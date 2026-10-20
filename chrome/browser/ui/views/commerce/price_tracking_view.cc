@@ -12,24 +12,18 @@
 #include "chrome/browser/ui/color/chrome_color_id.h"
 #include "chrome/browser/ui/views/chrome_layout_provider.h"
 #include "components/bookmarks/browser/bookmark_model.h"
-#include "components/commerce/core/commerce_feature_list.h"
 #include "components/commerce/core/price_tracking_utils.h"
 #include "components/omnibox/browser/vector_icons.h"
-#include "components/prefs/pref_service.h"
 #include "components/strings/grit/components_strings.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/ui_base_features.h"
-#include "ui/gfx/color_palette.h"
-#include "ui/gfx/geometry/insets_outsets_base.h"
-#include "ui/gfx/paint_vector_icon.h"
 #include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/background.h"
 #include "ui/views/border.h"
 #include "ui/views/controls/button/toggle_button.h"
 #include "ui/views/controls/image_view.h"
 #include "ui/views/controls/label.h"
-#include "ui/views/layout/box_layout.h"
 #include "ui/views/layout/box_layout_view.h"
 #include "ui/views/layout/flex_layout_view.h"
 #include "ui/views/layout/layout_provider.h"
@@ -221,7 +215,7 @@ void PriceTrackingView::UpdatePriceTrackingState(const GURL& url) {
     commerce::SetPriceTrackingStateForBookmark(
         service, model, node, is_price_track_enabled_, std::move(callback));
   } else {
-    DCHECK(!is_price_track_enabled_);
+    CHECK(!is_price_track_enabled_, base::NotFatalUntil::M162);
     if (commerce::CanTrackPrice(product_info_)) {
       commerce::SetPriceTrackingStateForClusterId(
           service, model, product_info_.product_cluster_id.value(),

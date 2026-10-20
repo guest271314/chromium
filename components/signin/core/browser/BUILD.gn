@@ -17,6 +17,8 @@ static_library("browser") {
     "account_investigator.h",
     "account_management_type_metrics_recorder.cc",
     "account_management_type_metrics_recorder.h",
+    "account_metrics_id_allocator.cc",
+    "account_metrics_id_allocator.h",
     "account_preview_data.cc",
     "account_preview_data.h",
     "account_preview_data_fetcher.cc",
@@ -25,6 +27,10 @@ static_library("browser") {
     "account_preview_data_service.h",
     "account_preview_data_service_impl.cc",
     "account_preview_data_service_impl.h",
+    "account_preview_heuristic.cc",
+    "account_preview_heuristic.h",
+    "account_preview_metrics_recorder.cc",
+    "account_preview_metrics_recorder.h",
     "account_reconcilor.cc",
     "account_reconcilor.h",
     "account_reconcilor_delegate.cc",
@@ -65,6 +71,7 @@ static_library("browser") {
     "//components/keyed_service/core",
     "//components/prefs",
     "//components/signin/public/base:signin_buildflags",
+    "//components/sync/base",
     "//google_apis",
     "//net",
     "//services/network/public/cpp",
@@ -75,10 +82,12 @@ static_library("browser") {
     "//base:i18n",
     "//components/google/core/common",
     "//components/metrics",
+    "//components/signin/internal/identity_manager:capabilities",
     "//components/signin/public/identity_manager",
     "//components/supervised_user/core/common:buildflags",
     "//components/supervised_user/core/common:features",
-    "//components/sync/base:features",
+    "//components/sync/service",
+    "//components/version_info",
     "//components/webdata/common",
     "//crypto",
     "//services/network/public/cpp",
@@ -86,13 +95,6 @@ static_library("browser") {
     "//sql",
     "//third_party/icu",
   ]
-
-  if (is_chromeos) {
-    deps += [
-      "//chromeos/crosapi/mojom",
-      "//components/account_manager_core",
-    ]
-  }
 
   if (!enable_dice_support) {
     sources -= [
@@ -109,10 +111,16 @@ static_library("browser") {
 source_set("unit_tests") {
   testonly = true
   sources = [
+    "about_signin_internals_unittest.cc",
     "account_investigator_unittest.cc",
     "account_management_type_metrics_recorder_unittest.cc",
+    "account_metrics_id_allocator_unittest.cc",
+    "account_preview_data_fetcher_unittest.cc",
     "account_preview_data_service_impl_unittest.cc",
-    "account_preview_data_unittest.cc",
+    "account_preview_data_test_util.cc",
+    "account_preview_data_test_util.h",
+    "account_preview_heuristic_unittest.cc",
+    "account_preview_metrics_recorder_unittest.cc",
     "account_reconcilor_delegate_unittest.cc",
     "account_reconcilor_unittest.cc",
     "active_primary_accounts_metrics_recorder_unittest.cc",
@@ -132,12 +140,14 @@ source_set("unit_tests") {
     "//components/prefs",
     "//components/prefs:test_support",
     "//components/privacy_sandbox:privacy_sandbox_prefs",
+    "//components/signin/internal/identity_manager:capabilities",
     "//components/signin/public/base:signin_buildflags",
     "//components/signin/public/base:test_support",
     "//components/signin/public/identity_manager",
     "//components/signin/public/identity_manager:test_support",
     "//components/supervised_user/core/common:buildflags",
     "//components/supervised_user/core/common:features",
+    "//components/sync:test_support",
     "//components/sync_preferences:test_support",
     "//google_apis",
     "//google_apis:test_support",
@@ -150,11 +160,6 @@ source_set("unit_tests") {
   ]
 
   if (is_chromeos) {
-    deps += [
-      "//chromeos/ash/components/install_attributes:test_support",
-      "//chromeos/crosapi/mojom",
-      "//components/account_manager_core:test_support",
-    ]
     sources -= [
       "account_investigator_unittest.cc",
       "signin_status_metrics_provider_helpers_unittest.cc",
@@ -178,6 +183,8 @@ source_set("test_support") {
   testonly = true
 
   sources = [
+    "test_account_preview_data_service.cc",
+    "test_account_preview_data_service.h",
     "test_account_reconcilor_observer.cc",
     "test_account_reconcilor_observer.h",
   ]

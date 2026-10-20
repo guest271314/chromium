@@ -19,17 +19,16 @@ import org.chromium.chrome.browser.browser_controls.BrowserControlsStateProvider
 import org.chromium.chrome.browser.browser_controls.BrowserControlsVisibilityManager;
 import org.chromium.chrome.browser.compositor.overlay_panel.OverlayPanel;
 import org.chromium.chrome.browser.compositor.overlay_panel.OverlayPanelManager;
-import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.layouts.LayoutStateProvider;
 import org.chromium.chrome.browser.layouts.LayoutStateProvider.LayoutStateObserver;
 import org.chromium.chrome.browser.layouts.LayoutType;
 import org.chromium.chrome.browser.lifecycle.DestroyObserver;
-import org.chromium.chrome.browser.tab.EmptyTabObserver;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabObserver;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetContent;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
-import org.chromium.components.browser_ui.bottomsheet.EmptyBottomSheetObserver;
+import org.chromium.components.browser_ui.bottomsheet.BottomSheetObserver;
+import org.chromium.components.browser_ui.bottomsheet.BottomSheetUtils;
 import org.chromium.components.browser_ui.bottomsheet.ExpandedSheetHelper;
 import org.chromium.components.browser_ui.bottomsheet.ManagedBottomSheetController;
 import org.chromium.content_public.browser.SelectionPopupController;
@@ -43,7 +42,7 @@ import java.util.function.Supplier;
  * otherwise shouldn't know about.
  */
 @NullMarked
-class BottomSheetManager extends EmptyBottomSheetObserver implements DestroyObserver {
+class BottomSheetManager implements BottomSheetObserver, DestroyObserver {
     /** A means of accessing the focus state of the omnibox. */
     private final MonotonicObservableSupplier<Boolean> mOmniboxFocusStateSupplier;
 
@@ -96,6 +95,8 @@ class BottomSheetManager extends EmptyBottomSheetObserver implements DestroyObse
     /** The token used to enable browser controls persistence. */
     private int mPersistentControlsToken;
 
+    private final boolean mIsBottomSheetAsBrowserControlsEnabled;
+
     /**
      * Creates a new instance of {@link BottomSheetManager}.
      *
@@ -108,6 +109,8 @@ class BottomSheetManager extends EmptyBottomSheetObserver implements DestroyObse
      * @param overlayManager The supplier for {@link OverlayPanelManager}.
      * @param layoutStateProviderSupplier The supplier for {@link LayoutStateProvider}.
      * @param bottomControlsStacker The {@link BottomControlsStacker} to register this layer with.
+     * @param isBottomSheetAsBrowserControlsEnabled Whether bottom sheet acting as browser controls
+     *     is enabled for the current context.
      */
     public BottomSheetManager(
             ManagedBottomSheetController controller,
@@ -117,7 +120,8 @@ class BottomSheetManager extends EmptyBottomSheetObserver implements DestroyObse
             MonotonicObservableSupplier<Boolean> omniboxFocusStateSupplier,
             Supplier<@Nullable OverlayPanelManager> overlayManager,
             OneshotSupplier<LayoutStateProvider> layoutStateProviderSupplier,
-            BottomControlsStacker bottomControlsStacker) {
+            BottomControlsStacker bottomControlsStacker,
+            boolean isBottomSheetAsBrowserControlsEnabled) {
         mSheetController = controller;
         mTabProvider = tabProvider;
         mBrowserControlsVisibilityManager = controlsVisibilityManager;
@@ -126,6 +130,7 @@ class BottomSheetManager extends EmptyBottomSheetObserver implements DestroyObse
         mCallbackController = new CallbackController();
         mExpandedSheetHelper = expandedSheetHelper;
         mBottomControlsStacker = bottomControlsStacker;
+        mIsBottomSheetAsBrowserControlsEnabled = isBottomSheetAsBrowserControlsEnabled;
 
         mLayoutStateObserver =
                 new LayoutStateObserver() {
@@ -150,7 +155,7 @@ class BottomSheetManager extends EmptyBottomSheetObserver implements DestroyObse
         // TODO(crbug.com/40134698): We should wait to instantiate all of these observers until the
         // bottom sheet is actually used.
         mTabObserver =
-                new EmptyTabObserver() {
+                new TabObserver() {
                     @Override
                     public void onPageLoadStarted(Tab tab, GURL url) {
                         controller.clearRequestsAndHide();
@@ -187,7 +192,7 @@ class BottomSheetManager extends EmptyBottomSheetObserver implements DestroyObse
                             boolean requestNewFrame,
                             boolean isVisibilityForced) {
                         controller.setBrowserControlsHiddenRatio(
-                                mBrowserControlsVisibilityManager.getBrowserControlHiddenRatio());
+                                mBrowserControlsVisibilityManager.getBottomControlHiddenRatio());
                     }
 
                     @Override
@@ -198,7 +203,7 @@ class BottomSheetManager extends EmptyBottomSheetObserver implements DestroyObse
                 };
 
         mBottomSheetLayer = new BottomSheetLayer();
-        if (ChromeFeatureList.sBottomSheetAsBrowserControls.isEnabled()) {
+        if (mIsBottomSheetAsBrowserControlsEnabled) {
             mSheetController.addObserver(mBottomSheetLayer);
             mBottomControlsStacker.addLayer(mBottomSheetLayer);
         } else {
@@ -222,7 +227,7 @@ class BottomSheetManager extends EmptyBottomSheetObserver implements DestroyObse
                     }
                 };
         mOmniboxFocusStateSupplier.addSyncObserverAndPostIfNonNull(mOmniboxFocusObserver);
-        if (ChromeFeatureList.sBottomSheetAsBrowserControls.isEnabled()) {
+        if (mIsBottomSheetAsBrowserControlsEnabled) {
             mBottomSheetLayer.maybeUpdateLayerHeight();
         }
     }
@@ -272,7 +277,7 @@ class BottomSheetManager extends EmptyBottomSheetObserver implements DestroyObse
         BottomSheetContent content = mSheetController.getCurrentSheetContent();
         // Content with a custom scrim lifecycle should not obscure the tab. The feature
         // is responsible for adding itself to the list of obscuring views when applicable.
-        if (content != null && content.hasCustomScrimLifecycle()) {
+        if (BottomSheetUtils.isSheetNonModal(content)) {
             mContentHasCustomScrimLifecycle = true;
             return;
         }
@@ -301,7 +306,7 @@ class BottomSheetManager extends EmptyBottomSheetObserver implements DestroyObse
 
     @Override
     public void onDestroy() {
-        if (ChromeFeatureList.sBottomSheetAsBrowserControls.isEnabled()) {
+        if (mIsBottomSheetAsBrowserControlsEnabled) {
             mBottomControlsStacker.removeLayer(mBottomSheetLayer);
             mSheetController.removeObserver(mBottomSheetLayer);
         } else {
@@ -324,9 +329,9 @@ class BottomSheetManager extends EmptyBottomSheetObserver implements DestroyObse
     // of bottom sheet peek mode height;
     // when bottom sheet is not used as controls, the layer will attach on top of the browser
     // controls, making the controls non-scrollable.
-    private class BottomSheetLayer extends EmptyBottomSheetObserver implements BottomControlsLayer {
+    private class BottomSheetLayer implements BottomSheetObserver, BottomControlsLayer {
         private int mContributedHeight;
-        private int mContributedVisibility;
+        private @LayerVisibility int mContributedVisibility = LayerVisibility.HIDDEN;
 
         @Override
         public void onSheetOpened(int reason) {
@@ -373,15 +378,14 @@ class BottomSheetManager extends EmptyBottomSheetObserver implements DestroyObse
         }
 
         @Override
-        public int getLayerVisibility() {
-            return mSheetController.getSheetState() == BottomSheetController.SheetState.HIDDEN
-                    ? LayerVisibility.HIDDEN
-                    : LayerVisibility.VISIBLE;
+        public @LayerVisibility int getLayerVisibility() {
+            return mContributedVisibility;
         }
 
         @Override
         public @Nullable Integer getBackgroundColor() {
-            return BottomSheetUtils.isContentActingAsBrowserControls(mSheetController)
+            return BottomSheetUtils.isContentActingAsBrowserControls(
+                            mSheetController, mIsBottomSheetAsBrowserControlsEnabled)
                     ? mSheetController.getSheetBackgroundColor()
                     : null;
         }
@@ -397,32 +401,72 @@ class BottomSheetManager extends EmptyBottomSheetObserver implements DestroyObse
             mSheetController.setBottomControlsOffset(offset);
 
             mSheetController.setBrowserControlsHiddenRatio(
-                    mBrowserControlsVisibilityManager.getBrowserControlHiddenRatio());
+                    mBrowserControlsVisibilityManager.getBottomControlHiddenRatio());
         }
 
         private void maybeUpdateLayerHeight() {
             int currentHeight = calculateContributedHeight();
-            int currentVisibility = getLayerVisibility();
+            @LayerVisibility int currentVisibility = calculateLayerVisibility();
             if (currentHeight != mContributedHeight
                     || currentVisibility != mContributedVisibility) {
+                // The sheet pins the bottom controls, so their min height equals their height.
+                // When the sheet hides while the top controls are scrolled off, only the bottom
+                // min height drops. Animate so cc animates the bottom controls down to the new
+                // min height; otherwise the renderer keeps them fully shown. The top offset is
+                // used because the bottom controls cannot scroll while pinned. Only animate when
+                // the renderer drives the animation, as the browser-driven fallback requires
+                // fully shown controls.
+                boolean animate =
+                        mContributedVisibility != LayerVisibility.HIDDEN
+                                && currentVisibility == LayerVisibility.HIDDEN
+                                && currentHeight == mContributedHeight
+                                && areTopControlsScrolledOff()
+                                && canRendererAnimateControls();
                 mContributedHeight = currentHeight;
                 mContributedVisibility = currentVisibility;
-                mBottomControlsStacker.requestLayerUpdate(false);
+                mBottomControlsStacker.requestLayerUpdate(animate);
             }
         }
 
+        private @LayerVisibility int calculateLayerVisibility() {
+            if (mSheetController.getSheetState() == BottomSheetController.SheetState.HIDDEN) {
+                return LayerVisibility.HIDDEN;
+            }
+            // When the sheet starts hiding while the top controls are scrolled off, release the
+            // bottom controls immediately so they animate out alongside the sheet instead of
+            // popping when the hide animation ends. Once released, stay released for the rest of
+            // the hide even if the top controls are shown again, so the bottom controls are not
+            // re-pinned mid-hide. The early release only applies when a hide starts via a state
+            // callback; other hides (e.g. swipe dismiss) release at SheetState.HIDDEN.
+            if (mSheetController.isSheetHiding()
+                    && (mContributedVisibility == LayerVisibility.HIDDEN
+                            || areTopControlsScrolledOff())) {
+                return LayerVisibility.HIDDEN;
+            }
+            return LayerVisibility.VISIBLE;
+        }
+
+        private boolean areTopControlsScrolledOff() {
+            return mBrowserControlsVisibilityManager.getTopControlsHeight() > 0
+                    && mBrowserControlsVisibilityManager.getTopControlOffset() < 0;
+        }
+
+        // Mirrors BrowserControlsManager#canAnimateNativeBrowserControls().
+        private boolean canRendererAnimateControls() {
+            Tab tab = mTabProvider.get();
+            return tab != null && tab.isUserInteractable() && !tab.isNativePage();
+        }
+
         private int calculateContributedHeight() {
-            if (!ChromeFeatureList.sBottomSheetAsBrowserControls.isEnabled()) {
+            if (!mIsBottomSheetAsBrowserControlsEnabled) {
                 return 0;
             }
             if (mSheetController.getSheetState() == BottomSheetController.SheetState.HIDDEN
                     || mSheetController.isSheetHiding()) {
                 return 0;
             }
-            if (!mSheetController.isFullWidth()) {
-                return 0;
-            }
-            return BottomSheetUtils.isContentActingAsBrowserControls(mSheetController)
+            return BottomSheetUtils.isContentActingAsBrowserControls(
+                            mSheetController, mIsBottomSheetAsBrowserControlsEnabled)
                     ? mSheetController.getCurrentPeekHeightPx()
                     : 0;
         }

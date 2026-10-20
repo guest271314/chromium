@@ -11,7 +11,6 @@
 #include "chrome/browser/ash/crostini/crostini_util.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/grit/chrome_unscaled_resources.h"
-#include "chrome/grit/generated_resources.h"
 #include "content/public/browser/child_process_host.h"
 #include "ui/base/l10n/l10n_util.h"
 
@@ -42,9 +41,9 @@ bool VmProcessTask::IsKillable() {
   return profile && owner_id_ == crostini::CryptohomeIdForProfile(profile);
 }
 
-int VmProcessTask::GetChildProcessUniqueID() const {
+content::ChildProcessId VmProcessTask::GetChildProcessUniqueID() const {
   // VMs are not child processes of the browser.
-  return content::ChildProcessHost::kInvalidUniqueID;
+  return content::ChildProcessId();
 }
 
 }  // namespace task_manager

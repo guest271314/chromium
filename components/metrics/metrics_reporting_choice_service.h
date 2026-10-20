@@ -4,19 +4,13 @@
 
 #ifndef COMPONENTS_METRICS_METRICS_REPORTING_CHOICE_SERVICE_H_
 #define COMPONENTS_METRICS_METRICS_REPORTING_CHOICE_SERVICE_H_
-
-#include "base/callback_list.h"
-#include "base/functional/callback_forward.h"
-#include "base/memory/raw_ptr.h"
-#include "components/metrics/metrics_reporting_level.h"
-#include "components/prefs/pref_change_registrar.h"
-
-class PrefRegistrySimple;
 class PrefService;
+class PrefRegistrySimple;
 
-namespace variations {
-class SyntheticTrialRegistry;
-}
+#include <map>
+#include <memory>
+
+class PrefChangeRegistrar;
 
 namespace metrics {
 
@@ -24,65 +18,67 @@ namespace metrics {
 // TODO(crbug.com/483043192): This feature is still under development.
 class MetricsReportingChoiceService {
  public:
-  explicit MetricsReportingChoiceService(PrefService* local_state);
-
   MetricsReportingChoiceService(const MetricsReportingChoiceService&) = delete;
   MetricsReportingChoiceService& operator=(
       const MetricsReportingChoiceService&) = delete;
 
-  ~MetricsReportingChoiceService();
+  // Starts observing a profile's kAdvancedReportingEnabled pref.
+  void MonitorAdvancedReportingPref(PrefService* profile_prefs);
 
-  // Registers local state prefs used by this class.
-  static void RegisterPrefs(PrefRegistrySimple* registry);
+  // Stops observing a profile's kAdvancedReportingEnabled pref.
+  void StopMonitoringAdvancedReportingPref(PrefService* profile_prefs);
 
-  // Initializes the synthetic field trial for the metrics consent restructure
-  // feature and caches the current feature state to local state for the next
-  // session.
-  static void InitSyntheticFieldTrial(
-      PrefService* local_state,
-      variations::SyntheticTrialRegistry* synthetic_trial_registry);
+  // Returns true if all monitored profiles have kAdvancedReportingEnabled set
+  // to true.
+  bool IsAdvancedReportingEnabledForAllProfiles() const;
 
-  // Returns true if kMetricsReportingLevel is set to either kBasic or
-  // kAdvanced, which means that basic metrics reporting is enabled.
+  // Registers profile-level preferences used by this service.
+  static void RegisterProfilePrefs(PrefRegistrySimple* registry);
+
+  // Sets the advanced metrics reporting choice.
+  static void SetAdvancedReportingEnabled(PrefService* profile_prefs,
+                                          bool enabled);
+
+  // Gets the current advanced metrics reporting choice.
+  static bool IsAdvancedReportingEnabled(const PrefService* profile_prefs);
+
+  // Returns true if the profile has migrated to the restructured consent.
+  static bool IsMigrated(const PrefService* profile_prefs);
+
+  // Returns true if basic metrics reporting is enabled.
   static bool IsBasicMetricsReportingEnabled(const PrefService* local_state);
 
-  // Returns true if kMetricsReportingLevel is set to kAdvanced.
-  static bool IsAdvancedMetricsReportingEnabled(const PrefService* local_state);
-
-  // Returns true if the metrics consent restructure feature is enabled.
-  static bool IsMetricsConsentRestructureFeatureEnabled(
-      const PrefService* local_state);
-
-  // Sets the metrics reporting level to |level|.
-  static void SetMetricsReportingLevel(PrefService* local_state,
-                                       MetricsReportingLevel level);
-
-  // Returns true if the metrics consent restructure should be used. This is
-  // different from IsMetricsConsentRestructureFeatureEnabled() in that it also
-  // checks if the migration has been completed (kMetricsReportingMigrationDone
-  // is true).
-  static bool ShouldUseMetricsConsentRestructure(
-      const PrefService* local_state);
-
-  // Clears the static cached feature state. Used only for testing.
-  static void ClearCachedFeatureStateForTesting();
+  // Returns true if the metrics consent restructure should be used.
+  static bool ShouldUseMetricsConsentRestructure();
 
   // Returns true if metrics reporting is disabled by policy.
   static bool IsMetricsReportingDisabledByPolicy(
       const PrefService* local_state);
 
-  // Adds a callback to be notified when the metrics reporting level changes.
-  base::CallbackListSubscription AddOnMetricsReportingLevelChangedCallback(
-      base::RepeatingClosure callback);
+ protected:
+  MetricsReportingChoiceService();
+  virtual ~MetricsReportingChoiceService();
+
+  // Called when the "enabled for all profiles" state changes.
+  virtual void OnAdvancedReportingEnabledForAllProfilesChanged(
+      bool enabled,
+      bool reset_client_state) {}
 
  private:
-  void OnReportingLevelPrefChanged();
-
-  const raw_ptr<PrefService> local_state_;
-  PrefChangeRegistrar pref_registrar_;
-  base::RepeatingCallbackList<void()> callback_list_;
-
   friend class MetricsReportingChoiceServiceTest;
+
+  void OnPrefChanged(PrefService* profile_prefs);
+  void UpdateAdvancedReportingEnabledForAllProfilesState(
+      bool reset_client_state = false);
+
+  struct MonitoredProfileInfo {
+    std::unique_ptr<PrefChangeRegistrar> registrar;
+    bool is_enabled = false;
+  };
+  std::map<PrefService*, MonitoredProfileInfo> monitored_profile_prefs_;
+
+  // Cached value of IsAdvancedReportingEnabledForAllProfiles().
+  bool is_advanced_reporting_enabled_for_all_profiles_ = false;
 };
 
 }  // namespace metrics

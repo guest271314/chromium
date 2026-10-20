@@ -59,6 +59,13 @@ class ModelBrokerAndroid final : public OnDeviceCapability,
   void SetUseCaseRequested(const std::string& use_case,
                            bool requested) override;
   void UninstallModels() override;
+  void ResetModelCrashCount() override;
+  void AddObserver(
+      mojo::PendingRemote<mojom::ModelBrokerDebugObserver>) override;
+  void AddAssetDownloadObserver(
+      const std::string& asset_name,
+      mojo::PendingRemote<on_device_model::mojom::DownloadObserver> observer)
+      override;
 
   mojo::Remote<on_device_model::mojom::OnDeviceModel>& GetOrCreateModelRemote(
       proto::ModelExecutionFeature feature);
@@ -85,6 +92,7 @@ class ModelBrokerAndroid final : public OnDeviceCapability,
       base::WeakPtr<on_device_model::mojom::OnDeviceModel> model);
 
   void AddModelDownloadProgressObserver(
+      const std::string& use_case,
       mojo::PendingRemote<on_device_model::mojom::DownloadObserver> observer);
 
   void OnDownloadProgressUpdated(int64_t downloaded_bytes, int64_t total_bytes);

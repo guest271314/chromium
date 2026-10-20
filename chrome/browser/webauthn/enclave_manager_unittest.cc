@@ -50,6 +50,7 @@
 #include "chrome/browser/webauthn/test_util.h"
 #include "chrome/browser/webauthn/unexportable_key_utils.h"
 #include "chrome/browser/webauthn/webauthn_metrics_util.h"
+#include "chrome/browser/webauthn/webauthn_scoped_fake_unexportable_key_provider.h"
 #include "components/cbor/reader.h"
 #include "components/cbor/writer.h"
 #include "components/signin/public/base/consent_level.h"
@@ -93,7 +94,9 @@
 #include "testing/gtest/include/gtest/gtest.h"
 
 #if BUILDFLAG(IS_MAC)
+#include "chrome/browser/webauthn/icloud_recovery.h"
 #include "components/trusted_vault/icloud_recovery_key_mac.h"
+#include "components/trusted_vault/trusted_vault_server_constants.h"
 #include "crypto/apple/scoped_fake_keychain_v2.h"
 #include "device/fido/mac/scoped_touch_id_test_environment.h"
 #include "third_party/boringssl/src/include/openssl/hmac.h"
@@ -106,7 +109,7 @@
 #include "components/trusted_vault/proto/vault.pb.h"
 #include "components/trusted_vault/proto_string_bytes_conversion.h"
 #include "components/trusted_vault/securebox.h"
-#include "crypto/signature_verifier.h"
+#include "crypto/sign.h"
 #endif  // BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN)
 
 // These tests are also disabled under MSAN. The enclave subprocess is written
@@ -318,7 +321,9 @@ class EnclaveManagerTest : public testing::Test, EnclaveManager::Observer {
   }
   void OnStateUpdated() override { notified_about_state_update_count_++; }
   void OnOutOfContextRecoveryCompletion(
-      EnclaveManager::OutOfContextRecoveryOutcome outcome) override {}
+      EnclaveManager::OutOfContextRecoveryOutcome outcome) override {
+    last_out_of_context_recovery_outcome_ = outcome;
+  }
 
   void DoCreate(
       std::unique_ptr<enclave::ClaimedPIN> claimed_pin,
@@ -525,6 +530,8 @@ class EnclaveManagerTest : public testing::Test, EnclaveManager::Observer {
   unsigned stored_count_ = 0;
   GaiaId last_stored_gaia_id_;
   unsigned notified_about_state_update_count_ = 0;
+  std::optional<EnclaveManager::OutOfContextRecoveryOutcome>
+      last_out_of_context_recovery_outcome_;
   const TempDir temp_dir_;
   const std::pair<base::Process, uint16_t> process_and_port_;
   const enclave::ScopedEnclaveOverride enclave_override_;
@@ -602,8 +609,35 @@ TEST_F(EnclaveManagerTest, Basic) {
   DoAssertion(GetTestEntity(), /*claimed_pin=*/nullptr,
               GetAssertionResponseExpectation());
   histogram_tester.ExpectBucketCount(
-      "WebAuthentication.EnclaveTransactionResult",
+      "WebAuthentication.EnclaveTransaction.Result",
       device::enclave::EnclaveTransactionResult::kSuccess, 2);
+  histogram_tester.ExpectBucketCount(
+      "WebAuthentication.EnclaveTransaction.PasskeyCreate.Result",
+      device::enclave::EnclaveTransactionResult::kSuccess, 1);
+  histogram_tester.ExpectBucketCount(
+      "WebAuthentication.EnclaveTransaction.PasskeyAssert.Result",
+      device::enclave::EnclaveTransactionResult::kSuccess, 1);
+
+  histogram_tester.ExpectTotalCount(
+      "WebAuthentication.EnclaveTransaction.Latency", 2);
+  histogram_tester.ExpectTotalCount(
+      "WebAuthentication.EnclaveTransaction.PasskeyCreate.Latency", 1);
+  histogram_tester.ExpectTotalCount(
+      "WebAuthentication.EnclaveTransaction.PasskeyAssert.Latency", 1);
+
+  histogram_tester.ExpectTotalCount(
+      "WebAuthentication.EnclaveTransaction.RequestSize", 2);
+  histogram_tester.ExpectTotalCount(
+      "WebAuthentication.EnclaveTransaction.PasskeyCreate.RequestSize", 1);
+  histogram_tester.ExpectTotalCount(
+      "WebAuthentication.EnclaveTransaction.PasskeyAssert.RequestSize", 1);
+
+  histogram_tester.ExpectTotalCount(
+      "WebAuthentication.EnclaveTransaction.ResponseSize", 2);
+  histogram_tester.ExpectTotalCount(
+      "WebAuthentication.EnclaveTransaction.PasskeyCreate.ResponseSize", 1);
+  histogram_tester.ExpectTotalCount(
+      "WebAuthentication.EnclaveTransaction.PasskeyAssert.ResponseSize", 1);
 }
 
 TEST_F(EnclaveManagerTest,
@@ -715,6 +749,19 @@ TEST_F(EnclaveManagerTest, GetAccessTokenErrorMetric_Success) {
   histogram_tester.ExpectUniqueSample(
       "WebAuthentication.Enclave.GetAccessTokenError",
       GoogleServiceAuthError::State::NONE, 1);
+  histogram_tester.ExpectUniqueSample(
+      "WebAuthentication.Enclave.ActionOutcome.RegisterIfNeeded",
+      EnclaveManager::ActionOutcome::kSuccess, 1);
+
+  // Calling RegisterIfNeeded when already registered should also record
+  // kSuccess.
+  BoolFuture register_future;
+  manager_.RegisterIfNeeded(register_future.GetCallback());
+  EXPECT_TRUE(register_future.Wait());
+  EXPECT_TRUE(register_future.Get());
+  histogram_tester.ExpectUniqueSample(
+      "WebAuthentication.Enclave.ActionOutcome.RegisterIfNeeded",
+      EnclaveManager::ActionOutcome::kSuccess, 2);
 }
 
 TEST_F(EnclaveManagerTest, GetAccessTokenErrorMetric_Failure) {
@@ -725,7 +772,8 @@ TEST_F(EnclaveManagerTest, GetAccessTokenErrorMetric_Failure) {
   manager_.RegisterIfNeeded(register_future.GetCallback());
 
   identity_test_env_.WaitForAccessTokenRequestIfNecessaryAndRespondWithError(
-      GoogleServiceAuthError(GoogleServiceAuthError::INVALID_GAIA_CREDENTIALS));
+      GoogleServiceAuthError::FromInvalidGaiaCredentialsReason(
+          GoogleServiceAuthError::InvalidGaiaCredentialsReason::UNKNOWN));
 
   EXPECT_TRUE(register_future.Wait());
   EXPECT_FALSE(register_future.Get());
@@ -733,6 +781,59 @@ TEST_F(EnclaveManagerTest, GetAccessTokenErrorMetric_Failure) {
   histogram_tester.ExpectUniqueSample(
       "WebAuthentication.Enclave.GetAccessTokenError",
       GoogleServiceAuthError::State::INVALID_GAIA_CREDENTIALS, 1);
+}
+
+TEST_F(EnclaveManagerTest, IsRegisteredForAccount) {
+  auto is_registered_for_account = [this](const GaiaId& gaia_id) {
+    BoolFuture future;
+    manager_.IsRegisteredForAccount(gaia_id, future.GetCallback());
+    return future.Get();
+  };
+
+  const GaiaId gaia1 =
+      identity_test_env_.identity_manager()
+          ->GetPrimaryAccountInfo(signin::ConsentLevel::kSignin)
+          .gaia;
+  EXPECT_FALSE(is_registered_for_account(gaia1));
+
+  ASSERT_TRUE(Register());
+  EXPECT_TRUE(manager_.IsRegistered());
+  EXPECT_TRUE(is_registered_for_account(gaia1));
+
+  // After switching to a different, unregistered primary account, the
+  // registration of the first account is still reported.
+  identity_test_env_.MakePrimaryAccountAvailable("test2@gmail.com",
+                                                 signin::ConsentLevel::kSignin);
+  const GaiaId gaia2 =
+      identity_test_env_.identity_manager()
+          ->GetPrimaryAccountInfo(signin::ConsentLevel::kSignin)
+          .gaia;
+  EXPECT_FALSE(manager_.IsRegistered());
+  EXPECT_TRUE(is_registered_for_account(gaia1));
+  EXPECT_FALSE(is_registered_for_account(gaia2));
+
+  NoArgFuture write_future;
+  if (manager_.RunWhenStoppedForTesting(write_future.GetCallback())) {
+    EXPECT_TRUE(write_future.Wait());
+  }
+  manager_.ResetForTesting();
+  ASSERT_FALSE(manager_.IsLoaded());
+  EXPECT_TRUE(is_registered_for_account(gaia1));
+  EXPECT_TRUE(manager_.IsLoaded());
+}
+
+TEST_F(EnclaveManagerTest, HasStoreKeysLock) {
+  EXPECT_FALSE(manager_.has_store_keys_lock());
+  {
+    auto lock1 = manager_.GetStoreKeysLock();
+    EXPECT_TRUE(manager_.has_store_keys_lock());
+    {
+      auto lock2 = manager_.GetStoreKeysLock();
+      EXPECT_TRUE(manager_.has_store_keys_lock());
+    }
+    EXPECT_TRUE(manager_.has_store_keys_lock());
+  }
+  EXPECT_FALSE(manager_.has_store_keys_lock());
 }
 
 TEST_F(EnclaveManagerTest, PrimaryUserChange) {
@@ -894,6 +995,7 @@ TEST_F(EnclaveManagerTest, AddWithExistingPIN) {
   std::vector<uint8_t> key(kTestKey.begin(), kTestKey.end());
   AcquireLockAndStoreKey(&manager_, {std::move(key)},
                          /*last_key_version=*/417);
+  base::HistogramTester histogram_tester;
   BoolFuture add_future;
   ASSERT_TRUE(manager_.AddDeviceToAccount(
       trusted_vault::GpmPinMetadata(std::string(kTestPINPublicKey),
@@ -914,9 +1016,13 @@ TEST_F(EnclaveManagerTest, AddWithExistingPIN) {
   // pretending that it was already there.
   EXPECT_EQ(security_domain_service_->num_pin_members(), 0u);
   EXPECT_TRUE(manager_.has_wrapped_pin());
+  histogram_tester.ExpectUniqueSample(
+      "WebAuthentication.Enclave.ActionOutcome.AddDeviceToAccount",
+      EnclaveManager::ActionOutcome::kSuccess, 1);
 }
 
 TEST_F(EnclaveManagerTest, InvalidWrappedPIN) {
+  base::HistogramTester histogram_tester;
   std::vector<uint8_t> key(kTestKey.begin(), kTestKey.end());
   AcquireLockAndStoreKey(&manager_, {std::move(key)},
                          /*last_key_version=*/417);
@@ -929,6 +1035,11 @@ TEST_F(EnclaveManagerTest, InvalidWrappedPIN) {
           trusted_vault::UsableRecoveryPinMetadata("nonsense wrapped PIN",
                                                    /*expiry=*/base::Time())),
       add_future.GetCallback()));
+  histogram_tester.ExpectUniqueSample(
+      "WebAuthentication.Enclave.ActionOutcome.AddDeviceToAccount",
+      EnclaveManager::ActionOutcome::
+          kAddDeviceToAccountNotStartedWrappedPinParsingError,
+      1);
 
   // A valid protobuf, but which fails invariants, should be rejected.
   webauthn_pb::EnclaveLocalState::WrappedPIN wrapped_pin = GetTestWrappedPIN();
@@ -939,9 +1050,15 @@ TEST_F(EnclaveManagerTest, InvalidWrappedPIN) {
                                         wrapped_pin.SerializeAsString(),
                                         /*expiry=*/base::Time())),
       add_future.GetCallback()));
+  histogram_tester.ExpectUniqueSample(
+      "WebAuthentication.Enclave.ActionOutcome.AddDeviceToAccount",
+      EnclaveManager::ActionOutcome::
+          kAddDeviceToAccountNotStartedWrappedPinParsingError,
+      2);
 }
 
 TEST_F(EnclaveManagerTest, SetupWithPIN) {
+  base::HistogramTester histogram_tester;
   const std::string pin = "123456";
 
   BoolFuture setup_future;
@@ -982,6 +1099,9 @@ TEST_F(EnclaveManagerTest, SetupWithPIN) {
   DoCreate(/*claimed_pin=*/nullptr, &entity);
   DoAssertion(std::move(entity), std::move(claimed_pin),
               GetAssertionResponseExpectation());
+  histogram_tester.ExpectUniqueSample(
+      "WebAuthentication.Enclave.ActionOutcome.SetupWithPIN",
+      EnclaveManager::ActionOutcome::kSuccess, 1);
 }
 
 TEST_F(EnclaveManagerTest, SetupWithPIN_SecurityDomainFailure) {
@@ -1076,6 +1196,7 @@ TEST_F(EnclaveManagerTest, AddDeviceAndPINToAccount) {
                          /*last_key_version=*/kSecretVersion);
   ASSERT_TRUE(manager_.has_pending_keys());
 
+  base::HistogramTester histogram_tester;
   BoolFuture add_future;
   manager_.AddDeviceAndPINToAccount(
       pin, /*previous_pin_public_key=*/std::nullopt, add_future.GetCallback());
@@ -1114,6 +1235,9 @@ TEST_F(EnclaveManagerTest, AddDeviceAndPINToAccount) {
   DoCreate(/*claimed_pin=*/nullptr, &entity);
   DoAssertion(std::move(entity), std::move(claimed_pin),
               GetAssertionResponseExpectation());
+  histogram_tester.ExpectUniqueSample(
+      "WebAuthentication.Enclave.ActionOutcome.AddDeviceAndPINToAccount",
+      EnclaveManager::ActionOutcome::kSuccess, 1);
 }
 
 TEST_F(EnclaveManagerTest, AddDeviceAndPINToAccountWithPreviouslyInvalidPIN) {
@@ -1171,6 +1295,7 @@ TEST_F(EnclaveManagerTest, ChangePIN) {
   const std::vector<uint8_t> security_domain_secret =
       std::move(manager_.TakeSecret()->second);
 
+  base::HistogramTester histogram_tester;
   BoolFuture change_future;
   manager_.ChangePIN(new_pin, "rapt", change_future.GetCallback());
   EXPECT_TRUE(change_future.Wait());
@@ -1191,6 +1316,9 @@ TEST_F(EnclaveManagerTest, ChangePIN) {
   DoCreate(/*claimed_pin=*/nullptr, &entity);
   DoAssertion(std::move(entity), std::move(claimed_pin),
               GetAssertionResponseExpectation());
+  histogram_tester.ExpectUniqueSample(
+      "WebAuthentication.Enclave.ActionOutcome.ChangePIN",
+      EnclaveManager::ActionOutcome::kSuccess, 1);
 }
 
 TEST_F(EnclaveManagerTest, AddPINToExistingAccount) {
@@ -1210,6 +1338,7 @@ TEST_F(EnclaveManagerTest, AddPINToExistingAccount) {
   const std::vector<uint8_t> security_domain_secret =
       std::move(manager_.TakeSecret()->second);
 
+  base::HistogramTester histogram_tester;
   BoolFuture set_pin_future;
   manager_.SetPIN(new_pin, "rapt", set_pin_future.GetCallback());
   EXPECT_TRUE(set_pin_future.Wait());
@@ -1230,6 +1359,9 @@ TEST_F(EnclaveManagerTest, AddPINToExistingAccount) {
   DoCreate(/*claimed_pin=*/nullptr, &entity);
   DoAssertion(std::move(entity), std::move(claimed_pin),
               GetAssertionResponseExpectation());
+  histogram_tester.ExpectUniqueSample(
+      "WebAuthentication.Enclave.ActionOutcome.SetPIN",
+      EnclaveManager::ActionOutcome::kSuccess, 1);
 }
 
 TEST_F(EnclaveManagerTest, AddPINToExistingAccountButTheresAlreadyOne) {
@@ -1376,25 +1508,7 @@ TEST_F(EnclaveManagerTest, EnclaveForgetsClient_AddDeviceAndPINToAccount) {
   EXPECT_FALSE(add_future.Get());
 }
 
-enum class PINRefreshFlow { kNewFlow, kOldFlow };
-
-class EnclaveManagerRenewPINTest
-    : public testing::WithParamInterface<PINRefreshFlow>,
-      public EnclaveManagerTest {
- public:
-  EnclaveManagerRenewPINTest() {
-    scoped_feature_list_.InitWithFeatureState(
-        device::kWebAuthnNewRefreshFlow,
-        GetParam() == PINRefreshFlow::kNewFlow);
-  }
-
-  void SetUp() override { EnclaveManagerTest::SetUp(); }
-
- private:
-  base::test::ScopedFeatureList scoped_feature_list_;
-};
-
-TEST_P(EnclaveManagerRenewPINTest, RenewPIN) {
+TEST_F(EnclaveManagerTest, RenewPIN) {
   ASSERT_TRUE(Register());
 
   const std::string pin = "123456";
@@ -1423,16 +1537,8 @@ TEST_P(EnclaveManagerRenewPINTest, RenewPIN) {
   EXPECT_EQ(security_domain_service_->num_physical_members(), 1u);
   EXPECT_EQ(security_domain_service_->num_pin_members(), 1u);
 
-  switch (GetParam()) {
-    case PINRefreshFlow::kNewFlow:
-      // We expect to create a new Vault.
-      EXPECT_EQ(recovery_key_store_->vaults().size(), 2u);
-      break;
-    case PINRefreshFlow::kOldFlow:
-      // We expect to replace the old Vault.
-      EXPECT_EQ(recovery_key_store_->vaults().size(), 1u);
-      break;
-  }
+  // We expect to create a new Vault.
+  EXPECT_EQ(recovery_key_store_->vaults().size(), 2u);
 
   const std::optional<std::vector<uint8_t>> security_domain_secret =
       FakeMagicArch::RecoverWithPIN(pin, *security_domain_service_,
@@ -1445,7 +1551,7 @@ TEST_P(EnclaveManagerRenewPINTest, RenewPIN) {
 // Tests that renewing a PIN that didn't have cohort details (because it was
 // wrapped on an older version of Chrome) results in the enclave re-wrapping it
 // with the details.
-TEST_P(EnclaveManagerRenewPINTest, RenewPINAddsCohortDetails) {
+TEST_F(EnclaveManagerTest, RenewPINAddsCohortDetails) {
   // Set up with a PIN.
   ASSERT_TRUE(Register());
   const std::string pin = "123456";
@@ -1472,7 +1578,7 @@ TEST_P(EnclaveManagerRenewPINTest, RenewPINAddsCohortDetails) {
     wrapped_pin_cbor.erase(wrapped_pin_cbor.find(cbor::Value(7)));
     std::vector<uint8_t> encrypted_pin = EnclaveManager::EncryptWrappedPIN(
         security_domain_secret,
-        *cbor::Writer::Write(cbor::Value(wrapped_pin_cbor)));
+        *cbor::Writer::Write(cbor::Value(std::move(wrapped_pin_cbor))));
     wrapped_pin_proto->set_wrapped_pin(
         std::string(base::as_string_view(encrypted_pin)));
     security_domain_service_->SetPinMemberWrappedPin(
@@ -1521,7 +1627,7 @@ TEST_P(EnclaveManagerRenewPINTest, RenewPINAddsCohortDetails) {
 // first manager. Then, the first manager will attempt renewing the PIN. This
 // used to be broken because the first manager would not download the updated
 // PIN data, causing a public key mismatch on the join security domain query.
-TEST_P(EnclaveManagerRenewPINTest, RenewPINWithStaleDataFromAnotherClient) {
+TEST_F(EnclaveManagerTest, RenewPINWithStaleDataFromAnotherClient) {
   const std::string kPin = "123456";
 
   // Set up the first manager with the PIN.
@@ -1585,7 +1691,7 @@ TEST_P(EnclaveManagerRenewPINTest, RenewPINWithStaleDataFromAnotherClient) {
 // Regression test for crbug.com/402425846.
 // Attempts renewing a PIN from local data when the security domain indicates
 // that the current PIN changed, and is also not usable for recovery.
-TEST_P(EnclaveManagerRenewPINTest, RenewUnusablePINFromLocalData) {
+TEST_F(EnclaveManagerTest, RenewUnusablePINFromLocalData) {
   const std::string kPin = "123456";
 
   // Set up the manager with the PIN.
@@ -1616,7 +1722,7 @@ TEST_P(EnclaveManagerRenewPINTest, RenewUnusablePINFromLocalData) {
 
 // Regression test for crbug.com/407171373.
 // Attempts renewing a PIN after the security domain has been reset.
-TEST_P(EnclaveManagerRenewPINTest, RenewPINAfterSecurityDomainReset) {
+TEST_F(EnclaveManagerTest, RenewPINAfterSecurityDomainReset) {
   base::HistogramTester histogram_tester;
   const std::string kPin = "123456";
 
@@ -1654,7 +1760,7 @@ TEST_P(EnclaveManagerRenewPINTest, RenewPINAfterSecurityDomainReset) {
 // Regression test for crbug.com/407171373.
 // Attempts renewing a PIN when the security domain reports that the user
 // doesn't have a GPM PIN at all.
-TEST_P(EnclaveManagerRenewPINTest, RenewPINAfterSecurityDomainReportsNoPin) {
+TEST_F(EnclaveManagerTest, RenewPINAfterSecurityDomainReportsNoPin) {
   base::HistogramTester histogram_tester;
   const std::string kPin = "123456";
 
@@ -1689,10 +1795,7 @@ TEST_P(EnclaveManagerRenewPINTest, RenewPINAfterSecurityDomainReportsNoPin) {
 
 // Tests attempting to renew a PIN that's stored in a Vault cohort that hasn't
 // been deprecated yet.
-TEST_P(EnclaveManagerRenewPINTest, NotYetDeprecated) {
-  if (GetParam() != PINRefreshFlow::kNewFlow) {
-    GTEST_SKIP() << "Test is not applicable to old flow";
-  }
+TEST_F(EnclaveManagerTest, NotYetDeprecated) {
   ASSERT_TRUE(Register());
   base::HistogramTester histogram_tester;
 
@@ -1725,10 +1828,7 @@ TEST_P(EnclaveManagerRenewPINTest, NotYetDeprecated) {
 
 // Tests attempting to renew a PIN with a cert.xml version that's older than the
 // last one used to wrap the PIN.
-TEST_P(EnclaveManagerRenewPINTest, NoKeyStoreDowngrade) {
-  if (GetParam() != PINRefreshFlow::kNewFlow) {
-    GTEST_SKIP() << "Test is not applicable to old flow";
-  }
+TEST_F(EnclaveManagerTest, NoKeyStoreDowngrade) {
   ASSERT_TRUE(Register());
   base::HistogramTester histogram_tester;
 
@@ -1766,7 +1866,7 @@ TEST_P(EnclaveManagerRenewPINTest, NoKeyStoreDowngrade) {
 // Tests that a PIN is still usable for recovery if updating the security domain
 // service failed e.g. due to a network issue.
 // Regression test for crbug.com/399818721.
-TEST_P(EnclaveManagerRenewPINTest, RenewPINInterruptSecurityDomainUpdate) {
+TEST_F(EnclaveManagerTest, RenewPINInterruptSecurityDomainUpdate) {
   ASSERT_TRUE(Register());
 
   const std::string pin = "123456";
@@ -1797,24 +1897,10 @@ TEST_P(EnclaveManagerRenewPINTest, RenewPINInterruptSecurityDomainUpdate) {
   const std::optional<std::vector<uint8_t>> security_domain_secret =
       FakeMagicArch::RecoverWithPIN(pin, *security_domain_service_,
                                     *recovery_key_store_);
-  switch (GetParam()) {
-    case PINRefreshFlow::kNewFlow:
-      // With the new flow, recovering should succeed.
-      ASSERT_TRUE(security_domain_secret.has_value());
-      EXPECT_EQ(manager_.TakeSecret()->second, *security_domain_secret);
-      break;
-    case PINRefreshFlow::kOldFlow:
-      // Sanity test that the old flow does not support recovering from this
-      // state.
-      EXPECT_FALSE(security_domain_secret.has_value());
-      break;
-  }
+  // With the new flow, recovering should succeed.
+  ASSERT_TRUE(security_domain_secret.has_value());
+  EXPECT_EQ(manager_.TakeSecret()->second, *security_domain_secret);
 }
-
-INSTANTIATE_TEST_SUITE_P(,
-                         EnclaveManagerRenewPINTest,
-                         testing::Values(PINRefreshFlow::kOldFlow,
-                                         PINRefreshFlow::kNewFlow));
 
 TEST_F(EnclaveManagerTest, EpochChanged) {
   ASSERT_TRUE(Register());
@@ -1832,12 +1918,16 @@ TEST_F(EnclaveManagerTest, EpochChanged) {
   EXPECT_TRUE(manager_.ConsiderSecurityDomainState(state, base::DoNothing()));
   EXPECT_TRUE(manager_.is_idle());
 
+  base::HistogramTester histogram_tester;
   BoolFuture update_future;
   state.key_version = kSecretVersion + 1;
   EXPECT_FALSE(
       manager_.ConsiderSecurityDomainState(state, update_future.GetCallback()));
   EXPECT_TRUE(update_future.Wait());
   EXPECT_FALSE(manager_.IsReady());
+  histogram_tester.ExpectUniqueSample(
+      "WebAuthentication.Enclave.ActionOutcome.ConsiderSecurityDomainState",
+      EnclaveManager::ActionOutcome::kSuccess, 1);
 }
 
 TEST_F(EnclaveManagerTest, PINChanged) {
@@ -1863,6 +1953,7 @@ TEST_F(EnclaveManagerTest, PINChanged) {
                             wrapped_pin.SerializeAsString(),
                             /*expiry=*/base::Time::FromTimeT(1)));
 
+  base::HistogramTester histogram_tester;
   BoolFuture update_future;
   EXPECT_TRUE(
       manager_.ConsiderSecurityDomainState(state, update_future.GetCallback()));
@@ -1871,6 +1962,35 @@ TEST_F(EnclaveManagerTest, PINChanged) {
   const webauthn_pb::EnclaveLocalState::User& updated_user =
       manager_.local_state_for_testing().users().begin()->second;
   EXPECT_EQ(updated_user.wrapped_pin().wrapped_pin(), kNewWrappedPin);
+  histogram_tester.ExpectUniqueSample(
+      "WebAuthentication.Enclave.ActionOutcome.ConsiderSecurityDomainState",
+      EnclaveManager::ActionOutcome::kSuccess, 1);
+}
+
+TEST_F(EnclaveManagerTest, ConsiderSecurityDomainState_InvalidWrappedPIN) {
+  ASSERT_TRUE(Register());
+  BoolFuture setup_future;
+  manager_.SetupWithPIN("123456", setup_future.GetCallback());
+  EXPECT_TRUE(setup_future.Wait());
+  EXPECT_TRUE(manager_.IsReady());
+
+  // Simulaing the new state with invalid wrapped pin.
+  trusted_vault::DownloadAuthenticationFactorsRegistrationStateResult state;
+  state.state = trusted_vault::
+      DownloadAuthenticationFactorsRegistrationStateResult::State::kRecoverable;
+  state.key_version = kSecretVersion;
+  state.gpm_pin_metadata = trusted_vault::GpmPinMetadata(
+      "new public key", trusted_vault::UsableRecoveryPinMetadata(
+                            "invalid wrapped pin",
+                            /*expiry=*/base::Time::FromTimeT(1)));
+
+  base::HistogramTester histogram_tester;
+  EXPECT_TRUE(manager_.ConsiderSecurityDomainState(state, base::DoNothing()));
+  histogram_tester.ExpectUniqueSample(
+      "WebAuthentication.Enclave.ActionOutcome.ConsiderSecurityDomainState",
+      EnclaveManager::ActionOutcome::
+          kConsiderSecurityDomainStateNotStartedWrappedPinParsingError,
+      1);
 }
 
 TEST_F(EnclaveManagerTest, SigningFails) {
@@ -1935,6 +2055,7 @@ TEST_F(EnclaveManagerTest, AddICloudRecoveryKey) {
   std::unique_ptr<trusted_vault::SecureBoxKeyPair> key =
       trusted_vault::SecureBoxKeyPair::CreateByPrivateKeyImport(
           icloud_key->key()->private_key().ExportToBytes());
+  base::HistogramTester histogram_tester;
   BoolFuture icloud_future;
   manager_.AddICloudRecoveryKey(std::move(icloud_key),
                                 icloud_future.GetCallback());
@@ -1971,6 +2092,315 @@ TEST_F(EnclaveManagerTest, AddICloudRecoveryKey) {
   EXPECT_TRUE(crypto::hmac::VerifySha256(
       *security_domain_secret, base::as_byte_span(icloud_member->public_key()),
       proof));
+  histogram_tester.ExpectUniqueSample(
+      "WebAuthentication.Enclave.ActionOutcome.AddICloudRecoveryKey",
+      EnclaveManager::ActionOutcome::kSuccess, 1);
+}
+
+TEST_F(EnclaveManagerTest, RecoverWithICloudKeychainSuccess) {
+  crypto::ScopedFakeUserVerifyingKeyProvider scoped_uv;
+  crypto::apple::ScopedFakeKeychainV2 scoped_fake_keychain{
+      webauthn::kICloudKeychainRecoveryKeyAccessGroup};
+
+  ASSERT_TRUE(Register());
+
+  BoolFuture setup_future;
+  manager_.SetupWithPIN("123456", setup_future.GetCallback());
+  EXPECT_TRUE(setup_future.Wait());
+  ASSERT_TRUE(manager_.IsReady());
+
+  base::test::TestFuture<std::unique_ptr<trusted_vault::ICloudRecoveryKey>>
+      create_key_future;
+  trusted_vault::ICloudRecoveryKey::Create(
+      create_key_future.GetCallback(),
+      trusted_vault::SecurityDomainId::kPasskeys,
+      webauthn::kICloudKeychainRecoveryKeyAccessGroup);
+  std::unique_ptr<trusted_vault::ICloudRecoveryKey> icloud_key =
+      create_key_future.Take();
+  ASSERT_TRUE(icloud_key);
+
+  BoolFuture add_icloud_future;
+  manager_.AddICloudRecoveryKey(std::move(icloud_key),
+                                add_icloud_future.GetCallback());
+  ASSERT_TRUE(add_icloud_future.Wait());
+  ASSERT_TRUE(add_icloud_future.Get());
+  std::optional<std::pair<int32_t, std::vector<uint8_t>>> expected_secret =
+      manager_.TakeSecret();
+  ASSERT_TRUE(expected_secret.has_value());
+
+  // Simulate another device (or a cleared local registration) recovering from
+  // iCloud Keychain.
+  manager_.ClearRegistrationForTesting();
+  manager_.ClearCachedKeysForTesting();
+  ASSERT_FALSE(manager_.IsRegistered());
+  ASSERT_FALSE(manager_.IsReady());
+
+  base::HistogramTester histogram_tester;
+  BoolFuture recovery_future;
+  manager_.RecoverWithICloudKeychain(recovery_future.GetCallback());
+  ASSERT_TRUE(recovery_future.Wait());
+  EXPECT_TRUE(recovery_future.Get());
+  EXPECT_TRUE(manager_.IsReady());
+  EXPECT_TRUE(manager_.is_idle());
+  EXPECT_EQ(manager_.TakeSecret(), expected_secret);
+  histogram_tester.ExpectUniqueSample(
+      "WebAuthentication.Enclave.ActionOutcome.RecoverWithICloudKeychain",
+      EnclaveManager::ActionOutcome::kSuccess, 1);
+}
+
+TEST_F(EnclaveManagerTest, RecoverWithICloudKeychainKeyAlreadyReady) {
+  crypto::ScopedFakeUserVerifyingKeyProvider scoped_uv;
+  crypto::apple::ScopedFakeKeychainV2 scoped_fake_keychain{
+      webauthn::kICloudKeychainRecoveryKeyAccessGroup};
+
+  ASSERT_TRUE(Register());
+
+  BoolFuture setup_future;
+  manager_.SetupWithPIN("123456", setup_future.GetCallback());
+  EXPECT_TRUE(setup_future.Wait());
+  ASSERT_TRUE(manager_.IsReady());
+
+  base::test::TestFuture<std::unique_ptr<trusted_vault::ICloudRecoveryKey>>
+      create_key_future;
+  trusted_vault::ICloudRecoveryKey::Create(
+      create_key_future.GetCallback(),
+      trusted_vault::SecurityDomainId::kPasskeys,
+      webauthn::kICloudKeychainRecoveryKeyAccessGroup);
+  std::unique_ptr<trusted_vault::ICloudRecoveryKey> icloud_key =
+      create_key_future.Take();
+  ASSERT_TRUE(icloud_key);
+
+  BoolFuture add_icloud_future;
+  manager_.AddICloudRecoveryKey(std::move(icloud_key),
+                                add_icloud_future.GetCallback());
+  ASSERT_TRUE(add_icloud_future.Wait());
+  ASSERT_TRUE(add_icloud_future.Get());
+  ASSERT_TRUE(manager_.IsReady());
+
+  base::HistogramTester histogram_tester;
+  BoolFuture recovery_future;
+  manager_.RecoverWithICloudKeychain(recovery_future.GetCallback());
+  ASSERT_TRUE(recovery_future.Wait());
+  EXPECT_FALSE(recovery_future.Get());
+  EXPECT_TRUE(manager_.IsReady());
+  histogram_tester.ExpectUniqueSample(
+      "WebAuthentication.Enclave.ActionOutcome.RecoverWithICloudKeychain",
+      EnclaveManager::ActionOutcome::
+          kDoNextActionFailedICloudKeychainKeyAlreadyReady,
+      1);
+}
+
+TEST_F(EnclaveManagerTest,
+       RecoverWithICloudKeychainDownloadAccountStateFailed) {
+  security_domain_service_->fail_all_requests();
+
+  base::HistogramTester histogram_tester;
+  BoolFuture recovery_future;
+  manager_.RecoverWithICloudKeychain(recovery_future.GetCallback());
+  ASSERT_TRUE(recovery_future.Wait());
+  EXPECT_FALSE(recovery_future.Get());
+  EXPECT_FALSE(manager_.IsReady());
+  histogram_tester.ExpectUniqueSample(
+      "WebAuthentication.Enclave.ActionOutcome.RecoverWithICloudKeychain",
+      EnclaveManager::ActionOutcome::
+          kDoDownloadingAccountStateForICloudRecoveryFailedTrustedVaultErrorResponse,
+      1);
+}
+
+TEST_F(EnclaveManagerTest, RecoverWithICloudKeychainNoICloudKeysInAccount) {
+  base::HistogramTester histogram_tester;
+  BoolFuture recovery_future;
+  manager_.RecoverWithICloudKeychain(recovery_future.GetCallback());
+  ASSERT_TRUE(recovery_future.Wait());
+  EXPECT_FALSE(recovery_future.Get());
+  EXPECT_FALSE(manager_.IsReady());
+  histogram_tester.ExpectUniqueSample(
+      "WebAuthentication.Enclave.ActionOutcome.RecoverWithICloudKeychain",
+      EnclaveManager::ActionOutcome::
+          kDoDownloadingAccountStateForICloudRecoveryFailedNoICloudKeysInAccount,
+      1);
+}
+
+TEST_F(EnclaveManagerTest, RecoverWithICloudKeychainNoMatchingLocalICloudKey) {
+  crypto::ScopedFakeUserVerifyingKeyProvider scoped_uv;
+  crypto::apple::ScopedFakeKeychainV2 scoped_fake_keychain{
+      webauthn::kICloudKeychainRecoveryKeyAccessGroup};
+
+  ASSERT_TRUE(Register());
+
+  BoolFuture setup_future;
+  manager_.SetupWithPIN("123456", setup_future.GetCallback());
+  EXPECT_TRUE(setup_future.Wait());
+  ASSERT_TRUE(manager_.IsReady());
+
+  // Add an iCloud recovery key to the account that is not stored in the local
+  // keychain.
+  std::unique_ptr<trusted_vault::ICloudRecoveryKey> icloud_key =
+      trusted_vault::ICloudRecoveryKey::CreateForTest();
+  BoolFuture add_icloud_future;
+  manager_.AddICloudRecoveryKey(std::move(icloud_key),
+                                add_icloud_future.GetCallback());
+  ASSERT_TRUE(add_icloud_future.Wait());
+  ASSERT_TRUE(add_icloud_future.Get());
+
+  manager_.ClearRegistrationForTesting();
+  manager_.ClearCachedKeysForTesting();
+  ASSERT_FALSE(manager_.IsReady());
+
+  base::HistogramTester histogram_tester;
+  BoolFuture recovery_future;
+  manager_.RecoverWithICloudKeychain(recovery_future.GetCallback());
+  ASSERT_TRUE(recovery_future.Wait());
+  EXPECT_FALSE(recovery_future.Get());
+  EXPECT_FALSE(manager_.IsReady());
+  histogram_tester.ExpectUniqueSample(
+      "WebAuthentication.Enclave.ActionOutcome.RecoverWithICloudKeychain",
+      EnclaveManager::ActionOutcome::
+          kDoRecoveringWithICloudKeychainFailedNoMatchingLocalICloudKey,
+      1);
+}
+
+TEST_F(EnclaveManagerTest, RecoverWithICloudKeychainDecryptionFailed) {
+  crypto::ScopedFakeUserVerifyingKeyProvider scoped_uv;
+  crypto::apple::ScopedFakeKeychainV2 scoped_fake_keychain{
+      webauthn::kICloudKeychainRecoveryKeyAccessGroup};
+
+  ASSERT_TRUE(Register());
+
+  BoolFuture setup_future;
+  manager_.SetupWithPIN("123456", setup_future.GetCallback());
+  EXPECT_TRUE(setup_future.Wait());
+  ASSERT_TRUE(manager_.IsReady());
+
+  base::test::TestFuture<std::unique_ptr<trusted_vault::ICloudRecoveryKey>>
+      create_key_future;
+  trusted_vault::ICloudRecoveryKey::Create(
+      create_key_future.GetCallback(),
+      trusted_vault::SecurityDomainId::kPasskeys,
+      webauthn::kICloudKeychainRecoveryKeyAccessGroup);
+  std::unique_ptr<trusted_vault::ICloudRecoveryKey> icloud_key =
+      create_key_future.Take();
+  ASSERT_TRUE(icloud_key);
+
+  BoolFuture add_icloud_future;
+  manager_.AddICloudRecoveryKey(std::move(icloud_key),
+                                add_icloud_future.GetCallback());
+  ASSERT_TRUE(add_icloud_future.Wait());
+  ASSERT_TRUE(add_icloud_future.Get());
+
+  manager_.ClearRegistrationForTesting();
+  manager_.ClearCachedKeysForTesting();
+  ASSERT_FALSE(manager_.IsReady());
+
+  security_domain_service_->CorruptICloudKeychainMemberKeys();
+
+  base::HistogramTester histogram_tester;
+  BoolFuture recovery_future;
+  manager_.RecoverWithICloudKeychain(recovery_future.GetCallback());
+  ASSERT_TRUE(recovery_future.Wait());
+  EXPECT_FALSE(recovery_future.Get());
+  EXPECT_FALSE(manager_.IsReady());
+  histogram_tester.ExpectUniqueSample(
+      "WebAuthentication.Enclave.ActionOutcome.RecoverWithICloudKeychain",
+      EnclaveManager::ActionOutcome::
+          kDoRecoveringWithICloudKeychainFailedDecryptionFailed,
+      1);
+}
+
+TEST_F(EnclaveManagerTest, RecoverWithICloudKeychainStoreKeysFailed) {
+  crypto::ScopedFakeUserVerifyingKeyProvider scoped_uv;
+  crypto::apple::ScopedFakeKeychainV2 scoped_fake_keychain{
+      webauthn::kICloudKeychainRecoveryKeyAccessGroup};
+
+  ASSERT_TRUE(Register());
+
+  BoolFuture setup_future;
+  manager_.SetupWithPIN("123456", setup_future.GetCallback());
+  EXPECT_TRUE(setup_future.Wait());
+  ASSERT_TRUE(manager_.IsReady());
+
+  base::test::TestFuture<std::unique_ptr<trusted_vault::ICloudRecoveryKey>>
+      create_key_future;
+  trusted_vault::ICloudRecoveryKey::Create(
+      create_key_future.GetCallback(),
+      trusted_vault::SecurityDomainId::kPasskeys,
+      webauthn::kICloudKeychainRecoveryKeyAccessGroup);
+  std::unique_ptr<trusted_vault::ICloudRecoveryKey> icloud_key =
+      create_key_future.Take();
+  ASSERT_TRUE(icloud_key);
+
+  BoolFuture add_icloud_future;
+  manager_.AddICloudRecoveryKey(std::move(icloud_key),
+                                add_icloud_future.GetCallback());
+  ASSERT_TRUE(add_icloud_future.Wait());
+  ASSERT_TRUE(add_icloud_future.Get());
+
+  manager_.ClearRegistrationForTesting();
+  manager_.ClearCachedKeysForTesting();
+  ASSERT_FALSE(manager_.IsReady());
+
+  security_domain_service_->fail_join_requests_matching(base::BindRepeating(
+      [](const trusted_vault_pb::JoinSecurityDomainsRequest&) {
+        return true;
+      }));
+
+  base::HistogramTester histogram_tester;
+  BoolFuture recovery_future;
+  manager_.RecoverWithICloudKeychain(recovery_future.GetCallback());
+  ASSERT_TRUE(recovery_future.Wait());
+  EXPECT_FALSE(recovery_future.Get());
+  EXPECT_FALSE(manager_.IsReady());
+  histogram_tester.ExpectUniqueSample(
+      "WebAuthentication.Enclave.ActionOutcome.RecoverWithICloudKeychain",
+      EnclaveManager::ActionOutcome::
+          kDoJoiningDomainFailedTrustedVaultRegistrationError,
+      1);
+}
+
+TEST_F(EnclaveManagerTest,
+       RecoverWithICloudKeychainPrimaryAccountChangedCancelsRecovery) {
+  crypto::ScopedFakeUserVerifyingKeyProvider scoped_uv;
+  crypto::apple::ScopedFakeKeychainV2 scoped_fake_keychain{
+      webauthn::kICloudKeychainRecoveryKeyAccessGroup};
+
+  ASSERT_TRUE(Register());
+
+  BoolFuture setup_future;
+  manager_.SetupWithPIN("123456", setup_future.GetCallback());
+  EXPECT_TRUE(setup_future.Wait());
+  ASSERT_TRUE(manager_.IsReady());
+
+  base::test::TestFuture<std::unique_ptr<trusted_vault::ICloudRecoveryKey>>
+      create_key_future;
+  trusted_vault::ICloudRecoveryKey::Create(
+      create_key_future.GetCallback(),
+      trusted_vault::SecurityDomainId::kPasskeys,
+      webauthn::kICloudKeychainRecoveryKeyAccessGroup);
+  std::unique_ptr<trusted_vault::ICloudRecoveryKey> icloud_key =
+      create_key_future.Take();
+  ASSERT_TRUE(icloud_key);
+
+  BoolFuture add_icloud_future;
+  manager_.AddICloudRecoveryKey(std::move(icloud_key),
+                                add_icloud_future.GetCallback());
+  ASSERT_TRUE(add_icloud_future.Wait());
+  ASSERT_TRUE(add_icloud_future.Get());
+
+  manager_.ClearRegistrationForTesting();
+  manager_.ClearCachedKeysForTesting();
+  ASSERT_FALSE(manager_.IsReady());
+
+  base::HistogramTester histogram_tester;
+  BoolFuture recovery_future;
+  manager_.RecoverWithICloudKeychain(recovery_future.GetCallback());
+  identity_test_env_.MakePrimaryAccountAvailable("other@gmail.com",
+                                                 signin::ConsentLevel::kSignin);
+  ASSERT_TRUE(recovery_future.Wait());
+  EXPECT_FALSE(recovery_future.Get());
+  EXPECT_FALSE(manager_.IsReady());
+  histogram_tester.ExpectUniqueSample(
+      "WebAuthentication.Enclave.ActionOutcome.RecoverWithICloudKeychain",
+      EnclaveManager::ActionOutcome::kStateMachineHasBeenDestroyed, 1);
 }
 #endif  // BUILDFLAG(IS_MAC)
 
@@ -1978,11 +2408,15 @@ TEST_F(EnclaveManagerTest, Unenroll) {
   ASSERT_TRUE(Register());
 
   ASSERT_TRUE(manager_.IsRegistered());
+  base::HistogramTester histogram_tester;
   BoolFuture unenroll_future;
   manager_.Unenroll(unenroll_future.GetCallback());
   EXPECT_TRUE(unenroll_future.Wait());
   EXPECT_TRUE(unenroll_future.Get());
   ASSERT_FALSE(manager_.IsRegistered());
+  histogram_tester.ExpectUniqueSample(
+      "WebAuthentication.Enclave.ActionOutcome.Unenroll",
+      EnclaveManager::ActionOutcome::kSuccess, 1);
 
   // Things should be in a good state such that we can register again.
   ASSERT_TRUE(Register());
@@ -2065,16 +2499,16 @@ TEST_F(EnclaveManagerTest, LockPINThenChange) {
               GetAssertionResponseExpectation());
 }
 
-// Tests that rely on `ScopedFakeUnexportableKeyProvider` only work on
-// platforms where EnclaveManager uses `GetUnexportableKeyProvider`, as opposed
-// to `GetSoftwareUnsecureUnexportableKeyProvider`.
-#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
-#define MAYBE_HardwareKeyLost HardwareKeyLost
-#else
-#define MAYBE_HardwareKeyLost DISABLED_HardwareKeyLost
-#endif
-TEST_F(EnclaveManagerTest, MAYBE_HardwareKeyLost) {
+TEST_F(EnclaveManagerTest, HardwareKeyLost) {
   crypto::ScopedFakeUserVerifyingKeyProvider scoped_uv_key_provider;
+#if BUILDFLAG(IS_CHROMEOS)
+  OverrideWebAuthnChromeosUserVerifyingKeyProviderForTesting([]() {
+    return crypto::GetUserVerifyingKeyProvider(
+        crypto::UserVerifyingKeyProvider::Config());
+  });
+  base::ScopedClosureRunner reset_uv_override(base::BindOnce(
+      &OverrideWebAuthnChromeosUserVerifyingKeyProviderForTesting, nullptr));
+#endif
   security_domain_service_->pretend_there_are_members();
   NoArgFuture loaded_future;
   manager_.Load(loaded_future.GetCallback());
@@ -2138,7 +2572,7 @@ TEST_F(EnclaveManagerTest, MAYBE_HardwareKeyLost) {
   EXPECT_TRUE(key_future_present.Wait());
   EXPECT_TRUE(key_future_present.Get().has_value());
 
-  crypto::ScopedNullUnexportableKeyProvider null_hw_provider;
+  WebAuthnScopedNullUnexportableKeyProvider null_hw_provider;
   auto signing_callback = manager_.IdentityKeySigningCallback();
   quit_closure = task_env_.QuitClosure();
   std::move(signing_callback)
@@ -2161,6 +2595,10 @@ TEST_F(EnclaveManagerTest, MAYBE_HardwareKeyLost) {
                                               key_future_deleted.GetCallback());
   EXPECT_TRUE(key_future_deleted.Wait());
   EXPECT_FALSE(key_future_deleted.Get().has_value());
+
+  // Wait for the background task posted by `ClearRegistration()` to finish
+  // before `null_hw_provider` is destroyed.
+  task_env_.RunUntilIdle();
 }
 
 // Tests that Chrome resets the local state if joining the physical device to
@@ -2310,6 +2748,24 @@ TEST_F(EnclaveManagerTest, CheckGpmPinAvailabilityWhenPinIsUnusable) {
   ASSERT_TRUE(manager_.IsReady());
   ASSERT_TRUE(manager_.has_wrapped_pin());
   security_domain_service_->MakePinMemberUnusable();
+
+  base::test::TestFuture<EnclaveManager::GpmPinAvailability> future;
+  auto request = manager_.CheckGpmPinAvailability(future.GetCallback());
+  EXPECT_TRUE(future.Wait());
+  EXPECT_EQ(future.Get(),
+            EnclaveManager::GpmPinAvailability::kGpmPinSetButNotUsable);
+}
+
+TEST_F(EnclaveManagerTest, CheckGpmPinAvailabilityWhenWrappedPinIsInvalid) {
+  const std::string pin = "123456";
+  ASSERT_TRUE(Register());
+
+  BoolFuture setup_future;
+  manager_.SetupWithPIN(pin, setup_future.GetCallback());
+  EXPECT_TRUE(setup_future.Wait());
+  ASSERT_TRUE(manager_.IsReady());
+  ASSERT_TRUE(manager_.has_wrapped_pin());
+  security_domain_service_->SetPinMemberWrappedPin("invalid wrapped pin");
 
   base::test::TestFuture<EnclaveManager::GpmPinAvailability> future;
   auto request = manager_.CheckGpmPinAvailability(future.GetCallback());
@@ -2821,8 +3277,7 @@ TEST_F(EnclaveUVTest, UserVerifyingKeyUseExisting) {
   std::unique_ptr<crypto::UserVerifyingKeyProvider> key_provider =
       crypto::GetUserVerifyingKeyProvider(/*config=*/{});
   key_provider->GenerateUserVerifyingSigningKey(
-      std::array{crypto::SignatureVerifier::ECDSA_SHA256},
-      key_future.GetCallback());
+      std::array{crypto::sign::ECDSA_SHA256}, key_future.GetCallback());
   EXPECT_TRUE(key_future.Wait());
   manager_.local_state_for_testing()
       .mutable_users()
@@ -3023,6 +3478,56 @@ TEST_F(OpportunisticKeyRetrievalEnclaveUVTest,
   // several things will go wrong. If nothing else, `pretend_there_are_members`
   // isn't called so the fake security domain service will CHECK since the
   // version is non-zero.
+}
+
+// Regression test for https://crbug.com/573735417.
+// Ensure redundant keys from opportunistic retrieval before enclave load are
+// ignored.
+TEST_F(OpportunisticKeyRetrievalEnclaveUVTest,
+       OpportunisticStoreKeysRedundantBeforeLoad) {
+  security_domain_service_->pretend_there_are_members();
+  {
+    EnclaveKeysWaiter enclave_keys_waiter(&manager_);
+    manager_.StoreKeys(
+        gaia_id_,
+        {trusted_vault::TrustedVaultKeyAndVersion(
+            std::vector<uint8_t>(kTestKey.begin(), kTestKey.end()),
+            kSecretVersion)},
+        trusted_vault::TrustedVaultUserActionTriggerForUMA::
+            kPasskeyUnlockProfileMenu);
+    ASSERT_EQ(enclave_keys_waiter.Wait(),
+              EnclaveManager::OutOfContextRecoveryOutcome::
+                  kStoreKeysFromOpportunisticFlowSucceeded);
+  }
+  ASSERT_TRUE(manager_.IsReady());
+
+  NoArgFuture write_future;
+  if (manager_.RunWhenStoppedForTesting(write_future.GetCallback())) {
+    EXPECT_TRUE(write_future.Wait());
+  }
+  manager_.ResetForTesting();
+  ASSERT_FALSE(manager_.IsLoaded());
+
+  base::HistogramTester histogram_tester;
+  EnclaveKeysWaiter enclave_keys_waiter(&manager_);
+  manager_.StoreKeys(gaia_id_,
+                     {trusted_vault::TrustedVaultKeyAndVersion(
+                         std::vector<uint8_t>(kTestKey.begin(), kTestKey.end()),
+                         kSecretVersion)},
+                     trusted_vault::TrustedVaultUserActionTriggerForUMA::
+                         kPasskeyUnlockProfileMenu);
+  EXPECT_EQ(enclave_keys_waiter.Wait(),
+            EnclaveManager::OutOfContextRecoveryOutcome::
+                kStoreKeysFromOpportunisticFlowIgnoredRedundant);
+
+  EXPECT_TRUE(manager_.IsLoaded());
+  EXPECT_TRUE(manager_.is_idle());
+  EXPECT_EQ(manager_.store_keys_count(), 0u);
+  histogram_tester.ExpectBucketCount(
+      "WebAuthentication.GPM.RecoveryEvent",
+      webauthn::metrics::WebAuthenticationGPMRecoveryEvent::
+          kStoreKeysFromOpportunisticFlowIgnoredRedundant,
+      1);
 }
 
 #if !BUILDFLAG(IS_CHROMEOS)
@@ -3249,7 +3754,7 @@ TEST_F(EnclaveUVTest, UnregisterOnFailedDeferredUVKeyCreation) {
   UseFailingUVKeySupport();
   EnclaveManager::EnableInvariantChecksForTesting(false);
 
-  base::RunLoop run_loop;
+  base::test::TestFuture<bool> unenroll_future;
   auto ui_request = std::make_unique<enclave::CredentialRequest>();
   ui_request->signing_callback = manager_.IdentityKeySigningCallback();
   ui_request->wrapped_secret =
@@ -3265,15 +3770,14 @@ TEST_F(EnclaveUVTest, UnregisterOnFailedDeferredUVKeyCreation) {
       manager_.UserVerifyingKeyCreationCallback();
   ui_request->unregister_callback =
       base::BindOnce(&EnclaveManager::Unenroll, manager_.GetWeakPtr(),
-                     base::BindLambdaForTesting(
-                         [&run_loop](bool) { run_loop.QuitWhenIdle(); }));
+                     unenroll_future.GetCallback());
 
   GetAssertionResponseExpectation expected_response;
   expected_response.result = device::GetAssertionStatus::kEnclaveError;
   expected_response.size = 0;
   DoAssertion(GetTestEntity(), /*claimed_pin=*/nullptr, expected_response,
               std::move(ui_request));
-  run_loop.Run();
+  EXPECT_TRUE(unenroll_future.Wait());
 
   EXPECT_FALSE(manager_.IsRegistered());
 }
@@ -3320,8 +3824,7 @@ TEST_F(EnclaveUVTest, UnregisterOnMissingUserVerifyingKey) {
   std::unique_ptr<crypto::UserVerifyingKeyProvider> key_provider =
       crypto::GetUserVerifyingKeyProvider(/*config=*/{});
   key_provider->GenerateUserVerifyingSigningKey(
-      std::array{crypto::SignatureVerifier::ECDSA_SHA256},
-      key_future.GetCallback());
+      std::array{crypto::sign::ECDSA_SHA256}, key_future.GetCallback());
   EXPECT_TRUE(key_future.Wait());
   manager_.local_state_for_testing()
       .mutable_users()
@@ -3343,7 +3846,7 @@ TEST_F(EnclaveUVTest, UnregisterOnMissingUserVerifyingKey) {
       base::MakeRefCounted<crypto::RefCountedUserVerifyingSigningKey>(
           std::move(key_temp));
 
-  base::RunLoop run_loop;
+  base::test::TestFuture<bool> unenroll_future;
   auto ui_request = std::make_unique<enclave::CredentialRequest>();
   ui_request->signing_callback =
       manager_.UserVerifyingKeySigningCallback(/*options=*/{});
@@ -3357,19 +3860,18 @@ TEST_F(EnclaveUVTest, UnregisterOnMissingUserVerifyingKey) {
       device::enclave::UserPresentAndVerifiedBits::kPresentAndVerified;
   ui_request->unregister_callback =
       base::BindOnce(&EnclaveManager::Unenroll, manager_.GetWeakPtr(),
-                     base::BindLambdaForTesting(
-                         [&run_loop](bool) { run_loop.QuitWhenIdle(); }));
+                     unenroll_future.GetCallback());
 
   GetAssertionResponseExpectation expected_response;
   expected_response.result = device::GetAssertionStatus::kEnclaveError;
   expected_response.size = 0;
   DoAssertion(GetTestEntity(), /*claimed_pin=*/nullptr, expected_response,
               std::move(ui_request));
-  run_loop.Run();
+  EXPECT_TRUE(unenroll_future.Wait());
 
   EXPECT_FALSE(manager_.IsRegistered());
   histogram_tester.ExpectBucketCount(
-      "WebAuthentication.EnclaveTransactionResult",
+      "WebAuthentication.EnclaveTransaction.Result",
       device::enclave::EnclaveTransactionResult::kMissingKey, 1);
 }
 

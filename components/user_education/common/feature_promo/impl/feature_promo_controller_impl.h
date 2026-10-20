@@ -21,16 +21,16 @@
 #include "components/user_education/common/feature_promo/feature_promo_specification.h"
 #include "components/user_education/common/feature_promo/impl/precondition_list_provider.h"
 #include "components/user_education/common/help_bubble/help_bubble_factory_registry.h"
-#include "components/user_education/common/product_messaging_controller.h"
 #include "components/user_education/common/tutorial/tutorial_service.h"
 #include "components/user_education/common/user_education_storage_service.h"
+#include "components/user_education/product_messaging/product_messaging_controller.h"
 
 // Declaring these in the global namespace for testing purposes.
-class BrowserFeaturePromoControllerTestBase;
-class BrowserFeaturePromoControllerTestHelper;
 class FeaturePromoLifecycleUiTest;
 
 namespace user_education {
+
+class BrowserFeaturePromoControllerTestBase;
 
 // Manages display of in-product help promos. All IPH displays in Top
 // Chrome should go through here.
@@ -52,7 +52,7 @@ class FeaturePromoControllerImpl : public FeaturePromoController {
       UserEducationStorageService* storage_service,
       FeaturePromoSessionPolicy* session_policy,
       TutorialService* tutorial_service,
-      ProductMessagingController* messaging_controller);
+      ProductMessagingController& messaging_controller);
   ~FeaturePromoControllerImpl() override;
 
   // Perform required initialization that cannot be safely done in the
@@ -255,7 +255,6 @@ class FeaturePromoControllerImpl : public FeaturePromoController {
 
  private:
   friend BrowserFeaturePromoControllerTestBase;
-  friend BrowserFeaturePromoControllerTestHelper;
   friend FeaturePromoLifecycleUiTest;
 
   struct PromoData;

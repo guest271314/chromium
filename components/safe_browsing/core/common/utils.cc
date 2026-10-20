@@ -27,7 +27,7 @@
 #include "services/network/public/mojom/cookie_access_observer.mojom.h"
 #include "services/network/public/mojom/url_response_head.mojom.h"
 
-#if BUILDFLAG(IS_WIN)
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
 #include "base/enterprise_util.h"
 #endif
 
@@ -59,20 +59,20 @@ std::string ShortURLForReporting(const GURL& url) {
 
 ChromeUserPopulation::ProfileManagementStatus GetProfileManagementStatus(
     const policy::BrowserPolicyConnector* bpc) {
-#if BUILDFLAG(IS_WIN)
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
   if (base::IsManagedDevice()) {
     return ChromeUserPopulation::ENTERPRISE_MANAGED;
   } else {
     return ChromeUserPopulation::NOT_MANAGED;
   }
 #elif BUILDFLAG(IS_CHROMEOS)
-  if (!bpc || !bpc->IsDeviceEnterpriseManaged()) {
-    return ChromeUserPopulation::NOT_MANAGED;
+  if (bpc && bpc->IsDeviceEnterpriseManaged()) {
+    return ChromeUserPopulation::ENTERPRISE_MANAGED;
   }
-  return ChromeUserPopulation::ENTERPRISE_MANAGED;
+  return ChromeUserPopulation::NOT_MANAGED;
 #else
   return ChromeUserPopulation::UNAVAILABLE;
-#endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_CHROMEOS)
+#endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_CHROMEOS)
 }
 
 void SetDelayInPref(PrefService* prefs,
@@ -150,11 +150,14 @@ bool ErrorIsRetriable(int net_error, int http_error) {
          (http_error == kUnsetHttpResponseCode || http_error == net::HTTP_OK);
 }
 
+// LINT.IfChange(GetExtraMetricsSuffix)
 std::string_view GetExtraMetricsSuffix(
     security_interstitials::UnsafeResource unsafe_resource) {
   switch (unsafe_resource.threat_source) {
     case safe_browsing::ThreatSource::LOCAL_PVER4:
       return "from_device_v4";
+    case safe_browsing::ThreatSource::LOCAL_PVER5_LOCAL_BLOCKLIST:
+      return "from_local_blocklist_v5";
     case safe_browsing::ThreatSource::CLIENT_SIDE_DETECTION:
       return "from_client_side_detection";
     case safe_browsing::ThreatSource::URL_REAL_TIME_CHECK:
@@ -165,11 +168,14 @@ std::string_view GetExtraMetricsSuffix(
       return "from_android_safebrowsing_real_time";
     case safe_browsing::ThreatSource::ANDROID_SAFEBROWSING:
       return "from_android_safebrowsing";
+    case safe_browsing::ThreatSource::GLIC_COUNTER_ABUSE:
+      return "from_glic_counter_abuse";
     case safe_browsing::ThreatSource::UNKNOWN:
       break;
   }
   NOTREACHED();
 }
+// LINT.ThenChange(//tools/metrics/histograms/metadata/interstitial/histograms.xml:SecurityInterstitialSBWithSourceType)
 
 std::string_view GetExtraExtraMetricsSuffix(
     security_interstitials::UnsafeResource unsafe_resource) {
@@ -184,6 +190,8 @@ std::string_view GetExtraExtraMetricsSuffix(
       return "scam_experiment_verdict_4";
     case safe_browsing::ThreatSubtype::SCAM_EXPERIMENT_CATCH_ALL_ENFORCEMENT:
       return "scam_experiment_catch_all";
+    case safe_browsing::ThreatSubtype::SCAM_EXPERIMENT_VERDICT_BILLING:
+      return "scam_experiment_verdict_billing";
     case safe_browsing::ThreatSubtype::UNKNOWN:
       return "";
   }
@@ -218,17 +226,18 @@ std::string GetThreatTypeStringForInterstitial(
     case SB_THREAT_TYPE_CSD_ALLOWLIST:
     case DEPRECATED_SB_THREAT_TYPE_URL_PASSWORD_PROTECTION_PHISHING:
     case DEPRECATED_SB_THREAT_TYPE_URL_CLIENT_SIDE_MALWARE:
+    case DEPRECATED_SB_THREAT_TYPE_BLOCKED_AD_POPUP:
+    case DEPRECATED_SB_THREAT_TYPE_BLOCKED_AD_REDIRECT:
     case SB_THREAT_TYPE_SAVED_PASSWORD_REUSE:
     case SB_THREAT_TYPE_SIGNED_IN_SYNC_PASSWORD_REUSE:
     case SB_THREAT_TYPE_SIGNED_IN_NON_SYNC_PASSWORD_REUSE:
     case SB_THREAT_TYPE_AD_SAMPLE:
-    case SB_THREAT_TYPE_BLOCKED_AD_POPUP:
-    case SB_THREAT_TYPE_BLOCKED_AD_REDIRECT:
     case SB_THREAT_TYPE_SUSPICIOUS_SITE:
     case SB_THREAT_TYPE_ENTERPRISE_PASSWORD_REUSE:
     case SB_THREAT_TYPE_APK_DOWNLOAD:
     case SB_THREAT_TYPE_HIGH_CONFIDENCE_ALLOWLIST:
     case SB_THREAT_TYPE_CSD_DOWNLOAD_ALLOWLIST:
+    case SB_THREAT_TYPE_WARNABLE_SUSPICIOUS_SITE:
       NOTREACHED();
   }
   return {};
@@ -255,6 +264,7 @@ int GetClientSideDetectionTypeTier(ClientSideDetectionType type) {
     case ClientSideDetectionType::CLIENT_SIDE_DETECTION_TYPE_UNSPECIFIED:
     case ClientSideDetectionType::POINTER_LOCK_REQUESTED:
     case ClientSideDetectionType::FULLSCREEN_API:
+    case ClientSideDetectionType::POLICY_ENGINE:
       NOTREACHED();
   }
 }

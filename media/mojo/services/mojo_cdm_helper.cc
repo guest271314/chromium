@@ -68,15 +68,14 @@ void MojoCdmHelper::GetMediaFoundationCdmData(
   cdm_document_service_->GetMediaFoundationCdmData(std::move(callback));
 }
 
-void MojoCdmHelper::SetCdmClientToken(
-    const std::vector<uint8_t>& client_token) {
-  ConnectToCdmDocumentService();
-  cdm_document_service_->SetCdmClientToken(client_token);
-}
-
 void MojoCdmHelper::OnCdmEvent(CdmEvent event, HRESULT hresult) {
   ConnectToCdmDocumentService();
   cdm_document_service_->OnCdmEvent(event, hresult);
+}
+
+void MojoCdmHelper::GetContentProtectionWindow(
+    GetContentProtectionWindowCB callback) {
+  frame_interfaces_->GetContentProtectionWindow(std::move(callback));
 }
 #endif  // BUILDFLAG(IS_WIN)
 
@@ -104,6 +103,7 @@ void MojoCdmHelper::EnableProtection(uint32_t desired_protection_mask,
                                        std::move(scoped_callback));
 }
 
+#if BUILDFLAG(IS_CHROMEOS)
 void MojoCdmHelper::ChallengePlatform(const std::string& service_id,
                                       const std::string& challenge,
                                       ChallengePlatformCB callback) {
@@ -114,13 +114,16 @@ void MojoCdmHelper::ChallengePlatform(const std::string& service_id,
   cdm_document_service_->ChallengePlatform(service_id, challenge,
                                            std::move(scoped_callback));
 }
+#endif  // BUILDFLAG(IS_CHROMEOS)
 
+#if BUILDFLAG(ENABLE_CDM_STORAGE_ID)
 void MojoCdmHelper::GetStorageId(uint32_t version, StorageIdCB callback) {
   StorageIdCB scoped_callback = mojo::WrapCallbackWithDefaultInvokeIfNotRun(
       std::move(callback), version, std::vector<uint8_t>());
   ConnectToCdmDocumentService();
   cdm_document_service_->GetStorageId(version, std::move(scoped_callback));
 }
+#endif  // BUILDFLAG(ENABLE_CDM_STORAGE_ID)
 
 void MojoCdmHelper::CloseCdmFileIO(MojoCdmFileIO* cdm_file_io) {
   DVLOG(3) << __func__ << ": cdm_file_io = " << cdm_file_io;
@@ -197,6 +200,11 @@ void MojoCdmHelper::RecordUkm(const CdmMetricsData& cdm_metrics_data) {
   if (cdm_metrics_data.key_system_data_bool1.has_value()) {
     ukm_builder.SetKeySystemDataBool1(
         cdm_metrics_data.key_system_data_bool1.value());
+  }
+
+  if (cdm_metrics_data.session_init_data_type.has_value()) {
+    ukm_builder.SetSessionInitDataType(
+        cdm_metrics_data.session_init_data_type.value());
   }
 
   ukm_builder.SetNumberOfVideoFrames(cdm_metrics_data.video_frames_processed);

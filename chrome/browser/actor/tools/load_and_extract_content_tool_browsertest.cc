@@ -21,12 +21,14 @@
 #include "base/time/time.h"
 #include "chrome/browser/actor/actor_keyed_service.h"
 #include "chrome/browser/actor/actor_proto_conversion.h"
+#include "chrome/browser/actor/actor_surface_handle.h"
+#include "chrome/browser/actor/actor_tab_close_skip_beforeunload_user_data.h"
 #include "chrome/browser/actor/actor_test_util.h"
 #include "chrome/browser/actor/tools/load_and_extract_content_tool_request.h"
 #include "chrome/browser/actor/tools/tools_test_util.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_window.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/tabs/tab_enums.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/tabs/tab_strip_model_observer.h"
@@ -73,8 +75,8 @@ class ActorLoadAndExtractContentToolBrowserTest : public ActorToolsTest {
 
   void SetUpOnMainThread() override {
     ActorToolsTest::SetUpOnMainThread();
-    browser()->window()->Show();
-    browser()->window()->Activate();
+    browser()->GetWindow()->Show();
+    browser()->GetWindow()->Activate();
     embedded_test_server()->RegisterRequestHandler(base::BindRepeating(
         &ActorLoadAndExtractContentToolBrowserTest::HandleStallRequest,
         base::Unretained(this)));
@@ -90,21 +92,21 @@ class ActorLoadAndExtractContentToolBrowserTest : public ActorToolsTest {
       ]
     })json",
         net::GetHostAndPort(embedded_test_server()->base_url()));
-    SafetyListManager::GetInstance()->ParseSafetyLists(json);
+    SetSafetyListsForTesting(SafetyListManager::GetInstance(), json);
   }
 
  protected:
   struct ExpectedNode {
     optimization_guide::proto::ContentAttributeType type;
-    std::optional<std::string> text = std::nullopt;
+    std::optional<std::string> text;
     std::vector<ExpectedNode> children;
   };
 
   struct ExpectedTabObservation {
     TabObservationResult result;
-    std::optional<std::string> expected_url = std::nullopt;
-    std::optional<std::string> expected_title = std::nullopt;
-    std::optional<ExpectedNode> expected_root_node = std::nullopt;
+    std::optional<std::string> expected_url;
+    std::optional<std::string> expected_title;
+    std::optional<ExpectedNode> expected_root_node;
   };
 
   std::unique_ptr<net::test_server::HttpResponse> HandleStallRequest(
@@ -131,7 +133,7 @@ class ActorLoadAndExtractContentToolBrowserTest : public ActorToolsTest {
     const std::vector<actor::ActionResultWithLatencyInfo>& action_results =
         result_future.Get();
     actor::BuildActionsResultWithObservations(
-        *browser()->profile(), /*start_time=*/base::TimeTicks::Now(),
+        *browser()->GetProfile(), /*start_time=*/base::TimeTicks::Now(),
         action_results, actor_task(),
         /*skip_async_observation_information=*/true,
         /*screenshot_collection_options=*/std::nullopt, future.GetCallback());
@@ -218,8 +220,8 @@ class ActorLoadAndExtractContentToolBrowserTest : public ActorToolsTest {
 // navigation in each of those tabs.
 class TabNavigationObserver : public TabStripModelObserver {
  public:
-  explicit TabNavigationObserver(Browser* browser)
-      : tab_strip_model_(browser->tab_strip_model()),
+  explicit TabNavigationObserver(BrowserWindowInterface* browser)
+      : tab_strip_model_(browser->GetTabStripModel()),
         initial_tab_count_(tab_strip_model_->count()) {
     tab_strip_model_->AddObserver(this);
   }
@@ -234,6 +236,8 @@ class TabNavigationObserver : public TabStripModelObserver {
     if (change.type() == TabStripModelChange::kInserted) {
       for (const auto& contents : change.GetInsert()->contents) {
         tabs_added_count_++;
+        actor::ActorTabCloseSkipBeforeUnloadUserData::CreateForWebContents(
+            contents.contents);
         // Create a watcher for the new tab to track its navigation.
         web_contents_observers_.push_back(
             std::make_unique<SingleTabNavigationWatcher>(contents.contents,
@@ -340,9 +344,9 @@ IN_PROC_BROWSER_TEST_F(ActorLoadAndExtractContentToolBrowserTest,
                        SameSiteStrictCookieNotSent) {
   const GURL url = embedded_test_server()->GetURL("/echoheader?cookie");
 
-  ASSERT_TRUE(content::SetCookie(browser()->profile(), url,
+  ASSERT_TRUE(content::SetCookie(browser()->GetProfile(), url,
                                  "strict_cookie=1; SameSite=Strict"));
-  ASSERT_TRUE(content::SetCookie(browser()->profile(), url,
+  ASSERT_TRUE(content::SetCookie(browser()->GetProfile(), url,
                                  "lax_cookie=1; SameSite=Lax"));
 
   std::unique_ptr<ToolRequest> request =
@@ -551,6 +555,11 @@ IN_PROC_BROWSER_TEST_F(ActorLoadAndExtractContentToolBrowserTest,
   observer.WaitForAddedTabs(1);
 
   // Close the newly added tab. The initial tab is at index 0.
+  const ActorSurfaceHandle closed_tab = ActorSurfaceHandle::From(
+      browser()->tab_strip_model()->GetTabAtIndex(1)->GetHandle());
+  ASSERT_TRUE(actor_task().HasActorSurface(closed_tab));
+  actor::ActorTabCloseSkipBeforeUnloadUserData::CreateForWebContents(
+      browser()->tab_strip_model()->GetWebContentsAt(1));
   browser()->tab_strip_model()->CloseWebContentsAt(1,
                                                    TabCloseTypes::CLOSE_NONE);
 
@@ -562,6 +571,36 @@ IN_PROC_BROWSER_TEST_F(ActorLoadAndExtractContentToolBrowserTest,
 
   VerifyActionsResult(mojom::ActionResultCode::kOk, result,
                       expected_tab_observations);
+
+  // The task doesn't keep the closed tab. Check by surface handle: the closed
+  // tab no longer maps to its surface, so HasTab() would pass regardless.
+  EXPECT_FALSE(actor_task().HasActorSurface(closed_tab));
+}
+
+// Tests the tool being cancelled because the task is paused while a page is
+// navigating. The task continues, so the tool's tab must be removed from it as
+// well as closed.
+IN_PROC_BROWSER_TEST_F(ActorLoadAndExtractContentToolBrowserTest,
+                       ToolCancelledByPauseRemovesTab) {
+  const GURL url = embedded_test_server()->GetURL("/actor/simple.html");
+  std::unique_ptr<ToolRequest> request =
+      std::make_unique<LoadAndExtractContentToolRequest>(
+          std::vector<GURL>{url});
+
+  TabNavigationObserver observer(browser());
+
+  ActResultFuture result;
+  actor_task().Act(ToRequestList(std::move(request)), result.GetCallback());
+  observer.WaitForAddedTabs(1);
+  const ActorSurfaceHandle tool_tab = ActorSurfaceHandle::From(
+      browser()->tab_strip_model()->GetTabAtIndex(1)->GetHandle());
+  ASSERT_TRUE(actor_task().HasActorSurface(tool_tab));
+
+  actor_task().Pause(/*from_actor=*/false);
+
+  ExpectErrorResult(result, mojom::ActionResultCode::kTaskPaused);
+  observer.VerifyTabCountRestored();
+  EXPECT_FALSE(actor_task().HasActorSurface(tool_tab));
 }
 
 IN_PROC_BROWSER_TEST_F(ActorLoadAndExtractContentToolBrowserTest,
@@ -620,14 +659,15 @@ IN_PROC_BROWSER_TEST_F(ActorLoadAndExtractContentToolBrowserTest,
   std::vector<GURL> urls = {url};
 
   // Create a second browser window for the tool to operate in.
-  Browser* second_browser = CreateBrowser(browser()->profile());
+  BrowserWindowInterface* second_browser =
+      CreateBrowser(browser()->GetProfile());
   ASSERT_TRUE(second_browser);
 
   // We need a way to ensure the tool uses the second browser, the tool
   // currently uses the active window.
   // TODO(b/478282022): Update this test to use a specific window ID once the
   // tool supports that.
-  second_browser->window()->Show();
+  second_browser->GetWindow()->Show();
 
   std::unique_ptr<ToolRequest> request =
       std::make_unique<LoadAndExtractContentToolRequest>(urls);
@@ -755,7 +795,7 @@ IN_PROC_BROWSER_TEST_F(ActorLoadAndExtractContentToolBrowserTest,
   actor_task().Act(ToRequestList(std::move(request)), result.GetCallback());
 
   ExpectErrorResult(result,
-                    mojom::ActionResultCode::kTriggeredNavigationBlocked);
+                    mojom::ActionResultCode::kActionsBlockedForSiteRisk);
 
   observer.VerifyTabCountRestored();
   EXPECT_EQ(observer.tabs_added_count(), 1);

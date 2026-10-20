@@ -10,17 +10,18 @@
 
 #include "partition_alloc/address_pool_manager.h"
 #include "partition_alloc/address_pool_manager_types.h"
+#include "partition_alloc/buildflags.h"
+#include "partition_alloc/internal/partition_root_internal_forward.h"
 #include "partition_alloc/internal/partition_superpage_extent_entry_internal.h"
 #include "partition_alloc/partition_address_space.h"
 #include "partition_alloc/partition_alloc-inl.h"
-#include "partition_alloc/partition_alloc_base/bits.h"
 #include "partition_alloc/partition_alloc_base/compiler_specific.h"
-#include "partition_alloc/partition_alloc_base/component_export.h"
 #include "partition_alloc/partition_alloc_base/thread_annotations.h"
 #include "partition_alloc/partition_alloc_check.h"
 #include "partition_alloc/partition_alloc_config.h"
 #include "partition_alloc/partition_alloc_constants.h"
 #include "partition_alloc/partition_alloc_forward.h"
+#include "partition_alloc/partition_alloc_public_constants.h"
 #include "partition_alloc/partition_bucket.h"
 #include "partition_alloc/partition_dcheck_helper.h"
 #include "partition_alloc/partition_page.h"
@@ -230,8 +231,6 @@ PA_ALWAYS_INLINE PartitionPageMetadata* PartitionPageMetadata::FromAddr(
   uintptr_t super_page = address & kSuperPageBaseMask;
 
 #if PA_BUILDFLAG(DCHECKS_ARE_ON)
-  PA_DCHECK(
-      ReservationOffsetTable::Get(super_page).IsReservationStart(super_page));
   PA_DCHECK(IsWithinSuperPagePayload(address));
 #endif
 
@@ -370,9 +369,19 @@ PA_ALWAYS_INLINE SlotSpanMetadata* SlotSpanMetadata::FromSlotStart(
     [[maybe_unused]] std::ptrdiff_t offset) {
   auto* slot_span = FromAddr(slot_start.value(), offset);
 
+#if PA_BUILDFLAG(DCHECKS_ARE_ON)
   // Checks that the pointer is a multiple of slot size.
-  PA_DCHECK(!(ToSlotSpanStart(slot_span, offset).offset(slot_start) %
-              static_cast<ptrdiff_t>(slot_span->bucket->slot_size)));
+  size_t offset_in_slot_span = static_cast<size_t>(
+      ToSlotSpanStart(slot_span, offset).offset(slot_start));
+  auto* bucket = slot_span->bucket;
+  if (offset_in_slot_span <= BucketIndexLookup::kMaxBucketSize &&
+      bucket->slot_size <= BucketIndexLookup::kMaxBucketSize) [[likely]] {
+    PA_DCHECK(bucket->GetSlotNumber(offset_in_slot_span) * bucket->slot_size ==
+              offset_in_slot_span);
+  } else {
+    PA_DCHECK(!(offset_in_slot_span % bucket->slot_size));
+  }
+#endif
   return slot_span;
 }
 

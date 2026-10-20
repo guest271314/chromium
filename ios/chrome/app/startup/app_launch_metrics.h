@@ -18,9 +18,6 @@ const char kWidgetKitActionHistogram[] = "IOS.WidgetKit.Action";
 const char kUMAMobileSessionStartActionHistogram[] =
     "Startup.MobileSessionStartAction";
 
-// UMA histogram key for iOS.SearchExtension.Action.
-const char kSearchExtensionActionHistogram[] = "iOS.SearchExtension.Action";
-
 // Values of the UMA IOS.LaunchSource histogram.
 // These values are persisted to logs. Entries should not be renumbered and
 // numeric values should never be reused.
@@ -44,6 +41,7 @@ enum class AppLaunchSource {
 // Values of the UMA Startup.MobileSessionCallerApp histogram.
 // These values are persisted to logs. Entries should not be renumbered and
 // numeric values should never be reused.
+// LINT.IfChange(MobileSessionCallerApp)
 enum MobileSessionCallerApp {
   CALLER_APP_GOOGLE_SEARCH = 0,
   CALLER_APP_GOOGLE_GMAIL = 1,
@@ -69,6 +67,7 @@ enum MobileSessionCallerApp {
   CALLER_APP_GOOGLE_CHROME_OPEN_EXTENSION = 18,
   MOBILE_SESSION_CALLER_APP_COUNT,
 };
+// LINT.ThenChange(//ios/chrome/app/startup/app_startup_utils.mm:IsCallerAppFirstParty)
 
 // Values of the UMA IOS.WidgetKit.Action histogram.
 // These values are persisted to logs. Entries should not be renumbered and
@@ -156,7 +155,12 @@ enum class IOSExternalAction {
   ACTION_SKIPPED_DEFAULT_BROWSER_SETTINGS_FOR_NTP = 3,
   // Logged when Chrome is passed a "AppStoreGeminiPromo" action.
   ACTION_APP_STORE_GEMINI_PROMO = 4,
-  kMaxValue = ACTION_APP_STORE_GEMINI_PROMO,
+  // Logged when Chrome is receiving a post opening action when triggering
+  // external actions from the App Switcher. Also logged when Chrome is passed
+  // an "AppSwitcherTesting" action which is purely to force this external
+  // action in testing.
+  ACTION_START_GEMINI_AI_SUMMARIZATION = 5,
+  kMaxValue = ACTION_START_GEMINI_AI_SUMMARIZATION,
 };
 // LINT.ThenChange(/tools/metrics/histograms/metadata/ios/enums.xml)
 

@@ -19,14 +19,22 @@ struct CoreAccountInfo;
 
 namespace trusted_vault_pb {
 enum SecurityDomainMember_MemberType : int;
+class RotateSharedKeyRequest;
 }  // namespace trusted_vault_pb
 
 namespace trusted_vault {
 
+enum class SecurityDomainId;
 class SecureBoxKeyPair;
 class SecureBoxPublicKey;
 
 enum class TrustedVaultRegistrationStatus {
+  // Used when registration was not attempted (e.g. factor is already
+  // registered or local state is not sufficient).
+  kRegistrationNotAttempted,
+  // Used when an in-flight registration was cancelled.
+  kRegistrationCancelled,
+  // Used when registration was successful.
   kSuccess,
   // Used when member corresponding to authentication factor already exists and
   // local keys that were sent as part of the request aren't stale.
@@ -69,6 +77,44 @@ enum class TrustedVaultDownloadKeysStatus {
   // Used for all network errors.
   kNetworkError,
   // Used for all http and protocol errors, when no statuses above fits.
+  kOtherError,
+};
+
+enum class TrustedVaultDownloadPasswordPublicKeyStatus {
+  kSuccess,
+  // Used when request wasn't sent due to transient auth error that prevented
+  // fetching an access token.
+  kTransientAccessTokenFetchError,
+  // Used when request wasn't sent due to persistent auth error that prevented
+  // fetching an access token.
+  kPersistentAccessTokenFetchError,
+  // Used when request wasn't sent because primary account changed meanwhile.
+  kPrimaryAccountChangeAccessTokenFetchError,
+  // Used for all network errors.
+  kNetworkError,
+  // Used for all http and protocol errors, when no statuses above fits.
+  kOtherError,
+};
+
+enum class TrustedVaultKeyRotationStatus {
+  kSuccess,
+  // Used when base epoch doesn't match current epoch of the security domain.
+  kLocalDataObsolete,
+  // Used when rotated shared member keys don't match current members.
+  kMembershipMismatch,
+  // Used when security domain has no members.
+  kEmptySecurityDomain,
+  // Used when request wasn't sent due to transient auth error that prevented
+  // fetching an access token.
+  kTransientAccessTokenFetchError,
+  // Used when request wasn't sent due to persistent auth error that prevented
+  // fetching an access token.
+  kPersistentAccessTokenFetchError,
+  // Used when request wasn't sent because primary account changed meanwhile.
+  kPrimaryAccountChangeAccessTokenFetchError,
+  // Used for all network errors.
+  kNetworkError,
+  // Used for all http and protocol errors not covered by the above.
   kOtherError,
 };
 
@@ -265,6 +311,11 @@ class TrustedVaultConnection {
   using DownloadAuthenticationFactorsRegistrationStateCallback =
       base::OnceCallback<void(
           DownloadAuthenticationFactorsRegistrationStateResult)>;
+  using DownloadGaiaPasswordPublicKeyCallback =
+      base::OnceCallback<void(TrustedVaultDownloadPasswordPublicKeyStatus,
+                              const std::vector<uint8_t>&)>;
+  using RotateSharedKeyCallback =
+      base::OnceCallback<void(TrustedVaultKeyRotationStatus, int)>;
 
   // Used to control ongoing request lifetime, destroying Request object causes
   // request cancellation.
@@ -291,6 +342,7 @@ class TrustedVaultConnection {
   // TODO(crbug.com/406191378): Rename to ...RecoveryFactor.
   [[nodiscard]] virtual std::unique_ptr<Request> RegisterAuthenticationFactor(
       const CoreAccountInfo& account_info,
+      SecurityDomainId security_domain,
       const MemberKeysSource& member_keys_source,
       const SecureBoxPublicKey& authentication_factor_public_key,
       AuthenticationFactorTypeAndRegistrationParams
@@ -302,6 +354,7 @@ class TrustedVaultConnection {
   // succeed only if constant key is the only key known server-side.
   [[nodiscard]] virtual std::unique_ptr<Request> RegisterLocalDeviceWithoutKeys(
       const CoreAccountInfo& account_info,
+      SecurityDomainId security_domain,
       const SecureBoxPublicKey& device_public_key,
       RegisterAuthenticationFactorCallback callback) = 0;
 
@@ -311,6 +364,7 @@ class TrustedVaultConnection {
   // |callback| call or until request needs to be cancelled.
   [[nodiscard]] virtual std::unique_ptr<Request> DownloadNewKeys(
       const CoreAccountInfo& account_info,
+      SecurityDomainId security_domain,
       const TrustedVaultKeyAndVersion& last_trusted_vault_key_and_version,
       std::unique_ptr<SecureBoxKeyPair> device_key_pair,
       DownloadNewKeysCallback callback) = 0;
@@ -321,7 +375,25 @@ class TrustedVaultConnection {
   [[nodiscard]] virtual std::unique_ptr<Request>
   DownloadIsRecoverabilityDegraded(
       const CoreAccountInfo& account_info,
+      SecurityDomainId security_domain,
       IsRecoverabilityDegradedCallback callback) = 0;
+
+  // Asynchronously attempts to download the Gaia password public key from the
+  // trusted vault server. Caller should hold returned request object until
+  // |callback| call or until request needs to be cancelled.
+  [[nodiscard]] virtual std::unique_ptr<Request> DownloadGaiaPasswordPublicKey(
+      const CoreAccountInfo& account_info,
+      SecurityDomainId security_domain,
+      DownloadGaiaPasswordPublicKeyCallback callback) = 0;
+
+  // Asynchronously attempts to rotate the shared key stored in a security
+  // domain. Caller should hold returned request object until |callback| call or
+  // until request needs to be cancelled.
+  [[nodiscard]] virtual std::unique_ptr<Request> RotateSharedKey(
+      const CoreAccountInfo& account_info,
+      SecurityDomainId security_domain,
+      const trusted_vault_pb::RotateSharedKeyRequest& request,
+      RotateSharedKeyCallback callback) = 0;
 
   // Enumerates the members of the security domain and determines the
   // recoverability of the security domain. (See the values of
@@ -332,6 +404,7 @@ class TrustedVaultConnection {
   [[nodiscard]] virtual std::unique_ptr<Request>
   DownloadAuthenticationFactorsRegistrationState(
       const CoreAccountInfo& account_info,
+      SecurityDomainId security_domain,
       DownloadAuthenticationFactorsRegistrationStateCallback callback,
       base::RepeatingClosure keep_alive_callback) = 0;
 
@@ -347,6 +420,7 @@ class TrustedVaultConnection {
   [[nodiscard]] virtual std::unique_ptr<Request>
   DownloadAuthenticationFactorsRegistrationState(
       const CoreAccountInfo& account_info,
+      SecurityDomainId security_domain,
       std::set<trusted_vault_pb::SecurityDomainMember_MemberType>
           recovery_factor_filter,
       DownloadAuthenticationFactorsRegistrationStateCallback callback,

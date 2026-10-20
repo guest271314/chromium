@@ -10,10 +10,11 @@
 #include "base/memory/raw_ptr.h"
 #include "base/test/scoped_feature_list.h"
 #include "build/build_config.h"
-#include "chrome/test/base/chrome_test_utils.h"
 #include "chrome/test/base/platform_browser_test.h"
 #include "components/browsing_data/content/browsing_data_model.h"
 #include "components/signin/public/base/signin_buildflags.h"
+
+class BrowserWindowInterface;
 
 namespace network::mojom {
 
@@ -52,11 +53,16 @@ class BrowsingDataRemoverBrowserTestBase : public PlatformBrowserTest {
   // If `web_contents` is not specified, `GetActiveWebContents` will be used.
   int GetSiteDataCount(content::WebContents* web_contents = nullptr);
 
+  // Helper that waits for the site data count to match `expected_count`.
+  // Returns true if the count matched, false if it timed out.
+  bool WaitForSiteDataCount(int expected_count,
+                            content::WebContents* web_contents = nullptr);
+
 // TODO(crbug.com/40169678): Support incognito browser tests on android.
 #if BUILDFLAG(IS_ANDROID)
   bool IsIncognito() { return false; }
 #else
-  Browser* GetBrowser() const;
+  BrowserWindowInterface* GetBrowser() const;
   void UseIncognitoBrowser();
   void RestartIncognitoBrowser();
   bool IsIncognito() { return incognito_browser_ != nullptr; }
@@ -69,7 +75,7 @@ class BrowsingDataRemoverBrowserTestBase : public PlatformBrowserTest {
   content::WebContents* GetActiveWebContents();
 
 #if !BUILDFLAG(IS_ANDROID)
-  content::WebContents* GetActiveWebContents(Browser* browser);
+  content::WebContents* GetActiveWebContents(BrowserWindowInterface* browser);
 #endif  // !BUILDFLAG(IS_ANDROID)
 
   // Returns the active Profile. On desktop this is in the first browser
@@ -107,7 +113,8 @@ class BrowsingDataRemoverBrowserTestBase : public PlatformBrowserTest {
  private:
   base::test::ScopedFeatureList feature_list_;
 #if !BUILDFLAG(IS_ANDROID)
-  raw_ptr<Browser, AcrossTasksDanglingUntriaged> incognito_browser_ = nullptr;
+  raw_ptr<BrowserWindowInterface, AcrossTasksDanglingUntriaged>
+      incognito_browser_ = nullptr;
 #endif
 };
 

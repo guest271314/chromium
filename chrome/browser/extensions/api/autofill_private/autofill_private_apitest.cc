@@ -17,7 +17,7 @@
 #include "chrome/browser/extensions/api/autofill_private/autofill_private_event_router.h"
 #include "chrome/browser/extensions/api/autofill_private/autofill_private_event_router_factory.h"
 #include "chrome/browser/extensions/extension_apitest.h"
-#include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/common/extensions/api/autofill_private.h"
 #include "components/autofill/content/browser/test_autofill_client_injector.h"
 #include "components/autofill/content/browser/test_content_autofill_client.h"
@@ -28,7 +28,7 @@
 #include "components/autofill/core/browser/payments/payments_autofill_client.h"
 #include "components/autofill/core/browser/payments/test/mock_mandatory_reauth_manager.h"
 #include "components/autofill/core/browser/payments/test_payments_network_interface.h"
-#include "components/autofill/core/browser/test_utils/autofill_test_utils.h"
+#include "components/autofill/core/browser/test_utils/autofill_test_util.h"
 #include "components/autofill/core/common/autofill_payments_features.h"
 #include "components/autofill/core/common/autofill_prefs.h"
 #include "components/keyed_service/core/keyed_service.h"
@@ -41,14 +41,7 @@ namespace {
 
 class AutofillPrivateApiTest : public ExtensionApiTest {
  public:
-  AutofillPrivateApiTest() {
-#if BUILDFLAG(IS_CHROMEOS)
-    // Enable the feature flag for this test.
-    scoped_feature_list_.InitAndEnableFeature(
-        autofill::features::kAutofillEnablePaymentsMandatoryReauthChromeOs);
-
-#endif  // BUILDFLAG(IS_CHROMEOS)
-  }
+  AutofillPrivateApiTest() = default;
   AutofillPrivateApiTest(const AutofillPrivateApiTest&) = delete;
   AutofillPrivateApiTest& operator=(const AutofillPrivateApiTest&) = delete;
   ~AutofillPrivateApiTest() override = default;
@@ -90,9 +83,6 @@ class AutofillPrivateApiTest : public ExtensionApiTest {
   content::BrowserContext* browser_context() {
     return GetActiveWebContents()->GetBrowserContext();
   }
-#if BUILDFLAG(IS_CHROMEOS)
-  base::test::ScopedFeatureList scoped_feature_list_;
-#endif  // BUILDFLAG(IS_CHROMEOS)
 
   autofill::TestAutofillClientInjector<autofill::TestContentAutofillClient>
       test_autofill_client_injector_;
@@ -144,72 +134,6 @@ IN_PROC_BROWSER_TEST_F(AutofillPrivateApiTest, AddCreditCard_Cvc) {
   EXPECT_EQ(1, user_action_tester.GetActionCount("AutofillCreditCardsAdded"));
   EXPECT_EQ(
       1, user_action_tester.GetActionCount("AutofillCreditCardsAddedWithCvc"));
-}
-
-IN_PROC_BROWSER_TEST_F(
-    AutofillPrivateApiTest,
-    AddCreditCard_Metrics_StoredCreditCardCountBeforeCardAdded) {
-  base::HistogramTester histogram_tester;
-
-  autofill::TestPersonalDataManager& personal_data_manager =
-      autofill_client()->GetPersonalDataManager();
-  // Required for adding the server card.
-  personal_data_manager.payments_data_manager().SetSyncingForTest(
-      /*is_syncing_for_test=*/true);
-
-  // Set up the personal data manager with 2 existing cards.
-  personal_data_manager.payments_data_manager().AddCreditCard(
-      autofill::test::GetCreditCard2());
-  personal_data_manager.test_payments_data_manager().AddServerCreditCard(
-      autofill::test::GetMaskedServerCard());
-  EXPECT_EQ(
-      personal_data_manager.payments_data_manager().GetCreditCards().size(),
-      2u);
-
-  EXPECT_TRUE(RunAutofillSubtest("addNewCreditCard")) << message_;
-
-  // Expect the metric to add a record for the 2 existing cards.
-  histogram_tester.ExpectUniqueSample(
-      "Autofill.PaymentMethods.SettingsPage."
-      "StoredCreditCardCountBeforeCardAdded",
-      2, 1);
-}
-
-IN_PROC_BROWSER_TEST_F(AutofillPrivateApiTest,
-                       AddCreditCard_Metrics_CardAddedWithoutExistingCards) {
-  base::HistogramTester histogram_tester;
-
-  autofill::TestPersonalDataManager& personal_data_manager =
-      autofill_client()->GetPersonalDataManager();
-  ASSERT_TRUE(
-      personal_data_manager.payments_data_manager().GetCreditCards().empty());
-
-  ASSERT_TRUE(RunAutofillSubtest("addNewCreditCard")) << message_;
-
-  // With no cards before this one was added, the histogram should log true.
-  histogram_tester.ExpectUniqueSample(
-      "Autofill.PaymentMethodsSettingsPage.CardAddedWithoutExistingCards", true,
-      1);
-}
-
-IN_PROC_BROWSER_TEST_F(
-    AutofillPrivateApiTest,
-    AddCreditCard_Metrics_CardAddedWithExistingCards) {
-  base::HistogramTester histogram_tester;
-
-  autofill::TestPersonalDataManager& personal_data_manager =
-      autofill_client()->GetPersonalDataManager();
-  personal_data_manager.payments_data_manager().AddCreditCard(
-      autofill::test::GetCreditCard2());
-  ASSERT_FALSE(
-      personal_data_manager.payments_data_manager().GetCreditCards().empty());
-
-  ASSERT_TRUE(RunAutofillSubtest("addNewCreditCard")) << message_;
-
-  // As there was an existing card, the histogram should log false.
-  histogram_tester.ExpectUniqueSample(
-      "Autofill.PaymentMethodsSettingsPage.CardAddedWithoutExistingCards",
-      false, 1);
 }
 
 IN_PROC_BROWSER_TEST_F(AutofillPrivateApiTest, AddCreditCard_NoCvc) {

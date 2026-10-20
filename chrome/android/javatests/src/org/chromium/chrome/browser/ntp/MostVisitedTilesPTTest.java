@@ -48,6 +48,8 @@ import java.util.List;
 @CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
 @Batch(Batch.PER_CLASS)
 @FixMethodOrder(MethodSorters.NAME_ASCENDING)
+// Tests the Java native NTP, which is not used on desktop (it uses the WebUI NTP).
+@Restriction(DeviceFormFactor.PHONE_OR_TABLET)
 public class MostVisitedTilesPTTest {
     @ClassRule public static EmbeddedTestServerRule sTestServerRule = new EmbeddedTestServerRule();
 
@@ -75,29 +77,13 @@ public class MostVisitedTilesPTTest {
 
     @Test
     @MediumTest
-    @DisableFeatures({ChromeFeatureList.MOST_VISITED_TILES_CUSTOMIZATION})
-    public void testClickFirstMVT_DisableMvtCustomization() {
+    public void testClickFirstMVT() {
         doClickMVTTest(0);
     }
 
     @Test
     @MediumTest
-    @EnableFeatures({ChromeFeatureList.MOST_VISITED_TILES_CUSTOMIZATION})
-    public void testClickFirstMVT_EnableMvtCustomization() {
-        doClickMVTTest(0);
-    }
-
-    @Test
-    @MediumTest
-    @DisableFeatures({ChromeFeatureList.MOST_VISITED_TILES_CUSTOMIZATION})
-    public void testClickLastMVT_DisableMvtCustomization() {
-        doClickMVTTest(7);
-    }
-
-    @Test
-    @MediumTest
-    @EnableFeatures({ChromeFeatureList.MOST_VISITED_TILES_CUSTOMIZATION})
-    public void testClickLastMVT_EnableMvtCustomization() {
+    public void testClickLastMVT() {
         doClickMVTTest(7);
     }
 

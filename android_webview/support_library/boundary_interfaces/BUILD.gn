@@ -10,9 +10,11 @@ android_library("boundary_interface_java") {
     "src/org/chromium/support_lib_boundary/DropDataContentProviderBoundaryInterface.java",
     "src/org/chromium/support_lib_boundary/ExecuteJavaScriptCallbackBoundaryInterface.java",
     "src/org/chromium/support_lib_boundary/FeatureFlagHolderBoundaryInterface.java",
+    "src/org/chromium/support_lib_boundary/HttpCacheBoundaryInterface.java",
     "src/org/chromium/support_lib_boundary/IsomorphicObjectBoundaryInterface.java",
     "src/org/chromium/support_lib_boundary/JsReplyProxyBoundaryInterface.java",
     "src/org/chromium/support_lib_boundary/NavigationParametersBoundaryInterface.java",
+    "src/org/chromium/support_lib_boundary/NavigationRedirectParametersBoundaryInterface.java",
     "src/org/chromium/support_lib_boundary/NoVarySearchDataBoundaryInterface.java",
     "src/org/chromium/support_lib_boundary/OriginMatchedHeaderBoundaryInterface.java",
     "src/org/chromium/support_lib_boundary/PrefetchOperationCallbackBoundaryInterface.java",
@@ -25,11 +27,13 @@ android_library("boundary_interface_java") {
     "src/org/chromium/support_lib_boundary/ServiceWorkerClientBoundaryInterface.java",
     "src/org/chromium/support_lib_boundary/ServiceWorkerControllerBoundaryInterface.java",
     "src/org/chromium/support_lib_boundary/ServiceWorkerWebSettingsBoundaryInterface.java",
+    "src/org/chromium/support_lib_boundary/SharedArrayBufferBoundaryInterface.java",
     "src/org/chromium/support_lib_boundary/SpeculativeLoadingConfigBoundaryInterface.java",
     "src/org/chromium/support_lib_boundary/SpeculativeLoadingParametersBoundaryInterface.java",
     "src/org/chromium/support_lib_boundary/StaticsBoundaryInterface.java",
     "src/org/chromium/support_lib_boundary/TracingControllerBoundaryInterface.java",
     "src/org/chromium/support_lib_boundary/VisualStateCallbackBoundaryInterface.java",
+    "src/org/chromium/support_lib_boundary/WebChromeClientBoundaryInterface.java",
     "src/org/chromium/support_lib_boundary/WebMessageBoundaryInterface.java",
     "src/org/chromium/support_lib_boundary/WebMessageCallbackBoundaryInterface.java",
     "src/org/chromium/support_lib_boundary/WebMessageListenerBoundaryInterface.java",
@@ -46,7 +50,9 @@ android_library("boundary_interface_java") {
     "src/org/chromium/support_lib_boundary/WebViewNavigationBoundaryInterface.java",
     "src/org/chromium/support_lib_boundary/WebViewNavigationClientBoundaryInterface.java",
     "src/org/chromium/support_lib_boundary/WebViewNavigationListenerBoundaryInterface.java",
+    "src/org/chromium/support_lib_boundary/WebViewNavigationStateBoundaryInterface.java",
     "src/org/chromium/support_lib_boundary/WebViewPageBoundaryInterface.java",
+    "src/org/chromium/support_lib_boundary/WebViewPageStateBoundaryInterface.java",
     "src/org/chromium/support_lib_boundary/WebViewProviderBoundaryInterface.java",
     "src/org/chromium/support_lib_boundary/WebViewProviderFactoryBoundaryInterface.java",
     "src/org/chromium/support_lib_boundary/WebViewRendererBoundaryInterface.java",
@@ -91,5 +97,8 @@ android_apk("boundary_interface_example_apk") {
   # Explicitly enable lint for this apk.
   enable_lint = true
 
-  deps = [ ":boundary_interface_java" ]
+  deps = [
+    ":boundary_interface_java",
+    "web:web_boundary_interface_java",
+  ]
 }

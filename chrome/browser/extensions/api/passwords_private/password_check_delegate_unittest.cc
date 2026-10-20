@@ -23,9 +23,11 @@
 #include "base/test/gmock_move_support.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/mock_callback.h"
+#include "base/test/scoped_feature_list.h"
 #include "base/time/time.h"
 #include "chrome/browser/extensions/api/passwords_private/passwords_private_event_router.h"
 #include "chrome/browser/extensions/api/passwords_private/passwords_private_event_router_factory.h"
+#include "chrome/browser/extensions/api/passwords_private/passwords_private_event_router_impl.h"
 #include "chrome/browser/password_manager/factories/account_password_store_factory.h"
 #include "chrome/browser/password_manager/factories/bulk_leak_check_service_factory.h"
 #include "chrome/browser/password_manager/factories/profile_password_store_factory.h"
@@ -37,12 +39,14 @@
 #include "chrome/test/base/testing_profile.h"
 #include "components/affiliations/core/browser/fake_affiliation_service.h"
 #include "components/keyed_service/core/keyed_service.h"
+#include "components/password_manager/core/browser/features/password_features.h"
 #include "components/password_manager/core/browser/leak_detection/bulk_leak_check.h"
 #include "components/password_manager/core/browser/leak_detection/bulk_leak_check_service.h"
 #include "components/password_manager/core/browser/password_form.h"
 #include "components/password_manager/core/browser/password_manager_metrics_util.h"
 #include "components/password_manager/core/browser/password_manager_test_utils.h"
 #include "components/password_manager/core/browser/password_store/test_password_store.h"
+#include "components/password_manager/core/browser/password_string.h"
 #include "components/password_manager/core/browser/ui/credential_ui_entry.h"
 #include "components/password_manager/core/browser/ui/saved_passwords_presenter.h"
 #include "components/password_manager/core/browser/well_known_change_password/well_known_change_password_util.h"
@@ -61,6 +65,7 @@
 #include "extensions/browser/test_event_router.h"
 #include "extensions/browser/test_event_router_observer.h"
 #include "net/base/net_errors.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "services/network/test/test_shared_url_loader_factory.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -99,6 +104,7 @@ using password_manager::IsLeaked;
 using password_manager::IsMuted;
 using password_manager::LeakCheckCredential;
 using password_manager::PasswordForm;
+using password_manager::PasswordString;
 using password_manager::SavedPasswordsPresenter;
 using password_manager::TestPasswordStore;
 using password_manager::TriggerBackendNotification;
@@ -131,7 +137,7 @@ PasswordForm MakeSavedPassword(
   form.signon_realm = std::string(signon_realm);
   form.url = GURL(signon_realm);
   form.username_value = std::u16string(username);
-  form.password_value = std::u16string(password);
+  form.password_value = PasswordString(std::u16string(password));
   form.username_element = std::u16string(username_element);
   form.in_store = store;
   return form;
@@ -177,7 +183,7 @@ PasswordForm MakeSavedAndroidPassword(
   form.username_value = std::u16string(username);
   form.app_display_name = std::string(app_display_name);
   form.affiliated_web_realm = std::string(affiliated_web_realm);
-  form.password_value = std::u16string(password);
+  form.password_value = PasswordString(std::u16string(password));
   form.in_store = PasswordForm::Store::kProfileStore;
   return form;
 }
@@ -198,10 +204,13 @@ auto ExpectCompromisedInfo(
 
 // Creates matcher for a given compromised credential
 auto ExpectCredential(const std::optional<std::string>& change_password_url,
-                      const std::u16string& username) {
+                      const std::u16string& username,
+                      bool is_automatic_password_change_supported = false) {
   return AllOf(
       Field(&PasswordUiEntry::username, base::UTF16ToASCII(username)),
-      Field(&PasswordUiEntry::change_password_url, change_password_url));
+      Field(&PasswordUiEntry::change_password_url, change_password_url),
+      Field(&PasswordUiEntry::is_automatic_password_change_supported,
+            is_automatic_password_change_supported));
 }
 
 // Creates matcher for a given compromised credential
@@ -210,20 +219,22 @@ auto ExpectCompromisedCredential(
     const std::u16string& username,
     base::TimeDelta elapsed_time_since_compromise,
     const std::string& elapsed_time_since_compromise_str,
-    std::vector<api::passwords_private::CompromiseType> compromise_types) {
+    std::vector<api::passwords_private::CompromiseType> compromise_types,
+    bool is_automatic_password_change_supported = false) {
   auto change_password_url_field_matcher =
       change_password_url.has_value()
           ? Field(&PasswordUiEntry::change_password_url,
                   change_password_url.value())
           : Field(&PasswordUiEntry::change_password_url,
                   testing::Eq(std::nullopt));
-  return AllOf(
-      Field(&PasswordUiEntry::username, base::UTF16ToASCII(username)),
-      change_password_url_field_matcher,
-      Field(&PasswordUiEntry::compromised_info,
-            Optional(ExpectCompromisedInfo(elapsed_time_since_compromise,
-                                           elapsed_time_since_compromise_str,
-                                           compromise_types))));
+  return AllOf(Field(&PasswordUiEntry::username, base::UTF16ToASCII(username)),
+               change_password_url_field_matcher,
+               Field(&PasswordUiEntry::compromised_info,
+                     Optional(ExpectCompromisedInfo(
+                         elapsed_time_since_compromise,
+                         elapsed_time_since_compromise_str, compromise_types))),
+               Field(&PasswordUiEntry::is_automatic_password_change_supported,
+                     is_automatic_password_change_supported));
 }
 
 std::unique_ptr<TestingProfile> CreateTestingProfile() {
@@ -238,7 +249,7 @@ std::unique_ptr<TestingProfile> CreateTestingProfile() {
       PasswordsPrivateEventRouterFactory::GetInstance(),
       base::BindRepeating([](content::BrowserContext* context)
                               -> std::unique_ptr<KeyedService> {
-        return std::make_unique<PasswordsPrivateEventRouter>(context);
+        return std::make_unique<PasswordsPrivateEventRouterImpl>(context);
       }));
   builder.AddTestingFactory(
       BulkLeakCheckServiceFactory::GetInstance(),
@@ -280,7 +291,9 @@ class PasswordCheckDelegateTest : public ::testing::Test {
     prefs_.registry()->RegisterDoublePref(kLastTimePasswordCheckCompleted, 0.0);
     presenter_.Init();
     delegate_ = std::make_unique<PasswordCheckDelegate>(
-        profile_.get(), &presenter_, &credential_id_generator_,
+        profile_->GetPrefs(),
+        BulkLeakCheckServiceFactory::GetForProfile(profile_.get()), &presenter_,
+        &credential_id_generator_,
         PasswordsPrivateEventRouterFactory::GetForProfile(profile_.get()));
   }
 
@@ -317,13 +330,17 @@ class PasswordCheckDelegateTest : public ::testing::Test {
   PasswordCheckDelegate& delegate() { return *delegate_; }
 
   PasswordCheckDelegate CreateDelegate(SavedPasswordsPresenter* presenter) {
-    return PasswordCheckDelegate(profile_.get(), presenter,
-                                 &credential_id_generator_);
+    return PasswordCheckDelegate(
+        profile_->GetPrefs(),
+        BulkLeakCheckServiceFactory::GetForProfile(profile_.get()), presenter,
+        &credential_id_generator_);
   }
 
   void ResetWithoutEventRouter() {
     delegate_ = std::make_unique<PasswordCheckDelegate>(
-        profile_.get(), &presenter_, &credential_id_generator_, nullptr);
+        profile_->GetPrefs(),
+        BulkLeakCheckServiceFactory::GetForProfile(profile_.get()), &presenter_,
+        &credential_id_generator_, nullptr);
   }
 
  private:
@@ -354,9 +371,34 @@ TEST_F(PasswordCheckDelegateTest, GetInsecureCredentialsFillsFieldsCorrectly) {
       MakeSavedPassword(kExampleCom, kUsername1, kWeakPassword1)));
   store().AddLogin(password_manager::FromPasswordForm(MakeSavedAndroidPassword(
       kExampleApp, kUsername2, "Example App", kExampleCom, kWeakPassword2)));
+  store().AddLogin(password_manager::FromPasswordForm(
+      MakeSavedPassword(kExampleOrg, kUsername3, kPassword1)));
   RunUntilIdle();
   delegate().StartPasswordCheck(
       password_manager::LeakDetectionInitiator::kBulkSyncedPasswordsCheck);
+  RunUntilIdle();
+
+  EXPECT_THAT(
+      delegate().GetInsecureCredentials(),
+      UnorderedElementsAre(
+          ExpectCredential("https://example.com/.well-known/change-password",
+                           kUsername1),
+          ExpectCredential("https://example.com/.well-known/change-password",
+                           kUsername2)));
+}
+
+// Verify that GetInsecureCredentials() returns all saved credentials when the
+// kMarkAllCredentialsAsLeaked feature is enabled.
+TEST_F(PasswordCheckDelegateTest,
+       GetInsecureCredentialsWithkMarkAllCredentialsAsLeaked) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(
+      password_manager::features::kMarkAllCredentialsAsLeaked);
+
+  store().AddLogin(password_manager::FromPasswordForm(
+      MakeSavedPassword(kExampleCom, kUsername1, kPassword1)));
+  store().AddLogin(password_manager::FromPasswordForm(MakeSavedAndroidPassword(
+      kExampleApp, kUsername2, "Example App", kExampleCom, kPassword2)));
   RunUntilIdle();
 
   EXPECT_THAT(
@@ -683,7 +725,8 @@ TEST_F(PasswordCheckDelegateTest, OnLeakFoundDoesNotCreateCredential) {
   store().RemoveLogin(FROM_HERE, password_manager::FromPasswordForm(form));
   RunUntilIdle();
   static_cast<BulkLeakCheckDelegateInterface*>(service())->OnFinishedCredential(
-      LeakCheckCredential(kUsername1, kPassword1), IsLeaked(true));
+      LeakCheckCredential(kUsername1, PasswordString(kPassword1)),
+      IsLeaked(true));
   RunUntilIdle();
 
   EXPECT_THAT(GetAllLoginsSync(&store()), IsEmpty());
@@ -701,7 +744,8 @@ TEST_F(PasswordCheckDelegateTest, NoLeakedFound) {
   delegate().StartPasswordCheck(
       password_manager::LeakDetectionInitiator::kBulkSyncedPasswordsCheck);
   static_cast<BulkLeakCheckDelegateInterface*>(service())->OnFinishedCredential(
-      LeakCheckCredential(kUsername1, kPassword1), IsLeaked(false));
+      LeakCheckCredential(kUsername1, PasswordString(kPassword1)),
+      IsLeaked(false));
   RunUntilIdle();
 
   EXPECT_THAT(GetAllLoginsSync(&store()),
@@ -720,7 +764,8 @@ TEST_F(PasswordCheckDelegateTest, OnLeakFoundCreatesCredential) {
   delegate().StartPasswordCheck(
       password_manager::LeakDetectionInitiator::kBulkSyncedPasswordsCheck);
   static_cast<BulkLeakCheckDelegateInterface*>(service())->OnFinishedCredential(
-      LeakCheckCredential(kUsername1, kPassword1), IsLeaked(true));
+      LeakCheckCredential(kUsername1, PasswordString(kPassword1)),
+      IsLeaked(true));
   RunUntilIdle();
 
   form.password_issues.insert_or_assign(
@@ -760,9 +805,11 @@ TEST_F(PasswordCheckDelegateTest, OnLeakFoundCreatesMultipleCredential) {
   delegate().StartPasswordCheck(
       password_manager::LeakDetectionInitiator::kBulkSyncedPasswordsCheck);
   static_cast<BulkLeakCheckDelegateInterface*>(service())->OnFinishedCredential(
-      LeakCheckCredential(kUsername1, kPassword1), IsLeaked(true));
+      LeakCheckCredential(kUsername1, PasswordString(kPassword1)),
+      IsLeaked(true));
   static_cast<BulkLeakCheckDelegateInterface*>(service())->OnFinishedCredential(
-      LeakCheckCredential(kUsername2Email, kPassword2), IsLeaked(true));
+      LeakCheckCredential(kUsername2Email, PasswordString(kPassword2)),
+      IsLeaked(true));
   RunUntilIdle();
 
   form_com_username1.password_issues.insert_or_assign(
@@ -1009,27 +1056,27 @@ TEST_F(PasswordCheckDelegateTest, OnCredentialDoneUpdatesProgress) {
   EXPECT_EQ(events::PASSWORDS_PRIVATE_ON_PASSWORD_CHECK_STATUS_CHANGED,
             event_iter->second->histogram_value);
   auto status =
-      PasswordCheckStatus::FromValue(event_iter->second->event_args.front());
+      PasswordCheckStatus::FromValue(event_iter->second->args().front());
   EXPECT_EQ(api::passwords_private::PasswordCheckState::kRunning,
             status->state);
   EXPECT_EQ(0, *status->already_processed);
   EXPECT_EQ(4, *status->remaining_in_queue);
 
   static_cast<BulkLeakCheckDelegateInterface*>(service())->OnFinishedCredential(
-      LeakCheckCredential(kUsername1, kPassword1), IsLeaked(false));
+      LeakCheckCredential(kUsername1, PasswordString(kPassword1)),
+      IsLeaked(false));
 
-  status =
-      PasswordCheckStatus::FromValue(event_iter->second->event_args.front());
+  status = PasswordCheckStatus::FromValue(event_iter->second->args().front());
   EXPECT_EQ(api::passwords_private::PasswordCheckState::kRunning,
             status->state);
   EXPECT_EQ(2, *status->already_processed);
   EXPECT_EQ(2, *status->remaining_in_queue);
 
   static_cast<BulkLeakCheckDelegateInterface*>(service())->OnFinishedCredential(
-      LeakCheckCredential(kUsername2, kPassword2), IsLeaked(false));
+      LeakCheckCredential(kUsername2, PasswordString(kPassword2)),
+      IsLeaked(false));
 
-  status =
-      PasswordCheckStatus::FromValue(event_iter->second->event_args.front());
+  status = PasswordCheckStatus::FromValue(event_iter->second->args().front());
   EXPECT_EQ(api::passwords_private::PasswordCheckState::kRunning,
             status->state);
   EXPECT_EQ(4, *status->already_processed);

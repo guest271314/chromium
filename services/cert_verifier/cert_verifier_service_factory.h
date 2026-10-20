@@ -12,7 +12,6 @@
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
 #include "mojo/public/cpp/bindings/receiver.h"
-#include "mojo/public/cpp/bindings/receiver_set.h"
 #include "net/net_buildflags.h"
 #include "services/cert_verifier/cert_net_url_loader/cert_net_fetcher_url_loader.h"
 #include "services/cert_verifier/cert_verifier_creation.h"
@@ -27,6 +26,7 @@
 
 #include "mojo/public/cpp/base/proto_wrapper.h"
 #include "net/cert/internal/trust_store_chrome.h"
+#include "net/cert/root_store_proto_lite/mtc_config.pb.h"
 #endif
 
 namespace cert_verifier {
@@ -70,8 +70,10 @@ class CertVerifierServiceFactoryImpl
   void DisableCtEnforcement(DisableCtEnforcementCallback callback) override;
 #endif
 #if BUILDFLAG(CHROME_ROOT_STORE_SUPPORTED)
-  void UpdateChromeRootStore(mojo_base::ProtoWrapper new_root_store,
-                             UpdateChromeRootStoreCallback callback) override;
+  void UpdateChromeRootStore(
+      mojo_base::ProtoWrapper new_root_store,
+      std::optional<mojo_base::ProtoWrapper> new_mtc_config,
+      UpdateChromeRootStoreCallback callback) override;
   void UpdateMtcMetadata(mojo_base::ProtoWrapper new_mtc_metadata,
                          UpdateMtcMetadataCallback callback) override;
   // Will not return anchors that are not trusted for the current running
@@ -82,6 +84,12 @@ class CertVerifierServiceFactoryImpl
   void GetPlatformRootStoreInfo(
       GetPlatformRootStoreInfoCallback callback) override;
 #endif
+
+  static std::optional<net::ChromeRootStoreData> ParseChromeRootStoreProto(
+      const mojo_base::ProtoWrapper& new_root_store);
+
+  static std::optional<chrome_root_store::MtcConfig> ParseMtcConfigProto(
+      const std::optional<mojo_base::ProtoWrapper>& new_mtc_config);
 #endif
 #if BUILDFLAG(CHROME_ROOT_STORE_OPTIONAL)
   void SetUseChromeRootStore(bool use_crs,

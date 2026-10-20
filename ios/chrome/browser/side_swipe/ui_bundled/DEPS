@@ -3,8 +3,8 @@ include_rules = [
   "+ios/chrome/browser/feature_engagement/model/tracker_factory.h",
   "+ios/chrome/browser/fullscreen/model/fullscreen_browser_agent.h",
   "+ios/chrome/browser/fullscreen/ui_bundled",
-  "+ios/chrome/browser/lens_overlay/coordinator/lens_overlay_availability.h",
   "+ios/chrome/browser/lens_overlay/model/lens_overlay_tab_helper.h",
+  "+ios/chrome/browser/lens_overlay/public/lens_overlay_availability.h",
   "+ios/chrome/browser/ntp/model/new_tab_page_util.h",
   "+ios/chrome/browser/ntp/ui_bundled/new_tab_page_util.h",
   "+ios/chrome/browser/reader_mode/model",
@@ -18,13 +18,3 @@ include_rules = [
   "+ios/chrome/browser/web/model/web_navigation_util.h",
   # keep-sorted end
 ]
-
-specific_include_rules = {
-  # TODO(crbug.com/41259428): Remove this exception.
-  "^side_swipe_mediator\.h$": [
-    "+ios/web/web_state/ui/crw_swipe_recognizer_provider.h",
-  ],
-  "^side_swipe_mediator_unittest.mm$": [
-    "+ios/web/web_state/crw_web_view.h",
-  ],
-}

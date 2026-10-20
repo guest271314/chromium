@@ -15,15 +15,20 @@
 #include "third_party/abseil-cpp/absl/status/status.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_evaluation_result.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_function.h"
+#include "third_party/blink/renderer/core/dom/focused_element_change_observer.h"
 #include "third_party/blink/renderer/core/dom/shadow_root.h"
 #include "third_party/blink/renderer/core/html/canvas/canvas_rendering_context.h"
 #include "third_party/blink/renderer/core/html/canvas/recording_test_utils.h"
+#include "third_party/blink/renderer/core/html/forms/html_input_element.h"
+#include "third_party/blink/renderer/core/html/html_slot_element.h"
+#include "third_party/blink/renderer/core/page/focus_controller.h"
 #include "third_party/blink/renderer/core/page/page_animator.h"
 #include "third_party/blink/renderer/core/paint/paint_layer.h"
 #include "third_party/blink/renderer/core/script/classic_script.h"
 #include "third_party/blink/renderer/core/testing/core_unit_test_helper.h"
 #include "third_party/blink/renderer/platform/graphics/test/gpu_compositing_test_platform.h"
 #include "third_party/blink/renderer/platform/graphics/test/gpu_test_utils.h"
+#include "third_party/blink/renderer/platform/heap/thread_state.h"
 #include "third_party/blink/renderer/platform/testing/paint_test_configurations.h"
 
 using ::blink_testing::ClearRectFlags;
@@ -74,7 +79,7 @@ TEST_P(HTMLCanvasElementTest, CleanCanvasResizeDoesntClearFrameBuffer) {
 
   cc::PaintFlags fill_flags = FillFlags();
   fill_flags.setColor(SkColors::kBlue);
-  EXPECT_THAT(canvas->RenderingContext()->GetLastRecordingForCanvas2D(),
+  EXPECT_THAT(canvas->RenderingContext()->GetLastRecording(),
               Optional(RecordedOpsAre(PaintOpEq<DrawRectOp>(
                   SkRect::MakeXYWH(0, 0, 5, 5), fill_flags))));
 }
@@ -107,7 +112,7 @@ TEST_P(HTMLCanvasElementTest, CanvasResizeClearsFrameBuffer) {
   cc::PaintFlags fill_flags = FillFlags();
   fill_flags.setColor(SkColors::kBlue);
   EXPECT_THAT(
-      canvas->RenderingContext()->GetLastRecordingForCanvas2D(),
+      canvas->RenderingContext()->GetLastRecording(),
       Optional(RecordedOpsAre(
           PaintOpEq<DrawRectOp>(SkRect::MakeXYWH(0, 0, 10, 20),
                                 ClearRectFlags()),
@@ -534,6 +539,10 @@ TEST_P(HTMLCanvasElementTest, IsCanvasOrInCanvasSubtree) {
   div->appendChild(nested_canvas);
   EXPECT_TRUE(nested_canvas->IsCanvasOrInCanvasSubtree());
   EXPECT_FALSE(nested_canvas->IsInCanvasSubtree());
+  EXPECT_TRUE(nested_input->IsCanvasOrInCanvasSubtree());
+  EXPECT_TRUE(nested_input->IsInCanvasSubtree());
+  EXPECT_TRUE(nested_input_shadow->IsCanvasOrInCanvasSubtree());
+  EXPECT_TRUE(nested_input_shadow->IsInCanvasSubtree());
   div->appendChild(nested_input);
   EXPECT_FALSE(nested_input->IsCanvasOrInCanvasSubtree());
   EXPECT_FALSE(nested_input->IsInCanvasSubtree());
@@ -553,51 +562,538 @@ TEST_P(HTMLCanvasElementTest, IsCanvasOrInCanvasSubtree) {
   EXPECT_TRUE(nested_input_shadow->IsInCanvasSubtree());
 }
 
-TEST_P(HTMLCanvasElementTest, LayoutsubtreeInvalidation) {
+TEST_P(HTMLCanvasElementTest, IsCanvasOrInCanvasSubtreeSlotted) {
+  GetDocument().body()->SetHTMLUnsafeWithoutTrustedTypes(R"(
+    <div id=slotHost>
+      <template shadowrootmode=open>
+        <canvas content=drawable>
+          <slot name="slot1"></slot>
+        </canvas>
+      </template>
+      <div id=slotted slot="slot1">
+        <p id=slotchild>Hello</p>
+      </div>
+    </div>
+  )");
+  UpdateAllLifecyclePhasesForTest();
+
+  auto* slotted = GetDocument().getElementById(AtomicString("slotted"));
+  EXPECT_TRUE(slotted->IsCanvasOrInCanvasSubtree());
+  EXPECT_TRUE(slotted->IsInCanvasSubtree());
+
+  auto* slotted_child = GetDocument().getElementById(AtomicString("slotchild"));
+  EXPECT_TRUE(slotted_child->IsCanvasOrInCanvasSubtree());
+  EXPECT_TRUE(slotted_child->IsInCanvasSubtree());
+}
+
+TEST_P(HTMLCanvasElementTest, InCanvasSubtreeUnslotted) {
+  ScopedCanvasDrawElementForTest forced_canvas_draw_element_feature(true);
+  GetDocument().GetSettings()->SetScriptEnabled(true);
+  GetDocument().body()->SetHTMLUnsafeWithoutTrustedTypes(R"HTML(
+    <div id="slotHost">
+      <template shadowrootmode="open">
+        <canvas content=drawable>
+          <slot name="slot1">
+            <button id="target">fallback</button>
+          </slot>
+        </canvas>
+      </template>
+      <div id="slotted" slot="slot1">
+        <p id="slotchild">Hello</p>
+      </div>
+      <div id="unassigned">Unassigned</div>
+    </div>
+  )HTML");
+  UpdateAllLifecyclePhasesForTest();
+
+  auto* host = GetDocument().getElementById(AtomicString("slotHost"));
+  auto* target = host->GetShadowRoot()->getElementById(AtomicString("target"));
+  auto* slotted = GetDocument().getElementById(AtomicString("slotted"));
+  auto* slotchild = GetDocument().getElementById(AtomicString("slotchild"));
+  auto* unassigned = GetDocument().getElementById(AtomicString("unassigned"));
+
+  EXPECT_FALSE(target->IsInCanvasSubtree());
+  EXPECT_TRUE(slotted->IsInCanvasSubtree());
+  EXPECT_TRUE(slotchild->IsInCanvasSubtree());
+  EXPECT_FALSE(unassigned->IsInCanvasSubtree());
+
+  // Removing the slotted child activates fallback content in the flat tree.
+  slotted->remove();
+  UpdateAllLifecyclePhasesForTest();
+  EXPECT_TRUE(target->IsInCanvasSubtree());
+  EXPECT_FALSE(slotted->IsInCanvasSubtree());
+  EXPECT_FALSE(slotchild->IsInCanvasSubtree());
+
+  // Adding the slotted child back deactivates fallback content.
+  host->appendChild(slotted);
+  UpdateAllLifecyclePhasesForTest();
+  EXPECT_FALSE(target->IsInCanvasSubtree());
+  EXPECT_TRUE(slotted->IsInCanvasSubtree());
+  EXPECT_TRUE(slotchild->IsInCanvasSubtree());
+}
+
+TEST_P(HTMLCanvasElementTest, InCanvasSubtreeUnslottedInIframe) {
+  SetBodyInnerHTML(R"HTML(
+    <canvas id="canvas">
+      <iframe id="iframe"></iframe>
+    </canvas>
+  )HTML");
+  SetChildFrameHTML(R"HTML(
+    <div id="slotHost">
+      <div id="unassigned">Unassigned</div>
+    </div>
+  )HTML");
+  auto* host = ChildDocument().getElementById(AtomicString("slotHost"));
+  host->AttachShadowRootForTesting(ShadowRootMode::kOpen);
+  UpdateAllLifecyclePhasesForTest();
+
+  auto* unassigned = ChildDocument().getElementById(AtomicString("unassigned"));
+  EXPECT_FALSE(unassigned->IsInCanvasSubtree());
+}
+
+TEST_P(HTMLCanvasElementTest, ContentDrawableInvalidation) {
   SetBodyInnerHTML(R"HTML(<canvas id=canvas></canvas>)HTML");
-  auto* canvas = GetDocument().getElementById(AtomicString("canvas"));
+  auto* canvas = To<HTMLCanvasElement>(
+      GetDocument().getElementById(AtomicString("canvas")));
   UpdateAllLifecyclePhasesForTest();
+  EXPECT_FALSE(canvas->IsContentDrawable());
   EXPECT_FALSE(canvas->NeedsStyleRecalc());
 
-  // Adding layoutsubtree should cause a style recalc.
-  canvas->setAttribute(html_names::kLayoutsubtreeAttr, AtomicString("true"));
+  // Adding content=drawable should cause a style recalc.
+  canvas->setAttribute(html_names::kContentAttr, AtomicString("drawable"));
+  EXPECT_TRUE(canvas->IsContentDrawable());
   EXPECT_TRUE(canvas->NeedsStyleRecalc());
 
   UpdateAllLifecyclePhasesForTest();
   EXPECT_FALSE(canvas->NeedsStyleRecalc());
 
-  // Setting layoutsubtree to the same value should not cause a style recalc.
-  canvas->setAttribute(html_names::kLayoutsubtreeAttr, AtomicString("true"));
+  // Setting content to the same value should not cause a style recalc.
+  canvas->setAttribute(html_names::kContentAttr, AtomicString("drawable"));
+  EXPECT_TRUE(canvas->IsContentDrawable());
   EXPECT_FALSE(canvas->NeedsStyleRecalc());
 
-  // Setting layoutsubtree to any other value should not cause a style recalc.
-  canvas->setAttribute(html_names::kLayoutsubtreeAttr, AtomicString(""));
-  EXPECT_FALSE(canvas->NeedsStyleRecalc());
-
-  // Removing layoutsubtree should cause a style recalc.
-  canvas->removeAttribute(html_names::kLayoutsubtreeAttr);
+  // Setting content to fallback should cause a style recalc.
+  canvas->setAttribute(html_names::kContentAttr, AtomicString("fallback"));
+  EXPECT_FALSE(canvas->IsContentDrawable());
   EXPECT_TRUE(canvas->NeedsStyleRecalc());
 
   UpdateAllLifecyclePhasesForTest();
   EXPECT_FALSE(canvas->NeedsStyleRecalc());
 
-  // Adding layoutsubtree back should cause a style recalc.
-  canvas->setAttribute(html_names::kLayoutsubtreeAttr, AtomicString(""));
+  // Setting content to an unknown value (which is also not drawable) should not
+  // cause a style recalc.
+  canvas->setAttribute(html_names::kContentAttr, AtomicString("unknown"));
+  EXPECT_FALSE(canvas->IsContentDrawable());
+  EXPECT_FALSE(canvas->NeedsStyleRecalc());
+
+  // Setting back to drawable should cause a style recalc.
+  canvas->setAttribute(html_names::kContentAttr, AtomicString("drawable"));
+  EXPECT_TRUE(canvas->IsContentDrawable());
+  EXPECT_TRUE(canvas->NeedsStyleRecalc());
+
+  UpdateAllLifecyclePhasesForTest();
+  EXPECT_FALSE(canvas->NeedsStyleRecalc());
+
+  // Removing content attribute should cause a style recalc.
+  canvas->removeAttribute(html_names::kContentAttr);
+  EXPECT_FALSE(canvas->IsContentDrawable());
   EXPECT_TRUE(canvas->NeedsStyleRecalc());
 }
 
 TEST_P(HTMLCanvasElementTest, HTMLInCanvasUseCounter) {
-  SetBodyInnerHTML(R"HTML(
-    <canvas></canvas>
-  )HTML");
-  UpdateAllLifecyclePhasesForTest();
-  EXPECT_FALSE(GetDocument().IsUseCounted(WebFeature::kHTMLInCanvas));
+  ScopedCanvasDrawElementForTest forced_canvas_draw_element_feature(true);
+  GetDocument().GetSettings()->SetScriptEnabled(true);
 
   SetBodyInnerHTML(R"HTML(
-    <canvas layoutsubtree></canvas>
+    <canvas id=cvs content=drawable>
+      <div id=target>hello world</div>
+    </canvas>
+  )HTML");
+  RunDocumentLifecycle();
+
+  // Metrics should not be recorded until the feature is actually used.
+  EXPECT_FALSE(GetDocument().IsUseCounted(WebFeature::kHTMLInCanvas));
+
+  Element* script = GetDocument().CreateRawElement(html_names::kScriptTag);
+  script->setTextContent(R"JS(
+    cvs.getContext('2d').drawElementImage(target, 0, 0);
+  )JS");
+  GetDocument().body()->appendChild(script);
+  RunDocumentLifecycle();
+  EXPECT_TRUE(GetDocument().IsUseCounted(WebFeature::kHTMLInCanvas));
+}
+
+TEST_P(HTMLCanvasElementTest, StaleSlotAssignmentDoesNotCorruptMovedChild) {
+  GetDocument().body()->SetHTMLUnsafeWithoutTrustedTypes(R"HTML(
+    <canvas id="c1">
+      <div id="host">
+        <template shadowrootmode="open">
+          <slot id="slot"></slot>
+        </template>
+        <div id="child">Child</div>
+        <div id="child2">Child 2</div>
+      </div>
+    </canvas>
+    <canvas id="c2"></canvas>
   )HTML");
   UpdateAllLifecyclePhasesForTest();
-  EXPECT_TRUE(GetDocument().IsUseCounted(WebFeature::kHTMLInCanvas));
+
+  auto* host = GetDocument().getElementById(AtomicString("host"));
+  auto* child = GetDocument().getElementById(AtomicString("child"));
+  auto* c2 =
+      To<HTMLCanvasElement>(GetDocument().getElementById(AtomicString("c2")));
+
+  EXPECT_TRUE(child->IsInCanvasSubtree());
+  child->remove();
+  c2->appendChild(child);
+  EXPECT_TRUE(child->IsInCanvasSubtree());
+  host->remove();
+  EXPECT_TRUE(child->IsInCanvasSubtree());
+}
+
+TEST_P(HTMLCanvasElementTest, AppendHostWithUnslottedChildToCanvas) {
+  SetBodyInnerHTML(R"HTML(
+    <canvas id="c"></canvas>
+  )HTML");
+  auto* c =
+      To<HTMLCanvasElement>(GetDocument().getElementById(AtomicString("c")));
+  auto* host = GetDocument().CreateRawElement(html_names::kDivTag);
+  host->AttachShadowRootForTesting(ShadowRootMode::kOpen);
+  auto* child = GetDocument().CreateRawElement(html_names::kDivTag);
+  host->appendChild(child);
+  UpdateAllLifecyclePhasesForTest();
+
+  EXPECT_FALSE(child->IsInCanvasSubtree());
+
+  c->appendChild(host);
+  UpdateAllLifecyclePhasesForTest();
+
+  EXPECT_TRUE(host->IsInCanvasSubtree());
+  EXPECT_FALSE(child->IsInCanvasSubtree());
+}
+
+TEST_P(HTMLCanvasElementTest, MoveConnectedHostWithSlottedChildIntoCanvas) {
+  GetDocument().body()->SetHTMLUnsafeWithoutTrustedTypes(R"HTML(
+    <div id="container">
+      <div id="host">
+        <template shadowrootmode="open">
+          <slot id="slot"></slot>
+        </template>
+        <div id="child">
+          <div id="grandchild"></div>
+        </div>
+      </div>
+    </div>
+    <canvas id="c"></canvas>
+  )HTML");
+  UpdateAllLifecyclePhasesForTest();
+
+  auto* host = GetDocument().getElementById(AtomicString("host"));
+  auto* child = GetDocument().getElementById(AtomicString("child"));
+  auto* grandchild = GetDocument().getElementById(AtomicString("grandchild"));
+  auto* c =
+      To<HTMLCanvasElement>(GetDocument().getElementById(AtomicString("c")));
+
+  EXPECT_FALSE(host->IsInCanvasSubtree());
+  EXPECT_FALSE(child->IsInCanvasSubtree());
+  EXPECT_FALSE(grandchild->IsInCanvasSubtree());
+
+  c->appendChild(host);
+  UpdateAllLifecyclePhasesForTest();
+
+  EXPECT_TRUE(host->IsInCanvasSubtree());
+  EXPECT_TRUE(child->IsInCanvasSubtree());
+  EXPECT_TRUE(grandchild->IsInCanvasSubtree());
+}
+
+TEST_P(HTMLCanvasElementTest, PseudoElementChildOfShadowHost) {
+  GetDocument().body()->SetHTMLUnsafeWithoutTrustedTypes(R"HTML(
+    <style>
+      #host::after {
+        content: "Hello, world!";
+      }
+    </style>
+    <div id="host">
+      <template shadowrootmode="open"></template>
+    </div>
+    <canvas id="c"></canvas>
+  )HTML");
+  UpdateAllLifecyclePhasesForTest();
+
+  auto* host = GetDocument().getElementById(AtomicString("host"));
+  EXPECT_FALSE(host->IsInCanvasSubtree());
+  EXPECT_FALSE(host->GetPseudoElement(kPseudoIdAfter)->IsInCanvasSubtree());
+  GetDocument().getElementById(AtomicString("c"))->appendChild(host);
+  UpdateAllLifecyclePhasesForTest();
+  EXPECT_TRUE(host->IsInCanvasSubtree());
+  EXPECT_TRUE(host->GetPseudoElement(kPseudoIdAfter)->IsInCanvasSubtree());
+}
+
+TEST_P(HTMLCanvasElementTest, TopLayerRemovalInvalidatesSubtreeAcrossFrames) {
+  SetBodyInnerHTML(R"HTML(
+    <style>
+      [popover] {
+        display: block !important;
+      }
+    </style>
+    <canvas id="canvas" content="drawable">
+      <div id="drawable" drawable>
+        <div id="popover" popover="manual">
+          <div id="child"></div>
+          <iframe id="iframe"></iframe>
+        </div>
+      </div>
+    </canvas>
+  )HTML");
+  SetChildFrameHTML(R"HTML(
+    <div id="inner_target">Hello</div>
+  )HTML");
+  UpdateAllLifecyclePhasesForTest();
+
+  auto* popover =
+      To<HTMLElement>(GetDocument().getElementById(AtomicString("popover")));
+  auto* child = GetDocument().getElementById(AtomicString("child"));
+  auto* iframe = GetDocument().getElementById(AtomicString("iframe"));
+  auto* inner_target =
+      ChildDocument().getElementById(AtomicString("inner_target"));
+
+  popover->ShowPopoverInternal(nullptr, nullptr);
+  UpdateAllLifecyclePhasesForTest();
+  ASSERT_TRUE(popover->IsInTopLayer());
+
+  EXPECT_FALSE(
+      popover->GetLayoutObject()->SubtreeShouldDoFullPaintInvalidation());
+  EXPECT_FALSE(
+      child->GetLayoutObject()->SubtreeShouldDoFullPaintInvalidation());
+  EXPECT_FALSE(child->GetLayoutObject()->NeedsPaintPropertyUpdate());
+  EXPECT_FALSE(
+      iframe->GetLayoutObject()->SubtreeShouldDoFullPaintInvalidation());
+  EXPECT_FALSE(iframe->GetLayoutObject()->NeedsPaintPropertyUpdate());
+  EXPECT_FALSE(
+      ChildDocument().GetLayoutView()->SubtreeShouldDoFullPaintInvalidation());
+  EXPECT_FALSE(ChildDocument().GetLayoutView()->NeedsPaintPropertyUpdate());
+  EXPECT_FALSE(
+      inner_target->GetLayoutObject()->SubtreeShouldDoFullPaintInvalidation());
+  EXPECT_FALSE(inner_target->GetLayoutObject()->NeedsPaintPropertyUpdate());
+
+  popover->HidePopoverInternal(
+      /*invoker=*/nullptr, HidePopoverFocusBehavior::kNone,
+      HidePopoverTransitionBehavior::kNoEventsNoWaiting,
+      /*exception_state=*/nullptr);
+  GetDocument().UpdateStyleAndLayoutTree();
+  ASSERT_FALSE(popover->IsInTopLayer());
+
+  EXPECT_TRUE(popover->GetLayoutObject()->ShouldDoFullPaintInvalidation());
+  EXPECT_TRUE(popover->GetLayoutObject()->NeedsPaintPropertyUpdate());
+  EXPECT_TRUE(child->GetLayoutObject()->ShouldDoFullPaintInvalidation());
+  EXPECT_TRUE(child->GetLayoutObject()->NeedsPaintPropertyUpdate());
+  EXPECT_TRUE(iframe->GetLayoutObject()->ShouldDoFullPaintInvalidation());
+  EXPECT_TRUE(iframe->GetLayoutObject()->NeedsPaintPropertyUpdate());
+  EXPECT_TRUE(
+      ChildDocument().GetLayoutView()->SubtreeShouldDoFullPaintInvalidation());
+  EXPECT_TRUE(ChildDocument().GetLayoutView()->NeedsPaintPropertyUpdate());
+  EXPECT_TRUE(
+      inner_target->GetLayoutObject()->SubtreeShouldDoFullPaintInvalidation());
+  EXPECT_TRUE(inner_target->GetLayoutObject()->NeedsPaintPropertyUpdate());
+}
+
+TEST_P(HTMLCanvasElementTest, SlotAssignmentDuringSetIsInCanvasSubtree) {
+  class GCOnFocusChangeObserver final
+      : public GarbageCollected<GCOnFocusChangeObserver>,
+        public FocusedElementChangeObserver {
+   public:
+    void DidChangeFocus() override {
+      invoked_ = true;
+      ThreadState::Current()->CollectAllGarbageForTesting(
+          ThreadState::StackState::kMayContainHeapPointers);
+    }
+    bool Invoked() const { return invoked_; }
+    void Trace(Visitor* visitor) const override {
+      FocusedElementChangeObserver::Trace(visitor);
+    }
+
+   private:
+    bool invoked_ = false;
+  };
+
+  ScopedCanvasDrawElementForTest forced_canvas_draw_element_feature(true);
+  GetDocument().GetSettings()->SetScriptEnabled(true);
+  GetPage().GetFocusController().SetActive(true);
+  GetPage().GetFocusController().SetFocused(true);
+  GetDocument().body()->SetHTMLUnsafeWithoutTrustedTypes(R"HTML(
+    <canvas id="cv" content="drawable">
+      <div id="h2">
+        <template shadowrootmode="open">
+          <slot id="s2"></slot>
+        </template>
+        <span></span>
+        <span></span>
+        <span></span>
+        <input id="d" type="date" value="2001-02-03">
+        <span id="y"></span>
+        <span></span>
+        <span></span>
+        <span></span>
+        <span></span>
+      </div>
+    </canvas>
+  )HTML");
+  UpdateAllLifecyclePhasesForTest();
+
+  auto* h2 = GetDocument().getElementById(AtomicString("h2"));
+  auto* d =
+      To<HTMLInputElement>(GetDocument().getElementById(AtomicString("d")));
+  auto* y = GetDocument().getElementById(AtomicString("y"));
+  auto* s2 = To<HTMLSlotElement>(
+      h2->GetShadowRoot()->getElementById(AtomicString("s2")));
+
+  s2->AssignedNodes();
+  d->SetValue("2001-02-04");
+  d->Focus();
+  h2->SetIsInCanvasSubtree(false);
+  d->setAttribute(html_names::kValueAttr, AtomicString("2003-04-05"));
+  y->setAttribute(html_names::kSlotAttr, AtomicString("away"));
+
+  auto* observer = MakeGarbageCollected<GCOnFocusChangeObserver>();
+  GetDocument().AddFocusedElementChangeObserver(observer);
+
+  h2->SetIsInCanvasSubtree(true);
+  EXPECT_TRUE(observer->Invoked());
+  EXPECT_FALSE(y->IsInCanvasSubtree());
+}
+
+TEST_P(HTMLCanvasElementTest, SlotReassignmentInvalidatesVisitedLinkStyle) {
+  ScopedCanvasDrawElementForTest forced_canvas_draw_element_feature(true);
+  GetDocument().body()->SetHTMLUnsafeWithoutTrustedTypes(R"HTML(
+    <div id="host">
+      <template shadowrootmode="open">
+        <div>
+          <slot name="outside"></slot>
+        </div>
+        <canvas content="drawable">
+          <div drawable>
+            <slot name="inside"></slot>
+          </div>
+        </canvas>
+      </template>
+      <div id="payload" slot="outside">
+        <a id="link" href=""><span id="child">Link</span></a>
+        <svg><a id="svg_link" href=""><rect width="10" height="10"/></a></svg>
+      </div>
+    </div>
+  )HTML");
+  UpdateAllLifecyclePhasesForTest();
+
+  auto* payload = GetDocument().getElementById(AtomicString("payload"));
+  auto* link = GetDocument().getElementById(AtomicString("link"));
+  auto* child = GetDocument().getElementById(AtomicString("child"));
+  auto* svg_link = GetDocument().getElementById(AtomicString("svg_link"));
+
+  EXPECT_FALSE(link->IsInCanvasSubtree());
+  EXPECT_EQ(link->GetComputedStyle()->InsideLink(),
+            EInsideLink::kInsideVisitedLink);
+  EXPECT_EQ(child->GetComputedStyle()->InsideLink(),
+            EInsideLink::kInsideVisitedLink);
+  EXPECT_EQ(svg_link->GetComputedStyle()->InsideLink(),
+            EInsideLink::kInsideVisitedLink);
+
+  payload->setAttribute(html_names::kSlotAttr, AtomicString("inside"));
+  UpdateAllLifecyclePhasesForTest();
+
+  EXPECT_TRUE(link->IsInCanvasSubtree());
+  EXPECT_EQ(link->GetComputedStyle()->InsideLink(),
+            EInsideLink::kInsideUnvisitedLink);
+  EXPECT_EQ(child->GetComputedStyle()->InsideLink(),
+            EInsideLink::kInsideUnvisitedLink);
+  EXPECT_EQ(svg_link->GetComputedStyle()->InsideLink(),
+            EInsideLink::kInsideUnvisitedLink);
+
+  payload->setAttribute(html_names::kSlotAttr, AtomicString("outside"));
+  UpdateAllLifecyclePhasesForTest();
+
+  EXPECT_FALSE(link->IsInCanvasSubtree());
+  EXPECT_EQ(link->GetComputedStyle()->InsideLink(),
+            EInsideLink::kInsideVisitedLink);
+  EXPECT_EQ(child->GetComputedStyle()->InsideLink(),
+            EInsideLink::kInsideVisitedLink);
+  EXPECT_EQ(svg_link->GetComputedStyle()->InsideLink(),
+            EInsideLink::kInsideVisitedLink);
+}
+
+TEST_P(HTMLCanvasElementTest, RemoveAndReinsertSlottedElementToSameHost) {
+  GetDocument().body()->SetHTMLUnsafeWithoutTrustedTypes(R"HTML(
+    <div id="host1">
+      <template shadowrootmode="open">
+        <canvas content="drawable">
+          <slot></slot>
+        </canvas>
+      </template>
+      <div id="slotted1">
+        <div id="child1"></div>
+      </div>
+    </div>
+    <canvas content="drawable">
+      <div id="host2">
+        <template shadowrootmode="open">
+          <slot></slot>
+        </template>
+        <div id="slotted2">
+          <div id="child2"></div>
+        </div>
+      </div>
+    </canvas>
+  )HTML");
+  UpdateAllLifecyclePhasesForTest();
+
+  auto* host1 = GetDocument().getElementById(AtomicString("host1"));
+  auto* slotted1 = GetDocument().getElementById(AtomicString("slotted1"));
+  auto* child1 = GetDocument().getElementById(AtomicString("child1"));
+  auto* host2 = GetDocument().getElementById(AtomicString("host2"));
+  auto* slotted2 = GetDocument().getElementById(AtomicString("slotted2"));
+  auto* child2 = GetDocument().getElementById(AtomicString("child2"));
+
+  EXPECT_TRUE(slotted1->IsInCanvasSubtree());
+  EXPECT_TRUE(child1->IsInCanvasSubtree());
+  EXPECT_TRUE(slotted2->IsInCanvasSubtree());
+  EXPECT_TRUE(child2->IsInCanvasSubtree());
+
+  // Remove and reinsert into the same shadow host without an intermediate
+  // slot assignment recalc, so both elements retain their previous slotting.
+  slotted1->remove();
+  EXPECT_FALSE(slotted1->IsInCanvasSubtree());
+  EXPECT_FALSE(child1->IsInCanvasSubtree());
+  host1->appendChild(slotted1);
+  EXPECT_TRUE(slotted1->IsInCanvasSubtree());
+  EXPECT_TRUE(child1->IsInCanvasSubtree());
+
+  slotted2->remove();
+  EXPECT_FALSE(slotted2->IsInCanvasSubtree());
+  EXPECT_FALSE(child2->IsInCanvasSubtree());
+  host2->appendChild(slotted2);
+  EXPECT_TRUE(slotted2->IsInCanvasSubtree());
+  EXPECT_TRUE(child2->IsInCanvasSubtree());
+
+  UpdateAllLifecyclePhasesForTest();
+  EXPECT_TRUE(slotted1->IsInCanvasSubtree());
+  EXPECT_TRUE(child1->IsInCanvasSubtree());
+  EXPECT_TRUE(slotted2->IsInCanvasSubtree());
+  EXPECT_TRUE(child2->IsInCanvasSubtree());
+
+  // Also test single-call re-insertion of an already-attached slotted child
+  // (`host->appendChild(slotted)`), which internally removes and re-inserts
+  // in the same task.
+  host1->appendChild(slotted1);
+  EXPECT_TRUE(slotted1->IsInCanvasSubtree());
+  EXPECT_TRUE(child1->IsInCanvasSubtree());
+  host2->appendChild(slotted2);
+  EXPECT_TRUE(slotted2->IsInCanvasSubtree());
+  EXPECT_TRUE(child2->IsInCanvasSubtree());
+
+  UpdateAllLifecyclePhasesForTest();
+  EXPECT_TRUE(slotted1->IsInCanvasSubtree());
+  EXPECT_TRUE(child1->IsInCanvasSubtree());
+  EXPECT_TRUE(slotted2->IsInCanvasSubtree());
+  EXPECT_TRUE(child2->IsInCanvasSubtree());
 }
 
 }  // namespace blink

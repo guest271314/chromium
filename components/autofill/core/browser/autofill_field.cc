@@ -22,8 +22,8 @@
 #include "base/containers/flat_map.h"
 #include "base/containers/span.h"
 #include "base/feature_list.h"
+#include "base/memory/ptr_util.h"
 #include "base/no_destructor.h"
-#include "base/not_fatal_until.h"
 #include "base/notreached.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
@@ -33,7 +33,7 @@
 #include "base/types/pass_key.h"
 #include "components/autofill/core/browser/autofill_format_string.h"
 #include "components/autofill/core/browser/autofill_type.h"
-#include "components/autofill/core/browser/field_type_utils.h"
+#include "components/autofill/core/browser/field_type_util.h"
 #include "components/autofill/core/browser/field_types.h"
 #include "components/autofill/core/browser/heuristic_source.h"
 #include "components/autofill/core/browser/proto/api_v1.pb.h"
@@ -69,12 +69,14 @@ namespace {
 // be an `HtmlFieldType` (The first type cannot since these types are always
 // preferred by default).
 struct PredictionPrecedenceException {
-  // Returns whether `field_type_1` should be preferred over `field_type_2`
-  // according to this exception.
+  // Returns whether, in `field`, `possibly_winning_type` should be preferred
+  // over `possibly_losing_type` according to this exception.
   bool ExceptionApplies(
+      const AutofillField& field,
       FieldType possibly_winning_type,
       std::variant<FieldType, HtmlFieldType> possibly_losing_type) const {
-    return IsWinningType(possibly_winning_type) &&
+    return (!field_condition || field_condition(field)) &&
+           IsWinningType(possibly_winning_type) &&
            IsLosingType(possibly_losing_type);
   }
 
@@ -116,163 +118,191 @@ struct PredictionPrecedenceException {
   std::optional<FieldType> winning_type;
   std::optional<FieldTypeSet> winning_types;
   std::optional<FieldTypeGroup> winning_type_group;
+  bool (*field_condition)(const AutofillField&) = nullptr;
 };
 
 static constexpr auto kPreferredServerTypesOverHtmlTypes =
-    std::to_array<PredictionPrecedenceException>(
-        {// If autocomplete=tel/tel-* and server confirms it really is a phone
-         // field, we always use the server prediction as html types are not
-         // very reliable.
-         {.losing_type_group = FieldTypeGroup::kPhone,
-          .winning_type_group = FieldTypeGroup::kPhone},
+    std::to_array<PredictionPrecedenceException>({
+        // If autocomplete=tel/tel-* and server confirms it really is a phone
+        // field, we always use the server prediction as html types are not
+        // very reliable.
+        {.losing_type_group = FieldTypeGroup::kPhone,
+         .winning_type_group = FieldTypeGroup::kPhone},
 
-         // When the server predicts that an address is a street name or a house
-         // number, we prioritize this over "address-line[1|2]" autocomplete
-         // since those signals are usually stronger for this combination.
-         {.losing_html_type = HtmlFieldType::kAddressLine1,
-          .winning_types = FieldTypeSet{ADDRESS_HOME_STREET_NAME,
-                                        ADDRESS_HOME_HOUSE_NUMBER}},
-         {.losing_html_type = HtmlFieldType::kAddressLine2,
-          .winning_types = FieldTypeSet{ADDRESS_HOME_STREET_NAME,
-                                        ADDRESS_HOME_HOUSE_NUMBER}},
+        // When the server predicts that an address is a street name or a house
+        // number, we prioritize this over "address-line[1|2]" autocomplete
+        // since those signals are usually stronger for this combination.
+        {.losing_html_type = HtmlFieldType::kAddressLine1,
+         .winning_types =
+             FieldTypeSet{ADDRESS_HOME_STREET_NAME, ADDRESS_HOME_HOUSE_NUMBER}},
+        {.losing_html_type = HtmlFieldType::kAddressLine2,
+         .winning_types =
+             FieldTypeSet{ADDRESS_HOME_STREET_NAME, ADDRESS_HOME_HOUSE_NUMBER}},
 
-         // If the explicit type is cc-exp and heuristics agree on a 2 vs 4
-         // digit specialization of cc-exp, use that specialization.
-         // TODO(crbug.com/40266396) Delete this exception when
-         // features::kAutofillEnableExpirationDateImprovements has launched as
-         // this should be covered by
-         // FormStructureRationalizer::RationalizeAutocompleteAttributes.
-         {.losing_html_type = HtmlFieldType::kCreditCardExp,
-          .winning_types = FieldTypeSet{CREDIT_CARD_EXP_DATE_2_DIGIT_YEAR,
-                                        CREDIT_CARD_EXP_DATE_4_DIGIT_YEAR}}});
+        // If the explicit type is cc-exp and the server agrees on a 2 vs 4
+        // digit specialization of cc-exp, use that specialization.
+        // TODO(crbug.com/40266396) Delete this exception when
+        // features::kAutofillEnableExpirationDateImprovements has launched as
+        // this should be covered by
+        // FormStructureRationalizer::RationalizeAutocompleteAttributes.
+        {.losing_html_type = HtmlFieldType::kCreditCardExp,
+         .winning_types = FieldTypeSet{CREDIT_CARD_EXP_DATE_2_DIGIT_YEAR,
+                                       CREDIT_CARD_EXP_DATE_4_DIGIT_YEAR}},
+    });
 
 static constexpr auto kPreferredHeuristicTypesOverHtmlTypes =
-    std::to_array<PredictionPrecedenceException>(
-        {// This list is used for new field types that do not have a clear
-         // corresponding HTML type. In these cases, the local heuristics
-         // predictions will be used to determine the field overall type.
-         {.losing_html_type = HtmlFieldType::kAddressLevel1,
-          .winning_types = FieldTypeSet{ADDRESS_HOME_ADMIN_LEVEL2,
-                                        ADDRESS_HOME_DEPENDENT_LOCALITY}},
-         {.losing_html_type = HtmlFieldType::kAddressLevel2,
-          .winning_types =
-              FieldTypeSet{ADDRESS_HOME_ADMIN_LEVEL2,
-                           ADDRESS_HOME_BETWEEN_STREETS,
-                           ADDRESS_HOME_BETWEEN_STREETS_OR_LANDMARK,
-                           ADDRESS_HOME_DEPENDENT_LOCALITY}},
-         {.losing_html_type = HtmlFieldType::kAddressLevel3,
-          .winning_type = ADDRESS_HOME_DEPENDENT_LOCALITY},
-         {.losing_html_type = HtmlFieldType::kAddressLine1,
-          .winning_types = FieldTypeSet{ADDRESS_HOME_DEPENDENT_LOCALITY,
-                                        ADDRESS_HOME_STREET_NAME,
-                                        ADDRESS_HOME_HOUSE_NUMBER}},
-         {.losing_html_type = HtmlFieldType::kAddressLine2,
-          .winning_types =
-              FieldTypeSet{ADDRESS_HOME_APT_NUM,
-                           ADDRESS_HOME_BETWEEN_STREETS_OR_LANDMARK,
-                           ADDRESS_HOME_DEPENDENT_LOCALITY,
-                           ADDRESS_HOME_OVERFLOW_AND_LANDMARK,
-                           ADDRESS_HOME_OVERFLOW, ADDRESS_HOME_STREET_NAME,
-                           ADDRESS_HOME_HOUSE_NUMBER}},
-         {.losing_html_type = HtmlFieldType::kAddressLine3,
-          .winning_types = FieldTypeSet{ADDRESS_HOME_APT_NUM,
-                                        ADDRESS_HOME_DEPENDENT_LOCALITY,
-                                        ADDRESS_HOME_OVERFLOW}},
-         {.losing_html_type = HtmlFieldType::kStreetAddress,
-          .winning_types = FieldTypeSet{ADDRESS_HOME_STREET_NAME,
-                                        ADDRESS_HOME_HOUSE_NUMBER}},
-         {.losing_html_type = HtmlFieldType::kOrganization,
-          .winning_type = ADDRESS_HOME_BETWEEN_STREETS_OR_LANDMARK},
-         {.losing_html_type = HtmlFieldType::kFamilyName,
-          .winning_type = ALTERNATIVE_FAMILY_NAME},
-         {.losing_html_type = HtmlFieldType::kGivenName,
-          .winning_type = ALTERNATIVE_GIVEN_NAME},
-         {.losing_html_type = HtmlFieldType::kName,
-          .winning_type = ALTERNATIVE_FULL_NAME},
+    std::to_array<PredictionPrecedenceException>({
+        // This list is used for new field types that do not have a clear
+        // corresponding HTML type. In these cases, the local heuristics
+        // predictions will be used to determine the field overall type.
+        {.losing_html_type = HtmlFieldType::kAddressLevel1,
+         .winning_types = FieldTypeSet{ADDRESS_HOME_ADMIN_LEVEL2,
+                                       ADDRESS_HOME_DEPENDENT_LOCALITY}},
+        {.losing_html_type = HtmlFieldType::kAddressLevel2,
+         .winning_types = FieldTypeSet{ADDRESS_HOME_ADMIN_LEVEL2,
+                                       ADDRESS_HOME_BETWEEN_STREETS,
+                                       ADDRESS_HOME_BETWEEN_STREETS_OR_LANDMARK,
+                                       ADDRESS_HOME_DEPENDENT_LOCALITY}},
+        {.losing_html_type = HtmlFieldType::kAddressLevel3,
+         .winning_type = ADDRESS_HOME_DEPENDENT_LOCALITY},
+        {.losing_html_type = HtmlFieldType::kAddressLine1,
+         .winning_types =
+             FieldTypeSet{ADDRESS_HOME_DEPENDENT_LOCALITY,
+                          ADDRESS_HOME_STREET_NAME, ADDRESS_HOME_HOUSE_NUMBER}},
+        {.losing_html_type = HtmlFieldType::kAddressLine2,
+         .winning_types =
+             FieldTypeSet{
+                 ADDRESS_HOME_APT_NUM, ADDRESS_HOME_BETWEEN_STREETS_OR_LANDMARK,
+                 ADDRESS_HOME_DEPENDENT_LOCALITY,
+                 ADDRESS_HOME_OVERFLOW_AND_LANDMARK, ADDRESS_HOME_OVERFLOW,
+                 ADDRESS_HOME_STREET_NAME, ADDRESS_HOME_HOUSE_NUMBER}},
+        {.losing_html_type = HtmlFieldType::kAddressLine3,
+         .winning_types =
+             FieldTypeSet{ADDRESS_HOME_APT_NUM, ADDRESS_HOME_DEPENDENT_LOCALITY,
+                          ADDRESS_HOME_OVERFLOW}},
+        {.losing_html_type = HtmlFieldType::kStreetAddress,
+         .winning_types =
+             FieldTypeSet{ADDRESS_HOME_STREET_NAME, ADDRESS_HOME_HOUSE_NUMBER}},
+        {.losing_html_type = HtmlFieldType::kOrganization,
+         .winning_type = ADDRESS_HOME_BETWEEN_STREETS_OR_LANDMARK},
+        {.losing_html_type = HtmlFieldType::kFamilyName,
+         .winning_type = ALTERNATIVE_FAMILY_NAME},
+        {.losing_html_type = HtmlFieldType::kGivenName,
+         .winning_type = ALTERNATIVE_GIVEN_NAME},
+        {.losing_html_type = HtmlFieldType::kName,
+         .winning_type = ALTERNATIVE_FULL_NAME},
 
-         // If the explicit type is cc-exp and the server agrees on a 2 vs 4
-         // digit specialization of cc-exp, use that specialization.
-         // TODO(crbug.com/40266396) Delete this exception when
-         // features::kAutofillEnableExpirationDateImprovements has launched as
-         // this should be covered by
-         // FormStructureRationalizer::RationalizeAutocompleteAttributes().
-         {.losing_html_type = HtmlFieldType::kCreditCardExp,
-          .winning_types = FieldTypeSet{CREDIT_CARD_EXP_DATE_2_DIGIT_YEAR,
-                                        CREDIT_CARD_EXP_DATE_4_DIGIT_YEAR}}});
+        // If the explicit type is cc-exp and heuristics agree on a 2 vs 4 digit
+        // specialization of cc-exp, use that specialization.
+        // TODO(crbug.com/40266396) Delete this exception when
+        // features::kAutofillEnableExpirationDateImprovements has launched as
+        // this should be covered by
+        // FormStructureRationalizer::RationalizeAutocompleteAttributes().
+        {.losing_html_type = HtmlFieldType::kCreditCardExp,
+         .winning_types = FieldTypeSet{CREDIT_CARD_EXP_DATE_2_DIGIT_YEAR,
+                                       CREDIT_CARD_EXP_DATE_4_DIGIT_YEAR}},
+
+        // It is very likely that developers use `autocomplete="country-code"`
+        // when they want to represent a phone country code, because of its
+        // higher visibility over `tel-country-code`. For that reason we prefer
+        // the heuristic type in that case, as it comes with a strong guarantee
+        // of a matching grammar. For additional caution, the exception is
+        // restricted to select elements for which the heuristics are even more
+        // accurate due to added restrictions.
+        {.losing_html_type = HtmlFieldType::kCountryCode,
+         .winning_type = PHONE_HOME_COUNTRY_CODE,
+         .field_condition =
+             [](const AutofillField& field) {
+               return field.IsSelectElement();
+             }},
+
+        // Since the HTML standard does not support loyalty card types, the more
+        // accurate heuristic type (that also includes email) is preferred.
+        {.losing_html_type = HtmlFieldType::kEmail,
+         .winning_type = EMAIL_OR_LOYALTY_MEMBERSHIP_ID},
+    });
 
 static constexpr auto kPreferredHeuristicTypesOverServerTypes = std::to_array<
-    PredictionPrecedenceException>(
-    {// The list is used for new field types that the server may have learned
-     // incorrectly. In these cases, the local heuristics predictions will be
-     // used to determine the field type.
-     {.losing_type = ADDRESS_HOME_CITY,
-      .winning_types = FieldTypeSet{ADDRESS_HOME_ADMIN_LEVEL2,
-                                    ADDRESS_HOME_DEPENDENT_LOCALITY}},
-     {.losing_type = ADDRESS_HOME_HOUSE_NUMBER,
-      .winning_types = FieldTypeSet{ADDRESS_HOME_HOUSE_NUMBER_AND_APT,
-                                    ADDRESS_HOME_APT_NUM}},
-     {.losing_type = ADDRESS_HOME_APT_NUM,
-      .winning_type = ADDRESS_HOME_HOUSE_NUMBER_AND_APT},
-     {.losing_type = ADDRESS_HOME_LINE1,
-      .winning_types = FieldTypeSet{ADDRESS_HOME_BETWEEN_STREETS,
-                                    ADDRESS_HOME_DEPENDENT_LOCALITY}},
-     {.losing_type = ADDRESS_HOME_LINE2,
-      .winning_types =
-          FieldTypeSet{ADDRESS_HOME_APT_NUM, ADDRESS_HOME_BETWEEN_STREETS,
-                       ADDRESS_HOME_DEPENDENT_LOCALITY, ADDRESS_HOME_LANDMARK,
-                       ADDRESS_HOME_BETWEEN_STREETS_OR_LANDMARK,
-                       ADDRESS_HOME_OVERFLOW_AND_LANDMARK,
-                       ADDRESS_HOME_OVERFLOW}},
-     {.losing_type = ADDRESS_HOME_LINE3,
-      .winning_types =
-          FieldTypeSet{ADDRESS_HOME_APT_NUM, ADDRESS_HOME_DEPENDENT_LOCALITY,
-                       ADDRESS_HOME_OVERFLOW}},
-     {.losing_type = ADDRESS_HOME_STREET_ADDRESS,
-      .winning_type = ADDRESS_HOME_BETWEEN_STREETS},
-     {.losing_type = ADDRESS_HOME_STATE,
-      .winning_type = ADDRESS_HOME_DEPENDENT_LOCALITY},
-     // TODO(crbug.com/359768803): Remove overrides for alternative names once
-     // the feature is rolled out.
-     {.losing_type = NAME_FULL, .winning_type = ALTERNATIVE_FULL_NAME},
-     {.losing_type = NAME_FIRST, .winning_type = ALTERNATIVE_GIVEN_NAME},
-     {.losing_type = NAME_LAST, .winning_type = ALTERNATIVE_FAMILY_NAME},
-     {.losing_type = NAME_LAST_SECOND, .winning_type = ALTERNATIVE_FAMILY_NAME},
+    PredictionPrecedenceException>({
+    // The list is used for new field types that the server may have learned
+    // incorrectly. In these cases, the local heuristics predictions will be
+    // used to determine the field type.
+    {.losing_type = ADDRESS_HOME_CITY,
+     .winning_types = FieldTypeSet{ADDRESS_HOME_ADMIN_LEVEL2,
+                                   ADDRESS_HOME_DEPENDENT_LOCALITY}},
+    {.losing_type = ADDRESS_HOME_HOUSE_NUMBER,
+     .winning_types =
+         FieldTypeSet{ADDRESS_HOME_HOUSE_NUMBER_AND_APT, ADDRESS_HOME_APT_NUM}},
+    {.losing_type = ADDRESS_HOME_APT_NUM,
+     .winning_type = ADDRESS_HOME_HOUSE_NUMBER_AND_APT},
+    {.losing_type = ADDRESS_HOME_LINE1,
+     .winning_types = FieldTypeSet{ADDRESS_HOME_BETWEEN_STREETS,
+                                   ADDRESS_HOME_DEPENDENT_LOCALITY}},
+    {.losing_type = ADDRESS_HOME_LINE2,
+     .winning_types =
+         FieldTypeSet{ADDRESS_HOME_APT_NUM, ADDRESS_HOME_BETWEEN_STREETS,
+                      ADDRESS_HOME_DEPENDENT_LOCALITY, ADDRESS_HOME_LANDMARK,
+                      ADDRESS_HOME_BETWEEN_STREETS_OR_LANDMARK,
+                      ADDRESS_HOME_OVERFLOW_AND_LANDMARK,
+                      ADDRESS_HOME_OVERFLOW}},
+    {.losing_type = ADDRESS_HOME_LINE3,
+     .winning_types =
+         FieldTypeSet{ADDRESS_HOME_APT_NUM, ADDRESS_HOME_DEPENDENT_LOCALITY,
+                      ADDRESS_HOME_OVERFLOW}},
+    {.losing_type = ADDRESS_HOME_STREET_ADDRESS,
+     .winning_type = ADDRESS_HOME_BETWEEN_STREETS},
+    {.losing_type = ADDRESS_HOME_STATE,
+     .winning_type = ADDRESS_HOME_DEPENDENT_LOCALITY},
+    // TODO(crbug.com/359768803): Remove overrides for alternative names once
+    // the feature is rolled out.
+    {.losing_type = NAME_FULL, .winning_type = ALTERNATIVE_FULL_NAME},
+    {.losing_type = NAME_FIRST, .winning_type = ALTERNATIVE_GIVEN_NAME},
+    {.losing_type = NAME_LAST, .winning_type = ALTERNATIVE_FAMILY_NAME},
+    {.losing_type = NAME_LAST_SECOND, .winning_type = ALTERNATIVE_FAMILY_NAME},
 
-     // Sometimes the server and heuristics disagree on whether a name field
-     // should be associated with an address or a credit card. There was a
-     // decision to prefer the heuristics in these cases, but it looks like it
-     // might be better to fix this server-side.
-     // See http://crbug.com/429236 for background.
-     {.losing_type = CREDIT_CARD_NAME_FULL, .winning_type = NAME_FULL},
-     {.losing_type = NAME_FULL, .winning_type = CREDIT_CARD_NAME_FULL},
-     {.losing_type = NAME_FIRST, .winning_type = CREDIT_CARD_NAME_FIRST},
-     {.losing_type = NAME_LAST, .winning_type = CREDIT_CARD_NAME_LAST},
+    // Sometimes the server and heuristics disagree on whether a name field
+    // should be associated with an address or a credit card. There was a
+    // decision to prefer the heuristics in these cases, but it looks like it
+    // might be better to fix this server-side.
+    // See http://crbug.com/429236 for background.
+    {.losing_type = CREDIT_CARD_NAME_FULL, .winning_type = NAME_FULL},
+    {.losing_type = NAME_FULL, .winning_type = CREDIT_CARD_NAME_FULL},
+    {.losing_type = NAME_FIRST, .winning_type = CREDIT_CARD_NAME_FIRST},
+    {.losing_type = NAME_LAST, .winning_type = CREDIT_CARD_NAME_LAST},
 
-     // Retain a preference for the CVC heuristic over the server's password
-     // predictions (http://crbug.com/469007)
-     {.losing_type_group = FieldTypeGroup::kPasswordField,
-      .winning_type = CREDIT_CARD_VERIFICATION_CODE},
+    // Retain a preference for the CVC heuristic over the server's password
+    // predictions (http://crbug.com/469007)
+    {.losing_type_group = FieldTypeGroup::kPasswordField,
+     .winning_type = CREDIT_CARD_VERIFICATION_CODE},
 
-     // For the following types, the heuristic predictions get precedence over
-     // the server predictions.
-     {.losing_types = FieldTypeSet::all(),
-      .winning_types =
-          FieldTypeSet{NAME_LAST_FIRST, NAME_LAST_SECOND,
-                       ADDRESS_HOME_STREET_NAME, ADDRESS_HOME_HOUSE_NUMBER,
-                       IBAN_VALUE, MERCHANT_PROMO_CODE}},
+    // For the following types, the heuristic predictions get precedence over
+    // the server predictions.
+    {.losing_types = FieldTypeSet::all(),
+     .winning_types =
+         FieldTypeSet{NAME_LAST_FIRST, NAME_LAST_SECOND,
+                      ADDRESS_HOME_STREET_NAME, ADDRESS_HOME_HOUSE_NUMBER,
+                      IBAN_VALUE, MERCHANT_PROMO_CODE}},
 
-     // For loyalty card fields the heuristic predictions get precedence over
-     // `UNKNOWN_TYPE` server prediction.
-     {.losing_type = UNKNOWN_TYPE, .winning_type = LOYALTY_MEMBERSHIP_ID}});
+    // For loyalty card fields the heuristic predictions get precedence over
+    // `UNKNOWN_TYPE` server prediction.
+    {.losing_type = UNKNOWN_TYPE, .winning_type = LOYALTY_MEMBERSHIP_ID},
+
+    // Since the loyalty card types are rather new and the server needs time to
+    // pick it up, the more accurate heuristic type (that also includes email)
+    // is preferred.
+    {.losing_type = EMAIL_ADDRESS,
+     .winning_type = EMAIL_OR_LOYALTY_MEMBERSHIP_ID},
+});
 
 bool PreferTypeAccordingToExceptions(
     base::span<const PredictionPrecedenceException> precedence_exceptions,
+    const AutofillField& field,
     FieldType field_type_1,
     std::variant<FieldType, HtmlFieldType> field_type_2) {
   return std::ranges::any_of(
       precedence_exceptions,
       [&](const PredictionPrecedenceException& exception) {
-        return exception.ExceptionApplies(field_type_1, field_type_2);
+        return exception.ExceptionApplies(field, field_type_1, field_type_2);
       });
 }
 
@@ -296,7 +326,6 @@ bool IsAutofillAiPrediction(const FieldPrediction& prediction) {
     case FieldPrediction::SOURCE_AUTOFILL_DEFAULT:
     case FieldPrediction::SOURCE_PASSWORDS_DEFAULT:
     case FieldPrediction::SOURCE_OVERRIDE:
-    case FieldPrediction::SOURCE_ALL_APPROVED_EXPERIMENTS:
     case FieldPrediction::SOURCE_FIELD_RANKS:
     case FieldPrediction::SOURCE_MANUAL_OVERRIDE:
     case FieldPrediction::SOURCE_AUTOFILL_COMBINED_TYPES:
@@ -453,10 +482,19 @@ AutofillField::AutofillField(const FormFieldData& field) {
 }
 
 AutofillField::AutofillField(AutofillField&&) = default;
+AutofillField::AutofillField(const AutofillField&) = default;
 
 AutofillField& AutofillField::operator=(AutofillField&&) = default;
+AutofillField& AutofillField::operator=(const AutofillField&) = default;
 
 AutofillField::~AutofillField() = default;
+
+// static
+std::unique_ptr<AutofillField> AutofillField::Clone(
+    const AutofillField& other,
+    AutofillFieldCopyKey pass_key) {
+  return base::WrapUnique(new AutofillField(other));
+}
 
 std::unique_ptr<AutofillField> AutofillField::CreateForPasswordManagerUpload(
     FieldSignature field_signature) {
@@ -511,13 +549,8 @@ FieldType AutofillField::server_type() const {
                    .value_or(NO_SERVER_DATA);
 }
 
-bool AutofillField::server_type_prediction_is_override() const {
-  return server_predictions_.empty() ? false
-                                     : server_predictions_[0].override();
-}
-
 void AutofillField::set_heuristic_type(HeuristicSource s, FieldType type) {
-  CHECK(ToSafeFieldType(type).has_value(), base::NotFatalUntil::M142);
+  CHECK(ToSafeFieldType(type).has_value());
   local_type_predictions_[static_cast<size_t>(s)] = type;
   if (s == GetActiveHeuristicSource()) {
     overall_type_ = std::nullopt;
@@ -605,8 +638,8 @@ std::optional<AutofillPredictionSource> AutofillField::PredictionSource()
   return GetOverallPredictionResult().source;
 }
 
-AutofillType AutofillField::MakeAutofillType(FieldType primary_field_type,
-                                             bool is_country_code) const {
+AutofillType AutofillField::MakeAutofillType(
+    FieldType primary_field_type) const {
   // Indicates whether `ft` may be part of the union type.
   auto is_union_type_candidate = [](FieldType ft) {
     return GroupTypeOfFieldType(ft) == FieldTypeGroup::kAutofillAi &&
@@ -636,13 +669,14 @@ AutofillType AutofillField::MakeAutofillType(FieldType primary_field_type,
         base::span(server_predictions_).first(prefix_length));
   } while (!AutofillType::TestConstraints(field_types) && prefix_length-- > 0);
   DCHECK(field_types.contains(primary_field_type));
-  return AutofillType(field_types, is_country_code);
+  return AutofillType(field_types);
 }
 
 AutofillField::PredictionResult AutofillField::GetOverallPredictionResult()
     const {
-  // Server Overrides are granted precedence unconditionally.
-  if (server_type_prediction_is_override() && server_type() != NO_SERVER_DATA) {
+  // Server overrides are granted precedence unconditionally.
+  if (!server_predictions_.empty() && server_predictions_[0].override() &&
+      server_type() != NO_SERVER_DATA) {
     return {MakeAutofillType(server_type()),
             AutofillPredictionSource::kServerOverride};
   }
@@ -670,31 +704,14 @@ AutofillField::PredictionResult AutofillField::GetComputedPredictionResult()
   if (html_type_local != HtmlFieldType::kUnspecified &&
       html_type_local != HtmlFieldType::kUnrecognized) {
     if (PreferTypeAccordingToExceptions(kPreferredServerTypesOverHtmlTypes,
-                                        server_type_local, html_type_local)) {
+                                        *this, server_type_local,
+                                        html_type_local)) {
       return {MakeAutofillType(server_type_local),
               AutofillPredictionSource::kServerCrowdsourcing};
     }
 
-    // TODO(crbug.com/416664590): Convert to PredictionPrecedenceException and
-    // add it to `kPreferredHeuristicTypesOverHtmlTypes` after launch.
-    if (heuristic_type_local == EMAIL_OR_LOYALTY_MEMBERSHIP_ID &&
-        html_type_local == HtmlFieldType::kEmail) {
-      return {MakeAutofillType(EMAIL_OR_LOYALTY_MEMBERSHIP_ID),
-              AutofillPredictionSource::kHeuristics};
-    }
-
-    // TODO(crbug.com/479503511): Convert to PredictionPrecedenceException after
-    // launch.
-    if (heuristic_type_local == PHONE_HOME_COUNTRY_CODE &&
-        html_type_local == HtmlFieldType::kCountryCode && IsSelectElement() &&
-        base::FeatureList::IsEnabled(
-            features::kAutofillPreferPhoneCountryCodeTypeOverCountryHtmlType)) {
-      return {MakeAutofillType(PHONE_HOME_COUNTRY_CODE),
-              AutofillPredictionSource::kHeuristics};
-    }
-
     if (PreferTypeAccordingToExceptions(kPreferredHeuristicTypesOverHtmlTypes,
-                                        heuristic_type_local,
+                                        *this, heuristic_type_local,
                                         html_type_local)) {
       return {MakeAutofillType(heuristic_type_local),
               AutofillPredictionSource::kHeuristics};
@@ -706,11 +723,9 @@ AutofillField::PredictionResult AutofillField::GetComputedPredictionResult()
     // `HtmlFieldTypeToBestCorrespondingFieldType(html_type_local)` behave
     // differently (crbug.com/436013479). In all other cases, they are
     // identical, except for AutofillType::ToString().
-    // TODO(crbug.com/436013479): Remove AutofillType::is_country_code().
-    AutofillType type = MakeAutofillType(
-        HtmlFieldTypeToBestCorrespondingFieldType(html_type_local),
-        /*is_country_code=*/html_type_local == HtmlFieldType::kCountryCode);
-    return {type, AutofillPredictionSource::kAutocomplete};
+    return {MakeAutofillType(
+                HtmlFieldTypeToBestCorrespondingFieldType(html_type_local)),
+            AutofillPredictionSource::kAutocomplete};
   }
 
   // #### Handle on-device ML classifications.
@@ -728,19 +743,11 @@ AutofillField::PredictionResult AutofillField::GetComputedPredictionResult()
 
   // #### Handle Server types.
 
-  // TODO(crbug.com/416664590): Convert to PredictionPrecedenceException after
-  // launch.
-  if (heuristic_type_local == EMAIL_OR_LOYALTY_MEMBERSHIP_ID &&
-      server_type_local == EMAIL_ADDRESS) {
-    return {MakeAutofillType(EMAIL_OR_LOYALTY_MEMBERSHIP_ID),
-            AutofillPredictionSource::kHeuristics};
-  }
-
   // In general, server types have precedence over heuristic types, except for
   // the cases listed in `kPreferredHeuristicTypesOverServerTypes`.
   if (server_type_local != NO_SERVER_DATA &&
       !PreferTypeAccordingToExceptions(kPreferredHeuristicTypesOverServerTypes,
-                                       heuristic_type_local,
+                                       *this, heuristic_type_local,
                                        server_type_local)) {
     return {MakeAutofillType(server_type_local),
             AutofillPredictionSource::kServerCrowdsourcing};
@@ -801,20 +808,17 @@ bool AutofillField::ShouldSuppressSuggestionsAndFillingByDefault(
   // autocomplete attribute's value to unrecognized. This is done in order to
   // preserve the ability to swap an autofilled value for a different one.
   // See crbug.com/469057923 for details.
-  if (last_modifier() == FieldModifier::kAutofill &&
-      base::FeatureList::IsEnabled(
-          features::kShowSugesstionsOnAlreadyAutofilledUnrecognized)) {
+  if (last_modifier() == FieldModifier::kAutofill) {
     return false;
   }
 
-  // The field will not be suppressed (i.e., it will be filled/suggested) if one
-  // of the following is true:
-  // 1. The autocomplete attribute is valid type (that can be seen in the HTML
-  //    spec).
+  // Suggestions/filling will not be suppressed if one of the following is true:
+  // 1. The autocomplete attribute is valid (can be seen in the HTML spec).
   // 2. The field's type comes from a server override.
-  // 3. The field type is credit-card-related.
+  // 3. The field type has a credit-card-related classification.
   if (html_type_ != HtmlFieldType::kUnrecognized ||
-      server_type_prediction_is_override() || IsCreditCardPrediction()) {
+      PredictionSource() == AutofillPredictionSource::kServerOverride ||
+      Type().GetCreditCardType() != UNKNOWN_TYPE) {
     return false;
   }
 
@@ -856,11 +860,6 @@ void AutofillField::UpdateFieldData(const FormFieldData& field_data) {
       CalculateFieldSignatureByNameAndType(name(), form_control_type());
 }
 
-bool AutofillField::IsCreditCardPrediction() const {
-  return GroupTypeOfFieldType(server_type()) == FieldTypeGroup::kCreditCard ||
-         GroupTypeOfFieldType(heuristic_type()) == FieldTypeGroup::kCreditCard;
-}
-
 void AutofillField::AppendLogEventIfNotRepeated(
     const FieldLogEventType& log_event) {
   if (!field_log_events_) {
@@ -886,60 +885,21 @@ bool AutofillField::WasAutofilledWithFallback() const {
 }
 
 DenseSet<FieldModifier> AutofillField::all_modifiers() const {
-  if (!base::FeatureList::IsEnabled(features::kAutofillFixIsAutofilled)) {
-    DenseSet<FieldModifier> field_modifiers;
-    if (is_user_edited_deprecated()) {
-      field_modifiers.insert(FieldModifier::kUser);
-    }
-    if (is_autofilled_according_to_renderer() ||
-        previously_autofilled_deprecated()) {
-      field_modifiers.insert(FieldModifier::kAutofill);
-    }
-    return field_modifiers;
-  }
   return DenseSet<FieldModifier>(field_modifiers_);
 }
 
 std::optional<FieldModifier> AutofillField::last_modifier() const {
-  if (!base::FeatureList::IsEnabled(features::kAutofillFixIsAutofilled)) {
-    return is_autofilled_according_to_renderer()
-               ? std::optional(FieldModifier::kAutofill)
-               : std::nullopt;
-  }
   return field_modifiers_.empty() ? std::nullopt
                                   : std::optional(field_modifiers_.back());
 }
 
 void AutofillField::AddFieldModifier(FieldModifier modifier) {
-  if (!base::FeatureList::IsEnabled(features::kAutofillFixIsAutofilled)) {
-    if (modifier == FieldModifier::kUser) {
-      set_is_user_edited_deprecated(true);
-      if (is_autofilled_according_to_renderer()) {
-        set_is_autofilled_according_to_renderer(false);
-        set_previously_autofilled_deprecated(true);
-      }
-    }
-    if (modifier == FieldModifier::kAutofill) {
-      set_is_autofilled_according_to_renderer(true);
-    }
-    return;
-  }
   std::erase(field_modifiers_, modifier);
   field_modifiers_.push_back(modifier);
 }
 
 void AutofillField::RemoveFieldModifier(FieldModifier modifier,
                                         base::PassKey<FormFiller> pass_key) {
-  if (!base::FeatureList::IsEnabled(features::kAutofillFixIsAutofilled)) {
-    if (modifier == FieldModifier::kUser) {
-      set_is_user_edited_deprecated(false);
-    }
-    if (modifier == FieldModifier::kAutofill) {
-      set_is_autofilled_according_to_renderer(false);
-      set_previously_autofilled_deprecated(false);
-    }
-    return;
-  }
   std::erase(field_modifiers_, modifier);
 }
 

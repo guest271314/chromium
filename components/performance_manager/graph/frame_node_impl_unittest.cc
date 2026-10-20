@@ -14,8 +14,8 @@
 #include "base/test/gtest_util.h"
 #include "components/performance_manager/graph/page_node_impl.h"
 #include "components/performance_manager/graph/process_node_impl.h"
-#include "components/performance_manager/public/execution_context_priority/execution_context_priority.h"
 #include "components/performance_manager/public/mojom/coordination_unit.mojom.h"
+#include "components/performance_manager/public/priority/priority.h"
 #include "components/performance_manager/public/render_process_host_id.h"
 #include "components/performance_manager/public/render_process_host_proxy.h"
 #include "components/performance_manager/test_support/graph/mock_frame_node_observer.h"
@@ -48,6 +48,35 @@ TEST_F(FrameNodeImplTest, SafeDowncast) {
   EXPECT_EQ(static_cast<Node*>(node), base->ToNode());
 }
 
+TEST_F(FrameNodeImplTest, SetFrameTreeNodeId) {
+  auto process = CreateNode<ProcessNodeImpl>();
+  auto page = CreateNode<PageNodeImpl>();
+
+  const content::FrameTreeNodeId kFtnId1 =
+      content::FrameTreeNodeId::FromUnsafeValue(10);
+  const content::FrameTreeNodeId kFtnId2 =
+      content::FrameTreeNodeId::FromUnsafeValue(20);
+
+  // A main frame can change its FrameTreeNodeId (e.g. upon prerender
+  // activation).
+  auto main_frame = CreateFrameNodeAutoId(
+      process.get(), page.get(), /*parent_frame_node=*/nullptr,
+      content::BrowsingInstanceId(), kFtnId1);
+  EXPECT_EQ(main_frame->GetFrameTreeNodeId(), kFtnId1);
+  main_frame->SetFrameTreeNodeId(kFtnId2);
+  EXPECT_EQ(main_frame->GetFrameTreeNodeId(), kFtnId2);
+
+  // A main frame in an embedded PageNode can also change its FrameTreeNodeId.
+  auto embedded_page = CreateNode<PageNodeImpl>();
+  embedded_page->SetEmbedderFrameNode(main_frame.get());
+  auto embedded_main_frame = CreateFrameNodeAutoId(
+      process.get(), embedded_page.get(), /*parent_frame_node=*/nullptr,
+      content::BrowsingInstanceId(), kFtnId1);
+  EXPECT_EQ(embedded_main_frame->GetFrameTreeNodeId(), kFtnId1);
+  embedded_main_frame->SetFrameTreeNodeId(kFtnId2);
+  EXPECT_EQ(embedded_main_frame->GetFrameTreeNodeId(), kFtnId2);
+}
+
 using FrameNodeImplDeathTest = FrameNodeImplTest;
 
 TEST_F(FrameNodeImplDeathTest, SafeDowncast) {
@@ -55,6 +84,33 @@ TEST_F(FrameNodeImplDeathTest, SafeDowncast) {
   auto page = CreateNode<PageNodeImpl>();
   auto frame = CreateFrameNodeAutoId(process.get(), page.get());
   ASSERT_DEATH_IF_SUPPORTED(PageNodeImpl::FromNodeBase(frame.get()), "");
+}
+
+TEST_F(FrameNodeImplDeathTest, SetFrameTreeNodeId) {
+  auto process = CreateNode<ProcessNodeImpl>();
+  auto page = CreateNode<PageNodeImpl>();
+
+  const content::FrameTreeNodeId kFtnId1 =
+      content::FrameTreeNodeId::FromUnsafeValue(10);
+  const content::FrameTreeNodeId kFtnId2 =
+      content::FrameTreeNodeId::FromUnsafeValue(20);
+
+  auto parent_node = CreateFrameNodeAutoId(
+      process.get(), page.get(), /*parent_frame_node=*/nullptr,
+      content::BrowsingInstanceId(), kFtnId1);
+  auto child_node =
+      CreateFrameNodeAutoId(process.get(), page.get(), parent_node.get(),
+                            content::BrowsingInstanceId(), kFtnId1);
+
+  // Setting the same ID on a child frame is allowed.
+  child_node->SetFrameTreeNodeId(kFtnId1);
+
+  // Setting a different ID on a child frame should CHECK-fail.
+  ASSERT_DEATH_IF_SUPPORTED(child_node->SetFrameTreeNodeId(kFtnId2), "");
+
+  // Setting a null ID should CHECK-fail.
+  ASSERT_DEATH_IF_SUPPORTED(
+      parent_node->SetFrameTreeNodeId(content::FrameTreeNodeId()), "");
 }
 
 TEST_F(FrameNodeImplTest, AddFrameHierarchyBasic) {
@@ -73,10 +129,12 @@ TEST_F(FrameNodeImplTest, AddFrameHierarchyBasic) {
 }
 
 TEST_F(FrameNodeImplTest, GetFrameNodeById) {
-  auto process_a = CreateNode<ProcessNodeImpl>(
-      RenderProcessHostProxy::CreateForTesting(RenderProcessHostId(42)));
-  auto process_b = CreateNode<ProcessNodeImpl>(
-      RenderProcessHostProxy::CreateForTesting(RenderProcessHostId(43)));
+  auto process_a =
+      CreateNode<ProcessNodeImpl>(RenderProcessHostProxy::CreateForTesting(
+          RenderProcessHostId(content::ChildProcessId(42))));
+  auto process_b =
+      CreateNode<ProcessNodeImpl>(RenderProcessHostProxy::CreateForTesting(
+          RenderProcessHostId(content::ChildProcessId(43))));
   auto page = CreateNode<PageNodeImpl>();
   auto frame_a1 = CreateFrameNodeAutoId(process_a.get(), page.get());
   auto frame_a2 = CreateFrameNodeAutoId(process_a.get(), page.get());
@@ -334,10 +392,9 @@ TEST_F(FrameNodeImplTest, ObserverWorks) {
   const FrameNode* raw_frame_node = frame_node.get();
   EXPECT_EQ(raw_frame_node, obs.created_frame_node());
 
-  // Invoke "UpdateCurrentFrame" and expect a "OnCurrentFrameChanged" callback.
-  EXPECT_CALL(obs, OnCurrentFrameChanged(raw_frame_node, nullptr));
-  FrameNodeImpl::UpdateCurrentFrame(/*previous_frame_node=*/frame_node.get(),
-                                    /*current_frame_node=*/nullptr, graph());
+  // Invoke "SetIsActive" and expect an "OnIsActiveChanged" callback.
+  EXPECT_CALL(obs, OnIsActiveChanged(raw_frame_node));
+  frame_node->SetIsActive(false);
   testing::Mock::VerifyAndClear(&obs);
 
   // Invoke "SetNetworkAlmostIdle" and expect an "OnNetworkAlmostIdleChanged"
@@ -627,7 +684,7 @@ TEST_F(FrameNodeImplTest, UsesWebRTC) {
 }
 
 TEST_F(FrameNodeImplTest, Priority) {
-  using PriorityAndReason = execution_context_priority::PriorityAndReason;
+  using PriorityAndReason = priority::PriorityAndReason;
 
   auto process = CreateNode<ProcessNodeImpl>();
   auto page = CreateNode<PageNodeImpl>();
@@ -886,6 +943,9 @@ TEST_F(FrameNodeImplTest, PublicInterface) {
 
   EXPECT_EQ(static_cast<const FrameNode*>(frame_node->parent_frame_node()),
             public_frame_node->GetParentFrameNode());
+  EXPECT_EQ(
+      static_cast<const FrameNode*>(frame_node->parent_or_outer_document()),
+      public_frame_node->GetParentOrOuterDocument());
   EXPECT_EQ(static_cast<const PageNode*>(frame_node->page_node()),
             public_frame_node->GetPageNode());
   EXPECT_EQ(static_cast<const ProcessNode*>(frame_node->process_node()),

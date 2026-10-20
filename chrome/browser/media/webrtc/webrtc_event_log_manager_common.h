@@ -63,13 +63,13 @@ extern const size_t kInvalidWebRtcEventLogWebAppId;
 // applied globally (all browser contexts are limited together).
 extern const size_t kMaxActiveRemoteBoundWebRtcEventLogs;
 
-// Limit over the number of pending logs (logs stored on disk and awaiting to
-// be uploaded to a remote server). This limit avoids excessive storage. If a
+// Limit over the number of logs stored on disk, local-only or awaiting to
+// be uploaded to a remote server. This limit avoids excessive storage. If a
 // user chooses to have multiple profiles (and hence browser contexts) on a
 // system, it is assumed that the user has enough storage to accommodate
 // the increased storage consumption that comes with it. Therefore, this
 // limit is applied per browser context.
-extern const size_t kMaxPendingRemoteBoundWebRtcEventLogs;
+extern const size_t kMaxPendingAndLocalOnlyRemoteBoundWebRtcEventLogs;
 
 // Max number of history files that may be kept; after this number is exceeded,
 // the oldest logs should be pruned.
@@ -198,35 +198,30 @@ struct WebRtcEventLogPeerConnectionKey {
 
   bool operator==(const WebRtcEventLogPeerConnectionKey& other) const {
     // Each RPH is associated with exactly one BrowserContext.
-    DCHECK(render_process_id != other.render_process_id ||
-           browser_context_id == other.browser_context_id);
-    // If render_process_id and lid are the same, then render_frame_id is also
-    // the same.
-    DCHECK(render_process_id != other.render_process_id || lid != other.lid ||
-           render_frame_id == other.render_frame_id);
+    CHECK(render_process_id != other.render_process_id ||
+              browser_context_id == other.browser_context_id,
+          base::NotFatalUntil::M161);
 
-    const bool equal = std::tie(render_process_id, lid) ==
-                       std::tie(other.render_process_id, other.lid);
-
-    return equal;
+    return std::tie(render_process_id, lid, render_frame_id) ==
+           std::tie(other.render_process_id, other.lid, other.render_frame_id);
   }
 
   bool operator<(const WebRtcEventLogPeerConnectionKey& other) const {
     // Each RPH is associated with exactly one BrowserContext.
+    // TODO(crbug.com/572678236): CHECK-exclusion: Convert to a CHECK once we
+    // are confident it won't be triggered.
     DCHECK(render_process_id != other.render_process_id ||
            browser_context_id == other.browser_context_id);
-    // If render_process_id and lid are the same, then render_frame_id is also
-    // the same.
-    DCHECK(render_process_id != other.render_process_id || lid != other.lid ||
-           render_frame_id == other.render_frame_id);
 
-    return std::tie(render_process_id, lid) <
-           std::tie(other.render_process_id, other.lid);
+    return std::tie(render_process_id, lid, render_frame_id) <
+           std::tie(other.render_process_id, other.lid, other.render_frame_id);
   }
 
-  // These two fields are the actual key; any peer connection is uniquely
-  // identifiable by the renderer process in which it lives, and its ID within
-  // that process.
+  // `render_process_id`, `lid`, and `render_frame_id` form the key. Including
+  // `render_frame_id` ensures that delayed removal notifications (e.g. from
+  // ~PeerConnectionTrackerHost after a renderer crash and process reuse) do not
+  // collide with peer connections created in a different frame with the same
+  // `lid`.
   int render_process_id;
   int lid;  // Renderer-local PeerConnection ID.
 
@@ -235,9 +230,8 @@ struct WebRtcEventLogPeerConnectionKey {
   // always necessary, so it makes sense to remember it along with the key.
   BrowserContextId browser_context_id;
 
-  // The frame ID is not actually part of the key, since `lid` is kept unique
-  // per renderer process. The frame ID is needed to obtain the RenderFrameHost
-  // used for communicating with the renderer process.
+  // The frame ID is also needed to obtain the RenderFrameHost used for
+  // communicating with the renderer process.
   int render_frame_id;
 };
 
@@ -571,6 +565,10 @@ base::FilePath WebRtcEventLogPath(const base::FilePath& remote_logs_dir,
 // even log. These functions do not examine the file's content or its extension.
 bool IsValidRemoteBoundLogFilename(const std::string& filename);
 bool IsValidRemoteBoundLogFilePath(const base::FilePath& path);
+
+// Checks whether the path/filename refers to a local-only remote-bound log.
+bool IsLocalOnlyRemoteBoundLogFilename(const std::string& filename);
+bool IsLocalOnlyRemoteBoundLogFilePath(const base::FilePath& path);
 
 // Given WebRTC event log's path, return the path to the history file that
 // is, or would be, associated with it.

@@ -4,7 +4,8 @@
 
 #include "third_party/blink/renderer/modules/ml/webnn/ml_graph_transform/transpose_elimination_transformer.h"
 
-#include "base/containers/adapters.h"
+#include <ranges>
+
 #include "third_party/blink/renderer/bindings/modules/v8/v8_ml_transpose_options.h"
 #include "third_party/blink/renderer/modules/ml/webnn/ml_graph_utils.h"
 #include "third_party/blink/renderer/modules/ml/webnn/ml_operand.h"
@@ -18,7 +19,7 @@ void TransposeEliminationTransformer::Transform(
   HeapHashSet<Member<const MLOperator>> graph_output_operators =
       GetGraphOutputOperators(named_outputs);
 
-  for (auto& op : base::Reversed(sorted_operators)) {
+  for (auto& op : std::views::reverse(sorted_operators)) {
     if (op->Kind() == webnn::mojom::blink::Operation::Tag::kTranspose &&
         !visited_transposes_.Contains(op)) {
       HandleTranspose(op, graph_output_operators, named_outputs);
@@ -208,6 +209,7 @@ class BracketingContextBuilder
       if (visited_.Contains(input->Operator())) {
         continue;
       }
+      visited_.insert(input->Operator());
 
       if (input->Operator()->Kind() ==
           webnn::mojom::blink::Operation::Tag::kTranspose) {
@@ -238,6 +240,7 @@ class BracketingContextBuilder
       if (visited_.Contains(dep)) {
         continue;
       }
+      visited_.insert(dep);
 
       if (dep->Kind() == webnn::mojom::blink::Operation::Tag::kTranspose) {
         auto perm = static_cast<const MLTransposeOptions*>(dep->Options())

@@ -13,6 +13,7 @@
 #include "cc/animation/animation_timeline.h"
 #include "cc/animation/animation_trigger_delegate.h"
 #include "cc/animation/keyframe_effect.h"
+#include "ui/gfx/animation/keyframe/keyframe_model.h"
 
 namespace cc {
 
@@ -136,7 +137,7 @@ void AnimationTrigger::DispatchAnimationTriggerEvent(
 
 void AnimationTrigger::PerformPlay(Animation& animation,
                                    base::TimeTicks monotonic_time) {
-  animation.Play(monotonic_time);
+  animation.Play(monotonic_time, Animation::AutoRewind::kDisabled);
 }
 
 void AnimationTrigger::PerformPause(Animation& animation,
@@ -146,6 +147,37 @@ void AnimationTrigger::PerformPause(Animation& animation,
   }
 
   animation.Pause(animation.CalculateCurrentTime(monotonic_time));
+}
+
+void AnimationTrigger::PerformReplay(Animation& animation,
+                                     base::TimeTicks monotonic_time) {
+  animation.Play(monotonic_time, Animation::AutoRewind::kForced);
+}
+
+void AnimationTrigger::PerformPlayOnce(Animation& animation,
+                                       base::TimeTicks monotonic_time) {
+  if (animation.IsFinished()) {
+    return;
+  }
+  animation.Play(monotonic_time);
+}
+
+void AnimationTrigger::PerformPlayForwards(Animation& animation,
+                                           base::TimeTicks monotonic_time) {
+  if (animation.GetPlaybackRate() > 0) {
+    animation.Play(monotonic_time, Animation::AutoRewind::kDisabled);
+  } else {
+    animation.Reverse(monotonic_time, Animation::AutoRewind::kDisabled);
+  }
+}
+
+void AnimationTrigger::PerformPlayBackwards(Animation& animation,
+                                            base::TimeTicks monotonic_time) {
+  if (animation.GetPlaybackRate() < 0) {
+    animation.Play(monotonic_time, Animation::AutoRewind::kDisabled);
+  } else {
+    animation.Reverse(monotonic_time, Animation::AutoRewind::kDisabled);
+  }
 }
 
 void AnimationTrigger::PerformBehavior(Animation& animation,
@@ -158,13 +190,22 @@ void AnimationTrigger::PerformBehavior(Animation& animation,
     case Behavior::kPause:
       PerformPause(animation, monotonic_time);
       break;
-    case Behavior::kPlayOnce:
-    case Behavior::kPlayForwards:
-    case Behavior::kPlayBackwards:
-    case Behavior::kReset:
     case Behavior::kReplay:
-      // TODO(crbug.com/451238244): Implement these behaviors.
-      NOTREACHED();
+      PerformReplay(animation, monotonic_time);
+      break;
+    case Behavior::kPlayOnce:
+      PerformPlayOnce(animation, monotonic_time);
+      break;
+    case Behavior::kPlayForwards:
+      PerformPlayForwards(animation, monotonic_time);
+      break;
+    case Behavior::kPlayBackwards:
+      PerformPlayBackwards(animation, monotonic_time);
+      break;
+    case Behavior::kReset:
+      // TODO(crbug.com/451238244): Reset is not supported on the compositor
+      // thread yet and is handled on the main thread.
+      break;
     case Behavior::kNone:
       break;
   }

@@ -5,6 +5,7 @@
 #include "cc/animation/animation_host.h"
 
 #include <algorithm>
+#include <cstdlib>
 #include <memory>
 #include <utility>
 
@@ -48,6 +49,46 @@ AnimationWorkletMutationState ToAnimationWorkletMutationState(
     case MutateStatus::kCanceled:
       return AnimationWorkletMutationState::CANCELED;
   }
+}
+
+// Returns true if `candidate_interval` is a harmonic divisor of
+// `animation_interval` (i.e. `animation_interval ≈ k * candidate_interval`
+// for an integer k >= 1) such that cumulative phase drift does not exceed
+// one candidate tick over `min_acceptable_drift_duration`.
+bool IsHarmonicInterval(
+    base::TimeDelta candidate_interval,
+    base::TimeDelta animation_interval,
+    base::TimeDelta min_acceptable_drift_duration = base::Seconds(3)) {
+  CHECK_GT(candidate_interval, base::TimeDelta());
+  if (animation_interval < candidate_interval) {
+    return false;
+  }
+
+  const int64_t candidate_us = candidate_interval.InMicroseconds();
+  const int64_t anim_us = animation_interval.InMicroseconds();
+
+  // Fast path: exact integer harmonic (zero drift).
+  if (anim_us % candidate_us == 0) {
+    return true;
+  }
+
+  // Nearest integer cadence: round(anim_us / candidate_us)
+  const int64_t cadence = (anim_us + candidate_us / 2) / candidate_us;
+  if (cadence <= 0) {
+    return false;
+  }
+
+  // Phase drift accumulated per animation cycle.
+  const int64_t drift_us = std::abs(anim_us - cadence * candidate_us);
+  if (drift_us == 0) {
+    return true;
+  }
+
+  // Check whether cumulative drift over `min_acceptable_drift_duration`
+  // stays within one candidate tick interval (cross-multiplied to avoid
+  // division truncation):
+  return candidate_us * anim_us >=
+         min_acceptable_drift_duration.InMicroseconds() * drift_us;
 }
 
 }  // namespace
@@ -118,17 +159,60 @@ void AnimationHost::ClearMutators() {
 }
 
 base::TimeDelta AnimationHost::MinimumTickInterval() const {
-  base::TimeDelta min_interval = base::TimeDelta::Max();
+  // Cap harmonic subdivisions at 32 (matching Viz's MixedFixedIntervalMatcher)
+  // to guarantee O(1) termination.
+  constexpr int kMaxHarmonics = 32;
+  int total_harmonics = 1;
+  base::TimeDelta candidate = base::TimeDelta::Max();
+
   for (const auto& animation : ticking_animations_.Read(*this)) {
     DCHECK(animation->keyframe_effect());
     base::TimeDelta interval =
         animation->keyframe_effect()->MinimumTickInterval();
-    if (interval.is_zero())
-      return interval;
-    if (interval < min_interval)
-      min_interval = interval;
+    // A zero interval indicates a continuous animation that must tick on every
+    // frame; disqualify the entire host from rate throttling.
+    if (interval.is_zero()) {
+      return base::TimeDelta();
+    }
+    CHECK_GT(interval, base::TimeDelta());
+    if (interval == base::TimeDelta::Max()) {
+      continue;
+    }
+
+    if (candidate == base::TimeDelta::Max()) {
+      candidate = interval;
+      continue;
+    }
+
+    if (IsHarmonicInterval(candidate, interval)) {
+      continue;
+    }
+
+    // Subdivide `candidate` until it harmonizes with `interval`. Because any
+    // integer subdivision of `candidate` remains a valid harmonic divisor of
+    // all previously matched animations, a single pass is sufficient.
+    bool matched = false;
+    for (int n = 2; n * total_harmonics <= kMaxHarmonics; ++n) {
+      base::TimeDelta sub_candidate = candidate / n;
+      // Integer microsecond division can round down to zero for tiny intervals.
+      if (!sub_candidate.is_positive()) {
+        break;
+      }
+      if (IsHarmonicInterval(sub_candidate, interval)) {
+        candidate = sub_candidate;
+        total_harmonics *= n;
+        matched = true;
+        break;
+      }
+    }
+    if (!matched) {
+      // No common harmonic found within the maximum multiple; treat as
+      // continuous.
+      return base::TimeDelta();
+    }
   }
-  return min_interval;
+
+  return candidate;
 }
 
 void AnimationHost::EraseTimeline(scoped_refptr<AnimationTimeline> timeline) {
@@ -241,6 +325,8 @@ bool AnimationHost::NextFrameHasPendingRAF() const {
 }
 
 void AnimationHost::InitClientAnimationState() {
+  WaitForProtectedSequenceCompletion();
+  RemoveStaleTimelines();
   for (auto map_entry : element_to_animations_map_.Write(*this))
     map_entry.second->InitClientAnimationState();
 }
@@ -655,10 +741,11 @@ bool AnimationHost::ActivateAnimations(MutatorEvents* mutator_events) {
   return true;
 }
 
-bool AnimationHost::TickAnimations(base::TimeTicks monotonic_time,
-                                   const ScrollTree& scroll_tree,
-                                   bool is_active_tree,
-                                   MutatorEvents* mutator_events) {
+AnimationTickResult AnimationHost::TickAnimations(
+    base::TimeTicks monotonic_time,
+    const ScrollTree& scroll_tree,
+    bool is_active_tree,
+    MutatorEvents* mutator_events) {
   if (is_active_tree) {
     // We update triggers first since they affect whether an animation is in
     // effect or not.
@@ -677,12 +764,12 @@ bool AnimationHost::TickAnimations(base::TimeTicks monotonic_time,
   // The ticking of worklet animations is deferred until draw to ensure that
   // mutator output takes effect in the same impl frame that it was mutated.
   if (is_active_tree && !NeedsTickAnimations()) {
-    return false;
+    return {};
   }
 
   TRACE_EVENT_INSTANT("cc", "NeedsTickAnimations");
 
-  bool animated = false;
+  AnimationTickResult result;
 
   std::vector<AnimationTimeline*> scroll_timelines;
   for (auto& kv : id_to_timeline_map_.Read(*this)) {
@@ -690,15 +777,20 @@ bool AnimationHost::TickAnimations(base::TimeTicks monotonic_time,
     if (timeline->IsScrollTimeline()) {
       scroll_timelines.push_back(timeline);
     } else {
-      animated |= timeline->TickTimeLinkedAnimations(
-          ticking_animations_.Read(*this), monotonic_time, !is_active_tree);
+      if (timeline->TickTimeLinkedAnimations(ticking_animations_.Read(*this),
+                                             monotonic_time, !is_active_tree)) {
+        result.animated = true;
+        result.needs_next_frame = true;
+      }
     }
   }
   // Tick the scroll-linked animations last, since a smooth scroll (time-linked)
   // might update the scroll offset.
   for (auto* timeline : scroll_timelines) {
-    animated |= timeline->TickScrollLinkedAnimations(
-        ticking_animations_.Read(*this), scroll_tree, is_active_tree);
+    if (timeline->TickScrollLinkedAnimations(ticking_animations_.Read(*this),
+                                             scroll_tree, is_active_tree)) {
+      result.animated = true;
+    }
   }
 
   // TODO(majidvp): At the moment we call this for both active and pending
@@ -710,7 +802,7 @@ bool AnimationHost::TickAnimations(base::TimeTicks monotonic_time,
   // handle these mutations are performed on receiving the asynchronous results.
   TickMutator(monotonic_time, scroll_tree, is_active_tree);
 
-  return animated;
+  return result;
 }
 
 void AnimationHost::TickScrollAnimations(base::TimeTicks monotonic_time,
@@ -1085,9 +1177,7 @@ void AnimationHost::UpdateTriggers(const ScrollTree& scroll_tree,
   for (const auto& kv : id_to_trigger_map_.Read(*this)) {
     AnimationTrigger* trigger = kv.second.get();
     // NOTE(crbug.com/451238244): Only timeline triggers are supported for now.
-    DCHECK(trigger->IsTimelineTrigger());
-    static_cast<TimelineTrigger*>(trigger)->Update(scroll_tree, events,
-                                                   monotonic_time);
+    ToTimelineTrigger(trigger)->Update(scroll_tree, events, monotonic_time);
   }
 }
 

@@ -4,6 +4,7 @@
 
 #include "base/functional/bind.h"
 #include "base/run_loop.h"
+#include "base/test/run_until.h"
 #include "base/test/test_future.h"
 #include "chrome/browser/profiles/batch_upload/batch_upload_delegate.h"
 #include "chrome/browser/profiles/batch_upload/batch_upload_service.h"
@@ -12,7 +13,7 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/sync/sync_service_factory.h"
-#include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/profiles/batch_upload_ui_delegate.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/frame/toolbar_button_provider.h"
@@ -21,7 +22,6 @@
 #include "chrome/browser/ui/views/toolbar/avatar_toolbar_button_interface.h"
 #include "chrome/browser/ui/views/toolbar/webui_test_utils.h"
 #include "chrome/common/webui_url_constants.h"
-#include "chrome/grit/branded_strings.h"
 #include "chrome/grit/generated_resources.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "components/keyed_service/content/browser_context_dependency_manager.h"
@@ -45,7 +45,7 @@ class BatchUploadBrowserTest : public InProcessBrowserTest {
 
   void SetUpOnMainThread() override {
     BatchUploadService* batch_upload_service =
-        BatchUploadServiceFactory::GetForProfile(browser()->profile());
+        BatchUploadServiceFactory::GetForProfile(browser()->GetProfile());
     ASSERT_TRUE(batch_upload_service);
     batch_upload_ = batch_upload_service;
   }
@@ -58,7 +58,8 @@ class BatchUploadBrowserTest : public InProcessBrowserTest {
   // Opens the batch upload dialog using the service from the profile in
   // `browser`. Waits for the batch upload url to load if opening the view was
   // successful and `wait_for_url_load`.
-  bool OpenBatchUpload(Browser* browser, bool wait_for_url_load = true) {
+  bool OpenBatchUpload(BrowserWindowInterface* browser,
+                       bool wait_for_url_load = true) {
     content::TestNavigationObserver observer{
         GURL(chrome::kChromeUIBatchUploadURL)};
     observer.StartWatchingNewWebContents();
@@ -80,7 +81,7 @@ class BatchUploadBrowserTest : public InProcessBrowserTest {
   void SigninWithFullInfo(
       signin::ConsentLevel consent_level = signin::ConsentLevel::kSignin) {
     signin::IdentityManager* identity_manager =
-        IdentityManagerFactory::GetForProfile(browser()->profile());
+        IdentityManagerFactory::GetForProfile(browser()->GetProfile());
     AccountInfo account_info = signin::MakePrimaryAccountAvailable(
         identity_manager, "test@gmail.com", consent_level);
     ASSERT_FALSE(account_info.IsEmpty());
@@ -127,8 +128,8 @@ IN_PROC_BROWSER_TEST_F(
   SigninWithFullInfo();
   test_helper().SetReturnDescriptions(syncer::DataType::PASSWORDS, 1);
 
-  Profile* profile = browser()->profile();
-  Browser* browser_2 = CreateBrowser(profile);
+  Profile* profile = browser()->GetProfile();
+  BrowserWindowInterface* browser_2 = CreateBrowser(profile);
 
   // Second browser opens dialog.
   EXPECT_TRUE(OpenBatchUpload(browser_2));
@@ -153,7 +154,7 @@ IN_PROC_BROWSER_TEST_F(BatchUploadBrowserTest, OpenedDialogThenSigninPending) {
   test_helper().SetReturnDescriptions(syncer::DataType::PASSWORDS, 1);
 
   signin::IdentityManager* identity_manager =
-      IdentityManagerFactory::GetForProfile(browser()->profile());
+      IdentityManagerFactory::GetForProfile(browser()->GetProfile());
   CoreAccountInfo primary_account =
       identity_manager->GetPrimaryAccountInfo(signin::ConsentLevel::kSignin);
   ASSERT_FALSE(primary_account.IsEmpty());
@@ -162,25 +163,33 @@ IN_PROC_BROWSER_TEST_F(BatchUploadBrowserTest, OpenedDialogThenSigninPending) {
   EXPECT_TRUE(batch_upload()->IsDialogOpened());
 
   // Trigger Signin Pending.
-  signin::SetInvalidRefreshTokenForPrimaryAccount(identity_manager);
-  EXPECT_FALSE(batch_upload()->IsDialogOpened());
+  signin::UpdatePersistentErrorOfRefreshTokenForAccount(
+      identity_manager, primary_account.account_id,
+      GoogleServiceAuthError::FromInvalidGaiaCredentialsReason(
+          GoogleServiceAuthError::InvalidGaiaCredentialsReason::
+              CREDENTIALS_REJECTED_BY_SERVER));
+  EXPECT_TRUE(base::test::RunUntil(
+      [&]() { return !batch_upload()->IsDialogOpened(); }));
 
   // Opening the dialog again should fail as we are still in signin pending.
   EXPECT_FALSE(OpenBatchUpload(browser()));
   EXPECT_FALSE(batch_upload()->IsDialogOpened());
 
   // Resolve the signin pending state.
-  signin::SetRefreshTokenForPrimaryAccount(identity_manager);
+  signin::UpdatePersistentErrorOfRefreshTokenForAccount(
+      identity_manager, primary_account.account_id,
+      GoogleServiceAuthError::AuthErrorNone());
   // Opening the dialog should now be possible again.
   EXPECT_TRUE(OpenBatchUpload(browser()));
 }
 
+#if !BUILDFLAG(IS_CHROMEOS)
 IN_PROC_BROWSER_TEST_F(BatchUploadBrowserTest, OpenedDialogThenSignout) {
   SigninWithFullInfo();
   test_helper().SetReturnDescriptions(syncer::DataType::PASSWORDS, 1);
 
   signin::IdentityManager* identity_manager =
-      IdentityManagerFactory::GetForProfile(browser()->profile());
+      IdentityManagerFactory::GetForProfile(browser()->GetProfile());
   CoreAccountInfo primary_account =
       identity_manager->GetPrimaryAccountInfo(signin::ConsentLevel::kSignin);
   ASSERT_FALSE(primary_account.IsEmpty());
@@ -201,7 +210,9 @@ IN_PROC_BROWSER_TEST_F(BatchUploadBrowserTest, OpenedDialogThenSignout) {
   // Opening the dialog should now be possible again.
   EXPECT_TRUE(OpenBatchUpload(browser()));
 }
+#endif  // !BUILDFLAG(IS_CHROMEOS)
 
+#if !BUILDFLAG(IS_CHROMEOS)
 // Used to control the creation of the dialog (not actually creating it), and
 // the expected output without having to deal with the real dialog.
 class BatchUploadDelegateFake : public BatchUploadDelegate {
@@ -237,7 +248,7 @@ class BatchUploadDelegateFake : public BatchUploadDelegate {
  private:
   // BatchUploadDelegate:
   void ShowBatchUploadDialog(
-      Browser* browser,
+      BrowserWindowInterface* browser,
       std::vector<syncer::LocalDataDescription> local_data_description_list,
       BatchUploadService::EntryPoint entry_point,
       BatchUploadSelectedDataTypeItemsCallback complete_callback) override {
@@ -255,7 +266,7 @@ class BatchUploadWithFakeDelegateBrowserTest : public BatchUploadBrowserTest {
 
   // The fake delegate will never show the actual content, so we should not wait
   // for the url to load.
-  bool OpenBatchUploadWithFakeDelegate(Browser* browser) {
+  bool OpenBatchUploadWithFakeDelegate(BrowserWindowInterface* browser) {
     return OpenBatchUpload(browser,
                            /*wait_for_url_load=*/false);
   }
@@ -271,8 +282,7 @@ class BatchUploadWithFakeDelegateBrowserTest : public BatchUploadBrowserTest {
     auto fake_delegate = std::make_unique<BatchUploadDelegateFake>();
     fake_delegate_ptr_ = fake_delegate.get();
     test_helper().SetupBatchUploadTestingFactoryInProfile(
-        profile, IdentityManagerFactory::GetForProfile(profile),
-        std::move(fake_delegate));
+        profile, std::move(fake_delegate));
   }
 
   raw_ptr<BatchUploadDelegateFake> fake_delegate_ptr_ = nullptr;
@@ -327,6 +337,7 @@ IN_PROC_BROWSER_TEST_F(BatchUploadWithFakeDelegateBrowserTest,
   EXPECT_EQ(avatar_accessor.GetText(), expected_avatar_text);
   EXPECT_EQ(announce_future.Get(), expected_avatar_text);
 }
+#endif  // !BUILDFLAG(IS_CHROMEOS)
 
 // Test suite that makes the sync service unavailable to test the factory.
 class BatchUploadServiceFactorySyncServiceUnavailableTest
@@ -357,7 +368,7 @@ class BatchUploadServiceFactorySyncServiceUnavailableTest
 // Regression test for crbug.com/502567799.
 IN_PROC_BROWSER_TEST_F(BatchUploadServiceFactorySyncServiceUnavailableTest,
                        ReturnsNullWhenSyncServiceIsUnavailable) {
-  Profile* profile = browser()->profile();
+  Profile* profile = browser()->GetProfile();
 
   ASSERT_EQ(nullptr, SyncServiceFactory::GetForProfile(profile));
 

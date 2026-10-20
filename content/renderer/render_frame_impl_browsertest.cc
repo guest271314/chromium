@@ -184,6 +184,7 @@ class RenderFrameImplTest : public RenderViewTest {
         std::move(frame_replication_state), std::move(widget_params),
         blink::mojom::FrameOwnerProperties::New(),
         /*has_committed_real_load=*/true, blink::DocumentToken(),
+        blink::InitiatorStateToken(),
         blink::mojom::PolicyContainer::New(
             blink::mojom::PolicyContainerPolicies::New(),
             mock_policy_container_host.BindNewEndpointAndPassDedicatedRemote()),
@@ -1371,6 +1372,30 @@ TEST_F(RenderFrameImplTest, ContentSettingsSameDocumentNavigation) {
   EXPECT_TRUE(HasText(GetMainFrame(), "JS_ENABLED"));
 }
 
+TEST_F(RenderFrameImplTest, SubframeMojoJSDisabledByDefault) {
+  v8::Isolate* isolate = Isolate();
+  v8::HandleScope handle_scope(isolate);
+
+  v8::Local<v8::Context> child_context =
+      child_frame().GetWebFrame()->MainWorldScriptContext();
+  EXPECT_FALSE(
+      blink::WebV8Features::IsMojoJSEnabledForTesting(child_context));
+}
+
+TEST_F(RenderFrameImplTest, SubframeMojoJSEnabled) {
+  // Enable MojoJS for the child frame BEFORE accessing its context.
+  child_frame().EnableMojoJsBindings(
+      content::mojom::ExtraMojoJsFeatures::New());
+
+  v8::Isolate* isolate = Isolate();
+  v8::HandleScope handle_scope(isolate);
+  v8::Local<v8::Context> child_context =
+      child_frame().GetWebFrame()->MainWorldScriptContext();
+  EXPECT_TRUE(
+      blink::WebV8Features::IsMojoJSEnabledForTesting(child_context));
+}
+
+
 class RenderFrameImplMojoJsTest : public RenderViewTest {
  public:
   RenderFrameImplMojoJsTest() {
@@ -1383,10 +1408,15 @@ class RenderFrameImplMojoJsTest : public RenderViewTest {
 
   void SetUp() override {
     RenderViewTest::SetUp();
+    // RenderViewTest::SetUp() enables every test-only feature, which includes
+    // MojoJS and MojoJSTest. Undo that grant here so test cases can exercise
+    // attempts to bypass the protection.
+    disallow_mojo_js_.emplace();
     EXPECT_TRUE(GetMainRenderFrame()->IsMainFrame());
   }
 
   void TearDown() override {
+    disallow_mojo_js_.reset();
 #if defined(LEAK_SANITIZER)
     // Do this before shutting down V8 in RenderViewTest::TearDown().
     // http://crbug.com/328552
@@ -1438,6 +1468,7 @@ class RenderFrameImplMojoJsTest : public RenderViewTest {
 
  private:
   base::test::ScopedFeatureList scoped_feature_list_;
+  std::optional<blink::ScopedDisallowMojoJsForTesting> disallow_mojo_js_;
 };
 
 // Verifies enabling MojoJS bindings.
@@ -1486,7 +1517,7 @@ TEST_F(RenderFrameImplMojoJsDeathTest, EnabledBindingsTampered) {
 
         LoadHTML(kSimpleScriptHtml);
       },
-      "Check failed: \\*mojo_js_allowed_");
+      "Check failed: IsMojoJSAllowedPerContextForProcess");
 }
 
 // Verifies that tampering with enable_mojo_js_bindings_ to enable MojoJS
@@ -1502,7 +1533,7 @@ TEST_F(RenderFrameImplMojoJsDeathTest, EnableMojoJsBindingsTampered) {
 
         LoadHTML(kSimpleScriptHtml);
       },
-      "Check failed: \\*mojo_js_allowed_");
+      "Check failed: IsMojoJSAllowedPerContextForProcess");
 }
 
 // Verifies that tampering with mojo_js_interface_broker_ to enable MojoJS
@@ -1519,7 +1550,7 @@ TEST_F(RenderFrameImplMojoJsDeathTest, MojoJsInterfaceBrokerTampered) {
 
         LoadHTML(kSimpleScriptHtml);
       },
-      "Check failed: \\*mojo_js_allowed_");
+      "Check failed: IsMojoJSAllowedPerContextForProcess");
 }
 
 // Verifies that tampering with mojo_js_interface_broker_ to enable MojoJS
@@ -1531,7 +1562,7 @@ TEST_F(RenderFrameImplMojoJsDeathTest,
   // Should CHECK fail due to the bindings value differing from the protected
   // memory value.
   EXPECT_CHECK_DEATH_WITH(ContextFeatureSettingsEnableMojoJsTampered(),
-                          "Check failed: \\*mojo_js_allowed_");
+                          "Check failed: IsMojoJSAllowedPerContextForProcess");
 }
 #endif  //  BUILDFLAG(PROTECTED_MEMORY_ENABLED)
 

@@ -47,6 +47,7 @@ static_library("base") {
     "progress_marker_map.h",
     "report_unrecoverable_error.cc",
     "report_unrecoverable_error.h",
+    "server_defined_unique_tags.h",
     "stop_source.h",
     "storage_type.h",
     "sync_invalidation.cc",
@@ -76,7 +77,7 @@ static_library("base") {
   deps = [
     "//base",
     "//base:i18n",
-    "//components/os_crypt/async/common",
+    "//components/os_crypt/common",
     "//components/pref_registry",
     "//components/prefs",
     "//components/signin/public/base",

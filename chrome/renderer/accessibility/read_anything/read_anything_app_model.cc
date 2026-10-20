@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <numeric>
+#include <ranges>
 #include <stack>
 #include <string>
 #include <type_traits>
@@ -16,30 +17,27 @@
 #include "base/containers/flat_map.h"
 #include "base/logging.h"
 #include "base/metrics/histogram_functions.h"
-#include "base/strings/stringprintf.h"
+#include "base/strings/string_util.h"
+#include "base/strings/utf_string_conversions.h"
 #include "base/time/time.h"
+#include "base/timer/elapsed_timer.h"
 #include "chrome/common/read_anything/read_anything_util.h"
+#include "ui/accessibility/ax_tree_data.h"
 #if !BUILDFLAG(IS_CHROMEOS)
 #include "chrome/common/webui_url_constants.h"
 #include "content/public/common/url_constants.h"
 #endif
-#include "chrome/renderer/accessibility/read_anything/read_aloud_traversal_utils.h"
 #include "chrome/renderer/accessibility/read_anything/read_anything_node_utils.h"
-#include "content/public/renderer/render_thread.h"
-#include "services/strings/grit/services_strings.h"
+#include "third_party/re2/src/re2/re2.h"
 #include "ui/accessibility/accessibility_features.h"
-#include "ui/accessibility/ax_enum_util.h"
 #include "ui/accessibility/ax_enums.mojom-shared.h"
 #include "ui/accessibility/ax_node.h"
 #include "ui/accessibility/ax_node_id_forward.h"
 #include "ui/accessibility/ax_role_properties.h"
 #include "ui/accessibility/ax_selection.h"
 #include "ui/accessibility/ax_serializable_tree.h"
-#include "ui/accessibility/ax_text_utils.h"
 #include "ui/accessibility/ax_tree_id.h"
 #include "ui/accessibility/ax_tree_observer.h"
-#include "ui/accessibility/ax_tree_update_util.h"
-#include "ui/base/l10n/l10n_util.h"
 #include "url/gurl.h"
 #include "url/url_util.h"
 
@@ -64,6 +62,41 @@ const ui::AXNode* GetUnignoredParentForSelection(const ui::AXNode* node) {
     parent = ancestor;
   }
   return parent == node ? nullptr : parent;
+}
+
+// Returns true if the node or one of its ancestors is rendered as a <figure>
+// in the side panel, which is hidden when images are disabled.
+bool IsNodeInFigure(const ui::AXNode* ax_node) {
+  for (auto* node = ax_node; node != nullptr;
+       node = node->GetUnignoredParentCrossingTreeBoundary()) {
+    if (node->GetStringAttribute(ax::mojom::StringAttribute::kHtmlTag) ==
+        "figure") {
+      return true;
+    }
+  }
+  return false;
+}
+
+// Returns true if any of `updates` changes the selection endpoints in
+// `old_tree_data`.
+bool HasSelectionChange(const ReadAnythingAppModel::Updates& updates,
+                        const ui::AXTreeData& old_tree_data) {
+  for (const ui::AXTreeUpdate& update : updates) {
+    if (!update.has_tree_data) {
+      continue;
+    }
+
+    const ui::AXTreeData& new_tree_data = update.tree_data;
+    if (new_tree_data.sel_anchor_object_id !=
+            old_tree_data.sel_anchor_object_id ||
+        new_tree_data.sel_anchor_offset != old_tree_data.sel_anchor_offset ||
+        new_tree_data.sel_focus_object_id !=
+            old_tree_data.sel_focus_object_id ||
+        new_tree_data.sel_focus_offset != old_tree_data.sel_focus_offset) {
+      return true;
+    }
+  }
+  return false;
 }
 
 }  // namespace
@@ -108,7 +141,7 @@ void ReadAnythingAppModel::InsertIdIfNotIgnored(
     return;
   }
 
-  if (!a11y::IsIgnored(ax_node, is_pdf_)) {
+  if (!a11y::IsIgnored(ax_node, IsPdf())) {
     non_ignored_ids.insert(id);
   }
 }
@@ -137,6 +170,7 @@ void ReadAnythingAppModel::OnSettingsRestoredFromPrefs(
 void ReadAnythingAppModel::Reset(std::vector<ui::AXNodeID> content_node_ids) {
   content_node_ids_ = std::move(content_node_ids);
   display_node_ids_.clear();
+  displayed_nodes_pending_deletion_.clear();
   screen2x_distiller_running_ = false;
   requires_post_process_selection_ = false;
   selections_from_reading_mode_ = 0;
@@ -168,10 +202,13 @@ bool ReadAnythingAppModel::PostProcessSelection() {
 
   UpdateSelectionEndpoints();
 
-  // TODO: crbug.com/505770261 - Implement selection_mode for readability.
-  // AXtree mapping is needed first and is_empty() must be redefined since a
-  // readability distillation doesn't use display_node_ids.
-  if (is_readability_next_distillation_method()) {
+  // For Readability, wait until the distilled content has been drawn and
+  // mapped to the AXTree before deciding whether the selection falls inside or
+  // outside the article. Keep the selection pending so it will be processed
+  // once mapping finishes.
+  if (is_readability_next_distillation_method() &&
+      (!readability_content_drawn_ || is_readability_mapping_in_progress_)) {
+    requires_post_process_selection_ = true;
     return false;
   }
 
@@ -254,8 +291,17 @@ void ReadAnythingAppModel::UpdateSelectionEndpoints() {
 }
 
 bool ReadAnythingAppModel::IsSelectionInDistilledContent() const {
-  return display_node_ids_.contains(start_.id) &&
-         display_node_ids_.contains(end_.id);
+  if (!images_enabled_ && (IsNodeInFigure(GetAXNode(start_.id)) ||
+                           IsNodeInFigure(GetAXNode(end_.id)))) {
+    return false;
+  }
+  // Since Readability renders from HTML rather than `display_node_ids_`, check
+  // against the AXNodes mapped from the rendered Readability text instead.
+  const std::set<ui::AXNodeID>& display_node_ids =
+      is_readability_next_distillation_method() ? readability_display_node_ids_
+                                                : display_node_ids_;
+  return display_node_ids.contains(start_.id) &&
+         display_node_ids.contains(end_.id);
 }
 
 void ReadAnythingAppModel::ComputeSelectionNodeIdsForSelectionMode() {
@@ -272,35 +318,40 @@ void ReadAnythingAppModel::ComputeSelectionNodeIdsForSelectionMode() {
   // The main panel selection contains content outside of the distilled
   // content. Find the selected nodes to display instead of the distilled
   // content.
-  if (!node->IsInvisibleOrIgnored() && !end->IsInvisibleOrIgnored()) {
-    // Add all ancestor ids of start node, including the start node itself.
-    for (base::queue<ui::AXNode*> ancestors =
-             node->GetAncestorsCrossingTreeBoundaryAsQueue();
-         !ancestors.empty(); ancestors.pop()) {
-      InsertIdIfNotIgnored(ancestors.front()->id(), selection_node_ids_);
-    }
+  // When text is selected on the main page, the AXSelection start (node) or
+  // end endpoints may land on container or structural nodes that are marked
+  // invisible or ignored in the accessibility tree.
+  // GetUnignoredParentForSelection and GetAncestorsCrossingTreeBoundaryAsQueue
+  // resolve ignored nodes to their unignored ancestors automatically.
+  // Do not abort if node or end is invisible or ignored so that selection
+  // across ignored container elements is handled naturally.
+  // Add all ancestor ids of start node, including the start node itself.
+  for (base::queue<ui::AXNode*> ancestors =
+           node->GetAncestorsCrossingTreeBoundaryAsQueue();
+       !ancestors.empty(); ancestors.pop()) {
+    InsertIdIfNotIgnored(ancestors.front()->id(), selection_node_ids_);
+  }
 
-    // Find the parent of the start and end nodes so we can look at nearby
-    // sibling nodes. Since the start and end nodes might be in different
-    // section of the tree, get the parents for start and end separately.
-    // Otherwise, the end selection might not render.
-    node = GetUnignoredParentForSelection(node);
-    end = GetUnignoredParentForSelection(end);
-    if (end) {
-      end = end->GetDeepestLastUnignoredDescendantCrossingTreeBoundary();
-      if (node && end) {
-        // Traverse the tree from the first sibling node to the last sibling
-        // node, inclusive. This ensures that when select-to-distill is used
-        // to distill non-distillable content (such as Gmail), text outside of
-        // the selected portion but on the same line is still distilled, even
-        // if there's special formatting.
-        // TODO(crbug.com/40802192): Consider using ax_position.h here to
-        // better manage selection.
-        for (node = node->GetFirstUnignoredChildCrossingTreeBoundary();
-             node && node->CompareTo(*end).value_or(1) <= 0;
-             node = node->GetNextUnignoredInTreeOrder()) {
-          InsertIdIfNotIgnored(node->id(), selection_node_ids_);
-        }
+  // Find the parent of the start and end nodes so we can look at nearby
+  // sibling nodes. Since the start and end nodes might be in different
+  // section of the tree, get the parents for start and end separately.
+  // Otherwise, the end selection might not render.
+  node = GetUnignoredParentForSelection(node);
+  end = GetUnignoredParentForSelection(end);
+  if (end) {
+    end = end->GetDeepestLastUnignoredDescendantCrossingTreeBoundary();
+    if (node && end) {
+      // Traverse the tree from the first sibling node to the last sibling
+      // node, inclusive. This ensures that when select-to-distill is used
+      // to distill non-distillable content (such as Gmail), text outside of
+      // the selected portion but on the same line is still distilled, even
+      // if there's special formatting.
+      // TODO(crbug.com/40802192): Consider using ax_position.h here to
+      // better manage selection.
+      for (node = node->GetFirstUnignoredChildCrossingTreeBoundary();
+           node && node->CompareTo(*end).value_or(1) <= 0;
+           node = node->GetNextUnignoredInTreeOrder()) {
+        InsertIdIfNotIgnored(node->id(), selection_node_ids_);
       }
     }
   }
@@ -333,6 +384,75 @@ bool ReadAnythingAppModel::ContentNodesOnlyContainHeadings() {
   return true;
 }
 
+ReadAnythingAppModel::OriginalPageMetrics
+ReadAnythingAppModel::GetOriginalPageMetrics() const {
+  if (!ContainsActiveTree()) {
+    return {};
+  }
+  const auto it = tree_infos_.find(active_tree_id_);
+  if (it == tree_infos_.end()) {
+    return {};
+  }
+  const AXTreeInfo* tree_info = it->second.get();
+  if (tree_info->original_page_metrics.has_value()) {
+    return tree_info->original_page_metrics.value();
+  }
+
+  ui::AXSerializableTree* active_tree = GetTreeFromId(active_tree_id_);
+  if (!active_tree || !active_tree->root()) {
+    tree_info->original_page_metrics = OriginalPageMetrics();
+    return tree_info->original_page_metrics.value();
+  }
+
+  OriginalPageMetrics metrics;
+  for (ui::AXNode* node = active_tree->root(); node;
+       node = node->GetNextUnignoredInTreeOrder()) {
+    if (!metrics.has_mathml && ui::IsMath(node->GetRole())) {
+      metrics.has_mathml = true;
+    }
+    if (!metrics.maybe_has_key_points && IsNodeLikelyKeyPoints(node)) {
+      metrics.maybe_has_key_points = true;
+    }
+    if (metrics.has_mathml && metrics.maybe_has_key_points) {
+      break;
+    }
+  }
+
+  tree_info->original_page_metrics = metrics;
+  return metrics;
+}
+
+// Checks if a specific AXNode seems likely to indicate a key points section.
+// This method uses a heuristic to make an educated guess about whether the
+// original page that reading mode was opened on has some type of key points
+// section. This heuristic checks if there's a heading or button that has
+// text that matches kKeyPointsRegex i.e. if the text contains English words
+// that could likely indicate that a section represents a "key points."
+// This is just intended as an approximation for metrics purposes to better
+// understand the types of pages that reading mode is opened on.
+bool ReadAnythingAppModel::IsNodeLikelyKeyPoints(ui::AXNode* node) const {
+  if (node->GetRole() == ax::mojom::Role::kHeading ||
+      node->GetRole() == ax::mojom::Role::kButton ||
+      node->GetRole() == ax::mojom::Role::kPopUpButton ||
+      node->GetRole() == ax::mojom::Role::kToggleButton ||
+      node->GetRole() == ax::mojom::Role::kDisclosureTriangle) {
+    int hierarchical_level =
+        node->GetIntAttribute(ax::mojom::IntAttribute::kHierarchicalLevel);
+    if (hierarchical_level == 1 &&
+        node->GetRole() == ax::mojom::Role::kHeading) {
+      return false;
+    }
+    std::u16string node_text16 = a11y::GetTextContent(node, IsPdf(), IsDocs());
+    std::string node_text = base::ToLowerASCII(base::UTF16ToUTF8(node_text16));
+
+    static constexpr re2::LazyRE2 key_points_re = {kKeyPointsRegex};
+    if (re2::RE2::PartialMatch(node_text, *key_points_re)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 void ReadAnythingAppModel::ComputeDisplayNodeIdsForDistilledTree() {
   DCHECK(!content_node_ids_.empty());
 
@@ -362,6 +482,13 @@ void ReadAnythingAppModel::ComputeDisplayNodeIdsForDistilledTree() {
     }
 
     if (content_node->IsInvisibleOrIgnored()) {
+      continue;
+    }
+
+    // Artifacts are only shown via select-to-distill, so leave them out of the
+    // main content. Skipping the content node here also keeps its artifact
+    // ancestors out of the ancestor walk below.
+    if (IsPdf() && a11y::IsPdfArtifact(content_node)) {
       continue;
     }
 
@@ -407,7 +534,34 @@ void ReadAnythingAppModel::ComputeDisplayNodeIdsForDistilledTree() {
     }
     while (next_node != deepest_last_descendant) {
       next_node = next_node->GetNextUnignoredInTreeOrder();
+      if (IsPdf() && a11y::IsPdfArtifact(next_node)) {
+        continue;
+      }
       InsertIdIfNotIgnored(next_node->id(), display_node_ids_);
+    }
+  }
+}
+
+void ReadAnythingAppModel::ComputeReadabilityDisplayNodeIds() {
+  for (const auto& block_segments : text_to_ax_map_) {
+    for (const MappingSegment& segment : block_segments) {
+      const ui::AXNode* node = GetAXNode(segment.id);
+      if (!node) {
+        continue;
+      }
+      // Include ancestors (just like `display_node_ids_`) so selections whose
+      // endpoints are on a parent container node are still recognized as part
+      // of the distilled content. Exit the loop early if an ancestor is
+      // already in `readability_display_node_ids_`, since all of its remaining
+      // ancestors will already be in the set too.
+      for (base::queue<ui::AXNode*> ancestors =
+               node->GetAncestorsCrossingTreeBoundaryAsQueue();
+           !ancestors.empty(); ancestors.pop()) {
+        if (!readability_display_node_ids_.insert(ancestors.front()->id())
+                 .second) {
+          break;
+        }
+      }
     }
   }
 }
@@ -497,6 +651,51 @@ void ReadAnythingAppModel::SetTreeInfoUrlInformation(
   }
 }
 
+void ReadAnythingAppModel::UpdateDistillationForDocsIfNeeded() {
+  // GetInitialDistillationMethod is sometimes called during
+  // OnActiveAXTreeIDChanged before SetTreeInfoUrlInformation has run and
+  // before the Google Docs URL is known. When the active page is later
+  // identified as Google Docs, fallback from Readability to Screen2x.
+  // Both next_distillation_method_ and current_content_distillation_method_
+  // are updated because this fallback occurs during initial page load while
+  // the UI is showing loading and no content has been rendered yet.
+  if (IsDocs() && is_readability_next_distillation_method()) {
+    FallbackToScreen2x();
+    set_current_content_distillation_method(DistillationMethod::kScreen2x);
+  }
+}
+
+void ReadAnythingAppModel::FallbackToScreen2x() {
+  set_next_distillation_method(DistillationMethod::kScreen2x);
+  set_requires_readability_distillation(false);
+  set_requires_distillation(true);
+}
+
+bool ReadAnythingAppModel::IsPdf() const {
+  if (tree_infos_.contains(active_tree_id_)) {
+    return tree_infos_.at(active_tree_id_)->is_pdf;
+  }
+
+  auto it = pending_is_pdf_.find(active_tree_id_);
+  if (it != pending_is_pdf_.end()) {
+    return it->second;
+  }
+
+  return false;
+}
+
+void ReadAnythingAppModel::SetIsPdf(bool is_pdf) {
+  if (active_tree_id_ == ui::AXTreeIDUnknown()) {
+    return;
+  }
+
+  if (tree_infos_.contains(active_tree_id_)) {
+    tree_infos_.at(active_tree_id_)->is_pdf = is_pdf;
+  } else {
+    pending_is_pdf_[active_tree_id_] = is_pdf;
+  }
+}
+
 bool ReadAnythingAppModel::IsDocs() const {
   // Sometimes during an initial page load, this may be called before the
   // tree has been initialized. If this happens, IsDocs should return false
@@ -524,8 +723,36 @@ bool ReadAnythingAppModel::IsWhatsNew() const {
   return tree_infos_.at(root_tree_id_)->is_whats_new;
 }
 
+void ReadAnythingAppModel::ResetDistillationCompleteIfNeeded() {
+  GURL current_url = GetActiveTreeUrl();
+
+  // If no content has been successfully distilled yet, or the current URL
+  // is invalid, or the scheme is not HTTP/HTTPS, there is nothing to compare or
+  // reset.
+  if (!last_readability_distilled_url_.is_valid() || !current_url.is_valid() ||
+      !current_url.SchemeIsHTTPOrHTTPS()) {
+    return;
+  }
+
+  // Same-document / SPA navigations typically change the URL path or query,
+  // but keep the same AXTree ID. Ignore hash fragments (#ref) when comparing.
+  bool url_changed = last_readability_distilled_url_.GetWithoutRef() !=
+                     current_url.GetWithoutRef();
+
+  if (url_changed) {
+    // Reset the flag to trigger a new distillation for same-document nav.
+    readability_distillation_complete_for_current_tree_ = false;
+  }
+}
+
 void ReadAnythingAppModel::AddPendingUpdates(const ui::AXTreeID& tree_id,
                                              Updates& updates) {
+  const ui::AXSerializableTree* tree = GetTreeFromId(tree_id);
+  if (IsPdf() && tree && HasSelectionChange(updates, tree->data())) {
+    // PDF selection updates are sent via tree_data without a separate
+    // selection AXEvent.
+    has_pending_selection_ = true;
+  }
   pending_updates_[tree_id].emplace_back(std::move(updates));
 }
 
@@ -536,6 +763,11 @@ void ReadAnythingAppModel::ClearPendingUpdates() {
 
 void ReadAnythingAppModel::UnserializePendingUpdates(
     const ui::AXTreeID& tree_id) {
+  // PDF updates use EventFrom::kNone, so ProcessGeneratedEvents() won't reset a
+  // stale reading mode selection count that would hide the pending selection.
+  if (has_pending_selection_ && IsPdf()) {
+    selections_from_reading_mode_ = 0;
+  }
   // has_pending_selection_ is used to process updates that would not have
   // otherwise been processed if Immersive is opening and already had a good
   // distillation. Therefore, it should be reset once UnserializePendingUpdates
@@ -612,7 +844,15 @@ void ReadAnythingAppModel::UnserializeUpdates(const Updates& updates,
   // Set URL info if it hasn't already been set.
   SetTreeInfoUrlInformation(*it->second);
 
-  ProcessGeneratedEvents(event_generator, prev_tree_size, tree->size());
+  // Reset cached original page metrics since tree structure changed.
+  it->second->original_page_metrics.reset();
+
+  ProcessGeneratedEvents(tree_id, event_generator, prev_tree_size,
+                         tree->size());
+
+  if (tree_id == active_tree_id_) {
+    UpdateDistillationForDocsIfNeeded();
+  }
 }
 
 void ReadAnythingAppModel::PrepareForAXTreeUpdates(
@@ -632,9 +872,13 @@ void ReadAnythingAppModel::EnsureAXTreeExists(const ui::AXTreeID& tree_id) {
   for (auto& observer : observers_) {
     observer.OnTreeAdded(new_tree.get());
   }
-  tree_infos_.emplace(
-      tree_id, std::make_unique<AXTreeInfo>(
-                   std::make_unique<ui::AXTreeManager>(std::move(new_tree))));
+  auto tree_info = std::make_unique<AXTreeInfo>(
+      std::make_unique<ui::AXTreeManager>(std::move(new_tree)));
+  if (pending_is_pdf_.contains(tree_id)) {
+    tree_info->is_pdf = pending_is_pdf_[tree_id];
+    pending_is_pdf_.erase(tree_id);
+  }
+  tree_infos_.emplace(tree_id, std::move(tree_info));
   // If we previously received UKM source info for this tree_id, set the
   // UKM source now that the tree information has been added to tree_infos_.
   if (tree_id == active_tree_id_ && pending_ukm_sources_.count(tree_id) > 0) {
@@ -695,15 +939,17 @@ void ReadAnythingAppModel::ApplyAccessibilityUpdates(
     UnserializePendingUpdates(tree_id);
     UnserializeUpdates(updates, tree_id);
     ProcessNonGeneratedEvents(events);
+
+    // has_pending_selection_ is used to process updates that would not have
+    // otherwise been processed if Immersive is opening and already had a good
+    // distillation. Therefore, it should be reset once updates are applied.
+    has_pending_selection_ = false;
   } else {
+    // Updates for other trees (e.g. the PDF extension host frame) don't drain
+    // the active tree's queue, so a pending selection stays pending.
     VLOG(1) << "ApplyAccessibilityUpdates- tree ID is not the active tree";
     UnserializeUpdates(updates, tree_id);
   }
-
-  // has_pending_selection_ is used to process updates that would not have
-  // otherwise been processed if Immersive is opening and already had a good
-  // distillation. Therefore, it should be reset once updates are applied.
-  has_pending_selection_ = false;
 }
 
 void ReadAnythingAppModel::QueueAccessibilityUpdates(
@@ -726,6 +972,8 @@ void ReadAnythingAppModel::QueueAccessibilityUpdates(
 }
 
 void ReadAnythingAppModel::OnAXTreeDestroyed(const ui::AXTreeID& tree_id) {
+  pending_is_pdf_.erase(tree_id);
+
   // `OnAXTreeDestroyed()` is called whenever the `AXActionHandler` in the
   // browser learns that an `AXTree` was destroyed. This could be from any tab,
   // not just the active one; therefore many `tree_id`s will not be found in
@@ -740,6 +988,7 @@ void ReadAnythingAppModel::OnAXTreeDestroyed(const ui::AXTreeID& tree_id) {
     // TODO(crbug.com/40802192): If distillation is in progress, cancel the
     // distillation request.
     active_tree_id_ = ui::AXTreeIDUnknown();
+    displayed_nodes_pending_deletion_.clear();
   }
 
   for (ui::AXTree* const ax_tree = it->second->manager->ax_tree();
@@ -862,9 +1111,7 @@ void ReadAnythingAppModel::SetDefaultDistillationMethod() {
 void ReadAnythingAppModel::OnScroll(bool on_selection,
                                     bool from_reading_mode) const {
   // Scroll events shouldn't be logged when reading mode is inactive.
-  if (features::IsImmersiveReadAnythingEnabled() &&
-      active_presentation_state_ ==
-          read_anything::mojom::ReadAnythingPresentationState::kInactive) {
+  if (!is_active_presentation_state_opened()) {
     return;
   }
   // Enum for logging how a scroll occurs.
@@ -910,9 +1157,11 @@ void ReadAnythingAppModel::SetActiveTreeId(ui::AXTreeID active_tree_id) {
   // Unserialize any updates on the previous active tree;
   // Otherwise, this can cause tree inconsistency issues if reading mode later
   // incorrectly receives updates from the old tree.
-  if (active_tree_id_ != active_tree_id &&
-      active_tree_id_ != ui::AXTreeIDUnknown() && ContainsActiveTree()) {
-    UnserializePendingUpdates(active_tree_id_);
+  if (active_tree_id_ != active_tree_id) {
+    if (active_tree_id_ != ui::AXTreeIDUnknown() && ContainsActiveTree()) {
+      UnserializePendingUpdates(active_tree_id_);
+    }
+    displayed_nodes_pending_deletion_.clear();
   }
 
   active_tree_id_ = std::move(active_tree_id);
@@ -935,9 +1184,17 @@ void ReadAnythingAppModel::ProcessNonGeneratedEvents(
       has_pending_selection_ = true;
     }
 
-    // Readability distillation ignores state change events as selection
-    // post-processing is the only required dynamic update.
+    // Readability distillation reacts to major document changes to support
+    // SPA navigations.
     if (is_readability_next_distillation_method()) {
+      switch (event.event_type) {
+        case ax::mojom::Event::kLoadComplete:
+          requires_readability_distillation_ = true;
+          page_finished_loading_ = true;
+          break;
+        default:
+          break;
+      }
       continue;
     }
 
@@ -1052,6 +1309,7 @@ void ReadAnythingAppModel::ProcessNonGeneratedEvents(
 }
 
 void ReadAnythingAppModel::ProcessGeneratedEvents(
+    const ui::AXTreeID& tree_id,
     const ui::AXEventGenerator& event_generator,
     size_t prev_tree_size,
     size_t tree_size) {
@@ -1062,17 +1320,24 @@ void ReadAnythingAppModel::ProcessGeneratedEvents(
     VLOG(2) << "Generated event type: " << event.event_params->event;
 #endif
 
-    // Readability only requires selection events. This ensures the side
-    // panel selection stays synchronized with the main panel.
+    // Readability only requires selection and title change events. This ensures
+    // the side panel content and selection stays synchronized with the main
+    // panel.
     if (is_readability_next_distillation_method()) {
-      if (event.event_params->event ==
-          ui::AXEventGenerator::Event::DOCUMENT_SELECTION_CHANGED) {
-        requires_post_process_selection_ = true;
-        if (event.event_params->event_from == ax::mojom::EventFrom::kUser) {
-          // Direct main panel user interaction fully supersedes any stale
-          // reading-mode-initiated selection actions.
-          selections_from_reading_mode_ = 0;
-        }
+      switch (event.event_params->event) {
+        case ui::AXEventGenerator::Event::DOCUMENT_SELECTION_CHANGED:
+          requires_post_process_selection_ = true;
+          if (event.event_params->event_from == ax::mojom::EventFrom::kUser) {
+            // Direct main panel user interaction fully supersedes any stale
+            // reading-mode-initiated selection actions.
+            selections_from_reading_mode_ = 0;
+          }
+          break;
+        case ui::AXEventGenerator::Event::DOCUMENT_TITLE_CHANGED:
+          requires_readability_distillation_ = true;
+          break;
+        default:
+          break;
       }
       continue;
     }
@@ -1111,7 +1376,8 @@ void ReadAnythingAppModel::ProcessGeneratedEvents(
         // displaying). To avoid distilling and causing RM to flicker, only
         // distill if the size of the updated tree is larger than before (to
         // capture the complete PDF load mentioned earlier).
-        if (is_pdf_ && prev_tree_size < tree_size) {
+        if (IsPdf() && tree_id == active_tree_id_ &&
+            prev_tree_size < tree_size) {
           requires_distillation_ = true;
           reset_distillation_delay_timer_ = true;
         }
@@ -1226,12 +1492,37 @@ void ReadAnythingAppModel::SetFontSize(double font_size, int increment) {
   font_size_ = AdjustFontScale(font_size, increment);
 }
 
+GURL ReadAnythingAppModel::GetActiveTreeUrl() const {
+  // Guard against retrieving trees that have not been initialized or registered
+  // yet.
+  if (!ContainsActiveTree()) {
+    return GURL();
+  }
+
+  ui::AXSerializableTree* tree = GetActiveTree();
+  if (tree && tree->root() &&
+      tree->root()->HasStringAttribute(ax::mojom::StringAttribute::kUrl)) {
+    return GURL(
+        tree->root()->GetStringAttribute(ax::mojom::StringAttribute::kUrl));
+  }
+  return GURL();
+}
+
 const std::set<ui::AXNodeID>* ReadAnythingAppModel::GetCurrentlyVisibleNodes()
     const {
   return (side_panel_distillation_mode_ ==
           SidePanelDistillationMode::kSelection)
              ? &selection_node_ids_
              : &display_node_ids_;
+}
+
+bool ReadAnythingAppModel::OnNodeWillBeDeleted(ui::AXNodeID node_id) {
+  return GetCurrentlyVisibleNodes()->contains(node_id) &&
+         displayed_nodes_pending_deletion_.insert(node_id).second;
+}
+
+bool ReadAnythingAppModel::OnNodeDeleted(ui::AXNodeID node_id) {
+  return displayed_nodes_pending_deletion_.erase(node_id) > 0;
 }
 
 void ReadAnythingAppModel::AllowChildTreeForActiveTree(bool use_child_tree) {
@@ -1450,41 +1741,84 @@ bool ReadAnythingAppModel::MapRenderedTextToTree(
     return false;
   }
 
+  base::ElapsedTimer total_timer;
+  base::ElapsedTimer step_timer;
+
   text_to_ax_map_.clear();
+  readability_display_node_ids_.clear();
   occupied_ax_ranges_.clear();
   // Ensure the mapping storage size matches the input blocks.
   text_to_ax_map_.resize(blocks.size());
-  should_map_rendered_text_to_tree_for_readability_ = false;
 
   FlattenAXTree(tree);
+  base::TimeDelta flattening_duration = step_timer.Elapsed();
 
-  // If the AXTree is empty, there is no text to map back to.
+  const bool is_loaded = page_finished_loading_ || tree->data().loaded;
+
+  // If the AXTree is empty, there is no text to map back to. Once loading has
+  // finished, reset the mapping flags so mapping is not retried on every event.
   if (global_ax_tree_text_.empty()) {
+    if (is_loaded) {
+      should_map_rendered_text_to_tree_for_readability_ = false;
+      is_readability_mapping_in_progress_ = false;
+    }
     return false;
   }
 
-  // TODO: crbug.com/507453378 - Create Mapping algorithm execution time metric.
-
-  // Build a Suffix Array index of the original page's text. Finding a text
-  // block can then be done in O(log N) time.
-  SuffixArray index;
-  index.Build(global_ax_tree_text_);
-
   // Build a frequency map of the distilled blocks.
+  step_timer = base::ElapsedTimer();
+  size_t total_distilled_chars = 0;
   base::flat_map<std::u16string_view, int> readability_block_counts;
   for (const auto& block : blocks) {
     if (!block.empty()) {
+      total_distilled_chars += block.length();
       readability_block_counts[block]++;
     }
   }
+  const size_t tree_mapping_coverage =
+      total_distilled_chars == 0
+          ? 0
+          : (global_ax_tree_text_.size() * 100) / total_distilled_chars;
+  if (!is_loaded && tree_mapping_coverage < kMinReadabilityMappingSuccessRate) {
+    return false;
+  }
+  base::TimeDelta initial_anchors_duration = step_timer.Elapsed();
 
+  // Build a Suffix Array index of the original page's text. Finding a text
+  // block can then be done in O(log N) time.
+  step_timer = base::ElapsedTimer();
+  SuffixArray index;
+  index.Build(global_ax_tree_text_);
+  base::TimeDelta suffix_array_duration = step_timer.Elapsed();
+
+  step_timer = base::ElapsedTimer();
   std::vector<AlignmentAnchor> candidates =
       FindGloballyUniqueBlocks(blocks, index, readability_block_counts);
 
   std::vector<AlignmentAnchor> major_anchors =
       FilterMonotonicAnchors(std::move(candidates));
+  initial_anchors_duration += step_timer.Elapsed();
 
+  step_timer = base::ElapsedTimer();
   GapSubstringAlignment(blocks, index, major_anchors);
+  base::TimeDelta gap_alignment_duration = step_timer.Elapsed();
+
+  std::optional<size_t> success_rate;
+  if (total_distilled_chars > 0) {
+    size_t total_mapped_chars = 0;
+    for (const auto& block_segments : text_to_ax_map_) {
+      for (const auto& segment : block_segments) {
+        total_mapped_chars += (segment.end - segment.start);
+      }
+    }
+    success_rate = (total_mapped_chars * 100) / total_distilled_chars;
+    if (!is_loaded &&
+        success_rate.value() < kMinReadabilityMappingSuccessRate) {
+      text_to_ax_map_.assign(blocks.size(), {});
+      occupied_ax_ranges_.clear();
+      return false;
+    }
+  }
 
   // Sort mapping segments for every block to ensure physical DOM splitting
   // happens in sequential order in the WebUI.
@@ -1494,6 +1828,12 @@ bool ReadAnythingAppModel::MapRenderedTextToTree(
                 return a.start < b.start;
               });
   }
+  ComputeReadabilityDisplayNodeIds();
+
+  should_map_rendered_text_to_tree_for_readability_ = false;
+  RecordReadabilityMappingMetrics(
+      success_rate, total_timer.Elapsed(), flattening_duration,
+      suffix_array_duration, initial_anchors_duration, gap_alignment_duration);
 
   return true;
 }
@@ -1506,7 +1846,11 @@ ReadAnythingAppModel::FindGloballyUniqueBlocks(
   CHECK_EQ(blocks.size(), text_to_ax_map_.size());
 
   std::vector<AlignmentAnchor> candidates;
-  for (size_t i = 0; i < blocks.size(); ++i) {
+
+  // Skip block 0 (title). Defer its mapping to subsequent steps once the search
+  // space has been restricted. This avoids false body matches if the title is
+  // synthesized metadata.
+  for (size_t i = 1; i < blocks.size(); ++i) {
     const std::u16string& block = blocks[i];
 
     if (block.empty()) {
@@ -1850,13 +2194,13 @@ void ReadAnythingAppModel::FlattenAXTree(ui::AXSerializableTree* tree) {
       // Only process nodes that actually contribute readable
       // text. This helper (from read_anything_node_utils.cc) filters out
       // decorative/empty tags that shouldn't be part of the text alignment.
-      if (!a11y::IsTextForReadAnything(node, is_pdf_, IsDocs())) {
+      if (!a11y::IsTextForReadAnything(node, IsPdf(), IsDocs())) {
         continue;
       }
 
       // Use a11y::GetTextContent to get the node's normalized text. Add this
       // text to the global string and record the node's position.
-      std::u16string node_text = a11y::GetTextContent(node, is_pdf_, IsDocs());
+      std::u16string node_text = a11y::GetTextContent(node, IsPdf(), IsDocs());
       if (!node_text.empty()) {
         flattened_ax_tree_nodes_.push_back(
             {node->id(), node_text, global_ax_tree_text_.length()});
@@ -1873,7 +2217,7 @@ void ReadAnythingAppModel::FlattenAXTree(ui::AXSerializableTree* tree) {
       children_to_push.push_back(&*it);
     }
     // Push children in reverse order for pre-order traversal.
-    for (ui::AXNode* child : base::Reversed(children_to_push)) {
+    for (ui::AXNode* child : std::views::reverse(children_to_push)) {
       stack.push(child);
     }
   }
@@ -1918,9 +2262,45 @@ ReadAnythingAppModel::CreateSegmentsForMatch(size_t ax_start,
                                 block_internal_offset);
     ms.end = static_cast<int>(std::min(ax_end, seg_end) - ax_start +
                               block_internal_offset);
+    ms.ax_node_offset =
+        static_cast<int>(std::max(ax_start, seg_start) - seg_start);
     segments.push_back(ms);
   }
   return segments;
+}
+
+void ReadAnythingAppModel::RecordReadabilityMappingMetrics(
+    std::optional<size_t> success_rate,
+    base::TimeDelta total_duration,
+    base::TimeDelta flattening_duration,
+    base::TimeDelta suffix_array_duration,
+    base::TimeDelta initial_anchors_duration,
+    base::TimeDelta gap_alignment_duration) {
+  if (success_rate.has_value()) {
+    base::UmaHistogramPercentage(
+        "Accessibility.ReadAnything.ReadabilityMapping.SuccessRate",
+        success_rate.value());
+  }
+
+  base::UmaHistogramTimes(
+      "Accessibility.ReadAnything.ReadabilityMapping.1_Flattening."
+      "ExecutionTime",
+      flattening_duration);
+  base::UmaHistogramTimes(
+      "Accessibility.ReadAnything.ReadabilityMapping.2_SuffixArray."
+      "ExecutionTime",
+      suffix_array_duration);
+  base::UmaHistogramTimes(
+      "Accessibility.ReadAnything.ReadabilityMapping.3_InitialAnchors."
+      "ExecutionTime",
+      initial_anchors_duration);
+  base::UmaHistogramTimes(
+      "Accessibility.ReadAnything.ReadabilityMapping.4_GapAlignment."
+      "ExecutionTime",
+      gap_alignment_duration);
+  base::UmaHistogramTimes(
+      "Accessibility.ReadAnything.ReadabilityMapping.0_Total.ExecutionTime",
+      total_duration);
 }
 
 std::vector<ReadAnythingAppModel::MappingSegment>

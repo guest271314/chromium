@@ -39,7 +39,8 @@ class MEDIA_EXPORT DecoderSelector {
   typedef DecoderStreamTraits<StreamType> StreamTraits;
   typedef typename StreamTraits::DecoderType Decoder;
   typedef typename StreamTraits::DecoderConfigType DecoderConfig;
-  using DecoderOrError = DecoderStatus::Or<std::unique_ptr<Decoder>>;
+  using DecoderOrError =
+      base::expected<std::unique_ptr<Decoder>, DecoderStatus>;
 
   // Callback to create a list of decoders to select from.
   // TODO(xhwang): Use a DecoderFactory to create decoders one by one as needed,
@@ -132,7 +133,7 @@ class MEDIA_EXPORT DecoderSelector {
   SEQUENCE_CHECKER(sequence_checker_);
 
   CreateDecodersCB create_decoders_cb_;
-  raw_ptr<MediaLog> media_log_;
+  const std::unique_ptr<MediaLog> media_log_;
 
   raw_ptr<StreamTraits, AcrossTasksDanglingUntriaged> traits_ = nullptr;
   raw_ptr<DemuxerStream, AcrossTasksDanglingUntriaged> stream_ = nullptr;

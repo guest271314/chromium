@@ -20,8 +20,7 @@
 using signin::CapabilityFetchCompletionCallback;
 using signin::Tribool;
 
-@interface AgeMismatchCapabilitiesFetcher () <
-    IdentityManagerObserverBridgeDelegate>
+@interface AgeMismatchCapabilitiesFetcher () <IdentityManagerObserving>
 @end
 
 @implementation AgeMismatchCapabilitiesFetcher {
@@ -85,25 +84,27 @@ using signin::Tribool;
   CHECK(_identityManager);
   AccountInfo accountInfo =
       _identityManager->FindExtendedAccountInfoByAccountId(accountId);
-  return accountInfo.capabilities.can_sign_in_to_chrome();
+  return accountInfo.GetAccountCapabilities().can_sign_in_to_chrome();
 }
 
-#pragma mark - IdentityManagerObserverBridgeDelegate
+#pragma mark - IdentityManagerObserving
 
-- (void)onIdentityManagerShutdown:(signin::IdentityManager*)identityManager {
+- (void)identityManagerDidShutdown:(signin::IdentityManager*)identityManager {
   _identityManager = nullptr;
   _completionCallbacks.clear();
   _fetchStartTimes.clear();
 }
 
-- (void)onExtendedAccountInfoUpdated:(const AccountInfo&)accountInfo {
-  auto it = _completionCallbacks.find(accountInfo.account_id);
+- (void)extendedAccountInfoDidUpdate:(const AccountInfo&)accountInfo {
+  auto it = _completionCallbacks.find(accountInfo.GetAccountId());
   if (it == _completionCallbacks.end()) {
     return;
   }
-  signin::Tribool capability = accountInfo.capabilities.can_sign_in_to_chrome();
+  signin::Tribool capability =
+      accountInfo.GetAccountCapabilities().can_sign_in_to_chrome();
   if (capability != Tribool::kUnknown) {
-    [self onCapabilityReceived:capability forAccountId:accountInfo.account_id];
+    [self onCapabilityReceived:capability
+                  forAccountId:accountInfo.GetAccountId()];
   }
 }
 

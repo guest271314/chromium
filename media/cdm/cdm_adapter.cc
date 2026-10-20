@@ -128,7 +128,7 @@ void* GetCdmHost(int host_interface_version, void* user_data) {
     return nullptr;
 
   static_assert(
-      CheckSupportedCdmHostVersions(cdm::Host_10::kVersion,
+      CheckSupportedCdmHostVersions(cdm::Host_11::kVersion,
                                     cdm::Host_12::kVersion),
       "Mismatch between GetCdmHost() and IsSupportedCdmHostVersion()");
 
@@ -137,8 +137,6 @@ void* GetCdmHost(int host_interface_version, void* user_data) {
   CdmAdapter* cdm_adapter = static_cast<CdmAdapter*>(user_data);
   DVLOG(1) << "Create CDM Host with version " << host_interface_version;
   switch (host_interface_version) {
-    case cdm::Host_10::kVersion:
-      return static_cast<cdm::Host_10*>(cdm_adapter);
     case cdm::Host_11::kVersion:
       return static_cast<cdm::Host_11*>(cdm_adapter);
     case cdm::Host_12::kVersion:
@@ -293,14 +291,14 @@ CdmAdapter::~CdmAdapter() {
     std::move(video_init_cb_).Run(false);
 }
 
-CdmWrapper* CdmAdapter::CreateCdmInstance(const std::string& key_system) {
+CdmWrapper* CdmAdapter::CreateCdmInstance() {
   CHECK(task_runner_->BelongsToCurrentThread());
   TRACE_EVENT0("media", "CdmAdapter::CreateCdmInstance");
 
-  CdmWrapper* cdm = CdmWrapper::Create(create_cdm_func_, key_system.data(),
-                                       key_system.size(), GetCdmHost, this);
-  DVLOG(1) << "CDM instance for " + key_system + (cdm ? "" : " could not be") +
-                  " created.";
+  CdmWrapper* cdm =
+      CdmWrapper::Create(create_cdm_func_, cdm_config_, GetCdmHost, this);
+  DVLOG(1) << "CDM instance for " + cdm_config_.key_system +
+                  (cdm ? "" : " could not be") + " created.";
 
   if (cdm) {
     // The interface version is relatively small. So using normal histogram
@@ -317,7 +315,7 @@ void CdmAdapter::Initialize(std::unique_ptr<media::SimpleCdmPromise> promise) {
   DVLOG(1) << __func__;
   TRACE_EVENT0("media", "CdmAdapter::Initialize");
 
-  cdm_.reset(CreateCdmInstance(cdm_config_.key_system));
+  cdm_.reset(CreateCdmInstance());
   if (!cdm_) {
     promise->reject(CdmPromise::Exception::INVALID_STATE_ERROR, 0,
                     "Unable to create CDM.");
@@ -327,9 +325,7 @@ void CdmAdapter::Initialize(std::unique_ptr<media::SimpleCdmPromise> promise) {
   init_promise_id_ =
       cdm_promise_adapter_.SavePromise(std::move(promise), __func__);
 
-  if (!cdm_->Initialize(cdm_config_.allow_distinctive_identifier,
-                        cdm_config_.allow_persistent_state,
-                        cdm_config_.use_hw_secure_codecs)) {
+  if (!cdm_->Initialize(cdm_config_)) {
     // OnInitialized() will not be called by the CDM, which is the case for
     // CDM interfaces prior to CDM_10.
     OnInitialized(true);
@@ -489,15 +485,13 @@ void CdmAdapter::Decrypt(StreamType stream_type,
 
   cdm::InputBuffer_2 input_buffer = {};
   std::vector<cdm::SubsampleEntry> subsamples;
-  std::unique_ptr<DecryptedBlockImpl> decrypted_block(new DecryptedBlockImpl());
+  auto decrypted_block = std::make_unique<DecryptedBlockImpl>();
 
-  TRACE_EVENT_BEGIN1("media", "CdmAdapter::Decrypt", "stream_type",
-                     stream_type);
+  TRACE_EVENT_BEGIN("media", "CdmAdapter::Decrypt", "stream_type", stream_type);
   ToCdmInputBuffer(*encrypted, &subsamples, &input_buffer);
   cdm::Status status = cdm_->Decrypt(input_buffer, decrypted_block.get());
-  TRACE_EVENT_END2("media", "CdmAdapter::Decrypt", "key ID",
-                   GetHexKeyId(input_buffer), "status",
-                   CdmStatusToString(status));
+  TRACE_EVENT_END("media", "key ID", GetHexKeyId(input_buffer), "status",
+                  CdmStatusToString(status));
 
   if (status != cdm::kSuccess) {
     DVLOG(1) << __func__ << ": status = " << status;
@@ -507,8 +501,7 @@ void CdmAdapter::Decrypt(StreamType stream_type,
 
   scoped_refptr<DecoderBuffer> decrypted_buffer(
       DecoderBuffer::CopyFrom(AsSpan(decrypted_block->DecryptedBuffer())));
-  decrypted_buffer->set_timestamp(
-      base::Microseconds(decrypted_block->Timestamp()));
+  decrypted_buffer->CopyMetadataClearBufferFrom(*encrypted);
   std::move(decrypt_cb).Run(Decryptor::kSuccess, std::move(decrypted_buffer));
 }
 
@@ -609,15 +602,14 @@ void CdmAdapter::DecryptAndDecodeAudio(scoped_refptr<DecoderBuffer> encrypted,
 
   cdm::InputBuffer_2 input_buffer = {};
   std::vector<cdm::SubsampleEntry> subsamples;
-  std::unique_ptr<AudioFramesImpl> audio_frames(new AudioFramesImpl());
+  auto audio_frames = std::make_unique<AudioFramesImpl>();
 
-  TRACE_EVENT_BEGIN0("media", "CdmAdapter::DecryptAndDecodeAudio");
+  TRACE_EVENT_BEGIN("media", "CdmAdapter::DecryptAndDecodeAudio");
   ToCdmInputBuffer(*encrypted, &subsamples, &input_buffer);
   cdm::Status status =
       cdm_->DecryptAndDecodeSamples(input_buffer, audio_frames.get());
-  TRACE_EVENT_END2("media", "CdmAdapter::DecryptAndDecodeAudio", "key ID",
-                   GetHexKeyId(input_buffer), "status",
-                   CdmStatusToString(status));
+  TRACE_EVENT_END("media", "key ID", GetHexKeyId(input_buffer), "status",
+                  CdmStatusToString(status));
 
   const Decryptor::AudioFrames empty_frames;
   if (status != cdm::kSuccess) {
@@ -649,7 +641,7 @@ void CdmAdapter::DecryptAndDecodeVideo(scoped_refptr<DecoderBuffer> encrypted,
   std::vector<cdm::SubsampleEntry> subsamples;
   std::unique_ptr<VideoFrameImpl> video_frame = helper_->CreateCdmVideoFrame();
 
-  TRACE_EVENT_BEGIN1(
+  TRACE_EVENT_BEGIN(
       "media", "CdmAdapter::DecryptAndDecodeVideo", "buffer type",
       encrypted->end_of_stream()
           ? "end of stream"
@@ -657,9 +649,8 @@ void CdmAdapter::DecryptAndDecodeVideo(scoped_refptr<DecoderBuffer> encrypted,
   ToCdmInputBuffer(*encrypted, &subsamples, &input_buffer);
   cdm::Status status =
       cdm_->DecryptAndDecodeFrame(input_buffer, video_frame.get());
-  TRACE_EVENT_END2("media", "CdmAdapter::DecryptAndDecodeVideo", "key ID",
-                   GetHexKeyId(input_buffer), "status",
-                   CdmStatusToString(status));
+  TRACE_EVENT_END("media", "key ID", GetHexKeyId(input_buffer), "status",
+                  CdmStatusToString(status));
 
   if (status != cdm::kSuccess) {
     DVLOG(1) << __func__ << ": status = " << status;
@@ -1167,6 +1158,9 @@ void CdmAdapter::ReportMetrics(cdm::MetricName metric_name, uint64_t value) {
       return;
     case cdm::kKeySystemDataBool1:
       cdm_metrics_data_.key_system_data_bool1 = value != 0;
+      return;
+    case cdm::kSessionInitDataType:
+      cdm_metrics_data_.session_init_data_type = value;
       return;
   }
 }

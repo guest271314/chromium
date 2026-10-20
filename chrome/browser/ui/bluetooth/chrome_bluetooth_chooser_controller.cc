@@ -10,10 +10,9 @@
 #include "build/buildflag.h"
 #include "chrome/browser/chooser_controller/title_util.h"
 #include "chrome/browser/profiles/profile_manager.h"
-#include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/scoped_tabbed_browser_displayer.h"
 #include "chrome/common/url_constants.h"
-#include "chrome/grit/generated_resources.h"
 #include "components/permissions/constants.h"
 #include "components/strings/grit/components_strings.h"
 #include "content/public/browser/page_navigator.h"
@@ -37,11 +36,12 @@
 
 namespace {
 
-Browser* GetBrowser() {
+BrowserWindowInterface* GetBrowser() {
   chrome::ScopedTabbedBrowserDisplayer browser_displayer(
       ProfileManager::GetLastUsedProfileAllowedByPolicy());
-  DCHECK(browser_displayer.browser());
-  return browser_displayer.browser();
+  CHECK(browser_displayer.browser_window_interface(),
+        base::NotFatalUntil::M162);
+  return browser_displayer.browser_window_interface();
 }
 
 }  // namespace
@@ -60,17 +60,15 @@ void ChromeBluetoothChooserController::OpenAdapterOffHelpUrl() const {
 #if BUILDFLAG(IS_CHROMEOS)
   // Chrome OS can directly link to the OS setting to turn on the adapter.
   chrome::SettingsWindowManager::GetInstance()->ShowOSSettings(
-      GetBrowser()->profile(),
+      GetBrowser()->GetProfile(),
       chromeos::settings::mojom::kBluetoothDevicesSubpagePath);
 #else
   // For other operating systems, show a help center page in a tab.
-  GetBrowser()->OpenURL(
-      content::OpenURLParams(GURL(chrome::kBluetoothAdapterOffHelpURL),
-                             content::Referrer(),
-                             WindowOpenDisposition::NEW_FOREGROUND_TAB,
-                             ui::PAGE_TRANSITION_AUTO_TOPLEVEL,
-                             false /* is_renderer_initialized */),
-      /*navigation_handle_callback=*/{});
+  GetBrowser()->OpenURL(content::OpenURLParams::CreateBrowserInitiated(
+                            GURL(chrome::kBluetoothAdapterOffHelpURL),
+                            WindowOpenDisposition::NEW_FOREGROUND_TAB,
+                            ui::PAGE_TRANSITION_AUTO_TOPLEVEL),
+                        /*navigation_handle_callback=*/{});
 #endif
 }
 
@@ -84,11 +82,9 @@ void ChromeBluetoothChooserController::OpenPermissionPreferences() const {
 }
 
 void ChromeBluetoothChooserController::OpenHelpCenterUrl() const {
-  GetBrowser()->OpenURL(
-      content::OpenURLParams(GURL(permissions::kChooserBluetoothOverviewURL),
-                             content::Referrer(),
-                             WindowOpenDisposition::NEW_FOREGROUND_TAB,
-                             ui::PAGE_TRANSITION_AUTO_TOPLEVEL,
-                             false /* is_renderer_initialized */),
-      /*navigation_handle_callback=*/{});
+  GetBrowser()->OpenURL(content::OpenURLParams::CreateBrowserInitiated(
+                            GURL(permissions::kChooserBluetoothOverviewURL),
+                            WindowOpenDisposition::NEW_FOREGROUND_TAB,
+                            ui::PAGE_TRANSITION_AUTO_TOPLEVEL),
+                        /*navigation_handle_callback=*/{});
 }

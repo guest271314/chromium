@@ -25,13 +25,14 @@ import org.chromium.chrome.browser.browser_controls.BrowserControlsOffsetTagsInf
 import org.chromium.chrome.browser.browser_controls.BrowserControlsStateProvider;
 import org.chromium.chrome.browser.browser_controls.BrowserControlsStateProvider.ControlsPosition;
 import org.chromium.chrome.browser.browser_controls.BrowserControlsUtils;
+import org.chromium.chrome.browser.browser_controls.BrowserControlsVisibilityManager;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.layouts.LayoutStateProvider;
 import org.chromium.chrome.browser.layouts.LayoutStateProvider.LayoutStateObserver;
 import org.chromium.chrome.browser.layouts.LayoutType;
 import org.chromium.chrome.browser.tab.CurrentTabObserver;
-import org.chromium.chrome.browser.tab.EmptyTabObserver;
 import org.chromium.chrome.browser.tab.Tab;
+import org.chromium.chrome.browser.tab.TabObserver;
 import org.chromium.chrome.browser.theme.ThemeColorProvider.ThemeColorObserver;
 import org.chromium.chrome.browser.theme.ThemeUtils;
 import org.chromium.chrome.browser.theme.ToolbarThemeColorProvider;
@@ -79,7 +80,7 @@ public class TopToolbarOverlayMediator implements ThemeColorObserver {
     private final CurrentTabObserver mTabObserver;
 
     /** Access to the current state of the browser controls. */
-    private final BrowserControlsStateProvider mBrowserControlsStateProvider;
+    private final BrowserControlsVisibilityManager mBrowserControlsVisibilityManager;
 
     /** An observer of the browser controls offsets. */
     private final BrowserControlsStateProvider.Observer mBrowserControlsObserver;
@@ -114,6 +115,12 @@ public class TopToolbarOverlayMediator implements ThemeColorObserver {
 
     /** Whether the overlay should be visible despite other signals. */
     private boolean mManualVisibility;
+
+    /**
+     * Whether the hairline shadow is externally suppressed (e.g., during fullscreen video or XR
+     * mode).
+     */
+    private boolean mToolbarHairlineSuppressed;
 
     /** Whether a layout that this overlay can be displayed on is showing. */
     private boolean mIsOnValidLayout;
@@ -155,7 +162,7 @@ public class TopToolbarOverlayMediator implements ThemeColorObserver {
             LayoutStateProvider layoutStateProvider,
             Callback<DrawingInfo> progressInfoCallback,
             NullableObservableSupplier<Tab> tabSupplier,
-            BrowserControlsStateProvider browserControlsStateProvider,
+            BrowserControlsVisibilityManager browserControlsVisibilityManager,
             ToolbarThemeColorProvider toolbarThemeColorProvider,
             NonNullObservableSupplier<Integer> bottomToolbarControlsOffsetSupplier,
             NonNullObservableSupplier<Boolean> suppressToolbarSceneLayerSupplier,
@@ -166,7 +173,7 @@ public class TopToolbarOverlayMediator implements ThemeColorObserver {
         mContext = context;
         mLayoutStateProvider = layoutStateProvider;
         mProgressInfoCallback = progressInfoCallback;
-        mBrowserControlsStateProvider = browserControlsStateProvider;
+        mBrowserControlsVisibilityManager = browserControlsVisibilityManager;
         mToolbarThemeColorProvider = toolbarThemeColorProvider;
         mModel = model;
         mBottomToolbarControlsOffsetSupplier = bottomToolbarControlsOffsetSupplier;
@@ -202,11 +209,12 @@ public class TopToolbarOverlayMediator implements ThemeColorObserver {
                     updateThemeColor(tab);
                     updateProgress();
                     updateAnonymize(tab);
+                    updateOffsetTag(mBrowserControlsOffsetTagsInfo);
                 };
         mTabObserver =
                 new CurrentTabObserver(
                         tabSupplier,
-                        new EmptyTabObserver() {
+                        new TabObserver() {
                             @Override
                             public void onDidChangeThemeColor(Tab tab, int color) {
                                 updateThemeColor(tab);
@@ -230,6 +238,7 @@ public class TopToolbarOverlayMediator implements ThemeColorObserver {
                                 updateVisibility();
                                 updateThemeColor(tab);
                                 updateAnonymize(tab);
+                                updateOffsetTag(mBrowserControlsOffsetTagsInfo);
                             }
 
                             @Override
@@ -265,10 +274,10 @@ public class TopToolbarOverlayMediator implements ThemeColorObserver {
                             // item of the top controls, so we need to subtract the height of the
                             // bookmark bar to shift the toolbar up.
                             // TODO(crbug.com/417238089): Get offset from TopControlsStacker.
-                            int height = mBrowserControlsStateProvider.getTopControlsHeight();
-                            if (ChromeFeatureList.sAndroidBookmarkBar.isEnabled()) {
-                                height = getBookmarkBarAdjustedContentOffset(height);
-                            }
+                            int height =
+                                    getBookmarkBarAdjustedContentOffset(
+                                            mBrowserControlsVisibilityManager
+                                                    .getTopControlsHeight());
                             if (getControlsPosition() == ControlsPosition.TOP) {
                                 applyContentOffsetToModel(adjustContentOffsetForHairline(height));
                             } else if (getControlsPosition() == ControlsPosition.BOTTOM) {
@@ -290,6 +299,7 @@ public class TopToolbarOverlayMediator implements ThemeColorObserver {
                     public void onAndroidControlsVisibilityChanged(int visibility) {
                         mIsBrowserControlsAndroidViewVisible = visibility == View.VISIBLE;
                         updateShadowState();
+                        updateVisibility();
                     }
 
                     @Override
@@ -305,7 +315,7 @@ public class TopToolbarOverlayMediator implements ThemeColorObserver {
                         }
                         if (shouldUpdateOffsets) {
                             applyContentOffsetToModel(
-                                    mBrowserControlsStateProvider.getContentOffset());
+                                    mBrowserControlsVisibilityManager.getContentOffset());
                         }
                     }
 
@@ -336,32 +346,28 @@ public class TopToolbarOverlayMediator implements ThemeColorObserver {
                         updateOffsetTag(mBrowserControlsOffsetTagsInfo);
                     }
                 };
-        mBrowserControlsStateProvider.addObserver(mBrowserControlsObserver);
+        mBrowserControlsVisibilityManager.addObserver(mBrowserControlsObserver);
 
         mProgressBarObserver =
                 new ProgressBarObserver() {
                     @Override
                     public void onVisibleProgressUpdated() {
-                        if (ChromeFeatureList.sAndroidAnimatedProgressBarInBrowser.isEnabled()) {
-                            updateProgress();
-                        }
+                        updateProgress();
                     }
 
                     @Override
                     public void onCompositedLayersVisibilityChanged() {
-                        if (ChromeFeatureList.sAndroidAnimatedProgressBarInBrowser.isEnabled()) {
-                            updateProgress();
-                        }
+                        updateProgress();
                     }
                 };
-        if (progressBar != null && ChromeFeatureList.sAndroidApb144Patch5.isEnabled()) {
+        if (progressBar != null) {
             progressBar.addObserver(mProgressBarObserver);
         }
 
         mToolbarThemeColorProvider.addThemeColorObserver(this);
 
         mIsBrowserControlsAndroidViewVisible =
-                mBrowserControlsStateProvider.getAndroidControlsVisibility() == View.VISIBLE;
+                mBrowserControlsVisibilityManager.getAndroidControlsVisibility() == View.VISIBLE;
     }
 
     private boolean isBookmarkBarVisible() {
@@ -389,9 +395,9 @@ public class TopToolbarOverlayMediator implements ThemeColorObserver {
         // the adjustment. This is guaranteed to almost always work, because onControlsOffsetChanged
         // will be called when render can respond to the new height.
         int renderTopControlsHeight =
-                mBrowserControlsStateProvider.getContentOffset()
-                        - mBrowserControlsStateProvider.getTopControlOffset();
-        if (renderTopControlsHeight != mBrowserControlsStateProvider.getTopControlsHeight()) {
+                mBrowserControlsVisibilityManager.getContentOffset()
+                        - mBrowserControlsVisibilityManager.getTopControlOffset();
+        if (renderTopControlsHeight != mBrowserControlsVisibilityManager.getTopControlsHeight()) {
             return originalContentOffset;
         }
         return originalContentOffset - offset;
@@ -427,14 +433,34 @@ public class TopToolbarOverlayMediator implements ThemeColorObserver {
     }
 
     /**
+     * Called when the external suppression state of the toolbar hairline shadow changes.
+     *
+     * @param suppressed Whether the hairline shadow should be suppressed (e.g., when in fullscreen
+     *     or XR mode).
+     */
+    void onToolbarHairlineSuppressedChanged(boolean suppressed) {
+        if (mToolbarHairlineSuppressed == suppressed) return;
+        mToolbarHairlineSuppressed = suppressed;
+        updateShadowState();
+    }
+
+    /**
      * Compute whether the texture's shadow should be visible. The shadow is visible whenever the
      * android view is not shown.
      */
     private void updateShadowState() {
+        if (mToolbarHairlineSuppressed) {
+            mModel.set(TopToolbarOverlayProperties.SHOW_SHADOW, false);
+            return;
+        }
+
         if (ChromeFeatureList.sAlwaysDrawCompositedToolbarHairline.isEnabled()) {
-            // With BCIV enabled, we show the hairline on the composited toolbar by default,
-            // and we don't want to update its visibility from the browser, because that incurs a
-            // compositor frame.
+            // With BCIV enabled, the hairline on the composited toolbar is shown by default.
+            // During normal browser scrolling and view transitions, SHOW_SHADOW is already true so
+            // setting it here is a no-op (avoiding extra compositor frames). However, when exiting
+            // external suppression (such as fullscreen video or XR mode where SHOW_SHADOW was set
+            // to false above), setting true here is required to restore the composited hairline.
+            mModel.set(TopToolbarOverlayProperties.SHOW_SHADOW, true);
             return;
         }
 
@@ -554,7 +580,7 @@ public class TopToolbarOverlayMediator implements ThemeColorObserver {
         mBottomToolbarControlsOffsetSupplier.removeObserver(mOnBottomToolbarControlsOffsetChanged);
         mSuppressToolbarSceneLayerSupplier.removeObserver(mOnSuppressToolbarSceneLayerChanged);
         mLayoutStateProvider.removeObserver(mSceneChangeObserver);
-        mBrowserControlsStateProvider.removeObserver(mBrowserControlsObserver);
+        mBrowserControlsVisibilityManager.removeObserver(mBrowserControlsObserver);
         mCaptureResourceIdSupplier.removeObserver(mOnCaptureResourceIdSupplierChange);
     }
 
@@ -562,7 +588,11 @@ public class TopToolbarOverlayMediator implements ThemeColorObserver {
     private void updateVisibility() {
         Tab tab = mTabSupplier.get();
         if (mSuppressToolbarSceneLayerSupplier.get()
-                || (tab != null && tab.isNativePage() && tab.isDisplayingBackForwardAnimation())) {
+                || (tab != null && tab.isNativePage() && tab.isDisplayingBackForwardAnimation())
+                || (tab != null
+                        && tab.isTrustedWebActivity()
+                        && ChromeFeatureList.sBrowserControlsHidingToken.isEnabled()
+                        && mBrowserControlsVisibilityManager.hasHidingTokens())) {
             // TODO(crbug.com/365818512): Add a screenshot capture test to cover this case.
             mModel.set(TopToolbarOverlayProperties.VISIBLE, false);
         } else if (mIsVisibilityManuallyControlled) {
@@ -642,7 +672,7 @@ public class TopToolbarOverlayMediator implements ThemeColorObserver {
 
     @ControlsPosition
     int getControlsPosition() {
-        return mBrowserControlsStateProvider.getControlsPosition();
+        return mBrowserControlsVisibilityManager.getControlsPosition();
     }
 
     private void updateContentOffset() {
@@ -657,7 +687,7 @@ public class TopToolbarOverlayMediator implements ThemeColorObserver {
         // bottom of the bottom controls stack. Instead, we rely on an offset
         // provided to us indirectly via BottomControlsStacker, which controls the
         // position of bottom controls layers.
-        int contentOffset = mBrowserControlsStateProvider.getContentOffset();
+        int contentOffset = mBrowserControlsVisibilityManager.getContentOffset();
 
         if (getControlsPosition() == ControlsPosition.BOTTOM) {
             contentOffset = (int) (mBottomToolbarControlsOffsetSupplier.get() + mViewportHeight);
@@ -666,18 +696,15 @@ public class TopToolbarOverlayMediator implements ThemeColorObserver {
         }
 
         contentOffset = adjustContentOffsetForHairline(contentOffset);
-
-        if (ChromeFeatureList.sAndroidBookmarkBar.isEnabled()) {
-            contentOffset = getBookmarkBarAdjustedContentOffset(contentOffset);
-        }
+        contentOffset = getBookmarkBarAdjustedContentOffset(contentOffset);
 
         applyContentOffsetToModel(contentOffset);
     }
 
     private int adjustContentOffsetForHairline(int contentOffset) {
-        int topControlsMinHeight = mBrowserControlsStateProvider.getTopControlsMinHeight();
+        int topControlsMinHeight = mBrowserControlsVisibilityManager.getTopControlsMinHeight();
         int topControlsHairlineHeight =
-                mBrowserControlsStateProvider.getTopControlsHairlineHeight();
+                mBrowserControlsVisibilityManager.getTopControlsHairlineHeight();
         if (BrowserControlsUtils.shouldContentOffsetHideTopControlsHairline(
                 contentOffset, topControlsMinHeight, topControlsHairlineHeight)) {
             return contentOffset - topControlsHairlineHeight;

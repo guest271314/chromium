@@ -5,16 +5,23 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_PLATFORM_MEDIASTREAM_MEDIA_STREAM_AUDIO_TRACK_H_
 #define THIRD_PARTY_BLINK_RENDERER_PLATFORM_MEDIASTREAM_MEDIA_STREAM_AUDIO_TRACK_H_
 
+#include <atomic>
 #include <memory>
+#include <optional>
 
 #include "base/functional/callback.h"
 #include "base/memory/weak_ptr.h"
 #include "base/synchronization/lock.h"
 #include "base/thread_annotations.h"
 #include "base/threading/thread_checker.h"
+#include "base/time/time.h"
+#include "media/base/audio_bus.h"
+#include "media/base/audio_parameters.h"
+#include "third_party/blink/public/platform/modules/mediastream/web_media_stream_track.h"
 #include "third_party/blink/renderer/platform/mediastream/media_stream_audio_deliverer.h"
 #include "third_party/blink/renderer/platform/mediastream/media_stream_track_platform.h"
 #include "third_party/blink/renderer/platform/platform_export.h"
+#include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
 
 namespace media {
 struct AudioGlitchInfo;
@@ -91,6 +98,13 @@ class PLATFORM_EXPORT MediaStreamAudioTrack : public MediaStreamTrackPlatform {
   // method to provide safe down-casting to their type.
   virtual void* GetClassIdentifier() const;
 
+  std::optional<bool> VoiceIsolationExactConstraint() const {
+    return voice_isolation_exact_constraint_;
+  }
+  void SetVoiceIsolationExactConstraint(std::optional<bool> value) {
+    voice_isolation_exact_constraint_ = value;
+  }
+
  private:
   friend class MediaStreamAudioSource;
   friend class MediaStreamAudioDeliverer<MediaStreamAudioTrack>;
@@ -151,6 +165,8 @@ class PLATFORM_EXPORT MediaStreamAudioTrack : public MediaStreamTrackPlatform {
   // Frame stats that have not yet been added into mainthread_frame_stats_. This
   // is only used on the audio thread.
   AudioFrameStats pending_frame_stats_;
+
+  std::optional<bool> voice_isolation_exact_constraint_;
 
   // Provides weak pointers that are valid until Stop() is called.
   base::WeakPtrFactory<MediaStreamAudioTrack> weak_factory_{this};

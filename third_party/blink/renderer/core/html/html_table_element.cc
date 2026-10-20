@@ -48,6 +48,7 @@
 #include "third_party/blink/renderer/platform/bindings/exception_state.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
 #include "third_party/blink/renderer/platform/instrumentation/use_counter.h"
+#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/blink/renderer/platform/weborigin/referrer.h"
 #include "third_party/blink/renderer/platform/wtf/std_lib_extras.h"
 #include "third_party/blink/renderer/platform/wtf/text/strcat.h"
@@ -489,9 +490,7 @@ HTMLTableElement::AdditionalPresentationAttributeStyle() {
   if (frame_attr_)
     return nullptr;
 
-  if (!border_attr_ &&
-      (!border_color_attr_ ||
-       RuntimeEnabledFeatures::TableBorderColorNoImplicitBorderEnabled())) {
+  if (!border_attr_) {
     // Setting the border to 'hidden' allows it to win over any border
     // set on the table's cells during border-conflict resolution.
     if (rules_attr_ != kUnsetRules) {
@@ -537,6 +536,17 @@ CSSPropertyValueSet* HTMLTableElement::CreateSharedCellStyle() {
   auto* style =
       MakeGarbageCollected<MutableCSSPropertyValueSet>(kHTMLQuirksMode);
 
+  // Determine the border-color for interior cells. The legacy behavior (flag
+  // enabled), and the `bordercolor` attribute, make cells inherit the table's
+  // border-color. Otherwise cells resolve to `currentColor`, since border-color
+  // is not an inherited property per CSS Backgrounds 3.
+  const CSSValue* cell_border_color =
+      RuntimeEnabledFeatures::TableCellBorderColorInheritEnabled() ||
+              border_color_attr_
+          ? static_cast<const CSSValue*>(CSSInheritedValue::Create())
+          : static_cast<const CSSValue*>(
+                CSSIdentifierValue::Create(CSSValueID::kCurrentcolor));
+
   switch (GetCellBorders()) {
     case kSolidBordersColsOnly:
       style->SetLonghandProperty(CSSPropertyID::kBorderLeftWidth,
@@ -547,8 +557,7 @@ CSSPropertyValueSet* HTMLTableElement::CreateSharedCellStyle() {
                                  CSSValueID::kSolid);
       style->SetLonghandProperty(CSSPropertyID::kBorderRightStyle,
                                  CSSValueID::kSolid);
-      style->SetProperty(CSSPropertyID::kBorderColor,
-                         *CSSInheritedValue::Create());
+      style->SetProperty(CSSPropertyID::kBorderColor, *cell_border_color);
       break;
     case kSolidBordersRowsOnly:
       style->SetLonghandProperty(CSSPropertyID::kBorderTopWidth,
@@ -559,8 +568,7 @@ CSSPropertyValueSet* HTMLTableElement::CreateSharedCellStyle() {
                                  CSSValueID::kSolid);
       style->SetLonghandProperty(CSSPropertyID::kBorderBottomStyle,
                                  CSSValueID::kSolid);
-      style->SetProperty(CSSPropertyID::kBorderColor,
-                         *CSSInheritedValue::Create());
+      style->SetProperty(CSSPropertyID::kBorderColor, *cell_border_color);
       break;
     case kSolidBorders:
       style->SetProperty(CSSPropertyID::kBorderWidth,
@@ -568,8 +576,7 @@ CSSPropertyValueSet* HTMLTableElement::CreateSharedCellStyle() {
                              1, CSSPrimitiveValue::UnitType::kPixels));
       style->SetProperty(CSSPropertyID::kBorderStyle,
                          *CSSIdentifierValue::Create(CSSValueID::kSolid));
-      style->SetProperty(CSSPropertyID::kBorderColor,
-                         *CSSInheritedValue::Create());
+      style->SetProperty(CSSPropertyID::kBorderColor, *cell_border_color);
       break;
     case kInsetBorders:
       style->SetProperty(CSSPropertyID::kBorderWidth,
@@ -577,8 +584,7 @@ CSSPropertyValueSet* HTMLTableElement::CreateSharedCellStyle() {
                              1, CSSPrimitiveValue::UnitType::kPixels));
       style->SetProperty(CSSPropertyID::kBorderStyle,
                          *CSSIdentifierValue::Create(CSSValueID::kInset));
-      style->SetProperty(CSSPropertyID::kBorderColor,
-                         *CSSInheritedValue::Create());
+      style->SetProperty(CSSPropertyID::kBorderColor, *cell_border_color);
       break;
     case kNoBorders:
       // If 'rules=none' then allow any borders set at cell level to take

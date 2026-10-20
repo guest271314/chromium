@@ -8,6 +8,7 @@
 #include "base/files/scoped_temp_dir.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/metrics/statistics_recorder.h"
+#include "base/process/process.h"
 #include "base/strings/stringprintf.h"
 #include "base/task/common/task_annotator.h"
 #include "base/test/tracing/test_trace_processor.h"
@@ -254,7 +255,8 @@ IN_PROC_BROWSER_TEST_F(TracingEndToEndBrowserTest, TaskExecutionEvent) {
     base::PendingTask task;
     task.task = base::DoNothing();
     task.posted_from = base::Location::CreateForTesting(
-        "my_func", "my_file", 0, /*program_counter=*/&task);
+        "my_func", "my_file", 0,
+        /*program_counter=*/reinterpret_cast<uintptr_t>(&task));
     // TaskAnnotator::RunTask is responsible for emitting the task execution
     // event.
     task_annotator.RunTask("RunTaskForTesting", task);
@@ -277,7 +279,13 @@ IN_PROC_BROWSER_TEST_F(TracingEndToEndBrowserTest, TaskExecutionEvent) {
                              std::vector<std::string>{"my_file", "my_func"}));
 }
 
-IN_PROC_BROWSER_TEST_F(TracingEndToEndBrowserTest, ThreadAndProcessName) {
+// TODO(crbug.com/519488198): Flaky on Fuchsia.
+#if BUILDFLAG(IS_FUCHSIA)
+#define MAYBE_ThreadAndProcessName DISABLED_ThreadAndProcessName
+#else
+#define MAYBE_ThreadAndProcessName ThreadAndProcessName
+#endif
+IN_PROC_BROWSER_TEST_F(TracingEndToEndBrowserTest, MAYBE_ThreadAndProcessName) {
   base::test::TestTraceProcessor ttp;
   ttp.StartTrace("foo");
 
@@ -826,9 +834,9 @@ IN_PROC_BROWSER_TEST_F(TracingEndToEndBrowserTest, AddTraceEventWithProcessId) {
   std::vector<base::ProcessId> child_pids;
   content::BrowserChildProcessHostIterator iterator;
   while (!iterator.Done()) {
-    const content::ChildProcessData& data = iterator.GetData();
-    if (data.GetProcess().IsValid()) {
-      child_pids.push_back(data.GetProcess().Pid());
+    const base::Process& process = iterator.GetProcess();
+    if (process.IsValid()) {
+      child_pids.push_back(process.Pid());
     }
     ++iterator;
   }
@@ -984,9 +992,8 @@ class SystemTracingEndToEndBrowserTest : public ContentBrowserTest {
   // Waits for the current process to connect to the tracing service as a
   // producer.
   bool WaitForCurrentProcessConnected() {
-    std::string current_process_name = tracing::PerfettoTracedProcess::Get()
-                                           .perfetto_platform_for_testing()
-                                           ->GetCurrentProcessName();
+    std::string current_process_name =
+        base::tracing::PerfettoPlatform::Get().GetCurrentProcessName();
     std::unique_ptr<perfetto::TracingSession> session =
         perfetto::Tracing::NewTrace(perfetto::kSystemBackend);
     for (size_t i = 0; i < 100; i++) {

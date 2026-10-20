@@ -29,6 +29,7 @@
 
 #include "base/notimplemented.h"
 #include "base/strings/string_view_rust.h"
+#include "third_party/blink/renderer/core/css/style_engine.h"
 #include "third_party/blink/renderer/core/dom/cdata_section.h"
 #include "third_party/blink/renderer/core/dom/comment.h"
 #include "third_party/blink/renderer/core/dom/document.h"
@@ -39,6 +40,7 @@
 #include "third_party/blink/renderer/core/dom/qualified_name.h"
 #include "third_party/blink/renderer/core/dom/text.h"
 #include "third_party/blink/renderer/core/dom/throw_on_dynamic_markup_insertion_count_incrementer.h"
+#include "third_party/blink/renderer/core/dom/transform_source.h"
 #include "third_party/blink/renderer/core/dom/xml_document.h"
 #include "third_party/blink/renderer/core/execution_context/agent.h"
 #include "third_party/blink/renderer/core/frame/local_frame.h"
@@ -46,16 +48,21 @@
 #include "third_party/blink/renderer/core/html/custom/ce_reactions_scope.h"
 #include "third_party/blink/renderer/core/html/custom/custom_element_registry.h"
 #include "third_party/blink/renderer/core/html/html_html_element.h"
+#include "third_party/blink/renderer/core/html/html_iframe_element.h"
 #include "third_party/blink/renderer/core/html/html_template_element.h"
 #include "third_party/blink/renderer/core/html/parser/html_construction_site.h"
 #include "third_party/blink/renderer/core/html_names.h"
 #include "third_party/blink/renderer/core/loader/frame_loader.h"
 #include "third_party/blink/renderer/core/svg/graphics/svg_image.h"
 #include "third_party/blink/renderer/core/xml/document_xml_tree_viewer.h"
+#include "third_party/blink/renderer/core/xml/document_xslt.h"
 #include "third_party/blink/renderer/core/xml/parser/xhtml_subset.h"
+#include "third_party/blink/renderer/core/xml/parser/xml_document_parser.h"
+#include "third_party/blink/renderer/core/xml/xslt_processor.h"
 #include "third_party/blink/renderer/core/xmlns_names.h"
 #include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/blink/renderer/platform/wtf/text/strcat.h"
+#include "third_party/blink/renderer/platform/wtf/text/string_view.h"
 
 namespace blink {
 namespace {
@@ -77,9 +84,20 @@ inline bool HasNoStyleInformation(Document* document) {
     return false;
   }
 
-  if (!document->IsInMainFrame() ||
-      document->GetFrame()->IsInFencedFrameTree()) {
+  if (document->GetFrame()->IsInFencedFrameTree()) {
     return false;  // This document has style information from a parent.
+  }
+
+  if (!document->IsInMainFrame()) {
+    if (!RuntimeEnabledFeatures::XMLViewerForIframesEnabled()) {
+      return false;
+    }
+    auto* owner = document->GetFrame()->DeprecatedLocalOwner();
+    if (!owner || !IsA<HTMLIFrameElement>(*owner) ||
+        document->Url().ProtocolIs("blob") ||
+        document->contentType() == "image/svg+xml") {
+      return false;
+    }
   }
 
   if (SVGImage::IsInSVGImage(document)) {
@@ -237,8 +255,29 @@ void XMLDocumentParserRs::HandleError(XMLErrors::ErrorType type,
 }
 
 void XMLDocumentParserRs::Append(const String& xml_string) {
-  xml_ffi::append_to_source(*read_state_,
-                            base::StringViewToRustSlice(xml_string.Utf8()));
+  if (saw_xsl_transform_ || !saw_first_element_) {
+    original_source_for_transform_.Append(xml_string);
+  }
+
+  if (IsStopped() || saw_xsl_transform_) {
+    return;
+  }
+
+  if (!xml_string.empty()) {
+    // Resume parsing, recover from unbalanced root error at previous chunk
+    // boundary.
+    carry_unbalanced_root_error_ = std::nullopt;
+  }
+  if (RuntimeEnabledFeatures::XMLParserReplaceLoneSurrogatesEnabled()) {
+    // Replace lone surrogates with U+FFFD so the parser does a best-effort
+    // parse instead of rejecting the whole input (crbug.com/40814739).
+    xml_ffi::append_to_source(*read_state_,
+                              base::StringViewToRustSlice(xml_string.Utf8(
+                                  Utf8ConversionMode::kStrictReplacingErrors)));
+  } else {
+    xml_ffi::append_to_source(*read_state_,
+                              base::StringViewToRustSlice(xml_string.Utf8()));
+  }
   ProcessEvents();
 }
 
@@ -357,6 +396,19 @@ void XMLDocumentParserRs::ProcessingInstruction(rust::Str target,
     saw_css_ = true;
     CheckIfBlockingStyleSheetAdded();
   }
+
+  if (pi->IsXSL()) {
+    // Only XSL processing instructions before the first element (in the prolog)
+    // can trigger an XSL transformation.
+    if (!saw_first_element_ && IsXSLTAllowed()) {
+      saw_xsl_transform_ = true;
+      if (!DocumentXSLT::HasTransformSourceDocument(*GetDocument())) {
+        StopParsing();
+      }
+    } else {
+      pi->DisallowXSL();
+    }
+  }
 }
 
 void XMLDocumentParserRs::StartElementNs(
@@ -377,6 +429,51 @@ void XMLDocumentParserRs::StartElementNs(
 
   bool is_first_element = !saw_first_element_;
   saw_first_element_ = true;
+  if (!parsing_fragment_ && is_first_element && local_name == "alert" &&
+      has_ns && IsCAPAlertNamespace(RustStrToAtomicString(ns))) {
+    UseCounter::Count(document_, WebFeature::kXmlCAPAlert);
+    if (document_) {
+      // Reference: Compare with XMLDocumentParser::StartElementNs in
+      // xml_document_parser.cc.
+      // We set this here so that XSLT processing can be conditionally enabled
+      // for this document (see XSLTProcessor::IsXSLTEnabled), and so the XSLT
+      // engine knows to inject the CAP alert banner and record use counters.
+      document_->SetIsCAPAlert(true);
+      if (RuntimeEnabledFeatures::EnableXSLTForCAPAlertsEnabled(
+              document_->GetExecutionContext())) {
+        for (Node* child = document_->firstChild(); child;
+             child = child->nextSibling()) {
+          if (auto* pi = DynamicTo<class ProcessingInstruction>(child)) {
+            if (!pi->IsXSL()) {
+              // The PI was initially inserted into the document before
+              // IsCAPAlert() was set, so IsXSL() returned false and it was
+              // treated as a regular CSS stylesheet (or disallowed). Remove
+              // it from the CSS engine, re-evaluate it, and trigger the XSLT
+              // processing logic since it was missed during insertion.
+              document_->GetStyleEngine().RemoveStyleSheetCandidateNode(
+                  *pi, *document_);
+              pi->UpdateStylesheetIfNeeded();
+              if (pi->IsXSL()) {
+                DocumentXSLT::ProcessingInstructionInsertedIntoDocument(
+                    *document_, pi);
+                saw_xsl_transform_ = true;
+                if (!DocumentXSLT::HasTransformSourceDocument(*GetDocument())) {
+                  StopParsing();
+                  return;
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  if (IsStopped() || saw_xsl_transform_) {
+    return;
+  }
+
+  original_source_for_transform_.Clear();
 
   Vector<Attribute, kAttributePrealloc> prefixed_attributes;
   bool encountered_namespace_reset = false;
@@ -428,8 +525,7 @@ void XMLDocumentParserRs::StartElementNs(
   for (const auto& attr : prefixed_attributes) {
     if (attr.GetName() == html_names::kIsAttr) {
       is = attr.Value();
-    } else if (RuntimeEnabledFeatures::ScopedCustomElementRegistryEnabled() &&
-               attr.GetName() == html_names::kCustomelementregistryAttr) {
+    } else if (attr.GetName() == html_names::kCustomelementregistryAttr) {
       has_customelementregistry_attr = true;
     }
   }
@@ -445,8 +541,7 @@ void XMLDocumentParserRs::StartElementNs(
   }
 
   CustomElementRegistry* registry = nullptr;
-  if (RuntimeEnabledFeatures::ScopedCustomElementRegistryEnabled() &&
-      !has_customelementregistry_attr) {
+  if (!has_customelementregistry_attr) {
     // If the element doesn't have the customelementregistry attribute, then
     // it should inherit its registry from its parent.
     if (auto* parent_element = DynamicTo<Element>(current_node_.Get())) {
@@ -474,12 +569,15 @@ void XMLDocumentParserRs::StartElementNs(
       reactions.emplace(isolate);
     }
   }
-
-  Element* new_element = current_node_->GetDocument().CreateElement(
-      q_name,
+  CreateElementFlags flags =
       parsing_fragment_ ? CreateElementFlags::ByFragmentParser(document_)
-                        : CreateElementFlags::ByParser(document_),
-      is, registry);
+                        : CreateElementFlags::ByParser(document_);
+  if (ShouldMarkScriptAlreadyStarted()) {
+    flags.SetAlreadyStarted(true);
+  }
+
+  Element* new_element =
+      current_node_->GetDocument().CreateElement(q_name, flags, is, registry);
 
   if (!new_element) {
     StopParsing();
@@ -648,11 +746,13 @@ void XMLDocumentParserRs::DocType(rust::Str name_rs,
 void XMLDocumentParserRs::EndDocument() {
   UpdateLeafTextNode();
   carry_unbalanced_root_error_ = std::nullopt;
-  bool xml_viewer_mode =
-      !saw_error_ && !saw_css_ && HasNoStyleInformation(GetDocument());
+  bool xml_viewer_mode = !saw_error_ && !saw_css_ && !saw_xsl_transform_ &&
+                         HasNoStyleInformation(GetDocument());
   if (xml_viewer_mode) {
     GetDocument()->SetIsViewSource(true);
-    TransformDocumentToXMLTreeView(*GetDocument());
+    TransformDocumentToXMLTreeView(
+        *GetDocument(),
+        /*preserve_document_element=*/!GetDocument()->IsInMainFrame());
   }
   // The XML crate keeps sending EndDocument as a next event if you keep
   // querying. Change state here to break out of the ProcessEvents loop.
@@ -682,6 +782,30 @@ void XMLDocumentParserRs::PopCurrentNode() {
 void XMLDocumentParserRs::EndInternal() {
   DCHECK(!parsing_fragment_);
 
+  if (saw_xsl_transform_) {
+    // When an XSL processing instruction was encountered in the prolog (or via
+    // CAP alert detection in StartElementNs()), element parsing into the DOM
+    // was halted by StopParsing(), but Append() continued accumulating incoming
+    // chunks of raw XML source into original_source_for_transform_.
+    //
+    // EndInternal() is called once the input stream finishes (e.g. from
+    // Finish() when the network resource completes, or when process_events
+    // reaches the end of input).
+    //
+    // We wrap up here by parsing the full buffered XML text into an in-memory
+    // libxml2 xmlDocPtr tree via XmlDocPtrForString(), and store it in
+    // Document's TransformSource. When the external XSL stylesheet finishes
+    // loading, DocumentXSLT will feed this TransformSource xmlDocPtr to libxslt
+    // via XSLTProcessor::TransformToString(), which transforms the document and
+    // re-parses the resulting HTML/XML. This avoids XMLDocumentParserRs ever
+    // needing to construct Blink DOM elements for the untransformed source.
+    xmlDocPtr doc = XmlDocPtrForString(
+        GetDocument(), original_source_for_transform_.ToString(),
+        GetDocument()->Url().GetString());
+    GetDocument()->SetTransformSource(std::make_unique<TransformSource>(doc));
+    DocumentParser::StopParsing();
+  }
+
   if (IsDetached()) {
     return;
   }
@@ -707,6 +831,11 @@ void XMLDocumentParserRs::EndInternal() {
     PrepareToStopParsing();
   }
   GetDocument()->SetReadyState(Document::kInteractive);
+  // SetReadyState can fire a readystatechange event which can run script and
+  // detach the document.
+  if (IsDetached()) {
+    return;
+  }
   ClearCurrentNodeStack();
   GetDocument()->FinishedParsing();
 }
@@ -719,6 +848,11 @@ void XMLDocumentParserRs::Finish() {
 
   Flush();
   if (IsDetached()) {
+    return;
+  }
+
+  if (saw_xsl_transform_) {
+    EndInternal();
     return;
   }
 
@@ -804,6 +938,64 @@ void XMLDocumentParserRs::CheckIfBlockingStyleSheetAdded() {
   added_pending_parser_blocking_stylesheet_ = false;
   waiting_for_stylesheets_ = true;
   PauseParsing();
+}
+
+bool XMLDocumentParserRs::ShouldMarkScriptAlreadyStarted() const {
+  if (!RuntimeEnabledFeatures::DOMParserXmlScriptAlreadyStartedEnabled()) {
+    return false;
+  }
+
+  return
+      // DOMParser.parseFromString parses with XML scripting support disabled:
+      // See: https://html.spec.whatwg.org/#dom-domparser-parsefromstring
+      //      step 3, "Otherwise", step 1.
+      document_->IsDOMParserDocument() ||
+      // XMLHTTPRequest.responseXML parses with XML scripting support disabled:
+      // See: https://xhr.spec.whatwg.org/#document-response, step 6
+      document_->IsXHRDocument() ||
+      // XSLTProcessor.transformToDocument (and any other XML document with a
+      // null browsing context) must mark script elements as already started
+      // and never execute them.
+      // See:
+      // https://html.spec.whatwg.org/multipage/scripting.html#scriptTagXSLT
+      // Documents without a frame (a null browsing context) do not have a
+      // `script_runner_` in XMLDocumentParserRs, so `EndElementNs()` returns
+      // early without calling `ScriptLoader::PrepareScript()` (which would
+      // otherwise mark scripts as already started and bail out before execution
+      // due to the null browsing context). Checking `!document_->GetFrame()`
+      // marks scripts as already started upon creation in frameless XML
+      // documents, covering `XSLTProcessor.transformToDocument()` (which
+      // creates a frameless Document and parses via `Document::SetContent()`
+      // without setting `IsDOMParserDocument()` or `IsXHRDocument()`):
+      !document_->GetFrame() ||
+      // All XML parse results created as part of XML fragment parsing:
+      // See:
+      // https://html.spec.whatwg.org/multipage/xhtml.html#xml-scripting-support-disabled,
+      // "If the parser was created as part of the XML fragment parsing
+      // algorithm, then the element's already started must be set to true."
+      parsing_fragment_;
+}
+
+// Returns whether XSLT processing is permitted for this document.
+//
+// Delegates to XSLTProcessor::IsXSLTEnabled(context), which captures:
+// 1. Origin trial header and meta cases: RuntimeEnabledFeatures::XSLTEnabled()
+//    queries ExecutionContext::GetOriginTrialContext() for the "XSLT" reverse
+//    origin trial, capturing tokens from HTTP response headers as well as
+//    <meta http-equiv="origin-trial"> tags parsed via HttpEquiv.
+// 2. CAP alert case: IsXSLTEnabled() inspects window->document()->IsCAPAlert(),
+//    which is set in StartElementNs() upon encountering a root <alert> in the
+//    CAP namespace, allowing XSLT if EnableXSLTForCAPAlerts is enabled.
+// 3. Enterprise policy: Respects the kXSLTEnabledPolicy switch if specified.
+bool XMLDocumentParserRs::IsXSLTAllowed() const {
+  if (!document_) {
+    return false;
+  }
+  const ExecutionContext* context = document_->GetExecutionContext();
+  if (!context) {
+    return false;
+  }
+  return XSLTProcessor::IsXSLTEnabled(context);
 }
 
 void XMLDocumentParserRs::ExecuteScriptsWaitingForResources() {

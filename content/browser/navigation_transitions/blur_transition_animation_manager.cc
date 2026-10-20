@@ -225,6 +225,13 @@ void BlurTransitionAnimationManager::ReadyToCommitNavigation(
     return;
   }
 
+  // Only observe the ViewAndroid while a transition is active. The native view
+  // may change between navigations, so make sure the current one is observed.
+  if (!view_observation_.IsObservingSource(native_view)) {
+    view_observation_.Reset();
+    view_observation_.Observe(native_view);
+  }
+
   navigation_id_ = navigation_handle->GetNavigationId();
 
   if (auto* rfh = navigation_handle->GetRenderFrameHost()) {
@@ -262,6 +269,9 @@ void BlurTransitionAnimationManager::RenderFrameHostStateChanged(
     RenderFrameHost* render_frame_host,
     RenderFrameHost::LifecycleState old_state,
     RenderFrameHost::LifecycleState new_state) {
+  // Wait for kActive since target frame activation marks the point where the
+  // outgoing page is no longer interactive, signaling the preferred moment to
+  // begin the blur transition animation.
   if (new_state != RenderFrameHost::LifecycleState::kActive ||
       !render_frame_host->IsInPrimaryMainFrame()) {
     return;
@@ -279,6 +289,11 @@ void BlurTransitionAnimationManager::RenderFrameHostStateChanged(
   }
 
   ShowBlurTransitionLayer();
+
+  // Suppress input events on the WebContents during the blur transition.
+  CHECK(!ignore_input_scope_);
+  ignore_input_scope_ =
+      web_contents()->IgnoreInputEvents(/*audit_callback=*/std::nullopt);
 
   SetAnimationState(AnimationState::kBlurShown);
   blur_hold_timer_.Start(
@@ -360,8 +375,27 @@ void BlurTransitionAnimationManager::OnBlurHoldTimerExpired() {
   RequestAnimate();
 }
 
+void BlurTransitionAnimationManager::OnDetachedFromWindow() {
+  SignalExit(TransitionExitReason::kNavigationInterrupted,
+             /*should_animate_out=*/false);
+  // The WindowAndroid may be destroyed while this object is still alive (e.g.
+  // a closing tab's WebContents is kept alive by TabWebContentsDestroyer), so
+  // never hold on to it once the view is detached. SignalExit() is a no-op
+  // when there are no layers, hence the explicit reset.
+  window_observation_.Reset();
+}
+
+void BlurTransitionAnimationManager::OnViewAndroidDestroyed() {
+  // WebContentsImpl destroys its view before SupportsUserData data (including
+  // this object) is destroyed, so stop observing the ViewAndroid here.
+  view_observation_.Reset();
+  OnDetachedFromWindow();
+}
+
 void BlurTransitionAnimationManager::OnDetachCompositor() {
   window_observation_.Reset();
+  // Clean up animation layer and ensure input suppression is removed.
+  DestroyLayer();
 }
 
 void BlurTransitionAnimationManager::OnAnimate(
@@ -520,16 +554,16 @@ void BlurTransitionAnimationManager::HideBlurTransitionLayer() {
 }
 
 void BlurTransitionAnimationManager::DestroyLayer() {
+  ignore_input_scope_.reset();
   blur_hold_timer_.Stop();
   HideBlurTransitionLayer();
   // Releasing the layer here drops the reference to the viz::SurfaceId,
   // allowing the old page's pixel buffers to be garbage collected.
   blur_layer_.reset();
   fallback_color_layer_.reset();
-  if (animation_state_ != AnimationState::kNone) {
-    animation_state_ = AnimationState::kNone;
-    window_observation_.Reset();
-  }
+  animation_state_ = AnimationState::kNone;
+  window_observation_.Reset();
+  view_observation_.Reset();
 }
 
 }  // namespace content

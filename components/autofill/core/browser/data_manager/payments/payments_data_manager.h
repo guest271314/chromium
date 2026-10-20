@@ -26,7 +26,6 @@
 #include "components/autofill/core/browser/country_type.h"
 #include "components/autofill/core/browser/data_model/payments/autofill_offer_data.h"
 #include "components/autofill/core/browser/data_model/payments/autofill_wallet_usage_data.h"
-#include "components/autofill/core/browser/data_model/payments/bnpl_issuer.h"
 #include "components/autofill/core/browser/data_model/payments/credit_card.h"
 #include "components/autofill/core/browser/data_model/payments/credit_card_benefit.h"
 #include "components/autofill/core/browser/data_model/payments/credit_card_cloud_token_data.h"
@@ -145,7 +144,7 @@ class PaymentsDataManager : public AutofillWebDataServiceObserverOnUISequence,
   // Returns the `AutofillOfferData` with the specified `offer_id`, or nullptr
   // if there is no promo code with the specified `offer_id`.
   const AutofillOfferData* GetMerchantPromoCodeByOfferId(
-      const int64_t offer_id) const;
+      std::string_view offer_id) const;
 
   // Returns the IBAN if any cached IBAN in `server_ibans_` has the same
   // `instrument_id` as the given `instrument_id`, otherwise returns nullptr.
@@ -188,11 +187,11 @@ class PaymentsDataManager : public AutofillWebDataServiceObserverOnUISequence,
       CreditCardBenefitBase::LinkedCardInstrumentId instrument_id,
       const url::Origin& merchant_origin) const;
 
-  // Returns an applicable benefit description string to display to the user
-  // based on the combination of `credit_card` and `origin`. However, if
+  // Returns an applicable `CreditCardBenefit` to display to the user based on
+  // the combination of `credit_card` and `origin`. However, if
   // `credit_card.IsCardEligibleForBenefits()` == false, the benefit description
   // will still be returned but not displayed to users.
-  std::u16string GetApplicableBenefitDescriptionForCardAndOrigin(
+  std::optional<CreditCardBenefit> GetApplicableBenefitForCardAndOrigin(
       const CreditCard& credit_card,
       const url::Origin& origin,
       const AutofillOptimizationGuideDecider* optimization_guide) const;
@@ -243,11 +242,13 @@ class PaymentsDataManager : public AutofillWebDataServiceObserverOnUISequence,
   virtual std::vector<CreditCardCloudTokenData*> GetCreditCardCloudTokenData()
       const;
 
-  // Returns autofill offer data, including card-linked and promo code offers.
+  // Returns autofill offer data, with the most recently issued offers first, in
+  // the order returned by `PaymentsAutofillTable::GetAutofillOffers()`.
   std::vector<const AutofillOfferData*> GetAutofillOffers() const;
 
   // Returns autofill offer data, but only promo code offers that are not
-  // expired and that are for the given |origin|.
+  // expired and that are for the given `origin`, in the same order as
+  // `GetAutofillOffers()`.
   std::vector<const AutofillOfferData*>
   GetActiveAutofillPromoCodeOffersForOrigin(GURL origin) const;
 
@@ -270,6 +271,10 @@ class PaymentsDataManager : public AutofillWebDataServiceObserverOnUISequence,
   // payments account by the user.
   // The returned span may be invalidated asynchronously.
   base::span<const BnplIssuer> GetUnlinkedBnplIssuers() const;
+
+  // Returns the eWallet creation options.
+  // The returned span may be invalidated asynchronously.
+  base::span<const Ewallet> GetEwalletCreationOptions() const;
 
   // Returns all BNPL issuers, both linked and unlinked.
   virtual std::vector<BnplIssuer> GetBnplIssuers() const;
@@ -473,7 +478,7 @@ class PaymentsDataManager : public AutofillWebDataServiceObserverOnUISequence,
   void SetPaymentsCvcStorageEnabled(bool enabled);
 
   // TODO(crbug.com/322170538): Remove.
-  scoped_refptr<AutofillWebDataService> GetLocalDatabase();
+  scoped_refptr<AutofillWebDataService> GetProfileDatabase();
   scoped_refptr<AutofillWebDataService> GetServerDatabase();
   bool IsUsingAccountStorageForServerDataForTest();
 
@@ -513,6 +518,10 @@ class PaymentsDataManager : public AutofillWebDataServiceObserverOnUISequence,
   // PaymentsDataManager.
   void AddEwalletForTest(const Ewallet& ewallet);
 
+  // Add an eWallet creation option to the cached list of creation options in
+  // `PaymentsDataManager`.
+  void AddEwalletCreationOptionForTest(Ewallet ewallet);
+
   // Sets a server credit card for test.
   //
   // TODO(crbug.com/330865438): This method currently sets `server_cards_`
@@ -535,6 +544,14 @@ class PaymentsDataManager : public AutofillWebDataServiceObserverOnUISequence,
 
   // Returns the value of the FacilitatedPaymentsEwallet user pref.
   bool IsFacilitatedPaymentsEwalletUserPrefEnabled() const;
+
+  // Sets the FacilitatedPaymentsEwalletAccountLinking user pref value to
+  // `enabled`.
+  void SetFacilitatedPaymentsEwalletAccountLinkingUserPref(bool enabled);
+
+  // Returns the value of the FacilitatedPaymentsEwalletAccountLinking user
+  // pref.
+  bool IsFacilitatedPaymentsEwalletAccountLinkingUserPrefEnabled() const;
 
   // Returns the value of the FacilitatedPaymentsA2AEnabled user pref.
   bool IsFacilitatedPaymentsA2AUserPrefEnabled() const;
@@ -573,7 +590,8 @@ class PaymentsDataManager : public AutofillWebDataServiceObserverOnUISequence,
   // Loads the payments customer data from the web database.
   void LoadPaymentsCustomerData();
 
-  // Loads the autofill offer data from the web database.
+  // Loads the autofill offer data from the profile web database, which is where
+  // the `ValuableSyncBridge` persists Wallet direct offers.
   void LoadAutofillOffers();
 
   // Loads the virtual card usage data from the web database.
@@ -628,6 +646,9 @@ class PaymentsDataManager : public AutofillWebDataServiceObserverOnUISequence,
 
   // Cached versions of the unlinked buy-now-pay-later issuers.
   std::vector<BnplIssuer> unlinked_bnpl_issuers_;
+
+  // Cached versions of the eWallet creation options.
+  std::vector<Ewallet> ewallet_creation_options_;
 
   // Cached version of the CreditCardCloudTokenData obtained from the database.
   std::vector<std::unique_ptr<CreditCardCloudTokenData>>
@@ -707,6 +728,9 @@ class PaymentsDataManager : public AutofillWebDataServiceObserverOnUISequence,
   // Whether eWallet accounts are supported for the platform OS.
   bool AreEwalletAccountsSupported() const;
 
+  // Whether eWallet creation options are supported for the platform OS.
+  bool AreEwalletCreationOptionsSupported() const;
+
   // Whether buy-now-pay-later issuers are supported for the platform OS.
   // Checks if the user's locale is supported for BNPL, and if the BNPL feature
   // is enabled.
@@ -769,6 +793,13 @@ class PaymentsDataManager : public AutofillWebDataServiceObserverOnUISequence,
   // buy-now-pay-later options. If it does, it caches relevant information in
   // `unlinked_bnpl_issuers_`.
   void CacheIfBnplPaymentInstrumentCreationOption(
+      const sync_pb::PaymentInstrumentCreationOption&
+          payment_instrument_creation_option);
+
+  // Checks whether a payment instrument creation option contains eWallet
+  // options. If it does, it caches relevant information in
+  // `ewallet_creation_options_`.
+  void CacheIfEwalletCreationOption(
       const sync_pb::PaymentInstrumentCreationOption&
           payment_instrument_creation_option);
 

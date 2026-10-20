@@ -9,7 +9,9 @@ import static org.chromium.build.NullUtil.assumeNonNull;
 import android.annotation.SuppressLint;
 import android.content.Context;
 import android.content.Intent;
+import android.content.res.AssetManager;
 import android.content.res.Configuration;
+import android.content.res.Resources;
 import android.content.res.Resources.Theme;
 import android.net.Uri;
 import android.os.Build;
@@ -19,7 +21,6 @@ import android.util.ArraySet;
 import android.util.DisplayMetrics;
 import android.view.ContextThemeWrapper;
 import android.view.InflateException;
-import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.ViewStub;
@@ -27,7 +28,6 @@ import android.widget.FrameLayout;
 
 import androidx.annotation.IntDef;
 import androidx.annotation.VisibleForTesting;
-import androidx.asynclayoutinflater.appcompat.AsyncAppCompatFactory;
 import androidx.core.content.res.ResourcesCompat;
 
 import org.jni_zero.JniType;
@@ -50,16 +50,16 @@ import org.chromium.chrome.browser.crash.ChromePureJavaExceptionReporter;
 import org.chromium.chrome.browser.customtabs.CustomTabDelegateFactory;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.profiles.Profile;
-import org.chromium.chrome.browser.tab.EmptyTabObserver;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabBuilder;
 import org.chromium.chrome.browser.tab.TabDelegateFactory;
 import org.chromium.chrome.browser.tab.TabLaunchType;
+import org.chromium.chrome.browser.tab.TabObserver;
 import org.chromium.chrome.browser.tab.TabSelectionType;
 import org.chromium.chrome.browser.toolbar.ControlContainer;
 import org.chromium.components.embedder_support.util.UrlConstants;
 import org.chromium.content_public.browser.WebContents;
-import org.chromium.ui.LayoutInflaterUtils;
+import org.chromium.ui.AsyncLayoutInflater;
 import org.chromium.ui.base.WindowAndroid;
 import org.chromium.ui.display.DisplayUtil;
 import org.chromium.url.GURL;
@@ -87,7 +87,7 @@ public class WarmupManager {
     private static final String TAG = "WarmupManager";
 
     /** Records stats, observes crashes, and cleans up spareTab object. */
-    private class HiddenTabObserver extends EmptyTabObserver {
+    private class HiddenTabObserver implements TabObserver {
         // This WindowAndroid is "owned" by the Tab and should be destroyed when it is no longer
         // needed by the Tab or when the Tab is destroyed.
         private WindowAndroid mOwnedWindowAndroid;
@@ -137,6 +137,23 @@ public class WarmupManager {
             // https://crbug.com/334755104
             Context target = mActivityContext != null ? mActivityContext : getBaseContext();
             target.startActivity(intent, options);
+        }
+
+        @Override
+        public AssetManager getAssets() {
+            return mActivityContext != null ? mActivityContext.getAssets() : super.getAssets();
+        }
+
+        @Override
+        public Resources getResources() {
+            return mActivityContext != null
+                    ? mActivityContext.getResources()
+                    : super.getResources();
+        }
+
+        @Override
+        public Theme getTheme() {
+            return mActivityContext != null ? mActivityContext.getTheme() : super.getTheme();
         }
     }
 
@@ -413,14 +430,13 @@ public class WarmupManager {
             CctContextWrapper context, int toolbarContainerId, int toolbarId) {
         try (TraceEvent e = TraceEvent.scoped("WarmupManager.inflateViewHierarchy")) {
             FrameLayout contentHolder = new FrameLayout(context);
-            var layoutInflater = LayoutInflater.from(context);
-            layoutInflater.setFactory2(new AsyncAppCompatFactory());
             ViewGroup mainView =
                     (ViewGroup)
-                            LayoutInflaterUtils.inflate(
-                                    layoutInflater,
-                                    MainLayoutSwitcher.getMainLayoutRes(),
-                                    contentHolder);
+                            new AsyncLayoutInflater(context)
+                                    .inflateSync(
+                                            MainLayoutSwitcher.getMainLayoutRes(context),
+                                            contentHolder,
+                                            /* attachToRoot= */ true);
             if (toolbarContainerId != ActivityUtils.NO_RESOURCE_ID) {
                 ViewStub stub = mainView.findViewById(R.id.control_container_stub);
                 stub.setLayoutResource(toolbarContainerId);
@@ -452,7 +468,7 @@ public class WarmupManager {
 
     /**
      * Transfers all the children in the local view hierarchy {@link #mMainView} to the given
-     * ViewGroup {@param contentView} as child.
+     * ViewGroup {@code contentView} as child.
      *
      * @param contentView The parent ViewGroup to use for the transfer.
      */

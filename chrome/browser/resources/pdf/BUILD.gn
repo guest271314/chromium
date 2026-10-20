@@ -14,7 +14,6 @@ build_webui("build") {
     "index.css",
     "index.html",
     "index_print.html",
-    "pdf_embedder.css",
   ]
 
   # TODO(crbug.com/362783117): Check in the .html.ts files for these two
@@ -31,6 +30,7 @@ build_webui("build") {
     "browser_api.ts",
     "constants.ts",
     "controller.ts",
+    "elements/icons.html.ts",
     "elements/viewer_attachment.html.ts",
     "elements/viewer_attachment.ts",
     "elements/viewer_attachment_bar.html.ts",
@@ -98,6 +98,8 @@ build_webui("build") {
       "elements/ink_color_selector.ts",
       "elements/ink_size_selector.html.ts",
       "elements/ink_size_selector.ts",
+      "elements/ink_text_annotations.html.ts",
+      "elements/ink_text_annotations.ts",
       "elements/ink_text_box.html.ts",
       "elements/ink_text_box.ts",
       "elements/ink_text_observer_mixin.ts",
@@ -113,11 +115,16 @@ build_webui("build") {
       "elements/viewer_bottom_toolbar_dropdown.ts",
       "elements/viewer_side_panel.html.ts",
       "elements/viewer_side_panel.ts",
+      "elements/viewer_signature_bottom_toolbar.html.ts",
+      "elements/viewer_signature_bottom_toolbar.ts",
+      "elements/viewer_signature_side_panel.html.ts",
+      "elements/viewer_signature_side_panel.ts",
       "elements/viewer_text_bottom_toolbar.html.ts",
       "elements/viewer_text_bottom_toolbar.ts",
       "elements/viewer_text_side_panel.html.ts",
       "elements/viewer_text_side_panel.ts",
       "ink2_manager.ts",
+      "ink_text_annotation_utils.ts",
       "undo_redo_stack.ts",
     ]
   }
@@ -137,6 +144,7 @@ build_webui("build") {
   css_files = [
     "elements/pdf_shared.css",
     "elements/shared_vars.css",
+    "elements/scrollbar.css",
     "elements/viewer_attachment.css",
     "elements/viewer_attachment_bar.css",
     "elements/viewer_bookmark.css",
@@ -165,6 +173,7 @@ build_webui("build") {
       "elements/ink_brush_selector.css",
       "elements/ink_color_selector.css",
       "elements/ink_size_selector.css",
+      "elements/ink_text_annotations.css",
       "elements/ink_text_box.css",
       "elements/selectable_icon_button.css",
       "elements/side_panel_shared.css",
@@ -173,6 +182,8 @@ build_webui("build") {
       "elements/viewer_bottom_toolbar.css",
       "elements/viewer_bottom_toolbar_dropdown.css",
       "elements/viewer_side_panel.css",
+      "elements/viewer_signature_bottom_toolbar.css",
+      "elements/viewer_signature_side_panel.css",
       "elements/viewer_text_bottom_toolbar.css",
       "elements/viewer_text_side_panel.css",
     ]
@@ -185,8 +196,6 @@ build_webui("build") {
       "elements/viewer_save_to_drive_controls.css",
     ]
   }
-
-  icons_html_files = [ "elements/icons.html" ]
 
   html_to_wrapper_scheme = "chrome"
 
@@ -248,6 +257,7 @@ tsc_folder = "tsc"
 # This script is injected by `pdf::PluginResponseWriter`, and must stand alone.
 # Consequently, it must always be rolled up by `optimize_webui()`.
 build_internal_plugin_manifest = "build_internal_plugin_manifest.json"
+
 optimize_webui("build_internal_plugin") {
   host = "about:blank"
   input = rebase_path("$target_gen_dir/$tsc_folder", root_build_dir)

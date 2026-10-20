@@ -26,6 +26,14 @@ using content::BrowserThread;
 
 namespace ash::file_system_provider {
 
+namespace {
+
+perfetto::NamedTrack GetTracingTrack(const FileStreamWriter* writer) {
+  return perfetto::NamedTrack::FromPointer("ash::FileStreamWriter", writer);
+}
+
+}  // namespace
+
 class FileStreamWriter::OperationRunner
     : public base::RefCountedThreadSafe<
           FileStreamWriter::OperationRunner,
@@ -40,8 +48,8 @@ class FileStreamWriter::OperationRunner
   // on UI thread.
   void OpenFileOnUIThread(const storage::FileSystemURL& url,
                           storage::AsyncFileUtil::StatusCallback callback) {
-    DCHECK_CURRENTLY_ON(BrowserThread::UI);
-    DCHECK(abort_callback_.is_null());
+    CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
+    CHECK(abort_callback_.is_null(), base::NotFatalUntil::M160);
 
     util::FileSystemURLParser parser(url);
     if (!parser.Parse()) {
@@ -64,8 +72,8 @@ class FileStreamWriter::OperationRunner
                            int64_t offset,
                            int length,
                            storage::AsyncFileUtil::StatusCallback callback) {
-    DCHECK_CURRENTLY_ON(BrowserThread::UI);
-    DCHECK(abort_callback_.is_null());
+    CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
+    CHECK(abort_callback_.is_null(), base::NotFatalUntil::M160);
 
     // If the file system got unmounted, then abort the writing operation.
     if (!file_system_.get()) {
@@ -82,8 +90,8 @@ class FileStreamWriter::OperationRunner
   }
 
   void FlushFileOnUIThread(storage::AsyncFileUtil::StatusCallback callback) {
-    DCHECK_CURRENTLY_ON(BrowserThread::UI);
-    DCHECK(abort_callback_.is_null());
+    CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
+    CHECK(abort_callback_.is_null(), base::NotFatalUntil::M160);
 
     // If the file system got unmounted, then abort the writing operation.
     if (!file_system_.get()) {
@@ -102,7 +110,7 @@ class FileStreamWriter::OperationRunner
   // Aborts the most recent operation (if exists) and closes a file if opened.
   // The runner must not be used anymore after calling this method.
   void CloseRunnerOnUIThread() {
-    DCHECK_CURRENTLY_ON(BrowserThread::UI);
+    CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
 
     if (!abort_callback_.is_null())
       std::move(abort_callback_).Run();
@@ -125,7 +133,7 @@ class FileStreamWriter::OperationRunner
       int file_handle,
       base::File::Error result,
       std::unique_ptr<EntryMetadata> metadata) {
-    DCHECK_CURRENTLY_ON(BrowserThread::UI);
+    CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
 
     abort_callback_.Reset();
     if (result == base::File::FILE_OK)
@@ -139,7 +147,7 @@ class FileStreamWriter::OperationRunner
   void OnWriteFileCompletedOnUIThread(
       storage::AsyncFileUtil::StatusCallback callback,
       base::File::Error result) {
-    DCHECK_CURRENTLY_ON(BrowserThread::UI);
+    CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
 
     abort_callback_.Reset();
     content::GetIOThreadTaskRunner({})->PostTask(
@@ -149,7 +157,7 @@ class FileStreamWriter::OperationRunner
   void OnFlushFileCompletedOnUIThread(
       storage::AsyncFileUtil::StatusCallback callback,
       base::File::Error result) {
-    DCHECK_CURRENTLY_ON(BrowserThread::UI);
+    CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
 
     abort_callback_.Reset();
     content::GetIOThreadTaskRunner({})->PostTask(
@@ -178,13 +186,13 @@ FileStreamWriter::~FileStreamWriter() {
   }
 
   // If a write is in progress, mark it as completed.
-  TRACE_EVENT_END("file_system_provider", perfetto::Track::FromPointer(this));
+  TRACE_EVENT_END("file_system_provider", GetTracingTrack(this));
 }
 
 void FileStreamWriter::Initialize(base::OnceClosure pending_closure,
                                   net::CompletionOnceCallback error_callback) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
-  DCHECK_EQ(NOT_INITIALIZED, state_);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M160);
+  CHECK_EQ(NOT_INITIALIZED, state_, base::NotFatalUntil::M160);
   state_ = INITIALIZING;
 
   content::GetUIThreadTaskRunner({})->PostTask(
@@ -200,8 +208,9 @@ void FileStreamWriter::OnOpenFileCompleted(
     base::OnceClosure pending_closure,
     net::CompletionOnceCallback error_callback,
     base::File::Error result) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
-  DCHECK(state_ == INITIALIZING || state_ == CANCELLING);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M160);
+  CHECK(state_ == INITIALIZING || state_ == CANCELLING,
+        base::NotFatalUntil::M160);
   if (state_ == CANCELLING)
     return;
 
@@ -213,7 +222,7 @@ void FileStreamWriter::OnOpenFileCompleted(
     return;
   }
 
-  DCHECK_EQ(base::File::FILE_OK, result);
+  CHECK_EQ(base::File::FILE_OK, result, base::NotFatalUntil::M160);
   state_ = INITIALIZED;
 
   // Run the task waiting for the initialization to be completed.
@@ -223,10 +232,9 @@ void FileStreamWriter::OnOpenFileCompleted(
 int FileStreamWriter::Write(net::IOBuffer* buffer,
                             int buffer_length,
                             net::CompletionOnceCallback callback) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M160);
   TRACE_EVENT_BEGIN("file_system_provider", "FileStreamWriter::Write",
-                    perfetto::Track::FromPointer(this), "buffer_length",
-                    buffer_length);
+                    GetTracingTrack(this), "buffer_length", buffer_length);
 
   write_callback_ = std::move(callback);
   switch (state_) {
@@ -262,7 +270,7 @@ int FileStreamWriter::Write(net::IOBuffer* buffer,
 }
 
 int FileStreamWriter::Cancel(net::CompletionOnceCallback callback) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M160);
 
   if (state_ != INITIALIZING && state_ != EXECUTING)
     return net::ERR_UNEXPECTED;
@@ -279,15 +287,15 @@ int FileStreamWriter::Cancel(net::CompletionOnceCallback callback) {
       FROM_HERE, base::BindOnce(std::move(callback), net::OK));
 
   // If a write is in progress, mark it as completed.
-  TRACE_EVENT_END("file_system_provider", perfetto::Track::FromPointer(this));
+  TRACE_EVENT_END("file_system_provider", GetTracingTrack(this));
 
   return net::ERR_IO_PENDING;
 }
 
 int FileStreamWriter::Flush(storage::FlushMode flush_mode,
                             net::CompletionOnceCallback callback) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
-  DCHECK_NE(CANCELLING, state_);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M160);
+  CHECK_NE(CANCELLING, state_, base::NotFatalUntil::M160);
 
   if (state_ == INITIALIZED && flush_mode == storage::FlushMode::kEndOfFile) {
     state_ = EXECUTING;
@@ -322,8 +330,8 @@ void FileStreamWriter::OnWriteFileCompleted(
     int buffer_length,
     net::CompletionOnceCallback callback,
     base::File::Error result) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
-  DCHECK(state_ == EXECUTING || state_ == CANCELLING);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M160);
+  CHECK(state_ == EXECUTING || state_ == CANCELLING, base::NotFatalUntil::M160);
   if (state_ == CANCELLING)
     return;
 
@@ -340,18 +348,18 @@ void FileStreamWriter::OnWriteFileCompleted(
 }
 
 void FileStreamWriter::OnWriteCompleted(int result) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M160);
   if (state_ != CANCELLING)
     std::move(write_callback_).Run(result);
 
-  TRACE_EVENT_END("file_system_provider", perfetto::Track::FromPointer(this));
+  TRACE_EVENT_END("file_system_provider", GetTracingTrack(this));
 }
 
 void FileStreamWriter::OnFlushFileCompleted(
     net::CompletionOnceCallback callback,
     base::File::Error result) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
-  DCHECK(state_ == EXECUTING || state_ == CANCELLING);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M160);
+  CHECK(state_ == EXECUTING || state_ == CANCELLING, base::NotFatalUntil::M160);
   if (state_ == CANCELLING) {
     return;
   }
@@ -364,8 +372,9 @@ void FileStreamWriter::WriteAfterInitialized(
     scoped_refptr<net::IOBuffer> buffer,
     int buffer_length,
     net::CompletionOnceCallback callback) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
-  DCHECK(state_ == INITIALIZED || state_ == CANCELLING);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M160);
+  CHECK(state_ == INITIALIZED || state_ == CANCELLING,
+        base::NotFatalUntil::M160);
   if (state_ == CANCELLING)
     return;
 

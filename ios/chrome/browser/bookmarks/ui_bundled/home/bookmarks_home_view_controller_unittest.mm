@@ -11,7 +11,11 @@
 #import "ios/chrome/browser/bookmarks/model/bookmark_ios_unit_test_support.h"
 #import "ios/chrome/browser/bookmarks/ui_bundled/home/bookmarks_home_mediator.h"
 #import "ios/chrome/browser/keyboard/ui_bundled/UIKeyCommand+Chrome.h"
+#import "ios/chrome/browser/shared/coordinator/alert/action_sheet_coordinator.h"
+#import "ios/chrome/browser/shared/coordinator/alert/alert_coordinator.h"
+#import "ios/chrome/browser/shared/coordinator/scene/scene_state.h"
 #import "ios/chrome/browser/shared/model/browser/browser.h"
+#import "ios/chrome/browser/shared/model/browser/test/test_browser.h"
 #import "ios/chrome/browser/shared/model/profile/test/test_profile_ios.h"
 #import "ios/chrome/browser/shared/public/commands/command_dispatcher.h"
 #import "ios/chrome/browser/shared/public/commands/scene_commands.h"
@@ -25,27 +29,14 @@
 @property(nonatomic, strong) BookmarksHomeMediator* mediator;
 @property(nonatomic, strong)
     BookmarksFolderChooserCoordinator* folderChooserCoordinator;
+@property(nonatomic, strong) AlertCoordinator* actionSheetCoordinator;
 
 - (void)bookmarksFolderChooserCoordinatorDidConfirm:
             (BookmarksFolderChooserCoordinator*)coordinator
                                  withSelectedFolder:
                                      (const bookmarks::BookmarkNode*)folder;
-@end
-
-// Fake implementation of BookmarksFolderChooserCoordinator for testing.
-@interface FakeBookmarksFolderChooserCoordinator
-    : BookmarksFolderChooserCoordinator
-@property(nonatomic, assign) std::set<raw_ptr<const bookmarks::BookmarkNode>>
-    editedNodesSet;
-@end
-
-@implementation FakeBookmarksFolderChooserCoordinator
-- (const std::set<raw_ptr<const bookmarks::BookmarkNode>>&)editedNodes {
-  return _editedNodesSet;
-}
-- (void)stop {
-  // Do nothing.
-}
+- (void)configureCoordinator:(AlertCoordinator*)coordinator
+        forSingleBookmarkURL:(const bookmarks::BookmarkNode*)node;
 @end
 
 namespace {
@@ -288,23 +279,88 @@ TEST_F(BookmarksHomeViewControllerTest,
   std::set<raw_ptr<const bookmarks::BookmarkNode>> selectedNodes;
   selectedNodes.insert(bookmark);
 
-  // Use a fake folder chooser coordinator.
-  FakeBookmarksFolderChooserCoordinator* fakeFolderChooserCoordinator =
-      [[FakeBookmarksFolderChooserCoordinator alloc]
+  BookmarksFolderChooserCoordinator* folderChooserCoordinator =
+      [[BookmarksFolderChooserCoordinator alloc]
           initWithBaseViewController:nil
                              browser:browser_.get()
-                         hiddenNodes:{}];
-  fakeFolderChooserCoordinator.editedNodesSet = selectedNodes;
-  [controller setFolderChooserCoordinator:fakeFolderChooserCoordinator];
+                          movedNodes:selectedNodes];
+  [folderChooserCoordinator start];
+  [controller setFolderChooserCoordinator:folderChooserCoordinator];
 
   // Call the delegate method with the same parent folder.
   // This should result in MoveBookmarksWithUndoSnackbar returning nil,
   // and showSnackbarMessage: NOT being called.
   [controller
-      bookmarksFolderChooserCoordinatorDidConfirm:fakeFolderChooserCoordinator
+      bookmarksFolderChooserCoordinatorDidConfirm:folderChooserCoordinator
                                withSelectedFolder:mobileNode];
 
   [mockSnackbarHandler verify];
+
+  [controller shutdown];
+}
+
+// Tests that accessing view lifecycle methods after shutdown does not crash.
+TEST_F(BookmarksHomeViewControllerTest,
+       ViewLifecycleAfterShutdownDoesNotCrash) {
+  BookmarksHomeViewController* controller =
+      [[BookmarksHomeViewController alloc] initWithBrowser:browser_.get()];
+  [controller shutdown];
+  // Force view loading and appearing after shutdown.
+  [controller loadViewIfNeeded];
+  [controller viewWillAppear:NO];
+}
+
+// Tests that deallocating the view controller without calling shutdown does not crash.
+TEST_F(BookmarksHomeViewControllerTest, DeallocWithoutShutdownDoesNotCrash) {
+  @autoreleasepool {
+    BookmarksHomeViewController* controller =
+        [[BookmarksHomeViewController alloc] initWithBrowser:browser_.get()];
+    [controller loadViewIfNeeded];
+  }
+}
+
+// Test that the single-bookmark action sheet includes Open in New Window only
+// when `multipleScenesAvailable` is YES, and dismisses when availability
+// changes.
+TEST_F(BookmarksHomeViewControllerTest,
+       SingleBookmarkActionSheetMultipleScenesAvailability) {
+  SceneState* scene_state = [[SceneState alloc] init];
+  TestBrowser browser(profile_, scene_state);
+  BookmarksHomeViewController* controller =
+      [[BookmarksHomeViewController alloc] initWithBrowser:&browser];
+  [controller loadViewIfNeeded];
+
+  const bookmarks::BookmarkNode* bookmark =
+      AddBookmark(bookmark_model_->mobile_node(), u"foo");
+
+  ActionSheetCoordinator* action_sheet_single_window =
+      [[ActionSheetCoordinator alloc]
+          initWithBaseViewController:controller
+                             browser:&browser
+                               title:nil
+                             message:nil
+                                rect:CGRectZero
+                                view:controller.view];
+  [controller configureCoordinator:action_sheet_single_window
+              forSingleBookmarkURL:bookmark];
+  EXPECT_EQ(4u, action_sheet_single_window.alertController.actions.count);
+
+  scene_state.multipleScenesAvailable = YES;
+  ActionSheetCoordinator* action_sheet_multi_window =
+      [[ActionSheetCoordinator alloc]
+          initWithBaseViewController:controller
+                             browser:&browser
+                               title:nil
+                             message:nil
+                                rect:CGRectZero
+                                view:controller.view];
+  [controller configureCoordinator:action_sheet_multi_window
+              forSingleBookmarkURL:bookmark];
+  EXPECT_EQ(5u, action_sheet_multi_window.alertController.actions.count);
+
+  controller.actionSheetCoordinator = action_sheet_multi_window;
+  scene_state.multipleScenesAvailable = NO;
+  EXPECT_EQ(nil, controller.actionSheetCoordinator);
 
   [controller shutdown];
 }

@@ -7,10 +7,13 @@
 #include <array>
 #include <utility>
 
+#include "base/strings/strcat.h"
 #include "base/test/metrics/histogram_tester.h"
+#include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
 #include "base/test/test_future.h"
 #include "build/build_config.h"
+#include "components/device_signals/core/common/signals_features.h"
 #include "components/enterprise/browser/reporting/report_request.h"
 #include "components/enterprise/browser/reporting/report_type.h"
 #include "components/policy/core/common/cloud/cloud_policy_constants.h"
@@ -76,7 +79,9 @@ class ReportUploaderTest : public ::testing::Test {
 
   void UploadReportAndSetExpectation(
       int number_of_request,
-      ReportUploader::ReportStatus expected_status) {
+      ReportUploader::ReportStatus expected_status,
+      SecuritySignalsMode security_signals_mode =
+          SecuritySignalsMode::kNoSignals) {
     DCHECK_LE(number_of_request, 2)
         << "Please update kBrowserVersionNames above.";
     ReportRequestQueue requests;
@@ -84,7 +89,7 @@ class ReportUploaderTest : public ::testing::Test {
       auto request = std::make_unique<ReportRequest>(GetReportType());
       em::BrowserReport* browser_report;
       switch (GetReportType()) {
-        case ReportType::kFull:
+        case ReportType::kBrowser:
         case ReportType::kBrowserVersion:
           browser_report =
               request->GetDeviceReportRequest().mutable_browser_report();
@@ -100,13 +105,13 @@ class ReportUploaderTest : public ::testing::Test {
     has_responded_ = false;
     uploader_->SetRequestAndUpload(
         ReportGenerationConfig(ReportTrigger::kTriggerNone, GetReportType(),
-                               SecuritySignalsMode::kNoSignals, use_cookies_),
+                               security_signals_mode, use_cookies_),
         std::move(requests),
         base::BindOnce(&ReportUploaderTest::OnReportUploaded,
                        base::Unretained(this), expected_status));
   }
 
-  virtual ReportType GetReportType() { return ReportType::kFull; }
+  virtual ReportType GetReportType() { return ReportType::kBrowser; }
 
   void OnReportUploaded(ReportUploader::ReportStatus expected_status,
                         ReportUploader::ReportStatus actuall_status) {
@@ -365,6 +370,132 @@ TEST_F(ReportUploaderTestWithProfileReportType, ProfileReportWithCookies) {
   EXPECT_TRUE(has_responded_);
 }
 
+class MockReportUploaderListener : public ReportUploader::Listener {
+ public:
+  MOCK_METHOD(void,
+              OnReportWillRetry,
+              (const ReportGenerationConfig& config),
+              (override));
+};
+
+// Tests that the listener is notified when ReportUploader retries.
+TEST_F(ReportUploaderTestWithProfileReportType, ListenerNotifiedOnRetry) {
+  CreateUploader(/* retry_count = */ 1);
+  MockReportUploaderListener listener;
+  uploader_->SetListener(&listener);
+
+  EXPECT_CALL(client_, UploadChromeProfileReport(/*use_cookies=*/false, _, _))
+      .WillOnce(ScheduleProfileResponse(policy::CloudPolicyClient::Result(
+          policy::DM_STATUS_TEMPORARY_UNAVAILABLE)))
+      .WillOnce(ScheduleProfileResponse(
+          policy::CloudPolicyClient::Result(policy::DM_STATUS_SUCCESS)));
+
+  EXPECT_CALL(listener, OnReportWillRetry(_))
+      .WillOnce([&](const ReportGenerationConfig& config) {
+        ReportRequestQueue requests;
+        requests.push(
+            std::make_unique<ReportRequest>(ReportType::kProfileReport));
+        uploader_->SetRequestAndUpload(
+            config, std::move(requests),
+            base::BindOnce(&ReportUploaderTest::OnReportUploaded,
+                           base::Unretained(this), ReportUploader::kSuccess));
+      });
+
+  UploadReportAndSetExpectation(/*number_of_request=*/1,
+                                ReportUploader::kSuccess,
+                                SecuritySignalsMode::kSignalsAttached);
+  RunNextTask();
+  RunNextTask();
+  EXPECT_TRUE(has_responded_);
+  uploader_->RemoveListener(&listener);
+}
+
+// Tests that removing the listener while retry timer is running stops the timer
+// and does not upload after the timer fires.
+TEST_F(ReportUploaderTestWithProfileReportType, RemoveListenerStopsRetryTimer) {
+  CreateUploader(/* retry_count = */ 1);
+  MockReportUploaderListener listener;
+  uploader_->SetListener(&listener);
+
+  EXPECT_CALL(client_, UploadChromeProfileReport(/*use_cookies=*/false, _, _))
+      .WillOnce(ScheduleProfileResponse(policy::CloudPolicyClient::Result(
+          policy::DM_STATUS_TEMPORARY_UNAVAILABLE)));
+
+  EXPECT_CALL(listener, OnReportWillRetry(_)).Times(0);
+
+  UploadReportAndSetExpectation(/*number_of_request=*/1,
+                                ReportUploader::kSuccess,
+                                SecuritySignalsMode::kSignalsAttached);
+  RunNextTask();
+
+  // Upload failed and retry timer is running. Now remove listener.
+  uploader_->RemoveListener(&listener);
+
+  // Fast forward past the retry timer. Listener should not be notified and
+  // no unexpected upload or crash should occur.
+  RunNextTask();
+}
+
+// Tests that RemoveListener stops the retry timer even when listener_ was
+// nullptr (e.g. for reports without security signals).
+TEST_F(ReportUploaderTestWithProfileReportType,
+       RemoveListenerStopsRetryTimerWhenNoListenerSet) {
+  CreateUploader(/* retry_count = */ 1);
+
+  EXPECT_CALL(client_, UploadChromeProfileReport(/*use_cookies=*/false, _, _))
+      .WillOnce(ScheduleProfileResponse(policy::CloudPolicyClient::Result(
+          policy::DM_STATUS_TEMPORARY_UNAVAILABLE)));
+
+  UploadReportAndSetExpectation(/*number_of_request=*/1,
+                                ReportUploader::kSuccess,
+                                SecuritySignalsMode::kNoSignals);
+  RunNextTask();
+
+  // Upload failed and retry timer is running with no listener set.
+  MockReportUploaderListener mock_listener;
+  uploader_->RemoveListener(&mock_listener);
+
+  // Fast forward past the retry timer. No retry upload should be triggered.
+  RunNextTask();
+}
+
+// Tests that SetRequestAndUpload with an empty queue completes without
+// crashing.
+TEST_F(ReportUploaderTestWithProfileReportType, UploadEmptyRequestsQueue) {
+  CreateUploader(/* retry_count = */ 1);
+
+  EXPECT_CALL(client_, UploadChromeProfileReport(/*use_cookies=*/false, _, _))
+      .Times(0);
+
+  UploadReportAndSetExpectation(/*number_of_request=*/0,
+                                ReportUploader::kSuccess,
+                                SecuritySignalsMode::kNoSignals);
+  RunNextTask();
+  EXPECT_TRUE(has_responded_);
+}
+
+// Tests that internal retries are not skipped if the feature is enabled but
+// the report has no security signals.
+TEST_F(ReportUploaderTestWithProfileReportType,
+       RetryNotSkippedWhenFeatureEnabledAndNoSignals) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndEnableFeature(
+      enterprise_signals::features::kCertificateCollectionEnabled);
+  EXPECT_CALL(client_, UploadChromeProfileReport(/*use_cookies=*/false, _, _))
+      .Times(2)
+      .WillRepeatedly(ScheduleProfileResponse(policy::CloudPolicyClient::Result(
+          policy::DM_STATUS_TEMPORARY_UNAVAILABLE)));
+  CreateUploader(/* retry_count = */ 1);
+  UploadReportAndSetExpectation(/*number_of_request=*/1,
+                                ReportUploader::kTransientError,
+                                SecuritySignalsMode::kNoSignals);
+  RunNextTask();
+  EXPECT_FALSE(has_responded_);
+  RunNextTask();
+  EXPECT_TRUE(has_responded_);
+  ::testing::Mock::VerifyAndClearExpectations(&client_);
+}
+
 // Verified three DM server error that is transient.
 TEST_P(ReportUploaderTestWithTransientError, WithoutRetry) {
   EXPECT_CALL(client_, UploadReport)
@@ -386,7 +517,7 @@ INSTANTIATE_TEST_SUITE_P(
 
 TEST_P(ReportUploaderTestWithReportType, Success) {
   switch (GetReportType()) {
-    case ReportType::kFull:
+    case ReportType::kBrowser:
     case ReportType::kBrowserVersion:
       EXPECT_CALL(client_, UploadReport)
           .WillOnce(ScheduleResponse(
@@ -405,12 +536,18 @@ TEST_P(ReportUploaderTestWithReportType, Success) {
   EXPECT_TRUE(has_responded_);
   histogram_tester_.ExpectUniqueSample(
       kResponseMetricsName, ReportResponseMetricsStatus::kSuccess, 1);
+
+  histogram_tester_.ExpectUniqueSample(
+      base::StrCat({"Enterprise.CloudReportingRequestSize.",
+                    GetReportTypeMetricSuffix(GetReportType())}),
+      /*report size floor to KB*/ 0, 1);
+
   ::testing::Mock::VerifyAndClearExpectations(&client_);
 }
 
 INSTANTIATE_TEST_SUITE_P(All,
                          ReportUploaderTestWithReportType,
-                         ::testing::Values(ReportType::kFull,
+                         ::testing::Values(ReportType::kBrowser,
                                            ReportType::kBrowserVersion,
                                            ReportType::kProfileReport));
 
@@ -479,6 +616,17 @@ class ReportUploaderPolicyStatusTest
         return "Enterprise.CloudReportingPolicyStatus.Profile.SignalsOnly";
     }
   }
+
+  std::string GetProfileCountHistogramName() {
+    switch (GetParam()) {
+      case SecuritySignalsMode::kNoSignals:
+        return "Enterprise.CloudReportingProfileCount.Profile.NoSignals";
+      case SecuritySignalsMode::kSignalsAttached:
+        return "Enterprise.CloudReportingProfileCount.Profile.SignalsAttached";
+      case SecuritySignalsMode::kSignalsOnly:
+        return "Enterprise.CloudReportingProfileCount.Profile.SignalsOnly";
+    }
+  }
 };
 
 TEST_P(ReportUploaderPolicyStatusTest, NoPolicySet) {
@@ -497,6 +645,7 @@ TEST_P(ReportUploaderPolicyStatusTest, NoPolicySet) {
   EXPECT_TRUE(has_responded_);
   histogram_tester_.ExpectUniqueSample(GetHistogramName(), 0 /* kNoPolicySet */,
                                        1);
+  histogram_tester_.ExpectUniqueSample(GetProfileCountHistogramName(), 1, 1);
 }
 
 TEST_P(ReportUploaderPolicyStatusTest, UserCloudPolicySetOnly) {
@@ -515,6 +664,7 @@ TEST_P(ReportUploaderPolicyStatusTest, UserCloudPolicySetOnly) {
   EXPECT_TRUE(has_responded_);
   histogram_tester_.ExpectUniqueSample(GetHistogramName(),
                                        1 /* kUserCloudPolicySetOnly */, 1);
+  histogram_tester_.ExpectUniqueSample(GetProfileCountHistogramName(), 1, 1);
 }
 
 TEST_P(ReportUploaderPolicyStatusTest, OtherPolicySetOnly) {
@@ -533,6 +683,7 @@ TEST_P(ReportUploaderPolicyStatusTest, OtherPolicySetOnly) {
   EXPECT_TRUE(has_responded_);
   histogram_tester_.ExpectUniqueSample(GetHistogramName(),
                                        2 /* kOtherPolicySetOnly */, 1);
+  histogram_tester_.ExpectUniqueSample(GetProfileCountHistogramName(), 1, 1);
 }
 
 TEST_P(ReportUploaderPolicyStatusTest, BothPolicySet) {
@@ -551,6 +702,7 @@ TEST_P(ReportUploaderPolicyStatusTest, BothPolicySet) {
   EXPECT_TRUE(has_responded_);
   histogram_tester_.ExpectUniqueSample(GetHistogramName(),
                                        3 /* kBothPolicySet */, 1);
+  histogram_tester_.ExpectUniqueSample(GetProfileCountHistogramName(), 1, 1);
 }
 
 TEST_P(ReportUploaderPolicyStatusTest, MergedUserCloudPolicy) {
@@ -569,6 +721,7 @@ TEST_P(ReportUploaderPolicyStatusTest, MergedUserCloudPolicy) {
   EXPECT_TRUE(has_responded_);
   histogram_tester_.ExpectUniqueSample(GetHistogramName(),
                                        3 /* kBothPolicySet */, 1);
+  histogram_tester_.ExpectUniqueSample(GetProfileCountHistogramName(), 1, 1);
 }
 
 TEST_P(ReportUploaderPolicyStatusTest, MergedOtherPolicy) {
@@ -587,6 +740,7 @@ TEST_P(ReportUploaderPolicyStatusTest, MergedOtherPolicy) {
   EXPECT_TRUE(has_responded_);
   histogram_tester_.ExpectUniqueSample(GetHistogramName(),
                                        2 /* kOtherPolicySetOnly */, 1);
+  histogram_tester_.ExpectUniqueSample(GetProfileCountHistogramName(), 1, 1);
 }
 
 INSTANTIATE_TEST_SUITE_P(

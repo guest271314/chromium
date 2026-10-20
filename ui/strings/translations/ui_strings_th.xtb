@@ -11,7 +11,6 @@
 <translation id="1253734725326687145">ย้ายเป้าหมายการสัมผัสไปที่ด้านขวาบนแล้ว แตะที่นี่</translation>
 <translation id="1266864766717917324">แชร์<ph name="CONTENT_TYPE" />ไม่ได้</translation>
 <translation id="1269641567813814718">Win</translation>
-<translation id="1291104554099683393">ลองแชร์ข้อความทีละส่วนแทน</translation>
 <translation id="1293699935367580298">Esc</translation>
 <translation id="1368832886055348810">ซ้ายไปขวา</translation>
 <translation id="1383876407941801731">ค้นหา</translation>
@@ -38,13 +37,11 @@
 <translation id="1901303067676059328">เลือก&amp;ทั้งหมด</translation>
 <translation id="19085484004813472">นี่เป็นฟีเจอร์ใหม่</translation>
 <translation id="2006524834898217237">ตรวจสอบว่าอุปกรณ์นี้เชื่อมต่ออินเทอร์เน็ตแล้ว</translation>
-<translation id="208586643495776849">โปรดลองอีกครั้ง</translation>
 <translation id="2111134541987263231">เปิด<ph name="BEGIN_BOLD" />อนุญาตในโหมดไม่ระบุตัวตน<ph name="END_BOLD" /></translation>
 <translation id="2141853158323869627">{DAYS,plural, =1{1 วัน}other{# วัน}}</translation>
 <translation id="2148716181193084225">วันนี้</translation>
 <translation id="2168039046890040389">เลื่อนหน้าขึ้น</translation>
 <translation id="2190355936436201913">(ว่างเปล่า)</translation>
-<translation id="2192232475740621500">ใช้ความหนาแน่นต่ำ</translation>
 <translation id="2267918077332197517">บล็อกการแจ้งเตือนทั้งหมดจากเว็บไซต์นี้</translation>
 <translation id="2283117145434822734">F6</translation>
 <translation id="2289052229480071835">แตะเป้าหมายการสัมผัสในหน้าจอ</translation>
@@ -56,7 +53,6 @@
 <translation id="2388990488038464401">โทรหาหมายเลขนี้จากโทรศัพท์ของคุณใช่ไหม</translation>
 <translation id="2435457462613246316">แสดงรหัสผ่าน</translation>
 <translation id="24452542372838207">ขยายการแจ้งเตือน</translation>
-<translation id="2445449901874883781">ใช้ความหนาแน่นสูง</translation>
 <translation id="2448407890032181691">ย้ายเป้าหมายการสัมผัสไปที่ด้านขวาล่างแล้ว แตะที่นี่</translation>
 <translation id="2482878487686419369">การแจ้งเตือน</translation>
 <translation id="2497284189126895209">ไฟล์ทั้งหมด</translation>
@@ -87,7 +83,6 @@
 <translation id="3306688585798492231">จอแสดงผลในตัว</translation>
 <translation id="335581015389089642">คำพูด</translation>
 <translation id="3372635229069101468">คลิก<ph name="BEGIN_BOLD" />รายละเอียด<ph name="END_BOLD" /></translation>
-<translation id="3389286852084373014">ข้อความมีขนาดใหญ่เกินไป</translation>
 <translation id="3406306243914553062">เนื้อหา HTML</translation>
 <translation id="3600566671520689681">{DAYS,plural, =1{เหลือ 1 วัน}other{เหลือ # วัน}}</translation>
 <translation id="3600969208114796418">ไฟล์ <ph name="SAVEAS_EXTENSION_TYPE" /></translation>
@@ -130,7 +125,6 @@
 <translation id="5046499563572181734">แตะที่นี่</translation>
 <translation id="5076340679995252485">&amp;วาง</translation>
 <translation id="520299402983819650"><ph name="QUANTITY" /> PB</translation>
-<translation id="5278860589123563674">ส่งไม่สำเร็จ</translation>
 <translation id="5283101102242354279">วิธีเปิดส่วนขยายในโหมดไม่ระบุตัวตน</translation>
 <translation id="528468243742722775">สิ้นสุด</translation>
 <translation id="5329858601952122676">&amp;ลบ</translation>
@@ -190,7 +184,6 @@
 <translation id="6965382102122355670">ตกลง</translation>
 <translation id="6974053822202609517">ขวาไปซ้าย</translation>
 <translation id="7052633198403197513">F1</translation>
-<translation id="7170202025028120564">การตั้งค่าการแสดงผลของแอปพลิเคชันจะมีผลหลังการรีสตาร์ทครั้งถัดไป</translation>
 <translation id="7222373446505536781">F11</translation>
 <translation id="7238427729722629793">{MINUTES,plural, =1{เหลือ 1 นาที}other{เหลือ # นาที}}</translation>
 <translation id="7252604552361840748">ค้นหาส่วนขยายด้านบน</translation>

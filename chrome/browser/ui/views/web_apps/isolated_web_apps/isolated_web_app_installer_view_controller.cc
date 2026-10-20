@@ -464,7 +464,8 @@ void IsolatedWebAppInstallerViewController::LoadChannelsAndShowMetadata() {
   update_manifest_fetcher_ = std::make_unique<UpdateManifestFetcher>(
       update_manifest_url.value(), kUpdateManifestFetchTrafficAnnotation,
       profile_->GetDefaultStoragePartition()
-          ->GetURLLoaderFactoryForBrowserProcess());
+          ->GetURLLoaderFactoryForBrowserProcess(),
+      profile_->GetDefaultStoragePartition()->GetNetworkContext());
 
   update_manifest_fetcher_->FetchUpdateManifest(base::BindOnce(
       &IsolatedWebAppInstallerViewController::OnUpdateManifestFetched,
@@ -478,14 +479,15 @@ void IsolatedWebAppInstallerViewController::LoadChannelsAndShowMetadata() {
 }
 
 void IsolatedWebAppInstallerViewController::OnUpdateManifestFetched(
-    base::expected<UpdateManifest, UpdateManifestFetcher::Error> fetch_result) {
+    base::expected<UpdateManifestWithAddressSpace, UpdateManifestFetcher::Error>
+        fetch_result) {
   update_manifest_fetcher_.reset();
   update_manifest_timer_.Stop();
 
   base::flat_set<UpdateChannel> unique_channels;
 
   if (fetch_result.has_value()) {
-    for (const auto& version : fetch_result->versions()) {
+    for (const auto& version : fetch_result->manifest.versions()) {
       unique_channels.insert(version.channels().begin(),
                              version.channels().end());
     }
@@ -498,7 +500,7 @@ void IsolatedWebAppInstallerViewController::OnUpdateManifestFetched(
   std::vector<UpdateManifest::ChannelMetadata> channels_metadata =
       base::ToVector(unique_channels, [&](const auto& channel) {
         if (fetch_result.has_value()) {
-          return fetch_result->GetChannelMetadata(channel);
+          return fetch_result->manifest.GetChannelMetadata(channel);
         }
         return UpdateManifest::ChannelMetadata(channel, std::nullopt);
       });
@@ -615,7 +617,7 @@ void IsolatedWebAppInstallerViewController::OnUpdateChannelSelected(
 void IsolatedWebAppInstallerViewController::OnSettingsLinkClicked() {
 #if BUILDFLAG(IS_CHROMEOS)
   chrome::SettingsWindowManager::GetInstance()->ShowOSSettings(
-      profile_, /*sub_page=*/"",
+      profile_, /*sub_page=*/chromeos::settings::mojom::kAppsSectionPath,
       chromeos::settings::mojom::Setting::kEnableIsolatedWebAppsOnOff);
 #endif  // BUILDFLAG(IS_CHROMEOS)
 }

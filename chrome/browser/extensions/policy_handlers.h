@@ -5,6 +5,7 @@
 #ifndef CHROME_BROWSER_EXTENSIONS_POLICY_HANDLERS_H_
 #define CHROME_BROWSER_EXTENSIONS_POLICY_HANDLERS_H_
 
+#include <memory>
 #include <optional>
 
 #include "base/values.h"
@@ -147,6 +148,7 @@ class ExtensionSettingsPolicyHandler
                            policy::PolicyErrorMap* errors) override;
   void ApplyPolicySettings(const policy::PolicyMap& policies,
                            PrefValueMap* prefs) override;
+  void OnPolicySettingsNotApplied() override;
 
  private:
   // Performs sanitization for both Check/ApplyPolicySettings(). If an entry
@@ -154,6 +156,16 @@ class ExtensionSettingsPolicyHandler
   // dictionary. Validation errors are stored in `errors` if non-null.
   void SanitizePolicySettings(base::Value* dict_value,
                               policy::PolicyErrorMap* errors);
+
+  // Cached policy value from CheckPolicySettings(), reused by
+  // ApplyPolicySettings() to avoid redundant clone + normalization +
+  // sanitization of the same data. OnPolicySettingsNotApplied() releases it
+  // when no ApplyPolicySettings() call follows.
+  std::unique_ptr<base::Value> checked_value_;
+
+  // Tracks whether CheckPolicySettings() was called before
+  // ApplyPolicySettings(). Used to enforce the framework contract via CHECK.
+  bool check_called_ = false;
 };
 
 }  // namespace extensions

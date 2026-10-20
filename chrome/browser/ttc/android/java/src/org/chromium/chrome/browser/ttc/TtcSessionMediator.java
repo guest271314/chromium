@@ -1,0 +1,248 @@
+// Copyright 2026 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+package org.chromium.chrome.browser.ttc;
+
+import android.Manifest;
+import android.content.pm.PackageManager;
+import android.os.Handler;
+
+import org.chromium.base.Callback;
+import org.chromium.base.ThreadUtils;
+import org.chromium.base.supplier.MonotonicObservableSupplier;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
+import org.chromium.chrome.browser.lifecycle.ActivityLifecycleDispatcher;
+import org.chromium.chrome.browser.lifecycle.ActivityLifecycleDispatcher.ActivityState;
+import org.chromium.chrome.browser.lifecycle.StartStopWithNativeObserver;
+import org.chromium.chrome.browser.profiles.Profile;
+import org.chromium.ui.base.WindowAndroid;
+import org.chromium.ui.modelutil.PropertyModel;
+
+/**
+ * Runs TTC sessions for one activity and keeps the session pill's {@link PropertyModel} in sync
+ * with the {@link TtcKeyedService}: follows the active profile, starts and ends sessions (prompting
+ * for the microphone permission first), and mirrors the service's state into the model.
+ *
+ * <p>The session belongs to the profile and is shared by every window. This mediator reports its
+ * window's visibility to the profile's {@link TtcSessionWindowTracker}, which ends the session once
+ * no window is visible, rather than ending it when this window alone stops.
+ */
+@NullMarked
+class TtcSessionMediator implements TtcKeyedService.Observer, StartStopWithNativeObserver {
+    /**
+     * How long the pill keeps showing an error after the session ends. The native side ends the
+     * session as soon as it reports a fatal error, so without this the error would never be seen.
+     */
+    static final long ERROR_DISPLAY_MS = 3000;
+
+    private final PropertyModel mModel;
+    private final WindowAndroid mWindowAndroid;
+    private final MonotonicObservableSupplier<Profile> mProfileSupplier;
+    private final ActivityLifecycleDispatcher mLifecycleDispatcher;
+    private final Callback<Profile> mProfileObserver = this::onProfileAvailable;
+    private final Handler mHandler = ThreadUtils.getUiThreadHandler();
+    private final Runnable mHideAfterErrorTask = this::hideAfterError;
+
+    // The service for the current profile, or null when no session can run against it (the
+    // feature is off, or the profile has no service / isn't enabled for it).
+    private @Nullable TtcKeyedService mService;
+
+    // Whether onSessionInitialized() has fired for the current session. The native side can
+    // signal initialization before it broadcasts SESSION_ACTIVE (ConversationImpl::Start()
+    // calls OnSessionInitialized() synchronously), so this is tracked independently of the
+    // service state.
+    private boolean mSessionInitialized;
+
+    // Whether the pill is showing an error and should stay visible until the hide task runs,
+    // even if the session has already ended.
+    private boolean mShowingError;
+
+    /**
+     * @param model The pill's model; {@link TtcSessionProperties#VISIBLE} is false until a session
+     *     starts.
+     * @param windowAndroid The activity's window, used for the microphone permission.
+     * @param profileSupplier Supplies the profile sessions run against.
+     * @param lifecycleDispatcher Used to report this window's visibility to the profile's {@link
+     *     TtcSessionWindowTracker}, which ends the session once no window is visible, since
+     *     microphone capture can't continue in the background.
+     */
+    TtcSessionMediator(
+            PropertyModel model,
+            WindowAndroid windowAndroid,
+            MonotonicObservableSupplier<Profile> profileSupplier,
+            ActivityLifecycleDispatcher lifecycleDispatcher) {
+        mModel = model;
+        mWindowAndroid = windowAndroid;
+        mProfileSupplier = profileSupplier;
+        mLifecycleDispatcher = lifecycleDispatcher;
+        // Tapping the pill ends the session. TtcKeyedService#endSession() is a no-op when no
+        // session is active.
+        mModel.set(
+                TtcSessionProperties.ON_CLICK_LISTENER,
+                v -> {
+                    if (mService != null) mService.endSession();
+                });
+        mLifecycleDispatcher.register(this);
+        mProfileSupplier.addSyncObserverAndCallIfNonNull(mProfileObserver);
+    }
+
+    void destroy() {
+        mLifecycleDispatcher.unregister(this);
+        mProfileSupplier.removeObserver(mProfileObserver);
+        // Only ends the session if no other window is still showing it.
+        detachFromService();
+    }
+
+    /**
+     * Ends the session if one is active, otherwise starts one, prompting for the microphone
+     * permission first if it hasn't been granted.
+     */
+    void toggleSession() {
+        if (mService == null) return;
+        if (mService.isSessionActive()) {
+            mService.endSession();
+            return;
+        }
+        if (mWindowAndroid.hasPermission(Manifest.permission.RECORD_AUDIO)) {
+            startSession();
+            return;
+        }
+        mWindowAndroid.requestPermissions(
+                new String[] {Manifest.permission.RECORD_AUDIO},
+                (permissions, grantResults) -> {
+                    // The prompt is asynchronous; by the time it resolves the mediator may have
+                    // been destroyed (mService is null) or the activity stopped, in which case a
+                    // session would run with no UI and nothing to end it.
+                    if (grantResults.length > 0
+                            && grantResults[0] == PackageManager.PERMISSION_GRANTED
+                            && isActivityVisible()) {
+                        startSession();
+                    }
+                });
+    }
+
+    // StartStopWithNativeObserver:
+
+    @Override
+    public void onStartWithNative() {
+        if (mService != null) mService.getWindowTracker().addVisibleWindow(this);
+    }
+
+    @Override
+    public void onStopWithNative() {
+        // Only ends the session if no other window is still showing it.
+        if (mService != null) mService.getWindowTracker().removeVisibleWindow(this);
+    }
+
+    // TtcKeyedService.Observer:
+
+    @Override
+    public void onServiceStateChanged(@ServiceState int state) {
+        boolean active = state == ServiceState.SESSION_ACTIVE;
+        if (active) {
+            clearError();
+            mModel.set(
+                    TtcSessionProperties.STATUS_TEXT_RES_ID,
+                    mSessionInitialized
+                            ? R.string.ttc_session_listening
+                            : R.string.ttc_session_connecting);
+            mModel.set(TtcSessionProperties.AUDIO_LEVEL, 0f);
+        } else {
+            mSessionInitialized = false;
+            // Leave the error on screen; hideAfterError() hides the pill.
+            if (mShowingError) return;
+        }
+        mModel.set(TtcSessionProperties.VISIBLE, active);
+    }
+
+    @Override
+    public void onSessionInitialized() {
+        mSessionInitialized = true;
+        if (mShowingError) return;
+        mModel.set(TtcSessionProperties.STATUS_TEXT_RES_ID, R.string.ttc_session_listening);
+    }
+
+    @Override
+    public void onAudioLevelChanged(float level) {
+        mModel.set(TtcSessionProperties.AUDIO_LEVEL, Math.max(0f, Math.min(1f, level)));
+    }
+
+    @Override
+    public void onError(int errorCode) {
+        mShowingError = true;
+        mModel.set(TtcSessionProperties.STATUS_TEXT_RES_ID, R.string.ttc_session_error);
+        mModel.set(TtcSessionProperties.AUDIO_LEVEL, 0f);
+        mHandler.removeCallbacks(mHideAfterErrorTask);
+        mHandler.postDelayed(mHideAfterErrorTask, ERROR_DISPLAY_MS);
+    }
+
+    private void onProfileAvailable(Profile profile) {
+        TtcKeyedService service = TtcSessionCoordinator.getServiceIfAvailable(profile);
+        if (service == mService) return;
+        // This window stops hosting the previous profile's session. That only ends the session if
+        // no other window is still showing it.
+        detachFromService();
+        mService = service;
+        if (mService == null) {
+            mModel.set(TtcSessionProperties.VISIBLE, false);
+            return;
+        }
+        mService.addObserver(this);
+        onServiceStateChanged(
+                mService.isSessionActive()
+                        ? ServiceState.SESSION_ACTIVE
+                        : ServiceState.SESSION_INACTIVE);
+        // The window may have started before the profile was available.
+        if (isActivityVisible()) mService.getWindowTracker().addVisibleWindow(this);
+    }
+
+    /**
+     * Stops observing the current service and removes this window from its {@link
+     * TtcSessionWindowTracker}, which ends the session if no other window is still showing it.
+     */
+    private void detachFromService() {
+        clearError();
+        if (mService == null) return;
+        mService.getWindowTracker().removeVisibleWindow(this);
+        mService.removeObserver(this);
+        mService = null;
+    }
+
+    private void startSession() {
+        if (mService == null || mService.isSessionActive()) return;
+        mService.startSession();
+    }
+
+    /**
+     * Whether the activity is on screen. A paused activity is still visible, e.g. an unfocused
+     * window in multi-window mode or a window behind the microphone permission dialog.
+     */
+    private boolean isActivityVisible() {
+        @ActivityState int state = mLifecycleDispatcher.getCurrentActivityState();
+        return state == ActivityState.STARTED_WITH_NATIVE
+                || state == ActivityState.RESUMED_WITH_NATIVE
+                || state == ActivityState.PAUSED_WITH_NATIVE;
+    }
+
+    private void hideAfterError() {
+        mShowingError = false;
+        if (mService != null && mService.isSessionActive()) {
+            // A non-fatal error: the session is still running, so go back to its status.
+            mModel.set(
+                    TtcSessionProperties.STATUS_TEXT_RES_ID,
+                    mSessionInitialized
+                            ? R.string.ttc_session_listening
+                            : R.string.ttc_session_connecting);
+            return;
+        }
+        mModel.set(TtcSessionProperties.VISIBLE, false);
+    }
+
+    private void clearError() {
+        if (!mShowingError) return;
+        mShowingError = false;
+        mHandler.removeCallbacks(mHideAfterErrorTask);
+    }
+}

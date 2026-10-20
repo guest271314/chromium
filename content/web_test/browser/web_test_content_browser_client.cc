@@ -17,6 +17,7 @@
 #include "base/notreached.h"
 #include "base/path_service.h"
 #include "base/strings/pattern.h"
+#include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
 #include "base/task/single_thread_task_runner.h"
 #include "build/build_config.h"
@@ -28,6 +29,7 @@
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/child_process_data.h"
 #include "content/public/browser/client_hints_controller_delegate.h"
+#include "content/public/browser/immersive_playback_options.h"
 #include "content/public/browser/login_delegate.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/navigation_throttle_registry.h"
@@ -58,7 +60,6 @@
 #include "content/web_test/browser/web_test_fedcm_manager.h"
 #include "content/web_test/browser/web_test_origin_trial_throttle.h"
 #include "content/web_test/browser/web_test_permission_manager.h"
-#include "content/web_test/browser/web_test_privacy_sandbox.h"
 #include "content/web_test/browser/web_test_sensor_provider_manager.h"
 #include "content/web_test/browser/web_test_storage_access_manager.h"
 #include "content/web_test/browser/web_test_tts_platform.h"
@@ -75,6 +76,8 @@
 #include "mojo/public/cpp/bindings/remote.h"
 #include "mojo/public/cpp/bindings/remote_set.h"
 #include "mojo/public/cpp/bindings/self_owned_receiver.h"
+#include "net/base/is_potentially_trustworthy.h"
+#include "net/base/switches.h"
 #include "net/net_buildflags.h"
 #include "net/proxy_resolution/proxy_config_with_annotation.h"
 #include "net/traffic_annotation/network_traffic_annotation_test_helper.h"
@@ -90,8 +93,8 @@
 #include "storage/browser/quota/quota_settings.h"
 #include "third_party/blink/public/common/associated_interfaces/associated_interface_registry.h"
 #include "third_party/blink/public/common/web_preferences/web_preferences.h"
-#include "third_party/blink/public/mojom/picture_in_picture/picture_in_picture.mojom.h"
 #include "third_party/blink/public/test/mojom/device_posture/device_posture_provider_automation.test-mojom.h"
+#include "third_party/blink/public/test/mojom/select_file_dialog/select_file_dialog_automation.test-mojom.h"
 #include "ui/base/ui_base_switches.h"
 #include "url/origin.h"
 #include "url/url_constants.h"
@@ -160,8 +163,7 @@ class BoundsMatchVideoSizeOverlayWindow : public VideoOverlayWindow {
       const std::vector<media_session::MediaImage>& images) override {}
   void SetSurfaceId(const viz::SurfaceId& surface_id) override {}
   void SetPlaybackControlsVisibility(bool is_visible) override {}
-  void SetImmersiveVideoOptions(
-      blink::mojom::ImmersiveOptionsPtr options) override {}
+  void SetImmersiveVideoOptions(const ImmersiveOptions& options) override {}
 
  private:
   gfx::Size size_;
@@ -309,6 +311,13 @@ WebTestContentBrowserClient::WebTestContentBrowserClient() {
   static storage::QuotaSettings quota_settings(
       storage::GetHardCodedSettings(1024 * 1024 * 1024));
   StoragePartition::SetDefaultQuotaSettingsForTesting(&quota_settings);
+
+  // DevTools frontend in web tests is loaded over
+  // http://debug-frontend.test:8000 (see WebTestDevToolsBindings::Inspect).
+  // Treat this origin as secure so that the DevTools frontend has access to
+  // [SecureContext] APIs (e.g. crypto.randomUUID).
+  net::SecureOriginAllowlist::GetInstance().SetAuxiliaryAllowlist(
+      "http://debug-frontend.test:8000", nullptr);
 }
 
 WebTestContentBrowserClient::~WebTestContentBrowserClient() {
@@ -431,6 +440,11 @@ void WebTestContentBrowserClient::OverrideWebPreferences(
   }
 }
 
+bool WebTestContentBrowserClient::
+    ShouldUpdateFontRendererPreferencesFromSystemSettings() const {
+  return false;
+}
+
 void WebTestContentBrowserClient::CreateThrottlesForNavigation(
     NavigationThrottleRegistry& registry) {
   ShellContentBrowserClient::CreateThrottlesForNavigation(registry);
@@ -457,6 +471,14 @@ void WebTestContentBrowserClient::AppendExtraCommandLineSwitches(
 
   command_line->CopySwitchesFrom(*base::CommandLine::ForCurrentProcess(),
                                  kForwardSwitches);
+
+  std::vector<std::string> allowlist =
+      net::SecureOriginAllowlist::GetInstance().GetCurrentAllowlist();
+  if (!allowlist.empty()) {
+    command_line->AppendSwitchASCII(
+        net::switches::kUnsafelyTreatInsecureOriginAsSecure,
+        base::JoinString(allowlist, ","));
+  }
 }
 
 std::unique_ptr<BrowserMainParts>
@@ -583,11 +605,11 @@ void WebTestContentBrowserClient::RegisterBrowserInterfaceBindersForFrame(
   map->Add<blink::test::mojom::FederatedAuthRequestAutomation>(
       base::BindRepeating(&WebTestContentBrowserClient::BindFedCmAutomation,
                           base::Unretained(this)));
+  map->Add<blink::test::mojom::SelectFileDialogAutomation>(base::BindRepeating(
+      &WebTestContentBrowserClient::BindSelectFileDialogAutomation,
+      base::Unretained(this)));
   map->Add<blink::test::mojom::WebSensorProviderAutomation>(base::BindRepeating(
       &WebTestContentBrowserClient::BindWebSensorProviderAutomation,
-      base::Unretained(this)));
-  map->Add<blink::test::mojom::WebPrivacySandboxAutomation>(base::BindRepeating(
-      &WebTestContentBrowserClient::BindWebPrivacySandboxAutomation,
       base::Unretained(this)));
 
 #if BUILDFLAG(ENABLE_COMPUTE_PRESSURE)
@@ -667,6 +689,16 @@ void WebTestContentBrowserClient::BindFedCmAutomation(
                       std::move(receiver));
 }
 
+void WebTestContentBrowserClient::BindSelectFileDialogAutomation(
+    RenderFrameHost* render_frame_host,
+    mojo::PendingReceiver<blink::test::mojom::SelectFileDialogAutomation>
+        receiver) {
+  if (WebTestControlHost::Get()) {
+    WebTestControlHost::Get()->BindSelectFileDialogAutomation(
+        std::move(receiver));
+  }
+}
+
 void WebTestContentBrowserClient::BindWebSensorProviderAutomation(
     RenderFrameHost* render_frame_host,
     mojo::PendingReceiver<blink::test::mojom::WebSensorProviderAutomation>
@@ -680,15 +712,6 @@ void WebTestContentBrowserClient::BindWebSensorProviderAutomation(
 
 void WebTestContentBrowserClient::ResetWebSensorProviderAutomation() {
   sensor_provider_manager_.reset();
-}
-
-void WebTestContentBrowserClient::BindWebPrivacySandboxAutomation(
-    RenderFrameHost* render_frame_host,
-    mojo::PendingReceiver<blink::test::mojom::WebPrivacySandboxAutomation>
-        receiver) {
-  WebTestPrivacySandbox::GetOrCreate(
-      WebContents::FromRenderFrameHost(render_frame_host))
-      ->Bind(std::move(receiver));
 }
 
 #if BUILDFLAG(ENABLE_COMPUTE_PRESSURE)
@@ -712,6 +735,7 @@ std::unique_ptr<LoginDelegate> WebTestContentBrowserClient::CreateLoginDelegate(
     const GURL& url,
     scoped_refptr<net::HttpResponseHeaders> response_headers,
     bool first_auth_attempt,
+    bool do_not_prompt_for_login,
     GuestPageHolder* guest,
     LoginDelegate::LoginAuthRequiredCallback auth_required_callback) {
   return nullptr;
@@ -770,27 +794,9 @@ void WebTestContentBrowserClient::BindNonAssociatedWebTestControlHost(
   }
 }
 
-#if BUILDFLAG(IS_WIN)
-bool WebTestContentBrowserClient::PreSpawnChild(
-    sandbox::TargetConfig* config,
-    sandbox::mojom::Sandbox sandbox_type,
-    ChildSpawnFlags flags) {
-  return true;
-}
-#endif  // BUILDFLAG(IS_WIN)
-
 std::string WebTestContentBrowserClient::GetAcceptLangs(
     BrowserContext* context) {
   return GetShellLanguage();
-}
-
-bool WebTestContentBrowserClient::IsInterestGroupAPIAllowed(
-    BrowserContext* browser_context,
-    RenderFrameHost* render_frame_host,
-    InterestGroupApiOperation operation,
-    const url::Origin& top_frame_origin,
-    const url::Origin& api_origin) {
-  return true;
 }
 
 bool WebTestContentBrowserClient::IsPrivacySandboxReportingDestinationAttested(
@@ -820,10 +826,5 @@ void WebTestContentBrowserClient::
       MojoBinderAssociatedPolicy::kGrant);
 }
 
-void WebTestContentBrowserClient::RegisterMojoBinderPoliciesForPreview(
-    MojoBinderPolicyMap& policy_map) {
-  policy_map.SetAssociatedPolicy<mojom::WebTestControlHost>(
-      MojoBinderAssociatedPolicy::kGrant);
-}
 
 }  // namespace content

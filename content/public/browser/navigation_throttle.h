@@ -8,9 +8,9 @@
 #include <optional>
 
 #include "base/functional/callback.h"
-#include "base/memory/advanced_memory_safety_checks.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/raw_ref.h"
+#include "base/memory/sanitized_object.h"
 #include "content/common/content_export.h"
 #include "content/public/browser/navigation_throttle_registry.h"
 #include "net/base/net_errors.h"
@@ -27,7 +27,7 @@ class NavigationHandle;
 class CONTENT_EXPORT NavigationThrottle {
   // Do not remove this macro!
   // The macro is maintained by the memory safety team.
-  ADVANCED_MEMORY_SAFETY_CHECKS();
+  SANITIZED_OBJECT();
 
  public:
   // Represents what a NavigationThrottle can decide to do to a navigation. Note
@@ -161,6 +161,16 @@ class CONTENT_EXPORT NavigationThrottle {
   // method. Failing to do so will result in use-after-free bugs. Should the
   // implementer need to destroy the WebContents, it should return CANCEL,
   // CANCEL_AND_IGNORE or DEFER and perform the destruction asynchronously.
+  //
+  // At the point where this is invoked, some navigation state has already been
+  // updated to reflect the redirect. Specifically:
+  // - navigation_handle()->GetURL() returns the new URL (the redirection
+  // target).
+  // - navigation_handle()->GetRedirectChain() contains the new URL as its last
+  //   entry.
+  // - navigation_handle()->GetResponseHeaders() returns the headers of the
+  //   redirect response (i.e. the response that triggered this redirect, not
+  //   the response of the new URL).
   virtual ThrottleCheckResult WillRedirectRequest();
 
   // Called when a request will fail.

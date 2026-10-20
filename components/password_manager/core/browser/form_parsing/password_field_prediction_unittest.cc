@@ -13,7 +13,7 @@
 #include "components/autofill/core/browser/autofill_server_prediction.h"
 #include "components/autofill/core/browser/autofill_type.h"
 #include "components/autofill/core/browser/field_types.h"
-#include "components/autofill/core/browser/test_utils/autofill_test_utils.h"
+#include "components/autofill/core/browser/test_utils/autofill_test_util.h"
 #include "components/autofill/core/common/form_data.h"
 #include "components/autofill/core/common/form_data_test_api.h"
 #include "components/autofill/core/common/signatures.h"
@@ -73,6 +73,18 @@ TEST(FormPredictionsTest, ConvertToFormPredictions) {
         PASSWORD,
         CREDIT_CARD_VERIFICATION_CODE,
         {CREDIT_CARD_VERIFICATION_CODE}},
+       // standalone cvc in |additional_types| takes precedence.
+       {"standalone_cvc",
+        FormControlType::kInputPassword,
+        PASSWORD,
+        CREDIT_CARD_STANDALONE_VERIFICATION_CODE,
+        {CREDIT_CARD_STANDALONE_VERIFICATION_CODE}},
+       // iban in |additional_types| takes precedence.
+       {"iban",
+        FormControlType::kInputPassword,
+        PASSWORD,
+        IBAN_VALUE,
+        {IBAN_VALUE}},
        // `CREDIT_CARD_NUMBER` takes precedence over any credential related
        // types.
        {"cc-number",
@@ -105,12 +117,10 @@ TEST(FormPredictionsTest, ConvertToFormPredictions) {
     test_api(form_data).Append(std::move(field));
   }
 
-  const DriverId driver_id = DriverId(1000);
   FormPredictions actual_predictions =
-      ConvertToFormPredictions(driver_id, form_data, autofill_predictions);
+      ConvertToFormPredictions(form_data, autofill_predictions);
 
   // Check whether actual predictions are equal to expected ones.
-  EXPECT_EQ(driver_id, actual_predictions.driver_id);
   EXPECT_EQ(CalculateFormSignature(form_data),
             actual_predictions.form_signature);
   EXPECT_EQ(std::size(test_fields), actual_predictions.fields.size());
@@ -175,7 +185,7 @@ TEST(FormPredictionsTest, ConvertToFormPredictions_SynthesiseConfirmation) {
     }
 
     FormPredictions actual_predictions =
-        ConvertToFormPredictions(DriverId(1), form_data, autofill_predictions);
+        ConvertToFormPredictions(form_data, autofill_predictions);
 
     for (size_t i = 0; i < form_data.fields().size(); ++i) {
       SCOPED_TRACE(
@@ -213,6 +223,9 @@ TEST(FormPredictionsTest, DeriveFromFieldType) {
        CredentialFieldType::kConfirmationPassword},
       {"Credit card number", CREDIT_CARD_NUMBER,
        CredentialFieldType::kNonCredential},
+      {"Standalone CVC", CREDIT_CARD_STANDALONE_VERIFICATION_CODE,
+       CredentialFieldType::kNonCredential},
+      {"IBAN", IBAN_VALUE, CredentialFieldType::kNonCredential},
       {"Not password", NOT_PASSWORD, CredentialFieldType::kNonCredential},
       {"Not username", NOT_USERNAME, CredentialFieldType::kNonCredential},
       {"OTP", ONE_TIME_CODE, CredentialFieldType::kNonCredential},
@@ -227,11 +240,16 @@ TEST(FormPredictionsTest, DeriveFromFieldType) {
   }
 }
 
+TEST(FormPredictionsTest, DeriveFromFieldType_StandaloneCvcAndIbanSiblings) {
+  EXPECT_EQ(CredentialFieldType::kNonCredential,
+            DeriveFromFieldType(CREDIT_CARD_STANDALONE_VERIFICATION_CODE));
+  EXPECT_EQ(CredentialFieldType::kNonCredential,
+            DeriveFromFieldType(IBAN_VALUE));
+}
+
 // Tests that if |AutofillServerPrediction| has an override flag, it
 // will be propagated to |FormPredictions|.
 TEST(FormPredictionsTest, ConvertToFormPredictions_OverrideFlagPropagated) {
-  const DriverId driver_id = DriverId(1);
-
   FormData form;
   FormFieldData single_username_field;
   single_username_field.set_renderer_id(autofill::FieldRendererId(1000));
@@ -245,14 +263,13 @@ TEST(FormPredictionsTest, ConvertToFormPredictions_OverrideFlagPropagated) {
       {single_username_field.global_id(), autofill_prediction});
 
   FormPredictions expected_result;
-  expected_result.driver_id = driver_id;
   expected_result.form_signature = CalculateFormSignature(form);
   expected_result.fields.push_back(
       {single_username_field.renderer_id(),
        CalculateFieldSignatureForField(single_username_field),
        autofill::SINGLE_USERNAME, /*is_override=*/true});
 
-  EXPECT_EQ(ConvertToFormPredictions(driver_id, form, autofill_predictions),
+  EXPECT_EQ(ConvertToFormPredictions(form, autofill_predictions),
             expected_result);
 }
 

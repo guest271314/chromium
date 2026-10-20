@@ -4,6 +4,8 @@
 
 #import "ios/chrome/browser/tracing/ios_chrome_background_tracing_metrics_provider.h"
 
+#import <optional>
+
 #import "base/functional/callback_helpers.h"
 #import "base/task/thread_pool.h"
 #import "base/task/thread_pool/thread_pool_instance.h"
@@ -11,7 +13,10 @@
 #import "base/test/run_until.h"
 #import "base/test/task_environment.h"
 #import "base/tracing/perfetto_platform.h"
+#import "components/variations/active_field_trials.h"
+#import "components/variations/synthetic_trial_registry.h"
 #import "ios/chrome/browser/tracing/ios_tracing_controller.h"
+#import "ios/chrome/browser/tracing/test_utils.h"
 #import "services/tracing/public/cpp/background_tracing/background_tracing_rule.h"
 #import "services/tracing/public/cpp/background_tracing/tracing_scenario.h"
 #import "services/tracing/public/cpp/startup_tracing_controller.h"
@@ -26,23 +31,22 @@ class IOSChromeBackgroundTracingMetricsProviderTest : public PlatformTest {
  protected:
   void SetUp() override {
     PlatformTest::SetUp();
-    IOSTracingController::MaybeCreateInstanceForTesting();
-    IOSTracingController::GetInstance().InitializeForTesting();
-
+    tracing_controller_ = std::make_unique<IOSTracingControllerForTesting>();
     base::ThreadPoolInstance::Get()->FlushForTesting();
   }
 
   void TearDown() override {
-    IOSTracingController::GetInstance().ResetForTesting();
+    tracing_controller_.reset();
     PlatformTest::TearDown();
   }
 
   base::test::TaskEnvironment task_environment_{
       base::test::TaskEnvironment::TimeSource::MOCK_TIME};
+  std::unique_ptr<IOSTracingControllerForTesting> tracing_controller_;
 };
 
 TEST_F(IOSChromeBackgroundTracingMetricsProviderTest, HasIndependentMetrics) {
-  IOSChromeBackgroundTracingMetricsProvider provider;
+  IOSChromeBackgroundTracingMetricsProvider provider(nullptr);
   EXPECT_FALSE(provider.HasIndependentMetrics());
 
   // Add mock trace data
@@ -71,7 +75,7 @@ TEST_F(IOSChromeBackgroundTracingMetricsProviderTest, HasIndependentMetrics) {
 }
 
 TEST_F(IOSChromeBackgroundTracingMetricsProviderTest, ProvideMetrics) {
-  IOSChromeBackgroundTracingMetricsProvider provider;
+  IOSChromeBackgroundTracingMetricsProvider provider(nullptr);
 
   // Add mock trace data
   perfetto::protos::gen::TriggerRule config;
@@ -115,6 +119,20 @@ TEST_F(IOSChromeBackgroundTracingMetricsProviderTest, ProvideMetrics) {
   if (uma_proto.trace_log_size() > 0) {
     EXPECT_FALSE(uma_proto.trace_log(0).raw_data().empty());
   }
+}
+
+TEST_F(IOSChromeBackgroundTracingMetricsProviderTest, ProvideSeedVersion) {
+  variations::SyntheticTrialRegistry registry;
+  IOSChromeBackgroundTracingMetricsProvider provider(&registry);
+
+  variations::SetSeedVersion("test_seed_version");
+  provider.Init();
+
+  metrics::SystemProfileProto system_profile_proto;
+  provider.RecordSystemProfileMetrics(system_profile_proto);
+
+  EXPECT_EQ(system_profile_proto.variations_seed_version(),
+            "test_seed_version");
 }
 
 }  // namespace tracing

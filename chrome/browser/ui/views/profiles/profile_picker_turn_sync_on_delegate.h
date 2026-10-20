@@ -9,7 +9,6 @@
 #include "base/memory/weak_ptr.h"
 #include "base/scoped_observation.h"
 #include "chrome/browser/profiles/profile_metrics.h"
-#include "chrome/browser/ui/views/profiles/profile_picker_view.h"
 #include "chrome/browser/ui/webui/signin/login_ui_service.h"
 #include "chrome/browser/ui/webui/signin/managed_user_profile_notice_ui.h"
 #include "chrome/browser/ui/webui/signin/turn_sync_on_helper.h"
@@ -58,6 +57,10 @@ class ProfilePickerTurnSyncOnDelegate : public TurnSyncOnHelper::Delegate,
 
   // Shows the sync confirmation screen in the profile creation flow.
   void ShowSyncConfirmationScreen();
+
+  // Shows the sign-in celebration if eligible, then runs
+  // `show_next_screen_callback`.
+  void MaybeShowSignInCelebration(base::OnceClosure show_next_screen_callback);
 
   // When ShowSync(Disabled)Confirmation() gets called, this must eventually get
   // called exactly once in all code branches. Handles the callback.

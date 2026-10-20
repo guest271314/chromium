@@ -4,6 +4,8 @@
 
 #include "components/component_updater/component_updater_service.h"
 
+#include <stdint.h>
+
 #include <algorithm>
 #include <map>
 #include <memory>
@@ -113,11 +115,13 @@ ComponentRegistration::~ComponentRegistration() = default;
 CrxUpdateService::CrxUpdateService(scoped_refptr<Configurator> config,
                                    std::unique_ptr<UpdateScheduler> scheduler,
                                    scoped_refptr<UpdateClient> update_client,
-                                   const std::string& brand)
+                                   const std::string& brand,
+                                   bool update_checks_disabled)
     : config_(config),
       scheduler_(std::move(scheduler)),
       update_client_(update_client),
-      brand_(brand) {
+      brand_(brand),
+      update_checks_disabled_(update_checks_disabled) {
   update_client->CleanupStaleDownloads(
       base::Time::Now(),
       base::BindOnce([] { VLOG(2) << "CleanupStaleDownloads done"; }));
@@ -174,6 +178,10 @@ base::Version CrxUpdateService::GetMaxPreviousProductVersion(
 
 void CrxUpdateService::Start() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  if (update_checks_disabled_) {
+    VLOG(1) << "CrxUpdateService update checks are disabled";
+    return;
+  }
   VLOG(1) << "CrxUpdateService starting up. "
           << "First update attempt will take place in "
           << config_->InitialDelay() << " seconds. "
@@ -205,6 +213,9 @@ bool CrxUpdateService::RegisterComponent(
       !component.installer) {
     return false;
   }
+
+  // Cancel any pending unregistration for this component.
+  std::erase(components_pending_unregistration_, component.app_id);
 
   // Update the registration data if the component has been registered before.
   auto it = components_.find(component.app_id);
@@ -382,6 +393,17 @@ void CrxUpdateService::OnDemandUpdate(const std::string& id,
                                       Callback callback) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
+  // Checked before the registration, so that callers get the same answer for
+  // components that are not registered when update checks are disabled.
+  if (update_checks_disabled_) {
+    if (!callback.is_null()) {
+      base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+          FROM_HERE, base::BindOnce(std::move(callback),
+                                    update_client::Error::UPDATE_DISABLED));
+    }
+    return;
+  }
+
   if (!GetComponent(id)) {
     if (!callback.is_null()) {
       base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
@@ -396,6 +418,9 @@ void CrxUpdateService::OnDemandUpdate(const std::string& id,
 
 bool CrxUpdateService::OnDemandUpdateWithCooldown(const std::string& id) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  if (update_checks_disabled_) {
+    return false;
+  }
 
   // Check if the request is too soon.
   const auto* component_state(GetComponentState(id));
@@ -501,7 +526,7 @@ void CrxUpdateService::OnUpdateComplete(Callback callback,
                                         const base::TimeTicks& start_time,
                                         update_client::Error error) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  VLOG(1) << "Update completed with error " << static_cast<int>(error);
+  VLOG(1) << "Update completed with error " << std::to_underlying(error);
 
   UMA_HISTOGRAM_BOOLEAN("ComponentUpdater.UpdateCompleteResult",
                         error != update_client::Error::NONE);
@@ -567,12 +592,14 @@ void CrxUpdateService::OnEvent(const CrxUpdateItem& update_item) {
 std::unique_ptr<ComponentUpdateService> ComponentUpdateServiceFactory(
     scoped_refptr<Configurator> config,
     std::unique_ptr<UpdateScheduler> scheduler,
-    const std::string& brand) {
+    const std::string& brand,
+    bool update_checks_disabled) {
   CHECK(config);
   CHECK(scheduler);
   auto update_client = update_client::UpdateClientFactory(config);
   return std::make_unique<CrxUpdateService>(config, std::move(scheduler),
-                                            std::move(update_client), brand);
+                                            std::move(update_client), brand,
+                                            update_checks_disabled);
 }
 
 // Register prefs required by the component update service.

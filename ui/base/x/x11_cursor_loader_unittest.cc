@@ -149,10 +149,10 @@ TEST(XCursorLoaderTest, BestSize) {
       // delay
       0,
       // chunk data (ARGB image)
-      0xffffffff,
-      0xffffffff,
-      0xffffffff,
-      0xffffffff,
+      0xff112233,
+      0xff445566,
+      0xff778899,
+      0xffaabbcc,
 
       // bytes in header
       16,
@@ -185,8 +185,12 @@ TEST(XCursorLoaderTest, BestSize) {
   };
   auto images = ParseFile(file, 2);
   ASSERT_EQ(images.size(), 1ul);
-  EXPECT_EQ(images[0].bitmap.width(), 2);
-  EXPECT_EQ(images[0].bitmap.height(), 2);
+  ASSERT_EQ(images[0].bitmap.width(), 2);
+  ASSERT_EQ(images[0].bitmap.height(), 2);
+  EXPECT_EQ(images[0].bitmap.getColor(0, 0), 0xff112233);
+  EXPECT_EQ(images[0].bitmap.getColor(1, 0), 0xff445566);
+  EXPECT_EQ(images[0].bitmap.getColor(0, 1), 0xff778899);
+  EXPECT_EQ(images[0].bitmap.getColor(1, 1), 0xffaabbcc);
 }
 
 TEST(XCursorLoaderTest, Animated) {
@@ -260,6 +264,33 @@ TEST(XCursorLoaderTest, Animated) {
   ASSERT_EQ(images.size(), 2ul);
   EXPECT_EQ(images[0].frame_delay.InMilliseconds(), 500);
   EXPECT_EQ(images[1].frame_delay.InMilliseconds(), 500);
+}
+
+TEST(XCursorLoaderTest, ThemeNameValidation) {
+  const char* const kInvalidThemes[] = {
+      "",
+      ".",
+      "..",
+      "/foo",
+      "/tmp/evil",
+      "../foo",
+      "foo/..",
+      "../../../../tmp/poc-cursor-evil",
+      "foo/bar",
+  };
+  for (const char* theme : kInvalidThemes) {
+    EXPECT_FALSE(IsValidCursorThemeNameForTesting(theme));
+  }
+
+  const char* const kValidThemes[] = {
+      "default",
+      "Adwaita",
+      "DMZ-White",
+      "my_theme-123",
+  };
+  for (const char* theme : kValidThemes) {
+    EXPECT_TRUE(IsValidCursorThemeNameForTesting(theme));
+  }
 }
 
 }  // namespace ui

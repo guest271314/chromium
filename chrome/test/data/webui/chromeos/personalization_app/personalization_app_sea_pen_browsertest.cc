@@ -96,7 +96,7 @@ class PersonalizationAppSeaPenBrowserTest
                                    uint32_t image_id) {
     auto* sea_pen_wallpaper_manager = SeaPenWallpaperManager::GetInstance();
     DCHECK(sea_pen_wallpaper_manager);
-    const AccountId account_id = GetAccountId(browser()->profile());
+    const AccountId account_id = GetAccountId(browser()->GetProfile());
     const SeaPenImage sea_pen_image = {CreateJpgBytes(), image_id};
     base::test::TestFuture<bool> save_image_future;
     sea_pen_wallpaper_manager->SaveSeaPenImage(account_id, sea_pen_image,
@@ -109,7 +109,14 @@ class PersonalizationAppSeaPenBrowserTest
   base::test::ScopedFeatureList scoped_feature_list_;
 };
 
-IN_PROC_BROWSER_TEST_F(PersonalizationAppSeaPenBrowserTest, SeaPen) {
+// TODO(crbug.com/566263805, crbug.com/566387414): Flaky and times out on debug
+// builds.
+#if !defined(NDEBUG)
+#define MAYBE_SeaPen DISABLED_SeaPen
+#else
+#define MAYBE_SeaPen SeaPen
+#endif
+IN_PROC_BROWSER_TEST_F(PersonalizationAppSeaPenBrowserTest, MAYBE_SeaPen) {
   RunTestWithoutTestLoader(
       "chromeos/personalization_app/personalization_app_test.js",
       "runMochaSuite('sea pen')");

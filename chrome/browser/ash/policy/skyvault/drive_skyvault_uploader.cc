@@ -74,7 +74,7 @@ DriveSkyvaultUploader::DriveSkyvaultUploader(
 DriveSkyvaultUploader::~DriveSkyvaultUploader() = default;
 
 void DriveSkyvaultUploader::Run() {
-  DCHECK(callback_);
+  CHECK(callback_, base::NotFatalUntil::M160);
 
   if (cancelled_) {
     OnEndCopy(MigrationUploadError::kCancelled);
@@ -108,7 +108,7 @@ void DriveSkyvaultUploader::Run() {
   }
 
   // Observe Drive updates.
-  drive::DriveIntegrationService::Observer::Observe(drive_integration_service_);
+  drive_observation_.Observe(drive_integration_service_);
 
   if (!drive_integration_service_->is_enabled()) {
     // Drive is completely disabled for this profile.
@@ -295,8 +295,8 @@ void DriveSkyvaultUploader::OnCopyStatus(
     case file_manager::io_task::State::kInProgress:
       if (observed_relative_drive_path_.empty() && !status.outputs.empty()) {
         // It's always one file.
-        DCHECK_EQ(status.sources.size(), 1u);
-        DCHECK_EQ(status.outputs.size(), 1u);
+        CHECK_EQ(status.sources.size(), 1u, base::NotFatalUntil::M160);
+        CHECK_EQ(status.outputs.size(), 1u, base::NotFatalUntil::M160);
 
         if (!drive_integration_service_) {
           LOG(ERROR) << "No Drive integration service";
@@ -314,7 +314,7 @@ void DriveSkyvaultUploader::OnCopyStatus(
       }
       return;
     case file_manager::io_task::State::kSuccess:
-      DCHECK_EQ(status.outputs.size(), 1u);
+      CHECK_EQ(status.outputs.size(), 1u, base::NotFatalUntil::M160);
       return;
     case file_manager::io_task::State::kCancelled:
       OnEndCopy(MigrationUploadError::kCancelled);
@@ -331,9 +331,10 @@ void DriveSkyvaultUploader::OnCopyStatus(
 void DriveSkyvaultUploader::ProcessCopyError(
     const file_manager::io_task::ProgressStatus& status) {
   // It's always one file.
-  DCHECK_EQ(status.sources.size(), 1u);
-  DCHECK_EQ(status.outputs.size(), 1u);
-  DCHECK_EQ(status.state, file_manager::io_task::State::kError);
+  CHECK_EQ(status.sources.size(), 1u, base::NotFatalUntil::M160);
+  CHECK_EQ(status.outputs.size(), 1u, base::NotFatalUntil::M160);
+  CHECK_EQ(status.state, file_manager::io_task::State::kError,
+           base::NotFatalUntil::M160);
 
   base::File::Error error =
       status.outputs.front().error.value_or(base::File::FILE_ERROR_FAILED);
@@ -446,7 +447,7 @@ void DriveSkyvaultUploader::OnDriveConnectionStatusChanged(
           base::Time::Now() - connection_wait_start_time_.value());
       connection_wait_start_time_.reset();
       reconnection_timer_.Stop();
-      drive::DriveIntegrationService::Observer::Reset();
+      drive_observation_.Reset();
       Run();
     }
     return;
@@ -460,6 +461,10 @@ void DriveSkyvaultUploader::OnDriveConnectionStatusChanged(
     LOG(ERROR) << "Lost connection to Drive during upload";
     OnEndCopy(MigrationUploadError::kNetworkError);
   }
+}
+
+void DriveSkyvaultUploader::OnDriveIntegrationServiceDestroyed() {
+  drive_observation_.Reset();
 }
 
 void DriveSkyvaultUploader::OnReconnectionTimeout() {

@@ -23,7 +23,7 @@ namespace audio {
 // should be accessed from the Audio thread.
 class COMPONENT_EXPORT(AUDIO_PUBLIC_CPP) SoundsManager {
  public:
-  typedef int SoundKey;
+  using SoundKey = int;
 
   // Creates a singleton instance of the SoundsManager.
   using StreamFactoryBinder = base::RepeatingCallback<void(
@@ -54,6 +54,10 @@ class COMPONENT_EXPORT(AUDIO_PUBLIC_CPP) SoundsManager {
   // Stops playing sound identified by |key|, returns false if SoundsManager
   // was not properly initialized.
   virtual bool Stop(SoundKey key) = 0;
+
+  // Pauses playing sound identified by |key|, returns false if SoundsManager
+  // was not properly initialized.
+  virtual bool Pause(SoundKey key) = 0;
 
   // Returns duration of the sound identified by |key|. If SoundsManager
   // was not properly initialized or |key| was not registered, this

@@ -73,6 +73,8 @@ class COMPONENT_EXPORT(UI_BASE_X) XOSExchangeDataProvider
   std::optional<url::Origin> GetRendererTaintedOrigin() const override;
   void MarkAsFromPrivileged() override;
   bool IsFromPrivileged() const override;
+  void SetChromeDragId(const base::UnguessableToken& drag_id) override;
+  std::optional<base::UnguessableToken> GetChromeDragId() const override;
   void SetString(std::u16string_view data) override;
   void SetURLs(base::span<const ClipboardUrlInfo> url_infos) override;
   void SetFilename(const base::FilePath& path) override;
@@ -90,7 +92,7 @@ class COMPONENT_EXPORT(UI_BASE_X) XOSExchangeDataProvider
   bool HasFile() const override;
   bool HasCustomFormat(const ClipboardFormatType& format) const override;
   void SetFileContents(const base::FilePath& filename,
-                       const std::string& file_contents) override;
+                       base::span<const uint8_t> file_contents) override;
   std::optional<FileContentsInfo> GetFileContents() const override;
   bool HasFileContents() const override;
 

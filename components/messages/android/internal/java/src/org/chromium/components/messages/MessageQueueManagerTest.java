@@ -9,7 +9,6 @@ import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.description;
-import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
@@ -19,8 +18,10 @@ import static org.mockito.Mockito.verify;
 
 import android.animation.Animator;
 import android.animation.AnimatorSet;
+import android.content.Context;
+import android.view.View;
 
-import androidx.test.filters.SmallTest;
+import androidx.test.core.app.ApplicationProvider;
 
 import org.junit.Assert;
 import org.junit.Before;
@@ -28,7 +29,6 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mockito;
-import org.robolectric.annotation.Config;
 
 import org.chromium.base.ActivityState;
 import org.chromium.base.test.BaseRobolectricTestRunner;
@@ -43,7 +43,6 @@ import org.chromium.ui.base.WindowAndroid;
 
 /** Unit tests for MessageQueueManager. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 @EnableFeatures({MessageFeatureList.MESSAGES_ANDROID_EXTRA_HISTOGRAMS})
 public class MessageQueueManagerTest {
 
@@ -155,16 +154,13 @@ public class MessageQueueManagerTest {
 
     @Before
     public void setUp() {
-        MessageContainer container = Mockito.mock(MessageContainer.class);
-        doAnswer(
-                        invocation -> {
-                            Runnable runnable = invocation.getArgument(0);
-                            runnable.run();
-                            return null;
-                        })
-                .when(container)
-                .runAfterInitialMessageLayout(any(Runnable.class));
-        doReturn(false).when(container).isIsInitializingLayout();
+        Context context = ApplicationProvider.getApplicationContext();
+        MessageContainer container = new MessageContainer(context, null);
+        // A message view that has already been laid out makes runAfterInitialMessageLayout() run
+        // its callbacks synchronously.
+        View messageView = new View(context);
+        container.addMessage(messageView);
+        messageView.layout(0, 0, 100, 100);
         mAnimationCoordinator = new MessageAnimationCoordinator(container, Animator::start);
     }
 
@@ -173,7 +169,6 @@ public class MessageQueueManagerTest {
      * hide() and dismiss()
      */
     @Test
-    @SmallTest
     public void testEnqueueMessage() {
         MessageQueueManager queueManager = new MessageQueueManager(mAnimationCoordinator);
         queueManager.setDelegate(mEmptyDelegate);
@@ -187,7 +182,6 @@ public class MessageQueueManagerTest {
                         .expectIntRecord("Android.Messages.Enqueued", m1.getMessageIdentifier())
                         .expectIntRecord(
                                 "Android.Messages.Enqueued.Visible", m1.getMessageIdentifier())
-                        .expectNoRecords("Android.Messages.Enqueued.Hiding")
                         .expectNoRecords("Android.Messages.Enqueued.Hidden")
                         .build();
         var dismissed =
@@ -222,7 +216,6 @@ public class MessageQueueManagerTest {
      * hide() and dismiss() when a queue is enqueued with multiple messages
      */
     @Test
-    @SmallTest
     public void testEnqueueMultipleMessages() {
         MessageQueueManager queueManager = new MessageQueueManager(mAnimationCoordinator);
         queueManager.setDelegate(mEmptyDelegate);
@@ -239,8 +232,6 @@ public class MessageQueueManagerTest {
                                 m2.getMessageIdentifier())
                         .expectIntRecord(
                                 "Android.Messages.Enqueued.Visible", m1.getMessageIdentifier())
-                        .expectIntRecord(
-                                "Android.Messages.Enqueued.Hiding", m1.getMessageIdentifier())
                         .expectIntRecord(
                                 "Android.Messages.Enqueued.Hidden", m2.getMessageIdentifier())
                         .build();
@@ -270,7 +261,6 @@ public class MessageQueueManagerTest {
 
     /** Histograms are recorded with whether queue is suspended. */
     @Test
-    @SmallTest
     public void testEnqueueWithQueueSuspension() {
         MessageQueueManager queueManager = new MessageQueueManager(mAnimationCoordinator);
         queueManager.setDelegate(mEmptyDelegate);
@@ -287,11 +277,6 @@ public class MessageQueueManagerTest {
                                 "Android.Messages.Enqueued",
                                 m1.getMessageIdentifier(),
                                 m2.getMessageIdentifier())
-                        .expectIntRecords(
-                                "Android.Messages.Enqueued.Suspended",
-                                m1.getMessageIdentifier(),
-                                m2.getMessageIdentifier())
-                        .expectNoRecords("Android.Messages.Enqueued.Resumed")
                         .build();
 
         queueManager.enqueueMessage(m1, m1, SCOPE_INSTANCE_ID, false);
@@ -308,11 +293,6 @@ public class MessageQueueManagerTest {
                                 "Android.Messages.Enqueued",
                                 m3.getMessageIdentifier(),
                                 m4.getMessageIdentifier())
-                        .expectIntRecords(
-                                "Android.Messages.Enqueued.Resumed",
-                                m3.getMessageIdentifier(),
-                                m4.getMessageIdentifier())
-                        .expectNoRecords("Android.Messages.Enqueued.Suspended")
                         .build();
         queueManager.resume(token);
 
@@ -323,7 +303,6 @@ public class MessageQueueManagerTest {
 
     /** Histograms are recorded with whether scope is active. */
     @Test
-    @SmallTest
     public void testEnqueueWithScopeActivation() {
         MessageQueueManager queueManager = new MessageQueueManager(mAnimationCoordinator);
         queueManager.setDelegate(mEmptyDelegate);
@@ -342,13 +321,6 @@ public class MessageQueueManagerTest {
                                 m1.getMessageIdentifier(),
                                 m2.getMessageIdentifier(),
                                 m3.getMessageIdentifier())
-                        .expectIntRecords(
-                                "Android.Messages.Enqueued.ScopeInactive",
-                                m2.getMessageIdentifier())
-                        .expectIntRecords(
-                                "Android.Messages.Enqueued.ScopeActive",
-                                m1.getMessageIdentifier(),
-                                m3.getMessageIdentifier())
                         .build();
 
         final ScopeKey inactiveScopeKey = new ScopeKey(SCOPE_TYPE, new InactiveMockWebContents());
@@ -360,23 +332,16 @@ public class MessageQueueManagerTest {
         enqueued.assertExpected();
 
         // Do not record again when there scopes are updated
-        enqueued =
-                HistogramWatcher.newBuilder()
-                        .expectNoRecords("Android.Messages.Enqueued.ScopeInactive")
-                        .expectNoRecords("Android.Messages.Enqueued.ScopeActive")
-                        .build();
         queueManager.onScopeChange(
                 new MessageScopeChange(
                         MessageScopeType.NAVIGATION, SCOPE_INSTANCE_ID, ChangeType.INACTIVE));
         queueManager.onScopeChange(
                 new MessageScopeChange(
                         MessageScopeType.NAVIGATION, inactiveScopeKey, ChangeType.ACTIVE));
-        enqueued.assertExpected();
     }
 
     /** Test method {@link MessageQueueManager#dismissAllMessages(int)}. */
     @Test
-    @SmallTest
     public void testDismissAllMessages() {
         MessageQueueManager queueManager = new MessageQueueManager(mAnimationCoordinator);
         queueManager.setDelegate(mEmptyDelegate);
@@ -411,7 +376,6 @@ public class MessageQueueManagerTest {
      * called.
      */
     @Test
-    @SmallTest
     public void testDismissBeforeShow() {
         MessageQueueManager queueManager = new MessageQueueManager(mAnimationCoordinator);
         queueManager.setDelegate(mEmptyDelegate);
@@ -437,7 +401,6 @@ public class MessageQueueManagerTest {
      * IllegalStateException.
      */
     @Test(expected = IllegalStateException.class)
-    @SmallTest
     public void testEnqueueDuplicateKey() {
         MessageQueueManager queueManager = new MessageQueueManager(mAnimationCoordinator);
         queueManager.setDelegate(mEmptyDelegate);
@@ -453,7 +416,6 @@ public class MessageQueueManagerTest {
 
     /** Tests that dismissing a message more than once is handled correctly. */
     @Test
-    @SmallTest
     public void testDismissMessageTwice() {
         MessageQueueManager queueManager = new MessageQueueManager(mAnimationCoordinator);
         queueManager.setDelegate(mEmptyDelegate);
@@ -466,7 +428,6 @@ public class MessageQueueManagerTest {
 
     /** Tests that delegate methods are properly called when queue is suspended and resumed. */
     @Test
-    @SmallTest
     public void testSuspendAndResumeQueue() {
         MessageQueueDelegate delegate = Mockito.spy(mEmptyDelegate);
         MessageQueueManager queueManager = new MessageQueueManager(mAnimationCoordinator);
@@ -488,9 +449,10 @@ public class MessageQueueManagerTest {
         verify(m1).hide(eq(Position.FRONT), eq(Position.INVISIBLE), anyBoolean());
     }
 
-    /** Tests that delegate methods are properly called to show/hide message when queue is suspended. */
+    /**
+     * Tests that delegate methods are properly called to show/hide message when queue is suspended.
+     */
     @Test
-    @SmallTest
     public void testDismissOnSuspend() {
         MessageQueueDelegate delegate = Mockito.spy(mEmptyDelegate);
         MessageQueueManager queueManager = new MessageQueueManager(mAnimationCoordinator);
@@ -515,7 +477,6 @@ public class MessageQueueManagerTest {
      * activated/deactivated.
      */
     @Test
-    @SmallTest
     public void testMessageShowOnScopeChange() {
         // TODO(crbug.com/40740060): cover more various scenarios, such as re-activating scopes
         //                          which have been destroyed.
@@ -571,7 +532,6 @@ public class MessageQueueManagerTest {
 
     /** Test that messages of multiple scope types can be correctly shown. */
     @Test
-    @SmallTest
     public void testMessageOnMultipleScopeTypes() {
         MessageQueueDelegate delegate = Mockito.spy(mEmptyDelegate);
         MessageQueueManager queueManager = new MessageQueueManager(mAnimationCoordinator);
@@ -623,9 +583,10 @@ public class MessageQueueManagerTest {
                 .dismiss(anyInt());
     }
 
-    /** Test that animateTransition gets propagated from MessageScopeChange to hide() call correctly. */
+    /**
+     * Test that animateTransition gets propagated from MessageScopeChange to hide() call correctly.
+     */
     @Test
-    @SmallTest
     public void testMessageAnimationTransitionOnScopeChange() {
         MessageQueueDelegate delegate = Mockito.spy(mEmptyDelegate);
         MessageQueueManager queueManager = new MessageQueueManager(mAnimationCoordinator);
@@ -645,7 +606,6 @@ public class MessageQueueManagerTest {
 
     /** Test that the message is correctly dismissed when the scope is destroyed. */
     @Test
-    @SmallTest
     public void testMessageDismissedOnScopeDestroy() {
         MessageQueueDelegate delegate = Mockito.spy(mEmptyDelegate);
         MessageQueueManager queueManager = new MessageQueueManager(mAnimationCoordinator);
@@ -676,9 +636,10 @@ public class MessageQueueManagerTest {
                 .dismiss(anyInt());
     }
 
-    /** Test that callback can be correctly called if #hide is called without #show called before. */
+    /**
+     * Test that callback can be correctly called if #hide is called without #show called before.
+     */
     @Test
-    @SmallTest
     public void testShowHideMultipleTimes() {
         MessageQueueDelegate delegate = Mockito.spy(MessageQueueDelegate.class);
         MessageQueueManager queueManager = new MessageQueueManager(mAnimationCoordinator);
@@ -712,7 +673,6 @@ public class MessageQueueManagerTest {
     }
 
     @Test
-    @SmallTest
     public void testSuspendDuringOnStartingShow() {
         MessageQueueDelegate delegate = Mockito.spy(mEmptyDelegate);
         MessageQueueManager queueManager = new MessageQueueManager(mAnimationCoordinator);
@@ -749,7 +709,6 @@ public class MessageQueueManagerTest {
 
     /** Test scope change controller is properly called when message is enqueued and dismissed. */
     @Test
-    @SmallTest
     public void testScopeChangeControllerInvoked() {
         ScopeChangeController controller = Mockito.mock(ScopeChangeController.class);
         MessageQueueManager queueManager = new MessageQueueManager(mAnimationCoordinator);
@@ -821,7 +780,6 @@ public class MessageQueueManagerTest {
 
     /** Test that the higher priority message is displayed when being enqueued. */
     @Test
-    @SmallTest
     public void testEnqueueHigherPriorityMessage() {
         MessageQueueManager queueManager = new MessageQueueManager(mAnimationCoordinator);
         queueManager.setDelegate(mEmptyDelegate);
@@ -842,7 +800,6 @@ public class MessageQueueManagerTest {
 
     /** Test that {@link MessageQueueManager#getNextMessages()} returns correct list. */
     @Test
-    @SmallTest
     public void testGetNextTwoMessages() {
         MessageQueueManager queueManager = new MessageQueueManager(mAnimationCoordinator);
         queueManager.setDelegate(mEmptyDelegate);
@@ -869,7 +826,6 @@ public class MessageQueueManagerTest {
     }
 
     @Test
-    @SmallTest
     public void testIsLowerPriority() {
         MessageQueueManager queueManager = new MessageQueueManager(mAnimationCoordinator);
         // highPriority first but id is larger.

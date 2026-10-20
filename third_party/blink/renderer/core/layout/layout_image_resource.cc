@@ -33,6 +33,7 @@
 #include "third_party/blink/renderer/core/layout/layout_image.h"
 #include "third_party/blink/renderer/core/layout/natural_sizing_info.h"
 #include "third_party/blink/renderer/core/svg/graphics/svg_image_for_container.h"
+#include "third_party/blink/renderer/platform/graphics/bitmap_image.h"
 #include "ui/base/resource/resource_scale_factor.h"
 
 namespace blink {
@@ -107,14 +108,29 @@ ResourcePriority LayoutImageResource::ComputeResourcePriority() const {
   return layout_object_->ComputeResourcePriority();
 }
 
-void LayoutImageResource::ResetAnimation() {
+void LayoutImageResource::ResetAnimation(ImageLoader::ResetTimeline timeline) {
   DCHECK(layout_object_);
 
-  if (!cached_image_)
+  if (!cached_image_) {
     return;
+  }
 
-  cached_image_->GetImage()->ResetAnimation();
+  Image* image = cached_image_->GetImage();
+  if (auto* bitmap_image = DynamicTo<BitmapImage>(image);
+      bitmap_image && timeline == ImageLoader::ResetTimeline::kSharedOnly) {
+    bitmap_image->ResetAnimationSharedTimelineOnly();
+  } else {
+    image->ResetAnimation();
+  }
 
+  layout_object_->SetShouldDoFullPaintInvalidation();
+}
+
+void LayoutImageResource::InvalidatePaint() {
+  DCHECK(layout_object_);
+  if (!cached_image_) {
+    return;
+  }
   layout_object_->SetShouldDoFullPaintInvalidation();
 }
 
@@ -123,7 +139,7 @@ RespectImageOrientationEnum LayoutImageResource::ImageOrientation() const {
   // Always respect the orientation of opaque origin images to avoid leaking
   // image data. Otherwise pull orientation from the layout object's style.
   return cached_image_->ForceOrientationIfNecessary(
-      layout_object_->StyleRef().ImageOrientation());
+      layout_object_->Style().ImageOrientation());
 }
 
 NaturalSizingInfo LayoutImageResource::GetNaturalDimensions(
@@ -207,7 +223,7 @@ scoped_refptr<Image> LayoutImageResource::GetImage(
   if (!svg_image)
     return image;
 
-  const ComputedStyle& style = layout_object_->StyleRef();
+  const ComputedStyle& style = layout_object_->Style();
   auto preferred_color_scheme = layout_object_->GetDocument()
                                     .GetStyleEngine()
                                     .ResolveColorSchemeForEmbedding(&style);

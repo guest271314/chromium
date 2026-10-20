@@ -46,6 +46,7 @@
 #include "gpu/command_buffer/client/client_shared_image.h"
 #include "gpu/command_buffer/client/gles2_interface.h"
 #include "gpu/command_buffer/client/raster_interface.h"
+#include "gpu/command_buffer/client/shared_image_pool.h"
 #include "gpu/command_buffer/common/mailbox.h"
 #include "gpu/command_buffer/common/sync_token.h"
 #include "gpu/config/gpu_feature_info.h"
@@ -97,6 +98,7 @@ class PLATFORM_EXPORT DrawingBuffer : public cc::TextureLayerClient,
     // Returns true if the DrawingBuffer is currently bound for draw.
     virtual bool DrawingBufferClientIsBoundForDraw() = 0;
     virtual void DrawingBufferClientRestoreScissorTest() = 0;
+    virtual void DrawingBufferClientRestoreRasterizerDiscard() = 0;
     // Interrupt and restore pixel local storage, if it was active.
     virtual void DrawingBufferClientInterruptPixelLocalStorage() = 0;
     virtual void DrawingBufferClientRestorePixelLocalStorage() = 0;
@@ -140,8 +142,8 @@ class PLATFORM_EXPORT DrawingBuffer : public cc::TextureLayerClient,
       bool desynchronized,
       PreserveDrawingBuffer,
       Platform::WebGLContextType,
-      bool is_offscreen_canvas,
       PredefinedColorSpace,
+      gfx::HDRMetadata,
       gl::GpuPreference);
 
   DrawingBuffer(const DrawingBuffer&) = delete;
@@ -187,10 +189,14 @@ class PLATFORM_EXPORT DrawingBuffer : public cc::TextureLayerClient,
   // Set the color space of the default draw buffer. This will destroy the
   // contents of the drawing buffer.
   void SetColorSpace(PredefinedColorSpace color_space);
+  void SetHdrMetadata(const gfx::HDRMetadata& hdr_metadata);
 
   // Bind the default framebuffer to |target|. |target| must be
   // GL_FRAMEBUFFER, GL_READ_FRAMEBUFFER, or GL_DRAW_FRAMEBUFFER.
   void Bind(GLenum target);
+  // Restore the default framebuffer binding to |target| in the GL context
+  // without ensuring/reallocating discarded buffers.
+  void RestoreDefaultFramebufferBinding(GLenum target = GL_FRAMEBUFFER);
   gfx::Size Size() const { return size_; }
   GLenum StorageFormat() const;
 
@@ -212,13 +218,14 @@ class PLATFORM_EXPORT DrawingBuffer : public cc::TextureLayerClient,
   // Returns false if the contents had previously been marked as changed and
   // have not yet been resolved.
   bool MarkContentsChanged();
+  // Restore buffers if they have been discarded.
+  void EnsureBuffers();
 
   void SetBufferClearNeeded(bool);
   void RequireExplicitBufferClear();
   bool BufferClearNeeded() const;
 
   void SetIsInHiddenPage(bool);
-  void SetHdrMetadata(const gfx::HDRMetadata& hdr_metadata);
 
   // Whether the target for draw operations has format GL_RGBA, but is
   // emulating format GL_RGB. When the target's storage is first
@@ -317,6 +324,10 @@ class PLATFORM_EXPORT DrawingBuffer : public cc::TextureLayerClient,
 
   scoped_refptr<ExternalCanvasResource> ExportLowLatencyCanvasResource();
 
+  bool IsWebGL2() const {
+    return webgl_version_ == Platform::WebGLContextType::kWebGL2ContextType;
+  }
+
   static const size_t kDefaultColorBufferCacheLimit;
 
  protected:  // For unittests
@@ -333,42 +344,35 @@ class PLATFORM_EXPORT DrawingBuffer : public cc::TextureLayerClient,
                 Platform::WebGLContextType,
                 bool wants_depth,
                 bool wants_stencil,
-                bool is_offscreen_canvas,
                 PredefinedColorSpace,
+                gfx::HDRMetadata,
                 gl::GpuPreference);
 
   bool Initialize(const gfx::Size&, bool use_multisampling);
 
   void SetSharedImageInterfaceProviderForSoftwareRenderingTest(
       std::unique_ptr<WebGraphicsSharedImageInterfaceProvider> sii_provider);
+  bool HasBackColorBufferForTesting() const { return !!back_color_buffer_; }
+  bool HasMultisampleRenderbufferForTesting() const {
+    return !!multisample_renderbuffer_;
+  }
+  bool HasDepthStencilBufferForTesting() const {
+    return !!depth_stencil_buffer_;
+  }
 
-  struct SoftwareResource {
-    SoftwareResource(
-        scoped_refptr<gpu::ClientSharedImage> shared_image,
-        gpu::SyncToken sync_token,
-        base::WeakPtr<blink::WebGraphicsSharedImageInterfaceProvider>
-            sii_provider)
-        : shared_image(std::move(shared_image)),
-          sync_token(std::move(sync_token)),
-          sii_provider(sii_provider) {}
-    SoftwareResource() = default;
-
-    // Explicitly move-only.
-    SoftwareResource(SoftwareResource&&) = default;
-    SoftwareResource& operator=(SoftwareResource&&) = default;
-
-    scoped_refptr<gpu::ClientSharedImage> shared_image;
-    gpu::SyncToken sync_token;
-    base::WeakPtr<blink::WebGraphicsSharedImageInterfaceProvider> sii_provider;
-  };
-  // Resources that were released by the compositor and can be used again by
-  // this DrawingBuffer.
-  Vector<SoftwareResource> recycled_software_resources_;
+  int RecycledSoftwareResourceCountForTesting() const {
+    return software_resource_pool_
+               ? static_cast<int>(
+                     software_resource_pool_->GetPoolSizeForTesting())
+               : 0;
+  }
 
  private:
   friend class ScopedRGBEmulationForBlitFramebuffer;
   friend class ScopedStateRestorer;
   friend class ColorBuffer;
+
+  gpu::ImageInfo CreateImageInfo(const gfx::Size& size);
 
   // This structure should wrap all public entrypoints that may modify GL state.
   // It will restore all state when it drops out of scope.
@@ -405,13 +409,15 @@ class PLATFORM_EXPORT DrawingBuffer : public cc::TextureLayerClient,
     bool pixel_pack_buffer_binding_dirty_ = false;
   };
 
-  struct ColorBuffer : public ThreadSafeRefCounted<ColorBuffer> {
-    ColorBuffer(base::WeakPtr<DrawingBuffer> drawing_buffer,
-                scoped_refptr<gpu::ClientSharedImage> shared_image,
-                std::unique_ptr<gpu::SharedImageTexture> shared_image_texture);
+  struct ColorBuffer : public gpu::ClientImage {
+    explicit ColorBuffer(scoped_refptr<gpu::ClientSharedImage> shared_image);
     ColorBuffer(const ColorBuffer&) = delete;
     ColorBuffer& operator=(const ColorBuffer&) = delete;
 
+    void Initialize(base::WeakPtr<DrawingBuffer> owner,
+                    gpu::gles2::GLES2Interface* gl);
+
+    bool IsInitialized() const { return is_initialized_; }
     GLuint texture_id() { return scoped_shared_image_access_->texture_id(); }
     void BeginAccess(const gpu::SyncToken& sync_token, bool readonly);
     gpu::SyncToken EndAccess();
@@ -433,13 +439,10 @@ class PLATFORM_EXPORT DrawingBuffer : public cc::TextureLayerClient,
     // The sync token for when this buffer was sent to the compositor.
     gpu::SyncToken produce_sync_token;
 
-    // The sync token for when this buffer was received back from the
-    // compositor.
-    gpu::SyncToken receive_sync_token;
-
    private:
-    friend class ThreadSafeRefCounted<ColorBuffer>;
-    ~ColorBuffer();
+    ~ColorBuffer() override;
+
+    bool is_initialized_ = false;
 
     std::unique_ptr<gpu::SharedImageTexture> shared_image_texture_;
     std::unique_ptr<gpu::SharedImageTexture::ScopedAccess>
@@ -460,6 +463,14 @@ class PLATFORM_EXPORT DrawingBuffer : public cc::TextureLayerClient,
 
   // Clears out newly-allocated framebuffers (really, renderbuffers / textures).
   void ClearNewlyAllocatedFramebuffers(ClearOption clear_option);
+
+  // These two functions are meant to discard buffers when possible upon
+  // entering the background.
+  void DiscardBackBuffer();
+  void DiscardMSAADepthStencilBuffers();
+
+  void EnsureBackColorBuffer();
+  void EnsureMSAADepthStencilBuffers();
 
   // The same as clearFramebuffers(), but leaves GL state dirty.
   void ClearFramebuffersInternal(GLbitfield clear_mask,
@@ -485,7 +496,7 @@ class PLATFORM_EXPORT DrawingBuffer : public cc::TextureLayerClient,
   };
 
   // Resolves m_multisampleFBO into m_fbo, if multisampling.
-  void ResolveIfNeeded(DiscardBehavior discardBehavior);
+  void ResolveIfNeeded(DiscardBehavior discard_behavior);
 
   enum CheckForDestructionResult {
     kDestroyedOrLost,
@@ -500,7 +511,7 @@ class PLATFORM_EXPORT DrawingBuffer : public cc::TextureLayerClient,
   // If all of the above checks pass, resolves the multisampled
   // renderbuffer if needed.
   CheckForDestructionResult CheckForDestructionAndChangeAndResolveIfNeeded(
-      DiscardBehavior discardBehavior);
+      DiscardBehavior discard_behavior);
 
   // Exports a SharedImage holding the backbuffer's contents for external
   // usage:
@@ -526,7 +537,8 @@ class PLATFORM_EXPORT DrawingBuffer : public cc::TextureLayerClient,
                                        const gpu::SyncToken&,
                                        bool lost_resource);
   void MailboxReleasedGpu(scoped_refptr<ColorBuffer>, bool lost_resource);
-  void MailboxReleasedSoftware(SoftwareResource,
+  void MailboxReleasedSoftware(base::WeakPtr<gpu::SharedImagePool<>>,
+                               scoped_refptr<gpu::ClientImage>,
                                const gpu::SyncToken&,
                                bool lost_resource);
 
@@ -539,7 +551,7 @@ class PLATFORM_EXPORT DrawingBuffer : public cc::TextureLayerClient,
 
   void ClearCcLayer();
 
-  SoftwareResource CreateOrRecycleSoftwareResource();
+  scoped_refptr<gpu::ClientImage> CreateOrRecycleSoftwareResource();
 
   // Updates the current size of the buffer, ensuring that
   // s_currentResourceUsePixels is updated.
@@ -590,6 +602,7 @@ class PLATFORM_EXPORT DrawingBuffer : public cc::TextureLayerClient,
   // Reallocate Multisampled renderbuffer, used by explicit resolve when resize
   // and GPU switch
   bool ReallocateMultisampleRenderbuffer(const gfx::Size&);
+  void ReallocateDepthStencilRenderbuffer(const gfx::Size&);
 
   WebGraphicsSharedImageInterfaceProvider*
   GetSharedImageInterfaceProviderForBitmap();
@@ -659,6 +672,10 @@ class PLATFORM_EXPORT DrawingBuffer : public cc::TextureLayerClient,
   // buffer.
   bool contents_changed_ = true;
 
+  // Whether the back buffer has been discarded. Used to make sure that it's
+  // been properly recreated.
+  bool back_buffer_discarded_ = false;
+
   // True if resolveIfNeeded() has been called since the last time
   // markContentsChanged() had been called.
   bool contents_change_resolved_ = false;
@@ -671,6 +688,7 @@ class PLATFORM_EXPORT DrawingBuffer : public cc::TextureLayerClient,
 
   // The color space of this buffer.
   gfx::ColorSpace color_space_;
+  gfx::HDRMetadata hdr_metadata_;
 
   AntialiasingMode anti_aliasing_mode_ = kAntialiasingModeNone;
 
@@ -681,27 +699,26 @@ class PLATFORM_EXPORT DrawingBuffer : public cc::TextureLayerClient,
   bool is_hidden_ = false;
   bool has_eqaa_support = false;
 
-  gfx::HDRMetadata hdr_metadata_;
-
   GLenum draw_buffer_ = GL_COLOR_ATTACHMENT0;
 
   scoped_refptr<cc::TextureLayer> layer_;
 
   // Mailboxes that were released by the compositor can be used again by this
   // DrawingBuffer.
-  Deque<scoped_refptr<ColorBuffer>> recycled_color_buffer_queue_;
+  std::unique_ptr<gpu::SharedImagePool<ColorBuffer>> color_buffer_pool_;
   base::flat_set<scoped_refptr<ColorBuffer>> exported_color_buffers_;
 
-  // Whether it's an offscreen canvas.
-  bool is_offscreen_canvas_;
+  // Software resources that were released by the compositor and can be used
+  // again by this DrawingBuffer.
+  std::unique_ptr<gpu::SharedImagePool<>> software_resource_pool_;
 
   bool opengl_flip_y_extension_;
 
-  const gl::GpuPreference initial_gpu_;
-  gl::GpuPreference current_active_gpu_;
+  const gl::GpuPreference requested_gpu_;
 
   std::unique_ptr<WebGraphicsSharedImageInterfaceProvider>
       shared_image_interface_provider_for_bitmap_test_;
+  base::WeakPtr<WebGraphicsSharedImageInterfaceProvider> software_sii_provider_;
 
   base::WeakPtrFactory<DrawingBuffer> weak_factory_;
 };

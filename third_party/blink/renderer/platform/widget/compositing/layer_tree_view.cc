@@ -130,8 +130,7 @@ void LayerTreeView::ClearPreviousDelegateAndReattachIfNeeded(
     layer_tree_host_->SetVisible(false);
   }
   layer_tree_host_->DetachInputDelegateAndRenderFrameObserver();
-  layer_tree_host_->StopDeferringCommits(
-      cc::PaintHoldingCommitTrigger::kWidgetSwapped);
+  layer_tree_host_->StopDeferringCommits();
   for (uint32_t i = 0;
        i <= static_cast<uint32_t>(cc::EventListenerClass::kLast); ++i) {
     layer_tree_host_->SetEventListenerProperties(
@@ -268,13 +267,11 @@ void LayerTreeView::OnCommitRequested() {
   delegate_->OnCommitRequested();
 }
 
-void LayerTreeView::OnDeferCommitsChanged(
-    bool status,
-    cc::PaintHoldingReason reason,
-    std::optional<cc::PaintHoldingCommitTrigger> trigger) {
+void LayerTreeView::OnDeferCommitsChanged(bool status,
+                                          cc::PaintHoldingReason reason) {
   if (!delegate_)
     return;
-  delegate_->OnDeferCommitsChanged(status, reason, trigger);
+  delegate_->OnDeferCommitsChanged(status, reason);
 }
 
 void LayerTreeView::BeginMainFrameNotExpectedSoon() {
@@ -307,6 +304,14 @@ void LayerTreeView::UpdateCompositorScrollState(
   if (!delegate_)
     return;
   delegate_->UpdateCompositorScrollState(commit_data);
+}
+
+void LayerTreeView::UpdateAnimatedImageState(
+    const cc::CompositorCommitData& commit_data) {
+  if (!delegate_) {
+    return;
+  }
+  delegate_->UpdateAnimatedImageState(commit_data);
 }
 
 void LayerTreeView::RequestNewLayerTreeFrameSink() {
@@ -418,7 +423,7 @@ void LayerTreeView::DidPresentCompositorFrame(
     return;
   }
   while (!presentation_callbacks_.empty()) {
-    const auto& front = presentation_callbacks_.begin();
+    auto front = presentation_callbacks_.begin();
     if (front->first > frame_token) {
       break;
     }
@@ -429,7 +434,7 @@ void LayerTreeView::DidPresentCompositorFrame(
 
 #if BUILDFLAG(IS_APPLE)
   while (!core_animation_error_code_callbacks_.empty()) {
-    const auto& front = core_animation_error_code_callbacks_.begin();
+    auto front = core_animation_error_code_callbacks_.begin();
     if (front->first > frame_token) {
       break;
     }
@@ -529,8 +534,7 @@ template <typename Callback>
 void LayerTreeView::AddCallback(
     uint32_t frame_token,
     Callback callback,
-    base::circular_deque<std::pair<uint32_t, std::vector<Callback>>>&
-        callbacks) {
+    Deque<std::pair<uint32_t, Vector<Callback>>>& callbacks) {
   DCHECK(delegate_);
   if (!callbacks.empty()) {
     auto& previous = callbacks.back();
@@ -542,7 +546,7 @@ void LayerTreeView::AddCallback(
     }
     DCHECK_GT(frame_token, previous_frame_token);
   }
-  std::vector<Callback> new_callbacks;
+  Vector<Callback> new_callbacks;
   new_callbacks.push_back(std::move(callback));
   callbacks.emplace_back(frame_token, std::move(new_callbacks));
   DCHECK_LE(callbacks.size(),

@@ -34,20 +34,23 @@ LLDBINIT_PATH = '$(PROJECT_DIR)/.lldbinit'
 
 PYTHON_RE = re.compile('[ /]python[23]?$')
 
-XCTEST_PRODUCT_TYPES = frozenset((
+XCTEST_PRODUCT_TYPES = frozenset(
+  (
     'com.apple.product-type.bundle.unit-test',
     'com.apple.product-type.bundle.ui-testing',
-))
+  )
+)
 
-SCHEME_PRODUCT_TYPES = frozenset((
+SCHEME_PRODUCT_TYPES = frozenset(
+  (
     'com.apple.product-type.app-extension',
     'com.apple.product-type.application',
-    'com.apple.product-type.framework'
-))
+    'com.apple.product-type.framework',
+  )
+)
 
 
 class Template(string.Template):
-
   """A subclass of string.Template that changes delimiter."""
 
   delimiter = '@'
@@ -66,7 +69,16 @@ def CreateIdentifier(str_id):
   return hashlib.sha1(str_id.encode("utf-8")).hexdigest()[:24].upper()
 
 
-def GenerateSchemeForTarget(root, project, old_project, name, path, is_test):
+def GenerateSchemeForTarget(
+  root,
+  project,
+  old_project,
+  name,
+  path,
+  is_test,
+  test_host_name,
+  test_host_path,
+):
   """Generates the .xcsheme file for target named |name|.
 
   The file is generated in the new project schemes directory from a template.
@@ -87,27 +99,33 @@ def GenerateSchemeForTarget(root, project, old_project, name, path, is_test):
     'BLUEPRINT_IDENTIFIER': identifier,
     'BUILDABLE_NAME': path,
     'BLUEPRINT_NAME': name,
-    'PROJECT_NAME': project_name
+    'PROJECT_NAME': project_name,
   }
 
   if is_test:
+    host_name = test_host_name or name
+    host_path = test_host_path or path
+    host_identifier = CreateIdentifier('%s %s' % (host_name, host_path))
     template = LoadSchemeTemplate(root, 'xcodescheme-testable')
     substitutions['PATH'] = os.environ['PATH']
+    substitutions['HOST_BLUEPRINT_NAME'] = host_name
+    substitutions['HOST_BUILDABLE_NAME'] = host_path
+    substitutions['HOST_BLUEPRINT_IDENTIFIER'] = host_identifier
 
   else:
     template = LoadSchemeTemplate(root, 'xcodescheme')
 
   old_scheme_path = os.path.join(old_project, relative_path)
   if os.path.exists(old_scheme_path):
-
     tree = xml.etree.ElementTree.parse(old_scheme_path)
     tree_root = tree.getroot()
 
     for reference in tree_root.findall('.//BuildableReference'):
-      for (attr, value) in (
-          ('BuildableName', path),
-          ('BlueprintName', name),
-          ('BlueprintIdentifier', identifier)):
+      for attr, value in (
+        ('BuildableName', path),
+        ('BlueprintName', name),
+        ('BlueprintIdentifier', identifier),
+      ):
         if reference.get(attr) != value:
           reference.set(attr, value)
 
@@ -119,32 +137,47 @@ def GenerateSchemeForTarget(root, project, old_project, name, path, is_test):
         child.set('customLLDBInitFile', LLDBINIT_PATH)
 
     if is_test:
-
       template_tree = xml.etree.ElementTree.parse(
-          io.StringIO(template.substitute(**substitutions)))
+        io.StringIO(template.substitute(**substitutions))
+      )
 
       template_tree_root = template_tree.getroot()
       for child in tree_root:
-        if child.tag != 'BuildAction':
-          continue
+        if child.tag == 'BuildAction':
+          for subchild in list(child):
+            child.remove(subchild)
 
-        for subchild in list(child):
-          child.remove(subchild)
-
-        for post_action in template_tree_root.findall('.//PostActions'):
-          child.append(post_action)
+          for post_action in template_tree_root.findall('.//PostActions'):
+            child.append(post_action)
+        elif child.tag == 'TestAction':
+          child.set('shouldUseLaunchSchemeArgsEnv', 'YES')
+        elif child.tag == 'LaunchAction':
+          # Adding explicit BuildableProductRunnable to LaunchAction ensures
+          # $(PROJECT_DIR) resolves when TestAction inherits from LaunchAction,
+          # allowing the custom LLDB init file to load.
+          runnable = child.find('BuildableProductRunnable')
+          if runnable is None:
+            runnable = template_tree_root.find(
+              './/LaunchAction/BuildableProductRunnable'
+            )
+            if runnable is not None:
+              child.append(runnable)
+          else:
+            ref = runnable.find('BuildableReference')
+            if ref is not None:
+              ref.set('BuildableName', host_path)
+              ref.set('BlueprintName', host_name)
+              ref.set('BlueprintIdentifier', host_identifier)
 
     tree.write(scheme_path, xml_declaration=True, encoding='UTF-8')
 
   else:
-
     with open(scheme_path, 'w') as scheme_file:
       scheme_file.write(template.substitute(**substitutions))
 
 
 class XcodeProject(object):
-
-  def __init__(self, objects, counter = 0):
+  def __init__(self, objects, counter=0):
     self.objects = objects
     self.counter = 0
 
@@ -175,22 +208,22 @@ class XcodeProject(object):
   def UpdateBuildScripts(self):
     """Update build scripts to respect configuration and platforms."""
     for key, obj in self.IterObjectsByIsa('PBXShellScriptBuildPhase'):
-
       shell_path = obj['shellPath']
       shell_code = obj['shellScript']
       if shell_path.endswith('/sh'):
         shell_code = shell_code.replace(
-            'ninja -C .',
-            'ninja -C "../${CONFIGURATION}${EFFECTIVE_PLATFORM_NAME}"')
+          'ninja -C .',
+          'ninja -C "../${CONFIGURATION}${EFFECTIVE_PLATFORM_NAME}"',
+        )
       elif PYTHON_RE.search(shell_path):
         shell_code = shell_code.replace(
-            '''ninja_params = [ '-C', '.' ]''',
-            '''ninja_params = [ '-C', '../' + os.environ['CONFIGURATION']'''
-            ''' + os.environ['EFFECTIVE_PLATFORM_NAME'] ]''')
+          '''ninja_params = [ '-C', '.' ]''',
+          '''ninja_params = [ '-C', '../' + os.environ['CONFIGURATION']'''
+          ''' + os.environ['EFFECTIVE_PLATFORM_NAME'] ]''',
+        )
 
       # Replace the build script in the object.
       obj['shellScript'] = shell_code
-
 
   def UpdateBuildConfigurations(self, configurations):
     """Add new configurations, using the first one as default."""
@@ -204,8 +237,9 @@ class XcodeProject(object):
       # Use the first build configuration as template for creating all the
       # new build configurations.
       build_config_template = self.objects[obj['buildConfigurations'][0]]
-      build_config_template['buildSettings']['CONFIGURATION_BUILD_DIR'] = \
-          '$(PROJECT_DIR)/../$(CONFIGURATION)$(EFFECTIVE_PLATFORM_NAME)'
+      build_config_template['buildSettings']['CONFIGURATION_BUILD_DIR'] = (
+        '$(PROJECT_DIR)/../$(CONFIGURATION)$(EFFECTIVE_PLATFORM_NAME)'
+      )
 
       # Remove the existing build configurations from the project before
       # creating the new ones.
@@ -258,8 +292,9 @@ def CopyFileIfChanged(source_path, target_path):
   target_dir = os.path.dirname(target_path)
   if not os.path.isdir(target_dir):
     os.makedirs(target_dir)
-  if not os.path.exists(target_path) or \
-      not filecmp.cmp(source_path, target_path):
+  if not os.path.exists(target_path) or not filecmp.cmp(
+    source_path, target_path
+  ):
     shutil.copyfile(source_path, target_path)
 
 
@@ -270,16 +305,21 @@ def CopyTreeIfChanged(source, target):
   if not os.path.isdir(target):
     os.makedirs(target)
   for name in os.listdir(source):
-    CopyTreeIfChanged(
-        os.path.join(source, name),
-        os.path.join(target, name))
+    CopyTreeIfChanged(os.path.join(source, name), os.path.join(target, name))
 
 
 def LoadXcodeProjectAsJSON(project_dir):
   """Return Xcode project at |path| as a JSON string."""
-  return check_output([
-      'plutil', '-convert', 'json', '-o', '-',
-      os.path.join(project_dir, 'project.pbxproj')])
+  return check_output(
+    [
+      'plutil',
+      '-convert',
+      'json',
+      '-o',
+      '-',
+      os.path.join(project_dir, 'project.pbxproj'),
+    ]
+  )
 
 
 def WriteXcodeProject(output_path, json_string):
@@ -289,8 +329,8 @@ def WriteXcodeProject(output_path, json_string):
     temp_file.flush()
     subprocess.check_call(['plutil', '-convert', 'xml1', temp_file.name])
     CopyFileIfChanged(
-        temp_file.name,
-        os.path.join(output_path, 'project.pbxproj'))
+      temp_file.name, os.path.join(output_path, 'project.pbxproj')
+    )
 
 
 def UpdateXcodeProject(project_dir, old_project_dir, configurations, root_dir):
@@ -321,14 +361,28 @@ def UpdateXcodeProject(project_dir, old_project_dir, configurations, root_dir):
     tests = mapping.get(product_path, []) + mapping.get(obj['name'], [])
     if not tests:
       GenerateSchemeForTarget(
-          root_dir, project_dir, old_project_dir,
-          obj['name'], product_path, False)
+        root_dir,
+        project_dir,
+        old_project_dir,
+        obj['name'],
+        product_path,
+        False,
+        "",
+        "",
+      )
 
     else:
-      for (_, test_name, test_path) in tests:
+      for _, test_name, test_path in tests:
         GenerateSchemeForTarget(
-          root_dir, project_dir, old_project_dir,
-          test_name, test_path, True)
+          root_dir,
+          project_dir,
+          old_project_dir,
+          test_name,
+          test_path,
+          True,
+          obj['name'],
+          product_path,
+        )
 
   root_object = project.objects[json_data['rootObject']]
   main_group = project.objects[root_object['mainGroup']]
@@ -346,7 +400,7 @@ def UpdateXcodeProject(project_dir, old_project_dir, configurations, root_dir):
   AddMarkdownToProject(project, root_dir, sources, sources is main_group)
   SortFileReferencesByName(project, sources, root_object.get('productRefGroup'))
 
-  objects = collections.OrderedDict(sorted(project.objects.items()))
+  objects = collections.OrderedDict(sorted(project.objects.items()))  # noqa: F841
   # WriteXcodeProject(project_dir, json.dumps(json_data))
 
 
@@ -367,7 +421,6 @@ def CreateGroup(project, parent_group, group_name, use_relative_paths):
 
 
 class ObjectKey(object):
-
   """Wrapper around PBXFileReference and PBXGroup for sorting.
 
   A PBXGroup represents a "directory" containing a list of files in an
@@ -411,8 +464,10 @@ class ObjectKey(object):
 
 def SortFileReferencesByName(project, group_object, products_group_ref):
   SortFileReferencesByNameWithSortKey(
-      project, group_object,
-      lambda ref: ObjectKey(project.objects[ref], ref == products_group_ref))
+    project,
+    group_object,
+    lambda ref: ObjectKey(project.objects[ref], ref == products_group_ref),
+  )
 
 
 def SortFileReferencesByNameWithSortKey(project, group_object, sort_key):
@@ -436,7 +491,7 @@ def AddMarkdownToProject(project, root_dir, group_object, use_relative_paths):
       "fileEncoding": "4",
       "isa": "PBXFileReference",
       "lastKnownFileType": "net.daringfireball.markdown",
-      "sourceTree": "<group>"
+      "sourceTree": "<group>",
     }
     if use_relative_paths:
       new_markdown_entry['path'] = os.path.basename(path)
@@ -444,8 +499,8 @@ def AddMarkdownToProject(project, root_dir, group_object, use_relative_paths):
       new_markdown_entry['name'] = os.path.basename(path)
       new_markdown_entry['path'] = path
     folder = GetFolderForPath(
-        project, group_object, os.path.dirname(path),
-        use_relative_paths)
+      project, group_object, os.path.dirname(path), use_relative_paths
+    )
     folder_name = folder.get('name', None)
     if folder_name is None:
       folder_name = folder.get('path', 'sources')
@@ -497,32 +552,46 @@ def ConvertGnXcodeProject(root_dir, proj_name, input_dir, output_dir, configs):
   '''
 
   UpdateXcodeProject(
-      os.path.join(input_dir, proj_name),
-      os.path.join(output_dir, proj_name),
-      configs, root_dir)
+    os.path.join(input_dir, proj_name),
+    os.path.join(output_dir, proj_name),
+    configs,
+    root_dir,
+  )
 
-  CopyTreeIfChanged(os.path.join(input_dir, proj_name),
-                    os.path.join(output_dir, proj_name))
+  CopyTreeIfChanged(
+    os.path.join(input_dir, proj_name), os.path.join(output_dir, proj_name)
+  )
 
 
 def Main(args):
   parser = argparse.ArgumentParser(
-      description='Convert GN Xcode projects for iOS.')
+    description='Convert GN Xcode projects for iOS.'
+  )
   parser.add_argument(
-      'input',
-      help='directory containing [product|all] Xcode projects.')
+    'input', help='directory containing [product|all] Xcode projects.'
+  )
   parser.add_argument(
-      'output',
-      help='directory where to generate the iOS configuration.')
+    'output', help='directory where to generate the iOS configuration.'
+  )
   parser.add_argument(
-      '--add-config', dest='configurations', default=[], action='append',
-      help='configuration to add to the Xcode project')
+    '--add-config',
+    dest='configurations',
+    default=[],
+    action='append',
+    help='configuration to add to the Xcode project',
+  )
   parser.add_argument(
-      '--root', type=os.path.abspath, required=True,
-      help='root directory of the project')
+    '--root',
+    type=os.path.abspath,
+    required=True,
+    help='root directory of the project',
+  )
   parser.add_argument(
-      '--project-name', default='all.xcodeproj', dest='proj_name',
-      help='name of the Xcode project (default: %(default)s)')
+    '--project-name',
+    default='all.xcodeproj',
+    dest='proj_name',
+    help='name of the Xcode project (default: %(default)s)',
+  )
   args = parser.parse_args(args)
 
   if not os.path.isdir(args.input):
@@ -530,8 +599,7 @@ def Main(args):
     return 1
 
   if args.proj_name not in os.listdir(args.input):
-    sys.stderr.write(
-        'Input directory does not contain the Xcode project.\n')
+    sys.stderr.write('Input directory does not contain the Xcode project.\n')
     return 1
 
   if not args.configurations:
@@ -539,11 +607,9 @@ def Main(args):
     return 1
 
   ConvertGnXcodeProject(
-      args.root,
-      args.proj_name,
-      args.input,
-      args.output,
-      args.configurations)
+    args.root, args.proj_name, args.input, args.output, args.configurations
+  )
+
 
 if __name__ == '__main__':
   sys.exit(Main(sys.argv[1:]))

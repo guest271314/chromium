@@ -94,7 +94,7 @@ gfx::RectF SVGResources::ReferenceBoxForEffects(
     // This simple approach only works because foreign objects do not support
     // strokes.
     box.set_origin(gfx::PointF());
-    box.Scale(obb_layout_object->StyleRef().EffectiveZoom());
+    box.Scale(obb_layout_object->Style().EffectiveZoom());
   }
 
   return box;
@@ -104,7 +104,7 @@ void SVGResources::UpdateEffects(LayoutObject& object,
                                  StyleDifference diff,
                                  const ComputedStyle* old_style) {
   const bool had_client = GetClient(object);
-  const ComputedStyle& style = object.StyleRef();
+  const ComputedStyle& style = object.Style();
   if (auto* reference_clip =
           DynamicTo<ReferenceClipPathOperation>(style.ClipPath())) {
     reference_clip->AddClient(EnsureClient(object));
@@ -130,8 +130,8 @@ void SVGResources::UpdateEffects(LayoutObject& object,
     old_style->Filter().RemoveClient(*client);
 }
 
-void SVGResources::ClearEffects(const LayoutObject& object) {
-  const ComputedStyle* style = object.Style();
+void SVGResources::ClearEffects(const LayoutObject& object,
+                                const ComputedStyle* style) {
   if (!style)
     return;
   SVGElementResourceClient* client = GetClient(object);
@@ -178,7 +178,7 @@ void SVGResources::ClearPaints(const LayoutObject& object,
 void SVGResources::UpdateMarkers(const LayoutObject& object,
                                  const ComputedStyle* old_style) {
   const bool had_client = GetClient(object);
-  const ComputedStyle& style = object.StyleRef();
+  const ComputedStyle& style = object.Style();
   if (StyleSVGResource* marker_resource = style.MarkerStartResource())
     marker_resource->AddClient(EnsureClient(object));
   if (StyleSVGResource* marker_resource = style.MarkerMidResource())
@@ -207,17 +207,22 @@ void SVGResources::ClearMarkers(const LayoutObject& object,
 class SVGElementResourceClient::FilterData final
     : public GarbageCollected<SVGElementResourceClient::FilterData> {
  public:
-  FilterData(FilterEffect* last_effect, SVGFilterGraphNodeMap* node_map)
-      : last_effect_(last_effect), node_map_(node_map) {}
+  FilterData(Filter* filter, SVGFilterGraphNodeMap* node_map)
+      : filter_(filter), node_map_(node_map) {}
 
-  bool HasEffects() const { return last_effect_ != nullptr; }
+  FilterEffect* LastEffect() const {
+    return filter_ ? filter_->LastEffect() : nullptr;
+  }
+
+  bool HasEffects() const { return LastEffect(); }
   bool OriginTainted() const {
-    return last_effect_ ? last_effect_->OriginTainted() : false;
+    return LastEffect() ? LastEffect()->OriginTainted() : false;
   }
   sk_sp<PaintFilter> BuildPaintFilter() {
-    return paint_filter_builder::Build(last_effect_.Get(),
-                                       kInterpolationSpaceSRGB);
+    return paint_filter_builder::Build(LastEffect(), kInterpolationSpaceSRGB);
   }
+
+  Filter* GetFilter() const { return filter_.Get(); }
 
   // Perform a finegrained invalidation of the filter chain for the
   // specified filter primitive and attribute. Returns false if no
@@ -234,23 +239,24 @@ class SVGElementResourceClient::FilterData final
 
   void Dispose() {
     node_map_ = nullptr;
-    if (last_effect_)
-      last_effect_->DisposeImageFiltersRecursive();
-    last_effect_ = nullptr;
+    if (LastEffect()) {
+      LastEffect()->DisposeImageFiltersRecursive();
+    }
+    filter_ = nullptr;
   }
 
   void Trace(Visitor* visitor) const {
-    visitor->Trace(last_effect_);
+    visitor->Trace(filter_);
     visitor->Trace(node_map_);
   }
 
  private:
-  Member<FilterEffect> last_effect_;
+  Member<Filter> filter_;
   Member<SVGFilterGraphNodeMap> node_map_;
 };
 
 SVGElementResourceClient::SVGElementResourceClient(SVGElement* element)
-    : element_(element), filter_data_dirty_(false) {}
+    : element_(element) {}
 
 namespace {
 
@@ -275,7 +281,7 @@ void SVGElementResourceClient::ResourceContentChanged(SVGResource* resource) {
   if (!layout_object)
     return;
 
-  const ComputedStyle& style = layout_object->StyleRef();
+  const ComputedStyle& style = layout_object->Style();
   if (style.HasFilter() && ContainsResource(style.Filter(), resource)) {
     InvalidateFilterData();
     layout_object->SetShouldDoFullPaintInvalidation();
@@ -359,7 +365,7 @@ SVGElementResourceClient::CreateFilterDataWithNodeMap(
     return nullptr;
   paint_filter_builder::PopulateSourceGraphicImageFilters(
       filter->GetSourceGraphic(), kInterpolationSpaceSRGB);
-  return MakeGarbageCollected<FilterData>(filter->LastEffect(), node_map);
+  return MakeGarbageCollected<FilterData>(filter, node_map);
 }
 
 void SVGElementResourceClient::UpdateFilterData(
@@ -370,7 +376,7 @@ void SVGElementResourceClient::UpdateFilterData(
   if (!operations.IsEmpty() && !filter_data_dirty_ &&
       reference_box == operations.ReferenceBox())
     return;
-  const ComputedStyle& style = object.StyleRef();
+  const ComputedStyle& style = object.Style();
   FilterEffectBuilder builder(
       reference_box, SVGViewportResolver(object).ResolveViewport(), 1,
       style.VisitedDependentColor(GetCSSPropertyColor()),
@@ -389,6 +395,8 @@ void SVGElementResourceClient::UpdateFilterData(
     }
     operations.Clear();
     if (filter_data_) {
+      FilterOperation* op = filter.Operations()[0].Get();
+      To<ReferenceFilterOperation>(*op).SetFilter(filter_data_->GetFilter());
       // If the referenced filter exists but does not contain any primitives,
       // then the rendering of the element should be disabled.
       if (filter_data_->HasEffects()) {
@@ -444,7 +452,7 @@ SVGResourceInvalidator::SVGResourceInvalidator(LayoutObject& object)
     : object_(object) {}
 
 void SVGResourceInvalidator::InvalidateEffects() {
-  const ComputedStyle& style = object_.StyleRef();
+  const ComputedStyle& style = object_.Style();
   if (style.HasFilter()) {
     if (SVGElementResourceClient* client = SVGResources::GetClient(object_))
       client->InvalidateFilterData();
@@ -455,19 +463,34 @@ void SVGResourceInvalidator::InvalidateEffects() {
   }
 }
 
+namespace {
+
+LayoutSVGResourcePaintServer* GetPaintServerResource(const SVGPaint& paint) {
+  StyleSVGResource* style_resource = paint.Resource();
+  if (!style_resource) {
+    return nullptr;
+  }
+  SVGResource* resource = style_resource->Resource();
+  if (!resource) {
+    return nullptr;
+  }
+  return DynamicTo<LayoutSVGResourcePaintServer>(
+      resource->ResourceContainerNoCycleCheck(SVGResource::Usage::kElement));
+}
+
+}  // namespace
+
 void SVGResourceInvalidator::InvalidatePaints() {
   SVGElementResourceClient* client = SVGResources::GetClient(object_);
   if (!client)
     return;
   bool needs_invalidation = false;
-  const ComputedStyle& style = object_.StyleRef();
-  if (auto* fill = GetSVGResourceAsType<LayoutSVGResourcePaintServer>(
-          *client, style.FillPaint().Resource())) {
+  const ComputedStyle& style = object_.Style();
+  if (auto* fill = GetPaintServerResource(style.FillPaint())) {
     fill->RemoveClientFromCache(*client);
     needs_invalidation = true;
   }
-  if (auto* stroke = GetSVGResourceAsType<LayoutSVGResourcePaintServer>(
-          *client, style.StrokePaint().Resource())) {
+  if (auto* stroke = GetPaintServerResource(style.StrokePaint())) {
     stroke->RemoveClientFromCache(*client);
     needs_invalidation = true;
   }

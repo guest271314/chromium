@@ -10,7 +10,7 @@
 #include "chromeos/ash/experiences/arc/session/arc_service_manager.h"
 #include "components/user_prefs/test/test_browser_context_with_prefs.h"
 #include "content/public/test/browser_task_environment.h"
-#include "mojo/public/cpp/system/platform_handle.h"
+#include "mojo/public/cpp/platform/platform_handle.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace arc {
@@ -47,13 +47,35 @@ TEST_F(ArcCrashCollectorBridgeTest, SetBuildProperties) {
                                std::optional<std::string>("fingerprint"));
 }
 
+// Tests that SetBuildProperties doesn't crash even if given invalid parameters.
+TEST_F(ArcCrashCollectorBridgeTest, SetInvalidBuildProperties) {
+  ASSERT_NE(nullptr, bridge());
+  bridge()->SetBuildProperties("device\nwith\nnewline", "board", "cpu_abi",
+                               std::optional<std::string>("fingerprint"));
+  bridge()->SetBuildProperties("device", "board with space", "cpu_abi",
+                               std::optional<std::string>("fingerprint"));
+  bridge()->SetBuildProperties("device", "board", "cpu_abi\twith\ttab",
+                               std::optional<std::string>("fingerprint"));
+  bridge()->SetBuildProperties("device\nwith\nnewline", "board", "cpu_abi",
+                               std::optional<std::string>("finger\nprint"));
+}
+
 // Tests that DumpCrash doesn't crash.
 // TODO(khmel): Test the behavior beyond just "no crash".
 TEST_F(ArcCrashCollectorBridgeTest, DumpCrash) {
   ASSERT_NE(nullptr, bridge());
   bridge()->SetBuildProperties("device", "board", "cpu_abi",
                                std::optional<std::string>());
-  bridge()->DumpCrash("type", mojo::ScopedHandle(), std::nullopt);
+  bridge()->DumpCrash("type", mojo::PlatformHandle(), std::nullopt);
+}
+
+// Tests that DumpCrash doesn't crash with an invalid crash type.
+// TODO(khmel): Test the behavior beyond just "no crash".
+TEST_F(ArcCrashCollectorBridgeTest, DumpCrashInvalidCrashType) {
+  ASSERT_NE(nullptr, bridge());
+  bridge()->SetBuildProperties("device", "board", "cpu_abi",
+                               std::optional<std::string>());
+  bridge()->DumpCrash("bad\ntype", mojo::PlatformHandle(), std::nullopt);
 }
 
 // Tests that DumpNativeCrash doesn't crash.
@@ -63,16 +85,25 @@ TEST_F(ArcCrashCollectorBridgeTest, DumpNativeCrash) {
   bridge()->SetBuildProperties("device", "board", "cpu_abi",
                                std::optional<std::string>());
   bridge()->DumpNativeCrash("exec_name", getpid(), /*timestamp=*/42,
-                            mojo::ScopedHandle());
+                            mojo::PlatformHandle());
 }
 
+// Tests that DumpNativeCrash doesn't crash.
+// TODO(khmel): Test the behavior beyond just "no crash".
+TEST_F(ArcCrashCollectorBridgeTest, DumpNativeCrashInvalidExecName) {
+  ASSERT_NE(nullptr, bridge());
+  bridge()->SetBuildProperties("device", "board", "cpu_abi",
+                               std::optional<std::string>());
+  bridge()->DumpNativeCrash("bad\nexec\bname", getpid(), /*timestamp=*/42,
+                            mojo::PlatformHandle());
+}
 // Tests that DumpKernelCrash doesn't crash.
 // TODO(khmel): Test the behavior beyond just "no crash".
 TEST_F(ArcCrashCollectorBridgeTest, DumpKernelCrash) {
   ASSERT_NE(nullptr, bridge());
   bridge()->SetBuildProperties("device", "board", "cpu_abi",
                                std::optional<std::string>());
-  bridge()->DumpKernelCrash(mojo::ScopedHandle());
+  bridge()->DumpKernelCrash(mojo::PlatformHandle());
 }
 
 }  // namespace

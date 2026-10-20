@@ -204,6 +204,9 @@ scoped_refptr<base::SingleThreadTaskRunner> WorkerSchedulerImpl::GetTaskRunner(
     case TaskType::kClipboard:
     case TaskType::kMachineLearning:
     case TaskType::kInternalAutofill:
+    // Web Locks tasks invoke script callbacks and must not run while the worker
+    // is paused or frozen.
+    case TaskType::kWebLocks:
       // UnthrottledTaskRunner is generally discouraged in future.
       // TODO(nhiroki): Identify which tasks can be throttled / suspendable and
       // move them into other task runners. See also comments in
@@ -215,9 +218,6 @@ scoped_refptr<base::SingleThreadTaskRunner> WorkerSchedulerImpl::GetTaskRunner(
     case TaskType::kInternalInspector:
     case TaskType::kInternalTest:
     case TaskType::kInternalNavigationAssociatedUnfreezable:
-      // kWebLocks can be frozen if for entire page, but not for individual
-      // frames. See https://crrev.com/c/1687716
-    case TaskType::kWebLocks:
       // UnthrottledTaskRunner is generally discouraged in future.
       // TODO(nhiroki): Identify which tasks can be throttled / suspendable and
       // move them into other task runners. See also comments in
@@ -361,13 +361,22 @@ std::unique_ptr<WebSchedulingTaskQueue>
 WorkerSchedulerImpl::CreateWebSchedulingTaskQueue(
     WebSchedulingQueueType queue_type,
     WebSchedulingPriority priority) {
+  // These queues are created from JavaScript, and JS should not be running
+  // after the worker is disposed.
+  CHECK(!is_disposed_);
+
   scoped_refptr<NonMainThreadTaskQueue> task_queue =
       thread_scheduler_->CreateTaskQueue(
           base::sequence_manager::QueueName::WORKER_WEB_SCHEDULING_TQ,
           NonMainThreadTaskQueue::QueueCreationParams()
               .SetWebSchedulingQueueType(queue_type)
               .SetWebSchedulingPriority(priority));
-  task_runners_.insert(task_queue, task_queue->CreateQueueEnabledVoter());
+  std::unique_ptr<base::sequence_manager::TaskQueue::QueueEnabledVoter> voter =
+      task_queue->CreateQueueEnabledVoter();
+  // TODO(crbug.com/528232589): Consider plumbing the initial enabled state to
+  // the QueueEnabledVoter constructor.
+  voter->SetVoteToEnable(paused_count_ == 0);
+  task_runners_.insert(task_queue, std::move(voter));
   return std::make_unique<NonMainThreadWebSchedulingTaskQueueImpl>(
       GetWeakPtr(), std::move(task_queue));
 }

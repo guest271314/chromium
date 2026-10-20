@@ -12,7 +12,6 @@
 #include "base/test/scoped_command_line.h"
 #include "base/test/scoped_feature_list.h"
 #include "build/build_config.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/tabs/split_tab_metrics.h"
 #include "chrome/browser/ui/tabs/tab_enums.h"
@@ -20,12 +19,14 @@
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/tabs/tab/tab_icon.h"
+#include "chrome/browser/ui/views/tabs/tab_strip.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "components/embedder_support/switches.h"
 #include "components/javascript_dialogs/app_modal_dialog_manager.h"
 #include "components/javascript_dialogs/tab_modal_dialog_manager.h"
 #include "components/ukm/test_ukm_recorder.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/isolated_world_ids.h"
@@ -108,9 +109,8 @@ IN_PROC_BROWSER_TEST_F(JavaScriptDialogTest,
   runner->Run();
 
   // Tab two is closed while the dialog is up.
-  int tab2_index = browser()->tab_strip_model()->GetIndexOfWebContents(tab2);
-  browser()->tab_strip_model()->CloseWebContentsAt(tab2_index,
-                                                   TabCloseTypes::CLOSE_NONE);
+  browser()->tab_strip_model()->CloseWebContents(tab2,
+                                                 TabCloseTypes::CLOSE_NONE);
 
   // Try reloading tab one.
   tab1->GetController().Reload(content::ReloadType::NORMAL, false);
@@ -143,9 +143,8 @@ IN_PROC_BROWSER_TEST_F(JavaScriptDialogTest,
   runner->Run();
 
   // The tab is closed while the dialog is up.
-  int tab_index = browser()->tab_strip_model()->GetIndexOfWebContents(tab);
-  browser()->tab_strip_model()->CloseWebContentsAt(tab_index,
-                                                   TabCloseTypes::CLOSE_NONE);
+  browser()->tab_strip_model()->CloseWebContents(tab,
+                                                 TabCloseTypes::CLOSE_NONE);
 
   // No crash is good news.
 }
@@ -385,15 +384,24 @@ IN_PROC_BROWSER_TEST_F(JavaScriptDialogTest,
 IN_PROC_BROWSER_TEST_F(JavaScriptDialogTest, DismissalCausePromptTabHidden) {
   JavaScriptDialogDismissalCauseTester tester(this);
   tester.PopupDialog(content::JAVASCRIPT_DIALOG_TYPE_PROMPT);
-  chrome::NewTab(browser());
+  chrome::NewTab(browser(), NewTabTypes::kNoUserAction);
   EXPECT_EQ(DismissalCause::kTabHidden, tester.GetLastDismissalCause());
 }
 
+// TODO(crbug.com/541131636): Re-enable test after fixing flakiness on Mac.
+#if BUILDFLAG(IS_MAC)
+#define MAYBE_DismissalCausePromptBrowserSwitched \
+  DISABLED_DismissalCausePromptBrowserSwitched
+#else
+#define MAYBE_DismissalCausePromptBrowserSwitched \
+  DismissalCausePromptBrowserSwitched
+#endif
 IN_PROC_BROWSER_TEST_F(JavaScriptDialogTest,
-                       DismissalCausePromptBrowserSwitched) {
+                       MAYBE_DismissalCausePromptBrowserSwitched) {
   JavaScriptDialogDismissalCauseTester tester(this);
   tester.PopupDialog(content::JAVASCRIPT_DIALOG_TYPE_PROMPT);
-  ui_test_utils::OpenNewEmptyWindowAndWaitUntilActivated(browser()->profile());
+  ui_test_utils::OpenNewEmptyWindowAndWaitUntilActivated(
+      browser()->GetProfile());
   EXPECT_EQ(DismissalCause::kBrowserSwitched, tester.GetLastDismissalCause());
 }
 
@@ -416,7 +424,7 @@ IN_PROC_BROWSER_TEST_F(JavaScriptDialogTest,
 IN_PROC_BROWSER_TEST_F(JavaScriptDialogTest, NoDismissalAlertTabHidden) {
   JavaScriptDialogDismissalCauseTester tester(this);
   tester.PopupDialog(content::JAVASCRIPT_DIALOG_TYPE_ALERT);
-  chrome::NewTab(browser());
+  chrome::NewTab(browser(), NewTabTypes::kNoUserAction);
   EXPECT_EQ(std::nullopt, tester.GetLastDismissalCause());
 }
 
@@ -541,7 +549,7 @@ IN_PROC_BROWSER_TEST_P(JavaScriptDialogOriginTest,
 IN_PROC_BROWSER_TEST_F(JavaScriptDialogTest,
                        MAYBE_HandlesSwappingTabWithDialogIntoSplitView) {
   // Create three tabs with the first two in a split view.
-  chrome::NewTab(browser());
+  chrome::NewTab(browser(), NewTabTypes::kNoUserAction);
   tab_strip_model()->ActivateTabAt(0);
   chrome::NewSplitTab(browser(), split_tabs::SplitTabLayout::kSideBySide,
                       split_tabs::SplitTabCreatedSource::kToolbarButton);
@@ -563,9 +571,8 @@ IN_PROC_BROWSER_TEST_F(JavaScriptDialogTest,
   // Switch to the split view which should hide the dialog and show tab
   // attention indicator.
   tab_strip_model()->ActivateTabAt(0);
-  ASSERT_TRUE(browser()
-                  ->GetBrowserView()
-                  .horizontal_tab_strip_for_testing()
+  ASSERT_TRUE(BrowserView::GetBrowserViewForBrowser(browser())
+                  ->horizontal_tab_strip_for_testing()
                   ->tab_at(2)
                   ->GetTabIconForTesting()
                   ->GetShowingAttentionIndicator());

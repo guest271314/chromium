@@ -6,9 +6,9 @@ load("@chromium-luci//xcode.star", _xcode = "xcode")
 
 # Keep this in-sync with the versions of bots in //ios/build/bots/.
 xcode = struct(
-    # Default Xcode Version (Xcode 26.0.1 Release)
-    xcode_default = _xcode.for_ios("17a400"),
+    # Default Xcode Version (Xcode 27.0 RC)
+    xcode_default = _xcode.for_ios("27a266a"),
 
     # Xcode beta version used on beta bots.
-    xcode_beta = _xcode.for_ios("17f42"),
+    xcode_beta = _xcode.for_ios("27b5028f"),
 )

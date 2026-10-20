@@ -19,10 +19,10 @@
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/skia/include/core/SkBitmap.h"
-#include "third_party/skia/include/core/SkCPURecorder.h"
 #include "third_party/skia/include/core/SkCanvas.h"
 #include "third_party/skia/include/core/SkColor.h"
 #include "third_party/skia/include/core/SkImage.h"
+#include "third_party/skia/include/core/SkRecorder.h"
 #include "third_party/skia/include/core/SkRect.h"
 #include "third_party/skia/include/core/SkRefCnt.h"
 #include "third_party/skia/include/core/SkSurface.h"
@@ -40,12 +40,12 @@ using ::testing::NiceMock;
 constexpr char kRenderAndPaintTimeMetric[] = "PDF.RenderAndPaintTime";
 constexpr char kRenderPaintAndFlushTimeMetric[] = "PDF.RenderPaintAndFlushTime";
 
-base::FilePath GetTestDataFilePath(std::string_view filename) {
+base::FilePath GetPaintManagerTestDataFilePath(std::string_view filename) {
   return base::FilePath(FILE_PATH_LITERAL("paint_manager"))
       .AppendASCII(filename);
 }
 
-class FakeClient : public PaintManager::Client {
+class MockPaintManagerClient : public PaintManager::Client {
  public:
   MOCK_METHOD(void, InvalidatePluginContainer, (), (override));
   MOCK_METHOD(SkBitmap*,
@@ -84,12 +84,20 @@ class PaintManagerTest : public testing::TestWithParam<bool> {
 
   void SetSizeAndInstall(const gfx::Size& new_size, float device_scale) {
     if (GetParam()) {
-      EXPECT_CALL(client_, InstallBuffer)
-          .WillOnce([this](SkImageInfo image_info, base::span<uint8_t> data) {
-            this->client_bitmap_.installPixels(image_info, data.data(),
-                                               image_info.minRowBytes());
-            return &client_bitmap_;
-          });
+      // This size check matches the one in PaintManager::SetSize(), in the
+      // `kPdfBufferedPaintManager` case, to replicate its behavior.
+      gfx::Size old_image_size =
+          gfx::SkISizeToSize(client_bitmap_.info().dimensions());
+      gfx::Size padded_new_size =
+          PaintManager::GetNewContextSize(old_image_size, new_size);
+      if (old_image_size != padded_new_size || client_bitmap_.empty()) {
+        EXPECT_CALL(client_, InstallBuffer)
+            .WillOnce([this](SkImageInfo image_info, base::span<uint8_t> data) {
+              this->client_bitmap_.installPixels(image_info, data.data(),
+                                                 image_info.minRowBytes());
+              return &client_bitmap_;
+            });
+      }
     }
     paint_manager_.SetSize(new_size, device_scale, kPremul_SkAlphaType);
   }
@@ -182,7 +190,7 @@ class PaintManagerTest : public testing::TestWithParam<bool> {
 
     // Check if `snapshot` matches `expected_bitmap`.
     snapshot = snapshot->makeSubset(
-        skcpu::Recorder::TODO(),
+        SkRecorder::TODO(),
         SkIRect::MakeWH(plugin_size.width(), plugin_size.height()), {});
     ASSERT_TRUE(snapshot);
 
@@ -228,14 +236,15 @@ class PaintManagerTest : public testing::TestWithParam<bool> {
 
     // Compare snapshot to `expected_png`.
     snapshot = snapshot->makeSubset(
-        skcpu::Recorder::TODO(),
+        SkRecorder::TODO(),
         SkIRect::MakeWH(plugin_size.width(), plugin_size.height()), {});
     ASSERT_TRUE(snapshot);
-    EXPECT_TRUE(MatchesPngFile(*snapshot, GetTestDataFilePath(expected_png)));
+    EXPECT_TRUE(MatchesPngFile(*snapshot,
+                               GetPaintManagerTestDataFilePath(expected_png)));
   }
 
   base::test::ScopedFeatureList list_;
-  NiceMock<FakeClient> client_;
+  NiceMock<MockPaintManagerClient> client_;
   SkBitmap client_bitmap_;
   PaintManager paint_manager_{&client_};
 };
@@ -326,10 +335,10 @@ TEST_P(PaintManagerTest, DoPaintFirst) {
       /*fake_pending=*/{});
   ASSERT_TRUE(snapshot);
   sk_sp<SkImage> subset =
-      snapshot->makeSubset(skcpu::Recorder::TODO(), {0, 0, 400, 300}, {});
+      snapshot->makeSubset(SkRecorder::TODO(), {0, 0, 400, 300}, {});
   ASSERT_TRUE(subset);
-  EXPECT_TRUE(
-      MatchesPngFile(*subset, GetTestDataFilePath("do_paint_first.png")));
+  EXPECT_TRUE(MatchesPngFile(
+      *subset, GetPaintManagerTestDataFilePath("do_paint_first.png")));
 
   histograms.ExpectTotalCount(kRenderAndPaintTimeMetric, 1);
   histograms.ExpectTotalCount(kRenderPaintAndFlushTimeMetric, 1);
@@ -407,6 +416,39 @@ TEST_P(PaintManagerTest, ScrollIgnored) {
 
   histograms.ExpectTotalCount(kRenderAndPaintTimeMetric, 16);
   histograms.ExpectTotalCount(kRenderPaintAndFlushTimeMetric, 16);
+}
+
+TEST_P(PaintManagerTest, ResizeRecyclesDrawBuffer) {
+  // 1. Set size to 100x100 and trigger a paint that returns early (no flush).
+  // If `draw_buffer_` isn't cleared on SetSize(), this leaves draw_buffer_
+  // allocated but not released.
+  SetSizeAndInstall(gfx::Size(100, 100), 1.0f);
+  paint_manager_.Invalidate();
+  WaitForOnPaint();
+
+  // 2. Resize to 200x200.
+  SetSizeAndInstall(gfx::Size(200, 200), 1.0f);
+  paint_manager_.Invalidate();
+  SkBitmap larger_bitmap;
+  larger_bitmap.allocN32Pixels(200, 200);
+  larger_bitmap.eraseColor(SK_ColorBLUE);
+
+  // 3. Paint at 200x200, if `draw_buffer_` is still 150x150, the copy will clip
+  // at 150x150 and fail the pixel comparison, however, since it is cleared,
+  // this works.
+  auto snapshot = WaitForFlush(
+      {gfx::Rect(0, 0, 200, 200)},
+      {PaintReadyRect(gfx::Rect(0, 0, 200, 200), larger_bitmap.asImage())}, {});
+  ASSERT_TRUE(snapshot);
+
+  snapshot = snapshot->makeSubset(nullptr, SkIRect::MakeWH(200, 200), {});
+  ASSERT_TRUE(snapshot);
+
+  SkBitmap snapshot_bitmap;
+  ASSERT_TRUE(snapshot->asLegacyBitmap(&snapshot_bitmap));
+
+  EXPECT_TRUE(cc::MatchesBitmap(snapshot_bitmap, larger_bitmap,
+                                cc::ExactPixelComparator()));
 }
 
 INSTANTIATE_TEST_SUITE_P(BufferedPaintManager,

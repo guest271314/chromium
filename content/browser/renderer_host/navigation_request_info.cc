@@ -26,18 +26,14 @@ NavigationRequestInfo::NavigationRequestInfo(
     const base::UnguessableToken& devtools_navigation_token,
     const base::UnguessableToken& devtools_throttling_token,
     network::mojom::ClientSecurityStatePtr client_security_state,
-    const std::optional<std::vector<net::SourceStreamType>>&
-        devtools_accepted_stream_types,
     bool is_pdf,
-    int initiator_process_id,
+    ChildProcessId initiator_process_id,
     std::optional<blink::DocumentToken> initiator_document_token,
-    base::WeakPtr<PrefetchServingPageMetricsContainer>
-        prefetch_serving_page_metrics_container,
     bool allow_cookies_from_browser,
     int64_t navigation_id,
-    bool shared_storage_writable_eligible,
     bool is_ad_tagged,
-    bool force_no_https_upgrade)
+    bool force_no_https_upgrade,
+    bool is_visible)
     : common_params(std::move(common_params)),
       begin_params(std::move(begin_params)),
       sandbox_flags(sandbox_flags),
@@ -53,17 +49,14 @@ NavigationRequestInfo::NavigationRequestInfo(
       devtools_navigation_token(devtools_navigation_token),
       devtools_throttling_token(devtools_throttling_token),
       client_security_state(std::move(client_security_state)),
-      devtools_accepted_stream_types(devtools_accepted_stream_types),
       is_pdf(is_pdf),
       initiator_process_id(initiator_process_id),
       initiator_document_token(std::move(initiator_document_token)),
-      prefetch_serving_page_metrics_container(
-          std::move(prefetch_serving_page_metrics_container)),
       allow_cookies_from_browser(allow_cookies_from_browser),
       navigation_id(navigation_id),
-      shared_storage_writable_eligible(shared_storage_writable_eligible),
       is_ad_tagged(is_ad_tagged),
-      force_no_https_upgrade(force_no_https_upgrade) {}
+      force_no_https_upgrade(force_no_https_upgrade),
+      is_visible(is_visible) {}
 
 NavigationRequestInfo::~NavigationRequestInfo() {}
 

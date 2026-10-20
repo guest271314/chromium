@@ -4,6 +4,8 @@
 
 #include "third_party/blink/renderer/modules/xr/xr_webgl_swap_chain.h"
 
+#include "base/functional/callback_helpers.h"
+#include "base/notreached.h"
 #include "third_party/blink/renderer/modules/webgl/webgl_framebuffer.h"
 #include "third_party/blink/renderer/modules/webgl/webgl_rendering_context_base.h"
 #include "third_party/blink/renderer/modules/webgl/webgl_texture.h"
@@ -11,6 +13,101 @@
 #include "third_party/blink/renderer/platform/graphics/gpu/xr_webgl_drawing_buffer.h"
 
 namespace blink {
+
+ScopedXRWebGLStateRestorer::ScopedXRWebGLStateRestorer(
+    WebGLRenderingContextBase* context,
+    GLenum source_texture_target)
+    : context_(context),
+      gl_(context->ContextGL()),
+      source_texture_target_(source_texture_target) {
+  if (!gl_) {
+    return;
+  }
+
+  gl_->GetIntegerv(GL_VIEWPORT, viewport_.data());
+
+  depth_test_enabled_ = gl_->IsEnabled(GL_DEPTH_TEST);
+  stencil_test_enabled_ = gl_->IsEnabled(GL_STENCIL_TEST);
+  culling_enabled_ = gl_->IsEnabled(GL_CULL_FACE);
+  blend_enabled_ = gl_->IsEnabled(GL_BLEND);
+  dither_enabled_ = gl_->IsEnabled(GL_DITHER);
+
+  polygon_mode_extension_enabled_ =
+      context_->ExtensionsUtil()->IsExtensionEnabled("WEBGL_polygon_mode");
+  if (polygon_mode_extension_enabled_) {
+    GLint value = 0;
+    gl_->GetIntegerv(GL_POLYGON_MODE_ANGLE, &value);
+    polygon_mode_ = static_cast<GLenum>(value);
+    gl_->PolygonModeANGLE(GL_FRONT_AND_BACK, GL_FILL_ANGLE);
+  }
+
+  gl_->Disable(GL_DEPTH_TEST);
+  gl_->Disable(GL_STENCIL_TEST);
+  gl_->Disable(GL_CULL_FACE);
+  gl_->Disable(GL_BLEND);
+  gl_->Disable(GL_DITHER);
+  gl_->Disable(GL_SCISSOR_TEST);
+
+  if (context_->IsWebGL2()) {
+    gl_->Disable(GL_RASTERIZER_DISCARD);
+  }
+
+  gl_->ColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+  gl_->DepthMask(GL_FALSE);
+}
+
+ScopedXRWebGLStateRestorer::~ScopedXRWebGLStateRestorer() {
+  if (!gl_) {
+    return;
+  }
+
+  gl_->Viewport(viewport_[0], viewport_[1], viewport_[2], viewport_[3]);
+
+  if (depth_test_enabled_) {
+    gl_->Enable(GL_DEPTH_TEST);
+  }
+  if (stencil_test_enabled_) {
+    gl_->Enable(GL_STENCIL_TEST);
+  }
+  if (culling_enabled_) {
+    gl_->Enable(GL_CULL_FACE);
+  }
+  if (blend_enabled_) {
+    gl_->Enable(GL_BLEND);
+  }
+  if (dither_enabled_) {
+    gl_->Enable(GL_DITHER);
+  }
+
+  if (polygon_mode_extension_enabled_ && polygon_mode_ != GL_FILL_ANGLE) {
+    gl_->PolygonModeANGLE(GL_FRONT_AND_BACK, polygon_mode_);
+  }
+
+  DrawingBuffer::Client* client = static_cast<DrawingBuffer::Client*>(context_);
+
+  switch (source_texture_target_) {
+    case GL_TEXTURE_2D:
+      client->DrawingBufferClientRestoreTexture2DBinding();
+      break;
+    case GL_TEXTURE_2D_ARRAY:
+      client->DrawingBufferClientRestoreTexture2DArrayBinding();
+      break;
+    case GL_TEXTURE_CUBE_MAP:
+      client->DrawingBufferClientRestoreTextureCubeMapBinding();
+      break;
+    default:
+      NOTREACHED();
+  }
+
+  client->DrawingBufferClientRestoreScissorTest();
+  client->DrawingBufferClientRestoreRasterizerDiscard();
+  client->DrawingBufferClientRestoreMaskAndClearValues();
+  client->DrawingBufferClientRestoreFramebufferBinding();
+
+  context_->RestoreVertexArrayObjectBinding();
+  context_->RestoreProgram();
+  context_->RestoreActiveTexture();
+}
 
 XRWebGLSwapChain::XRWebGLSwapChain(
     WebGLRenderingContextBase* context,
@@ -68,6 +165,9 @@ void XRWebGLSwapChain::ClearCurrentTexture() {
   }
 
   gl->Disable(GL_SCISSOR_TEST);
+  if (webgl2_) {
+    gl->Disable(GL_RASTERIZER_DISCARD);
+  }
 
   if (descriptor_.is_texture_array) {
     DLOG(ERROR) << __func__ << " Performing texture array clear";
@@ -98,6 +198,7 @@ void XRWebGLSwapChain::ClearCurrentTexture() {
       static_cast<DrawingBuffer::Client*>(context());
 
   client->DrawingBufferClientRestoreScissorTest();
+  client->DrawingBufferClientRestoreRasterizerDiscard();
   client->DrawingBufferClientRestoreMaskAndClearValues();
   client->DrawingBufferClientRestoreFramebufferBinding();
 }
@@ -182,8 +283,6 @@ XRWebGLSharedImageSwapChain::XRWebGLSharedImageSwapChain(
     const XRWebGLSwapChain::Descriptor& descriptor,
     bool webgl2)
     : XRWebGLSwapChain(context, descriptor, webgl2) {
-  // SharedImages cannot have multiple layers yet.
-  CHECK_EQ(descriptor.layers, 1);
 }
 
 WebGLUnownedTexture* XRWebGLSharedImageSwapChain::ProduceTexture() {
@@ -198,8 +297,6 @@ WebGLUnownedTexture* XRWebGLSharedImageSwapChain::ProduceTexture() {
     return nullptr;
   }
 
-  CHECK(content_image_data.sync_token.HasData());
-
   // Create a texture backed by the shared image.
   CHECK(!shared_image_texture_);
   shared_image_texture_ =
@@ -208,21 +305,43 @@ WebGLUnownedTexture* XRWebGLSharedImageSwapChain::ProduceTexture() {
       shared_image_texture_->BeginAccess(content_image_data.sync_token,
                                          /*readonly=*/false);
 
+  GLenum texture_target =
+      descriptor().is_texture_array ? GL_TEXTURE_2D_ARRAY : GL_TEXTURE_2D;
   return MakeGarbageCollected<WebGLUnownedTexture>(
-      context(), shared_image_texture_->id(), GL_TEXTURE_2D);
+      context(), shared_image_texture_->id(), texture_target);
 }
 
 void XRWebGLSharedImageSwapChain::OnFrameEnd() {
   WebGLUnownedTexture* texture = ResetCurrentTexture();
   if (texture) {
+    gpu::gles2::GLES2Interface* gl = context()->ContextGL();
+    if (gl) {
+      gl->Flush();
+    }
+
     DCHECK(shared_image_texture_);
-    gpu::SharedImageTexture::ScopedAccess::EndAccess(
+    sync_token_ = gpu::SharedImageTexture::ScopedAccess::EndAccess(
         std::move(shared_image_scoped_access_));
     shared_image_texture_.reset();
 
     // Notify our WebGLUnownedTexture that we have deleted it.
     static_cast<WebGLUnownedTexture*>(texture)->OnGLDeleteTextures();
   }
+}
+
+std::unique_ptr<SharedImageHolder>
+XRWebGLSharedImageSwapChain::TransferToSharedImageHolder() {
+  return DoneWithSharedBuffer();
+}
+
+std::unique_ptr<SharedImageHolder>
+XRWebGLSharedImageSwapChain::DoneWithSharedBuffer() {
+  const XRSharedImageData& content_image_data = layer()->SharedImage();
+  if (!content_image_data.shared_image) {
+    return nullptr;
+  }
+  return std::make_unique<SharedImageHolder>(content_image_data.shared_image,
+                                             sync_token_, base::DoNothing());
 }
 
 }  // namespace blink

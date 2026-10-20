@@ -3,13 +3,16 @@
 // found in the LICENSE file.
 
 import {SubmitButtonIconType} from 'chrome://new-tab-page/lazy_load.js';
+import {SingleTabMenuItemAction, SingleTabType} from 'chrome://resources/cr_components/composebox/common.js';
+import {ContextUploadStatus} from 'chrome://resources/cr_components/composebox/composebox_query.mojom-webui.js';
 import type {ComposeboxSubmitElement} from 'chrome://resources/cr_components/composebox/composebox_submit.js';
 import {createAutocompleteResultForTesting, createSearchMatchForTesting} from 'chrome://resources/cr_components/searchbox/searchbox_browser_proxy.js';
 import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
+import {TabAttachmentSource} from 'chrome://resources/mojo/components/omnibox/browser/searchbox.mojom-webui.js';
 import {assertDeepEquals, assertEquals, assertFalse, assertTrue} from 'chrome://webui-test/chai_assert.js';
 import {eventToPromise, microtasksFinished} from 'chrome://webui-test/test_util.js';
 
-import {createComposeboxElement, setupComposeboxTest} from './test_support.js';
+import {addTab, createComposeboxElement, FAKE_TOKEN_STRING, getSubmitContainer, setupComposeboxTest} from './test_support.js';
 
 suite('ComposeboxSubmitTest', () => {
   let submitButton: ComposeboxSubmitElement;
@@ -22,6 +25,10 @@ suite('ComposeboxSubmitTest', () => {
     submitButton = document.createElement('cr-composebox-submit');
     document.body.appendChild(submitButton);
     await microtasksFinished();
+  });
+
+  teardown(() => {
+    document.body.removeAttribute('energy-effect-animation-enabled_');
   });
 
   test('renders default properties', () => {
@@ -60,6 +67,21 @@ suite('ComposeboxSubmitTest', () => {
     // Assert overlay properties.
     assertTrue(!!overlay);
     assertEquals('Custom Title', overlay.getAttribute('title'));
+  });
+
+  test('dims energy layer when disabled and energy effect is on', async () => {
+    // The energy layer holds the background color only when the energy
+    // effect is enabled, so the dimming rule is gated on the same attribute.
+    document.body.toggleAttribute('energy-effect-animation-enabled_', true);
+    const energy =
+        submitButton.shadowRoot.querySelector<HTMLElement>('#submitEnergy');
+    assertTrue(!!energy);
+    assertEquals('1', window.getComputedStyle(energy).opacity);
+
+    submitButton.disabled = true;
+    await microtasksFinished();
+
+    assertEquals('0.4', window.getComputedStyle(energy).opacity);
   });
 
   test('dispatches submit-click when not disabled', async () => {
@@ -115,10 +137,13 @@ suite('ComposeboxSmartComposeSubmitTest', () => {
       composeboxSmartComposeEnabled: true,
       composeboxShowZps: true,
     });
-    createComposeboxElement(testProxy);
+    createComposeboxElement(testProxy, {
+      searchboxNextEnabled: true,
+    });
     await microtasksFinished();
 
-    const inputElement = testProxy.element.getInputElement().$.input;
+    const inputElement = testProxy.element.getInputElement()
+                             .shadowRoot.querySelector<HTMLElement>('#input')!;
 
     testProxy.element.smartComposeStats = {
       enabled: true,
@@ -138,6 +163,7 @@ suite('ComposeboxSmartComposeSubmitTest', () => {
     testProxy.element.haveReceivedSynchronousAutocompleteResponse = true;
     testProxy.searchboxCallbackRouterRemote.autocompleteResultChanged(
         createAutocompleteResultForTesting({
+          queryId: testProxy.element.activeQueryId,
           input: 'test',
           matches,
           smartComposeInlineHint: hint,
@@ -177,6 +203,7 @@ suite('ComposeboxSmartComposeSubmitTest', () => {
     testProxy.element.haveReceivedSynchronousAutocompleteResponse = true;
     testProxy.searchboxCallbackRouterRemote.autocompleteResultChanged(
         createAutocompleteResultForTesting({
+          queryId: testProxy.element.activeQueryId,
           input: 'test hint',
           matches,
           smartComposeInlineHint: hint2,
@@ -213,6 +240,7 @@ suite('ComposeboxSmartComposeSubmitTest', () => {
     testProxy.element.haveReceivedSynchronousAutocompleteResponse = true;
     testProxy.searchboxCallbackRouterRemote.autocompleteResultChanged(
         createAutocompleteResultForTesting({
+          queryId: testProxy.element.activeQueryId,
           input: 'test hint and more',
           matches,
         }));
@@ -247,5 +275,249 @@ suite('ComposeboxSmartComposeSubmitTest', () => {
       charactersAccepted: 14,
       shownLength: 14,
     });
+  });
+});
+
+suite('ComposeboxDelayedTabSubmitTest', () => {
+  const testProxy = setupComposeboxTest();
+
+  // Attaches a delayed tab whose snapshot has not been taken yet, which is
+  // the state in which every submission path must be held.
+  async function attachPendingDelayedTab(): Promise<string> {
+    createComposeboxElement(testProxy, {searchboxNextEnabled: true});
+    await microtasksFinished();
+    const token = await addTab(testProxy, /*delayUpload=*/ true);
+    await testProxy.element.updateComplete;
+    assertFalse(testProxy.element.fileUploadsComplete);
+    return token;
+  }
+
+  async function markSnapshotReady(token: string) {
+    testProxy.searchboxCallbackRouterRemote.onContextualInputStatusChanged(
+        token, ContextUploadStatus.kProcessing, null);
+    await testProxy.searchboxCallbackRouterRemote.$.flushForTesting();
+    await microtasksFinished();
+    assertTrue(testProxy.element.fileUploadsComplete);
+  }
+
+  async function showMatch() {
+    testProxy.searchboxCallbackRouterRemote.autocompleteResultChanged(
+        createAutocompleteResultForTesting({
+          queryId: testProxy.element.activeQueryId,
+          input: 'test',
+          matches: [createSearchMatchForTesting({fillIntoEdit: 'test'})],
+        }));
+    await testProxy.searchboxCallbackRouterRemote.$.flushForTesting();
+    await microtasksFinished();
+    const match =
+        testProxy.element.getDropdownElement()
+            .shadowRoot.querySelector<HTMLElement>('cr-composebox-match');
+    assertTrue(!!match);
+    return match;
+  }
+
+  test('submit button is held until the snapshot is ready', async () => {
+    const token = await attachPendingDelayedTab();
+
+    getSubmitContainer(testProxy).click();
+    await microtasksFinished();
+    assertEquals(0, testProxy.searchboxHandler.getCallCount('submitQuery'));
+
+    await markSnapshotReady(token);
+    getSubmitContainer(testProxy).click();
+    await microtasksFinished();
+    assertEquals(1, testProxy.searchboxHandler.getCallCount('submitQuery'));
+  });
+
+  test('suggestion click is held until the snapshot is ready', async () => {
+    const token = await attachPendingDelayedTab();
+    const match = await showMatch();
+
+    match.click();
+    await microtasksFinished();
+    assertEquals(
+        0, testProxy.searchboxHandler.getCallCount('openAutocompleteMatch'));
+
+    await markSnapshotReady(token);
+    (await showMatch()).click();
+    await microtasksFinished();
+    assertEquals(
+        1, testProxy.searchboxHandler.getCallCount('openAutocompleteMatch'));
+  });
+
+  test('voice result is kept but not submitted while held', async () => {
+    const token = await attachPendingDelayedTab();
+
+    testProxy.element.onVoiceSearchFinalResult(
+        new CustomEvent('voice-search-final-result', {detail: 'hello'}));
+    await microtasksFinished();
+    assertEquals(0, testProxy.searchboxHandler.getCallCount('submitQuery'));
+    assertEquals('hello', testProxy.element.input);
+
+    await markSnapshotReady(token);
+    testProxy.element.onVoiceSearchFinalResult(
+        new CustomEvent('voice-search-final-result', {detail: 'hello'}));
+    await microtasksFinished();
+    assertEquals(1, testProxy.searchboxHandler.getCallCount('submitQuery'));
+  });
+
+  test('programmatic submit is held before the next render', async () => {
+    createComposeboxElement(testProxy);
+    testProxy.element.input = 'test';
+    await microtasksFinished();
+    testProxy.searchboxHandler.setPromiseResolveFor(
+        'addTabContext', FAKE_TOKEN_STRING);
+    const attachment = testProxy.element.addTabContextHandleCallback({
+      tabId: 1,
+      title: 'test',
+      url: 'https://example.com',
+      delayUpload: true,
+      origin: TabAttachmentSource.kActionChip,
+    });
+    assertTrue(testProxy.element.canSubmitFilesAndInput);
+    testProxy.element.submitQuery();
+    assertEquals(0, testProxy.searchboxHandler.getCallCount('submitQuery'));
+
+    await attachment;
+    await markSnapshotReady(FAKE_TOKEN_STRING);
+    testProxy.element.submitQuery();
+    assertEquals(1, testProxy.searchboxHandler.getCallCount('submitQuery'));
+  });
+});
+
+suite('ComposeboxSingleTabMenuItemSubmitTest', () => {
+  const testProxy = setupComposeboxTest();
+
+  test(
+      'records Submitted when submitted with single tab menu item attached',
+      async () => {
+        createComposeboxElement(testProxy);
+        testProxy.element.composeboxSource = 'NewTabPage';
+        testProxy.element.input = 'summarize this tab';
+        await microtasksFinished();
+
+        testProxy.searchboxHandler.setPromiseResolveFor(
+            'addTabContext', FAKE_TOKEN_STRING);
+        await testProxy.element.onAddTabContext(
+            new CustomEvent('add-tab-context', {
+              detail: {
+                id: 1,
+                title: 'Recent Tab',
+                url: 'https://example.com',
+                delayUpload: false,
+                origin: TabAttachmentSource.kContextMenu,
+                singleTabType: SingleTabType.RECENT_TAB,
+              },
+            }));
+        testProxy.searchboxCallbackRouterRemote.onContextualInputStatusChanged(
+            FAKE_TOKEN_STRING, ContextUploadStatus.kUploadSuccessful, null);
+        await testProxy.searchboxCallbackRouterRemote.$.flushForTesting();
+        await microtasksFinished();
+
+        testProxy.element.submitQuery();
+        assertEquals(1, testProxy.searchboxHandler.getCallCount('submitQuery'));
+        assertEquals(
+            1,
+            testProxy.metrics.count(
+                'ContextualSearch.SingleTabMenuItem.Action.NewTabPage',
+                SingleTabMenuItemAction.RECENT_TAB_SUBMITTED));
+      });
+
+  test(
+      'records CurrentTab Submitted when singleTabType is CurrentTab',
+      async () => {
+        createComposeboxElement(testProxy);
+        testProxy.element.composeboxSource = 'ContextualTasks';
+        testProxy.element.input = 'summarize current tab';
+        await microtasksFinished();
+
+        testProxy.searchboxHandler.setPromiseResolveFor(
+            'addTabContext', FAKE_TOKEN_STRING);
+        await testProxy.element.onAddTabContext(
+            new CustomEvent('add-tab-context', {
+              detail: {
+                id: 1,
+                title: 'Current Tab',
+                url: 'https://example.com',
+                delayUpload: false,
+                origin: TabAttachmentSource.kContextMenu,
+                singleTabType: SingleTabType.CURRENT_TAB,
+              },
+            }));
+        testProxy.searchboxCallbackRouterRemote.onContextualInputStatusChanged(
+            FAKE_TOKEN_STRING, ContextUploadStatus.kUploadSuccessful, null);
+        await testProxy.searchboxCallbackRouterRemote.$.flushForTesting();
+        await microtasksFinished();
+
+        testProxy.element.submitQuery();
+        assertEquals(1, testProxy.searchboxHandler.getCallCount('submitQuery'));
+        assertEquals(
+            1,
+            testProxy.metrics.count(
+                'ContextualSearch.SingleTabMenuItem.Action.ContextualTasks',
+                SingleTabMenuItemAction.CURRENT_TAB_SUBMITTED));
+      });
+
+  test(
+      'does not record Submitted when single tab item deselected before submit',
+      async () => {
+        createComposeboxElement(testProxy);
+        testProxy.element.composeboxSource = 'NewTabPage';
+        testProxy.element.input = 'summarize this tab';
+        await microtasksFinished();
+
+        testProxy.searchboxHandler.setPromiseResolveFor(
+            'addTabContext', FAKE_TOKEN_STRING);
+        await testProxy.element.onAddTabContext(
+            new CustomEvent('add-tab-context', {
+              detail: {
+                id: 1,
+                title: 'Recent Tab',
+                url: 'https://example.com',
+                delayUpload: false,
+                origin: TabAttachmentSource.kContextMenu,
+                singleTabType: SingleTabType.RECENT_TAB,
+              },
+            }));
+        await testProxy.element.onDeleteTabContext(new CustomEvent(
+            'delete-tab-context', {detail: {tabId: 1, fromUserAction: true}}));
+        await microtasksFinished();
+
+        testProxy.element.submitQuery();
+        assertEquals(1, testProxy.searchboxHandler.getCallCount('submitQuery'));
+        assertEquals(
+            0,
+            testProxy.metrics.count(
+                'ContextualSearch.SingleTabMenuItem.Action.NewTabPage'));
+      });
+
+  test('does not record Submitted when tab was added from flyout', async () => {
+    createComposeboxElement(testProxy);
+    testProxy.element.composeboxSource = 'NewTabPage';
+    testProxy.element.input = 'summarize this tab';
+    await microtasksFinished();
+
+    testProxy.searchboxHandler.setPromiseResolveFor(
+        'addTabContext', FAKE_TOKEN_STRING);
+    await testProxy.element.onAddTabContext(new CustomEvent('add-tab-context', {
+      detail: {
+        id: 1,
+        title: 'Flyout Tab',
+        url: 'https://example.com',
+        delayUpload: false,
+        origin: TabAttachmentSource.kContextMenu,
+      },
+    }));
+    testProxy.searchboxCallbackRouterRemote.onContextualInputStatusChanged(
+        FAKE_TOKEN_STRING, ContextUploadStatus.kUploadSuccessful, null);
+    await testProxy.searchboxCallbackRouterRemote.$.flushForTesting();
+    await microtasksFinished();
+
+    testProxy.element.submitQuery();
+    assertEquals(1, testProxy.searchboxHandler.getCallCount('submitQuery'));
+    assertEquals(
+        0,
+        testProxy.metrics.count(
+            'ContextualSearch.SingleTabMenuItem.Action.NewTabPage'));
   });
 });

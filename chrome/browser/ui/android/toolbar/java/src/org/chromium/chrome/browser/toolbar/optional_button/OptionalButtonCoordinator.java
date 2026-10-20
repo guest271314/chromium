@@ -9,6 +9,7 @@ import static org.chromium.build.NullUtil.assumeNonNull;
 import android.content.res.ColorStateList;
 import android.content.res.Resources;
 import android.graphics.Rect;
+import android.transition.Transition;
 import android.view.View;
 import android.view.ViewGroup;
 
@@ -20,9 +21,11 @@ import org.chromium.base.FeatureList;
 import org.chromium.base.supplier.MonotonicObservableSupplier;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
+import org.chromium.chrome.browser.theme.ThemeUtils;
 import org.chromium.chrome.browser.toolbar.adaptive.AdaptiveToolbarButtonVariant;
 import org.chromium.chrome.browser.toolbar.adaptive.AdaptiveToolbarFeatures;
 import org.chromium.chrome.browser.toolbar.optional_button.OptionalButtonProperties.OnBeforeWidthTransitionCallback;
+import org.chromium.chrome.browser.ui.theme.BrandedColorScheme;
 import org.chromium.chrome.browser.user_education.IphCommandBuilder;
 import org.chromium.chrome.browser.user_education.UserEducationHelper;
 import org.chromium.components.browser_ui.widget.highlight.PulseDrawable.Bounds;
@@ -51,7 +54,8 @@ public class OptionalButtonCoordinator {
     private final MonotonicObservableSupplier<Tracker> mFeatureEngagementTrackerSupplier;
     private @Nullable Callback<Integer> mTransitionFinishedCallback;
     private @Nullable IphCommandBuilder mIphCommandBuilder;
-    private boolean mAlwaysShowActionChip;
+    private boolean mActionChipTriggeredByTracker;
+    private @BrandedColorScheme int mBrandedColorScheme = BrandedColorScheme.APP_DEFAULT;
 
     @IntDef({
         TransitionType.SWAPPING,
@@ -78,7 +82,7 @@ public class OptionalButtonCoordinator {
      *     transitions.
      * @param isAnimationAllowedPredicate A BooleanProvider that is called before all transitions to
      *     determine if said transition should be animated or not.
-     * @param featureEngagementTrackerSupplier Provides a {@Tracker} when available.
+     * @param featureEngagementTrackerSupplier Provides a {@link Tracker} when available.
      */
     public OptionalButtonCoordinator(
             View view,
@@ -96,6 +100,9 @@ public class OptionalButtonCoordinator {
                         .with(
                                 OptionalButtonProperties.IS_ANIMATION_ALLOWED_PREDICATE,
                                 isAnimationAllowedPredicate)
+                        .with(
+                                OptionalButtonProperties.BRANDED_COLOR_SCHEME,
+                                BrandedColorScheme.APP_DEFAULT)
                         .build();
 
         assert view instanceof OptionalButtonView;
@@ -106,6 +113,7 @@ public class OptionalButtonCoordinator {
 
         mMediator = new OptionalButtonMediator(model);
         mFeatureEngagementTrackerSupplier = featureEngagementTrackerSupplier;
+        updateIconTint();
     }
 
     /**
@@ -139,6 +147,15 @@ public class OptionalButtonCoordinator {
         mMediator.setCollapsedStateWidth(width);
     }
 
+    /**
+     * Sets the transition delegate that will be used to run transitions.
+     *
+     * @param delegate The transition delegate.
+     */
+    public void setTransitionDelegate(@Nullable Callback<Transition> delegate) {
+        mView.setTransitionDelegate(delegate);
+    }
+
     /** Sets a runnable that's invoked before the optional button is hidden. */
     public void setOnBeforeHideTransitionCallback(Runnable onBeforeHideTransitionCallback) {
         mMediator.setOnBeforeHideTransitionCallback(onBeforeHideTransitionCallback);
@@ -165,6 +182,23 @@ public class OptionalButtonCoordinator {
     }
 
     /**
+     * Sets the branded color scheme of the toolbar.
+     *
+     * @param brandedColorScheme The current {@link BrandedColorScheme}.
+     */
+    public void setBrandedColorScheme(@BrandedColorScheme int brandedColorScheme) {
+        mBrandedColorScheme = brandedColorScheme;
+        mMediator.setBrandedColorScheme(brandedColorScheme);
+        updateIconTint();
+    }
+
+    private void updateIconTint() {
+        ColorStateList tint =
+                ThemeUtils.getThemedToolbarIconTint(mView.getContext(), mBrandedColorScheme);
+        mMediator.setIconForegroundColor(tint);
+    }
+
+    /**
      * Set a callback that allows the control of the animation to be performed together with the
      * chip.
      *
@@ -183,15 +217,6 @@ public class OptionalButtonCoordinator {
      */
     public void setTransitionFinishedCallback(Callback<Integer> transitionFinishedCallback) {
         mTransitionFinishedCallback = transitionFinishedCallback;
-    }
-
-    /**
-     * Set the flag that always enables chip animiation of contextual page action.
-     *
-     * @param show Whether the animation should be always enabled.
-     */
-    public void setAlwaysShowActionChip(boolean show) {
-        mAlwaysShowActionChip = show;
     }
 
     /**
@@ -222,21 +247,25 @@ public class OptionalButtonCoordinator {
                     FeatureList.isInitialized()
                             && AdaptiveToolbarFeatures.shouldShowActionChip(
                                     buttonData.getButtonSpec().getButtonVariant());
-            // And if feature engagement allows it.
-            Tracker featureEngagementTracker = mFeatureEngagementTrackerSupplier.get();
-
             // TODO(crbug.com/485624827): Add a property to ButtonSpec to always show action chip.
             boolean isGlic =
                     buttonData.getButtonSpec().getButtonVariant()
                             == AdaptiveToolbarButtonVariant.GLIC;
-            boolean shouldShowActionChip =
-                    mAlwaysShowActionChip
-                            || isGlic
-                            || (isActionChipVariant
-                                    && featureEngagementTracker != null
-                                    && featureEngagementTracker.isInitialized()
-                                    && featureEngagementTracker.shouldTriggerHelpUi(
-                                            FeatureConstants.CONTEXTUAL_PAGE_ACTIONS_ACTION_CHIP));
+            boolean triggeredByTracker = false;
+            boolean shouldShowActionChip = false;
+
+            if (isGlic) {
+                shouldShowActionChip = true;
+            } else if (isActionChipVariant) {
+                Tracker tracker = mFeatureEngagementTrackerSupplier.get();
+                triggeredByTracker =
+                        tracker != null
+                                && tracker.isInitialized()
+                                && tracker.shouldTriggerHelpUi(
+                                        FeatureConstants.CONTEXTUAL_PAGE_ACTIONS_ACTION_CHIP);
+                shouldShowActionChip = triggeredByTracker;
+            }
+            mActionChipTriggeredByTracker = triggeredByTracker;
 
             if (!shouldShowActionChip) {
                 ((ButtonDataImpl) buttonData).updateActionChipResourceId(Resources.ID_NULL);
@@ -266,13 +295,6 @@ public class OptionalButtonCoordinator {
      */
     public void cancelTransition() {
         mMediator.cancelTransition();
-    }
-
-    /**
-     * Updates the foreground color on the icons and label to match the current theme/website color.
-     */
-    public void setIconForegroundColor(@Nullable ColorStateList colorStateList) {
-        mMediator.setIconForegroundColor(colorStateList);
     }
 
     /**
@@ -325,16 +347,19 @@ public class OptionalButtonCoordinator {
         }
 
         if (transitionType == TransitionType.EXPANDING_ACTION_CHIP) {
-            Tracker featureEngagementTracker = mFeatureEngagementTrackerSupplier.get();
-            if (featureEngagementTracker != null) {
-                // Record an event in feature engagement to limit the amount of times we show the
-                // action chip.
-                featureEngagementTracker.addOnInitializedCallback(
-                        isReady -> {
-                            if (!isReady) return;
-                            featureEngagementTracker.dismissed(
-                                    FeatureConstants.CONTEXTUAL_PAGE_ACTIONS_ACTION_CHIP);
-                        });
+            if (mActionChipTriggeredByTracker) {
+                Tracker featureEngagementTracker = mFeatureEngagementTrackerSupplier.get();
+                if (featureEngagementTracker != null) {
+                    // Record an event in feature engagement to limit the
+                    // amount of times we show the action chip.
+                    featureEngagementTracker.addOnInitializedCallback(
+                            isReady -> {
+                                if (!isReady) return;
+                                featureEngagementTracker.dismissed(
+                                        FeatureConstants.CONTEXTUAL_PAGE_ACTIONS_ACTION_CHIP);
+                            });
+                }
+                mActionChipTriggeredByTracker = false;
             }
         }
 

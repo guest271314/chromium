@@ -139,14 +139,15 @@ void SurfaceSavedFrame::RequestCopyOfOutput(
 
   const auto& active_frame = surface->GetActiveFrame();
   bool is_software = active_frame.metadata.is_software;
+  gfx::ContentColorUsage content_color_usage =
+      surface->GetActiveFrameContentColorUsage();
   for (const auto& render_pass : active_frame.render_pass_list) {
     if (active_frame.render_pass_list.back() == render_pass) {
       continue;
     }
 
-    if (auto request = CreateCopyRequestIfNeeded(
-            *render_pass, is_software,
-            active_frame.metadata.content_color_usage)) {
+    if (auto request = CreateCopyRequestIfNeeded(*render_pass, is_software,
+                                                 content_color_usage)) {
       surface->RequestCopyOfOutputOnActiveFrameRenderPassId(std::move(request),
                                                             render_pass->id);
       copy_request_count_++;
@@ -164,16 +165,17 @@ void SurfaceSavedFrame::RequestCopyOfOutput(
   // If we're using BlitRequests, then we need to create the result bundle
   // immediately, since it can be imported before the copy output results
   // arrive.
-  for (auto& [index, shared_image] : blit_shared_images_) {
+  for (auto& [index, blit_image] : blit_shared_images_) {
     OutputCopyResult* slot = &frame_result_->shared_results[index].emplace();
 
-    slot->sync_token = shared_image->creation_sync_token();
-    slot->shared_image = shared_image;
+    slot->sync_token = blit_image.shared_image->creation_sync_token();
+    slot->shared_image = blit_image.shared_image;
+    slot->pixel_alignment_offset = blit_image.pixel_alignment_offset;
     slot->release_callback = base::BindOnce(
         [](scoped_refptr<gpu::ClientSharedImage> image,
            const gpu::SyncToken& sync_token,
            bool is_lost) { image->UpdateDestructionSyncToken(sync_token); },
-        std::move(shared_image));
+        std::move(blit_image.shared_image));
   }
 
   // DispatchCopyDoneCallback early if that feature is enabled.
@@ -235,13 +237,18 @@ std::unique_ptr<CopyOutputRequest> SurfaceSavedFrame::CreateCopyRequestIfNeeded(
       kResultFormat, kResultDestination,
       base::BindOnce(&SurfaceSavedFrame::NotifyCopyOfOutputComplete,
                      weak_factory_.GetMutableWeakPtr(), shared_pass_index));
+  request->set_is_secure(true);
   request->set_result_task_runner(
       base::SingleThreadTaskRunner::GetCurrentDefault());
-  scoped_refptr<gpu::ClientSharedImage>& shared_image =
-      blit_shared_images_[shared_pass_index];
+  scoped_refptr<gpu::ClientSharedImage> shared_image;
 
   const auto& display_color_spaces = directive_.display_color_spaces();
   bool has_transparent_background = render_pass.has_transparent_background;
+  if (is_software) {
+    // Match LayerTreeHostImpl::GetTargetColorParams(): software compositing
+    // uses sRGB because it does not reliably color-convert resources.
+    content_color_usage = gfx::ContentColorUsage::kSRGB;
+  }
 
   auto image_format = display_color_spaces.GetOutputFormat(
       content_color_usage, has_transparent_background);
@@ -249,6 +256,7 @@ std::unique_ptr<CopyOutputRequest> SurfaceSavedFrame::CreateCopyRequestIfNeeded(
       display_color_spaces.GetRasterAndCompositeColorSpace(content_color_usage);
 
   if (is_software) {
+    color_space = gfx::ColorSpace::CreateSRGB();
     gpu::SharedImageUsageSet flags = gpu::SHARED_IMAGE_USAGE_CPU_WRITE_ONLY;
     shared_image =
         shared_image_interface_->CreateSharedImageForSoftwareCompositor(
@@ -265,6 +273,12 @@ std::unique_ptr<CopyOutputRequest> SurfaceSavedFrame::CreateCopyRequestIfNeeded(
       BlitRequest(gfx::Point(), LetterboxingBehavior::kDoNotLetterbox,
                   shared_image, shared_image->creation_sync_token(),
                   /*populates_mappable_shared_image=*/false));
+
+  gfx::Vector2dF orig_pixel_alignment_offset =
+      TransitionUtils::ComputePixelAlignmentOffset(
+          render_pass.transform_to_root_target);
+  blit_shared_images_[shared_pass_index] = {shared_image,
+                                            orig_pixel_alignment_offset};
 
   return request;
 }
@@ -335,7 +349,8 @@ void SurfaceSavedFrame::CompleteSavedFrameForTesting() {
             {SinglePlaneFormat::kBGRA_8888, kDefaultTextureSizeForTesting,
              gfx::ColorSpace(), gpu::SHARED_IMAGE_USAGE_CPU_WRITE_ONLY,
              "SurfaceSavedFrameForTesting"});
-    result->sync_token = shared_image_interface_->GenVerifiedSyncToken();
+    result->sync_token = result->shared_image->creation_sync_token();
+    shared_image_interface_->VerifySyncToken(result->sync_token);
     result->release_callback =
         base::DoNothingWithBoundArgs(result->shared_image);
   }
@@ -356,6 +371,15 @@ void SurfaceSavedFrame::CompleteSavedFrameForTesting() {
   }();
   weak_factory_.InvalidateWeakPtrs();
   DCHECK(IsValid());
+}
+
+std::unique_ptr<CopyOutputRequest>
+SurfaceSavedFrame::CreateCopyRequestForTesting(  // IN-TEST
+    const CompositorRenderPass& render_pass,
+    bool is_software,
+    gfx::ContentColorUsage content_color_usage) {
+  return CreateCopyRequestIfNeeded(render_pass, is_software,
+                                   content_color_usage);
 }
 
 SurfaceSavedFrame::OutputCopyResult::OutputCopyResult() = default;

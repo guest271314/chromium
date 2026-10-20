@@ -18,7 +18,9 @@ class TestSummary:
   parse_error: str = ""
 
   def __str__(self) -> str:
-    error_str = f"Parse error: {self.parse_error}\n\n" if self.parse_error else ""
+    error_str = (
+      f"Parse error: {self.parse_error}\n\n" if self.parse_error else ""
+    )
 
     failed_lines = []
     m = len(self.failed_tests)
@@ -38,10 +40,12 @@ class TestSummary:
 
     failed = '\n\n'.join(failed_lines)
 
-    return (f"{error_str}"
-            f"Test count: \n{self.test_count}\n\n"
-            f"Passed tests:\n{passed}\n\n"
-            f"Failed tests:\n{failed}")
+    return (
+      f"{error_str}"
+      f"Test count: \n{self.test_count}\n\n"
+      f"Passed tests:\n{passed}\n\n"
+      f"Failed tests:\n{failed}"
+    )
 
 
 def ParseTests(file_path: str) -> TestSummary:
@@ -64,8 +68,10 @@ def ParseTests(file_path: str) -> TestSummary:
       for result in results:
         status = result.get('status')
 
-        if (status in ('SUCCESS', 'PASS', 'SKIPPED')
-            and test_name not in test_names):
+        if (
+          status in ('SUCCESS', 'PASS', 'SKIPPED')
+          and test_name not in test_names
+        ):
           test_names.add(test_name)
           passed_tests.append(test_name)
         elif test_name not in test_names:
@@ -74,6 +80,45 @@ def ParseTests(file_path: str) -> TestSummary:
           failed_tests.append((test_name, logs))
       count += 1
 
-  return TestSummary(test_count=count,
-                     failed_tests=failed_tests,
-                     passed_tests=passed_tests)
+  return TestSummary(
+    test_count=count, failed_tests=failed_tests, passed_tests=passed_tests
+  )
+
+
+def ParseWebTestResults(file_path: str) -> TestSummary:
+  if not os.path.exists(file_path) or os.path.getsize(file_path) == 0:
+    return TestSummary(parse_error="Web test results file is missing or empty")
+
+  try:
+    with open(file_path, 'r') as f:
+      data = json.load(f)
+  except json.JSONDecodeError as e:
+    return TestSummary(
+      parse_error=f"Failed to parse web test results as JSON: {e}"
+    )
+
+  failed_tests: list[tuple[str, str]] = []
+  passed_tests: list[str] = []
+  count = 0
+
+  def walk(node, path=""):
+    if "actual" in node:
+      yield (path, node)
+    else:
+      for name, child in node.items():
+        yield from walk(child, f"{path}/{name}" if path else name)
+
+  for test_name, node in walk(data.get("tests", {})):
+    count += 1
+    if node.get("is_unexpected", False):
+      actual = node.get("actual", "")
+      expected = node.get("expected", "PASS").split()
+      failed_tests.append(
+        (test_name, f"Actual: {actual}, Expected: {' or '.join(expected)}")
+      )
+    else:
+      passed_tests.append(test_name)
+
+  return TestSummary(
+    test_count=count, failed_tests=failed_tests, passed_tests=passed_tests
+  )

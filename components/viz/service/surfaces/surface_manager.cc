@@ -27,6 +27,7 @@
 #include "components/viz/service/surfaces/surface_allocation_group.h"
 #include "components/viz/service/surfaces/surface_client.h"
 #include "components/viz/service/surfaces/surface_manager_delegate.h"
+#include "ui/latency/latency_info.h"
 
 #if DCHECK_IS_ON()
 #include <sstream>
@@ -49,6 +50,9 @@ SurfaceObserver::HandleInteraction GetHandleInteraction(
 }
 
 }  // namespace
+
+SurfaceManager::SurfaceReferenceInfo::SurfaceReferenceInfo() = default;
+SurfaceManager::SurfaceReferenceInfo::~SurfaceReferenceInfo() = default;
 
 SurfaceManager::SurfaceManager(
     SurfaceManagerDelegate* delegate,
@@ -161,7 +165,7 @@ void SurfaceManager::MarkSurfaceForDestruction(const SurfaceId& surface_id) {
   DCHECK(surface_map_.count(surface_id));
   for (auto& observer : observer_list_)
     observer.OnSurfaceMarkedForDestruction(surface_id);
-  surfaces_to_destroy_.emplace(surface_id, base::TimeTicks::Now());
+  surfaces_to_destroy_.insert(surface_id);
 }
 
 void SurfaceManager::InvalidateFrameSinkId(const FrameSinkId& frame_sink_id) {
@@ -214,13 +218,13 @@ void SurfaceManager::GarbageCollectSurfaces() {
   }
 
   SurfaceIdSet reachable_surfaces = GetLiveSurfaces();
-  base::flat_map<SurfaceId, base::TimeTicks> surfaces_to_delete;
+  std::vector<SurfaceId> surfaces_to_delete;
 
   // Delete all destroyed and unreachable surfaces.
   for (auto iter = surfaces_to_destroy_.begin();
        iter != surfaces_to_destroy_.end();) {
-    if (reachable_surfaces.count(iter->first) == 0) {
-      surfaces_to_delete.insert(*iter);
+    if (reachable_surfaces.count(*iter) == 0) {
+      surfaces_to_delete.push_back(*iter);
       iter = surfaces_to_destroy_.erase(iter);
     } else {
       ++iter;
@@ -228,8 +232,8 @@ void SurfaceManager::GarbageCollectSurfaces() {
   }
 
   // ~Surface() draw callback could modify |surfaces_to_destroy_|.
-  for (const auto& iter : surfaces_to_delete) {
-    DestroySurfaceInternal(iter.first);
+  for (const SurfaceId& surface_id : surfaces_to_delete) {
+    DestroySurfaceInternal(surface_id);
   }
 
   // Run another pass over surfaces_to_delete, all of which have just been
@@ -240,8 +244,8 @@ void SurfaceManager::GarbageCollectSurfaces() {
   // GarbageCollectSurfaces re-entrancy, which is exercised in tests and is
   // hard to prove can't happen in the wild. Evaluate whether we should allow
   // re-entrancy, and if not just remove here.
-  for (const auto& iter : surfaces_to_delete) {
-    surfaces_to_destroy_.erase(iter.first);
+  for (const SurfaceId& surface_id : surfaces_to_delete) {
+    surfaces_to_destroy_.erase(surface_id);
   }
 
   MaybeGarbageCollectAllocationGroups();
@@ -252,7 +256,7 @@ const base::flat_set<SurfaceId>& SurfaceManager::GetSurfacesReferencedByParent(
   auto iter = references_.find(surface_id);
   if (iter == references_.end())
     return empty_surface_id_set_;
-  return iter->second;
+  return iter->second.children;
 }
 
 base::flat_set<SurfaceId>
@@ -261,7 +265,7 @@ SurfaceManager::GetSurfacesThatReferenceChildForTesting(
   base::flat_set<SurfaceId> parents;
 
   for (auto& parent : references_) {
-    if (parent.second.find(surface_id) != parent.second.end())
+    if (parent.second.children.contains(surface_id))
       parents.insert(parent.first);
   }
   return parents;
@@ -270,10 +274,9 @@ SurfaceManager::GetSurfacesThatReferenceChildForTesting(
 base::TimeTicks SurfaceManager::GetSurfaceReferencedTimestamp(
     const SurfaceId& surface_id) const {
   CHECK(surface_id.is_valid());
-  auto surface_referenced_timestamp =
-      surface_referenced_timestamps_.find(surface_id);
-  if (surface_referenced_timestamp != surface_referenced_timestamps_.end()) {
-    return surface_referenced_timestamp->second.first;
+  auto iter = references_.find(surface_id);
+  if (iter != references_.end()) {
+    return iter->second.timestamp;
   }
   return base::TimeTicks();
 }
@@ -335,18 +338,16 @@ void SurfaceManager::AddSurfaceReferenceImpl(
     return;
   }
 
-  references_[parent_id].insert(child_id);
+  references_[parent_id].children.insert(child_id);
 
   // Increase the number of references to `child_id`.
-  if (surface_referenced_timestamps_.find(child_id) ==
-      surface_referenced_timestamps_.end()) {
+  SurfaceReferenceInfo& child_info = references_[child_id];
+  if (child_info.count == 0) {
     // If the surface has never been referenced before, also record the current
     // time as the first timestamp that the surface has been referenced.
-    surface_referenced_timestamps_[child_id] =
-        std::make_pair(base::TimeTicks::Now(), 1);
-  } else {
-    surface_referenced_timestamps_[child_id].second++;
+    child_info.timestamp = base::TimeTicks::Now();
   }
+  ++child_info.count;
 
   for (auto& observer : observer_list_)
     observer.OnAddedSurfaceReference(parent_id, child_id);
@@ -364,21 +365,23 @@ void SurfaceManager::RemoveSurfaceReferenceImpl(
   if (iter_parent == references_.end())
     return;
 
-  auto child_iter = iter_parent->second.find(child_id);
-  if (child_iter == iter_parent->second.end())
+  auto child_iter = iter_parent->second.children.find(child_id);
+  if (child_iter == iter_parent->second.children.end())
     return;
 
-  iter_parent->second.erase(child_iter);
-  if (iter_parent->second.empty())
+  iter_parent->second.children.erase(child_iter);
+  if (iter_parent->second.children.empty() && iter_parent->second.count == 0)
     references_.erase(iter_parent);
 
   // Decrease the amount of references to `child_id`, and erase the entry from
-  // `surface_referenced_timestamps_` if we've removed the last reference.
-  CHECK(surface_referenced_timestamps_.find(child_id) !=
-        surface_referenced_timestamps_.end());
-  surface_referenced_timestamps_[child_id].second--;
-  if (surface_referenced_timestamps_[child_id].second == 0) {
-    surface_referenced_timestamps_.erase(child_id);
+  // `references_` if we've removed the last reference.
+  auto iter_child = references_.find(child_id);
+  CHECK(iter_child != references_.end());
+  if (--iter_child->second.count == 0) {
+    iter_child->second.timestamp = base::TimeTicks();
+    if (iter_child->second.children.empty()) {
+      references_.erase(iter_child);
+    }
   }
 }
 
@@ -503,14 +506,16 @@ Surface* SurfaceManager::GetSurfaceForId(const SurfaceId& surface_id) const {
 bool SurfaceManager::SurfaceModified(
     const SurfaceId& surface_id,
     const BeginFrameAck& ack,
-    SurfaceObserver::HandleInteraction handle_interaction) {
+    SurfaceObserver::HandleInteraction handle_interaction,
+    const std::vector<ui::LatencyInfo>& latency_info) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   bool changed = false;
   if (handle_interaction == SurfaceObserver::HandleInteraction::kYes) {
     last_interactive_frame_ = ack.frame_id;
   }
   for (auto& observer : observer_list_) {
-    changed |= observer.OnSurfaceDamaged(surface_id, ack, handle_interaction);
+    changed |= observer.OnSurfaceDamaged(surface_id, ack, handle_interaction,
+                                         latency_info);
   }
   return changed;
 }
@@ -531,7 +536,7 @@ void SurfaceManager::SurfaceActivated(Surface* surface) {
   // Trigger a display frame if necessary.
   const CompositorFrameMetadata& metadata = surface->GetActiveFrameMetadata();
   if (!SurfaceModified(surface->surface_id(), metadata.begin_frame_ack,
-                       GetHandleInteraction(metadata))) {
+                       GetHandleInteraction(metadata), metadata.latency_info)) {
     TRACE_EVENT_INSTANT("viz", "Damage not visible.");
     surface->SendAckToClient();
   } else if (HasBlockedEmbedder(surface->surface_id().frame_sink_id())) {
@@ -594,7 +599,13 @@ void SurfaceManager::DestroySurfaceInternal(const SurfaceId& surface_id) {
   // and that's not desirable.
   std::unique_ptr<Surface> doomed = std::move(it->second);
   surface_map_.erase(it);
-  references_.erase(surface_id);
+  auto ref_it = references_.find(surface_id);
+  if (ref_it != references_.end()) {
+    ref_it->second.children.clear();
+    if (ref_it->second.count == 0) {
+      references_.erase(ref_it);
+    }
+  }
 }
 
 #if DCHECK_IS_ON()
@@ -754,7 +765,7 @@ bool SurfaceManager::FrameSinkManagerHasViewTransitionToken(
 }
 
 void SurfaceManager::CommitFramesInRangeRecursively(
-    const SurfaceRange& range,
+    SurfaceRange range,
     const CommitPredicate& predicate) {
   // Technically we need only latest active surface, but because activation will
   // happen during commit, it's impossible to predict which one will be active,

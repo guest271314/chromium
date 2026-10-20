@@ -4,19 +4,19 @@
 
 #include "chrome/browser/ash/file_system_provider/registry.h"
 
+#include <memory>
 #include <optional>
 #include <utility>
 
+#include "ash/constants/ash_pref_names.h"
+#include "base/check_deref.h"
 #include "base/files/file_path.h"
-#include "base/memory/ptr_util.h"
 #include "base/values.h"
 #include "chrome/browser/ash/file_system_provider/mount_path_util.h"
 #include "chrome/browser/ash/file_system_provider/observer.h"
 #include "chrome/browser/ash/file_system_provider/provided_file_system.h"
 #include "chrome/browser/ash/file_system_provider/provided_file_system_info.h"
 #include "chrome/browser/ash/file_system_provider/service_factory.h"
-#include "chrome/browser/profiles/profile.h"
-#include "chrome/common/pref_names.h"
 #include "components/pref_registry/pref_registry_syncable.h"
 #include "components/prefs/pref_service.h"
 #include "components/prefs/scoped_user_pref_update.h"
@@ -38,11 +38,10 @@ const char kPrefKeyWatcherPersistentOrigins[] = "persistent-origins";
 const char kPrefKeyOpenedFilesLimit[] = "opened-files-limit";
 
 void RegisterProfilePrefs(user_prefs::PrefRegistrySyncable* registry) {
-  registry->RegisterDictionaryPref(prefs::kFileSystemProviderMounted);
+  registry->RegisterDictionaryPref(ash::prefs::kFileSystemProviderMounted);
 }
 
-Registry::Registry(Profile* profile) : profile_(profile) {
-}
+Registry::Registry(PrefService* prefs) : prefs_(CHECK_DEREF(prefs)) {}
 
 Registry::~Registry() = default;
 
@@ -82,11 +81,8 @@ void Registry::RememberFileSystem(
   }
   file_system.Set(kPrefKeyWatchers, std::move(watchers_dict));
 
-  PrefService* const pref_service = profile_->GetPrefs();
-  DCHECK(pref_service);
-
-  ScopedDictPrefUpdate dict_update(pref_service,
-                                   prefs::kFileSystemProviderMounted);
+  ScopedDictPrefUpdate dict_update(&prefs_.get(),
+                                   ash::prefs::kFileSystemProviderMounted);
 
   base::DictValue* file_systems_per_extension =
       dict_update->EnsureDict(file_system_info.provider_id().ToString());
@@ -96,11 +92,8 @@ void Registry::RememberFileSystem(
 
 void Registry::ForgetFileSystem(const ProviderId& provider_id,
                                 const std::string& file_system_id) {
-  PrefService* const pref_service = profile_->GetPrefs();
-  DCHECK(pref_service);
-
-  ScopedDictPrefUpdate dict_update(pref_service,
-                                   prefs::kFileSystemProviderMounted);
+  ScopedDictPrefUpdate dict_update(&prefs_.get(),
+                                   ash::prefs::kFileSystemProviderMounted);
 
   base::DictValue* file_systems_per_extension =
       dict_update->FindDict(provider_id.ToString());
@@ -114,20 +107,16 @@ void Registry::ForgetFileSystem(const ProviderId& provider_id,
 
 std::unique_ptr<Registry::RestoredFileSystems> Registry::RestoreFileSystems(
     const ProviderId& provider_id) {
-  PrefService* const pref_service = profile_->GetPrefs();
-  DCHECK(pref_service);
-
   const base::DictValue& file_systems =
-      pref_service->GetDict(prefs::kFileSystemProviderMounted);
+      prefs_->GetDict(ash::prefs::kFileSystemProviderMounted);
 
   const base::DictValue* file_systems_per_extension =
       file_systems.FindDict(provider_id.ToString());
   if (!file_systems_per_extension) {
-    return base::WrapUnique(new RestoredFileSystems);  // Nothing to restore.
+    return std::make_unique<RestoredFileSystems>();  // Nothing to restore.
   }
 
-  std::unique_ptr<RestoredFileSystems> restored_file_systems(
-      new RestoredFileSystems);
+  auto restored_file_systems = std::make_unique<RestoredFileSystems>();
 
   for (const auto file_system_it : *file_systems_per_extension) {
     if (!file_system_it.second.is_dict()) {
@@ -226,13 +215,10 @@ std::unique_ptr<Registry::RestoredFileSystems> Registry::RestoreFileSystems(
 
 void Registry::UpdateWatcherTag(const ProvidedFileSystemInfo& file_system_info,
                                 const Watcher& watcher) {
-  PrefService* const pref_service = profile_->GetPrefs();
-  DCHECK(pref_service);
-
   // TODO(mtomasz): Consider optimizing it by moving information about watchers
   // or even file systems to leveldb.
-  ScopedDictPrefUpdate dict_update(pref_service,
-                                   prefs::kFileSystemProviderMounted);
+  ScopedDictPrefUpdate dict_update(&prefs_.get(),
+                                   ash::prefs::kFileSystemProviderMounted);
 
   // All of the following checks should not happen in healthy environment.
   // However, since they rely on storage, DCHECKs can't be used.

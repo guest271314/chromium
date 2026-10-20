@@ -20,7 +20,6 @@
 #include "chrome/browser/support_tool/data_collection_module.pb.h"
 #include "chrome/browser/support_tool/data_collector.h"
 #include "chrome/browser/support_tool/support_tool_util.h"
-#include "chrome/grit/branded_strings.h"
 #include "chrome/grit/generated_resources.h"
 #include "components/feedback/redaction_tool/pii_types.h"
 #include "net/base/url_util.h"
@@ -94,9 +93,6 @@ std::string GetDataCollectorName(
     case support_tool::CHROMEOS_CONNECTED_INPUT_DEVICES:
       return l10n_util::GetStringUTF8(
           IDS_SUPPORT_TOOL_CHROMEOS_CONNECTED_INPUT_DEVICES);
-    case support_tool::CHROMEOS_TRAFFIC_COUNTERS:
-      return l10n_util::GetStringUTF8(
-          IDS_SUPPORT_TOOL_CHROMEOS_TRAFFIC_COUNTERS);
     case support_tool::CHROMEOS_VIRTUAL_KEYBOARD:
       return l10n_util::GetStringUTF8(
           IDS_SUPPORT_TOOL_CHROMEOS_VIRTUAL_KEYBOARD);
@@ -269,7 +265,7 @@ std::set<redaction::PIIType> GetPIITypesToKeep(
   std::set<redaction::PIIType> pii_to_keep;
   for (const auto& item : *pii_items) {
     const base::DictValue* item_as_dict = item.GetIfDict();
-    DCHECK(item_as_dict);
+    CHECK(item_as_dict, base::NotFatalUntil::M162);
     std::optional<bool> keep =
         item_as_dict->FindBool(support_tool_ui::kPiiItemKeepKey);
     if (keep && keep.value()) {
@@ -320,7 +316,7 @@ std::set<support_tool::DataCollectorType> GetIncludedDataCollectorTypes(
   std::set<support_tool::DataCollectorType> included_data_collectors;
   for (const auto& item : *data_collector_items) {
     const base::DictValue* item_as_dict = item.GetIfDict();
-    DCHECK(item_as_dict);
+    CHECK(item_as_dict, base::NotFatalUntil::M162);
     std::optional<bool> isIncluded = item_as_dict->FindBool("isIncluded");
     if (isIncluded && isIncluded.value()) {
       included_data_collectors.insert(

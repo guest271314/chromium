@@ -43,8 +43,8 @@ class TestPrintPreviewObserver : PrintPreviewUI::TestDelegate {
   uint32_t rendered_page_count() const { return rendered_page_count_; }
 
 #if BUILDFLAG(IS_WIN)
-  std::optional<DocumentDataType> last_document_composite_data_type() const {
-    return last_document_composite_data_type_;
+  bool did_composite_pdf_document() const {
+    return did_composite_pdf_document_;
   }
 #endif
 
@@ -56,6 +56,7 @@ class TestPrintPreviewObserver : PrintPreviewUI::TestDelegate {
   void DidRenderPreviewPage(content::WebContents* preview_dialog) override;
   void PreviewDocumentReady(content::WebContents* preview_dialog,
                             base::span<const uint8_t> data) override;
+  void PreviewFailed() override;
 
   std::optional<content::DOMMessageQueue> queue_;
 
@@ -65,9 +66,10 @@ class TestPrintPreviewObserver : PrintPreviewUI::TestDelegate {
   const int pages_per_sheet_;
   uint32_t expected_rendered_page_count_ = 1;
   uint32_t rendered_page_count_ = 0;
+  bool preview_failed_ = false;
 
 #if BUILDFLAG(IS_WIN)
-  std::optional<DocumentDataType> last_document_composite_data_type_;
+  bool did_composite_pdf_document_ = false;
 #endif
 
   const bool wait_for_loaded_;

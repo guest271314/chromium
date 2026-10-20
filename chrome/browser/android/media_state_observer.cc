@@ -9,13 +9,10 @@
 #include "chrome/browser/ui/recently_audible_helper.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/web_contents.h"
-#include "content/public/browser/web_contents_user_data.h"
-#include "media/base/media_switches.h"
 
 MediaStateObserver::MediaStateObserver(content::WebContents* web_contents)
     : content::WebContentsObserver(web_contents),
-      content::WebContentsUserData<MediaStateObserver>(*web_contents),
-      recently_audible_subscription_(MaybeSubscribeToRecentlyAudible()) {
+      recently_audible_subscription_(SubscribeToRecentlyAudible()) {
   media_stream_capture_indicator_observation_.Observe(
       MediaCaptureDevicesDispatcher::GetInstance()
           ->GetMediaStreamCaptureIndicator()
@@ -30,13 +27,6 @@ void MediaStateObserver::DidUpdateAudioMutingState(bool muted) {
   }
   is_audio_muted_ = muted;
   UpdateMediaState();
-}
-
-void MediaStateObserver::OnAudioStateChanged(bool audible) {
-  if (recently_audible_subscription_) {
-    return;
-  }
-  UpdateAudibleState(audible);
 }
 
 void MediaStateObserver::OnIsCapturingVideoChanged(
@@ -83,14 +73,13 @@ void MediaStateObserver::MediaPictureInPictureChanged(
 }
 
 base::CallbackListSubscription
-MediaStateObserver::MaybeSubscribeToRecentlyAudible() {
-  if (base::FeatureList::IsEnabled(media::kEnableAudioMonitoringOnAndroid)) {
-    return RecentlyAudibleHelper::FromWebContents(web_contents())
-        ->RegisterRecentlyAudibleChangedCallback(base::BindRepeating(
-            &MediaStateObserver::OnRecentlyAudibleStateChanged,
-            base::Unretained(this)));
+MediaStateObserver::SubscribeToRecentlyAudible() {
+  if (auto* helper = RecentlyAudibleHelper::FromWebContents(web_contents())) {
+    return helper->RegisterRecentlyAudibleChangedCallback(
+        base::BindRepeating(&MediaStateObserver::OnRecentlyAudibleStateChanged,
+                            base::Unretained(this)));
   }
-  return base::CallbackListSubscription();
+  return {};
 }
 
 void MediaStateObserver::OnRecentlyAudibleStateChanged(bool was_audible) {
@@ -106,7 +95,7 @@ void MediaStateObserver::UpdateAudibleState(bool audible) {
 }
 
 void MediaStateObserver::UpdateMediaState() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
   tabs::MediaState new_state = tabs::MediaState::kNone;
   if (is_being_mirrored_) {
     new_state = tabs::MediaState::kSharing;
@@ -133,5 +122,3 @@ void MediaStateObserver::UpdateMediaState() {
   media_state_ = new_state;
   tab->SetMediaState(static_cast<int>(new_state));
 }
-
-WEB_CONTENTS_USER_DATA_KEY_IMPL(MediaStateObserver);

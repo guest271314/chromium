@@ -4,6 +4,7 @@
 
 #include "third_party/blink/renderer/core/style/style_ray.h"
 
+#include "base/numerics/angle_conversions.h"
 #include "third_party/blink/renderer/core/style/basic_shapes.h"
 #include "third_party/blink/renderer/platform/geometry/path.h"
 #include "ui/gfx/geometry/point_f.h"
@@ -15,21 +16,18 @@ namespace blink {
 StyleRay::StyleRay(float angle,
                    RaySize size,
                    bool contain,
-                   const BasicShapeCenterCoordinate& center_x,
-                   const BasicShapeCenterCoordinate& center_y,
+                   const LengthPoint& center,
                    bool has_explicit_center)
     : angle_(angle),
       size_(size),
       contain_(contain),
-      center_x_(center_x),
-      center_y_(center_y),
+      center_(center),
       has_explicit_center_(has_explicit_center) {}
 
 bool StyleRay::IsEqualAssumingSameType(const BasicShape& o) const {
   const StyleRay& other = To<StyleRay>(o);
   return angle_ == other.angle_ && size_ == other.size_ &&
-         contain_ == other.contain_ && center_x_ == other.center_x_ &&
-         center_y_ == other.center_y_ &&
+         contain_ == other.contain_ && center_ == other.center_ &&
          has_explicit_center_ == other.has_explicit_center_;
 }
 
@@ -71,7 +69,7 @@ float CalculateDistanceToReferenceBoxSide(
   if (!gfx::RectF(reference_box_size).InclusiveContains(point)) {
     return 0;
   }
-  const float theta = Deg2rad(angle);
+  const float theta = base::DegToRad(angle);
   float cos_t = std::cos(theta);
   float sin_t = std::sin(theta);
   // We are looking for % point, let's swap signs and lines
@@ -129,7 +127,7 @@ PointAndTangent StyleRay::PointAndNormalAtLength(
     const gfx::PointF& starting_point,
     float length) const {
   const float angle = Angle() - 90;
-  const float rad = Deg2rad(angle);
+  const float rad = base::DegToRad(angle);
   const float x = starting_point.x() + length * std::cos(rad);
   const float y = starting_point.y() + length * std::sin(rad);
   return {{x, y}, angle};

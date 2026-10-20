@@ -30,6 +30,7 @@
 #include "net/base/io_buffer.h"
 #include "net/base/ip_endpoint.h"
 #include "net/base/net_errors.h"
+#include "net/base/network_handle.h"
 #include "net/cookies/static_cookie_policy.h"
 #include "net/http/http_request_headers.h"
 #include "net/http/http_response_headers.h"
@@ -207,6 +208,59 @@ void WebSocket::WebSocketEventHandler::OnCreateURLRequest(
         url_request->net_log().source().id, url_request->url(),
         impl_->throttling_profile_id_);
   }
+
+  // If the request is to a URL that we can determine is an LNA request from
+  // just the URL, then trigger the LNA prompt. We only trigger this for request
+  // where GetAddressSpaceFromUrl() returns a value as those would also trigger
+  // if and when we move the LNA check to after hostname resolution but before
+  // connection.
+  if (impl_->client_security_state_ &&
+      impl_->client_security_state_->local_network_access_request_policy ==
+          mojom::LocalNetworkAccessRequestPolicy::kPermissionBlock &&
+      impl_->url_loader_network_observer_) {
+    std::optional<mojom::IPAddressSpace> url_address_space =
+        GetAddressSpaceFromUrl(url_request->url());
+    if (url_address_space) {
+      LocalNetworkAccessChecker lna_checker(
+          url_request->url(), impl_->origin_, impl_->required_ip_address_space_,
+          impl_->client_security_state_.get(), impl_->options_);
+      if (lna_checker.CheckAddressSpace(*url_address_space) ==
+          LocalNetworkAccessCheckResult::kLNAPermissionRequired) {
+        // This passes in `TransportType::kDirect`, regardless of how the
+        // request may end up being connected -- the cases where we know this
+        // is an LNA request from the URL alone are ones where we have high
+        // confidence in triggering the LNA prompt.
+        //
+        // Ignoring the result of the permission here because the point of this
+        // call is to get the permission prompt shown if the permission is
+        // "prompt". Later LNA checks will check the permission and use the
+        // result.
+        impl_->url_loader_network_observer_
+            ->OnLocalNetworkAccessPermissionRequired(
+                mojom::TransportType::kDirect, *url_address_space,
+                base::BindOnce(
+                    [](const net::NetLogWithSource& net_log,
+                       const mojom::IPAddressSpace address_space,
+                       mojom::LocalNetworkAccessResult result) {
+                      net_log.AddEvent(
+                          net::NetLogEventType::
+                              LOCAL_NETWORK_ACCESS_PERMISSION_REQUESTED,
+                          [&] {
+                            return base::DictValue()
+                                .Set("address_space",
+                                     IPAddressSpaceToStringPiece(address_space))
+                                .Set("transport_type",
+                                     TransportTypeToStringPiece(
+                                         mojom::TransportType::kDirect))
+                                .Set("result",
+                                     LocalNetworkAccessResultToStringPiece(
+                                         result));
+                          });
+                    },
+                    url_request->net_log(), *url_address_space));
+      }
+    }
+  }
 }
 
 int WebSocket::WebSocketEventHandler::OnURLRequestConnected(
@@ -214,7 +268,8 @@ int WebSocket::WebSocketEventHandler::OnURLRequestConnected(
     const net::TransportInfo& info,
     net::CompletionOnceCallback callback) {
   // Grab Metrics first, then do actual LNA checks.
-  if (impl_->url_loader_network_observer_) {
+  if (impl_->url_loader_network_observer_ &&
+      impl_->required_ip_address_space_ == mojom::IPAddressSpace::kUnknown) {
     impl_->url_loader_network_observer_->OnWebSocketConnectedToLocalNetwork(
         request->url(), TransportInfoToIPAddressSpace(info));
   }
@@ -226,12 +281,8 @@ int WebSocket::WebSocketEventHandler::OnURLRequestConnected(
     return net::OK;
   }
 
-  // required_ip_address_space is always kUnknown as websockets API doesn't have
-  // a targetAddressSpace parameter like fetch() does to bypass mixed content
-  // checks.
   LocalNetworkAccessChecker checker(
-      request->url(), request->initiator(),
-      /*required_ip_address_space=*/network::mojom::IPAddressSpace::kUnknown,
+      request->url(), request->initiator(), impl_->required_ip_address_space_,
       impl_->client_security_state_.get(), impl_->options_);
 
   LocalNetworkAccessCheckResult check_result = checker.Check(info);
@@ -434,8 +485,12 @@ void WebSocket::WebSocketEventHandler::OnStartOpeningHandshake(
   net::HttpRequestHeaders::Iterator it(request->headers);
   while (it.GetNext()) {
     if (!impl_->has_raw_headers_access_ &&
-        base::EqualsCaseInsensitiveASCII(it.name(),
-                                         net::HttpRequestHeaders::kCookie)) {
+        (base::EqualsCaseInsensitiveASCII(it.name(),
+                                          net::HttpRequestHeaders::kCookie) ||
+         base::EqualsCaseInsensitiveASCII(
+             it.name(), net::HttpRequestHeaders::kAuthorization) ||
+         base::EqualsCaseInsensitiveASCII(
+             it.name(), net::HttpRequestHeaders::kProxyAuthorization))) {
       continue;
     }
     mojom::HttpHeaderPtr header(mojom::HttpHeader::New());
@@ -522,19 +577,24 @@ WebSocket::WebSocket(
     std::optional<WebSocketThrottler::PendingConnection>
         pending_connection_tracker,
     base::TimeDelta delay,
-    const std::optional<base::UnguessableToken>& throttling_profile_id)
+    const std::optional<base::UnguessableToken>& throttling_profile_id,
+    mojom::IPAddressSpace required_ip_address_space,
+    net::handles::NetworkHandle target_network)
     : factory_(factory),
       url_loader_network_observer_(std::move(url_loader_network_observer)),
       handshake_client_(std::move(handshake_client)),
       auth_handler_(std::move(auth_handler)),
       header_client_(std::move(header_client)),
       pending_connection_tracker_(std::move(pending_connection_tracker)),
+      url_(url),
       delay_(delay),
       options_(options),
       traffic_annotation_(traffic_annotation),
       origin_(std::move(origin)),
       client_security_state_(std::move(client_security_state)),
+      required_ip_address_space_(required_ip_address_space),
       isolation_info_(isolation_info),
+      target_network_(target_network),
       has_raw_headers_access_(has_raw_headers_access),
       writable_watcher_(FROM_HERE,
                         mojo::SimpleWatcher::ArmingPolicy::MANUAL,
@@ -653,7 +713,7 @@ int WebSocket::OnBeforeStartTransaction(
     net::NetworkDelegate::OnBeforeStartTransactionCallback callback) {
   if (header_client_) {
     header_client_->OnBeforeSendHeaders(
-        headers,
+        url_, headers,
         base::BindOnce(&WebSocket::OnBeforeSendHeadersComplete,
                        weak_ptr_factory_.GetWeakPtr(), std::move(callback)));
     return net::ERR_IO_PENDING;
@@ -734,7 +794,7 @@ void WebSocket::AddChannel(
       (options_ & mojom::kWebSocketOptionMaximumPriority)
           ? net::WebSocketPriorityHint::kMaximum
           : net::WebSocketPriorityHint::kDefault,
-      traffic_annotation_);
+      traffic_annotation_, target_network_);
 }
 
 void WebSocket::OnWritable(MojoResult result,
@@ -1004,7 +1064,8 @@ void WebSocket::OnAuthRequiredComplete(
 void WebSocket::OnBeforeSendHeadersComplete(
     net::NetworkDelegate::OnBeforeStartTransactionCallback callback,
     int result,
-    const std::optional<net::HttpRequestHeaders>& headers) {
+    const std::optional<net::HttpRequestHeaders>& headers,
+    std::optional<base::DictValue> extended_net_log_events) {
   if (!channel_) {
     // Something happened before the OnBeforeSendHeaders response arrives.
     return;

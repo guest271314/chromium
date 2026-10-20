@@ -6,8 +6,8 @@
 #define COMPONENTS_PASSWORD_MANAGER_CORE_BROWSER_PASSWORD_AUTOFILL_MANAGER_H_
 
 #include <memory>
+#include <optional>
 #include <string>
-#include <variant>
 #include <vector>
 
 #include "base/check_deref.h"
@@ -74,26 +74,35 @@ class PasswordAutofillManager : public autofill::AutofillSuggestionDelegate,
       const AutofillSuggestionDelegate::SuggestionMetadata& metadata) override;
   std::optional<autofill::Suggestion>
   GetWebauthnSignInWithAnotherDeviceSuggestion() const override;
+  std::optional<autofill::Suggestion> GetWebauthnInlineQrCodeSuggestion()
+      const override;
+  void OnWebauthnInlineQrCodeSuggestionShown() override;
 
   // AutofillSuggestionDelegate implementation.
-  std::variant<autofill::AutofillDriver*, PasswordManagerDriver*> GetDriver()
-      override;
-  void OnSuggestionsShown(
-      base::span<const autofill::Suggestion> suggestions) override;
+  void OnSuggestionsShown(base::span<const autofill::Suggestion> suggestions,
+                          const SuggestionUiMetadata& metadata) override;
   void OnSuggestionsHidden(autofill::SuggestionHidingReason reason) override;
   bool OnFilterChanged(const std::u16string& filter) override;
   bool OnSearchSubmitted(const std::u16string& filter) override;
-  void DidSelectSuggestion(const autofill::Suggestion& suggestion) override;
+  void DidSelectSuggestion(const autofill::Suggestion& suggestion,
+                           const autofill::FormGlobalId& form_id,
+                           const autofill::FieldGlobalId& field_id) override;
   void DidAcceptSuggestion(const autofill::Suggestion& suggestion,
-                           const SuggestionMetadata& metadata) override;
-  void DidPerformButtonActionForSuggestion(
-      const autofill::Suggestion&,
-      const autofill::SuggestionButtonAction&) override;
+                           const SuggestionMetadata& metadata,
+                           const autofill::FormGlobalId& form_id,
+                           const autofill::FieldGlobalId& field_id) override;
   bool RemoveSuggestion(const autofill::Suggestion& suggestion) override;
   void ClearPreviewedForm() override;
   autofill::FillingProduct GetMainFillingProduct() const override;
   void OnTabSelected(autofill::TabbedPaneTabType tab_type) override;
   bool IsSearching() const override;
+  autofill::FieldGlobalId GetQueriedFieldId() const override;
+
+  // PasswordAutofillManager ignores the `form_id` and `field_id` in
+  // AutofillSuggestionDelegate::Did{Select,Accept}Suggestion().
+  void DidSelectSuggestion(const autofill::Suggestion& suggestion);
+  void DidAcceptSuggestion(const autofill::Suggestion& suggestion,
+                           const SuggestionMetadata& metadata);
 
   // Invoked when a password mapping is added.
   void OnAddPasswordFillData(const autofill::PasswordFormFillData& fill_data);
@@ -106,20 +115,26 @@ class PasswordAutofillManager : public autofill::AutofillSuggestionDelegate,
   // This is currently used for cases in which the automatic generation
   // option is offered through a different UI surface than the popup
   // (e.g. via the keyboard accessory on Android).
-  bool MaybeShowPasswordSuggestions(const gfx::RectF& bounds,
+  bool MaybeShowPasswordSuggestions(const autofill::FieldGlobalId& field_id,
+                                    const gfx::RectF& bounds,
                                     base::i18n::TextDirection text_direction);
 
   // If there are relevant credentials for the current frame, shows them with
   // an additional 'generation' option and returns true. Otherwise, does nothing
   // and returns false.
   bool MaybeShowPasswordSuggestionsWithGeneration(
+      const autofill::FieldGlobalId& field_id,
       const gfx::RectF& bounds,
       base::i18n::TextDirection text_direction,
       bool show_password_suggestions);
 
-  // Called when main frame navigates. Not called for in-page navigations.
-  void DidNavigateMainFrame();
+  // Called when a cross-document navigation commits in the frame of the
+  // driver. Resets the state that belongs to the previous document, including
+  // the suggestions shown by `this` and pending callbacks. Not called for
+  // in-page navigations.
+  void DidNavigateFrame();
 
+#if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
   PasswordManualFallbackMetricsRecorder&
   GetPasswordManualFallbackMetricsRecorder() {
     return CHECK_DEREF(manual_fallback_metrics_recorder_.get());
@@ -131,6 +146,7 @@ class PasswordAutofillManager : public autofill::AutofillSuggestionDelegate,
   inline PasswordSuggestionFlow* manual_fallback_flow() {
     return manual_fallback_flow_.get();
   }
+#endif  // !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
 
   // If there is a popup waiting to be displayed with a delay, this cancels it.
   void FocusedInputChanged();
@@ -147,7 +163,8 @@ class PasswordAutofillManager : public autofill::AutofillSuggestionDelegate,
 
  private:
   // Validates and forwards the given objects to the autofill client.
-  bool ShowPopup(const gfx::RectF& bounds,
+  bool ShowPopup(const autofill::FieldGlobalId& field_id,
+                 const gfx::RectF& bounds,
                  base::i18n::TextDirection text_direction,
                  const std::vector<autofill::Suggestion>& suggestions,
                  bool is_for_webauthn_request);
@@ -245,6 +262,11 @@ class PasswordAutofillManager : public autofill::AutofillSuggestionDelegate,
       ShowWebAuthnCredentials show_webauthn_credentials,
       ShowIdentityCredentials show_identity_credentials);
 
+#if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
+  bool MaybeTriggerPasswordManualFallback(
+      const autofill::TriggeringField& field);
+#endif  // !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
+
   std::unique_ptr<autofill::PasswordFormFillData> fill_data_;
 
   password_manager::PasswordSuggestionGenerator suggestion_generator_;
@@ -259,9 +281,15 @@ class PasswordAutofillManager : public autofill::AutofillSuggestionDelegate,
 
   const raw_ptr<PasswordManagerClient> password_client_;
 
+  // The ID of the last ShowPopup() call. UpdatePopup() is a no-op if the
+  // current session ID isn't the same as the `last_session_id_`.
+  std::optional<autofill::AutofillClient::SuggestionUiSessionId>
+      last_session_id_;
+
   // The arguments of the last ShowPopup() call and UpdatePopup(), to be re-used
   // by OnUnlockReauthCompleted().
   autofill::AutofillClient::PopupOpenArgs last_popup_open_args_;
+  autofill::FieldGlobalId last_field_id_;
 
   // Used to track a requested favicon.
   base::CancelableTaskTracker favicon_tracker_;
@@ -271,6 +299,7 @@ class PasswordAutofillManager : public autofill::AutofillSuggestionDelegate,
   // on Android, Mac and Windows.
   std::unique_ptr<device_reauth::DeviceAuthenticator> authenticator_;
 
+#if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
   // Initialized when the user triggers the password manual fallback. This flow
   // reads all user passwords upon initialization. Hence it's reset upon main
   // frame navigation or if this `PasswordAutofillManager` is destroyed.
@@ -286,6 +315,7 @@ class PasswordAutofillManager : public autofill::AutofillSuggestionDelegate,
   // `manual_fallback_flow_` and dies when `manual_fallback_flow_` dies.
   std::unique_ptr<PasswordManualFallbackMetricsRecorder>
       manual_fallback_metrics_recorder_;
+#endif  // !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
 
   // This timer is used to delay showing the suggestions popup if passkey
   // suggestions are allowed but the passkey list has not yet arrived.

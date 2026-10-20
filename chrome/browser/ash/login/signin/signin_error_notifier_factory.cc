@@ -6,8 +6,9 @@
 
 #include "ash/constants/ash_switches.h"
 #include "chrome/browser/ash/login/signin/signin_error_notifier.h"
-#include "chrome/browser/notifications/notification_display_service_factory.h"
+#include "chrome/browser/browser_process.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/signin/signin_error_controller_factory.h"
 #include "chrome/browser/supervised_user/supervised_user_service_factory.h"
 
@@ -25,9 +26,9 @@ SigninErrorNotifierFactory::SigninErrorNotifierFactory()
               // Ash Internals.
               .WithAshInternals(ProfileSelection::kOriginalOnly)
               .Build()) {
+  DependsOn(IdentityManagerFactory::GetInstance());
   DependsOn(SigninErrorControllerFactory::GetInstance());
-  DependsOn(NotificationDisplayServiceFactory::GetInstance());
-  DependsOn(SupervisedUserServiceFactory::GetInstance());
+  DependsOn(supervised_user::SupervisedUserServiceFactory::GetInstance());
 }
 
 SigninErrorNotifierFactory::~SigninErrorNotifierFactory() = default;
@@ -53,8 +54,15 @@ SigninErrorNotifierFactory::BuildServiceInstanceForBrowserContext(
     return nullptr;
 
   Profile* profile = static_cast<Profile*>(context);
+
+  // NOTE: Allow g_browser_process here as this class is initialized lazily with
+  // base::NoDestructor.
+  PrefService* local_state = g_browser_process->local_state();
+
   return std::make_unique<SigninErrorNotifier>(
-      SigninErrorControllerFactory::GetForProfile(profile), profile);
+      local_state, SigninErrorControllerFactory::GetForProfile(profile),
+      profile, IdentityManagerFactory::GetForProfile(profile),
+      supervised_user::SupervisedUserServiceFactory::GetForProfile(profile));
 }
 
 }  // namespace ash

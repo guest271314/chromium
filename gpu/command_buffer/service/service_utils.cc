@@ -20,6 +20,7 @@
 #include "gpu/command_buffer/service/context_group.h"
 #include "gpu/command_buffer/service/gpu_switches.h"
 #include "gpu/config/gpu_finch_features.h"
+#include "gpu/config/gpu_switches.h"
 #include "skia/buildflags.h"
 #include "ui/gl/gl_bindings.h"
 #include "ui/gl/gl_features.h"
@@ -156,8 +157,7 @@ gl::GLContextAttribs GenerateGLContextAttribsForDecoder(
     if (IsWebGL2OrES3ContextType(context_type)) {
       attribs.client_major_es_version = 3;
       attribs.client_minor_es_version = 0;
-      attribs.allow_es_version_fallback =
-          !features::ShouldFallbackToSWIfGLES3NotSupported();
+      attribs.allow_es_version_fallback = false;
     } else {
       DCHECK(IsWebGL1OrES2ContextType(context_type));
       attribs.client_major_es_version = 2;
@@ -218,8 +218,6 @@ GpuPreferences ParseGpuPreferences(const base::CommandLine* command_line) {
       command_line->HasSwitch(switches::kEnableGPUServiceLoggingGPU);
   gpu_preferences.enable_gpu_driver_debug_logging =
       command_line->HasSwitch(switches::kEnableGPUDriverDebugLogging);
-  gpu_preferences.disable_gpu_program_cache =
-      !features::IsShaderDiskCacheEnabled(command_line);
   gpu_preferences.enforce_gl_minimums =
       command_line->HasSwitch(switches::kEnforceGLMinimums);
   if (GetUintFromSwitch(
@@ -302,13 +300,18 @@ GpuPreferences ParseGpuPreferences(const base::CommandLine* command_line) {
         command_line->GetSwitchValueASCII(switches::kDisableDawnFeatures), ",",
         base::KEEP_WHITESPACE, base::SPLIT_WANT_ALL);
   }
-  gpu_preferences.gr_context_type = ParseGrContextType(command_line);
-  // ParseGrContextType checks Vulkan setting as well, so only parse Vulkan
-  // implementation name if gr_context_type is kVulkan.
-  gpu_preferences.use_vulkan =
-      gpu_preferences.gr_context_type == GrContextType::kVulkan
-          ? ParseVulkanImplementationName(command_line)
-          : VulkanImplementationName::kNone;
+  gpu_preferences.gr_context_type = ParseDefaultGrContextType(command_line);
+  if (gpu_preferences.gr_context_type == GrContextType::kGraphiteDawn ||
+      gpu_preferences.gr_context_type == GrContextType::kVulkan) {
+    // Set the default fallback type to GL so that the tests can fall back to GL
+    // without GpuDataManagerImplPrivate.
+    gpu_preferences.fallback_gr_context_types = {GrContextType::kGL};
+  } else {
+    gpu_preferences.fallback_gr_context_types.clear();
+  }
+  gpu_preferences.use_vulkan = features::IsUsingVulkan()
+                                   ? ParseVulkanImplementationName(command_line)
+                                   : VulkanImplementationName::kNone;
 
 #if BUILDFLAG(IS_FUCHSIA)
   // Vulkan Surface is not used on Fuchsia.
@@ -324,23 +327,40 @@ GpuPreferences ParseGpuPreferences(const base::CommandLine* command_line) {
   return gpu_preferences;
 }
 
-GrContextType ParseGrContextType(const base::CommandLine* command_line) {
-  if (features::IsSkiaGraphiteEnabled(command_line)) {
-    [[maybe_unused]] auto value =
-        command_line->GetSwitchValueASCII(switches::kSkiaGraphiteDawnBackend);
+GrContextType ParseDefaultGrContextType(const base::CommandLine* command_line) {
 #if BUILDFLAG(SKIA_USE_DAWN)
-    if (value.empty() || value == switches::kSkiaGraphiteDawnBackendD3D11 ||
-        value == switches::kSkiaGraphiteDawnBackendD3D12 ||
-        value == switches::kSkiaGraphiteDawnBackendMetal ||
-        value == switches::kSkiaGraphiteDawnBackendOpenGLES ||
-        value == switches::kSkiaGraphiteDawnBackendSwiftshader ||
-        value == switches::kSkiaGraphiteDawnBackendVulkan) {
+  if (base::FeatureList::IsEnabled(features::kLateGraphiteFeatureCheck)) {
+    // With late check, only the disable flag gates Graphite; the full
+    // feature/device check is deferred to the GPU process post-blocklist.
+    if (!command_line->HasSwitch(switches::kDisableSkiaGraphite)) {
+      if (command_line->HasSwitch(switches::kSkiaGraphiteVulkanBackend)) {
+        return GrContextType::kGraphiteVulkan;
+      }
+
       return GrContextType::kGraphiteDawn;
     }
-#endif  // BUILDFLAG(SKIA_USE_DAWN)
-    LOG(ERROR) << "Skia Graphite enabled but no valid Dawn backend found for \""
-               << value << "\" - falling back to Ganesh!";
+  } else {
+    if (features::IsSkiaGraphiteEnabled(command_line)) {
+      if (command_line->HasSwitch(switches::kSkiaGraphiteVulkanBackend)) {
+        return GrContextType::kGraphiteVulkan;
+      }
+
+      auto value =
+          command_line->GetSwitchValueASCII(switches::kSkiaGraphiteDawnBackend);
+      if (value.empty() || value == switches::kSkiaGraphiteDawnBackendD3D11 ||
+          value == switches::kSkiaGraphiteDawnBackendD3D12 ||
+          value == switches::kSkiaGraphiteDawnBackendMetal ||
+          value == switches::kSkiaGraphiteDawnBackendOpenGLES ||
+          value == switches::kSkiaGraphiteDawnBackendSwiftshader ||
+          value == switches::kSkiaGraphiteDawnBackendVulkan) {
+        return GrContextType::kGraphiteDawn;
+      }
+      LOG(ERROR)
+          << "Skia Graphite enabled but no valid Dawn backend found for \""
+          << value << "\" - falling back to Ganesh!";
+    }
   }
+#endif  // BUILDFLAG(SKIA_USE_DAWN)
   if (features::IsUsingVulkan()) {
     return GrContextType::kVulkan;
   }
@@ -362,49 +382,32 @@ bool MSAAIsSlow(const GpuDriverBugWorkarounds& workarounds) {
 
 }  // namespace gles2
 
-#if BUILDFLAG(IS_MAC)
-uint32_t GetTextureTargetForIOSurfaces() {
-  // On MacOS, the default texture target for native GpuMemoryBuffers is
-  // GL_TEXTURE_RECTANGLE_ARB. This is due to CGL's requirements for creating
-  // a GL surface. However, when ANGLE is used on top of SwiftShader or Metal,
-  // it's necessary to use GL_TEXTURE_2D instead.
-  // TODO(crbug.com/40676774): The proper behavior is to check the config
-  // parameter set by the EGL_ANGLE_iosurface_client_buffer extension
-  if (gl::GetGLImplementation() == gl::kGLImplementationEGLANGLE &&
-      (gl::GetANGLEImplementation() == gl::ANGLEImplementation::kSwiftShader ||
-       gl::GetANGLEImplementation() == gl::ANGLEImplementation::kMetal)) {
-    return GL_TEXTURE_2D;
-  }
-  return GL_TEXTURE_RECTANGLE_ANGLE;
-}
-#endif  // BUILDFLAG(IS_MAC)
-
 namespace {
 
 // Multiplier policy for kAggressiveShaderCacheLimits enabled.
-double GetAggressiveMemoryLimitMultiplier(int memory_limit) {
+double GetAggressiveMemoryLimitMultiplier(base::MemoryLimit memory_limit) {
 #if BUILDFLAG(IS_ANDROID)
   // Android ignores pressure notifications in aggressive mode.
   return 1.0;
 #else
   // Desktop ignores pressure above the Moderate threshold (50%).
-  if (memory_limit >= base::kModerateMemoryPressureThreshold) {
+  if (memory_limit >= base::MemoryLimit::ModeratePressureThreshold()) {
     return 1.0;
   }
   // Interpolate multiplier from 1.0 down to 0.25 between Moderate (50%) and
   // Critical (0%).
-  double t = static_cast<double>(base::kModerateMemoryPressureThreshold -
-                                 memory_limit) /
-             base::kModerateMemoryPressureThreshold;
+  double t = static_cast<double>(
+                 base::MemoryLimit::ModeratePressureThreshold().percent() -
+                 memory_limit.percent()) /
+             base::MemoryLimit::ModeratePressureThreshold().percent();
   return std::lerp(1.0, 0.25, t);
 #endif
 }
 
 // Multiplier policy for kAggressiveShaderCacheLimits disabled.
-double GetDefaultMemoryLimitMultiplier(int memory_limit) {
+double GetDefaultMemoryLimitMultiplier(base::MemoryLimit memory_limit) {
   // Scale quadratically (e.g., 25% cache size at 50% memory limit).
-  double ratio =
-      static_cast<double>(memory_limit) / base::kNoMemoryPressureThreshold;
+  double ratio = memory_limit.ratio();
   return ratio * ratio;
 }
 
@@ -413,28 +416,26 @@ double GetDefaultMemoryLimitMultiplier(int memory_limit) {
 size_t UpdateShaderCacheSizeOnMemoryPressure(
     size_t max_cache_size,
     base::MemoryPressureLevel memory_pressure_level) {
-  int memory_limit = base::kNoMemoryPressureThreshold;
+  base::MemoryLimit memory_limit = base::MemoryLimit::NoPressureThreshold();
   switch (memory_pressure_level) {
     case base::MEMORY_PRESSURE_LEVEL_NONE:
-      memory_limit = base::kNoMemoryPressureThreshold;
+      memory_limit = base::MemoryLimit::NoPressureThreshold();
       break;
     case base::MEMORY_PRESSURE_LEVEL_MODERATE:
-      memory_limit = base::kModerateMemoryPressureThreshold;
+      memory_limit = base::MemoryLimit::ModeratePressureThreshold();
       break;
     case base::MEMORY_PRESSURE_LEVEL_CRITICAL:
-      memory_limit = base::kCriticalMemoryPressureThreshold;
+      memory_limit = base::MemoryLimit::CriticalPressureThreshold();
       break;
   }
   return UpdateShaderCacheSizeOnMemoryLimit(max_cache_size, memory_limit);
 }
 
 size_t UpdateShaderCacheSizeOnMemoryLimit(size_t max_cache_size,
-                                          int memory_limit) {
-  CHECK_GE(memory_limit, 0);
-
+                                          base::MemoryLimit memory_limit) {
   // Handle limits greater than 100%. Scales linearly.
-  if (memory_limit > base::kNoMemoryPressureThreshold) {
-    return base::ScaleByMemoryLimit(max_cache_size, memory_limit);
+  if (memory_limit > base::MemoryLimit::NoPressureThreshold()) {
+    return memory_limit.Scale(max_cache_size);
   }
 
   double multiplier =

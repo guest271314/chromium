@@ -120,8 +120,6 @@ constexpr CGFloat kFacePileAvatarSize = 16;
   ProfileIOS* profile = self.profile;
   CHECK(profile);
   self.tabStripViewController = [[TabStripViewController alloc] init];
-  self.tabStripViewController.layoutGuideCenter =
-      LayoutGuideCenterForBrowser(self.browser);
   self.tabStripViewController.overrideUserInterfaceStyle =
       profile->IsOffTheRecord() ? UIUserInterfaceStyleDark
                                 : UIUserInterfaceStyleUnspecified;
@@ -231,6 +229,7 @@ constexpr CGFloat kFacePileAvatarSize = 16;
       [[SharingParams alloc] initWithURL:item.URL
                                    title:item.title
                                 scenario:SharingScenario::TabStripItem];
+  [_sharingCoordinator stop];
   _sharingCoordinator = [[SharingCoordinator alloc]
       initWithBaseViewController:self.baseViewController
                          browser:self.browser

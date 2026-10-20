@@ -5,14 +5,20 @@
 
 #import <WebKit/WebKit.h>
 
+#import "ios/chrome/browser/cobrowse/shared/metrics/assistant_aim_metrics_constants.h"
+#import "ios/chrome/browser/cobrowse/shared/metrics/assistant_aim_metrics_recorder.h"
 #import "ios/chrome/browser/cobrowse/ui/assistant_aim_header_view.h"
 #import "ios/chrome/browser/cobrowse/ui/assistant_aim_history_item.h"
 #import "ios/chrome/browser/cobrowse/ui/assistant_aim_history_view_controller.h"
 #import "ios/chrome/browser/cobrowse/ui/assistant_aim_mutator.h"
+#import "ios/chrome/browser/cobrowse/ui/assistant_aim_zero_state_view_controller.h"
 #import "ios/chrome/browser/composebox/ui/composebox_input_plate_view_controller.h"
+#import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/shared/public/features/system_flags.h"
+#import "ios/chrome/browser/shared/ui/symbols/symbols.h"
 #import "ios/chrome/common/ui/colors/semantic_color_names.h"
 #import "ios/chrome/common/ui/util/constraints_ui_util.h"
+#import "ios/web/common/crw_viewport_controller.h"
 
 namespace {
 
@@ -21,9 +27,11 @@ const CGSize kBarricadeTapeTileSize = {10.0, 10.0};
 // Height of the barricade tape.
 const CGFloat kBarricadeTapeHeight = 6.0;
 
-constexpr CGFloat kInputPlateMargin = 10.0f;
+constexpr CGFloat kInputPlateMargin = 16.0f;
 constexpr CGFloat kTitleVerticalMargin = 12.0;
+constexpr CGFloat kHeaderTopPadding = 16.0f;
 constexpr CGFloat kHeaderCenteringVerticalMargin = 16.0;
+constexpr CGFloat kThresholdForHistoryDismissal = 0.001;
 constexpr CGFloat kThresholdForClosedState = 0.12;
 constexpr CGFloat kThresholdForCompleteVisibility = 0.3;
 
@@ -32,6 +40,10 @@ constexpr CGFloat kThresholdForCompleteVisibility = 0.3;
 @interface AssistantAIMViewController () <
     AssistantAIMHeaderViewDelegate,
     AssistantAIMHistoryViewControllerDelegate>
+
+// Whether the asisstant view is fully mimimized.
+@property(nonatomic, assign) BOOL isMinimized;
+
 @end
 
 @implementation AssistantAIMViewController {
@@ -44,37 +56,59 @@ constexpr CGFloat kThresholdForCompleteVisibility = 0.3;
   AssistantAIMHeaderView* _headerView;
   NSLayoutConstraint* _headerTopMargin;
   NSLayoutConstraint* _inputPlateBottomMargin;
+  NSLayoutConstraint* _inputViewFadeBottomMargin;
   CGRect _keyboardFrameInWindow;
   AssistantAIMHistoryViewController* _historyViewController;
+  AssistantAIMZeroStateViewController* _zeroStateViewController;
+  AssistantAIMState _state;
+  AssistantAIMState _previousState;
+  NSString* _greetingMessage;
+  // Tracks the gesture recognizer panning the input plate.
+  __weak UIPanGestureRecognizer* _panGestureInInputPlate;
+  // Whether the input plate should stay hidden.
+  BOOL _inputPlateForceHidden;
+  // The title of the current thread.
+  NSString* _threadTitle;
 }
 
 @synthesize delegate = _delegate;
 
 - (void)setMutator:(id<AssistantAIMMutator>)mutator {
   _mutator = mutator;
-  _headerView.actionHandler = mutator;
 }
 
 - (void)viewDidLoad {
   [super viewDidLoad];
+
+  _state = AssistantAIMState::kThread;
+  _previousState = AssistantAIMState::kThread;
+
   if (experimental_flags::GetCobrowseGwsURL()) {
     [self setUpBarricadeTape];
   }
   [self setUpHeader];
   [self setUpWebStateView];
 
-  [self
-      registerForTraitChanges:
-          @[ UITraitHorizontalSizeClass.class, UITraitVerticalSizeClass.class ]
-                   withAction:@selector(traitsDidChange)];
+  [self registerForTraitChanges:@[
+    UITraitHorizontalSizeClass.class, UITraitVerticalSizeClass.class,
+    UITraitUserInterfaceStyle.class
+  ]
+                     withAction:@selector(traitsDidChange)];
   [self traitsDidChange];
+}
+
+- (void)viewSafeAreaInsetsDidChange {
+  [super viewSafeAreaInsetsDidChange];
+  [self updateInputPlateOverlap];
 }
 
 - (void)viewDidLayoutSubviews {
   [super viewDidLayoutSubviews];
   [_inputViewController.view layoutIfNeeded];
-  _fadeGradient.frame = _inputViewFade.bounds;
   [self updateInputPlateOverlap];
+  [self.view layoutIfNeeded];
+  _fadeGradient.frame = _inputViewFade.bounds;
+  [self updateWebViewInsets];
 }
 
 - (void)traitsDidChange {
@@ -122,18 +156,62 @@ constexpr CGFloat kThresholdForCompleteVisibility = 0.3;
         (kThresholdForCompleteVisibility - kThresholdForClosedState);
   }
 
+  if (percentage <= kThresholdForHistoryDismissal &&
+      _state == AssistantAIMState::kHistory) {
+    [self setAssistantAIMState:_previousState];
+    [self hideHistory];
+  }
+
   // This ensures the header end up centered in the collapsed state.
   _headerTopMargin.constant =
       kHeaderCenteringVerticalMargin +
-      effectPercentage *
-          (kTitleVerticalMargin - kHeaderCenteringVerticalMargin);
+      effectPercentage * (kHeaderTopPadding - kHeaderCenteringVerticalMargin);
 
   _inputViewController.view.alpha = effectPercentage;
   _webStateView.alpha = effectPercentage;
   _inputViewFade.alpha = effectPercentage;
-  _inputViewController.view.hidden = (effectPercentage == 0);
+  _zeroStateViewController.view.alpha = effectPercentage;
+  self.isMinimized = effectPercentage == 0;
 
   [_headerView adjustForPercentage:effectPercentage];
+}
+
+- (BOOL)shouldInterceptPanGesture:(UIPanGestureRecognizer*)gesture {
+  if (!gesture) {
+    return NO;
+  }
+
+  if (!_inputViewController.isViewLoaded) {
+    return NO;
+  }
+
+  // Intercept all pan gestures happening in the input plate.
+  switch (gesture.state) {
+    case UIGestureRecognizerStateBegan: {
+      UIView* inputPlateView = _inputViewController.view;
+      CGPoint touchLocation = [gesture locationInView:inputPlateView];
+      BOOL panningInInputPlate =
+          CGRectContainsPoint(inputPlateView.bounds, touchLocation);
+      // When the header overlaps the input plate (e.g.; the minimized state),
+      // treat the gesture as panning the header.
+      BOOL panningHeader =
+          CGRectContainsPoint(_headerView.bounds, touchLocation);
+      if (panningInInputPlate && !panningHeader) {
+        _panGestureInInputPlate = gesture;
+      }
+
+      return panningInInputPlate;
+    }
+    case UIGestureRecognizerStateChanged: {
+      return gesture == _panGestureInInputPlate;
+    }
+    default: {
+      if (gesture == _panGestureInInputPlate) {
+        _panGestureInInputPlate = nil;
+      }
+      return NO;
+    }
+  }
 }
 
 - (BOOL)shouldPauseScrollView:(UIScrollView*)scrollView
@@ -142,6 +220,13 @@ constexpr CGFloat kThresholdForCompleteVisibility = 0.3;
   // Only handle gestures in the assistant content.
   BOOL inAssistantContent = [scrollView isDescendantOfView:self.view];
   if (!inAssistantContent) {
+    return NO;
+  }
+
+  // Exclude the scroll happening in the input plate, such as scrolling the text
+  // field.
+  BOOL inInputPlate = [scrollView isDescendantOfView:_inputViewController.view];
+  if (inInputPlate) {
     return NO;
   }
 
@@ -161,9 +246,12 @@ constexpr CGFloat kThresholdForCompleteVisibility = 0.3;
 
   WKWebView* wkWebView = [self findWKWebViewInView:_webStateView];
 
-  // Allow overscroll for the main scroll view and sub-scroll views (e.g.
-  // iframes) if they are descendants of the web view.
-  BOOL isDescendant = [scrollView isDescendantOfView:wkWebView];
+  // Allow overscroll for the main scroll view, sub-scroll views (e.g.
+  // iframes), and history scroll views so the bottom sheet expands to its
+  // largest detent before inner content scrolls.
+  BOOL isDescendant =
+      [scrollView isDescendantOfView:wkWebView] ||
+      [scrollView isDescendantOfView:_historyViewController.view];
   if (!isDescendant) {
     return NO;
   }
@@ -177,7 +265,8 @@ constexpr CGFloat kThresholdForCompleteVisibility = 0.3;
 
   BOOL sheetMovementForLargestDetent =
       isInLargestDetent && isAtTop && draggingDown;
-  BOOL sheetMovementForSmallerDetents = !isInLargestDetent && isAtTop;
+  BOOL sheetMovementForSmallerDetents =
+      !isInLargestDetent && (isAtTop || !draggingDown);
 
   if (sheetMovementForLargestDetent || sheetMovementForSmallerDetents) {
     return YES;
@@ -189,7 +278,6 @@ constexpr CGFloat kThresholdForCompleteVisibility = 0.3;
   _inputPlateBottomMargin = [_inputViewController.view.bottomAnchor
       constraintEqualToAnchor:self.view.bottomAnchor
                      constant:-kInputPlateMargin];
-
   [NSLayoutConstraint activateConstraints:@[
     _inputPlateBottomMargin,
     [_inputViewController.view.leadingAnchor
@@ -201,6 +289,9 @@ constexpr CGFloat kThresholdForCompleteVisibility = 0.3;
   ]];
 
   if (_inputViewFade) {
+    _inputViewFadeBottomMargin = [_inputViewFade.bottomAnchor
+        constraintEqualToAnchor:_inputViewController.view.bottomAnchor
+                       constant:kInputPlateMargin];
     [NSLayoutConstraint activateConstraints:@[
       [_inputViewFade.topAnchor
           constraintEqualToAnchor:_inputViewController.view.topAnchor],
@@ -208,21 +299,11 @@ constexpr CGFloat kThresholdForCompleteVisibility = 0.3;
           constraintEqualToAnchor:self.view.leadingAnchor],
       [_inputViewFade.trailingAnchor
           constraintEqualToAnchor:self.view.trailingAnchor],
-      [_inputViewFade.bottomAnchor
-          constraintEqualToAnchor:self.view.bottomAnchor],
+      _inputViewFadeBottomMargin,
     ]];
   }
 
-  // TODO(crbug.com/493187015): Investigate why `keyboardLayoutGuide` cannot be
-  // used here. When the keyboard is hidden, `keyboardLayoutGuide.topAnchor`
-  // currently pushes the container downwards below its intended position. We
-  // manually observe keyboard frames and update constraints as a workaround.
   NSNotificationCenter* defaultCenter = [NSNotificationCenter defaultCenter];
-
-  [defaultCenter addObserver:self
-                    selector:@selector(keyboardWillChangeFrame:)
-                        name:UIKeyboardWillChangeFrameNotification
-                      object:nil];
 
   [defaultCenter addObserver:self
                     selector:@selector(keyboardWillShow:)
@@ -233,6 +314,25 @@ constexpr CGFloat kThresholdForCompleteVisibility = 0.3;
                     selector:@selector(keyboardDidHide:)
                         name:UIKeyboardDidHideNotification
                       object:nil];
+
+  [defaultCenter addObserver:self
+                    selector:@selector(textViewDidBeginEditing:)
+                        name:UITextViewTextDidBeginEditingNotification
+                      object:nil];
+
+  [defaultCenter addObserver:self
+                    selector:@selector(keyboardWillChangeFrame:)
+                        name:UIKeyboardWillChangeFrameNotification
+                      object:nil];
+}
+
+- (void)setIsMinimized:(BOOL)isMinimized {
+  if (_isMinimized == isMinimized) {
+    return;
+  }
+
+  _isMinimized = isMinimized;
+  [self computeInputPlateVisibility];
 }
 
 #pragma mark - AssistantAIMConsumer
@@ -245,20 +345,60 @@ constexpr CGFloat kThresholdForCompleteVisibility = 0.3;
   _webStateView = webStateView;
 
   [self setUpWebStateView];
+  [self updateWebViewInsets];
+}
+
+- (void)displayThread {
+  [self setAssistantAIMState:AssistantAIMState::kThread];
+}
+
+- (void)setAssistantAIMState:(AssistantAIMState)state {
+  if (_state == state) {
+    return;
+  }
+
+  _previousState = _state;
+  _state = state;
+  switch (state) {
+    case AssistantAIMState::kZeroState:
+      [self setUpZeroStateViewControllerIfNeeded];
+      _zeroStateViewController.view.hidden = NO;
+      _webStateView.hidden = YES;
+      _historyViewController.view.hidden = YES;
+      [_headerView setMode:AssistantAIMState::kZeroState];
+      self.view.backgroundColor = [UIColor clearColor];
+      break;
+    case AssistantAIMState::kThread:
+      _zeroStateViewController.view.hidden = YES;
+      _webStateView.hidden = NO;
+      _historyViewController.view.hidden = YES;
+      [_headerView setMode:AssistantAIMState::kThread];
+      if (_threadTitle) {
+        [_headerView setTitle:_threadTitle];
+      }
+      self.view.backgroundColor = [UIColor clearColor];
+      break;
+    case AssistantAIMState::kHistory:
+      _zeroStateViewController.view.hidden = YES;
+      _webStateView.hidden = YES;
+      _historyViewController.view.hidden = NO;
+      [_headerView setMode:AssistantAIMState::kHistory];
+      self.view.backgroundColor =
+          [UIColor colorNamed:kSecondaryBackgroundColor];
+      break;
+  }
+
+  [self computeInputPlateVisibility];
 }
 
 - (void)displayHistoryWithItems:
-    (const std::vector<AssistantAIMHistoryItem>&)items {
+            (const std::vector<AssistantAIMHistoryItem>&)items
+                       signedIn:(BOOL)signedIn {
   if (!_historyViewController) {
     _historyViewController = [[AssistantAIMHistoryViewController alloc] init];
     _historyViewController.delegate = self;
 
     [self addChildViewController:_historyViewController];
-
-    _webStateView.hidden = YES;
-    _inputViewController.view.hidden = YES;
-    [_headerView setMode:AssistantAIMHeaderViewMode::kHistory];
-    self.view.backgroundColor = [UIColor colorNamed:kSecondaryBackgroundColor];
 
     [self.view addSubview:_historyViewController.view];
     _historyViewController.view.translatesAutoresizingMaskIntoConstraints = NO;
@@ -277,7 +417,74 @@ constexpr CGFloat kThresholdForCompleteVisibility = 0.3;
     [_historyViewController didMoveToParentViewController:self];
   }
 
+  [_historyViewController setSignedIn:signedIn];
   [_historyViewController updateHistoryItems:items];
+}
+
+- (void)setHeaderTitle:(NSString*)title {
+  _threadTitle = [title copy];
+  if (_state != AssistantAIMState::kHistory) {
+    [_headerView setTitle:title];
+  }
+}
+
+- (void)setInputPlateForceHidden:(BOOL)hidden {
+  _inputPlateForceHidden = hidden;
+  [self computeInputPlateVisibility];
+}
+
+- (void)setGreetingMessage:(NSString*)message {
+  if ([_greetingMessage isEqualToString:message]) {
+    return;
+  }
+  _greetingMessage = [message copy];
+  if (_zeroStateViewController) {
+    _zeroStateViewController.greetingMessage = _greetingMessage;
+  }
+}
+
+- (void)setUpZeroStateViewControllerIfNeeded {
+  if (!_zeroStateViewController) {
+    _zeroStateViewController =
+        [[AssistantAIMZeroStateViewController alloc] init];
+    [self addChildViewController:_zeroStateViewController];
+    [_zeroStateViewController didMoveToParentViewController:self];
+
+    if (_inputViewController.view) {
+      [self.view insertSubview:_zeroStateViewController.view
+                  belowSubview:_inputViewController.view];
+    } else {
+      [self.view addSubview:_zeroStateViewController.view];
+    }
+
+    _zeroStateViewController.view.translatesAutoresizingMaskIntoConstraints =
+        NO;
+    NSLayoutYAxisAnchor* bottomAnchor =
+        _inputViewController.view ? _inputViewController.view.topAnchor
+                                  : self.view.bottomAnchor;
+
+    AddSameConstraintsToSides(_zeroStateViewController.view, self.view,
+                              LayoutSides::kHorizontal);
+
+    // Lowering the layout priority prevents a conflict with the header size
+    // when minimizing.
+    // This is safe because the zero state isn't visible when the assistant is
+    // minimized.
+    NSLayoutConstraint* zeroStateTopToHeader =
+        [_zeroStateViewController.view.topAnchor
+            constraintEqualToAnchor:_headerView.bottomAnchor
+                           constant:kTitleVerticalMargin];
+    zeroStateTopToHeader.priority = UILayoutPriorityRequired - 1;
+    [NSLayoutConstraint activateConstraints:@[
+      zeroStateTopToHeader, [_zeroStateViewController.view.bottomAnchor
+                                constraintEqualToAnchor:bottomAnchor]
+    ]];
+
+    _zeroStateViewController.view.hidden =
+        (_state != AssistantAIMState::kZeroState);
+  }
+
+  _zeroStateViewController.greetingMessage = _greetingMessage;
 }
 
 #pragma mark - AssistantAIMHistoryViewControllerDelegate
@@ -291,10 +498,21 @@ constexpr CGFloat kThresholdForCompleteVisibility = 0.3;
             (AssistantAIMHistoryViewController*)viewController
                       didSelectTaskWithId:(NSString*)taskId {
   [self.mutator didSelectHistoryTaskWithId:taskId];
+  [self setAssistantAIMState:AssistantAIMState::kThread];
   [self hideHistory];
 }
 
 #pragma mark - Private
+
+// Computes the visibility for the input plate.
+- (void)computeInputPlateVisibility {
+  // There is no thread to submit a query to while browsing the history, so the
+  // input plate is hidden in that state.
+  BOOL shouldHide = _inputPlateForceHidden || _isMinimized ||
+                    _state == AssistantAIMState::kHistory;
+  [_inputViewController.view setHidden:shouldHide];
+  [self updateWebViewInsets];
+}
 
 // Recursively searches for a WKWebView in the given view's hierarchy.
 - (WKWebView*)findWKWebViewInView:(UIView*)view {
@@ -316,6 +534,8 @@ constexpr CGFloat kThresholdForCompleteVisibility = 0.3;
   return fabs(translation.y) <= 3 * fabs(translation.x);
 }
 
+
+// Hides the history view.
 - (void)hideHistory {
   if (!_historyViewController) {
     return;
@@ -324,11 +544,6 @@ constexpr CGFloat kThresholdForCompleteVisibility = 0.3;
   [_historyViewController.view removeFromSuperview];
   [_historyViewController removeFromParentViewController];
   _historyViewController = nil;
-
-  _webStateView.hidden = NO;
-  _inputViewController.view.hidden = NO;
-  [_headerView setMode:AssistantAIMHeaderViewMode::kChat];
-  self.view.backgroundColor = [UIColor clearColor];
 }
 
 // Creates a fade effect behind the input plate.
@@ -368,6 +583,25 @@ constexpr CGFloat kThresholdForCompleteVisibility = 0.3;
                                       curve:curve];
 }
 
+// Called when the text view begins editing.
+- (void)textViewDidBeginEditing:(NSNotification*)notification {
+  if (![notification.object isKindOfClass:[UITextView class]]) {
+    return;
+  }
+  UITextView* textView = (UITextView*)notification.object;
+  if (![textView isDescendantOfView:self.view]) {
+    return;
+  }
+
+  // If the software keyboard is showing in fallback mode, `keyboardWillShow:`
+  // handles the synced animation. We only fallback if the hardware keyboard is
+  // used in the non-ChromeNext flow.
+  if (!IsChromeNextIaEnabled() &&
+      CGRectGetHeight(_keyboardFrameInWindow) == 0) {
+    [self keyboardWillShow:notification];
+  }
+}
+
 // Called when the keyboard is hidden.
 - (void)keyboardDidHide:(NSNotification*)notification {
   _keyboardFrameInWindow = CGRectZero;
@@ -400,18 +634,74 @@ constexpr CGFloat kThresholdForCompleteVisibility = 0.3;
                    completion:nil];
 }
 
-// Updates the input plate's bottom margin to account for the keyboard's frame.
+// Updates the input plate's bottom margin to stay above the bottom safe area
+// and any overlapping keyboard frame.
 - (void)updateInputPlateOverlap {
+  CGFloat defaultBottomMargin =
+      MAX(kInputPlateMargin, self.view.safeAreaInsets.bottom);
   if (CGRectIsEmpty(_keyboardFrameInWindow)) {
-    _inputPlateBottomMargin.constant = -kInputPlateMargin;
+    _inputPlateBottomMargin.constant = -defaultBottomMargin;
+    _inputViewFadeBottomMargin.constant = defaultBottomMargin;
     return;
   }
   CGRect keyboardFrameInView = [self.view convertRect:_keyboardFrameInWindow
                                              fromView:nil];
   CGFloat overlap =
       CGRectGetMaxY(self.view.bounds) - CGRectGetMinY(keyboardFrameInView);
-  CGFloat bottomMargin = MAX(kInputPlateMargin, overlap + kInputPlateMargin);
+  CGFloat bottomMargin = MAX(defaultBottomMargin, overlap + kInputPlateMargin);
   _inputPlateBottomMargin.constant = -bottomMargin;
+  _inputViewFadeBottomMargin.constant = kInputPlateMargin;
+}
+
+// Updates the web view insets to prevent content from being hidden by the input
+// plate.
+- (void)updateWebViewInsets {
+  if (!self.isViewLoaded || !_webStateView) {
+    return;
+  }
+
+  WKWebView* wkWebView = [self findWKWebViewInView:_webStateView];
+  if (!wkWebView) {
+    return;
+  }
+  wkWebView.scrollView.keyboardDismissMode =
+      UIScrollViewKeyboardDismissModeOnDrag;
+
+  CGFloat bottomObscured = 0;
+  if (!_inputViewController.view.isHidden && !self.isMinimized) {
+    // The WKWebView naturally adjusts its content inset to account for the
+    // device's bottom safe area. To avoid double padding, we calculate the
+    // exact distance between the bottom of the safe area and the top of the
+    // input plate.
+    // Note: `_inputPlateBottomMargin.constant` is negative and automatically
+    // includes the keyboard height when the keyboard is visible.
+    CGFloat inputPlateHeight =
+        CGRectGetHeight(_inputViewController.view.bounds);
+    CGFloat inputPlateMinY = CGRectGetMaxY(self.view.bounds) +
+                             _inputPlateBottomMargin.constant -
+                             inputPlateHeight;
+    CGFloat safeAreaMaxY =
+        CGRectGetMaxY(self.view.safeAreaLayoutGuide.layoutFrame);
+    bottomObscured = MAX(0.0, safeAreaMaxY - inputPlateMinY);
+  }
+
+  UIEdgeInsets insets = UIEdgeInsetsMake(0, 0, bottomObscured, 0);
+
+  if (!UIEdgeInsetsEqualToEdgeInsets(wkWebView.scrollView.contentInset,
+                                     insets)) {
+    wkWebView.scrollView.contentInset = insets;
+    wkWebView.scrollView.scrollIndicatorInsets = insets;
+    if (@available(iOS 26.0, *)) {
+      if ([wkWebView conformsToProtocol:@protocol(CRWViewportController)]) {
+        id<CRWViewportController> controller =
+            (id<CRWViewportController>)wkWebView;
+        if ([controller
+                respondsToSelector:@selector(setObscuredContentInsets:)]) {
+          controller.obscuredContentInsets = insets;
+        }
+      }
+    }
+  }
 }
 
 // Sets up the web state view.
@@ -438,20 +728,29 @@ constexpr CGFloat kThresholdForCompleteVisibility = 0.3;
     [_webStateView.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor],
   ];
   [NSLayoutConstraint activateConstraints:_webStateViewConstraints];
+
+  WKWebView* wkWebView = [self findWKWebViewInView:_webStateView];
+  if (wkWebView) {
+    wkWebView.scrollView.keyboardDismissMode =
+        UIScrollViewKeyboardDismissModeOnDrag;
+  }
 }
 
 // Sets up the header view.
 - (void)setUpHeader {
   _headerView = [[AssistantAIMHeaderView alloc] init];
   _headerView.translatesAutoresizingMaskIntoConstraints = NO;
-  // TODO(crbug.com/492442806): Update title.
-  [_headerView setTitle:@"Commuter Bike"];
   _headerView.delegate = self;
+
+  UITapGestureRecognizer* tapGesture = [[UITapGestureRecognizer alloc]
+      initWithTarget:self
+              action:@selector(handleTapOnHeader)];
+  [_headerView addGestureRecognizer:tapGesture];
   [self.view addSubview:_headerView];
 
   _headerTopMargin =
       [_headerView.topAnchor constraintEqualToAnchor:self.view.topAnchor
-                                            constant:kTitleVerticalMargin];
+                                            constant:kHeaderTopPadding];
   [NSLayoutConstraint activateConstraints:@[
     _headerTopMargin,
     [_headerView.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
@@ -461,15 +760,76 @@ constexpr CGFloat kThresholdForCompleteVisibility = 0.3;
   ]];
 }
 
+// Called when tapping the header.
+- (void)handleTapOnHeader {
+  if (_isMinimized) {
+    [_mutator didTapOnMinimizedHeader];
+  }
+}
+
 #pragma mark - AssistantAIMHeaderViewDelegate
 
 - (void)assistantAIMHeaderViewDidPressClose:
     (AssistantAIMHeaderView*)headerView {
+  [self.metricsRecorder
+      recordHeaderAction:AssistantAimHeaderAction::kCloseButtonTapped];
   [self.delegate assistantAIMViewControllerDidTapClose:self];
 }
 
 - (void)assistantAIMHeaderViewDidTapBack:(AssistantAIMHeaderView*)headerView {
   [self hideHistory];
+  [self setAssistantAIMState:_previousState];
+}
+
+- (void)assistantAIMHeaderViewDidRequestSRPLogs:
+    (AssistantAIMHeaderView*)headerView {
+  [self.delegate assistantAIMViewControllerDidRequestSRPLogs:self];
+}
+
+- (void)assistantAIMHeaderViewDidRequestLoadedURL:
+    (AssistantAIMHeaderView*)headerView {
+  [self.delegate assistantAIMViewControllerDidRequestLoadedURL:self];
+}
+
+- (void)assistantAIMHeaderViewDidRequestComposeboxLogs:
+    (AssistantAIMHeaderView*)headerView {
+  [self.delegate assistantAIMViewControllerDidRequestComposeboxLogs:self];
+}
+
+- (void)assistantAIMHeaderViewDidTapStartNewThread:
+    (AssistantAIMHeaderView*)headerView {
+  [self.metricsRecorder
+      recordHeaderAction:AssistantAimHeaderAction::kNewThreadTapped];
+  [UIView performWithoutAnimation:^{
+    [self setAssistantAIMState:AssistantAIMState::kZeroState];
+    [self.view layoutIfNeeded];
+  }];
+  [self.mutator didTapStartNewThread];
+}
+
+- (void)assistantAIMHeaderViewDidTapHistory:
+    (AssistantAIMHeaderView*)headerView {
+  [self.metricsRecorder
+      recordHeaderAction:AssistantAimHeaderAction::kThreadHistoryTapped];
+  [UIView performWithoutAnimation:^{
+    [self setAssistantAIMState:AssistantAIMState::kHistory];
+    [self.view layoutIfNeeded];
+  }];
+  [self.mutator didTapHistory];
+  [self.delegate assistantAIMViewControllerDidRequestEndEditing:self];
+}
+
+- (void)assistantAIMHeaderViewDidTapMyActivity:
+    (AssistantAIMHeaderView*)headerView {
+  [self.metricsRecorder
+      recordHeaderAction:AssistantAimHeaderAction::kMyActivityTapped];
+  [self.delegate assistantAIMViewControllerDidTapMyActivity:self];
+}
+
+- (void)assistantAIMHeaderViewDidTapHelp:(AssistantAIMHeaderView*)headerView {
+  [self.metricsRecorder
+      recordHeaderAction:AssistantAimHeaderAction::kHelpTapped];
+  [self.delegate assistantAIMViewControllerDidTapHelp:self];
 }
 
 #pragma mark - Private

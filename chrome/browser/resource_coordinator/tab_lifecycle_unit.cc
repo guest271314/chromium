@@ -8,7 +8,7 @@
 #include <optional>
 #include <utility>
 
-#include "base/byte_count.h"
+#include "base/byte_size.h"
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/logging.h"
@@ -30,8 +30,8 @@
 #include "chrome/browser/resource_coordinator/tab_load_tracker.h"
 #include "chrome/browser/resource_coordinator/time.h"
 #include "chrome/browser/resource_coordinator/utils.h"
-#include "chrome/browser/tab_contents/form_interaction_tab_helper.h"
-#include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/recently_audible_helper.h"
+#include "chrome/browser/ui/tabs/tab_change_type.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/web_applications/web_app_tab_helper.h"
 #include "components/device_event_log/device_event_log.h"
@@ -115,6 +115,15 @@ TabLifecycleUnitSource::TabLifecycleUnit::TabLifecycleUnit(
     last_focused_time_ticks_ = web_contents->GetLastActiveTimeTicks();
     last_focused_time_ = web_contents->GetLastActiveTime();
   }
+
+  if (auto* const audible_helper =
+          RecentlyAudibleHelper::FromWebContents(web_contents)) {
+    recently_audible_subscription_ =
+        audible_helper->RegisterRecentlyAudibleChangedCallback(
+            base::BindRepeating(&TabLifecycleUnit::SetRecentlyAudible,
+                                base::Unretained(this)));
+    SetRecentlyAudible(audible_helper->WasRecentlyAudible());
+  }
 }
 
 TabLifecycleUnitSource::TabLifecycleUnit::~TabLifecycleUnit() {
@@ -130,6 +139,16 @@ void TabLifecycleUnitSource::TabLifecycleUnit::SetWebContents(
     content::WebContents* web_contents) {
   DCHECK(web_contents);
   Observe(web_contents);
+
+  recently_audible_subscription_ = base::CallbackListSubscription();
+  if (auto* const audible_helper =
+          RecentlyAudibleHelper::FromWebContents(web_contents)) {
+    recently_audible_subscription_ =
+        audible_helper->RegisterRecentlyAudibleChangedCallback(
+            base::BindRepeating(&TabLifecycleUnit::SetRecentlyAudible,
+                                base::Unretained(this)));
+    SetRecentlyAudible(audible_helper->WasRecentlyAudible());
+  }
 }
 
 void TabLifecycleUnitSource::TabLifecycleUnit::SetFocused(bool focused) {
@@ -183,10 +202,11 @@ bool TabLifecycleUnitSource::TabLifecycleUnit::MaybeLoad() {
 
 void TabLifecycleUnitSource::TabLifecycleUnit::SetRecentlyAudible(
     bool recently_audible) {
-  if (recently_audible)
+  if (recently_audible) {
     recently_audible_time_ = base::TimeTicks::Max();
-  else if (recently_audible_time_ == base::TimeTicks::Max())
+  } else if (recently_audible_time_ == base::TimeTicks::Max()) {
     recently_audible_time_ = NowTicks();
+  }
 }
 
 void TabLifecycleUnitSource::TabLifecycleUnit::UpdateLifecycleState(
@@ -290,17 +310,14 @@ void TabLifecycleUnitSource::TabLifecycleUnit::FinishDiscard(
 
   AttemptFastKillForDiscard(old_contents, discard_reason);
 
-  // Replace the discarded tab with the null version.
-  const int index = tab_strip_model_->GetIndexOfWebContents(old_contents);
-  DCHECK_NE(index, TabStripModel::kNoTab);
-
   // This ensures that on reload after discard, the document has
   // "WasDiscarded" set to true.
   // The "WasDiscarded" state is also sent to tab_strip_model.
   null_contents->SetWasDiscarded(true);
 
   std::unique_ptr<content::WebContents> old_contents_deleter =
-      tab_strip_model_->DiscardWebContentsAt(index, std::move(null_contents));
+      tab_strip_model_->DiscardWebContents(old_contents,
+                                           std::move(null_contents));
   DCHECK_EQ(web_contents(), raw_null_contents);
 
   // Discard the old tab's renderer.
@@ -314,9 +331,7 @@ void TabLifecycleUnitSource::TabLifecycleUnit::FinishDiscard(
   DCHECK_EQ(GetLoadingState(), LifecycleUnitLoadingState::UNLOADED);
 
   web_contents()->NotifyWasDiscarded();
-  tab_strip_model_->UpdateWebContentsStateAt(
-      tab_strip_model_->GetIndexOfWebContents(web_contents()),
-      TabChangeType::kAll);
+  tab_strip_model_->UpdateWebContentsState(web_contents(), TabChangeType::kAll);
 }
 
 void TabLifecycleUnitSource::TabLifecycleUnit::
@@ -335,9 +350,7 @@ void TabLifecycleUnitSource::TabLifecycleUnit::
                                 NowTicks() - start_time);
       },
       discard_start_time));
-  tab_strip_model_->UpdateWebContentsStateAt(
-      tab_strip_model_->GetIndexOfWebContents(web_contents()),
-      TabChangeType::kAll);
+  tab_strip_model_->UpdateWebContentsState(web_contents(), TabChangeType::kAll);
 
   is_discarded_ = true;
   RecomputeLifecycleUnitState();
@@ -353,7 +366,7 @@ bool TabLifecycleUnitSource::TabLifecycleUnit::Discard(
   const base::TimeTicks discard_start_time = NowTicks();
 
   last_discard_time_ = discard_start_time;
-  last_discard_memory_estimate_ = base::KiBU(tab_memory_footprint_estimate);
+  last_discard_memory_estimate_ = base::KiB(tab_memory_footprint_estimate);
 
   // These values are persisted to logs. Entries should not be renumbered and
   // numeric values should never be reused.
@@ -450,11 +463,11 @@ void TabLifecycleUnitSource::TabLifecycleUnit::UpdatePreDiscardResourceUsage(
   if (pre_discard_resource_usage == nullptr) {
     performance_manager::user_tuning::UserPerformanceTuningManager::
         PreDiscardResourceUsage::CreateForWebContents(
-            web_contents, base::KiBU(tab_memory_footprint_estimate),
+            web_contents, base::KiB(tab_memory_footprint_estimate),
             discard_reason);
   } else {
     pre_discard_resource_usage->UpdateDiscardInfo(
-        base::KiBU(tab_memory_footprint_estimate), discard_reason);
+        base::KiB(tab_memory_footprint_estimate), discard_reason);
   }
 }
 

@@ -5,8 +5,8 @@
 #include "chrome/browser/headless/test/headless_mode_browsertest.h"
 
 #include "chrome/browser/headless/test/headless_mode_browsertest_utils.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_window.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/aura/window.h"
 #include "ui/aura/window_tree_host_platform.h"
@@ -56,11 +56,11 @@ gfx::Rect GetPlatformWindowExpectedBounds(views::Widget* widget) {
 
 namespace {
 
-ui::PlatformWindow* GetPlatformWindow(Browser* browser) {
+ui::PlatformWindow* GetPlatformWindow(BrowserWindowInterface* browser) {
   DCHECK(browser);
   auto* window_tree_host_platform =
       aura::WindowTreeHostPlatform::GetHostForWindow(
-          browser->window()->GetNativeWindow());
+          browser->GetWindow()->GetNativeWindow());
   return window_tree_host_platform->platform_window();
 }
 
@@ -99,7 +99,7 @@ INSTANTIATE_TEST_SUITE_P(
 IN_PROC_BROWSER_TEST_P(HeadlessModeBrowserTestWithStartWindowMode,
                        BrowserDesktopWindowVisibility) {
   // On Linux, new headless Chrome browser window exists and is visible.
-  EXPECT_TRUE(browser()->window()->IsVisible());
+  EXPECT_TRUE(browser()->GetWindow()->IsVisible());
 }
 
 }  // namespace

@@ -41,14 +41,17 @@
 #include "base/task/task_traits.h"
 #include "base/task/thread_pool.h"
 #include "base/test/bind.h"
+#include "base/test/gmock_expected_support.h"
 #include "base/test/gtest_util.h"
 #include "base/test/metrics/histogram_tester.h"
+#include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
 #include "base/thread_annotations.h"
 #include "base/trace_event/memory_dump_request_args.h"
 #include "base/trace_event/process_memory_dump.h"
 #include "build/build_config.h"
 #include "sql/database_memory_dump_provider.h"
+#include "sql/internal_api_token.h"
 #include "sql/meta_table.h"
 #include "sql/recovery.h"
 #include "sql/sqlite_result_code.h"
@@ -68,14 +71,20 @@ namespace sql {
 
 namespace {
 
+using ::base::Bucket;
+using ::base::BucketsAre;
+using ::base::test::ScopedFeatureList;
+using ::base::test::ValueIs;
 using ::sql::test::DriveErrorTestVfs;
 using ::sql::test::ExecuteWithResult;
+using ::sql::test::GetUncheckpointedFrameCount;
 using ::testing::Bool;
 using ::testing::Combine;
 using ::testing::Contains;
 using ::testing::ElementsAre;
 using ::testing::Eq;
 using ::testing::Field;
+using ::testing::Gt;
 using ::testing::IsEmpty;
 using ::testing::Not;
 using ::testing::Optional;
@@ -123,10 +132,6 @@ class ScopedUmaskSetter {
 bool IsOpenedInCorrectJournalMode(Database* db, bool is_wal) {
   std::string expected_mode = is_wal ? "wal" : "truncate";
   return ExecuteWithResult(db, "PRAGMA journal_mode") == expected_mode;
-}
-
-int64_t CheckedGetFileSize(const base::FilePath& file_path) {
-  return base::GetFileSize(file_path).value();
 }
 
 }  // namespace
@@ -195,6 +200,12 @@ class SQLDatabaseTest : public Test, public WithParamInterface<bool> {
   base::FilePath db_path_;
   std::unique_ptr<Database> db_;
 };
+
+TEST_P(SQLDatabaseTest, CloseReportsElapsedTimeHistogram) {
+  base::HistogramTester tester;
+  db_->Close();
+  tester.ExpectTotalCount("Sql.Database.DatabaseCloseTime.Test", 1);
+}
 
 TEST_P(SQLDatabaseTest, Execute_ValidStatement) {
   ASSERT_TRUE(db_->Execute("CREATE TABLE data(contents TEXT)"));
@@ -547,6 +558,28 @@ TEST_P(SQLDatabaseTest, ResetErrorCallback) {
       << "Execute() should not report errors after reset_error_callback()";
 }
 
+// Check that the error callback doesn't recursively call itself.
+TEST_P(SQLDatabaseTest, ErrorCallbackCausingAnError) {
+  base::HistogramTester tester;
+  ASSERT_TRUE(db_->Execute("CREATE TABLE rows(id)"));
+
+  int invocation_count = 0;
+  db_->set_error_callback(base::BindLambdaForTesting(
+      [&](int sqlite_error, sql::Statement* statement) {
+        ++invocation_count;
+        // Trigger an error from inside the error callback.
+        EXPECT_FALSE(db_->Execute("SELECT invalid FROM rows"));
+      }));
+
+  // Trigger an error that will call the error callback.
+  EXPECT_FALSE(db_->Execute("SELECT invalid FROM rows"));
+
+  // The error callback is invoked once, but both errors are reported.
+  EXPECT_EQ(invocation_count, 1);
+  EXPECT_THAT(tester.GetAllSamples("Sql.Database.Statement.Error.Test"),
+              BucketsAre(Bucket(SqliteResultCode::kError, 2)));
+}
+
 // Regression test for https://crbug.com/1522873
 TEST_P(SQLDatabaseTest, ErrorCallbackThatClosesDb) {
   for (const bool reopen_db : {false, true}) {
@@ -584,6 +617,19 @@ TEST_P(SQLDatabaseTest, ErrorCallbackThatClosesDb) {
   }
 }
 
+// Regression test for https://crbug.com/1522873
+TEST_P(SQLDatabaseTest, ErrorCallbackThatFreesDatabase) {
+  ASSERT_TRUE(db_->Execute("CREATE TABLE rows(id)"));
+
+  db_->set_error_callback(
+      base::BindLambdaForTesting([&](int sqlite_error, Statement* statement) {
+        db_.reset();
+      }));
+
+  EXPECT_CHECK_DEATH(std::ignore = db_->Execute("SELECT invalid FROM rows"))
+      << "Running an error callback deleting `db_` should have `CHECK`ed";
+}
+
 TEST_P(SQLDatabaseTest, DetachFromSequence) {
   base::test::TaskEnvironment task_environment;
 
@@ -611,34 +657,6 @@ TEST_P(SQLDatabaseTest, DetachFromSequence) {
           std::move(db_)),
       run_loop.QuitClosure());
   run_loop.Run();
-}
-
-// Regression test for https://crbug.com/1522873
-TEST_P(SQLDatabaseTest, ErrorCallbackThatFreesDatabase) {
-  static constexpr char kCreateSql[] =
-      "CREATE TABLE rows(id INTEGER PRIMARY KEY NOT NULL)";
-  ASSERT_TRUE(db_->Execute(kCreateSql));
-  ASSERT_TRUE(db_->Execute("INSERT INTO rows(id) VALUES(12)"));
-
-  bool error_callback_called = false;
-  int error = SQLITE_OK;
-  db_->set_error_callback(
-      base::BindLambdaForTesting([&](int sqlite_error, Statement* statement) {
-        error_callback_called = true;
-        error = sqlite_error;
-        db_.reset();
-      }));
-
-  {
-    sql::test::ScopedErrorExpecter expecter;
-    expecter.ExpectError(SQLITE_CONSTRAINT);
-    EXPECT_FALSE(db_->Execute("INSERT INTO rows(id) VALUES(12)"))
-        << "Inserting a duplicate primary key should have failed";
-    EXPECT_TRUE(expecter.SawExpectedErrors())
-        << "Inserting a duplicate primary key should have failed";
-  }
-  EXPECT_TRUE(error_callback_called);
-  EXPECT_EQ(SQLITE_CONSTRAINT_PRIMARYKEY, error);
 }
 
 // Sets a flag to true/false to track being alive.
@@ -1554,9 +1572,8 @@ TEST_P(SQLDatabaseTest, RazeTruncate) {
   // page.  Not checking directly because auto_vacuum on Android adds a freelist
   // page.
   ASSERT_TRUE(db_->Raze());
-  std::optional<int64_t> expected_size = GetFileSize(db_path_);
-  ASSERT_TRUE(expected_size.has_value());
-  EXPECT_GT(*expected_size, 0);
+  ASSERT_OK_AND_ASSIGN(int64_t expected_size, base::GetFileSize(db_path_));
+  EXPECT_GT(expected_size, 0);
 
   // Cause the database to take a few pages.
   static constexpr char kCreateSql[] =
@@ -1570,10 +1587,7 @@ TEST_P(SQLDatabaseTest, RazeTruncate) {
   // In WAL mode, writes don't reach the database file until a checkpoint
   // happens.
   ASSERT_TRUE(db_->CheckpointDatabase());
-
-  std::optional<int64_t> db_size = GetFileSize(db_path_);
-  ASSERT_TRUE(db_size.has_value());
-  EXPECT_GT(*db_size, *expected_size);
+  EXPECT_THAT(base::GetFileSize(db_path_), Optional(Gt(expected_size)));
 
   // Make a query covering most of the database file to make sure that the
   // blocks are actually mapped into memory.  Empirically, the truncate problem
@@ -1582,9 +1596,72 @@ TEST_P(SQLDatabaseTest, RazeTruncate) {
             ExecuteWithResult(db_.get(), "SELECT SUM(LENGTH(value)) FROM foo"));
 
   ASSERT_TRUE(db_->Raze());
-  db_size = GetFileSize(db_path_);
-  ASSERT_TRUE(db_size.has_value());
-  EXPECT_EQ(*expected_size, *db_size);
+  EXPECT_THAT(base::GetFileSize(db_path_), Optional(expected_size));
+}
+
+TEST_P(SQLDatabaseTest, Vacuum) {
+  // Some platforms have `auto_vacuum` enabled by default. `auto_vacuum` must be
+  // disabled to test manual vacuuming with `Vacuum()`. From the documentation:
+  // "To change [auto_vacuum] from "full" or "incremental" back to "none" always
+  // requires running VACUUM even on an empty database."
+  // https://www.sqlite.org/pragma.html#pragma_auto_vacuum
+  ASSERT_TRUE(db_->Execute("PRAGMA auto_vacuum = 0"));
+  ASSERT_TRUE(db_->Vacuum());
+
+  ASSERT_TRUE(db_->Execute("CREATE TABLE foo (data)"));
+  for (int i = 0; i < 50; ++i) {
+    ASSERT_TRUE(
+        db_->Execute("INSERT INTO foo (data) VALUES (randomblob(1024))"));
+  }
+
+  // Deleted rows aren't freed, they are moved to the freelist.
+  const int initial_page_count = test::GetPageCount(db_.get());
+  ASSERT_TRUE(db_->Execute("DELETE FROM foo"));
+  ASSERT_EQ(test::GetPageCount(db_.get()), initial_page_count);
+
+  // Vacuum should clear the freelist and release pages.
+  EXPECT_TRUE(db_->Vacuum());
+  EXPECT_LT(test::GetPageCount(db_.get()), initial_page_count);
+}
+
+TEST_P(SQLDatabaseTest, VacuumUnopenedDatabase) {
+  Database unopened_db(test::kTestTag);
+  EXPECT_FALSE(unopened_db.Vacuum());
+}
+
+TEST_P(SQLDatabaseTest, VacuumClosedDatabase) {
+  db_->Close();
+  EXPECT_FALSE(db_->Vacuum());
+}
+
+TEST_P(SQLDatabaseTest, VacuumPoisonedDatabase) {
+  db_->Poison();
+  EXPECT_FALSE(db_->Vacuum());
+}
+
+TEST_P(SQLDatabaseTest, VacuumWithActiveTransaction) {
+  ASSERT_TRUE(db_->Execute("CREATE TABLE rows(data)"));
+
+  Transaction transaction(db_.get());
+  ASSERT_TRUE(transaction.Begin());
+  EXPECT_FALSE(db_->Vacuum());
+
+  ASSERT_TRUE(transaction.Commit());
+  EXPECT_TRUE(db_->Vacuum());
+}
+
+TEST_P(SQLDatabaseTest, VacuumWithActiveStatement) {
+  ASSERT_TRUE(db_->Execute("CREATE TABLE rows(data)"));
+  ASSERT_TRUE(db_->Execute("INSERT INTO rows(data) VALUES(1)"));
+  ASSERT_TRUE(db_->Execute("INSERT INTO rows(data) VALUES(2)"));
+
+  {
+    Statement select(db_->GetUniqueStatement("SELECT data FROM rows"));
+    ASSERT_TRUE(select.Step());
+    EXPECT_FALSE(db_->Vacuum());
+  }
+
+  EXPECT_TRUE(db_->Vacuum());
 }
 
 #if BUILDFLAG(IS_ANDROID)
@@ -2186,8 +2263,7 @@ TEST_P(SQLDatabaseTest, ReOpenWithDifferentJournalMode) {
   } else {
     // The Rollback journal should have a zero size when pending operations
     // are completed.
-    std::optional<int64_t> journal_size = GetFileSize(journal_path);
-    EXPECT_THAT(journal_size, Optional(0));
+    EXPECT_THAT(base::GetFileSize(journal_path), Optional(0));
   }
 
   // Re-open the database with a different mode (Rollback vs WAL).
@@ -2354,38 +2430,131 @@ TEST_P(SQLDatabaseTest, CheckpointDatabase) {
   base::FilePath wal_path = Database::WriteAheadLogPath(db_path_);
   EXPECT_FALSE(base::PathExists(wal_path));
 
-  ASSERT_TRUE(
-      db_->Execute("CREATE TABLE foo (id INTEGER UNIQUE, value INTEGER)"));
-  ASSERT_TRUE(db_->Execute("INSERT INTO foo VALUES (1, 1)"));
-  ASSERT_TRUE(db_->Execute("INSERT INTO foo VALUES (2, 2)"));
+  ASSERT_TRUE(db_->Execute("CREATE TABLE foo (id)"));
+  ASSERT_TRUE(db_->Execute("INSERT INTO foo VALUES (1)"));
 
-  // Writes reach WAL file but not db file.
-  std::optional<int64_t> wal_size = GetFileSize(wal_path);
-  ASSERT_TRUE(wal_size.has_value());
-  EXPECT_GT(wal_size.value(), 0);
-
-  std::optional<int64_t> db_size = GetFileSize(db_path_);
-  ASSERT_TRUE(db_size.has_value());
-  EXPECT_EQ(db_size.value(), db_->page_size());
-
-  // Checkpoint database to immediately propagate writes to DB file.
+  EXPECT_THAT(GetUncheckpointedFrameCount(*db_), ValueIs(Gt(0)));
   EXPECT_TRUE(db_->CheckpointDatabase());
+  EXPECT_THAT(GetUncheckpointedFrameCount(*db_), ValueIs(0));
 
-  db_size = GetFileSize(db_path_);
-  EXPECT_TRUE(db_size.has_value());
-  EXPECT_GT(db_size.value(), db_->page_size());
-  EXPECT_EQ(ExecuteWithResult(db_.get(), "SELECT value FROM foo where id=1"),
-            "1");
-  EXPECT_EQ(ExecuteWithResult(db_.get(), "SELECT value FROM foo where id=2"),
-            "2");
-
-  // Checkpointing doesn't normally reduce the WAL file size, unless used with
-  // `truncate`.
-  std::optional<int64_t> post_checkpoint_wal_size = GetFileSize(wal_path);
-  EXPECT_EQ(post_checkpoint_wal_size, wal_size);
+  // The above call to `CheckpointDatabase` did not truncate the WAL file. Try
+  // again, forcing truncation.
+  EXPECT_THAT(base::GetFileSize(wal_path), Optional(Gt(0)));
   EXPECT_TRUE(db_->CheckpointDatabase(/*truncate=*/true));
-  std::optional<int64_t> post_truncate_wal_size = GetFileSize(wal_path);
-  EXPECT_EQ(post_truncate_wal_size, 0);
+  EXPECT_THAT(base::GetFileSize(wal_path), Optional(0));
+}
+
+TEST_P(SQLDatabaseTest, CheckpointDatabaseInDeferredTransaction) {
+  if (!IsWALEnabled()) {
+    GTEST_SKIP();
+  }
+
+  ASSERT_TRUE(db_->Execute("CREATE TABLE foo (id)"));
+  ASSERT_TRUE(db_->Execute("INSERT INTO foo VALUES (1)"));
+
+  base::FilePath wal_path = Database::WriteAheadLogPath(db_path_);
+
+  // Run a checkpoint in a deferred transaction.
+  {
+    EXPECT_THAT(GetUncheckpointedFrameCount(*db_), ValueIs(Gt(0)));
+
+    Transaction transaction(db_.get());
+    ASSERT_TRUE(transaction.Begin());
+    EXPECT_TRUE(db_->CheckpointDatabase());
+    transaction.Rollback();
+
+    EXPECT_THAT(GetUncheckpointedFrameCount(*db_), ValueIs(0));
+  }
+
+  // Truncate the WAL file in a deferred transaction.
+  {
+    EXPECT_THAT(base::GetFileSize(wal_path), Optional(Gt(0)));
+
+    Transaction transaction(db_.get());
+    ASSERT_TRUE(transaction.Begin());
+    EXPECT_TRUE(db_->CheckpointDatabase(/*truncate=*/true));
+    transaction.Rollback();
+
+    EXPECT_THAT(base::GetFileSize(wal_path), Optional(0));
+  }
+}
+
+TEST_P(SQLDatabaseTest, CheckpointDatabaseInReadTransaction) {
+  if (!IsWALEnabled()) {
+    GTEST_SKIP();
+  }
+
+  base::FilePath wal_path = Database::WriteAheadLogPath(db_path_);
+  ASSERT_TRUE(db_->Execute("CREATE TABLE foo (id)"));
+  ASSERT_TRUE(db_->Execute("INSERT INTO foo VALUES (1)"));
+
+  ASSERT_OK_AND_ASSIGN(int64_t wal_size, base::GetFileSize(wal_path));
+  ASSERT_OK_AND_ASSIGN(int64_t wal_frames, GetUncheckpointedFrameCount(*db_));
+
+  // Try to checkpoint in a read transaction.
+  {
+    Transaction transaction(db_.get());
+    ASSERT_TRUE(transaction.Begin());
+    EXPECT_EQ(ExecuteWithResult(db_.get(), "SELECT COUNT(*) FROM foo"), "1");
+    EXPECT_FALSE(db_->CheckpointDatabase());
+    transaction.Rollback();
+
+    // Checkpoint failed and left the WAL files untouched.
+    EXPECT_THAT(base::GetFileSize(wal_path), Optional(wal_size));
+    EXPECT_THAT(GetUncheckpointedFrameCount(*db_), ValueIs(wal_frames));
+  }
+
+  // Try to checkpoint and truncate in a read transaction.
+  {
+    Transaction transaction(db_.get());
+    ASSERT_TRUE(transaction.Begin());
+    EXPECT_EQ(ExecuteWithResult(db_.get(), "SELECT COUNT(*) FROM foo"), "1");
+    EXPECT_FALSE(db_->CheckpointDatabase(/*truncate=*/true));
+    transaction.Rollback();
+
+    // Checkpoint failed and left the WAL files untouched.
+    EXPECT_THAT(base::GetFileSize(wal_path), Optional(wal_size));
+    EXPECT_THAT(GetUncheckpointedFrameCount(*db_), ValueIs(wal_frames));
+  }
+}
+
+TEST_P(SQLDatabaseTest, CheckpointDatabaseInWriteTransaction) {
+  if (!IsWALEnabled()) {
+    GTEST_SKIP();
+  }
+
+  base::FilePath wal_path = Database::WriteAheadLogPath(db_path_);
+  ASSERT_TRUE(db_->Execute("CREATE TABLE foo (id)"));
+  ASSERT_TRUE(db_->Execute("INSERT INTO foo VALUES (1)"));
+
+  ASSERT_OK_AND_ASSIGN(int64_t wal_size, base::GetFileSize(wal_path));
+  ASSERT_OK_AND_ASSIGN(int64_t wal_frames, GetUncheckpointedFrameCount(*db_));
+
+  // Try to checkpoint in a write transaction.
+  {
+    Transaction transaction(db_.get());
+    ASSERT_TRUE(transaction.Begin());
+    EXPECT_TRUE(db_->Execute("INSERT INTO foo VALUES (3)"));
+    EXPECT_FALSE(db_->CheckpointDatabase());
+    transaction.Rollback();
+
+    // Checkpoint failed and left the WAL files untouched.
+    EXPECT_THAT(base::GetFileSize(wal_path), Optional(wal_size));
+    EXPECT_THAT(GetUncheckpointedFrameCount(*db_), ValueIs(wal_frames));
+  }
+
+  // Try to checkpoint and truncate in a write transaction.
+  {
+    Transaction transaction(db_.get());
+    ASSERT_TRUE(transaction.Begin());
+    EXPECT_TRUE(db_->Execute("INSERT INTO foo VALUES (4)"));
+    EXPECT_FALSE(db_->CheckpointDatabase(/*truncate=*/true));
+    transaction.Rollback();
+
+    // Checkpoint failed and left the WAL files untouched.
+    EXPECT_THAT(base::GetFileSize(wal_path), Optional(wal_size));
+    EXPECT_THAT(GetUncheckpointedFrameCount(*db_), ValueIs(wal_frames));
+  }
 }
 
 TEST_P(SQLDatabaseTest, WALCommitCallback) {
@@ -2411,29 +2580,23 @@ TEST_P(SQLDatabaseTest, WALCommitCallback) {
   // manual checkpoint options.
   EXPECT_EQ("0", ExecuteWithResult(&db, "PRAGMA wal_autocheckpoint"));
 
-  const base::FilePath wal_path = Database::WriteAheadLogPath(db_path_);
-  // The WAL file should not exist yet.
-  ASSERT_FALSE(base::GetFileSize(wal_path).has_value());
-
-  int64_t db_size = CheckedGetFileSize(db_path_);
-  int64_t previous_db_size = db_size;
+  ASSERT_OK_AND_ASSIGN(int64_t previous_db_size, base::GetFileSize(db_path_));
 
   // The following CREATE TABLE statement writes some pages into the WAL log.
   ASSERT_TRUE(
       db.Execute("CREATE TABLE foo (id INTEGER UNIQUE, value INTEGER)"));
 
   // The WAL callback must have been called while creating a table.
-  ASSERT_TRUE(wal_callback_pages.has_value());
-  EXPECT_GT(*wal_callback_pages, 0);
+  ASSERT_THAT(wal_callback_pages, Optional(Gt(0)));
   int previous_wal_callback_pages = *wal_callback_pages;
 
   // The WAL file should grow.
-  int64_t wal_size = CheckedGetFileSize(wal_path);
-  int64_t previous_wal_size = wal_size;
-  ASSERT_GT(wal_size, 0);
+  ASSERT_OK_AND_ASSIGN(int64_t previous_wal_frames,
+                       GetUncheckpointedFrameCount(db));
+  ASSERT_GT(previous_wal_frames, 0);
 
   // The db file size should not change.
-  ASSERT_EQ(CheckedGetFileSize(db_path_), previous_db_size);
+  ASSERT_THAT(base::GetFileSize(db_path_), Optional(previous_db_size));
 
   for (int i = 0; i < 100; ++i) {
     // The following INSERT INTO statement writes some pages into the WAL log.
@@ -2441,16 +2604,16 @@ TEST_P(SQLDatabaseTest, WALCommitCallback) {
         base::StringPrintf("INSERT INTO foo VALUES (%d, %d)", i, i)));
 
     // The WAL callback must have been called with a greater `pages` value.
-    ASSERT_GT(*wal_callback_pages, previous_wal_callback_pages);
+    ASSERT_THAT(wal_callback_pages, Optional(Gt(previous_wal_callback_pages)));
     previous_wal_callback_pages = *wal_callback_pages;
 
     // The WAL file should grow.
-    wal_size = CheckedGetFileSize(wal_path);
-    ASSERT_GT(wal_size, previous_wal_size);
-    previous_wal_size = wal_size;
+    ASSERT_OK_AND_ASSIGN(int64_t wal_frames, GetUncheckpointedFrameCount(db));
+    ASSERT_GT(wal_frames, previous_wal_frames);
+    previous_wal_frames = wal_frames;
 
     // The db file size should not change.
-    ASSERT_EQ(CheckedGetFileSize(db_path_), previous_db_size);
+    ASSERT_THAT(base::GetFileSize(db_path_), Optional(previous_db_size));
   }
 
   wal_callback_pages.reset();
@@ -2469,7 +2632,7 @@ TEST_P(SQLDatabaseTest, WALCommitCallback) {
   ASSERT_FALSE(wal_callback_pages.has_value());
 
   // The db file size should grow.
-  db_size = CheckedGetFileSize(db_path_);
+  ASSERT_OK_AND_ASSIGN(int64_t db_size, base::GetFileSize(db_path_));
   ASSERT_GT(db_size, previous_db_size);
   previous_db_size = db_size;
 
@@ -2479,11 +2642,11 @@ TEST_P(SQLDatabaseTest, WALCommitCallback) {
         base::StringPrintf("INSERT INTO foo VALUES (%d, %d)", i, i)));
 
     // The WAL callback must have been called with a greater `pages` value.
-    ASSERT_GT(*wal_callback_pages, previous_wal_callback_pages);
+    ASSERT_THAT(wal_callback_pages, Optional(Gt(previous_wal_callback_pages)));
     previous_wal_callback_pages = *wal_callback_pages;
 
     // The db file size should not change.
-    ASSERT_EQ(CheckedGetFileSize(db_path_), previous_db_size);
+    ASSERT_THAT(base::GetFileSize(db_path_), Optional(previous_db_size));
   }
 }
 
@@ -2672,14 +2835,6 @@ TEST_P(SQLDatabaseTest, OpenWithRecoveryHandlesCorruption) {
     EXPECT_EQ(error_count, 1u);
     EXPECT_FALSE(db_->has_error_callback());
   }
-}
-
-TEST_P(SQLDatabaseTest, OpenWithPreload) {
-  db_->Close();
-
-  DatabaseOptions options = GetDBOptions().set_preload(true);
-  db_ = std::make_unique<Database>(options, test::kTestTag);
-  ASSERT_TRUE(db_->Open(db_path_));
 }
 
 TEST_P(SQLDatabaseTest, ExecuteFailsAfterCorruptSizeInHeader) {
@@ -2984,6 +3139,247 @@ TEST_F(DatabaseDiskFullTest, RazeFailsWhenDiskIsFull) {
   EXPECT_FALSE(db.Raze());
   EXPECT_THAT(vfs_.errors_produced(), Contains(SqliteErrorCode::kFullDisk));
   EXPECT_THAT(ReadInts(db, "SELECT i FROM foo"), Optional(ElementsAre(42)));
+}
+
+// Tests that writing a journal can trigger an `SQLITE_FULL` error.
+TEST_F(DatabaseDiskFullTest, JournalCreationCanCauseSqliteFullErrors) {
+  Database db(test::kTestTag);
+
+  std::vector<int> errors;
+  db.set_error_callback(base::BindLambdaForTesting(
+      [&](int error, Statement*) { errors.push_back(error); }));
+
+  ASSERT_TRUE(db.Open(db_path_));
+  ASSERT_TRUE(db.Execute("CREATE TABLE foo(i)"));
+
+  // Force any further writes to fail.
+  vfs_.set_drive_full(true);
+
+  // Open a transaction so that rows aren't written to disk until the commit.
+  Transaction transaction(&db);
+  ASSERT_TRUE(transaction.Begin());
+
+  // Writing statements require creating a journal, which can't be done when
+  // the disk is full.
+  EXPECT_THAT(errors, IsEmpty());
+  EXPECT_FALSE(db.Execute("INSERT INTO foo(i) VALUES(42)"));
+  EXPECT_THAT(errors, ElementsAre(SQLITE_FULL));
+}
+
+// Tests that an `SQLITE_FULL` error can occur if SQLite runs out of room in its
+// memory cache and is forced to write to disk before the commit/rollback.
+TEST_F(DatabaseDiskFullTest, CacheSpillCanCauseSqliteFullErrors) {
+  Database db(DatabaseOptions().set_cache_size(1), test::kTestTag);
+
+  std::vector<int> errors;
+  db.set_error_callback(base::BindLambdaForTesting(
+      [&](int error, Statement*) { errors.push_back(error); }));
+
+  ASSERT_TRUE(db.Open(db_path_));
+
+  // Disable journal to only get `SQLITE_FULL` errors from writing to the main
+  // database file.
+  ASSERT_TRUE(db.Execute("PRAGMA journal_mode = OFF"));
+  ASSERT_TRUE(db.Execute("CREATE TABLE foo(i)"));
+
+  // Force any further writes to fail.
+  vfs_.set_drive_full(true);
+
+  // Open a transaction so that rows aren't written until the cache spills.
+  Transaction transaction(&db);
+  ASSERT_TRUE(transaction.Begin());
+
+  // The first rows are stored in the cache and don't trigger `SQLITE_FULL`.
+  for (int i = 0; i < 5; ++i) {
+    EXPECT_TRUE(db.Execute("INSERT INTO foo(i) VALUES(42)"));
+  }
+
+  // Eventually, the cache will fill and write will spill over to the disk.
+  EXPECT_THAT(errors, IsEmpty());
+  while (db.Execute("INSERT INTO foo(i) VALUES(42)")) {
+  }
+  EXPECT_THAT(errors, ElementsAre(SQLITE_FULL));
+}
+
+// Checks that statements producing `SQLITE_FULL` automatically rollback
+// transactions.
+TEST_F(DatabaseDiskFullTest, SqliteFullAbortsTransactions) {
+  Database db(test::kTestTag);
+
+  std::vector<int> errors;
+  db.set_error_callback(base::BindLambdaForTesting(
+      [&](int error, Statement*) { errors.push_back(error); }));
+
+  ASSERT_TRUE(db.Open(db_path_));
+  ASSERT_TRUE(db.Execute("CREATE TABLE foo(i)"));
+
+  vfs_.set_drive_full(true);
+
+  {
+    Transaction transaction(&db);
+    ASSERT_TRUE(transaction.Begin());
+
+    // `SQLITE_FULL` errors prematurely rollback the transaction on the SQLite
+    // side.
+    EXPECT_FALSE(sqlite3_get_autocommit(db.db(InternalApiToken())));
+    EXPECT_FALSE(db.Execute("INSERT INTO foo(i) VALUES(42)"));
+    EXPECT_TRUE(sqlite3_get_autocommit(db.db(InternalApiToken())));
+  }
+
+  // Should only be one error (i.e. `~Transaction` shouldn't trigger an SQLite
+  // error).
+  EXPECT_THAT(errors, ElementsAre(SQLITE_FULL));
+}
+
+// Checks that a `Transaction` rolled-back by an `SQLITE_FULL` error will also
+// produce an additional `SQLITE_ERROR` if the feature
+// `kCheckAutoCommitInCommitAndRollback` is disabled.
+TEST_F(DatabaseDiskFullTest,
+       TransactionsRolledBackBySqliteFullProduceSqliteErrorIfFeatureDisabled) {
+  ScopedFeatureList feature_list;
+  feature_list.InitAndDisableFeature(kCheckAutoCommitInCommitAndRollback);
+  Database db(test::kTestTag);
+
+  std::vector<int> errors;
+  db.set_error_callback(base::BindLambdaForTesting(
+      [&](int error, Statement*) { errors.push_back(error); }));
+
+  ASSERT_TRUE(db.Open(db_path_));
+  ASSERT_TRUE(db.Execute("CREATE TABLE foo(i)"));
+
+  {
+    Transaction transaction(&db);
+    ASSERT_TRUE(transaction.Begin());
+
+    vfs_.set_drive_full(true);
+    EXPECT_FALSE(db.Execute("INSERT INTO foo(i) VALUES(42)"));
+    vfs_.set_drive_full(false);
+
+    EXPECT_THAT(errors, ElementsAre(SQLITE_FULL));
+  }
+  // `~Transaction` tries to rollback. which fails because the SQLite
+  // transaction was already rolled-back by the `SQLITE_FULL` error.
+  EXPECT_THAT(errors, ElementsAre(SQLITE_FULL, SQLITE_ERROR));
+}
+
+// Checks that calling `Commit` in an abandoned transactions doesn't invoke
+// error callback.
+TEST_F(DatabaseDiskFullTest, CommitInAbandonedTransactions) {
+  Database db(test::kTestTag);
+
+  std::vector<int> errors;
+  db.set_error_callback(base::BindLambdaForTesting(
+      [&](int error, Statement*) { errors.push_back(error); }));
+
+  ASSERT_TRUE(db.Open(db_path_));
+  ASSERT_TRUE(db.Execute("CREATE TABLE foo(i)"));
+
+  vfs_.set_drive_full(true);
+
+  {
+    Transaction transaction(&db);
+    ASSERT_TRUE(transaction.Begin());
+
+    EXPECT_FALSE(db.Execute("INSERT INTO foo(i) VALUES(42)"));
+
+    EXPECT_FALSE(transaction.Commit());
+  }
+
+  // Should only be one error (i.e. `Commit` shouldn't trigger error callback).
+  EXPECT_THAT(errors, ElementsAre(SQLITE_FULL));
+}
+
+// Checks that calling `Rollback` in an abandoned transactions doesn't invoke
+// error callback.
+TEST_F(DatabaseDiskFullTest, RollbackInAbandonedTransactions) {
+  Database db(test::kTestTag);
+
+  std::vector<int> errors;
+  db.set_error_callback(base::BindLambdaForTesting(
+      [&](int error, Statement*) { errors.push_back(error); }));
+
+  ASSERT_TRUE(db.Open(db_path_));
+  ASSERT_TRUE(db.Execute("CREATE TABLE foo(i)"));
+
+  vfs_.set_drive_full(true);
+
+  {
+    Transaction transaction(&db);
+    ASSERT_TRUE(transaction.Begin());
+
+    EXPECT_FALSE(db.Execute("INSERT INTO foo(i) VALUES(42)"));
+
+    transaction.Rollback();
+  }
+
+  // Should only be one error (i.e. `Rollback` shouldn't trigger error
+  // callback).
+  EXPECT_THAT(errors, ElementsAre(SQLITE_FULL));
+}
+
+// Tests `Commit` in a transaction that was rolled-back outside the control of
+// the `Database` class. This simulates an automatic rollback done by SQLite in
+// a non-statement API call which the `Database` doesn't expect could ever
+// possibly rollback transactions. `Commit` should still fail without producing
+// errors.
+TEST_F(DatabaseDiskFullTest, CommitInTransactionAbortedByRawSqliteCalls) {
+  Database db(test::kTestTag);
+
+  std::vector<int> errors;
+  db.set_error_callback(base::BindLambdaForTesting(
+      [&](int error, Statement*) { errors.push_back(error); }));
+
+  ASSERT_TRUE(db.Open(db_path_));
+  ASSERT_TRUE(db.Execute("CREATE TABLE foo(i)"));
+
+  vfs_.set_drive_full(true);
+
+  {
+    Transaction transaction(&db);
+    ASSERT_TRUE(transaction.Begin());
+
+    EXPECT_EQ(
+        sqlite3_exec(db.db(InternalApiToken()), "INSERT INTO foo(i) VALUES(42)",
+                     /*callback=*/nullptr, /*arg=*/nullptr,
+                     /*errmsg=*/nullptr),
+        SQLITE_FULL);
+
+    EXPECT_FALSE(transaction.Commit());
+  }
+
+  EXPECT_THAT(errors, IsEmpty());
+}
+
+// Tests `Rollback` in a transaction that was rolled-back outside the control of
+// the `Database` class. This simulates an automatic rollback done by SQLite in
+// a non-statement API call which the `Database` doesn't expect could ever
+// possibly rollback transactions. `Rollback` shouldn't produce errors.
+TEST_F(DatabaseDiskFullTest, RollbackInTransactionAbortedByRawSqliteCalls) {
+  Database db(test::kTestTag);
+
+  std::vector<int> errors;
+  db.set_error_callback(base::BindLambdaForTesting(
+      [&](int error, Statement*) { errors.push_back(error); }));
+
+  ASSERT_TRUE(db.Open(db_path_));
+  ASSERT_TRUE(db.Execute("CREATE TABLE foo(i)"));
+
+  vfs_.set_drive_full(true);
+
+  {
+    Transaction transaction(&db);
+    ASSERT_TRUE(transaction.Begin());
+
+    EXPECT_EQ(
+        sqlite3_exec(db.db(InternalApiToken()), "INSERT INTO foo(i) VALUES(42)",
+                     /*callback=*/nullptr, /*arg=*/nullptr,
+                     /*errmsg=*/nullptr),
+        SQLITE_FULL);
+
+    transaction.Rollback();
+  }
+
+  EXPECT_THAT(errors, IsEmpty());
 }
 
 }  // namespace sql

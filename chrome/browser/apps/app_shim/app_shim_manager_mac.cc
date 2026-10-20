@@ -7,9 +7,11 @@
 #include <CoreFoundation/CoreFoundation.h>
 
 #include <algorithm>
+#include <memory>
 #include <optional>
 #include <set>
 #include <utility>
+#include <vector>
 
 #include "apps/app_lifetime_monitor_factory.h"
 #include "base/apple/bundle_locations.h"
@@ -50,14 +52,15 @@
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/profiles/profile_window.h"
 #include "chrome/browser/profiles/profiles_state.h"
-#include "chrome/browser/ui/browser.h"
-#include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface_iterator.h"
+#include "chrome/browser/ui/browser_window/public/create_browser_window.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/chrome_pages.h"
 #include "chrome/browser/ui/navigator/browser_navigator.h"
+#include "chrome/browser/ui/navigator/browser_navigator_params.h"
 #include "chrome/browser/ui/profiles/profile_picker.h"
+#include "chrome/browser/ui/tabs/tab_enums.h"
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/web_applications/app_browser_controller.h"
 #include "chrome/browser/web_applications/os_integration/mac/app_shim_registry.h"
@@ -76,6 +79,9 @@
 #include "mojo/public/cpp/bindings/receiver_set.h"
 #include "mojo/public/cpp/bindings/self_owned_receiver.h"
 #include "net/base/filename_util.h"
+#include "ui/base/base_window.h"
+#include "ui/base/page_transition_types.h"
+#include "ui/base/window_open_disposition.h"
 
 namespace {
 
@@ -302,7 +308,7 @@ bool AppShimManager::AppShimObserver::OnNotificationAction(
 }
 
 void SetMacShimStartupDoneCallbackForTesting(base::OnceClosure callback) {
-  DCHECK(!GetShimStartupDoneCallback());
+  CHECK(!GetShimStartupDoneCallback(), base::NotFatalUntil::M161);
   GetShimStartupDoneCallback() = std::move(callback);
 }
 
@@ -328,7 +334,7 @@ struct AppShimManager::ProfileState {
   const std::unique_ptr<AppShimHost> single_profile_host;
 
   // All browser instances for this (app, Profile) pair.
-  std::set<Browser*> browsers;
+  std::set<raw_ptr<BrowserWindowInterface, DanglingUntriaged>> browsers;
 
   // The current BadgeValue for this (app, Profile) pair.
   std::optional<badging::BadgeManager::BadgeValue> badge;
@@ -355,7 +361,7 @@ struct AppShimManager::AppState {
   // app, or if `did_save_last_active_profiles_on_terminate` is true.
   void MaybeSaveLastActiveProfiles() const;
 
-  const std::string app_id;
+  const webapps::AppId app_id;
 
   // Multi-profile apps share the same shim process across multiple profiles.
   const std::unique_ptr<AppShimHost> multi_profile_host;
@@ -385,7 +391,8 @@ AppShimManager::ProfileState::ProfileState(
       single_profile_host(std::move(in_single_profile_host)) {
   // Assert that the ProfileState and AppState agree about whether or not this
   // is a multi-profile shim.
-  DCHECK_NE(!!single_profile_host, !!app_state->multi_profile_host);
+  CHECK_NE(!!single_profile_host, !!app_state->multi_profile_host,
+           base::NotFatalUntil::M161);
 }
 
 AppShimHost* AppShimManager::ProfileState::GetHost() const {
@@ -523,13 +530,13 @@ void AppShimManager::UpdateAppBadge(
     return;
   }
   AppState* app_state = found_app->second.get();
-  DCHECK(app_state);
+  CHECK(app_state, base::NotFatalUntil::M161);
   auto found_profile = app_state->profiles.find(profile);
   if (found_profile == app_state->profiles.end()) {
     return;
   }
   ProfileState* profile_state = found_profile->second.get();
-  DCHECK(profile_state);
+  CHECK(profile_state, base::NotFatalUntil::M161);
 
   profile_state->badge = badge;
   UpdateApplicationBadge(profile_state);
@@ -543,16 +550,27 @@ AppShimManager::LaunchNotificationProvider(const webapps::AppId& app_id) {
   auto bind_provider = base::BindOnce(
       [](mojo::PendingReceiver<
              mac_notifications::mojom::MacNotificationProvider> receiver,
-         base::WeakPtr<AppShimManager> manager, AppShimHost* host) {
+         base::WeakPtr<AppShimManager> manager, bool existing_app,
+         AppShimHost* host) {
+        NotificationProviderOutcome outcome;
         if (!host) {
           LOG(ERROR) << "Failed to launch app shim for notifications";
+          outcome =
+              (g_browser_process && g_browser_process->IsShuttingDown())
+                  ? NotificationProviderOutcome::kShuttingDown
+                  : NotificationProviderOutcome::kNoProfileForBackgroundLaunch;
           if (manager) {
             manager->dummy_notification_provider_receivers_.Add(
                 manager.get(), std::move(receiver));
           }
-          return;
+        } else {
+          outcome = existing_app
+                        ? NotificationProviderOutcome::kBoundToExistingHost
+                        : NotificationProviderOutcome::kLaunchedNewShim;
+          host->GetAppShim()->BindNotificationProvider(std::move(receiver));
         }
-        host->GetAppShim()->BindNotificationProvider(std::move(receiver));
+        base::UmaHistogramEnumeration(
+            "Apps.AppShim.NotificationProvider.Outcome", outcome);
       },
       remote.BindNewPipeAndPassReceiver(), weak_factory_.GetWeakPtr());
 
@@ -563,14 +581,15 @@ AppShimManager::LaunchNotificationProvider(const webapps::AppId& app_id) {
     // already have a running app shim, launch a new one, but launch it in
     // "background" mode, so to the user it isn't noticeable that this is
     // happening.
-    LaunchShimInBackgroundMode(app_id, std::move(bind_provider));
+    LaunchShimInBackgroundMode(app_id, base::BindOnce(std::move(bind_provider),
+                                                      /*existing_app=*/false));
     return remote;
   }
 
   AppState* app_state = found_app->second.get();
   CHECK(app_state->IsMultiProfile());
   AppShimHost* shim = app_state->multi_profile_host.get();
-  std::move(bind_provider).Run(shim);
+  std::move(bind_provider).Run(/*existing_app=*/true, shim);
   return remote;
 }
 
@@ -639,6 +658,13 @@ Profile* AppShimManager::ProfileForBackgroundShimLaunch(
 void AppShimManager::LaunchShimInBackgroundMode(
     const webapps::AppId& app_id,
     base::OnceCallback<void(AppShimHost*)> callback) {
+  // Don't launch app shims once the browser has started shutting down (see
+  // OnShimLaunchRequested()).
+  if (g_browser_process->IsShuttingDown()) {
+    std::move(callback).Run(nullptr);
+    return;
+  }
+
   // A shim can only be launched through an active profile, so find a profile
   // through which to do the launch. This method should only be called for
   // multi-profile apps, for which an arbitrary profile is good enough.
@@ -719,26 +745,33 @@ void AppShimManager::UpdateApplicationBadge(ProfileState* profile_state) {
   }
 }
 
-AppShimHost* AppShimManager::GetHostForRemoteCocoaBrowser(Browser* browser) {
-  const std::string app_id =
-      web_app::GetAppIdFromApplicationName(browser->app_name());
-  if (!delegate_->AppUsesRemoteCocoa(browser->profile(), app_id)) {
+AppShimHost* AppShimManager::GetHostForRemoteCocoaBrowser(
+    BrowserWindowInterface* browser) {
+  auto* controller = web_app::AppBrowserController::From(browser);
+  if (!controller) {
     return nullptr;
   }
-  auto* profile_state = GetOrCreateProfileState(browser->profile(), app_id);
+  const webapps::AppId& app_id = controller->app_id();
+  if (!delegate_->AppUsesRemoteCocoa(browser->GetProfile(), app_id)) {
+    return nullptr;
+  }
+  auto* profile_state = GetOrCreateProfileState(browser->GetProfile(), app_id);
   if (!profile_state) {
     return nullptr;
   }
   return profile_state->GetHost();
 }
 
-bool AppShimManager::BrowserUsesRemoteCocoa(Browser* browser) {
-  const std::string app_id =
-      web_app::GetAppIdFromApplicationName(browser->app_name());
+bool AppShimManager::BrowserUsesRemoteCocoa(BrowserWindowInterface* browser) {
   if (web_app::AppShimCreationAndLaunchDisabledForTest()) {
     return false;
   }
-  return delegate_->AppUsesRemoteCocoa(browser->profile(), app_id);
+  auto* controller = web_app::AppBrowserController::From(browser);
+  if (!controller) {
+    return false;
+  }
+  const webapps::AppId& app_id = controller->app_id();
+  return delegate_->AppUsesRemoteCocoa(browser->GetProfile(), app_id);
 }
 
 void AppShimManager::OnShimLaunchRequested(
@@ -747,6 +780,21 @@ void AppShimManager::OnShimLaunchRequested(
     web_app::ShimLaunchMode launch_mode,
     apps::ShimLaunchedCallback launched_callback,
     apps::ShimTerminatedCallback terminated_callback) {
+  // Note that launch failures below are reported asynchronously, as they would
+  // be for a real launch, since this can be called synchronously from
+  // AppShimHost::LaunchShim().
+
+  // Don't launch app shims once the browser has started shutting down. By then
+  // the AppShimListener may already have been destroyed and Chrome will exit
+  // soon, so a newly launched shim would likely never connect, and would
+  // instead crash in AppShimController::PollForChromeReady() once Chrome has
+  // exited.
+  if (g_browser_process->IsShuttingDown()) {
+    content::GetUIThreadTaskRunner({})->PostTask(
+        FROM_HERE, std::move(terminated_callback));
+    return;
+  }
+
   // A shim can only be launched through an active profile, so find a profile
   // through which to do the launch. For multi-profile apps, select one
   // arbitrarily. For non-multi-profile apps, select the specified profile.
@@ -763,10 +811,11 @@ void AppShimManager::OnShimLaunchRequested(
       if (app_state->profiles.empty()) {
         LOG(ERROR)
             << "Attempting to launch shim for which no profiles are loaded.";
-        std::move(terminated_callback).Run();
+        content::GetUIThreadTaskRunner({})->PostTask(
+            FROM_HERE, std::move(terminated_callback));
         return;
       }
-      DCHECK(!app_state->profiles.empty());
+      CHECK(!app_state->profiles.empty(), base::NotFatalUntil::M161);
       profile = app_state->profiles.begin()->first;
     } else {
       profile = ProfileForPath(host->GetProfilePath());
@@ -784,7 +833,8 @@ void AppShimManager::OnShimLaunchRequested(
                                                         profile->GetPath()))) {
     LOG(ERROR)
         << "Attempting to launch shim for an app that is no longer installed.";
-    std::move(terminated_callback).Run();
+    content::GetUIThreadTaskRunner({})->PostTask(
+        FROM_HERE, std::move(terminated_callback));
     return;
   }
 
@@ -795,7 +845,8 @@ void AppShimManager::OnShimLaunchRequested(
 
 void AppShimManager::OnShimProcessConnected(
     std::unique_ptr<AppShimHostBootstrap> bootstrap) {
-  DCHECK(crx_file::id_util::IdIsValid(bootstrap->GetAppId()));
+  CHECK(crx_file::id_util::IdIsValid(bootstrap->GetAppId()),
+        base::NotFatalUntil::M161);
   if (app_shim_observer_) {
     app_shim_observer_->OnShimProcessConnected(bootstrap->GetAppShimPid());
   }
@@ -910,8 +961,8 @@ void AppShimManager::LoadAndLaunchApp(
   if (LoadAndLaunchApp_TryExistingProfileStates(
           profile_path, params, profiles_with_handlers, &launch_callback)) {
     // If we used an existing profile, |launch_callback| should have been run.
-    DCHECK(!launch_callback);
-    DCHECK(!GetShimStartupDoneCallback());
+    CHECK(!launch_callback, base::NotFatalUntil::M161);
+    CHECK(!GetShimStartupDoneCallback(), base::NotFatalUntil::M161);
     return;
   }
 
@@ -942,7 +993,7 @@ void AppShimManager::LoadAndLaunchApp(
         best_path = profile;
       }
     }
-    DCHECK(!best_path.empty());
+    CHECK(!best_path.empty(), base::NotFatalUntil::M161);
     profile_paths_to_launch.push_back(best_path);
   } else {
     profile_paths_to_launch.insert(profile_paths_to_launch.end(),
@@ -1036,7 +1087,7 @@ bool AppShimManager::LoadAndLaunchApp_TryExistingProfileStates(
   if (!profile_state) {
     return false;
   }
-  DCHECK(profile);
+  CHECK(profile, base::NotFatalUntil::M161);
 
   // Launch the app, if appropriate.
   LoadAndLaunchApp_LaunchIfAppropriate(
@@ -1162,13 +1213,13 @@ void AppShimManager::OnShimProcessConnectedAndAllLaunchesDone(
   // to connect to, then quit the shim. This may not represent an actual
   // failure (e.g, open-in-a-tab bookmarks return kSuccessAndDisconnect).
   if (result != chrome::mojom::AppShimLaunchResult::kSuccess) {
-    DCHECK(!profile_state);
+    CHECK(!profile_state, base::NotFatalUntil::M161);
     bootstrap->OnFailedToConnectToHost(result);
     return;
   }
-  DCHECK(profile_state);
+  CHECK(profile_state, base::NotFatalUntil::M161);
   AppShimHost* host = profile_state->GetHost();
-  DCHECK(host);
+  CHECK(host, base::NotFatalUntil::M161);
 
   audit_token_t audit_token = bootstrap->GetAppShimAuditToken();
   IsAcceptablyCodeSigned(
@@ -1298,7 +1349,7 @@ void AppShimManager::LoadProfileAndApp_OnProfileLoaded(
     LoadProfileAndAppCallback callback,
     Profile* profile) {
   // It may be that the profile fails to load.
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
   if (!profile) {
     LOG(ERROR) << "Failed to load profile from " << profile_path.value() << ".";
     std::move(callback).Run(nullptr);
@@ -1422,7 +1473,7 @@ void AppShimManager::WaitForAppRegistryReadyAsync(
     Profile* profile,
     base::OnceCallback<void()> callback) {
   auto* provider = web_app::WebAppProvider::GetForWebApps(profile);
-  DCHECK(provider);
+  CHECK(provider, base::NotFatalUntil::M161);
   if (provider->on_registry_ready().is_signaled()) {
     std::move(callback).Run();
   } else {
@@ -1451,13 +1502,14 @@ void AppShimManager::OpenAppURLInBrowserWindow(
   if (!profile) {
     profile = profile_manager_->GetLastUsedProfile();
   }
-  if (!profile || Browser::GetCreationStatusForProfile(profile) !=
-                      Browser::CreationStatus::kOk) {
+  if (!profile || GetBrowserWindowCreationStatusForProfile(*profile) !=
+                      BrowserWindowInterface::CreationStatus::kOk) {
     return;
   }
-  Browser* browser = Browser::Create(
-      Browser::CreateParams(Browser::TYPE_NORMAL, profile, true));
-  browser->window()->Show();
+  BrowserWindowInterface* browser =
+      CreateBrowserWindow(BrowserWindowCreateParams(
+          BrowserWindowInterface::TYPE_NORMAL, profile, true));
+  browser->GetWindow()->Show();
   NavigateParams params(browser, url, ui::PAGE_TRANSITION_AUTO_BOOKMARK);
   params.tabstrip_add_types = AddTabTypes::ADD_ACTIVE;
   params.disposition = WindowOpenDisposition::NEW_FOREGROUND_TAB;
@@ -1479,14 +1531,15 @@ void AppShimManager::OnShimProcessDisconnected(AppShimHost* host) {
   auto found_app = apps_.find(app_id);
   CHECK(found_app != apps_.end());
   AppState* app_state = found_app->second.get();
-  DCHECK(app_state);
+  CHECK(app_state, base::NotFatalUntil::M161);
 
   app_state->MaybeSaveLastActiveProfiles();
 
   // For multi-profile apps, just delete the AppState, which will take down
   // |host| and all profiles' state.
   if (app_state->IsMultiProfile()) {
-    DCHECK_EQ(host, app_state->multi_profile_host.get());
+    CHECK_EQ(host, app_state->multi_profile_host.get(),
+             base::NotFatalUntil::M161);
     apps_.erase(found_app);
     if (apps_.empty()) {
       MaybeTerminate();
@@ -1505,7 +1558,8 @@ void AppShimManager::OnShimProcessDisconnected(AppShimHost* host) {
   auto found_profile = app_state->profiles.find(profile);
   CHECK(found_profile != app_state->profiles.end());
   ProfileState* profile_state = found_profile->second.get();
-  DCHECK_EQ(host, profile_state->single_profile_host.get());
+  CHECK_EQ(host, profile_state->single_profile_host.get(),
+           base::NotFatalUntil::M161);
   app_state->profiles.erase(found_profile);
   host = nullptr;
 
@@ -1523,6 +1577,13 @@ void AppShimManager::OnShimProcessDisconnected(AppShimHost* host) {
 void AppShimManager::OnShimFocus(AppShimHost* host) {
   // This path is only for legacy apps (which are perforce single-profile).
   if (host->UsesRemoteViews()) {
+    return;
+  }
+
+  auto found_app = apps_.find(host->GetAppId());
+  CHECK(found_app != apps_.end());
+  AppState* app_state = found_app->second.get();
+  if (app_state->IsMultiProfile()) {
     return;
   }
 
@@ -1635,22 +1696,57 @@ void AppShimManager::OnShimWillTerminate(AppShimHost* host) {
   auto found_app = apps_.find(host->GetAppId());
   CHECK(found_app != apps_.end());
   AppState* app_state = found_app->second.get();
-  DCHECK(app_state);
+  CHECK(app_state, base::NotFatalUntil::M161);
 
   auto* notification_bridge = static_cast<NotificationPlatformBridgeMac*>(
       g_browser_process->notification_platform_bridge());
   notification_bridge->AppShimWillTerminate(host->GetAppId());
 
-  DCHECK(!app_state->did_save_last_active_profiles_on_terminate);
+  CHECK(!app_state->did_save_last_active_profiles_on_terminate,
+        base::NotFatalUntil::M161);
   app_state->MaybeSaveLastActiveProfiles();
   app_state->did_save_last_active_profiles_on_terminate = true;
 }
 
 void AppShimManager::OnNotificationPermissionStatusChanged(
     AppShimHost* host,
+    std::optional<mac_notifications::mojom::PermissionStatus> previous_status,
     mac_notifications::mojom::PermissionStatus status) {
+  using PermissionStatus = mac_notifications::mojom::PermissionStatus;
+  using RegistryStatus = AppShimRegistry::NotificationPermissionStatus;
+  RegistryStatus registry_status;
+  switch (status) {
+    case PermissionStatus::kNotDetermined:
+      registry_status = RegistryStatus::kNotDetermined;
+      break;
+    case PermissionStatus::kPromptPending:
+      registry_status = RegistryStatus::kPromptPending;
+      break;
+    case PermissionStatus::kDenied: {
+      // A denial is explicit if the user denied a permission prompt that was
+      // pending earlier in the current shim session, or if it follows a
+      // previous grant (i.e. the user turned off notifications in macOS System
+      // Settings). Explicit denials are preserved across subsequent status
+      // reports, such as when the shim is relaunched. A prompt that was still
+      // pending when the shim quit results in an implicit denial, since
+      // `previous_status` is reset when the shim reconnects.
+      const RegistryStatus old_registry_status =
+          AppShimRegistry::Get()->GetNotificationPermissionStatusForApp(
+              host->GetAppId());
+      const bool is_explicit =
+          previous_status == PermissionStatus::kPromptPending ||
+          old_registry_status == RegistryStatus::kGranted ||
+          old_registry_status == RegistryStatus::kExplicitlyDenied;
+      registry_status = is_explicit ? RegistryStatus::kExplicitlyDenied
+                                    : RegistryStatus::kImplicitlyDenied;
+      break;
+    }
+    case PermissionStatus::kGranted:
+      registry_status = RegistryStatus::kGranted;
+      break;
+  }
   AppShimRegistry::Get()->SaveNotificationPermissionStatusForApp(
-      host->GetAppId(), status);
+      host->GetAppId(), registry_status);
 }
 
 void AppShimManager::OnProfileAdded(Profile* profile) {
@@ -1690,10 +1786,10 @@ void AppShimManager::OnProfileMarkedForPermanentDeletion(Profile* profile) {
 }
 
 void AppShimManager::OnAppStart(content::BrowserContext* context,
-                                const std::string& app_id) {}
+                                const webapps::AppId& app_id) {}
 
 void AppShimManager::OnAppActivated(content::BrowserContext* context,
-                                    const std::string& app_id) {
+                                    const webapps::AppId& app_id) {
   Profile* profile = Profile::FromBrowserContext(context);
   if (!delegate_->AppIsInstalled(profile, app_id)) {
     return;
@@ -1704,7 +1800,7 @@ void AppShimManager::OnAppActivated(content::BrowserContext* context,
 }
 
 void AppShimManager::OnAppDeactivated(content::BrowserContext* context,
-                                      const std::string& app_id) {
+                                      const webapps::AppId& app_id) {
   Profile* profile = static_cast<Profile*>(context);
   auto found_app = apps_.find(app_id);
   if (found_app != apps_.end()) {
@@ -1742,17 +1838,20 @@ void AppShimManager::OnAppDeactivated(content::BrowserContext* context,
 }
 
 void AppShimManager::OnAppStop(content::BrowserContext* context,
-                               const std::string& app_id) {}
+                               const webapps::AppId& app_id) {}
 
 void AppShimManager::OnBrowserCreated(BrowserWindowInterface* browser) {
+  auto* controller = web_app::AppBrowserController::From(browser);
+  if (!controller) {
+    return;
+  }
+  const webapps::AppId& app_id = controller->app_id();
   Profile* profile = browser->GetProfile();
-  const std::string app_id = web_app::GetAppIdFromApplicationName(
-      browser->GetBrowserForMigrationOnly()->app_name());
   if (!delegate_->AppUsesRemoteCocoa(profile, app_id)) {
     return;
   }
   if (auto* profile_state = GetOrCreateProfileState(profile, app_id)) {
-    profile_state->browsers.insert(browser->GetBrowserForMigrationOnly());
+    profile_state->browsers.insert(browser);
     if (profile_state->browsers.size() == 1) {
       OnAppActivated(browser->GetProfile(), app_id);
     }
@@ -1766,8 +1865,7 @@ void AppShimManager::OnBrowserClosed(BrowserWindowInterface* browser) {
 
   for (const auto& [app_id, app_state] : apps_) {
     for (const auto& [profile, profile_state] : app_state->profiles) {
-      auto found =
-          profile_state->browsers.find(browser->GetBrowserForMigrationOnly());
+      auto found = profile_state->browsers.find(browser);
       if (found != profile_state->browsers.end()) {
         // If we have no browser windows open after erasing this window, then
         // close the ProfileState (and potentially the shim as well).
@@ -1797,9 +1895,12 @@ void AppShimManager::OnBrowserActivated(BrowserWindowInterface* browser) {
   }
   UpdateAllProfileMenus();
 
+  auto* controller = web_app::AppBrowserController::From(browser);
+  if (!controller) {
+    return;
+  }
+  const webapps::AppId& app_id = controller->app_id();
   // Update the application dock menu for the current profile.
-  const std::string app_id = web_app::GetAppIdFromApplicationName(
-      browser->GetBrowserForMigrationOnly()->app_name());
   if (!delegate_->AppUsesRemoteCocoa(browser->GetProfile(), app_id)) {
     return;
   }
@@ -1828,13 +1929,13 @@ void AppShimManager::OnProfileWillBeDestroyed(Profile* profile) {
     }
   }
 
-  for (const std::string& app_id : apps_to_deactivate) {
+  for (const webapps::AppId& app_id : apps_to_deactivate) {
     OnAppDeactivated(profile, app_id);
   }
 }
 
 void AppShimManager::OnAppLaunchCancelled(content::BrowserContext* context,
-                                          const std::string& app_id) {
+                                          const webapps::AppId& app_id) {
   auto found_app = apps_.find(app_id);
   if (found_app == apps_.end()) {
     return;
@@ -1893,12 +1994,12 @@ void AppShimManager::RebuildProfileMenuItemsFromAvatarMenu() {
 void AppShimManager::OnAvatarMenuChanged(AvatarMenu* menu) {
   // Rebuild the profile menu to reflect changes (e.g, added or removed
   // profiles).
-  DCHECK_EQ(avatar_menu_.get(), menu);
+  CHECK_EQ(avatar_menu_.get(), menu, base::NotFatalUntil::M161);
   UpdateAllProfileMenus();
 }
 
 void AppShimManager::UpdateAppProfileMenu(AppState* app_state) {
-  DCHECK(app_state->IsMultiProfile());
+  CHECK(app_state->IsMultiProfile(), base::NotFatalUntil::M161);
   // Include in |items| the profiles from |profile_menu_items_| for which this
   // app is installed, sorted by |menu_index|.
   std::vector<chrome::mojom::ProfileMenuItemPtr> items;
@@ -2099,7 +2200,7 @@ AppShimManager::BuildAppShimRequirementStringFromFrameworkRequirementString(
 void AppShimManager::OnAppsDeactivatedForBrowserClose(
     Profile* profile,
     std::vector<std::string> apps_to_deactivate) {
-  for (const std::string& app_id : apps_to_deactivate) {
+  for (const webapps::AppId& app_id : apps_to_deactivate) {
     OnAppDeactivated(profile, app_id);
   }
 }

@@ -10,11 +10,11 @@
 #include "ash/constants/ash_features.h"
 #include "ash/public/cpp/shell_window_ids.h"
 #include "ash/shell.h"
+#include "ash/strings/grit/ash_strings.h"
 #include "ash/wm/window_util.h"
 #include "chrome/browser/ash/input_method/assistive_window_controller_delegate.h"
 #include "chrome/browser/ash/input_method/assistive_window_properties.h"
 #include "chrome/browser/ui/ash/input_method/suggestion_details.h"
-#include "chrome/grit/generated_resources.h"
 #include "ui/base/ime/ash/ime_bridge.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/views/widget/widget.h"
@@ -176,6 +176,12 @@ void AssistiveWindowController::SetBounds(const Bounds& bounds) {
   if (grammar_suggestion_window_) {
     grammar_suggestion_window_->SetBounds(bounds_.caret);
   }
+  if (undo_window_) {
+    // Apply 4px padding to move the window away from the cursor.
+    gfx::Rect anchor_rect = bounds_.autocorrect;
+    anchor_rect.Inset(-4);
+    undo_window_->SetAnchorRect(anchor_rect);
+  }
   if (pending_suggestion_timer_ && pending_suggestion_timer_->IsRunning()) {
     pending_suggestion_timer_->FireNow();
     pending_suggestion_timer_ = nullptr;
@@ -282,8 +288,7 @@ void AssistiveWindowController::SetAssistiveWindowProperties(
       }
       if (window.visible) {
         // Apply 4px padding to move the window away from the cursor.
-        gfx::Rect anchor_rect =
-            bounds_.autocorrect.IsEmpty() ? bounds_.caret : bounds_.autocorrect;
+        gfx::Rect anchor_rect = bounds_.autocorrect;
         anchor_rect.Inset(-4);
         undo_window_->SetAnchorRect(anchor_rect);
         undo_window_->Show(window.show_setting_link);
@@ -355,6 +360,11 @@ void AssistiveWindowController::AssistiveWindowChanged(
   delegate_->AssistiveWindowChanged(window);
 }
 
+base::WeakPtr<ui::ime::AssistiveDelegate>
+AssistiveWindowController::GetWeakPtr() {
+  return weak_ptr_factory_.GetWeakPtr();
+}
+
 ui::ime::SuggestionWindowView*
 AssistiveWindowController::GetSuggestionWindowViewForTesting() {
   return suggestion_window_view_;
@@ -363,6 +373,11 @@ AssistiveWindowController::GetSuggestionWindowViewForTesting() {
 ui::ime::UndoWindow* AssistiveWindowController::GetUndoWindowForTesting()
     const {
   return undo_window_;
+}
+
+ui::ime::GrammarSuggestionWindow*
+AssistiveWindowController::GetGrammarSuggestionWindowForTesting() const {
+  return grammar_suggestion_window_;
 }
 
 }  // namespace input_method

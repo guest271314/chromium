@@ -33,17 +33,31 @@ const CGSize kOptionsButtonSize = {80.0f, 40.0f};
 
 - (void)start {
   CHECK(experimental_flags::IsOmniboxDebuggingEnabled());
-  [self setupOptionsButton];
-  [self setupOptionsMenu];
+  if (!self.hideOptionsButton) {
+    [self setupOptionsButton];
+    [self setupOptionsMenu];
+  }
   _events = [[NSMutableArray alloc] init];
 }
 
 - (void)stop {
   [self dismissAimDebuggerWithAnimation:NO];
+  [_optionsButton removeFromSuperview];
+  _optionsButton = nil;
 }
 
 - (void)logEvent:(ComposeboxDebuggerEvent*)event {
   [_events addObject:event];
+}
+
+- (void)showBreadcrumbsLogs {
+  UIViewController* breadcrumbsViewController =
+      [[ComposeboxDebuggerBreadcrumbsViewController alloc]
+          initWithEvents:_events];
+
+  [self.baseViewController presentViewController:breadcrumbsViewController
+                                        animated:YES
+                                      completion:nil];
 }
 
 #pragma mark - TabPickerLogger
@@ -112,7 +126,7 @@ const CGSize kOptionsButtonSize = {80.0f, 40.0f};
       configurationWithPointSize:20
                           weight:UIImageSymbolWeightMedium];
   UIImage* icon =
-      DefaultSymbolWithConfiguration(@"wrench.and.screwdriver", symbolConfig);
+      SymbolWithConfiguration(SymbolWrenchAndScrewdriver, symbolConfig);
 
   config.image = icon;
   config.baseForegroundColor = [UIColor whiteColor];
@@ -133,16 +147,16 @@ const CGSize kOptionsButtonSize = {80.0f, 40.0f};
 
 - (void)setupOptionsMenu {
   __weak __typeof(self) weakSelf = self;
-  UIAction* breadcrumbsAction = [UIAction
-      actionWithTitle:@"Composebox logs"
-                image:DefaultSymbolWithPointSize(@"binoculars.circle", 16)
-           identifier:nil
-              handler:^(UIAction* action) {
-                [weakSelf showBreadcrumbsLogs];
-              }];
+  UIAction* breadcrumbsAction =
+      [UIAction actionWithTitle:@"Composebox logs"
+                          image:SymbolWithPointSize(SymbolBinocularsCircle, 16)
+                     identifier:nil
+                        handler:^(UIAction* action) {
+                          [weakSelf showBreadcrumbsLogs];
+                        }];
   UIAction* aimEligibilityDebuggerAction = [UIAction
       actionWithTitle:@"AIM Eligibility"
-                image:CustomSymbolWithPointSize(kMagnifyingglassSparkSymbol, 16)
+                image:SymbolWithPointSize(SymbolMagnifyingglassSpark, 16)
            identifier:nil
               handler:^(UIAction* action) {
                 [weakSelf startAIMDebugger];
@@ -150,7 +164,7 @@ const CGSize kOptionsButtonSize = {80.0f, 40.0f};
 
   UIAction* omniboxDebuggerAction = [UIAction
       actionWithTitle:@"Omnibox debugger"
-                image:DefaultSymbolWithPointSize(@"ladybug.circle.fill", 16)
+                image:SymbolWithPointSize(SymbolLadybugCircleFill, 16)
            identifier:nil
               handler:^(UIAction* action) {
                 [weakSelf
@@ -167,16 +181,6 @@ const CGSize kOptionsButtonSize = {80.0f, 40.0f};
   _optionsButton.preferredMenuElementOrder =
       UIContextMenuConfigurationElementOrderFixed;
   _optionsButton.menu = menu;
-}
-
-- (void)showBreadcrumbsLogs {
-  UIViewController* breadcrumbsViewController =
-      [[ComposeboxDebuggerBreadcrumbsViewController alloc]
-          initWithEvents:_events];
-
-  [self.baseViewController presentViewController:breadcrumbsViewController
-                                        animated:YES
-                                      completion:nil];
 }
 
 - (void)handlePan:(UIPanGestureRecognizer*)gesture {

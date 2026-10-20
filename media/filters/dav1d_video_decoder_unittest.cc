@@ -22,8 +22,6 @@
 #include "media/base/test_data_util.h"
 #include "media/base/test_helpers.h"
 #include "media/base/video_frame.h"
-#include "media/ffmpeg/ffmpeg_common.h"
-#include "media/filters/in_memory_url_protocol.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "third_party/skia/include/core/SkData.h"
 #include "ui/gfx/switches.h"
@@ -35,7 +33,7 @@ namespace media {
 namespace {
 
 MATCHER(ContainsDecoderErrorLog, "") {
-  return CONTAINS_STRING(arg, "dav1d_send_data() failed");
+  return arg.contains("dav1d_send_data() failed");
 }
 
 }  // namespace
@@ -270,7 +268,8 @@ TEST_F(Dav1dVideoDecoderTest, DecodeFrame_12bitMono) {
 }
 
 TEST_F(Dav1dVideoDecoderTest, DecodeFrame_AgtmMetadata) {
-  base::test::ScopedFeatureList scoped_feature_list(features::kHdrAgtm);
+  base::test::ScopedFeatureList scoped_feature_list(
+      features::kHdrAgtmParseOldSyntax);
   Initialize();
 
   // Simulate decoding a single frame.

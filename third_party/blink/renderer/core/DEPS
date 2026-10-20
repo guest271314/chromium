@@ -1,4 +1,5 @@
 include_rules = [
+    "+base/android/device_info.h",
     "+base/apple/bridging.h",
     "+base/apple/scoped_cftyperef.h",
     "+base/atomic_sequence_num.h",
@@ -25,6 +26,7 @@ include_rules = [
     "+base/unguessable_token.h",
     "+base/uuid.h",
     "+base/values.h",
+    "+cc/animation/animation.h",
     "+cc/animation/animation_host.h",
     "+cc/animation/animation_id_provider.h",
     "+cc/animation/animation_timeline.h",
@@ -60,14 +62,13 @@ include_rules = [
     "+cc/metrics/begin_main_frame_metrics.h",
     "+cc/metrics/frame_sequence_tracker_collection.h",
     "+cc/trees/browser_controls_params.h",
+    "+cc/trees/layer_tree_frame_sink.h",
     "+cc/trees/layer_tree_host.h",
-    "+cc/trees/paint_holding_commit_trigger.h",
     "+cc/trees/paint_holding_reason.h",
     "+cc/trees/scroll_source_type.h",
     "+cc/trees/target_property.h",
     "+cc/trees/ukm_manager.h",
     "+components/subresource_filter/core/common/scoped_rule.h",
-    "+components/attribution_reporting/features.h",
     "+components/performance_manager/public/mojom/coordination_unit.mojom-blink.h",
     "+components/performance_manager/public/mojom/web_memory.mojom-blink.h",
     "+components/viz/common/frame_timing_details.h",
@@ -153,7 +154,7 @@ include_rules = [
 
 specific_include_rules = {
     # Additional allowed includes for tests.
-    ".*_(perf)?test(_.*)?\.(cc|h|mm)" : [
+    ".*_(perf)?test(_.*)?\\.(cc|h|mm)" : [
         "+base/command_line.h",
         "+base/json/json_reader.h",
         "+base/timer/lap_timer.h",
@@ -209,7 +210,7 @@ specific_include_rules = {
     "local_dom_window.cc" : [
         "+net/base/registry_controlled_domains/registry_controlled_domain.h",
     ],
-    "(computed_style|computed_style_test)\.cc" : [
+    "(computed_style|computed_style_test)\\.cc" : [
         "+ui/base/ui_base_features.h"
     ],
     "media_query_evaluator.cc": [
@@ -223,6 +224,12 @@ specific_include_rules = {
     ],
     "scripted_idle_task_controller(_test)?.(cc|h)": [
         "+base/task/delayed_task_handle.h",
+    ],
+    "local_frame_mojo_handler.cc" : [
+        "+base/command_line.h",
+    ],
+    "timezone_controller.cc" : [
+        "+base/command_line.h",
     ],
     "xml_http_request.cc": [
         "+net/base/mime_util.h",

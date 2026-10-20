@@ -18,6 +18,7 @@
 #include "chrome/browser/glic/host/glic_synthetic_trial_manager.h"  // nogncheck
 #include "chrome/browser/glic/public/glic_enabling.h"               // nogncheck
 #include "chrome/browser/infobars/browser_infobar_manager.h"
+#include "chrome/browser/infobars/infobar_features.h"
 #include "chrome/browser/local_network_access/ip_address_space_overrides_prefs_observer.h"
 #include "chrome/browser/media/audio_process_ml_model_forwarder.h"
 #include "chrome/browser/optimization_guide/model_execution/optimization_guide_global_state.h"
@@ -25,16 +26,24 @@
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/safe_browsing/application_advanced_protection_status_detector.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
+#include "chrome/browser/ui/views/frame/glass_frame_service.h"
 #include "components/application_locale_storage/application_locale_storage.h"
+#include "components/browser_apis/tab_drag/sessions/tab_drag_session_manager.h"
 #include "components/on_device_translation/buildflags/buildflags.h"
 #include "components/safe_browsing/core/common/features.h"
 #include "media/base/media_switches.h"
 #include "net/net_buildflags.h"
+#include "ui/base/ui_base_features.h"
 
 #if !BUILDFLAG(IS_ANDROID)
 // This causes a gn error on Android builds, because gn does not understand
 // buildflags, so we include it only on platforms where it is used.
 #include "chrome/browser/background/glic/glic_background_mode_manager.h"  // nogncheck
+#include "chrome/browser/child_module/child_module_manager.h"  // nogncheck
+#include "chrome/browser/child_module/features.h"              // nogncheck
+#include "chrome/browser/ui/omnibox/omnibox_everywhere/omnibox_everywhere_controller.h"
+#include "chrome/browser/ui/omnibox/omnibox_next_features.h"
+#include "chrome/browser/ui/tabs/tab_drag_api/desktop_tab_drag_impl/tab_drag_session_desktop_injector.h"
 #endif
 
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
@@ -49,8 +58,11 @@
 #if BUILDFLAG(IS_WIN) && BUILDFLAG(GOOGLE_CHROME_BRANDING)
 #include "chrome/browser/metrics/chrome_metrics_service_accessor.h"
 #include "chrome/browser/win/installer_downloader/installer_downloader_controller.h"
-#include "chrome/browser/win/installer_downloader/installer_downloader_feature.h"
 #include "chrome/browser/win/installer_downloader/installer_downloader_infobar_delegate.h"
+#endif
+
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
+#include "chrome/browser/lifetime/scheduled_restart_manager.h"
 #endif
 
 #if !BUILDFLAG(IS_ANDROID)
@@ -61,6 +73,10 @@
 #include "chrome/common/chrome_features.h"
 #endif  // !BUILDFLAG(IS_ANDROID)
 
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
+#include "chrome/browser/lifetime/scheduled_restart_manager.h"
+#include "chrome/browser/ui/views/scheduled_restart/scheduled_restart_bubble_controller.h"
+#endif
 #if BUILDFLAG(IS_WIN)
 #include "chrome/browser/startup/startup_launch_manager.h"
 #endif
@@ -75,6 +91,14 @@
 #if BUILDFLAG(ENABLE_ON_DEVICE_TRANSLATION)
 #include "chrome/browser/on_device_translation/installer_impl.h"
 #endif  // BUILDFLAG(ENABLE_ON_DEVICE_TRANSLATION)
+
+#if BUILDFLAG(ENABLE_REQUEST_HEADER_INTEGRITY)
+#include "chrome/browser/request_header_integrity/chrome_companero_host.h"  // nogncheck
+#include "chrome/common/request_header_integrity/request_header_integrity_url_loader_throttle.h"  // nogncheck
+#if !BUILDFLAG(IS_ANDROID)
+#include "chrome/browser/request_header_integrity/platform_runtime_host.h"  // nogncheck
+#endif
+#endif
 
 namespace {
 
@@ -123,12 +147,18 @@ void GlobalFeatures::PostBrowserProcessInit() {
     glic_profile_manager_ = std::make_unique<glic::GlicProfileManager>();
 #if !BUILDFLAG(IS_ANDROID)
     glic_background_mode_manager_ =
-        std::make_unique<glic::GlicBackgroundModeManager>(
-            g_browser_process->status_tray());
+        std::make_unique<glic::GlicBackgroundModeManager>();
 #endif
     synthetic_trial_manager_ =
         std::make_unique<glic::GlicSyntheticTrialManager>();
   }
+
+#if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN)
+  if (base::FeatureList::IsEnabled(omnibox::kOmniboxEverywhere)) {
+    omnibox_everywhere_controller_ =
+        std::make_unique<omnibox_everywhere::OmniboxEverywhereController>();
+  }
+#endif
 
 #if BUILDFLAG(ENABLE_DEVICE_BOUND_SESSIONS)
   if (unexportable_keys::UnexportableKeyServiceImpl::
@@ -165,12 +195,32 @@ void GlobalFeatures::PostBrowserProcessInit() {
             UpgradeDetector::GetInstance());
   }
 #endif  // !BUILDFLAG(IS_ANDROID)
+
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
+  if (base::FeatureList::IsEnabled(features::kScheduledRestart)) {
+    scheduled_restart_manager_ = CreateScheduledRestartManager();
+    scheduled_restart_bubble_controller_ =
+        GetUserDataFactory()
+            .CreateInstance<
+                scheduled_restart::ScheduledRestartBubbleController>(
+                *g_browser_process);
+  }
+#endif
+
+#if !BUILDFLAG(IS_ANDROID)
+  tab_drag_session_manager_ = std::make_unique<tabs_api::TabDragSessionManager>(
+      std::make_unique<tabs_api::TabDragSessionDesktopInjector>());
+#endif
 }
 
 void GlobalFeatures::PostBrowserProcessInitCore() {
-  browser_infobar_manager_ =
-      GetUserDataFactory().CreateInstance<infobars::BrowserInfoBarManager>(
-          *g_browser_process, g_browser_process);
+#if !BUILDFLAG(IS_ANDROID)
+  if (base::FeatureList::IsEnabled(infobars::kCentralizedInfoBarFramework)) {
+    browser_infobar_manager_ =
+        GetUserDataFactory().CreateInstance<infobars::BrowserInfoBarManager>(
+            *g_browser_process, g_browser_process);
+  }
+#endif
   system_permissions_platform_handle_ = CreateSystemPermissionsPlatformHandle();
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
   // TODO(crbug.com/463742800): Migrate WhatsNewRegistry (and other non-core
@@ -187,20 +237,15 @@ void GlobalFeatures::PostBrowserProcessInitCore() {
 
   application_locale_storage_ = std::make_unique<ApplicationLocaleStorage>();
 
-  glic::GlicGlobalEnabling::Delegate glic_enabling_delegate;
-  glic_global_enabling_ =
-      std::make_unique<glic::GlicGlobalEnabling>(glic_enabling_delegate);
+  glic_global_enabling_ = std::make_unique<glic::GlicGlobalEnabling>();
 
 #if BUILDFLAG(IS_WIN) && BUILDFLAG(GOOGLE_CHROME_BRANDING)
-  if (base::FeatureList::IsEnabled(
-          installer_downloader::kInstallerDownloader)) {
-    installer_downloader_controller_ = std::make_unique<
-        installer_downloader::InstallerDownloaderController>(
-        base::BindRepeating(
-            &installer_downloader::InstallerDownloaderInfoBarDelegate::Show),
-        base::BindRepeating(static_cast<bool (*)()>(
-            &ChromeMetricsServiceAccessor::IsMetricsAndCrashReportingEnabled)));
-  }
+  installer_downloader_controller_ = std::make_unique<
+      installer_downloader::InstallerDownloaderController>(
+      base::BindRepeating(
+          &installer_downloader::InstallerDownloaderInfoBarDelegate::Show),
+      base::BindRepeating(static_cast<bool (*)()>(
+          &ChromeMetricsServiceAccessor::IsMetricsAndCrashReportingEnabled)));
 #endif
 
   optimization_guide_global_feature_ =
@@ -217,24 +262,58 @@ void GlobalFeatures::PostBrowserProcessInitCore() {
         safe_browsing::ApplicationAdvancedProtectionStatusDetector>(
         g_browser_process->profile_manager());
   }
+
+#if BUILDFLAG(ENABLE_REQUEST_HEADER_INTEGRITY)
+  if (request_header_integrity::RequestHeaderIntegrityURLLoaderThrottle::
+          IsFeatureEnabled()) {
+    chrome_companero_host_ = CreateChromeCompaneroHost();
+#if !BUILDFLAG(IS_ANDROID)
+    platform_runtime_host_ = CreatePlatformRuntimeHost();
+#endif
+  }
+#endif
 }
 
 void GlobalFeatures::Init() {
   global_browser_collection_ = CreateGlobalBrowserCollection();
 }
 
+void GlobalFeatures::PreMainMessageLoopRun() {
+#if !BUILDFLAG(IS_ANDROID)
+  if (base::FeatureList::IsEnabled(child_module::features::kDynamicPatching)) {
+    child_module_manager_ = std::make_unique<child_module::ChildModuleManager>(
+        *g_browser_process->local_state());
+  }
+#endif
+
+#if BUILDFLAG(IS_MAC)
+  if (features::IsGlassFrameEnabled()) {
+    glass_frame_service_ =
+        GetUserDataFactory().CreateInstance<GlassFrameService>(
+            *g_browser_process, *g_browser_process);
+  }
+#endif
+}
+
 void GlobalFeatures::PostMainMessageLoopRun() {
 #if !BUILDFLAG(IS_ANDROID)
+  child_module_manager_.reset();
   smart_restart_manager_.reset();
   smart_restart_metrics_observer_.reset();
   profile_launch_observer_.reset();
 #endif  // !BUILDFLAG(IS_ANDROID)
+
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
+  scheduled_restart_bubble_controller_.reset();
+  scheduled_restart_manager_.reset();
+#endif
 
 #if !BUILDFLAG(IS_ANDROID)
   if (glic_background_mode_manager_) {
     glic_background_mode_manager_->Shutdown();
     glic_background_mode_manager_.reset();
   }
+  omnibox_everywhere_controller_.reset();
 #endif
   if (glic_profile_manager_) {
     glic_profile_manager_->Shutdown();
@@ -245,6 +324,16 @@ void GlobalFeatures::PostMainMessageLoopRun() {
   optimization_guide_global_feature_.reset();
 
   application_advanced_protection_status_detector_.reset();
+  tab_drag_session_manager_.reset();
+
+  glass_frame_service_.reset();
+
+#if BUILDFLAG(ENABLE_REQUEST_HEADER_INTEGRITY)
+  chrome_companero_host_.reset();
+#if !BUILDFLAG(IS_ANDROID)
+  platform_runtime_host_.reset();
+#endif
+#endif
 
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
   DefaultBrowserPromptManager::GetInstance()->CloseAllPrompts(
@@ -276,6 +365,28 @@ std::unique_ptr<GlobalBrowserCollection>
 GlobalFeatures::CreateGlobalBrowserCollection() {
   return std::make_unique<GlobalBrowserCollection>();
 }
+
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
+std::unique_ptr<scheduled_restart::ScheduledRestartManager>
+GlobalFeatures::CreateScheduledRestartManager() {
+  return std::make_unique<scheduled_restart::ScheduledRestartManager>(
+      *UpgradeDetector::GetInstance());
+}
+#endif
+
+#if BUILDFLAG(ENABLE_REQUEST_HEADER_INTEGRITY)
+std::unique_ptr<request_header_integrity::ChromeCompaneroHost>
+GlobalFeatures::CreateChromeCompaneroHost() {
+  return std::make_unique<request_header_integrity::ChromeCompaneroHost>();
+}
+
+#if !BUILDFLAG(IS_ANDROID)
+std::unique_ptr<request_header_integrity::PlatformRuntimeHost>
+GlobalFeatures::CreatePlatformRuntimeHost() {
+  return std::make_unique<request_header_integrity::PlatformRuntimeHost>();
+}
+#endif
+#endif
 
 // static
 ui::UserDataFactoryWithOwner<BrowserProcess>&

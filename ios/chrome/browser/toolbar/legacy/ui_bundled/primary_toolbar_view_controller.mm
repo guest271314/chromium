@@ -126,12 +126,16 @@ BASE_FEATURE(kPrimaryToolbarViewDidLoadUpdateViews,
   if (progress == 0 && !self.view.fakeOmniboxTarget) {
     [self.view addFakeOmniboxTarget];
     UITapGestureRecognizer* tapRecognizer = [[UITapGestureRecognizer alloc]
-        initWithTarget:self.browserCoordinatorHandler
-                action:@selector(showComposebox)];
+        initWithTarget:self
+                action:@selector(fakeOmniboxTargetTapped)];
     [self.view.fakeOmniboxTarget addGestureRecognizer:tapRecognizer];
   } else if (progress > 0 && self.view.fakeOmniboxTarget) {
     [self.view removeFakeOmniboxTarget];
   }
+}
+
+- (void)fakeOmniboxTargetTapped {
+  [self.browserCoordinatorHandler showComposebox];
 }
 
 #pragma mark - UIViewController
@@ -227,6 +231,14 @@ BASE_FEATURE(kPrimaryToolbarViewDidLoadUpdateViews,
   // This is hiding/showing and positionning the omnibox. This is only needed
   // if the omnibox should be hidden when there is only one toolbar.
   [self setScrollProgressForTabletOmnibox:(isNTP ? 0 : 1)];
+}
+
+- (void)setLocationBarFocused:(BOOL)locationBarFocused {
+  if (self.locationBarFocused == locationBarFocused) {
+    return;
+  }
+  [super setLocationBarFocused:locationBarFocused];
+
 }
 
 - (BOOL)locationBarIsExpanded {
@@ -404,11 +416,12 @@ BASE_FEATURE(kPrimaryToolbarViewDidLoadUpdateViews,
   // 3pt in all other configurations.
   CGFloat fullscreenVerticalMargin =
       IsCompactHeight(self) ? 0 : kAdaptiveLocationBarVerticalMarginFullscreen;
-  return -AlignValueToPixel((kAdaptiveLocationBarVerticalMargin * progress +
-                             fullscreenVerticalMargin * (1 - progress)) *
-                                [self clampedFontSizeMultiplier] +
-                            ([self clampedFontSizeMultiplier] - 1) *
-                                kLocationBarVerticalMarginDynamicType);
+  return -AlignValueToLowerPixel(
+      (kAdaptiveLocationBarVerticalMargin * progress +
+       fullscreenVerticalMargin * (1 - progress)) *
+          [self clampedFontSizeMultiplier] +
+      ([self clampedFontSizeMultiplier] - 1) *
+          kLocationBarVerticalMarginDynamicType);
 }
 
 // Sets the height of the location bar container.

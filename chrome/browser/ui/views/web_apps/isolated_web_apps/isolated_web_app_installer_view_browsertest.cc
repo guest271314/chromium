@@ -16,7 +16,7 @@
 #include "base/test/test_future.h"
 #include "base/version.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/test/pixel_test_configuration_mixin.h"
 #include "chrome/browser/ui/test/test_browser_ui.h"
 #include "chrome/browser/ui/views/web_apps/isolated_web_apps/isolated_web_app_installer_coordinator.h"
@@ -28,7 +28,6 @@
 #include "chrome/browser/web_applications/model/dialog_image_info.h"
 #include "chrome/browser/web_applications/test/web_app_icon_test_utils.h"
 #include "chrome/common/chrome_features.h"
-#include "chrome/grit/generated_resources.h"
 #include "chrome/test/base/mixin_based_in_process_browser_test.h"
 #include "components/prefs/pref_service.h"
 #include "components/web_package/signed_web_bundles/signed_web_bundle_id.h"
@@ -62,7 +61,7 @@ using Step = IsolatedWebAppInstallerModel::Step;
 struct TestParam {
   std::string test_suffix;
   Step step;
-  std::optional<IsolatedWebAppInstallerModel::Dialog> dialog = std::nullopt;
+  std::optional<IsolatedWebAppInstallerModel::Dialog> dialog;
   bool use_dark_theme = false;
   bool use_right_to_left_language = false;
 };
@@ -242,7 +241,7 @@ class IsolatedWebAppInstallerViewUiPixelTest
   }
 
   void ShowUi(const std::string& name) override {
-    Profile* profile = browser()->profile();
+    Profile* profile = browser()->GetProfile();
 
 #if BUILDFLAG(IS_CHROMEOS)
     profile->GetPrefs()->SetBoolean(ash::prefs::kIsolatedWebAppsEnabled, true);

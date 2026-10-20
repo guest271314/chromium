@@ -18,6 +18,7 @@
 #include "build/build_config.h"
 #include "cc/base/features.h"
 #include "cc/scheduler/commit_earlyout_reason.h"
+#include "cc/trees/proxy_common.h"
 #include "components/viz/common/features.h"
 #include "components/viz/common/frame_sinks/begin_frame_args.h"
 #include "third_party/perfetto/include/perfetto/tracing/track.h"
@@ -30,44 +31,39 @@ namespace cc {
 
 namespace {
 // Surfaces and CompositorTimingHistory don't support more than 1 pending swap.
-const int kMaxPendingSubmitFrames = 1;
+constexpr int kMaxPendingSubmitFrames = 1;
+
+constexpr float kFrameThrottlingSlackFactor = 0.9;
 
 bool IsEligibleToThrottleMainFrameRate() {
 #if BUILDFLAG(IS_ANDROID)
-  // Still requires balancing tradeoffs for desktop Android, not enabled yet.
-  return !base::android::device_info::is_desktop();
+  // Still requires balancing tradeoffs for desktop Android, not enabled
+  // unconditionally yet.
+  return !base::android::device_info::is_desktop() ||
+         base::FeatureList::IsEnabled(
+             features::kThrottleMainFrameTo60HzDesktopAndroid);
 #else
   return true;
 #endif
 }
 
-bool ShouldThrottleMainFrameRate(const SchedulerSettings& settings) {
-  if (!features::IsEligibleForThrottleMainFrameTo60Hz()) {
-    return false;
-  }
-#if BUILDFLAG(IS_ANDROID)
-  bool is_webview = settings.using_synchronous_renderer_compositor;
-  return is_webview
-             ? base::FeatureList::IsEnabled(
-                   features::kThrottleMainFrameTo60HzWebView)
-             : base::FeatureList::IsEnabled(features::kThrottleMainFrameTo60Hz);
-#else
-  // The browser compositor drives the application UI animations, which we want
-  // to be running at the nominal framerate.
-  bool is_browser_compositor =
-      settings.commit_to_active_tree || settings.single_threaded_proxy;
-  if (is_browser_compositor) {
-    return false;
-  }
+base::TimeDelta ThrottledFrameRateWithSlack(base::TimeDelta frame_interval,
+                                            int factor) {
+  return kFrameThrottlingSlackFactor * frame_interval * factor;
+}
 
-  return base::FeatureList::IsEnabled(features::kThrottleMainFrameTo60Hz);
-#endif  // BUILDFLAG(IS_ANDROID)
+perfetto::NamedTrack GetTracingTrack(
+    const SchedulerStateMachine* state_machine) {
+  return perfetto::NamedTrack::FromPointer("cc::SchedulerStateMachine",
+                                           state_machine);
 }
 
 }  // namespace
 
 SchedulerStateMachine::SchedulerStateMachine(const SchedulerSettings& settings)
-    : settings_(settings) {}
+    : settings_(settings),
+      throttle_repeated_no_damage_frames_(base::FeatureList::IsEnabled(
+          features::kThrottleRepeatedNoDamageFrames)) {}
 
 SchedulerStateMachine::~SchedulerStateMachine() = default;
 
@@ -541,9 +537,16 @@ bool SchedulerStateMachine::ShouldSendBeginMainFrame() const {
 
   // MFBA is disabled and we are waiting for previous activation, or the current
   // pending tree is impl-side.
+  // When Main is READY_TO_COMMIT, but is blocked by a previous pending_tree
+  // we cannot send an additional BeginMainFrame. As the Main thread will
+  // enter LayerTreeHost::WaitForProtectedSequenceCompletion and block.
+  // This causes the Renderer to hang.
   bool can_send_main_frame_with_pending_tree =
-      settings_.main_frame_before_activation_enabled ||
-      current_pending_tree_is_impl_side_;
+      (settings_.main_frame_before_activation_enabled ||
+       current_pending_tree_is_impl_side_) &&
+      (begin_main_frame_state_ == BeginMainFrameState::IDLE ||
+       !base::FeatureList::IsEnabled(
+           features::kDeferMainFrameBeforeCommitWithPendingTree));
   if (has_pending_tree_ && !can_send_main_frame_with_pending_tree)
     return false;
 
@@ -610,6 +613,13 @@ bool SchedulerStateMachine::ShouldSendBeginMainFrame() const {
 bool SchedulerStateMachine::ShouldThrottleSendBeginMainFrame() const {
   bool result = false;
   auto throttled_interval = MainFrameThrottledInterval();
+
+  if (throttle_repeated_no_damage_frames_) {
+    throttled_interval =
+        std::max(throttled_interval,
+                 main_frame_consecutive_no_damage_throttled_interval_);
+  }
+
   if (throttled_interval.is_positive() &&
       last_begin_impl_frame_time_ - last_sent_begin_main_frame_time_ <
           throttled_interval) {
@@ -868,6 +878,9 @@ void SchedulerStateMachine::WillSendBeginMainFrame() {
     DCHECK(settings_.main_frame_before_commit_enabled);
     DCHECK_EQ(begin_main_frame_state_, BeginMainFrameState::READY_TO_COMMIT);
     DCHECK_EQ(next_begin_main_frame_state_, BeginMainFrameState::IDLE);
+    DCHECK(!has_pending_tree_ ||
+           !base::FeatureList::IsEnabled(
+               features::kDeferMainFrameBeforeCommitWithPendingTree));
     next_begin_main_frame_state_ = BeginMainFrameState::SENT;
   }
   needs_begin_main_frame_ = false;
@@ -886,6 +899,13 @@ bool SchedulerStateMachine::CheckWillCommit() const {
 }
 
 void SchedulerStateMachine::WillCommit(bool commit_has_no_updates) {
+  if (commit_has_no_updates) {
+    consecutive_no_damage_main_frames_++;
+  } else {
+    consecutive_no_damage_main_frames_ = 0;
+  }
+  UpdateConsecutiveNoDamageThrottlingInterval();
+
   bool can_have_pending_tree =
       commit_has_no_updates &&
       (settings_.main_frame_before_activation_enabled ||
@@ -1430,9 +1450,10 @@ bool SchedulerStateMachine::ShouldBlockDeadlineIndefinitely() const {
   return false;
 }
 
-void SchedulerStateMachine::FrameIntervalUpdated(
-    base::TimeDelta frame_interval) {
-  unthrottled_frame_interval_ = frame_interval;
+// static
+base::TimeDelta SchedulerStateMachine::GetMainFrameThrottledInterval(
+    base::TimeDelta frame_interval,
+    bool is_webview) {
   // We only want to evaluate the feature on clients that see short VSync
   // intervals, to have the control and experiment only contain high refresh
   // rate clients. This ignores 90Hz displays, on purpose, and adds some
@@ -1440,24 +1461,47 @@ void SchedulerStateMachine::FrameIntervalUpdated(
   //
   // Apply some slack, so that if for some reason the interval is a bit larger
   // than 8.33333333333333ms, then we catch it still.
-  constexpr float kSlackFactor = .9;
   bool fast_vsync_interval =
-      frame_interval < base::Hertz(120) * (1 / kSlackFactor);
-  if (fast_vsync_interval && IsEligibleToThrottleMainFrameRate()) {
-    features::SetIsEligibleForThrottleMainFrameTo60Hz(true);
+      frame_interval.is_positive() &&
+      frame_interval < base::Hertz(120) * (1 / kFrameThrottlingSlackFactor);
+  if (!fast_vsync_interval || !IsEligibleToThrottleMainFrameRate()) {
+    return base::TimeDelta();
   }
-  if (fast_vsync_interval && ShouldThrottleMainFrameRate(settings_)) {
-    // Here as well, use a slack factor, to make sure that small timing
-    // variations don't result in uneven pacing.
-    //
-    // Use interval / 2 rather than an actual interval as refresh rates are
-    // not necessarily 120: it could be something really close, or it could be
-    // 144Hz for instance.
-    main_frame_throttled_interval_ = kSlackFactor * frame_interval * 2;
+  features::SetIsEligibleForThrottleMainFrameTo60Hz(true);
+#if BUILDFLAG(IS_ANDROID)
+  const base::Feature& feature = is_webview
+                                     ? features::kThrottleMainFrameTo60HzWebView
+                                     : features::kThrottleMainFrameTo60Hz;
+#else
+  const base::Feature& feature = features::kThrottleMainFrameTo60Hz;
+#endif
+  // Here as well, use a slack factor, to make sure that small timing
+  // variations don't result in uneven pacing.
+  //
+  // Use interval / 2 rather than an actual interval as refresh rates are
+  // not necessarily 120: it could be something really close, or it could be
+  // 144Hz for instance.
+  return base::FeatureList::IsEnabled(feature)
+             ? ThrottledFrameRateWithSlack(frame_interval, 2)
+             : base::TimeDelta();
+}
+
+void SchedulerStateMachine::FrameIntervalUpdated(
+    base::TimeDelta frame_interval) {
+  unthrottled_frame_interval_ = frame_interval;
+#if !BUILDFLAG(IS_ANDROID)
+  // The browser compositor drives the application UI animations, which we want
+  // to be running at the nominal framerate.
+  if (settings_.commit_to_active_tree || settings_.single_threaded_proxy) {
+    main_frame_throttled_interval_ = base::TimeDelta();
+    return;
+  }
+#endif
+  main_frame_throttled_interval_ = GetMainFrameThrottledInterval(
+      frame_interval, settings_.using_synchronous_renderer_compositor);
+  if (!main_frame_throttled_interval_.is_zero()) {
     TRACE_EVENT("cc", "ThrottleMainFrame", "interval",
                 main_frame_throttled_interval_);
-  } else {
-    main_frame_throttled_interval_ = base::TimeDelta();
   }
 }
 
@@ -1521,7 +1565,7 @@ void SchedulerStateMachine::SetNeedsPrepareTiles() {
 void SchedulerStateMachine::DidSubmitCompositorFrame() {
   if (!base::FeatureList::IsEnabled(features::kNoCompositorFrameAcks)) {
     TRACE_EVENT_BEGIN("cc", "Scheduler:pending_submit_frames",
-                      perfetto::Track::FromPointer(this), "pending_frames",
+                      GetTracingTrack(this), "pending_frames",
                       pending_submit_frames_);
 
     // If we are running with no frame rate limits, the GPU process can submit
@@ -1551,7 +1595,7 @@ void SchedulerStateMachine::DidReceiveCompositorFrameAck() {
     NOTREACHED();
   } else {
     TRACE_EVENT_END("cc", /*"Scheduler:pending_submit_frames"*/
-                    perfetto::Track::FromPointer(this), "pending_frames",
+                    GetTracingTrack(this), "pending_frames",
                     pending_submit_frames_);
     pending_submit_frames_--;
   }
@@ -1581,9 +1625,15 @@ bool SchedulerStateMachine::ImplLatencyTakesPriority() const {
   return false;
 }
 
-void SchedulerStateMachine::SetNeedsBeginMainFrame(bool now) {
-  TRACE_EVENT1("cc", __PRETTY_FUNCTION__, "now", now);
+void SchedulerStateMachine::SetNeedsBeginMainFrame(bool now, bool unthrottled) {
+  TRACE_EVENT("cc", __PRETTY_FUNCTION__, "now", now, "unthrottled",
+              unthrottled);
   needs_begin_main_frame_ = true;
+
+  if (unthrottled) {
+    consecutive_no_damage_main_frames_ = 0;
+    main_frame_consecutive_no_damage_throttled_interval_ = base::TimeDelta();
+  }
 
   if (now) {
     last_sent_begin_main_frame_time_ = base::TimeTicks();
@@ -1593,6 +1643,20 @@ void SchedulerStateMachine::SetNeedsBeginMainFrame(bool now) {
 void SchedulerStateMachine::SetUrgentBeginMainFramePending() {
   urgent_begin_main_frame_pending_ = true;
   SetNeedsBeginMainFrame(true);
+}
+
+void SchedulerStateMachine::NotifyInputEvent() {
+  // We unthrottle normally when we receive damage. But, it doesn't happen
+  // until we process the damaged frame. This would lead to a noticeable delay
+  // with input handling, so we cancel the throttling immediately upon
+  // receiving input instead.
+  //
+  // Note: This is a pessimization, since the input may lead to no change, and
+  // thus we may unthrottle too eagerly. However, unthrottling doesn't cause
+  // correctness issues, so it's better to be pessimistic here, to avoid
+  // regressions on input when we do actually want to unthrottle.
+  consecutive_no_damage_main_frames_ = 0;
+  UpdateConsecutiveNoDamageThrottlingInterval();
 }
 
 void SchedulerStateMachine::SetNeedsOneBeginImplFrame() {
@@ -1753,10 +1817,22 @@ bool SchedulerStateMachine::HasInitializedLayerTreeFrameSink() const {
   NOTREACHED();
 }
 
-void SchedulerStateMachine::SetShouldThrottleFrameRate(bool flag) {
-  if (base::FeatureList::IsEnabled(features::kRenderThrottleFrameRate)) {
-    throttle_frame_rate_ = flag;
+
+void SchedulerStateMachine::UpdateConsecutiveNoDamageThrottlingInterval() {
+  if (!throttle_repeated_no_damage_frames_) {
+    return;
   }
+
+  if (DisableThrottlingDueToHighFramerateRequests()) {
+    consecutive_no_damage_main_frames_ = 0;
+    main_frame_consecutive_no_damage_throttled_interval_ = base::TimeDelta();
+    return;
+  }
+
+  const int factor = GetThrottlingFactor(consecutive_no_damage_main_frames_);
+  main_frame_consecutive_no_damage_throttled_interval_ =
+      factor ? ThrottledFrameRateWithSlack(unthrottled_frame_interval_, factor)
+             : base::TimeDelta();
 }
 
 void SchedulerStateMachine::SetRequestHighFramerate(bool flag) {
@@ -1770,23 +1846,18 @@ void SchedulerStateMachine::SetRequestHighFramerate(bool flag) {
   }
 }
 
+bool SchedulerStateMachine::DisableThrottlingDueToHighFramerateRequests()
+    const {
+  return high_framerate_requests_count_ > 0 &&
+         base::FeatureList::IsEnabled(
+             features::kHighFramerateRequestFromClient);
+}
+
 base::TimeDelta SchedulerStateMachine::MainFrameThrottledInterval() const {
-  if (!throttle_frame_rate_) {
-    if (high_framerate_requests_count_ &&
-        base::FeatureList::IsEnabled(
-            features::kHighFramerateRequestFromClient)) {
-      return base::TimeDelta();
-    } else {
-      return main_frame_throttled_interval_;
-    }
+  if (DisableThrottlingDueToHighFramerateRequests()) {
+    return base::TimeDelta();
   } else {
-    auto throttled_interval =
-        std::max(base::Hertz(features::kRenderThrottledFrameIntervalHz.Get()),
-                 main_frame_throttled_interval_);
-    if (throttled_interval < unthrottled_frame_interval_) {
-      return base::TimeDelta();
-    }
-    return throttled_interval;
+    return main_frame_throttled_interval_;
   }
 }
 

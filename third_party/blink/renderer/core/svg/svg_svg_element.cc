@@ -65,6 +65,7 @@
 #include "third_party/blink/renderer/core/svg/svg_use_element.h"
 #include "third_party/blink/renderer/core/svg/svg_view_element.h"
 #include "third_party/blink/renderer/core/svg/svg_view_spec.h"
+#include "third_party/blink/renderer/core/svg/svg_zoom_migration.h"
 #include "third_party/blink/renderer/core/svg_names.h"
 #include "third_party/blink/renderer/platform/geometry/length_functions.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
@@ -78,7 +79,6 @@ namespace blink {
 SVGSVGElement::SVGSVGElement(Document& doc)
     : SVGViewportContainerElement(svg_names::kSVGTag, doc),
       time_container_(MakeGarbageCollected<SMILTimeContainer>(*this)),
-      translation_(MakeGarbageCollected<SVGPoint>()),
       current_scale_(1) {
   UseCounter::Count(doc, WebFeature::kSVGSVGElement);
 }
@@ -104,7 +104,7 @@ void SVGSVGElement::setCurrentScale(float scale) {
 class SVGCurrentTranslateTearOff : public SVGPointTearOff {
  public:
   SVGCurrentTranslateTearOff(SVGSVGElement* context_element)
-      : SVGPointTearOff(context_element->translation_, context_element) {}
+      : SVGPointTearOff(MakeGarbageCollected<SVGPoint>(), context_element) {}
 
   void CommitChange(SVGPropertyCommitReason) override {
     DCHECK(ContextElement());
@@ -112,12 +112,21 @@ class SVGCurrentTranslateTearOff : public SVGPointTearOff {
   }
 };
 
-SVGPointTearOff* SVGSVGElement::currentTranslateFromJavascript() {
-  return MakeGarbageCollected<SVGCurrentTranslateTearOff>(this);
+SVGPointTearOff* SVGSVGElement::EnsureCurrentTranslate() {
+  if (!translation_) {
+    translation_ = MakeGarbageCollected<SVGCurrentTranslateTearOff>(this);
+  }
+  return translation_;
+}
+
+gfx::Vector2dF SVGSVGElement::CurrentTranslate() const {
+  return translation_ ? translation_->Target()->Value().OffsetFromOrigin()
+                      : gfx::Vector2dF();
 }
 
 void SVGSVGElement::SetCurrentTranslate(const gfx::Vector2dF& point) {
-  translation_->SetValue(gfx::PointAtOffsetFromOrigin(point));
+  EnsureCurrentTranslate()->Target()->SetValue(
+      gfx::PointAtOffsetFromOrigin(point));
   UpdateUserTransform();
 }
 
@@ -143,17 +152,14 @@ void SVGSVGElement::ParseAttribute(const AttributeModificationParams& params) {
 
     // Only handle events if we're the outermost <svg> element
     if (name == html_names::kOnunloadAttr) {
-      GetDocument().SetWindowAttributeEventListener(
-          event_type_names::kUnload, JSEventHandlerForContentAttribute::Create(
-                                         GetExecutionContext(), name, value));
+      SetWindowAttributeEventListenerFromScriptBody(event_type_names::kUnload,
+                                                    name, value, params.reason);
     } else if (name == html_names::kOnresizeAttr) {
-      GetDocument().SetWindowAttributeEventListener(
-          event_type_names::kResize, JSEventHandlerForContentAttribute::Create(
-                                         GetExecutionContext(), name, value));
+      SetWindowAttributeEventListenerFromScriptBody(event_type_names::kResize,
+                                                    name, value, params.reason);
     } else if (name == html_names::kOnscrollAttr) {
-      GetDocument().SetWindowAttributeEventListener(
-          event_type_names::kScroll, JSEventHandlerForContentAttribute::Create(
-                                         GetExecutionContext(), name, value));
+      SetWindowAttributeEventListenerFromScriptBody(event_type_names::kScroll,
+                                                    name, value, params.reason);
     } else {
       set_listener = false;
     }
@@ -163,15 +169,12 @@ void SVGSVGElement::ParseAttribute(const AttributeModificationParams& params) {
   }
 
   if (name == html_names::kOnabortAttr) {
-    GetDocument().SetWindowAttributeEventListener(
-        event_type_names::kAbort, JSEventHandlerForContentAttribute::Create(
-                                      GetExecutionContext(), name, value));
+    SetWindowAttributeEventListenerFromScriptBody(event_type_names::kAbort,
+                                                  name, value, params.reason);
   } else if (name == html_names::kOnerrorAttr) {
-    GetDocument().SetWindowAttributeEventListener(
-        event_type_names::kError,
-        JSEventHandlerForContentAttribute::Create(
-            GetExecutionContext(), name, value,
-            JSEventHandler::HandlerType::kOnErrorEventHandler));
+    SetWindowAttributeEventListenerFromScriptBody(
+        event_type_names::kError, name, value, params.reason,
+        JSEventHandler::HandlerType::kOnErrorEventHandler);
   } else if (SVGZoomAndPan::ParseAttribute(name, value)) {
   } else {
     SVGElement::ParseAttribute(params);
@@ -249,7 +252,7 @@ enum class ElementResultFilter {
 HeapVector<Member<Element>> ComputeIntersectionList(
     const SVGSVGElement& root,
     const SVGElement* reference_element,
-    const gfx::RectF& rect,
+    const gfx::RectF& user_unit_rect,
     ElementResultFilter filter) {
   HeapVector<Member<Element>> elements;
   LocalFrameView* frame_view = root.GetDocument().View();
@@ -267,6 +270,8 @@ HeapVector<Member<Element>> ComputeIntersectionList(
     return elements;
   }
 
+  const gfx::RectF rect = NoopWillBeScaleRect(
+      user_unit_rect, layout_object->Style().EffectiveZoom());
   HitTestRequest request(HitTestRequest::kReadOnly | HitTestRequest::kActive |
                          HitTestRequest::kListBased |
                          HitTestRequest::kPenetratingList);
@@ -362,7 +367,7 @@ bool SVGSVGElement::checkIntersection(SVGElement* element,
 // rect, text and use.
 static bool IsEnclosureTarget(const LayoutObject* layout_object) {
   if (!layout_object ||
-      layout_object->StyleRef().UsedPointerEvents() == EPointerEvents::kNone) {
+      layout_object->Style().UsedPointerEvents() == EPointerEvents::kNone) {
     return false;
   }
   return layout_object->IsSVGShape() || layout_object->IsSVGText() ||
@@ -392,7 +397,11 @@ StaticNodeList* SVGSVGElement::getEnclosureList(
   GetDocument().UpdateStyleAndLayoutForNode(this,
                                             DocumentUpdateReason::kJavaScript);
 
-  const gfx::RectF& rect = query_rect->Target()->Rect();
+  const LayoutObject* layout_object = GetLayoutObject();
+  const float zoom =
+      layout_object ? layout_object->Style().EffectiveZoom() : 1.f;
+  const gfx::RectF rect =
+      NoopWillBeScaleRect(query_rect->Target()->Rect(), zoom);
   HeapVector<Member<Node>> nodes;
   if (const SVGElement* root =
           InnermostCommonSubtreeRoot(*this, reference_element)) {
@@ -412,7 +421,11 @@ bool SVGSVGElement::checkEnclosure(SVGElement* element,
   GetDocument().UpdateStyleAndLayoutForNode(this,
                                             DocumentUpdateReason::kJavaScript);
 
-  return CheckEnclosure(*element, rect->Target()->Rect());
+  const LayoutObject* layout_object = GetLayoutObject();
+  const float zoom =
+      layout_object ? layout_object->Style().EffectiveZoom() : 1.f;
+  return CheckEnclosure(*element,
+                        NoopWillBeScaleRect(rect->Target()->Rect(), zoom));
 }
 
 void SVGSVGElement::deselectAll() {
@@ -474,9 +487,16 @@ AffineTransform SVGSVGElement::LocalCoordinateSpaceTransform(
   } else if (layout_object) {
     if (mode == kScreenScope) {
       gfx::Transform matrix;
+      // TODO(crbug.com/530378493): Move this page/device-zoom removal into
+      // getScreenCTM() (the only affected caller) as a separate final step, so
+      // this shared helper can return the raw SVG-root-to-screen transform.
+      // This needs a definition of which of the several zooms between the
+      // LayoutView and the <svg> root to strip; note that a CSS `zoom` on the
+      // element must still be reflected in the result (see
+      // svg/zoom/zoomed-inline-svg-getscreenctm.html).
       // Adjust for the zoom level factored into CSS coordinates (WK bug
       // #96361).
-      matrix.Scale(1.0 / layout_object->View()->StyleRef().EffectiveZoom());
+      matrix.Scale(1.0 / layout_object->View()->Style().EffectiveZoom());
 
       // Apply transforms from our ancestor coordinate space, including any
       // non-SVG ancestor transforms.
@@ -488,6 +508,12 @@ AffineTransform SVGSVGElement::LocalCoordinateSpaceTransform(
       matrix.PreConcat(To<LayoutSVGRoot>(layout_object)
                            ->LocalToBorderBoxTransform()
                            .ToTransform());
+      if (RuntimeEnabledFeatures::SvgNewZoomEnabled()) {
+        const float zoom = layout_object->Style().EffectiveZoom();
+        if (zoom != 1.0f) {
+          matrix.Scale(zoom, zoom);
+        }
+      }
       // Drop any potential non-affine parts, because we're not able to convey
       // that information further anyway until getScreenCTM returns a DOMMatrix
       // (4x4 matrix.)
@@ -496,7 +522,9 @@ AffineTransform SVGSVGElement::LocalCoordinateSpaceTransform(
     viewport_size = To<LayoutSVGRoot>(*layout_object).ViewportSize();
   }
   if (!HasEmptyViewBox()) {
-    transform.PreConcat(ViewBoxToViewTransform(viewport_size));
+    const float zoom =
+        layout_object ? NoZoomWillBeSvgObjectZoom(layout_object->Style()) : 1;
+    transform.PreConcat(ViewBoxToViewTransform(viewport_size, zoom));
   }
   return transform;
 }
@@ -595,8 +623,9 @@ const SVGRect& SVGSVGElement::CurrentViewBox() const {
   return SVGViewportContainerElement::CurrentViewBox();
 }
 
-gfx::RectF SVGSVGElement::CurrentViewBoxRect() const {
-  gfx::RectF use_view_box = SVGViewportContainerElement::CurrentViewBoxRect();
+gfx::RectF SVGSVGElement::CurrentViewBoxRect(float zoom) const {
+  gfx::RectF use_view_box =
+      SVGViewportContainerElement::CurrentViewBoxRect(zoom);
   if (!use_view_box.IsEmpty() || !ShouldSynthesizeViewBox()) {
     return use_view_box;
   }
@@ -634,7 +663,10 @@ std::optional<float> SVGSVGElement::IntrinsicWidth() const {
   if (width_attr.IsPercentage())
     return std::nullopt;
   SVGLengthContext length_context(this);
-  return std::max(0.0f, width_attr.Value(length_context));
+
+  return NoopWillBeInvScaleScalar(
+      std::max(0.0f, width_attr.Value(length_context)),
+      length_context.GetZoom());
 }
 
 std::optional<float> SVGSVGElement::IntrinsicHeight() const {
@@ -645,13 +677,17 @@ std::optional<float> SVGSVGElement::IntrinsicHeight() const {
   if (height_attr.IsPercentage())
     return std::nullopt;
   SVGLengthContext length_context(this);
-  return std::max(0.0f, height_attr.Value(length_context));
+
+  return NoopWillBeInvScaleScalar(
+      std::max(0.0f, height_attr.Value(length_context)),
+      length_context.GetZoom());
 }
 
 AffineTransform SVGSVGElement::ViewBoxToViewTransform(
-    const gfx::SizeF& viewport_size) const {
+    const gfx::SizeF& viewport_size,
+    float zoom) const {
   AffineTransform ctm =
-      SVGViewportContainerElement::ViewBoxToViewTransform(viewport_size);
+      SVGViewportContainerElement::ViewBoxToViewTransform(viewport_size, zoom);
   if (!view_spec_ || !view_spec_->Transform()) {
     return ctm;
   }

@@ -7,7 +7,7 @@ import {PromiseResolver} from 'chrome-untrusted://resources/js/promise_resolver.
 import {getTrustedScriptURL} from 'chrome-untrusted://resources/js/static_types.js';
 
 import {DrivePickerError} from './drive_picker_result_handler.mojom-webui.js';
-import {DrivePickerSanitizer, SanitizationError} from './sanitizer.js';
+import {DRIVE_THUMBNAIL_BASE_URL, DRIVE_THUMBNAIL_ID_PARAM_PREFIX, DRIVE_THUMBNAIL_SIZE_PARAM, DrivePickerSanitizer, SanitizationError} from './sanitizer.js';
 import type {SanitizedDriveFile} from './sanitizer.js';
 
 /**
@@ -36,6 +36,7 @@ export interface GooglePicker {
     MIME_TYPE: string,
     NAME: string,
     TYPE: string,
+    ICON_URL: string,
   };
   Type: {
     DOCUMENT: string,
@@ -54,6 +55,7 @@ export interface GooglePickerBuilder {
   setDeveloperKey(key: string): GooglePickerBuilder;
   setAppId(appId: string): GooglePickerBuilder;
   setOrigin(origin: string): GooglePickerBuilder;
+  setSize(width: number, height: number): GooglePickerBuilder;
   enableFeature(feature: string): GooglePickerBuilder;
   setCallback(callback: (data: GooglePickerResponse) => void):
       GooglePickerBuilder;
@@ -153,6 +155,7 @@ export class DrivePickerApiProxyImpl implements DrivePickerApiProxy {
               // Drive Picker to appear since untrusted content is
               // blocked by Chrome.
               .setOrigin('chrome://drive-picker-host')
+              .setSize(window.innerWidth, window.innerHeight)
               .enableFeature(google.picker.Feature.MULTISELECT_ENABLED)
               .setCallback((data: GooglePickerResponse) => {
                 const action = data[google.picker.Response.ACTION];
@@ -191,7 +194,7 @@ export class DrivePickerApiProxyImpl implements DrivePickerApiProxy {
       TYPE: google.picker.Document.TYPE,
       SIZE_BYTES: 'sizeBytes',
       RESOURCE_KEY: 'resourceKey',
-      THUMBNAIL_URL: 'thumbnailUrl',
+      ICON_URL: google.picker.Document.ICON_URL,
     };
     // Note: 'file' is used as a string literal instead of
     // google.picker.Type.FILE, because FILE is not defined on
@@ -205,8 +208,19 @@ export class DrivePickerApiProxyImpl implements DrivePickerApiProxy {
 
     for (const doc of documents) {
       try {
+        const docObj = doc as Record<string, unknown>;
+        const id = docObj['id'] as string;
+        const type = docObj['type'] as string;
+        // The `thumbnailUrl` field is not returned for photos or videos that
+        // are owned in the user's Google Drive. Therefore, we need to create
+        // our own `thumbnailUrl` by constructing it from the file ID.
+        const thumbnailUrl = (type === 'photo' || type === 'video') ?
+            `${DRIVE_THUMBNAIL_BASE_URL}?${DRIVE_THUMBNAIL_SIZE_PARAM}${
+                DRIVE_THUMBNAIL_ID_PARAM_PREFIX}${id}` :
+            null;
+
         const sanitized = DrivePickerSanitizer.sanitizeDocument(
-            doc as Record<string, unknown>, pickerKeys, allowedTypes);
+            docObj, pickerKeys, thumbnailUrl, allowedTypes);
         sanitizedFiles.push(sanitized);
       } catch (e) {
         if (e instanceof Error) {

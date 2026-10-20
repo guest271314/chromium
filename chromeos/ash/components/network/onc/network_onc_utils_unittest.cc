@@ -17,21 +17,31 @@
 #include "chromeos/ash/components/network/managed_network_configuration_handler.h"
 #include "chromeos/ash/components/network/network_handler.h"
 #include "chromeos/ash/components/network/network_handler_test_helper.h"
+#include "chromeos/ash/components/network/network_profile_handler.h"
 #include "chromeos/ash/components/network/network_ui_data.h"
 #include "chromeos/components/onc/onc_signature.h"
 #include "chromeos/components/onc/onc_test_utils.h"
 #include "chromeos/components/onc/variable_expander.h"
 #include "chromeos/test/chromeos_test_utils.h"
+#include "components/account_id/account_id_literal.h"
 #include "components/prefs/testing_pref_service.h"
-#include "components/user_manager/fake_user_manager.h"
-#include "components/user_manager/scoped_user_manager.h"
-#include "components/user_manager/test_helper.h"
+#include "components/session_manager/test/user_session_test_environment.h"
+#include "components/user_manager/user.h"
+#include "components/user_manager/user_manager.h"
 #include "google_apis/gaia/gaia_id.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace ash::onc {
 
 namespace test_utils = ::chromeos::onc::test_utils;
+
+namespace {
+
+constexpr AccountId::Literal kTestAccountId =
+    AccountId::Literal::FromUserEmailGaiaId("account@test.com",
+                                            GaiaId::Literal("fakegaia"));
+
+}  // namespace
 
 class ONCUtilsTest : public testing::Test {
  public:
@@ -41,19 +51,14 @@ class ONCUtilsTest : public testing::Test {
   ~ONCUtilsTest() override = default;
 
   void SetUp() override {
-    user_manager::UserManagerImpl::RegisterPrefs(local_state_.registry());
-    auto fake_user_manager =
-        std::make_unique<user_manager::FakeUserManager>(&local_state_);
-    auto account_id =
-        AccountId::FromUserEmailGaiaId("account@test.com", GaiaId("fakegaia"));
-    const user_manager::User* user = fake_user_manager->AddGaiaUser(
-        account_id, user_manager::UserType::kRegular);
-    fake_user_manager->UserLoggedIn(
-        account_id, user_manager::TestHelper::GetFakeUsernameHash(account_id));
-    fake_user_manager->SwitchActiveUser(account_id);
-
-    scoped_user_manager_ = std::make_unique<user_manager::ScopedUserManager>(
-        std::move(fake_user_manager));
+    ash::test::UserSessionTestEnvironment::RegisterLocalStatePrefs(
+        local_state_.registry());
+    user_session_test_environment_ =
+        std::make_unique<ash::test::UserSessionTestEnvironment>(&local_state_);
+    const user_manager::User* user =
+        user_session_test_environment_->AddRegularUser(kTestAccountId);
+    ASSERT_TRUE(user);
+    user_session_test_environment_->LogIn(kTestAccountId);
 
     network_handler_test_helper_ =
         std::make_unique<ash::NetworkHandlerTestHelper>();
@@ -65,13 +70,14 @@ class ONCUtilsTest : public testing::Test {
 
   void TearDown() override {
     network_handler_test_helper_.reset();
-    scoped_user_manager_.reset();
+    user_session_test_environment_.reset();
   }
 
  protected:
   base::test::SingleThreadTaskEnvironment task_environment_;
   TestingPrefServiceSimple local_state_;
-  std::unique_ptr<user_manager::ScopedUserManager> scoped_user_manager_;
+  std::unique_ptr<ash::test::UserSessionTestEnvironment>
+      user_session_test_environment_;
   std::unique_ptr<ash::NetworkHandlerTestHelper> network_handler_test_helper_;
 };
 
@@ -173,6 +179,86 @@ TEST_F(ONCUtilsTest, ImportNetworksForUser_ImportONCWithRemoveField) {
       network_handler_test_helper_->service_test()->FindServiceMatchingGUID(
           kPolicyGuid);
   ASSERT_TRUE(service_path.empty());
+}
+
+TEST_F(ONCUtilsTest,
+       ImportNetworksForUser_EthernetWritesUserProxyAndDNSToSharedProfile) {
+  // FakeShillManagerClient::SetupDefaultEnvironment() created /service/eth1 in
+  // the shared profile (/profile/default). This mirrors real devices where the
+  // active Ethernet service is auto-saved to the shared profile.
+  const char kEthServicePath[] = "/service/eth1";
+  const std::string kSharedProfilePath =
+      NetworkProfileHandler::GetSharedProfilePath();  // "/profile/default"
+
+  // Precondition: the Ethernet service lives in the SHARED profile, not in the
+  // importing user's profile (/profile/1).
+  ASSERT_EQ(kSharedProfilePath,
+            network_handler_test_helper_->GetServiceStringProperty(
+                kEthServicePath, shill::kProfileProperty));
+  ASSERT_TRUE(network_handler_test_helper_
+                  ->GetServiceStringProperty(kEthServicePath,
+                                             shill::kProxyConfigProperty)
+                  .empty());
+
+  // Policies must be initialized for SetProperties() to proceed.
+  const user_manager::User* user =
+      user_manager::UserManager::Get()->GetActiveUser();
+  NetworkHandler::Get()->managed_network_configuration_handler()->SetPolicy(
+      ::onc::ONC_SOURCE_USER_POLICY, user->username_hash(), base::ListValue(),
+      base::DictValue());
+  NetworkHandler::Get()->managed_network_configuration_handler()->SetPolicy(
+      ::onc::ONC_SOURCE_DEVICE_POLICY, std::string(), base::ListValue(),
+      base::DictValue());
+
+  // Malicious ONC the unprivileged user imports via chrome://network
+  const char kAttackerPacUrl[] = "http://203.0.113.1/pac.js";
+  const char kAttackerDns[] = "203.0.113.53";
+  base::DictValue eth_config =
+      base::DictValue()
+          .Set(::onc::network_config::kGUID, "evil-eth")
+          .Set(::onc::network_config::kType, ::onc::network_config::kEthernet)
+          .Set(::onc::network_config::kEthernet,
+               base::DictValue().Set(::onc::ethernet::kAuthentication,
+                                     ::onc::ethernet::kAuthenticationNone))
+          .Set(::onc::network_config::kNameServersConfigType,
+               ::onc::network_config::kIPConfigTypeStatic)
+          .Set(::onc::network_config::kStaticIPConfig,
+               base::DictValue()
+                   .Set(::onc::ipconfig::kType, ::onc::ipconfig::kIPv4)
+                   .Set(::onc::ipconfig::kNameServers,
+                        base::ListValue().Append(kAttackerDns)))
+          .Set(::onc::network_config::kProxySettings,
+               base::DictValue()
+                   .Set(::onc::proxy::kType, ::onc::proxy::kPAC)
+                   .Set(::onc::proxy::kPAC, kAttackerPacUrl));
+
+  std::string error;
+  int created = ImportNetworksForUser(
+      user, base::ListValue().Append(std::move(eth_config)), &error);
+
+  // THE IMPORT SHOULD BE REJECTED ----
+  EXPECT_EQ(0, created);
+
+  // Assert that the validation error was caught and returned
+  EXPECT_FALSE(error.empty());
+  EXPECT_EQ("Ethernet configuration via user import is not allowed.", error);
+
+  // Assert that the Ethernet service remains cleanly in the shared profile
+  EXPECT_EQ(kSharedProfilePath,
+            network_handler_test_helper_->GetServiceStringProperty(
+                kEthServicePath, shill::kProfileProperty));
+
+  // Assert that the attacker-controlled PAC proxy was NOT written
+  std::string proxy_config =
+      network_handler_test_helper_->GetServiceStringProperty(
+          kEthServicePath, shill::kProxyConfigProperty);
+  EXPECT_EQ(std::string::npos, proxy_config.find(kAttackerPacUrl));
+
+  // Assert that StaticIPConfig was never populated with the rogue DNS
+  EXPECT_TRUE(network_handler_test_helper_
+                  ->GetServiceStringProperty(kEthServicePath,
+                                             shill::kStaticIPConfigProperty)
+                  .empty());
 }
 
 TEST_F(ONCUtilsTest, ProxySettingsToProxyConfig) {

@@ -28,6 +28,7 @@
 #include "extensions/browser/extension_event_histogram_value.h"
 #include "extensions/browser/extension_prefs.h"
 #include "extensions/browser/extension_registry.h"
+#include "extensions/browser/manifest_v2_handler.h"
 #include "extensions/browser/permissions_manager.h"
 #include "extensions/browser/process_manager.h"
 #include "extensions/browser/service_worker/worker_id.h"
@@ -93,15 +94,11 @@ DeveloperPrivateEventRouter::DeveloperPrivateEventRouter(Profile* profile)
       base::BindRepeating(&DeveloperPrivateEventRouter::OnProfilePrefChanged,
                           base::Unretained(this)));
   pref_change_registrar_.Add(
-      kMV2DeprecationWarningAcknowledgedGloballyPref.name,
+      prefs::kExtensionsPinnedByDefault,
       base::BindRepeating(&DeveloperPrivateEventRouter::OnProfilePrefChanged,
                           base::Unretained(this)));
   pref_change_registrar_.Add(
-      kMV2DeprecationDisabledAcknowledgedGloballyPref.name,
-      base::BindRepeating(&DeveloperPrivateEventRouter::OnProfilePrefChanged,
-                          base::Unretained(this)));
-  pref_change_registrar_.Add(
-      kMV2DeprecationUnsupportedAcknowledgedGloballyPref.name,
+      ManifestV2Handler::kMV2UnsupportedAcknowledgedGloballyPref.name,
       base::BindRepeating(&DeveloperPrivateEventRouter::OnProfilePrefChanged,
                           base::Unretained(this)));
 
@@ -129,8 +126,8 @@ void DeveloperPrivateEventRouter::RemoveExtensionId(
 void DeveloperPrivateEventRouter::OnExtensionLoaded(
     content::BrowserContext* browser_context,
     const Extension* extension) {
-  DCHECK(
-      profile_->IsSameOrParent(Profile::FromBrowserContext(browser_context)));
+  CHECK(profile_->IsSameOrParent(Profile::FromBrowserContext(browser_context)),
+        base::NotFatalUntil::M161);
   BroadcastItemStateChanged(developer::EventType::kLoaded, extension->id());
 }
 
@@ -138,8 +135,8 @@ void DeveloperPrivateEventRouter::OnExtensionUnloaded(
     content::BrowserContext* browser_context,
     const Extension* extension,
     UnloadedExtensionReason reason) {
-  DCHECK(
-      profile_->IsSameOrParent(Profile::FromBrowserContext(browser_context)));
+  CHECK(profile_->IsSameOrParent(Profile::FromBrowserContext(browser_context)),
+        base::NotFatalUntil::M161);
   BroadcastItemStateChanged(developer::EventType::kUnloaded, extension->id());
 }
 
@@ -147,8 +144,8 @@ void DeveloperPrivateEventRouter::OnExtensionInstalled(
     content::BrowserContext* browser_context,
     const Extension* extension,
     bool is_update) {
-  DCHECK(
-      profile_->IsSameOrParent(Profile::FromBrowserContext(browser_context)));
+  CHECK(profile_->IsSameOrParent(Profile::FromBrowserContext(browser_context)),
+        base::NotFatalUntil::M161);
   BroadcastItemStateChanged(developer::EventType::kInstalled, extension->id());
 }
 
@@ -156,8 +153,8 @@ void DeveloperPrivateEventRouter::OnExtensionUninstalled(
     content::BrowserContext* browser_context,
     const Extension* extension,
     extensions::UninstallReason reason) {
-  DCHECK(
-      profile_->IsSameOrParent(Profile::FromBrowserContext(browser_context)));
+  CHECK(profile_->IsSameOrParent(Profile::FromBrowserContext(browser_context)),
+        base::NotFatalUntil::M161);
   if (ui_util::ShouldDisplayInExtensionSettings(*extension)) {
     BroadcastItemStateChanged(developer::EventType::kUninstalled,
                               extension->id());
@@ -212,6 +209,7 @@ void DeveloperPrivateEventRouter::OnStartedTrackingServiceWorkerInstance(
 }
 
 void DeveloperPrivateEventRouter::OnStoppedTrackingServiceWorkerInstance(
+    content::BrowserContext& browser_context,
     const WorkerId& worker_id) {
   BroadcastItemStateChanged(developer::EventType::kServiceWorkerStopped,
                             worker_id.extension_id);
@@ -240,8 +238,8 @@ void DeveloperPrivateEventRouter::OnUserPermissionsSettingsChanged(
     const PermissionsManager::UserPermissionsSettings& settings) {
   developer::UserSiteSettings user_site_settings =
       ConvertToUserSiteSettings(settings);
-  base::ListValue args;
-  args.Append(user_site_settings.ToValue());
+  auto args = base::MakeRefCounted<EventArgs>();
+  args->data.Append(user_site_settings.ToValue());
 
   auto event = std::make_unique<Event>(
       events::DEVELOPER_PRIVATE_ON_USER_SITE_SETTINGS_CHANGED,
@@ -258,8 +256,8 @@ void DeveloperPrivateEventRouter::OnExtensionPermissionsUpdated(
 }
 
 void DeveloperPrivateEventRouter::OnExtensionManagementSettingsChanged() {
-  base::ListValue args;
-  args.Append(CreateProfileInfo(profile_).ToValue());
+  auto args = base::MakeRefCounted<EventArgs>();
+  args->data.Append(CreateProfileInfo(profile_).ToValue());
 
   auto event = std::make_unique<Event>(
       events::DEVELOPER_PRIVATE_ON_PROFILE_STATE_CHANGED,
@@ -303,8 +301,8 @@ void DeveloperPrivateEventRouter::OnExtensionsUploadabilityChanged() {
 }
 
 void DeveloperPrivateEventRouter::OnProfilePrefChanged() {
-  base::ListValue args;
-  args.Append(CreateProfileInfo(profile_).ToValue());
+  auto args = base::MakeRefCounted<EventArgs>();
+  args->data.Append(CreateProfileInfo(profile_).ToValue());
   auto event = std::make_unique<Event>(
       events::DEVELOPER_PRIVATE_ON_PROFILE_STATE_CHANGED,
       developer::OnProfileStateChanged::kEventName, std::move(args));
@@ -347,7 +345,7 @@ void DeveloperPrivateEventRouter::BroadcastItemStateChangedHelper(
     const ExtensionId& extension_id,
     std::unique_ptr<ExtensionInfoGenerator> info_generator,
     ExtensionInfoGenerator::ExtensionInfoList infos) {
-  DCHECK_LE(infos.size(), 1u);
+  CHECK_LE(infos.size(), 1u, base::NotFatalUntil::M161);
 
   developer::EventData event_data;
   event_data.event_type = event_type;
@@ -356,8 +354,8 @@ void DeveloperPrivateEventRouter::BroadcastItemStateChangedHelper(
     event_data.extension_info = std::move(infos[0]);
   }
 
-  base::ListValue args;
-  args.Append(event_data.ToValue());
+  auto args = base::MakeRefCounted<EventArgs>();
+  args->data.Append(event_data.ToValue());
   auto event = std::make_unique<Event>(
       events::DEVELOPER_PRIVATE_ON_ITEM_STATE_CHANGED,
       developer::OnItemStateChanged::kEventName, std::move(args));

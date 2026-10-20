@@ -21,9 +21,9 @@
 #include "base/containers/id_map.h"
 #include "base/functional/callback.h"
 #include "base/gtest_prod_util.h"
-#include "base/memory/advanced_memory_safety_checks.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/ref_counted.h"
+#include "base/memory/sanitized_object.h"
 #include "base/observer_list.h"
 #include "base/time/clock.h"
 #include "base/time/tick_clock.h"
@@ -116,6 +116,7 @@ FORWARD_DECLARE_TEST(ServiceWorkerVersionTest, DevToolsAttachThenDetach);
 FORWARD_DECLARE_TEST(ServiceWorkerVersionTest,
                      DefaultTimeoutRequestDoesNotAffectMaxTimeoutRequest);
 FORWARD_DECLARE_TEST(ServiceWorkerVersionTest, Doom);
+FORWARD_DECLARE_TEST(ServiceWorkerVersionTest, SetStatus_ReentrantSkipWaiting);
 }  // namespace service_worker_version_unittest
 
 FORWARD_DECLARE_TEST(ServiceWorkerRegistryTest, ScriptResponseTime);
@@ -138,7 +139,7 @@ class CONTENT_EXPORT ServiceWorkerVersion
       public EmbeddedWorkerInstance::Listener {
   // TODO(crbug.com/40864997): Remove this macro once we identified the cause of
   // the bug.
-  ADVANCED_MEMORY_SAFETY_CHECKS();
+  SANITIZED_OBJECT();
 
  public:
   using StatusCallback =
@@ -222,7 +223,11 @@ class CONTENT_EXPORT ServiceWorkerVersion
       int64_t version_id,
       mojo::PendingRemote<storage::mojom::ServiceWorkerLiveVersionRef>
           remote_reference,
-      base::WeakPtr<ServiceWorkerContextCore> context);
+      base::WeakPtr<ServiceWorkerContextCore> context,
+      const std::optional<base::UnguessableToken>&
+          creator_network_restrictions_id,
+      const std::optional<base::UnguessableToken>& network_restrictions_id,
+      const PolicyContainerPolicies& creator_policies);
 
   ServiceWorkerVersion(const ServiceWorkerVersion&) = delete;
   ServiceWorkerVersion& operator=(const ServiceWorkerVersion&) = delete;
@@ -241,6 +246,19 @@ class CONTENT_EXPORT ServiceWorkerVersion
   ukm::SourceId ukm_source_id() const { return ukm_source_id_; }
   const base::UnguessableToken& reporting_source() const {
     return reporting_source_;
+  }
+
+  const base::UnguessableToken& network_restrictions_id() const {
+    return network_restrictions_id_;
+  }
+
+  const std::optional<base::UnguessableToken>& creator_network_restrictions_id()
+      const {
+    return creator_network_restrictions_id_;
+  }
+
+  const PolicyContainerPolicies& creator_policies() const {
+    return creator_policies_;
   }
 
   // This status is set to EXISTS or DOES_NOT_EXIST when the install event has
@@ -431,9 +449,11 @@ class CONTENT_EXPORT ServiceWorkerVersion
   // This must be called when is_endpoint_ready() returns true, which is after
   // InitializeGlobalScope() is called.
   blink::mojom::ServiceWorker* endpoint() {
+    // TODO(crbug.com/557920479): CHECK-exclusion: Convert to a CHECK once we
+    // are confident it won't be triggered.
     DCHECK(running_status() == blink::EmbeddedWorkerStatus::kStarting ||
            running_status() == blink::EmbeddedWorkerStatus::kRunning);
-    DCHECK(service_worker_remote_.is_bound());
+    CHECK(service_worker_remote_.is_bound(), base::NotFatalUntil::M159);
     return service_worker_remote_.get();
   }
 
@@ -446,7 +466,7 @@ class CONTENT_EXPORT ServiceWorkerVersion
   // if the pending request is pending too long? https://crbug.com/797222
   blink::mojom::ControllerServiceWorker* controller() {
     if (!remote_controller_.is_bound()) {
-      DCHECK(!controller_receiver_.is_valid());
+      CHECK(!controller_receiver_.is_valid(), base::NotFatalUntil::M159);
       controller_receiver_ = remote_controller_.BindNewPipeAndPassReceiver();
     }
     return remote_controller_.get();
@@ -550,10 +570,17 @@ class CONTENT_EXPORT ServiceWorkerVersion
   void set_outside_fetch_client_settings_object(
       blink::mojom::FetchClientSettingsObjectPtr
           outside_fetch_client_settings_object) {
-    DCHECK(!outside_fetch_client_settings_object_);
+    CHECK(!outside_fetch_client_settings_object_, base::NotFatalUntil::M159);
     outside_fetch_client_settings_object_ =
         std::move(outside_fetch_client_settings_object);
   }
+
+  void set_network_restrictions_id(
+      const base::UnguessableToken& network_restrictions_id) {
+    network_restrictions_id_ = network_restrictions_id;
+  }
+
+  void MaybeRegisterNetworkRestrictions(base::OnceClosure callback);
 
   // Returns the reason the embedded worker failed to start, using internal
   // information that may not be available to the caller. Returns
@@ -783,8 +810,18 @@ class CONTENT_EXPORT ServiceWorkerVersion
 
   void OnPaymentHandlerDisconnect();
 
+  struct RouterRulesForDevTools {
+    std::optional<std::string> legacy_rules;
+    std::vector<ServiceWorkerRouterRule> typed_rules;
+  };
+  RouterRulesForDevTools CalculateRouterRulesForDevTools() const;
+
   // Timeout for a request to be handled.
   static constexpr base::TimeDelta kRequestTimeout = base::Minutes(5);
+
+  // Checks if there is an active and pending event that allows the worker to
+  // open a new window or focus an existing one.
+  bool HasPendingWindowInteractionEvent();
 
   base::WeakPtr<ServiceWorkerVersion> GetWeakPtr();
 
@@ -880,6 +917,9 @@ class CONTENT_EXPORT ServiceWorkerVersion
   FRIEND_TEST_ALL_PREFIXES(
       service_worker_version_unittest::ServiceWorkerVersionTest,
       Doom);
+  FRIEND_TEST_ALL_PREFIXES(
+      service_worker_version_unittest::ServiceWorkerVersionTest,
+      SetStatus_ReentrantSkipWaiting);
   FRIEND_TEST_ALL_PREFIXES(ServiceWorkerRegistryTest, ScriptResponseTime);
   FRIEND_TEST_ALL_PREFIXES(ServiceWorkerBrowserTest,
                            WarmUpAndStartServiceWorker);
@@ -909,7 +949,7 @@ class CONTENT_EXPORT ServiceWorkerVersion
   struct InflightRequest {
     // TODO(crbug.com/40864997): Remove this macro once we identified the cause
     // of the bug.
-    ADVANCED_MEMORY_SAFETY_CHECKS();
+    SANITIZED_OBJECT();
 
    public:
     InflightRequest(StatusCallback error_callback,
@@ -996,6 +1036,7 @@ class CONTENT_EXPORT ServiceWorkerVersion
   void OpenNewTab(const GURL& url, OpenNewTabCallback callback) override;
   void OpenPaymentHandlerWindow(
       const GURL& url,
+      blink::mojom::PaymentHandlerOpenWindowOptionsPtr options,
       OpenPaymentHandlerWindowCallback callback) override;
   void PostMessageToClient(const std::string& client_uuid,
                            blink::TransferableMessage message) override;
@@ -1117,6 +1158,10 @@ class CONTENT_EXPORT ServiceWorkerVersion
   void GetClientOnExecutionReady(const std::string& client_uuid,
                                  GetClientCallback callback,
                                  bool success);
+
+  // Checks if there is an active and pending PAYMENT_REQUEST event
+  // for the current service worker version.
+  bool HasPendingPaymentRequestEvent();
 
   void DidShowPaymentHandlerWindow(
       const GURL& url,
@@ -1415,6 +1460,20 @@ class CONTENT_EXPORT ServiceWorkerVersion
   // browser initiated network response for SyntheticResponse. In subsequent
   // navigations, this will be used as the locally returned response header.
   network::mojom::URLResponseHeadPtr synthetic_response_head_;
+
+  // The network restriction ID of the creator (e.g., frame) from which this
+  // worker may inherit restrictions.
+  const std::optional<base::UnguessableToken> creator_network_restrictions_id_;
+  // The policy container policies (including connection allowlists) inherited
+  // from the creator.
+  const PolicyContainerPolicies creator_policies_;
+
+  // A unique token identifying this worker's network restrictions in the
+  // network service.
+  base::UnguessableToken network_restrictions_id_;
+  // Whether the network restrictions for this worker have been registered with
+  // the network service.
+  bool network_restrictions_registered_ = false;
 
   base::WeakPtrFactory<ServiceWorkerVersion> weak_factory_{this};
 };

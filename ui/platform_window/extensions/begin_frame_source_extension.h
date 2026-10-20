@@ -26,10 +26,14 @@ class COMPONENT_EXPORT(PLATFORM_WINDOW) BeginFrameSourceExtension {
         base::TimeTicks deadline,
         base::TimeDelta interval,
         base::OnceCallback<void(bool has_damage)> ack_callback) = 0;
+
+    virtual void OnVSyncIntervalChanged(base::TimeTicks timebase,
+                                        base::TimeDelta interval) {}
   };
 
   virtual ~BeginFrameSourceExtension();
 
+  virtual void Reset() = 0;
   virtual void SetDelegate(Delegate* delegate) = 0;
   virtual void SetNeedsBeginFrame(bool needs) = 0;
   virtual void SetPreferredInterval(base::TimeDelta interval) = 0;

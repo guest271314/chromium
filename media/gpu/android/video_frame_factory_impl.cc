@@ -141,8 +141,8 @@ void VideoFrameFactoryImpl::CreateVideoFrame(
     OnceOutputCB output_cb) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
-  gfx::Size coded_size = output_buffer->size();
-  gfx::Rect visible_rect(coded_size);
+  gfx::Size visible_size = output_buffer->visible_size();
+  gfx::Rect visible_rect(visible_size);
 
   auto output_buffer_renderer = std::make_unique<CodecOutputBufferRenderer>(
       std::move(output_buffer), codec_buffer_wait_coordinator_, GetDrDcLock());
@@ -158,8 +158,10 @@ void VideoFrameFactoryImpl::CreateVideoFrame(
 
   // Check that we can create a VideoFrame for this config before trying to
   // create the textures for it.
+  // Note, that we use visible_size in place of the coded size here, because
+  // coded size not known yet.
   if (!VideoFrame::IsValidConfig(pixel_format, VideoFrame::STORAGE_OPAQUE,
-                                 coded_size, visible_rect, natural_size)) {
+                                 visible_size, visible_rect, natural_size)) {
     LOG(ERROR) << __func__ << " unsupported video frame format";
     std::move(output_cb).Run(nullptr);
     return;
@@ -261,7 +263,6 @@ void VideoFrameFactoryImpl::CreateVideoFrame_OnImageReady(
   auto codec_image_holder = std::move(record.codec_image_holder);
 
   CHECK(record.shared_image);
-  gfx::ColorSpace color_space = record.shared_image->color_space();
   scoped_refptr<VideoFrame> frame = VideoFrame::WrapSharedImage(
       pixel_format, std::move(record.shared_image), gpu::SyncToken(),
       VideoFrame::ReleaseMailboxCB(), frame_info.visible_rect, natural_size,
@@ -278,29 +279,12 @@ void VideoFrameFactoryImpl::CreateVideoFrame_OnImageReady(
   // For Vulkan.
   frame->metadata().ycbcr_info = frame_info.ycbcr_info;
 
-  frame->set_color_space(color_space);
   frame->set_hdr_metadata(hdr_metadata);
 
   frame->metadata().copy_required = video_frame_copy_required;
 
-  const bool is_surface_control =
-      overlay_mode == OverlayMode::kSurfaceControlSecure ||
-      overlay_mode == OverlayMode::kSurfaceControlInsecure;
   const bool wants_promotion_hints =
       overlay_mode == OverlayMode::kRequestPromotionHints;
-
-  bool allow_overlay = false;
-  if (is_surface_control) {
-    DCHECK(is_texture_owner_backed);
-    allow_overlay = true;
-  } else {
-    // We unconditionally mark the picture as overlayable, even if
-    // |!is_texture_owner_backed|, if we want to get hints.  It's
-    // required, else we won't get hints.
-    allow_overlay = !is_texture_owner_backed || wants_promotion_hints;
-  }
-
-  frame->metadata().allow_overlay = allow_overlay;
   frame->metadata().wants_promotion_hint = wants_promotion_hints;
   frame->metadata().in_surface_view = !is_texture_owner_backed;
 

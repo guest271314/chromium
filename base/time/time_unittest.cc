@@ -922,7 +922,7 @@ TEST_F(TimeTest, TimeTOverflow) {
   // We also expect the same behaviour for Min plus the Unix Epoch.
   constexpr Time kMinPlusUnix =
       Time() + base::Microseconds(std::numeric_limits<int64_t>::min() +
-                                  Time::kTimeTToMicrosecondsOffset);
+                                  Time::kMicrosecondsFromWindowsToUnixEpoch);
   static_assert(!kMinPlusUnix.is_min());
   EXPECT_EQ(std::numeric_limits<time_t>::min(), kMinPlusUnix.ToTimeT());
 
@@ -932,8 +932,9 @@ TEST_F(TimeTest, TimeTOverflow) {
   // time_t, but not on a 32 bit time_t, which can only represent values
   // starting from 1901-12-13
   constexpr Time kMinPlusUnixPlusOne =
-      Time() + base::Microseconds(std::numeric_limits<int64_t>::min() +
-                                  Time::kTimeTToMicrosecondsOffset + 1);
+      Time() +
+      base::Microseconds(std::numeric_limits<int64_t>::min() +
+                         Time::kMicrosecondsFromWindowsToUnixEpoch + 1);
   static_assert(!kMinPlusUnixPlusOne.is_min());
   if (time_t_is_32_bit) {
     EXPECT_EQ(std::numeric_limits<time_t>::min(),
@@ -975,7 +976,7 @@ TEST_F(TimeTest, Explode_Y10KCompliance) {
 
   // The Y2038 issue occurs when a 32-bit signed integer overflows.
   constexpr int64_t kYear2038MicrosOffset =
-      Time::kTimeTToMicrosecondsOffset +
+      Time::kMicrosecondsFromWindowsToUnixEpoch +
       (std::numeric_limits<int32_t>::max() * Time::kMicrosecondsPerSecond);
 
   // 1 March 10000 at noon.
@@ -983,7 +984,7 @@ TEST_F(TimeTest, Explode_Y10KCompliance) {
   constexpr int kExtraLeapDaysOverThoseYears = 1947;
   constexpr int kDaysFromJanToMar10000 = 31 + 29;
   constexpr int64_t kMarch10000MicrosOffset =
-      Time::kTimeTToMicrosecondsOffset +
+      Time::kMicrosecondsFromWindowsToUnixEpoch +
       Days(kYear10000YearsOffset * kDaysPerYear + kExtraLeapDaysOverThoseYears +
            kDaysFromJanToMar10000)
           .InMicroseconds() +
@@ -1000,7 +1001,7 @@ TEST_F(TimeTest, Explode_Y10KCompliance) {
   constexpr int64_t kMaxIntegerAsDoubleMillis =
       int64_t{1} << std::numeric_limits<double>::digits;
   constexpr int64_t kIcuMaxMicrosOffset =
-      Time::kTimeTToMicrosecondsOffset +
+      Time::kMicrosecondsFromWindowsToUnixEpoch +
       (kMaxIntegerAsDoubleMillis * Time::kMicrosecondsPerMillisecond + 999);
 
   const auto make_time = [](int64_t micros) {
@@ -1021,11 +1022,11 @@ TEST_F(TimeTest, Explode_Y10KCompliance) {
       {make_time(kHalfYearInMicros), Time::Exploded{1601, 7, 1, 2, 0, 0, 0, 0}},
 
       // Before/On/After 1 Jan 1970.
-      {make_time(Time::kTimeTToMicrosecondsOffset - kHalfYearInMicros),
+      {make_time(Time::kMicrosecondsFromWindowsToUnixEpoch - kHalfYearInMicros),
        Time::Exploded{1969, 7, 4, 3, 0, 0, 0, 0}},
-      {make_time(Time::kTimeTToMicrosecondsOffset),
+      {make_time(Time::kMicrosecondsFromWindowsToUnixEpoch),
        Time::Exploded{1970, 1, 4, 1, 0, 0, 0, 0}},
-      {make_time(Time::kTimeTToMicrosecondsOffset + kHalfYearInMicros),
+      {make_time(Time::kMicrosecondsFromWindowsToUnixEpoch + kHalfYearInMicros),
        Time::Exploded{1970, 7, 4, 2, 0, 0, 0, 0}},
 
       // Before/On/After 19 January 2038.
@@ -1450,6 +1451,10 @@ TEST(TimeTicks, LowRes) {
 }
 #endif
 
+constexpr TimeTicks kOneYearAfterUnixEpoch =
+    TimeTicks() + Microseconds(Time::kMicrosecondsFromWindowsToUnixEpoch) +
+    Days(365);
+
 class TimeTicksOverride {
  public:
   static TimeTicks Now() {
@@ -1464,13 +1469,13 @@ class TimeTicksOverride {
 TimeTicks TimeTicksOverride::now_ticks_;
 
 TEST(TimeTicks, NowOverride) {
-  TimeTicksOverride::now_ticks_ = TimeTicks::Min();
+  TimeTicksOverride::now_ticks_ = kOneYearAfterUnixEpoch;
 
   // Override is not active. All Now() methods should return a sensible value.
-  EXPECT_LT(TimeTicks::Min(), TimeTicks::UnixEpoch());
-  EXPECT_LT(TimeTicks::UnixEpoch(), TimeTicks::Now());
+  EXPECT_LT(TimeTicks::Min(), TimeTicks());
+  EXPECT_LT(TimeTicks(), TimeTicks::Now());
   EXPECT_GT(TimeTicks::Max(), TimeTicks::Now());
-  EXPECT_LT(TimeTicks::UnixEpoch(), subtle::TimeTicksNowIgnoringOverride());
+  EXPECT_LT(TimeTicks(), subtle::TimeTicksNowIgnoringOverride());
   EXPECT_GT(TimeTicks::Max(), subtle::TimeTicksNowIgnoringOverride());
 
   {
@@ -1479,21 +1484,21 @@ TEST(TimeTicks, NowOverride) {
                                                nullptr);
 
     // Overridden value is returned and incremented when Now() is called.
-    EXPECT_EQ(TimeTicks::Min() + Seconds(1), TimeTicks::Now());
-    EXPECT_EQ(TimeTicks::Min() + Seconds(2), TimeTicks::Now());
+    EXPECT_EQ(kOneYearAfterUnixEpoch + Seconds(1), TimeTicks::Now());
+    EXPECT_EQ(kOneYearAfterUnixEpoch + Seconds(2), TimeTicks::Now());
 
     // NowIgnoringOverride() still returns real ticks.
-    EXPECT_LT(TimeTicks::UnixEpoch(), subtle::TimeTicksNowIgnoringOverride());
+    EXPECT_LT(TimeTicks(), subtle::TimeTicksNowIgnoringOverride());
     EXPECT_GT(TimeTicks::Max(), subtle::TimeTicksNowIgnoringOverride());
 
     // IgnoringOverride methods didn't call NowOverrideTickClock::NowTicks().
-    EXPECT_EQ(TimeTicks::Min() + Seconds(3), TimeTicks::Now());
+    EXPECT_EQ(kOneYearAfterUnixEpoch + Seconds(3), TimeTicks::Now());
   }
 
   // All methods return real ticks again.
-  EXPECT_LT(TimeTicks::UnixEpoch(), TimeTicks::Now());
+  EXPECT_LT(TimeTicks(), TimeTicks::Now());
   EXPECT_GT(TimeTicks::Max(), TimeTicks::Now());
-  EXPECT_LT(TimeTicks::UnixEpoch(), subtle::TimeTicksNowIgnoringOverride());
+  EXPECT_LT(TimeTicks(), subtle::TimeTicksNowIgnoringOverride());
   EXPECT_GT(TimeTicks::Max(), subtle::TimeTicksNowIgnoringOverride());
 }
 
@@ -1515,10 +1520,9 @@ TEST(TimeTicks, LowResolutionNowOverride) {
 
   // Override is not active. All LowResolutionNow() methods should return a
   // sensible value.
-  EXPECT_LT(TimeTicks::UnixEpoch(), TimeTicks::LowResolutionNow());
+  EXPECT_LT(TimeTicks(), TimeTicks::LowResolutionNow());
   EXPECT_GT(TimeTicks::Max(), TimeTicks::LowResolutionNow());
-  EXPECT_LT(TimeTicks::UnixEpoch(),
-            subtle::TimeTicksLowResolutionNowIgnoringOverride());
+  EXPECT_LT(TimeTicks(), subtle::TimeTicksLowResolutionNowIgnoringOverride());
   EXPECT_GT(TimeTicks::Max(),
             subtle::TimeTicksLowResolutionNowIgnoringOverride());
 
@@ -1534,8 +1538,7 @@ TEST(TimeTicks, LowResolutionNowOverride) {
     EXPECT_EQ(TimeTicks::Min() + Seconds(2), TimeTicks::LowResolutionNow());
 
     // LowResolutionNowIgnoringOverride() still returns real ticks.
-    EXPECT_LT(TimeTicks::UnixEpoch(),
-              subtle::TimeTicksLowResolutionNowIgnoringOverride());
+    EXPECT_LT(TimeTicks(), subtle::TimeTicksLowResolutionNowIgnoringOverride());
     EXPECT_GT(TimeTicks::Max(),
               subtle::TimeTicksLowResolutionNowIgnoringOverride());
 
@@ -1545,10 +1548,9 @@ TEST(TimeTicks, LowResolutionNowOverride) {
   }
 
   // All methods return real ticks again.
-  EXPECT_LT(TimeTicks::UnixEpoch(), TimeTicks::LowResolutionNow());
+  EXPECT_LT(TimeTicks(), TimeTicks::LowResolutionNow());
   EXPECT_GT(TimeTicks::Max(), TimeTicks::LowResolutionNow());
-  EXPECT_LT(TimeTicks::UnixEpoch(),
-            subtle::TimeTicksLowResolutionNowIgnoringOverride());
+  EXPECT_LT(TimeTicks(), subtle::TimeTicksLowResolutionNowIgnoringOverride());
   EXPECT_GT(TimeTicks::Max(),
             subtle::TimeTicksLowResolutionNowIgnoringOverride());
 }
@@ -1768,6 +1770,87 @@ TEST(LiveTicks, NowOverride) {
   EXPECT_LT(LiveTicks::Now(), LiveTicks::Max());
   EXPECT_LE(initial_live_ticks, subtle::LiveTicksNowIgnoringOverride());
   EXPECT_LT(subtle::LiveTicksNowIgnoringOverride(), LiveTicks::Max());
+}
+
+class RealTicksOverride {
+ public:
+  static time_internal::RealTicks Now() {
+    now_ticks_ += Seconds(1);
+    return now_ticks_;
+  }
+
+  static time_internal::RealTicks now_ticks_;
+};
+
+// static
+time_internal::RealTicks RealTicksOverride::now_ticks_;
+
+TEST(RealTicks, NowOverride) {
+  RealTicksOverride::now_ticks_ = time_internal::RealTicks::Min();
+
+  // Override is not active. All Now() methods should return a sensible value.
+  time_internal::RealTicks initial_real_ticks = time_internal::RealTicks::Now();
+  EXPECT_LE(initial_real_ticks, time_internal::RealTicks::Now());
+  EXPECT_LT(time_internal::RealTicks::Now(), time_internal::RealTicks::Max());
+  EXPECT_LE(initial_real_ticks, subtle::RealTicksNowIgnoringOverride());
+  EXPECT_LT(subtle::RealTicksNowIgnoringOverride(),
+            time_internal::RealTicks::Max());
+
+  {
+    // Set override.
+    subtle::ScopedTimeClockOverrides overrides(
+        nullptr, nullptr, nullptr, nullptr, nullptr, &RealTicksOverride::Now);
+
+    // Overridden value is returned and incremented when Now() is called.
+    EXPECT_EQ(time_internal::RealTicks::Min() + Seconds(1),
+              time_internal::RealTicks::Now());
+    EXPECT_EQ(time_internal::RealTicks::Min() + Seconds(2),
+              time_internal::RealTicks::Now());
+
+    // NowIgnoringOverride() still returns real ticks.
+    EXPECT_LE(initial_real_ticks, subtle::RealTicksNowIgnoringOverride());
+    EXPECT_LT(subtle::RealTicksNowIgnoringOverride(),
+              time_internal::RealTicks::Max());
+
+    // IgnoringOverride methods didn't call NowOverrideTickClock::NowTicks().
+    EXPECT_EQ(time_internal::RealTicks::Min() + Seconds(3),
+              time_internal::RealTicks::Now());
+  }
+
+  // All methods return real ticks again.
+  EXPECT_LE(initial_real_ticks, time_internal::RealTicks::Now());
+  EXPECT_LT(time_internal::RealTicks::Now(), time_internal::RealTicks::Max());
+  EXPECT_LE(initial_real_ticks, subtle::RealTicksNowIgnoringOverride());
+  EXPECT_LT(subtle::RealTicksNowIgnoringOverride(),
+            time_internal::RealTicks::Max());
+}
+
+TEST(RealTicks, AdvancesInLockstepWithLiveTicks) {
+  // When the system is not sleeping, LiveTicks and RealTicks must advance in
+  // lockstep.
+  const time_internal::LiveAndRealTicks start =
+      time_internal::SampleLiveAndRealTicks();
+
+  PlatformThread::Sleep(Milliseconds(20));
+
+  const time_internal::LiveAndRealTicks end =
+      time_internal::SampleLiveAndRealTicks();
+
+  const TimeDelta live_delta = end.live - start.live;
+  const TimeDelta real_delta = end.real - start.real;
+  EXPECT_GE(live_delta, Milliseconds(10));
+  EXPECT_GE(real_delta, Milliseconds(10));
+
+  // The sampling uncertainty between the two clocks in each sample is bounded
+  // by `max_error`, which accounts for both non-atomic reads and independent
+  // microsecond truncation. Across both `start` and `end` samples, the maximum
+  // difference between `live_delta` and `real_delta` cannot exceed the sum of
+  // their individual error bounds. Deriving the error margin dynamically from
+  // these measured durations guarantees the most discriminant possible
+  // criterion for detecting drift between the two clocks without risking false
+  // failures.
+  const TimeDelta error_margin = start.max_error + end.max_error;
+  EXPECT_LE((live_delta - real_delta).magnitude(), error_margin);
 }
 
 TEST(TimeDelta, FromAndIn) {

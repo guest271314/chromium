@@ -10,6 +10,8 @@
 #include "base/memory/weak_ptr.h"
 #include "chrome/browser/glic/common/local_hotkey_manager.h"
 
+class Profile;
+
 namespace glic {
 
 // Manages application-scoped hotkeys that are handled by a specific embedder.
@@ -22,6 +24,7 @@ class PanelVisibilityDependentHotkeyManager
     : public LocalHotkeyManager::EventHandler {
  public:
   explicit PanelVisibilityDependentHotkeyManager(
+      Profile* profile,
       base::WeakPtr<LocalHotkeyManager::Panel> panel);
   ~PanelVisibilityDependentHotkeyManager() override;
 
@@ -30,6 +33,12 @@ class PanelVisibilityDependentHotkeyManager
   bool CanHandleAccelerators() const override;
 
   void InitializeAccelerators();
+
+  bool IsRegisteredAccelerator(const ui::Accelerator& accelerator) const;
+
+  base::WeakPtr<ui::AcceleratorTarget> GetAcceleratorTargetWeakPtr() {
+    return hotkey_manager_->GetWeakPtr();
+  }
 
  private:
   std::unique_ptr<LocalHotkeyManager> hotkey_manager_;

@@ -7,6 +7,7 @@
 
 #include <optional>
 
+#include "base/memory/raw_ptr.h"
 #include "third_party/blink/public/common/widget/device_emulation_params.h"
 #include "third_party/blink/public/mojom/page/widget.mojom-blink.h"
 #include "third_party/blink/public/mojom/webpreferences/web_preferences.mojom-blink.h"
@@ -41,6 +42,7 @@ class CORE_EXPORT DevToolsEmulator final
   void SetCookieEnabled(bool);
   void SetDoubleTapToZoomEnabled(bool);
   bool DoubleTapToZoomEnabled() const;
+  void SetMaxTouchPoints(int);
   void SetAvailablePointerTypes(int);
   void SetPrimaryPointerType(mojom::blink::PointerType);
   void SetAvailableHoverTypes(int);
@@ -53,6 +55,7 @@ class CORE_EXPORT DevToolsEmulator final
   void SetViewportEnabled(bool);
   void SetViewportMetaEnabled(bool);
   void SetTextSizeAdjustEnabled(bool);
+  void SetForceDarkModeEnabled(bool);
 
   // Enables and/or sets the parameters for emulation. Returns the emulation
   // transform to be used as a result.
@@ -95,9 +98,24 @@ class CORE_EXPORT DevToolsEmulator final
  private:
   class ScopedGlobalOverrides;
 
+  enum class ViewportEmulationMode {
+    kEmbedder,
+    kDesktopViewport,
+    kMobile,
+  };
+
+  ViewportEmulationMode GetViewportEmulationMode() const;
+  bool ApplyViewportStyleForMode(ViewportEmulationMode mode);
+  bool ApplyPageScaleLimitsForMode(ViewportEmulationMode mode);
+  // Returns whether the device-emulation caller should synchronously update
+  // lifecycle after applying the profile.
+  bool ApplyViewportEmulationMode(ViewportEmulationMode previous_mode);
   void EnableMobileEmulation();
   void DisableMobileEmulation();
+  void UpdateLifecycleAfterEmulationProfileChange();
   void SetForceAndroidOverlayScrollbar(bool);
+  void SetForceViewportMeta(bool);
+  void SetForceTextSizeAdjust(bool);
 
   // Enables viewport override and returns the emulation transform to be used.
   // The |position| is in CSS pixels, and |scale| is relative to a page scale of
@@ -117,7 +135,7 @@ class CORE_EXPORT DevToolsEmulator final
     return !!global_overrides_;
   }
 
-  WebViewImpl* web_view_;
+  raw_ptr<WebViewImpl, UnprotectedInRelease | DanglingUntriaged> web_view_;
 
   bool is_shutdown_ = false;
   bool device_metrics_enabled_;
@@ -151,7 +169,7 @@ class CORE_EXPORT DevToolsEmulator final
 
   bool touch_event_emulation_enabled_;
   bool double_tap_to_zoom_enabled_;
-  int original_max_touch_points_;
+  int embedder_max_touch_points_;
 
   bool embedder_script_enabled_;
   bool script_execution_disabled_;
@@ -159,6 +177,8 @@ class CORE_EXPORT DevToolsEmulator final
   bool embedder_hide_scrollbars_;
   bool scrollbars_hidden_;
   bool force_android_overlay_scrollbar_;
+  bool force_viewport_meta_=false;
+  bool force_text_size_adjust_ = false;
 
   bool embedder_cookie_enabled_;
   bool document_cookie_disabled_;

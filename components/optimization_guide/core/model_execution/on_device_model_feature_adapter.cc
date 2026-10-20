@@ -7,6 +7,7 @@
 #include <optional>
 #include <string>
 
+#include "base/logging.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/strings/strcat.h"
 #include "base/timer/elapsed_timer.h"
@@ -18,7 +19,6 @@
 #include "components/optimization_guide/core/model_execution/response_parser.h"
 #include "components/optimization_guide/core/model_execution/response_parser_factory.h"
 #include "components/optimization_guide/core/model_execution/simple_response_parser.h"
-#include "components/optimization_guide/core/optimization_guide_constants.h"
 #include "components/optimization_guide/core/optimization_guide_features.h"
 #include "components/optimization_guide/core/optimization_guide_util.h"
 
@@ -95,48 +95,43 @@ void OnDeviceModelFeatureAdapter::ParseResponse(
                       std::move(callback));
 }
 
-std::optional<proto::TextSafetyRequest>
-OnDeviceModelFeatureAdapter::ConstructTextSafetyRequest(
-    MultimodalMessageReadView request,
-    const std::string& text) const {
-  if (!config_.has_text_safety_fallback_config()) {
-    return std::nullopt;
-  }
-
-  auto& text_safety_fallback_config = config_.text_safety_fallback_config();
-
-  proto::TextSafetyRequest text_safety_request;
-  text_safety_request.set_text(text);
-
-  if (text_safety_fallback_config.has_input_url_proto_field()) {
-    std::optional<proto::Value> input_url_value =
-        request.GetValue(text_safety_fallback_config.input_url_proto_field());
-    if (input_url_value) {
-      const std::string string_value = GetStringFromValue(*input_url_value);
-      text_safety_request.set_url(string_value);
-    } else {
-      return std::nullopt;
-    }
-  }
-
-  return text_safety_request;
-}
-
 SamplingParamsConfig OnDeviceModelFeatureAdapter::GetSamplingParamsConfig()
     const {
+  std::string feature_name =
+      proto::ModelExecutionFeature_Name(config_.feature());
+
   if (!config_.has_sampling_params()) {
     // Returns default value if the sampling params are not configured.
-    return SamplingParamsConfig{
+    const SamplingParamsConfig result{
         .default_top_k = uint32_t(features::GetOnDeviceModelDefaultTopK()),
         .default_temperature =
             float(features::GetOnDeviceModelDefaultTemperature()),
     };
+    VLOG(1) << feature_name << "'s config does not specify sampling params; "
+            << __func__ << " for " << feature_name << " yields fallbacks: "
+            << "{top_k=" << result.default_top_k
+            << ", temperature=" << result.default_temperature << "}";
+    return result;
   }
 
-  return SamplingParamsConfig{
+  const SamplingParamsConfig result{
       .default_top_k = config_.sampling_params().top_k(),
       .default_temperature = config_.sampling_params().temperature(),
   };
+
+  if (!config_.sampling_params().has_top_k()) {
+    VLOG(1) << feature_name << "'s config does not specify top_k; using "
+            << "protobuf default: top_k=" << result.default_top_k;
+  }
+  if (!config_.sampling_params().has_temperature()) {
+    VLOG(1) << feature_name << "'s config does not specify temperature; using "
+            << "protobuf default: temperature=" << result.default_temperature;
+  }
+
+  VLOG(1) << __func__ << " for " << feature_name << " yields: "
+          << "{top_k=" << result.default_top_k
+          << ", temperature=" << result.default_temperature << "}";
+  return result;
 }
 
 SamplingParams OnDeviceModelFeatureAdapter::GetDefaultSamplingParams() const {

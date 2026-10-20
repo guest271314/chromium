@@ -22,6 +22,8 @@
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/devtools/devtools_file_watcher.h"
 #include "chrome/browser/download/download_prefs.h"
+#include "chrome/browser/file_system_access/chrome_file_system_access_permission_context.h"  // nogncheck
+#include "chrome/browser/file_system_access/file_system_access_permission_context_factory.h"  // nogncheck
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/grit/generated_resources.h"
@@ -34,6 +36,7 @@
 #include "content/public/browser/download_manager.h"
 #include "content/public/common/content_client.h"
 #include "crypto/obsolete/md5.h"
+#include "net/base/filename_util.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/shell_dialogs/selected_file_info.h"
 #include "url/gurl.h"
@@ -66,7 +69,7 @@ base::FilePath& GetLastSavePath() {
 void WriteToFile(const base::FilePath& path,
                  const std::string& content,
                  bool is_base64) {
-  DCHECK(!path.empty());
+  CHECK(!path.empty(), base::NotFatalUntil::M161);
 
   std::optional<std::vector<uint8_t>> decoded_content;
   if (is_base64) {
@@ -92,7 +95,7 @@ void WriteToFile(const base::FilePath& path,
 }
 
 void AppendToFile(const base::FilePath& path, const std::string& content) {
-  DCHECK(!path.empty());
+  CHECK(!path.empty(), base::NotFatalUntil::M161);
 
   base::File file(path, base::File::FLAG_OPEN_ALWAYS | base::File::FLAG_APPEND);
   if (!file.IsValid()) {
@@ -164,30 +167,24 @@ void DevToolsFileHelper::Save(const std::string& url,
   }
 
   if (initial_path.empty()) {
-    GURL gurl(url);
-    std::string suggested_file_name;
-    if (gurl.is_valid()) {
-      std::string escaped_content = gurl.ExtractFileName();
-      // TODO(crbug.com/40839171): Due to filename encoding on Windows we can't
-      // expect to always be able to convert to UTF8 and back
-      suggested_file_name = url::DecodeUrlEscapeSequences(
-          escaped_content, url::DecodeUrlMode::kUtf8OrIsomorphic);
-    } else {
-      suggested_file_name = url;
-    }
-    // TODO(crbug.com/40839171): Truncate a UTF8 string in a better way
-    if (suggested_file_name.length() > 64) {
-      suggested_file_name.erase(64);
-    }
-    // TODO(crbug.com/40839171): Ensure suggested_file_name is an ASCII string
+    // SECURITY: |url| is page-controlled. Derive the suggested filename via
+    // net::GenerateFileName(), which strips path separators, "..", BiDi
+    // control characters and shell-integrated extensions - the same
+    // sanitization the download stack applies. This prevents %2F / %5C
+    // traversal out of the default Save-As folder and U+202E filename
+    // spoofing.
+    base::FilePath suggested_file_name = net::GenerateFileName(
+        GURL(url), /*content_disposition=*/std::string(),
+        /*referrer_charset=*/std::string(), /*suggested_name=*/std::string(),
+        /*mime_type=*/std::string(), /*default_name=*/"download");
+
     if (!GetLastSavePath().empty()) {
-      initial_path =
-          GetLastSavePath().DirName().AppendASCII(suggested_file_name);
+      initial_path = GetLastSavePath().DirName().Append(suggested_file_name);
     } else {
       base::FilePath download_path =
           DownloadPrefs::FromDownloadManager(profile_->GetDownloadManager())
               ->DownloadPath();
-      initial_path = download_path.AppendASCII(suggested_file_name);
+      initial_path = download_path.Append(suggested_file_name);
     }
   }
 
@@ -286,14 +283,61 @@ void DevToolsFileHelper::ConnectAutomaticFileSystem(
     bool add_if_missing,
     const HandlePermissionsCallback& handle_permissions_callback,
     ConnectCallback connect_callback) {
-  DCHECK(file_system_uuid.is_valid());
+  CHECK(file_system_uuid.is_valid(), base::NotFatalUntil::M161);
 
-  // Make sure that |file_system_path| is a valid absolute path.
+  // Reject unsafe network, relative, or parent-referencing paths synchronously
+  // to avoid performing any filesystem existence/presence checks.
   base::FilePath path = base::FilePath::FromUTF8Unsafe(file_system_path);
-  if (!path.IsAbsolute()) {
+  if (!path.IsAbsolute() || path.IsNetwork() || path.ReferencesParent()) {
     LOG(ERROR) << "Rejected automatic file system " << file_system_path
-               << " with UUID " << file_system_uuid << " because it's not"
-               << " a valid absolute path.";
+               << " with UUID " << file_system_uuid
+               << " (not a safe local absolute path).";
+    std::move(connect_callback).Run(false);
+    FailedToAddFileSystem(kIllegalPath);
+    return;
+  }
+
+  auto* permission_context =
+      FileSystemAccessPermissionContextFactory::GetForProfile(profile_);
+  if (permission_context) {
+    content::PathInfo path_info(path);
+    // TODO(crbug.com/545006893): DevTools automatic file systems can write to
+    // disk, but currently use AccessTrigger::kProgrammaticRead. Investigate
+    // updating this to a write trigger. This CL is a pure refactoring so we
+    // avoid making behavioral changes here.
+    permission_context->ConfirmSensitiveEntryAccess(
+        url::Origin(), path_info,
+        content::FileSystemAccessPermissionContext::HandleType::kDirectory,
+        content::FileSystemAccessPermissionContext::AccessTrigger::
+            kProgrammaticRead,
+        content::GlobalRenderFrameHostId(),
+        base::BindOnce(
+            &DevToolsFileHelper::CheckBlocklistAndConnectAutomaticFileSystem,
+            weak_factory_.GetWeakPtr(), file_system_path, file_system_uuid,
+            add_if_missing, handle_permissions_callback,
+            std::move(connect_callback)));
+    return;
+  }
+
+  // If there is no permission context to check the path against a blocklist,
+  // deny access.
+  CheckBlocklistAndConnectAutomaticFileSystem(
+      file_system_path, file_system_uuid, add_if_missing,
+      handle_permissions_callback, std::move(connect_callback),
+      content::FileSystemAccessPermissionContext::SensitiveEntryResult::kAbort);
+}
+
+void DevToolsFileHelper::CheckBlocklistAndConnectAutomaticFileSystem(
+    const std::string& file_system_path,
+    const base::Uuid& file_system_uuid,
+    bool add_if_missing,
+    const HandlePermissionsCallback& handle_permissions_callback,
+    ConnectCallback connect_callback,
+    content::FileSystemAccessPermissionContext::SensitiveEntryResult result) {
+  if (result != content::FileSystemAccessPermissionContext::
+                    SensitiveEntryResult::kAllowed) {
+    LOG(ERROR) << "Rejected automatic file system " << file_system_path
+               << " with UUID " << file_system_uuid << " (sensitive path).";
     std::move(connect_callback).Run(false);
     FailedToAddFileSystem(kIllegalPath);
     return;
@@ -328,6 +372,7 @@ void DevToolsFileHelper::ConnectAutomaticFileSystem(
 
   // Ensure that the |path| refers to an existing directory first (since this
   // is a blocking call, we need to perform this operation asynchronously).
+  base::FilePath path = base::FilePath::FromUTF8Unsafe(file_system_path);
   file_task_runner_->PostTaskAndReplyWithResult(
       FROM_HERE, BindOnce(&base::DirectoryExists, path),
       BindOnce(&DevToolsFileHelper::ConnectMissingAutomaticFileSystem,
@@ -388,7 +433,7 @@ void DevToolsFileHelper::ConnectUserConfirmedAutomaticFileSystem(
 bool DevToolsFileHelper::IsUserConfirmedAutomaticFileSystem(
     const std::string& file_system_path,
     const base::Uuid& file_system_uuid) const {
-  DCHECK(file_system_uuid.is_valid());
+  CHECK(file_system_uuid.is_valid(), base::NotFatalUntil::M161);
   const base::DictValue& file_system_paths_value =
       profile_->GetPrefs()->GetDict(prefs::kDevToolsFileSystemPaths);
   const base::Value* value = file_system_paths_value.Find(file_system_path);
@@ -480,7 +525,7 @@ DevToolsFileHelper::GetFileSystems() {
 }
 
 void DevToolsFileHelper::RemoveFileSystem(const std::string& file_system_path) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M161);
   auto path = base::FilePath::FromUTF8Unsafe(file_system_path);
 
   if (connected_automatic_file_systems_.erase(file_system_path) == 1) {
@@ -496,21 +541,37 @@ void DevToolsFileHelper::RemoveFileSystem(const std::string& file_system_path) {
 
 bool DevToolsFileHelper::IsFileSystemAdded(
     const std::string& file_system_path) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M161);
   return file_system_paths_.contains(file_system_path);
+}
+
+bool DevToolsFileHelper::IsFileInFileSystem(const std::string& file_path) {
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M161);
+  base::FilePath path = base::FilePath::FromUTF8Unsafe(file_path);
+  if (path.ReferencesParent()) {
+    return false;
+  }
+  for (const auto& pair : file_system_paths_) {
+    base::FilePath file_system_path =
+        base::FilePath::FromUTF8Unsafe(pair.first);
+    if (file_system_path == path || file_system_path.IsParent(path)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 void DevToolsFileHelper::OnOpenItemComplete(
     const base::FilePath& path,
     platform_util::OpenOperationResult result) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M161);
   if (result == platform_util::OPEN_FAILED_INVALID_TYPE) {
     platform_util::ShowItemInFolder(profile_, path);
   }
 }
 
 void DevToolsFileHelper::ShowItemInFolder(const std::string& file_system_path) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M161);
   if (file_system_path.empty()) {
     return;
   }
@@ -522,10 +583,10 @@ void DevToolsFileHelper::ShowItemInFolder(const std::string& file_system_path) {
 }
 
 void DevToolsFileHelper::UpdateFileSystemPathsOnUI() {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M161);
   PathToType remaining;
   remaining.swap(file_system_paths_);
-  DCHECK(file_watcher_.get());
+  CHECK(file_watcher_.get(), base::NotFatalUntil::M161);
 
   for (const auto& file_system_path : GetActiveFileSystemPaths()) {
     if (remaining.find(file_system_path.first) == remaining.end()) {

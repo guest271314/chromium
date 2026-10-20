@@ -19,7 +19,6 @@
 #include "net/cert/cert_status_flags.h"
 #include "net/cert/x509_certificate.h"
 #include "net/socket/next_proto.h"
-#include "third_party/abseil-cpp/absl/container/flat_hash_set.h"
 
 namespace net {
 
@@ -174,6 +173,10 @@ struct NET_EXPORT SSLConfig {
   // enough to implement the extension and can process the server's list of
   // available trust anchors.
   std::optional<std::vector<uint8_t>> trust_anchor_ids;
+
+  // If not nullopt, the amount of server padding to request from the server.
+  // Experimental, may be removed at any time.
+  std::optional<uint16_t> server_padding_to_request = std::nullopt;
 };
 
 }  // namespace net

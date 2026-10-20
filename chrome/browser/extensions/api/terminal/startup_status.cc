@@ -11,12 +11,12 @@
 #include <memory>
 #include <vector>
 
+#include "ash/strings/grit/ash_strings.h"
 #include "base/functional/bind.h"
 #include "base/location.h"
 #include "base/strings/strcat.h"
 #include "base/strings/stringprintf.h"
 #include "base/time/time.h"
-#include "chrome/grit/generated_resources.h"
 #include "content/public/browser/browser_thread.h"
 #include "ui/base/l10n/l10n_util.h"
 
@@ -49,7 +49,7 @@ StartupStatusPrinter::~StartupStatusPrinter() = default;
 
 // Starts showing the progress indicator.
 void StartupStatusPrinter::StartShowingSpinner() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
   show_progress_timer_ = std::make_unique<base::RepeatingTimer>();
   show_progress_timer_->Start(
       FROM_HERE, base::Milliseconds(300),
@@ -62,8 +62,8 @@ void StartupStatusPrinter::StartShowingSpinner() {
 void StartupStatusPrinter::PrintStageWithColor(int stage_index,
                                                const char* color,
                                                const std::string& stage_name) {
-  DCHECK_GE(stage_index, 0);
-  DCHECK_LE(stage_index, max_stage_);
+  CHECK_GE(stage_index, 0, base::NotFatalUntil::M161);
+  CHECK_LE(stage_index, max_stage_, base::NotFatalUntil::M161);
   InitializeProgress();
   stage_index_ = stage_index;
   auto output = verbose_ ? stage_name : "";

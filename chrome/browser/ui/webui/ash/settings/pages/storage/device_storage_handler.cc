@@ -13,7 +13,7 @@
 
 #include "ash/constants/chrome_webui_url_constants.h"
 #include "ash/public/cpp/new_window_delegate.h"
-#include "base/byte_count.h"
+#include "base/byte_size.h"
 #include "base/check_op.h"
 #include "base/debug/dump_without_crashing.h"
 #include "base/notreached.h"
@@ -89,7 +89,7 @@ StorageHandler::~StorageHandler() {
 }
 
 void StorageHandler::RegisterMessages() {
-  DCHECK(web_ui());
+  CHECK(web_ui(), base::NotFatalUntil::M162);
 
   web_ui()->RegisterMessageCallback(
       "updateAndroidEnabled",
@@ -137,7 +137,8 @@ void StorageHandler::OnJavascriptDisallowed() {
   // Ensure that pending callbacks do not complete and cause JS to be evaluated.
   weak_ptr_factory_.InvalidateWeakPtrs();
 
-  DCHECK(arc_observation_.IsObservingSource(arc::ArcSessionManager::Get()));
+  CHECK(arc_observation_.IsObservingSource(arc::ArcSessionManager::Get()),
+        base::NotFatalUntil::M162);
   arc_observation_.Reset();
 
   StopObservingEvents();

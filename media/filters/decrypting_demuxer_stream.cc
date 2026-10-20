@@ -21,19 +21,26 @@
 
 namespace media {
 
-static bool IsStreamValid(DemuxerStream* stream) {
+namespace {
+bool IsStreamValid(DemuxerStream* stream) {
   return ((stream->type() == DemuxerStream::AUDIO &&
            stream->audio_decoder_config().IsValidConfig()) ||
           (stream->type() == DemuxerStream::VIDEO &&
            stream->video_decoder_config().IsValidConfig()));
 }
 
+perfetto::NamedTrack GetTracingTrack(const DecryptingDemuxerStream* stream) {
+  return perfetto::NamedTrack::FromPointer("media::DecryptingDemuxerStream",
+                                           stream);
+}
+}  // namespace
+
 DecryptingDemuxerStream::DecryptingDemuxerStream(
     const scoped_refptr<base::SequencedTaskRunner>& task_runner,
     MediaLog* media_log,
     const WaitingCB& waiting_cb)
     : task_runner_(task_runner),
-      media_log_(media_log),
+      media_log_(MediaLog::CloneSafely(media_log)),
       waiting_cb_(waiting_cb) {
   DETACH_FROM_SEQUENCE(sequence_checker_);
 }
@@ -266,7 +273,7 @@ void DecryptingDemuxerStream::DecryptPendingBuffer() {
   DCHECK_EQ(state_, kPendingDecrypt) << state_;
   DCHECK(!pending_buffer_to_decrypt_->end_of_stream());
   TRACE_EVENT_BEGIN("media", "DecryptingDemuxerStream::DecryptPendingBuffer",
-                    perfetto::Track::FromPointer(this), "type",
+                    GetTracingTrack(this), "type",
                     DemuxerStream::GetTypeName(demuxer_stream_->type()),
                     "timestamp_us",
                     pending_buffer_to_decrypt_->timestamp().InMicroseconds());
@@ -347,19 +354,12 @@ void DecryptingDemuxerStream::OnBufferDecrypted(
 
     TRACE_EVENT_BEGIN("media",
                       "DecryptingDemuxerStream::WaitingForDecryptionKey",
-                      perfetto::Track::FromPointer(this));
+                      GetTracingTrack(this));
     waiting_cb_.Run(WaitingReason::kNoDecryptionKey);
     return;
   }
 
   DCHECK_EQ(status, Decryptor::kSuccess);
-
-  // Copy the key frame flag and duration from the encrypted to decrypted
-  // buffer.
-  // TODO(crbug.com/40711813): Ensure all fields are copied by Decryptor.
-  decrypted_buffer->set_is_key_frame(
-      pending_buffer_to_decrypt_->is_key_frame());
-  decrypted_buffer->set_duration(pending_buffer_to_decrypt_->duration());
 
   pending_buffer_to_decrypt_ = nullptr;
   state_ = kIdle;
@@ -465,13 +465,13 @@ void DecryptingDemuxerStream::LogMetadata() {
 
 void DecryptingDemuxerStream::CompletePendingDecrypt(Decryptor::Status status) {
   DCHECK_EQ(state_, kPendingDecrypt);
-  TRACE_EVENT_END("media", perfetto::Track::FromPointer(this), "status",
+  TRACE_EVENT_END("media", GetTracingTrack(this), "status",
                   Decryptor::GetStatusName(status));
 }
 
 void DecryptingDemuxerStream::CompleteWaitingForDecryptionKey() {
   DCHECK_EQ(state_, kWaitingForKey);
-  TRACE_EVENT_END("media", perfetto::Track::FromPointer(this));
+  TRACE_EVENT_END("media", GetTracingTrack(this));
 }
 
 }  // namespace media

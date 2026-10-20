@@ -13,6 +13,7 @@
 #include "base/memory/weak_ptr.h"
 #include "chrome/browser/signin/dice_response_handler.h"
 #include "components/signin/public/base/signin_metrics.h"
+#include "components/signin/public/identity_manager/tribool.h"
 
 namespace content {
 class WebContents;
@@ -58,11 +59,11 @@ class ProcessDiceHeaderDelegateImpl : public ProcessDiceHeaderDelegate {
   static std::unique_ptr<ProcessDiceHeaderDelegateImpl> Create(
       content::WebContents* web_contents);
 
-  // |is_sync_signin_tab| is true if a sync signin flow has been started in that
-  // tab.
+  // |is_chrome_signin_tab| is true if a Chrome sign-in flow has been started in
+  // that tab.
   ProcessDiceHeaderDelegateImpl(
       content::WebContents* web_contents,
-      bool is_sync_signin_tab,
+      bool is_chrome_signin_tab,
       signin_metrics::AccessPoint access_point,
       signin_metrics::PromoAction promo_action,
       GURL redirect_url,
@@ -78,13 +79,17 @@ class ProcessDiceHeaderDelegateImpl : public ProcessDiceHeaderDelegate {
   ~ProcessDiceHeaderDelegateImpl() override;
 
   // ProcessDiceHeaderDelegate:
-  void HandleTokenExchangeSuccess(CoreAccountId account_id,
-                                  bool is_new_account) override;
+  void HandleTokenExchangeSuccess(
+      CoreAccountId account_id,
+      bool is_new_account,
+      signin::Tribool primary_is_connected) override;
   void CompleteChromeSignInAfterGaiaSignin(
       const CoreAccountInfo& account_info) override;
   void HandleTokenExchangeFailure(const std::string& email,
                                   const GoogleServiceAuthError& error) override;
   signin_metrics::AccessPoint GetAccessPoint() override;
+  void OnDiceSigninSessionComplete(
+      std::vector<CoreAccountId> secondary_accounts) override;
   void OnDiceSigninHeaderReceived() override;
 
  private:
@@ -100,7 +105,7 @@ class ProcessDiceHeaderDelegateImpl : public ProcessDiceHeaderDelegate {
 
   const base::WeakPtr<content::WebContents> web_contents_;
   const raw_ref<Profile> profile_;
-  const bool is_sync_signin_tab_;
+  const bool is_chrome_signin_tab_;
   signin_metrics::AccessPoint access_point_;
   const signin_metrics::PromoAction promo_action_;
   const GURL redirect_url_;
@@ -108,6 +113,8 @@ class ProcessDiceHeaderDelegateImpl : public ProcessDiceHeaderDelegate {
   EnableHistorySyncOptinCallback history_sync_optin_callback_;
   OnSigninHeaderReceived on_signin_header_received_;
   ShowSigninErrorCallback show_signin_error_callback_;
+
+  CoreAccountId initiator_account_id_;
 };
 
 #endif  // CHROME_BROWSER_SIGNIN_PROCESS_DICE_HEADER_DELEGATE_IMPL_H_

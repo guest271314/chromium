@@ -15,6 +15,7 @@ import("//chrome/android/trichrome.gni")
 import("//chrome/common/features.gni")
 import("//chrome/version.gni")
 import("//components/crash/android/silent_java_assert_reporting.gni")
+import("//components/optimization_guide/features.gni")
 import("//content/public/common/features.gni")
 import("//device/vr/buildflags/buildflags.gni")
 import("//media/media_options.gni")
@@ -46,11 +47,7 @@ default_chrome_public_jinja_variables = [
   "use_proprietary_codecs=$proprietary_codecs",
   "enable_dav1d_decoder=$enable_dav1d_decoder",
   "enable_jxl_decoder=$enable_jxl_decoder",
-  "zygote_preload_class=org.chromium.content_public.app.ZygotePreload",
 ]
-
-monochrome_android_manifest_jinja_variables =
-    [ "sandboxed_service_exported=true" ]
 
 # Generates an AndroidManifest.xml along with an optional second manifest
 # dependent on the original.
@@ -67,6 +64,7 @@ monochrome_android_manifest_jinja_variables =
 template("split_manifest_template") {
   _definitions_in_split =
       defined(invoker.definitions_in_split) && invoker.definitions_in_split
+
   jinja_template(target_name) {
     forward_variables_from(invoker,
                            [
@@ -113,13 +111,8 @@ template("split_manifest_template") {
 #   apk_name: For APK target types, the final APK name without a suffix.
 #   shared_libraries: List of native shared libraries targets to include in
 #     the final target (e.g. [ ":libchrome" ]).
-#   is_monochrome: Indicates that this target contains chrome and webview
-#     packaged together and can only run on Android N+.
 #   is_trichrome: Indicates this target relies on a trichrome static library
 #     target and can only run on Android P+.
-#   png_to_webp: Optional. If true, convert image resources to webp format.
-#     requires Android K+, since these were not supported by Android properly
-#     before 4.3.0.
 #
 #   Plus all other variables accepted by android_apk() or
 #   android_app_bundle_module(), depending on the target type.
@@ -132,11 +125,9 @@ template("chrome_common_apk_or_module_tmpl") {
          _target_type == "android_app_bundle_module" ||
          _target_type == "instrumentation_test_apk")
 
-  _is_monochrome = defined(invoker.is_monochrome) && invoker.is_monochrome
   _is_trichrome = defined(invoker.is_trichrome) && invoker.is_trichrome
   _is_bundle = _target_type == "android_app_bundle_module"
   _is_test = _target_type == "instrumentation_test_apk"
-  assert(!_is_monochrome, "Monochrome is an unsupported configuration")
   assert(!(_is_test && _is_trichrome), "Unsupported configuration")
 
   if (_is_test) {
@@ -146,6 +137,21 @@ template("chrome_common_apk_or_module_tmpl") {
   _is_64_bit_browser =
       android_64bit_target_cpu &&
       (!defined(invoker.is_64_bit_browser) || invoker.is_64_bit_browser)
+  if (android_64bit_target_cpu && defined(android_app_secondary_abi)) {
+    _secondary_out_dir =
+        get_label_info("X($android_secondary_abi_toolchain)", "root_out_dir")
+    not_needed([ "_secondary_out_dir" ])
+  }
+
+  # A 32-bit-only browser (e.g. Chrome32 in 64-bit builds, or Chrome in 32-bit
+  # builds). These are made multiarch (with a 64-bit placeholder library) so
+  # that Android does not show a "deprecated ABI" warning on devices supporting
+  # both 64-bit and 32-bit ABIs. The 32-bit ABI remains the primary one via
+  # use32bitAbi="true".
+  _is_32_bit_multiarch_browser =
+      !_is_trichrome && !_is_test && !_is_64_bit_browser &&
+      (android_64bit_target_cpu || defined(android_app_64bit_placeholder_abi))
+
   if (_is_trichrome) {
     _include_64_bit_webview =
         android_64bit_target_cpu && (!defined(invoker.include_64_bit_webview) ||
@@ -156,11 +162,6 @@ template("chrome_common_apk_or_module_tmpl") {
                            _include_64_bit_webview
     _include_secondary_abi = defined(android_app_secondary_abi) &&
                              (!_is_64_bit_browser || _include_32_bit_webview)
-    if (_include_secondary_abi) {
-      _secondary_out_dir =
-          get_label_info("X($android_secondary_abi_toolchain)", "root_out_dir")
-      not_needed([ "_secondary_out_dir" ])
-    }
   }
 
   assert(_is_trichrome == defined(invoker.static_library_provider),
@@ -169,6 +170,8 @@ template("chrome_common_apk_or_module_tmpl") {
 
   if (_is_trichrome) {
     _version_code = TRICHROME_VERSION_MAP["${android_64bit_target_cpu}_${_is_64_bit_browser}_${_include_64_bit_webview}_${_include_32_bit_webview}"]
+  } else if (android_64bit_target_cpu && !_is_64_bit_browser) {
+    _version_code = chrome_32_version_code
   } else {
     _version_code = chrome_version_code
   }
@@ -190,18 +193,28 @@ template("chrome_common_apk_or_module_tmpl") {
     _manifest_package = chrome_public_manifest_package
   }
 
+  _target_sdk_version = default_target_sdk_version
+  if (defined(invoker.override_target_sdk)) {
+    _target_sdk_version = invoker.override_target_sdk
+  } else if (defined(invoker.target_sdk_version)) {
+    _target_sdk_version = invoker.target_sdk_version
+  }
+
   _android_manifest = "$target_gen_dir/$target_name/AndroidManifest.xml"
   _split_android_manifest =
       "$target_gen_dir/$target_name/AndroidManifest_split.xml"
   _android_manifest_target_name = "${target_name}__android_manifest"
+
   split_manifest_template(_android_manifest_target_name) {
     definitions_in_split = _is_bundle
     split_input = "//chrome/android/java/AndroidManifest_split.xml"
     split_output = _split_android_manifest
     includes = []
     output = _android_manifest
-    variables = default_chrome_public_jinja_variables +
-                [ "manifest_package=$_manifest_package" ]
+    variables = default_chrome_public_jinja_variables + [
+                  "manifest_package=$_manifest_package",
+                  "target_sdk_version=$_target_sdk_version",
+                ]
     if (_is_trichrome) {
       input = "//chrome/android/java/AndroidManifest_trichrome_chrome.xml"
       includes = [ "//chrome/android/java/AndroidManifest.xml" ]
@@ -209,8 +222,13 @@ template("chrome_common_apk_or_module_tmpl") {
           trichrome_jinja_variables + [ "trichrome_version=$_version_code" ]
     } else {
       input = "//chrome/android/java/AndroidManifest.xml"
-      variables += [ "library_name=chrome" ]
+      if (_is_test) {
+        variables += [ "library_name=chromefortest" ]
+      } else {
+        variables += [ "library_name=chrome" ]
+      }
     }
+    variables += [ "is_32_bit_multiarch_browser=$_is_32_bit_multiarch_browser" ]
     if (_is_trichrome) {
       _force_32_bit = _include_32_bit_webview && _include_64_bit_webview &&
                       !_is_64_bit_browser
@@ -235,10 +253,8 @@ template("chrome_common_apk_or_module_tmpl") {
     if (defined(invoker.jinja_extra_includes)) {
       includes += invoker.jinja_extra_includes
     }
-    if (enable_javaless_renderers) {
-      variables += [ "javaless_renderers=true" ]
-    }
   }
+
   target(_target_type, target_name) {
     android_manifest = _android_manifest
     android_manifest_dep = ":$_android_manifest_target_name"
@@ -276,8 +292,6 @@ template("chrome_common_apk_or_module_tmpl") {
       is_base_module = true
     }
 
-    product_config_java_packages = [ "org.chromium.chrome.browser" ]
-
     # Chrome does not enable Strict Mode checks.
     disable_strict_mode_context = true
 
@@ -310,11 +324,6 @@ template("chrome_common_apk_or_module_tmpl") {
     resource_exclusion_regex += "|${_material_package}/xml.*badge_"
 
     if (!is_java_debug) {
-      # TODO(crbug.com/41475795): Update test goldens with webp versions of images.
-      if (!_is_test) {
-        png_to_webp = true
-      }
-
       proguard_enabled = true
       proguard_configs = [ "//chrome/android/proguard/main.flags" ]
       if (_is_test) {
@@ -324,38 +333,23 @@ template("chrome_common_apk_or_module_tmpl") {
         proguard_configs += invoker.proguard_configs
       }
 
-      # We only optimize resources for bundles since APKs are not shipped.
-      # Resources only live in the base module atm as such we only need to set
-      # these on the base module
-      if (_is_bundle) {
-        # Removes metadata needed for Resources.getIdentifier("resource_name").
-        strip_resource_names = true
-
-        # Shortens resource file names in apk eg: res/drawable/button.xml -> res/a.xml
-        short_resource_paths = true
-
-        # Removes unused resources from the apk. Only enabled on official builds
-        # since it adds a slow step and serializes the build graph causing fewer
-        # expensive tasks (eg: proguarding, resource optimization) to be run in
-        # parallel by adding dependencies between them (adds around 10-20
-        # seconds on my machine).
-        strip_unused_resources = is_official_build
-
-        # Resources config for blocklisting resource names from obfuscation
+      if (!_is_bundle && optimize_android_resources) {
         resources_config_paths = [ "//chrome/android/aapt2.config" ]
-        if (defined(invoker.resources_config_paths)) {
-          resources_config_paths += invoker.resources_config_paths
-        }
+      }
+
+      # Bundles set this in chrome_bundle(), since that is where R8 runs.
+      if (!_is_bundle && !_is_test) {
+        disallowed_library_classes = chrome_disallowed_library_classes
       }
     }
 
-    # Java and native targets form two independent compile graphs. Deps from java targets
-    # onto native ones (or vice versa) are unnecessary and reduce parallelism.
-    # This prevents most deps from java->native.
-    # One common violation is generate_jni() targets, which generate
-    # .srcjars, but also .h files, and so export their native deps.
-    # Tip: If the dep is due to loadable_modules or android_assets, use "asset_deps" rather than
-    #      "deps".
+    # Java and native targets form two independent compile graphs. Deps from
+    # java targets onto native ones (or vice versa) are unnecessary and reduce
+    # parallelism. This prevents most deps from java->native. One common
+    # violation is generate_jni() targets, which generate .srcjars, but also .h
+    # files, and so export their native deps. Tip: If the dep is due to
+    # loadable_modules or android_assets, use "asset_deps" rather than
+    # "deps".
     assert_no_native_deps = [
       "//base",
       "//build/config/compiler:compiler_buildflags",
@@ -370,10 +364,6 @@ template("chrome_common_apk_or_module_tmpl") {
       srcjar_deps += invoker.srcjar_deps
     }
 
-    # TODO(agrieve): Make unconditional when moving to trampoline.
-    if (_is_trichrome) {
-      deps += [ "//components/crash/android:handler_java" ]
-    }
     deps += [ "//chrome/android:base_module_java" ]
     if (defined(invoker.deps)) {
       deps += invoker.deps
@@ -381,16 +371,12 @@ template("chrome_common_apk_or_module_tmpl") {
 
     if (!_is_trichrome) {
       # These go in trichrome library.
-      deps += [
-        "//gin:v8_snapshot_assets",
-        "//third_party/icu:icu_assets",
-      ]
-
-      # TODO(agrieve): This is excluded from trichrome in preparation for
-      # "synchronized proguarding", which we've since abandoned. Enable for
-      # trichrome, or just remove the version check altogether.
-      build_config_include_product_version_resource = true
-      deps += [ "//chrome/android:product_version_resources" ]
+      if (android_64bit_target_cpu && !_is_64_bit_browser) {
+        deps += [ "//gin:v8_snapshot_secondary_abi_assets" ]
+      } else {
+        deps += [ "//gin:v8_snapshot_assets" ]
+      }
+      deps += [ "//third_party/icu:icu_assets" ]
     }
 
     loadable_modules = []
@@ -403,6 +389,7 @@ template("chrome_common_apk_or_module_tmpl") {
       deps += [ ":${target_name}__all_dfm_resources" ]
     } else {
       deps += [ "//chrome/android:chrome_all_java" ]
+      mergeable_android_manifests = []
       if (defined(invoker.module_descs)) {
         _module_descs = invoker.module_descs
       } else {
@@ -410,6 +397,9 @@ template("chrome_common_apk_or_module_tmpl") {
       }
       foreach(_desc, _module_descs) {
         deps += _desc.java_deps
+        if (defined(_desc.android_manifest)) {
+          mergeable_android_manifests += [ _desc.android_manifest ]
+        }
         if (defined(_desc.jni_registration)) {
           srcjar_deps += [ _desc.jni_registration ]
         }
@@ -417,11 +407,14 @@ template("chrome_common_apk_or_module_tmpl") {
           loadable_modules += _desc.loadable_modules
         }
         if (android_64bit_target_cpu) {
-          if (defined(_desc.loadable_modules_64_bit)) {
-            loadable_modules += _desc.loadable_modules_64_bit
-          }
-          if (defined(_desc.loadable_modules_32_bit)) {
-            secondary_abi_loadable_modules += _desc.loadable_modules_32_bit
+          if (_is_64_bit_browser) {
+            if (defined(_desc.loadable_modules_64_bit)) {
+              loadable_modules += _desc.loadable_modules_64_bit
+            }
+          } else {
+            if (defined(_desc.loadable_modules_32_bit)) {
+              secondary_abi_loadable_modules += _desc.loadable_modules_32_bit
+            }
           }
         } else {
           if (defined(_desc.loadable_modules_32_bit)) {
@@ -451,6 +444,12 @@ template("chrome_common_apk_or_module_tmpl") {
       # it contains more assets than we need (always use the 64_32 variant).
       # https://crbug.com/357131361
       suffix_apk_assets_used_by = system_webview_apk_target
+    } else {
+      # This must be done even for non-Trichrome due to Android R & S putting
+      # old versions of our TrichromeLibrary into our AssetManager:
+      # crbug.com/40064988
+      suffix_apk_assets_used_by = system_webview_apk_target
+      suffix_apk_assets_string = "40064988"
     }
 
     if (defined(invoker.add_upstream_only_deps) &&
@@ -556,7 +555,12 @@ template("chrome_common_apk_or_module_tmpl") {
         srcjar_deps += [ "//chrome/android:libmonochrome__jni_registration($default_toolchain)" ]
       }
     } else if (!_is_trichrome) {
-      shared_libraries += [ "//chrome/android:libchrome" ]
+      if (android_64bit_target_cpu && !_is_64_bit_browser) {
+        secondary_abi_shared_libraries +=
+            [ "//chrome/android:libchrome($android_secondary_abi_toolchain)" ]
+      } else {
+        shared_libraries += [ "//chrome/android:libchrome" ]
+      }
       srcjar_deps +=
           [ "//chrome/android:libchrome__jni_registration($default_toolchain)" ]
     }
@@ -598,14 +602,33 @@ template("chrome_common_apk_or_module_tmpl") {
 
     if (!_is_trichrome) {
       # https://chromium.googlesource.com/chromium/src/+/main/docs/android_native_libraries.md#Crashpad-Packaging
-      deps += [
-        "//third_party/crashpad/crashpad/handler:crashpad_handler_trampoline",
-      ]
-      loadable_modules += [ "$root_out_dir/libcrashpad_handler_trampoline.so" ]
+      if (android_64bit_target_cpu && !_is_64_bit_browser) {
+        deps += [ "//third_party/crashpad/crashpad/handler:crashpad_handler_trampoline($android_secondary_abi_toolchain)" ]
+        secondary_abi_loadable_modules +=
+            [ "$_secondary_out_dir/libcrashpad_handler_trampoline.so" ]
+      } else {
+        deps += [
+          "//third_party/crashpad/crashpad/handler:crashpad_handler_trampoline",
+        ]
+        loadable_modules +=
+            [ "$root_out_dir/libcrashpad_handler_trampoline.so" ]
+      }
     }
 
-    # The Chromium Linker depends on ASharedMemory_create() introduced in O.
-    use_chromium_linker = chromium_linker_supported && _is_trichrome
+    if (build_with_internal_optimization_guide) {
+      if (android_64bit_target_cpu && !_is_64_bit_browser) {
+        asset_deps += [ "//components/optimization_guide/internal:optimization_guide_internal($android_secondary_abi_toolchain)" ]
+        secondary_abi_loadable_modules +=
+            [ "$_secondary_out_dir/liboptimization_guide_internal.so" ]
+      } else {
+        asset_deps += [ "//components/optimization_guide/internal:optimization_guide_internal" ]
+        loadable_modules +=
+            [ "$root_out_dir/liboptimization_guide_internal.so" ]
+      }
+    }
+
+    # Chromium Linker used for shared relros.
+    use_chromium_linker = chromium_linker_supported && !_is_test
 
     if (use_chromium_linker) {
       if (android_64bit_target_cpu && !_is_64_bit_browser) {
@@ -642,6 +665,14 @@ template("chrome_common_apk_or_module_tmpl") {
       }
       if (_include_secondary_abi && secondary_abi_loadable_modules == []) {
         secondary_native_lib_placeholders = [ "libplaceholder.so" ]
+      }
+    } else if (_is_32_bit_multiarch_browser) {
+      # Never loaded. See comment for _is_32_bit_multiarch_browser.
+      if (!android_64bit_target_cpu) {
+        # Uses android_app_64bit_placeholder_abi.
+        secondary_native_lib_placeholders = [ "libplaceholder.so" ]
+      } else if (loadable_modules == [] && shared_libraries == []) {
+        native_lib_placeholders = [ "libplaceholder.so" ]
       }
     }
 

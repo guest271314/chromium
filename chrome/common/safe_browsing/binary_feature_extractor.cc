@@ -4,6 +4,8 @@
 
 #include "chrome/common/safe_browsing/binary_feature_extractor.h"
 
+#include "build/build_config.h"
+
 #include <memory>
 #include <utility>
 
@@ -28,21 +30,43 @@ bool BinaryFeatureExtractor::ExtractImageFeatures(
     ExtractHeadersOption options,
     ClientDownloadRequest_ImageHeaders* image_headers,
     google::protobuf::RepeatedPtrField<std::string>* signed_data) {
+  base::FilePath temp_dir;
+  if (!base::GetTempDir(&temp_dir)) {
+    return false;
+  }
+
   base::FilePath temp_path;
-  if (!base::CreateTemporaryFile(&temp_path)) {
+  base::File temp_file = base::CreateAndOpenTemporaryFileInDir(
+      temp_dir, &temp_path,
+      base::File::FLAG_WIN_TEMPORARY | base::File::FLAG_DELETE_ON_CLOSE);
+  if (!temp_file.IsValid()) {
     return false;
   }
 
-  if (!base::CopyFile(file_path, temp_path)) {
-    base::DeleteFile(temp_path);
-    return false;
-  }
+#if !BUILDFLAG(IS_WIN)
+  // CreateAndOpenTemporaryFileInDir delegates deletion to the caller on POSIX.
+  // We unlink the file immediately after creation to ensure it is deleted even
+  // if the process crashes, while keeping the file descriptor open for use.
+  base::DeleteFile(temp_path);
+#endif
 
-  base::File temp_file;
-  temp_file.Initialize(temp_path, base::File::FLAG_OPEN |
-                                      base::File::FLAG_READ |
-                                      base::File::FLAG_WIN_TEMPORARY |
-                                      base::File::FLAG_DELETE_ON_CLOSE);
+  {
+    // FLAG_WIN_SHARE_DELETE allows the download's rename to its final name to
+    // proceed on Windows while this read handle is still open, since the
+    // rename can otherwise take several retries to succeed on large files
+    // (https://crbug.com/545877431).
+    base::File source_file(file_path, base::File::FLAG_OPEN |
+                                          base::File::FLAG_READ |
+                                          base::File::FLAG_WIN_SHARE_DELETE);
+    if (!source_file.IsValid()) {
+      return false;
+    }
+
+    if (!base::CopyFileContents(source_file, temp_file)) {
+      base::DeleteFile(temp_path);
+      return false;
+    }
+  }
 
   base::MemoryMappedFile mapped_file;
   if (!mapped_file.Initialize(std::move(temp_file))) {
@@ -67,7 +91,9 @@ bool BinaryFeatureExtractor::ExtractImageFeaturesFromFile(
 void BinaryFeatureExtractor::ExtractDigest(
     const base::FilePath& file_path,
     ClientDownloadRequest_Digests* digests) {
-  base::File file(file_path, base::File::FLAG_OPEN | base::File::FLAG_READ);
+  // See the comment in ExtractImageFeatures() about FLAG_WIN_SHARE_DELETE.
+  base::File file(file_path, base::File::FLAG_OPEN | base::File::FLAG_READ |
+                                 base::File::FLAG_WIN_SHARE_DELETE);
   if (file.IsValid()) {
     auto buf = base::HeapArray<uint8_t>::Uninit(1 << 12);
     crypto::hash::Hasher hasher(crypto::hash::HashKind::kSha256);

@@ -2,10 +2,6 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-import("//components/enterprise/buildflags/buildflags.gni")
-
-assert(enterprise_client_certificates)
-
 source_set("dm_server_client") {
   configs += [ "//components/enterprise:extra_warnings" ]
 
@@ -33,15 +29,14 @@ source_set("cloud_management_delegate") {
 source_set("management_delegate") {
   configs += [ "//components/enterprise:extra_warnings" ]
 
-  public = [
-    "browser_cloud_management_delegate.h",
-    "profile_cloud_management_delegate.h",
-  ]
+  public = [ "profile_cloud_management_delegate.h" ]
 
-  sources = [
-    "browser_cloud_management_delegate.cc",
-    "profile_cloud_management_delegate.cc",
-  ]
+  sources = [ "profile_cloud_management_delegate.cc" ]
+
+  if (!is_chromeos) {
+    public += [ "browser_cloud_management_delegate.h" ]
+    sources += [ "browser_cloud_management_delegate.cc" ]
+  }
 
   public_deps = [
     "//base",
@@ -160,6 +155,20 @@ source_set("core") {
     ]
   }
 
+  if (is_chromeos) {
+    public += [
+      "ash/kcer_private_key.h",
+      "ash/kcer_private_key_factory.h",
+    ]
+
+    sources += [
+      "ash/kcer_private_key.cc",
+      "ash/kcer_private_key_factory.cc",
+    ]
+
+    deps += [ "//chromeos/ash/components/kcer" ]
+  }
+
   friend = [
     ":test_support",
     ":unit_tests",
@@ -267,6 +276,20 @@ source_set("unit_tests") {
     deps += [
       "//components/enterprise/client_certificates/android/browser_binding",
       "//net",
+    ]
+  }
+
+  if (is_chromeos) {
+    sources += [
+      "ash/kcer_private_key_factory_unittest.cc",
+      "ash/kcer_private_key_unittest.cc",
+    ]
+
+    deps += [
+      "//chromeos/ash/components/kcer",
+      "//chromeos/ash/components/kcer:chaps_proto",
+      "//chromeos/ash/components/kcer:test_support",
+      "//content/test:test_support",
     ]
   }
 }

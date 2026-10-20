@@ -15,19 +15,20 @@
 #include "base/memory/ptr_util.h"
 #include "base/memory/raw_ptr.h"
 #include "base/run_loop.h"
+#include "base/strings/strcat.h"
 #include "base/test/gtest_util.h"
 #include "base/test/mock_log.h"
 #include "base/test/scoped_command_line.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/unguessable_token.h"
 #include "content/browser/browsing_instance.h"
-#include "content/browser/child_process_security_policy_impl.h"
 #include "content/browser/isolated_origin_util.h"
 #include "content/browser/origin_agent_cluster_isolation_state.h"
 #include "content/browser/process_lock.h"
 #include "content/browser/renderer_host/navigation_entry_impl.h"
 #include "content/browser/renderer_host/render_process_host_impl.h"
 #include "content/browser/renderer_host/render_view_host_impl.h"
+#include "content/browser/security/cpsp/child_process_security_policy_impl.h"
 #include "content/browser/site_info.h"
 #include "content/browser/url_info.h"
 #include "content/browser/web_contents/web_contents_impl.h"
@@ -39,7 +40,6 @@
 #include "content/public/browser/site_isolation_policy.h"
 #include "content/public/browser/web_exposed_isolation_level.h"
 #include "content/public/browser/web_ui_controller.h"
-#include "content/public/common/bindings_policy.h"
 #include "content/public/common/content_client.h"
 #include "content/public/common/content_constants.h"
 #include "content/public/common/content_features.h"
@@ -105,9 +105,9 @@ const base::UnguessableToken kBrowserContextId =
 class SiteInstanceTestBrowserClient : public TestContentBrowserClient {
  public:
   bool IsSuitableHost(RenderProcessHost* process_host,
-                      const GURL& site_url) override {
+                      const SecurityPrincipal& security_principal) override {
     return (privileged_process_id_ == process_host->GetDeprecatedID()) ==
-           site_url.SchemeIs(kPrivilegedScheme);
+           security_principal.SchemeIs(kPrivilegedScheme);
   }
 
   void set_privileged_process_id(int process_id) {
@@ -1342,8 +1342,7 @@ TEST_F(SiteInstanceTest, IsSuitableForUrlInfo) {
 
   // Simulate granting WebUI bindings for the process.
   ChildProcessSecurityPolicyImpl::GetInstance()->GrantWebUIBindings(
-      webui_host->GetDeprecatedID(),
-      BindingsPolicySet({BindingsPolicyValue::kWebUi}));
+      webui_host->GetID());
 
   EXPECT_TRUE(webui_instance->HasProcess());
   EXPECT_TRUE(webui_instance->IsSuitableForUrlInfo(
@@ -2423,6 +2422,175 @@ TEST_F(SiteInstanceTest, SiteInfoDetermineProcessLock_OriginAgentCluster) {
   EXPECT_EQ(foo_url, site_info_for_a_foo.agent_cluster_key().GetSite());
 }
 
+// Host with a site-specific JITless policy exception, used by the tests below.
+constexpr char kJitBlockedHost[] = "jit-blocked.test";
+
+// Test ContentBrowserClient that records the URL the embedder is asked about,
+// so tests can pin the *policy scope URL* that SiteInfo::Create() passes to
+// IsJitDisabledForSite(), rather than just the derived boolean. It also
+// disables strict site isolation so that SiteInfo::Create() has to consult
+// RequiresDedicatedProcessInternal() instead of relying on
+// UseDedicatedProcessesForAllSites().
+class JitPolicyScopeContentBrowserClient
+    : public SiteInstanceTestBrowserClient {
+ public:
+  bool ShouldEnableStrictSiteIsolation() override { return false; }
+
+  bool IsJitDisabledForSite(BrowserContext* context, const GURL& url) override {
+    last_jit_url_ = url;
+    return url.host() == kJitBlockedHost;
+  }
+
+  GURL last_jit_url_;
+};
+
+// The three ways a response can (not) carry an Origin-Agent-Cluster header.
+enum class OacHeaderState {
+  kAbsent,  // No Origin-Agent-Cluster header.
+  kOptIn,   // Origin-Agent-Cluster: ?1
+  kOptOut,  // Origin-Agent-Cluster: ?0
+};
+
+UrlInfo CreateUrlInfoWithOacHeader(const GURL& url,
+                                   OacHeaderState oac_header_state) {
+  UrlInfoInit url_info_init(url);
+  switch (oac_header_state) {
+    case OacHeaderState::kAbsent:
+      break;
+    case OacHeaderState::kOptIn:
+      url_info_init.WithOACHeaderRequest(
+          OriginAgentClusterIsolationState::CreateForOriginAgentCluster(
+              /*had_oac_request=*/true,
+              /*requires_origin_keyed_process=*/true));
+      break;
+    case OacHeaderState::kOptOut:
+      url_info_init.WithOACHeaderRequest(
+          OriginAgentClusterIsolationState::CreateNonIsolatedByHeader());
+      break;
+  }
+  return UrlInfo(url_info_init);
+}
+
+// Sets up an environment with partial site isolation (so sites without a
+// dedicated process land in the default SiteInstanceGroup) where documents may
+// still opt in to an origin-keyed process via the Origin-Agent-Cluster header.
+class JitPolicyScopeTest : public SiteInstanceTest {
+ public:
+  void SetUp() override {
+    SiteInstanceTest::SetUp();
+
+    // Remove --site-per-process (if it was appended on the command line) so
+    // that UseDedicatedProcessesForAllSites() consults the embedder, which
+    // JitPolicyScopeContentBrowserClient answers with false. Note we must not
+    // pass --disable-site-isolation here, since that would also turn off
+    // IsProcessIsolationForOriginAgentClusterEnabled().
+    scoped_command_line_.GetProcessCommandLine()->RemoveSwitch(
+        switches::kSitePerProcess);
+    feature_list_.InitWithFeatures(
+        /*enabled_features=*/{features::kDefaultSiteInstanceGroups},
+        /*disabled_features=*/{features::kOriginKeyedProcessesByDefault,
+                               features::kStrictOriginIsolation});
+    regular_client_ = SetBrowserClientForTesting(&jit_policy_client_);
+
+    ASSERT_FALSE(SiteIsolationPolicy::UseDedicatedProcessesForAllSites());
+    ASSERT_TRUE(ShouldUseDefaultSiteInstanceGroup());
+    ASSERT_TRUE(
+        SiteIsolationPolicy::IsProcessIsolationForOriginAgentClusterEnabled());
+  }
+
+  void TearDown() override {
+    SetBrowserClientForTesting(regular_client_);
+    SiteInstanceTest::TearDown();
+  }
+
+ protected:
+  GURL jit_blocked_url() const {
+    return GURL(base::StrCat({"https://", kJitBlockedHost, "/"}));
+  }
+
+  IsolationContext CreateIsolationContext() {
+    return IsolationContext(
+        BrowsingInstanceId::FromUnsafeValue(42), context(),
+        /*is_guest=*/false, /*is_fenced=*/false,
+        OriginAgentClusterIsolationState::CreateForDefaultIsolation(context()));
+  }
+
+  JitPolicyScopeContentBrowserClient jit_policy_client_;
+
+ private:
+  base::test::ScopedCommandLine scoped_command_line_;
+  base::test::ScopedFeatureList feature_list_;
+  raw_ptr<ContentBrowserClient> regular_client_ = nullptr;
+};
+
+// Regression test for crbug.com/511806651: a document that opts in to an
+// origin-keyed agent cluster must still have the embedder's per-site JIT policy
+// applied. SiteInfo::Create() used to pass an inverted
+// `requires_origin_keyed_process` to RequiresDedicatedProcessInternal(), so an
+// OAC opt-in caused the policy scope URL to fall back to GURL() (the embedder's
+// *default* policy), letting the site escape a JITless policy on partial
+// site-isolation platforms such as Android. Conversely, a document *without* an
+// OAC opt-in shares the default SiteInstanceGroup, so it must evaluate the
+// embedder's default policy rather than leaking a site-specific exception into
+// a shared process.
+TEST_F(JitPolicyScopeTest, PolicyScopeUrlFollowsOriginAgentClusterHeader) {
+  const struct {
+    OacHeaderState oac_header_state;
+    bool expect_origin_keyed;
+  } kTestCases[] = {
+      {OacHeaderState::kOptIn, /*expect_origin_keyed=*/true},
+      {OacHeaderState::kOptOut, /*expect_origin_keyed=*/false},
+      {OacHeaderState::kAbsent, /*expect_origin_keyed=*/false},
+  };
+
+  for (const auto& test_case : kTestCases) {
+    SCOPED_TRACE(testing::Message()
+                 << "OacHeaderState: "
+                 << static_cast<int>(test_case.oac_header_state));
+
+    jit_policy_client_.last_jit_url_ = GURL("https://unset.test/");
+    SiteInfo site_info =
+        SiteInfo::Create(CreateIsolationContext(),
+                         CreateUrlInfoWithOacHeader(
+                             jit_blocked_url(), test_case.oac_header_state));
+
+    EXPECT_EQ(test_case.expect_origin_keyed,
+              site_info.agent_cluster_key().IsOriginKeyed());
+    // Only a document with a dedicated process may be evaluated against its own
+    // URL; documents in the default SiteInstanceGroup use the default policy.
+    EXPECT_EQ(test_case.expect_origin_keyed ? jit_blocked_url() : GURL(),
+              jit_policy_client_.last_jit_url_);
+    EXPECT_EQ(test_case.expect_origin_keyed, site_info.is_jit_disabled());
+  }
+}
+
+// End-to-end counterpart of the test above: once the embedder isolates origins
+// that have a JITless exception (see
+// ChromeContentBrowserClient::WillComputeSiteForNavigation()), the JITless
+// policy applies no matter what the Origin-Agent-Cluster header says, including
+// an explicit opt-out.
+TEST_F(JitPolicyScopeTest, JitlessExceptionAppliesRegardlessOfOacHeader) {
+  // Mirror what the embedder does for a site with a JITless exception.
+  ChildProcessSecurityPolicyImpl::GetInstance()->AddFutureIsolatedOrigins(
+      {url::Origin::Create(jit_blocked_url())},
+      IsolatedOriginSource::USER_TRIGGERED, context());
+
+  for (OacHeaderState oac_header_state :
+       {OacHeaderState::kOptIn, OacHeaderState::kOptOut,
+        OacHeaderState::kAbsent}) {
+    SCOPED_TRACE(testing::Message()
+                 << "OacHeaderState: " << static_cast<int>(oac_header_state));
+
+    jit_policy_client_.last_jit_url_ = GURL("https://unset.test/");
+    SiteInfo site_info = SiteInfo::Create(
+        CreateIsolationContext(),
+        CreateUrlInfoWithOacHeader(jit_blocked_url(), oac_header_state));
+
+    EXPECT_EQ(jit_blocked_url(), jit_policy_client_.last_jit_url_);
+    EXPECT_TRUE(site_info.is_jit_disabled());
+  }
+}
+
 TEST_F(SiteInstanceTest, ShouldAssignSiteForAboutBlank) {
   const GURL about_blank(url::kAboutBlankURL);
   url::Origin example_origin =
@@ -2698,9 +2866,83 @@ TEST_F(SiteInstanceTest, MimeHandlerRequiresDedicatedProcess) {
   EXPECT_TRUE(
       handler_site_info.RequiresDedicatedProcess(IsolationContext(context())));
   EXPECT_TRUE(handler_site_info.embedder_isolation_info().is_unique_instance());
-  EXPECT_EQ(100, handler_site_info.embedder_isolation_info().instance_id());
+  EXPECT_EQ(100,
+            handler_site_info.embedder_isolation_info().instance_id().value());
 
   SetBrowserClientForTesting(regular_client);
+}
+
+// Verify that a SiteInfo with a privileged EmbedderIsolationInfo requires a
+// dedicated process, even on platforms where not all sites get dedicated
+// processes.
+TEST_F(SiteInstanceTest, PrivilegedRequiresDedicatedProcess) {
+  // Disable the global "every site is dedicated" path so that
+  // `RequiresDedicatedProcess()` has to consult the EmbedderIsolationInfo
+  // branch in `RequiresDedicatedProcessInternal()`. See
+  // MimeHandlerRequiresDedicatedProcess for why both switches are needed.
+  base::test::ScopedCommandLine scoped_command_line;
+  scoped_command_line.GetProcessCommandLine()->AppendSwitch(
+      switches::kDisableSiteIsolation);
+  scoped_command_line.GetProcessCommandLine()->RemoveSwitch(
+      switches::kSitePerProcess);
+
+  NoStrictSiteIsolationContentBrowserClient custom_client;
+  ContentBrowserClient* regular_client =
+      SetBrowserClientForTesting(&custom_client);
+
+  ASSERT_FALSE(SiteIsolationPolicy::UseDedicatedProcessesForAllSites());
+
+  const GURL url("https://example.com/");
+
+  SiteInfo privileged_site_info =
+      SiteInfo::Create(IsolationContext(context()),
+                       UrlInfo(UrlInfoInit(url).WithEmbedderIsolationInfo(
+                           EmbedderIsolationInfo::CreateForPrivileged(42))));
+
+  EXPECT_TRUE(privileged_site_info.RequiresDedicatedProcess(
+      IsolationContext(context())));
+  EXPECT_TRUE(privileged_site_info.embedder_isolation_info().is_privileged());
+  EXPECT_EQ(42, privileged_site_info.embedder_isolation_info()
+                    .privileged_feature_id()
+                    .value());
+
+  SetBrowserClientForTesting(regular_client);
+}
+
+// Verify that the privileged feature id differentiates security principals:
+// the same URL with different feature ids must produce different principals,
+// the same feature id must produce the same principal, and a privileged
+// SiteInfo must differ from an ordinary (non-privileged) SiteInfo for the same
+// URL.
+TEST_F(SiteInstanceTest, PrivilegedFeatureIdDifferentiatesPrincipals) {
+  const GURL url("https://example.com/");
+
+  SiteInfo feature_42 =
+      SiteInfo::Create(IsolationContext(context()),
+                       UrlInfo(UrlInfoInit(url).WithEmbedderIsolationInfo(
+                           EmbedderIsolationInfo::CreateForPrivileged(42))));
+  SiteInfo feature_43 =
+      SiteInfo::Create(IsolationContext(context()),
+                       UrlInfo(UrlInfoInit(url).WithEmbedderIsolationInfo(
+                           EmbedderIsolationInfo::CreateForPrivileged(43))));
+
+  // Different feature ids must produce different principals.
+  EXPECT_FALSE(feature_42.IsSamePrincipalWith(feature_43));
+  EXPECT_NE(feature_42, feature_43);
+
+  // The same feature id must produce the same principal.
+  SiteInfo feature_42_dup =
+      SiteInfo::Create(IsolationContext(context()),
+                       UrlInfo(UrlInfoInit(url).WithEmbedderIsolationInfo(
+                           EmbedderIsolationInfo::CreateForPrivileged(42))));
+  EXPECT_TRUE(feature_42.IsSamePrincipalWith(feature_42_dup));
+  EXPECT_EQ(feature_42, feature_42_dup);
+
+  // Privileged vs ordinary content for the same URL must differ.
+  SiteInfo ordinary =
+      SiteInfo::Create(IsolationContext(context()), UrlInfo(UrlInfoInit(url)));
+  EXPECT_FALSE(feature_42.IsSamePrincipalWith(ordinary));
+  EXPECT_NE(feature_42, ordinary);
 }
 
 }  // namespace content

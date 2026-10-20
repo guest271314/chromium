@@ -7,6 +7,7 @@
 
 #import <Foundation/Foundation.h>
 
+#include <map>
 #include <set>
 #include <string>
 
@@ -22,6 +23,12 @@ class Uuid;
 namespace synced_sessions {
 struct DistantSession;
 }  // namespace synced_sessions
+namespace fake_server {
+class FakeServer;
+}  // namespace fake_server
+namespace syncer {
+class LoopbackServerEntity;
+}  // namespace syncer
 namespace tab_groups {
 class SavedTabGroup;
 class SavedTabGroupTab;
@@ -45,13 +52,17 @@ void TearDownFakeSyncServer();
 // nothing.
 void ClearFakeSyncServerData();
 
+// Returns the active fake sync server, or `nullptr` if none is set up.
+fake_server::FakeServer* GetFakeSyncServer();
+
+// Injects an entity into the active fake sync server.
+void InjectFakeSyncServerEntity(
+    std::unique_ptr<syncer::LoopbackServerEntity> entity);
+
 // Ensures that all of the FakeServer's data is persisted to disk. This is
 // useful before app restarts, where otherwise the FakeServer may not get to do
 // its usual on-destruction flush.
 void FlushFakeSyncServerToDisk();
-
-// Triggers a sync cycle for a `type`.
-void TriggerSyncCycle(syncer::DataType type);
 
 // Gets the number of entities of the given `type`.
 int GetNumberOfSyncEntities(syncer::DataType type);
@@ -137,6 +148,17 @@ void AddHistoryVisitToFakeSyncServer(const GURL& url);
 // Injects a device info into the fake sync server.
 void AddDeviceInfoToFakeSyncServer(const std::string& device_name,
                                    base::Time last_updated_timestamp);
+
+// Injects a Send Tab To Self entry into the fake sync server and returns its
+// GUID. If `target_device_cache_guid` is empty, the local device's cache GUID
+// is used instead.
+std::string AddSendTabToSelfEntryToFakeSyncServer(
+    const GURL& url,
+    const std::string& title,
+    const std::string& device_name,
+    const std::string& target_device_cache_guid = "",
+    const std::map<std::string, std::string>& form_fields = {},
+    const std::string& text_fragment = "");
 
 // Returns YES if the provided `url` is present (or not) if `expected_present`
 // is YES (or NO).

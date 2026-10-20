@@ -24,6 +24,7 @@
 #include "cc/layers/append_quads_context.h"
 #include "cc/layers/append_quads_data.h"
 #include "cc/layers/picture_layer.h"
+#include "cc/paint/draw_image.h"
 #include "cc/test/fake_content_layer_client.h"
 #include "cc/test/fake_impl_task_runner_provider.h"
 #include "cc/test/fake_layer_tree_frame_sink.h"
@@ -45,7 +46,6 @@
 #include "components/viz/common/quads/tile_draw_quad.h"
 #include "components/viz/test/begin_frame_args_test.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "ui/base/ui_base_features.h"
 #include "ui/gfx/geometry/rect_conversions.h"
 #include "ui/gfx/geometry/size_conversions.h"
 #include "ui/gfx/geometry/test/geometry_util.h"
@@ -2473,6 +2473,41 @@ TEST_F(LegacySWPictureLayerImplTest,
   high_res = active_layer()->tilings()->FindTilingWithScaleKey(1.0f);
   ASSERT_TRUE(high_res);
   EXPECT_EQ(HIGH_RESOLUTION, high_res->resolution());
+}
+
+TEST_F(PictureLayerImplTest, InvalidateRegionForImagesSetsNeedsPushProperties) {
+  gfx::Size layer_bounds(1000, 1000);
+  SetupDefaultTrees(layer_bounds);
+
+  // Use a raster source with images.
+  scoped_refptr<FakeRasterSource> raster_source =
+      FakeRasterSource::CreateFilledWithImages(layer_bounds);
+  pending_layer()->SetRasterSource(raster_source, Region());
+
+  // SetRasterSource sets needs_push_properties. Clear it.
+  pending_layer()->ResetChangeTracking();
+  EXPECT_FALSE(pending_layer()->needs_push_properties());
+  EXPECT_FALSE(pending_layer()->has_non_animated_image_update_rect());
+
+  // Find an image to invalidate from the discardable image map.
+  std::vector<const DrawImage*> images =
+      pending_layer()->discardable_image_map()->GetDiscardableImagesInRect(
+          gfx::Rect(layer_bounds));
+  ASSERT_FALSE(images.empty());
+  PaintImageIdFlatSet images_to_invalidate;
+  images_to_invalidate.insert(images[0]->paint_image().stable_id());
+
+  pending_layer()->InvalidateRegionForImages(images_to_invalidate);
+
+  // Verify that the layer now needs to push properties.
+  EXPECT_TRUE(pending_layer()->needs_push_properties());
+  EXPECT_TRUE(
+      pending_layer()->GetChangeFlag(LayerImpl::kChangedGeneralProperty));
+  EXPECT_TRUE(pending_layer()->has_non_animated_image_update_rect());
+
+  // Activate and verify that the flag is pushed to the active layer.
+  ActivateTree();
+  EXPECT_TRUE(active_layer()->has_non_animated_image_update_rect());
 }
 
 TEST_F(PictureLayerImplTest, OnlyHighResTilingWithGpuRasterization) {
@@ -5305,49 +5340,6 @@ TEST_F(TileSizeTest, GPUTileSizes) {
   EXPECT_EQ(result.height(), 512);  // 500 + 2, 32-byte aligned.
 }
 
-TEST_F(TileSizeTest, RawDrawTileSizes) {
-  base::test::ScopedFeatureList scoped_feature_list(features::kRawDraw);
-  SetupPendingTree();
-  auto* layer = pending_layer();
-
-  host_impl()->active_tree()->SetDeviceViewportRect(gfx::Rect(1000, 1000));
-  gfx::Size result;
-
-  host_impl()->CommitComplete();
-
-  constexpr int kMaxTextureSize = 2048;
-  // Gpu-RawDraw-rasterization uses 100%
-  // std::max({viewport-width, viewport-height, 2280}) tiles.
-  EXPECT_TRUE(host_impl()->use_gpu_rasterization());
-  gfx::Rect viewport_rect(2000, 2000);
-  host_impl()->active_tree()->SetDeviceViewportRect(viewport_rect);
-  layer->set_gpu_raster_max_texture_size(viewport_rect.size());
-  host_impl()->NotifyReadyToActivate();
-
-  gfx::Size content_bounds(10000, 10000);
-  result = layer->CalculateTileSize(content_bounds);
-  EXPECT_EQ(result, gfx::Size(kMaxTextureSize, kMaxTextureSize));
-
-  viewport_rect = gfx::Rect(1000, 1000);
-  host_impl()->active_tree()->SetDeviceViewportRect(viewport_rect);
-  layer->set_gpu_raster_max_texture_size(gfx::Size());
-  host_impl()->NotifyReadyToActivate();
-  content_bounds = gfx::Size(1600, 100);
-
-  result = layer->CalculateTileSize(content_bounds);
-  EXPECT_EQ(result, gfx::Size(1600, 128));
-
-  viewport_rect = gfx::Rect(1000, 1000);
-  host_impl()->active_tree()->SetDeviceViewportRect(viewport_rect);
-  layer->set_gpu_raster_max_texture_size(gfx::Size());
-  host_impl()->NotifyReadyToActivate();
-  content_bounds = gfx::Size(std::numeric_limits<int>::max(),
-                             std::numeric_limits<int>::max());
-
-  result = layer->CalculateTileSize(content_bounds);
-  EXPECT_EQ(result, gfx::Size(kMaxTextureSize, kMaxTextureSize));
-}
-
 class HalfWidthTileTest : public PictureLayerImplTest {};
 
 TEST_F(HalfWidthTileTest, TileSizes) {
@@ -5828,10 +5820,10 @@ TEST_F(LegacySWPictureLayerImplTest, AnimatedImages) {
 
   // All images should be registered on the pending layer.
   SetupPendingTree(raster_source, gfx::Size(), Region(gfx::Rect(layer_bounds)));
-  EXPECT_TRUE(
-      host_impl()->GatherImageAnimationState().contains(image1.stable_id()));
-  EXPECT_TRUE(
-      host_impl()->GatherImageAnimationState().contains(image2.stable_id()));
+  EXPECT_TRUE(host_impl()->GatherAnimatedImageDriverState().contains(
+      image1.stable_id()));
+  EXPECT_TRUE(host_impl()->GatherAnimatedImageDriverState().contains(
+      image2.stable_id()));
 
   // Make only the first image visible and verify that only this image is
   // animated.
@@ -5843,7 +5835,7 @@ TEST_F(LegacySWPictureLayerImplTest, AnimatedImages) {
   // Now activate and make sure the active layer is registered as well.
   ActivateTree();
   active_layer()->SetVisibleLayerRectForTesting(visible_rect);
-  base::flat_map<PaintImage::Id, bool> animation_state;
+  AnimatedImageDriverMap animation_state;
   host_impl()->active_tree()->AnnotateAnimatedImages(animation_state);
   EXPECT_TRUE(animation_state.contains(image1.stable_id()));
   EXPECT_TRUE(animation_state.contains(image2.stable_id()));

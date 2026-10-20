@@ -20,12 +20,17 @@ source_set("model") {
     "optimization_guide_service_factory.mm",
     "optimization_guide_tab_helper.h",
     "optimization_guide_tab_helper.mm",
-    "optimization_guide_validation_tab_helper.h",
-    "optimization_guide_validation_tab_helper.mm",
     "prediction_model_download_client.mm",
     "tab_url_provider_impl.h",
     "tab_url_provider_impl.mm",
   ]
+
+  if (build_with_model_execution) {
+    sources += [
+      "ios_model_execution_manager_delegate.h",
+      "ios_model_execution_manager_delegate.mm",
+    ]
+  }
   deps = [
     "//base",
     "//components/application_locale_storage",
@@ -59,7 +64,15 @@ source_set("model") {
     "//ios/web",
     "//ios/web/public",
     "//ios/web/public:web_state_observer",
+    "//services/network/public/cpp",
   ]
+
+  if (build_with_model_execution) {
+    deps += [
+      "//components/private_ai",
+      "//ios/chrome/browser/private_ai/model",
+    ]
+  }
   frameworks = [ "UIKit.framework" ]
   public_deps = [
     ":download_client_header",
@@ -101,7 +114,6 @@ source_set("unit_tests") {
     "optimization_guide_tab_helper_unittest.mm",
     "optimization_guide_test_utils.h",
     "optimization_guide_test_utils.mm",
-    "optimization_guide_validation_tab_helper_unittest.mm",
     "prediction_manager_browsertest.mm",
     "tab_url_provider_impl_unittest.mm",
   ]
@@ -137,6 +149,8 @@ source_set("unit_tests") {
     "//ios/chrome/browser/shared/model/profile",
     "//ios/chrome/browser/shared/model/profile/test",
     "//ios/chrome/browser/shared/model/web_state_list",
+    "//ios/chrome/browser/signin/model:fake_system_identity",
+    "//ios/chrome/browser/signin/model:test_support",
     "//ios/chrome/test:test_support",
     "//ios/web/public/test",
     "//ios/web/public/test/fakes",

@@ -151,6 +151,12 @@ MediaItemUIUpdatedView::MediaItemUIUpdatedView(
       media_color_theme_.secondary_foreground_color_id);
   favicon_source->SetFlexForView(source_label_, 1);
 
+  // Create the save video frame button.
+  save_video_frame_button_ = CreateMediaActionButton(
+      source_row, static_cast<int>(MediaSessionAction::kSaveVideoFrame),
+      vector_icons::kVideoFrameSaveIcon,
+      IDS_MEDIA_MESSAGE_CENTER_MEDIA_NOTIFICATION_ACTION_SAVE_VIDEO_FRAME);
+
   // Create the start casting button.
   start_casting_button_ = CreateMediaActionButton(
       source_row, kEmptyMediaActionButtonId,
@@ -216,12 +222,12 @@ MediaItemUIUpdatedView::MediaItemUIUpdatedView(
       metadata_row->AddChildView(std::make_unique<views::BoxLayoutView>());
   play_pause_button_ = CreateMediaActionButton(
       play_pause_button_container, static_cast<int>(MediaSessionAction::kPlay),
-      features::IsRoundedIconsEnabled() ? vector_icons::kPlayArrowFilledIcon
-                                        : vector_icons::kPlayArrowOldIcon,
+      features::IsRoundedIconsEnabled()
+          ? vector_icons::kPlayArrowFilledFlippableIcon
+          : vector_icons::kPlayArrowOldIcon,
       IDS_MEDIA_MESSAGE_CENTER_MEDIA_NOTIFICATION_ACTION_PLAY);
-  play_pause_button_->SetBackground(views::CreateRoundedRectBackground(
-      media_color_theme_.play_button_container_color_id,
-      kPlayPauseButtonSize.height() / 2));
+  play_pause_button_->SetBackground(views::CreatePillBackground(
+      media_color_theme_.play_button_container_color_id));
 
   // |progress_row| holds some media action buttons, the progress view and the
   // progress timestamp views.
@@ -347,7 +353,7 @@ MediaItemUIUpdatedView::~MediaItemUIUpdatedView() {
 
 gfx::Size MediaItemUIUpdatedView::CalculatePreferredSize(
     const views::SizeBounds& available_size) const {
-  auto size = GetLayoutManager()->GetPreferredSize(this);
+  auto size = GetLayoutManager()->GetPreferredSize(this, {kFixedWidth, {}});
   return gfx::Size(kFixedWidth, size.height());
 }
 
@@ -409,19 +415,18 @@ void MediaItemUIUpdatedView::UpdateWithMediaSessionInfo(
                                           : vector_icons::kPauseOldIcon,
         IDS_MEDIA_MESSAGE_CENTER_MEDIA_NOTIFICATION_ACTION_PAUSE,
         media_color_theme_.pause_button_foreground_color_id);
-    play_pause_button_->SetBackground(views::CreateRoundedRectBackground(
-        media_color_theme_.pause_button_container_color_id,
-        kPlayPauseButtonSize.height() / 2));
+    play_pause_button_->SetBackground(views::CreatePillBackground(
+        media_color_theme_.pause_button_container_color_id));
   } else {
     play_pause_button_->Update(
         static_cast<int>(MediaSessionAction::kPlay),
-        features::IsRoundedIconsEnabled() ? vector_icons::kPlayArrowFilledIcon
-                                          : vector_icons::kPlayArrowOldIcon,
+        features::IsRoundedIconsEnabled()
+            ? vector_icons::kPlayArrowFilledFlippableIcon
+            : vector_icons::kPlayArrowOldIcon,
         IDS_MEDIA_MESSAGE_CENTER_MEDIA_NOTIFICATION_ACTION_PLAY,
         media_color_theme_.play_button_foreground_color_id);
-    play_pause_button_->SetBackground(views::CreateRoundedRectBackground(
-        media_color_theme_.play_button_container_color_id,
-        kPlayPauseButtonSize.height() / 2));
+    play_pause_button_->SetBackground(views::CreatePillBackground(
+        media_color_theme_.play_button_container_color_id));
   }
 
   in_picture_in_picture_ =
@@ -619,6 +624,11 @@ void MediaItemUIUpdatedView::MediaActionButtonPressed(views::Button* button) {
           kMediaItemUIUpdatedViewActionHistogram,
           MediaItemUIUpdatedViewAction::kExitPictureInPicture);
       break;
+    case MediaSessionAction::kSaveVideoFrame:
+      base::UmaHistogramEnumeration(
+          kMediaItemUIUpdatedViewActionHistogram,
+          MediaItemUIUpdatedViewAction::kSaveVideoFrame);
+      break;
     default:
       NOTREACHED();
   }
@@ -650,8 +660,11 @@ void MediaItemUIUpdatedView::UpdateMediaActionButtonsVisibility() {
   for (views::Button* button : media_action_buttons_) {
     bool should_show = media_actions_.contains(
         static_cast<MediaSessionAction>(button->GetID()));
-    // Do not show the picture-in-picture button for a casting media item.
-    if (button == picture_in_picture_button_ && footer_view_) {
+    // Do not show the picture-in-picture button or the save video frame button
+    // for a casting media item.
+    if ((button == picture_in_picture_button_ ||
+         button == save_video_frame_button_) &&
+        footer_view_) {
       should_show = false;
     }
 
@@ -779,6 +792,13 @@ void MediaItemUIUpdatedView::UpdateCastingState() {
   }
 }
 
+MediaActionButton* MediaItemUIUpdatedView::GetMediaActionButton(
+    MediaSessionAction action) {
+  const auto i = std::ranges::find(
+      media_action_buttons_, static_cast<int>(action), &views::View::GetID);
+  return (i == media_action_buttons_.end()) ? nullptr : *i;
+}
+
 ///////////////////////////////////////////////////////////////////////////////
 // Helper functions for testing:
 
@@ -816,9 +836,7 @@ views::Label* MediaItemUIUpdatedView::GetDurationTimestampLabelForTesting() {
 
 MediaActionButton* MediaItemUIUpdatedView::GetMediaActionButtonForTesting(
     MediaSessionAction action) {
-  const auto i = std::ranges::find(
-      media_action_buttons_, static_cast<int>(action), &views::View::GetID);
-  return (i == media_action_buttons_.end()) ? nullptr : *i;
+  return GetMediaActionButton(action);
 }
 
 MediaProgressView* MediaItemUIUpdatedView::GetProgressViewForTesting() {

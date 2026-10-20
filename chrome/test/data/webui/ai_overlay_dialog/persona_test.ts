@@ -2,10 +2,14 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import 'chrome-untrusted://ai-overlay-dialog/persona.js';
+// NOTE: These tests exercise branded internal persona functionality (`internal/persona.js`).
+// TODO(crbug.com/532099566): Move branded-specific WebUI tests into an internal test subdirectory.
+import 'chrome-untrusted://ai-overlay-dialog/internal/persona.js';
 
-import {processConditionals, processNumbering, processTemplate} from 'chrome-untrusted://ai-overlay-dialog/persona.js';
-import {assertEquals, assertThrows} from 'chrome-untrusted://webui-test/chai_assert.js';
+import type {ConversationConfig} from 'chrome-untrusted://ai-overlay-dialog/internal/conversation.js';
+import {DEFAULT_API_CONFIG, DEFAULT_PERSONA, DEFAULT_SYSTEM_INSTRUCTION} from 'chrome-untrusted://ai-overlay-dialog/internal/conversation.js';
+import {buildSystemInstruction, processConditionals, processNumbering, processTemplate} from 'chrome-untrusted://ai-overlay-dialog/internal/persona.js';
+import {assertEquals, assertFalse, assertThrows, assertTrue} from 'chrome-untrusted://webui-test/chai_assert.js';
 
 suite('PersonaTest', () => {
   test('ProcessConditionalsBasic', () => {
@@ -116,5 +120,54 @@ suite('PersonaTest', () => {
         'Status: Discount Applied ' +
         'Final check: 2.';
     assertEquals(expectedBasic, processTemplate(template, data));
+  });
+
+  test('BuildSystemInstructionUsePersonaTrue', () => {
+    const config: ConversationConfig = {
+      system_instruction:
+          'Assistant persona details: ${persona}. Call us: ${nameList}.',
+      persona: {
+        id: '1',
+        name: 'Chef Billy',
+        nicknames: ['Billy', 'Bill'],
+        persona: 'You are Chef Billy, an elite French chef.',
+        voice: 'Aoede',
+      },
+      api_config: {endpointUrl: '', model: '', apiKey: ''},
+    };
+    const expected =
+        'Assistant persona details: You are Chef Billy, an elite French ' +
+        'chef.. Call us: Billy, Bill.';
+    assertEquals(expected, buildSystemInstruction(config));
+  });
+
+  test('BuildSystemInstructionUsePersonaFalse', () => {
+    const config: ConversationConfig = {
+      system_instruction:
+          'Assistant persona details: ${persona}. Call us: ${nameList}.',
+      persona: {
+        id: 'generic',
+        name: 'Chrome',
+        nicknames: [],
+        persona: '',
+        voice: 'Aoede',
+      },
+      api_config: {endpointUrl: '', model: '', apiKey: ''},
+    };
+    const expected = 'Assistant persona details: . Call us: Chrome.';
+    assertEquals(expected, buildSystemInstruction(config));
+  });
+
+  test('BuildSystemInstructionWithBuiltInDefaults', () => {
+    const config: ConversationConfig = {
+      system_instruction: DEFAULT_SYSTEM_INSTRUCTION,
+      persona: DEFAULT_PERSONA,
+      api_config: {...DEFAULT_API_CONFIG},
+    };
+    const instruction = buildSystemInstruction(config);
+    assertTrue(instruction.length > 0);
+    assertFalse(instruction.includes('${persona}'));
+    assertFalse(instruction.includes('${nameList}'));
+    assertTrue(instruction.includes('Chrome'));
   });
 });

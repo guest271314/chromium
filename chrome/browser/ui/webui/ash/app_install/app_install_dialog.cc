@@ -11,6 +11,7 @@
 
 #include "ash/constants/webui_url_constants.h"
 #include "ash/style/typography.h"
+#include "base/check_deref.h"
 #include "base/strings/utf_string_conversions.h"
 #include "chrome/browser/apps/almanac_api_client/almanac_app_icon_loader.h"
 #include "chrome/browser/apps/app_service/app_icon/app_icon_factory.h"
@@ -19,6 +20,7 @@
 #include "chrome/browser/ui/webui/ash/app_install/app_install_page_handler.h"
 #include "chromeos/constants/chromeos_features.h"
 #include "components/webapps/common/constants.h"
+#include "content/public/browser/navigation_controller.h"
 #include "ui/aura/window.h"
 #include "ui/base/mojom/ui_base_types.mojom-shared.h"
 #include "ui/base/webui/web_ui_util.h"
@@ -172,9 +174,9 @@ void AppInstallDialog::CleanUpDialogIfNotShown() {
 
 void AppInstallDialog::OnDialogShown(content::WebUI* webui) {
   CHECK(dialog_args_.has_value());
-
+  dialog_ui_ =
+      &CHECK_DEREF(webui->GetController()->GetAs<AppInstallDialogUI>());
   SystemWebDialogDelegate::OnDialogShown(webui);
-  dialog_ui_ = static_cast<AppInstallDialogUI*>(webui->GetController());
   dialog_ui_->SetDialogArgs(std::move(dialog_args_).value());
 }
 

@@ -34,7 +34,6 @@ static_library("quick_unlock") {
 
   public_deps = [
     "//base",
-    "//chrome/browser:browser_public_dependencies",
     "//chrome/browser/profiles:profile",
     "//chromeos/ash/components/feature_usage",
     "//chromeos/ash/components/login/auth",
@@ -51,8 +50,7 @@ static_library("quick_unlock") {
   deps = [
     "//ash/constants",
     "//ash/public/cpp",
-    "//chrome/app:generated_resources",
-    "//chrome/browser:browser_process",
+    "//ash/strings",
     "//chrome/browser:resources",
     "//chrome/browser/ash/profiles",
     "//chrome/browser/profiles:profile_manager",

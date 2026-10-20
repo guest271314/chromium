@@ -23,8 +23,8 @@ namespace storage {
 class FakeDomStorageDatabase : public DomStorageDatabase {
  public:
   // `open_status` is returned by Open(). Passed at construction time because
-  // DomStorageDatabaseFactory::Create() is immediately followed by an Open()
-  // call before the test can configure the instance.
+  // DomStorageDatabaseFactory::Open() immediately invokes Open() on the
+  // instance before the test can configure it.
   explicit FakeDomStorageDatabase(DbStatus open_status);
   ~FakeDomStorageDatabase() override;
 
@@ -50,6 +50,8 @@ class FakeDomStorageDatabase : public DomStorageDatabase {
                           std::vector<MapLocator> maps_to_delete) override;
   DbStatus PurgeOrigins(std::set<url::Origin> origins) override;
   DbStatus CleanUpStaleData() override;
+  void Close() override;
+  void DetachFromSequence() override;
 
   // Test-only DomStorageDatabase methods. Stubbed for now.
   // TODO(crbug.com/377242771): Update tests using these to rely on this fake

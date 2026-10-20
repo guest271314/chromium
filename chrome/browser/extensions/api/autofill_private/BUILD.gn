@@ -21,8 +21,6 @@ source_set("autofill_private") {
     "autofill_util.h",
   ]
 
-  configs += [ "//build/config/compiler:wexit_time_destructors" ]
-
   deps = [
     "//base",
     "//chrome/browser:browser_process",
@@ -39,6 +37,7 @@ source_set("autofill_private") {
     "//components/consent_auditor",
     "//components/device_reauth",
     "//components/feature_engagement/public",
+    "//components/password_manager/core/browser/features:password_features",
     "//components/prefs",
     "//components/strings:components_branded_strings_grit",
     "//components/strings:components_strings_grit",

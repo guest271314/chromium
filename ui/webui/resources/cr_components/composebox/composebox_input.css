@@ -61,7 +61,7 @@
 }
 
 #aimIcon {
-  -webkit-mask-image: url(//resources/cr_components/searchbox/icons/search_spark.svg);
+  -webkit-mask-image: url(//resources/cr_components/searchbox/icons/search_spark_old.svg);
   -webkit-mask-position: center;
   -webkit-mask-repeat: no-repeat;
   -webkit-mask-size: cover;
@@ -94,7 +94,7 @@
   font-family: inherit;
   font-size: var(--cr-composebox-font-size, inherit);
   line-height: 24px;
-  padding-block: var(--text-input-top-spacing) 0;
+  padding-block: var(--text-input-top-spacing) 4px;
   padding-inline: 12px var(--text-input-inline-end-spacing);
   width: 100%;
 }
@@ -107,7 +107,7 @@
   position: absolute;
   top: 0;
   user-select: none;
-  white-space: pre-wrap;
+  white-space: break-spaces;
   word-break: break-word;
 }
 
@@ -128,10 +128,17 @@
   border: none;
   color: var(--color-composebox-font-light);
   field-sizing: content;
-  padding-bottom: 4px;
   outline: none;
   position: relative;
   resize: none;
+  white-space: break-spaces;
+}
+
+:host([composebox-skills-enabled]) #input {
+  display: inline-block;
+  min-height: 24px;
+  white-space: break-spaces;
+  word-break: break-word;
 }
 
 :host(:not([disable-caret-color-animation])) #input {
@@ -209,11 +216,15 @@
   }
 }
 
-#input::placeholder {
+#input::placeholder,
+#input:empty::before {
+  content: attr(placeholder);
   color: var(--cr-composebox-input-placeholder-color, var(--color-composebox-type-ahead));
+  pointer-events: none;
 }
 
-:host-context([searchbox-next-enabled]) #input::placeholder {
+:host-context([searchbox-next-enabled]) #input::placeholder,
+:host-context([searchbox-next-enabled]) #input:empty::before {
   font-size: var(--cr-composebox-input-placeholder-font-size, 16px);
   font-weight: 400;
 }
@@ -232,12 +243,12 @@
 
 #invisibleText {
   color: transparent;
-  white-space: pre-wrap;
+  white-space: break-spaces;
 }
 
 #ghostText {
   color: var(--color-composebox-type-ahead);
-  white-space: pre-wrap;
+  white-space: break-spaces;
 }
 
 #tabChip {
@@ -318,4 +329,58 @@
   .action-icon {
     border: var(--composebox-outline-hcm);
   }
+
+  #cancelIcon:hover:not([disabled]) {
+    --cr-icon-button-icon-size: 0;
+    background-color: Highlight;
+    forced-color-adjust: none;
+  }
+
+  #cancelIcon:hover:not([disabled])::after {
+    -webkit-mask-image: url(//resources/images/icon_clear_old.svg);
+    -webkit-mask-position: center;
+    -webkit-mask-repeat: no-repeat;
+    -webkit-mask-size: 20px;
+    background-color: HighlightText;
+    content: '';
+    inset: 0;
+    position: absolute;
+  }
+
+  :host-context([webui-rounded-icons])
+      #cancelIcon:hover:not([disabled])::after {
+    -webkit-mask-image: url(//resources/images/icon_clear.svg);
+  }
 }
+
+.aim-chip {
+  border-radius: 4px;
+  display: inline-block;
+  font-size: 14px;
+  font-weight: bold;
+  padding-inline: 2px;
+  white-space: nowrap;
+}
+
+.aim-chip:hover {
+  background-color: var(--color-composebox-aim-chip-hover-background);
+  color: var(--color-composebox-aim-chip-hover-text);
+  cursor: pointer;
+}
+
+#mirror .aim-chip {
+  background-color: transparent;
+  color: transparent;
+}
+
+#mirror .aim-chip span {
+  position: relative;
+  top: -2px;
+}
+
+:host-context([webui-rounded-icons]) {
+  #aimIcon {
+    -webkit-mask-image: url(//resources/cr_components/searchbox/icons/search_spark.svg);
+  }
+}
+

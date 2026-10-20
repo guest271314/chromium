@@ -8,20 +8,22 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <array>
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
+#include <string_view>
+#include <type_traits>
 #include <vector>
 
+#include "base/containers/heap_array.h"
+#include "base/containers/span.h"
 #include "base/memory/raw_ptr.h"
 #include "gpu/command_buffer/common/buffer.h"
 #include "gpu/command_buffer/common/cmd_buffer_common.h"
 #include "gpu/command_buffer/common/constants.h"
 #include "gpu/command_buffer/service/gpu_command_buffer_service_export.h"
-
-// Forwardly declare a few GL types to avoid including GL header files.
-using GLsizei = int;
-using GLint = int;
 
 namespace gpu {
 
@@ -71,21 +73,29 @@ class GPU_COMMAND_BUFFER_SERVICE_EXPORT CommonDecoder {
       return size_;
     }
 
-    // Gets a pointer to a section the bucket. Returns nullptr if offset or size
-    // is out of range.
-    void* GetData(size_t offset, size_t size) const;
-
+    // Gets a span over a section of the bucket, reinterpreted as `count`
+    // elements of type `T` starting at byte `offset`. Returns an empty span if
+    // the range is out of bounds. `T` must be trivially copyable.
     template <typename T>
-    T GetDataAs(size_t offset, size_t size) const {
-      return reinterpret_cast<T>(GetData(offset, size));
+    base::span<T> GetDataAsSpan(size_t offset, size_t count) {
+      static_assert(std::is_trivially_copyable_v<T>);
+      base::span<uint8_t> bytes = GetDataAsByteSpan(offset, count * sizeof(T));
+      // The bucket's storage is a raw byte buffer, so reinterpret_span() is the
+      // intended safe conversion here. It CHECKs alignment and that the byte
+      // size is a multiple of sizeof(T).
+      return base::subtle::reinterpret_span<T>(bytes);
     }
+
+    // Gets a writable byte span over a section of the bucket. Returns an empty
+    // span if offset or size is out of range.
+    base::span<uint8_t> GetDataAsByteSpan(size_t offset, size_t size);
 
     // Sets the size of the bucket.
     void SetSize(size_t size);
 
     // Sets a part of the bucket.
-    // Returns false if offset or size is out of range.
-    bool SetData(const volatile void* src, size_t offset, size_t size);
+    // Returns false if `offset` or `src.size()` is out of range.
+    bool SetData(base::span<const volatile uint8_t> src, size_t offset);
 
     // Sets the bucket data from a string. Strings are passed NULL terminated to
     // distinguish between empty string and no string.
@@ -96,18 +106,16 @@ class GPU_COMMAND_BUFFER_SERVICE_EXPORT CommonDecoder {
     // is no string.
     bool GetAsString(std::string* str);
 
-    // Gets the bucket data as strings.
-    // On success, the number of strings are in |_count|, the string data are
-    // in |_string|, and string sizes are in |_length|..
-    bool GetAsStrings(GLsizei* _count,
-                      std::vector<char*>* _string,
-                      std::vector<GLint>* _length);
+    // Gets views of the strings stored in the bucket. Returns nullopt if the
+    // bucket does not contain a valid string array. The returned views are
+    // invalidated when the bucket's storage is resized or destroyed.
+    std::optional<std::vector<std::string_view>> GetAsStrings();
 
    private:
     bool OffsetSizeValid(size_t offset, size_t size) const;
 
     size_t size_;
-    ::std::unique_ptr<int8_t[]> data_;
+    base::HeapArray<uint8_t> data_;
   };
 
   explicit CommonDecoder(DecoderClient* client,
@@ -156,9 +164,42 @@ class GPU_COMMAND_BUFFER_SERVICE_EXPORT CommonDecoder {
     return static_cast<T>(GetAddressAndCheckSize(shm_id, offset, size));
   }
 
-  base::span<uint8_t> GetSharedMemoryAsSpan(uint32_t shm_id,
-                                            uint32_t offset,
-                                            uint32_t size);
+  template <typename T = uint8_t>
+  std::optional<base::span<T>> GetSharedMemoryAsSpan(uint32_t shm_id,
+                                                     uint32_t offset,
+                                                     size_t element_count) {
+    // Prevent integer overflow exploits on large element counts.
+    base::CheckedNumeric<uint32_t> checked_size_in_bytes =
+        base::CheckedNumeric<size_t>(element_count) * sizeof(T);
+    uint32_t size_in_bytes;
+    if (!checked_size_in_bytes.AssignIfValid(&size_in_bytes)) {
+      return std::nullopt;
+    }
+
+    std::optional<base::span<uint8_t>> byte_span =
+        GetSharedMemoryAsByteSpan(shm_id, offset, size_in_bytes);
+    if (!byte_span.has_value()) {
+      return std::nullopt;
+    }
+
+    // Protect against partial reads or out-of-bounds shared memory access.
+    if (byte_span->size_bytes() != size_in_bytes) {
+      return std::nullopt;
+    }
+
+    // Allow valid zero-count draw calls to pass without triggering alignment
+    // checks.
+    if (element_count == 0) {
+      return base::span<T>();
+    }
+
+    // Prevent undefined behavior from unaligned hardware memory access.
+    if (reinterpret_cast<uintptr_t>(byte_span->data()) % alignof(T) != 0) {
+      return std::nullopt;
+    }
+
+    return base::subtle::reinterpret_span<T>(*byte_span);
+  }
 
   void* GetAddressAndSize(unsigned int shm_id,
                           unsigned int offset,
@@ -210,6 +251,11 @@ class GPU_COMMAND_BUFFER_SERVICE_EXPORT CommonDecoder {
 
   #undef COMMON_COMMAND_BUFFER_CMD_OP
 
+  std::optional<base::span<uint8_t>> GetSharedMemoryAsByteSpan(
+      uint32_t shm_id,
+      uint32_t offset,
+      uint32_t size_in_bytes);
+
   raw_ptr<CommandBufferServiceBase, DanglingUntriaged> command_buffer_service_;
   raw_ptr<DecoderClient, DanglingUntriaged> client_;
   size_t max_bucket_size_;
@@ -229,7 +275,7 @@ class GPU_COMMAND_BUFFER_SERVICE_EXPORT CommonDecoder {
   };
 
   // A table of CommandInfo for all the commands.
-  static const CommandInfo command_info[];
+  static const std::array<CommandInfo, cmd::kNumCommands> command_info;
 };
 
 }  // namespace gpu

@@ -69,7 +69,7 @@ namespace enterprise_auth {
 
 namespace {
 
-constexpr base::ByteSize kDataSizeLimit = base::KiBU(128);
+constexpr base::ByteSize kDataSizeLimit = base::KiB(128);
 
 }  // namespace
 
@@ -354,9 +354,7 @@ void URLSessionURLLoader::RecordFailureMetrics(SSORequestFailReason reason) {
 
 // We let URLSession follow redirects and only get the final result.
 void URLSessionURLLoader::FollowRedirect(
-    const std::vector<std::string>& removed_headers,
-    const ::net::HttpRequestHeaders& modified_headers,
-    const ::net::HttpRequestHeaders& modified_cors_exempt_headers,
+    network::HttpRequestHeadersUpdateParams headers_update_params,
     const std::optional<::GURL>& new_url) {
   NOTREACHED();
 }

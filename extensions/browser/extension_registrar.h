@@ -346,11 +346,6 @@ class ExtensionRegistrar : public KeyedService,
   void GreylistExtensionForTest(const std::string& extension_id,
                                 const BitMapBlocklistState& state);
 
-  // Disables the automatic spin-up of lazy contexts. This should only be used
-  // in tests.
-  [[nodiscard]]
-  static base::AutoReset<bool> DisableLazyContextSpinupForTest();
-
   // Deactivates the extension, adding its id to the list of terminated
   // extensions.
   void TerminateExtension(const ExtensionId& extension_id);
@@ -390,6 +385,12 @@ class ExtensionRegistrar : public KeyedService,
     extensions_enabled_ = value;
   }
 
+  // Overrides the browser version used to detect whether a component
+  // extension's code may have changed across a browser update, allowing tests
+  // to simulate one. Pass nullptr to restore the real version.
+  static base::AutoReset<const char*> OverrideBrowserVersionForTesting(
+      const char* version);
+
  private:
   // How to surface an extension load error, e.g. showing an error dialog. The
   // actual behavior is up to the embedder.
@@ -418,6 +419,13 @@ class ExtensionRegistrar : public KeyedService,
   // afterwards.
   void DoReloadExtension(ExtensionId extension_id,
                          LoadErrorBehavior load_error_behavior);
+
+  // Records the current browser version in `extension_id`'s prefs and returns
+  // whether it differed from the previously recorded one (also true if there
+  // was no recorded version). Used to detect that a component extension's
+  // code may have changed across a browser update, since component extensions
+  // are packaged with the browser and may change without a version bump.
+  bool CheckAndUpdateLastLoadedBrowserVersion(const ExtensionId& extension_id);
 
   // Unregister the service worker that is not from manifest and has extension
   // root scope.

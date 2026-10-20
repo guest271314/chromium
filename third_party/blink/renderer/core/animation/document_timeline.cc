@@ -36,6 +36,7 @@
 #include "third_party/blink/renderer/core/animation/animation.h"
 #include "third_party/blink/renderer/core/animation/animation_clock.h"
 #include "third_party/blink/renderer/core/animation/animation_effect.h"
+#include "third_party/blink/renderer/core/dom/document.h"
 #include "third_party/blink/renderer/core/frame/local_dom_window.h"
 #include "third_party/blink/renderer/core/loader/document_loader.h"
 #include "third_party/blink/renderer/platform/instrumentation/tracing/trace_event.h"
@@ -134,6 +135,15 @@ void DocumentTimeline::ScheduleNextService() {
   }
 }
 
+DocumentTimeline::DocumentTimelineTiming::DocumentTimelineTiming(
+    DocumentTimeline* timeline)
+    : timeline_(timeline),
+      timer_(timeline->GetDocument()->GetTaskRunner(TaskType::kInternalDefault),
+             this,
+             &DocumentTimelineTiming::TimerFired) {
+  DCHECK(timeline_);
+}
+
 void DocumentTimeline::DocumentTimelineTiming::WakeAfter(
     base::TimeDelta duration) {
   if (timer_.IsActive() && timer_.NextFireInterval() < duration)
@@ -160,16 +170,16 @@ void DocumentTimeline::ResetForTesting() {
   zero_time_ = base::TimeTicks() + origin_time_;
   zero_time_initialized_ = true;
   playback_rate_ = 1;
-  last_current_phase_and_time_.reset();
+  last_current_time_.reset();
 }
 
 void DocumentTimeline::SetTimingForTesting(PlatformTiming* timing) {
   timing_ = timing;
 }
 
-AnimationTimeline::PhaseAndTime DocumentTimeline::CurrentPhaseAndTime() {
+std::optional<base::TimeDelta> DocumentTimeline::CurrentTimeInternal() {
   if (!IsActive()) {
-    return {TimelinePhase::kInactive, /*current_time*/ std::nullopt};
+    return std::nullopt;
   }
 
   std::optional<base::TimeDelta> result =
@@ -177,7 +187,7 @@ AnimationTimeline::PhaseAndTime DocumentTimeline::CurrentPhaseAndTime() {
           ? CalculateZeroTime().since_origin()
           : (CurrentAnimationTime(GetDocument()) - CalculateZeroTime()) *
                 playback_rate_;
-  return {TimelinePhase::kActive, result};
+  return result;
 }
 
 void DocumentTimeline::PauseAnimationsForTesting(AnimationTimeDelta hold_time) {
@@ -192,7 +202,8 @@ void DocumentTimeline::SetPlaybackRate(double playback_rate) {
 
   bool should_mark_pending = playback_rate != playback_rate_;
 
-  base::TimeDelta current_time = CurrentPhaseAndTime().time.value();
+  base::TimeDelta current_time = CurrentTimeInternal().value();
+
   playback_rate_ = playback_rate;
   zero_time_ = playback_rate == 0 ? base::TimeTicks() + current_time
                                   : CurrentAnimationTime(GetDocument()) -

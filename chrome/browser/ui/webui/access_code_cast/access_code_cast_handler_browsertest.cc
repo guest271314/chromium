@@ -11,6 +11,8 @@
 #include "base/win/windows_version.h"
 #endif
 #include "chrome/browser/media/router/discovery/access_code/access_code_cast_constants.h"
+#include "chrome/browser/ui/tabs/tab_enums.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "components/sessions/content/session_tab_helper.h"
 #include "services/network/test/test_network_connection_tracker.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -37,7 +39,7 @@ IN_PROC_BROWSER_TEST_F(AccessCodeCastHandlerBrowserTest,
 
   // This tests that if the network is not present (we are not connected to the
   // internet), we will see a server error in the access code dialog box.
-  SetUpPrimaryAccountWithHostedDomain(browser()->profile());
+  SetUpPrimaryAccountWithHostedDomain(browser()->GetProfile());
 
   network::TestNetworkConnectionTracker::GetInstance()->SetConnectionType(
       net::NetworkChangeNotifier::ConnectionType::CONNECTION_NONE);
@@ -89,7 +91,7 @@ IN_PROC_BROWSER_TEST_F(AccessCodeCastHandlerBrowserTest,
 
   EnableAccessCodeCasting();
 
-  SetUpPrimaryAccountWithHostedDomain(browser()->profile());
+  SetUpPrimaryAccountWithHostedDomain(browser()->GetProfile());
 
   auto* dialog_contents = ShowDialog();
   SetAccessCode("abcdef", dialog_contents);
@@ -108,9 +110,9 @@ IN_PROC_BROWSER_TEST_F(AccessCodeCastHandlerBrowserTest,
   EnableAccessCodeCasting();
 
   // This tests that an account with auth error will throw a generic error.
-  SetUpPrimaryAccountWithHostedDomain(browser()->profile());
+  SetUpPrimaryAccountWithHostedDomain(browser()->GetProfile());
   signin::IdentityManager* identity_manager =
-      AccessCodeCastSinkServiceFactory::GetForProfile(browser()->profile())
+      AccessCodeCastSinkServiceFactory::GetForProfile(browser()->GetProfile())
           ->GetIdentityManager();
   signin::UpdatePersistentErrorOfRefreshTokenForAccount(
       identity_manager,
@@ -163,7 +165,7 @@ IN_PROC_BROWSER_TEST_F(AccessCodeCastHandlerBrowserTest,
 
   EnableAccessCodeCasting();
 
-  SetUpPrimaryAccountWithHostedDomain(browser()->profile());
+  SetUpPrimaryAccountWithHostedDomain(browser()->GetProfile());
 
   auto* dialog_contents = ShowDialog();
   SetAccessCode("abcdef", dialog_contents);
@@ -211,7 +213,7 @@ IN_PROC_BROWSER_TEST_F(AccessCodeCastHandlerBrowserTest,
 
   EnableAccessCodeCasting();
 
-  SetUpPrimaryAccountWithHostedDomain(browser()->profile());
+  SetUpPrimaryAccountWithHostedDomain(browser()->GetProfile());
 
   auto* dialog_contents = ShowDialog();
   SetAccessCodeUsingKeyPress("ABCDEF");
@@ -223,6 +225,33 @@ IN_PROC_BROWSER_TEST_F(AccessCodeCastHandlerBrowserTest,
       web_contents());
 
   PressSubmitAndWaitForCloseUsingKeyPress(dialog_contents);
+}
+
+IN_PROC_BROWSER_TEST_F(AccessCodeCastHandlerBrowserTest,
+                       ExpectGenericErrorWhenInitiatorWebContentsDestroyed) {
+  EnableAccessCodeCasting();
+  SetUpPrimaryAccountWithHostedDomain(browser()->GetProfile());
+
+  // Open a second tab so that closing the initiating tab does not close the
+  // browser window.
+  ASSERT_TRUE(
+      AddTabAtIndex(1, GURL(url::kAboutBlankURL), ui::PAGE_TRANSITION_LINK));
+  ASSERT_EQ(2, browser()->tab_strip_model()->count());
+  ASSERT_EQ(1, browser()->tab_strip_model()->active_index());
+
+  auto* dialog_contents = ShowDialog();
+  ASSERT_TRUE(dialog_contents);
+
+  browser()->tab_strip_model()->CloseWebContentsAt(1,
+                                                   TabCloseTypes::CLOSE_NONE);
+
+  SetAccessCode("abcdef", dialog_contents);
+  PressSubmit(dialog_contents);
+
+  // This error code corresponds to
+  // ErrorMessage.GENERIC::AddSinkResultCode.UNKNOWN_ERROR.
+  EXPECT_EQ(1, WaitForAddSinkErrorCode(dialog_contents));
+  CloseDialog(dialog_contents);
 }
 
 }  // namespace media_router

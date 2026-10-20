@@ -2,7 +2,10 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "chrome/browser/metrics/critical_user_journeys/critical_user_journey_service.h"
+
 #include <memory>
+#include <utility>
 
 #include "base/path_service.h"
 #include "base/strings/strcat.h"
@@ -14,16 +17,15 @@
 #include "chrome/browser/browsing_data/browsing_data_important_sites_util.h"
 #include "chrome/browser/metrics/critical_user_journeys/critical_user_journey.h"
 #include "chrome/browser/metrics/critical_user_journeys/critical_user_journey_registry.h"
-#include "chrome/browser/metrics/critical_user_journeys/critical_user_journey_service.h"
 #include "chrome/browser/metrics/critical_user_journeys/critical_user_journey_service_factory.h"
 #include "chrome/browser/metrics/critical_user_journeys/critical_user_journey_session.h"
 #include "chrome/browser/metrics/critical_user_journeys/features.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/actions/chrome_action_id.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_actions.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
 #include "chrome/browser/ui/browser_window.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/chrome_pages.h"
 #include "chrome/browser/ui/hats/hats_service_factory.h"
 #include "chrome/browser/ui/hats/mock_hats_service.h"
@@ -40,10 +42,12 @@
 #include "content/public/browser/download_manager.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/download_test_observer.h"
+#include "testing/gmock/include/gmock/gmock.h"
 #include "ui/actions/actions.h"
 #include "ui/base/accelerators/accelerator.h"
 #include "ui/base/interaction/element_identifier.h"
 #include "ui/base/interaction/interaction_sequence.h"
+#include "ui/base/window_open_disposition.h"
 
 #if !BUILDFLAG(IS_CHROMEOS)
 #include "chrome/browser/ui/download/download_display.h"
@@ -100,14 +104,14 @@ class TestCriticalUserJourneyService : public CriticalUserJourneyService {
             })
             .Build());
 
-    // AnyOf Start Journey: Click New Tab button or Location Icon (triggers
+    // AnyOf Start Journey: Click New Tab button or Tab Search Button (triggers
     // start), then click the App Menu Button.
     registry->AddJourney(
         CriticalUserJourney::Builder(&kAnyOfStartJourney)
             .AddAnyOf({
                 Branch(kNewTabButtonElementId,
                        ui::InteractionSequence::StepType::kActivated, 1),
-                Branch(kLocationIconElementId,
+                Branch(kTabSearchButtonElementId,
                        ui::InteractionSequence::StepType::kActivated, 2),
             })
             .AddStep(kToolbarAppMenuButtonElementId,
@@ -160,11 +164,20 @@ IN_PROC_BROWSER_TEST_F(CriticalUserJourneyServiceInteractiveTest,
       base::StrCat({GetMetricJourneyPrefix(kAppMenuJourney), ".Result"});
 
   auto* mock_hats_service = static_cast<MockHatsService*>(
-      HatsServiceFactory::GetForProfile(browser()->profile(), true));
+      HatsServiceFactory::GetForProfile(browser()->GetProfile(), true));
   EXPECT_CALL(*mock_hats_service,
               LaunchSurvey("TestHatsTrigger", testing::_, testing::_,
                            testing::_, testing::_, testing::_, testing::_))
-      .Times(1);
+      .WillOnce([](const std::string& trigger,
+                   base::OnceClosure success_callback,
+                   base::OnceClosure failure_callback,
+                   const SurveyBitsData& product_specific_bits_data,
+                   const SurveyStringData& product_specific_string_data,
+                   const std::optional<std::string>& supplied_trigger_id,
+                   const HatsService::SurveyOptions& survey_options) {
+        std::move(success_callback).Run();
+        return HatsService::LaunchError::kNone;
+      });
 
   RunTestSequence(
       // Step 1: Click App Menu.
@@ -194,6 +207,25 @@ IN_PROC_BROWSER_TEST_F(CriticalUserJourneyServiceInteractiveTest,
       base::StrCat(
           {GetMetricJourneyPrefix(kAppMenuJourney), ".OverallDuration"}),
       1);
+
+  // Verify HaTS survey metrics are recorded.
+  const std::string hats_event_histogram = base::StrCat(
+      {GetMetricJourneyPrefix(kAppMenuJourney), ".HaTSSurveyEvent"});
+  histograms.ExpectBucketCount(
+      hats_event_histogram,
+      static_cast<int>(
+          CriticalUserJourneyService::CriticalUserJourneyHaTSEvent::kTriggered),
+      1);
+  histograms.ExpectBucketCount(
+      hats_event_histogram,
+      static_cast<int>(
+          CriticalUserJourneyService::CriticalUserJourneyHaTSEvent::kShown),
+      1);
+  histograms.ExpectBucketCount(
+      hats_event_histogram,
+      static_cast<int>(
+          CriticalUserJourneyService::CriticalUserJourneyHaTSEvent::kFailed),
+      0);
 }
 
 IN_PROC_BROWSER_TEST_F(CriticalUserJourneyServiceInteractiveTest,
@@ -299,8 +331,8 @@ IN_PROC_BROWSER_TEST_F(CriticalUserJourneyServiceInteractiveTest,
       base::StrCat({GetMetricJourneyPrefix(kAnyOfStartJourney), ".Result"});
 
   RunTestSequence(
-      // Step 1: Click the Location Icon (triggers start).
-      PressButton(kLocationIconElementId),
+      // Step 1: Click the Tab Search Button (triggers start).
+      PressButton(kTabSearchButtonElementId),
 
       // Step 2: Click the App Menu Button.
       PressButton(kToolbarAppMenuButtonElementId));
@@ -335,8 +367,8 @@ class RealCriticalUserJourneyServiceInteractiveTest
 
   void SetUpOnMainThread() override {
     InteractiveBrowserTest::SetUpOnMainThread();
-    browser()->profile()->GetPrefs()->SetBoolean(prefs::kPromptForDownload,
-                                                 false);
+    browser()->GetProfile()->GetPrefs()->SetBoolean(prefs::kPromptForDownload,
+                                                    false);
     embedded_test_server()->ServeFilesFromDirectory(
         base::PathService::CheckedGet(chrome::DIR_TEST_DATA));
     ASSERT_TRUE(embedded_test_server()->Start());
@@ -349,7 +381,7 @@ class RealCriticalUserJourneyServiceInteractiveTest
     return Steps(Do([this]() {
       GURL url = embedded_test_server()->GetURL("/downloads/a_zip_file.zip");
       content::DownloadManager* manager =
-          browser()->profile()->GetDownloadManager();
+          browser()->GetProfile()->GetDownloadManager();
       std::unique_ptr<content::DownloadTestObserver> observer(
           new content::DownloadTestObserverTerminal(
               manager, 1,
@@ -481,7 +513,7 @@ IN_PROC_BROWSER_TEST_F(RealCriticalUserJourneyServiceInteractiveTest,
        "settings-main",
        "settings-privacy-page-index",
        "settings-privacy-page",
-       "settings-clear-browsing-data-dialog-v2",
+       "settings-clear-browsing-data-dialog",
        "#deleteButton"};
 
   RunTestSequence(
@@ -489,7 +521,7 @@ IN_PROC_BROWSER_TEST_F(RealCriticalUserJourneyServiceInteractiveTest,
       PressButton(kToolbarAppMenuButtonElementId),
       SelectMenuItem(AppMenuModel::kClearBrowsingDataMenuItem),
       WaitForHide(AppMenuModel::kClearBrowsingDataMenuItem),
-      WaitForWebContentsReady(
+      WaitForWebContentsNavigation(
           kFirstTabElementId,
           chrome::GetSettingsUrl(chrome::kClearBrowserDataSubPage)),
       InstrumentTab(kClearBrowsingDataPage),
@@ -497,6 +529,13 @@ IN_PROC_BROWSER_TEST_F(RealCriticalUserJourneyServiceInteractiveTest,
       WaitForEvent(kBrowserViewElementId,
                    browsing_data_important_sites_util::
                        kClearBrowsingDataHistoryEventId));
+
+  // Verification
+  EXPECT_TRUE(base::test::RunUntil([&]() {
+    return histograms.GetBucketCount(
+               result, CriticalUserJourneySession::JourneyResult::kCompleted) >
+           0;
+  }));
 
   histograms.ExpectBucketCount(step_reached, 2, 1);  // App Menu Clicked
   histograms.ExpectBucketCount(step_reached, 3,
@@ -521,7 +560,7 @@ IN_PROC_BROWSER_TEST_F(RealCriticalUserJourneyServiceInteractiveTest,
        "settings-main",
        "settings-privacy-page-index",
        "settings-privacy-page",
-       "settings-clear-browsing-data-dialog-v2",
+       "settings-clear-browsing-data-dialog",
        "#deleteButton"};
 
   ui::Accelerator clear_browsing_data_accelerator;
@@ -533,7 +572,7 @@ IN_PROC_BROWSER_TEST_F(RealCriticalUserJourneyServiceInteractiveTest,
   RunTestSequence(
       InstrumentTab(kFirstTabElementId),
       SendAccelerator(kBrowserViewElementId, clear_browsing_data_accelerator),
-      WaitForWebContentsReady(
+      WaitForWebContentsNavigation(
           kFirstTabElementId,
           chrome::GetSettingsUrl(chrome::kClearBrowserDataSubPage)),
       InstrumentTab(kClearBrowsingDataPage),
@@ -541,6 +580,13 @@ IN_PROC_BROWSER_TEST_F(RealCriticalUserJourneyServiceInteractiveTest,
       WaitForEvent(kBrowserViewElementId,
                    browsing_data_important_sites_util::
                        kClearBrowsingDataHistoryEventId));
+
+  // Verification
+  EXPECT_TRUE(base::test::RunUntil([&]() {
+    return histograms.GetBucketCount(
+               result, CriticalUserJourneySession::JourneyResult::kCompleted) >
+           0;
+  }));
 
   histograms.ExpectBucketCount(step_reached, 1, 1);  // App Menu Clicked
   histograms.ExpectBucketCount(step_reached, 3,

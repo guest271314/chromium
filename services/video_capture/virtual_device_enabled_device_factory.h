@@ -20,7 +20,9 @@
 
 namespace video_capture {
 
-// Decorator that adds support for virtual devices to a given DeviceFactory.
+// Decorator that adds support for virtual devices to an optional
+// DeviceFactory. If no wrapped factory is provided, only registered virtual
+// devices are exposed.
 class VirtualDeviceEnabledDeviceFactory : public DeviceFactory {
  public:
   explicit VirtualDeviceEnabledDeviceFactory(
@@ -38,6 +40,10 @@ class VirtualDeviceEnabledDeviceFactory : public DeviceFactory {
   void CreateDevice(const std::string& device_id,
                     CreateDeviceCallback callback) override;
   void StopDevice(const std::string device_id) override;
+  // Note: For all Add*VirtualDevice methods, device_info.descriptor.device_id
+  // must start with media::kVirtualDeviceIdPrefix ("virtual-chromium-") and
+  // device_info.descriptor.display_name() must either be empty or start with
+  // media::kVirtualDeviceDisplayNamePrefix ("Virtual Chromium ").
   void AddSharedMemoryVirtualDevice(
       const media::VideoCaptureDeviceInfo& device_info,
       mojo::PendingRemote<mojom::Producer> producer,

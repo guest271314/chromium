@@ -9,7 +9,10 @@
 #import <UIKit/UIKit.h>
 
 #import "ios/chrome/browser/intelligence/bwg/utils/gemini_constants.h"
-#import "ios/public/provider/chrome/browser/bwg/bwg_api.h"
+#import "ios/public/provider/chrome/browser/bwg/gemini_api.h"
+
+@class GeminiChatMessageRequest;
+@class GeminiChatMessageResponse;
 
 // TODO(crbug.com/481711842): Replace this enum and its gemini_metrics.h
 // equivalent with an enum in gemini_constants.h
@@ -49,7 +52,10 @@ typedef NS_ENUM(NSInteger, GeminiCancelType) {
 
 // Delegate for Gemini session events. Keep up to date with GCR's
 // SessionDelegate.
-@protocol GeminiSessionDelegate
+@protocol GeminiSessionDelegate <NSObject>
+
+// Whether the current session is the first session.
+@property(nonatomic, assign) BOOL isFirstSession;
 
 // Called when a new session is created.
 - (void)newSessionCreatedWithClientID:(NSString*)clientID
@@ -100,6 +106,13 @@ typedef NS_ENUM(NSInteger, GeminiCancelType) {
                    sessionID:(NSString*)sessionID
               conversationID:(NSString*)conversationID;
 @optional
+// Called when the processing status changes with a dormant reason.
+- (void)didUpdateProcessingStatus:(ios::provider::GeminiClientMode)processStatus
+                    dormantReason:
+                        (ios::provider::GeminiDormantReason)dormantReason
+                        sessionID:(NSString*)sessionID
+                   conversationID:(NSString*)conversationID;
+
 // Called when the processing status changes.
 - (void)didUpdateProcessingStatus:(ios::provider::GeminiClientMode)processStatus
                         sessionID:(NSString*)sessionID
@@ -138,11 +151,69 @@ typedef NS_ENUM(NSInteger, GeminiCancelType) {
                                           sessionID:(NSString*)sessionID
                                      conversationID:(NSString*)conversationID;
 
-// Called when the user barges in during Gemini Live session.
+// Called when a request to detach a tab with the given ID is made.
+- (void)didRequestToDetachTabWithID:(NSString*)tabID;
+
+// Called when a tab with the given ID has been attached by the Floaty.
+- (void)didAttachTabWithID:(NSString*)tabID;
+
+// Called when a tab with the given ID has been detached by the Floaty.
+- (void)didDetachTabWithID:(NSString*)tabID;
+
+#pragma mark - Gemini Live
+
+// Called when the user interrupts during Gemini Live session.
 - (void)geminiLiveUserDidBargeIn;
 
 // Called when the user taps the Live button in Gemini UI.
 - (void)geminiLiveUserDidTapLiveButton;
+
+// Called when the user presses the Live stop button.
+- (void)geminiLiveUserDidPressStopButton;
+
+// Called when the SDK has shown the Live intro sequence. Chrome should
+// update its preferences to record that the intro has been shown.
+- (void)geminiLiveIntroShown:(UIViewController*)viewController;
+
+// Called when the SDK detects that system microphone access is unavailable.
+// Chrome must present a microphone permission alert and invoke the completion.
+- (void)geminiLive:(UIViewController*)viewController
+    showMicrophoneAlertWithCompletion:(void (^)(BOOL granted))completion;
+
+// Called when the SDK needs Chrome to present the Live consent (FRE) screen.
+// Chrome must present the FRE consent UI and invoke the completion.
+- (void)geminiLive:(UIViewController*)viewController
+    showConsentScreenWithCompletion:(void (^)(BOOL accepted))completion;
+
+// Called when the Gemini view mode changes.
+- (void)didSwitchToMode:(ios::provider::GeminiViewMode)mode;
+
+#pragma mark - Gemini View Delegate
+
+// Called when request is received from SDK to dismiss the UI.
+- (void)didRequestDismissal;
+
+// Called when the user taps the "View" button in the response ready collapsed
+// state.
+- (void)didTapResponseReadyViewButton;
+
+// Called when loading a previous conversation finishes.
+- (void)didFinishLoadingConversationWithID:(NSString*)conversationID
+                                     error:(NSError*)error;
+
+#pragma mark - Chat Message Interception
+
+// Called on the main thread when the user submits a chat message, before it is
+// sent to Gemini. `completion` must be called exactly once, on the main thread,
+// and currently synchronously as the Gemini SDK does not yet support
+// asynchronous interception. Passing nil, or a response with `shouldConsume`
+// set to NO, sends the message normally.
+// Intentionally optional so that the ios_internal bridge and implementations
+// can land independently.
+// TODO(crbug.com/567036317): Make required once the API is finalized.
+- (void)handleChatMessageRequest:(GeminiChatMessageRequest*)request
+                      completion:(void (^)(GeminiChatMessageResponse* response))
+                                     completion;
 
 @end
 

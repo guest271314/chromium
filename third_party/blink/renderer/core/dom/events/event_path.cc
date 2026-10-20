@@ -68,24 +68,10 @@ static inline Node* GetShadowRootParent(const ShadowRoot& shadow_root,
     return &shadow_root.host();
   }
 
-  // crbug.com/346835896: If the event has a source in a shadow-including
-  // ancestor via reference target, the event path should include the
-  // target element retargeted against the source element.
-  // See: https://github.com/whatwg/dom/pull/1377
-  Element* source = RuntimeEnabledFeatures::ShadowRootReferenceTargetEnabled(
-                        target.GetExecutionContext())
-                        ? event->SourceElement()
-                        : nullptr;
-  if (&shadow_root != target.ContainingShadowRoot() &&
-      (!source || &shadow_root != source->ContainingShadowRoot())) {
+  if (&shadow_root != target.ContainingShadowRoot()) {
     return &shadow_root.host();
-  } else if (!shadow_root.IsUserAgent() && source &&
-             source->GetTreeScope() != shadow_root &&
-             source->GetTreeScope().IsInclusiveAncestorOf(shadow_root)) {
-    return &source->GetTreeScope().Retarget(target);
-  } else {
-    return nullptr;
   }
+  return nullptr;
 }
 
 EventPath::EventPath(Node& node, Event* event) : node_(node), event_(event) {
@@ -300,6 +286,23 @@ void EventPath::AdjustForRelatedTarget(Node& target,
   ShrinkForRelatedTarget(target, *related_target_node);
 }
 
+void EventPath::AdjustForReferenceTarget(Node& target, EventTarget* source) {
+  if (!RuntimeEnabledFeatures::ShadowRootReferenceTargetEnabled(
+          target.GetExecutionContext())) {
+    return;
+  }
+  EventTarget* path_related_target = source;
+  if (Node* source_node = source ? source->ToNode() : nullptr;
+      source_node && target.GetTreeScope().Retarget(*source_node) == target) {
+    // If the source retargeted against target is equal to target (for example,
+    // when a shadow-internal button targets its own host),
+    // AdjustForRelatedTarget would remove the entire event path. Use target as
+    // the related target so the event is still dispatched at target.
+    path_related_target = &target;
+  }
+  AdjustForRelatedTarget(target, path_related_target);
+}
+
 void EventPath::RetargetRelatedTarget(const Node& related_target_node) {
   RelatedTargetMap related_node_map;
   BuildRelatedNodeMap(related_target_node, related_node_map);
@@ -464,7 +467,7 @@ void EventPath::CheckReachability(TreeScope& tree_scope,
                ->target()
                ->ToNode()
                ->GetTreeScope()
-               .IsInclusiveAncestorTreeScopeOf(tree_scope));
+               .IsInclusiveAncestorOf(tree_scope));
   }
 }
 #endif

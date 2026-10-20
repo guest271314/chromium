@@ -81,7 +81,7 @@ class ThirdPartyCookieLabelWrapper : public views::BoxLayoutView {
     const int title_width =
         title_->GetPreferredSize(views::SizeBounds(title_->width(), {}))
             .width();
-    DCHECK(available_size.width() >= title_width);
+    CHECK(available_size.width() >= title_width, base::NotFatalUntil::M162);
     const int available_width = available_size.width().is_bounded() &&
                                         available_size.width() > title_width
                                     ? available_size.width().value()
@@ -271,10 +271,7 @@ void PageInfoCookiesContentView::SetThirdPartyCookiesTitleAndDescription(
       title_text = l10n_util::GetStringUTF16(
           IDS_PAGE_INFO_COOKIES_SITE_NOT_WORKING_TITLE);
       description =
-          base::FeatureList::IsEnabled(
-              content_settings::features::kUserBypassUxSimplification)
-              ? IDS_PAGE_INFO_COOKIES_SITE_NOT_WORKING_DESCRIPTION_PERMANENT
-              : IDS_PAGE_INFO_TRACKING_PROTECTION_SITE_NOT_WORKING_DESCRIPTION_TEMPORARY;
+          IDS_PAGE_INFO_COOKIES_SITE_NOT_WORKING_DESCRIPTION_PERMANENT;
       break;
     case CookieControlsState::kAllowed3pc:
       if (expiration.is_null() ||
@@ -377,7 +374,7 @@ void PageInfoCookiesContentView::SetThirdPartyCookiesInfo(
 
 void PageInfoCookiesContentView::UpdateBlockingThirdPartyCookiesToggle(
     bool are_cookies_blocked) {
-  DCHECK(blocking_third_party_cookies_toggle_);
+  CHECK(blocking_third_party_cookies_toggle_, base::NotFatalUntil::M162);
   blocking_third_party_cookies_toggle_->SetIsOn(are_cookies_blocked);
 }
 

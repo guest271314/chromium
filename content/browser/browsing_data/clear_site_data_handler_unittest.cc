@@ -12,8 +12,10 @@
 #include "base/functional/callback_helpers.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/ref_counted.h"
+#include "base/path_service.h"
 #include "base/run_loop.h"
 #include "base/strings/stringprintf.h"
+#include "base/test/fuzztest_support.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
@@ -26,6 +28,7 @@
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/common/features_generated.h"
+#include "third_party/fuzztest/src/fuzztest/fuzztest.h"
 
 using ::testing::_;
 
@@ -37,6 +40,7 @@ using Message = ClearSiteDataHandler::ConsoleMessagesDelegate::Message;
 namespace {
 
 const char kClearCookiesHeader[] = "\"cookies\"";
+const char kClearClientHintsHeader[] = "\"clientHints\"";
 const char kClearPrefetchCacheHeader[] = "\"prefetchCache\"";
 const char kClearPrerenderCacheHeader[] = "\"prerenderCache\"";
 const char kClearPrefetchAndPrerenderCacheHeader[] =
@@ -49,7 +53,7 @@ const StoragePartitionConfig kTestStoragePartitionConfig;
 class TestHandler : public ClearSiteDataHandler {
  public:
   TestHandler(base::WeakPtr<BrowserContext> browser_context,
-              base::WeakPtr<WebContents> web_contents,
+              scoped_refptr<NavigationOrDocumentHandle> navigation_or_document,
               const StoragePartitionConfig& storage_partition_config,
               const GURL& url,
               const std::string& header_value,
@@ -60,7 +64,7 @@ class TestHandler : public ClearSiteDataHandler {
               base::OnceClosure callback,
               std::unique_ptr<ConsoleMessagesDelegate> delegate)
       : ClearSiteDataHandler(browser_context,
-                             web_contents,
+                             std::move(navigation_or_document),
                              storage_partition_config,
                              url,
                              header_value,
@@ -116,7 +120,8 @@ class VectorConsoleMessagesDelegate : public ConsoleMessagesDelegate {
       : message_buffer_(message_buffer) {}
   ~VectorConsoleMessagesDelegate() override = default;
 
-  void OutputMessages(base::WeakPtr<WebContents> web_contents) override {
+  void OutputMessages(
+      NavigationOrDocumentHandle* navigation_or_document) override {
     *message_buffer_ = GetMessagesForTesting();
   }
 
@@ -137,10 +142,12 @@ class StringConsoleMessagesDelegate : public ConsoleMessagesDelegate {
   ~StringConsoleMessagesDelegate() override {}
 
  private:
-  static void OutputFormattedMessage(std::string* output_buffer,
-                                     WebContents* web_contents,
-                                     blink::mojom::ConsoleMessageLevel level,
-                                     const std::string& formatted_text) {
+  static void OutputFormattedMessage(
+      std::string* output_buffer,
+      NavigationOrDocumentHandle* navigation_or_document,
+      const GURL& url,
+      blink::mojom::ConsoleMessageLevel level,
+      const std::string& formatted_text) {
     *output_buffer += formatted_text + "\n";
   }
 };
@@ -466,6 +473,64 @@ TEST_F(ClearSiteDataHandlerTest, InvalidOrigin) {
   }
 }
 
+// Attempt to clear client hints from a third-party context (a nonce is added to
+// the storage key) and see a warning.
+TEST_F(ClearSiteDataHandlerTest, ClientHintsThirdParty) {
+  std::vector<Message> message_buffer;
+  const GURL url = GURL("https://secure-origin.com");
+  TestHandler handler(
+      nullptr, nullptr, kTestStoragePartitionConfig, url,
+      kClearClientHintsHeader, net::LOAD_NORMAL,
+      /*cookie_partition_key=*/std::nullopt,
+      blink::StorageKey::CreateWithNonce(url::Origin::Create(url),
+                                         base::UnguessableToken::Create()),
+      /*partitioned_state_allowed_only=*/false, base::DoNothing(),
+      std::make_unique<VectorConsoleMessagesDelegate>(&message_buffer));
+
+  EXPECT_CALL(handler, ClearSiteData(_, _, _, _, _, _, _, _)).Times(1);
+
+  bool defer = handler.DoHandleHeader();
+
+  EXPECT_EQ(defer, true);
+  EXPECT_EQ(message_buffer.size(), 2u);
+  EXPECT_EQ(blink::mojom::ConsoleMessageLevel::kInfo,
+            message_buffer.front().level);
+  EXPECT_EQ("Cleared data types: \"clientHints\".",
+            message_buffer.front().text);
+  EXPECT_EQ(blink::mojom::ConsoleMessageLevel::kWarning,
+            message_buffer.back().level);
+  EXPECT_EQ(
+      "It's not possible to clear the client hints cache from a third-party "
+      "context.",
+      message_buffer.back().text);
+  testing::Mock::VerifyAndClearExpectations(&handler);
+}
+
+// Attempt to clear client hints from a first party context and see no warning.
+TEST_F(ClearSiteDataHandlerTest, ClientHintsFirstParty) {
+  std::vector<Message> message_buffer;
+  const GURL url = GURL("https://secure-origin.com");
+  TestHandler handler(
+      nullptr, nullptr, kTestStoragePartitionConfig, url,
+      kClearClientHintsHeader, net::LOAD_NORMAL,
+      /*cookie_partition_key=*/std::nullopt,
+      blink::StorageKey::CreateFirstParty(url::Origin::Create(url)),
+      /*partitioned_state_allowed_only=*/false, base::DoNothing(),
+      std::make_unique<VectorConsoleMessagesDelegate>(&message_buffer));
+
+  EXPECT_CALL(handler, ClearSiteData(_, _, _, _, _, _, _, _)).Times(1);
+
+  bool defer = handler.DoHandleHeader();
+
+  EXPECT_EQ(defer, true);
+  EXPECT_EQ(message_buffer.size(), 1u);
+  EXPECT_EQ(blink::mojom::ConsoleMessageLevel::kInfo,
+            message_buffer.front().level);
+  EXPECT_EQ("Cleared data types: \"clientHints\".",
+            message_buffer.front().text);
+  testing::Mock::VerifyAndClearExpectations(&handler);
+}
+
 // Verifies that console outputs from various actions on different URLs
 // are correctly pretty-printed to the console.
 TEST_F(ClearSiteDataHandlerTest, FormattedConsoleOutput) {
@@ -532,44 +597,30 @@ TEST_F(ClearSiteDataHandlerTest, FormattedConsoleOutput) {
        "No recognized types specified.\n"},
   };
 
-  // TODO(crbug.com/41409604): Delay output until next frame for navigations.
-  bool kHandlerTypeIsNavigation[] = {false};
+  std::string output_buffer;
+  std::string last_seen_console_output;
 
-  for (bool navigation : kHandlerTypeIsNavigation) {
-    SCOPED_TRACE(navigation ? "Navigation test." : "Subresource test.");
+  // |StoragePartitionImpl::OnClearSiteData| creates a new
+  // |ClearSiteDataHandler| for each navigation, redirect, or subresource
+  // header response.
+  for (const auto& test : kTestCases) {
+    TestHandler handler(
+        nullptr, nullptr, kTestStoragePartitionConfig, GURL(test.url),
+        test.header, net::LOAD_NORMAL, /*cookie_partition_key=*/std::nullopt,
+        /*storage_key=*/std::nullopt,
+        /*partitioned_state_allowed_only=*/false, base::DoNothing(),
+        std::make_unique<StringConsoleMessagesDelegate>(&output_buffer));
+    handler.DoHandleHeader();
 
-    std::string output_buffer;
-    std::string last_seen_console_output;
-
-    // |NetworkServiceClient| creates a new |ClearSiteDataHandler| for each
-    // navigation, redirect, or subresource header responses.
-    for (const auto& test : kTestCases) {
-      TestHandler handler(
-          nullptr, nullptr, kTestStoragePartitionConfig, GURL(test.url),
-          test.header, net::LOAD_NORMAL, /*cookie_partition_key=*/std::nullopt,
-          /*storage_key=*/std::nullopt,
-          /*partitioned_state_allowed_only=*/false, base::DoNothing(),
-          std::make_unique<StringConsoleMessagesDelegate>(&output_buffer));
-      handler.DoHandleHeader();
-
-      // For navigations, the console should be still empty. For subresource
-      // requests, messages should be added progressively.
-      if (navigation) {
-        EXPECT_TRUE(output_buffer.empty());
-      } else {
-        EXPECT_EQ(last_seen_console_output + test.output, output_buffer);
-      }
-
-      last_seen_console_output = output_buffer;
-    }
-
-    // At the end, the console must contain all messages regardless of whether
-    // it was a navigation or a subresource request.
-    std::string expected_output;
-    for (struct TestCase& test_case : kTestCases)
-      expected_output += test_case.output;
-    EXPECT_EQ(expected_output, output_buffer);
+    EXPECT_EQ(last_seen_console_output + test.output, output_buffer);
+    last_seen_console_output = output_buffer;
   }
+
+  std::string expected_output;
+  for (struct TestCase& test_case : kTestCases) {
+    expected_output += test_case.output;
+  }
+  EXPECT_EQ(expected_output, output_buffer);
 }
 
 TEST_F(ClearSiteDataHandlerTest, CookiePartitionKey) {
@@ -732,4 +783,27 @@ TEST_F(ClearSiteDataHandlerTest, ClearPrefetchAndPrerenderCacheSuccess) {
             blink::mojom::ConsoleMessageLevel::kInfo);
   testing::Mock::VerifyAndClearExpectations(&handler);
 }
+
+void ParseHeader(const std::string& data) {
+  ClearSiteDataTypeSet clear_site_data_types;
+  std::set<std::string> storage_buckets_to_remove;
+  ClearSiteDataHandler::ConsoleMessagesDelegate delegate;
+
+  content::ClearSiteDataHandler::ParseHeaderForTesting(
+      data, &clear_site_data_types, &storage_buckets_to_remove, &delegate,
+      GURL());
+}
+
+std::vector<std::tuple<std::string>> ReadCearSiteDataHeaderFuzzerCorpus() {
+  return fuzztest::ReadFilesFromDirectory(
+      base::PathService::CheckedGet(base::DIR_SRC_TEST_DATA_ROOT)
+          .AppendASCII("content/test/data/fuzzer_corpus/clear_site_data/")
+          .AsUTF8Unsafe());
+}
+
+FUZZ_TEST(ClearSiteDataHandlerFuzzerTest, ParseHeader)
+    // Pass the function as a pointer so the dictionary file is available
+    // for android after InitAndroidTestPaths runs.
+    .WithSeeds(ReadCearSiteDataHeaderFuzzerCorpus);
+
 }  // namespace content

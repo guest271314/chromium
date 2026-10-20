@@ -9,21 +9,20 @@
 #include <string>
 
 #include "base/auto_reset.h"
-#include "base/callback_list.h"
 #include "base/functional/callback_helpers.h"
 #include "base/memory/raw_ptr.h"
-#include "base/no_destructor.h"
 #include "base/time/time.h"
 #include "chrome/browser/profiles/profile_attributes_storage.h"
-#include "chrome/browser/profiles/profile_keyed_service_factory.h"
 #include "chrome/browser/ui/color/chrome_color_id.h"
 #include "chrome/browser/ui/views/profiles/avatar_toolbar_button_types.h"
 #include "chrome/browser/ui/views/toolbar/avatar_toolbar_button_interface.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
+#include "components/subscription_eligibility/subscription_eligibility_service.h"
 #include "google_apis/gaia/gaia_id.h"
 #include "ui/base/models/image_model.h"
+#include "ui/gfx/geometry/insets.h"
 
-class Browser;
+class BrowserWindowInterface;
 class Profile;
 
 namespace ui {
@@ -39,6 +38,7 @@ class StateObserver;
 enum class AvatarToolbarButtonState {
   kGuestSession,
   kIncognitoProfile,
+  kEnterpriseIsolatedProfile,
   kExplicitTextShowing,
   kOnSignin,
   kShowIdentityName,
@@ -76,7 +76,14 @@ class StateProvider {
   // Consider overriding `Init()` if you need to add a potential code to
   // `RequestUpdate()`. The init method will be
   // called right after all the main states are created.
-  explicit StateProvider(Profile* profile, StateObserver* state_observer);
+  // `should_consider_avatar_ring` specifies if this state may display
+  // the linear gradient ring to eligible users (subject to other conditions).
+  // The default behavior is to show it, but some error states that manipulate
+  // the avatar (e.g. they add a dotted ring around it) should set this to
+  // false.
+  explicit StateProvider(Profile* profile,
+                         StateObserver* state_observer,
+                         bool should_consider_avatar_ring);
 
   virtual ~StateProvider();
 
@@ -105,10 +112,14 @@ class StateProvider {
       const ui::ColorProvider& color_provider) const;
 
   // Returns the avatar icon and its type.
+  // Note: If you are overriding this method to show a custom icon that
+  // doesn't support the avatar ring, make sure to pass `false` for
+  // `should_consider_avatar_ring` in the constructor.
   virtual std::pair<ui::ImageModel, AvatarIconType> GetAvatarIcon(
       int icon_size,
       SkColor /*icon_color*/,
       const ui::ColorProvider& color_provider) const;
+
 
   // Returns the tooltip text of the avatar button.
   virtual std::u16string GetAvatarTooltipText() const;
@@ -143,6 +154,14 @@ class StateProvider {
   // purposes.
   virtual void ClearForTesting();
 
+  // Returns whether we should show the avatar ring.
+  bool ShouldShowGradientAvatarRing() const;
+
+  // Returns the layout insets for the button.
+  virtual gfx::Insets GetLayoutInsets(int total_size,
+                                      int avatar_size,
+                                      bool is_label_visible) const;
+
  protected:
   // This update request will attempt to update the text shown on the button.
   // The update will only go through if the requesting state was the main button
@@ -156,6 +175,7 @@ class StateProvider {
  private:
   const raw_ref<Profile> profile_;
   const raw_ref<StateObserver> state_observer_;
+  const bool should_consider_avatar_ring_;
 };
 
 class StateObserver {
@@ -178,7 +198,9 @@ class StateObserver {
 class AvatarToolbarButtonStateManager
     : public StateObserver,
       public signin::IdentityManager::Observer,
-      public ProfileAttributesStorage::Observer {
+      public ProfileAttributesStorage::Observer,
+      public subscription_eligibility::SubscriptionEligibilityService::
+          Observer {
  public:
   using ButtonState = AvatarToolbarButtonState;
 
@@ -201,16 +223,19 @@ class AvatarToolbarButtonStateManager
 
   explicit AvatarToolbarButtonStateManager(
       AvatarToolbarButtonInterface& avatar_control,
-      Browser* browser);
+      BrowserWindowInterface* browser);
   ~AvatarToolbarButtonStateManager() override;
 
   // This needs to be separated from the constructor since it might call
   // updates, which will try to access the `StateManager`.
   void InitializeStates();
 
-  Browser* browser() const { return browser_; }
+  BrowserWindowInterface* browser() const { return browser_; }
 
+  // Returns the active state provider. This is guaranteed to be non-null after
+  // initialization.
   StateProvider* GetActiveStateProvider() const;
+  ::AvatarToolbarButtonState GetActiveState() const;
 
   // Methods to register or remove observers of the button.
   void AddObserver(AvatarToolbarButtonInterface::Observer* observer);
@@ -235,15 +260,14 @@ class AvatarToolbarButtonStateManager
   // Returns whether the explicit state is set.
   bool HasExplicitButtonState() const;
 
+  // Returns the layout insets for the button based on the active state.
+  gfx::Insets GetLayoutInsets(int total_size,
+                              int avatar_size,
+                              bool is_label_visible) const;
+
   // Shared button press logic.
   void HandleButtonPressed(bool is_source_accelerator);
 
-  // Shared IPH methods.
-  void MaybeShowProfileSwitchIPH();
-#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
-  void MaybeShowSupervisedUserSignInIPH();
-  void MaybeShowSignInBenefitsIPH();
-#endif
   void MaybeShowExplicitBrowserSigninPreferenceRememberedIPH(
       const AccountInfo& account_info);
 
@@ -255,14 +279,6 @@ class AvatarToolbarButtonStateManager
   [[nodiscard]] static base::AutoReset<std::optional<base::TimeDelta>>
   CreateScopedInfiniteDelayOverrideForTesting(AvatarDelayType delay_type);
 
-  // static
-  [[nodiscard]] static base::AutoReset<base::TimeDelta>
-  SetScopedIPHMinDelayAfterCreationForTesting(base::TimeDelta delay);
-
-  // Do not show the IPH right when creating the window, so that the IPH has a
-  // separate animation.
-  static base::TimeDelta g_iph_min_delay_after_creation;
-
 #if BUILDFLAG(ENABLE_DICE_SUPPORT)
   [[nodiscard]] static base::AutoReset<std::optional<base::TimeDelta>>
   CreateScopedZeroDelayOverrideSigninPendingTextForTesting();
@@ -270,15 +286,11 @@ class AvatarToolbarButtonStateManager
   // WARNING: Check `AvatarToolbarButton::ForceShowingPromoForTesting()` before
   // using.
   void ForceShowingPromoForTesting();
-
-  // Returns whether the delay timer was running or not.
-  // Stops the timer if it is running.
-  bool GetStateAndFireSignedOutTriggerDelayTimerForTesting();
 #endif  // BUILDFLAG(ENABLE_DICE_SUPPORT)
 
  private:
   // Creates all main states and attach listeners.
-  void CreateStatesAndListeners(Browser* browser);
+  void CreateStatesAndListeners(BrowserWindowInterface* browser);
 
   // StateObserver:
   void OnStateProviderUpdateRequest(StateProvider* requesting_state) override;
@@ -297,6 +309,9 @@ class AvatarToolbarButtonStateManager
   // state transitions update all of the button properties. Consider adding a
   // filter if this is impacting performance.
   void UpdateAvatarButton();
+
+  // subscription_eligibility::SubscriptionEligibilityService::Observer:
+  void OnAiSubscriptionTierUpdated(int32_t new_subscription_tier) override;
 
   // signin::IdentityManager::Observer:
   void OnIdentityManagerShutdown(signin::IdentityManager*) override;
@@ -329,7 +344,7 @@ class AvatarToolbarButtonStateManager
 
   base::flat_map<ButtonState, std::unique_ptr<StateProvider>> states_;
   raw_ref<AvatarToolbarButtonInterface> avatar_control_;
-  const raw_ptr<Browser> browser_;
+  const raw_ptr<BrowserWindowInterface> browser_;
 
   // Active state per the last request to `ComputeButtonActiveState()`.
   // Pointer to the active element of `states_` with the highest priority.
@@ -346,6 +361,10 @@ class AvatarToolbarButtonStateManager
   base::ScopedObservation<ProfileAttributesStorage,
                           ProfileAttributesStorage::Observer>
       profile_observation_{this};
+  base::ScopedObservation<
+      subscription_eligibility::SubscriptionEligibilityService,
+      subscription_eligibility::SubscriptionEligibilityService::Observer>
+      subscription_service_observation_{this};
 
   const raw_ref<Profile> profile_;
 
@@ -353,9 +372,6 @@ class AvatarToolbarButtonStateManager
   // remembered following a web sign-in event but waiting for the available
   // account information to be fetched in order to show the sign in IPH.
   GaiaId gaia_id_for_signin_choice_remembered_;
-
-  // Time when this object was created.
-  const base::TimeTicks creation_time_;
 
   std::vector<raw_ref<Observer>> state_manager_observers_;
 

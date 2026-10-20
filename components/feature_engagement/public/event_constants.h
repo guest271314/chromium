@@ -67,14 +67,16 @@ extern const char kFocusHelpBubbleAcceleratorPromoRead[];
 // Th user clicked the extensions request access button in the toolbar.
 extern const char kExtensionsRequestAccessButtonClicked[];
 
-// The user has opened the cookie controls bubble.
-extern const char kCookieControlsBubbleShown[];
-
 // The user has accepted the Glic onboarding.
 extern const char kGlicOnboardingCompleted[];
 
 #endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_APPLE) || BUILDFLAG(IS_LINUX) ||
         // BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_FUCHSIA)
+
+#if BUILDFLAG(IS_WIN)
+// The search promotion was accepted by the user.
+extern const char kSearchPromotionAccepted[];
+#endif  // BUILDFLAG(IS_WIN)
 
 #if BUILDFLAG(IS_IOS)
 // The user has opened Chrome (cold start or from background).
@@ -187,6 +189,9 @@ extern const char kLensButtonKeyboardUsed[];
 
 // The user has triggered the Lens button in the Composebox.
 extern const char kIOSLensButtonComposeboxUsed[];
+
+// Event fired when the Level Up promo is used once.
+extern const char kIOSLevelUpPromoUsed[];
 
 // The user has more than one gesture to refresh a page in iOS. This includes
 // but not limited to re-typing the URL in omnibox and refreshing from context
@@ -306,6 +311,9 @@ extern const char kHomeCustomizationMenuUsed[];
 // enabled..
 extern const char kHomeBackgroundCustomizationMenuUsed[];
 
+// The user has opened the Home customization menu with ephemeral theme enabled.
+extern const char kEphemeralThemePromoUsed[];
+
 // The user has seen the `kIPHHomeCustomizationMenuFeature` iph.
 extern const char kHomeCustomizationPromoTriggered[];
 
@@ -424,6 +432,14 @@ extern const char kIOSGeminiLiveNewBadgeTriggered[];
 // Event fired when the Gemini Live 1st-time IPH is triggered.
 extern const char kIOSGeminiLiveIPHTriggered[];
 
+// Event fired when the user taps the "What can Gemini do" suggestion chip.
+extern const char kIOSGeminiWhatCanGeminiDoTapped[];
+
+// Event fired when the "What can Gemini do" suggestion chip is shown to the
+// user. This is different from WhatCanGeminiDoTapped because it can be
+// triggered without the user tapping the chip.
+extern const char kIOSGeminiWhatCanGeminiDoTriggered[];
+
 // Event fired when the user pins a site to the most visited tile.
 extern const char kIOSPinMVTSiteUsed[];
 
@@ -431,6 +447,27 @@ extern const char kIOSPinMVTSiteUsed[];
 // parameter. This includes switching between two windows in multi-window mode
 // when the user opens Chrome from the icon.
 extern const char kIOSChromeOpenedFromIcon[];
+
+// Event fired when the Settings default browser card promo is clicked.
+extern const char kDefaultBrowserSettingsCardPromoUsed[];
+
+// Event fired when the Settings default browser cell promo is dismissed.
+extern const char kDefaultBrowserSettingsCellPromoUsed[];
+
+// Event fired when the Default Browser promo destination in the Overflow Menu
+// is used.
+extern const char kDefaultBrowserPromoOverflowMenuDestinationUsed[];
+
+// Event fired when the Default Browser promo shortcut in the Overflow Menu is
+// used.
+extern const char kDefaultBrowserPromoOverflowMenuShortcutsUsed[];
+
+// Event fired when the contextual default browser promo with Gemini is used
+// (displayed).
+extern const char kDefaultBrowserPromoContextualGeminiUsed[];
+
+// Event fired when a Gemini session terminates or disappears.
+extern const char kGeminiSessionTerminated[];
 
 #endif  // BUILDFLAG(IS_IOS)
 
@@ -440,7 +477,9 @@ extern const char kIOSChromeOpenedFromIcon[];
 extern const char kPwaInstallMenuSelected[];
 #endif  // BUILDFLAG(IS_ANDROID)
 
-extern const char kTabSearchComboButtonUsed[];
+// The user clicked on the Send Tab to Self entry point in the omnibox
+// long-press menu.
+extern const char kSendTabToSelfOmniboxUsed[];
 
 }  // namespace events
 

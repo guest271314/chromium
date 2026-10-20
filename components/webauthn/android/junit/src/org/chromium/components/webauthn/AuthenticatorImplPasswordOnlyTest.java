@@ -10,8 +10,9 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import android.os.Build;
+
 import androidx.test.core.app.ApplicationProvider;
-import androidx.test.filters.SmallTest;
 
 import org.junit.After;
 import org.junit.Before;
@@ -21,28 +22,25 @@ import org.junit.runner.RunWith;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
-import org.robolectric.annotation.Config;
 
+import org.chromium.base.TriState;
 import org.chromium.base.test.BaseRobolectricTestRunner;
-import org.chromium.base.test.util.Batch;
-import org.chromium.base.test.util.Features.EnableFeatures;
+import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.blink.mojom.Authenticator;
 import org.chromium.blink.mojom.GetCredentialOptions;
 import org.chromium.blink.mojom.Mediation;
 import org.chromium.blink.mojom.PublicKeyCredentialRequestOptions;
+import org.chromium.components.webauthn.cred_man.CredManSupportProvider;
+import org.chromium.content_public.browser.LifecycleState;
 import org.chromium.content_public.browser.RenderFrameHost;
 import org.chromium.content_public.browser.Visibility;
 import org.chromium.content_public.browser.WebContents;
-import org.chromium.device.DeviceFeatureList;
 import org.chromium.url.GURL;
 import org.chromium.url.Origin;
 
 /** Tests for {@link AuthenticatorImpl} with password-only requests. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
-@Batch(Batch.UNIT_TESTS)
-@SmallTest
-@EnableFeatures({DeviceFeatureList.WEBAUTHN_IMMEDIATE_GET})
+@DisableFeatures({WebauthnFeatures.WEBAUTHN_ANDROID_CRED_MAN_FOR_DEV})
 public class AuthenticatorImplPasswordOnlyTest {
     private AuthenticatorImpl mAuthenticator;
     private Origin mOrigin;
@@ -53,6 +51,7 @@ public class AuthenticatorImplPasswordOnlyTest {
     @Mock private FidoIntentSender mIntentSender;
     @Mock private WebauthnModeProvider mModeProviderMock;
     @Mock private Fido2CredentialRequest mFido2CredentialRequestMock;
+    @Mock private WebauthnBrowserBridge.Natives mWebauthnBrowserBridgeNativesMock;
 
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
 
@@ -62,11 +61,13 @@ public class AuthenticatorImplPasswordOnlyTest {
         mTopOrigin = Origin.create(new GURL("https://example.com"));
 
         when(mRenderFrameHost.getLastCommittedOrigin()).thenReturn(mOrigin);
+        when(mRenderFrameHost.getLifecycleState()).thenReturn(LifecycleState.ACTIVE);
 
         WebauthnModeProvider.setInstanceForTesting(mModeProviderMock);
         when(mModeProviderMock.getWebauthnMode(any())).thenReturn(WebauthnMode.CHROME);
         when(mModeProviderMock.getGlobalWebauthnMode()).thenReturn(WebauthnMode.CHROME);
         AuthenticatorImpl.overrideFido2CredentialRequestForTesting(mFido2CredentialRequestMock);
+        WebauthnBrowserBridgeJni.setInstanceForTesting(mWebauthnBrowserBridgeNativesMock);
 
         when(mWebContents.getVisibility()).thenReturn(Visibility.VISIBLE);
 
@@ -105,6 +106,7 @@ public class AuthenticatorImplPasswordOnlyTest {
     @Test
     public void testGetCredential_passwordOnlyImmediate_webView_credManDisabled_fails() {
         GmsCoreUtils.setGmsCoreVersionForTesting(GmsCoreUtils.GMSCORE_MIN_VERSION);
+        CredManSupportProvider.setupForTesting(Build.VERSION_CODES.TIRAMISU, TriState.NOT_SET);
         when(mModeProviderMock.getWebauthnMode(any())).thenReturn(WebauthnMode.BROWSER); // WebView
         when(mModeProviderMock.getGlobalWebauthnMode()).thenReturn(WebauthnMode.BROWSER);
 

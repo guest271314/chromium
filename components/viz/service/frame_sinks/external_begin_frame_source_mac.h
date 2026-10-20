@@ -20,7 +20,7 @@
 
 namespace viz {
 class OutputSurface;
-class ExternalBeginFrameSourceMacTest;
+class ExternalBeginFrameSourceMacWrapper;
 
 // An external begin frame source for use on macOS. This listens to a
 // DisplayLinkMac in order to tick.
@@ -34,6 +34,7 @@ class VIZ_COMMON_EXPORT ExternalBeginFrameSourceMac
 
   ExternalBeginFrameSourceMac(uint32_t restart_id,
                               int64_t display_id,
+                              float refresh_rate,
                               OutputSurface* output_surface);
 
   ExternalBeginFrameSourceMac(const ExternalBeginFrameSourceMac&) = delete;
@@ -43,7 +44,6 @@ class VIZ_COMMON_EXPORT ExternalBeginFrameSourceMac
 
   // BeginFrameSource implementation.
   void SetVSyncDisplayID(int64_t display_id, bool force_update) override;
-  void RefreshRateChangedOnSameDisplay() override;
 
   void UpdateVSyncDisplay(int64_t display_id) override;
 
@@ -59,6 +59,7 @@ class VIZ_COMMON_EXPORT ExternalBeginFrameSourceMac
   base::TimeDelta GetMinimumFrameInterval() override;
   base::flat_set<base::TimeDelta> GetSupportedFrameIntervals(
       base::TimeDelta interval) override;
+  void UpdateRefreshRate(float refresh_rate) override;
 
   // CVDisplayLink Callback on the Viz thread.
   void OnDisplayLinkCallback(ui::VSyncParamsMac params);
@@ -73,18 +74,21 @@ class VIZ_COMMON_EXPORT ExternalBeginFrameSourceMac
       MultipleHWRefreshRatesCallback callback);
 
  private:
-  friend class ExternalBeginFrameSourceMacTest;
+  friend class ExternalBeginFrameSourceMacWrapper;
+
+  // Wraps ui::DisplayLinkMac::GetForDisplay to allow mocking the DisplayLink
+  // instance in unit tests via the ExternalBeginFrameSourceMacWrapper subclass.
+  virtual scoped_refptr<ui::DisplayLinkMac> GetForDisplay(int64_t display_id);
 
   void CreateDelayBasedTimeSourceIfNeeded();
 
-  void StartBeginFrame();
+  void StartBeginFrame(bool display_link_keep_alive_only);
   void StopBeginFrame(bool force_stop);
 
   void RecordFirstFrameHistograms(bool is_timer);
 
   // Implements base::PowerSuspendObserver.
   void OnSuspend() override;
-  void OnResume() override;
 
   BeginFrameArgsGenerator begin_frame_args_generator_;
 
@@ -124,6 +128,9 @@ class VIZ_COMMON_EXPORT ExternalBeginFrameSourceMac
   int vsync_callback_keep_alive_counter_ = 0;
 
   const raw_ptr<OutputSurface, DanglingUntriaged> output_surface_;
+
+  // When `min_refresh_interval_` changes, this callback is called and
+  // FrameIntervalDecider is updated.
   UpdateVSyncParametersCallback update_vsync_params_callback_;
 
   MultipleHWRefreshRatesCallback multiple_hw_refresh_rates_callback_;
@@ -133,10 +140,11 @@ class VIZ_COMMON_EXPORT ExternalBeginFrameSourceMac
   // FrameRateDecider. No preferred refresh rate is adjusted.
   bool hw_takes_any_refresh_rate_ = false;
 
-  // Screen refresh interval caps.
+  // This is the last known refresh interval. It's updated every time a VSync
+  // arrives and OnDisplayLinkCallback() is called.
   base::TimeDelta min_refresh_interval_ = BeginFrameArgs::DefaultInterval();
+
   base::TimeDelta max_refresh_interval_ = BeginFrameArgs::DefaultInterval();
-  base::TimeDelta granularity_ = BeginFrameArgs::DefaultInterval();
 
   base::WeakPtrFactory<ExternalBeginFrameSourceMac> weak_ptr_factory_{this};
 };

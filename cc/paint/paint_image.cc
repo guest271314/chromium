@@ -4,6 +4,8 @@
 
 #include "cc/paint/paint_image.h"
 
+#include <algorithm>
+#include <cmath>
 #include <memory>
 #include <sstream>
 #include <utility>
@@ -16,23 +18,28 @@
 #include "cc/paint/paint_image_generator.h"
 #include "cc/paint/paint_record.h"
 #include "cc/paint/skia_paint_image_generator.h"
+#include "cc/paint/texture_backing.h"
 #include "third_party/skia/include/core/SkBitmap.h"
-#include "third_party/skia/include/core/SkCPURecorder.h"
 #include "third_party/skia/include/core/SkColorSpace.h"
 #include "third_party/skia/include/core/SkImage.h"
 #include "third_party/skia/include/core/SkImageInfo.h"
 #include "third_party/skia/include/core/SkPixmap.h"
+#include "third_party/skia/include/core/SkRecorder.h"
 #include "third_party/skia/include/core/SkRefCnt.h"
 #include "third_party/skia/include/core/SkSize.h"
 #include "third_party/skia/include/core/SkYUVAPixmaps.h"
 #include "third_party/skia/include/gpu/ganesh/GrBackendSurface.h"
+#include "third_party/skia/include/private/SkGainmapInfo.h"
+#include "ui/gfx/color_space.h"
 #include "ui/gfx/geometry/skia_conversions.h"
+#include "ui/gfx/hdr_metadata.h"
+#include "ui/gfx/tone_map_util.h"
 
 namespace cc {
 namespace {
-base::AtomicSequenceNumber g_next_image_id;
-base::AtomicSequenceNumber g_next_image_content_id;
-base::AtomicSequenceNumber g_next_generator_client_id;
+base::AtomicSequenceNumberT<int64_t> g_next_image_id;
+base::AtomicSequenceNumberT<int64_t> g_next_image_content_id;
+base::AtomicSequenceNumberT<int64_t> g_next_generator_client_id;
 }  // namespace
 
 const PaintImage::Id PaintImage::kNonLazyStableId = -1;
@@ -47,6 +54,14 @@ ImageHeaderMetadata::ImageHeaderMetadata(const ImageHeaderMetadata& other) =
 ImageHeaderMetadata& ImageHeaderMetadata::operator=(
     const ImageHeaderMetadata& other) = default;
 ImageHeaderMetadata::ImageHeaderMetadata::~ImageHeaderMetadata() = default;
+
+AnimatedImageFrameIndexMap::AnimatedImageFrameIndexMap() = default;
+AnimatedImageFrameIndexMap::AnimatedImageFrameIndexMap(
+    base::sorted_unique_t sorted_unique,
+    container_type entries)
+    : base::flat_map<PaintImage::Id, size_t>(sorted_unique,
+                                             std::move(entries)) {}
+AnimatedImageFrameIndexMap::~AnimatedImageFrameIndexMap() = default;
 
 PaintImage::PaintImage() = default;
 PaintImage::PaintImage(const PaintImage& other) = default;
@@ -69,8 +84,6 @@ bool PaintImage::IsSameForTesting(const PaintImage& other) const {
          is_multipart_ == other.is_multipart_ &&
          texture_backing_ == other.texture_backing_ &&
          deferred_paint_record_ == other.deferred_paint_record_;
-  // Do not check may_be_lcp_candidate_ as it should not affect any rendering
-  // operation, only metrics collection.
 }
 
 // static
@@ -195,6 +208,17 @@ gpu::Mailbox PaintImage::GetMailbox() const {
   return texture_backing_->GetMailbox();
 }
 
+void PaintImage::BindTextureBacking(
+    scoped_refptr<TextureBackingContext> context) const {
+  DCHECK(texture_backing_);
+  texture_backing_->Bind(std::move(context));
+}
+
+void PaintImage::UnbindTextureBacking() const {
+  DCHECK(texture_backing_);
+  texture_backing_->Unbind();
+}
+
 const scoped_refptr<PaintWorkletInput> PaintImage::GetPaintWorkletInput()
     const {
   if (!IsPaintWorklet()) {
@@ -309,7 +333,7 @@ bool PaintImage::DecodeFromSkImage(SkPixmap pixmap,
   auto image = GetSkImageForFrame(frame_index, client_id);
   DCHECK(image);
   if (color_space) {
-    image = image->makeColorSpace(skcpu::Recorder::TODO(), color_space, {});
+    image = image->makeColorSpace(SkRecorder::TODO(), color_space, {});
     if (!image)
       return false;
   }
@@ -360,18 +384,13 @@ gfx::ContentColorUsage PaintImage::GetContentColorUsage() const {
   }
 
   const auto* color_space = GetSkImageInfo().colorSpace();
+  if (gfx::ToneMapUtil::IsHDR(color_space, hdr_metadata_)) {
+    return gfx::ContentColorUsage::kHDR;
+  }
 
   // Assume the image will be sRGB if we don't know yet.
   if (!color_space || color_space->isSRGB()) {
     return gfx::ContentColorUsage::kSRGB;
-  }
-
-  skcms_TransferFunction fn;
-  color_space->transferFn(&fn);
-  if (skcms_TransferFunction_isPQish(&fn) ||
-      skcms_TransferFunction_isHLGish(&fn) ||
-      skcms_TransferFunction_isPQ(&fn) || skcms_TransferFunction_isHLG(&fn)) {
-    return gfx::ContentColorUsage::kHDR;
   }
 
   // If it's not HDR and not SRGB, report it as WCG.
@@ -461,7 +480,6 @@ std::string PaintImage::ToString() const {
       << " animation_type_: " << static_cast<int>(animation_type_)
       << " completion_state_: " << static_cast<int>(completion_state_)
       << " is_multipart_: " << is_multipart_
-      << " may_be_lcp_candidate_: " << may_be_lcp_candidate_
       << " has gainmap: " << HasGainmapInfo() << " is YUV: "
       << IsYuv(SkYUVAPixmapInfo::SupportedDataTypes::All(), AuxImage::kDefault);
   return str.str();
@@ -486,6 +504,15 @@ std::string PaintImage::FrameKey::ToString() const {
   str << "content_id: " << content_id_ << ","
       << "frame_index: " << frame_index_;
   return str.str();
+}
+
+float PaintImage::GetMaximumRenderedHdrHeadroom() const {
+  if (HasGainmapInfo()) {
+    const SkGainmapInfo& gainmap_info = GetGainmapInfo();
+    return std::log2(
+        std::max(gainmap_info.fDisplayRatioSdr, gainmap_info.fDisplayRatioHdr));
+  }
+  return gfx::ToneMapUtil::GetMaxHdrHeadroom(color_space(), hdr_metadata_);
 }
 
 }  // namespace cc

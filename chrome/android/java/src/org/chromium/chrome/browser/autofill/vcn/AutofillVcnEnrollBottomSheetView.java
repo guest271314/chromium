@@ -74,15 +74,16 @@ import org.chromium.ui.widget.LoadingView;
      * @param context The context for inflating the UI layout XML file.
      */
     AutofillVcnEnrollBottomSheetView(Context context) {
-        mContentView =
-                (ViewGroup)
+        mScrollView =
+                (ScrollView)
                         LayoutInflater.from(context)
-                                .inflate(R.layout.autofill_vcn_enroll_bottom_sheet_content, null);
+                                .inflate(
+                                        R.layout.autofill_vcn_enroll_bottom_sheet_content, null);
+        mContentView = mScrollView;
         mContentView.setLayoutDirection(
                 LocalizationUtils.isLayoutRtl()
                         ? View.LAYOUT_DIRECTION_RTL
                         : View.LAYOUT_DIRECTION_LTR);
-        mScrollView = mContentView.findViewById(R.id.scroll_view);
         mDialogTitle = mContentView.findViewById(R.id.dialog_title);
         mVirtualCardDescription = mContentView.findViewById(R.id.virtual_card_description);
         mCardContainer = mContentView.findViewById(R.id.card_container);

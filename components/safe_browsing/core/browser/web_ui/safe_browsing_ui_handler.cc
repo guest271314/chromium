@@ -4,6 +4,7 @@
 
 #include "components/safe_browsing/core/browser/web_ui/safe_browsing_ui_handler.h"
 
+#include "base/memory/scoped_refptr.h"
 #include "components/os_crypt/async/browser/os_crypt_async.h"
 #include "components/os_crypt/async/common/encryptor.h"
 #include "components/password_manager/core/browser/hash_password_manager.h"
@@ -14,8 +15,9 @@
 #include "components/safe_browsing/core/common/proto/csd.to_value.h"
 #include "components/user_prefs/user_prefs.h"
 
-#if BUILDFLAG(SAFE_BROWSING_DB_LOCAL)
-#include "components/safe_browsing/core/browser/db/v4_local_database_manager.h"
+#if BUILDFLAG(SAFE_BROWSING_DB_LOCAL) || BUILDFLAG(IS_IOS)
+#include "components/safe_browsing/core/browser/db/sb_local_database_manager.h"
+#include "components/safe_browsing/core/common/features.h"
 #endif
 
 namespace safe_browsing {
@@ -116,7 +118,7 @@ void SafeBrowsingUIHandler::GetSavedPasswords(const base::ListValue& args) {
 
 void SafeBrowsingUIHandler::GetSavedPasswordsImpl(
     const std::string& callback_id,
-    os_crypt_async::Encryptor encryptor) {
+    scoped_refptr<os_crypt_async::Encryptor> encryptor) {
   password_manager::HashPasswordManager hash_manager(std::move(encryptor));
   hash_manager.set_prefs(user_prefs());
   hash_manager.set_local_prefs(delegate_->GetLocalState());
@@ -135,9 +137,9 @@ void SafeBrowsingUIHandler::GetDatabaseManagerInfo(
     const base::ListValue& args) {
   base::ListValue database_manager_info;
 
-#if BUILDFLAG(SAFE_BROWSING_DB_LOCAL)
-  const V4LocalDatabaseManager* local_database_manager_instance =
-      V4LocalDatabaseManager::current_local_database_manager();
+#if BUILDFLAG(SAFE_BROWSING_DB_LOCAL) || BUILDFLAG(IS_IOS)
+  const SBLocalDatabaseManager* local_database_manager_instance =
+      SBLocalDatabaseManager::current_local_database_manager();
   if (local_database_manager_instance) {
     DatabaseManagerInfo database_manager_info_proto;
     FullHashCacheInfo full_hash_cache_info_proto;
@@ -154,8 +156,10 @@ void SafeBrowsingUIHandler::GetDatabaseManagerInfo(
                               database_manager_info);
     }
 
-    database_manager_info.Append(
-        web_ui::AddFullHashCacheInfo(full_hash_cache_info_proto));
+    if (!base::FeatureList::IsEnabled(kLocalListsUseSBv5)) {
+      database_manager_info.Append(
+          web_ui::AddFullHashCacheInfo(full_hash_cache_info_proto));
+    }
   }
 #endif
 
@@ -419,6 +423,17 @@ void SafeBrowsingUIHandler::GetReportingEvents(const base::ListValue& args) {
   ResolveCallback(callback_id, reporting_events);
 }
 
+void SafeBrowsingUIHandler::GetV5GetHashLookups(const base::ListValue& args) {
+  base::ListValue lookups;
+  for (const auto& lookup : web_ui_info_singleton()->v5_get_hash_lookups()) {
+    lookups.Append(web_ui::SerializeV5GetHashLookup(lookup));
+  }
+
+  CHECK(!args.empty());
+  const std::string& callback_id = args[0].GetString();
+  ResolveCallback(callback_id, lookups);
+}
+
 void SafeBrowsingUIHandler::GetLogMessages(const base::ListValue& args) {
   const std::vector<std::pair<base::Time, std::string>>& log_messages =
       web_ui_info_singleton()->log_messages();
@@ -594,6 +609,10 @@ void SafeBrowsingUIHandler::RegisterMessages() {
   RegisterMessage(
       "getReportingEvents",
       base::BindRepeating(&SafeBrowsingUIHandler::GetReportingEvents,
+                          base::Unretained(this)));
+  RegisterMessage(
+      "getV5GetHashLookups",
+      base::BindRepeating(&SafeBrowsingUIHandler::GetV5GetHashLookups,
                           base::Unretained(this)));
   RegisterMessage("getDeepScans",
                   base::BindRepeating(&SafeBrowsingUIHandler::GetDeepScans,

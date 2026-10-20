@@ -67,6 +67,13 @@ NetworkServiceNetworkDelegate::NetworkServiceNetworkDelegate(
 
 NetworkServiceNetworkDelegate::~NetworkServiceNetworkDelegate() = default;
 
+void NetworkServiceNetworkDelegate::
+    SetShouldForceIgnoreSiteForCookiesCallbackForTesting(
+        base::RepeatingCallback<void(const net::URLRequest&)> callback) {
+  should_force_ignore_site_for_cookies_callback_for_testing_ =
+      std::move(callback);
+}
+
 void NetworkServiceNetworkDelegate::MaybeTruncateReferrer(
     net::URLRequest* const request,
     const GURL& effective_url) {
@@ -74,14 +81,6 @@ void NetworkServiceNetworkDelegate::MaybeTruncateReferrer(
     request->SetReferrer(std::string());
     request->set_referrer_policy(net::ReferrerPolicy::NO_REFERRER);
     return;
-  }
-
-  if (base::FeatureList::IsEnabled(
-          net::features::kCapReferrerToOriginOnCrossOrigin)) {
-    if (!url::IsSameOriginWith(effective_url, GURL(request->referrer()))) {
-      auto capped_referrer = url::Origin::Create(GURL(request->referrer()));
-      request->SetReferrer(capped_referrer.GetURL().spec());
-    }
   }
 }
 
@@ -222,7 +221,6 @@ NetworkServiceNetworkDelegate::OnGetStorageAccessStatus(
 
 bool NetworkServiceNetworkDelegate::OnAnnotateAndMoveUserBlockedCookies(
     const net::URLRequest& request,
-    const net::FirstPartySetMetadata& first_party_set_metadata,
     net::CookieAccessResultList& maybe_included_cookies,
     net::CookieAccessResultList& excluded_cookies) {
   if (!network_context_->cookie_manager()
@@ -230,8 +228,8 @@ bool NetworkServiceNetworkDelegate::OnAnnotateAndMoveUserBlockedCookies(
            .AnnotateAndMoveUserBlockedCookies(
                request.url(), request.site_for_cookies(),
                base::OptionalToPtr(request.isolation_info().top_frame_origin()),
-               first_party_set_metadata, request.cookie_setting_overrides(),
-               maybe_included_cookies, excluded_cookies)) {
+               request.cookie_setting_overrides(), maybe_included_cookies,
+               excluded_cookies)) {
     // CookieSettings has already moved and annotated the cookies.
     return false;
   }
@@ -279,12 +277,11 @@ bool NetworkServiceNetworkDelegate::OnCanSetCookie(
     const net::URLRequest& request,
     const net::CanonicalCookie& cookie,
     net::CookieOptions* options,
-    const net::FirstPartySetMetadata& first_party_set_metadata,
     net::CookieInclusionStatus* inclusion_status) {
   bool allowed =
       network_context_->cookie_manager()->cookie_settings().IsCookieAccessible(
           cookie, request.url(), request.site_for_cookies(),
-          request.isolation_info().top_frame_origin(), first_party_set_metadata,
+          request.isolation_info().top_frame_origin(),
           request.cookie_setting_overrides(), inclusion_status);
   if (!allowed)
     return false;
@@ -305,8 +302,11 @@ bool NetworkServiceNetworkDelegate::OnCanSetCookie(
 
 bool NetworkServiceNetworkDelegate::OnShouldForceIgnoreSiteForCookies(
     const net::URLRequest& request) {
+  if (should_force_ignore_site_for_cookies_callback_for_testing_) {
+    should_force_ignore_site_for_cookies_callback_for_testing_.Run(request);
+  }
   return url_loader_util::ShouldForceIgnoreSiteForCookies(
-      request.url(), request.initiator(), request.site_for_cookies(),
+      request.url_chain(), request.initiator(), request.site_for_cookies(),
       network_context_->cors_origin_access_list());
 }
 
@@ -425,7 +425,7 @@ int NetworkServiceNetworkDelegate::HandleClearSiteDataHeader(
   auto& cookie_settings = network_context_->cookie_manager()->cookie_settings();
   net::NetworkDelegate::PrivacySetting privacy_settings =
       cookie_settings.IsPrivacyModeEnabled(
-          request->url(), request->site_for_cookies(),
+          request->url(), request->isolation_info().site_for_cookies(),
           request->isolation_info().top_frame_origin(),
           request->cookie_setting_overrides());
   bool partitioned_state_allowed_only =
@@ -433,7 +433,12 @@ int NetworkServiceNetworkDelegate::HandleClearSiteDataHeader(
       net::NetworkDelegate::PrivacySetting::kPartitionedStateAllowedOnly;
 
   url_loader_network_observer->OnClearSiteData(
-      request->url(), *header_value, request->load_flags(),
+      request->url(),
+      request->isolation_info().top_frame_origin()
+          ? std::make_optional(net::SchemefulSite(
+                *request->isolation_info().top_frame_origin()))
+          : std::nullopt,
+      request->isolation_info().nonce(), *header_value, request->load_flags(),
       request->cookie_partition_key(), partitioned_state_allowed_only,
       base::BindOnce(&NetworkServiceNetworkDelegate::FinishedClearSiteData,
                      weak_ptr_factory_.GetWeakPtr(), request->GetWeakPtr(),

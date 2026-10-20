@@ -17,6 +17,7 @@
 #include <vector>
 
 #include "base/compiler_specific.h"
+#include "base/containers/span.h"
 #include "base/functional/callback.h"
 #include "base/gtest_prod_util.h"
 #include "base/memory/raw_ptr.h"
@@ -25,6 +26,7 @@
 #include "base/sequence_checker.h"
 #include "base/task/deferred_sequenced_task_runner.h"
 #include "base/values.h"
+#include "components/os_crypt/async/common/encryptor.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
 #include "mojo/public/cpp/bindings/remote.h"
 #include "services/preferences/public/mojom/preferences.mojom.h"
@@ -129,6 +131,8 @@ class PrefHashFilter final : public InterceptablePrefFilter {
   // construction and before any deferred tasks can run that might need it.
   void SetPrefService(PrefService* pref_service) override;
 
+  void SetMigratedPaths(base::span<const std::string> migrated_paths) override;
+
  private:
   // Friend fixtures for unit testing.
   FRIEND_TEST_ALL_PREFIXES(PrefHashFilterTest,
@@ -164,7 +168,8 @@ class PrefHashFilter final : public InterceptablePrefFilter {
       std::unique_ptr<base::DictValue> changed_paths_and_macs,
       bool write_success);
 
-  void OnEncryptorReceived(os_crypt_async::Encryptor encryptor) override;
+  void OnEncryptorReceived(
+      scoped_refptr<os_crypt_async::Encryptor> encryptor) override;
 
   // Performs the deferred work of re-validating preferences after the
   // encryptor has been fetched. This is posted from FinalizeFilterOnLoad.
@@ -182,6 +187,10 @@ class PrefHashFilter final : public InterceptablePrefFilter {
   // metric is only logged once per filter instance.
   void MaybeRecordTrackedPreferenceResetCount(
       const base::DictValue& pref_store_contents);
+
+  // Emits the Settings.TrackedPreferences.NewValueSerialized histogram for each
+  // preference in `changed_paths_`.
+  void RecordPrefValueChanges() const;
 
   // Applies resets found during any validation pass to the live PrefService.
   // This is posted as a task to run after PrefService initialization is
@@ -218,6 +227,9 @@ class PrefHashFilter final : public InterceptablePrefFilter {
   // FilterSerializeData.
   ChangedPathsMap changed_paths_;
 
+  // The set of paths migrated during FilterOnLoad (e.g. initial preferences).
+  std::vector<std::string> migrated_paths_;
+
   // The total number of reporting IDs.
   const size_t reporting_ids_count_;
 
@@ -235,7 +247,7 @@ class PrefHashFilter final : public InterceptablePrefFilter {
   raw_ptr<PrefService> pref_service_ = nullptr;
 
   const bool encrypted_hashing_enabled_;
-  std::optional<os_crypt_async::Encryptor> encryptor_
+  scoped_refptr<os_crypt_async::Encryptor> encryptor_
       GUARDED_BY_CONTEXT(sequence_checker_);
 
   // A callback to be run for testing purposes when deferred revalidation is

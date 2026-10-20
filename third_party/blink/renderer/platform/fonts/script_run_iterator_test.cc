@@ -11,6 +11,7 @@
 #include "base/logging.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/blink/renderer/platform/wtf/text/format.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_builder.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
 #include "third_party/blink/renderer/platform/wtf/threading.h"
@@ -23,10 +24,10 @@ struct ScriptTestRun {
 };
 
 struct ScriptExpectedRun {
-  unsigned limit;
+  wtf_size_t limit;
   UScriptCode code;
 
-  ScriptExpectedRun(unsigned the_limit, UScriptCode the_code)
+  ScriptExpectedRun(wtf_size_t the_limit, UScriptCode the_code)
       : limit(the_limit), code(the_code) {}
 
   bool operator==(const ScriptExpectedRun& other) const {
@@ -35,8 +36,8 @@ struct ScriptExpectedRun {
 };
 
 std::ostream& operator<<(std::ostream& output, const ScriptExpectedRun& run) {
-  return output << UNSAFE_TODO(String::Format("%d:%d (%s)", run.limit, run.code,
-                                              uscript_getName(run.code)));
+  return output << Format("{}:{} ({})", run.limit, run.code,
+                          uscript_getName(run.code));
 }
 
 class MockScriptData : public ScriptData {
@@ -109,6 +110,11 @@ class MockScriptData : public ScriptData {
       return PairedBracketType::kBracketTypeClose;
     }
     return PairedBracketType::kBracketTypeOpen;
+  }
+
+  RunExtensionLookups GetSafeToExtendExistingRun(
+      UScriptCode script) const override {
+    return {nullptr, nullptr};
   }
 
   static int TableLookup(int value) {
@@ -332,7 +338,7 @@ class ScriptRunIteratorTest : public testing::Test {
   void VerifyRuns(ScriptRunIterator* script_run_iterator,
                   const Vector<ScriptExpectedRun>& expect) {
     Vector<ScriptExpectedRun> actual;
-    unsigned limit;
+    wtf_size_t limit;
     UScriptCode code;
     while (script_run_iterator->Consume(&limit, &code))
       actual.emplace_back(limit, code);
@@ -343,7 +349,7 @@ class ScriptRunIteratorTest : public testing::Test {
 TEST_F(ScriptRunIteratorTest, Empty) {
   String empty(g_empty_string16_bit);
   ScriptRunIterator script_run_iterator(empty.Span16());
-  unsigned limit = 0;
+  wtf_size_t limit = 0;
   UScriptCode code = USCRIPT_INVALID_CODE;
   DCHECK(!script_run_iterator.Consume(&limit, &code));
   ASSERT_EQ(limit, 0u);
@@ -782,6 +788,13 @@ TEST_F(ScriptRunIteratorTest, CommonMalayalam) {
   CHECK_SCRIPT_RUNS({{"100-ാം", USCRIPT_MALAYALAM}});
 }
 
+TEST_F(ScriptRunIteratorTest, IdeographicCommaDoesNotCountAsLatin) {
+  CHECK_SCRIPT_RUNS({{"也：", USCRIPT_HAN},
+                     {"ABC", USCRIPT_LATIN},
+                     {"、", USCRIPT_BOPOMOFO},
+                     {"DEF", USCRIPT_LATIN}});
+}
+
 std::pair<int, UChar32> MaximumScriptExtensions() {
   int max_extensions = 0;
   UChar32 max_extensionscp = 0;
@@ -805,9 +818,9 @@ TEST_F(ScriptRunIteratorTest, MaxUnicodeScriptExtensions) {
   EXPECT_LE(max_extensions, ScriptRunIterator::kMaxUnicodeScriptExtensions);
 }
 
-class ScriptRunIteratorICUDataTest : public testing::Test {
+class ScriptRunIteratorIcuDataTest : public testing::Test {
  public:
-  ScriptRunIteratorICUDataTest() {
+  ScriptRunIteratorIcuDataTest() {
     std::tie(max_extensions_, max_extensions_codepoint_) =
         MaximumScriptExtensions();
   }
@@ -827,20 +840,20 @@ class ScriptRunIteratorICUDataTest : public testing::Test {
 
 // Validate that ICU never returns more than our maximum expected number of
 // script extensions.
-TEST_F(ScriptRunIteratorICUDataTest, ValidateICUMaxScriptExtensions) {
+TEST_F(ScriptRunIteratorIcuDataTest, ValidateIcuMaxScriptExtensions) {
   int max_extensions;
   UChar32 cp = GetACharWithMaxExtensions(&max_extensions);
   ASSERT_LT(max_extensions, ScriptData::kMaxScriptCount)
       << "char " << std::hex << cp << std::dec;
 }
 
-// Check that ICUScriptData returns all of a character's scripts.
+// Check that IcuScriptData returns all of a character's scripts.
 // This only checks one likely character, but doesn't check all cases.
-TEST_F(ScriptRunIteratorICUDataTest, ICUDataGetScriptsReturnsAllExtensions) {
+TEST_F(ScriptRunIteratorIcuDataTest, IcuDataGetScriptsReturnsAllExtensions) {
   int max_extensions;
   UChar32 cp = GetACharWithMaxExtensions(&max_extensions);
   ScriptData::UScriptCodeList extensions;
-  ICUScriptData::Instance()->GetScripts(cp, extensions);
+  IcuScriptData::Instance()->GetScripts(cp, extensions);
 
   // It's possible that GetScripts adds the primary script to the list of
   // extensions, resulting in one more script than the raw extension count.
@@ -848,10 +861,10 @@ TEST_F(ScriptRunIteratorICUDataTest, ICUDataGetScriptsReturnsAllExtensions) {
       << "char " << std::hex << cp << std::dec;
 }
 
-TEST_F(ScriptRunIteratorICUDataTest, CommonHaveNoMoreThanOneExtension) {
+TEST_F(ScriptRunIteratorIcuDataTest, CommonHaveNoMoreThanOneExtension) {
   ScriptData::UScriptCodeList extensions;
   for (UChar32 cp = 0; cp < 0x110000; ++cp) {
-    ICUScriptData::Instance()->GetScripts(cp, extensions);
+    IcuScriptData::Instance()->GetScripts(cp, extensions);
     UScriptCode primary = extensions.at(0);
     if (primary == USCRIPT_COMMON) {
       ASSERT_LE(extensions.size(), 2ul) << "cp: " << std::hex << cp << std::dec;

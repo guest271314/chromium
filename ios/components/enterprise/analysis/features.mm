@@ -6,7 +6,7 @@
 
 namespace enterprise_connectors {
 
-BASE_FEATURE(kEnableFileDownloadConnectorIOS,
+BASE_FEATURE(kEnableBulkDataEntryConnectorIOS,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
 }  // namespace enterprise_connectors

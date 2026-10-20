@@ -9,8 +9,6 @@ import static org.mockito.Mockito.when;
 
 import android.app.Activity;
 
-import androidx.test.filters.SmallTest;
-
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Rule;
@@ -20,7 +18,6 @@ import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 import org.robolectric.Robolectric;
-import org.robolectric.annotation.Config;
 
 import org.chromium.base.Callback;
 import org.chromium.base.test.BaseRobolectricTestRunner;
@@ -42,9 +39,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 /** Unit tests for the {@code AdaptiveToolbarStatePredictor} */
-@Config(manifest = Config.NONE)
 @RunWith(BaseRobolectricTestRunner.class)
-@EnableFeatures(ChromeFeatureList.ADAPTIVE_BUTTON_IN_TOP_TOOLBAR_CUSTOMIZATION_V2)
 public class AdaptiveToolbarStatePredictorTest {
 
     @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
@@ -71,7 +66,6 @@ public class AdaptiveToolbarStatePredictorTest {
     }
 
     @Test
-    @SmallTest
     public void testExpectTranslateFilteredWhenDisabled() {
         AdaptiveToolbarFeatures.setDefaultSegmentForTesting(AdaptiveToolbarFeatures.SHARE);
 
@@ -96,7 +90,6 @@ public class AdaptiveToolbarStatePredictorTest {
     }
 
     @Test
-    @SmallTest
     public void testExpectTranslateFilteredWhenDisabled_ManualOverride() {
         AdaptiveToolbarFeatures.setDefaultSegmentForTesting(AdaptiveToolbarFeatures.SHARE);
 
@@ -122,26 +115,6 @@ public class AdaptiveToolbarStatePredictorTest {
     }
 
     @Test
-    @SmallTest
-    @DisableFeatures(ChromeFeatureList.ADAPTIVE_BUTTON_IN_TOP_TOOLBAR_CUSTOMIZATION_V2)
-    public void testDisableFeature() {
-        AdaptiveToolbarFeatures.setDefaultSegmentForTesting(AdaptiveToolbarFeatures.SHARE);
-        AdaptiveToolbarStatePredictor statePredictor =
-                buildStatePredictor(
-                        true,
-                        AdaptiveToolbarButtonVariant.VOICE,
-                        List.of(AdaptiveToolbarButtonVariant.SHARE));
-        UiState expected =
-                new UiState(
-                        false,
-                        new ArrayList<Integer>(List.of(AdaptiveToolbarButtonVariant.UNKNOWN)),
-                        AdaptiveToolbarButtonVariant.UNKNOWN,
-                        AdaptiveToolbarButtonVariant.UNKNOWN);
-        statePredictor.recomputeUiState(verifyResultCallback(expected));
-    }
-
-    @Test
-    @SmallTest
     public void testManualOverride() {
         AdaptiveToolbarFeatures.setDefaultSegmentForTesting(AdaptiveToolbarFeatures.SHARE);
 
@@ -160,7 +133,6 @@ public class AdaptiveToolbarStatePredictorTest {
     }
 
     @Test
-    @SmallTest
     public void testExpectValidSegmentWhenSegmentationSucceeds() {
         AdaptiveToolbarFeatures.setDefaultSegmentForTesting(AdaptiveToolbarFeatures.SHARE);
 
@@ -185,7 +157,6 @@ public class AdaptiveToolbarStatePredictorTest {
     }
 
     @Test
-    @SmallTest
     public void testExpectValidSegmentWhenVoiceDisabled() {
         AdaptiveToolbarFeatures.setDefaultSegmentForTesting(AdaptiveToolbarFeatures.SHARE);
 
@@ -205,7 +176,6 @@ public class AdaptiveToolbarStatePredictorTest {
     }
 
     @Test
-    @SmallTest
     public void testExpectDefaultSegmentWhenSegmentationFails() {
         AdaptiveToolbarFeatures.setDefaultSegmentForTesting(AdaptiveToolbarFeatures.SHARE);
 
@@ -224,7 +194,6 @@ public class AdaptiveToolbarStatePredictorTest {
     }
 
     @Test
-    @SmallTest
     public void testToolbarSettingsToggleDisabled() {
         AdaptiveToolbarFeatures.setDefaultSegmentForTesting(AdaptiveToolbarFeatures.SHARE);
 
@@ -243,10 +212,12 @@ public class AdaptiveToolbarStatePredictorTest {
     }
 
     @Test
-    @SmallTest
     @EnableFeatures(ChromeFeatureList.GLIC)
-    @DisableFeatures(ChromeFeatureList.ENABLE_ANDROID_SIDE_PANEL)
-    public void testGlicEnabled() {
+    @DisableFeatures({
+        ChromeFeatureList.ENABLE_ANDROID_SIDE_PANEL,
+        ChromeFeatureList.ANDROID_BOTTOM_BAR
+    })
+    public void testGlicEnabled_GlicNotRecommendedInAuto() {
         AdaptiveToolbarFeatures.setDefaultSegmentForTesting(AdaptiveToolbarFeatures.SHARE);
 
         AdaptiveToolbarStatePredictor statePredictor =
@@ -255,21 +226,45 @@ public class AdaptiveToolbarStatePredictorTest {
                         AdaptiveToolbarButtonVariant.UNKNOWN,
                         List.of(AdaptiveToolbarButtonVariant.VOICE));
 
-        // Glic should be included in results.
+        // Glic should NOT be included in results when in AUTO.
         UiState expected =
                 new UiState(
                         true,
                         new ArrayList<Integer>(
                                 List.of(
                                         AdaptiveToolbarButtonVariant.VOICE,
-                                        AdaptiveToolbarButtonVariant.GLIC)),
+                                        AdaptiveToolbarButtonVariant.SHARE)),
                         AdaptiveToolbarButtonVariant.AUTO,
                         AdaptiveToolbarButtonVariant.VOICE);
         statePredictor.recomputeUiState(verifyResultCallback(expected));
     }
 
     @Test
-    @SmallTest
+    @EnableFeatures(ChromeFeatureList.GLIC)
+    @DisableFeatures({
+        ChromeFeatureList.ENABLE_ANDROID_SIDE_PANEL,
+        ChromeFeatureList.ANDROID_BOTTOM_BAR
+    })
+    public void testGlicManualOverride() {
+        AdaptiveToolbarFeatures.setDefaultSegmentForTesting(AdaptiveToolbarFeatures.SHARE);
+
+        AdaptiveToolbarStatePredictor statePredictor =
+                buildStatePredictor(
+                        true,
+                        AdaptiveToolbarButtonVariant.GLIC,
+                        List.of(AdaptiveToolbarButtonVariant.VOICE));
+
+        // Manual override of GLIC should be respected.
+        UiState expected =
+                new UiState(
+                        true,
+                        new ArrayList<Integer>(List.of(AdaptiveToolbarButtonVariant.GLIC)),
+                        AdaptiveToolbarButtonVariant.GLIC,
+                        AdaptiveToolbarButtonVariant.VOICE);
+        statePredictor.recomputeUiState(verifyResultCallback(expected));
+    }
+
+    @Test
     @EnableFeatures(ChromeFeatureList.GLIC)
     @DisableFeatures(ChromeFeatureList.ENABLE_ANDROID_SIDE_PANEL)
     public void testGlicEnabled_ManualOverride() {
@@ -292,7 +287,6 @@ public class AdaptiveToolbarStatePredictorTest {
     }
 
     @Test
-    @SmallTest
     public void testWithoutShowUiOnlyAfterReady() {
         AdaptiveToolbarFeatures.setDefaultSegmentForTesting(AdaptiveToolbarFeatures.SHARE);
 
@@ -329,7 +323,6 @@ public class AdaptiveToolbarStatePredictorTest {
     }
 
     @Test
-    @SmallTest
     public void testSegmentIdToAdaptiveToolbarButtonVariantConversion() {
         assertEquals(
                 AdaptiveToolbarButtonVariant.NEW_TAB,
@@ -354,7 +347,6 @@ public class AdaptiveToolbarStatePredictorTest {
     }
 
     @Test
-    @SmallTest
     @DisableFeatures(ChromeFeatureList.ANDROID_BOTTOM_BAR)
     public void testNewTabEnabled() {
         AdaptiveToolbarFeatures.setDefaultSegmentForTesting(AdaptiveToolbarFeatures.SHARE);
@@ -378,7 +370,6 @@ public class AdaptiveToolbarStatePredictorTest {
     }
 
     @Test
-    @SmallTest
     @EnableFeatures(ChromeFeatureList.ANDROID_BOTTOM_BAR)
     public void testNewTabFilteredWhenBottomBarEnabled() {
         AdaptiveToolbarFeatures.setDefaultSegmentForTesting(AdaptiveToolbarFeatures.SHARE);

@@ -17,27 +17,29 @@ namespace blink {
 // Navigation type that affects the download decision at download-discovery
 // time.
 enum class NavigationDownloadType {
-  kViewSource = 0,
-  kInterstitial = 1,
+  kViewSource,
 
   // The navigation was initiated on a x-origin opener.
-  kOpenerCrossOrigin = 2,
+  kOpenerCrossOrigin,
 
   // The navigation was initiated from or occurred in an ad frame without user
   // activation.
-  kAdFrameNoGesture = 3,
+  kAdFrameNoGesture,
 
   // The navigation was initiated from or occurred in an ad frame.
-  kAdFrame = 4,
+  kAdFrame,
 
   // The navigation was initiated from or occurred in an iframe with
   // |network::mojom::WebSandboxFlags::kDownloads| flag set.
-  kSandbox = 5,
+  kSandbox,
 
   // The navigation was initiated without user activation.
-  kNoGesture = 6,
+  kNoGesture,
 
-  kMaxValue = kNoGesture
+  // The navigation was initiated from an ad script.
+  kAdScript,
+
+  kMaxValue = kAdScript
 };
 
 // LINT.IfChange(InputStartPresence)
@@ -74,14 +76,15 @@ struct BLINK_COMMON_EXPORT NavigationDownloadPolicy {
   // Returns if download is allowed based on |disallowed_types|.
   bool IsDownloadAllowed() const;
 
-  // Possibly set the kOpenerCrossOrigin and kSandboxNoGesture policy in
-  // |download_policy|. The parameter `openee_can_access_opener_origin` only
-  // matters if `is_opener_navigation` is true.
+  // Possibly set the impacted types in `observed_types` and `disallowed_types`.
+  // The parameter `openee_can_access_opener_origin` only matters if
+  // `is_opener_navigation` is true.
   void ApplyDownloadFramePolicy(bool is_opener_navigation,
                                 bool has_gesture,
                                 bool openee_can_access_opener_origin,
                                 bool has_download_sandbox_flag,
-                                bool from_ad);
+                                bool from_ad_frame,
+                                bool is_ad_script_in_stack);
 
   // An alias of a bitset of navigation types.
   using NavigationDownloadTypes =

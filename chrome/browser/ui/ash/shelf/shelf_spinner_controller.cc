@@ -13,10 +13,10 @@
 #include "base/memory/raw_ptr.h"
 #include "base/task/single_thread_task_runner.h"
 #include "chrome/browser/ash/guest_os/guest_os_shelf_utils.h"
-#include "chrome/browser/ash/profiles/profile_helper.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/ash/shelf/chrome_shelf_controller.h"
 #include "chrome/browser/ui/ash/shelf/shelf_spinner_item_controller.h"
+#include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
 #include "components/user_manager/user_manager.h"
 #include "ui/gfx/canvas.h"
 #include "ui/gfx/image/canvas_image_source.h"
@@ -179,7 +179,7 @@ ShelfSpinnerController::~ShelfSpinnerController() {
 
 void ShelfSpinnerController::MaybeApplySpinningEffect(const std::string& app_id,
                                                       gfx::ImageSkia* image) {
-  DCHECK(image);
+  CHECK(image, base::NotFatalUntil::M162);
   auto it = app_controller_map_.find(app_id);
   if (it == app_controller_map_.end()) {
     return;
@@ -230,10 +230,11 @@ bool ShelfSpinnerController::RemoveSpinnerFromControllerMap(
   }
 
   const ash::ShelfID shelf_id(app_id);
-  DCHECK_EQ(it->second.controller(),
-            it->second.IsKilled()
-                ? nullptr
-                : owner_->shelf_model()->GetShelfItemDelegate(shelf_id));
+  CHECK_EQ(it->second.controller(),
+           it->second.IsKilled()
+               ? nullptr
+               : owner_->shelf_model()->GetShelfItemDelegate(shelf_id),
+           base::NotFatalUntil::M162);
   app_controller_map_.erase(it);
 
   return true;
@@ -241,8 +242,9 @@ bool ShelfSpinnerController::RemoveSpinnerFromControllerMap(
 
 void ShelfSpinnerController::CloseCrostiniSpinners() {
   std::vector<std::string> app_ids_to_close;
-  const Profile* profile =
-      ash::ProfileHelper::Get()->GetProfileByAccountId(current_account_id_);
+  const Profile* profile = Profile::FromBrowserContext(
+      ash::BrowserContextHelper::Get()->GetBrowserContextByAccountId(
+          current_account_id_));
   for (const auto& app_id_controller_pair : app_controller_map_) {
     if (guest_os::IsCrostiniShelfAppId(profile, app_id_controller_pair.first)) {
       app_ids_to_close.push_back(app_id_controller_pair.first);

@@ -83,7 +83,7 @@ function getCategoryItemMap(): Map<ContentSettingsTypes, CategoryListItem> {
       route: routes.SITE_SETTINGS_AUTOMATIC_DOWNLOADS,
       id: Id.AUTOMATIC_DOWNLOADS,
       label: 'siteSettingsAutomaticDownloads',
-      icon: 'cr:file-download',
+      icon: 'cr:download',
       enabledLabel: 'siteSettingsAutomaticDownloadsAsk',
       disabledLabel: 'siteSettingsAutomaticDownloadsBlocked',
     },
@@ -123,7 +123,7 @@ function getCategoryItemMap(): Map<ContentSettingsTypes, CategoryListItem> {
       route: routes.SITE_SETTINGS_BLUETOOTH_SCANNING,
       id: Id.BLUETOOTH_SCANNING,
       label: 'siteSettingsBluetoothScanning',
-      icon: 'settings:bluetooth-scanning',
+      icon: 'settings:bluetooth-searching',
       enabledLabel: 'siteSettingsBluetoothScanningAsk',
       disabledLabel: 'siteSettingsBluetoothScanningBlock',
       shouldShow: () =>
@@ -302,7 +302,7 @@ function getCategoryItemMap(): Map<ContentSettingsTypes, CategoryListItem> {
       route: routes.OFFER_WRITING_HELP,
       id: Id.OFFER_WRITING_HELP,
       label: 'siteSettingsOfferWritingHelp',
-      icon: 'settings:compose',
+      icon: 'settings:pen-spark',
       shouldShow: () => loadTimeData.getBoolean('enableComposeProactiveNudge'),
     },
     {
@@ -327,7 +327,7 @@ function getCategoryItemMap(): Map<ContentSettingsTypes, CategoryListItem> {
       route: routes.PERFORMANCE,
       id: Id.PERFORMANCE,
       label: 'siteSettingsPerformance',
-      icon: 'settings:performance',
+      icon: 'settings:speed',
       enabledLabel: 'siteSettingsPerformanceSublabel',
       disabledLabel: 'siteSettingsPerformanceSublabel',
     },
@@ -394,7 +394,7 @@ function getCategoryItemMap(): Map<ContentSettingsTypes, CategoryListItem> {
       route: routes.SITE_SETTINGS_WEB_PRINTING,
       id: Id.WEB_PRINTING,
       label: 'siteSettingsWebPrinting',
-      icon: 'settings:printer',
+      icon: 'settings:print',
       enabledLabel: 'siteSettingsWebPrintingAsk',
       disabledLabel: 'siteSettingsWebPrintingBlock',
       shouldShow: () =>
@@ -413,7 +413,7 @@ function getCategoryItemMap(): Map<ContentSettingsTypes, CategoryListItem> {
       route: routes.SITE_SETTINGS_STORAGE_ACCESS,
       id: Id.STORAGE_ACCESS,
       label: 'siteSettingsStorageAccess',
-      icon: 'privacy:storage-access',
+      icon: 'privacy:vr180-create2d',
       enabledLabel: 'storageAccessAsk',
       disabledLabel: 'storageAccessBlocked',
     },
@@ -502,14 +502,6 @@ export class SettingsSiteSettingsPageElement extends
 
   static get properties() {
     return {
-      /**
-       * Preferences state.
-       */
-      prefs: {
-        type: Object,
-        notify: true,
-      },
-
       lists_: {
         type: Object,
         value: function() {
@@ -604,7 +596,6 @@ export class SettingsSiteSettingsPageElement extends
             this.onUnusedSitePermissionListChanged_(sites));
   }
 
-  declare prefs: Object;
   declare private permissionsExpanded_: boolean;
   declare private contentExpanded_: boolean;
   declare private noRecentSitePermissions_: boolean;

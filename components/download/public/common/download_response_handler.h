@@ -57,7 +57,8 @@ class COMPONENTS_DOWNLOAD_EXPORT DownloadResponseHandler
       DownloadSource download_source,
       bool require_safety_checks,
       std::vector<GURL> url_chain,
-      bool is_background_mode);
+      bool is_background_mode,
+      ::network::mojom::RequestMode fetch_request_mode);
 
   DownloadResponseHandler(const DownloadResponseHandler&) = delete;
   DownloadResponseHandler& operator=(const DownloadResponseHandler&) = delete;
@@ -109,8 +110,12 @@ class COMPONENTS_DOWNLOAD_EXPORT DownloadResponseHandler
   DownloadSource download_source_;
   net::CertStatus cert_status_ = 0;
   bool has_strong_validators_;
+  // Whether the response was served by a Service Worker. Captured in
+  // OnReceiveResponse so it is available when mapping the completion status.
+  bool fetched_via_service_worker_ = false;
   std::optional<url::Origin> request_initiator_;
   ::network::mojom::CredentialsMode credentials_mode_;
+  ::network::mojom::RequestMode fetch_request_mode_;
   std::optional<net::IsolationInfo> isolation_info_;
   bool is_partial_request_;
   bool completed_;

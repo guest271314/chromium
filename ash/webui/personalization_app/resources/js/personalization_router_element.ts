@@ -21,7 +21,6 @@ import type {GooglePhotosAlbum, WallpaperCollection} from '../personalization_ap
 import {TopicSource} from '../personalization_app.mojom-webui.js';
 
 import {isAmbientModeAllowed} from './load_time_booleans.js';
-import {logAmbientAlbumsPathUMA, logPersonalizationPathUMA} from './personalization_metrics_logger.js';
 import {getTemplate} from './personalization_router_element.html.js';
 import {WallpaperObserver} from './wallpaper/wallpaper_observer.js';
 
@@ -116,10 +115,10 @@ export class PersonalizationRouterElement extends PolymerElement {
     return ['onPathOrQueryParamsChanged_(path_, queryParams_)'];
   }
 
-  private path_: string;
-  private query_: string;
-  private queryParams_: QueryParams;
-  private seaPenBasePath_: string;
+  declare private path_: string;
+  declare private query_: string;
+  declare private queryParams_: QueryParams;
+  declare private seaPenBasePath_: string;
 
   static instance(): PersonalizationRouterElement {
     return document.querySelector(PersonalizationRouterElement.is)!;
@@ -232,9 +231,6 @@ export class PersonalizationRouterElement extends PolymerElement {
       this.setProperties({path_: Paths.ROOT, queryParams_: {}});
     }
 
-    if (isPathValid(path)) {
-      logPersonalizationPathUMA(path as Paths);
-    }
     // Update the page title when the path changes.
     // TODO(b/228967523): Wallpaper related pages have been handled in their
     // specific Polymer elements so they are skipped here. See if we can move
@@ -252,10 +248,6 @@ export class PersonalizationRouterElement extends PolymerElement {
           // function to be called again once `queryParams` updates.
           console.warn('Topic source missing from query params');
           break;
-        }
-        const topicSource = parseInt(queryParams.topicSource!, 10);
-        if (!isNaN(topicSource) && topicSource in TopicSource) {
-          logAmbientAlbumsPathUMA(topicSource as TopicSource);
         }
         if (queryParams.topicSource === TopicSource.kGooglePhotos.toString()) {
           document.title =

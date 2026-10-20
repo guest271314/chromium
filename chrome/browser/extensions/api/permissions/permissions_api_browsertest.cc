@@ -2,17 +2,17 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "chrome/browser/extensions/api/permissions/permissions_api.h"
+#include "extensions/browser/api/permissions/permissions_api.h"
 
 #include <memory>
 #include <optional>
 #include <string>
 
+#include "base/auto_reset.h"
 #include "base/json/json_reader.h"
 #include "base/json/json_writer.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/stringprintf.h"
-#include "base/test/scoped_feature_list.h"
 #include "chrome/browser/extensions/chrome_test_extension_loader.h"
 #include "chrome/browser/extensions/extension_browsertest.h"
 #include "chrome/browser/extensions/extension_tab_util.h"
@@ -29,6 +29,7 @@
 #include "extensions/browser/extension_registry.h"
 #include "extensions/browser/extension_system.h"
 #include "extensions/browser/extension_util.h"
+#include "extensions/browser/host_access_request_helper.h"
 #include "extensions/browser/permissions/active_tab_permission_granter.h"
 #include "extensions/browser/permissions/permissions_test_util.h"
 #include "extensions/browser/permissions/permissions_updater.h"
@@ -37,7 +38,6 @@
 #include "extensions/browser/test_extension_registry_observer.h"
 #include "extensions/buildflags/buildflags.h"
 #include "extensions/common/extension_builder.h"
-#include "extensions/common/extension_features.h"
 #include "extensions/common/manifest_handlers/permissions_parser.h"
 #include "extensions/common/permissions/permissions_data.h"
 #include "extensions/test/test_extension_dir.h"
@@ -46,9 +46,8 @@
 #include "testing/gtest/include/gtest/gtest.h"
 
 #if BUILDFLAG(ENABLE_EXTENSIONS)
-#include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
-#include "chrome/test/base/test_browser_window.h"
 #endif
 
 static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
@@ -760,10 +759,7 @@ IN_PROC_BROWSER_TEST_F(PermissionsAPIUnitTest, RequestingFilePermissions) {
 #if BUILDFLAG(ENABLE_EXTENSIONS)
 class PermissionsAPIHostAccessRequestsUnitTest : public PermissionsAPIUnitTest {
  public:
-  PermissionsAPIHostAccessRequestsUnitTest() {
-    scoped_feature_list_.InitAndEnableFeature(
-        extensions_features::kApiPermissionsHostAccessRequests);
-  }
+  PermissionsAPIHostAccessRequestsUnitTest() = default;
   ~PermissionsAPIHostAccessRequestsUnitTest() override = default;
   PermissionsAPIHostAccessRequestsUnitTest(
       const PermissionsAPIHostAccessRequestsUnitTest&) = delete;
@@ -772,6 +768,8 @@ class PermissionsAPIHostAccessRequestsUnitTest : public PermissionsAPIUnitTest {
 
   void SetUpOnMainThread() override {
     PermissionsAPIUnitTest::SetUpOnMainThread();
+    cooldown_reset_.emplace(
+        HostAccessRequestsHelper::SetCooldownForTesting(base::TimeDelta()));
     host_resolver()->AddRule("*", "127.0.0.1");
     ASSERT_TRUE(embedded_test_server()->Start());
   }
@@ -805,7 +803,7 @@ class PermissionsAPIHostAccessRequestsUnitTest : public PermissionsAPIUnitTest {
   }
 
  private:
-  base::test::ScopedFeatureList scoped_feature_list_;
+  std::optional<base::AutoReset<base::TimeDelta>> cooldown_reset_;
 };
 
 // Test extension can add a host access request for a site it has host
@@ -821,7 +819,7 @@ IN_PROC_BROWSER_TEST_F(PermissionsAPIHostAccessRequestsUnitTest,
   // Open tab on a url requested by the extension.
   NavigateTo("http://www.requested.com");
   int tab_id = ExtensionTabUtil::GetTabId(
-      browser()->tab_strip_model()->GetActiveWebContents());
+      browser()->GetTabStripModel()->GetActiveWebContents());
 
   auto* permissions_manager = PermissionsManager::Get(profile());
 
@@ -875,7 +873,7 @@ IN_PROC_BROWSER_TEST_F(PermissionsAPIHostAccessRequestsUnitTest,
   // Open tab on a url requested by the extension.
   NavigateTo("http://www.requested.com");
   int tab_id = ExtensionTabUtil::GetTabId(
-      browser()->tab_strip_model()->GetActiveWebContents());
+      browser()->GetTabStripModel()->GetActiveWebContents());
 
   auto* permissions_manager = PermissionsManager::Get(profile());
 
@@ -957,7 +955,7 @@ IN_PROC_BROWSER_TEST_F(PermissionsAPIHostAccessRequestsUnitTest,
   // Open tab on a url not requested by the extension.
   NavigateTo("http://www.not-requested.com");
   int tab_id = ExtensionTabUtil::GetTabId(
-      browser()->tab_strip_model()->GetActiveWebContents());
+      browser()->GetTabStripModel()->GetActiveWebContents());
 
   auto* permissions_manager = PermissionsManager::Get(profile());
 
@@ -1014,7 +1012,7 @@ IN_PROC_BROWSER_TEST_F(PermissionsAPIHostAccessRequestsUnitTest,
   // Open tab on any url.
   NavigateTo("http://www.example.com");
   int tab_id = ExtensionTabUtil::GetTabId(
-      browser()->tab_strip_model()->GetActiveWebContents());
+      browser()->GetTabStripModel()->GetActiveWebContents());
 
   auto* permissions_manager = PermissionsManager::Get(profile());
 
@@ -1048,7 +1046,7 @@ IN_PROC_BROWSER_TEST_F(PermissionsAPIHostAccessRequestsUnitTest,
   // Open tab on a url not requested by the extension.
   NavigateTo("chrome://extensions");
   int tab_id = ExtensionTabUtil::GetTabId(
-      browser()->tab_strip_model()->GetActiveWebContents());
+      browser()->GetTabStripModel()->GetActiveWebContents());
 
   auto* permissions_manager = PermissionsManager::Get(profile());
 
@@ -1086,7 +1084,7 @@ IN_PROC_BROWSER_TEST_F(PermissionsAPIHostAccessRequestsUnitTest,
   // Verify there is no host access request.
   NavigateTo("http://www.optional.com");
   int tab_id = ExtensionTabUtil::GetTabId(
-      browser()->tab_strip_model()->GetActiveWebContents());
+      browser()->GetTabStripModel()->GetActiveWebContents());
   EXPECT_FALSE(
       permissions_manager->HasActiveHostAccessRequest(tab_id, extension->id()));
 
@@ -1120,7 +1118,7 @@ IN_PROC_BROWSER_TEST_F(PermissionsAPIHostAccessRequestsUnitTest,
   // there is no host access request.
   NavigateTo("http://www.contentscript.com");
   int tab_id = ExtensionTabUtil::GetTabId(
-      browser()->tab_strip_model()->GetActiveWebContents());
+      browser()->GetTabStripModel()->GetActiveWebContents());
   EXPECT_FALSE(
       permissions_manager->HasActiveHostAccessRequest(tab_id, extension->id()));
 
@@ -1153,7 +1151,7 @@ IN_PROC_BROWSER_TEST_F(PermissionsAPIHostAccessRequestsUnitTest,
   // Navigate to url requested by the extension.
   NavigateTo("http://www.requested.com");
   content::WebContents* web_contents =
-      browser()->tab_strip_model()->GetActiveWebContents();
+      browser()->GetTabStripModel()->GetActiveWebContents();
   int tab_id = ExtensionTabUtil::GetTabId(web_contents);
 
   // Block all extensions on requested.com.
@@ -1214,7 +1212,7 @@ IN_PROC_BROWSER_TEST_F(PermissionsAPIHostAccessRequestsUnitTest,
   // Navigate to url requested by the extension.
   NavigateTo("http://www.requested.com");
   content::WebContents* web_contents =
-      browser()->tab_strip_model()->GetActiveWebContents();
+      browser()->GetTabStripModel()->GetActiveWebContents();
   int tab_id = ExtensionTabUtil::GetTabId(web_contents);
 
   // Grant one-time host access.
@@ -1253,7 +1251,7 @@ IN_PROC_BROWSER_TEST_F(PermissionsAPIHostAccessRequestsUnitTest,
   // Open tab on a url requested by the extension.
   NavigateTo("http://www.requested.com");
   content::WebContents* web_contents =
-      browser()->tab_strip_model()->GetActiveWebContents();
+      browser()->GetTabStripModel()->GetActiveWebContents();
   int tab_id = ExtensionTabUtil::GetTabId(web_contents);
   std::string document_id =
       ExtensionApiFrameIdMap::GetDocumentId(web_contents->GetPrimaryMainFrame())
@@ -1313,7 +1311,7 @@ IN_PROC_BROWSER_TEST_F(PermissionsAPIHostAccessRequestsUnitTest,
   // Open tab on a url requested by the extension.
   NavigateTo("http://www.requested.com");
   int tab_id = ExtensionTabUtil::GetTabId(
-      browser()->tab_strip_model()->GetActiveWebContents());
+      browser()->GetTabStripModel()->GetActiveWebContents());
 
   auto* permissions_manager = PermissionsManager::Get(profile());
 
@@ -1418,7 +1416,7 @@ IN_PROC_BROWSER_TEST_F(PermissionsAPIHostAccessRequestsUnitTest,
   // Open tab on a url requested by the extension.
   NavigateTo("http://www.requested.com");
   int tab_id = ExtensionTabUtil::GetTabId(
-      browser()->tab_strip_model()->GetActiveWebContents());
+      browser()->GetTabStripModel()->GetActiveWebContents());
 
   auto* permissions_manager = PermissionsManager::Get(profile());
 
@@ -1528,7 +1526,7 @@ IN_PROC_BROWSER_TEST_F(PermissionsAPIHostAccessRequestsUnitTest,
   // Open tab on a url requested by the extension.
   NavigateTo("http://www.requested.com");
   content::WebContents* web_contents =
-      browser()->tab_strip_model()->GetActiveWebContents();
+      browser()->GetTabStripModel()->GetActiveWebContents();
   int tab_id = ExtensionTabUtil::GetTabId(web_contents);
   std::string document_id =
       ExtensionApiFrameIdMap::GetDocumentId(web_contents->GetPrimaryMainFrame())
@@ -1582,6 +1580,97 @@ IN_PROC_BROWSER_TEST_F(PermissionsAPIHostAccessRequestsUnitTest,
         api_test_utils::FunctionMode::kNone));
 
     // Verify request was removed.
+    EXPECT_FALSE(permissions_manager->HasActiveHostAccessRequest(
+        tab_id, extension->id()));
+  }
+}
+
+// Test that adding and removing host access requests are throttled when
+// the cooldown is active.
+// TODO(crbug.com/565866457): Flaky on Debug, ASan, and MSan due to 200ms
+// real-time cooldown.
+#if !defined(NDEBUG) || defined(ADDRESS_SANITIZER) || defined(MEMORY_SANITIZER)
+#define MAYBE_HostAccessRequestCooldown DISABLED_HostAccessRequestCooldown
+#else
+#define MAYBE_HostAccessRequestCooldown HostAccessRequestCooldown
+#endif
+IN_PROC_BROWSER_TEST_F(PermissionsAPIHostAccessRequestsUnitTest,
+                       MAYBE_HostAccessRequestCooldown) {
+  scoped_refptr<const Extension> extension =
+      ExtensionBuilder("Extension")
+          .AddHostPermission("*://*.requested.com/*")
+          .Build();
+  AddExtensionAndWithheldPermissions(*extension);
+
+  NavigateTo("http://www.requested.com");
+  int tab_id = ExtensionTabUtil::GetTabId(
+      browser()->GetTabStripModel()->GetActiveWebContents());
+
+  auto* permissions_manager = PermissionsManager::Get(profile());
+
+  // Set cooldown to 200ms.
+  auto cooldown_reset =
+      HostAccessRequestsHelper::SetCooldownForTesting(base::Milliseconds(200));
+
+  // Add request. Should succeed.
+  {
+    auto function =
+        base::MakeRefCounted<PermissionsAddHostAccessRequestFunction>();
+    function->set_extension(extension.get());
+    EXPECT_TRUE(api_test_utils::RunFunction(
+        function.get(), GetFunctionParams(tab_id), profile(),
+        api_test_utils::FunctionMode::kNone));
+    EXPECT_TRUE(permissions_manager->HasActiveHostAccessRequest(
+        tab_id, extension->id()));
+  }
+
+  // Remove request immediately. Should fail due to cooldown.
+  {
+    auto function =
+        base::MakeRefCounted<PermissionsRemoveHostAccessRequestFunction>();
+    function->set_extension(extension.get());
+    std::string error = api_test_utils::RunFunctionAndReturnError(
+        function.get(), GetFunctionParams(tab_id), profile(),
+        api_test_utils::FunctionMode::kNone);
+    EXPECT_EQ(
+        "Extension cannot remove a host access request due to rate limiting.",
+        error);
+    // Request is still active.
+    EXPECT_TRUE(permissions_manager->HasActiveHostAccessRequest(
+        tab_id, extension->id()));
+  }
+
+  // Wait for cooldown to expire.
+  {
+    base::RunLoop run_loop;
+    base::SingleThreadTaskRunner::GetCurrentDefault()->PostDelayedTask(
+        FROM_HERE, run_loop.QuitClosure(), base::Milliseconds(250));
+    run_loop.Run();
+  }
+
+  // Remove request again. Should succeed now.
+  {
+    auto function =
+        base::MakeRefCounted<PermissionsRemoveHostAccessRequestFunction>();
+    function->set_extension(extension.get());
+    EXPECT_TRUE(api_test_utils::RunFunction(
+        function.get(), GetFunctionParams(tab_id), profile(),
+        api_test_utils::FunctionMode::kNone));
+    EXPECT_FALSE(permissions_manager->HasActiveHostAccessRequest(
+        tab_id, extension->id()));
+  }
+
+  // Try to immediately re-add. Should fail due to cooldown.
+  {
+    auto function =
+        base::MakeRefCounted<PermissionsAddHostAccessRequestFunction>();
+    function->set_extension(extension.get());
+    std::string error = api_test_utils::RunFunctionAndReturnError(
+        function.get(), GetFunctionParams(tab_id), profile(),
+        api_test_utils::FunctionMode::kNone);
+    EXPECT_EQ(
+        "Extension cannot add a host access request due to rate limiting.",
+        error);
     EXPECT_FALSE(permissions_manager->HasActiveHostAccessRequest(
         tab_id, extension->id()));
   }

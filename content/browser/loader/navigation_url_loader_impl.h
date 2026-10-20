@@ -14,6 +14,7 @@
 #include "content/browser/loader/navigation_url_loader.h"
 #include "content/browser/loader/response_head_update_params.h"
 #include "content/browser/navigation_subresource_loader_params.h"
+#include "content/browser/scoped_browser_file_access.h"
 #include "content/common/content_export.h"
 #include "content/public/browser/frame_tree_node_id.h"
 #include "content/public/browser/global_request_id.h"
@@ -107,7 +108,8 @@ class CONTENT_EXPORT NavigationURLLoaderImpl
       network::URLLoaderFactoryBuilder factory_builder,
       StoragePartitionImpl* partition,
       std::optional<net::CookieSettingOverrides> devtools_cookie_overrides,
-      std::optional<net::CookieSettingOverrides> cookie_overrides);
+      std::optional<net::CookieSettingOverrides> cookie_overrides,
+      const base::UnguessableToken& network_restrictions_id);
 
   // NavigationURLLoader implementation:
   // Starts the loader by finalizing loader factories initialization and
@@ -122,6 +124,7 @@ class CONTENT_EXPORT NavigationURLLoaderImpl
 
   void TriggerTimeoutForTesting();
   const network::ResourceRequest& GetResourceRequestForTesting() const;
+  bool HasEarlyHintsManagerForTesting() const { return !!early_hints_manager_; }
 
  private:
   FRIEND_TEST_ALL_PREFIXES(NavigationURLLoaderImplTest,
@@ -163,11 +166,14 @@ class CONTENT_EXPORT NavigationURLLoaderImpl
 
   // Creates a SharedURLLoaderFactory for network-service-bound requests.
   static scoped_refptr<network::SharedURLLoaderFactory>
-  CreateNetworkLoaderFactory(BrowserContext* browser_context,
-                             StoragePartitionImpl* storage_partition,
-                             FrameTreeNode* frame_tree_node,
-                             const ukm::SourceIdObj& ukm_id,
-                             bool* bypass_redirect_checks);
+  CreateNetworkLoaderFactory(
+      BrowserContext* browser_context,
+      StoragePartitionImpl* storage_partition,
+      FrameTreeNode* frame_tree_node,
+      const ukm::SourceIdObj& ukm_id,
+      bool* bypass_redirect_checks,
+      bool allow_same_site_none_cookies_override,
+      scoped_refptr<base::SingleThreadTaskRunner> network_response_task_runner);
 
   void BindAndInterceptNonNetworkURLLoaderFactoryReceiver(
       const GURL& url,
@@ -286,6 +292,9 @@ class CONTENT_EXPORT NavigationURLLoaderImpl
   void MaybeRecordServiceWorkerMainResourceInfo(
       const network::mojom::URLResponseHeadPtr& head);
 
+  scoped_refptr<base::SingleThreadTaskRunner>
+  GetNavigationNetworkResponseTaskRunner() const;
+
   const network::ResourceRequest& resource_request() const;
 
   raw_ptr<NavigationURLLoaderDelegate, DanglingUntriaged> delegate_;
@@ -314,6 +323,11 @@ class CONTENT_EXPORT NavigationURLLoaderImpl
   std::unique_ptr<NavigationUIData> navigation_ui_data_;
 
   scoped_refptr<network::SharedURLLoaderFactory> network_loader_factory_;
+
+  // Whether `network_loader_factory_` was created with the cookie-setting
+  // override that allows SameSite=None cookies in sandboxed contexts. Tracked
+  // so the factory can be recreated if the value changes after a redirect.
+  bool allow_same_site_none_cookies_override_ = false;
 
   SubresourceLoaderParams subresource_loader_params_;
 
@@ -399,9 +413,6 @@ class CONTENT_EXPORT NavigationURLLoaderImpl
     State state() const { return state_; }
 
     blink::ThrottlingURLLoader* url_loader() const { return url_loader_.get(); }
-    mojo::PendingRemote<network::mojom::URLLoader>* response_url_loader() {
-      return &response_url_loader_;
-    }
 
     // Cancel the current loading, if any.
     // Any associated pending operations should be cancelled.
@@ -504,16 +515,6 @@ class CONTENT_EXPORT NavigationURLLoaderImpl
     std::unique_ptr<blink::ThrottlingURLLoader> url_loader_;
     mojo::Receiver<network::mojom::URLLoaderClient> response_loader_receiver_;
 
-    // URLLoader instance for response loaders, i.e loaders created for handling
-    // responses received from the network URLLoader.
-    //
-    // NOTE: This looks like coupled with
-    // `LoaderHolder::response_loader_receiver_` but actually isn't, because
-    // `response_url_loader_` is never touched during
-    // `MaybeCreateLoaderForResponse()` (at least within Chromium codesearch).
-    // For now this is kept here as-is but probably can be removed.
-    mojo::PendingRemote<network::mojom::URLLoader> response_url_loader_;
-
     std::optional<network::HttpRequestHeadersUpdateParams>
         headers_update_params_;
 
@@ -591,6 +592,12 @@ class CONTENT_EXPORT NavigationURLLoaderImpl
   // it, we still expose some parameters like the worker timing as part of the
   // response.
   ResponseHeadUpdateParams head_update_params_;
+
+  // If the navigation request includes a file upload, this object ensures the
+  // browser process is aware that the Network Service is allowed to read the
+  // files. The files are granted access upon creation and revoked when this
+  // loader is destroyed.
+  std::unique_ptr<ScopedBrowserFileAccess> scoped_browser_file_access_;
 
   base::WeakPtrFactory<NavigationURLLoaderImpl> weak_factory_{this};
 };

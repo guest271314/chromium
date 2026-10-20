@@ -9,11 +9,11 @@
 
 #include "base/containers/to_vector.h"
 #include "base/task/single_thread_task_runner.h"
+#include "content/renderer/policy_container_util.h"
 #include "content/renderer/render_thread_impl.h"
 #include "content/renderer/service_worker/service_worker_provider_context.h"
 #include "content/renderer/worker/fetch_client_settings_object_helpers.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
-#include "net/storage_access_api/status.h"
 #include "third_party/blink/public/common/loader/worker_main_script_load_parameters.h"
 #include "third_party/blink/public/common/tokens/tokens.h"
 #include "third_party/blink/public/common/tokens/tokens_mojom_traits.h"
@@ -48,13 +48,11 @@ void DedicatedWorkerHostFactoryClient::CreateWorkerHost(
     network::mojom::CredentialsMode credentials_mode,
     const blink::WebFetchClientSettingsObject& fetch_client_settings_object,
     blink::CrossVariantMojoRemote<blink::mojom::BlobURLTokenInterfaceBase>
-        blob_url_token,
-    net::StorageAccessApiStatus storage_access_api_status) {
+        blob_url_token) {
   factory_->CreateWorkerHostAndStartScriptLoad(
       dedicated_worker_token, script_url, credentials_mode,
       FetchClientSettingsObjectFromWebToMojom(fetch_client_settings_object),
-      std::move(blob_url_token), receiver_.BindNewPipeAndPassRemote(),
-      storage_access_api_status);
+      std::move(blob_url_token), receiver_.BindNewPipeAndPassRemote());
 }
 
 scoped_refptr<blink::WebWorkerFetchContext>
@@ -120,6 +118,7 @@ void DedicatedWorkerHostFactoryClient::OnScriptLoadStarted(
     blink::mojom::ControllerServiceWorkerInfoPtr controller_info,
     mojo::PendingRemote<blink::mojom::BackForwardCacheControllerHost>
         back_forward_cache_controller_host,
+    blink::mojom::PolicyContainerPtr policy_container,
     mojo::PendingReceiver<blink::mojom::ReportingObserver>
         coep_reporting_observer,
     mojo::PendingReceiver<blink::mojom::ReportingObserver>
@@ -163,10 +162,11 @@ void DedicatedWorkerHostFactoryClient::OnScriptLoadStarted(
       main_script_load_params->redirect_infos;
   worker_main_script_load_params->url_loader_client_endpoints =
       std::move(main_script_load_params->url_loader_client_endpoints);
-  worker_->OnScriptLoadStarted(std::move(worker_main_script_load_params),
-                               std::move(back_forward_cache_controller_host),
-                               std::move(coep_reporting_observer),
-                               std::move(dip_reporting_observer));
+  worker_->OnScriptLoadStarted(
+      std::move(worker_main_script_load_params),
+      std::move(back_forward_cache_controller_host),
+      ToWebPolicyContainer(std::move(policy_container)),
+      std::move(coep_reporting_observer), std::move(dip_reporting_observer));
 }
 
 void DedicatedWorkerHostFactoryClient::OnScriptLoadStartFailed() {

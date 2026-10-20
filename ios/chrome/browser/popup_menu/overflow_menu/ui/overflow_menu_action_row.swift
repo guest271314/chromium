@@ -31,6 +31,19 @@ struct OverflowMenuActionToggleStyle: ToggleStyle {
 
 /// A view that displays an action in the overflow menu.
 struct OverflowMenuActionRow: View {
+  /// `PreferenceKey` to track the highlighted action's bounds in its local coordinate space,
+  /// can be transformed to other coordinate space by geometry reader.
+  struct HighlightedActionBounds: PreferenceKey {
+    typealias Value = Anchor<CGRect>?
+    static let defaultValue: Value = nil
+    static func reduce(value: inout Value, nextValue: () -> Value) {
+      // AnchorPreference might be nil in the middle of layout.
+      if let next = nextValue() {
+        value = next
+      }
+    }
+  }
+
   /// Remove some of the default padding on the row, as it is too large by
   /// default.
   private static let rowEndPadding: CGFloat = -4
@@ -40,6 +53,12 @@ struct OverflowMenuActionRow: View {
 
   /// The size of the "N" IPH icon.
   private static let newLabelIconWidth: CGFloat = 15
+
+  /// The size of the preview image.
+  private static let previewImageSize: CGFloat = 24
+
+  /// The size of the fallback preview image.
+  private static let fallbackImageSize: CGFloat = 18
 
   // The duration that the view's highlight should persist.
   private static let highlightDuration: DispatchTimeInterval = .seconds(2)
@@ -92,6 +111,11 @@ struct OverflowMenuActionRow: View {
         view.accentColor(.textPrimary)
       }
       .listRowSeparatorTint(.overflowMenuSeparator)
+      .anchorPreference(
+        key: HighlightedActionBounds.self, value: .bounds
+      ) {
+        self.action.highlighted ? $0 : nil
+      }
   }
 
   @ViewBuilder
@@ -105,7 +129,7 @@ struct OverflowMenuActionRow: View {
         .labelStyle(.iconOnly)
         .tint(.chromeBlue)
         .accessibilityRemoveTraits(.isSelected)
-        rowIcon
+        rowIcon?.foregroundColor(action.symbolTintColor.map { Color(uiColor: $0) })
         centerTextView
         Spacer()
       }
@@ -123,9 +147,22 @@ struct OverflowMenuActionRow: View {
           newLabelIconView
         }
         Spacer()
-        if let rowIcon = rowIcon {
-          rowIcon
+        if let previewImage = action.previewImage {
+          CircularPreviewContainer(size: Self.previewImageSize) {
+            Image(uiImage: previewImage)
+              .resizable()
+              .aspectRatio(contentMode: .fill)
+          }
+        } else if let fallbackPreviewImage = action.fallbackPreviewImage {
+          Image(uiImage: fallbackPreviewImage)
+            .resizable()
+            .aspectRatio(contentMode: .fit)
+            .frame(
+              width: Self.fallbackImageSize,
+              height: Self.fallbackImageSize
+            )
         }
+        rowIcon?.foregroundColor(action.symbolTintColor.map { Color(uiColor: $0) })
       }
       .padding([.trailing], Self.rowEndPadding)
     }
@@ -146,11 +183,6 @@ struct OverflowMenuActionRow: View {
   var button: some View {
     if isEditing {
       rowContent
-    } else if let menu = action.menu as? UIMenu {
-      UIMenuElementView(element: menu) {
-        rowContent
-          .contentShape(Rectangle())
-      }
     } else {
       Button(
         action: {
@@ -218,5 +250,27 @@ struct OverflowMenuActionRow: View {
         }
       }
       .accessibilityIdentifier("overflowRowIPHBadgeIdentifier")
+  }
+}
+
+/// A generic circular container with a 1pt separator-colored border.
+/// It clips its content to a circle.
+struct CircularPreviewContainer<Content: View>: View {
+  var size: CGFloat
+  var content: Content
+
+  init(size: CGFloat, @ViewBuilder content: () -> Content) {
+    self.size = size
+    self.content = content()
+  }
+
+  var body: some View {
+    ZStack {
+      Circle()
+        .stroke(Color(uiColor: .separator), lineWidth: 1)
+      content
+        .clipShape(Circle())
+    }
+    .frame(width: size, height: size)
   }
 }

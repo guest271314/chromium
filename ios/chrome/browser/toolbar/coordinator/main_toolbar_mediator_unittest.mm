@@ -4,39 +4,40 @@
 
 #import "ios/chrome/browser/toolbar/coordinator/main_toolbar_mediator.h"
 
-#import "base/test/task_environment.h"
+#import "base/test/scoped_feature_list.h"
 #import "components/omnibox/browser/omnibox_pref_names.h"
 #import "components/prefs/pref_registry_simple.h"
 #import "components/prefs/testing_pref_service.h"
+#import "ios/chrome/browser/shared/coordinator/scene/state/browser_layout_state.h"
+#import "ios/chrome/browser/shared/coordinator/scene/state/layout_state_test_passkey_factory.h"
+#import "ios/chrome/browser/shared/model/browser/test/test_browser.h"
+#import "ios/chrome/browser/shared/model/profile/test/test_profile_ios.h"
+#import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/shared/ui/util/uikit_ui_util.h"
+#import "ios/web/public/test/web_task_environment.h"
 #import "testing/gtest/include/gtest/gtest.h"
 #import "testing/platform_test.h"
 
-@interface FakeMainToolbarMediatorDelegate
-    : NSObject <MainToolbarMediatorDelegate>
-@property(nonatomic, assign) BOOL onDidChangeOmniboxPositionCalled;
-@end
-
-@implementation FakeMainToolbarMediatorDelegate
-
-- (void)mainToolbarMediatorDidChangeOmniboxPosition:
-    (MainToolbarMediator*)mediator {
-  self.onDidChangeOmniboxPositionCalled = YES;
-}
-
+@interface MainToolbarMediator (Testing)
+- (BOOL)isBottomOmniboxPrefEnabled;
 @end
 
 class MainToolbarMediatorTest : public PlatformTest {
  protected:
   void SetUp() override {
     PlatformTest::SetUp();
+    feature_list_.InitAndEnableFeature(kChromeNextIa);
     prefs_ = std::make_unique<TestingPrefServiceSimple>();
     prefs_->registry()->RegisterBooleanPref(omnibox::kIsOmniboxInBottomPosition,
                                             false);
 
-    delegate_ = [[FakeMainToolbarMediatorDelegate alloc] init];
-    mediator_ = [[MainToolbarMediator alloc] initWithPrefService:prefs_.get()];
-    mediator_.delegate = delegate_;
+    profile_ = TestProfileIOS::Builder().Build();
+    browser_ = std::make_unique<TestBrowser>(profile_.get());
+    browser_layout_state_ = browser_->GetBrowserLayoutState();
+
+    mediator_ =
+        [[MainToolbarMediator alloc] initWithPrefService:prefs_.get()
+                                      browserLayoutState:browser_layout_state_];
   }
 
   void TearDown() override {
@@ -44,21 +45,49 @@ class MainToolbarMediatorTest : public PlatformTest {
     PlatformTest::TearDown();
   }
 
+  web::WebTaskEnvironment task_environment_;
+  std::unique_ptr<TestProfileIOS> profile_;
   std::unique_ptr<TestingPrefServiceSimple> prefs_;
-  FakeMainToolbarMediatorDelegate* delegate_;
+  std::unique_ptr<TestBrowser> browser_;
+  __weak BrowserLayoutState* browser_layout_state_;
   MainToolbarMediator* mediator_;
-  base::test::SingleThreadTaskEnvironment task_environment_;
+  base::test::ScopedFeatureList feature_list_;
 };
 
-// Tests that the mediator correctly reports the omnibox position and notifies
-// the delegate when it changes.
-TEST_F(MainToolbarMediatorTest, TestPrefChangeNotifiesDelegate) {
-  EXPECT_FALSE([mediator_ isOmniboxInBottomPosition]);
-  EXPECT_FALSE(delegate_.onDidChangeOmniboxPositionCalled);
+// Tests that the mediator correctly reports the omnibox position and updates
+// the browser layout state when it changes.
+TEST_F(MainToolbarMediatorTest, TestPrefChangeUpdatesLayoutState) {
+  EXPECT_FALSE([mediator_ isBottomOmniboxPrefEnabled]);
+  EXPECT_EQ(browser_layout_state_.toolbarPosition, ToolbarPosition::kTop);
 
   prefs_->SetBoolean(omnibox::kIsOmniboxInBottomPosition, true);
 
-  EXPECT_TRUE(delegate_.onDidChangeOmniboxPositionCalled);
-  EXPECT_TRUE([mediator_ isOmniboxInBottomPosition] ||
+  EXPECT_EQ(browser_layout_state_.toolbarPosition,
+            IsBottomOmniboxAvailable() ? ToolbarPosition::kBottom
+                                       : ToolbarPosition::kTop);
+  EXPECT_TRUE([mediator_ isBottomOmniboxPrefEnabled] ||
               !IsBottomOmniboxAvailable());
+}
+
+// Tests that showing the tab strip forces the toolbar position to kTop even
+// when the bottom omnibox preference is enabled.
+TEST_F(MainToolbarMediatorTest, TestTabStripVisibilityUpdatesLayoutState) {
+  prefs_->SetBoolean(omnibox::kIsOmniboxInBottomPosition, true);
+  EXPECT_EQ(browser_layout_state_.toolbarPosition,
+            IsBottomOmniboxAvailable() ? ToolbarPosition::kBottom
+                                       : ToolbarPosition::kTop);
+
+  [browser_layout_state_
+      setTabStripVisible:YES
+                 passKey:layout_state::LayoutStateTestPassKeyFactory::
+                             CreateBrowserKey()];
+  EXPECT_EQ(browser_layout_state_.toolbarPosition, ToolbarPosition::kTop);
+
+  [browser_layout_state_
+      setTabStripVisible:NO
+                 passKey:layout_state::LayoutStateTestPassKeyFactory::
+                             CreateBrowserKey()];
+  EXPECT_EQ(browser_layout_state_.toolbarPosition,
+            IsBottomOmniboxAvailable() ? ToolbarPosition::kBottom
+                                       : ToolbarPosition::kTop);
 }

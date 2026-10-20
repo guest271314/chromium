@@ -74,8 +74,8 @@ class SchedulerLoopQuarantineTaskObserverTest : public ::testing::Test {
     // function and that the string parses properly.
     EXPECT_TRUE(!GetQuarantineConfigJson().empty());
   }
-  BrowserTaskEnvironment task_environment_;
   base::test::ScopedFeatureList feature_list_;
+  BrowserTaskEnvironment task_environment_;
 };
 
 TEST_F(SchedulerLoopQuarantineTaskObserverTest, QuarantinePausesBetweenTasks) {
@@ -160,6 +160,36 @@ TEST_F(SchedulerLoopQuarantineTaskObserverTest, QuarantinePausesBetweenTasks) {
   // Clean up the observer to prevent dangling references.
   base::CurrentThread::Get().RemoveTaskObserver(slq_task_observer.get());
 #endif  // PA_BUILDFLAG(USE_PARTITION_ALLOC_AS_MALLOC)
+}
+
+// This test verifies that ThreadCacheProcessScopeForTesting correctly restores
+// the global ThreadCache state upon destruction, and does not leave it
+// corrupted (which would cause subsequent tests to crash).
+TEST_F(SchedulerLoopQuarantineTaskObserverTest,
+       ThreadCacheProcessScopeCleanup) {
+#if !PA_BUILDFLAG(USE_PARTITION_ALLOC_AS_MALLOC)
+  GTEST_SKIP();
+#else
+  // 1. Verify thread cache is initialized initially.
+  ASSERT_TRUE(partition_alloc::internal::ThreadCache::IsInitialized());
+
+  // 2. Create and destroy the scope.
+  {
+    partition_alloc::PartitionOptions opts;
+    partition_alloc::PartitionAllocatorForTesting allocator(opts);
+    partition_alloc::internal::ThreadCacheProcessScopeForTesting tcache_scope(
+        allocator.root());
+  }
+
+  // 3. Verify thread cache is STILL initialized after scope destruction.
+  EXPECT_TRUE(partition_alloc::internal::ThreadCache::IsInitialized());
+
+  // 4. Post a task to ensure the quarantine observer doesn't crash.
+  base::RunLoop loop;
+  task_environment_.GetMainThreadTaskRunner()->PostTask(FROM_HERE,
+                                                        loop.QuitClosure());
+  loop.Run();
+#endif
 }
 
 }  // namespace content

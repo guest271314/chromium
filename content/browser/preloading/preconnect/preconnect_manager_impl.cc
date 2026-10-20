@@ -4,12 +4,13 @@
 
 #include "content/browser/preloading/preconnect/preconnect_manager_impl.h"
 
+#include <ranges>
 #include <utility>
 
-#include "base/containers/adapters.h"
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/metrics/histogram_macros.h"
+#include "base/not_fatal_until.h"
 #include "base/trace_event/trace_event.h"
 #include "base/types/optional_util.h"
 #include "content/browser/preloading/proxy_lookup_client_impl.h"
@@ -20,6 +21,7 @@
 #include "content/public/browser/storage_partition.h"
 #include "content/public/common/content_features.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
+#include "services/network/public/cpp/constants.h"
 #include "services/network/public/mojom/connection_change_observer_client.mojom.h"
 #include "services/network/public/mojom/network_context.mojom.h"
 
@@ -66,7 +68,7 @@ PreresolveJob::PreresolveJob(
     mojo::PendingRemote<network::mojom::ConnectionChangeObserverClient>
         connection_change_observer_client,
     PreresolveInfo* info,
-    base::optional_ref<base::UnguessableToken> network_restrictions_id)
+    base::UnguessableToken network_restrictions_id)
     : url(url),
       num_sockets(num_sockets),
       allow_credentials(allow_credentials),
@@ -78,7 +80,7 @@ PreresolveJob::PreresolveJob(
           std::move(connection_change_observer_client)),
       info(info),
       creation_time(base::TimeTicks::Now()),
-      network_restrictions_id(network_restrictions_id.CopyAsOptional()) {
+      network_restrictions_id(network_restrictions_id) {
   CHECK_GE(num_sockets, 0);
 
   CHECK(!this->network_anonymization_key.IsEmpty() ||
@@ -109,8 +111,8 @@ PreconnectManagerImpl::PreconnectManagerImpl(
     : delegate_(std::move(delegate)),
       browser_context_(browser_context),
       inflight_preresolves_count_(0) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
-  DCHECK(browser_context_);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M159);
+  CHECK(browser_context_, base::NotFatalUntil::M159);
 }
 
 PreconnectManagerImpl::~PreconnectManagerImpl() = default;
@@ -132,7 +134,7 @@ void PreconnectManagerImpl::Start(
     const GURL& url,
     std::vector<content::PreconnectRequest> requests,
     net::NetworkTrafficAnnotationTag traffic_annotation) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M159);
   if (!delegate_ || !delegate_->IsPreconnectEnabled()) {
     return;
   }
@@ -164,8 +166,9 @@ void PreconnectManagerImpl::StartPreresolveHost(
     const net::NetworkAnonymizationKey& network_anonymization_key,
     net::NetworkTrafficAnnotationTag traffic_annotation,
     const content::StoragePartitionConfig* storage_partition_config,
-    base::optional_ref<base::UnguessableToken> network_restrictions_id) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+    const base::UnguessableToken& network_restrictions_id) {
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M159);
+  CHECK(!network_restrictions_id.is_empty(), base::NotFatalUntil::M165);
   if (!delegate_ || !delegate_->IsPreconnectEnabled()) {
     return;
   }
@@ -187,13 +190,14 @@ void PreconnectManagerImpl::StartPreresolveHosts(
     const net::NetworkAnonymizationKey& network_anonymization_key,
     net::NetworkTrafficAnnotationTag traffic_annotation,
     const content::StoragePartitionConfig* storage_partition_config,
-    base::optional_ref<base::UnguessableToken> network_restrictions_id) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+    const base::UnguessableToken& network_restrictions_id) {
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M159);
+  CHECK(!network_restrictions_id.is_empty(), base::NotFatalUntil::M165);
   if (!delegate_ || !delegate_->IsPreconnectEnabled()) {
     return;
   }
   // Push jobs in front of the queue due to higher priority.
-  for (const GURL& url : base::Reversed(urls)) {
+  for (const GURL& url : std::views::reverse(urls)) {
     if (!url.SchemeIsHTTPOrHTTPS()) {
       continue;
     }
@@ -216,15 +220,26 @@ void PreconnectManagerImpl::StartPreconnectUrl(
     net::NetworkAnonymizationKey network_anonymization_key,
     net::NetworkTrafficAnnotationTag traffic_annotation,
     const content::StoragePartitionConfig* storage_partition_config,
-    base::optional_ref<base::UnguessableToken> network_restrictions_id,
+    const base::UnguessableToken& network_restrictions_id,
     std::optional<net::ConnectionKeepAliveConfig> keepalive_config,
     mojo::PendingRemote<network::mojom::ConnectionChangeObserverClient>
         connection_change_observer_client) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M159);
+  CHECK(!network_restrictions_id.is_empty(), base::NotFatalUntil::M165);
   if (!delegate_ || !delegate_->IsPreconnectEnabled()) {
     return;
   }
   if (!url.SchemeIsHTTPOrHTTPS()) {
+    return;
+  }
+
+  if (base::FeatureList::IsEnabled(
+          features::kPreconnectManagerDirectFastPath)) {
+    PreconnectUrl(url.DeprecatedGetOriginAsURL(), /*num_sockets=*/1,
+                  allow_credentials, network_anonymization_key,
+                  traffic_annotation, storage_partition_config,
+                  network_restrictions_id, std::move(keepalive_config),
+                  std::move(connection_change_observer_client));
     return;
   }
 
@@ -240,7 +255,7 @@ void PreconnectManagerImpl::StartPreconnectUrl(
 }
 
 void PreconnectManagerImpl::Stop(const GURL& url) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M159);
   auto it = preresolve_info_.find(url);
   if (it == preresolve_info_.end()) {
     return;
@@ -256,13 +271,19 @@ void PreconnectManagerImpl::PreconnectUrl(
     const net::NetworkAnonymizationKey& network_anonymization_key,
     const net::NetworkTrafficAnnotationTag& traffic_annotation,
     const content::StoragePartitionConfig* storage_partition_config,
+    const base::UnguessableToken& network_restrictions_id,
     std::optional<net::ConnectionKeepAliveConfig> keepalive_config,
     mojo::PendingRemote<network::mojom::ConnectionChangeObserverClient>
         connection_change_observer_client) const {
-  DCHECK(url.DeprecatedGetOriginAsURL() == url);
-  DCHECK(url.SchemeIsHTTPOrHTTPS());
+  CHECK(!network_restrictions_id.is_empty(), base::NotFatalUntil::M165);
+  CHECK(url.DeprecatedGetOriginAsURL() == url, base::NotFatalUntil::M159);
+  CHECK(url.SchemeIsHTTPOrHTTPS(), base::NotFatalUntil::M159);
+  CHECK(!network_anonymization_key.IsEmpty() ||
+        !net::NetworkAnonymizationKey::IsPartitioningEnabled());
   if (observer_) {
-    observer_->OnPreconnectUrl(url, num_sockets, allow_credentials);
+    observer_->OnPreconnectUrl(url, num_sockets, allow_credentials,
+                               network_anonymization_key,
+                               connection_change_observer_client);
   }
 
   auto* network_context = GetNetworkContext(storage_partition_config);
@@ -277,13 +298,11 @@ void PreconnectManagerImpl::PreconnectUrl(
 
   // TODO(crbug.com/406022435): pass the actual `keepalive_config` from the
   // caller.
-  // TODO(crbug.com/447954811): pass the `network_restrictions_id` from the
-  // caller.
   network_context->PreconnectSockets(
       num_sockets, url,
       allow_credentials ? network::mojom::CredentialsMode::kInclude
                         : network::mojom::CredentialsMode::kOmit,
-      network_anonymization_key, /*network_restrictions_id=*/std::nullopt,
+      network_anonymization_key, network_restrictions_id,
       net::MutableNetworkTrafficAnnotationTag(traffic_annotation),
       std::move(keepalive_config),
       std::move(connection_change_observer_client));
@@ -293,9 +312,11 @@ std::unique_ptr<ResolveHostClientImpl> PreconnectManagerImpl::PreresolveUrl(
     const GURL& url,
     const net::NetworkAnonymizationKey& network_anonymization_key,
     const content::StoragePartitionConfig* storage_partition_config,
-    base::optional_ref<base::UnguessableToken> network_restrictions_id,
+    const base::UnguessableToken& network_restrictions_id,
     ResolveHostCallback callback) const {
-  DCHECK(url.DeprecatedGetOriginAsURL() == url);
+  CHECK(url.DeprecatedGetOriginAsURL() == url, base::NotFatalUntil::M159);
+  // TODO(crbug.com/573950459): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
   DCHECK(url.SchemeIsHTTPOrHTTPS());
 
   auto* network_context = GetNetworkContext(storage_partition_config);
@@ -310,7 +331,9 @@ void PreconnectManagerImpl::LookupProxyForUrl(
     const net::NetworkAnonymizationKey& network_anonymization_key,
     const content::StoragePartitionConfig* storage_partition_config,
     ProxyLookupClientImpl::ProxyLookupCallback callback) const {
-  DCHECK(url.DeprecatedGetOriginAsURL() == url);
+  CHECK(url.DeprecatedGetOriginAsURL() == url, base::NotFatalUntil::M159);
+  // TODO(crbug.com/571031313): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
   DCHECK(url.SchemeIsHTTPOrHTTPS());
 
   auto* network_context = GetNetworkContext(storage_partition_config);
@@ -320,14 +343,14 @@ void PreconnectManagerImpl::LookupProxyForUrl(
 }
 
 void PreconnectManagerImpl::TryToLaunchPreresolveJobs() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M159);
 
   while (!queued_jobs_.empty() &&
          inflight_preresolves_count_ < kMaxInflightPreresolves) {
     auto job_id = queued_jobs_.front();
     queued_jobs_.pop_front();
     PreresolveJob* job = preresolve_jobs_.Lookup(job_id);
-    DCHECK(job);
+    CHECK(job, base::NotFatalUntil::M159);
 
     // Note: PreresolveJobs are put into |queued_jobs_| immediately on creation,
     // so their creation time is also the time at which they started queueing.
@@ -357,7 +380,7 @@ void PreconnectManagerImpl::TryToLaunchPreresolveJobs() {
     }
 
     if (info) {
-      DCHECK_LE(1u, info->queued_count);
+      CHECK_LE(1u, info->queued_count, base::NotFatalUntil::M159);
       --info->queued_count;
       if (info->is_done()) {
         AllPreresolvesForUrlFinished(info);
@@ -368,9 +391,9 @@ void PreconnectManagerImpl::TryToLaunchPreresolveJobs() {
 
 void PreconnectManagerImpl::OnPreresolveFinished(PreresolveJobId job_id,
                                                  bool success) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M159);
   PreresolveJob* job = preresolve_jobs_.Lookup(job_id);
-  DCHECK(job);
+  CHECK(job, base::NotFatalUntil::M159);
 
   if (observer_) {
     observer_->OnPreresolveFinished(job->url, job->network_anonymization_key,
@@ -384,8 +407,10 @@ void PreconnectManagerImpl::OnPreresolveFinished(PreresolveJobId job_id,
 
 void PreconnectManagerImpl::OnProxyLookupFinished(PreresolveJobId job_id,
                                                   bool success) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M159);
   PreresolveJob* job = preresolve_jobs_.Lookup(job_id);
+  // TODO(crbug.com/573950459): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
   DCHECK(job);
 
   if (observer_) {
@@ -407,15 +432,16 @@ void PreconnectManagerImpl::OnProxyLookupFinished(PreresolveJobId job_id,
 
 void PreconnectManagerImpl::FinishPreresolveJob(PreresolveJobId job_id,
                                                 bool success) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M159);
   PreresolveJob* job = preresolve_jobs_.Lookup(job_id);
-  DCHECK(job);
+  CHECK(job, base::NotFatalUntil::M159);
 
   bool need_preconnect = success && job->need_preconnect();
   if (need_preconnect) {
     PreconnectUrl(job->url, job->num_sockets, job->allow_credentials,
                   job->network_anonymization_key, job->traffic_annotation_tag,
                   base::OptionalToPtr(job->storage_partition_config),
+                  job->network_restrictions_id,
                   std::move(job->keepalive_config),
                   std::move(job->connection_change_observer_client));
   }
@@ -428,7 +454,7 @@ void PreconnectManagerImpl::FinishPreresolveJob(PreresolveJobId job_id,
   preresolve_jobs_.Remove(job_id);
   --inflight_preresolves_count_;
   if (info) {
-    DCHECK_LE(1u, info->inflight_count);
+    CHECK_LE(1u, info->inflight_count, base::NotFatalUntil::M159);
     --info->inflight_count;
   }
   if (info && info->is_done()) {
@@ -438,11 +464,11 @@ void PreconnectManagerImpl::FinishPreresolveJob(PreresolveJobId job_id,
 }
 
 void PreconnectManagerImpl::AllPreresolvesForUrlFinished(PreresolveInfo* info) {
-  DCHECK(info);
-  DCHECK(info->is_done());
+  CHECK(info, base::NotFatalUntil::M159);
+  CHECK(info->is_done(), base::NotFatalUntil::M159);
   auto it = preresolve_info_.find(info->url);
   CHECK(it != preresolve_info_.end());
-  DCHECK(info == it->second.get());
+  CHECK(info == it->second.get(), base::NotFatalUntil::M159);
   if (delegate_) {
     delegate_->PreconnectFinished(std::move(info->stats));
   }
@@ -463,7 +489,7 @@ network::mojom::NetworkContext* PreconnectManagerImpl::GetNetworkContext(
                   : content::StoragePartitionConfig::CreateDefault(
                         browser_context_))
           ->GetNetworkContext();
-  DCHECK(network_context);
+  CHECK(network_context, base::NotFatalUntil::M159);
   return network_context;
 }
 

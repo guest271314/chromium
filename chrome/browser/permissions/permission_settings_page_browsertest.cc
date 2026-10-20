@@ -9,8 +9,8 @@
 #include "base/test/scoped_feature_list.h"
 #include "chrome/browser/content_settings/host_content_settings_map_factory.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/test/base/testing_profile.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "chrome/test/interaction/interactive_browser_test.h"
@@ -136,9 +136,9 @@ class PredictionSettingsPageBrowserTest : public InteractiveBrowserTest {
         .SetStartCallback(base::BindLambdaForTesting(
             [&, isAllowed, isQuiet, isCpss](ui::InteractionSequence* sequence,
                                             ui::TrackedElement* element) {
-              auto* pref_service = browser()->profile()->GetPrefs();
+              auto* pref_service = browser()->GetProfile()->GetPrefs();
               auto* settings_map = HostContentSettingsMapFactory::GetForProfile(
-                  browser()->profile());
+                  browser()->GetProfile());
 
               settings_map->SetDefaultContentSetting(
                   ContentSettingsType::NOTIFICATIONS,
@@ -166,7 +166,7 @@ class PredictionSettingsPageBrowserTest : public InteractiveBrowserTest {
               util->EvaluateAt(kBlockButton,
                                "blockButton => blockButton.click()");
               auto* settings_map = HostContentSettingsMapFactory::GetForProfile(
-                  browser()->profile());
+                  browser()->GetProfile());
               EXPECT_EQ(CONTENT_SETTING_BLOCK,
                         settings_map->GetDefaultContentSetting(
                             ContentSettingsType::NOTIFICATIONS, nullptr));
@@ -188,11 +188,11 @@ class PredictionSettingsPageBrowserTest : public InteractiveBrowserTest {
 
               util->EvaluateAt(kAskButton, "askButton => askButton.click()");
               auto* settings_map = HostContentSettingsMapFactory::GetForProfile(
-                  browser()->profile());
+                  browser()->GetProfile());
               EXPECT_EQ(CONTENT_SETTING_ASK,
                         settings_map->GetDefaultContentSetting(
                             ContentSettingsType::NOTIFICATIONS, nullptr));
-              auto* pref_service = browser()->profile()->GetPrefs();
+              auto* pref_service = browser()->GetProfile()->GetPrefs();
               EXPECT_FALSE(pref_service->GetBoolean(
                   prefs::kEnableQuietNotificationPermissionUi));
               EXPECT_TRUE(
@@ -254,11 +254,11 @@ class PredictionSettingsPageBrowserTest : public InteractiveBrowserTest {
 
               util->EvaluateAt(kAskButton, "askButton => askButton.click()");
               auto* settings_map = HostContentSettingsMapFactory::GetForProfile(
-                  browser()->profile());
+                  browser()->GetProfile());
               EXPECT_EQ(CONTENT_SETTING_ASK,
                         settings_map->GetDefaultContentSetting(
                             ContentSettingsType::NOTIFICATIONS, nullptr));
-              auto* pref_service = browser()->profile()->GetPrefs();
+              auto* pref_service = browser()->GetProfile()->GetPrefs();
               EXPECT_FALSE(pref_service->GetBoolean(
                   prefs::kEnableQuietNotificationPermissionUi));
 
@@ -288,11 +288,11 @@ class PredictionSettingsPageBrowserTest : public InteractiveBrowserTest {
 
               util->EvaluateAt(kAskButton, "askButton => askButton.click()");
               auto* settings_map = HostContentSettingsMapFactory::GetForProfile(
-                  browser()->profile());
+                  browser()->GetProfile());
               EXPECT_EQ(CONTENT_SETTING_ASK,
                         settings_map->GetDefaultContentSetting(
                             ContentSettingsType::NOTIFICATIONS, nullptr));
-              auto* pref_service = browser()->profile()->GetPrefs();
+              auto* pref_service = browser()->GetProfile()->GetPrefs();
               EXPECT_FALSE(pref_service->GetBoolean(
                   prefs::kEnableQuietNotificationPermissionUi));
 
@@ -328,11 +328,11 @@ class PredictionSettingsPageBrowserTest : public InteractiveBrowserTest {
 
               util->EvaluateAt(kAskButton, "askButton => askButton.click()");
               auto* settings_map = HostContentSettingsMapFactory::GetForProfile(
-                  browser()->profile());
+                  browser()->GetProfile());
               EXPECT_EQ(CONTENT_SETTING_ASK,
                         settings_map->GetDefaultContentSetting(
                             ContentSettingsType::NOTIFICATIONS, nullptr));
-              auto* pref_service = browser()->profile()->GetPrefs();
+              auto* pref_service = browser()->GetProfile()->GetPrefs();
               EXPECT_FALSE(pref_service->GetBoolean(
                   prefs::kEnableQuietNotificationPermissionUi));
 

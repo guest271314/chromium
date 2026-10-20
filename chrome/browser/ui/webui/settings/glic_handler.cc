@@ -20,6 +20,8 @@
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/glic/actor/glic_actor_policy_checker.h"
 #include "chrome/browser/glic/common/local_hotkey_manager.h"
+#include "chrome/browser/glic/glic_enums.h"
+#include "chrome/browser/glic/glic_metrics.h"
 #include "chrome/browser/glic/glic_pref_names.h"
 #include "chrome/browser/glic/public/glic_enabling.h"
 #include "chrome/browser/glic/public/glic_keyed_service.h"
@@ -93,6 +95,10 @@ void GlicHandler::RegisterMessages() {
       base::BindRepeating(&GlicHandler::HandleSetGlicFocusToggleShortcut,
                           base::Unretained(this)));
   web_ui()->RegisterMessageCallback(
+      "onHotkeyScopeSettingsChange",
+      base::BindRepeating(&GlicHandler::HandleOnHotkeyScopeSettingsChange,
+                          base::Unretained(this)));
+  web_ui()->RegisterMessageCallback(
       "setShortcutSuspensionState",
       base::BindRepeating(&GlicHandler::HandleSetShortcutSuspensionState,
                           base::Unretained(this)));
@@ -104,6 +110,16 @@ void GlicHandler::RegisterMessages() {
       "getActorLoginPermissions",
       base::BindRepeating(&GlicHandler::HandleGetActorLoginPermissions,
                           base::Unretained(this)));
+  web_ui()->RegisterMessageCallback(
+      "startObservingActorLoginPermissions",
+      base::BindRepeating(
+          &GlicHandler::HandleStartObservingActorLoginPermissions,
+          base::Unretained(this)));
+  web_ui()->RegisterMessageCallback(
+      "stopObservingActorLoginPermissions",
+      base::BindRepeating(
+          &GlicHandler::HandleStopObservingActorLoginPermissions,
+          base::Unretained(this)));
   web_ui()->RegisterMessageCallback(
       "revokeActorLoginPermission",
       base::BindRepeating(&GlicHandler::HandleRevokeActorLoginPermission,
@@ -169,16 +185,17 @@ void GlicHandler::OnJavascriptAllowed() {
                             base::Unretained(this)));
   }
 
-  actor_login_permissions_manager_ =
-      std::make_unique<actor_login::ActorLoginPermissionsManagerImpl>(
-          AffiliationServiceFactory::GetForProfile(profile),
-          actor_login::ActorLoginPermissionServiceFactory::GetForProfile(
-              profile),
-          ProfilePasswordStoreFactory::GetForProfile(
-              profile, ServiceAccessType::EXPLICIT_ACCESS),
-          AccountPasswordStoreFactory::GetForProfile(
-              profile, ServiceAccessType::EXPLICIT_ACCESS));
-  observation_.Observe(actor_login_permissions_manager_.get());
+  if (!actor_login_permissions_manager_) {
+    actor_login_permissions_manager_ =
+        std::make_unique<actor_login::ActorLoginPermissionsManagerImpl>(
+            AffiliationServiceFactory::GetForProfile(profile),
+            actor_login::ActorLoginPermissionServiceFactory::GetForProfile(
+                profile),
+            ProfilePasswordStoreFactory::GetForProfile(
+                profile, ServiceAccessType::EXPLICIT_ACCESS),
+            AccountPasswordStoreFactory::GetForProfile(
+                profile, ServiceAccessType::EXPLICIT_ACCESS));
+  }
 }
 
 void GlicHandler::OnJavascriptDisallowed() {
@@ -217,7 +234,7 @@ void GlicHandler::HandleGetGlicShortcut(const base::ListValue& args) {
   AllowJavascript();
   ResolveJavascriptCallback(
       callback_id,
-      base::UTF16ToUTF8(glic::GlicLauncherConfiguration::GetGlobalHotkey()
+      base::UTF16ToUTF8(glic::GlicLauncherConfiguration::GetToggleHotkey()
                             .GetShortcutText()));
 }
 
@@ -225,8 +242,19 @@ void GlicHandler::HandleSetGlicShortcut(const base::ListValue& args) {
   CHECK_EQ(2U, args.size());
   const base::Value& callback_id = args[0];
   const std::string accelerator_string = args[1].GetString();
-  g_browser_process->local_state()->SetString(glic::prefs::kGlicLauncherHotkey,
-                                              accelerator_string);
+  PrefService* local_state = g_browser_process->local_state();
+  const bool had_hotkey =
+      !local_state->GetString(glic::prefs::kGlicLauncherHotkey).empty();
+  local_state->SetString(glic::prefs::kGlicLauncherHotkey, accelerator_string);
+
+  if (had_hotkey && accelerator_string.empty()) {
+    auto default_scope = static_cast<glic::prefs::DefaultHotkeyScope>(
+        local_state->GetInteger(glic::prefs::kGlicDefaultHotkeyScope));
+    glic::RecordHotkeyCleared(
+        default_scope,
+        local_state->GetBoolean(glic::prefs::kGlicHotkeyGlobalScopeEnabled),
+        local_state->GetBoolean(glic::prefs::kGlicLauncherEnabled));
+  }
 
   UserEducationService::MaybeNotifyNewBadgeFeatureUsed(
       web_ui()->GetWebContents()->GetBrowserContext(),
@@ -261,6 +289,31 @@ void GlicHandler::HandleSetGlicFocusToggleShortcut(
   ResolveJavascriptCallback(callback_id, base::Value());
 }
 
+void GlicHandler::HandleOnHotkeyScopeSettingsChange(
+    const base::ListValue& args) {
+  CHECK_EQ(1U, args.size());
+  const bool is_global = args[0].GetBool();
+
+  int default_scope_int = g_browser_process->local_state()->GetInteger(
+      glic::prefs::kGlicDefaultHotkeyScope);
+  auto default_scope =
+      static_cast<glic::prefs::DefaultHotkeyScope>(default_scope_int);
+
+  if (default_scope == glic::prefs::DefaultHotkeyScope::kGlobal) {
+    glic::RecordHotkeyScopeChange(
+        is_global ? glic::GlicHotkeyScopeChange::kDefaultGlobalToGlobal
+                  : glic::GlicHotkeyScopeChange::kDefaultGlobalToLocal);
+  } else if (default_scope == glic::prefs::DefaultHotkeyScope::kLocal) {
+    glic::RecordHotkeyScopeChange(
+        is_global ? glic::GlicHotkeyScopeChange::kDefaultLocalToGlobal
+                  : glic::GlicHotkeyScopeChange::kDefaultLocalToLocal);
+  } else {
+    // This should never be recorded to unless users change internal
+    // preferences.
+    glic::RecordHotkeyScopeChange(glic::GlicHotkeyScopeChange::kNotMigrated);
+  }
+}
+
 void GlicHandler::HandleSetShortcutSuspensionState(
     const base::ListValue& args) {
   CHECK_EQ(1U, args.size());
@@ -292,9 +345,8 @@ void GlicHandler::HandleGetGlicSelectionShortcut(const base::ListValue& args) {
   AllowJavascript();
   ResolveJavascriptCallback(
       callback_id,
-      base::UTF16ToUTF8(
-          glic::GlicLauncherConfiguration::GetSelectionGlobalHotkey()
-              .GetShortcutText()));
+      base::UTF16ToUTF8(glic::GlicLauncherConfiguration::GetSelectionHotkey()
+                            .GetShortcutText()));
 }
 
 void GlicHandler::HandleSetGlicSelectionShortcut(const base::ListValue& args) {
@@ -340,9 +392,13 @@ void GlicHandler::OnExperimentalTriggeringPrefChanged() {
   }
 }
 
-void GlicHandler::OnWebActuationCapabilityChanged(bool can_act_on_web) {
-  FireWebUIListener("glic-web-actuation-capability-changed",
-                    base::Value(can_act_on_web));
+void GlicHandler::OnWebActuationCapabilityChanged(bool /*can_act_on_web*/) {
+  // Recompute enterprise state so a subscription lapse does not show an
+  // enterprise policy indicator.
+  FireWebUIListener(
+      "glic-web-actuation-disabled-for-enterprise-changed",
+      base::Value(GlicHandler::IsWebActuationDisabledForEnterprise(
+          Profile::FromWebUI(web_ui()))));
 }
 
 void GlicHandler::HandleGetWebActuationToggleVisibility(
@@ -379,6 +435,9 @@ void GlicHandler::HandleSetWebActuationEnabled(const base::ListValue& args) {
       glic::GlicKeyedServiceFactory::GetGlicKeyedService(profile);
   if (glic_service) {
     glic_service->enabling().SetUserEnabledActuationOnWeb(enabled);
+    if (!enabled) {
+      glic_service->enabling().SetExperimentalTriggeringEnabled(false);
+    }
   }
 }
 
@@ -419,72 +478,31 @@ void GlicHandler::FireWebActuationToggleVisibilityChanged() {
 }
 
 bool GlicHandler::ShouldShowWebActuationToggle(Profile* profile) {
-  auto* command_line = base::CommandLine::ForCurrentProcess();
-  if (command_line->HasSwitch(::switches::kGlicAlwaysShowWebActuationToggle)) {
-    return true;
-  }
-  if (!base::FeatureList::IsEnabled(features::kGlicWebActuationSetting)) {
-    return false;
-  }
-
-  // If the account is ineligible, hide the toggle.
   auto* glic_service =
       glic::GlicKeyedServiceFactory::GetGlicKeyedService(profile);
-  if (!glic_service) {
+  return glic_service &&
+         glic_service->enabling().ShouldShowWebActuationToggle();
+}
+
+bool GlicHandler::IsWebActuationDisabledForEnterprise(Profile* profile) {
+  if (!base::FeatureList::IsEnabled(features::kGlicActor)) {
     return false;
   }
-  if (glic_service->actor_policy_checker().CannotActOnWebReason() ==
-      glic::GlicActorPolicyChecker::CannotActReason::
-          kAccountCapabilityIneligible) {
+  auto* glic_service =
+      glic::GlicKeyedServiceFactory::GetGlicKeyedService(profile);
+  if (!glic_service || !glic_service->HasActorPolicyChecker()) {
     return false;
   }
+  return !glic_service->actor_policy_checker().CanActOnWeb() &&
+         glic_service->actor_policy_checker().CannotActOnWebReason() ==
+             glic::GlicActorPolicyChecker::CannotActReason::kDisabledByPolicy;
+}
 
-  bool is_managed = glic::GlicActorPolicyChecker::IsBrowserManaged(*profile);
-
-  bool is_enterprise_account = false;
-  if (auto* actor_service = actor::ActorKeyedService::Get(profile)) {
-    is_enterprise_account = glic::GlicActorPolicyChecker::IsEnterpriseAccount(
-        *profile, actor_service->GetJournal());
-  }
-
-  // Enterprise Case: Align toggle visibility with GlicActorPolicyChecker.
-  if (is_managed || is_enterprise_account) {
-    return glic_service->actor_policy_checker().CanActOnWeb();
-  }
-
-  // Google one User
-  // If not managed, we check consumer subscription tiers.
-  const base::flat_set<int32_t>& allowed_tiers =
-      glic::GlicActorPolicyChecker::GetActorEligibleTiers();
-  // If no tiers are allowed, the toggle should never be shown.
-  if (allowed_tiers.empty()) {
-    return false;
-  }
-
-  // NOTE: kGlicWebActuationSettingsToggle controls toggle visibility based
-  // solely on subscription eligibility. If this feature is disabled, the
-  // toggle remains visible only if the user has previously accepted the
-  // consent card.
-  if (base::FeatureList::IsEnabled(features::kGlicWebActuationSettingsToggle)) {
-    // Always show the toggle for internal dogfooders, mirroring the bypass in
-    // GlicActorPolicyChecker.
-    auto* variations_service = g_browser_process->variations_service();
-    if (variations_service && variations_service->IsLikelyDogfoodClient()) {
-      return true;
-    }
-    // Strict subscription check for external users.
-    auto* subscription_service = subscription_eligibility::
-        SubscriptionEligibilityServiceFactory::GetForProfile(profile);
-    CHECK(subscription_service);
-    return allowed_tiers.contains(
-        subscription_service->GetAiSubscriptionTier());
-  }
-  // Show the toggle if the user has explicitly modified the preference before
-  // (via accepting the consent card).
-  if (!glic_service->enabling().IsUserEnabledActuationOnWebDefault()) {
-    return true;
-  }
-  return false;
+bool GlicHandler::ShouldShowExperimentalTriggeringToggle(Profile* profile) {
+  auto* glic_service =
+      glic::GlicKeyedServiceFactory::GetGlicKeyedService(profile);
+  return glic_service &&
+         glic_service->enabling().ShouldShowExperimentalTriggeringToggle();
 }
 
 void GlicHandler::HandleGetActorLoginPermissions(const base::ListValue& args) {
@@ -516,6 +534,19 @@ void GlicHandler::HandleRevokeActorLoginPermission(
         base::BindOnce(&GlicHandler::OnRevokeActorLoginPermission,
                        weak_ptr_factory_.GetWeakPtr(), callback_id));
   }
+}
+
+void GlicHandler::HandleStartObservingActorLoginPermissions(
+    const base::ListValue& args) {
+  AllowJavascript();
+  if (actor_login_permissions_manager_ && !observation_.IsObserving()) {
+    observation_.Observe(actor_login_permissions_manager_.get());
+  }
+}
+
+void GlicHandler::HandleStopObservingActorLoginPermissions(
+    const base::ListValue& args) {
+  observation_.Reset();
 }
 
 void GlicHandler::OnRevokeActorLoginPermission(std::string callback_id_str,

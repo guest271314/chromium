@@ -18,7 +18,7 @@
 #include "chrome/browser/ash/drive/file_system_util.h"
 #include "chrome/browser/ash/profiles/profile_helper.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/webui/ash/settings/pages/files/mojom/google_drive_handler.mojom.h"
 #include "chrome/browser/ui/webui/ash/settings/test_support/os_settings_browser_test_mixin.h"
 #include "chrome/test/data/webui/chromeos/settings/test_api.test-mojom-test-utils.h"
@@ -42,7 +42,6 @@ using testing::InSequence;
 using testing::Pointee;
 using testing::Return;
 using testing::TestParamInfo;
-using testing::ValuesIn;
 using testing::WithParamInterface;
 
 namespace ash::settings {
@@ -149,7 +148,7 @@ class GoogleDriveHandlerBaseTest
                       Field("query_source", &QueryParameters::query_source,
                             QueryParameters::QuerySource::kLocalAndCloud)));
 
-    auto* fake_drivefs = GetFakeDriveFsForProfile(browser()->profile());
+    auto* fake_drivefs = GetFakeDriveFsForProfile(browser()->GetProfile());
 
     // Fall back to the default ON_CALL behaviour set in the FakeDriveFs
     // constructor for most queries. Without this, once one EXPECT_CALL is
@@ -168,7 +167,7 @@ class GoogleDriveHandlerBaseTest
 
   base::FilePath CreateFileInContentCache(int file_size_in_bytes) {
     auto* const service =
-        drive::util::GetIntegrationServiceByProfile(browser()->profile());
+        drive::util::GetIntegrationServiceByProfile(browser()->GetProfile());
     {
       // Ensure the content cache directory exists.
       base::ScopedAllowBlockingForTesting allow_blocking;
@@ -280,7 +279,7 @@ IN_PROC_BROWSER_TEST_P(GoogleDriveHandlerTest,
 
   const base::FilePath file_path = CreateFileInContentCache(32);
 
-  auto* fake_drivefs = GetFakeDriveFsForProfile(browser()->profile());
+  auto* fake_drivefs = GetFakeDriveFsForProfile(browser()->GetProfile());
   EXPECT_CALL(*fake_drivefs, ClearOfflineFiles(_))
       .WillOnce(
           [&file_path](
@@ -297,19 +296,16 @@ IN_PROC_BROWSER_TEST_P(GoogleDriveHandlerTest,
       FormatBytesToString(0));
 }
 
-const TestParam kTestParams[] = {
-    {
+INSTANTIATE_TEST_SUITE_P(
+    ,
+    GoogleDriveHandlerTest,
+    testing::Values(TestParam{
         .test_suffix = "BulkPinning",
         .enabled_features =
             {ash::features::kFeatureManagementDriveFsBulkPinning},
         .disabled_features = {},
-    },
-};
-
-INSTANTIATE_TEST_SUITE_P(,
-                         GoogleDriveHandlerTest,
-                         ValuesIn(kTestParams),
-                         &ParamToTestSuffix);
+    }),
+    &ParamToTestSuffix);
 
 }  // namespace
 }  // namespace ash::settings

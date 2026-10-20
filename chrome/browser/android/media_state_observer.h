@@ -11,7 +11,6 @@
 #include "chrome/browser/media/webrtc/media_stream_capture_indicator.h"
 #include "chrome/browser/tab/media_state.h"
 #include "content/public/browser/web_contents_observer.h"
-#include "content/public/browser/web_contents_user_data.h"
 
 namespace content {
 class WebContents;
@@ -19,10 +18,8 @@ class WebContents;
 
 // Observes media-related state changes for a tab's webcontents and updates the
 // TabAndroid media indicator.
-class MediaStateObserver
-    : public content::WebContentsObserver,
-      public content::WebContentsUserData<MediaStateObserver>,
-      public MediaStreamCaptureIndicator::Observer {
+class MediaStateObserver : public content::WebContentsObserver,
+                           public MediaStreamCaptureIndicator::Observer {
  public:
   explicit MediaStateObserver(content::WebContents* web_contents);
   ~MediaStateObserver() override;
@@ -33,10 +30,6 @@ class MediaStateObserver
   // content::WebContentsObserver overrides:
   // Called when the audio muting state of the WebContents has changed.
   void DidUpdateAudioMutingState(bool muted) override;
-  // Called when the audible state changes. This is used when
-  // kEnableAudioMonitoringOnAndroid is disabled to avoid the 2-second audible
-  // polling delay.
-  void OnAudioStateChanged(bool audible) override;
 
   // MediaStreamCaptureIndicator::Observer overrides:
   // Called when the video capture state of the WebContents has changed.
@@ -52,10 +45,8 @@ class MediaStateObserver
   void MediaPictureInPictureChanged(bool is_in_picture_in_picture) override;
 
  private:
-  friend class content::WebContentsUserData<MediaStateObserver>;
-
   // Subscribes to notifications about changes in the "recently audible" state.
-  base::CallbackListSubscription MaybeSubscribeToRecentlyAudible();
+  base::CallbackListSubscription SubscribeToRecentlyAudible();
 
   // Handles debounced audible state changes from RecentlyAudibleHelper. This is
   // used when kEnableAudioMonitoringOnAndroid is enabled to prevent UI
@@ -84,8 +75,6 @@ class MediaStateObserver
   base::ScopedObservation<MediaStreamCaptureIndicator,
                           MediaStreamCaptureIndicator::Observer>
       media_stream_capture_indicator_observation_{this};
-
-  WEB_CONTENTS_USER_DATA_KEY_DECL();
 };
 
 #endif  // CHROME_BROWSER_ANDROID_MEDIA_STATE_OBSERVER_H_

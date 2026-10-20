@@ -216,8 +216,6 @@ class BrowserToPageConnector {
       connector_->AgentHostClosed(agent_host);
     }
 
-    bool MayAccessAllCookies() override { return true; }
-
     bool AllowUnsafeOperations() override {
       return permissions_.allow_unsafe_operations;
     }
@@ -334,7 +332,7 @@ class BrowserToPageConnector {
                                              base::as_byte_span(*payload));
       return;
     }
-    DCHECK(agent_host == browser_host_.get());
+    CHECK(agent_host == browser_host_.get(), base::NotFatalUntil::M159);
 
     std::string encoded = base::Base64Encode(message_sp);
     std::string eval_code =
@@ -354,7 +352,7 @@ class BrowserToPageConnector {
     if (agent_host == browser_host_.get()) {
       page_host_->DetachClient(page_host_client_.get());
     } else {
-      DCHECK(agent_host == page_host_.get());
+      CHECK(agent_host == page_host_.get(), base::NotFatalUntil::M159);
       browser_host_->DetachClient(browser_host_client_.get());
     }
     GetInstanceMap().erase(page_host_.get());
@@ -570,7 +568,7 @@ class TargetHandler::Session : public DevToolsAgentHostClient {
     // for Target.SendMessageToTarget. And since the binary mode implies
     // flatten_protocol_ (we force the flag to true), we can assume in this
     // method that |message| is JSON.
-    DCHECK(!flatten_protocol_);
+    CHECK(!flatten_protocol_, base::NotFatalUntil::M159);
 
     if (throttle_ || worker_throttle_) {
       std::optional<base::DictValue> value = base::JSONReader::ReadDict(
@@ -610,7 +608,7 @@ class TargetHandler::Session : public DevToolsAgentHostClient {
   // DevToolsAgentHostClient implementation.
   void DispatchProtocolMessage(DevToolsAgentHost* agent_host,
                                base::span<const uint8_t> message) override {
-    DCHECK(agent_host == agent_host_.get());
+    CHECK(agent_host == agent_host_.get(), base::NotFatalUntil::M159);
     if (flatten_protocol_) {
       // TODO(johannes): It's not clear that this check is useful, but
       // a similar check has been in the code ever since the flattened protocol
@@ -632,12 +630,8 @@ class TargetHandler::Session : public DevToolsAgentHostClient {
   }
 
   void AgentHostClosed(DevToolsAgentHost* agent_host) override {
-    DCHECK(agent_host == agent_host_.get());
+    CHECK(agent_host == agent_host_.get(), base::NotFatalUntil::M159);
     Detach(true);
-  }
-
-  bool MayAccessAllCookies() override {
-    return GetRootClient()->MayAccessAllCookies();
   }
 
   bool MayAttachToRenderFrameHost(RenderFrameHost* rfh) override {
@@ -792,7 +786,10 @@ Response TargetHandler::Disable() {
   SetDiscoverTargets(false, {});
   hidden_target_manager_.Clear();
   auto_attached_sessions_.clear();
-  attached_sessions_.clear();
+  // Destroying a session may synchronously close attached targets which can
+  // try to detach sibling sessions, so move the map aside before releasing.
+  auto attached_sessions = std::move(attached_sessions_);
+  attached_sessions.clear();
 
   DevToolsManagerDelegate* delegate =
       DevToolsManager::GetInstance()->delegate();
@@ -801,14 +798,15 @@ Response TargetHandler::Disable() {
   }
 
   if (dispose_on_detach_context_ids_.size()) {
-    for (auto* context : delegate->GetBrowserContexts()) {
-      if (!dispose_on_detach_context_ids_.contains(context->UniqueId())) {
-        continue;
-      }
-      delegate->DisposeBrowserContext(context, base::DoNothing());
-    }
+    auto context_ids = std::move(dispose_on_detach_context_ids_);
     dispose_on_detach_context_ids_.clear();
+    for (const std::string& id : context_ids) {
+      if (auto* context = delegate->GetBrowserContext(id)) {
+        delegate->DisposeBrowserContext(context, base::DoNothing());
+      }
+    }
   }
+
   contexts_with_overridden_proxy_.clear();
   return Response::Success();
 }
@@ -816,12 +814,14 @@ Response TargetHandler::Disable() {
 void TargetHandler::MaybeCreateAndAddNavigationThrottle(
     TargetAutoAttacher* auto_attacher,
     NavigationThrottleRegistry& registry) {
-  DCHECK(auto_attach_ || !auto_attach_related_targets_.empty());
+  CHECK(auto_attach_ || !auto_attach_related_targets_.empty(),
+        base::NotFatalUntil::M159);
   auto* navigation_handle = &registry.GetNavigationHandle();
   FrameTreeNode* frame_tree_node =
       NavigationRequest::From(navigation_handle)->frame_tree_node();
-  DCHECK(access_mode_ != AccessMode::kBrowser ||
-         !auto_attach_related_targets_.empty() || !frame_tree_node->parent());
+  CHECK(access_mode_ != AccessMode::kBrowser ||
+            !auto_attach_related_targets_.empty() || !frame_tree_node->parent(),
+        base::NotFatalUntil::M159);
   // All child frames start navigating with their parent settings applied and
   // are only throttled at response where we know if they require a new host.
   // Note that fenced frames start as remote frames right away and get a RFDTAH
@@ -832,6 +832,8 @@ void TargetHandler::MaybeCreateAndAddNavigationThrottle(
     return;
   }
   // If we got here for main frame, it must be either browser or tab target.
+  // TODO(crbug.com/573156711): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
   DCHECK(auto_attacher == auto_attacher_);
   DevToolsAgentHost* host =
       RenderFrameDevToolsAgentHost::GetFor(frame_tree_node);
@@ -840,7 +842,8 @@ void TargetHandler::MaybeCreateAndAddNavigationThrottle(
     // RFDTAHs created during auto-attach had no renderer allocated originally,
     // and hence have messages paused, but with navigation we're supposed to
     // have a live host, so we can send messages to renderer now.
-    DCHECK(frame_tree_node->current_frame_host()->IsRenderFrameLive());
+    CHECK(frame_tree_node->current_frame_host()->IsRenderFrameLive(),
+          base::NotFatalUntil::M159);
     // Only resume sending messages to frame agents (i.e. skip for WebContents
     // ones).
     waiting_session->ResumeSendingMessagesToAgent();
@@ -935,8 +938,8 @@ void TargetHandler::UpdateAgentHostObserver() {
 bool TargetHandler::AutoAttach(TargetAutoAttacher* source,
                                DevToolsAgentHost* host,
                                bool waiting_for_debugger) {
-  DCHECK(host);
-  DCHECK(auto_attach_target_filter_);
+  CHECK(host, base::NotFatalUntil::M159);
+  CHECK(auto_attach_target_filter_, base::NotFatalUntil::M159);
   if (!auto_attach_target_filter_->Match(*host)) {
     return false;
   }
@@ -971,19 +974,31 @@ void TargetHandler::SetAttachedTargetsOfType(
     TargetAutoAttacher* source,
     const base::flat_set<scoped_refptr<DevToolsAgentHost>>& new_hosts,
     const std::string& type) {
-  DCHECK(!type.empty());
-  auto old_sessions = auto_attached_sessions_;
-  for (auto& entry : old_sessions) {
+  CHECK(!type.empty(), base::NotFatalUntil::M159);
+  // Detaching a target (e.g. a subframe) can synchronously dispose child
+  // sessions and tear down owned resources (e.g. hidden targets), which may
+  // destroy sibling DevToolsAgentHost instances and mutate
+  // `auto_attached_sessions_`.
+  // To avoid use-after-free on bare pointer keys or session objects, first
+  // collect strong references to the hosts that need to be detached while all
+  // entries are still alive and valid.
+  std::vector<scoped_refptr<DevToolsAgentHost>> hosts_to_detach;
+  for (const auto& entry : auto_attached_sessions_) {
     scoped_refptr<DevToolsAgentHost> host(entry.first);
     if (host->GetType() == type &&
         entry.second->auto_attacher_id_ ==
             reinterpret_cast<uintptr_t>(source) &&
         !new_hosts.contains(host)) {
-      AutoDetach(source, host.get());
+      hosts_to_detach.push_back(std::move(host));
     }
   }
-  for (auto& host : new_hosts) {
-    if (!old_sessions.contains(host.get())) {
+  // AutoDetach re-validates each host against the live `auto_attached_sessions_`
+  // map, safely skipping any targets already detached by earlier cascades.
+  for (const auto& host : hosts_to_detach) {
+    AutoDetach(source, host.get());
+  }
+  for (const auto& host : new_hosts) {
+    if (!auto_attached_sessions_.contains(host.get())) {
       AutoAttach(source, host.get(), false);
     }
   }
@@ -1019,7 +1034,7 @@ bool TargetHandler::ShouldWaitForDebuggerOnStart(
   if (auto_attach_) {
     return wait_for_debugger_on_start_;
   }
-  DCHECK(!auto_attach_related_targets_.empty());
+  CHECK(!auto_attach_related_targets_.empty(), base::NotFatalUntil::M159);
   auto* host = RenderFrameDevToolsAgentHost::GetFor(
       navigation_request->frame_tree_node());
   if (!host) {
@@ -1152,7 +1167,7 @@ void TargetHandler::AutoAttachRelated(
     return;
   }
   if (auto_attach_) {
-    DCHECK(auto_attach_related_targets_.empty());
+    CHECK(auto_attach_related_targets_.empty(), base::NotFatalUntil::M159);
     SetAutoAttachInternal(false, false, true, base::DoNothing());
   }
   flatten_auto_attach_ = true;
@@ -1443,7 +1458,7 @@ Response TargetHandler::GetTargets(
           : nullptr;
   const TargetFilter* effective_filter =
       passed_filter ? passed_filter.get() : discover_target_filter_.get();
-  DCHECK(effective_filter);
+  CHECK(effective_filter, base::NotFatalUntil::M159);
   *target_infos = std::make_unique<protocol::Array<Target::TargetInfo>>();
   for (const auto& host : DevToolsAgentHost::GetOrCreateAll()) {
     if (effective_filter->Match(*host)) {
@@ -1468,8 +1483,8 @@ bool TargetHandler::ShouldForceDevToolsAgentHostCreation() {
 }
 
 void TargetHandler::DevToolsAgentHostCreated(DevToolsAgentHost* host) {
-  DCHECK(discover());
-  DCHECK(host);
+  CHECK(discover(), base::NotFatalUntil::M159);
+  CHECK(host, base::NotFatalUntil::M159);
   if (!discover_target_filter_->Match(*host)) {
     return;
   }
@@ -1608,16 +1623,19 @@ protocol::Response TargetHandler::GetBrowserContexts(
     return Response::ServerError(
         "Browser context management is not supported.");
   }
-  std::vector<BrowserContext*> contexts = delegate->GetBrowserContexts();
+  std::vector<base::WeakPtr<BrowserContext>> contexts =
+      delegate->GetBrowserContexts();
   *browser_context_ids = std::make_unique<protocol::Array<protocol::String>>();
-  for (auto* context : contexts) {
-    (*browser_context_ids)->emplace_back(context->UniqueId());
+  for (const auto& context : contexts) {
+    if (context) {
+      (*browser_context_ids)->emplace_back(context->UniqueId());
+    }
   }
 
-  BrowserContext* default_context = delegate->GetDefaultBrowserContext();
-  if (default_context) {
+  if (BrowserContext* default_context = delegate->GetDefaultBrowserContext()) {
     *default_browser_context_id = default_context->UniqueId();
   }
+
   return Response::Success();
 }
 
@@ -1635,17 +1653,21 @@ void TargetHandler::DisposeBrowserContext(
         Response::ServerError("Browser context management is not supported."));
     return;
   }
-  std::vector<BrowserContext*> contexts = delegate->GetBrowserContexts();
-  auto context_it =
-      std::ranges::find(contexts, context_id, &BrowserContext::UniqueId);
-  if (context_it == contexts.end()) {
+  BrowserContext* context = delegate->GetBrowserContext(context_id);
+  if (!context) {
     callback->sendFailure(
         Response::ServerError("Failed to find context with id " + context_id));
     return;
   }
+  if (context == delegate->GetDefaultBrowserContext()) {
+    callback->sendFailure(
+        Response::ServerError("Cannot dispose default browser context."));
+    return;
+  }
   dispose_on_detach_context_ids_.erase(context_id);
   delegate->DisposeBrowserContext(
-      *context_it,
+      context,
+
       base::BindOnce(
           [](std::unique_ptr<DisposeBrowserContextCallback> callback,
              bool success, const std::string& error) {

@@ -4,6 +4,10 @@
 
 #include "chrome/browser/glic/service/metrics/metrics_types.h"
 
+#include "components/tabs/public/tab_interface.h"
+#include "content/public/browser/render_frame_host.h"
+#include "content/public/browser/web_contents.h"
+
 namespace glic {
 
 std::string GetDaisyChainSourceString(DaisyChainSource source) {
@@ -110,6 +114,8 @@ std::string GetInvocationSourceString(mojom::InvocationSource source) {
       return "ExperimentalTriggering";
     case mojom::InvocationSource::kIndigoPageAction:
       return "IndigoPageAction";
+    case mojom::InvocationSource::kWebDragDrop:
+      return "WebDragDrop";
     case mojom::InvocationSource::kUnsupported:
       return "Unsupported";
     case mojom::InvocationSource::kWebContentsContextMenu:
@@ -122,6 +128,63 @@ std::string GetInvocationSourceString(mojom::InvocationSource source) {
       return "ToolbarButton";
     case mojom::InvocationSource::kZeroStateAutoSummarize:
       return "ZeroStateAutoSummarize";
+    case mojom::InvocationSource::kPromotionPage:
+      return "PromotionPage";
+    case mojom::InvocationSource::kDaisyChainOnNewTab:
+      return "DaisyChainOnNewTab";
+    case mojom::InvocationSource::kDaisyChainOnFollowLink:
+      return "DaisyChainOnFollowLink";
+    case mojom::InvocationSource::kConversationSwitch:
+      return "ConversationSwitch";
+    case mojom::InvocationSource::kDetachAttachButton:
+      return "DetachAttachButton";
+    case mojom::InvocationSource::kTabRestore:
+      return "TabRestore";
+    case mojom::InvocationSource::kReshowInactive:
+      return "ReshowInactive";
+    case mojom::InvocationSource::kTabContextMenu:
+      return "TabContextMenu";
+    case mojom::InvocationSource::kWebContinuity:
+      return "WebContinuity";
+    case mojom::InvocationSource::kHistoryPageChatLinkout:
+      return "HistoryPageChatLinkout";
+    case mojom::InvocationSource::kContextHubTopics:
+      return "ContextHubTopics";
+    case mojom::InvocationSource::kContextHubAutoTodos:
+      return "ContextHubAutoTodos";
+    case mojom::InvocationSource::kWebContentsContextMenuLink:
+      return "WebContentsContextMenuLink";
+    case mojom::InvocationSource::kWebContentsContextMenuPage:
+      return "WebContentsContextMenuPage";
+    case mojom::InvocationSource::kWebContentsContextMenuTextSelection:
+      return "WebContentsContextMenuTextSelection";
+    case mojom::InvocationSource::kActorTool:
+      return "ActorTool";
   }
 }
+
+std::string_view GetEmbedderTypeString(EmbedderType type) {
+  switch (type) {
+    case EmbedderType::kSidePanel:
+      return "SidePanel";
+    case EmbedderType::kFloaty:
+      return "Floaty";
+    case EmbedderType::kTab:
+      return "Tab";
+    case EmbedderType::kUnknown:
+      return "Unknown";
+  }
+}
+
+ukm::SourceId GetUkmSourceIdForTab(tabs::TabInterface* tab) {
+  if (!tab) {
+    return ukm::NoURLSourceId();
+  }
+  content::WebContents* contents = tab->GetContents();
+  if (!contents || !contents->GetPrimaryMainFrame()) {
+    return ukm::NoURLSourceId();
+  }
+  return contents->GetPrimaryMainFrame()->GetPageUkmSourceId();
+}
+
 }  // namespace glic

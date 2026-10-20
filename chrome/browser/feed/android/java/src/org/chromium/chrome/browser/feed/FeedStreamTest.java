@@ -19,6 +19,7 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import static org.robolectric.shadows.ShadowLooper.runUiThreadTasksIncludingDelayedTasks;
 
 import android.app.Activity;
 import android.util.TypedValue;
@@ -26,7 +27,6 @@ import android.widget.FrameLayout;
 
 import androidx.appcompat.widget.AppCompatTextView;
 import androidx.recyclerview.widget.RecyclerView;
-import androidx.test.filters.SmallTest;
 
 import com.google.protobuf.ByteString;
 
@@ -41,7 +41,6 @@ import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 import org.robolectric.Robolectric;
 import org.robolectric.android.controller.ActivityController;
-import org.robolectric.annotation.Config;
 
 import org.chromium.base.Callback;
 import org.chromium.base.test.BaseRobolectricTestRunner;
@@ -50,6 +49,9 @@ import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.base.test.util.HistogramWatcher;
 import org.chromium.chrome.browser.feed.v2.FeedUserActionType;
+import org.chromium.chrome.browser.feedback.FeedbackPolicyManager;
+import org.chromium.chrome.browser.feedback.HelpAndFeedbackLauncher;
+import org.chromium.chrome.browser.feedback.HelpAndFeedbackLauncherFactory;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.profiles.ProfileManager;
@@ -65,7 +67,6 @@ import org.chromium.chrome.browser.xsurface.feed.FeedSurfaceScope;
 import org.chromium.chrome.browser.xsurface.feed.FeedUserInteractionReliabilityLogger.ClosedReason;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
 import org.chromium.components.feed.proto.FeedUiProto;
-import org.chromium.content_public.browser.LoadUrlParams;
 import org.chromium.ui.base.WindowAndroid;
 import org.chromium.ui.modaldialog.ModalDialogManager;
 import org.chromium.ui.mojom.WindowOpenDisposition;
@@ -73,12 +74,13 @@ import org.chromium.ui.test.util.MockitoHelper;
 import org.chromium.url.JUnitTestGURLs;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.function.Supplier;
 
 /** Unit tests for {@link FeedStream}. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 @EnableFeatures(ChromeFeatureList.FEED_LOADING_PLACEHOLDER)
 @DisableFeatures(ChromeFeatureList.FEED_CONTAINMENT)
 public class FeedStreamTest {
@@ -90,6 +92,8 @@ public class FeedStreamTest {
     private static final OpenUrlOptions DEFAULT_OPEN_URL_OPTIONS = new OpenUrlOptions() {};
 
     @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
+    @Mock private FeedbackPolicyManager mFeedbackPolicyManager;
+    @Mock private HelpAndFeedbackLauncher mHelpAndFeedbackLauncher;
     private ActivityController<Activity> mActivityController;
     private Activity mActivity;
     private RecyclerView mRecyclerView;
@@ -119,8 +123,6 @@ public class FeedStreamTest {
     @Mock private FeedReliabilityLogger mReliabilityLogger;
     @Mock private FeedActionDelegate mActionDelegate;
 
-    @Captor private ArgumentCaptor<LoadUrlParams> mLoadUrlParamsCaptor;
-    @Mock private FeedContentFirstLoadWatcher mFeedContentFirstLoadWatcher;
     @Mock private Stream.StreamsMediator mStreamsMediator;
     // Enable the Features class, so we can call code which checks to see if features are enabled
     // without crashing.
@@ -158,6 +160,9 @@ public class FeedStreamTest {
         FeedServiceBridgeJni.setInstanceForTesting(mFeedServiceBridgeJniMock);
         FeedReliabilityLoggingBridgeJni.setInstanceForTesting(mFeedReliabilityLoggingBridgeJniMock);
         ProfileManager.setLastUsedProfileForTesting(mProfileMock);
+        FeedbackPolicyManager.setInstanceForTesting(mFeedbackPolicyManager);
+        when(mFeedbackPolicyManager.isUserFeedbackAllowed()).thenReturn(true);
+        HelpAndFeedbackLauncherFactory.setInstanceForTesting(mHelpAndFeedbackLauncher);
 
         when(mFeedServiceBridgeJniMock.getLoadMoreTriggerLookahead())
                 .thenReturn(LOAD_MORE_TRIGGER_LOOKAHEAD);
@@ -174,7 +179,6 @@ public class FeedStreamTest {
                         mShareDelegateSupplier,
                         /* streamKind= */ StreamKind.FOR_YOU,
                         mActionDelegate,
-                        mFeedContentFirstLoadWatcher,
                         mStreamsMediator,
                         new FeedSurfaceRendererBridgeFactory());
         mRecyclerView = new RecyclerView(mActivity);
@@ -240,7 +244,6 @@ public class FeedStreamTest {
     }
 
     @Test
-    @SmallTest
     public void testBindUnbind_shouldPlaceSpacerTrue() {
         createHeaderContent(1);
         bindToView();
@@ -257,11 +260,9 @@ public class FeedStreamTest {
         assertEquals(2, mContentManager.getItemCount());
         assertEquals(HEADER_PREFIX + "0", mContentManager.getContent(0).getKey());
         assertEquals(1, mContentManager.findContentPositionByKey("Spacer"));
-        verify(mFeedContentFirstLoadWatcher).nonNativeContentLoaded(anyInt());
     }
 
     @Test
-    @SmallTest
     public void testUnbindBind_shouldPlaceSpacerTrue() {
         createHeaderContent(2);
         bindToView();
@@ -360,7 +361,6 @@ public class FeedStreamTest {
     }
 
     @Test
-    @SmallTest
     public void testAddSlicesOnStreamUpdated() {
         bindToView();
         // Add 3 new slices at first.
@@ -395,7 +395,6 @@ public class FeedStreamTest {
     }
 
     @Test
-    @SmallTest
     public void testAddNewSlicesWithSameIds() {
         bindToView();
         // Add 2 new slices at first.
@@ -489,7 +488,6 @@ public class FeedStreamTest {
     }
 
     @Test
-    @SmallTest
     public void testOpenUrlSameTab() {
         bindToView();
         FeedStream.FeedSurfaceActionsHandler handler =
@@ -508,7 +506,6 @@ public class FeedStreamTest {
     }
 
     @Test
-    @SmallTest
     public void testLogLaunchFinishedOnOpenSuggestionUrl() {
         bindToView();
         FeedStream.FeedSurfaceActionsHandler handler =
@@ -519,7 +516,6 @@ public class FeedStreamTest {
     }
 
     @Test
-    @SmallTest
     public void testLogLaunchFinishedOnOpenSuggestionUrlNewTab() {
         bindToView();
         FeedStream.FeedSurfaceActionsHandler handler =
@@ -532,7 +528,6 @@ public class FeedStreamTest {
     }
 
     @Test
-    @SmallTest
     public void testLogLaunchFinishedOnOpenUrlNewTab() {
         bindToView();
         FeedStream.FeedSurfaceActionsHandler handler =
@@ -544,7 +539,6 @@ public class FeedStreamTest {
     }
 
     @Test
-    @SmallTest
     public void testLogLaunchFinishedOnOpenSuggestionUrlIncognito() {
         bindToView();
         FeedStream.FeedSurfaceActionsHandler handler =
@@ -555,7 +549,6 @@ public class FeedStreamTest {
     }
 
     @Test
-    @SmallTest
     public void testOpenUrlInNewTab() {
         bindToView();
         FeedStream.FeedSurfaceActionsHandler handler =
@@ -575,7 +568,6 @@ public class FeedStreamTest {
     }
 
     @Test
-    @SmallTest
     public void testOpenUrlNewTabInGroup() {
         bindToView();
         FeedStream.FeedSurfaceActionsHandler handler =
@@ -595,7 +587,6 @@ public class FeedStreamTest {
     }
 
     @Test
-    @SmallTest
     public void testOpenUrlIncognitoTab() {
         bindToView();
         FeedStream.FeedSurfaceActionsHandler handler =
@@ -614,7 +605,6 @@ public class FeedStreamTest {
     }
 
     @Test
-    @SmallTest
     public void testShowBottomSheet() {
         bindToView();
         FeedStream.FeedSurfaceActionsHandler handler =
@@ -626,7 +616,6 @@ public class FeedStreamTest {
     }
 
     @Test
-    @SmallTest
     public void testDismissBottomSheet() {
         bindToView();
         FeedStream.FeedSurfaceActionsHandler handler =
@@ -639,7 +628,6 @@ public class FeedStreamTest {
     }
 
     @Test
-    @SmallTest
     public void testAddToReadingList() {
         bindToView();
         String title = "title";
@@ -663,7 +651,6 @@ public class FeedStreamTest {
     }
 
     @Test
-    @SmallTest
     public void testShowSnackbar() {
         bindToView();
         FeedStream.FeedActionsHandlerImpl handler =
@@ -676,7 +663,6 @@ public class FeedStreamTest {
     }
 
     @Test
-    @SmallTest
     public void testShowSnackbarOnAction() {
         bindToView();
         FeedStream.FeedActionsHandlerImpl handler =
@@ -700,7 +686,6 @@ public class FeedStreamTest {
     }
 
     @Test
-    @SmallTest
     public void testShowSnackbarOnDismissNoAction() {
         bindToView();
         FeedStream.FeedActionsHandlerImpl handler =
@@ -724,7 +709,6 @@ public class FeedStreamTest {
     }
 
     @Test
-    @SmallTest
     public void testTriggerRefreshDismissesSnackbars() {
         bindToView();
         FeedStream.FeedActionsHandlerImpl handler =
@@ -743,7 +727,6 @@ public class FeedStreamTest {
     }
 
     @Test
-    @SmallTest
     public void testShare() {
         mFeedStream.setShareWrapperForTest(mShareHelper);
 
@@ -759,7 +742,6 @@ public class FeedStreamTest {
     }
 
     @Test
-    @SmallTest
     public void testLoadMoreOnDismissal() {
         bindToView();
         final int itemCount = 10;
@@ -783,7 +765,6 @@ public class FeedStreamTest {
     }
 
     @Test
-    @SmallTest
     public void testScrollIsReportedOnUnbind() {
         bindToView();
 
@@ -797,7 +778,6 @@ public class FeedStreamTest {
     }
 
     @Test
-    @SmallTest
     public void testShowPlaceholder() {
         createHeaderContent(1);
         bindToView();
@@ -821,7 +801,6 @@ public class FeedStreamTest {
     }
 
     @Test
-    @SmallTest
     @DisableFeatures(ChromeFeatureList.FEED_LOADING_PLACEHOLDER)
     public void testShowSpinner_PlaceholderDisabled() {
         createHeaderContent(1);
@@ -846,7 +825,6 @@ public class FeedStreamTest {
     }
 
     @Test
-    @SmallTest
     public void testTriggerManualRefresh() {
         bindToView();
         FeedStream.FeedActionsHandlerImpl handler =
@@ -855,6 +833,45 @@ public class FeedStreamTest {
 
         handler.triggerManualRefresh();
         verify(mStreamsMediator).refreshStream();
+    }
+
+    @Test
+    public void testSendFeedback_PolicyEnabled() {
+        when(mFeedbackPolicyManager.isUserFeedbackAllowed()).thenReturn(true);
+        bindToView();
+        FeedStream.FeedActionsHandlerImpl handler =
+                (FeedStream.FeedActionsHandlerImpl)
+                        mContentManager.getContextValues(0).get(FeedActionsHandler.KEY);
+
+        Map<String, String> data = new HashMap<>();
+        data.put("Card URL", "http://example.com");
+        handler.sendFeedback(data);
+
+        runUiThreadTasksIncludingDelayedTasks();
+
+        verify(mHelpAndFeedbackLauncher)
+                .showFeedback(
+                        eq(mActivity),
+                        eq("http://example.com"),
+                        eq("com.google.chrome.feed.USER_INITIATED_FEEDBACK_REPORT"),
+                        eq(data));
+    }
+
+    @Test
+    public void testSendFeedback_PolicyDisabled() {
+        when(mFeedbackPolicyManager.isUserFeedbackAllowed()).thenReturn(false);
+        bindToView();
+        FeedStream.FeedActionsHandlerImpl handler =
+                (FeedStream.FeedActionsHandlerImpl)
+                        mContentManager.getContextValues(0).get(FeedActionsHandler.KEY);
+
+        Map<String, String> data = new HashMap<>();
+        data.put("Card URL", "http://example.com");
+        handler.sendFeedback(data);
+
+        runUiThreadTasksIncludingDelayedTasks();
+
+        verify(mHelpAndFeedbackLauncher, never()).showFeedback(any(), any(), any(), any());
     }
 
     private int getLoadMoreTriggerScrollDistance() {

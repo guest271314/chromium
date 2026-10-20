@@ -21,8 +21,8 @@
 
 #if defined(USE_AURA) && !BUILDFLAG(IS_ANDROID)
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_window.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/profile_browser_collection.h"
 #include "ui/aura/window.h"
 #include "ui/aura/window_tree_host.h"
@@ -118,7 +118,15 @@ ExtensionCommandsGlobalRegistry* ExtensionCommandsGlobalRegistry::Get(
 
 ui::GlobalAcceleratorListener*
 ExtensionCommandsGlobalRegistry::GetGlobalAcceleratorListener() const {
+#if BUILDFLAG(IS_CHROMEOS)
+  // Global extension commands are not supported on ChromeOS (see also
+  // IsGlobalShortcutEnabled() in extensions_ui.cc). The ChromeOS
+  // GlobalAcceleratorListener only exists for browser features, e.g. the Glic
+  // hotkey, so don't use it for extension commands.
+  return nullptr;
+#else
   return ui::GlobalAcceleratorListener::GetInstance();
+#endif
 }
 
 bool ExtensionCommandsGlobalRegistry::IsRegistered(
@@ -227,7 +235,7 @@ void ExtensionCommandsGlobalRegistry::OnKeyPressed(
 void ExtensionCommandsGlobalRegistry::ExecuteCommand(
     const ExtensionId& extension_id,
     const std::string& command_id) {
-  CommandExecuted(extension_id, command_id);
+  CommandExecuted(extension_id, command_id, ui::Accelerator());
 }
 
 }  // namespace extensions

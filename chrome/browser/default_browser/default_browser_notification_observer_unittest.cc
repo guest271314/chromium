@@ -27,6 +27,10 @@
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/unowned_user_data/user_data_factory.h"
 
+#if BUILDFLAG(IS_WIN)
+#include "base/test/scoped_os_info_override_win.h"
+#endif
+
 namespace default_browser {
 
 class DefaultBrowserNotificationObserverTest : public testing::Test {
@@ -37,9 +41,6 @@ class DefaultBrowserNotificationObserverTest : public testing::Test {
   }
 
   void SetUp() override {
-    display_service_tester_ =
-        std::make_unique<NotificationDisplayServiceTester>(&profile_);
-
     global_feature_override_ =
         GlobalFeatures::GetUserDataFactoryForTesting().AddOverrideForTesting(
             base::BindLambdaForTesting([&](BrowserProcess& browser_process) {
@@ -49,14 +50,20 @@ class DefaultBrowserNotificationObserverTest : public testing::Test {
               return std::make_unique<DefaultBrowserManager>(
                   TestingBrowserProcess::GetGlobal(), std::move(fake_delegate),
                   base::BindLambdaForTesting(
-                      [&]() -> Profile* { return &profile_; }));
+                      [&]() -> Profile* { return profile_.get(); }));
             }));
 
     TestingBrowserProcess::GetGlobal()->SetUpGlobalFeaturesForTesting(
         /*profile_manager=*/false);
+
+    profile_ = std::make_unique<TestingProfile>();
+    display_service_tester_ =
+        std::make_unique<NotificationDisplayServiceTester>(profile_.get());
   }
 
   void TearDown() override {
+    display_service_tester_.reset();
+    profile_.reset();
     TestingBrowserProcess::GetGlobal()->TearDownGlobalFeaturesForTesting();
   }
 
@@ -94,9 +101,13 @@ class DefaultBrowserNotificationObserverTest : public testing::Test {
   }
 
  private:
+#if BUILDFLAG(IS_WIN)
+  base::test::ScopedOSInfoOverride win11_os_{
+      base::test::ScopedOSInfoOverride::Type::kWin11Pro};
+#endif
   content::BrowserTaskEnvironment task_environment_;
   base::test::ScopedFeatureList feature_list_;
-  TestingProfile profile_;
+  std::unique_ptr<TestingProfile> profile_;
 
   ui::UserDataFactory::ScopedOverride global_feature_override_;
   raw_ptr<FakeShellDelegate> fake_shell_delegate_ptr_;

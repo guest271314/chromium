@@ -7,16 +7,23 @@
 #include <jni.h>
 
 #include <cstdint>
+#include <memory>
 #include <utility>
 #include <vector>
 
 #include "base/android/jni_android.h"
 #include "base/android/jni_array.h"
 #include "base/functional/bind.h"
+#include "base/functional/callback_helpers.h"
+#include "base/memory/weak_ptr.h"
+#include "components/facilitated_payments/content/browser/facilitated_payments_api_client_factory.h"
+#include "components/facilitated_payments/core/browser/account_linking_result.h"
 #include "components/facilitated_payments/core/utils/facilitated_payments_utils.h"
 #include "components/signin/public/identity_manager/identity_test_environment.h"
+#include "content/public/browser/web_contents.h"
 #include "content/public/test/test_renderer_host.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "url/gurl.h"
 
 namespace payments::facilitated {
 namespace {
@@ -39,6 +46,13 @@ void CaptureByteArray(bool* was_callback_invoked,
 void CaptureResultEnum(bool* was_callback_invoked,
                        PurchaseActionResult* output,
                        PurchaseActionResult input) {
+  *was_callback_invoked = true;
+  *output = input;
+}
+
+void CaptureLinkingResult(bool* was_callback_invoked,
+                          AccountLinkingResult* output,
+                          AccountLinkingResult input) {
   *was_callback_invoked = true;
   *output = input;
 }
@@ -88,13 +102,36 @@ TEST_F(FacilitatedPaymentsApiClientAndroidTest,
   secure_payload.secure_data.emplace_back(2, "value_2");
 
   apiClient.InvokePurchaseAction(
-      identity_test_environment.MakeAccountAvailable("test@example.test"),
+      identity_test_environment.MakeAccountAvailable("test@example.test")
+          .GetCoreAccountInfo(),
       secure_payload,
       base::BindOnce(&CaptureResultEnum, &was_callback_invoked,
                      &purchase_action_result));
 
   EXPECT_TRUE(was_callback_invoked);
   EXPECT_EQ(PurchaseActionResult::kCouldNotInvoke, purchase_action_result);
+}
+
+TEST_F(FacilitatedPaymentsApiClientAndroidTest,
+       InvokeInstrumentManagerResultIsFalseByDefault) {
+  FacilitatedPaymentsApiClientAndroid apiClient(main_rfh());
+  bool was_callback_invoked = false;
+  AccountLinkingResult invoke_instrument_manager_result{
+      true, 0, AccountLinkingResultCode::kResultOk};
+  signin::IdentityTestEnvironment identity_test_environment;
+  std::vector<uint8_t> action_token = {'A', 'c', 't', 'i', 'o', 'n'};
+
+  apiClient.InvokeInstrumentManager(
+      identity_test_environment.MakeAccountAvailable("test@example.test")
+          .GetCoreAccountInfo(),
+      action_token,
+      base::BindOnce(&CaptureLinkingResult, &was_callback_invoked,
+                     &invoke_instrument_manager_result));
+
+  EXPECT_TRUE(was_callback_invoked);
+  EXPECT_FALSE(invoke_instrument_manager_result.is_successful);
+  EXPECT_EQ(invoke_instrument_manager_result.error_code,
+            AccountLinkingResultCode::kCouldNotInvoke);
 }
 
 // Java bridge should invoke exactly one callback per method, but if it does
@@ -108,6 +145,49 @@ TEST_F(FacilitatedPaymentsApiClientAndroidTest,
   apiClient.OnGetClientToken(env, nullptr);
   apiClient.OnPurchaseActionResultEnum(
       env, static_cast<int32_t>(PurchaseActionResult::kResultOk));
+  apiClient.OnInvokeInstrumentManagerResult(env, nullptr);
+}
+
+TEST_F(
+    FacilitatedPaymentsApiClientAndroidTest,
+    GetFacilitatedPaymentsApiClientCreator_WebContents_CreatesClientAfterNavigation) {
+  NavigateAndCommit(GURL("https://initial.example.test"));
+  FacilitatedPaymentsApiClientCreator creator =
+      GetFacilitatedPaymentsApiClientCreator(web_contents()->GetWeakPtr());
+
+  NavigateAndCommit(GURL("https://merchant.example.test"));
+
+  std::unique_ptr<FacilitatedPaymentsApiClient> api_client = creator.Run();
+  EXPECT_NE(nullptr, api_client);
+}
+
+TEST_F(FacilitatedPaymentsApiClientAndroidTest,
+       InvokeInstrumentManager_AfterNavigation_UpdatesBridge) {
+  NavigateAndCommit(GURL("https://merchant.example.test/page1"));
+  content::GlobalRenderFrameHostId initial_rfh_id = main_rfh()->GetGlobalId();
+  FacilitatedPaymentsApiClientAndroid api_client(main_rfh());
+  EXPECT_EQ(api_client.GetRenderFrameHostIdForTesting(), initial_rfh_id);
+
+  NavigateAndCommit(GURL("https://merchant.example.test/page2"));
+  ASSERT_NE(initial_rfh_id, main_rfh()->GetGlobalId());
+
+  signin::IdentityTestEnvironment identity_test_environment;
+  api_client.InvokeInstrumentManager(
+      identity_test_environment.MakeAccountAvailable("test@example.test")
+          .GetCoreAccountInfo(),
+      /*action_token=*/{'A', 'c', 't', 'i', 'o', 'n'}, base::DoNothing());
+
+  EXPECT_EQ(api_client.GetRenderFrameHostIdForTesting(),
+            main_rfh()->GetGlobalId());
+}
+
+TEST_F(FacilitatedPaymentsApiClientAndroidTest,
+       GetFacilitatedPaymentsApiClientCreator_NullWebContents_ReturnsNullptr) {
+  FacilitatedPaymentsApiClientCreator creator =
+      GetFacilitatedPaymentsApiClientCreator(
+          base::WeakPtr<content::WebContents>());
+
+  EXPECT_EQ(nullptr, creator.Run());
 }
 
 }  // namespace

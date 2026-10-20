@@ -126,7 +126,7 @@ bool SpellChecker::IsSpellCheckingEnabled() const {
 void SpellChecker::IgnoreSpelling() {
   RemoveMarkers(GetFrame()
                     .Selection()
-                    .ComputeVisibleSelectionInDOMTree()
+                    .ComputeVisibleSelectionInDomTree()
                     .ToNormalizedEphemeralRange(),
                 DocumentMarker::MarkerTypes::Spelling());
 }
@@ -142,7 +142,7 @@ void SpellChecker::AdvanceToNextMisspelling(bool start_before_selection) {
   // Start at the end of the selection, search to edge of document. Starting at
   // the selection end makes repeated "check spelling" commands work.
   VisibleSelection selection(
-      GetFrame().Selection().ComputeVisibleSelectionInDOMTree());
+      GetFrame().Selection().ComputeVisibleSelectionInDomTree());
   Position spelling_search_start, spelling_search_end;
   Range::selectNodeContents(GetFrame().GetDocument(), spelling_search_start,
                             spelling_search_end);
@@ -248,7 +248,7 @@ void SpellChecker::AdvanceToNextMisspelling(bool start_before_selection) {
         EphemeralRange(spelling_search_start, spelling_search_end),
         misspelling_offset, misspelled_word.length());
     GetFrame().Selection().SetSelectionAndEndTyping(
-        SelectionInDOMTree::Builder()
+        SelectionInDomTree::Builder()
             .SetBaseAndExtent(misspelling_range)
             .Build());
     GetFrame().Selection().RevealSelection();
@@ -408,8 +408,10 @@ void SpellChecker::DidEndEditingOnTextField(Element* e) {
 
 void SpellChecker::RemoveSpellingAndGrammarMarkers(const HTMLElement& element,
                                                    ElementsType elements_type) {
-  // TODO(editing-dev): The use of updateStyleAndLayoutIgnorePendingStylesheets
-  // needs to be audited.  See http://crbug.com/590369 for more details.
+  if (!GetFrame().GetDocument()->Markers().PossiblyHasMarkers(
+          DocumentMarker::MarkerTypes::Misspelling())) {
+    return;
+  }
   if (elements_type == ElementsType::kOnlyNonEditable) {
     GetFrame().GetDocument()->UpdateStyleAndLayoutTreeForElement(
         &element, DocumentUpdateReason::kSpellCheck);
@@ -428,7 +430,7 @@ void SpellChecker::RemoveSpellingAndGrammarMarkers(const HTMLElement& element,
 DocumentMarkerGroup* SpellChecker::GetSpellCheckMarkerGroupUnderSelection()
     const {
   const VisibleSelection& selection =
-      GetFrame().Selection().ComputeVisibleSelectionInDOMTree();
+      GetFrame().Selection().ComputeVisibleSelectionInDomTree();
   if (selection.IsNone())
     return {};
 
@@ -449,7 +451,7 @@ std::pair<String, String> SpellChecker::SelectMisspellingAsync() {
     return {};
 
   const VisibleSelection& selection =
-      GetFrame().Selection().ComputeVisibleSelectionInDOMTree();
+      GetFrame().Selection().ComputeVisibleSelectionInDomTree();
   // Caret and range selections (one of which we must have since we found a
   // marker) always return valid normalized ranges.
   const EphemeralRange& selection_range =
@@ -475,7 +477,7 @@ void SpellChecker::ReplaceMisspelledRange(const String& text) {
     return;
 
   GetFrame().Selection().SetSelectionAndEndTyping(
-      SelectionInDOMTree::Builder()
+      SelectionInDomTree::Builder()
           .Collapse(marker_group->StartPosition())
           .Extend(marker_group->EndPosition())
           .Build());
@@ -542,15 +544,15 @@ bool SpellChecker::SelectionStartHasMarkerFor(
     int length) const {
   Node* node = FindFirstMarkable(GetFrame()
                                      .Selection()
-                                     .ComputeVisibleSelectionInDOMTree()
+                                     .ComputeVisibleSelectionInDomTree()
                                      .Start()
                                      .AnchorNode());
   auto* text_node = DynamicTo<Text>(node);
   if (!text_node)
     return false;
 
-  unsigned start_offset = static_cast<unsigned>(from);
-  unsigned end_offset = static_cast<unsigned>(from + length);
+  wtf_size_t start_offset = static_cast<wtf_size_t>(from);
+  wtf_size_t end_offset = static_cast<wtf_size_t>(from + length);
   DocumentMarkerVector markers =
       GetFrame().GetDocument()->Markers().MarkersFor(*text_node);
   for (wtf_size_t i = 0; i < markers.size(); ++i) {
@@ -682,15 +684,14 @@ std::pair<String, int> SpellChecker::FindFirstMisspelling(const Position& start,
 
         Vector<TextCheckingResult> results = FindMisspellings(paragraph_string);
 
-        for (unsigned i = 0; i < results.size(); i++) {
-          const TextCheckingResult* result = &results[i];
-          if (result->location >= current_start_offset &&
-              result->location + result->length <= current_end_offset) {
-            DCHECK_GT(result->length, 0);
-            DCHECK_GE(result->location, 0);
-            spelling_location = result->location;
+        for (const TextCheckingResult& result : results) {
+          if (result.location >= current_start_offset &&
+              result.location + result.length <= current_end_offset) {
+            DCHECK_GT(result.length, 0);
+            DCHECK_GE(result.location, 0);
+            spelling_location = result.location;
             misspelled_word =
-                paragraph_string.substr(result->location, result->length);
+                paragraph_string.substr(result.location, result.length);
             DCHECK(misspelled_word.length());
             break;
           }

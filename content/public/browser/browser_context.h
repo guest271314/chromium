@@ -15,12 +15,11 @@
 #include <vector>
 
 #include "base/functional/function_ref.h"
-#include "base/memory/advanced_memory_safety_checks.h"
+#include "base/memory/sanitized_object.h"
 #include "base/memory/weak_ptr.h"
 #include "base/supports_user_data.h"
 #include "base/unguessable_token.h"
 #include "content/common/content_export.h"
-#include "content/public/browser/k_anonymity_service_delegate.h"
 #include "content/public/browser/pre_prefetch_handle.h"
 #include "content/public/browser/prefetch_handle.h"
 #include "content/public/browser/prefetch_priority.h"
@@ -121,7 +120,7 @@ class StoragePartitionConfig;
 class CONTENT_EXPORT BrowserContext : public base::SupportsUserData {
   // Do not remove this macro!
   // The macro is maintained by the memory safety team.
-  ADVANCED_MEMORY_SAFETY_CHECKS();
+  SANITIZED_OBJECT();
 
  public:
   //////////////////////////////////////////////////////////////////////////////
@@ -478,6 +477,11 @@ class CONTENT_EXPORT BrowserContext : public base::SupportsUserData {
   // implementation.
   virtual bool CanUseDiskWhenOffTheRecord();
 
+  // Returns true if the session storage database should be cleared on startup
+  // instead of preserving data from the previous session.
+  // The default implementation returns false.
+  virtual bool ShouldClearSessionStorageOnStartup();
+
   // Returns the VariationsClient associated with the context if any, or
   // nullptr if there isn't one.
   virtual variations::VariationsClient* GetVariationsClient();
@@ -502,10 +506,6 @@ class CONTENT_EXPORT BrowserContext : public base::SupportsUserData {
   // nullptr otherwise.
   virtual FederatedIdentityPermissionContextDelegate*
   GetFederatedIdentityPermissionContext();
-
-  // Gets the KAnonymityServiceDelegate if supported. Returns nullptr if
-  // unavailable.
-  virtual KAnonymityServiceDelegate* GetKAnonymityServiceDelegate();
 
   // Returns the OriginTrialsControllerDelegate associated with the context if
   // any, nullptr otherwise.

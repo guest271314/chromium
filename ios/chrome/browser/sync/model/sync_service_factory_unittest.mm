@@ -31,6 +31,8 @@ class SyncServiceFactoryTest : public PlatformTest {
  public:
   SyncServiceFactoryTest() {
     TestProfileIOS::Builder profile_builder;
+    profile_builder.AddTestingFactory(SyncServiceFactory::GetInstance(),
+                                      SyncServiceFactory::GetDefaultFactory());
     // BOOKMARKS requires the FaviconService, which requires the HistoryService.
     profile_builder.AddTestingFactory(
         ios::FaviconServiceFactory::GetInstance(),
@@ -71,7 +73,6 @@ class SyncServiceFactoryTest : public PlatformTest {
     datatypes.Put(syncer::AUTOFILL_WALLET_CREDENTIAL);
     datatypes.Put(syncer::AUTOFILL_WALLET_DATA);
     datatypes.Put(syncer::AUTOFILL_WALLET_METADATA);
-    datatypes.Put(syncer::AUTOFILL_WALLET_OFFER);
     datatypes.Put(syncer::BOOKMARKS);
     datatypes.Put(syncer::CONTACT_INFO);
     datatypes.Put(syncer::DEVICE_INFO);
@@ -92,10 +93,7 @@ class SyncServiceFactoryTest : public PlatformTest {
     if (data_sharing::features::IsDataSharingFunctionalityEnabled()) {
       datatypes.Put(syncer::COLLABORATION_GROUP);
       datatypes.Put(syncer::SHARED_TAB_GROUP_DATA);
-      if (base::FeatureList::IsEnabled(
-              syncer::kSyncSharedTabGroupAccountData)) {
-        datatypes.Put(syncer::SHARED_TAB_GROUP_ACCOUNT_DATA);
-      }
+      datatypes.Put(syncer::SHARED_TAB_GROUP_ACCOUNT_DATA);
     }
     datatypes.Put(syncer::WEBAUTHN_CREDENTIAL);
     if (base::FeatureList::IsEnabled(syncer::kSyncSharedComment)) {
@@ -113,12 +111,13 @@ class SyncServiceFactoryTest : public PlatformTest {
     if (base::FeatureList::IsEnabled(syncer::kSyncGeminiThread)) {
       datatypes.Put(syncer::GEMINI_THREAD);
     }
-    if (base::FeatureList::IsEnabled(syncer::kSyncThemesIos) &&
-        IsNTPBackgroundCustomizationEnabled()) {
-      datatypes.Put(syncer::THEMES_IOS);
+    if (base::FeatureList::IsEnabled(
+            syncer::kSyncEncryptedTabContextContainer)) {
+      datatypes.Put(syncer::ENCRYPTED_TAB_CONTEXT_CONTAINER);
+      datatypes.Put(syncer::ENCRYPTED_TAB_CONTEXT_ITEM);
     }
-    if (base::FeatureList::IsEnabled(syncer::kSyncAccessibilityAnnotation)) {
-      datatypes.Put(syncer::ACCESSIBILITY_ANNOTATION);
+    if (base::FeatureList::IsEnabled(syncer::kSyncThemesIos)) {
+      datatypes.Put(syncer::THEMES_IOS);
     }
     if (base::FeatureList::IsEnabled(syncer::kSyncAccountSettings)) {
       datatypes.Put(syncer::ACCOUNT_SETTING);
@@ -128,6 +127,15 @@ class SyncServiceFactoryTest : public PlatformTest {
     }
     if (base::FeatureList::IsEnabled(syncer::kSyncAutofillValuableMetadata)) {
       datatypes.Put(syncer::AUTOFILL_VALUABLE_METADATA);
+    }
+    if (base::FeatureList::IsEnabled(syncer::kSyncNotebook)) {
+      datatypes.Put(syncer::NOTEBOOK);
+    }
+    if (base::FeatureList::IsEnabled(syncer::kSyncJourney)) {
+      datatypes.Put(syncer::JOURNEY);
+    }
+    if (base::FeatureList::IsEnabled(syncer::kSyncAutofillEntitySuppression)) {
+      datatypes.Put(syncer::AUTOFILL_ENTITY_SUPPRESSION);
     }
     return datatypes;
   }

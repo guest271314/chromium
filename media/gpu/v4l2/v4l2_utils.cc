@@ -243,6 +243,8 @@ std::optional<VideoFrameLayout> V4L2FormatToVideoFrameLayout(
 #if BUILDFLAG(IS_LINUX)
   if (video_fourcc == Fourcc(Fourcc::MM21)) {
     modifiers = DRM_FORMAT_MOD_MTK_16L_32S_TILE;
+  } else {
+    modifiers = DRM_FORMAT_MOD_LINEAR;
   }
 #endif
   const size_t num_buffers = pix_mp.num_planes;
@@ -332,6 +334,7 @@ static const std::map<v4l2_enum_type, v4l2_enum_type>
         {V4L2_PIX_FMT_H264, V4L2_CID_MPEG_VIDEO_H264_PROFILE},
         {V4L2_PIX_FMT_H264_SLICE, V4L2_CID_MPEG_VIDEO_H264_PROFILE},
 #if BUILDFLAG(ENABLE_HEVC_PARSER_AND_HW_DECODER)
+        {V4L2_PIX_FMT_HEVC, V4L2_CID_MPEG_VIDEO_HEVC_PROFILE},
         {V4L2_PIX_FMT_HEVC_SLICE, V4L2_CID_MPEG_VIDEO_HEVC_PROFILE},
 #endif  // BUILDFLAG(ENABLE_HEVC_PARSER_AND_HW_DECODER)
         {V4L2_PIX_FMT_VP8, V4L2_CID_MPEG_VIDEO_VP8_PROFILE},
@@ -722,6 +725,7 @@ std::string ControlToString(const T (&arr)[N][M], const std::string control) {
     s << ControlToString(base->control, #control); \
   } while (0)
 
+#if BUILDFLAG(USE_AV1_HW_DECODER)
 static std::string PrintStatelessAV1Control(
     const struct v4l2_ext_control* ext_ctrls) {
   std::ostringstream s;
@@ -853,6 +857,7 @@ static std::string PrintStatelessAV1Control(
   }
   return s.str();
 }
+#endif
 
 static std::string PrintStatelessVP8Control(
     const struct v4l2_ext_control* ext_ctrls) {
@@ -1196,11 +1201,13 @@ std::string V4L2ControlsToString(const struct v4l2_ext_controls* ctrls) {
 
   for (uint32_t i = 0; i < ctrls->count; ++i) {
     switch (ext_ctrls->id) {
+#if BUILDFLAG(USE_AV1_HW_DECODER)
       case V4L2_CID_STATELESS_AV1_SEQUENCE:
       case V4L2_CID_STATELESS_AV1_TILE_GROUP_ENTRY:
       case V4L2_CID_STATELESS_AV1_FRAME:
         s << PrintStatelessAV1Control(ext_ctrls);
         break;
+#endif
       case V4L2_CID_STATELESS_VP8_FRAME:
         s << PrintStatelessVP8Control(ext_ctrls);
         break;

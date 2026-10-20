@@ -16,21 +16,21 @@
 #import "base/metrics/user_metrics_action.h"
 #import "base/notimplemented.h"
 #import "base/strings/sys_string_conversions.h"
-#import "base/task/single_thread_task_runner.h"
-#import "base/trace_event/trace_event.h"
+#import "ios/chrome/browser/app_bar/ui/app_bar_constants.h"
 #import "ios/chrome/browser/bubble/ui_bundled/gesture_iph/gesture_in_product_help_view.h"
 #import "ios/chrome/browser/bubble/ui_bundled/gesture_iph/gesture_in_product_help_view_delegate.h"
 #import "ios/chrome/browser/intelligence/bwg/utils/gemini_constants.h"
+#import "ios/chrome/browser/intelligence/features/features.h"
 #import "ios/chrome/browser/keyboard/ui_bundled/UIKeyCommand+Chrome.h"
 #import "ios/chrome/browser/menu/ui_bundled/action_factory.h"
-#import "ios/chrome/browser/shared/coordinator/scene/state/layout_state.h"
+#import "ios/chrome/browser/shared/coordinator/scene/state/scene_layout_state.h"
+#import "ios/chrome/browser/shared/coordinator/scene/state/tab_grid_state.h"
 #import "ios/chrome/browser/shared/model/web_state_list/tab_utils.h"
-#import "ios/chrome/browser/shared/public/commands/bwg_commands.h"
+#import "ios/chrome/browser/shared/public/commands/gemini_commands.h"
 #import "ios/chrome/browser/shared/public/commands/scene_commands.h"
 #import "ios/chrome/browser/shared/public/commands/tab_grid_commands.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/shared/ui/symbols/symbols.h"
-#import "ios/chrome/browser/shared/ui/table_view/legacy_chrome_table_view_styler.h"
 #import "ios/chrome/browser/shared/ui/util/layout_guide_names.h"
 #import "ios/chrome/browser/shared/ui/util/rtl_geometry.h"
 #import "ios/chrome/browser/shared/ui/util/uikit_ui_util.h"
@@ -59,7 +59,6 @@
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/toolbars/tab_grid_page_control.h"
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/toolbars/tab_grid_toolbar_background_view.h"
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/toolbars/tab_grid_top_toolbar.h"
-#import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/transitions/legacy_grid_transition_layout.h"
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/transitions/tab_grid_transition_layout.h"
 #import "ios/chrome/common/ui/colors/semantic_color_names.h"
 #import "ios/chrome/common/ui/util/constraints_ui_util.h"
@@ -107,8 +106,9 @@ NSUInteger GetPageIndexFromPage(TabGridPage page) {
 
 @interface TabGridViewController () <GestureInProductHelpViewDelegate,
                                      GridViewControllerDelegate,
-                                     LayoutStateObserver,
                                      PinnedTabsViewControllerDelegate,
+                                     SceneLayoutStateObserver,
+                                     TabGridStateObserving,
                                      TabGroupsPanelViewControllerUIDelegate,
                                      UIGestureRecognizerDelegate,
                                      UIScrollViewAccessibilityDelegate>
@@ -200,7 +200,7 @@ NSUInteger GetPageIndexFromPage(TabGridPage page) {
   return self;
 }
 
-- (void)setLayoutState:(LayoutState*)layoutState {
+- (void)setLayoutState:(SceneLayoutState*)layoutState {
   if (_layoutState == layoutState) {
     return;
   }
@@ -211,21 +211,104 @@ NSUInteger GetPageIndexFromPage(TabGridPage page) {
   if (_layoutState) {
     [_layoutState addObserver:self];
   }
+  _bottomToolbar.layoutState = layoutState;
 }
 
-- (void)didSetupChildViewsForTesting {
-  _childViewsAreSetUp = YES;
+- (void)setBottomToolbar:(TabGridBottomToolbar*)bottomToolbar {
+  _bottomToolbar = bottomToolbar;
+  _bottomToolbar.layoutState = self.layoutState;
+}
+
+- (void)maybeShowSwipeToIncognitoIPH {
+  // Return if the regular tabs are visible.
+  if (!self.viewVisible || self.currentPage != TabGridPageRegularTabs) {
+    return;
+  }
+  // Check whether the user should see the IPH.
+  if (![self.delegate tabGridIsUserEligibleForSwipeToIncognitoIPH]) {
+    return;
+  }
+  // Return if the IPH has already been presented.
+  if (self.swipeToIncognitoIPH) {
+    return;
+  }
+
+  // Create the view.
+  UIView* regularGridView = self.regularTabsViewController.view;
+  CGSize expectedSize = CGSize();
+  CGFloat expectedHeight =
+      regularGridView.frame.size.height - self.topToolbar.bounds.size.height;
+  expectedHeight -=
+      self.view.window.windowScene.statusBarManager.statusBarFrame.size.height;
+  if ([self shouldUseCompactLayout]) {
+    expectedHeight -= self.bottomToolbar.bounds.size.height;
+  }
+  expectedSize.height = expectedHeight;
+  CGFloat safeAreaInsetForArrowDirection =
+      UseRTLLayout() ? regularGridView.safeAreaInsets.right
+                     : regularGridView.safeAreaInsets.left;
+  expectedSize.width =
+      regularGridView.frame.size.width - safeAreaInsetForArrowDirection;
+
+  int stringID = IDS_IOS_SWIPE_RIGHT_TO_INCOGNITO_IPH;
+  int voiceOverAnnouncementStringID =
+      IDS_IOS_SWIPE_RIGHT_TO_INCOGNITO_IPH_VOICEOVER;
+  UISwipeGestureRecognizerDirection swipeDirection =
+      UISwipeGestureRecognizerDirectionRight;
+  if (UseRTLLayout()) {
+    stringID = IDS_IOS_SWIPE_LEFT_TO_INCOGNITO_IPH;
+    voiceOverAnnouncementStringID =
+        IDS_IOS_SWIPE_LEFT_TO_INCOGNITO_IPH_VOICEOVER;
+    swipeDirection = UISwipeGestureRecognizerDirectionLeft;
+  }
+  GestureInProductHelpView* gestureIPHView = [[GestureInProductHelpView alloc]
+               initWithText:l10n_util::GetNSString(stringID)
+         bubbleBoundingSize:expectedSize
+             swipeDirection:swipeDirection
+      voiceOverAnnouncement:l10n_util::GetNSString(
+                                voiceOverAnnouncementStringID)];
+  [gestureIPHView setTranslatesAutoresizingMaskIntoConstraints:NO];
+
+  // Return if the view does NOT fit in the regular tab grid.
+  CGSize smallestPossibleSizeOfIPH = [gestureIPHView
+      systemLayoutSizeFittingSize:UILayoutFittingCompressedSize];
+  if (smallestPossibleSizeOfIPH.width > expectedSize.width ||
+      smallestPossibleSizeOfIPH.height > expectedSize.height) {
+    return;
+  }
+  if (![self.delegate tabGridShouldPresentSwipeToIncognitoIPH]) {
+    return;
+  }
+  gestureIPHView.delegate = self;
+  self.swipeToIncognitoIPH = gestureIPHView;
+  self.shouldShowSwipeToIncognitoIPH = NO;
+  [self.view addSubview:self.swipeToIncognitoIPH];
+  self.swipeToIncognitoIPHBottomConstraint = [gestureIPHView.bottomAnchor
+      constraintEqualToAnchor:[self shouldUseCompactLayout]
+                                  ? self.bottomToolbar.topAnchor
+                                  : regularGridView.bottomAnchor];
+  [NSLayoutConstraint activateConstraints:@[
+    [gestureIPHView.leadingAnchor
+        constraintEqualToAnchor:regularGridView.leadingAnchor],
+    [gestureIPHView.trailingAnchor
+        constraintEqualToAnchor:regularGridView.trailingAnchor],
+    [gestureIPHView.topAnchor
+        constraintEqualToAnchor:self.topToolbar.bottomAnchor],
+    self.swipeToIncognitoIPHBottomConstraint
+  ]];
+  if (IsPageActionMenuEnabled()) {
+    [self.geminiHandler
+        hideFloatyIfInvokedAnimated:NO
+                         fromSource:gemini::FloatyUpdateSource::GestureIph];
+  }
+  [self.swipeToIncognitoIPH startAnimation];
 }
 
 #pragma mark - UIViewController
 
-- (void)setupChildViewsIfNeeded {
-  if (_childViewsAreSetUp) {
-    return;
-  }
-  TRACE_EVENT("ui", "TabGridViewController::setupChildViewsIfNeeded");
-  _childViewsAreSetUp = YES;
-
+- (void)viewDidLoad {
+  [super viewDidLoad];
+  self.view.backgroundColor = [UIColor colorNamed:kGridBackgroundColor];
   [self setupScrollView];
 
   [self setupSearchUI];
@@ -239,45 +322,13 @@ NSUInteger GetPageIndexFromPage(TabGridPage page) {
     [self setupPinnedTabsViewController];
   }
 
-  // Hide the toolbars and the floating button, so they can fade in the first
-  // time there's a transition into this view controller. Not hidden for the new
-  // tab grid transitions.
-  if (!IsNewTabGridTransitionsEnabled()) {
-    [self hideToolbars];
-  }
 
   [self scrollToPage:self.currentPage animated:NO];
-}
 
-- (void)viewDidLoad {
-  [super viewDidLoad];
-  self.view.backgroundColor = [UIColor colorNamed:kGridBackgroundColor];
-
-  switch (GetTabGridSetupMode()) {
-    case TabGridSetupMode::kDeferred: {
-      // Schedule the setup to run on the UI thread, once the thread is idle.
-      // This takes the expensive setup of the tab grid off of the critical path
-      // of presenting the BrowserContentViewController, improving the
-      // perceived startup performance. The setup will normally run before the
-      // user opens the tab grid, so that the animated transition to the tab
-      // grid will still be smooth. In the unlikely event that the tab grid is
-      // presented before the setup completes, the setup will be triggered
-      // synchronously in `contentWillAppearAnimated:`, which may result in a
-      // few frames of stutter.
-      __weak __typeof(self) weakSelf = self;
-      web::GetUIThreadTaskRunner({base::TaskPriority::BEST_EFFORT})
-          ->PostTask(FROM_HERE, base::BindOnce(^{
-                       [weakSelf setupChildViewsIfNeeded];
-                     }));
-      break;
-    }
-    case TabGridSetupMode::kImmediate:
-      [self setupChildViewsIfNeeded];
-      break;
-    case TabGridSetupMode::kLazy_ForTesting:
-      break;
+  if (IsChromeNextIaEnabled() && !IsFullscreenRefactoringEnabled()) {
+    [self setContentVisible:self.viewVisible];
   }
-
+  [self updateAccessibilityElements];
   NSArray<UITrait>* traits = TraitCollectionSetForTraits(nil);
   [self registerForTraitChanges:traits
                      withAction:@selector(handleTraitChanges)];
@@ -348,7 +399,6 @@ NSUInteger GetPageIndexFromPage(TabGridPage page) {
 #pragma mark - UIScrollViewDelegate
 
 - (void)scrollViewDidScroll:(UIScrollView*)scrollView {
-  CHECK(_childViewsAreSetUp);
   if (scrollView.dragging || scrollView.decelerating) {
     // Only when user initiates scroll through dragging.
     CGFloat offsetWidth =
@@ -376,7 +426,6 @@ NSUInteger GetPageIndexFromPage(TabGridPage page) {
 }
 
 - (void)scrollViewWillBeginDragging:(UIScrollView*)scrollView {
-  CHECK(_childViewsAreSetUp);
   // Disable the page control when the user drags on the scroll view since
   // tapping on the page control during scrolling can result in erratic
   // scrolling.
@@ -385,13 +434,11 @@ NSUInteger GetPageIndexFromPage(TabGridPage page) {
 
 - (void)scrollViewDidEndDragging:(UIScrollView*)scrollView
                   willDecelerate:(BOOL)decelerate {
-  CHECK(_childViewsAreSetUp);
   // Re-enable the page control since the user isn't dragging anymore.
   self.topToolbar.pageControl.userInteractionEnabled = YES;
 }
 
 - (void)scrollViewDidEndDecelerating:(UIScrollView*)scrollView {
-  CHECK(_childViewsAreSetUp);
   // Update currentPage if scroll view has moved to a new page. Especially
   // important here for 3-finger accessibility swipes since it's not registered
   // as dragging in scrollViewDidScroll:
@@ -407,7 +454,6 @@ NSUInteger GetPageIndexFromPage(TabGridPage page) {
 }
 
 - (void)scrollViewDidEndScrollingAnimation:(UIScrollView*)scrollView {
-  CHECK(_childViewsAreSetUp);
   TabGridPage currentPage = GetPageFromScrollView(scrollView);
   if (currentPage != self.currentPage && self.isDragSessionInProgress) {
     // This happens when the user drags an item from one scroll view into
@@ -453,27 +499,15 @@ NSUInteger GetPageIndexFromPage(TabGridPage page) {
 #pragma mark - Public Methods
 
 - (void)contentWillAppearAnimated:(BOOL)animated {
-  [self setupChildViewsIfNeeded];
-
   _pageChangedSinceEntering = NO;
   _backgroundedSinceEntering = NO;
   [self resetIdlePageStatus];
   self.viewVisible = YES;
+  if (IsChromeNextIaEnabled() && !IsFullscreenRefactoringEnabled()) {
+    [self setContentVisible:YES];
+  }
   [self.topToolbar.pageControl setSelectedPage:self.currentPage animated:NO];
   [self configureViewControllerForCurrentSizeClassesAndPage];
-
-  // The new tab grid transitions don't hide the toolbars, so no need to show.
-  if (!IsNewTabGridTransitionsEnabled()) {
-    // The toolbars should be hidden (alpha 0.0) before the tab appears, so that
-    // they can be animated in. They can't be set to 0.0 here, because if
-    // `animated` is YES, this method is being called inside the animation
-    // block.
-    if (animated && self.transitionCoordinator) {
-      [self animateToolbarsForAppearance];
-    } else {
-      [self showToolbars];
-    }
-  }
   [self broadcastIncognitoContentVisibility];
 
   [self.incognitoTabsViewController contentWillAppearAnimated:animated];
@@ -482,6 +516,7 @@ NSUInteger GetPageIndexFromPage(TabGridPage page) {
 
   // Record when the tab switcher is presented.
   self.tabGridEnterTime = base::TimeTicks::Now();
+  [self updateAccessibilityElements];
 }
 
 - (void)contentDidAppear {
@@ -490,28 +525,28 @@ NSUInteger GetPageIndexFromPage(TabGridPage page) {
 
 - (void)contentWillDisappearAnimated:(BOOL)animated {
   [self recordIdlePageStatus];
-
-  [self.regularGridHandler discardSavedClosedItems];
+  [self exitSearchModeAndUnfocusSearchBar];
 
   [self.swipeToIncognitoIPH
       dismissWithReason:IPHDismissalReasonType::kTappedOutsideIPHAndAnchorView];
 
-  // The new tab grid transitions don't hide the toolbars.
-  if (!IsNewTabGridTransitionsEnabled()) {
-    // When the view disappears, the toolbar alpha should be set to 0; either as
-    // part of the animation, or directly with -hideToolbars.
-    if (animated && self.transitionCoordinator) {
-      [self animateToolbarsForDisappearance];
-    } else {
-      [self hideToolbars];
-    }
-  }
 
   self.viewVisible = NO;
+  [self updateAccessibilityElements];
 
   [self.pinnedTabsViewController contentWillDisappear];
 
   self.tabGridEnterTime = base::TimeTicks();
+}
+
+- (void)setContentVisible:(BOOL)visible {
+  CHECK(IsChromeNextIaEnabled());
+  CHECK(!IsFullscreenRefactoringEnabled());
+
+  self.scrollView.hidden = !visible;
+  self.topToolbar.hidden = !visible;
+  self.bottomToolbar.hidden = !visible;
+  self.pinnedTabsViewController.view.hidden = !visible;
 }
 
 - (void)setCurrentPageAndPageControl:(TabGridPage)page animated:(BOOL)animated {
@@ -536,7 +571,7 @@ NSUInteger GetPageIndexFromPage(TabGridPage page) {
 
   [self.mutator pageChanged:newActivePage
                 interaction:TabSwitcherPageChangeInteraction::kNone];
-  self.activePage = newActivePage;
+  [self setActivePage:newActivePage behavior:TabGridScrollBehaviorNone];
 }
 
 #pragma mark - Public Properties
@@ -593,6 +628,14 @@ NSUInteger GetPageIndexFromPage(TabGridPage page) {
 
 #pragma mark - Private
 
+// Returns YES if the bottom toolbar edge background should be created.
+- (BOOL)shouldCreateBottomBackground {
+  if (@available(iOS 26, *)) {
+    return YES;
+  }
+  return IsChromeNextIaEnabled();
+}
+
 // Updates elements in response to trait collection changes.
 - (void)handleTraitChanges {
   [self updateConstraintsOnTraitChange];
@@ -602,13 +645,6 @@ NSUInteger GetPageIndexFromPage(TabGridPage page) {
 // Updates the edge effects on the top and bottom toolbars based on the current
 // layout.
 - (void)updateToolbarEdgeEffects {
-  if (!_childViewsAreSetUp) {
-    return;
-  }
-  if (!@available(iOS 26, *)) {
-    return;
-  }
-
   UIView* topToolbar = self.topToolbar;
   UIView* bottomToolbar = self.bottomToolbar;
 
@@ -618,28 +654,36 @@ NSUInteger GetPageIndexFromPage(TabGridPage page) {
   if (shouldUseCompactLayout) {
     UIView* view = self.view;
 
-    [view insertSubview:_topToolbarBackground belowSubview:topToolbar];
-    [NSLayoutConstraint activateConstraints:@[
-      [_topToolbarBackground.leadingAnchor
-          constraintEqualToAnchor:view.leadingAnchor],
-      [_topToolbarBackground.trailingAnchor
-          constraintEqualToAnchor:view.trailingAnchor],
-      [_topToolbarBackground.topAnchor constraintEqualToAnchor:view.topAnchor],
-      [_topToolbarBackground.bottomAnchor
-          constraintEqualToAnchor:topToolbar.bottomAnchor],
-    ]];
+    // `_topToolbarBackground` is only instantiated on iOS 26+.
+    if (_topToolbarBackground && !_topToolbarBackground.superview) {
+      [view insertSubview:_topToolbarBackground belowSubview:topToolbar];
+      [NSLayoutConstraint activateConstraints:@[
+        [_topToolbarBackground.leadingAnchor
+            constraintEqualToAnchor:view.leadingAnchor],
+        [_topToolbarBackground.trailingAnchor
+            constraintEqualToAnchor:view.trailingAnchor],
+        [_topToolbarBackground.topAnchor
+            constraintEqualToAnchor:view.topAnchor],
+        [_topToolbarBackground.bottomAnchor
+            constraintEqualToAnchor:topToolbar.bottomAnchor],
+      ]];
+    }
 
-    [view insertSubview:_bottomToolbarBackground belowSubview:bottomToolbar];
-    [NSLayoutConstraint activateConstraints:@[
-      [_bottomToolbarBackground.leadingAnchor
-          constraintEqualToAnchor:view.leadingAnchor],
-      [_bottomToolbarBackground.trailingAnchor
-          constraintEqualToAnchor:view.trailingAnchor],
-      [_bottomToolbarBackground.topAnchor
-          constraintEqualToAnchor:bottomToolbar.topAnchor],
-      [_bottomToolbarBackground.bottomAnchor
-          constraintEqualToAnchor:view.bottomAnchor],
-    ]];
+    // `_bottomToolbarBackground` is instantiated on iOS 26+ and on pre-iOS 26
+    // when ChromeNextIA is enabled.
+    if (_bottomToolbarBackground && !_bottomToolbarBackground.superview) {
+      [view insertSubview:_bottomToolbarBackground belowSubview:bottomToolbar];
+      [NSLayoutConstraint activateConstraints:@[
+        [_bottomToolbarBackground.leadingAnchor
+            constraintEqualToAnchor:view.leadingAnchor],
+        [_bottomToolbarBackground.trailingAnchor
+            constraintEqualToAnchor:view.trailingAnchor],
+        [_bottomToolbarBackground.topAnchor
+            constraintEqualToAnchor:bottomToolbar.topAnchor],
+        [_bottomToolbarBackground.bottomAnchor
+            constraintEqualToAnchor:view.bottomAnchor],
+      ]];
+    }
 
   } else {
     [_topToolbarBackground removeFromSuperview];
@@ -680,9 +724,6 @@ NSUInteger GetPageIndexFromPage(TabGridPage page) {
 // Sets the proper insets for the Grid ViewControllers to accommodate for the
 // safe area and toolbars.
 - (void)setInsetForGridViews {
-  if (!_childViewsAreSetUp) {
-    return;
-  }
   // Sync the scroll view offset to the current page value if the scroll view
   // isn't scrolling. Don't animate this.
   if (!self.scrollViewAnimatingContentOffset && !self.scrollView.dragging &&
@@ -699,7 +740,22 @@ NSUInteger GetPageIndexFromPage(TabGridPage page) {
 }
 
 - (void)setActivePage:(TabGridPage)activePage {
-  [self scrollToPage:activePage animated:YES];
+  [self setActivePage:activePage behavior:TabGridScrollBehaviorAnimated];
+}
+
+- (void)setActivePage:(TabGridPage)activePage
+             behavior:(TabGridScrollBehavior)behavior {
+  switch (behavior) {
+    case TabGridScrollBehaviorAnimated:
+      [self scrollToPage:activePage animated:YES];
+      break;
+    case TabGridScrollBehaviorInstant:
+      [self scrollToPage:activePage animated:NO];
+      break;
+    case TabGridScrollBehaviorNone:
+      // Don't scroll.
+      break;
+  }
   [self.activityObserver updateLastActiveTabPage:activePage];
   if (activePage != _activePage) {
     // Usually, an active page change is a result of an in-page action happening
@@ -712,6 +768,7 @@ NSUInteger GetPageIndexFromPage(TabGridPage page) {
 - (void)setCurrentPage:(TabGridPage)currentPage {
   // Record the idle metric if the previous page was the tab groups page.
   if (_currentPage != currentPage) {
+    [self exitSearchModeAndUnfocusSearchBar];
     [self tabGridDidPerformAction:TabGridActionType::kChangePage];
     if (_currentPage == TabGridPageTabGroups) {
       _idleTabGroupsPage = YES;
@@ -726,6 +783,7 @@ NSUInteger GetPageIndexFromPage(TabGridPage page) {
   UIViewController* previousPageVC = self.currentPageViewController;
   _currentPage = currentPage;
   self.currentPageViewController.view.accessibilityElementsHidden = NO;
+  [self updateAccessibilityElements];
 
   if (_mode == TabGridMode::kSearch) {
     // `UIAccessibilityLayoutChangedNotification` doesn't change the current
@@ -759,9 +817,7 @@ NSUInteger GetPageIndexFromPage(TabGridPage page) {
     [self.pinnedTabsViewController pinnedTabsAvailable:pinnedTabsAvailable];
   }
   [self updateToolbarsAppearance];
-  // Make sure the current page becomes the first responder, so that it can
-  // register and handle key commands.
-  [self.currentPageViewController becomeFirstResponder];
+  [self.delegate tabGridViewController:self didChangeCurrentPage:currentPage];
 }
 
 // Sets the value of `currentPage`, adjusting the position of the scroll view
@@ -780,9 +836,8 @@ NSUInteger GetPageIndexFromPage(TabGridPage page) {
     animated = NO;
   }
 
-  // If the view isn't loaded or set up yet, just do bookkeeping on
-  // `currentPage`.
-  if (!self.viewLoaded || !_childViewsAreSetUp) {
+  // If the view isn't loaded yet, just do bookkeeping on `currentPage`.
+  if (!self.viewLoaded) {
     self.currentPage = targetPage;
     return;
   }
@@ -877,7 +932,7 @@ NSUInteger GetPageIndexFromPage(TabGridPage page) {
   gridsStack.distribution = UIStackViewDistributionEqualSpacing;
 
   [scrollView addSubview:gridsStack];
-  [self.view insertSubview:scrollView atIndex:0];
+  [self.view addSubview:scrollView];
   [self.incognitoGridContainerViewController
       didMoveToParentViewController:self];
   [self.regularGridContainerViewController didMoveToParentViewController:self];
@@ -916,7 +971,7 @@ NSUInteger GetPageIndexFromPage(TabGridPage page) {
   UIView* topToolbar = self.topToolbar;
   CHECK(topToolbar);
 
-  [self.view insertSubview:topToolbar aboveSubview:self.scrollView];
+  [self.view addSubview:topToolbar];
 
   [NSLayoutConstraint activateConstraints:@[
     [topToolbar.topAnchor
@@ -939,7 +994,7 @@ NSUInteger GetPageIndexFromPage(TabGridPage page) {
   CHECK(bottomToolbar);
 
   if (IsChromeNextIaEnabled()) {
-    [self.view insertSubview:bottomToolbar aboveSubview:self.scrollView];
+    [self.view addSubview:bottomToolbar];
 
     _bottomToolbarBottomConstraint = [bottomToolbar.bottomAnchor
         constraintEqualToAnchor:self.view.bottomAnchor];
@@ -957,7 +1012,7 @@ NSUInteger GetPageIndexFromPage(TabGridPage page) {
       _bottomToolbarBottomConstraint,
     ]];
   } else {
-    [self.view insertSubview:bottomToolbar aboveSubview:self.scrollView];
+    [self.view addSubview:bottomToolbar];
 
     [NSLayoutConstraint activateConstraints:@[
       [bottomToolbar.bottomAnchor
@@ -972,7 +1027,7 @@ NSUInteger GetPageIndexFromPage(TabGridPage page) {
   [self.layoutGuideCenter referenceView:bottomToolbar
                               underName:kTabGridBottomToolbarGuide];
 
-  if (@available(iOS 26, *)) {
+  if ([self shouldCreateBottomBackground]) {
     _bottomToolbarBackground = [[TabGridToolbarBackgroundView alloc]
         initWithPosition:TabGridToolbarBackgroundPosition::kBottom];
     _bottomToolbarBackground.translatesAutoresizingMaskIntoConstraints = NO;
@@ -986,8 +1041,7 @@ NSUInteger GetPageIndexFromPage(TabGridPage page) {
   pinnedTabsViewController.delegate = self;
 
   [self addChildViewController:pinnedTabsViewController];
-  [self.view insertSubview:pinnedTabsViewController.view
-              aboveSubview:self.scrollView];
+  [self.view addSubview:pinnedTabsViewController.view];
   [pinnedTabsViewController didMoveToParentViewController:self];
 
   [self updatePinnedTabsViewControllerConstraints];
@@ -1001,101 +1055,6 @@ NSUInteger GetPageIndexFromPage(TabGridPage page) {
     // vertically long or the selection mode is enabled.
     self.configuration = TabGridConfigurationBottomToolbar;
   }
-}
-
-// Shows the two toolbars and the floating button. Suitable for use in
-// animations.
-- (void)showToolbars {
-  CHECK(_childViewsAreSetUp);
-  [self.topToolbar show];
-  [self.bottomToolbar show];
-}
-
-// Hides the two toolbars. Suitable for use in animations.
-- (void)hideToolbars {
-  if (!_childViewsAreSetUp) {
-    return;
-  }
-  [self.topToolbar hide];
-  [self.bottomToolbar hide];
-}
-
-// Translates the toolbar views offscreen and then animates them back in using
-// the transition coordinator. Transitions are preferred here since they don't
-// interact with the layout system at all.
-- (void)animateToolbarsForAppearance {
-  CHECK(_childViewsAreSetUp);
-  DCHECK(self.transitionCoordinator);
-  // Unless reduce motion is enabled, hide the scroll view during the
-  // animation.
-  if (!UIAccessibilityIsReduceMotionEnabled()) {
-    self.scrollView.hidden = YES;
-  }
-  // Fade the toolbars in for the last 60% of the transition.
-  auto keyframe = ^{
-    [UIView addKeyframeWithRelativeStartTime:0.2
-                            relativeDuration:0.6
-                                  animations:^{
-                                    [self showToolbars];
-                                  }];
-  };
-  // Animation block that does the keyframe animation.
-  auto animation = ^(id<UIViewControllerTransitionCoordinatorContext> context) {
-    [UIView animateKeyframesWithDuration:context.transitionDuration
-                                   delay:0
-                                 options:UIViewAnimationOptionLayoutSubviews
-                              animations:keyframe
-                              completion:nil];
-  };
-
-  // Restore the scroll view and toolbar opacities (in case the animation didn't
-  // complete) as part of the completion.
-  auto cleanup = ^(id<UIViewControllerTransitionCoordinatorContext> context) {
-    self.scrollView.hidden = NO;
-    [self showToolbars];
-  };
-
-  // Animate the toolbar alphas alongside the current transition.
-  [self.transitionCoordinator animateAlongsideTransition:animation
-                                              completion:cleanup];
-}
-
-// Translates the toolbar views offscreen using the transition coordinator.
-- (void)animateToolbarsForDisappearance {
-  CHECK(_childViewsAreSetUp);
-  DCHECK(self.transitionCoordinator);
-  // Unless reduce motion is enabled, hide the scroll view during the
-  // animation.
-  if (!UIAccessibilityIsReduceMotionEnabled()) {
-    self.scrollView.hidden = YES;
-  }
-  // Fade the toolbars out in the first 66% of the transition.
-  auto keyframe = ^{
-    [UIView addKeyframeWithRelativeStartTime:0
-                            relativeDuration:0.40
-                                  animations:^{
-                                    [self hideToolbars];
-                                  }];
-  };
-
-  // Animation block that does the keyframe animation.
-  auto animation = ^(id<UIViewControllerTransitionCoordinatorContext> context) {
-    [UIView animateKeyframesWithDuration:context.transitionDuration
-                                   delay:0
-                                 options:UIViewAnimationOptionLayoutSubviews
-                              animations:keyframe
-                              completion:nil];
-  };
-
-  // Hide the scroll view (and thus the tab grids) until the transition
-  // completes. Restore the toolbar opacity when the transition completes.
-  auto cleanup = ^(id<UIViewControllerTransitionCoordinatorContext> context) {
-    self.scrollView.hidden = NO;
-  };
-
-  // Animate the toolbar alphas alongside the current transition.
-  [self.transitionCoordinator animateAlongsideTransition:animation
-                                              completion:cleanup];
 }
 
 // Tells the appropriate delegate to create a new item, and then tells the
@@ -1192,7 +1151,6 @@ NSUInteger GetPageIndexFromPage(TabGridPage page) {
 
 // Shows scrim overlay.
 - (void)showScrim {
-  CHECK(_childViewsAreSetUp);
   self.scrimView.alpha = 0.0f;
   self.scrimView.hidden = NO;
   if (!self.scrimView.superview) {
@@ -1200,6 +1158,7 @@ NSUInteger GetPageIndexFromPage(TabGridPage page) {
     AddSameConstraints(self.scrimView, self.view);
     [self.view layoutIfNeeded];
   }
+  [self updateAccessibilityElements];
   self.currentPageViewController.accessibilityElementsHidden = YES;
   __weak __typeof(self) weakSelf = self;
   [UIView animateWithDuration:kAnimationDuration.InSecondsF()
@@ -1221,7 +1180,6 @@ NSUInteger GetPageIndexFromPage(TabGridPage page) {
 
 // Hides scrim overlay.
 - (void)hideScrim {
-  CHECK(_childViewsAreSetUp);
   __weak TabGridViewController* weakSelf = self;
   [UIView animateWithDuration:kAnimationDuration.InSecondsF()
       animations:^{
@@ -1238,6 +1196,7 @@ NSUInteger GetPageIndexFromPage(TabGridPage page) {
           return;
         }
         strongSelf.scrimView.hidden = YES;
+        [strongSelf updateAccessibilityElements];
         strongSelf.currentPageViewController.accessibilityElementsHidden = NO;
       }];
 }
@@ -1245,9 +1204,6 @@ NSUInteger GetPageIndexFromPage(TabGridPage page) {
 // Updates the appearance of the toolbars based on the scroll position of the
 // currently active Grid.
 - (void)updateToolbarsAppearance {
-  if (!_childViewsAreSetUp) {
-    return;
-  }
   CGFloat remainingScrollDistanceTop;
   CGFloat remainingScrollDistanceBottom;
   switch (self.currentPage) {
@@ -1270,16 +1226,23 @@ NSUInteger GetPageIndexFromPage(TabGridPage page) {
           self.tabGroupsPanelViewController.remainingScrollDistanceBottom;
       break;
   }
-  if (@available(iOS 26, *)) {
+  // Update modern background views when attached to the view hierarchy,
+  // otherwise fall back to legacy discrete edge state updates on the toolbars
+  // (e.g. on iPad / non-compact layout where the background views are
+  // detached).
+  if (_topToolbarBackground && _topToolbarBackground.superview) {
     _topToolbarBackground.remainingScrollDistance = remainingScrollDistanceTop;
+  } else {
+    [self.topToolbar
+        setScrollViewScrolledToEdge:remainingScrollDistanceTop <= 0];
+  }
+  if (_bottomToolbarBackground && _bottomToolbarBackground.superview) {
     _bottomToolbarBackground.remainingScrollDistance =
         remainingScrollDistanceBottom;
-    return;
+  } else {
+    [self.bottomToolbar
+        setScrollViewScrolledToEdge:remainingScrollDistanceBottom <= 0];
   }
-
-  [self.topToolbar setScrollViewScrolledToEdge:remainingScrollDistanceTop <= 0];
-  [self.bottomToolbar
-      setScrollViewScrolledToEdge:remainingScrollDistanceBottom <= 0];
 }
 
 - (void)reportTabSelectionTime {
@@ -1343,92 +1306,12 @@ NSUInteger GetPageIndexFromPage(TabGridPage page) {
   [self.mutator quitSearchMode];
 }
 
-// Optionally presents a full screen IPH that instructs the user to right swipe
-// to view the incognito tab grid. If the delegate determines that the user
-// supposed to see this tip, and the IPH fits on the current screen both
-// contextually and visually, then it initializes `swipeToIncognitoIPH` and
-// presents a GestureInProductHelpView. Otherwise, it keeps
-// `swipeToIncognitoIPH` to `nil` and no gestural tip is shown.
-- (void)maybeShowSwipeToIncognitoIPH {
-  // Return if the regular tabs are visible.
-  if (!self.viewVisible || self.currentPage != TabGridPageRegularTabs) {
-    return;
+// Exits search mode if active and unfocuses the search bar.
+- (void)exitSearchModeAndUnfocusSearchBar {
+  if (_mode == TabGridMode::kSearch) {
+    [self quitSearchMode];
   }
-  // Check whether the user should see the IPH.
-  if (![self.delegate tabGridIsUserEligibleForSwipeToIncognitoIPH]) {
-    return;
-  }
-  // Return if the IPH has already been presented.
-  if (self.swipeToIncognitoIPH) {
-    return;
-  }
-
-  // Create the view.
-  UIView* regularGridView = self.regularTabsViewController.view;
-  CGSize expectedSize = CGSize();
-  CGFloat expectedHeight =
-      regularGridView.frame.size.height - self.topToolbar.bounds.size.height;
-  expectedHeight -=
-      self.view.window.windowScene.statusBarManager.statusBarFrame.size.height;
-  if ([self shouldUseCompactLayout]) {
-    expectedHeight -= self.bottomToolbar.bounds.size.height;
-  }
-  expectedSize.height = expectedHeight;
-  CGFloat safeAreaInsetForArrowDirection =
-      UseRTLLayout() ? regularGridView.safeAreaInsets.right
-                     : regularGridView.safeAreaInsets.left;
-  expectedSize.width =
-      regularGridView.frame.size.width - safeAreaInsetForArrowDirection;
-
-  int stringID = IDS_IOS_SWIPE_RIGHT_TO_INCOGNITO_IPH;
-  int voiceOverAnnouncementStringID =
-      IDS_IOS_SWIPE_RIGHT_TO_INCOGNITO_IPH_VOICEOVER;
-  UISwipeGestureRecognizerDirection swipeDirection =
-      UISwipeGestureRecognizerDirectionRight;
-  if (UseRTLLayout()) {
-    stringID = IDS_IOS_SWIPE_LEFT_TO_INCOGNITO_IPH;
-    voiceOverAnnouncementStringID =
-        IDS_IOS_SWIPE_LEFT_TO_INCOGNITO_IPH_VOICEOVER;
-    swipeDirection = UISwipeGestureRecognizerDirectionLeft;
-  }
-  GestureInProductHelpView* gestureIPHView = [[GestureInProductHelpView alloc]
-               initWithText:l10n_util::GetNSString(stringID)
-         bubbleBoundingSize:expectedSize
-             swipeDirection:swipeDirection
-      voiceOverAnnouncement:l10n_util::GetNSString(
-                                voiceOverAnnouncementStringID)];
-  [gestureIPHView setTranslatesAutoresizingMaskIntoConstraints:NO];
-
-  // Return if the view does NOT fit in the regular tab grid.
-  CGSize smallestPossibleSizeOfIPH = [gestureIPHView
-      systemLayoutSizeFittingSize:UILayoutFittingCompressedSize];
-  if (smallestPossibleSizeOfIPH.width > expectedSize.width ||
-      smallestPossibleSizeOfIPH.height > expectedSize.height) {
-    return;
-  }
-  if (![self.delegate tabGridShouldPresentSwipeToIncognitoIPH]) {
-    return;
-  }
-  gestureIPHView.delegate = self;
-  self.swipeToIncognitoIPH = gestureIPHView;
-  [self.view addSubview:self.swipeToIncognitoIPH];
-  self.swipeToIncognitoIPHBottomConstraint = [gestureIPHView.bottomAnchor
-      constraintEqualToAnchor:[self shouldUseCompactLayout]
-                                  ? self.bottomToolbar.topAnchor
-                                  : regularGridView.bottomAnchor];
-  [NSLayoutConstraint activateConstraints:@[
-    [gestureIPHView.leadingAnchor
-        constraintEqualToAnchor:regularGridView.leadingAnchor],
-    [gestureIPHView.trailingAnchor
-        constraintEqualToAnchor:regularGridView.trailingAnchor],
-    [gestureIPHView.topAnchor
-        constraintEqualToAnchor:self.topToolbar.bottomAnchor],
-    self.swipeToIncognitoIPHBottomConstraint
-  ]];
-  [self.geminiHandler
-      hideFloatyIfInvokedAnimated:NO
-                       fromSource:gemini::FloatyUpdateSource::GestureIph];
-  [self.swipeToIncognitoIPH startAnimation];
+  [self.topToolbar unfocusSearchBar];
 }
 
 // Called when a drag will begin.
@@ -1441,9 +1324,6 @@ NSUInteger GetPageIndexFromPage(TabGridPage page) {
 }
 
 - (void)updateConstraintsOnTraitChange {
-  if (!_childViewsAreSetUp) {
-    return;
-  }
   if (IsPinnedTabsEnabled()) {
     [self updatePinnedTabsViewControllerConstraints];
   }
@@ -1471,10 +1351,12 @@ NSUInteger GetPageIndexFromPage(TabGridPage page) {
           UISceneActivationStateForegroundActive) {
     return;
   }
-  [self.geminiHandler
-      updateFloatyVisibilityIfEligibleAnimated:NO
-                                    fromSource:gemini::FloatyUpdateSource::
-                                                   ViewTransition];
+  if (IsPageActionMenuEnabled()) {
+    [self.geminiHandler
+        updateFloatyVisibilityIfEligibleAnimated:NO
+                                      fromSource:gemini::FloatyUpdateSource::
+                                                     ViewTransition];
+  }
 }
 
 #pragma mark - UIGestureRecognizerDelegate
@@ -1491,7 +1373,6 @@ NSUInteger GetPageIndexFromPage(TabGridPage page) {
 #pragma mark - UISearchBarDelegate
 
 - (void)searchBarTextDidBeginEditing:(UISearchBar*)searchBar {
-  CHECK(_childViewsAreSetUp);
   _searchText = searchBar.text;
   [self updateScrimVisibilityForText:searchBar.text];
   [self.currentPageViewController.view
@@ -1499,24 +1380,27 @@ NSUInteger GetPageIndexFromPage(TabGridPage page) {
 }
 
 - (void)searchBarTextDidEndEditing:(UISearchBar*)searchBar {
-  CHECK(_childViewsAreSetUp);
   [self.currentPageViewController.view
       removeGestureRecognizer:self.searchResultPanRecognizer];
 }
 
 - (void)searchBarSearchButtonClicked:(UISearchBar*)searchBar {
-  CHECK(_childViewsAreSetUp);
   [searchBar resignFirstResponder];
 }
 
 - (void)searchBar:(UISearchBar*)searchBar textDidChange:(NSString*)searchText {
-  CHECK(_childViewsAreSetUp);
   if ([_searchText isEqualToString:searchText]) {
     // It seems that in some cases, the keyboard is triggered twice in the same
     // runloop. This is a tentative fix to avoid trigger duplicate updates. See
     // crbug.com/336515391.
     return;
   }
+
+  // Exit early if the Tab Grid Mode is incompatible with the search bar.
+  if (_mode != TabGridMode::kSearch) {
+    return;
+  }
+
   _searchText = searchText;
   searchBar.searchTextField.accessibilityIdentifier =
       [kTabGridSearchTextFieldIdentifierPrefix
@@ -1551,7 +1435,6 @@ NSUInteger GetPageIndexFromPage(TabGridPage page) {
 }
 
 - (void)updateScrimVisibilityForText:(NSString*)searchText {
-  CHECK(_childViewsAreSetUp);
   if (_mode != TabGridMode::kSearch) {
     return;
   }
@@ -1590,6 +1473,14 @@ NSUInteger GetPageIndexFromPage(TabGridPage page) {
   inset.left = self.scrollView.safeAreaInsets.left;
   inset.right = self.scrollView.safeAreaInsets.right;
   inset.top += self.scrollView.safeAreaInsets.top;
+
+  if (IsChromeNextIaEnabled()) {
+    if (self.layoutState.appBarPosition == AppBarPosition::kRight) {
+      inset.right += AppBarHeightLandscape();
+    } else if (self.layoutState.appBarPosition == AppBarPosition::kLeft) {
+      inset.left += AppBarHeightLandscape();
+    }
+  }
 
   return inset;
 }
@@ -1640,6 +1531,7 @@ NSUInteger GetPageIndexFromPage(TabGridPage page) {
 
 - (void)pinnedTabsViewControllerVisibilityDidChange:
     (PinnedTabsViewController*)pinnedTabsViewController {
+  [self updateAccessibilityElements];
   UIEdgeInsets insets = [self calculateInsetsForRegularGridView];
   [UIView animateWithDuration:kPinnedViewInsetAnimationTime
                    animations:^{
@@ -2005,6 +1897,7 @@ NSUInteger GetPageIndexFromPage(TabGridPage page) {
   [self configureViewControllerForCurrentSizeClassesAndPage];
   [self.view setNeedsLayout];
   self.scrollView.scrollEnabled = (_mode == TabGridMode::kNormal);
+  [self updateAccessibilityElements];
 }
 
 #pragma mark - UIResponder
@@ -2015,33 +1908,49 @@ NSUInteger GetPageIndexFromPage(TabGridPage page) {
   return YES;
 }
 
-- (UIResponder*)nextResponder {
-  UIResponder* nextResponder = [super nextResponder];
-  if (self.viewVisible) {
-    // Add toolbars to the responder chain.
-    // TODO(crbug.com/40273478): Transform toolbars in view controller directly
-    // have it in the chain by default instead of adding it manually.
-    [self.bottomToolbar respondBeforeResponder:nextResponder];
-    [self.topToolbar respondBeforeResponder:self.bottomToolbar];
-    return self.topToolbar;
-  } else {
-    return nextResponder;
+- (NSArray<UIKeyCommand*>*)keyCommands {
+  // As they are siblings, expose key commands of child toolbars (topToolbar and
+  // bottomToolbar) along with TabGrid key commands.
+  if (!self.tabGridState.tabGridVisible) {
+    return nil;
   }
+  NSMutableArray<UIKeyCommand*>* commands = [NSMutableArray array];
+  if (self.topToolbar.keyCommands) {
+    [commands addObjectsFromArray:self.topToolbar.keyCommands];
+  }
+  if (self.bottomToolbar.keyCommands) {
+    [commands addObjectsFromArray:self.bottomToolbar.keyCommands];
+  }
+  [commands addObject:UIKeyCommand.cr_openNewRegularTab];
+  [commands addObjectsFromArray:[super keyCommands]];
+  return commands;
 }
 
-- (NSArray<UIKeyCommand*>*)keyCommands {
-  // On iOS 15+, key commands visible in the app's menu are created in
-  // MenuBuilder. Return the key commands that are not already present in the
-  // menu.
-  return @[
-    UIKeyCommand.cr_openNewRegularTab,
-  ];
+- (id)targetForAction:(SEL)action withSender:(id)sender {
+  if ([self.topToolbar canPerformAction:action withSender:sender]) {
+    return self.topToolbar;
+  }
+  if ([self.bottomToolbar canPerformAction:action withSender:sender]) {
+    return self.bottomToolbar;
+  }
+  if ([self canPerformAction:action withSender:sender]) {
+    return self;
+  }
+  return nil;
 }
 
 - (BOOL)canPerformAction:(SEL)action withSender:(id)sender {
-  if (self.presentedViewController) {
+  if (self.presentedViewController || !self.tabGridState.tabGridVisible) {
     return NO;
   }
+
+  if ([self.topToolbar canPerformAction:action withSender:sender]) {
+    return YES;
+  }
+  if ([self.bottomToolbar canPerformAction:action withSender:sender]) {
+    return YES;
+  }
+
   if (sel_isEqual(action, @selector(keyCommand_closeTab))) {
     return [self canPerformCloseTab];
   }
@@ -2072,17 +1981,17 @@ NSUInteger GetPageIndexFromPage(TabGridPage page) {
   if (command.action == @selector(keyCommand_select1)) {
     newTitle = l10n_util::GetNSStringWithFixup(
         IDS_IOS_KEYBOARD_GO_TO_INCOGNITO_TAB_GRID);
-    command.image = CustomSymbolWithConfiguration(kIncognitoSymbol, nil);
+    command.image = SymbolWithConfiguration(SymbolIncognito, nil);
   }
   if (command.action == @selector(keyCommand_select2)) {
     newTitle = l10n_util::GetNSStringWithFixup(
         IDS_IOS_KEYBOARD_GO_TO_REGULAR_TAB_GRID);
-    command.image = DefaultSymbolWithConfiguration(kTabsSymbol, nil);
+    command.image = SymbolWithConfiguration(SymbolTabs, nil);
   }
   if (command.action == @selector(keyCommand_select3)) {
     newTitle =
         l10n_util::GetNSStringWithFixup(IDS_IOS_KEYBOARD_GO_TO_TAB_GROUPS_GRID);
-    command.image = DefaultSymbolWithConfiguration(kTabGroupsSymbol, nil);
+    command.image = SymbolWithConfiguration(SymbolTabGroups, nil);
   }
   // If a new title was determined, set it on the command.
   if (newTitle.length > 0) {
@@ -2146,9 +2055,6 @@ NSUInteger GetPageIndexFromPage(TabGridPage page) {
 
 // Updates and sets constraints for `pinnedTabsViewController`.
 - (void)updatePinnedTabsViewControllerConstraints {
-  if (!_childViewsAreSetUp) {
-    return;
-  }
   if ([self.pinnedTabsConstraints count] > 0) {
     [NSLayoutConstraint deactivateConstraints:self.pinnedTabsConstraints];
     self.pinnedTabsConstraints = nil;
@@ -2201,8 +2107,9 @@ NSUInteger GetPageIndexFromPage(TabGridPage page) {
 
 #pragma mark - GridConsumer
 
-- (void)setActivePageFromPage:(TabGridPage)page {
-  self.activePage = page;
+- (void)setActivePageFromPage:(TabGridPage)page
+                     behavior:(TabGridScrollBehavior)behavior {
+  [self setActivePage:page behavior:behavior];
 }
 
 - (void)prepareForDismissal {
@@ -2215,10 +2122,14 @@ NSUInteger GetPageIndexFromPage(TabGridPage page) {
 - (void)gestureInProductHelpView:(GestureInProductHelpView*)view
             didDismissWithReason:(IPHDismissalReasonType)reason {
   [self.delegate tabGridDidDismissSwipeToIncognitoIPHWithReason:reason];
-  [self.geminiHandler
-      updateFloatyVisibilityIfEligibleAnimated:NO
-                                    fromSource:gemini::FloatyUpdateSource::
-                                                   GestureIph];
+  if (IsPageActionMenuEnabled()) {
+    [self.geminiHandler
+        updateFloatyVisibilityIfEligibleAnimated:NO
+                                      fromSource:gemini::FloatyUpdateSource::
+                                                     GestureIph];
+  }
+  self.swipeToIncognitoIPH = nil;
+  [self updateAccessibilityElements];
 }
 
 - (void)gestureInProductHelpView:(GestureInProductHelpView*)view
@@ -2251,13 +2162,81 @@ NSUInteger GetPageIndexFromPage(TabGridPage page) {
   }
 }
 
-#pragma mark - LayoutStateObserver
+#pragma mark - SceneLayoutStateObserver
 
-- (void)layoutState:(LayoutState*)layoutState
+- (void)layoutState:(SceneLayoutState*)layoutState
     didChangeAppBarPosition:(AppBarPosition)appBarPosition {
   if (IsPinnedTabsEnabled()) {
     [self updatePinnedTabsViewControllerConstraints];
   }
+  [self setInsetForGridViews];
+}
+
+- (id<UIContextMenuInteractionAnimating>)activeContextMenuAnimator {
+  id activeVC = self.currentPageViewController;
+  return [activeVC respondsToSelector:@selector(activeContextMenuAnimator)]
+             ? [activeVC activeContextMenuAnimator]
+             : nil;
+}
+
+- (void)setTabGridState:(TabGridState*)tabGridState {
+  if (_tabGridState == tabGridState) {
+    return;
+  }
+  [_tabGridState removeObserver:self];
+  _tabGridState = tabGridState;
+  [_tabGridState addObserver:self];
+}
+
+#pragma mark - TabGridStateObserving
+
+- (void)willShowTabGroup:(const TabGroup*)group {
+  [self updateAccessibilityElements];
+}
+
+- (void)willHideTabGroup {
+  [self updateAccessibilityElements];
+}
+
+#pragma mark - Accessibility
+
+// Updates the accessibility elements on the root view to enforce a logical
+// focus order (Top Toolbar -> Scrim -> Scroll View/Active Page -> Pinned Tabs
+// -> Bottom Toolbar -> Transient Views).
+- (void)updateAccessibilityElements {
+  if (!self.viewVisible) {
+    // To fix some EGTests on iOS 18.2, caused by OS bugs that prevents sibling
+    // view's accessibility labels to be parsed.
+    self.view.accessibilityElements = nil;
+    return;
+  }
+
+  if (self.tabGridState.visibleTabGroup != nullptr) {
+    self.view.accessibilityElements = nil;
+    return;
+  }
+
+  NSMutableArray* elements = [[NSMutableArray alloc] init];
+  if (self.topToolbar) {
+    [elements addObject:self.topToolbar];
+  }
+  if (self.scrimView && !self.scrimView.hidden) {
+    [elements addObject:self.scrimView];
+  }
+  if (self.scrollView) {
+    [elements addObject:self.scrollView];
+  }
+  if (IsPinnedTabsEnabled() && self.pinnedTabsViewController.view &&
+      !self.pinnedTabsViewController.view.hidden) {
+    [elements addObject:self.pinnedTabsViewController.view];
+  }
+  if (self.bottomToolbar) {
+    [elements addObject:self.bottomToolbar];
+  }
+  if (self.swipeToIncognitoIPH && !self.swipeToIncognitoIPH.hidden) {
+    [elements addObject:self.swipeToIncognitoIPH];
+  }
+  self.view.accessibilityElements = elements;
 }
 
 @end

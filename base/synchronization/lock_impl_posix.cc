@@ -133,14 +133,14 @@ LockImpl::~LockImpl() {
   DCHECK_EQ(rv, 0) << ". " << SystemErrorCodeToString(rv);
 }
 
-void LockImpl::LockInternal() {
+void LockImpl::LockInternal(const LockMetricTagList& tags) {
 #if BUILDFLAG(IS_POSIX)
   if (TrySpin()) {
     return;
   }
 #endif  // BUILDFLAG(IS_POSIX)
 
-  LockMetricsRecorder::ScopedLockAcquisitionTimer timer;
+  LockMetricsRecorder::ScopedLockAcquisitionTimer timer(tags);
   int rv = pthread_mutex_lock(&native_handle_);
   DCHECK_EQ(rv, 0) << ". " << SystemErrorCodeToString(rv);
 }
@@ -152,7 +152,7 @@ bool LockImpl::TrySpin() {
   int backoff = 1;
   const int spin_count = g_spin_count.load(std::memory_order_relaxed);
 
-  do {
+  while (tries < spin_count) {
     if (Try()) [[likely]] {
       return true;
     }
@@ -164,7 +164,7 @@ bool LockImpl::TrySpin() {
 
     constexpr int kMaxBackoff = 16;
     backoff = std::min(kMaxBackoff, backoff << 1);
-  } while (tries < spin_count);
+  }
 
   return false;
 }

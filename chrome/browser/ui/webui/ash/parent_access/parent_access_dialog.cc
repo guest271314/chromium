@@ -18,7 +18,6 @@
 #include "chrome/browser/ui/webui/ash/parent_access/parent_access_metrics_utils.h"
 #include "chrome/browser/ui/webui/ash/parent_access/parent_access_ui.mojom.h"
 #include "chrome/browser/ui/webui/ash/system_web_dialog/system_web_dialog_delegate.h"
-#include "chrome/grit/generated_resources.h"
 #include "ui/aura/window.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/mojom/ui_base_types.mojom-shared.h"
@@ -68,7 +67,8 @@ ParentAccessDialogProvider::ShowError ParentAccessDialogProvider::Show(
     return ParentAccessDialogProvider::ShowError::kDialogAlreadyVisible;
   }
 
-  DCHECK(ParentAccessDialog::GetInstance() == nullptr);
+  CHECK(ParentAccessDialog::GetInstance() == nullptr,
+        base::NotFatalUntil::M162);
   // Note:  |dialog|'s memory is freed when
   // SystemWebDialogDelegate::OnDialogClosed() is called.
   ParentAccessDialog* dialog =
@@ -161,7 +161,7 @@ ParentAccessDialog::ParentAccessDialog(
       callback_(std::move(callback)) {}
 
 void ParentAccessDialog::ShowDimmer() {
-  DCHECK_EQ(nullptr, dimmer_);
+  CHECK_EQ(nullptr, dimmer_, base::NotFatalUntil::M162);
   dimmer_ = std::make_unique<WindowDimmer>(
       Shell::GetPrimaryRootWindow()->GetChildById(
           kShellWindowId_SystemModalContainer));

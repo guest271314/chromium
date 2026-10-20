@@ -66,14 +66,8 @@ public class HomeFragment extends DevUiBaseFragment {
 
         if (isTV()) {
             View navBarButton = activity.findViewById(R.id.navigation_home);
-            setupTvFocusOnCreated(mInfoListView, navBarButton);
+            registerBackPressToNavBarCallback(navBarButton);
         }
-    }
-
-    private void setupTvFocusOnCreated(View infoListView, View navBarButton) {
-        infoListView.setNextFocusUpId(infoListView.getId());
-        infoListView.setNextFocusDownId(infoListView.getId());
-        registerBackPressToNavBarCallback(navBarButton);
     }
 
     @Override
@@ -118,16 +112,37 @@ public class HomeFragment extends DevUiBaseFragment {
         mInfoListView.setAdapter(itemsArrayAdapter);
 
         if (isTV()) {
+            mInfoListView.setItemsCanFocus(true);
             setupTvFocusOnResume();
+            View actionButton = requireActivity().findViewById(R.id.action_button);
+            if (actionButton != null) {
+                registerDownPressToFocusOnFirstItem(actionButton, mInfoListView);
+            }
         }
+    }
+
+    @Override
+    public void onPause() {
+        if (isTV()) {
+            View actionButton = requireActivity().findViewById(R.id.action_button);
+            if (actionButton != null) {
+                // When user leaves HomeFragment, cancel registerDownPressToFocusOnFirstItem
+                // (pressing DOWN on actionButton goes to HomeFragment mInfoListView)
+                actionButton.setOnKeyListener(null);
+            }
+        }
+        super.onPause();
     }
 
     private void setupTvFocusOnResume() {
         if (!shouldRequestFocus()) return;
         mInfoListView.post(
                 () -> {
-                    mInfoListView.requestFocus();
-                    mInfoListView.setSelection(0);
+                    if (mInfoListView.getChildCount() > 0) {
+                        mInfoListView.getChildAt(0).requestFocus();
+                    } else {
+                        mInfoListView.requestFocus();
+                    }
                 });
     }
 
@@ -175,7 +190,18 @@ public class HomeFragment extends DevUiBaseFragment {
             title.setText(item.title);
             subtitle.setText(item.subtitle);
 
+            if (isTV()) {
+                setupTvFocusForInfoItem(view, position);
+            }
+
             return view;
+        }
+
+        private void setupTvFocusForInfoItem(View view, int position) {
+            if (position == 0) {
+                view.setNextFocusUpId(R.id.action_button);
+            }
+            preventFocusEscapeFromLastItem(view, position == getCount() - 1);
         }
     }
 }

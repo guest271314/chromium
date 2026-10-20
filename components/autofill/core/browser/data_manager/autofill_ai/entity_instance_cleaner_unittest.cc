@@ -9,7 +9,7 @@
 #include "base/test/task_environment.h"
 #include "base/version_info/version_info.h"
 #include "components/autofill/core/browser/data_manager/autofill_ai/entity_data_manager.h"
-#include "components/autofill/core/browser/test_utils/entity_data_test_utils.h"
+#include "components/autofill/core/browser/test_utils/entity_data_test_util.h"
 #include "components/autofill/core/browser/webdata/autofill_ai/entity_table.h"
 #include "components/autofill/core/browser/webdata/autofill_webdata_service_test_helper.h"
 #include "components/autofill/core/common/autofill_features.h"
@@ -25,6 +25,7 @@ namespace {
 
 using test::GetPassportEntityInstanceWithRandomGuid;
 using test::GetVehicleEntityInstanceWithRandomGuid;
+using ::testing::SizeIs;
 
 class EntityInstanceCleanerTest : public testing::Test {
  public:
@@ -37,6 +38,7 @@ class EntityInstanceCleanerTest : public testing::Test {
         /*sync_service=*/&sync_service(),
         webdata_helper_.autofill_webdata_service(),
         /*history_service=*/nullptr,
+        /*pcontext_manager=*/nullptr,
         /*strike_database=*/nullptr,
         /*variation_country_code=*/GeoIpCountryCode("US"));
     cleaner_ = std::make_unique<EntityInstanceCleaner>(
@@ -59,7 +61,7 @@ class EntityInstanceCleanerTest : public testing::Test {
   base::test::ScopedFeatureList scoped_feature_list_{
       features::kAutofillAiDedupeEntities};
   std::unique_ptr<sync_preferences::TestingPrefServiceSyncable> pref_service_;
-  base::test::SingleThreadTaskEnvironment task_environment_;
+  base::test::TaskEnvironment task_environment_;
   AutofillWebDataServiceTestHelper webdata_helper_{
       std::make_unique<EntityTable>()};
   syncer::TestSyncService sync_service_;
@@ -97,13 +99,13 @@ TEST_F(EntityInstanceCleanerTest, DuplicatedLocalEntitiesAreRemoved) {
   entity_data_manager().AddOrUpdateEntityInstance(entity2);
   entity_data_manager().AddOrUpdateEntityInstance(entity3);
   webdata_helper()->WaitUntilIdle();
-  ASSERT_EQ(entity_data_manager().GetEntityInstances().size(), 3u);
+  ASSERT_THAT(entity_data_manager().GetEntityInstances(), SizeIs(3u));
 
   base::HistogramTester histogram_tester;
   sync_service().FireStateChanged();
   webdata_helper()->WaitUntilIdle();
 
-  EXPECT_THAT(entity_data_manager().GetEntityInstances().size(), 1u);
+  EXPECT_THAT(entity_data_manager().GetEntityInstances(), SizeIs(1u));
   histogram_tester.ExpectUniqueSample(
       "Autofill.Ai.Deduplication.NumberOfLocalEntitiesConsidered.AllEntities",
       2, 1);
@@ -121,7 +123,7 @@ TEST_F(EntityInstanceCleanerTest, EntityThatIsSubsetOfAnotherIsRemoved) {
   entity_data_manager().AddOrUpdateEntityInstance(entity1);
   entity_data_manager().AddOrUpdateEntityInstance(entity2);
   webdata_helper()->WaitUntilIdle();
-  ASSERT_EQ(entity_data_manager().GetEntityInstances().size(), 2u);
+  ASSERT_THAT(entity_data_manager().GetEntityInstances(), SizeIs(2u));
 
   base::HistogramTester histogram_tester;
   sync_service().FireStateChanged();
@@ -129,7 +131,7 @@ TEST_F(EntityInstanceCleanerTest, EntityThatIsSubsetOfAnotherIsRemoved) {
 
   base::span<const EntityInstance> instances =
       entity_data_manager().GetEntityInstances();
-  EXPECT_THAT(instances.size(), 1u);
+  EXPECT_THAT(instances, SizeIs(1u));
   EXPECT_EQ(instances[0].guid(), entity2.guid());
   histogram_tester.ExpectUniqueSample(
       "Autofill.Ai.Deduplication.NumberOfLocalEntitiesConsidered.AllEntities",
@@ -152,13 +154,13 @@ TEST_F(EntityInstanceCleanerTest, DifferentEntities_NoneIsRemoved) {
   entity_data_manager().AddOrUpdateEntityInstance(entity1);
   entity_data_manager().AddOrUpdateEntityInstance(entity2);
   webdata_helper()->WaitUntilIdle();
-  ASSERT_EQ(entity_data_manager().GetEntityInstances().size(), 2u);
+  ASSERT_THAT(entity_data_manager().GetEntityInstances(), SizeIs(2u));
 
   base::HistogramTester histogram_tester;
   sync_service().FireStateChanged();
   webdata_helper()->WaitUntilIdle();
 
-  EXPECT_THAT(entity_data_manager().GetEntityInstances().size(), 2u);
+  EXPECT_THAT(entity_data_manager().GetEntityInstances(), SizeIs(2u));
   histogram_tester.ExpectUniqueSample(
       "Autofill.Ai.Deduplication.NumberOfLocalEntitiesConsidered.AllEntities",
       2, 1);
@@ -185,13 +187,13 @@ TEST_F(EntityInstanceCleanerTest,
   entity_data_manager().AddOrUpdateEntityInstance(entity2);
   entity_data_manager().AddOrUpdateEntityInstance(entity3);
   webdata_helper()->WaitUntilIdle();
-  ASSERT_EQ(entity_data_manager().GetEntityInstances().size(), 3u);
+  ASSERT_THAT(entity_data_manager().GetEntityInstances(), SizeIs(3u));
 
   base::HistogramTester histogram_tester;
   sync_service().FireStateChanged();
   webdata_helper()->WaitUntilIdle();
 
-  EXPECT_THAT(entity_data_manager().GetEntityInstances().size(), 3u);
+  EXPECT_THAT(entity_data_manager().GetEntityInstances(), SizeIs(3u));
   histogram_tester.ExpectTotalCount(
       "Autofill.Ai.Deduplication.NumberOfLocalEntitiesConsidered.AllEntities",
       0);

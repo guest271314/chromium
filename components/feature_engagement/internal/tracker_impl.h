@@ -67,8 +67,6 @@ class TrackerImpl : public Tracker {
   TriggerDetails ShouldTriggerHelpUIWithSnooze(
       const base::Feature& feature) override;
   bool WouldTriggerHelpUI(const base::Feature& feature) const override;
-  Tracker::TriggerState GetTriggerState(
-      const base::Feature& feature) const override;
   bool HasEverTriggered(const base::Feature& feature,
                         bool from_window) const override;
   void Dismissed(const base::Feature& feature) override;
@@ -87,7 +85,7 @@ class TrackerImpl : public Tracker {
   void UpdateConfig(const base::Feature& feature,
                     const ConfigurationProvider* provider) override;
 #endif
-  const Configuration* GetConfigurationForTesting() const override;
+  const Configuration* GetConfiguration() const override;
   void SetClockForTesting(const base::Clock& clock,
                           base::Time initial_now) override;
   bool IsInFeatureTestMode() const override;

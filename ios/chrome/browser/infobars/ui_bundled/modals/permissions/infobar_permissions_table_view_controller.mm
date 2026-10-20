@@ -18,7 +18,6 @@
 #import "ios/chrome/browser/permissions/ui_bundled/permissions_delegate.h"
 #import "ios/chrome/browser/settings/ui_bundled/cells/settings_image_detail_text_item.h"
 #import "ios/chrome/browser/shared/ui/table_view/cells/table_view_switch_item.h"
-#import "ios/chrome/browser/shared/ui/table_view/legacy_chrome_table_view_styler.h"
 #import "ios/chrome/common/string_util.h"
 #import "ios/chrome/common/ui/colors/semantic_color_names.h"
 #import "ios/chrome/common/ui/table_view/table_view_cells_constants.h"
@@ -49,10 +48,8 @@ typedef NS_ENUM(NSInteger, ItemType) {
   // The permissions description.
   NSString* _permissionsDescription;
 
-  // The list of permissions used to create switches. The first NSNumber
-  // represents the `web::Permission` int value and the second its associated
-  // `web::PermissionState`.
-  NSDictionary<NSNumber*, NSNumber*>* _permissionsInfo;
+  // The list of permissions used to create switches.
+  NSArray<PermissionInfo*>* _permissionsInfo;
 }
 
 - (instancetype)initWithDelegate:
@@ -107,12 +104,7 @@ typedef NS_ENUM(NSInteger, ItemType) {
   [self.tableViewModel addItem:[self permissionsDescriptionItem]
        toSectionWithIdentifier:SectionIdentifierContent];
 
-  for (NSNumber* key in _permissionsInfo.allKeys) {
-    PermissionInfo* permissionInfo = [[PermissionInfo alloc] init];
-    permissionInfo.permission = (web::Permission)key.unsignedIntValue;
-    permissionInfo.state =
-        (web::PermissionState)_permissionsInfo[key].unsignedIntValue;
-
+  for (PermissionInfo* permissionInfo in _permissionsInfo) {
     [self updateSwitchForPermission:permissionInfo tableViewLoaded:NO];
   }
   _modelLoaded = YES;
@@ -144,8 +136,7 @@ typedef NS_ENUM(NSInteger, ItemType) {
   _permissionsDescription = permissionsDescription;
 }
 
-- (void)setPermissionsInfo:
-    (NSDictionary<NSNumber*, NSNumber*>*)permissionsInfo {
+- (void)setPermissionsInfo:(NSArray<PermissionInfo*>*)permissionsInfo {
   _permissionsInfo = [permissionsInfo copy];
 }
 
@@ -222,7 +213,7 @@ typedef NS_ENUM(NSInteger, ItemType) {
   permissionsDescription.permission = permission;
   permissionsDescription.state =
       sender.isOn ? web::PermissionStateAllowed : web::PermissionStateBlocked;
-  [_infobarModalDelegate updateStateForPermission:permissionsDescription];
+  [_infobarModalDelegate updatePermissionInfo:permissionsDescription];
 }
 
 // Adds or removes a switch depending on the value of the PermissionState.

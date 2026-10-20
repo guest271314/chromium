@@ -8,16 +8,21 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <vector>
 
 #include "base/memory/raw_ptr.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/scoped_observation.h"
 #include "base/task/sequenced_task_runner.h"
+#include "base/types/expected.h"
 #include "components/password_manager/core/browser/hash_password_manager.h"
 #include "components/password_manager/core/browser/password_manager_metrics_util.h"
 #include "components/password_manager/core/browser/password_reuse_manager.h"
+#include "components/password_manager/core/browser/password_store/password_store_backend_error.h"
 #include "components/password_manager/core/browser/password_store/password_store_consumer.h"
 #include "components/password_manager/core/browser/password_store/password_store_interface.h"
+#include "components/password_manager/core/browser/password_store/stored_credential.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "components/signin/public/identity_manager/primary_account_change_event.h"
 
@@ -75,8 +80,10 @@ class PasswordReuseManagerImpl : public PasswordReuseManager,
   void SetPasswordReuseManagerSigninNotifier(
       std::unique_ptr<PasswordReuseManagerSigninNotifier> notifier) override;
   void ScheduleEnterprisePasswordURLUpdate() override;
-  void MaybeSavePasswordHash(const PasswordForm* submitted_form,
-                             PasswordManagerClient* client) override;
+  void MaybeSavePasswordHash(
+      const PasswordForm* submitted_form,
+      PasswordManagerClient* client,
+      std::optional<metrics_util::GaiaPasswordHashChange> event) override;
   HashPasswordManager* GetHashPasswordManager() override;
   void AddObserver(PasswordReuseManager::Observer* observer) override;
   void RemoveObserver(PasswordReuseManager::Observer* observer) override;
@@ -99,7 +106,7 @@ class PasswordReuseManagerImpl : public PasswordReuseManager,
 
   void InitHashPasswordManager(PrefService* local_prefs);
 
-  void OnOsCryptAsyncReady(os_crypt_async::Encryptor encryptor);
+  void OnOsCryptAsyncReady(scoped_refptr<os_crypt_async::Encryptor> encryptor);
 
   // Schedules the update of password hashes used by reuse detector.
   // |sign_in_state_for_metrics|, if not nullopt, is used for metrics only.
@@ -112,7 +119,8 @@ class PasswordReuseManagerImpl : public PasswordReuseManager,
   // Implements PasswordStoreConsumer interface.
   void OnGetPasswordStoreResultsOrErrorFrom(
       PasswordStoreInterface* store,
-      LoginsResultOrError results_or_error) override;
+      base::expected<std::vector<StoredCredential>, PasswordStoreBackendError>
+          results_or_error) override;
 
   // Implements PasswordStoreInterface::Observer
   void OnLoginsChanged(

@@ -18,6 +18,7 @@ import android.os.Bundle;
 import android.util.Pair;
 
 import org.chromium.base.Callback;
+import org.chromium.base.ResettersForTesting;
 import org.chromium.base.metrics.RecordHistogram;
 import org.chromium.blink.mojom.Authenticator;
 import org.chromium.blink.mojom.AuthenticatorStatus;
@@ -31,11 +32,11 @@ import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.components.password_manager.BrowserAssistedLoginType;
 import org.chromium.components.ukm.UkmRecorder;
+import org.chromium.components.webauthn.cred_man.CredManSupportProvider;
+import org.chromium.content_public.browser.LifecycleState;
 import org.chromium.content_public.browser.RenderFrameHost;
 import org.chromium.content_public.browser.Visibility;
 import org.chromium.content_public.browser.WebContents;
-import org.chromium.device.DeviceFeatureList;
-import org.chromium.device.DeviceFeatureMap;
 import org.chromium.mojo.system.MojoException;
 import org.chromium.ui.base.WindowAndroid;
 import org.chromium.url.Origin;
@@ -73,9 +74,7 @@ public final class AuthenticatorImpl implements Authenticator, AuthenticationCon
     private final Set<Fido2CredentialRequest> mUnclosedFido2CredentialRequests = new HashSet<>();
 
     // Information about the request cached here for metric reporting purposes.
-    private boolean mIsConditionalRequest;
-    private boolean mIsPaymentRequest;
-    private boolean mIsImmediateRequest;
+    private @AuthenticationRequestMode int mRequestMode = AuthenticationRequestMode.MODAL_WEB_AUTHN;
 
     // StaticFieldLeak complains that this is a memory leak because
     // `Fido2CredentialRequest` contains a `Context`. But this field is only
@@ -118,12 +117,15 @@ public final class AuthenticatorImpl implements Authenticator, AuthenticationCon
     }
 
     public static void overrideFido2CredentialRequestForTesting(Fido2CredentialRequest request) {
+        Fido2CredentialRequest oldValue = sFido2CredentialRequestOverrideForTesting;
         sFido2CredentialRequestOverrideForTesting = request;
+        ResettersForTesting.register(() -> sFido2CredentialRequestOverrideForTesting = oldValue);
     }
 
     private Fido2CredentialRequest getFido2CredentialRequest() {
         if (sFido2CredentialRequestOverrideForTesting != null) {
             sFido2CredentialRequestOverrideForTesting.setAuthenticationContextProvider(this);
+            mUnclosedFido2CredentialRequests.add(sFido2CredentialRequestOverrideForTesting);
             return sFido2CredentialRequestOverrideForTesting;
         }
         Fido2CredentialRequest request = new Fido2CredentialRequest(this);
@@ -162,13 +164,53 @@ public final class AuthenticatorImpl implements Authenticator, AuthenticationCon
                             new RequestMetrics.Builder().build()));
             return;
         }
+        if (mRenderFrameHost.getLifecycleState() != LifecycleState.ACTIVE) {
+            requestCallback.onComplete(
+                    WebauthnRequestResponse.forFailedMakeCredential(
+                            AuthenticatorStatus.NOT_ALLOWED_ERROR,
+                            new RequestMetrics.Builder().build()));
+            return;
+        }
         log(TAG, "makeCredential");
 
-        mIsPaymentRequest = options.isPaymentCredentialCreation;
+        if (options.isPaymentCredentialCreation) {
+            mRequestMode = AuthenticationRequestMode.PAYMENT;
+        } else if (options.isConditional) {
+            mRequestMode = AuthenticationRequestMode.PASSKEY_UPGRADE;
+        } else {
+            mRequestMode = AuthenticationRequestMode.MODAL_WEB_AUTHN;
+        }
         mRequestCallback = requestCallback;
         mRequestCallback.setCompletionCallback(this::cleanupRequest);
-        if (!GmsCoreUtils.isWebauthnSupported()
-                || (!isChrome(mWebContents) && !GmsCoreUtils.isResultReceiverSupported())) {
+
+        if (options.isConditional
+                && GpmBrowserOptionsHelper.isIncognito(mRenderFrameHost)
+                && WebauthnFeatureMap.getInstance()
+                        .isEnabled(
+                                WebauthnFeatures
+                                        .WEBAUTHN_ANDROID_DISALLOW_INCOGNITO_CONDITIONAL_CREATE)) {
+            mRequestCallback.onComplete(
+                    WebauthnRequestResponse.forFailedMakeCredential(
+                            AuthenticatorStatus.NOT_ALLOWED_ERROR,
+                            new RequestMetrics.Builder()
+                                    .setMakeCredentialOutcome(
+                                            MakeCredentialOutcome.CONDITIONAL_CREATE_FAILURE)
+                                    .build()));
+            return;
+        }
+
+        if (isChrome(mWebContents)
+                && WebauthnBrowserBridge.shouldDisallowCredentialRequest(mRenderFrameHost)) {
+            mRequestCallback.onComplete(
+                    WebauthnRequestResponse.forFailedMakeCredential(
+                            AuthenticatorStatus.NOT_ALLOWED_ERROR,
+                            new RequestMetrics.Builder()
+                                    .setMakeCredentialOutcome(
+                                            MakeCredentialOutcome.BLOCKED_BY_EMBEDDER)
+                                    .build()));
+            return;
+        }
+        if (!hasCredentialBackend()) {
             mRequestCallback.onComplete(
                     WebauthnRequestResponse.forFailedMakeCredential(
                             AuthenticatorStatus.NOT_IMPLEMENTED,
@@ -239,21 +281,43 @@ public final class AuthenticatorImpl implements Authenticator, AuthenticationCon
                             new RequestMetrics.Builder().build()));
             return;
         }
+        if (mRenderFrameHost.getLifecycleState() != LifecycleState.ACTIVE) {
+            requestCallback.onComplete(
+                    WebauthnRequestResponse.forFailedGetCredential(
+                            AuthenticatorStatus.NOT_ALLOWED_ERROR,
+                            new RequestMetrics.Builder().build()));
+            return;
+        }
         log(TAG, "getCredential");
 
         mRequestCallback = requestCallback;
         mRequestCallback.setCompletionCallback(this::cleanupRequest);
-        mIsPaymentRequest = mPayment != null;
-        mIsConditionalRequest = options.mediation == Mediation.CONDITIONAL;
-        mIsImmediateRequest = options.mediation == Mediation.IMMEDIATE;
+        if (mPayment != null) {
+            mRequestMode = AuthenticationRequestMode.PAYMENT;
+        } else if (options.mediation == Mediation.CONDITIONAL) {
+            mRequestMode = AuthenticationRequestMode.CONDITIONAL;
+        } else if (options.mediation == Mediation.IMMEDIATE) {
+            mRequestMode = AuthenticationRequestMode.IMMEDIATE;
+        } else {
+            mRequestMode = AuthenticationRequestMode.MODAL_WEB_AUTHN;
+        }
+
+        if (isChrome(mWebContents)
+                && WebauthnBrowserBridge.shouldDisallowCredentialRequest(mRenderFrameHost)) {
+            mRequestCallback.onComplete(
+                    WebauthnRequestResponse.forFailedGetCredential(
+                            AuthenticatorStatus.NOT_ALLOWED_ERROR,
+                            new RequestMetrics.Builder()
+                                    .setGetAssertionOutcome(GetAssertionOutcome.BLOCKED_BY_EMBEDDER)
+                                    .build()));
+            return;
+        }
 
         boolean isPasswordOnlyFlux =
                 options.publicKey == null
                         && options.password
                         && options.mediation == Mediation.IMMEDIATE;
-        if (!GmsCoreUtils.isWebauthnSupported()
-                || (!isChrome(mWebContents) && !GmsCoreUtils.isResultReceiverSupported())
-                || (options.publicKey == null && !isPasswordOnlyFlux)) {
+        if (!hasCredentialBackend() || (options.publicKey == null && !isPasswordOnlyFlux)) {
             RequestMetrics metrics =
                     new RequestMetrics.Builder()
                             .setGetAssertionOutcome(GetAssertionOutcome.OTHER_FAILURE)
@@ -300,9 +364,17 @@ public final class AuthenticatorImpl implements Authenticator, AuthenticationCon
         return GmsCoreUtils.isWebauthnSupported() && isChrome(mWebContents);
     }
 
-    private boolean couldSupportUvpaa() {
-        return GmsCoreUtils.isWebauthnSupported()
-                && (isChrome(mWebContents) || GmsCoreUtils.isResultReceiverSupported());
+    /**
+     * Returns whether there is a backend that can serve requests from this WebContents. Chrome uses
+     * GMSCore. Other embedders, e.g. WebView, cannot receive activity results, so they need either
+     * Android Credential Manager or a GMSCore that can respond via ResultReceiver.
+     */
+    private boolean hasCredentialBackend() {
+        if (isChrome(mWebContents)) {
+            return GmsCoreUtils.isWebauthnSupported();
+        }
+        return (GmsCoreUtils.isWebauthnSupported() && GmsCoreUtils.isResultReceiverSupported())
+                || CredManSupportProvider.getCredManSupportForWebView() != CredManSupport.DISABLED;
     }
 
     @Override
@@ -316,7 +388,7 @@ public final class AuthenticatorImpl implements Authenticator, AuthenticationCon
                     callback.call(isUvpaa);
                 };
 
-        if (!couldSupportUvpaa()) {
+        if (!hasCredentialBackend()) {
             decoratedCallback.call(false);
             return;
         }
@@ -344,7 +416,7 @@ public final class AuthenticatorImpl implements Authenticator, AuthenticationCon
         capabilities.add(
                 createWebAuthnClientCapability(AuthenticatorConstants.CAPABILITY_PPAA, true));
 
-        if (!couldSupportUvpaa()) {
+        if (!hasCredentialBackend()) {
             capabilities.add(
                     createWebAuthnClientCapability(
                             AuthenticatorConstants.CAPABILITY_CONDITIONAL_GET, false));
@@ -379,8 +451,7 @@ public final class AuthenticatorImpl implements Authenticator, AuthenticationCon
                                             couldSupportConditionalMediation() && isUvpaa));
                             capabilities.add(
                                     createWebAuthnClientCapability(
-                                            AuthenticatorConstants.CAPABILITY_UVPAA,
-                                            couldSupportUvpaa() && isUvpaa));
+                                            AuthenticatorConstants.CAPABILITY_UVPAA, isUvpaa));
                             capabilities.add(
                                     createWebAuthnClientCapability(
                                             AuthenticatorConstants.CAPABILITY_CONDITIONAL_CREATE,
@@ -388,10 +459,7 @@ public final class AuthenticatorImpl implements Authenticator, AuthenticationCon
                             capabilities.add(
                                     createWebAuthnClientCapability(
                                             AuthenticatorConstants.CAPABILITY_IMMEDIATE_GET,
-                                            DeviceFeatureMap.isEnabled(
-                                                            DeviceFeatureList
-                                                                    .WEBAUTHN_IMMEDIATE_GET)
-                                                    && isUvpaa));
+                                            isUvpaa));
                             capabilities.add(
                                     createWebAuthnClientCapability(
                                             AuthenticatorConstants
@@ -524,17 +592,9 @@ public final class AuthenticatorImpl implements Authenticator, AuthenticationCon
             return;
         }
 
-        @AuthenticationRequestMode int mode = AuthenticationRequestMode.MODAL_WEB_AUTHN;
-        if (mIsConditionalRequest) {
-            mode = AuthenticationRequestMode.CONDITIONAL;
-        } else if (mIsPaymentRequest) {
-            mode = AuthenticationRequestMode.PAYMENT;
-        } else if (mIsImmediateRequest) {
-            mode = AuthenticationRequestMode.IMMEDIATE;
-        }
         new UkmRecorder(mWebContents, event)
                 .addMetric(resultMetricName, resultMetricValue)
-                .addMetric("RequestMode", mode)
+                .addMetric("RequestMode", mRequestMode)
                 .record();
     }
 

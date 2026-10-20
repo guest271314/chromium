@@ -4,21 +4,32 @@
 
 #include "extensions/browser/api/file_handlers/app_file_handler_util.h"
 
+#include <set>
+#include <string>
+
 #include "base/files/file.h"
 #include "base/files/file_path.h"
+#include "base/files/file_util.h"
+#include "base/files/scoped_temp_dir.h"
+#include "base/functional/callback_helpers.h"
 #include "base/run_loop.h"
 #include "base/test/gtest_util.h"
 #include "base/test/mock_callback.h"
+#include "base/test/test_future.h"
 #include "components/file_access/scoped_file_access.h"
 #include "components/file_access/scoped_file_access_delegate.h"
 #include "components/file_access/test/mock_scoped_file_access_delegate.h"
 #include "components/services/app_service/public/cpp/file_handler.h"
 #include "components/services/app_service/public/cpp/file_handler_info.h"
 #include "content/public/test/browser_task_environment.h"
+#include "content/public/test/mock_render_process_host.h"
 #include "content/public/test/test_browser_context.h"
 #include "extensions/browser/api/extensions_api_client.h"
 #include "extensions/browser/entry_info.h"
+#include "extensions/browser/granted_file_entry.h"
+#include "storage/common/file_system/file_system_util.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "url/gurl.h"
 
 namespace extensions {
 namespace app_file_handler_util {
@@ -290,6 +301,24 @@ class PrepareFilesForWritableAppTest : public ::testing::Test {
   }
 
  protected:
+  // Runs PrepareFilesForWritableApp() for |path| under |root_path| and returns
+  // whether it succeeded.
+  bool PrepareUnderRoot(const base::FilePath& path,
+                        bool is_directory,
+                        const base::FilePath& root_path) {
+    base::test::TestFuture<bool> future;
+    std::set<base::FilePath> directory_paths;
+    if (is_directory) {
+      directory_paths.insert(path);
+    }
+    PrepareFilesForWritableApp({path}, &context_, directory_paths,
+                               base::BindOnce(future.GetCallback(), true),
+                               base::IgnoreArgs<const base::FilePath&>(
+                                   base::BindOnce(future.GetCallback(), false)),
+                               root_path);
+    return future.Get();
+  }
+
   // File exists.
   base::FilePath file1;
   // File does not exist, but the directory of the file.
@@ -380,6 +409,19 @@ TEST_F(PrepareFilesForWritableAppTest,
   run_loop.Run();
 }
 
+TEST_F(PrepareFilesForWritableAppTest, FileUnderRoot) {
+  base::FilePath root = file1.DirName();
+  base::FilePath dir = root.Append(FILE_PATH_LITERAL("dir"));
+  ASSERT_TRUE(base::CreateDirectory(dir));
+
+  EXPECT_TRUE(PrepareUnderRoot(root, /*is_directory=*/true, root));
+  EXPECT_TRUE(PrepareUnderRoot(file1, /*is_directory=*/false, file1));
+  EXPECT_TRUE(PrepareUnderRoot(dir, /*is_directory=*/true, root));
+  EXPECT_TRUE(PrepareUnderRoot(dir.Append(FILE_PATH_LITERAL("new.txt")),
+                               /*is_directory=*/false, root));
+  EXPECT_FALSE(PrepareUnderRoot(file1, /*is_directory=*/false, dir));
+}
+
 #if BUILDFLAG(IS_CHROMEOS)
 
 TEST_F(PrepareFilesForWritableAppTest, SingleFileThatExistsDlpGrantsAccess) {
@@ -426,6 +468,142 @@ TEST_F(PrepareFilesForWritableAppTest, SingleFileThatExistsDlpDeniesAccess) {
 }
 
 #endif
+
+#if BUILDFLAG(IS_POSIX)
+TEST_F(PrepareFilesForWritableAppTest, SymlinkToExistingFile) {
+  base::FilePath target = file1;
+  base::FilePath symlink =
+      file1.DirName().Append(FILE_PATH_LITERAL("symlink.txt"));
+  ASSERT_TRUE(base::CreateSymbolicLink(target, symlink));
+
+  testing::StrictMock<base::MockOnceCallback<void()>> success_callback;
+  testing::StrictMock<base::MockOnceCallback<void(const base::FilePath& path)>>
+      fail_callback;
+
+  base::RunLoop run_loop;
+  EXPECT_CALL(fail_callback, Run)
+      .WillOnce([&run_loop, &symlink](const base::FilePath& path) {
+        EXPECT_EQ(symlink, path);
+        run_loop.Quit();
+      });
+
+  PrepareFilesForWritableApp({symlink}, &context_, {}, success_callback.Get(),
+                             fail_callback.Get());
+  run_loop.Run();
+}
+
+TEST_F(PrepareFilesForWritableAppTest, DanglingSymlink) {
+  base::FilePath target =
+      file1.DirName().Append(FILE_PATH_LITERAL("non_existent.txt"));
+  base::FilePath symlink =
+      file1.DirName().Append(FILE_PATH_LITERAL("dangling.txt"));
+  ASSERT_TRUE(base::CreateSymbolicLink(target, symlink));
+
+  testing::StrictMock<base::MockOnceCallback<void()>> success_callback;
+  testing::StrictMock<base::MockOnceCallback<void(const base::FilePath& path)>>
+      fail_callback;
+
+  base::RunLoop run_loop;
+  EXPECT_CALL(fail_callback, Run)
+      .WillOnce([&run_loop, &symlink](const base::FilePath& path) {
+        EXPECT_EQ(symlink, path);
+        run_loop.Quit();
+      });
+
+  PrepareFilesForWritableApp({symlink}, &context_, {}, success_callback.Get(),
+                             fail_callback.Get());
+  run_loop.Run();
+
+  // Verify that the target of the dangling symlink was not created.
+  EXPECT_FALSE(base::PathExists(target));
+}
+
+TEST_F(PrepareFilesForWritableAppTest, SymlinkToExistingDirectory) {
+  base::FilePath target =
+      file1.DirName().Append(FILE_PATH_LITERAL("target_dir"));
+  ASSERT_TRUE(base::CreateDirectory(target));
+  base::FilePath symlink =
+      file1.DirName().Append(FILE_PATH_LITERAL("symlink_dir"));
+  ASSERT_TRUE(base::CreateSymbolicLink(target, symlink));
+
+  testing::StrictMock<base::MockOnceCallback<void()>> success_callback;
+  testing::StrictMock<base::MockOnceCallback<void(const base::FilePath& path)>>
+      fail_callback;
+
+  base::RunLoop run_loop;
+  EXPECT_CALL(fail_callback, Run)
+      .WillOnce([&run_loop, &symlink](const base::FilePath& path) {
+        EXPECT_EQ(symlink, path);
+        run_loop.Quit();
+      });
+
+  PrepareFilesForWritableApp({symlink}, &context_, {symlink},
+                             success_callback.Get(), fail_callback.Get());
+  run_loop.Run();
+}
+
+TEST_F(PrepareFilesForWritableAppTest, SymlinkedDirectoryUnderRoot) {
+  base::ScopedTempDir outside;
+  ASSERT_TRUE(outside.CreateUniqueTempDir());
+  base::FilePath sub = outside.GetPath().Append(FILE_PATH_LITERAL("sub"));
+  ASSERT_TRUE(base::CreateDirectory(sub));
+  base::FilePath root = file1.DirName();
+  base::FilePath link = root.Append(FILE_PATH_LITERAL("link"));
+  ASSERT_TRUE(base::CreateSymbolicLink(outside.GetPath(), link));
+
+  EXPECT_FALSE(PrepareUnderRoot(link.Append(FILE_PATH_LITERAL("new.txt")),
+                                /*is_directory=*/false, root));
+  EXPECT_FALSE(PrepareUnderRoot(link.Append(FILE_PATH_LITERAL("sub"))
+                                    .Append(FILE_PATH_LITERAL("new.txt")),
+                                /*is_directory=*/false, root));
+  EXPECT_FALSE(PrepareUnderRoot(link.Append(FILE_PATH_LITERAL("sub")),
+                                /*is_directory=*/true, root));
+  EXPECT_FALSE(
+      base::PathExists(outside.GetPath().Append(FILE_PATH_LITERAL("new.txt"))));
+  EXPECT_FALSE(base::PathExists(sub.Append(FILE_PATH_LITERAL("new.txt"))));
+
+  // Without a root, only the final component is checked.
+  EXPECT_TRUE(PrepareUnderRoot(link.Append(FILE_PATH_LITERAL("new.txt")),
+                               /*is_directory=*/false, base::FilePath()));
+}
+
+TEST_F(PrepareFilesForWritableAppTest, SymlinkAboveRoot) {
+  base::ScopedTempDir parent;
+  ASSERT_TRUE(parent.CreateUniqueTempDir());
+  base::FilePath root = parent.GetPath().Append(FILE_PATH_LITERAL("link"));
+  ASSERT_TRUE(base::CreateSymbolicLink(file1.DirName(), root));
+
+  EXPECT_TRUE(PrepareUnderRoot(root.Append(FILE_PATH_LITERAL("new.txt")),
+                               /*is_directory=*/false, root));
+}
+#endif
+
+TEST(FileHandlersAppFileHandlerUtilTest, ValidateFileEntryAndGetPathRoot) {
+  content::BrowserTaskEnvironment task_environment;
+  content::TestBrowserContext context;
+  content::MockRenderProcessHost process(&context);
+  base::ScopedTempDir root;
+  ASSERT_TRUE(root.CreateUniqueTempDir());
+  GrantedFileEntry entry = CreateFileEntryWithPermissions(
+      process.GetDeprecatedID(), root.GetPath(), /*can_write=*/false,
+      /*can_create=*/false, /*can_delete=*/false);
+  std::string filesystem_name = storage::GetIsolatedFileSystemName(
+      GURL("chrome-extension://abcdefghijklmnopabcdefghijklmnop/"),
+      entry.filesystem_id);
+
+  base::FilePath file_path;
+  base::FilePath root_path;
+  std::string error;
+  ASSERT_TRUE(ValidateFileEntryAndGetPath(
+      filesystem_name, entry.registered_name + "/dir/file.txt",
+      process.GetDeprecatedID(), &file_path, &error, &root_path))
+      << error;
+  EXPECT_EQ(root.GetPath(), root_path);
+  EXPECT_EQ(root.GetPath()
+                .Append(FILE_PATH_LITERAL("dir"))
+                .Append(FILE_PATH_LITERAL("file.txt")),
+            file_path);
+}
 
 }  // namespace app_file_handler_util
 }  // namespace extensions

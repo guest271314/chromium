@@ -94,7 +94,7 @@ class CORE_EXPORT Binary : public crdtp::Serializable {
   size_t size() const { return impl_ ? impl_->size() : 0; }
   base::span<const uint8_t> Span() const {
     // SAFETY: Safety relies on data() and size() of Impl class.
-    return UNSAFE_BUFFERS(base::span(data(), size()));
+    return UNSAFE_BUFFERS(base::span(base::unchecked, data(), size()));
   }
 
   String toBase64() const;
@@ -134,6 +134,21 @@ struct ProtocolTypeTraits<blink::protocol::Binary> {
   static void Serialize(const blink::protocol::Binary& value,
                         std::vector<uint8_t>* bytes);
 };
+
+template <typename DestType>
+DestType ConvertAssociatedData(std::string_view from);
+
+template <typename DestType>
+  requires std::is_constructible_v<DestType, std::string_view>
+DestType ConvertAssociatedData(std::string_view from) {
+  return DestType(from);
+}
+
+template <typename DestType>
+  requires std::is_convertible_v<DestType, base::span<char>>
+DestType ConvertAssociatedData(std::string_view from) {
+  return DestType(base::span(from.data(), from.size()));
+}
 
 }  // namespace crdtp
 

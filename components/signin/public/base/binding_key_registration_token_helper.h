@@ -16,9 +16,11 @@
 #include "base/memory/weak_ptr.h"
 #include "base/types/expected.h"
 #include "components/signin/public/base/binding_key_registration_token_result.h"
+#include "components/signin/public/base/session_binding_utils.h"
+#include "components/unexportable_keys/background_task_priority.h"
 #include "components/unexportable_keys/service_error.h"
 #include "components/unexportable_keys/unexportable_key_id.h"
-#include "crypto/signature_verifier.h"
+#include "crypto/sign.h"
 #include "url/gurl.h"
 
 namespace base {
@@ -41,6 +43,10 @@ namespace signin {
 //
 // TODO(alexilin): support a timeout aborting the token generation if it takes
 // too long.
+//
+// TODO(crbug.com/516196445): move this class into
+// `//components/signin/internal/identity_manager/` once it's no longer used
+// outside of the signin component.
 class BindingKeyRegistrationTokenHelper {
  public:
   // Initialization parameter indicating which binding key should be used for
@@ -48,7 +54,7 @@ class BindingKeyRegistrationTokenHelper {
   using KeyInitParam = std::variant<
       // A list of acceptable signature algorithms to generate a new binding
       // key.
-      std::vector<crypto::SignatureVerifier::SignatureAlgorithm>,
+      std::vector<crypto::sign::SignatureKind>,
       // Wrapped binding key to reuse an existing binding key.
       std::vector<uint8_t>>;
 
@@ -70,9 +76,14 @@ class BindingKeyRegistrationTokenHelper {
   // LINT.ThenChange(//tools/metrics/histograms/metadata/signin/enums.xml:BoundSessionCredentialsRegistrationTokenResult)
 
   // `unexportable_key_service` must outlive `this`.
+  // `priority` specifies the priority of background tasks used to generate,
+  // load, or sign with a binding key. Defaults to `kBestEffort` because new
+  // key registrations are typically non-blocking.
   BindingKeyRegistrationTokenHelper(
       unexportable_keys::UnexportableKeyService& unexportable_key_service,
-      KeyInitParam key_init_param);
+      KeyInitParam key_init_param,
+      unexportable_keys::BackgroundTaskPriority priority =
+          unexportable_keys::BackgroundTaskPriority::kBestEffort);
 
   BindingKeyRegistrationTokenHelper(const BindingKeyRegistrationTokenHelper&) =
       delete;
@@ -80,6 +91,14 @@ class BindingKeyRegistrationTokenHelper {
       const BindingKeyRegistrationTokenHelper&) = delete;
 
   virtual ~BindingKeyRegistrationTokenHelper();
+
+  // Initiates loading or generation of the binding key if not already started.
+  void CreateKeyLoaderIfNeeded();
+
+  // Returns `true` if the binding key was successfully generated or unwrapped.
+  // Returns `false` if the key hasn't been created yet or if it failed to
+  // create/unwrap.
+  bool IsRegistrationKeyReady() const;
 
   // Invokes `callback` with a `Result` containing a new binding key ID and a
   // corresponding registration token on success. Otherwise, invokes `callback`
@@ -91,18 +110,18 @@ class BindingKeyRegistrationTokenHelper {
       base::OnceCallback<void(std::optional<Result>)> callback);
   virtual void GenerateForTokenBinding(
       std::string_view client_id,
-      std::string_view auth_code,
+      const std::variant<TokenBindingAuthCode, TokenBindingChallenge>&
+          auth_code_or_challenge,
       const GURL& registration_url,
       base::OnceCallback<void(std::optional<Result>)> callback);
 
  private:
   using HeaderAndPayloadGenerator =
       base::RepeatingCallback<std::optional<std::string>(
-          crypto::SignatureVerifier::SignatureAlgorithm,
+          crypto::sign::SignatureKind,
           base::span<const uint8_t>,
           base::Time)>;
 
-  void CreateKeyLoaderIfNeeded();
   void SignHeaderAndPayload(
       HeaderAndPayloadGenerator header_and_payload_generator,
       base::OnceCallback<void(base::expected<Result, Error>)> callback,
@@ -110,7 +129,7 @@ class BindingKeyRegistrationTokenHelper {
           unexportable_keys::UnexportableSigningKeyId> binding_key);
   void CreateRegistrationToken(
       std::string_view header_and_payload,
-      unexportable_keys::UnexportableKeyId binding_key,
+      unexportable_keys::UnexportableSigningKeyId binding_key,
       base::OnceCallback<void(base::expected<Result, Error>)> callback,
       unexportable_keys::ServiceErrorOr<std::vector<uint8_t>> signature);
   static void RecordResultAndInvokeCallback(
@@ -121,6 +140,7 @@ class BindingKeyRegistrationTokenHelper {
   const raw_ref<unexportable_keys::UnexportableKeyService>
       unexportable_key_service_;
   const KeyInitParam key_init_param_;
+  const unexportable_keys::BackgroundTaskPriority priority_;
 
   std::unique_ptr<unexportable_keys::UnexportableKeyLoader> key_loader_;
   base::WeakPtrFactory<BindingKeyRegistrationTokenHelper> weak_ptr_factory_{

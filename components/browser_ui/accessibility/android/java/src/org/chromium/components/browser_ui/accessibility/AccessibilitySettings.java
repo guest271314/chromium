@@ -37,7 +37,9 @@ import org.chromium.components.browser_ui.site_settings.SingleCategorySettings;
 import org.chromium.components.browser_ui.site_settings.SiteSettingsCategory;
 import org.chromium.components.dom_distiller.core.DistilledPagePrefs;
 import org.chromium.components.dom_distiller.core.DomDistillerFeatures;
-import org.chromium.components.omnibox.OmniboxFeatures;
+import org.chromium.components.prefs.PrefChangeRegistrar;
+import org.chromium.components.prefs.PrefChangeRegistrar.PrefObserver;
+import org.chromium.components.user_prefs.UserPrefs;
 import org.chromium.content_public.browser.ContentFeatureList;
 import org.chromium.content_public.browser.ContentFeatureMap;
 import org.chromium.ui.base.UiAndroidFeatureList;
@@ -87,11 +89,12 @@ public class AccessibilitySettings extends PreferenceFragmentCompat
     private ChromeSwitchPreference mPageZoomAlwaysShowPref;
     private ChromeSwitchPreference mForceEnableZoomPref;
     private ChromeSwitchPreference mCaretBrowsingPref;
-    private ChromeSwitchPreference mJumpStartOmnibox;
     private @Nullable AccessibilitySettingsDelegate mDelegate;
     private double mPageZoomLatestDefaultZoomPrefValue;
     private ChromeSwitchPreference mTouchpadOverscrollHistoryNavigationPref;
     private @Nullable DistilledPagePrefs mDistilledPagePrefs;
+    private @Nullable PrefChangeRegistrar mPrefChangeRegistrar;
+    private @Nullable PrefObserver mPrefObserver;
 
     private final SettableMonotonicObservableSupplier<String> mPageTitle =
             ObservableSuppliers.createMonotonic();
@@ -112,17 +115,7 @@ public class AccessibilitySettings extends PreferenceFragmentCompat
         mPageTitle.set(getString(R.string.prefs_accessibility));
 
         assertNonNull(mDelegate);
-        // TODO(crbug.com/439911511): Add PageZoomPreference directly to the xml file instead.
-        // Create the page zoom preference.
-        if (mDelegate.shouldUseSlider()) {
-            mPageZoomDefaultZoomPref = new PageZoomSliderPreference(getContext(), null);
-        } else {
-            mPageZoomDefaultZoomPref = new PageZoomSeekbarPreference(getContext(), null);
-        }
-        mPageZoomDefaultZoomPref.setKey(PREF_PAGE_ZOOM_DEFAULT_ZOOM);
-        mPageZoomDefaultZoomPref.setOrder(-1);
-        getPreferenceScreen().addPreference(mPageZoomDefaultZoomPref);
-
+        mPageZoomDefaultZoomPref = findPreference(PREF_PAGE_ZOOM_DEFAULT_ZOOM);
         mPageZoomAlwaysShowPref = findPreference(PREF_PAGE_ZOOM_ALWAYS_SHOW);
         mPageZoomIncludeOSAdjustment = findPreference(PREF_PAGE_ZOOM_INCLUDE_OS_ADJUSTMENT);
 
@@ -130,7 +123,7 @@ public class AccessibilitySettings extends PreferenceFragmentCompat
         mPageZoomDefaultZoomPref.setInitialValue(
                 PageZoomUtils.getDefaultZoomAsBarValue(mDelegate.getBrowserContextHandle()));
         mPageZoomDefaultZoomPref.setOnPreferenceChangeListener(this);
-        mPageZoomAlwaysShowPref.setChecked(PageZoomUtils.shouldShowZoomMenuItem());
+        mPageZoomAlwaysShowPref.setChecked(PageZoomUtils.shouldShowZoomMenuItem(getContext()));
         mPageZoomAlwaysShowPref.setOnPreferenceChangeListener(this);
 
         // When Smart Zoom feature is enabled, set the required delegate.
@@ -143,11 +136,6 @@ public class AccessibilitySettings extends PreferenceFragmentCompat
         mForceEnableZoomPref.setOnPreferenceChangeListener(this);
         mForceEnableZoomPref.setChecked(
                 mDelegate.getForceEnableZoomAccessibilityDelegate().getValue());
-
-        mJumpStartOmnibox = findPreference(OmniboxFeatures.KEY_JUMP_START_OMNIBOX);
-        mJumpStartOmnibox.setOnPreferenceChangeListener(this);
-        mJumpStartOmnibox.setChecked(OmniboxFeatures.isJumpStartOmniboxEnabled());
-        mJumpStartOmnibox.setVisible(shouldShowJumpStartOmniboxPref());
 
         ChromeSwitchPreference readerForAccessibilityPref =
                 findPreference(PREF_READER_FOR_ACCESSIBILITY);
@@ -190,9 +178,9 @@ public class AccessibilitySettings extends PreferenceFragmentCompat
                             AllSiteSettings.EXTRA_TITLE,
                             getString(R.string.zoom_info_preference_title));
                     assumeNonNull(mDelegate)
-                            .getSiteSettingsNavigation()
+                            .getSiteSettingsNavigation(requireContext())
                             .startSettings(
-                                    ContextUtils.getApplicationContext(),
+                                    requireContext(),
                                     AllSiteSettings.class,
                                     initialArguments,
                                     /* addToBackStack= */ true);
@@ -212,13 +200,8 @@ public class AccessibilitySettings extends PreferenceFragmentCompat
 
         // Caret Browsing Settings
         mCaretBrowsingPref = findPreference(PREF_CARET_BROWSING);
-
-        if (shouldShowCaretBrowsingPref()) {
-            mCaretBrowsingPref.setChecked(mDelegate.isCaretBrowsingEnabled());
-            mCaretBrowsingPref.setOnPreferenceChangeListener(this);
-        } else {
-            mCaretBrowsingPref.setVisible(false);
-        }
+        mCaretBrowsingPref.setChecked(mDelegate.isCaretBrowsingEnabled());
+        mCaretBrowsingPref.setOnPreferenceChangeListener(this);
 
         // Touchpad swipe-to-navigate settings.
         mTouchpadOverscrollHistoryNavigationPref =
@@ -233,15 +216,39 @@ public class AccessibilitySettings extends PreferenceFragmentCompat
         } else {
             mTouchpadOverscrollHistoryNavigationPref.setVisible(false);
         }
+
+        String caretBrowsingKey = mDelegate.getCaretBrowsingPreferenceKey();
+        if (caretBrowsingKey != null) {
+            mPrefChangeRegistrar =
+                    new PrefChangeRegistrar(UserPrefs.get(mDelegate.getBrowserContextHandle()));
+            mPrefObserver = this::updateCaretBrowsingPref;
+            mPrefChangeRegistrar.addObserver(caretBrowsingKey, mPrefObserver);
+        }
     }
 
     @Override
     public void onDestroy() {
+        if (mPrefChangeRegistrar != null) {
+            mPrefChangeRegistrar.destroy();
+            mPrefChangeRegistrar = null;
+        }
         if (mDistilledPagePrefs != null) {
             mDistilledPagePrefs.removeObserver(mDistilledPagePrefsObserver);
         }
 
         super.onDestroy();
+    }
+
+    @Override
+    public void onStart() {
+        super.onStart();
+        updateCaretBrowsingPref();
+    }
+
+    private void updateCaretBrowsingPref() {
+        if (mCaretBrowsingPref != null && mDelegate != null) {
+            mCaretBrowsingPref.setChecked(mDelegate.isCaretBrowsingEnabled());
+        }
     }
 
     @Override
@@ -284,8 +291,6 @@ public class AccessibilitySettings extends PreferenceFragmentCompat
             PageZoomUtils.setShouldAlwaysShowZoomMenuItem((Boolean) newValue);
         } else if (PREF_PAGE_ZOOM_INCLUDE_OS_ADJUSTMENT.equals(preference.getKey())) {
             // TODO(mschillaci): Implement the override behavior for OS level.
-        } else if (OmniboxFeatures.KEY_JUMP_START_OMNIBOX.equals(preference.getKey())) {
-            OmniboxFeatures.setJumpStartOmniboxEnabled((Boolean) newValue);
         } else if (PREF_CARET_BROWSING.equals(preference.getKey())) {
             mDelegate.setCaretBrowsingEnabled((Boolean) newValue);
         } else if (PREF_TOUCHPAD_OVERSCROLL_HISTORY_NAVIGATION.equals(preference.getKey())) {
@@ -311,16 +316,12 @@ public class AccessibilitySettings extends PreferenceFragmentCompat
         return false;
     }
 
-    private static boolean shouldShowJumpStartOmniboxPref() {
-        return OmniboxFeatures.sJumpStartOmnibox.isEnabled();
+    @Nullable PrefObserver getPrefObserverForTesting() {
+        return mPrefObserver;
     }
 
     private static boolean shouldShowPageZoomV2() {
         return ContentFeatureMap.isEnabled(ContentFeatureList.ACCESSIBILITY_PAGE_ZOOM_V2);
-    }
-
-    private static boolean shouldShowCaretBrowsingPref() {
-        return ContentFeatureList.sAndroidCaretBrowsing.isEnabled();
     }
 
     private static boolean shouldShowTouchpadOverscrollHistoryNavigationPref() {
@@ -381,17 +382,11 @@ public class AccessibilitySettings extends PreferenceFragmentCompat
                 subViewPos,
                 R.string.page_zoom_preview_title,
                 R.string.page_zoom_preview_text_summary);
-        if (!shouldShowJumpStartOmniboxPref()) {
-            indexData.removeEntryForKey(prefFragment, OmniboxFeatures.KEY_JUMP_START_OMNIBOX);
-        }
         if (!shouldShowPageZoomV2()) {
             indexData.removeEntryForKey(prefFragment, PREF_PAGE_ZOOM_INCLUDE_OS_ADJUSTMENT);
         }
         if (!shouldShowImageDescriptionsPref(delegate)) {
             indexData.removeEntryForKey(prefFragment, PREF_IMAGE_DESCRIPTIONS);
-        }
-        if (!shouldShowCaretBrowsingPref()) {
-            indexData.removeEntryForKey(prefFragment, PREF_CARET_BROWSING);
         }
         if (!shouldShowTouchpadOverscrollHistoryNavigationPref()) {
             indexData.removeEntryForKey(prefFragment, PREF_TOUCHPAD_OVERSCROLL_HISTORY_NAVIGATION);
@@ -412,7 +407,7 @@ public class AccessibilitySettings extends PreferenceFragmentCompat
         String id = PreferenceParser.createUniqueId(parentFragment, key);
         Context context = ContextUtils.getApplicationContext();
         String title = context.getString(titleId);
-        indexData.addEntry(
+        indexData.updateEntry(
                 id,
                 new SettingsIndexData.Entry.Builder(id, key, title, parentFragment)
                         .setSummary(context.getString(summaryId))

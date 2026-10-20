@@ -7,7 +7,9 @@
 #include <optional>
 
 #include "base/bits.h"
+#include "base/memory/raw_ptr.h"
 #include "build/build_config.h"
+#include "gpu/command_buffer/service/gl_utils.h"
 #include "gpu/command_buffer/service/shared_context_state.h"
 #include "gpu/command_buffer/service/shared_image/gl_repack_utils.h"
 #include "gpu/command_buffer/service/shared_image/shared_image_gl_utils.h"
@@ -19,6 +21,7 @@
 #include "ui/gl/gl_version_info.h"
 #include "ui/gl/progress_reporter.h"
 #include "ui/gl/scoped_binders.h"
+#include "ui/gl/scoped_gl_framebuffer.h"
 #include "ui/gl/scoped_make_current.h"
 #include "ui/gl/scoped_restore_texture.h"
 
@@ -56,64 +59,21 @@ constexpr int ComputeBestAlignment(size_t bytes_per_pixel, size_t stride) {
   return bytes_per_pixel;
 }
 
+
+
 }  // anonymous namespace
 
-// static
-// TODO(hitawala): Check GLFormatCaps for format support.
-viz::SharedImageFormat GLTextureHolder::GetPlaneFormat(
-    viz::SharedImageFormat format,
-    int plane_index) {
-  DCHECK(format.IsValidPlaneIndex(plane_index));
-  if (format.is_single_plane()) {
-    return format;
-  }
-
-  int num_channels = format.NumChannelsInPlane(plane_index);
-  DCHECK_LE(num_channels, 2);
-  switch (format.channel_format()) {
-    case viz::SharedImageFormat::ChannelFormat::k8:
-      return num_channels == 2 ? viz::SinglePlaneFormat::kRG_88
-                               : viz::SinglePlaneFormat::kR_8;
-    case viz::SharedImageFormat::ChannelFormat::k10:
-    case viz::SharedImageFormat::ChannelFormat::k16:
-      return num_channels == 2 ? viz::SinglePlaneFormat::kRG_1616
-                               : viz::SinglePlaneFormat::kR_16;
-    case viz::SharedImageFormat::ChannelFormat::k16F:
-      CHECK_EQ(num_channels, 1);
-      return viz::SinglePlaneFormat::kR_F16;
-  }
-  NOTREACHED();
-}
-
 GLTextureHolder::GLTextureHolder(viz::SharedImageFormat format,
+                                 int plane_index,
                                  const gfx::Size& size,
                                  bool is_passthrough,
                                  gl::ProgressReporter* progress_reporter)
     : format_(format),
       size_(size),
+      plane_index_(plane_index),
       is_passthrough_(is_passthrough),
       progress_reporter_(progress_reporter) {
-  CHECK(format_.is_single_plane());
-}
-
-// TODO(kylechar): When `texture_` is removed with validating command decoder
-// move constructor/assignment can be defaulted.
-GLTextureHolder::GLTextureHolder(GLTextureHolder&& other) {
-  operator=(std::move(other));
-}
-
-GLTextureHolder& GLTextureHolder::operator=(GLTextureHolder&& other) {
-  format_ = other.format_;
-  size_ = other.size_;
-  is_passthrough_ = other.is_passthrough_;
-  context_lost_ = other.context_lost_;
-  texture_ = other.texture_;
-  other.texture_ = nullptr;
-  passthrough_texture_ = std::move(other.passthrough_texture_);
-  context_ = std::move(other.context_);
-  format_desc_ = other.format_desc_;
-  progress_reporter_ = other.progress_reporter_;
-  return *this;
+  CHECK(format_.IsValidPlaneIndex(plane_index_));
 }
 
 GLTextureHolder::~GLTextureHolder() {
@@ -159,22 +119,22 @@ void GLTextureHolder::Initialize(
                               is_passthrough_ ? nullptr : &texture_);
 
   if (is_passthrough_) {
-    passthrough_texture_->SetEstimatedSize(format_.EstimatedSizeInBytes(size_));
-  } else {
-    // TODO(piman): We pretend the texture was created in an ES2 context, so
-    // that it can be used in other ES2 contexts, and so we have to pass
-    // gl_format as the internal format in the LevelInfo.
-    // https://crbug.com/628064
-    texture_->SetLevelInfo(format_desc_.target, 0, format_desc_.data_format,
-                           size_.width(), size_.height(), /*depth=*/1, 0,
-                           format_desc_.data_format, format_desc_.data_type,
-                           /*cleared_rect=*/gfx::Rect());
-    texture_->SetImmutable(true, format_info.supports_storage);
+    passthrough_texture_->SetEstimatedSize(
+        format_.MaybeEstimatedPlaneSizeInBytes(plane_index_, size_)
+            .value_or(0));
   }
 
   gl::GLApi* api = gl::g_current_gl_context;
   gl::ScopedRestoreTexture scoped_restore(api, format_desc_.target,
                                           GetServiceId());
+
+  // Drain any pre-existing GL errors so the post-allocation check
+  // below is attributable to the storage call. Silently squelching
+  // these errors is unfortunate, but is done in order to mirror other
+  // allocation checks done in the command decoder.
+  DrainGLErrors(api);
+
+  const gfx::Size plane_size = format_.GetPlaneSize(plane_index_, size_);
 
   // Initialize the texture storage/image parameters and upload initial pixels
   // if available.
@@ -194,7 +154,7 @@ void GLTextureHolder::Initialize(
       gl::ScopedProgressReporter scoped_progress_reporter(progress_reporter_);
       api->glTexStorage2DEXTFn(format_desc_.target, /*levels=*/1,
                                format_info.adjusted_storage_internal_format,
-                               size_.width(), size_.height());
+                               plane_size.width(), plane_size.height());
     }
 
     if (!pixel_data.empty()) {
@@ -202,28 +162,49 @@ void GLTextureHolder::Initialize(
           /*uploading_data=*/true);
       gl::ScopedProgressReporter scoped_progress_reporter(progress_reporter_);
       api->glTexSubImage2DFn(format_desc_.target, /*level=*/0, /*xoffset=*/0,
-                             /*yoffset=*/0, size_.width(), size_.height(),
-                             format_info.adjusted_format,
+                             /*yoffset=*/0, plane_size.width(),
+                             plane_size.height(), format_info.adjusted_format,
                              format_desc_.data_type, pixel_data.data());
     }
   } else if (format_info.is_compressed) {
     ScopedUnpackState scoped_unpack_state(!pixel_data.empty());
     gl::ScopedProgressReporter scoped_progress_reporter(progress_reporter_);
-    api->glCompressedTexImage2DFn(format_desc_.target, 0,
-                                  format_desc_.image_internal_format,
-                                  size_.width(), size_.height(), /*border=*/0,
-                                  pixel_data.size(), pixel_data.data());
+    api->glCompressedTexImage2DFn(
+        format_desc_.target, 0, format_desc_.image_internal_format,
+        plane_size.width(), plane_size.height(), /*border=*/0,
+        pixel_data.size(), pixel_data.data());
   } else {
     ScopedUnpackState scoped_unpack_state(!pixel_data.empty());
     gl::ScopedProgressReporter scoped_progress_reporter(progress_reporter_);
     const void* data = pixel_data.empty() ? nullptr : pixel_data.data();
     api->glTexImage2DFn(
         format_desc_.target, /*level=*/0, format_desc_.image_internal_format,
-        size_.width(), size_.height(), /*border=*/0,
+        plane_size.width(), plane_size.height(), /*border=*/0,
         format_info.adjusted_format, format_desc_.data_type, data);
   }
 
   if (!is_passthrough_) {
+    // Only commit decoder-side LevelInfo / immutable state once the native
+    // allocation has succeeded. If the driver rejected the allocation (e.g.
+    // GL_OUT_OF_MEMORY), leaving LevelInfo at {0,0,0} ensures
+    // Texture::ValidForTexture rejects subsequent TexSubImage calls instead of
+    // forwarding oversized writes to a zero-storage native texture. This
+    // mirrors the fix in GLES2DecoderImpl::TexStorageImpl.
+    if (api->glGetErrorFn() == GL_NO_ERROR) {
+      // TODO(piman): We pretend the texture was created in an ES2 context, so
+      // that it can be used in other ES2 contexts, and so we have to pass
+      // gl_format as the internal format in the LevelInfo.
+      // https://crbug.com/628064
+      const gfx::Rect cleared_rect =
+          !pixel_data.empty() ? gfx::Rect(plane_size) : gfx::Rect();
+      texture_->SetLevelInfo(
+          format_desc_.target, /*level=*/0, format_desc_.data_format,
+          plane_size.width(), plane_size.height(), /*depth=*/1, /*border=*/0,
+          format_desc_.data_format, format_desc_.data_type, cleared_rect);
+      texture_->SetImmutable(true, format_info.supports_storage);
+    } else {
+      LOG(ERROR) << "GLTextureHolder: native storage allocation failed";
+    }
     // Must be set after initial pixel upload.
     texture_->SetCompatibilitySwizzle(format_info.swizzle);
   }
@@ -265,8 +246,9 @@ void GLTextureHolder::InitializeWithTexture(const GLFormatDesc& format_desc,
 }
 
 bool GLTextureHolder::UploadFromMemory(const SkPixmap& pixmap) {
-  DCHECK_EQ(pixmap.width(), size_.width());
-  DCHECK_EQ(pixmap.height(), size_.height());
+  const gfx::Size plane_size = format_.GetPlaneSize(plane_index_, size_);
+  DCHECK_EQ(pixmap.width(), plane_size.width());
+  DCHECK_EQ(pixmap.height(), plane_size.height());
 
   // Ensure the correct GL context and surface are current for the upload.
   std::optional<ui::ScopedMakeCurrent> scoped_make_current;
@@ -301,9 +283,9 @@ bool GLTextureHolder::UploadFromMemory(const SkPixmap& pixmap) {
     // BGRX and RGBX data is uploaded as GL_RGB. Repack from 4 to 3 bytes per
     // pixel.
     repacked_data = RepackPixelDataAsRgb(
-        size_, pixmap, format_ == viz::SinglePlaneFormat::kBGRX_8888);
-    src_stride =
-        base::bits::AlignUp<size_t>(size_.width() * 3, gl_unpack_alignment);
+        plane_size, pixmap, format_ == viz::SinglePlaneFormat::kBGRX_8888);
+    src_stride = base::bits::AlignUp<size_t>(plane_size.width() * 3,
+                                             gl_unpack_alignment);
     src_total_bytes = repacked_data.size();
     src_bytes_per_pixel = 3;
   }
@@ -313,7 +295,7 @@ bool GLTextureHolder::UploadFromMemory(const SkPixmap& pixmap) {
   uint32_t expected_total_bytes = 0;
   uint32_t expected_stride = 0;
   bool result = gles2::GLES2Util::ComputeImageDataSizes(
-      size_.width(), size_.height(), /*depth=*/1, gl_format, gl_type,
+      plane_size.width(), plane_size.height(), /*depth=*/1, gl_format, gl_type,
       gl_unpack_alignment, &expected_total_bytes, nullptr, &expected_stride);
   CHECK(result);
   DCHECK_GE(src_total_bytes, expected_total_bytes);
@@ -330,7 +312,8 @@ bool GLTextureHolder::UploadFromMemory(const SkPixmap& pixmap) {
     } else {
       // If GL_UNPACK_ROW_LENGTH isn't supported then repack pixels with the
       // expected stride.
-      repacked_data = RepackPixelDataWithStride(size_, pixmap, expected_stride);
+      repacked_data =
+          RepackPixelDataWithStride(plane_size, pixmap, expected_stride);
     }
   }
 
@@ -341,18 +324,26 @@ bool GLTextureHolder::UploadFromMemory(const SkPixmap& pixmap) {
   const void* pixels =
       !repacked_data.empty() ? repacked_data.data() : pixmap.addr();
   gl::GLApi* api = gl::g_current_gl_context;
+
+  // Drain any pre-existing GL errors so the post-allocation check below is
+  // attributable to the storage call. Mirrors other allocation checks done in
+  // the command decoder.
+  DrainGLErrors(api);
+
   {
     gl::ScopedProgressReporter scoped_progress_reporter(progress_reporter_);
-    api->glTexSubImage2DFn(gl_target, /*level=*/0, 0, 0, size_.width(),
-                           size_.height(), gl_format, gl_type, pixels);
+    api->glTexSubImage2DFn(gl_target, /*level=*/0, 0, 0, plane_size.width(),
+                           plane_size.height(), gl_format, gl_type, pixels);
   }
 
-  return true;
+  // Report any failures
+  return api->glGetErrorFn() == GL_NO_ERROR;
 }
 
 bool GLTextureHolder::ReadbackToMemory(const SkPixmap& pixmap) {
-  DCHECK_EQ(pixmap.width(), size_.width());
-  DCHECK_EQ(pixmap.height(), size_.height());
+  const gfx::Size plane_size = format_.GetPlaneSize(plane_index_, size_);
+  DCHECK_EQ(pixmap.width(), plane_size.width());
+  DCHECK_EQ(pixmap.height(), plane_size.height());
 
   // Ensure the correct GL context and surface are current for the readback.
   std::optional<ui::ScopedMakeCurrent> scoped_make_current;
@@ -381,9 +372,21 @@ bool GLTextureHolder::ReadbackToMemory(const SkPixmap& pixmap) {
   }
 
   gl::GLApi* api = gl::g_current_gl_context;
-  GLuint framebuffer;
-  api->glGenFramebuffersEXTFn(1, &framebuffer);
-  gl::ScopedFramebufferBinder scoped_framebuffer_binder(framebuffer);
+
+  // Drain any pre-existing GL errors so the post-allocation check below is
+  // attributable to the storage call. Mirrors other allocation checks done in
+  // the command decoder.
+  DrainGLErrors(api);
+
+  // ScopedGLFramebuffer must be declared before ScopedFramebufferBinder
+  // so that when this scope exits, ScopedFramebufferBinder is destroyed first
+  // (restoring the previous framebuffer binding) before the temporary FBO is
+  // deleted. Some drivers retain an internal reference to the previously bound
+  // FBO across bind transitions; deleting it while bound can trigger a
+  // driver UAF (see https://crbug.com/525317502).
+  auto temp_fbo = gl::CreateScopedGLFramebuffer(api);
+  gl::ScopedFramebufferBinder scoped_framebuffer_binder(temp_fbo.get());
+
   // This uses GL_FRAMEBUFFER instead of GL_READ_FRAMEBUFFER as the target for
   // GLES2 compatibility.
   api->glFramebufferTexture2DEXTFn(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
@@ -433,7 +436,7 @@ bool GLTextureHolder::ReadbackToMemory(const SkPixmap& pixmap) {
   uint32_t expected_total_bytes = 0;
   uint32_t expected_stride = 0;
   bool result = gles2::GLES2Util::ComputeImageDataSizes(
-      size_.width(), size_.height(), /*depth=*/1, gl_format, gl_type,
+      plane_size.width(), plane_size.height(), /*depth=*/1, gl_format, gl_type,
       gl_pack_alignment, &expected_total_bytes, nullptr, &expected_stride);
   CHECK(result);
   DCHECK_GE(pixmap.computeByteSize(), expected_total_bytes);
@@ -448,7 +451,8 @@ bool GLTextureHolder::ReadbackToMemory(const SkPixmap& pixmap) {
     } else {
       // If GL_PACK_ROW_LENGTH isn't supported then readback to a temporary
       // buffer with expected stride.
-      unpack_buffer = std::vector<uint8_t>(expected_stride * size_.height());
+      unpack_buffer =
+          std::vector<uint8_t>(expected_stride * plane_size.height());
     }
   }
 
@@ -458,31 +462,32 @@ bool GLTextureHolder::ReadbackToMemory(const SkPixmap& pixmap) {
       !unpack_buffer.empty() ? unpack_buffer.data() : pixmap.writable_addr();
   {
     gl::ScopedProgressReporter scoped_progress_reporter(progress_reporter_);
-    api->glReadPixelsFn(0, 0, size_.width(), size_.height(), gl_format, gl_type,
-                        pixels);
+    api->glReadPixelsFn(0, 0, plane_size.width(), plane_size.height(),
+                        gl_format, gl_type, pixels);
   }
-
-  api->glDeleteFramebuffersEXTFn(1, &framebuffer);
 
   if (!unpack_buffer.empty()) {
     DCHECK_GT(dst_stride, expected_stride);
-    UnpackPixelDataWithStride(size_, unpack_buffer, expected_stride, pixmap);
+    UnpackPixelDataWithStride(plane_size, unpack_buffer, expected_stride,
+                              pixmap);
   }
 
   if (needs_rb_swizzle) {
     SwizzleRedAndBlue(pixmap);
   }
 
-  return true;
+  // Report any failures
+  return api->glGetErrorFn() == GL_NO_ERROR;
 }
 
 sk_sp<GrPromiseImageTexture> GLTextureHolder::GetPromiseImage(
     SharedContextState* context_state) {
+  const gfx::Size plane_size = format_.GetPlaneSize(plane_index_, size_);
   GrBackendTexture backend_texture;
-  GetGrBackendTexture(context_state->feature_info(), format_desc_.target, size_,
-                      GetServiceId(), format_desc_.storage_internal_format,
-                      context_state->gr_context()->threadSafeProxy(),
-                      &backend_texture);
+  GetGrBackendTexture(
+      context_state->feature_info(), format_desc_.target, plane_size,
+      GetServiceId(), format_desc_.storage_internal_format,
+      context_state->gr_context()->threadSafeProxy(), &backend_texture);
   return GrPromiseImageTexture::Make(backend_texture);
 }
 

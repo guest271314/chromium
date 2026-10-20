@@ -4,18 +4,24 @@
 
 import 'chrome-untrusted://read-anything-side-panel.top-chrome/read_anything.js';
 
-import {LinkStatus, MetricsBrowserProxyImpl, ReadAloudSettingsChange, ReadAnythingLogger, ReadAnythingSettingsChange, ReadAnythingVoiceType, SpeechControls, TimeFrom} from 'chrome-untrusted://read-anything-side-panel.top-chrome/read_anything.js';
-import {assertEquals, assertGT, assertLE} from 'chrome-untrusted://webui-test/chai_assert.js';
+import type {ReadAnythingLogger} from 'chrome-untrusted://read-anything-side-panel.top-chrome/read_anything.js';
+import {LinkStatus, ReadAloudSettingsChange, ReadAnythingMathMlDistillationStatus, ReadAnythingSettingsAction, ReadAnythingSettingsChange, ReadAnythingVoiceType, SpeechControls, TimeFrom} from 'chrome-untrusted://read-anything-side-panel.top-chrome/read_anything.js';
+import {assertEquals, assertGT, assertLE, assertNotEquals, assertTrue} from 'chrome-untrusted://webui-test/chai_assert.js';
 
-import {createSpeechSynthesisVoice} from './common.js';
-import {FakeReadingMode} from './fake_reading_mode.js';
-import {TestMetricsBrowserProxy} from './test_metrics_browser_proxy.js';
+import {createSpeechSynthesisVoice, setupTestEnvironment} from './common.js';
+import type {TestAudioBrowserProxy} from './test_audio_browser_proxy.js';
+import type {TestContentBrowserProxy} from './test_content_browser_proxy.js';
+import type {TestMetricsBrowserProxy} from './test_metrics_browser_proxy.js';
+import type {TestVisualBrowserProxy} from './test_visual_browser_proxy.js';
 
 suite('Logger', () => {
   const defaultSpeechStartTime = 0;
 
   let logger: ReadAnythingLogger;
   let metrics: TestMetricsBrowserProxy;
+  let visualBrowserProxy: TestVisualBrowserProxy;
+  let audioBrowserProxy: TestAudioBrowserProxy;
+  let contentBrowserProxy: TestContentBrowserProxy;
 
   async function assertTimeMetricIsCalled(
       from: TimeFrom, expectedMetric: string) {
@@ -25,12 +31,12 @@ suite('Logger', () => {
   }
 
   setup(() => {
-    const readingMode = new FakeReadingMode();
-    chrome.readingMode = readingMode as unknown as typeof chrome.readingMode;
-    metrics = new TestMetricsBrowserProxy();
-    MetricsBrowserProxyImpl.setInstance(metrics);
-
-    logger = new ReadAnythingLogger();
+    const result = setupTestEnvironment();
+    metrics = result.metrics;
+    visualBrowserProxy = result.visualBrowserProxy;
+    audioBrowserProxy = result.audioBrowserProxy;
+    contentBrowserProxy = result.contentBrowserProxy;
+    logger = result.logger;
   });
 
   test('speech controls', async () => {
@@ -49,6 +55,12 @@ suite('Logger', () => {
     logger.logSpeechControlClick(SpeechControls.PLAY_FROM_SELECTION);
     assertEquals(
         'Accessibility.ReadAnything.ReadAloudPlayFromSelectionSessionCount',
+        await metrics.whenCalled('incrementMetricCount'));
+    metrics.reset();
+
+    logger.logSpeechControlClick(SpeechControls.PLAY_FROM_LINE_FOCUS);
+    assertEquals(
+        'Accessibility.ReadAnything.ReadAloudPlayFromLineFocusSessionCount',
         await metrics.whenCalled('incrementMetricCount'));
   });
 
@@ -117,6 +129,13 @@ suite('Logger', () => {
     assertEquals(0, metrics.getCallCount('recordSpeechSettingsChange'));
   });
 
+  test('settings actions', async () => {
+    logger.logSettingsAction(ReadAnythingSettingsAction.TRANSLATE_ACTION);
+    assertEquals(
+        ReadAnythingSettingsAction.TRANSLATE_ACTION,
+        await metrics.whenCalled('recordSettingsAction'));
+  });
+
   test('speech settings', async () => {
     logger.logSpeechSettingsChange(ReadAloudSettingsChange.VOICE_NAME_CHANGE);
     assertEquals(
@@ -172,26 +191,26 @@ suite('Logger', () => {
   });
 
   test('line focus session with flag enabled', () => {
-    chrome.readingMode.isLineFocusEnabled = true;
+    visualBrowserProxy.lineFocusEnabled = true;
     logger.logLineFocusSession();
     assertEquals(1, metrics.getCallCount('recordLineFocusSession'));
   });
 
   test('line focus session with flag disabled', () => {
-    chrome.readingMode.isLineFocusEnabled = false;
+    visualBrowserProxy.lineFocusEnabled = false;
     logger.logLineFocusSession();
     assertEquals(0, metrics.getCallCount('recordLineFocusSession'));
   });
 
   test('line focus toggled with flag enabled', () => {
-    chrome.readingMode.isLineFocusEnabled = true;
+    visualBrowserProxy.lineFocusEnabled = true;
     logger.logLineFocusToggled(true);
     logger.logLineFocusToggled(false);
     assertEquals(2, metrics.getCallCount('recordLineFocusToggled'));
   });
 
   test('line focus toggled with flag disabled', () => {
-    chrome.readingMode.isLineFocusEnabled = false;
+    visualBrowserProxy.lineFocusEnabled = false;
     logger.logLineFocusToggled(true);
     logger.logLineFocusToggled(false);
     assertEquals(0, metrics.getCallCount('recordLineFocusToggled'));
@@ -290,12 +309,83 @@ suite('Logger', () => {
     // The playback length should be at least the amount of time we waited above
     // and less than the starting time (i.e. we should be recording length of
     // time, not timestamp).
-    const recordedTime = await metrics.whenCalled('recordSpeechPlaybackLength');
+    const recordedTime =
+        await metrics.whenCalled('recordSpeechPlaybackLengthLegacy');
     assertLE(expectedTime, recordedTime);
     assertGT(startTime, recordedTime);
   });
 
-  test('logTimeFrom uses correct uma name', () => {
+  test(
+      'logSpeechPlaySession records time with page type and view mode',
+      async () => {
+        const startTime = Date.now();
+
+        visualBrowserProxy.pdf = false;
+        visualBrowserProxy.activePresentationState =
+            visualBrowserProxy.inImmersiveOverlayPresentationState;
+        logger.logSpeechPlaySession(startTime, null);
+        let args = await metrics.whenCalled('recordSpeechPlaybackLength');
+        assertEquals(
+            'Accessibility.ReadAnything.SpeechPlaybackSession.WebPageInFullPage',
+            args[0]);
+
+        metrics.reset();
+        visualBrowserProxy.activePresentationState =
+            visualBrowserProxy.inSidePanelPresentationState;
+        logger.logSpeechPlaySession(startTime, null);
+        args = await metrics.whenCalled('recordSpeechPlaybackLength');
+        assertEquals(
+            'Accessibility.ReadAnything.SpeechPlaybackSession.WebPageInSidePanel',
+            args[0]);
+
+        metrics.reset();
+        visualBrowserProxy.pdf = true;
+        logger.logSpeechPlaySession(startTime, null);
+        args = await metrics.whenCalled('recordSpeechPlaybackLength');
+        assertEquals(
+            'Accessibility.ReadAnything.SpeechPlaybackSession.PDFInSidePanel',
+            args[0]);
+
+        metrics.reset();
+        visualBrowserProxy.activePresentationState =
+            visualBrowserProxy.inImmersiveOverlayPresentationState;
+        logger.logSpeechPlaySession(startTime, null);
+        args = await metrics.whenCalled('recordSpeechPlaybackLength');
+        assertEquals(
+            'Accessibility.ReadAnything.SpeechPlaybackSession.PDFInFullPage',
+            args[0]);
+      });
+
+  test('logSpeechPlaySession does not record with invalid page type', () => {
+    const startTime = Date.now();
+    visualBrowserProxy.pdf = false;
+    visualBrowserProxy.activePresentationState = 10000;
+
+    logger.logSpeechPlaySession(startTime, null);
+
+    assertEquals(0, metrics.getCallCount('recordSpeechPlaybackLength'));
+  });
+
+  test('logSpeechPlaybackSessionPerPage records time', async () => {
+    const playbackTime = 12345;
+    logger.logSpeechPlaybackSessionPerPage(playbackTime);
+    const args = await metrics.whenCalled('recordSpeechPlaybackLength');
+    assertEquals(
+        'Accessibility.ReadAnything.SpeechPlaybackSession.PerPage', args[0]);
+    assertEquals(playbackTime, args[1]);
+  });
+
+  test(
+      'logSpeechPlaybackSessionPerPage does not record when time is zero or negative',
+      () => {
+        logger.logSpeechPlaybackSessionPerPage(0);
+        assertEquals(0, metrics.getCallCount('recordSpeechPlaybackLength'));
+
+        logger.logSpeechPlaybackSessionPerPage(-100);
+        assertEquals(0, metrics.getCallCount('recordSpeechPlaybackLength'));
+      });
+
+    test('logTimeFrom uses correct uma name', () => {
     assertTimeMetricIsCalled(
         TimeFrom.APP,
         'Accessibility.ReadAnything.TimeFromAppStartedToConstructor');
@@ -336,60 +426,558 @@ suite('Logger', () => {
 
     test('when hidden does not log', () => {
       logger.setHidden(true);
-      const p = document.createElement('p');
-      p.textContent = 'Paragraph';
-      container.replaceChildren(p);
+      container.appendChild(document.createElement('h1'));
+      container.appendChild(document.createElement('p'));
       logger.logDistilledPageStructure(container);
       assertEquals(0, metrics.getCallCount('recordCount'));
+      assertEquals(0, metrics.getCallCount('recordBoolean'));
     });
 
-    test('logs structure count metrics', () => {
-      const titleHeader = document.createElement('h1');
-      titleHeader.textContent = 'Title';
-
-      const h2Elements = Array.from({length: 2}, (_, i) => {
-        const h2 = document.createElement('h2');
-        h2.textContent = `Header 2.${i + 1}`;
-        return h2;
-      });
-
-      const h4Elements = Array.from({length: 5}, (_, i) => {
-        const h4 = document.createElement('h4');
-        h4.textContent = `Header 4.${i + 1}`;
-        return h4;
-      });
-
-      const firstParagraph = document.createElement('p');
-      firstParagraph.textContent = 'P1';
-      const secondParagraph = document.createElement('p');
-      secondParagraph.textContent = 'P2';
-
-      container.replaceChildren(
-          titleHeader, ...h2Elements, ...h4Elements, firstParagraph,
-          secondParagraph);
+    test('single h1 excluded from top two calculation', () => {
+      // 1 h1, 2 h2s, 0 h3s, 5 h4s, 2 paragraphs
+      container.appendChild(document.createElement('h1'));
+      for (let i = 0; i < 2; i++) {
+        container.appendChild(document.createElement('h2'));
+      }
+      for (let i = 0; i < 5; i++) {
+        container.appendChild(document.createElement('h4'));
+      }
+      for (let i = 0; i < 2; i++) {
+        container.appendChild(document.createElement('p'));
+      }
       logger.logDistilledPageStructure(container);
 
       // TotalHeaderCount: 1 + 2 + 5 = 8
       // UniqueHeaderTags: h1, h2, h4 = 3
       // NumberParagraphs: 2
+      // HeadingToParagraphRatio: (8 / 2) * 100 = 400
+      // TopTwoHeadersCount (excluding h1): h2 (2) + h4 (5) = 7
+      // TopTwoHeadersHaveMinimumTwoItems: h2 has 2, h4 has 5 -> true
+      // TopTwoHeadingRatio: (2 / 5) * 100 = 40
+      // MathML.PresentOnPage: false (logged for every page)
 
-      assertEquals(3, metrics.getCallCount('recordCount'));
+      assertEquals(6, metrics.getCallCount('recordCount'));
+      assertEquals(2, metrics.getCallCount('recordBoolean'));
 
       const countCalls = metrics.getArgs('recordCount');
       assertEquals(
-          'Accessibility.ReadAnything.DistilledPageStructure.NumberParagraphs',
-          countCalls[0][0]);
-      assertEquals(2, countCalls[0][1]);
-
-      assertEquals(
           'Accessibility.ReadAnything.DistilledPageStructure.TotalHeaderCount',
-          countCalls[1][0]);
-      assertEquals(8, countCalls[1][1]);
+          countCalls[0][0]);
+      assertEquals(8, countCalls[0][1]);
 
       assertEquals(
           'Accessibility.ReadAnything.DistilledPageStructure.UniqueHeaderTags',
+          countCalls[1][0]);
+      assertEquals(3, countCalls[1][1]);
+
+      assertEquals(
+          'Accessibility.ReadAnything.DistilledPageStructure.NumberParagraphs',
           countCalls[2][0]);
-      assertEquals(3, countCalls[2][1]);
+      assertEquals(2, countCalls[2][1]);
+
+      assertEquals(
+          'Accessibility.ReadAnything.DistilledPageStructure.HeadingToParagraphRatio',
+          countCalls[3][0]);
+      assertEquals(400, countCalls[3][1]);
+
+      assertEquals(
+          'Accessibility.ReadAnything.DistilledPageStructure.TopTwoHeadersCount',
+          countCalls[4][0]);
+      assertEquals(7, countCalls[4][1]);
+
+      assertEquals(
+          'Accessibility.ReadAnything.DistilledPageStructure.TopTwoHeadingRatio',
+          countCalls[5][0]);
+      assertEquals(40, countCalls[5][1]);
+
+      const booleanCalls = metrics.getArgs('recordBoolean');
+      assertEquals(
+          'Accessibility.ReadAnything.DistilledPageStructure.TopTwoHeadersHaveMinimumTwoItems',
+          booleanCalls[0][0]);
+      assertEquals(true, booleanCalls[0][1]);
     });
+
+    test('multiple h1s included in top two calculation', () => {
+      // 5 h1s, 5 h2s, 20 h3s, 1 h4, 10 paragraphs
+      for (let i = 0; i < 5; i++) {
+        container.appendChild(document.createElement('h1'));
+        container.appendChild(document.createElement('h2'));
+      }
+      for (let i = 0; i < 20; i++) {
+        container.appendChild(document.createElement('h3'));
+      }
+      container.appendChild(document.createElement('h4'));
+      for (let i = 0; i < 10; i++) {
+        container.appendChild(document.createElement('p'));
+      }
+      logger.logDistilledPageStructure(container);
+
+      // TotalHeaderCount: 5 + 5 + 20 + 1 = 31
+      // UniqueHeaderTags: h1, h2, h3, h4 = 4
+      // NumberParagraphs: 10
+      // HeadingToParagraphRatio: Math.round((31 / 10) * 100) = 310
+      // TopTwoHeadersCount (h1 and h2): 5 + 5 = 10
+      // TopTwoHeadersHaveMinimumTwoItems: h1 has 5, h2 has 5 -> true
+      // TopTwoHeadingRatio: (5 / 5) * 100 = 100
+      // MathML.PresentOnPage: false (logged for every page)
+
+      assertEquals(6, metrics.getCallCount('recordCount'));
+      assertEquals(2, metrics.getCallCount('recordBoolean'));
+
+      const countCalls = metrics.getArgs('recordCount');
+      assertEquals(
+          'Accessibility.ReadAnything.DistilledPageStructure.TotalHeaderCount',
+          countCalls[0][0]);
+      assertEquals(31, countCalls[0][1]);
+
+      assertEquals(
+          'Accessibility.ReadAnything.DistilledPageStructure.UniqueHeaderTags',
+          countCalls[1][0]);
+      assertEquals(4, countCalls[1][1]);
+
+      assertEquals(
+          'Accessibility.ReadAnything.DistilledPageStructure.NumberParagraphs',
+          countCalls[2][0]);
+      assertEquals(10, countCalls[2][1]);
+
+      assertEquals(
+          'Accessibility.ReadAnything.DistilledPageStructure.HeadingToParagraphRatio',
+          countCalls[3][0]);
+      assertEquals(310, countCalls[3][1]);
+
+      assertEquals(
+          'Accessibility.ReadAnything.DistilledPageStructure.TopTwoHeadersCount',
+          countCalls[4][0]);
+      assertEquals(10, countCalls[4][1]);
+
+      assertEquals(
+          'Accessibility.ReadAnything.DistilledPageStructure.TopTwoHeadingRatio',
+          countCalls[5][0]);
+      assertEquals(100, countCalls[5][1]);
+
+      const booleanCalls = metrics.getArgs('recordBoolean');
+      assertEquals(
+          'Accessibility.ReadAnything.DistilledPageStructure.TopTwoHeadersHaveMinimumTwoItems',
+          booleanCalls[0][0]);
+      assertEquals(true, booleanCalls[0][1]);
+    });
+
+    test('zero paragraphs and single header type', () => {
+      // 1 h1, 5 h2s, 0 paragraphs
+      container.appendChild(document.createElement('h1'));
+      for (let i = 0; i < 5; i++) {
+        container.appendChild(document.createElement('h2'));
+      }
+      logger.logDistilledPageStructure(container);
+
+      // TotalHeaderCount: 6
+      // UniqueHeaderTags: 2
+      // NumberParagraphs: 0
+      // HeadingToParagraphRatio: not logged (0 paragraphs)
+      // TopTwoHeadersCount (excluding h1): h2 (5), no second header -> 5
+      // TopTwoHeadersHaveMinimumTwoItems: no second header -> false
+      // TopTwoHeadingRatio: not logged (no second header)
+      // MathML.PresentOnPage: false (logged for every page)
+
+      assertEquals(4, metrics.getCallCount('recordCount'));
+      assertEquals(2, metrics.getCallCount('recordBoolean'));
+
+      const countCalls = metrics.getArgs('recordCount');
+      assertEquals(
+          'Accessibility.ReadAnything.DistilledPageStructure.TotalHeaderCount',
+          countCalls[0][0]);
+      assertEquals(6, countCalls[0][1]);
+
+      assertEquals(
+          'Accessibility.ReadAnything.DistilledPageStructure.UniqueHeaderTags',
+          countCalls[1][0]);
+      assertEquals(2, countCalls[1][1]);
+
+      assertEquals(
+          'Accessibility.ReadAnything.DistilledPageStructure.NumberParagraphs',
+          countCalls[2][0]);
+      assertEquals(0, countCalls[2][1]);
+
+      assertEquals(
+          'Accessibility.ReadAnything.DistilledPageStructure.TopTwoHeadersCount',
+          countCalls[3][0]);
+      assertEquals(5, countCalls[3][1]);
+
+      const booleanCalls = metrics.getArgs('recordBoolean');
+      assertEquals(
+          'Accessibility.ReadAnything.DistilledPageStructure.TopTwoHeadersHaveMinimumTwoItems',
+          booleanCalls[0][0]);
+      assertEquals(false, booleanCalls[0][1]);
+    });
+
+    test('logs pdf structure for pdfs', () => {
+      visualBrowserProxy.pdf = true;
+      for (let i = 0; i < 5; i++) {
+        container.appendChild(document.createElement('h1'));
+        container.appendChild(document.createElement('h2'));
+      }
+      container.appendChild(document.createElement('h3'));
+      for (let i = 0; i < 30; i++) {
+        container.appendChild(document.createElement('p'));
+      }
+
+      logger.logDistilledPageStructure(container);
+
+      assertNotEquals(0, metrics.getCallCount('recordCount'));
+      const countCalls = metrics.getArgs('recordCount');
+      const h1Metric = countCalls.find(
+          args => args[0] === 'Accessibility.ReadAnything.Pdf.Headings.H1');
+      assertTrue(!!h1Metric);
+      assertEquals(5, h1Metric[1]);
+
+      const h2Metric = countCalls.find(
+          args => args[0] === 'Accessibility.ReadAnything.Pdf.Headings.H2');
+      assertTrue(!!h2Metric);
+      assertEquals(5, h2Metric[1]);
+
+      const h3Metric = countCalls.find(
+          args => args[0] === 'Accessibility.ReadAnything.Pdf.Headings.H3');
+      assertTrue(!!h3Metric);
+      assertEquals(1, h3Metric[1]);
+
+      const h4Metric = countCalls.find(
+          args => args[0] === 'Accessibility.ReadAnything.Pdf.Headings.H4');
+      assertTrue(!!h4Metric);
+      assertEquals(0, h4Metric[1]);
+
+      const h5Metric = countCalls.find(
+          args => args[0] === 'Accessibility.ReadAnything.Pdf.Headings.H5');
+      assertTrue(!!h5Metric);
+      assertEquals(0, h5Metric[1]);
+
+      const h6Metric = countCalls.find(
+          args => args[0] === 'Accessibility.ReadAnything.Pdf.Headings.H6');
+      assertTrue(!!h6Metric);
+      assertEquals(0, h6Metric[1]);
+
+      const pMetric = countCalls.find(
+          args =>
+              args[0] === 'Accessibility.ReadAnything.Pdf.NumberParagraphs');
+      assertTrue(!!pMetric);
+      assertEquals(30, pMetric[1]);
+
+      const ratioMetric = countCalls.find(
+          args => args[0] ===
+              'Accessibility.ReadAnything.Pdf.HeadingToParagraphRatio');
+      assertTrue(!!ratioMetric);
+      assertNotEquals(0, ratioMetric[1]);
+    });
+  });
+  test('logDistilledPageStructure logs key points correctly', () => {
+    // Setup wordCountContainer
+    const container = document.createElement('div');
+
+    // Add h1 which should be ignored
+    const h1 = document.createElement('h1');
+    h1.textContent = 'Summary of the article';
+    container.appendChild(h1);
+
+    // Test baseLanguageForSpeech is checked
+    audioBrowserProxy.baseLanguageForSpeech = 'en-US';
+    logger.logDistilledPageStructure(container);
+
+    const booleanMetrics1 = metrics.getArgs('recordBoolean');
+    const inReadingModeMetric1 = booleanMetrics1.find(
+        (args: [string, boolean]) => args[0] ===
+            'Accessibility.ReadAnything.PageStructure.EnglishKeyPointsInReadingMode');
+    assertTrue(!!inReadingModeMetric1);
+    assertEquals(false, inReadingModeMetric1[1]);
+
+    metrics.reset();
+
+    // Add h2 which should trigger true
+    const h2 = document.createElement('h2');
+    h2.textContent = 'The Bottom Line';
+    container.appendChild(h2);
+
+    visualBrowserProxy.originalPageMetrics = {
+      hasMathML: false,
+      maybeHasKeyPoints: true,
+    };
+
+    logger.logDistilledPageStructure(container);
+
+    // Verify true because of 'the bottom line'
+    const booleanMetrics2 = metrics.getArgs('recordBoolean');
+    const inReadingModeMetric2 = booleanMetrics2.find(
+        (args: [string, boolean]) => args[0] ===
+            'Accessibility.ReadAnything.PageStructure.EnglishKeyPointsInReadingMode');
+    assertTrue(!!inReadingModeMetric2);
+    assertEquals(true, inReadingModeMetric2[1]);
+
+    // Verify OnPage is also logged
+    const onPageMetric = booleanMetrics2.find(
+        (args: [string, boolean]) => args[0] ===
+            'Accessibility.ReadAnything.PageStructure.EnglishKeyPointsOnPage');
+    assertTrue(!!onPageMetric);
+    assertEquals(true, onPageMetric[1]);
+  });
+
+  suite('logDistilledPageStructure MathML metrics', () => {
+    let container: HTMLElement;
+
+    setup(() => {
+      container = document.createElement('div');
+      // Attach to the document, as the distilled content is in production, so
+      // that checkVisibility() can account for hidden ancestors.
+      document.body.appendChild(container);
+      // Unless a test overrides it, the original page contains MathML.
+      visualBrowserProxy.originalPageMetrics.hasMathML = true;
+      metrics.reset();
+    });
+
+    function getPresentOnPageMetric(): boolean|undefined {
+      const booleanCalls = metrics.getArgs('recordBoolean');
+      const presentCall = booleanCalls.find(
+          (args: [string, boolean]) =>
+              args[0] === 'Accessibility.ReadAnything.MathML.PresentOnPage');
+      return presentCall ? presentCall[1] : undefined;
+    }
+
+    // Logs the structure of `container` and asserts that MathML was reported
+    // as present and that `expected` was the only distillation status logged.
+    function logAndAssertStatus(
+        expected: ReadAnythingMathMlDistillationStatus) {
+      logger.logDistilledPageStructure(container);
+
+      assertEquals(true, getPresentOnPageMetric());
+      assertEquals(1, metrics.getCallCount('recordMathMlDistillationStatus'));
+      assertEquals(
+          expected, metrics.getArgs('recordMathMlDistillationStatus')[0]);
+    }
+
+    function setDistilledByReadability() {
+      contentBrowserProxy.activeDistillationMethod =
+          contentBrowserProxy.distillationTypeReadability;
+    }
+
+    test('page without MathML logs false and no distillation status', () => {
+      visualBrowserProxy.originalPageMetrics.hasMathML = false;
+
+      logger.logDistilledPageStructure(container);
+
+      assertEquals(false, getPresentOnPageMetric());
+      assertEquals(0, metrics.getCallCount('recordMathMlDistillationStatus'));
+    });
+
+    test('ONLY_MATHML logged when distilled page has only mathml', () => {
+      container.appendChild(document.createElement('math'));
+
+      logAndAssertStatus(ReadAnythingMathMlDistillationStatus.ONLY_MATHML);
+    });
+
+    test(
+        'MIXED_MATHML_AND_FALLBACK logged when distilled page has both', () => {
+          container.appendChild(document.createElement('math'));
+          const img = document.createElement('img');
+          img.className = 'mwe-math-fallback-image-inline';
+          container.appendChild(img);
+
+          logAndAssertStatus(
+              ReadAnythingMathMlDistillationStatus.MIXED_MATHML_AND_FALLBACK);
+        });
+
+    test(
+        'ONLY_FALLBACK logged when distilled page has math image with math class',
+        () => {
+          const img = document.createElement('img');
+          img.className = 'mwe-math-element';
+          container.appendChild(img);
+
+          logAndAssertStatus(
+              ReadAnythingMathMlDistillationStatus.ONLY_FALLBACK);
+        });
+
+    test(
+        'ONLY_FALLBACK logged when distilled page has math image with LaTeX alt',
+        () => {
+          const img = document.createElement('img');
+          img.alt = '{\\displaystyle \\sqrt{x^2+y^2}}';
+          container.appendChild(img);
+
+          logAndAssertStatus(
+              ReadAnythingMathMlDistillationStatus.ONLY_FALLBACK);
+        });
+
+    test(
+        'ONLY_FALLBACK logged when distilled page has KaTeX container with content',
+        () => {
+          const span = document.createElement('span');
+          span.className = 'katex';
+          span.textContent = 'x = 1';
+          container.appendChild(span);
+
+          logAndAssertStatus(
+              ReadAnythingMathMlDistillationStatus.ONLY_FALLBACK);
+        });
+
+    test(
+        'ONLY_FALLBACK logged when distilled page has MathJax container with SVG',
+        () => {
+          const mathjax = document.createElement('mjx-container');
+          const svg =
+              document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+          mathjax.appendChild(svg);
+          container.appendChild(mathjax);
+
+          logAndAssertStatus(
+              ReadAnythingMathMlDistillationStatus.ONLY_FALLBACK);
+        });
+
+    test(
+        'ONLY_FALLBACK logged when distilled page has mw:Extension/math element',
+        () => {
+          const span = document.createElement('span');
+          span.setAttribute('typeof', 'mw:Extension/math');
+          span.textContent = 'E = mc^2';
+          container.appendChild(span);
+
+          logAndAssertStatus(
+              ReadAnythingMathMlDistillationStatus.ONLY_FALLBACK);
+        });
+
+    test('non-math image and empty container do not count as math', () => {
+      setDistilledByReadability();
+
+      const img = document.createElement('img');
+      img.alt = 'A beautiful sunset in the mountains';
+      img.className = 'header-photo';
+      container.appendChild(img);
+
+      const emptyKatex = document.createElement('span');
+      emptyKatex.className = 'katex';
+      container.appendChild(emptyKatex);
+
+      logAndAssertStatus(
+          ReadAnythingMathMlDistillationStatus.NOT_DISTILLED_READABILITY);
+    });
+
+    test(
+        'NOT_DISTILLED status matches distillation method when math is absent',
+        () => {
+          const p = document.createElement('p');
+          p.textContent = 'Just regular text with no math elements.';
+          container.appendChild(p);
+
+          setDistilledByReadability();
+          logAndAssertStatus(
+              ReadAnythingMathMlDistillationStatus.NOT_DISTILLED_READABILITY);
+
+          metrics.reset();
+          contentBrowserProxy.activeDistillationMethod =
+              contentBrowserProxy.distillationTypeScreen2x;
+          logAndAssertStatus(
+              ReadAnythingMathMlDistillationStatus.NOT_DISTILLED_SCREEN2X);
+        });
+
+    test('hidden MathML elements do not count as distilled', () => {
+      setDistilledByReadability();
+      const displayNoneMath = document.createElement('math');
+      displayNoneMath.style.display = 'none';
+      container.appendChild(displayNoneMath);
+
+      const hiddenAttributeMath = document.createElement('math');
+      hiddenAttributeMath.hidden = true;
+      container.appendChild(hiddenAttributeMath);
+
+      logAndAssertStatus(
+          ReadAnythingMathMlDistillationStatus.NOT_DISTILLED_READABILITY);
+    });
+
+    test('hidden math fallbacks do not count as distilled', () => {
+      setDistilledByReadability();
+      const displayNoneImg = document.createElement('img');
+      displayNoneImg.className = 'mwe-math-fallback-image-inline';
+      displayNoneImg.style.display = 'none';
+      container.appendChild(displayNoneImg);
+
+      const hiddenAttributeImg = document.createElement('img');
+      hiddenAttributeImg.className = 'mwe-math-fallback-image-inline';
+      hiddenAttributeImg.hidden = true;
+      container.appendChild(hiddenAttributeImg);
+
+      // A math container whose only child is hidden.
+      const span = document.createElement('span');
+      span.setAttribute('typeof', 'mw:Extension/math');
+      const latexImg = document.createElement('img');
+      latexImg.alt = '{\\displaystyle \\mathbb{R}^n}';
+      latexImg.style.display = 'none';
+      span.appendChild(latexImg);
+      container.appendChild(span);
+
+      logAndAssertStatus(
+          ReadAnythingMathMlDistillationStatus.NOT_DISTILLED_READABILITY);
+    });
+
+    test(
+        'visible MathML among hidden MathML and fallback logs ONLY_MATHML',
+        () => {
+          const hiddenMath = document.createElement('math');
+          hiddenMath.style.display = 'none';
+          container.appendChild(hiddenMath);
+
+          const visibleMath = document.createElement('math');
+          container.appendChild(visibleMath);
+
+          const hiddenImg = document.createElement('img');
+          hiddenImg.className = 'mwe-math-fallback-image-inline';
+          hiddenImg.style.display = 'none';
+          container.appendChild(hiddenImg);
+
+          logAndAssertStatus(ReadAnythingMathMlDistillationStatus.ONLY_MATHML);
+        });
+
+    test(
+        'visible fallback among hidden MathML and fallback logs ONLY_FALLBACK',
+        () => {
+          const hiddenMath = document.createElement('math');
+          hiddenMath.style.display = 'none';
+          container.appendChild(hiddenMath);
+
+          const hiddenImg = document.createElement('img');
+          hiddenImg.className = 'mwe-math-fallback-image-inline';
+          hiddenImg.style.display = 'none';
+          container.appendChild(hiddenImg);
+
+          const visibleImg = document.createElement('img');
+          visibleImg.className = 'mwe-math-fallback-image-inline';
+          container.appendChild(visibleImg);
+
+          logAndAssertStatus(
+              ReadAnythingMathMlDistillationStatus.ONLY_FALLBACK);
+        });
+
+    test(
+        'realistic Wikipedia formula with hidden MathML and hidden fallback image logs NOT_DISTILLED_READABILITY',
+        () => {
+          setDistilledByReadability();
+
+          // Simulates Wikipedia's <span typeof="mw:Extension/math"> wrapping
+          // visually-hidden MathML and an <img> that is hidden when images are
+          // toggled off in Reading Mode.
+          const span = document.createElement('span');
+          span.setAttribute('typeof', 'mw:Extension/math');
+
+          const mathWrapper = document.createElement('span');
+          mathWrapper.className = 'mwe-math-mathml-inline';
+          mathWrapper.style.display = 'none';
+          mathWrapper.appendChild(document.createElement('math'));
+          span.appendChild(mathWrapper);
+
+          const img = document.createElement('img');
+          img.className = 'mwe-math-fallback-image-inline';
+          img.style.display = 'none';
+          span.appendChild(img);
+
+          container.appendChild(span);
+
+          logAndAssertStatus(
+              ReadAnythingMathMlDistillationStatus.NOT_DISTILLED_READABILITY);
+        });
   });
 });

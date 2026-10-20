@@ -7,6 +7,8 @@
 #include <memory>
 #include <string>
 
+#include "base/test/run_until.h"
+#include "base/test/task_environment.h"
 #include "components/live_caption/caption_bubble_context.h"
 #include "components/live_caption/caption_bubble_controller.h"
 #include "components/live_caption/pref_names.h"
@@ -39,7 +41,9 @@ class TestCaptionControllerBase : public CaptionControllerBase {
 
 class MockListener : public CaptionControllerBase::Listener {
  public:
-  explicit MockListener(bool* free_flag = nullptr) : free_flag_(free_flag) {}
+  explicit MockListener(bool* free_flag = nullptr) : free_flag_(free_flag) {
+    ON_CALL(*this, IsTranscriptionAllowed(_)).WillByDefault(Return(true));
+  }
   ~MockListener() override {
     if (free_flag_) {
       *free_flag_ = true;
@@ -61,6 +65,10 @@ class MockListener : public CaptionControllerBase::Listener {
               (content::RenderFrameHost*,
                CaptionBubbleContext*,
                const media::mojom::LanguageIdentificationEventPtr&),
+              (override));
+  MOCK_METHOD(bool,
+              IsTranscriptionAllowed,
+              (content::RenderFrameHost*),
               (override));
 
  private:
@@ -192,6 +200,7 @@ class CaptionControllerBaseTest : public testing::Test {
   }
 
   TestingPrefServiceSimple testing_pref_service_;
+  base::test::TaskEnvironment task_environment_;
 };
 
 TEST_F(CaptionControllerBaseTest, ListenersAreFreedOnDestruction) {
@@ -270,6 +279,36 @@ TEST_F(CaptionControllerBaseTest, ListenersReceiveAudioEnd) {
   controller_under_test->DispatchTranscription(rfh, &context, result);
 }
 
+TEST_F(CaptionControllerBaseTest, IsTranscriptionAllowedChecksListeners) {
+  auto mock_bubble_controller = std::make_unique<MockCaptionBubbleController>();
+  auto controller_under_test =
+      CreateController(std::make_unique<MockCaptionControllerDelegate>(
+          std::move(mock_bubble_controller)));
+
+  // No listeners -> false.
+  EXPECT_FALSE(controller_under_test->IsTranscriptionAllowed(/*rfh=*/nullptr));
+
+  // Creating the UI adds `CaptionBubbleController`, which uses the default
+  // `Listener::IsTranscriptionAllowed` implementation -> still false.
+  controller_under_test->create_ui_for_testing();
+  EXPECT_FALSE(controller_under_test->IsTranscriptionAllowed(/*rfh=*/nullptr));
+
+  // Listener disallowing transcription -> false even with bubble listener
+  // present.
+  auto listener1 = std::make_unique<MockListener>();
+  EXPECT_CALL(*listener1, IsTranscriptionAllowed(/*rfh=*/nullptr))
+      .WillRepeatedly(Return(false));
+  controller_under_test->AddListener(std::move(listener1));
+  EXPECT_FALSE(controller_under_test->IsTranscriptionAllowed(/*rfh=*/nullptr));
+
+  // Second listener allowing transcription -> true.
+  auto listener2 = std::make_unique<MockListener>();
+  EXPECT_CALL(*listener2, IsTranscriptionAllowed(/*rfh=*/nullptr))
+      .WillRepeatedly(Return(true));
+  controller_under_test->AddListener(std::move(listener2));
+  EXPECT_TRUE(controller_under_test->IsTranscriptionAllowed(/*rfh=*/nullptr));
+}
+
 class CaptionControllerBaseListenerTest : public CaptionControllerBaseTest {
  public:
   class TestCaptionController : public CaptionControllerBase {
@@ -321,6 +360,25 @@ TEST_F(CaptionControllerBaseListenerTest, OnLastListenerRemovedCalled) {
 
   // Removing the last listener should trigger the callback.
   controller->remove_listener_for_testing(listener2_ptr);
+}
+
+TEST_F(CaptionControllerBaseListenerTest, RemoveSoonRemovesListener) {
+  auto controller = std::make_unique<TestCaptionController>(
+      &testing_pref_service_, speech::kUsEnglishLocale);
+  EXPECT_CALL(*controller, OnFirstListenerAdded).Times(1);
+  EXPECT_CALL(*controller, OnLastListenerRemoved).Times(1);
+
+  bool was_freed = false;
+  auto listener = std::make_unique<MockListener>(&was_freed);
+  auto* listener_ptr = listener.get();
+  controller->AddListener(std::move(listener));
+
+  EXPECT_FALSE(was_freed);
+  controller->RemoveSoon(listener_ptr);
+  EXPECT_FALSE(was_freed);  // Not freed yet
+
+  // Run pending tasks to process removal.
+  EXPECT_TRUE(base::test::RunUntil([&]() { return was_freed; }));
 }
 
 }  // namespace

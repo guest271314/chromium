@@ -4,15 +4,17 @@
 
 #include "chrome/updater/test/http_request.h"
 
+#include <stddef.h>
+
 #include <algorithm>
 #include <iterator>
 #include <string>
 
 #include "base/logging.h"
 #include "base/strings/string_util.h"
-#include "base/strings/stringprintf.h"
 #include "net/test/embedded_test_server/http_request.h"
 #include "third_party/abseil-cpp/absl/strings/ascii.h"
+#include "third_party/abseil-cpp/absl/strings/str_format.h"
 #include "third_party/zlib/google/compression_utils.h"
 
 namespace updater::test {
@@ -64,10 +66,10 @@ std::string GetPrintableContent(const HttpRequest& request) {
     return printable_content;
   }
 
-  return base::StringPrintf("%s\n<Total size: %zu, skipped printing %zu bytes>",
-                            printable_content.c_str(),
-                            request.decoded_content.size(),
-                            request.decoded_content.size() - dump_limit);
+  return absl::StrFormat("%s\n<Total size: %zu, skipped printing %zu bytes>",
+                         printable_content.c_str(),
+                         request.decoded_content.size(),
+                         request.decoded_content.size() - dump_limit);
 }
 
 }  // namespace updater::test

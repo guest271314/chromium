@@ -21,6 +21,7 @@
 #include "content/public/renderer/render_frame_observer.h"
 #include "mojo/public/cpp/bindings/associated_receiver_set.h"
 #include "mojo/public/cpp/bindings/pending_associated_receiver.h"
+#include "pdf/buildflags.h"
 #include "services/service_manager/public/cpp/binder_registry.h"
 #include "third_party/blink/public/common/associated_interfaces/associated_interface_registry.h"
 
@@ -43,8 +44,8 @@ class PageStabilityMonitor;
 }
 
 namespace safe_browsing {
-class PhishingClassifierDelegate;
-class PhishingImageEmbedderDelegate;
+class ContentPhishingClassifierDelegate;
+class ContentPhishingImageEmbedderDelegate;
 }  // namespace safe_browsing
 
 namespace translate {
@@ -83,6 +84,8 @@ class ChromeRenderFrameObserver : public content::RenderFrameObserver,
 
  private:
   friend class ChromeRenderFrameObserverTest;
+  FRIEND_TEST_ALL_PREFIXES(ChromeRenderFrameObserverTest,
+                           DynamicTranslateAgentCreation);
 
   // RenderFrameObserver implementation.
   void OnInterfaceRequestForFrame(
@@ -99,6 +102,8 @@ class ChromeRenderFrameObserver : public content::RenderFrameObserver,
   void DidCreateNewDocument() override;
   void DidCommitProvisionalLoad(ui::PageTransition transition) override;
   void DidClearWindowObject() override;
+  void DidCreateScriptContext(v8::Local<v8::Context> context,
+                              int32_t world_id) override;
   void DidMeaningfulLayout(blink::WebMeaningfulLayout layout_type) override;
   void OnDestruct() override;
   void WillDetach(blink::DetachReason detach_reason) override;
@@ -141,7 +146,7 @@ class ChromeRenderFrameObserver : public content::RenderFrameObserver,
       mojo::PendingAssociatedRemote<actor::mojom::JournalClient> client)
       override;
   void GetCrossDocumentScriptToolResult(
-      const base::UnguessableToken& execution_id,
+      const blink::ToolInvocationToken& execution_id,
       GetCrossDocumentScriptToolResultCallback callback) override;
   // Multiple calls will clobber a PageStabilityMonitor previously created and
   // it's the caller's responsibility to ensure the monitor is unneeded before
@@ -155,6 +160,11 @@ class ChromeRenderFrameObserver : public content::RenderFrameObserver,
           page_content_annotations::mojom::PageStabilityMonitor> monitor,
       const actor::TaskId& task_id,
       bool supports_paint_stability) override;
+#if BUILDFLAG(ENABLE_PDF)
+  void PdfPageCaptured(const std::u16string& contents,
+                       const std::string& pdf_lang,
+                       const GURL& page_url) override;
+#endif
 
   // Initialize a |phishing_classifier_delegate_|.
   void SetClientSidePhishingDetection();
@@ -198,9 +208,9 @@ class ChromeRenderFrameObserver : public content::RenderFrameObserver,
   raw_ptr<translate::TranslateAgent> translate_agent_;
   raw_ptr<optimization_guide::PageTextAgent> page_text_agent_;
 #if BUILDFLAG(SAFE_BROWSING_AVAILABLE)
-  raw_ptr<safe_browsing::PhishingClassifierDelegate> phishing_classifier_ =
-      nullptr;
-  raw_ptr<safe_browsing::PhishingImageEmbedderDelegate>
+  raw_ptr<safe_browsing::ContentPhishingClassifierDelegate>
+      phishing_classifier_ = nullptr;
+  raw_ptr<safe_browsing::ContentPhishingImageEmbedderDelegate>
       phishing_image_embedder_ = nullptr;
 #endif
 

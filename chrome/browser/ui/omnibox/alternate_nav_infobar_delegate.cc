@@ -4,6 +4,10 @@
 
 #include "chrome/browser/ui/omnibox/alternate_nav_infobar_delegate.h"
 
+#include <string>
+#include <vector>
+
+#include "base/containers/span.h"
 #include "base/memory/ptr_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "build/build_config.h"
@@ -18,7 +22,9 @@
 #include "components/omnibox/browser/shortcuts_backend.h"
 #include "content/public/browser/web_contents.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/base/page_transition_types.h"
 #include "ui/base/ui_base_features.h"
+#include "ui/base/window_open_disposition.h"
 
 AlternateNavInfoBarDelegate::~AlternateNavInfoBarDelegate() = default;
 
@@ -54,7 +60,7 @@ const gfx::VectorIcon& AlternateNavInfoBarDelegate::GetVectorIcon() const {
 }
 
 std::u16string AlternateNavInfoBarDelegate::GetLinkText() const {
-  return base::UTF8ToUTF16(destination_url_.spec());
+  return std::u16string();
 }
 
 GURL AlternateNavInfoBarDelegate::GetLinkURL() const {
@@ -63,7 +69,7 @@ GURL AlternateNavInfoBarDelegate::GetLinkURL() const {
 
 bool AlternateNavInfoBarDelegate::LinkClicked(
     WindowOpenDisposition disposition) {
-  DCHECK(match_);
+  CHECK(match_, base::NotFatalUntil::M162);
   history::HistoryService* const history_service =
       HistoryServiceFactory::GetForProfile(profile_,
                                            ServiceAccessType::IMPLICIT_ACCESS);
@@ -85,13 +91,38 @@ bool AlternateNavInfoBarDelegate::LinkClicked(
   // Pretend the user typed this URL, so that navigating to it will be the
   // default action when it's typed again in the future.
   infobars::ContentInfoBarManager::WebContentsFromInfoBar(infobar())->OpenURL(
-      content::OpenURLParams(destination_url_, content::Referrer(), disposition,
-                             ui::PAGE_TRANSITION_TYPED, false),
+      content::OpenURLParams::CreateBrowserInitiated(
+          destination_url_, disposition, ui::PAGE_TRANSITION_TYPED),
       /*navigation_handle_callback=*/{});
 
   // We should always close, even if the navigation did not occur within this
   // WebContents.
   return true;
+}
+
+std::u16string AlternateNavInfoBarDelegate::GetMessageText() const {
+  return l10n_util::GetStringFUTF16(IDS_ALTERNATE_NAV_URL_VIEW_LABEL,
+                                    base::UTF8ToUTF16(destination_url_.spec()));
+}
+
+std::u16string AlternateNavInfoBarDelegate::GetMessageTextTemplate() const {
+  return l10n_util::GetStringUTF16(IDS_ALTERNATE_NAV_URL_VIEW_LABEL);
+}
+
+base::span<const MessageSubstitution>
+AlternateNavInfoBarDelegate::GetMessageSubstitutions() const {
+  return substitutions_;
+}
+
+bool AlternateNavInfoBarDelegate::InlineSubstitutionLinkClicked(
+    size_t index,
+    WindowOpenDisposition disposition) {
+  CHECK_EQ(index, 0u);
+  return LinkClicked(disposition);
+}
+
+int AlternateNavInfoBarDelegate::GetButtons() const {
+  return BUTTON_NONE;
 }
 
 AlternateNavInfoBarDelegate::AlternateNavInfoBarDelegate(
@@ -106,11 +137,15 @@ AlternateNavInfoBarDelegate::AlternateNavInfoBarDelegate(
       destination_url_(destination_url),
       original_url_(original_url) {
   if (match_) {
-    DCHECK_EQ(destination_url_, match_->destination_url);
+    CHECK_EQ(destination_url_, match_->destination_url,
+             base::NotFatalUntil::M162);
   }
 
-  DCHECK(destination_url_.is_valid());
-  DCHECK(original_url_.is_valid());
+  CHECK(destination_url_.is_valid(), base::NotFatalUntil::M162);
+  CHECK(original_url_.is_valid(), base::NotFatalUntil::M162);
+
+  substitutions_.emplace_back(base::UTF8ToUTF16(destination_url_.spec()),
+                              /*is_link=*/true, std::nullopt);
 }
 
 // AlternateNavInfoBarDelegate::CreateInfoBar() is implemented in

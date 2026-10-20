@@ -65,6 +65,8 @@ using Microsoft::WRL::ComPtr;
 
 namespace media {
 
+using Error = AudioInputStream::AudioInputCallback::Error;
+
 namespace {
 
 constexpr uint32_t KSAUDIO_SPEAKER_UNSUPPORTED = 0;
@@ -668,7 +670,8 @@ WASAPIAudioInputStream::WASAPIAudioInputStream(
     const AudioParameters& params,
     const std::string& device_id,
     AudioManager::LogCallback log_callback)
-    : manager_(manager),
+    : id_(base::UnguessableToken::Create()),
+      manager_(manager),
       params_(params),
       peak_detector_(base::BindRepeating(&AudioManager::TraceAmplitudePeak,
                                          base::Unretained(manager_),
@@ -764,12 +767,9 @@ bool WASAPIAudioInputStream::UpdateFormats() {
     base::UmaHistogramEnumeration("Media.Audio.Capture.Win.AudioEngineFormat",
                                   mix_sample_format);
     if (mix_sample_format != kUnknownSampleFormat) {
-      // We are not sure if the Windows Audio Engine will ever choose 24bit over
-      // 32bit. Check if this is the case, and if so we choose S32 instead.
-      CHECK_NE(mix_sample_format, kSampleFormatS24, base::NotFatalUntil::M148);
-      sample_format_ = (mix_sample_format == kSampleFormatS24)
-                           ? kSampleFormatS32
-                           : mix_sample_format;
+      // The Windows Audio Engine should not choose 24bit over 32bit.
+      CHECK_NE(mix_sample_format, kSampleFormatS24);
+      sample_format_ = mix_sample_format;
 
       input_format_.SubFormat = GetSubFormat(mix_format);
 
@@ -790,8 +790,6 @@ bool WASAPIAudioInputStream::UpdateFormats() {
     } else {
       const uint32_t format_tag =
           EXTRACT_WAVEFORMATEX_ID(&mix_format.SubFormat);
-      base::UmaHistogramSparse(
-          "Media.Audio.Capture.Win.AudioEngineFormat.Unknown", format_tag);
       SendLogMessage(base::StringPrintf(
           "%s => (WARNING: unknown mix sample format (tag=%#x))", __func__,
           format_tag));
@@ -949,6 +947,9 @@ AudioInputStream::OpenOutcome WASAPIAudioInputStream::Open() {
       return OpenOutcome::kFailedSystemPermissions;
     case AUDCLNT_E_DEVICE_IN_USE:
       return OpenOutcome::kFailedInUse;
+    case AUDCLNT_E_DEVICE_INVALIDATED:
+    case HRESULT_FROM_WIN32(ERROR_DEVICE_REMOVED):
+      return OpenOutcome::kFailedDeviceRemoved;
     default:
       return OpenOutcome::kFailed;
   }
@@ -999,7 +1000,7 @@ void WASAPIAudioInputStream::Start(AudioInputCallback* callback) {
 
   // Create and start the thread that will drive the capturing by waiting for
   // capture events.
-  DCHECK(!capture_thread_.get());
+  DCHECK(!capture_thread_);
   capture_thread_ = std::make_unique<base::DelegateSimpleThread>(
       this, "wasapi_capture_thread",
       base::SimpleThread::Options(base::ThreadType::kRealtimeAudio));
@@ -1018,7 +1019,7 @@ void WASAPIAudioInputStream::Start(AudioInputCallback* callback) {
     // pipeline to let them know that no audio data will be coming and something
     // went wrong.
     if (sink_) {
-      sink_->OnError();
+      sink_->OnError(Error::kStartupFailed);
     }
   }
 
@@ -1196,8 +1197,8 @@ void WASAPIAudioInputStream::SetOutputDeviceForAec(
 
 void WASAPIAudioInputStream::SendLogMessage(std::string message) {
   if (log_callback_) {
-    log_callback_.Run(
-        base::StringPrintf("WAIS[%p]: %s", this, message.c_str()));
+    log_callback_.Run(base::StringPrintf(
+        "WAIS[id=%s]: %s", id_.ToString().c_str(), message.c_str()));
   }
 }
 
@@ -1331,7 +1332,7 @@ void WASAPIAudioInputStream::Run() {
     audio_client_->Stop();
 
     // There was an error while recording audio.
-    sink_->OnError();
+    sink_->OnError(Error::kRuntimeError);
   }
 
   // Disable MMCSS.
@@ -1934,7 +1935,7 @@ bool WASAPIAudioInputStream::DesiredFormatIsSupported(HRESULT* hr) {
       // Engine for its MixFormat. The MixFormat should in theory always be
       // supported and have the same bit depth, so we should not hit this
       // pathway.
-      CHECK(!use_device_sample_format_, base::NotFatalUntil::M148);
+      CHECK(!use_device_sample_format_);
       input_format->wBitsPerSample = closest_match->wBitsPerSample;
     }
 
@@ -2194,11 +2195,11 @@ void WASAPIAudioInputStream::MaybeReportFormatRelatedInitError(
 
   const FormatRelatedInitError format_related_error =
       hr == AUDCLNT_E_UNSUPPORTED_FORMAT
-          ? converter_.get()
+          ? converter_
                 ? FormatRelatedInitError::kUnsupportedFormatWithFormatConversion
                 : FormatRelatedInitError::kUnsupportedFormat
       // Otherwise |hr| == E_INVALIDARG.
-      : converter_.get()
+      : converter_
           ? FormatRelatedInitError::kInvalidArgumentWithFormatConversion
           : FormatRelatedInitError::kInvalidArgument;
   base::UmaHistogramEnumeration(

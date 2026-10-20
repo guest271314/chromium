@@ -4,27 +4,22 @@
 
 #include "chrome/browser/ui/views/bookmarks/bookmark_bubble_view.h"
 
-#include "base/command_line.h"
 #include "base/memory/raw_ptr.h"
-#include "base/strings/utf_string_conversions.h"
 #include "base/test/scoped_feature_list.h"
-#include "base/test/with_feature_override.h"
 #include "build/build_config.h"
 #include "chrome/browser/bookmarks/bookmark_model_factory.h"
 #include "chrome/browser/commerce/shopping_service_factory.h"
 #include "chrome/browser/feature_engagement/tracker_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
-#include "chrome/browser/sync/sync_service_factory.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/commerce/mock_commerce_ui_tab_helper.h"
+#include "chrome/browser/ui/tabs/tab_enums.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/test/test_browser_dialog.h"
-#include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/views/commerce/price_tracking_view.h"
 #include "chrome/browser/ui/views/commerce/shopping_collection_iph_view.h"
-#include "chrome/common/chrome_switches.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "components/bookmarks/browser/bookmark_model.h"
@@ -40,16 +35,17 @@
 #include "components/signin/public/base/signin_switches.h"
 #include "components/signin/public/identity_manager/identity_test_utils.h"
 #include "components/sync/base/features.h"
-#include "components/sync/test/test_sync_service.h"
 #include "components/ukm/test_ukm_recorder.h"
 #include "content/public/test/browser_test.h"
 #include "services/metrics/public/cpp/ukm_builders.h"
 #include "ui/base/interaction/element_identifier.h"
+#include "ui/base/page_transition_types.h"
 #include "ui/base/unowned_user_data/user_data_factory.h"
 #include "ui/views/bubble/bubble_dialog_delegate_view.h"
 #include "ui/views/controls/combobox/combobox.h"
 #include "ui/views/interaction/element_tracker_views.h"
 #include "ui/views/test/widget_test.h"
+#include "url/url_constants.h"
 
 class BaseBookmarkBubbleViewBrowserTest : public DialogBrowserTest {
  public:
@@ -75,7 +71,7 @@ class BaseBookmarkBubbleViewBrowserTest : public DialogBrowserTest {
   void ShowUi(const std::string& name) override {
 #if !BUILDFLAG(IS_CHROMEOS)
     signin::IdentityManager* identity_manager =
-        IdentityManagerFactory::GetForProfile(browser()->profile());
+        IdentityManagerFactory::GetForProfile(browser()->GetProfile());
     signin::MakePrimaryAccountAvailable(identity_manager, "testuser@gtest.com",
                                         signin::ConsentLevel::kSignin);
 #endif
@@ -86,7 +82,7 @@ class BaseBookmarkBubbleViewBrowserTest : public DialogBrowserTest {
       commerce::MockShoppingService* mock_shopping_service =
           static_cast<commerce::MockShoppingService*>(
               commerce::ShoppingServiceFactory::GetForBrowserContext(
-                  browser()->profile()));
+                  browser()->GetProfile()));
       mock_shopping_service->SetIsShoppingListEligible(true);
       mock_shopping_service->SetResponseForGetProductInfoForUrl(info);
       mock_shopping_service->SetIsSubscribedCallbackValue(false);
@@ -95,10 +91,10 @@ class BaseBookmarkBubbleViewBrowserTest : public DialogBrowserTest {
     const GURL url = GURL("https://www.google.com");
     const std::u16string title = u"Title";
     bookmarks::BookmarkModel* bookmark_model =
-        BookmarkModelFactory::GetForBrowserContext(browser()->profile());
+        BookmarkModelFactory::GetForBrowserContext(browser()->GetProfile());
     bookmarks::test::WaitForBookmarkModelToLoad(bookmark_model);
     bookmarks::AddIfNotBookmarked(bookmark_model, url, title);
-    browser()->window()->ShowBookmarkBubble(url, true);
+    BrowserWindow::FromBrowser(browser())->ShowBookmarkBubble(url, true);
 
     if (name == "ios_promotion") {
       BookmarkBubbleView::bookmark_bubble()->AcceptDialog();
@@ -168,7 +164,7 @@ class BookmarkBubbleViewMigrationBrowserTest : public InProcessBrowserTest {
     InProcessBrowserTest::SetUpOnMainThread();
 
     bookmark_model_ =
-        BookmarkModelFactory::GetForBrowserContext(browser()->profile());
+        BookmarkModelFactory::GetForBrowserContext(browser()->GetProfile());
     bookmarks::test::WaitForBookmarkModelToLoad(bookmark_model_);
     bookmark_node_ = bookmarks::AddIfNotBookmarked(
         bookmark_model_, GURL(kTestBookmarkURL), std::u16string());
@@ -191,17 +187,21 @@ class BookmarkBubbleViewMigrationBrowserTest : public InProcessBrowserTest {
   }
 
   void CreateBubbleView(bool already_bookmarked = true) {
-    browser()->window()->ShowBookmarkBubble(GURL(kTestBookmarkURL),
-                                            already_bookmarked);
+    BrowserWindow::FromBrowser(browser())->ShowBookmarkBubble(
+        GURL(kTestBookmarkURL), already_bookmarked);
   }
 
   bookmarks::BookmarkModel* GetBookmarkModel() { return bookmark_model_; }
   const bookmarks::BookmarkNode* GetBookmark() { return bookmark_node_; }
 
   views::View* GetViewInBookmarkBubble(ui::ElementIdentifier id) {
+    views::BubbleDialogDelegate* const bubble =
+        BookmarkBubbleView::bookmark_bubble();
+    if (!bubble || !bubble->GetWidget()) {
+      return nullptr;
+    }
     const ui::ElementContext context =
-        views::ElementTrackerViews::GetContextForView(
-            BookmarkBubbleView::bookmark_bubble()->GetAnchorView());
+        views::ElementTrackerViews::GetContextForWidget(bubble->GetWidget());
     return views::ElementTrackerViews::GetInstance()->GetFirstMatchingView(
         id, context);
   }
@@ -224,6 +224,46 @@ class BookmarkBubbleViewMigrationBrowserTest : public InProcessBrowserTest {
       weak_ptr_factory_{this};
 };
 
+// The bubble edits the bookmark of one specific tab. Closing that tab used to
+// leave the bubble on screen, still holding on to the destroyed tab's state;
+// pressing "Done" on the orphaned bubble then crashed the browser. See
+// https://crbug.com/526451600.
+IN_PROC_BROWSER_TEST_F(BookmarkBubbleViewMigrationBrowserTest,
+                       BubbleClosesWhenTabIsClosed) {
+  // A second tab keeps the browser window around once the bookmarked tab goes
+  // away.
+  ASSERT_TRUE(
+      AddTabAtIndex(1, GURL(url::kAboutBlankURL), ui::PAGE_TRANSITION_TYPED));
+  TabStripModel* const tab_strip = browser()->GetTabStripModel();
+  ASSERT_EQ(2, tab_strip->count());
+
+  tab_strip->ActivateTabAt(0);
+  ASSERT_EQ(0, tab_strip->active_index());
+
+  CreateBubbleView();
+  ASSERT_TRUE(BookmarkBubbleView::bookmark_bubble());
+
+  tab_strip->CloseWebContentsAt(0, TabCloseTypes::CLOSE_NONE);
+  EXPECT_FALSE(BookmarkBubbleView::bookmark_bubble());
+}
+
+IN_PROC_BROWSER_TEST_F(BookmarkBubbleViewMigrationBrowserTest,
+                       BubbleClosesWhenTabIsBackgrounded) {
+  ASSERT_TRUE(
+      AddTabAtIndex(1, GURL(url::kAboutBlankURL), ui::PAGE_TRANSITION_TYPED));
+  TabStripModel* const tab_strip = browser()->GetTabStripModel();
+  ASSERT_EQ(2, tab_strip->count());
+
+  tab_strip->ActivateTabAt(0);
+  ASSERT_EQ(0, tab_strip->active_index());
+
+  CreateBubbleView();
+  ASSERT_TRUE(BookmarkBubbleView::bookmark_bubble());
+
+  tab_strip->ActivateTabAt(1);
+  EXPECT_FALSE(BookmarkBubbleView::bookmark_bubble());
+}
+
 // Verifies that the sync promo is not displayed for a signed in user.
 // TODO(crbug.com/40066949): Remove once kSync becomes unreachable or is
 // deleted from the codebase. See ConsentLevel::kSync documentation for
@@ -231,7 +271,7 @@ class BookmarkBubbleViewMigrationBrowserTest : public InProcessBrowserTest {
 IN_PROC_BROWSER_TEST_F(BookmarkBubbleViewMigrationBrowserTest,
                        SyncPromoSignedIn) {
   signin::MakePrimaryAccountAvailable(
-      IdentityManagerFactory::GetForProfile(browser()->profile()),
+      IdentityManagerFactory::GetForProfile(browser()->GetProfile()),
       "fake_username@gmail.com", signin::ConsentLevel::kSync);
   CreateBubbleView();
   EXPECT_FALSE(
@@ -264,7 +304,7 @@ IN_PROC_BROWSER_TEST_F(BookmarkBubbleViewMigrationBrowserTest,
   commerce::MockShoppingService* mock_shopping_service =
       static_cast<commerce::MockShoppingService*>(
           commerce::ShoppingServiceFactory::GetForBrowserContext(
-              browser()->profile()));
+              browser()->GetProfile()));
   mock_shopping_service->SetIsShoppingListEligible(true);
 
   commerce::ProductInfo info;
@@ -289,7 +329,7 @@ IN_PROC_BROWSER_TEST_F(BookmarkBubbleViewMigrationBrowserTest,
   commerce::MockShoppingService* mock_shopping_service =
       static_cast<commerce::MockShoppingService*>(
           commerce::ShoppingServiceFactory::GetForBrowserContext(
-              browser()->profile()));
+              browser()->GetProfile()));
   mock_shopping_service->SetIsShoppingListEligible(true);
 
   commerce::ProductInfo info;
@@ -312,7 +352,7 @@ IN_PROC_BROWSER_TEST_F(BookmarkBubbleViewMigrationBrowserTest,
   commerce::MockShoppingService* mock_shopping_service =
       static_cast<commerce::MockShoppingService*>(
           commerce::ShoppingServiceFactory::GetForBrowserContext(
-              browser()->profile()));
+              browser()->GetProfile()));
   mock_shopping_service->SetResponseForGetProductInfoForUrl(std::nullopt);
 
   CreateBubbleView();
@@ -330,7 +370,7 @@ IN_PROC_BROWSER_TEST_F(BookmarkBubbleViewMigrationBrowserTest,
   commerce::MockShoppingService* mock_shopping_service =
       static_cast<commerce::MockShoppingService*>(
           commerce::ShoppingServiceFactory::GetForBrowserContext(
-              browser()->profile()));
+              browser()->GetProfile()));
   mock_shopping_service->SetIsShoppingListEligible(true);
 
   commerce::ProductInfo info;
@@ -379,7 +419,7 @@ IN_PROC_BROWSER_TEST_P(PriceTrackingViewFeatureFlagBrowserTest,
   commerce::MockShoppingService* mock_shopping_service =
       static_cast<commerce::MockShoppingService*>(
           commerce::ShoppingServiceFactory::GetForBrowserContext(
-              browser()->profile()));
+              browser()->GetProfile()));
   commerce::ProductInfo info;
   info.product_cluster_id.emplace(12345L);
   mock_shopping_service->SetResponseForGetProductInfoForUrl(info);
@@ -430,7 +470,7 @@ class BookmarkBubbleViewShoppingCollectionBrowserTest
     BookmarkBubbleViewMigrationBrowserTest::SetUpOnMainThread();
 
     signin::MakePrimaryAccountAvailable(
-        IdentityManagerFactory::GetForProfile(browser()->profile()),
+        IdentityManagerFactory::GetForProfile(browser()->GetProfile()),
         "test@example.com",
         GetParam() ? signin::ConsentLevel::kSignin
                    : signin::ConsentLevel::kSync);
@@ -479,12 +519,8 @@ IN_PROC_BROWSER_TEST_P(BookmarkBubbleViewShoppingCollectionBrowserTest,
 
   CreateBubbleView();
 
-  const ui::ElementContext context =
-      views::ElementTrackerViews::GetContextForView(
-          BookmarkBubbleView::bookmark_bubble()->GetAnchorView());
   views::View* iph_root =
-      views::ElementTrackerViews::GetInstance()->GetFirstMatchingView(
-          commerce::kShoppingCollectionIPHViewId, context);
+      GetViewInBookmarkBubble(commerce::kShoppingCollectionIPHViewId);
 
   // The IPH should be shown in this case.
   EXPECT_TRUE(iph_root);
@@ -498,12 +534,8 @@ IN_PROC_BROWSER_TEST_P(BookmarkBubbleViewShoppingCollectionBrowserTest,
 
   CreateBubbleView();
 
-  const ui::ElementContext context =
-      views::ElementTrackerViews::GetContextForView(
-          BookmarkBubbleView::bookmark_bubble()->GetAnchorView());
   views::View* iph_root =
-      views::ElementTrackerViews::GetInstance()->GetFirstMatchingView(
-          commerce::kShoppingCollectionIPHViewId, context);
+      GetViewInBookmarkBubble(commerce::kShoppingCollectionIPHViewId);
 
   // The IPH should not be shown.
   EXPECT_FALSE(iph_root);
@@ -517,12 +549,8 @@ IN_PROC_BROWSER_TEST_P(BookmarkBubbleViewShoppingCollectionBrowserTest,
 
   CreateBubbleView();
 
-  const ui::ElementContext context =
-      views::ElementTrackerViews::GetContextForView(
-          BookmarkBubbleView::bookmark_bubble()->GetAnchorView());
   views::View* const iph_root =
-      views::ElementTrackerViews::GetInstance()->GetFirstMatchingView(
-          commerce::kShoppingCollectionIPHViewId, context);
+      GetViewInBookmarkBubble(commerce::kShoppingCollectionIPHViewId);
 
   // The IPH should not be shown.
   EXPECT_FALSE(iph_root);

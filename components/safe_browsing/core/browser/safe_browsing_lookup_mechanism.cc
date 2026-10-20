@@ -6,7 +6,7 @@
 
 #include "base/metrics/histogram_functions.h"
 #include "base/strings/strcat.h"
-#include "components/safe_browsing/core/browser/db/v4_protocol_manager_util.h"
+#include "components/safe_browsing/core/browser/db/sb_protocol_manager_util.h"
 
 namespace safe_browsing {
 
@@ -29,12 +29,10 @@ SafeBrowsingLookupMechanism::StartCheckResult::StartCheckResult(
 SafeBrowsingLookupMechanism::CompleteCheckResult::CompleteCheckResult(
     const GURL& url,
     SBThreatType threat_type,
-    const ThreatMetadata& metadata,
     std::optional<ThreatSource> threat_source,
     std::unique_ptr<RTLookupResponse> url_real_time_lookup_response)
     : url(url),
       threat_type(threat_type),
-      metadata(metadata),
       threat_source(threat_source),
       url_real_time_lookup_response(std::move(url_real_time_lookup_response)) {}
 

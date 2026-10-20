@@ -6,10 +6,11 @@
 #define CHROME_BROWSER_ACTOR_TAB_OBSERVATION_STRATEGY_H_
 
 #include "base/containers/flat_map.h"
-#include "components/tabs/public/tab_interface.h"
+#include "chrome/browser/actor/actor_surface_handle.h"
 
 namespace actor {
 
+// LINT.IfChange(ScreenshotPolicy)
 // Options that can be used to influence whether a tab screenshot is taken
 // after a set of actions has completed. These votes are combined to help
 // determine the final decision about screenshots.
@@ -30,7 +31,9 @@ enum class ScreenshotPolicy {
   // provided.
   kRequired = 2,
 };
+// LINT.ThenChange(//chrome/common/actor.mojom:ScreenshotPolicy)
 
+// LINT.IfChange(PageContentExtractionPolicy)
 // Options a client can use to influence whether a page content extraction
 // (i.e. the construction of `AiPageContent`) is done after a set of actions has
 // completed. These votes are combined to help determine the final decision
@@ -54,12 +57,13 @@ enum class PageContentExtractionPolicy {
   // not.
   kRequired = 2,
 };
+// LINT.ThenChange(//chrome/common/actor.mojom:PageContentExtractionPolicy)
 
-// Collects observation votes for one or more tabs and tallies them to determine
-// whether screenshots and/or page content extraction is performed after actions
-// are complete. Incremental vote tallying is performed at the time of voting
-// using std::max. Once actions are complete, the strategy should be "locked" so
-// that the final decisions remain immutable.
+// Collects observation votes for one or more surfaces and tallies them to
+// determine whether screenshots and/or page content extraction is performed
+// after actions are complete. Incremental vote tallying is performed at the
+// time of voting using std::max. Once actions are complete, the strategy should
+// be "locked" so that the final decisions remain immutable.
 class TabObservationStrategy {
  public:
   TabObservationStrategy();
@@ -69,22 +73,25 @@ class TabObservationStrategy {
   TabObservationStrategy& operator=(TabObservationStrategy&&);
   ~TabObservationStrategy();
 
-  // Registers a vote for a specific tab. Tools should vote once per tab.
-  void VoteForScreenshot(tabs::TabHandle tab, ScreenshotPolicy policy);
-  void VoteForPageContentExtraction(tabs::TabHandle tab,
+  // Registers a vote for a specific surface. Tools should vote once per
+  // surface.
+  void VoteForScreenshot(ActorSurfaceHandle actor_surface_handle,
+                         ScreenshotPolicy policy);
+  void VoteForPageContentExtraction(ActorSurfaceHandle actor_surface_handle,
                                     PageContentExtractionPolicy policy);
 
   // Locks the object and prevents further voting.
   void Lock();
 
-  // Retrieves the final outcome policies for a tab.
-  ScreenshotPolicy GetScreenshotPolicy(tabs::TabHandle tab) const;
+  // Retrieves the final outcome policies for a surface.
+  ScreenshotPolicy GetScreenshotPolicy(
+      ActorSurfaceHandle actor_surface_handle) const;
   PageContentExtractionPolicy GetPageContentExtractionPolicy(
-      tabs::TabHandle tab) const;
+      ActorSurfaceHandle actor_surface_handle) const;
 
  private:
-  base::flat_map<tabs::TabHandle, ScreenshotPolicy> screenshot_votes_;
-  base::flat_map<tabs::TabHandle, PageContentExtractionPolicy>
+  base::flat_map<ActorSurfaceHandle, ScreenshotPolicy> screenshot_votes_;
+  base::flat_map<ActorSurfaceHandle, PageContentExtractionPolicy>
       extraction_votes_;
   bool locked_ = false;
 };

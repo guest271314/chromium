@@ -27,13 +27,14 @@ import org.mockito.InOrder;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
-import org.robolectric.annotation.Config;
+import org.robolectric.Robolectric;
 
 import org.chromium.base.supplier.ObservableSuppliers;
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.chrome.browser.feature_engagement.TrackerFactory;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
+import org.chromium.chrome.browser.glic.GlicEnabling;
 import org.chromium.chrome.browser.homepage.HomepageManager;
 import org.chromium.chrome.browser.multiwindow.MultiInstanceManager.NewWindowAppSource;
 import org.chromium.chrome.browser.multiwindow.MultiInstanceOrchestrator;
@@ -58,7 +59,6 @@ import java.util.function.Supplier;
 
 /** Unit tests for ToolbarTabControllerImpl. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 @DisableFeatures(ChromeFeatureList.GLIC)
 public class ToolbarTabControllerImplTest {
     private static class LoadUrlParamsMatcher implements ArgumentMatcher<LoadUrlParams> {
@@ -79,7 +79,6 @@ public class ToolbarTabControllerImplTest {
     @Mock private Supplier<Tab> mTabSupplier;
     @Mock private Tab mTab;
     @Mock private Tab mTab2;
-    @Mock private Activity mActivity;
     @Mock private BottomControlsCoordinator mBottomControlsCoordinator;
     @Mock private Tracker mTracker;
     @Mock private Supplier<Tracker> mTrackerSupplier;
@@ -93,12 +92,14 @@ public class ToolbarTabControllerImplTest {
     @Mock private Supplier<Boolean> mIsOffTheRecordSupplier;
 
     private final GURL mGURL = new GURL("https://example.com");
+    private Activity mActivity;
     private ToolbarTabControllerImpl mToolbarTabController;
     private Tab mTabToBeReturned;
     private boolean mIsOffTheRecord;
 
     @Before
     public void setUp() {
+        mActivity = Robolectric.buildActivity(Activity.class).get();
         doReturn(mTab).when(mTabSupplier).get();
         doReturn(mTab).when(mActivityTabProvider).get();
         doReturn(mProfile).when(mTab).getProfile();
@@ -112,6 +113,7 @@ public class ToolbarTabControllerImplTest {
         doReturn(false).when(mIsOffTheRecordSupplier).get();
         TrackerFactory.setTrackerForTests(mTracker);
         MultiInstanceOrchestratorFactory.setInstanceForTesting(mMultiInstanceOrchestrator);
+        GlicEnabling.setEnabledForTesting(false);
         initToolbarTabController();
 
         mTabToBeReturned = mTab;

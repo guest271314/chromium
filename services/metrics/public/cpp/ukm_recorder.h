@@ -47,11 +47,12 @@ class RenderFrameHostImpl;
 }  // namespace content
 
 namespace extensions {
-class ManifestV2ExperimentManager;
+class ManifestV2Handler;
 class ExtensionContextMenuModel;
 class MetricsPrivateRecordExtensionUsageUkmFunction;
 class TabsUpdateFunction;
 class TabsRemoveFunction;
+class TabHelper;
 namespace declarative_net_request {
 class RulesetManager;
 }  // namespace declarative_net_request
@@ -64,6 +65,7 @@ class NotificationContentDetectionUkmUtil;
 namespace ukm {
 
 class DelegatingUkmRecorder;
+class IwaSourceUrlRecorder;
 class TestRecordingHelper;
 class UkmBackgroundRecorderService;
 
@@ -156,7 +158,7 @@ class METRICS_EXPORT UkmRecorder {
   // from the manifest v2 experiment manager. This method should only be called
   // by approved cases, indicated by the PassKeys.
   static SourceId GetSourceIdForExtensionUrl(
-      base::PassKey<extensions::ManifestV2ExperimentManager>,
+      base::PassKey<extensions::ManifestV2Handler>,
       const GURL& extension_url);
   static SourceId GetSourceIdForExtensionUrl(
       base::PassKey<extensions::ExtensionContextMenuModel>,
@@ -173,18 +175,26 @@ class METRICS_EXPORT UkmRecorder {
   static SourceId GetSourceIdForExtensionUrl(
       base::PassKey<extensions::TabsRemoveFunction>,
       const GURL& extension_url);
+  static SourceId GetSourceIdForExtensionUrl(
+      base::PassKey<extensions::TabHelper>,
+      const GURL& extension_url);
 
   // Gets a new SourceId of REDIRECT_ID type and updates the source URL to the
   // given domain. This method should only be called in the BtmServiceImpl
-  // class for sites in the DIPS database. `site` must be a registrable domain.
-  static SourceId GetSourceIdForDipsSite(base::PassKey<content::BtmServiceImpl>,
-                                         const std::string& site);
+  // class for sites in the BTM database. `site` must be a registrable domain.
+  static SourceId GetSourceIdForBtmSite(base::PassKey<content::BtmServiceImpl>,
+                                        const std::string& site);
 
   // Gets a new SourceId of CHROMEOS_WEBSITE_ID type. This should be only
   // used for recording ChromeOS website stats.
   static SourceId GetSourceIdForChromeOSWebsiteURL(
       base::PassKey<apps::WebsiteMetrics>,
       const GURL& chromeos_website_url);
+
+  // Gets a new SourceId of IWA_BUNDLE_ID type. This should only be used for
+  // recording Isolated Web App metrics.
+  static SourceId GetSourceIdForIwaUrl(base::PassKey<IwaSourceUrlRecorder>,
+                                       const GURL& iwa_url);
 
   // Gets a new SourceId of NOTIFICATION_ID type. This should only be
   // used for recording Permission UKM events related to persistent and

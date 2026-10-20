@@ -32,7 +32,7 @@
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/ash/login/user_adding_screen.h"
-#include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/chrome_pages.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/common/webui_url_constants.h"
@@ -563,7 +563,7 @@ class SystemTrayClientShowVideoConferenceTest
     ASSERT_TRUE(browser_);
   }
 
-  raw_ptr<Browser, DanglingUntriaged> browser_ = nullptr;
+  raw_ptr<BrowserWindowInterface, DanglingUntriaged> browser_ = nullptr;
 };
 
 IN_PROC_BROWSER_TEST_F(SystemTrayClientShowVideoConferenceTest,
@@ -575,7 +575,7 @@ IN_PROC_BROWSER_TEST_F(SystemTrayClientShowVideoConferenceTest,
 
   EXPECT_EQ(
       GURL(kVideoConferenceUrl),
-      browser_->tab_strip_model()->GetActiveWebContents()->GetVisibleURL());
+      browser_->GetTabStripModel()->GetActiveWebContents()->GetVisibleURL());
 }
 
 IN_PROC_BROWSER_TEST_F(
@@ -589,7 +589,7 @@ IN_PROC_BROWSER_TEST_F(
 
   EXPECT_EQ(
       GURL(kVideoConferenceUrl),
-      browser_->tab_strip_model()->GetActiveWebContents()->GetVisibleURL());
+      browser_->GetTabStripModel()->GetActiveWebContents()->GetVisibleURL());
 }
 
 IN_PROC_BROWSER_TEST_F(
@@ -609,7 +609,7 @@ IN_PROC_BROWSER_TEST_F(
   // Expect the url not to have opened in the browser.
   EXPECT_NE(
       GURL(kVideoConferenceUrl),
-      browser_->tab_strip_model()->GetActiveWebContents()->GetVisibleURL());
+      browser_->GetTabStripModel()->GetActiveWebContents()->GetVisibleURL());
 }
 
 IN_PROC_BROWSER_TEST_F(SystemTrayClientShowVideoConferenceTest,
@@ -621,7 +621,20 @@ IN_PROC_BROWSER_TEST_F(SystemTrayClientShowVideoConferenceTest,
 
   EXPECT_EQ(
       GURL(kVideoConferenceUrl),
-      browser_->tab_strip_model()->GetActiveWebContents()->GetVisibleURL());
+      browser_->GetTabStripModel()->GetActiveWebContents()->GetVisibleURL());
+}
+
+IN_PROC_BROWSER_TEST_F(SystemTrayClientShowVideoConferenceTest,
+                       DoNotLaunchPrivilegedVideoConferenceUrl) {
+  const auto kPrivilegedUrl = GURL("chrome://settings");
+
+  ash::Shell::Get()->system_tray_model()->client()->ShowVideoConference(
+      kPrivilegedUrl);
+
+  // The active tab should NOT be the privileged URL.
+  EXPECT_NE(
+      kPrivilegedUrl,
+      browser_->GetTabStripModel()->GetActiveWebContents()->GetVisibleURL());
 }
 
 class SystemTrayClientShowChannelInfoGiveFeedbackTest
@@ -644,16 +657,9 @@ class SystemTrayClientShowChannelInfoGiveFeedbackTest
   ash::LoginManagerMixin login_mixin_{&mixin_host_};
 };
 
-// TODO(crbug.com/40857702): Flaky on release bots.
-#if defined(NDEBUG)
-#define MAYBE_RecordFeedbackSourceChannelIndicator \
-  DISABLED_RecordFeedbackSourceChannelIndicator
-#else
-#define MAYBE_RecordFeedbackSourceChannelIndicator \
-  RecordFeedbackSourceChannelIndicator
-#endif
+// TODO(crbug.com/520272283): Disabled due to segfaulting.
 IN_PROC_BROWSER_TEST_F(SystemTrayClientShowChannelInfoGiveFeedbackTest,
-                       MAYBE_RecordFeedbackSourceChannelIndicator) {
+                       DISABLED_RecordFeedbackSourceChannelIndicator) {
   base::HistogramTester histograms;
   auto tray_test_api = ash::SystemTrayTestApi::Create();
 

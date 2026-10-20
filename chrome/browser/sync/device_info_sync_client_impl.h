@@ -27,9 +27,6 @@ class DeviceInfoSyncClientImpl : public syncer::DeviceInfoSyncClient {
   std::string GetSigninScopedDeviceId() const override;
 
   // syncer::DeviceInfoSyncClient:
-  bool GetSendTabToSelfReceivingEnabled() const override;
-
-  // syncer::DeviceInfoSyncClient:
   syncer::DeviceInfo::SendTabReceivingType GetSendTabToSelfReceivingType()
       const override;
 
@@ -58,6 +55,11 @@ class DeviceInfoSyncClientImpl : public syncer::DeviceInfoSyncClient {
   // syncer::DeviceInfoSyncClient:
   syncer::DeviceInfo::GlicExperimentalTriggeringState
   GetGlicExperimentalTriggeringState() const override;
+  std::optional<int> GetGlicExperimentalTriggeringVersion() const override;
+  base::flat_set<std::string> GetGlicExperimentalTriggeringCapabilities()
+      const override;
+  syncer::DeviceInfo::PersonalContextInfo::StatusOrInfo
+  GetLocalPersonalContextInfo() const override;
 
  private:
   const raw_ptr<Profile> profile_;

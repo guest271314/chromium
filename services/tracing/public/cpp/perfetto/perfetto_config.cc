@@ -21,8 +21,13 @@
 #include "build/chromecast_buildflags.h"
 #include "components/tracing/common/tracing_switches.h"
 #include "services/tracing/public/cpp/perfetto/perfetto_data_source_names.h"
+#include "services/tracing/public/cpp/trace_startup_config.h"
 #include "third_party/perfetto/protos/perfetto/config/chrome/histogram_samples.gen.h"
 #include "third_party/perfetto/protos/perfetto/config/track_event/track_event_config.gen.h"
+
+#if BUILDFLAG(IS_WIN)
+#include "components/tracing/common/etw_stack_sampling_win.h"
+#endif
 
 namespace tracing {
 
@@ -76,10 +81,6 @@ void AddDataSourceConfigs(
   if (stripped_config.IsCategoryGroupEnabled(
           base::trace_event::MemoryDumpManager::kTraceCategory)) {
     AddDataSourceConfig(perfetto_config, kMemoryInstrumentationDataSourceName,
-                        chrome_config_string, privacy_filtering_enabled,
-                        convert_to_legacy_json, json_agent_label_filter,
-                        enable_package_name_filter);
-    AddDataSourceConfig(perfetto_config, kNativeHeapProfilerSourceName,
                         chrome_config_string, privacy_filtering_enabled,
                         convert_to_legacy_json, json_agent_label_filter,
                         enable_package_name_filter);
@@ -158,14 +159,6 @@ void AddDataSourceConfigs(
           TRACE_DISABLED_BY_DEFAULT("system_metrics"))) {
     AddDataSourceConfig(perfetto_config, kSystemMetricsSourceName,
                         /*chrome_config_string=*/"", privacy_filtering_enabled,
-                        convert_to_legacy_json, json_agent_label_filter,
-                        enable_package_name_filter);
-  }
-
-  if (stripped_config.IsCategoryGroupEnabled(
-          TRACE_DISABLED_BY_DEFAULT("java-heap-profiler"))) {
-    AddDataSourceConfig(perfetto_config, kJavaHeapProfilerSourceName,
-                        chrome_config_string, privacy_filtering_enabled,
                         convert_to_legacy_json, json_agent_label_filter,
                         enable_package_name_filter);
   }
@@ -252,14 +245,19 @@ void AdaptDataSourceConfig(
     AdaptTrackEventConfig(&track_event_config, privacy_filtering_enabled);
     config->set_track_event_config_raw(track_event_config.SerializeAsString());
   }
+
+#if BUILDFLAG(IS_WIN)
+  if (config->name() == "org.chromium.etw_system") {
+    AddEtwStackSamplingDebugIds(config);
+  }
+#endif
 }
 
 }  // namespace
 
-base::ByteCount GetDefaultTraceBufferSize() {
-  auto* command_line = base::CommandLine::ForCurrentProcess();
-  std::string switch_value = command_line->GetSwitchValueASCII(
-      switches::kDefaultTraceBufferSizeLimitInKb);
+base::ByteSize GetDefaultTraceBufferSize() {
+  std::string_view switch_value =
+      TraceStartupConfig::GetInstance().GetDefaultTraceBufferSizeLimitInKb();
   size_t switch_kilobytes;
   if (!switch_value.empty() &&
       base::StringToSizeT(switch_value, &switch_kilobytes)) {
@@ -282,8 +280,7 @@ perfetto::TraceConfig GetDefaultPerfettoConfig(
   base::ByteSize size_limit = chrome_config.GetTraceBufferSizeInBytes();
   if (size_limit.is_zero()) {
     // If trace config did not provide trace buffer size, we will use default
-    size_limit =
-        base::ByteSize::FromDeprecatedByteCount(GetDefaultTraceBufferSize());
+    size_limit = GetDefaultTraceBufferSize();
   }
   auto* buffer_config = perfetto_config.add_buffers();
   buffer_config->set_size_kb(size_limit.InKiB());

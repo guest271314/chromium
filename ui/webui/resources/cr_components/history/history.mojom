@@ -18,6 +18,13 @@ enum FilteringBehavior {
   kInvalid = 3,
 };
 
+// Represents a synced device.
+struct Device {
+  string name;
+  bool is_local_device;
+  array<string> ids;
+};
+
 // Represents the possible states of the query process.
 struct QueryState {
   // Whether the most recent query was incremental.
@@ -37,6 +44,9 @@ struct QueryState {
 
   // Whether actor visits should be shown.
   bool include_actor_visits;
+
+  // Client IDs of selected device to filter visits by.
+  array<string> client_ids;
 };
 
 
@@ -131,6 +141,42 @@ struct HistoryEntry {
 
   // Optional debug info about a visit.
   DebugInfo? debug;
+
+  // List of critical actions associated with this visit.
+  array<CriticalAction> critical_actions;
+};
+
+// LINT.IfChange(CriticalActionType)
+enum CriticalActionType {
+  kUnknown = 0,
+  kFormFill = 1,
+  kDownload = 2,
+  kSettingChange = 3,
+  kCredentialAccess = 4,
+  kGooglePasswordManager = 5,
+  kFederatedLogin = 6,
+  kCredentialsOtp = 7,
+  kWebMcpTool = 8,
+};
+// LINT.ThenChange(//tools/metrics/histograms/metadata/critical_actions/enums.xml:CriticalActionType)
+
+// Represents a critical action performed on a visit.
+struct CriticalAction {
+  // Unique identifier for the action.
+  string id;
+
+  // Localized user-facing action label.
+  string label;
+
+  // Tooltip describing the action category.
+  string tooltip;
+
+  // Destination management URL for the action. Null if the action has no
+  // linkout, in which case the UI renders the action as a plain label.
+  string? linkout_url;
+
+  // Category type of the critical action.
+  CriticalActionType action_type;
 };
 
 
@@ -161,6 +207,20 @@ struct AccountInfo {
   string email;
 };
 
+// LINT.IfChange(OpenConversationResult)
+enum OpenConversationResult {
+  kSuccess = 0,
+  kErrorInvalidActionEntry = 1,
+  kErrorInternal = 2,
+};
+// LINT.ThenChange(//tools/metrics/histograms/metadata/critical_actions/enums.xml:OpenConversationResult)
+
+// Represents the entry point from which the user turns on history sync.
+enum AccessPoint {
+  kRecentTabs = 0,
+  kHistoryPage = 1,
+};
+
 // Browser-side handler for requests from WebUI page.
 interface PageHandler {
   // The BrowserProxy singleton calls this when it's first initialized.
@@ -173,7 +233,8 @@ interface PageHandler {
       int32 max_results,
       double? begin_time,
       bool include_user_visits,
-      bool include_actor_visits) => (QueryResult results);
+      bool include_actor_visits,
+      array<string> client_ids) => (QueryResult results);
 
   // Completes continuation of ongoing query. Returns a promise of a result
   // object.
@@ -200,7 +261,15 @@ interface PageHandler {
   RequestAccountInfo() => (AccountInfo account_info);
 
   // The user turns on the history sync by clicking the "Sync history" button.
-  TurnOnHistorySync();
+  TurnOnHistorySync(AccessPoint access_point);
+
+  // Opens the conversation associated with the given critical action in
+  // split view.
+  OpenCriticalActionConversation(string critical_action_id)
+      => (OpenConversationResult result);
+
+  // Fetches the list of known synced devices.
+  GetSyncedDevicesForFiltering() => (array<Device> devices);
 
   // Checks if the history sync promo should be shown on the history page.
   [EnableIfNot=is_chromeos]

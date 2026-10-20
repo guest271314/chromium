@@ -20,15 +20,31 @@ source_set("wm") {
     "wm_desks_private_feature_ash.h",
   ]
 
-  public_deps = [ "//chrome/browser:browser_public_dependencies" ]
-
   deps = [
     "//ash",
     "//base",
     "//chrome/browser/profiles:profile",
-    "//chrome/common/extensions/api",
+    "//chrome/browser/profiles:profile_manager",
+    "//chromeos/ash/experiences/extensions/common/api",
     "//components/keyed_service/content",
     "//content/public/browser",
     "//extensions/browser",
+  ]
+}
+
+source_set("unit_tests") {
+  testonly = true
+  sources = [ "wm_desks_private_events_unittest.cc" ]
+  deps = [
+    ":wm",
+    "//base",
+    "//chrome/test:test_support",
+    "//chromeos/ash/experiences/extensions/common/api",
+    "//components/crx_file",
+    "//content/public/browser",
+    "//content/test:test_support",
+    "//extensions/browser",
+    "//extensions/browser:test_support",
+    "//testing/gtest",
   ]
 }

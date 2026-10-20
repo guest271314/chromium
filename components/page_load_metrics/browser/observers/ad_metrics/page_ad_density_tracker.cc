@@ -17,6 +17,12 @@ namespace {
 
 using RectId = PageAdDensityTracker::RectId;
 
+// Minimum area threshold to include an ad in 'ad count'. This filters out
+// small peripheral UI elements (e.g. video control buttons) while retaining the
+// smallest standard IAB display ads (such as 320x50 mobile banners). Reported
+// rectangles are in CSS pixels.
+constexpr uint64_t kMinimumAdCountAreaCssPixels = 10000;
+
 int CalculateIntersectedLength(int start1, int end1, int start2, int end2) {
   DCHECK_LE(start1, end1);
   DCHECK_LE(start2, end2);
@@ -216,6 +222,22 @@ PageAdDensityTracker::PageAdDensityTracker(bool is_in_foreground,
 
 PageAdDensityTracker::~PageAdDensityTracker() = default;
 
+PageAdDensityTracker::LiveStats PageAdDensityTracker::GetLiveStats() {
+  auto density_stats = viewport_ad_density_by_area_stats_.CalculateStats();
+  double average_density = density_stats ? density_stats->mean : 0;
+
+  auto count_stats = viewport_ad_count_stats_.CalculateStats();
+  double average_count = count_stats ? count_stats->mean : 0;
+
+  return {
+      static_cast<int>(
+          viewport_ad_density_by_area_stats_.last_sample().value_or(0)),
+      average_density,
+      static_cast<int>(viewport_ad_count_stats_.last_sample().value_or(0)),
+      average_count,
+  };
+}
+
 std::optional<int> PageAdDensityTracker::MaxPageAdDensityByHeight() const {
   if (auto max_value = page_ad_density_by_height_stats_.maximum_value()) {
     return static_cast<int>(*max_value);
@@ -411,19 +433,25 @@ PageAdDensityTracker::CalculateDensityWithin(const gfx::Rect& bounding_rect) {
   if (bounding_rect.IsEmpty())
     return {};
 
-  // O(N) pass to count how many ad rectangles intersect the bounding box.
+  // O(N) pass to check if any ad rectangle intersects `bounding_rect`, and to
+  // count intersecting ad rectangles that meet the minimum area threshold.
+  bool has_intersecting_ad = false;
   int ad_count = 0;
-  for (const auto& kv : rect_events_iterators_) {
+  for (const auto& [rect_id, iterators] : rect_events_iterators_) {
     // top_it points to a RectEvent which contains the original gfx::Rect
-    if (bounding_rect.Intersects(kv.second.top_it->rect)) {
-      ad_count++;
+    const gfx::Rect& rect = iterators.top_it->rect;
+    if (bounding_rect.Intersects(rect)) {
+      has_intersecting_ad = true;
+      if (rect.size().Area64() >= kMinimumAdCountAreaCssPixels) {
+        ad_count++;
+      }
     }
   }
 
   AdDensityCalculationResult result;
   result.ad_count = ad_count;
 
-  if (ad_count == 0) {
+  if (!has_intersecting_ad) {
     result.ad_density_by_height = 0;
     result.ad_density_by_area = 0;
     return result;

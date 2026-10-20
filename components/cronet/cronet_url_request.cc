@@ -7,12 +7,15 @@
 #include <limits>
 #include <utility>
 
+#include "base/android/jni_android.h"
+#include "base/android/jni_string.h"
 #include "base/byte_size.h"
 #include "base/functional/bind.h"
 #include "base/location.h"
 #include "base/logging.h"
 #include "base/notreached.h"
 #include "build/build_config.h"
+#include "components/cronet/android/cronet_jni_headers/CronetPccAuditLogger_jni.h"
 #include "components/cronet/cronet_context.h"
 #include "components/cronet/metrics_util.h"
 #include "net/base/idempotency.h"
@@ -21,6 +24,7 @@
 #include "net/base/load_states.h"
 #include "net/base/net_error_details.h"
 #include "net/base/net_errors.h"
+#include "net/base/network_handle.h"
 #include "net/base/proxy_chain.h"
 #include "net/base/proxy_server.h"
 #include "net/base/request_priority.h"
@@ -218,6 +222,11 @@ void CronetURLRequest::NetworkTasks::OnReceivedRedirect(
   DCHECK_CALLED_ON_VALID_THREAD(network_thread_checker_);
   received_byte_count_from_redirects_ +=
       request->GetTotalReceivedBytes().InBytes();
+  {
+    JNIEnv* env = base::android::AttachCurrentThread();
+    cronet::Java_CronetPccAuditLogger_maybeWrite(env,
+                                                 redirect_info.new_url.spec());
+  }
   callback_->OnReceivedRedirect(
       redirect_info.new_url.spec(), redirect_info.status_code,
       request->response_headers()->GetStatusText(), request->response_headers(),
@@ -299,7 +308,10 @@ void CronetURLRequest::NetworkTasks::Start(
           << initial_url_.possibly_invalid_spec().c_str()
           << " priority: " << RequestPriorityToString(initial_priority_);
   url_request_ = context->GetURLRequestContext(network_)->CreateRequest(
-      initial_url_, net::DEFAULT_PRIORITY, this, MISSING_TRAFFIC_ANNOTATION);
+      initial_url_, net::DEFAULT_PRIORITY, this, MISSING_TRAFFIC_ANNOTATION,
+      // TODO(crbug.com/495684670): Update multi-network Cronet to rely on
+      // UrlRequest's target_network instead of URLRequestContext's.
+      net::handles::kInvalidNetworkHandle);
   url_request_->SetLoadFlags(initial_load_flags_);
   url_request_->set_method(method);
   url_request_->SetExtraRequestHeaders(*request_headers);
@@ -339,14 +351,14 @@ void CronetURLRequest::NetworkTasks::Start(
   if (upload)
     url_request_->set_upload(std::move(upload));
   if (traffic_stats_tag_set_ || traffic_stats_uid_set_) {
-#if BUILDFLAG(IS_ANDROID)
     url_request_->set_socket_tag(net::SocketTag(
         traffic_stats_uid_set_ ? traffic_stats_uid_ : net::SocketTag::UNSET_UID,
         traffic_stats_tag_set_ ? traffic_stats_tag_
                                : net::SocketTag::UNSET_TAG));
-#else
-    NOTREACHED();
-#endif
+  }
+  {
+    JNIEnv* env = base::android::AttachCurrentThread();
+    cronet::Java_CronetPccAuditLogger_maybeWrite(env, initial_url_.spec());
   }
   url_request_->Start();
 }

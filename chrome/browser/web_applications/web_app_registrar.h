@@ -16,6 +16,7 @@
 #include "base/check_op.h"
 #include "base/containers/flat_map.h"
 #include "base/containers/flat_set.h"
+#include "base/containers/span.h"
 #include "base/feature_list.h"
 #include "base/files/file_path.h"
 #include "base/functional/callback.h"
@@ -94,10 +95,6 @@ using AppsHavingTrustedIconsCount =
     base::StrongAlias<class AppsHavingTrustedIconsCountTag, int>;
 
 struct FindBestAppInScopeOptions {
-  // Sets the `filter` applied to the best match only.
-  explicit FindBestAppInScopeOptions(WebAppFilter filter);
-  ~FindBestAppInScopeOptions();
-
   // Only apps that pass this filter are considered when ranking apps for scope
   // control over a URL.
   WebAppFilter eligibility_filter = WebAppFilter::InstalledInChrome();
@@ -106,11 +103,12 @@ struct FindBestAppInScopeOptions {
   // app.
   WebAppScopeScoreOptions scope_score_options = {};
 
-  // After determining the best app to control a given url, this filter is
-  // checked with the final app. If it does not pass, then std::nullopt is
-  // returned. This is a nice shortcut as most callers also have a specific set
-  // of constraints the app needs to satisfy, like having OS integration, etc.
-  WebAppFilter filter;
+  // By default, scope extensions of Isolated Web Apps (and their sub apps) are
+  // ignored (with `only_consider_scope_extensions`, IWAs are skipped): an https
+  // URL in an IWA's `scope_extensions` never loads inside the IWA, so it must
+  // not be attributed to it. Set to true only when asking which app claims the
+  // URL, e.g. for navigation capturing.
+  bool include_isolated_web_app_scope_extensions = false;
 };
 
 // Enabling this will force all apps that are exclusively preinstalled and open
@@ -204,8 +202,11 @@ class WebAppRegistrar {
 
   // Returns the AppId of an app that best matches the specified filter.
   // 'Best' is determined by the longest scope that is a prefix of `url`.
-  // Note that this method doesn't consider suggested apps (from migration or
-  // from another device).
+  // The `filter` is checked only against the final best app: if it does not
+  // pass, std::nullopt is returned. See `FindBestAppInScopeOptions` for which
+  // apps are ranked and how. Note that by default this method doesn't consider
+  // suggested apps (from migration or from another device), nor the scope
+  // extensions of Isolated Web Apps.
   //
   // Example usage:
   //    std::optional<webapps::AppId> app_ip = FindBestAppWithUrlInScope(
@@ -213,13 +214,7 @@ class WebAppRegistrar {
   std::optional<webapps::AppId> FindBestAppWithUrlInScope(
       const GURL& url,
       const WebAppFilter& filter,
-      WebAppScopeScoreOptions scope_score_options = {}) const;
-
-  // A more granular overload of the function above: allows the caller to
-  // include suggested apps, for instance.
-  std::optional<webapps::AppId> FindBestAppWithUrlInScope(
-      const GURL& url,
-      const FindBestAppInScopeOptions& options) const;
+      const FindBestAppInScopeOptions& options = {}) const;
 
   // Finds all apps that have scopes that are nested within the given
   // `outer_scope`, and match the specified filter.
@@ -413,6 +408,18 @@ class WebAppRegistrar {
   std::vector<webapps::AppId> GetAllSubAppIds(
       const webapps::AppId& parent_app_id) const;
 
+  // Gets the name of the Parent App of a given sub app.
+  // The function returns std::nullopt if the given app_id does not
+  // belong to sub app of an isolated web app.
+  std::optional<std::string> GetParentAppShortName(
+      const webapps::AppId& app_id) const;
+
+  // Gets the AppId of the Parent App.
+  // The function returns std::nullopt if the given app_id does not
+  // have a parent app.
+  std::optional<webapps::AppId> GetParentAppId(
+      const webapps::AppId& app_id) const;
+
   // Maps all app IDs to their parent apps' IDs. Maps that do not have a parent
   // are omitted. This query should only be called with an AllAppsLock since all
   // apps are queried for their parent.
@@ -517,6 +524,10 @@ class WebAppRegistrar {
   // its scope. This returns false for apps that aren't installed.
   bool CanCaptureLinksInScope(const webapps::AppId& app_id) const;
 
+  // Verifies if the scopes of 2 apps match for user link capturing.
+  bool AppScopesMatchForUserLinkCapturing(const webapps::AppId& app_id1,
+                                          const webapps::AppId& app_id2) const;
+
   // ChromeOS stores the per-app capturing setting in PreferredAppsImpl, not
   // here.
 #if !BUILDFLAG(IS_CHROMEOS)
@@ -542,10 +553,6 @@ class WebAppRegistrar {
   // Returns a set of app ids that match the scope for user link capturing that
   std::vector<webapps::AppId> GetOverlappingAppsMatchingScope(
       const webapps::AppId& app_id) const;
-
-  // Verifies if the scopes of 2 apps match for user link capturing.
-  bool AppScopesMatchForUserLinkCapturing(const webapps::AppId& app_id1,
-                                          const webapps::AppId& app_id2) const;
 #endif
 
   // Returns information about apps that controls the input url, i.e. the app's
@@ -590,7 +597,7 @@ class WebAppRegistrar {
   void NotifyWebAppFileHandlerApprovalStateChanged(
       const webapps::AppId& app_id);
   void NotifyWebAppsWillBeUpdatedFromSync(
-      const std::vector<const WebApp*>& new_apps_state);
+      base::span<const WebApp* const> new_apps_state);
   void NotifyWebAppDisabledStateChanged(const webapps::AppId& app_id,
                                         bool is_disabled);
   void NotifyWebAppsDisabledModeChanged();

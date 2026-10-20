@@ -149,9 +149,10 @@ struct IndividualSettings {
   std::string blocked_install_message;
 
   // Allows admins to control whether the extension icon should be pinned to
-  // the toolbar next to the omnibar. If it is pinned, the icon is visible at
-  // all times.
-  ManagedToolbarPinMode toolbar_pin = ManagedToolbarPinMode::kDefaultUnpinned;
+  // the toolbar next to the omnibar. By default, this is kNotSet which means
+  // that the pinning behavior will be determined by the
+  // kExtensionsPinnedByDefault feature flag.
+  ManagedToolbarPinMode toolbar_pin = ManagedToolbarPinMode::kNotSet;
 
   // Boolean to indicate whether the extension can navigate to file URLs.
   bool file_url_navigation_allowed{false};
@@ -159,13 +160,6 @@ struct IndividualSettings {
 
 // Global extension management settings, applicable to all extensions.
 struct GlobalSettings {
-  enum class ManifestV2Setting {
-    kDefault = 0,
-    kDisabled,
-    kEnabled,
-    kEnabledForForceInstalled,
-  };
-
   enum class UnpublishedAvailability {
     kAllowUnpublished = 0,
     kDisableUnpublished = 1,
@@ -178,8 +172,6 @@ struct GlobalSettings {
 
   ~GlobalSettings();
 
-  void Reset();
-
   // Settings specifying which URLs are allowed to install extensions, will be
   // enforced only if `has_restricted_install_sources` is set to true.
   std::optional<URLPatternSet> install_sources;
@@ -188,11 +180,12 @@ struct GlobalSettings {
   // only of `has_restricted_allowed_types` is set to true.
   std::optional<std::vector<Manifest::Type>> allowed_types;
 
-  // An enum setting indicates if manifest v2 is allowed.
-  ManifestV2Setting manifest_v2_setting = ManifestV2Setting::kDefault;
-
   UnpublishedAvailability unpublished_availability_setting =
       UnpublishedAvailability::kAllowUnpublished;
+
+  // Cached value of the
+  // ExtensionForceInstallWithSearchOrNewTabOverridesEnabled enterprise policy.
+  bool allow_low_trust_dse_ntp_overrides = false;
 };
 
 }  // namespace internal

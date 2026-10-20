@@ -62,7 +62,7 @@ class ResetPasswordHandlerImpl : public mojom::ResetPasswordHandler {
       content::WebContents* web_contents,
       mojo::PendingReceiver<mojom::ResetPasswordHandler> receiver)
       : web_contents_(web_contents), receiver_(this, std::move(receiver)) {
-    DCHECK(web_contents);
+    CHECK(web_contents, base::NotFatalUntil::M162);
   }
 
   ResetPasswordHandlerImpl(const ResetPasswordHandlerImpl&) = delete;
@@ -78,7 +78,7 @@ class ResetPasswordHandlerImpl : public mojom::ResetPasswordHandler {
         ChromePasswordProtectionService::GetPasswordProtectionService(profile);
     if (service) {
       service->OnUserAction(
-          web_contents_,
+          web_contents_->GetWeakPtr(),
           service->reused_password_account_type_for_last_shown_warning(),
           RequestOutcome::UNKNOWN,
           LoginReputationClientResponse::VERDICT_TYPE_UNSPECIFIED,

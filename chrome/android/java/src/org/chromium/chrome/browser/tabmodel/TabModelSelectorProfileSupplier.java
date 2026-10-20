@@ -39,15 +39,6 @@ public class TabModelSelectorProfileSupplier
         mSelectorObserver =
                 new TabModelSelectorObserver() {
                     @Override
-                    public void onChange() {
-                        assumeNonNull(mSelector);
-                        if (mSelector.getCurrentModel() == null) return;
-                        Profile profile = mSelector.getCurrentModel().getProfile();
-                        if (profile == null) return;
-                        set(profile);
-                    }
-
-                    @Override
                     public void onTabStateInitialized() {
                         assumeNonNull(mSelector);
                         Profile profile = mSelector.getCurrentModel().getProfile();
@@ -118,12 +109,12 @@ public class TabModelSelectorProfileSupplier
     }
 
     @Override
-    public @Nullable Profile addObserver(Callback<Profile> obs, int behavior) {
+    public @Nullable Profile addObserver(Callback<? super Profile> obs, int behavior) {
         return mSupplier.addObserver(obs, behavior);
     }
 
     @Override
-    public void removeObserver(Callback<Profile> obs) {
+    public void removeObserver(Callback<? super Profile> obs) {
         mSupplier.removeObserver(obs);
     }
 

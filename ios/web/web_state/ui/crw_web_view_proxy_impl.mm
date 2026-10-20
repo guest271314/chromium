@@ -75,6 +75,7 @@ UIView* GetFirstResponderSubview(UIView* view) {
   CRWWebViewScrollViewProxy* _contentViewScrollViewProxy;
 }
 @synthesize contentView = _contentView;
+@synthesize ignoreObscuredInsets = _ignoreObscuredInsets;
 @dynamic keyboardVisible;
 
 - (instancetype)initWithWebController:(CRWWebController*)webController {
@@ -108,6 +109,19 @@ UIView* GetFirstResponderSubview(UIView* view) {
 
 - (void)setAllowsLinkPreview:(BOOL)allowsLinkPreview {
   _webController.allowsLinkPreview = allowsLinkPreview;
+}
+
+- (UIEdgeInsets)obscuredContentInsets {
+  if (@available(iOS 26.0, *)) {
+    return _webController.obscuredContentInsets;
+  }
+  return UIEdgeInsetsZero;
+}
+
+- (void)setObscuredContentInsets:(UIEdgeInsets)obscuredContentInsets {
+  if (@available(iOS 26.0, *)) {
+    _webController.obscuredContentInsets = obscuredContentInsets;
+  }
 }
 
 - (CGRect)bounds {
@@ -197,6 +211,14 @@ UIView* GetFirstResponderSubview(UIView* view) {
   return firstResponder.inputAccessoryView != nil;
 }
 
+- (BOOL)shouldSuppressInputViews {
+  return _webController.shouldSuppressInputViews;
+}
+
+- (void)setShouldSuppressInputViews:(BOOL)shouldSuppressInputViews {
+  _webController.shouldSuppressInputViews = shouldSuppressInputViews;
+}
+
 - (BOOL)becomeFirstResponder {
   return [_contentView becomeFirstResponder];
 }
@@ -210,7 +232,16 @@ UIView* GetFirstResponderSubview(UIView* view) {
 }
 
 - (void)setObscuredInsets:(UIEdgeInsets)obscuredInsets {
-  [_contentView setObscuredInsets:obscuredInsets];
+  [self setObscuredInsets:obscuredInsets initialVelocity:0.0];
+}
+
+- (void)setObscuredInsets:(UIEdgeInsets)obscuredInsets
+          initialVelocity:(CGFloat)initialVelocity {
+  if (_ignoreObscuredInsets) {
+    return;
+  }
+  [_contentView setObscuredInsets:obscuredInsets
+                  initialVelocity:initialVelocity];
 }
 
 - (void)setMinimumViewportInset:(UIEdgeInsets)minInset

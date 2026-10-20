@@ -7,12 +7,12 @@
 
 #include "base/memory/raw_ptr.h"
 #include "base/memory/raw_ref.h"
+#include "chrome/browser/ui/extensions/extensions_menu_handler.h"
 #include "chrome/browser/ui/extensions/extensions_menu_view_model.h"
-#include "chrome/browser/ui/views/extensions/extensions_menu_handler.h"
-#include "content/public/browser/web_contents.h"
 #include "extensions/browser/permissions_manager.h"
 #include "extensions/common/extension.h"
 #include "ui/views/view_tracker.h"
+#include "url/origin.h"
 
 namespace views {
 class View;
@@ -43,6 +43,7 @@ class ExtensionsMenuDelegateDesktop : public ExtensionsMenuViewModel::Delegate,
   ~ExtensionsMenuDelegateDesktop() override;
 
   // ExtensionsMenuViewModel::Delegate:
+  content::WebContents* GetActiveWebContents() const override;
   std::unique_ptr<ExtensionActionViewModel> CreateActionViewModel(
       const extensions::ExtensionId& extension_id) override;
 
@@ -80,8 +81,10 @@ class ExtensionsMenuDelegateDesktop : public ExtensionsMenuViewModel::Delegate,
   void OnSiteSettingsToggleButtonPressed(bool is_on) override;
   void OnSiteAccessSelected(
       const extensions::ExtensionId& extension_id,
+      const url::Origin& origin,
       extensions::PermissionsManager::UserSiteAccess site_access) override;
   void OnExtensionToggleSelected(const extensions::ExtensionId& extension_id,
+                                 const url::Origin& origin,
                                  bool is_on) override;
   void OnReloadPageButtonClicked() override;
   void OnAllowExtensionClicked(

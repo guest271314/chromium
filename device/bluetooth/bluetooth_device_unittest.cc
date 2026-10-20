@@ -30,8 +30,6 @@
 #include "device/bluetooth/test/bluetooth_test_mac.h"
 #elif BUILDFLAG(IS_WIN)
 #include "device/bluetooth/test/bluetooth_test_win.h"
-#elif defined(USE_CAST_BLUETOOTH_ADAPTER)
-#include "device/bluetooth/test/bluetooth_test_cast.h"
 #elif BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_LINUX)
 #include "device/bluetooth/test/bluetooth_test_bluez.h"
 #elif BUILDFLAG(IS_FUCHSIA)
@@ -68,6 +66,12 @@ void ScheduleAsynchronousRejectPairing(BluetoothDevice* device) {
                                 base::Unretained(device)));
 }
 #endif  // BUILDFLAG(IS_WIN)
+
+class TestBluetoothDevice : public MockBluetoothDevice {
+ public:
+  using BluetoothDevice::DidDisconnectGatt;
+  using MockBluetoothDevice::MockBluetoothDevice;
+};
 
 }  // namespace
 
@@ -137,6 +141,39 @@ TEST(BluetoothDeviceTest, CanonicalizeAddressFormat_RejectsInvalidFormats) {
     std::array<uint8_t, 6> parsed;
     EXPECT_FALSE(ParseBluetoothAddress(kInvalidFormats[i], parsed));
   }
+}
+
+TEST(BluetoothDeviceTest, GattDisconnectionFailsPendingConnection) {
+  constexpr char kTestDeviceAddress[] = "00:11:22:33:44:55";
+
+  auto adapter = base::MakeRefCounted<MockBluetoothAdapter>();
+  TestBluetoothDevice device(adapter.get(),
+                             /*bluetooth_class=*/0, "Test Device",
+                             kTestDeviceAddress,
+                             /*initially_paired=*/false,
+                             /*connected=*/false);
+
+  EXPECT_CALL(*adapter, GetDevice(kTestDeviceAddress))
+      .WillRepeatedly(Return(&device));
+  EXPECT_CALL(device, CreateGattConnection(_, _))
+      .WillOnce([&](BluetoothDevice::GattConnectionCallback callback,
+                    std::optional<BluetoothUUID> service_uuid) {
+        device.BluetoothDevice::CreateGattConnection(std::move(callback),
+                                                     service_uuid);
+      });
+  EXPECT_CALL(device, IsGattConnected()).WillRepeatedly(Return(false));
+  EXPECT_CALL(device, CreateGattConnectionImpl(_))
+      .WillOnce([&](std::optional<BluetoothUUID> service_uuid) {
+        device.DidDisconnectGatt();
+      });
+
+  base::test::TestFuture<std::unique_ptr<BluetoothGattConnection>,
+                         std::optional<BluetoothDevice::ConnectErrorCode>>
+      future;
+  device.CreateGattConnection(future.GetCallback(),
+                              /*service_uuid=*/std::nullopt);
+  EXPECT_FALSE(future.Get<0>());
+  EXPECT_EQ(future.Get<1>(), BluetoothDevice::ConnectErrorCode::ERROR_FAILED);
 }
 
 TEST(BluetoothDeviceTest, GattConnectionErrorReentrancy) {
@@ -594,8 +631,7 @@ TEST_F(BluetoothTest, MAYBE_GetServiceDataUUIDs_GetServiceDataForUUID) {
 
 // TODO(crbug.com/41310506): Remove #if once the BlueZ caching behavior is
 // changed.
-#if (BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_LINUX)) && \
-    !defined(USE_CAST_BLUETOOTH_ADAPTER)
+#if BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_LINUX)
   // On ChromeOS and Linux, BlueZ persists all service data meaning if
   // a device stops advertising service data for a UUID, BlueZ will
   // still return the cached value for that UUID.
@@ -1673,6 +1709,25 @@ TEST_F(BluetoothTest, MAYBE_BluetoothGattConnection_SimulateDisconnect) {
     EXPECT_FALSE(connection->IsConnected());
 }
 
+#if BUILDFLAG(IS_ANDROID)
+TEST_F(BluetoothTest, BluetoothGattConnection_DisconnectGattWithoutCallback) {
+  InitWithFakeAdapter();
+  StartLowEnergyDiscoverySession();
+  BluetoothDevice* device = SimulateLowEnergyDevice(3);
+
+  base::test::TestFuture<std::unique_ptr<BluetoothGattConnection>,
+                         std::optional<BluetoothDevice::ConnectErrorCode>>
+      future;
+  device->CreateGattConnection(future.GetCallback(),
+                               /*service_uuid=*/std::nullopt);
+
+  device->DisconnectGatt();
+
+  EXPECT_FALSE(future.Get<0>());
+  EXPECT_EQ(BluetoothDevice::ERROR_FAILED, future.Get<1>());
+}
+#endif  // BUILDFLAG(IS_ANDROID)
+
 #if BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_APPLE)
 #define MAYBE_BluetoothGattConnection_DisconnectGatt_SimulateConnect \
   BluetoothGattConnection_DisconnectGatt_SimulateConnect
@@ -1693,7 +1748,7 @@ TEST_F(BluetoothTest,
   BluetoothDevice* device = SimulateLowEnergyDevice(3);
 
   ResetEventCounts();
-  EXPECT_TRUE(
+  bool connected =
       ConnectGatt(device,
                   /*service_uuid=*/std::nullopt,
                   base::BindLambdaForTesting([this](BluetoothDevice* device) {
@@ -1703,17 +1758,28 @@ TEST_F(BluetoothTest,
                     device->DisconnectGatt();
 #endif
                     SimulateGattConnection(device);
-                  })));
+                  }));
 
+  EXPECT_EQ(1, gatt_connection_attempts_);
+  // On Android, calling DisconnectGatt() while the GATT connection is still
+  // pending cancels the in-flight attempt, so the connection never completes.
+  // Other platforms let the pending connection finish before applying the
+  // disconnect, so the connection succeeds and is then torn down below.
+#if BUILDFLAG(IS_ANDROID)
+  EXPECT_FALSE(connected);
+  EXPECT_EQ(2, gatt_disconnection_attempts_);
+  EXPECT_TRUE(gatt_connections_.empty());
+#else
+  EXPECT_TRUE(connected);
 #if !BUILDFLAG(IS_WIN)
   EXPECT_EQ(1, gatt_disconnection_attempts_);
 #endif
-  EXPECT_EQ(1, gatt_connection_attempts_);
 
   EXPECT_TRUE(gatt_connections_.back()->IsConnected());
   ResetEventCounts();
   SimulateGattDisconnection(device);
   base::RunLoop().RunUntilIdle();
+#endif
 }
 
 #if BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_APPLE)
@@ -2154,13 +2220,11 @@ TEST_F(BluetoothTest, GetDeviceTransportType) {
   BluetoothDevice* device = SimulateLowEnergyDevice(1);
   EXPECT_EQ(BLUETOOTH_TRANSPORT_LE, device->GetType());
 
-#if !defined(USE_CAST_BLUETOOTH_ADAPTER)
   BluetoothDevice* device2 = SimulateLowEnergyDevice(6);
   EXPECT_EQ(BLUETOOTH_TRANSPORT_DUAL, device2->GetType());
 
   BluetoothDevice* device3 = SimulateClassicDevice();
   EXPECT_EQ(BLUETOOTH_TRANSPORT_CLASSIC, device3->GetType());
-#endif  // !defined(USE_CAST_BLUETOOTH_ADAPTER)
 }
 #endif  // BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_LINUX) ||
         // BUILDFLAG(IS_ANDROID)

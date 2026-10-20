@@ -923,7 +923,7 @@ class FileTransferAnalysisDelegateAuditOnlyTest : public BaseTest {
   std::map<base::FilePath, ContentAnalysisResponse> failures_;
 
   // DLP response to ovewrite in the callback if present.
-  std::optional<ContentAnalysisResponse> dlp_response_ = std::nullopt;
+  std::optional<ContentAnalysisResponse> dlp_response_;
 
   // URLs to verify source and destination.
   storage::FileSystemURL source_url_;
@@ -1689,7 +1689,6 @@ TEST_F(FileTransferAnalysisDelegateAuditOnlyTest,
       source_directory_url_.path());
 
   std::string scan_id = "scan_id";
-  ContentAnalysisResponse::Result result;
   // Mark all files and text with failed scans.
   for (const auto& path : paths) {
     if (path.value().find("bad") != std::string::npos) {
@@ -1699,7 +1698,6 @@ TEST_F(FileTransferAnalysisDelegateAuditOnlyTest,
               TriggeredRule::BLOCK);
       response.set_request_token(scan_id);
       PathFailsDeepScan(path, response);
-      result = response.results()[0];
     }
   }
 

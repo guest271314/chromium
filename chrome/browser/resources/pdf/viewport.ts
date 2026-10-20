@@ -43,18 +43,18 @@ export interface Size {
 }
 
 interface FitToPageParams {
-  page?: number;
+  pageIndex?: number;
   scrollToTop?: boolean;
 }
 
 interface FitToHeightParams {
-  page?: number;
+  pageIndex?: number;
   viewPosition?: number;
 }
 
 interface FitToBoundingBoxParams {
   boundingBox: Rect;
-  page: number;
+  pageIndex: number;
 }
 
 interface FitToBoundingBoxDimensionParams extends FitToBoundingBoxParams {
@@ -180,16 +180,18 @@ export class Viewport {
     this.setZoomManager(new InactiveZoomManager(this.getZoom.bind(this), 1));
 
     // Print Preview
-    if (this.window_ === document.documentElement ||
-        // Necessary check since during testing a fake DOM element is used.
-        !(this.window_ instanceof HTMLElement)) {
+    if (this.window_ === document.documentElement) {
       window.addEventListener('scroll', this.updateViewport_.bind(this));
       this.scrollContent_.setEventTarget(window);
+      window.addEventListener('resize', this.resizeWrapper_.bind(this));
+    } else if (!(this.window_ instanceof HTMLElement)) {
+      // Test case (fake DOM element / MockElement)
+      this.scrollContent_.setEventTarget(
+          this.window_ as unknown as EventTarget);
       // The following line is only used in tests, since they expect
       // |scrollCallback| to be called on the mock |window_| object (legacy).
       (this.window_ as HtmlElementWithExtras).scrollCallback =
           this.updateViewport_.bind(this);
-      window.addEventListener('resize', this.resizeWrapper_.bind(this));
       // The following line is only used in tests, since they expect
       // |resizeCallback| to be called on the mock |window_| object (legacy).
       (this.window_ as HtmlElementWithExtras).resizeCallback =
@@ -1144,13 +1146,13 @@ export class Viewport {
         y: this.position.y / this.getZoom(),
       };
 
-      if (params?.page !== undefined) {
-        assert(params.page < this.pageDimensions_.length);
-        scrollPosition.y = this.pageDimensions_[params.page]!.y;
+      if (params?.pageIndex !== undefined) {
+        assert(params.pageIndex < this.pageDimensions_.length);
+        scrollPosition.y = this.pageDimensions_[params.pageIndex]!.y;
       }
 
       if (params?.viewPosition !== undefined) {
-        if (params.page === undefined) {
+        if (params.pageIndex === undefined) {
           // getMostVisiblePage() always returns an index in range of
           // pageDimensions_.
           scrollPosition.y = this.pageDimensions_[this.getMostVisiblePage()]!.y;
@@ -1185,11 +1187,12 @@ export class Viewport {
         y: this.position.y / this.getZoom(),
       };
 
-      const page =
-          params?.page !== undefined ? params.page : this.getMostVisiblePage();
+      const page = params?.pageIndex !== undefined ? params.pageIndex :
+                                                     this.getMostVisiblePage();
       assert(this.pageDimensions_.length > page);
 
-      if (params?.page !== undefined || document.fullscreenElement !== null) {
+      if (params?.pageIndex !== undefined ||
+          document.fullscreenElement !== null) {
         scrollPosition.y = this.pageDimensions_[page]!.y;
       }
 
@@ -1227,20 +1230,21 @@ export class Viewport {
         y: this.position.y / this.getZoom(),
       };
 
-      const page =
-          params?.page !== undefined ? params.page : this.getMostVisiblePage();
-      assert(this.pageDimensions_.length > page);
+      const pageIndex = params?.pageIndex !== undefined ?
+          params.pageIndex :
+          this.getMostVisiblePage();
+      assert(pageIndex < this.pageDimensions_.length);
 
-      if (params?.page !== undefined || params?.scrollToTop !== false) {
+      if (params?.pageIndex !== undefined || params?.scrollToTop !== false) {
         // Scroll to top of page.
         scrollPosition.x = 0;
-        scrollPosition.y = this.pageDimensions_[page]!.y;
+        scrollPosition.y = this.pageDimensions_[pageIndex]!.y;
       }
 
       // Fit to the page's height and the widest page's width.
       const dimensions = {
         width: this.documentDimensions_.width,
-        height: this.pageDimensions_[page]!.height,
+        height: this.pageDimensions_[pageIndex]!.height,
       };
       this.setZoomInternal_(
           this.computeFittingZoom_(dimensions, true, true), scrollPosition);
@@ -1291,7 +1295,7 @@ export class Viewport {
     const newZoom = this.clampZoom_(Math.min(zoomFitToWidth, zoomFitToHeight));
 
     // Calculate the position.
-    const pageInsetDimensions = this.getPageInsetDimensions(params.page);
+    const pageInsetDimensions = this.getPageInsetDimensions(params.pageIndex);
     const viewportSize = this.size;
     const screenPosition: Point = {
       x: pageInsetDimensions.x + boundingBox.x,
@@ -1321,7 +1325,7 @@ export class Viewport {
       params: FitToBoundingBoxDimensionParams, zoomFitToDimension: number,
       newZoom: number): Point {
     const boundingBox = params.boundingBox;
-    const pageInsetDimensions = this.getPageInsetDimensions(params.page);
+    const pageInsetDimensions = this.getPageInsetDimensions(params.pageIndex);
     const screenPosition: Point = {
       x: pageInsetDimensions.x,
       y: pageInsetDimensions.y + boundingBox.y,
@@ -1348,7 +1352,7 @@ export class Viewport {
       params: FitToBoundingBoxDimensionParams, zoomFitToDimension: number,
       newZoom: number): Point {
     const boundingBox = params.boundingBox;
-    const pageInsetDimensions = this.getPageInsetDimensions(params.page);
+    const pageInsetDimensions = this.getPageInsetDimensions(params.pageIndex);
     const screenPosition: Point = {
       x: pageInsetDimensions.x + boundingBox.x,
       y: pageInsetDimensions.y,
@@ -2148,18 +2152,7 @@ class ScrollContent {
   }
 
   get overlayScrollbarWidth(): number {
-    // Default width for overlay scrollbars to avoid painting the page indicator
-    // over the scrollbar parts.
-    let overlayScrollbarWidth = 16;
-
-    // MacOS has a fixed width independent of the presence of a pdf plugin.
-    // <if expr="not is_macosx">
-    if (this.plugin_) {
-      overlayScrollbarWidth = this.scrollbarWidth_;
-    }
-    // </if>
-
-    return overlayScrollbarWidth;
+    return this.scrollbarWidth_;
   }
 
   /** Gets the content size. */

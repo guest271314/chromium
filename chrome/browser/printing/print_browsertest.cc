@@ -30,7 +30,6 @@
 #include "chrome/app/chrome_command_ids.h"
 #include "chrome/browser/extensions/extension_browsertest.h"
 #include "chrome/browser/printing/browser_printing_context_factory_for_test.h"
-#include "chrome/browser/printing/print_compositor_util.h"
 #include "chrome/browser/printing/print_error_dialog.h"
 #include "chrome/browser/printing/print_job.h"
 #include "chrome/browser/printing/print_job_manager.h"
@@ -43,8 +42,8 @@
 #include "chrome/browser/printing/test_print_view_manager.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/renderer_context_menu/render_view_context_menu_browsertest_util.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
+#include "chrome/browser/ui/webui/print_preview/print_preview_ui.h"
 #include "chrome/common/chrome_paths.h"
 #include "chrome/common/chrome_switches.h"
 #include "chrome/common/pref_names.h"
@@ -60,14 +59,15 @@
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/global_routing_id.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_process_host.h"
+#include "content/public/browser/web_ui.h"
 #include "content/public/common/content_features.h"
 #include "content/public/common/content_switches.h"
 #include "content/public/test/back_forward_cache_util.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
-#include "content/public/test/fenced_frame_test_util.h"
 #include "content/public/test/prerender_test_util.h"
 #include "extensions/common/extension.h"
 #include "mojo/public/cpp/bindings/associated_remote.h"
@@ -102,6 +102,7 @@
 #include "chrome/browser/printing/printer_query_oop.h"
 #include "chrome/services/printing/public/mojom/print_backend_service.mojom.h"
 #endif
+
 
 #if BUILDFLAG(IS_WIN)
 #include "printing/printing_utils.h"
@@ -515,14 +516,14 @@ void PrintBrowserTest::AddPrinter(const std::string& printer_name) {
       printer_name,
       /*display_name=*/"test printer",
       /*printer_description=*/"A printer for testing.",
-      test::kPrintInfoOptions);
+      test::GetPrintInfoOptions());
 
   auto default_caps = std::make_unique<PrinterSemanticCapsAndDefaults>();
   default_caps->copies_max = kTestPrinterCapabilitiesMaxCopies;
-  default_caps->dpis = test::kPrinterCapabilitiesDefaultDpis;
+  default_caps->dpis = test::GetPrinterCapabilitiesDefaultDpis();
   default_caps->default_dpi = test::kPrinterCapabilitiesDpi;
-  default_caps->papers.push_back(test::kPaperLetter);
-  default_caps->papers.push_back(test::kPaperLegal);
+  default_caps->papers.push_back(test::GetPaperLetter());
+  default_caps->papers.push_back(test::GetPaperLegal());
   test_print_backend_->AddValidPrinter(
       printer_name, std::move(default_caps),
       std::make_unique<PrinterBasicInfo>(printer_info));
@@ -1263,10 +1264,10 @@ IN_PROC_BROWSER_TEST_F(PrintBrowserTest,
 
   // Creates mojom::PrintCompositor.
   client->CompositeDocument(
-      kDefaultDocumentCookie, main_frame,
+      kDefaultDocumentCookie, *main_frame,
       *TestPrintRenderFrame::GetDefaultDidPrintContentParams(),
-      ui::AXTreeUpdate(), mojom::GenerateDocumentOutline::kNone,
-      GetCompositorDocumentType(), base::DoNothing());
+      /*is_pdf=*/false, ui::AXTreeUpdate(),
+      mojom::GenerateDocumentOutline::kNone, base::DoNothing());
   ASSERT_TRUE(client->GetCompositeRequest(kDefaultDocumentCookie));
   // `requested_subframes_` should be empty.
   ASSERT_TRUE(client->requested_subframes_.empty());
@@ -1280,6 +1281,16 @@ IN_PROC_BROWSER_TEST_F(PrintBrowserTest,
 IN_PROC_BROWSER_TEST_F(SitePerProcessPrintBrowserTest, BasicPrint) {
   ASSERT_NO_FATAL_FAILURE(
       StartEmbeddedTestServerAndNavigate("/printing/test1.html"));
+
+  PrintAndWaitUntilPreviewIsReady();
+}
+
+// Printing preview a PDF file when site per process is enabled.
+// Test that PrintPreviewUI can properly route the PDF to the print compositor
+// and it doesn't cause a crash or timeout.
+IN_PROC_BROWSER_TEST_F(SitePerProcessPrintBrowserTest, BasicPdfPrint) {
+  ASSERT_NO_FATAL_FAILURE(
+      StartEmbeddedTestServerAndNavigate("/pdf/test.pdf"));
 
   PrintAndWaitUntilPreviewIsReady();
 }
@@ -1931,6 +1942,19 @@ IN_PROC_BROWSER_TEST_F(PrintBrowserTest, SpecifiedPageSizeCrash) {
   PrintAndWaitUntilPreviewIsReadyAndLoaded();
 }
 
+// Regression test for crbug.com/568827486
+IN_PROC_BROWSER_TEST_F(PrintBrowserTest, PrintCssLuminanceMask) {
+  static constexpr char kHtmlData[] =
+      "data:text/html,<div style='mask-image: linear-gradient(black, "
+      "transparent); mask-mode: luminance; print-color-adjust: exact;'>Hello "
+      "world!</div>";
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), GURL(kHtmlData)));
+
+  PrintAndWaitUntilPreviewIsReady();
+
+  EXPECT_EQ(rendered_page_count(), 1u);
+}
+
 class PrintPrerenderBrowserTest
     : public PrintBrowserTest,
       public testing::WithParamInterface<std::string> {
@@ -2034,206 +2058,7 @@ IN_PROC_BROWSER_TEST_P(PrintPrerenderBrowserTest,
   EXPECT_EQ(1u, console_observer.messages().size());
 }
 
-class PrintFencedFrameBrowserTest : public PrintBrowserTest {
- public:
-  PrintFencedFrameBrowserTest() {
-    fenced_frame_helper_ =
-        std::make_unique<content::test::FencedFrameTestHelper>();
-  }
-  ~PrintFencedFrameBrowserTest() override = default;
-
-  void SetUpOnMainThread() override {
-    PrintBrowserTest::SetUpOnMainThread();
-    https_server_.ServeFilesFromSourceDirectory(GetChromeTestDataDir());
-    ASSERT_TRUE(https_server_.Start());
-  }
-
-  PrintFencedFrameBrowserTest(const PrintFencedFrameBrowserTest&) = delete;
-  PrintFencedFrameBrowserTest& operator=(const PrintFencedFrameBrowserTest&) =
-      delete;
-
-  content::WebContents* web_contents() {
-    return browser()->tab_strip_model()->GetActiveWebContents();
-  }
-
-  content::test::FencedFrameTestHelper* fenced_frame_test_helper() {
-    return fenced_frame_helper_.get();
-  }
-
- protected:
-  content::RenderFrameHost* CreateFencedFrame(
-      content::RenderFrameHost* fenced_frame_parent,
-      const GURL& url) {
-    if (fenced_frame_helper_) {
-      return fenced_frame_helper_->CreateFencedFrame(fenced_frame_parent, url);
-    }
-
-    // FencedFrameTestHelper only supports the MPArch version of fenced frames.
-    // So need to maually create a fenced frame for the ShadowDOM version.
-    content::TestNavigationManager navigation(web_contents(), url);
-    constexpr char kAddFencedFrameScript[] = R"({
-        const fenced_frame = document.createElement('fencedframe');
-        fenced_frame.src = $1;
-        document.body.appendChild(fenced_frame);
-    })";
-    EXPECT_TRUE(ExecJs(fenced_frame_parent,
-                       content::JsReplace(kAddFencedFrameScript, url)));
-    EXPECT_TRUE(navigation.WaitForNavigationFinished());
-
-    return ChildFrameAt(fenced_frame_parent, 0);
-  }
-
-  void RunScriptedPrintTest(const std::string& print_command) {
-    // Navigate to an initial page.
-    const GURL url(https_server_.GetURL("/empty.html"));
-    ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), url));
-
-    // Load a fenced frame.
-    GURL fenced_frame_url = https_server_.GetURL("/fenced_frames/title1.html");
-    content::WebContents* web_contents =
-        browser()->tab_strip_model()->GetActiveWebContents();
-    content::RenderFrameHost* fenced_frame_host = CreateFencedFrame(
-        web_contents->GetPrimaryMainFrame(), fenced_frame_url);
-    ASSERT_TRUE(fenced_frame_host);
-    content::WebContentsConsoleObserver console_observer(web_contents);
-    EXPECT_EQ(0u, console_observer.messages().size());
-
-    constexpr char kAddListenersScript[] = R"(
-        (async () => {
-          let firedBeforePrint = false;
-          let firedAfterPrint = false;
-          window.addEventListener('beforeprint', () => {
-            firedBeforePrint = true;
-          });
-          window.addEventListener('afterprint', () => {
-            firedAfterPrint = true;
-          });
-          %s
-          return 'beforeprint: ' + firedBeforePrint +
-                 ', afterprint: ' + firedAfterPrint;
-        })();
-      )";
-    const std::string test_script =
-        base::StringPrintf(kAddListenersScript, print_command.c_str());
-    EXPECT_EQ("beforeprint: false, afterprint: false",
-              content::EvalJs(fenced_frame_host, test_script));
-
-    ASSERT_TRUE(console_observer.Wait());
-    ASSERT_EQ(1u, console_observer.messages().size());
-    EXPECT_EQ(
-        "Ignored call to 'print()'. The document is in a fenced frame tree.",
-        console_observer.GetMessageAt(0));
-  }
-
-  void RunPrintTest() {
-    // Navigate to an initial page.
-    const GURL url(https_server_.GetURL("/empty.html"));
-    ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), url));
-
-    // Load a fenced frame.
-    GURL fenced_frame_url = https_server_.GetURL("/fenced_frames/title1.html");
-    content::WebContents* web_contents =
-        browser()->tab_strip_model()->GetActiveWebContents();
-    content::RenderFrameHost* fenced_frame_host = CreateFencedFrame(
-        web_contents->GetPrimaryMainFrame(), fenced_frame_url);
-    ASSERT_TRUE(fenced_frame_host);
-
-    // `PrintViewManager` should refuse to print.
-    auto* print_view_manager = PrintViewManager::FromWebContents(web_contents);
-    ASSERT_TRUE(print_view_manager);
-    EXPECT_FALSE(print_view_manager->PrintPreviewNow(fenced_frame_host,
-                                                     /*has_selection=*/false));
-  }
-
- private:
-  std::unique_ptr<content::test::FencedFrameTestHelper> fenced_frame_helper_;
-  net::EmbeddedTestServer https_server_{net::EmbeddedTestServer::TYPE_HTTPS};
-};
-
-IN_PROC_BROWSER_TEST_F(PrintFencedFrameBrowserTest, ScriptedPrint) {
-  RunScriptedPrintTest("window.print();");
-}
-
-IN_PROC_BROWSER_TEST_F(PrintFencedFrameBrowserTest, DocumentExecCommand) {
-  RunScriptedPrintTest("document.execCommand('print');");
-}
-
-IN_PROC_BROWSER_TEST_F(PrintFencedFrameBrowserTest, BrowserPrint) {
-  RunPrintTest();
-}
-
 #if BUILDFLAG(IS_WIN)
-std::string GetDocumentDataTypeTestSuffix(
-    const testing::TestParamInfo<DocumentDataType>& info) {
-  switch (info.param) {
-    case DocumentDataType::kUnknown:
-      NOTREACHED();
-    case DocumentDataType::kPdf:
-      return "Pdf";
-    case DocumentDataType::kXps:
-      return "Xps";
-  }
-}
-
-class PrintCompositorDocumentDataTypeBrowserTest
-    : public PrintBrowserTest,
-      public testing::WithParamInterface<DocumentDataType> {
- public:
-  PrintCompositorDocumentDataTypeBrowserTest() = default;
-  ~PrintCompositorDocumentDataTypeBrowserTest() override = default;
-
-  void SetUp() override {
-    std::vector<base::test::FeatureRefAndParams> enabled_features;
-    std::vector<base::test::FeatureRef> disabled_features;
-
-    // Force use of out-of-process print drivers, since it is required for
-    // printing with XPS.
-    enabled_features.push_back(
-        {features::kEnableOopPrintDrivers,
-         {{features::kEnableOopPrintDriversJobPrint.name, "true"}}});
-    if (GetParam() == DocumentDataType::kXps) {
-      enabled_features.push_back({features::kUseXpsForPrinting, {}});
-
-      // Use of XPS printing requires using LPAC for the sandbox, otherwise
-      // the permissions for token-based sandboxing have to be significantly
-      // relaxed.
-      enabled_features.push_back(
-          {sandbox::policy::features::kPrintCompositorLPAC, {}});
-    } else {
-      disabled_features.push_back(features::kUseXpsForPrinting);
-    }
-
-    scoped_feature_list_.InitWithFeaturesAndParameters(enabled_features,
-                                                       disabled_features);
-    PrintBrowserTest::SetUp();
-  }
-
- private:
-  base::test::ScopedFeatureList scoped_feature_list_;
-};
-
-INSTANTIATE_TEST_SUITE_P(All,
-                         PrintCompositorDocumentDataTypeBrowserTest,
-                         testing::Values(DocumentDataType::kPdf,
-                                         DocumentDataType::kXps),
-                         GetDocumentDataTypeTestSuffix);
-
-// Demonstrate that the Print Compositor is plumbed to generate the different
-// document types.
-IN_PROC_BROWSER_TEST_P(PrintCompositorDocumentDataTypeBrowserTest,
-                       WindowDotPrint) {
-  content::WebContents* web_contents =
-      browser()->tab_strip_model()->GetActiveWebContents();
-
-  TestPrintPreviewObserver print_preview_observer(/*wait_for_loaded=*/true);
-  content::ExecuteScriptAsync(web_contents->GetPrimaryMainFrame(),
-                              "window.print();");
-  print_preview_observer.WaitUntilPreviewIsReady();
-
-  EXPECT_THAT(print_preview_observer.last_document_composite_data_type(),
-              testing::Optional(GetParam()));
-}
-
 // Demonstrate that the Print Compositor still works using the legacy sandbox
 // method, should the `kPrintCompositorLPAC` flag be disabled.
 // TODO(crbug.com/40283514):  Remove once LPAC sandboxing has been proven to
@@ -2244,7 +2069,6 @@ class PrintCompositorLegacySandboxBrowserTest : public PrintBrowserTest {
 
     disabled_features.push_back(
         sandbox::policy::features::kPrintCompositorLPAC);
-    disabled_features.push_back(features::kUseXpsForPrinting);
 
     scoped_feature_list_.InitWithFeatures(/*enabled_features=*/{},
                                           disabled_features);
@@ -2265,8 +2089,7 @@ IN_PROC_BROWSER_TEST_F(PrintCompositorLegacySandboxBrowserTest,
                               "window.print();");
   print_preview_observer.WaitUntilPreviewIsReady();
 
-  EXPECT_THAT(print_preview_observer.last_document_composite_data_type(),
-              testing::Optional(DocumentDataType::kPdf));
+  EXPECT_TRUE(print_preview_observer.did_composite_pdf_document());
 }
 #endif  // BUILDFLAG(IS_WIN)
 

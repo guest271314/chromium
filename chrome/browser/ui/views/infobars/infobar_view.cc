@@ -10,32 +10,22 @@
 #include <string>
 #include <utility>
 
-#include "base/strings/utf_string_conversions.h"
-#include "chrome/browser/themes/theme_properties.h"
 #include "chrome/browser/ui/color/chrome_color_id.h"
-#include "chrome/browser/ui/layout_constants.h"
 #include "chrome/browser/ui/views/chrome_layout_provider.h"
-#include "chrome/browser/ui/views/chrome_typography.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/grit/generated_resources.h"
 #include "components/infobars/core/infobar_delegate.h"
 #include "components/strings/grit/components_strings.h"
 #include "components/vector_icons/vector_icons.h"
-#include "third_party/skia/include/effects/SkGradient.h"
 #include "ui/accessibility/ax_enums.mojom.h"
-#include "ui/accessibility/ax_node_data.h"
-#include "ui/base/class_property.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
-#include "ui/base/theme_provider.h"
 #include "ui/base/ui_base_features.h"
 #include "ui/base/window_open_disposition_utils.h"
 #include "ui/compositor/layer.h"
 #include "ui/gfx/canvas.h"
-#include "ui/gfx/color_palette.h"
 #include "ui/gfx/color_utils.h"
 #include "ui/gfx/image/image.h"
-#include "ui/gfx/paint_vector_icon.h"
 #include "ui/gfx/text_constants.h"
 #include "ui/native_theme/native_theme.h"
 #include "ui/views/accessibility/view_accessibility.h"
@@ -43,9 +33,6 @@
 #include "ui/views/border.h"
 #include "ui/views/controls/button/image_button.h"
 #include "ui/views/controls/button/image_button_factory.h"
-#include "ui/views/controls/button/label_button_border.h"
-#include "ui/views/controls/button/md_text_button.h"
-#include "ui/views/controls/button/menu_button.h"
 #include "ui/views/controls/highlight_path_generator.h"
 #include "ui/views/controls/image_view.h"
 #include "ui/views/controls/label.h"
@@ -54,9 +41,7 @@
 #include "ui/views/controls/styled_label.h"
 #include "ui/views/layout/flex_layout.h"
 #include "ui/views/view_class_properties.h"
-#include "ui/views/view_utils.h"
 #include "ui/views/widget/widget.h"
-#include "ui/views/window/frame_view.h"
 
 template <typename T>
 void InfoBarView::AssignLabelDetails(T* view) const {
@@ -77,6 +62,11 @@ template void InfoBarView::AssignLabelDetails(views::Link*) const;
 
 namespace {
 const int kInfobarIconSize = 24;
+
+// Pill padding; the horizontal inset keeps the "+N" text clear of the
+// capsule's rounded ends.
+constexpr gfx::Insets kQueuedCountPillPadding = gfx::Insets::VH(2, 8);
+
 int GetElementSpacing() {
   return ChromeLayoutProvider::Get()->GetDistanceMetric(
       views::DISTANCE_UNRELATED_INFOBAR_CONTAINER_HORIZONTAL);
@@ -100,6 +90,7 @@ DEFINE_CLASS_ELEMENT_IDENTIFIER_VALUE(InfoBarView, kInfoBarElementId);
 DEFINE_CLASS_ELEMENT_IDENTIFIER_VALUE(InfoBarView, kDismissButtonElementId);
 DEFINE_CLASS_ELEMENT_IDENTIFIER_VALUE(InfoBarView, kLeftBalancerElementId);
 DEFINE_CLASS_ELEMENT_IDENTIFIER_VALUE(InfoBarView, kRightSpacerElementId);
+DEFINE_CLASS_ELEMENT_IDENTIFIER_VALUE(InfoBarView, kQueuedCountPillElementId);
 
 InfoBarView::InfoBarView(std::unique_ptr<infobars::InfoBarDelegate> delegate)
     : infobars::InfoBar(std::move(delegate)),
@@ -116,6 +107,8 @@ InfoBarView::InfoBarView(std::unique_ptr<infobars::InfoBarDelegate> delegate)
   // animation.
   SetPaintToLayer();
   layer()->SetMasksToBounds(true);
+
+  SetBackground(views::CreateSolidBackground(kColorInfoBarBackground));
 
   const int kRefreshMargin = ChromeLayoutProvider::Get()->GetDistanceMetric(
       views::DISTANCE_UNRELATED_CONTROL_HORIZONTAL);
@@ -193,7 +186,7 @@ InfoBarView::InfoBarView(std::unique_ptr<infobars::InfoBarDelegate> delegate)
   auto* right_layout = right_side_container_->SetLayoutManager(
       std::make_unique<views::FlexLayout>());
   right_layout->SetOrientation(views::LayoutOrientation::kHorizontal)
-      .SetCrossAxisAlignment(views::LayoutAlignment::kEnd);
+      .SetCrossAxisAlignment(views::LayoutAlignment::kCenter);
   right_side_container_->SetProperty(views::kFlexBehaviorKey, kRigidFlex);
 
   if (this->delegate()->IsCloseable()) {
@@ -236,7 +229,7 @@ InfoBarView::~InfoBarView() {
   // We should have closed any open menus in PlatformSpecificHide(), then
   // subclasses' RunMenu() functions should have prevented opening any new ones
   // once we became unowned.
-  DCHECK(!menu_runner_.get());
+  CHECK(!menu_runner_.get(), base::NotFatalUntil::M162);
 }
 
 void InfoBarView::RecalculateLayoutBalancing() {
@@ -291,30 +284,11 @@ gfx::Size InfoBarView::CalculatePreferredSize(
 
 void InfoBarView::OnThemeChanged() {
   views::View::OnThemeChanged();
-  const auto* cp = GetColorProvider();
-  const SkColor background_theme_color = cp->GetColor(kColorInfoBarBackground);
-  SetBackground(views::CreateSolidBackground(background_theme_color));
-
-  const SkColor text_color = cp->GetColor(kColorInfoBarForeground);
-  for (views::View* child : content_container_->children()) {
-    auto* label = views::AsViewClass<views::Label>(child);
-    if (label) {
-      label->SetBackgroundColor(background_theme_color);
-      if (!views::IsViewClass<views::Link>(child)) {
-        label->SetEnabledColor(text_color);
-        label->SetAutoColorReadabilityEnabled(false);
-      }
-    }
-    auto* styled_label = views::AsViewClass<views::StyledLabel>(child);
-    if (styled_label) {
-      styled_label->SetDisplayedOnBackgroundColor(background_theme_color);
-    }
-  }
 
   // Set dark mode status so that it can be used to set a different icon image
   // that is more suitable for a dark background.
-  delegate()->set_dark_mode(
-      color_utils::IsDark(cp->GetColor(kColorInfoBarBackground)));
+  delegate()->set_dark_mode(color_utils::IsDark(
+      GetColorProvider()->GetColor(kColorInfoBarBackground)));
   if (icon_) {
     icon_->SetImage(delegate()->GetIcon());
   }
@@ -335,6 +309,9 @@ std::unique_ptr<views::Label> InfoBarView::CreateLabel(
     const std::u16string& text) const {
   auto label = std::make_unique<views::Label>(
       text, views::style::CONTEXT_DIALOG_BODY_TEXT);
+  label->SetBackgroundColor(kColorInfoBarBackground);
+  label->SetEnabledColor(kColorInfoBarForeground);
+  label->SetAutoColorReadabilityEnabled(false);
   AssignLabelDetails(label.get());
   return label;
 }
@@ -344,6 +321,7 @@ std::unique_ptr<views::StyledLabel> InfoBarView::CreateStyledLabel(
   auto label = std::make_unique<views::StyledLabel>();
   label->SetText(text);
   label->SetTextContext(views::style::CONTEXT_DIALOG_BODY_TEXT);
+  label->SetDisplayedOnBackgroundColor(kColorInfoBarBackground);
   AssignLabelDetails(label.get());
   return label;
 }
@@ -353,6 +331,7 @@ std::unique_ptr<views::Link> InfoBarView::CreateLink(
     const std::optional<std::u16string>& accessible_text) {
   auto link = std::make_unique<views::Link>(
       text, views::style::CONTEXT_DIALOG_BODY_TEXT);
+  link->SetBackgroundColor(kColorInfoBarBackground);
   AssignLabelDetails(link.get());
   link->SetCallback(
       base::BindRepeating(&InfoBarView::LinkClicked, base::Unretained(this)));
@@ -362,6 +341,59 @@ std::unique_ptr<views::Link> InfoBarView::CreateLink(
   }
 
   return link;
+}
+
+std::unique_ptr<views::Label> InfoBarView::CreateQueuedCountPillLabel() const {
+  auto pill = std::make_unique<views::Label>(std::u16string(),
+                                             views::style::CONTEXT_LABEL,
+                                             views::style::STYLE_BODY_5);
+  // Pin the background so auto color readability cannot re-contrast the
+  // deemphasized foreground (same pattern as CreateLabel()).
+  pill->SetEnabledColor(kColorInfoBarQueuedCountPillForeground);
+  pill->SetBackgroundColor(kColorInfoBarQueuedCountPillBackground);
+  pill->SetAutoColorReadabilityEnabled(false);
+  pill->SetBorder(views::CreateEmptyBorder(kQueuedCountPillPadding));
+  // right_side_container_ bottom-aligns children (kEnd); center the
+  // shorter pill against the close button.
+  pill->SetProperty(views::kCrossAxisAlignmentKey,
+                    views::LayoutAlignment::kCenter);
+  pill->SetProperty(views::kElementIdentifierKey, kQueuedCountPillElementId);
+  pill->GetViewAccessibility().SetRole(ax::mojom::Role::kStatus);
+  return pill;
+}
+
+void InfoBarView::SetQueuedInfoBarCount(size_t count,
+                                        base::PassKey<InfoBarContainerView>) {
+  if (count == 0) {
+    if (queued_count_pill_) {
+      queued_count_pill_->SetVisible(false);
+      RecalculateLayoutBalancing();
+    }
+    return;
+  }
+
+  if (!queued_count_pill_) {
+    if (!right_side_container_) {
+      return;
+    }
+
+    auto pill = CreateQueuedCountPillLabel();
+    queued_count_pill_ = pill.get();
+    AddViewBeforeCloseButton(std::move(pill));
+  }
+
+  queued_count_pill_->SetText(l10n_util::GetPluralStringFUTF16(
+      IDS_INFOBAR_PENDING_COUNT, static_cast<int>(count)));
+  const std::u16string description = l10n_util::GetPluralStringFUTF16(
+      IDS_INFOBAR_PENDING_COUNT_TOOLTIP, static_cast<int>(count));
+  queued_count_pill_->SetTooltipText(description);
+  queued_count_pill_->GetViewAccessibility().SetName(description);
+  // Radius tracks height so the capsule survives font scaling.
+  queued_count_pill_->SetBackground(views::CreateRoundedRectBackground(
+      kColorInfoBarQueuedCountPillBackground,
+      queued_count_pill_->GetPreferredSize().height() / 2.0f));
+  queued_count_pill_->SetVisible(true);
+  RecalculateLayoutBalancing();
 }
 
 void InfoBarView::AddViewBeforeCloseButton(std::unique_ptr<views::View> view) {
@@ -471,6 +503,11 @@ void InfoBarView::AssignWidthsSorted(Views* views, int available_width) {
   views->back()->SetSize(back_view_size);
   views->pop_back();
   AssignWidthsSorted(views, available_width - back_view_size.width());
+}
+
+void InfoBarView::SetInteriorMargin(const gfx::Insets& margin) {
+  static_cast<views::FlexLayout*>(GetLayoutManager())
+      ->SetInteriorMargin(margin);
 }
 
 void InfoBarView::LinkClicked(const ui::Event& event) {

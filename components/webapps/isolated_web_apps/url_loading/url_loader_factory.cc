@@ -17,6 +17,7 @@
 #include "base/location.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/scoped_refptr.h"
+#include "base/memory/self_deleting.h"
 #include "base/memory/weak_ptr.h"
 #include "base/no_destructor.h"
 #include "base/scoped_observation.h"
@@ -31,7 +32,6 @@
 #include "components/web_package/signed_web_bundles/signed_web_bundle_id.h"
 #include "components/web_package/web_bundle_utils.h"
 #include "components/webapps/isolated_web_apps/client.h"
-#include "components/webapps/isolated_web_apps/public/header_utils.h"
 #include "components/webapps/isolated_web_apps/reading/response_reader.h"
 #include "components/webapps/isolated_web_apps/reading/response_reader_registry.h"
 #include "components/webapps/isolated_web_apps/reading/response_reader_registry_factory.h"
@@ -40,6 +40,7 @@
 #include "components/webapps/isolated_web_apps/types/source.h"
 #include "components/webapps/isolated_web_apps/types/storage_location.h"
 #include "components/webapps/isolated_web_apps/types/url_loading_types.h"
+#include "components/webapps/isolated_web_apps/url_loading/header_utils.h"
 #include "components/webapps/isolated_web_apps/url_loading/url_loader.h"
 #include "components/webapps/isolated_web_apps/url_loading/utils.h"
 #include "content/public/browser/browser_context.h"
@@ -64,6 +65,7 @@
 #include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "services/network/public/cpp/url_loader_completion_status.h"
 #include "services/network/public/mojom/early_hints.mojom.h"
+#include "services/network/public/mojom/fetch_api.mojom-shared.h"
 #include "services/network/public/mojom/network_service.mojom.h"
 #include "services/network/public/mojom/url_loader.mojom.h"
 #include "services/network/public/mojom/url_loader_factory.mojom.h"
@@ -82,6 +84,16 @@ bool IsSupportedHttpMethod(const std::string& method) {
          method == net::HttpRequestHeaders::kHeadMethod;
 }
 
+bool IsWorkerScriptRequest(const network::ResourceRequest& resource_request) {
+  switch (resource_request.destination) {
+    case network::mojom::RequestDestination::kWorker:
+    case network::mojom::RequestDestination::kSharedWorker:
+    case network::mojom::RequestDestination::kServiceWorker:
+      return true;
+    default:
+      return false;
+  }
+}
 
 class ForwardingURLLoaderClient : public network::mojom::URLLoaderClient {
  public:
@@ -126,9 +138,10 @@ class ForwardingURLLoaderClient : public network::mojom::URLLoaderClient {
 };
 
 // This URL loader client parses the headers propagated from the underlying
-// layer. This is necessary for service worker loading (which relies on
-// `response_head->parsed_headers` for deducing cross-origin isolation
-// correctly) and implies an additional hop via the network service.
+// layer. This is necessary for worker script loading (which relies on
+// `response_head->parsed_headers` for deducing cross-origin isolation and
+// enforcing connection allowlists before throttles run) and implies an
+// additional hop via the network service.
 class HeaderParsingURLLoaderClient : public ForwardingURLLoaderClient {
  public:
   HeaderParsingURLLoaderClient(
@@ -235,7 +248,7 @@ class HeaderInjectionURLLoaderClient : public ForwardingURLLoaderClient {
 
   void OnComplete(const network::URLLoaderCompletionStatus& status) override {
     network::URLLoaderCompletionStatus adjusted_status = status;
-    adjusted_status.encoded_data_length += header_size_delta_.InBytes();
+    adjusted_status.encoded_data_length += header_size_delta_;
     url_loader_client()->OnComplete(adjusted_status);
   }
 
@@ -282,8 +295,9 @@ class IsolatedWebAppURLLoaderFactoryImpl
       std::optional<url::Origin> app_origin,
       std::optional<content::FrameTreeNodeId> frame_tree_node_id,
       bool enforce_same_origin,
-      mojo::PendingReceiver<network::mojom::URLLoaderFactory> factory_receiver)
-      : network::SelfDeletingURLLoaderFactory(std::move(factory_receiver)),
+      mojo::PendingReceiver<network::mojom::URLLoaderFactory> factory_receiver,
+      base::SelfDeletingPassKey key)
+      : network::SelfDeletingURLLoaderFactory(std::move(factory_receiver), key),
         browser_context_(content::AreIsolatedWebAppsEnabled(browser_context)
                              ? browser_context
                              : nullptr),
@@ -334,12 +348,15 @@ class IsolatedWebAppURLLoaderFactoryImpl
     CHECK(resource_request.url.SchemeIs(webapps::kIsolatedAppScheme));
     DCHECK(resource_request.url.IsStandard());
 
-    if (resource_request.headers.GetHeader("Service-Worker") == "script") {
-      // Service worker script loading expects parsed headers in the response,
-      // whereas `HeaderInjectionURLLoaderClient` explicitly sets them to
-      // nullptr. This is fine for navigation requests which re-parse them at a
-      // higher layer, but for SW having `response_head->parsed_headers` be
-      // present is a must to deduce cross-origin isolation correctly.
+    if (IsWorkerScriptRequest(resource_request)) {
+      // Worker script loading and its throttles (such as
+      // `NetworkRestrictionsWorkerThrottle`) expect parsed headers in the
+      // response, whereas `HeaderInjectionURLLoaderClient` explicitly sets them
+      // to nullptr. This is fine for navigation requests which re-parse them at
+      // a higher layer, but for worker scripts having
+      // `response_head->parsed_headers` present before throttles run is
+      // necessary to deduce cross-origin isolation and enforce connection
+      // allowlists correctly.
       mojo::PendingRemote<network::mojom::URLLoaderClient>
           forwarding_loader_client;
 
@@ -510,7 +527,7 @@ mojo::PendingRemote<network::mojom::URLLoaderFactory> CreateInternal(
   // The IsolatedWebAppURLLoaderFactoryImpl will delete itself when there are no
   // more receivers - see the
   // network::SelfDeletingURLLoaderFactory::OnDisconnect method.
-  new IsolatedWebAppURLLoaderFactoryImpl(
+  base::MakeSelfDeleting<IsolatedWebAppURLLoaderFactoryImpl>(
       browser_context, std::move(app_origin), frame_tree_node_id,
       enforce_same_origin, pending_remote.InitWithNewPipeAndPassReceiver());
 

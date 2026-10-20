@@ -1241,18 +1241,19 @@ TEST(AXTreeTest, TreeObserverIsNotCalledForReparenting) {
 
 // https://crbug.com/1359080
 // UAF caught by ax_tree_fuzzer
-TEST(AXTreeTest, DISABLED_BogusAXTree) {
+TEST(AXTreeTest, BogusAXTree) {
   AXTreeUpdate initial_state;
   AXNodeData node;
   node.id = 0;
   initial_state.nodes.push_back(node);
   initial_state.nodes.push_back(node);
   AXTree tree;
-#if DCHECK_IS_ON()
+#if AX_FAIL_FAST_BUILD()
   EXPECT_DEATH_IF_SUPPORTED(tree.Unserialize(initial_state),
                             "AXTreeUpdate contains invalid node");
 #else
-  tree.Unserialize(initial_state);
+  EXPECT_FALSE(tree.Unserialize(initial_state));
+  EXPECT_EQ("Tree or update must have a valid root.", tree.error());
 #endif
 }
 
@@ -2070,6 +2071,40 @@ TEST(AXTreeTest, ReverseRelationsDoNotKeepGrowing) {
     }
   }
   EXPECT_LT(map_key_count, 10U);
+  EXPECT_LT(set_entry_count, 10U);
+}
+
+TEST(AXTreeTest, ReverseRelationsDoNotKeepGrowingWhenSourcesAreDeleted) {
+  // Each iteration replaces the root's child with a new node whose
+  // aria-activedescendant points at the root, so the previous child (a
+  // relation source) is destroyed every time. The reverse relation map must
+  // not keep entries for destroyed sources.
+  AXTreeUpdate initial_state;
+  initial_state.root_id = 1;
+  initial_state.nodes.resize(2);
+  initial_state.nodes[0].id = 1;
+  initial_state.nodes[0].child_ids.push_back(2);
+  initial_state.nodes[1].id = 2;
+  AXTree tree(initial_state);
+
+  for (int i = 0; i < 1000; ++i) {
+    AXTreeUpdate update;
+    update.root_id = 1;
+    update.nodes.resize(2);
+    update.nodes[0].id = 1;
+    update.nodes[1].id = i + 3;
+    update.nodes[1].AddIntAttribute(
+        ax::mojom::IntAttribute::kActivedescendantId, 1);
+    update.nodes[0].child_ids.push_back(update.nodes[1].id);
+    EXPECT_TRUE(tree.Unserialize(update));
+  }
+
+  size_t set_entry_count = 0;
+  for (auto& iter : tree.int_reverse_relations()) {
+    for (auto it2 = iter.second.begin(); it2 != iter.second.end(); ++it2) {
+      set_entry_count += it2->second.size();
+    }
+  }
   EXPECT_LT(set_entry_count, 10U);
 }
 
@@ -4376,9 +4411,10 @@ TEST(AXTreeTest, SetSizePosInSetPopUpButtonAndSelect) {
   initial_state.nodes[5].role = ax::mojom::Role::kMenuListOption;
   AXTree tree(initial_state);
 
-  // The first popupbutton should have SetSize of 0.
+  // The first popupbutton has no controls, no details, and no children,
+  // so it has no SetSize.
   AXNode* popup_button_1 = tree.GetFromId(2);
-  EXPECT_OPTIONAL_EQ(0, popup_button_1->GetSetSize());
+  EXPECT_FALSE(popup_button_1->GetSetSize());
   // The combo box select should have SetSize of 2, since the menulistpopup
   // that it wraps has a SetSize of 2.
   AXNode* combo_box_select = tree.GetFromId(3);
@@ -4729,9 +4765,9 @@ TEST(AXTreeTest, SetSizePosInSetControls) {
   EXPECT_OPTIONAL_EQ(3, item->GetPosInSet());
   EXPECT_OPTIONAL_EQ(3, item->GetSetSize());
   button = tree.GetFromId(7);
-  EXPECT_OPTIONAL_EQ(0, button->GetSetSize());
+  EXPECT_FALSE(button->GetSetSize().has_value());
   button = tree.GetFromId(8);
-  EXPECT_OPTIONAL_EQ(0, button->GetSetSize());
+  EXPECT_FALSE(button->GetSetSize().has_value());
 }
 
 // Tests GetPosInSet and GetSetSize return the assigned int attribute values

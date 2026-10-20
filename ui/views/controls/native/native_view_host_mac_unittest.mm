@@ -9,13 +9,16 @@
 #include <memory>
 
 #include "base/mac/mac_util.h"
+#include "base/test/scoped_feature_list.h"
 #import "testing/gtest_mac.h"
 #import "ui/base/cocoa/views_hostable.h"
+#include "ui/compositor/compositor.h"
 #include "ui/gfx/native_ui_types.h"
 #import "ui/views/cocoa/native_widget_mac_ns_window_host.h"
 #include "ui/views/controls/native/native_view_host.h"
 #include "ui/views/controls/native/native_view_host_test_base.h"
 #include "ui/views/view.h"
+#include "ui/views/views_features.h"
 #include "ui/views/widget/widget.h"
 
 class TestViewsHostable : public ui::ViewsHostableView {
@@ -167,31 +170,23 @@ TEST_F(NativeViewHostMacTest, CheckNativeViewReferenceOnAttach) {
   NSWindow* native_window = [view window];
   host()->Attach(second_widget->GetNativeView());
 
-  // On Ventura, the attach rips Widget A's contentView from its window.
+  // The attach rips Widget A's contentView from its window.
   // NativeViewHostMac::AttachNativeView() should have stored a reference.
-  if (base::mac::MacOSMajorVersion() >= 13) {
-    EXPECT_EQ([native_window contentView], nullptr);
-    EXPECT_EQ(GetMovedContentViewForWidget(second_widget), view);
-  } else {
-    EXPECT_EQ([native_window contentView], view);
-  }
+  EXPECT_EQ(native_window.contentView, nullptr);
+  EXPECT_EQ(GetMovedContentViewForWidget(second_widget), view);
 
   // After detaching, there should be no reference, and the native view should
   // be restored to its widget's window.
   host()->Detach();
   EXPECT_EQ(GetMovedContentViewForWidget(second_widget), nullptr);
-  EXPECT_EQ([native_window contentView], view);
+  EXPECT_EQ(native_window.contentView, view);
 
   DestroyHost();
 }
 
-// On macOS13, if Widget A has been attached to Widget B, ensure Widget A's
-// reference to its native view disappears when the native view is freed.
+// If Widget A has been attached to Widget B, ensure Widget A's reference to its
+// native view disappears when the native view is freed.
 TEST_F(NativeViewHostMacTest, CheckNoNativeViewReferenceOnDestruct) {
-  if (base::mac::MacOSMajorVersion() < 13) {
-    return;
-  }
-
   CreateTopLevel();
   CreateTestingHost();
   toplevel()->GetRootView()->AddChildViewRaw(host());
@@ -317,6 +312,52 @@ TEST_F(NativeViewHostMacTest, NativeViewReleased) {
   // During teardown, NativeViewDetaching() is called in RemovedFromWidget().
   // Just trigger it with Detach().
   host()->Detach();
+
+  DestroyHost();
+}
+
+// Tests that NativeViewHostMac properly forwards video capture locks to the
+// hosting window, preserves compositor visibility and unsuspended state while
+// locked, and safely handles calls when detached from a widget hierarchy.
+TEST_F(NativeViewHostMacTest, VideoCaptureLock) {
+  base::test::ScopedFeatureList scoped_feature_list(
+      features::kNotifyCompositorOfWindowVisibilityOnMacOs);
+
+  CreateHost();
+  toplevel()->SetBounds(gfx::Rect(0, 0, 100, 100));
+  toplevel()->Show();
+  ASSERT_NE(nullptr, toplevel()->GetCompositor());
+
+  NativeWidgetMacNSWindowHost* ns_window_host =
+      NativeWidgetMacNSWindowHost::GetFromNativeWindow(
+          toplevel()->GetNativeWindow());
+  ASSERT_NE(nullptr, ns_window_host);
+
+  remote_cocoa::mojom::NativeWidgetNSWindowHost* mojo_host = ns_window_host;
+  mojo_host->OnVisibilityChanged(true);
+  EXPECT_TRUE(toplevel()->GetCompositor()->IsVisible());
+  EXPECT_FALSE(toplevel()->GetCompositor()->IsLocked());
+
+  // 1. Calling CreateVideoCaptureLock on NativeViewHostMac returns a valid lock
+  // while attached to a widget hierarchy.
+  base::ScopedClosureRunner lock = native_host()->CreateVideoCaptureLock();
+  EXPECT_TRUE(lock);
+
+  // 2. While the lock is held, hiding the window keeps the compositor visible
+  // and unsuspended.
+  mojo_host->OnVisibilityChanged(false);
+  EXPECT_TRUE(toplevel()->GetCompositor()->IsVisible());
+  EXPECT_FALSE(toplevel()->GetCompositor()->IsLocked());
+
+  // 3. Destroying the lock suspends and hides the compositor.
+  lock.RunAndReset();
+  EXPECT_FALSE(toplevel()->GetCompositor()->IsVisible());
+  EXPECT_TRUE(toplevel()->GetCompositor()->IsLocked());
+
+  // 4. When removed from the widget hierarchy, CreateVideoCaptureLock safely
+  // returns an empty runner rather than dereferencing a null widget.
+  toplevel()->GetRootView()->RemoveChildView(host());
+  EXPECT_FALSE(native_host()->CreateVideoCaptureLock());
 
   DestroyHost();
 }

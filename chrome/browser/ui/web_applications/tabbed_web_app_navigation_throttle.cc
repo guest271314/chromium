@@ -4,6 +4,8 @@
 
 #include "chrome/browser/ui/web_applications/tabbed_web_app_navigation_throttle.h"
 
+#include "base/functional/bind.h"
+#include "base/task/sequenced_task_runner.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
@@ -18,6 +20,8 @@
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/page_navigator.h"
 #include "content/public/browser/web_contents.h"
+#include "ui/base/page_transition_types.h"
+#include "ui/base/window_open_disposition.h"
 #include "url/gurl.h"
 
 namespace web_app {
@@ -137,7 +141,9 @@ TabbedWebAppNavigationThrottle::WillStartRequest() {
     if (browser_window->GetTabStripModel()->count() > 1 &&
         !web_contents->GetLastCommittedURL().is_valid()) {
       DVLOG(1) << "TabbedWebAppNavigationThrottle: Closing blank tab";
-      web_contents->ClosePage();
+      base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+          FROM_HERE, base::BindOnce(&content::WebContents::ClosePage,
+                                    web_contents->GetWeakPtr()));
     }
     DVLOG(1) << "TabbedWebAppNavigationThrottle: Redirecting to FocusHomeTab";
     return FocusHomeTab(*app_controller, *browser_window->GetTabStripModel());

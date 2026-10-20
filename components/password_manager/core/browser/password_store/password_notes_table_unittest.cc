@@ -8,9 +8,11 @@
 #include <string>
 
 #include "base/files/scoped_temp_dir.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/test/test_future.h"
 #include "base/time/time.h"
 #include "components/os_crypt/async/browser/test_utils.h"
+#include "components/os_crypt/async/common/encryptor.h"
 #include "components/password_manager/core/browser/password_store/login_database.h"
 #include "components/password_manager/core/browser/password_store/password_form_converters.h"
 #include "components/password_manager/core/browser/password_store/stored_credential.h"
@@ -26,7 +28,8 @@ StoredCredential CreateStoredCredential(std::u16string username = u"username") {
   cred.signon_realm = "http://www.google.com";
   cred.url = GURL(cred.signon_realm);
   cred.username_value = username;
-  cred.password_value = u"superstrongpassword";
+  cred.password_value =
+      password_manager::PasswordString(u"superstrongpassword");
   return cred;
 }
 
@@ -61,10 +64,9 @@ class PasswordNotesTableTest : public testing::Test {
 
   LoginDatabase* login_db() { return login_db_.get(); }
 
-  os_crypt_async::Encryptor CreateEncryptor() {
-    base::test::TestFuture<os_crypt_async::Encryptor> future;
-    test_oscrypt_async_->GetInstance(future.GetCallback(),
-                                     os_crypt_async::Encryptor::Option::kNone);
+  scoped_refptr<os_crypt_async::Encryptor> CreateEncryptor() {
+    base::test::TestFuture<scoped_refptr<os_crypt_async::Encryptor>> future;
+    test_oscrypt_async_->GetInstance(future.GetCallback());
     return future.Take();
   }
 

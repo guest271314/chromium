@@ -39,6 +39,7 @@ class HistoryEmbeddingsHandler : public history_embeddings::mojom::PageHandler {
   HistoryEmbeddingsHandler(
       mojo::PendingReceiver<history_embeddings::mojom::PageHandler>
           pending_page_handler,
+      mojo::PendingRemote<history_embeddings::mojom::Page> pending_page,
       base::WeakPtr<Profile> profile,
       content::WebUI* web_ui,
       bool for_side_panel);
@@ -47,8 +48,6 @@ class HistoryEmbeddingsHandler : public history_embeddings::mojom::PageHandler {
   ~HistoryEmbeddingsHandler() override;
 
   // history_embeddings::mojom::PageHandler:
-  void SetPage(mojo::PendingRemote<history_embeddings::mojom::Page>
-                   pending_page) override;
   void Search(history_embeddings::mojom::SearchQueryPtr query) override;
   void RecordSearchResultsMetrics(bool non_empty_results,
                                   bool user_clicked_results,
@@ -58,7 +57,6 @@ class HistoryEmbeddingsHandler : public history_embeddings::mojom::PageHandler {
                                   uint32_t query_word_count) override;
   void SetUserFeedback(
       history_embeddings::mojom::UserFeedback user_feedback) override;
-  void MaybeShowFeaturePromo() override;
   void SendQualityLog(const std::vector<uint32_t>& selected_indices,
                       uint32_t num_chars_for_query) override;
   void OpenSettingsPage() override;

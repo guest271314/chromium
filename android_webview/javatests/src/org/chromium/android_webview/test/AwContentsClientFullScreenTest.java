@@ -35,7 +35,6 @@ import org.chromium.base.test.util.Feature;
 import org.chromium.content_public.browser.WebContents;
 import org.chromium.content_public.browser.test.util.DOMUtils;
 import org.chromium.content_public.browser.test.util.TouchCommon;
-import org.chromium.url.GURL;
 
 import java.util.concurrent.TimeoutException;
 
@@ -341,10 +340,26 @@ public class AwContentsClientFullScreenTest extends AwParameterizedTest {
         assertKeepScreenOnActive(customView, true);
     }
 
+    @Test
+    @MediumTest
+    @Feature({"AndroidWebView"})
+    public void testReparentAwContents_FullScreenTransitionsState() throws Throwable {
+        loadTestPage(VIDEO_TEST_URL);
+        mTestContainerView = mActivityTestRule.reparentAwContents(mTestContainerView);
+        mContentsClient.setActivity(mActivityTestRule.getActivity());
+
+        JSUtils.clickNodeWithUserGesture(
+                mTestContainerView.getWebContents(), CUSTOM_FULLSCREEN_CONTROL_ID);
+        mContentsClient.waitForCustomViewShown();
+        assertWaitForIsFullscreen();
+
+        DOMUtils.exitFullscreen(getWebContentsOnUiThread());
+        mContentsClient.waitForCustomViewHidden();
+    }
+
     private boolean shouldPlayOnFullScreenView() throws Exception {
-        GURL testUrl = mTestContainerView.getAwContents().getUrl();
-        return new GURL(VIDEO_TEST_URL).equals(testUrl)
-                && DOMUtils.isFullscreen(getWebContentsOnUiThread());
+        String testUrl = mTestContainerView.getAwContents().getUrl();
+        return VIDEO_TEST_URL.equals(testUrl) && DOMUtils.isFullscreen(getWebContentsOnUiThread());
     }
 
     private void playVideo() throws Exception {

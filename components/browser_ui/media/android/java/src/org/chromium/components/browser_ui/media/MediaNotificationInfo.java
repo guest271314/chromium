@@ -44,7 +44,6 @@ public class MediaNotificationInfo {
         private boolean mIsPrivate = true;
         private int mNotificationSmallIcon;
         private @Nullable Bitmap mNotificationLargeIcon;
-        private int mDefaultNotificationLargeIcon;
         private @Nullable Bitmap mMediaSessionImage;
         private int mActions = ACTION_PLAY_PAUSE | ACTION_SWIPEAWAY | ACTION_STOP;
         private int mId = INVALID_ID;
@@ -55,6 +54,24 @@ public class MediaNotificationInfo {
 
         /** Initializes the builder with the default values. */
         public Builder() {}
+
+        /** Initializes the builder with the values from another {@link MediaNotificationInfo}. */
+        public Builder(MediaNotificationInfo info) {
+            mMetadata = info.metadata;
+            mIsPaused = info.isPaused;
+            mOrigin = info.origin;
+            mInstanceId = info.instanceId;
+            mIsPrivate = info.isPrivate;
+            mNotificationSmallIcon = info.notificationSmallIcon;
+            mNotificationLargeIcon = info.notificationLargeIcon;
+            mMediaSessionImage = info.mediaSessionImage;
+            mActions = info.mActions;
+            mId = info.id;
+            mContentIntent = info.contentIntent;
+            mListener = info.listener;
+            mMediaSessionActions = info.mediaSessionActions;
+            mMediaPosition = info.mediaPosition;
+        }
 
         public MediaNotificationInfo build() {
             assert mMetadata != null;
@@ -69,7 +86,6 @@ public class MediaNotificationInfo {
                     mIsPrivate,
                     mNotificationSmallIcon,
                     mNotificationLargeIcon,
-                    mDefaultNotificationLargeIcon,
                     mMediaSessionImage,
                     mActions,
                     mId,
@@ -111,11 +127,6 @@ public class MediaNotificationInfo {
 
         public Builder setNotificationLargeIcon(@Nullable Bitmap icon) {
             mNotificationLargeIcon = icon;
-            return this;
-        }
-
-        public Builder setDefaultNotificationLargeIcon(int icon) {
-            mDefaultNotificationLargeIcon = icon;
             return this;
         }
 
@@ -184,9 +195,6 @@ public class MediaNotificationInfo {
     /** The Bitmap resource used as the notification large icon. */
     public final @Nullable Bitmap notificationLargeIcon;
 
-    /** The id of the default notification large icon from R.drawable. */
-    public final int defaultNotificationLargeIcon;
-
     /**
      * The Bitmap resource used for Android MediaSession image, which will be used on lock screen
      * and wearable devices.
@@ -235,8 +243,6 @@ public class MediaNotificationInfo {
      * @param isPrivate Whether the media notification should be considered as private.
      * @param notificationSmallIcon The small icon used in the notification.
      * @param notificationLargeIcon The large icon used in the notification.
-     * @param defaultNotificationLargeIcon The fallback large icon when |notificationLargeIcon| is
-     *        improper to use.
      * @param mediaSessionImage The artwork image to be used in Android MediaSession.
      * @param actions The actions supported in this notification.
      * @param id The id of this notification, which is used for distinguishing media playback, cast
@@ -254,7 +260,6 @@ public class MediaNotificationInfo {
             boolean isPrivate,
             int notificationSmallIcon,
             @Nullable Bitmap notificationLargeIcon,
-            int defaultNotificationLargeIcon,
             @Nullable Bitmap mediaSessionImage,
             int actions,
             int id,
@@ -270,7 +275,6 @@ public class MediaNotificationInfo {
         this.isPrivate = isPrivate;
         this.notificationSmallIcon = notificationSmallIcon;
         this.notificationLargeIcon = notificationLargeIcon;
-        this.defaultNotificationLargeIcon = defaultNotificationLargeIcon;
         this.mediaSessionImage = mediaSessionImage;
         this.mActions = actions;
         assert id != INVALID_ID;
@@ -295,7 +299,6 @@ public class MediaNotificationInfo {
                 && (notificationLargeIcon == other.notificationLargeIcon
                         || (notificationLargeIcon != null
                                 && notificationLargeIcon.sameAs(other.notificationLargeIcon)))
-                && defaultNotificationLargeIcon == other.defaultNotificationLargeIcon
                 && mediaSessionImage == other.mediaSessionImage
                 && mActions == other.mActions
                 && id == other.id
@@ -324,7 +327,6 @@ public class MediaNotificationInfo {
         result =
                 31 * result
                         + (notificationLargeIcon == null ? 0 : notificationLargeIcon.hashCode());
-        result = 31 * result + defaultNotificationLargeIcon;
         result = 31 * result + (mediaSessionImage == null ? 0 : mediaSessionImage.hashCode());
         result = 31 * result + mActions;
         result = 31 * result + id;

@@ -78,6 +78,13 @@
 - (void)l2capChannelClosed:(IOBluetoothL2CAPChannel*)l2capChannel {
   [_l2capChannel setDelegate:nil];
 
+  // Maintain a strong local reference to ensure the delegate survives the
+  // callback. This is necessary for incoming connections or failed outgoing
+  // connections where `_strongSelf` is never armed, leaving `delegate_` in
+  // C++ as the only strong reference keeping this object alive.
+  [[maybe_unused]] NS_VALID_UNTIL_END_OF_SCOPE BluetoothL2capChannelDelegate*
+      keepAlive = self;
+
   // If `_channel` still exists, notify it that the channel was closed so it
   // can release its strong references to `l2capChannel` and the channel
   // delegate (this object). In the typical case we expect `_channel` has
@@ -109,8 +116,7 @@ namespace device {
 BluetoothL2capChannelMac::BluetoothL2capChannelMac(
     BluetoothSocketMac* socket,
     IOBluetoothL2CAPChannel* channel)
-    : channel_(channel),
-      delegate_(nil) {
+    : channel_(channel), delegate_(nil), is_opened_(channel != nil) {
   SetSocket(socket);
 }
 
@@ -120,7 +126,18 @@ BluetoothL2capChannelMac::~BluetoothL2capChannelMac() {
   // delegate's reference to this object so the delegate will not notify us
   // for events that occur after our destruction.
   [delegate_ resetOwner];
-  [channel_ closeChannel];
+  [channel_ setDelegate:nil];
+  if (is_opened_) {
+    [channel_ closeChannel];
+  }
+  // `delegate_`'s self-retain (`_strongSelf`) is only armed after a successful
+  // open. If we are destroyed during a pending or failed open, keep the
+  // delegate alive across one main-run-loop turn so any already-enqueued
+  // IOBluetooth callbacks hit a live receiver. See FB13705522.
+  BluetoothL2capChannelDelegate* __strong delegate = delegate_;
+  dispatch_async(dispatch_get_main_queue(), ^{
+    (void)delegate;
+  });
 }
 
 // static
@@ -187,6 +204,10 @@ void BluetoothL2capChannelMac::OnChannelOpenComplete(
     DCHECK_EQ(status, kIOReturnSuccess);
   }
 
+  if (status == kIOReturnSuccess) {
+    is_opened_ = true;
+  }
+
   base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
       FROM_HERE, base::BindOnce(&BluetoothSocketMac::OnChannelOpenComplete,
                                 base::WrapRefCounted(socket()),
@@ -199,6 +220,7 @@ void BluetoothL2capChannelMac::OnChannelClosed(
     IOBluetoothL2CAPChannel* channel) {
   DCHECK_EQ(channel_, channel);
   channel_ = nil;
+  is_opened_ = false;
   [delegate_ resetOwner];
   delegate_ = nil;
   socket()->OnChannelClosed();

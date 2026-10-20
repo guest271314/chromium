@@ -4,6 +4,7 @@
 
 package org.chromium.chrome.browser.browser_controls;
 
+import android.content.Context;
 import android.os.Handler;
 import android.util.SparseIntArray;
 
@@ -12,12 +13,14 @@ import androidx.annotation.VisibleForTesting;
 
 import org.chromium.base.Callback;
 import org.chromium.base.Log;
+import org.chromium.base.metrics.RecordHistogram;
 import org.chromium.build.annotations.Contract;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.cc.input.BrowserControlsState;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.components.browser_ui.util.BrowserControlsVisibilityDelegate;
+import org.chromium.ui.base.WindowAndroid;
 
 import java.lang.annotation.ElementType;
 import java.lang.annotation.Retention;
@@ -38,6 +41,7 @@ public class TopControlsStacker implements BrowserControlsStateProvider.Observer
 
     private static boolean sDumpStatusLogs;
 
+    // LINT.IfChange(TopControlType)
     /** Enums that defines the types of top controls. */
     @Target(ElementType.TYPE_USE)
     @Retention(RetentionPolicy.SOURCE)
@@ -48,6 +52,8 @@ public class TopControlsStacker implements BrowserControlsStateProvider.Observer
         TopControlType.BOOKMARK_BAR,
         TopControlType.HAIRLINE,
         TopControlType.PROGRESS_BAR,
+        TopControlType.TAB_SHARING_TOOLBAR,
+        TopControlType.TOP_SCALP,
     })
     public @interface TopControlType {
         int STATUS_INDICATOR = 0;
@@ -56,7 +62,11 @@ public class TopControlsStacker implements BrowserControlsStateProvider.Observer
         int BOOKMARK_BAR = 3;
         int HAIRLINE = 4;
         int PROGRESS_BAR = 5;
+        int TAB_SHARING_TOOLBAR = 6;
+        int TOP_SCALP = 7;
     }
+
+    // LINT.ThenChange(:TopControlTypeName)
 
     /** Enum that defines the possible visibilities of a top control. */
     @Retention(RetentionPolicy.SOURCE)
@@ -108,14 +118,23 @@ public class TopControlsStacker implements BrowserControlsStateProvider.Observer
         int NEVER_SCROLLABLE = 1;
     }
 
+    private static final String HISTOGRAM_NUMBER_OF_VISIBLE_LAYERS =
+            "Android.TopControlsStacker.NumberOfVisibleLayers";
+    private static final String HISTOGRAM_PERCENTAGE_MAX_HEIGHT =
+            "Android.TopControlsStacker.PercentageOfWindowUsedByTopControlsAtMaxHeight";
+    private static final String HISTOGRAM_PERCENTAGE_MIN_HEIGHT =
+            "Android.TopControlsStacker.PercentageOfWindowUsedByTopControlsAtMinHeight";
+
     // The pre-defined stack order for different top controls.
     private static final @TopControlType int[] STACK_ORDER =
             new int[] {
+                TopControlType.TOP_SCALP,
                 TopControlType.STATUS_INDICATOR,
                 TopControlType.TABSTRIP,
                 TopControlType.TOOLBAR,
                 TopControlType.BOOKMARK_BAR,
                 TopControlType.HAIRLINE,
+                TopControlType.TAB_SHARING_TOOLBAR,
                 TopControlType.PROGRESS_BAR,
             };
 
@@ -142,6 +161,8 @@ public class TopControlsStacker implements BrowserControlsStateProvider.Observer
 
     private final BrowserControlsSizer mBrowserControlsSizer;
     private final BrowserControlsVisibilityDelegate mBrowserControlsVisibilityDelegate;
+    private final Context mContext;
+    private final WindowAndroid mWindowAndroid;
     private final Callback<@BrowserControlsState Integer> mBrowserControlsStateCallback =
             this::updateBrowserControlsState;
     private @BrowserControlsState int mBrowserControlsState = BrowserControlsState.BOTH;
@@ -162,13 +183,19 @@ public class TopControlsStacker implements BrowserControlsStateProvider.Observer
      *
      * @param browserControlsSizer {@link BrowserControlsSizer} to request browser controls changes.
      * @param browserControlsVisibilityDelegate The visibility delegate for the whole app.
+     * @param context Context in which the stacker is operating.
+     * @param windowAndroid The window in which the top controls stack is displaying.
      */
     public TopControlsStacker(
             BrowserControlsSizer browserControlsSizer,
-            BrowserControlsVisibilityDelegate browserControlsVisibilityDelegate) {
+            BrowserControlsVisibilityDelegate browserControlsVisibilityDelegate,
+            Context context,
+            WindowAndroid windowAndroid) {
         mControls = new HashMap<>();
         mBrowserControlsSizer = browserControlsSizer;
         mBrowserControlsVisibilityDelegate = browserControlsVisibilityDelegate;
+        mContext = context;
+        mWindowAndroid = windowAndroid;
 
         mBrowserControlsSizer.addObserver(this);
         mBrowserControlsVisibilityDelegate.addSyncObserverAndPostIfNonNull(
@@ -212,6 +239,11 @@ public class TopControlsStacker implements BrowserControlsStateProvider.Observer
         if (mScrollingDisabled == disabled) return false;
         mScrollingDisabled = disabled;
         return true;
+    }
+
+    /** Returns whether scrolling is disabled for top controls. */
+    public boolean isScrollingDisabled() {
+        return mScrollingDisabled;
     }
 
     /**
@@ -271,8 +303,11 @@ public class TopControlsStacker implements BrowserControlsStateProvider.Observer
         updateTopControlsHeight(animate);
 
         // When reposition happening when browser controls is overriding offsets, we need to
-        // reposition immediately.
-        if (shouldUpdateOffsets) {
+        // reposition immediately. Also reposition immediately when not animating so all layers
+        // assume their resting offsets without waiting for animation frames.
+        // TODO(crbug.com/559323059): Avoid repositioning immediately in favor of allowing
+        // animations for VT->HT transitions.
+        if (shouldUpdateOffsets || !animate) {
             repositionLayers(
                     mBrowserControlsSizer.getTopControlOffset(),
                     mBrowserControlsSizer.getTopControlsMinHeightOffset(),
@@ -304,9 +339,12 @@ public class TopControlsStacker implements BrowserControlsStateProvider.Observer
     }
 
     /**
-     * Returns true when the given control type is at the bottom of the set of top controls. We
-     * define the bottom as the point in the stack that has no non-null, visible,
-     * height-contributing layers beyond it.
+     * Returns whether the given layer is the bottom-most visible layer.
+     *
+     * <p>We define the bottom as the point in the stack that has no non-null, visible,
+     * height-contributing layers beyond it. Non-height-contributing layers (such as the progress
+     * bar overlay) are ignored when determining the bottom of the layout stack, as they do not
+     * affect the physical layout boundary.
      *
      * @param controlType Type of control to query for.
      * @return Whether or not the control is at the bottom.
@@ -315,14 +353,14 @@ public class TopControlsStacker implements BrowserControlsStateProvider.Observer
         // A null layer (not in the map) cannot be at the bottom.
         if (mControls.get(controlType) == null) return false;
 
-        // Find the bottom-most visible layer that contributes to the total height of the top
-        // controls (i.e. the first we encounter). If it is the same as the given |controlType|,
-        // then that type is the bottom layer.
+        // Iterate from the bottom of the stack order upward. The first visible, height-contributing
+        // layer we encounter defines the physical bottom boundary of the top controls. If it
+        // matches |controlType|, then that type is the bottom layer.
         for (int i = STACK_ORDER.length - 1; i >= 0; i--) {
             @TopControlType int currentType = STACK_ORDER[i];
             TopControlLayer layer = mControls.get(currentType);
 
-            if (!isLayerHidden(layer)) {
+            if (!isLayerHidden(layer) && layer.contributesToTotalHeight()) {
                 return currentType == controlType;
             }
         }
@@ -415,7 +453,7 @@ public class TopControlsStacker implements BrowserControlsStateProvider.Observer
         if (sDumpStatusLogs) {
             Log.i(
                     TAG,
-                    "*** repositionLayers *** initialTopOffset="
+                    "[TopControlsPositioning] *** repositionLayers *** initialTopOffset="
                             + initialTopOffset
                             + " minHeightOffset="
                             + initialTopControlsMinHeightOffset
@@ -690,6 +728,23 @@ public class TopControlsStacker implements BrowserControlsStateProvider.Observer
         return INVALID_HEIGHT;
     }
 
+    /**
+     * See {@link #getHeightFromLayerToTop(int)}. This method also includes the height of the {@code
+     * stopLayer} if it's visible.
+     */
+    public int getHeightFromLayerBottomToTop(@TopControlType int stopLayer) {
+        int height = getHeightFromLayerToTop(stopLayer);
+        if (height != INVALID_HEIGHT) {
+            TopControlLayer layer = mControls.get(stopLayer);
+            if (!isLayerHidden(layer) && layer.contributesToTotalHeight()) {
+                height += layer.getTopControlHeight();
+            }
+            return height;
+        }
+
+        return INVALID_HEIGHT;
+    }
+
     // BrowserControlsStateProvider.Observer implementation:
 
     @Override
@@ -730,6 +785,32 @@ public class TopControlsStacker implements BrowserControlsStateProvider.Observer
                 topOffset, topControlsMinHeightOffset, requestNewFrame || isVisibilityForced);
     }
 
+    /** Notifies that the active tab has completed a cross-document navigation in the main frame. */
+    public void notifyDidFinishNavigationInPrimaryMainFrame() {
+        recordLayerMetrics();
+    }
+
+    private void recordLayerMetrics() {
+        int numberOfVisibleLayers = 0;
+        for (@TopControlType int type : STACK_ORDER) {
+            TopControlLayer layer = mControls.get(type);
+            if (!isLayerHidden(layer)) {
+                numberOfVisibleLayers++;
+            }
+        }
+        RecordHistogram.recordSparseHistogram(
+                HISTOGRAM_NUMBER_OF_VISIBLE_LAYERS, numberOfVisibleLayers);
+
+        int windowHeight = BrowserControlsUtils.getWindowHeight(mContext, mWindowAndroid);
+        if (windowHeight <= 0 || mTotalHeight < 0 || mMinHeight < 0) return;
+        RecordHistogram.recordPercentageHistogram(
+                HISTOGRAM_PERCENTAGE_MAX_HEIGHT,
+                BrowserControlsUtils.calculatePercentageOfWindowUsed(mTotalHeight, windowHeight));
+        RecordHistogram.recordPercentageHistogram(
+                HISTOGRAM_PERCENTAGE_MIN_HEIGHT,
+                BrowserControlsUtils.calculatePercentageOfWindowUsed(mMinHeight, windowHeight));
+    }
+
     /** Tear down |this| and clear all existing controls from the Map. */
     public void destroy() {
         if (mPendingRequest != null) {
@@ -747,7 +828,7 @@ public class TopControlsStacker implements BrowserControlsStateProvider.Observer
 
         Log.w(
                 TAG,
-                "Height mismatch observed."
+                "[TopControlsPositioning] Height mismatch observed."
                         + " [Expected]"
                         + " expectedHeight= "
                         + expectedHeight
@@ -763,7 +844,7 @@ public class TopControlsStacker implements BrowserControlsStateProvider.Observer
     private void dumpLayerStatus(TopControlLayer layer, int yOffset) {
         Log.i(
                 TAG,
-                "["
+                "[TopControlsPositioning] ["
                         + getName(layer.getTopControlType())
                         + "] yOffset="
                         + yOffset
@@ -775,6 +856,7 @@ public class TopControlsStacker implements BrowserControlsStateProvider.Observer
                         + layer.getTopControlVisibility());
     }
 
+    // LINT.IfChange(TopControlTypeName)
     private static String getName(@TopControlType int type) {
         switch (type) {
             case TopControlType.STATUS_INDICATOR:
@@ -789,8 +871,13 @@ public class TopControlsStacker implements BrowserControlsStateProvider.Observer
                 return "HAIRLINE";
             case TopControlType.PROGRESS_BAR:
                 return "PROGRESS_BAR";
+            case TopControlType.TAB_SHARING_TOOLBAR:
+                return "TAB_SHARING_TOOLBAR";
+            case TopControlType.TOP_SCALP:
+                return "TOP_SCALP";
         }
         assert false : "Unknown TopControlType: " + type;
         return "";
     }
+    // LINT.ThenChange(:TopControlType)
 }

@@ -17,6 +17,25 @@ namespace ukm::builders {
 class SoftNavigation;
 }  // namespace ukm::builders
 
+// These values are persisted to logs. Entries should not be renumbered and
+// numeric values should never be reused.
+//
+// State machine to verify this observer's assumptions about page lifecycle.
+//
+// LINT.IfChange(SoftNavigationPageLoadMetricsObserverState)
+enum class SoftNavigationPageLoadMetricsObserverState {
+  kInitial = 0,
+  kStarted = 1,
+  kPrerenderStarted = 2,
+  kPrerenderActivated = 3,
+  kInBackForwardCache = 4,
+  kRestoredFromBackForwardCache = 5,
+  kComplete = 6,
+  kMaxValue = kComplete,
+};
+
+// LINT.ThenChange(//tools/metrics/histograms/metadata/page/enums.xml:SoftNavigationPageLoadMetricsObserverState)
+
 // This observer records the SoftNavigation events to UKM, for 'regular' page
 // loads, prerendered and activated page loads, and back-forward cache restores.
 class SoftNavigationPageLoadMetricsObserver
@@ -60,35 +79,28 @@ class SoftNavigationPageLoadMetricsObserver
 
   ObservePolicy OnShown() override;
 
-  void OnSoftNavigation() override;
-
-  // State machine to verify this observer's assumptions about page lifecycle.
-  enum class State {
-    kInitial,
-    kStarted,
-    kPrerenderStarted,
-    kPrerenderActivated,
-    kInBackForwardCache,
-    kRestoredFromBackForwardCache,
-    kComplete,
-  };
+  void OnSoftNavigationCompleted(const page_load_metrics::SoftNavigationData&
+                                     soft_navigation_data) override;
 
  private:
-  bool FromForegroundOptionalEventInForeground(
-      const std::optional<base::TimeDelta>& event);
-  void RecordSoftNavigationEventIfPending();
-  void RecordSoftLcp(ukm::builders::SoftNavigation& builder);
-  void RecordSoftInp(ukm::builders::SoftNavigation& builder);
-  void RecordSoftCls(ukm::builders::SoftNavigation& builder);
+  void RecordSoftCommit(
+      ukm::builders::SoftNavigation& builder,
+      const page_load_metrics::mojom::SoftNavigationCommit& commit);
+  void RecordSoftFcp(
+      ukm::builders::SoftNavigation& builder,
+      const page_load_metrics::SoftNavigationData& soft_navigation_data);
+  void RecordSoftLcp(
+      ukm::builders::SoftNavigation& builder,
+      const page_load_metrics::SoftNavigationData& soft_navigation_data);
+  void RecordSoftInp(
+      ukm::builders::SoftNavigation& builder,
+      const page_load_metrics::SoftNavigationData& soft_navigation_data);
+  void RecordSoftCls(
+      ukm::builders::SoftNavigation& builder,
+      const page_load_metrics::SoftNavigationData& soft_navigation_data);
 
+  using State = SoftNavigationPageLoadMetricsObserverState;
   State state_ = State::kInitial;
-  // We record soft navigations after they complete: (1) when the next soft
-  // navigation arrives, (2) when the (hard) navigation completes, or *eagerly*
-  // (3) when the app moves to the background (See
-  // ::FlushMetricsOnAppEnterBackground). To not double record after recording
-  // eagerly, this variable indicates that a soft navigation has been detected
-  // but not yet been recorded.
-  bool pending_soft_navigation_ = false;
   // Only record soft CLS if we were ever in the foreground.
   bool should_record_soft_cls_ = false;
 };

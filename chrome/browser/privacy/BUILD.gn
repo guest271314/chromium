@@ -96,6 +96,7 @@ if (is_android) {
       ":*",
       "//chrome/android:jni_headers",
       "//chrome/browser",
+      "//chrome/browser/android",
     ]
     sources = [ "java/src/org/chromium/chrome/browser/privacy/secure_dns/SecureDnsBridge.java" ]
   }
@@ -206,6 +207,5 @@ if (is_android) {
       "//content/public/browser",
       "//net",
     ]
-    public_deps = [ "//chrome/browser:browser_public_dependencies" ]
   }
 }

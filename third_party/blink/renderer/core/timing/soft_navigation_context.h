@@ -22,6 +22,7 @@
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
 #include "third_party/blink/renderer/platform/heap/prefinalizer.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
+#include "third_party/perfetto/include/perfetto/tracing/track.h"
 #include "ui/gfx/geometry/rect_f.h"
 
 namespace blink {
@@ -63,29 +64,23 @@ class CORE_EXPORT SoftNavigationContext
   }
 
   bool HasNavigationId() const {
-    return navigation_id_ != PerformanceTimelineEntryIdInfo::kNoId;
+    return navigation_id_ != PerformanceTimelineEntryIdInfo::kNone;
   }
-  // The navigation id is a unique id, which montonically increases as soft
-  // navigations are committed to the performance timeline.
-  uint64_t NavigationId() const { return navigation_id_; }
+  // The navigation id info contains the web-exposed navigationId and the
+  // monotonic ordinal offset.
+  PerformanceTimelineEntryIdInfo NavigationId() const { return navigation_id_; }
 
-  // The soft navigation offset is an exact count of the soft navigations
-  // emitted to UKM since the start of the page load. This is similar in spirit
-  // to the navigation id, but has stricter requirements due to the usage for
-  // ukm_page_load_metrics_observer.cc, the PageLoad:SoftNavigationCount metric,
-  // and assertions while we work on correctness. For the last
-  // soft navigation, it is synonymous with the count of the soft navigations
-  // for this page load.
-  uint64_t SoftNavigationOffset() const { return soft_navigation_offset_; }
+  LocalDOMWindow* DomWindow() const { return window_.Get(); }
+  uint64_t InteractionId() const {
+    return initial_event_timing_ ? initial_event_timing_->interactionId() : 0;
+  }
+
   base::TimeTicks SoftNavigationSlicingTime() const {
     return soft_navigation_slicing_time_;
   }
-  void StartSlicingPerformanceTimeline(
-      uint64_t navigation_id,
-      uint64_t soft_navigation_offset,
-      base::TimeTicks soft_navigation_slicing_time) {
+  void OnSoftNavigationCommit(PerformanceTimelineEntryIdInfo navigation_id,
+                              base::TimeTicks soft_navigation_slicing_time) {
     navigation_id_ = navigation_id;
-    soft_navigation_offset_ = soft_navigation_offset;
     soft_navigation_slicing_time_ = soft_navigation_slicing_time;
   }
 
@@ -143,6 +138,9 @@ class CORE_EXPORT SoftNavigationContext
 
   uint64_t PaintedArea() const { return painted_area_; }
   uint64_t ContextId() const { return context_id_; }
+  InteractionContentfulPaint* LargestIcpEntry() const {
+    return largest_icp_entry_.Get();
+  }
 
   // Reports a new contentful paint area to this context, and the Node painted.
   bool AddPaintedArea(PaintTimingRecord*);
@@ -164,32 +162,35 @@ class CORE_EXPORT SoftNavigationContext
     return first_input_or_scroll_time_.is_null();
   }
 
+  template <IsDerivedFromPaintTimingRecord T>
+  bool ShouldTrackForPaintTiming(const T& record) const {
+    if (!IsRecordingLargestContentfulPaint()) {
+      return false;
+    }
+    // We want to know about all painted text and images if they're valid LCP
+    // candidates.
+    return lcp_calculator_->IsEligibleForLcp(record);
+  }
+
   SoftNavigationHeuristics* GetSoftNavigationHeuristics() const;
 
   // Emits the soft navigation performance entry. The context must not have been
   // previously emitted. `WasEmitted()` returns true after this is called.
   //
-  // Note: There are several reasons why we might have an FCP but have not
+  // Note: There are a couple reasons why we might have an FCP but have not
   // emitted an ICP, all of which should be fixed:
-  //   1. crbug.com/383568320: For <video>, we set the paint timestamp for the
-  //      first video frame outside of paint, but require BeginMainFrame +
-  //      presentation feedback to emit the ICP entry. The soft nav entry can be
-  //      emitted in this gap.
+  //  1. crbug.com/383568320: For <video>, we set the paint timestamp for the
+  //     first video frame outside of paint, but require BeginMainFrame +
+  //     presentation feedback to emit the ICP entry. The soft nav entry can be
+  //     emitted in this gap.
   //  2. crbug.com/454082773: If the FCP element is detached from the DOM before
   //     its presentation feedback is processed, we won't emit an ICP entry for
   //     this.
-  //  3. crbug.com/454082771, crbug.com/434160944: We overwrite image and text
-  //     candidates during paint, which affects which candidates we emit when
-  //     processing presentation feedback. For example, if we paint a text node
-  //     (FCP) in frame 1 and a larger image in frame 2, and the feedback for
-  //     frame 1 arrives after frame 2, the image blocks emitting the ICP entry
-  //     for the text. Moving more logic into presentation time, like we do for
-  //     hard LCP, in conjunction with emitting largest presented image/text
-  //     (vs. pending image) would fix this.
   void EmitSoftNavigation();
   bool WasEmitted() const { return was_emitted_; }
 
   void WriteIntoTrace(perfetto::TracedValue context) const;
+  const perfetto::NamedTrack& GetTracingTrack() const { return track_; }
 
   // Called when `SoftNavigationHeuristics` is shut down on frame detach.
   void Shutdown();
@@ -203,8 +204,8 @@ class CORE_EXPORT SoftNavigationContext
   // largest value and can be used to identify the most recent context.
   const uint64_t context_id_ = ++last_context_id_;
 
-  uint64_t navigation_id_ = PerformanceTimelineEntryIdInfo::kNoId;
-  uint64_t soft_navigation_offset_ = 0;
+  PerformanceTimelineEntryIdInfo navigation_id_ =
+      PerformanceTimelineEntryIdInfo::kNone;
   bool was_emitted_ = false;
 
   base::TimeTicks first_input_or_scroll_time_;
@@ -220,12 +221,14 @@ class CORE_EXPORT SoftNavigationContext
   Member<PerformanceEventTiming> initial_event_timing_;
   Member<PaintTimingRecord> first_image_or_text_;
   Member<InteractionContentfulPaint> largest_icp_entry_;
+  Member<LargestContentfulPaint> current_lcp_entry_;
 
   size_t num_modified_dom_nodes_ = 0;
   uint64_t painted_area_ = 0;
 
   size_t num_modified_dom_nodes_last_animation_frame_ = 0;
   uint64_t painted_area_last_animation_frame_ = 0;
+  const perfetto::NamedTrack track_;
 };
 
 }  // namespace blink

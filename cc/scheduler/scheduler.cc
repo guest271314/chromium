@@ -31,6 +31,7 @@
 #include "cc/scheduler/scheduler_state_machine.h"
 #include "cc/scheduler/slim_scheduler_state_machine.h"
 #include "cc/scheduler/webview_scheduler_state_machine.h"
+#include "components/viz/common/display/display_scheduler_draw_result.h"
 #include "components/viz/common/features.h"
 #include "components/viz/common/frame_sinks/begin_frame_args.h"
 #include "components/viz/common/frame_sinks/delay_based_time_source.h"
@@ -179,9 +180,15 @@ void Scheduler::NotifyPaintWorkletStateChange(PaintWorkletState state) {
   ProcessScheduledActions();
 }
 
-void Scheduler::SetNeedsBeginMainFrame(bool now) {
-  state_machine_->SetNeedsBeginMainFrame(now);
+void Scheduler::SetNeedsBeginMainFrame(bool now, bool unthrottled) {
+  state_machine_->SetNeedsBeginMainFrame(now, unthrottled);
   ProcessScheduledActions();
+}
+
+void Scheduler::NotifyInputEvent() {
+  state_machine_->NotifyInputEvent();
+  // This is called before we process the input event, so we do not need to
+  // call |ProcessScheduledActions()| here.
 }
 
 void Scheduler::SetNeedsOneBeginImplFrame() {
@@ -194,29 +201,22 @@ void Scheduler::SetNeedsOneBeginImplFrame() {
 // in the last renderer frame of a cross-document view transition.
 void Scheduler::SendEarlyFinalBeginMainFrame() {
   TRACE_EVENT0("cc", "Scheduler::SendEarlyFinalBeginMainFrame");
-  viz::BeginFrameArgs args = last_dispatched_begin_main_frame_args_;
-
-  // Ensure we start from the latest known args to avoid sequence number
-  // clashes.
-  if (begin_impl_frame_tracker_.DangerousMethodCurrentOrLast().frame_id >
-      args.frame_id) {
-    args = begin_impl_frame_tracker_.DangerousMethodCurrentOrLast();
-  }
-  if (pending_begin_frame_args_.frame_id > args.frame_id) {
-    args = pending_begin_frame_args_;
-  }
+  // Start from the latest BeginFrameArgs that the scheduler knows about. The
+  // new frame time must not be earlier than the frame time of a BeginFrame
+  // that the scheduler already used, even if that BeginFrame never started an
+  // impl frame.
+  viz::BeginFrameArgs args = LatestKnownBeginFrameArgs();
 
   if (!args.IsValid() || args.interval.is_zero()) {
     return;
   }
 
-  // If we are starting a frame that covers or supersedes the pending one,
-  // clear it now to prevent it from starting later.
-  if (pending_begin_frame_args_.IsValid() &&
-      args.frame_id >= pending_begin_frame_args_.frame_id) {
-    pending_begin_frame_args_ = viz::BeginFrameArgs();
-    pending_begin_frame_task_.Cancel();
-  }
+  // Detach any pending BeginFrame before finishing the current impl frame so
+  // that FinishImplFrame() -> ProcessScheduledActions() does not post or
+  // cancel it prematurely.
+  viz::BeginFrameArgs pending_args =
+      std::exchange(pending_begin_frame_args_, viz::BeginFrameArgs());
+  pending_begin_frame_task_.Cancel();
 
   if (state_machine_->begin_impl_frame_state() !=
       SchedulerStateMachine::BeginImplFrameState::IDLE) {
@@ -229,6 +229,22 @@ void Scheduler::SendEarlyFinalBeginMainFrame() {
     FinishImplFrame();
   }
 
+  state_machine_->SetUrgentBeginMainFramePending();
+
+  if (pending_args.IsValid()) {
+    const bool can_use_pending =
+        state_machine_->BeginFrameNeeded() &&
+        !(pending_args.type == viz::BeginFrameArgs::MISSED &&
+          pending_args.deadline < Now() &&
+          !settings_.wait_for_all_pipeline_stages_before_draw);
+    if (can_use_pending) {
+      BeginImplFrameWithDeadline(pending_args);
+      return;
+    }
+    TRACE_EVENT_INSTANT("cc", "Scheduler::BeginFrameDropped");
+    SendDidNotProduceFrame(pending_args, FrameSkippedReason::kRecoverLatency);
+  }
+
   // Calculate intervals after potentially finishing the current frame.
   base::TimeDelta elapsed = Now() - args.frame_time;
   uint64_t intervals =
@@ -236,16 +252,61 @@ void Scheduler::SendEarlyFinalBeginMainFrame() {
   if (intervals <= 0) {
     intervals = 1;
   }
-  args.frame_id.sequence_number += intervals;
+  args.frame_id.sequence_number =
+      NextManualSequenceNumber(args.frame_id.sequence_number + intervals);
+  args.frame_id.source_id = viz::BeginFrameArgs::kManualSourceId;
   args.frame_time += args.interval * intervals;
   args.deadline = args.frame_time + args.interval;
   args.on_critical_path = !state_machine_->ImplLatencyTakesPriority();
-  args.frame_id.source_id = viz::BeginFrameArgs::kManualSourceId;
-
-  state_machine_->SetUrgentBeginMainFramePending();
 
   // Send the next BeginMainFrame right away.
   OnBeginFrame(args);
+}
+
+viz::BeginFrameArgs Scheduler::LatestKnownBeginFrameArgs() const {
+  viz::BeginFrameArgs latest = LastUsedBeginFrameArgs();
+  for (const viz::BeginFrameArgs* args :
+       {&begin_impl_frame_tracker_.DangerousMethodCurrentOrLast(),
+        &last_dispatched_begin_main_frame_args_, &pending_begin_frame_args_}) {
+    if (args->IsValid() &&
+        (!latest.IsValid() || args->frame_time > latest.frame_time)) {
+      latest = *args;
+    }
+  }
+  return latest;
+}
+
+uint64_t Scheduler::NextManualSequenceNumber(uint64_t candidate) const {
+  uint64_t next =
+      std::max(candidate, viz::BeginFrameArgs::kStartingFrameNumber);
+  for (const viz::BeginFrameArgs* args :
+       {&LastUsedBeginFrameArgs(),
+        &begin_impl_frame_tracker_.DangerousMethodCurrentOrLast(),
+        &last_dispatched_begin_main_frame_args_, &pending_begin_frame_args_}) {
+    if (args->IsValid() &&
+        args->frame_id.source_id == viz::BeginFrameArgs::kManualSourceId) {
+      next = std::max(next, args->frame_id.sequence_number + 1);
+    }
+  }
+  return next;
+}
+
+void Scheduler::OnBeginFrame(const viz::BeginFrameArgs& args) {
+  // A manual BeginFrame (e.g. from `SendEarlyFinalBeginMainFrame()`) can have
+  // a later frame time than a BeginFrame that the BeginFrameSource sent before,
+  // but that arrives after it. Such a BeginFrame is stale. Drop it, instead of
+  // going back in time.
+  const viz::BeginFrameArgs& last_used = LastUsedBeginFrameArgs();
+  if (last_used.IsValid() &&
+      last_used.frame_id.source_id == viz::BeginFrameArgs::kManualSourceId &&
+      args.frame_id.source_id != viz::BeginFrameArgs::kManualSourceId &&
+      args.frame_time < last_used.frame_time) {
+    TRACE_EVENT_INSTANT("cc", "Scheduler::StaleBeginFrameDropped");
+    ++dropped_begin_frame_args_;
+    SendDidNotProduceFrame(args, FrameSkippedReason::kRecoverLatency);
+    return;
+  }
+  viz::BeginFrameObserverBase::OnBeginFrame(args);
 }
 
 void Scheduler::SetNeedsRedraw() {
@@ -752,8 +813,10 @@ void Scheduler::FinishImplFrame() {
     client_->DidFinishImplFrame(last_activate_origin_frame_args());
   }
 
-  if (begin_frame_source_)
-    begin_frame_source_->DidFinishFrame(this);
+  if (begin_frame_source_) {
+    begin_frame_source_->DidFinishFrame(
+        this, viz::DisplaySchedulerDrawResult::kUnknown);
+  }
 }
 
 void Scheduler::SendDidNotProduceFrame(const viz::BeginFrameArgs& args,
@@ -1130,9 +1193,6 @@ void Scheduler::ClearHistory() {
   ProcessScheduledActions();
 }
 
-void Scheduler::SetShouldThrottleFrameRate(bool flag) {
-  state_machine_->SetShouldThrottleFrameRate(flag);
-}
 
 void Scheduler::SetRequestHighFramerate(bool flag) {
   TRACE_EVENT("blink", __PRETTY_FUNCTION__);

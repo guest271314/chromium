@@ -7,6 +7,8 @@
 #include <memory>
 #include <utility>
 
+#include "ash/constants/ash_features.h"
+#include "ash/constants/ash_pref_names.h"
 #include "ash/constants/ash_switches.h"
 #include "ash/public/cpp/keyboard/keyboard_controller.h"
 #include "ash/shell.h"
@@ -16,14 +18,18 @@
 #include "base/functional/callback.h"
 #include "base/strings/strcat.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/test/scoped_chromeos_version_info.h"
+#include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
 #include "base/test/test_future.h"
 #include "build/config/chromebox_for_meetings/buildflags.h"
 #include "chrome/browser/ash/app_mode/kiosk_chrome_app_manager.h"
 #include "chrome/browser/ash/app_mode/kiosk_cryptohome_remover.h"
 #include "chrome/browser/ash/browser_delegate/browser_controller_impl.h"
+#include "chrome/browser/ash/customization/customization_document.h"
 #include "chrome/browser/ash/input_method/input_method_configuration.h"
 #include "chrome/browser/ash/login/enrollment/mock_enrollment_launcher.h"
+#include "chrome/browser/ash/login/quick_unlock/pin_backend.h"
 #include "chrome/browser/ash/login/startup_utils.h"
 #include "chrome/browser/ash/login/wizard_context.h"
 #include "chrome/browser/ash/net/rollback_network_config/fake_rollback_network_config.h"
@@ -62,6 +68,7 @@
 #include "chromeos/ash/components/dbus/oobe_config/oobe_configuration_client.h"
 #include "chromeos/ash/components/dbus/session_manager/session_manager_client.h"
 #include "chromeos/ash/components/dbus/update_engine/fake_update_engine_client.h"
+#include "chromeos/ash/components/hid_detection/hid_detection_manager_impl.h"
 #include "chromeos/ash/components/install_attributes/stub_install_attributes.h"
 #include "chromeos/ash/components/login/auth/auth_events_recorder.h"
 #include "chromeos/ash/components/login/session/session_termination_manager.h"
@@ -80,6 +87,7 @@
 #include "content/public/test/browser_task_environment.h"
 #include "content/public/test/test_web_contents_factory.h"
 #include "content/public/test/test_web_ui.h"
+#include "services/device/public/cpp/hid/fake_input_service_linux.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "services/network/public/cpp/weak_wrapper_shared_url_loader_factory.h"
 #include "services/network/test/test_url_loader_factory.h"
@@ -156,8 +164,9 @@ class ScreenWaiter : public WizardController::ScreenObserver {
     base::ScopedObservation<WizardController, ScreenWaiter> observation(this);
     observation.Observe(&wizard_controller_.get());
 
-    if (wizard_controller_->current_screen()->screen_id().name ==
-        screen_id_.name) {
+    if (wizard_controller_->current_screen() &&
+        wizard_controller_->current_screen()->screen_id().name ==
+            screen_id_.name) {
       return true;
     }
     return screen_reached.Wait();
@@ -166,7 +175,8 @@ class ScreenWaiter : public WizardController::ScreenObserver {
  private:
   // WizardController::ScreenObserver:
   void OnCurrentScreenChanged(BaseScreen* new_screen) override {
-    if (new_screen->screen_id().name == screen_id_.name && screen_reached_) {
+    if (new_screen && new_screen->screen_id().name == screen_id_.name &&
+        screen_reached_) {
       std::move(screen_reached_).Run();
     }
   }
@@ -251,9 +261,19 @@ class WizardControllerTestBase : public ::testing::Test {
     // PreProfileInit:
     fake_user_manager_.Reset(std::make_unique<user_manager::FakeUserManager>());
     session_manager_->OnUserManagerCreated(fake_user_manager_.Get());
+    quick_unlock::PinBackend::Initialize(
+        TestingBrowserProcess::GetGlobal()->local_state());
     profile_manager_ = std::make_unique<TestingProfileManager>(
         TestingBrowserProcess::GetGlobal());
     CHECK(profile_manager_->SetUp());
+
+    services_customization_document_ =
+        std::make_unique<ServicesCustomizationDocument>(
+            TestingBrowserProcess::GetGlobal()->local_state(),
+            TestingBrowserProcess::GetGlobal()
+                ->GetFeatures()
+                ->application_locale_storage(),
+            TestingBrowserProcess::GetGlobal()->shared_url_loader_factory());
 
     input_method::Initialize(TestingBrowserProcess::GetGlobal()->local_state(),
                              TestingBrowserProcess::GetGlobal()
@@ -263,10 +283,12 @@ class WizardControllerTestBase : public ::testing::Test {
     chrome_keyboard_controller_client_ =
         ChromeKeyboardControllerClient::CreateForTest();
 
+    kiosk_cryptohome_remover_ = std::make_unique<KioskCryptohomeRemover>(
+        TestingBrowserProcess::GetGlobal()->local_state());
     kiosk_chrome_app_manager_ = std::make_unique<KioskChromeAppManager>(
         TestingBrowserProcess::GetGlobal()->local_state(),
         TestingBrowserProcess::GetGlobal()->shared_url_loader_factory(),
-        &kiosk_cryptohome_remover_);
+        kiosk_cryptohome_remover_.get());
 
     browser_controller_ = std::make_unique<ash::BrowserControllerImpl>();
 
@@ -284,6 +306,12 @@ class WizardControllerTestBase : public ::testing::Test {
     TestingBrowserProcess::GetGlobal()
         ->platform_part()
         ->InitializeTimezoneResolverManager();
+    TestingBrowserProcess::GetGlobal()
+        ->platform_part()
+        ->InitializeDeviceRestrictionScheduleController();
+    TestingBrowserProcess::GetGlobal()
+        ->platform_part()
+        ->InitializeDeviceDisablingManager();
 
     wallpaper_controller_client_ = std::make_unique<
         WallpaperControllerClientImpl>(
@@ -314,22 +342,32 @@ class WizardControllerTestBase : public ::testing::Test {
   void TearDown() override {
     // PostMainMessageLoopRun:
     DeviceSettingsService::Get()->StopProcessing();
+
+    TestingBrowserProcess::GetGlobal()
+        ->platform_part()
+        ->ShutdownDeviceDisablingManager();
+    TestingBrowserProcess::GetGlobal()
+        ->platform_part()
+        ->ShutdownDeviceRestrictionScheduleController();
+
     auth_events_recorder_.reset();
     kiosk_chrome_app_manager_.reset();
+    kiosk_cryptohome_remover_.reset();
     wallpaper_controller_client_.reset();
     chrome_keyboard_controller_client_.reset();
-    ash_test_helper_->TearDown();
 
-    // Need to call `StartTearDown` here because `TimeZoneResolverManager`
-    // depends on the profile PrefService and `SystemLocationProvider`.
-    // Note that the latter is destroyed in ~AshTestHelper.
+    // Need to call `StartTearDown` before `AshTestHelper::TearDown` because
+    // `TimeZoneResolverManager` depends on the profile PrefService and
+    // `SystemLocationProvider` which is destroyed in `AshTestHelper::TearDown`.
     TestingBrowserProcess::GetGlobal()->platform_part()->StartTearDown();
 
+    ash_test_helper_->TearDown();
     ash_test_helper_.reset();
     test_context_factories_.reset();
     input_method::Shutdown();
     profile_ = nullptr;
     profile_manager_.reset();
+    services_customization_document_.reset();
     session_manager_.reset();
     fake_user_manager_.Reset();
 
@@ -348,6 +386,11 @@ class WizardControllerTestBase : public ::testing::Test {
     InstallAttributesClient::Shutdown();
     BiodClient::Shutdown();
     DBusThreadManager::Shutdown();
+
+    // TODO(crbug.com/498416395): We should refactor PinBackend and
+    // shutdown/destroy it in the reverse order of initialization.
+    quick_unlock::PinBackend::Shutdown();
+
     StatsReportingController::Shutdown();
     cros_settings_.reset();
 
@@ -387,6 +430,8 @@ class WizardControllerTestBase : public ::testing::Test {
 
   std::unique_ptr<base::test::TaskEnvironment> task_environment_;
   network::TestURLLoaderFactory test_url_loader_factory_;
+  std::unique_ptr<ServicesCustomizationDocument>
+      services_customization_document_;
 
   std::unique_ptr<ScopedTestingCrosSettings> cros_settings_;
   std::unique_ptr<ash::SessionTerminationManager> session_termination_manager_;
@@ -406,8 +451,7 @@ class WizardControllerTestBase : public ::testing::Test {
   input_method::FakeInputMethodDelegate delegate_;
   input_method::InputMethodUtil util_{&delegate_};
   OobeConfiguration oobe_configuration_;
-  KioskCryptohomeRemover kiosk_cryptohome_remover_{
-      TestingBrowserProcess::GetGlobal()->local_state()};
+  std::unique_ptr<KioskCryptohomeRemover> kiosk_cryptohome_remover_;
 
   // Note: StatisticsProvider is created with base::Singleton in production.
   ash::system::ScopedFakeStatisticsProvider statistics_provider_;
@@ -429,8 +473,16 @@ class WizardControllerTest : public WizardControllerTestBase {
         web_contents_factory_->CreateWebContents(web_ui_profile));
 
     fake_login_display_host_ = std::make_unique<FakeLoginDisplayHost>();
-    auto oobe_ui = std::make_unique<OobeUI>(test_web_ui_.get(),
-                                            GURL("chrome://oobe/oobe"));
+    auto oobe_ui = std::make_unique<OobeUI>(
+        TestingBrowserProcess::GetGlobal()->local_state(),
+        TestingBrowserProcess::GetGlobal()
+            ->GetFeatures()
+            ->application_locale_storage(),
+        TestingBrowserProcess::GetGlobal()
+            ->platform_part()
+            ->browser_policy_connector_ash(),
+        TestingBrowserProcess::GetGlobal()->shared_url_loader_factory(),
+        test_web_ui_.get(), GURL("chrome://oobe/oobe"));
     fake_login_display_host_->SetOobeUI(oobe_ui.get());
     test_web_ui_->SetController(std::move(oobe_ui));
 
@@ -449,6 +501,9 @@ class WizardControllerTest : public WizardControllerTestBase {
         TestingBrowserProcess::GetGlobal()
             ->platform_part()
             ->component_manager_ash(),
+        TestingBrowserProcess::GetGlobal()
+            ->platform_part()
+            ->device_restriction_schedule_controller(),
         fake_login_display_host_->GetWizardContext());
     wizard_controller_ = wizard_controller.get();
     fake_login_display_host_->SetWizardController(std::move(wizard_controller));
@@ -689,6 +744,118 @@ TEST_F(WizardControllerAfterRollbackTest, ImportNetworkConfigAfterRollback) {
   const std::string* guid = network.GetDict().FindString("GUID");
   ASSERT_TRUE(guid);
   EXPECT_EQ(*guid, "wpa-psk-network-guid");
+}
+
+class WizardControllerDeviceMigrationTest : public WizardControllerTest {
+ public:
+  WizardControllerDeviceMigrationTest() {
+    feature_list_.InitAndEnableFeature(ash::features::kDeviceMoveConfigSave);
+  }
+
+  void SetUp() override {
+    WizardControllerTest::SetUp();
+    rollback_network_config::OverrideInProcessInstanceForTesting(
+        std::make_unique<FakeRollbackNetworkConfig>());
+    // Set an EU timezone so that the update opt-out notice would be shown if
+    // not skipped by `skipUpdateOptOutScreen`.
+    TestingBrowserProcess::GetGlobal()->local_state()->SetString(
+        ash::prefs::kSigninScreenTimezone, "Europe/Berlin");
+    SetOobeConfiguration(kDeviceMigrationOobeConfig);
+  }
+
+  void TearDown() override {
+    rollback_network_config::Shutdown();
+    WizardControllerTest::TearDown();
+  }
+
+ private:
+  static constexpr char kDeviceMigrationOobeConfig[] = R"({
+    "eulaAutoAccept": false,
+    "eulaSendStatistics": false,
+    "networkUseConnected": true,
+    "welcomeNext": true,
+    "skipHidScreen": true,
+    "skipUpdateOptOutScreen": true,
+    "networkConfig": "{\"NetworkConfigurations\":[{
+     \"GUID\":\"wpa-psk-network-guid\",
+     \"Type\": \"WiFi\",
+     \"Name\": \"WiFi\",
+     \"WiFi\": {
+       \"Security\": \"WPA-PSK\",
+       \"Passphrase\": \"wpa-psk-network-passphrase\"
+    }}]}"
+  })";
+
+  base::test::ScopedFeatureList feature_list_;
+};
+
+#if !BUILDFLAG(PLATFORM_CFM)
+TEST_F(WizardControllerDeviceMigrationTest,
+       DeviceMigrationOobeFlowAdvancesToUserCreation) {
+  wizard_controller_->Init(/*first_screen=*/ash::OOBE_SCREEN_UNKNOWN);
+  ASSERT_TRUE(AwaitScreen(kWelcomeScreen));
+
+  // `welcomeNext` is handled in WebUI JS, which doesn't run under `TestWebUI`,
+  // so trigger it manually.
+  PerformUserAction(kActionContinue);
+  ASSERT_TRUE(AwaitScreen(kNetworkScreen));
+
+  // `FakeRollbackNetworkConfig` doesn't connect a network in Shill, so connect
+  // manually to advance past `NetworkScreen`.
+  StartNetworkConnection();
+  ASSERT_TRUE(AwaitScreen(kUpdateScreen));
+
+  MakeNonCriticalUpdateAvailable();
+  ASSERT_TRUE(AwaitScreen(kUserCreationScreen));
+}
+#endif  // !BUILDFLAG(PLATFORM_CFM)
+
+#if BUILDFLAG(PLATFORM_CFM)
+TEST_F(WizardControllerDeviceMigrationTest,
+       CfMDeviceMigrationOobeFlowAdvancesToEnrollment) {
+  wizard_controller_->Init(/*first_screen=*/ash::OOBE_SCREEN_UNKNOWN);
+  ASSERT_TRUE(AwaitScreen(kWelcomeScreen));
+
+  // `welcomeNext` is handled in WebUI JS, which doesn't run under `TestWebUI`,
+  // so trigger it manually.
+  PerformUserAction(kActionContinue);
+  ASSERT_TRUE(AwaitScreen(kNetworkScreen));
+
+  // `FakeRollbackNetworkConfig` doesn't connect a network in Shill, so connect
+  // manually to advance past `NetworkScreen`.
+  StartNetworkConnection();
+  ASSERT_TRUE(AwaitScreen(kUpdateScreen));
+
+  MakeNonCriticalUpdateAvailable();
+  ASSERT_TRUE(AwaitScreen(kEnrollmentScreen));
+}
+#endif  // BUILDFLAG(PLATFORM_CFM)
+
+class WizardControllerDeviceMigrationChromeboxTest
+    : public WizardControllerDeviceMigrationTest {
+ public:
+  void SetUp() override {
+    hid_detection::HidDetectionManagerImpl::SetInputDeviceManagerBinderForTest(
+        base::BindRepeating(&device::FakeInputServiceLinux::Bind,
+                            base::Unretained(&fake_input_service_)));
+    WizardControllerDeviceMigrationTest::SetUp();
+  }
+
+  void TearDown() override {
+    WizardControllerDeviceMigrationTest::TearDown();
+    hid_detection::HidDetectionManagerImpl::SetInputDeviceManagerBinderForTest(
+        base::NullCallback());
+  }
+
+ private:
+  base::test::ScopedChromeOSVersionInfo version_{"DEVICETYPE=CHROMEBOX",
+                                                 base::Time::Now()};
+  device::FakeInputServiceLinux fake_input_service_;
+};
+
+TEST_F(WizardControllerDeviceMigrationChromeboxTest, SkipsHidDetectionScreen) {
+  wizard_controller_->Init(/*first_screen=*/ash::OOBE_SCREEN_UNKNOWN);
+  ASSERT_TRUE(AwaitScreen(kWelcomeScreen));
 }
 
 }  // namespace ash

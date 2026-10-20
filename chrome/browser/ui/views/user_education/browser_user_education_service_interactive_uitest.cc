@@ -40,7 +40,7 @@ class BrowserUserEducationServiceUiTest : public InteractiveFeaturePromoTest {
 
   UserEducationService* GetUserEducationService() {
     return UserEducationServiceFactory::GetForBrowserContext(
-        browser()->profile());
+        browser()->GetProfile());
   }
 
   auto DoSetup() {
@@ -52,7 +52,7 @@ class BrowserUserEducationServiceUiTest : public InteractiveFeaturePromoTest {
                                               kToolbarName),
         NameViewRelative(kBrowserViewElementId, kContentsPaneName,
                          [](BrowserView* browser_view) {
-                           return browser_view->contents_web_view();
+                           return browser_view->GetContentsView();
                          }),
         InAnyContext(WaitForShow(kWebUIIPHDemoElementIdentifier)));
   }

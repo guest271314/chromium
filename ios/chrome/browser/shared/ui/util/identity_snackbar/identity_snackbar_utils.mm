@@ -16,6 +16,7 @@
 #import "ios/chrome/browser/shared/public/commands/command_dispatcher.h"
 #import "ios/chrome/browser/shared/public/commands/snackbar_commands.h"
 #import "ios/chrome/browser/shared/public/snackbar/snackbar_message.h"
+#import "ios/chrome/browser/shared/ui/image/g_with_point_size.h"
 #import "ios/chrome/browser/shared/ui/symbols/symbols.h"
 #import "ios/chrome/browser/shared/ui/util/uikit_ui_util.h"
 #import "ios/chrome/browser/signin/model/authentication_service_factory.h"
@@ -43,11 +44,10 @@ constexpr CGFloat kSymbolsPointSize = 24;
 // Returns the branded version of the Google Services symbol.
 UIImage* GetBrandedGoogleServicesSymbol() {
 #if BUILDFLAG(IOS_USE_BRANDED_ASSETS)
-  return MakeSymbolMulticolor(
-      CustomSymbolWithPointSize(kGoogleIconSymbol, kSymbolsPointSize));
+  return GWithPointSize(SuperGSize::k24pt);
 #else
   return MakeSymbolMulticolor(
-      DefaultSymbolWithPointSize(kGearshape2Symbol, kSymbolsPointSize));
+      SymbolWithPointSize(SymbolGearshape2, kSymbolsPointSize));
 #endif
 }
 
@@ -55,15 +55,18 @@ UIImage* GetBrandedGoogleServicesSymbol() {
 UIImage* GetEnterpriseIcon() {
   UIColor* color = [UIColor colorNamed:kTextSecondaryColor];
   return SymbolWithPalette(
-      CustomSymbolWithPointSize(kEnterpriseSymbol, kSymbolsPointSize),
-      @[ color ]);
+      SymbolWithPointSize(SymbolEnterprise, kSymbolsPointSize), @[ color ]);
 }
 
 }  // namespace
 
-SnackbarMessage* CreateIdentitySnackbarMessage(id<SystemIdentity> identity,
-                                               Browser* browser) {
-  CHECK(identity, base::NotFatalUntil::M151);
+// Creates and returns a snackbar message with the user's identity information,
+// using the given custom title.
+SnackbarMessage* CreateIdentitySnackbarMessageWithCustomTitle(
+    id<SystemIdentity> identity,
+    Browser* browser,
+    NSString* title) {
+  CHECK(identity);
   // Retrieve necessary services and profile information.
   ProfileIOS* profile = browser->GetProfile()->GetOriginalProfile();
   AuthenticationService* auth_service =
@@ -76,14 +79,6 @@ SnackbarMessage* CreateIdentitySnackbarMessage(id<SystemIdentity> identity,
   base::UmaHistogramBoolean(
       /*name=*/kIdentitySnackbarHadUserName,
       /*sample=*/(identity.userGivenName != nil));
-
-  // Determine the main title of the snackbar.
-  NSString* title =
-      (identity.userGivenName)
-          ? l10n_util::GetNSStringF(
-                IDS_IOS_ACCOUNT_MENU_SWITCH_CONFIRMATION_TITLE,
-                base::SysNSStringToUTF16(identity.userGivenName))
-          : l10n_util::GetNSString(IDS_IOS_SIGNIN_ACCOUNT_NOTIFICATION_TITLE);
 
   SnackbarMessage* message = [[SnackbarMessage alloc] initWithTitle:title];
 
@@ -128,9 +123,35 @@ SnackbarMessage* CreateIdentitySnackbarMessage(id<SystemIdentity> identity,
   return message;
 }
 
+SnackbarMessage* CreateIdentitySnackbarMessage(id<SystemIdentity> identity,
+                                               Browser* browser) {
+  CHECK(identity);
+  // Determine the main title of the snackbar.
+  NSString* title =
+      (identity.userGivenName)
+          ? l10n_util::GetNSStringF(
+                IDS_IOS_ACCOUNT_MENU_SWITCH_CONFIRMATION_TITLE,
+                base::SysNSStringToUTF16(identity.userGivenName))
+          : l10n_util::GetNSString(IDS_IOS_SIGNIN_ACCOUNT_NOTIFICATION_TITLE);
+
+  return CreateIdentitySnackbarMessageWithCustomTitle(identity, browser, title);
+}
+
 void TriggerAccountSwitchSnackbarWithIdentity(id<SystemIdentity> identity,
                                               Browser* browser) {
   SnackbarMessage* message = CreateIdentitySnackbarMessage(identity, browser);
+  CommandDispatcher* dispatcher = browser->GetCommandDispatcher();
+  id<SnackbarCommands> snackbar_commands_handler =
+      HandlerForProtocol(dispatcher, SnackbarCommands);
+  [snackbar_commands_handler showSnackbarMessageOverBrowserToolbar:message];
+}
+
+void TriggerSigninConfirmationSnackbarWithCustomTitle(
+    id<SystemIdentity> identity,
+    Browser* browser,
+    NSString* custom_title) {
+  SnackbarMessage* message = CreateIdentitySnackbarMessageWithCustomTitle(
+      identity, browser, custom_title);
   CommandDispatcher* dispatcher = browser->GetCommandDispatcher();
   id<SnackbarCommands> snackbar_commands_handler =
       HandlerForProtocol(dispatcher, SnackbarCommands);

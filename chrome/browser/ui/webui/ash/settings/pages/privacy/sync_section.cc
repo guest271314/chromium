@@ -11,7 +11,6 @@
 #include "base/containers/span.h"
 #include "base/feature_list.h"
 #include "base/strings/utf_string_conversions.h"
-#include "chrome/browser/browser_process.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/webui/ash/settings/os_settings_features_util.h"
 #include "chrome/browser/ui/webui/ash/settings/pages/people/os_sync_handler.h"
@@ -19,8 +18,12 @@
 #include "chrome/browser/ui/webui/settings/shared_settings_localized_strings_provider.h"
 #include "chrome/grit/branded_strings.h"
 #include "chrome/grit/generated_resources.h"
+#include "chromeos/ash/components/browser_context_helper/annotated_account_id.h"
 #include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
+#include "chromeos/ash/components/signin/identity_manager_provider.h"
+#include "components/application_locale_storage/application_locale_storage.h"
 #include "components/google/core/common/google_util.h"
+#include "components/signin/public/identity_manager/identity_manager.h"
 #include "components/sync/base/features.h"
 #include "content/public/browser/web_ui.h"
 #include "content/public/browser/web_ui_data_source.h"
@@ -40,7 +43,8 @@ using ::chromeos::settings::mojom::Subpage;
 
 namespace {
 
-void AddSyncControlsStrings(content::WebUIDataSource* html_source) {
+void AddSyncControlsStrings(content::WebUIDataSource* html_source,
+                            Profile* profile) {
   static constexpr webui::LocalizedString kLocalizedStrings[] = {
       {"syncEverythingCheckboxLabel",
        IDS_SETTINGS_SYNC_EVERYTHING_CHECKBOX_LABEL},
@@ -59,7 +63,6 @@ void AddSyncControlsStrings(content::WebUIDataSource* html_source) {
        IDS_OS_SETTINGS_WIFI_CONFIGURATIONS_CHECKBOX_LABEL},
       {"osSyncAppsCheckboxLabel", IDS_OS_SETTINGS_SYNC_APPS_CHECKBOX_LABEL},
       {"osSyncTurnOn", IDS_OS_SETTINGS_SYNC_TURN_ON},
-      {"osSyncFeatureLabel", IDS_OS_SETTINGS_SYNC_FEATURE_LABEL},
       {"spellingPref", IDS_SETTINGS_SPELLING_PREF},
       {"spellingDescription", IDS_SETTINGS_SPELLING_PREF_DESC},
       {"enablePersonalizationLogging", IDS_SETTINGS_ENABLE_LOGGING_PREF},
@@ -67,6 +70,19 @@ void AddSyncControlsStrings(content::WebUIDataSource* html_source) {
        IDS_SETTINGS_ENABLE_LOGGING_PREF_DESC},
   };
   html_source->AddLocalizedStrings(kLocalizedStrings);
+
+  // Some Profiles have no annotated AccountId (e.g. guest and sign-in/lock
+  // screen Profiles); treat those as having no IdentityManager.
+  const AccountId* account_id = AnnotatedAccountId::Get(profile);
+  signin::IdentityManager* identity_manager =
+      account_id ? IdentityManagerProvider::Get().Find(*account_id) : nullptr;
+  html_source->AddLocalizedString(
+      "osSyncFeatureLabel",
+      (identity_manager &&
+       identity_manager->HasPrimaryAccount(signin::ConsentLevel::kSignin) &&
+       syncer::IsReplaceSyncPromosWithSignInPromosEnabled())
+          ? IDS_OS_SETTINGS_SYNC_FEATURE_LABEL_2
+          : IDS_OS_SETTINGS_SYNC_FEATURE_LABEL);
 }
 
 base::span<const SearchConcept> GetCategorizedSyncSearchConcepts() {
@@ -83,9 +99,12 @@ base::span<const SearchConcept> GetCategorizedSyncSearchConcepts() {
 
 }  // namespace
 
-SyncSection::SyncSection(Profile* profile,
-                         SearchTagRegistry* search_tag_registry)
-    : OsSettingsSection(profile, search_tag_registry) {
+SyncSection::SyncSection(
+    const ApplicationLocaleStorage* application_locale_storage,
+    Profile* profile,
+    SearchTagRegistry* search_tag_registry)
+    : OsSettingsSection(profile, search_tag_registry),
+      application_locale_storage_(CHECK_DEREF(application_locale_storage)) {
   CHECK(profile);
   CHECK(search_tag_registry);
 
@@ -103,6 +122,9 @@ SyncSection::SyncSection(Profile* profile,
 SyncSection::~SyncSection() = default;
 
 void SyncSection::AddLoadTimeData(content::WebUIDataSource* html_source) {
+  html_source->AddBoolean("replaceSyncPromosWithSignInPromos",
+                          syncer::IsReplaceSyncPromosWithSignInPromosEnabled());
+
   html_source->AddLocalizedString(
       "syncAndNonPersonalizedServices",
       IDS_SETTINGS_SYNC_SYNC_AND_NON_PERSONALIZED_SERVICES);
@@ -120,14 +142,14 @@ void SyncSection::AddLoadTimeData(content::WebUIDataSource* html_source) {
                    syncer::kSyncEnableNewSyncDashboardUrl)
                    ? ash::chrome_external_urls::kNewSyncGoogleDashboardURL
                    : ash::chrome_external_urls::kLegacySyncGoogleDashboardURL),
-          g_browser_process->GetApplicationLocale())
+          std::string(application_locale_storage_->GetTag().tag_string()))
           .spec();
 
   html_source->AddString(
       "syncDisconnectExplanation",
       l10n_util::GetStringFUTF8(IDS_SETTINGS_SYNC_DISCONNECT_EXPLANATION,
                                 base::ASCIIToUTF16(sync_dashboard_url)));
-  AddSyncControlsStrings(html_source);
+  AddSyncControlsStrings(html_source, profile());
   ::settings::AddSharedSyncPageStrings(html_source);
 }
 

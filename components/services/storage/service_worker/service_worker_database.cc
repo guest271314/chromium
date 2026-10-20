@@ -29,6 +29,7 @@
 #include "services/network/public/mojom/referrer_policy.mojom.h"
 #include "services/network/public/mojom/service_worker_router_info.mojom-shared.h"
 #include "services/network/public/mojom/web_sandbox_flags.mojom-shared.h"
+#include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/common/service_worker/service_worker_router_rule.h"
 #include "third_party/blink/public/common/storage_key/storage_key.h"
 #include "third_party/blink/public/mojom/service_worker/service_worker_ancestor_frame_type.mojom.h"
@@ -167,7 +168,7 @@ using RouterSourceType = network::mojom::ServiceWorkerRouterSourceType;
 
 class ServiceWorkerEnv : public leveldb_env::ChromiumEnv {
  public:
-  ServiceWorkerEnv() : ChromiumEnv(storage::CreateFilesystemProxy()) {}
+  ServiceWorkerEnv() : ChromiumEnv(CreateFilesystemProxy()) {}
 
   // Returns a shared instance of ServiceWorkerEnv. This is thread-safe.
   static ServiceWorkerEnv* GetInstance() {
@@ -304,7 +305,7 @@ base::ByteSize AccumulateResourceSizeInBytes(
 
 std::optional<std::vector<liburlpattern::Part>> ConvertToBlinkParts(
     const google::protobuf::RepeatedPtrField<
-        storage::ServiceWorkerRegistrationData::RouterRules::RuleV1::Condition::
+        ServiceWorkerRegistrationData::RouterRules::RuleV1::Condition::
             URLPattern::Part>& parts) {
   std::vector<liburlpattern::Part> ret;
   for (const auto& input_part : parts) {
@@ -364,7 +365,7 @@ std::optional<std::vector<liburlpattern::Part>> ConvertToBlinkParts(
 void ConvertToProtoParts(
     const std::vector<liburlpattern::Part> parts,
     google::protobuf::RepeatedPtrField<
-        storage::ServiceWorkerRegistrationData::RouterRules::RuleV1::Condition::
+        ServiceWorkerRegistrationData::RouterRules::RuleV1::Condition::
             URLPattern::Part>* out_parts) {
   for (const auto& p : parts) {
     ServiceWorkerRegistrationData::RouterRules::RuleV1::Condition::URLPattern::
@@ -687,7 +688,7 @@ bool WriteToBlinkCondition(
           case ServiceWorkerRegistrationData::RouterRules::RuleV1::Condition::
               Request::kDictionaryDestination:
             request.destination =
-                network::mojom::RequestDestination::kDictionary;
+                network::mojom::RequestDestination::kCompressionDictionary;
             break;
           case ServiceWorkerRegistrationData::RouterRules::RuleV1::Condition::
               Request::kSpeculationRulesDestination:
@@ -699,9 +700,11 @@ bool WriteToBlinkCondition(
             request.destination = network::mojom::RequestDestination::kJson;
             break;
           case ServiceWorkerRegistrationData::RouterRules::RuleV1::Condition::
+              Request::kTextDestination:
+            request.destination = network::mojom::RequestDestination::kText;
+            break;
+          case ServiceWorkerRegistrationData::RouterRules::RuleV1::Condition::
               Request::kSharedStorageWorkletDestination:
-            request.destination =
-                network::mojom::RequestDestination::kSharedStorageWorklet;
             break;
         }
       }
@@ -1047,7 +1050,7 @@ void WriteConditionToProtoWithHelper(
               ServiceWorkerRegistrationData::RouterRules::RuleV1::Condition::
                   Request::kEmailVerificationDestination);
           break;
-        case network::mojom::RequestDestination::kDictionary:
+        case network::mojom::RequestDestination::kCompressionDictionary:
           mutable_request->set_destination(
               ServiceWorkerRegistrationData::RouterRules::RuleV1::Condition::
                   Request::kDictionaryDestination);
@@ -1062,10 +1065,10 @@ void WriteConditionToProtoWithHelper(
               ServiceWorkerRegistrationData::RouterRules::RuleV1::Condition::
                   Request::kJsonDestination);
           break;
-        case network::mojom::RequestDestination::kSharedStorageWorklet:
+        case network::mojom::RequestDestination::kText:
           mutable_request->set_destination(
               ServiceWorkerRegistrationData::RouterRules::RuleV1::Condition::
-                  Request::kSharedStorageWorkletDestination);
+                  Request::kTextDestination);
           break;
       }
     }
@@ -1189,6 +1192,35 @@ ServiceWorkerDatabase::Status ServiceWorkerDatabase::GetNextAvailableIds(
                                &next_avail_resource_id_);
   if (status != Status::kOk)
     return status;
+
+  if (base::FeatureList::IsEnabled(
+          blink::features::kServiceWorkerDatabaseDoomOnMissingNextId) &&
+      (next_avail_registration_id_ == 0 || next_avail_version_id_ == 0 ||
+       next_avail_resource_id_ == 0)) {
+    // If any next available ID metadata is 0 while pre-existing registrations
+    // exist on disk, the database ID metadata was lost or corrupted.
+    // Treat this as database corruption to allow ServiceWorkerStorage to doom
+    // the database and recover cleanly.
+    {
+      std::unique_ptr<leveldb::Iterator> itr(
+          db_->NewIterator(leveldb::ReadOptions()));
+      itr->Seek(service_worker_internals::kRegKeyPrefix);
+      status = LevelDBStatusToServiceWorkerDBStatus(itr->status());
+      if (status == Status::kOk && itr->Valid()) {
+        std::string_view key_str(itr->key().data(), itr->key().size());
+        if (base::StartsWith(key_str, service_worker_internals::kRegKeyPrefix,
+                             base::CompareCase::SENSITIVE)) {
+          DLOG(ERROR) << "Registrations exist on disk but next available ID "
+                         "metadata is missing.";
+          status = Status::kErrorCorrupted;
+        }
+      }
+    }
+    if (status != Status::kOk) {
+      HandleReadResult(FROM_HERE, status);
+      return status;
+    }
+  }
 
   *next_avail_registration_id = next_avail_registration_id_;
   *next_avail_version_id = next_avail_version_id_;

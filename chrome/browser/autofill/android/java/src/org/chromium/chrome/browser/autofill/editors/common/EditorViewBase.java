@@ -39,6 +39,7 @@ import android.widget.TextView;
 import androidx.annotation.LayoutRes;
 import androidx.annotation.StringRes;
 import androidx.core.view.MarginLayoutParamsCompat;
+import androidx.fragment.app.FragmentManager;
 
 import org.chromium.base.Callback;
 import org.chromium.base.ResettersForTesting;
@@ -66,10 +67,10 @@ import org.chromium.components.browser_ui.widget.AlwaysDismissedDialog;
 import org.chromium.components.browser_ui.widget.FadingEdgeScrollView;
 import org.chromium.components.browser_ui.widget.FadingEdgeScrollView.EdgeType;
 import org.chromium.components.browser_ui.widget.StrictButtonPressController.ButtonClickResult;
-import org.chromium.components.browser_ui.widget.TintedDrawable;
 import org.chromium.components.browser_ui.widget.displaystyle.UiConfig;
 import org.chromium.components.browser_ui.widget.displaystyle.ViewResizer;
 import org.chromium.ui.KeyboardVisibilityDelegate;
+import org.chromium.ui.UiUtils;
 import org.chromium.ui.interpolators.Interpolators;
 import org.chromium.ui.modaldialog.ModalDialogManager;
 import org.chromium.ui.modaldialog.ModalDialogManagerHolder;
@@ -97,6 +98,7 @@ public abstract class EditorViewBase extends AlwaysDismissedDialog
 
     private final Activity mActivity;
     private final Context mContext;
+    private final @Nullable FragmentManager mFragmentManager;
 
     private final View mContainerView;
     private final ViewGroup mContentView;
@@ -133,7 +135,14 @@ public abstract class EditorViewBase extends AlwaysDismissedDialog
 
     private @Nullable UiConfig mUiConfig;
 
-    public EditorViewBase(Activity activity) {
+    /**
+     * Constructs the {@code EditorViewBase}.
+     *
+     * @param activity The current activity to show the editor for.
+     * @param fragmentManager The fragment manager associated with the activity. This can be {@code
+     *     null} if the editor is not going to show any date fields.
+     */
+    public EditorViewBase(Activity activity, @Nullable FragmentManager fragmentManager) {
         super(
                 activity,
                 R.style.ThemeOverlay_BrowserUI_Fullscreen,
@@ -141,14 +150,11 @@ public abstract class EditorViewBase extends AlwaysDismissedDialog
         // Sets transparent background for animating content view.
         assumeNonNull(getWindow()).setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
         mActivity = activity;
-        if (ChromeFeatureList.sAndroidSettingsContainment.isEnabled()) {
-            // TODO(crbug.com/439911511): Set the style directly in the layout instead.
-            mContext =
-                    new ContextThemeWrapper(
-                            activity, R.style.ThemeOverlay_Chromium_Settings_InputFields);
-        } else {
-            mContext = activity;
-        }
+        mFragmentManager = fragmentManager;
+        // TODO(crbug.com/439911511): Set the style directly in the layout instead.
+        mContext =
+                new ContextThemeWrapper(
+                        activity, R.style.ThemeOverlay_Chromium_Settings_InputFields);
 
         mContainerView =
                 LayoutInflater.from(mContext).inflate(R.layout.autofill_editor_dialog, null);
@@ -445,7 +451,7 @@ public abstract class EditorViewBase extends AlwaysDismissedDialog
                 });
 
         // Cancel editing when the user hits the back arrow.
-        toolbar.setNavigationContentDescription(R.string.cancel);
+        toolbar.setNavigationContentDescription(R.string.abc_action_bar_up_description);
         toolbar.setNavigationIcon(getTintedBackIcon());
         toolbar.setNavigationOnClickListener(view -> assumeNonNull(mCancelRunnable).run());
 
@@ -466,10 +472,8 @@ public abstract class EditorViewBase extends AlwaysDismissedDialog
     }
 
     private Drawable getTintedBackIcon() {
-        return TintedDrawable.constructTintedDrawable(
-                getContext(),
-                R.drawable.ic_arrow_back_white_24dp,
-                R.color.default_icon_color_tint_list);
+        return UiUtils.getTintedDrawable(
+                getContext(), R.drawable.ic_arrow_back_24dp, R.color.default_icon_color_tint_list);
     }
 
     /**
@@ -614,8 +618,11 @@ public abstract class EditorViewBase extends AlwaysDismissedDialog
                 }
             case DATE:
                 {
+                    assert mFragmentManager != null
+                            : "Fragment manager must be set for editors that show date fields";
                     DateFieldView dateField =
-                            new DateFieldView(getStyledContext(), editorItem.model);
+                            new DateFieldView(
+                                    getStyledContext(), mFragmentManager, editorItem.model);
                     mDateFieldMCPs.add(
                             PropertyModelChangeProcessor.create(
                                     editorItem.model,

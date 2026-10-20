@@ -12,7 +12,6 @@
 dfried@chromium.org
 dljames@chromium.org
 dpenning@chromium.org
-ellyjones@chromium.org
 estalin@chromium.org
 jkeitel@google.com
 koretadaniel@chromium.org
@@ -47,4 +46,4 @@ per-file settings_window_manager*chromeos*=file://chrome/browser/ui/ash/OWNERS
 
 per-file file_system_access*=file://content/browser/file_system_access/OWNERS
 
-per-file intent_picker_tab_helper*=file://chrome/browser/apps/intent_helper/OWNERS
+per-file intent_picker_tab_helper*=file://chrome/browser/web_applications/OWNERS

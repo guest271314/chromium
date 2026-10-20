@@ -261,6 +261,9 @@
   <message name="IDS_POLICY_URL_NOT_HTTPS_ERROR" desc="The text displayed in the status column when the URL given isn't using the https scheme, but needs to be.">
     URL must be https.
   </message>
+  <message name="IDS_POLICY_GEMINI_ENTERPRISE_URL_HOST_NOT_ALLOWED_ERROR" desc="The text displayed in the status column of the GeminiEnterpriseUrl policy when the configured URL doesn't point to a Gemini Enterprise domain.">
+    URL must point to a <ph name="GEMINI_ENTERPRISE_PRODUCT_NAME">Gemini Enterprise<ex>Gemini Enterprise</ex></ph> domain.
+  </message>
   <message name="IDS_POLICY_INVALID_SEARCH_URL_ERROR" desc="The text displayed in the status column when a the URL given for DefaultSearchProviderSearchURL is invalid.">
     Invalid search URL.
   </message>
@@ -384,6 +387,9 @@ Additional details:
   </message>
   <message name="IDS_POLICY_OK" desc="Text displayed in the status column when a valid value is set for a policy." meaning="Policy is working as expected.">
     OK
+  </message>
+  <message name="IDS_POLICY_RESTART_REQUIRED" desc="Text displayed in the status column when a policy requires a browser restart to take effect.">
+    Restart required
   </message>
   <message name="IDS_POLICY_UNSET" desc="Text displayed in the status column when no value is set for a policy.">
     Not set.
@@ -516,10 +522,10 @@ Additional details:
   <message name="IDS_POLICY_STATUS_USER" desc="Title for the user policy status box.">
     User policies
   </message>
-<message name="IDS_POLICY_STATUS_MACHINE" desc="Title for the machine policy status box.">
+  <message name="IDS_POLICY_STATUS_MACHINE" desc="Title for the machine policy status box.">
     Machine policies
   </message>
- <if expr="is_win">
+ <if expr="is_win or is_macosx or is_linux">
   <message name="IDS_POLICY_STATUS_UPDATER" desc="Title for the updater policy status box on windows.">
     Google Update
   </message>
@@ -679,9 +685,6 @@ Additional details:
   </message>
   <message name="IDS_POLICY_SCOPE_USER" desc="Text displayed in the Applies to column when a policy applies to the current user only.">
     Current user
-  </message>
-  <message name="IDS_POLICY_SCOPE_ALL_USERS" desc="Text displayed in the Applies to column when a policy applies to all the users in the current session.">
-    All users
   </message>
   <if expr="not is_android and not is_chromeos">
     <message name="IDS_POLICY_SCOPE_DEVICE" desc="Text displayed in the Applies to column when a policy applies to everyone on the machine.">
@@ -886,6 +889,9 @@ Additional details:
   </message>
   <message name="IDS_POLICY_BANNER_PROMOTION_BTN" desc="Button for Chrome Enterprise Core (CEC) promotion banner">
     Try Chrome Enterprise Core
+  </message>
+  <message name="IDS_POLICY_COMMAND_LINE_FLAGS_WARNING" desc="Warning shown on chrome://policy when custom command line flags are explicitly specified by the user upon launching Chrome.">
+    This instance of Chrome is running with command line flags manually set. Note that command line flags may change at any time and are not supported.
   </message>
   <message name="IDS_DEVTOOLS_BLOCKED_BY_POLICY" desc="Message shown when DevTools is blocked by policy.">
     Your organization has blocked the use of DevTools on this page

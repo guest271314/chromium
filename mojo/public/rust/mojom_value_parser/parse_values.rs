@@ -22,7 +22,7 @@ use crate::ast::*;
 use crate::errors::*;
 use crate::parse_primitives::*;
 use std::collections::BTreeMap;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 use itertools::Itertools;
 
@@ -74,6 +74,20 @@ fn parse_leaf_element(
             ParserData::take_handle,
             MojomValue::PendingRemote,
         ),
+        PackedLeafType::PendingAssociatedReceiver => parse_endpoint(
+            data,
+            is_nullable,
+            /* is_remote = */ false,
+            ParserData::take_interface_id,
+            MojomValue::PendingAssociatedReceiver,
+        ),
+        PackedLeafType::PendingAssociatedRemote => parse_endpoint(
+            data,
+            is_nullable,
+            /* is_remote = */ true,
+            ParserData::take_interface_id,
+            MojomValue::PendingAssociatedRemote,
+        ),
     }
 }
 
@@ -109,8 +123,12 @@ fn parse_endpoint<'a, T1, T2>(
     constructor: fn(T2) -> MojomValue,
 ) -> ParsingResult<MojomValue>
 where
-    T1: Into<T2>,
+    T1: Into<T2> + 'static,
 {
+    // For diagnostic messages
+    let is_associated_endpoint =
+        std::any::TypeId::of::<T1>() == std::any::TypeId::of::<InterfaceId>();
+
     // On the wire, endpoints are represented
     let idx_u32 = parse_u32(data)?;
     if is_remote {
@@ -123,12 +141,21 @@ where
         if is_nullable {
             return Ok(MojomValue::Nullable(None));
         } else {
-            return Err(ParsingError::invalid_handle_index(data.bytes_parsed() - 8, idx));
+            return Err(ParsingError::invalid_handle_index(
+                data.bytes_parsed() - if is_remote { 8 } else { 4 },
+                idx,
+                is_associated_endpoint,
+            ));
         }
     };
 
-    let retrieved = lookup(data, idx)
-        .ok_or_else(|| ParsingError::invalid_handle_index(data.bytes_parsed() - 8, idx))?;
+    let retrieved = lookup(data, idx).ok_or_else(|| {
+        ParsingError::invalid_handle_index(
+            data.bytes_parsed() - if is_remote { 8 } else { 4 },
+            idx,
+            is_associated_endpoint,
+        )
+    })?;
     let retrieved = constructor(retrieved.into());
 
     if is_nullable {
@@ -275,8 +302,8 @@ fn parse_array(
         return parse_string(data, size_in_bytes, num_elements);
     }
 
-    // An array body is equivalent to a struct body with `num_elements` copies of
-    // its field.
+    // An array body is equivalent to a struct body with `num_elements` copies
+    // of its field.
     let array_body = crate::pack::pack_array_body(element_type, num_elements);
 
     // We also need to provide dummy field names for debugging purposes.
@@ -427,7 +454,8 @@ fn parse_map(
                     values.len(),
                 ));
             }
-            // Map bodies are 24 bytes, and the key array immediately follows them.
+            // Map bodies are 24 bytes, and the key array immediately follows
+            // them.
             let key_offset = initial_bytes_parsed + 24;
             check_for_duplicate_keys(key_offset, &mut keys)?;
             let map_val = keys.into_iter().zip(values).collect();
@@ -447,7 +475,8 @@ fn parse_string(
     size_in_bytes: usize,
     num_elements: usize,
 ) -> ParsingResult<MojomValue> {
-    // Array header size should be the size of the header (8) + the number of bytes
+    // Array header size should be the size of the header (8) + the number of
+    // bytes
     if size_in_bytes != num_elements + 8 {
         return Err(ParsingError::wrong_size(data.bytes_parsed(), size_in_bytes, num_elements + 8));
     }
@@ -525,8 +554,8 @@ where
         None => &mut local_nested_data_list,
     };
 
-    // Pre-allocate space for the parsed values, so we can write directly into them
-    // by index. We have to provide dummy values since rust won't allow
+    // Pre-allocate space for the parsed values, so we can write directly into
+    // them by index. We have to provide dummy values since rust won't allow
     // uninitialized memory.
     let mut ret_names: Vec<String> = vec![String::new(); num_elements_in_value];
     let mut ret_values: Vec<MojomValue> =
@@ -606,16 +635,22 @@ where
                             // to nested_data_list. We need to adjust the appended info so that it's
                             // relative to the enclosing struct, instead of this union.
                             (tag, None) => {
-                                // We just pushed an entry, so we know it exists.
-                                // We know no elements are later than it because unions cannot nest
-                                // directly in other unions, so we'll never recurse more than once.
+                                // We just pushed an entry, so we know it
+                                // exists.
+                                // We know no elements are later than it because
+                                // unions cannot nest
+                                // directly in other unions, so we'll never
+                                // recurse more than once.
                                 let nested_data_info = nested_data_list.last_mut().unwrap();
                                 // This was previously None
                                 nested_data_info.union_discriminant = Some((tag, *is_nullable));
-                                // This was previously the ordinal in the _union_ (i.e. 0)
+                                // This was previously the ordinal in the
+                                // _union_ (i.e. 0)
                                 nested_data_info.ordinal = ordinal;
-                                // This was previously the distance from the start of the _union_
-                                // body. We need it to be the distance from the start of _this_ body
+                                // This was previously the distance from the
+                                // start of the _union_
+                                // body. We need it to be the distance from the
+                                // start of _this_ body
                                 nested_data_info.expected_offset += bytes_parsed_at_union_start;
                             }
                         }
@@ -638,14 +673,15 @@ where
         parse_padding(data, expected_size_in_bytes - bytes_parsed_so_far)?
     }
 
-    // At this point, we'll only parse nested things if we didn't have an eclosing
-    // nested data list; if we did, then the nested things will be at the end of the
-    // enclosing object instead.
+    // At this point, we'll only parse nested things if we didn't have an
+    // eclosing nested data list; if we did, then the nested things will be
+    // at the end of the enclosing object instead.
     for nested_data in local_nested_data_list {
         // All nested data is 8-byte aligned
         skip_to_alignment(data, 8)?;
-        // Nested data is required to appear in the same order as the (packed) fields
-        // of the struct. So the expected offset is only useful for validation.
+        // Nested data is required to appear in the same order as the (packed)
+        // fields of the struct. So the expected offset is only useful
+        // for validation.
         let bytes_parsed_so_far = data.bytes_parsed() - initial_bytes_parsed;
         if nested_data.expected_offset != bytes_parsed_so_far {
             return Err(ParsingError::wrong_pointer(
@@ -677,7 +713,8 @@ where
                 parse_map(data, key_type, value_type)?
             }
         };
-        // If necessary, wrap the parsed value based on the type it was contained in
+        // If necessary, wrap the parsed value based on the type it was
+        // contained in
         if nested_data.was_nullable {
             // The pointer to this data was nullable
             parsed_data = MojomValue::Nullable(Some(Box::new(parsed_data)));
@@ -700,6 +737,85 @@ where
     Ok((ret_names, ret_values))
 }
 
+/// Extract the array of associated interface IDs from the end of this message,
+/// if it exists.
+///
+/// The `interface_ids_offset` argument should be the distance from the
+/// beginning of `data_slice` (the message body) to the beginning of the
+/// interface ID array, or 0 if no array is present.
+///
+/// This function returns the parsed array (empty if it didn't exist), as well
+/// as the data slice with the parsed bytes removed. The elements of the array
+/// are all `Some`, but will be replaced with `None` as the rest of the message
+/// is parsed.
+pub fn extract_interface_ids(
+    data_slice: &[u8],
+    interface_ids_offset: u64,
+) -> ParsingResult<(&[u8], Vec<InterfaceId>)> {
+    // We will parse the array later by calling `parse_array`; this is the
+    // element type we'll pass to the function. It's logically a constant,
+    // but since `Arc` involves heap allocations we need to use `LazyLock`
+    // instead.
+    static INTERFACE_ARRAY_TY: LazyLock<Arc<MojomWireType>> = LazyLock::new(|| {
+        Arc::new(MojomWireType::Leaf { leaf_type: PackedLeafType::UInt32, is_nullable: false })
+    });
+
+    if interface_ids_offset == 0 {
+        return Ok((data_slice, vec![]));
+    }
+
+    let Ok(offset_usize) = usize::try_from(interface_ids_offset) else {
+        // If we fail to fit into a `usize` then we must be on a 32-bit system,
+        // and the provided offset was colossal.
+        return Err(ParsingError::not_enough_data(
+            data_slice.len(),
+            "Interface ID array".to_string(),
+            data_slice.len(),
+            data_slice.len(),
+        ));
+    };
+
+    let (data, id_array_data) = data_slice.split_at_checked(offset_usize).ok_or_else(|| {
+        // interface_ids_ptr pointed past the end of the data slice
+        ParsingError::not_enough_data(
+            data_slice.len(),
+            "Interface ID array".to_string(),
+            offset_usize,
+            data_slice.len(),
+        )
+    })?;
+
+    let id_array_parsed = parse_array(
+        &mut ParserData::new(id_array_data, &mut [], vec![]),
+        &INTERFACE_ARRAY_TY,
+        &PackedArrayType::UnsizedArray,
+    )?;
+    let MojomValue::Array(id_vec) = id_array_parsed else {
+        unreachable!(); // We got this from parse_array
+    };
+
+    let id_vec = id_vec
+        .into_iter()
+        .enumerate()
+        .map(|(idx, id)| {
+            let MojomValue::UInt32(id_u32) = id else {
+                unreachable!(); // We specified UInt32 earlier
+            };
+            // Interface IDs in the body of a message should never be 0 or
+            // the control interface ID.
+            if matches!(id_u32, 0 | 0xffffffff) {
+                return Err(ParsingError::invalid_interface_id(
+                    interface_ids_offset as usize,
+                    idx,
+                    id_u32,
+                ));
+            }
+            Ok(id_u32.try_into().unwrap())
+        })
+        .collect::<ParsingResult<_>>()?;
+    Ok((data, id_vec))
+}
+
 /// Parse a single mojom value of the given type, outside the context of a
 /// struct. This function is only useful for unit testing, since all mojom
 /// values in practice are members of a struct. The function only works for
@@ -709,7 +825,7 @@ pub fn parse_single_value_for_testing(
     handles: &mut [Option<UntypedHandle>],
     wire_type: &MojomWireType,
 ) -> ParsingResult<MojomValue> {
-    let mut data = ParserData::new(data, handles);
+    let mut data = ParserData::new(data, handles, vec![]);
     match wire_type {
         MojomWireType::Leaf { leaf_type, is_nullable: false } => {
             parse_leaf_element(&mut data, leaf_type, false)
@@ -753,12 +869,19 @@ pub fn parse_single_value_for_testing(
 
 /// Deserialize a single value from the given bytes, and return the remaining
 /// unparsed bytes.
+///
+/// The `interface_ids_offset` argument should be the distance from the
+/// beginning of `data_slice` (the message body) to the beginning of the
+/// interface ID array, or 0 if no array is present.
 pub fn parse_top_level_value<'a>(
     data_slice: &'a [u8],
     handles: &'a mut [Option<UntypedHandle>],
+    interface_ids_offset: u64,
     ty: &MojomWireType,
 ) -> ParsingResult<(&'a [u8], MojomValue)> {
-    let mut data = ParserData::new(data_slice, handles);
+    let (data_slice, interface_ids) = extract_interface_ids(data_slice, interface_ids_offset)?;
+    let interface_id_opts = interface_ids.into_iter().map(Some).collect();
+    let mut data = ParserData::new(data_slice, handles, interface_id_opts);
     match ty {
         MojomWireType::Pointer {
             nested_data_type:

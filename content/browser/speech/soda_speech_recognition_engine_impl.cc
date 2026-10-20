@@ -81,7 +81,7 @@ bool SodaSpeechRecognitionEngineImpl::Initialize() {
   media::mojom::SpeechRecognitionOptionsPtr options =
       media::mojom::SpeechRecognitionOptions::New();
   options->recognition_mode = media::mojom::SpeechRecognitionMode::kCaption;
-  options->enable_formatting = false;
+  options->enable_formatting = config_.unspoken_punctuation;
   options->recognizer_client_type =
       media::mojom::RecognizerClientType::kLiveCaption;
   options->skip_continuously_empty_audio = true;
@@ -97,7 +97,8 @@ bool SodaSpeechRecognitionEngineImpl::Initialize() {
                          weak_factory_.GetWeakPtr())));
 
   speech_recognition_mgr_delegate->BindSpeechRecognitionContext(
-      std::move(speech_recognition_context_receiver), config_.language);
+      std::move(speech_recognition_context_receiver), config_.language,
+      config_.initial_context.global_id);
 
   speech_recognition_context_.set_disconnect_handler(
       base::BindPostTaskToCurrentDefault(base::BindOnce(
@@ -163,6 +164,13 @@ void SodaSpeechRecognitionEngineImpl::OnSpeechRecognitionRecognitionEvent(
   media::mojom::WebSpeechRecognitionResultPtr& result = results.back();
   result->is_provisional = !recognition_result.is_final;
 
+  if (recognition_result.timing_information.has_value()) {
+    result->audio_start_time =
+        recognition_result.timing_information->audio_start_time;
+    result->audio_end_time =
+        recognition_result.timing_information->audio_end_time;
+  }
+
   media::mojom::SpeechRecognitionHypothesisPtr hypothesis =
       media::mojom::SpeechRecognitionHypothesis::New();
   // TODO(crbug.com/40286514): Hardcode now.
@@ -222,7 +230,7 @@ void SodaSpeechRecognitionEngineImpl::OnRecognizerDisconnected() {
 
 void SodaSpeechRecognitionEngineImpl::SendAudioToSpeechRecognitionService(
     media::mojom::AudioDataS16Ptr audio_data) {
-  DCHECK(audio_data);
+  CHECK(audio_data, base::NotFatalUntil::M159);
   if (speech_recognition_recognizer_.is_bound()) {
     speech_recognition_recognizer_->SendAudioToSpeechRecognitionService(
         std::move(audio_data), std::nullopt);

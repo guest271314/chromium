@@ -24,7 +24,6 @@ const AccessPoint kAccessPointsThatSupportUserAction[] = {
     AccessPoint::kExtensions,
     AccessPoint::kBookmarkBubble,
     AccessPoint::kBookmarkManager,
-    AccessPoint::kAvatarBubbleSignIn,
     AccessPoint::kUserManager,
     AccessPoint::kFullscreenSigninPromo,
     AccessPoint::kRecentTabs,
@@ -41,10 +40,11 @@ const AccessPoint kAccessPointsThatSupportUserAction[] = {
     AccessPoint::kSetUpList,
     AccessPoint::kChromeSigninInterceptBubble,
     AccessPoint::kNotificationsOptInScreenContentToggle,
-    AccessPoint::kAvatarBubbleSignInWithSyncPromo,
+    AccessPoint::kProfileMenuPrimaryButton,
     AccessPoint::kProductSpecifications,
     AccessPoint::kAddressBubble,
     AccessPoint::kGlicLaunchButton,
+    AccessPoint::kHistoryPage,
     AccessPoint::kNonModalSigninPasswordPromo,
     AccessPoint::kNonModalSigninBookmarkPromo,
     AccessPoint::kUserManagerWithPrefilledEmail,
@@ -53,6 +53,9 @@ const AccessPoint kAccessPointsThatSupportUserAction[] = {
     AccessPoint::kIosPageActionMenu,
     AccessPoint::kIosGeminiButtonToolbar,
     AccessPoint::kSettingsAutofillAndPasswords,
+    AccessPoint::kIndigo,
+    AccessPoint::kSkills,
+    AccessPoint::kPasswordManagerCard,
 };
 
 const AccessPoint kAccessPointsThatSupportImpression[] = {
@@ -63,7 +66,6 @@ const AccessPoint kAccessPointsThatSupportImpression[] = {
     AccessPoint::kExtensionInstallBubble,
     AccessPoint::kBookmarkBubble,
     AccessPoint::kBookmarkManager,
-    AccessPoint::kAvatarBubbleSignIn,
     AccessPoint::kFullscreenSigninPromo,
     AccessPoint::kRecentTabs,
     AccessPoint::kPasswordBubble,
@@ -83,6 +85,7 @@ const AccessPoint kAccessPointsThatSupportImpression[] = {
     AccessPoint::kCredentialExchangeImport,
     AccessPoint::kIosGeminiButtonToolbar,
     AccessPoint::kSettingsAutofillAndPasswords,
+    AccessPoint::kPasswordManagerCard,
 };
 
 class SigninMetricsTest : public ::testing::Test {
@@ -105,8 +108,6 @@ class SigninMetricsTest : public ::testing::Test {
         return "BookmarkBubble";
       case AccessPoint::kBookmarkManager:
         return "BookmarkManager";
-      case AccessPoint::kAvatarBubbleSignIn:
-        return "AvatarBubbleSignin";
       case AccessPoint::kUserManager:
         return "UserManager";
       case AccessPoint::kFullscreenSigninPromo:
@@ -181,8 +182,8 @@ class SigninMetricsTest : public ::testing::Test {
         return "OidcRedirectionInterception";
       case AccessPoint::kWebauthnModalDialog:
         return "WebAuthnModalDialog";
-      case AccessPoint::kAvatarBubbleSignInWithSyncPromo:
-        return "AvatarBubbleSigninWithSyncPromo";
+      case AccessPoint::kProfileMenuPrimaryButton:
+        return "ProfileMenuPrimaryButton";
       case AccessPoint::kAccountMenuSwitchAccount:
         return "AccountMenu";
       case AccessPoint::kAccountMenuSwitchAccountFailed:
@@ -255,6 +256,26 @@ class SigninMetricsTest : public ::testing::Test {
         return "DeepLinkDefault";
       case AccessPoint::kAgeMismatchSignout:
         return "AgeMismatchSignout";
+      case AccessPoint::kIndigo:
+        return "Indigo";
+      case AccessPoint::kOverflowMenu:
+        return "OverflowMenu";
+      case AccessPoint::kLevelUp:
+        return "LevelUp";
+      case AccessPoint::kSignoutUndoSnackbar:
+        return "SignoutUndoSnackbar";
+      case AccessPoint::kComposeboxDriveContextMenuOptionBubble:
+        return "ComposeboxDriveContextMenuOptionBubble";
+      case AccessPoint::kSkills:
+        return "Skills";
+      case AccessPoint::kAccountMenuSignedOutState:
+        return "AccountMenuSignedOutState";
+      case AccessPoint::kAppSwitcherAISummarization:
+        return "AppSwitcherAISummarization";
+      case AccessPoint::kGeminiExternalAppStoreEvent:
+        return "GeminiExternalAppStoreEvent";
+      case AccessPoint::kPasswordManagerCard:
+        return "PasswordManagerCard";
     }
   }
 };

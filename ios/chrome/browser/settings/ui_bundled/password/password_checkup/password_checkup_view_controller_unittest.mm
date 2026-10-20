@@ -13,6 +13,7 @@
 #import "components/password_manager/core/browser/password_form.h"
 #import "components/password_manager/core/browser/password_manager_test_utils.h"
 #import "components/password_manager/core/browser/password_store/test_password_store.h"
+#import "components/password_manager/core/browser/password_string.h"
 #import "components/password_manager/core/browser/ui/credential_ui_entry.h"
 #import "ios/chrome/browser/affiliations/model/ios_chrome_affiliation_service_factory.h"
 #import "ios/chrome/browser/passwords/model/ios_chrome_password_check_manager_factory.h"
@@ -42,6 +43,7 @@
 using password_manager::CredentialUIEntry;
 using password_manager::InsecureType;
 using password_manager::PasswordForm;
+using password_manager::PasswordString;
 using password_manager::TestPasswordStore;
 using password_manager::WarningType;
 
@@ -69,6 +71,11 @@ class PasswordCheckupViewControllerTest
 
     CreateController();
 
+    // Embed the controller in a navigation controller to test navigation.
+    __unused UINavigationController* navigationController =
+        [[UINavigationController alloc]
+            initWithRootViewController:GetPasswordCheckupViewController()];
+
     PasswordCheckupViewController* view_controller =
         GetPasswordCheckupViewController();
 
@@ -79,6 +86,9 @@ class PasswordCheckupViewControllerTest
     mediator_.consumer = view_controller;
 
     handler_ = OCMStrictProtocolMock(@protocol(PasswordCheckupCommands));
+    // Stub dismissAfterAllPasswordsGone by default to tolerate async state
+    // transitions that can happen during test setup/execution.
+    OCMStub([handler_ dismissAfterAllPasswordsGone]);
     view_controller.handler = handler_;
 
     // Add a saved password since Password Checkup is not available when the
@@ -144,7 +154,7 @@ class PasswordCheckupViewControllerTest
     cred.username_element = u"Email";
     cred.username_value = u"test@egmail.com";
     cred.password_element = u"Passwd";
-    cred.password_value = u"test";
+    cred.password_value = PasswordString(u"test");
     cred.signon_realm = url;
     cred.scheme = password_manager::PasswordForm::Scheme::kHtml;
     cred.in_store = password_manager::PasswordForm::Store::kProfileStore;
@@ -160,7 +170,7 @@ class PasswordCheckupViewControllerTest
     cred.username_element = u"Email";
     cred.username_value = u"test@egmail.com";
     cred.password_element = u"Passwd";
-    cred.password_value = u"test";
+    cred.password_value = PasswordString(u"test");
     cred.signon_realm = url;
     cred.scheme = password_manager::PasswordForm::Scheme::kHtml;
     cred.in_store = password_manager::PasswordForm::Store::kProfileStore;
@@ -188,7 +198,7 @@ class PasswordCheckupViewControllerTest
       NSString* detail_text,
       bool indicator_hidden,
       bool trailing_icon_hidden,
-      NSString* trailing_icon_name,
+      Symbol trailing_icon_symbol,
       NSString* trailing_icon_color_name,
       UITableViewCellAccessoryType accessory_type) {
     SettingsCheckItem* cell =
@@ -201,7 +211,7 @@ class PasswordCheckupViewControllerTest
     if (trailing_icon_hidden) {
       EXPECT_TRUE(nil == cell.trailingImage);
     } else {
-      EXPECT_NSEQ(DefaultSymbolTemplateWithPointSize(trailing_icon_name, 22),
+      EXPECT_NSEQ(SymbolTemplateWithPointSize(trailing_icon_symbol, 22),
                   cell.trailingImage);
       EXPECT_TRUE([cell.trailingImageTintColor
           isEqual:[UIColor colorNamed:trailing_icon_color_name]]);
@@ -293,7 +303,7 @@ TEST_F(PasswordCheckupViewControllerTest, PasswordCheckupHomepageStateRunning) {
       /*detail_text=*/compromised_detail_text_,
       /*indicator_hidden=*/NO,
       /*trailing_icon_hidden=*/YES,
-      /*trailing_icon_name=*/@"",
+      /*trailing_icon_symbol=*/SymbolNone,
       /*trailing_icon_color_name=*/@"",
       /*accessory_type=*/UITableViewCellAccessoryNone);
   CheckItemFromInsecureTypesSection(
@@ -301,7 +311,7 @@ TEST_F(PasswordCheckupViewControllerTest, PasswordCheckupHomepageStateRunning) {
       /*detail_text=*/reused_detail_text_,
       /*indicator_hidden=*/NO,
       /*trailing_icon_hidden=*/YES,
-      /*trailing_icon_name=*/@"",
+      /*trailing_icon_symbol=*/SymbolNone,
       /*trailing_icon_color_name=*/@"",
       /*accessory_type=*/UITableViewCellAccessoryNone);
   CheckItemFromInsecureTypesSection(
@@ -309,7 +319,7 @@ TEST_F(PasswordCheckupViewControllerTest, PasswordCheckupHomepageStateRunning) {
       /*detail_text=*/weak_detail_text_,
       /*indicator_hidden=*/NO,
       /*trailing_icon_hidden=*/YES,
-      /*trailing_icon_name=*/@"",
+      /*trailing_icon_symbol=*/SymbolNone,
       /*trailing_icon_color_name=*/@"",
       /*accessory_type=*/UITableViewCellAccessoryNone);
 
@@ -337,7 +347,7 @@ TEST_F(PasswordCheckupViewControllerTest, PasswordCheckupHomepageStateSafe) {
       /*detail_text=*/compromised_detail_text_,
       /*indicator_hidden=*/YES,
       /*trailing_icon_hidden=*/NO,
-      /*trailing_icon_name=*/kCheckmarkCircleFillSymbol,
+      /*trailing_icon_symbol=*/SymbolCheckmarkCircleFill,
       /*trailing_icon_color_name=*/kGreen500Color,
       /*accessory_type=*/UITableViewCellAccessoryNone);
   CheckItemFromInsecureTypesSection(
@@ -345,7 +355,7 @@ TEST_F(PasswordCheckupViewControllerTest, PasswordCheckupHomepageStateSafe) {
       /*detail_text=*/reused_detail_text_,
       /*indicator_hidden=*/YES,
       /*trailing_icon_hidden=*/NO,
-      /*trailing_icon_name=*/kCheckmarkCircleFillSymbol,
+      /*trailing_icon_symbol=*/SymbolCheckmarkCircleFill,
       /*trailing_icon_color_name=*/kGreen500Color,
       /*accessory_type=*/UITableViewCellAccessoryNone);
   CheckItemFromInsecureTypesSection(
@@ -353,7 +363,7 @@ TEST_F(PasswordCheckupViewControllerTest, PasswordCheckupHomepageStateSafe) {
       /*detail_text=*/weak_detail_text_,
       /*indicator_hidden=*/YES,
       /*trailing_icon_hidden=*/NO,
-      /*trailing_icon_name=*/kCheckmarkCircleFillSymbol,
+      /*trailing_icon_symbol=*/SymbolCheckmarkCircleFill,
       /*trailing_icon_color_name=*/kGreen500Color,
       /*accessory_type=*/UITableViewCellAccessoryNone);
 
@@ -386,7 +396,7 @@ TEST_F(PasswordCheckupViewControllerTest,
       /*detail_text=*/compromised_detail_text_,
       /*indicator_hidden=*/YES,
       /*trailing_icon_hidden=*/NO,
-      /*trailing_icon_name=*/kErrorCircleFillSymbol,
+      /*trailing_icon_symbol=*/SymbolErrorCircleFill,
       /*trailing_icon_color_name=*/kRed500Color,
       /*accessory_type=*/UITableViewCellAccessoryDisclosureIndicator);
   CheckItemFromInsecureTypesSection(
@@ -394,7 +404,7 @@ TEST_F(PasswordCheckupViewControllerTest,
       /*detail_text=*/reused_detail_text_,
       /*indicator_hidden=*/YES,
       /*trailing_icon_hidden=*/NO,
-      /*trailing_icon_name=*/kCheckmarkCircleFillSymbol,
+      /*trailing_icon_symbol=*/SymbolCheckmarkCircleFill,
       /*trailing_icon_color_name=*/kGreen500Color,
       /*accessory_type=*/UITableViewCellAccessoryNone);
   CheckItemFromInsecureTypesSection(
@@ -402,7 +412,7 @@ TEST_F(PasswordCheckupViewControllerTest,
       /*detail_text=*/weak_detail_text_,
       /*indicator_hidden=*/YES,
       /*trailing_icon_hidden=*/NO,
-      /*trailing_icon_name=*/kCheckmarkCircleFillSymbol,
+      /*trailing_icon_symbol=*/SymbolCheckmarkCircleFill,
       /*trailing_icon_color_name=*/kGreen500Color,
       /*accessory_type=*/UITableViewCellAccessoryNone);
 
@@ -433,7 +443,7 @@ TEST_F(PasswordCheckupViewControllerTest,
       /*detail_text=*/compromised_detail_text_,
       /*indicator_hidden=*/YES,
       /*trailing_icon_hidden=*/NO,
-      /*trailing_icon_name=*/kErrorCircleFillSymbol,
+      /*trailing_icon_symbol=*/SymbolErrorCircleFill,
       /*trailing_icon_color_name=*/kYellow500Color,
       /*accessory_type=*/UITableViewCellAccessoryDisclosureIndicator);
   CheckItemFromInsecureTypesSection(
@@ -441,7 +451,7 @@ TEST_F(PasswordCheckupViewControllerTest,
       /*detail_text=*/reused_detail_text_,
       /*indicator_hidden=*/YES,
       /*trailing_icon_hidden=*/NO,
-      /*trailing_icon_name=*/kCheckmarkCircleFillSymbol,
+      /*trailing_icon_symbol=*/SymbolCheckmarkCircleFill,
       /*trailing_icon_color_name=*/kGreen500Color,
       /*accessory_type=*/UITableViewCellAccessoryNone);
   CheckItemFromInsecureTypesSection(
@@ -449,7 +459,7 @@ TEST_F(PasswordCheckupViewControllerTest,
       /*detail_text=*/weak_detail_text_,
       /*indicator_hidden=*/YES,
       /*trailing_icon_hidden=*/NO,
-      /*trailing_icon_name=*/kCheckmarkCircleFillSymbol,
+      /*trailing_icon_symbol=*/SymbolCheckmarkCircleFill,
       /*trailing_icon_color_name=*/kGreen500Color,
       /*accessory_type=*/UITableViewCellAccessoryNone);
 
@@ -483,7 +493,7 @@ TEST_F(PasswordCheckupViewControllerTest,
       /*detail_text=*/compromised_detail_text_,
       /*indicator_hidden=*/YES,
       /*trailing_icon_hidden=*/NO,
-      /*trailing_icon_name=*/kCheckmarkCircleFillSymbol,
+      /*trailing_icon_symbol=*/SymbolCheckmarkCircleFill,
       /*trailing_icon_color_name=*/kGreen500Color,
       /*accessory_type=*/UITableViewCellAccessoryNone);
   CheckItemFromInsecureTypesSection(
@@ -491,7 +501,7 @@ TEST_F(PasswordCheckupViewControllerTest,
       /*detail_text=*/reused_detail_text_,
       /*indicator_hidden=*/YES,
       /*trailing_icon_hidden=*/NO,
-      /*trailing_icon_name=*/kErrorCircleFillSymbol,
+      /*trailing_icon_symbol=*/SymbolErrorCircleFill,
       /*trailing_icon_color_name=*/kYellow500Color,
       /*accessory_type=*/UITableViewCellAccessoryDisclosureIndicator);
   CheckItemFromInsecureTypesSection(
@@ -499,7 +509,7 @@ TEST_F(PasswordCheckupViewControllerTest,
       /*detail_text=*/weak_detail_text_,
       /*indicator_hidden=*/YES,
       /*trailing_icon_hidden=*/NO,
-      /*trailing_icon_name=*/kCheckmarkCircleFillSymbol,
+      /*trailing_icon_symbol=*/SymbolCheckmarkCircleFill,
       /*trailing_icon_color_name=*/kGreen500Color,
       /*accessory_type=*/UITableViewCellAccessoryNone);
 
@@ -531,7 +541,7 @@ TEST_F(PasswordCheckupViewControllerTest,
       /*detail_text=*/compromised_detail_text_,
       /*indicator_hidden=*/YES,
       /*trailing_icon_hidden=*/NO,
-      /*trailing_icon_name=*/kCheckmarkCircleFillSymbol,
+      /*trailing_icon_symbol=*/SymbolCheckmarkCircleFill,
       /*trailing_icon_color_name=*/kGreen500Color,
       /*accessory_type=*/UITableViewCellAccessoryNone);
   CheckItemFromInsecureTypesSection(
@@ -539,7 +549,7 @@ TEST_F(PasswordCheckupViewControllerTest,
       /*detail_text=*/reused_detail_text_,
       /*indicator_hidden=*/YES,
       /*trailing_icon_hidden=*/NO,
-      /*trailing_icon_name=*/kCheckmarkCircleFillSymbol,
+      /*trailing_icon_symbol=*/SymbolCheckmarkCircleFill,
       /*trailing_icon_color_name=*/kGreen500Color,
       /*accessory_type=*/UITableViewCellAccessoryNone);
   CheckItemFromInsecureTypesSection(
@@ -547,7 +557,7 @@ TEST_F(PasswordCheckupViewControllerTest,
       /*detail_text=*/weak_detail_text_,
       /*indicator_hidden=*/YES,
       /*trailing_icon_hidden=*/NO,
-      /*trailing_icon_name=*/kErrorCircleFillSymbol,
+      /*trailing_icon_symbol=*/SymbolErrorCircleFill,
       /*trailing_icon_color_name=*/kYellow500Color,
       /*accessory_type=*/UITableViewCellAccessoryDisclosureIndicator);
 
@@ -605,39 +615,99 @@ TEST_F(PasswordCheckupViewControllerTest, TestTapWeakPasswordsNotifiesHandler) {
   EXPECT_OCMOCK_VERIFY((id)handler_);
 }
 
-// Verifies that interactions are ignored during the cooldown period.
-TEST_F(PasswordCheckupViewControllerTest, TestCooldown) {
-  AddSavedInsecureForm(InsecureType::kLeaked);
-  ChangePasswordCheckupHomepageState(PasswordCheckupHomepageStateDone);
-
-  // 1. First tap should succeed.
-  OCMExpect([handler_ showPasswordIssuesWithWarningType:
-                          WarningType::kCompromisedPasswordsWarning]);
-  SimulateTap(/*index=*/0, /*section=*/0);
-  EXPECT_OCMOCK_VERIFY((id)handler_);
-
-  // 2. Second tap immediately after should be ignored (cooldown active).
-  // We strictly expect NO call to handler.
-  SimulateTap(/*index=*/0, /*section=*/0);
-  EXPECT_OCMOCK_VERIFY((id)handler_);
-
-  // 3. Fast forward past the cooldown ( > 500 milliseconds).
-  // Using 600us to be safe.
-  task_environment_.FastForwardBy(base::Milliseconds(600));
-
-  // 4. Third tap should succeed again.
-  OCMExpect([handler_ showPasswordIssuesWithWarningType:
-                          WarningType::kCompromisedPasswordsWarning]);
-  SimulateTap(/*index=*/0, /*section=*/0);
-  EXPECT_OCMOCK_VERIFY((id)handler_);
-}
-
 // Verifies that deleting all saved passwords through Password Checkup triggers
 // a dismissal in the handler.
 TEST_F(PasswordCheckupViewControllerTest, TestDismissAfterPasswordsGone) {
+  // Re-create a fresh strict mock without the default stub to verify dismissal.
+  handler_ = OCMStrictProtocolMock(@protocol(PasswordCheckupCommands));
+  GetPasswordCheckupViewController().handler = handler_;
+
   OCMExpect([handler_ dismissAfterAllPasswordsGone]);
 
   ChangePasswordCheckupHomepageState(PasswordCheckupHomepageStateDisabled);
 
   EXPECT_OCMOCK_VERIFY((id)handler_);
+}
+
+// Verifies that a successful navigation blocks subsequent taps.
+TEST_F(PasswordCheckupViewControllerTest, TestSuccessfulNavigationBlocksTaps) {
+  AddSavedInsecureForm(InsecureType::kLeaked);
+  ChangePasswordCheckupHomepageState(PasswordCheckupHomepageStateDone);
+
+  PasswordCheckupViewController* pwd_checkup_vc =
+      GetPasswordCheckupViewController();
+  UIViewController* dummy_vc = [[UIViewController alloc] init];
+
+  // Stub the handler to perform a successful push.
+  OCMStub([handler_ showPasswordIssuesWithWarningType:
+                        WarningType::kCompromisedPasswordsWarning])
+      .andDo(^(NSInvocation* invocation) {
+        [pwd_checkup_vc.navigationController pushViewController:dummy_vc
+                                                       animated:NO];
+      });
+
+  // 1. First tap should succeed and trigger the push.
+  SimulateTap(/*index=*/0, /*section=*/0);
+  EXPECT_EQ(pwd_checkup_vc.navigationController.topViewController, dummy_vc);
+
+  // 2. Second tap should be ignored because navigating is active.
+  // We reject any calls to the handler.
+  OCMReject([handler_ showPasswordIssuesWithWarningType:
+                          WarningType::kCompromisedPasswordsWarning]);
+  SimulateTap(/*index=*/0, /*section=*/0);
+  EXPECT_OCMOCK_VERIFY((id)handler_);
+
+  // Verify the first part (reject was not violated)
+  EXPECT_OCMOCK_VERIFY((id)handler_);
+
+  // Re-setup a new mock for the second part. Use a regular mock to tolerate
+  // async noise (like dismissAfterAllPasswordsGone).
+  id<PasswordCheckupCommands> newHandler =
+      OCMProtocolMock(@protocol(PasswordCheckupCommands));
+  pwd_checkup_vc.handler = newHandler;
+
+  // 4. Simulate returning to the screen (pop the dummy and call
+  // viewWillAppear).
+  [pwd_checkup_vc.navigationController popViewControllerAnimated:NO];
+  EXPECT_EQ(pwd_checkup_vc.navigationController.topViewController,
+            pwd_checkup_vc);
+  [pwd_checkup_vc viewWillAppear:NO];
+
+  // 5. Third tap should now succeed again.
+  OCMExpect([newHandler showPasswordIssuesWithWarningType:
+                            WarningType::kCompromisedPasswordsWarning]);
+  SimulateTap(/*index=*/0, /*section=*/0);
+  EXPECT_OCMOCK_VERIFY((id)newHandler);
+}
+
+// Verifies that a failed navigation (no push) does not block subsequent taps.
+TEST_F(PasswordCheckupViewControllerTest,
+       TestFailedNavigationDoesNotBlockTaps) {
+  AddSavedInsecureForm(InsecureType::kLeaked);
+  ChangePasswordCheckupHomepageState(PasswordCheckupHomepageStateDone);
+
+  PasswordCheckupViewController* pwd_checkup_vc =
+      GetPasswordCheckupViewController();
+
+  // Stub the handler to do nothing (failed navigation).
+  OCMStub([handler_ showPasswordIssuesWithWarningType:
+                        WarningType::kCompromisedPasswordsWarning]);
+
+  // 1. First tap should succeed (calls handler, but no push).
+  SimulateTap(/*index=*/0, /*section=*/0);
+  EXPECT_EQ(pwd_checkup_vc.navigationController.topViewController,
+            pwd_checkup_vc);
+
+  // Re-setup a new mock for the second part to avoid stub/expect collision.
+  // Use a regular mock to tolerate async noise (like
+  // dismissAfterAllPasswordsGone).
+  id<PasswordCheckupCommands> newHandler =
+      OCMProtocolMock(@protocol(PasswordCheckupCommands));
+  pwd_checkup_vc.handler = newHandler;
+
+  // 2. Second tap should succeed again because navigating was never set.
+  OCMExpect([newHandler showPasswordIssuesWithWarningType:
+                            WarningType::kCompromisedPasswordsWarning]);
+  SimulateTap(/*index=*/0, /*section=*/0);
+  EXPECT_OCMOCK_VERIFY((id)newHandler);
 }

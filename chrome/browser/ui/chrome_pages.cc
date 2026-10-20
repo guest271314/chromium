@@ -29,10 +29,10 @@
 #include "chrome/browser/policy/profile_policy_connector.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/signin/account_consistency_mode_manager.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/browser_window/public/create_browser_window.h"
 #include "chrome/browser/ui/browser_window/public/profile_browser_collection.h"
 #include "chrome/browser/ui/navigator/browser_navigator.h"
 #include "chrome/browser/ui/navigator/browser_navigator_params.h"
@@ -43,6 +43,7 @@
 #include "chrome/browser/ui/user_education/show_promo_in_page.h"
 #include "chrome/browser/ui/webui/bookmarks/bookmarks_ui.h"
 #include "chrome/browser/ui/webui/settings/site_settings_helper.h"
+#include "chrome/browser/ui/window_feature_controller/window_feature_controller.h"
 #include "chrome/browser/user_education/tutorial_identifiers.h"
 #include "chrome/browser/user_education/user_education_service.h"
 #include "chrome/browser/user_education/user_education_service_factory.h"
@@ -61,20 +62,23 @@
 #include "components/safe_browsing/core/common/safebrowsing_referral_methods.h"
 #include "components/search_engines/search_engines_switches.h"
 #include "components/signin/public/base/consent_level.h"
+#include "components/version_info/version_info.h"
 #include "content/public/browser/web_contents.h"
 #include "extensions/browser/extension_prefs.h"
 #include "extensions/common/constants.h"
 #include "extensions/common/extension_urls.h"
 #include "net/base/url_util.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/base/page_transition_types.h"
 #include "ui/base/window_open_disposition.h"
 #include "url/url_util.h"
 
 #if BUILDFLAG(IS_CHROMEOS)
-#include "ash/constants/ash_features.h"
 #include "ash/constants/webui_url_constants.h"
 #include "ash/webui/settings/public/constants/routes_util.h"
 #include "chrome/browser/ui/ash/system_web_apps/system_web_app_ui_utils.h"
+#include "chrome/browser/ui/settings_window_manager_chromeos.h"
+#include "chromeos/ash/experiences/settings_ui/settings_app_manager.h"
 #else
 #include "chrome/browser/ui/signin/signin_view_controller.h"
 #endif
@@ -82,19 +86,11 @@
 #if !BUILDFLAG(IS_ANDROID)
 #include "base/metrics/histogram_functions.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
+#include "chrome/browser/web_applications/web_app_utils.h"
 #include "components/signin/public/base/signin_pref_names.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
-#endif
-
-#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
-#include "chrome/browser/web_applications/web_app_utils.h"
-#endif
-
-#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX) || \
-    BUILDFLAG(IS_CHROMEOS)
 #include "components/webapps/isolated_web_apps/scheme.h"
-#endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX) ||
-        // BUILDFLAG(IS_CHROMEOS)
+#endif  //! BUILDFLAG(IS_ANDROID)
 
 using base::UserMetricsAction;
 
@@ -132,9 +128,7 @@ void LaunchReleaseNotesImpl(Profile* profile, apps::LaunchSource source) {
   base::RecordAction(UserMetricsAction("ReleaseNotes.ShowReleaseNotes"));
   ash::SystemAppLaunchParams params;
   params.url =
-      base::FeatureList::IsEnabled(
-          ash::features::kHelpAppOpensInsteadOfReleaseNotesNotification) &&
-              source == apps::LaunchSource::kFromReleaseNotesNotification
+      source == apps::LaunchSource::kFromReleaseNotesNotification
           ? GURL("chrome://help-app/updates?launchSource=version-update")
           : GURL("chrome://help-app/updates");
   params.launch_source = source;
@@ -240,14 +234,19 @@ std::string GenerateContentSettingsExceptionsSubPage(ContentSettingsType type) {
           {ContentSettingsType::WEB_PRINTING, "webPrinting"},
           {ContentSettingsType::AUTO_PICTURE_IN_PICTURE,
            "autoPictureInPicture"},
+          {ContentSettingsType::INLINE_CUE_MENU, "ai/inlineCueMenu"},
       });
 
   const std::string_view* override =
       base::FindOrNull(kSettingsPathOverrides, type);
-  return base::StrCat(
-      {kContentSettingsSubPage, "/",
-       override ? *override
-                : site_settings::ContentSettingsTypeToGroupName(type)});
+  if (override) {
+    if (override->find('/') != std::string_view::npos) {
+      return std::string(*override);
+    }
+    return base::StrCat({kContentSettingsSubPage, "/", *override});
+  }
+  return base::StrCat({kContentSettingsSubPage, "/",
+                       site_settings::ContentSettingsTypeToGroupName(type)});
 }
 
 bool SiteGURLIsValid(const GURL& url) {
@@ -314,7 +313,7 @@ BrowserWindowInterface* GetOrCreateBrowserForProfile(Profile* profile) {
   BrowserWindowInterface* browser =
       ProfileBrowserCollection::GetForProfile(profile)->FindTabbedBrowser();
   if (!browser) {
-    return Browser::Create(Browser::CreateParams(profile, true));
+    return CreateBrowserWindow(BrowserWindowCreateParams(profile, true));
   }
   return browser;
 }
@@ -338,9 +337,7 @@ void ShowHistory(BrowserWindowInterface* browser,
   // disclaimer bubble should show up. This also updates the behavior of history
   // keyboard shortcts in Incognito.
   if (browser->GetProfile()->IsOffTheRecord()) {
-    browser->GetBrowserForMigrationOnly()
-        ->window()
-        ->ShowIncognitoHistoryDisclaimerDialog();
+    BrowserWindow::FromBrowser(browser)->ShowIncognitoHistoryDisclaimerDialog();
     return;
   }
 
@@ -371,7 +368,7 @@ void ShowDownloads(BrowserWindowInterface* browser) {
 #if !BUILDFLAG(IS_CHROMEOS)
   // Hide the download bubble if it is showing, to avoid redundancy with the
   // chrome://downloads page we are about to open.
-  auto* browser_window = browser->GetBrowserForMigrationOnly()->window();
+  auto* browser_window = BrowserWindow::FromBrowser(browser);
   if (browser_window && browser_window->GetDownloadBubbleUIController() &&
       browser_window->GetDownloadBubbleUIController()
           ->GetDownloadDisplayController()) {
@@ -417,6 +414,16 @@ void LaunchReleaseNotes(Profile* profile, apps::LaunchSource source) {
 #endif
 }
 
+void ShowChromeEnterpriseReleaseNotes(BrowserWindowInterface* browser) {
+  std::string url = base::StrCat(
+      {"https://chromeenterprise.google/resources/release-notes/",
+       "?utm_source=release-notes-chrome-enterprise",
+       "&utm_medium=release-notes",
+       "&utm_campaign=release-notes-chrome-enterprise",
+       "&utm_term=release-notes-m", version_info::GetMajorVersionNumber()});
+  ShowSingletonTab(browser, GURL(url));
+}
+
 void ShowBetaForum(BrowserWindowInterface* browser) {
   ShowSingletonTab(browser, GURL(kChromeBetaForumURL));
 }
@@ -438,7 +445,7 @@ GURL GetHistoryUrl(std::string_view sub_page) {
 bool IsTrustedPopupWindowWithScheme(const BrowserWindowInterface* browser,
                                     const std::string& scheme) {
   if (browser->GetType() == BrowserWindowInterface::Type::TYPE_NORMAL ||
-      !browser->GetBrowserForMigrationOnly()->is_trusted_source()) {
+      !WindowFeatureController::From(browser)->IsTrustedSource()) {
     return false;
   }
   if (scheme.empty()) {  // Any trusted popup window
@@ -491,8 +498,7 @@ void ShowSettingsSubPageInTabbedBrowser(BrowserWindowInterface* browser,
 void ShowPageWithPromoForProfile(Profile* profile,
                                  ShowPromoInPage::Params promo_params) {
   BrowserWindowInterface* browser = GetOrCreateBrowserForProfile(profile);
-  ShowPromoInPage::Start(browser->GetBrowserForMigrationOnly(),
-                         std::move(promo_params));
+  ShowPromoInPage::Start(browser, std::move(promo_params));
 }
 
 void ShowContentSettingsExceptions(BrowserWindowInterface* browser,
@@ -513,7 +519,7 @@ void ShowSiteSettings(BrowserWindowInterface* browser, const GURL& url) {
 }
 
 void ShowSiteSettings(Profile* profile, const GURL& url) {
-  DCHECK(profile);
+  CHECK(profile, base::NotFatalUntil::M162);
   ShowSiteSettingsImpl(nullptr, profile, url);
 }
 
@@ -523,7 +529,7 @@ void ShowSiteSettingsFileSystem(BrowserWindowInterface* browser,
 }
 
 void ShowSiteSettingsFileSystem(Profile* profile, const GURL& url) {
-  DCHECK(profile);
+  CHECK(profile, base::NotFatalUntil::M162);
   ShowSiteSettingsFileSystemImpl(nullptr, profile, url);
 }
 
@@ -547,7 +553,7 @@ void ShowPasswordManager(BrowserWindowInterface* bwi) {
   auto* service =
       UserEducationServiceFactory::GetForBrowserContext(bwi->GetProfile());
   if (service) {
-    auto* tutorial_service = &service->tutorial_service();
+    auto* tutorial_service = service->tutorial_service();
     if (tutorial_service &&
         tutorial_service->IsRunningTutorial(kPasswordManagerTutorialId)) {
       ShowSingletonTab(bwi, GURL(kChromeUIPasswordManagerSettingsURL));
@@ -600,8 +606,7 @@ void ShowSafeBrowsingEnhancedProtectionWithIph(
   base::UmaHistogramEnumeration("SafeBrowsing.EsbPromotionFlow.IphShown",
                                 referral_method);
   safe_browsing::LogShowEnhancedProtectionAction();
-  ShowPromoInPage::Start(browser->GetBrowserForMigrationOnly(),
-                         std::move(params));
+  ShowPromoInPage::Start(browser, std::move(params));
 #endif
 }
 
@@ -695,19 +700,23 @@ void ShowSharedTabGroupActivity(Profile* profile) {
                    GURL(data_sharing::features::kActivityLogsURL.Get()));
 }
 
-#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
+#if !BUILDFLAG(IS_ANDROID)
 void ShowWebAppSettingsImpl(BrowserWindowInterface* browser,
                             Profile* profile,
                             const std::string& app_id,
                             web_app::AppSettingsPageEntryPoint entry_point) {
   base::UmaHistogramEnumeration(
       web_app::kAppSettingsPageEntryPointsHistogramName, entry_point);
-
+#if BUILDFLAG(IS_CHROMEOS)
+  chrome::SettingsWindowManager::GetInstance()->ShowOSSettings(
+      profile, ash::SettingsAppManager::CreateAppManagementPagePath(app_id));
+#else
   const GURL link_destination(chrome::kChromeUIWebAppSettingsURL + app_id);
   NavigateParams params(profile, link_destination, ui::PAGE_TRANSITION_TYPED);
   params.disposition = WindowOpenDisposition::NEW_FOREGROUND_TAB;
   params.browser = browser;
   Navigate(&params);
+#endif  // BUILDFLAG(IS_CHROMEOS)
 }
 
 void ShowWebAppSettings(BrowserWindowInterface* browser,
@@ -721,6 +730,16 @@ void ShowWebAppSettings(Profile* profile,
                         web_app::AppSettingsPageEntryPoint entry_point) {
   ShowWebAppSettingsImpl(/*browser=*/nullptr, profile, app_id, entry_point);
 }
-#endif
+
+void ShowSkillsYourSkills(BrowserWindowInterface* browser) {
+  ShowSingletonTabIgnorePathOverwriteNTP(
+      browser, GURL(kChromeUISkillsURL).Resolve(kChromeUISkillsYourSkillsPath));
+}
+
+void ShowSkillsBrowse(BrowserWindowInterface* browser) {
+  ShowSingletonTabIgnorePathOverwriteNTP(
+      browser, GURL(kChromeUISkillsURL).Resolve(kChromeUISkillsBrowsePath));
+}
+#endif  // !BUILDFLAG(IS_ANDROID)
 
 }  // namespace chrome

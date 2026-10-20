@@ -39,6 +39,7 @@ enum class AutofillManagerEvent {
   kDidAutofillForm,
   kJavaScriptChangedAutofilledValue,
   kFormSubmitted,
+  kFormWithEmailVerificationTokenSubmitted,
   kLoadedServerPredictions,
   kMaxValue = kLoadedServerPredictions
 };
@@ -250,8 +251,21 @@ class TestAutofillManagerWaiter : public AutofillManager::Observer {
   void OnAfterFormSubmitted(AutofillManager& manager,
                             const FormData& form) override;
 
-  void OnBeforeLoadedServerPredictions(AutofillManager& manager) override;
-  void OnAfterLoadedServerPredictions(AutofillManager& manager) override;
+  void OnBeforeFormWithEmailVerificationTokenSubmitted(
+      AutofillManager& manager,
+      const FormData& form,
+      const FieldGlobalId& field_id) override;
+  void OnAfterFormWithEmailVerificationTokenSubmitted(
+      AutofillManager& manager,
+      const FormData& form,
+      const FieldGlobalId& field_id) override;
+
+  void OnBeforeLoadedServerPredictions(
+      AutofillManager& manager,
+      base::span<const FormGlobalId> forms) override;
+  void OnAfterLoadedServerPredictions(
+      AutofillManager& manager,
+      base::span<const FormGlobalId> forms) override;
 
   DenseSet<Event> relevant_events_;
   std::unique_ptr<State> state_ = std::make_unique<State>();
@@ -574,10 +588,21 @@ class TestAutofillManagerSingleEventWaiter::Impl
       FieldGlobalId trigger_field_id,
       mojom::ActionPersistence action_persistence,
       const base::flat_set<FieldGlobalId>& filled_field_ids,
+      const base::flat_map<FieldGlobalId, DenseSet<FieldFillingSkipReason>>&
+          skip_reasons,
       const FillingPayload& filling_payload) override {
     MaybeQuit(&Observer::OnFillOrPreviewForm, manager, form_id,
               trigger_field_id, action_persistence, filled_field_ids,
-              filling_payload);
+              skip_reasons, filling_payload);
+  }
+  void OnFillOrPreviewField(AutofillManager& manager,
+                            FormGlobalId form_id,
+                            FieldGlobalId field_id,
+                            mojom::ActionPersistence action_persistence,
+                            const std::u16string& value,
+                            std::optional<FieldType> field_type_used) override {
+    MaybeQuit(&Observer::OnFillOrPreviewField, manager, form_id, field_id,
+              action_persistence, value, field_type_used);
   }
   void OnBeforeFormSubmitted(AutofillManager& manager,
                              const FormData& form) override {
@@ -587,11 +612,15 @@ class TestAutofillManagerSingleEventWaiter::Impl
                             const FormData& form) override {
     MaybeQuit(&Observer::OnAfterFormSubmitted, manager, form);
   }
-  void OnBeforeLoadedServerPredictions(AutofillManager& manager) override {
-    MaybeQuit(&Observer::OnBeforeLoadedServerPredictions, manager);
+  void OnBeforeLoadedServerPredictions(
+      AutofillManager& manager,
+      base::span<const FormGlobalId> forms) override {
+    MaybeQuit(&Observer::OnBeforeLoadedServerPredictions, manager, forms);
   }
-  void OnAfterLoadedServerPredictions(AutofillManager& manager) override {
-    MaybeQuit(&Observer::OnAfterLoadedServerPredictions, manager);
+  void OnAfterLoadedServerPredictions(
+      AutofillManager& manager,
+      base::span<const FormGlobalId> forms) override {
+    MaybeQuit(&Observer::OnAfterLoadedServerPredictions, manager, forms);
   }
 
   // Quits the `run_loop_` if `event` matches `event_`.

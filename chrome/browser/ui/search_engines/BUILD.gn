@@ -18,9 +18,11 @@ source_set("search_engines") {
     "//components/favicon/core",
     "//components/find_in_page",
     "//components/search_engines",
+    "//components/tabs:public",
     "//content/public/browser",
     "//mojo/public/cpp/bindings",
     "//ui/base",
+    "//ui/base/unowned_user_data",
     "//ui/gfx",
   ]
 
@@ -37,7 +39,6 @@ source_set("search_engines") {
 
   deps = [
     "//base:i18n",
-    "//chrome/app:generated_resources",
     "//chrome/browser/autocomplete:aim_eligibility_service",
     "//chrome/browser/favicon",
     "//chrome/browser/profiles:profile",
@@ -79,7 +80,6 @@ source_set("unit_tests") {
   deps = [
     ":search_engines",
     "//chrome/browser/profiles:profile",
-    "//chrome/browser/ui/extensions",
     "//chrome/test:test_support",
     "//components/omnibox/common",
     "//components/sync_preferences:test_support",
@@ -92,6 +92,7 @@ source_set("unit_tests") {
           [ "default_search_extension_controlled_controller_unittest.cc" ]
       deps += [
         "//chrome/browser/search_engines",
+        "//chrome/browser/ui/extensions",
         "//chrome/browser/ui/tabs:test_support",
         "//components/tabs:test_support",
       ]
@@ -114,14 +115,13 @@ if (!is_android) {
       "//chrome/browser/search_engines",
       "//chrome/browser/ui/tabs:tab_enums",
       "//chrome/browser/ui/tabs:tab_strip",
+      "//chrome/browser/ui/tabs:tabs_public",
       "//chrome/test:test_support",
       "//chrome/test:test_support_ui",
+      "//components/tabs:public",
       "//content/test:test_support",
       "//net:test_support",
+      "//ui/base/unowned_user_data",
     ]
-
-    # TODO(crbug.com/40031409): Fix code that adds exit-time destructors and
-    # enable the diagnostic by removing this line.
-    configs += [ "//build/config/compiler:no_exit_time_destructors" ]
   }
 }

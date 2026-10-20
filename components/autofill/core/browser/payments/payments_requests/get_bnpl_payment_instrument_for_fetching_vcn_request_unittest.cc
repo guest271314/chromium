@@ -9,15 +9,16 @@
 #include "base/strings/stringprintf.h"
 #include "base/test/mock_callback.h"
 #include "base/test/values_test_util.h"
+#include "components/autofill/core/browser/payments/payments_requests/payments_request_test_api.h"
+#include "components/version_info/version_info.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
-namespace {
-using base::MockCallback;
-using Dict = base::DictValue;
-using testing::Field;
-}  // namespace
-
 namespace autofill::payments {
+namespace {
+
+using ::base::MockCallback;
+using ::testing::Field;
+using Dict = ::base::DictValue;
 
 class GetBnplPaymentInstrumentForFetchingVcnRequestTest : public testing::Test {
  public:
@@ -74,11 +75,19 @@ TEST_F(GetBnplPaymentInstrumentForFetchingVcnRequestTest, GetRequestContent) {
           .Set("context",
                Dict()
                    .Set("billable_service",
-                        payments::kUnmaskPaymentMethodBillableServiceNumber)
+                        kUnmaskPaymentMethodBillableServiceNumber)
                    .Set("customer_context",
                         PaymentsRequest::BuildCustomerContextDictionary(
                             request_details_.billing_customer_number)))
-          .Set("chrome_user_context", Dict().Set("full_sync_enabled", true))
+          .Set(
+              "chrome_user_context",
+              base::DictValue()
+                  .Set("full_sync_enabled", true)
+                  .Set("chrome_major_version",
+                       version_info::GetMajorVersionNumberAsInt())
+                  .Set("client_type",
+                       static_cast<int>(test_api(request_.get())
+                                            .GetChromeUserContextClientType())))
           .Set("instrument_id", request_details_.instrument_id)
           .Set("risk_data_encoded",
                PaymentsRequest::BuildRiskDictionary(request_details_.risk_data))
@@ -181,4 +190,5 @@ TEST_F(GetBnplPaymentInstrumentForFetchingVcnRequestTest, RespondToDelegate) {
       PaymentsAutofillClient::PaymentsRpcResult::kSuccess);
 }
 
+}  // namespace
 }  // namespace autofill::payments

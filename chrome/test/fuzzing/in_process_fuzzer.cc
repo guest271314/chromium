@@ -20,6 +20,7 @@
 #include "content/public/renderer/render_frame.h"
 #include "content/public/renderer/render_frame_observer.h"
 #include "content/public/test/test_launcher.h"
+#include "partition_alloc/buildflags.h"
 #include "third_party/blink/public/web/web_testing_support.h"
 
 #if BUILDFLAG(IS_WIN)
@@ -135,7 +136,7 @@ void InProcessFuzzer::SetUpOnMainThread() {
 #if BUILDFLAG(IS_POSIX)
   signal(SIGTERM, SIG_DFL);
   signal(SIGINT, SIG_DFL);
-#if defined(MEMORY_TOOL_REPLACES_ALLOCATOR)
+#if PA_BUILDFLAG(MEMORY_TOOL_REPLACES_ALLOCATOR)
   // In case we're being built with a memory tool (asan, msan...), we should
   // let it handle this signal so that we get better reporting.
   // As of now, since both in-process stack traces and the crashpad handler are
@@ -143,7 +144,7 @@ void InProcessFuzzer::SetUpOnMainThread() {
   // being set in
   // https://source.chromium.org/chromium/chromium/src/+/main:content/public/test/browser_test_base.cc?q=SignalHandler
   signal(SIGSEGV, SIG_DFL);
-#endif  // BUILDFLAG(MEMORY_TOOL_REPLACES_ALLOCATOR)
+#endif  // PA_BUILDFLAG(MEMORY_TOOL_REPLACES_ALLOCATOR)
 #endif  // BUILDFLAG(IS_POSIX)
 }
 
@@ -174,6 +175,9 @@ class InternalsObjectFrameInjector : public content::RenderFrameObserver {
 
 class InternalsObjectRendererInjector : public ChromeContentRendererClient {
  public:
+  InternalsObjectRendererInjector()
+      : ChromeContentRendererClient(/*create_extensions_client=*/false) {}
+
   void RenderFrameCreated(content::RenderFrame* render_frame) override {
     new InternalsObjectFrameInjector(render_frame);
   }
@@ -357,7 +361,7 @@ int main(int argc, char** argv) {
   chromium_arguments.push_back(FILE_PATH_LITERAL("--disable-gpu"));
   chromium_arguments.push_back(
       FILE_PATH_LITERAL("--enable-unsafe-swiftshader"));
-#if defined(MEMORY_TOOL_REPLACES_ALLOCATOR)
+#if PA_BUILDFLAG(MEMORY_TOOL_REPLACES_ALLOCATOR)
   // We disable in-process stack trace handling in case we're using memory
   // tools so that we get better reporting on what happened in case of
   // SIGSEGV.

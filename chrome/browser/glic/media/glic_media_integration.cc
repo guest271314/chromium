@@ -4,8 +4,10 @@
 
 #include "chrome/browser/glic/media/glic_media_integration.h"
 
+#include "base/memory/weak_ptr.h"
 #include "base/supports_user_data.h"
 #include "chrome/browser/accessibility/live_caption/live_caption_controller_factory.h"
+#include "chrome/browser/glic/glic_pref_names.h"
 #include "chrome/browser/glic/media/glic_media_context.h"
 #include "chrome/browser/glic/media/glic_media_page_cache.h"
 #include "chrome/browser/glic/media/media_transcript_provider_impl.h"
@@ -13,12 +15,15 @@
 #include "chrome/browser/glic/public/glic_keyed_service.h"
 #include "chrome/browser/picture_in_picture/picture_in_picture_window_manager.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/speech/speech_recognition_client_browser_interface.h"
+#include "chrome/browser/speech/speech_recognition_client_browser_interface_factory.h"
 #include "components/live_caption/caption_controller_base.h"
 #include "components/live_caption/caption_util.h"
 #include "components/live_caption/live_caption_controller.h"
 #include "components/live_caption/pref_names.h"
 #include "components/optimization_guide/core/optimization_guide_features.h"
 #include "components/optimization_guide/proto/features/common_quality_data.pb.h"
+#include "components/prefs/pref_change_registrar.h"
 #include "components/prefs/pref_service.h"
 #include "content/public/browser/peer_connection_tracker_host_observer.h"
 #include "content/public/browser/web_contents.h"
@@ -69,6 +74,15 @@ class GlicMediaPeerConnectionObserver
         }
       }
     }
+
+    // Notify speech recognition clients so active recognizers in affected
+    // frames are reset when a peer connection starts.
+    if (auto* client_browser_interface =
+            SpeechRecognitionClientBrowserInterfaceFactory::
+                GetForProfileIfExists(
+                    Profile::FromBrowserContext(wc->GetBrowserContext()))) {
+      client_browser_interface->OnLiveCaptionAvailabilityChanged();
+    }
   }
 
   void OnPeerConnectionRemoved(
@@ -103,6 +117,15 @@ class GlicMediaPeerConnectionObserver
         }
       }
     }
+
+    // Re-evaluate speech recognition availability so affected frames can
+    // resume transcription once all peer connections are removed.
+    if (auto* client_browser_interface =
+            SpeechRecognitionClientBrowserInterfaceFactory::
+                GetForProfileIfExists(
+                    Profile::FromBrowserContext(wc->GetBrowserContext()))) {
+      client_browser_interface->OnLiveCaptionAvailabilityChanged();
+    }
   }
 };
 
@@ -127,6 +150,7 @@ class GlicMediaIntegrationImpl : public glic::GlicMediaIntegration,
 
   // GlicMediaIntegrationImpl:
   void OnContextUpdated(glic::GlicMediaContext* context);
+  void OnListenerDestroyed();
 
   // Returns whether `web_contents` should be excluded by origin checks.  This
   // includes subframes.
@@ -144,17 +168,48 @@ class GlicMediaIntegrationImpl : public glic::GlicMediaIntegration,
   std::unique_ptr<GlicMediaPeerConnectionObserver> rtc_observer_;
   std::vector<url::Origin> excluded_origins_;
   base::CallbackListSubscription subscription_;
+
+ private:
+  void OnPrefChanged();
+
+  PrefChangeRegistrar pref_change_registrar_;
+  raw_ptr<captions::CaptionControllerBase::Listener> listener_ = nullptr;
+
+  base::WeakPtrFactory<GlicMediaIntegrationImpl> weak_ptr_factory_{this};
 };
 
 class CaptionListenerImpl : public captions::CaptionControllerBase::Listener {
  public:
-  explicit CaptionListenerImpl(Profile* profile) : profile_(profile) {}
-  ~CaptionListenerImpl() override = default;
+  explicit CaptionListenerImpl(
+      base::WeakPtr<GlicMediaIntegrationImpl> integration)
+      : integration_(integration) {}
+  ~CaptionListenerImpl() override {
+    if (integration_) {
+      integration_->OnListenerDestroyed();
+    }
+  }
+
+  bool IsTranscriptionAllowed(content::RenderFrameHost* rfh) override {
+    if (!rfh || !integration_) {
+      return false;
+    }
+
+    auto* web_contents = content::WebContents::FromRenderFrameHost(rfh);
+    if (!web_contents || integration_->IsExcludedByOrigin(web_contents)) {
+      return false;
+    }
+
+    // Disallow transcription if the document is excluded (e.g. due to active
+    // WebRTC peer connections or media capture) to avoid creating unnecessary
+    // SODA instances.
+    auto* context = glic::GlicMediaContext::GetOrCreateForCurrentDocument(rfh);
+    return context && !context->IsExcludedFromTranscript();
+  }
 
   bool OnTranscription(content::RenderFrameHost* rfh,
                        captions::CaptionBubbleContext*,
                        const media::SpeechRecognitionResult& result) override {
-    if (!rfh) {
+    if (!IsTranscriptionAllowed(rfh)) {
       return false;
     }
 
@@ -162,10 +217,6 @@ class CaptionListenerImpl : public captions::CaptionControllerBase::Listener {
     auto* integration = static_cast<GlicMediaIntegrationImpl*>(
         glic::GlicMediaIntegration::GetFor(web_contents));
     CHECK(integration);
-
-    if (integration->IsExcludedByOrigin(web_contents)) {
-      return false;
-    }
 
     bool continue_transcribing = false;
     if (auto* context =
@@ -185,7 +236,7 @@ class CaptionListenerImpl : public captions::CaptionControllerBase::Listener {
       const media::mojom::LanguageIdentificationEventPtr&) override {}
 
  private:
-  raw_ptr<Profile> profile_;
+  base::WeakPtr<GlicMediaIntegrationImpl> integration_;
 };
 
 GlicMediaIntegrationImpl::GlicMediaIntegrationImpl(Profile* profile)
@@ -207,18 +258,54 @@ void GlicMediaIntegrationImpl::Initialize() {
   CHECK(!rtc_observer_);
 
   rtc_observer_ = std::make_unique<GlicMediaPeerConnectionObserver>();
-  auto* lc = captions::LiveCaptionControllerFactory::GetForProfile(profile_);
-  lc->AddListener(std::make_unique<CaptionListenerImpl>(profile_));
 
-  // For now, enable the pref if we get this far.  Do this after getting the
-  // Live Caption controller, since it resets the pref to false.
-  profile_->GetPrefs()->SetBoolean(prefs::kHeadlessCaptionEnabled, true);
-
-  // Default to turning off for YT.
+  // Default to turning off for YT. Set this before enabling the headless
+  // caption pref so that any synchronous availability notifications already
+  // see the excluded origins.
   std::vector<url::Origin> excluded_origins = {
       url::Origin::Create(GURL("https://www.youtube.com")),
       url::Origin::Create(GURL("http://www.youtube.com"))};
   SetExcludedOrigins(std::move(excluded_origins));
+
+  pref_change_registrar_.Init(profile_->GetPrefs());
+  pref_change_registrar_.Add(
+      glic::prefs::kGlicMediaUnderstandingEnabled,
+      base::BindRepeating(&GlicMediaIntegrationImpl::OnPrefChanged,
+                          base::Unretained(this)));
+
+  OnPrefChanged();
+
+  // For now, enable the pref if we get this far.  Do this after getting the
+  // Live Caption controller, since it resets the pref to false.
+  profile_->GetPrefs()->SetBoolean(prefs::kHeadlessCaptionEnabled, true);
+}
+
+void GlicMediaIntegrationImpl::OnPrefChanged() {
+  bool enabled = profile_->GetPrefs()->GetBoolean(
+      glic::prefs::kGlicMediaUnderstandingEnabled);
+  auto* lc = captions::LiveCaptionControllerFactory::GetForProfile(profile_);
+  if (enabled) {
+    if (!listener_) {
+      auto listener =
+          std::make_unique<CaptionListenerImpl>(weak_ptr_factory_.GetWeakPtr());
+      listener_ = listener.get();
+      lc->AddListener(std::move(listener));
+    }
+  } else {
+    if (listener_) {
+      lc->RemoveSoon(listener_);
+      listener_ = nullptr;
+
+      // Discard all transcripts when disabled.
+      for (base::LinkNode<glic::GlicMediaPageCache::Entry>* node =
+               page_cache_.head();
+           node != page_cache_.end(); node = node->next()) {
+        auto* entry = static_cast<glic::GlicMediaPageCache::Entry*>(node);
+        auto* context = static_cast<glic::GlicMediaContext*>(entry);
+        context->ClearAllTranscripts();
+      }
+    }
+  }
 }
 
 bool GlicMediaIntegrationImpl::IsExcludedByOrigin(
@@ -278,9 +365,6 @@ void GlicMediaIntegrationImpl::AppendContextForFrame(
   if (!rfh) {
     return;
   }
-  context_root->mutable_content_attributes()->set_attribute_type(
-      optimization_guide::proto::CONTENT_ATTRIBUTE_TEXT);
-
   if (IsExcludedByOrigin(content::WebContents::FromRenderFrameHost(rfh))) {
     return;
   }
@@ -319,14 +403,19 @@ void GlicMediaIntegrationImpl::AppendContextForFrame(
 
   // Include the entire context in one node.  This could be split into multiple
   // nodes too.
-  context_root->mutable_content_attributes()
-      ->mutable_text_data()
-      ->set_text_content(std::move(result));
+  auto* content_attributes = context_root->mutable_content_attributes();
+  content_attributes->set_attribute_type(
+      optimization_guide::proto::CONTENT_ATTRIBUTE_TEXT);
+  content_attributes->mutable_text_data()->set_text_content(std::move(result));
 }
 
 void GlicMediaIntegrationImpl::OnContextUpdated(
     glic::GlicMediaContext* context) {
   page_cache_.PlaceAtFront(context);
+}
+
+void GlicMediaIntegrationImpl::OnListenerDestroyed() {
+  listener_ = nullptr;
 }
 
 void GlicMediaIntegrationImpl::OnPeerConnectionAddedForTesting(

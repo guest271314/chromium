@@ -4,9 +4,12 @@
 
 #include "chrome/browser/ui/views/incognito_clear_browsing_data_dialog.h"
 
+#include "base/command_line.h"
 #include "base/memory/raw_ptr.h"
 #include "base/test/metrics/histogram_tester.h"
-#include "chrome/browser/ui/browser.h"
+#include "build/branding_buildflags.h"
+#include "build/build_config.h"
+#include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
@@ -15,17 +18,32 @@
 #include "chrome/browser/ui/views/frame/toolbar_button_provider.h"
 #include "chrome/browser/ui/views/incognito_clear_browsing_data_dialog_coordinator.h"
 #include "chrome/browser/ui/views/toolbar/avatar_toolbar_button_interface.h"
+#include "chrome/browser/ui/views/toolbar/webui_test_utils.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
+#include "components/enterprise/isolated_mode/isolated_mode_features.h"
+#include "components/enterprise/isolated_mode/prefs.h"
+#include "components/prefs/pref_service.h"
 #include "content/public/test/browser_test.h"
 #include "ui/base/mojom/dialog_button.mojom.h"
 #include "ui/views/test/widget_test.h"
 #include "ui/views/widget/widget_observer.h"
 
+#if BUILDFLAG(GOOGLE_CHROME_BRANDING) && !BUILDFLAG(IS_CHROMEOS)
+#include "chrome/test/base/scoped_channel_override.h"
+#endif  // BUILDFLAG(GOOGLE_CHROME_BRANDING) && !BUILDFLAG(IS_CHROMEOS)
+
 namespace {
 
 class IncognitoClearBrowsingDataDialogTest : public InProcessBrowserTest {
  public:
+  BrowserWindowInterface* CreateIncognitoBrowser(Profile* profile = nullptr) {
+    BrowserWindowInterface* incognito_browser =
+        InProcessBrowserTest::CreateIncognitoBrowser(profile);
+    AvatarToolbarButtonTestAccessor(incognito_browser).WaitForAvatarButton();
+    return incognito_browser;
+  }
+
   void OpenDialog(IncognitoClearBrowsingDataDialogInterface::Type type) {
     if (!incognito_browser_) {
       incognito_browser_ = CreateIncognitoBrowser(GetProfile());
@@ -41,7 +59,7 @@ class IncognitoClearBrowsingDataDialogTest : public InProcessBrowserTest {
     EXPECT_TRUE(coordinator->IsShowing());
   }
 
-  Browser* GetIncognitoBrowser() { return incognito_browser_; }
+  BrowserWindowInterface* GetIncognitoBrowser() { return incognito_browser_; }
 
   IncognitoClearBrowsingDataDialog* GetDialogView() {
     return GetCoordinator()->GetIncognitoClearBrowsingDataDialogForTesting();
@@ -53,12 +71,13 @@ class IncognitoClearBrowsingDataDialogTest : public InProcessBrowserTest {
   }
 
   IncognitoClearBrowsingDataDialogCoordinator* GetCoordinator() {
-    return incognito_browser_->GetFeatures()
-        .incognito_clear_browsing_data_dialog_coordinator();
+    return IncognitoClearBrowsingDataDialogCoordinator::From(
+        incognito_browser_);
   }
 
  private:
-  raw_ptr<Browser, AcrossTasksDanglingUntriaged> incognito_browser_ = nullptr;
+  raw_ptr<BrowserWindowInterface, AcrossTasksDanglingUntriaged>
+      incognito_browser_ = nullptr;
 };
 
 // Used to test that the bubble widget is destroyed before the host browser.
@@ -157,14 +176,66 @@ IN_PROC_BROWSER_TEST_F(IncognitoClearBrowsingDataDialogTest,
 
 IN_PROC_BROWSER_TEST_F(IncognitoClearBrowsingDataDialogTest,
                        ClearBrowsingDataNavigationInIncognito) {
-  Browser* incognito_browser = CreateIncognitoBrowser();
+  BrowserWindowInterface* incognito_browser = CreateIncognitoBrowser();
   ui_test_utils::SendToOmniboxAndSubmit(incognito_browser,
                                         "chrome://settings/clearBrowserData");
   std::u16string current_tab_title;
   ui_test_utils::GetCurrentTabTitle(incognito_browser, &current_tab_title);
   EXPECT_EQ(u"about:blank", current_tab_title);
-  auto* coordinator = incognito_browser->GetFeatures()
-                          .incognito_clear_browsing_data_dialog_coordinator();
+  auto* coordinator =
+      IncognitoClearBrowsingDataDialogCoordinator::From(incognito_browser);
+  ASSERT_TRUE(coordinator->IsShowing());
+}
+
+class IsolatedClearBrowsingDataDialogTest
+    : public IncognitoClearBrowsingDataDialogTest {
+ public:
+  IsolatedClearBrowsingDataDialogTest() {
+    scoped_feature_list_.InitAndEnableFeature(
+        enterprise_isolated_mode::kEnableEnterpriseIsolatedMode);
+  }
+
+  void SetUpCommandLine(base::CommandLine* command_line) override {
+    IncognitoClearBrowsingDataDialogTest::SetUpCommandLine(command_line);
+    command_line->AppendSwitch(
+        enterprise_isolated_mode::switches::
+            kForceEnterpriseIsolatedModeReplacesIncognito);
+  }
+
+ private:
+#if BUILDFLAG(GOOGLE_CHROME_BRANDING) && !BUILDFLAG(IS_CHROMEOS)
+  chrome::ScopedChannelOverride channel_override_{
+      chrome::ScopedChannelOverride::Channel::kDev};
+#endif  // BUILDFLAG(GOOGLE_CHROME_BRANDING) && !BUILDFLAG(IS_CHROMEOS)
+  base::test::ScopedFeatureList scoped_feature_list_;
+};
+
+IN_PROC_BROWSER_TEST_F(IsolatedClearBrowsingDataDialogTest,
+                       ClearBrowsingDataNavigationInIsolatedMode) {
+  BrowserWindowInterface* isolated_browser = CreateIncognitoBrowser();
+  Profile* isolated_profile = isolated_browser->GetProfile();
+  ASSERT_TRUE(isolated_profile->IsEnterpriseIsolatedModeProfile());
+  ui_test_utils::SendToOmniboxAndSubmit(isolated_browser,
+                                        "chrome://settings/clearBrowserData");
+  std::u16string current_tab_title;
+  ui_test_utils::GetCurrentTabTitle(isolated_browser, &current_tab_title);
+  EXPECT_EQ(u"about:blank", current_tab_title);
+  auto* coordinator =
+      IncognitoClearBrowsingDataDialogCoordinator::From(isolated_browser);
+  ASSERT_TRUE(coordinator->IsShowing());
+}
+
+IN_PROC_BROWSER_TEST_F(IsolatedClearBrowsingDataDialogTest,
+                       HistoryNavigationInIsolatedMode) {
+  BrowserWindowInterface* isolated_browser = CreateIncognitoBrowser();
+  Profile* isolated_profile = isolated_browser->GetProfile();
+  ASSERT_TRUE(isolated_profile->IsEnterpriseIsolatedModeProfile());
+  ui_test_utils::SendToOmniboxAndSubmit(isolated_browser, "chrome://history");
+  std::u16string current_tab_title;
+  ui_test_utils::GetCurrentTabTitle(isolated_browser, &current_tab_title);
+  EXPECT_EQ(u"about:blank", current_tab_title);
+  auto* coordinator =
+      IncognitoClearBrowsingDataDialogCoordinator::From(isolated_browser);
   ASSERT_TRUE(coordinator->IsShowing());
 }
 

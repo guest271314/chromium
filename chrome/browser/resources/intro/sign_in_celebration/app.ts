@@ -2,10 +2,10 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import 'chrome://resources/cr_elements/cr_lottie/cr_lottie.js';
+import 'chrome://resources/cr_components/cr_lottie/cr_lottie.js';
 import '/strings.m.js';
 
-import type {CrLottieElement} from 'chrome://resources/cr_elements/cr_lottie/cr_lottie.js';
+import type {CrLottieElement} from 'chrome://resources/cr_components/cr_lottie/cr_lottie.js';
 import {I18nMixinLit} from 'chrome://resources/cr_elements/i18n_mixin_lit.js';
 import {assert} from 'chrome://resources/js/assert.js';
 import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
@@ -63,6 +63,7 @@ export class SignInCelebrationAppElement extends
   private darkModeListener_: (e: MediaQueryListEvent) => void;
   private matchMedia_: MediaQueryList;
   private listenerIds_: number[] = [];
+  private isAnimationFinished_: boolean = false;
 
   constructor() {
     super();
@@ -84,6 +85,10 @@ export class SignInCelebrationAppElement extends
 
     this.browserProxy_.handler.getSignInCelebrationUserInfo().then(
         res => this.updateUserInfo_(res.userInfo));
+
+    if (this.disableAnimations_) {
+      this.onAvatarAnimationCrLottieCompleted_();
+    }
   }
 
   override disconnectedCallback() {
@@ -99,6 +104,14 @@ export class SignInCelebrationAppElement extends
     return this.isDarkMode_ ?
         'animations/avatar_sign_in_celebration_dark.json' :
         'animations/avatar_sign_in_celebration.json';
+  }
+
+  protected onAvatarAnimationCrLottieCompleted_() {
+    if (this.isAnimationFinished_) {
+      return;
+    }
+    this.isAnimationFinished_ = true;
+    this.browserProxy_.handler.signInCelebrationFinished();
   }
 
   private updateUserInfo_(userInfo: SignInCelebrationUserInfo) {

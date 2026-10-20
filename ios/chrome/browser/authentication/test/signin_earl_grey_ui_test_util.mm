@@ -43,8 +43,8 @@ using chrome_test_util::SignOutAccountsButton;
 namespace {
 
 // Opens settings > sync settings > button with `identifier`.
-// `identifier` is an accessiblity identifier. It must be visible when the view
-// scrolled to the bottom.
+// `identifier` is an accessibility identifier. It must be visible when the view
+// is scrolled to the bottom.
 void OpenSyncSettingsSubmenu(NSString* identifier) {
   // First scroll down so that the button is visible.
   id<GREYMatcher> scroll_view_matcher =
@@ -75,18 +75,6 @@ void CloseHistorySyncSheet(BOOL enableHistorySync) {
         selectElementWithMatcher:chrome_test_util::ButtonStackSecondaryButton()]
         performAction:grey_tap()];
   }
-}
-
-// Closes the "Sign out and delete data" dialog. That dialog may be shown when a
-// managed account signs out.
-void CloseManagedAccountSignOutAndDeleteDataDialog() {
-  // Verify whether there is a confirmation dialog and interact with it to
-  // complete the sign-in flow if present.
-  id<GREYMatcher> acceptButton = [ChromeMatchersAppInterface
-      actionSheetItemWithAccessibilityLabelID:
-          IDS_IOS_SIGNOUT_AND_DELETE_DIALOG_SIGN_OUT_BUTTON];
-  [ChromeEarlGrey waitForUIElementToAppearWithMatcher:acceptButton];
-  [[EarlGrey selectElementWithMatcher:acceptButton] performAction:grey_tap()];
 }
 
 // Taps the sign-in sheet confirmation if the user is not signed-in yet, and
@@ -143,8 +131,7 @@ id<GREYMatcher> SignOutSnackbarLabelMatcher() {
     // For convenience, add the identity, if it was not added yet.
     [SigninEarlGrey addFakeIdentity:fakeIdentity];
   }
-  if ([SigninEarlGrey areSeparateProfilesForManagedAccountsEnabled] &&
-      IsIdentityPossiblyManaged(fakeIdentity)) {
+  if (IsIdentityPossiblyManaged(fakeIdentity)) {
     [SigninEarlGrey signinWithFakeIdentity:fakeIdentity];
     [ChromeEarlGreyUI waitForAppToIdle];
     CloseHistorySyncSheet(enableHistorySync);
@@ -198,20 +185,13 @@ id<GREYMatcher> SignOutSnackbarLabelMatcher() {
 }
 
 + (void)signOut {
-  [self signOutWithClearDataConfirmation:NO
-                          expectSnackbar:YES
-                           closeSettings:YES];
+  [self signOutWithExpectSnackbar:YES closeSettings:YES];
 }
 
-+ (void)signOutWithClearDataConfirmation:(BOOL)expectClearDataConfirmation
-                          expectSnackbar:(BOOL)expectSnackbar
-                           closeSettings:(BOOL)closeSettings {
++ (void)signOutWithExpectSnackbar:(BOOL)expectSnackbar
+                    closeSettings:(BOOL)closeSettings {
   [SigninEarlGreyUI openSyncSettings];
   [SigninEarlGreyUI tapSignOutFromSyncSettings];
-
-  if (expectClearDataConfirmation) {
-    CloseManagedAccountSignOutAndDeleteDataDialog();
-  }
 
   if (expectSnackbar) {
     // Close the snackbar, so that it can't obstruct other UI items.
@@ -413,9 +393,15 @@ id<GREYMatcher> SignOutSnackbarLabelMatcher() {
   NSString* signedInSnackbarTitle =
       l10n_util::GetNSStringF(IDS_IOS_ACCOUNT_MENU_SWITCH_CONFIRMATION_TITLE,
                               base::SysNSStringToUTF16(identity.userGivenName));
-  id<GREYMatcher> snackbarMatcher = grey_allOf(
-      chrome_test_util::SnackbarViewMatcher(),
-      grey_descendant(grey_accessibilityLabel(signedInSnackbarTitle)), nil);
+  [self dismissSigninConfirmationSnackbarWithTitle:signedInSnackbarTitle
+                                     assertVisible:assertVisible];
+}
+
++ (void)dismissSigninConfirmationSnackbarWithTitle:(NSString*)title
+                                     assertVisible:(BOOL)assertVisible {
+  id<GREYMatcher> snackbarMatcher =
+      grey_allOf(chrome_test_util::SnackbarViewMatcher(),
+                 grey_descendant(grey_accessibilityLabel(title)), nil);
 
   if (assertVisible) {
     [[EarlGrey selectElementWithMatcher:snackbarMatcher]

@@ -7,7 +7,6 @@
 
 #include <map>
 #include <memory>
-#include <set>
 
 #include "base/containers/flat_set.h"
 #include "base/containers/id_map.h"
@@ -51,7 +50,6 @@ class CONTENT_EXPORT RendererWebMediaPlayerDelegate final
 
   // blink::WebMediaPlayerDelegate implementation.
   bool IsPageHidden() override;
-  bool IsFrameHidden() override;
   int AddObserver(Observer* observer) override;
   void RemoveObserver(int player_id) override;
   void DidMediaMetadataChange(int player_id,
@@ -68,8 +66,6 @@ class CONTENT_EXPORT RendererWebMediaPlayerDelegate final
 
   // content::RenderFrameObserver overrides.
   void OnDestruct() override;
-  void OnFrameVisibilityChanged(
-      blink::mojom::FrameVisibility render_status) override;
 
   // blink::WebViewObserver overrides.
   void OnPageVisibilityChanged(
@@ -87,9 +83,6 @@ class CONTENT_EXPORT RendererWebMediaPlayerDelegate final
                                       const base::TickClock* tick_clock,
                                       bool is_low_end);
   bool IsIdleCleanupTimerRunningForTesting() const;
-
-  // Note: Does not call OnFrameHidden()/OnFrameShown().
-  void SetFrameHiddenForTesting(bool is_frame_hidden);
 
   friend class RendererWebMediaPlayerDelegateTest;
 
@@ -122,7 +115,7 @@ class CONTENT_EXPORT RendererWebMediaPlayerDelegate final
   // Tracks which players have entered an idle state. After some period of
   // inactivity these players will be notified and become stale.
   std::map<int, base::TimeTicks> idle_player_map_;
-  std::set<int> stale_players_;
+  base::flat_set<int> stale_players_;
   base::OneShotTimer idle_cleanup_timer_;
 
   // Amount of time allowed to elapse after a player becomes idle before
@@ -140,11 +133,6 @@ class CONTENT_EXPORT RendererWebMediaPlayerDelegate final
   // Players with a video track.
   base::flat_set<int> players_with_video_;
 
-  // The currently playing local videos. Used to determine whether
-  // OnMediaDelegatePlay() should allow the videos to play in the background or
-  // not.
-  base::flat_set<int> playing_videos_;
-
   // Determined at construction time based on system information; determines
   // when the idle cleanup timer should be fired more aggressively.
   bool is_low_end_;
@@ -152,9 +140,6 @@ class CONTENT_EXPORT RendererWebMediaPlayerDelegate final
   // Last page shown/hidden state sent to the player.  Unset if we have not sent
   // any message.  Used to elide duplicates.
   std::optional<bool> is_shown_;
-
-  // Last rendered status sent to the player from the containing frame.
-  bool is_frame_hidden_ = false;
 
   base::WeakPtrFactory<RendererWebMediaPlayerDelegate> weak_ptr_factory_{this};
 };

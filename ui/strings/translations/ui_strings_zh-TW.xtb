@@ -11,7 +11,6 @@
 <translation id="1253734725326687145">觸控目標已移至右上方。輕觸這裡。</translation>
 <translation id="1266864766717917324">無法分享<ph name="CONTENT_TYPE" /></translation>
 <translation id="1269641567813814718">Windows 鍵</translation>
-<translation id="1291104554099683393">請嘗試將要分享的文字分成多個片段。</translation>
 <translation id="1293699935367580298">Esc</translation>
 <translation id="1368832886055348810">由左至右</translation>
 <translation id="1383876407941801731">搜尋</translation>
@@ -38,13 +37,11 @@
 <translation id="1901303067676059328">選取全部(&amp;A)</translation>
 <translation id="19085484004813472">這是新功能</translation>
 <translation id="2006524834898217237">請確認此裝置已連上網際網路。</translation>
-<translation id="208586643495776849">請再試一次</translation>
 <translation id="2111134541987263231">開啟「允許在無痕模式中執行」<ph name="BEGIN_BOLD" /><ph name="END_BOLD" /></translation>
 <translation id="2141853158323869627">{DAYS,plural, =1{1 天}other{# 天}}</translation>
 <translation id="2148716181193084225">今天</translation>
 <translation id="2168039046890040389">向上翻頁</translation>
 <translation id="2190355936436201913">(空白)</translation>
-<translation id="2192232475740621500">使用低密度模式</translation>
 <translation id="2267918077332197517">一律封鎖來自這個網站的通知</translation>
 <translation id="2283117145434822734">F6</translation>
 <translation id="2289052229480071835">輕觸畫面上的觸控目標。</translation>
@@ -56,7 +53,6 @@
 <translation id="2388990488038464401">要透過你的手機撥打這個號碼嗎？</translation>
 <translation id="2435457462613246316">顯示密碼</translation>
 <translation id="24452542372838207">展開通知</translation>
-<translation id="2445449901874883781">使用高密度模式</translation>
 <translation id="2448407890032181691">觸控目標已移至右下方。輕觸這裡。</translation>
 <translation id="2482878487686419369">通知</translation>
 <translation id="2497284189126895209">所有檔案</translation>
@@ -87,7 +83,6 @@
 <translation id="3306688585798492231">內建螢幕</translation>
 <translation id="335581015389089642">語音</translation>
 <translation id="3372635229069101468">按一下「詳細資料」<ph name="BEGIN_BOLD" /><ph name="END_BOLD" />。</translation>
-<translation id="3389286852084373014">文字過多</translation>
 <translation id="3406306243914553062">HTML 內容</translation>
 <translation id="3600566671520689681">{DAYS,plural, =1{還剩 1 天}other{還剩 # 天}}</translation>
 <translation id="3600969208114796418"><ph name="SAVEAS_EXTENSION_TYPE" /> 檔案</translation>
@@ -130,7 +125,6 @@
 <translation id="5046499563572181734">輕觸這裡</translation>
 <translation id="5076340679995252485">貼上(&amp;P)</translation>
 <translation id="520299402983819650"><ph name="QUANTITY" /> PB</translation>
-<translation id="5278860589123563674">無法傳送</translation>
 <translation id="5283101102242354279">在無痕模式中開啟擴充功能：</translation>
 <translation id="528468243742722775">結束</translation>
 <translation id="5329858601952122676">刪除(&amp;D)</translation>
@@ -190,7 +184,6 @@
 <translation id="6965382102122355670">確定</translation>
 <translation id="6974053822202609517">由右至左</translation>
 <translation id="7052633198403197513">F1 鍵</translation>
-<translation id="7170202025028120564">應用程式的顯示設定將在下次重新啟動時生效。</translation>
 <translation id="7222373446505536781">F11</translation>
 <translation id="7238427729722629793">{MINUTES,plural, =1{還剩 1 分鐘}other{還剩 # 分鐘}}</translation>
 <translation id="7252604552361840748">找出上述擴充功能</translation>

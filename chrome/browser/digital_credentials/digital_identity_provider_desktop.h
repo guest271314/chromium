@@ -5,10 +5,9 @@
 #ifndef CHROME_BROWSER_DIGITAL_CREDENTIALS_DIGITAL_IDENTITY_PROVIDER_DESKTOP_H_
 #define CHROME_BROWSER_DIGITAL_CREDENTIALS_DIGITAL_IDENTITY_PROVIDER_DESKTOP_H_
 
+#include "base/gtest_prod_util.h"
 #include "base/memory/weak_ptr.h"
 #include "base/timer/timer.h"
-#include "chrome/browser/ui/views/digital_credentials/digital_identity_bluetooth_manual_dialog_controller.h"
-#include "chrome/browser/ui/views/digital_credentials/digital_identity_multi_step_dialog.h"
 #include "content/public/browser/cross_device_request_info.h"
 #include "content/public/browser/digital_credentials_cross_device.h"
 #include "content/public/browser/digital_identity_provider.h"
@@ -21,6 +20,9 @@ class RenderFrameHost;
 namespace device::cablev2 {
 enum class Event;
 }
+
+class DigitalIdentityBluetoothManualDialogController;
+class DigitalIdentityMultiStepDialog;
 
 // Desktop-specific implementation of `DigitalIdentityProvider`. Uses FIDO
 // hybrid flow to retrieve credentials stored on a mobile device.
@@ -73,7 +75,17 @@ class DigitalIdentityProviderDesktop : public content::DigitalIdentityProvider {
     callback_ = std::move(callback);
   }
 
+  // Ensures `dialog_` is initialized and returns it.
+  DigitalIdentityMultiStepDialog* EnsureDialogCreated();
+
+  // Called to end the request with an error.
+  void EndRequestWithError(
+      content::DigitalIdentityProvider::RequestStatusForMetrics);
+
  private:
+  FRIEND_TEST_ALL_PREFIXES(DigitalIdentityMultiStepDialogBrowserTest,
+                           OnCableEventOwnerDestroyedDuringDialogUpdate);
+
   // Called whenever some significant event occurs during the transaction.
   void OnEvent(const std::string& qr_url,
                RequestInfo::RequestType request_type,
@@ -89,8 +101,6 @@ class DigitalIdentityProviderDesktop : public content::DigitalIdentityProvider {
       base::expected<content::digital_credentials::cross_device::Response,
                      content::digital_credentials::cross_device::Error>);
 
-  // Ensures `dialog_` is initialized and returns it.
-  DigitalIdentityMultiStepDialog* EnsureDialogCreated();
 
   // Shows dialog which prompts user to manually turn on bluetooth.
   void ShowBluetoothManualTurnOnDialog();
@@ -114,9 +124,6 @@ class DigitalIdentityProviderDesktop : public content::DigitalIdentityProvider {
   // canceling the dialog.
   void OnCanceled();
 
-  // Called to end the request with an error.
-  void EndRequestWithError(
-      content::DigitalIdentityProvider::RequestStatusForMetrics);
 
   // The web contents to which the dialog is modal to.
   base::WeakPtr<content::WebContents> web_contents_;

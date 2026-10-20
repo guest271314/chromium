@@ -140,8 +140,10 @@ FileSystemFileInfosToDragItemFileSystemFilePtr(
     storage::FileSystemURL file_system_url =
         file_system_access_manager->context()->CrackURLInFirstPartyContext(
             file_system_file.url);
-    DCHECK(file_system_url.type() != storage::kFileSystemTypePersistent);
-    DCHECK(file_system_url.type() != storage::kFileSystemTypeTemporary);
+    CHECK(file_system_url.type() != storage::kFileSystemTypePersistent,
+          base::NotFatalUntil::M152);
+    CHECK(file_system_url.type() != storage::kFileSystemTypeTemporary,
+          base::NotFatalUntil::M152);
 
     std::string uuid = base::Uuid::GenerateRandomV4().AsLowercaseString();
 
@@ -190,6 +192,8 @@ blink::mojom::DragDataPtr DropDataToDragData(
     int child_id,
     scoped_refptr<ChromeBlobStorageContext> chrome_blob_storage_context) {
   // These fields are currently unused when dragging into Blink.
+  // TODO(crbug.com/540942115): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
   DCHECK(!drop_data.download_metadata.has_value());
 
   std::vector<blink::mojom::DragItemPtr> items;
@@ -238,10 +242,16 @@ blink::mojom::DragDataPtr DropDataToDragData(
     items.push_back(
         blink::mojom::DragItem::NewFileSystemFile(std::move(file_system_file)));
   }
-  if (!drop_data.file_contents.empty()) {
+  // A genuine file drag (a JS-constructed File round-trip or a Chromium
+  // file-promise) carries a source URL or a Content-Disposition. A plain <img>
+  // drag populates `file_contents` on macOS (kept for browser-side consumers
+  // such as Glic) but carries neither signal, so it must not surface as a File
+  // in the renderer's DataTransfer.files.
+  if (!drop_data.file_contents.empty() &&
+      (drop_data.file_contents_source_url.is_valid() ||
+       !drop_data.file_contents_content_disposition.empty())) {
     blink::mojom::DragItemBinaryPtr item = blink::mojom::DragItemBinary::New();
-    item->data =
-        mojo_base::BigBuffer(base::as_byte_span(drop_data.file_contents));
+    item->data = mojo_base::BigBuffer(drop_data.file_contents);
     item->is_image_accessible = drop_data.file_contents_image_accessible;
     // source_url is synthesized from Content-Disposition for JS-constructed
     // File objects. If absent (e.g. dropped from a non-Chromium app), leave
@@ -323,7 +333,6 @@ blink::mojom::DragDataPtr DropMetaDataToDragData(
     if (meta_data_item.kind == DropData::Kind::FILESYSTEMFILE) {
       blink::mojom::DragItemFileSystemFilePtr item =
           blink::mojom::DragItemFileSystemFile::New();
-      item->url = meta_data_item.file_system_url;
       items.push_back(
           blink::mojom::DragItem::NewFileSystemFile(std::move(item)));
       continue;
@@ -345,7 +354,7 @@ blink::mojom::DragDataPtr DropMetaDataToDragData(
 
 DropData DragDataToDropData(const blink::mojom::DragData& drag_data) {
   // This field should be empty when dragging from the renderer.
-  DCHECK(!drag_data.file_system_id);
+  CHECK(!drag_data.file_system_id, base::NotFatalUntil::M152);
 
   DropData result;
   if (drag_data.source_effect_allowed.has_value()) {
@@ -426,7 +435,8 @@ DropData DragDataToDropData(const blink::mojom::DragData& drag_data) {
         const blink::mojom::DragItemFileSystemFilePtr& file_system_file_item =
             item->get_file_system_file();
         // This field should be empty when dragging from the renderer.
-        DCHECK(!file_system_file_item->file_system_id);
+        CHECK(!file_system_file_item->file_system_id,
+              base::NotFatalUntil::M152);
 
         DropData::FileSystemFileInfo info;
         info.url = file_system_file_item->url;

@@ -127,7 +127,7 @@ public class PasswordManagerHelper {
         RecordHistogram.recordEnumeratedHistogram(
                 "PasswordManager.ManagePasswordsReferrer",
                 referrer,
-                ManagePasswordsReferrer.MAX_VALUE);
+                ManagePasswordsReferrer.MAX_VALUE + 1);
         SyncService syncService = SyncServiceFactory.getForProfile(mProfile);
 
         if (!showPwmUnavailableOrDownloadCsvDialog(
@@ -139,7 +139,7 @@ public class PasswordManagerHelper {
     }
 
     /**
-     * Starts the flow allowing the user to download unmigrated password manger passwords as a CSV.
+     * Starts the flow allowing the user to download unmigrated password manager passwords as a CSV.
      *
      * @param context instance of a FragmentActivity which will host the entire UI flow
      * @param settingsCustomTabLauncher used to open a help articcle in a CCT
@@ -508,21 +508,8 @@ public class PasswordManagerHelper {
                 forAccount
                         ? PasswordMetricsUtil.ACCOUNT_GET_INTENT_API_ERROR_HISTOGRAM
                         : PasswordMetricsUtil.LOCAL_GET_INTENT_API_ERROR_HISTOGRAM;
-        final String kGetIntentErrorConnectionResultCodeHistogram =
-                forAccount
-                        ? PasswordMetricsUtil
-                                .ACCOUNT_GET_INTENT_ERROR_CONNECTION_RESULT_CODE_HISTOGRAM
-                        : PasswordMetricsUtil
-                                .LOCAL_GET_INTENT_ERROR_CONNECTION_RESULT_CODE_HISTOGRAM;
-
         int apiErrorCode = PasswordManagerAndroidBackendUtil.getApiErrorCode(exception);
         RecordHistogram.recordSparseHistogram(kGetIntentApiErrorHistogram, apiErrorCode);
-        Integer connectionResultCode =
-                PasswordManagerAndroidBackendUtil.getConnectionResultCode(exception);
-        if (connectionResultCode == null) return;
-
-        RecordHistogram.recordSparseHistogram(
-                kGetIntentErrorConnectionResultCodeHistogram, connectionResultCode);
     }
 
     private static void launchIntentAndRecordSuccess(

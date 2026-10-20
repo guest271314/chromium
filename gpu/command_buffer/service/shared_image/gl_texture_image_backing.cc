@@ -17,6 +17,7 @@
 #include "gpu/command_buffer/common/shared_image_info.h"
 #include "gpu/command_buffer/common/shared_image_usage.h"
 #include "gpu/command_buffer/service/context_state.h"
+#include "gpu/command_buffer/service/gl_utils.h"
 #include "gpu/command_buffer/service/gles2_cmd_decoder.h"
 #include "gpu/command_buffer/service/shared_context_state.h"
 #include "gpu/command_buffer/service/shared_image/shared_image_factory.h"
@@ -236,7 +237,6 @@ bool GLTextureImageBacking::SupportsPixelReadbackWithFormat(
           format == viz::SinglePlaneFormat::kRGBA_8888 ||
           format == viz::SinglePlaneFormat::kBGRA_8888 ||
           format == viz::SinglePlaneFormat::kR_8 ||
-          format == viz::SinglePlaneFormat::kRG_88 ||
           format == viz::SinglePlaneFormat::kRGBX_8888 ||
           format == viz::SinglePlaneFormat::kBGRX_8888);
 }
@@ -252,10 +252,7 @@ bool GLTextureImageBacking::SupportsPixelUploadWithFormat(
           format == viz::SinglePlaneFormat::kRGBA_4444 ||
           format == viz::SinglePlaneFormat::kBGRA_8888 ||
           format == viz::SinglePlaneFormat::kR_8 ||
-          format == viz::SinglePlaneFormat::kRG_88 ||
           format == viz::SinglePlaneFormat::kRGBA_F16 ||
-          format == viz::SinglePlaneFormat::kR_16 ||
-          format == viz::SinglePlaneFormat::kRG_1616 ||
           format == viz::SinglePlaneFormat::kRGBX_8888 ||
           format == viz::SinglePlaneFormat::kBGRX_8888 ||
           format == viz::SinglePlaneFormat::kRGBA_1010102 ||
@@ -279,7 +276,7 @@ GLTextureImageBacking::GLTextureImageBacking(const Mailbox& mailbox,
 GLTextureImageBacking::~GLTextureImageBacking() {
   if (!have_context()) {
     for (auto& texture : textures_) {
-      texture.SetContextLost();
+      texture->SetContextLost();
     }
   }
 }
@@ -318,7 +315,7 @@ SharedImageBackingType GLTextureImageBacking::GetType() const {
 
 gfx::Rect GLTextureImageBacking::ClearedRect() const {
   if (!IsPassthrough()) {
-    return textures_[0].GetClearedRect();
+    return textures_[0]->GetClearedRect();
   }
 
   // Use shared image based tracking for passthrough, because we don't always
@@ -328,7 +325,7 @@ gfx::Rect GLTextureImageBacking::ClearedRect() const {
 
 void GLTextureImageBacking::SetClearedRect(const gfx::Rect& cleared_rect) {
   if (!IsPassthrough()) {
-    textures_[0].SetClearedRect(cleared_rect);
+    textures_[0]->SetClearedRect(cleared_rect);
     return;
   }
 
@@ -337,7 +334,7 @@ void GLTextureImageBacking::SetClearedRect(const gfx::Rect& cleared_rect) {
   ClearTrackingSharedImageBacking::SetClearedRect(cleared_rect);
 }
 
-void GLTextureImageBacking::Update(std::unique_ptr<gfx::GpuFence> in_fence) {}
+void GLTextureImageBacking::Update(gfx::GpuFenceHandle in_fence) {}
 
 bool GLTextureImageBacking::UploadFromMemory(
     const std::vector<SkPixmap>& pixmaps) {
@@ -345,7 +342,7 @@ bool GLTextureImageBacking::UploadFromMemory(
   DCHECK(SupportsPixelUploadWithFormat(format()));
 
   for (size_t i = 0; i < textures_.size(); ++i) {
-    if (!textures_[i].UploadFromMemory(pixmaps[i])) {
+    if (!textures_[i]->UploadFromMemory(pixmaps[i])) {
       return false;
     }
   }
@@ -364,7 +361,7 @@ bool GLTextureImageBacking::ReadbackToMemory(
   }
 
   for (size_t i = 0; i < textures_.size(); ++i) {
-    if (!textures_[i].ReadbackToMemory(pixmaps[i])) {
+    if (!textures_[i]->ReadbackToMemory(pixmaps[i])) {
       return false;
     }
   }
@@ -376,8 +373,9 @@ GLTextureImageBacking::ProduceGLTexture(SharedImageManager* manager,
                                         MemoryTypeTracker* tracker) {
   std::vector<raw_ptr<gles2::Texture>> gl_textures;
   for (auto& texture : textures_) {
-    DCHECK(texture.texture());
-    gl_textures.push_back(texture.texture());
+    CHECK(texture);
+    CHECK(texture->texture());
+    gl_textures.push_back(texture->texture());
   }
 
   return std::make_unique<GLTextureImageRepresentationImpl>(
@@ -389,8 +387,9 @@ GLTextureImageBacking::ProduceGLTexturePassthrough(SharedImageManager* manager,
                                                    MemoryTypeTracker* tracker) {
   std::vector<scoped_refptr<gles2::TexturePassthrough>> gl_textures;
   for (auto& texture : textures_) {
-    DCHECK(texture.passthrough_texture());
-    gl_textures.push_back(texture.passthrough_texture());
+    CHECK(texture);
+    CHECK(texture->passthrough_texture());
+    gl_textures.push_back(texture->passthrough_texture());
   }
 
   return std::make_unique<GLTexturePassthroughImageRepresentationImpl>(
@@ -444,7 +443,7 @@ GLTextureImageBacking::ProduceSkiaGanesh(
   if (cached_promise_textures_.empty()) {
     for (auto& texture : textures_) {
       cached_promise_textures_.push_back(
-          texture.GetPromiseImage(context_state.get()));
+          texture->GetPromiseImage(context_state.get()));
     }
   }
 
@@ -482,11 +481,15 @@ std::unique_ptr<VideoImageRepresentation> GLTextureImageBacking::ProduceVideo(
     VideoDevice device) {
 #if BUILDFLAG(IS_WIN)
   DCHECK_EQ(textures_.size(), 1u);
-  DCHECK(device);
+  // The GL copy path requires a D3D11 device; a D3D12 command queue cannot use
+  // it.
+  const auto* d3d11_device =
+      std::get_if<Microsoft::WRL::ComPtr<ID3D11Device>>(&device);
+  CHECK(d3d11_device);
 
   return D3D11VideoImageCopyRepresentation::CreateFromGL(
-      textures_[0].GetServiceId(), debug_label(), device.Get(), manager, this,
-      tracker);
+      textures_[0]->GetServiceId(), debug_label(), d3d11_device->Get(), manager,
+      this, tracker);
 #else
   return nullptr;
 #endif
@@ -497,21 +500,42 @@ void GLTextureImageBacking::InitializeGLTexture(
     base::span<const uint8_t> pixel_data,
     gl::ProgressReporter* progress_reporter,
     bool framebuffer_attachment_angle) {
+  // Drain any pre-existing GL errors so the post-allocation check below is
+  // attributable to the storage call. Silently squelching these errors is
+  // unfortunate, but is done in order to mirror other allocation checks done in
+  // the command decoder.
+  gl::GLApi* const api = gl::g_current_gl_context;
+  DrainGLErrors(api);
+
   const std::string debug_label =
       "GLSharedImage_" + SharedImageBacking::debug_label();
   int num_planes = format().NumberOfPlanes();
   textures_.reserve(num_planes);
   for (int plane = 0; plane < num_planes; ++plane) {
-    auto plane_format = GLTextureHolder::GetPlaneFormat(format(), plane);
-    textures_.emplace_back(plane_format, format().GetPlaneSize(plane, size()),
-                           is_passthrough_, progress_reporter);
-    textures_[plane].Initialize(format_info[plane],
-                                framebuffer_attachment_angle, pixel_data,
-                                debug_label);
+    textures_.push_back(base::MakeRefCounted<GLTextureHolder>(
+        format(), plane, size(), is_passthrough_, progress_reporter));
+    textures_[plane]->Initialize(format_info[plane],
+                                 framebuffer_attachment_angle, pixel_data,
+                                 debug_label);
   }
 
-  if (!pixel_data.empty()) {
-    SetCleared();
+  // Update the cleared state for passthrough textures if the pixel data upload
+  // was successful. We don't need to update the cleared state for validating
+  // decoder textures because we track the cleared state in the decoder texture
+  // objects whose cleared state is set in TextureHolder::Initialize above.
+  if (is_passthrough_ && !pixel_data.empty()) {
+    // The storage allocation allocates undefined-content storage on a context
+    // without robust-resource-init. If the subsequent upload failed (e.g.
+    // GL_OUT_OF_MEMORY) the storage is still uninitialised; only mark the
+    // backing cleared if no GL error was raised.
+    GLenum error = api->glGetErrorFn();
+    if (error == GL_NO_ERROR) {
+      SetCleared();
+    } else {
+      LOG(ERROR)
+          << "GLTextureImageBacking: initial pixel upload failed (GL error 0x"
+          << std::hex << error << ")";
+    }
   }
 }
 

@@ -15,10 +15,12 @@
 #include "base/files/file_path.h"
 #include "components/services/app_service/public/cpp/app_launch_util.h"
 #include "components/services/app_service/public/cpp/intent.h"
+#include "services/network/public/mojom/referrer_policy.mojom-shared.h"
 #include "ui/base/window_open_disposition.h"
 #include "ui/display/types/display_constants.h"
 #include "ui/gfx/geometry/rect.h"
 #include "url/gurl.h"
+#include "url/origin.h"
 
 namespace apps {
 
@@ -69,13 +71,6 @@ struct AppLaunchParams {
 
   // If non-empty, use override_url in place of the application's launch url.
   GURL override_url;
-
-  // If non-empty, use override_boudns in place of the application's default
-  // position and dimensions.
-  gfx::Rect override_bounds;
-
-  // If non-empty, use override_app_name in place of generating one normally.
-  std::string override_app_name;
 
   // The id from the restore data to restore the browser window.
   int32_t restore_id = 0;
@@ -129,6 +124,15 @@ struct AppLaunchParams {
   // Whether or not to have the resulting Browser be omitted from session
   // restore.
   bool omit_from_session_restore = false;
+
+  // The origin of the initiator of the navigation, if any (e.g. when
+  // launching an app from a link in the renderer context menu).
+  std::optional<url::Origin> initiator_origin;
+
+  // The referrer URL and policy for the navigation, if any.
+  GURL referrer_url;
+  network::mojom::ReferrerPolicy referrer_policy =
+      network::mojom::ReferrerPolicy::kDefault;
 };
 
 }  // namespace apps

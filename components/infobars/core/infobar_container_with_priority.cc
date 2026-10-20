@@ -27,6 +27,9 @@ std::string GetPrioritySuffix(InfoBarDelegate::InfobarPriority priority) {
   NOTREACHED();
 }
 
+bool IsCloseable(const InfoBar* infobar) {
+  return !infobar->delegate() || infobar->delegate()->IsCloseable();
+}
 }  // namespace
 
 InfoBarContainerWithPriority::InfoBarContainerWithPriority(Delegate* delegate)
@@ -80,6 +83,8 @@ void InfoBarContainerWithPriority::ChangeInfoBarManager(
     pending_infobars_.clear();
     visible_.clear();
 
+    NotifyPendingCountChangedIfNeeded();
+
     if (infobar_manager) {
       scoped_observation_.Observe(infobar_manager);
       if (!manager()->infobars().empty()) {
@@ -97,6 +102,8 @@ void InfoBarContainerWithPriority::ChangeInfoBarManager(
     }
   }
 
+  NotifyPendingCountChangedIfNeeded();
+
   if (state_changed) {
     OnInfoBarStateChanged(false);
   }
@@ -107,6 +114,7 @@ void InfoBarContainerWithPriority::OnInfoBarAdded(InfoBar* infobar) {
                             ? infobar->delegate()->GetPriority()
                             : InfoBarDelegate::InfobarPriority::kDefault;
   AdmitOrQueue(infobar, priority, /*animate=*/true);
+  NotifyPendingCountChangedIfNeeded();
 }
 
 void InfoBarContainerWithPriority::OnInfoBarRemoved(InfoBar* infobar,
@@ -136,10 +144,26 @@ void InfoBarContainerWithPriority::OnInfoBarRemoved(InfoBar* infobar,
     // base::OnInfoBarRemoved because it was never added to the base container.
     CHECK(pending_removed > 0 || !infobar->delegate());
   }
+
+  NotifyPendingCountChangedIfNeeded();
 }
 
 void InfoBarContainerWithPriority::OnInfoBarReplaced(InfoBar* old_infobar,
                                                      InfoBar* new_infobar) {
+  const size_t pending_removed = std::erase_if(
+      pending_infobars_, [old_infobar](const PendingInfoBarEntry& entry) {
+        return entry.infobar == old_infobar;
+      });
+  if (pending_removed > 0) {
+    const auto new_priority = new_infobar->delegate()
+                                  ? new_infobar->delegate()->GetPriority()
+                                  : InfoBarDelegate::InfobarPriority::kDefault;
+    AdmitOrQueue(new_infobar, new_priority, /*animate=*/false,
+                 /*allow_duplicate=*/true);
+    NotifyPendingCountChangedIfNeeded();
+    return;
+  }
+
   // Track whether the old infobar was actually visible in this container.
   const bool was_visible =
       std::ranges::any_of(visible_, [old_infobar](const VisibleEntry& entry) {
@@ -177,13 +201,18 @@ void InfoBarContainerWithPriority::AddInfoBarAndTrack(
 void InfoBarContainerWithPriority::AdmitOrQueue(
     InfoBar* infobar,
     InfoBarDelegate::InfobarPriority priority,
-    bool animate) {
+    bool animate,
+    bool allow_duplicate) {
   // If an identical infobar is already in the queue, do nothing. This avoids
   // enqueuing duplicates.
-  if (IsDuplicateOfPending(infobar)) {
+  if (!allow_duplicate && IsDuplicateOfPending(infobar)) {
     return;
   }
 
+  if (!IsCloseable(infobar)) {
+    AddInfoBarAndTrack(infobar, infobars().size(), animate, priority);
+    return;
+  }
   // 1) Handle CRITICAL priority.
   if (priority == InfoBarDelegate::InfobarPriority::kCriticalSecurity) {
     if (CountVisible(priority) < GetInfoBarPriorityCapFor(priority)) {
@@ -316,7 +345,9 @@ bool InfoBarContainerWithPriority::IsDuplicateOfPending(
 void InfoBarContainerWithPriority::MarkVisible(
     InfoBar* infobar,
     InfoBarDelegate::InfobarPriority priority) {
-  visible_.push_back({.infobar = infobar, .priority = priority});
+  visible_.push_back({.infobar = infobar,
+                      .priority = priority,
+                      .closeable = IsCloseable(infobar)});
 }
 
 size_t InfoBarContainerWithPriority::ClearVisible(InfoBar* infobar) {
@@ -327,7 +358,9 @@ size_t InfoBarContainerWithPriority::ClearVisible(InfoBar* infobar) {
 
 size_t InfoBarContainerWithPriority::CountVisible(
     InfoBarDelegate::InfobarPriority priority) const {
-  return std::ranges::count(visible_, priority, &VisibleEntry::priority);
+  return std::ranges::count_if(visible_, [priority](const VisibleEntry& entry) {
+    return entry.closeable && entry.priority == priority;
+  });
 }
 
 bool InfoBarContainerWithPriority::HasPendingOfPriority(
@@ -340,6 +373,16 @@ bool InfoBarContainerWithPriority::HasPendingOfPriority(
 void InfoBarContainerWithPriority::RecordInfoBarPendingQueueSize() {
   base::UmaHistogramExactLinear("InfoBar.Prioritization.QueueSize",
                                 static_cast<int>(pending_infobars_.size()), 50);
+}
+
+void InfoBarContainerWithPriority::NotifyPendingCountChangedIfNeeded() {
+  const size_t count = pending_infobars_.size();
+  if (count == last_notified_pending_count_) {
+    return;
+  }
+
+  last_notified_pending_count_ = count;
+  PlatformSpecificPendingInfoBarCountChanged(count);
 }
 
 }  // namespace infobars

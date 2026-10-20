@@ -23,7 +23,6 @@
 #include "content/browser/preloading/speculation_rules/speculation_rules_util.h"
 #include "content/browser/renderer_host/render_frame_host_impl.h"
 #include "content/public/browser/content_browser_client.h"
-#include "content/public/browser/prefetch_metrics.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/content_client.h"
@@ -34,6 +33,21 @@ namespace content {
 
 namespace {
 static PrefetchService* g_prefetch_service_for_testing = nullptr;
+
+// `SpeculationCandidate::tags` must never be empty: rules that specify no tags
+// carry a single null tag instead (see blink.mojom.SpeculationCandidate). Every
+// candidate reaching here has been through SpeculationHostImpl's
+// CandidatesAreValid(), which rejects an empty list as a bad message.
+//
+// This used to map an empty list to nullopt, which silently dropped the
+// Sec-Speculation-Tags header while the prerender path CHECK()ed on the very
+// same input, hiding half of crbug.com/550345163. Enforce the invariant so a
+// future regression is loud on both paths.
+SpeculationRulesTags TagsFromCandidate(
+    const blink::mojom::SpeculationCandidatePtr& candidate) {
+  CHECK(!candidate->tags.empty());
+  return SpeculationRulesTags(candidate->tags);
+}
 
 struct PrefetchUrlParams {
   explicit PrefetchUrlParams(
@@ -46,8 +60,7 @@ struct PrefetchUrlParams {
                       candidate->eagerness),
         referrer(*candidate->referrer),
         no_vary_search_hint(candidate->no_vary_search_hint.Clone()),
-        tags(candidate->tags.empty() ? std::nullopt
-                                     : std::make_optional(candidate->tags)) {
+        tags(TagsFromCandidate(candidate)) {
     if (prefetch_type.IsProxyRequiredWhenCrossOrigin() &&
         ShouldPrefetchBypassProxyForTestHost(prefetch_url.GetHost())) {
       // TODO(crbug.com/40942006): Remove SetProxyBypassedForTest, since it is
@@ -60,7 +73,7 @@ struct PrefetchUrlParams {
   PrefetchType prefetch_type;
   blink::mojom::Referrer referrer;
   network::mojom::NoVarySearchPtr no_vary_search_hint;
-  std::optional<SpeculationRulesTags> tags;
+  SpeculationRulesTags tags;
 };
 
 }  // namespace
@@ -195,7 +208,7 @@ void PrefetchDocumentManager::PrefetchUrl(
     const PrefetchType& prefetch_type,
     const PreloadingPredictor& enacting_predictor,
     const blink::mojom::Referrer& referrer,
-    std::optional<SpeculationRulesTags> speculation_rules_tags,
+    SpeculationRulesTags speculation_rules_tags,
     const network::mojom::NoVarySearchPtr& mojo_no_vary_search_hint,
     scoped_refptr<PreloadPipelineInfo> preload_pipeline_info) {
   const std::pair<GURL, PreloadingType> all_prefetches_key =
@@ -255,7 +268,6 @@ void PrefetchDocumentManager::PrefetchUrl(
       weak_method_factory_.GetWeakPtr(), std::move(preload_pipeline_info),
       attempt->GetWeakPtr());
 
-  referring_page_metrics_.prefetch_attempted_count++;
 
   all_prefetches_[all_prefetches_key] =
       prefetch_service->AddPrefetchRequestWithHandle(std::move(request));
@@ -298,27 +310,15 @@ PrefetchService* PrefetchDocumentManager::GetPrefetchService() const {
     return g_prefetch_service_for_testing;
   }
 
-  DCHECK(BrowserContextImpl::From(render_frame_host().GetBrowserContext())
-             ->GetPrefetchService());
+  CHECK(BrowserContextImpl::From(render_frame_host().GetBrowserContext())
+            ->GetPrefetchService(),
+        base::NotFatalUntil::M159);
   return BrowserContextImpl::From(render_frame_host().GetBrowserContext())
       ->GetPrefetchService();
 }
 
-void PrefetchDocumentManager::OnGotInitialEligibility(
-    const PrefetchContainer& prefetch_container) {
-  // Recording an eligiblity for PrefetchReferringPageMetrics.
-  // TODO(crbug.com/40946257): Current code doesn't support
-  // PrefetchReferringPageMetrics when the prefetch is initiated by browser.
-  if (prefetch_container.GetInitialEligibility() ==
-      PreloadingEligibility::kEligible) {
-    referring_page_metrics_.prefetch_eligible_count++;
-  }
-}
-
 void PrefetchDocumentManager::OnPrefetchCompletedOrFailed(
     const PrefetchContainer& prefetch_container) {
-  // TODO(crbug.com/40946257): Current code doesn't support
-  // PrefetchReferringPageMetrics when the prefetch is initiated by browser.
   // TODO(crbug.com/433057364): Currently `PrefetchStatus::kPrefetchSuccessful`
   // is used to preserve the existing behavior and metrics, but probably we
   // should revamp this, e.g. because currently we don't count
@@ -327,7 +327,6 @@ void PrefetchDocumentManager::OnPrefetchCompletedOrFailed(
       PrefetchStatus::kPrefetchSuccessful) {
     return;
   }
-  referring_page_metrics_.prefetch_successful_count++;
   if (IsImmediateSpeculationEagerness(
           prefetch_container.request().prefetch_type().GetEagerness())) {
     completed_immediate_prefetches_.push_back(
@@ -382,7 +381,7 @@ PrefetchDocumentManager::CanPrefetchNow(PrefetchContainer* prefetch) {
     }
     // We are at capacity, and now need to evict the oldest non-immediate
     // prefetch to make space for a new one.
-    DCHECK(GetPrefetchService());
+    CHECK(GetPrefetchService(), base::NotFatalUntil::M159);
     base::WeakPtr<PrefetchContainer> oldest_prefetch =
         completed_non_immediate_prefetches_.front();
     // TODO(crbug.com/40064525): We should also be checking if the prefetch is

@@ -2,8 +2,6 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-import("//build/config/chromeos/ui_mode.gni")
-
 assert(is_chromeos)
 
 static_library("memory_pressure") {
@@ -13,8 +11,6 @@ static_library("memory_pressure") {
     "container_oom_score_manager.cc",
     "container_oom_score_manager.h",
   ]
-
-  public_deps = [ "//chrome/browser:browser_public_dependencies" ]
 
   deps = [
     "//base",

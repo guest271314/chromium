@@ -7,6 +7,7 @@
 #include "base/notreached.h"
 #include "build/build_config.h"
 #include "chrome/browser/ui/tabs/features.h"
+#include "chrome/browser/ui/ui_features.h"
 #include "components/omnibox/common/omnibox_features.h"
 #include "ui/base/pointer/touch_ui_controller.h"
 #include "ui/base/ui_base_features.h"
@@ -23,6 +24,8 @@ int GetLayoutConstant(LayoutConstant constant) {
       return 24;
     case LayoutConstant::kAppMenuMaximumCharacterLength:
       return 30;
+    case LayoutConstant::kAppMenuButtonImageLabelPadding:
+      return features::IsToolbarGlowUpEnabled() ? 4 : 2;
     case LayoutConstant::kBookmarkBarHeight: {
       // The fixed margin ensures the bookmark buttons appear centered relative
       // to the white space above and below.
@@ -66,8 +69,18 @@ int GetLayoutConstant(LayoutConstant constant) {
       return 6;
     case LayoutConstant::kLocationBarPageInfoIconDangerousTrailingPadding:
       return 10;
+    case LayoutConstant::kLocationBarLeadingDecorationEdgePadding:
+      return 5;
+    case LayoutConstant::kLocationBarLeadingDecorationInnerPadding:
+      return 8;
+    case LayoutConstant::kLocationBarInputIconIndent:
+      return 7;
+    case LayoutConstant::kLocationBarInputTextIndent:
+      return 6;
     case LayoutConstant::kLocationBarTrailingDecorationEdgePadding:
       return touch_ui ? 3 : 12;
+    case LayoutConstant::kLocationBarTrailingDecorationAimEdgePadding:
+      return 5;
     case LayoutConstant::kLocationBarTrailingDecorationInnerPadding:
       return touch_ui ? 3 : 8;
     case LayoutConstant::kLocationBarHeight:
@@ -76,6 +89,10 @@ int GetLayoutConstant(LayoutConstant constant) {
     case LayoutConstant::kLocationBarIconSize:
       return touch_ui ? 20 : 16;
     // LINT.ThenChange(//chrome/browser/ui/omnibox/omnibox_edit_model.cc:SuperGIconSize)
+    case LayoutConstant::kLocationBarIconLabelBubbleSpaceBesideSeparator:
+      return 8;
+    case LayoutConstant::kLocationBarIconLabelBubbleSeparatorWidth:
+      return 1;
     case LayoutConstant::kLocationBarLeadingIconSize:
       return GetLayoutConstant(LayoutConstant::kLocationBarIconSize);
     case LayoutConstant::kLocationBarTrailingIconSize:
@@ -91,7 +108,7 @@ int GetLayoutConstant(LayoutConstant constant) {
     case LayoutConstant::kTabAlertIndicatorIconWidth:
       return touch_ui ? 12 : 16;
     case LayoutConstant::kTabCloseButtonSize:
-      return touch_ui ? 24 : 16;
+      return touch_ui ? 24 : (features::IsRoundedIconsEnabled() ? 14 : 16);
     case LayoutConstant::kTabHeight:
       return 34 + GetLayoutConstant(LayoutConstant::kTabstripToolbarOverlap);
     case LayoutConstant::kTabStripHeight:
@@ -102,6 +119,10 @@ int GetLayoutConstant(LayoutConstant constant) {
     case LayoutConstant::kTabSeparatorHeight:
       return touch_ui ? 24 : 20;
     case LayoutConstant::kTabPreTitlePadding:
+      return 8;
+    case LayoutConstant::kTabVerticalPadding:
+      return 6;
+    case LayoutConstant::kTabHorizontalPadding:
       return 8;
     case LayoutConstant::kTabStackDistance:
       return touch_ui ? 4 : 6;
@@ -124,6 +145,8 @@ int GetLayoutConstant(LayoutConstant constant) {
       return touch_ui ? 0 : 4;
     case LayoutConstant::kToolbarIconDefaultMargin:
       return touch_ui ? 0 : 2;
+    case LayoutConstant::kToolbarButtonRefreshExpandedMargin:
+      return 5;
     case LayoutConstant::kLocationBarMargin:
       return touch_ui ? 12 : 9;
     case LayoutConstant::kSidePanelInset:
@@ -188,7 +211,10 @@ gfx::Insets GetLayoutInsets(LayoutInset inset) {
       return touch_ui ? gfx::Insets::VH(5, 10) : gfx::Insets::VH(4, 4);
 
     case LOCATION_BAR_PAGE_ACTION_ICON_PADDING:
-      return touch_ui ? gfx::Insets::VH(5, 10) : gfx::Insets::VH(2, 2);
+      return touch_ui ? gfx::Insets::VH(5, 10)
+                      : (features::IsPageActionsElevatedToolbarEnabled()
+                             ? gfx::Insets::VH(3, 3)
+                             : gfx::Insets::VH(2, 2));
 
     case TOOLBAR_ACTION_VIEW: {
       // TODO(afakhry): Unify all toolbar button sizes on all platforms.

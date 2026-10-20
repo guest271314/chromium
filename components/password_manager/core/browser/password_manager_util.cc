@@ -21,11 +21,14 @@
 #include "base/time/time.h"
 #include "build/build_config.h"
 #include "components/affiliations/core/browser/affiliation_utils.h"
+#include "components/affiliations/core/browser/match_type.h"
 #include "components/autofill/core/browser/field_types.h"
 #include "components/autofill/core/browser/foundations/autofill_client.h"
 #include "components/autofill/core/browser/logging/log_manager.h"
 #include "components/autofill/core/browser/suggestions/suggestion_type.h"
 #include "components/autofill/core/common/password_generation_util.h"
+#include "components/device_reauth/device_auth_availability_checker.h"
+#include "components/password_manager/core/browser/browser_save_password_progress_logger.h"
 #include "components/password_manager/core/browser/features/password_features.h"
 #include "components/password_manager/core/browser/password_bubble_experiment.h"
 #include "components/password_manager/core/browser/password_form.h"
@@ -39,24 +42,24 @@
 #include "components/password_manager/core/browser/password_store/password_store_interface.h"
 #include "components/password_manager/core/browser/password_store/password_store_util.h"
 #include "components/password_manager/core/browser/password_store/stored_credential.h"
+#include "components/password_manager/core/browser/password_sync_util.h"
+#include "components/password_manager/core/common/password_manager_constants.h"
 #include "components/password_manager/core/common/password_manager_pref_names.h"
 #include "components/prefs/pref_service.h"
 #include "components/signin/public/base/signin_metrics.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
+#include "crypto/process_bound_string.h"
 #include "url/url_util.h"
-
-#if BUILDFLAG(IS_ANDROID)
-#include "components/password_manager/core/browser/password_sync_util.h"
-
-using password_manager::sync_util::IsSyncFeatureEnabledIncludingPasswords;
-#endif
 
 using autofill::password_generation::PasswordGenerationType;
 using password_manager::PasswordForm;
 using password_manager::StoredCredential;
+using password_manager::constants::kSpecialSymbols;
 
 namespace password_manager_util {
 namespace {
+
+using enum password_manager::PasswordForm::Store;
 
 std::tuple<int, base::Time, int> GetPriorityProperties(
     const StoredCredential& form) {
@@ -69,18 +72,21 @@ bool IsBetterMatchStored(const StoredCredential& lhs,
   return GetPriorityProperties(lhs) > GetPriorityProperties(rhs);
 }
 
-#if BUILDFLAG(IS_ANDROID)
-// Returns true if the password saving should be allowed for the in-flow
-// Trusted Vault key recovery.
-bool ShouldAllowSavingPasswordsWithInFlowRecovery(
-    password_manager::ActionableError error) {
-  return base::FeatureList::IsEnabled(
-             password_manager::features::
-                 kInFlowTrustedVaultKeyRetrievalAndroid) &&
-         error == password_manager::ActionableError::kTrustedVaultKeyNeeded;
+// Returns whether we should attempt to match |submitted_form| against stored
+// credentials by password value.
+//
+// This returns true if the username is empty, which typically happens when:
+// 1. The browser failed to detect the username field on the page.
+// 2. It is a password-only submission (e.g., a re-auth or step-up flow).
+//
+// Forms submitted via the Credential Management API (kApi) are explicitly
+// excluded. In the context of the API, an empty username is an intentional,
+// explicit signal from the site, not a parsing failure, so we should not
+// try to second-guess it.
+bool IsEligibleForEmptyUsernameMatching(const PasswordForm& submitted_form) {
+  return submitted_form.username_value.empty() &&
+         submitted_form.type != PasswordForm::Type::kApi;
 }
-#endif
-
 }  // namespace
 
 // Update |credential| to reflect usage.
@@ -97,6 +103,15 @@ void UpdateMetadataForUsage(PasswordForm* credential) {
 bool IsLoggingActive(password_manager::PasswordManagerClient* client) {
   autofill::LogManager* log_manager = client->GetCurrentLogManager();
   return log_manager && log_manager->IsLoggingActive();
+}
+
+std::unique_ptr<password_manager::BrowserSavePasswordProgressLogger>
+GetLoggerIfAvailable(password_manager::PasswordManagerClient* client) {
+  if (!IsLoggingActive(client)) {
+    return nullptr;
+  }
+  return std::make_unique<password_manager::BrowserSavePasswordProgressLogger>(
+      client->GetCurrentLogManager());
 }
 
 bool ManualPasswordGenerationEnabled(
@@ -117,9 +132,10 @@ void UserTriggeredManualGenerationFromContextMenu(
     password_manager::PasswordManagerClient* password_manager_client,
     autofill::AutofillClient* autofill_client) {
   if (autofill_client) {
-    autofill_client->HideAutofillSuggestions(
+    autofill_client->HideSuggestions(
         autofill::SuggestionHidingReason::
-            kOverlappingWithPasswordGenerationPopup);
+            kOverlappingWithPasswordGenerationPopup,
+        /*product=*/std::nullopt);
     autofill_client->HideAutofillFieldIph();
   }
   password_manager_client->GeneratePassword(PasswordGenerationType::kManual);
@@ -133,19 +149,101 @@ bool IsAbleToSavePasswords(password_manager::PasswordManagerClient* client) {
           client->GetSyncService())) {
     const password_manager::PasswordStoreInterface* account_store =
         client->GetAccountPasswordStore();
-    password_manager::ActionableError error =
-        account_store ? account_store->GetError()
-                      : password_manager::ActionableError::kNoError;
-    const bool is_able_to_save =
-        IsAbleToSavePasswords(error) ||
-        ShouldAllowSavingPasswordsWithInFlowRecovery(error);
-    return account_store && is_able_to_save;
+    return account_store && IsAbleToSavePasswords(account_store->GetError());
   }
 #endif
   // TODO(b/324054761): Check AccountPasswordStore store when needed.
   const password_manager::PasswordStoreInterface* profile_store =
       client->GetProfilePasswordStore();
   return profile_store && IsAbleToSavePasswords(profile_store->GetError());
+}
+
+bool IsSavingBlockedByTrustedVaultError(
+    const password_manager::PasswordManagerClient* client,
+    const password_manager::PasswordFormManagerForUI* form_manager) {
+  // If the user disabled password syncing the passwords will be saved locally,
+  // and saving should not be blocked by trusted vault errors in this case.
+  if (!password_manager::sync_util::HasChosenToSyncPasswords(
+          client->GetSyncService())) {
+    return false;
+  }
+
+  // The updates of the locally stored passwords should not be blocked by
+  // trusted vault errors.
+  if (form_manager && form_manager->IsPasswordUpdate() &&
+      !form_manager->IsUpdateAffectingPasswordsStoredInTheGoogleAccount()) {
+    return false;
+  }
+
+#if BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_IOS)
+  const password_manager::PasswordStoreInterface* account_store =
+      client->GetAccountPasswordStore();
+  return account_store &&
+         account_store->GetError() ==
+             password_manager::ActionableError::kTrustedVaultKeyNeeded &&
+         base::FeatureList::IsEnabled(
+             password_manager::features::kPasswordSaveInContextErrorResolution);
+#else  // !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
+  bool has_trusted_vault_error = false;
+  bool has_other_blocking_errors = false;
+  // It might be that the credential is updated in both stores. In this case
+  // `store_for_saving` will be the enum value with both bits set (the account
+  // and the profile store bits).
+  password_manager::PasswordForm::Store store_for_saving =
+      form_manager->GetPasswordStoreForSaving(
+          form_manager->GetPendingCredentials());
+  for (password_manager::PasswordForm::Store store_type :
+       {kProfileStore, kAccountStore}) {
+    if ((store_for_saving & store_type) != store_type) {
+      continue;
+    }
+    const password_manager::PasswordStoreInterface* store =
+        (store_type == kAccountStore) ? client->GetAccountPasswordStore()
+                                      : client->GetProfilePasswordStore();
+    if (!store) {
+      continue;
+    }
+    password_manager::ActionableError error = store->GetError();
+    if (error == password_manager::ActionableError::kTrustedVaultKeyNeeded) {
+      has_trusted_vault_error = true;
+    } else if (!IsAbleToSavePasswords(error)) {
+      has_other_blocking_errors = true;
+    }
+  }
+  return has_trusted_vault_error && !has_other_blocking_errors &&
+         base::FeatureList::IsEnabled(
+             password_manager::features::kPasswordSaveInContextErrorResolution);
+#endif
+}
+
+bool IsSavingBlockedByRecoverableError(
+    const password_manager::PasswordManagerClient* client,
+    const password_manager::PasswordFormManagerForUI* form_manager) {
+#if BUILDFLAG(IS_IOS)
+  if (!password_manager::sync_util::HasChosenToSyncPasswords(
+          client->GetSyncService())) {
+    return false;
+  }
+  // The updates of the locally stored passwords should not be blocked by
+  // recoverable errors.
+  if (form_manager && form_manager->IsPasswordUpdate() &&
+      !form_manager->IsUpdateAffectingPasswordsStoredInTheGoogleAccount()) {
+    return false;
+  }
+  const password_manager::PasswordStoreInterface* account_store =
+      client->GetAccountPasswordStore();
+  if (!account_store) {
+    return false;
+  }
+  password_manager::ActionableError error = account_store->GetError();
+  return (error == password_manager::ActionableError::kTrustedVaultKeyNeeded ||
+          error == password_manager::ActionableError::kSignInNeeded ||
+          error == password_manager::ActionableError::kNeedsPassphrase) &&
+         base::FeatureList::IsEnabled(
+             password_manager::features::kPasswordSaveInContextErrorResolution);
+#else  // !BUILDFLAG(IS_IOS)
+  return false;
+#endif
 }
 
 std::string_view GetSignonRealmWithProtocolExcluded(const PasswordForm& form) {
@@ -160,22 +258,22 @@ std::string_view GetSignonRealmWithProtocolExcluded(const PasswordForm& form) {
 
 GetLoginMatchType GetMatchType(const password_manager::PasswordForm& form) {
   CHECK(form.match_type.has_value());
-  if (form.match_type.value() == PasswordForm::MatchType::kExact) {
+  if (form.match_type.value() == affiliations::MatchType::kExact) {
     return GetLoginMatchType::kExact;
   }
 
   if (static_cast<int>(form.match_type.value() &
-                       PasswordForm::MatchType::kAffiliated)) {
+                       affiliations::MatchType::kAffiliated)) {
     return GetLoginMatchType::kAffiliated;
   }
 
   if (static_cast<int>(form.match_type.value() &
-                       PasswordForm::MatchType::kPSL)) {
+                       affiliations::MatchType::kPSL)) {
     return GetLoginMatchType::kPSL;
   }
 
   if (static_cast<int>(form.match_type.value() &
-                       PasswordForm::MatchType::kGrouped)) {
+                       affiliations::MatchType::kGrouped)) {
     return GetLoginMatchType::kGrouped;
   }
 
@@ -184,22 +282,22 @@ GetLoginMatchType GetMatchType(const password_manager::PasswordForm& form) {
 
 GetLoginMatchType GetMatchType(const password_manager::StoredCredential& form) {
   CHECK(form.match_type.has_value());
-  if (form.match_type.value() == PasswordForm::MatchType::kExact) {
+  if (form.match_type.value() == affiliations::MatchType::kExact) {
     return GetLoginMatchType::kExact;
   }
 
   if (static_cast<int>(form.match_type.value() &
-                       PasswordForm::MatchType::kAffiliated)) {
+                       affiliations::MatchType::kAffiliated)) {
     return GetLoginMatchType::kAffiliated;
   }
 
   if (static_cast<int>(form.match_type.value() &
-                       PasswordForm::MatchType::kPSL)) {
+                       affiliations::MatchType::kPSL)) {
     return GetLoginMatchType::kPSL;
   }
 
   if (static_cast<int>(form.match_type.value() &
-                       PasswordForm::MatchType::kGrouped)) {
+                       affiliations::MatchType::kGrouped)) {
     return GetLoginMatchType::kGrouped;
   }
 
@@ -332,14 +430,31 @@ const StoredCredential* GetMatchForUpdating(
     return nullptr;
   }
 
-  // Try to return form with matching |username_value|.
+  crypto::SecureU16String submitted_form_password_value =
+      submitted_form.password_value.secure_value();
+
+  if (IsEligibleForEmptyUsernameMatching(submitted_form)) {
+    // Prioritize matching by password value.
+    const StoredCredential* best_match = nullptr;
+    for (const StoredCredential* stored_match : credentials) {
+      if (stored_match->password_value == submitted_form_password_value &&
+          (!best_match || IsBetterMatchStored(*stored_match, *best_match))) {
+        best_match = stored_match;
+      }
+    }
+    if (best_match) {
+      return best_match;
+    }
+  }
+
+  // Match credential by username.
   const StoredCredential* username_match =
       FindCredentialByUsername(credentials, submitted_form.username_value);
   if (username_match) {
     const bool password_change_should_update_match =
         submitted_form.type == PasswordForm::Type::kChangeSubmission &&
         // Password change should update all matches that are PSL or stronger.
-        username_match->match_type < PasswordForm::MatchType::kGrouped;
+        username_match->match_type < affiliations::MatchType::kGrouped;
     if (!IsCredentialWeakMatch(*username_match) ||
         password_change_should_update_match) {
       return username_match;
@@ -360,29 +475,13 @@ const StoredCredential* GetMatchForUpdating(
                                                               : nullptr;
   }
 
-  // Next attempt is to find a match by password value. It should not be tried
-  // when the username was actually detected.
-  if (submitted_form.type == PasswordForm::Type::kApi ||
-      !submitted_form.username_value.empty()) {
-    return nullptr;
+  // Ultimate fallback: The submitted form had no username but a password.
+  // Assume that it corresponds to an existing credential.
+  if (IsEligibleForEmptyUsernameMatching(submitted_form) &&
+      !username_updated_in_bubble && !credentials.empty()) {
+    return credentials.front();
   }
-
-  for (const StoredCredential* stored_match : credentials) {
-    if (stored_match->password_value == submitted_form.password_value) {
-      return stored_match;
-    }
-  }
-
-  // If the user manually changed the username value: consider this at this
-  // point of the heuristic a new credential (didn't match other
-  // passwords/usernames).
-  if (username_updated_in_bubble) {
-    return nullptr;
-  }
-
-  // Last try. The submitted form had no username but a password. Assume that
-  // it's an existing credential.
-  return credentials.empty() ? nullptr : credentials.front();
+  return nullptr;
 }
 
 PasswordForm MakeNormalizedBlocklistedForm(
@@ -420,13 +519,27 @@ bool ShouldShowBiometricAuthenticationBeforeFillingPromo(
   if (!client) {
     return false;
   }
-  std::unique_ptr<device_reauth::DeviceAuthenticator> device_authenticator =
-      client->GetDeviceAuthenticator();
-  if (!device_authenticator) {
+  if (!base::FeatureList::IsEnabled(
+          password_manager::features::kDeviceReauthRefactor)) {
+    std::unique_ptr<device_reauth::DeviceAuthenticator> device_authenticator =
+        client->GetDeviceAuthenticator();
+    if (!device_authenticator) {
+      return false;
+    }
+    if (!device_authenticator->CanAuthenticateWithBiometrics()) {
+      return false;
+    }
+    return !client->GetPrefs()->GetBoolean(
+        password_manager::prefs::kBiometricAuthenticationBeforeFilling);
+  }
+
+  std::unique_ptr<device_reauth::DeviceAuthAvailabilityChecker> checker =
+      client->GetDeviceAuthAvailabilityChecker();
+  if (!checker) {
     return false;
   }
 
-  if (!device_authenticator->CanAuthenticateWithBiometrics()) {
+  if (!checker->CanAuthenticateWithBiometrics()) {
     return false;
   }
   return !client->GetPrefs()->GetBoolean(

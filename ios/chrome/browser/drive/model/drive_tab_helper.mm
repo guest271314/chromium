@@ -11,26 +11,64 @@
 #import "base/files/file_util.h"
 #import "base/functional/bind.h"
 #import "base/task/thread_pool.h"
-#import "components/enterprise/common/proto/connectors.pb.h"
-#import "components/enterprise/connectors/core/analysis_settings.h"
 #import "components/enterprise/connectors/core/cloud_content_scanning/files_request_handler_base.h"
-#import "components/enterprise/connectors/core/common.h"
 #import "ios/chrome/browser/drive/model/drive_file_uploader.h"
 #import "ios/chrome/browser/drive/model/drive_service.h"
 #import "ios/chrome/browser/drive/model/drive_service_factory.h"
 #import "ios/chrome/browser/drive/model/drive_upload_task.h"
-#import "ios/chrome/browser/enterprise/cloud_content_scanning/model/files_request_handler_ios.h"
-#import "ios/chrome/browser/enterprise/cloud_content_scanning/model/ios_cloud_binary_upload_service.h"
-#import "ios/chrome/browser/enterprise/cloud_content_scanning/model/ios_cloud_binary_upload_service_factory.h"
-#import "ios/chrome/browser/enterprise/cloud_content_scanning/model/scan_decision_helper.h"
+#import "ios/chrome/browser/enterprise/cloud_content_scanning/model/cloud_content_scanning_helper.h"
 #import "ios/chrome/browser/enterprise/connectors/analysis/content_analysis_info.h"
-#import "ios/chrome/browser/enterprise/connectors/connectors_service.h"
-#import "ios/chrome/browser/enterprise/connectors/connectors_service_factory.h"
+#import "ios/chrome/browser/shared/model/application_context/application_context.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
+#import "ios/chrome/browser/signin/model/system_identity.h"
+#import "ios/chrome/browser/signin/model/system_identity_manager.h"
 
 using drive::DriveService;
 using drive::DriveServiceFactory;
+
+namespace {
+
+NSErrorDomain const kSaveToDriveErrorDomain = @"SaveToDriveErrorDomain";
+
+enum class SaveToDriveErrorCode : NSInteger {
+  kAccountNotFound = -1,
+};
+
+// Returns an NSError indicating that the account used for the upload is no
+// longer present on the device or has invalid credentials.
+NSError* CreateAccountNotFoundError() {
+  NSDictionary* userInfo = @{
+    NSLocalizedDescriptionKey :
+        @"The account used for Save to Drive was removed from the device."
+  };
+  return [NSError errorWithDomain:kSaveToDriveErrorDomain
+                             code:static_cast<NSInteger>(
+                                      SaveToDriveErrorCode::kAccountNotFound)
+                         userInfo:userInfo];
+}
+
+// Returns true if `identity` is valid and has valid authentication on the
+// device.
+bool IsIdentityOnDeviceWithValidAuth(id<SystemIdentity> identity,
+                                     SystemIdentityManager* manager) {
+  if (!identity || !manager) {
+    return false;
+  }
+  __block BOOL identity_found_and_valid = NO;
+  manager->IterateOverIdentities(
+      base::BindRepeating(^(id<SystemIdentity> sys_identity) {
+        if ([sys_identity.hashedGaiaID isEqualToString:identity.hashedGaiaID]) {
+          // This identity is present on this device.
+          identity_found_and_valid = sys_identity.hasValidAuth;
+          return SystemIdentityManager::IteratorResult::kInterruptIteration;
+        }
+        return SystemIdentityManager::IteratorResult::kContinueIteration;
+      }));
+  return identity_found_and_valid;
+}
+
+}  // namespace
 
 DriveTabHelper::DriveTabHelper(web::WebState* web_state)
     : web_state_(web_state) {}
@@ -102,6 +140,7 @@ void DriveTabHelper::ResetSaveToDriveData(web::DownloadTask* task,
   upload_task_observation_.Reset();
   files_request_handler_.reset();
   content_analysis_info_.reset();
+  has_processed_complete_task_ = false;
   if (!task || !identity) {
     return;
   }
@@ -134,44 +173,21 @@ void DriveTabHelper::RemoveComplete(bool remove_completed) {
 }
 
 void DriveTabHelper::ProcessCompleteDownloadTask(web::DownloadTask* task) {
-  ProfileIOS* profile =
-      ProfileIOS::FromBrowserState(web_state_->GetBrowserState());
-  const GURL& url = task->GetRedirectedUrl();
-  std::optional<enterprise_connectors::AnalysisSettings> settings =
-      std::nullopt;
-  enterprise_connectors::ConnectorsService* connectors_service =
-      enterprise_connectors::ConnectorsServiceFactory::GetForProfile(profile);
-  if (connectors_service) {
-    settings = connectors_service->GetAnalysisSettings(
-        url, enterprise_connectors::AnalysisConnector::FILE_DOWNLOADED);
+  if (has_processed_complete_task_) {
+    return;
   }
+  has_processed_complete_task_ = true;
 
-  content_analysis_info_ =
-      std::make_unique<enterprise_connectors::ContentAnalysisInfo>(
-          url,
-          std::move(settings).value_or(
-              enterprise_connectors::AnalysisSettings()),
-          enterprise_connectors::ContentAnalysisRequest::NORMAL_DOWNLOAD,
-          *web_state_);
+  enterprise_connectors::FileDownloadScanningResources resources =
+      enterprise_connectors::PrepareCloudContentScanning(
+          web_state_, task->GetRedirectedUrl(), task->GetResponsePath(),
+          enterprise_connectors::TriggerType::kSavePrompt,
+          base::BindOnce(&DriveTabHelper::MaybeUploadDownloadToDrive,
+                         weak_ptr_factory_.GetWeakPtr(), task));
+  files_request_handler_ = std::move(resources.files_request_handler);
+  content_analysis_info_ = std::move(resources.content_analysis_info);
 
-  auto files_request_handler_delegate =
-      std::make_unique<enterprise_connectors::FilesRequestHandlerIOS>(
-          profile, task->GetResponsePath(),
-          base::BindOnce(
-              &enterprise_connectors::HandleScanDecision,
-              web_state_->GetWeakPtr(),
-              enterprise_connectors::TriggerType::kSavePrompt,
-              base::BindOnce(&DriveTabHelper::MaybeUploadDownloadToDrive,
-                             weak_ptr_factory_.GetWeakPtr(), task)));
-
-  // Send the download file for enterprise DLP download content scanning.
-  files_request_handler_ = std::make_unique<
-      enterprise_connectors::FilesRequestHandlerBase>(
-      content_analysis_info_.get(),
-      enterprise_connectors::IOSCloudBinaryUploadServiceFactory::GetForProfile(
-          profile),
-      url, "", enterprise_connectors::DeepScanAccessPoint::DOWNLOAD,
-      std::move(files_request_handler_delegate));
+  // Upload the file for content scanning.
   files_request_handler_->UploadData();
 }
 
@@ -190,6 +206,17 @@ void DriveTabHelper::MaybeUploadDownloadToDrive(web::DownloadTask* task,
   upload_task_->SetFileToUpload(task->GetResponsePath(),
                                 task->GenerateFileName(), task->GetMimeType(),
                                 task->GetTotalBytes());
+
+  id<SystemIdentity> identity = upload_task_->GetIdentity();
+  SystemIdentityManager* manager =
+      GetApplicationContext()->GetSystemIdentityManager();
+  if (!IsIdentityOnDeviceWithValidAuth(identity, manager)) {
+    upload_task_->Fail(CreateAccountNotFoundError(), /*resumable=*/false);
+    files_request_handler_.reset();
+    content_analysis_info_.reset();
+    return;
+  }
+
   upload_task_->Start();
 
   // Ensure the handler and content_analysis_info_ are destroyed as soon as they

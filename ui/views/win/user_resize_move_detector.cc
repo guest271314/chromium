@@ -10,6 +10,8 @@
 
 namespace views {
 
+static bool g_in_move_resize_loop = false;
+
 UserResizeMoveDetector::UserResizeMoveDetector(
     HWNDMessageHandlerDelegate* hwnd_delegate)
     : hwnd_delegate_(hwnd_delegate) {}
@@ -17,6 +19,9 @@ UserResizeMoveDetector::UserResizeMoveDetector(
 void UserResizeMoveDetector::OnEnterSizeMove() {
   if (state_ == State::kNotResizing) {
     state_ = State::kInSizeMove;
+    // The native modal size/move loop is on the stack from here until
+    // WM_EXITSIZEMOVE.
+    g_in_move_resize_loop = true;
   }
 }
 
@@ -40,7 +45,13 @@ void UserResizeMoveDetector::OnExitSizeMove() {
   } else if (state_ == State::kInMoving) {
     hwnd_delegate_->HandleEndUserDrag();
   }
+  g_in_move_resize_loop = false;
   state_ = State::kNotResizing;
+}
+
+// static
+bool UserResizeMoveDetector::InMoveResizeLoop() {
+  return g_in_move_resize_loop;
 }
 
 }  // namespace views

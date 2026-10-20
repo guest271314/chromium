@@ -15,6 +15,7 @@ import androidx.test.filters.SmallTest;
 import androidx.test.platform.app.InstrumentationRegistry;
 import androidx.test.runner.lifecycle.Stage;
 
+import org.hamcrest.Matchers;
 import org.junit.After;
 import org.junit.Assert;
 import org.junit.Before;
@@ -24,6 +25,7 @@ import org.junit.runner.RunWith;
 
 import org.chromium.base.ApplicationStatus;
 import org.chromium.base.ContextUtils;
+import org.chromium.base.DeviceInfo;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.params.ParameterAnnotations;
 import org.chromium.base.test.params.ParameterProvider;
@@ -32,6 +34,7 @@ import org.chromium.base.test.params.ParameterizedRunner;
 import org.chromium.base.test.util.ApplicationTestUtils;
 import org.chromium.base.test.util.CallbackHelper;
 import org.chromium.base.test.util.CommandLineFlags;
+import org.chromium.base.test.util.Criteria;
 import org.chromium.base.test.util.CriteriaHelper;
 import org.chromium.base.test.util.DoNotBatch;
 import org.chromium.base.test.util.MinAndroidSdkLevel;
@@ -40,7 +43,6 @@ import org.chromium.chrome.browser.incognito.IncognitoUtils;
 import org.chromium.chrome.browser.multiwindow.MultiInstanceManager.PersistedInstanceType;
 import org.chromium.chrome.browser.multiwindow.MultiWindowUtils;
 import org.chromium.chrome.browser.tab.Tab;
-import org.chromium.chrome.browser.tab.TabCreationState;
 import org.chromium.chrome.browser.tab.TabLaunchType;
 import org.chromium.chrome.browser.tabmodel.TabModelSelector;
 import org.chromium.chrome.browser.tabmodel.TabModelSelectorObserver;
@@ -90,8 +92,7 @@ public class LauncherShortcutTest {
                     TabModelSelectorObserver tabModelSelectorObserver =
                             new TabModelSelectorObserver() {
                                 @Override
-                                public void onNewTabCreated(
-                                        Tab tab, @TabCreationState int creationState) {
+                                public void onNewTabCreated(Tab tab) {
                                     mTabAddedCallback.notifyCalled();
                                 }
                             };
@@ -102,7 +103,7 @@ public class LauncherShortcutTest {
     @After
     public void tearDown() {
         ShortcutManager shortcutManager =
-                mActivityTestRule.getActivity().getSystemService(ShortcutManager.class);
+                ContextUtils.getApplicationContext().getSystemService(ShortcutManager.class);
         List<String> idsToRemove = new ArrayList<>();
         idsToRemove.add(LauncherShortcutActivity.DYNAMIC_OPEN_NEW_INCOGNITO_TAB_ID);
         idsToRemove.add(LauncherShortcutActivity.DYNAMIC_OPEN_NEW_WINDOW_ID);
@@ -112,6 +113,46 @@ public class LauncherShortcutTest {
         List<ShortcutInfo> remainingShortcuts = shortcutManager.getDynamicShortcuts();
         Assert.assertEquals(
                 "Dynamic shortcuts should be cleared in setUp", 0, remainingShortcuts.size());
+    }
+
+    @Test
+    @MediumTest
+    @MinAndroidSdkLevel(VERSION_CODES.S)
+    public void testLauncherShortcut_OpenIncognitoWhenOnlyIncognitoInstancesExist()
+            throws Exception {
+        IncognitoUtils.setShouldOpenIncognitoAsWindowForTesting(true);
+
+        ChromeTabbedActivity incognitoActivity =
+                mActivityTestRule.getActivityTestRule().newIncognitoWindowFromMenu();
+
+        ChromeTabbedActivity regularActivity = mActivityTestRule.getActivity();
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    regularActivity.finishAndRemoveTask();
+                });
+
+        CriteriaHelper.pollUiThread(
+                () -> {
+                    Criteria.checkThat(
+                            MultiWindowUtils.getInstanceCount(
+                                    PersistedInstanceType.ACTIVE | PersistedInstanceType.REGULAR),
+                            Matchers.is(0));
+                });
+
+        TabModelSelector incognitoSelector = incognitoActivity.getTabModelSelector();
+        int initialTabCount =
+                ThreadUtils.runOnUiThreadBlocking(() -> incognitoSelector.getTotalTabCount());
+
+        Intent intent = new Intent(LauncherShortcutActivity.ACTION_OPEN_NEW_TAB);
+        intent.setClass(incognitoActivity, LauncherShortcutActivity.class);
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        ContextUtils.getApplicationContext().startActivity(intent);
+
+        CriteriaHelper.pollUiThread(
+                () -> {
+                    Criteria.checkThat(
+                            incognitoSelector.getTotalTabCount(), Matchers.is(initialTabCount + 1));
+                });
     }
 
     @Test
@@ -132,51 +173,62 @@ public class LauncherShortcutTest {
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
         InstrumentationRegistry.getInstrumentation().startActivitySync(intent);
         if (incognito && IncognitoUtils.shouldOpenIncognitoAsWindow()) {
-            List<Activity> runningActivities = ApplicationStatus.getRunningActivities();
-            Assert.assertEquals(
-                    "Incorrect number of running activities.", 2, runningActivities.size());
-            Assert.assertTrue(
-                    "Running activities should contain a regular ChromeTabbedActivity.",
-                    runningActivities.stream()
-                            .anyMatch(
-                                    activity ->
-                                            activity instanceof ChromeTabbedActivity cta
-                                                    && !cta.isIncognitoWindow()));
-            Assert.assertTrue(
-                    "Running activities should contain an incognito ChromeTabbedActivity.",
-                    runningActivities.stream()
-                            .anyMatch(
-                                    activity ->
-                                            activity instanceof ChromeTabbedActivity cta
-                                                    && cta.isIncognitoWindow()));
+            CriteriaHelper.pollUiThread(
+                    () -> {
+                        List<Activity> runningActivities = ApplicationStatus.getRunningActivities();
+                        Criteria.checkThat(
+                                "Incorrect number of running activities.",
+                                runningActivities.size(),
+                                Matchers.is(2));
+                        Criteria.checkThat(
+                                "Running activities should contain a regular"
+                                        + " ChromeTabbedActivity.",
+                                runningActivities.stream()
+                                        .anyMatch(
+                                                activity ->
+                                                        activity instanceof ChromeTabbedActivity cta
+                                                                && !cta.isIncognitoWindow()),
+                                Matchers.is(true));
+                        Criteria.checkThat(
+                                "Running activities should contain an incognito"
+                                        + " ChromeTabbedActivity.",
+                                runningActivities.stream()
+                                        .anyMatch(
+                                                activity ->
+                                                        activity instanceof ChromeTabbedActivity cta
+                                                                && cta.isIncognitoWindow()),
+                                Matchers.is(true));
+                    });
         } else {
-        mTabAddedCallback.waitForCallback(0);
-        // Verify NTP was created.
-        Tab activityTab = mActivityTestRule.getActivityTab();
-        Assert.assertEquals(
-                "Incorrect tab launch type.",
-                TabLaunchType.FROM_LAUNCHER_SHORTCUT,
-                activityTab.getLaunchType());
+            mTabAddedCallback.waitForCallback(0);
+            // Verify NTP was created.
+            Tab activityTab = mActivityTestRule.getActivityTab();
+            Assert.assertEquals(
+                    "Incorrect tab launch type.",
+                    TabLaunchType.FROM_LAUNCHER_SHORTCUT,
+                    activityTab.getLaunchType());
 
-        Assert.assertTrue(
-                "Tab should be an NTP. Tab url: " + ChromeTabUtils.getUrlOnUiThread(activityTab),
-                UrlUtilities.isNtpUrl(ChromeTabUtils.getUrlOnUiThread(activityTab)));
+            Assert.assertTrue(
+                    "Tab should be an NTP. Tab url: "
+                            + ChromeTabUtils.getUrlOnUiThread(activityTab),
+                    UrlUtilities.isNtpUrl(ChromeTabUtils.getUrlOnUiThread(activityTab)));
 
-        // Verify tab model.
-        Assert.assertEquals(
-                "Incorrect tab model selected.",
-                incognito,
-                mTabModelSelector.isIncognitoSelected());
-        int tabCount = ThreadUtils.runOnUiThreadBlocking(() -> mTabModelSelector.getTotalTabCount());
-        Assert.assertEquals("Incorrect total tab count.", initialTabCount + 1, tabCount);
-        Assert.assertEquals(
-                "Incorrect normal tab count.",
-                incognito ? initialTabCount : initialTabCount + 1,
-                mActivityTestRule.tabsCount(false));
-        Assert.assertEquals(
-                "Incorrect incognito tab count.",
-                incognito ? 1 : 0,
-                mActivityTestRule.tabsCount(true));
+            // Verify tab model.
+            Assert.assertEquals(
+                    "Incorrect tab model selected.",
+                    incognito,
+                    mTabModelSelector.isIncognitoSelected());
+            int tabCount =
+                    ThreadUtils.runOnUiThreadBlocking(() -> mTabModelSelector.getTotalTabCount());
+            Assert.assertEquals("Incorrect total tab count.", initialTabCount + 1, tabCount);
+            Assert.assertEquals(
+                    "Incorrect normal tab count.",
+                    incognito ? initialTabCount : initialTabCount + 1,
+                    mActivityTestRule.tabsCount(false));
+            Assert.assertEquals(
+                    "Incorrect incognito tab count.",
+                    incognito ? 1 : 0,
+                    mActivityTestRule.tabsCount(true));
         }
     }
 
@@ -250,47 +302,92 @@ public class LauncherShortcutTest {
     }
 
     private void testDynamicShortcutsInternal() {
-        List<String> expectedLabels;
-        int expectedSize;
+        List<String> expectedLabelsWhenIncognitoEnabled;
+        List<String> expectedLabelsWhenIncognitoDisabled;
+        int expectedSizeWhenIncognitoEnabled;
+        int expectedSizeWhenIncognitoDisabled;
         if (IncognitoUtils.shouldOpenIncognitoAsWindow()) {
-            expectedLabels = Arrays.asList("New window", "New Incognito window");
-            expectedSize = 2;
+            if (DeviceInfo.isDesktop()) {
+                expectedLabelsWhenIncognitoEnabled = Arrays.asList("New Incognito window");
+                expectedLabelsWhenIncognitoDisabled = Arrays.asList();
+                expectedSizeWhenIncognitoEnabled = 1;
+                expectedSizeWhenIncognitoDisabled = 0;
+            } else {
+                expectedLabelsWhenIncognitoEnabled =
+                        Arrays.asList("New window", "New Incognito window");
+                expectedLabelsWhenIncognitoDisabled = Arrays.asList("New window");
+                expectedSizeWhenIncognitoEnabled = 2;
+                expectedSizeWhenIncognitoDisabled = 1;
+            }
         } else {
-            expectedLabels = Arrays.asList("New Incognito tab");
-            expectedSize = 1;
+            expectedLabelsWhenIncognitoEnabled = Arrays.asList("New Incognito tab");
+            expectedLabelsWhenIncognitoDisabled = Arrays.asList();
+            expectedSizeWhenIncognitoEnabled = 1;
+            expectedSizeWhenIncognitoDisabled = 0;
         }
 
         IncognitoUtils.setEnabledForTesting(true);
-        LauncherShortcutActivity.updateIncognitoShortcut(
-                mActivityTestRule.getActivity(), mActivityTestRule.getProfile(false));
+        LauncherShortcutActivity.updateDynamicLauncherShortcuts(
+                mActivityTestRule.getProfile(false));
         ShortcutManager shortcutManager =
                 mActivityTestRule.getActivity().getSystemService(ShortcutManager.class);
-        List<ShortcutInfo> shortcuts = shortcutManager.getDynamicShortcuts();
-        List<String> actualLabels =
-                shortcuts.stream()
-                        .map(shortcut -> shortcut.getLongLabel().toString())
-                        .collect(Collectors.toList());
 
-        Assert.assertEquals(
-                "The number of shortcuts was incorrect.", expectedSize, actualLabels.size());
-        Assert.assertTrue(
-                "The list did not contain all expected labels.",
-                actualLabels.containsAll(expectedLabels));
+        CriteriaHelper.pollInstrumentationThread(
+                () -> {
+                    List<ShortcutInfo> shortcuts = shortcutManager.getDynamicShortcuts();
+                    List<String> actualLabels =
+                            shortcuts.stream()
+                                    .map(shortcut -> shortcut.getLongLabel().toString())
+                                    .collect(Collectors.toList());
+                    Criteria.checkThat(
+                            "The number of shortcuts was incorrect.",
+                            actualLabels.size(),
+                            Matchers.is(expectedSizeWhenIncognitoEnabled));
+                    Criteria.checkThat(
+                            "The list did not contain all expected labels.",
+                            actualLabels.containsAll(expectedLabelsWhenIncognitoEnabled),
+                            Matchers.is(true));
+                });
 
         IncognitoUtils.setEnabledForTesting(false);
-        LauncherShortcutActivity.updateIncognitoShortcut(
-                mActivityTestRule.getActivity(), mActivityTestRule.getProfile(false));
-        shortcuts = shortcutManager.getDynamicShortcuts();
-        Assert.assertEquals("Incorrect number of dynamic shortcuts.", 0, shortcuts.size());
+        LauncherShortcutActivity.updateDynamicLauncherShortcuts(
+                mActivityTestRule.getProfile(false));
+        CriteriaHelper.pollInstrumentationThread(
+                () -> {
+                    List<ShortcutInfo> shortcuts = shortcutManager.getDynamicShortcuts();
+                    List<String> actualLabels =
+                            shortcuts.stream()
+                                    .map(shortcut -> shortcut.getLongLabel().toString())
+                                    .collect(Collectors.toList());
+                    Criteria.checkThat(
+                            "Incorrect number of dynamic shortcuts.",
+                            actualLabels.size(),
+                            Matchers.is(expectedSizeWhenIncognitoDisabled));
+                    Criteria.checkThat(
+                            "The list did not contain all expected labels.",
+                            actualLabels.containsAll(expectedLabelsWhenIncognitoDisabled),
+                            Matchers.is(true));
+                });
 
         IncognitoUtils.setEnabledForTesting(true);
-        LauncherShortcutActivity.updateIncognitoShortcut(
-                mActivityTestRule.getActivity(), mActivityTestRule.getProfile(false));
-        shortcuts = shortcutManager.getDynamicShortcuts();
-        Assert.assertEquals(
-                "Incorrect number of dynamic shortcuts after re-enabling incognito.",
-                expectedSize,
-                shortcuts.size());
+        LauncherShortcutActivity.updateDynamicLauncherShortcuts(
+                mActivityTestRule.getProfile(false));
+        CriteriaHelper.pollInstrumentationThread(
+                () -> {
+                    List<ShortcutInfo> shortcuts = shortcutManager.getDynamicShortcuts();
+                    List<String> actualLabels =
+                            shortcuts.stream()
+                                    .map(shortcut -> shortcut.getLongLabel().toString())
+                                    .collect(Collectors.toList());
+                    Criteria.checkThat(
+                            "Incorrect number of dynamic shortcuts after re-enabling incognito.",
+                            actualLabels.size(),
+                            Matchers.is(expectedSizeWhenIncognitoEnabled));
+                    Criteria.checkThat(
+                            "The list did not contain all expected labels.",
+                            actualLabels.containsAll(expectedLabelsWhenIncognitoEnabled),
+                            Matchers.is(true));
+                });
     }
 
     @Test
@@ -301,14 +398,19 @@ public class LauncherShortcutTest {
 
     private void testDynamicShortcuts_LanguageChangeInternal() {
         IncognitoUtils.setEnabledForTesting(true);
-        LauncherShortcutActivity.updateIncognitoShortcut(
-                mActivityTestRule.getActivity(), mActivityTestRule.getProfile(false));
+        LauncherShortcutActivity.updateDynamicLauncherShortcuts(
+                mActivityTestRule.getProfile(false));
 
         List<String> expectedLabels;
         int expectedSize;
         if (IncognitoUtils.shouldOpenIncognitoAsWindow()) {
-            expectedLabels = Arrays.asList("New window", "New Incognito window");
-            expectedSize = 2;
+            if (DeviceInfo.isDesktop()) {
+                expectedLabels = Arrays.asList("New Incognito window");
+                expectedSize = 1;
+            } else {
+                expectedLabels = Arrays.asList("New window", "New Incognito window");
+                expectedSize = 2;
+            }
         } else {
             expectedLabels = Arrays.asList("New Incognito tab");
             expectedSize = 1;
@@ -316,34 +418,84 @@ public class LauncherShortcutTest {
 
         ShortcutManager shortcutManager =
                 mActivityTestRule.getActivity().getSystemService(ShortcutManager.class);
-        List<ShortcutInfo> shortcuts = shortcutManager.getDynamicShortcuts();
-        List<String> actualLabels =
-                shortcuts.stream()
-                        .map(shortcut -> shortcut.getLongLabel().toString())
-                        .collect(Collectors.toList());
 
-        Assert.assertEquals(
-                "The number of shortcuts was incorrect.", expectedSize, actualLabels.size());
-        Assert.assertTrue(
-                "The list did not contain all expected labels.",
-                actualLabels.containsAll(expectedLabels));
+        CriteriaHelper.pollInstrumentationThread(
+                () -> {
+                    List<ShortcutInfo> shortcuts = shortcutManager.getDynamicShortcuts();
+                    List<String> actualLabels =
+                            shortcuts.stream()
+                                    .map(shortcut -> shortcut.getLongLabel().toString())
+                                    .collect(Collectors.toList());
+                    Criteria.checkThat(
+                            "The number of shortcuts was incorrect.",
+                            actualLabels.size(),
+                            Matchers.is(expectedSize));
+                    Criteria.checkThat(
+                            "The list did not contain all expected labels.",
+                            actualLabels.containsAll(expectedLabels),
+                            Matchers.is(true));
+                });
 
         LauncherShortcutActivity.setDynamicShortcutStringForTesting("Foo");
-        LauncherShortcutActivity.updateIncognitoShortcut(
-                mActivityTestRule.getActivity(), mActivityTestRule.getProfile(false));
-        shortcuts = shortcutManager.getDynamicShortcuts();
-        Assert.assertEquals(
-                "Incorrect number of dynamic shortcuts after updating.",
-                expectedSize,
-                shortcuts.size());
+        LauncherShortcutActivity.updateDynamicLauncherShortcuts(
+                mActivityTestRule.getProfile(false));
 
-        Assert.assertEquals(
-                "Incorrect label after updating.", "Foo", shortcuts.get(0).getLongLabel());
+        CriteriaHelper.pollInstrumentationThread(
+                () -> {
+                    List<ShortcutInfo> shortcuts = shortcutManager.getDynamicShortcuts();
+                    Criteria.checkThat(
+                            "Incorrect number of dynamic shortcuts after updating.",
+                            shortcuts.size(),
+                            Matchers.is(expectedSize));
+                    Criteria.checkThat(
+                            "Incorrect label after updating.",
+                            shortcuts.get(0).getLongLabel().toString(),
+                            Matchers.is("Foo"));
+                });
     }
 
     @Test
     @SmallTest
     public void testDynamicShortcuts_LanguageChange() {
         testDynamicShortcuts_LanguageChangeInternal();
+    }
+
+    @Test
+    @MediumTest
+    public void testLauncherShortcut_DuplicateIntentsDeduplicated() throws Exception {
+        int initialTabCount =
+                ThreadUtils.runOnUiThreadBlocking(() -> mTabModelSelector.getTotalTabCount());
+
+        android.content.Context context = ContextUtils.getApplicationContext();
+        Intent intent1 = new Intent(LauncherShortcutActivity.ACTION_OPEN_NEW_TAB);
+        intent1.setClass(context, LauncherShortcutActivity.class);
+        intent1.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+
+        Intent intent2 = new Intent(LauncherShortcutActivity.ACTION_OPEN_NEW_TAB);
+        intent2.setClass(context, LauncherShortcutActivity.class);
+        intent2.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    context.startActivity(intent1);
+                    context.startActivity(intent2);
+                });
+
+        mTabAddedCallback.waitForCallback(0);
+
+        // Wait a little bit to make sure no extra tab is added by the duplicate intent.
+        try {
+            mTabAddedCallback.waitForCallback(1, 1, 2, java.util.concurrent.TimeUnit.SECONDS);
+            Assert.fail("A second tab was added when duplicate intents were sent back-to-back!");
+        } catch (TimeoutException e) {
+            // Expected: no second tab added.
+        }
+
+        int tabCount =
+                ThreadUtils.runOnUiThreadBlocking(() -> mTabModelSelector.getTotalTabCount());
+        Assert.assertEquals(
+                "Incorrect total tab count. Duplicate intent was not deduplicated.",
+                initialTabCount + 1,
+                tabCount);
     }
 }

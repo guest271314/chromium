@@ -6,12 +6,10 @@
 #define COMPONENTS_PAYMENTS_CONTENT_CONTENT_PAYMENT_REQUEST_DELEGATE_H_
 
 #include <memory>
-#include <optional>
 #include <string>
 
 #include "base/functional/callback.h"
 #include "base/memory/weak_ptr.h"
-#include "base/unguessable_token.h"
 #include "components/payments/content/payment_request_display_manager.h"
 #include "components/payments/core/payment_request_delegate.h"
 
@@ -21,6 +19,10 @@ class scoped_refptr;
 namespace content {
 class RenderFrameHost;
 }  // namespace content
+
+namespace gfx {
+class Size;
+}  // namespace gfx
 
 namespace webauthn {
 class InternalAuthenticator;
@@ -64,6 +66,7 @@ class ContentPaymentRequestDelegate : public PaymentRequestDelegate {
   // true/false to indicate success/failure.
   virtual void EmbedPaymentHandlerWindow(
       const GURL& url,
+      const std::optional<gfx::Size>& preferred_web_contents_size,
       PaymentHandlerOpenWindowCallback callback) = 0;
 
   // Returns whether user interaction is enabled. (False when showing a
@@ -85,12 +88,6 @@ class ContentPaymentRequestDelegate : public PaymentRequestDelegate {
 
   virtual PaymentRequestDialog* GetDialogForTesting() = 0;
   virtual const base::WeakPtr<PaymentUIObserver> GetPaymentUIObserver()
-      const = 0;
-  // Returns an instance id for the TWA that invokes the payment app. The
-  // instance id is used to find the TWA window in the ash so that we can
-  // attach the payment dialog to it. This interface should only be used
-  // in ChromeOS.
-  virtual std::optional<base::UnguessableToken> GetChromeOSTWAInstanceId()
       const = 0;
 
   // Obtains the macOS keychain access group for the secure payment confirmation

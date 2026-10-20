@@ -13,6 +13,7 @@
 #include <utility>
 #include <vector>
 
+#include "base/byte_size.h"
 #include "base/containers/span.h"
 #include "base/feature_list.h"
 #include "base/memory/ref_counted_memory.h"
@@ -178,7 +179,7 @@ class MockRequestClient : public ResourceRequestClient {
       data_ += ReadOneChunk(&body);
     }
   }
-  void OnTransferSizeUpdated(int transfer_size_diff) override {
+  void OnTransferSizeUpdated(base::ByteSize transfer_size_diff) override {
     transfer_size_updated_called_ = true;
   }
   void OnCompletedRequest(
@@ -242,12 +243,11 @@ class MockLoader : public network::mojom::URLLoader {
 
   // network::mojom::URLLoader implementation:
   void FollowRedirect(
-      const std::vector<std::string>& removed_headers,
-      const net::HttpRequestHeaders& modified_headers,
-      const net::HttpRequestHeaders& modified_cors_exempt_headers,
+      network::HttpRequestHeadersUpdateParams headers_update_params,
       const std::optional<GURL>& new_url) override {
     if (follow_redirect_callback_) {
-      follow_redirect_callback_.Run(removed_headers, modified_headers);
+      follow_redirect_callback_.Run(headers_update_params.removed_headers,
+                                    headers_update_params.modified_headers);
     }
   }
   void SetPriority(net::RequestPriority priority,
@@ -301,11 +301,6 @@ class DummyCodeCacheHost final : public mojom::blink::CodeCacheHost {
                            const KURL& url) override {
     did_clear_code_cache_entry_ = true;
   }
-  void DidGenerateCacheableMetadataInCacheStorage(
-      const KURL& url,
-      base::Time expected_response_time,
-      mojo_base::BigBuffer data,
-      const String& cache_storage_cache_name) override {}
 
   blink::CodeCacheHost* GetCodeCacheHost() { return host_.get(); }
   bool did_clear_code_cache_entry() const {
@@ -1458,7 +1453,8 @@ TEST_F(ResourceRequestSenderTest,
 
   auto response = CreateResponse();
   response->was_fetched_via_service_worker = true;
-  response->cache_storage_cache_name = "dummy";
+  response->service_worker_response_source =
+      network::mojom::FetchResponseSource::kCacheStorage;
 
   // Send a cached data from CodeCacheHost.
   std::vector<uint8_t> cache_data{1, 2, 3, 4, 5, 6};
@@ -2158,8 +2154,9 @@ class TestingPlatformForWebUIBundledCodeCache : public TestingPlatformSupport {
   ~TestingPlatformForWebUIBundledCodeCache() override = default;
 
   // TestingPlatformSupport:
-  base::RefCountedMemory* GetDataResourceBytes(int resource_id) override {
-    return resource_data_.get();
+  scoped_refptr<base::RefCountedMemory> GetDataResourceBytes(
+      int resource_id) override {
+    return resource_data_;
   }
   std::optional<int> GetWebUIBundledCodeCacheResourceId(
       const GURL& resource_url) override {

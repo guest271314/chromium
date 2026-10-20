@@ -16,6 +16,7 @@
 #include "cc/animation/animation.h"
 #include "cc/animation/animation_host.h"
 #include "cc/animation/animation_id_provider.h"
+#include "cc/base/features.h"
 #include "cc/layers/content_layer_client.h"
 #include "cc/layers/effect_tree_layer_list_iterator.h"
 #include "cc/layers/layer.h"
@@ -94,8 +95,33 @@ class DrawPropertiesTestBase : public LayerTreeImplTestBase {
     return layer ? host_impl()->pending_tree()->LayerById(layer->id())
                  : nullptr;
   }
+  RenderSurfaceImpl* GetRenderSurface(LayerImpl* layer) {
+    if (!layer) {
+      return nullptr;
+    }
+    auto& effect_tree = GetPropertyTrees(layer)->effect_tree_mutable();
+    if (auto* surface =
+            effect_tree.GetRenderSurface(layer->effect_tree_index())) {
+      return surface;
+    }
+    return effect_tree.GetRenderSurface(GetEffectNode(layer)->target_id);
+  }
+  const RenderSurfaceImpl* GetRenderSurface(const LayerImpl* layer) const {
+    if (!layer) {
+      return nullptr;
+    }
+    const auto& effect_tree = GetPropertyTrees(layer)->effect_tree();
+    if (const auto* surface =
+            effect_tree.GetRenderSurface(layer->effect_tree_index())) {
+      return surface;
+    }
+    return effect_tree.GetRenderSurface(GetEffectNode(layer)->target_id);
+  }
   RenderSurfaceImpl* GetRenderSurfaceImpl(const scoped_refptr<Layer>& layer) {
     return GetRenderSurface(ImplOf(layer));
+  }
+  RenderSurfaceImpl* GetRenderSurface(int effect_id) {
+    return host_impl()->active_tree()->GetRenderSurface(effect_id);
   }
 
   // Updates main thread draw properties, commits main thread tree to
@@ -1174,8 +1200,10 @@ TEST_F(DrawPropertiesTest, ClipRectCullsRenderSurfaces) {
   UpdateActiveTreeDrawProperties();
 
   ASSERT_EQ(2U, GetRenderSurfaceList().size());
-  EXPECT_EQ(root->element_id(), GetRenderSurfaceList().at(0)->id());
-  EXPECT_EQ(child->element_id(), GetRenderSurfaceList().at(1)->id());
+  EXPECT_EQ(root->element_id(),
+            GetRenderSurface(GetRenderSurfaceList().at(0))->id());
+  EXPECT_EQ(child->element_id(),
+            GetRenderSurface(GetRenderSurfaceList().at(1))->id());
 }
 
 TEST_F(DrawPropertiesTest, ClipRectCullsSurfaceWithoutVisibleContent) {
@@ -1219,7 +1247,8 @@ TEST_F(DrawPropertiesTest, ClipRectCullsSurfaceWithoutVisibleContent) {
 
   // We should cull child and grand_child from the GetRenderSurfaceList.
   ASSERT_EQ(1U, GetRenderSurfaceList().size());
-  EXPECT_EQ(root->element_id(), GetRenderSurfaceList().at(0)->id());
+  EXPECT_EQ(root->element_id(),
+            GetRenderSurface(GetRenderSurfaceList().at(0))->id());
 }
 
 TEST_F(DrawPropertiesTest, IsClippedIsSetCorrectlyLayerImpl) {
@@ -3948,11 +3977,14 @@ TEST_F(DrawPropertiesTestWithLayerTree, SubtreeHiddenWithCopyRequest) {
   // parent since it has opacity and two drawing descendants, one for the parent
   // since it owns a surface, and one for the copy_layer.
   ASSERT_EQ(4u, GetRenderSurfaceList().size());
-  EXPECT_EQ(root->element_id(), GetRenderSurfaceList().at(0)->id());
+  EXPECT_EQ(root->element_id(),
+            GetRenderSurface(GetRenderSurfaceList().at(0))->id());
   EXPECT_EQ(copy_grand_parent->element_id(),
-            GetRenderSurfaceList().at(1)->id());
-  EXPECT_EQ(copy_parent->element_id(), GetRenderSurfaceList().at(2)->id());
-  EXPECT_EQ(copy_layer->element_id(), GetRenderSurfaceList().at(3)->id());
+            GetRenderSurface(GetRenderSurfaceList().at(1))->id());
+  EXPECT_EQ(copy_parent->element_id(),
+            GetRenderSurface(GetRenderSurfaceList().at(2))->id());
+  EXPECT_EQ(copy_layer->element_id(),
+            GetRenderSurface(GetRenderSurfaceList().at(3))->id());
 
   // The root render surface should have 2 contributing layers.
   EXPECT_EQ(2, GetRenderSurfaceImpl(root)->num_contributors());
@@ -4024,7 +4056,8 @@ TEST_F(DrawPropertiesTestWithLayerTree, ClippedOutCopyRequest) {
 
   // We should have two render surface, as the others are clipped out.
   ASSERT_EQ(2u, GetRenderSurfaceList().size());
-  EXPECT_EQ(root->element_id(), GetRenderSurfaceList().at(0)->id());
+  EXPECT_EQ(root->element_id(),
+            GetRenderSurface(GetRenderSurfaceList().at(0))->id());
 
   // The root render surface should have only 2 contributing layer, since the
   // other layers are clipped away.
@@ -5151,15 +5184,17 @@ TEST_F(DrawPropertiesStickyPositionTest, StickyPositionBottomRounded) {
 
   // Once we get past the top of the container it moves to be aligned 10px
   // up from the the bottom of the scroller.
+  // bottom_offset = 10.5 causes bottom_delta = -45.5 at this scroll position.
+  // floor(-45.5 + 0.5) = floor(-45.0) = -45. Screen y = 150 + (-45) - 25 = 80.
   SetScrollOffsetDelta(scroller_impl_, gfx::Vector2dF(0.f, 25.f));
   UpdateActiveTreeDrawProperties();
   EXPECT_VECTOR2DF_EQ(
-      gfx::Vector2dF(0.f, 79.f),
+      gfx::Vector2dF(0.f, 80.f),
       sticky_pos_impl_->ScreenSpaceTransform().To2dTranslation());
   SetScrollOffsetDelta(scroller_impl_, gfx::Vector2dF(0.f, 30.f));
   UpdateActiveTreeDrawProperties();
   EXPECT_VECTOR2DF_EQ(
-      gfx::Vector2dF(0.f, 79.f),
+      gfx::Vector2dF(0.f, 80.f),
       sticky_pos_impl_->ScreenSpaceTransform().To2dTranslation());
 }
 
@@ -5621,6 +5656,38 @@ TEST_F(DrawPropertiesStickyPositionTest, StickyPositionNested) {
       inner_sticky_impl->ScreenSpaceTransform().To2dTranslation());
 }
 
+TEST_F(DrawPropertiesStickyPositionTest,
+       StickyPositionBottomPixelSnapRounding) {
+  CreateTree();
+
+  // Element at y=90, height=10, bottom at 100.
+  // constraint_box_rect bottom = 100 (integer, no clip mismatch).
+  SetPostTranslation(sticky_pos_.get(), gfx::Vector2dF(0, 90));
+  auto& sticky_position = EnsureStickyData(sticky_pos_.get()).constraints;
+  sticky_position.is_anchored_bottom = true;
+  sticky_position.bottom_offset = 0.0f;
+  sticky_position.constraint_box_rect = gfx::RectF(0, 0, 100, 100);
+  sticky_position.scroll_container_relative_sticky_box_rect =
+      gfx::RectF(0, 90, 10, 10);
+  sticky_position.scroll_container_relative_containing_block_rect =
+      gfx::RectF(0, 0, 50, 200);
+  // pixel_snap_offset of -0.5 is where LayoutUnit::Round and std::round
+  // disagree. LayoutUnit::Round(-0.5)=0, std::round(-0.5)=-1.
+  sticky_position.pixel_snap_offset = gfx::Vector2dF(0.0f, -0.5f);
+
+  CommitAndUpdateImplPointers();
+
+  // At scroll=0: clip bottom = 100, sticky_box bottom = 100.
+  // bottom_delta = min(0, 100 - 100) = 0. No sticking needed.
+  // sticky_offset = 0 + pixel_snap(-0.5) = -0.5.
+  //
+  // With std::round: round(-0.5) = -1. Element at 90 + (-1) = 89. Wrong!
+  // With floor(x+0.5): floor(0) = 0. Element at 90 + 0 = 90. Correct!
+  EXPECT_VECTOR2DF_EQ(
+      gfx::Vector2dF(0.f, 90.f),
+      sticky_pos_impl_->ScreenSpaceTransform().To2dTranslation());
+}
+
 class DrawPropertiesAnchorPositionScrollTest : public DrawPropertiesTest {
  protected:
   void CreateRoot() {
@@ -5720,6 +5787,28 @@ TEST_F(DrawPropertiesAnchorPositionScrollTest, Basics) {
   EXPECT_VECTOR2DF_EQ(
       gfx::Vector2dF(-5, -5),
       GetImpl(anchored.get())->ScreenSpaceTransform().To2dTranslation());
+}
+
+TEST_F(DrawPropertiesAnchorPositionScrollTest, ScrollSnapping) {
+  CreateRoot();
+
+  scoped_refptr<Layer> container;
+  scoped_refptr<Layer> scroller;
+  std::tie(container, scroller) = CreateScroller(root_.get());
+
+  scoped_refptr<Layer> anchored =
+      CreateAnchored(root_.get(), {scroller->element_id()});
+  SetPostTranslation(anchored.get(), gfx::Vector2dF(10, 20));
+  Commit();
+
+  LayerImpl* anchored_impl = GetImpl(anchored.get());
+  EXPECT_FALSE(GetTransformNode(anchored_impl)->should_be_snapped);
+
+  SetScrollOffsetDelta(GetImpl(scroller.get()), gfx::Vector2dF(5.1f, 8.1f));
+  UpdateActiveTreeDrawProperties();
+
+  EXPECT_VECTOR2DF_EQ(gfx::Vector2dF(5, 12),
+                      anchored_impl->ScreenSpaceTransform().To2dTranslation());
 }
 
 TEST_F(DrawPropertiesAnchorPositionScrollTest, NestedScrollers) {
@@ -6069,10 +6158,11 @@ TEST_F(DrawPropertiesTest, MaximumAnimationScaleFactor) {
 
 static void GatherDrawnLayers(LayerTreeImpl* tree_impl,
                               std::set<LayerImpl*>* drawn_layers) {
-  for (EffectTreeLayerListIterator it(tree_impl);
-       it.state() != EffectTreeLayerListIterator::State::kEnd; ++it) {
+  for (EffectTreeLayerListIterator it(*tree_impl);
+       it.state() != EffectTreeLayerListIterator::State::kEnd;
+       it.Advance(*tree_impl)) {
     if (it.state() == EffectTreeLayerListIterator::State::kLayer) {
-      drawn_layers->insert(it.current_layer());
+      drawn_layers->insert(it.CurrentLayer(*tree_impl));
     }
 
     if (it.state() !=
@@ -7919,6 +8009,112 @@ TEST_F(DrawPropertiesTest, SublayerScaleWithTransformNodeBetweenTwoTargets) {
   EXPECT_EQ(gfx::Rect(15, 15), test_layer->visible_layer_rect());
 }
 
+// Like page_scale_factor for the main frame, external_page_scale_factor
+// magnifies an OOPIF's raster resolution but not its geometry, so a non-root
+// effect surface (opacity/filter/mask) must be sized at that scale to keep text
+// crisp. The root surface is left unmagnified.
+TEST_F(DrawPropertiesTest, OopifNonRootEffectSurfaceSizedAtExternalPageScale) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndEnableFeature(
+      features::kSizeOopifEffectSurfacesAtExternalScale);
+
+  LayerImpl* root = root_layer();
+  LayerImpl* render_surface = AddLayerInActiveTree<LayerImpl>();
+  LayerImpl* test_layer = AddLayerInActiveTree<LayerImpl>();
+
+  root->SetBounds(gfx::Size(30, 30));
+  render_surface->SetBounds(gfx::Size(30, 30));
+  test_layer->SetBounds(gfx::Size(30, 30));
+  test_layer->SetDrawsContent(true);
+
+  CopyProperties(root, render_surface);
+  CreateEffectNode(render_surface).render_surface_reason =
+      RenderSurfaceReason::kTest;
+  CopyProperties(render_surface, test_layer);
+
+  host_impl()->active_tree()->SetExternalPageScaleFactor(2.f);
+  UpdateActiveTreeDrawProperties();
+
+  // The non-root effect surface is enlarged by the external page scale factor.
+  EXPECT_EQ(gfx::Vector2dF(2.f, 2.f),
+            GetEffectNode(render_surface)->surface_contents_scale);
+  // The root surface is left unmagnified.
+  EXPECT_EQ(gfx::Vector2dF(1.f, 1.f),
+            GetEffectNode(root)->surface_contents_scale);
+}
+
+// The external page scale factor multiplies a non-root effect surface's own
+// scale rather than replacing it.
+TEST_F(DrawPropertiesTest, OopifEffectSurfaceScaleCombinesWithLocalScale) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndEnableFeature(
+      features::kSizeOopifEffectSurfacesAtExternalScale);
+  LayerImpl* root = root_layer();
+  LayerImpl* render_surface = AddLayerInActiveTree<LayerImpl>();
+  LayerImpl* test_layer = AddLayerInActiveTree<LayerImpl>();
+
+  gfx::Transform scale;
+  scale.Scale(2.f, 2.f);
+
+  root->SetBounds(gfx::Size(30, 30));
+  render_surface->SetBounds(gfx::Size(30, 30));
+  test_layer->SetBounds(gfx::Size(30, 30));
+  test_layer->SetDrawsContent(true);
+
+  CopyProperties(root, render_surface);
+  CreateTransformNode(render_surface).local = scale;
+  CreateEffectNode(render_surface).render_surface_reason =
+      RenderSurfaceReason::kTest;
+  CopyProperties(render_surface, test_layer);
+
+  host_impl()->active_tree()->SetExternalPageScaleFactor(2.f);
+  UpdateActiveTreeDrawProperties();
+
+  // Local 2x transform scale multiplied by the 2x external page scale factor.
+  EXPECT_EQ(gfx::Vector2dF(4.f, 4.f),
+            GetEffectNode(render_surface)->surface_contents_scale);
+}
+
+// A non-root k2DScaleTransformWithCompositedDescendants surface rasters at an
+// integer scale (fractional remainder becomes the draw transform). The external
+// page scale factor is applied *before* that ceil so the magnified raster scale
+// is what gets rounded up. This keeps a magnified OOPIF's effect surface
+// seam-free even when the local scale times the external scale is fractional --
+// ceiling after the multiply guarantees an integer raster scale, whereas
+// ceiling first and then multiplying by a fractional external scale would not.
+TEST_F(DrawPropertiesTest,
+       OopifK2DScaleEffectSurfaceCeilsAfterExternalPageScale) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndEnableFeature(
+      features::kSizeOopifEffectSurfacesAtExternalScale);
+  LayerImpl* root = root_layer();
+  LayerImpl* render_surface = AddLayerInActiveTree<LayerImpl>();
+  LayerImpl* test_layer = AddLayerInActiveTree<LayerImpl>();
+
+  gfx::Transform scale;
+  scale.Scale(3.5f, 3.5f);
+
+  root->SetBounds(gfx::Size(30, 30));
+  render_surface->SetBounds(gfx::Size(30, 30));
+  test_layer->SetBounds(gfx::Size(30, 30));
+  test_layer->SetDrawsContent(true);
+
+  CopyProperties(root, render_surface);
+  CreateTransformNode(render_surface).local = scale;
+  CreateEffectNode(render_surface).render_surface_reason =
+      RenderSurfaceReason::k2DScaleTransformWithCompositedDescendants;
+  CopyProperties(render_surface, test_layer);
+
+  host_impl()->active_tree()->SetExternalPageScaleFactor(2.f);
+  UpdateActiveTreeDrawProperties();
+
+  // Local 3.5x scale is multiplied by the 2x external page scale (7.0) and only
+  // then ceiled, so the surface rasters at an integer 7x -- not ceil(3.5)=4
+  // then *2 = 8.
+  EXPECT_EQ(gfx::Vector2dF(7.f, 7.f),
+            GetEffectNode(render_surface)->surface_contents_scale);
+}
+
 TEST_F(DrawPropertiesTest, NoisyTransform) {
   LayerImpl* root = root_layer();
   LayerImpl* render_surface = AddLayerInActiveTree<LayerImpl>();
@@ -8000,8 +8196,8 @@ TEST_F(DrawPropertiesTest, LargeTransformTest) {
   EXPECT_TRUE(is_inf_or_nan);
 
   // The root layer should be in the RenderSurfaceList.
-  EXPECT_TRUE(
-      std::ranges::contains(GetRenderSurfaceList(), GetRenderSurface(root)));
+  EXPECT_TRUE(std::ranges::contains(GetRenderSurfaceList(),
+                                    GetRenderSurface(root)->EffectTreeIndex()));
 }
 
 #if DCHECK_IS_ON()
@@ -8278,12 +8474,14 @@ TEST_F(DrawPropertiesTestWithLayerTree, SubtreeHiddenWithCacheRenderSurface) {
   // parent since it has opacity and two drawing descendants, one for the parent
   // since it owns a surface, and one for the cache.
   ASSERT_EQ(4u, GetRenderSurfaceList().size());
-  EXPECT_EQ(root->element_id(), GetRenderSurfaceList().at(0)->id());
+  EXPECT_EQ(root->element_id(),
+            GetRenderSurface(GetRenderSurfaceList().at(0))->id());
   EXPECT_EQ(cache_grand_parent->element_id(),
-            GetRenderSurfaceList().at(1)->id());
-  EXPECT_EQ(cache_parent->element_id(), GetRenderSurfaceList().at(2)->id());
+            GetRenderSurface(GetRenderSurfaceList().at(1))->id());
+  EXPECT_EQ(cache_parent->element_id(),
+            GetRenderSurface(GetRenderSurfaceList().at(2))->id());
   EXPECT_EQ(cache_render_surface->element_id(),
-            GetRenderSurfaceList().at(3)->id());
+            GetRenderSurface(GetRenderSurfaceList().at(3))->id());
 
   // The root render surface should have 2 contributing layers.
   EXPECT_EQ(2, GetRenderSurfaceImpl(root)->num_contributors());

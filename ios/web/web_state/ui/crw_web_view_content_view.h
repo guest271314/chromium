@@ -19,6 +19,9 @@
 // The fullscreen state of this view
 @property(nonatomic, readonly) CrFullscreenState fullscreenState;
 
+// The MIME type of the currently loaded document.
+@property(nonatomic, strong) NSString* mimeType;
+
 // Initializes the CRWWebViewContentView to display `webView` and passes state
 // of fullscreen mode. This should pass in a default value of
 // CrFullscreenState (e.g., kNotInFullScreen).
@@ -36,6 +39,10 @@
 - (instancetype)initWithFrame:(CGRect)frame NS_UNAVAILABLE;
 
 - (void)updateFullscreenState:(CrFullscreenState)fullscreenState;
+
+// Called when the minimum/maximum viewport insets change.
+- (void)viewportInsetsDidChangeWithMinInset:(UIEdgeInsets)minInset
+                                   maxInset:(UIEdgeInsets)maxInset;
 
 @end
 

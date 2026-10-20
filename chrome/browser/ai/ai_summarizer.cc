@@ -138,12 +138,31 @@ AISummarizer::ToProtoOptions(
 }
 
 // static
-std::string AISummarizer::CombineContexts(std::string_view shared,
-                                          std::string_view input) {
-  std::string result = (!shared.empty() && !input.empty())
-                           ? base::JoinString({shared, input}, " ")
-                           : std::string(shared.empty() ? input : shared);
-  return result.empty() ? result : base::StrCat({result, "\n"});
+optimization_guide::MultimodalMessage AISummarizer::ToInitialRequest(
+    const blink::mojom::AISummarizerCreateOptionsPtr& options) {
+  optimization_guide::proto::SummarizeRequest request;
+  request.set_allocated_options(
+      AISummarizer::ToProtoOptions(options).release());
+  if (options->shared_context.has_value() &&
+      !options->shared_context.value().empty()) {
+    request.set_shared_context(options->shared_context.value());
+  }
+  auto initial_request = optimization_guide::MultimodalMessage(request);
+  // Mark dynamic execution fields as pending so the template stops before them
+  // during SetInput() and avoids pre-populating with empty execution strings.
+  initial_request.edit().MarkPending(
+      optimization_guide::proto::SummarizeRequest::kArticleFieldNumber);
+  initial_request.edit().MarkPending(
+      optimization_guide::proto::SummarizeRequest::kContextFieldNumber);
+  return initial_request;
+}
+
+// static
+uint32_t AISummarizer::GetInputContextLimit(
+    const blink::mojom::AISummarizerCreateOptionsPtr& options) {
+  return (options->preference == blink::mojom::PerformancePreference::kSpeed)
+             ? blink::mojom::kTinyModelMaxInputTokenSize
+             : blink::mojom::kWritingAssistanceMaxInputTokenSize;
 }
 
 // static
@@ -235,12 +254,13 @@ void AISummarizer::DidGetExecutionInputSizeForSummarize(
     return;
   }
 
-  uint32_t quota = blink::mojom::kWritingAssistanceMaxInputTokenSize;
-  if (result.value() > quota) {
+  uint32_t context_window_size = session_wrapper_.GetInputContextLimit(
+      AISummarizer::GetInputContextLimit(options_));
+  if (result.value() > context_window_size) {
     on_device_ai::SendStreamingStatus(
         responder,
         blink::mojom::ModelStreamingResponseStatus::kErrorInputTooLarge,
-        blink::mojom::QuotaErrorInfo::New(result.value(), quota));
+        blink::mojom::QuotaErrorInfo::New(result.value(), context_window_size));
     return;
   }
 
@@ -319,7 +339,12 @@ optimization_guide::proto::SummarizeRequest AISummarizer::BuildRequest(
   request.set_article(input);
   request.set_allocated_options(
       AISummarizer::ToProtoOptions(options_).release());
-  request.set_context(AISummarizer::CombineContexts(
-      options_->shared_context.value_or(""), context));
+  if (options_->shared_context.has_value() &&
+      !options_->shared_context.value().empty()) {
+    request.set_shared_context(options_->shared_context.value());
+  }
+  if (!context.empty()) {
+    request.set_context(context);
+  }
   return request;
 }

@@ -75,6 +75,13 @@ class PrerenderManager : public content::WebContentsObserver,
   // server's URL as a Finch parameter in the tests.
   void SetPrewarmUrlForTesting(const GURL& url);
 
+  // Returns the lifecycle observer for the prewarm task for testing, or
+  // nullptr if no prewarm task exists.
+  content::PrerenderHandle::Observer* GetPrewarmObserverForTesting();
+
+  // Returns true if `search_prewarm_task_` exists for testing.
+  bool HasSearchPrewarmTaskForTesting() const;
+
   // Calling this method will lead to the cancellation of the previous prerender
   // if the given `canonical_search_url` differs from the ongoing one's.
   void StartPrerenderSearchResult(
@@ -109,6 +116,7 @@ class PrerenderManager : public content::WebContentsObserver,
 
  private:
   class SearchPrerenderTask;
+  class SearchPrewarmTask;
 
   // These values are persisted to logs. Entries should not be renumbered and
   // numeric values should never be reused.
@@ -129,7 +137,8 @@ class PrerenderManager : public content::WebContentsObserver,
     kInKioskSession = 11,
     kLowMemory = 12,
     kDisabledByBlackout = 13,
-    kMaxValue = kDisabledByBlackout,
+    kDisabledOnStartup = 14,
+    kMaxValue = kDisabledOnStartup,
   };
   // LINT.ThenChange(//tools/metrics/histograms/metadata/navigation/enums.xml:PrerenderPrewarmDecision)
 
@@ -147,10 +156,12 @@ class PrerenderManager : public content::WebContentsObserver,
   void OnSearchPrewarmPrerenderNavigationHandle(
       content::NavigationHandle& navigation_handle);
 
-  void NotifySearchPrewarmFinished(content::PrerenderLifecycleStatus result);
-
-  std::unique_ptr<content::PrerenderHandle> search_prewarm_handle_;
-  bool is_search_prewarm_ongoing_ = false;
+  // Stores the prewarm task for the default search engine. We explicitly keep
+  // `search_prewarm_task_` even if the underlying prewarm page is reused or
+  // cancelled. We will only create the prewarm page again if the revalidate
+  // feature (`features::kPrewarmRevalidate`) is enabled.
+  std::unique_ptr<SearchPrewarmTask> search_prewarm_task_;
+  bool prewarm_scheduled_after_startup_ = false;
   std::optional<GURL> prewarm_url_for_testing_;
 
   // Stores the prerender which serves for search results. It is responsible for

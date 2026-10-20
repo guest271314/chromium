@@ -19,7 +19,9 @@
 #include "base/functional/bind.h"
 #include "base/memory/ref_counted.h"
 #include "base/run_loop.h"
+#include "base/test/run_until.h"
 #include "base/time/time.h"
+#include "net/base/network_handle.h"
 #include "net/base/request_priority.h"
 #include "net/base/session_usage.h"
 #include "net/dns/public/secure_dns_policy.h"
@@ -91,7 +93,8 @@ class SpdyStreamTest : public ::testing::Test, public WithTaskEnvironment {
                        ProxyChain::Direct(), SessionUsage::kDestination,
                        SocketTag(), NetworkAnonymizationKey(),
                        SecureDnsPolicy::kAllow,
-                       /*disable_cert_verification_network_fetches=*/false);
+                       /*disable_cert_verification_network_fetches=*/false,
+                       handles::kInvalidNetworkHandle);
     return CreateSpdySession(session_.get(), key, NetLogWithSource());
   }
 
@@ -1292,6 +1295,79 @@ TEST_F(SpdyStreamTest, IncreaseSendWindowSizeOverflow) {
   base::RunLoop().RunUntilIdle();
 
   EXPECT_THAT(delegate.WaitForClose(), IsError(ERR_HTTP2_FLOW_CONTROL_ERROR));
+}
+
+// Regression test for crbug.com/512103527: canceling a stream with unwritten
+// DATA in the write queue after its stream send window was increased to near
+// INT32_MAX must not hit NOTREACHED() when SpdyBuffer::DISCARD refunds the
+// send window on the already-deactivated stream.
+TEST_F(SpdyStreamTest, CancelStreamWithPendingDataAndSendWindowSizeOverflow) {
+  spdy::SpdySerializedFrame req(
+      spdy_util_.ConstructSpdyPost(kDefaultUrl, 1, kPostBodyLength, LOWEST,
+                                   base::span<const std::string_view>()));
+  AddWrite(req);
+
+  AddReadPause();
+
+  spdy::SpdySerializedFrame resp(spdy_util_.ConstructSpdyGetReply(
+      base::span<const std::string_view>(), 1));
+  AddRead(resp);
+
+  AddReadPause();
+
+  spdy::SpdySerializedFrame rst(
+      spdy_util_.ConstructSpdyRstStream(1, spdy::ERROR_CODE_CANCEL));
+  AddWrite(rst);
+
+  AddReadEOF();
+
+  SequencedSocketData data(GetReads(), GetWrites());
+  MockConnect connect_data(SYNCHRONOUS, OK);
+  data.set_connect_data(connect_data);
+  session_deps_.socket_factory->AddSocketDataProvider(&data);
+
+  AddSSLSocketData();
+
+  base::WeakPtr<SpdySession> session(CreateDefaultSpdySession());
+
+  base::WeakPtr<SpdyStream> stream = CreateStreamSynchronously(
+      SPDY_BIDIRECTIONAL_STREAM, session, url_, LOWEST,
+      NetLogWithSource::Make(NetLogSourceType::NONE));
+  ASSERT_TRUE(stream);
+
+  StreamDelegateSendImmediate delegate(stream, kPostBodyStringPiece);
+  stream->SetDelegate(&delegate);
+
+  quiche::HttpHeaderBlock headers(
+      spdy_util_.ConstructPostHeaderBlock(kDefaultUrl, kPostBodyLength));
+  EXPECT_THAT(stream->SendRequestHeaders(std::move(headers), MORE_DATA_TO_SEND),
+              IsError(ERR_IO_PENDING));
+
+  data.RunUntilPaused();
+
+  // Read response headers synchronously; StreamDelegateSendImmediate queues the
+  // DATA frame and decrements the stream's send window, without writing it yet.
+  data.Resume();
+
+  // Inflate the stream's send window to INT32_MAX so that refunding
+  // kPostBodyLength on discard would overflow.
+  int32_t old_send_window_size = stream->send_window_size();
+  ASSERT_GT(old_send_window_size, 0);
+  stream->IncreaseSendWindowSize(std::numeric_limits<int32_t>::max() -
+                                 old_send_window_size);
+  ASSERT_TRUE(stream);
+  EXPECT_EQ(std::numeric_limits<int32_t>::max(), stream->send_window_size());
+
+  // Canceling the stream deactivates it and then destroys it, discarding the
+  // pending DATA buffer. IncreaseSendWindowSize() on the deactivated stream
+  // must be a no-op.
+  stream->Cancel(ERR_ABORTED);
+  EXPECT_FALSE(stream);
+
+  data.Resume();
+  EXPECT_TRUE(base::test::RunUntil([&]() { return !session; }));
+  EXPECT_TRUE(data.AllWriteDataConsumed());
+  EXPECT_TRUE(data.AllReadDataConsumed());
 }
 
 // Functions used with

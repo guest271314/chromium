@@ -8,6 +8,7 @@
 
 #include "base/check_op.h"
 #include "base/functional/bind.h"
+#include "base/logging.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/trace_event/trace_event.h"
 #include "media/cast/common/openscreen_conversion_helpers.h"
@@ -93,6 +94,12 @@ void AudioSender::InsertAudio(std::unique_ptr<AudioBus> audio_bus,
   audio_encoder_->InsertAudio(std::move(audio_bus), recorded_time);
 }
 
+AudioSender::AsynchronousEncodeCallback
+AudioSender::GetAsynchronousEncodeCallback() {
+  return audio_encoder_ ? audio_encoder_->GetAsynchronousEncodeCallback()
+                        : AudioSender::AsynchronousEncodeCallback();
+}
+
 void AudioSender::SetTargetPlayoutDelay(
     base::TimeDelta new_target_playout_delay) {
   frame_sender_->SetTargetPlayoutDelay(new_target_playout_delay);
@@ -102,7 +109,7 @@ base::TimeDelta AudioSender::GetTargetPlayoutDelay() const {
   return frame_sender_->GetTargetPlayoutDelay();
 }
 
-int AudioSender::GetEncoderBitrate() const {
+uint32_t AudioSender::GetEncoderBitrate() const {
   return audio_encoder_->GetBitrate();
 }
 
@@ -136,8 +143,9 @@ void AudioSender::OnEncodedAudioFrame(
     int samples_skipped) {
   DCHECK(cast_environment_->CurrentlyOn(CastEnvironment::ThreadId::kMain));
 
-  samples_in_encoder_ -= audio_encoder_->GetSamplesPerFrame() + samples_skipped;
-  DCHECK_GE(samples_in_encoder_, 0);
+  const int samples_processed =
+      audio_encoder_->GetSamplesPerFrame() + samples_skipped;
+  samples_in_encoder_ = std::max(0, samples_in_encoder_ - samples_processed);
 
   const RtpTimeTicks rtp_timestamp = encoded_frame->rtp_timestamp;
   const CastStreamingFrameDropReason reason =

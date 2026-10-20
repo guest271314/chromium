@@ -15,8 +15,6 @@ source_set("management") {
     "management_api_delegate.h",
   ]
 
-  configs += [ "//build/config/compiler:wexit_time_destructors" ]
-
   public_deps = [
     "//base",
     "//components/keyed_service/core",
@@ -24,7 +22,6 @@ source_set("management") {
     "//extensions/common",
     "//extensions/common:common_constants",
     "//extensions/common/api",
-    "//services/data_decoder/public/cpp",
     "//url",
   ]
 

@@ -93,12 +93,14 @@
 #include "chromeos/ash/components/geolocation/location_fetcher.h"
 #include "chromeos/ash/components/geolocation/system_location_provider.h"
 #include "chromeos/ash/components/install_attributes/stub_install_attributes.h"
+#include "chromeos/ash/components/sync/fake_sync_service_provider.h"
 #include "chromeos/ash/components/system/fake_statistics_provider.h"
 #include "chromeos/ash/components/system/statistics_provider.h"
 #include "chromeos/constants/chromeos_features.h"
 #include "components/account_id/account_id.h"
 #include "components/prefs/pref_change_registrar.h"
 #include "components/prefs/scoped_user_pref_update.h"
+#include "components/sync/test/test_sync_service.h"
 #include "components/user_manager/user_names.h"
 #include "components/user_manager/user_type.h"
 #include "google_apis/gaia/gaia_id.h"
@@ -164,16 +166,12 @@ std::string GetDummyFileName(const AccountId& account_id) {
 }
 
 constexpr char kUser1[] = "user1@test.com";
-const AccountId kAccountId1 =
-    AccountId::FromUserEmailGaiaId(kUser1, GaiaId("1111"));
-const std::string kWallpaperFilesId1 = GetDummyFileId(kAccountId1);
-const std::string kFileName1 = GetDummyFileName(kAccountId1);
+constexpr char kWallpaperFilesId1[] = "user1@test.com-hash";
+constexpr char kFileName1[] = "user1@test.com-file";
 
 constexpr char kUser2[] = "user2@test.com";
-const AccountId kAccountId2 =
-    AccountId::FromUserEmailGaiaId(kUser2, GaiaId("2222"));
-const std::string kWallpaperFilesId2 = GetDummyFileId(kAccountId2);
-const std::string kFileName2 = GetDummyFileName(kAccountId2);
+constexpr char kWallpaperFilesId2[] = "user2@test.com-hash";
+constexpr char kFileName2[] = "user2@test.com-file";
 
 constexpr char kChildEmail[] = "child@test.com";
 
@@ -182,15 +180,15 @@ constexpr char kDummyUrl2[] = "https://best_wallpaper/2";
 constexpr char kDummyUrl3[] = "https://best_wallpaper/3";
 constexpr char kDummyUrl4[] = "https://best_wallpaper/4";
 
-const uint64_t kAssetId = 1;
-const uint64_t kAssetId2 = 2;
-const uint64_t kAssetId3 = 3;
-const uint64_t kAssetId4 = 4;
-const uint64_t kUnitId = 1;
-const uint64_t kUnitId2 = 2;
+constexpr uint64_t kAssetId = 1;
+constexpr uint64_t kAssetId2 = 2;
+constexpr uint64_t kAssetId3 = 3;
+constexpr uint64_t kAssetId4 = 4;
+constexpr uint64_t kUnitId = 1;
+constexpr uint64_t kUnitId2 = 2;
 
-const std::string kFakeGooglePhotosAlbumId = "fake_album";
-const std::string kFakeGooglePhotosPhotoId = "fake_photo";
+constexpr char kFakeGooglePhotosAlbumId[] = "fake_album";
+constexpr char kFakeGooglePhotosPhotoId[] = "fake_photo";
 
 // For checking that the wallpaper changes at approximately the correct time
 // when the "auto" schedule is enabled. The sunrise/set times specified in
@@ -606,10 +604,26 @@ class WallpaperControllerTestBase : public NoSessionAshTestBase {
     client_.set_fake_files_id_for_account_id(kAccountId1, kWallpaperFilesId1);
     client_.set_fake_files_id_for_account_id(kAccountId2, kWallpaperFilesId2);
 
+    // Make the wallpaper sync check resolve OS sync as enabled for the accounts
+    // these tests sign in.
+    FakeSyncServiceProvider* sync_service_provider =
+        ash_test_helper()->sync_service_provider();
+    sync_service_provider->SetSyncServiceForAccount(kAccountId1,
+                                                    &test_sync_service_);
+    sync_service_provider->SetSyncServiceForAccount(kAccountId2,
+                                                    &test_sync_service2_);
+
     CreateDefaultWallpapers();
   }
 
   void TearDown() override {
+    // Unregister the test SyncServices from the process-wide provider before it
+    // (and the fixture-owned TestSyncServices) are torn down.
+    FakeSyncServiceProvider* sync_service_provider =
+        ash_test_helper()->sync_service_provider();
+    sync_service_provider->SetSyncServiceForAccount(kAccountId2, nullptr);
+    sync_service_provider->SetSyncServiceForAccount(kAccountId1, nullptr);
+
     drivefs_delegate_ = nullptr;
     controller_ = nullptr;
     pref_manager_ = nullptr;
@@ -968,8 +982,19 @@ class WallpaperControllerTestBase : public NoSessionAshTestBase {
   base::HistogramTester histogram_tester_;
 
   TestWallpaperControllerClient client_;
+  // Registered with AshTestHelper's process-wide SyncServiceProvider for the
+  // logged-in test accounts in SetUp() -- a separate instance per account,
+  // since each user has its own SyncService. Both default to a TestSyncService
+  // with OS sync enabled, matching the previous test client's default of
+  // wallpaper sync enabled; individual tests can clear them per account.
+  syncer::TestSyncService test_sync_service_;
+  syncer::TestSyncService test_sync_service2_;
   raw_ptr<TestWallpaperDriveFsDelegate> drivefs_delegate_;
 
+  const AccountId kAccountId1 =
+      AccountId::FromUserEmailGaiaId(kUser1, GaiaId("1111"));
+  const AccountId kAccountId2 =
+      AccountId::FromUserEmailGaiaId(kUser2, GaiaId("2222"));
   const AccountId kChildAccountId =
       AccountId::FromUserEmailGaiaId(kChildEmail, GaiaId("child_gaia_id"));
 
@@ -3503,12 +3528,10 @@ TEST_P(WallpaperControllerTest, WallpaperBlurDuringLockScreenTransition) {
 
   // There are three layers: underlay, original and old layers.
   ASSERT_EQ(3u, wallpaper_view()->layer()->parent()->children().size());
-  EXPECT_EQ(ui::LAYER_SOLID_COLOR,
-            wallpaper_view()->layer()->parent()->children()[0]->type());
-  EXPECT_EQ(ui::LAYER_TEXTURED,
-            wallpaper_view()->layer()->parent()->children()[1]->type());
-  EXPECT_EQ(ui::LAYER_TEXTURED,
-            wallpaper_view()->layer()->parent()->children()[2]->type());
+  EXPECT_TRUE(
+      wallpaper_view()->layer()->parent()->children()[0]->AsSolidColor());
+  EXPECT_TRUE(wallpaper_view()->layer()->parent()->children()[1]->AsTextured());
+  EXPECT_TRUE(wallpaper_view()->layer()->parent()->children()[2]->AsTextured());
 
   // Simulate lock and unlock sequence.
   controller_->UpdateWallpaperBlurForLockState(true);
@@ -3520,14 +3543,12 @@ TEST_P(WallpaperControllerTest, WallpaperBlurDuringLockScreenTransition) {
 
   // There are four layers: shield, underlay, original and old layers.
   ASSERT_EQ(4u, wallpaper_view()->layer()->parent()->children().size());
-  EXPECT_EQ(ui::LAYER_SOLID_COLOR,
-            wallpaper_view()->layer()->parent()->children()[0]->type());
-  EXPECT_EQ(ui::LAYER_SOLID_COLOR,
-            wallpaper_view()->layer()->parent()->children()[1]->type());
-  EXPECT_EQ(ui::LAYER_TEXTURED,
-            wallpaper_view()->layer()->parent()->children()[2]->type());
-  EXPECT_EQ(ui::LAYER_TEXTURED,
-            wallpaper_view()->layer()->parent()->children()[3]->type());
+  EXPECT_TRUE(
+      wallpaper_view()->layer()->parent()->children()[0]->AsSolidColor());
+  EXPECT_TRUE(
+      wallpaper_view()->layer()->parent()->children()[1]->AsSolidColor());
+  EXPECT_TRUE(wallpaper_view()->layer()->parent()->children()[2]->AsTextured());
+  EXPECT_TRUE(wallpaper_view()->layer()->parent()->children()[3]->AsTextured());
 
   // Change of state to ACTIVE triggers post lock animation and
   // UpdateWallpaperBlur(false)
@@ -3537,12 +3558,10 @@ TEST_P(WallpaperControllerTest, WallpaperBlurDuringLockScreenTransition) {
 
   // There are three layers: underlay, original and old layers.
   ASSERT_EQ(3u, wallpaper_view()->layer()->parent()->children().size());
-  EXPECT_EQ(ui::LAYER_SOLID_COLOR,
-            wallpaper_view()->layer()->parent()->children()[0]->type());
-  EXPECT_EQ(ui::LAYER_TEXTURED,
-            wallpaper_view()->layer()->parent()->children()[1]->type());
-  EXPECT_EQ(ui::LAYER_TEXTURED,
-            wallpaper_view()->layer()->parent()->children()[2]->type());
+  EXPECT_TRUE(
+      wallpaper_view()->layer()->parent()->children()[0]->AsSolidColor());
+  EXPECT_TRUE(wallpaper_view()->layer()->parent()->children()[1]->AsTextured());
+  EXPECT_TRUE(wallpaper_view()->layer()->parent()->children()[2]->AsTextured());
 }
 
 TEST_P(WallpaperControllerTest, LockDuringOverview) {
@@ -3897,7 +3916,6 @@ TEST_P(WallpaperControllerTest, ConfirmPreviewWallpaper) {
   EXPECT_TRUE(
       pref_manager_->GetUserWallpaperInfo(kAccountId1, &user_wallpaper_info));
   EXPECT_TRUE(user_wallpaper_info.MatchesSelection(default_wallpaper_info));
-  histogram_tester().ExpectTotalCount("Ash.Wallpaper.Preview.Show", 1);
 
   // Now confirm the preview wallpaper, verify that there's no wallpaper change
   // because the wallpaper is already shown.
@@ -4815,7 +4833,8 @@ TEST_P(WallpaperControllerTest, ActiveUserPrefServiceChanged_SyncDisabled) {
 
   client_.ResetCounts();
 
-  client_.set_wallpaper_sync_enabled(false);
+  ash_test_helper()->sync_service_provider()->SetSyncServiceForAccount(
+      kAccountId1, nullptr);
 
   controller_->OnActiveUserPrefServiceChanged(
       GetProfilePrefService(kAccountId1));
@@ -5978,7 +5997,6 @@ TEST_P(WallpaperControllerTest, ConfirmGooglePhotosPreviewWallpaper) {
   EXPECT_TRUE(
       pref_manager_->GetUserWallpaperInfo(kAccountId1, &user_wallpaper_info));
   EXPECT_TRUE(user_wallpaper_info.MatchesSelection(default_wallpaper_info));
-  histogram_tester().ExpectTotalCount("Ash.Wallpaper.Preview.Show", 1);
 
   // Now confirm the preview wallpaper, verify that there's no wallpaper
   // change because the wallpaper is already shown.
@@ -6039,7 +6057,6 @@ TEST_P(WallpaperControllerTest, CancelGooglePhotosPreviewWallpaper) {
   EXPECT_TRUE(
       pref_manager_->GetUserWallpaperInfo(kAccountId1, &user_wallpaper_info));
   EXPECT_TRUE(user_wallpaper_info.MatchesSelection(default_wallpaper_info));
-  histogram_tester().ExpectTotalCount("Ash.Wallpaper.Preview.Show", 1);
 
   // Now cancel the preview. Verify the wallpaper changes back to the default
   // and the user wallpaper info remains unchanged.
@@ -6092,7 +6109,6 @@ TEST_P(WallpaperControllerTest, GooglePhotosWallpaperSyncedDuringPreview) {
   EXPECT_TRUE(
       pref_manager_->GetUserWallpaperInfo(kAccountId1, &user_wallpaper_info));
   EXPECT_TRUE(user_wallpaper_info.MatchesSelection(default_wallpaper_info));
-  histogram_tester().ExpectTotalCount("Ash.Wallpaper.Preview.Show", 1);
 
   // Now set a custom wallpaper for the user and disable preview (this happens
   // if a custom wallpaper set on another device is being synced). Verify

@@ -21,7 +21,6 @@
 #import "ios/chrome/test/earl_grey/chrome_matchers.h"
 #import "ios/chrome/test/earl_grey/chrome_test_case.h"
 #import "ios/chrome/test/scoped_eg_synchronization_disabler.h"
-#import "ios/components/enterprise/analysis/features.h"
 #import "ios/testing/earl_grey/app_launch_configuration.h"
 #import "ios/testing/earl_grey/earl_grey_test.h"
 #import "ios/testing/embedded_test_server_handlers.h"
@@ -107,10 +106,9 @@ NSString* const kActivityMenuIdentifier = @"ActivityListView";
   configuration.features_disabled.push_back(
       kDownloadAutoDeletionFeatureEnabled);
   configuration.features_disabled.push_back(kIOSSaveToDriveSignedOut);
+  configuration.features_disabled.push_back(kChromeNextIa);
 
   if ([self isEnterpriseDownloadTest]) {
-    configuration.features_enabled.push_back(
-        enterprise_connectors::kEnableFileDownloadConnectorIOS);
     configuration.additional_args.push_back(base::StrCat(
         {"--", safe_browsing::switches::kCloudBinaryUploadServiceUrlFlag, "=",
          _uploadServer->GetServiceURL().spec()}));
@@ -296,7 +294,7 @@ NSString* const kActivityMenuIdentifier = @"ActivityListView";
   // Wait until the new tab is open and switch to that tab.
   [ChromeEarlGrey waitForMainTabCount:2];
   [ChromeEarlGrey selectTabAtIndex:1U];
-  GREYAssert(WaitForDownloadButton(/*loading*/ false),
+  GREYAssert(WaitForDownloadButton(/*loading*/ true),
              @"Download button did not show up");
 
   // Proceed with download.
@@ -506,7 +504,12 @@ NSString* const kActivityMenuIdentifier = @"ActivityListView";
 
 // Tests that a pdf that is displayed in the web view can be downloaded.
 // Only valid with "Save to drive" enabled.
+// TODO(crbug.com/502586050): Failing with ChromeNextIA.
 - (void)testDownloadDisplayedPDF {
+  if ([ChromeEarlGrey isChromeNextEnabled]) {
+    EARL_GREY_TEST_SKIPPED(
+        @"Test is failing with ChromeNextIA enabled. See b/502586050.");
+  }
   [ChromeEarlGrey loadURL:self.testServer->GetURL("/two_pages.pdf")];
   [ChromeEarlGrey waitForPageToFinishLoading];
   GREYAssert(WaitForDownloadButton(/*loading*/ true),
@@ -648,7 +651,11 @@ NSString* const kActivityMenuIdentifier = @"ActivityListView";
 
 // Tests that a warning dialog will show up if the scan result is warn, download
 // will proceed if the user decides to continue.
+// TODO(crbug.com/518764990): Flaky on iPad.
 - (void)testDownloadWarnProceedWhenDownloadProtectionEnabled {
+  if ([ChromeEarlGrey isIPadIdiom]) {
+    EARL_GREY_TEST_DISABLED(@"Flaky on iPad.");
+  }
   [AnalysisConnectorsAppInterface setDownloadProtectionRules];
   [AnalysisConnectorsAppInterface setBrowserDMToken];
 

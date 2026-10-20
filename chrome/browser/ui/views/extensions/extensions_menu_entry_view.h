@@ -5,6 +5,9 @@
 #ifndef CHROME_BROWSER_UI_VIEWS_EXTENSIONS_EXTENSIONS_MENU_ENTRY_VIEW_H_
 #define CHROME_BROWSER_UI_VIEWS_EXTENSIONS_EXTENSIONS_MENU_ENTRY_VIEW_H_
 
+#include <string>
+
+#include "base/functional/callback_forward.h"
 #include "base/memory/raw_ptr.h"
 #include "chrome/browser/ui/extensions/extensions_menu_view_model.h"
 #include "chrome/browser/ui/views/extensions/extension_context_menu_controller.h"
@@ -12,12 +15,15 @@
 #include "ui/base/metadata/metadata_header_macros.h"
 #include "ui/views/controls/button/button.h"
 #include "ui/views/layout/flex_layout_view.h"
+#include "ui/views/view.h"
+#include "url/origin.h"
 
 class BrowserWindowInterface;
 class HoverButton;
 class ToolbarActionViewModel;
 
 namespace views {
+class Label;
 class ToggleButton;
 }  // namespace views
 
@@ -35,7 +41,8 @@ class ExtensionsMenuEntryView
       bool is_enterprise,
       ToolbarActionViewModel* view_model,
       views::Button::PressedCallback action_button_callback,
-      base::RepeatingCallback<void(bool)> site_access_toggle_callback,
+      base::RepeatingCallback<void(const url::Origin&, bool)>
+          site_access_toggle_callback,
       views::Button::PressedCallback site_permissions_button_callback);
   ExtensionsMenuEntryView(const ExtensionsMenuEntryView&) = delete;
   ExtensionsMenuEntryView& operator=(const ExtensionsMenuEntryView&) = delete;
@@ -53,6 +60,7 @@ class ExtensionsMenuEntryView
       ExtensionsMenuViewModel::ControlState button_state);
 
   const extensions::ExtensionId& extension_id() { return extension_id_; }
+  const url::Origin& origin() const { return origin_; }
 
   // Accessors for testing.
   bool IsContextMenuRunningForTesting() const;
@@ -62,6 +70,9 @@ class ExtensionsMenuEntryView
   }
   HoverButton* site_permissions_button_for_testing() {
     return site_permissions_button_;
+  }
+  views::Label* site_permissions_label_for_testing() {
+    return site_permissions_label_;
   }
   HoverButton* context_menu_button_for_testing() {
     return context_menu_button_;
@@ -83,6 +94,9 @@ class ExtensionsMenuEntryView
   // The id of the extension the entry corresponds to.
   const extensions::ExtensionId extension_id_;
 
+  // The origin of the site currently displayed in this menu entry.
+  url::Origin origin_;
+
   // Controller responsible for showing the context menu for an extension.
   std::unique_ptr<ExtensionContextMenuController> context_menu_controller_;
 
@@ -90,6 +104,7 @@ class ExtensionsMenuEntryView
   raw_ptr<HoverButton> action_button_ = nullptr;
   raw_ptr<views::ToggleButton> site_access_toggle_ = nullptr;
   raw_ptr<HoverButton> site_permissions_button_ = nullptr;
+  raw_ptr<views::Label> site_permissions_label_ = nullptr;
   raw_ptr<HoverButton> context_menu_button_ = nullptr;
   raw_ptr<HoverButton> pin_button_ = nullptr;
 };

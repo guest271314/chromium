@@ -8,7 +8,9 @@
 
 #include "base/task/single_thread_task_runner.h"
 #include "components/autofill/core/common/save_password_progress_logger.h"
+#include "components/device_reauth/device_auth_availability_checker.h"
 #include "components/device_reauth/device_authenticator.h"
+#include "components/password_manager/core/browser/features/password_features.h"
 #include "components/password_manager/core/browser/password_form.h"
 #include "components/password_manager/core/browser/password_form_manager.h"
 #include "components/password_manager/core/browser/password_form_manager_for_ui.h"
@@ -66,11 +68,11 @@ void HttpAuthManagerImpl::SetObserverAndDeliverCredentials(
     authenticator_->Cancel();
   }
   observer_ = observer;
+  observed_origin_ = url::Origin::Create(observed_form.url);
 
-  if (!client_->IsFillingEnabled(observed_form.url)) {
+  if (!client_->IsFillingEnabled(observed_origin_)) {
     return;
   }
-  observed_origin_ = url::Origin::Create(observed_form.url);
   // Initialize the form manager.
   form_manager_ = std::make_unique<PasswordFormManager>(
       client_, PasswordFormDigest(observed_form), nullptr /* form_fetcher */,
@@ -92,26 +94,42 @@ void HttpAuthManagerImpl::Autofill(const PasswordForm& preferred_match,
     return;
   }
 
-  if (!client_->IsFillingEnabled(form_manager_->GetURL())) {
+  if (!client_->IsFillingEnabled(observed_origin_, form_manager_->GetURL())) {
     return;
   }
 
-  std::unique_ptr<device_reauth::DeviceAuthenticator> authenticator =
-      client_->GetDeviceAuthenticator();
+  bool should_reauth = false;
+  std::unique_ptr<device_reauth::DeviceAuthenticator> authenticator;
+  if (!base::FeatureList::IsEnabled(
+          password_manager::features::kDeviceReauthRefactor)) {
+    authenticator = client_->GetDeviceAuthenticator();
+    should_reauth =
+        client_->IsReauthBeforeFillingRequiredLegacy(authenticator.get());
+  } else {
+    std::unique_ptr<device_reauth::DeviceAuthAvailabilityChecker> checker =
+        client_->GetDeviceAuthAvailabilityChecker();
+    should_reauth = client_->IsReauthBeforeFillingRequired(checker.get());
+    if (should_reauth) {
+      authenticator = client_->GetDeviceAuthenticator();
+    }
+  }
 
   // Biometric filling is disabled, notify observers and invoke callback.
-  if (!client_->IsReauthBeforeFillingRequired(authenticator.get())) {
+  if (!should_reauth) {
     observer_->OnAutofillDataAvailable(preferred_match.username_value,
-                                       preferred_match.password_value);
+                                       preferred_match.password_value.value());
     base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
         FROM_HERE, std::move(on_filling_complete));
     return;
   }
 
+  CHECK(authenticator);
+
   auto filling_callback = base::BindOnce(
       &HttpAuthManagerImpl::OnReauthCompleted, weak_ptr_factory_.GetWeakPtr(),
-      preferred_match.username_value, preferred_match.password_value,
+      preferred_match.username_value, preferred_match.password_value.value(),
       url::Origin::Create(preferred_match.url), std::move(on_filling_complete));
+
   if (authenticator_) {
     authenticator_->Cancel();
   }
@@ -120,7 +138,7 @@ void HttpAuthManagerImpl::Autofill(const PasswordForm& preferred_match,
   std::u16string message;
 #if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN) || BUILDFLAG(IS_CHROMEOS)
   const std::u16string origin = base::UTF8ToUTF16(
-      GetShownOrigin(url::Origin::Create(client_->GetLastCommittedURL())));
+      GetShownOrigin(url::Origin::Create(form_manager_->GetURL())));
   message =
       l10n_util::GetStringFUTF16(IDS_PASSWORD_MANAGER_FILLING_REAUTH, origin);
 #endif  // BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN) || BUILDFLAG(IS_CHROMEOS)
@@ -148,7 +166,7 @@ void HttpAuthManagerImpl::OnReauthCompleted(
 
 void HttpAuthManagerImpl::OnPasswordFormSubmitted(
     const PasswordForm& password_form) {
-  if (client_->IsSavingAndFillingEnabled(password_form.url) &&
+  if (client_->IsSavingAndFillingEnabled(observed_origin_, password_form.url) &&
       !password_form.password_value.empty()) {
     ProvisionallySaveForm(password_form);
   }
@@ -185,8 +203,8 @@ void HttpAuthManagerImpl::OnDidFinishMainFrameNavigation() {
 
 void HttpAuthManagerImpl::OnLoginSuccesfull() {
   LogMessage(Logger::STRING_HTTPAUTH_ON_ASK_USER_OR_SAVE_PASSWORD);
-  if (!form_manager_ ||
-      !client_->IsSavingAndFillingEnabled(form_manager_->GetURL())) {
+  if (!form_manager_ || !client_->IsSavingAndFillingEnabled(
+                            observed_origin_, form_manager_->GetURL())) {
     return;
   }
 

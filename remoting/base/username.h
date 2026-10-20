@@ -19,6 +19,12 @@ std::string GetUsername();
 #if BUILDFLAG(IS_LINUX)
 // Returns the username that the network process is run as.
 base::cstring_view GetNetworkProcessUsername();
+
+// Returns the username that the peer connection process is run as.
+base::cstring_view GetPeerConnectionProcessUsername();
+
+// Returns the username that the Crashpad handler process is run as.
+base::cstring_view GetCrashpadProcessUsername();
 #endif  // BUILDFLAG(IS_LINUX)
 
 }  // namespace remoting

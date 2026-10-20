@@ -11,6 +11,7 @@ import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.tab.Tab;
+import org.chromium.chrome.browser.tab.TabDestroyStatus;
 import org.chromium.chrome.browser.tab.TabLaunchType;
 import org.chromium.components.tabs.TabStripCollection;
 import org.chromium.content_public.browser.LoadUrlParams;
@@ -23,9 +24,6 @@ import java.util.List;
  */
 @NullMarked
 public interface TabModelSelector {
-    /** Should be called when the app starts showing a view with multiple tabs. */
-    void onTabsViewShown();
-
     /**
      * Set the current model. This won't cause an animation, but will still change the stack that is
      * currently visible if the tab switcher is open.
@@ -99,13 +97,13 @@ public interface TabModelSelector {
 
     /**
      * @return If the current {@link TabModel} is Incognito branded.
-     * @see {@link Profile#isIncognitoBranded()}
+     * @see Profile#isIncognitoBranded()
      */
     boolean isIncognitoBrandedModelSelected();
 
     /**
      * @return If the current {@link TabModel} is off the record.
-     * @see {@link Profile#isOffTheRecord()}
+     * @see Profile#isOffTheRecord()
      */
     boolean isOffTheRecordModelSelected();
 
@@ -136,10 +134,8 @@ public interface TabModelSelector {
      * getModel(isIncognito).getTabRemover().closeTabs()}.
      *
      * @param tabClosureParams A {@link TabClosureParams} for a single tab.
-     * @param allowDialog Whether to show a tab removal dialog see {@link TabRemover}
-     * @return true if the tab was found and closed.
      */
-    boolean tryCloseTab(TabClosureParams tabClosureParams, boolean allowDialog);
+    void closeTab(TabClosureParams tabClosureParams);
 
     /** Get total tab count across all tab models */
     int getTotalTabCount();
@@ -230,11 +226,9 @@ public interface TabModelSelector {
      */
     void removeObserverFromAllModels(TabModelObserver observer);
 
-    /** Reset the internal tab model list to allow initialization again. */
-    void resetTabModelListForTesting(); // IN-TEST
-
     /** Destroy all owned {@link TabModel}s and {@link Tab}s referenced by this selector. */
-    void destroy();
+    @TabDestroyStatus
+    int destroy();
 
     /**
      * Returns the profile for the selector.

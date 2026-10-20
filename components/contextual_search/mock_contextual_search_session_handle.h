@@ -6,6 +6,7 @@
 #define COMPONENTS_CONTEXTUAL_SEARCH_MOCK_CONTEXTUAL_SEARCH_SESSION_HANDLE_H_
 
 #include "components/contextual_search/contextual_search_session_handle.h"
+#include "components/contextual_search/contextual_search_types.h"
 #include "components/lens/contextual_input.h"
 #include "components/lens/proto/server/lens_overlay_response.pb.h"
 #include "testing/gmock/include/gmock/gmock.h"
@@ -34,6 +35,14 @@ class MockContextualSearchSessionHandle : public ContextualSearchSessionHandle {
               GetUploadedContextFileInfos,
               (),
               (const, override));
+  MOCK_METHOD(std::vector<FileInfo>,
+              GetSubmittedContextFileInfos,
+              (),
+              (const, override));
+  MOCK_METHOD(ContextualSearchMetricsRecorder*,
+              GetMetricsRecorder,
+              (),
+              (const, override));
   MOCK_METHOD(ContextualSearchContextController*,
               GetController,
               (),
@@ -57,6 +66,12 @@ class MockContextualSearchSessionHandle : public ContextualSearchSessionHandle {
                            CreateSearchUrlRequestInfo> search_url_request_info,
        base::OnceCallback<void(GURL)> callback),
       (override));
+  MOCK_METHOD(std::string, search_session_id, (), (const, override));
+  MOCK_METHOD((std::optional<lens::LensOverlayVisualSearchInteractionData>),
+              GetVisualSearchInteractionData,
+              (const base::UnguessableToken&,
+               const std::optional<std::string>&),
+              (override));
 };
 
 }  // namespace contextual_search

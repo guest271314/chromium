@@ -36,6 +36,7 @@
 #include "third_party/blink/renderer/platform/mediastream/media_stream_audio_processor_options.h"
 #include "third_party/blink/renderer/platform/mediastream/webaudio_media_stream_source.h"
 #include "third_party/blink/renderer/platform/scheduler/public/main_thread.h"
+#include "third_party/blink/renderer/platform/wtf/text/format.h"
 #include "third_party/blink/renderer/platform/wtf/text/strcat.h"
 #include "third_party/blink/renderer/platform/wtf/uuid.h"
 
@@ -55,7 +56,7 @@ MediaStreamAudioDestinationNode::MediaStreamAudioDestinationNode(
       ActiveScriptWrappable<MediaStreamAudioDestinationNode>({}) {
   DVLOG(1) << "Creating WebAudio media stream source.";
   auto audio_source = std::make_unique<WebAudioMediaStreamSource>(
-    context.GetExecutionContext()->GetTaskRunner(TaskType::kInternalMedia));
+      context.GetExecutionContext()->GetTaskRunner(TaskType::kInternalMedia));
   WebAudioMediaStreamSource* audio_source_ptr = audio_source.get();
 
   String source_id = StrCat({"WebAudio-", CreateCanonicalUuidString()});
@@ -69,8 +70,7 @@ MediaStreamAudioDestinationNode::MediaStreamAudioDestinationNode(
   capabilities.voice_isolation = Vector<bool>({false});
   capabilities.sample_size = {
       media::SampleFormatToBitsPerChannel(media::kSampleFormatS16),
-      media::SampleFormatToBitsPerChannel(media::kSampleFormatS16)
-  };
+      media::SampleFormatToBitsPerChannel(media::kSampleFormatS16)};
 
   source_ = MakeGarbageCollected<MediaStreamSource>(
       source_id, MediaStreamSource::kTypeAudio,
@@ -80,22 +80,19 @@ MediaStreamAudioDestinationNode::MediaStreamAudioDestinationNode(
   stream_ = MediaStream::Create(
       context.GetExecutionContext(),
       MediaStreamTrackVector({MediaStreamUtils::CreateLocalAudioTrack(
-          context.GetExecutionContext(),
-          source_)}));
+          context.GetExecutionContext(), source_)}));
 
-  SetHandler(
-      MediaStreamAudioDestinationHandler::Create(
-          *this, number_of_channels, audio_source_ptr->Consumer()));
+  SetHandler(MediaStreamAudioDestinationHandler::Create(
+      *this, number_of_channels, audio_source_ptr->Consumer()));
 
   SendLogMessage(
       __func__,
-      String::Format("({context.state=%s}, {context.sampleRate=%.0f}, "
-                     "{number_of_channels=%u}, {handler=0x%" PRIXPTR
-                     "}, [this=0x%" PRIXPTR "])",
-                     context.state().AsString().Utf8().c_str(),
-                     context.sampleRate(), number_of_channels,
-                     reinterpret_cast<uintptr_t>(&Handler()),
-                     reinterpret_cast<uintptr_t>(this)));
+      Format("({{context.state={}}}, {{context.sampleRate={:.0f}}}, "
+             "{{number_of_channels={}}}, {{handler=0x{:X}}}, [this=0x{:X}])",
+             context.GetStateStringForLogMessage().c_str(),
+             context.sampleRate(), number_of_channels,
+             reinterpret_cast<uintptr_t>(&Handler()),
+             reinterpret_cast<uintptr_t>(this)));
 }
 
 MediaStreamAudioDestinationNode* MediaStreamAudioDestinationNode::Create(
@@ -123,17 +120,26 @@ MediaStreamAudioDestinationNode* MediaStreamAudioDestinationNode::Create(
   if (!context->CheckExecutionContextAndThrowIfNecessary(exception_state)) {
     return nullptr;
   }
-  MediaStreamAudioDestinationNode* node =
-      MakeGarbageCollected<MediaStreamAudioDestinationNode>(
-          *context, kDefaultNumberOfChannels);
-
-  // Need to handle channelCount here ourselves because the upper
-  // limit is different from the normal AudioNode::setChannelCount
-  // limit of 32.  Error messages will sometimes show the wrong
-  // limits.
+  uint32_t number_of_channels = kDefaultNumberOfChannels;
   if (options->hasChannelCount()) {
-    node->setChannelCount(options->channelCount(), exception_state);
+    number_of_channels = options->channelCount();
+    if (number_of_channels < 1 ||
+        number_of_channels >
+            MediaStreamAudioDestinationHandler::kMaxChannelCountSupported) {
+      exception_state.ThrowDOMException(
+          DOMExceptionCode::kNotSupportedError,
+          ExceptionMessages::IndexOutsideRange<unsigned>(
+              "channel count", number_of_channels, 1,
+              ExceptionMessages::kInclusiveBound,
+              MediaStreamAudioDestinationHandler::kMaxChannelCountSupported,
+              ExceptionMessages::kInclusiveBound));
+      return nullptr;
+    }
   }
+
+  MediaStreamAudioDestinationNode* node =
+      MakeGarbageCollected<MediaStreamAudioDestinationNode>(*context,
+                                                            number_of_channels);
 
   node->HandleChannelOptions(options, exception_state);
 
@@ -166,10 +172,7 @@ MediaStreamAudioDestinationNode::GetOwnHandler() const {
 void MediaStreamAudioDestinationNode::SendLogMessage(
     const String& function_name,
     const String& message) {
-  WebRtcLogMessage(String::Format("[WA]MSADN::%s %s",
-                                  function_name.Utf8().c_str(),
-                                  message.Utf8().c_str())
-                       .Utf8());
+  WebRtcLogMessage(StrCat({"[WA]MSADN::", function_name, " ", message}).Utf8());
 }
 
 }  // namespace blink

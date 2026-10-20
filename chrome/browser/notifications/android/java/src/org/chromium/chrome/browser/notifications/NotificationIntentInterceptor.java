@@ -24,6 +24,8 @@ import org.chromium.base.ApplicationStatus;
 import org.chromium.base.ContextUtils;
 import org.chromium.base.IntentUtils;
 import org.chromium.base.Log;
+import org.chromium.base.TimeUtils;
+import org.chromium.base.metrics.RecordHistogram;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.base.SplitCompatIntentService;
@@ -130,10 +132,30 @@ public class NotificationIntentInterceptor {
      * A trampoline activity that handles logging metrics for click events and action click events.
      */
     public static class TrampolineActivity extends Activity {
+        // These values are persisted to logs. Entries should not be renumbered and
+        // numeric values should never be reused.
+        @IntDef({TrampolineActivityEvent.CREATED, TrampolineActivityEvent.DESTROYED})
+        @Retention(RetentionPolicy.SOURCE)
+        private @interface TrampolineActivityEvent {
+            int CREATED = 0;
+            int DESTROYED = 1;
+            int COUNT = 2;
+        }
+
+        private static void recordTrampolineActivityEvent(@TrampolineActivityEvent int event) {
+            RecordHistogram.recordEnumeratedHistogram(
+                    "Notifications.Android.TrampolineActivity",
+                    event,
+                    TrampolineActivityEvent.COUNT);
+        }
+
+        private long mCreateTime;
 
         @Override
         protected void onCreate(@Nullable Bundle savedInstanceState) {
             super.onCreate(savedInstanceState);
+            mCreateTime = TimeUtils.elapsedRealtimeMillis();
+            recordTrampolineActivityEvent(TrampolineActivityEvent.CREATED);
 
             if (Build.VERSION.SDK_INT < Build.VERSION_CODES.VANILLA_ICE_CREAM
                     || hasVisibleActivities()) {
@@ -162,6 +184,15 @@ public class NotificationIntentInterceptor {
             if (!handleNotificationIntent()) {
                 TrampolineActivityTracker.getInstance().finishTrackedActivity();
             }
+        }
+
+        @Override
+        protected void onDestroy() {
+            long duration = TimeUtils.elapsedRealtimeMillis() - mCreateTime;
+            RecordHistogram.recordTimesHistogram(
+                    "Notifications.Android.TrampolineActivity.Duration", duration);
+            recordTrampolineActivityEvent(TrampolineActivityEvent.DESTROYED);
+            super.onDestroy();
         }
 
         @Override
@@ -220,6 +251,8 @@ public class NotificationIntentInterceptor {
         }
         // The delete intent, and "close incognito" content intent, need to be handled by broadcast
         // receiver from Q due to background activity start restriction.
+        // TODO(crbug.com/527130820): Avoid hardcoding specific action types here. Instead,
+        // add an explicit background action parameter to the notification builder layer.
         boolean shouldUseBroadcast =
                 (intentType == IntentType.CONTENT_INTENT
                                 && metadata.type
@@ -242,6 +275,18 @@ public class NotificationIntentInterceptor {
                         || actionType
                                 == NotificationUmaTracker.ActionType
                                         .REPORT_UNWARNED_NOTIFICATION_AS_SPAM;
+
+        boolean isDownloadAction =
+                actionType == NotificationUmaTracker.ActionType.DOWNLOAD_PAUSE
+                        || actionType == NotificationUmaTracker.ActionType.DOWNLOAD_RESUME
+                        || actionType == NotificationUmaTracker.ActionType.DOWNLOAD_CANCEL
+                        || actionType == NotificationUmaTracker.ActionType.DOWNLOAD_PAGE_PAUSE
+                        || actionType == NotificationUmaTracker.ActionType.DOWNLOAD_PAGE_RESUME
+                        || actionType == NotificationUmaTracker.ActionType.DOWNLOAD_PAGE_CANCEL;
+
+        if (isDownloadAction && ChromeFeatureList.sNotificationTrampolineNoNewTask.isEnabled()) {
+            shouldUseBroadcast = true;
+        }
 
         Context applicationContext = ContextUtils.getApplicationContext();
         Intent intent = null;
@@ -284,10 +329,12 @@ public class NotificationIntentInterceptor {
         // broadcast delivery.
         if (shouldUseBroadcast) intent.addFlags(Intent.FLAG_RECEIVER_FOREGROUND);
 
-        // Use request code to distinguish different PendingIntents on Android.
+        // Use request code and identifier to distinguish different PendingIntents on Android.
         int originalRequestCode =
                 pendingIntentProvider != null ? pendingIntentProvider.getRequestCode() : 0;
         int requestCode = computeHashCode(metadata, intentType, actionType, originalRequestCode);
+        intent.setIdentifier(
+                computeIntentIdentifier(metadata, intentType, actionType, originalRequestCode));
 
         return shouldUseBroadcast
                 ? PendingIntent.getBroadcast(applicationContext, requestCode, intent, flags)
@@ -352,6 +399,35 @@ public class NotificationIntentInterceptor {
             e.printStackTrace();
         }
         return false;
+    }
+
+    /**
+     * Computes a unique identifier for the intercept {@link Intent} so that {@link
+     * Intent#filterEquals} distinguishes intents with different metadata.
+     *
+     * @param metadata Notification metadata including notification id, tag, etc.
+     * @param intentType The type of the {@link PendingIntent}.
+     * @param actionType Distinguishes actions for `ACTION_INTENT` {@link IntentType}.
+     * @param requestCode The request code of the wrapped {@link PendingIntent}.
+     * @return The unique identifier string for the intercept {@link Intent}.
+     */
+    private static String computeIntentIdentifier(
+            NotificationMetadata metadata,
+            @IntentType int intentType,
+            @NotificationUmaTracker.ActionType int actionType,
+            int requestCode) {
+        StringBuilder sb = new StringBuilder();
+        sb.append(metadata.type).append(':');
+        sb.append(intentType).append(':');
+        sb.append(actionType).append(':');
+        sb.append(metadata.id).append(':');
+        sb.append(requestCode).append(':');
+        if (metadata.tag == null) {
+            sb.append("null");
+        } else {
+            sb.append(metadata.tag.length()).append(':').append(metadata.tag);
+        }
+        return sb.toString();
     }
 
     /**

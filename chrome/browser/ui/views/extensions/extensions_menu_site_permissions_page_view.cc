@@ -8,21 +8,17 @@
 #include <string>
 
 #include "base/memory/raw_ptr.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/chrome_pages.h"
 #include "chrome/browser/ui/color/chrome_color_id.h"
+#include "chrome/browser/ui/extensions/extensions_menu_handler.h"
 #include "chrome/browser/ui/extensions/extensions_menu_view_model.h"
 #include "chrome/browser/ui/views/chrome_layout_provider.h"
 #include "chrome/browser/ui/views/controls/hover_button.h"
-#include "chrome/browser/ui/views/extensions/extensions_menu_handler.h"
 #include "chrome/grit/generated_resources.h"
 #include "components/strings/grit/components_strings.h"
 #include "components/vector_icons/vector_icons.h"
-#include "content/public/browser/web_contents.h"
-#include "extensions/browser/permissions/site_permissions_helper.h"
 #include "extensions/browser/permissions_manager.h"
-#include "extensions/common/extension.h"
 #include "extensions/common/extension_id.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
@@ -32,6 +28,7 @@
 #include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/border.h"
 #include "ui/views/bubble/bubble_frame_view.h"
+#include "ui/views/cascading_property.h"
 #include "ui/views/controls/button/button.h"
 #include "ui/views/controls/button/image_button.h"
 #include "ui/views/controls/button/image_button_factory.h"
@@ -114,7 +111,7 @@ int GetSiteAccessButtonIndex(PermissionsManager::UserSiteAccess site_access) {
 std::unique_ptr<views::ImageView> GetSettingsButtonIcon(int icon_size) {
   return std::make_unique<views::ImageView>(ui::ImageModel::FromVectorIcon(
       features::IsRoundedIconsEnabled()
-          ? vector_icons::kKeyboardArrowRightIcon
+          ? vector_icons::kKeyboardArrowRightFlippableIcon
           : vector_icons::kSubmenuArrowChromeRefreshOldIcon,
       ui::kColorIconSecondary, icon_size));
 }
@@ -126,6 +123,7 @@ ExtensionsMenuSitePermissionsPageView::ExtensionsMenuSitePermissionsPageView(
     extensions::ExtensionId extension_id,
     ExtensionsMenuHandler* menu_handler)
     : browser_(browser), extension_id_(extension_id) {
+  views::SetCascadingRadioGroupView(this, views::kCascadingRadioGroupView);
   // TODO(crbug.com/40879945): Same stretch specification as
   // ExtensionsMenuMainPageView. Move to a shared file.
   views::FlexSpecification stretch_specification =
@@ -176,7 +174,7 @@ ExtensionsMenuSitePermissionsPageView::ExtensionsMenuSitePermissionsPageView(
       };
 
   const auto create_radio_button_builder =
-      [=](PermissionsManager::UserSiteAccess site_access) {
+      [=, this](PermissionsManager::UserSiteAccess site_access) {
         return views::Builder<views::BoxLayoutView>()
             .SetOrientation(views::BoxLayout::Orientation::kVertical)
             // Add dialog horizontal margins, and top margin to separate the
@@ -202,9 +200,17 @@ ExtensionsMenuSitePermissionsPageView::ExtensionsMenuSitePermissionsPageView(
                     // between the radio button icon and label.
                     .SetImageLabelSpacing(back_button_border.right() +
                                           horizontal_spacing)
+                    // To ensure we use the right origin when the callback is
+                    // called, we pass `this` to access the current origin,
+                    // rather than binding a copy of the origin.
                     .SetCallback(base::BindRepeating(
-                        &ExtensionsMenuHandler::OnSiteAccessSelected,
-                        base::Unretained(menu_handler), extension_id,
+                        [](ExtensionsMenuSitePermissionsPageView* view,
+                           ExtensionsMenuHandler* handler,
+                           PermissionsManager::UserSiteAccess access) {
+                          handler->OnSiteAccessSelected(view->extension_id(),
+                                                        view->origin(), access);
+                        },
+                        base::Unretained(this), base::Unretained(menu_handler),
                         site_access)),
                 views::Builder<views::Label>()
                     .SetText(GetSiteAccessRadioButtonDescription(site_access))
@@ -382,6 +388,7 @@ ExtensionsMenuSitePermissionsPageView::ExtensionsMenuSitePermissionsPageView(
 void ExtensionsMenuSitePermissionsPageView::Update(
     ExtensionsMenuViewModel::ExtensionSitePermissionsState
         site_permissions_state) {
+  origin_ = site_permissions_state.origin;
   extension_icon_->SetImage(site_permissions_state.extension_icon);
   extension_name_->SetText(site_permissions_state.extension_name);
 

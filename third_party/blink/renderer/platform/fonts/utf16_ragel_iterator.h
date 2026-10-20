@@ -14,6 +14,7 @@
 #include "third_party/blink/renderer/platform/text/emoji_segmentation_category_inline_header.h"
 #include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
 #include "third_party/blink/renderer/platform/wtf/text/character_names.h"
+#include "third_party/blink/renderer/platform/wtf/wtf_size_t.h"
 
 namespace blink {
 
@@ -28,25 +29,21 @@ class PLATFORM_EXPORT UTF16RagelIterator {
   STACK_ALLOCATED();
 
  public:
-  UTF16RagelIterator()
-      : cursor_(0),
-        cached_category_(EmojiSegmentationCategory::kInvalidCacheEntry) {}
+  UTF16RagelIterator() = default;
 
   explicit UTF16RagelIterator(base::span<const UChar> buffer,
-                              unsigned cursor = 0)
-      : buffer_(buffer),
-        cursor_(cursor),
-        cached_category_(EmojiSegmentationCategory::kInvalidCacheEntry) {}
+                              wtf_size_t cursor = 0)
+      : buffer_(buffer), cursor_(cursor) {}
 
   UTF16RagelIterator end() {
     UTF16RagelIterator ret = *this;
-    ret.cursor_ = static_cast<unsigned>(buffer_.size());
+    ret.cursor_ = static_cast<wtf_size_t>(buffer_.size());
     return ret;
   }
 
   size_t size() { return buffer_.size(); }
 
-  UTF16RagelIterator& SetCursor(unsigned new_cursor) {
+  UTF16RagelIterator& SetCursor(wtf_size_t new_cursor) {
     DCHECK_GE(new_cursor, 0u);
     DCHECK_LT(new_cursor, buffer_.size());
     cursor_ = new_cursor;
@@ -54,7 +51,7 @@ class PLATFORM_EXPORT UTF16RagelIterator {
     return *this;
   }
 
-  unsigned Cursor() { return cursor_; }
+  wtf_size_t Cursor() { return cursor_; }
 
   UTF16RagelIterator& operator+=(int v) {
     if (v > 0) {
@@ -147,7 +144,7 @@ class PLATFORM_EXPORT UTF16RagelIterator {
   // the buffer. (Potential issue with InputMethodController, or the tests?).
   UChar32 PeekCodepoint() {
     UChar32 output = uchar::kReplacementCharacter;
-    unsigned temp_cursor = cursor_;
+    wtf_size_t temp_cursor = cursor_;
     U16_FWD_1(buffer_, temp_cursor, buffer_.size());
     if (temp_cursor < buffer_.size()) {
       U16_GET(buffer_, 0, temp_cursor, buffer_.size(), output);
@@ -157,8 +154,9 @@ class PLATFORM_EXPORT UTF16RagelIterator {
 
  private:
   base::span<const UChar> buffer_;
-  unsigned cursor_;
-  EmojiSegmentationCategory cached_category_;
+  wtf_size_t cursor_ = 0;
+  EmojiSegmentationCategory cached_category_ =
+      EmojiSegmentationCategory::kInvalidCacheEntry;
 };
 
 }  // namespace blink

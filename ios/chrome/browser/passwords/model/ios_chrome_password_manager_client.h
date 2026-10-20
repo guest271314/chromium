@@ -11,6 +11,8 @@
 
 #import "base/memory/weak_ptr.h"
 #import "base/scoped_observation.h"
+#import "base/time/time.h"
+#import "base/types/optional_ref.h"
 #import "components/autofill/core/common/language_code.h"
 #import "components/password_manager/core/browser/leak_detection_dialog_utils.h"
 #import "components/password_manager/core/browser/password_feature_manager_impl.h"
@@ -30,7 +32,13 @@
 #import "ios/web/public/web_state_observer.h"
 #import "services/metrics/public/cpp/ukm_source_id.h"
 
+class GURL;
 class ProfileIOS;
+
+namespace device_reauth {
+class DeviceAuthAvailabilityChecker;
+class DeviceAuthenticator;
+}  // namespace device_reauth
 
 namespace autofill {
 class LogManager;
@@ -46,6 +54,10 @@ namespace safe_browsing {
 enum class WarningAction;
 }
 
+namespace webauthn {
+class PasskeyTabHelper;
+}
+
 @protocol IOSChromePasswordManagerClientBridge <PasswordManagerClientBridge>
 
 @property(readonly, nonatomic) ProfileIOS* profile;
@@ -55,6 +67,12 @@ enum class WarningAction;
     (std::unique_ptr<password_manager::PasswordForm>)formSignedIn;
 
 @end
+
+// Histogram names for Touch to Fill submission metrics.
+inline constexpr char kTouchToFillTimeToSuccessfulLoginHistogram[] =
+    "PasswordManager.TouchToFill.TimeToSuccessfulLogin";
+inline constexpr char kTouchToFillSuccessfulSubmissionWasObservedHistogram[] =
+    "PasswordManager.TouchToFill.SuccessfulSubmissionWasObserved";
 
 // An iOS implementation of password_manager::PasswordManagerClient.
 // TODO(crbug.com/41456340): write unit tests for this class.
@@ -91,6 +109,14 @@ class IOSChromePasswordManagerClient
       std::vector<std::unique_ptr<password_manager::PasswordForm>> local_forms,
       const url::Origin& origin,
       CredentialsCallback callback) override;
+  bool IsReauthBeforeFillingRequired(
+      device_reauth::DeviceAuthAvailabilityChecker* checker) override;
+  bool IsReauthBeforeFillingRequiredLegacy(
+      device_reauth::DeviceAuthenticator* authenticator) override;
+  std::unique_ptr<device_reauth::DeviceAuthAvailabilityChecker>
+  GetDeviceAuthAvailabilityChecker() override;
+  std::unique_ptr<device_reauth::DeviceAuthenticator> GetDeviceAuthenticator()
+      override;
   void AutomaticPasswordSave(
       std::unique_ptr<password_manager::PasswordFormManagerForUI>
           saved_form_manager,
@@ -121,7 +147,13 @@ class IOSChromePasswordManagerClient
   void NotifySuccessfulLoginWithExistingPassword(
       std::unique_ptr<password_manager::PasswordFormManagerForUI>
           submitted_manager) override;
+  void NotifyOnSuccessfulLogin(
+      const std::u16string& submitted_username) override;
+  void StartSubmissionTrackingAfterTouchToFill(
+      const std::u16string& filled_username) override;
+  void ResetSubmissionTrackingAfterTouchToFill() override;
   bool IsPasswordChangeOngoing() override;
+  bool IsActorTaskActive() override;
   void MaybeReportEnterpriseLoginEvent(
       const GURL& url,
       bool is_federated,
@@ -134,8 +166,13 @@ class IOSChromePasswordManagerClient
   void NotifyUserCredentialsWereLeaked(
       password_manager::LeakedPasswordDetails details) override;
   void NotifyKeychainError() override;
-  bool IsSavingAndFillingEnabled(const GURL& url) const override;
-  bool IsFillingEnabled(const GURL& url) const override;
+  using password_manager::PasswordManagerClient::IsFillingEnabled;
+  using password_manager::PasswordManagerClient::IsSavingAndFillingEnabled;
+  bool IsSavingAndFillingEnabled(
+      const url::Origin& origin,
+      base::optional_ref<const GURL> url) const override;
+  bool IsFillingEnabled(const url::Origin& origin,
+                        base::optional_ref<const GURL> url) const override;
   bool IsFieldFilledWithOtp(autofill::FormGlobalId form_id,
                             autofill::FieldGlobalId field_id) override;
   bool IsCommittedMainFrameSecure() const override;
@@ -165,6 +202,14 @@ class IOSChromePasswordManagerClient
       override;
 
  private:
+  // Returns the PasskeyTabHelper for the associated web state, or nullptr.
+  webauthn::PasskeyTabHelper* GetPasskeyTabHelper() const;
+
+  // Records a successful password login on the associated web state from
+  // `form_manager` to establish automatic passkey upgrade eligibility.
+  void RecordPasswordLogin(
+      const password_manager::PasswordFormManagerForUI* form_manager);
+
   __weak id<IOSChromePasswordManagerClientBridge> bridge_;
 
   password_manager::PasswordFeatureManagerImpl password_feature_manager_;
@@ -187,6 +232,14 @@ class IOSChromePasswordManagerClient
   // Helper for performing logic that is common between
   // ChromePasswordManagerClient and IOSChromePasswordManagerClient.
   password_manager::PasswordManagerClientHelper helper_;
+
+  // State tracking credential data and timestamp when Touch to Fill was used.
+  struct TouchToFillState {
+    std::u16string username;
+    base::TimeTicks fill_time;
+  };
+
+  std::optional<TouchToFillState> touch_to_fill_state_;
 
   base::WeakPtrFactory<IOSChromePasswordManagerClient> weak_factory_{this};
 };

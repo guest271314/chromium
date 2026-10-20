@@ -13,6 +13,7 @@
 #include "third_party/blink/public/common/input/web_mouse_event.h"
 #include "third_party/blink/public/mojom/input/focus_type.mojom-blink.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_gc_controller.h"
+#include "third_party/blink/renderer/bindings/core/v8/v8_mouse_event_init.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_pointer_event_init.h"
 #include "third_party/blink/renderer/core/css/css_property_value_set.h"
 #include "third_party/blink/renderer/core/css/document_style_environment_variables.h"
@@ -34,6 +35,8 @@
 #include "third_party/blink/renderer/core/input/event_handler.h"
 #include "third_party/blink/renderer/core/layout/layout_object.h"
 #include "third_party/blink/renderer/core/loader/empty_clients.h"
+#include "third_party/blink/renderer/core/pointer_type_names.h"
+#include "third_party/blink/renderer/core/style/computed_style.h"
 #include "third_party/blink/renderer/core/testing/page_test_base.h"
 #include "third_party/blink/renderer/modules/media_controls/elements/media_control_cast_button_element.h"
 #include "third_party/blink/renderer/modules/media_controls/elements/media_control_current_time_display_element.h"
@@ -175,7 +178,7 @@ class MediaControlsImplTest
     SetupPageWithClients(MakeGarbageCollected<FakeChromeClient>(),
                          MakeGarbageCollected<StubLocalFrameClientForImpl>());
 
-    GetDocument().write("<video controls>");
+    GetDocument().write("<video controls></video>");
     auto& video = To<HTMLVideoElement>(
         *GetDocument().QuerySelector(AtomicString("video")));
     media_controls_ = static_cast<MediaControlsImpl*>(video.GetMediaControls());
@@ -217,6 +220,13 @@ class MediaControlsImplTest
   void SimulateOnSeeked() { media_controls_->OnSeeked(); }
   void SimulateOnWaiting() { media_controls_->OnWaiting(); }
   void SimulateOnPlaying() { media_controls_->OnPlaying(); }
+
+  void SetIsTouchInteraction(bool val) {
+    media_controls_->is_touch_interaction_ = val;
+  }
+  bool IsTouchInteraction() const {
+    return media_controls_->is_touch_interaction_;
+  }
 
   void SimulateMediaControlPlaying() {
     MediaControls().MediaElement().SetReadyState(
@@ -374,7 +384,30 @@ class MediaControlsImplTest
 
   PointerEvent* CreatePointerEvent(const AtomicString& name) {
     PointerEventInit* init = PointerEventInit::Create();
+    init->setPointerType(pointer_type_names::kMouse);
     return PointerEvent::Create(name, init);
+  }
+
+  PointerEvent* CreateTouchPointerEvent(const AtomicString& name) {
+    PointerEventInit* init = PointerEventInit::Create();
+    init->setPointerType(pointer_type_names::kTouch);
+    return PointerEvent::Create(name, init);
+  }
+
+  MouseEvent* CreateMouseEvent(const AtomicString& name) {
+    MouseEventInit* init = MouseEventInit::Create();
+    return MouseEvent::Create(name, init, base::TimeTicks::Now(),
+                              MouseEvent::kRealOrIndistinguishable,
+                              ui::mojom::blink::MenuSourceType::kNone);
+  }
+
+  void SimulateGestureTap(Element* element) {
+    element->DispatchEvent(
+        *CreateTouchPointerEvent(event_type_names::kGesturetap));
+  }
+
+  void SimulateClick(Element* element) {
+    element->DispatchEvent(*CreatePointerEvent(event_type_names::kClick));
   }
 
  private:
@@ -1583,6 +1616,55 @@ TEST_F(MediaControlsImplTest, DoubleTouchChangesTimeWhenZoomed) {
   EXPECT_EQ(30, MediaControls().MediaElement().currentTime());
 }
 
+TEST_F(MediaControlsImplTest, TimelineDoesNotSeekWhenNotSeekable) {
+  double duration = 60;
+  LoadMediaWithDuration(duration);
+  EnsureSizing();
+  MediaControls().MediaElement().setCurrentTime(30);
+  test::RunPendingTasks();
+  ASSERT_EQ(30, MediaControls().MediaElement().currentTime());
+
+  // Non-seekable finite streaming media returns [0.0, 0.0].
+  WebMediaPlayer()->seekable_ = WebTimeRanges(0.0, 0.0);
+
+  MediaControlTimelineElement* timeline = TimelineElement();
+  timeline->setValueAsNumber(15, ASSERT_NO_EXCEPTION);
+  timeline->DispatchInputEvent();
+  EXPECT_EQ(30, MediaControls().MediaElement().currentTime());
+
+  timeline->setValueAsNumber(0, ASSERT_NO_EXCEPTION);
+  timeline->DispatchInputEvent();
+  EXPECT_EQ(30, MediaControls().MediaElement().currentTime());
+}
+
+TEST_F(MediaControlsImplTest, DoubleTouchDoesNotChangeTimeWhenNotSeekable) {
+  double duration = 60;
+  LoadMediaWithDuration(duration);
+  EnsureSizing();
+  MediaControls().MediaElement().setCurrentTime(5);
+  test::RunPendingTasks();
+  ASSERT_EQ(5, MediaControls().MediaElement().currentTime());
+
+  // Non-seekable finite streaming media returns [0.0, 0.0].
+  WebMediaPlayer()->seekable_ = WebTimeRanges(0.0, 0.0);
+
+  DOMRect* videoRect = MediaControls().MediaElement().GetBoundingClientRect();
+  ASSERT_LT(0, videoRect->width());
+  gfx::PointF leftOfCenter(videoRect->left() + (videoRect->width() / 2) - 5,
+                           videoRect->top() + 5);
+  gfx::PointF rightOfCenter(videoRect->left() + (videoRect->width() / 2) + 5,
+                            videoRect->top() + 5);
+
+  // Double-tapping left at t=5s clamps to 0.0, which must still be ignored.
+  GestureDoubleTapAt(leftOfCenter);
+  test::RunPendingTasks();
+  EXPECT_EQ(5, MediaControls().MediaElement().currentTime());
+
+  GestureDoubleTapAt(rightOfCenter);
+  test::RunPendingTasks();
+  EXPECT_EQ(5, MediaControls().MediaElement().currentTime());
+}
+
 TEST_F(MediaControlsImplTest, HideControlsDefersStyleCalculationOnPlaying) {
   MediaControls().MediaElement().SetBooleanAttribute(html_names::kControlsAttr,
                                                      false);
@@ -1723,6 +1805,106 @@ TEST_F(MediaControlsImplTest, OverlayPlayButtonHidesWhenTooShort) {
   // Set the size to be large enough.
   SetElementHeight(min_height);
   EXPECT_TRUE(overlay_play_button->DoesFit());
+}
+
+TEST_F(MediaControlsImplTest, TouchInteractionResetsOnMouseEvents) {
+  // --- Positive Tests: Mouse/Pointer events should reset touch interaction ---
+  for (const AtomicString& event_name :
+       {event_type_names::kPointermove, event_type_names::kPointerover,
+        event_type_names::kPointerdown, event_type_names::kClick}) {
+    SetIsTouchInteraction(true);
+    MediaControls().DispatchEvent(*CreatePointerEvent(event_name));
+    EXPECT_FALSE(IsTouchInteraction())
+        << "Touch interaction should be reset by pointer event: " << event_name;
+  }
+
+  for (const AtomicString& event_name :
+       {event_type_names::kMousedown, event_type_names::kMousemove}) {
+    SetIsTouchInteraction(true);
+    MediaControls().DispatchEvent(*CreateMouseEvent(event_name));
+    EXPECT_FALSE(IsTouchInteraction())
+        << "Touch interaction should be reset by mouse event: " << event_name;
+  }
+
+  // --- Negative Tests: Touch pointer events should NOT reset touch interaction
+  // ---
+  for (const AtomicString& event_name :
+       {event_type_names::kPointermove, event_type_names::kPointerover,
+        event_type_names::kPointerdown}) {
+    Event* native_touch = CreateTouchPointerEvent(event_name);
+    EXPECT_TRUE(MediaControls().IsTouchEvent(native_touch))
+        << "IsTouchEvent should be true for native touch: " << event_name;
+
+    SetIsTouchInteraction(true);
+    MediaControls().DispatchEvent(*native_touch);
+    EXPECT_TRUE(IsTouchInteraction())
+        << "Touch interaction should NOT be reset by touch-type event: "
+        << event_name;
+  }
+}
+
+TEST_F(MediaControlsImplTest,
+       OverlayPlayButtonTogglesPlayPauseOnGestureTapAndClick) {
+  EnsureSizing();
+
+  auto* overlay_play_button = OverlayPlayButtonElement();
+  ASSERT_NE(nullptr, overlay_play_button);
+
+  MediaControls().MediaElement().SetSrc(
+      AtomicString("https://example.com/foo.mp4"));
+  test::RunPendingTasks();
+  SimulateLoadedMetadata();
+
+  // Initially paused.
+  EXPECT_TRUE(MediaControls().MediaElement().paused());
+
+  // Tap to play.
+  SimulateGestureTap(overlay_play_button);
+  EXPECT_FALSE(MediaControls().MediaElement().paused());
+
+  // Tap to pause.
+  SimulateGestureTap(overlay_play_button);
+  EXPECT_TRUE(MediaControls().MediaElement().paused());
+
+  // Click to play.
+  SimulateClick(overlay_play_button);
+  EXPECT_FALSE(MediaControls().MediaElement().paused());
+
+  // Click to pause.
+  SimulateClick(overlay_play_button);
+  EXPECT_TRUE(MediaControls().MediaElement().paused());
+}
+
+TEST_F(MediaControlsImplTest, InterstitialFontFamilyIsGeneric) {
+  auto& video =
+      To<HTMLVideoElement>(*GetDocument().QuerySelector(AtomicString("video")));
+  video.MediaRemotingStarted(WebString::FromUtf8("Living Room TV"));
+  UpdateAllLifecyclePhasesForTest();
+
+  ShadowRoot* shadow_root = video.UserAgentShadowRoot();
+  ASSERT_TRUE(shadow_root);
+
+  bool found_interstitial_message = false;
+  bool found_toast_message = false;
+
+  for (Element* child = ElementTraversal::FirstChild(*shadow_root); child;
+       child = ElementTraversal::Next(*child, shadow_root)) {
+    if (child->ShadowPseudoId() == "-internal-media-interstitial-message") {
+      found_interstitial_message = true;
+      const ComputedStyle* style = child->GetComputedStyle();
+      ASSERT_TRUE(style);
+      EXPECT_TRUE(style->GetFontDescription().Family().FamilyIsGeneric());
+    } else if (child->ShadowPseudoId() ==
+               "-internal-media-remoting-toast-message") {
+      found_toast_message = true;
+      const ComputedStyle* style = child->GetComputedStyle();
+      ASSERT_TRUE(style);
+      EXPECT_TRUE(style->GetFontDescription().Family().FamilyIsGeneric());
+    }
+  }
+
+  EXPECT_TRUE(found_interstitial_message);
+  EXPECT_TRUE(found_toast_message);
 }
 
 }  // namespace blink

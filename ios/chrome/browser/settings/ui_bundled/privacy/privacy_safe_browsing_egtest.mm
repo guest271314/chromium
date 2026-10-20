@@ -10,8 +10,10 @@
 #import "ios/chrome/browser/authentication/test/signin_earl_grey.h"
 #import "ios/chrome/browser/authentication/test/signin_earl_grey_ui_test_util.h"
 #import "ios/chrome/browser/authentication/test/signin_matchers.h"
+#import "ios/chrome/browser/infobars/ui_bundled/banners/infobar_banner_constants.h"
 #import "ios/chrome/browser/settings/ui_bundled/privacy/privacy_constants.h"
 #import "ios/chrome/browser/settings/ui_bundled/privacy/safe_browsing/safe_browsing_constants.h"
+#import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/signin/model/fake_system_identity.h"
 #import "ios/chrome/common/string_util.h"
 #import "ios/chrome/common/ui/table_view/table_view_cells_constants.h"
@@ -104,7 +106,7 @@ void PressInfoButtonForCell(NSString* cellId) {
 @implementation PrivacySafeBrowsingTestCase
 
 - (AppLaunchConfiguration)appConfigurationForTestCase {
-  AppLaunchConfiguration config;
+  AppLaunchConfiguration config = [super appConfigurationForTestCase];
   // TODO: crbug.com/444244681 - Remove this and tests when fully deployed.
   config.features_enabled.push_back(
       safe_browsing::kMovePasswordLeakDetectionToggleIos);
@@ -181,10 +183,10 @@ void PressInfoButtonForCell(NSString* cellId) {
 - (void)testPrivacySafeBrowsingSwipeDown {
   OpenPrivacySafeBrowsingSettings();
 
-  // Check that Privacy Safe Browsing TableView is presented.
-  [[EarlGrey selectElementWithMatcher:grey_accessibilityID(
-                                          kPrivacySafeBrowsingTableViewId)]
-      assertWithMatcher:grey_notNil()];
+  // Wait for Privacy Safe Browsing TableView to be presented.
+  [ChromeEarlGrey
+      waitForUIElementToAppearWithMatcher:grey_accessibilityID(
+                                              kPrivacySafeBrowsingTableViewId)];
 
   // Swipe TableView down.
   [[EarlGrey selectElementWithMatcher:grey_accessibilityID(
@@ -192,9 +194,8 @@ void PressInfoButtonForCell(NSString* cellId) {
       performAction:grey_swipeFastInDirection(kGREYDirectionDown)];
 
   // Check that Settings has been dismissed.
-  [[EarlGrey selectElementWithMatcher:grey_accessibilityID(
-                                          kPrivacySafeBrowsingTableViewId)]
-      assertWithMatcher:grey_nil()];
+  [ChromeEarlGrey waitForUIElementToDisappearWithMatcher:
+                      grey_accessibilityID(kPrivacySafeBrowsingTableViewId)];
 }
 
 // Tests UI and preference value updates between multiple windows.
@@ -393,6 +394,11 @@ void PressInfoButtonForCell(NSString* cellId) {
   // TODO: crbug.com/444244681 - Remove when this is fully deployed.
   config.features_enabled.push_back(
       safe_browsing::kMovePasswordLeakDetectionToggleIos);
+  // TODO(crbug.com/514608938): Fix test for Chrome Next.
+  if ([self isRunningTest:@selector
+            (testPasswordLeakCheckToggle_MissingWhenFeatureFlagEnabled)]) {
+    config.features_disabled.push_back(kChromeNextIa);
+  }
   return config;
 }
 

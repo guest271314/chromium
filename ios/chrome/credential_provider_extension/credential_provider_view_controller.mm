@@ -12,6 +12,7 @@
 #import "base/ios/block_types.h"
 #import "base/not_fatal_until.h"
 #import "base/notreached.h"
+#import "components/password_manager/core/common/browser_assisted_login_type.h"
 #import "components/webauthn/core/browser/passkey_model_utils.h"
 #import "components/webauthn/ios/passkey_types.h"
 #import "ios/chrome/common/app_group/app_group_metrics.h"
@@ -28,6 +29,7 @@
 #import "ios/chrome/common/ui/colors/semantic_color_names.h"
 #import "ios/chrome/common/ui/confirmation_alert/confirmation_alert_action_handler.h"
 #import "ios/chrome/common/ui/reauthentication/reauthentication_module.h"
+#import "ios/chrome/common/ui/reauthentication/reauthentication_protocol.h"
 #import "ios/chrome/common/ui/util/constraints_ui_util.h"
 #import "ios/chrome/credential_provider_extension/account_verification_provider.h"
 #import "ios/chrome/credential_provider_extension/font_provider.h"
@@ -48,6 +50,7 @@
 #import "ios/components/credential_provider_extension/password_util.h"
 
 using app_group::UserDefaultsStringForKey;
+using webauthn::PasskeyUserVerificationStatus;
 
 namespace {
 
@@ -76,21 +79,14 @@ enum class PasskeyCreationEligibility {
   kExcludedPasskey,
 };
 
-enum class PasskeyUserVerificationStatus {
-  kNotRequired,
-  kRequired,
-  kCompleted
-};
-
 }  // namespace
 
-// TODO(crbug.com/454307667): Add unit tests for the whole file.
 @interface CredentialProviderViewController () <
     ConfirmationAlertActionHandler,
     CredentialResponseHandler,
+    MultiProfilePasskeyCreationViewControllerDelegate,
     PasskeyKeychainProviderBridgeDelegate,
     PasskeyWelcomeScreenViewControllerDelegate,
-    MultiProfilePasskeyCreationViewControllerDelegate,
     UIAdaptivePresentationControllerDelegate>
 
 // Interface for the persistent credential store.
@@ -104,14 +100,15 @@ enum class PasskeyUserVerificationStatus {
 @property(nonatomic, strong) ConsentCoordinator* consentCoordinator;
 
 // Reauthentication Module used for reauthentication.
-@property(nonatomic, strong) ReauthenticationModule* reauthenticationModule;
+@property(nonatomic, strong) id<ReauthenticationProtocol>
+    reauthenticationModule;
 
 // Interface for `reauthenticationModule`, handling mostly the case when no
 // hardware for authentication is available.
 @property(nonatomic, strong) ReauthenticationHandler* reauthenticationHandler;
 
-// Interface for verified that accounts are still valid.
-@property(nonatomic, strong) AccountVerificationProvider* accountVerificator;
+// Interface for verifying that accounts are still valid.
+@property(nonatomic, strong) id<AccountVerificationProvider> accountVerificator;
 
 // Loading indicator used for user validation, which APIs can take a long time.
 @property(nonatomic, strong) UIActivityIndicatorView* activityIndicatorView;
@@ -157,9 +154,8 @@ enum class PasskeyUserVerificationStatus {
 
   UINavigationBar* navigationBar = [self createNavigationBar];
   [self.view addSubview:navigationBar];
-  AddSameConstraintsToSides(
-      navigationBar, self.view.safeAreaLayoutGuide,
-      LayoutSides::kTrailing | LayoutSides::kTop | LayoutSides::kLeading);
+  AddSameConstraintsToSides(navigationBar, self.view.safeAreaLayoutGuide,
+                            LayoutSides::kTop | LayoutSides::kHorizontal);
 }
 
 - (void)viewWillAppear:(BOOL)animated {
@@ -322,14 +318,6 @@ enum class PasskeyUserVerificationStatus {
 
 - (void)performPasskeyRegistrationWithoutUserInteractionIfPossible:
     (ASPasskeyCredentialRequest*)registrationRequest {
-  // TODO(crbug.com/515318495): Force disable registration to prevent the CPE
-  // startup crash in M149
-  [self exitWithErrorCode:ASExtensionErrorCodeFailed];
-  return;
-
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wunreachable-code"
-
   PasskeyRequestDetails* passkeyRequestDetails =
       [self passkeyDetailsFromConditionalCreateRequest:registrationRequest];
   if (![passkeyRequestDetails
@@ -352,8 +340,6 @@ enum class PasskeyUserVerificationStatus {
 
   // Try to create a passkey while user interaction is disallowed.
   [self createPasskeyWithDetails:passkeyRequestDetails gaia:gaia];
-
-#pragma clang diagnostic pop
 }
 
 - (void)prepareInterfaceForPasskeyRegistration:
@@ -518,14 +504,14 @@ enum class PasskeyUserVerificationStatus {
   return _reauthenticationHandler;
 }
 
-- (ReauthenticationModule*)reauthenticationModule {
+- (id<ReauthenticationProtocol>)reauthenticationModule {
   if (!_reauthenticationModule) {
     _reauthenticationModule = [[ReauthenticationModule alloc] init];
   }
   return _reauthenticationModule;
 }
 
-- (AccountVerificationProvider*)accountVerificator {
+- (id<AccountVerificationProvider>)accountVerificator {
   if (!_accountVerificator) {
     _accountVerificator = [[AccountVerificationProvider alloc] init];
   }
@@ -642,9 +628,10 @@ enum class PasskeyUserVerificationStatus {
 
 #pragma mark - PasskeyKeychainProviderBridgeDelegate
 
-- (void)performUserVerificationIfNeeded:(ProceduralBlock)completion {
+- (void)performUserVerificationIfNeeded:
+    (UserVerificationCompletionBlock)completion {
   if (_userVerificationStatus != PasskeyUserVerificationStatus::kRequired) {
-    completion();
+    completion(YES);
     return;
   }
 
@@ -652,9 +639,10 @@ enum class PasskeyUserVerificationStatus {
   [self
       reauthenticateIfNeededToAccessPasskeys:YES
                        withCompletionHandler:^(ReauthenticationResult result) {
-                         if (result != ReauthenticationResult::kFailure) {
-                           completion();
-                         } else {
+                         BOOL success =
+                             (result != ReauthenticationResult::kFailure);
+                         completion(success);
+                         if (!success) {
                            [weakSelf
                                exitWithErrorCode:ASExtensionErrorCodeFailed];
                          }
@@ -821,7 +809,7 @@ enum class PasskeyUserVerificationStatus {
                              (ReauthenticationResultBlock)completionHandler {
   __weak __typeof__(self) weakSelf = self;
   auto handlerWrapper = ^(ReauthenticationResult result) {
-    if (result == ReauthenticationResult::kSuccess) {
+    if (result != ReauthenticationResult::kFailure) {
       weakSelf.userVerificationStatus =
           PasskeyUserVerificationStatus::kCompleted;
     }
@@ -1016,6 +1004,11 @@ enum class PasskeyUserVerificationStatus {
 // -completeAssertionRequestWithSelectedPasskeyCredential:completionHandler:.
 - (void)completeAssertionRequestWithSelectedPasskeyCredential:
     (ASPasskeyAssertionCredential*)credential {
+  UpdateHistogramCount(
+      @"PasswordManager.BrowserAssistedLogin.Type",
+      static_cast<int>(
+          password_manager::metrics_util::BrowserAssistedLoginType::
+              kPasskeyStoredInGPMFacilitatedThroughIOSUI));
   [self.listCoordinator stop];
   self.listCoordinator = nil;
   [self.extensionContext
@@ -1159,7 +1152,7 @@ enum class PasskeyUserVerificationStatus {
       _userVerificationStatus == PasskeyUserVerificationStatus::kCompleted;
 
   if (passkeyRequestDetails.userVerificationRequired) {
-    CHECK(didCompleteUserVerification, base::NotFatalUntil::M144);
+    CHECK(didCompleteUserVerification);
   }
 
   ASPasskeyRegistrationCredential* passkeyRegistrationCredential =
@@ -1208,7 +1201,7 @@ enum class PasskeyUserVerificationStatus {
       _userVerificationStatus == PasskeyUserVerificationStatus::kCompleted;
 
   if (passkeyRequestDetails.userVerificationRequired) {
-    CHECK(didCompleteUserVerification, base::NotFatalUntil::M144);
+    CHECK(didCompleteUserVerification);
   }
 
   ASPasskeyAssertionCredential* passkeyCredential = [passkeyRequestDetails

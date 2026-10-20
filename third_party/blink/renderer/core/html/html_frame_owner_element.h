@@ -24,10 +24,10 @@
 #include "services/network/public/cpp/permissions_policy/permissions_policy_declaration.h"
 #include "services/network/public/mojom/trust_tokens.mojom-blink-forward.h"
 #include "third_party/blink/public/common/frame/frame_owner_element_type.h"
+#include "third_party/blink/public/mojom/frame/frame_owner_properties.mojom-blink.h"
 #include "third_party/blink/public/mojom/scroll/scrollbar_mode.mojom-blink.h"
 #include "third_party/blink/public/mojom/timing/resource_timing.mojom-blink.h"
 #include "third_party/blink/renderer/core/core_export.h"
-#include "third_party/blink/renderer/core/dom/document.h"
 #include "third_party/blink/renderer/core/frame/dom_window.h"
 #include "third_party/blink/renderer/core/frame/embedded_content_view.h"
 #include "third_party/blink/renderer/core/frame/frame_owner.h"
@@ -43,10 +43,10 @@
 
 namespace blink {
 
+class Document;
 class Frame;
 class LayoutEmbeddedContent;
 class LazyLoadFrameObserver;
-class WebPluginContainerImpl;
 class ResourceRequestHead;
 class SecurityOrigin;
 
@@ -90,30 +90,10 @@ class CORE_EXPORT HTMLFrameOwnerElement : public HTMLElement,
   void SetColorScheme(mojom::blink::ColorScheme);
   void SetPreferredColorScheme(mojom::blink::PreferredColorScheme);
 
-  class PluginDisposeSuspendScope {
-    STACK_ALLOCATED();
-
-   public:
-    PluginDisposeSuspendScope() { suspend_count_ += 2; }
-    ~PluginDisposeSuspendScope() {
-      suspend_count_ -= 2;
-      if (suspend_count_ == 1)
-        PerformDeferredPluginDispose();
-    }
-
-   private:
-    void PerformDeferredPluginDispose();
-
-    // Low bit indicates if there are plugins to dispose.
-    static int suspend_count_;
-
-    friend class HTMLFrameOwnerElement;
-  };
-
   // Node overrides:
   Node::InsertionNotificationRequest InsertedInto(
       ContainerNode& insertion_point) override;
-  void DidChangeIsCanvasOrInCanvasSubtree() override;
+  void DidChangeIsInCanvasSubtree(CanvasSubtreePropagation) override;
   void RemovedFrom(ContainerNode& insertion_point) override;
   // Element overrides:
   void DidRecalcStyle(const StyleRecalcChange) override;
@@ -127,6 +107,7 @@ class CORE_EXPORT HTMLFrameOwnerElement : public HTMLElement,
   const FramePolicy& GetFramePolicy() const final { return frame_policy_; }
   void NaturalSizingInfoChanged() override;
   void ClearLastNaturalSizingInfo() override;
+  void ClearAllNaturalSizingInfo() override;
   void SetNeedsOcclusionTracking(bool) override {}
   AtomicString BrowsingContextContainerName() const override {
     return FastGetAttribute(html_names::kNameAttr);
@@ -139,6 +120,7 @@ class CORE_EXPORT HTMLFrameOwnerElement : public HTMLElement,
   bool AllowFullscreen() const override { return false; }
   bool AllowPaymentRequest() const override { return false; }
   bool IsDisplayNone() const override { return !embedded_content_view_; }
+  mojom::blink::FrameResponsiveSizing GetResponsiveSizing() const override;
   mojom::blink::ColorScheme GetColorScheme() const override;
   mojom::blink::PreferredColorScheme GetPreferredColorScheme() const override;
   bool ShouldLazyLoadChildren() const final;
@@ -184,8 +166,6 @@ class CORE_EXPORT HTMLFrameOwnerElement : public HTMLElement,
   FocusgroupFlags NativeArrowKeyAxes() const final;
   void FrameOwnerPropertiesChanged() override;
 
-  void DisposePluginSoon(WebPluginContainerImpl*);
-
   // Return the origin which is to be used for permissions policy container
   // policies, as "the origin of the URL in the frame's src attribute" (see
   // https://w3c.github.io/webappsec-permissions-policy/#iframe-allow-attribute).
@@ -229,7 +209,7 @@ class CORE_EXPORT HTMLFrameOwnerElement : public HTMLElement,
   virtual void CheckPotentialPermissionsPolicyViolation() {}
 
  protected:
-  bool is_swapping_frames() const { return is_swapping_frames_; }
+  bool IsSwappingFrames() const final { return is_swapping_frames_; }
 
   // Checks that the number of frames on the page are within the current limit.
   bool IsCurrentlyWithinFrameLimit() const;
@@ -243,7 +223,7 @@ class CORE_EXPORT HTMLFrameOwnerElement : public HTMLElement,
   bool IsLocal() const final { return true; }
   bool IsRemote() const final { return false; }
   bool IsFrameOwnerElement() const final { return true; }
-  void SetIsSwappingFrames(bool is_swapping) override {
+  void SetIsSwappingFrames(bool is_swapping) final {
     is_swapping_frames_ = is_swapping;
   }
 
@@ -266,7 +246,10 @@ class CORE_EXPORT HTMLFrameOwnerElement : public HTMLElement,
   std::optional<NaturalSizingInfo> last_natural_sizing_info_;
   bool should_lazy_load_children_;
   bool is_swapping_frames_{false};
-  mojom::blink::PreferredColorScheme preferred_color_scheme_;
+  mojom::blink::FrameResponsiveSizing responsive_sizing_{
+      mojom::blink::FrameResponsiveSizing::kNone};
+  mojom::blink::PreferredColorScheme preferred_color_scheme_{
+      mojom::blink::PreferredColorScheme::kLight};
 };
 
 class SubframeLoadingDisabler {

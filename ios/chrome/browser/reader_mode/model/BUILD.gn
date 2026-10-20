@@ -9,6 +9,8 @@ source_set("model") {
     "reader_mode_browser_agent.h",
     "reader_mode_browser_agent.mm",
     "reader_mode_browser_agent_delegate.h",
+    "reader_mode_browser_agent_observer_bridge.h",
+    "reader_mode_browser_agent_observer_bridge.mm",
     "reader_mode_content_delegate.h",
     "reader_mode_content_tab_helper.h",
     "reader_mode_content_tab_helper.mm",
@@ -47,7 +49,6 @@ source_set("model") {
   ]
   deps = [
     ":constants",
-    ":features",
     ":reader_mode_js",
     ":reader_mode_scroll_anchor_js",
     "//base",
@@ -100,27 +101,13 @@ source_set("model") {
     "//ios/chrome/browser/translate/model",
     "//ios/chrome/browser/web/model/web_view_proxy",
     "//ios/chrome/browser/web_selection/model",
-    "//ios/web/navigation:wk_navigation_util",
     "//ios/web/public",
     "//ios/web/public/js_messaging",
+    "//net",
     "//services/metrics/public/cpp:ukm_builders",
+    "//third_party/re2",
   ]
   public_deps = [ "//base" ]
-}
-
-source_set("features") {
-  sources = [
-    "features.h",
-    "features.mm",
-  ]
-  deps = [
-    ":constants",
-    "//base",
-    "//components/variations/service",
-    "//ios/chrome/browser/shared/model/application_context",
-    "//ios/chrome/browser/shared/public/features",
-    "//ios/chrome/browser/shared/public/features:system_flags",
-  ]
 }
 
 optimize_ts("reader_mode_scroll_anchor_js") {
@@ -160,7 +147,6 @@ source_set("test_support") {
   ]
   deps = [
     ":constants",
-    ":features",
     ":model",
     "//base",
     "//base/test:test_support",
@@ -168,6 +154,7 @@ source_set("test_support") {
     "//components/feature_engagement/test:test_support",
     "//components/language/ios/browser",
     "//components/prefs:test_support",
+    "//components/sync:test_support",
     "//components/translate/core/browser:translate_pref_names",
     "//components/translate/core/language_detection",
     "//ios/chrome/browser/dom_distiller/model",
@@ -182,9 +169,10 @@ source_set("test_support") {
     "//ios/chrome/browser/shared/model/profile/test",
     "//ios/chrome/browser/snapshots/model",
     "//ios/chrome/browser/snapshots/model:snapshot_source",
+    "//ios/chrome/browser/sync/model",
+    "//ios/chrome/browser/sync/model:test_support",
     "//ios/chrome/test:test_support",
     "//ios/components/security_interstitials/safe_browsing:test_support",
-    "//ios/web/js_messaging:java_script_feature_manager_header",
     "//ios/web/public/js_messaging",
     "//ios/web/public/test",
   ]
@@ -197,6 +185,7 @@ source_set("unit_tests") {
     "reader_mode_content_tab_helper_unittest.mm",
     "reader_mode_dependency_bridge_unittest.mm",
     "reader_mode_distiller_page_unittest.mm",
+    "reader_mode_distiller_viewer_unittest.mm",
     "reader_mode_font_size_utils_unittest.mm",
     "reader_mode_java_script_feature_unittest.mm",
     "reader_mode_metrics_helper_unittest.mm",
@@ -206,14 +195,15 @@ source_set("unit_tests") {
   ]
   deps = [
     ":constants",
-    ":features",
     ":model",
     ":test_support",
     "//base",
     "//base/test:test_support",
     "//components/dom_distiller/core",
+    "//components/dom_distiller/core/mojom",
     "//components/feature_engagement/test:test_support",
     "//components/optimization_guide/proto:optimization_guide_proto",
+    "//components/sync:test_support",
     "//components/sync_preferences",
     "//components/sync_preferences:test_support",
     "//components/ukm:test_support",
@@ -238,10 +228,12 @@ source_set("unit_tests") {
     "//ios/chrome/browser/shared/public/commands",
     "//ios/chrome/browser/snapshots/model",
     "//ios/chrome/browser/snapshots/model:snapshot_source",
+    "//ios/chrome/browser/sync/model",
     "//ios/chrome/browser/tabs/model:dependency_installer",
     "//ios/chrome/browser/web/model:web_internal",
     "//ios/chrome/browser/web/model/web_view_proxy",
     "//ios/chrome/browser/web_selection/model",
+    "//ios/chrome/test:ios_chrome_test_with_web_state",
     "//ios/chrome/test:test_support",
     "//ios/chrome/test/fakes",
     "//ios/web/js_messaging:java_script_feature_manager_header",
@@ -250,5 +242,6 @@ source_set("unit_tests") {
     "//testing/gtest",
     "//third_party/ocmock",
     "//ui/base",
+    "//url",
   ]
 }

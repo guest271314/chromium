@@ -9,9 +9,9 @@
 #include <vector>
 
 #include "base/check_op.h"
+#include "base/containers/span.h"
 #include "base/functional/bind.h"
 #include "base/strings/string_util.h"
-#include "chrome/browser/ui/ui_features.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/window_open_disposition_utils.h"
 #include "ui/events/event.h"
@@ -26,10 +26,10 @@ ConfirmInfoBarWithStyledLabel::ConfirmInfoBarWithStyledLabel(
   // substitution strings, and link metadata from the delegate.
   const std::u16string message_template =
       delegate_ptr->GetMessageTextTemplate();
-  const std::vector<MessageSubstitution> substitutions =
+  base::span<const MessageSubstitution> substitutions =
       delegate_ptr->GetMessageSubstitutions();
-
   std::vector<std::u16string> substitution_strings;
+  substitution_strings.reserve(substitutions.size());
   for (const auto& sub : substitutions) {
     substitution_strings.push_back(sub.text);
   }

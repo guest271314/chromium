@@ -113,13 +113,21 @@ MergeUrlResourcesResult MergeUrlResources(
       if (!incoming_res.context_id.has_value()) {
         incoming_res.context_id = existing_res.context_id;
       }
+      if (!incoming_res.timestamp.has_value()) {
+        incoming_res.timestamp = existing_res.timestamp;
+      }
+      incoming_res.has_chrome_tab_data =
+          incoming_res.has_chrome_tab_data || existing_res.has_chrome_tab_data;
 
       // Check if anything changed.
       if (incoming_res.url_id != existing_res.url_id ||
           incoming_res.url != existing_res.url ||
           incoming_res.tab_id != existing_res.tab_id ||
           incoming_res.title != existing_res.title ||
-          incoming_res.context_id != existing_res.context_id) {
+          incoming_res.context_id != existing_res.context_id ||
+          incoming_res.timestamp != existing_res.timestamp ||
+          incoming_res.has_chrome_tab_data !=
+              existing_res.has_chrome_tab_data) {
         result.has_changes = true;
         result.added_or_updated_resources.push_back(incoming_res);
       }
@@ -480,6 +488,12 @@ ContextualTasksServiceImpl::GetContextualTaskForTab(SessionID tab_id) const {
       return task_it->second;
     }
   }
+  if (IsStickyConversationEnabled() && last_active_task_id_.has_value()) {
+    auto task_it = tasks_.find(*last_active_task_id_);
+    if (task_it != tasks_.end()) {
+      return task_it->second;
+    }
+  }
   return std::nullopt;
 }
 
@@ -492,6 +506,10 @@ std::vector<SessionID> ContextualTasksServiceImpl::GetTabsAssociatedWithTask(
     }
   }
   return associated_tabs;
+}
+
+void ContextualTasksServiceImpl::SetLastActiveTask(const base::Uuid& task_id) {
+  last_active_task_id_ = task_id;
 }
 
 void ContextualTasksServiceImpl::GetContextForTask(
@@ -667,6 +685,7 @@ void ContextualTasksServiceImpl::OnThreadAddedOrUpdatedRemotely(
           new_thread_entity.specifics().title(),
           new_thread_entity.specifics().last_turn_time_unix_epoch_millis(),
           new_thread_entity.specifics().conversation_turn_id()));
+      task.SetTitle(new_thread_entity.specifics().title());
       NotifyTaskUpdated(task, TriggerSource::kRemote);
     }
 
@@ -697,6 +716,11 @@ void ContextualTasksServiceImpl::OnThreadAddedOrUpdatedRemotely(
 void ContextualTasksServiceImpl::OnThreadRemovedRemotely(
     const std::vector<base::Uuid>& thread_ids) {
   OnThreadRemovedRemotelyInternal(ThreadType::kAiMode, thread_ids);
+}
+
+void ContextualTasksServiceImpl::OnThreadRemovedRemotely(
+    const std::vector<std::string>& thread_server_ids) {
+  OnThreadRemovedRemotelyInternal(ThreadType::kAiMode, thread_server_ids);
 }
 
 void ContextualTasksServiceImpl::OnGeminiThreadDataStoreLoaded() {
@@ -796,6 +820,10 @@ void ContextualTasksServiceImpl::RemoveTaskInternal(const base::Uuid& task_id,
     tab_to_task_.erase(tab_id);
   }
 
+  if (last_active_task_id_ == task_id) {
+    last_active_task_id_ = std::nullopt;
+  }
+
   tasks_.erase(task_it);
   base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
       FROM_HERE,
@@ -806,16 +834,30 @@ void ContextualTasksServiceImpl::RemoveTaskInternal(const base::Uuid& task_id,
 void ContextualTasksServiceImpl::OnThreadRemovedRemotelyInternal(
     ThreadType thread_type_filter,
     const std::vector<base::Uuid>& thread_ids) {
-  std::set<std::string> removed_thread_server_ids;
+  std::vector<std::string> server_ids;
+  server_ids.reserve(thread_ids.size());
   for (const auto& id : thread_ids) {
-    removed_thread_server_ids.insert(id.AsLowercaseString());
+    server_ids.push_back(id.AsLowercaseString());
+  }
+  OnThreadRemovedRemotelyInternal(thread_type_filter, server_ids);
+}
+
+void ContextualTasksServiceImpl::OnThreadRemovedRemotelyInternal(
+    ThreadType thread_type_filter,
+    const std::vector<std::string>& thread_server_ids) {
+  std::set<std::string> removed_thread_server_ids;
+  for (const auto& id : thread_server_ids) {
+    if (!id.empty()) {
+      removed_thread_server_ids.insert(base::ToLowerASCII(id));
+    }
   }
 
   std::vector<base::Uuid> tasks_to_delete;
   for (const auto& task_entry : tasks_) {
     const ContextualTask& task = task_entry.second;
     if (task.GetThread() && task.GetThread()->type == thread_type_filter) {
-      if (removed_thread_server_ids.count(task.GetThread()->server_id)) {
+      if (removed_thread_server_ids.count(
+              base::ToLowerASCII(task.GetThread()->server_id))) {
         tasks_to_delete.push_back(task.GetTaskId());
       }
     }

@@ -32,10 +32,10 @@ class SyncService;
 - (void)
     showBookmarksFolderChooserWithParentFolder:
         (const bookmarks::BookmarkNode*)parent
-                                   hiddenNodes:
+                                   editedNodes:
                                        (const std::set<raw_ptr<
                                             const bookmarks::BookmarkNode>>&)
-                                           hiddenNodes;
+                                           editedNodes;
 // Called when the controller successfully created or edited `folder`.
 - (void)bookmarksFolderEditor:(BookmarksFolderEditorViewController*)folderEditor
        didFinishEditingFolder:(const bookmarks::BookmarkNode*)folder;
@@ -70,6 +70,11 @@ class SyncService;
 
 // Whether the UI is disabled.
 @property(nonatomic, assign) BOOL UIDisabled;
+
+// Whether the view controller's coordinator is stopping programmatically.
+// When YES, `viewDidDisappear:` ignores dismissal notifications to prevent
+// redundant delegate callbacks during coordinator teardown.
+@property(nonatomic, assign) BOOL coordinatorIsStopping;
 
 // Snackbar commands handler for this ViewController.
 @property(nonatomic, weak) id<SnackbarCommands> snackbarCommandsHandler;

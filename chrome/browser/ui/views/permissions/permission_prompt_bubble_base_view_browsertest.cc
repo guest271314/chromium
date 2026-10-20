@@ -10,27 +10,26 @@
 #include "base/functional/callback_helpers.h"
 #include "base/run_loop.h"
 #include "base/test/metrics/histogram_tester.h"
+#include "base/test/run_until.h"
 #include "build/build_config.h"
 #include "chrome/browser/custom_handlers/protocol_handler_registry_factory.h"
 #include "chrome/browser/download/download_permission_request.h"
 #include "chrome/browser/permissions/quiet_notification_permission_ui_config.h"
-#include "chrome/browser/permissions/quiet_notification_permission_ui_state.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_window.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/tabs/tab_strip_model_delegate.h"
 #include "chrome/browser/ui/test/test_browser_dialog.h"
+#include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/permissions/chip/chip_controller.h"
 #include "chrome/browser/ui/views/permissions/permission_prompt_bubble_base_view.h"
 #include "chrome/browser/ui/views/permissions/permission_prompt_chip.h"
+#include "chrome/browser/ui/views/permissions/permission_prompt_observer.h"
 #include "chrome/browser/ui/views/toolbar/toolbar_view.h"
-#include "chrome/common/pref_names.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "chrome/test/permissions/permission_request_manager_test_api.h"
-#include "components/content_settings/core/common/features.h"
-#include "components/content_settings/core/common/pref_names.h"
 #include "components/custom_handlers/protocol_handler_registry.h"
 #include "components/custom_handlers/register_protocol_handler_permission_request.h"
 #include "components/permissions/constants.h"
@@ -51,16 +50,22 @@
 #include "content/public/test/browser_test_utils.h"
 #include "content/public/test/cursor_utils.h"
 #include "content/public/test/test_utils.h"
+#include "extensions/buildflags/buildflags.h"
 #include "net/dns/mock_host_resolver.h"
 #include "ui/base/cursor/cursor.h"
 #include "ui/base/cursor/mojom/cursor_type.mojom-shared.h"
-#include "ui/events/base_event_utils.h"
 #include "ui/gfx/animation/animation.h"
 #include "ui/gfx/animation/animation_test_api.h"
 #include "ui/views/controls/styled_label.h"
 #include "ui/views/test/ax_event_counter.h"
-#include "ui/views/test/button_test_api.h"
 #include "url/gurl.h"
+#include "url/origin.h"
+
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
+#include "chrome/browser/extensions/chrome_test_extension_loader.h"
+#include "extensions/common/extension.h"
+#include "extensions/test/test_extension_dir.h"
+#endif
 
 // To run the pixel tests of this file run: browser_tests
 // --gtest_filter=BrowserUiTest.Invoke --test-launcher-interactive
@@ -96,6 +101,28 @@ class PermissionPromptBubbleBaseViewBrowserTest : public DialogBrowserTest {
     const std::string& actual_name = name.substr(0, name.find("/"));
     AddRequestForContentSetting(actual_name);
     base::RunLoop().RunUntilIdle();
+
+    // In WebUI Toolbar mode, permission chips use WebUIPermissionChip, which
+    // drives expand animations via asynchronous Mojo IPCs instead of native
+    // gfx::Animation. `base::RunLoop().RunUntilIdle()` alone does not wait for
+    // the WebUI IPC callback to arrive. If the chip is still animating,
+    // forcibly snap the chip to expanded and trigger `OnExpandAnimationEnded()`
+    // to open the prompt bubble.
+    ChipController* chip_controller = GetChipController();
+    if (chip_controller && chip_controller->IsAnimating()) {
+      chip_controller->chip()->ResetAnimation(
+          PermissionChipInterface::AnimationState::kExpanded);
+      chip_controller->OnExpandAnimationEnded();
+    }
+
+    // WebUIPermissionChip also resolves the bubble's anchor asynchronously,
+    // once the WebUI has registered the chip element over Mojo. Wait for it so
+    // that the prompt bubble widget is created before `ShowUi()` returns.
+    if (chip_controller) {
+      ASSERT_TRUE(base::test::RunUntil([chip_controller] {
+        return !chip_controller->is_waiting_for_anchor_for_testing();
+      }));
+    }
   }
 
   GURL GetTestUrl() { return test_url_; }
@@ -103,7 +130,7 @@ class PermissionPromptBubbleBaseViewBrowserTest : public DialogBrowserTest {
 
   content::RenderFrameHost* GetActiveMainFrame() {
     return browser()
-        ->tab_strip_model()
+        ->GetTabStripModel()
         ->GetActiveWebContents()
         ->GetPrimaryMainFrame();
   }
@@ -128,19 +155,43 @@ class PermissionPromptBubbleBaseViewBrowserTest : public DialogBrowserTest {
 
  private:
   std::unique_ptr<custom_handlers::RegisterProtocolHandlerPermissionRequest>
-  MakeRegisterProtocolHandlerRequest() {
+  MakeRegisterProtocolHandlerRequest(const GURL& handler_url,
+                                     const url::Origin& requesting_origin) {
     std::string protocol = "mailto";
     custom_handlers::ProtocolHandler handler =
         custom_handlers::ProtocolHandler::CreateProtocolHandler(protocol,
-                                                                GetTestUrl());
+                                                                handler_url);
     custom_handlers::ProtocolHandlerRegistry* registry =
         ProtocolHandlerRegistryFactory::GetForBrowserContext(
-            browser()->profile());
+            browser()->GetProfile());
     // Deleted in RegisterProtocolHandlerPermissionRequest::RequestFinished().
     return std::make_unique<
         custom_handlers::RegisterProtocolHandlerPermissionRequest>(
-        registry, handler, GetTestUrl(), base::ScopedClosureRunner());
+        registry, handler, requesting_origin, base::ScopedClosureRunner());
   }
+
+  std::unique_ptr<custom_handlers::RegisterProtocolHandlerPermissionRequest>
+  MakeRegisterProtocolHandlerRequest() {
+    return MakeRegisterProtocolHandlerRequest(
+        GetTestUrl(), url::Origin::Create(GetTestUrl()));
+  }
+
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
+  url::Origin GetTestExtensionOrigin() {
+    if (!test_extension_) {
+      test_extension_dir_.WriteManifest(
+          R"({
+               "name": "Test Extension",
+               "version": "0.1",
+               "manifest_version": 3
+             })");
+      test_extension_ =
+          extensions::ChromeTestExtensionLoader(browser()->GetProfile())
+              .LoadExtension(test_extension_dir_.UnpackedPath());
+    }
+    return test_extension_ ? test_extension_->origin() : url::Origin();
+  }
+#endif  // BUILDFLAG(ENABLE_EXTENSIONS_CORE)
 
   void AddRequestForContentSetting(const std::string& name) {
     constexpr const char* kMultipleName = "multiple";
@@ -155,6 +206,12 @@ class PermissionPromptBubbleBaseViewBrowserTest : public DialogBrowserTest {
          {"mic", ContentSettingsType::MEDIASTREAM_MIC},
          {"camera", ContentSettingsType::MEDIASTREAM_CAMERA},
          {"protocol_handlers", ContentSettingsType::PROTOCOL_HANDLERS},
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
+         {"extension_protocol_handlers_cross_origin",
+          ContentSettingsType::PROTOCOL_HANDLERS},
+         {"extension_protocol_handlers_cross_origin_replace",
+          ContentSettingsType::PROTOCOL_HANDLERS},
+#endif
          {"midi", ContentSettingsType::MIDI_SYSEX},
          {"storage_access", ContentSettingsType::STORAGE_ACCESS},
          {"downloads", ContentSettingsType::AUTOMATIC_DOWNLOADS},
@@ -178,6 +235,33 @@ class PermissionPromptBubbleBaseViewBrowserTest : public DialogBrowserTest {
 
     switch (it->type) {
       case ContentSettingsType::PROTOCOL_HANDLERS:
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
+        if (name == "extension_protocol_handlers_cross_origin") {
+          manager->AddRequest(source_frame,
+                              MakeRegisterProtocolHandlerRequest(
+                                  GURL("https://example.com/handler?q=%s"),
+                                  GetTestExtensionOrigin()));
+          break;
+        }
+
+        if (name == "extension_protocol_handlers_cross_origin_replace") {
+          // Pre-register an existing handler for mailto.
+          custom_handlers::ProtocolHandlerRegistry* registry =
+              ProtocolHandlerRegistryFactory::GetForBrowserContext(
+                  browser()->GetProfile());
+          custom_handlers::ProtocolHandler old_handler =
+              custom_handlers::ProtocolHandler::CreateProtocolHandler(
+                  "mailto", GURL("https://old.com/handler?q=%s"));
+          registry->OnAcceptRegisterProtocolHandler(old_handler);
+
+          manager->AddRequest(source_frame,
+                              MakeRegisterProtocolHandlerRequest(
+                                  GURL("https://example.com/handler?q=%s"),
+                                  GetTestExtensionOrigin()));
+          break;
+        }
+#endif  // BUILDFLAG(ENABLE_EXTENSIONS_CORE)
+
         manager->AddRequest(source_frame, MakeRegisterProtocolHandlerRequest());
         break;
       case ContentSettingsType::AUTOMATIC_DOWNLOADS:
@@ -222,6 +306,11 @@ class PermissionPromptBubbleBaseViewBrowserTest : public DialogBrowserTest {
   std::unique_ptr<test::PermissionRequestManagerTestApi> test_api_;
   GURL embedding_origin_ = GURL("https://www.origin.test.com");
   GURL test_url_ = GURL("https://example.com");
+
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
+  extensions::TestExtensionDir test_extension_dir_;
+  scoped_refptr<const extensions::Extension> test_extension_;
+#endif
 };
 
 // Flaky on Mac: http://crbug.com/40942996
@@ -245,11 +334,16 @@ IN_PROC_BROWSER_TEST_F(PermissionPromptBubbleBaseViewBrowserTest,
 // make sure no crashes.
 IN_PROC_BROWSER_TEST_F(PermissionPromptBubbleBaseViewBrowserTest,
                        SwitchBetweenChipAndBubble) {
+  // TODO(crbug.com/545160323): Support testing location bar hiding in WebUI
+  // toolbar mode.
+  if (features::IsWebUIToolbarEnabled()) {
+    GTEST_SKIP() << "Test requires Views LocationBarView";
+  }
   BrowserView* browser_view = BrowserView::GetBrowserViewForBrowser(browser());
   browser_view->GetLocationBarView()->SetVisible(false);
   ShowUi("geolocation");
   content::WebContents* web_contents =
-      browser()->tab_strip_model()->GetActiveWebContents();
+      browser()->GetTabStripModel()->GetActiveWebContents();
   permissions::PermissionRequestManager* permission_request_manager =
       permissions::PermissionRequestManager::FromWebContents(web_contents);
   permission_request_manager->UpdateAnchor();
@@ -276,7 +370,7 @@ IN_PROC_BROWSER_TEST_F(
 
   // Simulate a render process crash while the permission prompt is pending.
   content::RenderViewHost* render_view_host = browser()
-                                                  ->tab_strip_model()
+                                                  ->GetTabStripModel()
                                                   ->GetActiveWebContents()
                                                   ->GetPrimaryMainFrame()
                                                   ->GetRenderViewHost();
@@ -299,8 +393,8 @@ IN_PROC_BROWSER_TEST_F(
   // Wait until the WebContents, and with it, the PermissionRequestManager, is
   // gone, and make sure nothing crashes.
   content::WebContentsDestroyedWatcher web_contents_destroyed_watcher(
-      browser()->tab_strip_model()->GetActiveWebContents());
-  browser()->tab_strip_model()->CloseAllTabs();
+      browser()->GetTabStripModel()->GetActiveWebContents());
+  browser()->GetTabStripModel()->CloseAllTabs();
   web_contents_destroyed_watcher.Wait();
 }
 
@@ -333,6 +427,22 @@ IN_PROC_BROWSER_TEST_F(PermissionPromptBubbleBaseViewBrowserTest,
                        InvokeUi_protocol_handlers) {
   ShowAndVerifyUi();
 }
+
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
+// Host wants to open email links through an external handler URL.
+IN_PROC_BROWSER_TEST_F(PermissionPromptBubbleBaseViewBrowserTest,
+                       InvokeUi_extension_protocol_handlers_cross_origin) {
+  ShowAndVerifyUi();
+}
+
+// Host wants to open email links through an external handler URL, replacing an
+// existing handler.
+IN_PROC_BROWSER_TEST_F(
+    PermissionPromptBubbleBaseViewBrowserTest,
+    InvokeUi_extension_protocol_handlers_cross_origin_replace) {
+  ShowAndVerifyUi();
+}
+#endif  // BUILDFLAG(ENABLE_EXTENSIONS_CORE)
 
 // Host wants to use your MIDI devices.
 IN_PROC_BROWSER_TEST_F(PermissionPromptBubbleBaseViewBrowserTest,
@@ -522,6 +632,70 @@ IN_PROC_BROWSER_TEST_F(PermissionPromptBubbleBaseViewBrowserTest,
   EXPECT_EQ(content::CursorUtils::GetLastCursorForWebContents(
                 GetTestApi().manager()->GetAssociatedWebContents()),
             ui::mojom::CursorType::kCustom);
+}
+
+namespace {
+class TestPermissionPromptObserver : public PermissionPromptObserver::Observer {
+ public:
+  TestPermissionPromptObserver() = default;
+  ~TestPermissionPromptObserver() override = default;
+
+  void OnPermissionPromptChanged(bool is_showing,
+                                 const gfx::Size& prompt_size) override {
+    is_showing_history_.push_back(is_showing);
+    sizes_.push_back(prompt_size);
+  }
+
+  const std::vector<bool>& is_showing_history() const {
+    return is_showing_history_;
+  }
+  const std::vector<gfx::Size>& sizes() const { return sizes_; }
+
+ private:
+  std::vector<bool> is_showing_history_;
+  std::vector<gfx::Size> sizes_;
+};
+}  // namespace
+
+IN_PROC_BROWSER_TEST_F(PermissionPromptBubbleBaseViewBrowserTest,
+                       PermissionPromptBubbleNotifiesObserver) {
+  content::WebContents* web_contents =
+      browser()->GetTabStripModel()->GetActiveWebContents();
+  PermissionPromptObserver* observer =
+      PermissionPromptObserver::FromWebContents(web_contents);
+  if (!observer) {
+    PermissionPromptObserver::CreateForWebContents(web_contents);
+    observer = PermissionPromptObserver::FromWebContents(web_contents);
+  }
+
+  TestPermissionPromptObserver test_observer;
+  observer->AddObserver(&test_observer);
+
+  // Must use a request type that does not support the confirmation chip (like
+  // "downloads") so that it immediately triggers a `PermissionPromptBubble`.
+  // Using a request type like "mic" would show a Chip first and not immediately
+  // instantiate the PermissionPromptBubble class under test.
+  ShowUi("downloads");
+  EXPECT_TRUE(base::test::RunUntil(
+      [&]() { return test_observer.is_showing_history().size() >= 1u; }));
+
+  // Verify that it notified is_showing = true, and empty size (0, 0) is ignored
+  // because the size is unused in the PermissionPromptBubble` class and not
+  // because the height/width should be 0.
+  ASSERT_EQ(1u, test_observer.is_showing_history().size());
+  EXPECT_TRUE(test_observer.is_showing_history()[0]);
+  EXPECT_EQ(gfx::Size(0, 0), test_observer.sizes()[0]);
+
+  // Accept/Dismiss the prompt to verify is_showing = false is dispatched.
+  GetTestApi().manager()->Accept(/*prompt_options=*/std::monostate());
+  EXPECT_TRUE(base::test::RunUntil(
+      [&]() { return test_observer.is_showing_history().size() >= 2u; }));
+
+  ASSERT_EQ(2u, test_observer.is_showing_history().size());
+  EXPECT_FALSE(test_observer.is_showing_history()[1]);
+  EXPECT_EQ(gfx::Size(0, 0), test_observer.sizes()[1]);
+
+  observer->RemoveObserver(&test_observer);
 }
 
 IN_PROC_BROWSER_TEST_F(PermissionPromptBubbleBaseViewBrowserTest,

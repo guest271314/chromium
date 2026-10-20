@@ -79,10 +79,12 @@ class SecHeaderHelpersTestBase : public PlatformTest {
   SecHeaderHelpersTestBase()
       : task_environment_(base::test::TaskEnvironment::MainThreadType::IO),
         context_(net::CreateTestURLRequestContextBuilder()->Build()),
-        url_request_(context_->CreateRequest(GURL(kSecureSite),
-                                             net::DEFAULT_PRIORITY,
-                                             /*delegate=*/nullptr,
-                                             TRAFFIC_ANNOTATION_FOR_TESTS)) {
+        url_request_(
+            context_->CreateRequest(GURL(kSecureSite),
+                                    net::DEFAULT_PRIORITY,
+                                    /*delegate=*/nullptr,
+                                    TRAFFIC_ANNOTATION_FOR_TESTS,
+                                    net::handles::kInvalidNetworkHandle)) {
     url_request_->set_initiator(
         url::Origin::Create(GURL(kPrivilegedInitiator)));
 
@@ -296,6 +298,137 @@ TEST_F(SecHeaderHelpersTest, PrivilegedRequestOnExtension) {
               }));
 }
 
+// Validate that when a privileged extension request redirects to an
+// unprivileged target, Sec-Fetch-Site is downgraded from "none" to
+// "cross-site".
+TEST_F(SecHeaderHelpersTest,
+       PrivilegedRequestOnExtensionRedirectToUnprivileged) {
+  GURL initial_url(kSecureSite);
+  GURL redirect_url(kSecureCrossSite);
+
+  url_request().set_isolation_info(net::IsolationInfo::Create(
+      net::IsolationInfo::RequestType::kOther, url::Origin::Create(initial_url),
+      url::Origin::Create(initial_url), net::SiteForCookies(),
+      /*nonce=*/std::nullopt,
+      /*network_isolation_partition=*/net::NetworkIsolationPartition::kGeneral,
+      /*frame_ancestor_relation=*/
+      net::IsolationInfo::FrameAncestorRelation::kSameOrigin));
+
+  network::mojom::URLLoaderFactoryParams params;
+  params.unsafe_non_webby_initiator = true;
+
+  cors::OriginAccessList origin_access_list;
+  origin_access_list.AddAllowListEntryForOrigin(
+      url::Origin::Create(GURL(kPrivilegedInitiator)), initial_url.GetScheme(),
+      initial_url.GetHost(), /*port=*/0,
+      mojom::CorsDomainMatchMode::kDisallowSubdomains,
+      mojom::CorsPortMatchMode::kAllowAnyPort,
+      mojom::CorsOriginAccessMatchPriority::kDefaultPriority);
+
+  // Initial request to the permitted host sends `Sec-Fetch-Site: none`.
+  SetFetchMetadataHeaders(url_request(), network::mojom::RequestMode::kCors,
+                          /*has_user_activation=*/false,
+                          network::mojom::RequestDestination::kEmpty,
+                          /*pending_redirect_url=*/std::nullopt, params,
+                          origin_access_list, mojom::CredentialsMode::kInclude);
+  EXPECT_EQ(
+      url_request().extra_request_headers().GetHeader(kKnownSecFetchSiteHeader),
+      "none");
+
+  // Redirecting to an unpermitted host must send `Sec-Fetch-Site: cross-site`.
+  SetFetchMetadataHeaders(url_request(), network::mojom::RequestMode::kCors,
+                          /*has_user_activation=*/false,
+                          network::mojom::RequestDestination::kEmpty,
+                          redirect_url, params, origin_access_list,
+                          mojom::CredentialsMode::kInclude);
+  EXPECT_EQ(
+      url_request().extra_request_headers().GetHeader(kKnownSecFetchSiteHeader),
+      "cross-site");
+}
+
+// Validate that if any hop in an extension request's redirect chain is
+// unprivileged, Sec-Fetch-Site is "cross-site" even if the current URL and
+// pending redirect target are privileged.
+TEST_F(SecHeaderHelpersTest, UnprivilegedHopInMiddleOfChainOnExtension) {
+  GURL privileged_url_1(kSecureSite);
+  GURL unprivileged_url(kSecureCrossSite);
+  GURL privileged_url_2(kSecureSameSite);
+
+  // Simulate a redirect chain where an earlier hop was unprivileged:
+  // privileged_url_1 -> unprivileged_url -> privileged_url_1 (current) ->
+  // privileged_url_2 (pending).
+  url_request().SetURLChain(
+      {privileged_url_1, unprivileged_url, privileged_url_1});
+
+  url_request().set_isolation_info(net::IsolationInfo::Create(
+      net::IsolationInfo::RequestType::kOther,
+      url::Origin::Create(privileged_url_1),
+      url::Origin::Create(privileged_url_1), net::SiteForCookies(),
+      /*nonce=*/std::nullopt,
+      /*network_isolation_partition=*/net::NetworkIsolationPartition::kGeneral,
+      /*frame_ancestor_relation=*/
+      net::IsolationInfo::FrameAncestorRelation::kSameOrigin));
+
+  network::mojom::URLLoaderFactoryParams params;
+  params.unsafe_non_webby_initiator = true;
+
+  cors::OriginAccessList origin_access_list;
+  for (const GURL& allowed_url : {privileged_url_1, privileged_url_2}) {
+    origin_access_list.AddAllowListEntryForOrigin(
+        url::Origin::Create(GURL(kPrivilegedInitiator)),
+        allowed_url.GetScheme(), allowed_url.GetHost(), /*port=*/0,
+        mojom::CorsDomainMatchMode::kDisallowSubdomains,
+        mojom::CorsPortMatchMode::kAllowAnyPort,
+        mojom::CorsOriginAccessMatchPriority::kDefaultPriority);
+  }
+
+  SetFetchMetadataHeaders(url_request(), network::mojom::RequestMode::kCors,
+                          /*has_user_activation=*/false,
+                          network::mojom::RequestDestination::kEmpty,
+                          privileged_url_2, params, origin_access_list,
+                          mojom::CredentialsMode::kInclude);
+  EXPECT_EQ(
+      url_request().extra_request_headers().GetHeader(kKnownSecFetchSiteHeader),
+      "cross-site");
+}
+
+// Validate that when a privileged extension request redirects to another
+// privileged target, Sec-Fetch-Site remains "none".
+TEST_F(SecHeaderHelpersTest, PrivilegedRequestOnExtensionRedirectToPrivileged) {
+  GURL initial_url(kSecureSite);
+  GURL redirect_url(kSecureCrossSite);
+
+  url_request().set_isolation_info(net::IsolationInfo::Create(
+      net::IsolationInfo::RequestType::kOther, url::Origin::Create(initial_url),
+      url::Origin::Create(initial_url), net::SiteForCookies(),
+      /*nonce=*/std::nullopt,
+      /*network_isolation_partition=*/net::NetworkIsolationPartition::kGeneral,
+      /*frame_ancestor_relation=*/
+      net::IsolationInfo::FrameAncestorRelation::kSameOrigin));
+
+  network::mojom::URLLoaderFactoryParams params;
+  params.unsafe_non_webby_initiator = true;
+
+  cors::OriginAccessList origin_access_list;
+  for (const GURL& allowed_url : {initial_url, redirect_url}) {
+    origin_access_list.AddAllowListEntryForOrigin(
+        url::Origin::Create(GURL(kPrivilegedInitiator)),
+        allowed_url.GetScheme(), allowed_url.GetHost(), /*port=*/0,
+        mojom::CorsDomainMatchMode::kDisallowSubdomains,
+        mojom::CorsPortMatchMode::kAllowAnyPort,
+        mojom::CorsOriginAccessMatchPriority::kDefaultPriority);
+  }
+
+  SetFetchMetadataHeaders(url_request(), network::mojom::RequestMode::kCors,
+                          /*has_user_activation=*/false,
+                          network::mojom::RequestDestination::kEmpty,
+                          redirect_url, params, origin_access_list,
+                          mojom::CredentialsMode::kInclude);
+  EXPECT_EQ(
+      url_request().extra_request_headers().GetHeader(kKnownSecFetchSiteHeader),
+      "none");
+}
+
 struct FileSchemeTestData {
   const url::Origin test_origin;
   const std::string_view expected_header_value;
@@ -310,10 +443,12 @@ class SecHeaderHelpersFileSchemeTest
   SecHeaderHelpersFileSchemeTest()
       : task_environment_(base::test::TaskEnvironment::MainThreadType::IO),
         context_(net::CreateTestURLRequestContextBuilder()->Build()),
-        url_request_(context_->CreateRequest(GURL(kFile),
-                                             net::DEFAULT_PRIORITY,
-                                             /*delegate=*/nullptr,
-                                             TRAFFIC_ANNOTATION_FOR_TESTS)) {}
+        url_request_(
+            context_->CreateRequest(GURL(kFile),
+                                    net::DEFAULT_PRIORITY,
+                                    /*delegate=*/nullptr,
+                                    TRAFFIC_ANNOTATION_FOR_TESTS,
+                                    net::handles::kInvalidNetworkHandle)) {}
 
   net::URLRequest* url_request() const { return url_request_.get(); }
 
@@ -525,10 +660,12 @@ class FrameTopSecHeaderHelpersTest : public PlatformTest,
   FrameTopSecHeaderHelpersTest()
       : task_environment_(base::test::TaskEnvironment::MainThreadType::IO),
         context_(net::CreateTestURLRequestContextBuilder()->Build()),
-        url_request_(context_->CreateRequest(GetParam(),
-                                             net::DEFAULT_PRIORITY,
-                                             /*delegate=*/nullptr,
-                                             TRAFFIC_ANNOTATION_FOR_TESTS)) {
+        url_request_(
+            context_->CreateRequest(GetParam(),
+                                    net::DEFAULT_PRIORITY,
+                                    /*delegate=*/nullptr,
+                                    TRAFFIC_ANNOTATION_FOR_TESTS,
+                                    net::handles::kInvalidNetworkHandle)) {
     url_request_->set_initiator(
         url::Origin::Create(GURL(kPrivilegedInitiator)));
     url_request_->set_storage_access_status(net::StorageAccessStatusCache(
@@ -673,10 +810,12 @@ class FrameAncestorsSecHeaderHelpersTest
  public:
   FrameAncestorsSecHeaderHelpersTest()
       : context_(net::CreateTestURLRequestContextBuilder()->Build()),
-        url_request_(context_->CreateRequest(GetParam().url_request_dest,
-                                             net::DEFAULT_PRIORITY,
-                                             /*delegate=*/nullptr,
-                                             TRAFFIC_ANNOTATION_FOR_TESTS)) {
+        url_request_(
+            context_->CreateRequest(GetParam().url_request_dest,
+                                    net::DEFAULT_PRIORITY,
+                                    /*delegate=*/nullptr,
+                                    TRAFFIC_ANNOTATION_FOR_TESTS,
+                                    net::handles::kInvalidNetworkHandle)) {
     url_request_->set_initiator(
         url::Origin::Create(GURL(kPrivilegedInitiator)));
     url_request_->set_storage_access_status(net::StorageAccessStatusCache(

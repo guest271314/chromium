@@ -32,6 +32,7 @@
 #include "third_party/blink/renderer/core/editing/commands/clipboard_commands.h"
 
 #include "base/auto_reset.h"
+#include "base/memory/raw_ptr.h"
 #include "third_party/blink/public/platform/web_content_settings_client.h"
 #include "third_party/blink/renderer/core/clipboard/clipboard_utilities.h"
 #include "third_party/blink/renderer/core/clipboard/data_transfer.h"
@@ -93,15 +94,20 @@ class ExecutionContextClipboardEventState
   virtual ~ExecutionContextClipboardEventState() = default;
 
   struct State {
-    const AtomicString* event_type = nullptr;
+    raw_ptr<const AtomicString, UnprotectedInRelease | DanglingUntriaged>
+        event_type = nullptr;
     std::optional<EditorCommandSource> source;
+    std::optional<absl::uint128> sequence_number = 0;
   };
 
-  base::AutoReset<State> SetState(const AtomicString& event_type,
-                                  EditorCommandSource source) {
+  base::AutoReset<State> SetState(
+      const AtomicString& event_type,
+      EditorCommandSource source,
+      std::optional<absl::uint128> sequence_number) {
     State new_state;
     new_state.event_type = &event_type;
     new_state.source = source;
+    new_state.sequence_number = sequence_number;
     return base::AutoReset<State>(&state_, new_state);
   }
 
@@ -111,10 +117,32 @@ class ExecutionContextClipboardEventState
   State state_;
 };
 
+DataTransfer* CreateBeforeInputDataTransfer(
+    LocalFrame& frame,
+    Element* target,
+    PasteMode paste_mode,
+    absl::uint128 paste_sequence_number) {
+  SystemClipboard* const system_clipboard = frame.GetSystemClipboard();
+  DataObject* data_object = DataObject::Create();
+  if (system_clipboard->SequenceNumber() == paste_sequence_number) {
+    data_object = DataObject::CreateFromClipboard(
+        target ? target->GetExecutionContext() : nullptr, system_clipboard,
+        paste_mode);
+    if (system_clipboard->SequenceNumber() != paste_sequence_number) {
+      data_object = DataObject::Create();
+    }
+  }
+  return DataTransfer::Create(DataTransfer::kCopyAndPaste,
+                              DataTransferAccessPolicy::kReadable, data_object);
+}
+
 }  // namespace
 
 bool ClipboardCommands::CanReadClipboard(LocalFrame& frame,
                                          EditorCommandSource source) {
+  if (frame.GetDocument() && frame.GetDocument()->IsPrerendering()) {
+    return false;
+  }
   if (source == EditorCommandSource::kMenuOrKeyBinding)
     return true;
   Settings* const settings = frame.GetSettings();
@@ -128,11 +156,18 @@ bool ClipboardCommands::CanReadClipboard(LocalFrame& frame,
 
 bool ClipboardCommands::CanWriteClipboard(LocalFrame& frame,
                                           EditorCommandSource source) {
+  if (frame.GetDocument() && frame.GetDocument()->IsPrerendering()) {
+    return false;
+  }
   if (source == EditorCommandSource::kMenuOrKeyBinding)
     return true;
   Settings* const settings = frame.GetSettings();
-  if ((settings && settings->GetJavaScriptCanAccessClipboard()) ||
-      LocalFrame::HasTransientUserActivation(&frame)) {
+  if (settings && settings->GetJavaScriptCanAccessClipboard()) {
+    return true;
+  }
+  if (LocalFrame::HasTransientUserActivation(&frame) &&
+      ((settings && settings->GetClipboardFocusExempt()) ||
+       frame.GetDocument()->hasFocus())) {
     return true;
   }
   return frame.GetContentSettingsClient() &&
@@ -154,6 +189,14 @@ bool ClipboardCommands::IsExecutingPaste(ExecutionContext& context) {
          event_state.source == EditorCommandSource::kMenuOrKeyBinding;
 }
 
+std::optional<absl::uint128>
+ClipboardCommands::GetSequenceNumberForExecutingPaste(
+    ExecutionContext& context) {
+  const ExecutionContextClipboardEventState::State& event_state =
+      ExecutionContextClipboardEventState::From(context).GetState();
+  return event_state.sequence_number;
+}
+
 bool ClipboardCommands::CanSmartReplaceInClipboard(LocalFrame& frame) {
   return frame.GetEditor().SmartInsertDeleteEnabled() &&
          frame.GetSystemClipboard()->IsFormatAvailable(
@@ -171,12 +214,9 @@ Element* ClipboardCommands::FindEventTargetForClipboardEvent(
   //   or the body element if no node has focus."
   if (source == EditorCommandSource::kMenuOrKeyBinding &&
       frame.Selection().IsHidden()) {
-    if (RuntimeEnabledFeatures::
-            ClipboardEventTargetCanBeFocusedElementEnabled()) {
-      Element* focusedElement = frame.GetDocument()->FocusedElement();
-      if (focusedElement && !IsEditable(*focusedElement)) {
-        return focusedElement;
-      }
+    Element* focusedElement = frame.GetDocument()->FocusedElement();
+    if (focusedElement && !IsEditable(*focusedElement)) {
+      return focusedElement;
     }
     return frame.Selection().GetDocument().body();
   }
@@ -186,7 +226,7 @@ Element* ClipboardCommands::FindEventTargetForClipboardEvent(
   // position types, the container is the parent of the anchor node.
   if (RuntimeEnabledFeatures::ClipboardEventTargetUsesContainerNodeEnabled()) {
     const VisibleSelection& selection =
-        frame.Selection().ComputeVisibleSelectionInDOMTree();
+        frame.Selection().ComputeVisibleSelectionInDomTree();
     const Position& start = selection.Start();
     Node* container = start.ComputeContainerNode();
     if (!container) {
@@ -208,7 +248,7 @@ Element* ClipboardCommands::FindEventTargetForClipboardEvent(
   }
 
   return FindEventTargetFrom(
-      frame, frame.Selection().ComputeVisibleSelectionInDOMTree());
+      frame, frame.Selection().ComputeVisibleSelectionInDomTree());
 }
 
 // Returns true if Editor should continue with default processing.
@@ -222,6 +262,10 @@ bool ClipboardCommands::DispatchClipboardEvent(LocalFrame& frame,
     return true;
 
   SystemClipboard* system_clipboard = frame.GetSystemClipboard();
+  std::optional<absl::uint128> sequence_number =
+      event_type == event_type_names::kPaste
+          ? std::make_optional(system_clipboard->SequenceNumber())
+          : std::nullopt;
   DataTransfer* const data_transfer = DataTransfer::Create(
       DataTransfer::kCopyAndPaste, policy,
       policy == DataTransferAccessPolicy::kWritable
@@ -234,7 +278,7 @@ bool ClipboardCommands::DispatchClipboardEvent(LocalFrame& frame,
     base::AutoReset<ExecutionContextClipboardEventState::State> reset =
         ExecutionContextClipboardEventState::From(
             *target->GetExecutionContext())
-            .SetState(event_type, source);
+            .SetState(event_type, source, sequence_number);
     Event* const evt = ClipboardEvent::Create(event_type, data_transfer);
     target->DispatchEvent(*evt);
     no_default_processing = evt->defaultPrevented();
@@ -256,8 +300,9 @@ bool ClipboardCommands::DispatchCopyOrCutEvent(LocalFrame& frame,
   // needs to be audited.  See http://crbug.com/590369 for more details.
   frame.GetDocument()->UpdateStyleAndLayout(DocumentUpdateReason::kEditing);
   if (IsInPasswordField(
-          frame.Selection().ComputeVisibleSelectionInDOMTree().Start()))
+          frame.Selection().ComputeVisibleSelectionInDomTree().Start())) {
     return true;
+  }
 
   return DispatchClipboardEvent(frame, event_type,
                                 DataTransferAccessPolicy::kWritable, source,
@@ -321,7 +366,7 @@ static SystemClipboard::SmartReplaceOption GetSmartReplaceOption(
 
 void ClipboardCommands::WriteSelectionToClipboard(LocalFrame& frame) {
   const KURL& url = frame.GetDocument()->Url();
-  const String html = frame.Selection().SelectedHTMLForClipboard();
+  const String html = frame.Selection().SelectedHtmlForClipboard();
   String plain_text = frame.SelectedTextForClipboard();
   frame.GetSystemClipboard()->WriteHTML(html, url,
                                         GetSmartReplaceOption(frame));
@@ -362,7 +407,7 @@ bool ClipboardCommands::ExecuteCopy(LocalFrame& frame,
           ImageElementFromImageDocument(document)) {
     // In an image document, normally there isn't anything to select, and we
     // only want to copy the image itself.
-    if (frame.Selection().ComputeVisibleSelectionInDOMTree().IsNone()) {
+    if (frame.Selection().ComputeVisibleSelectionInDomTree().IsNone()) {
       WriteImageNodeToClipboard(*frame.GetSystemClipboard(), *image_element,
                                 document->title());
       return true;
@@ -380,7 +425,7 @@ bool ClipboardCommands::ExecuteCopy(LocalFrame& frame,
     return true;
 
   if (EnclosingTextControl(
-          frame.Selection().ComputeVisibleSelectionInDOMTree().Start())) {
+          frame.Selection().ComputeVisibleSelectionInDomTree().Start())) {
     frame.GetSystemClipboard()->WritePlainText(frame.SelectedTextForClipboard(),
                                                GetSmartReplaceOption(frame));
     frame.GetSystemClipboard()->CommitWrite();
@@ -413,7 +458,7 @@ bool ClipboardCommands::ExecuteCut(LocalFrame& frame,
                                    EditorCommandSource source,
                                    const String&) {
   // document.execCommand("cut") is a no-op in EditContext
-  if (source == EditorCommandSource::kDOM &&
+  if (source == EditorCommandSource::kDom &&
       frame.GetInputMethodController().GetActiveEditContext()) {
     return true;
   }
@@ -436,7 +481,7 @@ bool ClipboardCommands::ExecuteCut(LocalFrame& frame,
   if (!CanDeleteRange(frame.GetEditor().SelectedRange()))
     return true;
   if (EnclosingTextControl(
-          frame.Selection().ComputeVisibleSelectionInDOMTree().Start())) {
+          frame.Selection().ComputeVisibleSelectionInDomTree().Start())) {
     const String plain_text = frame.SelectedTextForClipboard();
     frame.GetSystemClipboard()->WritePlainText(plain_text,
                                                GetSmartReplaceOption(frame));
@@ -484,13 +529,18 @@ void ClipboardCommands::PasteAsFragment(LocalFrame& frame,
 
 void ClipboardCommands::PasteAsPlainTextFromClipboard(
     LocalFrame& frame,
-    EditorCommandSource source) {
+    EditorCommandSource source,
+    absl::uint128 paste_sequence_number) {
   Element* const target = FindEventTargetForClipboardEvent(frame, source);
   if (!target)
     return;
+  const String text = frame.GetSystemClipboard()->ReadPlainText();
+  const bool smart_replace = CanSmartReplaceInClipboard(frame);
+  if (frame.GetSystemClipboard()->SequenceNumber() != paste_sequence_number) {
+    return;
+  }
   target->DispatchEvent(*TextEvent::CreateForPlainTextPaste(
-      frame.DomWindow(), frame.GetSystemClipboard()->ReadPlainText(),
-      CanSmartReplaceInClipboard(frame)));
+      frame.DomWindow(), text, smart_replace));
 }
 
 ClipboardCommands::FragmentAndPlainText
@@ -498,8 +548,8 @@ ClipboardCommands::GetFragmentFromClipboard(LocalFrame& frame) {
   DocumentFragment* fragment = nullptr;
   if (frame.GetSystemClipboard()->IsFormatAvailable(
           blink::mojom::ClipboardFormat::kHtml)) {
-    unsigned fragment_start = 0;
-    unsigned fragment_end = 0;
+    wtf_size_t fragment_start = 0;
+    wtf_size_t fragment_end = 0;
     KURL url;
     const String markup =
         frame.GetSystemClipboard()->ReadHTML(url, fragment_start, fragment_end);
@@ -509,8 +559,14 @@ ClipboardCommands::GetFragmentFromClipboard(LocalFrame& frame) {
   if (fragment)
     return std::make_pair(fragment, false);
 
-  if (const String markup = frame.GetSystemClipboard()->ReadImageAsImageMarkup(
-          mojom::blink::ClipboardBuffer::kStandard)) {
+  String markup;
+  if (RuntimeEnabledFeatures::ClipboardPasteImageRespectBufferEnabled()) {
+    markup = frame.GetSystemClipboard()->ReadImageAsImageMarkup();
+  } else {
+    markup = frame.GetSystemClipboard()->ReadImageAsImageMarkup(
+        mojom::blink::ClipboardBuffer::kStandard);
+  }
+  if (!markup.empty()) {
     fragment = CreateFragmentFromMarkup(*frame.GetDocument(), markup,
                                         /* base_url */ "",
                                         kDisallowScriptingAndPluginContent);
@@ -531,16 +587,21 @@ ClipboardCommands::GetFragmentFromClipboard(LocalFrame& frame) {
   return std::make_pair(fragment, true);
 }
 
-void ClipboardCommands::PasteFromClipboard(LocalFrame& frame,
-                                           EditorCommandSource source,
-                                           DataTransfer* data_transfer) {
+void ClipboardCommands::PasteFromClipboard(
+    LocalFrame& frame,
+    EditorCommandSource source,
+    DataTransfer* data_transfer,
+    absl::uint128 paste_sequence_number) {
   const ClipboardCommands::FragmentAndPlainText fragment_and_plain_text =
       GetFragmentFromClipboard(frame);
+  const bool smart_replace = CanSmartReplaceInClipboard(frame);
 
+  if (frame.GetSystemClipboard()->SequenceNumber() != paste_sequence_number) {
+    return;
+  }
   if (!fragment_and_plain_text.first)
     return;
-  PasteAsFragment(frame, fragment_and_plain_text.first,
-                  CanSmartReplaceInClipboard(frame),
+  PasteAsFragment(frame, fragment_and_plain_text.first, smart_replace,
                   fragment_and_plain_text.second, source, data_transfer);
 }
 
@@ -548,19 +609,26 @@ void ClipboardCommands::Paste(LocalFrame& frame, EditorCommandSource source) {
   DCHECK(frame.GetDocument());
 
   // document.execCommand("paste") is a no-op in EditContext
-  if (source == EditorCommandSource::kDOM &&
+  if (source == EditorCommandSource::kDom &&
       frame.GetInputMethodController().GetActiveEditContext()) {
     return;
   }
 
   // The code below makes multiple calls to SystemClipboard methods which
-  // implies multiple IPC calls to the ClipboardHost in the browaser process.
+  // implies multiple IPC calls to the ClipboardHost in the browser process.
   // SystemClipboard snapshotting tells SystemClipboard to cache results from
   // the ClipboardHost so that at most one IPC is made for each type.
-  ScopedSystemClipboardSnapshot snapshot(*frame.GetSystemClipboard());
+  SystemClipboard* const system_clipboard = frame.GetSystemClipboard();
+  ScopedSystemClipboardSnapshot snapshot(*system_clipboard);
+  const absl::uint128 paste_sequence_number =
+      system_clipboard->SequenceNumber();
 
   if (!DispatchPasteEvent(frame, PasteMode::kAllMimeTypes, source))
     return;
+  // A 'paste' event handler may destroy target frame.
+  if (frame.GetDocument()->GetFrame() != frame) {
+    return;
+  }
   if (!frame.GetEditor().CanPaste())
     return;
 
@@ -585,11 +653,8 @@ void ClipboardCommands::Paste(LocalFrame& frame, EditorCommandSource source) {
   if (source == EditorCommandSource::kMenuOrKeyBinding) {
     Element* const target = FindEventTargetForClipboardEvent(frame, source);
 
-    data_transfer = DataTransfer::Create(
-        DataTransfer::kCopyAndPaste, DataTransferAccessPolicy::kReadable,
-        DataObject::CreateFromClipboard(
-            target ? target->GetExecutionContext() : nullptr,
-            frame.GetSystemClipboard(), paste_mode));
+    data_transfer = CreateBeforeInputDataTransfer(frame, target, paste_mode,
+                                                  paste_sequence_number);
 
     if (DispatchBeforeInputDataTransfer(
             target, InputEvent::InputType::kInsertFromPaste, data_transfer) !=
@@ -605,13 +670,15 @@ void ClipboardCommands::Paste(LocalFrame& frame, EditorCommandSource source) {
       return;
   }
 
-  if (paste_mode == PasteMode::kAllMimeTypes) {
-    RuntimeEnabledFeatures::InputEventDataTransferForInsertCmdEnabled()
-        ? PasteFromClipboard(frame, source, data_transfer)
-        : PasteFromClipboard(frame, source);
+  if (system_clipboard->SequenceNumber() != paste_sequence_number) {
     return;
   }
-  PasteAsPlainTextFromClipboard(frame, source);
+
+  if (paste_mode == PasteMode::kAllMimeTypes) {
+    PasteFromClipboard(frame, source, data_transfer, paste_sequence_number);
+    return;
+  }
+  PasteAsPlainTextFromClipboard(frame, source, paste_sequence_number);
 }
 
 class CORE_EXPORT PasteImageResourceObserver final
@@ -677,7 +744,7 @@ class CORE_EXPORT PasteImageResourceObserver final
       return frame_->Selection().GetDocument().body();
     }
     return FindEventTargetFrom(
-        *frame_, frame_->Selection().ComputeVisibleSelectionInDOMTree());
+        *frame_, frame_->Selection().ComputeVisibleSelectionInDomTree());
   }
 
   String BuildMarkup() const {
@@ -686,8 +753,8 @@ class CORE_EXPORT PasteImageResourceObserver final
   }
 
   DocumentFragment* BuildFragment() const {
-    unsigned fragment_start = 0;
-    unsigned fragment_end = 0;
+    wtf_size_t fragment_start = 0;
+    wtf_size_t fragment_end = 0;
 
     return CreateStrictlyProcessedFragmentFromMarkupWithContext(
         *(frame_->GetDocument()), BuildMarkup(), fragment_start, fragment_end,
@@ -755,7 +822,7 @@ class CORE_EXPORT PasteImageResourceObserver final
   const KURL src_;
 };
 
-void ClipboardCommands::PasteFromImageURL(LocalFrame& frame,
+void ClipboardCommands::PasteFromImageUrl(LocalFrame& frame,
                                           EditorCommandSource source,
                                           const String src) {
   DCHECK(frame.GetDocument());
@@ -819,8 +886,21 @@ bool ClipboardCommands::ExecutePasteAndMatchStyle(LocalFrame& frame,
                                                   Event*,
                                                   EditorCommandSource source,
                                                   const String&) {
+  // The code below makes multiple calls to SystemClipboard methods which
+  // implies multiple IPC calls to the ClipboardHost in the browser process.
+  // SystemClipboard snapshotting tells SystemClipboard to cache results from
+  // the ClipboardHost so that at most one IPC is made for each type.
+  SystemClipboard* const system_clipboard = frame.GetSystemClipboard();
+  ScopedSystemClipboardSnapshot snapshot(*system_clipboard);
+  const absl::uint128 paste_sequence_number =
+      system_clipboard->SequenceNumber();
+
   if (!DispatchPasteEvent(frame, PasteMode::kPlainTextOnly, source))
     return false;
+  // A 'paste' event handler may destroy target frame.
+  if (frame.GetDocument()->GetFrame() != frame) {
+    return false;
+  }
   if (!frame.GetEditor().CanPaste())
     return false;
 
@@ -836,11 +916,8 @@ bool ClipboardCommands::ExecutePasteAndMatchStyle(LocalFrame& frame,
 
     Element* const target = FindEventTargetForClipboardEvent(frame, source);
 
-    DataTransfer* data_transfer = DataTransfer::Create(
-        DataTransfer::kCopyAndPaste, DataTransferAccessPolicy::kReadable,
-        DataObject::CreateFromClipboard(
-            target ? target->GetExecutionContext() : nullptr,
-            frame.GetSystemClipboard(), PasteMode::kPlainTextOnly));
+    DataTransfer* data_transfer = CreateBeforeInputDataTransfer(
+        frame, target, PasteMode::kPlainTextOnly, paste_sequence_number);
     if (DispatchBeforeInputDataTransfer(
             target, InputEvent::InputType::kInsertFromPaste, data_transfer) !=
         DispatchEventResult::kNotCanceled) {
@@ -855,15 +932,19 @@ bool ClipboardCommands::ExecutePasteAndMatchStyle(LocalFrame& frame,
       return true;
   }
 
-  PasteAsPlainTextFromClipboard(frame, source);
+  if (system_clipboard->SequenceNumber() != paste_sequence_number) {
+    return false;
+  }
+
+  PasteAsPlainTextFromClipboard(frame, source, paste_sequence_number);
   return true;
 }
 
-bool ClipboardCommands::ExecutePasteFromImageURL(LocalFrame& frame,
+bool ClipboardCommands::ExecutePasteFromImageUrl(LocalFrame& frame,
                                                  Event*,
                                                  EditorCommandSource source,
                                                  const String& src) {
-  PasteFromImageURL(frame, source, src);
+  PasteFromImageUrl(frame, source, src);
   return true;
 }
 

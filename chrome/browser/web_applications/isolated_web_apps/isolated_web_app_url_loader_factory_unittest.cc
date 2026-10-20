@@ -6,6 +6,7 @@
 #include <optional>
 #include <string>
 
+#include "base/byte_size.h"
 #include "base/feature_list.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
@@ -18,8 +19,8 @@
 #include "chrome/browser/web_applications/isolated_web_apps/install/non_installed_bundle_inspection_context.h"
 #include "chrome/browser/web_applications/isolated_web_apps/isolated_web_app_trust_checker.h"
 #include "chrome/browser/web_applications/isolated_web_apps/isolated_web_app_url_info.h"
-#include "chrome/browser/web_applications/isolated_web_apps/isolation_data.h"
 #include "chrome/browser/web_applications/isolated_web_apps/test/isolated_web_app_builder.h"
+#include "chrome/browser/web_applications/model/isolation_data.h"
 #include "chrome/browser/web_applications/test/fake_web_app_database_factory.h"
 #include "chrome/browser/web_applications/test/fake_web_app_provider.h"
 #include "chrome/browser/web_applications/test/web_app_install_test_utils.h"
@@ -44,7 +45,6 @@
 #include "net/http/http_request_headers.h"
 #include "net/http/http_status_code.h"
 #include "net/traffic_annotation/network_traffic_annotation_test_helper.h"
-#include "services/data_decoder/public/cpp/test_support/in_process_data_decoder.h"
 #include "services/network/public/cpp/parsed_headers.h"
 #include "services/network/public/cpp/resource_request.h"
 #include "services/network/public/mojom/content_security_policy.mojom.h"
@@ -213,7 +213,6 @@ class IsolatedWebAppURLLoaderFactoryTestBase : public WebAppTest {
 
  private:
   base::test::ScopedFeatureList scoped_feature_list_;
-  data_decoder::test::InProcessDataDecoder in_process_data_decoder_;
   std::unique_ptr<ScopedUrlHandler> url_handler_;
 };
 
@@ -275,8 +274,9 @@ class IsolatedWebAppURLLoaderFactoryTest
       response_info_ = loader->ResponseInfo()->Clone();
       response_body_ = *helper.response_body();
 
-      int64_t body_length = response_body_.size();
-      EXPECT_THAT(completion_status_.decoded_body_length, Eq(body_length));
+      size_t body_length = response_body_.size();
+      EXPECT_THAT(completion_status_.decoded_body_length.InBytes(),
+                  Eq(body_length));
     }
     return loader->NetError();
   }
@@ -1044,14 +1044,16 @@ TEST_P(IsolatedWebAppURLLoaderFactorySignedWebBundleTest,
   ASSERT_THAT(ResponseInfo(), NotNull());
   EXPECT_THAT(ResponseInfo()->headers->response_code(), Eq(200));
 
-  int64_t body_length = ResponseBody().size();
-  int64_t header_length =
-      static_cast<int64_t>(ResponseInfo()->headers->raw_headers().size());
-  EXPECT_THAT(CompletionStatus().encoded_data_length,
+  size_t body_length = ResponseBody().size();
+  size_t header_length = ResponseInfo()->headers->raw_headers().size();
+  EXPECT_THAT(CompletionStatus().encoded_data_length.InBytes(),
               Eq(body_length + header_length));
-  EXPECT_THAT(CompletionStatus().encoded_body_length, Eq(body_length));
-  EXPECT_THAT(CompletionStatus().decoded_body_length, Eq(body_length));
-  EXPECT_THAT(ResponseInfo()->content_length, Eq(body_length));
+  EXPECT_THAT(CompletionStatus().encoded_body_length.InBytes(),
+              Eq(body_length));
+  EXPECT_THAT(CompletionStatus().decoded_body_length.InBytes(),
+              Eq(body_length));
+  EXPECT_THAT(ResponseInfo()->content_length,
+              Eq(static_cast<int64_t>(body_length)));
 }
 
 TEST_P(IsolatedWebAppURLLoaderFactorySignedWebBundleTest,
@@ -1066,13 +1068,14 @@ TEST_P(IsolatedWebAppURLLoaderFactorySignedWebBundleTest,
   EXPECT_THAT(ResponseInfo()->headers->response_code(),
               IsHttpStatusCode(net::HTTP_NOT_FOUND));
 
-  int64_t body_length = ResponseBody().size();
-  int64_t header_length =
-      static_cast<int64_t>(ResponseInfo()->headers->raw_headers().size());
-  EXPECT_THAT(CompletionStatus().encoded_data_length,
+  size_t body_length = ResponseBody().size();
+  size_t header_length = ResponseInfo()->headers->raw_headers().size();
+  EXPECT_THAT(CompletionStatus().encoded_data_length.InBytes(),
               Eq(body_length + header_length));
-  EXPECT_THAT(CompletionStatus().encoded_body_length, Eq(body_length));
-  EXPECT_THAT(CompletionStatus().decoded_body_length, Eq(body_length));
+  EXPECT_THAT(CompletionStatus().encoded_body_length.InBytes(),
+              Eq(body_length));
+  EXPECT_THAT(CompletionStatus().decoded_body_length.InBytes(),
+              Eq(body_length));
 }
 
 TEST_P(IsolatedWebAppURLLoaderFactorySignedWebBundleTest,

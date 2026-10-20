@@ -13,7 +13,6 @@
 #include "content/browser/first_party_sets/first_party_sets_handler_impl.h"
 #include "content/public/browser/first_party_sets_handler.h"
 #include "net/first_party_sets/first_party_set_metadata.h"
-#include "net/first_party_sets/first_party_sets_cache_filter.h"
 #include "net/first_party_sets/first_party_sets_context_config.h"
 #include "net/first_party_sets/global_first_party_sets.h"
 
@@ -38,14 +37,12 @@ void ScopedMockFirstPartySetsHandler::SetPublicFirstPartySets(
 
 std::optional<net::FirstPartySetEntry>
 ScopedMockFirstPartySetsHandler::FindEntry(
-    const net::SchemefulSite& site,
-    const net::FirstPartySetsContextConfig& config) const {
-  return global_sets_.FindEntry(site, config);
+    const net::SchemefulSite& site) const {
+  return global_sets_.FindEntry(site);
 }
 
 void ScopedMockFirstPartySetsHandler::Init(
-    const base::FilePath& user_data_dir,
-    const net::LocalSetDeclaration& local_set) {}
+    const base::FilePath& user_data_dir) {}
 
 [[nodiscard]] std::optional<net::GlobalFirstPartySets>
 ScopedMockFirstPartySetsHandler::GetSets(
@@ -62,48 +59,29 @@ ScopedMockFirstPartySetsHandler::GetSets(
   return global_sets_.Clone();
 }
 
-void ScopedMockFirstPartySetsHandler::GetContextConfigForPolicy(
-    base::optional_ref<const base::DictValue> policy,
-    base::OnceCallback<void(net::FirstPartySetsContextConfig)> callback) {
+bool ScopedMockFirstPartySetsHandler::WhenInitComplete(
+    base::OnceClosure callback) {
   if (should_deadlock_) {
-    return;
+    return false;
   }
-  if (invoke_callbacks_asynchronously_) {
+  if (invoke_callbacks_asynchronously_ && !callback.is_null()) {
     base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
-        FROM_HERE, base::BindOnce(std::move(callback), config_.Clone()));
-    return;
+        FROM_HERE, std::move(callback));
+    return false;
   }
-  std::move(callback).Run(config_.Clone());
-}
 
-void ScopedMockFirstPartySetsHandler::ClearSiteDataOnChangedSetsForContext(
-    base::RepeatingCallback<BrowserContext*()> browser_context_getter,
-    const std::string& browser_context_id,
-    net::FirstPartySetsContextConfig context_config,
-    base::OnceCallback<void(net::FirstPartySetsContextConfig,
-                            net::FirstPartySetsCacheFilter)> callback) {
-  if (should_deadlock_) {
-    return;
-  }
-  if (invoke_callbacks_asynchronously_) {
-    base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
-        FROM_HERE, base::BindOnce(std::move(callback), config_.Clone(),
-                                  cache_filter_.Clone()));
-    return;
-  }
-  std::move(callback).Run(config_.Clone(), cache_filter_.Clone());
+  return true;
 }
 
 void ScopedMockFirstPartySetsHandler::ComputeFirstPartySetMetadata(
     const net::SchemefulSite& site,
     base::optional_ref<const net::SchemefulSite> top_frame_site,
-    const net::FirstPartySetsContextConfig& config,
     base::OnceCallback<void(net::FirstPartySetMetadata)> callback) {
   if (should_deadlock_) {
     return;
   }
   net::FirstPartySetMetadata metadata =
-      global_sets_.ComputeMetadata(site, top_frame_site, config);
+      global_sets_.ComputeMetadata(site, top_frame_site);
   if (invoke_callbacks_asynchronously_) {
     base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
         FROM_HERE, base::BindOnce(std::move(callback), std::move(metadata)));
@@ -113,23 +91,12 @@ void ScopedMockFirstPartySetsHandler::ComputeFirstPartySetMetadata(
 }
 
 bool ScopedMockFirstPartySetsHandler::ForEachEffectiveSetEntry(
-    const net::FirstPartySetsContextConfig& config,
     base::FunctionRef<bool(const net::SchemefulSite&,
                            const net::FirstPartySetEntry&)> f) const {
   if (invoke_callbacks_asynchronously_) {
     return false;
   }
-  return global_sets_.ForEachEffectiveSetEntry(config, f);
-}
-
-void ScopedMockFirstPartySetsHandler::SetContextConfig(
-    net::FirstPartySetsContextConfig config) {
-  config_ = std::move(config);
-}
-
-void ScopedMockFirstPartySetsHandler::SetCacheFilter(
-    net::FirstPartySetsCacheFilter cache_filter) {
-  cache_filter_ = std::move(cache_filter);
+  return global_sets_.ForEachEffectiveSetEntry(f);
 }
 
 void ScopedMockFirstPartySetsHandler::SetGlobalSets(

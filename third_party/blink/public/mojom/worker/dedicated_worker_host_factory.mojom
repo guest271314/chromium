@@ -6,7 +6,6 @@ module blink.mojom;
 
 import "services/network/public/mojom/cross_origin_embedder_policy.mojom";
 import "services/network/public/mojom/fetch_api.mojom";
-import "services/network/public/mojom/storage_access_api.mojom";
 import "third_party/blink/public/mojom/blob/blob_url_store.mojom";
 import "third_party/blink/public/mojom/browser_interface_broker.mojom";
 import "third_party/blink/public/mojom/frame/reporting_observer.mojom";
@@ -18,6 +17,7 @@ import "third_party/blink/public/mojom/worker/worker_main_script_load_params.moj
 import "third_party/blink/public/mojom/service_worker/controller_service_worker.mojom";
 import "third_party/blink/public/mojom/service_worker/service_worker_container.mojom";
 import "third_party/blink/public/mojom/tokens/tokens.mojom";
+import "third_party/blink/public/mojom/frame/policy_container.mojom";
 import "third_party/blink/public/mojom/frame/back_forward_cache_controller.mojom";
 import "url/mojom/url.mojom";
 import "url/mojom/origin.mojom";
@@ -75,6 +75,9 @@ interface DedicatedWorkerHostFactoryClient {
       pending_remote<BackForwardCacheControllerHost>
       back_forward_cache_controller_host,
 
+      // The policy container of the worker.
+      PolicyContainer policy_container,
+
       // Used by a CrossOriginEmbedderPolicyReporter to send reports to the
       // ReportingObservers.
       pending_receiver<ReportingObserver>? coep_reporting_observer_receiver,
@@ -98,9 +101,6 @@ interface DedicatedWorkerHostFactory {
   // `blob_url_token` should be non-null when `script_url` is a blob URL.
   // `client` is used for notifying the renderer process of results of worker
   // host creation and script loading.
-  // `storage_access_api_status` notifies the browser process if unpartitioned cookie
-  // access should be granted to the worker. The browser process verifies this
-  // by checking if it has a record of the STORAGE_ACCESS permission grant.
   CreateWorkerHostAndStartScriptLoad(
       blink.mojom.DedicatedWorkerToken token,
       url.mojom.Url script_url,
@@ -108,6 +108,5 @@ interface DedicatedWorkerHostFactory {
       blink.mojom.FetchClientSettingsObject
           outside_fetch_client_settings_object,
       pending_remote<blink.mojom.BlobURLToken>? blob_url_token,
-      pending_remote<DedicatedWorkerHostFactoryClient> client,
-      network.mojom.StorageAccessApiStatus storage_access_api_status);
+      pending_remote<DedicatedWorkerHostFactoryClient> client);
 };

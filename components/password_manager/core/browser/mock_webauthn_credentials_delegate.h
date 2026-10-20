@@ -27,6 +27,11 @@ class MockWebAuthnCredentialsDelegate : public WebAuthnCredentialsDelegate {
       const MockWebAuthnCredentialsDelegate&) = delete;
 
   MOCK_METHOD(void, LaunchSecurityKeyOrHybridFlow, (), (override));
+  MOCK_METHOD(std::optional<std::string>,
+              GetCableQrString,
+              (),
+              (const, override));
+  MOCK_METHOD(void, OnPasskeyQrCodeSuggestionShown, (), (override));
   MOCK_METHOD(void,
               SelectPasskey,
               (const std::string&,
@@ -36,9 +41,9 @@ class MockWebAuthnCredentialsDelegate : public WebAuthnCredentialsDelegate {
                               PasskeysUnavailableReason>),
               GetPasskeys,
               (),
-              (const override));
+              (const, override));
   MOCK_METHOD(void, NotifyForPasskeysDisplay, (), (override));
-  MOCK_METHOD(bool, IsSecurityKeyOrHybridFlowAvailable, (), (const override));
+  MOCK_METHOD(bool, IsSecurityKeyOrHybridFlowAvailable, (), (const, override));
   MOCK_METHOD(void,
               RequestNotificationWhenPasskeysReady,
               (base::OnceClosure),

@@ -61,6 +61,25 @@ Before the auto-generated CLs can be landed, you will need to get an LGTM from
 chrome-third-party-rust-reviews@google.com to the "Reviewers" line, an
 OWNER will be automatically assigned.
 
+## Minimum publish age
+
+`third_party/rust/chromium_crates_io/.cargo/config.toml` sets
+`global-min-publish-age = "14 days"`, so that `cargo` only considers crate
+versions that have been published on crates.io for at least 14 days (see
+https://crbug.com/562192366).  This reduces the risk of ingesting a malicious
+release before it is detected and yanked.  The setting applies to all `cargo`
+commands that talk to crates.io from that directory, including
+`create_update_cl.py`, `tools/crates/run_gnrt.py update`, and
+`tools/crates/run_gnrt.py add`.
+
+If a newer version is needed urgently (e.g. to pick up a security fix), the
+cooldown can be bypassed for a single invocation:
+
+```sh
+$ CARGO_RESOLVER_INCOMPATIBLE_PUBLISH_AGE=allow \
+    tools/crates/create_update_cl.py auto -- <crate name>
+```
+
 ## New transitive dependencies
 
 Notes from `//third_party/rust/OWNERS-review-checklist.md` apply, in
@@ -192,7 +211,7 @@ case the transition can be split into the following steps:
       in future rotations
 1. Land the new major version, so that the old and the new versions coexist.
    To do this follow the process for importing a new crate as described in
-   [`docs/rust.md`](../../docs/rust.md#importing-a-crate-from-crates_io)
+   [`//docs/rust/README.md`](/docs/rust/README.md#importing-a-crate-from-crates_io)
    (i.e. edit `Cargo.toml` to add the new version, run `gnrt vendor`, and so
    forth).
 1. Incrementally transition first-party code to the new major version

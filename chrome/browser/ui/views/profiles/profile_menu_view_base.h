@@ -18,6 +18,7 @@
 #include "chrome/browser/ui/views/close_bubble_on_tab_activation_helper.h"
 #include "chrome/browser/ui/views/controls/hover_button.h"
 #include "components/signin/public/identity_manager/account_info.h"
+#include "components/user_education/common/new_badge/new_badge_controller.h"
 #include "content/public/browser/web_contents_delegate.h"
 #include "ui/base/metadata/metadata_header_macros.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
@@ -31,7 +32,8 @@
 #include "ui/views/style/typography.h"
 #include "ui/views/view_tracker.h"
 
-class Browser;
+class BrowserWindowInterface;
+class ProfileAttributesEntry;
 
 namespace views {
 class Button;
@@ -87,10 +89,13 @@ class ProfileMenuViewBase : public content::WebContentsDelegate,
     kBatchUploadAsPrimaryButton = 29,
     kBatchUploadWindows10DepreciationAsPrimaryButton = 30,
     kPasskeyUnlockButton = 31,
+    kSigninOnPhoneButton = 32,
 
-    kMaxValue = kPasskeyUnlockButton,
+    kMaxValue = kSigninOnPhoneButton,
   };
   // LINT.ThenChange(//tools/metrics/histograms/metadata/profile/enums.xml:ProfileMenuActionableItem)
+
+  enum class AvatarRingType { kNone, kDotted, kGradient };
 
   // Parameters for `SetProfileIdentityWithCallToAction()`
   struct IdentitySectionParams {
@@ -112,10 +117,11 @@ class ProfileMenuViewBase : public content::WebContentsDelegate,
 
     // `profile_image` must not be empty. It does not need to be circular.
     ui::ImageModel profile_image;
-    bool has_dotted_ring = false;
+    AvatarRingType avatar_ring = AvatarRingType::kNone;
     // This padding does not make the avatar larger in the menu.
     // `profile_image` is drawn smaller to leave space around for the padding.
     int profile_image_padding = 0;
+    std::u16string badge_label;
 
     // Must not be empty.
     std::u16string title;
@@ -152,11 +158,24 @@ class ProfileMenuViewBase : public content::WebContentsDelegate,
   static constexpr int kOtherProfileImageSize = 16;
 
   // `browser` must not be nullptr.
-  ProfileMenuViewBase(views::BubbleAnchor anchor_element, Browser* browser);
+  ProfileMenuViewBase(views::BubbleAnchor anchor_element,
+                      BrowserWindowInterface* browser);
   ~ProfileMenuViewBase() override;
 
   ProfileMenuViewBase(const ProfileMenuViewBase&) = delete;
   ProfileMenuViewBase& operator=(const ProfileMenuViewBase&) = delete;
+
+  // Returns a formatted profile display name based on the name form in `entry`.
+  static std::u16string GetProfileIdentifier(
+      const ProfileAttributesEntry& entry);
+
+  // Resizes and crops `image_model` to a circular shape.
+  // Note: if the image is backed by a vector icon, it is actually not cropped.
+  // Cropping it would require theme colors which are not necessarily available,
+  // and it is best to avoid cropping icons anyway -- icons naturally fitting in
+  // the circle should be used instead.
+  static ui::ImageModel GetCircularSizedImage(const ui::ImageModel& image_model,
+                                              int size);
 
   // This method is called once to add all menu items.
   virtual void BuildMenu() = 0;
@@ -167,12 +186,18 @@ class ProfileMenuViewBase : public content::WebContentsDelegate,
   void AddFeatureButton(const std::u16string& text,
                         base::RepeatingClosure action,
                         const gfx::VectorIcon& icon,
-                        float icon_to_image_ratio = 1.0f);
+                        float icon_to_image_ratio = 1.0f,
+                        user_education::DisplayNewBadge display_new_badge = {});
   void SetProfileManagementHeading(const std::u16string& heading);
-  void AddAvailableProfile(const ui::ImageModel& image_model,
-                           const std::u16string& name,
-                           bool is_guest,
-                           base::RepeatingClosure action);
+
+  // Does not resize the image.
+  void AddAvailableProfile(
+      const ui::ImageModel& image_model,
+      const std::u16string& name,
+      bool is_guest,
+      base::RepeatingClosure action,
+      const std::u16string& extra_accessible_text = std::u16string());
+
   void AddProfileManagementFeaturesSeparator();
   void AddProfileManagementFeatureButton(const gfx::VectorIcon& icon,
                                          const std::u16string& text,
@@ -230,7 +255,9 @@ class ProfileMenuViewBase : public content::WebContentsDelegate,
   std::unique_ptr<HoverButton> CreateMenuRowButton(
       base::RepeatingClosure action,
       std::unique_ptr<views::View> icon_view,
-      const std::u16string& text);
+      const std::u16string& text,
+      int icon_offset = 0,
+      user_education::DisplayNewBadge display_new_badge = {});
 
   const raw_ref<Profile> profile_;
 
@@ -271,6 +298,8 @@ class ProfileMenuViewBase : public content::WebContentsDelegate,
   std::u16string profile_mgmt_heading_;
 
   std::unique_ptr<AXMenuWidgetObserver> ax_widget_observer_;
+
+  base::WeakPtrFactory<ProfileMenuViewBase> weak_factory_{this};
 };
 
 #endif  // CHROME_BROWSER_UI_VIEWS_PROFILES_PROFILE_MENU_VIEW_BASE_H_

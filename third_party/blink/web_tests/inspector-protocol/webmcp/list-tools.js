@@ -21,18 +21,18 @@
           execute: echo,
           name: "initial_imperative_tool",
           description: "An imperative WebMCP tool",
-          annotations: { readOnlyHint: true, untrustedContentHint: false },
+          annotations: { readOnlyHint: true, untrustedContentHint: false, consequentialHint: false, debugging: false },
         };
         window.initialController = new AbortController();
-        navigator.modelContext.registerTool(initial_imperative_tool, { signal: window.initialController.signal });
+        document.modelContext.registerTool(initial_imperative_tool, { signal: window.initialController.signal });
 
         window.registerNewTools = function() {
-            navigator.modelContext.registerTool({
+            document.modelContext.registerTool({
               execute: echo,
               name: "new_imperative_tool",
               description: "Another imperative tool",
               inputSchema,
-              annotations: { readOnlyHint: false, untrustedContentHint: false },
+              annotations: { readOnlyHint: false, untrustedContentHint: false, consequentialHint: false, debugging: false },
             });
             const form = document.createElement("form");
             form.id = "new_declarative";
@@ -54,7 +54,7 @@
         };
 
         window.registerEvenMoreTools = function() {
-            navigator.modelContext.registerTool({
+            document.modelContext.registerTool({
               execute: echo,
               name: "newer_imperative_tool",
               description: "Another imperative tool",
@@ -91,14 +91,16 @@
 
   async function waitAdded(count) {
     addedTarget += count;
-    if (addedCount >= addedTarget) return;
+    if (addedCount >= addedTarget)
+      return;
     addedResolvers = Promise.withResolvers();
     return addedResolvers.promise;
   }
 
   async function waitRemoved(count) {
     removedTarget += count;
-    if (removedCount >= removedTarget) return;
+    if (removedCount >= removedTarget)
+      return;
     removedResolvers = Promise.withResolvers();
     return removedResolvers.promise;
   }

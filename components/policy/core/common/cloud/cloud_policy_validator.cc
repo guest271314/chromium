@@ -26,7 +26,8 @@
 #include "components/policy/core/common/policy_logger.h"
 #include "components/policy/core/common/policy_switches.h"
 #include "components/policy/proto/device_management_backend.pb.h"
-#include "crypto/signature_verifier.h"
+#include "crypto/keypair.h"
+#include "crypto/sign.h"
 #include "google_apis/gaia/gaia_auth_util.h"
 #include "google_apis/gaia/gaia_id.h"
 
@@ -264,14 +265,13 @@ bool CloudPolicyValidatorBase::VerifySignature(const std::string& data,
                                                const std::string& key,
                                                const std::string& signature,
                                                SignatureType signature_type) {
-  crypto::SignatureVerifier verifier;
-  crypto::SignatureVerifier::SignatureAlgorithm algorithm;
+  crypto::sign::SignatureKind algorithm;
   switch (signature_type) {
     case em::PolicyFetchRequest::SHA1_RSA:
-      algorithm = crypto::SignatureVerifier::RSA_PKCS1_SHA1;
+      algorithm = crypto::sign::RSA_PKCS1_SHA1;
       break;
     case em::PolicyFetchRequest::SHA256_RSA:
-      algorithm = crypto::SignatureVerifier::RSA_PKCS1_SHA256;
+      algorithm = crypto::sign::RSA_PKCS1_SHA256;
       break;
     default:
       // Treat `em::PolicyFetchRequest::NONE` as unsigned blobs, which is
@@ -281,14 +281,16 @@ bool CloudPolicyValidatorBase::VerifySignature(const std::string& data,
       return false;
   }
 
-  if (!verifier.VerifyInit(algorithm, base::as_byte_span(signature),
-                           base::as_byte_span(key))) {
+  std::optional<crypto::keypair::PublicKey> public_key =
+      crypto::keypair::PublicKey::FromSubjectPublicKeyInfo(
+          base::as_byte_span(key));
+  if (!public_key || !public_key->IsRsa()) {
     DLOG_POLICY(ERROR, CBCM_ENROLLMENT)
         << "Invalid verification signature/key format";
     return false;
   }
-  verifier.VerifyUpdate(base::as_byte_span(data));
-  return verifier.VerifyFinal();
+  return crypto::sign::Verify(algorithm, *public_key, base::as_byte_span(data),
+                              base::as_byte_span(signature));
 }
 
 CloudPolicyValidatorBase::CloudPolicyValidatorBase(
@@ -331,9 +333,9 @@ CloudPolicyValidatorBase::GetCurrentPolicyVerificationKey() {
 }
 
 // static
-void CloudPolicyValidatorBase::PostValidationTask(
+void CloudPolicyValidatorBase::StartValidation(
     std::unique_ptr<CloudPolicyValidatorBase> validator,
-    base::OnceClosure completion_callback) {
+    CompletionCallback completion_callback) {
   const auto task_runner = validator->background_task_runner_;
   task_runner->PostTask(
       FROM_HERE,
@@ -347,7 +349,7 @@ void CloudPolicyValidatorBase::PostValidationTask(
 void CloudPolicyValidatorBase::PerformValidation(
     std::unique_ptr<CloudPolicyValidatorBase> self,
     scoped_refptr<base::SingleThreadTaskRunner> task_runner,
-    base::OnceClosure completion_callback) {
+    CompletionCallback completion_callback) {
   // Run the validation activities on this thread.
   self->RunValidation();
 
@@ -361,8 +363,8 @@ void CloudPolicyValidatorBase::PerformValidation(
 // static
 void CloudPolicyValidatorBase::ReportCompletion(
     std::unique_ptr<CloudPolicyValidatorBase> self,
-    base::OnceClosure completion_callback) {
-  std::move(completion_callback).Run();
+    CompletionCallback completion_callback) {
+  std::move(completion_callback).Run(self.get());
 }
 
 void CloudPolicyValidatorBase::RunValidation() {
@@ -454,8 +456,9 @@ bool CloudPolicyValidatorBase::CheckNewPublicKeyVerificationSignature() {
                       verification_key_.value(),
                       policy_->new_public_key_verification_data_signature(),
                       em::PolicyFetchRequest::SHA256_RSA) &&
-      CheckDomainInPublicKeyVerificationData(
-          policy_->new_public_key_verification_data())) {
+      CheckPublicKeyVerificationData(
+          policy_->new_public_key_verification_data(),
+          policy_->new_public_key())) {
     UMA_HISTOGRAM_ENUMERATION(kMetricKeySignatureVerification,
                               MetricKeySignatureVerification::kSuccess);
     // Signature verification succeeded - return success to the caller.
@@ -542,13 +545,20 @@ std::string CloudPolicyValidatorBase::ExtractDomainFromPolicy() {
   return domain;
 }
 
-bool CloudPolicyValidatorBase::CheckDomainInPublicKeyVerificationData(
-    const std::string& new_public_key_verification_data) {
+bool CloudPolicyValidatorBase::CheckPublicKeyVerificationData(
+    const std::string& new_public_key_verification_data,
+    const std::string& expected_public_key) {
   em::PublicKeyVerificationData public_key_data;
   if (!public_key_data.ParseFromString(new_public_key_verification_data)) {
     LOG_POLICY(ERROR, POLICY_FETCHING)
         << PolicyTypeLogPrefix(policy_type_, settings_entity_id_)
         << "Failed to deserialize new public key.";
+    return false;
+  }
+  if (public_key_data.new_public_key() != expected_public_key) {
+    LOG_POLICY(ERROR, POLICY_FETCHING)
+        << PolicyTypeLogPrefix(policy_type_, settings_entity_id_)
+        << "Key mismatch in new public key verification data.";
     return false;
   }
   if (public_key_data.domain() != ExtractDomainFromPolicy()) {
@@ -631,7 +641,7 @@ CloudPolicyValidatorBase::Status CloudPolicyValidatorBase::CheckCachedKey() {
   if (VerifySignature(new_cached_key_, verification_key_.value(),
                       new_cached_key_signature_,
                       em::PolicyFetchRequest::SHA256_RSA) &&
-      CheckDomainInPublicKeyVerificationData(new_cached_key_)) {
+      CheckPublicKeyVerificationData(new_cached_key_, cached_key_)) {
     UMA_HISTOGRAM_ENUMERATION(kMetricKeySignatureVerification,
                               MetricKeySignatureVerification::kSuccess);
     // Signature verification succeeded - return success to the caller.
@@ -714,14 +724,13 @@ CloudPolicyValidatorBase::Status CloudPolicyValidatorBase::CheckDMToken() {
        policy_data_->request_token().empty())) {
     LOG_POLICY(ERROR, POLICY_FETCHING)
         << PolicyTypeLogPrefix(policy_type_, settings_entity_id_)
-        << "Empty DM token encountered - expected: " << dm_token_;
+        << "Empty DM token encountered";
     return VALIDATION_BAD_DM_TOKEN;
   }
   if (!dm_token_.empty() && policy_data_->request_token() != dm_token_) {
     LOG_POLICY(ERROR, POLICY_FETCHING)
         << PolicyTypeLogPrefix(policy_type_, settings_entity_id_)
-        << "Invalid DM token: " << policy_data_->request_token()
-        << " - expected: " << dm_token_;
+        << "Invalid DM token encountered";
     return VALIDATION_BAD_DM_TOKEN;
   }
 

@@ -22,6 +22,7 @@
 #include "base/test/multiprocess_test.h"
 #include "base/types/expected.h"
 #include "base/uuid.h"
+#include "base/win/access_token.h"
 #include "base/win/com_init_util.h"
 #include "base/win/elevation_util.h"
 #include "base/win/scoped_bstr.h"
@@ -116,11 +117,8 @@ class ElevationServiceTest : public ::testing::Test {
   }
 
  private:
-  static ServiceEnvironment* service_environment_;
+  static inline ServiceEnvironment* service_environment_ = nullptr;
 };
-
-// static
-ServiceEnvironment* ElevationServiceTest::service_environment_ = nullptr;
 
 TEST_F(ElevationServiceTest, AcceptInvitation) {
   base::win::ScopedCOMInitializer com_initializer;
@@ -174,7 +172,7 @@ MULTIPROCESS_TEST_MAIN(RunIsolatedChromeInChild) {
 
   base::WaitableEvent event(base::win::ScopedHandle(::CreateEventA(
       /*lpEventAttributes=*/nullptr, /*bManualReset=*/FALSE,
-      /*bInitialState=*/FALSE, /*lpName=*/std::data(event_name))));
+      /*bInitialState=*/FALSE, /*lpName=*/event_name.c_str())));
 
   DWORD last_error = 0;
   ULONG_PTR proc_handle;
@@ -214,6 +212,15 @@ MULTIPROCESS_TEST_MAIN(RunIsolatedChromeInChild) {
     const auto read_only_process = base::Process::OpenWithAccess(
         pid, PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION);
     EXPECT_TRUE(read_only_process.IsValid());
+    // Interop DCOM requires the ability to read the process token, so verify
+    // that here.
+    const auto token =
+        base::win::AccessToken::FromProcess(read_only_process.Handle());
+    EXPECT_TRUE(token.has_value());
+    if (token.has_value()) {
+      const auto default_dacl = token->DefaultDacl();
+      EXPECT_TRUE(default_dacl);
+    }
   }
   // Any attempt to open isolated process above PROCESS_TERMINATE, SYNCHRONIZE,
   // PROCESS_QUERY_LIMITED_INFORMATION will fail.

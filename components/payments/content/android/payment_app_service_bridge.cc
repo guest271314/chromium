@@ -23,8 +23,8 @@
 #include "components/payments/content/android/payment_request_spec.h"
 #include "components/payments/content/payment_app_service.h"
 #include "components/payments/content/payment_request_spec.h"
-#include "components/payments/content/web_payments_web_data_service.h"
 #include "components/payments/core/payment_prefs.h"
+#include "components/payments/core/web_payments_web_data_service.h"
 #include "components/prefs/pref_service.h"
 #include "components/url_formatter/elide_url.h"
 #include "components/user_prefs/user_prefs.h"
@@ -311,6 +311,8 @@ void PaymentAppServiceBridge::ShowProcessingSpinner() {
   // Java UI determines when the show a spinner itself.
 }
 
+void PaymentAppServiceBridge::ShowLoadingView() {}
+
 base::WeakPtr<PaymentRequestSpec> PaymentAppServiceBridge::GetSpec() const {
   return spec_;
 }
@@ -360,11 +362,6 @@ base::WeakPtr<CSPChecker> PaymentAppServiceBridge::GetCSPChecker() {
 
 void PaymentAppServiceBridge::SetOptOutOffered() {
   set_opt_out_offered_callback_.Run();
-}
-
-std::optional<base::UnguessableToken>
-PaymentAppServiceBridge::GetChromeOSTWAInstanceId() const {
-  return std::nullopt;
 }
 
 PaymentAppServiceBridge::PaymentAppServiceBridge(

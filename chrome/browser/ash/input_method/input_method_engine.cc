@@ -14,6 +14,7 @@
 #include "ash/keyboard/ui/keyboard_ui_controller.h"
 #include "ash/public/cpp/system/anchored_nudge_manager.h"
 #include "base/check.h"
+#include "base/containers/span.h"
 #include "base/i18n/char_iterator.h"
 #include "base/logging.h"
 #include "base/metrics/histogram_macros.h"
@@ -985,7 +986,8 @@ void InputMethodEngine::Announce(const std::u16string& message) {
 void InputMethodEngine::OnProfileWillBeDestroyed(Profile* profile) {
   if (profile == profile_) {
     pref_change_registrar_.reset();
-    DCHECK(profile_observation_.IsObservingSource(profile_));
+    CHECK(profile_observation_.IsObservingSource(profile_),
+          base::NotFatalUntil::M160);
     profile_observation_.Reset();
     profile_ = nullptr;
   }

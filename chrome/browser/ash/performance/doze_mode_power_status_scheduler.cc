@@ -15,7 +15,7 @@
 #include "base/task/sequenced_task_runner.h"
 #include "base/time/time.h"
 #include "chrome/browser/ash/performance/pref_names.h"
-#include "chrome/browser/ash/profiles/profile_helper.h"
+#include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
 #include "chromeos/ash/components/dbus/concierge/concierge_client.h"
 
 namespace ash {
@@ -134,22 +134,24 @@ void DozeModePowerStatusScheduler::Start() {
   arc_power_bridge_observation_.Observe(
       arc::ArcPowerBridge::GetForBrowserContext(
           arc::ArcSessionManager::Get()->profile()));
-  DCHECK(arc_power_bridge_observation_.IsObserving());
+  CHECK(arc_power_bridge_observation_.IsObserving(), base::NotFatalUntil::M160);
 
   power_manager_client_observation_.Observe(
       chromeos::PowerManagerClient::Get());
-  DCHECK(power_manager_client_observation_.IsObserving());
+  CHECK(power_manager_client_observation_.IsObserving(),
+        base::NotFatalUntil::M160);
   chromeos::PowerManagerClient::Get()->RequestStatusUpdate();
 
   session_controller_impl_observation_.Observe(
       Shell::Get()->session_controller());
-  DCHECK(session_controller_impl_observation_.IsObserving());
+  CHECK(session_controller_impl_observation_.IsObserving(),
+        base::NotFatalUntil::M160);
 
   video_detector_observation_.Observe(Shell::Get()->video_detector());
-  DCHECK(video_detector_observation_.IsObserving());
+  CHECK(video_detector_observation_.IsObserving(), base::NotFatalUntil::M160);
 
   user_activity_observation_.Observe(ui::UserActivityDetector::Get());
-  DCHECK(user_activity_observation_.IsObserving());
+  CHECK(user_activity_observation_.IsObserving(), base::NotFatalUntil::M160);
 
   // TODO(b/351086080): Move metrics recording out of scheduler.
   daily_event_.emplace(
@@ -166,7 +168,7 @@ void DozeModePowerStatusScheduler::Start() {
       kMaxSimulatedBatteryStatusDuration);
   force_real_power_timer_.set_remaining_duration(base::TimeDelta());
 
-  user_id_hash_ = ProfileHelper::GetUserIdHashFromProfile(
+  user_id_hash_ = BrowserContextHelper::GetUserIdHashFromBrowserContext(
       arc::ArcSessionManager::Get()->profile());
 }
 

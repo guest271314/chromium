@@ -128,6 +128,33 @@ suite('ReadAloudModel', () => {
     assertTextEmpty();
   });
 
+  test('getCurrentText separates table cells', async () => {
+    const table = document.createElement('table');
+    const row = document.createElement('tr');
+    const cell1 = document.createElement('td');
+    cell1.textContent = 'Siblings';
+    const cell2 = document.createElement('td');
+    cell2.textContent = 'Hestia';
+
+    row.appendChild(cell1);
+    row.appendChild(cell2);
+    table.appendChild(row);
+    document.body.appendChild(table);
+
+    await microtasksFinished();
+
+    getReadAloudModel().init(ReadAloudNode.create(document.body)!);
+
+    assertEquals(
+        'Siblings', getReadAloudModel().getCurrentTextContent().trim());
+
+    getReadAloudModel().moveSpeechForward();
+    assertEquals('Hestia', getReadAloudModel().getCurrentTextContent().trim());
+
+    getReadAloudModel().moveSpeechForward();
+    assertTextEmpty();
+  });
+
   test(
       'getCurrentText separates nested superscripts with no spaces',
       async () => {
@@ -1484,6 +1511,35 @@ suite('ReadAloudModel', () => {
       });
 
   test(
+      'getCurrentTextSegments mid-sentence superscript after earlier sentences',
+      async () => {
+        // The first text node spans several sentences, so the node search for
+        // the last sentence must still start at that node and not mistake the
+        // superscript for the start of the sentence.
+        const paragraph = document.createElement('p');
+        paragraph.appendChild(document.createTextNode('First. Second. Third'));
+        paragraph.appendChild(createLinkedCitationSuperscript('1'));
+        paragraph.appendChild(document.createTextNode(' Fourth.'));
+        document.body.appendChild(paragraph);
+
+        await microtasksFinished();
+        getReadAloudModel().init(ReadAloudNode.create(document.body)!);
+
+        assertEquals(
+            'First.', getReadAloudModel().getCurrentTextContent().trim());
+        getReadAloudModel().moveSpeechForward();
+        assertEquals(
+            'Second.', getReadAloudModel().getCurrentTextContent().trim());
+        getReadAloudModel().moveSpeechForward();
+        assertEquals(
+            'Third [1] Fourth.',
+            getReadAloudModel().getCurrentTextContent().trim());
+
+        getReadAloudModel().moveSpeechForward();
+        assertTextEmpty();
+      });
+
+  test(
       'getCurrentTextSegments all superscript nodes included in current sentence',
       async () => {
         // Create a container element to hold the simplified structure
@@ -1568,6 +1624,38 @@ suite('ReadAloudModel', () => {
             getReadAloudModel().getCurrentTextContent().trim());
 
         // The next sentence and is returned on its own.
+        getReadAloudModel().moveSpeechForward();
+        assertEquals(
+            'People gon\' come here from everywhere.',
+            getReadAloudModel().getCurrentTextContent().trim());
+
+        getReadAloudModel().moveSpeechForward();
+        assertTextEmpty();
+      });
+
+  test(
+      'getCurrentTextSegments PDF-style wrapped superscript text node combined with preceding sentence',
+      async () => {
+        const paragraph = document.createElement('p');
+        paragraph.appendChild(
+            document.createTextNode('And I am almost there.'));
+
+        // PDFs wrap the superscript text node directly in a <sup> tag.
+        const superscript = document.createElement('sup');
+        superscript.appendChild(document.createTextNode('1'));
+        paragraph.appendChild(superscript);
+
+        paragraph.appendChild(document.createTextNode(
+            ' People gon\' come here from everywhere.'));
+
+        document.body.appendChild(paragraph);
+        await microtasksFinished();
+        getReadAloudModel().init(ReadAloudNode.create(document.body)!);
+
+        assertEquals(
+            'And I am almost there. 1',
+            getReadAloudModel().getCurrentTextContent().trim());
+
         getReadAloudModel().moveSpeechForward();
         assertEquals(
             'People gon\' come here from everywhere.',

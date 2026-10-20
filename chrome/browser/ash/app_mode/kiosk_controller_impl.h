@@ -19,13 +19,13 @@
 #include "chrome/browser/ash/app_mode/isolated_web_app/kiosk_iwa_manager.h"
 #include "chrome/browser/ash/app_mode/kiosk_app.h"
 #include "chrome/browser/ash/app_mode/kiosk_app_launch_error.h"
+#include "chrome/browser/ash/app_mode/kiosk_app_level_logs_manager_wrapper.h"
 #include "chrome/browser/ash/app_mode/kiosk_app_types.h"
 #include "chrome/browser/ash/app_mode/kiosk_chrome_app_manager.h"
 #include "chrome/browser/ash/app_mode/kiosk_controller.h"
 #include "chrome/browser/ash/app_mode/kiosk_cryptohome_remover.h"
 #include "chrome/browser/ash/app_mode/kiosk_system_session.h"
 #include "chrome/browser/ash/app_mode/web_app/kiosk_web_app_manager.h"
-#include "chrome/browser/chromeos/app_mode/kiosk_app_level_logs_manager_wrapper.h"
 #include "components/user_manager/user.h"
 #include "components/user_manager/user_manager.h"
 #include "content/public/browser/web_contents.h"
@@ -93,15 +93,16 @@ class KioskControllerImpl : public KioskController,
 
   void OnAppLaunched(const KioskAppId& kiosk_app_id,
                      Profile* profile,
-                     const std::optional<std::string>& app_name);
+                     const std::optional<webapps::AppId>& app_id);
   void OnLaunchComplete(KioskAppLaunchError::Error error);
   void OnLaunchCompleteAfterCrash(const KioskAppId& app,
                                   Profile* profile,
                                   bool success,
-                                  const std::optional<std::string>& app_name);
-  void InitializeKioskSystemSession(const KioskAppId& kiosk_app_id,
-                                    Profile* profile,
-                                    const std::optional<std::string>& app_name);
+                                  const std::optional<webapps::AppId>& app_id);
+  void InitializeKioskSystemSession(
+      const KioskAppId& kiosk_app_id,
+      Profile* profile,
+      const std::optional<webapps::AppId>& app_id);
 
   void DeleteLaunchControllerAsync();
   void DeleteLaunchController();

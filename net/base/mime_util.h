@@ -89,6 +89,15 @@ NET_EXPORT bool MatchesMimeType(
 // If |params| is non-NULL, clears it and sets it with name-value pairs of
 // parsed parameters. Parsing of parameters is lenient, and invalid params are
 // ignored.
+//
+// Note on invalid inputs:
+// - If the input is missing a slash, or has space/tab before the slash (e.g.
+//   "text / html"), it returns false.
+// - If the input has other invalid characters in type/subtype (like newlines or
+//   unusual spaces, e.g. "text\n/\nhtml"), but has a slash and no space/tab
+//   before it, ParseMimeType will return true and extract the whole substring
+//   including the invalid characters (since it only terminates parsing the type
+//   on spaces, tabs, semicolons, or open parenthesis).
 NET_EXPORT bool ParseMimeType(std::string_view type_str,
                               std::string* mime_type,
                               base::StringPairs* params);
@@ -130,7 +139,8 @@ NET_EXPORT std::optional<std::string> ExtractMimeTypeFromMediaType(
 // Returns true if the |type_string| is a top-level type of any media type
 // registered with IANA media types registry at
 // http://www.iana.org/assignments/media-types/media-types.xhtml or an
-// experimental type (type with x- prefix).
+// experimental type (type with x- prefix, excluding pseudo-types such as
+// x-scheme-handler).
 //
 // This method doesn't check that the input conforms to token ABNF, so if input
 // is experimental type strings, you need to check check that before using

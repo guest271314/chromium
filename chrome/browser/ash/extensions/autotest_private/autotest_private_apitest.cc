@@ -15,6 +15,8 @@
 #include "ash/public/cpp/test/shell_test_api.h"
 #include "base/json/json_writer.h"
 #include "base/memory/raw_ptr.h"
+#include "base/memory/scoped_refptr.h"
+#include "base/run_loop.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/test/bind.h"
 #include "base/test/scoped_command_line.h"
@@ -32,6 +34,9 @@
 #include "chrome/browser/ash/arc/tracing/arc_app_performance_tracing_session.h"
 #include "chrome/browser/ash/arc/tracing/test/arc_app_performance_tracing_test_helper.h"
 #include "chrome/browser/ash/extensions/autotest_private/autotest_private_api.h"
+#include "chrome/browser/ash/ownership/owner_settings_service_ash_factory.h"
+#include "chrome/browser/ash/settings/device_settings_service.h"
+#include "chrome/browser/ash/settings/stats_reporting_controller.h"
 #include "chrome/browser/ash/system_web_apps/test_support/test_system_web_app_installation.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/extensions/extension_apitest.h"
@@ -51,6 +56,7 @@
 #include "components/device_event_log/device_event_log.h"
 #include "components/feature_engagement/public/feature_constants.h"
 #include "components/language/core/browser/pref_names.h"
+#include "components/ownership/mock_owner_key_util.h"
 #include "components/policy/core/browser/browser_policy_connector.h"
 #include "components/policy/core/common/mock_configuration_policy_provider.h"
 #include "components/policy/core/common/policy_map.h"
@@ -61,7 +67,6 @@
 #include "content/public/browser/web_contents.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/test_navigation_observer.h"
-#include "content/public/test/test_utils.h"
 #include "services/viz/privileged/mojom/compositing/features.mojom-features.h"
 #include "ui/aura/window.h"
 #include "ui/events/event_utils.h"
@@ -93,7 +98,7 @@ class TestSearchProvider : public app_list::SearchProvider {
   }
 
   void Start(const std::u16string& query) override {
-    DCHECK(!ash::IsZeroStateResultType(result_type_));
+    CHECK(!ash::IsZeroStateResultType(result_type_), base::NotFatalUntil::M160);
     base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
         FROM_HERE, base::BindOnce(&TestSearchProvider::SetResults,
                                   query_weak_factory_.GetWeakPtr()));
@@ -141,7 +146,7 @@ class AutotestPrivateApiTest : public ExtensionApiTest {
     ExtensionApiTest::SetUpOnMainThread();
     // Turn on testing mode so we don't kill the browser.
     AutotestPrivateAPI::GetFactoryInstance()
-        ->Get(browser()->profile())
+        ->Get(browser()->GetProfile())
         ->set_test_mode(true);
   }
 
@@ -209,7 +214,7 @@ IN_PROC_BROWSER_TEST_P(AutotestPrivateApiTestWithContextType,
 #endif
 IN_PROC_BROWSER_TEST_P(AutotestPrivateApiTestWithContextType,
                        MAYBE_AutotestPrivateArcEnabled) {
-  ArcAppListPrefs* const prefs = ArcAppListPrefs::Get(browser()->profile());
+  ArcAppListPrefs* const prefs = ArcAppListPrefs::Get(browser()->GetProfile());
   ASSERT_TRUE(prefs);
 
   arc::ArcSessionManager::Get()->SetArcSessionRunnerForTesting(
@@ -218,11 +223,12 @@ IN_PROC_BROWSER_TEST_P(AutotestPrivateApiTestWithContextType,
 
   // Having ARC Terms accepted automatically bypasses TOS stage.
   // Set it before |arc::SetArcPlayStoreEnabledForProfile|
-  browser()->profile()->GetPrefs()->SetBoolean(arc::prefs::kArcTermsAccepted,
-                                               true);
+  browser()->GetProfile()->GetPrefs()->SetBoolean(arc::prefs::kArcTermsAccepted,
+                                                  true);
   arc::SetArcPlayStoreEnabledForProfile(profile(), true);
   // Provisioning is completed.
-  browser()->profile()->GetPrefs()->SetBoolean(arc::prefs::kArcSignedIn, true);
+  browser()->GetProfile()->GetPrefs()->SetBoolean(arc::prefs::kArcSignedIn,
+                                                  true);
   // Start ARC
   arc::ArcSessionManager::Get()->StartArcForTesting();
 
@@ -331,7 +337,7 @@ INSTANTIATE_TEST_SUITE_P(
 
 IN_PROC_BROWSER_TEST_P(AutotestPrivateHoldingSpaceApiTest,
                        HoldingSpaceAPITest) {
-  auto* prefs = browser()->profile()->GetPrefs();
+  auto* prefs = browser()->GetProfile()->GetPrefs();
 
   ash::holding_space_prefs::SetPreviewsEnabled(prefs, false);
   ash::holding_space_prefs::MarkTimeOfFirstAdd(prefs);
@@ -376,7 +382,7 @@ class AutotestPrivateApiOverviewTest
     AutotestPrivateApiTest::SetUpOnMainThread();
 
     // Create one additional browser window to make total of 2 windows.
-    CreateBrowser(browser()->profile());
+    CreateBrowser(browser()->GetProfile());
 
     // Enters tablet overview mode.
     ash::ShellTestApi().SetTabletModeEnabledForTest(true);
@@ -395,7 +401,7 @@ class AutotestPrivateApiOverviewTest
   }
 
   gfx::NativeWindow GetRootWindow() const {
-    return browser()->window()->GetNativeWindow()->GetRootWindow();
+    return browser()->GetWindow()->GetNativeWindow()->GetRootWindow();
   }
 };
 
@@ -486,8 +492,10 @@ class AutotestPrivateWithPolicyApiTest
     policy.Set(policy::key::kAllowDinosaurEasterEgg,
                policy::POLICY_LEVEL_MANDATORY, policy::POLICY_SCOPE_USER,
                policy::POLICY_SOURCE_CLOUD, base::Value(true), nullptr);
+    provider_.SetupPolicyServiceForPolicyUpdates(
+        g_browser_process->policy_service());
     provider_.UpdateChromePolicy(policy);
-    base::RunLoop().RunUntilIdle();
+    provider_.SetupPolicyServiceForPolicyUpdates(nullptr);
   }
 
  protected:
@@ -688,7 +696,7 @@ IN_PROC_BROWSER_TEST_P(AutotestPrivateSearchTest,
   }
 
   ui::test::EventGenerator generator(
-      browser()->window()->GetNativeWindow()->GetRootWindow());
+      browser()->GetWindow()->GetNativeWindow()->GetRootWindow());
   generator.GestureTapAt(
       ash::GetSearchBoxView()->GetBoundsInScreen().CenterPoint());
 
@@ -751,11 +759,11 @@ IN_PROC_BROWSER_TEST_P(AutotestPrivateApiTestWithContextType,
       ash::personalization_app::mojom::AmbientTheme::kFloatOnBy;
   ash::personalization_app::mojom::AmbientTheme default_theme =
       ash::AmbientUiSettings::ReadFromPrefService(
-          *browser()->profile()->GetPrefs())
+          *browser()->GetProfile()->GetPrefs())
           .theme();
   ASSERT_NE(kTestTheme, default_theme);
   ash::AmbientUiSettings(kTestTheme)
-      .WriteToPrefService(*browser()->profile()->GetPrefs());
+      .WriteToPrefService(*browser()->GetProfile()->GetPrefs());
 
   base::ListValue suite_args;
   suite_args.Append(base::Value(ash::ambient::prefs::kAmbientUiSettings));
@@ -765,7 +773,7 @@ IN_PROC_BROWSER_TEST_P(AutotestPrivateApiTestWithContextType,
       << message_;
   // Value read back should be the default.
   EXPECT_EQ(ash::AmbientUiSettings::ReadFromPrefService(
-                *browser()->profile()->GetPrefs())
+                *browser()->GetProfile()->GetPrefs())
                 .theme(),
             default_theme);
 }
@@ -778,7 +786,7 @@ IN_PROC_BROWSER_TEST_P(AutotestPrivateApiTestWithContextType,
   ASSERT_TRUE(
       RunAutotestPrivateExtensionTest("setDeviceLanguage", std::move(args)))
       << message_;
-  std::string cur_locale = browser()->profile()->GetPrefs()->GetString(
+  std::string cur_locale = browser()->GetProfile()->GetPrefs()->GetString(
       language::prefs::kApplicationLocale);
   EXPECT_EQ(cur_locale, target_locale);
 }
@@ -790,6 +798,85 @@ IN_PROC_BROWSER_TEST_P(AutotestPrivateApiTestWithContextType,
   NET_LOG(DEBUG) << "NetworkTestLog";
   USB_LOG(DEBUG) << "USBTestLog";
   ASSERT_TRUE(RunAutotestPrivateExtensionTest("getDeviceEventLog")) << message_;
+}
+
+// Keeps the device unowned, so `StatsReportingController` only stores pending
+// values, as in OOBE before ownership is taken.
+class AutotestPrivateSetMetricsEnabledApiTest
+    : public AutotestPrivateApiTestWithContextType {
+ public:
+  void SetUpInProcessBrowserTestFixture() override {
+    AutotestPrivateApiTestWithContextType::SetUpInProcessBrowserTestFixture();
+    // No owner key exists and generating one fails, so the signed-in user
+    // never takes ownership.
+    owner_key_util_->SimulateGenerateKeyFailure(/*fail_times=*/999);
+    ash::OwnerSettingsServiceAshFactory::GetInstance()
+        ->SetOwnerKeyUtilForTesting(owner_key_util_);
+  }
+
+ protected:
+  bool RunSetMetricsEnabledTest(bool enabled) {
+    base::ListValue args;
+    args.Append(enabled);
+    return RunAutotestPrivateExtensionTest("setMetricsEnabled",
+                                           std::move(args));
+  }
+
+  scoped_refptr<ownership::MockOwnerKeyUtil> owner_key_util_ =
+      base::MakeRefCounted<ownership::MockOwnerKeyUtil>();
+};
+
+INSTANTIATE_TEST_SUITE_P(EventPage,
+                         AutotestPrivateSetMetricsEnabledApiTest,
+                         ::testing::Values(ContextType::kEventPage));
+INSTANTIATE_TEST_SUITE_P(ServiceWorker,
+                         AutotestPrivateSetMetricsEnabledApiTest,
+                         ::testing::Values(ContextType::kServiceWorker));
+
+// A pending `true` (e.g. from OOBE pre-consent metrics) must be overridden even
+// though `kStatsReportingPref` is still `false`.
+IN_PROC_BROWSER_TEST_P(AutotestPrivateSetMetricsEnabledApiTest,
+                       DisableOverridesPendingValueBeforeOwnership) {
+  ASSERT_NE(ash::DeviceSettingsService::Get()->GetOwnershipStatus(),
+            ash::DeviceSettingsService::OwnershipStatus::kOwnershipTaken);
+  ash::StatsReportingController* controller =
+      ash::StatsReportingController::Get();
+  controller->SetEnabled(browser()->GetProfile(), true);
+  ASSERT_TRUE(controller->IsEnabled());
+
+  ASSERT_TRUE(RunSetMetricsEnabledTest(false)) << message_;
+  EXPECT_FALSE(controller->IsEnabled());
+}
+
+// The call must respond without waiting for the value to be persisted, which
+// only happens once ownership is taken.
+IN_PROC_BROWSER_TEST_P(AutotestPrivateSetMetricsEnabledApiTest,
+                       EnableRespondsBeforeOwnership) {
+  ASSERT_NE(ash::DeviceSettingsService::Get()->GetOwnershipStatus(),
+            ash::DeviceSettingsService::OwnershipStatus::kOwnershipTaken);
+  ash::StatsReportingController* controller =
+      ash::StatsReportingController::Get();
+  controller->SetEnabled(browser()->GetProfile(), false);
+  ASSERT_FALSE(controller->IsEnabled());
+
+  ASSERT_TRUE(RunSetMetricsEnabledTest(true)) << message_;
+  EXPECT_TRUE(controller->IsEnabled());
+}
+
+// `IsEnabled()` already matches the target via the pending value (e.g. from
+// OOBE pre-consent metrics) while `kStatsReportingPref` is still `false`, so
+// the call must return early and keep the value.
+IN_PROC_BROWSER_TEST_P(AutotestPrivateSetMetricsEnabledApiTest,
+                       ReturnsEarlyWhenPendingValueMatchesTarget) {
+  ASSERT_NE(ash::DeviceSettingsService::Get()->GetOwnershipStatus(),
+            ash::DeviceSettingsService::OwnershipStatus::kOwnershipTaken);
+  ash::StatsReportingController* controller =
+      ash::StatsReportingController::Get();
+  controller->SetEnabled(browser()->GetProfile(), true);
+  ASSERT_TRUE(controller->IsEnabled());
+
+  ASSERT_TRUE(RunSetMetricsEnabledTest(true)) << message_;
+  EXPECT_TRUE(controller->IsEnabled());
 }
 
 }  // namespace extensions

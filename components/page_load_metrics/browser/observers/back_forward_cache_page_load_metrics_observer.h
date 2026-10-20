@@ -87,7 +87,9 @@ class BackForwardCachePageLoadMetricsObserver
   void OnFirstInputAfterBackForwardCacheRestoreInPage(
       const page_load_metrics::mojom::BackForwardCacheTiming& timing,
       size_t index) override;
-  void OnSoftNavigation() override;
+  void OnSoftNavigationFirstContentfulPaint(
+      const page_load_metrics::mojom::SoftNavigationMetrics&
+          soft_navigation_metrics) override;
   ObservePolicy FlushMetricsOnAppEnterBackground(
       const page_load_metrics::mojom::PageLoadTiming& timing) override;
   void OnComplete(
@@ -95,6 +97,11 @@ class BackForwardCachePageLoadMetricsObserver
 
  private:
   friend class ::BackForwardCachePageLoadMetricsObserverTest;
+
+  // Records INP before the first soft navigation arrives.
+  void RecordResponsivenessMetricsBeforeSoftNavigation();
+  // Records CLS before the first soft navigation arrives.
+  void RecordLayoutShiftBeforeSoftNavigation();
 
   // Records metrics related to the end of a page visit. This occurs either
   // when the observed page enters (or re-enters) the back-forward cache, or

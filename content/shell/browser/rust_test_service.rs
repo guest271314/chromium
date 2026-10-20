@@ -9,9 +9,15 @@
 chromium::import! {
     "//mojo/public/rust/bindings";
     "//content/shell:rust_test_mojom_rust";
+    "//base:command_line";
+    "//base:feature";
 }
 
+use command_line::CurrentCommandLine;
+use feature::{base_feature, FeatureState};
 use rust_test_mojom_rust::rust_test::RustTestService;
+
+base_feature!(FeatureFlagSetViaRust, FeatureState::Disabled);
 
 // To define an implementation of the service, we create a new type, then
 // implement the `RustTestService` trait. This service isn't stateful, so we
@@ -43,6 +49,22 @@ impl RustTestServiceImpl {
 impl RustTestService for RustTestServiceImpl {
     fn GetStringFromRust(&mut self, index: u32, send_response: impl FnOnce(String)) {
         send_response(self.get_string_at_index(index).to_string());
+    }
+
+    fn IsFeatureFlagSetViaRustEnabled(&mut self, send_response: impl FnOnce(bool)) {
+        send_response(FeatureFlagSetViaRust.is_enabled());
+    }
+
+    fn HasCommandLineSwitch(&mut self, switch_name: String, send_response: impl FnOnce(bool)) {
+        send_response(CurrentCommandLine::get().has_switch(&switch_name));
+    }
+
+    fn GetCommandLineSwitchValue(
+        &mut self,
+        switch_name: String,
+        send_response: impl FnOnce(String),
+    ) {
+        send_response(CurrentCommandLine::get().get_switch_value_ascii(&switch_name));
     }
 }
 

@@ -180,7 +180,7 @@ DlpRulesManager::Level IsDataTransferAllowed(
 // `should_proceed`. It is used as a callback in `PasteIfAllowed` to handle
 // warning proceeded clipboard events.
 void MaybeReportWarningProceededEventAndPaste(
-    base::OnceCallback<void(void)> reporting_cb,
+    base::OnceClosure reporting_cb,
     base::OnceCallback<void(bool)> paste_cb,
     bool should_proceed) {
   if (should_proceed) {
@@ -428,7 +428,8 @@ void DataTransferDlpController::WarnOnPaste(
     base::optional_ref<const ui::DataTransferEndpoint> data_src,
     base::optional_ref<const ui::DataTransferEndpoint> data_dst,
     base::OnceClosure reporting_cb) {
-  DCHECK(!(data_dst.has_value() && data_dst->IsUrlType()));
+  CHECK(!(data_dst.has_value() && data_dst->IsUrlType()),
+        base::NotFatalUntil::M161);
   clipboard_notifier_.WarnOnPaste(data_src, data_dst, std::move(reporting_cb));
 }
 
@@ -640,7 +641,7 @@ void DataTransferDlpController::ContinuePasteIfClipboardRestrictionsAllow(
 
   // If it's blocked, the data should be empty & PasteIfAllowed should not be
   // called.
-  DCHECK_NE(level, DlpRulesManager::Level::kBlock);
+  CHECK_NE(level, DlpRulesManager::Level::kBlock, base::NotFatalUntil::M161);
 
   if (level == DlpRulesManager::Level::kAllow ||
       level == DlpRulesManager::Level::kReport) {
@@ -648,7 +649,7 @@ void DataTransferDlpController::ContinuePasteIfClipboardRestrictionsAllow(
     return;
   }
 
-  DCHECK_EQ(level, DlpRulesManager::Level::kWarn);
+  CHECK_EQ(level, DlpRulesManager::Level::kWarn, base::NotFatalUntil::M161);
 
   if (ShouldPasteOnWarn(data_dst)) {
     if (ShouldNotifyOnPaste(data_dst)) {

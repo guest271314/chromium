@@ -8,7 +8,9 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
+import android.app.Activity;
 import android.content.Context;
 
 import androidx.credentials.CreateCredentialResponse;
@@ -22,6 +24,7 @@ import androidx.credentials.PasswordCredential;
 import androidx.credentials.exceptions.CreateCredentialException;
 import androidx.credentials.exceptions.CreateCredentialNoCreateOptionException;
 import androidx.credentials.exceptions.GetCredentialException;
+import androidx.credentials.exceptions.NoCredentialException;
 
 import org.junit.Before;
 import org.junit.Rule;
@@ -32,19 +35,22 @@ import org.mockito.Mock;
 import org.mockito.invocation.InvocationOnMock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
+import org.robolectric.Robolectric;
+import org.robolectric.shadows.ShadowLooper;
 
 import org.chromium.base.Callback;
 import org.chromium.base.test.BaseRobolectricTestRunner;
-import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.HistogramWatcher;
+import org.chromium.content_public.browser.WebContents;
+import org.chromium.ui.base.WindowAndroid;
 import org.chromium.url.GURL;
 
+import java.lang.ref.WeakReference;
 import java.util.ArrayList;
 import java.util.concurrent.Executor;
 
 /** Tests for the ThirdPartyCredentialManagerBridge. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Batch(Batch.PER_CLASS)
 public class ThirdPartyCredentialManagerBridgeTest {
 
     private static final String USERNAME = "username";
@@ -56,13 +62,20 @@ public class ThirdPartyCredentialManagerBridgeTest {
     @Mock private GetCredentialException mGetCredentialException;
     @Mock private Callback<PasswordCredentialResponse> mCredentialResponseCallback;
     @Mock private Callback<Boolean> mStoreCallback;
+    @Mock private WebContents mWebContents;
+    @Mock private WindowAndroid mWindowAndroid;
 
+    private Activity mActivity;
     private ThirdPartyCredentialManagerBridge mBridge;
 
     @Before
     public void setUp() {
+        mActivity = Robolectric.buildActivity(Activity.class).get();
         mBridge = new ThirdPartyCredentialManagerBridge();
         mBridge.setCredentialManagerForTesting(mCredentialManager);
+
+        when(mWebContents.getTopLevelNativeWindow()).thenReturn(mWindowAndroid);
+        when(mWindowAndroid.getActivity()).thenReturn(new WeakReference<>(mActivity));
     }
 
     @Test
@@ -83,7 +96,14 @@ public class ThirdPartyCredentialManagerBridgeTest {
                         any(Executor.class),
                         any());
 
-        mBridge.get(true, true, new ArrayList<GURL>(), ORIGIN, mCredentialResponseCallback);
+        mBridge.get(
+                mWebContents,
+                true,
+                true,
+                new ArrayList<GURL>(),
+                ORIGIN,
+                mCredentialResponseCallback);
+        ShadowLooper.idleMainLooper();
 
         verify(mCredentialManager)
                 .getCredentialAsync(
@@ -115,7 +135,53 @@ public class ThirdPartyCredentialManagerBridgeTest {
                         any(Executor.class),
                         any());
 
-        mBridge.get(false, true, new ArrayList<GURL>(), ORIGIN, mCredentialResponseCallback);
+        mBridge.get(
+                mWebContents,
+                false,
+                true,
+                new ArrayList<GURL>(),
+                ORIGIN,
+                mCredentialResponseCallback);
+        ShadowLooper.idleMainLooper();
+
+        verify(mCredentialManager)
+                .getCredentialAsync(
+                        any(Context.class),
+                        any(GetCredentialRequest.class),
+                        any(),
+                        any(Executor.class),
+                        any());
+        verify(mCredentialResponseCallback)
+                .onResult(
+                        argThat(
+                                new PasswordCredentialResponseMatcher(
+                                        new PasswordCredentialResponse(false, "", ""))));
+        histogramWatcher.assertExpected();
+    }
+
+    @Test
+    public void testOnGetCredentialNoCredentialExceptionCalled() {
+        HistogramWatcher histogramWatcher =
+                HistogramWatcher.newSingleRecordWatcher(
+                        ThirdPartyCredentialManagerMetricsRecorder.GET_RESULT_HISTOGRAM_NAME,
+                        CredentialManagerAndroidGetResult.NO_CREDENTIAL);
+        doAnswer(invocation -> respondToGetCallback(invocation, null, new NoCredentialException()))
+                .when(mCredentialManager)
+                .getCredentialAsync(
+                        any(Context.class),
+                        any(GetCredentialRequest.class),
+                        any(),
+                        any(Executor.class),
+                        any());
+
+        mBridge.get(
+                mWebContents,
+                false,
+                true,
+                new ArrayList<GURL>(),
+                ORIGIN,
+                mCredentialResponseCallback);
+        ShadowLooper.idleMainLooper();
 
         verify(mCredentialManager)
                 .getCredentialAsync(
@@ -148,7 +214,8 @@ public class ThirdPartyCredentialManagerBridgeTest {
                         any(Executor.class),
                         any());
 
-        mBridge.store(USERNAME, PASSWORD, ORIGIN, mStoreCallback);
+        mBridge.store(mWebContents, USERNAME, PASSWORD, ORIGIN, mStoreCallback);
+        ShadowLooper.idleMainLooper();
 
         verify(mCredentialManager)
                 .createCredentialAsync(
@@ -181,7 +248,8 @@ public class ThirdPartyCredentialManagerBridgeTest {
                         any(Executor.class),
                         any());
 
-        mBridge.store(USERNAME, PASSWORD, ORIGIN, mStoreCallback);
+        mBridge.store(mWebContents, USERNAME, PASSWORD, ORIGIN, mStoreCallback);
+        ShadowLooper.idleMainLooper();
 
         verify(mCredentialManager)
                 .createCredentialAsync(

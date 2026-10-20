@@ -35,9 +35,11 @@
 #include <optional>
 
 #include "base/types/pass_key.h"
+#include "net/base/schemeful_site.h"
 #include "third_party/blink/renderer/platform/platform_export.h"
 #include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
 #include "third_party/blink/renderer/platform/wtf/forward.h"
+#include "third_party/blink/renderer/platform/wtf/hash_functions_memory.h"
 #include "third_party/blink/renderer/platform/wtf/hash_traits.h"
 #include "third_party/blink/renderer/platform/wtf/ref_counted.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
@@ -104,6 +106,10 @@ class PLATFORM_EXPORT SecurityOrigin : public RefCounted<SecurityOrigin> {
 
   static scoped_refptr<SecurityOrigin> CreateFromUrlOrigin(const url::Origin&);
   url::Origin ToUrlOrigin() const;
+
+  // Returns the cached `net::SchemefulSite` for this origin, computing it
+  // on-demand. Equivalent to `net::SchemefulSite(ToUrlOrigin())`.
+  const net::SchemefulSite& GetSchemefulSite() const;
 
   // Creates an opaque origin with the given nonce and origin. This method can
   // only be called by SandboxedOpaqueSecurityOriginCreator to ensure proper
@@ -204,6 +210,10 @@ class PLATFORM_EXPORT SecurityOrigin : public RefCounted<SecurityOrigin> {
   // https://w3c.github.io/webappsec-secure-contexts/#is-origin-trustworthy
   bool IsPotentiallyTrustworthy() const;
 
+  // Returns true if this origin's protocol is a WebUI scheme (e.g. chrome://,
+  // chrome-untrusted://, or registered as WebUI).
+  bool IsWebUI() const;
+
   // Returns a human-readable error message describing that a non-secure
   // origin's access to a feature is denied.
   static String IsPotentiallyTrustworthyErrorMessage();
@@ -288,7 +298,7 @@ class PLATFORM_EXPORT SecurityOrigin : public RefCounted<SecurityOrigin> {
   // whereas this function serializes them to "null" or // "file://" depending
   // on the `allow_file_access_from_file_urls` flag in WebPreferences. This
   // difference should be cleaned up, along with the workaround for it in
-  // RenderFrameProxyHost::SerializePostMessageSourceOrigin().
+  // MessageEvent::originForBindings().
   String ToString() const;
   AtomicString ToAtomicString() const;
 
@@ -487,6 +497,10 @@ class PLATFORM_EXPORT SecurityOrigin : public RefCounted<SecurityOrigin> {
   // For opaque origins, tracks the non-opaque origin from which the opaque
   // origin is derived.
   const scoped_refptr<const SecurityOrigin> precursor_origin_;
+
+  // Cached value of `GetSchemefulSite()`. Pure function of `const` tuple
+  // members so invalidation is not needed. Not copied; copies recompute lazily.
+  mutable std::unique_ptr<net::SchemefulSite> cached_schemeful_site_;
 };
 
 // The default HashTraits of SecurityOrigin implements the "same origin"
@@ -497,26 +511,26 @@ class PLATFORM_EXPORT SecurityOrigin : public RefCounted<SecurityOrigin> {
 template <>
 struct HashTraits<scoped_refptr<const SecurityOrigin>>
     : GenericHashTraits<scoped_refptr<const SecurityOrigin>> {
-  static unsigned GetHash(const SecurityOrigin* origin) {
+  static uint32_t GetHash(const SecurityOrigin* origin) {
     const base::UnguessableToken* nonce = origin->GetNonceForSerialization();
     size_t nonce_hash = nonce ? base::UnguessableTokenHash()(*nonce) : 0;
 
-    unsigned hash_codes[] = {
-      origin->Protocol().Impl() ? origin->Protocol().Impl()->GetHash() : 0,
-      origin->Host().Impl() ? origin->Host().Impl()->GetHash() : 0,
-      origin->Port(),
+    uint32_t hash_codes[] = {
+        origin->Protocol().Impl() ? origin->Protocol().Impl()->GetHash() : 0,
+        origin->Host().Impl() ? origin->Host().Impl()->GetHash() : 0,
+        origin->Port(),
 #if ARCH_CPU_32_BITS
-      nonce_hash,
+        nonce_hash,
 #elif ARCH_CPU_64_BITS
-      static_cast<unsigned>(nonce_hash),
-      static_cast<unsigned>(nonce_hash >> 32),
+        static_cast<uint32_t>(nonce_hash),
+        static_cast<uint32_t>(nonce_hash >> 32),
 #else
 #error "Unknown bits"
 #endif
     };
-    return StringHasher::HashMemory(base::as_byte_span(hash_codes));
+    return HashMemory32(base::as_byte_span(hash_codes));
   }
-  static unsigned GetHash(const scoped_refptr<const SecurityOrigin>& origin) {
+  static uint32_t GetHash(const scoped_refptr<const SecurityOrigin>& origin) {
     return GetHash(origin.get());
   }
 

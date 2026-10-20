@@ -23,20 +23,26 @@
 #include "base/strings/utf_string_conversions.h"
 #include "base/task/cancelable_task_tracker.h"
 #include "base/test/gmock_callback_support.h"
+#include "base/test/mock_callback.h"
 #include "base/test/run_until.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
+#include "base/values.h"
 #include "build/build_config.h"
 #include "components/history/core/browser/top_sites.h"
 #include "components/history/core/browser/top_sites_observer.h"
+#include "components/ntp_tiles/constants.h"
 #include "components/ntp_tiles/custom_links_manager.h"
+#include "components/ntp_tiles/custom_links_pref_names.h"
 #include "components/ntp_tiles/enterprise/enterprise_shortcuts_manager.h"
+#include "components/ntp_tiles/enterprise/enterprise_shortcuts_pref_names.h"
 #include "components/ntp_tiles/features.h"
 #include "components/ntp_tiles/icon_cacher.h"
 #include "components/ntp_tiles/popular_sites_impl.h"
-#include "components/ntp_tiles/pref_names.h"
+#include "components/ntp_tiles/popular_sites_pref_names.h"
 #include "components/ntp_tiles/section_type.h"
 #include "components/ntp_tiles/switches.h"
+#include "components/prefs/pref_change_registrar.h"
 #include "components/search/ntp_features.h"
 #include "components/supervised_user/core/common/buildflags.h"
 #include "components/sync_preferences/testing_pref_service_syncable.h"
@@ -73,6 +79,7 @@ using testing::AtLeast;
 using testing::ByMove;
 using testing::Contains;
 using testing::DoAll;
+using testing::Each;
 using testing::ElementsAre;
 using testing::Eq;
 using testing::Ge;
@@ -248,6 +255,7 @@ class MockCustomLinksManager : public CustomLinksManager {
   MOCK_METHOD0(Uninitialize, void());
   MOCK_CONST_METHOD0(IsInitialized, bool());
   MOCK_CONST_METHOD0(GetLinks, const std::vector<CustomLinksManager::Link>&());
+  MOCK_CONST_METHOD0(GetMaxLinks, size_t());
   MOCK_METHOD3(AddLinkTo,
                bool(const GURL& url, const std::u16string& title, size_t pos));
   MOCK_METHOD2(AddLink, bool(const GURL& url, const std::u16string& title));
@@ -434,6 +442,75 @@ TEST(CustomLinksCacheTest, Main) {
   EXPECT_FALSE(cache.HasUrl(GURL(kTestUrl2)));
 }
 
+TEST(MostVisitedSitesStaticHelpersTest, AddCustomLinksObserverWatchesScope) {
+  sync_preferences::TestingPrefServiceSyncable pref_service;
+  pref_service.registry()->RegisterListPref(prefs::kCustomLinksList);
+  pref_service.registry()->RegisterBooleanPref(prefs::kCustomLinksInitialized,
+                                               false);
+  pref_service.registry()->RegisterListPref(prefs::kCustomLinksListMobile);
+  pref_service.registry()->RegisterBooleanPref(
+      prefs::kCustomLinksInitializedMobile, false);
+
+  PrefChangeRegistrar registrar;
+  registrar.Init(&pref_service);
+  base::MockCallback<base::RepeatingClosure> callback;
+  MostVisitedSites::AddCustomLinksObserver(
+      registrar, CustomLinksScope::kDesktop, callback.Get());
+
+  EXPECT_CALL(callback, Run()).Times(2);
+  pref_service.SetList(prefs::kCustomLinksList,
+                       base::ListValue().Append("https://example.com/"));
+  pref_service.SetBoolean(prefs::kCustomLinksInitialized, true);
+  testing::Mock::VerifyAndClearExpectations(&callback);
+
+  // Changes to another scope's keys are ignored.
+  EXPECT_CALL(callback, Run()).Times(0);
+  pref_service.SetList(prefs::kCustomLinksListMobile,
+                       base::ListValue().Append("https://example.com/"));
+  pref_service.SetBoolean(prefs::kCustomLinksInitializedMobile, true);
+}
+
+#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || \
+    BUILDFLAG(IS_CHROMEOS)
+TEST(MostVisitedSitesStaticHelpersTest, HasEnterpriseShortcuts) {
+  sync_preferences::TestingPrefServiceSyncable pref_service;
+  pref_service.registry()->RegisterListPref(
+      prefs::kEnterpriseShortcutsPolicyList);
+  EXPECT_FALSE(MostVisitedSites::HasEnterpriseShortcuts(pref_service));
+
+  pref_service.SetList(
+      prefs::kEnterpriseShortcutsPolicyList,
+      base::ListValue().Append(base::DictValue()
+                                   .Set("url", "https://corp.example.com/")
+                                   .Set("title", "Corp")));
+  EXPECT_TRUE(MostVisitedSites::HasEnterpriseShortcuts(pref_service));
+
+  // Invalid policy entries (e.g. without a URL) do not count as shortcuts.
+  pref_service.SetList(
+      prefs::kEnterpriseShortcutsPolicyList,
+      base::ListValue().Append(base::DictValue().Set("title", "No URL")));
+  EXPECT_FALSE(MostVisitedSites::HasEnterpriseShortcuts(pref_service));
+}
+
+TEST(MostVisitedSitesStaticHelpersTest, AddEnterpriseShortcutsObserver) {
+  sync_preferences::TestingPrefServiceSyncable pref_service;
+  pref_service.registry()->RegisterListPref(
+      prefs::kEnterpriseShortcutsPolicyList);
+
+  PrefChangeRegistrar registrar;
+  registrar.Init(&pref_service);
+  base::MockCallback<base::RepeatingClosure> callback;
+  MostVisitedSites::AddEnterpriseShortcutsObserver(registrar, callback.Get());
+
+  EXPECT_CALL(callback, Run());
+  pref_service.SetList(
+      prefs::kEnterpriseShortcutsPolicyList,
+      base::ListValue().Append(base::DictValue()
+                                   .Set("url", "https://corp.example.com/")
+                                   .Set("title", "Corp")));
+}
+#endif
+
 // Param specifies whether Popular Sites is enabled via variations.
 class MostVisitedSitesTest : public ::testing::Test {
  protected:
@@ -475,6 +552,14 @@ class MostVisitedSitesTest : public ::testing::Test {
       mock_custom_links_manager =
           std::make_unique<StrictMock<MockCustomLinksManager>>();
       mock_custom_links_manager_ = mock_custom_links_manager.get();
+      size_t expected_max_links =
+          base::FeatureList::IsEnabled(ntp_features::kNtpShortcutsRedesign)
+              ? static_cast<size_t>(
+                    ntp_features::GetMaxShortcutsInExpandedState())
+              : ntp_tiles::kMaxNumCustomLinks;
+      EXPECT_CALL(*mock_custom_links_manager, GetMaxLinks())
+          .Times(testing::AnyNumber())
+          .WillRepeatedly(Return(expected_max_links));
     }
 
     // Enterprise custom links needs to be nullptr when MostVisitedSites is
@@ -937,7 +1022,7 @@ TEST_F(MostVisitedSitesTest, ShouldPinHomepageAgainIfBlockedUndone) {
                            Contains(MatchesTile(u"", kHomepageUrl,
                                                 TileSource::HOMEPAGE))))));
 
-  most_visited_sites_->OnURLFilterChanged();
+  most_visited_sites_->OnUrlFilteringServiceChanged();
 
   base::RunLoop().RunUntilIdle();
 }
@@ -1191,6 +1276,46 @@ TEST_F(MostVisitedSitesTest, CustomLinksCappedAtTenWhenRedesignDisabled) {
   EXPECT_EQ(10ul, sections.at(SectionType::PERSONALIZED).size());
 }
 #endif  // !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
+
+// Existing tests check the default 8-link mobile cap. This dedicated test
+// verifies the 10-link limit configured on WebUI NTP (AL) builds.
+TEST_F(MostVisitedSitesTest, CustomLinksCappedAtTenWhenWebUiNtpEnabled) {
+  EnableCustomLinks();
+  RecreateMostVisitedSites();
+
+  std::vector<CustomLinksManager::Link> custom_links;
+  for (int i = 0; i < 15; ++i) {
+    custom_links.push_back({GURL("http://site/"), u"Title"});
+  }
+
+  EXPECT_CALL(*mock_custom_links_manager_, IsInitialized())
+      .WillRepeatedly(Return(true));
+  EXPECT_CALL(*mock_custom_links_manager_, GetMaxLinks())
+      .WillRepeatedly(Return(10));
+  EXPECT_CALL(*mock_custom_links_manager_, GetLinks())
+      .WillOnce(ReturnRef(custom_links));
+  EXPECT_CALL(*mock_top_sites_, SyncWithHistory());
+  EXPECT_CALL(*mock_custom_links_manager_, RegisterCallbackForOnChanged(_));
+
+  base::RunLoop run_loop;
+  std::map<SectionType, NTPTilesVector> sections;
+
+  EXPECT_CALL(mock_observer_, OnURLsAvailable(_, _))
+      .WillOnce(
+          testing::DoAll(testing::SaveArg<1>(&sections),
+                         base::test::RunOnceClosure(run_loop.QuitClosure())));
+
+  most_visited_sites_->AddMostVisitedURLsObserver(&mock_observer_,
+                                                  /*max_num_sites=*/8);
+  run_loop.Run();
+
+  EXPECT_THAT(
+      sections,
+      Contains(Pair(
+          SectionType::PERSONALIZED,
+          AllOf(SizeIs(10), Each(MatchesTile(u"Title", "http://site/",
+                                             TileSource::CUSTOM_LINKS))))));
+}
 
 TEST_F(MostVisitedSitesTest, ShouldDeduplicateDomainWithNoWwwDomain) {
   EXPECT_TRUE(MostVisitedSites::IsHostOrMobilePageKnown({"www.mobile.de"},
@@ -2059,6 +2184,16 @@ class MostVisitedSitesWithEnterpriseShortcutsTest
     run_loop.Run();
     Mock::VerifyAndClearExpectations(mock_top_sites_.get());
     Mock::VerifyAndClearExpectations(mock_custom_links_manager_);
+    if (mock_custom_links_manager_) {
+      size_t expected_max_links =
+          base::FeatureList::IsEnabled(ntp_features::kNtpShortcutsRedesign)
+              ? static_cast<size_t>(
+                    ntp_features::GetMaxShortcutsInExpandedState())
+              : ntp_tiles::kMaxNumCustomLinks;
+      EXPECT_CALL(*mock_custom_links_manager_, GetMaxLinks())
+          .Times(testing::AnyNumber())
+          .WillRepeatedly(Return(expected_max_links));
+    }
     Mock::VerifyAndClearExpectations(mock_enterprise_shortcuts_manager_);
   }
 };

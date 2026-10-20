@@ -10,7 +10,7 @@ import './side_panel.js';
 import '/strings.m.js';
 import './tab_strip/tab_strip.js';
 import './webview.js';
-import 'chrome://resources/cr_components/searchbox/searchbox.js';
+import './webui_browser_searchbox.js';
 import 'chrome://resources/cr_elements/cr_button/cr_button.js';
 import 'chrome://resources/cr_elements/cr_icon_button/cr_icon_button.js';
 import 'chrome://resources/cr_elements/cr_icon/cr_icon.js';
@@ -19,22 +19,21 @@ import {ColorChangeUpdater} from '//resources/cr_components/color_change_listene
 import {assert, assertNotReachedCase} from '//resources/js/assert.js';
 import {loadTimeData} from '//resources/js/load_time_data.js';
 import type {Tab as TabData} from '/tab_strip_api/tab_strip_api_data_model.mojom-webui.js';
-import type {SearchboxElement} from 'chrome://resources/cr_components/searchbox/searchbox.js';
 import {TrackedElementManager} from 'chrome://resources/js/tracked_element/tracked_element_manager.js';
 import {CrLitElement} from 'chrome://resources/lit/v3_0/lit.rollup.js';
 
 import {getCss} from './app.css.js';
 import {getHtml} from './app.html.js';
-import {FullscreenContext, SecurityIcon} from './browser.mojom-webui.js';
-import {BrowserProxy} from './browser_proxy.js';
+import {browserProxyFactory, FullscreenContext, SecurityIcon} from './browser.mojom-webui.js';
 import type {ContentRegionElement} from './content_region.js';
 import type {SidePanelElement} from './side_panel.js';
-import type {TabActivated, TabAdded, TabClosed, TabUpdated} from './tab_strip/events.js';
+import type {TabAdded, TabClosed, TabUpdated} from './tab_strip/events.js';
 import {TabStripElement} from './tab_strip/tab_strip.js';
+import type {WebuiBrowserSearchboxElement} from './webui_browser_searchbox.js';
 
 export interface WebuiBrowserAppElement {
   $: {
-    address: SearchboxElement,
+    address: WebuiBrowserSearchboxElement,
     appMenuButton: HTMLElement,
     avatarButton: HTMLElement,
     backButton: HTMLElement,
@@ -70,6 +69,11 @@ export class WebuiBrowserAppElement extends CrLitElement {
       showLocationIconButton_: {type: Boolean, reflect: true},
       locationIcon_: {state: true, type: String},
       tabStripInset_: {state: true, type: Number},
+      inactive_: {
+        type: Boolean,
+        reflect: true,
+        attribute: 'inactive',
+      },
     };
   }
 
@@ -81,8 +85,12 @@ export class WebuiBrowserAppElement extends CrLitElement {
   protected accessor reloadOrStopIcon_: string = 'icon-refresh';
   protected accessor showingSidePanel_: boolean = false;
   protected accessor showLocationIconButton_: boolean = false;
-  protected accessor locationIcon_: string = 'NoEncryption';
-  protected accessor tabStripInset_: number = 0;
+  protected accessor locationIcon_: string = 'no-encryption';
+  protected accessor tabStripInset_: number =
+      loadTimeData.valueExists('tabStripInset') ?
+      loadTimeData.getInteger('tabStripInset') :
+      0;
+  protected accessor inactive_: boolean = false;
 
   constructor() {
     super();
@@ -90,11 +98,14 @@ export class WebuiBrowserAppElement extends CrLitElement {
 
     this.trackedElementManager_ = TrackedElementManager.getInstance();
 
-    const callbackRouter = BrowserProxy.getCallbackRouter();
+    const callbackRouter = browserProxyFactory.getInstance().callbackRouter;
     callbackRouter.showSidePanel.addListener(this.showSidePanel_.bind(this));
     callbackRouter.closeSidePanel.addListener(this.closeSidePanel_.bind(this));
     callbackRouter.onFullscreenModeChanged.addListener(
         this.onFullscreenModeChanged_.bind(this));
+    callbackRouter.onPaintAsActiveChanged.addListener((active: boolean) => {
+      this.inactive_ = !active;
+    });
   }
 
   override async connectedCallback() {
@@ -117,7 +128,8 @@ export class WebuiBrowserAppElement extends CrLitElement {
         this.$.contentRegion, 'kContentsContainerViewElementId');
     this.setUpLongPress_(this.$.backButton, /*isBack=*/ true);
     this.setUpLongPress_(this.$.forwardButton, /*isBack=*/ false);
-    const {width} = await BrowserProxy.getPageHandler().getTabStripInset();
+    const {width} =
+        await browserProxyFactory.getInstance().handler.getTabStripInset();
     this.tabStripInset_ = width;
   }
 
@@ -129,42 +141,51 @@ export class WebuiBrowserAppElement extends CrLitElement {
   // Map from SecurityIcon values to the names of icons defined in
   // icons.html.ts.
   private securityIconToIconNameMap = new Map<SecurityIcon, string>([
-    [SecurityIcon.HttpChromeRefresh, 'HttpChromeRefresh'],
-    [SecurityIcon.SecurePageInfoChromeRefresh, 'SecurePageInfoChromeRefresh'],
-    [SecurityIcon.NoEncryption, 'NoEncryption'],
+    [SecurityIcon.HttpChromeRefresh, 'info'],
+    [SecurityIcon.SecurePageInfoChromeRefresh, 'page-info'],
+    [SecurityIcon.NoEncryption, 'no-encryption'],
     [
       SecurityIcon.NotSecureWarningChromeRefresh,
-      'NotSecureWarningChromeRefresh',
+      'warning',
     ],
-    [SecurityIcon.BusinessChromeRefresh, 'BusinessChromeRefresh'],
-    [SecurityIcon.DangerousChromeRefresh, 'DangerousChromeRefresh'],
-    [SecurityIcon.ProductChromeRefresh, 'ProductChromeRefresh'],
-    [SecurityIcon.ExtensionChromeRefresh, 'ExtensionChromeRefresh'],
-    [SecurityIcon.OfflinePin, 'OfflinePin'],
+    [SecurityIcon.BusinessChromeRefresh, 'domain'],
+    [SecurityIcon.DangerousChromeRefresh, 'dangerous-filled'],
+    [SecurityIcon.ProductChromeRefresh, 'chrome-product'],
+    [SecurityIcon.ExtensionChromeRefresh, 'chrome-extension'],
+    [SecurityIcon.OfflinePin, 'OfflinePinIcon-custom'],
   ]);
 
   protected onAppMenuClick_(_: Event) {
-    BrowserProxy.getPageHandler().openAppMenu();
+    browserProxyFactory.getInstance().handler.openAppMenu();
+  }
+
+  protected onBookmarksClick_() {
+    if (this.showingSidePanel_ && this.$.sidePanel.isShowingBookmarks()) {
+      this.closeSidePanel_();
+    } else {
+      this.showingSidePanel_ = true;
+      this.$.sidePanel.showBookmarks();
+    }
   }
 
   protected onAvatarClick_(_: Event) {
-    BrowserProxy.getPageHandler().openProfileMenu();
+    browserProxyFactory.getInstance().handler.openProfileMenu();
   }
 
   protected onMinimizeClick_(_: Event) {
-    BrowserProxy.getPageHandler().minimize();
+    browserProxyFactory.getInstance().handler.minimize();
   }
 
   protected onMaximizeClick_(_: Event) {
-    BrowserProxy.getPageHandler().maximize();
+    browserProxyFactory.getInstance().handler.maximize();
   }
 
   protected onRestoreClick_(_: Event) {
-    BrowserProxy.getPageHandler().restore();
+    browserProxyFactory.getInstance().handler.restore();
   }
 
   protected onCloseClick_(_: Event) {
-    BrowserProxy.getPageHandler().close();
+    browserProxyFactory.getInstance().handler.close();
   }
 
   protected onBackClick_(_: Event) {
@@ -175,7 +196,8 @@ export class WebuiBrowserAppElement extends CrLitElement {
 
   protected onBackContextmenu_(e: Event) {
     e.preventDefault();
-    BrowserProxy.getPageHandler().showBackForwardMenu(/*isBack=*/ true);
+    browserProxyFactory.getInstance().handler.showBackForwardMenu(
+        /*isBack=*/ true);
   }
 
   protected onForwardClick_(_: Event) {
@@ -186,7 +208,8 @@ export class WebuiBrowserAppElement extends CrLitElement {
 
   protected onForwardContextmenu_(e: Event) {
     e.preventDefault();
-    BrowserProxy.getPageHandler().showBackForwardMenu(/*isBack=*/ false);
+    browserProxyFactory.getInstance().handler.showBackForwardMenu(
+        /*isBack=*/ false);
   }
 
   // Long-press on back/forward buttons shows the navigation history menu,
@@ -203,7 +226,7 @@ export class WebuiBrowserAppElement extends CrLitElement {
       }
       this.longPressTimer_ = window.setTimeout(() => {
         clearTimer();
-        BrowserProxy.getPageHandler().showBackForwardMenu(isBack);
+        browserProxyFactory.getInstance().handler.showBackForwardMenu(isBack);
       }, 500);
     });
     button.addEventListener('pointerup', clearTimer);
@@ -238,18 +261,13 @@ export class WebuiBrowserAppElement extends CrLitElement {
     this.refreshLayout();
   }
 
-  protected onTabActivated_(event: CustomEvent<TabActivated>) {
-    this.$.contentRegion.activateTab(event.detail.id);
-    this.updateUrlForActiveTab_(event.detail);
-    this.refreshLayout();
-  }
-
   protected onTabUpdated_(event: CustomEvent<TabUpdated>) {
     const tabData = event.detail;
     if (!tabData.isActive) {
       return;
     }
 
+    // TODO(crbug.com/537801193): store and restore focus on tab switch.
     this.$.contentRegion.activateTab(tabData.id);
     this.updateUrlForActiveTab_(tabData);
     this.refreshLayout();
@@ -303,28 +321,18 @@ export class WebuiBrowserAppElement extends CrLitElement {
   }
 
   protected override firstUpdated() {
-    BrowserProxy.getCallbackRouter().setFocusToLocationBar.addListener(
-        this.setFocusToLocationBar.bind(this));
-    BrowserProxy.getCallbackRouter().setReloadStopState.addListener(
-        this.setReloadStopState.bind(this));
+    browserProxyFactory.getInstance()
+        .callbackRouter.setFocusToLocationBar.addListener(
+            this.setFocusToLocationBar.bind(this));
+    browserProxyFactory.getInstance()
+        .callbackRouter.setReloadStopState.addListener(
+            this.setReloadStopState.bind(this));
   }
 
   protected onTabDragMousedown_(e: MouseEvent) {
     if (e.target instanceof TabStripElement) {
       this.$.tabstrip.dragMouseDown(e);
-      this.addEventListener('mouseup', this.onTabDragMouseUp_);
-      this.addEventListener('mousemove', this.onTabDragMouseMove_);
     }
-  }
-
-  protected onTabDragMouseUp_(_: MouseEvent) {
-    this.$.tabstrip.closeDragElement();
-    this.removeEventListener('mouseup', this.onTabDragMouseUp_);
-    this.removeEventListener('mousemove', this.onTabDragMouseMove_);
-  }
-
-  protected onTabDragMouseMove_(e: MouseEvent) {
-    this.$.tabstrip.elementDrag(e);
   }
 
   protected setFocusToLocationBar(isUserInitiated: boolean) {

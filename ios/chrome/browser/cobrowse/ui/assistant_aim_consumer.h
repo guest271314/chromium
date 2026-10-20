@@ -11,15 +11,39 @@
 
 #import "ios/chrome/browser/cobrowse/ui/assistant_aim_history_item.h"
 
+// Represents the current main content state of the Assistant AIM UI.
+enum class AssistantAIMState {
+  // The greeting/welcoming zero state shown before a thread is started.
+  kZeroState,
+  // The active interaction thread state with the web content.
+  kThread,
+  // The history state showing a list of past tasks.
+  kHistory,
+};
+
 // Consumer for the Assistant AIM UI.
 @protocol AssistantAIMConsumer <NSObject>
 
 // Sets the WebState view to be displayed.
 - (void)setWebStateView:(UIView*)webStateView;
 
-// Displays the history view with the given items.
+// Displays the history view with `items`. When `signedIn` is NO, the history
+// view displays the signed out zero state instead of the list of items.
 - (void)displayHistoryWithItems:
-    (const std::vector<AssistantAIMHistoryItem>&)items;
+            (const std::vector<AssistantAIMHistoryItem>&)items
+                       signedIn:(BOOL)signedIn;
+
+// Sets the header title.
+- (void)setHeaderTitle:(NSString*)title;
+
+// Hides the input plate.
+- (void)setInputPlateForceHidden:(BOOL)hidden;
+
+// Sets the greeting message to display in the landing state.
+- (void)setGreetingMessage:(NSString*)message;
+
+// Notifies the consumer to switch to the thread view if needed.
+- (void)displayThread;
 
 @end
 

@@ -33,8 +33,8 @@
 @interface AdaptiveToolbarViewController
     : UIViewController <FullscreenBrowserAgentObserving,
                         FullscreenUIElement,
-                        PopupMenuUIUpdating,
-                        LegacyToolbarConsumer>
+                        LegacyToolbarConsumer,
+                        PopupMenuUIUpdating>
 
 // Button factory.
 @property(nonatomic, strong) LegacyToolbarButtonFactory* buttonFactory;
@@ -86,6 +86,9 @@
 - (void)IPHHighlightTabGridButton:(BOOL)highlight;
 // Used for any additional clean up on shutdown.
 - (void)disconnect;
+
+// Hides the composebox.
+- (void)hideComposebox;
 
 @end
 

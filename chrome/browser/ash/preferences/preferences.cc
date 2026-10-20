@@ -24,6 +24,7 @@
 #include "ash/system/geolocation/geolocation_controller.h"
 #include "ash/system/privacy_hub/privacy_hub_controller.h"
 #include "base/check_deref.h"
+#include "base/check_is_test.h"
 #include "base/command_line.h"
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
@@ -48,10 +49,6 @@
 #include "chrome/browser/ash/system/input_device_settings.h"
 #include "chrome/browser/ash/system/timezone_resolver_manager.h"
 #include "chrome/browser/ash/system/timezone_util.h"
-#include "chrome/browser/browser_process.h"
-#include "chrome/browser/browser_process_platform_part.h"
-#include "chrome/browser/download/download_prefs.h"
-#include "chrome/browser/prefs/pref_service_syncable_util.h"
 #include "chrome/browser/ui/ash/system/system_tray_client_impl.h"
 #include "chrome/common/pref_names.h"
 #include "chromeos/ash/components/dbus/pciguard/pciguard_client.h"
@@ -82,6 +79,7 @@
 #include "components/user_manager/user.h"
 #include "components/user_manager/user_manager.h"
 #include "content/public/browser/browser_thread.h"
+#include "content/public/browser/media_session_service.h"
 #include "third_party/blink/public/mojom/speech/speech_synthesis.mojom.h"
 #include "third_party/cros_system_api/dbus/update_engine/dbus-constants.h"
 #include "third_party/icu/source/i18n/unicode/timezone.h"
@@ -118,21 +116,31 @@ const char* const kCopyToKnownUserPrefs[] = {
 
 }  // namespace
 
-Preferences::Preferences(PrefService* local_state,
-                         ApplicationLocaleStorage* application_locale_storage)
+Preferences::Preferences(
+    PrefService* local_state,
+    ApplicationLocaleStorage* application_locale_storage,
+    system::TimeZoneResolverManager* timezone_resolver_manager)
     : Preferences(local_state,
                   application_locale_storage,
+                  timezone_resolver_manager,
                   input_method::InputMethodManager::Get()) {}
 
-Preferences::Preferences(PrefService* local_state,
-                         ApplicationLocaleStorage* application_locale_storage,
-                         input_method::InputMethodManager* input_method_manager)
+Preferences::Preferences(
+    PrefService* local_state,
+    ApplicationLocaleStorage* application_locale_storage,
+    system::TimeZoneResolverManager* timezone_resolver_manager,
+    input_method::InputMethodManager* input_method_manager)
     : local_state_(CHECK_DEREF(local_state)),
       application_locale_storage_(CHECK_DEREF(application_locale_storage)),
+      timezone_resolver_manager_(timezone_resolver_manager),
       prefs_(nullptr),
       input_method_manager_(input_method_manager),
       user_(nullptr),
-      user_is_primary_(false) {}
+      user_is_primary_(false) {
+  if (!timezone_resolver_manager_) {
+    CHECK_IS_TEST();
+  }
+}
 
 Preferences::~Preferences() {
   prefs_->RemoveObserver(this);
@@ -163,7 +171,7 @@ void Preferences::RegisterPrefs(PrefRegistrySimple* registry) {
       prefs::kLocalStateDevicePeripheralDataAccessEnabled, false);
   registry->RegisterBooleanPref(prefs::kDeviceI18nShortcutsEnabled, true);
   registry->RegisterBooleanPref(prefs::kLoginScreenWebUILazyLoading, false);
-  registry->RegisterBooleanPref(::prefs::kConsumerAutoUpdateToggle, true);
+  registry->RegisterBooleanPref(ash::prefs::kConsumerAutoUpdateToggle, true);
   registry->RegisterBooleanPref(prefs::kDeviceEphemeralNetworkPoliciesEnabled,
                                 false);
   registry->RegisterBooleanPref(prefs::kDeviceSwitchFunctionKeysBehaviorEnabled,
@@ -196,7 +204,7 @@ void Preferences::RegisterProfilePrefs(
     hardware_keyboard_id = "xkb:us::eng";  // only for testing.
   }
 
-  registry->RegisterBooleanPref(::prefs::kPerformanceTracingEnabled, false);
+  registry->RegisterBooleanPref(ash::prefs::kPerformanceTracingEnabled, false);
 
   registry->RegisterBooleanPref(
       prefs::kTapToClickEnabled, true,
@@ -244,7 +252,8 @@ void Preferences::RegisterProfilePrefs(
       prefs::kTouchpadHapticFeedback, true,
       user_prefs::PrefRegistrySyncable::SYNCABLE_OS_PRIORITY_PREF);
   registry->RegisterBooleanPref(::prefs::kLabsMediaplayerEnabled, false);
-  registry->RegisterBooleanPref(::prefs::kLabsAdvancedFilesystemEnabled, false);
+  registry->RegisterBooleanPref(::ash::prefs::kLabsAdvancedFilesystemEnabled,
+                                false);
   registry->RegisterBooleanPref(::prefs::kAppReinstallRecommendationEnabled,
                                 false);
 
@@ -382,7 +391,7 @@ void Preferences::RegisterProfilePrefs(
   registry->RegisterBooleanPref(ash::prefs::kLockScreenAutoStartOnlineReauth,
                                 false);
 
-  registry->RegisterBooleanPref(::prefs::kShowMobileDataNotification, true);
+  registry->RegisterBooleanPref(ash::prefs::kShowMobileDataNotification, true);
 
   // Initially all existing users would see "What's new" for current version
   // after update.
@@ -394,9 +403,10 @@ void Preferences::RegisterProfilePrefs(
 
   registry->RegisterStringPref(ash::prefs::kTermsOfServiceURL, "");
 
-  registry->RegisterBooleanPref(::prefs::kTouchVirtualKeyboardEnabled, false);
-  registry->RegisterBooleanPref(::prefs::kVirtualKeyboardSmartVisibilityEnabled,
-                                true);
+  registry->RegisterBooleanPref(ash::prefs::kTouchVirtualKeyboardEnabled,
+                                false);
+  registry->RegisterBooleanPref(
+      ash::prefs::kVirtualKeyboardSmartVisibilityEnabled, true);
 
   registry->RegisterStringPref(prefs::kCaptureModePolicySavePath,
                                std::string());
@@ -421,7 +431,8 @@ void Preferences::RegisterProfilePrefs(
   // explicitly enabled for the signin screen (usually by policy).
   if (local_state.GetAllPrefStoresInitializationStatus() ==
           PrefService::INITIALIZATION_STATUS_WAITING ||
-      system::InputDeviceSettings::Get()->ForceKeyboardDrivenUINavigation()) {
+      system::InputDeviceSettings::ForceKeyboardDrivenUINavigation(
+          local_state)) {
     allow_time_zone_resolve_by_default = false;
   }
 
@@ -448,35 +459,15 @@ void Preferences::RegisterProfilePrefs(
 
   registry->RegisterBooleanPref(ash::prefs::kHatsDeviceIsSelected, false);
 
-  registry->RegisterInt64Pref(ash::prefs::kHatsOnboardingSurveyCycleEndTs, 0);
-
-  registry->RegisterBooleanPref(ash::prefs::kHatsOnboardingDeviceIsSelected,
-                                false);
-
-  registry->RegisterInt64Pref(ash::prefs::kHatsArcGamesSurveyCycleEndTs, 0);
-
-  registry->RegisterBooleanPref(ash::prefs::kHatsArcGamesDeviceIsSelected,
-                                false);
-
   registry->RegisterInt64Pref(ash::prefs::kHatsAudioSurveyCycleEndTs, 0);
 
   registry->RegisterBooleanPref(ash::prefs::kHatsAudioDeviceIsSelected, false);
-
-  registry->RegisterInt64Pref(ash::prefs::kHatsAudioOutputProcSurveyCycleEndTs,
-                              0);
-
-  registry->RegisterBooleanPref(
-      ash::prefs::kHatsAudioOutputProcDeviceIsSelected, false);
 
   registry->RegisterInt64Pref(ash::prefs::kHatsBluetoothAudioSurveyCycleEndTs,
                               0);
 
   registry->RegisterBooleanPref(ash::prefs::kHatsBluetoothAudioDeviceIsSelected,
                                 false);
-
-  registry->RegisterInt64Pref(ash::prefs::kHatsEntSurveyCycleEndTs, 0);
-
-  registry->RegisterBooleanPref(ash::prefs::kHatsEntDeviceIsSelected, false);
 
   registry->RegisterInt64Pref(ash::prefs::kHatsStabilitySurveyCycleEndTs, 0);
 
@@ -509,11 +500,6 @@ void Preferences::RegisterProfilePrefs(
       ash::prefs::kHatsGeneralCameraPrioritizedLastInteractionTimestamp,
       base::Time());
 
-  registry->RegisterInt64Pref(ash::prefs::kHatsBluetoothRevampCycleEndTs, 0);
-
-  registry->RegisterBooleanPref(ash::prefs::kHatsBluetoothRevampIsSelected,
-                                false);
-
   registry->RegisterInt64Pref(ash::prefs::kHatsBatteryLifeCycleEndTs, 0);
 
   registry->RegisterBooleanPref(ash::prefs::kHatsBatteryLifeIsSelected, false);
@@ -522,31 +508,11 @@ void Preferences::RegisterProfilePrefs(
 
   registry->RegisterBooleanPref(ash::prefs::kHatsPeripheralsIsSelected, false);
 
-  // Personalization HaTS survey prefs for avatar, screensaver, and wallpaper
-  // features.
+  // Slow and Laggy Deep Dive HaTS prefs.
   registry->RegisterInt64Pref(
-      ash::prefs::kHatsPersonalizationAvatarSurveyCycleEndTs, 0);
+      ash::prefs::kHatsSlowAndLaggyDeepDiveSurveyCycleEndTs, 0);
   registry->RegisterBooleanPref(
-      ash::prefs::kHatsPersonalizationAvatarSurveyIsSelected, false);
-  registry->RegisterInt64Pref(
-      ash::prefs::kHatsPersonalizationScreensaverSurveyCycleEndTs, 0);
-  registry->RegisterBooleanPref(
-      ash::prefs::kHatsPersonalizationScreensaverSurveyIsSelected, false);
-  registry->RegisterInt64Pref(
-      ash::prefs::kHatsPersonalizationWallpaperSurveyCycleEndTs, 0);
-  registry->RegisterBooleanPref(
-      ash::prefs::kHatsPersonalizationWallpaperSurveyIsSelected, false);
-
-  // MediaApp HaTS prefs for Pdf and Photos experiences.
-  registry->RegisterInt64Pref(ash::prefs::kHatsMediaAppPdfCycleEndTs, 0);
-  registry->RegisterBooleanPref(ash::prefs::kHatsMediaAppPdfIsSelected, false);
-  registry->RegisterInt64Pref(ash::prefs::kHatsPhotosExperienceCycleEndTs, 0);
-  registry->RegisterBooleanPref(ash::prefs::kHatsPhotosExperienceIsSelected,
-                                false);
-
-  // Office HaTS prefs.
-  registry->RegisterInt64Pref(ash::prefs::kHatsOfficeSurveyCycleEndTs, 0);
-  registry->RegisterBooleanPref(ash::prefs::kHatsOfficeSurveyIsSelected, false);
+      ash::prefs::kHatsSlowAndLaggyDeepDiveSurveyIsSelected, false);
 
   registry->RegisterBooleanPref(::prefs::kPinUnlockFeatureNotificationShown,
                                 false);
@@ -565,7 +531,7 @@ void Preferences::RegisterProfilePrefs(
 
   registry->RegisterBooleanPref(::prefs::kCastReceiverEnabled, false);
   registry->RegisterBooleanPref(::prefs::kShowArcSettingsOnSessionStart, false);
-  registry->RegisterBooleanPref(::prefs::kShowSyncSettingsOnSessionStart,
+  registry->RegisterBooleanPref(::ash::prefs::kShowSyncSettingsOnSessionStart,
                                 false);
 
   // Text-to-speech prefs.
@@ -600,6 +566,10 @@ void Preferences::RegisterProfilePrefs(
       user_prefs::PrefRegistrySyncable::SYNCABLE_OS_PREF);
 
   registry->RegisterBooleanPref(prefs::kMagicBoostEnabled, true);
+
+  registry->RegisterBooleanPref(
+      ash::prefs::kAudioFocusEnforcementEnabled, true,
+      user_prefs::PrefRegistrySyncable::SYNCABLE_OS_PREF);
 
   registry->RegisterBooleanPref(prefs::kHmrEnabled, true);
   registry->RegisterIntegerPref(prefs::kHmrManagedSettings, 0);
@@ -642,33 +612,15 @@ void Preferences::RegisterProfilePrefs(
 
   registry->RegisterBooleanPref(prefs::kShowTouchpadScrollScreenEnabled, true);
 
-  // Settings HaTS survey prefs for Settings and Settings Search features.
-  registry->RegisterInt64Pref(ash::prefs::kHatsOsSettingsSearchSurveyCycleEndTs,
-                              0);
-  registry->RegisterBooleanPref(
-      ash::prefs::kHatsOsSettingsSearchSurveyIsSelected, false);
-
-  // Borealis HaTS survey prefs for game satisfaction.
-  registry->RegisterInt64Pref(ash::prefs::kHatsBorealisGamesSurveyCycleEndTs,
-                              0);
-  registry->RegisterBooleanPref(ash::prefs::kHatsBorealisGamesSurveyIsSelected,
-                                false);
-  registry->RegisterTimePref(
-      ash::prefs::kHatsBorealisGamesLastInteractionTimestamp, base::Time());
-
-  // Launcher HaTS survey prefs.
-  registry->RegisterInt64Pref(ash::prefs::kHatsLauncherAppsSurveyCycleEndTs, 0);
-  registry->RegisterBooleanPref(ash::prefs::kHatsLauncherAppsSurveyIsSelected,
-                                false);
-
   registry->RegisterBooleanPref(prefs::kShowDisplaySizeScreenEnabled, true);
 
-  registry->RegisterDictionaryPref(::prefs::kTotalUniqueOsSettingsChanged);
+  registry->RegisterDictionaryPref(ash::prefs::kTotalUniqueOsSettingsChanged);
 
-  registry->RegisterBooleanPref(::prefs::kHasResetFirst7DaysSettingsUsedCount,
-                                false);
+  registry->RegisterBooleanPref(
+      ::ash::prefs::kHasResetFirst7DaysSettingsUsedCount, false);
 
-  registry->RegisterBooleanPref(::prefs::kHasEverRevokedMetricsConsent, true);
+  registry->RegisterBooleanPref(ash::prefs::kHasEverRevokedMetricsConsent,
+                                true);
 
   registry->RegisterBooleanPref(prefs::kShowHumanPresenceSensorScreenEnabled,
                                 true);
@@ -699,8 +651,8 @@ void Preferences::InitUserPrefs(sync_preferences::PrefServiceSyncable* prefs) {
   BooleanPrefMember::NamedChangeCallback callback = base::BindRepeating(
       &Preferences::OnPreferenceChanged, base::Unretained(this));
 
-  performance_tracing_enabled_.Init(::prefs::kPerformanceTracingEnabled, prefs,
-                                    callback);
+  performance_tracing_enabled_.Init(ash::prefs::kPerformanceTracingEnabled,
+                                    prefs, callback);
   tap_to_click_enabled_.Init(prefs::kTapToClickEnabled, prefs, callback);
   three_finger_click_enabled_.Init(prefs::kEnableTouchpadThreeFingerClick,
                                    prefs, callback);
@@ -766,8 +718,10 @@ void Preferences::InitUserPrefs(sync_preferences::PrefServiceSyncable* prefs) {
       prefs::kLocalStateDevicePeripheralDataAccessEnabled, &local_state_.get(),
       callback);
 
-  consumer_auto_update_toggle_pref_.Init(::prefs::kConsumerAutoUpdateToggle,
+  consumer_auto_update_toggle_pref_.Init(ash::prefs::kConsumerAutoUpdateToggle,
                                          &local_state_.get(), callback);
+  audio_focus_enforcement_enabled_.Init(
+      ash::prefs::kAudioFocusEnforcementEnabled, prefs, callback);
   pref_change_registrar_.Init(prefs);
   pref_change_registrar_.Add(ash::prefs::kUserGeolocationAccessLevel, callback);
   pref_change_registrar_.Add(ash::prefs::kUserPreviousGeolocationAccessLevel,
@@ -789,11 +743,12 @@ void Preferences::InitUserPrefs(sync_preferences::PrefServiceSyncable* prefs) {
                      weak_ptr_factory_.GetWeakPtr()));
 }
 
-void Preferences::Init(Profile* profile, const user_manager::User* user) {
-  DCHECK(profile);
-  DCHECK(user);
-  sync_preferences::PrefServiceSyncable* prefs =
-      PrefServiceSyncableFromProfile(profile);
+void Preferences::Init(const user_manager::User* user,
+                       Profile* profile,
+                       sync_preferences::PrefServiceSyncable* prefs) {
+  CHECK(user, base::NotFatalUntil::M160);
+  CHECK(profile, base::NotFatalUntil::M160);
+  CHECK(prefs, base::NotFatalUntil::M160);
   // This causes OnIsSyncingChanged to be called when the value of
   // PrefService::IsSyncing() changes.
   prefs->AddObserver(this);
@@ -807,13 +762,12 @@ void Preferences::Init(Profile* profile, const user_manager::User* user) {
   user_manager::UserManager::Get()->AddSessionStateObserver(this);
 
   UserSessionManager* session_manager = UserSessionManager::GetInstance();
-  DCHECK(session_manager);
+  CHECK(session_manager, base::NotFatalUntil::M160);
   ime_state_ = session_manager->GetDefaultIMEState(profile);
 
   if (user_is_primary_) {
-    g_browser_process->platform_part()
-        ->GetTimezoneResolverManager()
-        ->SetPrimaryUserPrefs(prefs_);
+    CHECK(timezone_resolver_manager_);
+    timezone_resolver_manager_->SetPrimaryUserPrefs(prefs_);
   }
 
   // Initialize preferences to currently saved state.
@@ -921,7 +875,8 @@ void Preferences::ReportTimePrefApplication(
 
 void Preferences::ApplyPreferences(ApplyReason reason,
                                    const std::string& pref_name) {
-  DCHECK(reason != REASON_PREF_CHANGED || !pref_name.empty());
+  CHECK(reason != REASON_PREF_CHANGED || !pref_name.empty(),
+        base::NotFatalUntil::M160);
   const bool user_is_owner =
       user_manager::UserManager::Get()->GetOwnerAccountId() ==
       user_->GetAccountId();
@@ -932,8 +887,9 @@ void Preferences::ApplyPreferences(ApplyReason reason,
   system::PointingStickSettings pointing_stick_settings;
   user_manager::KnownUser known_user(&local_state_.get());
 
-  if (user_is_primary_ && (reason == REASON_INITIALIZATION ||
-                           pref_name == ::prefs::kPerformanceTracingEnabled)) {
+  if (user_is_primary_ &&
+      (reason == REASON_INITIALIZATION ||
+       pref_name == ash::prefs::kPerformanceTracingEnabled)) {
     const bool enabled = performance_tracing_enabled_.GetValue();
     if (enabled) {
       tracing_manager_ = ContentTracingManager::Create();
@@ -941,6 +897,16 @@ void Preferences::ApplyPreferences(ApplyReason reason,
       tracing_manager_.reset();
     }
     SystemTrayClientImpl::Get()->SetPerformanceTracingIconVisible(enabled);
+  }
+  if (reason != REASON_PREF_CHANGED ||
+      pref_name == ash::prefs::kAudioFocusEnforcementEnabled) {
+    const bool enabled = audio_focus_enforcement_enabled_.GetValue();
+    EnsureAudioFocusManagerBound();
+    if (audio_focus_manager_.is_bound()) {
+      audio_focus_manager_->SetEnforcementMode(
+          enabled ? media_session::mojom::EnforcementMode::kDefault
+                  : media_session::mojom::EnforcementMode::kNone);
+    }
   }
   if (reason != REASON_PREF_CHANGED || pref_name == prefs::kTapToClickEnabled) {
     const bool enabled = tap_to_click_enabled_.GetValue();
@@ -1205,7 +1171,7 @@ void Preferences::ApplyPreferences(ApplyReason reason,
     }
     if (ImeController::Get()) {  // Can be null in tests.
       ImeController::Get()->SetImesManagedByPolicy(
-          success && allowed_input_methods_force_enabled);
+          allowed_by_policy && success && allowed_input_methods_force_enabled);
     } else {
       CHECK_IS_TEST();
     }
@@ -1288,7 +1254,8 @@ void Preferences::ApplyPreferences(ApplyReason reason,
 
   if (pref_name == ash::prefs::kUserTimezone &&
       reason != REASON_ACTIVE_USER_CHANGED) {
-    system::UpdateSystemTimezone(ProfileHelper::Get()->GetProfileByUser(user_));
+    system::UpdateSystemTimezone(local_state_.get(),
+                                 ProfileHelper::Get()->GetProfileByUser(user_));
   }
 
   if (reason == REASON_INITIALIZATION ||
@@ -1304,17 +1271,17 @@ void Preferences::ApplyPreferences(ApplyReason reason,
       // Policy check is false here, because there is no owner for enterprise.
       local_state_->SetInteger(
           ash::prefs::kResolveDeviceTimezoneByGeolocationMethod,
-          static_cast<int>(system::TimeZoneResolverManager::
-                               GetEffectiveUserTimeZoneResolveMethod(
-                                   prefs_, false /* check_policy */)));
+          static_cast<int>(
+              system::TimeZoneResolverManager::
+                  GetEffectiveUserTimeZoneResolveMethod(
+                      local_state_.get(), prefs_, false /* check_policy */)));
     }
     if (user_is_primary_) {
-      g_browser_process->platform_part()
-          ->GetTimezoneResolverManager()
-          ->UpdateTimezoneResolver();
+      CHECK(timezone_resolver_manager_);
+      timezone_resolver_manager_->UpdateTimezoneResolver();
       if (system::TimeZoneResolverManager::
                   GetEffectiveUserTimeZoneResolveMethod(
-                      prefs_, true /* check_policy */) ==
+                      local_state_.get(), prefs_, true /* check_policy */) ==
               system::TimeZoneResolverManager::TimeZoneResolveMethod::
                   DISABLED &&
           reason == REASON_PREF_CHANGED) {
@@ -1435,8 +1402,8 @@ void Preferences::UpdateAutoRepeatRate() {
       .repeat_interval =
           base::Milliseconds(xkb_auto_repeat_interval_pref_.GetValue()),
   };
-  DCHECK(rate.initial_delay.is_positive());
-  DCHECK(rate.repeat_interval.is_positive());
+  CHECK(rate.initial_delay.is_positive(), base::NotFatalUntil::M160);
+  CHECK(rate.repeat_interval.is_positive(), base::NotFatalUntil::M160);
   input_method::InputMethodManager::Get()->GetImeKeyboard()->SetAutoRepeatRate(
       rate);
 
@@ -1481,6 +1448,20 @@ void Preferences::OnIsConsumerAutoUpdateEnabled(std::optional<bool> enabled) {
     return;
   }
   consumer_auto_update_toggle_pref_.SetValue(enabled.value());
+}
+
+void Preferences::EnsureAudioFocusManagerBound() {
+  if (audio_focus_manager_.is_bound()) {
+    return;
+  }
+  content::GetMediaSessionService().BindAudioFocusManager(
+      audio_focus_manager_.BindNewPipeAndPassReceiver());
+  audio_focus_manager_.set_disconnect_handler(base::BindOnce(
+      &Preferences::OnAudioFocusManagerDisconnected, base::Unretained(this)));
+}
+
+void Preferences::OnAudioFocusManagerDisconnected() {
+  audio_focus_manager_.reset();
 }
 
 }  // namespace ash

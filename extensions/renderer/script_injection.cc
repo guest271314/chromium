@@ -5,6 +5,8 @@
 #include "extensions/renderer/script_injection.h"
 
 #include <map>
+#include <optional>
+#include <string>
 #include <utility>
 
 #include "base/feature_list.h"
@@ -34,12 +36,45 @@
 #include "third_party/blink/public/web/web_local_frame.h"
 #include "third_party/blink/public/web/web_script_execution_callback.h"
 #include "third_party/blink/public/web/web_script_source.h"
+#include "third_party/perfetto/include/perfetto/tracing/track.h"
 
 using perfetto::protos::pbzero::ChromeTrackEvent;
 
 namespace extensions {
 
 namespace {
+
+// Writes the world an injection targets into a trace event.
+class ScriptInjectionForTracing {
+ public:
+  ScriptInjectionForTracing(mojom::ExecutionWorld execution_world,
+                            const std::optional<std::string>& world_id)
+      : execution_world_(execution_world), world_id_(world_id) {}
+
+  void WriteIntoTrace(perfetto::TracedProto<
+                      perfetto::protos::pbzero::ChromeExtensionScriptInjection>
+                          proto) const {
+    using ProtoWorld = perfetto::protos::pbzero::ChromeExtensionScriptInjection;
+    switch (execution_world_) {
+      case mojom::ExecutionWorld::kIsolated:
+        proto->set_execution_world(ProtoWorld::EXECUTION_WORLD_ISOLATED);
+        break;
+      case mojom::ExecutionWorld::kMain:
+        proto->set_execution_world(ProtoWorld::EXECUTION_WORLD_MAIN);
+        break;
+      case mojom::ExecutionWorld::kUserScript:
+        proto->set_execution_world(ProtoWorld::EXECUTION_WORLD_USER_SCRIPT);
+        break;
+    }
+    if (world_id_) {
+      proto->set_user_script_world_id(*world_id_);
+    }
+  }
+
+ private:
+  const mojom::ExecutionWorld execution_world_;
+  const std::optional<std::string> world_id_;
+};
 
 const int64_t kInvalidRequestId = -1;
 
@@ -88,7 +123,8 @@ ScriptInjection::ScriptInjection(
       frame_watcher_(new FrameWatcher(render_frame, this)) {
   CHECK(injection_host_.get());
   TRACE_EVENT_BEGIN(
-      "extensions", "ScriptInjection", perfetto::Track::FromPointer(this),
+      "extensions", "ScriptInjection",
+      perfetto::NamedTrack::FromPointer("extensions::ScriptInjection", this),
       ChromeTrackEvent::kRenderProcessHost, content::RenderThread::Get(),
       ChromeTrackEvent::kChromeExtensionId,
       ExtensionIdForTracing(host_id().id));
@@ -98,11 +134,12 @@ ScriptInjection::~ScriptInjection() {
   if (!complete_)
     NotifyWillNotInject(ScriptInjector::InjectFailureReason::kWontInject);
 
-  TRACE_EVENT_END("extensions", perfetto::Track::FromPointer(this),
-                  ChromeTrackEvent::kRenderProcessHost,
-                  content::RenderThread::Get(),
-                  ChromeTrackEvent::kChromeExtensionId,
-                  ExtensionIdForTracing(injection_host_ ? host_id().id : ""));
+  TRACE_EVENT_END(
+      "extensions",
+      perfetto::NamedTrack::FromPointer("extensions::ScriptInjection", this),
+      ChromeTrackEvent::kRenderProcessHost, content::RenderThread::Get(),
+      ChromeTrackEvent::kChromeExtensionId,
+      ExtensionIdForTracing(injection_host_ ? host_id().id : ""));
 }
 
 ScriptInjection::InjectionResult ScriptInjection::TryToInject(
@@ -314,13 +351,23 @@ void ScriptInjection::InjectJs(std::set<std::string>* executing_scripts,
       break;
   }
 
+  blink::WebString script_injector_id;
+  if (injection_host_->id().type == mojom::HostID::HostType::kExtensions) {
+    script_injector_id = blink::WebString::FromUtf8(host_string_id);
+  }
+
+  TRACE_EVENT_INSTANT("extensions", "ScriptInjection execution world",
+                      ChromeTrackEvent::kChromeExtensionScriptInjection,
+                      ScriptInjectionForTracing(execution_world, world_id));
+
   render_frame_->GetWebFrame()->RequestExecuteScript(
       blink_world_id, sources, injector_->IsUserGesture(), execution_option,
       blink::mojom::LoadEventBlockingOption::kBlock,
       base::BindOnce(&ScriptInjection::OnJsInjectionCompleted,
                      weak_ptr_factory_.GetWeakPtr()),
       blink::BackForwardCacheAware::kPossiblyDisallow,
-      injector_->ExpectsResults(), injector_->ShouldWaitForPromise());
+      injector_->ExpectsResults(), injector_->ShouldWaitForPromise(),
+      script_injector_id);
 }
 
 void ScriptInjection::OnJsInjectionCompleted(std::optional<base::Value> value,

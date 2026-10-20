@@ -32,6 +32,11 @@ struct ID3D11DeviceChild;
 struct ID3D11Device;
 class IMFMediaType;
 
+namespace gpu {
+class MemoryTypeTracker;
+class SharedContextState;
+}  // namespace gpu
+
 namespace media {
 
 // Helper function to print HRESULT to std::string.
@@ -219,13 +224,11 @@ MEDIA_EXPORT Microsoft::WRL::ComPtr<IMFSample> CreateSampleFromTexture(
     Microsoft::WRL::ComPtr<ID3D11Texture2D> input_texture,
     bool need_perform_copy);
 
-// Converts `frame` into an IMFSample, using an underlying D3D texture,
-// reading back from the GPU, or copying the frame contents as necessary.
+// Converts `frame` into an IMFSample, using an underlying D3D texture
+// or copying the frame contents as necessary.
 MEDIA_EXPORT HRESULT GenerateSampleFromVideoFrame(
     const media::VideoFrame* frame,
     DXGIDeviceManager* dxgi_device_manager,
-    bool use_dxgi_buffer,
-    Microsoft::WRL::ComPtr<ID3D11Texture2D>* staging_texture,
     DWORD buffer_alignment,
     IMFSample** sample_out);
 
@@ -256,7 +259,9 @@ class MEDIA_EXPORT SharedImageReadLock
       std::unique_ptr<gpu::VideoImageRepresentation> representation,
       std::unique_ptr<gpu::VideoImageRepresentation::ScopedReadAccess>
           scoped_read_access,
-      scoped_refptr<VideoFrame> frame);
+      scoped_refptr<VideoFrame> frame,
+      scoped_refptr<gpu::SharedContextState> context_state,
+      std::unique_ptr<gpu::MemoryTypeTracker> tracker);
 
   gpu::VideoImageRepresentation::ScopedReadAccess* access() const {
     return scoped_read_access_.get();
@@ -265,12 +270,13 @@ class MEDIA_EXPORT SharedImageReadLock
  private:
   ~SharedImageReadLock() override;
 
-  std::unique_ptr<gpu::VideoImageRepresentation, base::OnTaskRunnerDeleter>
-      representation_;
-  std::unique_ptr<gpu::VideoImageRepresentation::ScopedReadAccess,
-                  base::OnTaskRunnerDeleter>
+  std::unique_ptr<gpu::VideoImageRepresentation> representation_;
+  std::unique_ptr<gpu::VideoImageRepresentation::ScopedReadAccess>
       scoped_read_access_;
   scoped_refptr<VideoFrame> frame_;
+  scoped_refptr<gpu::SharedContextState> context_state_;
+  std::unique_ptr<gpu::MemoryTypeTracker> tracker_;
+  scoped_refptr<base::SequencedTaskRunner> task_runner_;
 };
 
 // Parameters:

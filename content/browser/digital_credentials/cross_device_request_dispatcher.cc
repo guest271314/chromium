@@ -100,8 +100,14 @@ void RequestDispatcher::OnAuthenticatorReady(
         base::unexpected(ProtocolError::kIncompatibleDevice));
     return;
   }
-  if (!tunnel_device->features().contains(
-          device::cablev2::Feature::kDigitialIdentities)) {
+  const std::optional<base::flat_set<device::cablev2::Feature>>& features =
+      tunnel_device->features();
+  if (!features.has_value()) {
+    FIDO_LOG(ERROR) << "Hybrid tunnel failed prior to feature negotiation";
+    std::move(callback_).Run(base::unexpected(ProtocolError::kTransportError));
+    return;
+  }
+  if (!features->contains(device::cablev2::Feature::kDigitialIdentities)) {
     FIDO_LOG(ERROR)
         << "Hybrid device doesn't advertise support for digital identities";
     std::move(callback_).Run(
@@ -136,10 +142,7 @@ void RequestDispatcher::OnComplete(
     return;
   }
 
-  std::string reserialized;
-  base::JSONWriter::WriteWithOptions(
-      *json, base::JsonOptions::OPTIONS_PRETTY_PRINT, &reserialized);
-  FIDO_LOG(EVENT) << "-> " << reserialized;
+  FIDO_LOG(EVENT) << "-> [large JSON payload: " << response->size() << " bytes]";
 
   const base::DictValue* response_dict = json->FindDict("response");
   if (!response_dict) {

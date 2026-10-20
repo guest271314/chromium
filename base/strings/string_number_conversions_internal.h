@@ -15,10 +15,11 @@
 
 #include "base/check.h"
 #include "base/compiler_specific.h"
+#include "base/containers/span.h"
 #include "base/logging.h"
 #include "base/numerics/safe_math.h"
 #include "base/strings/string_util.h"
-#include "base/third_party/double_conversion/double-conversion/double-conversion.h"
+#include "base/third_party/double_conversion/src/double-conversion/double-conversion.h"
 
 namespace base::internal {
 

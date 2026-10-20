@@ -36,7 +36,9 @@
 #include "third_party/blink/renderer/core/editing/visible_selection.h"
 #include "third_party/blink/renderer/core/editing/visible_units.h"
 #include "third_party/blink/renderer/core/html/html_body_element.h"
+#include "third_party/blink/renderer/core/html/html_slot_element.h"
 #include "third_party/blink/renderer/core/layout/layout_object.h"
+#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 
 namespace blink {
 
@@ -384,8 +386,8 @@ PositionInFlatTree ComputeEndRespectingGranularity(
       start, end, granularity);
 }
 
-SelectionInDOMTree SelectionAdjuster::AdjustSelectionRespectingGranularity(
-    const SelectionInDOMTree& selection,
+SelectionInDomTree SelectionAdjuster::AdjustSelectionRespectingGranularity(
+    const SelectionInDomTree& selection,
     TextGranularity granularity,
     const WordInclusion inclusion = WordInclusion::kDefault) {
   return GranularityAdjuster::AdjustSelection(selection, granularity,
@@ -602,9 +604,9 @@ class ShadowBoundaryAdjuster final {
   }
 };
 
-SelectionInDOMTree
+SelectionInDomTree
 SelectionAdjuster::AdjustSelectionToAvoidCrossingShadowBoundaries(
-    const SelectionInDOMTree& selection) {
+    const SelectionInDomTree& selection) {
   return ShadowBoundaryAdjuster::AdjustSelection(selection);
 }
 SelectionInFlatTree
@@ -736,17 +738,40 @@ EditingBoundaryAdjuster::IsEditingBoundary<EditingInFlatTreeStrategy>(
     const Node& node,
     const Node& previous_node,
     bool is_previous_node_editable) {
+  const bool slotted_content_enabled =
+      RuntimeEnabledFeatures::SelectionEditingBoundarySlottedContentEnabled();
+
+  // A <slot> is only a flat-tree conduit for the light-DOM nodes assigned to
+  // it (e.g. the content of an open <details> slotted into its UA-shadow
+  // <slot>). Entering the slot from one of its assigned nodes doesn't change
+  // the editing host, so it's not a boundary.
+  if (slotted_content_enabled) {
+    if (const auto* slot = DynamicTo<HTMLSlotElement>(node)) {
+      if (previous_node.AssignedSlotWithoutRecalc() == slot) {
+        return false;
+      }
+    }
+  }
+
   // We want to treat shadow host as not editable element if |previous_node|
-  // is in the shadow tree attached to the shadow host.
+  // is in the shadow tree attached to the shadow host. But when |previous_node|
+  // is a <slot> carrying assigned light-DOM content, that content belongs to
+  // the host's editing host, so leaving the slot up into the host is not a
+  // boundary; fall through to the normal editability comparison.
   if (IsShadowHost(&node) && is_previous_node_editable &&
-      previous_node.OwnerShadowHost() == &node)
-    return true;
+      previous_node.OwnerShadowHost() == &node) {
+    const auto* slot = DynamicTo<HTMLSlotElement>(previous_node);
+    if (!slotted_content_enabled || !slot ||
+        !slot->HasAssignedNodesNoRecalc()) {
+      return true;
+    }
+  }
   return IsEditable(node) != is_previous_node_editable;
 }
 
-SelectionInDOMTree
+SelectionInDomTree
 SelectionAdjuster::AdjustSelectionToAvoidCrossingEditingBoundaries(
-    const SelectionInDOMTree& selection) {
+    const SelectionInDomTree& selection) {
   return EditingBoundaryAdjuster::AdjustSelection(selection);
 }
 SelectionInFlatTree
@@ -821,8 +846,8 @@ class SelectionTypeAdjuster final {
   }
 };
 
-SelectionInDOMTree SelectionAdjuster::AdjustSelectionType(
-    const SelectionInDOMTree& selection) {
+SelectionInDomTree SelectionAdjuster::AdjustSelectionType(
+    const SelectionInDomTree& selection) {
   return SelectionTypeAdjuster::AdjustSelection(selection);
 }
 SelectionInFlatTree SelectionAdjuster::AdjustSelectionType(

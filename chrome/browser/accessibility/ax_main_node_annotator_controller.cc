@@ -47,7 +47,7 @@ namespace screen_ai {
 AXMainNodeAnnotatorController::AXMainNodeAnnotatorController(Profile* profile)
     : profile_(profile) {
   // Initialize an observer for changes of AX Main Node Annotation pref.
-  DCHECK(profile_);
+  CHECK(profile_, base::NotFatalUntil::M161);
   VLOG(2) << "Init AXMainNodeAnnotatorController";
   pref_change_registrar_.Init(profile_->GetPrefs());
   pref_change_registrar_.Add(
@@ -159,6 +159,10 @@ void AXMainNodeAnnotatorController::StateChanged(
           IDS_SETTINGS_MAIN_NODE_ANNOTATIONS_DOWNLOAD_COMPLETE);
       break;
   }
+}
+
+void AXMainNodeAnnotatorController::OnScreenAIInstallStateDestroying() {
+  component_ready_observer_.Reset();
 }
 
 void AXMainNodeAnnotatorController::Activate() {

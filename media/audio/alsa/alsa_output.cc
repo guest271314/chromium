@@ -555,10 +555,10 @@ void AlsaPcmOutputStream::ScheduleNextWrite(bool source_exhausted) {
 
 std::string AlsaPcmOutputStream::FindDeviceForChannels(uint32_t channels) {
   // Constants specified by the ALSA API for device hints.
-  static const int kGetAllDevices = -1;
-  static const char kPcmInterfaceName[] = "pcm";
-  static const char kIoHintName[] = "IOID";
-  static const char kNameHintName[] = "NAME";
+  constexpr int kGetAllDevices = -1;
+  constexpr char kPcmInterfaceName[] = "pcm";
+  constexpr char kIoHintName[] = "IOID";
+  constexpr char kNameHintName[] = "NAME";
 
   const auto wanted_device = GuessSpecificDeviceName(channels);
   if (wanted_device.empty()) {
@@ -740,9 +740,9 @@ snd_pcm_t* AlsaPcmOutputStream::AutoSelectDevice(unsigned int latency) {
   uint32_t default_channels = channels_;
   if (default_channels > 2) {
     default_channels = 2;
-    channel_mixer_ = std::make_unique<ChannelMixer>(channel_layout_, channels_,
-                                                    kDefaultOutputChannelLayout,
-                                                    default_channels);
+    channel_mixer_ = std::make_unique<ChannelMixer>(
+        ChannelLayoutConfig(channel_layout_, channels_),
+        ChannelLayoutConfig(kDefaultOutputChannelLayout, default_channels));
     mixed_audio_bus_ = AudioBus::Create(
         default_channels, audio_bus_->frames());
   }

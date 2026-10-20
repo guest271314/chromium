@@ -3,14 +3,16 @@
 // found in the LICENSE file.
 
 #include "chrome/browser/ash/login/enrollment/mock_enrollment_screen.h"
+
 #include "chrome/browser/ash/login/screens/error_screen.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
 
 namespace ash {
 
 MockEnrollmentScreen::MockEnrollmentScreen(
     PrefService* local_state,
     scoped_refptr<network::SharedURLLoaderFactory> shared_url_loader_factory,
-    const policy::BrowserPolicyConnectorAsh* browser_policy_connector_ash,
+    policy::BrowserPolicyConnectorAsh* browser_policy_connector_ash,
     base::WeakPtr<EnrollmentScreenView> view,
     ErrorScreen* error_screen,
     const ScreenExitCallback& exit_callback)

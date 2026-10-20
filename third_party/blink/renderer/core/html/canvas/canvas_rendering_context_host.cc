@@ -20,8 +20,8 @@
 #include "third_party/blink/renderer/core/html/canvas/canvas_rendering_context.h"
 #include "third_party/blink/renderer/core/html/canvas/unique_font_selector.h"
 #include "third_party/blink/renderer/platform/fonts/plain_text_painter.h"
+#include "third_party/blink/renderer/platform/graphics/canvas_2d_resource_provider.h"
 #include "third_party/blink/renderer/platform/graphics/canvas_resource_dispatcher.h"
-#include "third_party/blink/renderer/platform/graphics/canvas_resource_provider.h"
 #include "third_party/blink/renderer/platform/graphics/gpu/shared_gpu_context.h"
 #include "third_party/blink/renderer/platform/graphics/skia/skia_utils.h"
 #include "third_party/blink/renderer/platform/graphics/static_bitmap_image.h"
@@ -50,14 +50,16 @@ CanvasRenderingContextHost::CanvasRenderingContextHost(HostType host_type,
 
 CanvasRenderingContextHost::~CanvasRenderingContextHost() {
   if (externally_allocated_memory_.is_positive()) {
-    external_memory_accounter_.Decrease(v8::Isolate::GetCurrent(),
-                                        externally_allocated_memory_.InBytes());
+    external_memory_accounter_.Decrease(
+        v8::Isolate::GetCurrent(),
+        static_cast<size_t>(externally_allocated_memory_.InBytes()));
   }
 }
 
 void CanvasRenderingContextHost::Trace(Visitor* visitor) const {
   visitor->Trace(plain_text_painter_);
   visitor->Trace(unique_font_selector_);
+  GarbageCollectedMixin::Trace(visitor);
 }
 
 void CanvasRenderingContextHost::RecordCanvasSizeToUMA() {
@@ -115,10 +117,7 @@ CanvasRenderingContextHost::CreateTransparentImage() const {
   if (!IsValidImageSize()) {
     return nullptr;
   }
-  SkImageInfo info = SkImageInfo::Make(
-      gfx::SizeToSkISize(Size()),
-      viz::ToClosestSkColorType(GetRenderingContextFormat()),
-      kPremul_SkAlphaType, GetRenderingContextColorSpace().ToSkColorSpace());
+  SkImageInfo info = SkImageInfo::MakeN32Premul(gfx::SizeToSkISize(Size()));
   sk_sp<SkSurface> surface =
       SkSurfaces::Raster(info, info.minRowBytes(), nullptr);
   if (!surface) {
@@ -155,12 +154,6 @@ bool CanvasRenderingContextHost::IsPaintable() const {
          IsValidImageSize();
 }
 
-void CanvasRenderingContextHost::InitializeForRecording(
-    cc::PaintCanvas* canvas) const {
-  if (RenderingContext())
-    RenderingContext()->RestoreCanvasMatrixClipStack(canvas);
-}
-
 bool CanvasRenderingContextHost::IsWebGL() const {
   return RenderingContext() && RenderingContext()->IsWebGL();
 }
@@ -176,23 +169,6 @@ bool CanvasRenderingContextHost::IsRenderingContext2D() const {
 bool CanvasRenderingContextHost::IsImageBitmapRenderingContext() const {
   return RenderingContext() &&
          RenderingContext()->IsImageBitmapRenderingContext();
-}
-
-SkAlphaType CanvasRenderingContextHost::GetRenderingContextAlphaType() const {
-  return RenderingContext() ? RenderingContext()->GetAlphaType()
-                            : kPremul_SkAlphaType;
-}
-
-viz::SharedImageFormat CanvasRenderingContextHost::GetRenderingContextFormat()
-    const {
-  return RenderingContext() ? RenderingContext()->GetSharedImageFormat()
-                            : GetN32FormatForCanvas();
-}
-
-gfx::ColorSpace CanvasRenderingContextHost::GetRenderingContextColorSpace()
-    const {
-  return RenderingContext() ? RenderingContext()->GetColorSpace()
-                            : gfx::ColorSpace::CreateSRGB();
 }
 
 PlainTextPainter& CanvasRenderingContextHost::GetPlainTextPainter() {

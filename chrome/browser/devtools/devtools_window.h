@@ -29,14 +29,13 @@
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"  // nogncheck crbug.com/40147906
 #endif
 
-class Browser;
 class BrowserWindowInterface;
 class BrowserWindow;
 class Profile;
-class TabModel;
 class DevToolsWindowTesting;
 class DevToolsEventForwarder;
 class DevToolsEyeDropper;
+enum class DevToolsBlockReason;
 
 namespace content {
 class DevToolsAgentHost;
@@ -117,6 +116,15 @@ class DevToolsWindow : public DevToolsUIBindings::Delegate,
   // only checks for |profile| in general.
   static bool AllowDevToolsFor(Profile* profile,
                                content::WebContents* web_contents);
+  static bool AllowDevToolsFor(Profile* profile,
+                               content::DevToolsAgentHost* agent_host);
+
+  // Returns why DevTools are not allowed for the specified |profile| and
+  // |web_contents|, or DevToolsBlockReason::kNotBlocked if AllowDevToolsFor()
+  // returns true.
+  static DevToolsBlockReason GetBlockReasonFor(
+      Profile* profile,
+      content::WebContents* web_contents);
 
   // Return the DevToolsWindow for the given WebContents if one exists,
   // otherwise nullptr.
@@ -149,12 +157,6 @@ class DevToolsWindow : public DevToolsUIBindings::Delegate,
   // Open or reveal DevTools window, with no special action.
   // How to get pointer to the created window see comments for
   // ToggleDevToolsWindow().
-#if BUILDFLAG(IS_ANDROID)
-  static TabModel* GetTabModelForDefaultRouting(
-      Profile* profile,
-      content::WebContents* inspected_web_contents);
-#endif
-
   static void OpenDevToolsWindow(content::WebContents* inspected_web_contents,
                                  DevToolsOpenedByAction opened_by);
   static void OpenDevToolsWindow(
@@ -325,6 +327,9 @@ class DevToolsWindow : public DevToolsUIBindings::Delegate,
   bool IsDocked() { return is_docked_; }
   bool OpenNewWindowForPopups() const { return open_new_window_for_popups_; }
 
+  // Attaches this devtools window to the given browser.
+  void AttachToBrowser(BrowserWindowInterface* browser);
+
  private:
   friend class DevToolsWindowTesting;
   friend class DevToolsWindowCreationObserver;
@@ -442,8 +447,7 @@ class DevToolsWindow : public DevToolsUIBindings::Delegate,
       bool user_gesture,
       bool* was_blocked) override;
   void WebContentsCreated(content::WebContents* source_contents,
-                          int opener_render_process_id,
-                          int opener_render_frame_id,
+                          const content::GlobalRenderFrameHostId& opener_id,
                           const std::string& frame_name,
                           const GURL& target_url,
                           content::WebContents* new_contents) override;
@@ -484,6 +488,7 @@ class DevToolsWindow : public DevToolsUIBindings::Delegate,
   void ConnectionReady() override;
   void SetOpenNewWindowForPopups(bool value) override;
   infobars::ContentInfoBarManager* GetInfoBarManager() override;
+  void RemoveSharingInfoBar();
   void RenderProcessGone(bool crashed) override;
   void ShowCertificateViewer(const std::string& cert_viewer) override;
   int GetDockStateForLogging() override;
@@ -608,7 +613,9 @@ class DevToolsWindow : public DevToolsUIBindings::Delegate,
   raw_ptr<infobars::InfoBar> sharing_infobar_ = nullptr;
   int checked_sharing_process_id_ = content::ChildProcessHost::kInvalidUniqueID;
 
-#if !BUILDFLAG(IS_ANDROID)
+#if BUILDFLAG(IS_ANDROID)
+  bool launched_activity_ = false;
+#else
   base::ScopedObservation<GlobalBrowserCollection, BrowserCollectionObserver>
       browser_collection_observation_{this};
 #endif

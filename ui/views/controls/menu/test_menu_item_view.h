@@ -24,6 +24,7 @@ class TestMenuItemView : public MenuItemView {
 
   ~TestMenuItemView() override;
 
+  using MenuItemView::PrepareForRun;
   using MenuItemView::UpdateEmptyMenusAndMetrics;
 
   void set_has_mnemonics(bool has_mnemonics) {
@@ -42,6 +43,14 @@ class TestMenuItemView : public MenuItemView {
 
   static ImageView* submenu_arrow_image_view(MenuItemView* view) {
     return view->submenu_arrow_image_view_;
+  }
+
+  static ImageView* radio_check_image_view(MenuItemView* view) {
+    return view->radio_check_image_view_;
+  }
+
+  static int GetDrawStringFlagsFor(const MenuItemView* view) {
+    return view->GetDrawStringFlags();
   }
 };
 

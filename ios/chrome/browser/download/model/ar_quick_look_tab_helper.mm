@@ -12,11 +12,13 @@
 #import "base/functional/bind.h"
 #import "base/metrics/histogram_functions.h"
 #import "base/strings/escape.h"
+#import "base/strings/sys_string_conversions.h"
 #import "base/task/thread_pool.h"
 #import "ios/chrome/browser/download/model/ar_quick_look_tab_helper_delegate.h"
 #import "ios/chrome/browser/download/model/download_directory_util.h"
 #import "ios/chrome/browser/shared/model/utils/mime_type_util.h"
 #import "ios/web/public/download/download_task.h"
+#import "ios/web/public/navigation/navigation_context.h"
 #import "net/base/apple/url_conversions.h"
 #import "net/base/net_errors.h"
 #import "net/base/url_util.h"
@@ -137,8 +139,9 @@ void ARQuickLookTabHelper::Download(
   LogHistogram(download_task_.get());
   download_task_->AddObserver(this);
 
-  download_task_->Start(
-      download_dir.Append(download_task_->GenerateFileName()));
+  base::FilePath task_dir = download_dir.Append(
+      base::SysNSStringToUTF8(download_task_->GetIdentifier()));
+  download_task_->Start(task_dir.Append(download_task_->GenerateFileName()));
 
   // Calling DownloadTask::Start() may cause the task to be immediately
   // destroyed (e.g. if it is in error). Only call `LogHistogram` is it
@@ -250,6 +253,25 @@ void ARQuickLookTabHelper::WasShown(web::WebState* web_state) {
                          canonicalURL:pending_preview_->canonical_url
                              webState:web_state_
                   allowContentScaling:pending_preview_->allow_content_scaling];
+    pending_preview_.reset();
+  }
+}
+
+void ARQuickLookTabHelper::DidStartNavigation(
+    web::WebState* web_state,
+    web::NavigationContext* navigation_context) {
+  CHECK_EQ(web_state_, web_state);
+  if (!navigation_context->IsSameDocument()) {
+    pending_preview_.reset();
+  }
+}
+
+void ARQuickLookTabHelper::DidFinishNavigation(
+    web::WebState* web_state,
+    web::NavigationContext* navigation_context) {
+  CHECK_EQ(web_state_, web_state);
+  if (navigation_context->HasCommitted() &&
+      !navigation_context->IsSameDocument()) {
     pending_preview_.reset();
   }
 }

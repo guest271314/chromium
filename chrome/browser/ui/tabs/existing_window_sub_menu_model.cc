@@ -5,12 +5,12 @@
 #include "chrome/browser/ui/tabs/existing_window_sub_menu_model.h"
 
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/profile_browser_collection.h"
 #include "chrome/browser/ui/tabs/tab_menu_model_delegate.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/tabs/tab_strip_model_delegate.h"
+#include "chrome/browser/ui/window_metadata/window_metadata_controller.h"
 #include "chrome/grit/generated_resources.h"
 #include "ui/base/accelerators/accelerator.h"
 
@@ -123,7 +123,7 @@ ExistingWindowSubMenuModel::BuildMenuItemInfoVectorForBrowsers(
   for (size_t i = 0; i < existing_browsers.size(); ++i) {
     BrowserWindowInterface* browser = existing_browsers[i];
     auto window_title =
-        browser->GetBrowserForMigrationOnly()->GetWindowTitleForMaxWidth(
+        WindowMetadataController::From(browser)->GetWindowTitleForMaxWidth(
             kWindowTitleForMenuMaxWidth);
     menu_item_infos.emplace_back(window_title);
     menu_item_infos.back().may_have_mnemonics = false;

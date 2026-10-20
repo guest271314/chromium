@@ -9,23 +9,22 @@
 #include <algorithm>
 #include <map>
 #include <memory>
+#include <ranges>
 #include <utility>
 
 #include "base/auto_reset.h"
 #include "base/check_deref.h"
-#include "base/containers/adapters.h"
+#include "base/containers/span.h"
 #include "base/logging.h"
 #include "base/memory/safety_checks.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/metrics/user_metrics.h"
-#include "base/no_destructor.h"
 #include "base/notreached.h"
 #include "base/trace_event/trace_event.h"
 #include "build/build_config.h"
 #include "ui/accessibility/accessibility_features.h"
 #include "ui/accessibility/ax_common.h"
-#include "ui/accessibility/ax_language_detection.h"
 #include "ui/accessibility/ax_tree_data.h"
 #include "ui/accessibility/ax_tree_id.h"
 #include "ui/accessibility/ax_tree_serializer.h"
@@ -68,9 +67,6 @@ AXTreeUpdate MakeAXTreeUpdateForTesting(
     const AXNodeData& node12 /* = AXNodeData() */,
     const AXNodeData& node13 /* = AXNodeData() */,
     const AXNodeData& node14 /* = AXNodeData() */) {
-  static base::NoDestructor<AXNodeData> empty_data;
-  int32_t no_id = empty_data->id;
-
   AXTreeUpdate update;
   AXTreeData tree_data;
   tree_data.tree_id = AXTreeID::CreateNewAXTreeID();
@@ -80,32 +76,45 @@ AXTreeUpdate MakeAXTreeUpdateForTesting(
   update.has_tree_data = true;
   update.root_id = node1.id;
   update.nodes.push_back(node1);
-  if (node2.id != no_id)
+  if (node2.id != kInvalidAXNodeID) {
     update.nodes.push_back(node2);
-  if (node3.id != no_id)
+  }
+  if (node3.id != kInvalidAXNodeID) {
     update.nodes.push_back(node3);
-  if (node4.id != no_id)
+  }
+  if (node4.id != kInvalidAXNodeID) {
     update.nodes.push_back(node4);
-  if (node5.id != no_id)
+  }
+  if (node5.id != kInvalidAXNodeID) {
     update.nodes.push_back(node5);
-  if (node6.id != no_id)
+  }
+  if (node6.id != kInvalidAXNodeID) {
     update.nodes.push_back(node6);
-  if (node7.id != no_id)
+  }
+  if (node7.id != kInvalidAXNodeID) {
     update.nodes.push_back(node7);
-  if (node8.id != no_id)
+  }
+  if (node8.id != kInvalidAXNodeID) {
     update.nodes.push_back(node8);
-  if (node9.id != no_id)
+  }
+  if (node9.id != kInvalidAXNodeID) {
     update.nodes.push_back(node9);
-  if (node10.id != no_id)
+  }
+  if (node10.id != kInvalidAXNodeID) {
     update.nodes.push_back(node10);
-  if (node11.id != no_id)
+  }
+  if (node11.id != kInvalidAXNodeID) {
     update.nodes.push_back(node11);
-  if (node12.id != no_id)
+  }
+  if (node12.id != kInvalidAXNodeID) {
     update.nodes.push_back(node12);
-  if (node13.id != no_id)
+  }
+  if (node13.id != kInvalidAXNodeID) {
     update.nodes.push_back(node13);
-  if (node14.id != no_id)
+  }
+  if (node14.id != kInvalidAXNodeID) {
     update.nodes.push_back(node14);
+  }
   return update;
 }
 
@@ -301,14 +310,16 @@ void BrowserAccessibilityManager::FireGeneratedEvent(
 
   const auto& node_data = wrapper->GetData();
 
-  const auto& announcements = node_data.GetStringListAttribute(
-      ax::mojom::StringListAttribute::kAriaNotificationAnnouncements);
-  const auto& priority_properties = node_data.GetIntListAttribute(
-      ax::mojom::IntListAttribute::kAriaNotificationPriorityProperties);
-  const std::vector<std::int32_t> interrupt_properties =
+  base::span<const std::string> announcements =
+      node_data.GetStringListAttribute(
+          ax::mojom::StringListAttribute::kAriaNotificationAnnouncements);
+  base::span<const std::int32_t> priority_properties =
+      node_data.GetIntListAttribute(
+          ax::mojom::IntListAttribute::kAriaNotificationPriorityProperties);
+  base::span<const std::int32_t> interrupt_properties =
       node_data.GetIntListAttribute(
           ax::mojom::IntListAttribute::kAriaNotificationInterruptProperties);
-  const std::vector<std::string> types = node_data.GetStringListAttribute(
+  base::span<const std::string> types = node_data.GetStringListAttribute(
       ax::mojom::StringListAttribute::kAriaNotificationTypes);
 
   DCHECK_EQ(announcements.size(), priority_properties.size());
@@ -575,18 +586,14 @@ bool BrowserAccessibilityManager::OnAccessibilityEvents(
     BrowserAccessibilityManager* parent_manager =
         has_parent_id ? BrowserAccessibilityManager::FromID(parent_id)
                       : nullptr;
-    if (IsRootFrameManager()) {
-      CHECK(!has_parent_id)
-          << "The root frame must be parentless, root url = "
-          << GetTreeData().url << "\nSupposed parent = "
-          << (parent_manager ? parent_manager->GetTreeData().url
-                             : "[not in map for parent_tree_id]");
+    if (IsRootFrameManager() && !has_parent_id) {
       CHECK(!connected_to_parent_tree_node_)
-          << "Root manager must not be connected to a parent tree node.";
+          << "A root tree with no parent must not be connected to a parent "
+             "tree node.";
     } else {
       CHECK(parent_manager)
-          << "Non-root trees must have a parent manager to "
-             "reach this code, otherwise CanFireEvents() "
+          << "A tree below the root of the full platform tree must have a "
+             "parent manager to reach this code, otherwise CanFireEvents() "
              "should have returned false, has_parent_id = "
           << has_parent_id << "\nCurrent url = " << GetTreeData().url;
       CHECK(connected_to_parent_tree_node_)
@@ -613,8 +620,9 @@ bool BrowserAccessibilityManager::OnAccessibilityEvents(
   // the currently-focused node. We do this so that screen readers are made
   // aware of changes in the tree which might be relevant to subsequent events
   // on the focused node, such as the focused node being a descendant of a
-  // reparented node or a newly-shown dialog box.
-  BrowserAccessibility* focus = GetFocus();
+  // reparented node or a newly-shown dialog box. `raw_ptr` mitigates
+  // crbug.com/549740754.
+  raw_ptr<BrowserAccessibility> focus = GetFocus();
   std::vector<AXEventGenerator::TargetedEvent> deferred_events;
   for (const auto& targeted_event : event_generator()) {
     if (!ShouldFireGeneratedEvent(targeted_event.event_params->event)) {
@@ -738,17 +746,6 @@ bool BrowserAccessibilityManager::OnAccessibilityEvents(
     // the platform independent events have already fired.
     // Some screen readers need a focus event in order to work properly.
     FireFocusEventsIfNeeded();
-
-    // Perform the initial run of language detection.
-    ax_tree()->language_detection_manager->DetectLanguages();
-    ax_tree()->language_detection_manager->LabelLanguages();
-
-    // After initial language detection, enable language detection for future
-    // content updates in order to support dynamic content changes.
-    //
-    // If the LanguageDetectionDynamic feature flag is not enabled then this
-    // is a no-op.
-    ax_tree()->language_detection_manager->RegisterLanguageDetectionObserver();
   }
 
   // Allow derived classes to do event post-processing. This must run after
@@ -1177,6 +1174,32 @@ void BrowserAccessibilityManager::ShowContextMenu(
   AXPlatform::GetInstance().OnActionFromAssistiveTech();
 }
 
+void BrowserAccessibilityManager::ShowTooltip(
+    const BrowserAccessibility& node) {
+  if (!delegate_) {
+    return;
+  }
+
+  AXActionData action_data;
+  action_data.action = ax::mojom::Action::kShowTooltip;
+  action_data.target_node_id = node.GetId();
+  delegate_->AccessibilityPerformAction(action_data);
+  AXPlatform::GetInstance().OnActionFromAssistiveTech();
+}
+
+void BrowserAccessibilityManager::HideTooltip(
+    const BrowserAccessibility& node) {
+  if (!delegate_) {
+    return;
+  }
+
+  AXActionData action_data;
+  action_data.action = ax::mojom::Action::kHideTooltip;
+  action_data.target_node_id = node.GetId();
+  delegate_->AccessibilityPerformAction(action_data);
+  AXPlatform::GetInstance().OnActionFromAssistiveTech();
+}
+
 void BrowserAccessibilityManager::SignalEndOfTest() {
   if (!delegate_)
     return;
@@ -1211,7 +1234,7 @@ void BrowserAccessibilityManager::Scroll(const BrowserAccessibility& node,
 
 void BrowserAccessibilityManager::ScrollToMakeVisible(
     const BrowserAccessibility& node,
-    gfx::Rect subfocus,
+    std::optional<gfx::Rect> subfocus,
     ax::mojom::ScrollAlignment horizontal_scroll_alignment,
     ax::mojom::ScrollAlignment vertical_scroll_alignment,
     ax::mojom::ScrollBehavior scroll_behavior) {
@@ -1299,7 +1322,7 @@ void BrowserAccessibilityManager::SetSelection(
   if (!delegate_ || range.IsNull())
     return;
 
-  // TODO(crbug.com/443078007): Add position types and affinity to AXActionData
+  // TODO(crbug.com/527726308): Add position types and affinity to AXActionData
   // and pass them to blink to avoid ambiguity.
   AXActionData action_data;
   action_data.anchor_node_id = range.anchor()->anchor_id();
@@ -1447,7 +1470,7 @@ void BrowserAccessibilityManager::HitTest(const gfx::Point& frame_point,
 
 gfx::Rect BrowserAccessibilityManager::GetViewBoundsInScreenCoordinates()
     const {
-  AXPlatformTreeManagerDelegate* delegate = GetDelegateFromRootManager();
+  AXPlatformTreeManagerDelegate* delegate = GetDelegateForNativeView();
   if (delegate) {
     gfx::Rect bounds = delegate->AccessibilityGetViewBounds();
 
@@ -1827,7 +1850,10 @@ void BrowserAccessibilityManager::OnNodeCreated(AXTree* tree, AXNode* node) {
   DCHECK(tree->GetFromId(node->id()) || node->IsGenerated())
       << "Node must be in AXTree's map, unless it's an ExtraMacNode.";
 
-  id_wrapper_map_[node->id()] = CreateBrowserAccessibility(node);
+  auto [iter, inserted] = id_wrapper_map_.try_emplace(node->id(), nullptr);
+  CHECK(inserted) << "Attempted to overwrite existing wrapper for node ID: "
+                  << node->id();
+  iter->second = CreateBrowserAccessibility(node);
 
   if (node->HasIntAttribute(ax::mojom::IntAttribute::kPopupForId)) {
     popup_root_ids_.insert(node->id());
@@ -1935,7 +1961,11 @@ AXTreeManager* BrowserAccessibilityManager::GetParentManager() const {
   if (!parent)
     return nullptr;
 
-  if (delegate_ && delegate_->AccessibilityIsWebContentSource()) {
+  BrowserAccessibilityManager* parent_platform_manager =
+      BrowserAccessibilityManager::FromID(parent->GetTreeID());
+  if (delegate_ && delegate_->AccessibilityIsWebContentSource() &&
+      parent_platform_manager &&
+      parent_platform_manager->IsWebContentSource()) {
     DCHECK(!IsRootFrameManager());
   }
 
@@ -1952,15 +1982,38 @@ BrowserAccessibilityManager::GetDelegateFromRootManager() const {
   return nullptr;
 }
 
+AXPlatformTreeManagerDelegate*
+BrowserAccessibilityManager::GetDelegateForNativeView() const {
+  if (delegate_ && !delegate_->AccessibilityIsWebContentSource()) {
+    return delegate_.get();
+  }
+  return GetDelegateFromRootManager();
+}
+
 bool BrowserAccessibilityManager::IsRootFrameManager() const {
   // delegate_ can be null in unit tests.
-  if (!delegate_)
+  if (!delegate_) {
     return GetTreeData().parent_tree_id == AXTreeIDUnknown();
+  }
+
+  if (!delegate_->AccessibilityIsWebContentSource()) {
+    return false;
+  }
 
   bool is_root_tree = delegate_->AccessibilityIsRootFrame();
-  DCHECK(!is_root_tree || GetParentTreeID() == AXTreeIDUnknown())
-      << "Root tree has parent tree id of: " << GetParentTreeID();
+
+  if (is_root_tree && GetParentTreeID() != AXTreeIDUnknown()) {
+    BrowserAccessibilityManager* parent_manager =
+        BrowserAccessibilityManager::FromID(GetParentTreeID());
+    DCHECK(parent_manager);
+    DCHECK(!parent_manager->IsWebContentSource());
+  }
   return is_root_tree;
+}
+
+bool BrowserAccessibilityManager::IsWebContentSource() const {
+  // delegate_ can be null in unit tests.
+  return !delegate_ || delegate_->AccessibilityIsWebContentSource();
 }
 
 AXTreeUpdate BrowserAccessibilityManager::SnapshotAXTreeForTesting() {
@@ -2077,7 +2130,7 @@ void BrowserAccessibilityManager::BuildAXTreeHitTestCacheInternal(
   // assume the object that occurs later in the tree is on top of one that comes
   // before it.
   auto range = node->PlatformChildren();
-  for (const auto& child : base::Reversed(range)) {
+  for (const auto& child : std::views::reverse(range)) {
     // Skip table columns because cells are only contained in rows,
     // not columns.
     if (child.GetRole() == ax::mojom::Role::kColumn)
@@ -2145,7 +2198,7 @@ void BrowserAccessibilityManager::CollectChangedNodesAndParentsForAtomicUpdate(
 
     if (!changed_node->IsIgnored()) {
       BrowserAccessibility* obj = GetFromAXNode(changed_node);
-      if (obj) {
+      if (obj && obj->GetAXPlatformNode()) {
         nodes_needing_update->insert(obj->GetAXPlatformNode());
       }
     }
@@ -2161,7 +2214,7 @@ void BrowserAccessibilityManager::CollectChangedNodesAndParentsForAtomicUpdate(
     // each embedded object character offset.
     if (changed_node->data().role != ax::mojom::Role::kInlineTextBox) {
       BrowserAccessibility* parent_obj = GetFromAXNode(parent);
-      if (parent_obj) {
+      if (parent_obj && parent_obj->GetAXPlatformNode()) {
         nodes_needing_update->insert(parent_obj->GetAXPlatformNode());
       }
     }
@@ -2176,8 +2229,9 @@ void BrowserAccessibilityManager::CollectChangedNodesAndParentsForAtomicUpdate(
     }
 
     BrowserAccessibility* editable_root_obj = GetFromAXNode(editable_root);
-    if (editable_root_obj)
+    if (editable_root_obj && editable_root_obj->GetAXPlatformNode()) {
       nodes_needing_update->insert(editable_root_obj->GetAXPlatformNode());
+    }
   }
 }
 

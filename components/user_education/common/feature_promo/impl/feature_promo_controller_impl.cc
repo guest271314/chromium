@@ -31,11 +31,11 @@
 #include "components/user_education/common/feature_promo/impl/feature_promo_queue_set.h"
 #include "components/user_education/common/feature_promo/impl/messaging_coordinator.h"
 #include "components/user_education/common/feature_promo/impl/precondition_list_provider.h"
-#include "components/user_education/common/product_messaging_controller.h"
 #include "components/user_education/common/user_education_context.h"
 #include "components/user_education/common/user_education_data.h"
 #include "components/user_education/common/user_education_features.h"
 #include "components/user_education/common/user_education_storage_service.h"
+#include "components/user_education/product_messaging/product_messaging_controller.h"
 #include "ui/accessibility/ax_mode.h"
 #include "ui/accessibility/platform/ax_platform.h"
 #include "ui/base/interaction/element_tracker.h"
@@ -177,14 +177,14 @@ FeaturePromoControllerImpl::FeaturePromoControllerImpl(
     UserEducationStorageService* storage_service,
     FeaturePromoSessionPolicy* session_policy,
     TutorialService* tutorial_service,
-    ProductMessagingController* messaging_controller)
+    ProductMessagingController& messaging_controller)
     : registry_(registry),
       feature_engagement_tracker_(feature_engagement_tracker),
       bubble_factory_registry_(help_bubble_registry),
       storage_service_(storage_service),
       session_policy_(session_policy),
       tutorial_service_(tutorial_service),
-      product_messaging_controller_(*messaging_controller),
+      product_messaging_controller_(messaging_controller),
       demo_feature_name_(GetFeatureEngagementDemoFeatureName()) {
   DCHECK(feature_engagement_tracker_);
   DCHECK(bubble_factory_registry_);
@@ -394,13 +394,13 @@ const FeaturePromoSpecification*
 FeaturePromoControllerImpl::GetCurrentPromoSpecificationForAnchor(
     ui::ElementIdentifier menu_element_id) const {
   auto* iph_feature = current_promo_ ? current_promo_->iph_feature() : nullptr;
-  if (iph_feature && registry_) {
+  if (iph_feature && registry_ && current_promo_->is_bubble_visible()) {
     auto* const spec = registry_->GetParamsForFeature(*iph_feature);
     if (spec->anchor_element_id() == menu_element_id) {
       return spec;
     }
   }
-  return {};
+  return nullptr;
 }
 
 bool FeaturePromoControllerImpl::HasPromoBeenDismissed(
@@ -550,7 +550,7 @@ FeaturePromoControllerImpl::GetNextPromoData() {
     // If there's a pending promo determine if it can show right now.
     const bool is_high_priority =
         pending->second == FeaturePromoPriorityProvider::PromoPriority::kHigh;
-    if (private_->messaging_coordinator.CanShowPromo(is_high_priority)) {
+    if (private_->messaging_coordinator.ReadyToShow(is_high_priority)) {
       result.eligible_promo = private_->queues.UnqueueEligiblePromo(*pending);
     } else {
       result.pending_priority = pending->second;
@@ -793,7 +793,8 @@ void FeaturePromoControllerImpl::AddDemoPreconditionProviders(
                 ptr->current_promo() &&
                 ptr->current_promo()->iph_feature() == spec.feature();
             list.AddPrecondition(std::make_unique<AnchorElementPrecondition>(
-                spec, context->GetElementContext(), pre_increment));
+                spec, context->GetElementContext(),
+                context->GetDefaultElementFilter(), pre_increment));
           }
           return list;
         },
@@ -854,7 +855,8 @@ void FeaturePromoControllerImpl::AddPreconditionProviders(
                 std::make_unique<ForwardingFeaturePromoPrecondition>(
                     ptr->private_->get_tracker_precondition()));
             list.AddPrecondition(std::make_unique<AnchorElementPrecondition>(
-                spec, context->GetElementContext(), false));
+                spec, context->GetElementContext(),
+                context->GetDefaultElementFilter(), false));
             // Wait-for state *does* take the current promo into account, since
             // a higher-weight promo might block a lower-weight promo.
             list.AddPrecondition(std::make_unique<SessionPolicyPrecondition>(
@@ -1001,13 +1003,6 @@ std::unique_ptr<HelpBubble> FeaturePromoControllerImpl::ShowPromoBubbleImpl(
     bubble_params.arrow = params.arrow;
     bubble_params.focus_on_show_hint = spec.focus_on_show_override();
 
-    // If timeouts are explicitly disabled then set that the bubble explicitly
-    // does not time out.
-    if (spec.bubble_should_time_out_override().has_value() &&
-        !spec.bubble_should_time_out_override().value()) {
-      bubble_params.timeout = base::Seconds(0);
-    }
-
     bubble_params.timeout_callback =
         base::BindOnce(&FeaturePromoControllerImpl::OnHelpBubbleTimeout,
                        GetImplWeakPtr(), base::Unretained(spec.feature()));
@@ -1022,6 +1017,24 @@ std::unique_ptr<HelpBubble> FeaturePromoControllerImpl::ShowPromoBubbleImpl(
 
     switch (spec.promo_type()) {
       case FeaturePromoSpecification::PromoType::kToast: {
+        if (current_promo_) {
+          if (current_promo_->promo_subtype() ==
+              FeaturePromoSpecification::PromoSubtype::kLegalNotice) {
+            bubble_params.buttons =
+                CreateSnoozeButtons(*spec.feature(), /*can_snooze=*/false);
+            // Generally focus notices when they're shown.
+            bubble_params.focus_on_show_hint =
+                bubble_params.focus_on_show_hint.value_or(true);
+          } else if (current_promo_->promo_type() ==
+                     FeaturePromoSpecification::PromoType::kRotating) {
+            bubble_params.buttons = CreateRotatingToastButtons(*spec.feature());
+            // If no hint is set, promos with buttons take focus. However,
+            // toasts do not take focus by default. So if the hint isn't already
+            // set, set the promo not to take focus.
+            bubble_params.focus_on_show_hint =
+                bubble_params.focus_on_show_hint.value_or(false);
+          }
+        }
         // Rotating toast promos require a "got it" button.
         if (current_promo_ &&
             current_promo_->promo_type() ==
@@ -1199,6 +1212,8 @@ void FeaturePromoControllerImpl::OnTutorialStarted(
   tutorial_promo_handle_ = CloseBubbleAndContinuePromoWithReason(
       *iph_feature, FeaturePromoClosedReason::kAction);
   DCHECK(tutorial_promo_handle_.is_valid());
+  CHECK(tutorial_service_) << "Attempted to start a tutorial IPH in a context "
+                              "with no tutorial service.";
   if (auto actual_context = ResolveContext(context, bubble_context)) {
     tutorial_service_->StartTutorial(
         tutorial_id, context->GetElementContext(),

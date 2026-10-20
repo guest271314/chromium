@@ -46,7 +46,6 @@
 #include "chrome/browser/web_applications/web_app_constants.h"
 #include "chrome/browser/web_applications/web_app_helpers.h"
 #include "chrome/browser/web_applications/web_app_icon_generator.h"
-#include "chrome/browser/web_applications/web_app_install_finalizer.h"
 #include "chrome/browser/web_applications/web_app_install_manager.h"
 #include "chrome/browser/web_applications/web_app_management_type.h"
 #include "chrome/browser/web_applications/web_app_registry_update.h"
@@ -114,6 +113,32 @@ int CountApps(const WebAppRegistrar::AppSet& app_set) {
     ++count;
   }
   return count;
+}
+
+constexpr char kIwaUrl[] =
+    "isolated-app://berugqztij5biqquuk3mfwpsaibuegaqcitgfchwuosuofdjabzqaaic/";
+
+// Creates an app whose validated scope extensions cover `extended_origin`.
+std::unique_ptr<WebApp> CreateWebAppWithScopeExtension(
+    const GURL& start_url,
+    const url::Origin& extended_origin) {
+  auto web_app = test::CreateWebApp(start_url);
+  web_app->SetValidatedScopeExtensions(
+      {ScopeExtensionInfo::CreateForOrigin(extended_origin)});
+  return web_app;
+}
+
+// Creates an Isolated Web App whose validated scope extensions cover
+// `extended_origin`.
+std::unique_ptr<WebApp> CreateIsolatedWebAppWithScopeExtension(
+    const url::Origin& extended_origin) {
+  auto web_app = CreateWebAppWithScopeExtension(GURL(kIwaUrl), extended_origin);
+  web_app->SetIsolationData(
+      IsolationData::Builder(
+          IwaStorageOwnedBundle{"random_name", /*dev_mode=*/false},
+          *IwaVersion::Create("1.0.0"))
+          .Build());
+  return web_app;
 }
 
 }  // namespace
@@ -724,6 +749,92 @@ TEST_F(WebAppRegistrarTest, FindPwaBasedOnStartUrlIfScopeIsEmpty) {
           app2_page, web_app::WebAppFilter::InstalledInChrome());
   ASSERT_TRUE(app2_match);
   EXPECT_EQ(app2_match, std::optional<webapps::AppId>(app3_id));
+}
+
+TEST_F(WebAppRegistrarTest,
+       FindBestAppWithUrlInScope_IgnoresIsolatedAppScopeExtensionsByDefault) {
+  base::test::ScopedFeatureList scoped_feature_list(features::kIsolatedWebApps);
+  StartWebAppProvider();
+
+  const GURL extended_url("https://ext.example/page");
+  auto iwa =
+      CreateIsolatedWebAppWithScopeExtension(url::Origin::Create(extended_url));
+  const webapps::AppId iwa_id = iwa->app_id();
+  RegisterAppUnsafe(std::move(iwa));
+
+  // By default the IWA is not matched via its scope extensions, but its
+  // primary scope still matches.
+  EXPECT_EQ(registrar().FindBestAppWithUrlInScope(
+                extended_url, WebAppFilter::InstalledInChrome()),
+            std::nullopt);
+  EXPECT_EQ(
+      registrar().FindBestAppWithUrlInScope(GURL(kIwaUrl).Resolve("ui.html"),
+                                            WebAppFilter::InstalledInChrome()),
+      iwa_id);
+
+  // Callers can explicitly opt in to considering IWA scope extensions.
+  EXPECT_EQ(registrar().FindBestAppWithUrlInScope(
+                extended_url, WebAppFilter::InstalledInChrome(),
+                {.include_isolated_web_app_scope_extensions = true}),
+            iwa_id);
+}
+
+TEST_F(
+    WebAppRegistrarTest,
+    FindBestAppWithUrlInScope_IgnoresIsolatedSubAppScopeExtensionsByDefault) {
+  base::test::ScopedFeatureList scoped_feature_list(features::kIsolatedWebApps);
+  StartWebAppProvider();
+
+  const GURL extended_url("https://ext.example/page");
+  const url::Origin extended_origin = url::Origin::Create(extended_url);
+  auto iwa = CreateIsolatedWebAppWithScopeExtension(extended_origin);
+  const webapps::AppId iwa_id = iwa->app_id();
+  RegisterAppUnsafe(std::move(iwa));
+
+  const GURL sub_app_url = GURL(kIwaUrl).Resolve("sub_app/index.html");
+  auto sub_app = CreateWebAppWithScopeExtension(sub_app_url, extended_origin);
+  sub_app->SetParentAppId(iwa_id);
+  const webapps::AppId sub_app_id = sub_app->app_id();
+  RegisterAppUnsafe(std::move(sub_app));
+  ASSERT_TRUE(
+      registrar().AppMatches(sub_app_id, WebAppFilter::IsIsolatedSubApp()));
+
+  EXPECT_EQ(registrar().FindBestAppWithUrlInScope(
+                extended_url, WebAppFilter::InstalledInChrome()),
+            std::nullopt);
+  EXPECT_EQ(registrar().FindBestAppWithUrlInScope(
+                GURL(kIwaUrl).Resolve("sub_app/page.html"),
+                WebAppFilter::InstalledInChrome()),
+            sub_app_id);
+}
+
+TEST_F(WebAppRegistrarTest,
+       FindBestAppWithUrlInScope_HonorsNonIsolatedAppScopeExtensions) {
+  base::test::ScopedFeatureList scoped_feature_list(features::kIsolatedWebApps);
+  StartWebAppProvider();
+
+  const GURL extended_url("https://ext.example/page");
+  const url::Origin extended_origin = url::Origin::Create(extended_url);
+  RegisterAppUnsafe(CreateIsolatedWebAppWithScopeExtension(extended_origin));
+
+  auto pwa = CreateWebAppWithScopeExtension(GURL("https://app.example/start"),
+                                            extended_origin);
+  const webapps::AppId pwa_id = pwa->app_id();
+  RegisterAppUnsafe(std::move(pwa));
+
+  // Scope extensions of non-isolated apps are still honored, and the IWA
+  // doesn't shadow them.
+  EXPECT_EQ(registrar().FindBestAppWithUrlInScope(
+                extended_url, WebAppFilter::InstalledInChrome()),
+            pwa_id);
+
+  // An app actually controlling the URL wins as well.
+  auto controlling_app = test::CreateWebApp(GURL("https://ext.example/start"));
+  const webapps::AppId controlling_app_id = controlling_app->app_id();
+  RegisterAppUnsafe(std::move(controlling_app));
+  EXPECT_EQ(registrar().FindBestAppWithUrlInScope(
+                extended_url, WebAppFilter::InstalledInChrome()),
+            controlling_app_id);
 }
 
 TEST_F(WebAppRegistrarTest, BeginAndCommitUpdate) {
@@ -2208,13 +2319,8 @@ TEST_P(WebAppRegistrarParameterizedTest, Filter_IsIsolatedSubApp) {
 INSTANTIATE_TEST_SUITE_P(
     ,
     WebAppRegistrarParameterizedTest,
-#if BUILDFLAG(IS_CHROMEOS)
-    testing::Values(apps::test::LinkCapturingFeatureVersion::kV2DefaultOff)
-#else
     testing::Values(apps::test::LinkCapturingFeatureVersion::kV2DefaultOff,
-                    apps::test::LinkCapturingFeatureVersion::kV2DefaultOn)
-#endif  // BUILDFLAG(IS_CHROMEOS)
-        ,
+                    apps::test::LinkCapturingFeatureVersion::kV2DefaultOn),
     apps::test::LinkCapturingVersionToString);
 
 }  // namespace web_app

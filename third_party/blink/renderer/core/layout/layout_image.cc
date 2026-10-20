@@ -34,18 +34,15 @@
 #include "third_party/blink/renderer/core/frame/web_feature.h"
 #include "third_party/blink/renderer/core/html/html_area_element.h"
 #include "third_party/blink/renderer/core/html/html_image_element.h"
-#include "third_party/blink/renderer/core/html/media/html_video_element.h"
-#include "third_party/blink/renderer/core/html_names.h"
 #include "third_party/blink/renderer/core/inspector/identifiers_factory.h"
 #include "third_party/blink/renderer/core/inspector/inspector_trace_events.h"
 #include "third_party/blink/renderer/core/layout/hit_test_result.h"
 #include "third_party/blink/renderer/core/layout/layout_object_inlines.h"
-#include "third_party/blink/renderer/core/layout/layout_video.h"
 #include "third_party/blink/renderer/core/layout/layout_view.h"
 #include "third_party/blink/renderer/core/loader/resource/image_resource_content.h"
 #include "third_party/blink/renderer/core/paint/image_painter.h"
 #include "third_party/blink/renderer/core/paint/paint_layer.h"
-#include "third_party/blink/renderer/core/paint/timing/image_element_timing.h"
+#include "third_party/blink/renderer/core/paint/timing/paint_timing_detector.h"
 #include "third_party/blink/renderer/platform/instrumentation/use_counter.h"
 #include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "ui/gfx/geometry/size_conversions.h"
@@ -56,7 +53,7 @@ LayoutImage::LayoutImage(Element* element) : LayoutReplaced(element) {}
 
 LayoutImage* LayoutImage::CreateAnonymous(Document& document) {
   LayoutImage* image = MakeGarbageCollected<LayoutImage>(nullptr);
-  image->SetDocumentForAnonymous(&document);
+  image->SetDocumentForAnonymous(document);
   return image;
 }
 
@@ -67,25 +64,29 @@ void LayoutImage::Trace(Visitor* visitor) const {
   LayoutReplaced::Trace(visitor);
 }
 
-void LayoutImage::WillBeDestroyed() {
+void LayoutImage::WillBeDestroyed(const ComputedStyle* style) {
   NOT_DESTROYED();
   DCHECK(image_resource_);
   image_resource_->Shutdown();
 
-  LayoutReplaced::WillBeDestroyed();
+  LayoutReplaced::WillBeDestroyed(style);
 }
 
 void LayoutImage::InsertedIntoTree() {
   NOT_DESTROYED();
   ImageResourceContent* image_content = image_resource_->CachedImage();
-  LocalDOMWindow* window = GetDocument().domWindow();
 
   // If the image content was ready before attaching to the layout image, and
   // and it did not have a node, it would not be possible to know if the node
   // would be required for timing. Notify at this point now it is attached to
   // its parent.
-  if (!GetNode() && window && image_content && image_content->IsLoaded()) {
-    ImageElementTiming::From(*window).NotifyImageFinished(*this, image_content);
+  //
+  // TODO(crbug.com/535432431): This may no longer be necessary once
+  // ElementTiming is a PaintTiming client.
+  if (!GetNode() && GetDocument().domWindow() && image_content &&
+      image_content->IsLoaded()) {
+    PaintTimingDetector::From(GetDocument())
+        .NotifyImageFinished(*this, image_content);
   }
   LayoutReplaced::InsertedIntoTree();
 }
@@ -101,14 +102,16 @@ void GetImageSizeChangeTracingData(perfetto::TracedValue context,
 void LayoutImage::StyleDidChange(
     StyleDifference diff,
     const ComputedStyle* old_style,
+    const ComputedStyle& new_style,
     const StyleChangeContext& style_change_context) {
   NOT_DESTROYED();
-  LayoutReplaced::StyleDidChange(diff, old_style, style_change_context);
+  LayoutReplaced::StyleDidChange(diff, old_style, new_style,
+                                 style_change_context);
 
   RespectImageOrientationEnum old_orientation =
       old_style ? old_style->ImageOrientation()
                 : ComputedStyleInitialValues::InitialImageOrientation();
-  if (StyleRef().ImageOrientation() != old_orientation) {
+  if (new_style.ImageOrientation() != old_orientation) {
     NaturalSizeChanged();
   }
 
@@ -192,10 +195,10 @@ void LayoutImage::ImageChanged(WrappedImagePtr new_image,
   if (!did_increment_visually_non_empty_pixel_count_) {
     PhysicalSize default_object_size{LayoutUnit(kDefaultWidth),
                                      LayoutUnit(kDefaultHeight)};
-    default_object_size.Scale(StyleRef().EffectiveZoom());
+    default_object_size.Scale(Style().EffectiveZoom());
     PhysicalSize concrete_object_size =
         ConcreteObjectSize(natural_dimensions_, default_object_size);
-    concrete_object_size.Scale(1 / StyleRef().EffectiveZoom());
+    concrete_object_size.Scale(1 / Style().EffectiveZoom());
     View()->GetFrameView()->IncrementVisuallyNonEmptyPixelCount(
         ToFlooredSize(concrete_object_size));
     did_increment_visually_non_empty_pixel_count_ = true;
@@ -209,7 +212,7 @@ bool LayoutImage::UpdateNaturalSizeIfNeeded() {
   // dimensions of 0x0 ("represents nothing" per HTML spec).
   if (image_resource_->IsSizeAvailable()) {
     new_natural_dimensions = PhysicalNaturalSizingInfo::FromSizingInfo(
-        image_resource_->GetNaturalDimensions(StyleRef().EffectiveZoom()));
+        image_resource_->GetNaturalDimensions(Style().EffectiveZoom()));
   }
   const bool dimensions_changed = natural_dimensions_ != new_natural_dimensions;
   if (!image_resource_->ErrorOccurred()) {
@@ -226,7 +229,7 @@ bool LayoutImage::NeedsLayoutOnNaturalSizeChange() const {
     return true;
   }
 
-  const auto& style = StyleRef();
+  const auto& style = Style();
   // TODO(https://crbug.com/313072): Should this test min/max-height as well?
   bool is_fixed_sized =
       style.LogicalWidth().IsFixed() && style.LogicalHeight().IsFixed() &&
@@ -333,27 +336,30 @@ bool LayoutImage::ForegroundIsKnownToBeOpaqueInRect(
     return false;
   if (!PhysicalContentBoxRect().Contains(local_rect))
     return false;
-  EFillBox background_clip = StyleRef().BackgroundClip();
+  EFillBox background_clip = Style().BackgroundClip();
   // Background paints under borders.
-  if (background_clip == EFillBox::kBorder && StyleRef().HasBorder() &&
-      !StyleRef().BorderObscuresBackground())
+  if (background_clip == EFillBox::kBorder && Style().HasBorder() &&
+      !Style().BorderObscuresBackground()) {
     return false;
+  }
   // Background shows in padding area.
   if ((background_clip == EFillBox::kBorder ||
        background_clip == EFillBox::kPadding) &&
-      StyleRef().MayHavePadding())
+      Style().MayHavePadding()) {
     return false;
+  }
   // Object-position may leave parts of the content box empty, regardless of the
   // value of object-fit.
-  if (StyleRef().ObjectPosition() !=
-      ComputedStyleInitialValues::InitialObjectPosition())
+  if (Style().ObjectPosition() !=
+      ComputedStyleInitialValues::InitialObjectPosition()) {
     return false;
+  }
   // Object-fit may leave parts of the content box empty.
-  EObjectFit object_fit = StyleRef().GetObjectFit();
+  EObjectFit object_fit = Style().GetObjectFit();
   if (object_fit != EObjectFit::kFill && object_fit != EObjectFit::kCover)
     return false;
   // Object-view-box may leave parts of the content box empty.
-  if (StyleRef().ObjectViewBox()) {
+  if (Style().ObjectViewBox()) {
     return false;
   }
   // Check for image with alpha.
@@ -365,18 +371,11 @@ bool LayoutImage::ForegroundIsKnownToBeOpaqueInRect(
 
 bool LayoutImage::ComputeBackgroundIsKnownToBeObscured() const {
   NOT_DESTROYED();
-  if (!StyleRef().HasBackground())
+  if (!Style().HasBackground()) {
     return false;
+  }
 
   return ForegroundIsKnownToBeOpaqueInRect(BackgroundPaintedExtent(), 0);
-}
-
-HTMLMapElement* LayoutImage::ImageMap() const {
-  NOT_DESTROYED();
-  auto* i = DynamicTo<HTMLImageElement>(GetNode());
-  return i ? i->GetTreeScope().GetImageMap(
-                 i->FastGetAttribute(html_names::kUsemapAttr))
-           : nullptr;
 }
 
 bool LayoutImage::NodeAtPoint(HitTestResult& result,
@@ -402,7 +401,7 @@ PhysicalNaturalSizingInfo LayoutImage::GetNaturalDimensions() const {
 
 bool LayoutImage::IsUnsizedImage() const {
   NOT_DESTROYED();
-  const ComputedStyle& style = this->StyleRef();
+  const ComputedStyle& style = this->Style();
   const auto explicit_width = style.LogicalWidth().HasOnlyFixedAndPercent();
   const auto explicit_height = style.LogicalHeight().HasOnlyFixedAndPercent();
   bool has_aspect_ratio =

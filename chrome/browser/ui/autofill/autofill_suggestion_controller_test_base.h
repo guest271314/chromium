@@ -24,11 +24,14 @@
 #include "components/autofill/core/browser/suggestions/suggestion_hiding_reason.h"
 #include "components/autofill/core/browser/ui/autofill_external_delegate.h"
 #include "components/autofill/core/browser/ui/autofill_suggestion_delegate.h"
-#include "components/autofill/core/browser/ui/suggestion_button_action.h"
 #include "components/autofill/core/browser/ui/tabbed_pane_enums.h"
-#include "components/autofill/core/common/autofill_test_utils.h"
+#include "components/autofill/core/common/autofill_test_util.h"
+#include "content/public/browser/render_frame_host.h"
+#include "content/public/test/navigation_simulator.h"
+#include "content/public/test/test_renderer_host.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "url/gurl.h"
 
 #if BUILDFLAG(IS_ANDROID)
 #include "chrome/browser/autofill/mock_manual_filling_view.h"
@@ -45,7 +48,6 @@
 namespace autofill {
 
 class AutofillExternalDelegateForPopupTest;
-class AutofillSuggestionControllerForTest;
 
 // A `BrowserAutofillManager` with a modified `AutofillExternalDelegate` that
 // allows verifying interactions with the popup.
@@ -103,24 +105,30 @@ class AutofillSuggestionControllerTestBase
             base::test::TaskEnvironment::TimeSource::MOCK_TIME) {}
   ~AutofillSuggestionControllerTestBase() override = default;
 
+  TestingProfile::TestingFactories GetTestingFactories() const override {
+    return {TestingProfile::TestingFactory(
+        PersonalDataManagerFactory::GetInstance(),
+        base::BindRepeating([](content::BrowserContext* context)
+                                -> std::unique_ptr<KeyedService> {
+          return std::make_unique<TestPersonalDataManager>();
+        }))};
+  }
+
   void SetUp() override {
     ChromeRenderViewHostTestHarness::SetUp();
-    PersonalDataManagerFactory::GetInstance()->SetTestingFactory(
-        profile(), base::BindRepeating([](content::BrowserContext* context)
-                                           -> std::unique_ptr<KeyedService> {
-          return std::make_unique<TestPersonalDataManager>();
-        }));
     NavigateAndCommit(GURL("https://foo.com/"));
     FocusWebContentsOnMainFrame();
     ASSERT_TRUE(web_contents()->GetFocusedFrame());
 
 #if BUILDFLAG(IS_ANDROID)
+    auto mock_view =
+        std::make_unique<::testing::NiceMock<MockManualFillingView>>();
+    raw_mock_manual_filling_view_ = mock_view.get();
     ManualFillingControllerImpl::CreateForWebContentsForTesting(
         web_contents(), mock_pwd_controller_.AsWeakPtr(),
         mock_address_controller_.AsWeakPtr(),
         mock_payment_method_controller_.AsWeakPtr(),
-        mock_at_memory_controller_.AsWeakPtr(),
-        std::make_unique<::testing::NiceMock<MockManualFillingView>>());
+        mock_at_memory_controller_.AsWeakPtr(), std::move(mock_view));
 #endif  // BUILDFLAG(IS_ANDROID)
   }
 
@@ -185,20 +193,62 @@ class AutofillSuggestionControllerTestBase
     client().suggestion_controller(manager).Show(
         AutofillSuggestionController::GenerateSuggestionUiSessionId(),
         std::move(suggestions), trigger_source,
-        AutoselectFirstSuggestion(false), ignore_focus_loss);
+        AutoselectFirstSuggestion(false), ignore_focus_loss,
+        /*search_bar_initial_value=*/{});
   }
 
-  input::NativeWebKeyboardEvent CreateKeyPressEvent(int windows_key_code) {
+  input::NativeWebKeyboardEvent CreateKeyPressEvent(
+      int windows_key_code,
+      int modifiers = blink::WebInputEvent::kNoModifiers) {
     input::NativeWebKeyboardEvent event(
-        blink::WebInputEvent::Type::kRawKeyDown,
-        blink::WebInputEvent::kNoModifiers,
+        blink::WebInputEvent::Type::kRawKeyDown, modifiers,
         blink::WebInputEvent::GetStaticTimeStampForTests());
     event.windows_key_code = windows_key_code;
     return event;
   }
 
+  // Helper function to create a child frame, navigate it to `url`, and return
+  // it.
+  static content::RenderFrameHost* CreateAndNavigateChildFrame(
+      content::RenderFrameHost* parent,
+      const GURL& url,
+      std::string_view name) {
+    content::RenderFrameHost* rfh =
+        content::RenderFrameHostTester::For(parent)->AppendChild(
+            std::string(name));
+    // ContentAutofillDriverFactory::DidFinishNavigation() creates a driver for
+    // subframes only if
+    // `NavigationHandle::HasSubframeNavigationEntryCommitted()` is true. This
+    // is not the case for the first navigation. (In non-unit-tests, the first
+    // navigation creates a driver in
+    // ContentAutofillDriverFactory::BindAutofillDriver().) Therefore,
+    // we simulate *two* navigations here, and explicitly set the transition
+    // type for the second navigation.
+    std::unique_ptr<content::NavigationSimulator> simulator;
+    // First navigation: `HasSubframeNavigationEntryCommitted() == false`.
+    // Must be a different URL from the second navigation.
+    GURL about_blank("about:blank");
+    CHECK_NE(about_blank, url);
+    simulator =
+        content::NavigationSimulator::CreateRendererInitiated(about_blank, rfh);
+    simulator->Commit();
+    rfh = simulator->GetFinalRenderFrameHost();
+    // Second navigation: `HasSubframeNavigationEntryCommitted() == true`.
+    // Must set the transition type to ui::PAGE_TRANSITION_MANUAL_SUBFRAME.
+    simulator = content::NavigationSimulator::CreateRendererInitiated(url, rfh);
+    simulator->SetTransition(ui::PAGE_TRANSITION_MANUAL_SUBFRAME);
+    simulator->Commit();
+    return simulator->GetFinalRenderFrameHost();
+  }
+
+#if BUILDFLAG(IS_ANDROID)
+  MockManualFillingView* manual_filling_view() {
+    return raw_mock_manual_filling_view_;
+  }
+#endif  // BUILDFLAG(IS_ANDROID)
+
  private:
-  ::autofill::test::AutofillUnitTestEnvironment autofill_test_environment_;
+  test::AutofillUnitTestEnvironment autofill_test_environment_;
 
   TestAutofillClientInjector<Client> autofill_client_injector_;
   TestAutofillDriverInjector<Driver> autofill_driver_injector_;
@@ -211,6 +261,7 @@ class AutofillSuggestionControllerTestBase
       mock_payment_method_controller_;
   ::testing::NiceMock<MockAtMemoryAccessoryController>
       mock_at_memory_controller_;
+  raw_ptr<MockManualFillingView> raw_mock_manual_filling_view_ = nullptr;
 #endif  // BUILDFLAG(IS_ANDROID)
 };
 
@@ -227,18 +278,20 @@ class AutofillExternalDelegateForPopupTest : public AutofillExternalDelegate {
   MOCK_METHOD(void, ClearPreviewedForm, (), (override));
   MOCK_METHOD(void,
               OnSuggestionsShown,
-              (base::span<const Suggestion>),
+              (base::span<const Suggestion>,
+               const AutofillSuggestionDelegate::SuggestionUiMetadata&),
               (override));
   MOCK_METHOD(void, OnSuggestionsHidden, (SuggestionHidingReason), (override));
-  MOCK_METHOD(void, DidSelectSuggestion, (const Suggestion&), (override));
+  MOCK_METHOD(void,
+              DidSelectSuggestion,
+              (const Suggestion&, const FormGlobalId&, const FieldGlobalId&),
+              (override));
   MOCK_METHOD(void,
               DidAcceptSuggestion,
               (const Suggestion&,
-               const AutofillSuggestionDelegate::SuggestionMetadata&),
-              (override));
-  MOCK_METHOD(void,
-              DidPerformButtonActionForSuggestion,
-              (const Suggestion&, const SuggestionButtonAction&),
+               const AutofillSuggestionDelegate::SuggestionMetadata&,
+               const FormGlobalId&,
+               const FieldGlobalId&),
               (override));
   MOCK_METHOD(bool, RemoveSuggestion, (const Suggestion&), (override));
   MOCK_METHOD(void, OnTabSelected, (TabbedPaneTabType), (override));
@@ -257,8 +310,8 @@ class AutofillSuggestionControllerForTest
   AutofillSuggestionControllerForTest(
       base::WeakPtr<AutofillExternalDelegate> external_delegate,
       content::WebContents* web_contents,
-      const gfx::RectF& element_bounds
-  );
+      const LocalFrameToken& frame_token,
+      const gfx::RectF& element_bounds);
   ~AutofillSuggestionControllerForTest() override;
 
   // Making protected functions public for testing

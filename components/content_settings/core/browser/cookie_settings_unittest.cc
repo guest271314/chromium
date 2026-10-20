@@ -15,7 +15,6 @@
 #include "base/rand_util.h"
 #include "base/scoped_observation.h"
 #include "base/test/bind.h"
-#include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
 #include "base/values.h"
@@ -63,11 +62,6 @@ const bool kSupports3pcBlocking = {
     true
 #endif
 };
-
-#if !BUILDFLAG(IS_IOS)
-constexpr char kAllowedRequestsHistogram[] =
-    "API.StorageAccess.AllowedRequests4.Subsampled";
-#endif
 
 // To avoid an explosion of test cases, please don't just add a boolean to
 // the test features. Consider whether features can interact with each other and
@@ -317,41 +311,6 @@ class CookieSettingsTestP : public CookieSettingsTestBase,
   ContentSetting SettingWithTopLevelSaaOverride() const {
     return IsTopLevelStorageAccessGrantEligible() ? CONTENT_SETTING_ALLOW
                                                   : CONTENT_SETTING_BLOCK;
-  }
-
-  // The cookie access result would be blocked if not for a Storage Access API
-  // grant.
-  net::cookie_util::StorageAccessResult
-  BlockedStorageAccessResultWithSaaOverride() const {
-    if (IsStorageAccessGrantEligibleViaAPI() ||
-        IsStorageAccessGrantEligibleViaHeader()) {
-      return net::cookie_util::StorageAccessResult::
-          ACCESS_ALLOWED_STORAGE_ACCESS_GRANT;
-    }
-    return net::cookie_util::StorageAccessResult::ACCESS_BLOCKED;
-  }
-
-  // The cookie access result would be blocked if not for some Storage Access
-  // API usage. Note that this is not the same thing as presence of a permission
-  // grant.
-  net::cookie_util::StorageAccessResult
-  BlockedStorageAccessResultWithSaaViaAPI() const {
-    if (IsStorageAccessGrantEligibleViaAPI()) {
-      return net::cookie_util::StorageAccessResult::
-          ACCESS_ALLOWED_STORAGE_ACCESS_GRANT;
-    }
-    return net::cookie_util::StorageAccessResult::ACCESS_BLOCKED;
-  }
-
-  // A version of above that considers Top-Level Storage Access API grant
-  // instead of Storage Access API grant.
-  net::cookie_util::StorageAccessResult
-  BlockedStorageAccessResultWithTopLevelSaaOverride() const {
-    if (IsTopLevelStorageAccessGrantEligible()) {
-      return net::cookie_util::StorageAccessResult::
-          ACCESS_ALLOWED_TOP_LEVEL_STORAGE_ACCESS_GRANT;
-    }
-    return net::cookie_util::StorageAccessResult::ACCESS_BLOCKED;
   }
 
  private:
@@ -763,18 +722,7 @@ TEST_F(CookieSettingsTest, ThirdPartyExceptionSessionOnly) {
   EXPECT_FALSE(cookie_settings_->IsCookieSessionOnly(kBlockedSite));
 }
 
-class CookieSettingsTestUserBypass : public CookieSettingsTest {
- public:
-  CookieSettingsTestUserBypass() {
-    // Verify that cookie settings works correct with temporary user bypass
-    // exceptions.
-    feature_list_.InitAndEnableFeatureWithParameters(
-        content_settings::features::kUserBypassUI, {{"expiration", "90d"}});
-  }
-
- private:
-  base::test::ScopedFeatureList feature_list_;
-};
+class CookieSettingsTestUserBypass : public CookieSettingsTest {};
 
 // UserBypass is a desktop and android-only feature
 #if !BUILDFLAG(IS_IOS)
@@ -899,9 +847,6 @@ TEST_F(CookieSettingsTestUserBypass,
   EXPECT_TRUE(cookie_settings_incognito_->IsThirdPartyAccessAllowed(
       first_party_url, &info));
 
-  base::TimeDelta expiration =
-      content_settings::features::kUserBypassUIExceptionExpiration.Get();
-  ASSERT_FALSE(expiration.is_zero());
   EXPECT_TRUE(info.metadata.expiration().is_null());
 
   SettingInfo exception_info;
@@ -1164,27 +1109,16 @@ TEST_F(CookieSettingsTest, GetCookieSettingAllowedTelemetry) {
   prefs_.SetInteger(prefs::kCookieControlsMode,
                     static_cast<int>(CookieControlsMode::kOff));
 
-  base::HistogramTester histogram_tester;
-  histogram_tester.ExpectTotalCount(kAllowedRequestsHistogram, 0);
-
   EXPECT_EQ(cookie_settings_->GetCookieSetting(
                 url, net::SiteForCookies(), top_level_url,
                 net::CookieSettingOverrides(), nullptr),
             CONTENT_SETTING_ALLOW);
-  histogram_tester.ExpectTotalCount(kAllowedRequestsHistogram, 1);
-  histogram_tester.ExpectBucketCount(
-      kAllowedRequestsHistogram,
-      static_cast<int>(net::cookie_util::StorageAccessResult::ACCESS_ALLOWED),
-      1);
 }
 
 TEST_P(CookieSettingsTestP, GetCookieSettingSAA) {
   const GURL top_level_url = GURL(kFirstPartySite);
   const GURL url = GURL(kAllowedSite);
   const GURL third_url = GURL(kBlockedSite);
-
-  base::HistogramTester histogram_tester;
-  histogram_tester.ExpectTotalCount(kAllowedRequestsHistogram, 0);
 
   prefs_.SetInteger(prefs::kCookieControlsMode,
                     static_cast<int>(CookieControlsMode::kBlockThirdParty));
@@ -1198,10 +1132,6 @@ TEST_P(CookieSettingsTestP, GetCookieSettingSAA) {
                 url, net::SiteForCookies(), top_level_url,
                 GetCookieSettingOverrides(), nullptr),
             SettingWithSaaOverride());
-  histogram_tester.ExpectTotalCount(kAllowedRequestsHistogram, 1);
-  histogram_tester.ExpectBucketCount(
-      kAllowedRequestsHistogram,
-      static_cast<int>(BlockedStorageAccessResultWithSaaOverride()), 1);
 
   // Invalid pair the |top_level_url| granting access to |url| is now
   // being loaded under |url| as the top level url.
@@ -1263,9 +1193,6 @@ TEST_P(CookieSettingsTestP, GetCookieSettingSAAViaFedCM) {
   const GURL url = GURL(kAllowedSite);
   const GURL third_url = GURL(kBlockedSite);
 
-  base::HistogramTester histogram_tester;
-  histogram_tester.ExpectTotalCount(kAllowedRequestsHistogram, 0);
-
   prefs_.SetInteger(prefs::kCookieControlsMode,
                     static_cast<int>(CookieControlsMode::kBlockThirdParty));
 
@@ -1287,10 +1214,6 @@ TEST_P(CookieSettingsTestP, GetCookieSettingSAAViaFedCM) {
                 url, net::SiteForCookies(), top_level_url,
                 GetCookieSettingOverrides(), nullptr),
             SettingWithSaaViaAPI());
-  histogram_tester.ExpectTotalCount(kAllowedRequestsHistogram, 1);
-  histogram_tester.ExpectBucketCount(
-      kAllowedRequestsHistogram,
-      static_cast<int>(BlockedStorageAccessResultWithSaaViaAPI()), 1);
 
   // Grants are not bidrectional.
   EXPECT_EQ(cookie_settings_->GetCookieSetting(
@@ -1316,9 +1239,6 @@ TEST_P(CookieSettingsTestP, GetCookieSettingTopLevelStorageAccess) {
   const GURL url(kAllowedSite);
   const GURL third_url(kBlockedSite);
 
-  base::HistogramTester histogram_tester;
-  histogram_tester.ExpectTotalCount(kAllowedRequestsHistogram, 0);
-
   prefs_.SetInteger(prefs::kCookieControlsMode,
                     static_cast<int>(CookieControlsMode::kBlockThirdParty));
 
@@ -1331,10 +1251,6 @@ TEST_P(CookieSettingsTestP, GetCookieSettingTopLevelStorageAccess) {
                 url, net::SiteForCookies(), top_level_url,
                 GetCookieSettingOverrides(), nullptr),
             SettingWithTopLevelSaaOverride());
-  histogram_tester.ExpectTotalCount(kAllowedRequestsHistogram, 1);
-  histogram_tester.ExpectBucketCount(
-      kAllowedRequestsHistogram,
-      static_cast<int>(BlockedStorageAccessResultWithTopLevelSaaOverride()), 1);
 
   // Invalid pair the |top_level_url| granting access to |url| is now being
   // loaded under |url| as the top level url.

@@ -22,6 +22,7 @@
 #include "components/content_settings/core/common/features.h"
 #include "components/content_settings/core/test/content_settings_test_utils.h"
 #include "components/permissions/content_setting_permission_context_base.h"
+#include "components/permissions/permission_uma_util.h"
 #include "content/public/test/browser_task_environment.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "url/gurl.h"
@@ -236,7 +237,7 @@ TEST_F(OneTimePermissionProviderTest,
 
   one_time_permission_provider_->OnAllTabsInBackgroundTimerExpired(
       url::Origin::Create(primary_url),
-      OneTimePermissionsTrackerObserver::BackgroundExpiryType::kTimeout);
+      /*is_long_timeout=*/false);
 
   EXPECT_EQ(std::nullopt,
             TestUtils::GetPermissionSetting(
@@ -349,7 +350,7 @@ TEST_F(OneTimePermissionProviderTest,
 
   one_time_permission_provider_->OnAllTabsInBackgroundTimerExpired(
       url::Origin::Create(primary_url),
-      OneTimePermissionsTrackerObserver::BackgroundExpiryType::kTimeout);
+      /*is_long_timeout=*/false);
 
   EXPECT_EQ(CONTENT_SETTING_ALLOW,
             TestUtils::GetContentSetting(

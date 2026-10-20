@@ -8,11 +8,11 @@
 
 #include "base/feature_list.h"
 #include "base/memory/safe_ref.h"
-#include "components/variations/net/omnibox_autofocus_url_loader_throttle.h"
 #include "components/variations/net/variations_url_loader_throttle.h"
 #include "content/browser/client_hints/client_hints.h"
 #include "content/browser/client_hints/critical_client_hints_throttle.h"
 #include "content/browser/origin_trials/critical_origin_trials_throttle.h"
+#include "content/browser/preloading/prefetch/cancel_unrelated_prefetch_url_loader_throttle.h"
 #include "content/browser/preloading/prerender/prerender_url_loader_throttle.h"
 #include "content/browser/reduce_accept_language/reduce_accept_language_throttle.h"
 #include "content/browser/renderer_host/frame_tree_node.h"
@@ -28,6 +28,7 @@
 #include "net/base/load_flags.h"
 #include "net/http/http_request_headers.h"
 #include "net/http/http_util.h"
+#include "services/data_decoder/public/cpp/data_decoder.h"
 #include "services/network/public/cpp/client_hints.h"
 #include "services/network/public/cpp/features.h"
 #include "services/network/public/cpp/resource_request.h"
@@ -49,8 +50,6 @@ CreateContentBrowserURLLoaderThrottles(
       GetContentClient()->browser()->CreateURLLoaderThrottles(
           request, browser_context, wc_getter, navigation_ui_data,
           frame_tree_node_id, navigation_id);
-  variations::OmniboxAutofocusURLLoaderThrottle::AppendThrottleIfNeeded(
-      &throttles);
   // TODO(crbug.com/40135370): Consider whether we want to use the WebContents
   // to determine the value for variations::Owner. Alternatively, this is the
   // browser side, and we might be fine with Owner::kUnknown.
@@ -76,9 +75,7 @@ CreateContentBrowserURLLoaderThrottles(
           ReduceAcceptLanguageUtils::Create(browser_context);
       reduce_accept_lang_utils && request.is_outermost_main_frame) {
     throttles.push_back(std::make_unique<ReduceAcceptLanguageThrottle>(
-        std::move(reduce_accept_lang_utils.value()),
-        browser_context->GetOriginTrialsControllerDelegate(),
-        frame_tree_node_id));
+        std::move(reduce_accept_lang_utils.value())));
   }
 
   // frame_tree_node_id may be invalid if we are loading the first frame
@@ -119,14 +116,29 @@ CreateContentBrowserURLLoaderThrottles(
     }
   }
 
-  if (auto throttle = MaybeCreateIdentityUrlLoaderThrottle(base::BindRepeating(
-          webid::SetIdpSigninStatus, browser_context->GetWeakPtr(),
-          request.destination, frame_tree_node_id))) {
+  if (auto throttle = MaybeCreateIdentityUrlLoaderThrottle(
+          base::BindRepeating(
+              [](base::WeakPtr<content::BrowserContext> context,
+                 FrameTreeNodeId ftn_id,
+                 network::mojom::RequestDestination destination,
+                 const std::optional<url::Origin>& initiator,
+                 const url::Origin& idp_origin,
+                 blink::mojom::IdpSigninStatus status) {
+                webid::SetIdpSigninStatus(context, destination, ftn_id,
+                                          initiator, idp_origin, status);
+              },
+              browser_context->GetWeakPtr(), frame_tree_node_id),
+          GetSetLoginHeaderDataDecoderParser())) {
     throttles.push_back(std::move(throttle));
   }
 
   if (auto throttle =
           PrerenderURLLoaderThrottle::MaybeCreate(frame_tree_node_id)) {
+    throttles.push_back(std::move(throttle));
+  }
+
+  if (auto throttle = CancelUnrelatedPrefetchURLLoaderThrottle::MaybeCreate(
+          frame_tree_node_id)) {
     throttles.push_back(std::move(throttle));
   }
 

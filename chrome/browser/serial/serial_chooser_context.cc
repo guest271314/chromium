@@ -27,11 +27,8 @@
 #include "components/content_settings/core/common/content_settings.h"
 #include "content/public/browser/device_service.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
-#include "ui/base/l10n/l10n_util.h"
-
-#if !BUILDFLAG(IS_ANDROID)
 #include "services/device/public/cpp/usb/usb_ids.h"
-#endif  // !BUILDFLAG(IS_ANDROID)
+#include "ui/base/l10n/l10n_util.h"
 
 #if BUILDFLAG(IS_CHROMEOS)
 #include "chrome/browser/ash/profiles/profile_helper.h"
@@ -87,38 +84,32 @@ bool IsPolicyGrantedObject(const base::DictValue& object) {
 base::Value VendorAndProductIdsToValue(uint16_t vendor_id,
                                        uint16_t product_id) {
   base::DictValue object;
-#if !BUILDFLAG(IS_ANDROID)
-  const char* product_name =
-      device::UsbIds::GetProductName(vendor_id, product_id);
-  if (product_name) {
-    object.Set(kPortNameKey, product_name);
+  device::UsbIdNames names =
+      device::UsbIds::GetVendorAndProductName(vendor_id, product_id);
+  if (names.product_name) {
+    object.Set(kPortNameKey, names.product_name);
   } else {
-    const char* vendor_name = device::UsbIds::GetVendorName(vendor_id);
-    if (vendor_name) {
+    if (names.vendor_name) {
       object.Set(
           kPortNameKey,
           l10n_util::GetStringFUTF16(
               IDS_SERIAL_POLICY_DESCRIPTION_FOR_USB_PRODUCT_ID_AND_VENDOR_NAME,
               base::ASCIIToUTF16(base::StringPrintf("%04X", product_id)),
-              base::UTF8ToUTF16(vendor_name)));
+              base::UTF8ToUTF16(names.vendor_name)));
     } else {
-#endif  // !BUILDFLAG(IS_ANDROID)
       object.Set(
           kPortNameKey,
           l10n_util::GetStringFUTF16(
               IDS_SERIAL_POLICY_DESCRIPTION_FOR_USB_PRODUCT_ID_AND_VENDOR_ID,
               base::ASCIIToUTF16(base::StringPrintf("%04X", product_id)),
               base::ASCIIToUTF16(base::StringPrintf("%04X", vendor_id))));
-#if !BUILDFLAG(IS_ANDROID)
     }
   }
-#endif  // !BUILDFLAG(IS_ANDROID)
   return base::Value(std::move(object));
 }
 
 base::Value VendorIdToValue(uint16_t vendor_id) {
   base::DictValue object;
-#if !BUILDFLAG(IS_ANDROID)
   const char* vendor_name = device::UsbIds::GetVendorName(vendor_id);
   if (vendor_name) {
     object.Set(kPortNameKey,
@@ -126,14 +117,11 @@ base::Value VendorIdToValue(uint16_t vendor_id) {
                    IDS_SERIAL_POLICY_DESCRIPTION_FOR_USB_VENDOR_NAME,
                    base::UTF8ToUTF16(vendor_name)));
   } else {
-#endif  // !BUILDFLAG(IS_ANDROID)
     object.Set(kPortNameKey,
                l10n_util::GetStringFUTF16(
                    IDS_SERIAL_POLICY_DESCRIPTION_FOR_USB_VENDOR_ID,
                    base::ASCIIToUTF16(base::StringPrintf("%04X", vendor_id))));
-#if !BUILDFLAG(IS_ANDROID)
   }
-#endif  // !BUILDFLAG(IS_ANDROID)
   return base::Value(std::move(object));
 }
 
@@ -149,7 +137,7 @@ SerialChooserContext::SerialChooserContext(Profile* profile)
           ContentSettingsType::SERIAL_CHOOSER_DATA,
           HostContentSettingsMapFactory::GetForProfile(profile)),
       profile_(profile) {
-  DCHECK(profile_);
+  CHECK(profile_, base::NotFatalUntil::M162);
   permission_observation_.Observe(this);
 }
 
@@ -257,7 +245,7 @@ bool SerialChooserContext::IsValidObject(const base::DictValue& object) {
 std::u16string SerialChooserContext::GetObjectDisplayName(
     const base::DictValue& object) {
   const std::string* name = object.FindString(kPortNameKey);
-  DCHECK(name);
+  CHECK(name, base::NotFatalUntil::M162);
   return base::UTF8ToUTF16(*name);
 }
 
@@ -413,7 +401,7 @@ void SerialChooserContext::RevokeObjectPermissionInternal(
     return;
   std::set<base::UnguessableToken>& ports = it->second;
 
-  DCHECK(IsValidObject(object));
+  CHECK(IsValidObject(object), base::NotFatalUntil::M162);
   base::UnguessableToken decoded_token = DecodeToken(*token);
   if (decoded_token.is_empty()) {
     return;
@@ -423,6 +411,22 @@ void SerialChooserContext::RevokeObjectPermissionInternal(
                                  ? SerialPermissionRevoked::kEphemeralByWebsite
                                  : SerialPermissionRevoked::kEphemeralByUser);
   NotifyPermissionRevoked(origin);
+}
+
+std::vector<url::Origin> SerialChooserContext::RevokeEphemeralPermissions(
+    const ContentSettingsPattern& primary_pattern,
+    bool unconditional) {
+  std::vector<url::Origin> revoked_origins;
+  std::erase_if(ephemeral_ports_, [&](const auto& entry) {
+    const auto& [origin, ports] = entry;
+    if (primary_pattern.Matches(origin.GetURL()) &&
+        (unconditional || !CanRequestObjectPermission(origin))) {
+      revoked_origins.push_back(origin);
+      return true;
+    }
+    return false;
+  });
+  return revoked_origins;
 }
 
 void SerialChooserContext::GrantPortPermission(
@@ -475,7 +479,7 @@ bool SerialChooserContext::HasPortPermission(
     const base::DictValue& device = object->value;
 
     // Objects provided by the parent class can be assumed valid.
-    DCHECK(IsValidObject(device));
+    CHECK(IsValidObject(device), base::NotFatalUntil::M162);
 
     if (port.bluetooth_service_class_id &&
         port.bluetooth_service_class_id->IsValid()) {
@@ -578,7 +582,7 @@ bool SerialChooserContext::CanStorePersistentEntry(
 
 const device::mojom::SerialPortInfo* SerialChooserContext::GetPortInfo(
     const base::UnguessableToken& token) {
-  DCHECK(is_initialized_);
+  CHECK(is_initialized_, base::NotFatalUntil::M162);
   auto it = port_info_.find(token);
   return it == port_info_.end() ? nullptr : it->second.get();
 }
@@ -653,8 +657,8 @@ void SerialChooserContext::OnPortConnectedStateChanged(
 }
 
 void SerialChooserContext::Shutdown() {
-  FlushScheduledSaveSettingsCalls();
   permissions::ObjectPermissionContextBase::Shutdown();
+  FlushScheduledSaveSettingsCalls();
 }
 
 void SerialChooserContext::EnsurePortManagerConnection() {
@@ -716,9 +720,9 @@ void SerialChooserContext::OnPortManagerConnectionError() {
 bool SerialChooserContext::CanApplyPortSpecificPolicy() {
 #if BUILDFLAG(IS_CHROMEOS)
   auto* profile_helper = ash::ProfileHelper::Get();
-  DCHECK(profile_helper);
+  CHECK(profile_helper, base::NotFatalUntil::M162);
   user_manager::User* user = profile_helper->GetUserByProfile(profile_);
-  DCHECK(user);
+  CHECK(user, base::NotFatalUntil::M162);
   return user->IsAffiliated();
 #else
   return true;

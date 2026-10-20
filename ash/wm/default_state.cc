@@ -155,6 +155,14 @@ DefaultState::DefaultState(WindowStateType initial_state_type)
 
 DefaultState::~DefaultState() = default;
 
+void DefaultState::OnWMEvent(WindowState* window_state, const WMEvent* event) {
+  // A window state change should not lead to the window destruction.
+  // It is the caller's responsibility to delete the window in a safe way
+  // after the transition is completed if necessary (crbug.com/513489429).
+  aura::Window::ScopedDeleteBlocker blocker(window_state->window());
+  BaseState::OnWMEvent(window_state, event);
+}
+
 void DefaultState::AttachState(WindowState* window_state,
                                WindowState::State* state_in_previous_mode) {
   DCHECK_EQ(stored_window_state_, window_state);
@@ -582,7 +590,7 @@ void DefaultState::EnterToNextState(
     Shell::Get()->screen_pinning_controller()->SetPinnedWindow(
         window_state->window());
     if (window_state->delegate())
-      window_state->delegate()->ToggleLockedFullscreen(window_state);
+      window_state->delegate()->ToggleTrustedPinned(window_state);
   }
 }
 
@@ -682,7 +690,7 @@ void DefaultState::UpdateBoundsFromState(
 
     case WindowStateType::kFullscreen:
     case WindowStateType::kPinned:
-    case WindowStateType::kLockedFullscreen:
+    case WindowStateType::kTrustedPinned:
       MoveWindowToDisplayAsNeeded(window_state->window(),
                                   window_state->GetFullscreenTargetDisplayId());
       bounds_in_parent = screen_util::GetFullscreenWindowBoundsInParent(window);

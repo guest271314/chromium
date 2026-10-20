@@ -8,11 +8,13 @@
 
 #include "base/containers/flat_set.h"
 #include "base/feature_list.h"
+#include "base/memory_coordinator/utils.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/strings/strcat.h"
 #include "chrome/browser/glic/glic_metrics.h"
 #include "chrome/browser/glic/host/host.h"
 #include "chrome/browser/glic/public/glic_instance.h"
+#include "chrome/browser/glic/service/glic_instance_impl.h"
 #include "chrome/common/chrome_features.h"
 #include "content/public/browser/render_process_host.h"
 #include "content/public/browser/web_contents.h"
@@ -83,11 +85,22 @@ void GlicInstanceCoordinatorMetrics::RecordSwitchConversationTarget(
                                 target);
 }
 
-void GlicInstanceCoordinatorMetrics::OnMemoryPressure(
-    base::MemoryPressureLevel level) {
-  std::string_view suffix = (level == base::MEMORY_PRESSURE_LEVEL_MODERATE)
-                                ? ".ModeratePressure"
-                                : ".CriticalPressure";
+void GlicInstanceCoordinatorMetrics::RecordActivateTabCandidateTabCount(
+    size_t count) {
+  base::UmaHistogramCounts100(
+      "Glic.ActivateTabWithConversation.CandidateTabCount", count);
+}
+
+void GlicInstanceCoordinatorMetrics::OnReleaseMemory(
+    base::MemoryLimit memory_limit) {
+  if (memory_limit > base::kModerateMemoryPressureThreshold) {
+    return;
+  }
+
+  std::string_view suffix =
+      (memory_limit <= base::kCriticalMemoryPressureThreshold)
+          ? ".CriticalPressure"
+          : ".ModeratePressure";
   RecordMemoryFootprint(suffix);
 }
 
@@ -195,4 +208,35 @@ GlicInstanceCoordinatorMetrics::GetMostRecentlyActiveConversationId(
   }
   return std::nullopt;
 }
+
+void GlicInstanceCoordinatorMetrics::RecordCountOnCreation() {
+  size_t count = data_provider_->GetInstances().size();
+  base::UmaHistogramExactLinear("Glic.Instances.Count.OnCreation", count, 10);
+}
+
+void GlicInstanceCoordinatorMetrics::RecordCountAwakeOnContentsCreated() {
+  size_t unhibernated_count = 0;
+  for (GlicInstanceImpl* instance : data_provider_->GetInstances()) {
+    if (!instance->IsHibernated()) {
+      unhibernated_count++;
+    }
+  }
+  // The current instance is about to become unhibernated by this container
+  // creation.
+  unhibernated_count++;
+  base::UmaHistogramExactLinear("Glic.Instances.CountAwake.OnContentsCreated",
+                                unhibernated_count, 10);
+}
+
+void GlicInstanceCoordinatorMetrics::RecordCountActuatingOnTaskCreation() {
+  size_t actuating_count = 0;
+  for (GlicInstanceImpl* instance : data_provider_->GetInstances()) {
+    if (instance->IsActuating()) {
+      actuating_count++;
+    }
+  }
+  base::UmaHistogramExactLinear("Glic.Instances.CountActuating.OnTaskCreation",
+                                actuating_count, 10);
+}
+
 }  // namespace glic

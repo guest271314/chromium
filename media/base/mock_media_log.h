@@ -19,10 +19,6 @@ struct TypeAndCodec {
 };
 }  // namespace
 
-// Helper macros to reduce boilerplate when verifying media log entries.
-// |outer| is the std::string searched for substring |sub|.
-#define CONTAINS_STRING(outer, sub) (std::string::npos != (outer).find(sub))
-
 // Assumes |media_log_| is available which is a MockMediaLog, optionally a
 // NiceMock or StrictMock, in scope of the usage of this macro.
 #define EXPECT_MEDIA_LOG(x) EXPECT_MEDIA_LOG_ON(media_log_, x)
@@ -65,8 +61,8 @@ struct TypeAndCodec {
 namespace media {
 
 MATCHER_P(TracksHasCodecName, tandc, "") {
-  return (arg.substr(0, 15) == "{\"" + tandc.type + "\"") && (arg[16] != ']') &&
-         CONTAINS_STRING(arg, tandc.codec);
+  return arg.starts_with("{\"" + tandc.type + "\"") && (arg[16] != ']') &&
+         arg.contains(tandc.codec);
 }
 
 MATCHER_P(MatchesPropertyExactValue, message, "") {
@@ -74,7 +70,7 @@ MATCHER_P(MatchesPropertyExactValue, message, "") {
 }
 
 MATCHER_P(MatchesPropertyAnyValue, message, "") {
-  return CONTAINS_STRING(arg, message);
+  return arg.contains(message);
 }
 
 class MockMediaLog : public MediaLog {
@@ -85,6 +81,11 @@ class MockMediaLog : public MediaLog {
   MockMediaLog& operator=(const MockMediaLog&) = delete;
 
   ~MockMediaLog() override;
+
+  // Important but subtle note: remember that media logs are often `Clone()`d,
+  // so the mock is the parent log rather than the instance that any particular
+  // class owns.  If you mock any `MediaLog` methods here, be sure they're
+  // actually called by clones.
 
   MOCK_METHOD1(DoAddLogRecordLogString, void(const std::string& event));
 
@@ -105,9 +106,6 @@ class MockMediaLog : public MediaLog {
   std::unique_ptr<MediaLogRecord> take_most_recent_event() {
     return std::move(most_recent_event_);
   }
-
-  // Disable console logging since the mock log is used in spammy tests.
-  bool ShouldLogToDebugConsole() const override;
 
  private:
   std::unique_ptr<MediaLogRecord> most_recent_event_;

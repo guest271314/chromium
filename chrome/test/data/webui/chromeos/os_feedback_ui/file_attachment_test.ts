@@ -14,7 +14,7 @@ import {CrButtonElement} from 'chrome://resources/ash/common/cr_elements/cr_butt
 import {CrCheckboxElement} from 'chrome://resources/ash/common/cr_elements/cr_checkbox/cr_checkbox.js';
 import {CrToastElement} from 'chrome://resources/ash/common/cr_elements/cr_toast/cr_toast.js';
 import {strictQuery} from 'chrome://resources/ash/common/typescript_utils/strict_query.js';
-import {assertEquals, assertFalse, assertTrue} from 'chrome://webui-test/chromeos/chai_assert.js';
+import {assertEquals, assertFalse, assertTrue} from 'chrome://webui-test/chai_assert.js';
 import {flushTasks} from 'chrome://webui-test/polymer_test_util.js';
 import {eventToPromise, isVisible} from 'chrome://webui-test/test_util.js';
 
@@ -261,7 +261,7 @@ suite('fileAttachmentTestSuite', () => {
         strictQuery('#fileTooBigErrorMessage', page!.shadowRoot, CrToastElement)
             .open);
     assertEquals(
-        `Can't upload file larger than 10 MB`,
+        'Can\'t upload file larger than 10 MB',
         getElementContent('#fileTooBigErrorMessage > #errorMessage'));
     // There should not be a selected file.
     assertEquals('', getElementContent('#selectedFileName'));

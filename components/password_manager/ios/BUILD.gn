@@ -4,6 +4,19 @@
 
 import("//ios/web/public/js_messaging/optimize_ts.gni")
 
+bundle_data("auto_submit_test_bundle_data") {
+  testonly = true
+  sources = [
+    "//components/test/data/password_manager/auto_submit_disabled_field_after.html",
+    "//components/test/data/password_manager/auto_submit_disabled_field_between.html",
+    "//components/test/data/password_manager/auto_submit_synthetic_form.html",
+    "//components/test/data/password_manager/auto_submit_test.html",
+    "//components/test/data/password_manager/auto_submit_with_preceding_field.html",
+  ]
+  outputs = [ "{{bundle_resources_dir}}/" +
+              "{{source_root_relative_dir}}/{{source_file_part}}" ]
+}
+
 component("ios") {
   public_deps = [ ":password_manager_feature_header" ]
 
@@ -17,6 +30,7 @@ component("ios") {
     "//components/autofill/ios/browser",
     "//components/autofill/ios/browser:util",
     "//components/autofill/ios/common",
+    "//components/autofill/ios/common:autofill_optimization_features",
     "//components/autofill/ios/form_util",
     "//components/password_manager/core/browser",
     "//components/password_manager/core/browser/features:password_features",
@@ -35,9 +49,8 @@ component("ios") {
     "//url",
   ]
 
-  configs += [ "//build/config/compiler:wexit_time_destructors" ]
-
   sources = [
+    "actor_login/actor_login_tool_delegate.h",
     "constants.h",
     "ios_password_manager_driver.h",
     "ios_password_manager_driver.mm",
@@ -73,8 +86,6 @@ source_set("password_manager_feature_header") {
     "//ios/web/public/js_messaging",
   ]
 
-  configs += [ "//build/config/compiler:wexit_time_destructors" ]
-
   sources = [ "password_manager_java_script_feature.h" ]
 }
 
@@ -88,8 +99,6 @@ source_set("account_select_fill_data") {
     "//url",
   ]
 
-  configs += [ "//build/config/compiler:wexit_time_destructors" ]
-
   sources = [
     "account_select_fill_data.cc",
     "account_select_fill_data.h",
@@ -98,8 +107,6 @@ source_set("account_select_fill_data") {
 
 source_set("features") {
   deps = [ "//base" ]
-
-  configs += [ "//build/config/compiler:wexit_time_destructors" ]
 
   sources = [
     "features.h",

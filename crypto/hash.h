@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <string_view>
+#include <vector>
 
 #include "base/containers/span.h"
 #include "base/notreached.h"
@@ -29,9 +30,6 @@ inline constexpr size_t kSha512Size = 64;
 
 // Unless your code needs to be generic over HashKind, use one of these
 // kind-specific functions:
-CRYPTO_EXPORT std::array<uint8_t, kSha1Size> Sha1(
-    base::span<const uint8_t> data);
-CRYPTO_EXPORT std::array<uint8_t, kSha1Size> Sha1(std::string_view data);
 
 CRYPTO_EXPORT std::array<uint8_t, kSha256Size> Sha256(
     base::span<const uint8_t> data);
@@ -44,6 +42,8 @@ CRYPTO_EXPORT std::array<uint8_t, kSha512Size> Sha512(std::string_view data);
 // If you do need to be generic, you can use the Hash() function and pass a
 // HashKind instead.
 enum HashKind {
+  // Deprecated; don't use kSha1. If you need SHA-1 in new code, contact a
+  // CRYPTO_OWNERS member.
   kSha1,
   kSha256,
   kSha384,
@@ -71,6 +71,14 @@ inline constexpr size_t DigestSizeForHashKind(HashKind k) {
   NOTREACHED();
 }
 
+// One-shot hashing. The returned vector will be of the corresponding digest
+// size for `kind`.
+[[nodiscard]] CRYPTO_EXPORT std::vector<uint8_t> Hash(
+    HashKind kind,
+    base::span<const uint8_t> data);
+[[nodiscard]] CRYPTO_EXPORT std::vector<uint8_t> Hash(HashKind kind,
+                                                      std::string_view data);
+
 // One-shot hashing. The passed-in digest span must be the correct size for the
 // digest; use DigestSizeForHashKind() if your HashKind is variable.
 CRYPTO_EXPORT void Hash(HashKind kind,
@@ -80,8 +88,8 @@ CRYPTO_EXPORT void Hash(HashKind kind,
                         std::string_view data,
                         base::span<uint8_t> digest);
 
-// A streaming hasher interface. Calling Finish() resets the hash context to the
-// initial state after computing the digest.
+// A streaming hasher interface. Instances cannot be reused after Finish() is
+// called, so you need one of these per hash you want to compute.
 class CRYPTO_EXPORT Hasher {
  public:
   explicit Hasher(HashKind kind);

@@ -12,7 +12,8 @@
 
 namespace page_actions {
 
-FakeTabInterface::FakeTabInterface(TestingProfile* testing_profile) {
+FakeTabInterface::FakeTabInterface(TestingProfile* testing_profile)
+    : testing_profile_(testing_profile) {
   if (testing_profile) {
     web_contents_factory_ = std::make_unique<content::TestWebContentsFactory>();
     web_contents_ = web_contents_factory_->CreateWebContents(testing_profile);
@@ -35,6 +36,10 @@ content::WebContents* FakeTabInterface::GetContents() const {
   return web_contents_;
 }
 
+Profile* FakeTabInterface::GetProfile() const {
+  return testing_profile_;
+}
+
 void FakeTabInterface::Activate() {
   is_activated_ = true;
   activation_callbacks_.Notify(this);
@@ -47,6 +52,15 @@ void FakeTabInterface::Deactivate() {
 
 bool FakeTabInterface::IsActivated() const {
   return is_activated_;
+}
+
+ui::UnownedUserDataHost& FakeTabInterface::GetUnownedUserDataHost() {
+  return user_data_host_;
+}
+
+const ui::UnownedUserDataHost& FakeTabInterface::GetUnownedUserDataHost()
+    const {
+  return user_data_host_;
 }
 
 }  // namespace page_actions

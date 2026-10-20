@@ -88,7 +88,7 @@ void ChromeExtensionsBrowserClient::CleanUpWebView(
 
   // Clean up context menus for the WebView.
   auto* menu_manager = MenuManager::Get(profile);
-  DCHECK(menu_manager);
+  CHECK(menu_manager, base::NotFatalUntil::M161);
   // The |webview_embedder_frame_id| parameter of ExtensionKey is not used to
   // identify the context menu items that belong to a WebView so it is OK for it
   // to be |IPC::mojom::kRoutingIdNone| here.
@@ -107,9 +107,8 @@ void ChromeExtensionsBrowserClient::GetWebViewStoragePartitionConfig(
         callback) {
   if (owner_site_instance->GetSecurityPrincipal().SchemeIs(
           webapps::kIsolatedAppScheme)) {
-    base::expected<web_app::IsolatedWebAppUrlInfo, std::string> url_info =
-        web_app::IsolatedWebAppUrlInfo::Create(
-            owner_site_instance->GetSecurityPrincipal().GetDeprecatedSiteURL());
+    auto url_info = web_app::IsolatedWebAppUrlInfo::CreateFromHost(
+        owner_site_instance->GetSecurityPrincipal().GetHost());
     DCHECK(url_info.has_value()) << url_info.error();
 
     auto* profile = Profile::FromBrowserContext(browser_context);

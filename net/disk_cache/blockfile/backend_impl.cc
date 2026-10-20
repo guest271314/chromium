@@ -10,6 +10,7 @@
 #include <memory>
 #include <utility>
 
+#include "base/byte_size.h"
 #include "base/containers/heap_array.h"
 #include "base/debug/crash_logging.h"
 #include "base/debug/dump_without_crashing.h"
@@ -26,6 +27,7 @@
 #include "base/metrics/field_trial.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/metrics/histogram_macros.h"
+#include "base/numerics/safe_conversions.h"
 #include "base/rand_util.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
@@ -40,6 +42,7 @@
 #include "base/timer/timer.h"
 #include "base/trace_event/trace_event.h"
 #include "base/types/expected.h"
+#include "net/base/features.h"
 #include "net/base/net_errors.h"
 #include "net/disk_cache/backend_cleanup_tracker.h"
 #include "net/disk_cache/blockfile/disk_format.h"
@@ -109,10 +112,26 @@ size_t GetIndexSize(int table_len) {
 
 // Sets group for the current experiment. Returns false if the files should be
 // discarded.
-bool InitExperiment(disk_cache::IndexHeader* header, bool cache_created) {
+bool InitExperiment(disk_cache::IndexHeader* header,
+                    bool cache_created,
+                    net::CacheType cache_type) {
+  // Shader cache experiment.
+  if (cache_type == net::SHADER_CACHE &&
+      base::FeatureList::IsEnabled(
+          net::features::kShaderDiskCacheBackendExperiment)) {
+    if (cache_created) {
+      header->experiment = disk_cache::EXPERIMENT_SHADER_CACHE_BACKEND_WIPED;
+      return true;
+    }
+    return header->experiment ==
+           disk_cache::EXPERIMENT_SHADER_CACHE_BACKEND_WIPED;
+  }
+
+  // No active experiment: Discard the cache if it is associated with an
+  // experiment.
   if (header->experiment == disk_cache::EXPERIMENT_OLD_FILE1 ||
-      header->experiment == disk_cache::EXPERIMENT_OLD_FILE2) {
-    // Discard current cache.
+      header->experiment == disk_cache::EXPERIMENT_OLD_FILE2 ||
+      header->experiment == disk_cache::EXPERIMENT_SHADER_CACHE_BACKEND_WIPED) {
     return false;
   }
 
@@ -254,7 +273,8 @@ int BackendImpl::SyncInit() {
   init_ = true;
 
   if (data_->header.experiment != NO_EXPERIMENT &&
-      GetCacheType() != net::DISK_CACHE) {
+      GetCacheType() != net::DISK_CACHE &&
+      GetCacheType() != net::SHADER_CACHE) {
     // No experiment for other caches.
     return net::ERR_FAILED;
   }
@@ -289,8 +309,10 @@ int BackendImpl::SyncInit() {
   if (!restarted_ && (create_files || !data_->header.num_entries))
     ReportError(ERR_CACHE_CREATED);
 
-  if (!(user_flags_ & kNoRandom) && GetCacheType() == net::DISK_CACHE &&
-      !InitExperiment(&data_->header, create_files)) {
+  if (!(user_flags_ & kNoRandom) &&
+      (GetCacheType() == net::DISK_CACHE ||
+       GetCacheType() == net::SHADER_CACHE) &&
+      !InitExperiment(&data_->header, create_files, GetCacheType())) {
     return net::ERR_FAILED;
   }
 
@@ -729,6 +751,14 @@ bool BackendImpl::SetMaxSize(int64_t max_bytes) {
   user_flags_ |= kMaxSize;
   max_size_ = max_bytes;
   return true;
+}
+
+void BackendImpl::SetMaxBytes(base::ByteSize max_bytes) {
+  // Not implemented for the blockfile backend. Safe to ignore.
+}
+
+base::ByteSize BackendImpl::GetMaxBytesForTesting() const {
+  return base::ByteSize(base::checked_cast<uint64_t>(max_size_));
 }
 
 base::FilePath BackendImpl::GetFileName(Addr address) const {
@@ -1468,26 +1498,31 @@ bool BackendImpl::InitBackingStore(bool* file_created) {
 // The maximum cache size will be either set explicitly by the caller, or
 // calculated by this code.
 void BackendImpl::AdjustMaxCacheSize(int table_len) {
-  if (max_size_)
+  if (max_size_) {
     return;
+  }
 
   // If table_len is provided, the index file exists.
   DCHECK(!table_len || data_->header.magic);
 
   // The user is not setting the size, let's figure it out.
-  int64_t available = base::SysInfo::AmountOfFreeDiskSpace(path_).value_or(-1);
-  if (available < 0) {
-    max_size_ = kDefaultCacheSize;
+  std::optional<base::SysInfo::DiskSpaceInfo> disk_space =
+      base::SysInfo::AmountOfDiskSpace(path_);
+  if (!disk_space) {
+    max_size_ = kDefaultCacheSize.InBytes();
     return;
   }
 
-  if (table_len)
-    available += data_->header.num_bytes;
+  base::ByteSize available = disk_space->available;
+  if (table_len) {
+    available += base::ByteSizeDelta(data_->header.num_bytes);
+  }
 
-  max_size_ = PreferredCacheSize(available, GetCacheType());
+  max_size_ = PreferredCacheSize(available, GetCacheType()).InBytes();
 
-  if (!table_len)
+  if (!table_len) {
     return;
+  }
 
   // If we already have a table, adjust the size to it.
   max_size_ = std::min(max_size_, MaxStorageSizeForTable(table_len));
@@ -2009,8 +2044,10 @@ BackendImpl::CheckIndexResult BackendImpl::CheckIndex() {
 
 #if !defined(NET_BUILD_STRESS_CACHE)
   if (data_->header.num_bytes < 0 ||
-      (max_size_ < std::numeric_limits<int32_t>::max() - kDefaultCacheSize &&
-       data_->header.num_bytes > max_size_ + kDefaultCacheSize)) {
+      (max_size_ < std::numeric_limits<int32_t>::max() -
+                       kDefaultCacheSize.AsByteSizeDelta().InBytes() &&
+       data_->header.num_bytes >
+           max_size_ + kDefaultCacheSize.AsByteSizeDelta().InBytes())) {
     LOG(ERROR) << "Invalid cache (current) size";
     return BackendImpl::CheckIndexResult::kInvalidCacheSize;
   }
@@ -2092,8 +2129,8 @@ int BackendImpl::MaxBuffersSize() {
   // then cache the result.
   static const int max_buffers_size = ([]() {
     constexpr uint64_t kMaxMaxBuffersSize = 30 * 1024 * 1024;
-    const base::ByteCount total_memory =
-        base::SysInfo::AmountOfPhysicalMemory();
+    const base::ByteSize total_memory =
+        base::SysInfo::AmountOfTotalPhysicalMemory();
     if (total_memory.is_zero()) {
       return int{kMaxMaxBuffersSize};
     }

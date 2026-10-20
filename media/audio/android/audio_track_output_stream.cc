@@ -7,9 +7,12 @@
 #include <cmath>
 
 #include "base/android/jni_bytebuffer.h"
+#include "base/bits.h"
+#include "base/containers/span.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/logging.h"
+#include "base/numerics/safe_conversions.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/time/default_tick_clock.h"
 #include "media/audio/audio_manager_base.h"
@@ -162,12 +165,26 @@ ScopedJavaLocalRef<jobject> AudioTrackOutputStream::OnMoreData(
 
   base::span<uint8_t> native_buffer =
       base::android::JavaByteBufferToMutableSpan(env, audio_data);
-  CHECK_GE(native_buffer.size(), AudioBus::CalculateMemorySize(params_));
 
   if (params_.IsBitstreamFormat()) {
     // For bitstream formats, use the direct buffer memory to avoid additional
-    // memory copy.
-    auto audio_bus = AudioBus::WrapMemory(params_, native_buffer);
+    // memory copy. `native_buffer` is sized by `AudioTrackOutputStream.open()`
+    // to `3 * AudioTrack.getMinBufferSize()` for the compressed format rather
+    // than uncompressed float32 `AudioBus::CalculateMemorySize(params_)`, so
+    // size the wrapper to the aligned capacity of `native_buffer`. `AlignDown`
+    // trims at most `AudioBus::kChannelAlignment * params_.channels() - 1`
+    // bytes, leaving the wrapper well above both `getMinBufferSize()` and the
+    // single compressed `DecoderBuffer` packet that
+    // `AudioRendererAlgorithm::FillBuffer()` copies per `OnMoreData()` call.
+    AudioParameters bitstream_params = params_;
+    const size_t max_frames =
+        native_buffer.size() / (sizeof(float) * params_.channels());
+    const int aligned_frames = base::checked_cast<int>(base::bits::AlignDown(
+        max_frames, AudioBus::kChannelAlignment / sizeof(float)));
+    bitstream_params.set_frames_per_buffer(aligned_frames);
+    auto audio_bus = AudioBus::WrapMemory(
+        bitstream_params,
+        native_buffer.first(AudioBus::CalculateMemorySize(bitstream_params)));
     audio_bus->set_is_bitstream_format(true);
 
     callback_->OnMoreData(delay, tick_clock_->NowTicks(), {}, audio_bus.get());
@@ -186,13 +203,13 @@ ScopedJavaLocalRef<jobject> AudioTrackOutputStream::OnMoreData(
 
   callback_->OnMoreData(delay, tick_clock_->NowTicks(), {}, audio_bus_.get());
 
-  int16_t* native_bus = reinterpret_cast<int16_t*>(native_buffer.data());
-  audio_bus_->ToInterleaved<SignedInt16SampleTypeTraits>(audio_bus_->frames(),
-                                                         native_bus);
+  const size_t total_bytes =
+      audio_bus_->frames() * audio_bus_->channels() * sizeof(int16_t);
+  base::span<uint8_t> target_buffer = native_buffer.first(total_bytes);
+  audio_bus_->ToInterleavedBytes<SignedInt16SampleTypeTraits>(target_buffer);
 
   return Java_AudioTrackOutputStream_createAudioBufferInfo(
-      env, j_audio_output_stream_, audio_bus_->frames(),
-      sizeof(*native_bus) * audio_bus_->channels() * audio_bus_->frames());
+      env, j_audio_output_stream_, audio_bus_->frames(), total_bytes);
 }
 
 void AudioTrackOutputStream::OnError(JNIEnv* env) {

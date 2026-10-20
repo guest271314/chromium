@@ -72,23 +72,17 @@ public class HubTabSwitcherMetricsRecorder {
         Tab previousTab = tabModel.getTabById(lastId);
         if (previousTab == null) return;
 
-        if (mPaneIdWhenShown.intValue() == currentPane.getPaneId()) {
+        if (mPaneIdWhenShown == currentPane.getPaneId()) {
             if (tab.getId() == mTabIdWhenShown) {
                 // TODO(crbug.com/40132120): Differentiate list.
                 RecordUserAction.record("MobileTabReturnedToCurrentTab.TabGrid");
 
                 RecordUserAction.record("MobileTabReturnedToCurrentTab");
-            } else {
-                int previousIndex = tabModel.representativeIndexOf(previousTab);
-                int currentIndex = tabModel.representativeIndexOf(tab);
-                if (previousIndex != currentIndex) {
-                    if (!tabModel.isTabInTabGroup(tab)) {
-                        RecordUserAction.record("MobileTabSwitched.GridTabSwitcher");
-                    }
-                }
+            } else if (previousTab != tab && tab.getTabGroupId() == null) {
+                RecordUserAction.record("MobileTabSwitched.GridTabSwitcher");
             }
         } else {
-            int currentIndex = TabModelUtils.getTabIndexById(tabModel, tab.getId());
+            int currentIndex = tabModel.indexOf(tab);
             if (currentIndex == mIndexInModelWhenSwitched) {
                 // TabModelImpl logs this action only when a different index is set within a
                 // TabModelImpl. If we switch between normal tab model and incognito tab model and
@@ -98,7 +92,7 @@ public class HubTabSwitcherMetricsRecorder {
                 RecordUserAction.record("MobileTabSwitched");
             }
 
-            if (!tabModel.isTabInTabGroup(tab)) {
+            if (tab.getTabGroupId() == null) {
                 RecordUserAction.record("MobileTabSwitched.GridTabSwitcher");
             }
         }

@@ -107,7 +107,7 @@ PageContext::FormField MakeFormField(std::u16string id_attribute,
                                      std::u16string value) {
   PageContext::FormField field;
   field.id_attribute = std::move(id_attribute);
-  field.form_control_type = "text";
+  field.form_control_type = autofill::FormControlType::kInputText;
   field.value = std::move(value);
   return field;
 }
@@ -146,18 +146,8 @@ TEST(SendTabToSelfEntry, AsProto) {
   EXPECT_EQ(entry.GetSharedTime().ToDeltaSinceWindowsEpoch().InMicroseconds(),
             specifics.shared_time_usec());
   EXPECT_FALSE(specifics.has_page_context());
-}
-
-// Tests that the send tab to self entry is correctly created from the required
-// fields
-TEST(SendTabToSelfEntry, FromRequiredFields) {
-  EXPECT_THAT(
-      SendTabToSelfEntry::FromRequiredFields("1", GURL("http://example.com"),
-                                             "target_device"),
-      Pointee(MatchesEntry(
-          "1", GURL("http://example.com"), "", "", "target_device",
-          MatchesPageContext(IsEmpty()),
-          MatchesNavigationHistory(IsEmpty(), testing::Eq(std::nullopt)))));
+  EXPECT_FALSE(specifics.has_opened_time_windows_epoch_micros());
+  EXPECT_FALSE(specifics.has_activated_time_windows_epoch_micros());
 }
 
 // Tests that the send tab to self entry is correctly parsed from
@@ -171,13 +161,40 @@ TEST(SendTabToSelfEntry, FromProto) {
   pb_entry.set_target_device_sync_cache_guid("device");
   pb_entry.set_shared_time_usec(1);
 
-  EXPECT_THAT(
-      SendTabToSelfEntry::FromProto(pb_entry, base::Time::FromTimeT(10)),
-      Pointee(MatchesEntry(
-          pb_entry.guid(), GURL(pb_entry.url()), pb_entry.title(),
-          pb_entry.device_name(), pb_entry.target_device_sync_cache_guid(),
-          MatchesPageContext(IsEmpty()),
-          MatchesNavigationHistory(IsEmpty(), testing::Eq(std::nullopt)))));
+  std::unique_ptr<SendTabToSelfEntry> entry =
+      SendTabToSelfEntry::FromProto(pb_entry, base::Time::FromTimeT(10));
+  ASSERT_THAT(entry, testing::NotNull());
+  EXPECT_THAT(*entry, MatchesEntry(pb_entry.guid(), GURL(pb_entry.url()),
+                                   pb_entry.title(), pb_entry.device_name(),
+                                   pb_entry.target_device_sync_cache_guid(),
+                                   MatchesPageContext(IsEmpty()),
+                                   MatchesNavigationHistory(
+                                       IsEmpty(), testing::Eq(std::nullopt))));
+  EXPECT_FALSE(entry->IsOpened());
+  EXPECT_FALSE(entry->IsActivated());
+}
+
+// Tests that `FromProto` rejects entries with non-HTTP(S) or invalid URLs.
+TEST(SendTabToSelfEntry, FromProto_InvalidUrl) {
+  sync_pb::SendTabToSelfSpecifics pb_entry;
+  pb_entry.set_guid("1");
+  pb_entry.set_device_name("device");
+  pb_entry.set_target_device_sync_cache_guid("device");
+  pb_entry.set_shared_time_usec(1);
+
+  // Invalid scheme.
+  pb_entry.set_url("chrome://flags");
+  EXPECT_EQ(nullptr,
+            SendTabToSelfEntry::FromProto(pb_entry, base::Time::FromTimeT(10)));
+
+  pb_entry.set_url("about:blank");
+  EXPECT_EQ(nullptr,
+            SendTabToSelfEntry::FromProto(pb_entry, base::Time::FromTimeT(10)));
+
+  // Invalid URL.
+  pb_entry.set_url("invalid_url");
+  EXPECT_EQ(nullptr,
+            SendTabToSelfEntry::FromProto(pb_entry, base::Time::FromTimeT(10)));
 }
 
 // Tests that the send tab to self entry expiry works as expected
@@ -524,10 +541,12 @@ TEST(SendTabToSelfEntry, TimestampFieldsRoundTrip) {
 
   entry.MarkReceived(base::Time::FromTimeT(20));
   entry.MarkOpened(base::Time::FromTimeT(30));
+  entry.MarkActivated(base::Time::FromTimeT(40));
 
   SendTabToSelfLocal local_pb = entry.AsLocalProto();
   EXPECT_TRUE(local_pb.specifics().has_received_time_windows_epoch_micros());
   EXPECT_TRUE(local_pb.specifics().has_opened_time_windows_epoch_micros());
+  EXPECT_TRUE(local_pb.specifics().has_activated_time_windows_epoch_micros());
 
   std::unique_ptr<SendTabToSelfEntry> restored = SendTabToSelfEntry::FromProto(
       local_pb.specifics(), base::Time::FromTimeT(100));
@@ -535,6 +554,8 @@ TEST(SendTabToSelfEntry, TimestampFieldsRoundTrip) {
   EXPECT_EQ(base::Time::FromTimeT(20), restored->GetReceivedTime());
   EXPECT_TRUE(restored->IsOpened());
   EXPECT_EQ(base::Time::FromTimeT(30), restored->GetOpenedTime());
+  EXPECT_TRUE(restored->IsActivated());
+  EXPECT_EQ(base::Time::FromTimeT(40), restored->GetActivatedTime());
 }
 
 }  // namespace

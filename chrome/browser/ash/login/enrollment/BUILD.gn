@@ -24,7 +24,6 @@ static_library("enrollment") {
 
   public_deps = [
     "//base",
-    "//chrome/browser:browser_public_dependencies",
     "//chrome/browser/ash/login/",
     "//chrome/browser/ash/login/screens",
     "//chromeos/ash/components/network",
@@ -37,19 +36,18 @@ static_library("enrollment") {
 
   deps = [
     "//ash/constants",
-    "//chrome/browser:browser_process",
     "//chrome/browser:browser_process_platform_part",
     "//chrome/browser/ash/attestation",
     "//chrome/browser/ash/login/demo_mode",
     "//chrome/browser/ash/policy/core",
     "//chrome/browser/ash/policy/enrollment",
     "//chrome/browser/ash/policy/handlers",
-    "//chrome/browser/net",
     "//chrome/browser/ui/ash/login",
     "//chromeos/ash/components/attestation",
     "//chromeos/ash/components/dbus",
     "//chromeos/ash/components/dbus/attestation",
     "//chromeos/ash/components/dbus/device_management",
+    "//chromeos/ash/components/login/session:process_shutdown",
     "//chromeos/ash/components/system",
     "//chromeos/dbus/common",
     "//components/user_manager",
@@ -105,10 +103,10 @@ source_set("browser_tests") {
   deps = [
     ":enrollment",
     "//ash/constants",
+    "//ash/login/resources:login_strings",
     "//ash/public/cpp",
     "//base",
     "//base/test:test_support",
-    "//chrome/app:generated_resources",
     "//chrome/browser",
     "//chrome/browser:browser_process",
     "//chrome/browser:browser_process_platform_part",
@@ -120,7 +118,6 @@ source_set("browser_tests") {
     "//chrome/browser/ash/policy/enrollment/psm:test_support",
     "//chrome/browser/ash/policy/server_backed_state",
     "//chrome/browser/ash/policy/test_support",
-    "//chrome/browser/ui",
     "//chrome/browser/ui/ash/login",
     "//chrome/browser/ui/webui/ash/login",
     "//chrome/common:constants",
@@ -167,15 +164,13 @@ source_set("unit_tests") {
     "//chrome/browser/ui/ash/login:test_support",
     "//chrome/common:constants",
     "//chrome/test:test_support",
+    "//chrome/test/base:testing_browser_process",
     "//chromeos/ash/components/install_attributes:test_support",
+    "//chromeos/ash/components/login/session:test_support",
     "//chromeos/ash/components/network:test_support",
     "//chromeos/ash/components/system",
     "//components/policy/core/common:common_constants",
     "//components/prefs:test_support",
     "//testing/gtest",
   ]
-
-  # TODO(crbug.com/40031409): Fix code that adds exit-time destructors and
-  # enable the diagnostic by removing this line.
-  configs += [ "//build/config/compiler:no_exit_time_destructors" ]
 }

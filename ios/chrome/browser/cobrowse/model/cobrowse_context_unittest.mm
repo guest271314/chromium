@@ -10,6 +10,7 @@
 #import "ios/chrome/browser/shared/public/features/system_flags.h"
 #import "net/base/url_util.h"
 #import "testing/gtest/include/gtest/gtest.h"
+#import "testing/gtest_mac.h"
 #import "testing/platform_test.h"
 #import "url/gurl.h"
 
@@ -46,8 +47,6 @@ TEST_F(CobrowseContextTest, InitWithDefaultURL) {
   EXPECT_EQ(context.url.path(), "/search");
 
   std::string value;
-  EXPECT_TRUE(net::GetValueForKeyInQuery(context.url, "gsc", &value));
-  EXPECT_EQ(value, "2");
   EXPECT_TRUE(net::GetValueForKeyInQuery(context.url, "sourceid", &value));
   EXPECT_EQ(value, "chrome-mobile");
   EXPECT_TRUE(net::GetValueForKeyInQuery(context.url, "gsas", &value));
@@ -69,12 +68,52 @@ TEST_F(CobrowseContextTest, InitWithOverrideURL) {
   EXPECT_EQ(context.url.path(), "/search");
 
   std::string value;
-  EXPECT_TRUE(net::GetValueForKeyInQuery(context.url, "gsc", &value));
-  EXPECT_EQ(value, "2");
   EXPECT_TRUE(net::GetValueForKeyInQuery(context.url, "sourceid", &value));
   EXPECT_EQ(value, "chrome-mobile");
   EXPECT_TRUE(net::GetValueForKeyInQuery(context.url, "gsas", &value));
   EXPECT_EQ(value, "4");
+}
+
+// Tests that the context is correctly initialized using a search query string.
+TEST_F(CobrowseContextTest, CobrowseContextWithSearchQuery) {
+  CobrowseContext* context =
+      [CobrowseContext cobrowseContextWithSearchQuery:@"test query"];
+
+  EXPECT_EQ(context.url.host(), "www.google.com");
+  EXPECT_EQ(context.url.path(), "/search");
+  EXPECT_NSEQ(context.searchQuery, @"test query");
+
+  std::string value;
+  EXPECT_TRUE(net::GetValueForKeyInQuery(context.url, "udm", &value));
+  EXPECT_EQ(value, "50");
+  EXPECT_TRUE(net::GetValueForKeyInQuery(context.url, "sourceid", &value));
+  EXPECT_EQ(value, "chrome-mobile");
+  EXPECT_TRUE(net::GetValueForKeyInQuery(context.url, "gsas", &value));
+  EXPECT_EQ(value, "4");
+  EXPECT_TRUE(net::GetValueForKeyInQuery(context.url, "q", &value));
+  EXPECT_EQ(value, "test query");
+}
+
+// Test that `serverID` (`mtid`) and `turnID` (`mstk`) are extracted from the
+// URL and compared in `isEqual:`.
+TEST_F(CobrowseContextTest, ExtractsServerIDAndTurnID) {
+  GURL url(
+      "https://www.google.com/search?udm=50&q=hello&mtid=thread_1&mstk=turn_2");
+  CobrowseContext* context = [[CobrowseContext alloc] initWithURL:url];
+
+  EXPECT_NSEQ(context.searchQuery, @"hello");
+  EXPECT_NSEQ(context.serverID, @"thread_1");
+  EXPECT_NSEQ(context.turnID, @"turn_2");
+  EXPECT_TRUE(context.hasServerSessionTokens);
+
+  CobrowseContext* same_context = [[CobrowseContext alloc] initWithURL:url];
+  EXPECT_TRUE([context isEqual:same_context]);
+
+  GURL different_turn_url(
+      "https://www.google.com/search?udm=50&q=hello&mtid=thread_1&mstk=turn_3");
+  CobrowseContext* different_turn_context =
+      [[CobrowseContext alloc] initWithURL:different_turn_url];
+  EXPECT_NSNE(context, different_turn_context);
 }
 
 }  // namespace

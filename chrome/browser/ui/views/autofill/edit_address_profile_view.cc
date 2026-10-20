@@ -10,7 +10,6 @@
 #include "base/functional/bind.h"
 #include "base/notreached.h"
 #include "chrome/browser/autofill/personal_data_manager_factory.h"
-#include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/autofill/address_editor_controller.h"
 #include "chrome/browser/ui/autofill/autofill_bubble_base.h"
 #include "chrome/browser/ui/autofill/edit_address_profile_dialog_controller.h"
@@ -19,7 +18,6 @@
 #include "chrome/browser/ui/tabs/public/tab_features.h"
 #include "chrome/browser/ui/views/autofill/address_editor_view.h"
 #include "chrome/browser/ui/views/chrome_layout_provider.h"
-#include "components/autofill/core/common/autofill_features.h"
 #include "components/constrained_window/constrained_window_views.h"
 #include "components/strings/grit/components_strings.h"
 #include "components/tabs/public/tab_interface.h"
@@ -29,7 +27,6 @@
 #include "ui/base/mojom/ui_base_types.mojom-shared.h"
 #include "ui/views/controls/label.h"
 #include "ui/views/layout/box_layout.h"
-#include "ui/views/layout/fill_layout.h"
 #include "ui/views/metadata/view_factory.h"
 #include "ui/views/view_class_properties.h"
 #include "ui/views/widget/widget.h"
@@ -105,7 +102,7 @@ std::unique_ptr<AutofillBubbleBase> ShowEditAddressProfileDialogView(
 EditAddressProfileView::EditAddressProfileView(
     EditAddressProfileDialogController* controller)
     : controller_(controller) {
-  DCHECK(controller);
+  CHECK(controller, base::NotFatalUntil::M162);
 
   // TODO(crbug.com/338254375): Remove the following line once this is the
   // default state for widgets.
@@ -143,10 +140,10 @@ EditAddressProfileView::~EditAddressProfileView() = default;
 
 void EditAddressProfileView::ShowForWebContents(
     content::WebContents* web_contents) {
-  DCHECK(web_contents);
+  CHECK(web_contents, base::NotFatalUntil::M162);
   auto address_editor_controller = std::make_unique<AddressEditorController>(
       controller_->GetProfileToEdit(),
-      autofill::PersonalDataManagerFactory::GetForBrowserContext(
+      PersonalDataManagerFactory::GetForBrowserContext(
           web_contents->GetBrowserContext()),
       controller_->GetIsValidatable());
 

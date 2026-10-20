@@ -226,17 +226,21 @@ std::u16string ExtensionsToolbarViewModel::GetToolbarButtonTooltipText(
   return l10n_util::GetStringUTF16(message_id);
 }
 
+// static
 ExtensionsToolbarViewModel::ExtensionsToolbarButtonState
 ExtensionsToolbarViewModel::GetButtonState(
-    content::WebContents& web_contents) const {
-  if (!actions_model_) {
+    BrowserWindowInterface* browser,
+    content::WebContents& web_contents,
+    const ToolbarActionsModel* actions_model,
+    base::OnceCallback<bool(content::WebContents&)> has_access_callback) {
+  if (!actions_model) {
     return ExtensionsToolbarButtonState::kDefault;
   }
 
-  Profile* profile = browser_->GetProfile();
+  Profile* profile = browser->GetProfile();
   const GURL& url = web_contents.GetLastCommittedURL();
 
-  if (actions_model_->IsRestrictedUrl(url)) {
+  if (actions_model->IsRestrictedUrl(url)) {
     return ExtensionsToolbarButtonState::kAllExtensionsBlocked;
   }
 
@@ -250,11 +254,20 @@ ExtensionsToolbarViewModel::GetButtonState(
     return ExtensionsToolbarButtonState::kAllExtensionsBlocked;
   }
 
-  if (AnyActionHasCurrentSiteAccess(web_contents)) {
+  if (std::move(has_access_callback).Run(web_contents)) {
     return ExtensionsToolbarButtonState::kAnyExtensionHasAccess;
   }
 
   return ExtensionsToolbarButtonState::kDefault;
+}
+
+ExtensionsToolbarViewModel::ExtensionsToolbarButtonState
+ExtensionsToolbarViewModel::GetButtonState(
+    content::WebContents& web_contents) const {
+  return GetButtonState(
+      browser_, web_contents, actions_model_,
+      base::BindOnce(&ExtensionsToolbarViewModel::AnyActionHasCurrentSiteAccess,
+                     base::Unretained(this)));
 }
 
 void ExtensionsToolbarViewModel::ExecuteUserAction(
@@ -269,8 +282,9 @@ void ExtensionsToolbarViewModel::ExecuteUserAction(
 
 void ExtensionsToolbarViewModel::GrantSiteAccess(
     content::WebContents* web_contents,
-    const std::vector<extensions::ExtensionId>& extension_ids) {
-  if (!actions_model_) {
+    const std::vector<extensions::ExtensionId>& extension_ids,
+    const url::Origin& expected_origin) {
+  if (!actions_model_ || !web_contents) {
     return;
   }
 
@@ -287,7 +301,7 @@ void ExtensionsToolbarViewModel::GrantSiteAccess(
 
   extensions::SitePermissionsHelper(profile).UpdateSiteAccess(
       extensions_to_run, web_contents,
-      extensions::PermissionsManager::UserSiteAccess::kOnSite);
+      extensions::PermissionsManager::UserSiteAccess::kOnSite, expected_origin);
 }
 
 // Extensions are included in the request access button only when:
@@ -298,7 +312,8 @@ ExtensionsToolbarViewModel::RequestAccessButtonParams
 ExtensionsToolbarViewModel::GetRequestAccessButtonParams(
     content::WebContents* web_contents) const {
   RequestAccessButtonParams params;
-  if (!web_contents || !permissions_manager_observation_.IsObserving()) {
+  if (!web_contents || !permissions_manager_observation_.IsObserving() ||
+      !actions_model_) {
     return params;
   }
 
@@ -337,6 +352,8 @@ ExtensionsToolbarViewModel::GetRequestAccessButtonParams(
     return params;
   }
 
+  params.origin = origin;
+
   std::vector<std::u16string> tooltip_parts;
   tooltip_parts.push_back(l10n_util::GetStringFUTF16(
       IDS_EXTENSIONS_REQUEST_ACCESS_BUTTON_TOOLTIP_MULTIPLE_EXTENSIONS,
@@ -369,7 +386,7 @@ bool ExtensionsToolbarViewModel::ShowToolbarActionPopupForAPICall(
   }
 
   ToolbarActionViewModel* action = GetActionModelForId(action_id);
-  DCHECK(action);
+  CHECK(action, base::NotFatalUntil::M162);
   action->TriggerPopupForAPI(std::move(callback));
   return true;
 }
@@ -380,6 +397,11 @@ void ExtensionsToolbarViewModel::ToggleExtensionsMenu() {
 
 void ExtensionsToolbarViewModel::ShowManageExtensionsIPH() {
   delegate_->ShowManageExtensionsIPH();
+}
+
+void ExtensionsToolbarViewModel::ShowPinnedByDefaultIPH(
+    const std::string& extension_id) {
+  delegate_->ShowPinnedByDefaultIPH(extension_id);
 }
 
 bool ExtensionsToolbarViewModel::HasAnyExtensions() const {
@@ -463,6 +485,19 @@ void ExtensionsToolbarViewModel::OnActiveTabChanged(TabListInterface& tab_list,
   WebContentsObserver::Observe(contents);
   for (Observer& obs : observers_) {
     obs.OnActiveWebContentsChanged(/*is_same_document=*/false, contents);
+  }
+}
+
+void ExtensionsToolbarViewModel::OnWebContentsReplaced(
+    TabListInterface& tab_list,
+    tabs::TabInterface* tab,
+    content::WebContents* old_contents,
+    content::WebContents* new_contents) {
+  if (tab == tab_list.GetActiveTab()) {
+    WebContentsObserver::Observe(new_contents);
+    for (Observer& obs : observers_) {
+      obs.OnActiveWebContentsChanged(/*is_same_document=*/false, new_contents);
+    }
   }
 }
 
@@ -578,6 +613,19 @@ void ExtensionsToolbarViewModel::OnShowAccessRequestsInToolbarChanged(
 void ExtensionsToolbarViewModel::OnToolbarActionsModelShutdown() {
   actions_model_observation_.Reset();
   actions_model_ = nullptr;
+
+  // Notify observers for each action being removed so views can be safely
+  // detached and destroyed while their action view models are still valid.
+  std::vector<ToolbarActionsModel::ActionId> action_ids;
+  action_ids.reserve(actions_.size());
+  for (const auto& [action_id, _] : actions_) {
+    action_ids.push_back(action_id);
+  }
+  for (const auto& action_id : action_ids) {
+    OnToolbarActionRemoved(action_id);
+  }
+  // All actions_ elements should be erased in the OnToolbarActionRemoved calls
+  // above, but we clear them here as well just to be safe.
   actions_.clear();
 }
 

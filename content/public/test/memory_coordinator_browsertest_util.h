@@ -5,11 +5,14 @@
 #ifndef CONTENT_PUBLIC_TEST_MEMORY_COORDINATOR_BROWSERTEST_UTIL_H_
 #define CONTENT_PUBLIC_TEST_MEMORY_COORDINATOR_BROWSERTEST_UTIL_H_
 
+#include <stdint.h>
+
 #include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
 
+#include "base/memory_coordinator/memory_limit.h"
 #include "content/common/content_export.h"
 
 namespace content::test {
@@ -23,7 +26,7 @@ class ScopedMemoryLimitOverride {
   explicit ScopedMemoryLimitOverride(std::string_view consumer_name);
   ~ScopedMemoryLimitOverride();
 
-  void SetLimit(int percentage);
+  void SetLimit(base::MemoryLimit memory_limit);
   void ClearLimit();
   void NotifyReleaseMemory();
 
@@ -32,8 +35,8 @@ class ScopedMemoryLimitOverride {
       delete;
 
  private:
-  const std::string consumer_name_;
-  std::optional<int> limit_;
+  const uint32_t consumer_id_;
+  std::optional<base::MemoryLimit> limit_;
 };
 
 }  // namespace content::test

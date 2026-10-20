@@ -30,8 +30,8 @@ import org.chromium.base.test.util.MinAndroidSdkLevel;
 import org.chromium.base.test.util.Restriction;
 import org.chromium.base.test.util.TestAnimations;
 import org.chromium.content.common.ContentInternalFeatures;
-import org.chromium.content_public.browser.ContentFeatureList;
 import org.chromium.content_public.browser.test.ContentJUnit4ClassRunner;
+import org.chromium.ui.accessibility.AccessibilityFeatures;
 import org.chromium.ui.test.util.DeviceRestriction;
 
 /** Tests for WebContentsAccessibilityImpl integration with accessibility services. */
@@ -39,12 +39,6 @@ import org.chromium.ui.test.util.DeviceRestriction;
 @SuppressLint("VisibleForTests")
 @Batch(Batch.PER_CLASS)
 @Restriction(DeviceRestriction.RESTRICTION_TYPE_NON_AUTO)
-@DisableFeatures({ContentFeatureList.ACCESSIBILITY_UNIFIED_SNAPSHOTS})
-@EnableFeatures({
-    ContentFeatureList.ACCESSIBILITY_DEPRECATE_TYPE_ANNOUNCE,
-    ContentFeatureList.ACCESSIBILITY_EXTENDED_SELECTION,
-    ContentFeatureList.ACCESSIBILITY_SET_SELECTABLE_ON_ALL_NODES_WITH_TEXT
-})
 @TestAnimations.EnableAnimations
 public class WebContentsAccessibilityTreeTest {
     // File path that holds all the relevant tests.
@@ -52,8 +46,13 @@ public class WebContentsAccessibilityTreeTest {
     private static final String BASE_ARIA_FILE_PATH = "content/test/data/accessibility/aria/";
     private static final String BASE_APG_PATTERN_FILE_PATH =
             "content/test/data/accessibility/aria/apg-patterns/";
+    private static final String BASE_APG_PATTERN_THIRDPARTY_INPUT_PATH =
+            "third_party/aria-practices/src/content/patterns/";
+    private static final String BASE_APG_PATTERN_THIRDPARTY_EXPECTATION_PATH =
+            "content/test/data/accessibility/aria/apg-patterns-thirdparty/";
     private static final String BASE_CSS_FILE_PATH = "content/test/data/accessibility/css/";
     private static final String BASE_HTML_FILE_PATH = "content/test/data/accessibility/html/";
+    private static final String BASE_MATHML_FILE_PATH = "content/test/data/accessibility/mathml/";
     private static final String DEFAULT_FILE_SUFFIX = "-expected-android-external.txt";
     private static final String ASSIST_DATA_FILE_SUFFIX = "-expected-android-assist-data.txt";
 
@@ -76,21 +75,29 @@ public class WebContentsAccessibilityTreeTest {
      * @param expectationFilePath directory that holds the test files
      */
     private void performTest(String inputFile, String expectationFile, String expectationFilePath) {
+        performTest(inputFile, expectationFilePath, expectationFile, expectationFilePath);
+    }
+
+    private void performTest(
+            String inputFile,
+            String inputFilePath,
+            String expectationFile,
+            String expectationFilePath) {
         // Build page from given file and enable testing framework.
-        mActivityTestRule.setupTestFromFile(expectationFilePath + inputFile);
+        mActivityTestRule.setupTestFromFile(inputFilePath + inputFile);
 
         // Create extra strings to print to logs along with potential error(s) for rebase tool.
         String accessibilityNodeInfoErrorPrefix =
                 String.format(
                         "\n\nTesting: %s%s\nExpected output: %s%s",
-                        expectationFilePath,
+                        inputFilePath,
                         inputFile,
                         expectationFilePath,
                         expectationFile + DEFAULT_FILE_SUFFIX);
         // String assistDataErrorPrefix =
         //         String.format(
         //                 "\n\nTesting: %s%s\nExpected output: %s%s",
-        //                 expectationFilePath,
+        //                 inputFilePath,
         //                 inputFile,
         //                 expectationFilePath,
         //                 expectationFile + ASSIST_DATA_FILE_SUFFIX);
@@ -168,18 +175,34 @@ public class WebContentsAccessibilityTreeTest {
         performTest(inputFile, expectationFile, BASE_ARIA_FILE_PATH);
     }
 
+    private String removeHtmlSuffix(String input) {
+        // ".html" has length 5.
+        return input.substring(0, input.length() - 5);
+    }
+
     private void performApgPatternTest(String input) {
-        // Remove the '.html' from the input file, and append the standard suffix.
-        performApgPatternTest(input, input.substring(0, input.length() - 5));
+        performApgPatternTest(input, removeHtmlSuffix(input));
     }
 
     private void performApgPatternTest(String inputFile, String expectationFile) {
         performTest(inputFile, expectationFile, BASE_APG_PATTERN_FILE_PATH);
     }
 
+    private void performApgPatternThirdPartyTest(String input) {
+        String filename = input.substring(input.lastIndexOf('/') + 1);
+        performApgPatternThirdPartyTest(input, removeHtmlSuffix(filename));
+    }
+
+    private void performApgPatternThirdPartyTest(String inputFile, String expectationFile) {
+        performTest(
+                inputFile,
+                BASE_APG_PATTERN_THIRDPARTY_INPUT_PATH,
+                expectationFile,
+                BASE_APG_PATTERN_THIRDPARTY_EXPECTATION_PATH);
+    }
+
     private void performCssTest(String input) {
-        // Remove the '.html' from the input file, and append the standard suffix.
-        performCssTest(input, input.substring(0, input.length() - 5));
+        performCssTest(input, removeHtmlSuffix(input));
     }
 
     private void performCssTest(String inputFile, String expectationFile) {
@@ -187,12 +210,16 @@ public class WebContentsAccessibilityTreeTest {
     }
 
     private void performHtmlTest(String input) {
-        // Remove the '.html' from the input file, and append the standard suffix.
-        performHtmlTest(input, input.substring(0, input.length() - 5));
+        performHtmlTest(input, removeHtmlSuffix(input));
     }
 
     private void performHtmlTest(String inputFile, String expectationFile) {
         performTest(inputFile, expectationFile, BASE_HTML_FILE_PATH);
+    }
+
+    private void performMathmlTest(String input) {
+        String expectationFile = removeHtmlSuffix(input);
+        performTest(input, expectationFile, BASE_MATHML_FILE_PATH);
     }
 
     private String generateViewStructureTree() {
@@ -413,6 +440,13 @@ public class WebContentsAccessibilityTreeTest {
     @SmallTest
     public void test_ariaDescribedby() {
         performAriaTest("aria-describedby.html");
+    }
+
+    @Test
+    @SmallTest
+    @DisabledTest(message = "Mac-only test for fieldset description fallback")
+    public void test_ariaFieldsetDescribedby() {
+        performAriaTest("aria-fieldset-describedby.html");
     }
 
     @Test
@@ -650,42 +684,26 @@ public class WebContentsAccessibilityTreeTest {
 
     @Test
     @SmallTest
+    public void test_ariaListLabeled() {
+        performAriaTest("aria-list-labeled.html");
+    }
+
+    @Test
+    @SmallTest
     public void test_ariaListitem() {
         performAriaTest("aria-listitem.html");
     }
 
     @Test
     @SmallTest
-    @DisableFeatures({
-        ContentFeatureList.ACCESSIBILITY_DEPRECATE_TYPE_ANNOUNCE,
-        ContentFeatureList.ACCESSIBILITY_IMPROVE_LIVE_REGION_ANNOUNCE
-    })
     public void test_ariaLive() {
         performAriaTest("aria-live.html");
     }
 
     @Test
     @SmallTest
-    @EnableFeatures(ContentFeatureList.ACCESSIBILITY_DEPRECATE_TYPE_ANNOUNCE)
-    public void test_ariaLive_exp() {
-        performAriaTest("aria-live.html", "aria-live-exp");
-    }
-
-    @Test
-    @SmallTest
-    @DisableFeatures({
-        ContentFeatureList.ACCESSIBILITY_DEPRECATE_TYPE_ANNOUNCE,
-        ContentFeatureList.ACCESSIBILITY_IMPROVE_LIVE_REGION_ANNOUNCE
-    })
     public void test_ariaLiveWithContent() {
         performAriaTest("aria-live-with-content.html");
-    }
-
-    @Test
-    @SmallTest
-    @EnableFeatures(ContentFeatureList.ACCESSIBILITY_DEPRECATE_TYPE_ANNOUNCE)
-    public void test_ariaLiveWithContent_exp() {
-        performAriaTest("aria-live-with-content.html", "aria-live-with-content-exp");
     }
 
     @Test
@@ -768,8 +786,15 @@ public class WebContentsAccessibilityTreeTest {
 
     @Test
     @SmallTest
+    @DisabledTest(message = "https://crbug.com/517959931")
     public void test_ariaModal() {
         performAriaTest("aria-modal.html");
+    }
+
+    @Test
+    @SmallTest
+    public void test_ariaModalWithAriaOwns() {
+        performAriaTest("aria-modal-with-aria-owns.html");
     }
 
     @Test
@@ -896,6 +921,24 @@ public class WebContentsAccessibilityTreeTest {
     @SmallTest
     public void test_ariaRadio() {
         performAriaTest("aria-radio.html");
+    }
+
+    @Test
+    @SmallTest
+    public void test_radiosInRadiogroupsWithInterveningNonGenerics() {
+        performAriaTest("radios-in-radiogroups-with-intervening-non-generics.html");
+    }
+
+    @Test
+    @SmallTest
+    public void test_radioGroupCalculationWithIgnoredRadios() {
+        performAriaTest("radio-group-calculation-with-ignored-radios.html");
+    }
+
+    @Test
+    @SmallTest
+    public void test_radioGroupPosinsetSetsizeOverrides() {
+        performAriaTest("radio-group-posinset-setsize-overrides.html");
     }
 
     @Test
@@ -1188,12 +1231,6 @@ public class WebContentsAccessibilityTreeTest {
 
     @Test
     @SmallTest
-    public void test_ariaVirtualcontent() {
-        performAriaTest("aria-virtualcontent.html");
-    }
-
-    @Test
-    @SmallTest
     public void test_dpubRoles() {
         performAriaTest("dpub-roles.html");
     }
@@ -1202,6 +1239,12 @@ public class WebContentsAccessibilityTreeTest {
     @SmallTest
     public void test_graphicsRoles() {
         performAriaTest("graphics-roles.html");
+    }
+
+    @Test
+    @SmallTest
+    public void test_headingWithAriaLabel() {
+        performAriaTest("heading-with-aria-label.html");
     }
 
     @Test
@@ -1362,6 +1405,409 @@ public class WebContentsAccessibilityTreeTest {
         performApgPatternTest("aria-treeview-file-directory-declared-properties.html");
     }
 
+    @Test
+    @SmallTest
+    public void test_ariaApgPatternThirdPartyAccordion() {
+        performApgPatternThirdPartyTest("accordion/examples/accordion.html");
+    }
+
+    @Test
+    @SmallTest
+    public void test_ariaApgPatternThirdPartyAdvancedDataGrid() {
+        performApgPatternThirdPartyTest("grid/examples/advanced-data-grid.html");
+    }
+
+    @Test
+    @SmallTest
+    public void test_ariaApgPatternThirdPartyAlert() {
+        performApgPatternThirdPartyTest("alert/examples/alert.html");
+    }
+
+    @Test
+    @SmallTest
+    public void test_ariaApgPatternThirdPartyAlertdialog() {
+        performApgPatternThirdPartyTest("alertdialog/examples/alertdialog.html");
+    }
+
+    @Test
+    @SmallTest
+    public void test_ariaApgPatternThirdPartyBreadcrumb() {
+        performApgPatternThirdPartyTest("breadcrumb/examples/breadcrumb.html");
+    }
+
+    @Test
+    @SmallTest
+    public void test_ariaApgPatternThirdPartyButton() {
+        performApgPatternThirdPartyTest("button/examples/button.html");
+    }
+
+    @Test
+    @SmallTest
+    public void test_ariaApgPatternThirdPartyButtonIdl() {
+        performApgPatternThirdPartyTest("button/examples/button_idl.html");
+    }
+
+    @Test
+    @SmallTest
+    public void test_ariaApgPatternThirdPartyCarousel1PrevNext() {
+        performApgPatternThirdPartyTest("carousel/examples/carousel-1-prev-next.html");
+    }
+
+    @Test
+    @SmallTest
+    public void test_ariaApgPatternThirdPartyCarousel2Tablist() {
+        performApgPatternThirdPartyTest("carousel/examples/carousel-2-tablist.html");
+    }
+
+    @Test
+    @SmallTest
+    public void test_ariaApgPatternThirdPartyCheckbox() {
+        performApgPatternThirdPartyTest("checkbox/examples/checkbox.html");
+    }
+
+    @Test
+    @SmallTest
+    public void test_ariaApgPatternThirdPartyCheckboxMixed() {
+        performApgPatternThirdPartyTest("checkbox/examples/checkbox-mixed.html");
+    }
+
+    @Test
+    @SmallTest
+    public void test_ariaApgPatternThirdPartyComboboxAutocompleteBoth() {
+        performApgPatternThirdPartyTest("combobox/examples/combobox-autocomplete-both.html");
+    }
+
+    @Test
+    @SmallTest
+    public void test_ariaApgPatternThirdPartyComboboxAutocompleteList() {
+        performApgPatternThirdPartyTest("combobox/examples/combobox-autocomplete-list.html");
+    }
+
+    @Test
+    @SmallTest
+    public void test_ariaApgPatternThirdPartyComboboxAutocompleteNone() {
+        performApgPatternThirdPartyTest("combobox/examples/combobox-autocomplete-none.html");
+    }
+
+    @Test
+    @SmallTest
+    public void test_ariaApgPatternThirdPartyComboboxDatepicker() {
+        performApgPatternThirdPartyTest("combobox/examples/combobox-datepicker.html");
+    }
+
+    @Test
+    @SmallTest
+    public void test_ariaApgPatternThirdPartyComboboxSelectOnly() {
+        performApgPatternThirdPartyTest("combobox/examples/combobox-select-only.html");
+    }
+
+    @Test
+    @SmallTest
+    public void test_ariaApgPatternThirdPartyDataGrids() {
+        performApgPatternThirdPartyTest("grid/examples/data-grids.html");
+    }
+
+    @Test
+    @SmallTest
+    public void test_ariaApgPatternThirdPartyDatepickerDialog() {
+        performApgPatternThirdPartyTest("dialog-modal/examples/datepicker-dialog.html");
+    }
+
+    @Test
+    @SmallTest
+    public void test_ariaApgPatternThirdPartyDatepickerSpinbuttons() {
+        performApgPatternThirdPartyTest("spinbutton/examples/datepicker-spinbuttons.html");
+    }
+
+    @Test
+    @SmallTest
+    public void test_ariaApgPatternThirdPartyDialog() {
+        performApgPatternThirdPartyTest("dialog-modal/examples/dialog.html");
+    }
+
+    @Test
+    @SmallTest
+    public void test_ariaApgPatternThirdPartyDisclosureCard() {
+        performApgPatternThirdPartyTest("disclosure/examples/disclosure-card.html");
+    }
+
+    @Test
+    @SmallTest
+    public void test_ariaApgPatternThirdPartyDisclosureFaq() {
+        performApgPatternThirdPartyTest("disclosure/examples/disclosure-faq.html");
+    }
+
+    // TODO(crbug.com/545647752): disabled due to flakiness
+    @Test
+    @SmallTest
+    @DisabledTest(message = "b/545647752")
+    public void test_ariaApgPatternThirdPartyDisclosureImageDescription() {
+        performApgPatternThirdPartyTest("disclosure/examples/disclosure-image-description.html");
+    }
+
+    @Test
+    @SmallTest
+    public void test_ariaApgPatternThirdPartyDisclosureNavigation() {
+        performApgPatternThirdPartyTest("disclosure/examples/disclosure-navigation.html");
+    }
+
+    @Test
+    @SmallTest
+    public void test_ariaApgPatternThirdPartyDisclosureNavigationHybrid() {
+        performApgPatternThirdPartyTest("disclosure/examples/disclosure-navigation-hybrid.html");
+    }
+
+    // TODO(crbug.com/545647752): disabled due to flakiness
+    @Test
+    @SmallTest
+    @DisabledTest(message = "b/545647752")
+    public void test_ariaApgPatternThirdPartyFeed() {
+        performApgPatternThirdPartyTest("feed/examples/feed.html");
+    }
+
+    // TODO(crbug.com/545647752): disabled due to flakiness
+    @Test
+    @SmallTest
+    @DisabledTest(message = "b/545647752")
+    public void test_ariaApgPatternThirdPartyFeedDisplay() {
+        performApgPatternThirdPartyTest("feed/examples/feed-display.html");
+    }
+
+    @Test
+    @SmallTest
+    public void test_ariaApgPatternThirdPartyGridCombo() {
+        performApgPatternThirdPartyTest("combobox/examples/grid-combo.html");
+    }
+
+    // TODO(crbug.com/545647752): disabled due to flakiness
+    @Test
+    @SmallTest
+    @DisabledTest(message = "b/545647752")
+    public void test_ariaApgPatternThirdPartyLayoutGrids() {
+        performApgPatternThirdPartyTest("grid/examples/layout-grids.html");
+    }
+
+    @Test
+    @SmallTest
+    public void test_ariaApgPatternThirdPartyLink() {
+        performApgPatternThirdPartyTest("link/examples/link.html");
+    }
+
+    @Test
+    @SmallTest
+    public void test_ariaApgPatternThirdPartyListboxCollapsible() {
+        performApgPatternThirdPartyTest("listbox/examples/listbox-collapsible.html");
+    }
+
+    @Test
+    @SmallTest
+    public void test_ariaApgPatternThirdPartyListboxGrouped() {
+        performApgPatternThirdPartyTest("listbox/examples/listbox-grouped.html");
+    }
+
+    // TODO(crbug.com/545647752): disabled due to flakiness
+    @Test
+    @SmallTest
+    @DisabledTest(message = "b/545647752")
+    public void test_ariaApgPatternThirdPartyListboxRearrangeable() {
+        performApgPatternThirdPartyTest("listbox/examples/listbox-rearrangeable.html");
+    }
+
+    // TODO(crbug.com/545647752): disabled due to flakiness
+    @Test
+    @SmallTest
+    @DisabledTest(message = "b/545647752")
+    public void test_ariaApgPatternThirdPartyListboxScrollable() {
+        performApgPatternThirdPartyTest("listbox/examples/listbox-scrollable.html");
+    }
+
+    @Test
+    @SmallTest
+    public void test_ariaApgPatternThirdPartyMenuButtonActions() {
+        performApgPatternThirdPartyTest("menu-button/examples/menu-button-actions.html");
+    }
+
+    @Test
+    @SmallTest
+    public void test_ariaApgPatternThirdPartyMenuButtonActionsActiveDescendant() {
+        performApgPatternThirdPartyTest(
+                "menu-button/examples/menu-button-actions-active-descendant.html");
+    }
+
+    @Test
+    @SmallTest
+    public void test_ariaApgPatternThirdPartyMenuButtonLinks() {
+        performApgPatternThirdPartyTest("menu-button/examples/menu-button-links.html");
+    }
+
+    // TODO(crbug.com/545647752): disabled due to flakiness
+    @Test
+    @SmallTest
+    @DisabledTest(message = "b/545647752")
+    public void test_ariaApgPatternThirdPartyMenubarEditor() {
+        performApgPatternThirdPartyTest("menubar/examples/menubar-editor.html");
+    }
+
+    @Test
+    @SmallTest
+    public void test_ariaApgPatternThirdPartyMenubarNavigation() {
+        performApgPatternThirdPartyTest("menubar/examples/menubar-navigation.html");
+    }
+
+    @Test
+    @SmallTest
+    public void test_ariaApgPatternThirdPartyMeter() {
+        performApgPatternThirdPartyTest("meter/examples/meter.html");
+    }
+
+    @Test
+    @SmallTest
+    public void test_ariaApgPatternThirdPartyQuantitySpinbutton() {
+        performApgPatternThirdPartyTest("spinbutton/examples/quantity-spinbutton.html");
+    }
+
+    @Test
+    @SmallTest
+    public void test_ariaApgPatternThirdPartyRadio() {
+        performApgPatternThirdPartyTest("radio/examples/radio.html");
+    }
+
+    @Test
+    @SmallTest
+    public void test_ariaApgPatternThirdPartyRadioActivedescendant() {
+        performApgPatternThirdPartyTest("radio/examples/radio-activedescendant.html");
+    }
+
+    // TODO(crbug.com/545647752): disabled due to flakiness
+    @Test
+    @SmallTest
+    @DisabledTest(message = "b/545647752")
+    public void test_ariaApgPatternThirdPartyRadioRating() {
+        performApgPatternThirdPartyTest("radio/examples/radio-rating.html");
+    }
+
+    @Test
+    @SmallTest
+    public void test_ariaApgPatternThirdPartySliderColorViewer() {
+        performApgPatternThirdPartyTest("slider/examples/slider-color-viewer.html");
+    }
+
+    @Test
+    @SmallTest
+    public void test_ariaApgPatternThirdPartySliderMultithumb() {
+        performApgPatternThirdPartyTest("slider-multithumb/examples/slider-multithumb.html");
+    }
+
+    @Test
+    @SmallTest
+    public void test_ariaApgPatternThirdPartySliderRating() {
+        performApgPatternThirdPartyTest("slider/examples/slider-rating.html");
+    }
+
+    // TODO(crbug.com/545647752): disabled due to flakiness
+    @Test
+    @SmallTest
+    @DisabledTest(message = "b/545647752")
+    public void test_ariaApgPatternThirdPartySliderSeek() {
+        performApgPatternThirdPartyTest("slider/examples/slider-seek.html");
+    }
+
+    @Test
+    @SmallTest
+    public void test_ariaApgPatternThirdPartySliderTemperature() {
+        performApgPatternThirdPartyTest("slider/examples/slider-temperature.html");
+    }
+
+    @Test
+    @SmallTest
+    public void test_ariaApgPatternThirdPartySortableTable() {
+        performApgPatternThirdPartyTest("table/examples/sortable-table.html");
+    }
+
+    @Test
+    @SmallTest
+    public void test_ariaApgPatternThirdPartySwitch() {
+        performApgPatternThirdPartyTest("switch/examples/switch.html");
+    }
+
+    @Test
+    @SmallTest
+    public void test_ariaApgPatternThirdPartySwitchButton() {
+        performApgPatternThirdPartyTest("switch/examples/switch-button.html");
+    }
+
+    @Test
+    @SmallTest
+    public void test_ariaApgPatternThirdPartySwitchCheckbox() {
+        performApgPatternThirdPartyTest("switch/examples/switch-checkbox.html");
+    }
+
+    @Test
+    @SmallTest
+    public void test_ariaApgPatternThirdPartyTable() {
+        performApgPatternThirdPartyTest("table/examples/table.html");
+    }
+
+    // TODO(crbug.com/545647752): disabled due to flakiness
+    @Test
+    @SmallTest
+    @DisabledTest(message = "b/545647752")
+    public void test_ariaApgPatternThirdPartyTabsActions() {
+        performApgPatternThirdPartyTest("tabs/examples/tabs-actions.html");
+    }
+
+    // TODO(crbug.com/545647752): disabled due to flakiness
+    @Test
+    @SmallTest
+    @DisabledTest(message = "b/545647752")
+    public void test_ariaApgPatternThirdPartyTabsAutomatic() {
+        performApgPatternThirdPartyTest("tabs/examples/tabs-automatic.html");
+    }
+
+    // TODO(crbug.com/545647752): disabled due to flakiness
+    @Test
+    @SmallTest
+    @DisabledTest(message = "b/545647752")
+    public void test_ariaApgPatternThirdPartyTabsManual() {
+        performApgPatternThirdPartyTest("tabs/examples/tabs-manual.html");
+    }
+
+    // TODO(crbug.com/545647752): disabled due to flakiness
+    @Test
+    @SmallTest
+    @DisabledTest(message = "b/545647752")
+    public void test_ariaApgPatternThirdPartyToolbar() {
+        performApgPatternThirdPartyTest("toolbar/examples/toolbar.html");
+    }
+
+    // TODO(crbug.com/545647752): disabled due to flakiness
+    @Test
+    @SmallTest
+    @DisabledTest(message = "b/545647752")
+    public void test_ariaApgPatternThirdPartyTreegrid1() {
+        performApgPatternThirdPartyTest("treegrid/examples/treegrid-1.html");
+    }
+
+    @Test
+    @SmallTest
+    public void test_ariaApgPatternThirdPartyTreeview1a() {
+        performApgPatternThirdPartyTest("treeview/examples/treeview-1a.html");
+    }
+
+    @Test
+    @SmallTest
+    public void test_ariaApgPatternThirdPartyTreeview1b() {
+        performApgPatternThirdPartyTest("treeview/examples/treeview-1b.html");
+    }
+
+    // TODO(crbug.com/545647752): disabled due to flakiness
+    @Test
+    @SmallTest
+    @DisabledTest(message = "b/545647752")
+    public void test_ariaApgPatternThirdPartyTreeviewNavigation() {
+        performApgPatternThirdPartyTest("treeview/examples/treeview-navigation.html");
+    }
+
     // ------------------ CSS TESTS ------------------ //
 
     @Test
@@ -1443,6 +1889,12 @@ public class WebContentsAccessibilityTreeTest {
     @SmallTest
     public void test_aNameCalc() {
         performHtmlTest("a-name-calc.html");
+    }
+
+    @Test
+    @SmallTest
+    public void test_aEmptyPlaceholder() {
+        performHtmlTest("a-empty-placeholder.html");
     }
 
     @Test
@@ -1725,8 +2177,24 @@ public class WebContentsAccessibilityTreeTest {
 
     @Test
     @SmallTest
-    public void test_contenteditableDescendants() {
+    public void test_containerWithGenericDescendantsAndName() {
+        performHtmlTest("container-with-generic-descendants-and-name.html");
+    }
+
+    @Test
+    @SmallTest
+    @DisableFeatures(ContentInternalFeatures.ACCESSIBILITY_EXPOSE_NON_ATOMIC_TEXT_FIELD_CHILDREN)
+    public void test_contenteditableDescendants_ExposeNonAtomicTextFieldChildrenFeatureDisabled() {
         performHtmlTest("contenteditable-descendants.html");
+    }
+
+    @Test
+    @SmallTest
+    @EnableFeatures(ContentInternalFeatures.ACCESSIBILITY_EXPOSE_NON_ATOMIC_TEXT_FIELD_CHILDREN)
+    public void test_contenteditableDescendants_ExposeNonAtomicTextFieldChildrenFeatureEnabled() {
+        performHtmlTest(
+                "contenteditable-descendants.html",
+                "contenteditable-descendants-expose-non-atomic-text-field-children-feature");
     }
 
     @Test
@@ -1737,7 +2205,17 @@ public class WebContentsAccessibilityTreeTest {
 
     @Test
     @SmallTest
-    public void test_contenteditableWithNoDescendants() {
+    @DisableFeatures(ContentInternalFeatures.ACCESSIBILITY_EXPOSE_NON_ATOMIC_TEXT_FIELD_CHILDREN)
+    public void
+            test_contenteditableWithNoDescendants_ExposeNonAtomicTextFieldChildrenFeatureDisabled() {
+        performHtmlTest("contenteditable-with-no-descendants.html");
+    }
+
+    @Test
+    @SmallTest
+    @EnableFeatures(ContentInternalFeatures.ACCESSIBILITY_EXPOSE_NON_ATOMIC_TEXT_FIELD_CHILDREN)
+    public void
+            test_contenteditableWithNoDescendants_ExposeNonAtomicTextFieldChildrenFeatureEnabled() {
         performHtmlTest("contenteditable-with-no-descendants.html");
     }
 
@@ -1750,10 +2228,7 @@ public class WebContentsAccessibilityTreeTest {
 
     @Test
     @SmallTest
-    @EnableFeatures({
-        ContentInternalFeatures.ACCESSIBILITY_EXPOSE_NON_ATOMIC_TEXT_FIELD_CHILDREN,
-        ContentFeatureList.ACCESSIBILITY_EXTENDED_SELECTION
-    })
+    @EnableFeatures({ContentInternalFeatures.ACCESSIBILITY_EXPOSE_NON_ATOMIC_TEXT_FIELD_CHILDREN})
     public void test_selectionInContenteditable() {
         performHtmlTest("selection-in-contenteditable.html");
     }
@@ -2204,6 +2679,12 @@ public class WebContentsAccessibilityTreeTest {
 
     @Test
     @SmallTest
+    public void test_inputRadioSiblingWithSpan() {
+        performHtmlTest("input-radio-sibling-with-span.html");
+    }
+
+    @Test
+    @SmallTest
     public void test_inputRadio() {
         performHtmlTest("input-radio.html");
     }
@@ -2433,8 +2914,27 @@ public class WebContentsAccessibilityTreeTest {
 
     @Test
     @SmallTest
+    @EnableFeatures(AccessibilityFeatures.ACCESSIBILITY_ANDROID_MATH)
+    @MinAndroidSdkLevel(Build.VERSION_CODES.CINNAMON_BUN)
+    public void test_mathIntent() {
+        performMathmlTest("intent.html");
+    }
+
+    @Test
+    @SmallTest
     public void test_menu() {
         performHtmlTest("menu.html");
+    }
+
+    @Test
+    @SmallTest
+    @MinAndroidSdkLevel(Build.VERSION_CODES.BAKLAVA)
+    @CommandLineFlags.Add({"enable-blink-features=MenuElements"})
+    public void test_menulistInvokerHaspopup() {
+        Assume.assumeTrue(
+                "Requires Android 16 QPR2 (36.1) or higher",
+                Build.VERSION.SDK_INT_FULL >= VERSION_CODES_FULL.BAKLAVA_1);
+        performHtmlTest("menulist-invoker-haspopup.html");
     }
 
     @Test

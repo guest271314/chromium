@@ -6,17 +6,25 @@
 
 #include <stdint.h>
 
+#include <optional>
+
 #include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
+#include "build/buildflag.h"
 #include "media/base/platform_features.h"
+#include "media/base/supported_video_decoder_config.h"
 #include "media/base/video_codecs.h"
+#include "media/base/video_decoder_config.h"
 #include "media/video/mock_gpu_video_accelerator_factories.h"
 #include "media/video/video_decode_accelerator.h"
 #include "media/webrtc/webrtc_features.h"
+#include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/common/features.h"
+#include "third_party/webrtc/api/video/resolution.h"
 #include "third_party/webrtc/api/video_codecs/sdp_video_format.h"
 #include "third_party/webrtc/api/video_codecs/video_decoder_factory.h"
+#include "ui/gfx/geometry/size.h"
 
 using ::testing::Return;
 using ::testing::UnorderedElementsAre;
@@ -322,4 +330,32 @@ TEST_F(RTCVideoDecoderFactoryTest,
              kUnsupported));
 }
 #endif  // BUILDFLAG(RTC_USE_H265)
+
+TEST_F(RTCVideoDecoderFactoryTest,
+       QueryCodecSupportAV1WithWebRtcHwAv1DecodingDisabled) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitFromCommandLine("", "WebRtcHwAv1Decoding");
+  EXPECT_CALL(mock_gpu_factories_, IsDecoderSupportKnown())
+      .WillRepeatedly(Return(true));
+
+  // AV1 is missing from this list.
+  EXPECT_THAT(
+      decoder_factory_.GetSupportedFormats(),
+      UnorderedElementsAre(
+          kH264CbPacketizatonMode0Sdp, kH264CbPacketizatonMode1Sdp,
+          kH264BaselinePacketizatonMode0Sdp, kH264BaselinePacketizatonMode1Sdp,
+          kH264MainPacketizatonMode0Sdp, kH264MainPacketizatonMode1Sdp,
+          kVp9Profile0Sdp, kVp9Profile1Sdp, kVp9Profile2Sdp
+#if BUILDFLAG(RTC_USE_H265)
+          ,
+          kH265MainProfileLevel6Sdp, kH265Main10ProfileLevel6Sdp
+#endif  // BUILDFLAG(RTC_USE_H265)
+          ));
+
+  EXPECT_TRUE(
+      Equals(decoder_factory_.QueryCodecSupport(webrtc::SdpVideoFormat("AV1"),
+                                                false /*reference_scaling*/),
+             kUnsupported));
+}
+
 }  // namespace blink

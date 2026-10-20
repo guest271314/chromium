@@ -18,7 +18,7 @@
 #include "content/browser/compositor/image_transport_factory.h"
 #include "content/browser/compositor/surface_utils.h"
 #include "content/browser/dom_storage/dom_storage_context_wrapper.h"
-#include "content/browser/dom_storage/session_storage_namespace_impl.h"
+#include "content/browser/dom_storage/session_storage_namespace_handle_impl.h"
 #include "content/browser/renderer_host/data_transfer_util.h"
 #include "content/browser/renderer_host/render_frame_proxy_host.h"
 #include "content/browser/storage_partition_impl.h"
@@ -53,7 +53,7 @@ namespace content {
 
 TestRenderWidgetHostView::TestRenderWidgetHostView(RenderWidgetHost* rwh)
     : RenderWidgetHostViewBase(rwh),
-      is_showing_(false),
+      is_showing_(!host()->IsHidden()),
       is_occluded_(false),
       cursor_manager_(this) {
 #if BUILDFLAG(IS_ANDROID)
@@ -137,26 +137,11 @@ bool TestRenderWidgetHostView::IsShowing() {
   return is_showing_;
 }
 
-void TestRenderWidgetHostView::WasUnOccluded() {
-  // Can't be unoccluded unless the page is visible.
-  page_visibility_ = PageVisibilityState::kVisible;
-  OnShowWithPageVisibility(page_visibility_);
-  is_occluded_ = false;
-}
-
 void TestRenderWidgetHostView::WasOccluded() {
   if (!host()->IsHidden()) {
     host()->WasHidden();
   }
   is_occluded_ = true;
-}
-
-void TestRenderWidgetHostView::EnsureSurfaceSynchronizedForWebTest() {
-  ++latest_capture_sequence_number_;
-}
-
-uint32_t TestRenderWidgetHostView::GetCaptureSequenceNumber() const {
-  return latest_capture_sequence_number_;
 }
 
 void TestRenderWidgetHostView::UpdateCursor(const ui::Cursor& cursor) {
@@ -167,16 +152,20 @@ void TestRenderWidgetHostView::RenderProcessGone() {
   delete this;
 }
 
-void TestRenderWidgetHostView::Destroy() {
-  // Call this here in case any observers need access to the `this` before
-  // this derived class runs its destructor.
-  NotifyObserversAboutShutdown();
-
+void TestRenderWidgetHostView::DestroyImpl() {
   delete this;
 }
 
+void TestRenderWidgetHostView::SetSize(const gfx::Size& size) {
+  bounds_.set_size(size);
+}
+
+void TestRenderWidgetHostView::SetBounds(const gfx::Rect& rect) {
+  bounds_ = rect;
+}
+
 gfx::Rect TestRenderWidgetHostView::GetViewBounds() {
-  return gfx::Rect();
+  return bounds_;
 }
 
 #if BUILDFLAG(IS_MAC)
@@ -207,7 +196,7 @@ bool TestRenderWidgetHostView::IsTouchSequencePotentiallyActiveOnViz() {
 }
 #endif
 
-gfx::Rect TestRenderWidgetHostView::GetBoundsInRootWindow() {
+gfx::Rect TestRenderWidgetHostView::GetBoundsInScreen() {
   return gfx::Rect();
 }
 
@@ -322,18 +311,7 @@ void TestRenderWidgetHostView::
     RequestSuccessfulPresentationTimeFromHostOrDelegate(
         blink::RecordContentToVisibleTimeRequest visible_time_request) {
   // Should only be called if the view was already shown.
-#if !BUILDFLAG(IS_ANDROID)
-  // TODO(jonross): Update the constructor to determine showing state
-  // `is_showing_ = !host()->IsHidden()` this will match production code. Also
-  // update various tests not prepared for this to also match production.
-  //
-  // In tests TestRenderViewHostFactory::CreateRenderViewHost creates all hosts
-  // as visible. Which leads to newly created views being attached to already
-  // visible hosts. On Android we begin tracking content-to-visible-time when
-  // recreating the main render frame. This leads to requests while already
-  // visible in tests.
   EXPECT_TRUE(is_showing_);
-#endif
   EXPECT_FALSE(is_occluded_);
   EXPECT_EQ(page_visibility_, PageVisibilityState::kVisible);
 }
@@ -507,11 +485,11 @@ MockRenderProcessHost* TestRenderViewHost::GetProcess() const {
 }
 
 void TestRenderViewHost::SimulateWasHidden() {
-  GetWidget()->WasHidden();
+  GetWidget()->GetView()->Hide();
 }
 
 void TestRenderViewHost::SimulateWasShown() {
-  GetWidget()->WasShown({} /* record_tab_switch_time_request */);
+  GetWidget()->GetView()->ShowWithVisibility(PageVisibilityState::kVisible);
 }
 
 blink::web_pref::WebPreferences

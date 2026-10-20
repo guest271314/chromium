@@ -31,7 +31,6 @@ import org.mockito.junit.MockitoRule;
 import org.robolectric.RuntimeEnvironment;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
-import org.chromium.base.test.util.Batch;
 import org.chromium.chrome.browser.magic_stack.ModuleDelegate;
 import org.chromium.chrome.browser.magic_stack.ModuleDelegate.ModuleType;
 import org.chromium.chrome.browser.preferences.Pref;
@@ -50,7 +49,6 @@ import java.util.function.Supplier;
 
 /** Tests for the Safety Hub Magic Stack mediator. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Batch(Batch.UNIT_TESTS)
 public class SafetyHubMagicStackMediatorTest {
     private static final String DESCRIPTION = "description";
 
@@ -63,7 +61,6 @@ public class SafetyHubMagicStackMediatorTest {
     @Mock private SettingsNavigation mSettingsNavigation;
     @Mock private PrefChangeRegistrar mPrefChangeRegistrar;
     @Mock private Supplier<ModalDialogManager> mModalDialogManagerSupplier;
-    @Mock private View mView;
 
     private Context mContext;
     private Profile mProfile;
@@ -72,10 +69,12 @@ public class SafetyHubMagicStackMediatorTest {
     private PropertyModel mModel;
     private SafetyHubMagicStackMediator mMediator;
     private ModalDialogManager mModalDialogManager;
+    private View mView;
 
     @Before
     public void setUp() {
-        mContext = RuntimeEnvironment.application;
+        mContext = RuntimeEnvironment.getApplication();
+        mView = new View(mContext);
         mProfile = mSafetyHubTestRule.getProfile();
         mPrefService = mSafetyHubTestRule.getPrefService();
         mPasswordCheckIntentForAccountCheckup =

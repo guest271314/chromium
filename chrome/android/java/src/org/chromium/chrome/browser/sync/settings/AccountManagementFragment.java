@@ -44,6 +44,7 @@ import org.chromium.chrome.browser.signin.services.ProfileDataCache;
 import org.chromium.chrome.browser.signin.services.SigninManager;
 import org.chromium.chrome.browser.signin.services.SigninManager.SignInStateObserver;
 import org.chromium.chrome.browser.sync.SyncServiceFactory;
+import org.chromium.chrome.browser.sync.SyncSettingsUtils;
 import org.chromium.chrome.browser.sync.ui.PassphraseDialogFragment;
 import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager;
 import org.chromium.chrome.browser.ui.signin.SignOutCoordinator;
@@ -56,12 +57,14 @@ import org.chromium.components.signin.AccountManagerFacade;
 import org.chromium.components.signin.AccountManagerFacadeProvider;
 import org.chromium.components.signin.AccountUtils;
 import org.chromium.components.signin.GAIAServiceType;
+import org.chromium.components.signin.SigninFeatureMap;
+import org.chromium.components.signin.SigninFeatures;
 import org.chromium.components.signin.base.AccountInfo;
-import org.chromium.components.signin.base.CoreAccountInfo;
 import org.chromium.components.signin.identitymanager.IdentityManager;
 import org.chromium.components.signin.metrics.SignoutReason;
 import org.chromium.components.sync.SyncService;
 import org.chromium.components.sync.UserActionableError;
+import org.chromium.components.trusted_vault.SecurityDomainId;
 import org.chromium.components.trusted_vault.TrustedVaultClient;
 import org.chromium.components.trusted_vault.TrustedVaultUserActionTriggerForUMA;
 import org.chromium.components.user_prefs.UserPrefs;
@@ -105,7 +108,7 @@ public class AccountManagementFragment extends ChromeBaseSettingsFragment
 
     private @GAIAServiceType int mGaiaServiceType = GAIAServiceType.GAIA_SERVICE_TYPE_NONE;
 
-    private @Nullable CoreAccountInfo mSignedInCoreAccountInfo;
+    private @Nullable AccountInfo mPrimaryAccount;
     private ProfileDataCache mProfileDataCache;
     private SyncService mSyncService;
     private @Nullable OneshotSupplier<SnackbarManager> mSnackbarManagerSupplier;
@@ -170,19 +173,17 @@ public class AccountManagementFragment extends ChromeBaseSettingsFragment
 
         if (getPreferenceScreen() != null) getPreferenceScreen().removeAll();
 
-        mSignedInCoreAccountInfo = getIdentityManager().getPrimaryAccountInfo();
-        List<AccountInfo> accounts =
-                AccountUtils.getAccountsIfFulfilledOrEmpty(
-                        AccountManagerFacadeProvider.getInstance().getAccounts());
-        if (mSignedInCoreAccountInfo == null || accounts.isEmpty()) {
+        mPrimaryAccount = getIdentityManager().getPrimaryAccountInfo();
+        List<AccountInfo> accounts = getAccounts();
+        if (mPrimaryAccount == null || accounts.isEmpty()) {
             // The AccountManagementFragment can only be shown when the user is signed in. If the
             // user is signed out, exit the fragment.
-            SettingsNavigationFactory.createSettingsNavigation().finishCurrentSettings(this);
+            SettingsNavigationFactory.createSettingsNavigation(requireActivity())
+                    .finishCurrentSettings(this);
             return;
         }
 
-        DisplayableProfileData profileData =
-                mProfileDataCache.getById(mSignedInCoreAccountInfo.getId());
+        DisplayableProfileData profileData = mProfileDataCache.getById(mPrimaryAccount.getId());
         mPageTitle.set(
                 assumeNonNull(
                         SyncSettingsUtils.getDisplayableFullNameOrEmailWithPreference(
@@ -192,7 +193,7 @@ public class AccountManagementFragment extends ChromeBaseSettingsFragment
         addPreferencesFromResource(R.xml.account_management_preferences);
         configureSignOutSwitch();
         configureChildAccountPreferences();
-        AccountManagerFacadeProvider.getInstance().getAccounts().then(this::updateAccountsList);
+        updateAccountsList(accounts);
     }
 
     /**
@@ -239,6 +240,7 @@ public class AccountManagementFragment extends ChromeBaseSettingsFragment
                                 assertNonNull(assumeNonNull(mSnackbarManagerSupplier).get()),
                                 SignoutReason.USER_CLICKED_SIGNOUT_SETTINGS,
                                 /* showConfirmDialog= */ false,
+                                /* offerDataDeletionChoice= */ false,
                                 CallbackUtils.emptyRunnable());
                         return true;
                     });
@@ -275,10 +277,6 @@ public class AccountManagementFragment extends ChromeBaseSettingsFragment
     }
 
     private void updateAccountsList(List<AccountInfo> accounts) {
-        // This method is called asynchronously on accounts fetched from AccountManagerFacade.
-        // Make sure the fragment is alive before updating preferences.
-        if (!isResumed()) return;
-
         setAccountBadges(accounts);
 
         PreferenceCategory accountsCategory = findPreference(PREF_ACCOUNTS_CATEGORY);
@@ -289,13 +287,12 @@ public class AccountManagementFragment extends ChromeBaseSettingsFragment
         }
         accountsCategory.removeAll();
 
-        accountsCategory.addPreference(
-                createAccountPreference(assumeNonNull(mSignedInCoreAccountInfo)));
+        accountsCategory.addPreference(createAccountPreference(assumeNonNull(mPrimaryAccount)));
         accountsCategory.addPreference(createManageYourGoogleAccountPreference());
         accountsCategory.addPreference(createDividerPreference(R.layout.horizontal_divider));
 
-        for (CoreAccountInfo account : accounts) {
-            if (!account.equals(mSignedInCoreAccountInfo)) {
+        for (AccountInfo account : accounts) {
+            if (!account.equals(mPrimaryAccount)) {
                 accountsCategory.addPreference(createAccountPreference(account));
             }
         }
@@ -303,11 +300,11 @@ public class AccountManagementFragment extends ChromeBaseSettingsFragment
         notifyPreferencesUpdated();
     }
 
-    private Preference createAccountPreference(CoreAccountInfo coreAccountInfo) {
+    private Preference createAccountPreference(AccountInfo accountInfo) {
         Preference accountPreference = new Preference(getStyledContext());
         accountPreference.setLayoutResource(R.layout.account_management_account_row);
 
-        DisplayableProfileData profileData = mProfileDataCache.getById(coreAccountInfo.getId());
+        DisplayableProfileData profileData = mProfileDataCache.getById(accountInfo.getId());
         accountPreference.setTitle(
                 SyncSettingsUtils.getDisplayableFullNameOrEmailWithPreference(
                         profileData, getContext(), SyncSettingsUtils.TitlePreference.EMAIL));
@@ -339,7 +336,8 @@ public class AccountManagementFragment extends ChromeBaseSettingsFragment
                                             IdentityServicesProvider.get()
                                                     .getIdentityManager(getProfile()))
                                     .hasPrimaryAccount();
-                            SyncSettingsUtils.openGoogleMyAccount(getActivity());
+                            SyncSettingsUtils.openGoogleMyAccount(
+                                    getContext(), getCustomTabLauncher());
                         }));
 
         return manageYourGoogleAccountPreference;
@@ -378,7 +376,8 @@ public class AccountManagementFragment extends ChromeBaseSettingsFragment
 
                                 // Return to the last opened tab if triggered from the content area.
                                 if (mGaiaServiceType != GAIAServiceType.GAIA_SERVICE_TYPE_NONE) {
-                                    SettingsNavigationFactory.createSettingsNavigation()
+                                    SettingsNavigationFactory.createSettingsNavigation(
+                                                    requireActivity())
                                             .finishCurrentSettings(this);
                                 }
                             });
@@ -399,7 +398,9 @@ public class AccountManagementFragment extends ChromeBaseSettingsFragment
     }
 
     private void setAccountBadges(List<AccountInfo> accounts) {
-        for (CoreAccountInfo account : accounts) {
+        // TODO(crbug.com/517558429): This method is called every time profile data is updated,
+        // resulting in redundant BadgeConfig creation. This should be optimized.
+        for (AccountInfo account : accounts) {
             AccountManagerFacadeProvider.getInstance()
                     .checkIsSubjectToParentalControls(
                             account,
@@ -419,7 +420,7 @@ public class AccountManagementFragment extends ChromeBaseSettingsFragment
     // ProfileDataCache.Observer implementation:
     @Override
     public void onProfileDataUpdated(DisplayableProfileData profileData) {
-        AccountManagerFacadeProvider.getInstance().getAccounts().then(this::updateAccountsList);
+        updateAccountsList(getAccounts());
     }
 
     // SignInStateObserver implementation:
@@ -436,11 +437,15 @@ public class AccountManagementFragment extends ChromeBaseSettingsFragment
     // IdentityErrorCardPreference.Listener implementation.
     @Override
     public void onIdentityErrorCardButtonClicked(@UserActionableError int error) {
-        assert mSignedInCoreAccountInfo != null;
+        if (mPrimaryAccount == null) {
+            // Can happen in case of a race condition between a sign-out (because the primary
+            // account got removed from the device) and the user tapping the error card.
+            return;
+        }
         switch (error) {
             case UserActionableError.SIGN_IN_NEEDS_UPDATE:
                 AccountManagerFacadeProvider.getInstance()
-                        .updateCredentials(mSignedInCoreAccountInfo, getActivity(), null);
+                        .updateCredentials(mPrimaryAccount.getId(), getActivity(), null);
                 return;
             case UserActionableError.NEEDS_CLIENT_UPGRADE:
                 // Opens the client in play store for update.
@@ -457,14 +462,12 @@ public class AccountManagementFragment extends ChromeBaseSettingsFragment
             case UserActionableError.NEEDS_TRUSTED_VAULT_KEY_FOR_EVERYTHING:
             case UserActionableError.NEEDS_TRUSTED_VAULT_KEY_FOR_PASSWORDS:
                 SyncSettingsUtils.openTrustedVaultKeyRetrievalDialog(
-                        this, mSignedInCoreAccountInfo, REQUEST_CODE_TRUSTED_VAULT_KEY_RETRIEVAL);
+                        this, mPrimaryAccount, REQUEST_CODE_TRUSTED_VAULT_KEY_RETRIEVAL);
                 return;
             case UserActionableError.TRUSTED_VAULT_RECOVERABILITY_DEGRADED_FOR_EVERYTHING:
             case UserActionableError.TRUSTED_VAULT_RECOVERABILITY_DEGRADED_FOR_PASSWORDS:
                 SyncSettingsUtils.openTrustedVaultRecoverabilityDegradedDialog(
-                        this,
-                        mSignedInCoreAccountInfo,
-                        REQUEST_CODE_TRUSTED_VAULT_RECOVERABILITY_DEGRADED);
+                        this, mPrimaryAccount, REQUEST_CODE_TRUSTED_VAULT_RECOVERABILITY_DEGRADED);
                 return;
             case UserActionableError.NONE:
             default:
@@ -492,11 +495,11 @@ public class AccountManagementFragment extends ChromeBaseSettingsFragment
         // done even if the user cancelled the flow (i.e. resultCode != RESULT_OK) because it's
         // harmless to issue a redundant notifyKeysChanged().
         if (requestCode == REQUEST_CODE_TRUSTED_VAULT_KEY_RETRIEVAL) {
-            TrustedVaultClient.get()
+            TrustedVaultClient.get(SecurityDomainId.CHROME_SYNC)
                     .notifyKeysChanged(TrustedVaultUserActionTriggerForUMA.SETTINGS);
         }
         if (requestCode == REQUEST_CODE_TRUSTED_VAULT_RECOVERABILITY_DEGRADED) {
-            TrustedVaultClient.get().notifyRecoverabilityChanged();
+            TrustedVaultClient.get(SecurityDomainId.CHROME_SYNC).notifyRecoverabilityChanged();
         }
     }
 
@@ -537,6 +540,7 @@ public class AccountManagementFragment extends ChromeBaseSettingsFragment
 
     /**
      * Open the account management UI.
+     *
      * @param serviceType A signin::GAIAServiceType that triggered the dialog.
      */
     public static void openAccountManagementScreen(
@@ -544,7 +548,7 @@ public class AccountManagementFragment extends ChromeBaseSettingsFragment
         Bundle arguments = new Bundle();
         arguments.putInt(SHOW_GAIA_SERVICE_TYPE_EXTRA, serviceType);
         SettingsNavigation settingsNavigation =
-                SettingsNavigationFactory.createSettingsNavigation();
+                SettingsNavigationFactory.createSettingsNavigation(context);
         settingsNavigation.startSettings(
                 context, AccountManagementFragment.class, arguments, /* addToBackStack= */ true);
     }
@@ -572,6 +576,15 @@ public class AccountManagementFragment extends ChromeBaseSettingsFragment
 
     SigninManager getSigninManager() {
         return assumeNonNull(IdentityServicesProvider.get().getSigninManager(getProfile()));
+    }
+
+    private List<AccountInfo> getAccounts() {
+        if (SigninFeatureMap.isEnabled(
+                SigninFeatures.MAKE_IDENTITY_MANAGER_SOURCE_OF_ACCOUNTS_PART2)) {
+            return getIdentityManager().getExtendedAccountInfoForAccountsWithRefreshToken();
+        }
+        return AccountUtils.getAccountsIfFulfilledOrEmpty(
+                AccountManagerFacadeProvider.getInstance().getAccounts());
     }
 
     public static final ChromeBaseSearchIndexProvider SEARCH_INDEX_DATA_PROVIDER =

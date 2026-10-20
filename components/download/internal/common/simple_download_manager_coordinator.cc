@@ -6,10 +6,8 @@
 
 #include <utility>
 
-#include "base/functional/bind.h"
 #include "base/memory/raw_ptr.h"
 #include "base/observer_list.h"
-#include "base/task/single_thread_task_runner.h"
 #include "components/download/public/common/all_download_event_notifier.h"
 #include "components/download/public/common/download_item.h"
 #include "components/download/public/common/download_stats.h"
@@ -47,6 +45,12 @@ void SimpleDownloadManagerCoordinator::SetSimpleDownloadManager(
   current_manager_has_all_history_downloads_ = manages_all_history_downloads;
   simple_download_manager_ = simple_download_manager;
   simple_download_manager_->AddObserver(this);
+  std::vector<base::OnceClosure> callbacks =
+      std::move(active_downloads_callbacks_);
+  for (auto& callback : callbacks) {
+    simple_download_manager_->WaitForActiveDownloadsInitialization(
+        std::move(callback));
+  }
 }
 
 void SimpleDownloadManagerCoordinator::AddObserver(Observer* observer) {
@@ -88,17 +92,6 @@ DownloadItem* SimpleDownloadManagerCoordinator::GetDownloadByGuid(
   return nullptr;
 }
 
-void SimpleDownloadManagerCoordinator::GetDownloadByGuidAsync(
-    const std::string& guid,
-    SimpleDownloadManager::GetDownloadCallback callback) {
-  if (!simple_download_manager_) {
-    base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
-        FROM_HERE, base::BindOnce(std::move(callback), nullptr));
-    return;
-  }
-  simple_download_manager_->GetDownloadByGuidAsync(guid, std::move(callback));
-}
-
 void SimpleDownloadManagerCoordinator::OnDownloadsInitialized() {
   initialized_ = true;
   has_all_history_downloads_ = current_manager_has_all_history_downloads_;
@@ -123,6 +116,19 @@ AllDownloadEventNotifier* SimpleDownloadManagerCoordinator::GetNotifier() {
 
 void SimpleDownloadManagerCoordinator::CheckForExternallyRemovedDownloads() {
   simple_download_manager_->CheckForHistoryFilesRemoval();
+}
+
+void SimpleDownloadManagerCoordinator::WaitForActiveDownloadsInitialization(
+    base::OnceClosure callback) {
+  if (callback.is_null()) {
+    return;
+  }
+  if (simple_download_manager_) {
+    simple_download_manager_->WaitForActiveDownloadsInitialization(
+        std::move(callback));
+  } else {
+    active_downloads_callbacks_.push_back(std::move(callback));
+  }
 }
 
 }  // namespace download

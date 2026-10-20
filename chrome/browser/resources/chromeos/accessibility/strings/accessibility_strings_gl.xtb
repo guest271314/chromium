@@ -218,6 +218,7 @@
 <translation id="2365384324219615024">Se queres activar elementos (por exemplo, enviar texto nun formulario), tamén podes premer Introducir. Para continuar, preme Introducir.</translation>
 <translation id="2371402123699727805">Ditado en activo. <ph name="GESTURE" /> para detelo. Outros xestos non están dispoñibles temporalmente.</translation>
 <translation id="2381733276052567791">Activa ou desactiva a fala</translation>
+<translation id="2386248289416625097">Candidatos</translation>
 <translation id="2390264819538553347">Para avanzar, preme Intro; para ir cara atrás, preme Retroceso.</translation>
 <translation id="2397408693730730860">.input {$$COUNT :number} .match $$COUNT 1{{asterisco}} *{{{$$COUNT} asteriscos}}</translation>
 <translation id="2398579267367951220">Escribe para realizar buscas na páxina. Preme Intro para saltar ata o resultado, utiliza as frechas de dirección cara arriba ou abaixo para explorar os resultados, continúa escribindo para cambiar a busca ou preme Esc para cancelar.</translation>
@@ -279,7 +280,7 @@
 <translation id="2717271541250958000">tabpnl</translation>
 <translation id="2720806141886412599">.input {$$COUNT :number} .match $$COUNT 1{{barra invertida}} *{{{$$COUNT} barras invertidas}}</translation>
 <translation id="2723001399770238859">audio</translation>
-<translation id="2737898226590637227">Non hai ningún punto de referencia de ARIA posterior</translation>
+<translation id="2737898226590637227">Non hai ningún punto de referencia ARIA posterior</translation>
 <translation id="2749275490991666823">Marcado</translation>
 <translation id="2751454300227269244">Mover a boca cara á dereita</translation>
 <translation id="27527859628328957">Saltar ao seguinte elemento enfocable</translation>
@@ -292,7 +293,7 @@
 <translation id="2816868829355607410">Zona de práctica: comandos de desprazamento</translation>
 <translation id="2841013758207633010">Hora</translation>
 <translation id="284171465644749950">Para explorar os temas, pasa un dedo cara á esquerda ou cara á dereita</translation>
-<translation id="2843432675592278677">Non hai ningún punto de referencia de ARIA anterior</translation>
+<translation id="2843432675592278677">Non hai ningún punto de referencia ARIA anterior</translation>
 <translation id="2843814945404750166">Verde oliva escuro</translation>
 <translation id="2843837985843789981">Grupo anterior</translation>
 <translation id="2849035674501872372">Levanta a mirada</translation>

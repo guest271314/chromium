@@ -4,18 +4,19 @@
 
 #include "chrome/browser/webauthn/passkey_unlock_manager.h"
 
+#include "base/test/metrics/histogram_tester.h"
 #include "base/test/test_future.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/sync/test/integration/sync_service_impl_harness.h"
 #include "chrome/browser/trusted_vault/trusted_vault_encryption_keys_tab_helper.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/webauthn/enclave_authenticator_browsertest_base.h"
 #include "chrome/browser/webauthn/enclave_manager.h"
 #include "chrome/browser/webauthn/enclave_manager_factory.h"
 #include "chrome/browser/webauthn/passkey_unlock_manager_factory.h"
 #include "chrome/test/base/in_process_browser_test.h"
+#include "components/trusted_vault/trusted_vault_histograms.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/test/browser_test.h"
 #include "net/dns/mock_host_resolver.h"
@@ -75,11 +76,11 @@ class PasskeyUnlockManagerBrowserTest : public EnclaveAuthenticatorTestBase {
 
   webauthn::PasskeyUnlockManager* passkey_unlock_manager() {
     return webauthn::PasskeyUnlockManagerFactory::GetForProfile(
-        browser()->profile());
+        browser()->GetProfile());
   }
 
   signin::IdentityManager* identity_manager() {
-    return IdentityManagerFactory::GetForProfile(browser()->profile());
+    return IdentityManagerFactory::GetForProfile(browser()->GetProfile());
   }
 
   SyncServiceImplHarness* sync_harness() {
@@ -88,7 +89,8 @@ class PasskeyUnlockManagerBrowserTest : public EnclaveAuthenticatorTestBase {
     }
 
     sync_harness_ = SyncServiceImplHarness::Create(
-        browser()->profile(), SyncServiceImplHarness::SigninType::FAKE_SIGNIN);
+        browser()->GetProfile(),
+        SyncServiceImplHarness::SigninType::FAKE_SIGNIN);
     return sync_harness_.get();
   }
 
@@ -111,7 +113,7 @@ class PasskeyUnlockManagerBrowserTest : public EnclaveAuthenticatorTestBase {
     base::test::TestFuture<void> load_future;
     EnclaveManager* enclave_manager =
         EnclaveManagerFactory::GetAsEnclaveManagerForProfile(
-            browser()->profile());
+            browser()->GetProfile());
     enclave_manager->Load(load_future.GetCallback());
     ASSERT_TRUE(load_future.Wait());
 
@@ -129,6 +131,7 @@ IN_PROC_BROWSER_TEST_F(PasskeyUnlockManagerBrowserTest,
                        OpensNewTabWithPasskeyUnlockUrl) {
   TabStripModel* tab_strip_model = browser()->tab_strip_model();
   int initial_tab_count = tab_strip_model->count();
+  base::HistogramTester histogram_tester;
 
   PasskeyUnlockManager::OpenTabWithPasskeyUnlockChallenge(
       browser(), trusted_vault::TrustedVaultUserActionTriggerForUMA::
@@ -141,6 +144,9 @@ IN_PROC_BROWSER_TEST_F(PasskeyUnlockManagerBrowserTest,
   EXPECT_THAT(
       new_contents->GetVisibleURL().spec(),
       testing::StartsWith("https://accounts.google.com/encryption/unlock/"));
+  histogram_tester.ExpectUniqueSample(
+      "TrustedVault.RecoveryFlowTriggeredEndpoint",
+      trusted_vault::TrustedVaultRecoveryFlowEndpoint::kDesktop, 1);
   TrustedVaultEncryptionKeysTabHelper* tab_helper =
       TrustedVaultEncryptionKeysTabHelper::FromWebContents(new_contents);
   ASSERT_TRUE(tab_helper);

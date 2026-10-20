@@ -4,48 +4,132 @@
 
 #import "ios/chrome/browser/send_tab_to_self/model/send_tab_to_self_tab_helper.h"
 
-#import "base/feature_list.h"
-#import "components/send_tab_to_self/features.h"
+#import <memory>
+
+#import "components/send_tab_to_self/send_tab_to_self_entry.h"
+#import "components/send_tab_to_self/send_tab_to_self_model.h"
+#import "components/send_tab_to_self/send_tab_to_self_sync_service.h"
+#import "components/shared_highlighting/core/common/text_fragment.h"
+#import "ios/chrome/browser/send_tab_to_self/model/send_tab_to_self_load_navigation_user_data.h"
 #import "ios/chrome/browser/send_tab_to_self/model/send_tab_to_self_text_fragment_selector_generator.h"
-#import "ios/web/public/navigation/navigation_item.h"
-#import "ios/web/public/navigation/navigation_manager.h"
+#import "ios/chrome/browser/send_tab_to_self/model/send_tab_to_self_util.h"
+#import "ios/chrome/browser/shared/model/profile/profile_ios.h"
+#import "ios/chrome/browser/sync/model/send_tab_to_self_sync_service_factory.h"
 #import "ios/web/public/web_state.h"
+#import "url/origin.h"
+
+namespace {
+
+// Returns the SendTabToSelfEntry with the given `guid`, or nullptr if not
+// found.
+const send_tab_to_self::SendTabToSelfEntry* GetEntry(web::WebState* web_state,
+                                                     std::string_view guid) {
+  if (guid.empty()) {
+    return nullptr;
+  }
+
+  web::BrowserState* browser_state = web_state->GetBrowserState();
+  if (!browser_state) {
+    return nullptr;
+  }
+
+  ProfileIOS* profile = ProfileIOS::FromBrowserState(browser_state);
+  send_tab_to_self::SendTabToSelfSyncService* sync_service =
+      profile ? SendTabToSelfSyncServiceFactory::GetForProfile(profile)
+              : nullptr;
+  send_tab_to_self::SendTabToSelfModel* model =
+      sync_service ? sync_service->GetSendTabToSelfModel() : nullptr;
+  return model ? model->GetEntryByGUID(std::string(guid)) : nullptr;
+}
+
+// Restores the scroll position for `entry` if a text fragment is present.
+void RestoreScrollPosition(web::WebState* web_state,
+                           const send_tab_to_self::SendTabToSelfEntry* entry) {
+  const send_tab_to_self::TextFragmentData& fragment_data =
+      entry->GetPageContext().scroll_position.text_fragment;
+  if (fragment_data.IsEmpty()) {
+    return;
+  }
+
+  std::string fragment_string =
+      fragment_data.ToSharedHighlightingTextFragment().ToEscapedString(
+          shared_highlighting::TextFragment::EscapedStringFormat::
+              kWithoutTextDirective);
+  if (!fragment_string.empty()) {
+    SendTabToSelfTextFragmentSelectorGenerator::GetInstance()
+        ->ScrollToTextFragment(web_state, fragment_string);
+  }
+}
+
+}  // namespace
 
 SendTabToSelfTabHelper::SendTabToSelfTabHelper(web::WebState* web_state) {
-  CHECK(base::FeatureList::IsEnabled(
-      send_tab_to_self::kSendTabToSelfPropagateScrollPosition));
   web_state_observation_.Observe(web_state);
 }
 
 SendTabToSelfTabHelper::~SendTabToSelfTabHelper() = default;
 
-void SendTabToSelfTabHelper::PageLoaded(
-    web::WebState* web_state,
-    web::PageLoadCompletionStatus load_completion_status) {
-  if (load_completion_status != web::PageLoadCompletionStatus::SUCCESS) {
+void SendTabToSelfTabHelper::WasShown(web::WebState* web_state) {
+  // Do not restore scroll position if the document is still loading;
+  // PageLoaded will handle it once loading finishes.
+  if (deferred_scroll_restoration_guid_.empty() || web_state->IsLoading()) {
     return;
   }
 
-  // The text fragment to scroll to is attached to the NavigationItem when
-  // the page is initially loaded via Send Tab to Self.
-  web::NavigationItem* item =
-      web_state->GetNavigationManager()->GetLastCommittedItem();
-  if (!item) {
-    return;
-  }
+  const std::string guid =
+      std::exchange(deferred_scroll_restoration_guid_, std::string());
 
-  const std::optional<std::string>& fragment =
-      item->GetInternalScrollToTextFragment();
-  if (fragment.has_value() && !fragment.value().empty()) {
-    // Inject the javascript to scroll to the parsed text fragment.
-    SendTabToSelfTextFragmentSelectorGenerator::GetInstance()
-        ->ScrollToTextFragment(web_state, fragment.value());
-    // Clear the fragment so that reloading the page doesn't trigger the
-    // scroll logic again.
-    item->SetInternalScrollToTextFragment(std::nullopt);
+  const send_tab_to_self::SendTabToSelfEntry* entry = GetEntry(web_state, guid);
+  if (entry) {
+    RestoreScrollPosition(web_state, entry);
   }
 }
 
+void SendTabToSelfTabHelper::PageLoaded(
+    web::WebState* web_state,
+    web::PageLoadCompletionStatus load_completion_status) {
+  deferred_scroll_restoration_guid_.clear();
+  SendTabToSelfLoadNavigationUserData* user_data =
+      SendTabToSelfLoadNavigationUserData::FromWebState(web_state);
+  if (!user_data) {
+    return;
+  }
+
+  switch (load_completion_status) {
+    case web::PageLoadCompletionStatus::SUCCESS:
+      break;
+    case web::PageLoadCompletionStatus::FAILURE:
+      // Do not remove the STTS user data on failure so that it can be retried
+      // on subsequent reloads or successful navigations.
+      return;
+  }
+
+  const std::string guid = user_data->entry_guid();
+
+  // Remove the tag immediately so it doesn't trigger again on subsequent
+  // reloads of the same page, even if subsequent steps fail or return early.
+  SendTabToSelfLoadNavigationUserData::RemoveFromWebState(web_state);
+
+  const send_tab_to_self::SendTabToSelfEntry* entry = GetEntry(web_state, guid);
+  if (!entry) {
+    return;
+  }
+
+  send_tab_to_self::FillWebState(
+      web_state, url::Origin::Create(entry->GetURL()), entry->GetPageContext());
+
+  // Defer scroll restoration if the tab is hidden, as WKWebView lacks an
+  // active visual geometry in the background and resets scroll offset upon
+  // foregrounding.
+  if (!web_state->IsVisible()) {
+    deferred_scroll_restoration_guid_ = guid;
+    return;
+  }
+
+  RestoreScrollPosition(web_state, entry);
+}
+
 void SendTabToSelfTabHelper::WebStateDestroyed(web::WebState* web_state) {
+  deferred_scroll_restoration_guid_.clear();
   web_state_observation_.Reset();
 }

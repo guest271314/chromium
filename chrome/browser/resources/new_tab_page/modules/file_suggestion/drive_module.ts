@@ -43,31 +43,31 @@ export class DriveModuleElement extends DriveModuleElementBase {
     return {
       files: {type: Array},
       showInfoDialog_: {type: Boolean},
+      showDriveModuleSeeMoreLink_: {type: Boolean},
     };
   }
 
   accessor files: File[] = [];
   protected accessor showInfoDialog_: boolean = false;
+  protected accessor showDriveModuleSeeMoreLink_: boolean =
+      loadTimeData.getBoolean('showDriveModuleSeeMoreLink');
 
   protected getMenuItems_(): MenuItem[] {
     return [
-        {
-          action: 'dismiss',
-          icon: 'modules:visibility_off',
-          text: this.i18nRecursive(
-              '', 'modulesDismissForHoursButtonText',
-              'fileSuggestionDismissHours'),
-        },
-        {
-          action: 'disable',
-          icon: 'modules:block',
-          text: this.i18n('modulesDriveDisableButtonTextV2'),
-        },
-        {
-          action: 'info',
-          icon: 'modules:info',
-          text: this.i18n('moduleInfoButtonTitle'),
-        },
+      {
+        action: 'disable',
+        icon: loadTimeData.getBoolean('webuiRoundedIconsEnabled') ?
+            'modules:block' :
+            'modules:block-old',
+        text: this.i18n('modulesDriveDisableButtonTextV2'),
+      },
+      {
+        action: 'info',
+        icon: loadTimeData.getBoolean('webuiRoundedIconsEnabled') ?
+            'modules:info' :
+            'modules:info-old',
+        text: this.i18n('moduleInfoButtonTitle'),
+      },
     ];
   }
 
@@ -82,16 +82,6 @@ export class DriveModuleElement extends DriveModuleElementBase {
       },
     });
     this.dispatchEvent(disableEvent);
-  }
-
-  protected onDismissButtonClick_() {
-    FileProxy.getHandler().dismissModule();
-    this.fire('dismiss-module-instance', {
-      message: loadTimeData.getStringF(
-          'dismissModuleToastMessage',
-          loadTimeData.getString('modulesFilesSentence')),
-      restoreCallback: () => FileProxy.getHandler().restoreModule(),
-    });
   }
 
   protected onInfoButtonClick_() {

@@ -4,6 +4,8 @@
 
 #include "components/autofill/core/browser/payments/autofill_save_card_ui_info.h"
 
+#include "base/feature_list.h"
+#include "base/metrics/field_trial_params.h"
 #include "base/strings/utf_string_conversions.h"
 #include "build/branding_buildflags.h"
 #include "components/autofill/core/browser/data_model/payments/credit_card.h"
@@ -46,6 +48,9 @@ static std::u16string GetConfirmButtonText(
       return l10n_util::GetStringUTF16(
           IDS_AUTOFILL_SAVE_CVC_MESSAGE_SAVE_ACCEPT);
     }
+    case CardSaveType::kCardholderNameUpdateOnly:
+      // This flow is not available on Android.
+      NOTREACHED();
   }
 #elif BUILDFLAG(IS_IOS)
   if (options.source_feature == SourceFeature::kScanCardSaveAndFill) {
@@ -63,6 +68,9 @@ static std::u16string GetConfirmButtonText(
       return l10n_util::GetStringUTF16(
           IDS_AUTOFILL_SAVE_CVC_MESSAGE_SAVE_ACCEPT);
     }
+    case CardSaveType::kCardholderNameUpdateOnly:
+      // This flow is not available on iOS.
+      NOTREACHED();
   }
 #else  // !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
   NOTREACHED();
@@ -117,9 +125,9 @@ static AutofillSaveCardUiInfo CreateAutofillSaveCardUiInfo(
       card.nickname(), card.NetworkForDisplay(), card.LastFourDigits(),
       card.ExpirationDateForDisplay());
   ui_info.displayed_target_account_email =
-      base::UTF8ToUTF16((displayed_target_account.email));
+      base::UTF8ToUTF16(displayed_target_account.GetEmail());
   ui_info.displayed_target_account_avatar =
-      displayed_target_account.account_image;
+      displayed_target_account.GetAvatarImage().value_or(gfx::Image());
   ui_info.title_text = title_text;
   ui_info.confirm_text = confirm_text;
   ui_info.cancel_text = cancel_text;
@@ -127,7 +135,10 @@ static AutofillSaveCardUiInfo CreateAutofillSaveCardUiInfo(
   ui_info.loading_description = loading_description;
   ui_info.is_chrome_branding_enabled = is_chrome_branding_enabled;
   ui_info.is_for_bottom_sheet = is_for_bottom_sheet;
-  ui_info.google_pay_pill_logo_id = IDR_AUTOFILL_GOOGLE_PAY_PILL;
+  ui_info.google_pay_pill_logo_id =
+      base::FeatureList::IsEnabled(features::kAutofillEnableGradientGoogleLogos)
+          ? IDR_AUTOFILL_GOOGLE_PAY_PILL_WITH_GRADIENT
+          : IDR_AUTOFILL_GOOGLE_PAY_PILL;
   return ui_info;
 }
 
@@ -162,6 +173,9 @@ AutofillSaveCardUiInfo AutofillSaveCardUiInfo::CreateForLocalSave(
           IDS_AUTOFILL_SAVE_CVC_PROMPT_EXPLANATION_LOCAL);
       break;
     }
+    case CardSaveType::kCardholderNameUpdateOnly:
+      // This flow is not available on Android.
+      NOTREACHED();
   }
 #elif BUILDFLAG(IS_IOS)
   // On iOS, the UI (infobar vs. bottom sheet) and title are determined by
@@ -201,6 +215,9 @@ AutofillSaveCardUiInfo AutofillSaveCardUiInfo::CreateForLocalSave(
           IDS_AUTOFILL_SAVE_CVC_PROMPT_EXPLANATION_LOCAL_SAVE_IOS);
       break;
     }
+    case CardSaveType::kCardholderNameUpdateOnly:
+      // This flow is not available on iOS.
+      NOTREACHED();
   }
 #else  // !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
   NOTREACHED();
@@ -243,13 +260,18 @@ AutofillSaveCardUiInfo AutofillSaveCardUiInfo::CreateForUploadSave(
       base::FeatureList::IsEnabled(features::kAutofillEnableWalletBranding);
   bool is_wallet_branding_v2_enabled =
       base::FeatureList::IsEnabled(features::kAutofillEnableWalletBrandingV2);
+  bool is_gradient_google_logos_enabled = base::FeatureList::IsEnabled(
+      features::kAutofillEnableGradientGoogleLogos);
   switch (options.card_save_type) {
     case CardSaveType::kCardSaveOnly: {
       if (is_chrome_branding_enabled) {
         if (is_wallet_branding_enabled) {
-          save_card_icon_id = is_wallet_branding_v2_enabled
-                                  ? IDR_AUTOFILL_GOOGLE_WALLET_ICON
-                                  : IDR_AUTOFILL_GOOGLE_WALLET;
+          save_card_icon_id =
+              is_wallet_branding_v2_enabled
+                  ? (is_gradient_google_logos_enabled
+                         ? IDR_AUTOFILL_GOOGLE_WALLET_ICON_WITH_GRADIENT
+                         : IDR_AUTOFILL_GOOGLE_WALLET_ICON)
+                  : IDR_AUTOFILL_GOOGLE_WALLET;
           save_card_icon_description_text = l10n_util::GetStringUTF16(
               IDS_AUTOFILL_GOOGLE_WALLET_LOGO_ACCESSIBLE_NAME);
           description_text = l10n_util::GetStringUTF16(
@@ -277,9 +299,12 @@ AutofillSaveCardUiInfo AutofillSaveCardUiInfo::CreateForUploadSave(
     case CardSaveType::kCardSaveWithCvc: {
       if (is_chrome_branding_enabled) {
         if (is_wallet_branding_enabled) {
-          save_card_icon_id = is_wallet_branding_v2_enabled
-                                  ? IDR_AUTOFILL_GOOGLE_WALLET_ICON
-                                  : IDR_AUTOFILL_GOOGLE_WALLET;
+          save_card_icon_id =
+              is_wallet_branding_v2_enabled
+                  ? (is_gradient_google_logos_enabled
+                         ? IDR_AUTOFILL_GOOGLE_WALLET_ICON_WITH_GRADIENT
+                         : IDR_AUTOFILL_GOOGLE_WALLET_ICON)
+                  : IDR_AUTOFILL_GOOGLE_WALLET;
           save_card_icon_description_text = l10n_util::GetStringUTF16(
               IDS_AUTOFILL_GOOGLE_WALLET_LOGO_ACCESSIBLE_NAME);
           description_text = l10n_util::GetStringUTF16(
@@ -313,6 +338,9 @@ AutofillSaveCardUiInfo AutofillSaveCardUiInfo::CreateForUploadSave(
               : IDS_AUTOFILL_SAVE_CVC_PROMPT_EXPLANATION_UPLOAD);
       break;
     }
+    case CardSaveType::kCardholderNameUpdateOnly:
+      // This flow is not available on Android.
+      NOTREACHED();
   }
 #elif BUILDFLAG(IS_IOS)
   is_for_bottom_sheet = ShouldShowSaveCardBottomSheet(
@@ -360,9 +388,12 @@ AutofillSaveCardUiInfo AutofillSaveCardUiInfo::CreateForUploadSave(
           base::FeatureList::IsEnabled(features::kAutofillEnableWalletBranding)
               ? IDS_AUTOFILL_SAVE_CVC_TO_WALLET_PROMPT_EXPLANATION_UPLOAD_IOS
               : IDS_AUTOFILL_SAVE_CVC_PROMPT_EXPLANATION_UPLOAD_IOS,
-          base::UTF8ToUTF16(displayed_target_account.email));
+          base::UTF8ToUTF16(displayed_target_account.GetEmail()));
       break;
     }
+    case CardSaveType::kCardholderNameUpdateOnly:
+      // This flow is not available on iOS.
+      NOTREACHED();
   }
 #else  // !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
   NOTREACHED();
@@ -404,9 +435,14 @@ bool ShouldShowSaveCardBottomSheet(
     int num_strikes,
     bool should_request_name_from_user,
     bool should_request_expiration_date_from_user) {
+  int max_strikes = 1;
+  if (base::FeatureList::IsEnabled(
+          features::kAutofillSaveCardBottomSheetStrikeLimitIos)) {
+    max_strikes = features::kMaxStrikesForSaveCardBottomSheetIos.Get();
+  }
   return source_feature == SourceFeature::kScanCardSaveAndFill ||
-         (card_save_type != CardSaveType::kCvcSaveOnly && num_strikes == 0 &&
-          !should_request_name_from_user &&
+         (card_save_type != CardSaveType::kCvcSaveOnly &&
+          num_strikes < max_strikes && !should_request_name_from_user &&
           !should_request_expiration_date_from_user);
 }
 #endif  // BUILDFLAG(IS_IOS)

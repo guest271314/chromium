@@ -11,10 +11,12 @@
 #include "base/files/file_util.h"
 #include "base/functional/bind.h"
 #include "base/logging.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/strings/string_util.h"
 #include "base/task/lazy_thread_pool_task_runner.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/third_party/icu/icu_utf.h"
+#include "base/types/pass_key.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
 #include "storage/browser/file_system/file_system_context.h"
@@ -32,42 +34,49 @@ scoped_refptr<base::SequencedTaskRunner> impl_task_runner() {
 scoped_refptr<DevToolsStreamFile> DevToolsStreamFile::Create(
     DevToolsIOContext* context,
     bool binary) {
-  return new DevToolsStreamFile(context, binary);
+  auto stream = base::MakeRefCounted<DevToolsStreamFile>(
+      base::PassKey<DevToolsStreamFile>(), binary);
+  // Registering takes a reference to the stream, so it must happen after the
+  // object has been adopted by `MakeRefCounted`, not during construction.
+  stream->handle_ = stream->Register(context);
+  return stream;
 }
 
-DevToolsStreamFile::DevToolsStreamFile(DevToolsIOContext* context, bool binary)
+DevToolsStreamFile::DevToolsStreamFile(base::PassKey<DevToolsStreamFile>,
+                                       bool binary)
     : DevToolsIOContext::Stream(impl_task_runner()),
-      handle_(Register(context)),
       binary_(binary),
       task_runner_(impl_task_runner()) {}
 
 DevToolsStreamFile::~DevToolsStreamFile() {
-  DCHECK(task_runner_->RunsTasksInCurrentSequence());
+  CHECK(task_runner_->RunsTasksInCurrentSequence(), base::NotFatalUntil::M159);
 }
 
 bool DevToolsStreamFile::InitOnFileSequenceIfNeeded() {
-  DCHECK(task_runner_->RunsTasksInCurrentSequence());
+  CHECK(task_runner_->RunsTasksInCurrentSequence(), base::NotFatalUntil::M159);
   if (had_errors_)
     return false;
   if (file_.IsValid())
     return true;
-  base::FilePath temp_path;
-  if (!base::CreateTemporaryFile(&temp_path)) {
-    LOG(ERROR) << "Failed to create temporary file";
+  base::FilePath temp_dir;
+  if (!base::GetTempDir(&temp_dir)) {
+    LOG(ERROR) << "Failed to get temporary directory";
     had_errors_ = true;
     return false;
   }
-  const unsigned flags = base::File::FLAG_OPEN_TRUNCATED |
-                         base::File::FLAG_WRITE | base::File::FLAG_READ |
-                         base::File::FLAG_DELETE_ON_CLOSE;
-  file_.Initialize(temp_path, flags);
+  base::FilePath temp_path;
+  file_ = base::CreateAndOpenTemporaryFileInDir(
+      temp_dir, &temp_path,
+      base::File::FLAG_WIN_TEMPORARY | base::File::FLAG_DELETE_ON_CLOSE);
   if (!file_.IsValid()) {
-    LOG(ERROR) << "Failed to open temporary file: " << temp_path.value() << ", "
+    LOG(ERROR) << "Failed to create temporary file: "
                << base::File::ErrorToString(file_.error_details());
     had_errors_ = true;
-    base::DeleteFile(temp_path);
     return false;
   }
+#if !BUILDFLAG(IS_WIN)
+  base::DeleteFile(temp_path);
+#endif
   return true;
 }
 
@@ -108,8 +117,8 @@ DevToolsIOContext::Stream::Status DevToolsStreamFile::InnerReadOnFileSequence(
     off_t position,
     size_t max_size,
     std::string& buffer) {
-  DCHECK(task_runner_->RunsTasksInCurrentSequence());
-  DCHECK(file_.IsValid());
+  CHECK(task_runner_->RunsTasksInCurrentSequence(), base::NotFatalUntil::M159);
+  CHECK(file_.IsValid(), base::NotFatalUntil::M159);
 
   if (position < 0) {
     position = last_read_pos_;

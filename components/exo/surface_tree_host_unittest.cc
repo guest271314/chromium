@@ -22,6 +22,7 @@
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/aura/layout_manager.h"
 #include "ui/aura/window.h"
+#include "ui/compositor/layer_surface.h"
 #include "ui/display/display.h"
 #include "ui/display/test/display_manager_test_api.h"
 #include "ui/display/types/display_constants.h"
@@ -321,6 +322,8 @@ class FakeRasterContextProvider
   }
   void AddObserver(viz::ContextLostObserver* obs) override { ADD_FAILURE(); }
   void RemoveObserver(viz::ContextLostObserver* obs) override { ADD_FAILURE(); }
+  bool IsLost() override { return false; }
+
   base::Lock* GetLock() override {
     ADD_FAILURE();
     return nullptr;
@@ -336,13 +339,11 @@ class FakeRasterContextProvider
   }
   const gpu::Capabilities& ContextCapabilities() const override {
     ADD_FAILURE();
-    static gpu::Capabilities dummy_caps;
-    return dummy_caps;
+    return dummy_caps_;
   }
   const gpu::GpuFeatureInfo& GetGpuFeatureInfo() const override {
     ADD_FAILURE();
-    static gpu::GpuFeatureInfo dummy_feature_info;
-    return dummy_feature_info;
+    return dummy_feature_info_;
   }
   gpu::raster::RasterInterface* RasterInterface() override {
     return GetInterceptingTestRasterInterface();
@@ -364,6 +365,8 @@ class FakeRasterContextProvider
   base::OnceClosure on_destroyed_;
 
   InterceptingTestRasterInterface intercepting_test_raster_interface_;
+  gpu::Capabilities dummy_caps_;
+  gpu::GpuFeatureInfo dummy_feature_info_;
 };
 
 }  // namespace

@@ -40,6 +40,7 @@
 #include <string_view>
 #include <utility>
 
+#include "base/byte_size.h"
 #include "base/check.h"
 #include "base/check_op.h"
 #include "base/feature_list.h"
@@ -47,7 +48,6 @@
 #include "base/memory/scoped_refptr.h"
 #include "base/memory/values_equivalent.h"
 #include "base/memory/weak_ptr.h"
-#include "base/metrics/histogram_functions.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/trace_event/trace_event.h"
 #include "cc/layers/texture_layer.h"  // IWYU pragma: keep (https://github.com/clangd/clangd/issues/2044)
@@ -97,15 +97,16 @@
 #include "third_party/blink/renderer/modules/canvas/canvas2d/path_2d.h"
 #include "third_party/blink/renderer/modules/canvas/htmlcanvas/canvas_context_creation_attributes_helpers.h"
 #include "third_party/blink/renderer/platform/fonts/font.h"
+#include "third_party/blink/renderer/platform/fonts/font_orientation.h"
 #include "third_party/blink/renderer/platform/geometry/layout_unit.h"
 #include "third_party/blink/renderer/platform/geometry/path.h"
 #include "third_party/blink/renderer/platform/geometry/path_builder.h"
 #include "third_party/blink/renderer/platform/geometry/physical_offset.h"
 #include "third_party/blink/renderer/platform/geometry/stroke_data.h"
+#include "third_party/blink/renderer/platform/graphics/canvas_2d_resource_provider.h"
 #include "third_party/blink/renderer/platform/graphics/canvas_deferred_paint_record.h"
 #include "third_party/blink/renderer/platform/graphics/canvas_hibernation_handler.h"
 #include "third_party/blink/renderer/platform/graphics/canvas_resource.h"
-#include "third_party/blink/renderer/platform/graphics/canvas_resource_provider.h"
 #include "third_party/blink/renderer/platform/graphics/gpu/canvas_utils.h"
 #include "third_party/blink/renderer/platform/graphics/gpu/shared_context_rate_limiter.h"
 #include "third_party/blink/renderer/platform/graphics/gpu/shared_gpu_context.h"
@@ -119,6 +120,7 @@
 #include "third_party/blink/renderer/platform/graphics/web_graphics_context_3d_provider_util.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
 #include "third_party/blink/renderer/platform/instrumentation/use_counter.h"
+#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/blink/renderer/platform/timer.h"
 #include "third_party/blink/renderer/platform/transforms/affine_transform.h"
 #include "third_party/blink/renderer/platform/wtf/hash_table.h"
@@ -131,6 +133,7 @@
 #include "ui/gfx/geometry/rect_f.h"
 #include "ui/gfx/geometry/size.h"
 #include "ui/gfx/geometry/skia_conversions.h"
+#include "ui/gfx/hdr_metadata.h"
 
 // UMA Histogram macros trigger a bug in IWYU.
 // https://github.com/include-what-you-use/include-what-you-use/issues/1546
@@ -209,6 +212,7 @@ CanvasRenderingContext2D::CanvasRenderingContext2D(
       canvas->GetDocument().GetSettings()->GetAntialiasedClips2dCanvasEnabled())
     clip_antialiasing_ = kAntiAliased;
   SetShouldAntialias(true);
+  FlushForImageListener::Get()->AddObserver(this);
 }
 
 V8RenderingContext* CanvasRenderingContext2D::AsV8RenderingContext() {
@@ -238,11 +242,7 @@ bool CanvasRenderingContext2D::IsComposited() const {
     return false;
   }
 
-  if (!resource_provider_) [[unlikely]] {
-    return false;
-  }
-
-  if (!resource_provider_->As2DSharedImageProvider()) {
+  if (!GetSharedImageProvider()) {
     return false;
   }
 
@@ -251,6 +251,13 @@ bool CanvasRenderingContext2D::IsComposited() const {
   }
 
   return true;
+}
+
+bool CanvasRenderingContext2D::Is2DCanvasAccelerated() const {
+  if (IsHibernating() || !canvas()) {
+    return false;
+  }
+  return BaseRenderingContext2D::Is2DCanvasAccelerated();
 }
 
 void CanvasRenderingContext2D::Stop() {
@@ -283,9 +290,10 @@ void CanvasRenderingContext2D::LoseContext(LostContextMode lost_mode) {
     return;
   context_lost_mode_ = lost_mode;
   ResetInternal();
+  ResetRecorder();
   HTMLCanvasElement* const element = canvas();
   if (element != nullptr) [[likely]] {
-    resource_provider_ = nullptr;
+    ResetBacking();
     element->DiscardResources();
     element->DiscardResourceDispatcher();
 
@@ -303,6 +311,7 @@ void CanvasRenderingContext2D::Trace(Visitor* visitor) const {
   ScriptWrappable::Trace(visitor);
   BaseRenderingContext2D::Trace(visitor);
   SVGResourceClient::Trace(visitor);
+  CanvasHibernationHandler::Delegate::Trace(visitor);
 }
 
 void CanvasRenderingContext2D::WillDrawImage(CanvasImageSource* source,
@@ -322,7 +331,7 @@ void CanvasRenderingContext2D::WillDrawImage(CanvasImageSource* source,
     // Recreate the CRP in GPU raster mode and signal that it needs a
     // compositing update.
     canvas()->SetPreferred2DRasterMode(RasterModeHint::kPreferGPU);
-    DropAndRecreateExistingResourceProvider();
+    DropAndRecreateExistingBacking();
     canvas()->SetNeedsCompositingUpdate();
   }
 }
@@ -332,13 +341,11 @@ bool CanvasRenderingContext2D::WritePixels(const SkImageInfo& orig_info,
                                            size_t row_bytes,
                                            int x,
                                            int y) {
-  if (!resource_provider_ || !canvas() || isContextLost() ||
-      !resource_provider_->IsValid()) {
+  if (!IsBackingValid() || isContextLost()) {
     return false;
   }
 
   CanvasRenderingContextHost* host = Host();
-  CanvasResourceProvider* provider = resource_provider_.get();
 
   if (x <= 0 && y <= 0 && x + orig_info.width() >= host->Size().width() &&
       y + orig_info.height() >= host->Size().height()) {
@@ -356,15 +363,22 @@ bool CanvasRenderingContext2D::WritePixels(const SkImageInfo& orig_info,
       recorder->RestartRecording();
     }
   } else {
-    provider->FlushCanvas2D();
-
-    // Short-circuit out if an error occurred while flushing the recording.
-    if (!provider->IsValid()) {
+    FlushCanvas(FlushReason::kOther);
+    if (!IsBackingValid()) {
       return false;
     }
   }
 
-  return provider->WritePixels(orig_info, pixels, row_bytes, x, y);
+  bool result = WritePixelsToBacking(orig_info, pixels, row_bytes, x, y);
+  if (result) {
+    // WritePixels content is not saved in the recording. Thus, WritePixels()
+    // must invalidate the last recording and ensure that any subsequent
+    // recording is not treated as a full-frame recording, as it would be
+    // missing this pixel data.
+    last_recording_ = std::nullopt;
+    set_clear_frame(false);
+  }
+  return result;
 }
 
 bool CanvasRenderingContext2D::ShouldAntialias() const {
@@ -407,8 +421,8 @@ void CanvasRenderingContext2D::ScrollPathIntoViewInternal(const Path& path) {
   PhysicalRect path_rect = PhysicalRect::EnclosingRect(bounding_rect);
   PhysicalRect canvas_rect = layout_box->PhysicalContentBoxRect();
   // TODO(fserb): Is this kIgnoreTransforms correct?
-  canvas_rect.Move(
-      layout_box->LocalToAbsolutePoint(PhysicalOffset(), kIgnoreTransforms));
+  canvas_rect.Move(layout_box->LocalToAbsolutePoint(
+      PhysicalOffset(), {MapCoordinatesMode::kIgnoreTransforms}));
   path_rect.SetX(
       (canvas_rect.X() + path_rect.X() * canvas_rect.Width() / width));
   path_rect.SetY(
@@ -452,19 +466,18 @@ MemoryManagedPaintCanvas* CanvasRenderingContext2D::GetOrCreatePaintCanvas() {
   if (isContextLost()) [[unlikely]] {
     return nullptr;
   }
+  if (!canvas()) {
+    return nullptr;
+  }
 
-  CanvasResourceProvider* provider = GetResourceProvider();
-  if (provider != nullptr) [[likely]] {
-    // If we already had a provider, we can check whether it recorded ops passed
-    // the autoflush limit.
+  if (HasBacking()) {
     if (layer_count_ == 0) [[likely]] {
       // TODO(crbug.com/1246486): Make auto-flushing layer friendly.
-      provider->FlushIfRecordingLimitExceededForCanvas2D();
+      FlushIfRecordingLimitExceeded();
     }
   } else {
-    // If we have no provider, try creating one.
-    provider = GetOrCreateResourceProvider();
-    if (provider == nullptr) [[unlikely]] {
+    // If we have no backing, try creating one.
+    if (!InitializeBacking()) [[unlikely]] {
       return nullptr;
     }
   }
@@ -472,37 +485,10 @@ MemoryManagedPaintCanvas* CanvasRenderingContext2D::GetOrCreatePaintCanvas() {
   return &Recorder()->getRecordingCanvas();
 }
 
-const MemoryManagedPaintCanvas* CanvasRenderingContext2D::GetPaintCanvas()
-    const {
-  if (isContextLost()) [[unlikely]] {
-    return nullptr;
-  }
-  const CanvasResourceProvider* provider = GetResourceProvider();
-  if (!provider) [[unlikely]] {
-    return nullptr;
-  }
-  return &Recorder()->getRecordingCanvas();
-}
-
-const MemoryManagedPaintRecorder* CanvasRenderingContext2D::Recorder() const {
-  const CanvasResourceProvider* provider = GetResourceProvider();
-  if (provider == nullptr) [[unlikely]] {
-    return nullptr;
-  }
-  return &provider->Recorder();
-}
-
-MemoryManagedPaintRecorder* CanvasRenderingContext2D::Recorder() {
-  CanvasResourceProvider* provider = GetResourceProvider();
-  if (provider == nullptr) [[unlikely]] {
-    return nullptr;
-  }
-  return &provider->Recorder();
-}
-
 void CanvasRenderingContext2D::WillDraw(
     const gfx::Rect& dirty_rect,
     CanvasPerformanceMonitor::DrawType draw_type) {
+  CHECK(HasBacking());
   if (ShouldAntialias()) {
     gfx::Rect inflated_dirty_rect = dirty_rect;
     inflated_dirty_rect.Outset(1);
@@ -516,20 +502,32 @@ void CanvasRenderingContext2D::WillDraw(
   }
 
   // Always draw everything during printing.
-  if (CanvasResourceProvider* provider = GetResourceProvider();
-      layer_count_ == 0 && provider != nullptr) [[likely]] {
+  if (layer_count_ == 0) [[likely]] {
     // TODO(crbug.com/1246486): Make auto-flushing layer friendly.
-    provider->FlushIfRecordingLimitExceededForCanvas2D();
+    FlushIfRecordingLimitExceeded();
   }
 }
 
 std::optional<cc::PaintRecord> CanvasRenderingContext2D::FlushCanvas(
     FlushReason reason) {
-  CanvasResourceProvider* provider = GetResourceProvider();
-  if (provider == nullptr) [[unlikely]] {
+  if (!canvas()) {
     return std::nullopt;
   }
-  return provider->FlushCanvas2D(reason);
+  return FlushCanvasInternal(reason);
+}
+
+void CanvasRenderingContext2D::DidFlushRecording(
+    const cc::PaintRecord& recording,
+    bool clear_frame,
+    FlushReason reason) {
+  bool want_to_print = (Host() && Host()->IsPrinting()) ||
+                       reason == FlushReason::kPrinting ||
+                       reason == FlushReason::kCanvasPushFrameWhilePrinting;
+  if (want_to_print && clear_frame) {
+    last_recording_ = recording;
+  } else {
+    last_recording_ = std::nullopt;
+  }
 }
 
 bool CanvasRenderingContext2D::WillSetFont() const {
@@ -603,6 +601,9 @@ bool CanvasRenderingContext2D::ResolveFont(const String& new_font) {
           element_font_description.SpecifiedSize());
       element_font_description.SetAdjustedSize(
           element_font_description.SpecifiedSize());
+      // Reset the orientation to avoid inheriting the vertical
+      // writing-mode/text-orientation from the <canvas> element.
+      element_font_description.SetOrientation(FontOrientation::kHorizontal);
 
       font_style_builder.SetFontDescription(element_font_description);
       const ComputedStyle* font_style = font_style_builder.TakeStyle();
@@ -676,9 +677,7 @@ void CanvasRenderingContext2D::PruneLocalFontCache(size_t target_size) {
 void CanvasRenderingContext2D::StyleDidChange(const ComputedStyle* old_style,
                                               const ComputedStyle& new_style) {
   if (old_style &&
-      (base::FeatureList::IsEnabled(blink::features::kCSSFontComparisonFix)
-           ? base::ValuesEquivalent(old_style->GetFont(), new_style.GetFont())
-           : old_style->GetFont() == new_style.GetFont())) {
+      base::ValuesEquivalent(old_style->GetFont(), new_style.GetFont())) {
     return;
   }
   PruneLocalFontCache(0);
@@ -731,30 +730,27 @@ scoped_refptr<CanvasResource>
 CanvasRenderingContext2D::PaintRenderingResultsToResource(
     SourceDrawingBuffer source_buffer,
     FlushReason reason) {
-  if (!IsResourceProviderValid()) {
+  if (!IsBackingValid()) {
     return nullptr;
   }
 
   // Only CRPSI can produce CanvasResources.
-  auto* si_provider = resource_provider_->As2DSharedImageProvider();
+  auto* si_provider = GetSharedImageProvider();
   if (!si_provider) {
     return nullptr;
   }
 
-  return si_provider->ProduceCanvasResource(reason);
+  FlushCanvas(reason);
+  return si_provider->ProduceCanvasResource(GetSoftwareSurface());
 }
 
 const std::optional<cc::PaintRecord>&
-CanvasRenderingContext2D::GetLastRecordingForCanvas2D() {
-  auto* provider = GetResourceProvider();
-  if (!provider) {
-    return empty_recording_;
-  }
-  return provider->LastRecordingForCanvas2D();
+CanvasRenderingContext2D::GetLastRecording() {
+  return last_recording_;
 }
 
-bool CanvasRenderingContext2D::CanCreateResourceProvider() {
-  return GetOrCreateResourceProvider();
+bool CanvasRenderingContext2D::CanCreateBacking() {
+  return InitializeBacking();
 }
 
 scoped_refptr<StaticBitmapImage> blink::CanvasRenderingContext2D::GetImage() {
@@ -763,12 +759,7 @@ scoped_refptr<StaticBitmapImage> blink::CanvasRenderingContext2D::GetImage() {
         GetHibernationHandler()->GetImage());
   }
 
-  if (!IsResourceProviderValid()) {
-    return nullptr;
-  }
-
-  resource_provider_->FlushCanvas2D();
-  return resource_provider_->Snapshot();
+  return PaintRenderingResultsToSnapshot(kBackBuffer);
 }
 
 ImageData* CanvasRenderingContext2D::getImageDataInternal(
@@ -792,19 +783,10 @@ void CanvasRenderingContext2D::EnableAccelerationIfPossible() {
       AllowSoftwareToAcceleratedCanvasUpgrade(
           SharedGpuContext::ContextProviderWrapper().get())) {
     canvas()->SetPreferred2DRasterMode(RasterModeHint::kPreferGPU);
-    DropAndRecreateExistingResourceProvider();
+    DropAndRecreateExistingBacking();
   }
 }
 
-void CanvasRenderingContext2D::PreFinalizeFrame() {
-  // Low-latency 2d canvases produce their frames after the resource gets single
-  // buffered.
-  // TODO(crbug.com/40280152): Analyze whether this call is redundant (i.e.,
-  // whether the CRP is guaranteed to always be present).
-  if (canvas() && canvas()->LowLatencyEnabled() && canvas()->IsDirty()) {
-    GetOrCreateResourceProvider();
-  }
-}
 
 void CanvasRenderingContext2D::FinalizeFrame(FlushReason reason) {
   TRACE_EVENT0("blink", "CanvasRenderingContext2D::FinalizeFrame");
@@ -815,7 +797,12 @@ void CanvasRenderingContext2D::FinalizeFrame(FlushReason reason) {
   HTMLCanvasElement* host = canvas();
   CHECK(host);
 
-  GetResourceProvider()->FlushCanvas2D(reason);
+  if (RuntimeEnabledFeatures::Canvas2dDeferredFlushEnabled() &&
+      IsComposited() && reason == FlushReason::kCanvasPushFrame) {
+    // Flush is deferred to PrepareTransferableResource when composited.
+  } else {
+    FlushCanvas(reason);
+  }
   if (reason == FlushReason::kCanvasPushFrame) {
     if (host->IsDisplayed()) {
       // Make sure the GPU is never more than two animation frames behind.
@@ -844,7 +831,7 @@ ExecutionContext* CanvasRenderingContext2D::GetTopExecutionContext() const {
 }
 
 bool CanvasRenderingContext2D::IsPaintable() const {
-  return GetResourceProvider();
+  return canvas() && BaseRenderingContext2D::IsPaintable();
 }
 
 bool CanvasRenderingContext2D::IsHibernating() const {
@@ -870,20 +857,15 @@ void CanvasRenderingContext2D::PageVisibilityChanged() {
 
   // If the canvas is backed by a SharedImage resource provider, toggle
   // whether resource recycling is enabled based on page visibility.
-  auto* resource_provider = GetResourceProvider();
-  auto* resource_provider_si =
-      resource_provider ? resource_provider->As2DSharedImageProvider()
-                        : nullptr;
-  if (resource_provider_si) {
-    resource_provider_si->SetResourceRecyclingEnabled(page_is_visible);
+  if (GetSharedImageProvider()) {
+    GetSharedImageProvider()->SetResourceRecyclingEnabled(page_is_visible);
   }
 
   // Conserve memory.
   SetAggressivelyFreeSharedGpuContextResourcesIfPossible(!page_is_visible);
 
   if (features::IsCanvas2DHibernationEnabled() && !page_is_visible &&
-      !IsHibernating() && resource_provider &&
-      resource_provider->IsAccelerated()) {
+      !IsHibernating() && IsBackingAccelerated()) {
     // Assuming 8-bit RGBA or similar, this means that we don't bother
     // hibernating canvas elements smaller than 64kiB. Hibernation has a cost,
     // and a lot of pages have very small canvas elements, according to metrics.
@@ -919,7 +901,7 @@ void CanvasRenderingContext2D::PageVisibilityChanged() {
   }
 
   if (page_is_visible && IsHibernating()) {
-    GetOrCreateResourceProvider();  // Rude awakening
+    InitializeBacking();  // Rude awakening
   }
 
   if (!element->IsPageVisible()) {
@@ -1039,7 +1021,7 @@ void CanvasRenderingContext2D::DisableAcceleration() {
   // Create and configure an unaccelerated CanvasResourceProvider.
   canvas()->SetPreferred2DRasterMode(RasterModeHint::kPreferCPU);
 
-  DropAndRecreateExistingResourceProvider();
+  DropAndRecreateExistingBacking();
 
   // We must force a paint invalidation on the canvas even if its
   // content did not change, because its layer was destroyed.
@@ -1073,8 +1055,9 @@ UniqueFontSelector* CanvasRenderingContext2D::GetFontSelector() const {
 }
 
 void CanvasRenderingContext2D::SizeChanged() {
-  resource_provider_ = nullptr;
-  did_fail_to_create_resource_provider_ = false;
+  ResetBacking();
+  ResetRecorder();
+  did_fail_to_create_backing_ = false;
 }
 
 CanvasHibernationHandler* CanvasRenderingContext2D::GetHibernationHandler()
@@ -1083,21 +1066,17 @@ CanvasHibernationHandler* CanvasRenderingContext2D::GetHibernationHandler()
 }
 
 void CanvasRenderingContext2D::Dispose() {
+  FlushForImageListener::Get()->RemoveObserver(this);
   hibernation_handler_ = nullptr;
-  resource_provider_ = nullptr;
+  ResetBacking();
+  ResetRecorder();
   CanvasRenderingContext::Dispose();
 }
 
-std::unique_ptr<CanvasResourceProvider>
-CanvasRenderingContext2D::CreateCanvasResourceProvider() {
-  CHECK(!GetResourceProvider());
+void CanvasRenderingContext2D::CreateBacking() {
+  CHECK(!HasBacking());
 
   canvas()->GetOrCreateResourceDispatcher();
-
-  std::unique_ptr<CanvasResourceProvider> provider;
-  const SkAlphaType alpha_type = GetAlphaType();
-  const viz::SharedImageFormat format = GetSharedImageFormat();
-  const gfx::ColorSpace color_space = GetColorSpace();
 
   const bool is_gpu_compositing_enabled =
       SharedGpuContext::IsGpuCompositingEnabled();
@@ -1107,21 +1086,23 @@ CanvasRenderingContext2D::CreateCanvasResourceProvider() {
   // If using GPU compositing, try to create a SharedImage-backed provider if
   // either (a) using GPU raster or (b) using CPU raster and want to use
   // mappable SharedImage for Canvas2D.
-  // The layoutsubtree check is so that html-in-canvas uses the shared image
+  // The content=drawable check is so that html-in-canvas uses the shared image
   // codepath to enable same-frame updates. This could be changed in the future.
   if (is_gpu_compositing_enabled &&
       (use_gpu_raster || UseMappableSharedImagesForCanvas2D() ||
-       canvas()->layoutSubtree())) {
+       canvas()->IsContentDrawable())) {
     RasterMode raster_mode =
         use_gpu_raster ? RasterMode::kGPU : RasterMode::kCPU;
     gpu::SharedImageUsageSet shared_image_usage_flags =
         gpu::SHARED_IMAGE_USAGE_DISPLAY_READ;
 
     // Configure this SharedImage for scanout and concurrent read/write as
-    // appropriate.
-    bool low_latency_supported =
-        canvas()->LowLatencyEnabled() &&
-        LowLatencyUsageSupportedForCanvas2D(raster_mode);
+    // appropriate. Concurrent read/write only makes sense if raster writes are
+    // happening via the GPU.
+
+    bool low_latency_supported = canvas()->LowLatencyEnabled() &&
+                                 raster_mode == RasterMode::kGPU &&
+                                 LowLatencyUsageSupportedForCanvas2D();
     if (low_latency_supported || UseOverlaysForCanvas2D()) {
       shared_image_usage_flags |= gpu::SHARED_IMAGE_USAGE_SCANOUT;
       if (low_latency_supported) {
@@ -1130,78 +1111,86 @@ CanvasRenderingContext2D::CreateCanvasResourceProvider() {
       }
     }
 
-    provider = Canvas2DResourceProviderSharedImage::CreateWithClear(
-        canvas()->Size(), format, alpha_type, color_space,
-        SharedGpuContext::ContextProviderWrapper(), raster_mode,
-        shared_image_usage_flags, canvas());
+    CreateSharedImageProvider(raster_mode, shared_image_usage_flags);
   } else if (!is_gpu_compositing_enabled) {
     // Create a CanvasResourceProvider that uses a SharedImage backed by a
     // shared-memory buffer that can be written by canvas SW raster and read by
     // the SW compositor.
-    provider = Canvas2DResourceProviderSharedImage::
-        CreateWithClearForSoftwareCompositor(
-            canvas()->Size(), format, alpha_type, color_space,
-            SharedGpuContext::SharedImageInterfaceProvider(), canvas());
+    CreateSharedImageProviderForSoftwareCompositor();
   }
-  if (!provider) {
+  if (!GetSharedImageProvider()) {
     // The final fallback is to raster into a bitmap that will then either be
     // uploaded into GPU memory (for GPU compositing) or copied into the Viz
     // process (for software compositing).
-    provider = Canvas2DResourceProviderBitmap::CreateWithClear(
-        canvas()->Size(), format, alpha_type, color_space, canvas());
+    CreateSoftwareSurface();
   }
-
-  return provider;
+  if (HasBacking()) {
+    ConfigureRecorder(
+        canvas()->Size(),
+        GetSharedImageProvider() && GetSharedImageProvider()->IsGraphite());
+  }
 }
 
-CanvasResourceProvider* CanvasRenderingContext2D::GetResourceProvider() const {
-  if (!canvas()) {
-    return nullptr;
+base::ByteSize CanvasRenderingContext2D::AllocatedBufferSize() const {
+  if (hibernation_handler_ && hibernation_handler_->IsHibernating()) {
+    return base::ByteSize(hibernation_handler_->memory_size());
   }
-  return resource_provider_.get();
+  return BaseRenderingContext2D::AllocatedBufferSize();
 }
 
-CanvasResourceProvider*
-CanvasRenderingContext2D::GetOrCreateResourceProvider() {
+bool CanvasRenderingContext2D::IsBackingValid() const {
+  return canvas() && BaseRenderingContext2D::IsBackingValid();
+}
+
+bool CanvasRenderingContext2D::IsBackingAccelerated() const {
+  return GetSharedImageProvider() && GetSharedImageProvider()->IsAccelerated();
+}
+
+bool CanvasRenderingContext2D::HasBacking() const {
+  return BaseRenderingContext2D::HasBacking();
+}
+
+scoped_refptr<StaticBitmapImage> CanvasRenderingContext2D::Snapshot() {
+  return BaseRenderingContext2D::Snapshot();
+}
+
+bool CanvasRenderingContext2D::InitializeBacking() {
   HTMLCanvasElement* const element = canvas();
   if (!element) [[unlikely]] {
-    return nullptr;
+    return false;
   }
 
-  CanvasResourceProvider* resource_provider = GetResourceProvider();
   if (isContextLost() && !IsContextBeingRestored()) {
-    DCHECK(!resource_provider);
-    return nullptr;
+    DCHECK(!HasBacking());
+    return false;
   }
 
-  if (resource_provider) {
-    if (!resource_provider->IsValid()) {
-      // The canvas context is not lost but the provider is invalid. This
-      // happens if the GPU process dies in the middle of a render task. The
-      // canvas is notified of GPU context losses via the
-      // `NotifyGpuContextLost` callback and restoration happens in
-      // `TryRestoreContextEvent`. Both callbacks are executed in their own
-      // separate task. If the GPU context goes invalid in the middle of a
-      // render task, the canvas won't immediately know about it and canvas
-      // APIs will continue using the provider that is now invalid. We can
-      // early return here, trying to re-create the provider right away would
-      // just fail. We need to let `TryRestoreContextEvent` wait for the GPU
-      // process to up again.
-      return nullptr;
-    }
-    return resource_provider;
+  if (HasBacking()) {
+    // The canvas context is not lost but the backing may be invalid if the
+    // GPU process dies in the middle of a render task. The canvas is notified
+    // of GPU context losses via the `NotifyGpuContextLost` callback and
+    // restoration happens in `TryRestoreContextEvent`. Both callbacks are
+    // executed in their own separate task. If the GPU context goes invalid in
+    // the middle of a render task, the canvas won't immediately know about it
+    // and canvas APIs will continue using the backing that is now invalid. We
+    // can early return here, trying to re-create the backing right away would
+    // just fail. We need to let `TryRestoreContextEvent` wait for the GPU
+    // process to up again.
+    return IsBackingValid();
   }
 
-  if (did_fail_to_create_resource_provider_) {
-    return nullptr;
+  if (did_fail_to_create_backing_) {
+    ResetRecorder();
+    return false;
   }
 
   if (!canvas()->IsValidImageSize()) {
-    did_fail_to_create_resource_provider_ = true;
+    did_fail_to_create_backing_ = true;
+    ResetRecorder();
     if (!canvas()->Size().IsEmpty()) {
       LoseContext(CanvasRenderingContext::kInvalidCanvasSize);
     }
-    return nullptr;
+    return false;
   }
 
   canvas()->UpdatePreferred2DRasterMode();
@@ -1210,90 +1199,88 @@ CanvasRenderingContext2D::GetOrCreateResourceProvider() {
     hibernation_handler_ = std::make_unique<CanvasHibernationHandler>(*this);
   }
 
-  RecreateResourceProvider();
+  RecreateBacking();
 
   canvas()->UpdateMemoryUsage();
 
   canvas()->SetNeedsCompositingUpdate();
 
-  return resource_provider_.get();
+  return HasBacking();
 }
 
-std::unique_ptr<CanvasResourceProvider>
-CanvasRenderingContext2D::ReplaceResourceProvider(
-    std::unique_ptr<CanvasResourceProvider> provider) {
-  std::unique_ptr<CanvasResourceProvider> old_resource_provider =
-      std::move(resource_provider_);
-  resource_provider_ = std::move(provider);
-  canvas()->UpdateMemoryUsage();
-  if (old_resource_provider) {
-    old_resource_provider->SetDelegate(nullptr);
-  }
-  return old_resource_provider;
+void CanvasRenderingContext2D::ResetBacking() {
+  BaseRenderingContext2D::ResetBacking();
+  last_recording_ = std::nullopt;
 }
 
-void CanvasRenderingContext2D::DropAndRecreateExistingResourceProvider() {
-  CanvasResourceProvider* old_provider = GetResourceProvider();
-  if (old_provider == nullptr) {
+void CanvasRenderingContext2D::DropAndRecreateExistingBacking() {
+  if (!canvas() || !HasBacking()) {
     return;
   }
 
   scoped_refptr<StaticBitmapImage> image = GetImage();
   // image can be null if allocation failed in which case we should just
-  // abort the provider switch to retain the old provider, which is still
+  // abort the backing switch to retain the old backing, which is still
   // functional.
   if (!image) {
     return;
   }
-  std::unique_ptr<MemoryManagedPaintRecorder> recorder =
-      old_provider->ReleaseRecorder();
   canvas()->ResetLayer();
-  ReplaceResourceProvider(nullptr);
+  ResetBacking();
 
   // Bail out if the context is lost.
   if (isContextLost() && !IsContextBeingRestored()) {
+    ResetRecorder();
     return;
   }
 
-  // Bail out if it's not possible to create a new provider.
-  RecreateResourceProvider();
-  if (!resource_provider_) {
+  // Bail out if it's not possible to create a new backing.
+  RecreateBacking();
+  if (!HasBacking()) {
     return;
   }
 
-  resource_provider_->RestoreBackBufferForCanvas2D(
-      image->PaintImageForCurrentFrame());
-  resource_provider_->SetRecorder(std::move(recorder));
+  RestoreBackBuffer(image->PaintImageForCurrentFrame());
 
   canvas()->UpdateMemoryUsage();
 }
 
-void CanvasRenderingContext2D::RecreateResourceProvider() {
+void CanvasRenderingContext2D::RecreateBacking() {
   CHECK(GetHibernationHandler());
-  CHECK(!resource_provider_);
+  CHECK(!HasBacking());
 
-  if (did_fail_to_create_resource_provider_) {
+  if (did_fail_to_create_backing_) {
+    ResetRecorder();
     return;
   }
 
   if (canvas()->IsValidImageSize()) {
-    resource_provider_ = CreateCanvasResourceProvider();
-    canvas()->UpdateMemoryUsage();
+    CreateBacking();
   }
-  if (!resource_provider_) {
-    did_fail_to_create_resource_provider_ = true;
+
+  if (!HasBacking()) {
+    did_fail_to_create_backing_ = true;
+    ResetRecorder();
     return;
   }
 
-  CHECK(resource_provider_->IsValid());
-  base::UmaHistogramBoolean("Blink.Canvas.ResourceProviderIsAccelerated",
-                            resource_provider_->IsAccelerated());
-  base::UmaHistogramEnumeration("Blink.Canvas.ResourceProviderType",
-                                resource_provider_->GetType());
+  RecordBackingHistograms();
 
   if (GetHibernationHandler()->IsHibernating()) {
     WakeUpFromHibernation();
   }
+}
+
+void CanvasRenderingContext2D::RestoreBackBuffer(const cc::PaintImage& image) {
+  DCHECK_EQ(image.height(), Host()->Size().height());
+  DCHECK_EQ(image.width(), Host()->Size().width());
+
+  auto sk_image = image.GetSwSkImage();
+  DCHECK(sk_image);
+  SkPixmap map;
+  sk_image->peekPixels(&map);
+  WritePixelsToBacking(map.info(), map.addr(), map.rowBytes(), /*x=*/0,
+                       /*y=*/0);
 }
 
 void CanvasRenderingContext2D::WakeUpFromHibernation() {
@@ -1304,7 +1291,7 @@ void CanvasRenderingContext2D::WakeUpFromHibernation() {
         CanvasHibernationHandler::HibernationEvent::
             kHibernationEndedWithSwitchToBackgroundRendering);
   } else {
-    if (resource_provider_->IsAccelerated()) {
+    if (IsBackingAccelerated()) {
       CanvasHibernationHandler::ReportHibernationEvent(
           CanvasHibernationHandler::HibernationEvent::
               kHibernationEndedNormally);
@@ -1320,8 +1307,7 @@ void CanvasRenderingContext2D::WakeUpFromHibernation() {
   builder.set_image(hibernation_handler->GetImage(),
                     PaintImage::GetNextContentId());
   builder.set_id(PaintImage::GetNextId());
-  resource_provider_->RestoreBackBufferForCanvas2D(builder.TakePaintImage());
-  resource_provider_->SetRecorder(hibernation_handler->ReleaseRecorder());
+  RestoreBackBuffer(builder.TakePaintImage());
   // The hibernation image is no longer valid, clear it.
   hibernation_handler->Clear();
   DCHECK(!hibernation_handler->IsHibernating());
@@ -1330,13 +1316,15 @@ void CanvasRenderingContext2D::WakeUpFromHibernation() {
   canvas()->SetNeedsCompositingUpdate();
 }
 
-void CanvasRenderingContext2D::SetCanvas2DResourceProviderForTesting(
-    std::unique_ptr<CanvasResourceProvider> provider,
-    const gfx::Size& size) {
+void CanvasRenderingContext2D::CreateSoftwareSurfaceForTesting() {
   canvas()->DiscardResources();
-  canvas()->SetSize(size);
   hibernation_handler_ = std::make_unique<CanvasHibernationHandler>(*this);
-  ReplaceResourceProvider(std::move(provider));
+  ResetBacking();
+  ResetRecorder();
+  CreateSoftwareSurface();
+  if (HasBacking()) {
+    ConfigureRecorder(canvas()->Size(), /*is_graphite=*/false);
+  }
 }
 
 }  // namespace blink

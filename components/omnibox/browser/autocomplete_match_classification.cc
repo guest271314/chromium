@@ -23,6 +23,30 @@ std::u16string clean(std::u16string_view text) {
 
 }  // namespace
 
+ACMatchClassifications ClassifyFormattedString(
+    const omnibox::FormattedString& formatted_string,
+    int base_style) {
+  ACMatchClassifications classifications;
+  for (int i = 0; i < formatted_string.fragments_size(); ++i) {
+    const auto& fragment = formatted_string.fragments(i);
+    if (fragment.has_start_index()) {
+      int style = fragment.is_bolded()
+                      ? (ACMatchClassification::MATCH | base_style)
+                      : base_style;
+      // Fragment `start_index` is guaranteed to come sorted from the server.
+      if (classifications.empty()) {
+        if (fragment.start_index() > 0) {
+          classifications.emplace_back(0, base_style);
+        }
+        classifications.emplace_back(fragment.start_index(), style);
+      } else if (classifications.back().offset < fragment.start_index()) {
+        classifications.emplace_back(fragment.start_index(), style);
+      }
+    }
+  }
+  return classifications;
+}
+
 ACMatchClassifications ClassifyAllMatchesInString(
     const std::u16string& find_text,
     const std::u16string& text,

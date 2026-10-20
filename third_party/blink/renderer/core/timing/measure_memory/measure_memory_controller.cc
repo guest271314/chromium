@@ -6,7 +6,7 @@
 
 #include <algorithm>
 
-#include "base/byte_count.h"
+#include "base/byte_size.h"
 #include "base/rand_util.h"
 #include "components/performance_manager/public/mojom/coordination_unit.mojom-blink.h"
 #include "services/metrics/public/cpp/ukm_builders.h"
@@ -320,8 +320,9 @@ MemoryMeasurement* ConvertResult(const WebMemoryMeasurementPtr& measurement) {
 
 bool IsDedicatedWorkerEntry(const WebMemoryBreakdownEntryPtr& breakdown_entry) {
   for (const auto& entry : breakdown_entry->attribution) {
-    if (entry->scope == WebMemoryAttribution::Scope::kDedicatedWorker)
+    if (entry->scope == WebMemoryAttribution::Scope::kDedicatedWorker) {
       return true;
+    }
   }
   return false;
 }

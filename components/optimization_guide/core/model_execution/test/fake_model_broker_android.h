@@ -11,8 +11,9 @@
 #include "components/optimization_guide/core/delivery/model_provider_registry.h"
 #include "components/optimization_guide/core/delivery/optimization_guide_model_provider.h"
 #include "components/optimization_guide/core/model_execution/android/model_broker_android.h"
-#include "components/optimization_guide/core/model_execution/test/fake_model_broker.h"
+#include "components/optimization_guide/core/model_execution/test/fake_model_assets.h"
 #include "components/optimization_guide/public/mojom/model_broker.mojom.h"
+#include "components/prefs/testing_pref_service.h"
 #include "services/on_device_model/android/on_device_model_bridge_native_unittest_helper.h"
 
 namespace optimization_guide {
@@ -30,25 +31,38 @@ class ScopedModelBrokerAndroidFeatureList {
 
 class FakeModelBrokerAndroid {
  public:
-  FakeModelBrokerAndroid();
+  struct Options {
+    proto::OnDeviceBaseModelMetadata metadata =
+        FakeBaseModelAsset::DefaultSpec();
+    // If true, the Java ModelDownloader will report the base model as already
+    // installed.
+    bool preinstall_base_model = true;
+  };
+
+  explicit FakeModelBrokerAndroid(const Options& options);
   ~FakeModelBrokerAndroid();
 
   mojo::PendingRemote<mojom::ModelBroker> BindAndPassRemote();
 
+  void InstallBaseModel();
+  void UnInstallBaseModel();
+
   void UpdateModelAdaptation(const FakeAdaptationAsset& asset);
 
-  PrefService& local_state() { return local_state_.local_state(); }
+  PrefService& local_state() { return local_state_; }
   on_device_model::OnDeviceModelBridgeNativeUnitTestHelper& java_helper() {
     return java_helper_;
   }
+  ModelProviderRegistry& model_provider() { return model_provider_; }
 
  private:
   ModelBrokerAndroid& EnsureBroker();
   void UpdateTarget(proto::OptimizationTarget target,
                     const ModelInfo& model_info);
 
+  Options options_;
   ScopedModelBrokerAndroidFeatureList feature_list_;
-  ModelBrokerPrefService local_state_;
+  TestingPrefServiceSimple local_state_;
   OptimizationGuideLogger logger_;
   ModelProviderRegistry model_provider_{&logger_};
   on_device_model::OnDeviceModelBridgeNativeUnitTestHelper java_helper_;

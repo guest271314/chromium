@@ -60,7 +60,7 @@ void AdsBlockedMessageDelegate::ShowMessage() {
   messages::MessageDispatcherBridge* message_dispatcher_bridge =
       messages::MessageDispatcherBridge::Get();
   message->SetIconResourceId(message_dispatcher_bridge->MapToJavaDrawableId(
-      IDR_ANDROID_INFOBAR_BLOCKED_POPUPS));
+      IDR_ANDROID_MESSAGE_BLOCKED_POPUPS));
 
   message->SetSecondaryIconResourceId(
       message_dispatcher_bridge->MapToJavaDrawableId(IDR_ANDROID_SETTINGS));
@@ -130,10 +130,9 @@ void AdsBlockedMessageDelegate::HandleDialogLearnMoreClicked() {
   subresource_filter::ContentSubresourceFilterThrottleManager::LogAction(
       subresource_filter::SubresourceFilterAction::kClickedLearnMore);
   web_contents()->OpenURL(
-      content::OpenURLParams(GURL(subresource_filter::kLearnMoreLink),
-                             content::Referrer(),
-                             WindowOpenDisposition::NEW_FOREGROUND_TAB,
-                             ui::PAGE_TRANSITION_LINK, false),
+      content::OpenURLParams::CreateBrowserInitiated(
+          GURL(subresource_filter::kLearnMoreLink),
+          WindowOpenDisposition::NEW_FOREGROUND_TAB, ui::PAGE_TRANSITION_LINK),
       /*navigation_handle_callback=*/{});
 }
 

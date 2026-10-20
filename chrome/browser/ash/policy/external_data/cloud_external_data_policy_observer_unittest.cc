@@ -52,7 +52,9 @@
 #include "components/session_manager/core/fake_session_manager_delegate.h"
 #include "components/session_manager/core/session_manager.h"
 #include "components/user_manager/scoped_user_manager.h"
+#include "components/user_manager/test_helper.h"
 #include "content/public/test/test_utils.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "services/network/public/cpp/weak_wrapper_shared_url_loader_factory.h"
 #include "services/network/test/test_url_loader_factory.h"
 #include "testing/gmock/include/gmock/gmock.h"
@@ -235,13 +237,13 @@ void CloudExternalDataPolicyObserverTest::SetUp() {
       TestingBrowserProcess::GetGlobal()->local_state());
   device_local_account_policy_service_ =
       std::make_unique<DeviceLocalAccountPolicyService>(
-          &session_manager_client_, device_settings_service_.get(),
-          ash::CrosSettings::Get(), &invalidation_listener_,
+          shared_url_loader_factory_, &session_manager_client_,
+          device_settings_service_.get(), ash::CrosSettings::Get(),
+          &invalidation_listener_,
           base::SingleThreadTaskRunner::GetCurrentDefault(),
           base::SingleThreadTaskRunner::GetCurrentDefault(),
           base::SingleThreadTaskRunner::GetCurrentDefault(),
-          base::SingleThreadTaskRunner::GetCurrentDefault(),
-          shared_url_loader_factory_);
+          base::SingleThreadTaskRunner::GetCurrentDefault());
 
   user_policy_provider_.SetDefaultReturns(
       /*is_initialization_complete_return=*/true,
@@ -364,7 +366,7 @@ void CloudExternalDataPolicyObserverTest::LogInAsDeviceLocalAccount(
       std::make_unique<PolicyServiceImpl>(std::move(providers));
   builder.SetPolicyService(std::move(policy_service));
   builder.SetPath(ash::ProfileHelper::Get()->GetProfilePathByUserIdHash(
-      user_manager::FakeUserManager::GetFakeUsernameHash(account_id)));
+      user_manager::TestHelper::GetFakeUsernameHash(account_id)));
 
   profile_ = builder.Build();
   profile_->set_profile_name(account_id.GetUserEmail());
@@ -403,7 +405,7 @@ void CloudExternalDataPolicyObserverTest::LogInAsRegularUser() {
       std::make_unique<PolicyServiceImpl>(std::move(providers));
   builder.SetPolicyService(std::move(policy_service));
   builder.SetPath(ash::ProfileHelper::Get()->GetProfilePathByUserIdHash(
-      user_manager::FakeUserManager::GetFakeUsernameHash(account_id)));
+      user_manager::TestHelper::GetFakeUsernameHash(account_id)));
 
   profile_ = builder.Build();
   profile_->set_profile_name(kRegularUserID);

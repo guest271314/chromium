@@ -9,6 +9,7 @@
 
 #include "base/check_op.h"
 #include "base/strings/sys_string_conversions.h"
+#include "chrome/app/chrome_command_ids.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
@@ -16,6 +17,7 @@
 #include "chrome/common/pref_names.h"
 #include "chrome/grit/generated_resources.h"
 #include "components/prefs/pref_registry_simple.h"
+#import "components/remote_cocoa/app_shim/native_widget_mac_nswindow.h"
 #include "ui/base/accelerators/accelerator.h"
 #import "ui/base/accelerators/platform_accelerator_cocoa.h"
 #include "ui/base/l10n/l10n_util_mac.h"
@@ -144,17 +146,18 @@ typedef NS_ENUM(NSInteger, FadeWindowsOperation) { kHide, kShow };
 
 - (void)setCurrentProgress:(NSAnimationProgress)progress {
   CGFloat value = _op == kShow ? progress : 1.0 - progress;
+  NSMutableSet* windowsToFade = [NSMutableSet set];
   for (NSWindow* window in NSApp.windows) {
-    if (GlobalBrowserCollection::GetInstance()->FindBrowserWithWindow(
-            gfx::NativeWindow(window))) {
+    if ([window isKindOfClass:[NativeWidgetMacNSWindow class]]) {
+      [windowsToFade addObject:window];
       // Include child windows to ensure the animation is also applied to
       // popovers, dialogs, etc.
-      NSArray* windowsToFade =
-          [@[ window ] arrayByAddingObjectsFromArray:window.childWindows];
-      for (NSWindow* windowToFade in windowsToFade) {
-        windowToFade.alphaValue = value;
-      }
+      [windowsToFade addObjectsFromArray:window.childWindows];
     }
+  }
+
+  for (NSWindow* window in windowsToFade) {
+    window.alphaValue = value;
   }
 }
 
@@ -172,8 +175,6 @@ typedef NS_ENUM(NSInteger, FadeWindowsOperation) { kHide, kShow };
 - (void)hideAllWindowsWithDuration:(NSTimeInterval)duration;
 - (void)sendAccessibilityAnnouncement;
 @end
-
-ConfirmQuitPanelController* __strong g_confirmQuitPanelController = nil;
 
 static BOOL __strong (^g_isKeyDownForKeyCodeMock)(unsigned short) = nil;
 
@@ -193,13 +194,8 @@ BOOL isKeyDownForKeyCode(unsigned short keyCode) {
   ConfirmQuitFrameView* __weak _contentView;
   // Whether we've hidden all windows and initiated the quitting process.
   BOOL _didHideWindows;
-}
-
-+ (ConfirmQuitPanelController*)sharedController {
-  if (!g_confirmQuitPanelController) {
-    g_confirmQuitPanelController = [[ConfirmQuitPanelController alloc] init];
-  }
-  return g_confirmQuitPanelController;
+  // Invoked when the panel has finished dismissing.
+  void (^_dismissedCallback)();
 }
 
 + (BOOL (^)(unsigned short))isKeyDownForKeyCodeMock {
@@ -239,7 +235,9 @@ BOOL isKeyDownForKeyCode(unsigned short keyCode) {
   return self;
 }
 
-- (BOOL)runConfirmQuitLoopWithEvent:(NSEvent*)event {
+- (BOOL)runConfirmQuitLoopWithEvent:(NSEvent*)event
+                  dismissedCallback:(void (^)())dismissedCallback {
+  _dismissedCallback = [dismissedCallback copy];
   [[maybe_unused]] NS_VALID_UNTIL_END_OF_SCOPE ConfirmQuitPanelController*
       keepAlive = self;
 
@@ -333,7 +331,10 @@ BOOL isKeyDownForKeyCode(unsigned short keyCode) {
   // Release all animations because CAAnimation retains its delegate (self),
   // which will cause a retain cycle. Break it!
   self.window.animations = @{};
-  g_confirmQuitPanelController = nil;  // releases self
+  if (_dismissedCallback) {
+    _dismissedCallback();
+    _dismissedCallback = nil;
+  }
 }
 
 - (void)showWindow:(id)sender {
@@ -367,6 +368,10 @@ BOOL isKeyDownForKeyCode(unsigned short keyCode) {
 }
 
 - (void)animateFadeOut {
+  if (!self.window.visible) {
+    return;
+  }
+
   NSWindow* window = self.window;
   CAAnimation* animation = [[window animationForKey:@"alphaValue"] copy];
   animation.delegate = self;
@@ -417,15 +422,17 @@ BOOL isKeyDownForKeyCode(unsigned short keyCode) {
   NSMenu* appMenu = [[NSApp.mainMenu itemAtIndex:0] submenu];
   for (NSMenuItem* item in appMenu.itemArray) {
     // Find the Quit item.
-    if (item.action == @selector(terminate:)) {
+    if (item.tag == IDC_EXIT) {
       return item;
     }
   }
 
   // Default to Cmd+Q.
-  NSMenuItem* item = [[NSMenuItem alloc] initWithTitle:@""
-                                                action:@selector(terminate:)
-                                         keyEquivalent:@"q"];
+  NSMenuItem* item =
+      [[NSMenuItem alloc] initWithTitle:@""
+                                 action:@selector(commandDispatch:)
+                          keyEquivalent:@"q"];
+  item.tag = IDC_EXIT;
   item.keyEquivalentModifierMask = NSEventModifierFlagCommand;
   return item;
 }

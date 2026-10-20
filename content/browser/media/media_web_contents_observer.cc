@@ -84,14 +84,14 @@ class MediaWebContentsObserver::PlayerInfo {
   bool is_playing() const { return is_playing_; }
 
   void SetIsPlaying() {
-    DCHECK(!is_playing_);
+    CHECK(!is_playing_, base::NotFatalUntil::M160);
     is_playing_ = true;
 
     NotifyPlayerStarted();
   }
 
   void SetIsStopped(bool reached_end_of_stream) {
-    DCHECK(is_playing_);
+    CHECK(is_playing_, base::NotFatalUntil::M160);
     is_playing_ = false;
 
     NotifyPlayerStopped(
@@ -112,7 +112,7 @@ class MediaWebContentsObserver::PlayerInfo {
 
     if (observer_->power_experiment_manager_) {
       auto* render_frame_host = RenderFrameHost::FromID(id_.frame_routing_id);
-      DCHECK(render_frame_host);
+      CHECK(render_frame_host, base::NotFatalUntil::M160);
 
       // Bind the callback to a WeakPtr for the frame, so that we won't try to
       // notify the frame after it's been destroyed.
@@ -333,10 +333,11 @@ MediaWebContentsObserver::GetFullscreenVideoMediaPlayerId() const {
   return fullscreen_player_;
 }
 
-void MediaWebContentsObserver::MediaPictureInPictureChanged(
+void MediaWebContentsObserver::OnPictureInPictureStateChanged(
+    const MediaPlayerId& player_id,
     bool is_picture_in_picture) {
   session_controllers_manager_->PictureInPictureStateChanged(
-      is_picture_in_picture);
+      player_id, is_picture_in_picture);
 }
 
 void MediaWebContentsObserver::DidUpdateAudioMutingState(bool muted) {
@@ -488,7 +489,7 @@ void MediaWebContentsObserver::MediaPlayerObserverHostImpl::
     OnAudioOutputSinkChanged(const std::string& hashed_device_id) {
   auto* render_frame_host =
       RenderFrameHost::FromID(media_player_id_.frame_routing_id);
-  DCHECK(render_frame_host);
+  CHECK(render_frame_host, base::NotFatalUntil::M160);
 
   content::GetRawDeviceIdFromHMAC(
       render_frame_host->GetGlobalId(), hashed_device_id,
@@ -572,8 +573,7 @@ void MediaWebContentsObserver::MediaPlayerObserverHostImpl::
   // This requires explicit browser-side authorization to prevent spoofing.
   bool should_add_client =
       player_info->IsAudible() && !uses_audio_service_ &&
-      AudibilityBypassAuthorization::IsAuthorized(
-          RenderFrameHost::FromID(media_player_id_.frame_routing_id));
+      AudibilityBypassTracker::ClaimGrant(media_player_id_);
 
   auto* audio_stream_monitor =
       media_web_contents_observer_->web_contents_impl()->audio_stream_monitor();
@@ -655,6 +655,14 @@ void MediaWebContentsObserver::OnMediaPlaying() {
   has_played_before_ = true;
 }
 
+void MediaWebContentsObserver::OnAudibilityBypassRevoked(
+    const MediaPlayerId& id) {
+  auto it = media_player_observer_hosts_.find(id);
+  if (it != media_player_observer_hosts_.end()) {
+    it->second->NotifyAudioStreamMonitorIfNeeded();
+  }
+}
+
 void MediaWebContentsObserver::OnAudioOutputSinkChangedWithRawDeviceId(
     const MediaPlayerId& player_id,
     const std::string& raw_device_id) {
@@ -675,6 +683,12 @@ void MediaWebContentsObserver::MediaPlayerObserverHostImpl::
       ->OnVideoVisibilityChanged(media_player_id_, meets_visibility_threshold);
 }
 
+void MediaWebContentsObserver::MediaPlayerObserverHostImpl::
+    OnVideoFrameAvailabilityChanged(bool available) {
+  media_web_contents_observer_->session_controllers_manager()
+      ->OnVideoFrameAvailabilityChanged(media_player_id_, available);
+}
+
 bool MediaWebContentsObserver::IsMediaPlayerRemoteAvailable(
     const MediaPlayerId& player_id) {
   return media_player_remotes_.contains(player_id);
@@ -687,7 +701,8 @@ MediaWebContentsObserver::GetMediaPlayerRemote(const MediaPlayerId& player_id) {
 
 void MediaWebContentsObserver::OnMediaPlayerObserverDisconnected(
     const MediaPlayerId& player_id) {
-  DCHECK(media_player_observer_hosts_.contains(player_id));
+  CHECK(media_player_observer_hosts_.contains(player_id),
+        base::NotFatalUntil::M160);
   media_player_observer_hosts_.erase(player_id);
 }
 
@@ -773,6 +788,7 @@ void MediaWebContentsObserver::OnMediaPlayerAdded(
         }
         observer->media_player_remotes_.erase(player_id);
         observer->session_controllers_manager_->OnEnd(player_id);
+        AudibilityBypassTracker::ReleaseGrant(player_id);
         if (observer->fullscreen_player_ &&
             *observer->fullscreen_player_ == player_id) {
           observer->fullscreen_player_.reset();
@@ -814,17 +830,85 @@ MediaWebContentsObserver::GetWeakPtrForFrame(
   return result.first->second->GetWeakPtr();
 }
 
-AudibilityBypassAuthorization::AudibilityBypassAuthorization(
-    RenderFrameHost* rfh)
-    : DocumentUserData<AudibilityBypassAuthorization>(rfh) {}
+AudibilityBypassTracker::AudibilityBypassTracker(RenderFrameHost* rfh)
+    : DocumentUserData<AudibilityBypassTracker>(rfh) {}
 
-AudibilityBypassAuthorization::~AudibilityBypassAuthorization() = default;
+AudibilityBypassTracker::~AudibilityBypassTracker() = default;
 
 // static
-bool AudibilityBypassAuthorization::IsAuthorized(RenderFrameHost* rfh) {
-  return rfh && GetForCurrentDocument(rfh) != nullptr;
+AudibilityBypassTracker::ScopedGrant AudibilityBypassTracker::AddGrant(
+    RenderFrameHost* rfh) {
+  if (rfh) {
+    auto* tracker = GetOrCreateForCurrentDocument(rfh);
+    int grant_id = ++tracker->next_grant_id_;
+    tracker->pending_grants_.insert(grant_id);
+    return ScopedGrant(base::BindOnce(&AudibilityBypassTracker::RevokeGrant,
+                                      rfh->GetGlobalId(), grant_id));
+  }
+  return ScopedGrant();
 }
 
-DOCUMENT_USER_DATA_KEY_IMPL(AudibilityBypassAuthorization);
+// static
+bool AudibilityBypassTracker::ClaimGrant(const MediaPlayerId& id) {
+  auto* rfh = RenderFrameHost::FromID(id.frame_routing_id);
+  if (!rfh) {
+    return false;
+  }
+  auto* tracker = GetForCurrentDocument(rfh);
+  if (tracker && tracker->active_grants_.contains(id)) {
+    return true;
+  }
+  if (tracker && !tracker->pending_grants_.empty()) {
+    int grant_id = *tracker->pending_grants_.begin();
+    tracker->pending_grants_.erase(tracker->pending_grants_.begin());
+    tracker->active_grants_[id] = grant_id;
+    return true;
+  }
+  return false;
+}
+
+// static
+void AudibilityBypassTracker::ReleaseGrant(const MediaPlayerId& id) {
+  auto* rfh = RenderFrameHost::FromID(id.frame_routing_id);
+  if (!rfh) {
+    return;
+  }
+  auto* tracker = GetForCurrentDocument(rfh);
+  if (tracker) {
+    tracker->active_grants_.erase(id);
+  }
+}
+
+// static
+void AudibilityBypassTracker::RevokeGrant(GlobalRenderFrameHostId rfh_id,
+                                          int grant_id) {
+  auto* rfh = RenderFrameHost::FromID(rfh_id);
+  if (!rfh) {
+    return;
+  }
+  auto* tracker = GetForCurrentDocument(rfh);
+  if (!tracker) {
+    return;
+  }
+  if (tracker->pending_grants_.erase(grant_id)) {
+    return;
+  }
+  for (auto it = tracker->active_grants_.begin();
+       it != tracker->active_grants_.end(); ++it) {
+    if (it->second == grant_id) {
+      MediaPlayerId id = it->first;
+      tracker->active_grants_.erase(it);
+      auto* web_contents =
+          static_cast<WebContentsImpl*>(WebContents::FromRenderFrameHost(rfh));
+      if (web_contents && web_contents->media_web_contents_observer()) {
+        web_contents->media_web_contents_observer()->OnAudibilityBypassRevoked(
+            id);
+      }
+      break;
+    }
+  }
+}
+
+DOCUMENT_USER_DATA_KEY_IMPL(AudibilityBypassTracker);
 
 }  // namespace content

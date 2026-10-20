@@ -237,18 +237,24 @@ class MockClientSocketFactory : public ClientSocketFactory {
 
   std::unique_ptr<DatagramClientSocket> CreateDatagramClientSocket(
       DatagramSocket::BindType bind_type,
+      handles::NetworkHandle target_network,
       NetLog* net_log,
       const NetLogSource& source) override {
+    // This is used only for testing in scenarios that do not involve multiple
+    // networks. With that in mind, it's safe to ignore `target_network`.
     NOTREACHED();
   }
 
   std::unique_ptr<TransportClientSocket> CreateTransportClientSocket(
       const AddressList& addresses,
+      handles::NetworkHandle target_network,
       std::unique_ptr<
           SocketPerformanceWatcher> /* socket_performance_watcher */,
       NetworkQualityEstimator* /* network_quality_estimator */,
       NetLog* /* net_log */,
       const NetLogSource& /*source*/) override {
+    // This is used only for testing in scenarios that do not involve multiple
+    // networks. With that in mind, it's safe to ignore `target_network`.
     allocation_count_++;
     return nullptr;
   }
@@ -267,6 +273,12 @@ class MockClientSocketFactory : public ClientSocketFactory {
   void SignalJobs();
 
   void SignalJob(size_t job);
+
+  void SignalJobFailure(size_t job);
+
+  void TriggerJobProxyAuth(size_t job);
+
+  void SetJobDestructionClosure(size_t job, base::OnceClosure closure);
 
   void SetJobLoadState(size_t job, LoadState load_state);
 
@@ -329,8 +341,30 @@ class TestConnectJob : public ConnectJob {
   TestConnectJob(const TestConnectJob&) = delete;
   TestConnectJob& operator=(const TestConnectJob&) = delete;
 
+  ~TestConnectJob() override {
+    if (destruction_closure_) {
+      std::move(destruction_closure_).Run();
+    }
+  }
+
   void Signal() {
     DoConnect(waiting_success_, true /* async */, false /* recoverable */);
+  }
+
+  void SignalFailure() {
+    DoConnect(/*succeed=*/false, /*was_async=*/true, /*cert_error=*/false);
+  }
+
+  void TriggerProxyAuth() {
+    set_load_state(LOAD_STATE_ESTABLISHING_PROXY_TUNNEL);
+    HttpResponseInfo info;
+    NotifyDelegateOfProxyAuth(
+        info, /*http_auth_controller=*/nullptr,
+        base::BindOnce(&TestConnectJob::Signal, weak_factory_.GetWeakPtr()));
+  }
+
+  void set_destruction_closure(base::OnceClosure destruction_closure) {
+    destruction_closure_ = std::move(destruction_closure);
   }
 
   void set_load_state(LoadState load_state) { load_state_ = load_state; }
@@ -367,7 +401,8 @@ class TestConnectJob : public ConnectJob {
   int ConnectInternal() override {
     AddressList ignored;
     client_socket_factory_->CreateTransportClientSocket(
-        ignored, nullptr, nullptr, nullptr, NetLogSource());
+        ignored, handles::kInvalidNetworkHandle, nullptr, nullptr, nullptr,
+        NetLogSource());
     switch (job_type_) {
       case kMockJob:
         return DoConnect(true /* successful */, false /* sync */,
@@ -521,6 +556,7 @@ class TestConnectJob : public ConnectJob {
   LoadState load_state_ = LOAD_STATE_IDLE;
   bool has_established_connection_ = false;
   bool store_additional_error_state_ = false;
+  base::OnceClosure destruction_closure_;
 
   base::WeakPtrFactory<TestConnectJob> weak_factory_{this};
 };
@@ -626,6 +662,27 @@ void MockClientSocketFactory::SignalJob(size_t job) {
   waiting_jobs_.erase(waiting_jobs_.begin() + job);
 }
 
+void MockClientSocketFactory::SignalJobFailure(size_t job) {
+  ASSERT_LT(job, waiting_jobs_.size());
+  TestConnectJob* waiting_job = waiting_jobs_[job];
+  waiting_jobs_.erase(waiting_jobs_.begin() + job);
+  waiting_job->SignalFailure();
+}
+
+void MockClientSocketFactory::TriggerJobProxyAuth(size_t job) {
+  ASSERT_LT(job, waiting_jobs_.size());
+  TestConnectJob* waiting_job = waiting_jobs_[job];
+  waiting_jobs_.erase(waiting_jobs_.begin() + job);
+  waiting_job->TriggerProxyAuth();
+}
+
+void MockClientSocketFactory::SetJobDestructionClosure(
+    size_t job,
+    base::OnceClosure closure) {
+  ASSERT_LT(job, waiting_jobs_.size());
+  waiting_jobs_[job]->set_destruction_closure(std::move(closure));
+}
+
 void MockClientSocketFactory::SetJobLoadState(size_t job,
                                               LoadState load_state) {
   ASSERT_LT(job, waiting_jobs_.size());
@@ -643,7 +700,7 @@ class ClientSocketPoolBaseTest : public TestWithTaskEnvironment {
       : TestWithTaskEnvironment(
             base::test::TaskEnvironment::TimeSource::MOCK_TIME),
         params_(ClientSocketPool::SocketParams::CreateForHttpForTesting()) {
-    scoped_feature_list_.InitWithFeatures(
+    AddScopedFeatureList().InitWithFeatures(
         {features::kPermitTcpSocketPoolConnectBackupJobs},
         {features::kTcpSocketPoolLimitRandomization});
   }
@@ -670,7 +727,6 @@ class ClientSocketPoolBaseTest : public TestWithTaskEnvironment {
     connect_job_factory_ = connect_job_factory.get();
     pool_ = TransportClientSocketPool::CreateForTesting(
         max_sockets, max_sockets_per_group,
-        SocketPoolAdditionalCapacity::Create(max_sockets),
         unused_idle_socket_timeout, used_idle_socket_timeout, proxy_chain,
         /*is_for_websockets=*/false, &common_connect_job_params_,
         std::move(connect_job_factory), nullptr /* ssl_config_service */,
@@ -756,8 +812,6 @@ class ClientSocketPoolBaseTest : public TestWithTaskEnvironment {
 
   // Must outlive `connect_job_factory_`
   std::unique_ptr<TransportClientSocketPool> pool_;
-
-  base::test::ScopedFeatureList scoped_feature_list_;
 
   raw_ptr<TestConnectJobFactory> connect_job_factory_;
   ClientSocketPoolTest test_base_;
@@ -876,8 +930,7 @@ TEST_F(ClientSocketPoolBaseTest, SocketWithUnreadDataReturnedToPool) {
 
 // Make sure different groups do not share sockets.
 TEST_F(ClientSocketPoolBaseTest, GroupSeparation) {
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndEnableFeature(
+  AddScopedFeatureList().InitAndEnableFeature(
       features::kPartitionConnectionsByNetworkIsolationKey);
 
   CreatePool(1000 /* max_sockets */, 2 /* max_sockets_per_group */);
@@ -906,6 +959,12 @@ TEST_F(ClientSocketPoolBaseTest, GroupSeparation) {
   const SecureDnsPolicy kSecureDnsPolicys[] = {SecureDnsPolicy::kAllow,
                                                SecureDnsPolicy::kDisable};
 
+  const handles::NetworkHandle kNetworks[] = {
+      handles::kInvalidNetworkHandle,
+      kDefaultNetworkForTests,
+      kNewNetworkForTests,
+  };
+
   int total_idle_sockets = 0;
 
   // Walk through each GroupId, making sure that requesting a socket for one
@@ -921,59 +980,62 @@ TEST_F(ClientSocketPoolBaseTest, GroupSeparation) {
           SCOPED_TRACE(network_anonymization_key.ToDebugString());
           for (const auto& secure_dns_policy : kSecureDnsPolicys) {
             SCOPED_TRACE(static_cast<int>(secure_dns_policy));
+            for (const auto& target_network : kNetworks) {
+              SCOPED_TRACE(target_network);
 
-            connect_job_factory_->set_job_type(TestConnectJob::kMockPendingJob);
+              connect_job_factory_->set_job_type(
+                  TestConnectJob::kMockPendingJob);
 
-            ClientSocketPool::GroupId group_id(
-                url::SchemeHostPort(scheme, host_port_pair.host(),
-                                    host_port_pair.port()),
-                privacy_mode, network_anonymization_key, secure_dns_policy,
-                /*disable_cert_network_fetches=*/false,
-                handles::kInvalidNetworkHandle);
+              ClientSocketPool::GroupId group_id(
+                  url::SchemeHostPort(scheme, host_port_pair.host(),
+                                      host_port_pair.port()),
+                  privacy_mode, network_anonymization_key, secure_dns_policy,
+                  /*disable_cert_network_fetches=*/false, target_network);
 
-            EXPECT_FALSE(pool_->HasGroupForTesting(group_id));
+              EXPECT_FALSE(pool_->HasGroupForTesting(group_id));
 
-            TestCompletionCallback callback;
-            ClientSocketHandle handle;
+              TestCompletionCallback callback;
+              ClientSocketHandle handle;
 
-            // Since the group is empty, requesting a socket should not complete
-            // synchronously.
-            EXPECT_THAT(handle.Init(group_id, params_, std::nullopt,
-                                    DEFAULT_PRIORITY, SocketTag(),
-                                    ClientSocketPool::RespectLimits::ENABLED,
-                                    callback.callback(),
-                                    ClientSocketPool::ProxyAuthCallback(),
-                                    pool_.get(), NetLogWithSource()),
-                        IsError(ERR_IO_PENDING));
-            EXPECT_TRUE(pool_->HasGroupForTesting(group_id));
-            EXPECT_EQ(total_idle_sockets, pool_->IdleSocketCount());
+              // Since the group is empty, requesting a socket should not
+              // complete synchronously.
+              EXPECT_THAT(handle.Init(group_id, params_, std::nullopt,
+                                      DEFAULT_PRIORITY, SocketTag(),
+                                      ClientSocketPool::RespectLimits::ENABLED,
+                                      callback.callback(),
+                                      ClientSocketPool::ProxyAuthCallback(),
+                                      pool_.get(), NetLogWithSource()),
+                          IsError(ERR_IO_PENDING));
+              EXPECT_TRUE(pool_->HasGroupForTesting(group_id));
+              EXPECT_EQ(total_idle_sockets, pool_->IdleSocketCount());
 
-            EXPECT_THAT(callback.WaitForResult(), IsOk());
-            EXPECT_TRUE(handle.socket());
-            EXPECT_TRUE(pool_->HasGroupForTesting(group_id));
-            EXPECT_EQ(total_idle_sockets, pool_->IdleSocketCount());
+              EXPECT_THAT(callback.WaitForResult(), IsOk());
+              EXPECT_TRUE(handle.socket());
+              EXPECT_TRUE(pool_->HasGroupForTesting(group_id));
+              EXPECT_EQ(total_idle_sockets, pool_->IdleSocketCount());
 
-            // Return socket to pool.
-            handle.Reset();
-            EXPECT_EQ(total_idle_sockets + 1, pool_->IdleSocketCount());
+              // Return socket to pool.
+              handle.Reset();
+              EXPECT_EQ(total_idle_sockets + 1, pool_->IdleSocketCount());
 
-            // Requesting a socket again should return the same socket as
-            // before, so should complete synchronously.
-            EXPECT_THAT(handle.Init(group_id, params_, std::nullopt,
-                                    DEFAULT_PRIORITY, SocketTag(),
-                                    ClientSocketPool::RespectLimits::ENABLED,
-                                    callback.callback(),
-                                    ClientSocketPool::ProxyAuthCallback(),
-                                    pool_.get(), NetLogWithSource()),
-                        IsOk());
-            EXPECT_TRUE(handle.socket());
-            EXPECT_EQ(total_idle_sockets, pool_->IdleSocketCount());
+              // Requesting a socket again should return the same socket as
+              // before, so should complete synchronously.
+              EXPECT_THAT(handle.Init(group_id, params_, std::nullopt,
+                                      DEFAULT_PRIORITY, SocketTag(),
+                                      ClientSocketPool::RespectLimits::ENABLED,
+                                      callback.callback(),
+                                      ClientSocketPool::ProxyAuthCallback(),
+                                      pool_.get(), NetLogWithSource()),
+                          IsOk());
+              EXPECT_TRUE(handle.socket());
+              EXPECT_EQ(total_idle_sockets, pool_->IdleSocketCount());
 
-            // Return socket to pool again.
-            handle.Reset();
-            EXPECT_EQ(total_idle_sockets + 1, pool_->IdleSocketCount());
+              // Return socket to pool again.
+              handle.Reset();
+              EXPECT_EQ(total_idle_sockets + 1, pool_->IdleSocketCount());
 
-            ++total_idle_sockets;
+              ++total_idle_sockets;
+            }
           }
         }
       }
@@ -5353,7 +5415,9 @@ class TestAuthHelper {
     EXPECT_FALSE(callback_.have_result());
 
     ++auth_count_;
-    run_loop_->Quit();
+    if (run_loop_) {
+      run_loop_->Quit();
+    }
     if (restart_sync_) {
       std::move(restart_with_auth_callback).Run();
       return;
@@ -5850,8 +5914,7 @@ TEST_P(ClientSocketPoolBaseRefreshTest, RefreshGroupCreatesNewConnectJobs) {
 }
 
 TEST_P(ClientSocketPoolBaseRefreshTest, RefreshGroupClosesIdleConnectJobs) {
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndEnableFeature(
+  AddScopedFeatureList().InitAndEnableFeature(
       features::kPartitionConnectionsByNetworkIsolationKey);
 
   CreatePoolForRefresh(kDefaultMaxSockets, kDefaultMaxSocketsPerGroup);
@@ -6132,6 +6195,102 @@ TEST_F(ClientSocketPoolBaseTest, RefreshBothPrivacyAndNormalSockets) {
   EXPECT_FALSE(pool_->HasGroupForTesting(kGroupIdPrivacy));
   EXPECT_TRUE(pool_->HasGroupForTesting(kOtherGroupId));
   EXPECT_EQ(1u, pool_->IdleSocketCountInGroup(kOtherGroupId));
+}
+
+// Regression test for crbug.com/565797214: Destroying a completed ConnectJob
+// whose destructor synchronously completes the last remaining ConnectJob in the
+// same Group must not delete the Group until the outer completion finishes.
+TEST_F(ClientSocketPoolBaseTest,
+       ConnectJobDestructionCompletesOtherJobInGroup) {
+  CreatePool(kDefaultMaxSockets, kDefaultMaxSocketsPerGroup);
+  connect_job_factory_->set_job_type(TestConnectJob::kMockWaitingJob);
+
+  const ClientSocketPool::GroupId kGroupId = TestGroupId("a", 80);
+
+  ClientSocketHandle handle1;
+  TestCompletionCallback callback1;
+  EXPECT_THAT(
+      handle1.Init(kGroupId, params_, std::nullopt, DEFAULT_PRIORITY,
+                   SocketTag(), ClientSocketPool::RespectLimits::ENABLED,
+                   callback1.callback(), ClientSocketPool::ProxyAuthCallback(),
+                   pool_.get(), NetLogWithSource()),
+      IsError(ERR_IO_PENDING));
+
+  ClientSocketHandle handle2;
+  TestCompletionCallback callback2;
+  EXPECT_THAT(
+      handle2.Init(kGroupId, params_, std::nullopt, DEFAULT_PRIORITY,
+                   SocketTag(), ClientSocketPool::RespectLimits::ENABLED,
+                   callback2.callback(), ClientSocketPool::ProxyAuthCallback(),
+                   pool_.get(), NetLogWithSource()),
+      IsError(ERR_IO_PENDING));
+
+  // When the first ConnectJob is destroyed after failing, synchronously fail
+  // the second ConnectJob in the same Group.
+  client_socket_factory_.SetJobDestructionClosure(
+      0, base::BindOnce(&MockClientSocketFactory::SignalJobFailure,
+                        base::Unretained(&client_socket_factory_), 0));
+
+  client_socket_factory_.SignalJobFailure(0);
+
+  EXPECT_THAT(callback1.WaitForResult(), IsError(ERR_CONNECTION_FAILED));
+  EXPECT_THAT(callback2.WaitForResult(), IsError(ERR_CONNECTION_FAILED));
+  EXPECT_FALSE(pool_->HasGroupForTesting(kGroupId));
+}
+
+// Regression test for crbug.com/565797214: If destroying a ConnectJob during
+// RemoveAllUnboundJobs() synchronously triggers another unbound or bound
+// ConnectJob in the same Group to complete, the unbound completion is ignored,
+// the bound completion fails with the flush error, and the Group is cleaned up
+// cleanly.
+TEST_F(ClientSocketPoolBaseTest,
+       RemoveAllUnboundJobsDestructionCompletesOtherJobInGroup) {
+  CreatePool(kDefaultMaxSockets, /*max_sockets_per_group=*/3);
+  connect_job_factory_->set_job_type(TestConnectJob::kMockWaitingJob);
+  const ClientSocketPool::GroupId kGroupId = TestGroupId("a", 80);
+
+  // Start a ConnectJob that challenges for proxy auth so that it becomes bound
+  // to `auth_helper`.
+  TestAuthHelper auth_helper;
+  auth_helper.InitHandle(params_, pool_.get(), DEFAULT_PRIORITY,
+                         ClientSocketPool::RespectLimits::ENABLED, kGroupId);
+  client_socket_factory_.TriggerJobProxyAuth(0);
+  EXPECT_EQ(1, auth_helper.auth_count());
+
+  // Start two unbound waiting ConnectJobs in the same Group.
+  ClientSocketHandle handle1;
+  TestCompletionCallback callback1;
+  EXPECT_THAT(
+      handle1.Init(kGroupId, params_, std::nullopt, DEFAULT_PRIORITY,
+                   SocketTag(), ClientSocketPool::RespectLimits::ENABLED,
+                   callback1.callback(), ClientSocketPool::ProxyAuthCallback(),
+                   pool_.get(), NetLogWithSource()),
+      IsError(ERR_IO_PENDING));
+
+  ClientSocketHandle handle2;
+  TestCompletionCallback callback2;
+  EXPECT_THAT(
+      handle2.Init(kGroupId, params_, std::nullopt, DEFAULT_PRIORITY,
+                   SocketTag(), ClientSocketPool::RespectLimits::ENABLED,
+                   callback2.callback(), ClientSocketPool::ProxyAuthCallback(),
+                   pool_.get(), NetLogWithSource()),
+      IsError(ERR_IO_PENDING));
+
+  // When the first unbound ConnectJob is destroyed during
+  // RemoveAllUnboundJobs(), synchronously complete both the second unbound
+  // ConnectJob and the bound ConnectJob.
+  client_socket_factory_.SetJobDestructionClosure(
+      0, base::BindOnce(&MockClientSocketFactory::SignalJob,
+                        base::Unretained(&client_socket_factory_), 1)
+             .Then(base::BindOnce(&TestAuthHelper::RestartWithAuth,
+                                  base::Unretained(&auth_helper))));
+
+  pool_->FlushWithError(ERR_NETWORK_CHANGED, "Network changed");
+
+  EXPECT_THAT(callback1.WaitForResult(), IsError(ERR_NETWORK_CHANGED));
+  EXPECT_THAT(callback2.WaitForResult(), IsError(ERR_NETWORK_CHANGED));
+  EXPECT_THAT(auth_helper.WaitForResult(), IsError(ERR_NETWORK_CHANGED));
+  EXPECT_FALSE(pool_->HasGroupForTesting(kGroupId));
 }
 
 }  // namespace

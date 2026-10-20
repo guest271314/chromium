@@ -14,6 +14,7 @@
 #include "ash/constants/ash_pref_names.h"
 #include "ash/constants/notifier_catalogs.h"
 #include "ash/public/cpp/notification_utils.h"
+#include "ash/strings/grit/ash_strings.h"
 #include "ash/webui/settings/public/constants/routes.mojom.h"
 #include "base/check_deref.h"
 #include "base/files/file_util.h"
@@ -31,9 +32,6 @@
 #include "chrome/browser/ash/crostini/crostini_util.h"
 #include "chrome/browser/ash/guest_os/guest_id.h"
 #include "chrome/browser/ash/guest_os/guest_os_pref_names.h"
-#include "chrome/browser/ash/plugin_vm/plugin_vm_features.h"
-#include "chrome/browser/ash/plugin_vm/plugin_vm_util.h"
-#include "chrome/browser/notifications/system_notification_helper.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/grit/generated_resources.h"
 #include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
@@ -53,14 +51,14 @@
 #include "ui/base/ui_base_features.h"
 #include "ui/chromeos/styles/cros_tokens_color_mappings.h"
 #include "ui/gfx/paint_vector_icon.h"
+#include "ui/message_center/message_center.h"
+#include "ui/message_center/public/cpp/notification.h"
 
 namespace ash {
 
 namespace {
 
 constexpr uint32_t kAllInterfacesMask = ~0U;
-const char16_t kParallelsShortName[] = u"Parallels";
-const char16_t kParallelsName[] = u"Parallels Desktop";
 
 // Not owned locally.
 static CrosUsbDetector* g_cros_usb_detector = nullptr;
@@ -163,15 +161,12 @@ crostini::CrostiniManager* manager() {
 class CrosUsbNotificationDelegate
     : public message_center::NotificationDelegate {
  public:
-  explicit CrosUsbNotificationDelegate(const std::string& notification_id,
-                                       std::string guid,
+  explicit CrosUsbNotificationDelegate(std::string guid,
                                        std::vector<std::string> vm_names,
                                        std::string settings_sub_page)
-      : notification_id_(notification_id),
-        guid_(std::move(guid)),
+      : guid_(std::move(guid)),
         vm_names_(std::move(vm_names)),
-        settings_sub_page_(std::move(settings_sub_page)),
-        disposition_(CrosUsbNotificationClosed::kUnknown) {}
+        settings_sub_page_(std::move(settings_sub_page)) {}
 
   CrosUsbNotificationDelegate(const CrosUsbNotificationDelegate&) = delete;
   CrosUsbNotificationDelegate& operator=(const CrosUsbNotificationDelegate&) =
@@ -179,7 +174,6 @@ class CrosUsbNotificationDelegate
 
   void Click(const std::optional<int>& button_index,
              const std::optional<std::u16string>& reply) override {
-    disposition_ = CrosUsbNotificationClosed::kUnknown;
     if (button_index && *button_index < static_cast<int>(vm_names_.size())) {
       LOG(WARNING)
           << "Share USB device with [some guest] notification was clicked";
@@ -193,24 +187,15 @@ class CrosUsbNotificationDelegate
     }
   }
 
-  void Close(bool by_user) override {
-    if (by_user) {
-      disposition_ = CrosUsbNotificationClosed::kByUser;
-    }
-  }
-
  private:
   ~CrosUsbNotificationDelegate() override = default;
   void HandleConnectToGuest(const guest_os::GuestId& guest_id) {
-    disposition_ = CrosUsbNotificationClosed::kConnectToLinux;
     CrosUsbDetector* detector = CrosUsbDetector::Get();
     if (detector) {
       LOG(WARNING)
           << "Handling guest connection, will attach USB device to guest";
       detector->AttachUsbDeviceToGuest(guest_id, guid_, base::DoNothing());
-      return;
     }
-    Close(false);
   }
 
   void HandleConnectToGuest(const std::string& vm_name) {
@@ -225,14 +210,11 @@ class CrosUsbNotificationDelegate
       // user.
       ash::SettingsAppManager::Get()->Open(*user, {.sub_page = sub_page});
     }
-    Close(false);
   }
 
-  std::string notification_id_;
   std::string guid_;
   std::vector<std::string> vm_names_;
   std::string settings_sub_page_;
-  CrosUsbNotificationClosed disposition_;
   base::WeakPtrFactory<CrosUsbNotificationDelegate> weak_ptr_factory_{this};
 };
 
@@ -303,19 +285,6 @@ void ShowNotificationForDevice(const std::string& guid,
     settings_sub_page =
         chromeos::settings::mojom::kCrostiniUsbPreferencesSubpagePath;
   }
-  if (plugin_vm::PluginVmFeatures::Get()->IsEnabled(profile())) {
-    vm_name = kParallelsName;
-    vm_name_button_text = kParallelsShortName;
-    rich_notification_data.buttons.emplace_back(
-        message_center::ButtonInfo(l10n_util::GetStringFUTF16(
-            IDS_CROSUSB_NOTIFICATION_BUTTON_CONNECT_TO_VM,
-            vm_name_button_text)));
-    vm_names.emplace_back(plugin_vm::kPluginVmName);
-    vm_names_in_notification.emplace_back(vm_name);
-    settings_sub_page =
-        chromeos::settings::mojom::kPluginVmUsbPreferencesSubpagePath;
-  }
-
   if (IsPlayStoreEnabledWithArcVmForProfile(profile())) {
     vm_name = l10n_util::GetStringUTF16(IDS_CROSUSB_NOTIFICATION_ARCVM);
     vm_name_button_text =
@@ -341,7 +310,7 @@ void ShowNotificationForDevice(const std::string& guid,
         chromeos::settings::mojom::kBruschettaUsbPreferencesSubpagePath;
   }
 
-  DCHECK(vm_names_in_notification.size());
+  CHECK(vm_names_in_notification.size(), base::NotFatalUntil::M160);
   std::u16string message = l10n_util::GetStringFUTF16(
       IDS_CROSUSB_DEVICE_DETECTED_NOTIFICATION, label,
       CombineVmNames(vm_names_in_notification));
@@ -351,7 +320,7 @@ void ShowNotificationForDevice(const std::string& guid,
   }
 
   std::string notification_id = CrosUsbDetector::MakeNotificationId(guid);
-  message_center::Notification notification(
+  auto notification = std::make_unique<message_center::Notification>(
       message_center::NOTIFICATION_TYPE_MULTIPLE, notification_id,
       l10n_util::GetStringUTF16(IDS_CROSUSB_DEVICE_DETECTED_NOTIFICATION_TITLE),
       message, ui::ImageModel(), std::u16string(), GURL(),
@@ -360,9 +329,9 @@ void ShowNotificationForDevice(const std::string& guid,
                                  NotificationCatalogName::kCrosUSBDetector),
       rich_notification_data,
       base::MakeRefCounted<CrosUsbNotificationDelegate>(
-          notification_id, guid, std::move(vm_names),
-          std::move(settings_sub_page)));
-  SystemNotificationHelper::GetInstance()->Display(notification);
+          guid, std::move(vm_names), std::move(settings_sub_page)));
+  message_center::MessageCenter::Get()->AddNotification(
+      std::move(notification));
 }
 
 class FilesystemUnmounter : public base::RefCounted<FilesystemUnmounter> {
@@ -438,7 +407,7 @@ CrosUsbDetector* CrosUsbDetector::Get() {
 }
 
 CrosUsbDetector::CrosUsbDetector() {
-  DCHECK(!g_cros_usb_detector);
+  CHECK(!g_cros_usb_detector, base::NotFatalUntil::M160);
   g_cros_usb_detector = this;
 
   // If *ALL* interfaces of a device match the below list, no notification will
@@ -477,16 +446,14 @@ CrosUsbDetector::CrosUsbDetector() {
 
   CiceroneClient::Get()->AddObserver(this);
   ConciergeClient::Get()->AddVmObserver(this);
-  VmPluginDispatcherClient::Get()->AddObserver(this);
   disks::DiskMountManager::GetInstance()->AddObserver(this);
 }
 
 CrosUsbDetector::~CrosUsbDetector() {
-  DCHECK_EQ(this, g_cros_usb_detector);
+  CHECK_EQ(this, g_cros_usb_detector, base::NotFatalUntil::M160);
   disks::DiskMountManager::GetInstance()->RemoveObserver(this);
   CiceroneClient::Get()->RemoveObserver(this);
   ConciergeClient::Get()->RemoveVmObserver(this);
-  VmPluginDispatcherClient::Get()->RemoveObserver(this);
   g_cros_usb_detector = nullptr;
 }
 
@@ -537,13 +504,13 @@ void CrosUsbDetector::ConnectToDeviceManager() {
     content::GetDeviceService().BindUsbDeviceManager(
         device_manager_.BindNewPipeAndPassReceiver());
   }
-  DCHECK(device_manager_);
+  CHECK(device_manager_, base::NotFatalUntil::M160);
   device_manager_.set_disconnect_handler(
       base::BindOnce(&CrosUsbDetector::OnDeviceManagerConnectionError,
                      weak_ptr_factory_.GetWeakPtr()));
 
   // Listen for added/removed device events.
-  DCHECK(!client_receiver_.is_bound());
+  CHECK(!client_receiver_.is_bound(), base::NotFatalUntil::M160);
   device_manager_->EnumerateDevicesAndSetClient(
       client_receiver_.BindNewEndpointAndPassRemote(),
       base::BindOnce(&CrosUsbDetector::OnListAttachedDevices,
@@ -558,7 +525,6 @@ bool CrosUsbDetector::ShouldShowNotification(const UsbDevice& device) {
   }
 
   if (!crostini::CrostiniFeatures::Get()->IsEnabled(profile()) &&
-      !plugin_vm::PluginVmFeatures::Get()->IsEnabled(profile()) &&
       !IsPlayStoreEnabledWithArcVmForProfile(profile()) &&
       !bruschetta::IsInstalled(profile(), bruschetta::GetBruschettaAlphaId())) {
     return false;
@@ -614,20 +580,6 @@ void CrosUsbDetector::OnVmStarted(
 void CrosUsbDetector::OnVmStopped(
     const vm_tools::concierge::VmStoppedSignal& signal) {
   DisconnectSharedDevicesOnVmShutdown(signal.name());
-}
-
-void CrosUsbDetector::OnVmToolsStateChanged(
-    const vm_tools::plugin_dispatcher::VmToolsStateChangedSignal& signal) {}
-
-void CrosUsbDetector::OnVmStateChanged(
-    const vm_tools::plugin_dispatcher::VmStateChangedSignal& signal) {
-  if (signal.vm_state() ==
-      vm_tools::plugin_dispatcher::VmState::VM_STATE_RUNNING) {
-    ConnectSharedDevicesOnVmStartup(signal.vm_name());
-  } else if (signal.vm_state() ==
-             vm_tools::plugin_dispatcher::VmState::VM_STATE_STOPPED) {
-    DisconnectSharedDevicesOnVmShutdown(signal.vm_name());
-  }
 }
 
 void CrosUsbDetector::OnMountEvent(
@@ -767,8 +719,9 @@ void CrosUsbDetector::OnDeviceAdded(device::mojom::UsbDeviceInfoPtr device_info,
 
 void CrosUsbDetector::OnDeviceRemoved(
     device::mojom::UsbDeviceInfoPtr device_info) {
-  SystemNotificationHelper::GetInstance()->Close(
-      CrosUsbDetector::MakeNotificationId(device_info->guid));
+  message_center::MessageCenter::Get()->RemoveNotification(
+      CrosUsbDetector::MakeNotificationId(device_info->guid),
+      /*by_user=*/false);
 
   std::string guid = device_info->guid;
   auto it = usb_devices_.find(guid);
@@ -1042,8 +995,9 @@ void CrosUsbDetector::AttachAfterDetach(
   // Close any associated notifications (the user isn't using them). This
   // destroys the CrosUsbNotificationDelegate and vm_name and guid args may be
   // invalid after Close.
-  SystemNotificationHelper::GetInstance()->Close(
-      CrosUsbDetector::MakeNotificationId(guid));
+  message_center::MessageCenter::Get()->RemoveNotification(
+      CrosUsbDetector::MakeNotificationId(guid),
+      /*by_user=*/false);
 }
 
 void CrosUsbDetector::OnAttachUsbDeviceOpened(

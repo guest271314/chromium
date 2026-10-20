@@ -8,12 +8,15 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
+#include <vector>
 
 #include "base/compiler_specific.h"
 #include "base/functional/bind.h"
 #include "base/memory/ptr_util.h"
 #include "base/memory/raw_ptr.h"
+#include "base/memory/weak_ptr.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
@@ -28,6 +31,7 @@
 #include "chrome/browser/sessions/session_tab_helper_factory.h"
 #include "chrome/browser/sessions/tab_restore_service_factory.h"
 #include "chrome/browser/sessions/tab_restore_service_load_waiter.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/common/url_constants.h"
 #include "chrome/test/base/chrome_render_view_host_test_harness.h"
 #include "chrome/test/base/chrome_render_view_test.h"
@@ -38,12 +42,17 @@
 #include "components/sessions/content/content_live_tab.h"
 #include "components/sessions/content/content_test_helper.h"
 #include "components/sessions/content/session_tab_helper.h"
+#include "components/sessions/core/command_storage_features.h"
+#include "components/sessions/core/live_tab.h"
 #include "components/sessions/core/serialized_navigation_entry_test_helper.h"
+#include "components/sessions/core/session_id.h"
 #include "components/sessions/core/session_types.h"
 #include "components/sessions/core/tab_restore_service_client.h"
 #include "components/sessions/core/tab_restore_service_impl.h"
 #include "components/sessions/core/tab_restore_service_observer.h"
+#include "components/sessions/core/tab_restore_types.h"
 #include "components/split_tabs/split_tab_id.h"
+#include "components/split_tabs/split_tab_visual_data.h"
 #include "components/tab_groups/tab_group_id.h"
 #include "components/tab_groups/tab_group_visual_data.h"
 #include "content/public/browser/browser_thread.h"
@@ -57,6 +66,7 @@
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/common/user_agent/user_agent_metadata.h"
 #include "ui/base/mojom/window_show_state.mojom.h"
+#include "ui/base/window_open_disposition.h"
 
 typedef sessions::tab_restore::Entry Entry;
 typedef sessions::tab_restore::Tab Tab;
@@ -70,7 +80,10 @@ using sessions::SerializedNavigationEntry;
 using sessions::SerializedNavigationEntryTestHelper;
 
 using ::testing::_;
+using ::testing::IsEmpty;
+using ::testing::Optional;
 using ::testing::Return;
+using ::testing::UnorderedElementsAre;
 
 class MockLiveTab : public sessions::LiveTab {
  public:
@@ -88,6 +101,13 @@ class MockLiveTab : public sessions::LiveTab {
       GetPlatformSpecificTabData,
       std::unique_ptr<sessions::tab_restore::PlatformSpecificTabData>());
   MOCK_METHOD0(GetUserAgentOverride, sessions::SerializedUserAgentOverride());
+
+  base::WeakPtr<sessions::LiveTab> GetWeakPtr() override {
+    return weak_ptr_factory_.GetWeakPtr();
+  }
+
+ private:
+  base::WeakPtrFactory<MockLiveTab> weak_ptr_factory_{this};
 };
 
 class MockLiveTabContext : public sessions::LiveTabContext {
@@ -115,6 +135,9 @@ class MockLiveTabContext : public sessions::LiveTabContext {
   MOCK_CONST_METHOD1(GetVisualDataForGroup,
                      const tab_groups::TabGroupVisualData*(
                          const tab_groups::TabGroupId& group));
+  MOCK_CONST_METHOD1(GetVisualDataForSplit,
+                     const split_tabs::SplitTabVisualData*(
+                         const split_tabs::SplitTabId& split_id));
   MOCK_CONST_METHOD1(
       GetSavedTabGroupIdForGroup,
       const std::optional<base::Uuid>(const tab_groups::TabGroupId& group));
@@ -125,6 +148,9 @@ class MockLiveTabContext : public sessions::LiveTabContext {
   MOCK_METHOD2(SetVisualDataForGroup,
                void(const tab_groups::TabGroupId& group,
                     const tab_groups::TabGroupVisualData& visual_data));
+  MOCK_CONST_METHOD0(GetInitialFocusedTabGroup,
+                     const std::optional<tab_groups::TabGroupId>());
+  MOCK_METHOD1(SetFocusedTabGroup, void(const tab_groups::TabGroupId& group));
   MOCK_CONST_METHOD0(GetRestoredBounds, const gfx::Rect());
   MOCK_CONST_METHOD0(GetRestoredState, ui::mojom::WindowShowState());
   MOCK_CONST_METHOD0(GetWorkspace, std::string());
@@ -140,10 +166,11 @@ class MockLiveTabContext : public sessions::LiveTabContext {
               ReplaceRestoredTab,
               ((const sessions::tab_restore::Tab&)),
               (override));
-  MOCK_METHOD3(ReconstructSplit,
+  MOCK_METHOD4(ReconstructSplit,
                void(sessions::LiveTab* leading_tab,
                     sessions::LiveTab* trailing_tab,
-                    split_tabs::SplitTabId split_id));
+                    split_tabs::SplitTabId split_id,
+                    const split_tabs::SplitTabVisualData& visual_data));
   MOCK_METHOD0(CloseTab, void());
 };
 
@@ -227,6 +254,9 @@ class TabRestoreServiceImplTest : public ChromeRenderViewHostTestHarness {
 
   // testing::Test:
   void SetUp() override {
+    // TODO(crbug.com/479420496): Add support for encrypted files before full
+    // launch of encrypted sessions.
+    feature_list_.InitAndDisableFeature(sessions::kEncryptSessionStorage);
     ChromeRenderViewHostTestHarness::SetUp();
     CreateSessionServiceTabHelper(web_contents());
     live_tab_ = base::WrapUnique(new sessions::ContentLiveTab(web_contents()));
@@ -274,6 +304,10 @@ class TabRestoreServiceImplTest : public ChromeRenderViewHostTestHarness {
     service_->Shutdown();
     content::RunAllTasksUntilIdle();
     service_.reset();
+    // TabRestoreService indirectly owns a CommandStorageBackend, which
+    // inherits from RefCountedDeleteOnSequence. This ensures the
+    // CommandStorageBackend is cleaned up before creating the new service.
+    content::RunAllTasksUntilIdle();
 
     CreateService();
     SynchronousLoadTabsFromLastSession();
@@ -295,7 +329,8 @@ class TabRestoreServiceImplTest : public ChromeRenderViewHostTestHarness {
 
     SessionService* session_service =
         SessionServiceFactory::GetForProfile(profile());
-    session_service->SetWindowType(window_id(), Browser::TYPE_NORMAL);
+    session_service->SetWindowType(window_id(),
+                                   BrowserWindowInterface::TYPE_NORMAL);
     session_service->SetTabWindow(window_id(), tab_id());
     session_service->SetTabIndexInWindow(window_id(), tab_id(), 0);
     session_service->SetSelectedTabInWindow(window_id(), 0);
@@ -338,6 +373,7 @@ class TabRestoreServiceImplTest : public ChromeRenderViewHostTestHarness {
 
   sessions::LiveTab* live_tab() { return live_tab_.get(); }
 
+  base::test::ScopedFeatureList feature_list_;
   GURL url1_;
   GURL url2_;
   GURL url3_;
@@ -466,8 +502,8 @@ TEST_F(TabRestoreServiceImplTest, Basic) {
 
 TEST_F(TabRestoreServiceImplWithMockClientTest,
        TabExtraDataPresentInHistoricalTab) {
-  constexpr char kSampleKey[] = "test";
-  constexpr char kSampleValue[] = "true";
+  constexpr std::string_view kSampleKey = "test";
+  constexpr std::string_view kSampleValue = "true";
 
   std::unique_ptr<MockLiveTabContext> mock_live_tab_context_ptr(
       new ::testing::NiceMock<MockLiveTabContext>());
@@ -477,7 +513,7 @@ TEST_F(TabRestoreServiceImplWithMockClientTest,
   EXPECT_CALL(*mock_live_tab_context_ptr, GetExtraDataForTab)
       .WillOnce([kSampleKey, kSampleValue]() {
         std::map<std::string, std::string> sample_extra_data;
-        sample_extra_data[kSampleKey] = kSampleValue;
+        sample_extra_data.emplace(kSampleKey, kSampleValue);
         return sample_extra_data;
       });
   ON_CALL(*mock_tab_restore_service_client_, FindLiveTabContextForTab(_))
@@ -498,7 +534,7 @@ TEST_F(TabRestoreServiceImplWithMockClientTest,
   ASSERT_EQ(1U, tab->navigations.size());
   EXPECT_EQ(url1_, tab->navigations[0].virtual_url());
   ASSERT_EQ(1U, tab->extra_data.size());
-  ASSERT_EQ(kSampleValue, tab->extra_data[kSampleKey]);
+  ASSERT_EQ(kSampleValue, tab->extra_data[std::string(kSampleKey)]);
 }
 
 // Ensure fields are written and read from saved state.
@@ -557,10 +593,102 @@ TEST_F(TabRestoreServiceImplWithMockClientTest, WindowRestore) {
   validate();
 }
 
+TEST_F(TabRestoreServiceImplWithMockClientTest, BrowserClosingReturnsWindowId) {
+  SerializedNavigationEntry navigation_entry =
+      SerializedNavigationEntryTestHelper::CreateNavigationForTest();
+  testing::NiceMock<MockLiveTab> mock_live_tab;
+  ON_CALL(mock_live_tab, GetSessionID)
+      .WillByDefault(Return(SessionID::NewUnique()));
+  ON_CALL(mock_live_tab, GetEntryCount).WillByDefault(Return(1));
+  ON_CALL(mock_live_tab, GetEntryAtIndex)
+      .WillByDefault(Return(navigation_entry));
+
+  testing::NiceMock<MockLiveTabContext> mock_live_tab_context;
+  ON_CALL(mock_live_tab_context, GetSessionID)
+      .WillByDefault(Return(SessionID::NewUnique()));
+  ON_CALL(mock_live_tab_context, GetTabCount).WillByDefault(Return(1));
+  ON_CALL(mock_live_tab_context, GetLiveTabAt)
+      .WillByDefault(Return(&mock_live_tab));
+
+  std::optional<SessionID> id =
+      service_->BrowserClosing(&mock_live_tab_context);
+  ASSERT_TRUE(id.has_value());
+  ASSERT_EQ(1u, service_->entries().size());
+  EXPECT_EQ(*id, service_->entries().front()->id);
+}
+
+TEST_F(TabRestoreServiceImplWithMockClientTest,
+       BrowserClosingReturnsNulloptWithNoNavigations) {
+  testing::NiceMock<MockLiveTab> mock_live_tab;
+  ON_CALL(mock_live_tab, GetSessionID)
+      .WillByDefault(Return(SessionID::NewUnique()));
+  ON_CALL(mock_live_tab, GetEntryCount).WillByDefault(Return(0));
+
+  testing::NiceMock<MockLiveTabContext> mock_live_tab_context;
+  ON_CALL(mock_live_tab_context, GetSessionID)
+      .WillByDefault(Return(SessionID::NewUnique()));
+  ON_CALL(mock_live_tab_context, GetTabCount).WillByDefault(Return(1));
+  ON_CALL(mock_live_tab_context, GetLiveTabAt)
+      .WillByDefault(Return(&mock_live_tab));
+
+  std::optional<SessionID> id =
+      service_->BrowserClosing(&mock_live_tab_context);
+  EXPECT_EQ(std::nullopt, id);
+  EXPECT_TRUE(service_->entries().empty());
+}
+
+TEST_F(TabRestoreServiceImplWithMockClientTest,
+       CreateHistoricalGroupReturnsGroupId) {
+  SerializedNavigationEntry navigation_entry =
+      SerializedNavigationEntryTestHelper::CreateNavigationForTest();
+  testing::NiceMock<MockLiveTab> mock_live_tab;
+  ON_CALL(mock_live_tab, GetSessionID)
+      .WillByDefault(Return(SessionID::NewUnique()));
+  ON_CALL(mock_live_tab, GetEntryCount).WillByDefault(Return(1));
+  ON_CALL(mock_live_tab, GetEntryAtIndex)
+      .WillByDefault(Return(navigation_entry));
+
+  tab_groups::TabGroupId group_id = tab_groups::TabGroupId::GenerateNew();
+  testing::NiceMock<MockLiveTabContext> mock_live_tab_context;
+  ON_CALL(mock_live_tab_context, GetSessionID)
+      .WillByDefault(Return(SessionID::NewUnique()));
+  ON_CALL(mock_live_tab_context, GetTabCount).WillByDefault(Return(1));
+  ON_CALL(mock_live_tab_context, GetLiveTabAt)
+      .WillByDefault(Return(&mock_live_tab));
+  ON_CALL(mock_live_tab_context, GetTabGroupForTab(0))
+      .WillByDefault(Return(group_id));
+
+  tab_groups::TabGroupVisualData visual_data;
+  ON_CALL(mock_live_tab_context, GetVisualDataForGroup(testing::_))
+      .WillByDefault(Return(&visual_data));
+
+  std::optional<SessionID> id =
+      service_->CreateHistoricalGroup(&mock_live_tab_context, group_id);
+  EXPECT_NE(std::nullopt, id);
+  ASSERT_EQ(1u, service_->entries().size());
+  EXPECT_EQ(*id, service_->entries().front()->id);
+}
+
 // Make sure TabRestoreService doesn't create an entry for a tab with no
 // navigations.
 TEST_F(TabRestoreServiceImplTest, DontCreateEmptyTab) {
   service_->CreateHistoricalTab(live_tab(), -1);
+  EXPECT_TRUE(service_->entries().empty());
+}
+
+TEST_F(TabRestoreServiceImplTest, CreateHistoricalTabReturnsStoredEntryId) {
+  AddThreeNavigations();
+  std::optional<SessionID> id = service_->CreateHistoricalTab(live_tab(), -1);
+  ASSERT_TRUE(id.has_value());
+  ASSERT_EQ(1U, service_->entries().size());
+  EXPECT_EQ(*id, service_->entries().front()->id);
+}
+
+TEST_F(TabRestoreServiceImplTest,
+       CreateHistoricalTabReturnsNulloptWhenFiltered) {
+  NavigateAndCommit(GURL(chrome::kChromeUINewTabURL));
+  std::optional<SessionID> id = service_->CreateHistoricalTab(live_tab(), -1);
+  EXPECT_EQ(std::nullopt, id);
   EXPECT_TRUE(service_->entries().empty());
 }
 
@@ -917,6 +1045,33 @@ TEST_F(TabRestoreServiceImplTest, DontLoadWhenSavingIsDisabled) {
   ASSERT_EQ(0U, service_->entries().size());
 }
 
+// Makes sure toggling the policy mid-session immediately clears temporary
+// in-memory tab restore entries and prevents subsequent entries.
+TEST_F(TabRestoreServiceImplTest,
+       SavingBrowserHistoryDisabledMidSessionClearsEntries) {
+  AddThreeNavigations();
+
+  // Have the service record a closed tab.
+  service_->CreateHistoricalTab(live_tab(), -1);
+  EXPECT_EQ(1U, service_->entries().size());
+
+  // Enable the policy mid-session.
+  profile()->GetPrefs()->SetBoolean(prefs::kSavingBrowserHistoryDisabled, true);
+
+  // Temporary restore entries should be wiped immediately from memory for
+  // privacy.
+  EXPECT_EQ(0U, service_->entries().size());
+
+  // Attempt to record another historical tab.
+  AddThreeNavigations();
+  std::optional<SessionID> result =
+      service_->CreateHistoricalTab(live_tab(), -1);
+
+  // New tab restores should be blocked.
+  EXPECT_EQ(std::nullopt, result);
+  EXPECT_EQ(0U, service_->entries().size());
+}
+
 // Regression test to ensure Window::show_state is set correctly when reading
 // TabRestoreSession from saved state.
 TEST_F(TabRestoreServiceImplTest, WindowShowStateIsSet) {
@@ -1040,6 +1195,32 @@ TEST_F(TabRestoreServiceImplTest, LoadWindowBoundsAndWorkspace) {
   EXPECT_TRUE(url1_ == tab->navigations[0].virtual_url());
   EXPECT_TRUE(url2_ == tab->navigations[1].virtual_url());
   EXPECT_TRUE(url3_ == tab->navigations[2].virtual_url());
+}
+
+// Make sure window user title and app name are properly loaded from the session
+// service after a crash or forced shutdown (crbug.com/569565958).
+TEST_F(TabRestoreServiceImplTest, LoadWindowUserTitleAndAppName) {
+  constexpr char kUserTitle[] = "My Work Task Window";
+  constexpr char kAppName[] = "test-app";
+
+  CreateSessionServiceWithOneWindow(false);
+
+  SessionService* session_service =
+      SessionServiceFactory::GetForProfile(profile());
+  session_service->SetWindowUserTitle(window_id(), kUserTitle);
+  session_service->SetWindowAppName(window_id(), kAppName);
+
+  session_service->MoveCurrentSessionToLastSession();
+
+  RecreateService();
+
+  ASSERT_EQ(1U, service_->entries().size());
+  Entry* entry = service_->entries().front().get();
+  ASSERT_EQ(sessions::tab_restore::Type::WINDOW, entry->type);
+  sessions::tab_restore::Window* window =
+      static_cast<sessions::tab_restore::Window*>(entry);
+  EXPECT_EQ(kUserTitle, window->user_title);
+  EXPECT_EQ(kAppName, window->app_name);
 }
 
 // Make sure pinned state is correctly loaded from session service.
@@ -1432,4 +1613,356 @@ TEST_F(TabRestoreServiceImplWithMockClientTest, SplitCreationAndSuppression) {
   ASSERT_EQ(3U, service_->entries().size());
   EXPECT_EQ(sessions::tab_restore::Type::TAB,
             service_->entries().front()->type);
+}
+
+TEST_F(TabRestoreServiceImplWithMockClientTest, SplitVisualDataPersistence) {
+  testing::NiceMock<MockLiveTabContext> mock_live_tab_context;
+  testing::NiceMock<MockLiveTab> mock_tab1, mock_tab2;
+  split_tabs::SplitTabId split_id = split_tabs::SplitTabId::GenerateNew();
+
+  SetupMockSplit(&mock_live_tab_context, &mock_tab1, &mock_tab2,
+                 GURL("http://split1"), GURL("http://split2"), split_id);
+
+  ON_CALL(mock_live_tab_context, AddRestoredTab(_, _, _, _, _))
+      .WillByDefault(testing::Return(&mock_tab1));
+
+  split_tabs::SplitTabVisualData visual_data(
+      split_tabs::SplitTabLayout::kStacked, 0.3);
+
+  ON_CALL(mock_live_tab_context, GetVisualDataForSplit(split_id))
+      .WillByDefault(testing::Return(&visual_data));
+
+  // Create the Historical Split
+  service_->CreateHistoricalSplit(&mock_live_tab_context, split_id);
+  ASSERT_EQ(1U, service_->entries().size());
+
+  auto& entry = service_->entries().front();
+  ASSERT_EQ(sessions::tab_restore::Type::SPLIT, entry->type);
+
+  auto* split_entry = static_cast<sessions::tab_restore::Split*>(entry.get());
+  EXPECT_EQ(visual_data, split_entry->visual_data);
+
+  // Now verify that restoring the split passes the correct visual data.
+  EXPECT_CALL(mock_live_tab_context,
+              ReconstructSplit(_, _, split_id, testing::Eq(visual_data)))
+      .Times(1);
+
+  service_->RestoreEntryById(&mock_live_tab_context, entry->id,
+                             WindowOpenDisposition::NEW_FOREGROUND_TAB);
+}
+
+TEST_F(TabRestoreServiceImplWithMockClientTest,
+       WindowSplitVisualDataPersistence) {
+  testing::NiceMock<MockLiveTabContext> mock_live_tab_context;
+  testing::NiceMock<MockLiveTab> mock_tab1, mock_tab2;
+  split_tabs::SplitTabId split_id = split_tabs::SplitTabId::GenerateNew();
+
+  SetupMockSplit(&mock_live_tab_context, &mock_tab1, &mock_tab2,
+                 GURL("http://split1"), GURL("http://split2"), split_id);
+
+  ON_CALL(mock_live_tab_context, AddRestoredTab(_, _, _, _, _))
+      .WillByDefault(testing::Return(&mock_tab1));
+
+  split_tabs::SplitTabVisualData visual_data(
+      split_tabs::SplitTabLayout::kStacked, 0.3);
+
+  ON_CALL(mock_live_tab_context, GetVisualDataForSplit(split_id))
+      .WillByDefault(testing::Return(&visual_data));
+
+  ON_CALL(mock_live_tab_context, GetWindowType)
+      .WillByDefault(testing::Return(sessions::SessionWindow::TYPE_NORMAL));
+
+  ON_CALL(*mock_tab_restore_service_client_,
+          CreateLiveTabContext(_, _, _, _, _, _, _, _))
+      .WillByDefault(testing::Return(&mock_live_tab_context));
+
+  // Create the Historical Window (via BrowserClosing)
+  service_->BrowserClosing(&mock_live_tab_context);
+  ASSERT_EQ(1U, service_->entries().size());
+
+  auto& entry = service_->entries().front();
+  ASSERT_EQ(sessions::tab_restore::Type::WINDOW, entry->type);
+
+  auto* window_entry = static_cast<sessions::tab_restore::Window*>(entry.get());
+  ASSERT_EQ(2U, window_entry->tabs.size());
+
+  // Verify that the tabs inside the window preserved the split visual data.
+  EXPECT_EQ(split_id, window_entry->tabs[0]->split_id);
+  EXPECT_EQ(visual_data, window_entry->tabs[0]->split_visual_data);
+
+  // Now verify that restoring the window passes the correct visual data.
+  EXPECT_CALL(mock_live_tab_context,
+              ReconstructSplit(_, _, split_id, testing::Eq(visual_data)))
+      .Times(1);
+
+  service_->RestoreEntryById(&mock_live_tab_context, entry->id,
+                             WindowOpenDisposition::NEW_FOREGROUND_TAB);
+}
+
+TEST_F(TabRestoreServiceImplWithMockClientTest,
+       SplitVisualDataPersistenceAfterRestart) {
+  ON_CALL(*mock_tab_restore_service_client_, ShouldTrackURLForRestore(_))
+      .WillByDefault(testing::Return(true));
+
+  testing::NiceMock<MockLiveTabContext> mock_live_tab_context;
+  testing::NiceMock<MockLiveTab> mock_tab1, mock_tab2;
+  split_tabs::SplitTabId split_id = split_tabs::SplitTabId::GenerateNew();
+
+  SetupMockSplit(&mock_live_tab_context, &mock_tab1, &mock_tab2,
+                 GURL("http://split1"), GURL("http://split2"), split_id);
+
+  ON_CALL(mock_live_tab_context, AddRestoredTab(_, _, _, _, _))
+      .WillByDefault(testing::Return(&mock_tab1));
+
+  split_tabs::SplitTabVisualData visual_data(
+      split_tabs::SplitTabLayout::kStacked, 0.3);
+
+  ON_CALL(mock_live_tab_context, GetVisualDataForSplit(split_id))
+      .WillByDefault(testing::Return(&visual_data));
+
+  // Create the Historical Split
+  service_->CreateHistoricalSplit(&mock_live_tab_context, split_id);
+  ASSERT_EQ(1U, service_->entries().size());
+
+  // Recreate the service to trigger persistence write and load.
+  RecreateService();
+
+  // Set expectation on the new mock client created inside RecreateService.
+  ON_CALL(*mock_tab_restore_service_client_, ShouldTrackURLForRestore(_))
+      .WillByDefault(testing::Return(true));
+
+  // Verify the split visual data survived the restart.
+  ASSERT_EQ(1U, service_->entries().size());
+  auto& entry = service_->entries().front();
+  ASSERT_EQ(sessions::tab_restore::Type::SPLIT, entry->type);
+
+  auto* split_entry = static_cast<sessions::tab_restore::Split*>(entry.get());
+  EXPECT_EQ(visual_data, split_entry->visual_data);
+
+  // Now verify that restoring the split after restart passes the correct visual
+  // data.
+  EXPECT_CALL(mock_live_tab_context,
+              ReconstructSplit(_, _, split_id, testing::Eq(visual_data)))
+      .Times(1);
+
+  service_->RestoreEntryById(&mock_live_tab_context, entry->id,
+                             WindowOpenDisposition::NEW_FOREGROUND_TAB);
+}
+
+TEST_F(TabRestoreServiceImplWithMockClientTest, RestoreOneTabFromSplit) {
+  testing::NiceMock<MockLiveTabContext> mock_live_tab_context;
+  testing::NiceMock<MockLiveTab> mock_tab1, mock_tab2;
+  split_tabs::SplitTabId split_id = split_tabs::SplitTabId::GenerateNew();
+
+  SetupMockSplit(&mock_live_tab_context, &mock_tab1, &mock_tab2,
+                 GURL("http://split1"), GURL("http://split2"), split_id);
+
+  ON_CALL(mock_live_tab_context, AddRestoredTab(_, _, _, _, _))
+      .WillByDefault(testing::Return(&mock_tab1));
+
+  // Create the Historical Split
+  service_->CreateHistoricalSplit(&mock_live_tab_context, split_id);
+  ASSERT_EQ(1U, service_->entries().size());
+
+  auto& entry = service_->entries().front();
+  ASSERT_EQ(sessions::tab_restore::Type::SPLIT, entry->type);
+
+  auto* split_entry = static_cast<sessions::tab_restore::Split*>(entry.get());
+  ASSERT_EQ(2U, split_entry->tabs.size());
+
+  SessionID tab1_id = split_entry->tabs[0]->id;
+  SessionID tab2_id = split_entry->tabs[1]->id;
+
+  // Restore only tab1 from the split.
+  service_->RestoreEntryById(&mock_live_tab_context, tab1_id,
+                             WindowOpenDisposition::NEW_FOREGROUND_TAB);
+
+  // Verify the Split entry has been replaced by the remaining tab entry.
+  ASSERT_EQ(1U, service_->entries().size());
+  auto& remaining_entry = service_->entries().front();
+  ASSERT_EQ(sessions::tab_restore::Type::TAB, remaining_entry->type);
+
+  auto* tab_entry =
+      static_cast<sessions::tab_restore::Tab*>(remaining_entry.get());
+  EXPECT_EQ(tab2_id, tab_entry->id);
+  EXPECT_EQ(std::nullopt, tab_entry->split_id);
+  EXPECT_EQ(std::nullopt, tab_entry->split_visual_data);
+
+  // Restore the remaining tab to verify that it does not crash.
+  service_->RestoreEntryById(&mock_live_tab_context, tab2_id,
+                             WindowOpenDisposition::NEW_FOREGROUND_TAB);
+
+  EXPECT_TRUE(service_->entries().empty());
+}
+
+TEST_F(TabRestoreServiceImplWithMockClientTest,
+       DontCreateGroupEntryWhileRestoring) {
+  ON_CALL(*mock_tab_restore_service_client_, ShouldTrackURLForRestore(_))
+      .WillByDefault(Return(true));
+
+  // Create a group entry with two tabs and place it at the back of the list so
+  // that it would be the first entry dropped if the list were ever pruned.
+  auto group = std::make_unique<sessions::tab_restore::Group>();
+  group->group_id = tab_groups::TabGroupId::GenerateNew();
+  for (int i = 0; i < 2; ++i) {
+    auto tab = std::make_unique<Tab>();
+    tab->navigations.push_back(ContentTestHelper::CreateNavigation(
+        base::StringPrintf("http://group/%d", i), "title"));
+    tab->current_navigation_index = 0;
+    group->tabs.push_back(std::move(tab));
+  }
+  const SessionID group_entry_id = group->id;
+  mutable_entries()->push_back(std::move(group));
+
+  // Fill the rest of the list up to kMaxEntries with tab entries that are
+  // newer than the group entry.
+  const size_t max_entries = kMaxEntries;
+  for (size_t i = 0; i < max_entries - 1; ++i) {
+    auto tab = std::make_unique<Tab>();
+    tab->navigations.push_back(ContentTestHelper::CreateNavigation(
+        base::StringPrintf("http://%d", static_cast<int>(i)), "title"));
+    tab->current_navigation_index = 0;
+    mutable_entries()->push_front(std::move(tab));
+  }
+  ASSERT_EQ(max_entries, service_->entries().size());
+
+  // A separate context that simulates a tab group closure being committed
+  // while the restore below is in progress.
+  testing::NiceMock<MockLiveTabContext> closing_context;
+  testing::NiceMock<MockLiveTab> closing_tab;
+  tab_groups::TabGroupId closing_group_id =
+      tab_groups::TabGroupId::GenerateNew();
+  tab_groups::TabGroupVisualData closing_group_visual_data;
+  ON_CALL(closing_context, GetSessionID())
+      .WillByDefault(Return(SessionID::NewUnique()));
+  ON_CALL(closing_context, GetTabCount()).WillByDefault(Return(1));
+  ON_CALL(closing_context, GetTabGroupForTab(0))
+      .WillByDefault(Return(closing_group_id));
+  ON_CALL(closing_context, GetVisualDataForGroup(_))
+      .WillByDefault(Return(&closing_group_visual_data));
+  ON_CALL(closing_context, GetLiveTabAt(0)).WillByDefault(Return(&closing_tab));
+  ON_CALL(closing_tab, GetEntryCount()).WillByDefault(Return(1));
+  ON_CALL(closing_tab, GetEntryAtIndex(_))
+      .WillByDefault(
+          Return(ContentTestHelper::CreateNavigation("http://closing", "T")));
+
+  // Restoring a tab can synchronously commit pending tab group closures, which
+  // calls back into CreateHistoricalGroup. The service must not add a new
+  // entry while a restore is already in progress.
+  testing::NiceMock<MockLiveTabContext> restore_context;
+  int restored_tab_count = 0;
+  ON_CALL(restore_context, AddRestoredTab(_, _, _, _, _))
+      .WillByDefault([&](const sessions::tab_restore::Tab&, int, bool, bool,
+                         sessions::tab_restore::Type) -> sessions::LiveTab* {
+        ++restored_tab_count;
+        EXPECT_TRUE(service_->IsRestoring());
+        EXPECT_EQ(std::nullopt, service_->CreateHistoricalGroup(&closing_context, closing_group_id));
+        EXPECT_EQ(group_entry_id, service_->entries().back()->id);
+        return nullptr;
+      });
+
+  service_->RestoreEntryById(&restore_context, group_entry_id,
+                             WindowOpenDisposition::NEW_FOREGROUND_TAB);
+
+  EXPECT_EQ(2, restored_tab_count);
+  EXPECT_EQ(max_entries - 1, service_->entries().size());
+}
+
+// Restoring a window with a tab that's closed again before the restore
+// completes (e.g. while the browser window is being shown) excludes that tab
+// from the returned vector.
+TEST_F(TabRestoreServiceImplWithMockClientTest,
+       RestoreWindowEntryOmitsTabsClosedDuringRestore) {
+  // Create a window entry with three tabs.
+  auto window = std::make_unique<Window>();
+  for (int i = 0; i < 3; ++i) {
+    auto tab = std::make_unique<Tab>();
+    tab->navigations.push_back(ContentTestHelper::CreateNavigation(
+        base::StringPrintf("http://%d", i), base::NumberToString(i)));
+    tab->current_navigation_index = 0;
+    window->tabs.push_back(std::move(tab));
+  }
+  window->selected_tab_index = 0;
+  const SessionID entry_id = window->id;
+  mutable_entries()->push_back(std::move(window));
+
+  testing::NiceMock<MockLiveTabContext> restore_context;
+  ON_CALL(restore_context, GetSessionID())
+      .WillByDefault(Return(SessionID::NewUnique()));
+  ON_CALL(*mock_tab_restore_service_client_,
+          CreateLiveTabContext(_, _, _, _, _, _, _, _))
+      .WillByDefault(Return(&restore_context));
+
+  auto restored_tab1 = std::make_unique<testing::NiceMock<MockLiveTab>>();
+  auto restored_tab2 = std::make_unique<testing::NiceMock<MockLiveTab>>();
+  EXPECT_CALL(restore_context, AddRestoredTab(_, _, _, _, _))
+      .WillOnce(Return(restored_tab1.get()))
+      .RetiresOnSaturation();
+  EXPECT_CALL(restore_context, AddRestoredTab(_, _, _, _, _))
+      .WillOnce(Return(restored_tab2.get()))
+      .RetiresOnSaturation();
+  // A tab that can't be created for a tab entry should be excluded from the
+  // list, rather than included as a nullptr.
+  EXPECT_CALL(restore_context, AddRestoredTab(_, _, _, _, _))
+      .WillOnce(Return(nullptr))
+      .RetiresOnSaturation();
+
+  // Close the first restored tab while the window is being shown, which happens
+  // before RestoreEntryById() returns.
+  EXPECT_CALL(restore_context, ShowBrowserWindow()).WillOnce([&]() {
+    restored_tab1.reset();
+  });
+
+  std::optional<std::vector<sessions::LiveTab*>> restored_tabs =
+      service_->RestoreEntryById(&restore_context, entry_id,
+                                 WindowOpenDisposition::NEW_FOREGROUND_TAB);
+
+  // The result should omit tab 1 (closed during restore) and tab 3 (not
+  // created), returning only `restored_tab2`.
+  EXPECT_THAT(restored_tabs,
+              Optional(UnorderedElementsAre(restored_tab2.get())));
+}
+
+// Restoring an entry where all tabs are closed before the restore completes
+// returns an empty vector.
+TEST_F(TabRestoreServiceImplWithMockClientTest,
+       RestoreWindowEntryAllTabsClosed) {
+  auto window = std::make_unique<Window>();
+  auto tab = std::make_unique<Tab>();
+  tab->navigations.push_back(
+      ContentTestHelper::CreateNavigation("http://0", "0"));
+  tab->current_navigation_index = 0;
+  window->tabs.push_back(std::move(tab));
+  window->selected_tab_index = 0;
+  const SessionID entry_id = window->id;
+  mutable_entries()->push_back(std::move(window));
+
+  testing::NiceMock<MockLiveTabContext> restore_context;
+  ON_CALL(restore_context, GetSessionID())
+      .WillByDefault(Return(SessionID::NewUnique()));
+  ON_CALL(*mock_tab_restore_service_client_,
+          CreateLiveTabContext(_, _, _, _, _, _, _, _))
+      .WillByDefault(Return(&restore_context));
+
+  auto restored_tab = std::make_unique<testing::NiceMock<MockLiveTab>>();
+  EXPECT_CALL(restore_context, AddRestoredTab(_, _, _, _, _))
+      .WillOnce(Return(restored_tab.get()));
+
+  EXPECT_CALL(restore_context, ShowBrowserWindow()).WillOnce([&]() {
+    restored_tab.reset();
+  });
+
+  std::optional<std::vector<sessions::LiveTab*>> restored_tabs =
+      service_->RestoreEntryById(&restore_context, entry_id,
+                                 WindowOpenDisposition::NEW_FOREGROUND_TAB);
+  EXPECT_THAT(restored_tabs, Optional(IsEmpty()));
+}
+
+// Attempting to restore an invalid ID returns nullopt.
+TEST_F(TabRestoreServiceImplWithMockClientTest, RestoreEntryByIdInvalidId) {
+  testing::NiceMock<MockLiveTabContext> restore_context;
+  auto restored_tabs =
+      service_->RestoreEntryById(&restore_context, SessionID::NewUnique(),
+                                 WindowOpenDisposition::NEW_FOREGROUND_TAB);
+  EXPECT_EQ(restored_tabs, std::nullopt);
 }

@@ -40,25 +40,26 @@ import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.compositor.LayerTitleCache;
 import org.chromium.chrome.browser.compositor.layouts.LayoutUpdateHost;
-import org.chromium.chrome.browser.compositor.layouts.components.CompositorButton;
 import org.chromium.chrome.browser.compositor.layouts.components.CompositorButton.ButtonType;
 import org.chromium.chrome.browser.compositor.layouts.components.CompositorButton.TooltipHandler;
 import org.chromium.chrome.browser.compositor.layouts.components.TintedCompositorButton;
 import org.chromium.chrome.browser.compositor.layouts.components.TintedCompositorTextButton;
 import org.chromium.chrome.browser.compositor.overlays.strip.StripLayoutGroupTitle;
+import org.chromium.chrome.browser.compositor.overlays.strip.StripLayoutHelper;
 import org.chromium.chrome.browser.compositor.overlays.strip.StripLayoutHelperManager;
 import org.chromium.chrome.browser.compositor.overlays.strip.StripLayoutTab;
 import org.chromium.chrome.browser.compositor.overlays.strip.StripLayoutTrailingButtonsCoordinator;
 import org.chromium.chrome.browser.compositor.overlays.strip.StripLayoutView.StripLayoutViewOnClickHandler;
 import org.chromium.chrome.browser.compositor.overlays.strip.StripLayoutView.StripLayoutViewOnKeyboardFocusHandler;
+import org.chromium.chrome.browser.compositor.overlays.strip.StripLayoutView.StripLayoutViewOnLongClickHandler;
 import org.chromium.chrome.browser.compositor.overlays.strip.TabLoadTracker.TabLoadTrackerCallback;
 import org.chromium.chrome.browser.layouts.scene_layer.SceneLayer;
-import org.chromium.chrome.browser.tab.MediaState;
+import org.chromium.components.tabs.TabAlert;
 import org.chromium.ui.resources.ResourceManager;
 
 /** Tests for {@link TabStripSceneLayer}. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE, qualifiers = "sw600dp")
+@Config(qualifiers = "sw600dp")
 public class TabStripSceneLayerTest {
 
     @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
@@ -69,6 +70,7 @@ public class TabStripSceneLayerTest {
     @Mock private SceneLayer mSceneLayer;
     @Mock private TooltipHandler mTooltipHandler;
     @Mock private StripLayoutViewOnClickHandler mOnClickHandler;
+    @Mock private StripLayoutViewOnLongClickHandler mOnLongClickHandler;
     @Mock private StripLayoutViewOnKeyboardFocusHandler mKeyboardFocusHandler;
     @Mock private TabLoadTrackerCallback mTabLoadTrackerCallback;
     @Mock private LayoutUpdateHost mLayoutUpdateHost;
@@ -76,11 +78,13 @@ public class TabStripSceneLayerTest {
     @Mock private TintedCompositorButton mCloseButton;
     @Mock private StripLayoutGroupTitle mStripGroupTitle;
     @Mock private StripLayoutTrailingButtonsCoordinator mTrailingButtonsCoordinator;
+    @Mock private StripLayoutHelper mStripLayoutHelper;
+    @Mock private TintedCompositorButton mTabSearchButton;
 
     private static final float DP_TO_PX = 1.f;
 
     private TintedCompositorTextButton mGlicButton;
-    private CompositorButton mModelSelectorButton;
+    private TintedCompositorButton mModelSelectorButton;
     private TintedCompositorButton mNewTabButton;
     private Context mContext;
     private TabStripSceneLayer mTabStripSceneLayer;
@@ -172,18 +176,22 @@ public class TabStripSceneLayerTest {
                                 mContext,
                                 1,
                                 mOnClickHandler,
+                                mOnLongClickHandler,
                                 mKeyboardFocusHandler,
+                                /* accessibilityFocusHandler= */ null,
                                 mTabLoadTrackerCallback,
                                 mLayoutUpdateHost,
                                 false,
                                 false,
-                                MediaState.NONE));
+                                /* alertState= */ TabAlert.NONE));
         mTabStripSceneLayer.initializeNativeForTesting();
         mStripLayoutTabs = new StripLayoutTab[] {mStripLayoutTab};
         mStripGroupTitles = new StripLayoutGroupTitle[] {mStripGroupTitle};
         when(mStripLayoutHelperManager.getNewTabButton()).thenReturn(mNewTabButton);
+        when(mStripLayoutHelperManager.getActiveStripLayoutHelper()).thenReturn(mStripLayoutHelper);
+        when(mStripLayoutHelper.getTabSearchButton()).thenReturn(mTabSearchButton);
         when(mTrailingButtonsCoordinator.getGlicButton()).thenReturn(mGlicButton);
-        when(mStripLayoutHelperManager.getModelSelectorButton()).thenReturn(mModelSelectorButton);
+        when(mTrailingButtonsCoordinator.getModelSelectorButton()).thenReturn(mModelSelectorButton);
         when(mStripLayoutHelperManager.getContext()).thenReturn(mContext);
         when(mStripLayoutTab.getCloseButton()).thenReturn(mCloseButton);
         when(mStripGroupTitle.getKeyboardFocusRingColor())
@@ -349,6 +357,8 @@ public class TabStripSceneLayerTest {
                         anyFloat(),
                         anyFloat(),
                         anyFloat(),
+                        anyFloat(),
+                        anyFloat(),
                         anyBoolean(),
                         anyBoolean(),
                         anyBoolean(),
@@ -370,7 +380,7 @@ public class TabStripSceneLayerTest {
                                         * mContext.getResources().getDisplayMetrics().density),
                         anyBoolean(),
                         anyFloat(),
-                        anyBoolean(),
+                        anyFloat(),
                         anyInt(),
                         anyInt(),
                         anyInt());
@@ -427,6 +437,8 @@ public class TabStripSceneLayerTest {
                         anyFloat(),
                         anyFloat(),
                         anyFloat(),
+                        anyFloat(),
+                        anyFloat(),
                         anyBoolean(),
                         anyBoolean(),
                         anyBoolean(),
@@ -446,7 +458,7 @@ public class TabStripSceneLayerTest {
                                         * mContext.getResources().getDisplayMetrics().density),
                         anyBoolean(),
                         anyFloat(),
-                        anyBoolean(),
+                        anyFloat(),
                         anyInt(),
                         anyInt(),
                         anyInt());
@@ -503,6 +515,8 @@ public class TabStripSceneLayerTest {
                         anyFloat(),
                         anyFloat(),
                         anyFloat(),
+                        anyFloat(),
+                        anyFloat(),
                         anyBoolean(),
                         anyBoolean(),
                         anyBoolean(),
@@ -524,7 +538,7 @@ public class TabStripSceneLayerTest {
                                         * mContext.getResources().getDisplayMetrics().density),
                         anyBoolean(),
                         anyFloat(),
-                        anyBoolean(),
+                        anyFloat(),
                         anyInt(),
                         anyInt(),
                         anyInt());
@@ -580,6 +594,8 @@ public class TabStripSceneLayerTest {
                         anyFloat(),
                         anyFloat(),
                         anyFloat(),
+                        anyFloat(),
+                        anyFloat(),
                         anyBoolean(),
                         anyBoolean(),
                         anyBoolean(),
@@ -601,7 +617,7 @@ public class TabStripSceneLayerTest {
                                         * mContext.getResources().getDisplayMetrics().density),
                         anyBoolean(),
                         anyFloat(),
-                        anyBoolean(),
+                        anyFloat(),
                         anyInt(),
                         anyInt(),
                         anyInt());
@@ -705,10 +721,11 @@ public class TabStripSceneLayerTest {
                         anyInt(),
                         anyFloat(),
                         eq(true),
-                        eq(R.drawable.circular_button_keyfocus),
+                        eq(R.drawable.glic_button_keyfocus),
                         eq(
                                 MaterialColors.getColor(
                                         mContext, R.attr.colorPrimary, /* defaultValue= */ 0)),
+                        anyFloat(),
                         anyInt(),
                         anyFloat(),
                         anyFloat(),
@@ -752,10 +769,11 @@ public class TabStripSceneLayerTest {
                         anyInt(),
                         anyFloat(),
                         eq(true),
-                        eq(R.drawable.circular_button_keyfocus),
+                        eq(R.drawable.glic_split_button_keyfocus),
                         eq(
                                 MaterialColors.getColor(
                                         mContext, R.attr.colorPrimary, /* defaultValue= */ 0)),
+                        anyFloat(),
                         anyInt(),
                         anyFloat(),
                         anyFloat(),

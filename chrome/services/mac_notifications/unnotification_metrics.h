@@ -24,6 +24,11 @@ void LogUNNotificationRequestPermissionResult(
 // Logs the current notifications settings and permissions.
 void LogUNNotificationSettings(UNNotificationSettings* settings);
 
+// Logs the result of adding a notification request to the system.
+void LogUNNotificationAddRequestResult(
+    NSError* error,
+    bool is_retry_without_attachment = false);
+
 }  // namespace mac_notifications
 
 #endif  // CHROME_SERVICES_MAC_NOTIFICATIONS_UNNOTIFICATION_METRICS_H_

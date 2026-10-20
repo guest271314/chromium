@@ -31,6 +31,7 @@
 #include "net/base/address_list.h"
 #include "net/base/io_buffer.h"
 #include "net/base/net_errors.h"
+#include "net/base/network_handle.h"
 #include "net/base/network_isolation_key.h"
 #include "net/dns/public/host_resolver_results.h"
 #include "net/dns/public/resolve_error_info.h"
@@ -159,8 +160,8 @@ class PortForwardingHostResolver : public network::ResolveHostClientBase {
                              int port,
                              ResolveHostCallback resolve_host_callback)
       : resolve_host_callback_(std::move(resolve_host_callback)) {
-    DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
-    DCHECK(!receiver_.is_bound());
+    CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
+    CHECK(!receiver_.is_bound(), base::NotFatalUntil::M161);
 
     net::HostPortPair host_port_pair(host, port);
     // Intentionally using a HostPortPair because scheme isn't specified.
@@ -183,7 +184,7 @@ class PortForwardingHostResolver : public network::ResolveHostClientBase {
 
  private:
   ~PortForwardingHostResolver() override {
-    DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+    CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
   }
 
   // network::mojom::ResolveHostClient:
@@ -192,12 +193,12 @@ class PortForwardingHostResolver : public network::ResolveHostClientBase {
       const net::ResolveErrorInfo& resolve_error_info,
       const net::AddressList& resolved_addresses,
       const net::HostResolverEndpointResults& alternative_endpoints) override {
-    DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+    CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
 
     if (result < 0) {
       std::move(resolve_host_callback_).Run(net::AddressList());
     } else {
-      DCHECK(!resolved_addresses.empty());
+      CHECK(!resolved_addresses.empty(), base::NotFatalUntil::M161);
       std::move(resolve_host_callback_).Run(resolved_addresses);
     }
 
@@ -252,7 +253,7 @@ class SocketTunnel {
   }
 
   void OnResolveHostComplete(net::AddressList resolved_addresses) {
-    DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+    CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
 
     if (resolved_addresses.empty()) {
       adb_thread_runner_->DeleteSoon(FROM_HERE, this);
@@ -268,7 +269,11 @@ class SocketTunnel {
     DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
 
     host_socket_ = std::make_unique<net::TCPClientSocket>(
-        resolved_addresses, nullptr, nullptr, nullptr, net::NetLogSource());
+        resolved_addresses, nullptr, nullptr, nullptr, net::NetLogSource(),
+        // There are currently no use cases for targeting a network when
+        // forwarding via devtools. This will need to be reconsidered if a need
+        // arises.
+        net::handles::kInvalidNetworkHandle);
     int result = host_socket_->Connect(
         base::BindOnce(&SocketTunnel::OnConnected, base::Unretained(this)));
     if (result != net::ERR_IO_PENDING)
@@ -454,21 +459,22 @@ PortForwardingController::Connection::Connection(
       command_id_(0),
       connected_(false),
       forwarding_map_(forwarding_map) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M161);
   (*registry_)[device_->serial()] = this;
   web_socket_.reset(device_->CreateWebSocket(
       browser->socket(), browser->browser_target_id(), this));
 }
 
 PortForwardingController::Connection::~Connection() {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
-  DCHECK(registry_->find(device_->serial()) != registry_->end());
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M161);
+  CHECK(registry_->find(device_->serial()) != registry_->end(),
+        base::NotFatalUntil::M161);
   registry_->erase(device_->serial());
 }
 
 void PortForwardingController::Connection::UpdateForwardingMap(
     const ForwardingMap& new_forwarding_map) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M161);
   if (connected_) {
     SerializeChanges(kUnbindMethod, new_forwarding_map, forwarding_map_);
     SerializeChanges(kBindMethod, forwarding_map_, new_forwarding_map);
@@ -480,7 +486,7 @@ void PortForwardingController::Connection::SerializeChanges(
     const std::string& method,
     const ForwardingMap& old_map,
     const ForwardingMap& new_map) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M161);
   for (auto new_it(new_map.begin()); new_it != new_map.end(); ++new_it) {
     int port = new_it->first;
     const std::string& location = new_it->second;
@@ -494,9 +500,10 @@ void PortForwardingController::Connection::SerializeChanges(
 
 void PortForwardingController::Connection::SendCommand(
     const std::string& method, int port) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M161);
   base::DictValue params;
-  DCHECK(method == kBindMethod || kUnbindMethod == method);
+  CHECK(method == kBindMethod || kUnbindMethod == method,
+        base::NotFatalUntil::M161);
   params.Set(kPortParam, port);
   int id = ++command_id_;
 
@@ -553,12 +560,12 @@ void PortForwardingController::Connection::ProcessUnbindResponse(
 
 const PortForwardingController::PortStatusMap&
 PortForwardingController::Connection::GetPortStatusMap() {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M161);
   return port_status_;
 }
 
 void PortForwardingController::Connection::OnSocketOpened() {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M161);
   connected_ = true;
   SerializeChanges(kBindMethod, ForwardingMap(), forwarding_map_);
 }
@@ -569,7 +576,7 @@ void PortForwardingController::Connection::OnSocketClosed() {
 
 void PortForwardingController::Connection::OnFrameRead(
     const std::string& message) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M161);
   if (ProcessResponse(message))
     return;
 

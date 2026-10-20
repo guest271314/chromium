@@ -4,11 +4,12 @@
 
 package org.chromium.chrome.browser.sync.settings;
 
-import android.app.Activity;
+import android.content.Context;
 
 import androidx.test.filters.SmallTest;
 
 import org.junit.Assert;
+import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -17,16 +18,17 @@ import org.mockito.Mockito;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 
-import org.chromium.base.ContextUtils;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.util.Batch;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.sync.SyncServiceFactory;
-import org.chromium.chrome.test.ChromeBrowserTestRule;
+import org.chromium.chrome.browser.sync.SyncSettingsUtils;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
+import org.chromium.components.browser_ui.settings.SettingsCustomTabLauncher;
 import org.chromium.components.sync.BookmarksLimitExceededHelpClickedSource;
 import org.chromium.components.sync.SyncService;
 import org.chromium.components.sync.UserActionableError;
+import org.chromium.content_public.browser.test.NativeLibraryTestUtils;
 
 /** Unit tests for {@link SyncSettingsUtils}. */
 @RunWith(ChromeJUnit4ClassRunner.class)
@@ -35,11 +37,16 @@ public class SyncSettingsUtilsTest {
 
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
 
-    @Rule public ChromeBrowserTestRule mBrowserTestRule = new ChromeBrowserTestRule();
-
     @Mock private Profile mProfile;
 
     @Mock private SyncService mSyncService;
+
+    @Mock private SettingsCustomTabLauncher mCustomTabLauncher;
+
+    @Before
+    public void setUp() {
+        NativeLibraryTestUtils.loadNativeLibraryAndInitBrowserProcess();
+    }
 
     @Test
     @SmallTest
@@ -69,20 +76,21 @@ public class SyncSettingsUtilsTest {
     @Test
     @SmallTest
     public void testOpenBookmarkLimitHelpPage() {
-        Activity activity = Mockito.mock(Activity.class);
-        Mockito.when(activity.getPackageName())
-                .thenReturn(ContextUtils.getApplicationContext().getPackageName());
+        Context context = Mockito.mock(Context.class);
 
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
                     SyncSettingsUtils.openBookmarkLimitHelpPage(
-                            activity,
+                            context,
                             mSyncService,
-                            BookmarksLimitExceededHelpClickedSource.SETTINGS);
+                            BookmarksLimitExceededHelpClickedSource.SETTINGS,
+                            mCustomTabLauncher);
                 });
 
         Mockito.verify(mSyncService)
                 .acknowledgeBookmarksLimitExceededError(
                         BookmarksLimitExceededHelpClickedSource.SETTINGS);
+        Mockito.verify(mCustomTabLauncher)
+                .openUrlInCct(context, SyncSettingsUtils.BOOKMARKS_LIMIT_EXCEEDED_HELP_CENTER_URL);
     }
 }

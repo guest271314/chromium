@@ -14,6 +14,7 @@
 
 #include <algorithm>
 #include <limits>
+#include <utility>
 
 #include "base/command_line.h"
 #include "base/fuchsia/fuchsia_component_connect.h"
@@ -21,6 +22,7 @@
 #include "base/fuchsia/mem_buffer_util.h"
 #include "base/fuchsia/process_context.h"
 #include "base/functional/bind.h"
+#include "base/functional/callback_helpers.h"
 #include "base/json/json_writer.h"
 #include "base/logging.h"
 #include "base/metrics/user_metrics.h"
@@ -287,18 +289,24 @@ std::optional<url::Origin> ParseAndValidateWebOrigin(
   return origin;
 }
 
-int GetEffectFlagsForRenderUsage(fuchsia::media::AudioRenderUsage usage) {
+int GetEffectFlagsForRenderUsage(fuchsia::media::AudioRenderUsage2 usage) {
   switch (usage) {
-    case fuchsia::media::AudioRenderUsage::BACKGROUND:
+    case fuchsia::media::AudioRenderUsage2::BACKGROUND:
       return media::AudioParameters::FUCHSIA_RENDER_USAGE_BACKGROUND;
-    case fuchsia::media::AudioRenderUsage::MEDIA:
+    case fuchsia::media::AudioRenderUsage2::MEDIA:
       return media::AudioParameters::FUCHSIA_RENDER_USAGE_MEDIA;
-    case fuchsia::media::AudioRenderUsage::INTERRUPTION:
+    case fuchsia::media::AudioRenderUsage2::INTERRUPTION:
       return media::AudioParameters::FUCHSIA_RENDER_USAGE_INTERRUPTION;
-    case fuchsia::media::AudioRenderUsage::SYSTEM_AGENT:
+    case fuchsia::media::AudioRenderUsage2::SYSTEM_AGENT:
       return media::AudioParameters::FUCHSIA_RENDER_USAGE_SYSTEM_AGENT;
-    case fuchsia::media::AudioRenderUsage::COMMUNICATION:
+    case fuchsia::media::AudioRenderUsage2::COMMUNICATION:
       return media::AudioParameters::FUCHSIA_RENDER_USAGE_COMMUNICATION;
+    case fuchsia::media::AudioRenderUsage2::ACCESSIBILITY:
+      return media::AudioParameters::FUCHSIA_RENDER_USAGE_ACCESSIBILITY;
+    default:
+      LOG(WARNING) << "Unknown AudioRenderUsage2: "
+                   << static_cast<uint32_t>(usage);
+      return media::AudioParameters::FUCHSIA_RENDER_USAGE_UNKNOWN;
   }
 }
 
@@ -312,7 +320,7 @@ class AudioStreamBrokerFactory final
     DCHECK_CURRENTLY_ON(content::BrowserThread::IO);
   }
 
-  base::RepeatingCallback<void(fuchsia::media::AudioRenderUsage output_usage)>
+  base::RepeatingCallback<void(fuchsia::media::AudioRenderUsage2 output_usage)>
   GetSetOutputUsagerCallback() {
     DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
     return base::BindRepeating(
@@ -387,7 +395,7 @@ class AudioStreamBrokerFactory final
  private:
   static void SetOutputUsageOnUIThread(
       base::WeakPtr<AudioStreamBrokerFactory> factory,
-      fuchsia::media::AudioRenderUsage output_usage) {
+      fuchsia::media::AudioRenderUsage2 output_usage) {
     DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
     content::GetIOThreadTaskRunner({})->PostTask(
         FROM_HERE,
@@ -395,20 +403,20 @@ class AudioStreamBrokerFactory final
                        factory, output_usage));
   }
 
-  void SetOutputUsageOnIOThread(fuchsia::media::AudioRenderUsage output_usage) {
+  void SetOutputUsageOnIOThread(fuchsia::media::AudioRenderUsage2 output_usage) {
     DCHECK_CURRENTLY_ON(content::BrowserThread::IO);
     output_usage_ = output_usage;
   }
 
   std::unique_ptr<content::AudioStreamBrokerFactory> base_factory_;
-  std::optional<fuchsia::media::AudioRenderUsage> output_usage_;
+  std::optional<fuchsia::media::AudioRenderUsage2> output_usage_;
   base::WeakPtrFactory<AudioStreamBrokerFactory> weak_factory_{this};
 };
 
 }  // namespace
 
 FrameImpl::PendingPopup::PendingPopup(
-    FrameImpl* frame_ptr,
+    base::WeakPtr<FrameImpl> frame_ptr,
     fidl::InterfaceHandle<fuchsia::web::Frame> handle,
     fuchsia::web::PopupFrameCreationInfo creation_info)
     : frame_ptr(std::move(frame_ptr)),
@@ -586,6 +594,16 @@ void FrameImpl::ExecuteJavaScriptInternal(std::vector<std::string> origins,
   }
 }
 
+bool FrameImpl::ShouldResumeRequestsForCreatedWindow() {
+  // Always return false here to defer loading the created window until after
+  // the embedder acknowledges the popup frame via PopupFrameCreationListener.
+  return false;
+}
+
+void FrameImpl::ResumePopupLoading() {
+  web_contents_->ResumeLoadingCreatedWebContents();
+}
+
 bool FrameImpl::IsWebContentsCreationOverridden(
     content::RenderFrameHost* opener,
     content::SiteInstance* source_site_instance,
@@ -653,13 +671,17 @@ content::WebContents* FrameImpl::AddNewContents(
       auto* popup_frame = context_->CreateFrameForWebContents(
           std::move(new_contents), std::move(params),
           frame_handle.NewRequest());
+      if (!popup_frame) {
+        return nullptr;
+      }
 
       fuchsia::web::ContentAreaSettings settings;
       status = content_area_settings_.Clone(&settings);
       ZX_DCHECK(status == ZX_OK, status);
       popup_frame->SetContentAreaSettings(std::move(settings));
 
-      pending_popups_.emplace_back(popup_frame, std::move(frame_handle),
+      pending_popups_.emplace_back(popup_frame->GetWeakPtr(),
+                                   std::move(frame_handle),
                                    std::move(popup_frame_creation_info));
       MaybeSendPopup();
       return nullptr;
@@ -680,12 +702,12 @@ content::WebContents* FrameImpl::AddNewContents(
   }
 }
 
-void FrameImpl::WebContentsCreated(content::WebContents* source_contents,
-                                   int opener_render_process_id,
-                                   int opener_render_frame_id,
-                                   const std::string& frame_name,
-                                   const GURL& target_url,
-                                   content::WebContents* new_contents) {
+void FrameImpl::WebContentsCreated(
+    content::WebContents* source_contents,
+    const content::GlobalRenderFrameHostId& opener_id,
+    const std::string& frame_name,
+    const GURL& target_url,
+    content::WebContents* new_contents) {
   auto creation_info = std::make_unique<PopupFrameCreationInfoUserData>();
   creation_info->info.set_initial_url(target_url.spec());
   new_contents->SetUserData(kPopupCreationInfo, std::move(creation_info));
@@ -701,11 +723,17 @@ void FrameImpl::MaybeSendPopup() {
   auto popup = std::move(pending_popups_.front());
   pending_popups_.pop_front();
 
-  popup_listener_->OnPopupFrameCreated(std::move(popup.handle),
-                                       std::move(popup.creation_info), [this] {
-                                         popup_ack_outstanding_ = false;
-                                         MaybeSendPopup();
-                                       });
+  popup_listener_->OnPopupFrameCreated(
+      std::move(popup.handle), std::move(popup.creation_info),
+      [weak_this = weak_factory_.GetWeakPtr(),
+       resume_popup = base::ScopedClosureRunner(base::BindOnce(
+           &FrameImpl::ResumePopupLoading, popup.frame_ptr))]() mutable {
+        resume_popup.RunAndReset();
+        if (weak_this) {
+          weak_this->popup_ack_outstanding_ = false;
+          weak_this->MaybeSendPopup();
+        }
+      });
   popup_ack_outstanding_ = true;
 }
 
@@ -739,6 +767,7 @@ void FrameImpl::OnPopupListenerDisconnected(zx_status_t status) {
   ZX_LOG_IF(WARNING, status != ZX_ERR_PEER_CLOSED, status)
       << "Popup listener disconnected.";
   pending_popups_.clear();
+  popup_ack_outstanding_ = false;
 }
 
 void FrameImpl::OnMediaPlayerDisconnect() {
@@ -1117,6 +1146,8 @@ void FrameImpl::SetPopupFrameCreationListener(
               "fuchsia.web/Frame.SetPopupFrameCreationListener",
               perfetto::Flow::FromPointer(this));
 
+  pending_popups_.clear();
+  popup_ack_outstanding_ = false;
   popup_listener_ = listener.Bind();
   popup_listener_.set_error_handler(
       fit::bind_member(this, &FrameImpl::OnPopupListenerDisconnected));
@@ -1243,9 +1274,9 @@ void FrameImpl::SetMediaSettings(
               perfetto::Flow::FromPointer(this));
 
   media_settings_ = std::move(media_settings);
-  if (media_settings_.has_renderer_usage() &&
+  if (media_settings_.has_renderer_usage2() &&
       set_audio_output_usage_callback_) {
-    set_audio_output_usage_callback_.Run(media_settings_.renderer_usage());
+    set_audio_output_usage_callback_.Run(media_settings_.renderer_usage2());
   }
 }
 
@@ -1589,8 +1620,8 @@ FrameImpl::CreateAudioStreamBrokerFactory(content::WebContents* web_contents) {
 
   // Save callback to use to pass renderer usage to the factory in the future.
   set_audio_output_usage_callback_ = result->GetSetOutputUsagerCallback();
-  if (media_settings_.has_renderer_usage())
-    set_audio_output_usage_callback_.Run(media_settings_.renderer_usage());
+  if (media_settings_.has_renderer_usage2())
+    set_audio_output_usage_callback_.Run(media_settings_.renderer_usage2());
 
   return result;
 }
@@ -1646,6 +1677,7 @@ void FrameImpl::DidFirstVisuallyNonEmptyPaint() {
 void FrameImpl::ResourceLoadComplete(
     content::RenderFrameHost* render_frame_host,
     const content::GlobalRequestID& request_id,
+    const GURL& original_url,
     const blink::mojom::ResourceLoadInfo& resource_load_info) {
   int net_error = resource_load_info.net_error;
   if (net_error != net::OK) {

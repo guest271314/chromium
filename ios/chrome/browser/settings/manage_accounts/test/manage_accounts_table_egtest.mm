@@ -13,7 +13,6 @@
 #import "ios/chrome/browser/ntp/ui_bundled/new_tab_page_feature.h"
 #import "ios/chrome/browser/settings/manage_accounts/public/manage_accounts_table_view_controller_constants.h"
 #import "ios/chrome/browser/settings/manage_sync/public/manage_sync_settings_constants.h"
-#import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/signin/model/fake_system_identity.h"
 #import "ios/chrome/browser/signin/model/test_constants.h"
 #import "ios/chrome/browser/signin/model/test_constants_utils.h"
@@ -23,7 +22,7 @@
 #import "ios/chrome/test/earl_grey/chrome_earl_grey_ui.h"
 #import "ios/chrome/test/earl_grey/chrome_matchers.h"
 #import "ios/chrome/test/earl_grey/chrome_matchers_app_interface.h"
-#import "ios/chrome/test/earl_grey/web_http_server_chrome_test_case.h"
+#import "ios/chrome/test/earl_grey/chrome_test_case.h"
 #import "ios/testing/earl_grey/earl_grey_test.h"
 #import "net/test/embedded_test_server/embedded_test_server.h"
 #import "ui/base/l10n/l10n_util.h"
@@ -32,7 +31,7 @@ using chrome_test_util::SettingsDoneButton;
 using chrome_test_util::SettingsSignInRowMatcher;
 
 // Integration tests using the Account Settings screen.
-@interface ManageAccountsTableTestCase : WebHttpServerChromeTestCase
+@interface ManageAccountsTableTestCase : ChromeTestCase
 @end
 
 @implementation ManageAccountsTableTestCase
@@ -40,17 +39,6 @@ using chrome_test_util::SettingsSignInRowMatcher;
 - (void)tearDownHelper {
   [ChromeEarlGrey clearFakeSyncServerData];
   [super tearDownHelper];
-}
-
-- (AppLaunchConfiguration)appConfigurationForTestCase {
-  AppLaunchConfiguration config = [super appConfigurationForTestCase];
-
-  if ([self isRunningTest:@selector
-            (testReloadOnRemoveSecondaryAccountInOtherProfile)]) {
-    config.features_enabled.push_back(kSeparateProfilesForManagedAccounts);
-  }
-
-  return config;
 }
 
 // Tests that the Accounts list screen is correctly popped if the signed in

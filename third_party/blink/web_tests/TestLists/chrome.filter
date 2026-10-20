@@ -14,6 +14,8 @@ external/wpt/secure-payment-confirmation/*
 external/wpt/html/webappapis/system-state-and-capabilities/*
 external/wpt/speculation-rules/prerender/protocol-handler-register.https.html
 external/wpt/speculation-rules/prerender/protocol-handler-unregister.https.html
+virtual/prefetch-cancel-unrelated-prefetch/external/wpt/speculation-rules/prerender/protocol-handler-register.https.html
+virtual/prefetch-cancel-unrelated-prefetch/external/wpt/speculation-rules/prerender/protocol-handler-unregister.https.html
 
 # crbug.com/397998925 run_bounce_tracking_mitigations and the bounce tracking
 # mitigations feature are not implemented for content shell yet.
@@ -31,8 +33,9 @@ external/wpt/ai/translator/*
 external/wpt/storage-access-api/*
 external/wpt/fedcm/fedcm-storage-access-api-autogrant.tentative.https.sub.html
 
-# Top-Level Storage Access API is implemented in the `//chrome` layer.
-external/wpt/top-level-storage-access-api/*
+# Email Verification Protocol relies on the `//chrome` Autofill layer.
+external/wpt/fedcm/fedcm-delegation/*
+virtual/fedcm-delegation/external/wpt/fedcm/fedcm-delegation/*
 
 # Device Bound Session Credentials relies on the `//chrome` layer.
 external/wpt/device-bound-session-credentials/*
@@ -82,5 +85,17 @@ virtual/view-transition-mpa-serialization/external/wpt/css/css-view-transitions/
 # TODO(crbug.com/393152490): Pending Web Bluetooth Permission API integration for running in headless shell.
 virtual/web-bluetooth-new-permissions-backend/external/wpt/bluetooth/bidi/*
 
-#webui browser is mostly implemented in `//chrome` layer.
-virtual/webui-browser/*
+# Extension APIs can reach into the `//chrome` layer.
+external/wpt/web-extensions/*
+
+# Web Payments APIs (Payment Request, Payment Handler, Payment Method Manifest,
+# etc) rely on the `//chrome` layer.
+external/wpt/payment-method-manifest/*
+virtual/connection-allowlist/external/wpt/connection-allowlist/tentative/payment-request-app-manifest-blocked.https.window.html
+virtual/connection-allowlist/external/wpt/connection-allowlist/tentative/payment-request-head-blocked.https.window.html
+virtual/connection-allowlist/external/wpt/connection-allowlist/tentative/payment-request-manifests-allowed.https.window.html
+virtual/connection-allowlist/external/wpt/connection-allowlist/tentative/payment-request-payment-manifest-blocked.https.window.html
+virtual/connection-allowlist/external/wpt/connection-allowlist/tentative/payment-request-payment-manifest-redirect-allowed.https.window.html
+virtual/connection-allowlist/external/wpt/connection-allowlist/tentative/payment-request-payment-manifest-redirect-blocked.https.window.html
+virtual/connection-allowlist/external/wpt/connection-allowlist/tentative/payment-request-sw-registration-allowed.https.window.html
+virtual/connection-allowlist/external/wpt/connection-allowlist/tentative/payment-request-sw-registration-blocked.https.window.html

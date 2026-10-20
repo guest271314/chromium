@@ -8,7 +8,9 @@
 #import <memory>
 #import <utility>
 
+#import "base/callback_list.h"
 #import "base/critical_closure.h"
+#import "base/feature_list.h"
 #import "base/files/file_path.h"
 #import "base/files/file_util.h"
 #import "base/functional/bind.h"
@@ -33,11 +35,12 @@
 #import "components/language/core/browser/pref_names.h"
 #import "components/prefs/pref_service.h"
 #import "components/translate/core/browser/translate_metrics_logger_impl.h"
+#import "components/webauthn/core/browser/device_authorization/device_authorization_features.h"
 #import "ios/chrome/app/application_delegate/app_state.h"
 #import "ios/chrome/app/application_delegate/metrics_mediator.h"
 #import "ios/chrome/app/deferred_initialization_runner.h"
 #import "ios/chrome/app/deferred_initialization_task_names.h"
-#import "ios/chrome/app/profile/app_icon_launched_profile_agent.h"
+#import "ios/chrome/app/profile/actor_profile_agent.h"
 #import "ios/chrome/app/profile/application_storage_metrics.h"
 #import "ios/chrome/app/profile/certificate_policy_profile_agent.h"
 #import "ios/chrome/app/profile/features.h"
@@ -65,18 +68,18 @@
 #import "ios/chrome/browser/external_files/model/external_file_remover_factory.h"
 #import "ios/chrome/browser/feature_engagement/model/tracker_factory.h"
 #import "ios/chrome/browser/first_run/public/features.h"
+#import "ios/chrome/browser/intelligence/features/features.h"
+#import "ios/chrome/browser/level_up/model/level_up_promo_profile_agent.h"
 #import "ios/chrome/browser/mailto_handler/model/mailto_handler_service_factory.h"
 #import "ios/chrome/browser/ntp/model/home_background_customization_promo_profile_agent.h"
 #import "ios/chrome/browser/profile_metrics/model/profile_activity_profile_agent.h"
-#import "ios/chrome/browser/reading_list/model/reading_list_download_service.h"
-#import "ios/chrome/browser/reading_list/model/reading_list_download_service_factory.h"
 #import "ios/chrome/browser/search_engines/model/extension_search_engine_data_updater.h"
-#import "ios/chrome/browser/search_engines/model/search_engines_util.h"
 #import "ios/chrome/browser/search_engines/model/template_url_service_factory.h"
 #import "ios/chrome/browser/sessions/model/session_constants.h"
 #import "ios/chrome/browser/sessions/model/session_restoration_service.h"
 #import "ios/chrome/browser/sessions/model/session_restoration_service_factory.h"
 #import "ios/chrome/browser/shared/coordinator/scene/scene_state.h"
+#import "ios/chrome/browser/shared/coordinator/scene/scene_state_animator.h"
 #import "ios/chrome/browser/shared/coordinator/scene/scene_state_observer.h"
 #import "ios/chrome/browser/shared/model/browser/browser.h"
 #import "ios/chrome/browser/shared/model/browser/browser_list.h"
@@ -93,7 +96,10 @@
 #import "ios/chrome/browser/signin/model/authentication_service_factory.h"
 #import "ios/chrome/browser/snapshots/model/constants.h"
 #import "ios/chrome/browser/translate/model/chrome_ios_translate_client.h"
+#import "ios/chrome/browser/web_extension/model/extension_service.h"
+#import "ios/chrome/browser/web_extension/model/extension_service_factory.h"
 #import "ios/chrome/browser/web_state_list/model/web_usage_enabler/web_usage_enabler_browser_agent.h"
+#import "ios/chrome/browser/webauthn/model/device_authorization_profile_agent.h"
 #import "ios/chrome/browser/welcome_back/model/features.h"
 #import "ios/components/cookie_util/cookie_util.h"
 #import "ios/public/provider/chrome/browser/raccoon/raccoon_api.h"
@@ -103,7 +109,6 @@
 #import "net/url_request/url_request_context.h"
 #import "net/url_request/url_request_context_getter.h"
 #import "ui/base/device_form_factor.h"
-
 #if BUILDFLAG(IOS_CREDENTIAL_PROVIDER_ENABLED)
 #import "ios/chrome/browser/credential_provider/model/credential_provider_service_factory.h"  // nogncheck
 #import "ios/chrome/browser/credential_provider/model/credential_provider_util.h"  // nogncheck
@@ -125,9 +130,9 @@ NSString* const kStartupPurgeUnassociatedData = @"StartupPurgeUnassociatedData";
 NSString* const kStartupCreateMailtoHandlerService =
     @"StartupCreateMailtoHandlerService";
 
-// Name of the block initializing the ReadingListDownloadService instance.
-NSString* const kStartupInitReadingListDownloadService =
-    @"StartupInitReadingListDownloadService";
+// Name of the block cleaning up the offline reading list directory.
+NSString* const kStartupCleanupReadingListOfflineData =
+    @"StartupCleanupReadingListOfflineData";
 
 // Name of the block that resynchronize the Spotlight index.
 NSString* const kStartResyncSpotlightIndex = @"StartResyncSpotlightIndex";
@@ -193,31 +198,10 @@ void RemoveSessionsFromSessionsToDiscard(const SessionIds& session_ids,
   std::ranges::set_difference(
       attrs.GetDiscardedSessions(), session_ids,
       std::inserter(discarded_sessions, discarded_sessions.end()));
-  attrs.SetDiscardedSessions(discarded_sessions);
-}
-
-// Record whether data has been purged for a scene with the same identifier.
-//
-// This method is only called once per-Scene, either when it is connected to
-// the Profile (if InitStage is greater than  kPurgeDiscardedSessionsData) or
-// after the data has been purged.
-//
-// It is used to detect if data is lost due to the possible bug in UIKit where
-// the method -application:didDiscardSceneSessions: is called with references
-// to scenes that are still connected.
-//
-// See https://crbug.com/392575873 for more details.
-void RecordDiscardedSceneConnectedAfterBeingPurged(
-    const SessionIds& purged_identifiers,
-    std::string_view scene_identifier) {
-  if (ui::GetDeviceFormFactor() != ui::DEVICE_FORM_FACTOR_TABLET) {
-    return;
+  for (const std::string& session_id : session_ids) {
+    attrs.ClearSessionScopedPrefs(session_id);
   }
-
-  const auto iterator = purged_identifiers.find(scene_identifier);
-  base::UmaHistogramBoolean(
-      "IOS.Sessions.DiscardedSceneConnectedAfterBeingPurged",
-      iterator != purged_identifiers.end());
+  attrs.SetDiscardedSessions(discarded_sessions);
 }
 
 }  // namespace
@@ -240,19 +224,15 @@ void RecordDiscardedSceneConnectedAfterBeingPurged(
   // Flag recording whether the cookies are currently being saved or not.
   BOOL _savingCookies;
 
-  // For RecordDiscardedSceneConnectedAfterBeingPurged(), removed once the
-  // investigation is complete (see https://crbug.com/392575873 for details).
-  //
-  // Contains the list of session identifiers whose data have been purged
-  // during the current profile startup (used to detect whether data loss
-  // occurred).
-  SessionIds _purgedSessionIdentifiers;
-
   // Keep the loaded profile alive.
   ScopedProfileKeepAliveIOS _scopedProfileKeepAlive;
 
   // Used to control whether the animations should be cancelled.
   base::OneShotTimer _cancelAnimationTimer;
+
+  // Subscription waiting for ExtensionService to be ready before continuing
+  // initialization.
+  base::CallbackListSubscription _extensionReadySubscription;
 }
 
 - (instancetype)initWithAppState:(AppState*)appState
@@ -308,6 +288,8 @@ void RecordDiscardedSceneConnectedAfterBeingPurged(
 
   // Inform the AppState of the ProfileState destruction.
   [_state.appState profileStateDestroyed:_state];
+
+  _extensionReadySubscription = {};
 
   // Clear the -profile property of ProfileState before unloading the object.
   [_state setProfile:nullptr];
@@ -408,11 +390,6 @@ void RecordDiscardedSceneConnectedAfterBeingPurged(
 - (void)profileState:(ProfileState*)profileState
       sceneConnected:(SceneState*)sceneState {
   const ProfileInitStage initStage = _state.initStage;
-  if (initStage > ProfileInitStage::kPurgeDiscardedSessionsData) {
-    RecordDiscardedSceneConnectedAfterBeingPurged(_purgedSessionIdentifiers,
-                                                  sceneState.sceneSessionID);
-  }
-
   if (initStage >= ProfileInitStage::kUIReady) {
     return;
   }
@@ -588,19 +565,11 @@ void RecordDiscardedSceneConnectedAfterBeingPurged(
 - (void)dataPurgedForDiscardedSessions:(const SessionIds&)sessions {
   DCHECK(_state.profile);
   DCHECK(_profileManager);
-  ProfileIOS* profile = _state.profile;
-  _purgedSessionIdentifiers = sessions;
-
   if (!sessions.empty()) {
     _profileManager->GetProfileAttributesStorage()
         ->UpdateAttributesForProfileWithName(
-            profile->GetProfileName(),
+            _state.profile->GetProfileName(),
             base::BindOnce(&RemoveSessionsFromSessionsToDiscard, sessions));
-  }
-
-  for (SceneState* sceneState in _state.connectedScenes) {
-    RecordDiscardedSceneConnectedAfterBeingPurged(_purgedSessionIdentifiers,
-                                                  sceneState.sceneSessionID);
   }
 
   // The profile manager is no longer used, clear the pointer so that it
@@ -621,7 +590,6 @@ void RecordDiscardedSceneConnectedAfterBeingPurged(
   translate::TranslateMetricsLoggerImpl::LogApplicationStartMetrics(
       ChromeIOSTranslateClient::CreateTranslatePrefs(prefs));
 
-  search_engines::UpdateSearchEngineCountryCodeIfNeeded(prefs);
 
   // Force desktop mode when racoon is enabled.
   if (ios::provider::IsRaccoonEnabled()) {
@@ -649,27 +617,45 @@ void RecordDiscardedSceneConnectedAfterBeingPurged(
   [_state addAgent:[[SearchEngineChoiceProfileAgent alloc] init]];
   [_state addAgent:[[SessionMetricsProfileAgent alloc] init]];
 
-  if (IsDockingPromoV2Enabled()) {
-    [_state addAgent:[[AppIconLaunchedProfileAgent alloc] init]];
-  }
-
   if (IsWelcomeBackEnabled()) {
     [_state addAgent:[[WelcomeBackScreenProfileAgent alloc] init]];
   }
 
-  if (IsSyncedSetUpEnabled()) {
-    [_state addAgent:[[SyncedSetUpProfileAgent alloc] init]];
-  }
+  [_state addAgent:[[SyncedSetUpProfileAgent alloc] init]];
 
   if (IsIOSBackendPromoServiceIntegrationEnabled()) {
     [_state addAgent:[[BackendPromoProfileAgent alloc] init]];
   }
 
   [_state addAgent:[[HomeBackgroundCustomizationPromoProfileAgent alloc] init]];
+
+  if (IsLevelUpEnabled()) {
+    [_state addAgent:[[LevelUpPromoProfileAgent alloc] init]];
+  }
+
+  if (base::FeatureList::IsEnabled(
+          webauthn::features::kFetchDeviceAuthorizationKeys)) {
+    [_state addAgent:[[DeviceAuthorizationProfileAgent alloc] init]];
+  }
+
+  if (IsGeminiActorBackgroundingEnabled()) {
+    [_state addAgent:[[ActorProfileAgent alloc] init]];
+  }
 }
 
 - (void)maybeContinueForegroundInitialization {
   if (_state.initStage != ProfileInitStage::kPrepareUI) {
+    return;
+  }
+
+  ExtensionService* extensionService =
+      ExtensionServiceFactory::GetForProfile(_state.profile);
+  if (extensionService && !extensionService->IsReady()) {
+    __weak ProfileController* weakSelf = self;
+    _extensionReadySubscription =
+        extensionService->RunWhenReady(base::BindOnce(^{
+          [weakSelf maybeContinueForegroundInitialization];
+        }));
     return;
   }
 
@@ -745,7 +731,7 @@ void RecordDiscardedSceneConnectedAfterBeingPurged(
   [self scheduleClearingSessionCookies];
   [self scheduleCleanupSessionStateCache];
   [self scheduleCreateMailtoHandlerService];
-  [self scheduleInitializeReadingListDownloadService];
+  [self scheduleCleanupReadingListOfflineData];
   [self scheduleResyncSpotlightIndex];
   [self scheduleCleanupFavicons];
   [self scheduleLogStorageMetrics];
@@ -833,15 +819,15 @@ void RecordDiscardedSceneConnectedAfterBeingPurged(
                                      }];
 }
 
-// Schedules initialization of the ReadingList download service.
-- (void)scheduleInitializeReadingListDownloadService {
+// Schedules cleanup of the ReadingList offline data directory.
+// TODO(crbug.com/522229299): Remove after Jun 2027.
+- (void)scheduleCleanupReadingListOfflineData {
   DCHECK(_state.deferredRunner);
   __weak ProfileController* weakSelf = self;
-  [_state.deferredRunner
-      enqueueBlockNamed:kStartupInitReadingListDownloadService
-                  block:^{
-                    [weakSelf initializeReadingListDownloadService];
-                  }];
+  [_state.deferredRunner enqueueBlockNamed:kStartupCleanupReadingListOfflineData
+                                     block:^{
+                                       [weakSelf cleanupReadingListOfflineData];
+                                     }];
 }
 
 // Schedules resynchronisation of the Spotlight index.
@@ -904,11 +890,18 @@ void RecordDiscardedSceneConnectedAfterBeingPurged(
   std::ignore = MailtoHandlerServiceFactory::GetForProfile(_state.profile);
 }
 
-// Initializes the ReadingListDownloadService.
-- (void)initializeReadingListDownloadService {
+// Cleans up the ReadingList offline data directory.
+- (void)cleanupReadingListOfflineData {
   DCHECK(_state.profile);
-  ReadingListDownloadServiceFactory::GetForProfile(_state.profile)
-      ->Initialize();
+  ProfileIOS* profile = _state.profile;
+  base::FilePath offline_directory =
+      profile->GetStatePath().Append(FILE_PATH_LITERAL("Offline"));
+  base::ThreadPool::PostTask(
+      FROM_HERE,
+      {base::MayBlock(), base::TaskPriority::BEST_EFFORT,
+       base::TaskShutdownBehavior::CONTINUE_ON_SHUTDOWN},
+      base::BindOnce(base::IgnoreResult(&base::DeletePathRecursively),
+                     offline_directory));
 }
 
 // Resynchronizes the spotlight index.

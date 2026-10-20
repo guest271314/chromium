@@ -6,13 +6,16 @@
 
 #include "base/check_deref.h"
 #include "base/test/scoped_feature_list.h"
+#include "chrome/browser/autocomplete/aim_eligibility_service_factory.h"
 #include "chrome/browser/extensions/tab_helper.h"
 #include "chrome/browser/glic/glic_pref_names.h"
+#include "chrome/browser/glic/public/glic_enabling.h"
 #include "chrome/browser/glic/test_support/glic_browser_test.h"
 #include "chrome/browser/glic/test_support/glic_test_environment.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
-#include "chrome/browser/ui/browser_window.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/browser_window/public/create_browser_window.h"
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/common/chrome_switches.h"
 #include "chrome/common/webui_url_constants.h"
@@ -21,6 +24,8 @@
 #include "components/guest_view/browser/guest_view_base.h"
 #include "components/guest_view/browser/guest_view_manager_delegate.h"
 #include "components/guest_view/browser/test_guest_view_manager.h"
+#include "components/keyed_service/content/browser_context_dependency_manager.h"
+#include "components/omnibox/browser/mock_aim_eligibility_service.h"
 #include "components/signin/public/identity_manager/identity_test_utils.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_ui.h"
@@ -36,6 +41,7 @@
 #include "extensions/browser/app_window/app_window_registry.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/skia/include/core/SkColor.h"
+#include "ui/base/base_window.h"
 #include "ui/base/window_open_disposition.h"
 
 namespace glic {
@@ -64,7 +70,8 @@ class TestWebUIController : public content::WebUIController {
         base::BindRepeating(
             [](const std::string& path,
                content::WebUIDataSource::GotDataCallback callback) {
-              std::move(callback).Run(new base::RefCountedString(R"(
+              std::move(callback).Run(
+                  base::MakeRefCounted<base::RefCountedString>(R"(
                   <!DOCTYPE html>
                   <html>
                     <body><webview src="about:blank"></webview></body>
@@ -90,13 +97,13 @@ Profile& GetProfile() {
 }
 
 void OpenWebUiWithGuestView(const GURL& host_url) {
-  Browser::CreateParams params =
-      Browser::CreateParams(Browser::Type::TYPE_NORMAL,
-                            /*profile=*/&GetProfile(),
-                            /*user_gesture=*/true);
+  BrowserWindowCreateParams params(BrowserWindowInterface::Type::TYPE_NORMAL,
+                                   /*profile=*/&GetProfile(),
+                                   /*from_user_gesture=*/true);
 
-  auto& new_browser = CHECK_DEREF(Browser::Create(params));
-  new_browser.window()->Show();
+  BrowserWindowInterface& new_browser =
+      CHECK_DEREF(CreateBrowserWindow(std::move(params)));
+  new_browser.GetWindow()->Show();
 
   ui_test_utils::NavigateToURLWithDisposition(
       &new_browser, host_url, WindowOpenDisposition::NEW_FOREGROUND_TAB,
@@ -111,10 +118,35 @@ guest_view::TestGuestViewManager& GetGuestViewManager(
 }
 
 class GuestUtilBrowserTest : public GlicBrowserTest {
+ public:
+  void SetUpInProcessBrowserTestFixture() override {
+    create_services_subscription_ =
+        BrowserContextDependencyManager::GetInstance()
+            ->RegisterCreateServicesCallbackForTesting(base::BindRepeating(
+                &GuestUtilBrowserTest::OnWillCreateBrowserContextServices,
+                base::Unretained(this)));
+  }
+
+  virtual void OnWillCreateBrowserContextServices(
+      content::BrowserContext* context) {
+    AimEligibilityServiceFactory::GetInstance()->SetTestingFactory(
+        context, base::BindRepeating([](content::BrowserContext* context)
+                                         -> std::unique_ptr<KeyedService> {
+          auto service =
+              std::make_unique<testing::NiceMock<MockAimEligibilityService>>(
+                  *Profile::FromBrowserContext(context)->GetPrefs(), nullptr,
+                  nullptr, nullptr);
+          ON_CALL(*service, IsAimEligible())
+              .WillByDefault(testing::Return(true));
+          return service;
+        }));
+  }
+
  protected:
   guest_view::TestGuestViewManagerFactory& factory() { return factory_; }
 
  private:
+  base::CallbackListSubscription create_services_subscription_;
   guest_view::TestGuestViewManagerFactory factory_;
 };
 
@@ -137,6 +169,9 @@ IN_PROC_BROWSER_TEST_F(GuestUtilBrowserTest, OnGuestAdded_NonGlic) {
 }
 
 IN_PROC_BROWSER_TEST_F(GuestUtilBrowserTest, OnGuestAdded_Glic) {
+  if (IsNoWebviewEnabled()) {
+    GTEST_SKIP() << "GuestView is not used in NoWebview mode.";
+  }
   EXPECT_EQ(0ULL, GetGuestViewManager(factory()).GetCurrentGuestCount());
 
   ASSERT_OK(OpenGlicForActiveTab());

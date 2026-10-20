@@ -33,20 +33,6 @@ void XRWebGLFrameTransportDelegate::WaitOnFence(gfx::GpuFence* fence) {
   gl->DestroyGpuFenceCHROMIUM(id);
 }
 
-gpu::SyncToken XRWebGLFrameTransportDelegate::GenerateSyncToken() {
-  gpu::SyncToken sync_token;
-  if (!context_provider_) {
-    return sync_token;
-  }
-  gpu::gles2::GLES2Interface* gl = context_provider_->ContextGL();
-  if (!gl) {
-    return sync_token;
-  }
-
-  gl->GenSyncTokenCHROMIUM(sync_token.GetData());
-  return sync_token;
-}
-
 void XRWebGLFrameTransportDelegate::VerifySyncToken(
     gpu::SyncToken& sync_token) {
   if (!context_provider_) {
@@ -62,7 +48,7 @@ void XRWebGLFrameTransportDelegate::VerifySyncToken(
   gl->VerifySyncTokensCHROMIUM(&sync_token_data, 1);
 }
 
-std::pair<gfx::GpuMemoryBufferHandle, gpu::SyncToken>
+std::pair<scoped_refptr<gpu::ClientSharedImage>, gpu::SyncToken>
 XRWebGLFrameTransportDelegate::CopyImage(SharedImageHolder* image,
                                          bool last_transfer_succeeded) {
   if (!image_copier_ || !last_transfer_succeeded) {
@@ -71,7 +57,7 @@ XRWebGLFrameTransportDelegate::CopyImage(SharedImageHolder* image,
         context_provider_->SharedImageInterface());
   }
 
-  auto [gpu_memory_buffer_handle, sync_token] =
+  auto [copied_image, sync_token] =
       image_copier_->CopyImage(image->shared_image);
   image->sync_token = sync_token;
 
@@ -80,7 +66,7 @@ XRWebGLFrameTransportDelegate::CopyImage(SharedImageHolder* image,
   client->DrawingBufferClientRestoreFramebufferBinding();
   client->DrawingBufferClientRestoreRenderbufferBinding();
 
-  return std::make_pair(std::move(gpu_memory_buffer_handle), sync_token);
+  return std::make_pair(std::move(copied_image), sync_token);
 }
 
 bool XRWebGLFrameTransportDelegate::IsContextLost() {

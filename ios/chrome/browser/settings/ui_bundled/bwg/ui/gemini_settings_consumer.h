@@ -18,6 +18,15 @@
 // Sets the Camera Permission boolean.
 - (void)setCameraPermissionEnabled:(BOOL)enabled;
 
+// Sets the Gemini Suggestions boolean.
+- (void)setGeminiSuggestionsEnabled:(BOOL)enabled;
+
+// Sets the Closed Captioning boolean.
+- (void)setClosedCaptioningEnabled:(BOOL)enabled;
+
+// Sets the Microphone Permission boolean.
+- (void)setMicrophoneEnabled:(BOOL)enabled;
+
 // Sets the Page Content Sharing boolean.
 - (void)setPageContentSharingEnabled:(BOOL)enabled;
 

@@ -87,9 +87,19 @@ class CONTENT_EXPORT PreconnectManager {
    public:
     virtual ~Observer() = default;
 
-    virtual void OnPreconnectUrl(const GURL& url,
-                                 int num_sockets,
-                                 bool allow_credentials) {}
+    // Called when a preconnect request is issued to the NetworkContext.
+    //
+    // Note: `connection_change_observer_client` is provided by non-const
+    // reference so that testing observers may intercept and take ownership of
+    // the pending remote to simulate connection state changes. If moved by an
+    // observer, an empty remote will be forwarded to PreconnectSockets.
+    virtual void OnPreconnectUrl(
+        const GURL& url,
+        int num_sockets,
+        bool allow_credentials,
+        const net::NetworkAnonymizationKey& network_anonymization_key,
+        mojo::PendingRemote<network::mojom::ConnectionChangeObserverClient>&
+            connection_change_observer_client) {}
 
     virtual void OnPreresolveFinished(
         const GURL& url,
@@ -123,13 +133,13 @@ class CONTENT_EXPORT PreconnectManager {
       const net::NetworkAnonymizationKey& network_anonymization_key,
       net::NetworkTrafficAnnotationTag traffic_annotation,
       const StoragePartitionConfig* storage_partition_config,
-      base::optional_ref<base::UnguessableToken> network_restrictions_id) = 0;
+      const base::UnguessableToken& network_restrictions_id) = 0;
   virtual void StartPreresolveHosts(
       const std::vector<GURL>& urls,
       const net::NetworkAnonymizationKey& network_anonymization_key,
       net::NetworkTrafficAnnotationTag traffic_annotation,
       const StoragePartitionConfig* storage_partition_config,
-      base::optional_ref<base::UnguessableToken> network_restrictions_id) = 0;
+      const base::UnguessableToken& network_restrictions_id) = 0;
   // TODO(crbug.com/447954811): Pass network_restriction_id for preconnect,
   // just like we do for host resolution above.
   virtual void StartPreconnectUrl(
@@ -138,7 +148,7 @@ class CONTENT_EXPORT PreconnectManager {
       net::NetworkAnonymizationKey network_anonymization_key,
       net::NetworkTrafficAnnotationTag traffic_annotation,
       const StoragePartitionConfig* storage_partition_config,
-      base::optional_ref<base::UnguessableToken> network_restrictions_id,
+      const base::UnguessableToken& network_restrictions_id,
       std::optional<net::ConnectionKeepAliveConfig> keepalive_config,
       mojo::PendingRemote<network::mojom::ConnectionChangeObserverClient>
           connection_change_observer_client) = 0;

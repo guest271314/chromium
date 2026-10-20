@@ -8,47 +8,47 @@
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/views/toolbar/webui_toolbar_web_view.h"
+#include "chrome/browser/ui/waap/initial_webui_profile_service.h"
+#include "chrome/browser/ui/waap/initial_webui_profile_service_factory.h"
 #include "chrome/browser/ui/waap/initial_webui_window_metrics_manager.h"
+#include "chrome/browser/ui/waap/waap_utils.h"
 #include "chrome/browser/ui/webui/webui_embedding_context.h"
 #include "chrome/common/chrome_features.h"
-#include "chrome/common/webui_url_constants.h"
-#include "components/ukm/content/source_url_recorder.h"
-#include "content/public/browser/navigation_controller.h"
-#include "content/public/browser/site_instance.h"
 #include "content/public/browser/web_contents.h"
 #include "ui/base/unowned_user_data/scoped_unowned_user_data.h"
-
-// Forward declaration to avoid circular dependency with //chrome/browser.
-// This function is defined in
-// //chrome/browser/page_load_metrics/page_load_metrics_initialize.cc
-void InitializePageLoadMetricsForWebContents(
-    content::WebContents* web_contents);
 
 DEFINE_USER_DATA(InitialWebUIManager);
 
 InitialWebUIManager::InitialWebUIManager(BrowserWindowInterface* browser)
-    : is_initial_web_ui_pending_(
-          features::IsWebUIToolbarEnabled() ||
-          base::FeatureList::IsEnabled(
-              features::kWebUIToolbarProcessOverheadExperiment)),
+    : is_initial_web_ui_pending_(features::IsWebUIToolbarEnabled()),
       scoped_data_holder_(browser->GetUnownedUserDataHost(), *this),
       metrics_manager_(InitialWebUIWindowMetricsManager::From(browser)) {
-  if ((features::IsWebUIToolbarEnabled() &&
-       features::kWebUIReloadButtonPrewarmWebUI.Get()) ||
-      base::FeatureList::IsEnabled(
-          features::kWebUIToolbarProcessOverheadExperiment)) {
+  if (features::IsWebUIToolbarEnabled() &&
+      features::kWebUIReloadButtonPrewarmWebUI.Get()) {
     Profile* profile = browser->GetProfile();
-    scoped_refptr<content::SiteInstance> site_instance =
-        content::SiteInstance::CreateForURL(
-            profile, GURL(chrome::kChromeUIWebUIToolbarURL));
-    toolbar_web_contents_ = content::WebContents::Create(
-        content::WebContents::CreateParams(profile, site_instance));
 
-    ConfigureToolbarWebContents(toolbar_web_contents_.get(), browser);
+    if (features::kWebUIReloadButtonProfilePrewarming.Get()) {
+      // If `WebUIReloadButtonProfilePrewarming` is enabled, the WebContents is
+      // created and pre-navigated in the profile service, so we just take it
+      // from there.
+      if (auto* profile_service =
+              InitialWebUIProfileServiceFactory::GetForProfile(profile)) {
+        toolbar_web_contents_ = profile_service->TakeToolbarContents();
+      }
+    }
 
-    toolbar_web_contents_->GetController().LoadURL(
-        GURL(chrome::kChromeUIWebUIToolbarURL), content::Referrer(),
-        ui::PAGE_TRANSITION_AUTO_TOPLEVEL, std::string());
+    if (toolbar_web_contents_) {
+      // The WebContents is already pre-created, bind the BrowserWindowInterface
+      // now.
+      webui::SetBrowserWindowInterface(toolbar_web_contents_.get(), browser);
+      return;
+    }
+
+    const bool pre_navigate =
+        features::kWebUIReloadButtonPrewarmWebUIPreNavigate.Get();
+    toolbar_web_contents_ =
+        waap::PrewarmHelper::PrewarmWebUIContents(profile, pre_navigate);
+    webui::SetBrowserWindowInterface(toolbar_web_contents_.get(), browser);
   }
 }
 
@@ -69,14 +69,8 @@ InitialWebUIManager* InitialWebUIManager::From(
 void InitialWebUIManager::ConfigureToolbarWebContents(
     content::WebContents* web_contents,
     BrowserWindowInterface* browser) {
-  // PLM has to be initialized before loading the URL.
-  InitializePageLoadMetricsForWebContents(web_contents);
-  // Needed for UKM PageLoad metrics.
-  ukm::InitializeSourceUrlRecorderForWebContents(web_contents);
-
-  web_contents->SetPageBaseBackgroundColor(SK_ColorTRANSPARENT);
-  web_contents->SetIgnoreZoomGestures(true);
-
+  waap::PrewarmHelper::ConfigureWebUIContents(web_contents,
+                                              browser->GetProfile());
   // Ensure the browser window interface is associated with the WebContents
   // before the WebUI acts on it.
   webui::SetBrowserWindowInterface(web_contents, browser);
@@ -101,8 +95,23 @@ bool InitialWebUIManager::RequestDeferShow(base::OnceClosure unsafe_callback) {
   return false;
 }
 
+bool InitialWebUIManager::RegisterWebUIReadyCallback(
+    base::OnceClosure unsafe_callback) {
+  if (is_initial_web_ui_pending_) {
+    if (unsafe_callback) {
+      web_ui_ready_callbacks_.AddUnsafe(std::move(unsafe_callback));
+    }
+    return true;
+  }
+  return false;
+}
+
 bool InitialWebUIManager::IsShowPending() const {
   return is_show_pending_;
+}
+
+bool InitialWebUIManager::IsInitialWebUIPending() const {
+  return is_initial_web_ui_pending_;
 }
 
 void InitialWebUIManager::OnWebUIToolbarLoaded() {

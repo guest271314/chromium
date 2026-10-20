@@ -8,7 +8,7 @@ import android.content.Context;
 
 import androidx.annotation.VisibleForTesting;
 
-import org.chromium.base.FeatureList;
+import org.chromium.base.DeviceInfo;
 import org.chromium.base.ResettersForTesting;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
@@ -18,7 +18,6 @@ import org.chromium.chrome.browser.preferences.Pref;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.readaloud.ReadAloudFeatures;
 import org.chromium.chrome.browser.ui.bottombar.BottomBarConfigUtils;
-import org.chromium.chrome.browser.ui.side_panel.AndroidSidePanelEnabledFn;
 import org.chromium.components.prefs.PrefService;
 import org.chromium.components.user_prefs.UserPrefs;
 import org.chromium.ui.base.DeviceFormFactor;
@@ -83,13 +82,9 @@ public class AdaptiveToolbarFeatures {
         return false;
     }
 
-    /**
-     * Returns whether the adaptive toolbar is enabled with segmentation and customization.
-     *
-     * <p>Must be called with the {@link FeatureList} initialized.
-     */
+    /** Returns whether the adaptive toolbar is enabled with segmentation and customization. */
     public static boolean isCustomizationEnabled() {
-        return ChromeFeatureList.sAdaptiveButtonInTopToolbarCustomizationV2.isEnabled();
+        return true;
     }
 
     /**
@@ -176,18 +171,16 @@ public class AdaptiveToolbarFeatures {
         return ChromeFeatureList.sCpaTabGroupingButton.isEnabled();
     }
 
-    /** Returns whether Glic is enabled by flags in the context of the adaptive toolbar. */
-    public static boolean isGlicActionEnabled() {
-        // TODO(crbug.com/500410559): Remove side panel check and instead check if tab strip is
-        // hidden after launch.
-        return ChromeFeatureList.sGlic.isEnabled() && !AndroidSidePanelEnabledFn.isEnabled();
-    }
-
     /**
      * Returns whether Glic is enabled for the given profile in the context of the adaptive toolbar.
      */
-    public static boolean isGlicEnabledForProfile(Profile profile) {
-        return GlicEnabling.isEnabledForProfile(profile) && !AndroidSidePanelEnabledFn.isEnabled();
+    public static boolean isGlicEnabledForAdaptiveToolbar(Context context, Profile profile) {
+        boolean isTablet =
+                DeviceFormFactor.isNonMultiDisplayContextOnTablet(context)
+                        && !DeviceInfo.isFoldable();
+        return GlicEnabling.isEnabledForProfile(profile)
+                && !isTablet
+                && !BottomBarConfigUtils.isBottomBarEnabled(context);
     }
 
     static void setDefaultSegmentForTesting(String defaultSegment) {
@@ -204,9 +197,6 @@ public class AdaptiveToolbarFeatures {
     public static @AdaptiveToolbarButtonVariant int getDefaultButtonVariant(
             Context context, Profile profile) {
         boolean isBottomBarEnabled = BottomBarConfigUtils.isBottomBarEnabled(context);
-        if (isGlicEnabledForProfile(profile) && !isBottomBarEnabled) {
-            return AdaptiveToolbarButtonVariant.GLIC;
-        }
         if (sDefaultSegmentForTesting != null) {
             return switch (sDefaultSegmentForTesting) {
                 case NEW_TAB -> AdaptiveToolbarButtonVariant.NEW_TAB;
@@ -255,9 +245,6 @@ public class AdaptiveToolbarFeatures {
 
     /** Returns the minimum device width below which the toolbar button isn't shown. */
     public static int getDeviceMinimumWidthForShowingButton() {
-        return ChromeFeatureList.getFieldTrialParamByFeatureAsInt(
-                ChromeFeatureList.ADAPTIVE_BUTTON_IN_TOP_TOOLBAR_CUSTOMIZATION_V2,
-                "minimum_width_dp",
-                DEFAULT_MIN_WIDTH_DP);
+        return DEFAULT_MIN_WIDTH_DP;
     }
 }

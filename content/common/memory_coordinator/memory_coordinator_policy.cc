@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "content/common/memory_coordinator/memory_coordinator_policy.h"
+#include "content/public/common/memory_coordinator/memory_coordinator_policy.h"
 
 #include "content/common/memory_coordinator/memory_coordinator_policy_manager.h"
 
@@ -12,28 +12,15 @@ MemoryCoordinatorPolicy::MemoryCoordinatorPolicy(
     MemoryCoordinatorPolicyManager& manager)
     : manager_(manager) {}
 
-namespace internal {
-
-MemoryCoordinatorPolicyRegistrationInternal::
-    MemoryCoordinatorPolicyRegistrationInternal(
-        MemoryCoordinatorPolicyManager& manager,
-        MemoryCoordinatorPolicy* policy,
-        MemoryCoordinatorPolicyManager::Observer* observer)
-    : manager_(manager), policy_(policy), observer_(observer) {
-  manager_->AddPolicy(policy_);
-  if (observer_) {
-    manager_->AddObserver(observer_);
-  }
+MemoryCoordinatorPolicyRegistration::MemoryCoordinatorPolicyRegistration(
+    MemoryCoordinatorPolicyManager& manager,
+    MemoryCoordinatorPolicy& policy)
+    : manager_(manager), policy_(policy) {
+  manager_->AddPolicy(&policy_.get());
 }
 
-MemoryCoordinatorPolicyRegistrationInternal::
-    ~MemoryCoordinatorPolicyRegistrationInternal() {
-  if (observer_) {
-    manager_->RemoveObserver(observer_);
-  }
-  manager_->RemovePolicy(policy_);
+MemoryCoordinatorPolicyRegistration::~MemoryCoordinatorPolicyRegistration() {
+  manager_->RemovePolicy(&policy_.get());
 }
-
-}  // namespace internal
 
 }  // namespace content

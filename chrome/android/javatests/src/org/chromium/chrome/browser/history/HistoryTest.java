@@ -4,10 +4,6 @@
 
 package org.chromium.chrome.browser.history;
 
-import static androidx.test.espresso.Espresso.onView;
-import static androidx.test.espresso.action.ViewActions.click;
-import static androidx.test.espresso.assertion.ViewAssertions.doesNotExist;
-import static androidx.test.espresso.assertion.ViewAssertions.matches;
 import static androidx.test.espresso.matcher.ViewMatchers.hasDescendant;
 import static androidx.test.espresso.matcher.ViewMatchers.isAssignableFrom;
 import static androidx.test.espresso.matcher.ViewMatchers.isDescendantOfA;
@@ -16,17 +12,17 @@ import static androidx.test.espresso.matcher.ViewMatchers.withContentDescription
 import static androidx.test.espresso.matcher.ViewMatchers.withId;
 import static androidx.test.espresso.matcher.ViewMatchers.withText;
 
-import static org.hamcrest.Matchers.not;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 
+import static org.chromium.base.test.transit.ViewFinder.expectNoView;
+import static org.chromium.base.test.transit.ViewFinder.expectView;
 import static org.chromium.base.test.transit.ViewFinder.waitForNoView;
 import static org.chromium.base.test.transit.ViewFinder.waitForView;
 import static org.chromium.chrome.browser.url_constants.UrlConstantResolver.getOriginalHistoryUrl;
 import static org.chromium.chrome.browser.url_constants.UrlConstantResolver.getOriginalNativeHistoryUrl;
-import static org.chromium.ui.test.util.ViewUtils.onViewWaiting;
 
 import android.graphics.Bitmap;
 
@@ -48,6 +44,7 @@ import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.DisableIf;
 import org.chromium.base.test.util.DisabledTest;
 import org.chromium.base.test.util.Features;
+import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.base.test.util.Restriction;
 import org.chromium.base.ui.KeyboardUtils;
 import org.chromium.chrome.R;
@@ -61,8 +58,8 @@ import org.chromium.chrome.browser.profiles.ProfileManager;
 import org.chromium.chrome.browser.ui.edge_to_edge.EdgeToEdgeController;
 import org.chromium.chrome.browser.ui.favicon.FaviconHelper;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
+import org.chromium.chrome.test.transit.AutoResetCtaTransitTestRule;
 import org.chromium.chrome.test.transit.ChromeTransitTestRules;
-import org.chromium.chrome.test.transit.FreshCtaTransitTestRule;
 import org.chromium.chrome.test.util.ActivityTestUtils;
 import org.chromium.chrome.test.util.MenuUtils;
 import org.chromium.chrome.test.util.browser.signin.SigninTestRule;
@@ -80,6 +77,7 @@ import java.util.concurrent.TimeoutException;
 @RunWith(ChromeJUnit4ClassRunner.class)
 @CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
 @Batch(Batch.PER_CLASS)
+@DisableFeatures(ChromeFeatureList.ANDROID_DESKTOP_WEB_UI_HISTORY)
 public class HistoryTest {
 
     private static class FaviconWaiter extends CallbackHelper
@@ -99,8 +97,8 @@ public class HistoryTest {
     }
 
     @Rule
-    public FreshCtaTransitTestRule mActivityTestRule =
-            ChromeTransitTestRules.freshChromeTabbedActivityRule();
+    public AutoResetCtaTransitTestRule mActivityTestRule =
+            ChromeTransitTestRules.fastAutoResetCtaActivityRule();
 
     @Rule public SigninTestRule mSigninTestRule = new SigninTestRule();
 
@@ -181,19 +179,19 @@ public class HistoryTest {
         // Verify that the promo is shown.
         waitForView(withId(R.id.signin_promo_view_container));
         // Click on the promo CTA.
-        onView(withId(R.id.sync_promo_signin_button)).perform(click());
+        expectView(withId(R.id.signin_promo_primary_button)).click();
 
         // Verify that the history sync screen is shown.
         waitForView(withId(R.id.history_sync_illustration));
 
         // Opt-in history sync and finish the opt-in activity.
-        onViewWaiting(withId(R.id.button_primary)).perform(click());
+        waitForView(withId(R.id.button_primary)).click();
         SyncTestUtil.waitForHistorySyncEnabled();
 
         // Verify that the content is still shown and the promo is dismissed.
         waitForNoView(withId(R.id.signin_promo_view_container));
-        onView(withId(R.id.history_page_recycler_view)).check(matches(isDisplayed()));
-        onView(withId(R.id.empty_state_container)).check(matches(not(isDisplayed())));
+        expectView(withId(R.id.history_page_recycler_view));
+        expectNoView(withId(R.id.empty_state_container));
     }
 
     @Test
@@ -221,26 +219,23 @@ public class HistoryTest {
         // Verify that the promo is shown.
         waitForView(withId(R.id.signin_promo_view_container));
         // Click on the promo CTA.
-        onView(withId(R.id.sync_promo_signin_button)).perform(click());
+        expectView(withId(R.id.signin_promo_primary_button)).click();
 
         // Verify that the history sync screen is shown.
         waitForView(withId(R.id.history_sync_illustration));
 
         // Opt-in history sync and finish the opt-in activity.
-        onViewWaiting(withId(R.id.button_primary)).perform(click());
+        waitForView(withId(R.id.button_primary)).click();
         SyncTestUtil.waitForHistorySyncEnabled();
 
         // Verify that the empty state is shown when the promo is dismissed.
         waitForView(withId(R.id.empty_state_container));
-        onView(withId(R.id.history_page_recycler_view)).check(matches(not(isDisplayed())));
+        expectNoView(withId(R.id.history_page_recycler_view));
     }
 
     @MediumTest
     @Test
-    @Features.EnableFeatures({
-        ChromeFeatureList.DRAW_CHROME_PAGES_EDGE_TO_EDGE,
-        ChromeFeatureList.EDGE_TO_EDGE_MONITOR_CONFIGURATIONS
-    })
+    @Features.EnableFeatures({ChromeFeatureList.EDGE_TO_EDGE_MONITOR_CONFIGURATIONS})
     @Restriction({DeviceFormFactor.PHONE, DeviceRestriction.RESTRICTION_TYPE_NON_AUTO})
     public void testDrawsEdgeToEdge() {
         mActivityTestRule.startOnBlankPage();
@@ -307,27 +302,27 @@ public class HistoryTest {
                 mActivityTestRule.getActivity().getWindow().getDecorView());
 
         // Initial state: cluster is collapsed. "One" and "Two" should not be displayed.
-        onViewWaiting(withText(domain)).check(matches(isDisplayed()));
+        waitForView(withText(domain));
 
-        onView(withText("One")).check(doesNotExist());
-        onView(withText("Two")).check(doesNotExist());
+        expectNoView(withText("One"));
+        expectNoView(withText("Two"));
 
         // Click on the expand button. It has the content description "Expand"
-        onView(
+        expectView(
                         org.hamcrest.Matchers.allOf(
                                 withContentDescription(
                                         mActivityTestRule
                                                 .getActivity()
                                                 .getString(R.string.accessibility_expand_section)),
                                 isDisplayed()))
-                .perform(click());
+                .click();
 
         // Now "One" and "Two" should be displayed.
-        onViewWaiting(withText("One")).check(matches(isDisplayed()));
-        onViewWaiting(withText("Two")).check(matches(isDisplayed()));
+        waitForView(withText("One"));
+        waitForView(withText("Two"));
 
         // Click on the collapse button.
-        onView(
+        expectView(
                         org.hamcrest.Matchers.allOf(
                                 withContentDescription(
                                         mActivityTestRule
@@ -335,7 +330,7 @@ public class HistoryTest {
                                                 .getString(
                                                         R.string.accessibility_collapse_section)),
                                 isDisplayed()))
-                .perform(click());
+                .click();
 
         // "One" and "Two" should be hidden.
         waitForNoView(withText("One"));
@@ -369,20 +364,20 @@ public class HistoryTest {
                 mActivityTestRule.getActivity().getWindow().getDecorView());
 
         // Expand the cluster.
-        onViewWaiting(
+        waitForView(
                         org.hamcrest.Matchers.allOf(
                                 withContentDescription(
                                         mActivityTestRule
                                                 .getActivity()
                                                 .getString(R.string.accessibility_expand_section)),
                                 isDisplayed()))
-                .perform(click());
+                .click();
 
         // Wait for items to be visible.
-        onViewWaiting(withText("One")).check(matches(isDisplayed()));
+        waitForView(withText("One"));
 
         // Remove "One".
-        onView(
+        expectView(
                         org.hamcrest.Matchers.allOf(
                                 withId(R.id.end_button),
                                 withContentDescription(R.string.remove),
@@ -390,13 +385,13 @@ public class HistoryTest {
                                         org.hamcrest.Matchers.allOf(
                                                 hasDescendant(withText("One")),
                                                 isAssignableFrom(HistoryItemView.class)))))
-                .perform(click());
+                .click();
 
         // "One" should disappear.
         waitForNoView(withText("One"));
 
         // The cluster should dissolve, so "Two" is visible as a normal item.
-        onViewWaiting(withText("Two")).check(matches(isDisplayed()));
+        waitForView(withText("Two"));
     }
 
     @Test
@@ -424,14 +419,11 @@ public class HistoryTest {
         KeyboardUtils.hideAndroidSoftKeyboard(
                 mActivityTestRule.getActivity().getWindow().getDecorView());
 
-        // Verify the cluster is created.
-        onViewWaiting(withText(domain)).check(matches(isDisplayed()));
-
-        // Select the cluster head using long click.
-        onView(withText(domain)).perform(androidx.test.espresso.action.ViewActions.longClick());
+        // Verify the cluster is created and select it.
+        waitForView(withText(domain)).longPress();
 
         // Click delete on the toolbar.
-        onViewWaiting(withId(R.id.selection_mode_delete_menu_id)).perform(click());
+        waitForView(withId(R.id.selection_mode_delete_menu_id)).click();
 
         // Ensure "domain" is removed.
         waitForNoView(withText(domain));

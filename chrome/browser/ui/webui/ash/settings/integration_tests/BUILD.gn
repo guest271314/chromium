@@ -19,7 +19,6 @@ if (!is_chromeos_device) {
       "//ash/webui/settings/public/constants:mojom",
       "//base",
       "//base/test:test_support",
-      "//chrome/browser/ui",
       "//chrome/test:test_support_ui",
       "//chrome/test/base/ash/interactive:test_support",
       "//chromeos/ash/experiences/settings_ui",
@@ -36,7 +35,6 @@ source_set("browser_tests") {
   sources = [
     "os_settings_auto_screen_lock_browsertest.cc",
     "os_settings_lock_screen_authentication_browsertest.cc",
-    "os_settings_notification_settings_browsertest.cc",
     "os_settings_password_setup_browsertest.cc",
     "os_settings_pin_setup_browsertest.cc",
     "os_settings_recovery_browsertest.cc",

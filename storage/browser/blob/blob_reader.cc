@@ -70,6 +70,10 @@ int ConvertBlobErrorToNetError(BlobStatus reason) {
   }
   NOTREACHED();
 }
+
+perfetto::NamedTrack GetTracingTrack(const BlobReader* ptr) {
+  return perfetto::NamedTrack::FromPointer("storage::BlobReader", ptr);
+}
 }  // namespace
 
 BlobReader::FileStreamReaderProvider::~FileStreamReaderProvider() = default;
@@ -149,15 +153,14 @@ void BlobReader::DidReadSideData(StatusCallback done,
                                  int result,
                                  mojo_base::BigBuffer data) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  if (result >= 0) {
-    DCHECK_EQ(expected_size, result);
+  if (result == expected_size) {
     DCHECK_EQ(static_cast<size_t>(expected_size), data.size());
     RecordBytesReadFromDataHandle(/* item_index= */ 0, result);
     side_data_ = std::move(data);
     std::move(done).Run(Status::DONE);
     return;
   }
-  std::move(done).Run(ReportError(result));
+  std::move(done).Run(ReportError(result < 0 ? result : net::ERR_FAILED));
 }
 
 BlobReader::Status BlobReader::SetReadRange(uint64_t offset, uint64_t length) {
@@ -581,9 +584,8 @@ BlobReader::Status BlobReader::ReadFileItem(FileStreamReader* reader,
     return Status::DONE;
   }
   if (result == net::ERR_IO_PENDING) {
-    TRACE_EVENT_BEGIN("Blob", "BlobReader::ReadFileItem",
-                      perfetto::Track::FromPointer(this), "uuid",
-                      blob_data_->uuid());
+    TRACE_EVENT_BEGIN("Blob", "BlobReader::ReadFileItem", GetTracingTrack(this),
+                      "uuid", blob_data_->uuid());
     io_pending_ = true;
     return Status::IO_PENDING;
   }
@@ -592,9 +594,8 @@ BlobReader::Status BlobReader::ReadFileItem(FileStreamReader* reader,
 
 void BlobReader::DidReadFile(int result) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  TRACE_EVENT_END("Blob", /*"BlobReader::ReadFileItem"*/
-                  perfetto::Track::FromPointer(this), "uuid",
-                  blob_data_->uuid());
+  TRACE_EVENT_END("Blob", /*"BlobReader::ReadFileItem"*/ GetTracingTrack(this),
+                  "uuid", blob_data_->uuid());
   DidReadItem(result);
 }
 
@@ -644,8 +645,7 @@ BlobReader::Status BlobReader::ReadReadableDataHandle(const BlobDataItem& item,
   }
   if (result == net::ERR_IO_PENDING) {
     TRACE_EVENT_BEGIN("Blob", "BlobReader::ReadReadableDataHandle",
-                      perfetto::Track::FromPointer(this), "uuid",
-                      blob_data_->uuid());
+                      GetTracingTrack(this), "uuid", blob_data_->uuid());
     io_pending_ = true;
     return Status::IO_PENDING;
   }
@@ -654,9 +654,9 @@ BlobReader::Status BlobReader::ReadReadableDataHandle(const BlobDataItem& item,
 
 void BlobReader::DidReadReadableDataHandle(int result) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  TRACE_EVENT_END("Blob", /*"BlobReader::ReadReadableDataHandle"*/
-                  perfetto::Track::FromPointer(this), "uuid",
-                  blob_data_->uuid());
+  TRACE_EVENT_END(
+      "Blob", /*"BlobReader::ReadReadableDataHandle"*/ GetTracingTrack(this),
+      "uuid", blob_data_->uuid());
   RecordBytesReadFromDataHandle(current_item_index_, result);
   DidReadItem(result);
 }

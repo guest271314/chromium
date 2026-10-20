@@ -87,13 +87,11 @@ bool IsSystemWebUIHost(std::string_view host) {
       ash::kChromeUIAppInstallDialogHost,
       ash::kChromeUIBluetoothPairingHost,
       ash::kChromeUIBorealisCreditsHost,
-      ash::kChromeUIBorealisMOTDHost,
       kChromeUICertificateManagerHost,
       ash::kChromeUICloudUploadHost,
       ash::kChromeUICrostiniCreditsHost,
       ash::kChromeUICrostiniInstallerHost,
       ash::kChromeUICryptohomeHost,
-      ash::kChromeUIDeviceEmulatorHost,
       ash::kChromeUIEmojiPickerHost,
       ash::kChromeUIExtendedUpdatesDialogHost,
       ash::kChromeUIInternetConfigDialogHost,
@@ -118,8 +116,7 @@ bool IsSystemWebUIHost(std::string_view host) {
 }
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
-// Add hosts here to be included in chrome://chrome-urls (about:about).
-// These hosts will also be suggested by BuiltinProvider.
+// Add hosts here to be suggested by BuiltinProvider.
 base::span<const base::cstring_view> ChromeURLHosts() {
   static constexpr auto kChromeURLHosts = std::to_array<base::cstring_view>({
       kChromeUIAboutHost,
@@ -130,17 +127,19 @@ base::span<const base::cstring_view> ChromeURLHosts() {
 #endif
       kChromeUIAutofillInternalsHost,
       kChromeUIBluetoothInternalsHost,
-      kChromeUIBrowsingTopicsInternalsHost,
-      kChromeUIChromeFindsInternalsHost,
       kChromeUIChromeURLsHost,
       kChromeUIComponentsHost,
       commerce::kChromeUICommerceInternalsHost,
       kChromeUIConnectorsInternalsHost,
+#if !BUILDFLAG(IS_ANDROID)
+      kChromeUIContextualCueingInternalsHost,
+#endif
       kChromeUICrashesHost,
       kChromeUICreditsHost,
-#if BUILDFLAG(IS_CHROMEOS) && !defined(OFFICIAL_BUILD)
-      ash::kChromeUIDeviceEmulatorHost,
+#if !BUILDFLAG(IS_ANDROID)
+      kChromeUICriticalActionsInternalsHost,
 #endif
+      kChromeUICrossDeviceSigninQrBubbleHost,
       kChromeUIDeviceLogHost,
       kChromeUIDownloadInternalsHost,
       kChromeUIFamilyLinkUserInternalsHost,
@@ -149,6 +148,9 @@ base::span<const base::cstring_view> ChromeURLHosts() {
       kChromeUIHistoryHost,
       history_clusters_internals::kChromeUIHistoryClustersInternalsHost,
       kChromeUIInterstitialHost,
+#if !BUILDFLAG(IS_ANDROID)
+      kChromeUIIwaDevHost,
+#endif
       kChromeUILocalStateHost,
 #if !BUILDFLAG(IS_ANDROID)
       kChromeUIManagementHost,
@@ -158,7 +160,8 @@ base::span<const base::cstring_view> ChromeURLHosts() {
       kChromeUINetExportHost,
       kChromeUINetInternalsHost,
       kChromeUINewTabHost,
-      kChromeUIOmniboxHost,
+      kChromeUIOmniboxInternalsHost,
+      kChromeUIOmniboxInternalsAimEligibilityPage,
 #if !BUILDFLAG(IS_ANDROID)
       kChromeUIOnDeviceInternalsHost,
 #endif
@@ -177,15 +180,12 @@ base::span<const base::cstring_view> ChromeURLHosts() {
       kChromeUISiteEngagementHost,
       kChromeUISkillsHost,
       kChromeUISubresourceFilterInternalsHost,
-#if !BUILDFLAG(IS_ANDROID)
       kChromeUISuggestInternalsHost,
-#endif
       kChromeUINTPTilesInternalsHost,
       safe_browsing::kChromeUISafeBrowsingHost,
       kChromeUISyncInternalsHost,
 #if !BUILDFLAG(IS_ANDROID)
       kChromeUITabSearchHost,
-      kChromeUITabsFromOtherDevicesSidePanelHost,
       kChromeUITermsHost,
 #endif
       kChromeUITranslateInternalsHost,
@@ -198,8 +198,6 @@ base::span<const base::cstring_view> ChromeURLHosts() {
 #if !BUILDFLAG(IS_ANDROID)
       kChromeUIWebAppInternalsHost,
 #endif
-      content::kChromeUIPrivateAggregationInternalsHost,
-      content::kChromeUIAttributionInternalsHost,
       content::kChromeUIBlobInternalsHost,
       content::kChromeUIDinoHost,
       content::kChromeUIGpuHost,
@@ -237,6 +235,7 @@ base::span<const base::cstring_view> ChromeURLHosts() {
 #endif
 #endif
 #if BUILDFLAG(IS_ANDROID)
+      kChromeUIChromeFindsInternalsHost,
       kChromeUISnippetsInternalsHost,
       kChromeUIWebApksHost,
 #endif
@@ -286,6 +285,7 @@ base::span<const base::cstring_view> ChromeURLHosts() {
       ash::kChromeUIDlpInternalsHost,
 #endif  // BUILDFLAG(IS_CHROMEOS)
 #if !BUILDFLAG(IS_ANDROID)
+      kChromeUIOrganizerPanelHost,
       kChromeUIWebuiBrowserHost,
 #endif  // !BUILDFLAG(IS_ANDROID)
   });
@@ -299,6 +299,19 @@ base::span<const base::cstring_view> ChromeDebugURLs() {
       {blink::kChromeUIBadCastCrashURL,
        blink::kChromeUIBrowserCrashURL,
        blink::kChromeUIBrowserDcheckURL,
+       blink::kChromeUIBrowserUIHang,
+       blink::kChromeUIBrowserHeapMemberDerefAfterFreeURL,
+       blink::kChromeUIBrowserHeapOverflowURL,
+       blink::kChromeUIBrowserHeapUaFURL,
+       blink::kChromeUIBrowserHeapUnderflowURL,
+       blink::kChromeUIGpuHeapMemberDerefAfterFreeURL,
+       blink::kChromeUIGpuHeapOverflowURL,
+       blink::kChromeUIGpuHeapUaFURL,
+       blink::kChromeUIGpuHeapUnderflowURL,
+       blink::kChromeUIRendererHeapMemberDerefAfterFreeURL,
+       blink::kChromeUIRendererHeapOverflowURL,
+       blink::kChromeUIRendererHeapUaFURL,
+       blink::kChromeUIRendererHeapUnderflowURL,
        blink::kChromeUICrashURL,
        blink::kChromeUICrashRustURL,
 #if defined(ADDRESS_SANITIZER)
@@ -314,6 +327,9 @@ base::span<const base::cstring_view> ChromeDebugURLs() {
        blink::kChromeUIMemoryExhaustURL,
        blink::kChromeUIMemoryPressureCriticalURL,
        blink::kChromeUIMemoryPressureModerateURL,
+       blink::kChromeUIBlinkOOMURL,
+       blink::kChromeUIBlinkWorkerOOMURL,
+       blink::kChromeUIV8OOMURL,
 #if BUILDFLAG(IS_WIN)
        blink::kChromeUIBrowserHeapCorruptionURL,
        blink::kChromeUICfgViolationCrashURL,

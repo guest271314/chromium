@@ -18,7 +18,7 @@
 #import "ios/chrome/browser/autocomplete/model/shortcuts_backend_factory.h"
 #import "ios/chrome/browser/history/model/top_sites_factory.h"
 #import "ios/chrome/browser/omnibox/eg_tests/test_fake_suggestions_service.h"
-#import "ios/chrome/browser/omnibox/model/omnibox_position/omnibox_position_browser_agent.h"
+#import "ios/chrome/browser/omnibox/model/omnibox_focus/omnibox_focus_browser_agent.h"
 #import "ios/chrome/browser/omnibox/ui/omnibox_text_field_ios.h"
 #import "ios/chrome/browser/omnibox/ui/omnibox_text_input.h"
 #import "ios/chrome/browser/search_engines/model/template_url_service_factory.h"
@@ -93,7 +93,7 @@ const base::FilePath& GetTestDataDir() {
 + (void)setUpFakeSuggestionsService:(NSString*)filename {
   RemoteSuggestionsService* remoteSuggestionsService =
       RemoteSuggestionsServiceFactory::GetForProfile(
-          chrome_test_util::GetOriginalProfile(), YES);
+          chrome_test_util::GetOriginalProfile());
 
   TemplateURLService* templateURLService =
       ios::TemplateURLServiceFactory::GetForProfile(
@@ -108,7 +108,7 @@ const base::FilePath& GetTestDataDir() {
 + (void)tearDownFakeSuggestionsService {
   RemoteSuggestionsService* remoteSuggestionsService =
       RemoteSuggestionsServiceFactory::GetForProfile(
-          chrome_test_util::GetOriginalProfile(), YES);
+          chrome_test_util::GetOriginalProfile());
 
   network::mojom::URLLoaderFactory* urlLoaderFactory =
       chrome_test_util::GetOriginalProfile()->GetURLLoaderFactory();
@@ -173,7 +173,7 @@ const base::FilePath& GetTestDataDir() {
 }
 
 + (BOOL)isOmniboxFocusedOnMainBrowser {
-  return OmniboxPositionBrowserAgent::FromBrowser(
+  return OmniboxFocusBrowserAgent::FromBrowser(
              chrome_test_util::GetMainBrowser())
       ->IsOmniboxFocused();
 }

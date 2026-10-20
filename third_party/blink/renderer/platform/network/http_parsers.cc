@@ -34,17 +34,18 @@
 
 #include <memory>
 #include <optional>
+#include <ranges>
 #include <string>
 #include <string_view>
 #include <utility>
 
 #include "base/compiler_specific.h"
-#include "base/containers/adapters.h"
 #include "base/containers/flat_map.h"
 #include "base/feature_list.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/strings/string_view_util.h"
 #include "net/http/http_content_disposition.h"
+#include "net/http/http_no_vary_search_data.h"
 #include "net/http/http_response_headers.h"
 #include "net/http/http_util.h"
 #include "services/network/public/cpp/content_security_policy/content_security_policy.h"
@@ -57,6 +58,7 @@
 #include "services/network/public/mojom/integrity_policy.mojom-blink.h"
 #include "services/network/public/mojom/no_vary_search.mojom-blink-forward.h"
 #include "services/network/public/mojom/no_vary_search.mojom-blink.h"
+#include "services/network/public/mojom/origin_or_wildcard_header_value.mojom-blink.h"
 #include "services/network/public/mojom/parsed_headers.mojom-blink.h"
 #include "services/network/public/mojom/sri_message_signature.mojom-blink.h"
 #include "services/network/public/mojom/supports_loading_mode.mojom-blink.h"
@@ -78,6 +80,7 @@
 #include "third_party/blink/renderer/platform/wtf/text/string_utf8_adaptor.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
 #include "third_party/blink/renderer/platform/wtf/wtf.h"
+#include "url/gurl.h"
 
 // We would like finding a way to convert from/to blink type automatically.
 // The following attempt has been withdrawn:
@@ -244,20 +247,21 @@ blink::ContentSecurityPolicyPtr ConvertToBlink(
       ConvertToBlink(in->trusted_types), ConvertToBlink(in->parsing_errors));
 }
 
-blink::AllowCSPFromHeaderValuePtr ConvertToBlink(
-    const AllowCSPFromHeaderValuePtr& allow_csp_from) {
-  if (!allow_csp_from)
+blink::OriginOrWildcardHeaderValuePtr ConvertToBlink(
+    const OriginOrWildcardHeaderValuePtr& header_value) {
+  if (!header_value) {
     return nullptr;
-  switch (allow_csp_from->which()) {
-    case AllowCSPFromHeaderValue::Tag::kAllowStar:
-      return blink::AllowCSPFromHeaderValue::NewAllowStar(
-          allow_csp_from->get_allow_star());
-    case AllowCSPFromHeaderValue::Tag::kOrigin:
-      return blink::AllowCSPFromHeaderValue::NewOrigin(
-          ConvertToBlink(allow_csp_from->get_origin()));
-    case AllowCSPFromHeaderValue::Tag::kErrorMessage:
-      return blink::AllowCSPFromHeaderValue::NewErrorMessage(
-          ConvertToBlink(allow_csp_from->get_error_message()));
+  }
+  switch (header_value->which()) {
+    case OriginOrWildcardHeaderValue::Tag::kAllowStar:
+      return blink::OriginOrWildcardHeaderValue::NewAllowStar(
+          header_value->get_allow_star());
+    case OriginOrWildcardHeaderValue::Tag::kOrigin:
+      return blink::OriginOrWildcardHeaderValue::NewOrigin(
+          ConvertToBlink(header_value->get_origin()));
+    case OriginOrWildcardHeaderValue::Tag::kErrorMessage:
+      return blink::OriginOrWildcardHeaderValue::NewErrorMessage(
+          ConvertToBlink(header_value->get_error_message()));
   }
 }
 
@@ -393,6 +397,7 @@ blink::ParsedHeadersPtr ConvertToBlink(const ParsedHeadersPtr& in) {
   return blink::ParsedHeaders::New(
       ConvertToBlink(in->content_security_policy),
       ConvertToBlink(in->allow_csp_from), in->connection_allowlists,
+      ConvertToBlink(in->allow_connection_allowlist_from),
       in->cross_origin_embedder_policy, in->cross_origin_opener_policy,
       in->document_isolation_policy, in->integrity_policy,
       in->integrity_policy_report_only, in->origin_agent_cluster,
@@ -418,7 +423,7 @@ blink::ParsedHeadersPtr ConvertToBlink(const ParsedHeadersPtr& in) {
           ? std::make_optional(ConvertToBlink(in->content_language.value()))
           : std::nullopt,
       ConvertToBlink(in->no_vary_search_with_parse_error),
-      in->observe_browsing_topics, in->allow_cross_origin_event_reporting,
+      in->allow_cross_origin_event_reporting,
       /*declarative_performance_observer_policy=*/nullptr,
       in->prefetch_activation_beacon_endpoint.has_value()
           ? std::make_optional(
@@ -610,48 +615,32 @@ std::optional<base::Time> ParseDate(const String& value) {
   return parsed_time;
 }
 
+// Extracts the MIME type from a Content-Type/media-type header value.
+//
+// This function delegates parsing to net::HttpUtil::ParseContentType (which
+// internally calls net::ParseMimeType) for parity with the network process.
+// See net::ParseMimeType for how invalid inputs are handled.
 AtomicString ExtractMIMETypeFromMediaType(const AtomicString& media_type) {
-  unsigned length = media_type.length();
-
-  unsigned pos = 0;
-
-  while (pos < length) {
-    UChar c = media_type[pos];
-    if (c != '\t' && c != ' ')
-      break;
-    ++pos;
-  }
-
-  if (pos == length)
+  if (media_type.empty()) {
     return media_type;
-
-  unsigned type_start = pos;
-
-  unsigned type_end = pos;
-  while (pos < length) {
-    UChar c = media_type[pos];
-
-    // While RFC 2616 does not allow it, other browsers allow multiple values in
-    // the HTTP media type header field, Content-Type. In such cases, the media
-    // type string passed here may contain the multiple values separated by
-    // commas. For now, this code ignores text after the first comma, which
-    // prevents it from simply failing to parse such types altogether.  Later
-    // for better compatibility we could consider using the first or last valid
-    // MIME type instead.
-    // See https://bugs.webkit.org/show_bug.cgi?id=25352 for more discussion.
-    if (c == ',' || c == ';')
-      break;
-
-    if (c != '\t' && c != ' ')
-      type_end = pos + 1;
-
-    ++pos;
   }
 
-  // Use a StringView to create an AtomicString here so we do not allocate an
-  // intermediate string.
-  return AtomicString(
-      StringView(media_type, type_start, type_end - type_start));
+  std::string media_type_std = media_type.Utf8();
+  std::string mime_type;
+  std::string charset;
+  bool had_charset = false;
+
+  net::HttpUtil::ValuesIterator it(media_type_std, ',',
+                                   /*ignore_empty_values=*/true);
+  while (it.GetNext()) {
+    net::HttpUtil::ParseContentType(it.value(), &mime_type, &charset,
+                                    &had_charset, /*boundary=*/nullptr);
+  }
+
+  if (mime_type.empty()) {
+    return g_empty_atom;
+  }
+  return AtomicString::FromUtf8(mime_type);
 }
 
 bool IsHTTPTabOrSpace(UChar c) {
@@ -1053,24 +1042,15 @@ bool ParseMultipartFormHeadersFromBody(base::span<const uint8_t> bytes,
   return true;
 }
 
-bool ParseContentRangeHeaderFor206(const String& content_range,
-                                   int64_t* first_byte_position,
-                                   int64_t* last_byte_position,
-                                   int64_t* instance_length) {
-  return net::HttpUtil::ParseContentRangeHeaderFor206(
-      StringUtf8Adaptor(content_range).AsStringView(), first_byte_position,
-      last_byte_position, instance_length);
-}
-
 std::unique_ptr<ServerTimingHeaderVector> ParseServerTimingHeader(
-    const String& headerValue) {
+    const String& header_value) {
   std::unique_ptr<ServerTimingHeaderVector> headers =
       std::make_unique<ServerTimingHeaderVector>();
 
-  if (!headerValue.IsNull()) {
-    DCHECK(headerValue.Is8Bit());
+  if (!header_value.IsNull()) {
+    DCHECK(header_value.Is8Bit());
 
-    HeaderFieldTokenizer tokenizer(headerValue);
+    HeaderFieldTokenizer tokenizer(header_value);
     while (!tokenizer.IsConsumed()) {
       StringView name;
       if (!tokenizer.ConsumeToken(ParsedContentType::Mode::kNormal, name)) {
@@ -1162,8 +1142,17 @@ ParseContentSecurityPolicyHeaders(
           network::mojom::blink::ContentSecurityPolicyType::kReport,
           network::mojom::blink::ContentSecurityPolicySource::kHTTP,
           headers.ResponseUrl());
-  parsed_csps.append_range(base::RangeAsRvalues(std::move(report_only_csps)));
+  parsed_csps.append_range(std::views::as_rvalue(report_only_csps));
   return parsed_csps;
+}
+
+network::mojom::blink::CSPSourceListPtr ParseAllowOrigins(
+    const StringView& raw_value) {
+  std::vector<std::string> parsing_errors;
+  // `allow-origins` uses the same syntax as CSP `frame-ancestors`.
+  return network::mojom::ConvertToBlink(
+      network::ParseSourceList(network::mojom::CSPDirectiveName::FrameAncestors,
+                               raw_value.Utf8(), parsing_errors));
 }
 
 network::mojom::blink::SRIMessageSignaturesPtr
@@ -1205,5 +1194,31 @@ String GetNoVarySearchHintConsoleMessage(
     const network::mojom::NoVarySearchParseError& error) {
   return network::mojom::ConvertToBlink(
       network::GetNoVarySearchHintConsoleMessage(error));
+}
+
+bool AreUrlsEquivalentUnderNoVarySearch(
+    const KURL& url1,
+    const KURL& url2,
+    const network::mojom::blink::NoVarySearchPtr& no_vary_search) {
+  DCHECK(no_vary_search);
+  auto to_std_vector = [](const Vector<String>& params) {
+    std::vector<std::string> result;
+    result.reserve(params.size());
+    for (const String& param : params) {
+      result.push_back(param.Utf8());
+    }
+    return result;
+  };
+  net::HttpNoVarySearchData data =
+      no_vary_search->search_variance->is_vary_params()
+          ? net::HttpNoVarySearchData::CreateFromVaryParams(
+                to_std_vector(
+                    no_vary_search->search_variance->get_vary_params()),
+                no_vary_search->vary_on_key_order)
+          : net::HttpNoVarySearchData::CreateFromNoVaryParams(
+                to_std_vector(
+                    no_vary_search->search_variance->get_no_vary_params()),
+                no_vary_search->vary_on_key_order);
+  return data.AreEquivalent(GURL(url1), GURL(url2));
 }
 }  // namespace blink

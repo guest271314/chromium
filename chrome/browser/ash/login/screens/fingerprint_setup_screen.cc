@@ -5,6 +5,7 @@
 #include "chrome/browser/ash/login/screens/fingerprint_setup_screen.h"
 
 #include "ash/constants/ash_pref_names.h"
+#include "ash/strings/grit/ash_strings.h"
 #include "base/metrics/histogram_functions.h"
 #include "chrome/browser/ash/auth/legacy_fingerprint_engine.h"
 #include "chrome/browser/ash/login/quick_unlock/quick_unlock_utils.h"
@@ -14,7 +15,6 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/ui/webui/ash/login/fingerprint_setup_screen_handler.h"
-#include "chrome/grit/generated_resources.h"
 #include "chromeos/ash/components/dbus/userdataauth/userdataauth_client.h"
 #include "components/prefs/pref_service.h"
 #include "content/public/browser/device_service.h"
@@ -76,7 +76,8 @@ constexpr int kMaxAllowedFingerprints = 3;
 
 // Determines what the newly added fingerprint's name should be.
 std::string GetDefaultFingerprintName(int enrolled_finger_count) {
-  DCHECK(enrolled_finger_count < kMaxAllowedFingerprints);
+  CHECK(enrolled_finger_count < kMaxAllowedFingerprints,
+        base::NotFatalUntil::M161);
   switch (enrolled_finger_count) {
     case 0:
       return l10n_util::GetStringUTF8(
@@ -120,7 +121,7 @@ FingerprintSetupScreen::FingerprintSetupScreen(
   content::GetDeviceService().BindFingerprint(
       fp_service_.BindNewPipeAndPassReceiver());
   fp_service_->AddFingerprintObserver(receiver_.BindNewPipeAndPassRemote());
-  DCHECK(view_);
+  CHECK(view_, base::NotFatalUntil::M161);
 }
 
 FingerprintSetupScreen::~FingerprintSetupScreen() = default;
@@ -225,7 +226,8 @@ void FingerprintSetupScreen::OnSessionFailed() {
 }
 
 void FingerprintSetupScreen::StartAddingFinger() {
-  DCHECK(enrolled_finger_count_ < kMaxAllowedFingerprints);
+  CHECK(enrolled_finger_count_ < kMaxAllowedFingerprints,
+        base::NotFatalUntil::M161);
 
   enroll_session_started_ = true;
   fp_service_->StartEnrollSession(

@@ -17,18 +17,20 @@
 #include "base/strings/to_string.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/task/single_thread_task_runner.h"
+#include "base/test/bind.h"
 #include "base/test/run_until.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/threading/thread_restrictions.h"
 #include "build/build_config.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/sharing_hub/sharing_hub_features.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
 #include "chrome/browser/ui/browser_tabstrip.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/browser_window/public/create_browser_window.h"
 #include "chrome/browser/ui/chrome_pages.h"
 #include "chrome/browser/ui/frame/window_frame_util.h"
 #include "chrome/browser/ui/location_bar/location_bar.h"
@@ -57,6 +59,7 @@
 #include "components/omnibox/browser/autocomplete_match_type.h"
 #include "components/omnibox/browser/omnibox_client.h"
 #include "components/omnibox/common/omnibox_features.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_view_host.h"
 #include "content/public/browser/render_widget_host.h"
@@ -67,12 +70,23 @@
 #include "content/public/test/test_navigation_observer.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
 #include "third_party/blink/public/common/switches.h"
+#include "ui/base/page_transition_types.h"
 #include "ui/base/test/ui_controls.h"
 #include "ui/base/ui_base_features.h"
+#include "ui/base/window_open_disposition.h"
+#include "ui/views/controls/webview/webview.h"
 #include "ui/views/focus/focus_manager.h"
 #include "ui/views/interaction/view_focus_observer.h"
 #include "ui/views/test/widget_activation_waiter.h"
 #include "ui/views/widget/widget.h"
+
+#if BUILDFLAG(IS_OZONE)
+#include "ui/ozone/public/ozone_platform.h"
+#endif
+
+#if BUILDFLAG(IS_WIN)
+#include "ui/base/ime/win/tsf_input_scope.h"
+#endif
 
 #if BUILDFLAG(IS_MAC)
 #include "base/mac/mac_util.h"
@@ -86,6 +100,9 @@ using content::WebContents;
 const char kSimplePage[] = "/focus/page_with_focus.html";
 const char kStealFocusPage[] = "/focus/page_steals_focus.html";
 const char kTypicalPage[] = "/focus/typical_page.html";
+
+DEFINE_LOCAL_STATE_IDENTIFIER_VALUE(ui::test::PollingStateObserver<bool>,
+                                    kOmniboxFocused);
 
 class BrowserFocusBasicTest : public InProcessBrowserTest {
  public:
@@ -148,6 +165,7 @@ IN_PROC_BROWSER_TEST_F(BrowserFocusBasicTest, BrowserFocusedOnCreation) {
   views::test::WaitForWidgetActive(GetWidgetForBrowser(browser()), true);
   // Check that when a browser is created, it's active.
   EXPECT_TRUE(IsBrowserActive(browser()));
+  ui_test_utils::WaitForViewFocus(browser(), VIEW_ID_OMNIBOX, true);
   EXPECT_TRUE(ui_test_utils::IsViewFocused(browser(), VIEW_ID_OMNIBOX));
 
   // Use `chrome::OpenEmptyWindow()` instead of directly creating a `Browser`
@@ -156,11 +174,12 @@ IN_PROC_BROWSER_TEST_F(BrowserFocusBasicTest, BrowserFocusedOnCreation) {
   // new window. The difference is that it makes sure that there is at least one
   // tab on the window before calling `BrowserView::Show()`.
   BrowserWindowInterface* browser2 =
-      chrome::OpenEmptyWindow(browser()->profile());
+      chrome::OpenEmptyWindow(browser()->GetProfile());
   WaitForToolbarReady(browser2);
   ui_test_utils::CreateAsyncWidgetRequestWaiter(*browser2).Wait();
   views::test::WaitForWidgetActive(GetWidgetForBrowser(browser2), true);
   EXPECT_TRUE(IsBrowserActive(browser2));
+  ui_test_utils::WaitForViewFocus(browser2, VIEW_ID_OMNIBOX, true);
   EXPECT_TRUE(ui_test_utils::IsViewFocused(browser2, VIEW_ID_OMNIBOX));
 }
 
@@ -168,14 +187,6 @@ DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kWebContentsId);
 
 class BrowserFocusTest : public InteractiveBrowserTest {
  public:
-  BrowserFocusTest() {
-    // TODO(crbug.com/441102004): `kAiModeOmniboxEntryPoint` changes the focus
-    //   and popup opening order of the omnibox. If it launches, update the
-    //   tests to match the new expectations.
-    scoped_feature_list_.InitAndDisableFeature(
-        omnibox::kAiModeOmniboxEntryPoint);
-  }
-
   // InteractiveBrowserTest overrides:
   void SetUpOnMainThread() override {
     ASSERT_TRUE(embedded_test_server()->Start());
@@ -195,6 +206,40 @@ class BrowserFocusTest : public InteractiveBrowserTest {
 
   void ClickOnView(ViewID vid) { ui_test_utils::ClickOnView(browser(), vid); }
 
+  // Returns true if `browser()` uses the WebUI location bar rather than the
+  // Views omnibox.
+  bool UsesWebUILocationBar() {
+    return GetWebUIToolbarWebView(browser()) != nullptr;
+  }
+
+  // Verifies that the omnibox text is not shown selected after focus has moved
+  // away from the omnibox. How to check this depends on the omnibox
+  // implementation, so callers must use this instead of asserting on
+  // OmniboxView::IsSelectAll() directly.
+  //
+  // With the Views omnibox, OmniboxViewViews::OnBlur() collapses the displayed
+  // selection when focus leaves (it saves the selection in
+  // saved_selection_for_focus_change_ so it can be restored on refocus). So if
+  // focus moved away correctly, IsSelectAll() returns false.
+  //
+  // With the WebUI location bar, IsSelectAll() reports the selection that the
+  // renderer's <input> remembers across blur. That remembered selection is the
+  // equivalent of what OmniboxViewViews saves, not of what it displays, so
+  // IsSelectAll() can stay true even though nothing is shown selected. The
+  // <input> only paints a selection while it is focused, so there the right
+  // check is simply that the omnibox is no longer focused.
+  void ExpectOmniboxTextNotShownSelected() {
+    if (UsesWebUILocationBar()) {
+      ui_test_utils::WaitForViewFocus(browser(), VIEW_ID_OMNIBOX, false);
+      EXPECT_FALSE(IsViewFocused(VIEW_ID_OMNIBOX));
+    } else {
+      OmniboxView* view = BrowserWindow::FromBrowser(browser())
+                              ->GetLocationBar()
+                              ->GetOmniboxView();
+      EXPECT_FALSE(view->IsSelectAll());
+    }
+  }
+
   void WaitForToolbarReady(
       BrowserWindowInterface* browser_interface = nullptr) {
     if (!browser_interface) {
@@ -207,11 +252,8 @@ class BrowserFocusTest : public InteractiveBrowserTest {
     std::vector<content::WebContents*> web_contents = {
         browser()->tab_strip_model()->GetActiveWebContents()};
 
-    ToolbarButtonProvider* toolbar_button_provider =
-        BrowserView::GetBrowserViewForBrowser(browser())
-            ->toolbar_button_provider();
-    if (WebUIToolbarWebView* webui_toolbar =
-            toolbar_button_provider->GetWebUIToolbarViewForTesting()) {
+    WebUIToolbarWebView* webui_toolbar = GetWebUIToolbarWebView(browser());
+    if (webui_toolbar) {
       web_contents.push_back(
           webui_toolbar->GetWebViewForTesting()->web_contents());
     }
@@ -220,6 +262,36 @@ class BrowserFocusTest : public InteractiveBrowserTest {
     ASSERT_TRUE(ui_test_utils::SendKeyPressSync(browser(), ui::VKEY_TAB, false,
                                                 reverse, false, false));
     obs.WaitForFocusChange();
+
+    // `obs` may have been woken by the toolbar renderer's frame-level
+    // focused-element notification, whereas the omnibox focus state reported
+    // by IsViewFocused(VIEW_ID_OMNIBOX) travels over the separate
+    // ToolbarUIService pipe. Settle the toolbar pipes so callers observe the
+    // state that corresponds to the focus change they just waited for.
+    if (webui_toolbar) {
+      // Flushing the pipes is only sufficient once the toolbar page has sent
+      // its omnibox focus notification. The page sends it from the omnibox
+      // input's `focus`/`blur` handler, and Blink only dispatches those events
+      // on the active element once the page itself is focused. That page-level
+      // focus state (RenderWidgetHostImpl::SetPageFocus()) travels over the
+      // widget input pipe, which is not ordered with respect to the frame
+      // interface used by SetInitialFocus() and by the flush below. So when
+      // tab traversal moves Views focus onto the toolbar WebView, the omnibox
+      // element may already be document.activeElement while the page is not
+      // yet focused, and a flush at that point would complete without the
+      // focus notification. Wait for the page's focus state to agree with the
+      // Views focused view first.
+      views::WebView* toolbar_web_view = webui_toolbar->GetWebViewForTesting();
+      const bool toolbar_page_focused =
+          toolbar_web_view->Contains(GetFocusManager()->GetFocusedView());
+      ASSERT_TRUE(base::test::RunUntil([&]() {
+        return content::EvalJs(toolbar_web_view->web_contents(),
+                               "document.hasFocus()")
+                   .ExtractBool() == toolbar_page_focused;
+      })) << "Toolbar page focus did not settle to "
+          << toolbar_page_focused;
+      ASSERT_TRUE(FlushWebUIToolbarPipes(browser()));
+    }
   }
 
   void TestFocusTraversal(bool reverse) {
@@ -242,18 +314,18 @@ class BrowserFocusTest : public InteractiveBrowserTest {
   }
 
   views::FocusManager* GetFocusManager() {
-    BrowserWindow* browser_window = browser()->window();
-    DCHECK(browser_window);
+    BrowserWindow* browser_window = BrowserWindow::FromBrowser(browser());
+    CHECK(browser_window, base::NotFatalUntil::M162);
     gfx::NativeWindow window = browser_window->GetNativeWindow();
-    DCHECK(window);
+    CHECK(window, base::NotFatalUntil::M162);
     views::Widget* widget = views::Widget::GetWidgetForNativeWindow(window);
-    DCHECK(widget);
+    CHECK(widget, base::NotFatalUntil::M162);
     views::FocusManager* focus_manager = widget->GetFocusManager();
-    DCHECK(focus_manager);
+    CHECK(focus_manager, base::NotFatalUntil::M162);
     return focus_manager;
   }
 
-  views::Widget* GetWidgetForBrowser(Browser* browser) {
+  views::Widget* GetWidgetForBrowser(BrowserWindowInterface* browser) {
     BrowserView* browser_view = BrowserView::GetBrowserViewForBrowser(browser);
     CHECK(browser_view);
     views::Widget* widget = browser_view->GetWidget();
@@ -266,19 +338,55 @@ class BrowserFocusTest : public InteractiveBrowserTest {
   constexpr static size_t kMaxIterations = 20;
 };
 
+// Test that adding a new foreground tab to a background (inactive) window
+// activates that window, while adding a background tab does not.
+IN_PROC_BROWSER_TEST_F(BrowserFocusTest,
+                       BackgroundWindowActivatedOnNewForegroundTab) {
+#if BUILDFLAG(IS_OZONE)
+  // TODO(crbug.com/430097333): Wayland doesn't support programmatic window
+  // activation. Re-enable when activation is supported.
+  if (::ui::OzonePlatform::RunningOnWaylandForTest()) {
+    GTEST_SKIP() << "Wayland doesn't support programmatic window activation";
+  }
+#endif
+
+  ASSERT_TRUE(ui_test_utils::BringBrowserWindowToFront(browser()));
+  EXPECT_TRUE(browser()->GetWindow()->IsActive());
+
+  // Create a second browser window and activate it.
+  BrowserWindowInterface* browser2 =
+      chrome::OpenEmptyWindow(browser()->GetProfile());
+  ASSERT_TRUE(ui_test_utils::BringBrowserWindowToFront(browser2));
+  EXPECT_TRUE(browser2->GetWindow()->IsActive());
+  EXPECT_FALSE(browser()->GetWindow()->IsActive());
+
+  // Adding a background tab to the inactive window should not activate it.
+  chrome::AddTabAt(browser(), GURL(chrome::kChromeUINewTabURL), -1,
+                   /*foreground=*/false);
+  EXPECT_FALSE(browser()->GetWindow()->IsActive());
+  EXPECT_TRUE(browser2->GetWindow()->IsActive());
+
+  // Adding a foreground tab to the inactive window should activate it.
+  ui_test_utils::BrowserActivationWaiter activation_waiter(browser());
+  chrome::AddTabAt(browser(), GURL(chrome::kChromeUINewTabURL), -1,
+                   /*foreground=*/true, std::nullopt, /*pinned=*/false,
+                   NavigateParams::WindowAction::kShowWindow);
+  activation_waiter.WaitForActivation();
+  EXPECT_TRUE(browser()->GetWindow()->IsActive());
+}
+
 IN_PROC_BROWSER_TEST_F(BrowserFocusTest, ClickingMovesFocus) {
   RunTestSequence(
       InstrumentTab(kWebContentsId),
-      ObserveState(views::test::kCurrentFocusedViewId,
-                   GetWidgetForBrowser(browser())),
-      WaitForState(views::test::kCurrentFocusedViewId, kOmniboxElementId),
+      PollState(kOmniboxFocused,
+                [this]() { return IsViewFocused(VIEW_ID_OMNIBOX); }),
+      WaitForState(kOmniboxFocused, true),
       // Click on the tab container and check that it has focus.
       MoveMouseTo(ContentsWebView::kContentsWebViewElementId), ClickMouse(),
-      WaitForState(views::test::kCurrentFocusedViewId,
-                   ContentsWebView::kContentsWebViewElementId),
+      WaitForState(kOmniboxFocused, false),
       // Click on the omnibox and check that it has focus.
       MoveMouseTo(kOmniboxElementId), ClickMouse(),
-      WaitForState(views::test::kCurrentFocusedViewId, kOmniboxElementId));
+      WaitForState(kOmniboxFocused, true));
 }
 
 IN_PROC_BROWSER_TEST_F(BrowserFocusTest, BrowsersRememberFocus) {
@@ -286,20 +394,24 @@ IN_PROC_BROWSER_TEST_F(BrowserFocusTest, BrowsersRememberFocus) {
   const GURL url = embedded_test_server()->GetURL(kSimplePage);
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), url));
 
-  gfx::NativeWindow window = browser()->window()->GetNativeWindow();
+  gfx::NativeWindow window = browser()->GetWindow()->GetNativeWindow();
 
   // The focus should be on the Tab contents.
+  ui_test_utils::WaitForViewFocus(browser(), VIEW_ID_TAB_CONTAINER, true);
   ASSERT_TRUE(IsViewFocused(VIEW_ID_TAB_CONTAINER));
   // Now hide the window, show it again, the focus should not have changed.
   ui_test_utils::HideNativeWindow(window);
   ASSERT_TRUE(ui_test_utils::ShowAndFocusNativeWindow(window));
+  ui_test_utils::WaitForViewFocus(browser(), VIEW_ID_TAB_CONTAINER, true);
   ASSERT_TRUE(IsViewFocused(VIEW_ID_TAB_CONTAINER));
 
   chrome::FocusLocationBar(browser());
+  ui_test_utils::WaitForViewFocus(browser(), VIEW_ID_OMNIBOX, true);
   ASSERT_TRUE(IsViewFocused(VIEW_ID_OMNIBOX));
   // Hide the window, show it again, the focus should not have changed.
   ui_test_utils::HideNativeWindow(window);
   ASSERT_TRUE(ui_test_utils::ShowAndFocusNativeWindow(window));
+  ui_test_utils::WaitForViewFocus(browser(), VIEW_ID_OMNIBOX, true);
   ASSERT_TRUE(IsViewFocused(VIEW_ID_OMNIBOX));
 }
 
@@ -331,8 +443,10 @@ IN_PROC_BROWSER_TEST_F(BrowserFocusTest, TabsRememberFocus) {
       // Activate the location bar or the page.
       if (kFocusPage[i][j]) {
         browser()->tab_strip_model()->GetWebContentsAt(j)->Focus();
+        ui_test_utils::WaitForViewFocus(browser(), VIEW_ID_TAB_CONTAINER, true);
       } else {
         chrome::FocusLocationBar(browser());
+        ui_test_utils::WaitForViewFocus(browser(), VIEW_ID_OMNIBOX, true);
       }
     }
 
@@ -356,9 +470,14 @@ IN_PROC_BROWSER_TEST_F(BrowserFocusTest, TabsRememberFocus) {
       ViewID vid =
           kFocusPage[i][j % 5] ? VIEW_ID_TAB_CONTAINER : VIEW_ID_OMNIBOX;
       ui_test_utils::WaitForViewFocus(browser(), vid, true);
-
       ASSERT_TRUE(ui_test_utils::SendKeyPressSync(browser(), ui::VKEY_TAB, true,
                                                   false, false, false));
+      // Wait for tab switch to complete.
+      int expected_next_tab = (j + 1) % 5;
+      ASSERT_TRUE(base::test::RunUntil([&]() {
+        return browser()->tab_strip_model()->active_index() ==
+               expected_next_tab;
+      }));
     }
 
     // As above, but with ctrl+shift+tab.
@@ -369,22 +488,116 @@ IN_PROC_BROWSER_TEST_F(BrowserFocusTest, TabsRememberFocus) {
       ViewID vid =
           kFocusPage[i][j % 5] ? VIEW_ID_TAB_CONTAINER : VIEW_ID_OMNIBOX;
       ui_test_utils::WaitForViewFocus(browser(), vid, true);
-
       ASSERT_TRUE(ui_test_utils::SendKeyPressSync(browser(), ui::VKEY_TAB, true,
                                                   true, false, false));
+      // Wait for tab switch to complete.
+      int expected_next_tab = (j + 4) % 5;
+      ASSERT_TRUE(base::test::RunUntil([&]() {
+        return browser()->tab_strip_model()->active_index() ==
+               expected_next_tab;
+      }));
     }
   }
 }
 
-// Tabs remember focus with find-in-page box.
-IN_PROC_BROWSER_TEST_F(BrowserFocusTest, TabsRememberFocusFindInPage) {
-  // TODO(crbug.com/40268465): Re-enable when child widget focus manager
-  // relationship is fixed.
-#if BUILDFLAG(IS_MAC)
-  if (base::mac::MacOSMajorVersion() >= 13) {
-    GTEST_SKIP() << "Broken on macOS 13: https://crbug.com/40268465";
+#if BUILDFLAG(IS_WIN)
+// Leaves `browser` with two tabs of `url`. The second one is active and has a
+// focused, selected contenteditable in an about:blank iframe, like the editing
+// iframe Google Slides uses.
+void OpenTabWithFocusedEditable(BrowserWindowInterface* browser,
+                                const GURL& url,
+                                content::WebContents** tab) {
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser, url));
+  chrome::AddSelectedTabWithURL(browser, url, ui::PAGE_TRANSITION_TYPED);
+  *tab = browser->GetTabStripModel()->GetActiveWebContents();
+  ASSERT_TRUE(content::WaitForLoadStop(*tab));
+  ASSERT_TRUE(content::ExecJs(*tab, R"(
+    const frame = document.createElement('iframe');
+    document.body.appendChild(frame);
+    const doc = frame.contentDocument;
+    doc.body.contentEditable = 'true';
+    doc.body.textContent = 'hello';
+    frame.contentWindow.focus();
+    doc.body.focus();
+    frame.contentWindow.getSelection().setBaseAndExtent(
+        doc.body.firstChild, 1, doc.body.firstChild, 3);
+  )"));
+  ASSERT_EQ(true, content::EvalJs(*tab, R"(
+    (() => {
+      const doc = document.querySelector('iframe').contentDocument;
+      return doc.hasFocus() && doc.activeElement === doc.body;
+    })()
+  )"));
+}
+
+// The param is whether the test runs in an incognito window.
+class BrowserFocusInputScopeTest : public BrowserFocusTest,
+                                   public testing::WithParamInterface<bool> {};
+
+// Regression test for crbug.com/344961539. Slides keeps its editing state in
+// an about:blank iframe. SetInputScope() makes TSF request a lock on the
+// focused text store. With Slides' braille support on, calling it every time a
+// tab was shown changed the page's selection and made Slides flip between
+// slides. A TSF client that reacts like that can't be attached in a test, so
+// check the cause instead: showing a tab with a focused editable must not call
+// SetInputScope().
+IN_PROC_BROWSER_TEST_P(BrowserFocusInputScopeTest,
+                       ShowingTabDoesNotCallSetInputScopeWithFocusedEditable) {
+  BrowserWindowInterface* browser_window = browser();
+  if (GetParam()) {
+    browser_window = CreateIncognitoBrowser();
+    ASSERT_TRUE(ui_test_utils::BringBrowserWindowToFront(browser_window));
   }
+  content::WebContents* tab = nullptr;
+  ASSERT_NO_FATAL_FAILURE(OpenTabWithFocusedEditable(
+      browser_window, embedded_test_server()->GetURL(kSimplePage), &tab));
+
+  int set_input_scope_calls = 0;
+  ui::tsf_inputscope::ScopedSetInputScopeCallbackForTesting scoped_callback(
+      base::BindLambdaForTesting(
+          [&](HWND, InputScope) { ++set_input_scope_calls; }));
+
+  // Switch away from and back to the tab several times.
+  TabStripModel* tab_strip = browser_window->GetTabStripModel();
+  for (int i = 0; i < 5; ++i) {
+    for (int index : {0, 1}) {
+      tab_strip->ActivateTabAt(
+          index, TabStripUserGestureDetails(
+                     TabStripUserGestureDetails::GestureType::kOther));
+    }
+  }
+
+  // Guard against passing vacuously: the tab must be showing again, with the
+  // editable focused.
+  ASSERT_EQ(tab, tab_strip->GetActiveWebContents());
+  ASSERT_EQ("visible", content::EvalJs(tab, "document.visibilityState"));
+  ASSERT_TRUE(tab->GetRenderWidgetHostView()->HasFocus());
+  ASSERT_EQ(true, content::EvalJs(tab, R"(
+    (() => {
+      const doc = document.querySelector('iframe').contentDocument;
+      return doc.activeElement === doc.body;
+    })()
+  )"));
+  EXPECT_EQ(0, set_input_scope_calls);
+}
+
+INSTANTIATE_TEST_SUITE_P(All,
+                         BrowserFocusInputScopeTest,
+                         testing::Bool(),
+                         [](const testing::TestParamInfo<bool>& info) {
+                           return info.param ? "Incognito" : "Regular";
+                         });
+#endif  // BUILDFLAG(IS_WIN)
+
+// Tabs remember focus with find-in-page box.
+#if BUILDFLAG(IS_MAC)
+// TODO(https://crbug.com/40268465): Re-enable when child widget focus manager
+// relationship is fixed.
+#define MAYBE_TabsRememberFocusFindInPage DISABLED_TabsRememberFocusFindInPage
+#else
+#define MAYBE_TabsRememberFocusFindInPage TabsRememberFocusFindInPage
 #endif
+IN_PROC_BROWSER_TEST_F(BrowserFocusTest, MAYBE_TabsRememberFocusFindInPage) {
   ASSERT_TRUE(ui_test_utils::BringBrowserWindowToFront(browser()));
   const GURL url = embedded_test_server()->GetURL(kSimplePage);
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), url));
@@ -393,15 +606,19 @@ IN_PROC_BROWSER_TEST_F(BrowserFocusTest, TabsRememberFocusFindInPage) {
   ui_test_utils::FindInPage(
       browser()->tab_strip_model()->GetActiveWebContents(), u"a", true, false,
       nullptr, nullptr);
+  ui_test_utils::WaitForViewFocus(browser(), VIEW_ID_FIND_IN_PAGE_TEXT_FIELD,
+                                  true);
   ASSERT_TRUE(IsViewFocused(VIEW_ID_FIND_IN_PAGE_TEXT_FIELD));
 
   // Focus the location bar.
   chrome::FocusLocationBar(browser());
+  ui_test_utils::WaitForViewFocus(browser(), VIEW_ID_OMNIBOX, true);
 
   // Create a 2nd tab.
   chrome::AddSelectedTabWithURL(browser(), url, ui::PAGE_TRANSITION_TYPED);
 
   // Focus should be on the recently opened tab page.
+  ui_test_utils::WaitForViewFocus(browser(), VIEW_ID_TAB_CONTAINER, true);
   ASSERT_TRUE(IsViewFocused(VIEW_ID_TAB_CONTAINER));
 
   // Select 1st tab, focus should still be on the location-bar.
@@ -409,19 +626,25 @@ IN_PROC_BROWSER_TEST_F(BrowserFocusTest, TabsRememberFocusFindInPage) {
   browser()->tab_strip_model()->ActivateTabAt(
       0, TabStripUserGestureDetails(
              TabStripUserGestureDetails::GestureType::kOther));
+  ui_test_utils::WaitForViewFocus(browser(), VIEW_ID_OMNIBOX, true);
   ASSERT_TRUE(IsViewFocused(VIEW_ID_OMNIBOX));
 
   // Now open the find box again, switch to another tab and come back, the focus
   // should return to the find box.
   chrome::Find(browser());
+  ui_test_utils::WaitForViewFocus(browser(), VIEW_ID_FIND_IN_PAGE_TEXT_FIELD,
+                                  true);
   ASSERT_TRUE(IsViewFocused(VIEW_ID_FIND_IN_PAGE_TEXT_FIELD));
   browser()->tab_strip_model()->ActivateTabAt(
       1, TabStripUserGestureDetails(
              TabStripUserGestureDetails::GestureType::kOther));
+  ui_test_utils::WaitForViewFocus(browser(), VIEW_ID_TAB_CONTAINER, true);
   ASSERT_TRUE(IsViewFocused(VIEW_ID_TAB_CONTAINER));
   browser()->tab_strip_model()->ActivateTabAt(
       0, TabStripUserGestureDetails(
              TabStripUserGestureDetails::GestureType::kOther));
+  ui_test_utils::WaitForViewFocus(browser(), VIEW_ID_FIND_IN_PAGE_TEXT_FIELD,
+                                  true);
   ASSERT_TRUE(IsViewFocused(VIEW_ID_FIND_IN_PAGE_TEXT_FIELD));
 }
 
@@ -431,10 +654,11 @@ IN_PROC_BROWSER_TEST_F(BrowserFocusTest, BackgroundBrowserDontStealFocus) {
   ASSERT_TRUE(ui_test_utils::BringBrowserWindowToFront(browser()));
 
   // Open a new browser window.
-  Browser* background_browser =
-      Browser::Create(Browser::CreateParams(browser()->profile(), true));
+  BrowserWindowInterface* background_browser =
+      CreateBrowserWindow(BrowserWindowCreateParams(
+          browser()->GetProfile(), /*from_user_gesture=*/true));
   chrome::AddTabAt(background_browser, GURL(), -1, true);
-  background_browser->window()->Show();
+  background_browser->GetWindow()->Show();
 
   const GURL steal_focus_url = embedded_test_server()->GetURL(kStealFocusPage);
   ASSERT_TRUE(
@@ -444,15 +668,15 @@ IN_PROC_BROWSER_TEST_F(BrowserFocusTest, BackgroundBrowserDontStealFocus) {
   // platforms, that may be asynchronous. Ensure the activation is properly
   // reflected in the browser process by activating again.
   ASSERT_TRUE(ui_test_utils::BringBrowserWindowToFront(background_browser));
-  EXPECT_TRUE(background_browser->window()->IsActive());
+  EXPECT_TRUE(background_browser->GetWindow()->IsActive());
 
   // Activate the first browser (again). Note BringBrowserWindowToFront() does
   // Show() and Focus(), but not Activate(), which is needed for Desktop Linux.
-  browser()->window()->Activate();
+  browser()->GetWindow()->Activate();
   ASSERT_TRUE(ui_test_utils::BringBrowserWindowToFront(browser()));
-  EXPECT_TRUE(browser()->window()->IsActive());
+  EXPECT_TRUE(browser()->GetWindow()->IsActive());
   ASSERT_TRUE(content::ExecJs(
-      background_browser->tab_strip_model()->GetActiveWebContents(),
+      background_browser->GetTabStripModel()->GetActiveWebContents(),
       "stealFocus();"));
 
   // Try flushing tasks. Note that on Mac and Desktop Linux, window activation
@@ -465,7 +689,7 @@ IN_PROC_BROWSER_TEST_F(BrowserFocusTest, BackgroundBrowserDontStealFocus) {
   content::RunAllTasksUntilIdle();
 
   // Make sure the first browser is still active.
-  EXPECT_TRUE(browser()->window()->IsActive());
+  EXPECT_TRUE(browser()->GetWindow()->IsActive());
 }
 
 // Page cannot steal focus when focus is on location bar.
@@ -475,6 +699,7 @@ IN_PROC_BROWSER_TEST_F(BrowserFocusTest, LocationBarLockFocus) {
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), url));
 
   chrome::FocusLocationBar(browser());
+  ui_test_utils::WaitForViewFocus(browser(), VIEW_ID_OMNIBOX, true);
 
   ASSERT_TRUE(content::ExecJs(
       browser()->tab_strip_model()->GetActiveWebContents(), "stealFocus();"));
@@ -490,11 +715,8 @@ IN_PROC_BROWSER_TEST_F(BrowserFocusTest, FocusTraversal) {
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), url));
   std::vector<content::WebContents*> web_contents = {
       browser()->tab_strip_model()->GetActiveWebContents()};
-  ToolbarButtonProvider* toolbar_button_provider =
-      BrowserView::GetBrowserViewForBrowser(browser())
-          ->toolbar_button_provider();
-  if (WebUIToolbarWebView* webui_toolbar =
-          toolbar_button_provider->GetWebUIToolbarViewForTesting()) {
+  WebUIToolbarWebView* webui_toolbar = GetWebUIToolbarWebView(browser());
+  if (webui_toolbar) {
     web_contents.push_back(
         webui_toolbar->GetWebViewForTesting()->web_contents());
   }
@@ -502,11 +724,30 @@ IN_PROC_BROWSER_TEST_F(BrowserFocusTest, FocusTraversal) {
   ui_test_utils::FocusChangeObserver obs{GetFocusManager(), web_contents};
   chrome::FocusLocationBar(browser());
   obs.WaitForFocusChange();
+  ui_test_utils::WaitForViewFocus(browser(), VIEW_ID_OMNIBOX, true);
   ASSERT_TRUE(IsViewFocused(VIEW_ID_OMNIBOX));
 
+  // With the WebUI location bar, the focus request above is acknowledged by
+  // the renderer asynchronously, and it is that acknowledgement which starts
+  // zero-suggest. Make sure it has been processed before waiting for
+  // autocomplete to finish, so that the popup state is final when we close
+  // the popup below.
+  if (webui_toolbar) {
+    ASSERT_TRUE(FlushWebUIToolbarPipes(browser()));
+  }
+  ui_test_utils::WaitForAutocompleteDone(browser());
+
   // Simulate ESC being pressed to close the omnibox suggestions popup.
-  browser()->browser_window_features()->omnibox_popup_closer()->CloseWithReason(
+  omnibox::OmniboxPopupCloser::From(browser())->CloseWithReason(
       omnibox::PopupCloseReason::kEscapeKeyPressed);
+
+  // The WebUI omnibox decides whether Tab is focus traversal or a popup key
+  // from the popup-open flag the browser pushes to it. Make sure it has seen
+  // the popup close before the first Tab is sent; otherwise it swallows the
+  // key and forwards it to the (now closed) popup instead.
+  if (webui_toolbar) {
+    ASSERT_TRUE(FlushWebUIToolbarPipes(browser()));
+  }
 
   // Loop through the focus chain twice in each direction for good measure.
   TestFocusTraversal(false);
@@ -519,12 +760,14 @@ IN_PROC_BROWSER_TEST_F(BrowserFocusTest, FocusTraversal) {
 IN_PROC_BROWSER_TEST_F(BrowserFocusTest, FindFocusTest) {
   RunTestSequence(
       InstrumentTab(kWebContentsId),
+      PollState(kOmniboxFocused,
+                [this]() { return IsViewFocused(VIEW_ID_OMNIBOX); }),
       ObserveState(views::test::kCurrentFocusedViewId,
                    GetWidgetForBrowser(browser())),
       Do([this]() { chrome::Find(browser()); }),
       WaitForState(views::test::kCurrentFocusedViewId, FindBarView::kTextField),
       MoveMouseTo(kOmniboxElementId), ClickMouse(),
-      WaitForState(views::test::kCurrentFocusedViewId, kOmniboxElementId),
+      WaitForState(kOmniboxFocused, true),
       Do([this]() { chrome::Find(browser()); }),
       WaitForState(views::test::kCurrentFocusedViewId,
                    FindBarView::kTextField));
@@ -539,18 +782,21 @@ IN_PROC_BROWSER_TEST_F(BrowserFocusTest, TabInitialFocus) {
   chrome::ShowHistory(browser());
   ASSERT_NO_FATAL_FAILURE(EXPECT_TRUE(content::WaitForLoadStop(
       browser()->tab_strip_model()->GetActiveWebContents())));
+  ui_test_utils::WaitForViewFocus(browser(), VIEW_ID_TAB_CONTAINER, true);
   EXPECT_TRUE(IsViewFocused(VIEW_ID_TAB_CONTAINER));
 
   // Open the new tab, focus should be on the location bar.
-  chrome::NewTab(browser());
+  chrome::NewTab(browser(), NewTabTypes::kNoUserAction);
   ASSERT_NO_FATAL_FAILURE(EXPECT_TRUE(content::WaitForLoadStop(
       browser()->tab_strip_model()->GetActiveWebContents())));
+  ui_test_utils::WaitForViewFocus(browser(), VIEW_ID_OMNIBOX, true);
   EXPECT_TRUE(IsViewFocused(VIEW_ID_OMNIBOX));
 
   // Open the download tab, focus should be on the tab contents.
   chrome::ShowDownloads(browser());
   ASSERT_NO_FATAL_FAILURE(EXPECT_TRUE(content::WaitForLoadStop(
       browser()->tab_strip_model()->GetActiveWebContents())));
+  ui_test_utils::WaitForViewFocus(browser(), VIEW_ID_TAB_CONTAINER, true);
   EXPECT_TRUE(IsViewFocused(VIEW_ID_TAB_CONTAINER));
 
   // Open about:blank, focus should be on the location bar.
@@ -558,6 +804,7 @@ IN_PROC_BROWSER_TEST_F(BrowserFocusTest, TabInitialFocus) {
                                 ui::PAGE_TRANSITION_LINK);
   ASSERT_NO_FATAL_FAILURE(EXPECT_TRUE(content::WaitForLoadStop(
       browser()->tab_strip_model()->GetActiveWebContents())));
+  ui_test_utils::WaitForViewFocus(browser(), VIEW_ID_OMNIBOX, true);
   EXPECT_TRUE(IsViewFocused(VIEW_ID_OMNIBOX));
 }
 
@@ -565,7 +812,7 @@ IN_PROC_BROWSER_TEST_F(BrowserFocusTest, TabInitialFocus) {
 IN_PROC_BROWSER_TEST_F(BrowserFocusTest, FocusOnReload) {
   // Open the new tab, reload.
   {
-    auto& contents = chrome::NewTab(browser());
+    auto& contents = chrome::NewTab(browser(), NewTabTypes::kNoUserAction);
     content::WaitForLoadStop(&contents);
   }
   content::RunAllPendingInMessageLoop();
@@ -577,12 +824,14 @@ IN_PROC_BROWSER_TEST_F(BrowserFocusTest, FocusOnReload) {
     observer.Wait();
   }
   // Focus should stay on the location bar.
+  ui_test_utils::WaitForViewFocus(browser(), VIEW_ID_OMNIBOX, true);
   ASSERT_TRUE(IsViewFocused(VIEW_ID_OMNIBOX));
 
   // Open a regular page, focus the location bar, reload.
   ASSERT_TRUE(ui_test_utils::NavigateToURL(
       browser(), embedded_test_server()->GetURL(kSimplePage)));
   chrome::FocusLocationBar(browser());
+  ui_test_utils::WaitForViewFocus(browser(), VIEW_ID_OMNIBOX, true);
   ASSERT_TRUE(IsViewFocused(VIEW_ID_OMNIBOX));
   {
     content::LoadStopObserver observer(
@@ -593,6 +842,7 @@ IN_PROC_BROWSER_TEST_F(BrowserFocusTest, FocusOnReload) {
 
   // Focus should now be on the tab contents.
   chrome::ShowDownloads(browser());
+  ui_test_utils::WaitForViewFocus(browser(), VIEW_ID_TAB_CONTAINER, true);
   ASSERT_TRUE(IsViewFocused(VIEW_ID_TAB_CONTAINER));
 }
 
@@ -642,81 +892,92 @@ IN_PROC_BROWSER_TEST_F(BrowserFocusTest, NavigateFromOmnibox) {
   // Focus the Omnibox.
   ASSERT_TRUE(ui_test_utils::BringBrowserWindowToFront(browser()));
   chrome::FocusLocationBar(browser());
-  OmniboxView* view = browser()->window()->GetLocationBar()->GetOmniboxView();
+  ui_test_utils::WaitForViewFocus(browser(), VIEW_ID_OMNIBOX, true);
+  OmniboxView* view =
+      BrowserWindow::FromBrowser(browser())->GetLocationBar()->GetOmniboxView();
 
   // Simulate typing a URL into the omnibox.
   view->SetUserText(base::UTF8ToUTF16(url.spec()));
   EXPECT_TRUE(IsViewFocused(VIEW_ID_OMNIBOX));
   EXPECT_FALSE(view->IsSelectAll());
 
+  // Verifies that the omnibox text is not shown selected. This is a regression
+  // test for https://crbug.com/40672172: Update() selects all of the text while
+  // the omnibox is still focused, and the navigation must move focus away
+  // before that selection can be painted. See
+  // ExpectOmniboxTextNotShownSelected() for why this is not a plain
+  // IsSelectAll() check.
+
   // Simulate pressing Enter and wait until the navigation starts.
   content::WebContents* web_contents =
       chrome_test_utils::GetActiveWebContents(this);
   content::TestNavigationManager nav_manager(web_contents, url);
-  ASSERT_TRUE(ui_controls::SendKeyPress(browser()->window()->GetNativeWindow(),
-                                        ui::VKEY_RETURN, false, false, false,
-                                        false));
+  ASSERT_TRUE(
+      ui_controls::SendKeyPress(browser()->GetWindow()->GetNativeWindow(),
+                                ui::VKEY_RETURN, false, false, false, false));
   ASSERT_TRUE(nav_manager.WaitForRequestStart());
 
   // Verify that a navigation has started.
   EXPECT_TRUE(web_contents->GetController().GetPendingEntry());
-  // Verify that the Omnibox text is not selected - this is a regression test
-  // for https://crbug.com/40672172.
-  EXPECT_FALSE(view->IsSelectAll());
-  // Intentionally not asserting anything about IsViewFocused in this
+  ExpectOmniboxTextNotShownSelected();
+  // Intentionally not asserting anything else about IsViewFocused in this
   // _intermediate_ state.
 
   // Wait for the navigation to finish and verify final, steady state.
   ASSERT_TRUE(nav_manager.WaitForNavigationFinished());
   EXPECT_TRUE(nav_manager.was_successful());
   EXPECT_EQ(url, web_contents->GetLastCommittedURL());
+  ui_test_utils::WaitForViewFocus(browser(), VIEW_ID_TAB_CONTAINER, true);
   EXPECT_TRUE(IsViewFocused(VIEW_ID_TAB_CONTAINER));
-  EXPECT_FALSE(view->IsSelectAll());
+  ExpectOmniboxTextNotShownSelected();
 }
 
 // Tests that when a new tab is opened from the omnibox, the focus is moved from
 // the omnibox for the current tab.
 IN_PROC_BROWSER_TEST_F(BrowserFocusTest, NavigateFromOmniboxIntoNewTab) {
-  GURL url("http://www.google.com/");
-  GURL url2("http://maps.google.com/");
+  ASSERT_TRUE(ui_test_utils::BringBrowserWindowToFront(browser()));
+  const GURL url = embedded_test_server()->GetURL("/title1.html");
+  const GURL url2 = embedded_test_server()->GetURL("/title2.html");
 
   // Navigate to url.
-  NavigateParams p(browser(), url, ui::PAGE_TRANSITION_LINK);
-  p.window_action = NavigateParams::WindowAction::kShowWindow;
-  p.disposition = WindowOpenDisposition::CURRENT_TAB;
-  Navigate(&p);
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), url));
 
   // Focus the omnibox.
   chrome::FocusLocationBar(browser());
+  ui_test_utils::WaitForViewFocus(browser(), VIEW_ID_OMNIBOX, true);
 
-  OmniboxClient* omnibox_client =
-      browser()->window()->GetLocationBar()->GetOmniboxController()->client();
+  OmniboxClient* omnibox_client = BrowserWindow::FromBrowser(browser())
+                                      ->GetLocationBar()
+                                      ->GetOmniboxController()
+                                      ->client();
 
   // Simulate an alt-enter.
   omnibox_client->OnAutocompleteAccept(
       url2, nullptr, WindowOpenDisposition::NEW_FOREGROUND_TAB,
-      ui::PAGE_TRANSITION_TYPED, AutocompleteMatchType::URL_WHAT_YOU_TYPED,
-      base::TimeTicks(), false, false, std::u16string(), AutocompleteMatch(),
-      AutocompleteMatch());
+      ui::PAGE_TRANSITION_TYPED,
+      omnibox::AutocompleteMatchType::kUrlWhatYouTyped, base::TimeTicks(),
+      false, false, std::u16string(), AutocompleteMatch(), AutocompleteMatch());
 
   // Make sure the second tab is selected.
   EXPECT_EQ(1, browser()->tab_strip_model()->active_index());
 
   // The tab contents should have the focus in the second tab.
+  ui_test_utils::WaitForViewFocus(browser(), VIEW_ID_TAB_CONTAINER, true);
   EXPECT_TRUE(IsViewFocused(VIEW_ID_TAB_CONTAINER));
 
   // Go back to the first tab. The focus should not be in the omnibox.
   chrome::SelectPreviousTab(browser());
   EXPECT_EQ(0, browser()->tab_strip_model()->active_index());
+  ui_test_utils::WaitForViewFocus(browser(), VIEW_ID_OMNIBOX, false);
   EXPECT_FALSE(IsViewFocused(VIEW_ID_OMNIBOX));
 }
 
 IN_PROC_BROWSER_TEST_F(BrowserFocusTest, OmniboxFocusesOnNewTab) {
   RunTestSequence(
       InstrumentTab(kWebContentsId),
-      ObserveState(views::test::kCurrentFocusedViewId,
-                   GetWidgetForBrowser(browser())),
-      WaitForState(views::test::kCurrentFocusedViewId, kOmniboxElementId));
+      PollState(kOmniboxFocused,
+                [this]() { return IsViewFocused(VIEW_ID_OMNIBOX); }),
+      WaitForState(kOmniboxFocused, true));
 }
 
 // TODO(crbug.com/370117091): This currently tests the incorrect behavior that
@@ -727,6 +988,8 @@ IN_PROC_BROWSER_TEST_F(BrowserFocusTest, OmniboxFocusStateAcrossHistory) {
   const GURL ntp_url = chrome::ChromeUINewTabURLAsGURL();
   RunTestSequence(
       InstrumentTab(kWebContentsId),
+      PollState(kOmniboxFocused,
+                [this]() { return IsViewFocused(VIEW_ID_OMNIBOX); }),
       ObserveState(views::test::kCurrentFocusedViewId,
                    GetWidgetForBrowser(browser())),
       NavigateWebContents(kWebContentsId, ntp_url),
@@ -736,8 +999,7 @@ IN_PROC_BROWSER_TEST_F(BrowserFocusTest, OmniboxFocusStateAcrossHistory) {
       // focus the location bar, but that is not the current behavior.
       PressButton(kToolbarBackButtonElementId),
       WaitForWebContentsNavigation(kWebContentsId, ntp_url),
-      WaitForState(views::test::kCurrentFocusedViewId,
-                   testing::Ne(kOmniboxElementId)),
+      WaitForState(kOmniboxFocused, false),
       // Navigate forward. Should focus the body.
       PressButton(kToolbarForwardButtonElementId),
       WaitForWebContentsNavigation(kWebContentsId, title1_url),
@@ -779,7 +1041,7 @@ IN_PROC_BROWSER_TEST_F(BrowserFocusTest, AboutBlankNavigationLocationTest) {
 IN_PROC_BROWSER_TEST_F(BrowserFocusTest, NoFocusForBackgroundNTP) {
   // Start at the NTP and navigate to a test page.  We will later go back to the
   // NTP, which gives the omnibox focus in some cases.
-  chrome::NewTab(browser());
+  chrome::NewTab(browser(), NewTabTypes::kNoUserAction);
   ASSERT_TRUE(ui_test_utils::NavigateToURL(
       browser(), embedded_test_server()->GetURL("/title1.html")));
 
@@ -808,7 +1070,8 @@ IN_PROC_BROWSER_TEST_F(BrowserFocusTest, NoFocusForBackgroundNTP) {
 // TODO(crbug.com/40794922): Flaky on Linux.
 // TODO(crbug.com/41493632): Broken since CR2023.
 IN_PROC_BROWSER_TEST_F(BrowserFocusTest, DISABLED_PopupLocationBar) {
-  Browser* popup_browser = CreateBrowserForPopup(browser()->profile());
+  BrowserWindowInterface* popup_browser =
+      CreateBrowserForPopup(browser()->GetProfile());
 
   // Make sure the popup is in the front. Otherwise the test is flaky.
   ASSERT_TRUE(ui_test_utils::BringBrowserWindowToFront(popup_browser));
@@ -827,7 +1090,7 @@ IN_PROC_BROWSER_TEST_F(BrowserFocusTest, DISABLED_PopupLocationBar) {
 
   ASSERT_TRUE(ui_test_utils::SendKeyPressSync(popup_browser, ui::VKEY_TAB,
                                               false, false, false, false));
-  if (sharing_hub::HasPageAction(browser()->profile(), true)) {
+  if (sharing_hub::HasPageAction(browser()->GetProfile(), true)) {
     ui_test_utils::WaitForViewFocus(popup_browser, VIEW_ID_SHARING_HUB_BUTTON,
                                     true);
     ASSERT_TRUE(ui_test_utils::SendKeyPressSync(popup_browser, ui::VKEY_TAB,
@@ -840,7 +1103,8 @@ IN_PROC_BROWSER_TEST_F(BrowserFocusTest, DISABLED_PopupLocationBar) {
 // Tests that the location bar is not focusable when hidden, which is the case
 // in app windows.
 IN_PROC_BROWSER_TEST_F(BrowserFocusTest, AppLocationBar) {
-  Browser* app_browser = CreateBrowserForApp("foo", browser()->profile());
+  BrowserWindowInterface* app_browser =
+      CreateBrowserForApp("foo", browser()->GetProfile());
 
   // Make sure the app window is in the front. Otherwise the test is flaky.
   ASSERT_TRUE(ui_test_utils::BringBrowserWindowToFront(app_browser));

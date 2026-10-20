@@ -64,10 +64,10 @@ NonModalPromoTriggerType MetricTypeForPromoReason(
 }  // namespace
 
 @interface NonModalDefaultBrowserPromoSchedulerSceneAgent () <
-    WebStateListObserving,
+    BrowserObserving,
     CRWWebStateObserver,
     OverlayPresenterObserving,
-    BrowserObserving> {
+    WebStateListObserving> {
   std::unique_ptr<WebStateListObserverBridge> _webStateListObserver;
   std::unique_ptr<web::WebStateObserverBridge> _webStateObserver;
   std::unique_ptr<ActiveWebStateObservationForwarder> _forwarder;
@@ -269,7 +269,8 @@ NonModalPromoTriggerType MetricTypeForPromoReason(
 - (void)logPromoAction:(NonModalDefaultBrowserPromoReason)currentPromoReason
         promoShownTime:(base::TimeTicks)promoShownTime {
   RecordDefaultBrowserPromoLastAction(
-      IOSDefaultBrowserPromoAction::kActionButton);
+      IOSDefaultBrowserPromoAction::kActionButton,
+      IOSDefaultBrowserPromoSurface::kNonModal);
   LogNonModalPromoAction(NonModalPromoAction::kAccepted,
                          MetricTypeForPromoReason(currentPromoReason),
                          _userInteractionWithNonModalPromoCount);

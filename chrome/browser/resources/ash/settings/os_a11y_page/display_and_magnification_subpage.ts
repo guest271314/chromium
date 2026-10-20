@@ -85,29 +85,6 @@ export class SettingsDisplayAndMagnificationSubpageElement extends
         },
       },
 
-      /**
-       * Whether the reduced animations feature is enabled.
-       */
-      isAccessibilityReducedAnimationsEnabled_: {
-        type: Boolean,
-        value() {
-          return loadTimeData.getBoolean(
-            'isAccessibilityReducedAnimationsEnabled');
-        },
-      },
-
-      /**
-       * Whether the magnifier following ChromeVox focus feature is
-       * enabled.
-       */
-      isAccessibilityMagnifierFollowsChromeVoxEnabled_: {
-        type: Boolean,
-        value() {
-          return loadTimeData.getBoolean(
-              'isAccessibilityMagnifierFollowsChromeVoxEnabled');
-        },
-      },
-
       colorVisionDeficiencyTypeOptions_: {
         readOnly: true,
         type: Array,
@@ -152,13 +129,13 @@ export class SettingsDisplayAndMagnificationSubpageElement extends
     Setting.kAlwaysShowScrollbarsEnabled,
   ]);
 
-  private readonly colorVisionDeficiencyTypeOptions_:
+  declare private readonly colorVisionDeficiencyTypeOptions_:
       Array<{value: number, name: string}>;
-  private isKioskModeActive_: boolean;
-  private screenMagnifierMouseFollowingModePrefValues_: {[key: string]: number};
-  private screenMagnifierZoomOptions_: Array<{value: number, name: string}>;
-  private isAccessibilityReducedAnimationsEnabled_: boolean;
-  private isAccessibilityMagnifierFollowsChromeVoxEnabled_: boolean;
+  declare private isKioskModeActive_: boolean;
+  declare private screenMagnifierMouseFollowingModePrefValues_:
+      {[key: string]: number};
+  declare private screenMagnifierZoomOptions_:
+      Array<{value: number, name: string}>;
 
   constructor() {
     super();

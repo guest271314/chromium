@@ -2,7 +2,32 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
+import("//build/rust/rust_static_library.gni")
 import("//media/media_options.gni")
+
+rust_static_library("safe_mpeg_audio_parsers") {
+  crate_root = "mpeg/lib.rs"
+  sources = [
+    "mpeg/bit_reader.rs",
+    "mpeg/lib.rs",
+    "mpeg/mpeg_audio_parser.rs",
+    "mpeg/parse_adts.rs",
+    "mpeg/parse_mp3.rs",
+  ]
+  cxx_bindings = [ "mpeg/lib.rs" ]
+  allow_unsafe = true
+}
+
+rust_static_library("rust_unittests") {
+  testonly = true
+  is_gtest_unittests = true
+  crate_root = "mpeg/bit_reader_unittest.rs"
+  sources = [ "mpeg/bit_reader_unittest.rs" ]
+  deps = [
+    ":safe_mpeg_audio_parsers",
+    "//testing/rust_gtest_interop",
+  ]
+}
 
 source_set("formats") {
   # Do not expand the visibility here without double-checking with OWNERS, this
@@ -37,14 +62,14 @@ source_set("formats") {
     "mp4/es_descriptor.h",
     "mp4/fourccs.cc",
     "mp4/fourccs.h",
-    "mp4/hdr_metadata_track.cc",
-    "mp4/hdr_metadata_track.h",
     "mp4/mp4_stream_parser.cc",
     "mp4/mp4_stream_parser.h",
     "mp4/parse_result.h",
     "mp4/rcheck.h",
     "mp4/sample_to_group_iterator.cc",
     "mp4/sample_to_group_iterator.h",
+    "mp4/stream_parser_metadata_track.cc",
+    "mp4/stream_parser_metadata_track.h",
     "mp4/track_run_iterator.cc",
     "mp4/track_run_iterator.h",
     "mp4/writable_box_definitions.cc",
@@ -81,11 +106,10 @@ source_set("formats") {
     "webm/webm_tracks_parser.h",
     "webm/webm_video_client.cc",
     "webm/webm_video_client.h",
-    "webm/webm_webvtt_parser.cc",
-    "webm/webm_webvtt_parser.h",
   ]
 
   deps = [
+    ":safe_mpeg_audio_parsers",
     "//build:chromecast_buildflags",
     "//media:media_buildflags",
     "//media/base",
@@ -138,8 +162,6 @@ source_set("formats") {
 
   if (enable_platform_dts_audio) {
     sources += [
-      "dts/dts_stream_parser.cc",
-      "dts/dts_stream_parser.h",
       "dts/dts_util.cc",
       "dts/dts_util.h",
       "mp4/dts.cc",
@@ -232,6 +254,8 @@ source_set("formats") {
     "hls/rendition_group.h",
     "hls/rendition_manager.cc",
     "hls/rendition_manager.h",
+    "hls/security_metadata.cc",
+    "hls/security_metadata.h",
     "hls/segment_stream.cc",
     "hls/segment_stream.h",
     "hls/source_string.cc",
@@ -309,10 +333,10 @@ source_set("unit_tests") {
     "webm/webm_stream_parser_unittest.cc",
     "webm/webm_tracks_parser_unittest.cc",
     "webm/webm_video_client_unittest.cc",
-    "webm/webm_webvtt_parser_unittest.cc",
   ]
 
   deps = [
+    ":rust_unittests",
     "//base/test:test_support",
     "//media:test_support",
     "//testing/gmock",
@@ -323,14 +347,15 @@ source_set("unit_tests") {
     sources += [
       "mp4/aac_unittest.cc",
       "mp4/avc_unittest.cc",
+      "mp4/box_definitions_unittest.cc",
       "mp4/box_reader_unittest.cc",
       "mp4/dolby_vision_unittest.cc",
       "mp4/es_descriptor_unittest.cc",
       "mp4/h264_annex_b_to_avc_bitstream_converter_unittest.cc",
       "mp4/h26x_annex_b_to_bitstream_converter_unittest.cc",
-      "mp4/hdr_metadata_track_unittest.cc",
       "mp4/mp4_stream_parser_unittest.cc",
       "mp4/sample_to_group_iterator_unittest.cc",
+      "mp4/stream_parser_metadata_track_unittest.cc",
       "mp4/track_run_iterator_unittest.cc",
       "mpeg/adts_stream_parser_unittest.cc",
     ]

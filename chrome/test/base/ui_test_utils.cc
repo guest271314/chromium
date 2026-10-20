@@ -22,6 +22,7 @@
 #include "base/logging.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/ref_counted.h"
+#include "base/memory/weak_ptr.h"
 #include "base/path_service.h"
 #include "base/run_loop.h"
 #include "base/scoped_observation.h"
@@ -39,10 +40,9 @@
 #include "chrome/browser/task_manager/providers/web_contents/web_contents_tag.h"
 #include "chrome/browser/task_manager/providers/web_contents/web_contents_tags_manager.h"
 #include "chrome/browser/task_manager/web_contents_tags.h"
-#include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/browser_active_state_manager/browser_active_state_manager.h"
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/browser_window.h"
-#include "chrome/browser/ui/browser_window/public/browser_collection.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface_iterator.h"
@@ -56,11 +56,11 @@
 #include "chrome/browser/ui/omnibox/omnibox_controller.h"
 #include "chrome/browser/ui/omnibox/omnibox_edit_model.h"
 #include "chrome/browser/ui/omnibox/omnibox_view.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/common/chrome_paths.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/test/base/autocomplete_change_observer.h"
-#include "chrome/test/base/chrome_test_utils.h"
 #include "chrome/test/base/find_result_waiter.h"
 #include "components/bookmarks/browser/bookmark_model.h"
 #include "components/download/public/common/download_item.h"
@@ -71,6 +71,7 @@
 #include "components/javascript_dialogs/app_modal_dialog_queue.h"
 #include "components/omnibox/browser/autocomplete_controller.h"
 #include "components/prefs/pref_service.h"
+#include "components/sessions/core/session_id.h"
 #include "components/web_modal/web_contents_modal_dialog_manager.h"
 #include "content/public/browser/download_manager.h"
 #include "content/public/browser/navigation_controller.h"
@@ -92,9 +93,11 @@
 #include "services/network/public/cpp/resource_request_body.h"
 #include "services/network/public/mojom/cookie_manager.mojom.h"
 #include "third_party/blink/public/common/chrome_debug_urls.h"
+#include "ui/base/page_transition_types.h"
+#include "ui/base/window_open_disposition.h"
 #include "ui/gfx/geometry/rect.h"
+#include "ui/views/test/views_test_utils.h"
 #include "ui/views/test/widget_activation_waiter.h"
-#include "ui/views/widget/widget_interactive_uitest_utils.h"
 
 #if BUILDFLAG(IS_WIN)
 #include <windows.h>
@@ -126,12 +129,20 @@ namespace ui_test_utils {
 namespace {
 
 BrowserWindowInterface* WaitForBrowserNotInSet(
-    std::set<BrowserWindowInterface*> excluded_browsers) {
-  BrowserWindowInterface* new_browser = GetBrowserNotInSet(excluded_browsers);
+    std::set<SessionID> excluded_browsers) {
+  BrowserWindowInterface* new_browser = nullptr;
+  GlobalBrowserCollection::GetInstance()->ForEach(
+      [&](BrowserWindowInterface* browser) {
+        if (!excluded_browsers.contains(browser->GetSessionID())) {
+          new_browser = browser;
+          return false;  // Stop iterating.
+        }
+        return true;  // Continue iterating.
+      });
   if (!new_browser) {
     new_browser = WaitForBrowserToOpen();
     // The new browser should never be in |excluded_browsers|.
-    DCHECK(!excluded_browsers.contains(new_browser));
+    DCHECK(!excluded_browsers.contains(new_browser->GetSessionID()));
   }
   return new_browser;
 }
@@ -291,9 +302,7 @@ void NavigateToURL(NavigateParams* params) {
 }
 
 void NavigateToURLWithPost(BrowserWindowInterface* browser, const GURL& url) {
-  NavigateParams params(
-      browser ? browser->GetBrowserForMigrationOnly() : nullptr, url,
-      ui::PAGE_TRANSITION_FORM_SUBMIT);
+  NavigateParams params(browser, url, ui::PAGE_TRANSITION_FORM_SUBMIT);
 
   std::string post_data("test=body");
   params.post_data = network::ResourceRequestBody::CreateFromCopyOfBytes(
@@ -333,20 +342,19 @@ NavigateToURLWithDispositionBlockUntilNavigationsComplete(
   if (!blink::IsRendererDebugURL(url))
     same_tab_observer.set_expected_initial_url(url);
 
-  std::set<BrowserWindowInterface*> initial_browsers;
+  std::set<SessionID> initial_browsers;
   ForEachCurrentBrowserWindowInterfaceOrderedByActivation(
       [&](BrowserWindowInterface* initial_browser) {
-        initial_browsers.insert(initial_browser);
+        initial_browsers.insert(initial_browser->GetSessionID());
         return true;  // Continue iterating.
       });
 
   AllBrowserTabAddedWaiter tab_added_waiter;
 
   WebContents* const web_contents =
-      browser->GetBrowserForMigrationOnly()->OpenURL(
-          OpenURLParams(url, Referrer(), disposition, ui::PAGE_TRANSITION_TYPED,
-                        false),
-          /*navigation_handle_callback=*/{});
+      browser->OpenURL(OpenURLParams::CreateBrowserInitiated(
+                           url, disposition, ui::PAGE_TRANSITION_TYPED),
+                       /*navigation_handle_callback=*/{});
   if (browser_test_flags & BROWSER_TEST_WAIT_FOR_BROWSER) {
     // `WaitForBrowserNotInSet()` waits until the new browser is created, and
     // `WaitForBrowserSetLastActive()` waits until the new browser is active.
@@ -383,7 +391,16 @@ NavigateToURLWithDispositionBlockUntilNavigationsComplete(
     EXPECT_EQ(web_contents, tab_strip->GetActiveWebContents());
   }
   if (disposition == WindowOpenDisposition::CURRENT_TAB) {
+    // Waiting for the navigation may destroy `web_contents` (e.g. navigating
+    // to a resource that closes its own tab, such as a corrupted extension
+    // page that gets disabled mid-navigation under enforced content
+    // verification). Guard against use-after-free before touching it again.
+    base::WeakPtr<content::WebContents> weak_web_contents =
+        web_contents->GetWeakPtr();
     same_tab_observer.Wait();
+    if (!weak_web_contents) {
+      return nullptr;
+    }
     content::SimulateEndOfPaintHoldingOnPrimaryMainFrame(web_contents);
     return web_contents->GetPrimaryMainFrame();
   } else if (web_contents) {
@@ -393,7 +410,13 @@ NavigateToURLWithDispositionBlockUntilNavigationsComplete(
         /*ignore_uncommitted_navigations=*/false);
     if (!blink::IsRendererDebugURL(url))
       observer.set_expected_initial_url(url);
+    // See the comment above: the navigation may destroy `web_contents`.
+    base::WeakPtr<content::WebContents> weak_web_contents =
+        web_contents->GetWeakPtr();
     observer.Wait();
+    if (!weak_web_contents) {
+      return nullptr;
+    }
     content::SimulateEndOfPaintHoldingOnPrimaryMainFrame(web_contents);
     return web_contents->GetPrimaryMainFrame();
   }
@@ -504,8 +527,8 @@ int FindInPage(WebContents* tab,
   find_in_page::FindTabHelper* find_tab_helper =
       find_in_page::FindTabHelper::FromWebContents(tab);
   find_tab_helper->StartFinding(search_string, forward, match_case,
-                                true, /* find_match */
-                                true /* run_synchronously_for_testing */);
+                                /*find_match=*/true, /*scroll_to_match=*/true,
+                                /*run_synchronously_for_testing=*/true);
   FindResultWaiter observer(tab);
   observer.Wait();
   if (ordinal)
@@ -528,8 +551,7 @@ void DownloadURL(BrowserWindowInterface* browser, const GURL& download_url) {
 }
 
 void WaitForAutocompleteDone(BrowserWindowInterface* browser) {
-  auto* controller = browser->GetBrowserForMigrationOnly()
-                         ->window()
+  auto* controller = BrowserWindow::FromBrowser(browser)
                          ->GetLocationBar()
                          ->GetOmniboxController()
                          ->autocomplete_controller();
@@ -578,19 +600,25 @@ bool MaximizeAndWaitUntilUIUpdateDone(BrowserWindowInterface& browser) {
 
 FullscreenWaiter::FullscreenWaiter(BrowserWindowInterface* browser,
                                    FullscreenWaiter::Expectation expectation)
+    : FullscreenWaiter(
+          ExclusiveAccessManager::From(browser)->fullscreen_controller(),
+          std::move(expectation)) {}
+
+FullscreenWaiter::FullscreenWaiter(FullscreenController* controller,
+                                   FullscreenWaiter::Expectation expectation)
     : expectation_(std::move(expectation)),
-      controller_(browser->GetFeatures()
-                      .exclusive_access_manager()
-                      ->fullscreen_controller()),
+      controller_(controller),
       // Sometimes, the wait is called on a sequeunce, e.g.
       // as a part of interactive_ui_tests's RunTestSequence.
       // To handle that case, we can process pending task posted to the
       // sequence in nested RunLoop.
       run_loop_(base::RunLoop::Type::kNestableTasksAllowed),
-      satisfied_(IsSatisfied()) {
-  subscription_ = controller_->RegisterOnFullscreenStateChanged(
-      base::BindRepeating(&FullscreenWaiter::OnFullscreenStateChanged,
-                          base::Unretained(this)));
+      satisfied_(controller_ ? IsSatisfied() : true) {
+  if (controller_) {
+    subscription_ = controller_->RegisterOnFullscreenStateChanged(
+        base::BindRepeating(&FullscreenWaiter::OnFullscreenStateChanged,
+                            base::Unretained(this)));
+  }
 }
 
 FullscreenWaiter::~FullscreenWaiter() = default;
@@ -643,10 +671,8 @@ void ToggleFullscreenModeAndWait(BrowserWindowInterface* browser) {
   // The waiting condition is following the current implementation.
   // If the mode is either browser/tab fullscreen, it will be existed.
   // Otherwise, entering into browser fullscreen.
-  bool current = browser->GetFeatures()
-                     .exclusive_access_manager()
-                     ->context()
-                     ->IsFullscreen();
+  bool current =
+      ExclusiveAccessManager::From(browser)->context()->IsFullscreen();
   FullscreenWaiter waiter(browser, current ? FullscreenWaiter::kNoFullscreen
                                            : FullscreenWaiter::Expectation{
                                                  .browser_fullscreen = true});
@@ -668,14 +694,14 @@ bool IsBrowserActive(BrowserWindowInterface* browser) {
   return widget->native_widget_active();
 }
 
-Browser* OpenNewEmptyWindowAndWaitUntilActivated(
+BrowserWindowInterface* OpenNewEmptyWindowAndWaitUntilActivated(
     Profile* profile,
     bool should_trigger_session_restore) {
   ui_test_utils::BrowserCreatedObserver browser_created_observer;
   chrome::NewEmptyWindow(profile, should_trigger_session_restore);
   BrowserWindowInterface* new_browser = browser_created_observer.Wait();
   WaitUntilBrowserBecomeActive(new_browser);
-  return new_browser->GetBrowserForMigrationOnly();
+  return new_browser;
 }
 
 BrowserDidBecomeActiveWaiter::BrowserDidBecomeActiveWaiter(
@@ -723,12 +749,12 @@ void DeprecatedFakeActivateBrowser(BrowserWindowInterface* browser) {
   CHECK(browser);
 
   // We must deactivate the currently active browser first.
-  GetLastActiveBrowserWindowInterfaceWithAnyProfile()
-      ->GetBrowserForMigrationOnly()
+  BrowserActiveStateManager::From(
+      GetLastActiveBrowserWindowInterfaceWithAnyProfile())
       ->DidBecomeInactive();
 
   // Fake activation of the target browser.
-  browser->GetBrowserForMigrationOnly()->DidBecomeActive();
+  BrowserActiveStateManager::From(browser)->DidBecomeActive();
 }
 
 void SendToOmniboxAndSubmit(BrowserWindowInterface* browser,
@@ -736,7 +762,7 @@ void SendToOmniboxAndSubmit(BrowserWindowInterface* browser,
                             base::TimeTicks match_selection_timestamp,
                             bool wait_for_autocomplete_done) {
   LocationBar* location_bar =
-      browser->GetBrowserForMigrationOnly()->window()->GetLocationBar();
+      BrowserWindow::FromBrowser(browser)->GetLocationBar();
   OmniboxView* omnibox = location_bar->GetOmniboxView();
   location_bar->GetOmniboxController()->edit_model()->OnSetFocus(
       /*control_down=*/false);
@@ -749,7 +775,7 @@ void SendToOmniboxAndSubmit(BrowserWindowInterface* browser,
   }
 }
 
-Browser* GetBrowserNotInSet(
+BrowserWindowInterface* GetBrowserNotInSet(
     const std::set<BrowserWindowInterface*>& excluded_browsers) {
   BrowserWindowInterface* browser_not_in_set = nullptr;
   ForEachCurrentBrowserWindowInterfaceOrderedByActivation(
@@ -760,8 +786,7 @@ Browser* GetBrowserNotInSet(
         }
         return true;  // Continue iterating.
       });
-  return browser_not_in_set ? browser_not_in_set->GetBrowserForMigrationOnly()
-                            : nullptr;
+  return browser_not_in_set;
 }
 
 std::vector<BrowserWindowInterface*> FindMatchingBrowsers(
@@ -1030,7 +1055,7 @@ void WaitForHistoryToLoad(history::HistoryService* history_service) {
   }
 }
 
-Browser* WaitForBrowserToOpen() {
+BrowserWindowInterface* WaitForBrowserToOpen() {
   return BrowserCreatedObserver().Wait();
 }
 
@@ -1157,12 +1182,12 @@ BrowserCreatedObserver::BrowserCreatedObserver() {
 
 BrowserCreatedObserver::~BrowserCreatedObserver() = default;
 
-Browser* BrowserCreatedObserver::Wait() {
+BrowserWindowInterface* BrowserCreatedObserver::Wait() {
   if (!browser_) {
     run_loop_.Run();
   }
   CHECK(browser_);
-  return browser_->GetBrowserForMigrationOnly();
+  return browser_;
 }
 
 void BrowserCreatedObserver::OnBrowserCreated(BrowserWindowInterface* browser) {

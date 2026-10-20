@@ -19,6 +19,7 @@
 #include "components/sessions/core/session_types.h"
 #include "components/sessions/core/sessions_export.h"
 #include "components/split_tabs/split_tab_id.h"
+#include "components/split_tabs/split_tab_visual_data.h"
 #include "components/tab_groups/tab_group_id.h"
 #include "components/tab_groups/tab_group_visual_data.h"
 #include "ui/base/mojom/window_show_state.mojom-forward.h"
@@ -114,6 +115,12 @@ struct SESSIONS_EXPORT Tab : public Entry {
   // Index within the tab strip. May be -1 for an unknown index.
   int tabstrip_index = -1;
 
+  // Index within `group`, if the tab was in one. May be -1 for an unknown
+  // index. Unlike `tabstrip_index`, this survives the group being reopened
+  // with a new local id or moved to another window. Set only by contexts whose
+  // indices address the tab strip; desktop, the only reader, is one.
+  int index_in_group = -1;
+
   // True if the tab was pinned.
   bool pinned = false;
 
@@ -128,6 +135,9 @@ struct SESSIONS_EXPORT Tab : public Entry {
 
   // The split view the tab belonged to, if any.
   std::optional<split_tabs::SplitTabId> split_id = std::nullopt;
+
+  // The split visual data for the tab, if any.
+  std::optional<split_tabs::SplitTabVisualData> split_visual_data;
 
   // The group the tab belonged to, if any.
   std::optional<tab_groups::TabGroupId> group;
@@ -149,8 +159,15 @@ struct SESSIONS_EXPORT Split : public Entry {
   // Entry:
   size_t EstimateMemoryUsage() const override;
 
+  // Creates a new Split object using the split metadata from a tab. CHECK if
+  // `tab` has a split_id value.
+  static std::unique_ptr<Split> FromTab(const Tab& tab);
+
   // The unique identifier for this split view instance.
   std::optional<split_tabs::SplitTabId> split_id = std::nullopt;
+
+  // The visual data for the split view.
+  split_tabs::SplitTabVisualData visual_data;
 
   // The tabs that comprised the split view, in order.
   std::vector<std::unique_ptr<Tab>> tabs;
@@ -184,8 +201,10 @@ struct SESSIONS_EXPORT Group : public Entry {
   // there.
   SessionID::id_type browser_id = 0;
 
-  // A mapping of split tab IDs to the split tabs inside this group.
-  std::map<split_tabs::SplitTabId, std::vector<raw_ptr<Tab>>> split_tabs;
+  // The split views in the group. These are only used to query properties
+  // about a split view such as visual data. As such, splits in this structure
+  // should NOT contain any tabs.
+  std::map<split_tabs::SplitTabId, std::unique_ptr<Split>> split_tabs;
 };
 
 // Represents a previously open window.
@@ -199,7 +218,8 @@ struct SESSIONS_EXPORT Window : public Entry {
   size_t EstimateMemoryUsage() const override;
 
   // Type of window.
-  sessions::SessionWindow::WindowType window_type;
+  sessions::SessionWindow::WindowType window_type =
+      sessions::SessionWindow::TYPE_NORMAL;
 
   // The tabs that comprised the window, in order.
   std::vector<std::unique_ptr<Tab>> tabs;
@@ -208,6 +228,11 @@ struct SESSIONS_EXPORT Window : public Entry {
   // a group such as visual data, collapsed state, and saved state. As such,
   // groups in this structure should NOT contain any tabs.
   std::map<tab_groups::TabGroupId, std::unique_ptr<Group>> tab_groups;
+
+  // The split views in the window. These are only used to query properties
+  // about a split view such as visual data. As such, splits in this structure
+  // should NOT contain any tabs.
+  std::map<split_tabs::SplitTabId, std::unique_ptr<Split>> split_tabs;
 
   // Index of the selected tab.
   int selected_tab_index = -1;

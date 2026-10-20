@@ -54,12 +54,15 @@ void SafeBrowsingNavigationObserver::MaybeCreateForWebContents(
     HostContentSettingsMap* host_content_settings_map,
     SafeBrowsingNavigationObserverManager* observer_manager,
     PrefService* prefs,
-    bool has_safe_browsing_service) {
+    bool has_safe_browsing_service,
+    bool is_referrer_chain_needed_for_enterprise) {
   if (FromWebContents(web_contents))
     return;
 
-  if (safe_browsing::SafeBrowsingNavigationObserverManager::IsEnabledAndReady(
-          prefs, has_safe_browsing_service)) {
+  if (observer_manager &&
+      (SafeBrowsingNavigationObserverManager::IsEnabledAndReady(
+           prefs, has_safe_browsing_service) ||
+       is_referrer_chain_needed_for_enterprise)) {
     web_contents->SetUserData(
         kWebContentsUserDataKey,
         std::make_unique<SafeBrowsingNavigationObserver>(
@@ -244,20 +247,22 @@ void SafeBrowsingNavigationObserver::
   if (it != navigation_handle_map_.end() &&
       it->second->navigation_initiation != ReferrerChainEntry::UNDEFINED) {
     nav_event->navigation_initiation = it->second->navigation_initiation;
-  } else {
-    // If this is the first time we see this navigation_handle, decide if it is
-    // triggered by user.
-    if (!navigation_handle->IsRendererInitiated()) {
-      nav_event->navigation_initiation = ReferrerChainEntry::BROWSER_INITIATED;
-    } else if (GetObserverManager()->HasUnexpiredUserGesture(web_contents())) {
-      nav_event->navigation_initiation =
-          ReferrerChainEntry::RENDERER_INITIATED_WITH_USER_GESTURE;
-    } else {
-      nav_event->navigation_initiation =
-          ReferrerChainEntry::RENDERER_INITIATED_WITHOUT_USER_GESTURE;
-    }
-    GetObserverManager()->OnUserGestureConsumed(web_contents());
+    return;
   }
+
+  // If this is the first time we see this navigation_handle, decide if it is
+  // triggered by user.
+  if (!navigation_handle->IsRendererInitiated()) {
+    nav_event->navigation_initiation = ReferrerChainEntry::BROWSER_INITIATED;
+  } else if (GetObserverManager()->HasUnexpiredUserGesture(web_contents()) ||
+             navigation_handle->HasUserGesture()) {
+    nav_event->navigation_initiation =
+        ReferrerChainEntry::RENDERER_INITIATED_WITH_USER_GESTURE;
+  } else {
+    nav_event->navigation_initiation =
+        ReferrerChainEntry::RENDERER_INITIATED_WITHOUT_USER_GESTURE;
+  }
+  GetObserverManager()->OnUserGestureConsumed(web_contents());
 }
 
 void SafeBrowsingNavigationObserver::SetNavigationSourceUrl(
@@ -335,6 +340,14 @@ void SafeBrowsingNavigationObserver::SetNavigationOutermostMainFrameIds(
       nav_event->initiator_outermost_main_frame_id =
           initiator_frame_host->GetOutermostMainFrame()->GetGlobalId();
     }
+  }
+}
+
+void SafeBrowsingNavigationObserver::RecordHostToIpMapping(
+    const std::string& host,
+    const std::string& ip) {
+  if (GetObserverManager()) {
+    GetObserverManager()->RecordHostToIpMapping(host, ip);
   }
 }
 

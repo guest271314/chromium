@@ -7,21 +7,23 @@
           "--platform",
           "iPad Air 11-inch (M2)",
           "--version",
-          "18.2",
+          "26.5",
           "--xcodebuild-sim-runner",
           "--extra-app-args=--disable-field-trial-config",
           "--out-dir",
           "${ISOLATED_OUTDIR}",
           "--xcode-build-version",
-          "17a400",
+          "27a266a",
           "--xctest"
         ],
+        "ci_only": true,
+        "experiment_percentage": 100,
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
         "module_name": "//ios/chrome/test/earl_grey2:ios_chrome_bookmarks_eg2tests_module",
         "module_scheme": "xctest",
-        "name": "ios_chrome_bookmarks_eg2tests_module iPad Air (6th generation) 18.2",
+        "name": "ios_chrome_bookmarks_eg2tests_module iPad Air (6th generation) 26.5",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -31,21 +33,21 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:4c7290150d1c360cecc6a93c0214dc531585c3ab"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
             "cpu": "arm64",
-            "os": "Mac-15|Mac-26",
+            "os": "Mac-26",
             "pool": "chromium.tests.finch"
           },
           "named_caches": [
             {
-              "name": "runtime_ios_18_2",
-              "path": "Runtime-ios-18.2"
+              "name": "runtime_ios_26_5",
+              "path": "Runtime-ios-26.5"
             },
             {
-              "name": "xcode_ios_17a400",
+              "name": "xcode_ios_27a266a",
               "path": "Xcode.app"
             }
           ],
@@ -54,29 +56,31 @@
         },
         "test": "ios_chrome_bookmarks_eg2tests_module",
         "test_id_prefix": "ninja://ios/chrome/test/earl_grey2:ios_chrome_bookmarks_eg2tests_module/",
-        "variant_id": "iPad Air (6th generation) 18.2"
+        "variant_id": "iPad Air (6th generation) 26.5"
       },
       {
         "args": [
           "--use-simulator-cache",
           "--platform",
-          "iPhone 15",
+          "iPhone 16",
           "--version",
-          "18.2",
+          "26.5",
           "--xcodebuild-sim-runner",
           "--extra-app-args=--disable-field-trial-config",
           "--out-dir",
           "${ISOLATED_OUTDIR}",
           "--xcode-build-version",
-          "17a400",
+          "27a266a",
           "--xctest"
         ],
+        "ci_only": true,
+        "experiment_percentage": 100,
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
         "module_name": "//ios/chrome/test/earl_grey2:ios_chrome_bookmarks_eg2tests_module",
         "module_scheme": "xctest",
-        "name": "ios_chrome_bookmarks_eg2tests_module iPhone 15 18.2",
+        "name": "ios_chrome_bookmarks_eg2tests_module iPhone 16 26.5",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -86,21 +90,21 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:4c7290150d1c360cecc6a93c0214dc531585c3ab"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
             "cpu": "arm64",
-            "os": "Mac-15|Mac-26",
+            "os": "Mac-26",
             "pool": "chromium.tests.finch"
           },
           "named_caches": [
             {
-              "name": "runtime_ios_18_2",
-              "path": "Runtime-ios-18.2"
+              "name": "runtime_ios_26_5",
+              "path": "Runtime-ios-26.5"
             },
             {
-              "name": "xcode_ios_17a400",
+              "name": "xcode_ios_27a266a",
               "path": "Xcode.app"
             }
           ],
@@ -109,7 +113,7 @@
         },
         "test": "ios_chrome_bookmarks_eg2tests_module",
         "test_id_prefix": "ninja://ios/chrome/test/earl_grey2:ios_chrome_bookmarks_eg2tests_module/",
-        "variant_id": "iPhone 15 18.2"
+        "variant_id": "iPhone 16 26.5"
       },
       {
         "args": [
@@ -119,21 +123,23 @@
           "--platform",
           "iPad Air 11-inch (M2)",
           "--version",
-          "18.2",
+          "26.5",
           "--xcodebuild-sim-runner",
           "--extra-app-args=--disable-field-trial-config",
           "--out-dir",
           "${ISOLATED_OUTDIR}",
           "--xcode-build-version",
-          "17a400",
+          "27a266a",
           "--xctest"
         ],
+        "ci_only": true,
+        "experiment_percentage": 100,
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
         "module_name": "//ios/chrome/test/earl_grey2:ios_chrome_integration_eg2tests_module",
         "module_scheme": "xctest",
-        "name": "ios_chrome_integration_eg2tests_module iPad Air (6th generation) 18.2",
+        "name": "ios_chrome_integration_eg2tests_module iPad Air (6th generation) 26.5",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -143,21 +149,21 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:4c7290150d1c360cecc6a93c0214dc531585c3ab"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
             "cpu": "arm64",
-            "os": "Mac-15|Mac-26",
+            "os": "Mac-26",
             "pool": "chromium.tests.finch"
           },
           "named_caches": [
             {
-              "name": "runtime_ios_18_2",
-              "path": "Runtime-ios-18.2"
+              "name": "runtime_ios_26_5",
+              "path": "Runtime-ios-26.5"
             },
             {
-              "name": "xcode_ios_17a400",
+              "name": "xcode_ios_27a266a",
               "path": "Xcode.app"
             }
           ],
@@ -166,7 +172,7 @@
         },
         "test": "ios_chrome_integration_eg2tests_module",
         "test_id_prefix": "ninja://ios/chrome/test/earl_grey2:ios_chrome_integration_eg2tests_module/",
-        "variant_id": "iPad Air (6th generation) 18.2"
+        "variant_id": "iPad Air (6th generation) 26.5"
       },
       {
         "args": [
@@ -174,23 +180,25 @@
           "2",
           "--use-simulator-cache",
           "--platform",
-          "iPhone 15",
+          "iPhone 16",
           "--version",
-          "18.2",
+          "26.5",
           "--xcodebuild-sim-runner",
           "--extra-app-args=--disable-field-trial-config",
           "--out-dir",
           "${ISOLATED_OUTDIR}",
           "--xcode-build-version",
-          "17a400",
+          "27a266a",
           "--xctest"
         ],
+        "ci_only": true,
+        "experiment_percentage": 100,
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
         "module_name": "//ios/chrome/test/earl_grey2:ios_chrome_integration_eg2tests_module",
         "module_scheme": "xctest",
-        "name": "ios_chrome_integration_eg2tests_module iPhone 15 18.2",
+        "name": "ios_chrome_integration_eg2tests_module iPhone 16 26.5",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -200,21 +208,21 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:4c7290150d1c360cecc6a93c0214dc531585c3ab"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
             "cpu": "arm64",
-            "os": "Mac-15|Mac-26",
+            "os": "Mac-26",
             "pool": "chromium.tests.finch"
           },
           "named_caches": [
             {
-              "name": "runtime_ios_18_2",
-              "path": "Runtime-ios-18.2"
+              "name": "runtime_ios_26_5",
+              "path": "Runtime-ios-26.5"
             },
             {
-              "name": "xcode_ios_17a400",
+              "name": "xcode_ios_27a266a",
               "path": "Xcode.app"
             }
           ],
@@ -223,7 +231,7 @@
         },
         "test": "ios_chrome_integration_eg2tests_module",
         "test_id_prefix": "ninja://ios/chrome/test/earl_grey2:ios_chrome_integration_eg2tests_module/",
-        "variant_id": "iPhone 15 18.2"
+        "variant_id": "iPhone 16 26.5"
       },
       {
         "args": [
@@ -233,21 +241,23 @@
           "--platform",
           "iPad Air 11-inch (M2)",
           "--version",
-          "18.2",
+          "26.5",
           "--xcodebuild-sim-runner",
           "--extra-app-args=--disable-field-trial-config",
           "--out-dir",
           "${ISOLATED_OUTDIR}",
           "--xcode-build-version",
-          "17a400",
+          "27a266a",
           "--xctest"
         ],
+        "ci_only": true,
+        "experiment_percentage": 100,
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
         "module_name": "//ios/chrome/test/earl_grey2:ios_chrome_settings_eg2tests_module",
         "module_scheme": "xctest",
-        "name": "ios_chrome_settings_eg2tests_module iPad Air (6th generation) 18.2",
+        "name": "ios_chrome_settings_eg2tests_module iPad Air (6th generation) 26.5",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -257,21 +267,21 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:4c7290150d1c360cecc6a93c0214dc531585c3ab"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
             "cpu": "arm64",
-            "os": "Mac-15|Mac-26",
+            "os": "Mac-26",
             "pool": "chromium.tests.finch"
           },
           "named_caches": [
             {
-              "name": "runtime_ios_18_2",
-              "path": "Runtime-ios-18.2"
+              "name": "runtime_ios_26_5",
+              "path": "Runtime-ios-26.5"
             },
             {
-              "name": "xcode_ios_17a400",
+              "name": "xcode_ios_27a266a",
               "path": "Xcode.app"
             }
           ],
@@ -280,7 +290,7 @@
         },
         "test": "ios_chrome_settings_eg2tests_module",
         "test_id_prefix": "ninja://ios/chrome/test/earl_grey2:ios_chrome_settings_eg2tests_module/",
-        "variant_id": "iPad Air (6th generation) 18.2"
+        "variant_id": "iPad Air (6th generation) 26.5"
       },
       {
         "args": [
@@ -288,23 +298,25 @@
           "2",
           "--use-simulator-cache",
           "--platform",
-          "iPhone 15",
+          "iPhone 16",
           "--version",
-          "18.2",
+          "26.5",
           "--xcodebuild-sim-runner",
           "--extra-app-args=--disable-field-trial-config",
           "--out-dir",
           "${ISOLATED_OUTDIR}",
           "--xcode-build-version",
-          "17a400",
+          "27a266a",
           "--xctest"
         ],
+        "ci_only": true,
+        "experiment_percentage": 100,
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
         "module_name": "//ios/chrome/test/earl_grey2:ios_chrome_settings_eg2tests_module",
         "module_scheme": "xctest",
-        "name": "ios_chrome_settings_eg2tests_module iPhone 15 18.2",
+        "name": "ios_chrome_settings_eg2tests_module iPhone 16 26.5",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -314,21 +326,21 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:4c7290150d1c360cecc6a93c0214dc531585c3ab"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
             "cpu": "arm64",
-            "os": "Mac-15|Mac-26",
+            "os": "Mac-26",
             "pool": "chromium.tests.finch"
           },
           "named_caches": [
             {
-              "name": "runtime_ios_18_2",
-              "path": "Runtime-ios-18.2"
+              "name": "runtime_ios_26_5",
+              "path": "Runtime-ios-26.5"
             },
             {
-              "name": "xcode_ios_17a400",
+              "name": "xcode_ios_27a266a",
               "path": "Xcode.app"
             }
           ],
@@ -337,7 +349,7 @@
         },
         "test": "ios_chrome_settings_eg2tests_module",
         "test_id_prefix": "ninja://ios/chrome/test/earl_grey2:ios_chrome_settings_eg2tests_module/",
-        "variant_id": "iPhone 15 18.2"
+        "variant_id": "iPhone 16 26.5"
       },
       {
         "args": [
@@ -345,21 +357,23 @@
           "--platform",
           "iPad Air 11-inch (M2)",
           "--version",
-          "18.2",
+          "26.5",
           "--xcodebuild-sim-runner",
           "--extra-app-args=--disable-field-trial-config",
           "--out-dir",
           "${ISOLATED_OUTDIR}",
           "--xcode-build-version",
-          "17a400",
+          "27a266a",
           "--xctest"
         ],
+        "ci_only": true,
+        "experiment_percentage": 100,
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
         "module_name": "//ios/chrome/test/earl_grey2:ios_chrome_signin_eg2tests_module",
         "module_scheme": "xctest",
-        "name": "ios_chrome_signin_eg2tests_module iPad Air (6th generation) 18.2",
+        "name": "ios_chrome_signin_eg2tests_module iPad Air (6th generation) 26.5",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -369,21 +383,21 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:4c7290150d1c360cecc6a93c0214dc531585c3ab"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
             "cpu": "arm64",
-            "os": "Mac-15|Mac-26",
+            "os": "Mac-26",
             "pool": "chromium.tests.finch"
           },
           "named_caches": [
             {
-              "name": "runtime_ios_18_2",
-              "path": "Runtime-ios-18.2"
+              "name": "runtime_ios_26_5",
+              "path": "Runtime-ios-26.5"
             },
             {
-              "name": "xcode_ios_17a400",
+              "name": "xcode_ios_27a266a",
               "path": "Xcode.app"
             }
           ],
@@ -392,29 +406,31 @@
         },
         "test": "ios_chrome_signin_eg2tests_module",
         "test_id_prefix": "ninja://ios/chrome/test/earl_grey2:ios_chrome_signin_eg2tests_module/",
-        "variant_id": "iPad Air (6th generation) 18.2"
+        "variant_id": "iPad Air (6th generation) 26.5"
       },
       {
         "args": [
           "--use-simulator-cache",
           "--platform",
-          "iPhone 15",
+          "iPhone 16",
           "--version",
-          "18.2",
+          "26.5",
           "--xcodebuild-sim-runner",
           "--extra-app-args=--disable-field-trial-config",
           "--out-dir",
           "${ISOLATED_OUTDIR}",
           "--xcode-build-version",
-          "17a400",
+          "27a266a",
           "--xctest"
         ],
+        "ci_only": true,
+        "experiment_percentage": 100,
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
         "module_name": "//ios/chrome/test/earl_grey2:ios_chrome_signin_eg2tests_module",
         "module_scheme": "xctest",
-        "name": "ios_chrome_signin_eg2tests_module iPhone 15 18.2",
+        "name": "ios_chrome_signin_eg2tests_module iPhone 16 26.5",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -424,21 +440,21 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:4c7290150d1c360cecc6a93c0214dc531585c3ab"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
             "cpu": "arm64",
-            "os": "Mac-15|Mac-26",
+            "os": "Mac-26",
             "pool": "chromium.tests.finch"
           },
           "named_caches": [
             {
-              "name": "runtime_ios_18_2",
-              "path": "Runtime-ios-18.2"
+              "name": "runtime_ios_26_5",
+              "path": "Runtime-ios-26.5"
             },
             {
-              "name": "xcode_ios_17a400",
+              "name": "xcode_ios_27a266a",
               "path": "Xcode.app"
             }
           ],
@@ -447,7 +463,7 @@
         },
         "test": "ios_chrome_signin_eg2tests_module",
         "test_id_prefix": "ninja://ios/chrome/test/earl_grey2:ios_chrome_signin_eg2tests_module/",
-        "variant_id": "iPhone 15 18.2"
+        "variant_id": "iPhone 16 26.5"
       },
       {
         "args": [
@@ -455,21 +471,23 @@
           "--platform",
           "iPad Air 11-inch (M2)",
           "--version",
-          "18.2",
+          "26.5",
           "--xcodebuild-sim-runner",
           "--extra-app-args=--disable-field-trial-config",
           "--out-dir",
           "${ISOLATED_OUTDIR}",
           "--xcode-build-version",
-          "17a400",
+          "27a266a",
           "--xctest"
         ],
+        "ci_only": true,
+        "experiment_percentage": 100,
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
         "module_name": "//ios/chrome/test/earl_grey2:ios_chrome_smoke_eg2tests_module",
         "module_scheme": "xctest",
-        "name": "ios_chrome_smoke_eg2tests_module iPad Air (6th generation) 18.2",
+        "name": "ios_chrome_smoke_eg2tests_module iPad Air (6th generation) 26.5",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -479,21 +497,21 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:4c7290150d1c360cecc6a93c0214dc531585c3ab"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
             "cpu": "arm64",
-            "os": "Mac-15|Mac-26",
+            "os": "Mac-26",
             "pool": "chromium.tests.finch"
           },
           "named_caches": [
             {
-              "name": "runtime_ios_18_2",
-              "path": "Runtime-ios-18.2"
+              "name": "runtime_ios_26_5",
+              "path": "Runtime-ios-26.5"
             },
             {
-              "name": "xcode_ios_17a400",
+              "name": "xcode_ios_27a266a",
               "path": "Xcode.app"
             }
           ],
@@ -501,29 +519,31 @@
         },
         "test": "ios_chrome_smoke_eg2tests_module",
         "test_id_prefix": "ninja://ios/chrome/test/earl_grey2:ios_chrome_smoke_eg2tests_module/",
-        "variant_id": "iPad Air (6th generation) 18.2"
+        "variant_id": "iPad Air (6th generation) 26.5"
       },
       {
         "args": [
           "--use-simulator-cache",
           "--platform",
-          "iPhone 15",
+          "iPhone 16",
           "--version",
-          "18.2",
+          "26.5",
           "--xcodebuild-sim-runner",
           "--extra-app-args=--disable-field-trial-config",
           "--out-dir",
           "${ISOLATED_OUTDIR}",
           "--xcode-build-version",
-          "17a400",
+          "27a266a",
           "--xctest"
         ],
+        "ci_only": true,
+        "experiment_percentage": 100,
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
         "module_name": "//ios/chrome/test/earl_grey2:ios_chrome_smoke_eg2tests_module",
         "module_scheme": "xctest",
-        "name": "ios_chrome_smoke_eg2tests_module iPhone 15 18.2",
+        "name": "ios_chrome_smoke_eg2tests_module iPhone 16 26.5",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -533,21 +553,21 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:4c7290150d1c360cecc6a93c0214dc531585c3ab"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
             "cpu": "arm64",
-            "os": "Mac-15|Mac-26",
+            "os": "Mac-26",
             "pool": "chromium.tests.finch"
           },
           "named_caches": [
             {
-              "name": "runtime_ios_18_2",
-              "path": "Runtime-ios-18.2"
+              "name": "runtime_ios_26_5",
+              "path": "Runtime-ios-26.5"
             },
             {
-              "name": "xcode_ios_17a400",
+              "name": "xcode_ios_27a266a",
               "path": "Xcode.app"
             }
           ],
@@ -555,7 +575,7 @@
         },
         "test": "ios_chrome_smoke_eg2tests_module",
         "test_id_prefix": "ninja://ios/chrome/test/earl_grey2:ios_chrome_smoke_eg2tests_module/",
-        "variant_id": "iPhone 15 18.2"
+        "variant_id": "iPhone 16 26.5"
       },
       {
         "args": [
@@ -565,21 +585,23 @@
           "--platform",
           "iPad Air 11-inch (M2)",
           "--version",
-          "18.2",
+          "26.5",
           "--xcodebuild-sim-runner",
           "--extra-app-args=--disable-field-trial-config",
           "--out-dir",
           "${ISOLATED_OUTDIR}",
           "--xcode-build-version",
-          "17a400",
+          "27a266a",
           "--xctest"
         ],
+        "ci_only": true,
+        "experiment_percentage": 100,
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
         "module_name": "//ios/chrome/test/earl_grey2:ios_chrome_ui_eg2tests_module",
         "module_scheme": "xctest",
-        "name": "ios_chrome_ui_eg2tests_module iPad Air (6th generation) 18.2",
+        "name": "ios_chrome_ui_eg2tests_module iPad Air (6th generation) 26.5",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -589,21 +611,21 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:4c7290150d1c360cecc6a93c0214dc531585c3ab"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
             "cpu": "arm64",
-            "os": "Mac-15|Mac-26",
+            "os": "Mac-26",
             "pool": "chromium.tests.finch"
           },
           "named_caches": [
             {
-              "name": "runtime_ios_18_2",
-              "path": "Runtime-ios-18.2"
+              "name": "runtime_ios_26_5",
+              "path": "Runtime-ios-26.5"
             },
             {
-              "name": "xcode_ios_17a400",
+              "name": "xcode_ios_27a266a",
               "path": "Xcode.app"
             }
           ],
@@ -612,7 +634,7 @@
         },
         "test": "ios_chrome_ui_eg2tests_module",
         "test_id_prefix": "ninja://ios/chrome/test/earl_grey2:ios_chrome_ui_eg2tests_module/",
-        "variant_id": "iPad Air (6th generation) 18.2"
+        "variant_id": "iPad Air (6th generation) 26.5"
       },
       {
         "args": [
@@ -620,23 +642,25 @@
           "2",
           "--use-simulator-cache",
           "--platform",
-          "iPhone 15",
+          "iPhone 16",
           "--version",
-          "18.2",
+          "26.5",
           "--xcodebuild-sim-runner",
           "--extra-app-args=--disable-field-trial-config",
           "--out-dir",
           "${ISOLATED_OUTDIR}",
           "--xcode-build-version",
-          "17a400",
+          "27a266a",
           "--xctest"
         ],
+        "ci_only": true,
+        "experiment_percentage": 100,
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
         "module_name": "//ios/chrome/test/earl_grey2:ios_chrome_ui_eg2tests_module",
         "module_scheme": "xctest",
-        "name": "ios_chrome_ui_eg2tests_module iPhone 15 18.2",
+        "name": "ios_chrome_ui_eg2tests_module iPhone 16 26.5",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -646,21 +670,21 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:4c7290150d1c360cecc6a93c0214dc531585c3ab"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
             "cpu": "arm64",
-            "os": "Mac-15|Mac-26",
+            "os": "Mac-26",
             "pool": "chromium.tests.finch"
           },
           "named_caches": [
             {
-              "name": "runtime_ios_18_2",
-              "path": "Runtime-ios-18.2"
+              "name": "runtime_ios_26_5",
+              "path": "Runtime-ios-26.5"
             },
             {
-              "name": "xcode_ios_17a400",
+              "name": "xcode_ios_27a266a",
               "path": "Xcode.app"
             }
           ],
@@ -669,7 +693,7 @@
         },
         "test": "ios_chrome_ui_eg2tests_module",
         "test_id_prefix": "ninja://ios/chrome/test/earl_grey2:ios_chrome_ui_eg2tests_module/",
-        "variant_id": "iPhone 15 18.2"
+        "variant_id": "iPhone 16 26.5"
       },
       {
         "args": [
@@ -677,21 +701,23 @@
           "--platform",
           "iPad Air 11-inch (M2)",
           "--version",
-          "18.2",
+          "26.5",
           "--xcodebuild-sim-runner",
           "--extra-app-args=--disable-field-trial-config",
           "--out-dir",
           "${ISOLATED_OUTDIR}",
           "--xcode-build-version",
-          "17a400",
+          "27a266a",
           "--xctest"
         ],
+        "ci_only": true,
+        "experiment_percentage": 100,
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
         "module_name": "//ios/chrome/test/earl_grey2:ios_chrome_web_eg2tests_module",
         "module_scheme": "xctest",
-        "name": "ios_chrome_web_eg2tests_module iPad Air (6th generation) 18.2",
+        "name": "ios_chrome_web_eg2tests_module iPad Air (6th generation) 26.5",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -701,21 +727,21 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:4c7290150d1c360cecc6a93c0214dc531585c3ab"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
             "cpu": "arm64",
-            "os": "Mac-15|Mac-26",
+            "os": "Mac-26",
             "pool": "chromium.tests.finch"
           },
           "named_caches": [
             {
-              "name": "runtime_ios_18_2",
-              "path": "Runtime-ios-18.2"
+              "name": "runtime_ios_26_5",
+              "path": "Runtime-ios-26.5"
             },
             {
-              "name": "xcode_ios_17a400",
+              "name": "xcode_ios_27a266a",
               "path": "Xcode.app"
             }
           ],
@@ -724,29 +750,31 @@
         },
         "test": "ios_chrome_web_eg2tests_module",
         "test_id_prefix": "ninja://ios/chrome/test/earl_grey2:ios_chrome_web_eg2tests_module/",
-        "variant_id": "iPad Air (6th generation) 18.2"
+        "variant_id": "iPad Air (6th generation) 26.5"
       },
       {
         "args": [
           "--use-simulator-cache",
           "--platform",
-          "iPhone 15",
+          "iPhone 16",
           "--version",
-          "18.2",
+          "26.5",
           "--xcodebuild-sim-runner",
           "--extra-app-args=--disable-field-trial-config",
           "--out-dir",
           "${ISOLATED_OUTDIR}",
           "--xcode-build-version",
-          "17a400",
+          "27a266a",
           "--xctest"
         ],
+        "ci_only": true,
+        "experiment_percentage": 100,
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
         "module_name": "//ios/chrome/test/earl_grey2:ios_chrome_web_eg2tests_module",
         "module_scheme": "xctest",
-        "name": "ios_chrome_web_eg2tests_module iPhone 15 18.2",
+        "name": "ios_chrome_web_eg2tests_module iPhone 16 26.5",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -756,21 +784,21 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:4c7290150d1c360cecc6a93c0214dc531585c3ab"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
             "cpu": "arm64",
-            "os": "Mac-15|Mac-26",
+            "os": "Mac-26",
             "pool": "chromium.tests.finch"
           },
           "named_caches": [
             {
-              "name": "runtime_ios_18_2",
-              "path": "Runtime-ios-18.2"
+              "name": "runtime_ios_26_5",
+              "path": "Runtime-ios-26.5"
             },
             {
-              "name": "xcode_ios_17a400",
+              "name": "xcode_ios_27a266a",
               "path": "Xcode.app"
             }
           ],
@@ -779,7 +807,7 @@
         },
         "test": "ios_chrome_web_eg2tests_module",
         "test_id_prefix": "ninja://ios/chrome/test/earl_grey2:ios_chrome_web_eg2tests_module/",
-        "variant_id": "iPhone 15 18.2"
+        "variant_id": "iPhone 16 26.5"
       },
       {
         "args": [
@@ -787,21 +815,23 @@
           "--platform",
           "iPad Air 11-inch (M2)",
           "--version",
-          "18.2",
+          "26.5",
           "--xcodebuild-sim-runner",
           "--extra-app-args=--disable-field-trial-config",
           "--out-dir",
           "${ISOLATED_OUTDIR}",
           "--xcode-build-version",
-          "17a400",
+          "27a266a",
           "--xctest"
         ],
+        "ci_only": true,
+        "experiment_percentage": 100,
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
         "module_name": "//ios/web/shell/test:ios_web_shell_eg2tests_module",
         "module_scheme": "xctest",
-        "name": "ios_web_shell_eg2tests_module iPad Air (6th generation) 18.2",
+        "name": "ios_web_shell_eg2tests_module iPad Air (6th generation) 26.5",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -811,21 +841,21 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:4c7290150d1c360cecc6a93c0214dc531585c3ab"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
             "cpu": "arm64",
-            "os": "Mac-15|Mac-26",
+            "os": "Mac-26",
             "pool": "chromium.tests.finch"
           },
           "named_caches": [
             {
-              "name": "runtime_ios_18_2",
-              "path": "Runtime-ios-18.2"
+              "name": "runtime_ios_26_5",
+              "path": "Runtime-ios-26.5"
             },
             {
-              "name": "xcode_ios_17a400",
+              "name": "xcode_ios_27a266a",
               "path": "Xcode.app"
             }
           ],
@@ -833,29 +863,31 @@
         },
         "test": "ios_web_shell_eg2tests_module",
         "test_id_prefix": "ninja://ios/web/shell/test:ios_web_shell_eg2tests_module/",
-        "variant_id": "iPad Air (6th generation) 18.2"
+        "variant_id": "iPad Air (6th generation) 26.5"
       },
       {
         "args": [
           "--use-simulator-cache",
           "--platform",
-          "iPhone 15",
+          "iPhone 16",
           "--version",
-          "18.2",
+          "26.5",
           "--xcodebuild-sim-runner",
           "--extra-app-args=--disable-field-trial-config",
           "--out-dir",
           "${ISOLATED_OUTDIR}",
           "--xcode-build-version",
-          "17a400",
+          "27a266a",
           "--xctest"
         ],
+        "ci_only": true,
+        "experiment_percentage": 100,
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
         "module_name": "//ios/web/shell/test:ios_web_shell_eg2tests_module",
         "module_scheme": "xctest",
-        "name": "ios_web_shell_eg2tests_module iPhone 15 18.2",
+        "name": "ios_web_shell_eg2tests_module iPhone 16 26.5",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -865,21 +897,21 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:4c7290150d1c360cecc6a93c0214dc531585c3ab"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
             "cpu": "arm64",
-            "os": "Mac-15|Mac-26",
+            "os": "Mac-26",
             "pool": "chromium.tests.finch"
           },
           "named_caches": [
             {
-              "name": "runtime_ios_18_2",
-              "path": "Runtime-ios-18.2"
+              "name": "runtime_ios_26_5",
+              "path": "Runtime-ios-26.5"
             },
             {
-              "name": "xcode_ios_17a400",
+              "name": "xcode_ios_27a266a",
               "path": "Xcode.app"
             }
           ],
@@ -887,7 +919,7 @@
         },
         "test": "ios_web_shell_eg2tests_module",
         "test_id_prefix": "ninja://ios/web/shell/test:ios_web_shell_eg2tests_module/",
-        "variant_id": "iPhone 15 18.2"
+        "variant_id": "iPhone 16 26.5"
       }
     ]
   }

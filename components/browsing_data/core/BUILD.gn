@@ -12,7 +12,6 @@ static_library("core") {
     "browsing_data_policies_utils.h",
     "browsing_data_utils.cc",
     "browsing_data_utils.h",
-    "clear_browsing_data_tab.h",
     "counters/autofill_counter.cc",
     "counters/autofill_counter.h",
     "counters/bookmark_counter.cc",
@@ -62,6 +61,7 @@ if (is_android) {
     visibility = [ ":*" ]
     sources = [ "browsing_data_utils.h" ]
   }
+
   java_cpp_enum("cookie_or_cache_deletion_choice_javagen") {
     # External code should depend on ":java" instead.
     visibility = [ ":*" ]
@@ -85,11 +85,6 @@ source_set("unit_tests") {
     "counters/browsing_data_counter_unittest.cc",
     "history_notice_utils_unittest.cc",
   ]
-
-  if (is_ios) {
-    # pref_names_unittest.cc tests a method only available in iOS.
-    sources += [ "pref_names_unittest.cc" ]
-  }
 
   deps = [
     ":core",

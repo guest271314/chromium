@@ -9,11 +9,12 @@
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/task/single_thread_task_runner.h"
-#include "content/browser/connection_allowlist_gating.h"
+#include "content/browser/connection_allowlist_utils.h"
 #include "content/browser/data_url_loader_factory.h"
 #include "content/browser/devtools/devtools_agent_host_impl.h"
 #include "content/browser/devtools/devtools_instrumentation.h"
 #include "content/browser/devtools/network_service_devtools_observer.h"
+#include "content/browser/devtools/render_frame_devtools_agent_host.h"
 #include "content/browser/file_system/file_system_url_loader_factory.h"
 #include "content/browser/loader/browser_initiated_resource_request.h"
 #include "content/browser/loader/file_url_loader_factory.h"
@@ -21,6 +22,7 @@
 #include "content/browser/renderer_host/frame_tree_node.h"
 #include "content/browser/renderer_host/policy_container_host.h"
 #include "content/browser/renderer_host/render_frame_host_impl.h"
+#include "content/browser/renderer_preferences_util.h"
 #include "content/browser/service_worker/service_worker_context_wrapper.h"
 #include "content/browser/service_worker/service_worker_main_resource_handle.h"
 #include "content/browser/storage_partition_impl.h"
@@ -29,8 +31,10 @@
 #include "content/browser/worker_host/network_restrictions_worker_throttle.h"
 #include "content/browser/worker_host/worker_script_loader.h"
 #include "content/browser/worker_host/worker_script_loader_factory.h"
+#include "content/common/features.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/browser_thread.h"
+#include "content/public/browser/child_process_host.h"
 #include "content/public/browser/content_browser_client.h"
 #include "content/public/browser/global_request_id.h"
 #include "content/public/browser/network_service_instance.h"
@@ -104,7 +108,7 @@ const net::NetworkTrafficAnnotationTag kWorkerScriptLoadTrafficAnnotation =
 // navigation_request.cc, FrameFetchContext, and WorkerFetchContext.
 void AddAdditionalRequestHeaders(network::ResourceRequest* resource_request,
                                  BrowserContext* browser_context) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
 
   // TODO(nhiroki): Return early when the request is neither HTTP nor HTTPS
   // (i.e., Blob URL or Data URL). This should be checked by
@@ -116,12 +120,34 @@ void AddAdditionalRequestHeaders(network::ResourceRequest* resource_request,
       net::HttpRequestHeaders::kAccept, network::kDefaultAcceptHeaderValue);
 
   blink::RendererPreferences renderer_preferences;
-  GetContentClient()->browser()->UpdateRendererPreferencesForWorker(
-      browser_context, &renderer_preferences);
+  UpdateRendererPreferencesForWorkerHelper(browser_context,
+                                           &renderer_preferences);
   UpdateAdditionalHeadersForBrowserInitiatedRequest(
       &resource_request->headers, browser_context,
       /*should_update_existing_headers=*/false, renderer_preferences,
       /*is_for_worker_script=*/true);
+}
+
+// Build `PolicyContainerPolicies` from the worker script response headers or
+// inherit from the creator for local schemes.
+PolicyContainerPolicies ComputePolicyContainerPoliciesForWorker(
+    const GURL& final_response_url,
+    network::mojom::URLResponseHead* response_head,
+    const PolicyContainerPolicies* creator_policies) {
+  PolicyContainerPolicies policies;
+  if (base::FeatureList::IsEnabled(
+          features::kServiceWorkerDropHandleForCSPSandboxedWorker)) {
+    if (final_response_url.SchemeIsLocal() && creator_policies) {
+      policies = creator_policies->Clone();
+    } else if (response_head && response_head->parsed_headers) {
+      policies =
+          PolicyContainerPolicies(final_response_url, response_head, nullptr);
+    }
+  }
+  policies.connection_allowlists = GetConnectionAllowlistsForWorker(
+      final_response_url, response_head, creator_policies,
+      final_response_url.SchemeIsLocal());
+  return policies;
 }
 
 void DidCreateScriptLoader(
@@ -134,8 +160,9 @@ void DidCreateScriptLoader(
     std::optional<PolicyContainerPolicies> creator_policies,
     blink::mojom::WorkerMainScriptLoadParamsPtr main_script_load_params,
     const network::URLLoaderCompletionStatus* completion_status) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
-  DCHECK_NE(main_script_load_params.is_null(), completion_status == nullptr);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
+  CHECK_NE(main_script_load_params.is_null(), completion_status == nullptr,
+           base::NotFatalUntil::M160);
   TRACE_EVENT("loading", "DidCreateScriptLoader");
 
   // Figure out the final response URL.
@@ -172,30 +199,12 @@ void DidCreateScriptLoader(
 
   // The load succeeded iff `main_script_load_params` is not nullptr.
   if (main_script_load_params) {
-    // TODO(crbug.com/41478971): Pass the PolicyContainerPolicies. It can
-    // be built from the
-    // `main_script_load_params.response_head->parsed_headers`.
-    PolicyContainerPolicies policies;
-    if (base::FeatureList::IsEnabled(
-            network::features::kConnectionAllowlists)) {
-      if (final_response_url.SchemeIsLocal() && creator_policies) {
-        policies.connection_allowlists =
-            std::move(creator_policies->connection_allowlists);
-      } else if (ResponseContainsConnectionAllowlist(
-                     main_script_load_params->response_head.get()) &&
-                 ResponseEnablesConnectionAllowlistsOriginTrial(
-                     final_response_url,
-                     main_script_load_params->response_head->headers.get())) {
-        // Connection allowlist needs to be enforced for workers once the
-        // allowlist response header is received. The origin trial token for
-        // this feature is received within the same response. The token is
-        // parsed here to query the trial status. See
-        // https://wicg.github.io/connection-allowlists/.
-        policies.connection_allowlists =
-            main_script_load_params->response_head->parsed_headers
-                ->connection_allowlists;
-      }
-    }
+    // Note: Unlike in the spec, the referrer policy will be lazily calculated
+    // by the renderer in `(Shared/Dedicated)WorkerGlobalScope::Initialize()`.
+    // https://html.spec.whatwg.org/C/#creating-a-policy-container-from-a-fetch-response
+    PolicyContainerPolicies policies = ComputePolicyContainerPoliciesForWorker(
+        final_response_url, main_script_load_params->response_head.get(),
+        base::OptionalToPtr(creator_policies));
 
     std::move(callback).Run(std::make_optional<WorkerScriptFetcherResult>(
         std::move(subresource_loader_factories),
@@ -268,6 +277,7 @@ void WorkerScriptFetcher::CreateAndStart(
     blink::mojom::FetchClientSettingsObjectPtr
         outside_fetch_client_settings_object,
     network::mojom::RequestDestination request_destination,
+    bool file_url_support,
     scoped_refptr<ServiceWorkerContextWrapper> service_worker_context,
     ServiceWorkerMainResourceHandle* service_worker_handle,
     scoped_refptr<network::SharedURLLoaderFactory> blob_url_loader_factory,
@@ -278,15 +288,14 @@ void WorkerScriptFetcher::CreateAndStart(
     const base::UnguessableToken& devtools_worker_token,
     bool require_cross_site_request_for_cookies,
     net::StorageAccessApiStatus storage_access_api_status,
-    const std::optional<base::UnguessableToken>& worker_network_restrictions_id,
-    const std::optional<base::UnguessableToken>&
-        creator_network_restrictions_id,
+    const base::UnguessableToken& worker_network_restrictions_id,
+    const base::UnguessableToken& creator_network_restrictions_id,
     std::optional<PolicyContainerPolicies> creator_policies,
     CompletionCallback callback) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
-  DCHECK(client_security_state);
-  DCHECK(storage_partition);
-  DCHECK(devtools_agent_host);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
+  CHECK(client_security_state, base::NotFatalUntil::M160);
+  CHECK(storage_partition, base::NotFatalUntil::M160);
+  CHECK(devtools_agent_host, base::NotFatalUntil::M160);
   DCHECK(request_destination == network::mojom::RequestDestination::kWorker ||
          request_destination ==
              network::mojom::RequestDestination::kSharedWorker)
@@ -297,9 +306,6 @@ void WorkerScriptFetcher::CreateAndStart(
     // The browser is shutting down. Just drop this request.
     return;
   }
-
-  bool constructor_uses_file_url =
-      request_initiator.scheme() == url::kFileScheme;
 
   // TODO(crbug.com/41472712): Filesystem URL support on shared workers
   // are now broken.
@@ -313,13 +319,13 @@ void WorkerScriptFetcher::CreateAndStart(
   std::unique_ptr<blink::PendingURLLoaderFactoryBundle>
       factory_bundle_for_browser = CreateFactoryBundle(
           LoaderType::kMainResource, worker_process_id, storage_partition,
-          storage_domain, constructor_uses_file_url, filesystem_url_support,
+          storage_domain, file_url_support, filesystem_url_support,
           creator_render_frame_host, request_initiator_storage_key,
           request_destination);
   std::unique_ptr<blink::PendingURLLoaderFactoryBundle>
       subresource_loader_factories = CreateFactoryBundle(
           LoaderType::kSubResource, worker_process_id, storage_partition,
-          storage_domain, constructor_uses_file_url, filesystem_url_support,
+          storage_domain, file_url_support, filesystem_url_support,
           creator_render_frame_host, request_initiator_storage_key,
           request_destination);
 
@@ -450,22 +456,23 @@ void WorkerScriptFetcher::CreateScriptLoader(
     DevToolsAgentHostImpl* devtools_agent_host,
     const base::UnguessableToken& devtools_worker_token,
     bool require_cross_site_request_for_cookies,
-    const std::optional<base::UnguessableToken>& worker_network_restrictions_id,
-    const std::optional<base::UnguessableToken>&
-        creator_network_restrictions_id,
+    const base::UnguessableToken& worker_network_restrictions_id,
+    const base::UnguessableToken& creator_network_restrictions_id,
     std::optional<PolicyContainerPolicies> creator_policies,
     WorkerScriptFetcher::CompletionCallback callback) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
-  DCHECK(devtools_agent_host);
-  DCHECK(client_security_state);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
+  CHECK(devtools_agent_host, base::NotFatalUntil::M160);
+  CHECK(client_security_state, base::NotFatalUntil::M160);
   TRACE_EVENT("loading", "WorkerScriptFetcher::CreateScriptLoader");
 
   RenderProcessHost* factory_process =
       RenderProcessHost::FromID(worker_process_id);
-  DCHECK(factory_process);  // Checked by callers of the Start method.
+  CHECK(factory_process,
+        base::NotFatalUntil::M160);  // Checked by callers of the Start method.
 
   BrowserContext* browser_context = factory_process->GetBrowserContext();
-  DCHECK(browser_context);  // Checked in the Start method.
+  CHECK(browser_context,
+        base::NotFatalUntil::M160);  // Checked in the Start method.
 
   // Do not enforce COEP or Document-Isolation-Policy on the main script fetch.
   client_security_state->cross_origin_embedder_policy =
@@ -485,7 +492,7 @@ void WorkerScriptFetcher::CreateScriptLoader(
     url_loader_factory = std::move(url_loader_factory_override);
   } else {
     // Add the default factory to the bundle for browser.
-    DCHECK(factory_bundle_for_browser_info);
+    CHECK(factory_bundle_for_browser_info, base::NotFatalUntil::M160);
     mojo::PendingRemote<network::mojom::URLLoaderNetworkServiceObserver>
         url_loader_network_observer;
     mojo::PendingRemote<network::mojom::DevToolsObserver> devtools_observer;
@@ -499,8 +506,13 @@ void WorkerScriptFetcher::CreateScriptLoader(
                   content::GlobalRenderFrameHostId(
                       creator_render_frame_host->GetProcess()->GetID(),
                       creator_render_frame_host->GetRoutingID()));
+    }
+
+    auto* frame_devtools_host =
+        RenderFrameDevToolsAgentHost::GetFor(&ancestor_render_frame_host);
+    if (frame_devtools_host) {
       devtools_observer = NetworkServiceDevToolsObserver::MakeSelfOwned(
-          creator_render_frame_host->GetDevToolsFrameToken().ToString());
+          frame_devtools_host->GetId());
     }
 
     const url::Origin& request_initiator = *resource_request->request_initiator;
@@ -581,13 +593,14 @@ void WorkerScriptFetcher::CreateScriptLoader(
           nullptr /* navigation_ui_data */, frame_tree_node_id,
           /*navigation_id=*/std::nullopt);
 
-  if (worker_network_restrictions_id && creator_policies) {
+  if (!worker_network_restrictions_id.is_empty() && creator_policies) {
     if (auto throttle = NetworkRestrictionsWorkerThrottle::Create(
             static_cast<StoragePartitionImpl*>(
                 factory_process->GetStoragePartition())
                 ->GetWeakPtr(),
-            *worker_network_restrictions_id, creator_policies->Clone(),
-            ancestor_render_frame_host.GetWeakPtr())) {
+            worker_network_restrictions_id, creator_policies->Clone(),
+            ancestor_render_frame_host.GetWeakPtr(),
+            /*is_service_worker=*/false)) {
       throttles.push_back(std::move(throttle));
     }
   }
@@ -626,15 +639,12 @@ WorkerScriptFetcher::CreateFactoryBundle(
     RenderFrameHostImpl* creator_render_frame_host,
     const blink::StorageKey& request_initiator_storage_key,
     network::mojom::RequestDestination request_destination) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
 
   ContentBrowserClient::NonNetworkURLLoaderFactoryMap non_network_factories;
   non_network_factories.emplace(url::kDataScheme,
                                 DataURLLoaderFactory::Create());
   if (filesystem_url_support) {
-    // TODO(crbug.com/41471904): Pass ChildProcessHost::kInvalidUniqueID
-    // instead of valid `worker_process_id` for `factory_bundle_for_browser`
-    // once CanCommitURL-like check is implemented in PlzWorker.
     non_network_factories.emplace(
         url::kFileSystemScheme,
         CreateFileSystemURLLoaderFactory(
@@ -677,10 +687,10 @@ WorkerScriptFetcher::CreateFactoryBundle(
     auto requesting_scheme =
         creator_render_frame_host->GetLastCommittedOrigin().scheme();
     non_network_factories.emplace(
-        requesting_scheme,
-        CreateWebUIURLLoaderFactory(
-            creator_render_frame_host, requesting_scheme,
-            /*allowed_hosts=*/base::flat_set<std::string>()));
+        requesting_scheme, CreateWebUIURLLoaderFactory(
+                               creator_render_frame_host, requesting_scheme,
+                               /*allowed_hosts=*/base::flat_set<std::string>(),
+                               request_initiator_storage_key.origin()));
   }
 
   auto factory_bundle =
@@ -699,14 +709,19 @@ WorkerScriptFetcher::CreateFactoryBundle(
 GURL WorkerScriptFetcher::DetermineFinalResponseUrl(
     const GURL& initial_request_url,
     blink::mojom::WorkerMainScriptLoadParams* main_script_load_params) {
-  DCHECK(main_script_load_params);
+  CHECK(main_script_load_params, base::NotFatalUntil::M160);
+
+  if (initial_request_url.SchemeIsLocal()) {
+    return initial_request_url;
+  }
 
   network::mojom::URLResponseHead* url_response_head =
       main_script_load_params->response_head.get();
 
   // First check the URL list from the service worker.
   if (!url_response_head->url_list_via_service_worker.empty()) {
-    DCHECK(url_response_head->was_fetched_via_service_worker);
+    CHECK(url_response_head->was_fetched_via_service_worker,
+          base::NotFatalUntil::M160);
     return url_response_head->url_list_via_service_worker.back();
   }
 
@@ -719,6 +734,16 @@ GURL WorkerScriptFetcher::DetermineFinalResponseUrl(
   return initial_request_url;
 }
 
+// static
+PolicyContainerPolicies
+WorkerScriptFetcher::ComputePolicyContainerPoliciesForTesting(
+    const GURL& final_response_url,
+    network::mojom::URLResponseHead* response_head,
+    const PolicyContainerPolicies* creator_policies) {
+  return ComputePolicyContainerPoliciesForWorker(
+      final_response_url, response_head, creator_policies);
+}
+
 WorkerScriptFetcher::WorkerScriptFetcher(
     std::unique_ptr<WorkerScriptLoaderFactory> script_loader_factory,
     std::unique_ptr<network::ResourceRequest> resource_request,
@@ -727,16 +752,16 @@ WorkerScriptFetcher::WorkerScriptFetcher(
       request_id_(GlobalRequestID::MakeBrowserInitiated().request_id),
       resource_request_(std::move(resource_request)),
       callback_(std::move(callback)) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
 }
 
 WorkerScriptFetcher::~WorkerScriptFetcher() {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
 }
 
 void WorkerScriptFetcher::Start(
     std::vector<std::unique_ptr<blink::URLLoaderThrottle>> throttles) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
 
   auto shared_url_loader_factory =
       base::MakeRefCounted<network::WeakWrapperSharedURLLoaderFactory>(
@@ -751,15 +776,15 @@ void WorkerScriptFetcher::Start(
 
 void WorkerScriptFetcher::OnReceiveEarlyHints(
     network::mojom::EarlyHintsPtr early_hints) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
 }
 
 void WorkerScriptFetcher::OnReceiveResponse(
     network::mojom::URLResponseHeadPtr response_head,
     mojo::ScopedDataPipeConsumerHandle body,
     std::optional<mojo_base::BigBuffer> cached_metadata) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
-  DCHECK(!cached_metadata);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
+  CHECK(!cached_metadata, base::NotFatalUntil::M160);
   if (!body) {
     return;
   }
@@ -795,7 +820,7 @@ void WorkerScriptFetcher::OnReceiveResponse(
 void WorkerScriptFetcher::OnReceiveRedirect(
     const net::RedirectInfo& redirect_info,
     network::mojom::URLResponseHeadPtr response_head) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
   redirect_infos_.push_back(redirect_info);
   redirect_response_heads_.push_back(std::move(response_head));
   url_loader_->FollowRedirect(/*headers_update_params=*/{});
@@ -815,7 +840,7 @@ void WorkerScriptFetcher::OnTransferSizeUpdated(int32_t transfer_size_diff) {
 
 void WorkerScriptFetcher::OnComplete(
     const network::URLLoaderCompletionStatus& status) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
 
   // Successful completion must be passed to `url_loader_client_endpoints` and
   // shouldn't reach here, because in successful fetch `url_loader_->Unbind()`
@@ -831,8 +856,8 @@ void WorkerScriptFetcher::OnComplete(
 
 void WorkerScriptFetcher::DidParseHeaders(
     network::mojom::ParsedHeadersPtr parsed_headers) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
-  DCHECK(main_script_load_params_);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
+  CHECK(main_script_load_params_, base::NotFatalUntil::M160);
 
   main_script_load_params_->response_head->parsed_headers =
       std::move(parsed_headers);

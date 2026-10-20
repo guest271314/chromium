@@ -111,6 +111,8 @@ CSSFontFaceSrcValue::FontTechnology ValueIDToTechnology(CSSValueID valueID) {
       return CSSFontFaceSrcValue::FontTechnology::kTechnologyCDBT;
     case CSSValueID::kColorSbix:
       return CSSFontFaceSrcValue::FontTechnology::kTechnologySBIX;
+    case CSSValueID::kIncremental:
+      return CSSFontFaceSrcValue::FontTechnology::kTechnologyIncremental;
     default:
       NOTREACHED();
   }
@@ -296,8 +298,8 @@ CSSValue* ConsumeDescriptor(StyleRule::RuleType rule_type,
     case StyleRule::kMixin:
       return Parser::ParseAtFunctionOrMixinDescriptor(rule_type, id, stream,
                                                       context);
-    case StyleRule::kRoute:
-      return Parser::ParseAtRouteDescriptor(id, stream, context);
+    case StyleRule::kLocation:
+      return Parser::ParseAtLocationDescriptor(id, stream, context);
     case StyleRule::kCharset:
     case StyleRule::kContainer:
     case StyleRule::kStyle:
@@ -319,6 +321,7 @@ CSSValue* ConsumeDescriptor(StyleRule::RuleType rule_type,
     case StyleRule::kSupports:
     case StyleRule::kStartingStyle:
     case StyleRule::kResult:
+    case StyleRule::kPrivate:
     case StyleRule::kApplyMixin:
     case StyleRule::kContents:
     case StyleRule::kPositionTry:
@@ -524,10 +527,22 @@ CSSValue* AtRuleDescriptorParser::ParseAtViewTransitionDescriptor(
       }
       break;
     case AtRuleDescriptorID::Types: {
+      stream.ConsumeWhitespace();
+      if (CSSIdentifierValue* none =
+              css_parsing_utils::ConsumeIdent<CSSValueID::kNone>(stream)) {
+        parsed_value = none;
+        break;
+      }
+
       CSSValueList* types = CSSValueList::CreateSpaceSeparated();
-      parsed_value = types;
       while (!stream.AtEnd()) {
         stream.ConsumeWhitespace();
+        if (stream.AtEnd()) {
+          break;
+        }
+        if (stream.Peek().GetType() != kIdentToken) {
+          return nullptr;
+        }
         if (stream.Peek().Id() == CSSValueID::kNone) {
           return nullptr;
         }
@@ -540,6 +555,12 @@ CSSValue* AtRuleDescriptorParser::ParseAtViewTransitionDescriptor(
         }
         types->Append(*ident);
       }
+
+      if (!types->length()) {
+        return nullptr;
+      }
+
+      parsed_value = types;
       break;
     }
     default:
@@ -579,7 +600,7 @@ CSSValue* AtRuleDescriptorParser::ParseAtFunctionOrMixinDescriptor(
                                                            &context);
 }
 
-CSSValue* AtRuleDescriptorParser::ParseAtRouteDescriptor(
+CSSValue* AtRuleDescriptorParser::ParseAtLocationDescriptor(
     AtRuleDescriptorID id,
     CSSParserTokenStream& stream,
     const CSSParserContext& context) {

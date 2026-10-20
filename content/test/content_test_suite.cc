@@ -98,18 +98,9 @@ ContentTestSuite::ContentTestSuite(int argc, char** argv)
   // Reproducer:FileSystemAccessFileHandleImplRequestPermissionTest.RequestWrite_Denied
   disable_field_trial("TrackEmptyRendererProcessesForReuse");
 
-  // TODO(447305320) Enable testing for this field trial feature.
-  // Reproducer:NavigatorTest.NoContent
-  disable_field_trial("DeferSpeculativeRFHCreation");
-
   // TODO(447307242) Enable testing for this field trial feature.
   // Reproducer:PrerendererTest.RemoveRendererHostAfterCandidateRemoved
   disable_field_trial("LCPTimingPredictorPrerender2");
-
-  // TODO(447306957) Enable testing for this field trial feature.
-  // Reproducer:ServiceWorkerRaceNetworkRequestURLLoaderClientTest.NetworkError_AfterInitialResponse
-  disable_field_trial(
-      "ServiceWorkerStaticRouterRaceNetworkRequestPerformanceImprovement");
 
   // TODO(447307245) Enable testing for this field trial feature.
   // Reproducer:ParametrizedTests/PrefetchServiceTest.PrefetchQueueNotStuckWhenResettingRunningPrefetch/2

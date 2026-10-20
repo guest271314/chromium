@@ -33,14 +33,6 @@ class PhoneFieldParser : public FormFieldParser {
   static std::unique_ptr<FormFieldParser> Parse(ParsingContext& context,
                                                 AutofillScanner& scanner);
 
-#if defined(UNIT_TEST)
-  // Assign types to the fields for the testing purposes.
-  void AddClassificationsForTesting(
-      FieldCandidatesMap& field_candidates_for_testing) const {
-    AddClassifications(field_candidates_for_testing);
-  }
-#endif
-
  protected:
   void AddClassifications(FieldCandidatesMap& field_candidates) const override;
 
@@ -113,9 +105,7 @@ class PhoneFieldParser : public FormFieldParser {
   static bool ParseGrammar(ParsingContext& context,
                            const PhoneGrammar& grammar,
                            ParsedPhoneFields& parsed_fields,
-                           AutofillScanner& scanner,
-                           bool improve_phone_field_parser_experiment_enabled,
-                           bool new_augmented_cc_regex_experiment_enabled);
+                           AutofillScanner& scanner);
 
   // FIELD_PHONE is always present if a match is found. The rest may be nullopt.
   ParsedPhoneFields parsed_phone_fields_;

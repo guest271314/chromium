@@ -24,6 +24,7 @@
 #include "net/http/http_auth.h"
 #include "net/http/http_auth_filter.h"
 #include "net/http/http_auth_preferences.h"
+#include "net/http/http_request_info.h"
 #include "net/log/net_log_capture_mode.h"
 #include "net/log/net_log_event_type.h"
 #include "net/log/net_log_with_source.h"
@@ -51,7 +52,7 @@ base::DictValue NetLogParameterChannelBindings(
 // creates the default auth system for each platform.
 std::unique_ptr<HttpAuthMechanism> CreateAuthSystem(
 #if !BUILDFLAG(IS_ANDROID)
-    HttpAuthHandlerNegotiate::AuthLibrary* auth_library,
+    scoped_refptr<HttpAuthHandlerNegotiate::AuthLibrary> auth_library,
 #endif
     const HttpAuthPreferences* prefs,
     HttpAuthMechanismFactory negotiate_auth_system_factory) {
@@ -60,10 +61,10 @@ std::unique_ptr<HttpAuthMechanism> CreateAuthSystem(
 #if BUILDFLAG(IS_ANDROID)
   return std::make_unique<android::HttpAuthNegotiateAndroid>(prefs);
 #elif BUILDFLAG(IS_WIN)
-  return std::make_unique<HttpAuthSSPI>(auth_library,
+  return std::make_unique<HttpAuthSSPI>(std::move(auth_library),
                                         HttpAuth::AUTH_SCHEME_NEGOTIATE);
 #elif BUILDFLAG(IS_POSIX)
-  return std::make_unique<HttpAuthGSSAPI>(auth_library,
+  return std::make_unique<HttpAuthGSSAPI>(std::move(auth_library),
                                           CHROME_GSS_SPNEGO_MECH_OID_DESC);
 #endif
 }
@@ -101,7 +102,7 @@ int HttpAuthHandlerNegotiate::Factory::CreateAuthHandler(
   //                 method and only constructing when valid.
   std::unique_ptr<HttpAuthHandler> tmp_handler(
       std::make_unique<HttpAuthHandlerNegotiate>(
-          CreateAuthSystem(auth_library_.get(), http_auth_preferences(),
+          CreateAuthSystem(auth_library_, http_auth_preferences(),
                            negotiate_auth_system_factory_),
           http_auth_preferences(), host_resolver));
 #elif BUILDFLAG(IS_ANDROID)
@@ -227,6 +228,7 @@ int HttpAuthHandlerNegotiate::GenerateAuthTokenImpl(
   DCHECK(callback_.is_null());
   DCHECK(auth_token_ == nullptr);
   auth_token_ = auth_token;
+  target_network_ = request->target_network;
   if (already_called_) {
     DCHECK((!has_credentials_ && credentials == nullptr) ||
            (has_credentials_ && credentials->Equals(credentials_)));
@@ -351,8 +353,9 @@ int HttpAuthHandlerNegotiate::DoResolveCanonicalName() {
   // TODO(cbentzel): Add reverse DNS lookup for numeric addresses.
   HostResolver::ResolveHostParameters parameters;
   parameters.include_canonical_name = true;
-  resolve_host_request_ = resolver_->CreateRequest(
-      scheme_host_port_, network_anonymization_key_, net_log(), parameters);
+  resolve_host_request_ =
+      resolver_->CreateRequest(scheme_host_port_, network_anonymization_key_,
+                               target_network_, net_log(), parameters);
   return resolve_host_request_->Start(base::BindOnce(
       &HttpAuthHandlerNegotiate::OnIOComplete, base::Unretained(this)));
 }

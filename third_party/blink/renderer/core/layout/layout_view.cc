@@ -68,7 +68,9 @@
 #include "third_party/blink/renderer/core/paint/view_painter.h"
 #include "third_party/blink/renderer/core/svg/svg_document_extensions.h"
 #include "third_party/blink/renderer/core/view_transition/view_transition.h"
+#include "third_party/blink/renderer/core/view_transition/view_transition_skip_reason.h"
 #include "third_party/blink/renderer/core/view_transition/view_transition_utils.h"
+#include "third_party/blink/renderer/platform/geometry/infinite_int_rect.h"
 #include "third_party/blink/renderer/platform/graphics/paint/paint_controller.h"
 #include "third_party/blink/renderer/platform/instrumentation/histogram.h"
 #include "third_party/blink/renderer/platform/instrumentation/tracing/trace_event.h"
@@ -111,7 +113,6 @@ LayoutView::~LayoutView() = default;
 
 void LayoutView::Trace(Visitor* visitor) const {
   visitor->Trace(frame_view_);
-  visitor->Trace(svg_text_descendants_);
   visitor->Trace(text_to_variable_length_transform_result_);
   visitor->Trace(hit_test_cache_);
   visitor->Trace(initial_containing_block_resize_handled_list_);
@@ -122,18 +123,6 @@ bool LayoutView::HitTest(const HitTestLocation& location,
                          HitTestResult& result) {
   NOT_DESTROYED();
   TRACE_EVENT0("blink", "LayoutView::HitTest");
-  if (HasSVGTextDescendants()) {
-    // This is necessary because SVG <text> might have obsolete geometry after
-    // scale-only changes.  See crbug.com/1296089#c16
-    auto it = svg_text_descendants_.find(this);
-    if (it != svg_text_descendants_.end()) {
-      for (LayoutSVGText* svg_text : *it->value) {
-        if (svg_text->NeedsTextMetricsUpdate()) {
-          svg_text->SetNeedsLayout(layout_invalidation_reason::kStyleChange);
-        }
-      }
-    }
-  }
 
   // We have to recursively update layout/style here because otherwise, when the
   // hit test recurses into a child document, it could trigger a layout on the
@@ -158,7 +147,7 @@ bool LayoutView::HitTest(const HitTestLocation& location,
 bool LayoutView::HitTestNoLifecycleUpdate(const HitTestLocation& location,
                                           HitTestResult& result) {
   NOT_DESTROYED();
-  TRACE_EVENT_BEGIN0("blink,devtools.timeline", "HitTest");
+  TRACE_EVENT_BEGIN("blink,devtools.timeline", "HitTest");
   hit_test_count_++;
 
   uint64_t dom_tree_version = GetDocument().DomTreeVersion();
@@ -176,7 +165,10 @@ bool LayoutView::HitTestNoLifecycleUpdate(const HitTestLocation& location,
       // Start with a rect sized to the frame, to ensure we include the
       // scrollbars.
       hit_test_area.size = PhysicalSize(frame_view->Size());
-      if (result.GetHitTestRequest().IgnoreClipping()) {
+      if (RuntimeEnabledFeatures::UnboundedElementEnabled() &&
+          GetDocument().HasActiveUnboundedElements()) {
+        hit_test_area = PhysicalRect(InfiniteIntRect());
+      } else if (result.GetHitTestRequest().IgnoreClipping()) {
         hit_test_area.Unite(
             frame_view->DocumentToFrame(PhysicalRect(DocumentRect())));
       }
@@ -210,12 +202,11 @@ bool LayoutView::HitTestNoLifecycleUpdate(const HitTestLocation& location,
       hit_test_cache_->AddCachedResult(location, result, dom_tree_version);
   }
 
-  TRACE_EVENT_END1("blink,devtools.timeline", "HitTest", "endData",
-                   [&](perfetto::TracedValue context) {
-                     inspector_hit_test_event::EndData(
-                         std::move(context), result.GetHitTestRequest(),
-                         location, result);
-                   });
+  TRACE_EVENT_END(
+      "blink,devtools.timeline", "endData", [&](perfetto::TracedValue context) {
+        inspector_hit_test_event::EndData(
+            std::move(context), result.GetHitTestRequest(), location, result);
+      });
   return hit_layer;
 }
 
@@ -229,19 +220,21 @@ void LayoutView::ClearHitTestCache() {
 
 LayoutUnit LayoutView::ComputeMinimumWidth() {
   NOT_DESTROYED();
-  const ComputedStyle& style = StyleRef();
+  const ComputedStyle& style = Style();
   WritingMode mode = style.GetWritingMode();
   ConstraintSpaceBuilder builder(mode, style.GetWritingDirection(),
                                  /* is_new_fc */ true);
+  builder.SetContainsAnnotations(contains_annotations_);
   return BlockNode(this)
       .ComputeMinMaxSizes(mode, SizeType::kIntrinsic,
-                          builder.ToConstraintSpace())
+                          builder.ToConstraintSpace(),
+                          MinMaxSizesInput::Unconstrained())
       .sizes.min_size;
 }
 
 void LayoutView::AddChild(LayoutObject* new_child, LayoutObject* before_child) {
   NOT_DESTROYED();
-  if (new_child->StyleRef().StyleType() == kPseudoIdViewTransition) {
+  if (new_child->Style().StyleType() == kPseudoIdViewTransition) {
     // The view-transition pseudo tree is needs to be laid out within the
     // "snapshot containing block". This is implemented by inserting an
     // anonymous LayoutViewTransitionRoot between the ::view-transition and
@@ -307,7 +300,7 @@ bool LayoutView::ShouldPlaceBlockDirectionScrollbarOnLogicalLeft() const {
   // sufficient.
   if (Element* body = GetDocument().body()) {
     if (LayoutObject* body_layout_object = body->GetLayoutObject()) {
-      return body_layout_object->StyleRef()
+      return body_layout_object->Style()
           .ShouldPlaceBlockDirectionScrollbarOnLogicalLeft();
     }
   }
@@ -318,7 +311,9 @@ void LayoutView::MapLocalToAncestor(const LayoutBoxModelObject* ancestor,
                                     TransformState& transform_state,
                                     MapCoordinatesFlags mode) const {
   NOT_DESTROYED();
-  if (!ancestor && !(mode & kIgnoreTransforms) &&
+  CHECK_EQ(transform_state.Direction(),
+           TransformState::kApplyTransformDirection);
+  if (!ancestor && !mode.Has(MapCoordinatesMode::kIgnoreTransforms) &&
       ShouldUseTransformFromContainer(nullptr)) {
     gfx::Transform t;
     GetTransformFromContainer(nullptr, PhysicalOffset(), t);
@@ -328,19 +323,20 @@ void LayoutView::MapLocalToAncestor(const LayoutBoxModelObject* ancestor,
   if (ancestor == this)
     return;
 
-  if (mode & kTraverseDocumentBoundaries) {
+  if (mode.Has(MapCoordinatesMode::kTraverseDocumentBoundaries)) {
     auto* parent_doc_layout_object = GetFrame()->OwnerLayoutObject();
     if (parent_doc_layout_object) {
       transform_state.Move(
-          parent_doc_layout_object->PhysicalContentBoxOffset());
+          parent_doc_layout_object->PhysicalContentBoxRect().offset);
       parent_doc_layout_object->MapLocalToAncestor(ancestor, transform_state,
                                                    mode);
     } else {
       DCHECK(!ancestor);
-      if (mode &
-          (kApplyRemoteMainFrameTransform | kApplyRemoteViewportTransform)) {
+      if (mode.HasAny({MapCoordinatesMode::kApplyRemoteMainFrameTransform,
+                       MapCoordinatesMode::kApplyRemoteViewportTransform})) {
         GetFrameView()->MapLocalToRemoteMainFrame(
-            transform_state, mode & kApplyRemoteViewportTransform);
+            transform_state,
+            mode.Has(MapCoordinatesMode::kApplyRemoteViewportTransform));
       }
     }
   }
@@ -350,24 +346,26 @@ void LayoutView::MapAncestorToLocal(const LayoutBoxModelObject* ancestor,
                                     TransformState& transform_state,
                                     MapCoordinatesFlags mode) const {
   NOT_DESTROYED();
-  if (this != ancestor && (mode & kTraverseDocumentBoundaries)) {
+  CHECK_EQ(transform_state.Direction(),
+           TransformState::kUnapplyInverseTransformDirection);
+  if (this != ancestor &&
+      mode.Has(MapCoordinatesMode::kTraverseDocumentBoundaries)) {
     if (auto* parent_doc_layout_object = GetFrame()->OwnerLayoutObject()) {
-      // A LayoutView is a containing block for fixed-position elements, so
-      // don't carry this state across frames.
       parent_doc_layout_object->MapAncestorToLocal(ancestor, transform_state,
                                                    mode);
 
       transform_state.Move(
-          parent_doc_layout_object->PhysicalContentBoxOffset());
+          parent_doc_layout_object->PhysicalContentBoxRect().offset);
     } else {
       DCHECK(!ancestor);
       // Note that MapLocalToRemoteMainFrame is correct here because
-      // transform_state will be set to kUnapplyInverseTransformDirection.
-      if ((mode &
-           (kApplyRemoteMainFrameTransform | kApplyRemoteViewportTransform)) &&
+      // transform_state has kUnapplyInverseTransformDirection.
+      if (mode.HasAny({MapCoordinatesMode::kApplyRemoteMainFrameTransform,
+                       MapCoordinatesMode::kApplyRemoteViewportTransform}) &&
           GetFrame()->IsLocalRoot()) {
         GetFrameView()->MapLocalToRemoteMainFrame(
-            transform_state, mode & kApplyRemoteViewportTransform);
+            transform_state,
+            mode.Has(MapCoordinatesMode::kApplyRemoteViewportTransform));
       }
     }
   } else {
@@ -375,10 +373,9 @@ void LayoutView::MapAncestorToLocal(const LayoutBoxModelObject* ancestor,
   }
 }
 
-LogicalSize LayoutView::InitialContainingBlockSize() const {
+PhysicalSize LayoutView::InitialContainingBlockSize() const {
   NOT_DESTROYED();
-  return LogicalSize(LayoutUnit(ViewLogicalWidthForBoxSizing()),
-                     LayoutUnit(ViewLogicalHeightForBoxSizing()));
+  return PhysicalSize(GetLayoutSize(kIncludeScrollbars));
 }
 
 void LayoutView::RegisterVariableLengthTransformResult(
@@ -431,7 +428,7 @@ bool LayoutView::MapToVisualRectInAncestorSpaceInternal(
     return true;
 
   const bool apply_viewport_clip =
-      !(visual_rect_flags & VisualRectFlags::kSkipAncestorAndViewportClips);
+      !visual_rect_flags.Has(VisualRectFlag::kSkipAncestorAndViewportClips);
 
   Element* owner = GetDocument().LocalOwner();
   if (!owner) {
@@ -439,9 +436,9 @@ bool LayoutView::MapToVisualRectInAncestorSpaceInternal(
         transform_state.LastPlanarQuad().BoundingBox());
     const bool apply_overflow_clip =
         apply_viewport_clip &&
-        !(visual_rect_flags & kDontApplyMainFrameOverflowClip);
+        !visual_rect_flags.Has(VisualRectFlag::kDontApplyMainFrameOverflowClip);
     const bool apply_viewport_transform =
-        visual_rect_flags & kVisualRectApplyRemoteViewportTransform;
+        visual_rect_flags.Has(VisualRectFlag::kApplyRemoteViewportTransform);
 
     // When mapping into the viewport space (ancestor == nullptr) for the
     // outermost main frame, apply the local visual viewport transform (page
@@ -471,7 +468,7 @@ bool LayoutView::MapToVisualRectInAncestorSpaceInternal(
       // apply LayoutView::ViewRect() clipping for ancestor == nullptr.
       if (apply_overflow_clip) {
         PhysicalRect view_rectangle = ViewRect();
-        if (visual_rect_flags & kEdgeInclusive) {
+        if (visual_rect_flags.Has(VisualRectFlag::kEdgeInclusive)) {
           if (!rect.InclusiveIntersect(view_rectangle)) {
             transform_state.SetQuad(gfx::QuadF(gfx::RectF(rect)));
             return false;
@@ -494,7 +491,7 @@ bool LayoutView::MapToVisualRectInAncestorSpaceInternal(
         transform_state.LastPlanarQuad().BoundingBox());
     PhysicalRect view_rectangle = ViewRect();
     if (apply_viewport_clip) {
-      if (visual_rect_flags & kEdgeInclusive) {
+      if (visual_rect_flags.Has(VisualRectFlag::kEdgeInclusive)) {
         if (!rect.InclusiveIntersect(view_rectangle)) {
           transform_state.SetQuad(gfx::QuadF(gfx::RectF(rect)));
           return false;
@@ -510,7 +507,7 @@ bool LayoutView::MapToVisualRectInAncestorSpaceInternal(
     rect.ExpandEdgesToPixelBoundaries();
 
     // Adjust for frame border.
-    rect.Move(obj->PhysicalContentBoxOffset());
+    rect.Move(obj->PhysicalContentBoxRect().offset);
     transform_state.SetQuad(gfx::QuadF(gfx::RectF(rect)));
 
     return obj->MapToVisualRectInAncestorSpaceInternal(
@@ -529,7 +526,8 @@ PhysicalOffset LayoutView::OffsetForFixedPosition() const {
 
 void LayoutView::QuadsInAncestorInternal(Vector<gfx::QuadF>& quads,
                                          const LayoutBoxModelObject* ancestor,
-                                         MapCoordinatesFlags mode) const {
+                                         MapCoordinatesFlags mode,
+                                         BoxQuadType) const {
   NOT_DESTROYED();
   quads.push_back(LocalRectToAncestorQuad(
       PhysicalRect(PhysicalOffset(), GetScrollableArea()->Size()), ancestor,
@@ -580,7 +578,9 @@ PhysicalRect LayoutView::ViewRect() const {
         // layout is deferred during a resize or rotation, causing a temporary
         // mismatch. We need skip the transition which would have happened later
         // anyway.
-        transition->SkipTransitionSoon();
+        transition->SkipTransitionSoon(
+            ViewTransition::PromiseResponse::kRejectInvalidState,
+            ViewTransitionSkipReason::kSnapshotRootChangedSize);
         return PhysicalRect(PhysicalOffset(),
                             PhysicalSize(frame_view_->Size()));
       }
@@ -595,32 +595,26 @@ PhysicalRect LayoutView::ViewRect() const {
 }
 
 PhysicalRect LayoutView::OverflowClipRect(
-    const PhysicalOffset& location,
     OverlayScrollbarClipBehavior overlay_scrollbar_clip_behavior) const {
   NOT_DESTROYED();
-  return OverflowClipRectInternal(location, overlay_scrollbar_clip_behavior,
+  return OverflowClipRectInternal(overlay_scrollbar_clip_behavior,
                                   false /* for_scroll_node */);
 }
 
-PhysicalRect LayoutView::OverflowClipRectForScrollNode(
-    const PhysicalOffset& location) const {
+PhysicalRect LayoutView::OverflowClipRectForScrollNode() const {
   NOT_DESTROYED();
-  return OverflowClipRectInternal(location, kIgnoreOverlayScrollbarSize,
+  return OverflowClipRectInternal(kIgnoreOverlayScrollbarSize,
                                   true /* for_scroll_node */);
 }
 
 PhysicalRect LayoutView::OverflowClipRectInternal(
-    const PhysicalOffset& location,
     OverlayScrollbarClipBehavior overlay_scrollbar_clip_behavior,
     bool for_scroll_node) const {
   NOT_DESTROYED();
   PhysicalRect rect = ViewRect();
   if (rect.IsEmpty()) {
-    return LayoutBox::OverflowClipRect(location,
-                                       overlay_scrollbar_clip_behavior);
+    return LayoutBox::OverflowClipRect(overlay_scrollbar_clip_behavior);
   }
-
-  rect.offset += location;
 
   // When capturing the root snapshot for a transition, we paint the
   // background color where the scrollbar would be so keep the clip rect
@@ -728,13 +722,8 @@ void LayoutView::CalculateScrollbarModes(
       RETURN_SCROLLBAR_MODE(mojom::blink::ScrollbarMode::kAuto);
     }
 
-    LayoutObject* viewport = viewport_defining_element->GetLayoutObject();
+    const LayoutObject* viewport = viewport_defining_element->GetLayoutObject();
     if (!viewport) {
-      RETURN_SCROLLBAR_MODE(mojom::blink::ScrollbarMode::kAuto);
-    }
-
-    const ComputedStyle* style = viewport->Style();
-    if (!style) {
       RETURN_SCROLLBAR_MODE(mojom::blink::ScrollbarMode::kAuto);
     }
 
@@ -751,8 +740,10 @@ void LayoutView::CalculateScrollbarModes(
         RETURN_SCROLLBAR_MODE(mojom::blink::ScrollbarMode::kAlwaysOff);
       }
     }
-    overflow_x = style->OverflowX();
-    overflow_y = style->OverflowY();
+
+    const ComputedStyle& style = viewport->Style();
+    overflow_x = style.OverflowX();
+    overflow_y = style.OverflowY();
   }
 
   h_mode = v_mode = mojom::blink::ScrollbarMode::kAuto;
@@ -825,27 +816,15 @@ gfx::Size LayoutView::GetNonPrintingLayoutSize(
   return result;
 }
 
-int LayoutView::ViewLogicalWidth(
-    IncludeScrollbarsInRect scrollbar_inclusion) const {
-  NOT_DESTROYED();
-  return StyleRef().IsHorizontalWritingMode() ? ViewWidth(scrollbar_inclusion)
-                                              : ViewHeight(scrollbar_inclusion);
-}
-
-int LayoutView::ViewLogicalHeight(
-    IncludeScrollbarsInRect scrollbar_inclusion) const {
-  NOT_DESTROYED();
-  return StyleRef().IsHorizontalWritingMode() ? ViewHeight(scrollbar_inclusion)
-                                              : ViewWidth(scrollbar_inclusion);
-}
-
 LayoutUnit LayoutView::ViewLogicalHeightForPercentages() const {
   NOT_DESTROYED();
+  PhysicalSize size;
   if (GetDocument().Printing()) {
-    PhysicalSize size = initial_containing_block_size_for_printing_;
-    return IsHorizontalWritingMode() ? size.height : size.width;
+    size = initial_containing_block_size_for_printing_;
+  } else {
+    size = PhysicalSize(GetLayoutSize(kExcludeScrollbars));
   }
-  return LayoutUnit(ViewLogicalHeight());
+  return IsHorizontalWritingMode() ? size.height : size.width;
 }
 
 const LayoutBox& LayoutView::RootBox() const {
@@ -876,22 +855,48 @@ void LayoutView::LayoutRoot() {
       chrome_client.GetScreenInfo(frame).device_scale_factor);
 #endif
 
-  bool is_resizing_initial_containing_block =
-      LogicalWidth() != ViewLogicalWidthForBoxSizing() ||
-      LogicalHeight() != ViewLogicalHeightForBoxSizing();
+  const ComputedStyle& style = Style();
+  const WritingMode writing_mode = style.GetWritingMode();
+  const WritingDirectionMode writing_direction = style.GetWritingDirection();
+  const LogicalSize original_size =
+      ToLogicalSize(InitialContainingBlockSize(), writing_mode);
+
+  // If we are being auto-sized, we want to ensure that we are at least our
+  // min-content size in the inline-axis.
+  LayoutUnit min_size;
+  if (RuntimeEnabledFeatures::AutoSizeUsesScrollWidthForOverflowEnabled() &&
+      GetFrameView()->IsBeingAutoSized()) {
+    ConstraintSpaceBuilder builder(writing_mode, writing_direction,
+                                   /* is_new_fc */ true);
+    builder.SetAvailableSize({kIndefiniteSize, original_size.block_size});
+    builder.SetIsFixedBlockSize(true);
+    builder.SetContainsAnnotations(contains_annotations_);
+    min_size = BlockNode(this)
+                   .ComputeMinMaxSizes(writing_mode, SizeType::kIntrinsic,
+                                       builder.ToConstraintSpace(),
+                                       MinMaxSizesInput::Unconstrained())
+                   .sizes.min_size;
+    if (style.OverflowBlockDirection() == EOverflow::kAuto) {
+      min_size -= ComputeLogicalScrollbars().InlineSum();
+    }
+  }
+
+  const LogicalSize initial_size(std::max(original_size.inline_size, min_size),
+                                 original_size.block_size);
+  const bool is_resizing_initial_containing_block =
+      ToLogicalSize(StitchedSize(), writing_mode) != initial_size;
   DCHECK(!initial_containing_block_resize_handled_list_);
   if (is_resizing_initial_containing_block) {
     initial_containing_block_resize_handled_list_ =
         MakeGarbageCollected<GCedHeapHashSet<Member<const LayoutObject>>>();
   }
 
-  const auto& style = StyleRef();
-  ConstraintSpaceBuilder builder(style.GetWritingMode(),
-                                 style.GetWritingDirection(),
+  ConstraintSpaceBuilder builder(writing_mode, writing_direction,
                                  /* is_new_fc */ true);
-  builder.SetAvailableSize(InitialContainingBlockSize());
+  builder.SetAvailableSize(initial_size);
   builder.SetIsFixedInlineSize(true);
   builder.SetIsFixedBlockSize(true);
+  builder.SetContainsAnnotations(contains_annotations_);
 
   BlockNode(this).Layout(builder.ToConstraintSpace());
   initial_containing_block_resize_handled_list_ = nullptr;
@@ -909,7 +914,8 @@ void LayoutView::UpdateHitTestResult(HitTestResult& result,
     if (const auto* layout_box = node->GetLayoutBox())
       adjusted_point -= layout_box->PhysicalLocation();
     if (IsScrollContainer()) {
-      adjusted_point += PhysicalOffset(PixelSnappedScrolledContentOffset());
+      adjusted_point +=
+          PhysicalOffset(GetScrollableArea()->PixelSnappedScrollOffset());
     }
     result.SetNodeAndPosition(node, adjusted_point);
   }
@@ -991,13 +997,13 @@ gfx::SizeF LayoutView::PaginationViewportSizeForMediaQueries() const {
   return size;
 }
 
-void LayoutView::WillBeDestroyed() {
+void LayoutView::WillBeDestroyed(const ComputedStyle* style) {
   NOT_DESTROYED();
   // TODO(wangxianzhu): This is a workaround of crbug.com/570706.
   // Should find and fix the root cause.
   if (PaintLayer* layer = Layer())
     layer->SetNeedsRepaint();
-  LayoutBlockFlow::WillBeDestroyed();
+  LayoutBlockFlow::WillBeDestroyed(style);
 }
 
 void LayoutView::UpdateFromStyle() {
@@ -1040,9 +1046,11 @@ void LayoutView::CacheScrollDimensions() {
 void LayoutView::StyleDidChange(
     StyleDifference diff,
     const ComputedStyle* old_style,
+    const ComputedStyle& new_style,
     const StyleChangeContext& style_change_context) {
   NOT_DESTROYED();
-  LayoutBlockFlow::StyleDidChange(diff, old_style, style_change_context);
+  LayoutBlockFlow::StyleDidChange(diff, old_style, new_style,
+                                  style_change_context);
 
   LocalFrame& frame = GetFrameView()->GetFrame();
   VisualViewport& visual_viewport = frame.GetPage()->GetVisualViewport();
@@ -1062,17 +1070,18 @@ void LayoutView::StyleDidChange(
 
 PhysicalRect LayoutView::DebugRect() const {
   NOT_DESTROYED();
-  return PhysicalRect(gfx::Rect(0, 0, ViewWidth(kIncludeScrollbars),
-                                ViewHeight(kIncludeScrollbars)));
+  return PhysicalRect(gfx::Rect(GetLayoutSize(kIncludeScrollbars)));
 }
 
 CompositingReasons LayoutView::AdditionalCompositingReasons() const {
   NOT_DESTROYED();
   // TODO(lfg): Audit for portals
   const LocalFrame& frame = frame_view_->GetFrame();
-  if (frame.OwnerLayoutObject() && frame.IsCrossOriginToParentOrOuterDocument())
-    return CompositingReason::kIFrame;
-  return CompositingReason::kNone;
+  if (frame.OwnerLayoutObject() &&
+      frame.IsCrossOriginToParentOrOuterDocument()) {
+    return {CompositingReason::kIFrame};
+  }
+  return {};
 }
 
 bool LayoutView::AffectedByResizedInitialContainingBlock(
@@ -1133,6 +1142,15 @@ bool LayoutView::SetScrollbarSizesForViewportUnits(const gfx::Size& size) {
     changed = true;
   }
   return changed;
+}
+
+void LayoutView::SetContainsAnnotations() {
+  NOT_DESTROYED();
+  if (contains_annotations_) {
+    return;
+  }
+  contains_annotations_ = true;
+  SetNeedsLayout(layout_invalidation_reason::kStyleChange);
 }
 
 }  // namespace blink

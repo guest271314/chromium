@@ -43,6 +43,7 @@ export enum BrowsingDataType {
   DOWNLOADS = 6,
   HOSTED_APPS_DATA = 7,
   // TABS = 8, Not used on Desktop.
+  SKILLS = 9,
 }
 // LINT.ThenChange(/components/browsing_data/core/browsing_data_utils.h:BrowsingDataType)
 
@@ -58,15 +59,9 @@ export interface ClearBrowsingDataResult {
 /**
  * UpdateSyncStateEvent contains relevant information for a summary of a user's
  * updated Sync State.
- *
- * TODO(crbug.com/397187800): Clean up UpdateSyncStateEvent interface when
- * kDBDRevampDesktop is launched. We only need to fetch isNonGoogleDse &
- * nonGoogleSearchHistoryString for the DBDv2 dialog.
  */
 export interface UpdateSyncStateEvent {
   signedIn: boolean;
-  syncingHistory: boolean;
-  shouldShowCookieException: boolean;
   isNonGoogleDse: boolean;
   nonGoogleSearchHistoryString: string;
 }
@@ -92,18 +87,13 @@ export interface ClearBrowsingDataBrowserProxy {
   getSyncState(): Promise<UpdateSyncStateEvent>;
 
   /**
-   * Requests the backend to restart the browsing data counters of the basic or
-   * advanced tab (determined by |isBasic|), instructing them to calculate the
-   * data volume for the |timePeriod|. No return value, as the frontend needn't
-   * wait for the counting to be completed.
+   * Requests the backend to restart the browsing data counters, instructing
+   * them to calculate the data volume for the |timePeriod|. No return value, as
+   * the frontend needn't wait for the counting to be completed.
    */
-  restartCounters(isBasic: boolean, timePeriod: number): void;
+  restartCounters(timePeriod: number): void;
 
-  recordSettingsClearBrowsingDataBasicTimePeriodHistogram(bucket: TimePeriod):
-      void;
-
-  recordSettingsClearBrowsingDataAdvancedTimePeriodHistogram(
-      bucket: TimePeriod): void;
+  recordSettingsClearBrowsingDataTimePeriodHistogram(bucket: TimePeriod): void;
 }
 
 export class ClearBrowsingDataBrowserProxyImpl implements
@@ -121,24 +111,15 @@ export class ClearBrowsingDataBrowserProxyImpl implements
     return sendWithPromise<UpdateSyncStateEvent>('getSyncState');
   }
 
-  restartCounters(isBasic: boolean, timePeriod: number) {
-    chrome.send('restartClearBrowsingDataCounters', [isBasic, timePeriod]);
+  restartCounters(timePeriod: number) {
+    chrome.send('restartClearBrowsingDataCounters', [timePeriod]);
   }
 
-  recordSettingsClearBrowsingDataBasicTimePeriodHistogram(bucket: TimePeriod) {
-    chrome.send('metricsHandler:recordInHistogram', [
-      'Settings.ClearBrowsingData.Basic.TimePeriod',
-      bucket,
-      TimePeriod.TIME_PERIOD_LAST,
-    ]);
-  }
-
-  recordSettingsClearBrowsingDataAdvancedTimePeriodHistogram(bucket:
-                                                                 TimePeriod) {
+  recordSettingsClearBrowsingDataTimePeriodHistogram(bucket: TimePeriod) {
     chrome.send('metricsHandler:recordInHistogram', [
       'Settings.ClearBrowsingData.Advanced.TimePeriod',
       bucket,
-      TimePeriod.TIME_PERIOD_LAST,
+      TimePeriod.TIME_PERIOD_LAST + 1,
     ]);
   }
 

@@ -2,15 +2,17 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include <algorithm>
-
+#include "base/functional/bind.h"
 #include "base/memory/ref_counted_memory.h"
+#include "base/test/bind.h"
 #include "base/test/scoped_feature_list.h"
-#include "components/language_detection/content/common/language_detection.mojom.h"
 #include "content/browser/renderer_host/navigation_controller_impl.h"
 #include "content/browser/renderer_host/render_frame_host_impl.h"
 #include "content/browser/web_contents/web_contents_impl.h"
 #include "content/browser/webui/web_ui_data_source_impl.h"
+#include "content/common/features.h"
+#include "content/public/browser/webui_config.h"
+#include "content/public/browser/webui_config_map.h"
 #include "content/public/common/content_client.h"
 #include "content/public/common/content_features.h"
 #include "content/public/common/url_utils.h"
@@ -24,12 +26,26 @@
 #include "content/public/test/web_ui_browsertest_util.h"
 #include "content/shell/browser/shell.h"
 #include "content/test/content_browser_test_utils_internal.h"
-#include "mojo/public/cpp/bindings/remote.h"
+#include "url/url_constants.h"
 
 namespace content {
 
 #if !BUILDFLAG(IS_ANDROID)
 namespace {
+
+class TestWebUIV2EnabledConfig : public DefaultWebUIConfig<WebUIController> {
+ public:
+  explicit TestWebUIV2EnabledConfig(std::string_view host)
+      : DefaultWebUIConfig("chrome", host) {}
+  bool SupportsInProcessResourceLoadingV2() const override { return true; }
+};
+
+class TestWebUIV2DisabledConfig : public DefaultWebUIConfig<WebUIController> {
+ public:
+  explicit TestWebUIV2DisabledConfig(std::string_view host)
+      : DefaultWebUIConfig("chrome", host) {}
+  bool SupportsInProcessResourceLoadingV2() const override { return false; }
+};
 
 class InitialWebUIOverrideContentBrowserClient
     : public ContentBrowserTestContentBrowserClient {
@@ -47,7 +63,7 @@ class InitialWebUIOverrideContentBrowserClient
     return initial_webui_url_ == url;
   }
   bool IsTopChromeWebUIURL(const GURL& url) override {
-    return initial_webui_url_ == url;
+    return url.SchemeIs("chrome") && url.DomainIs("top-chrome");
   }
 
  private:
@@ -78,11 +94,8 @@ class InitialWebUINavigationBrowserTest : public ContentBrowserTest {
  public:
   InitialWebUINavigationBrowserTest() {
     WebUIControllerFactory::RegisterFactory(&factory_);
-    scoped_feature_list_.InitWithFeaturesAndParameters(
-        {{features::kInitialWebUISyncNavStartToCommit, {}},
-         {features::kWebUIInProcessResourceLoadingV2, {}},
-         {features::kInitialWebUI, {{"without_language_detection", "true"}}}},
-        {});
+    scoped_feature_list_.InitWithFeatures(
+        {features::kWebUIInProcessResourceLoadingV2}, {});
   }
 
  protected:
@@ -96,7 +109,15 @@ class InitialWebUINavigationBrowserTest : public ContentBrowserTest {
 };
 
 IN_PROC_BROWSER_TEST_F(InitialWebUINavigationBrowserTest, CommitInitialWebUI) {
-  GURL url("chrome://foo");
+  GURL url("chrome://foo.top-chrome");
+
+  auto& config_map = WebUIConfigMap::GetInstance();
+  config_map.AddWebUIConfig(
+      std::make_unique<TestWebUIV2EnabledConfig>("foo.top-chrome"));
+  base::ScopedClosureRunner cleanup_configs(base::BindLambdaForTesting([&]() {
+    WebUIConfigMap::GetInstance().RemoveConfig(GURL("chrome://foo.top-chrome"));
+  }));
+
   // Make `url` an initial WebUI URL.
   InitialWebUIOverrideContentBrowserClient content_browser_client(url);
 
@@ -118,8 +139,8 @@ IN_PROC_BROWSER_TEST_F(InitialWebUINavigationBrowserTest, CommitInitialWebUI) {
   // string response instead of adding a ResourceBundle resource ID. This is
   // different from what happens in production (which will use a resource ID),
   // but this is significantly easier to test.
-  WebUIDataSource* source =
-      WebUIDataSource::CreateAndAdd(controller.GetBrowserContext(), "foo");
+  WebUIDataSource* source = WebUIDataSource::CreateAndAdd(
+      controller.GetBrowserContext(), "foo.top-chrome");
   source->SetResourcePathToResponse("", "<!doctype html><body>bar</body>");
 
   // Ensure that there are no navigations yet on the new WebContents.
@@ -173,45 +194,182 @@ IN_PROC_BROWSER_TEST_F(InitialWebUINavigationBrowserTest, CommitInitialWebUI) {
         root_csp[0]->header->header_value);
   }
 }
-
-// Verifies that the language detection driver is not bound for Initial WebUIs
-// when the optimization feature is enabled, avoiding unnecessary work on
-// startup.
+// Verifies that V2 enablement is based on WebUIConfig.
 IN_PROC_BROWSER_TEST_F(InitialWebUINavigationBrowserTest,
-                       SkipsLanguageDetection) {
-  GURL url("chrome://foo");
-  // Make `url` an initial WebUI URL.
-  InitialWebUIOverrideContentBrowserClient content_browser_client(url);
+                       V2EnabledBasedOnWebUIConfig) {
+  GURL v2_enabled_url("chrome://v2-enabled");
+  GURL v2_disabled_url("chrome://v2-disabled");
 
-  WebContents::CreateParams params(
-      contents()->GetBrowserContext(),
-      SiteInstance::CreateForURL(contents()->GetBrowserContext(), url));
-  auto new_web_contents = WebContents::Create(params);
+  auto& config_map = WebUIConfigMap::GetInstance();
+  config_map.AddWebUIConfig(
+      std::make_unique<TestWebUIV2EnabledConfig>("v2-enabled"));
+  config_map.AddWebUIConfig(
+      std::make_unique<TestWebUIV2DisabledConfig>("v2-disabled"));
 
-  WebUIDataSource::CreateAndAdd(contents()->GetBrowserContext(), "foo")
-      ->SetResourcePathToResponse("", "<!doctype html><body>bar</body>");
+  // Cleanup configs on teardown.
+  base::ScopedClosureRunner cleanup_configs(base::BindLambdaForTesting([&]() {
+    WebUIConfigMap::GetInstance().RemoveConfig(GURL("chrome://v2-enabled"));
+    WebUIConfigMap::GetInstance().RemoveConfig(GURL("chrome://v2-disabled"));
+  }));
 
-  EXPECT_TRUE(NavigateToURL(new_web_contents.get(), url));
+  // Test v2_disabled_url (should NOT have V2 resources in config)
+  {
+    WebContents::CreateParams new_contents_params(
+        contents()->GetBrowserContext());
+    new_contents_params.site_instance = SiteInstance::CreateForURL(
+        contents()->GetBrowserContext(), v2_disabled_url);
+    std::unique_ptr<WebContents> new_web_contents(
+        WebContents::Create(new_contents_params));
+    NavigationControllerImpl& controller =
+        static_cast<NavigationControllerImpl&>(
+            new_web_contents->GetController());
 
-  RenderFrameHostImpl* rfh =
-      static_cast<WebContentsImpl*>(new_web_contents.get())
-          ->GetPrimaryMainFrame();
-  EXPECT_TRUE(rfh->GetProcess()->IsForTopChromeWebUI());
+    WebUIDataSource* source = WebUIDataSource::CreateAndAdd(
+        controller.GetBrowserContext(), "v2-disabled");
+    // Use SetRequestFilter to serve the main HTML so it loads successfully.
+    source->SetRequestFilter(
+        base::BindRepeating([](const std::string& path) { return path == ""; }),
+        base::BindRepeating([](const std::string& path,
+                               URLDataSource::GotDataCallback callback) {
+          std::move(callback).Run(base::MakeRefCounted<base::RefCountedString>(
+              "<!doctype html><body>disabled</body>"));
+        }));
+    // Enable strings.m.js generation.
+    source->UseStringsJs();
+    source->AddString("dummy", "value");
 
-  auto* broker_impl = static_cast<
-      BrowserInterfaceBrokerImpl<RenderFrameHostImpl, RenderFrameHost*>*>(
-      rfh->browser_interface_broker_receiver_for_testing()
-          .internal_state()
-          ->impl());
+    TestNavigationObserver navigation_observer(v2_disabled_url);
+    navigation_observer.WatchExistingWebContents();
+    controller.LoadURLWithParams(
+        NavigationController::LoadURLParams(v2_disabled_url));
+    navigation_observer.Wait();
+    EXPECT_TRUE(navigation_observer.last_navigation_succeeded());
 
-  std::vector<std::string> interfaces;
-  broker_impl->GetBinderMapInterfacesForTesting(interfaces);
+    RenderFrameHostImpl* rfh = static_cast<RenderFrameHostImpl*>(
+        new_web_contents->GetPrimaryMainFrame());
+    auto& config = rfh->local_resource_loader_config_for_testing();
+    EXPECT_FALSE(config.is_null());
+    auto origin = url::Origin::Create(v2_disabled_url);
+    EXPECT_TRUE(config->sources.contains(origin));
+    // strings.m.js should NOT be present because V2 is disabled for this
+    // origin.
+    EXPECT_FALSE(
+        config->sources[origin]->path_to_resource_map.contains("strings.m.js"));
+  }
 
-  EXPECT_TRUE(
-      std::find(
-          interfaces.begin(), interfaces.end(),
-          language_detection::mojom::ContentLanguageDetectionDriver::Name_) ==
-      interfaces.end());
+  // Test v2_enabled_url (should HAVE V2 resources in config)
+  {
+    WebContents::CreateParams new_contents_params(
+        contents()->GetBrowserContext());
+    new_contents_params.site_instance = SiteInstance::CreateForURL(
+        contents()->GetBrowserContext(), v2_enabled_url);
+    std::unique_ptr<WebContents> new_web_contents(
+        WebContents::Create(new_contents_params));
+    NavigationControllerImpl& controller =
+        static_cast<NavigationControllerImpl&>(
+            new_web_contents->GetController());
+
+    WebUIDataSource* source = WebUIDataSource::CreateAndAdd(
+        controller.GetBrowserContext(), "v2-enabled");
+    // Use SetRequestFilter to serve the main HTML so it loads successfully.
+    source->SetRequestFilter(
+        base::BindRepeating([](const std::string& path) { return path == ""; }),
+        base::BindRepeating([](const std::string& path,
+                               URLDataSource::GotDataCallback callback) {
+          std::move(callback).Run(base::MakeRefCounted<base::RefCountedString>(
+              "<!doctype html><body>enabled</body>"));
+        }));
+    // Enable strings.m.js generation.
+    source->UseStringsJs();
+    source->AddString("dummy", "value");
+
+    TestNavigationObserver navigation_observer(v2_enabled_url);
+    navigation_observer.WatchExistingWebContents();
+    controller.LoadURLWithParams(
+        NavigationController::LoadURLParams(v2_enabled_url));
+    navigation_observer.Wait();
+    EXPECT_TRUE(navigation_observer.last_navigation_succeeded());
+
+    RenderFrameHostImpl* rfh = static_cast<RenderFrameHostImpl*>(
+        new_web_contents->GetPrimaryMainFrame());
+    auto& config = rfh->local_resource_loader_config_for_testing();
+    EXPECT_FALSE(config.is_null());
+    auto origin = url::Origin::Create(v2_enabled_url);
+    EXPECT_TRUE(config->sources.contains(origin));
+    // Generated resources SHOULD be present because V2 is enabled for this
+    // origin.
+    EXPECT_TRUE(
+        config->sources[origin]->path_to_resource_map.contains("strings.m.js"));
+  }
+}
+
+class InitialWebUINavigationFeatureEnabledBrowserTest
+    : public InitialWebUINavigationBrowserTest,
+      public testing::WithParamInterface<bool> {
+ public:
+  InitialWebUINavigationFeatureEnabledBrowserTest() {
+    if (ShouldAllowDebug()) {
+      feature_list_.InitAndEnableFeature(features::kDebugTopChromeWebUI);
+    } else {
+      feature_list_.InitAndDisableFeature(features::kDebugTopChromeWebUI);
+    }
+  }
+
+ protected:
+  bool ShouldAllowDebug() { return GetParam(); }
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
+};
+
+INSTANTIATE_TEST_SUITE_P(All,
+                         InitialWebUINavigationFeatureEnabledBrowserTest,
+                         testing::Bool());
+
+// Test that we can navigate away from the initial web UI if and only if
+// debugging is enabled.
+IN_PROC_BROWSER_TEST_P(InitialWebUINavigationFeatureEnabledBrowserTest,
+                       NavigateAwayFromInitialWebUIWithDebugEnabled) {
+  GURL initial_webui_url("chrome://foo.top-chrome");
+
+  auto& config_map = WebUIConfigMap::GetInstance();
+  config_map.AddWebUIConfig(
+      std::make_unique<TestWebUIV2EnabledConfig>("foo.top-chrome"));
+  base::ScopedClosureRunner cleanup_configs(base::BindLambdaForTesting([&]() {
+    WebUIConfigMap::GetInstance().RemoveConfig(GURL("chrome://foo.top-chrome"));
+  }));
+
+  InitialWebUIOverrideContentBrowserClient content_browser_client(
+      initial_webui_url);
+
+  // Setup data source for the WebUI.
+  WebUIDataSource* source = WebUIDataSource::CreateAndAdd(
+      contents()->GetBrowserContext(), "foo.top-chrome");
+  source->SetResourcePathToResponse("", "<!doctype html><body>bar</body>");
+
+  // Create a new WebContents to navigate to initial WebUI.
+  WebContents::CreateParams new_contents_params(
+      contents()->GetBrowserContext());
+  new_contents_params.site_instance = SiteInstance::CreateForURL(
+      contents()->GetBrowserContext(), initial_webui_url);
+  std::unique_ptr<WebContents> new_web_contents(
+      WebContents::Create(new_contents_params));
+  NavigationControllerImpl& controller =
+      static_cast<NavigationControllerImpl&>(new_web_contents->GetController());
+
+  // Navigate to initial WebUI.
+  {
+    TestNavigationObserver navigation_observer(new_web_contents.get(), 1);
+    controller.LoadURLWithParams(
+        NavigationController::LoadURLParams(initial_webui_url));
+    navigation_observer.Wait();
+    EXPECT_TRUE(navigation_observer.last_navigation_succeeded());
+  }
+
+  // Now try to navigate away to about:blank
+  // With feature flag enabled, this should succeed.
+  ASSERT_EQ(NavigateToURL(new_web_contents.get(), GURL(url::kAboutBlankURL)),
+            ShouldAllowDebug());
 }
 #endif
 

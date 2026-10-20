@@ -4,30 +4,34 @@
 
 #include "chrome/browser/ash/system/timezone_resolver_manager.h"
 
+#include <utility>
+
 #include "ash/constants/ash_pref_names.h"
 #include "ash/constants/ash_switches.h"
 #include "ash/constants/geolocation_access_level.h"
 #include "ash/shell.h"
 #include "ash/system/privacy_hub/privacy_hub_controller.h"
 #include "base/check.h"
+#include "base/check_deref.h"
 #include "base/command_line.h"
 #include "base/functional/bind.h"
 #include "base/notreached.h"
 #include "chrome/browser/ash/net/delay_network_call.h"
 #include "chrome/browser/ash/preferences/preferences.h"
-#include "chrome/browser/ash/profiles/profile_helper.h"
 #include "chrome/browser/ash/system/input_device_settings.h"
 #include "chrome/browser/ash/system/timezone_util.h"
-#include "chrome/browser/browser_process.h"
-#include "chrome/browser/browser_process_platform_part.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
 #include "chromeos/ash/components/geolocation/system_location_provider.h"
 #include "chromeos/ash/components/install_attributes/install_attributes.h"
 #include "chromeos/ash/components/timezone/timezone_util.h"
 #include "components/policy/proto/chrome_device_policy.pb.h"
 #include "components/prefs/pref_change_registrar.h"
 #include "components/prefs/pref_service.h"
+#include "components/session_manager/core/session.h"
 #include "components/session_manager/core/session_manager.h"
+#include "components/user_manager/user_manager.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
 
 namespace ash {
 namespace system {
@@ -45,14 +49,14 @@ enum ServiceConfiguration {
 // Starts or stops TimezoneResolver if required by
 // SystemTimezoneAutomaticDetectionPolicy.
 // Returns SHOULD_* if timezone resolver status is controlled by this policy.
-ServiceConfiguration GetServiceConfigurationFromAutomaticDetectionPolicy() {
-  PrefService* local_state = g_browser_process->local_state();
-  const bool is_managed = local_state->IsManagedPreference(
+ServiceConfiguration GetServiceConfigurationFromAutomaticDetectionPolicy(
+    const PrefService& local_state) {
+  const bool is_managed = local_state.IsManagedPreference(
       ash::prefs::kSystemTimezoneAutomaticDetectionPolicy);
   if (!is_managed)
     return UNSPECIFIED;
 
-  int policy_value = local_state->GetInteger(
+  int policy_value = local_state.GetInteger(
       ash::prefs::kSystemTimezoneAutomaticDetectionPolicy);
 
   switch (policy_value) {
@@ -82,14 +86,15 @@ ServiceConfiguration GetServiceConfigurationFromSystemTimezonePolicy() {
 
 // Starts or stops TimezoneResolver if required by policy.
 // Returns true if timezone resolver status is controlled by policy.
-ServiceConfiguration GetServiceConfigurationFromPolicy() {
+ServiceConfiguration GetServiceConfigurationFromPolicy(
+    const PrefService& local_state) {
   ServiceConfiguration result =
       GetServiceConfigurationFromSystemTimezonePolicy();
 
   if (result != UNSPECIFIED)
     return result;
 
-  result = GetServiceConfigurationFromAutomaticDetectionPolicy();
+  result = GetServiceConfigurationFromAutomaticDetectionPolicy(local_state);
   return result;
 }
 
@@ -105,23 +110,23 @@ ServiceConfiguration GetServiceConfigurationFromUserPrefs(
 }
 
 // Returns service configuration for the signin screen.
-ServiceConfiguration GetServiceConfigurationForSigninScreen() {
+ServiceConfiguration GetServiceConfigurationForSigninScreen(
+    const PrefService& local_state) {
   using AccessLevel = GeolocationAccessLevel;
 
-  const AccessLevel device_geolocation_permission =
-      static_cast<AccessLevel>(g_browser_process->local_state()->GetInteger(
-          prefs::kDeviceGeolocationAllowed));
+  const AccessLevel device_geolocation_permission = static_cast<AccessLevel>(
+      local_state.GetInteger(prefs::kDeviceGeolocationAllowed));
   if (device_geolocation_permission == AccessLevel::kDisallowed) {
     return SHOULD_STOP;
   }
 
-  const PrefService::Preference* device_pref =
-      g_browser_process->local_state()->FindPreference(
-          ash::prefs::kResolveDeviceTimezoneByGeolocationMethod);
+  const PrefService::Preference* device_pref = local_state.FindPreference(
+      ash::prefs::kResolveDeviceTimezoneByGeolocationMethod);
   if (!device_pref || device_pref->IsDefaultValue()) {
     // CfM devices default to static timezone.
     bool keyboard_driven_oobe =
-        system::InputDeviceSettings::Get()->ForceKeyboardDrivenUINavigation();
+        system::InputDeviceSettings::ForceKeyboardDrivenUINavigation(
+            local_state);
     return keyboard_driven_oobe ? SHOULD_STOP : SHOULD_START;
   }
 
@@ -141,10 +146,15 @@ ServiceConfiguration GetServiceConfigurationForSigninScreen() {
 }  // anonymous namespace.
 
 TimeZoneResolverManager::TimeZoneResolverManager(
+    PrefService* local_state,
+    scoped_refptr<network::SharedURLLoaderFactory> shared_url_loader_factory,
     SystemLocationProvider* geolocation_provider,
     session_manager::SessionManager* session_manager)
-    : geolocation_provider_(geolocation_provider) {
-  switch (g_browser_process->local_state()->GetInitializationStatus()) {
+    : local_state_(CHECK_DEREF(local_state)),
+      shared_url_loader_factory_(std::move(shared_url_loader_factory)),
+      geolocation_provider_(geolocation_provider) {
+  CHECK(shared_url_loader_factory_);
+  switch (local_state_->GetInitializationStatus()) {
     case PrefService::INITIALIZATION_STATUS_SUCCESS:
     case PrefService::INITIALIZATION_STATUS_CREATED_NEW_PREF_STORE:
       local_state_initialized_ = true;
@@ -152,11 +162,11 @@ TimeZoneResolverManager::TimeZoneResolverManager(
     default:
       local_state_initialized_ = false;
   }
-  g_browser_process->local_state()->AddPrefInitObserver(
+  local_state_->AddPrefInitObserver(
       base::BindOnce(&TimeZoneResolverManager::OnLocalStateInitialized,
                      weak_factory_.GetWeakPtr()));
 
-  local_state_pref_change_registrar_.Init(g_browser_process->local_state());
+  local_state_pref_change_registrar_.Init(&local_state_.get());
   local_state_pref_change_registrar_.Add(
       ash::prefs::kSystemTimezoneAutomaticDetectionPolicy,
       base::BindRepeating(&TimeZoneResolverManager::UpdateTimezoneResolver,
@@ -177,8 +187,9 @@ void TimeZoneResolverManager::SetPrimaryUserPrefs(PrefService* pref_service) {
 
 bool TimeZoneResolverManager::ShouldSendWiFiGeolocationData() const {
   // Managed user case, check cloud policies for automatic time zone.
-  if (IsTimeZoneResolutionPolicyControlled()) {
-    switch (GetEffectiveAutomaticTimezoneManagementSetting()) {
+  if (IsTimeZoneResolutionPolicyControlled(local_state_.get())) {
+    switch (
+        GetEffectiveAutomaticTimezoneManagementSetting(local_state_.get())) {
       case enterprise_management::SystemTimezoneProto::SEND_WIFI_ACCESS_POINTS:
         return true;
       case enterprise_management::SystemTimezoneProto::SEND_ALL_LOCATION_INFO:
@@ -208,7 +219,8 @@ bool TimeZoneResolverManager::ShouldSendWiFiGeolocationData() const {
 
   // Automatic time zone setting is a user configurable option, applying
   // the primary user's choice to the entire session.
-  switch (GetEffectiveUserTimeZoneResolveMethod(primary_user_prefs_,
+  switch (GetEffectiveUserTimeZoneResolveMethod(local_state_.get(),
+                                                primary_user_prefs_,
                                                 /*check_policy=*/false)) {
     case TimeZoneResolveMethod::SEND_WIFI_ACCESS_POINTS:
       return true;
@@ -221,8 +233,9 @@ bool TimeZoneResolverManager::ShouldSendWiFiGeolocationData() const {
 
 bool TimeZoneResolverManager::ShouldSendCellularGeolocationData() const {
   // Managed user case, check cloud policies for automatic time zone.
-  if (IsTimeZoneResolutionPolicyControlled()) {
-    switch (GetEffectiveAutomaticTimezoneManagementSetting()) {
+  if (IsTimeZoneResolutionPolicyControlled(local_state_.get())) {
+    switch (
+        GetEffectiveAutomaticTimezoneManagementSetting(local_state_.get())) {
       case enterprise_management::SystemTimezoneProto::SEND_ALL_LOCATION_INFO:
         return true;
       case enterprise_management::SystemTimezoneProto::USERS_DECIDE:
@@ -250,15 +263,17 @@ bool TimeZoneResolverManager::ShouldSendCellularGeolocationData() const {
 
   // Automatic time zone setting is a user configurable option, applying
   // the primary user's choice to the entire session.
-  return GetEffectiveUserTimeZoneResolveMethod(primary_user_prefs_,
+  return GetEffectiveUserTimeZoneResolveMethod(local_state_.get(),
+                                               primary_user_prefs_,
                                                /*check_policy=*/false) ==
          TimeZoneResolveMethod::SEND_ALL_LOCATION_INFO;
 }
 
 // static
-int TimeZoneResolverManager::GetEffectiveAutomaticTimezoneManagementSetting() {
+int TimeZoneResolverManager::GetEffectiveAutomaticTimezoneManagementSetting(
+    const PrefService& local_state) {
   // Regular users choose automatic time zone method themselves.
-  if (!IsTimeZoneResolutionPolicyControlled()) {
+  if (!IsTimeZoneResolutionPolicyControlled(local_state)) {
     return enterprise_management::SystemTimezoneProto::USERS_DECIDE;
   }
 
@@ -267,29 +282,28 @@ int TimeZoneResolverManager::GetEffectiveAutomaticTimezoneManagementSetting() {
     return enterprise_management::SystemTimezoneProto::DISABLED;
   }
 
-  int policy_value = g_browser_process->local_state()->GetInteger(
+  int policy_value = local_state.GetInteger(
       ash::prefs::kSystemTimezoneAutomaticDetectionPolicy);
-  DCHECK(policy_value <= enterprise_management::SystemTimezoneProto::
-                             AutomaticTimezoneDetectionType_MAX);
+  CHECK(policy_value <= enterprise_management::SystemTimezoneProto::
+                            AutomaticTimezoneDetectionType_MAX,
+        base::NotFatalUntil::M160);
 
   return policy_value;
 }
 
 void TimeZoneResolverManager::OnUserProfileLoaded(const AccountId& account_id) {
-  Profile* profile = ProfileHelper::Get()->GetProfileByAccountId(account_id);
-  system::UpdateSystemTimezone(profile);
-
-  auto* user_manager = user_manager::UserManager::Get();
-  const auto* user = user_manager->FindUser(account_id);
-  if (!user) {
-    return;
-  }
+  Profile* profile = Profile::FromBrowserContext(
+      BrowserContextHelper::Get()->GetBrowserContextByAccountId(account_id));
+  system::UpdateSystemTimezone(local_state_.get(), profile);
 
   // In Multi-Profile mode only primary user settings are in effect.
-  if (user != user_manager->GetPrimaryUser()) {
+  const session_manager::Session* primary_session =
+      session_manager::SessionManager::Get()->GetPrimarySession();
+  if (!primary_session || primary_session->account_id() != account_id) {
     return;
   }
 
+  auto* user_manager = user_manager::UserManager::Get();
   if (!user_manager->IsUserLoggedIn()) {
     return;
   }
@@ -354,24 +368,24 @@ bool TimeZoneResolverManager::TimeZoneResolverShouldBeRunning() const {
 
 bool TimeZoneResolverManager::TimeZoneResolverAllowedByTimeZoneConfigData()
     const {
-  ServiceConfiguration result = GetServiceConfigurationFromPolicy();
+  ServiceConfiguration result =
+      GetServiceConfigurationFromPolicy(local_state_.get());
 
   if (result == UNSPECIFIED) {
     if (primary_user_prefs_) {
       result = GetServiceConfigurationFromUserPrefs(primary_user_prefs_);
     } else {
       // We are on a signin page.
-      result = GetServiceConfigurationForSigninScreen();
+      result = GetServiceConfigurationForSigninScreen(local_state_.get());
     }
   }
   return result == SHOULD_START;
 }
 
 ash::TimeZoneResolver* TimeZoneResolverManager::GetResolver() {
-  if (!timezone_resolver_.get()) {
+  if (!timezone_resolver_) {
     timezone_resolver_ = std::make_unique<ash::TimeZoneResolver>(
-        g_browser_process->local_state(),
-        g_browser_process->shared_url_loader_factory(), this,
+        &local_state_.get(), shared_url_loader_factory_, this,
         geolocation_provider_, base::BindRepeating(&ash::DelayNetworkCall));
   }
   return timezone_resolver_.get();
@@ -407,10 +421,12 @@ TimeZoneResolverManager::TimeZoneResolveMethodFromInt(int value) {
 // static
 TimeZoneResolverManager::TimeZoneResolveMethod
 TimeZoneResolverManager::GetEffectiveUserTimeZoneResolveMethod(
+    const PrefService& local_state,
     const PrefService* user_prefs,
     bool check_policy) {
   if (check_policy) {
-    int policy_value = GetEffectiveAutomaticTimezoneManagementSetting();
+    int policy_value =
+        GetEffectiveAutomaticTimezoneManagementSetting(local_state);
     switch (policy_value) {
       case enterprise_management::SystemTimezoneProto::USERS_DECIDE:
         // Follow user preference.
@@ -436,13 +452,15 @@ TimeZoneResolverManager::GetEffectiveUserTimeZoneResolveMethod(
 }
 
 // static
-bool TimeZoneResolverManager::IsTimeZoneResolutionPolicyControlled() {
-  return GetServiceConfigurationFromPolicy() != UNSPECIFIED;
+bool TimeZoneResolverManager::IsTimeZoneResolutionPolicyControlled(
+    const PrefService& local_state) {
+  return GetServiceConfigurationFromPolicy(local_state) != UNSPECIFIED;
 }
 
 // static
-bool TimeZoneResolverManager::IfServiceShouldBeRunningForSigninScreen() {
-  return GetServiceConfigurationForSigninScreen() == SHOULD_START;
+bool TimeZoneResolverManager::IfServiceShouldBeRunningForSigninScreen(
+    const PrefService& local_state) {
+  return GetServiceConfigurationForSigninScreen(local_state) == SHOULD_START;
 }
 
 }  // namespace system

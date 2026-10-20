@@ -9,10 +9,10 @@
 #include <memory>
 
 #include "base/callback_list.h"
-#include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/scoped_observation.h"
 #include "chrome/browser/background/glic/glic_launcher_configuration.h"
+#include "chrome/browser/glic/host/glic.mojom-shared.h"
 #include "chrome/browser/profiles/profile_manager_observer.h"
 #include "chrome/browser/profiles/profile_observer.h"
 
@@ -21,7 +21,7 @@
 #endif
 
 class ScopedKeepAlive;
-class StatusTray;
+class ScopedProfileKeepAlive;
 
 namespace ui {
 class Accelerator;
@@ -29,8 +29,19 @@ class Accelerator;
 
 namespace glic {
 
-class GlicController;
 class GlicStatusIcon;
+
+// Delegate interface for GlicStatusIcon to trigger background mode actions
+// without tightly coupling to the manager.
+class GlicBackgroundDelegate {
+ public:
+  virtual ~GlicBackgroundDelegate() = default;
+  virtual void ToggleUI(bool prevent_close, mojom::InvocationSource source) = 0;
+
+  // Returns whether toggling would close a panel/window rather than open one.
+  // Used to label the status icon's tooltip and context menu item.
+  virtual bool WouldToggleClose() const = 0;
+};
 
 // These values are persisted to logs. Entries should not be renumbered and
 // numeric values should never be reused.
@@ -48,10 +59,15 @@ enum class HotkeyUsage {
 // listen to a global hotkey, and provide a status icon for triggering the UI.
 class GlicBackgroundModeManager : public GlicLauncherConfiguration::Observer,
                                   public ProfileManagerObserver,
-                                  public ProfileObserver {
+                                  public ProfileObserver,
+                                  public GlicBackgroundDelegate {
  public:
-  explicit GlicBackgroundModeManager(StatusTray* status_tray);
+  GlicBackgroundModeManager();
   ~GlicBackgroundModeManager() override;
+
+  // GlicBackgroundDelegate:
+  void ToggleUI(bool prevent_close, mojom::InvocationSource source) override;
+  bool WouldToggleClose() const override;
 
   static GlicBackgroundModeManager* GetInstance();
 
@@ -78,13 +94,12 @@ class GlicBackgroundModeManager : public GlicLauncherConfiguration::Observer,
   }
 
   bool IsInBackgroundModeForTesting() {
-    CHECK_EQ(static_cast<bool>(keep_alive_), static_cast<bool>(status_icon_));
     return keep_alive_ != nullptr;
   }
 
   GlicStatusIcon* GetStatusIconForTesting() { return status_icon_.get(); }
 
-  void EnterBackgroundMode();
+  void EnterBackgroundMode(bool show_status_icon);
   void ExitBackgroundMode();
 
  private:
@@ -93,20 +108,19 @@ class GlicBackgroundModeManager : public GlicLauncherConfiguration::Observer,
   void RegisterHotkeys(const std::vector<ui::Accelerator>& updated_hotkeys);
   void UnregisterHotkey();
   void UpdateState();
+  void RefreshStatusIconToggleLabel();
 
+  bool ShouldRegisterGlobalHotkey() const;
   bool IsEnabledInAnyLoadedProfile();
+  bool UpdateExpectedHotkeys();
+  ui::Accelerator GetHotkeyToShow() const;
 
   // A helper class for observing pref changes.
   std::unique_ptr<GlicLauncherConfiguration> configuration_;
 
-  // An abstraction used to show/hide the UI.
-  std::unique_ptr<GlicController> controller_;
-
   std::unique_ptr<ScopedKeepAlive> keep_alive_;
+  std::unique_ptr<ScopedProfileKeepAlive> profile_keep_alive_;
 
-  // TODO(https://crbug.com/378139555): Figure out how to not dangle this
-  // pointer (and other instances of StatusTray).
-  raw_ptr<StatusTray, DanglingUntriaged> status_tray_;
   // Class that represents the glic status icon. Only exists when the background
   // mode is enabled.
   std::unique_ptr<GlicStatusIcon> status_icon_;
@@ -140,6 +154,8 @@ class GlicBackgroundModeManager : public GlicLauncherConfiguration::Observer,
       profile_enabled_subscriptions_;
   std::map<Profile*, base::CallbackListSubscription>
       profile_consent_subscriptions_;
+  std::map<Profile*, base::CallbackListSubscription>
+      profile_show_hide_subscriptions_;
   using ScopedProfileObserver =
       base::ScopedObservation<Profile, ProfileObserver>;
   std::map<Profile*, ScopedProfileObserver> profile_observers_;

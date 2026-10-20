@@ -3,12 +3,14 @@
 // found in the LICENSE file.
 
 #include <memory>
+#include <string>
 #include <vector>
 
 #include "ash/accessibility/magnifier/fullscreen_magnifier_controller.h"
 #include "ash/accessibility/ui/accessibility_focus_ring_controller_impl.h"
 #include "ash/accessibility/ui/accessibility_focus_ring_layer.h"
 #include "ash/accessibility/ui/accessibility_highlight_layer.h"
+#include "ash/constants/ash_extension_constants.h"
 #include "ash/constants/ash_pref_names.h"
 #include "ash/public/cpp/ash_view_ids.h"
 #include "ash/public/cpp/system_tray_test_api.h"
@@ -24,6 +26,7 @@
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/scoped_feature_list.h"
+#include "base/threading/thread_restrictions.h"
 #include "chrome/browser/ash/accessibility/accessibility_feature_browsertest.h"
 #include "chrome/browser/ash/accessibility/accessibility_manager.h"
 #include "chrome/browser/ash/accessibility/accessibility_test_utils.h"
@@ -33,9 +36,10 @@
 #include "chrome/browser/ash/accessibility/select_to_speak_test_utils.h"
 #include "chrome/browser/ash/accessibility/speech_monitor.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_window.h"
-#include "chrome/common/extensions/extension_constants.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
+#include "chrome/browser/ui/ui_features.h"
+#include "chrome/grit/generated_resources.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "components/prefs/pref_service.h"
@@ -48,12 +52,14 @@
 #include "extensions/browser/process_manager.h"
 #include "third_party/skia/include/core/SkColor.h"
 #include "ui/accessibility/accessibility_features.h"
+#include "ui/base/l10n/l10n_util.h"
 #include "ui/compositor/layer.h"
 #include "ui/display/manager/display_manager.h"
 #include "ui/display/screen.h"
 #include "ui/display/test/display_manager_test_api.h"
 #include "ui/events/keycodes/keyboard_codes_posix.h"
 #include "ui/events/test/event_generator.h"
+#include "ui/gfx/text_utils.h"
 #include "url/url_constants.h"
 
 namespace ash {
@@ -869,6 +875,20 @@ IN_PROC_BROWSER_TEST_F(SelectToSpeakTest, ReadsSelectedTextWithSearchS) {
 }
 
 IN_PROC_BROWSER_TEST_F(SelectToSpeakTest,
+                       ReadsSelectedTextWithContextMenuNotification) {
+  std::string text = "Pick me! Read me!";
+  LoadURLAndSelectToSpeak(base::StringPrintf(
+      "data:text/html;charset=utf-8,<p>Not me!</p><p>%s</p><p>Nor me!</p>",
+      text.c_str()));
+  SelectNodeWithText(text);
+
+  AccessibilityManager::Get()->OnSelectToSpeakContextMenuClick();
+
+  sm_.ExpectSpeechPattern(text);
+  sm_.Replay();
+}
+
+IN_PROC_BROWSER_TEST_F(SelectToSpeakTest,
                        ReadsSelectedTextFromContextMenuClick) {
   std::string text = "This is some selected text";
   LoadURLAndSelectToSpeak(base::StringPrintf(
@@ -903,19 +923,4 @@ IN_PROC_BROWSER_TEST_F(SelectToSpeakTest,
   sm_.ExpectSpeechPattern(text);
   sm_.Replay();
 }
-
-IN_PROC_BROWSER_TEST_F(SelectToSpeakTest,
-                       ReadsSelectedTextWithContextMenuNotification) {
-  std::string text = "Pick me! Read me!";
-  LoadURLAndSelectToSpeak(base::StringPrintf(
-      "data:text/html;charset=utf-8,<p>Not me!</p><p>%s</p><p>Nor me!</p>",
-      text.c_str()));
-  SelectNodeWithText(text);
-
-  AccessibilityManager::Get()->OnSelectToSpeakContextMenuClick();
-
-  sm_.ExpectSpeechPattern(text);
-  sm_.Replay();
-}
-
 }  // namespace ash

@@ -40,10 +40,19 @@ constexpr CGFloat kPreviewImageScale = 2.0;
   // The URL of the image to load.
   NSURL* _imageURL;
 
+  // The frame ID of the subframe containing the image, if any.
+  NSString* _frameID;
+
+  // The origin of the subframe containing the image, if any.
+  url::Origin _frameOrigin;
+
   // Image transcoder used to convert untrusted image data into safe
   // locally-encoded image data, which can then be safely decoded using UIImage
   // in Chrome process.
   web::JavaScriptImageTranscoder _imageTranscoder;
+
+  // The referrer policy to use when fetching the image preview.
+  web::ReferrerPolicy _referrerPolicy;
 
   // Image view that contains the preview image.
   UIImageView* _imageView;
@@ -63,24 +72,39 @@ constexpr CGFloat kPreviewImageScale = 2.0;
   UIView* _spinnerView;
 }
 
-- (instancetype)initWithSrcURL:(NSURL*)URL webState:(web::WebState*)webState {
+- (instancetype)initWithSrcURL:(NSURL*)URL
+                      webState:(web::WebState*)webState
+                referrerPolicy:(web::ReferrerPolicy)referrerPolicy
+                       frameID:(NSString*)frameID
+                   frameOrigin:(url::Origin)frameOrigin {
   self = [super initWithNibName:nil bundle:nil];
   if (self) {
     _imageURL = [URL copy];
     _webState = webState->GetWeakPtr();
+    _referrerPolicy = referrerPolicy;
+    _frameID = [frameID copy];
+    _frameOrigin = std::move(frameOrigin);
   }
   return self;
 }
 
 - (void)loadPreview {
+  if (!_webState) {
+    return;
+  }
   ImageFetchTabHelper* imageFetcher =
       ImageFetchTabHelper::FromWebState(_webState.get());
+  if (!imageFetcher) {
+    return;
+  }
   const GURL& lastCommittedURL = _webState->GetLastCommittedURL();
-  web::Referrer referrer(lastCommittedURL, web::ReferrerPolicyDefault);
+  web::Referrer referrer(lastCommittedURL, _referrerPolicy);
+
+  std::string frameIDStr = _frameID ? base::SysNSStringToUTF8(_frameID) : "";
 
   __weak __typeof(self) weakSelf = self;
   imageFetcher->GetImageData(net::GURLWithNSURL(_imageURL), referrer,
-                             ^(NSData* data) {
+                             frameIDStr, _frameOrigin, ^(NSData* data) {
                                [weakSelf imageDataReceived:data];
                              });
 }
@@ -164,7 +188,7 @@ constexpr CGFloat kPreviewImageScale = 2.0;
   [errorView addSubview:errorImageView];
   errorImageView.translatesAutoresizingMaskIntoConstraints = NO;
   AddSameCenterConstraints(errorView, errorImageView);
-  [errorImageView setImage:DefaultSymbolWithPointSize(kPhotoSymbol, 17)];
+  [errorImageView setImage:SymbolWithPointSize(SymbolPhoto, 17)];
   errorImageView.tintColor = [UIColor colorNamed:kTextSecondaryColor];
 }
 

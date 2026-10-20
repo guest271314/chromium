@@ -23,7 +23,6 @@ import org.junit.runner.RunWith;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
-import org.robolectric.annotation.Config;
 
 import org.chromium.base.ContextUtils;
 import org.chromium.base.test.BaseRobolectricTestRunner;
@@ -32,7 +31,6 @@ import org.chromium.components.embedder_support.util.Origin;
 
 /** Tests for {@link InstalledWebappRegistrar}. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 public class InstalledWebappRegistrarTest {
     private static final int APP_UID = 123;
     private static final String APP_NAME = "Example App";
@@ -100,16 +98,56 @@ public class InstalledWebappRegistrarTest {
 
     @Test
     @Feature("TrustedWebActivities")
+    public void testMultipleAppsSameOrigin() throws PackageManager.NameNotFoundException {
+        String otherPackage = "com.other.app";
+        int otherUid = 456;
+        ApplicationInfo otherAppInfo = new ApplicationInfo();
+        otherAppInfo.uid = otherUid;
+
+        doReturn(otherAppInfo).when(mPackageManager).getApplicationInfo(eq(otherPackage), anyInt());
+        doReturn("Other App").when(mPackageManager).getApplicationLabel(otherAppInfo);
+
+        mRegistrar.registerClient(APP_PACKAGE, ORIGIN, PAGE_URL);
+        mRegistrar.registerClient(otherPackage, ORIGIN, PAGE_URL);
+
+        verifyRegistration("example.com");
+        assertTrue(
+                InstalledWebappDataRegister.getDomainsForRegisteredPackage(otherPackage)
+                        .contains("example.com"));
+    }
+
+    @Test
+    @Feature("TrustedWebActivities")
+    public void testMultipleAppsSameUid() throws PackageManager.NameNotFoundException {
+        String otherPackage = "com.other.app";
+        // Use same UID as APP_UID
+        ApplicationInfo otherAppInfo = new ApplicationInfo();
+        otherAppInfo.uid = APP_UID;
+
+        doReturn(otherAppInfo).when(mPackageManager).getApplicationInfo(eq(otherPackage), anyInt());
+        doReturn("Other App").when(mPackageManager).getApplicationLabel(otherAppInfo);
+
+        mRegistrar.registerClient(APP_PACKAGE, ORIGIN, PAGE_URL);
+        mRegistrar.registerClient(otherPackage, OTHER_ORIGIN, PAGE_URL);
+
+        verifyRegistration("example.com");
+        assertTrue(
+                InstalledWebappDataRegister.getDomainsForRegisteredPackage(otherPackage)
+                        .contains("other.com"));
+    }
+
+    @Test
+    @Feature("TrustedWebActivities")
     public void testMisingPackage() {
-        var uids = InstalledWebappDataRegister.getUids();
+        var packages = InstalledWebappDataRegister.getPackages();
         mRegistrar.registerClient(MISSING_PACKAGE, ORIGIN, PAGE_URL);
         // Implicitly checking we don't throw.
-        assertEquals(uids, InstalledWebappDataRegister.getUids());
+        assertEquals(packages, InstalledWebappDataRegister.getPackages());
     }
 
     private void verifyRegistration(String expectedDomain) {
         assertTrue(
-                InstalledWebappDataRegister.getDomainsForRegisteredUid(APP_UID)
+                InstalledWebappDataRegister.getDomainsForRegisteredPackage(APP_PACKAGE)
                         .contains(expectedDomain));
     }
 }

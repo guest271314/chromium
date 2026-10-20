@@ -342,6 +342,10 @@ bool ContentBlocked(ContentType type) {
       }
       auto* const controller = GeolocationPrivacySwitchController::Get();
       CHECK(controller);
+      if (!controller->IsReady()) {
+        // Default to blocked if the controller is not yet initialized.
+        return true;
+      }
       return !controller->IsGeolocationUsageAllowedForApps();
     }
     default: {

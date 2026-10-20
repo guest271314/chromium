@@ -8,6 +8,8 @@ import static org.chromium.build.NullUtil.assumeNonNull;
 
 import android.content.Context;
 
+import androidx.annotation.VisibleForTesting;
+
 import org.jni_zero.CalledByNative;
 import org.jni_zero.JNINamespace;
 
@@ -97,6 +99,21 @@ public class TextSuggestionPopupController implements WindowEventObserver, Hidea
         }
     }
 
+    @Override
+    public void destroy() {
+        boolean lastShownDestroyed = mLastShownHost == null;
+        for (TextSuggestionHost host : mTextSuggestionHosts.values()) {
+            if (host == mLastShownHost) {
+                lastShownDestroyed = true;
+            }
+            host.destroy();
+        }
+        mTextSuggestionHosts.clear();
+        assert lastShownDestroyed;
+        mLastShownHost = null;
+        hidePopups();
+    }
+
     @CalledByNative
     private static void onNativeTextSuggestionHostDestroyed(
             WebContents webContents, long nativeTextSuggestionHostPtr) {
@@ -115,8 +132,14 @@ public class TextSuggestionPopupController implements WindowEventObserver, Hidea
         }
     }
 
-    private float getContentOffsetYPix() {
-        return mWebContents.getRenderCoordinates().getContentOffsetYPix();
+    @VisibleForTesting
+    double calculateYOffset(double caretYPx) {
+        float contentOffsetYPix = mWebContents.getRenderCoordinates().getContentOffsetYPix();
+        if (Double.isNaN(caretYPx)) return contentOffsetYPix;
+
+        int containerHeight = assumeNonNull(mViewDelegate.getContainerView()).getHeight();
+        double maxOffset = Math.max((double) contentOffsetYPix, (double) containerHeight);
+        return Math.clamp(caretYPx + contentOffsetYPix, contentOffsetYPix, maxOffset);
     }
 
     // WindowEventObserver
@@ -207,7 +230,7 @@ public class TextSuggestionPopupController implements WindowEventObserver, Hidea
                         assumeNonNull(mViewDelegate.getContainerView()));
 
         mSpellCheckPopupWindow.show(
-                caretXPx, caretYPx + getContentOffsetYPix(), markedText, suggestions);
+                caretXPx, calculateYOffset(caretYPx), markedText, suggestions);
     }
 
     @CalledByNative
@@ -248,7 +271,7 @@ public class TextSuggestionPopupController implements WindowEventObserver, Hidea
                         assumeNonNull(mViewDelegate.getContainerView()));
 
         mTextSuggestionsPopupWindow.show(
-                caretXPx, caretYPx + getContentOffsetYPix(), markedText, suggestions);
+                caretXPx, calculateYOffset(caretYPx), markedText, suggestions);
     }
 
     /** Hides the text suggestion menu (and informs Blink that it was closed). */
@@ -289,6 +312,10 @@ public class TextSuggestionPopupController implements WindowEventObserver, Hidea
 
     public @Nullable TextSuggestionHost getLastShownHostForTesting() {
         return mLastShownHost;
+    }
+
+    public void setLastShownHostForTesting(TextSuggestionHost host) {
+        mLastShownHost = host;
     }
 
     public Map<Long, TextSuggestionHost> getTextSuggestionHostsForTesting() {

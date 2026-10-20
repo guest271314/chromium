@@ -5,7 +5,9 @@
 import {ComposeboxContextAddedMethod} from '//resources/cr_components/search/constants.js';
 import {assertNotReachedCase} from '//resources/js/assert.js';
 import {loadTimeData} from '//resources/js/load_time_data.js';
-import type {DriveUploadError} from '//resources/mojo/components/omnibox/browser/searchbox.mojom-webui.js';
+import type {FuseboxAction, SuggestInventory} from '//resources/mojo/components/omnibox/browser/fusebox_action.mojom-webui.js';
+import {TabAttachmentSource} from '//resources/mojo/components/omnibox/browser/searchbox.mojom-webui.js';
+import type {DriveUploadError, SearchContextAttachment, SelectedFileInfo, TabInfo} from '//resources/mojo/components/omnibox/browser/searchbox.mojom-webui.js';
 import type {UnguessableToken} from '//resources/mojo/mojo/public/mojom/base/unguessable_token.mojom-webui.js';
 import type {Url} from '//resources/mojo/url/mojom/url.mojom-webui.js';
 
@@ -60,6 +62,12 @@ export enum ProcessFilesError {
   MAX_IMAGES_EXCEEDED = 5,
   MAX_PDFS_EXCEEDED = 6,
   FILE_UPLOAD_NOT_ALLOWED = 7,
+}
+
+export enum TabSuggestionsState {
+  NOT_STARTED = 0,
+  LOADING = 1,
+  LOADED = 2,
 }
 
 export const FILE_VALIDATION_ERRORS_MAP =
@@ -124,6 +132,15 @@ export class ComposeboxFile {
   iconName: string|null;
   supportsUnimodal: boolean;
   thumbnailUrl?: string|null;
+  iconUrl?: Url|null;
+  origin?: TabAttachmentSource;
+  delayUpload?: boolean;
+  singleTabType?: SingleTabType;
+  // True if this is a placeholder ("ghost") entry created from an upload
+  // status update for a token the frontend does not know about yet. Its
+  // metadata, including `inputType`, is not yet known and must not be relied
+  // on until the entry is replaced by a fully hydrated one.
+  isGhost?: boolean;
 
   constructor(
       uuid: UnguessableToken, name: string, type: string, inputType: InputType,
@@ -141,6 +158,11 @@ export class ComposeboxFile {
     this.iconName = options?.iconName ?? null;
     this.supportsUnimodal = options?.supportsUnimodal ?? false;
     this.thumbnailUrl = options?.thumbnailUrl ?? null;
+    this.iconUrl = options?.iconUrl ?? null;
+    this.origin = options?.origin;
+    this.delayUpload = options?.delayUpload ?? false;
+    this.singleTabType = options?.singleTabType;
+    this.isGhost = options?.isGhost ?? false;
   }
 
   static createFromFile(
@@ -185,6 +207,10 @@ export interface ComposeboxState {
   error?: DriveUploadError;
   mode: ToolMode;
   model: ModelMode;
+  suggestInventory?: SuggestInventory;
+  // <if expr="not is_android">
+  smartTabSharingActive: boolean;
+  // </if>
 }
 
 export interface FileUpload {
@@ -196,14 +222,153 @@ export interface DriveUpload {
   mimeType: string;
   fileName: string;
   thumbnailUrl: string|null;
+  iconUrl: Url|null;
 }
 
-export enum TabUploadOrigin {
-  CONTEXT_MENU = 0,
-  RECENT_TAB_CHIP = 1,
-  ACTION_CHIP = 2,
-  AUTO_ACTIVE = 3,
-  OTHER = 4,
+export function isAutoAddedOrigin(origin?: TabAttachmentSource): boolean {
+  return origin === TabAttachmentSource.kAutoAdded ||
+      origin === TabAttachmentSource.kCurrentTabChip;
+}
+
+export function hasOnlyAutoAddedTabs(
+    files: Map<UnguessableToken, ComposeboxFile>): boolean {
+  if (files.size === 0) {
+    return false;
+  }
+  for (const file of files.values()) {
+    if (file.inputType !== InputType.kBrowserTab ||
+        !isAutoAddedOrigin(file.origin)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+export interface ComposeboxInputModelParams {
+  files?: Map<UnguessableToken, ComposeboxFile>;
+  attachedContext?: Map<UnguessableToken, ComposeboxFile>;
+  smartTabSharingActive?: boolean;
+  tabFaviconChipsToCoinsEnabled?: boolean;
+  input?: string;
+  selectedMatchIndex?: number;
+  hasResult?: boolean;
+  activeTool?: ToolMode;
+}
+
+export class ComposeboxInputModel {
+  readonly attachedContext: Map<UnguessableToken, ComposeboxFile>;
+  readonly smartTabSharingActive: boolean;
+  readonly tabFaviconChipsToCoinsEnabled: boolean;
+  readonly input: string;
+  readonly selectedMatchIndex: number;
+  readonly hasResult: boolean;
+  readonly activeTool?: ToolMode;
+
+  get files(): Map<UnguessableToken, ComposeboxFile> {
+    return this.attachedContext;
+  }
+
+  constructor(params?: ComposeboxInputModelParams) {
+    this.attachedContext =
+        params?.attachedContext ?? params?.files ?? new Map();
+    this.smartTabSharingActive = params?.smartTabSharingActive ?? false;
+    this.tabFaviconChipsToCoinsEnabled =
+        params?.tabFaviconChipsToCoinsEnabled ?? false;
+    this.input = params?.input ?? '';
+    this.selectedMatchIndex = params?.selectedMatchIndex ?? -1;
+    this.hasResult = params?.hasResult ?? false;
+    this.activeTool = params?.activeTool;
+  }
+
+  hasTabs(): boolean {
+    return (this.tabFaviconChipsToCoinsEnabled &&
+            Array.from(this.attachedContext.values()).some(f => !!f.url)) ||
+        this.smartTabSharingActive;
+  }
+
+  hasNonTabFiles(): boolean {
+    return Array.from(this.attachedContext.values()).some(f => !f.url);
+  }
+
+  getNonTabFileNum(): number {
+    return Array.from(this.attachedContext.values())
+        .filter(file => file.inputType !== InputType.kBrowserTab)
+        .length;
+  }
+
+  getSharedTabs(): TabInfo[] {
+    return Array.from(this.attachedContext.values())
+        .filter(file => !!file.url)
+        .map(file => ({
+               tabId: file.tabId!,
+               title: file.name,
+               url: file.url!,
+               // A tab coin is "loading" while its context upload is still in
+               // flight. This mirrors `pendingUploads`, which gates the submit
+               // button, so the skeleton and the disabled submit button agree.
+               isLoading: !isContextUploadStatusTerminal(file.status),
+             } as TabInfo));
+  }
+
+  hasFiles(): boolean {
+    return this.attachedContext.size > 0;
+  }
+
+  hasMultipleFiles(): boolean {
+    return this.attachedContext.size > 1 || this.smartTabSharingActive;
+  }
+
+  hasOnlyAutoAddedTabs(): boolean {
+    return hasOnlyAutoAddedTabs(this.attachedContext);
+  }
+
+  hasUnimodalFile(): boolean {
+    return Array.from(this.attachedContext.values())
+        .some(file => file.supportsUnimodal);
+  }
+
+  hasValidQuery(): boolean {
+    if (this.hasUnimodalFile()) {
+      return true;
+    }
+    if (this.selectedMatchIndex >= 0 && this.hasResult) {
+      return true;
+    }
+    return this.input.trim().length > 0;
+  }
+
+  hasContent(ignoreAutoAddedTabs: boolean = false): boolean {
+    const hasFiles = this.hasFiles() &&
+        !(ignoreAutoAddedTabs && this.hasOnlyAutoAddedTabs());
+    return (this.activeTool !== undefined &&
+            this.activeTool !== ToolMode.kUnspecified) ||
+        this.input.trim().length > 0 || hasFiles;
+  }
+
+  canSubmit(): boolean {
+    return this.hasValidQuery() || this.hasFiles();
+  }
+}
+
+export function hasOnlyAutoAddedTabAttachments(
+    attachments: SearchContextAttachment[]): boolean {
+  if (attachments.length === 0) {
+    return false;
+  }
+  for (const attachment of attachments) {
+    if (!attachment.tabAttachment) {
+      return false;
+    }
+    if (!isAutoAddedOrigin(attachment.tabAttachment.source)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+export enum SingleTabType {
+  RECENT_TAB = 'RecentTab',
+  CURRENT_TAB = 'CurrentTab',
 }
 
 export interface TabUpload {
@@ -211,10 +376,25 @@ export interface TabUpload {
   url: Url;
   title: string;
   delayUpload: boolean;
-  origin: TabUploadOrigin;
+  origin: TabAttachmentSource;
+  singleTabType?: SingleTabType;
 }
 
-export type ContextualUpload = TabUpload|FileUpload|DriveUpload;
+export interface BrowserFileUpload {
+  token: UnguessableToken;
+  fileInfo: SelectedFileInfo;
+}
+
+export type ContextualUpload =
+    TabUpload|FileUpload|DriveUpload|BrowserFileUpload;
+
+// Represents an embedder-agnostic request to execute a FuseboxAction in a
+// Composebox instance
+export interface ComposeboxFuseboxActionRequest {
+  suggestion: string;
+  files: ContextualUpload[];
+  fuseboxAction?: FuseboxAction;
+}
 
 export enum GlifAnimationState {
   INELIGIBLE = 'ineligible',
@@ -232,17 +412,56 @@ export enum ContextualSearchInputStateDeletionType {
 }
 // LINT.ThenChange(//tools/metrics/histograms/metadata/contextual_search/enums.xml:ContextualSearchInputStateDeletionType)
 
+// LINT.IfChange(SingleTabMenuItemAction)
+
+// These values are persisted to logs. Entries should not be renumbered and
+// numeric values should never be reused.
+export enum SingleTabMenuItemAction {
+  RECENT_TAB_SELECTED = 0,
+  RECENT_TAB_DESELECTED = 1,
+  RECENT_TAB_SUBMITTED = 2,
+  CURRENT_TAB_SELECTED = 3,
+  CURRENT_TAB_DESELECTED = 4,
+  CURRENT_TAB_SUBMITTED = 5,
+  MAX_VALUE = CURRENT_TAB_SUBMITTED,
+}
+
+// LINT.ThenChange(//tools/metrics/histograms/metadata/contextual_search/enums.xml:ContextualSearchSingleTabMenuItemAction)
+
+export function recordSingleTabMenuItemAction(
+    action: SingleTabMenuItemAction, composeboxSource: string) {
+  recordEnumerationValue(
+      `ContextualSearch.SingleTabMenuItem.Action.${composeboxSource}`, action,
+      SingleTabMenuItemAction.MAX_VALUE + 1);
+}
+
 export function recordEnumerationValue(
     metricName: string, value: number, enumSize: number) {
-  chrome.histograms.recordEnumerationValue(metricName, value, enumSize);
+  const metricsService = chrome.histograms || chrome.metricsPrivate;
+  if (metricsService) {
+    metricsService.recordEnumerationValue(metricName, value, enumSize);
+  }
 }
 
 export function recordUserAction(metricName: string) {
-  chrome.histograms.recordUserAction(metricName);
+  const metricsService = chrome.histograms || chrome.metricsPrivate;
+  if (metricsService) {
+    metricsService.recordUserAction(metricName);
+  }
 }
 
 export function recordBoolean(metricName: string, value: boolean) {
-  chrome.histograms.recordBoolean(metricName, value);
+  const metricsService = chrome.histograms || chrome.metricsPrivate;
+  if (metricsService) {
+    metricsService.recordBoolean(metricName, value);
+  }
+}
+
+export function recordCount(metricName: string, value: number) {
+  const metricsService = chrome.histograms || chrome.metricsPrivate;
+  if (metricsService) {
+    metricsService.recordCount(metricName, value);
+  }
 }
 
 // TODO(crbug.com/468329884): Consider making this a new contextual entry
@@ -472,4 +691,109 @@ export function mapUploadErrorToProcessFilesError(errorType: ContextUploadErrorT
     default:
       return ProcessFilesError.NONE;
   }
+}
+
+/**
+ * Returns whether a given tab ID represents a valid browser tab.
+ */
+export function isValidTabId(tabId: number|undefined|null): boolean {
+  return typeof tabId === 'number' && tabId > 0;
+}
+
+// These values are persisted to logs. Entries should not be renumbered and
+// numeric values should never be reused.
+export enum SmartTabSharingSurface {
+  OMNIBOX_COMPOSEBOX = 0,
+  CONTEXTUAL_SEARCHBOX = 1,
+  MAX_VALUE = CONTEXTUAL_SEARCHBOX,
+}
+
+// LINT.IfChange(TabPickerSurface)
+
+// Histogram name suffix identifying which tab picker implementation recorded
+// the sample.
+export enum TabPickerSurface {
+  // The tab picker page served by the Contextual Tasks component extension
+  // (tab_picker.html, a web-accessible resource the AIM web page embeds).
+  CONTEXTUAL_TASKS_EXTENSION = 'ContextualTasksExtension',
+  // The tab picker flyout embedded in the in-WebUI composebox action menu in
+  // Contextual Tasks.
+  CONTEXTUAL_TASKS_WEB_UI = 'ContextualTasksWebUi',
+  // The tab picker flyout embedded in the in-WebUI composebox action menu on
+  // the New Tab Page.
+  NEW_TAB_PAGE = 'NewTabPage',
+  // The tab picker flyout embedded in the in-WebUI composebox action menu in
+  // the Omnibox.
+  OMNIBOX = 'Omnibox',
+}
+
+// LINT.ThenChange(//tools/metrics/histograms/metadata/contextual_search/histograms.xml:TabPickerSurface)
+
+export function mapMetricsSourceToTabPickerSurface(metricsSource: string):
+    TabPickerSurface|null {
+  switch (metricsSource) {
+    case 'ContextualTasks':
+      return TabPickerSurface.CONTEXTUAL_TASKS_WEB_UI;
+    case 'NewTabPage':
+      return TabPickerSurface.NEW_TAB_PAGE;
+    case 'Omnibox':
+    case 'OmniboxEverywhere':
+      return TabPickerSurface.OMNIBOX;
+    default:
+      return null;
+  }
+}
+
+// Largest position the tab picker position histogram records explicitly; higher
+// positions land in the overflow bucket. This is a histogram bound, not a limit
+// on the suggestion list -- that is driven by the
+// NtpComposeboxContextMenuMaxTabSuggestions Finch param, which currently
+// defaults to 3. The bound is deliberately generous so that raising the param
+// does not require changing the histogram.
+const TAB_PICKER_POSITION_HISTOGRAM_MAX = 20;
+
+/**
+ * Records which tab the user attached from the tab picker, along two
+ * independent axes.
+ *
+ * These are deliberately separate histograms rather than one enum, because the
+ * two properties are orthogonal and frequently co-occur:
+ *  - `isActiveTab` comes from TabInfo.showInCurrentTabChip, which the browser
+ *    computes by comparing the tab's URL against the active tab's URL.
+ *  - `index` is the tab's position in the suggestion list, which the browser
+ *    sorts by descending recency. Index 0 is the most recently active eligible
+ *    tab, and is the entry the UI badges as "Recent".
+ *
+ * `SelectedTabIsActive` is only recorded when an active tab candidate is
+ * present in the suggestion list (`hasActiveTabCandidate` is true, or
+ * `isActiveTab` is true). In full tab mode or on the New Tab Page, the active
+ * tab is an internal chrome:// page and is excluded from the list, so no sample
+ * is recorded to avoid skewing the metric.
+ */
+export function recordTabPickerTabSelected(
+    surface: TabPickerSurface, isActiveTab: boolean, index: number,
+    hasActiveTabCandidate: boolean = false) {
+  if (hasActiveTabCandidate || isActiveTab) {
+    recordBoolean(
+        `ContextualSearch.TabPicker.SelectedTabIsActive.${surface}`,
+        isActiveTab);
+  }
+  if (index < 0) {
+    // The tab is no longer in the suggestion list; position is meaningless.
+    return;
+  }
+  recordEnumerationValue(
+      `ContextualSearch.TabPicker.SelectedTabPosition.${surface}`,
+      Math.min(index, TAB_PICKER_POSITION_HISTOGRAM_MAX),
+      TAB_PICKER_POSITION_HISTOGRAM_MAX + 1);
+}
+
+// Returns a CSP-safe image URL using Chrome's SanitizedImageSource
+// (//image?...).
+export function computeImageUrl(url: string|undefined): string {
+  if (!url) {
+    return '';
+  }
+  return `//image?staticEncode=true&encodeType=webp&url=${
+      encodeURIComponent(url)}`;
 }

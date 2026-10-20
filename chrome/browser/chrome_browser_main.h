@@ -13,6 +13,7 @@
 #include "base/memory/raw_ptr.h"
 #include "base/run_loop.h"
 #include "build/build_config.h"
+#include "chrome/browser/after_startup_task_utils.h"
 #include "chrome/browser/buildflags.h"
 #include "chrome/browser/first_run/first_run.h"
 #include "chrome/browser/lifetime/browser_shutdown.h"
@@ -90,7 +91,7 @@ class ChromeBrowserMainParts : public content::BrowserMainParts {
   void PreCreateMainMessageLoop() override;
   void PostCreateMainMessageLoop() override;
   int PreCreateThreads() override;
-  void PostCreateThreads() override;
+  int PostCreateThreads() override;
   int PreMainMessageLoopRun() override;
 #if !BUILDFLAG(IS_ANDROID)
   bool ShouldInterceptMainMessageLoopRun() override;
@@ -226,6 +227,10 @@ class ChromeBrowserMainParts : public content::BrowserMainParts {
 #if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_WIN)
   // Applies enterprise policies for platform auth SSO.
   std::unique_ptr<PlatformAuthPolicyObserver> platform_auth_policy_observer_;
+#endif
+
+#if !BUILDFLAG(IS_ANDROID)
+  std::unique_ptr<AfterStartupTaskUtils::StartupInProgressRef> first_idle_ref_;
 #endif
 };
 

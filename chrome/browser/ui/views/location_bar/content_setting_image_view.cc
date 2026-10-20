@@ -11,41 +11,25 @@
 
 #include "base/metrics/user_metrics.h"
 #include "base/metrics/user_metrics_action.h"
-#include "base/strings/utf_string_conversions.h"
-#include "base/token.h"
 #include "build/build_config.h"
-#include "chrome/browser/signin/identity_manager_factory.h"
-#include "chrome/browser/themes/theme_properties.h"
-#include "chrome/browser/ui/browser.h"
-#include "chrome/browser/ui/browser_element_identifiers.h"
 #include "chrome/browser/ui/browser_window.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/color/chrome_color_id.h"
 #include "chrome/browser/ui/content_settings/content_setting_bubble_model.h"
 #include "chrome/browser/ui/content_settings/content_setting_image_model.h"
 #include "chrome/browser/ui/user_education/browser_user_education_interface.h"
 #include "chrome/browser/ui/view_ids.h"
 #include "chrome/browser/ui/views/content_setting_bubble_contents.h"
-#include "chrome/browser/user_education/user_education_service.h"
-#include "chrome/browser/user_education/user_education_service_factory.h"
 #include "chrome/browser/web_applications/web_app_tab_helper.h"
 #include "chrome/grit/generated_resources.h"
 #include "components/feature_engagement/public/feature_constants.h"
-#include "components/strings/grit/components_strings.h"
 #include "components/user_education/common/feature_promo/feature_promo_controller.h"
-#include "components/user_education/common/feature_promo/feature_promo_specification.h"
-#include "components/user_education/common/help_bubble/help_bubble_params.h"
-#include "ui/base/interaction/element_identifier.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
-#include "ui/base/theme_provider.h"
 #include "ui/events/event_utils.h"
-#include "ui/gfx/color_palette.h"
 #include "ui/gfx/color_utils.h"
-#include "ui/strings/grit/ui_strings.h"
 #include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/animation/ink_drop.h"
-#include "ui/views/animation/ink_drop_impl.h"
-#include "ui/views/controls/image_view.h"
 #include "ui/views/controls/label.h"
 #include "ui/views/interaction/element_tracker_views.h"
 #include "ui/views/property_effects.h"
@@ -96,14 +80,14 @@ ContentSettingImageView::ContentSettingImageView(
     std::unique_ptr<ContentSettingImageModel> image_model,
     IconLabelBubbleView::Delegate* parent_delegate,
     ContentSettingImageViewDelegate* delegate,
-    Browser* browser,
+    BrowserWindowInterface* browser,
     const gfx::FontList& font_list)
     : IconLabelBubbleView(font_list, parent_delegate),
       delegate_(delegate),
       content_setting_image_model_(std::move(image_model)),
       bubble_view_(nullptr),
       browser_(browser) {
-  DCHECK(delegate_);
+  CHECK(delegate_, base::NotFatalUntil::M162);
   SetUpForInOutAnimation();
   image_container_view()->SetFlipCanvasOnPaintForRTLUI(true);
 
@@ -156,7 +140,7 @@ void ContentSettingImageView::Update() {
     GetViewAccessibility().SetIsIgnored(true);
     return;
   }
-  DCHECK(web_contents);
+  CHECK(web_contents, base::NotFatalUntil::M162);
   UpdateImage();
   SetVisible(true);
   GetViewAccessibility().SetIsIgnored(false);
@@ -175,8 +159,8 @@ void ContentSettingImageView::Update() {
   }
 
   if (content_setting_image_model_->ShouldAutoOpenBubble(web_contents)) {
-    ShowBubbleImpl();
     content_setting_image_model_->SetBubbleWasAutoOpened(web_contents);
+    ShowBubbleImpl();
   }
 
   // If the content usage or blockage should be indicated to the user, start the
@@ -292,12 +276,17 @@ ContentSettingImageModel::ImageType ContentSettingImageView::GetType() const {
   return content_setting_image_model_->image_type();
 }
 
-views::Widget* ContentSettingImageView::GetBubbleWidgetForTesting() const {
+views::Widget* ContentSettingImageView::GetBubbleWidget() const {
   if (!bubble_view_) {
     return nullptr;
   }
 
   return bubble_view_->GetWidget();
+}
+
+views::BubbleDialogDelegateView*
+ContentSettingImageView::GetBubbleViewForTesting() const {
+  return bubble_view_.get();
 }
 
 void ContentSettingImageView::OnWidgetDestroying(views::Widget* widget) {
@@ -315,7 +304,7 @@ void ContentSettingImageView::OnWidgetDestroying(views::Widget* widget) {
   }
 #endif  // BUILDFLAG(IS_MAC)
 
-  DCHECK(observation_.IsObservingSource(widget));
+  CHECK(observation_.IsObservingSource(widget), base::NotFatalUntil::M162);
   observation_.Reset();
   bubble_view_ = nullptr;
   UnpauseAnimation();

@@ -60,18 +60,29 @@
 
         <!-- The following service entries exist in order to allow us to
              start more than one sandboxed process. -->
-        {% set num_sandboxed_services = 40 %}
-        <meta-data android:name="org.chromium.content.browser.NUM_SANDBOXED_SERVICES"
-                   android:value="{{ num_sandboxed_services }}"/>
         <meta-data android:name="org.chromium.content.browser.SANDBOXED_SERVICES_NAME"
                      android:value="org.chromium.content.app.SandboxedProcessService"/>
 
-        {% for i in range(num_sandboxed_services) %}
+        {% for i in range(2) %}
         <service android:name="org.chromium.content.app.SandboxedProcessService{{ i }}"
                  android:process=":sandboxed_process{{ i }}"
                  android:permission="org.chromium.chromecast.shell.permission.SANDBOX"
                  android:isolatedProcess="true"
                  android:exported="false" />
+        {% endfor %}
+
+        {% for i in range(2) %}
+        <service android:name="org.chromium.content.app.NativeOnlySandboxedProcessService{{ i }}"
+                 android:process=":sandboxed_process{{ i }}"
+                 android:permission="org.chromium.chromecast.shell.permission.SANDBOX"
+                 android:isolatedProcess="true"
+                 android:nativeService="true"
+                 android:exported="false" >
+             <property android:name="android.app.PROPERTY_NATIVE_SERVICE_LIBRARY_NAME"
+                       android:value="lib{{ library_name }}.so" />
+             <property android:name="android.app.PROPERTY_NATIVE_SERVICE_FUNCTION_NAME"
+                       android:value="NativeChildProcessService_onCreate" />
+        </service>
         {% endfor %}
 
         {% set num_privileged_services = 5 %}

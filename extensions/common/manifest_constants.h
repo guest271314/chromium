@@ -33,8 +33,11 @@ inline constexpr char kActionDefaultState[] = "default_state";
 inline constexpr char kActionDefaultTitle[] = "default_title";
 inline constexpr char kApp[] = "app";
 inline constexpr char kAutomation[] = "automation";
+inline constexpr char kBackForwardCache[] = "back_forward_cache";
 inline constexpr char kBackground[] = "background";
 inline constexpr char kBackgroundAllowJsAccess[] = "background.allow_js_access";
+inline constexpr char kBackgroundAsyncListenerRegistration[] =
+    "background.async_listener_registration";
 inline constexpr char kBackgroundPage[] = "background.page";
 inline constexpr char kBackgroundPersistent[] = "background.persistent";
 inline constexpr char kBackgroundScripts[] = "background.scripts";
@@ -144,7 +147,6 @@ inline constexpr char kTheme[] = "theme";
 inline constexpr char kThemeColors[] = "colors";
 inline constexpr char kThemeDisplayProperties[] = "properties";
 inline constexpr char kThemeImages[] = "images";
-inline constexpr char kThemeTabGroupColorPalette[] = "tab_group_color_palette";
 inline constexpr char kThemeTints[] = "tints";
 inline constexpr char kTrialTokens[] = "trial_tokens";
 inline constexpr char kTtsEngine[] = "tts_engine";
@@ -287,10 +289,18 @@ inline constexpr char16_t kInvalidActionDefaultState[] =
     u"Invalid value for 'default_state'.";
 inline constexpr char16_t kInvalidActionDefaultTitle[] =
     u"Invalid value for 'default_title'.";
+inline constexpr char16_t kInvalidBackForwardCache[] =
+    u"Invalid value for 'back_forward_cache'.";
 inline constexpr char16_t kInvalidBackground[] =
     u"Invalid value for 'background_page'.";
 inline constexpr char16_t kInvalidBackgroundAllowJsAccess[] =
     u"Invalid value for 'background.allow_js_access'.";
+inline constexpr char16_t kInvalidBackgroundAsyncListenerRegistration[] =
+    u"Invalid value for 'background.async_listener_registration'.";
+inline constexpr char16_t
+    kInvalidBackgroundAsyncListenerRegistrationNoServiceWorker[] =
+        u"Must specify background.service_worker to use"
+        " background.async_listener_registration.";
 inline constexpr char16_t kInvalidBackgroundCombination[] =
     u"Only one of 'background.page', 'background.scripts', and "
     "'background.service_worker' can be specified.";
@@ -425,6 +435,8 @@ inline constexpr char kInvalidInputComponents[] =
     "Invalid value for 'input_components'";
 inline constexpr char16_t kInvalidInputComponents16[] =
     u"Invalid value for 'input_components'";
+inline constexpr char kInvalidInputComponentId[] =
+    "Invalid value for 'input_components[*].id";
 inline constexpr char kInvalidInputComponentLayoutName[] =
     "Invalid value for 'input_components[*].layouts[*]";
 inline constexpr char kInvalidInputComponentName[] =
@@ -574,9 +586,6 @@ inline constexpr char kThemeImageMissingFileExtension[] =
     "unsupported in the future.";
 inline constexpr char16_t kInvalidThemeTints[] =
     u"Invalid value for theme images - tints must be decimal numbers.";
-inline constexpr char16_t kInvalidThemeTabGroupColorPalette[] =
-    u"Invalid value for theme tab group color palette - tab group color "
-    u"palette values must be integers.";
 inline constexpr char kInvalidThemeDictImagePath[] =
     "Invalid path for theme image: entry '*', scale '*', path '*'.";
 inline constexpr char kInvalidTrialTokensNonEmptyList[] =

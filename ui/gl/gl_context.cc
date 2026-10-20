@@ -53,8 +53,6 @@ constinit thread_local GLContext* current_real_context = nullptr;
 
 // static
 std::atomic<int32_t> GLContext::total_gl_contexts_ = 0;
-// static
-bool GLContext::switchable_gpus_supported_ = false;
 
 GLContext::ScopedReleaseCurrent::ScopedReleaseCurrent() : canceled_(false) {}
 
@@ -100,17 +98,6 @@ GLContext::~GLContext() {
 // static
 int32_t GLContext::TotalGLContexts() {
   return total_gl_contexts_.load(std::memory_order_relaxed);
-}
-
-// static
-bool GLContext::SwitchableGPUsSupported() {
-  return switchable_gpus_supported_;
-}
-
-// static
-void GLContext::SetSwitchableGPUsSupported() {
-  DCHECK(!switchable_gpus_supported_);
-  switchable_gpus_supported_ = true;
 }
 
 bool GLContext::Initialize(GLSurface* compatible_surface,
@@ -456,6 +443,7 @@ bool GLContext::MakeVirtuallyCurrent(
     if (current_state &&
         !virtual_context->GetGLStateRestorer()->IsInitialized()) {
       current_state->PauseTransformFeedback();
+      current_state->PauseQueries();
     }
 
     if (virtual_context->GetGLStateRestorer()->IsInitialized()) {

@@ -9,13 +9,12 @@ static_library("power_ui") {
     "power_ui.cc",
     "power_ui.h",
   ]
-
+  public_deps = [ "//ash/constants" ]
   deps = [
+    "//ash/strings",
     "//base",
     "//chrome/browser/ash/power",
-    "//chrome/browser/profiles:profile",
     "//chrome/browser/resources/chromeos/power:resources",
-    "//chrome/common",
     "//content/public/browser",
     "//content/public/common",
     "//ui/base",

@@ -207,6 +207,7 @@ flexBasis
 flexDirection
 flexFlow
 flexGrow
+flexLineCount
 flexShrink
 flexWrap
 float
@@ -239,6 +240,7 @@ fontVariantPosition
 fontVariationSettings
 fontWeight
 forcedColorAdjust
+frameSizing
 gap
 getPropertyPriority
 getPropertyValue
@@ -309,6 +311,7 @@ marginInlineStart
 marginLeft
 marginRight
 marginTop
+marginTrim
 marker
 markerEnd
 markerMid
@@ -431,6 +434,7 @@ rowRuleStyle
 rowRuleVisibilityItems
 rowRuleWidth
 rubyAlign
+rubyOverhang
 rubyPosition
 rule
 ruleBreak
@@ -447,6 +451,7 @@ ruleWidth
 rx
 ry
 scale
+scrollAxisLock
 scrollBehavior
 scrollInitialTarget
 scrollMargin
@@ -518,6 +523,7 @@ textBoxTrim
 textCombineUpright
 textDecoration
 textDecorationColor
+textDecorationInset
 textDecorationLine
 textDecorationSkipInk
 textDecorationStyle
@@ -736,6 +742,7 @@ whiteSpaceCollapse
 widows
 width
 willChange
+windowDrag
 wordBreak
 wordSpacing
 wordWrap

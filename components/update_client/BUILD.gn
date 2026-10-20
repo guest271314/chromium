@@ -114,6 +114,8 @@ static_library("update_client") {
     "op_install.h",
     "op_puffin.cc",
     "op_puffin.h",
+    "op_space_check.cc",
+    "op_space_check.h",
     "op_xz.cc",
     "op_xz.h",
     "op_zucchini.cc",
@@ -199,6 +201,8 @@ static_library("update_client") {
     sources += [
       "background_downloader_win.cc",
       "background_downloader_win.h",
+      "delivery_optimization_downloader_win.cc",
+      "delivery_optimization_downloader_win.h",
     ]
   }
 }
@@ -291,7 +295,10 @@ bundle_data("unit_tests_bundle_data") {
 }
 
 bundle_data("recovery_component_tests_bundle_data") {
-  visibility = [ "//chrome/test:unit_tests" ]
+  visibility = [
+    "//chrome/browser/component_updater:unit_tests",
+    "//chrome/test:unit_tests",
+  ]
   testonly = true
   sources = [ "//components/test/data/update_client/ChromeRecovery.crx3" ]
   outputs = [ "{{bundle_resources_dir}}/" +
@@ -306,6 +313,7 @@ source_set("unit_tests") {
     "crx_cache_unittest.cc",
     "op_download_unittest.cc",
     "op_puffin_unittest.cc",
+    "op_space_check_unittest.cc",
     "op_xz_unittest.cc",
     "op_zucchini_unittest.cc",
     "patch/patch_impl_unittest.cc",
@@ -324,10 +332,16 @@ source_set("unit_tests") {
   ]
 
   if (!disable_file_support) {
-    sources += [ "crx_downloader_unittest.cc" ]
+    sources += [
+      "crx_downloader_unittest.cc",
+      "url_fetcher_downloader_unittest.cc",
+    ]
 
     if (is_win) {
-      sources += [ "background_downloader_win_unittest.cc" ]
+      sources += [
+        "background_downloader_win_unittest.cc",
+        "delivery_optimization_downloader_win_unittest.cc",
+      ]
     }
 
     if (is_mac) {
@@ -345,6 +359,7 @@ source_set("unit_tests") {
     ":update_client",
     "//base",
     "//build:branding_buildflags",
+    "//components/client_update_protocol",
     "//components/crx_file",
     "//components/prefs",
     "//components/prefs:test_support",
@@ -352,6 +367,7 @@ source_set("unit_tests") {
     "//components/services/patch/public/mojom",
     "//components/services/unzip:in_process",
     "//components/version_info",
+    "//crypto",
     "//net:test_support",
     "//services/network:test_support",
     "//services/network/public/cpp",

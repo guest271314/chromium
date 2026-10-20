@@ -8,7 +8,7 @@
 #include <vector>
 
 #include "components/optimization_guide/core/feature_registry/enterprise_policy_registry.h"
-#include "components/optimization_guide/core/model_execution/feature_keys.h"
+#include "components/optimization_guide/core/feature_registry/feature_keys.h"
 
 namespace optimization_guide {
 
@@ -46,7 +46,9 @@ class SettingsUiMetadata {
 
 class SettingsUiRegistry {
  public:
+  COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
   SettingsUiRegistry();
+  COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
   ~SettingsUiRegistry();
 
   COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)

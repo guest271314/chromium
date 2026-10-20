@@ -16,8 +16,8 @@
 #include "base/threading/thread_checker.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
+#include "media/gfx/paint_canvas_video_renderer.h"
 #include "media/mojo/mojom/media_types.mojom-shared.h"
-#include "media/renderers/paint_canvas_video_renderer.h"
 #include "media/video/gpu_video_accelerator_factories.h"
 #include "third_party/blink/public/platform/media/web_media_player_delegate.h"
 #include "third_party/blink/public/platform/modules/mediastream/web_media_stream.h"
@@ -29,10 +29,6 @@ namespace media {
 class MappableSharedImageVideoFramePool;
 class MediaLog;
 }  // namespace media
-
-namespace cc {
-class VideoLayer;
-}
 
 namespace blink {
 
@@ -91,8 +87,7 @@ class BLINK_MODULES_EXPORT WebMediaPlayerMS
       media::GpuVideoAcceleratorFactories* gpu_factories,
       const WebString& sink_id,
       CreateSurfaceLayerBridgeCB create_bridge_callback,
-      std::unique_ptr<WebVideoFrameSubmitter> submitter_,
-      bool use_surface_layer);
+      std::unique_ptr<WebVideoFrameSubmitter> submitter_);
 
   WebMediaPlayerMS(const WebMediaPlayerMS&) = delete;
   WebMediaPlayerMS& operator=(const WebMediaPlayerMS&) = delete;
@@ -148,6 +143,7 @@ class BLINK_MODULES_EXPORT WebMediaPlayerMS
   // True if the loaded media has a playable video/audio track.
   bool HasVideo() const override;
   bool HasAudio() const override;
+  bool IsVideoBeingCaptured() const override;
 
   // Dimensions of the video.
   gfx::Size NaturalSize() const override;
@@ -199,7 +195,6 @@ class BLINK_MODULES_EXPORT WebMediaPlayerMS
   void OnFirstFrameReceived(media::VideoTransformation video_transform,
                             bool is_opaque);
   void OnOpacityChanged(bool is_opaque);
-  void OnTransformChanged(media::VideoTransformation video_transform);
 
   // WebMediaStreamObserver implementation
   void TrackAdded(const WebString& track_id) override;
@@ -248,8 +243,10 @@ class BLINK_MODULES_EXPORT WebMediaPlayerMS
   void SetNetworkState(WebMediaPlayer::NetworkState state);
   void SetReadyState(WebMediaPlayer::ReadyState state);
 
+#if INSIDE_BLINK
   // Getter method to |client_|.
-  MediaPlayerClient* get_client() { return client_; }
+  MediaPlayerClient* get_client() { return client_.Get(); }
+#endif  // INSIDE_BLINK
 
   // To be run when tracks are added or removed.
   void Reload();
@@ -286,7 +283,10 @@ class BLINK_MODULES_EXPORT WebMediaPlayerMS
 
   const WebTimeRanges buffered_;
 
-  raw_ptr<MediaPlayerClient> client_ = nullptr;
+  WebPrivatePtrForGC<MediaPlayerClient,
+                     WebPrivatePtrDestruction::kSameThread,
+                     WebPrivatePtrStrength::kWeak>
+      client_;
 
   // WebMediaPlayer notifies the |delegate_| of playback state changes using
   // |delegate_id_|; an id provided after registering with the delegate.  The
@@ -312,8 +312,6 @@ class BLINK_MODULES_EXPORT WebMediaPlayerMS
 
   scoped_refptr<MediaStreamVideoRenderer> video_frame_provider_;  // Weak
 
-  scoped_refptr<cc::VideoLayer> video_layer_;
-
   scoped_refptr<MediaStreamAudioRenderer> audio_renderer_;  // Weak
   media::PaintCanvasVideoRenderer video_renderer_;
   std::unique_ptr<media::VideoFrameSharedImageCache> rgb_shared_image_cache_;
@@ -325,6 +323,11 @@ class BLINK_MODULES_EXPORT WebMediaPlayerMS
   bool pending_rvfc_request_ = false;
 
   bool paused_;
+
+  // A MediaStream has a wall-clock timeline which advances while its media
+  // element is playing, even when no new media frames are received.
+  base::TimeDelta elapsed_playback_time_;
+  base::TimeTicks playback_started_at_;
 
   std::unique_ptr<media::MediaLog> media_log_;
 
@@ -375,9 +378,6 @@ class BLINK_MODULES_EXPORT WebMediaPlayerMS
 
   std::unique_ptr<WebVideoFrameSubmitter> submitter_;
 
-  // Whether the use of a surface layer instead of a video layer is enabled.
-  bool use_surface_layer_ = false;
-
   // Owns the weblayer and obtains/maintains SurfaceIds for
   // kUseSurfaceLayerForVideo feature.
   std::unique_ptr<WebSurfaceLayerBridge> bridge_;
@@ -393,6 +393,8 @@ class BLINK_MODULES_EXPORT WebMediaPlayerMS
   base::TimeDelta compositor_last_time_;
   base::TimeDelta audio_initial_time_;
   base::TimeDelta audio_last_time_;
+
+  base::TimeTicks last_frame_request_time_;
 
   base::WeakPtr<WebMediaPlayerMS> weak_this_;
   base::WeakPtrFactory<WebMediaPlayerMS> weak_factory_{this};

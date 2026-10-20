@@ -4,29 +4,18 @@
 
 #include "chrome/browser/ui/views/download/bubble/download_bubble_security_view.h"
 
-#include "base/containers/fixed_flat_map.h"
-#include "base/debug/crash_logging.h"
-#include "base/debug/dump_without_crashing.h"
 #include "base/memory/raw_ptr.h"
-#include "base/metrics/histogram_functions.h"
-#include "base/strings/strcat.h"
 #include "base/strings/utf_string_conversions.h"
 #include "chrome/browser/download/download_commands.h"
-#include "chrome/browser/download/download_item_model.h"
 #include "chrome/browser/download/download_item_warning_data.h"
-#include "chrome/browser/download/download_ui_model.h"
-#include "chrome/browser/download/offline_item_utils.h"
 #include "chrome/browser/ui/download/download_bubble_security_view_info.h"
 #include "chrome/browser/ui/layout_constants.h"
 #include "chrome/browser/ui/views/chrome_layout_provider.h"
 #include "chrome/browser/ui/views/download/bubble/download_bubble_navigation_handler.h"
 #include "chrome/browser/ui/views/download/bubble/download_bubble_password_prompt_view.h"
 #include "chrome/browser/ui/views/download/bubble/download_bubble_row_view.h"
-#include "chrome/grit/branded_strings.h"
 #include "chrome/grit/generated_resources.h"
 #include "components/download/public/common/download_danger_type.h"
-#include "components/safe_browsing/core/common/features.h"
-#include "components/strings/grit/components_strings.h"
 #include "components/vector_icons/vector_icons.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
@@ -549,9 +538,10 @@ void DownloadBubbleSecurityView::UpdateButton(
       &HandleButtonClickWithDefaultClose, weak_factory_.GetWeakPtr(),
       button_info.command, is_secondary_button));
 
+  bubble_delegate_->SetButtonEnabled(button_type, !occluded_);
+
   if (button_type == ui::mojom::DialogButton::kCancel) {
     bubble_delegate_->SetCancelCallbackWithClose(callback);
-    bubble_delegate_->SetButtonEnabled(button_type, true);
     views::LabelButton* button = bubble_delegate_->GetCancelButton();
     if (button_info.text_color) {
       button->SetEnabledTextColors(*button_info.text_color);
@@ -699,6 +689,25 @@ DownloadBubbleSecurityView::DownloadBubbleSecurityView(
 }
 
 DownloadBubbleSecurityView::~DownloadBubbleSecurityView() = default;
+
+void DownloadBubbleSecurityView::AddedToWidget() {
+  views::Widget* widget = GetWidget();
+  pip_occlusion_observation_.Observe(widget);
+}
+
+void DownloadBubbleSecurityView::OnOcclusionStateChanged(bool occluded) {
+  if (occluded_ == occluded) {
+    return;
+  }
+
+  // If transitioning from occluded to un-occluded, restart the input protection
+  // timer to prevent clickjacking/unintended clicks.
+  if (occluded_ && !occluded && bubble_delegate_) {
+    bubble_delegate_->TriggerInputProtection();
+  }
+  occluded_ = occluded;
+  UpdateButtons();
+}
 
 int DownloadBubbleSecurityView::GetMinimumBubbleWidth() const {
   return ChromeLayoutProvider::Get()->GetSnappedDialogWidth(

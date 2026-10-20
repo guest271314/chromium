@@ -14,7 +14,6 @@
 #include "base/notreached.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
-#include "chrome/browser/bookmarks/bookmark_expanded_state_tracker_factory.h"
 #include "chrome/browser/bookmarks/bookmark_model_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/bookmarks/bookmark_editor.h"
@@ -31,7 +30,6 @@
 #include "components/bookmarks/common/bookmark_metrics.h"
 #include "components/constrained_window/constrained_window_views.h"
 #include "components/history/core/browser/history_service.h"
-#include "components/signin/public/base/signin_switches.h"
 #include "components/strings/grit/components_strings.h"
 #include "components/url_formatter/url_fixer.h"
 #include "components/user_prefs/user_prefs.h"
@@ -89,14 +87,12 @@ BookmarkEditorView::BookmarkEditorView(
     : profile_(profile),
       details_(details),
       bb_model_(BookmarkModelFactory::GetForBrowserContext(profile)),
-      expanded_state_tracker_(
-          BookmarkExpandedStateTrackerFactory::GetForProfile(profile)),
       show_tree_(configuration == SHOW_TREE),
       on_save_callback_(std::move(on_save_callback)) {
-  DCHECK(profile);
-  DCHECK(bb_model_);
-  DCHECK(expanded_state_tracker_);
-  DCHECK(!bb_model_->client()->IsNodeManaged(details_.parent_node));
+  CHECK(profile, base::NotFatalUntil::M162);
+  CHECK(bb_model_, base::NotFatalUntil::M162);
+  CHECK(!bb_model_->client()->IsNodeManaged(details_.parent_node),
+        base::NotFatalUntil::M162);
   SetCanResize(true);
   SetModalType(ui::mojom::ModalType::kWindow);
   SetShowCloseButton(false);
@@ -280,14 +276,14 @@ bool BookmarkEditorView::GetAcceleratorForCommandId(
 }
 
 void BookmarkEditorView::ExecuteCommand(int command_id, int event_flags) {
-  DCHECK(tree_view_->GetActiveNode());
+  CHECK(tree_view_->GetActiveNode(), base::NotFatalUntil::M162);
   if (command_id == kContextMenuItemEdit) {
     tree_view_->StartEditing(tree_view_->GetActiveNode());
   } else if (command_id == kContextMenuItemDelete) {
     ExecuteCommandDelete(base::BindOnce(&bookmarks::ConfirmDeleteBookmarkNode,
                                         GetWidget()->GetNativeWindow()));
   } else {
-    DCHECK_EQ(kContextMenuItemNewFolder, command_id);
+    CHECK_EQ(kContextMenuItemNewFolder, command_id, base::NotFatalUntil::M162);
     NewFolder(tree_model_->AsNode(tree_view_->GetActiveNode()));
   }
 }
@@ -318,7 +314,7 @@ void BookmarkEditorView::ShowContextMenuForViewImpl(
     views::View* source,
     const gfx::Point& point,
     ui::mojom::MenuSourceType source_type) {
-  DCHECK_EQ(tree_view_, source);
+  CHECK_EQ(tree_view_, source, base::NotFatalUntil::M162);
   if (!tree_view_->GetActiveNode()) {
     return;
   }
@@ -472,13 +468,13 @@ void BookmarkEditorView::UserInputChanged() {
 }
 
 void BookmarkEditorView::NewFolderButtonPressed() {
-  DCHECK(tree_view_->GetSelectedNode());
+  CHECK(tree_view_->GetSelectedNode(), base::NotFatalUntil::M162);
   NewFolder(tree_model_->AsNode(tree_view_->GetSelectedNode()));
 }
 
 void BookmarkEditorView::NewFolder(EditorNode* parent) {
   // Create a new entry parented to the given item.
-  DCHECK(parent);
+  CHECK(parent, base::NotFatalUntil::M162);
   tree_view_->StartEditing(AddNewFolder(parent));
 }
 
@@ -563,21 +559,6 @@ void BookmarkEditorView::AddLabels() {
 }
 
 void BookmarkEditorView::ExpandAndSelect() {
-  // Only expand tracked nodes if the feature flag is disabled. With the flag
-  // enabled, only the nodes leading up to the selected node's parent should be
-  // expanded.
-  if (!base::FeatureList::IsEnabled(switches::kBookmarksMigrateUiChanges)) {
-    BookmarkExpandedStateTracker::Nodes expanded_nodes =
-        expanded_state_tracker_->GetExpandedNodes();
-    for (const BookmarkNode* node : expanded_nodes) {
-      EditorNode* editor_node =
-          FindNodeWithID(tree_model_->GetRoot(), node->id());
-      if (editor_node) {
-        tree_view_->Expand(editor_node);
-      }
-    }
-  }
-
   const BookmarkNode* to_select = details_.parent_node;
   if (details_.type == EditDetails::EXISTING_NODE) {
     to_select = details_.existing_node->parent();
@@ -607,7 +588,7 @@ BookmarkEditorView::CreateRootNode() {
       bookmarks::GetPermanentNodesForDisplay(bb_model_);
   if (!permanent_nodes.account_nodes.empty()) {
     auto add_nodes = [this](EditorNode* parent,
-                            std::vector<const BookmarkNode*> nodes) {
+                            std::vector<raw_ptr<const BookmarkNode>> nodes) {
       for (const BookmarkNode* node : nodes) {
         EditorNode* const new_b_node = parent->Add(std::make_unique<EditorNode>(
             node->GetTitle(),
@@ -633,12 +614,15 @@ BookmarkEditorView::CreateRootNode() {
   } else {
     const BookmarkNode* bb_root_node = bb_model_->root_node();
     CreateNodes(bb_root_node, root_node.get());
-    DCHECK_GE(root_node->children().size(), 2u);
-    DCHECK_LE(root_node->children().size(), 4u);
-    DCHECK_EQ(BookmarkNode::BOOKMARK_BAR, bb_root_node->children()[0]->type());
-    DCHECK_EQ(BookmarkNode::OTHER_NODE, bb_root_node->children()[1]->type());
+    CHECK_GE(root_node->children().size(), 2u, base::NotFatalUntil::M162);
+    CHECK_LE(root_node->children().size(), 4u, base::NotFatalUntil::M162);
+    CHECK_EQ(BookmarkNode::BOOKMARK_BAR, bb_root_node->children()[0]->type(),
+             base::NotFatalUntil::M162);
+    CHECK_EQ(BookmarkNode::OTHER_NODE, bb_root_node->children()[1]->type(),
+             base::NotFatalUntil::M162);
     if (root_node->children().size() >= 3) {
-      DCHECK_EQ(BookmarkNode::MOBILE, bb_root_node->children()[2]->type());
+      CHECK_EQ(BookmarkNode::MOBILE, bb_root_node->children()[2]->type(),
+               base::NotFatalUntil::M162);
     }
   }
   return root_node;
@@ -675,7 +659,7 @@ BookmarkEditorView::EditorNode* BookmarkEditorView::FindNodeWithID(
 }
 
 void BookmarkEditorView::ApplyEdits(EditorNode* parent) {
-  DCHECK(bb_model_->loaded());
+  CHECK(bb_model_->loaded(), base::NotFatalUntil::M162);
 
   if (!parent) {
     if (tree_view_) {
@@ -684,7 +668,7 @@ void BookmarkEditorView::ApplyEdits(EditorNode* parent) {
 
     if (show_tree_) {
       parent = tree_model_->AsNode(tree_view_->GetSelectedNode());
-      DCHECK(parent);
+      CHECK(parent, base::NotFatalUntil::M162);
     }
   }
   // We're going to apply edits to the bookmark bar model, which will call us
@@ -711,10 +695,6 @@ void BookmarkEditorView::ApplyEdits(EditorNode* parent) {
 
     BookmarkEditor::ApplyEdits(bb_model_, new_parent, details_, new_title,
                                new_url);
-
-    BookmarkExpandedStateTracker::Nodes expanded_nodes;
-    UpdateExpandedNodes(tree_model_->GetRoot(), &expanded_nodes);
-    expanded_state_tracker_->SetExpandedNodes(expanded_nodes);
 
     // Remove the folders that were removed. This has to be done after all the
     // other changes have been committed.
@@ -797,25 +777,6 @@ void BookmarkEditorView::ApplyNameChangesAndCreateNewFolders(
     ApplyNameChangesAndCreateNewFolders(child_target_node,
                                         child_source_node.get(),
                                         parent_source_node, parent_target_node);
-  }
-}
-
-void BookmarkEditorView::UpdateExpandedNodes(
-    EditorNode* editor_node,
-    BookmarkExpandedStateTracker::Nodes* expanded_nodes) {
-  if (!tree_view_->IsExpanded(editor_node)) {
-    return;
-  }
-
-  // Only insert tree nodes that correspond to a bookmark node. This excludes
-  // new folders that have not yet been added to the bookmark model.
-  if (editor_node->value.bookmark_node_id != 0) {
-    expanded_nodes->insert(bookmarks::GetBookmarkNodeByID(
-        bb_model_, editor_node->value.bookmark_node_id));
-  }
-
-  for (const auto& child : editor_node->children()) {
-    UpdateExpandedNodes(child.get(), expanded_nodes);
   }
 }
 

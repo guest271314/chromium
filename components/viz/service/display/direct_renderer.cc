@@ -105,6 +105,10 @@ void DirectRenderer::Initialize() {
   initialized_ = true;
 }
 
+int DirectRenderer::GetCurrentAllocatedBuffers() const {
+  return 0;
+}
+
 gfx::AxisTransform2d DirectRenderer::CalculateTargetToDeviceTransform(
     const gfx::Rect& draw_rect,
     const gfx::Size& viewport_size) {
@@ -134,12 +138,13 @@ void DirectRenderer::SetOutputSurfaceClipRect(const gfx::Rect& clip_rect) {
   output_surface_clip_rect_ = clip_rect;
 }
 
-void DirectRenderer::SetVisible(bool visible) {
+void DirectRenderer::SetHasBackBuffers(bool has_back_buffers) {
   DCHECK(initialized_);
-  if (visible_ == visible)
+  if (has_back_buffers_ == has_back_buffers) {
     return;
-  visible_ = visible;
-  DidChangeVisibility();
+  }
+  has_back_buffers_ = has_back_buffers;
+  DidChangeHasBackBuffers();
 }
 
 void DirectRenderer::ReallocatedFrameBuffers() {
@@ -178,6 +183,8 @@ void DirectRenderer::DecideRenderPassAllocationsForFrame(
         // If the render pass is drawn directly, it will not be drawn from as
         // a render pass so it's not added to the map.
         render_pass_bypass_quads_[pass->id] = quad.value();
+        TRACE_EVENT_INSTANT(TRACE_DISABLED_BY_DEFAULT("viz.quads"),
+                            "Bypass RPDQ", "render_pass_id", pass->id.value());
         continue;
       }
     }
@@ -198,7 +205,7 @@ void DirectRenderer::DrawFrame(
     const gfx::DisplayColorSpaces& display_color_spaces,
     SurfaceDamageRectList surface_damage_rect_list,
     const TrackedElementRects& tracked_element_rects) {
-  DCHECK(visible_);
+  DCHECK(has_back_buffers_);
   TRACE_EVENT0("viz,benchmark", "DirectRenderer::DrawFrame");
 
   auto* root_render_pass = render_passes_in_draw_order->back().get();
@@ -256,34 +263,6 @@ void DirectRenderer::DrawFrame(
   output_surface_->SetNeedsMeasureNextDrawLatency();
   BeginDrawingFrame();
 
-  if (!base::FeatureList::IsEnabled(features::kRpdqFilterLookupOptimizations)) {
-    // Determine the output rects for render passes with pixel-moving backdrop
-    // filters.
-    // TODO(crbug.com/444264038): Move this logic to
-    // `DirectRenderer::ComputeScissorRectForRenderPass` and remove the class
-    // member `backdrop_filter_output_rects_`.
-    base::flat_map<AggregatedRenderPassId, gfx::Rect>
-        backdrop_filter_output_rect_candidates;
-    for (const auto& pass : *render_passes_in_draw_order) {
-      backdrop_filter_output_rect_candidates[pass->id] =
-          cc::MathUtil::MapEnclosingClippedRect(pass->transform_to_root_target,
-                                                pass->output_rect);
-      for (auto* quad : pass->quad_list) {
-        if (auto* rpdq = quad->DynamicCast<AggregatedRenderPassDrawQuad>()) {
-          if (rpdq->filters.HasFilterThatMovesPixels()) {
-            has_pixel_moving_foreground_filters_ = true;
-          }
-          if (rpdq->backdrop_filters.HasFilterThatMovesPixels()) {
-            // This is correct because an RPDQ can only embed a RenderPass that
-            // comes first in draw list.
-            backdrop_filter_output_rects_[rpdq->render_pass_id] =
-                backdrop_filter_output_rect_candidates[rpdq->render_pass_id];
-          }
-        }
-      }
-    }
-  }
-
   gfx::ColorSpace frame_color_space =
       RenderPassColorSpace(current_frame()->root_render_pass);
   SharedImageFormat frame_si_format =
@@ -294,6 +273,8 @@ void DirectRenderer::DrawFrame(
   bool has_primary_plane = false;
 #endif
   if (overlay_processor_) {
+    TRACE_EVENT_BEGIN("viz,benchmark",
+                      "DirectRenderer::DrawFrame ProcessForOverlays");
     // Display transform and viewport size are needed for overlay validator on
     // Android SurfaceControl. These need to be called before
     // ProcessForOverlays.
@@ -340,6 +321,9 @@ void DirectRenderer::DrawFrame(
         current_frame()->overlay_list,
         [](const auto& candidate) { return candidate.is_root_render_pass; });
 #endif
+    TRACE_EVENT_END("viz,benchmark", "num candidates",
+                    current_frame()->overlay_list.size(), "root_damage_rect",
+                    current_frame()->root_damage_rect.ToString());
   }
 
   // Only reshape when we know we are going to draw. Otherwise, the reshape
@@ -367,8 +351,9 @@ void DirectRenderer::DrawFrame(
     // For Mac, all render passes will be promoted to CALayer, the redraw full
     // frame is for the main surface only.
     // TODO(penghuang): verify this logic with SkiaRenderer.
-    if (!output_surface_->capabilities().supports_surfaceless)
+    if (!output_surface_->capabilities().renderer_allocates_images) {
       needs_full_frame_redraw = true;
+    }
 #elif BUILDFLAG(IS_WIN)
     // If compositing is delegated, then there will be no output_surface_plane,
     // and we should not trigger a redraw of the root render pass.
@@ -472,8 +457,6 @@ void DirectRenderer::DrawFrame(
 
   render_passes_in_draw_order->clear();
   render_pass_bypass_quads_.clear();
-  backdrop_filter_output_rects_.clear();
-  has_pixel_moving_foreground_filters_ = false;
 
   current_frame_valid_ = false;
 }
@@ -727,8 +710,9 @@ void DirectRenderer::AddInkDamageToRenderPass(
 }
 
 void DirectRenderer::DrawRenderPass(const AggregatedRenderPass* render_pass) {
-  TRACE_EVENT1("viz", "DirectRenderer::DrawRenderPass", "NumberOfQuads",
-               render_pass->quad_list.size());
+  TRACE_EVENT("viz", "DirectRenderer::DrawRenderPass", "id",
+              render_pass->id.value(), "NumberOfQuads",
+              render_pass->quad_list.size());
 
   if (CanSkipRenderPass(render_pass)) {
     skipped_render_pass_ids_.insert(render_pass->id);
@@ -983,77 +967,36 @@ void DirectRenderer::ExpandDamageForPixelMovingFilters(
   // If the damage rect intersects any child render pass that has a
   // pixel-moving backdrop filter, expand the damage to include the entire
   // child pass. See crbug.com/986206 for context.
-  if (base::FeatureList::IsEnabled(features::kRpdqFilterLookupOptimizations)) {
-    if (!damage_rect.IsEmpty()) {
-      for (auto* quad : render_pass->quad_list) {
-        // Sanity check: we should not have a Compositor
-        // CompositorRenderPassDrawQuad here.
-        DCHECK_NE(quad->material, DrawQuad::Material::kCompositorRenderPass);
-        if (auto* rpdq = quad->DynamicCast<AggregatedRenderPassDrawQuad>()) {
-          // For render pass with pixel moving backdrop filters.
-          if (!rpdq->backdrop_filters.IsEmpty() &&
-              rpdq->backdrop_filters.HasFilterThatMovesPixels()) {
-            gfx::Rect this_output_rect = cc::MathUtil::MapEnclosingClippedRect(
-                rpdq->shared_quad_state->quad_to_target_transform, rpdq->rect);
-            if (damage_rect.Intersects(this_output_rect)) {
-              damage_rect.Union(this_output_rect);
-            }
-          }
-          // For render pass with pixel moving foreground filters.
-          if (rpdq->filters.HasFilterThatMovesPixels()) {
-            gfx::Rect expanded_rect =
-                GetTargetExpandedRectForPixelMovingFilters(*rpdq);
-
-            // Expanding damage outside of the 'clip_rect' can cause parts
-            // of the root to be rendered that may never have been included
-            // due to 'aggregate_only_damaged_' in SurfaceAggregator. See
-            // crbug.com/1492891
-            if (rpdq->shared_quad_state->clip_rect) {
-              expanded_rect.Intersect(*rpdq->shared_quad_state->clip_rect);
-            }
-
-            if (damage_rect.Intersects(expanded_rect)) {
-              damage_rect.Union(expanded_rect);
-            }
+  if (!damage_rect.IsEmpty()) {
+    for (auto* quad : render_pass->quad_list) {
+      // Sanity check: we should not have a Compositor
+      // CompositorRenderPassDrawQuad here.
+      DCHECK_NE(quad->material, DrawQuad::Material::kCompositorRenderPass);
+      if (auto* rpdq = quad->DynamicCast<AggregatedRenderPassDrawQuad>()) {
+        // For render pass with pixel moving backdrop filters.
+        if (!rpdq->backdrop_filters.IsEmpty() &&
+            rpdq->backdrop_filters.HasFilterThatMovesPixels()) {
+          gfx::Rect this_output_rect = cc::MathUtil::MapEnclosingClippedRect(
+              rpdq->shared_quad_state->quad_to_target_transform, rpdq->rect);
+          if (damage_rect.Intersects(this_output_rect)) {
+            damage_rect.Union(this_output_rect);
           }
         }
-      }
-    }
-  } else {
-    if ((!backdrop_filter_output_rects_.empty() ||
-         has_pixel_moving_foreground_filters_) &&
-        !damage_rect.IsEmpty()) {
-      for (auto* quad : render_pass->quad_list) {
-        // Sanity check: we should not have a Compositor
-        // CompositorRenderPassDrawQuad here.
-        DCHECK_NE(quad->material, DrawQuad::Material::kCompositorRenderPass);
-        if (auto* rpdq = quad->DynamicCast<AggregatedRenderPassDrawQuad>()) {
-          // For render pass with pixel moving backdrop filters.
-          if (auto iter =
-                  backdrop_filter_output_rects_.find(rpdq->render_pass_id);
-              iter != backdrop_filter_output_rects_.end()) {
-            gfx::Rect this_output_rect = iter->second;
-            if (damage_rect.Intersects(this_output_rect)) {
-              damage_rect.Union(this_output_rect);
-            }
+        // For render pass with pixel moving foreground filters.
+        if (rpdq->filters.HasFilterThatMovesPixels()) {
+          gfx::Rect expanded_rect =
+              GetTargetExpandedRectForPixelMovingFilters(*rpdq);
+
+          // Expanding damage outside of the 'clip_rect' can cause parts
+          // of the root to be rendered that may never have been included
+          // due to 'aggregate_only_damaged_' in SurfaceAggregator. See
+          // crbug.com/1492891
+          if (rpdq->shared_quad_state->clip_rect) {
+            expanded_rect.Intersect(*rpdq->shared_quad_state->clip_rect);
           }
 
-          // For render pass with pixel moving foreground filters.
-          if (rpdq->filters.HasFilterThatMovesPixels()) {
-            gfx::Rect expanded_rect =
-                GetTargetExpandedRectForPixelMovingFilters(*rpdq);
-
-            // Expanding damage outside of the 'clip_rect' can cause parts
-            // of the root to be rendered that may never have been included
-            // due to 'aggregate_only_damaged_' in SurfaceAggregator. See
-            // crbug.com/1492891
-            if (rpdq->shared_quad_state->clip_rect) {
-              expanded_rect.Intersect(*rpdq->shared_quad_state->clip_rect);
-            }
-
-            if (damage_rect.Intersects(expanded_rect)) {
-              damage_rect.Union(expanded_rect);
-            }
+          if (damage_rect.Intersects(expanded_rect)) {
+            damage_rect.Union(expanded_rect);
           }
         }
       }

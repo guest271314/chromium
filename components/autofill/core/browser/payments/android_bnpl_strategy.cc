@@ -13,9 +13,9 @@ AndroidBnplStrategy::AndroidBnplStrategy() = default;
 
 AndroidBnplStrategy::~AndroidBnplStrategy() = default;
 
-BnplStrategy::SuggestionShownNextAction
-AndroidBnplStrategy::GetNextActionOnSuggestionShown() {
-  return SuggestionShownNextAction::
+BnplStrategy::SuggestionsShownNextAction
+AndroidBnplStrategy::GetNextActionOnSuggestionsShown() {
+  return SuggestionsShownNextAction::
       kSkipNotifyingUpdateCallbackOfSuggestionsShownResponse;
 }
 
@@ -23,6 +23,12 @@ BnplStrategy::UserDecisionToUseBnplNextAction
 AndroidBnplStrategy::GetNextActionOnUserDecisionToUseBnpl() {
   return UserDecisionToUseBnplNextAction::
       kCheckAmountExtractionBeforeContinuingFlowForAndroid;
+}
+
+BnplStrategy::UserDecisionToUseBnplAgainNextAction
+AndroidBnplStrategy::GetNextActionOnUserDecisionToUseBnplAgain() {
+  return UserDecisionToUseBnplAgainNextAction::
+      kReshowSelectBnplIssuerUiOnAndroid;
 }
 
 BnplStrategy::BnplAmountExtractionReturnedNextAction
@@ -37,6 +43,22 @@ AndroidBnplStrategy::GetBeforeViewSwitchAction() {
   // screen within the same view, so no need to close the current screen
   // before opening the next screen.
   return BeforeSwitchingViewAction::kDoNothing;
+}
+
+BnplStrategy::BnplAiBasedAmountExtractionReturnedNextAction
+AndroidBnplStrategy::GetNextActionOnAiBasedAmountExtractionReturned() {
+  return BnplAiBasedAmountExtractionReturnedNextAction::
+      kSwitchToIssuerSelectionScreenOnAndroid;
+}
+
+BnplStrategy::UserDecisionToUseSavedCardsNextAction
+AndroidBnplStrategy::GetNextActionOnUserDecisionToUseSavedCards() {
+  return UserDecisionToUseSavedCardsNextAction::
+      kResetSelectedIssuerOrFlowStateOnAndroid;
+}
+
+BnplStrategy::UiDismissalAction AndroidBnplStrategy::GetUiDismissalAction() {
+  return UiDismissalAction::kRemoveBnplUi;
 }
 
 bool AndroidBnplStrategy::ShouldRemoveExistingUiOnServerReturn(

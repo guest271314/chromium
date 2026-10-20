@@ -2,45 +2,51 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "chrome/browser/ui/views/frame/browser_view.h"
+
 #include "base/strings/string_util.h"
 #include "build/build_config.h"
 #include "chrome/app/chrome_command_ids.h"
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/browser_tabstrip.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
-#include "chrome/browser/ui/exclusive_access/exclusive_access_bubble_type.h"
 #include "chrome/browser/ui/exclusive_access/exclusive_access_context.h"
 #include "chrome/browser/ui/exclusive_access/exclusive_access_manager.h"
 #include "chrome/browser/ui/exclusive_access/fullscreen_controller.h"
 #include "chrome/browser/ui/focus/browser_focus_controller.h"
+#include "chrome/browser/ui/location_bar/location_bar.h"
 #include "chrome/browser/ui/tab_modal_confirm_dialog.h"
 #include "chrome/browser/ui/tabs/split_tab_metrics.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/ui_features.h"
-#include "chrome/browser/ui/views/frame/browser_view.h"
+#include "chrome/browser/ui/views/frame/top_container_view.h"
 #include "chrome/browser/ui/views/location_bar/location_bar_view.h"
-#include "chrome/browser/ui/views/page_action/page_action_view.h"
+#include "chrome/browser/ui/views/tab_modal_confirm_dialog_views.h"
 #include "chrome/browser/ui/views/tabs/tab_strip.h"
-#include "chrome/common/pref_names.h"
+#include "chrome/browser/ui/views/toolbar/toolbar_view.h"
 #include "chrome/grit/branded_strings.h"
-#include "chrome/test/base/chrome_test_utils.h"
+#include "chrome/test/base/chrome_test_path_utils.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/interactive_test_utils.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "components/input/native_web_keyboard_event.h"
 #include "components/split_tabs/split_tab_visual_data.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/test_navigation_observer.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/base/ozone_buildflags.h"
+#include "ui/base/page_transition_types.h"
 #include "ui/base/ui_base_features.h"
+#include "ui/base/window_open_disposition.h"
 #include "ui/ozone/public/ozone_platform.h"
 #include "ui/views/bubble/bubble_dialog_delegate_view.h"
 #include "ui/views/bubble/bubble_dialog_model_host.h"
 #include "ui/views/buildflags.h"
 #include "ui/views/test/ax_event_counter.h"
+#include "ui/views/test/views_test_utils.h"
 #include "ui/views/test/widget_activation_waiter.h"
-#include "ui/views/widget/widget_interactive_uitest_utils.h"
 
 #if BUILDFLAG(IS_MAC)
 #include "chrome/browser/profiles/profile.h"
@@ -91,19 +97,22 @@ class BrowserViewTest : public InProcessBrowserTest {
 }  // namespace
 
 IN_PROC_BROWSER_TEST_F(BrowserViewTest, FullscreenClearsFocus) {
-  BrowserView* browser_view = static_cast<BrowserView*>(browser()->window());
-  LocationBarView* location_bar_view = browser_view->GetLocationBarView();
-  FocusManager* focus_manager = browser_view->GetFocusManager();
+  if (features::IsWebUILocationBarEnabled()) {
+    GTEST_SKIP() << "Not applicable when WebUILocationBar is enabled.";
+  }
+  BrowserView* browser_view = BrowserView::GetBrowserViewForBrowser(browser());
+  LocationBar* location_bar = browser_view->GetLocationBar();
+  ASSERT_TRUE(location_bar);
 
   // Focus starts in the location bar or one of its children.
-  EXPECT_TRUE(location_bar_view->Contains(focus_manager->GetFocusedView()));
+  EXPECT_TRUE(location_bar->IsFocusWithin());
 
   // Enter into fullscreen mode.
   ui_test_utils::ToggleFullscreenModeAndWait(browser());
   EXPECT_TRUE(browser_view->IsFullscreen());
 
   // Focus is released from the location bar.
-  EXPECT_FALSE(location_bar_view->Contains(focus_manager->GetFocusedView()));
+  EXPECT_FALSE(location_bar->IsFocusWithin());
 }
 
 // Test that the view tree order is preserved after entering and exiting
@@ -204,9 +213,15 @@ IN_PROC_BROWSER_TEST_F(BrowserViewTest,
 
 // Test whether the top view including toolbar and tab strip shows up or hides
 // correctly in browser fullscreen mode.
-IN_PROC_BROWSER_TEST_F(BrowserViewTest, BrowserFullscreenShowTopView) {
+#if BUILDFLAG(IS_MAC)
+// TODO(crbug.com/523216992): Re-enable this test.
+#define MAYBE_BrowserFullscreenShowTopView DISABLED_BrowserFullscreenShowTopView
+#else
+#define MAYBE_BrowserFullscreenShowTopView BrowserFullscreenShowTopView
+#endif
+IN_PROC_BROWSER_TEST_F(BrowserViewTest, MAYBE_BrowserFullscreenShowTopView) {
   BrowserView* const browser_view =
-      static_cast<BrowserView*>(browser()->window());
+      BrowserView::GetBrowserViewForBrowser(browser());
 
   // The top view should always show up in regular mode.
   EXPECT_FALSE(browser_view->IsFullscreen());
@@ -269,12 +284,10 @@ IN_PROC_BROWSER_TEST_F(BrowserViewTest, BrowserFullscreenShowTopView) {
             chrome::IsCommandEnabled(browser(), IDC_SHOW_BOOKMARK_BAR));
 
   // Enter into tab fullscreen mode from browser fullscreen mode.
-  FullscreenController* controller = browser()
-                                         ->GetFeatures()
-                                         .exclusive_access_manager()
-                                         ->fullscreen_controller();
+  FullscreenController* controller =
+      ExclusiveAccessManager::From(browser())->fullscreen_controller();
   content::WebContents* web_contents =
-      browser()->tab_strip_model()->GetActiveWebContents();
+      browser()->GetTabStripModel()->GetActiveWebContents();
   controller->EnterFullscreenModeForTab(web_contents->GetPrimaryMainFrame());
   EXPECT_TRUE(browser_view->IsFullscreen());
   bool top_view_in_tab_fullscreen =
@@ -289,8 +302,7 @@ IN_PROC_BROWSER_TEST_F(BrowserViewTest, BrowserFullscreenShowTopView) {
       blink::WebInputEvent::Type::kKeyDown, blink::WebInputEvent::kNoModifiers,
       blink::WebInputEvent::GetStaticTimeStampForTests());
   event.windows_key_code = ui::VKEY_ESCAPE;
-  browser()->GetFeatures().exclusive_access_manager()->HandleUserKeyEvent(
-      event);
+  ExclusiveAccessManager::From(browser())->HandleUserKeyEvent(event);
   EXPECT_TRUE(browser_view->IsFullscreen());
   EXPECT_EQ(top_view_in_browser_fullscreen, browser_view->GetTabStripVisible());
   // This makes sure that the layout was updated accordingly.
@@ -308,19 +320,17 @@ IN_PROC_BROWSER_TEST_F(BrowserViewTest, BrowserFullscreenShowTopView) {
 // Test whether the top view including toolbar and tab strip appears or hides
 // correctly in tab fullscreen mode.
 IN_PROC_BROWSER_TEST_F(BrowserViewTest, TabFullscreenShowTopView) {
-  BrowserView* browser_view = static_cast<BrowserView*>(browser()->window());
+  BrowserView* browser_view = BrowserView::GetBrowserViewForBrowser(browser());
 
   // The top view should always show up in regular mode.
   EXPECT_FALSE(browser_view->IsFullscreen());
   EXPECT_TRUE(browser_view->GetTabStripVisible());
 
   // Enter into tab fullscreen mode.
-  FullscreenController* controller = browser()
-                                         ->GetFeatures()
-                                         .exclusive_access_manager()
-                                         ->fullscreen_controller();
+  FullscreenController* controller =
+      ExclusiveAccessManager::From(browser())->fullscreen_controller();
   content::WebContents* web_contents =
-      browser()->tab_strip_model()->GetActiveWebContents();
+      browser()->GetTabStripModel()->GetActiveWebContents();
   controller->EnterFullscreenModeForTab(web_contents->GetPrimaryMainFrame());
   EXPECT_TRUE(browser_view->IsFullscreen());
 
@@ -341,24 +351,22 @@ IN_PROC_BROWSER_TEST_F(BrowserViewTest, TabFullscreenShowTopView) {
 IN_PROC_BROWSER_TEST_F(BrowserViewTest, TabFullscreenHideSplitView) {
   // Add a second tab and create a split
   chrome::AddTabAt(browser(), GURL(), -1, true);
-  browser()->tab_strip_model()->ActivateTabAt(0);
-  browser()->tab_strip_model()->AddToNewSplit(
+  browser()->GetTabStripModel()->ActivateTabAt(0);
+  browser()->GetTabStripModel()->AddToNewSplit(
       {1}, split_tabs::SplitTabVisualData(),
       split_tabs::SplitTabCreatedSource::kToolbarButton);
 
-  BrowserView* browser_view = static_cast<BrowserView*>(browser()->window());
+  BrowserView* browser_view = BrowserView::GetBrowserViewForBrowser(browser());
 
   // Split view should be open
   EXPECT_FALSE(browser_view->IsFullscreen());
   EXPECT_TRUE(browser_view->IsInSplitView());
 
   // Enter into tab fullscreen mode.
-  FullscreenController* controller = browser()
-                                         ->GetFeatures()
-                                         .exclusive_access_manager()
-                                         ->fullscreen_controller();
+  FullscreenController* controller =
+      ExclusiveAccessManager::From(browser())->fullscreen_controller();
   content::WebContents* web_contents =
-      browser()->tab_strip_model()->GetActiveWebContents();
+      browser()->GetTabStripModel()->GetActiveWebContents();
   controller->EnterFullscreenModeForTab(web_contents->GetPrimaryMainFrame());
   EXPECT_TRUE(browser_view->IsFullscreen());
 
@@ -378,7 +386,7 @@ IN_PROC_BROWSER_TEST_F(BrowserViewTest, TabFullscreenHideSplitView) {
 
 // Test whether bookmark bar shows up or hides correctly for fullscreen modes.
 IN_PROC_BROWSER_TEST_F(BrowserViewTest, FullscreenShowBookmarkBar) {
-  BrowserView* browser_view = static_cast<BrowserView*>(browser()->window());
+  BrowserView* browser_view = BrowserView::GetBrowserViewForBrowser(browser());
 
   // If the bookmark bar is not showing, enable showing it so that we can check
   // its state.
@@ -474,6 +482,9 @@ IN_PROC_BROWSER_TEST_F(BrowserViewTest, WindowActivatedAccessibleEvent) {
 #endif
 IN_PROC_BROWSER_TEST_F(BrowserViewTest,
                        MAYBE_FocusInactivePopupForAccessibility) {
+  if (features::IsWebUILocationBarEnabled()) {
+    GTEST_SKIP() << "Not applicable when WebUILocationBar is enabled.";
+  }
   std::unique_ptr<ui::DialogModel> dialog_model =
       ui::DialogModel::Builder()
           .SetTitle(u"test")
@@ -531,7 +542,7 @@ IN_PROC_BROWSER_TEST_F(BrowserViewFullscreenTest, MAYBE_Fullscreen) {
   }
 #endif
 
-  BrowserView* browser_view = static_cast<BrowserView*>(browser()->window());
+  BrowserView* browser_view = BrowserView::GetBrowserViewForBrowser(browser());
 
   // The top view should always show up in regular mode.
   EXPECT_FALSE(browser_view->IsFullscreen());
@@ -559,26 +570,6 @@ IN_PROC_BROWSER_TEST_F(BrowserViewFullscreenTest, MAYBE_Fullscreen) {
   }
 }
 
-class BrowserViewLoadingAnimationTest
-    : public BrowserViewTest,
-      public testing::WithParamInterface<bool> {
- public:
-  BrowserViewLoadingAnimationTest() {
-    if (GetParam()) {
-      feature_list_.InitAndEnableFeature(features::kCompositorLoadingThrobber);
-    } else {
-      feature_list_.InitAndDisableFeature(features::kCompositorLoadingThrobber);
-    }
-  }
-
- private:
-  base::test::ScopedFeatureList feature_list_;
-};
-
-INSTANTIATE_TEST_SUITE_P(CompositorDrivenThrobber,
-                         BrowserViewLoadingAnimationTest,
-                         testing::Bool());
-
 // TODO(b/342017720): Re-enable on Mac
 #if BUILDFLAG(IS_MAC)
 #define MAYBE_LoadingAnimationChangeOnMinimizeAndRestore \
@@ -587,9 +578,9 @@ INSTANTIATE_TEST_SUITE_P(CompositorDrivenThrobber,
 #define MAYBE_LoadingAnimationChangeOnMinimizeAndRestore \
   LoadingAnimationChangeOnMinimizeAndRestore
 #endif  // BUILDFLAG(IS_MAC)
-IN_PROC_BROWSER_TEST_P(BrowserViewLoadingAnimationTest,
+IN_PROC_BROWSER_TEST_F(BrowserViewTest,
                        MAYBE_LoadingAnimationChangeOnMinimizeAndRestore) {
-  auto* contents = browser()->tab_strip_model()->GetActiveWebContents();
+  auto* contents = browser()->GetTabStripModel()->GetActiveWebContents();
   content::TestNavigationObserver navigation_watcher(
       contents, 1, content::MessageLoopRunner::QuitMode::DEFERRED);
 
@@ -609,7 +600,7 @@ IN_PROC_BROWSER_TEST_P(BrowserViewLoadingAnimationTest,
     run_loop.Run();
   }
 
-  EXPECT_TRUE(browser()->tab_strip_model()->TabsNeedLoadingUI());
+  EXPECT_TRUE(browser()->GetTabStripModel()->TabsNeedLoadingUI());
   EXPECT_FALSE(browser_view()->IsLoadingAnimationRunning());
 
   {
@@ -622,12 +613,12 @@ IN_PROC_BROWSER_TEST_P(BrowserViewLoadingAnimationTest,
     run_loop.Run();
   }
 
-  EXPECT_TRUE(browser()->tab_strip_model()->TabsNeedLoadingUI());
+  EXPECT_TRUE(browser()->GetTabStripModel()->TabsNeedLoadingUI());
   EXPECT_TRUE(browser_view()->IsLoadingAnimationRunning());
 
   // Now block for the navigation to complete.
   navigation_watcher.Wait();
-  EXPECT_FALSE(browser()->tab_strip_model()->TabsNeedLoadingUI());
+  EXPECT_FALSE(browser()->GetTabStripModel()->TabsNeedLoadingUI());
 }
 
 // On Mac, voiceover treats tab modal dialogs as native windows, so setting an
@@ -649,12 +640,33 @@ class TestTabModalConfirmDialogDelegate : public TabModalConfirmDialogDelegate {
   std::u16string GetDialogMessage() override { return std::u16string(); }
 };
 
+class BrowserViewDesktopWidgetDisabledTest : public BrowserViewTest {
+ public:
+  BrowserViewDesktopWidgetDisabledTest() {
+    feature_list_.InitAndDisableFeature(features::kTabModalUsesDesktopWidget);
+  }
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
+};
+
+class BrowserViewDesktopWidgetEnabledTest : public BrowserViewTest {
+ public:
+  BrowserViewDesktopWidgetEnabledTest() {
+    feature_list_.InitAndEnableFeature(features::kTabModalUsesDesktopWidget);
+  }
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
+};
+
 }  // namespace
 
 // Open a tab-modal dialog and check that the accessible window title is the
 // title of the dialog. The accessible window title is based on the focused
 // dialog and this dependency on focus is why this is an interactive ui test.
-IN_PROC_BROWSER_TEST_F(BrowserViewTest, GetAccessibleTabModalDialogTitle) {
+IN_PROC_BROWSER_TEST_F(BrowserViewDesktopWidgetDisabledTest,
+                       GetAccessibleTabModalDialogTitle) {
   std::u16string window_title =
       u"about:blank - " + l10n_util::GetStringUTF16(IDS_PRODUCT_NAME);
   EXPECT_TRUE(base::StartsWith(browser_view()->GetAccessibleWindowTitle(),
@@ -672,6 +684,41 @@ IN_PROC_BROWSER_TEST_F(BrowserViewTest, GetAccessibleTabModalDialogTitle) {
   EXPECT_TRUE(base::StartsWith(browser_view()->GetAccessibleWindowTitle(),
                                window_title, base::CompareCase::SENSITIVE));
 }
+
+IN_PROC_BROWSER_TEST_F(BrowserViewDesktopWidgetEnabledTest,
+                       GetAccessibleTabModalDialogTitle) {
+  std::u16string window_title =
+      u"about:blank - " + l10n_util::GetStringUTF16(IDS_PRODUCT_NAME);
+  EXPECT_TRUE(base::StartsWith(browser_view()->GetAccessibleWindowTitle(),
+                               window_title, base::CompareCase::SENSITIVE));
+
+  content::WebContents* contents = browser_view()->GetActiveWebContents();
+  auto delegate = std::make_unique<TestTabModalConfirmDialogDelegate>(contents);
+  TestTabModalConfirmDialogDelegate* delegate_observer = delegate.get();
+
+// When using desktop widgets, the dialog has its own window title. The
+// browser accessible window title should not be updated with the dialog
+// title.
+#if !BUILDFLAG(IS_CHROMEOS)
+  auto* dialog = static_cast<TabModalConfirmDialogViews*>(
+      TabModalConfirmDialog::Create(std::move(delegate), contents));
+  EXPECT_TRUE(base::StartsWith(browser_view()->GetAccessibleWindowTitle(),
+                               window_title, base::CompareCase::SENSITIVE));
+  EXPECT_EQ(dialog->GetWidget()->widget_delegate()->GetAccessibleWindowTitle(),
+            delegate_observer->GetTitle());
+#else
+  TabModalConfirmDialog::Create(std::move(delegate), contents);
+  // The desktop widget override is a no-op on ChromeOS. The browser
+  // accessibility title should be updated to the dialog title.
+  EXPECT_EQ(browser_view()->GetAccessibleWindowTitle(),
+            delegate_observer->GetTitle());
+#endif
+
+  delegate_observer->Close();
+
+  EXPECT_TRUE(base::StartsWith(browser_view()->GetAccessibleWindowTitle(),
+                               window_title, base::CompareCase::SENSITIVE));
+}
 #endif  // !BUILDFLAG(IS_MAC)
 
 #if BUILDFLAG(IS_CHROMEOS)
@@ -679,10 +726,8 @@ using BrowserViewLockedFullscreenTestChromeOS = BrowserViewTest;
 
 IN_PROC_BROWSER_TEST_F(BrowserViewLockedFullscreenTestChromeOS,
                        ShowExclusiveAccessBubbleWhenNotLocked) {
-  ash::PinWindow(browser()->window()->GetNativeWindow(), /*trusted=*/false);
-  browser()
-      ->GetFeatures()
-      .exclusive_access_manager()
+  ash::PinWindow(browser()->GetWindow()->GetNativeWindow(), /*trusted=*/false);
+  ExclusiveAccessManager::From(browser())
       ->context()
       ->UpdateExclusiveAccessBubble(
           {
@@ -701,10 +746,8 @@ IN_PROC_BROWSER_TEST_F(BrowserViewLockedFullscreenTestChromeOS,
 
 IN_PROC_BROWSER_TEST_F(BrowserViewLockedFullscreenTestChromeOS,
                        HideExclusiveAccessBubbleWhenLocked) {
-  ash::PinWindow(browser()->window()->GetNativeWindow(), /*trusted=*/true);
-  browser()
-      ->GetFeatures()
-      .exclusive_access_manager()
+  ash::PinWindow(browser()->GetWindow()->GetNativeWindow(), /*trusted=*/true);
+  ExclusiveAccessManager::From(browser())
       ->context()
       ->UpdateExclusiveAccessBubble(
           {.origin = url::Origin::Create(
@@ -721,7 +764,7 @@ IN_PROC_BROWSER_TEST_F(BrowserViewLockedFullscreenTestChromeOS,
 
 IN_PROC_BROWSER_TEST_F(BrowserViewLockedFullscreenTestChromeOS,
                        EnableImmersiveModeWhenNotTrustedPinned) {
-  ash::PinWindow(browser()->window()->GetNativeWindow(), /*trusted=*/false);
+  ash::PinWindow(browser()->GetWindow()->GetNativeWindow(), /*trusted=*/false);
   EXPECT_TRUE(ImmersiveModeController::From(browser())->IsEnabled());
 }
 
@@ -729,7 +772,7 @@ IN_PROC_BROWSER_TEST_F(BrowserViewLockedFullscreenTestChromeOS,
                        DisableImmersiveModeWhenNotLockedForOnTask) {
   ash::boca::OnTaskLockedController::From(browser())->set_locked_for_on_task(
       false);
-  ash::PinWindow(browser()->window()->GetNativeWindow(), /*trusted=*/true);
+  ash::PinWindow(browser()->GetWindow()->GetNativeWindow(), /*trusted=*/true);
   EXPECT_FALSE(ImmersiveModeController::From(browser())->IsEnabled());
 }
 
@@ -737,7 +780,7 @@ IN_PROC_BROWSER_TEST_F(BrowserViewLockedFullscreenTestChromeOS,
                        EnableImmersiveModeWhenLockedForOnTask) {
   ash::boca::OnTaskLockedController::From(browser())->set_locked_for_on_task(
       true);
-  ash::PinWindow(browser()->window()->GetNativeWindow(), /*trusted=*/true);
+  ash::PinWindow(browser()->GetWindow()->GetNativeWindow(), /*trusted=*/true);
   EXPECT_TRUE(ImmersiveModeController::From(browser())->IsEnabled());
 }
 #endif  // BUILDFLAG(IS_CHROMEOS)

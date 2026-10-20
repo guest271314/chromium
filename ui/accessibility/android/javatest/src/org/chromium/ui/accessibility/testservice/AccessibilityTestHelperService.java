@@ -6,6 +6,7 @@ package org.chromium.ui.accessibility.testservice;
 
 import android.app.Service;
 import android.content.Intent;
+import android.os.Bundle;
 import android.os.IBinder;
 
 import org.chromium.base.Log;
@@ -20,24 +21,39 @@ public class AccessibilityTestHelperService extends Service {
     private final IAccessibilityTestHelperService.Stub mBinder =
             new IAccessibilityTestHelperService.Stub() {
                 @Override
-                public boolean waitForEvent(WaitForEventParams params) {
+                public boolean waitForEvent(EventMatcher matcher, long timeoutMs) {
                     Log.i(
                             TAG,
-                            "waitForEvent called with type: "
-                                    + params.eventType
-                                    + ", class: "
-                                    + params.className
-                                    + ", ContentChangeTypes: "
-                                    + params.contentChangeTypes
-                                    + ", text: "
-                                    + params.text);
-                    return AccessibilityTestService.tryWaitForEvent(params);
+                            "waitForEvent called, timeoutMs: "
+                                    + timeoutMs
+                                    + ", eventMatcher: "
+                                    + AccessibilityTestService.eventMatcherToString(matcher));
+                    return AccessibilityTestService.waitForEvent(matcher, timeoutMs);
                 }
 
                 @Override
-                public boolean performActionOnNode(String className, String text, int action) {
+                public boolean waitForNode(NodeMatcher matcher, long timeoutMs) {
+                    Log.i(
+                            TAG,
+                            "waitForNode called, timeoutMs: "
+                                    + timeoutMs
+                                    + ", nodeMatcher: "
+                                    + AccessibilityTestService.nodeMatcherToString(matcher));
+                    return AccessibilityTestService.waitForNode(matcher, timeoutMs);
+                }
+
+                @Override
+                public boolean waitForActiveWindow(long timeoutMs) {
+                    Log.i(TAG, "waitForActiveWindow called, timeoutMs: " + timeoutMs);
+                    return AccessibilityTestService.waitForActiveWindow(timeoutMs);
+                }
+
+                @Override
+                public boolean performActionOnNode(
+                        NodeMatcher matcher, int action, Bundle arguments) {
                     Log.i(TAG, "performActionOnNode called in HelperService");
-                    return AccessibilityTestService.tryPerformActionOnNode(className, text, action);
+                    return AccessibilityTestService.tryPerformActionOnNode(
+                            matcher, action, arguments);
                 }
 
                 @Override

@@ -2,11 +2,11 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import type {File} from 'chrome://new-tab-page/file_suggestion.mojom-webui.js';
-import {RecommendationType} from 'chrome://new-tab-page/file_suggestion.mojom-webui.js';
-import {FileSuggestionElement} from 'chrome://new-tab-page/lazy_load.js';
+import {FileAction, FileSuggestionElement} from 'chrome://new-tab-page/lazy_load.js';
+import type {File} from 'chrome://new-tab-page/new_tab_page.js';
+import {RecommendationType} from 'chrome://new-tab-page/new_tab_page.js';
 import type {CrAutoImgElement} from 'chrome://new-tab-page/new_tab_page.js';
-import {assertEquals, assertTrue} from 'chrome://webui-test/chai_assert.js';
+import {assertEquals, assertFalse, assertTrue} from 'chrome://webui-test/chai_assert.js';
 import {fakeMetricsPrivate} from 'chrome://webui-test/metrics_test_support.js';
 import {eventToPromise, isVisible, microtasksFinished} from 'chrome://webui-test/test_util.js';
 
@@ -96,6 +96,11 @@ suite('FileSuggestion', () => {
         assertEquals(1, metrics.count(`NewTabPage.${moduleName}.FileClick`));
         assertEquals(
             1, metrics.count(`NewTabPage.${moduleName}.FileClick`, clickIndex));
+        assertEquals(
+            1,
+            metrics.count(
+                `NewTabPage.${moduleName}.UserAction`,
+                FileAction.FILE_SUGGESTION_CLICKED));
 
         // Test that files with non-null `recommendationType` get a histogram
         // emission for the type.
@@ -115,5 +120,43 @@ suite('FileSuggestion', () => {
             metrics.count(
                 `NewTabPage.${moduleName}.RecommendationTypeClick`,
                 RecommendationType.kTrending));
+        assertEquals(
+            2,
+            metrics.count(
+                `NewTabPage.${moduleName}.UserAction`,
+                FileAction.FILE_SUGGESTION_CLICKED));
+      });
+
+  test(
+      'see more button renders and dispatches usage event when clicked',
+      async () => {
+        const metrics = fakeMetricsPrivate();
+        fileSuggestion.moduleName = 'Drive';
+        fileSuggestion.files = createFiles(1, null);
+        await microtasksFinished();
+
+        assertFalse(!!fileSuggestion.shadowRoot.querySelector(
+            '#seeMoreButtonContainer'));
+
+        fileSuggestion.seeMoreUrl = 'https://drive.google.com';
+        fileSuggestion.seeMoreText = 'See more';
+        await microtasksFinished();
+
+        const seeMoreContainer =
+            fileSuggestion.shadowRoot.querySelector('#seeMoreButtonContainer');
+        assertTrue(!!seeMoreContainer);
+
+        const link = seeMoreContainer.querySelector<HTMLElement>('a');
+        assertTrue(!!link);
+        assertEquals('https://drive.google.com', link.getAttribute('href'));
+
+        const usagePromise = eventToPromise('usage', fileSuggestion);
+        link.click();
+        const usageEvent: Event = await usagePromise;
+        assertTrue(!!usageEvent);
+        assertEquals(
+            1,
+            metrics.count(
+                'NewTabPage.Drive.UserAction', FileAction.SEE_MORE_CLICKED));
       });
 });

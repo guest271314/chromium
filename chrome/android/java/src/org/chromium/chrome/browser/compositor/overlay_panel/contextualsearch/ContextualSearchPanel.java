@@ -39,6 +39,7 @@ import org.chromium.chrome.browser.contextualsearch.ContextualSearchUma;
 import org.chromium.chrome.browser.contextualsearch.ResolvedSearchTerm.CardTag;
 import org.chromium.chrome.browser.feature_engagement.TrackerFactory;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
+import org.chromium.chrome.browser.layouts.scene_layer.SceneLayer;
 import org.chromium.chrome.browser.layouts.scene_layer.SceneOverlayLayer;
 import org.chromium.chrome.browser.overlay_panel.PanelState;
 import org.chromium.chrome.browser.profiles.Profile;
@@ -47,7 +48,9 @@ import org.chromium.chrome.browser.toolbar.ToolbarManager;
 import org.chromium.chrome.browser.toolbar.top.ToolbarLayout;
 import org.chromium.chrome.browser.ui.edge_to_edge.EdgeToEdgeController;
 import org.chromium.chrome.browser.ui.side_panel.AndroidSidePanelEnabledFn;
+import org.chromium.chrome.browser.ui.side_ui.SideUiCoordinator.AnchorSide;
 import org.chromium.chrome.browser.ui.side_ui.SideUiCoordinator.SideUiSpecs;
+import org.chromium.chrome.browser.ui.side_ui.SideUiCoordinator.UiUpdateRequest;
 import org.chromium.chrome.browser.ui.side_ui.SideUiObserver;
 import org.chromium.chrome.browser.ui.side_ui.SideUiStateProvider;
 import org.chromium.chrome.browser.user_education.IphCommandBuilder;
@@ -131,7 +134,7 @@ public class ContextualSearchPanel extends OverlayPanel implements SideUiObserve
     private boolean mHasContentBeenTouched;
 
     /** The compositor layer used for drawing the panel. */
-    private final ContextualSearchSceneLayer mSceneLayer;
+    private ContextualSearchSceneLayer mSceneLayer;
 
     /**
      * A ScrimManager for adjusting the Status Bar's brightness when a scrim is present (when the
@@ -372,12 +375,20 @@ public class ContextualSearchPanel extends OverlayPanel implements SideUiObserve
     }
 
     @Override
-    public void onSideUiSpecsChanged(SideUiSpecs sideUiSpecs) {
+    public void onSideUiSpecsChangeStarted(SideUiSpecs sideUiSpecs, UiUpdateRequest request) {
+        int leftWidth = sideUiSpecs.getReservedWidth(AnchorSide.LEFT);
+        int rightWidth = sideUiSpecs.getReservedWidth(AnchorSide.RIGHT);
+        int startMargin = LocalizationUtils.isLayoutRtl() ? rightWidth : leftWidth;
+        int endMargin = LocalizationUtils.isLayoutRtl() ? leftWidth : rightWidth;
+
         setLayoutMargins(
-                sideUiSpecs.mStartContainerWidth * mPxToDp,
-                sideUiSpecs.mEndContainerWidth * mPxToDp);
+                /* layoutMarginStart= */ startMargin * mPxToDp,
+                /* layoutMarginEnd= */ endMargin * mPxToDp);
         resizePanelContentView();
     }
+
+    @Override
+    public void onSideUiSpecsChangeCompleted(SideUiSpecs sideUiSpecs, UiUpdateRequest request) {}
 
     // ============================================================================================
     // Generic Event Handling
@@ -407,7 +418,9 @@ public class ContextualSearchPanel extends OverlayPanel implements SideUiObserve
                 super.handleBarClick(x, y);
             }
         } else if (isExpanded() || isMaximized()) {
-            if (canPromoteToNewTab() && isCoordinateInsideOpenTabButton(x)) {
+            if (isCoordinateInsideCloseButton(x)) {
+                closePanel(StateChangeReason.CLOSE_BUTTON, /* animate= */ true);
+            } else if (canPromoteToNewTab() && isCoordinateInsideOpenTabButton(x)) {
                 mManagementDelegate.promoteToTab();
             } else {
                 peekPanel(StateChangeReason.UNKNOWN);
@@ -455,10 +468,15 @@ public class ContextualSearchPanel extends OverlayPanel implements SideUiObserve
     }
 
     @Override
+    @SuppressWarnings("NullAway")
     public void destroy() {
         if (mSideUiStateProvider != null) {
             mSideUiStateProvider.removeObserver(this);
             mSideUiStateProvider = null;
+        }
+        if (mSceneLayer != null) {
+            mSceneLayer.destroy();
+            mSceneLayer = null;
         }
         super.destroy();
     }
@@ -484,28 +502,33 @@ public class ContextualSearchPanel extends OverlayPanel implements SideUiObserve
     }
 
     @Override
-    public void notifyBarTouched(float x) {
-        getOverlayPanelContent().showContent();
-    }
-
-    @Override
     public float getOpenTabIconX() {
-        if (LocalizationUtils.isLayoutRtl()) {
-            return getOffsetX() + getBarMarginSide();
-        } else {
-            return getOffsetX() + getWidth() - getBarMarginSide() - getCloseIconDimension();
+        if (ChromeFeatureList.sContextualPanelCloseButton.isEnabled()) {
+            return super.getOpenTabIconX();
         }
+        return LocalizationUtils.isLayoutRtl()
+                ? getOffsetX() + getBarMarginSide()
+                : getOffsetX() + getWidth() - getBarMarginSide() - getCloseIconDimension();
     }
 
     @Override
     protected boolean isCoordinateInsideCloseButton(float x) {
-        return false;
+        return ChromeFeatureList.sContextualPanelCloseButton.isEnabled()
+                && super.isCoordinateInsideCloseButton(x);
     }
 
     @Override
     protected boolean isCoordinateInsideOpenTabButton(float x) {
-        return getOpenTabIconX() - getButtonPaddingDps() <= x
-                && x <= getOpenTabIconX() + getOpenTabIconDimension() + getButtonPaddingDps();
+        return super.isCoordinateInsideOpenTabButton(x);
+    }
+
+    /**
+     * @return The resource ID of the close icon, or {@code INVALID_RESOURCE_ID} if disabled.
+     */
+    public int getCloseIconResourceId() {
+        return ChromeFeatureList.sContextualPanelCloseButton.isEnabled()
+                ? R.drawable.btn_close
+                : SceneLayer.INVALID_RESOURCE_ID;
     }
 
     @Override

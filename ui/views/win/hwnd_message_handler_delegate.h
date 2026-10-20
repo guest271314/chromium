@@ -112,8 +112,10 @@ class VIEWS_EXPORT HWNDMessageHandlerDelegate {
 
   virtual gfx::NativeViewAccessible GetNativeViewAccessible() = 0;
 
-  // Returns the NativeViewAccessible for the parent Widget's RootView if the
-  // parent is a Views-owned Widget; otherwise nullptr.
+  // Returns the NativeViewAccessible for the parent Widget's RootView. For
+  // visible widgets without a parent Widget, falls back to the Win32 owner's
+  // Widget. Returns nullptr if no corresponding Widget or RootView is
+  // available.
   virtual gfx::NativeViewAccessible GetParentNativeViewAccessible() = 0;
 
   // TODO(beng): Investigate migrating these methods to On* prefixes once
@@ -251,13 +253,6 @@ class VIEWS_EXPORT HWNDMessageHandlerDelegate {
   // Called when a gesture event is received. Returns true if the event was
   // handled by the delegate.
   virtual bool HandleGestureEvent(ui::GestureEvent* event) = 0;
-
-  // Called when the window size is about to change.
-  virtual void HandleWindowSizeChanging() = 0;
-
-  // Called after HandleWindowSizeChanging() when it's determined the window
-  // size didn't actually change.
-  virtual void HandleWindowSizeUnchanged() = 0;
 
   // Called when the window scale factor has changed.
   virtual void HandleWindowScaleFactorChanged(float window_scale_factor) = 0;

@@ -23,6 +23,7 @@
 #include "mojo/public/cpp/bindings/self_owned_receiver.h"
 #include "mojo/public/cpp/system/functions.h"
 #include "services/webnn/error.h"
+#include "services/webnn/gpu_task_scheduler.h"
 #include "services/webnn/public/cpp/ml_tensor_usage.h"
 #include "services/webnn/public/cpp/operand_descriptor.h"
 #include "services/webnn/public/cpp/supported_data_types.h"
@@ -35,7 +36,6 @@
 #include "services/webnn/public/mojom/webnn_graph_builder.mojom.h"
 #include "services/webnn/public/mojom/webnn_service_introspection.mojom.h"
 #include "services/webnn/public/mojom/webnn_tensor.mojom.h"
-#include "services/webnn/scoped_gpu_sequence.h"
 #include "services/webnn/webnn_constant_operand.h"
 #include "services/webnn/webnn_context_impl.h"
 #include "services/webnn/webnn_context_provider_impl.h"
@@ -49,26 +49,22 @@ namespace webnn {
 
 namespace {
 
-// A fake WebNNGraph Mojo interface implementation that binds a pipe for
-// computing graph message.
+// A fake WebNNGraph implementation for testing.
 class FakeWebNNGraphImpl final : public WebNNGraphImpl {
  public:
-  FakeWebNNGraphImpl(mojo::PendingReceiver<mojom::WebNNGraph> receiver,
-                     WebNNContextImpl& context,
+  FakeWebNNGraphImpl(WebNNContextImpl& context,
                      ComputeResourceInfo compute_resource_info)
-      : WebNNGraphImpl(std::move(receiver),
-                       context,
+      : WebNNGraphImpl(context,
                        std::move(compute_resource_info),
                        /*devices=*/{}) {}
 
   static void CreateAndBuild(
-      mojo::PendingReceiver<mojom::WebNNGraph> receiver,
       base::WeakPtr<WebNNContextImpl> context,
       const mojom::GraphInfo& graph_info,
       ComputeResourceInfo compute_resource_info,
       WebNNContextImpl::CreateGraphImplCallback callback) {
     std::move(callback).Run(base::MakeRefCounted<FakeWebNNGraphImpl>(
-        std::move(receiver), *context, std::move(compute_resource_info)));
+        *context, std::move(compute_resource_info)));
   }
 
  private:
@@ -111,7 +107,7 @@ class FakeWebNNContextImpl final : public WebNNContextImpl {
   FakeWebNNContextImpl(
       mojo::PendingReceiver<mojom::WebNNContext> receiver,
       base::WeakPtr<WebNNContextProviderImpl> context_provider,
-      std::unique_ptr<ScopedGpuSequence> gpu_sequence,
+      std::unique_ptr<GpuTaskScheduler> gpu_task_scheduler,
       scoped_refptr<gpu::MemoryTracker> memory_tracker,
       scoped_refptr<base::SingleThreadTaskRunner> owning_task_runner,
       gpu::SharedImageManager* shared_image_manager,
@@ -124,7 +120,7 @@ class FakeWebNNContextImpl final : public WebNNContextImpl {
                          mojom::CreateContextOptions::New(),
                          mojo::ScopedDataPipeConsumerHandle(),
                          mojo::ScopedDataPipeProducerHandle(),
-                         std::move(gpu_sequence),
+                         std::move(gpu_task_scheduler),
                          std::move(memory_tracker),
                          std::move(owning_task_runner),
                          shared_image_manager,
@@ -140,19 +136,15 @@ class FakeWebNNContextImpl final : public WebNNContextImpl {
   ~FakeWebNNContextImpl() override = default;
 
   void CreateGraphImpl(
-      mojo::PendingReceiver<mojom::WebNNGraph> receiver,
       mojom::GraphInfoPtr graph_info,
       WebNNGraphImpl::ComputeResourceInfo compute_resource_info,
       base::flat_map<
           OperandId,
           std::unique_ptr<WebNNConstantOperand>> /*constant_operands*/,
-      base::flat_map<
-          OperandId,
-          scoped_refptr<WebNNTensorImpl>> /*constant_tensor_operands*/,
       CreateGraphImplCallback callback) override {
-    FakeWebNNGraphImpl::CreateAndBuild(
-        std::move(receiver), AsWeakPtr(), *graph_info,
-        std::move(compute_resource_info), std::move(callback));
+    FakeWebNNGraphImpl::CreateAndBuild(AsWeakPtr(), *graph_info,
+                                       std::move(compute_resource_info),
+                                       std::move(callback));
   }
 
   base::expected<scoped_refptr<WebNNTensorImpl>, mojom::ErrorPtr>
@@ -188,7 +180,7 @@ class FakeWebNNBackend : public WebNNContextProviderImpl::BackendForTesting {
   std::unique_ptr<WebNNContextImpl, OnTaskRunnerDeleter> CreateWebNNContext(
       base::WeakPtr<WebNNContextProviderImpl> context_provider_impl,
       mojom::CreateContextOptionsPtr options,
-      std::unique_ptr<ScopedGpuSequence> gpu_sequence,
+      std::unique_ptr<GpuTaskScheduler> gpu_task_scheduler,
       scoped_refptr<gpu::MemoryTracker> memory_tracker,
       scoped_refptr<base::SingleThreadTaskRunner> owning_task_runner,
       gpu::SharedImageManager* shared_image_manager,
@@ -200,7 +192,7 @@ class FakeWebNNBackend : public WebNNContextProviderImpl::BackendForTesting {
     std::unique_ptr<WebNNContextImpl, OnTaskRunnerDeleter> context_impl(
         new FakeWebNNContextImpl(
             remote.InitWithNewPipeAndPassReceiver(),
-            std::move(context_provider_impl), std::move(gpu_sequence),
+            std::move(context_provider_impl), std::move(gpu_task_scheduler),
             std::move(memory_tracker), std::move(owning_task_runner),
             shared_image_manager, std::move(main_task_runner)),
         OnTaskRunnerDeleter(std::move(task_runner)));
@@ -231,7 +223,7 @@ CreateTensorSuccess CreateWebNNTensor(
       mojom::TensorInfo::New(
           OperandDescriptor::UnsafeCreateForTesting(data_type, shape),
           MLTensorUsage()),
-      mojo_base::BigBuffer(0), create_tensor_future.GetCallback());
+      create_tensor_future.GetCallback());
   mojom::CreateTensorResultPtr create_tensor_result =
       create_tensor_future.Take();
   mojo::AssociatedRemote<mojom::WebNNTensor> webnn_tensor;
@@ -274,8 +266,6 @@ bool ValidateDispatch(
                                     create_graph_future.GetCallback());
   base::expected<mojom::CreateGraphSuccessPtr, mojom::ErrorPtr>
       create_graph_result = create_graph_future.Take();
-  mojo::Remote<mojom::WebNNGraph> webnn_graph;
-  webnn_graph.Bind(std::move(create_graph_result.value()->graph_remote));
   blink::WebNNGraphToken graph_token = create_graph_result.value()->graph_token;
 
   // Validate the inputs in the `Dispatch` function.
@@ -340,9 +330,11 @@ class WebNNGraphImplTest : public testing::Test {
   }
 
   void TearDown() override {
-    // Give WebNNContext a chance to disconnect.
     webnn_context_.reset();
-    webnn_test_environment_.RunUntilIdle();
+    webnn_test_environment_.WaitForAllContextsToBeDestroyed();
+
+    provider_remote_.reset();
+    webnn_test_environment_.TearDown();
 
     WebNNContextProviderImpl::SetBackendForTesting(nullptr);
   }
@@ -671,13 +663,7 @@ struct BatchNormalizationTester {
   OperandInfo variance;
   std::optional<OperandInfo> scale;
   std::optional<OperandInfo> bias;
-  struct BatchNormalizationAttributes {
-    std::optional<OperandId> scale_operand_id;
-    std::optional<OperandId> bias_operand_id;
-    uint32_t axis = 1;
-    float epsilon = 1e-5;
-  };
-  BatchNormalizationAttributes attributes;
+  BuildBatchNormalizationAttributes attributes;
   OperandInfo output;
   bool expected;
 
@@ -928,10 +914,9 @@ TEST_F(WebNNGraphImplTest, BatchNormalizationTest) {
         builder.BuildInput("mean", {2}, OperandDataType::kFloat32);
     OperandId variance_operand_id =
         builder.BuildInput("variance", {2}, OperandDataType::kFloat32);
-    builder.BuildBatchNormalization(
-        input_operand_id, mean_operand_id, variance_operand_id,
-        input_operand_id,
-        BatchNormalizationTester::BatchNormalizationAttributes{});
+    builder.BuildBatchNormalization(input_operand_id, mean_operand_id,
+                                    variance_operand_id, input_operand_id,
+                                    BuildBatchNormalizationAttributes{});
     EXPECT_FALSE(builder.IsValidGraphForTesting(context_properties));
   }
   {
@@ -945,9 +930,9 @@ TEST_F(WebNNGraphImplTest, BatchNormalizationTest) {
         builder.BuildInput("mean", {2}, OperandDataType::kFloat32);
     OperandId variance_operand_id =
         builder.BuildInput("variance", {2}, OperandDataType::kFloat32);
-    builder.BuildBatchNormalization(
-        input_operand_id, mean_operand_id, variance_operand_id, mean_operand_id,
-        BatchNormalizationTester::BatchNormalizationAttributes{});
+    builder.BuildBatchNormalization(input_operand_id, mean_operand_id,
+                                    variance_operand_id, mean_operand_id,
+                                    BuildBatchNormalizationAttributes{});
     EXPECT_FALSE(builder.IsValidGraphForTesting(context_properties));
   }
   {
@@ -961,10 +946,9 @@ TEST_F(WebNNGraphImplTest, BatchNormalizationTest) {
         builder.BuildInput("mean", {2}, OperandDataType::kFloat32);
     OperandId variance_operand_id =
         builder.BuildInput("variance", {2}, OperandDataType::kFloat32);
-    builder.BuildBatchNormalization(
-        input_operand_id, mean_operand_id, variance_operand_id,
-        variance_operand_id,
-        BatchNormalizationTester::BatchNormalizationAttributes{});
+    builder.BuildBatchNormalization(input_operand_id, mean_operand_id,
+                                    variance_operand_id, variance_operand_id,
+                                    BuildBatchNormalizationAttributes{});
     EXPECT_FALSE(builder.IsValidGraphForTesting(context_properties));
   }
 }
@@ -1108,14 +1092,8 @@ struct Conv2dTester {
   mojom::Conv2d::Kind type;
   OperandInfo input;
   OperandInfo filter;
-  struct Conv2dAttributes {
-    std::vector<uint32_t> padding = {0, 0, 0, 0};
-    std::vector<uint32_t> strides = {1, 1};
-    std::vector<uint32_t> dilations = {1, 1};
-    uint32_t groups = 1;
-    std::optional<OperandInfo> bias;
-  };
-  Conv2dAttributes attributes;
+  BuildConv2dAttributes attributes;
+  std::optional<OperandInfo> bias;
   InputOperandLayout input_operand_layout = InputOperandLayout::kNchw;
   OperandInfo output;
   bool expected;
@@ -1135,16 +1113,15 @@ struct Conv2dTester {
         builder.BuildInput("filter", filter.dimensions, filter.type);
 
     std::optional<OperandId> bias_operand_id;
-    if (attributes.bias) {
-      bias_operand_id = builder.BuildInput("bias", attributes.bias->dimensions,
-                                           attributes.bias->type);
+    if (bias) {
+      bias_operand_id =
+          builder.BuildInput("bias", bias->dimensions, bias->type);
     }
 
     OperandId output_operand_id =
         builder.BuildOutput("output", output.dimensions, output.type);
     builder.BuildConv2d(type, input_operand_id, filter_operand_id,
-                        output_operand_id, std::move(attributes),
-                        bias_operand_id);
+                        output_operand_id, attributes, bias_operand_id);
     EXPECT_EQ(builder.IsValidGraphForTesting(context_properties), expected);
   }
 };
@@ -1269,8 +1246,7 @@ TEST_F(WebNNGraphImplTest, Conv2dTest) {
                   .dimensions = {1, 1, 5, 5}},
         .filter = {.type = OperandDataType::kFloat32,
                    .dimensions = {1, 1, 3, 3}},
-        .attributes = {.bias = OperandInfo{.type = OperandDataType::kInt32,
-                                           .dimensions = {1}}},
+        .bias = OperandInfo{.type = OperandDataType::kInt32, .dimensions = {1}},
         .output = {.type = OperandDataType::kFloat32,
                    .dimensions = {1, 1, 3, 3}},
         .expected = false}
@@ -1279,17 +1255,16 @@ TEST_F(WebNNGraphImplTest, Conv2dTest) {
   {
     // Test the invalid graph when the bias shape is not equal to
     // [output_channels].
-    Conv2dTester{
-        .type = mojom::Conv2d::Kind::kDirect,
-        .input = {.type = OperandDataType::kFloat32,
-                  .dimensions = {1, 1, 5, 5}},
-        .filter = {.type = OperandDataType::kFloat32,
-                   .dimensions = {1, 1, 3, 3}},
-        .attributes = {.bias = OperandInfo{.type = OperandDataType::kFloat32,
-                                           .dimensions = {2}}},
-        .output = {.type = OperandDataType::kFloat32,
-                   .dimensions = {1, 1, 3, 3}},
-        .expected = false}
+    Conv2dTester{.type = mojom::Conv2d::Kind::kDirect,
+                 .input = {.type = OperandDataType::kFloat32,
+                           .dimensions = {1, 1, 5, 5}},
+                 .filter = {.type = OperandDataType::kFloat32,
+                            .dimensions = {1, 1, 3, 3}},
+                 .bias = OperandInfo{.type = OperandDataType::kFloat32,
+                                     .dimensions = {2}},
+                 .output = {.type = OperandDataType::kFloat32,
+                            .dimensions = {1, 1, 3, 3}},
+                 .expected = false}
         .Test(*this);
   }
   {
@@ -1356,7 +1331,7 @@ TEST_F(WebNNGraphImplTest, Conv2dTest) {
 
     builder.BuildConv2d(mojom::Conv2d::Kind::kDirect, input_operand_id,
                         filter_operand_id, input_operand_id,
-                        Conv2dTester::Conv2dAttributes{}, std::nullopt);
+                        BuildConv2dAttributes{}, std::nullopt);
 
     EXPECT_FALSE(builder.IsValidGraphForTesting(context_properties));
   }
@@ -1372,7 +1347,7 @@ TEST_F(WebNNGraphImplTest, Conv2dTest) {
 
     builder.BuildConv2d(mojom::Conv2d::Kind::kDirect, input_operand_id,
                         filter_operand_id, filter_operand_id,
-                        Conv2dTester::Conv2dAttributes{}, std::nullopt);
+                        BuildConv2dAttributes{}, std::nullopt);
 
     EXPECT_FALSE(builder.IsValidGraphForTesting(context_properties));
   }
@@ -1540,8 +1515,7 @@ TEST_F(WebNNGraphImplTest, ConvTranspose2dTest) {
                   .dimensions = {1, 1, 3, 3}},
         .filter = {.type = OperandDataType::kFloat32,
                    .dimensions = {1, 1, 3, 3}},
-        .attributes = {.bias = OperandInfo{.type = OperandDataType::kInt32,
-                                           .dimensions = {1}}},
+        .bias = OperandInfo{.type = OperandDataType::kInt32, .dimensions = {1}},
         .output = {.type = OperandDataType::kFloat32,
                    .dimensions = {1, 1, 5, 5}},
         .expected = false}
@@ -1550,17 +1524,16 @@ TEST_F(WebNNGraphImplTest, ConvTranspose2dTest) {
   {
     // Test the invalid graph when the bias shape is not equal to
     // [output_channels].
-    Conv2dTester{
-        .type = mojom::Conv2d::Kind::kTransposed,
-        .input = {.type = OperandDataType::kFloat32,
-                  .dimensions = {1, 1, 3, 3}},
-        .filter = {.type = OperandDataType::kFloat32,
-                   .dimensions = {1, 1, 3, 3}},
-        .attributes = {.bias = OperandInfo{.type = OperandDataType::kFloat32,
-                                           .dimensions = {2}}},
-        .output = {.type = OperandDataType::kFloat32,
-                   .dimensions = {1, 1, 5, 5}},
-        .expected = false}
+    Conv2dTester{.type = mojom::Conv2d::Kind::kTransposed,
+                 .input = {.type = OperandDataType::kFloat32,
+                           .dimensions = {1, 1, 3, 3}},
+                 .filter = {.type = OperandDataType::kFloat32,
+                            .dimensions = {1, 1, 3, 3}},
+                 .bias = OperandInfo{.type = OperandDataType::kFloat32,
+                                     .dimensions = {2}},
+                 .output = {.type = OperandDataType::kFloat32,
+                            .dimensions = {1, 1, 5, 5}},
+                 .expected = false}
         .Test(*this);
   }
   {
@@ -1575,7 +1548,7 @@ TEST_F(WebNNGraphImplTest, ConvTranspose2dTest) {
 
     builder.BuildConv2d(mojom::Conv2d::Kind::kTransposed, input_operand_id,
                         filter_operand_id, input_operand_id,
-                        Conv2dTester::Conv2dAttributes{}, std::nullopt);
+                        BuildConv2dAttributes{}, std::nullopt);
 
     EXPECT_FALSE(builder.IsValidGraphForTesting(context_properties));
   }
@@ -1591,7 +1564,7 @@ TEST_F(WebNNGraphImplTest, ConvTranspose2dTest) {
 
     builder.BuildConv2d(mojom::Conv2d::Kind::kTransposed, input_operand_id,
                         filter_operand_id, filter_operand_id,
-                        Conv2dTester::Conv2dAttributes{}, std::nullopt);
+                        BuildConv2dAttributes{}, std::nullopt);
 
     EXPECT_FALSE(builder.IsValidGraphForTesting(context_properties));
   }
@@ -3009,14 +2982,7 @@ struct GemmTester {
   OperandInfo a;
   OperandInfo b;
   std::optional<OperandInfo> c;
-  struct GemmAttributes {
-    std::optional<OperandId> c_operand_id;
-    float alpha = 1.0;
-    float beta = 1.0;
-    bool a_transpose = false;
-    bool b_transpose = false;
-  };
-  GemmAttributes attributes;
+  BuildGemmAttributes attributes;
   OperandInfo output;
   bool expected;
 
@@ -3153,20 +3119,6 @@ TEST_F(WebNNGraphImplTest, GemmTest) {
 }
 
 struct GruTester {
-  struct GruAttributes {
-    std::optional<OperandId> bias_operand_id;
-    std::optional<OperandId> recurrent_bias_operand_id;
-    std::optional<OperandId> initial_hidden_state_operand_id;
-    bool reset_after = true;
-    bool return_sequence = false;
-    mojom::RecurrentNetworkDirection direction =
-        mojom::RecurrentNetworkDirection::kForward;
-    mojom::GruWeightLayout layout = mojom::GruWeightLayout::kZrn;
-    std::vector<mojom::RecurrentNetworkActivation> activations = {
-        mojom::RecurrentNetworkActivation::kSigmoid,
-        mojom::RecurrentNetworkActivation::kTanh};
-  };
-
   OperandInfo input;
   OperandInfo weight;
   OperandInfo recurrent_weight;
@@ -3175,7 +3127,7 @@ struct GruTester {
   std::optional<OperandInfo> bias;
   std::optional<OperandInfo> recurrent_bias;
   std::optional<OperandInfo> initial_hidden_state;
-  GruAttributes attributes;
+  BuildGruAttributes attributes;
   std::vector<OperandInfo> outputs;
   bool expected;
 
@@ -3355,26 +3307,16 @@ TEST_F(WebNNGraphImplTest, GruTest) {
         "initialHiddenState", {num_directions, batch_size, hidden_size},
         OperandDataType::kFloat32);
 
-    builder.BuildGru(
-        input_operand_id, weight_operand_id, recurrent_weight_operand_id,
-        {initial_hidden_state_operand_id}, steps, hidden_size,
-        GruTester::GruAttributes{.initial_hidden_state_operand_id =
-                                     initial_hidden_state_operand_id});
+    builder.BuildGru(input_operand_id, weight_operand_id,
+                     recurrent_weight_operand_id,
+                     {initial_hidden_state_operand_id}, steps, hidden_size,
+                     BuildGruAttributes{.initial_hidden_state_operand_id =
+                                            initial_hidden_state_operand_id});
     EXPECT_FALSE(builder.IsValidGraphForTesting(context_properties));
   }
 }
 
 struct GruCellTester {
-  struct GruCellAttributes {
-    std::optional<OperandId> bias_operand_id;
-    std::optional<OperandId> recurrent_bias_operand_id;
-    bool reset_after = true;
-    mojom::GruWeightLayout layout = mojom::GruWeightLayout::kZrn;
-    std::vector<mojom::RecurrentNetworkActivation> activations = {
-        mojom::RecurrentNetworkActivation::kSigmoid,
-        mojom::RecurrentNetworkActivation::kTanh};
-  };
-
   OperandInfo input;
   OperandInfo weight;
   OperandInfo recurrent_weight;
@@ -3382,7 +3324,7 @@ struct GruCellTester {
   uint32_t hidden_size;
   std::optional<OperandInfo> bias;
   std::optional<OperandInfo> recurrent_bias;
-  GruCellAttributes attributes;
+  BuildGruCellAttributes attributes;
   OperandInfo output;
   bool expected;
 
@@ -3770,7 +3712,7 @@ TEST_F(WebNNGraphImplTest, GruCellTest) {
     builder.BuildGruCell(input_operand_id, weight_operand_id,
                          recurrent_weight_operand_id, hidden_state_operand_id,
                          hidden_state_operand_id, hidden_size,
-                         GruCellTester::GruCellAttributes{.reset_after = true});
+                         BuildGruCellAttributes{.reset_after = true});
     EXPECT_FALSE(builder.IsValidGraphForTesting(context_properties));
   }
 }
@@ -3779,12 +3721,7 @@ struct InstanceNormalizationTester {
   OperandInfo input;
   std::optional<OperandInfo> scale;
   std::optional<OperandInfo> bias;
-  struct InstanceNormalizationAttributes {
-    std::optional<OperandId> scale_operand_id;
-    std::optional<OperandId> bias_operand_id;
-    float epsilon = 1e-5;
-  };
-  InstanceNormalizationAttributes attributes;
+  BuildInstanceNormalizationAttributes attributes;
   InputOperandLayout input_operand_layout = InputOperandLayout::kNchw;
   OperandInfo output;
   bool expected;
@@ -3940,9 +3877,8 @@ TEST_F(WebNNGraphImplTest, InstanceNormalizationTest) {
     GraphInfoBuilder builder(remote);
     OperandId input_operand_id =
         builder.BuildInput("input", {1, 2, 3, 4}, OperandDataType::kFloat32);
-    builder.BuildInstanceNormalization(
-        input_operand_id, input_operand_id,
-        InstanceNormalizationTester::InstanceNormalizationAttributes{});
+    builder.BuildInstanceNormalization(input_operand_id, input_operand_id,
+                                       BuildInstanceNormalizationAttributes{});
     EXPECT_FALSE(builder.IsValidGraphForTesting(context_properties));
   }
   {
@@ -3955,7 +3891,7 @@ TEST_F(WebNNGraphImplTest, InstanceNormalizationTest) {
     OperandId scale_operand_id =
         builder.BuildInput("scale", {2}, OperandDataType::kFloat32);
 
-    InstanceNormalizationTester::InstanceNormalizationAttributes attributes;
+    BuildInstanceNormalizationAttributes attributes;
     attributes.scale_operand_id = scale_operand_id;
 
     builder.BuildInstanceNormalization(input_operand_id, scale_operand_id,
@@ -3972,7 +3908,7 @@ TEST_F(WebNNGraphImplTest, InstanceNormalizationTest) {
     OperandId bias_operand_id =
         builder.BuildInput("bias", {2}, OperandDataType::kFloat32);
 
-    InstanceNormalizationTester::InstanceNormalizationAttributes attributes;
+    BuildInstanceNormalizationAttributes attributes;
     attributes.bias_operand_id = bias_operand_id;
 
     builder.BuildInstanceNormalization(input_operand_id, bias_operand_id,
@@ -3985,13 +3921,7 @@ struct LayerNormalizationTester {
   OperandInfo input;
   std::optional<OperandInfo> scale;
   std::optional<OperandInfo> bias;
-  struct LayerNormalizationAttributes {
-    std::optional<OperandId> scale_operand_id;
-    std::optional<OperandId> bias_operand_id;
-    std::vector<uint32_t> axes;
-    float epsilon = 1e-5;
-  };
-  LayerNormalizationAttributes attributes;
+  BuildLayerNormalizationAttributes attributes;
   OperandInfo output;
   bool expected;
 
@@ -4137,9 +4067,8 @@ TEST_F(WebNNGraphImplTest, LayerNormalizationTest) {
     GraphInfoBuilder builder(remote);
     OperandId input_operand_id =
         builder.BuildInput("input", {1, 2, 3, 4}, OperandDataType::kFloat32);
-    builder.BuildLayerNormalization(
-        input_operand_id, input_operand_id,
-        LayerNormalizationTester::LayerNormalizationAttributes{});
+    builder.BuildLayerNormalization(input_operand_id, input_operand_id,
+                                    BuildLayerNormalizationAttributes{});
     EXPECT_FALSE(builder.IsValidGraphForTesting(context_properties));
   }
   {
@@ -4152,7 +4081,7 @@ TEST_F(WebNNGraphImplTest, LayerNormalizationTest) {
     OperandId scale_operand_id =
         builder.BuildInput("scale", {1, 2, 3, 4}, OperandDataType::kFloat32);
 
-    LayerNormalizationTester::LayerNormalizationAttributes attributes;
+    BuildLayerNormalizationAttributes attributes;
     attributes.scale_operand_id = scale_operand_id;
     attributes.axes = {0, 1, 2, 3};
 
@@ -4170,7 +4099,7 @@ TEST_F(WebNNGraphImplTest, LayerNormalizationTest) {
     OperandId bias_operand_id =
         builder.BuildInput("bias", {1, 2, 3, 4}, OperandDataType::kFloat32);
 
-    LayerNormalizationTester::LayerNormalizationAttributes attributes;
+    BuildLayerNormalizationAttributes attributes;
     attributes.bias_operand_id = bias_operand_id;
     attributes.axes = {0, 1, 2, 3};
 
@@ -4181,22 +4110,6 @@ TEST_F(WebNNGraphImplTest, LayerNormalizationTest) {
 }
 
 struct LstmTester {
-  struct LstmAttributes {
-    std::optional<OperandId> bias_operand_id;
-    std::optional<OperandId> recurrent_bias_operand_id;
-    std::optional<OperandId> peephole_weight_operand_id;
-    std::optional<OperandId> initial_hidden_state_operand_id;
-    std::optional<OperandId> initial_cell_state_operand_id;
-    bool return_sequence = false;
-    mojom::RecurrentNetworkDirection direction =
-        mojom::RecurrentNetworkDirection::kForward;
-    mojom::LstmWeightLayout layout = mojom::LstmWeightLayout::kIofg;
-    std::vector<mojom::RecurrentNetworkActivation> activations = {
-        mojom::RecurrentNetworkActivation::kSigmoid,
-        mojom::RecurrentNetworkActivation::kTanh,
-        mojom::RecurrentNetworkActivation::kTanh};
-  };
-
   OperandInfo input;
   OperandInfo weight;
   OperandInfo recurrent_weight;
@@ -4207,7 +4120,7 @@ struct LstmTester {
   std::optional<OperandInfo> peephole_weight;
   std::optional<OperandInfo> initial_hidden_state;
   std::optional<OperandInfo> initial_cell_state;
-  LstmAttributes attributes;
+  BuildLstmAttributes attributes;
   std::vector<OperandInfo> outputs;
   bool expected;
 
@@ -4387,7 +4300,7 @@ TEST_F(WebNNGraphImplTest, LstmTest) {
     builder.BuildLstm(input_operand_id, weight_operand_id,
                       recurrent_weight_operand_id,
                       {output_operand_id, recurrent_weight_operand_id}, steps,
-                      hidden_size, LstmTester::LstmAttributes{});
+                      hidden_size, BuildLstmAttributes{});
     EXPECT_FALSE(builder.IsValidGraphForTesting(context_properties));
   }
   {
@@ -4421,24 +4334,13 @@ TEST_F(WebNNGraphImplTest, LstmTest) {
     builder.BuildLstm(
         input_operand_id, weight_operand_id, recurrent_weight_operand_id,
         {initial_cell_state_operand_id, output_operand_id}, steps, hidden_size,
-        LstmTester::LstmAttributes{.initial_cell_state_operand_id =
-                                       initial_cell_state_operand_id});
+        BuildLstmAttributes{.initial_cell_state_operand_id =
+                                initial_cell_state_operand_id});
     EXPECT_FALSE(builder.IsValidGraphForTesting(context_properties));
   }
 }
 
 struct LstmCellTester {
-  struct LstmCellAttributes {
-    std::optional<OperandId> bias_operand_id;
-    std::optional<OperandId> recurrent_bias_operand_id;
-    std::optional<OperandId> peephole_weight_operand_id;
-    mojom::LstmWeightLayout layout = mojom::LstmWeightLayout::kIofg;
-    std::vector<mojom::RecurrentNetworkActivation> activations = {
-        mojom::RecurrentNetworkActivation::kSigmoid,
-        mojom::RecurrentNetworkActivation::kTanh,
-        mojom::RecurrentNetworkActivation::kTanh};
-  };
-
   OperandInfo input;
   OperandInfo weight;
   OperandInfo recurrent_weight;
@@ -4448,7 +4350,7 @@ struct LstmCellTester {
   std::optional<OperandInfo> bias;
   std::optional<OperandInfo> recurrent_bias;
   std::optional<OperandInfo> peephole_weight;
-  LstmCellAttributes attributes;
+  BuildLstmCellAttributes attributes;
   std::vector<OperandInfo> outputs;
   bool expected;
 
@@ -4693,7 +4595,7 @@ TEST_F(WebNNGraphImplTest, LstmCellTest) {
                           recurrent_weight_operand_id, hidden_state_operand_id,
                           cell_state_operand_id,
                           {cell_state_operand_id, output_operand_id},
-                          hidden_size, LstmTester::LstmAttributes{});
+                          hidden_size, BuildLstmCellAttributes{});
     EXPECT_FALSE(builder.IsValidGraphForTesting(context_properties));
   }
 }
@@ -4940,13 +4842,7 @@ TEST_F(WebNNGraphImplTest, PadTest) {
 
 struct Pool2dTester {
   OperandInfo input;
-  struct Pool2dAttributes {
-    std::vector<uint32_t> window_dimensions;
-    std::vector<uint32_t> padding = {0, 0, 0, 0};
-    std::vector<uint32_t> strides = {1, 1};
-    std::vector<uint32_t> dilations = {1, 1};
-  };
-  Pool2dAttributes attributes;
+  BuildPool2dAttributes attributes;
   InputOperandLayout input_operand_layout = InputOperandLayout::kNchw;
   OperandInfo output;
   bool expected;
@@ -5776,13 +5672,7 @@ TEST_F(WebNNGraphImplTest, ReluTest) {
 
 struct Resample2dTester {
   OperandInfo input;
-  struct Resample2dAttributes {
-    mojom::Resample2d::InterpolationMode mode =
-        mojom::Resample2d::InterpolationMode::kNearestNeighbor;
-    std::optional<std::vector<float>> scales;
-    std::vector<uint32_t> axes = {2, 3};
-  };
-  Resample2dAttributes attributes;
+  BuildResample2dAttributes attributes;
   OperandInfo output;
   bool expected;
 
@@ -6004,7 +5894,7 @@ TEST_F(WebNNGraphImplTest, Resample2dTest) {
     OperandId input_operand_id =
         builder.BuildInput("input", {1, 1, 2, 4}, OperandDataType::kFloat32);
     builder.BuildResample2d(input_operand_id, input_operand_id,
-                            Resample2dTester::Resample2dAttributes{});
+                            BuildResample2dAttributes{});
 
     EXPECT_FALSE(builder.IsValidGraphForTesting(context_properties));
   }
@@ -7536,24 +7426,22 @@ TEST_F(WebNNGraphImplTest, WhereTest) {
 
 TEST_F(WebNNGraphImplTest, ValidateDispatchTest) {
   auto context_properties = GetContextPropertiesForTesting();
-  // TODO(crbug.com/325598628): De-dup these data type constants.
-  const OperandDataType kMojoDataType = OperandDataType::kUint8;
   const OperandDataType kDataType = OperandDataType::kUint8;
   const std::vector<uint32_t> kShape = {3, 5};
   // Build the graph with mojo type.
   mojo::Remote<mojom::WebNNGraphBuilder> remote = BindNewGraphBuilderRemote();
   GraphInfoBuilder builder(remote);
   const OperandId lhs_operand_id =
-      builder.BuildInput("lhs", kShape, kMojoDataType);
+      builder.BuildInput("lhs", kShape, kDataType);
   const OperandId rhs_operand_id =
-      builder.BuildInput("rhs", kShape, kMojoDataType);
+      builder.BuildInput("rhs", kShape, kDataType);
   const OperandId output_1_operand_id =
-      builder.BuildOutput("output1", kShape, kMojoDataType);
+      builder.BuildOutput("output1", kShape, kDataType);
   builder.BuildElementWiseBinary(mojom::ElementWiseBinary::Kind::kAdd,
                                  lhs_operand_id, rhs_operand_id,
                                  output_1_operand_id);
   const OperandId output_2_operand_id =
-      builder.BuildOutput("output2", kShape, kMojoDataType);
+      builder.BuildOutput("output2", kShape, kDataType);
   builder.BuildElementWiseBinary(mojom::ElementWiseBinary::Kind::kAdd,
                                  lhs_operand_id, rhs_operand_id,
                                  output_2_operand_id);
@@ -7788,7 +7676,7 @@ TEST_F(WebNNGraphImplTest, BuildMultipleInputsAppendingConstants) {
   OperandId intermediate_1_operand_id =
       builder.BuildIntermediateOperand({2, 2}, OperandDataType::kFloat32);
   builder.BuildGemm(input_a_operand_id, constant_a_operand_id,
-                    intermediate_1_operand_id, GemmTester::GemmAttributes());
+                    intermediate_1_operand_id, BuildGemmAttributes());
 
   OperandId input_b_operand_id =
       builder.BuildInput("input_b", {2, 2}, OperandDataType::kFloat32);
@@ -7798,9 +7686,9 @@ TEST_F(WebNNGraphImplTest, BuildMultipleInputsAppendingConstants) {
   OperandId intermediate_2_operand_id =
       builder.BuildIntermediateOperand({2, 2}, OperandDataType::kFloat32);
   builder.BuildGemm(input_b_operand_id, constant_b_operand_id,
-                    intermediate_2_operand_id, GemmTester::GemmAttributes());
+                    intermediate_2_operand_id, BuildGemmAttributes());
   builder.BuildGemm(intermediate_1_operand_id, intermediate_2_operand_id,
-                    output_operand_id, GemmTester::GemmAttributes());
+                    output_operand_id, BuildGemmAttributes());
   EXPECT_TRUE(builder.IsValidGraphForTesting(context_properties));
 }
 
@@ -7828,7 +7716,7 @@ TEST_F(WebNNGraphImplTest, BuildMultipleConstantsAppendingInputs) {
   OperandId intermediate_1_operand_id =
       builder.BuildIntermediateOperand({2, 2}, OperandDataType::kFloat32);
   builder.BuildGemm(constant_a_operand_id, input_a_operand_id,
-                    intermediate_1_operand_id, GemmTester::GemmAttributes());
+                    intermediate_1_operand_id, BuildGemmAttributes());
 
   OperandId input_b_operand_id =
       builder.BuildInput("input_b", {2, 2}, OperandDataType::kFloat32);
@@ -7838,10 +7726,10 @@ TEST_F(WebNNGraphImplTest, BuildMultipleConstantsAppendingInputs) {
   OperandId intermediate_2_operand_id =
       builder.BuildIntermediateOperand({2, 2}, OperandDataType::kFloat32);
   builder.BuildGemm(constant_b_operand_id, input_b_operand_id,
-                    intermediate_2_operand_id, GemmTester::GemmAttributes());
+                    intermediate_2_operand_id, BuildGemmAttributes());
 
   builder.BuildGemm(intermediate_1_operand_id, intermediate_2_operand_id,
-                    output_operand_id, GemmTester::GemmAttributes());
+                    output_operand_id, BuildGemmAttributes());
   EXPECT_TRUE(builder.IsValidGraphForTesting(context_properties));
 }
 

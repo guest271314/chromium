@@ -72,6 +72,12 @@ class Profile : public content::BrowserContext {
     kAsynchronous,
   };
 
+  enum class LifecycleState {
+    kNotRegistered,
+    kRegistered,
+    kPendingDestruction,
+  };
+
   // Defines an ID to distinguish different off-the-record profiles of a regular
   // profile.
   class OTRProfileID {
@@ -385,10 +391,9 @@ class Profile : public content::BrowserContext {
   // more recent (or equal to) the one specified.
   virtual bool WasCreatedByVersionOrLater(const std::string& version) = 0;
 
-  // IsRegularProfile(), IsSystemProfile(), IsIncognitoProfile(), and
-  // IsGuestSession() are mutually exclusive.
-  // Note: IsGuestSession() is not mutually exclusive with the rest of the
-  // methods mentioned above on ChromeOS. TODO(crbug.com/40233408).
+  // IsRegularProfile(), IsSystemProfile(), IsIncognitoProfile(),
+  // IsGuestSession() and IsEnterpriseIsolatedModeProfile() are mutually
+  // exclusive.
   //
   // IsSystemProfile() returns true for both regular and off-the-record profile
   //   of the system profile.
@@ -402,8 +407,17 @@ class Profile : public content::BrowserContext {
   // off-the-record profile that is used for incognito mode.
   bool IsIncognitoProfile() const;
 
+  // Returns whether this profile is an Enterprise Isolated Mode session.
+  bool IsEnterpriseIsolatedModeProfile() const;
+
+  // Returns true if this is a primary OffTheRecord profile with a regular
+  // parent profile (i.e. an Incognito profile or an Enterprise Isolated Mode
+  // profile).
+  bool IsPrimaryOTRProfileWithRegularParent() const;
+
   // Returns true if this is a primary OffTheRecord profile, which covers the
-  // OffTheRecord profile used for incognito mode and guest sessions.
+  // OffTheRecord profile used for incognito mode, isolated mode and guest
+  // sessions.
   bool IsPrimaryOTRProfile() const;
 
   // Returns whether it is a Guest session. This covers both regular and
@@ -440,13 +454,17 @@ class Profile : public content::BrowserContext {
   }
 
   void ResumeAccessibilityEvents() {
-    DCHECK_GT(accessibility_pause_level_, 0);
+    CHECK_GT(accessibility_pause_level_, 0, base::NotFatalUntil::M162);
     accessibility_pause_level_--;
   }
 
   bool ShouldSendAccessibilityEvents() {
     return 0 == accessibility_pause_level_;
   }
+
+  // Returns the LOM profile ID for this profile, generating one if it doesn't
+  // exist yet.
+  virtual uint64_t GetLomProfileId();
 
   // Returns whether the profile is new.  A profile is new if the browser has
   // not been shut down since the profile was created.
@@ -492,6 +510,18 @@ class Profile : public content::BrowserContext {
   static Profile* FromJavaObject(const jni_zero::JavaRef<jobject>& obj);
   jni_zero::ScopedJavaLocalRef<jobject> GetJavaObject() const;
 #endif  // BUILDFLAG(IS_ANDROID)
+
+#if BUILDFLAG(IS_WIN)
+  // Track user acknowledgement of the crash bubble. For more information, see
+  // the definition of `ProfileLoadTracker`.
+  virtual void AckCrashForTracking() = 0;
+#endif
+
+  LifecycleState lifecycle_state() const { return lifecycle_state_; }
+  void set_lifecycle_state(LifecycleState lifecycle_state) {
+    lifecycle_state_ = lifecycle_state;
+  }
+
  protected:
   // Creates an OffTheRecordProfile which points to this Profile.
   static std::unique_ptr<Profile> CreateOffTheRecordProfile(
@@ -516,13 +546,9 @@ class Profile : public content::BrowserContext {
 
   const std::optional<OTRProfileID> otr_profile_id_;
 
-#if BUILDFLAG(IS_CHROMEOS)
-  // TODO(40233408): Remove this when migration is completed.
-  // True if the guest profile uses BrowserProfileType::kGuest.
-  bool new_guest_profile_impl_;
-#endif
-
  private:
+  LifecycleState lifecycle_state_ = LifecycleState::kNotRegistered;
+
   bool restored_last_session_ = false;
 
   // Used to prevent the notification that this Profile is destroyed from

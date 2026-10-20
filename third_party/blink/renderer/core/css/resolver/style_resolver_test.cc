@@ -16,6 +16,7 @@
 #include "third_party/blink/renderer/core/css/css_flip_revert_value.h"
 #include "third_party/blink/renderer/core/css/css_image_set_value.h"
 #include "third_party/blink/renderer/core/css/css_image_value.h"
+#include "third_party/blink/renderer/core/css/css_style_declaration.h"
 #include "third_party/blink/renderer/core/css/css_test_helpers.h"
 #include "third_party/blink/renderer/core/css/css_value_list.h"
 #include "third_party/blink/renderer/core/css/media_feature_names.h"
@@ -45,10 +46,12 @@
 #include "third_party/blink/renderer/core/page/focus_controller.h"
 #include "third_party/blink/renderer/core/style/anchor_specifier_value.h"
 #include "third_party/blink/renderer/core/style/computed_style_constants.h"
+#include "third_party/blink/renderer/core/testing/color_scheme_helper.h"
 #include "third_party/blink/renderer/core/testing/page_test_base.h"
 #include "third_party/blink/renderer/platform/bindings/exception_state.h"
 #include "third_party/blink/renderer/platform/geometry/calculation_value.h"
 #include "third_party/blink/renderer/platform/testing/runtime_enabled_features_test_helpers.h"
+#include "third_party/blink/renderer/platform/wtf/text/format.h"
 
 namespace blink {
 
@@ -68,7 +71,8 @@ class StyleResolverTest : public PageTestBase {
   }
 
   String ComputedValue(String name, const ComputedStyle& style) {
-    CSSPropertyRef ref(name, GetDocument());
+    AtomicString atomic_name(name);
+    CSSPropertyRef ref(&atomic_name, GetDocument());
     DCHECK(ref.IsValid());
     return ref.GetProperty()
         .CSSValueFromComputedStyle(style, nullptr, false,
@@ -446,14 +450,93 @@ TEST_F(StyleResolverTest,
             ComputedValue("font-size", *StyleForId("target")));
 }
 
+TEST_F(StyleResolverTest, TransitionOnNewlyInsertedElement) {
+  GetDocument().documentElement()->SetInnerHTMLWithoutTrustedTypes(R"HTML(
+    <style>
+      #target {
+        opacity: 0;
+        transition: opacity 1000s steps(2, start);
+      }
+      #target.visible { opacity: 1; }
+      #no-transition {
+        opacity: 0;
+        transition: none;
+      }
+      #no-transition.visible { opacity: 1; }
+    </style>
+    <div id=target></div>
+    <div id=no-transition></div>
+  )HTML");
+  UpdateAllLifecyclePhasesForTest();
+
+  Element* target = GetDocument().getElementById(AtomicString("target"));
+  ASSERT_TRUE(target);
+  // Merely declaring a transition does not require a base computed style.
+  EXPECT_FALSE(target->GetElementAnimations());
+  EXPECT_FALSE(target->GetComputedStyle()->GetBaseComputedStyle());
+  EXPECT_EQ("0", ComputedValue("opacity", *StyleForId("target")));
+
+  Element* no_transition =
+      GetDocument().getElementById(AtomicString("no-transition"));
+  ASSERT_TRUE(no_transition);
+  EXPECT_FALSE(no_transition->GetElementAnimations());
+  EXPECT_FALSE(no_transition->GetComputedStyle()->GetBaseComputedStyle());
+
+  target->setAttribute(html_names::kClassAttr, AtomicString("visible"));
+  no_transition->setAttribute(html_names::kClassAttr, AtomicString("visible"));
+  UpdateAllLifecyclePhasesForTest();
+
+  ElementAnimations* element_animations = target->GetElementAnimations();
+  ASSERT_TRUE(element_animations);
+  EXPECT_EQ(1u, element_animations->Animations().size());
+  EXPECT_TRUE(target->GetComputedStyle()->GetBaseComputedStyle());
+  EXPECT_EQ("0.5", ComputedValue("opacity", *StyleForId("target")));
+
+  EXPECT_FALSE(no_transition->GetElementAnimations());
+  EXPECT_FALSE(no_transition->GetComputedStyle()->GetBaseComputedStyle());
+  EXPECT_EQ("1", ComputedValue("opacity", *StyleForId("no-transition")));
+}
+
+TEST_F(StyleResolverTest, TransitionWithIncrementalInlineStyle) {
+  GetDocument().documentElement()->SetInnerHTMLWithoutTrustedTypes(R"HTML(
+    <style>
+      #target {
+        transition: opacity 1000s steps(2, start);
+      }
+    </style>
+    <div id=target style="opacity: 0"></div>
+  )HTML");
+  UpdateAllLifecyclePhasesForTest();
+
+  Element* target = GetDocument().getElementById(AtomicString("target"));
+  ASSERT_TRUE(target);
+  EXPECT_FALSE(target->GetElementAnimations());
+  EXPECT_FALSE(target->GetComputedStyle()->GetBaseComputedStyle());
+  EXPECT_EQ("0", ComputedValue("opacity", *StyleForId("target")));
+
+  // Mutating an existing independent inline property via CSSStyleDeclaration
+  // sets kIndependentStyleChange, which must still fall back to full
+  // cascade resolution when a transition can start.
+  target->style()->setProperty(GetDocument().GetExecutionContext(), "opacity",
+                               "1", "", ASSERT_NO_EXCEPTION);
+  EXPECT_EQ(kIndependentStyleChange, target->GetStyleChangeType());
+  UpdateAllLifecyclePhasesForTest();
+
+  ElementAnimations* element_animations = target->GetElementAnimations();
+  ASSERT_TRUE(element_animations);
+  EXPECT_EQ(1u, element_animations->Animations().size());
+  EXPECT_TRUE(target->GetComputedStyle()->GetBaseComputedStyle());
+  EXPECT_EQ("0.5", ComputedValue("opacity", *StyleForId("target")));
+}
+
 class StyleResolverFontRelativeUnitTest
     : public testing::WithParamInterface<const char*>,
       public StyleResolverTest {};
 
 TEST_P(StyleResolverFontRelativeUnitTest,
        BaseNotReusableIfFontRelativeUnitPresent) {
-  GetDocument().documentElement()->SetInnerHTMLWithoutTrustedTypes(UNSAFE_TODO(
-      String::Format("<div id=div style='width:1%s'>Test</div>", GetParam())));
+  GetDocument().documentElement()->SetInnerHTMLWithoutTrustedTypes(
+      Format("<div id=div style='width:1{}'>Test</div>", GetParam()));
   UpdateAllLifecyclePhasesForTest();
 
   Element* div = GetDocument().getElementById(AtomicString("div"));
@@ -476,8 +559,8 @@ TEST_P(StyleResolverFontRelativeUnitTest,
 
 TEST_P(StyleResolverFontRelativeUnitTest,
        BaseReusableIfNoFontAffectingAnimation) {
-  GetDocument().documentElement()->SetInnerHTMLWithoutTrustedTypes(UNSAFE_TODO(
-      String::Format("<div id=div style='width:1%s'>Test</div>", GetParam())));
+  GetDocument().documentElement()->SetInnerHTMLWithoutTrustedTypes(
+      Format("<div id=div style='width:1{}'>Test</div>", GetParam()));
   UpdateAllLifecyclePhasesForTest();
 
   Element* div = GetDocument().getElementById(AtomicString("div"));
@@ -648,33 +731,44 @@ TEST_F(StyleResolverTest, BackgroundImageFetch) {
       first_line_none->EnsureComputedStyle(kPseudoIdFirstLine);
 
   ASSERT_TRUE(before_style);
-  EXPECT_TRUE(GetBackgroundImageValue(*before_style).IsCachePending())
+  EXPECT_TRUE(GetBackgroundImageValue(*before_style)
+                  .IsCachePending(GetDocument().Fetcher()))
       << "No fetch for non-generated ::before";
   ASSERT_TRUE(first_line_style);
-  EXPECT_FALSE(GetBackgroundImageValue(*first_line_style).IsCachePending())
+  EXPECT_FALSE(GetBackgroundImageValue(*first_line_style)
+                   .IsCachePending(GetDocument().Fetcher()))
       << "Fetched by layout of ::first-line";
   ASSERT_TRUE(first_line_span_style);
-  EXPECT_TRUE(GetBackgroundImageValue(*first_line_span_style).IsCachePending())
+  EXPECT_TRUE(GetBackgroundImageValue(*first_line_span_style)
+                  .IsCachePending(GetDocument().Fetcher()))
       << "No fetch for inline with ::first-line";
   ASSERT_TRUE(first_line_none_style);
-  EXPECT_TRUE(GetBackgroundImageValue(*first_line_none_style).IsCachePending())
+  EXPECT_TRUE(GetBackgroundImageValue(*first_line_none_style)
+                  .IsCachePending(GetDocument().Fetcher()))
       << "No fetch for display:none with ::first-line";
-  EXPECT_TRUE(GetBackgroundImageValue(none).IsCachePending())
+  EXPECT_TRUE(
+      GetBackgroundImageValue(none).IsCachePending(GetDocument().Fetcher()))
       << "No fetch for display:none";
-  EXPECT_TRUE(GetBackgroundImageValue(inside_none).IsCachePending())
+  EXPECT_TRUE(GetBackgroundImageValue(inside_none)
+                  .IsCachePending(GetDocument().Fetcher()))
       << "No fetch inside display:none";
-  EXPECT_TRUE(GetBackgroundImageSetValue(none_image_set).IsCachePending(1.0f))
+  EXPECT_TRUE(GetBackgroundImageSetValue(none_image_set)
+                  .IsCachePending(GetDocument().Fetcher(), 1.0f))
       << "No fetch for display:none";
-  EXPECT_FALSE(GetBackgroundImageValue(hidden).IsCachePending())
+  EXPECT_FALSE(
+      GetBackgroundImageValue(hidden).IsCachePending(GetDocument().Fetcher()))
       << "Fetch for visibility:hidden";
-  EXPECT_FALSE(GetBackgroundImageValue(inside_hidden).IsCachePending())
+  EXPECT_FALSE(GetBackgroundImageValue(inside_hidden)
+                   .IsCachePending(GetDocument().Fetcher()))
       << "Fetch for inherited visibility:hidden";
-  EXPECT_FALSE(GetBackgroundImageValue(contents).IsCachePending())
+  EXPECT_FALSE(
+      GetBackgroundImageValue(contents).IsCachePending(GetDocument().Fetcher()))
       << "Fetch for display:contents";
-  EXPECT_FALSE(GetBackgroundImageValue(inside_contents).IsCachePending())
+  EXPECT_FALSE(GetBackgroundImageValue(inside_contents)
+                   .IsCachePending(GetDocument().Fetcher()))
       << "Fetch for image inherited from display:contents";
-  EXPECT_TRUE(GetBackgroundImageValue(non_slotted).IsCachePending())
-      << "No fetch for element outside the flat tree";
+
+  EXPECT_EQ(non_slotted->GetComputedStyle(), nullptr);
 
   // Added two frameset elements to hit the MatchedPropertiesCache for the
   // second one. Frameset adjusts style to display:block in StyleAdjuster, but
@@ -682,9 +776,11 @@ TEST_F(StyleResolverTest, BackgroundImageFetch) {
   // MatchedPropertiesCache leaving the cached style with StylePendingImage
   // unless we also check for LayoutObjectIsNeeded in
   // StyleResolverState::LoadPendingImages.
-  EXPECT_FALSE(GetBackgroundImageValue(frameset1).IsCachePending())
+  EXPECT_FALSE(GetBackgroundImageValue(frameset1).IsCachePending(
+      GetDocument().Fetcher()))
       << "Fetch for display:none frameset";
-  EXPECT_FALSE(GetBackgroundImageValue(frameset2).IsCachePending())
+  EXPECT_FALSE(GetBackgroundImageValue(frameset2).IsCachePending(
+      GetDocument().Fetcher()))
       << "Fetch for display:none frameset - cached";
 }
 
@@ -700,14 +796,14 @@ TEST_F(StyleResolverTest, FetchForAtPage) {
   )HTML");
 
   UpdateAllLifecyclePhasesForTest();
-  const ComputedStyle* page_style =
+  const ComputedStyle& page_style =
       GetDocument().GetStyleResolver().StyleForPage(0, g_empty_atom);
-  ASSERT_TRUE(page_style);
   const CSSValue* computed_value = ComputedStyleUtils::ComputedPropertyValue(
-      GetCSSPropertyBackgroundImage(), *page_style);
+      GetCSSPropertyBackgroundImage(), page_style);
 
   const CSSValueList* bg_img_list = To<CSSValueList>(computed_value);
-  EXPECT_FALSE(To<CSSImageValue>(bg_img_list->Item(0)).IsCachePending());
+  EXPECT_FALSE(To<CSSImageValue>(bg_img_list->Item(0))
+                   .IsCachePending(GetDocument().Fetcher()));
 }
 
 TEST_F(StyleResolverTest, SingleAxisAdjustOverflow) {
@@ -751,11 +847,10 @@ TEST_F(StyleResolverTest, NoFetchForAtPage) {
   )HTML");
 
   UpdateAllLifecyclePhasesForTest();
-  const ComputedStyle* page_style =
+  const ComputedStyle& page_style =
       GetDocument().GetStyleResolver().StyleForPage(0, g_empty_atom);
-  ASSERT_TRUE(page_style);
   const CSSValue* computed_value = ComputedStyleUtils::ComputedPropertyValue(
-      GetCSSPropertyListStyleImage(), *page_style);
+      GetCSSPropertyListStyleImage(), page_style);
   const auto* keyword = DynamicTo<CSSIdentifierValue>(computed_value);
   ASSERT_TRUE(keyword);
   EXPECT_EQ(keyword->GetValueID(), CSSValueID::kNone);
@@ -796,38 +891,37 @@ TEST_F(StyleResolverTest, PageComputedStyle) {
   )HTML");
 
   UpdateAllLifecyclePhasesForTest();
-  const ComputedStyle* style =
+  const ComputedStyle& style =
       GetDocument().GetStyleResolver().StyleForPage(0, g_empty_atom);
-  ASSERT_TRUE(style);
 
-  EXPECT_EQ(style->GetPageSizeType(), PageSizeType::kFixed);
-  gfx::SizeF page_size = style->PageSize();
+  EXPECT_EQ(style.GetPageSizeType(), PageSizeType::kFixed);
+  gfx::SizeF page_size = style.PageSize();
   EXPECT_EQ(page_size.width(), 100);
   EXPECT_EQ(page_size.height(), 150);
 
-  EXPECT_EQ(style->MarginTop(), Length::Fixed(11));
-  EXPECT_EQ(style->MarginRight(), Length::Fixed(12));
-  EXPECT_EQ(style->MarginBottom(), Length::Fixed(66));
-  EXPECT_EQ(style->MarginLeft(), Length::Fixed(66));
-  EXPECT_EQ(style->GetPageOrientation(), PageOrientation::kRotateLeft);
+  EXPECT_EQ(style.MarginTop(), Length::Fixed(11));
+  EXPECT_EQ(style.MarginRight(), Length::Fixed(12));
+  EXPECT_EQ(style.MarginBottom(), Length::Fixed(66));
+  EXPECT_EQ(style.MarginLeft(), Length::Fixed(66));
+  EXPECT_EQ(style.GetPageOrientation(), PageOrientation::kRotateLeft);
 
-  EXPECT_EQ(style->PaddingTop(), Length::Fixed(7));
+  EXPECT_EQ(style.PaddingTop(), Length::Fixed(7));
 
-  EXPECT_EQ(style->Width(), Length::Auto());
+  EXPECT_EQ(style.Width(), Length::Auto());
 
-  EXPECT_EQ(style->LineHeight(), Length::Fixed(64));
-  EXPECT_EQ(style->FontSize(), 32);
+  EXPECT_EQ(style.LineHeight(), Length::Fixed(64));
+  EXPECT_EQ(style.FontSize(), 32);
   String font_family = ComputedStyleUtils::ValueForFontFamily(
-                           style->GetFontDescription().Family())
+                           style.GetFontDescription().Family())
                            ->CssText();
   EXPECT_EQ(
       font_family,
       R"(cursive, fantasy, monospace, sans-serif, serif, UnquotedFont, "QuotedFont\",")");
 
   // Non-applicable properties:
-  EXPECT_TRUE(style->HasAutoColumnCount());
-  EXPECT_TRUE(style->HasAutoColumnWidth());
-  EXPECT_FALSE(style->ColumnGap().has_value());
+  EXPECT_TRUE(style.HasAutoColumnCount());
+  EXPECT_TRUE(style.HasAutoColumnWidth());
+  EXPECT_FALSE(style.ColumnGap().has_value());
 }
 
 TEST_F(StyleResolverTest, NoFetchForHighlightPseudoElements) {
@@ -1174,110 +1268,6 @@ TEST_F(StyleResolverTestCQ, CascadedValuesForPseudoElementInContainer) {
   EXPECT_EQ("1em", map.at(top)->CssText());
 }
 
-TEST_F(StyleResolverTest, EnsureComputedStyleSlotFallback) {
-  GetDocument().body()->SetInnerHTMLWithoutTrustedTypes(R"HTML(
-    <div id="host"><span></span></div>
-  )HTML");
-
-  ShadowRoot& shadow_root =
-      GetDocument()
-          .getElementById(AtomicString("host"))
-          ->AttachShadowRootForTesting(ShadowRootMode::kOpen);
-  shadow_root.SetInnerHTMLWithoutTrustedTypes(R"HTML(
-    <style>
-      slot { color: red }
-    </style>
-    <slot><span id="fallback"></span></slot>
-  )HTML");
-  Element* fallback = shadow_root.getElementById(AtomicString("fallback"));
-  ASSERT_TRUE(fallback);
-
-  UpdateAllLifecyclePhasesForTest();
-
-  // Elements outside the flat tree does not get styles computed during the
-  // lifecycle update.
-  EXPECT_FALSE(fallback->GetComputedStyle());
-
-  // We are currently allowed to query the computed style of elements outside
-  // the flat tree, but slot fallback does not inherit from the slot.
-  const ComputedStyle* fallback_style = fallback->EnsureComputedStyle();
-  ASSERT_TRUE(fallback_style);
-  EXPECT_EQ(Color::kBlack,
-            fallback_style->VisitedDependentColor(GetCSSPropertyColor()));
-}
-
-TEST_F(StyleResolverTest, EnsureComputedStyleOutsideFlatTree) {
-  GetDocument().documentElement()->SetHTMLUnsafeWithoutTrustedTypes(R"HTML(
-    <div id=host>
-      <template shadowrootmode=open>
-      </template>
-      <div id=a>
-        <div id=b>
-          <div id=c>
-            <div id=d>
-              <div id=e>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-  )HTML");
-  UpdateAllLifecyclePhasesForTest();
-
-  Element* host = GetElementById("host");
-  ASSERT_TRUE(host);
-  ASSERT_TRUE(host->GetShadowRoot());
-
-  Element* a = GetElementById("a");
-  Element* b = GetElementById("b");
-  Element* c = GetElementById("c");
-  Element* d = GetElementById("d");
-  Element* e = GetElementById("e");
-  ASSERT_TRUE(a);
-  ASSERT_TRUE(b);
-  ASSERT_TRUE(c);
-  ASSERT_TRUE(d);
-  ASSERT_TRUE(e);
-
-  EXPECT_FALSE(a->GetComputedStyle());
-  EXPECT_FALSE(b->GetComputedStyle());
-  EXPECT_FALSE(c->GetComputedStyle());
-  EXPECT_FALSE(d->GetComputedStyle());
-  EXPECT_FALSE(e->GetComputedStyle());
-
-  c->EnsureComputedStyle();
-
-  const ComputedStyle* a_style = a->GetComputedStyle();
-  const ComputedStyle* b_style = b->GetComputedStyle();
-  const ComputedStyle* c_style = c->GetComputedStyle();
-
-  ASSERT_TRUE(a_style);
-  ASSERT_TRUE(b_style);
-  ASSERT_TRUE(c_style);
-  EXPECT_FALSE(d->GetComputedStyle());
-  EXPECT_FALSE(e->GetComputedStyle());
-
-  // Dirty style of #a.
-  a->SetInlineStyleProperty(CSSPropertyID::kZIndex, "42");
-
-  // Note that there is no call to UpdateAllLifecyclePhasesForTest here,
-  // because #a is outside the flat tree, hence that process would anyway not
-  // reach #a.
-
-  // Ensuring the style of some deep descendant must discover that some ancestor
-  // is marked for recalc.
-  e->EnsureComputedStyle();
-  EXPECT_TRUE(a->GetComputedStyle());
-  EXPECT_TRUE(b->GetComputedStyle());
-  EXPECT_TRUE(c->GetComputedStyle());
-  EXPECT_TRUE(d->GetComputedStyle());
-  EXPECT_TRUE(e->GetComputedStyle());
-  EXPECT_NE(a_style, a->GetComputedStyle());
-  EXPECT_NE(b_style, b->GetComputedStyle());
-  EXPECT_NE(c_style, c->GetComputedStyle());
-}
-
 TEST_F(StyleResolverTest, EnsureComputedStyleForExistingScrollMarkerGroup) {
   SetBodyInnerHTML(R"HTML(
       <style>
@@ -1349,6 +1339,36 @@ TEST_F(StyleResolverTest, ComputedValueRootElement) {
   EXPECT_EQ("42px", computed_value->CssText());
 }
 
+TEST_F(StyleResolverTest, ComputedValueFontSizeRelative) {
+  Element* target = GetDocument().documentElement();
+  ASSERT_TRUE(target);
+  target->SetInlineStyleProperty(CSSPropertyID::kFontSize, "30px");
+  UpdateAllLifecyclePhasesForTest();
+  CSSPropertyID property_id = CSSPropertyID::kWidth;
+  const CSSValue* parsed_value = css_test_helpers::ParseLonghand(
+      GetDocument(), GetCSSPropertyWidth(), "2em");
+  ASSERT_TRUE(parsed_value);
+  const CSSValue* computed_value = StyleResolver::ComputeValue(
+      target, CSSPropertyName(property_id), *parsed_value);
+  ASSERT_TRUE(computed_value);
+  EXPECT_EQ("60px", computed_value->CssText());
+}
+
+TEST_F(StyleResolverTest, ComputedValueLineHeight) {
+  Element* target = GetDocument().documentElement();
+  ASSERT_TRUE(target);
+  target->SetInlineStyleProperty(CSSPropertyID::kLineHeight, "50px");
+  UpdateAllLifecyclePhasesForTest();
+  CSSPropertyID property_id = CSSPropertyID::kWidth;
+  const CSSValue* parsed_value = css_test_helpers::ParseLonghand(
+      GetDocument(), GetCSSPropertyWidth(), "2lh");
+  ASSERT_TRUE(parsed_value);
+  const CSSValue* computed_value = StyleResolver::ComputeValue(
+      target, CSSPropertyName(property_id), *parsed_value);
+  ASSERT_TRUE(computed_value);
+  EXPECT_EQ("100px", computed_value->CssText());
+}
+
 namespace {
 
 const CSSValue* ParseCustomProperty(Document& document,
@@ -1377,7 +1397,7 @@ TEST_F(StyleResolverTest, ComputeValueCustomProperty) {
 
   AtomicString custom_property_name("--color");
   const CSSValue* parsed_value = ParseCustomProperty(
-      GetDocument(), CustomProperty(custom_property_name, GetDocument()),
+      GetDocument(), CustomProperty(&custom_property_name, GetDocument()),
       "blue");
   ASSERT_TRUE(parsed_value);
   const CSSValue* computed_value = StyleResolver::ComputeValue(
@@ -2791,7 +2811,7 @@ TEST_F(StyleResolverTest, BodyPropagationLayoutImageContain) {
   UpdateAllLifecyclePhasesForTest();
 
   EXPECT_EQ(Color::kTransparent,
-            GetDocument().GetLayoutView()->StyleRef().VisitedDependentColor(
+            GetDocument().GetLayoutView()->Style().VisitedDependentColor(
                 GetCSSPropertyBackgroundColor()));
 }
 
@@ -2817,7 +2837,7 @@ TEST_F(StyleResolverTest, IsInertWithAttributeAndDialog) {
   EXPECT_FALSE(html->GetComputedStyle()->IsInert());
   EXPECT_FALSE(body->GetComputedStyle()->IsInert());
   EXPECT_TRUE(div->GetComputedStyle()->IsInert());
-  EXPECT_TRUE(div_text->GetLayoutObject()->StyleRef().IsInert());
+  EXPECT_TRUE(div_text->GetLayoutObject()->Style().IsInert());
   EXPECT_EQ(dialog->GetComputedStyle(), nullptr);
   EXPECT_EQ(dialog_text->GetLayoutObject(), nullptr);
 
@@ -2827,7 +2847,7 @@ TEST_F(StyleResolverTest, IsInertWithAttributeAndDialog) {
   EXPECT_FALSE(html->GetComputedStyle()->IsInert());
   EXPECT_FALSE(body->GetComputedStyle()->IsInert());
   EXPECT_FALSE(div->GetComputedStyle()->IsInert());
-  EXPECT_FALSE(div_text->GetLayoutObject()->StyleRef().IsInert());
+  EXPECT_FALSE(div_text->GetLayoutObject()->Style().IsInert());
   EXPECT_EQ(dialog->GetComputedStyle(), nullptr);
   EXPECT_EQ(dialog_text->GetLayoutObject(), nullptr);
 
@@ -2837,9 +2857,9 @@ TEST_F(StyleResolverTest, IsInertWithAttributeAndDialog) {
   EXPECT_TRUE(html->GetComputedStyle()->IsInert());
   EXPECT_TRUE(body->GetComputedStyle()->IsInert());
   EXPECT_TRUE(div->GetComputedStyle()->IsInert());
-  EXPECT_TRUE(div_text->GetLayoutObject()->StyleRef().IsInert());
+  EXPECT_TRUE(div_text->GetLayoutObject()->Style().IsInert());
   EXPECT_FALSE(dialog->GetComputedStyle()->IsInert());
-  EXPECT_FALSE(dialog_text->GetLayoutObject()->StyleRef().IsInert());
+  EXPECT_FALSE(dialog_text->GetLayoutObject()->Style().IsInert());
 
   div->SetBooleanAttribute(html_names::kInertAttr, true);
   UpdateAllLifecyclePhasesForTest();
@@ -2847,9 +2867,9 @@ TEST_F(StyleResolverTest, IsInertWithAttributeAndDialog) {
   EXPECT_TRUE(html->GetComputedStyle()->IsInert());
   EXPECT_TRUE(body->GetComputedStyle()->IsInert());
   EXPECT_TRUE(div->GetComputedStyle()->IsInert());
-  EXPECT_TRUE(div_text->GetLayoutObject()->StyleRef().IsInert());
+  EXPECT_TRUE(div_text->GetLayoutObject()->Style().IsInert());
   EXPECT_FALSE(dialog->GetComputedStyle()->IsInert());
-  EXPECT_FALSE(dialog_text->GetLayoutObject()->StyleRef().IsInert());
+  EXPECT_FALSE(dialog_text->GetLayoutObject()->Style().IsInert());
 
   dialog->close();
   UpdateAllLifecyclePhasesForTest();
@@ -2857,7 +2877,7 @@ TEST_F(StyleResolverTest, IsInertWithAttributeAndDialog) {
   EXPECT_FALSE(html->GetComputedStyle()->IsInert());
   EXPECT_FALSE(body->GetComputedStyle()->IsInert());
   EXPECT_TRUE(div->GetComputedStyle()->IsInert());
-  EXPECT_TRUE(div_text->GetLayoutObject()->StyleRef().IsInert());
+  EXPECT_TRUE(div_text->GetLayoutObject()->Style().IsInert());
   EXPECT_EQ(dialog->GetComputedStyle(), nullptr);
   EXPECT_EQ(dialog_text->GetLayoutObject(), nullptr);
 }
@@ -2908,7 +2928,7 @@ TEST_F(StyleResolverTest, IsInertWithDialogs) {
     EXPECT_TRUE(html->GetComputedStyle()->IsInert());
     EXPECT_TRUE(body->GetComputedStyle()->IsInert());
     EXPECT_FALSE(dialog1->GetComputedStyle()->IsInert());
-    EXPECT_FALSE(dialog1_text->GetLayoutObject()->StyleRef().IsInert());
+    EXPECT_FALSE(dialog1_text->GetLayoutObject()->Style().IsInert());
     EXPECT_EQ(dialog2->GetComputedStyle(), nullptr);
     EXPECT_EQ(dialog2_text->GetLayoutObject(), nullptr);
     EXPECT_TRUE(div->GetComputedStyle()->IsInert());
@@ -2924,9 +2944,9 @@ TEST_F(StyleResolverTest, IsInertWithDialogs) {
     EXPECT_TRUE(html->GetComputedStyle()->IsInert());
     EXPECT_TRUE(body->GetComputedStyle()->IsInert());
     EXPECT_TRUE(dialog1->GetComputedStyle()->IsInert());
-    EXPECT_TRUE(dialog1_text->GetLayoutObject()->StyleRef().IsInert());
+    EXPECT_TRUE(dialog1_text->GetLayoutObject()->Style().IsInert());
     EXPECT_FALSE(dialog2->GetComputedStyle()->IsInert());
-    EXPECT_FALSE(dialog2_text->GetLayoutObject()->StyleRef().IsInert());
+    EXPECT_FALSE(dialog2_text->GetLayoutObject()->Style().IsInert());
     EXPECT_TRUE(div->GetComputedStyle()->IsInert());
     EXPECT_EQ(dialog3->GetComputedStyle(), nullptr);
     EXPECT_EQ(dialog3_text->GetLayoutObject(), nullptr);
@@ -2940,12 +2960,12 @@ TEST_F(StyleResolverTest, IsInertWithDialogs) {
     EXPECT_TRUE(html->GetComputedStyle()->IsInert());
     EXPECT_TRUE(body->GetComputedStyle()->IsInert());
     EXPECT_TRUE(dialog1->GetComputedStyle()->IsInert());
-    EXPECT_TRUE(dialog1_text->GetLayoutObject()->StyleRef().IsInert());
+    EXPECT_TRUE(dialog1_text->GetLayoutObject()->Style().IsInert());
     EXPECT_TRUE(dialog2->GetComputedStyle()->IsInert());
-    EXPECT_TRUE(dialog2_text->GetLayoutObject()->StyleRef().IsInert());
+    EXPECT_TRUE(dialog2_text->GetLayoutObject()->Style().IsInert());
     EXPECT_TRUE(div->GetComputedStyle()->IsInert());
     EXPECT_FALSE(dialog3->GetComputedStyle()->IsInert());
-    EXPECT_FALSE(dialog3_text->GetLayoutObject()->StyleRef().IsInert());
+    EXPECT_FALSE(dialog3_text->GetLayoutObject()->Style().IsInert());
   };
   ExpectState3();
 
@@ -3002,11 +3022,11 @@ TEST_F(StyleResolverTest, IsInertWithFullscreen) {
     EXPECT_FALSE(html->GetComputedStyle()->IsInert());
     EXPECT_FALSE(body->GetComputedStyle()->IsInert());
     EXPECT_FALSE(div->GetComputedStyle()->IsInert());
-    EXPECT_FALSE(div_text->GetLayoutObject()->StyleRef().IsInert());
+    EXPECT_FALSE(div_text->GetLayoutObject()->Style().IsInert());
     EXPECT_FALSE(span->GetComputedStyle()->IsInert());
-    EXPECT_FALSE(span_text->GetLayoutObject()->StyleRef().IsInert());
+    EXPECT_FALSE(span_text->GetLayoutObject()->Style().IsInert());
     EXPECT_FALSE(p->GetComputedStyle()->IsInert());
-    EXPECT_FALSE(p_text->GetLayoutObject()->StyleRef().IsInert());
+    EXPECT_FALSE(p_text->GetLayoutObject()->Style().IsInert());
   };
   ExpectState0();
 
@@ -3016,11 +3036,11 @@ TEST_F(StyleResolverTest, IsInertWithFullscreen) {
   EXPECT_TRUE(html->GetComputedStyle()->IsInert());
   EXPECT_TRUE(body->GetComputedStyle()->IsInert());
   EXPECT_FALSE(div->GetComputedStyle()->IsInert());
-  EXPECT_FALSE(div_text->GetLayoutObject()->StyleRef().IsInert());
+  EXPECT_FALSE(div_text->GetLayoutObject()->Style().IsInert());
   EXPECT_FALSE(span->GetComputedStyle()->IsInert());
-  EXPECT_FALSE(span_text->GetLayoutObject()->StyleRef().IsInert());
+  EXPECT_FALSE(span_text->GetLayoutObject()->Style().IsInert());
   EXPECT_TRUE(p->GetComputedStyle()->IsInert());
-  EXPECT_TRUE(p_text->GetLayoutObject()->StyleRef().IsInert());
+  EXPECT_TRUE(p_text->GetLayoutObject()->Style().IsInert());
 
   EnterFullscreen(document, *span);
   UpdateAllLifecyclePhasesForTest();
@@ -3028,11 +3048,11 @@ TEST_F(StyleResolverTest, IsInertWithFullscreen) {
   EXPECT_TRUE(html->GetComputedStyle()->IsInert());
   EXPECT_TRUE(body->GetComputedStyle()->IsInert());
   EXPECT_TRUE(div->GetComputedStyle()->IsInert());
-  EXPECT_TRUE(div_text->GetLayoutObject()->StyleRef().IsInert());
+  EXPECT_TRUE(div_text->GetLayoutObject()->Style().IsInert());
   EXPECT_FALSE(span->GetComputedStyle()->IsInert());
-  EXPECT_FALSE(span_text->GetLayoutObject()->StyleRef().IsInert());
+  EXPECT_FALSE(span_text->GetLayoutObject()->Style().IsInert());
   EXPECT_TRUE(p->GetComputedStyle()->IsInert());
-  EXPECT_TRUE(p_text->GetLayoutObject()->StyleRef().IsInert());
+  EXPECT_TRUE(p_text->GetLayoutObject()->Style().IsInert());
 
   EnterFullscreen(document, *p);
   UpdateAllLifecyclePhasesForTest();
@@ -3040,11 +3060,11 @@ TEST_F(StyleResolverTest, IsInertWithFullscreen) {
   EXPECT_TRUE(html->GetComputedStyle()->IsInert());
   EXPECT_TRUE(body->GetComputedStyle()->IsInert());
   EXPECT_TRUE(div->GetComputedStyle()->IsInert());
-  EXPECT_TRUE(div_text->GetLayoutObject()->StyleRef().IsInert());
+  EXPECT_TRUE(div_text->GetLayoutObject()->Style().IsInert());
   EXPECT_TRUE(span->GetComputedStyle()->IsInert());
-  EXPECT_TRUE(span_text->GetLayoutObject()->StyleRef().IsInert());
+  EXPECT_TRUE(span_text->GetLayoutObject()->Style().IsInert());
   EXPECT_FALSE(p->GetComputedStyle()->IsInert());
-  EXPECT_FALSE(p_text->GetLayoutObject()->StyleRef().IsInert());
+  EXPECT_FALSE(p_text->GetLayoutObject()->Style().IsInert());
 
   ExitFullscreen(document);
   UpdateAllLifecyclePhasesForTest();
@@ -3066,7 +3086,7 @@ TEST_F(StyleResolverTest, IsInertWithFrameAndFullscreen) {
   EXPECT_FALSE(html->GetComputedStyle()->IsInert());
   EXPECT_FALSE(body->GetComputedStyle()->IsInert());
   EXPECT_FALSE(div->GetComputedStyle()->IsInert());
-  EXPECT_FALSE(div_text->GetLayoutObject()->StyleRef().IsInert());
+  EXPECT_FALSE(div_text->GetLayoutObject()->Style().IsInert());
 
   EnterFullscreen(document, *div);
   UpdateAllLifecyclePhasesForTest();
@@ -3074,7 +3094,7 @@ TEST_F(StyleResolverTest, IsInertWithFrameAndFullscreen) {
   EXPECT_TRUE(html->GetComputedStyle()->IsInert());
   EXPECT_TRUE(body->GetComputedStyle()->IsInert());
   EXPECT_FALSE(div->GetComputedStyle()->IsInert());
-  EXPECT_FALSE(div_text->GetLayoutObject()->StyleRef().IsInert());
+  EXPECT_FALSE(div_text->GetLayoutObject()->Style().IsInert());
 
   EnterFullscreen(document, *body);
   UpdateAllLifecyclePhasesForTest();
@@ -3082,7 +3102,7 @@ TEST_F(StyleResolverTest, IsInertWithFrameAndFullscreen) {
   EXPECT_TRUE(html->GetComputedStyle()->IsInert());
   EXPECT_FALSE(body->GetComputedStyle()->IsInert());
   EXPECT_FALSE(div->GetComputedStyle()->IsInert());
-  EXPECT_FALSE(div_text->GetLayoutObject()->StyleRef().IsInert());
+  EXPECT_FALSE(div_text->GetLayoutObject()->Style().IsInert());
 
   EnterFullscreen(document, *html);
   UpdateAllLifecyclePhasesForTest();
@@ -3090,7 +3110,7 @@ TEST_F(StyleResolverTest, IsInertWithFrameAndFullscreen) {
   EXPECT_FALSE(html->GetComputedStyle()->IsInert());
   EXPECT_FALSE(body->GetComputedStyle()->IsInert());
   EXPECT_FALSE(div->GetComputedStyle()->IsInert());
-  EXPECT_FALSE(div_text->GetLayoutObject()->StyleRef().IsInert());
+  EXPECT_FALSE(div_text->GetLayoutObject()->Style().IsInert());
   ExitFullscreen(document);
 }
 
@@ -4117,7 +4137,16 @@ TEST_F(StyleResolverTest, TryTacticsSet_Flip) {
   ASSERT_TRUE(try_tactics_set);
 
   AnchorEvaluatorImpl anchor_evaluator(
-      {WritingMode::kHorizontalTb, TextDirection::kLtr});
+      *div->GetLayoutBox(),
+      /*anchor_map=*/nullptr,
+      /*implicit_anchor=*/nullptr,
+      /*containing_block=*/nullptr,
+      /*actual_containing_block=*/nullptr,
+      /*grid_layout_data=*/nullptr,
+      {WritingMode::kHorizontalTb, TextDirection::kLtr},
+      /*container_size=*/LogicalSize(),
+      /*container_rect=*/LogicalRect(),
+      /*scroll_rect=*/std::nullopt);
   const ComputedStyle* try_style = StyleForId(
       "div", StyleRecalcContext{.anchor_evaluator = &anchor_evaluator,
                                 .try_set = try_set,
@@ -4210,13 +4239,19 @@ TEST_F(StyleResolverTestCQ, ContainerUnitContext) {
         width: 200px;
         height: 200px;
       }
+      #between {
+        width: 150px;
+        height: 150px;
+      }
       #div {
         width: 100px;
         height: 100px;
       }
     </style>
     <div id="container">
-      <div id="div"></div>
+      <div id="between">
+        <div id="div"></div>
+      </div>
     </div>
   )HTML");
 
@@ -4789,24 +4824,140 @@ TEST_F(StyleResolverTest, FindContainerForElement_LayoutSiblings) {
   Element* button =
       scroller->GetPseudoElement(kPseudoIdScrollButtonInlineStart);
 
-  EXPECT_EQ(StyleResolver::FindContainerForElement(group, size_selector,
-                                                   &GetDocument()),
+  EXPECT_EQ(StyleResolver::FindContainerForElement(group, size_selector),
             outer);
-  EXPECT_EQ(StyleResolver::FindContainerForElement(group, scroll_state_selector,
-                                                   &GetDocument()),
+  EXPECT_EQ(
+      StyleResolver::FindContainerForElement(group, scroll_state_selector),
+      scroller);
+  EXPECT_EQ(StyleResolver::FindContainerForElement(group, anchored_selector),
             scroller);
-  EXPECT_EQ(StyleResolver::FindContainerForElement(group, anchored_selector,
-                                                   &GetDocument()),
-            scroller);
-  EXPECT_EQ(StyleResolver::FindContainerForElement(button, size_selector,
-                                                   &GetDocument()),
+  EXPECT_EQ(StyleResolver::FindContainerForElement(button, size_selector),
             outer);
-  EXPECT_EQ(StyleResolver::FindContainerForElement(
-                button, scroll_state_selector, &GetDocument()),
+  EXPECT_EQ(
+      StyleResolver::FindContainerForElement(button, scroll_state_selector),
+      scroller);
+  EXPECT_EQ(StyleResolver::FindContainerForElement(button, anchored_selector),
             scroller);
-  EXPECT_EQ(StyleResolver::FindContainerForElement(button, anchored_selector,
-                                                   &GetDocument()),
-            scroller);
+}
+
+TEST_F(StyleResolverTest, FindContainerForElement_SkeletonPseudo) {
+  ScopedDeclarativeSkeletonsForTest enable(true);
+
+  Element* root = GetDocument().documentElement();
+  root->SetInlineStyleProperty(CSSPropertyID::kContainerType, "inline-size");
+  root->SetInlineStyleProperty(CSSPropertyID::kContainerName, "--root");
+  UpdateAllLifecyclePhasesForTest();
+
+  ContainerSelector size_selector(g_null_atom, kPhysicalAxesNone,
+                                  kLogicalAxesInline,
+                                  /*scroll_state=*/false,
+                                  /*anchored_query=*/false);
+  ContainerSelector named_selector(AtomicString("--root"), kPhysicalAxesNone,
+                                   kLogicalAxesNone,
+                                   /*scroll_state=*/false,
+                                   /*anchored_query=*/false);
+
+  PseudoElement& skeleton =
+      GetDocument().documentElement()->EnsureSkeletonPseudo();
+
+  EXPECT_EQ(StyleResolver::FindContainerForElement(&skeleton, size_selector),
+            nullptr);
+  EXPECT_EQ(StyleResolver::FindContainerForElement(&skeleton, named_selector),
+            nullptr);
+}
+
+TEST_F(StyleResolverTest, IncrementalStyleResetsColorIsDerivedFromParent) {
+  SetBodyInnerHTML(R"HTML(
+    <div id="target"
+         style="color: color-mix(in srgb, currentColor 50%, red)"></div>
+  )HTML");
+  Element* target = GetElementById("target");
+  EXPECT_TRUE(target->GetComputedStyle()->ColorIsDerivedFromParent());
+
+  // Incremental style starts from a copy of the old style.
+  target->style()->setProperty(GetDocument().GetExecutionContext(), "color",
+                               "blue", "", ASSERT_NO_EXCEPTION);
+  EXPECT_EQ(kIndependentStyleChange, target->GetStyleChangeType());
+  UpdateAllLifecyclePhasesForTest();
+  EXPECT_FALSE(target->GetComputedStyle()->ColorIsDerivedFromParent());
+}
+
+TEST_F(StyleResolverTest, PreserveParentColorSkipsFastPath) {
+  ColorSchemeHelper color_scheme_helper(GetDocument());
+  color_scheme_helper.SetInForcedColors(GetDocument(), true);
+  SetBodyInnerHTML(R"HTML(
+    <style>
+      #parent.on { color: rgb(200, 0, 0); }
+      #preserve { forced-color-adjust: preserve-parent-color; }
+    </style>
+    <div id="parent"><div id="preserve"></div></div>
+  )HTML");
+  auto color_of = [&](const char* id) {
+    return GetElementById(id)->GetComputedStyle()->VisitedDependentColor(
+        GetCSSPropertyColor());
+  };
+  GetElementById("parent")->classList().Add(AtomicString("on"));
+  UpdateAllLifecyclePhasesForTest();
+  // The parent's used color is forced, not its computed rgb(200, 0, 0).
+  EXPECT_EQ(color_of("parent"), color_of("preserve"));
+}
+
+TEST_F(StyleResolverTest, PrecomputeHover) {
+  ScopedCompositeHoverStyleForTest precompute(true);
+
+  SetBodyInnerHTML(R"HTML(
+    <style>
+      #t1 { color: red; }
+      #t1:hover { color: green; }
+      #t2 { color: red; }
+      #t2:hover { color: green; }
+      #t2:hover { background-color: lime; }
+      #t3 { color: green !important; }
+      #t3:hover { color: red; }
+      #t4 { color: red; }
+      :hover #t4:hover { color: green; }
+    </style>
+    <div id="t1"></div>
+    <div id="t2"></div>
+    <div id="t3"></div>
+    <div id="t4"></div>
+  )HTML");
+
+  UpdateAllLifecyclePhasesForTest();
+
+  const ComputedStyle* t1_style = GetElementById("t1")->GetComputedStyle();
+  const ComputedStyle* t2_style = GetElementById("t2")->GetComputedStyle();
+  const ComputedStyle* t3_style = GetElementById("t3")->GetComputedStyle();
+  const ComputedStyle* t4_style = GetElementById("t4")->GetComputedStyle();
+  const ComputedStyle* t1_hover =
+      t1_style->GetCachedPseudoElementStyle(kPseudoIdPrecomputedHover);
+  const ComputedStyle* t2_hover =
+      t2_style->GetCachedPseudoElementStyle(kPseudoIdPrecomputedHover);
+  const ComputedStyle* t3_hover =
+      t3_style->GetCachedPseudoElementStyle(kPseudoIdPrecomputedHover);
+  const ComputedStyle* t4_hover =
+      t4_style->GetCachedPseudoElementStyle(kPseudoIdPrecomputedHover);
+
+  EXPECT_EQ(t1_style->VisitedDependentColor(GetCSSPropertyColor()),
+            Color(255, 0, 0));
+
+  ASSERT_TRUE(t1_hover);
+  EXPECT_EQ(t1_hover->VisitedDependentColor(GetCSSPropertyColor()),
+            Color(0, 128, 0));
+
+  EXPECT_EQ(t2_style->VisitedDependentColor(GetCSSPropertyColor()),
+            Color(255, 0, 0));
+  EXPECT_FALSE(t2_hover);
+
+  EXPECT_EQ(t3_style->VisitedDependentColor(GetCSSPropertyColor()),
+            Color(0, 128, 0));
+  ASSERT_TRUE(t3_hover);
+  EXPECT_EQ(t3_hover->VisitedDependentColor(GetCSSPropertyColor()),
+            Color(0, 128, 0));
+
+  EXPECT_EQ(t4_style->VisitedDependentColor(GetCSSPropertyColor()),
+            Color(255, 0, 0));
+  EXPECT_FALSE(t4_hover);
 }
 
 }  // namespace blink

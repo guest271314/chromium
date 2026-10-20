@@ -6,9 +6,11 @@
 
 #include <stddef.h>
 
+#include <iterator>
 #include <memory>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "ash/constants/ash_features.h"
 #include "ash/constants/ash_switches.h"
@@ -42,8 +44,6 @@
 #include "chrome/browser/ash/multidevice_setup/multidevice_setup_service_factory.h"
 #include "chrome/browser/ash/policy/enrollment/enrollment_requisition_manager.h"
 #include "chrome/browser/ash/system/input_device_settings.h"
-#include "chrome/browser/browser_process.h"
-#include "chrome/browser/browser_process_platform_part.h"
 #include "chrome/browser/extensions/tab_helper.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_manager.h"
@@ -54,7 +54,6 @@
 #include "chrome/browser/ui/webui/ash/login/ai_intro_screen_handler.h"
 #include "chrome/browser/ui/webui/ash/login/app_downloading_screen_handler.h"
 #include "chrome/browser/ui/webui/ash/login/app_launch_splash_screen_handler.h"
-#include "chrome/browser/ui/webui/ash/login/arc_vm_data_migration_screen_handler.h"
 #include "chrome/browser/ui/webui/ash/login/auto_enrollment_check_screen_handler.h"
 #include "chrome/browser/ui/webui/ash/login/base_screen_handler.h"
 #include "chrome/browser/ui/webui/ash/login/categories_selection_screen_handler.h"
@@ -142,14 +141,11 @@
 #include "chrome/browser/ui/webui/metrics_handler.h"
 #include "chrome/browser/ui/webui/theme_source.h"
 #include "chrome/common/chrome_constants.h"
-#include "chrome/common/chrome_features.h"
-#include "chrome/common/chrome_switches.h"
 #include "chrome/grit/browser_resources.h"
 #include "chrome/grit/chrome_unscaled_resources.h"
 #include "chrome/grit/component_extension_resources.h"
 #include "chrome/grit/gaia_auth_host_resources.h"
 #include "chrome/grit/gaia_auth_host_resources_map.h"
-#include "chrome/grit/generated_resources.h"
 #include "chrome/grit/oobe_resources.h"
 #include "chrome/grit/oobe_resources_map.h"
 #include "chromeos/ash/components/browser_context_helper/browser_context_types.h"
@@ -158,6 +154,7 @@
 #include "chromeos/ash/services/cellular_setup/public/mojom/esim_manager.mojom.h"
 #include "chromeos/ash/services/multidevice_setup/multidevice_setup_service.h"
 #include "chromeos/services/network_config/public/mojom/cros_network_config.mojom.h"
+#include "components/application_locale_storage/application_locale_storage.h"
 #include "components/policy/core/common/cloud/cloud_policy_constants.h"
 #include "components/prefs/pref_service.h"
 #include "content/public/browser/browser_context.h"
@@ -166,10 +163,12 @@
 #include "content/public/common/content_features.h"
 #include "content/public/common/content_switches.h"
 #include "remoting/host/chromeos/features.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "services/network/public/mojom/content_security_policy.mojom.h"
 #include "ui/accessibility/accessibility_features.h"
 #include "ui/base/resource/resource_bundle.h"
 #include "ui/base/ui_base_features.h"
+#include "ui/base/webui/resource_path.h"
 #include "ui/base/webui/web_ui_util.h"
 #include "ui/chromeos/resources/grit/ui_chromeos_resources.h"
 #include "ui/display/display.h"
@@ -287,7 +286,8 @@ void AddTestAPIResources(content::WebUIDataSource* source) {
 }
 
 // Creates a WebUIDataSource for chrome://oobe
-void CreateAndAddOobeUIDataSource(Profile* profile,
+void CreateAndAddOobeUIDataSource(const PrefService& local_state,
+                                  Profile* profile,
                                   const base::DictValue& localized_strings,
                                   const std::string& display_type) {
   base::CommandLine* command_line = base::CommandLine::ForCurrentProcess();
@@ -298,7 +298,7 @@ void CreateAndAddOobeUIDataSource(Profile* profile,
   source->AddLocalizedStrings(localized_strings);
   source->UseStringsJs();
 
-  OobeUI::AddOobeComponents(source);
+  OobeUI::AddOobeComponents(local_state, source);
 
   source->SetDefaultResource(IDR_OOBE_OOBE_HTML);
 
@@ -318,16 +318,11 @@ void CreateAndAddOobeUIDataSource(Profile* profile,
   source->AddBoolean("isOobeAiIntroEnabled", features::IsOobeAiIntroEnabled());
   source->AddBoolean("isJellyEnabled", features::IsOobeJellyEnabled());
   source->AddBoolean("isOobeJellyEnabled", features::IsOobeJellyEnabled());
-  source->AddBoolean("isOobeJellyModalEnabled",
-                     features::IsOobeJellyModalEnabled());
   source->AddBoolean("isBootAnimationEnabled",
                      features::IsBootAnimationEnabled());
   source->AddBoolean("isChoobeEnabled", features::IsOobeChoobeEnabled());
   source->AddBoolean("isSoftwareUpdateEnabled",
                      features::IsOobeSoftwareUpdateEnabled());
-  source->AddBoolean(
-      "isArcVmDataMigrationEnabled",
-      base::FeatureList::IsEnabled(arc::kEnableArcVmDataMigration));
 
   source->AddBoolean("isTouchpadScrollEnabled",
                      features::IsOobeTouchpadScrollEnabled());
@@ -385,17 +380,18 @@ void CreateAndAddOobeUIDataSource(Profile* profile,
       network::mojom::CSPDirectiveName::ObjectSrc, "object-src chrome:;");
 }
 
-std::string GetDisplayType(const GURL& url) {
-  std::string path = url.GetPath().size() ? url.GetPath().substr(1) : "";
+std::string_view GetDisplayType(const GURL& url) {
+  std::string_view path = url.path().size() ? url.path().substr(1) : "";
 
   constexpr auto kKnownDisplayTypes = base::MakeFixedFlatSet<std::string_view>(
       {OobeUI::kAppLaunchSplashDisplay, OobeUI::kGaiaSigninDisplay,
        OobeUI::kOobeDisplay, OobeUI::kOobeTestLoader});
 
-  if (!kKnownDisplayTypes.contains(path)) {
+  auto it = kKnownDisplayTypes.find(path);
+  if (it == kKnownDisplayTypes.end()) {
     NOTREACHED() << "Unknown display type '" << path << "'. Setting default.";
   }
-  return path;
+  return *it;
 }
 
 }  // namespace
@@ -408,6 +404,21 @@ struct DisplayScaleFactor {
 const DisplayScaleFactor k4KDisplay = {3840, 1.5f},
                          kMediumDisplay = {1440, 4.f / 3};
 
+OobeUIConfig::OobeUIConfig(
+    PrefService* local_state,
+    const ApplicationLocaleStorage* application_locale_storage,
+    policy::BrowserPolicyConnectorAsh* browser_policy_connector_ash,
+    scoped_refptr<network::SharedURLLoaderFactory> shared_url_loader_factory)
+    : WebUIConfig(content::kChromeUIScheme, ash::kChromeUIOobeHost),
+      local_state_(CHECK_DEREF(local_state)),
+      application_locale_storage_(CHECK_DEREF(application_locale_storage)),
+      browser_policy_connector_ash_(CHECK_DEREF(browser_policy_connector_ash)),
+      shared_url_loader_factory_(std::move(shared_url_loader_factory)) {
+  CHECK(shared_url_loader_factory_);
+}
+
+OobeUIConfig::~OobeUIConfig() = default;
+
 bool OobeUIConfig::IsWebUIEnabled(content::BrowserContext* browser_context) {
   base::CommandLine* command_line = base::CommandLine::ForCurrentProcess();
   bool is_running_test = command_line->HasSwitch(ash::switches::kTestName) ||
@@ -416,14 +427,18 @@ bool OobeUIConfig::IsWebUIEnabled(content::BrowserContext* browser_context) {
   return IsSigninBrowserContext(browser_context) || is_running_test;
 }
 
-void OobeUI::ConfigureOobeDisplay() {
-  // TODO(crbug.com/489929275): Avoid using g_browser_process.
-  PrefService* local_state = g_browser_process->local_state();
-  policy::BrowserPolicyConnectorAsh* browser_policy_connector_ash =
-      g_browser_process->platform_part()->browser_policy_connector_ash();
-  scoped_refptr<network::SharedURLLoaderFactory> shared_url_loader_factory =
-      g_browser_process->shared_url_loader_factory();
+std::unique_ptr<content::WebUIController> OobeUIConfig::CreateWebUIController(
+    content::WebUI* web_ui,
+    const GURL& url) {
+  return std::make_unique<OobeUI>(&local_state_.get(),
+                                  &application_locale_storage_.get(),
+                                  &browser_policy_connector_ash_.get(),
+                                  shared_url_loader_factory_, web_ui, url);
+}
 
+void OobeUI::ConfigureOobeDisplay(
+    policy::BrowserPolicyConnectorAsh* browser_policy_connector_ash,
+    scoped_refptr<network::SharedURLLoaderFactory> shared_url_loader_factory) {
   network_state_informer_ = new NetworkStateInformer();
   network_state_informer_->Init();
 
@@ -432,7 +447,8 @@ void OobeUI::ConfigureOobeDisplay() {
   AddScreenHandler(std::make_unique<UpdateScreenHandler>());
 
   if (display_type_ == kOobeDisplay) {
-    AddScreenHandler(std::make_unique<WelcomeScreenHandler>());
+    AddScreenHandler(std::make_unique<WelcomeScreenHandler>(
+        &local_state_.get(), &application_locale_storage_.get()));
 
     AddScreenHandler(std::make_unique<DemoPreferencesScreenHandler>());
   }
@@ -456,10 +472,11 @@ void OobeUI::ConfigureOobeDisplay() {
   AddScreenHandler(std::make_unique<ErrorScreenHandler>());
 
   error_screen_ = std::make_unique<ErrorScreen>(
-      local_state, GetView<ErrorScreenHandler>()->AsWeakPtr());
+      &local_state_.get(), GetView<ErrorScreenHandler>()->AsWeakPtr());
   ErrorScreen* error_screen = error_screen_.get();
 
-  AddScreenHandler(std::make_unique<EnrollmentScreenHandler>());
+  AddScreenHandler(std::make_unique<EnrollmentScreenHandler>(
+      &local_state_.get(), &application_locale_storage_.get()));
 
   AddScreenHandler(std::make_unique<LocaleSwitchScreenHandler>());
 
@@ -467,9 +484,6 @@ void OobeUI::ConfigureOobeDisplay() {
 
   AddScreenHandler(std::make_unique<SyncConsentScreenHandler>());
 
-  if (base::FeatureList::IsEnabled(arc::kEnableArcVmDataMigration)) {
-    AddScreenHandler(std::make_unique<ArcVmDataMigrationScreenHandler>());
-  }
 
   AddScreenHandler(std::make_unique<RecommendAppsScreenHandler>());
 
@@ -501,7 +515,8 @@ void OobeUI::ConfigureOobeDisplay() {
   AddScreenHandler(std::make_unique<MarketingOptInScreenHandler>());
 
   AddScreenHandler(std::make_unique<GaiaScreenHandler>(
-      local_state, browser_policy_connector_ash, shared_url_loader_factory,
+      &local_state_.get(), &application_locale_storage_.get(),
+      browser_policy_connector_ash, std::move(shared_url_loader_factory),
       network_state_informer_, error_screen));
 
   AddScreenHandler(std::make_unique<OnlineAuthenticationScreenHandler>());
@@ -625,8 +640,7 @@ void OobeUI::ConfigureOobeDisplay() {
     UpScaleOobe();
   }
 
-  if (policy::EnrollmentRequisitionManager::IsMeetDevice(
-          CHECK_DEREF(local_state))) {
+  if (policy::EnrollmentRequisitionManager::IsMeetDevice(local_state_.get())) {
     oobe_display_chooser_ = std::make_unique<OobeDisplayChooser>(
         ash::Shell::Get()->cros_display_config());
   }
@@ -634,10 +648,8 @@ void OobeUI::ConfigureOobeDisplay() {
 
 bool OobeUI::ShouldUpScaleOobe() {
   const int64_t display_id = display::Screen::Get()->GetPrimaryDisplay().id();
-  // TODO(crbug.com/489929275): Avoid using g_browser_process.
   return upscaled_display_id_ != display_id && switches::ShouldScaleOobe() &&
-         policy::EnrollmentRequisitionManager::IsMeetDevice(
-             CHECK_DEREF(g_browser_process->local_state()));
+         policy::EnrollmentRequisitionManager::IsMeetDevice(local_state_.get());
 }
 
 void OobeUI::UpScaleOobe() {
@@ -704,7 +716,7 @@ void OobeUI::BindInterface(
     mojo::PendingReceiver<auth::mojom::AuthFactorConfig> receiver) {
   auth::BindToAuthFactorConfig(std::move(receiver),
                                quick_unlock::QuickUnlockFactory::GetDelegate(),
-                               g_browser_process->local_state());
+                               &local_state_.get());
 }
 
 void OobeUI::BindInterface(
@@ -713,33 +725,41 @@ void OobeUI::BindInterface(
   CHECK(pin_backend);
   auth::BindToPinFactorEditor(std::move(receiver),
                               quick_unlock::QuickUnlockFactory::GetDelegate(),
-                              g_browser_process->local_state(), *pin_backend);
+                              &local_state_.get(), *pin_backend);
 }
 
 void OobeUI::BindInterface(
     mojo::PendingReceiver<auth::mojom::PasswordFactorEditor> receiver) {
   auth::BindToPasswordFactorEditor(
       std::move(receiver), quick_unlock::QuickUnlockFactory::GetDelegate(),
-      g_browser_process->local_state());
+      &local_state_.get());
 }
 
-OobeUI::OobeUI(content::WebUI* web_ui, const GURL& url)
-    : ui::MojoWebUIController(web_ui, true /* enable_chrome_send */) {
+OobeUI::OobeUI(
+    PrefService* local_state,
+    const ApplicationLocaleStorage* application_locale_storage,
+    policy::BrowserPolicyConnectorAsh* browser_policy_connector_ash,
+    scoped_refptr<network::SharedURLLoaderFactory> shared_url_loader_factory,
+    content::WebUI* web_ui,
+    const GURL& url)
+    : ui::MojoWebUIController(web_ui, true /* enable_chrome_send */),
+      local_state_(CHECK_DEREF(local_state)),
+      application_locale_storage_(CHECK_DEREF(application_locale_storage)) {
+  CHECK(browser_policy_connector_ash);
+  CHECK(shared_url_loader_factory);
   LOG(WARNING) << "OobeUI created";
   display_type_ = GetDisplayType(url);
 
-  // TODO(crbug.com/489929275): Avoid using g_browser_process.
-  policy::BrowserPolicyConnectorAsh* browser_policy_connector_ash =
-      g_browser_process->platform_part()->browser_policy_connector_ash();
-
-  auto core_oobe_handler = std::make_unique<CoreOobeHandler>();
+  auto core_oobe_handler =
+      std::make_unique<CoreOobeHandler>(&local_state_.get());
   core_handler_ = core_oobe_handler.get();
-  core_oobe_ =
-      std::make_unique<CoreOobe>(browser_policy_connector_ash, display_type_,
-                                 core_oobe_handler->AsWeakPtr());
+  core_oobe_ = std::make_unique<CoreOobe>(
+      local_state_.get(), browser_policy_connector_ash, display_type_,
+      core_oobe_handler->AsWeakPtr());
   web_ui->AddMessageHandler(std::move(core_oobe_handler));
 
-  ConfigureOobeDisplay();
+  ConfigureOobeDisplay(browser_policy_connector_ash,
+                       std::move(shared_url_loader_factory));
 
   AddScreenHandler(std::make_unique<PinSetupScreenHandler>());
   web_ui->AddMessageHandler(std::make_unique<MetricsHandler>());
@@ -753,14 +773,14 @@ OobeUI::OobeUI(content::WebUI* web_ui, const GURL& url)
 
   bool enable_test_api = command_line->HasSwitch(switches::kEnableOobeTestAPI);
   if (enable_test_api) {
-    AddWebUIHandler(std::make_unique<OobeTestAPIHandler>());
+    AddWebUIHandler(std::make_unique<OobeTestAPIHandler>(&local_state_.get()));
   }
 
   base::DictValue localized_strings = GetLocalizedStrings();
 
   // Set up the chrome://oobe/ source.
-  CreateAndAddOobeUIDataSource(Profile::FromWebUI(web_ui), localized_strings,
-                               display_type_);
+  CreateAndAddOobeUIDataSource(local_state_.get(), Profile::FromWebUI(web_ui),
+                               localized_strings, display_type_);
 }
 
 OobeUI::~OobeUI() {
@@ -771,7 +791,8 @@ OobeUI::~OobeUI() {
 }
 
 // static
-void OobeUI::AddOobeComponents(content::WebUIDataSource* source) {
+void OobeUI::AddOobeComponents(const PrefService& local_state,
+                               content::WebUIDataSource* source) {
   // Add all resources from OOBE's autogenerated GRD.
   constexpr auto kConditionalResources =
       base::MakeFixedFlatSet<std::string_view>({
@@ -784,17 +805,19 @@ void OobeUI::AddOobeComponents(content::WebUIDataSource* source) {
           "test_api/no_test_api.js",
           "test_api/test_api.js",
       });
+  std::vector<webui::ResourcePath> oobe_resources;
+  oobe_resources.reserve(std::size(kOobeResources));
   for (const auto& path : kOobeResources) {
     if (!kConditionalResources.contains(path.path)) {
-      source->AddResourcePath(path.path, path.id);
+      oobe_resources.push_back(path);
     }
   }
+  source->AddResourcePaths(oobe_resources);
+
   // Add Gaia Authenticator resources
   source->AddResourcePaths(kGaiaAuthHostResources);
 
-  // TODO(crbug.com/489929275): Avoid using g_browser_process.
-  if (policy::EnrollmentRequisitionManager::IsMeetDevice(
-          CHECK_DEREF(g_browser_process->local_state())) &&
+  if (policy::EnrollmentRequisitionManager::IsMeetDevice(local_state) &&
       !fjord_util::ShouldShowFjordOobe()) {
     source->AddResourcePath(
         kOobeCustomVarsCssJs,
@@ -829,8 +852,9 @@ base::DictValue OobeUI::GetLocalizedStrings() {
     handler->GetLocalizedStrings(&localized_strings);
   }
 
-  const std::string& app_locale = g_browser_process->GetApplicationLocale();
-  webui::SetLoadTimeDataDefaults(app_locale, &localized_strings);
+  std::string_view app_locale =
+      application_locale_storage_->GetTag().tag_string();
+  webui::SetLoadTimeDataDefaults(std::string(app_locale), &localized_strings);
   localized_strings.Set("app_locale", app_locale);
 
 #if BUILDFLAG(GOOGLE_CHROME_BRANDING)
@@ -844,16 +868,14 @@ base::DictValue OobeUI::GetLocalizedStrings() {
   if (features::IsOobeJellyEnabled()) {
     oobeClasses += "jelly-enabled ";
   }
-  if (features::IsOobeJellyModalEnabled()) {
-    oobeClasses += "jelly-modal-enabled ";
-  }
   if (features::IsBootAnimationEnabled()) {
     oobeClasses += "boot-animation-enabled ";
   }
   localized_strings.Set("oobeClasses", oobeClasses);
 
-  bool keyboard_driven_oobe = ash::system::InputDeviceSettings::Get()
-                                  ->ForceKeyboardDrivenUINavigation();
+  bool keyboard_driven_oobe =
+      ash::system::InputDeviceSettings::ForceKeyboardDrivenUINavigation(
+          local_state_.get());
   localized_strings.Set("highlightStrength",
                         keyboard_driven_oobe ? "strong" : "normal");
   return localized_strings;

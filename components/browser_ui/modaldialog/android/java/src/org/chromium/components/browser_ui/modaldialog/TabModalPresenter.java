@@ -9,11 +9,13 @@ import static org.chromium.build.NullUtil.assumeNonNull;
 import android.animation.Animator;
 import android.animation.AnimatorListenerAdapter;
 import android.content.Context;
+import android.content.res.Resources;
 import android.view.ContextThemeWrapper;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.accessibility.AccessibilityEvent;
+import android.view.accessibility.AccessibilityNodeInfo;
 import android.widget.FrameLayout;
 
 import androidx.activity.ComponentDialog;
@@ -26,6 +28,7 @@ import org.chromium.build.annotations.Nullable;
 import org.chromium.content_public.browser.SelectionPopupController;
 import org.chromium.content_public.browser.WebContents;
 import org.chromium.ui.LayoutInflaterUtils;
+import org.chromium.ui.accessibility.AccessibilityState;
 import org.chromium.ui.interpolators.Interpolators;
 import org.chromium.ui.modaldialog.DialogDismissalCause;
 import org.chromium.ui.modaldialog.ModalDialogManager;
@@ -185,15 +188,28 @@ public abstract class TabModalPresenter extends ModalDialogManager.Presenter {
      */
     public void updateContainerHierarchy(boolean toFront) {
         assumeNonNull(mDialogView);
+        PropertyModel model = getDialogModel();
+        if (model != null) {
+            CharSequence title = model.get(ModalDialogProperties.TITLE);
+            if (title == null) {
+                title = model.get(ModalDialogProperties.CONTENT_DESCRIPTION);
+            }
+            mDialogView.setAccessibilityPaneTitle(title);
+        }
+        AccessibilityEvent event =
+                AccessibilityEvent.obtain(AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED);
+        event.setSource(mDialogView);
         if (toFront) {
             mDialogView.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_YES);
-            mDialogView.requestFocus();
-            mDialogView.sendAccessibilityEvent(AccessibilityEvent.TYPE_VIEW_FOCUSED);
+            ViewCompat.setScreenReaderFocusable(mDialogView, true);
+            event.setContentChangeTypes(AccessibilityEvent.CONTENT_CHANGE_TYPE_PANE_APPEARED);
         } else {
-            mDialogView.clearFocus();
+            event.setContentChangeTypes(AccessibilityEvent.CONTENT_CHANGE_TYPE_PANE_DISAPPEARED);
             mDialogView.setImportantForAccessibility(
                     View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS);
+            ViewCompat.setScreenReaderFocusable(mDialogView, false);
         }
+        AccessibilityState.sendAccessibilityEvent(event);
     }
 
     /**
@@ -202,9 +218,12 @@ public abstract class TabModalPresenter extends ModalDialogManager.Presenter {
      *
      * @param webContents the WebContents that the dialog is showing over.
      * @param save true if a dialog is showing and text selection should be saved; false if a dialog
-     *         is hiding and text selection should be restored.
+     *     is hiding and text selection should be restored.
+     * @param restoreFocus when restoring, whether to give focus back to the page. Callers should
+     *     pass false if the tab is no longer shown and selected. Ignored when saving.
      */
-    protected void saveOrRestoreTextSelection(WebContents webContents, boolean save) {
+    protected void saveOrRestoreTextSelection(
+            WebContents webContents, boolean save, boolean restoreFocus) {
         SelectionPopupController controller = SelectionPopupController.fromWebContents(webContents);
         if (save) {
             // Dismiss the action bar that obscures the dialogs but preserve the text selection.
@@ -214,6 +233,13 @@ public abstract class TabModalPresenter extends ModalDialogManager.Presenter {
             controller.updateTextSelectionUI(false);
             mDidClearTextControls = true;
         } else if (mDidClearTextControls) {
+            // Give focus back to the page, as happens when a dialog closes on desktop.
+            if (restoreFocus) {
+                View containerView =
+                        assumeNonNull(webContents.getViewAndroidDelegate()).getContainerView();
+                assumeNonNull(containerView).requestFocus();
+            }
+
             // Show the action bar back if it was dismissed when the dialogs were showing.
             mDidClearTextControls = false;
             controller.updateTextSelectionUI(true);
@@ -224,16 +250,27 @@ public abstract class TabModalPresenter extends ModalDialogManager.Presenter {
      * Inserts {@link TabModalPresenter#mDialogView} into {@link TabModalPresenter#mDialogContainer}
      * and animates the container into view.
      *
-     * Exposed to subclasses as they may want to control the exact start time of the animation.
+     * <p>Exposed to subclasses as they may want to control the exact start time of the animation.
      */
     protected void runEnterAnimation() {
         assumeNonNull(mDialogContainer).animate().cancel();
+        assumeNonNull(mDialogContainer).setClickable(true);
 
         FrameLayout.LayoutParams params =
                 new FrameLayout.LayoutParams(
                         ViewGroup.LayoutParams.MATCH_PARENT,
                         ViewGroup.LayoutParams.WRAP_CONTENT,
                         Gravity.CENTER);
+        if (ModalDialogFeatureMap.isLargeFormFactorUiEnabled(mContext)) {
+            // Real layout margins, so the container reserves the space. Its bounds already
+            // exclude browser controls and side UI (e.g. Vertical Tabs / Side Panel).
+            Resources resources = mContext.getResources();
+            int horizontalMargin =
+                    resources.getDimensionPixelSize(
+                            R.dimen.modal_dialog_view_horizontal_margin_lff);
+            params.setMargins(horizontalMargin, /* top= */ 0, horizontalMargin, /* bottom= */ 0);
+        }
+
         assumeNonNull(mDialogView).setBackgroundResource(R.drawable.dialog_bg_no_shadow);
         mDialogContainer.addView(mDialogView, params);
         mDialogContainer.setAlpha(0f);
@@ -252,8 +289,20 @@ public abstract class TabModalPresenter extends ModalDialogManager.Presenter {
                             }
 
                             @Override
+                            @SuppressWarnings("AccessibilityFocus")
                             public void onAnimationEnd(Animator animation) {
-                                updateContainerHierarchy(true);
+                                if (mDialogView != null) {
+                                    updateContainerHierarchy(true);
+                                    mDialogView.post(
+                                            () -> {
+                                                if (mDialogView != null) {
+                                                    mDialogView.performAccessibilityAction(
+                                                            AccessibilityNodeInfo
+                                                                    .ACTION_ACCESSIBILITY_FOCUS,
+                                                            null);
+                                                }
+                                            });
+                                }
                             }
                         })
                 .start();

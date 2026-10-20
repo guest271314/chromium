@@ -9,6 +9,7 @@
 #include <utility>
 
 #include "base/check.h"
+#include "base/task/sequenced_task_runner.h"
 #include "components/live_caption/caption_bubble_controller.h"
 #include "components/live_caption/caption_util.h"
 #include "components/live_caption/pref_names.h"
@@ -187,6 +188,30 @@ void CaptionControllerBase::RemoveListener(Listener* listener) {
     return;
   }
   NOTREACHED();
+}
+
+bool CaptionControllerBase::Listener::IsTranscriptionAllowed(
+    content::RenderFrameHost* rfh) {
+  // Fail closed so listeners like `CaptionBubbleController` don't allow
+  // transcription in headless mode.
+  return false;
+}
+
+void CaptionControllerBase::RemoveSoon(Listener* listener) {
+  base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+      FROM_HERE, base::BindOnce(&CaptionControllerBase::RemoveListener,
+                                weak_ptr_factory_.GetWeakPtr(), listener));
+}
+
+bool CaptionControllerBase::IsTranscriptionAllowed(
+    content::RenderFrameHost* rfh) {
+  for (auto& listener : listeners_) {
+    if (listener->IsTranscriptionAllowed(rfh)) {
+      return true;
+    }
+  }
+
+  return false;
 }
 
 bool CaptionControllerBase::DispatchTranscription(

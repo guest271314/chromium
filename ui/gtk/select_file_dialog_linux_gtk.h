@@ -5,11 +5,14 @@
 #ifndef UI_GTK_SELECT_FILE_DIALOG_LINUX_GTK_H_
 #define UI_GTK_SELECT_FILE_DIALOG_LINUX_GTK_H_
 
+#include <optional>
 #include <vector>
 
+#include "base/component_export.h"
 #include "base/containers/flat_map.h"
 #include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
+#include "base/time/time.h"
 #include "ui/base/glib/scoped_gsignal.h"
 #include "ui/gtk/gtk_util.h"
 #include "ui/shell_dialogs/select_file_dialog_linux.h"
@@ -18,8 +21,9 @@ namespace gtk {
 
 // Implementation of SelectFileDialog that shows a Gtk common dialog for
 // choosing a file or folder. This acts as a modal dialog.
-class SelectFileDialogLinuxGtk : public ui::SelectFileDialogLinux,
-                                 public aura::WindowObserver {
+class COMPONENT_EXPORT(GTK) SelectFileDialogLinuxGtk
+    : public ui::SelectFileDialogLinux,
+      public aura::WindowObserver {
  public:
   SelectFileDialogLinuxGtk(Listener* listener,
                            std::unique_ptr<ui::SelectFilePolicy> policy,
@@ -27,6 +31,12 @@ class SelectFileDialogLinuxGtk : public ui::SelectFileDialogLinux,
 
   SelectFileDialogLinuxGtk(const SelectFileDialogLinuxGtk&) = delete;
   SelectFileDialogLinuxGtk& operator=(const SelectFileDialogLinuxGtk&) = delete;
+
+  static void EnsureActivationKeyTracking();
+  static void SetActivationKeyDownForTesting(bool is_down);
+  static void ResetForTesting();
+  static void DispatchKeyEventForTesting(ui::KeyEvent* event);
+  static void DispatchCancelModeForTesting();
 
  protected:
   ~SelectFileDialogLinuxGtk() override;
@@ -46,6 +56,7 @@ class SelectFileDialogLinuxGtk : public ui::SelectFileDialogLinux,
 
  private:
   friend class FilePicker;
+  friend class SelectFileDialogLinuxGtkTest;
 
   struct DialogState {
     DialogState();
@@ -61,12 +72,35 @@ class SelectFileDialogLinuxGtk : public ui::SelectFileDialogLinux,
     raw_ptr<aura::Window> parent = nullptr;
 
     base::OnceClosure reenable_parent_events;
+
+    raw_ptr<GtkWidget> preview_widget = nullptr;
+
+    base::FilePath preview_file_path;
+
+    base::TimeTicks show_time;
+  };
+
+  struct PendingDialog {
+    Type type;
+    std::u16string title;
+    base::FilePath default_path;
+    std::optional<FileTypeInfo> file_types;
+    int file_type_index;
+    base::FilePath::StringType default_extension;
+    raw_ptr<aura::Window> owning_window = nullptr;
   };
 
   bool HasMultipleFileTypeChoicesImpl() override;
 
   // Overridden from aura::WindowObserver:
   void OnWindowDestroying(aura::Window* window) override;
+
+  // Shows the dialog after any pending activation key release.
+  void ShowPendingDialog();
+
+  // Checks whether the dialog has been displayed for at least the minimum
+  // duration before allowing an accept response.
+  bool IsAcceptResponseAllowed(GtkWidget* dialog, int response_id);
 
   // Add the filters from |file_types_| to |chooser|.
   void AddFilters(GtkFileChooser* chooser);
@@ -129,13 +163,31 @@ class SelectFileDialogLinuxGtk : public ui::SelectFileDialogLinux,
   // GTK3.
   void OnUpdatePreview(GtkWidget* dialog);
 
-  // Only used on GTK3 since GTK4 provides its own preview.
-  // The GtkImage widget for showing previews of selected images.
-  raw_ptr<GtkWidget, DanglingUntriaged> preview_ = nullptr;
+  // Callback for when the preview file is read from disk on a background
+  // thread. Only used on GTK3.
+  void OnPreviewFileRead(const base::FilePath& file_path,
+                         ScopedGObject<GtkWidget> chooser,
+                         std::optional<std::vector<uint8_t>> bytes);
+
+  // Callback for when the preview image is decoded out-of-process. Only used
+  // on GTK3.
+  void OnPreviewImageDecoded(const base::FilePath& file_path,
+                             ScopedGObject<GtkWidget> chooser,
+                             const SkBitmap& bitmap);
+
+  // Callback for when the preview image is resized on a background thread.
+  // Only used on GTK3.
+  void OnPreviewImageResized(const base::FilePath& file_path,
+                             ScopedGObject<GtkWidget> chooser,
+                             const SkBitmap& bitmap);
 
   const raw_ptr<GtkUiPlatform> platform_;
 
   base::flat_map<GtkWidget*, DialogState> dialogs_;
+
+  std::optional<PendingDialog> pending_dialog_;
+
+  base::WeakPtrFactory<SelectFileDialogLinuxGtk> weak_factory_{this};
 };
 
 }  // namespace gtk

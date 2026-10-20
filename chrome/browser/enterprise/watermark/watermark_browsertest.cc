@@ -4,9 +4,15 @@
 
 #include "base/command_line.h"
 #include "base/run_loop.h"
+#include "base/strings/pattern.h"
 #include "base/strings/stringprintf.h"
+#include "base/test/icu_test_util.h"
+#include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/test_future.h"
+#include "base/time/time.h"
+#include "build/branding_buildflags.h"
+#include "build/chromeos_buildflags.h"
 #include "chrome/browser/enterprise/data_protection/data_protection_features.h"
 #include "chrome/browser/enterprise/data_protection/data_protection_navigation_controller.h"
 #include "chrome/browser/enterprise/data_protection/data_protection_overlay_view.h"
@@ -16,9 +22,12 @@
 #include "chrome/browser/preloading/scoped_prewarm_feature_list.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/safe_browsing/chrome_enterprise_url_lookup_service_factory.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/navigator/browser_navigator.h"
+#include "chrome/browser/ui/navigator/browser_navigator_params.h"
 #include "chrome/browser/ui/tabs/public/tab_features.h"
 #include "chrome/browser/ui/tabs/split_tab_metrics.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/test/test_browser_ui.h"
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
@@ -30,15 +39,25 @@
 #include "components/enterprise/connectors/core/common.h"
 #include "components/enterprise/connectors/core/connectors_prefs.h"
 #include "components/enterprise/data_controls/core/browser/test_utils.h"
+#include "components/enterprise/data_protection/features.h"
+#include "components/enterprise/data_protection/utils.h"
 #include "components/keyed_service/content/browser_context_dependency_manager.h"
 #include "components/policy/core/common/policy_types.h"
 #include "components/prefs/pref_service.h"
 #include "components/safe_browsing/core/browser/realtime/fake_url_lookup_service.h"
+#include "components/sessions/core/session_id.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "net/dns/mock_host_resolver.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/skia/include/core/SkColor.h"
+#include "ui/base/page_transition_types.h"
+#include "ui/base/window_open_disposition.h"
+
+#if BUILDFLAG(GOOGLE_CHROME_BRANDING) && !BUILDFLAG(IS_CHROMEOS)
+#include "chrome/test/base/scoped_channel_override.h"
+#endif  // BUILDFLAG(GOOGLE_CHROME_BRANDING) && !BUILDFLAG(IS_CHROMEOS)
 
 namespace enterprise_watermark {
 
@@ -53,17 +72,30 @@ constexpr char kMultilingualWatermarkMessage[] = R"(
     مضحك جداً
 )";
 
-// This string checks that long lines are properly handled by multiline logic.
+// This string checks dynamic block width: short and medium lines expand block
+// width without splitting, while extremely long lines exceeding the maximum cap
+// are split up into multiple lines.
 constexpr char kLongLinesWatermarkMessage[] = R"(
-This is a very long line that should be split up into multiple lines
-This is a shorter line
-It was not split
+
+This dynamically expands the block width and stays on one line
+This is a short line
+It is not split
 This is another very long line that should be split up into multiple lines
 )";
+
+constexpr char kTimestampUtcWatermarkMessage[] =
+    "Confidential (UTC)\nuser@example.com\n";
+constexpr char kTimestampTokyoWatermarkMessage[] =
+    "Confidential (Tokyo)\nuser@example.com\n";
+constexpr char kTimestampTorontoWatermarkMessage[] =
+    "Confidential (Toronto)\nuser@example.com\n";
+constexpr char kTimestampKolkataWatermarkMessage[] =
+    "Confidential (Kolkata)\nuser@example.com\n";
 
 struct WatermarkTextParams {
   const char* test_suffix;
   const char* watermark_text;
+  const char* timezone = nullptr;
 };
 
 struct WatermarkParams {
@@ -75,7 +107,7 @@ struct WatermarkParams {
 };
 
 constexpr SkColor kTestFillColor = SkColorSetARGB(0x2A, 0, 0, 0);
-constexpr SkColor kTestOutlineColor = SkColorSetARGB(0x3D, 0, 0, 0);
+constexpr SkColor kTestOutlineColor = SkColorSetARGB(0x3D, 255, 255, 255);
 constexpr int kTestFontSize =
     enterprise_connectors::kWatermarkStyleFontSizeDefault;
 
@@ -83,6 +115,11 @@ class WatermarkBrowserTest
     : public UiBrowserTest,
       public testing::WithParamInterface<WatermarkTextParams> {
  public:
+  WatermarkBrowserTest() {
+    scoped_feature_list_.InitAndEnableFeature(
+        enterprise_data_protection::kEnableWatermarkTimestampTimezone);
+  }
+
   void SetUpOnMainThread() override {
     host_resolver()->AddRule("*", "127.0.0.1");
     ASSERT_TRUE(embedded_test_server()->Start());
@@ -96,12 +133,26 @@ class WatermarkBrowserTest
 
   // Returns true if a watermark view object was available to set the watermark.
   bool SetWatermark(const std::string& watermark_message) {
+    std::string message = watermark_message;
+    if (GetParam().timezone) {
+      GetProfile()->GetPrefs()->SetString(
+          enterprise_connectors::kWatermarkStyleTimestampTimezonePref,
+          GetParam().timezone);
+
+      std::string timestamp_timezone =
+          GetTimestampTimezone(GetProfile()->GetPrefs());
+
+      base::test::ScopedRestoreDefaultTimezone timezone("UTC");
+      message += enterprise_data_protection::FormatWatermarkTimestamp(
+          base::Time::FromSecondsSinceUnixEpoch(1700000000),
+          timestamp_timezone);
+    }
     if (auto* data_protection_overlay_view =
             BrowserView::GetBrowserViewForBrowser(browser())
                 ->GetContentsContainerViews()[0]
                 ->data_protection_overlay_view()) {
       data_protection_overlay_view->SetWatermarkText(
-          watermark_message, kTestFillColor, kTestOutlineColor, kTestFontSize);
+          message, kTestFillColor, kTestOutlineColor, kTestFontSize);
       return true;
     }
     return false;
@@ -161,7 +212,19 @@ INSTANTIATE_TEST_SUITE_P(
     WatermarkBrowserTest,
     testing::Values(
         WatermarkTextParams{"Multilingual", kMultilingualWatermarkMessage},
-        WatermarkTextParams{"LongLines", kLongLinesWatermarkMessage}));
+        WatermarkTextParams{"LongLines", kLongLinesWatermarkMessage},
+        WatermarkTextParams{"TimestampUtc", kTimestampUtcWatermarkMessage,
+                            "UTC"},
+        WatermarkTextParams{"TimestampTokyo", kTimestampTokyoWatermarkMessage,
+                            "Asia/Tokyo"},
+        WatermarkTextParams{"TimestampToronto",
+                            kTimestampTorontoWatermarkMessage,
+                            "America/Toronto"},
+        WatermarkTextParams{"TimestampKolkata",
+                            kTimestampKolkataWatermarkMessage, "Asia/Kolkata"},
+        WatermarkTextParams{"TimestampInvalidFallback",
+                            kTimestampUtcWatermarkMessage,
+                            "Invalid/Timezone"}));
 
 // Test fixture for the default chrome://watermark page.
 class WatermarkTestPageBrowserTest : public UiBrowserTest {
@@ -214,7 +277,7 @@ class FakeRealTimeUrlLookupService
     // Only add a watermark for watermark.com URLs.
     if (url.GetHost() == "watermark.com") {
       safe_browsing::MatchedUrlNavigationRule::WatermarkMessage wm;
-      wm.set_watermark_message("custom_messge");
+      wm.set_watermark_message("custom_message");
       wm.mutable_timestamp()->set_seconds(base::Time::Now().ToTimeT());
       *matched_url_navigation_rule->mutable_watermark_message() = wm;
     }
@@ -231,7 +294,10 @@ class FakeRealTimeUrlLookupService
 
 class WatermarkBrowserNavigationTest : public InProcessBrowserTest {
  public:
-  WatermarkBrowserNavigationTest() = default;
+  WatermarkBrowserNavigationTest() {
+    scoped_feature_list_.InitAndEnableFeature(
+        enterprise_data_protection::kEnableWatermarkTimestampTimezone);
+  }
   WatermarkBrowserNavigationTest(const WatermarkBrowserNavigationTest&) =
       delete;
   WatermarkBrowserNavigationTest& operator=(
@@ -284,6 +350,7 @@ class WatermarkBrowserNavigationTest : public InProcessBrowserTest {
   test::ScopedPrewarmFeatureList scoped_prewarm_feature_list_{
       test::ScopedPrewarmFeatureList::PrewarmState::kDisabled};
   base::CallbackListSubscription create_services_subscription_;
+  base::test::ScopedFeatureList scoped_feature_list_;
 };
 
 IN_PROC_BROWSER_TEST_F(WatermarkBrowserNavigationTest, Apply_NoWatermark) {
@@ -325,6 +392,47 @@ IN_PROC_BROWSER_TEST_F(WatermarkBrowserNavigationTest,
                   ->has_text_for_testing());
 }
 
+class WatermarkBrowserNavigationTestDisabled
+    : public WatermarkBrowserNavigationTest {
+ public:
+  WatermarkBrowserNavigationTestDisabled() {
+    disabled_feature_list_.InitAndDisableFeature(
+        enterprise_data_protection::kEnableWatermarkTimestampTimezone);
+  }
+
+ private:
+  base::test::ScopedFeatureList disabled_feature_list_;
+};
+
+IN_PROC_BROWSER_TEST_F(WatermarkBrowserNavigationTest,
+                       Apply_WatermarkTextFormat) {
+  NavigateToAndWait(GURL("https://watermark.com"));
+  auto* overlay_view = BrowserView::GetBrowserViewForBrowser(browser())
+                           ->GetContentsContainerViews()[0]
+                           ->data_protection_overlay_view();
+  EXPECT_TRUE(overlay_view->has_text_for_testing());
+  std::string text = overlay_view->watermark_text_for_testing();
+  EXPECT_NE(text.find("custom_message"), std::string::npos);
+  std::string timestamp = text.substr(text.rfind('\n') + 1);
+  EXPECT_TRUE(base::MatchPattern(timestamp, "????-??-??T??:??:??+??:??") ||
+              base::MatchPattern(timestamp, "????-??-??T??:??:??-??:??"))
+      << "Actual watermark text: " << text;
+}
+
+IN_PROC_BROWSER_TEST_F(WatermarkBrowserNavigationTestDisabled,
+                       Apply_WatermarkTextFormat_FlagDisabled) {
+  NavigateToAndWait(GURL("https://watermark.com"));
+  auto* overlay_view = BrowserView::GetBrowserViewForBrowser(browser())
+                           ->GetContentsContainerViews()[0]
+                           ->data_protection_overlay_view();
+  EXPECT_TRUE(overlay_view->has_text_for_testing());
+  std::string text = overlay_view->watermark_text_for_testing();
+  EXPECT_NE(text.find("custom_message"), std::string::npos);
+  std::string timestamp = text.substr(text.rfind('\n') + 1);
+  EXPECT_TRUE(base::MatchPattern(timestamp, "????-??-??T??:??:??.???Z"))
+      << "Actual watermark text: " << text;
+}
+
 IN_PROC_BROWSER_TEST_F(WatermarkBrowserNavigationTest,
                        Apply_Nav_Watermark_NoWatermark) {
   // Start on a page that should show a watermark.
@@ -364,7 +472,7 @@ IN_PROC_BROWSER_TEST_F(WatermarkBrowserNavigationTest,
                    ->has_text_for_testing());
 
   // Switch active tabs back to watermarked page.
-  browser()->tab_strip_model()->ActivateTabAt(
+  browser()->GetTabStripModel()->ActivateTabAt(
       0, TabStripUserGestureDetails(
              TabStripUserGestureDetails::GestureType::kMouse));
   EXPECT_TRUE(BrowserView::GetBrowserViewForBrowser(browser())
@@ -391,7 +499,7 @@ IN_PROC_BROWSER_TEST_F(WatermarkBrowserNavigationTest,
                    ->has_text_for_testing());
 
   // Switch back to the watermarked tab. The watermark should still be showing.
-  browser()->tab_strip_model()->ActivateTabAt(
+  browser()->GetTabStripModel()->ActivateTabAt(
       0, TabStripUserGestureDetails(
              TabStripUserGestureDetails::GestureType::kMouse));
   EXPECT_TRUE(BrowserView::GetBrowserViewForBrowser(browser())
@@ -451,7 +559,7 @@ IN_PROC_BROWSER_TEST_F(WatermarkBrowserNavigationTest,
                    ->has_text_for_testing());
 
   // Switch back to the watermarked tab. The watermark should show immediately.
-  browser()->tab_strip_model()->ActivateTabAt(
+  browser()->GetTabStripModel()->ActivateTabAt(
       0, TabStripUserGestureDetails(
              TabStripUserGestureDetails::GestureType::kMouse));
   EXPECT_TRUE(BrowserView::GetBrowserViewForBrowser(browser())
@@ -474,10 +582,11 @@ IN_PROC_BROWSER_TEST_F(WatermarkBrowserNavigationTest, SplitTabWatermark) {
   ASSERT_TRUE(
       AddTabAtIndex(2, GURL(url::kAboutBlankURL), ui::PAGE_TRANSITION_TYPED));
 
-  browser()->tab_strip_model()->ActivateTabAt(0);
-  split_tabs::SplitTabId split_id = browser()->tab_strip_model()->AddToNewSplit(
-      {1}, split_tabs::SplitTabVisualData(),
-      split_tabs::SplitTabCreatedSource::kToolbarButton);
+  browser()->GetTabStripModel()->ActivateTabAt(0);
+  split_tabs::SplitTabId split_id =
+      browser()->GetTabStripModel()->AddToNewSplit(
+          {1}, split_tabs::SplitTabVisualData(),
+          split_tabs::SplitTabCreatedSource::kToolbarButton);
 
   NavigateToAndWait(GURL("https://watermark.com"));
 
@@ -492,7 +601,7 @@ IN_PROC_BROWSER_TEST_F(WatermarkBrowserNavigationTest, SplitTabWatermark) {
                    ->has_text_for_testing());
 
   // Reverse the tabs in the split.
-  browser()->tab_strip_model()->ReverseTabsInSplit(split_id);
+  browser()->GetTabStripModel()->ReverseTabsInSplit(split_id);
 
   EXPECT_TRUE(BrowserView::GetBrowserViewForBrowser(browser())
                   ->GetContentsContainerViews()[1]
@@ -505,7 +614,7 @@ IN_PROC_BROWSER_TEST_F(WatermarkBrowserNavigationTest, SplitTabWatermark) {
                    ->has_text_for_testing());
 
   // Switch to a different tab without split.
-  browser()->tab_strip_model()->ActivateTabAt(2);
+  browser()->GetTabStripModel()->ActivateTabAt(2);
   NavigateToAndWait(GURL("https://watermark.com"));
 
   EXPECT_TRUE(BrowserView::GetBrowserViewForBrowser(browser())
@@ -518,7 +627,7 @@ IN_PROC_BROWSER_TEST_F(WatermarkBrowserNavigationTest, SplitTabWatermark) {
                    ->GetVisible());
 
   // Switch back to split view .
-  browser()->tab_strip_model()->ActivateTabAt(1);
+  browser()->GetTabStripModel()->ActivateTabAt(1);
 
   EXPECT_TRUE(BrowserView::GetBrowserViewForBrowser(browser())
                   ->GetContentsContainerViews()[1]
@@ -531,7 +640,7 @@ IN_PROC_BROWSER_TEST_F(WatermarkBrowserNavigationTest, SplitTabWatermark) {
                    ->has_text_for_testing());
 
   // Add watermark to the other split view as well.
-  browser()->tab_strip_model()->ActivateTabAt(0);
+  browser()->GetTabStripModel()->ActivateTabAt(0);
   NavigateToAndWait(GURL("https://watermark.com"));
 
   EXPECT_TRUE(BrowserView::GetBrowserViewForBrowser(browser())
@@ -590,7 +699,7 @@ IN_PROC_BROWSER_TEST_P(WatermarkTestPageDynamicBrowserTest, DynamicWatermark) {
   ASSERT_TRUE(ui_test_utils::NavigateToURL(
       browser(), GURL(chrome::kChromeUIWatermarkURL)));
 
-  auto* web_contents = browser()->tab_strip_model()->GetActiveWebContents();
+  auto* web_contents = browser()->GetTabStripModel()->GetActiveWebContents();
   auto* watermark_ui =
       web_contents->GetWebUI()->GetController()->GetAs<WatermarkUI>();
   ASSERT_TRUE(watermark_ui);
@@ -650,7 +759,7 @@ class WatermarkSettingsBrowserTest : public InProcessBrowserTest,
 };
 
 IN_PROC_BROWSER_TEST_P(WatermarkSettingsBrowserTest, GetStyleSettings) {
-  PrefService* prefs = browser()->profile()->GetPrefs();
+  PrefService* prefs = GetProfile()->GetPrefs();
 
   // Test with default pref values.
   SkColor expected_fill_color = GetDefaultFillColor();
@@ -694,16 +803,67 @@ class WatermarkSettingsCommandLineBrowserTest : public InProcessBrowserTest {
   }
 
  private:
+#if BUILDFLAG(GOOGLE_CHROME_BRANDING) && !BUILDFLAG(IS_CHROMEOS)
+  chrome::ScopedChannelOverride channel_override_{
+      chrome::ScopedChannelOverride::Channel::kDev};
+#endif  // BUILDFLAG(GOOGLE_CHROME_BRANDING) && !BUILDFLAG(IS_CHROMEOS)
   base::test::ScopedFeatureList scoped_feature_list_{
       kEnableWatermarkCustomization};
 };
 
 IN_PROC_BROWSER_TEST_F(WatermarkSettingsCommandLineBrowserTest, GetColors) {
-  PrefService* prefs = browser()->profile()->GetPrefs();
+  PrefService* prefs = GetProfile()->GetPrefs();
   EXPECT_EQ(GetFillColor(prefs), SkColorSetA(SkColorSetRGB(0x00, 0x00, 0x00),
                                              PercentageToSkAlpha(50)));
   EXPECT_EQ(GetOutlineColor(prefs), SkColorSetA(SkColorSetRGB(0xff, 0xff, 0xff),
                                                 PercentageToSkAlpha(60)));
+}
+
+class WatermarkTimestampTimezoneBrowserTest : public InProcessBrowserTest {
+ public:
+  WatermarkTimestampTimezoneBrowserTest() {
+    scoped_feature_list_.InitAndEnableFeature(
+        enterprise_data_protection::kEnableWatermarkTimestampTimezone);
+  }
+
+ private:
+  base::test::ScopedFeatureList scoped_feature_list_;
+};
+
+IN_PROC_BROWSER_TEST_F(WatermarkTimestampTimezoneBrowserTest,
+                       TimestampTimezoneTypeHistogram) {
+  base::HistogramTester histogram_tester;
+  PrefService* prefs = GetProfile()->GetPrefs();
+
+  // 0. Default (unmanaged / unset pref)
+  EXPECT_EQ(GetTimestampTimezone(prefs), "user_device");
+  histogram_tester.ExpectBucketCount(
+      "Enterprise.Watermark.TimestampTimezoneType",
+      TimestampTimezoneType::kDefault, 1);
+
+  // 1. UserDevice (admin explicitly set to "user_device")
+  prefs->SetString(enterprise_connectors::kWatermarkStyleTimestampTimezonePref,
+                   "user_device");
+  EXPECT_EQ(GetTimestampTimezone(prefs), "user_device");
+  histogram_tester.ExpectBucketCount(
+      "Enterprise.Watermark.TimestampTimezoneType",
+      TimestampTimezoneType::kUserDevice, 1);
+
+  // 2. ValidIANATimeZone (admin set to valid IANA timezone)
+  prefs->SetString(enterprise_connectors::kWatermarkStyleTimestampTimezonePref,
+                   "America/Toronto");
+  EXPECT_EQ(GetTimestampTimezone(prefs), "America/Toronto");
+  histogram_tester.ExpectBucketCount(
+      "Enterprise.Watermark.TimestampTimezoneType",
+      TimestampTimezoneType::kValidIANATimeZone, 1);
+
+  // 3. InvalidFallback (admin set to invalid timezone string)
+  prefs->SetString(enterprise_connectors::kWatermarkStyleTimestampTimezonePref,
+                   "Invalid/Timezone");
+  EXPECT_EQ(GetTimestampTimezone(prefs), "user_device");
+  histogram_tester.ExpectBucketCount(
+      "Enterprise.Watermark.TimestampTimezoneType",
+      TimestampTimezoneType::kInvalidFallback, 1);
 }
 
 }  // namespace enterprise_watermark

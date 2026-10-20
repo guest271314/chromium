@@ -10,6 +10,7 @@
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/service_worker_context.h"
 #include "content/public/browser/storage_partition.h"
+#include "extensions/browser/event_router.h"
 #include "extensions/common/constants.h"
 #include "extensions/common/extension.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -22,6 +23,41 @@ content::ServiceWorkerContext* GetServiceWorkerContext(
     content::BrowserContext* browser_context) {
   return browser_context->GetDefaultStoragePartition()
       ->GetServiceWorkerContext();
+}
+
+std::optional<ListenerRegistrationPhaseMap::State>
+GetListenerRegistrationPhaseState(content::BrowserContext& browser_context,
+                                  const ExtensionId& extension_id) {
+  return EventRouter::Get(&browser_context)
+      ->listener_registration_phases()
+      .GetState(extension_id, browser_context);
+}
+
+testing::AssertionResult StopServiceWorkerForScope(
+    content::ServiceWorkerContext* sw_context,
+    const GURL& sw_scope,
+    const blink::StorageKey& sw_storage_key) {
+  std::optional<int64_t> version_id;
+  for (const auto& [id, info] : sw_context->GetRunningServiceWorkerInfos()) {
+    if (info.scope == sw_scope && info.key == sw_storage_key) {
+      version_id = id;
+      break;
+    }
+  }
+
+  if (!version_id.has_value()) {
+    return testing::AssertionFailure()
+           << "Could not find running Service Worker for scope "
+           << sw_scope.spec();
+  }
+
+  extensions::service_worker_test_utils::TestServiceWorkerContextObserver
+      observer(sw_context);
+  observer.SetRunningId(version_id.value());
+  sw_context->StopAllServiceWorkersForStorageKey(sw_storage_key);
+  observer.WaitForWorkerStopped();
+
+  return testing::AssertionSuccess();
 }
 
 namespace {
@@ -237,6 +273,7 @@ UnregisterWorkerObserver::UnregisterWorkerObserver(
 UnregisterWorkerObserver::~UnregisterWorkerObserver() = default;
 
 void UnregisterWorkerObserver::OnStoppedTrackingServiceWorkerInstance(
+    content::BrowserContext& browser_context,
     const WorkerId& worker_id) {
   run_loop_.QuitWhenIdle();
 }
@@ -284,6 +321,24 @@ void TestServiceWorkerTaskQueueObserver::WaitForUntrackServiceWorkerState(
   base::RunLoop run_loop;
   untrack_quit_closure_ = run_loop.QuitClosure();
   run_loop.Run();
+}
+
+void TestServiceWorkerTaskQueueObserver::WaitForWorkerUnregistered(
+    const ExtensionId& extension_id) {
+  while (!unregistered_set_.contains(extension_id)) {
+    base::RunLoop run_loop;
+    unregistered_quit_closure_ = run_loop.QuitClosure();
+    run_loop.Run();
+  }
+}
+
+void TestServiceWorkerTaskQueueObserver::WaitForWorkerRegistrationStarted(
+    const ExtensionId& extension_id) {
+  while (!registration_started_set_.contains(extension_id)) {
+    base::RunLoop run_loop;
+    registration_started_quit_closure_ = run_loop.QuitClosure();
+    run_loop.Run();
+  }
 }
 
 void TestServiceWorkerTaskQueueObserver::WaitForWorkerContextInitialized(
@@ -419,6 +474,22 @@ void TestServiceWorkerTaskQueueObserver::UntrackServiceWorkerState(
   untracked_set_.insert(scope);
   if (untrack_quit_closure_) {
     std::move(untrack_quit_closure_).Run();
+  }
+}
+
+void TestServiceWorkerTaskQueueObserver::WorkerUnregistered(
+    const ExtensionId& extension_id) {
+  unregistered_set_.insert(extension_id);
+  if (unregistered_quit_closure_) {
+    std::move(unregistered_quit_closure_).Run();
+  }
+}
+
+void TestServiceWorkerTaskQueueObserver::OnWorkerRegistrationStarted(
+    const ExtensionId& extension_id) {
+  registration_started_set_.insert(extension_id);
+  if (registration_started_quit_closure_) {
+    std::move(registration_started_quit_closure_).Run();
   }
 }
 

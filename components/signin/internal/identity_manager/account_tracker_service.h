@@ -6,7 +6,9 @@
 #define COMPONENTS_SIGNIN_INTERNAL_IDENTITY_MANAGER_ACCOUNT_TRACKER_SERVICE_H_
 
 #include <map>
+#include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "base/files/file_path.h"
@@ -40,13 +42,13 @@ namespace signin {
 class IdentityManager;
 void SimulateSuccessfulFetchOfAccountInfo(IdentityManager*,
                                           const CoreAccountId&,
-                                          const std::string&,
+                                          std::string_view,
                                           const GaiaId&,
-                                          const std::string&,
-                                          const std::string&,
-                                          const std::string&,
-                                          const std::string&,
-                                          const std::string&);
+                                          std::string_view,
+                                          std::string_view,
+                                          std::string_view,
+                                          std::string_view,
+                                          std::string_view);
 void SimulateAccountImageFetch(signin::IdentityManager*,
                                const CoreAccountId&,
                                const std::string& image_url_with_size,
@@ -98,12 +100,12 @@ class AccountTrackerService {
   std::vector<AccountInfo> GetAccounts() const;
   AccountInfo GetAccountInfo(const CoreAccountId& account_id) const;
   AccountInfo FindAccountInfoByGaiaId(const GaiaId& gaia_id) const;
-  AccountInfo FindAccountInfoByEmail(const std::string& email) const;
+  AccountInfo FindAccountInfoByEmail(std::string_view email) const;
 
   // Picks the correct account_id for the specified account depending on the
   // migration state.
   CoreAccountId PickAccountIdForAccount(const GaiaId& gaia,
-                                        const std::string& email) const;
+                                        std::string_view email) const;
 
   // Seeds the account whose account_id is given by PickAccountIdForAccount()
   // with its corresponding gaia id and email address.  Returns the same
@@ -134,6 +136,12 @@ class AccountTrackerService {
                                       bool is_under_advanced_protection);
 
   void RemoveAccount(const CoreAccountId& account_id);
+
+  // Sets or clears the override for a specific capability for the account.
+  // Set `override_value` to `std::nullopt` to clear the override.
+  void SetCapabilityOverride(const CoreAccountId& account_id,
+                             std::string_view capability_name,
+                             std::optional<signin::Tribool> override_value);
 
 #if BUILDFLAG(IS_CHROMEOS)
   AccountIdMigrationState GetMigrationState() const;
@@ -174,20 +182,20 @@ class AccountTrackerService {
   friend void signin::SimulateSuccessfulFetchOfAccountInfo(
       signin::IdentityManager*,
       const CoreAccountId&,
-      const std::string&,
+      std::string_view,
       const GaiaId&,
-      const std::string&,
-      const std::string&,
-      const std::string&,
-      const std::string&,
-      const std::string&);
+      std::string_view,
+      std::string_view,
+      std::string_view,
+      std::string_view,
+      std::string_view);
   friend void signin::SimulateAccountImageFetch(signin::IdentityManager*,
                                                 const CoreAccountId&,
                                                 const std::string&,
                                                 const gfx::Image&);
 
-  void NotifyAccountUpdated(const AccountInfo& account_info);
-  void NotifyAccountRemoved(const AccountInfo& account_info);
+  void MaybeNotifyAccountUpdated(const AccountInfo& account_info);
+  void MaybeNotifyAccountRemoved(const AccountInfo& account_info);
 
   // Start tracking `account_id` (`account_id` must not be empty).
   void StartTrackingAccount(const CoreAccountId& account_id);

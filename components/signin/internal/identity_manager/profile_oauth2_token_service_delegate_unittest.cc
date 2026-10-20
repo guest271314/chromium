@@ -15,7 +15,7 @@
 #include "components/signin/internal/identity_manager/profile_oauth2_token_service_observer.h"
 #include "components/signin/public/base/signin_metrics.h"
 #include "google_apis/gaia/core_account_id.h"
-#include "google_apis/gaia/fake_device_management_error_details.h"
+#include "google_apis/gaia/gaia_auth_test_util.h"
 #include "google_apis/gaia/gaia_urls.h"
 #include "google_apis/gaia/google_service_auth_error.h"
 #include "services/network/test/test_utils.h"
@@ -97,7 +97,7 @@ std::vector<GoogleServiceAuthError> GetAllErrors() {
               kInvalidScope),
       GoogleServiceAuthError::FromTokenBindingChallenge(std::string()),
       GoogleServiceAuthError::FromDeviceManagementError(
-          std::make_unique<gaia::FakeDeviceManagementErrorDetails>()),
+          gaia::CreateFakeDeviceManagementErrorDetails()),
   };
   static_assert(
       std::size(table) == GoogleServiceAuthError::NUM_STATES -
@@ -210,8 +210,9 @@ TEST_F(ProfileOAuth2TokenServiceDelegateTest, AuthErrorChanged) {
       CoreAccountId::FromGaiaId(GaiaId("account_id"));
   delegate.UpdateCredentials(account_id, "refresh_token");
 
-  GoogleServiceAuthError error(
-      GoogleServiceAuthError::INVALID_GAIA_CREDENTIALS);
+  GoogleServiceAuthError error =
+      GoogleServiceAuthError::FromInvalidGaiaCredentialsReason(
+          GoogleServiceAuthError::InvalidGaiaCredentialsReason::UNKNOWN);
   EXPECT_CALL(mock_observer,
               OnAuthErrorChanged(
                   account_id, error,

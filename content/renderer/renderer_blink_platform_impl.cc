@@ -5,6 +5,8 @@
 #include "content/renderer/renderer_blink_platform_impl.h"
 
 #include <algorithm>
+#include <cstdint>
+#include <limits>
 #include <memory>
 #include <string_view>
 #include <utility>
@@ -33,6 +35,7 @@
 #include "base/time/time.h"
 #include "base/time/time_delta_from_string.h"
 #include "build/build_config.h"
+#include "cc/base/features.h"
 #include "components/content_settings/core/common/content_settings_pattern.h"
 #include "components/input/features.h"
 #include "components/input/input_constants.h"
@@ -123,7 +126,6 @@
 
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
 #include "content/child/font_data/font_data_manager.h"
-#include "skia/ext/font_utils.h"
 #endif
 
 #if BUILDFLAG(IS_MAC)
@@ -196,11 +198,9 @@ viz::command_buffer_metrics::ContextType ToVizContextType(
 //------------------------------------------------------------------------------
 
 RendererBlinkPlatformImpl::RendererBlinkPlatformImpl(
-    blink::scheduler::WebThreadScheduler* main_thread_scheduler)
-    : BlinkPlatformImpl(RenderThreadImpl::current()
-                            ? RenderThreadImpl::current()->GetIOTaskRunner()
-                            : nullptr),
-      sudden_termination_disables_(0),
+    blink::scheduler::WebThreadScheduler* main_thread_scheduler,
+    scoped_refptr<base::SingleThreadTaskRunner> io_thread_task_runner)
+    : BlinkPlatformImpl(std::move(io_thread_task_runner)),
       is_locked_to_site_(false),
       main_thread_scheduler_(main_thread_scheduler),
       next_frame_sink_id_(uint32_t{std::numeric_limits<int32_t>::max()} + 1) {
@@ -223,10 +223,7 @@ RendererBlinkPlatformImpl::RendererBlinkPlatformImpl(
     // single-process environment. In single process, the SkFontMgr is already
     // installed by browser process code at this point.
     if (features::IsFontDataServiceEnabled() && sandboxEnabled()) {
-      sk_sp<font_data_service::FontDataManager> font_data_manager =
-          sk_make_sp<font_data_service::FontDataManager>();
-
-      skia::OverrideDefaultSkFontMgr(font_data_manager);
+      font_data_service::FontDataManager::CreateAndInitialize();
     }
 #endif
   }
@@ -402,6 +399,13 @@ bool RendererBlinkPlatformImpl::ShouldUseCodeCacheWithHashing(
       request_url);
 }
 
+bool RendererBlinkPlatformImpl::ShouldUsePerBrowsingInstanceWindowAgent(
+    const blink::WebSecurityOrigin& origin) {
+  return GetContentClient()
+      ->renderer()
+      ->ShouldUsePerBrowsingInstanceWindowAgent(origin);
+}
+
 bool RendererBlinkPlatformImpl::IsolateStartsInBackground() {
   if (auto* renderer = GetContentClient()->renderer()) {
     // Isolates start in the background if we do not handle hidden/visibility
@@ -496,6 +500,12 @@ bool RendererBlinkPlatformImpl::IsElasticOverscrollSupported() {
   return thread ? thread->IsElasticOverscrollSupported() : false;
 }
 
+bool RendererBlinkPlatformImpl::IsElasticOverscrollEnabledForSubscroll() {
+  return base::FeatureList::IsEnabled(
+             ::features::kOverscrollEffectOnNonRootScrollers) &&
+         IsElasticOverscrollSupported();
+}
+
 bool RendererBlinkPlatformImpl::IsScrollAnimatorEnabled() {
   RenderThreadImpl* thread = RenderThreadImpl::current();
   return thread ? thread->IsScrollAnimatorEnabled() : false;
@@ -579,6 +589,18 @@ RendererBlinkPlatformImpl::EstablishGpuChannelSync() {
 void RendererBlinkPlatformImpl::EstablishGpuChannel(
     EstablishGpuChannelCallback callback) {
   RenderThreadImpl::current()->EstablishGpuChannel(std::move(callback));
+}
+
+void RendererBlinkPlatformImpl::FlushGpuChannelIfEstablished() {
+  RenderThreadImpl* render_thread = RenderThreadImpl::current();
+  if (!render_thread) {
+    return;
+  }
+  // GetGpuChannel() never establishes a channel. It returns null if there is no
+  // channel or if it was lost.
+  if (gpu::GpuChannelHost* gpu_channel = render_thread->GetGpuChannel()) {
+    gpu_channel->EnsureFlush(std::numeric_limits<uint32_t>::max());
+  }
 }
 
 bool RendererBlinkPlatformImpl::RTCSmoothnessAlgorithmEnabled() {
@@ -939,12 +961,6 @@ void RendererBlinkPlatformImpl::WorkerContextCreated(
       worker);
 }
 
-bool RendererBlinkPlatformImpl::AllowScriptExtensionForServiceWorker(
-    const blink::WebSecurityOrigin& script_origin) {
-  return GetContentClient()->renderer()->AllowScriptExtensionForServiceWorker(
-      script_origin);
-}
-
 blink::ProtocolHandlerSecurityLevel
 RendererBlinkPlatformImpl::GetProtocolHandlerSecurityLevel(
     const blink::WebSecurityOrigin& origin) {
@@ -1155,22 +1171,18 @@ base::PlatformThreadId RendererBlinkPlatformImpl::GetIOThreadId() const {
 
 scoped_refptr<base::SingleThreadTaskRunner>
 RendererBlinkPlatformImpl::VideoFrameCompositorTaskRunner() {
-  auto compositor_task_runner = CompositorThreadTaskRunner();
-  if (::features::UseSurfaceLayerForVideo() || !compositor_task_runner) {
-    if (!video_frame_compositor_thread_) {
-      // All of Chromium's GPU code must know which thread it's running on, and
-      // be the same thread on which the rendering context was initialized. This
-      // is why this must be a SingleThreadTaskRunner instead of a
-      // SequencedTaskRunner.
-      video_frame_compositor_thread_ =
-          std::make_unique<base::Thread>("VideoFrameCompositor");
-      video_frame_compositor_thread_->StartWithOptions(
-          base::Thread::Options(base::ThreadType::kPresentation));
-    }
-
-    return video_frame_compositor_thread_->task_runner();
+  if (!video_frame_compositor_thread_) {
+    // All of Chromium's GPU code must know which thread it's running on, and
+    // be the same thread on which the rendering context was initialized. This
+    // is why this must be a SingleThreadTaskRunner instead of a
+    // SequencedTaskRunner.
+    video_frame_compositor_thread_ =
+        std::make_unique<base::Thread>("VideoFrameCompositor");
+    video_frame_compositor_thread_->StartWithOptions(
+        base::Thread::Options(base::ThreadType::kPresentation));
   }
-  return compositor_task_runner;
+
+  return video_frame_compositor_thread_->task_runner();
 }
 
 #if BUILDFLAG(IS_ANDROID)

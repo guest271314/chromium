@@ -318,9 +318,9 @@ public class FakeAccountManagerFacade implements AccountManagerFacade {
 
     @Override
     public void updateCredentials(
-            CoreAccountInfo accountInfo, Activity activity, @Nullable Callback<Boolean> callback) {
+            CoreAccountId accountId, Activity activity, @Nullable Callback<Boolean> callback) {
         if (callback != null) {
-            ThreadUtils.postOnUiThread(() -> callback.onResult(true));
+            ThreadUtils.postOnUiThread(callback.bind(true));
         }
     }
 
@@ -538,7 +538,7 @@ public class FakeAccountManagerFacade implements AccountManagerFacade {
      * updated until the returned {@link AutoCloseable} is closed. Any account addition/removal
      * later on will not be reflected in {@link #getAccounts}. Use {@link
      * #blockGetAccountsAndPopulateCache()} if you require the currently available accounts to
-     * populate the promise. When the returned {@link UpdateBlocker} is closed, the {@param
+     * populate the promise. When the returned {@link UpdateBlocker} is closed, the {@code
      * postUnblockCallback} will be called.
      *
      * @param postUnblockCallback the callback to be called when the returned {@link UpdateBlocker}
@@ -560,7 +560,7 @@ public class FakeAccountManagerFacade implements AccountManagerFacade {
      * updated until the returned {@link AutoCloseable} is closed. The promise will be fulfilled
      * with the current list of available accounts. Any account addition/removal later on will not
      * be reflected in {@link #getAccounts}. When the returned {@link UpdateBlocker} is closed, the
-     * {@param postUnblockCallback} will be called.
+     * {@code postUnblockCallback} will be called.
      *
      * @param postUnblockCallback the callback to be called when the returned {@link UpdateBlocker}
      *     is closed.
@@ -604,7 +604,7 @@ public class FakeAccountManagerFacade implements AccountManagerFacade {
 
     /**
      * Sets an error for the given `accountId` when requesting an access token. After this method is
-     * called, subsequent calls to {@link #getAccessToken} with {@param accountInfo} will return an
+     * called, subsequent calls to {@link #getAccessToken} with {@code accountInfo} will return an
      * {@link AuthException} with the `authError` provided.
      *
      * <p>If the `authError` has the state {@link GoogleServiceAuthErrorState#NONE} then {@link
@@ -685,7 +685,7 @@ public class FakeAccountManagerFacade implements AccountManagerFacade {
     private void fireOnAccountsChangedNotification() {
         ThreadUtils.checkUiThread();
         for (AccountsChangeObserver observer : mObservers) {
-            observer.onCoreAccountInfosChanged();
+            observer.onAccountsChanged();
         }
     }
 

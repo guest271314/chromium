@@ -13,7 +13,6 @@
 #include "chrome/browser/signin/signin_promo_util.h"
 #include "chrome/browser/ui/views/controls/hover_button.h"
 #include "chrome/browser/ui/views/profiles/badged_profile_photo.h"
-#include "chrome/grit/generated_resources.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/ui_base_types.h"
@@ -73,7 +72,7 @@ BubbleSignInPromoSignInButtonView::BubbleSignInPromoSignInButtonView(
     std::u16string button_text,
     std::u16string button_accessibility_text)
     : account_(account) {
-  DCHECK(!account_icon.IsEmpty());
+  CHECK(!account_icon.IsEmpty(), base::NotFatalUntil::M162);
   auto card_title = base::UTF8ToUTF16(account.GetFullName().value_or(""));
 
   bool is_signin_promo = signin::IsSignInPromo(access_point);

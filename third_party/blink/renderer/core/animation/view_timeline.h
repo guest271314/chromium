@@ -11,6 +11,7 @@
 #include "third_party/blink/renderer/core/animation/timeline_inset.h"
 #include "third_party/blink/renderer/core/animation/timeline_range.h"
 #include "third_party/blink/renderer/core/core_export.h"
+#include "third_party/blink/renderer/core/layout/geometry/axis.h"
 #include "third_party/blink/renderer/core/layout/layout_box.h"
 #include "third_party/blink/renderer/platform/bindings/script_wrappable.h"
 
@@ -32,7 +33,16 @@ class CORE_EXPORT ViewTimeline : public ScrollTimeline {
  public:
   static ViewTimeline* Create(Document&, ViewTimelineOptions*, ExceptionState&);
 
-  ViewTimeline(Document*, Element* subject, ScrollAxis axis, TimelineInset);
+  // ViewTimelines may be created based on CSS rules, or from explicit calls
+  // to the constructor from JavaScript. When constructed for a CSS rule, a
+  // tree scope is required for name resolution. Imperative declarations have
+  // no CSS defining tree scope. An element within shadowDOM may be using a
+  // tree scope for the shadow root, or it's host document.
+  ViewTimeline(Document*,
+               Element* subject,
+               ScrollAxis axis,
+               TimelineInset,
+               const TreeScope* tree_scope);
 
   bool IsViewTimeline() const override { return true; }
 
@@ -41,7 +51,10 @@ class CORE_EXPORT ViewTimeline : public ScrollTimeline {
   // IDL API implementation.
   Element* subject() const;
 
-  bool Matches(Element* subject, ScrollAxis, const TimelineInset&) const;
+  bool Matches(Element* subject,
+               ScrollAxis,
+               const TimelineInset&,
+               const TreeScope* tree_scope) const;
 
   const TimelineInset& GetInset() const;
 
@@ -54,11 +67,12 @@ class CORE_EXPORT ViewTimeline : public ScrollTimeline {
 
  protected:
   void CalculateOffsets(PaintLayerScrollableArea* scrollable_area,
-                        ScrollOrientation physical_orientation,
+                        PhysicalAxis physical_orientation,
                         TimelineState* state) const override;
 
- private:
+  Element* SubjectInternal() const;
 
+ private:
   std::optional<gfx::SizeF> SubjectSize() const;
   std::optional<gfx::PointF> SubjectPosition(LayoutBox* scroll_container) const;
 
@@ -67,7 +81,7 @@ class CORE_EXPORT ViewTimeline : public ScrollTimeline {
                               double viewport_size,
                               double target_size,
                               double target_offset,
-                              ScrollOrientation orientation,
+                              PhysicalAxis orientation,
                               LayoutBox* scroll_container) const;
 
   TimelineInset inset_;

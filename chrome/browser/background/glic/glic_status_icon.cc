@@ -13,7 +13,8 @@
 #include "build/build_config.h"
 #include "chrome/app/chrome_command_ids.h"
 #include "chrome/app/vector_icons/vector_icons.h"
-#include "chrome/browser/background/glic/glic_controller.h"
+#include "chrome/browser/background/glic/glic_background_mode_manager.h"
+#include "chrome/browser/background/glic/glic_launcher_configuration.h"
 #include "chrome/browser/glic/browser_ui/glic_vector_icon_manager.h"
 #include "chrome/browser/glic/glic_profile_manager.h"
 #include "chrome/browser/glic/glic_settings_util.h"
@@ -59,17 +60,34 @@
 
 namespace {
 
-int GetTooltipMessageId(bool panel_showing) {
+int GetTooltipMessageId(bool would_close) {
+  if (would_close) {
+    switch (chrome::GetChannel()) {
+      case version_info::Channel::CANARY:
+        return IDS_GLIC_STATUS_ICON_TOOLTIP_CLOSE_CANARY;
+      case version_info::Channel::DEV:
+        return IDS_GLIC_STATUS_ICON_TOOLTIP_CLOSE_DEV;
+      case version_info::Channel::BETA:
+        return IDS_GLIC_STATUS_ICON_TOOLTIP_CLOSE_BETA;
+      default:
+        return IDS_GLIC_STATUS_ICON_TOOLTIP_CLOSE;
+    }
+  }
   switch (chrome::GetChannel()) {
     case version_info::Channel::CANARY:
-      return IDS_GLIC_STATUS_ICON_TOOLTIP_TOGGLE_CANARY;
+      return IDS_GLIC_STATUS_ICON_TOOLTIP_CANARY;
     case version_info::Channel::DEV:
-      return IDS_GLIC_STATUS_ICON_TOOLTIP_TOGGLE_DEV;
+      return IDS_GLIC_STATUS_ICON_TOOLTIP_DEV;
     case version_info::Channel::BETA:
-      return IDS_GLIC_STATUS_ICON_TOOLTIP_TOGGLE_BETA;
+      return IDS_GLIC_STATUS_ICON_TOOLTIP_BETA;
     default:
-      return IDS_GLIC_STATUS_ICON_TOOLTIP_TOGGLE;
+      return IDS_GLIC_STATUS_ICON_TOOLTIP;
   }
+}
+
+int GetMenuMessageId(bool would_close) {
+  return would_close ? IDS_GLIC_STATUS_ICON_MENU_CLOSE
+                     : IDS_GLIC_STATUS_ICON_MENU_SHOW;
 }
 
 }  // namespace
@@ -78,20 +96,20 @@ namespace glic {
 
 // static
 std::unique_ptr<GlicStatusIcon> GlicStatusIcon::Create(
-    GlicController* controller,
+    GlicBackgroundDelegate* delegate,
     StatusTray* status_tray) {
 #if BUILDFLAG(IS_WIN)
-  return std::make_unique<GlicStatusIconWin>(controller, status_tray);
+  return std::make_unique<GlicStatusIconWin>(delegate, status_tray);
 #elif BUILDFLAG(IS_CHROMEOS)
-  return std::make_unique<GlicStatusIconChromeOS>(controller, status_tray);
+  return std::make_unique<GlicStatusIconChromeOS>(delegate, status_tray);
 #else
-  return std::make_unique<GlicStatusIcon>(controller, status_tray);
+  return std::make_unique<GlicStatusIcon>(delegate, status_tray);
 #endif
 }
 
-GlicStatusIcon::GlicStatusIcon(GlicController* controller,
+GlicStatusIcon::GlicStatusIcon(GlicBackgroundDelegate* delegate,
                                StatusTray* status_tray)
-    : controller_(controller),
+    : delegate_(delegate),
       status_tray_(status_tray)
 #if BUILDFLAG(IS_MAC)
       ,
@@ -115,9 +133,10 @@ GlicStatusIcon::~GlicStatusIcon() {
 }
 
 void GlicStatusIcon::Init() {
+  would_close_ = delegate_->WouldToggleClose();
   status_icon_ = status_tray_->CreateStatusIcon(
       StatusTray::GLIC_ICON, GetIcon(),
-      l10n_util::GetStringUTF16(GetTooltipMessageId(controller_->IsShowing())));
+      l10n_util::GetStringUTF16(GetTooltipMessageId(would_close_)));
 
   // If the StatusIcon cannot be created, don't configure it.
   if (!status_icon_) {
@@ -151,11 +170,14 @@ void GlicStatusIcon::Init() {
 }
 
 void GlicStatusIcon::OnStatusIconClicked() {
-  controller_->Toggle(mojom::InvocationSource::kOsButton);
+  delegate_->ToggleUI(/*prevent_close=*/false,
+                      mojom::InvocationSource::kOsButton);
 }
 
 void GlicStatusIcon::ExecuteCommand(int command_id, int event_flags) {
-  auto* profile = GlicProfileManager::GetInstance()->GetProfileForLaunch();
+  auto* profile_manager = GlicProfileManager::GetInstance();
+  auto* profile =
+      profile_manager ? profile_manager->GetProfileForLaunch() : nullptr;
   switch (command_id) {
     case IDC_GLIC_STATUS_ICON_MENU_CUSTOMIZE_KEYBOARD_SHORTCUT: {
       OpenGlicKeyboardShortcutSetting(profile);
@@ -183,7 +205,8 @@ void GlicStatusIcon::ExecuteCommand(int command_id, int event_flags) {
       break;
     }
     case IDC_GLIC_STATUS_ICON_MENU_TOGGLE: {
-      controller_->Toggle(mojom::InvocationSource::kOsButtonMenu);
+      delegate_->ToggleUI(/*prevent_close=*/false,
+                          mojom::InvocationSource::kOsButtonMenu);
       base::RecordAction(base::UserMetricsAction(
           "GlicOsEntrypoint.ContextMenuSelection.ToggleGlic"));
       break;
@@ -196,10 +219,20 @@ void GlicStatusIcon::ExecuteCommand(int command_id, int event_flags) {
 
 void GlicStatusIcon::OnBrowserCreated(BrowserWindowInterface* browser) {
   UpdateVisibilityOfExitInContextMenu();
+  RefreshToggleLabel();
 }
 
 void GlicStatusIcon::OnBrowserClosed(BrowserWindowInterface* browser) {
   UpdateVisibilityOfExitInContextMenu();
+  RefreshToggleLabel();
+}
+
+void GlicStatusIcon::OnBrowserActivated(BrowserWindowInterface* browser) {
+  RefreshToggleLabel();
+}
+
+void GlicStatusIcon::OnBrowserDeactivated(BrowserWindowInterface* browser) {
+  RefreshToggleLabel();
 }
 
 void GlicStatusIcon::UpdateHotkey(const ui::Accelerator& hotkey) {
@@ -247,6 +280,23 @@ void GlicStatusIcon::UpdateVisibilityOfExitInContextMenu() {
 #endif
 }
 
+void GlicStatusIcon::RefreshToggleLabel() {
+  const bool would_close = delegate_->WouldToggleClose();
+  if (would_close_ == would_close) {
+    return;
+  }
+  would_close_ = would_close;
+  if (status_icon_) {
+    status_icon_->SetToolTip(
+        l10n_util::GetStringUTF16(GetTooltipMessageId(would_close_)));
+  }
+  if (context_menu_) {
+    context_menu_->ChangeLabelForCommandId(
+        IDC_GLIC_STATUS_ICON_MENU_TOGGLE,
+        l10n_util::GetStringUTF16(GetMenuMessageId(would_close_)));
+  }
+}
+
 gfx::ImageSkia GlicStatusIcon::GetIcon() const {
   // On Mac and Linux, theming is handled by the system,. whereas ChromeOS and
   // Win need theme aware icons. (See GetIcon() implementations of
@@ -265,7 +315,7 @@ std::unique_ptr<StatusIconMenuModel> GlicStatusIcon::CreateStatusIconMenu() {
       std::make_unique<StatusIconMenuModel>(this);
 
   menu->AddItem(IDC_GLIC_STATUS_ICON_MENU_TOGGLE,
-                l10n_util::GetStringUTF16(IDS_GLIC_STATUS_ICON_MENU_TOGGLE));
+                l10n_util::GetStringUTF16(GetMenuMessageId(would_close_)));
 
   menu->AddSeparator(ui::NORMAL_SEPARATOR);
 

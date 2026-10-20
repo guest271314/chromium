@@ -8,6 +8,7 @@
 #include "base/callback_list.h"
 #include "base/json/json_reader.h"
 #include "base/scoped_observation.h"
+#include "base/test/gtest_util.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/mock_callback.h"
 #include "base/test/scoped_feature_list.h"
@@ -18,18 +19,17 @@
 #include "chrome/browser/glic/test_support/glic_test_environment.h"
 #include "chrome/browser/policy/policy_test_utils.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_tabstrip.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/tabs/split_tab_metrics.h"
+#include "chrome/browser/ui/tabs/tab_enums.h"
 #include "chrome/browser/ui/tabs/tab_group_deletion_dialog_controller.h"
 #include "chrome/browser/ui/tabs/tab_group_model.h"
 #include "chrome/browser/ui/tabs/tab_strip_model_observer.h"
 #include "chrome/browser/ui/tabs/tab_strip_model_test_utils.h"
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
-#include "chrome/browser/ui/views/tabs/tab_strip_controller.h"
 #include "chrome/browser/ui/web_applications/test/web_app_browsertest_util.h"
 #include "chrome/browser/web_applications/test/os_integration_test_override_impl.h"
 #include "chrome/browser/web_applications/test/prevent_close_test_base.h"
@@ -99,14 +99,14 @@ class TabStripModelPreventCloseTest : public PreventCloseTestBase,
               (override));
 
  protected:
-  void ObserveBrowser(Browser* browser) {
+  void ObserveBrowser(BrowserWindowInterface* browser) {
     browser_did_close_subscription_ =
         browser->RegisterBrowserDidClose(base::BindRepeating(
             [](TabStripModelPreventCloseTest* self, BrowserWindowInterface*) {
               self->observer_.Reset();
             },
             base::Unretained(this)));
-    observer_.Observe(browser->tab_strip_model());
+    observer_.Observe(browser->GetTabStripModel());
   }
 
   web_app::OsIntegrationTestOverrideBlockingRegistration faked_os_integration_;
@@ -121,16 +121,16 @@ IN_PROC_BROWSER_TEST_F(TabStripModelPreventCloseTest,
   SetPoliciesAndWaitUntilInstalled(ash::kCalculatorAppId,
                                    kPreventCloseEnabledForCalculator,
                                    kCalculatorForceInstalled);
-  Browser* const browser =
+  BrowserWindowInterface* const browser =
       LaunchPWA(ash::kCalculatorAppId, /*launch_in_window=*/true);
   ASSERT_TRUE(browser);
 
   ObserveBrowser(browser);
 
-  TabStripModel* const tab_strip_model = browser->tab_strip_model();
+  TabStripModel* const tab_strip_model = browser->GetTabStripModel();
   EXPECT_EQ(1, tab_strip_model->count());
-  EXPECT_EQ(!kShouldPreventClose, tab_strip_model->IsTabClosable(
-                                      tab_strip_model->GetActiveWebContents()));
+  EXPECT_EQ(!kShouldPreventClose,
+            tab_strip_model->IsTabClosable(tab_strip_model->GetActiveTab()));
 
   EXPECT_CALL(*this, OnTabCloseCancelled(_)).Times(kShouldPreventClose ? 1 : 0);
 
@@ -139,8 +139,8 @@ IN_PROC_BROWSER_TEST_F(TabStripModelPreventCloseTest,
 
   if (kShouldPreventClose) {
     ClearWebAppSettings();
-    EXPECT_TRUE(tab_strip_model->IsTabClosable(
-        tab_strip_model->GetActiveWebContents()));
+    EXPECT_TRUE(
+        tab_strip_model->IsTabClosable(tab_strip_model->GetActiveTab()));
 
     tab_strip_model->CloseAllTabs();
     EXPECT_EQ(0, tab_strip_model->count());
@@ -162,16 +162,15 @@ IN_PROC_BROWSER_TEST_F(
   SetPoliciesAndWaitUntilInstalled(ash::kCalculatorAppId,
                                    kPreventCloseEnabledForCalculator,
                                    kCalculatorForceInstalled);
-  Browser* const browser =
+  BrowserWindowInterface* const browser =
       LaunchPWA(ash::kCalculatorAppId, /*launch_in_window=*/false);
   ASSERT_TRUE(browser);
 
   ObserveBrowser(browser);
 
-  TabStripModel* const tab_strip_model = browser->tab_strip_model();
+  TabStripModel* const tab_strip_model = browser->GetTabStripModel();
   EXPECT_NE(0, tab_strip_model->count());
-  EXPECT_TRUE(
-      tab_strip_model->IsTabClosable(tab_strip_model->GetActiveWebContents()));
+  EXPECT_TRUE(tab_strip_model->IsTabClosable(tab_strip_model->GetActiveTab()));
 
   EXPECT_CALL(*this, OnTabCloseCancelled(_)).Times(0);
 
@@ -329,7 +328,7 @@ IN_PROC_BROWSER_TEST_F(TabStripModelBrowserTest,
 
   // Make sure the dialog is shown, and fake clicking the button.
   tab_groups::DeletionDialogController* deletion_dialog_controller =
-      browser()->GetFeatures().tab_group_deletion_dialog_controller();
+      tab_groups::DeletionDialogController::From(browser());
   EXPECT_TRUE(deletion_dialog_controller->IsShowingDialog());
 
   // Pull the dialog state and call the OnDialogOk method.
@@ -395,7 +394,7 @@ IN_PROC_BROWSER_TEST_F(TabStripModelBrowserTest,
 
   // Make sure the dialog is shown, and fake clicking the button.
   tab_groups::DeletionDialogController* deletion_dialog_controller =
-      browser()->GetFeatures().tab_group_deletion_dialog_controller();
+      tab_groups::DeletionDialogController::From(browser());
   EXPECT_TRUE(deletion_dialog_controller->IsShowingDialog());
 
   // Pull the dialog state and call the OnDialogOk method.
@@ -486,6 +485,11 @@ IN_PROC_BROWSER_TEST_F(TabStripModelBrowserTest, CommandDuplicateSelected) {
 #if BUILDFLAG(GOOGLE_CHROME_BRANDING) && BUILDFLAG(IS_CHROMEOS)
 #define MAYBE_TestCloseTabDuringMoveOperation \
   DISABLED_TestCloseTabDuringMoveOperation
+// TODO(crbug.com/542347163): Re-enable test.
+#elif BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_MAC) || \
+    BUILDFLAG(IS_WIN)
+#define MAYBE_TestCloseTabDuringMoveOperation \
+  DISABLED_TestCloseTabDuringMoveOperation
 #else
 #define MAYBE_TestCloseTabDuringMoveOperation TestCloseTabDuringMoveOperation
 #endif
@@ -520,40 +524,19 @@ IN_PROC_BROWSER_TEST_F(TabStripModelBrowserTest,
   TabStripModelCloseWebContentsOnChangeObserver close_tab_observer;
   tab_strip_model->AddObserver(&close_tab_observer);
 
-  EXPECT_DEATH_IF_SUPPORTED(tab_strip_model->MoveWebContentsAt(0, 1, false),
-                            "Check failed");
+  EXPECT_CHECK_DEATH(tab_strip_model->MoveWebContentsAt(0, 1, false));
   tab_strip_model->RemoveObserver(&close_tab_observer);
 }
 
-class TabStripModelTestTabGroupEntryPointsEnabled
-    : public TabStripModelBrowserTest {
- public:
-  TabStripModelTestTabGroupEntryPointsEnabled() {
-    scoped_feature_list_.InitAndEnableFeature(
-        features::kTabGroupMenuMoreEntryPoints);
-  }
-
-  TabStrip* tabstrip() {
-    return views::AsViewClass<HorizontalTabStripRegionView>(
-               browser()->GetBrowserView().tab_strip_view())
-        ->tab_strip();
-  }
-
- private:
-  base::test::ScopedFeatureList scoped_feature_list_;
-};
-
-IN_PROC_BROWSER_TEST_F(TabStripModelTestTabGroupEntryPointsEnabled,
-                       TestMostRecentlyUsedGroup) {
+IN_PROC_BROWSER_TEST_F(TabStripModelBrowserTest, TestMostRecentlyUsedGroup) {
   TabStripModel* tab_strip_model = browser()->tab_strip_model();
   TabGroupModel* tab_group_model = tab_strip_model->group_model();
   ASSERT_TRUE(tab_strip_model->SupportsTabGroups());
   ASSERT_TRUE(tab_group_model);
 
-  TabStripController* tab_strip_controller = tabstrip()->controller();
-  tab_strip_controller->CreateNewTab(NewTabTypes::kNewTabCommand);
-  tab_strip_controller->CreateNewTab(NewTabTypes::kNewTabCommand);
-  tab_strip_controller->CreateNewTab(NewTabTypes::kNewTabCommand);
+  chrome::AddTabAt(browser(), GURL(), -1, false);
+  chrome::AddTabAt(browser(), GURL(), -1, false);
+  chrome::AddTabAt(browser(), GURL(), -1, false);
 
   ASSERT_TRUE(tab_strip_model->count() == 4);
 
@@ -572,16 +555,16 @@ IN_PROC_BROWSER_TEST_F(TabStripModelTestTabGroupEntryPointsEnabled,
   EXPECT_TRUE(most_recently_used);
   EXPECT_EQ(*most_recently_used, group_3);
 
-  tab_strip_controller->RemoveTabFromGroup(3);
+  tab_strip_model->RemoveFromGroup({3});
   most_recently_used = tab_group_model->GetMostRecentTabGroupId();
   EXPECT_TRUE(most_recently_used);
   EXPECT_EQ(*most_recently_used, group_1);
 
-  tab_strip_controller->RemoveTabFromGroup(1);
+  tab_strip_model->RemoveFromGroup({1});
   most_recently_used = tab_group_model->GetMostRecentTabGroupId();
   EXPECT_TRUE(most_recently_used);
   EXPECT_EQ(*most_recently_used, group_2);
 
-  tab_strip_controller->RemoveTabFromGroup(2);
+  tab_strip_model->RemoveFromGroup({2});
   EXPECT_FALSE(tab_group_model->GetMostRecentTabGroupId());
 }

@@ -17,7 +17,7 @@
 #include "ash/test/active_window_waiter.h"
 #include "ash/webui/os_feedback_ui/url_constants.h"
 #include "ash/webui/shortcut_customization_ui/url_constants.h"
-#include "base/run_loop.h"
+#include "base/test/run_until.h"
 #include "chrome/browser/ash/app_list/app_list_client_impl.h"
 #include "chrome/browser/ash/app_list/search/test/app_list_search_test_helper.h"
 #include "chrome/browser/ash/app_list/search/test/search_results_changed_waiter.h"
@@ -28,6 +28,7 @@
 #include "chrome/browser/ui/ash/system_web_apps/system_web_app_ui_utils.h"
 #include "chrome/browser/web_applications/test/web_app_install_test_utils.h"
 #include "chrome/test/base/in_process_browser_test.h"
+#include "chromeos/ash/components/browser_delegate/browser_delegate.h"
 #include "chromeos/constants/chromeos_features.h"
 #include "components/app_constants/constants.h"
 #include "content/public/test/browser_test.h"
@@ -79,9 +80,9 @@ class AppListSearchBrowserTest : public InProcessBrowserTest {
     results_changed_waiter.Wait();
     results_waiter.Wait();
 
-    // Search UI updates are scheduled by posting a task on the main thread, run
-    // loop to run scheduled result update tasks.
-    base::RunLoop().RunUntilIdle();
+    // Wait for the posted search UI updates to show the result list.
+    ASSERT_TRUE(base::test::RunUntil(
+        [] { return AppListTestApi().GetTopVisibleSearchResultListView(); }));
   }
 
   void ClickTopSearchResult(
@@ -139,8 +140,9 @@ IN_PROC_BROWSER_TEST_F(AppListSearchBrowserTest, OpenFeedbackApp) {
 
   // Wait for the Feedback app to launch.
   navigation_observer.Wait();
-  Browser* feedback_browser = FindSystemWebAppBrowser(
-      browser()->profile(), SystemWebAppType::OS_FEEDBACK);
+  ash::BrowserDelegate* feedback_browser = FindSystemWebAppBrowser(
+      browser()->GetProfile(), SystemWebAppType::OS_FEEDBACK,
+      ash::BrowserType::kApp);
   EXPECT_TRUE(feedback_browser);
 }
 
@@ -159,8 +161,10 @@ IN_PROC_BROWSER_TEST_F(AppListSearchBrowserTest, OpenShortcutsApp) {
 
   // Wait for the Shortcut Customization app to launch.
   navigation_observer.Wait();
-  Browser* shortcut_customization_browser = FindSystemWebAppBrowser(
-      browser()->profile(), SystemWebAppType::SHORTCUT_CUSTOMIZATION);
+  ash::BrowserDelegate* shortcut_customization_browser =
+      FindSystemWebAppBrowser(browser()->GetProfile(),
+                              SystemWebAppType::SHORTCUT_CUSTOMIZATION,
+                              ash::BrowserType::kApp);
   EXPECT_TRUE(shortcut_customization_browser);
 }
 
@@ -182,8 +186,10 @@ IN_PROC_BROWSER_TEST_F(AppListSearchBrowserTest,
 
   // Wait for the Shortcut Customization app to launch.
   navigation_observer.Wait();
-  Browser* shortcut_customization_browser = FindSystemWebAppBrowser(
-      browser()->profile(), SystemWebAppType::SHORTCUT_CUSTOMIZATION);
+  ash::BrowserDelegate* shortcut_customization_browser =
+      FindSystemWebAppBrowser(browser()->GetProfile(),
+                              SystemWebAppType::SHORTCUT_CUSTOMIZATION,
+                              ash::BrowserType::kApp);
   EXPECT_TRUE(shortcut_customization_browser);
 }
 

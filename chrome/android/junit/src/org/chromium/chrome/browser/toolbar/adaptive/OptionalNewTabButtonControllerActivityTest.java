@@ -15,7 +15,6 @@ import android.content.res.Resources;
 import android.util.Pair;
 
 import androidx.test.core.app.ActivityScenario;
-import androidx.test.filters.MediumTest;
 
 import org.junit.After;
 import org.junit.Before;
@@ -25,12 +24,16 @@ import org.mockito.Mockito;
 import org.robolectric.RuntimeEnvironment;
 import org.robolectric.annotation.Config;
 
+import org.chromium.base.BaseSwitches;
 import org.chromium.base.test.util.CommandLineFlags;
-import org.chromium.base.test.util.Features.EnableFeatures;
+import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.chrome.browser.ChromeRobolectricTestRunner;
 import org.chromium.chrome.browser.ChromeTabbedActivity;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
+import org.chromium.chrome.browser.glic.GlicEnabling;
+import org.chromium.chrome.browser.glic.GlicKeyedService;
+import org.chromium.chrome.browser.glic.GlicKeyedServiceFactory;
 import org.chromium.chrome.browser.price_tracking.PriceTrackingFeatures;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.tab.MockTab;
@@ -50,12 +53,10 @@ import java.util.NoSuchElementException;
  * ChromeTabbedActivity}.
  */
 @RunWith(ChromeRobolectricTestRunner.class)
-@EnableFeatures(
-        ChromeFeatureList.ADAPTIVE_BUTTON_IN_TOP_TOOLBAR_CUSTOMIZATION_V2
-                + ":min_version_adaptive/0")
+@DisableFeatures(ChromeFeatureList.ANDROID_BOTTOM_BAR)
 @CommandLineFlags.Add({
     ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE,
-    ChromeSwitches.DISABLE_NATIVE_INITIALIZATION
+    BaseSwitches.DISABLE_NATIVE_INITIALIZATION
 })
 public class OptionalNewTabButtonControllerActivityTest {
 
@@ -71,6 +72,10 @@ public class OptionalNewTabButtonControllerActivityTest {
         when(incognitoProfile.isOffTheRecord()).thenReturn(true);
 
         PriceTrackingFeatures.setPriceAnnotationsEnabledForTesting(false);
+
+        GlicKeyedService glicKeyedService = Mockito.mock(GlicKeyedService.class);
+        GlicKeyedServiceFactory.setForTesting(glicKeyedService);
+        GlicEnabling.setEnabledForTesting(false);
 
         // Avoid leaking state from the previous test.
         AdaptiveToolbarStatePredictor.setToolbarStateForTesting(
@@ -113,7 +118,6 @@ public class OptionalNewTabButtonControllerActivityTest {
     }
 
     @Test
-    @MediumTest
     @Config(qualifiers = "w390dp-h820dp-land")
     public void testAlwaysShownOnPhone() {
         mActivityScenario.onActivity(
@@ -127,7 +131,6 @@ public class OptionalNewTabButtonControllerActivityTest {
     }
 
     @Test
-    @MediumTest
     @Config(qualifiers = "w600dp-h820dp")
     public void testNeverShownOnTablet() {
         mActivityScenario.onActivity(
@@ -142,7 +145,6 @@ public class OptionalNewTabButtonControllerActivityTest {
     }
 
     @Test
-    @MediumTest
     @Config(qualifiers = "w400dp-h600dp")
     public void testNightMode() {
         mActivityScenario.onActivity(
@@ -158,7 +160,6 @@ public class OptionalNewTabButtonControllerActivityTest {
     }
 
     @Test
-    @MediumTest
     @Config(qualifiers = "w400dp-h600dp")
     public void testNtp() {
         mActivityScenario.onActivity(

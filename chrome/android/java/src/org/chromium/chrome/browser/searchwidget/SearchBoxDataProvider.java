@@ -21,17 +21,18 @@ import org.chromium.chrome.browser.omnibox.UrlBarData;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.ui.searchactivityutils.SearchActivityPreferencesManager;
 import org.chromium.components.browser_ui.styles.ChromeColors;
+import org.chromium.components.metrics.OmniboxEventProtosIntDef.PageClassification;
 import org.chromium.components.security_state.ConnectionMaliciousContentStatus;
 import org.chromium.components.security_state.ConnectionSecurityLevel;
 import org.chromium.url.GURL;
 
 @NullMarked
-class SearchBoxDataProvider implements LocationBarDataProvider {
+public class SearchBoxDataProvider implements LocationBarDataProvider {
     private final NonNullObservableSupplier<@ControlsPosition Integer> mToolbarPosition =
             ObservableSuppliers.createNonNull(ControlsPosition.TOP);
     private final FuseboxSessionState mFuseboxSessionState = new FuseboxSessionState();
 
-    private /* PageClassification */ int mPageClassification;
+    private @PageClassification int mPageClassification;
     private @ColorInt int mPrimaryColor;
     private @Nullable GURL mGurl;
     private boolean mIsIncognito;
@@ -44,7 +45,7 @@ class SearchBoxDataProvider implements LocationBarDataProvider {
      *
      * @param context current context
      */
-    /* package */ void initialize(Context context, boolean isIncognito) {
+    public void initialize(Context context, boolean isIncognito) {
         mPrimaryColor = ChromeColors.getPrimaryBackgroundColor(context, isIncognito);
         mIsIncognito = isIncognito;
     }
@@ -144,7 +145,7 @@ class SearchBoxDataProvider implements LocationBarDataProvider {
     }
 
     @Override
-    public int getPageClassification(boolean prefetch) {
+    public @PageClassification int getPageClassification(boolean prefetch) {
         return mPageClassification;
     }
 
@@ -163,7 +164,7 @@ class SearchBoxDataProvider implements LocationBarDataProvider {
         return 0;
     }
 
-    void setPageClassification(int pageClassification) {
+    public void setPageClassification(@PageClassification int pageClassification) {
         mPageClassification = pageClassification;
     }
 

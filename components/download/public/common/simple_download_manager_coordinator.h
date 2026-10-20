@@ -79,11 +79,6 @@ class COMPONENTS_DOWNLOAD_EXPORT SimpleDownloadManagerCoordinator
   // Get the download item for |guid|.
   DownloadItem* GetDownloadByGuid(const std::string& guid);
 
-  // Asynchronously gets the download item for |guid| using a callback.
-  void GetDownloadByGuidAsync(
-      const std::string& guid,
-      SimpleDownloadManager::GetDownloadCallback callback);
-
   // Returns a non-empty notifier to be used for observing download events.
   AllDownloadEventNotifier* GetNotifier();
 
@@ -96,6 +91,10 @@ class COMPONENTS_DOWNLOAD_EXPORT SimpleDownloadManagerCoordinator
   // that refer to removed files. The check runs in the background and may
   // finish asynchronously after this method returns.
   void CheckForExternallyRemovedDownloads();
+
+  // Calls `callback` when active/in-progress downloads are initialized.
+  // Buffers the callback if simple_download_manager_ is not yet set.
+  void WaitForActiveDownloadsInitialization(base::OnceClosure callback);
 
  private:
   // SimpleDownloadManager::Observer implementation.
@@ -120,6 +119,9 @@ class COMPONENTS_DOWNLOAD_EXPORT SimpleDownloadManagerCoordinator
 
   // Callback to download the url when full manager becomes ready.
   DownloadWhenFullManagerStartsCallBack download_when_full_manager_starts_cb_;
+
+  // Callbacks waiting for active downloads to be initialized.
+  std::vector<base::OnceClosure> active_downloads_callbacks_;
 
   // Observers that want to be notified of changes to the set of downloads.
   base::ObserverList<Observer> observers_;

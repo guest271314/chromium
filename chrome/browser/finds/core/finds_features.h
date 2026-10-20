@@ -7,6 +7,7 @@
 
 #include "base/feature_list.h"
 #include "base/metrics/field_trial_params.h"
+#include "base/time/time.h"
 
 namespace finds::features {
 
@@ -18,6 +19,10 @@ BASE_DECLARE_FEATURE(kChromeFindsInternals);
 
 // The cooldown period in days for the model execution cooldown.
 extern const base::FeatureParam<int> kModelExecutionCooldownDurationInDays;
+
+// The history time window in days to query history entries. This should match
+// the model execution cooldown duration, except for testing configurations.
+extern const base::FeatureParam<int> kHistoryTimeWindowInDays;
 
 // The cooldown period in days for each theme not interested.
 extern const base::FeatureParam<int> kThemeCooldownDurationInDays;
@@ -67,6 +72,20 @@ extern const base::FeatureParam<bool> kEnableThemeUrlVisitCountOptIn;
 
 // The feature flag param to block model execution.
 extern const base::FeatureParam<bool> kBlockModelExecution;
+
+// The feature flag param to enable the omnibox recent search suggestion opt-in
+// flow.
+extern const base::FeatureParam<bool> kEnableOmniboxRecentSearchSuggestionOptIn;
+
+// The number of times a user should click recent search suggestions in the
+// omnibox before triggering the opt-in promo.
+extern const base::FeatureParam<int>
+    kOmniboxRecentSearchSuggestionCountThreshold;
+
+// The timeout for an individual model execution request. This override is
+// needed for requests to finish before erroring out (accounts for the time it
+// takes to finish text generation, finds feature orchestrator post processing).
+extern const base::FeatureParam<base::TimeDelta> kModelExecutionRequestTimeout;
 
 }  // namespace finds::features
 

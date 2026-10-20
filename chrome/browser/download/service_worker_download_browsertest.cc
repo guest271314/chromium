@@ -19,7 +19,7 @@
 #include "chrome/browser/download/download_prefs.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/renderer_context_menu/render_view_context_menu_test_util.h"
-#include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/test/base/in_process_browser_test.h"
@@ -62,6 +62,8 @@ constexpr char kSwImagePath[] = "/sw-image.png";
 // SW observes the fetch event but does NOT call respondWith, exercising the
 // "result == nullopt" fallback branch.
 constexpr char kSwFallbackPath[] = "/sw-target-fallback.txt";
+// Same as kSwFallbackPath but for the Save Image As path (image/png MIME type).
+constexpr char kSwImageFallbackPath[] = "/sw-image-fallback.png";
 // SW returns a 404 response with a non-empty body. The user explicitly asked
 // to save, so the body should still land on disk.
 constexpr char kSwErrorPath[] = "/sw-target-error.txt";
@@ -114,7 +116,8 @@ self.addEventListener('fetch', (e) => {
         { headers: {'content-type': 'image/png'} }));
     return;
   }
-  if (url.pathname === '/sw-target-fallback.txt') {
+  if (url.pathname === '/sw-target-fallback.txt' ||
+      url.pathname === '/sw-image-fallback.png') {
     // Observe the event but decline to respond. The download path must
     // fall back to the network factory.
     return;
@@ -214,6 +217,9 @@ std::unique_ptr<net::test_server::HttpResponse> HandleRequest(
   if (request.relative_url == kSwFallbackPath) {
     // Network response used by the SW-declines-to-respond fallback test.
     return reply(kNetworkResponseBody, "text/plain");
+  }
+  if (request.relative_url == kSwImageFallbackPath) {
+    return reply(kNetworkResponseBody, "image/png");
   }
   if (request.relative_url == kSwErrorPath) {
     // Network counterpart for kSwErrorPath; only reached if the SW path is
@@ -315,15 +321,16 @@ IN_PROC_BROWSER_TEST_F(ServiceWorkerDownloadBrowserTest,
   EXPECT_EQ(std::string(kSwResponseBody), ReadFile(saved));
 }
 
-// Context-menu Save Link As / Save Image As -> SW intercepts -> SW's
-// bytes on disk. The two entry points share the browser-initiated
-// download path in RenderViewContextMenu; parameterize them so both
-// variants run against the same assertions.
+// Context-menu Save Link As / Save Image As variants — covers both SW-served
+// and SW-declines-to-respond (fallback) cases. The two entry points share the
+// browser-initiated download path in RenderViewContextMenu; parameterize so
+// all variants run against the same body.
 struct ContextMenuSaveAsCase {
   const char* test_name;
   const char* url_path;
   blink::mojom::ContextMenuDataMediaType media_type;
   int command_id;
+  std::string_view expected_body;
 };
 
 class ServiceWorkerDownloadContextMenuTest
@@ -331,7 +338,7 @@ class ServiceWorkerDownloadContextMenuTest
       public ::testing::WithParamInterface<ContextMenuSaveAsCase> {};
 
 IN_PROC_BROWSER_TEST_P(ServiceWorkerDownloadContextMenuTest,
-                       ServedByServiceWorker) {
+                       ContextMenuDownload) {
   const ContextMenuSaveAsCase& cs = GetParam();
   content::WebContents* web_contents = NavigateAndWaitForSWControl();
 
@@ -358,7 +365,7 @@ IN_PROC_BROWSER_TEST_P(ServiceWorkerDownloadContextMenuTest,
 
   base::FilePath saved = WaitForOneCompletedDownload();
   ASSERT_FALSE(saved.empty());
-  EXPECT_EQ(std::string(kSwResponseBody), ReadFile(saved));
+  EXPECT_EQ(std::string(cs.expected_body), ReadFile(saved));
 }
 
 INSTANTIATE_TEST_SUITE_P(
@@ -370,12 +377,30 @@ INSTANTIATE_TEST_SUITE_P(
             kSwTargetPath,
             blink::mojom::ContextMenuDataMediaType::kNone,
             IDC_CONTENT_CONTEXT_SAVELINKAS,
+            kSwResponseBody,
         },
         ContextMenuSaveAsCase{
             "SaveImageAs",
             kSwImagePath,
             blink::mojom::ContextMenuDataMediaType::kImage,
             IDC_CONTENT_CONTEXT_SAVEIMAGEAS,
+            kSwResponseBody,
+        },
+        // SW observes the FetchEvent but does NOT call respondWith; the
+        // download must fall back to the network factory.
+        ContextMenuSaveAsCase{
+            "SaveLinkAsFallback",
+            kSwFallbackPath,
+            blink::mojom::ContextMenuDataMediaType::kNone,
+            IDC_CONTENT_CONTEXT_SAVELINKAS,
+            kNetworkResponseBody,
+        },
+        ContextMenuSaveAsCase{
+            "SaveImageAsFallback",
+            kSwImageFallbackPath,
+            blink::mojom::ContextMenuDataMediaType::kImage,
+            IDC_CONTENT_CONTEXT_SAVEIMAGEAS,
+            kNetworkResponseBody,
         }),
     [](const ::testing::TestParamInfo<ContextMenuSaveAsCase>& info) {
       return info.param.test_name;
@@ -384,15 +409,8 @@ INSTANTIATE_TEST_SUITE_P(
 // SW observes the FetchEvent but does NOT call respondWith; the
 // download must fall back to the network factory and the file on disk
 // must contain the network's bytes.
-//
-// TODO(crbug.com/40410035): The current implementation passes a no-op
-// FallbackCallback to ServiceWorkerMainResourceLoaderInterceptor::
-// MaybeCreateLoader (returning nullptr), so when the SW declines to respond
-// the download hangs instead of proceeding to the network. Re-enable this
-// test once the FallbackCallback returns a valid network URLLoaderFactory.
-IN_PROC_BROWSER_TEST_F(
-    ServiceWorkerDownloadBrowserTest,
-    DISABLED_DirectDownloadFallsBackToNetworkWhenSWDeclines) {
+IN_PROC_BROWSER_TEST_F(ServiceWorkerDownloadBrowserTest,
+                       DirectDownloadFallsBackToNetworkWhenSWDeclines) {
   NavigateAndWaitForSWControl();
   StartDirectDownload(embedded_test_server()->GetURL(kSwFallbackPath));
 
@@ -453,22 +471,22 @@ IN_PROC_BROWSER_TEST_F(ServiceWorkerDownloadBrowserTest,
 // OTR storage partition's interceptor wiring.
 IN_PROC_BROWSER_TEST_F(ServiceWorkerDownloadBrowserTest,
                        IncognitoDirectDownloadServedByServiceWorker) {
-  Browser* incognito = CreateIncognitoBrowser();
+  BrowserWindowInterface* incognito = CreateIncognitoBrowser();
   ASSERT_TRUE(incognito);
 
   // Mirror the per-browser download prefs setup the base fixture does for
   // the regular browser, so the incognito download lands in the temp dir.
   DownloadPrefs* incognito_prefs =
-      DownloadPrefs::FromBrowserContext(incognito->profile());
+      DownloadPrefs::FromBrowserContext(incognito->GetProfile());
   incognito_prefs->SetDownloadPath(GetDownloadDirectory(browser()));
   incognito_prefs->SetSaveFilePath(GetDownloadDirectory(browser()));
-  incognito->profile()->GetPrefs()->SetBoolean(prefs::kPromptForDownload,
-                                               false);
+  incognito->GetProfile()->GetPrefs()->SetBoolean(prefs::kPromptForDownload,
+                                                  false);
 
   GURL page_url = embedded_test_server()->GetURL(kPagePath);
   ASSERT_TRUE(ui_test_utils::NavigateToURL(incognito, page_url));
   content::WebContents* web_contents =
-      incognito->tab_strip_model()->GetActiveWebContents();
+      incognito->GetTabStripModel()->GetActiveWebContents();
   EXPECT_EQ(true, content::EvalJs(web_contents, "window.swReady"));
 
   auto params = std::make_unique<download::DownloadUrlParameters>(
@@ -562,20 +580,13 @@ IN_PROC_BROWSER_TEST_F(ServiceWorkerDownloadFeatureFlagOffBrowserTest,
 // bytes must equal the second-attempt body; never the first attempt's
 // partial bytes prepended to the second response.
 //
-// TODO(crbug.com/40410035): An SW-served download whose body stream errors
-// terminates as CANCELLED (terminal, non-resumable) instead of INTERRUPTED.
-// The premise is wrong for SW-served downloads: the abort is a transient
-// stream failure, not a user action. One option would be to make the
-// HandleRequestCompletionStatus mapping to distinguish SW-originated
-// aborts and sending ERR_FAILED instead of ERR_ABORT, so that
-// StreamWaiter::OnAborted advances the download to INTERRUPTED with
-// reason NETWORK_FAILED; the user-resume call below then drives the
-// restart-on-resume path under test here. The restart-on-resume
-// invariant itself is covered by the
-// DownloadItemTest.ResumeOfSWFetchedDownloadRestartsAndKeepsSW unit test.
-IN_PROC_BROWSER_TEST_F(
-    ServiceWorkerDownloadBrowserTest,
-    DISABLED_ResumeOfSWFetchedDownloadRestartsViaServiceWorker) {
+// The SW-served stream error maps to NETWORK_FAILED (not the terminal
+// USER_CANCELED), so the download interrupts and the user-resume call below
+// drives the restart-on-resume path. The restart-on-resume invariant itself is
+// covered by the DownloadItemTest.ResumeOfSWFetchedDownloadRestartsAndKeepsSW
+// unit test. (crbug.com/40410035)
+IN_PROC_BROWSER_TEST_F(ServiceWorkerDownloadBrowserTest,
+                       ResumeOfSWFetchedDownloadRestartsViaServiceWorker) {
   NavigateAndWaitForSWControl();
 
   std::unique_ptr<content::DownloadTestObserver> interrupt_observer(

@@ -128,6 +128,12 @@ void SetFetchDestinationFromModuleType(
       resource_request.SetRequestContext(module_request.ContextType());
       resource_request.SetRequestDestination(module_request.Destination());
       break;
+    case ModuleType::kTEXT:
+      resource_request.SetRequestContext(
+          mojom::blink::RequestContextType::TEXT);
+      resource_request.SetRequestDestination(
+          network::mojom::RequestDestination::kText);
+      break;
     case ModuleType::kInvalid:
       // ModuleTreeLinker checks that the module type is valid
       // before creating ModuleScriptFetchRequest objects.
@@ -167,7 +173,8 @@ void ModuleScriptLoader::FetchInternal(
   // moduleType.</spec>
   SetFetchDestinationFromModuleType(resource_request, module_request);
 
-  ResourceLoaderOptions options(&request_world);
+  ResourceLoaderOptions options =
+      ResourceLoaderOptions::CreateForTargetWorld(&request_world);
 
   // <spec step="11">Set request's initiator type to "script".</spec>
   options.initiator_info.name = fetch_initiator_type_names::kScript;
@@ -332,21 +339,20 @@ void ModuleScriptLoader::NotifyFetchFinishedSuccess(
       module_script_ = ValueWrapperSyntheticModuleScript::
           CreateJSONWrapperSyntheticModuleScript(params, modulator_);
       break;
+    case ResolvedModuleType::kTEXT:
+      module_script_ = ValueWrapperSyntheticModuleScript::
+          CreateTextWrapperSyntheticModuleScript(params, modulator_);
+      break;
     case ResolvedModuleType::kCSS:
       // <spec step="13.7.3"> If mimeType is "text/css" and moduleType is "css",
       // then set moduleScript to the result of creating a CSS module script
       // given sourceText and settingsObject.</spec>
       {
-        // Retrieve the pre-created CSS module from the module map entry and
-        // update the contents with the fetch result. The empty CSSStyleSheet
-        // was created at fetch start time in FetchSingleModuleScript.
-        ModuleScript* pre_created = modulator_->GetFetchedModuleScript(
-            params.SourceURL(), ModuleType::kCSS);
-        CHECK(pre_created);
-        module_script_ =
-            ValueWrapperSyntheticModuleScript::UpdateCSSModuleScript(
-                static_cast<ValueWrapperSyntheticModuleScript*>(pre_created),
-                params.GetSourceText().ToString(), modulator_);
+        // This can be reached via the parser via modulepreload (which disallows
+        // script), so we need to allow user agent script.
+        ScriptForbiddenScope::AllowUserAgentScript allow_script;
+        module_script_ = ValueWrapperSyntheticModuleScript::
+            CreateCSSWrapperSyntheticModuleScript(params, modulator_);
       }
       break;
     case ResolvedModuleType::kJavaScript:

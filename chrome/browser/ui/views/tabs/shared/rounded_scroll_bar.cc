@@ -7,7 +7,6 @@
 #include <memory>
 
 #include "base/functional/bind.h"
-#include "base/i18n/rtl.h"
 #include "cc/paint/paint_flags.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/color/color_id.h"
@@ -34,7 +33,7 @@ constexpr int kThumbTrailingPadding = 4;
 
 RoundedScrollBar::Thumb::Thumb(RoundedScrollBar* scroll_bar)
     : views::BaseScrollBarThumb(scroll_bar), scroll_bar_(scroll_bar) {
-  // |scroll_bar| isn't done being constructed; it's not safe to do anything
+  // `scroll_bar` isn't done being constructed; it's not safe to do anything
   // that might reference it yet.
 }
 

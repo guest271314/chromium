@@ -10,6 +10,7 @@ load("@chromium-luci//gn_args.star", "gn_args")
 load("@chromium-luci//try.star", "try_")
 load("//lib/siso.star", "siso")
 load("//lib/try_constants.star", "try_constants")
+load("//project.star", "settings")
 
 try_.defaults.set(
     executable = try_constants.DEFAULT_EXECUTABLE,
@@ -23,6 +24,7 @@ try_.defaults.set(
     execution_timeout = try_constants.DEFAULT_EXECUTION_TIMEOUT,
     experiments = {
         "chromium_tests.resultdb_module": 100,
+        "luci.buildbucket.run_in_turboci": 100,
     },
     orchestrator_cores = 4,
     service_account = try_constants.DEFAULT_SERVICE_ACCOUNT,
@@ -50,6 +52,18 @@ try_.builder(
     ),
     cores = 32,
     ssd = True,
+    properties = {
+        # The format of these properties is defined at archive/properties.proto
+        "$build/archive": {
+            "source_side_spec_path": [
+                "src",
+                "infra",
+                "archive_config",
+                "android-desktop-arm64-archive-rel.json",
+            ],
+            "verify_paths_only": True,
+        },
+    },
 )
 
 try_.builder(
@@ -66,6 +80,18 @@ try_.builder(
     ),
     cores = 32,
     ssd = True,
+    properties = {
+        # The format of these properties is defined at archive/properties.proto
+        "$build/archive": {
+            "source_side_spec_path": [
+                "src",
+                "infra",
+                "archive_config",
+                "android-desktop-x64-archive-rel.json",
+            ],
+            "verify_paths_only": True,
+        },
+    },
 )
 
 try_.builder(
@@ -87,7 +113,6 @@ try_.builder(
 try_.orchestrator_builder(
     name = "android-desktop-x64-rel",
     branch_selector = branches.selector.ANDROID_BRANCHES,
-    description_html = "Run Chromium tests on Android Desktop emulators.",
     mirrors = [
         "ci/android-desktop-x64-compile-rel",
         "ci/android-desktop-x64-rel-15-tests",
@@ -107,11 +132,19 @@ try_.orchestrator_builder(
     # are addressed
     # use_orchestrator_pool = True,
     cq_settings = try_.cq_settings(
+        equivalent_builder = "{}:try/android-internal-desktop-x64-rel".format(settings.chrome_project),
+        equivalent_builder_percentage = 100,
+        equivalent_builder_whitelist = "google/chrome-al-eng@google.com",
         on_default_cq = True,
+        reuse_max_commit_distance = 800 if settings.is_main else None,
     ),
     experiments = {
         # crbug.com/40617829
         "chromium.enable_cleandead": 100,
+        # go/rts-project-proposal
+        "chromium_rts.filter_file_analysis": 100,
+        # crbug.com/40280175
+        "chromium_checkout.expand_submodules": 100,
     },
     main_list_view = "try",
     use_clang_coverage = True,
@@ -121,7 +154,6 @@ try_.orchestrator_builder(
 try_.compilator_builder(
     name = "android-desktop-x64-rel-compilator",
     branch_selector = branches.selector.ANDROID_BRANCHES,
-    description_html = "Compilator builder for android-desktop-x64-rel",
     main_list_view = "try",
 )
 
@@ -166,6 +198,7 @@ try_.builder(
             "ci/android-desktop-arm64-deterministic-rel",
         ],
     ),
+    ssd = True,
     execution_timeout = 6 * time.hour,
 )
 
@@ -191,6 +224,7 @@ try_.builder(
             "ci/android-desktop-x64-deterministic-rel",
         ],
     ),
+    ssd = True,
     execution_timeout = 6 * time.hour,
 )
 
@@ -218,6 +252,7 @@ try_.builder(
             "release_try_builder",
         ],
     ),
+    ssd = True,
 )
 
 try_.builder(
@@ -237,7 +272,6 @@ try_.builder(
             "official_optimize",
             # TODO(crbug.com/433988303): Swap to stable.
             "dev_channel",
-            "v8_release_branch",
         ],
     ),
     cores = 32,
@@ -247,15 +281,13 @@ try_.builder(
     properties = {
         "$build/binary_size": {
             "analyze_targets": [
-                "//chrome/android:trichrome_64_minimal_apks",
-                "//chrome/android:trichrome_library_64_apk",
+                "//chrome/android:chrome_and_webview_64_minimal_apks",
                 "//chrome/android:validate_expectations",
                 "//tools/binary_size:binary_size_trybot_py",
             ],
             "compile_targets": [
                 "check_chrome_static_initializers",
-                "trichrome_64_minimal_apks",
-                "trichrome_library_64_apk",
+                "chrome_and_webview_64_minimal_apks",
                 "validate_expectations",
             ],
         },
@@ -280,7 +312,6 @@ try_.builder(
             "official_optimize",
             # TODO(crbug.com/433988303): Swap to stable.
             "dev_channel",
-            "v8_release_branch",
         ],
     ),
     cores = 32,
@@ -290,15 +321,13 @@ try_.builder(
     properties = {
         "$build/binary_size": {
             "analyze_targets": [
-                "//chrome/android:trichrome_64_minimal_apks",
-                "//chrome/android:trichrome_library_64_apk",
+                "//chrome/android:chrome_and_webview_64_minimal_apks",
                 "//chrome/android:validate_expectations",
                 "//tools/binary_size:binary_size_trybot_py",
             ],
             "compile_targets": [
                 "check_chrome_static_initializers",
-                "trichrome_64_minimal_apks",
-                "trichrome_library_64_apk",
+                "chrome_and_webview_64_minimal_apks",
                 "validate_expectations",
             ],
         },

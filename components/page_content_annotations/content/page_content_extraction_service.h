@@ -5,6 +5,8 @@
 #ifndef COMPONENTS_PAGE_CONTENT_ANNOTATIONS_CONTENT_PAGE_CONTENT_EXTRACTION_SERVICE_H_
 #define COMPONENTS_PAGE_CONTENT_ANNOTATIONS_CONTENT_PAGE_CONTENT_EXTRACTION_SERVICE_H_
 
+#include <stdint.h>
+
 #include <memory>
 #include <optional>
 #include <set>
@@ -89,9 +91,30 @@ enum class PageContentExtractionEnablementReason {
 
 class AnnotatedPageContentRequest;
 struct ExtractedPageContentResult;
-class PageContentCache;
 class PageContentCacheHandler;
 
+// A Profile-keyed service that manages the extraction, caching, and retrieval
+// of page content (specifically `AnnotatedPageContent` for HTML pages and plain
+// text for PDFs).
+//
+// This service coordinates:
+// - Caching: Maintains an in-memory and on-disk cache of extracted page
+//   content (for HTML pages). PDF extractions are not cached.
+// - Observers: Automatically extracts page content when an observer is
+//   registered and fires notifications to registered `Observer`s upon
+//   extraction.
+// - Lifecycle management: Cleans up cached content when tabs are closed,
+//   handles tab visibility/backgrounding state, etc.
+//
+// Developers looking to fetch page content should prefer using this service
+// over the more direct `optimization_guide::GetAIPageContent` to benefit from:
+// 1. Shared Caching: Avoids running redundant extractions on the renderer if
+//    multiple features query the same page.
+// 2. Lifecycle Integration: Automatically handles waiting for the page to
+//    load, settling of layout stability, and cache cleanup on tab closing.
+//
+// For a detailed integration guide, comparison matrix, and usage examples,
+// see `components/page_content_annotations/content/pces_guide.md`.
 class PageContentExtractionService : public KeyedService,
                                      public base::SupportsUserData {
  public:
@@ -99,15 +122,45 @@ class PageContentExtractionService : public KeyedService,
       base::OnceCallback<void(std::optional<ExtractedPageContentResult>)>;
   using GetServerUploadEligibilityCallback =
       base::OnceCallback<void(std::optional<bool>)>;
+  using GetPageContentCallback = base::OnceCallback<void(
+      std::optional<optimization_guide::proto::PageContext>)>;
+  using GetAllTabIdsCallback = base::OnceCallback<void(std::vector<int64_t>)>;
 
   class Observer : public base::CheckedObserver {
    public:
-    // Invoked when `page_content` is extracted for `page`. The extraction is
-    // triggered for every page once the page has sufficiently loaded. The
-    // `page_content` holds either the APC for a non-PDF page; or the PDF text
-    // for a PDF page.
+    // Invoked when `page_content` is extracted for `page`, whether
+    // automatically (once the page loads and settles, or when the tab is
+    // hidden, depending on configuration) or on demand. May be invoked multiple
+    // times for the same `page` (e.g., on eligible same-document navigations,
+    // tab hides, or on-demand refreshes), or not at all if extraction is
+    // skipped or fails. `page_content` holds either the APC for a non-PDF page
+    // or the PDF text for a PDF page.
+    //
+    // For non-PDF pages, the extracted content and its server upload
+    // eligibility are cached before this method is called, so synchronous
+    // calls to `GetExtractedPageContentAndEligibilityForPage(page)` and
+    // `GetServerUploadEligibilityForPage(page)` from within this method will
+    // return the newly extracted result.
     virtual void OnPageContentExtracted(content::Page& page,
                                         PageContent page_content) {}
+
+    // Invoked when a navigation of the primary main frame resets page content
+    // tracking for its tab (discarding any previously extracted content), i.e.
+    // whenever a new automatic extraction cycle begins. `current_page` is the
+    // new primary page if the primary page changed, or the existing primary
+    // page for a same-document navigation. This fires for every
+    // cross-document navigation, and for same-document navigations that are
+    // significant enough to trigger a new extraction (see
+    // `AnnotatedPageContentRequest`). A matching `OnPageContentExtracted()`
+    // for `current_page` follows if and when extraction succeeds, but is not
+    // guaranteed (e.g. `current_page` is not eligible, or is navigated away
+    // from first).
+    //
+    // By the time this is called, pending async requests for any discarded
+    // content have already resolved with `std::nullopt`. Observers must not
+    // synchronously call back into the service from this method.
+    virtual void OnPageContentReset(content::Page& current_page,
+                                    bool is_same_document) {}
   };
 
 #if BUILDFLAG(IS_ANDROID)
@@ -158,13 +211,16 @@ class PageContentExtractionService : public KeyedService,
   // Asynchronous versions of the getter methods above.
   // These methods will resolve immediately if the extraction is already
   // complete, or wait for the initial extraction to finish if there is one
-  // pending, or is not scheduled to occur. If the extraction request is
-  // cleared or reset (e.g. from a navigation or destruction), the callbacks
-  // will resolve with std::nullopt.
+  // pending. If the extraction request is cleared or reset (e.g. from a
+  // navigation or destruction), the callbacks will resolve with std::nullopt.
+  // If the initial extraction has not been triggered, it will be iff
+  // `trigger_if_not_cached` is true. (This is not available for
+  // GetServerUploadEligibilityForPageAsync.)
   // Virtual for testing.
   virtual void GetExtractedPageContentAndEligibilityForPageAsync(
       content::Page& page,
-      GetExtractedPageContentAndEligibilityCallback callback);
+      GetExtractedPageContentAndEligibilityCallback callback,
+      bool trigger_if_not_cached = true);
   virtual void GetServerUploadEligibilityForPageAsync(
       content::Page& page,
       GetServerUploadEligibilityCallback callback);
@@ -200,21 +256,30 @@ class PageContentExtractionService : public KeyedService,
   // entries in the page content cache.
   void RunCleanUpTasksWithActiveTabs(const std::set<int64_t>& all_tab_ids);
 
-  // Disk cache for getting page contents for tabs without webcontents.
-  PageContentCache* GetPageContentCache();
+  bool IsOnDiskCacheEnabled() const;
+
+  // Asynchronously retrieves the on-disk cached page context for a specific
+  // tab. This should be used when a tab is not active and has no WebContents.
+  void GetPageContentFromOnDiskCache(int64_t tab_id,
+                                     GetPageContentCallback callback);
+
+  // Asynchronously retrieves all tab IDs that have cached page content on-disk.
+  void GetOnDiskCachedTabIds(GetAllTabIdsCallback callback);
 
  protected:
-  friend class AnnotatedPageContentRequest;
-
-  // Invoked when `page_content` is extracted for `page`, to notify the
-  // observers. The `page_content` holds either the APC for a non-PDF page; or
-  // the PDF text for a PDF page. `tab_id` for the tab where page is loaded, if
-  // available.
+  // Invoked when `page_content` (either the APC for a non-PDF page or the PDF
+  // text for a PDF page) is extracted for `page`. Notifies observers and, if
+  // enabled for non-PDF pages, updates the on-disk cache using `tab_id` and
+  // `screenshot_data`.
   virtual void OnPageContentExtracted(
       content::Page& page,
       PageContent page_content,
       const std::vector<uint8_t>& screenshot_data,
       std::optional<int> tab_id);
+
+ private:
+  friend class AnnotatedPageContentRequest;
+  friend class PageContentCacheBrowserTest;
 
   AnnotatedPageContentRequest* GetAnnotatedPageContentRequestFromWebContents(
       content::WebContents* web_contents);
@@ -226,7 +291,6 @@ class PageContentExtractionService : public KeyedService,
   const bool is_page_content_cache_enabled_;
   const std::unique_ptr<PageContentCacheHandler> page_content_cache_handler_;
 
- private:
   base::WeakPtrFactory<PageContentExtractionService> weak_ptr_factory_{this};
 };
 

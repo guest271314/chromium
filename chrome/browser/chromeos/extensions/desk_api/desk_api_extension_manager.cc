@@ -6,13 +6,12 @@
 
 #include <memory>
 
+#include "ash/constants/ash_extension_constants.h"
 #include "base/files/file_path.h"
 #include "base/functional/bind.h"
 #include "base/strings/string_util.h"
 #include "chrome/browser/enterprise/util/affiliation.h"
 #include "chrome/browser/extensions/component_loader.h"
-#include "chrome/browser/extensions/extension_service.h"
-#include "chrome/common/extensions/extension_constants.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/grit/browser_resources.h"
 #include "components/prefs/pref_change_registrar.h"
@@ -137,7 +136,8 @@ std::string DeskApiExtensionManager::GetManifest() const {
   std::string manifest_contents =
       ui::ResourceBundle::GetSharedInstance().LoadDataResourceString(
           IDR_DESK_API_MANIFEST);
-  DCHECK(manifest_contents.find(kDomainsTag) != std::string::npos);
+  CHECK(manifest_contents.find(kDomainsTag) != std::string::npos,
+        base::NotFatalUntil::M161);
   base::ReplaceFirstSubstringAfterOffset(&manifest_contents, 0, kDomainsTag,
                                          domain_list);
 

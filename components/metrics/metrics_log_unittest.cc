@@ -10,6 +10,7 @@
 #include <string>
 
 #include "base/base64.h"
+#include "base/byte_size.h"
 #include "base/command_line.h"
 #include "base/memory/ptr_util.h"
 #include "base/metrics/bucket_ranges.h"
@@ -42,6 +43,9 @@
 
 #if BUILDFLAG(IS_ANDROID)
 #include "base/android/android_info.h"
+#include "base/android/device_info.h"
+#include "components/metrics/version_utils.h"
+#include "third_party/abseil-cpp/absl/cleanup/cleanup.h"
 #endif
 
 #if BUILDFLAG(IS_WIN)
@@ -315,7 +319,8 @@ TEST_F(MetricsLogTest, BasicRecord) {
   auto app_os_arch = base::SysInfo::ProcessCPUArchitecture();
   if (!app_os_arch.empty())
     hardware->set_app_cpu_architecture(app_os_arch);
-  hardware->set_system_ram_mb(base::SysInfo::AmountOfPhysicalMemory().InMiB());
+  hardware->set_system_ram_mb(
+      base::SysInfo::AmountOfTotalPhysicalMemory().InMiB());
   hardware->set_hardware_class(GetExpectedHardwareClass());
 #if BUILDFLAG(IS_WIN)
   hardware->set_dll_base(reinterpret_cast<uint64_t>(CURRENT_MODULE()));
@@ -337,10 +342,12 @@ TEST_F(MetricsLogTest, BasicRecord) {
 #elif BUILDFLAG(IS_ANDROID)
   system_profile->mutable_os()->set_build_fingerprint(
       base::android::android_info::android_build_fp());
+  system_profile->mutable_hardware()->set_manufacturer(
+      base::SysInfo::HardwareManufacturer());
   system_profile->set_app_package_name("test app");
-#elif BUILDFLAG(IS_IOS)
+#elif BUILDFLAG(IS_APPLE)
   system_profile->mutable_os()->set_build_number(
-      base::SysInfo::GetIOSBuildNumber());
+      base::SysInfo::OperatingSystemBuildVersion());
 #endif
 
 #if BUILDFLAG(IS_LINUX)
@@ -873,5 +880,33 @@ TEST_F(MetricsLogTest, ToInstallerPackage) {
   EXPECT_EQ(SystemProfileProto::INSTALLER_PACKAGE_OTHER,
             ToInstallerPackage("foo"));
 }
+
+#if BUILDFLAG(IS_ANDROID)
+TEST_F(MetricsLogTest, AndroidDesktopOperatingSystemName) {
+  absl::Cleanup reset_is_desktop = [] {
+    base::android::device_info::reset_is_desktop_for_testing();
+  };
+
+  base::android::device_info::set_is_desktop_for_testing(true);
+  EXPECT_EQ("Android Desktop", GetOperatingSystemName());
+  {
+    TestMetricsLog log(kClientId, kSessionId, MetricsLog::ONGOING_LOG,
+                       &client_);
+    DelegatingProvider delegating_provider;
+    log.RecordEnvironment(&delegating_provider);
+    EXPECT_EQ("Android Desktop", log.uma_proto().system_profile().os().name());
+  }
+
+  base::android::device_info::set_is_desktop_for_testing(false);
+  EXPECT_EQ("Android", GetOperatingSystemName());
+  {
+    TestMetricsLog log(kClientId, kSessionId, MetricsLog::ONGOING_LOG,
+                       &client_);
+    DelegatingProvider delegating_provider;
+    log.RecordEnvironment(&delegating_provider);
+    EXPECT_EQ("Android", log.uma_proto().system_profile().os().name());
+  }
+}
+#endif  // BUILDFLAG(IS_ANDROID)
 
 }  // namespace metrics

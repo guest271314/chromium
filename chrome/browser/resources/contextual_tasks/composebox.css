@@ -37,6 +37,7 @@
   --composebox-submit-container-inline-end:
       var(--composebox-last-icon-inline-end);
   --composebox-last-icon-inline-end: 12px;
+  --cr-composebox-entrypoint-icon-animation-delay: 750ms;
   --cr-composebox-tool-chip-animation: none;
   --cr-composebox-tool-chip-height: var(--icon-menu-button-size);
   --cr-searchbox-height: 52px;
@@ -44,16 +45,21 @@
   --icon-menu-spacing: 6px;
   --icon-menu-icon-size: 24px;
   --icon-menu-button-size: 40px;
-  /* TODO(crbug.com/467758241): Change
-   * pdf icon to one without outline just for contextual tasks.
-   * Border-radius is temporary fix to hide
-   * most of outline.
-   */
-  --pdf-icon-border-radius: 12px;
   --pdf-icon-size: 16px;
   --document-icon-size: 16px;
   --injected-input-icon-size: 24px;
   --lens-submit-icon-extra-spacing: 0;
+
+  /* Energy Effect Motion Curves */
+  --emphasized-curve: cubic-bezier(0.2, 0, 0, 1);
+  --emphasized-decelerate-curve: cubic-bezier(0.05, 0.7, 0.1, 1);
+  --emphasized-accelerate-curve: cubic-bezier(0.3, 0, 0.8, 0.15);
+  --standard-accelerate-curve: cubic-bezier(0.3, 0, 1, 1);
+  --standard-decelerate-curve: cubic-bezier(0, 0, 0, 1);
+}
+
+:host-context([webui-rounded-icons]) {
+  --pdf-icon-size: 24px;
 }
 
 :host([energy-effect-enabled_]) {
@@ -103,6 +109,10 @@
 @media (prefers-color-scheme: dark) {
   :host([energy-effect-enabled_]) {
     --color-composebox-file-chip-background: rgba(78, 80, 89, 1);
+    --color-composebox-scrim-background: rgba(16, 18, 24, 1);
+    --color-drag-placeholder-font: rgba(230, 232, 240, 1);
+    --color-dragging-opaque-frost-backup_: rgba(44, 45, 53, 1);
+    --color-search-animated-glow-background: rgba(31, 31, 31, 1);
   }
 }
 
@@ -154,6 +164,10 @@
   --contextual-entrypoint-and-carousel-context-menu-container-padding-inline-start:
       0;
   min-height: var(--composebox-min-height);
+  transition:
+    max-height var(--expand-duration) var(--emphasized-curve),
+    min-height var(--expand-duration) var(--emphasized-curve),
+    opacity var(--fade-duration) ease-in-out;
 }
 
 :host(:not([input-enabled])) #composebox::part(composebox) {
@@ -196,6 +210,35 @@
 
 :host([in-voice-search-mode]) #composebox::after {
   opacity: 0;
+}
+
+#composebox,
+#contextualTasksSuggestionsContainer {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+:host([is-zero-state]:not([in-nlm])) #composebox,
+:host([is-zero-state]) #contextualTasksSuggestionsContainer {
+  opacity: 0;
+  transform: translateY(12px);
+  will-change: transform, opacity;
+}
+
+@keyframes zero-state-enter-composebox {
+  0% {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+:host(.play-zero-state[is-zero-state]:not([in-nlm])) #composebox,
+:host(.play-zero-state[is-zero-state]) #contextualTasksSuggestionsContainer {
+  animation: zero-state-enter-composebox 900ms var(--emphasized-curve) both;
 }
 
 #composebox {
@@ -311,8 +354,6 @@
 }
 
 :host([is-zero-state][energy-effect-enabled_]) #composebox::part(input-container) {
-  animation: zero-state-input-plate-ease-in 900ms
-    var(--emphasized-curve);
   height: 100%;
 }
 
@@ -359,8 +400,17 @@
   --cr-icon-button-size: var(--icon-menu-button-size);
 }
 
+/* The overlapping favicon coins are separated by a 2px border that must be
+ * painted in the color of the surface they sit on, so the gap reads as
+ * background rather than a light outline. */
+#composebox::part(entrypoint-button) {
+  --composebox-favicon-border-color: var(--cr-composebox-background-color);
+}
+
 :host([energy-effect-enabled_]) #composebox:not([in-tool-mode_])::part(context-menu-entrypoint-icon),
 :host([energy-effect-enabled_]) #composebox:not([in-tool-mode_])::part(entrypoint-button) {
+  --composebox-favicon-border-color:
+      var(--color-composebox-context-entrypoint-background);
   --cr-composebox-entrypoint-background-color:
       var(--color-composebox-context-entrypoint-background);
   --cr-composebox-entrypoint-border-radius: 100px;
@@ -543,16 +593,11 @@
 :host([energy-effect-enabled_]) #composebox[submit-enabled]::part(submit) {
   opacity: 1;
   transform: scale(1);
-  visibility: visible;
+  visibility: inherit;
   transition:
     opacity 100ms linear,
     transform 100ms cubic-bezier(0.4, 0, 1, 1),
     visibility 0ms;
-}
-
-/* TODO(crbug.com/454388827: - Color the tab chips to spec. */
-#composebox::part(context-entrypoint) {
-  transition-delay: 0ms;
 }
 
 #composebox::part(dropdown) {
@@ -685,17 +730,9 @@
   padding-inline-end: 10px;
 }
 
-:host([is-zero-state][energy-effect-animation-enabled_]) #contextualTasksSuggestionsContainer {
-  animation: zero-state-recommendations-enter 600ms
-    var(--emphasized-decelerate-curve) forwards;
-}
-
-:host([is-zero-state][energy-effect-animation-enabled_]) #contextualTasksSuggestionsContainer::part(match-wrapper) {
-  animation: zero-state-recommendations-enter 600ms
-    var(--emphasized-decelerate-curve) both;
+:host(.play-zero-state[is-zero-state]) #contextualTasksSuggestionsContainer::part(match-wrapper) {
+  animation: zero-state-recommendations-enter 600ms var(--emphasized-decelerate-curve) both;
   animation-delay: calc(var(--match-wrapper-index, 0) * 50ms);
-  opacity: 0;
-  will-change: transform, opacity;
 }
 
 @keyframes zero-state-recommendations-enter {

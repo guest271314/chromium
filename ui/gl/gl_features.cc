@@ -4,6 +4,7 @@
 
 #include "ui/gl/gl_features.h"
 
+#include "base/byte_size.h"
 #include "base/command_line.h"
 #include "base/feature_list.h"
 #include "base/strings/string_split.h"
@@ -36,7 +37,7 @@
 namespace features {
 namespace {
 
-#if BUILDFLAG(IS_ANDROID)
+#if BUILDFLAG(IS_ANDROID) && BUILDFLAG(ENABLE_VALIDATING_COMMAND_DECODER)
 const base::FeatureParam<std::string>
     kPassthroughCommandDecoderBlockListByBrand{
         &kDefaultPassthroughCommandDecoder, "BlockListByBrand", ""};
@@ -53,11 +54,9 @@ const base::FeatureParam<std::string>
     kPassthroughCommandDecoderBlockListByManufacturer{
         &kDefaultPassthroughCommandDecoder, "BlockListByManufacturer", ""};
 
-// b/455412928 flickering issue with WebView on the following XR devices
 const base::FeatureParam<std::string>
     kPassthroughCommandDecoderBlockListByModel{
-        &kDefaultPassthroughCommandDecoder, "BlockListByModel",
-        "SM-I610|SM-I610H|Robin XR"};
+        &kDefaultPassthroughCommandDecoder, "BlockListByModel", ""};
 
 const base::FeatureParam<std::string>
     kPassthroughCommandDecoderBlockListByBoard{
@@ -76,7 +75,7 @@ bool IsDeviceBlocked(const std::string& field, const std::string& block_list) {
   }
   return false;
 }
-#endif
+#endif  // BUILDFLAG(IS_ANDROID) && BUILDFLAG(ENABLE_VALIDATING_COMMAND_DECODER)
 
 BASE_FEATURE(kForceANGLEFeatures, base::FEATURE_DISABLED_BY_DEFAULT);
 
@@ -110,17 +109,6 @@ BASE_FEATURE(kDefaultPassthroughCommandDecoder,
              base::FEATURE_ENABLED_BY_DEFAULT);
 #endif  // BUILDFLAG(ENABLE_VALIDATING_COMMAND_DECODER)
 
-// Controls whether the GPU process falls back to software if GLES3 is not
-// supported.
-BASE_FEATURE(kFallbackToSWIfGLES3NotSupported,
-#if BUILDFLAG(IS_WIN)
-             // TODO(https://crbug.com/444049511): Currently disabled on
-             // Windows for D3D9 users that are still on ES 2. Enable once
-             // crbug.com/40874754 is fixed, deprecating D3D9 usage.
-             base::FEATURE_DISABLED_BY_DEFAULT);
-#else
-             base::FEATURE_ENABLED_BY_DEFAULT);
-#endif
 
 #if BUILDFLAG(IS_WIN)
 // If true, VsyncThreadWin will use the compositor clock
@@ -163,6 +151,12 @@ bool UseCompositorClockVSyncInterval() {
 // --skia-graphite-backend=dawn-d3d12
 BASE_FEATURE(kDCompOnD3D12, base::FEATURE_DISABLED_BY_DEFAULT);
 #endif  // BUILDFLAG(IS_WIN)
+
+#if BUILDFLAG(IS_ANDROID)
+// Enables 2-pixel even boundary alignment for YUV SurfaceControl overlays.
+BASE_FEATURE(kAndroidYuvOverlayEvenAlignment,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+#endif  // BUILDFLAG(IS_ANDROID)
 
 bool UseGpuVsync() {
   return !base::CommandLine::ForCurrentProcess()->HasSwitch(
@@ -252,6 +246,10 @@ bool IsANGLEPassthroughShadersAllowed() {
   return base::FeatureList::IsEnabled(kAllowANGLEPassthroughShaders);
 }
 
+#if BUILDFLAG(IS_APPLE)
+BASE_FEATURE(kANGLEPurgeableBufferPool, base::FEATURE_DISABLED_BY_DEFAULT);
+#endif  // BUILDFLAG(IS_APPLE)
+
 void GetANGLEFeaturesFromCommandLineAndFinch(
     const base::CommandLine* command_line,
     std::vector<std::string>& enabled_angle_features,
@@ -269,19 +267,14 @@ void GetANGLEFeaturesFromCommandLineAndFinch(
     SplitAndAppendANGLEFeatureList(kForcedANGLEDisabledFeaturesFP.Get(),
                                    disabled_angle_features);
   }
+
+#if BUILDFLAG(IS_APPLE)
+  if (base::FeatureList::IsEnabled(kANGLEPurgeableBufferPool)) {
+    enabled_angle_features.push_back("purgeableBufferPool");
+  }
+#endif
 }
 
-bool ShouldFallbackToSWIfGLES3NotSupported() {
-#if BUILDFLAG(IS_CHROMEOS)
-  static bool is_enabled =
-      !base::CommandLine::ForCurrentProcess()->HasSwitch(
-          ash::switches::kRevenBranding) &&
-      base::FeatureList::IsEnabled(kFallbackToSWIfGLES3NotSupported);
-  return is_enabled;
-#else   // !BUILDFLAG(IS_CHROMEOS)
-  return base::FeatureList::IsEnabled(kFallbackToSWIfGLES3NotSupported);
-#endif  // BUILDFLAG(IS_CHROMEOS)
-}
 
 #if BUILDFLAG(ENABLE_SWIFTSHADER)
 #if BUILDFLAG(IS_FUCHSIA)
@@ -299,13 +292,24 @@ bool IsSwiftShaderAllowedByCommandLine(const base::CommandLine* command_line) {
 
   std::string angle_name =
       command_line->GetSwitchValueASCII(switches::kUseANGLE);
-  if (angle_name == gl::kANGLEImplementationSwiftShaderName) {
+  if (angle_name == gl::kANGLEImplementationSwiftShaderName ||
+      angle_name == gl::kANGLEImplementationSwiftShaderForWebGLName) {
     // If SwiftShader is specifically requested with the --use-angle command
     // line flag, allow it.
     return true;
   }
 
   return false;
+}
+
+bool IsSwiftShaderUsedForWebGLByCommandLine(
+    const base::CommandLine* command_line) {
+  std::string use_gl = command_line->GetSwitchValueASCII(switches::kUseGL);
+  if (!use_gl.empty() && use_gl != gl::kGLImplementationANGLEName) {
+    return false;
+  }
+  return command_line->GetSwitchValueASCII(switches::kUseANGLE) ==
+         gl::kANGLEImplementationSwiftShaderForWebGLName;
 }
 #endif
 
@@ -322,6 +326,10 @@ bool IsSwiftShaderAllowedByCommandLine(const base::CommandLine*) {
 }
 
 bool IsSwiftShaderAllowedByFeature() {
+  return false;
+}
+
+bool IsSwiftShaderUsedForWebGLByCommandLine(const base::CommandLine*) {
   return false;
 }
 #endif
@@ -362,18 +370,15 @@ bool IsSoftwareGLFallbackDueToCrashesAllowed(
   return base::FeatureList::IsEnabled(kAllowSoftwareGLFallbackDueToCrashes);
 }
 
-BASE_FEATURE(kAllowANGLED3D9Fallback, base::FEATURE_DISABLED_BY_DEFAULT);
-
-bool IsANGLED3D9FallbackAllowed() {
-  return base::FeatureList::IsEnabled(kAllowANGLED3D9Fallback);
-}
-
 #if BUILDFLAG(IS_ANDROID)
 BASE_FEATURE(kAndroidLimitRgb565DisplayToApi32,
              base::FEATURE_ENABLED_BY_DEFAULT);
 
+BASE_FEATURE(kAndroidSurfaceControlPartialDamage,
+             base::FEATURE_ENABLED_BY_DEFAULT);
+
 bool PreferRGB565ResourcesForDisplay() {
-  return base::SysInfo::AmountOfPhysicalMemory().InMiB() <= 512 &&
+  return base::SysInfo::AmountOfTotalPhysicalMemory().InMiB() <= 512 &&
          (base::android::android_info::sdk_int() <=
               base::android::android_info::SDK_VERSION_Sv2 ||
           !base::FeatureList::IsEnabled(kAndroidLimitRgb565DisplayToApi32));

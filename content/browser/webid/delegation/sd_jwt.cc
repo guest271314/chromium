@@ -46,6 +46,11 @@ Jwk::Jwk() = default;
 Jwk::~Jwk() = default;
 Jwk::Jwk(const Jwk& other) = default;
 
+bool Jwk::operator==(const Jwk& other) const {
+  return kty == other.kty && crv == other.crv && x == other.x && y == other.y &&
+         d == other.d && n == other.n && e == other.e;
+}
+
 // static
 std::optional<Jwk> Jwk::From(const base::DictValue& dict) {
   Jwk result;
@@ -467,8 +472,6 @@ std::optional<JSONString> Payload::ToJson() const {
   }
 
   if (cnf) {
-    base::DictValue jwk;
-
     base::DictValue cnf_dict;
     cnf_dict.Set("jwk", cnf->jwk.ToDict());
     payload_dict.Set("cnf", std::move(cnf_dict));

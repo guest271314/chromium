@@ -38,7 +38,23 @@ bool IsAndroidSpellCheckFeatureEnabled();
 BASE_DECLARE_FEATURE(kAndroidGrammarCheck);
 #endif  // BUILDFLAG(IS_ANDROID)
 
+// When enabled, the spellcheck service will use a regionalized endpoint based
+// on the user's data region setting.
 BASE_DECLARE_FEATURE(kEnableSpellcheckRegionalSignal);
+
+// When enabled, spellcheck character attributes and break iterator rule sets
+// are initialized lazily on first spellcheck use rather than at renderer
+// launch.
+BASE_DECLARE_FEATURE(kLazyInitializeSpellcheckCharAttribute);
+
+// When enabled, the renderer custom dictionary is built asynchronously on
+// a background worker thread rather than blocking the main thread.
+BASE_DECLARE_FEATURE(kAsyncSpellcheckCustomDictionaryInit);
+
+// When enabled, spellcheck initialization is completely pull-based (on-demand)
+// across all platforms: the browser process does not push dictionaries to new
+// renderer processes at startup, and renderers request them lazily when needed.
+BASE_DECLARE_FEATURE(kOnDemandSpellcheckInitialization);
 
 #endif  // BUILDFLAG(ENABLE_SPELLCHECK)
 

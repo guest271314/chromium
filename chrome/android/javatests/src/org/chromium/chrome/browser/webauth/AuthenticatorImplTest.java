@@ -31,6 +31,7 @@ import org.mockito.junit.MockitoRule;
 
 import org.chromium.base.ContextUtils;
 import org.chromium.base.ThreadUtils;
+import org.chromium.base.TriState;
 import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.Restriction;
@@ -54,6 +55,8 @@ import org.chromium.components.webauthn.Fido2CredentialRequest;
 import org.chromium.components.webauthn.GpmBrowserOptionsHelper;
 import org.chromium.components.webauthn.InternalAuthenticator;
 import org.chromium.components.webauthn.InternalAuthenticatorJni;
+import org.chromium.components.webauthn.WebauthnBrowserBridge;
+import org.chromium.components.webauthn.WebauthnBrowserBridgeJni;
 import org.chromium.components.webauthn.WebauthnMode;
 import org.chromium.components.webauthn.WebauthnModeProvider;
 import org.chromium.components.webauthn.cred_man.CredManSupportProvider;
@@ -81,8 +84,6 @@ import java.util.Arrays;
     DeviceRestriction.RESTRICTION_TYPE_NON_AUTO
 })
 public class AuthenticatorImplTest {
-    private static final String TAG = "AuthImplTest";
-
     @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
 
     @Rule
@@ -90,13 +91,14 @@ public class AuthenticatorImplTest {
             ChromeTransitTestRules.fastAutoResetCtaActivityRule();
 
     @Mock UkmRecorder.Natives mUkmRecorderJniMock;
+    @Mock WebauthnBrowserBridge.Natives mWebauthnBrowserBridgeNativesMock;
 
     private Context mContext;
     private WebauthnTestUtils.MockIntentSender mIntentSender;
     private EmbeddedTestServer mTestServer;
     private WebauthnTestUtils.MockAuthenticatorRenderFrameHost mFrameHost;
     private MockWebContents mWebContents;
-    private WebauthnTestUtils.MockFido2ApiCallHelper mFido2ApiCallHelper;
+    private MockFido2ApiCallHelper mFido2ApiCallHelper;
     private Origin mOrigin;
     private WebauthnTestUtils.TestAuthenticatorImplJni mTestAuthenticatorImplJni;
     private PublicKeyCredentialCreationOptions mCreationOptions;
@@ -108,7 +110,6 @@ public class AuthenticatorImplTest {
     public void setUp() throws Exception {
         mActivityTestRule.startOnBlankPage();
         mContext = ContextUtils.getApplicationContext();
-        WebauthnTestUtils.applyFidoOverride(mContext);
         mIntentSender = new WebauthnTestUtils.MockIntentSender();
         mTestServer = mActivityTestRule.getTestServer();
         mCallback = Fido2ApiTestHelper.getAuthenticatorCallback();
@@ -128,6 +129,7 @@ public class AuthenticatorImplTest {
         mTestAuthenticatorImplJni = new WebauthnTestUtils.TestAuthenticatorImplJni(mCallback);
         InternalAuthenticatorJni.setInstanceForTesting(mTestAuthenticatorImplJni);
         UkmRecorderJni.setInstanceForTesting(mUkmRecorderJniMock);
+        WebauthnBrowserBridgeJni.setInstanceForTesting(mWebauthnBrowserBridgeNativesMock);
 
         mCreationOptions = Fido2ApiTestHelper.createDefaultMakeCredentialOptions();
         mRequestOptions = new GetCredentialOptions();
@@ -137,7 +139,7 @@ public class AuthenticatorImplTest {
         // Ensure AuthenticatorImpl doesn't hold onto a stale request override from another test.
         AuthenticatorImpl.overrideFido2CredentialRequestForTesting(null);
 
-        mFido2ApiCallHelper = new WebauthnTestUtils.MockFido2ApiCallHelper();
+        mFido2ApiCallHelper = new MockFido2ApiCallHelper();
         mFido2ApiCallHelper.setReturnedCredentialDetails(
                 Arrays.asList(Fido2ApiTestHelper.getCredentialDetails()));
         Fido2ApiCallHelper.overrideInstanceForTesting(mFido2ApiCallHelper);
@@ -146,7 +148,7 @@ public class AuthenticatorImplTest {
 
         CredManSupportProvider.setupForTesting(
                 /* overrideAndroidVersion= */ Build.VERSION_CODES.TIRAMISU,
-                /* overrideForcesGpm= */ false);
+                /* overrideForcesGpm= */ TriState.FALSE);
     }
 
     @After

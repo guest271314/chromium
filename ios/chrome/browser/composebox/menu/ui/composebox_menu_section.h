@@ -11,8 +11,11 @@
 
 enum class ComposeboxMenuSectionIdentifier {
   kAttachments = 0,
+  kSharedTabs,
   kTools,
   kModels,
+  kMoreOptionsSubmenu,
+  kCurrentTab,
 };
 
 // Represents a section in the Composebox menu.
@@ -25,10 +28,17 @@ enum class ComposeboxMenuSectionIdentifier {
 // The section identifier.
 @property(nonatomic, assign, readonly)
     ComposeboxMenuSectionIdentifier identifier;
+// Whether to show section as a horizontal carousel.
+@property(nonatomic, readonly) BOOL showAsHorizontalCarousel;
 
 - (instancetype)initWithTitle:(NSString*)title
                         items:(NSArray<ComposeboxMenuItem*>*)items
                    identifier:(ComposeboxMenuSectionIdentifier)identifier;
+
+- (instancetype)initWithTitle:(NSString*)title
+                        items:(NSArray<ComposeboxMenuItem*>*)items
+                   identifier:(ComposeboxMenuSectionIdentifier)identifier
+     showAsHorizontalCarousel:(BOOL)showAsHorizontalCarousel;
 
 @end
 

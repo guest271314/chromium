@@ -31,7 +31,21 @@ namespace language {
 class LanguagePrefs;
 }
 
+namespace base::i18n {
+class LanguageTag;
+}
+
 namespace translate {
+
+// LINT.IfChange(DataRegion)
+// Enum representing the data region for translation.
+// Must match the integer values of prefs::kTranslateDataRegionSetting.
+enum class DataRegion {
+  kNoPreference = 0,
+  kUnitedStates = 1,
+  kEurope = 2,
+};
+// LINT.ThenChange(//components/translate/core/browser/translate_pref_names.h:DataRegion)
 
 // Enables or disables using the most recent target language as the default
 // target language option.
@@ -189,9 +203,10 @@ class TranslatePrefs {
   // If force_blocked is set to false, the language is added to the blocked list
   // if the language list does not already contain another language with the
   // same base language.
-  void AddToLanguageList(std::string_view language, bool force_blocked);
+  void AddToLanguageList(const base::i18n::LanguageTag& language_tag,
+                         bool force_blocked);
   // Removes the language from the language list at chrome://settings/languages.
-  void RemoveFromLanguageList(std::string_view language);
+  void RemoveFromLanguageList(const base::i18n::LanguageTag& language_tag);
 
   // Rearranges the given language inside the language list.
   // The direction of the move is specified as a RearrangeSpecifier.
@@ -300,10 +315,10 @@ class TranslatePrefs {
 
   // Gets the full (policy-forced and user selected) language list from language
   // settings.
-  void GetLanguageList(std::vector<std::string>* languages) const;
+  std::vector<base::i18n::LanguageTag> GetLanguageList() const;
 
   // Gets the user selected language list from language settings.
-  void GetUserSelectedLanguageList(std::vector<std::string>* languages) const;
+  std::vector<base::i18n::LanguageTag> GetUserSelectedLanguageList() const;
 
   // Returns true if translate should trigger the UI on English
   // pages, even when the UI language is English. This function also records

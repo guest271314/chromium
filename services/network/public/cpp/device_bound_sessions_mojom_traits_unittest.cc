@@ -5,6 +5,7 @@
 #include "services/network/public/cpp/device_bound_sessions_mojom_traits.h"
 
 #include "mojo/public/cpp/test_support/test_utils.h"
+#include "net/device_bound_sessions/refresh_result.h"
 #include "services/network/public/mojom/device_bound_sessions.mojom.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -14,18 +15,24 @@ namespace {
 using SessionParams = net::device_bound_sessions::SessionParams;
 
 TEST(DeviceBoundSessionsMojomTraitsTest, SerializeAndDeserializeSessionParams) {
-  SessionParams::Scope scope;
-  scope.include_site = true;
-  scope.specifications.push_back(
-      {SessionParams::Scope::Specification::Type::kExclude, "*.example.com",
-       "/excluded_path"});
-  scope.origin = "https://example.com";
-
-  SessionParams input(
-      "session_id", GURL("https://example.com/registration"), "/refresh",
-      std::move(scope), {{"cookie_name", "Secure; SameSite=Lax"}},
-      unexportable_keys::UnexportableSigningKeyId(),
-      {"*.allowed-refresh-initiator.com", "not-subdomains.com"});
+  SessionParams input{
+      .session_id = "session_id",
+      .fetcher_url = GURL("https://example.com/registration"),
+      .refresh_url = "/refresh",
+      .scope =
+          {
+              .include_site = true,
+              .specifications = {{
+                  .type = SessionParams::Scope::Specification::Type::kExclude,
+                  .domain = "*.example.com",
+                  .path = "/excluded_path",
+              }},
+              .origin = "https://example.com",
+          },
+      .credentials = {{.name = "test_cookie", .attributes = "secure"}},
+      .allowed_refresh_initiators = {"*.allowed-refresh-initiator.com",
+                                     "not-subdomains.com"},
+  };
   SessionParams output;
   ASSERT_TRUE(mojo::test::SerializeAndDeserialize<
               network::mojom::DeviceBoundSessionParams>(input, output));
@@ -37,9 +44,22 @@ TEST(DeviceBoundSessionsMojomTraitsTest, SerializeAndDeserializeSessionParams) {
   EXPECT_EQ(input.scope.specifications, output.scope.specifications);
   EXPECT_EQ(input.scope.origin, output.scope.origin);
   EXPECT_EQ(input.credentials, output.credentials);
-  // `UnexportableKeyId`s are not currently serialized/deserialized.
+  // `UnexportableSigningKeyId`s are not currently serialized/deserialized.
   EXPECT_EQ(input.allowed_refresh_initiators,
             output.allowed_refresh_initiators);
+}
+
+TEST(DeviceBoundSessionsMojomTraitsTest, SerializeAndDeserializeRefreshResult) {
+  using net::device_bound_sessions::RefreshResult;
+  for (RefreshResult input :
+       {RefreshResult::kInScopeRefreshNotYetNeeded, RefreshResult::kCanceled}) {
+    SCOPED_TRACE(static_cast<int>(input));
+    RefreshResult output;
+    ASSERT_TRUE(
+        mojo::test::SerializeAndDeserialize<
+            network::mojom::DeviceBoundSessionRefreshResult>(input, output));
+    EXPECT_EQ(input, output);
+  }
 }
 
 }  // namespace

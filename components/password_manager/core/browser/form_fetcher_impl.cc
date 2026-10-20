@@ -8,7 +8,6 @@
 #include <iterator>
 #include <memory>
 #include <utility>
-#include <variant>
 #include <vector>
 
 #include "base/check_deref.h"
@@ -22,6 +21,7 @@
 #include "base/task/single_thread_task_runner.h"
 #include "build/build_config.h"
 #include "components/affiliations/core/browser/affiliation_utils.h"
+#include "components/affiliations/core/browser/match_type.h"
 #include "components/autofill/core/common/save_password_progress_logger.h"
 #include "components/password_manager/core/browser/browser_save_password_progress_logger.h"
 #include "components/password_manager/core/browser/credentials_filter.h"
@@ -307,11 +307,29 @@ void FormFetcherImpl::NotifyConsumer(FormFetcher::Consumer* consumer) {
 void FormFetcherImpl::FindMatchesAndNotifyConsumers(
     std::vector<StoredCredential> results) {
   DCHECK_EQ(State::WAITING, state_);
+
+  std::unique_ptr<password_manager::BrowserSavePasswordProgressLogger> logger =
+      password_manager_util::GetLoggerIfAvailable(client_);
+  if (logger) {
+    logger->LogMessage(Logger::STRING_ON_GET_STORE_RESULTS_METHOD);
+    logger->LogNumberResultsForStore(
+        PasswordForm::Store::kProfileStore,
+        std::ranges::count_if(results, &StoredCredential::IsUsingProfileStore));
+    logger->LogNumberResultsForStore(
+        PasswordForm::Store::kAccountStore,
+        std::ranges::count_if(results, &StoredCredential::IsUsingAccountStore));
+  }
+
   SplitResults(std::move(results));
 
   best_matches_ =
       password_manager_util::FindBestMatches(NonFederatedSameSchemeMatches(
           base::span(non_federated_), form_digest_.scheme));
+
+  if (logger) {
+    logger->LogNumber(Logger::STRING_NUMBER_OF_UNIQUE_MATCHED_CREDENTIALS,
+                      best_matches_.size());
+  }
 
   state_ = State::NOT_WAITING;
   for (auto& consumer : consumers_) {
@@ -362,26 +380,27 @@ void FormFetcherImpl::SplitResults(std::vector<StoredCredential> forms) {
 
 void FormFetcherImpl::OnGetPasswordStoreResultsOrErrorFrom(
     PasswordStoreInterface* store,
-    LoginsResultOrError results_or_error) {
+    base::expected<std::vector<StoredCredential>, PasswordStoreBackendError>
+        results_or_error) {
   if (store == client_->GetProfilePasswordStore()) {
     profile_store_backend_error_.reset();
-    if (std::holds_alternative<PasswordStoreBackendError>(results_or_error)) {
-      profile_store_backend_error_ =
-          std::get<PasswordStoreBackendError>(results_or_error);
+    if (!results_or_error) {
+      profile_store_backend_error_ = results_or_error.error();
     }
   } else if (store == client_->GetAccountPasswordStore()) {
     account_store_backend_error_.reset();
-    if (std::holds_alternative<PasswordStoreBackendError>(results_or_error)) {
-      account_store_backend_error_ =
-          std::get<PasswordStoreBackendError>(results_or_error);
+    if (!results_or_error) {
+      account_store_backend_error_ = results_or_error.error();
     }
   }
+
+  bool has_backend_error = !results_or_error;
 
   std::vector<StoredCredential> results =
       GetLoginsOrEmptyListOnFailure(std::move(results_or_error));
   if (filter_grouped_credentials_) {
     std::erase_if(results, [this](const auto& form) {
-      if (form.match_type == PasswordForm::MatchType::kGrouped) {
+      if (form.match_type == affiliations::MatchType::kGrouped) {
         // To achieve consistency for
         // `FormFetcher::GetPreferredOrPotentialMatchFormType()`, grouped
         // website credentials are prioritized over grouped application
@@ -407,7 +426,7 @@ void FormFetcherImpl::OnGetPasswordStoreResultsOrErrorFrom(
   DCHECK_EQ(State::WAITING, state_);
   DCHECK_GT(wait_counter_, 0);
 
-  if (should_migrate_http_passwords_ && results.empty() &&
+  if (should_migrate_http_passwords_ && results.empty() && !has_backend_error &&
       form_digest_.url.SchemeIs(url::kHttpsScheme)) {
     http_migrators_[store] = std::make_unique<HttpPasswordStoreMigrator>(
         url::Origin::Create(form_digest_.url), store,
@@ -440,11 +459,6 @@ void FormFetcherImpl::AggregatePasswordStoreResults(
     return;
   }
 
-  if (password_manager_util::IsLoggingActive(client_)) {
-    BrowserSavePasswordProgressLogger logger(client_->GetCurrentLogManager());
-    logger.LogMessage(Logger::STRING_ON_GET_STORE_RESULTS_METHOD);
-    logger.LogNumber(Logger::STRING_NUMBER_RESULTS, partial_results_.size());
-  }
   FindMatchesAndNotifyConsumers(std::move(partial_results_));
 }
 

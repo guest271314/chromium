@@ -42,6 +42,9 @@ size_t MaybeRoundUp(size_t size) {
 bool MaybeEncryptBuffer(base::span<uint8_t> buffer) {
 #if BUILDFLAG(IS_WIN)
   TRACE_EVENT0(kTraceCategory, "ProcessBoundString::EncryptBuffer");
+  if (buffer.empty()) {
+    return true;
+  }
   if (::CryptProtectMemory(buffer.data(), buffer.size(),
                            CRYPTPROTECTMEMORY_SAME_PROCESS)) {
     return true;
@@ -53,6 +56,9 @@ bool MaybeEncryptBuffer(base::span<uint8_t> buffer) {
 bool MaybeDecryptBuffer(base::span<uint8_t> buffer) {
 #if BUILDFLAG(IS_WIN)
   TRACE_EVENT0(kTraceCategory, "ProcessBoundString::DecryptBuffer");
+  if (buffer.empty()) {
+    return true;
+  }
   if (::CryptUnprotectMemory(buffer.data(), buffer.size(),
                              CRYPTPROTECTMEMORY_SAME_PROCESS)) {
     return true;
@@ -68,14 +74,6 @@ bool MaybeDecryptBuffer(base::span<uint8_t> buffer) {
   }
 #endif  // BUILDFLAG(IS_WIN)
   return false;
-}
-
-void SecureZeroBuffer(base::span<uint8_t> buffer) {
-#if BUILDFLAG(IS_WIN)
-  ::SecureZeroMemory(buffer.data(), buffer.size());
-#else
-  OPENSSL_cleanse(buffer.data(), buffer.size());
-#endif  // BUILDFLAG(IS_WIN)
 }
 
 }  // namespace crypto::internal

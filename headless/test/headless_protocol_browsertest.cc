@@ -9,6 +9,7 @@
 #include "base/command_line.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
+#include "base/files/scoped_temp_dir.h"
 #include "base/json/json_reader.h"
 #include "base/json/json_writer.h"
 #include "base/memory/scoped_refptr.h"
@@ -26,6 +27,7 @@
 #include "headless/public/switches.h"
 #include "headless/test/headless_browser_test_utils.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
+#include "net/test/embedded_test_server/register_basic_auth_handler.h"
 #include "services/network/public/cpp/network_switches.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -276,6 +278,9 @@ HEADLESS_PROTOCOL_TEST(VirtualTimeDisposeWhileRunning,
                        "emulation/virtual-time-dispose-while-running.js")
 HEADLESS_PROTOCOL_TEST(VirtualTimePausesDocumentLoading,
                        "emulation/virtual-time-pauses-document-loading.js")
+HEADLESS_PROTOCOL_TEST(
+    VirtualTimeCommitWhileResumingLoaders,
+    "emulation/virtual-time-commit-while-resuming-loaders.js")
 
 HEADLESS_PROTOCOL_TEST(PageBeforeUnload, "page/page-before-unload.js")
 
@@ -298,19 +303,13 @@ HEADLESS_PROTOCOL_TEST(Geolocation, "emulation/geolocation-crash.js")
 
 HEADLESS_PROTOCOL_TEST(DragStarted, "input/dragIntercepted.js")
 
-// https://crbug.com/1414190
-#if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_WIN)
-#define MAYBE_InputClipboardOps DISABLED_InputClipboardOps
-#else
-#define MAYBE_InputClipboardOps InputClipboardOps
-#endif
-HEADLESS_PROTOCOL_TEST(MAYBE_InputClipboardOps, "input/input-clipboard-ops.js")
+HEADLESS_PROTOCOL_TEST(InputClipboardOps, "shared/input-clipboard-ops.js")
 
 HEADLESS_PROTOCOL_TEST(ClipboardApiCopyPaste,
                        "input/clipboard-api-copy-paste.js")
 
 HEADLESS_PROTOCOL_TEST(FocusBlurNotifications,
-                       "input/focus-blur-notifications.js")
+                       "shared/focus-blur-notifications.js")
 
 HEADLESS_PROTOCOL_TEST(HeadlessSessionBasicsTest,
                        "sessions/headless-session-basics.js")
@@ -382,8 +381,20 @@ class HeadlessProtocolBrowserTestWithAllowedCrashes
   std::unique_ptr<content::ScopedAllowRendererCrashes> allow_renderer_crashes_;
 };
 
+// Some platforms take very long time to handle crashes, and the test depends
+// on a large number of simulated crashes. See https://crbug.com/517040374 for
+// additional context.
+#define PLATFORM_SUPPORTS_CRASH_TEST()                                       \
+  !(BUILDFLAG(IS_WIN) && !defined(NDEBUG)) && !defined(ADDRESS_SANITIZER) && \
+      !defined(THREAD_SANITIZER)
+
+#if PLATFORM_SUPPORTS_CRASH_TEST()
+#define MAYBE_HiddenTargetSyncClose HiddenTargetSyncClose
+#else
+#define MAYBE_HiddenTargetSyncClose DISABLED_HiddenTargetSyncClose
+#endif
 HEADLESS_PROTOCOL_TEST_F(HeadlessProtocolBrowserTestWithAllowedCrashes,
-                         HiddenTargetSyncClose,
+                         MAYBE_HiddenTargetSyncClose,
                          "shared/hidden-target-sync-close.js")
 HEADLESS_PROTOCOL_TEST(HiddenTargetCreateInvalidParams,
                        "shared/hidden-target-create-invalid-params.js")
@@ -503,14 +514,53 @@ HEADLESS_PROTOCOL_TEST_F(HeadlessProtocolBrowserTestWithProxy,
                          BrowserSetProxyConfig,
                          "sanity/browser-set-proxy-config.js")
 
+class HeadlessProtocolBrowserTestWithAuthProxy
+    : public HeadlessProtocolBrowserTest {
+ public:
+  HeadlessProtocolBrowserTestWithAuthProxy()
+      : proxy_server_(net::EmbeddedTestServer::TYPE_HTTP) {
+    net::test_server::RegisterProxyBasicAuthHandler(proxy_server_, "user",
+                                                    "pass");
+    proxy_server_.AddDefaultHandlers(
+        base::FilePath(FILE_PATH_LITERAL("headless/test/data")));
+  }
+
+  void SetUp() override {
+    ASSERT_TRUE(proxy_server_.Start());
+    HeadlessProtocolBrowserTest::SetUp();
+  }
+
+  void TearDown() override {
+    EXPECT_TRUE(proxy_server_.ShutdownAndWaitUntilComplete());
+    HeadlessProtocolBrowserTest::TearDown();
+  }
+
+  net::EmbeddedTestServer* proxy_server() { return &proxy_server_; }
+
+ protected:
+  base::DictValue GetPageUrlExtraParams() override {
+    std::string proxy = proxy_server()->host_port_pair().ToString();
+    base::DictValue dict;
+    dict.Set("proxy", proxy);
+    return dict;
+  }
+
+ private:
+  net::EmbeddedTestServer proxy_server_;
+};
+
+HEADLESS_PROTOCOL_TEST_F(HeadlessProtocolBrowserTestWithAuthProxy,
+                         DevtoolsInterceptionWithAuthProxy,
+                         "sanity/devtools-interception-with-auth-proxy.js")
+
 class PopupWindowOpenTest : public HeadlessProtocolBrowserTest,
                             public testing::WithParamInterface<bool> {
  protected:
   PopupWindowOpenTest() = default;
 
   void CustomizeHeadlessBrowserContext(
-      HeadlessBrowserContext::Builder& builder) override {
-    builder.SetBlockNewWebContents(ShouldBlockNewWebContents());
+      HeadlessBrowserContext::CreateParams& params) override {
+    params.block_new_web_contents = ShouldBlockNewWebContents();
   }
 
   base::DictValue GetPageUrlExtraParams() override {
@@ -529,6 +579,12 @@ HEADLESS_PROTOCOL_TEST_P(PopupWindowOpenTest,
 INSTANTIATE_TEST_SUITE_P(/* no prefix */,
                          PopupWindowOpenTest_Open,
                          ::testing::Bool());
+
+HEADLESS_PROTOCOL_TEST(PopupWindowHasOpener,
+                       "shared/popup-window-has-opener.js")
+
+HEADLESS_PROTOCOL_TEST(NormalWindowHasOpener,
+                       "shared/normal-window-has-opener.js")
 
 class HeadlessProtocolBrowserTestWithoutSiteIsolation
     : public HeadlessProtocolBrowserTest {
@@ -662,19 +718,29 @@ HEADLESS_PROTOCOL_TEST(SetZoomedWindowBounds,
 HEADLESS_PROTOCOL_TEST(WindowOpenOnSecondaryScreen,
                        "shared/window-open-on-secondary-screen.js")
 
+HEADLESS_PROTOCOL_TEST(WindowOpenClickOpenerId,
+                       "shared/window-open-click-opener-id.js")
+
+HEADLESS_PROTOCOL_TEST(WindowOpenNoopenerClickOpenerId,
+                       "shared/window-open-noopener-click-opener-id.js")
+
+HEADLESS_PROTOCOL_TEST(WindowOpenShiftClickOpenerId,
+                       "shared/window-open-shift-click-opener-id.js")
+
+HEADLESS_PROTOCOL_TEST(WindowOpenMiddleClick,
+                       "shared/window-open-middle-click.js")
+
+HEADLESS_PROTOCOL_TEST(BlockNewWebContents, "sanity/block-new-web-contents.js")
+
+HEADLESS_PROTOCOL_TEST(ContextDisposal, "sanity/context-disposal.js")
+
 HEADLESS_PROTOCOL_TEST(ScreenRotationSecondaryScreen,
                        "sanity/screen-rotation-secondary-screen.js")
 
 HEADLESS_PROTOCOL_TEST(MoveWindowBetweenScreens,
                        "shared/move-window-between-screens.js")
 
-// This fails on Mac with RenderDocument enabled, http://crbug.com/446689489.
-#if BUILDFLAG(IS_MAC)
-#define MAYBE_CreateTargetSecondaryScreen DISABLED_CreateTargetSecondaryScreen
-#else
-#define MAYBE_CreateTargetSecondaryScreen CreateTargetSecondaryScreen
-#endif
-HEADLESS_PROTOCOL_TEST(MAYBE_CreateTargetSecondaryScreen,
+HEADLESS_PROTOCOL_TEST(CreateTargetSecondaryScreen,
                        "shared/create-target-secondary-screen.js")
 
 HEADLESS_PROTOCOL_TEST(CreateTargetWindowState,
@@ -686,8 +752,6 @@ HEADLESS_PROTOCOL_TEST(DocumentVisibilityState,
 HEADLESS_PROTOCOL_TEST(DocumentVisibilityStatePopup,
                        "shared/document-visibility-state-popup.js")
 
-// This currently results in an unexpected screen orientation type,
-// see http://crbug.com/398150465.
 HEADLESS_PROTOCOL_TEST(MultipleScreenDetails,
                        "shared/multiple-screen-details.js")
 
@@ -778,5 +842,41 @@ HEADLESS_PROTOCOL_TEST(WindowWithNewContext,
 
 HEADLESS_PROTOCOL_TEST(RangeMouseEventAfterNodeRemoval,
                        "shared/range-mouse-event-after-node-removal.js")
+
+HEADLESS_PROTOCOL_TEST(GetCanvasContextWebGL,
+                       "shared/get-canvas-context-webgl.js")
+
+HEADLESS_PROTOCOL_TEST(GetBrowserContexts, "shared/get-browser-contexts.js")
+
+class HeadlessProtocolBrowserTestWithDownload
+    : public HeadlessProtocolBrowserTest {
+ public:
+  void SetUp() override {
+    ASSERT_TRUE(download_dir_.CreateUniqueTempDir());
+    HeadlessProtocolBrowserTest::SetUp();
+  }
+
+ protected:
+  base::DictValue GetPageUrlExtraParams() override {
+    base::DictValue dict;
+    dict.Set("downloadPath", download_dir_.GetPath().AsUTF8Unsafe());
+    return dict;
+  }
+
+ private:
+  base::ScopedTempDir download_dir_;
+};
+
+HEADLESS_PROTOCOL_TEST_F(HeadlessProtocolBrowserTestWithDownload,
+                         FileDownload,
+                         "shared/file-download.js")
+
+HEADLESS_PROTOCOL_TEST_F(HeadlessProtocolBrowserTestWithDownload,
+                         FileDownloadRepeated,
+                         "shared/file-download-repeated.js")
+
+HEADLESS_PROTOCOL_TEST_F(HeadlessProtocolBrowserTestWithDownload,
+                         FileDownloadSecondTab,
+                         "shared/file-download-second-tab.js")
 
 }  // namespace headless

@@ -10,15 +10,14 @@
 #include "chrome/browser/feature_engagement/tracker_factory.h"
 #include "chrome/browser/performance_manager/public/side_panel_loading_policy.h"
 #include "chrome/browser/ui/bookmarks/bookmark_utils.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_window.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/side_panel/side_panel_content_proxy.h"
 #include "chrome/browser/ui/side_panel/side_panel_entry_scope.h"
 #include "chrome/browser/ui/side_panel/side_panel_util.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/webui/webui_embedding_context.h"
 #include "chrome/common/webui_url_constants.h"
-#include "chrome/grit/generated_resources.h"
 #include "components/feature_engagement/public/feature_constants.h"
 #include "components/feature_engagement/public/tracker.h"
 #include "extensions/buildflags/buildflags.h"
@@ -38,6 +37,15 @@ SidePanelWebUIView::SidePanelWebUIView(SidePanelEntryScope& scope,
   const bool is_ready_to_show = contents_wrapper->is_ready_to_show();
   SidePanelUtil::GetSidePanelContentProxy(this)->SetAvailable(is_ready_to_show);
   SetVisible(is_ready_to_show);
+  if (!is_ready_to_show) {
+    // Until the entry reports availability from ShowUI(), it is not added to
+    // the side panel, so its WebContents is never shown and PerformanceManager
+    // would deprioritize the very load being waited on. See
+    // crbug.com/549552319.
+    withheld_from_view_ =
+        performance_manager::PageLiveStateDecorator::MarkWithheldFromView(
+            contents_wrapper->web_contents());
+  }
   SetID(kSidePanelWebViewId);
   contents_wrapper->SetHost(weak_factory_.GetWeakPtr());
   SetWebContents(contents_wrapper->web_contents());
@@ -45,7 +53,7 @@ SidePanelWebUIView::SidePanelWebUIView(SidePanelEntryScope& scope,
 
   // The mechanism that ensure the Side Panel will load at high priority even
   // while it is still not visible requires the WebContents to be tagged.
-  performance_manager::execution_context_priority::MarkAsSidePanel(
+  performance_manager::priority::MarkAsSidePanel(
       contents_wrapper->web_contents());
 
   // For per-window side panels the scoped browser does not change. The browser
@@ -92,6 +100,7 @@ void SidePanelWebUIView::ViewHierarchyChanged(
 void SidePanelWebUIView::ShowUI() {
   SetVisible(true);
   SidePanelUtil::GetSidePanelContentProxy(this)->SetAvailable(true);
+  withheld_from_view_.reset();
   if (on_show_cb_) {
     on_show_cb_.Run();
   }
@@ -107,6 +116,7 @@ void SidePanelWebUIView::ShowCustomContextMenu(
     gfx::Point point,
     std::unique_ptr<ui::MenuModel> menu_model) {
   ConvertPointToScreen(this, &point);
+  context_menu_runner_.reset();
   context_menu_model_ = std::move(menu_model);
   context_menu_runner_ = std::make_unique<views::MenuRunner>(
       context_menu_model_.get(),

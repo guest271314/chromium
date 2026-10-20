@@ -66,8 +66,8 @@ bool IsValidRange(const RangeInFlatTree* range) {
     // flat tree may become invalid due to slotted elements. DocumentMarkers
     // should maybe work on FlatTree types but for now just invalidate this
     // case.
-    Position start = ToPositionInDOMTree(range->StartPosition());
-    Position end = ToPositionInDOMTree(range->EndPosition());
+    Position start = ToPositionInDomTree(range->StartPosition());
+    Position end = ToPositionInDomTree(range->EndPosition());
     if (start > end) {
       return false;
     }
@@ -131,26 +131,26 @@ bool IsValidRangeAndMarkable(const RangeInFlatTree* range) {
     // be programmatically scrolled).
     if (box->HasNonVisibleOverflow()) {
       PhysicalSize size = box->StitchedSize();
-      if (box->StyleRef().OverflowX() != EOverflow::kVisible &&
+      if (box->Style().OverflowX() != EOverflow::kVisible &&
           size.width.RawValue() <= 0) {
         return false;
       }
 
-      if (box->StyleRef().OverflowY() != EOverflow::kVisible &&
+      if (box->Style().OverflowY() != EOverflow::kVisible &&
           size.height.RawValue() <= 0) {
         return false;
       }
     }
 
     // If an ancestor is set to opacity 0, consider the target invisible.
-    if (box->StyleRef().Opacity() == 0) {
+    if (box->Style().Opacity() == 0) {
       return false;
     }
 
     // If the range is in a fixed subtree, scrolling the view won't change its
     // viewport-relative location so report the range as unfindable if its
     // currently offscreen.
-    if (box->StyleRef().GetPosition() == EPosition::kFixed) {
+    if (box->Style().GetPosition() == EPosition::kFixed) {
       PhysicalRect view_rect =
           PhysicalRect::EnclosingRect(box->View()->AbsoluteBoundingBoxRectF());
       if (!view_rect.Intersects(absolute_bounding_box)) {
@@ -347,8 +347,8 @@ void AnnotationAgentImpl::Reset(base::PassKey<AnnotationAgentContainerImpl>) {
 
   if (IsAttached()) {
     EphemeralRange dom_range =
-        EphemeralRange(ToPositionInDOMTree(attached_range_->StartPosition()),
-                       ToPositionInDOMTree(attached_range_->EndPosition()));
+        EphemeralRange(ToPositionInDomTree(attached_range_->StartPosition()),
+                       ToPositionInDomTree(attached_range_->EndPosition()));
     Document* document = attached_range_->StartPosition().GetDocument();
     DCHECK(document);
 
@@ -388,8 +388,8 @@ void AnnotationAgentImpl::ScrollIntoView(bool applies_focus) const {
   Node& first_node = *range.Nodes().begin();
 
   Document& document = *owning_container_->GetSupplementable();
-  document.EnsurePaintLocationDataValidForNode(
-      &first_node, DocumentUpdateReason::kFindInPage);
+  document.UpdateStyleAndLayoutForNode(&first_node,
+                                       DocumentUpdateReason::kFindInPage);
 
   Node* first_node_with_layout_object = nullptr;
   for (Node& node : range.Nodes()) {
@@ -578,8 +578,8 @@ void AnnotationAgentImpl::ProcessAttachmentFinished() {
     TRACE_EVENT_INSTANT("blink", "IsAttached");
 
     EphemeralRange dom_range =
-        EphemeralRange(ToPositionInDOMTree(attached_range_->StartPosition()),
-                       ToPositionInDOMTree(attached_range_->EndPosition()));
+        EphemeralRange(ToPositionInDomTree(attached_range_->StartPosition()),
+                       ToPositionInDomTree(attached_range_->EndPosition()));
     Document* document = attached_range_->StartPosition().GetDocument();
     DCHECK(document);
 

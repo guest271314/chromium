@@ -40,6 +40,7 @@
 #include "third_party/blink/renderer/core/events/gesture_event.h"
 #include "third_party/blink/renderer/core/events/keyboard_event.h"
 #include "third_party/blink/renderer/core/events/mouse_event.h"
+#include "third_party/blink/renderer/core/execution_context/agent.h"
 #include "third_party/blink/renderer/core/html/forms/html_data_list_element.h"
 #include "third_party/blink/renderer/core/html/forms/html_input_element.h"
 #include "third_party/blink/renderer/core/html/forms/html_opt_group_element.h"
@@ -321,6 +322,11 @@ void HTMLOptionElement::ParseAttribute(
       PseudoStateChanged(CSSSelector::kPseudoDisabled);
       PseudoStateChanged(CSSSelector::kPseudoEnabled);
       InvalidateIfHasEffectiveAppearance();
+      if (RuntimeEnabledFeatures::SelectedcontentSpec2Enabled()) {
+        if (HTMLSelectElement* select = OwnerSelectElement()) {
+          select->ResetSelectedness();
+        }
+      }
     }
   } else if (name == html_names::kSelectedAttr) {
     if (params.old_value.IsNull() != params.new_value.IsNull() && !is_dirty_)
@@ -369,7 +375,14 @@ bool HTMLOptionElement::selectedForBinding() const {
 
 void HTMLOptionElement::setSelectedForBinding(bool selected) {
   bool was_selected = is_selected_;
-  SetSelected(selected);
+  if (RuntimeEnabledFeatures::SelectedcontentSpec2Enabled()) {
+    SetSelectedState(selected);
+    if (HTMLSelectElement* select = OwnerSelectElement()) {
+      select->OptionSelectionStateChanged(this, selected);
+    }
+  } else {
+    SetSelected(selected);
+  }
 
   // As of December 2015, the HTML specification says the dirtiness becomes
   // true by |selected| setter unconditionally. However it caused a real bug,
@@ -592,7 +605,9 @@ void HTMLOptionElement::WalkAncestorsAndUpdate() {
   HTMLSelectElement::SelectOptgroupDatalist ancestors =
       HTMLSelectElement::WalkAncestorsForRelatedParts(*this);
   nearest_ancestor_select_ = ancestors.select;
-  nearest_ancestor_select_child_ = ancestors.select_child;
+  if (RuntimeEnabledFeatures::FilterableSelectEnabled()) {
+    nearest_ancestor_select_child_ = ancestors.select_child;
+  }
   nearest_ancestor_optgroup_ = ancestors.optgroup;
   nearest_ancestor_datalist_ = ancestors.datalist;
   SetFiltered(false);
@@ -615,16 +630,24 @@ Node::InsertionNotificationRequest HTMLOptionElement::InsertedInto(
   // TODO(crbug.com/453705243): Call OptionInserted on the ancestor datalist if
   // it changed.
 
-  if (RuntimeEnabledFeatures::SelectedcontentSpecEnabled() && Selected()) {
-    return InsertionNotificationRequest::
-        kInsertionShouldCallDidNotifySubtreeInsertions;
+  if (Selected() && nearest_ancestor_select_) {
+    if (!GetDocument().StatePreservingAtomicMoveInProgress()) {
+      return InsertionNotificationRequest::
+          kInsertionShouldCallDidNotifySubtreeInsertions;
+    } else if ((!RuntimeEnabledFeatures::SelectedcontentSpec2Enabled() ||
+                nearest_ancestor_select_ != old_ancestor_select) &&
+               nearest_ancestor_select_
+                   ->HasDescendantSelectedcontentElements()) {
+      GetDocument().GetAgent().event_loop()->EnqueueMicrotask(
+          BindOnce(&HTMLSelectElement::UpdateAllSelectedcontents,
+                   WrapWeakPersistent(nearest_ancestor_select_.Get())));
+    }
   }
   return return_value;
 }
 
 void HTMLOptionElement::DidNotifySubtreeInsertionsToDocument() {
-  if (RuntimeEnabledFeatures::SelectedcontentSpecEnabled() && Selected() &&
-      nearest_ancestor_select_) {
+  if (Selected() && nearest_ancestor_select_) {
     if (nearest_ancestor_select_->IsMultiple()) {
       nearest_ancestor_select_->UpdateAllSelectedcontentsMultiple();
     } else {
@@ -816,60 +839,11 @@ void HTMLOptionElement::DefaultEventHandlerInternal(Event& event) {
         event.SetDefaultHandled();
         return;
       } else if (key == keywords::kPageDown) {
-        if (!IsVisibleInViewport()) {
-          // If the option isn't visible at all right now, *only* scroll it into
-          // view.
-          scrollIntoViewIfNeeded(/*center_if_needed*/ false);
-        } else {
-          auto* next_option = options.NextFocusableElement(*this);
-          if (next_option && !next_option->IsVisibleInViewport()) {
-            // The next option isn't visible, which means we were at the very
-            // bottom. Scroll the current option to the top, and then focus the
-            // bottom one.
-            ScrollIntoViewOptions* scroll_into_view_options =
-                ScrollIntoViewOptions::Create();
-            scroll_into_view_options->setBlock(
-                V8ScrollLogicalPosition::Enum::kStart);
-            scroll_into_view_options->setInlinePosition(
-                V8ScrollLogicalPosition::Enum::kNearest);
-            scrollIntoViewWithOptions(scroll_into_view_options);
-          }
-          // Then find the last option that is still in the view.
-          HTMLOptionElement* next_focus = this;
-          for (auto* current = this; current && current->IsVisibleInViewport();
-               current = options.NextFocusableElement(*current)) {
-            next_focus = current;
-          }
-          next_focus->Focus(focus_params);
-        }
+        options.HandlePageUpDown(*this, OptionList::PageKey::kDown,
+                                 focus_params);
         event.SetDefaultHandled();
       } else if (key == keywords::kPageUp) {
-        if (!IsVisibleInViewport()) {
-          // If the option isn't visible at all right now, *only* scroll it into
-          // view.
-          scrollIntoViewIfNeeded(/*center_if_needed*/ false);
-        } else {
-          auto* previous_option = options.PreviousFocusableElement(*this);
-          if (previous_option && !previous_option->IsVisibleInViewport()) {
-            // The previous option isn't visible, which means we were at the
-            // very top. Scroll the current option to the bottom, and then focus
-            // the top one.
-            ScrollIntoViewOptions* scroll_into_view_options =
-                ScrollIntoViewOptions::Create();
-            scroll_into_view_options->setBlock(
-                V8ScrollLogicalPosition::Enum::kEnd);
-            scroll_into_view_options->setInlinePosition(
-                V8ScrollLogicalPosition::Enum::kNearest);
-            scrollIntoViewWithOptions(scroll_into_view_options);
-          }
-          // Then find the first option that is in the view.
-          HTMLOptionElement* next_focus = this;
-          for (auto* current = this; current && current->IsVisibleInViewport();
-               current = options.PreviousFocusableElement(*current)) {
-            next_focus = current;
-          }
-          next_focus->Focus(focus_params);
-        }
+        options.HandlePageUpDown(*this, OptionList::PageKey::kUp, focus_params);
         event.SetDefaultHandled();
       }
     }
@@ -960,9 +934,7 @@ void HTMLOptionElement::FinishParsingChildren() {
   HTMLElement::FinishParsingChildren();
   if (Selected()) {
     if (auto* select = OwnerSelectElement()) {
-      if (select->IsMultiple()) {
-        select->UpdateAllSelectedcontentsMultiple();
-      } else {
+      if (!select->IsMultiple()) {
         select->UpdateAllSelectedcontentsSingle(this);
       }
     }

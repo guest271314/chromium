@@ -23,14 +23,11 @@
 
 namespace {
 
-const std::array<network::mojom::PermissionsPolicyFeature, 5>
+const std::array<network::mojom::PermissionsPolicyFeature, 2>
     kDefinedOptInFeatures = {
         network::mojom::PermissionsPolicyFeature::kBrowsingTopics,
         network::mojom::PermissionsPolicyFeature::
-            kBrowsingTopicsBackwardCompatible,
-        network::mojom::PermissionsPolicyFeature::kSharedStorage,
-        network::mojom::PermissionsPolicyFeature::kRunAdAuction,
-        network::mojom::PermissionsPolicyFeature::kJoinAdInterestGroup};
+            kBrowsingTopicsBackwardCompatible};
 
 }  // namespace
 
@@ -83,18 +80,49 @@ void PermissionsPolicy::Allowlist::AddOpaqueSrc() {
 }
 
 bool PermissionsPolicy::Allowlist::Contains(const url::Origin& origin) const {
+  // Implements W3C Permissions Policy §Allowlist matches:
+  // https://w3c.github.io/webappsec-permissions-policy/#matches
+
+  // 1. If the allowlist is the special value *, then return true.
+  if (matches_all_origins_) {
+    return true;
+  }
+
+  // 2. If the allowlist's self-origin is not null and it is same origin-domain
+  // with origin, then return true.
   if (origin == self_if_matches_) {
     return true;
   }
+
+  // 3. If the allowlist's src-origin is not null and it is same origin-domain
+  // with origin, then return true.
+  // In Chromium, `matches_opaque_src_` represents this for sandboxed/opaque
+  // container contexts.
+  if (matches_opaque_src_ && origin.opaque()) {
+    return true;
+  }
+
+  // 4. If origin is an opaque origin, return false.
+  if (origin.opaque()) {
+    return false;
+  }
+
+  // 5. Let url be the result of calling the url parser on the serialization of
+  // origin.
+  // (Performed inside `OriginWithPossibleWildcards::DoesMatchOrigin()`.)
+
+  // 6. For each permissions-source-expression item in the allowlist's
+  // expressions:
+  //   1. If the result of running "Does url match expression in origin with
+  //   redirect count?" on url, item, origin, and 0 is true then return true.
   for (const auto& allowed_origin : allowed_origins_) {
     if (allowed_origin.DoesMatchOrigin(origin)) {
       return true;
     }
   }
-  if (origin.opaque()) {
-    return matches_opaque_src_;
-  }
-  return matches_all_origins_;
+
+  // 7. Return false.
+  return false;
 }
 
 const std::optional<url::Origin>& PermissionsPolicy::Allowlist::SelfIfMatches()
@@ -377,12 +405,22 @@ const PermissionsPolicy::Allowlist PermissionsPolicy::GetAllowlistForFeature(
 std::optional<const PermissionsPolicy::Allowlist>
 PermissionsPolicy::GetAllowlistForFeatureIfExists(
     network::mojom::PermissionsPolicyFeature feature) const {
-  // Return an empty allowlist when disabled through inheritance.
+  // Return nullopt when disabled through inheritance.
   if (!IsFeatureEnabledByInheritedPolicy(feature)) {
     return std::nullopt;
   }
 
   // Only return allowlist if actually in `allowlists_`.
+  auto allowlist = allowlists_.find(feature);
+  if (allowlist != allowlists_.end()) {
+    return allowlist->second;
+  }
+  return std::nullopt;
+}
+
+std::optional<PermissionsPolicy::Allowlist>
+PermissionsPolicy::GetHeaderAllowlistForFeatureIfExists(
+    network::mojom::PermissionsPolicyFeature feature) const {
   auto allowlist = allowlists_.find(feature);
   if (allowlist != allowlists_.end()) {
     return allowlist->second;

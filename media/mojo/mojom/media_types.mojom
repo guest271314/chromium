@@ -14,6 +14,7 @@ import "media/mojo/mojom/encryption_pattern.mojom";
 import "mojo/public/mojom/base/byte_string.mojom";
 import "mojo/public/mojom/base/shared_memory.mojom";
 import "mojo/public/mojom/base/time.mojom";
+import "mojo/public/mojom/base/token.mojom";
 import "mojo/public/mojom/base/values.mojom";
 import "mojo/public/mojom/base/unguessable_token.mojom";
 import "ui/gfx/geometry/mojom/geometry.mojom";
@@ -58,6 +59,15 @@ enum VideoCodec;
 enum VideoCodecProfile;
 
 // See media/base/video_types.h for descriptions.
+enum VideoChromaSampling {
+  kUnknown,
+  k420,
+  k422,
+  k444,
+  k400,
+};
+
+// See media/base/video_types.h for descriptions.
 [Native]
 enum VideoPixelFormat;
 
@@ -88,6 +98,26 @@ struct VideoTransformation {
   bool mirrored;
 };
 
+// See media/base/video_spatial_format.h for descriptions.
+enum VideoStereoMode {
+  kMono,
+  kSideBySideLeftFirst,
+  kTopBottomLeftFirst,
+};
+
+// See media/base/video_spatial_format.h for descriptions.
+enum VideoProjectionType {
+  kNone,
+  kEquirect180,
+  kEquirect360,
+};
+
+// See media/base/video_spatial_format.h for descriptions.
+struct VideoSpatialFormat {
+  VideoProjectionType projection_type;
+  VideoStereoMode stereo_mode;
+};
+
 // See media/base/waiting.h for descriptions.
 [Native]
 enum WaitingReason;
@@ -112,8 +142,11 @@ enum MediaContainerName;
 enum MediaStatusState;
 
 // See media/base/encryption_scheme.h for description.
-[Native]
-enum EncryptionScheme;
+enum EncryptionScheme {
+  kUnencrypted,
+  kCenc,
+  kCbcs,
+};
 
 // See media::EncryptionType for descriptions.
 enum EncryptionType {
@@ -207,8 +240,7 @@ struct VideoColorSpace {
 struct AudioDecoderConfig {
   AudioCodec codec;
   SampleFormat sample_format;
-  ChannelLayout channel_layout;
-  int32 channels;
+  ChannelLayoutConfig channel_layout_config;
   int32 samples_per_second;
   array<uint8> extra_data;
   EncryptionScheme encryption_scheme;
@@ -236,6 +268,7 @@ struct VideoDecoderConfig {
   EncryptionScheme encryption_scheme;
   VideoColorSpace color_space_info;
   gfx.mojom.HDRMetadata hdr_metadata;
+  VideoSpatialFormat spatial_format;
 };
 
 // Native struct media::SubsampleEntry;
@@ -281,6 +314,9 @@ struct DecoderBufferSideData {
   // VP9 specific information.
   array<uint32> spatial_layers;
   array<uint8> alpha_data;
+
+  // Container-level HDR metadata.
+  gfx.mojom.HDRMetadata hdr_metadata;
 
   // Secure buffer handle corresponding to the decrypted contents of the
   // associated DecoderBuffer. A non-zero value indicates this was set.
@@ -333,11 +369,8 @@ struct AudioBuffer {
   // Format of the audio.
   SampleFormat sample_format;
 
-  // How the channels are laid out.
-  ChannelLayout channel_layout;
-
-  // Number of channels.
-  int32 channel_count;
+  // How the channels are laid out, and the number of channels.
+  ChannelLayoutConfig channel_layout_config;
 
   // Sample rate of the buffer.
   int32 sample_rate;
@@ -368,21 +401,53 @@ struct CaptureVersion {
   uint32 sub_capture;
 };
 
+// Capture-specific geometry, temporal damage, and sub-capture metadata for a
+// VideoFrame. See media::CaptureMetadata in media/base/video_frame_metadata.h
+// for a detailed description of each field, its coordinate space, and its
+// producers and consumers.
+//
+// The nullable fields are null when the producer does not provide the value
+// (e.g. camera capture and decoded frames set none of them). Null also means
+// "unset" for media::VideoFrameMetadata::MergeMetadataFrom(), which keeps the
+// existing value instead of overwriting it.
+struct CaptureMetadata {
+  // Frame counter incremented by the producer on each frame; used to detect
+  // dropped frames between consecutive deliveries (`update_rect`). Only set by
+  // the Viz frame sink video capturer.
+  int32? counter;
+
+  // Temporal damage rect in coded-frame pixel coordinates since the preceding
+  // `counter` frame. Only set by the Viz frame sink video capturer; consumers
+  // must treat the entire frame as changed when null.
+  gfx.mojom.Rect? update_rect;
+
+  // Unscaled pixel dimensions of the captured source (or active crop region).
+  // Only set by screen/tab/window capturers; null for other sources such as
+  // cameras.
+  gfx.mojom.Size? source_size;
+
+  // Single-target physical crop origin rect in the requested root frame sink's
+  // DIP coordinate space. Null unless Viz physically crops the frame for
+  // single-target Region Capture within the requested frame sink (i.e. null
+  // when uncropped, in multi-target mode, during Element Capture, or when the
+  // crop target is in an out-of-process iframe).
+  gfx.mojom.Rect? region_capture_rect;
+
+  // Per-target logical bounding rects in delivered VideoFrame pixel
+  // coordinates (`visible_rect()`) keyed by RegionCaptureCropId token.
+  map<mojo_base.mojom.Token, gfx.mojom.Rect> region_capture_bounds;
+
+  // Capture version `(source, sub_capture)` according to which the frame was
+  // produced.
+  CaptureVersion version;
+};
+
 // See media/base/video_frame_metadata.h for a description of fields.
 struct VideoFrameMetadata {
-  bool allow_overlay;
-
   mojo_base.mojom.TimeTicks? capture_begin_time;
   mojo_base.mojom.TimeTicks? capture_end_time;
 
-  int32? capture_counter;
-
-  gfx.mojom.Rect? capture_update_rect;
-
-  gfx.mojom.Size? source_size;
-
-  gfx.mojom.Rect? region_capture_rect;
-  CaptureVersion capture_version;
+  CaptureMetadata capture;
 
   bool copy_required;
 
@@ -409,8 +474,6 @@ struct VideoFrameMetadata {
   bool hw_protected;
 
   bool needs_detiling;
-
-  bool is_webgpu_compatible;
 
   mojo_base.mojom.UnguessableToken? tracking_token;
 
@@ -628,6 +691,7 @@ enum InputStreamErrorCode {
   kSystemPermissions = 1,
   kDeviceInUse = 2,
   kSocketError = 3,
+  kDeviceRemoved = 4,
 };
 
 // See media/base/renderer.h for description.

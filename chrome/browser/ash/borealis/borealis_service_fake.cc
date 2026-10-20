@@ -4,7 +4,6 @@
 
 #include "chrome/browser/ash/borealis/borealis_service_fake.h"
 
-#include "chrome/browser/ash/borealis/borealis_install_url_handler.h"
 #include "chrome/browser/ash/borealis/borealis_service.h"
 #include "chrome/browser/ash/borealis/borealis_service_factory.h"
 
@@ -34,9 +33,9 @@ BorealisAppUninstaller& BorealisServiceFake::AppUninstaller() {
   return *app_uninstaller_;
 }
 
-BorealisContextManager& BorealisServiceFake::ContextManager() {
-  CHECK(context_manager_);
-  return *context_manager_;
+BorealisDiskCleanupManager& BorealisServiceFake::DiskCleanupManager() {
+  CHECK(disk_cleanup_manager_);
+  return *disk_cleanup_manager_;
 }
 
 BorealisFeatures& BorealisServiceFake::Features() {
@@ -47,11 +46,6 @@ BorealisFeatures& BorealisServiceFake::Features() {
 BorealisInstaller& BorealisServiceFake::Installer() {
   CHECK(installer_);
   return *installer_;
-}
-
-BorealisInstallUrlHandler& BorealisServiceFake::InstallUrlHandler() {
-  CHECK(install_url_handler_);
-  return *install_url_handler_;
 }
 
 BorealisLaunchOptions& BorealisServiceFake::LaunchOptions() {
@@ -69,11 +63,6 @@ BorealisWindowManager& BorealisServiceFake::WindowManager() {
   return *window_manager_;
 }
 
-BorealisSurveyHandler& BorealisServiceFake::SurveyHandler() {
-  CHECK(survey_handler_);
-  return *survey_handler_;
-}
-
 void BorealisServiceFake::SetAppLauncherForTesting(
     BorealisAppLauncher* app_launcher) {
   app_launcher_ = app_launcher;
@@ -84,9 +73,9 @@ void BorealisServiceFake::SetAppUninstallerForTesting(
   app_uninstaller_ = app_uninstaller;
 }
 
-void BorealisServiceFake::SetContextManagerForTesting(
-    BorealisContextManager* context_manager) {
-  context_manager_ = context_manager;
+void BorealisServiceFake::SetDiskCleanupManagerForTesting(
+    BorealisDiskCleanupManager* disk_cleanup_manager) {
+  disk_cleanup_manager_ = disk_cleanup_manager;
 }
 
 void BorealisServiceFake::SetFeaturesForTesting(BorealisFeatures* features) {
@@ -97,11 +86,6 @@ void BorealisServiceFake::SetInstallerForTesting(BorealisInstaller* installer) {
   installer_ = installer;
 }
 
-void BorealisServiceFake::SetInstallUrlHandlerForTesting(
-    BorealisInstallUrlHandler* install_url_handler) {
-  install_url_handler_ = install_url_handler;
-}
-
 void BorealisServiceFake::SetShutdownMonitorForTesting(
     BorealisShutdownMonitor* shutdown_monitor) {
   shutdown_monitor_ = shutdown_monitor;
@@ -110,11 +94,6 @@ void BorealisServiceFake::SetShutdownMonitorForTesting(
 void BorealisServiceFake::SetWindowManagerForTesting(
     BorealisWindowManager* window_manager) {
   window_manager_ = window_manager;
-}
-
-void BorealisServiceFake::SetSurveyHandlerForTesting(
-    BorealisSurveyHandler* survey_handler) {
-  survey_handler_ = survey_handler;
 }
 
 }  // namespace borealis

@@ -19,6 +19,7 @@
 #include "base/containers/flat_set.h"
 #include "base/functional/callback_forward.h"
 #include "base/gtest_prod_util.h"
+#include "base/memory/raw_ptr.h"
 #include "base/observer_list_threadsafe.h"
 #include "base/sequence_checker.h"
 #include "base/synchronization/lock.h"
@@ -29,7 +30,6 @@
 #include "services/metrics/public/cpp/ukm_source_id.h"
 #include "services/metrics/public/mojom/ukm_interface.mojom-forward.h"
 #include "third_party/abseil-cpp/absl/container/flat_hash_map.h"
-#include "third_party/abseil-cpp/absl/container/flat_hash_set.h"
 #include "ukm_consent_state.h"
 #include "url/gurl.h"
 
@@ -145,6 +145,9 @@ class COMPONENT_EXPORT(UKM_RECORDER) UkmRecorderImpl : public UkmRecorder {
   // Called when UKM consent state changed.
   void OnUkmAllowedStateChanged(UkmConsentState state);
 
+  // Called when UKM allowed state changes.
+  void OnUkmAllowedStateChanged(bool ukm_allowed);
+
   // Sets the sampling seed for testing purposes.
   void SetSamplingSeedForTesting(uint32_t seed) {
     // Normally the seed is set during object construction and remains
@@ -156,13 +159,16 @@ class COMPONENT_EXPORT(UKM_RECORDER) UkmRecorderImpl : public UkmRecorder {
 
   bool recording_enabled() const { return recording_enabled_; }
 
-  bool recording_enabled(ukm::UkmConsentType type) const {
-    return recording_state_.Has(type);
-  }
+  bool recording_enabled(ukm::UkmConsentType type) const;
 
   bool ShouldDropEntryForTesting(mojom::UkmEntry* entry);
 
  protected:
+  // Returns whether kRestructureMetricsConsentSettings feature is enabled.
+  // This is a pure virtual method to force subclasses to override this
+  // behavior.
+  virtual bool ShouldUseMetricsConsentRestructure() const = 0;
+
   // Calculates sampled in/out for a specific source/event based on internal
   // configuration. This function is guaranteed to always return the same
   // result over the life of this object for the same config & input parameters.
@@ -255,6 +261,7 @@ class COMPONENT_EXPORT(UKM_RECORDER) UkmRecorderImpl : public UkmRecorder {
       GetDocumentToNavigationUrlsMap_MissingSubframeSource);
   FRIEND_TEST_ALL_PREFIXES(UkmRecorderImplTest,
                            GetDocumentToNavigationUrlsMap_Redirect);
+  FRIEND_TEST_ALL_PREFIXES(UkmRecorderImplTest, DocumentCreatedNotSerialized);
   FRIEND_TEST_ALL_PREFIXES(UkmRecorderImplTest,
                            StoreDownsamplingParametersInReport);
 

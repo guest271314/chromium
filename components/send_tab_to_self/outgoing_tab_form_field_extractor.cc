@@ -9,8 +9,6 @@
 #include <utility>
 
 #include "base/check_is_test.h"
-#include "base/logging.h"
-#include "base/notreached.h"
 #include "base/strings/utf_ostream_operators.h"
 #include "components/autofill/core/browser/autofill_field.h"
 #include "components/autofill/core/browser/field_types.h"
@@ -67,31 +65,6 @@ void LogFieldExtraction(std::ostream* os,
   *os << "\n";
 }
 
-bool IsSensitiveFieldType(autofill::FormControlType type) {
-  // Explicitly exclude password fields.
-  switch (type) {
-    case autofill::FormControlType::kInputPassword:
-    case autofill::FormControlType::kInputHiddenEmailVerification:
-      return true;
-    case autofill::FormControlType::kContentEditable:
-    case autofill::FormControlType::kInputCheckbox:
-    case autofill::FormControlType::kInputDate:
-    case autofill::FormControlType::kInputEmail:
-    case autofill::FormControlType::kInputMonth:
-    case autofill::FormControlType::kInputNumber:
-    case autofill::FormControlType::kInputRadio:
-    case autofill::FormControlType::kInputSearch:
-    case autofill::FormControlType::kInputTelephone:
-    case autofill::FormControlType::kInputText:
-    case autofill::FormControlType::kInputUrl:
-    case autofill::FormControlType::kSelectOne:
-    case autofill::FormControlType::kTextArea:
-      return false;
-  }
-
-  NOTREACHED();
-}
-
 ExtractionResult GetExtractionResult(const autofill::AutofillField& field,
                                      const url::Origin& origin) {
   if (field.origin() != origin) {
@@ -129,8 +102,7 @@ PageContext::FormFieldInfo ExtractOutgoingTabFormFieldsInternal(
         PageContext::FormField field_data;
         field_data.id_attribute = field->id_attribute();
         field_data.name_attribute = field->name_attribute();
-        field_data.form_control_type = std::string(
-            autofill::FormControlTypeToString(field->form_control_type()));
+        field_data.form_control_type = field->form_control_type();
         field_data.value = field->value();
         field_data.autofill_signature.form_signature = form.form_signature();
         field_data.autofill_signature.field_signature =

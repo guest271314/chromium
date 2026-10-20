@@ -7,27 +7,29 @@
 #include <memory>
 #include <utility>
 
+#include "base/check.h"
+#include "base/functional/bind.h"
 #include "base/task/sequenced_task_runner.h"
-#include "chrome/browser/glic/experimental_opt_in/glic_experimental_opt_in_dialog_view.h"
+#include "build/build_config.h"
 #include "chrome/browser/glic/public/glic_enabling.h"
 #include "chrome/browser/glic/public/glic_keyed_service.h"
 #include "chrome/browser/glic/public/glic_keyed_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/tabs/public/tab_dialog_manager.h"
-#include "chrome/browser/ui/tabs/public/tab_features.h"
-#include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/web_contents.h"
-#include "ui/views/widget/widget.h"
+#include "url/gurl.h"
 
 namespace glic {
 
 GlicExperimentalOptInController::GlicExperimentalOptInController(
     Profile* profile)
-    : profile_(profile) {}
+    : profile_(profile),
+      host_(GlicExperimentalOptInUIHost::Create(profile_, this)) {
+  CHECK(host_);
+}
 
 GlicExperimentalOptInController::~GlicExperimentalOptInController() = default;
 
-views::Widget* GlicExperimentalOptInController::ShowDialog(
+void GlicExperimentalOptInController::ShowDialog(
     content::WebContents* web_contents,
     base::OnceCallback<void(bool)> callback) {
   GlicKeyedService* service =
@@ -35,63 +37,54 @@ views::Widget* GlicExperimentalOptInController::ShowDialog(
   if (!service) {
     base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
         FROM_HERE, base::BindOnce(std::move(callback), false));
-    return nullptr;
+    return;
   }
 
   if (service->enabling().GetRequiredExperimentalOptIn() ==
       RequiredExperimentalOptIn::kNotNeeded) {
     base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
         FROM_HERE, base::BindOnce(std::move(callback), true));
-    return nullptr;
+    return;
   }
 
   callbacks_.push_back(std::move(callback));
-
-  if (dialog_widget_) {
-    dialog_widget_->Show();
-    return dialog_widget_.get();
-  }
-
-  tabs::TabInterface* tab_interface =
-      tabs::TabInterface::MaybeGetFromContents(web_contents);
-  if (!tab_interface) {
-    CloseDialog(false);
-    return nullptr;
-  }
-
-  dialog_view_ = std::make_unique<GlicExperimentalOptInDialogView>(
-      profile_, tab_interface);
-  dialog_view_->SetOwnershipOfNewWidget(
-      views::Widget::InitParams::CLIENT_OWNS_WIDGET);
-
-  dialog_widget_ = tab_interface->GetTabFeatures()
-                       ->tab_dialog_manager()
-                       ->CreateAndShowDialog(
-                           dialog_view_.get(),
-                           std::make_unique<tabs::TabDialogManager::Params>());
-
-  dialog_widget_->MakeCloseSynchronous(
-      base::BindOnce(&GlicExperimentalOptInController::CloseWidget,
-                     weak_ptr_factory_.GetWeakPtr()));
-
-  return dialog_widget_.get();
+  host_->Show(web_contents);
 }
 
 void GlicExperimentalOptInController::CloseDialog(bool accepted) {
-  CloseWidget(accepted ? views::Widget::ClosedReason::kAcceptButtonClicked
-                       : views::Widget::ClosedReason::kCancelButtonClicked);
+  host_->Close(accepted);
 }
 
-void GlicExperimentalOptInController::CloseWidget(
-    views::Widget::ClosedReason reason) {
-  bool accepted = (reason == views::Widget::ClosedReason::kAcceptButtonClicked);
+void GlicExperimentalOptInController::OnUIClosed(bool accepted) {
   for (auto& callback : std::exchange(callbacks_, {})) {
     base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
         FROM_HERE, base::BindOnce(std::move(callback), accepted));
   }
+}
 
-  dialog_widget_.reset();
-  dialog_view_.reset();
+void GlicExperimentalOptInController::OpenLinkInNewTab(const GURL& url) {
+  host_->OpenLinkInNewTab(url);
+}
+
+#if !BUILDFLAG(IS_ANDROID)
+views::Widget* GlicExperimentalOptInController::GetDialogWidgetForTesting() {
+  return host_->GetWidgetForTesting();  // IN-TEST
+}
+
+GlicExperimentalOptInDialogView*
+GlicExperimentalOptInController::GetDialogViewForTesting() {
+  return host_->GetDialogViewForTesting();  // IN-TEST
+}
+#endif
+
+void GlicExperimentalOptInController::SetTickClockForTesting(
+    const base::TickClock* clock) {
+  host_->SetTickClockForTesting(clock);  // IN-TEST
+}
+
+content::WebContents*
+GlicExperimentalOptInController::GetOrCreateSuitableWebContents() {
+  return host_->GetOrCreateSuitableWebContents();
 }
 
 }  // namespace glic

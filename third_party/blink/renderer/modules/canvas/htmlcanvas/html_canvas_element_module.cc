@@ -5,6 +5,7 @@
 #include "third_party/blink/renderer/modules/canvas/htmlcanvas/html_canvas_element_module.h"
 
 #include "base/metrics/histogram_functions.h"
+#include "third_party/blink/public/common/features.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_canvas_context_creation_attributes_module.h"
 #include "third_party/blink/renderer/core/dom/dom_node_ids.h"
 #include "third_party/blink/renderer/core/html/canvas/canvas_rendering_context.h"
@@ -70,20 +71,27 @@ OffscreenCanvas* HTMLCanvasElementModule::transferControlToOffscreen(
 OffscreenCanvas* HTMLCanvasElementModule::TransferControlToOffscreenInternal(
     ScriptState* script_state,
     HTMLCanvasElement& canvas) {
-  OffscreenCanvas* offscreen_canvas =
-      OffscreenCanvas::Create(script_state, canvas.width(), canvas.height());
-
   DOMNodeId canvas_id = canvas.GetDomNodeId();
-  canvas.RegisterPlaceholderCanvas(static_cast<int>(canvas_id));
-  offscreen_canvas->SetPlaceholderCanvasId(canvas_id);
+  canvas.RegisterPlaceholderCanvas(canvas_id);
+  if (base::FeatureList::IsEnabled(
+          features::kOffscreenCanvasSyncAnimationState)) {
+    canvas.UpdateSuspendOffscreenCanvasAnimation();
+  }
+
+  uint32_t client_id = 0;
+  uint32_t sink_id = 0;
+
+  if (SurfaceLayerBridge* bridge = canvas.SurfaceLayerBridge()) {
+    client_id = bridge->GetFrameSinkId().client_id();
+    sink_id = bridge->GetFrameSinkId().sink_id();
+  }
+
+  OffscreenCanvas* offscreen_canvas =
+      OffscreenCanvas::Create(script_state, canvas.width(), canvas.height(),
+                              client_id, sink_id, canvas_id);
   offscreen_canvas->SetTextDirection(canvas.GetTextDirection(nullptr));
   offscreen_canvas->SetLocale(canvas.GetLocale());
 
-  SurfaceLayerBridge* bridge = canvas.SurfaceLayerBridge();
-  if (bridge) {
-    offscreen_canvas->SetFrameSinkId(bridge->GetFrameSinkId().client_id(),
-                                     bridge->GetFrameSinkId().sink_id());
-  }
   return offscreen_canvas;
 }
 

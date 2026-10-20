@@ -13,10 +13,12 @@
 #include "base/files/scoped_temp_dir.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/test_future.h"
+#include "base/threading/thread_restrictions.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/support_tool/data_collector.h"
-#include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/window_metadata/window_metadata_controller.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "components/feedback/redaction_tool/pii_types.h"
 #include "content/public/test/browser_test.h"
@@ -73,10 +75,11 @@ IN_PROC_BROWSER_TEST_F(UiHierarchyDataCollectorBrowserTest,
 
   // CreateBrowser() will create a browser with a single tab (about:blank).
   Profile* profile = ProfileManager::GetActiveUserProfile();
-  Browser* browser = CreateBrowser(profile);
+  BrowserWindowInterface* browser = CreateBrowser(profile);
   ASSERT_TRUE(browser);
   std::string browser_window_title = base::UTF16ToUTF8(
-      browser->GetWindowTitleForCurrentTab(/*include_app_name=*/true));
+      WindowMetadataController::From(browser)->GetWindowTitleForCurrentTab(
+          /*include_app_name=*/true));
 
   // Collect UI hierarchy data and assert no error returned.
   base::test::TestFuture<std::optional<SupportToolError>>

@@ -31,9 +31,7 @@ enum class HTMLFragmentParsingBehavior {
 };
 
 using HTMLFragmentParsingBehaviorSet =
-    base::EnumSet<HTMLFragmentParsingBehavior,
-                  HTMLFragmentParsingBehavior::kMinValue,
-                  HTMLFragmentParsingBehavior::kMaxValue>;
+    base::EnumSet<HTMLFragmentParsingBehavior>;
 
 // If this fails because of an unsupported tag and
 // `failed_because_unsupported_tag` is non-null, then it is set to true.
@@ -81,14 +79,15 @@ enum class HtmlFastPathResult {
   // This value is no longer used.
   // kFailedDirAttributeDirty = 23,
   kFailedOnAttribute = 24,
-  // 25 is no longer used because it was erroneously applied to both
-  // `kFailedMaxDepth` and `kFailedBigText`.
+  // 25 is no longer used because it was erroneously applied to two different
+  // errors.
   // This value is no longer used.
   // kFailedCssPseudoDirEnabledAndDirAttributeDirtyDeprecated = 26,
   // 27 is skipped due to erroneous use in C++ vs enums.xml.
   kFailedMaxDepth = 28,
-  kFailedBigText = 29,
-  kMaxValue = kFailedBigText,
+  // This value is no longer used.
+  // kFailedBigText = 29,
+  kMaxValue = kFailedMaxDepth,
 };
 
 }  // namespace blink

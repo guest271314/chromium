@@ -7,8 +7,10 @@
 #include <map>
 #include <memory>
 
+#include "base/memory/scoped_refptr.h"
 #include "base/metrics/field_trial.h"
 #include "base/metrics/field_trial_params.h"
+#include "base/notreached.h"
 #include "base/run_loop.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
@@ -17,8 +19,8 @@
 #include "components/safe_browsing/android/safe_browsing_api_handler_bridge.h"
 #include "components/safe_browsing/android/safe_browsing_api_handler_test_util.h"
 #include "components/safe_browsing/core/browser/db/database_manager.h"
-#include "components/safe_browsing/core/browser/db/v4_protocol_manager_util.h"
-#include "components/safe_browsing/core/browser/db/v4_test_util.h"
+#include "components/safe_browsing/core/browser/db/sb_protocol_manager_util.h"
+#include "components/safe_browsing/core/browser/db/sb_test_util.h"
 #include "components/safe_browsing/core/common/features.h"
 #include "components/variations/variations_associated_data.h"
 #include "content/public/test/browser_task_environment.h"
@@ -72,14 +74,18 @@ class TestClient : public SafeBrowsingDatabaseManager::Client {
   ~TestClient() override { db_->CancelCheck(this); }
 
   void OnCheckBrowseUrlResult(const GURL& url,
-                              SBThreatType threat_type,
-                              const ThreatMetadata& metadata) override {
+                              SBThreatType threat_type) override {
     EXPECT_EQ(expected_url_, url);
     EXPECT_EQ(expected_threat_type_, threat_type);
     is_callback_called_ = true;
   }
 
   bool IsCallbackCalled() { return is_callback_called_; }
+
+  base::WeakPtr<V5GetHashProtocolManager> GetV5GetHashProtocolManager()
+      override {
+    NOTREACHED();
+  }
 
  private:
   scoped_refptr<RemoteSafeBrowsingDatabaseManager> db_;
@@ -103,9 +109,9 @@ class RemoteDatabaseManagerTest
     test_shared_loader_factory_ =
         base::MakeRefCounted<network::WeakWrapperSharedURLLoaderFactory>(
             &test_url_loader_factory_);
-    db_ = new RemoteSafeBrowsingDatabaseManager();
+    db_ = base::MakeRefCounted<RemoteSafeBrowsingDatabaseManager>();
     db_->StartOnUIThread(test_shared_loader_factory_,
-                         GetTestV4ProtocolConfig());
+                         GetTestSBProtocolConfig());
 
     url_interceptor_ = std::make_unique<TestUrlCheckInterceptor>();
     SafeBrowsingApiHandlerBridge::GetInstance().SetInterceptorForTesting(

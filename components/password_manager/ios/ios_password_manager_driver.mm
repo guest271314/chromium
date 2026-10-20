@@ -6,6 +6,7 @@
 
 #import <string>
 
+#import "base/functional/callback_helpers.h"
 #import "base/hash/hash.h"
 #include "base/notimplemented.h"
 #import "components/autofill/core/common/password_form_fill_data.h"
@@ -13,8 +14,6 @@
 #import "components/password_manager/core/browser/password_generation_frame_helper.h"
 #import "components/password_manager/core/browser/password_manager.h"
 #import "components/password_manager/ios/ios_password_manager_driver_factory.h"
-#import "components/password_manager/ios/password_manager_java_script_feature.h"
-#include "ui/gfx/geometry/rect_f.h"
 
 using password_manager::PasswordAutofillManager;
 using password_manager::PasswordManager;
@@ -45,6 +44,10 @@ IOSPasswordManagerDriver::IOSPasswordManagerDriver(
   // Cache these values early, so that it can be accessed after frame deletion.
   is_in_main_frame_ = web_frame->IsMainFrame();
   security_origin_ = web_frame->GetSecurityOrigin();
+  url_ = web_frame->GetUrl();
+  if (url_.is_empty() && !security_origin_.opaque()) {
+    url_ = security_origin_.GetURL();
+  }
 }
 
 IOSPasswordManagerDriver::~IOSPasswordManagerDriver() = default;
@@ -111,6 +114,17 @@ void IOSPasswordManagerDriver::GeneratedPasswordAccepted(
   NOTIMPLEMENTED();
 }
 
+void IOSPasswordManagerDriver::FillField(
+    autofill::FieldRendererId triggering_field_id,
+    const std::u16string& value,
+    autofill::FieldPropertiesFlags field_flags,
+    base::OnceCallback<void(bool)> success_callback) {
+  [bridge_ fillField:triggering_field_id
+              withValue:value
+             forFrameId:frame_id_
+      completionHandler:base::CallbackToBlock(std::move(success_callback))];
+}
+
 void IOSPasswordManagerDriver::FillSuggestion(
     const std::u16string& username,
     const std::u16string& password,
@@ -173,6 +187,11 @@ IOSPasswordManagerDriver::GetPasswordAutofillManager() {
   return nullptr;
 }
 
+autofill::PasswordManagerDelegate*
+IOSPasswordManagerDriver::GetPasswordManagerDelegate() {
+  return nullptr;
+}
+
 bool IOSPasswordManagerDriver::IsDirectChildOfPrimaryMainFrame() const {
   NOTREACHED();
 }
@@ -182,7 +201,8 @@ bool IOSPasswordManagerDriver::IsInPrimaryMainFrame() const {
 }
 
 bool IOSPasswordManagerDriver::IsNestedWithinFencedFrame() const {
-  NOTREACHED();
+  // Not yet supported by WebKit.
+  return false;
 }
 
 bool IOSPasswordManagerDriver::CanShowAutofillUi() const {
@@ -194,26 +214,39 @@ int IOSPasswordManagerDriver::GetFrameId() const {
 }
 
 const GURL& IOSPasswordManagerDriver::GetLastCommittedURL() const {
-  return bridge_.lastCommittedURL;
+  if (is_in_main_frame_ && web_state_) {
+    const GURL& url = web_state_->GetLastCommittedURL();
+    if (!url.is_empty()) {
+      return url;
+    }
+  }
+  return url_;
 }
 
 const url::Origin& IOSPasswordManagerDriver::GetLastCommittedOrigin() const {
-  NOTREACHED();
+  return security_origin_;
 }
 
 bool IOSPasswordManagerDriver::HasCrossOriginAncestor() const {
+  // TODO(crbug.com/539923959): Implement once child frame registration is done,
+  // and the ancestors of a web frame could be tracked.
   NOTREACHED();
-}
-
-gfx::RectF IOSPasswordManagerDriver::TransformToRootCoordinates(
-    const gfx::RectF& bounds_in_frame_coordinates) {
-  NOTIMPLEMENTED();
-  return bounds_in_frame_coordinates;
 }
 
 void IOSPasswordManagerDriver::CheckViewAreaVisible(
     autofill::FieldRendererId field_id,
-    base::OnceCallback<void(bool)>) {
+    base::OnceCallback<void(bool)> callback) {
+  [bridge_
+      scrollAndCheckViewAreaVisible:field_id
+                         forFrameId:frame_id_
+                  completionHandler:base::CallbackToBlock(std::move(callback))];
+}
+
+bool IOSPasswordManagerDriver::HasValidURL(bool may_kill_renderer) {
+  NOTREACHED();
+}
+
+bool IOSPasswordManagerDriver::IsRenderFrameHostSupported() {
   NOTREACHED();
 }
 

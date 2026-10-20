@@ -4,9 +4,5 @@
 
 [RuntimeEnabled=CanvasDrawElement, Exposed=(Window,Worker), Transferable]
 interface ElementImage {
-  // dimensions in canvas output bitmap pixels
-  readonly attribute unsigned long width;
-  readonly attribute unsigned long height;
-
   void close();
 };

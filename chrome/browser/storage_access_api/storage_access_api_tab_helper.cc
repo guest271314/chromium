@@ -9,7 +9,6 @@
 #include "components/guest_view/buildflags/buildflags.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/web_contents_observer.h"
-#include "content/public/browser/web_contents_user_data.h"
 
 #if BUILDFLAG(ENABLE_GUEST_VIEW)
 #include "components/guest_view/browser/guest_view_base.h"
@@ -33,8 +32,8 @@ void StorageAccessAPITabHelper::FrameReceivedUserActivation(
   }
 #endif
 
-  if (rfh->GetLastCommittedOrigin().opaque() ||
-      rfh->GetParentOrOuterDocument()->GetLastCommittedOrigin().opaque()) {
+  if (rfh->GetParentOrOuterDocument()->GetLastCommittedOrigin().opaque() ||
+      rfh->IsStorageAccessRestricted()) {
     return;
   }
 
@@ -47,9 +46,6 @@ StorageAccessAPITabHelper::StorageAccessAPITabHelper(
     content::WebContents* web_contents,
     StorageAccessAPIService* service)
     : content::WebContentsObserver(web_contents),
-      content::WebContentsUserData<StorageAccessAPITabHelper>(*web_contents),
       service_(raw_ref<StorageAccessAPIService>::from_ptr(service)) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 }
-
-WEB_CONTENTS_USER_DATA_KEY_IMPL(StorageAccessAPITabHelper);

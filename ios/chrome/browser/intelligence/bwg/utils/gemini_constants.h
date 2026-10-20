@@ -14,8 +14,7 @@ namespace gemini {
 // Logged as IOSGeminiEntryPoint enum for the IOS.Gemini.EntryPoint histogram.
 // LINT.IfChange(EntryPoint)
 enum class EntryPoint {
-  // Gemini was opened directly from a Gemini promo.
-  Promo = 0,
+  // Promo = 0, // Deprecated, no longer used.
   // Gemini was opened directly from the overflow menu.
   OverflowMenu = 1,
   // Gemini was opened from the AI Hub.
@@ -39,7 +38,17 @@ enum class EntryPoint {
   ExternalAppStoreEvent = 11,
   // Gemini was opened from the Toolbar.
   Toolbar = 12,
-  kMaxValue = Toolbar,
+  // Gemini was opened via App Switcher AI Summarization entry point.
+  AppSwitcherAISummarization = 13,
+  // Gemini was opened from an unsupported query in AtMemory search.
+  AtMemorySearch = 14,
+  // Gemini was opened from the contextual cue chip in the omnibox.
+  ContextualCueChip = 15,
+  // Gemini was opened from the contextual cue infobar banner.
+  ContextualCueInfobar = 16,
+  // The entry point is unknown.
+  Unknown = 100,
+  kMaxValue = Unknown,
 };
 // LINT.ThenChange(/tools/metrics/histograms/metadata/ios/enums.xml:IOSGeminiEntryPoint)
 
@@ -128,19 +137,21 @@ enum class GenAiDefaultSettingsPolicy {
   kNotAllowed = 2,
 };
 
-// Current state of the Gemini FRE.
-// LINT.IfChange(FREState)
-enum class FREState {
+// Current state of the Gemini First Run.
+// LINT.IfChange(FirstRunState)
+enum class FirstRunState {
   // Initial state, when the flow was never started by the user.
   kPending = 0,
-  // The FRE flow was shown to the user but they did not proceed til the end and
+  // The First Run flow was shown to the user but they did not proceed til the
+  // end and
   // give their explicit consent to Gemini usage.
   kStarted = 1,
-  // The user completed the FRE flow and gave their consent to Gemini usage.
+  // The user completed the First Run flow and gave their consent to Gemini
+  // usage.
   kCompleted = 2,
   kMaxValue = kCompleted
 };
-// LINT.ThenChange(/tools/metrics/histograms/metadata/ios/enums.xml:IOSGeminiFREState)
+// LINT.ThenChange(/tools/metrics/histograms/metadata/ios/enums.xml:IOSGeminiFirstRunState)
 
 // Input type for Gemini queries.
 // LINT.IfChange(InputType)
@@ -200,7 +211,11 @@ enum class InputType {
   // Input from Helios entry point on the Edit menu when user highlights text
   // Something like: “Explain this to me: <selected text>”
   kEditMenuPrompt = 26,
-  kMaxValue = kEditMenuPrompt,
+  // Summarization query originating from the App Switcher.
+  kAppSwitcherSummarize = 27,
+  // Live voice prompt input type.
+  kLivePrompt = 28,
+  kMaxValue = kLivePrompt,
 };
 // LINT.ThenChange(
 //   /ios/chrome/browser/intelligence/bwg/metrics/gemini_metrics.h:IOSGeminiFirstPromptSubmissionMethod,
@@ -209,8 +224,8 @@ enum class InputType {
 
 }  // namespace gemini
 
-// Types of Gemini First Run Experience (FRE).
-enum class GeminiFREType {
+// Types of Gemini First Run Experience.
+enum class GeminiFirstRunType {
   kNewUser,
   kLive,
 };
@@ -221,11 +236,26 @@ enum class GeminiFREType {
 // The entry point that triggered the Gemini session.
 @property(nonatomic, assign) gemini::EntryPoint entryPoint;
 
+// Whether this is the first Gemini session.
+@property(nonatomic, assign) BOOL isFirstSession;
+
 // An optional image to attach to the query.
 @property(nonatomic, strong) UIImage* imageAttachment;
 
 // An optional text prompt to prepopulate the input field.
 @property(nonatomic, copy) NSString* prepopulatedPrompt;
+
+// Whether to automatically submit `prepopulatedPrompt` upon presenting the
+// floaty.
+@property(nonatomic, assign) BOOL shouldAutoSubmit;
+
+// Whether the signed-in active account does not match the target account
+// specified by the triggering entry point (e.g. App Switcher AI
+// Summarization). Entry points targeting a specific user identity generally
+// compare two identities communicated between applications on startup and set
+// this to YES to inform the user via a snackbar that they are on a different
+// account.
+@property(nonatomic, assign) BOOL isMismatchedAccount;
 
 // Initializes with the given entry point.
 - (instancetype)initWithEntryPoint:(gemini::EntryPoint)entryPoint;
@@ -235,46 +265,87 @@ enum class GeminiFREType {
 // Gemini UI sheet detent identifier.
 extern NSString* const kGeminiPromoConsentFullDetentIdentifier;
 
-// Gemini UI Lottie Animation name for FRE Banner.
-extern NSString* const kLottieAnimationFREBannerName;
+// Gemini UI Lottie Animation name for First Run Banner.
+extern NSString* const kLottieAnimationFirstRunBannerName;
+
+// Lottie animation names for Gemini Visual Rich First Run carousel slides.
+extern NSString* const kLottieAnimationFRESummarizeSlideName;
+extern NSString* const kLottieAnimationFRESummarizeSlideRTLName;
+
+extern NSString* const kLottieAnimationFREShoppingSlideName;
+extern NSString* const kLottieAnimationFREShoppingSlideDarkName;
+extern NSString* const kLottieAnimationFREShoppingSlideRTLName;
+extern NSString* const kLottieAnimationFREShoppingSlideDarkRTLName;
+
+extern NSString* const kLottieAnimationFREPlanningSlideName;
+extern NSString* const kLottieAnimationFREPlanningSlideDarkName;
+extern NSString* const kLottieAnimationFREPlanningSlideRTLName;
+extern NSString* const kLottieAnimationFREPlanningSlideDarkRTLName;
+
+// Returns the color provider dictionary for the Summarize slide in light mode.
+NSDictionary<NSString*, UIColor*>* SummarizeSlideLightModeColorProvider();
+
+// Returns the color provider dictionary for the Summarize slide in dark mode.
+NSDictionary<NSString*, UIColor*>* SummarizeSlideDarkModeColorProvider();
+
+// Accessibility identifier for the Gemini Visual Rich FRE carousel scroll view.
+extern NSString* const kGeminiFRECarouselScrollViewAccessibilityIdentifier;
 
 // Session map dictionary key for the last interaction timestamp.
 extern const char kLastInteractionTimestampDictKey[];
-
-// The accessibility ID of the Gemini consent FootNote textView.
-extern NSString* const kGeminiFootNoteTextViewAccessibilityIdentifier;
-
 // Session map dictionary key for the visible URL during the last BWG
 // interaction.
 extern const char kURLOnLastInteractionDictKey[];
 
-// Links for attributed links.
-extern const char kFirstFootnoteLinkURL[];
-extern const char kSecondFootnoteLinkURL[];
-extern const char kKoreanTermsFootnoteLinkURL[];
-extern const char kSecondBoxLinkURLManagedAccount[];
-extern const char kSecondBoxLink1URLNonManagedAccount[];
-extern const char kSecondBoxLink2URLNonManagedAccount[];
+// Consent row links for the Gemini First Run.
+extern const char kDataGovernanceManagedLinkURL[];
+extern const char kActivityLinkURL[];
+extern const char kChoicesLinkURL[];
+extern const char kConnectedServicesLinkURL[];
+
+// Consent row links for Gemini Live First Run.
 extern const char kLivePrivacyNoticeLinkURL[];
 extern const char kLiveLearnMoreLinkURL[];
 extern const char kLivePrivacyPolicyLinkURL[];
+extern const char kLivePrivacyHubManagedLinkURL[];
+
+// Footnote links.
+extern const char kFirstFootnoteLinkURL[];
+extern const char kSecondFootnoteLinkURL[];
+extern const char kKoreanTermsFootnoteLinkURL[];
 extern const char kWatchLinkURL[];
 
-// Action identifier on a tap on links in the footnote.
-extern NSString* const kGeminiFirstFootnoteLinkAction;
-extern NSString* const kGeminiSecondFootnoteLinkAction;
-extern NSString* const kGeminiKoreanTermsLinkAction;
-extern NSString* const kGeminiSecondBoxLinkActionManagedAccount;
-extern NSString* const kGeminiSecondBoxLink1ActionNonManagedAccount;
-extern NSString* const kGeminiSecondBoxLink2ActionNonManagedAccount;
+// Action identifiers for links in the Gemini First Run consent rows.
+extern NSString* const kGeminiDataGovernanceManagedLinkAction;
+extern NSString* const kGeminiActivityLinkAction;
+extern NSString* const kGeminiChoicesLinkAction;
+extern NSString* const kGeminiConnectedServicesLinkAction;
+
+// Action identifiers for links in the Gemini Live First Run consent rows.
 extern NSString* const kGeminiLivePrivacyNoticeLinkAction;
 extern NSString* const kGeminiLiveLearnMoreLinkAction;
 extern NSString* const kGeminiLivePrivacyPolicyLinkAction;
+extern NSString* const kGeminiLivePrivacyHubManagedLinkAction;
+
+// Action identifier for links in the Gemini consent footnote.
+extern NSString* const kGeminiFirstFootnoteLinkAction;
+extern NSString* const kGeminiSecondFootnoteLinkAction;
+extern NSString* const kGeminiKoreanTermsLinkAction;
 extern NSString* const kGeminiWatchLinkAction;
+
+// Accessibility identifiers for Gemini consent view.
+// The accessibility ID of the Gemini consent FootNote textView.
+extern NSString* const kGeminiFootNoteTextViewAccessibilityIdentifier;
 
 // The sliding window for displaying a Gemini contextual cue chip. Chips are
 // shown within this time range (in hours) relative to the last chip that was
 // displayed.
 extern const int kGeminiContextualCueChipSlidingWindow;
+
+// The accessibility ID of the Gemini wrapper stack in the first run flow.
+extern NSString* const kGeminiFirstRunWrapperStackAccessibilityIdentifier;
+
+// The accessibility ID of the close button in the Gemini modal.
+extern NSString* const kGeminiModalContentCloseButtonAccessibilityIdentifier;
 
 #endif  // IOS_CHROME_BROWSER_INTELLIGENCE_BWG_UTILS_GEMINI_CONSTANTS_H_

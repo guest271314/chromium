@@ -11,7 +11,6 @@
 <translation id="1253734725326687145">Cible tactile déplacée en haut à droite. Appuyez ici.</translation>
 <translation id="1266864766717917324">Impossible de partager le contenu suivant : <ph name="CONTENT_TYPE" /></translation>
 <translation id="1269641567813814718">Windows</translation>
-<translation id="1291104554099683393">Essayez de le partager en plusieurs fois.</translation>
 <translation id="1293699935367580298">Échap</translation>
 <translation id="1368832886055348810">De gauche à droite</translation>
 <translation id="1383876407941801731">Rechercher</translation>
@@ -38,13 +37,11 @@
 <translation id="1901303067676059328">&amp;Tout sélectionner</translation>
 <translation id="19085484004813472">Il s'agit d'une nouvelle fonctionnalité</translation>
 <translation id="2006524834898217237">Assurez-vous que cet appareil est bien connecté à Internet.</translation>
-<translation id="208586643495776849">Veuillez réessayer</translation>
 <translation id="2111134541987263231">Activez l'option <ph name="BEGIN_BOLD" />Autoriser en navigation privée<ph name="END_BOLD" /></translation>
 <translation id="2141853158323869627">{DAYS,plural, =1{1 j}one{# j}other{# j}}</translation>
 <translation id="2148716181193084225">Aujourd'hui</translation>
 <translation id="2168039046890040389">Page précédente</translation>
 <translation id="2190355936436201913">(vide)</translation>
-<translation id="2192232475740621500">Utiliser une densité faible</translation>
 <translation id="2267918077332197517">Bloquer toutes les notifications de ce site</translation>
 <translation id="2283117145434822734">F6</translation>
 <translation id="2289052229480071835">Appuyez sur les cibles tactiles affichées à l'écran.</translation>
@@ -56,7 +53,6 @@
 <translation id="2388990488038464401">Appeler ce numéro depuis votre téléphone ?</translation>
 <translation id="2435457462613246316">Afficher le mot de passe</translation>
 <translation id="24452542372838207">Développer la notification</translation>
-<translation id="2445449901874883781">Utiliser une densité élevée</translation>
 <translation id="2448407890032181691">Cible tactile déplacée en bas à droite. Appuyez ici.</translation>
 <translation id="2482878487686419369">Notifications</translation>
 <translation id="2497284189126895209">Tous les fichiers</translation>
@@ -87,12 +83,11 @@
 <translation id="3306688585798492231">Écran de l'appareil</translation>
 <translation id="335581015389089642">Voix</translation>
 <translation id="3372635229069101468">Cliquez sur <ph name="BEGIN_BOLD" />Détails<ph name="END_BOLD" /></translation>
-<translation id="3389286852084373014">Volume de texte trop important</translation>
 <translation id="3406306243914553062">Contenu HTML</translation>
 <translation id="3600566671520689681">{DAYS,plural, =1{1 jour restant}one{# jour restant}other{# jours restants}}</translation>
 <translation id="3600969208114796418">Fichier <ph name="SAVEAS_EXTENSION_TYPE" /></translation>
 <translation id="3608915363409716668">+ de <ph name="MAXIMUM_VALUE" /></translation>
-<translation id="3618849550573277856">Rechercher "<ph name="LOOKUP_STRING" />"</translation>
+<translation id="3618849550573277856">Effectuer une recherche sur "<ph name="LOOKUP_STRING" />"</translation>
 <translation id="3622035490309591977">Historique du presse-papiers</translation>
 <translation id="364720409959344976">Sélectionner le dossier d'importation</translation>
 <translation id="3660179305079774227">Haut</translation>
@@ -130,7 +125,6 @@
 <translation id="5046499563572181734">Appuyez ici</translation>
 <translation id="5076340679995252485">C&amp;oller</translation>
 <translation id="520299402983819650"><ph name="QUANTITY" /> Po</translation>
-<translation id="5278860589123563674">Échec de l'envoi</translation>
 <translation id="5283101102242354279">Pour activer une extension en mode navigation privée :</translation>
 <translation id="528468243742722775">Fin</translation>
 <translation id="5329858601952122676">&amp;Supprimer</translation>
@@ -190,7 +184,6 @@
 <translation id="6965382102122355670">OK</translation>
 <translation id="6974053822202609517">De droite à gauche</translation>
 <translation id="7052633198403197513">F1</translation>
-<translation id="7170202025028120564">Les paramètres d'affichage de votre application s'appliqueront à son prochain redémarrage.</translation>
 <translation id="7222373446505536781">F11</translation>
 <translation id="7238427729722629793">{MINUTES,plural, =1{1 min restante}one{# min restante}other{# min restantes}}</translation>
 <translation id="7252604552361840748">Repérez l'extension ci-dessus</translation>

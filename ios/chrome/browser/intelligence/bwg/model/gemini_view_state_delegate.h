@@ -7,7 +7,9 @@
 
 #import <Foundation/Foundation.h>
 
-#import "ios/public/provider/chrome/browser/bwg/bwg_api.h"
+#import "ios/public/provider/chrome/browser/bwg/gemini_api.h"
+
+typedef NS_ENUM(NSInteger, GeminiCancelType);
 
 // Delegate protocol for handling view state changes.
 @protocol GeminiViewStateDelegate <NSObject>
@@ -15,8 +17,12 @@
 // Called when the view state changes.
 - (void)didSwitchToViewState:(ios::provider::GeminiViewState)viewState;
 
-// Switch to `viewState`.
-- (void)switchToViewState:(ios::provider::GeminiViewState)viewState;
+// Called when the processing status changes with a dormant reason.
+- (void)didUpdateProcessingStatus:(ios::provider::GeminiClientMode)processStatus
+                    dormantReason:
+                        (ios::provider::GeminiDormantReason)dormantReason
+                        sessionID:(NSString*)sessionID
+                   conversationID:(NSString*)conversationID;
 
 // Called when the processing status changes.
 - (void)didUpdateProcessingStatus:
@@ -27,8 +33,46 @@
 // Called when the user taps the Live button in Gemini UI.
 - (void)geminiLiveUserDidTapLiveButton;
 
+// Called when the user presses the Live stop button.
+- (void)geminiLiveUserDidPressStopButton;
+
 // Called when the user barges in during Gemini Live session.
 - (void)geminiLiveUserDidBargeIn;
+
+// Called when the Gemini view mode changes.
+- (void)didSwitchToMode:(ios::provider::GeminiViewMode)mode;
+
+// Called when the Gemini UI did appear.
+- (void)geminiUIDidAppear;
+
+// Called when the user taps the New Chat button in Gemini UI.
+- (void)didTapNewChatButton;
+
+// Called when the Gemini response is cancelled with a reason.
+- (void)responseCancelledWithReason:(GeminiCancelType)reason;
+
+// Called when the user taps the "View" button in the response ready collapsed
+// state.
+- (void)didTapResponseReadyViewButton;
+
+// Called when loading a previous conversation finishes.
+- (void)didFinishLoadingConversationWithID:(NSString*)conversationID
+                                     error:(NSError*)error;
+
+// Called when a request to detach a tab with the given ID is made.
+- (void)didRequestToDetachTabWithID:(NSString*)tabID;
+
+// Called when a tab with the given ID has been attached by the Floaty.
+- (void)didAttachTabWithID:(NSString*)tabID;
+
+// Called when a tab with the given ID has been detached by the Floaty.
+- (void)didDetachTabWithID:(NSString*)tabID;
+
+// Returns the number of currently attached tabs.
+- (NSUInteger)attachedTabsCount;
+
+// Returns whether a multi-tab prompt is used.
+- (BOOL)isMultiTabUsed;
 
 @end
 

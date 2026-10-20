@@ -4,6 +4,7 @@
 
 #include "components/page_load_metrics/browser/page_load_metrics_test_waiter.h"
 
+#include "base/byte_size.h"
 #include "base/check_op.h"
 #include "base/i18n/number_formatting.h"
 #include "components/page_load_metrics/browser/observers/page_load_metrics_observer_tester.h"
@@ -53,7 +54,8 @@ class WaiterMetricsObserver final : public PageLoadMetricsObserver {
   void OnTimingUpdate(content::RenderFrameHost* subframe_rfh,
                       const mojom::PageLoadTiming& timing) override;
 
-  void OnSoftNavigation() override;
+  void OnSoftNavigationFirstContentfulPaint(
+      const mojom::SoftNavigationMetrics& soft_navigation_metrics) override;
 
   void OnSoftNavigationLargestContentfulPaint(uint64_t num_soft_lcps) override;
 
@@ -74,6 +76,9 @@ class WaiterMetricsObserver final : public PageLoadMetricsObserver {
   void OnFeaturesUsageObserved(
       content::RenderFrameHost* rfh,
       const std::vector<blink::UseCounterFeature>&) override;
+
+  void OnCustomUserTimingMarkObserved(
+      const std::vector<mojom::CustomUserTimingMarkPtr>& timings) override;
 
   void OnDidFinishSubFrameNavigation(
       content::NavigationHandle* navigation_handle) override;
@@ -216,6 +221,11 @@ void PageLoadMetricsTestWaiter::AddUseCounterFeatureExpectation(
   expected_.feature_tracker_.TestAndSet(feature);
 }
 
+void PageLoadMetricsTestWaiter::AddCustomUserTimingMarkExpectation(
+    const std::string& mark_name) {
+  expected_.custom_user_timing_marks_.insert(mark_name);
+}
+
 void PageLoadMetricsTestWaiter::AddSubframeNavigationExpectation() {
   expected_.subframe_navigation_ = true;
 }
@@ -230,7 +240,7 @@ void PageLoadMetricsTestWaiter::AddMinimumCompleteResourcesExpectation(
 }
 
 void PageLoadMetricsTestWaiter::AddMinimumNetworkBytesExpectation(
-    base::ByteCount expected_minimum_network_bytes) {
+    base::ByteSize expected_minimum_network_bytes) {
   expected_minimum_network_bytes_ = expected_minimum_network_bytes;
 }
 
@@ -444,6 +454,19 @@ void PageLoadMetricsTestWaiter::OnFeaturesUsageObserved(
 
   if (ExpectationsSatisfied() && run_loop_)
     run_loop_->Quit();
+}
+
+void PageLoadMetricsTestWaiter::OnCustomUserTimingMarksObserved(
+    content::RenderFrameHost* rfh,
+    const std::vector<page_load_metrics::mojom::CustomUserTimingMarkPtr>&
+        timings) {
+  for (const auto& timing : timings) {
+    observed_.custom_user_timing_marks_.insert(timing->mark_name);
+  }
+
+  if (ExpectationsSatisfied() && run_loop_) {
+    run_loop_->Quit();
+  }
 }
 
 void PageLoadMetricsTestWaiter::OnMainFrameRectChanged(
@@ -750,6 +773,17 @@ bool PageLoadMetricsTestWaiter::
          expected_num_soft_navigation_largest_contentful_paint_;
 }
 
+bool PageLoadMetricsTestWaiter::CustomUserTimingMarksExpectationsSatisfied()
+    const {
+  for (const auto& mark : expected_.custom_user_timing_marks_) {
+    if (observed_.custom_user_timing_marks_.find(mark) ==
+        observed_.custom_user_timing_marks_.end()) {
+      return false;
+    }
+  }
+  return true;
+}
+
 bool PageLoadMetricsTestWaiter::ExpectationsSatisfied() const {
   for (const auto& entries : expected_.page_bfcache_restore_fields_) {
     auto it = observed_.page_bfcache_restore_fields_.find(entries.first);
@@ -777,7 +811,8 @@ bool PageLoadMetricsTestWaiter::ExpectationsSatisfied() const {
          NumLargestContentfulPaintTextSatisfied() &&
          LargestContentfulPaintGreaterThanExpectationSatisfied() &&
          SoftNavigationCountExpectationSatisfied() &&
-         SoftNavigationLargestContentfulPaintExpectationSatisfied();
+         SoftNavigationLargestContentfulPaintExpectationSatisfied() &&
+         CustomUserTimingMarksExpectationsSatisfied();
 }
 
 void PageLoadMetricsTestWaiter::AssertExpectationsSatisfied() const {
@@ -794,13 +829,14 @@ void PageLoadMetricsTestWaiter::AssertExpectationsSatisfied() const {
   EXPECT_TRUE(CpuTimeExpectationsSatisfied());
   EXPECT_TRUE(MainFrameRectExpectationsSatisfied());
   EXPECT_TRUE(MainFrameViewportRectExpectationsSatisfied());
+  EXPECT_TRUE(CustomUserTimingMarksExpectationsSatisfied());
 }
 
 void PageLoadMetricsTestWaiter::ResetExpectations() {
   expected_ = State();
   observed_ = State();
   expected_minimum_complete_resources_ = 0;
-  expected_minimum_network_bytes_ = base::ByteCount(0);
+  expected_minimum_network_bytes_ = base::ByteSize(0);
   expected_minimum_aggregate_cpu_time_ = base::TimeDelta();
 }
 
@@ -831,7 +867,8 @@ void WaiterMetricsObserver::OnTimingUpdate(
   }
 }
 
-void WaiterMetricsObserver::OnSoftNavigation() {
+void WaiterMetricsObserver::OnSoftNavigationFirstContentfulPaint(
+    const mojom::SoftNavigationMetrics& soft_navigation_metrics) {
   if (waiter_) {
     waiter_->OnSoftNavigation();
   }
@@ -886,6 +923,13 @@ void WaiterMetricsObserver::OnFeaturesUsageObserved(
     const std::vector<blink::UseCounterFeature>& features) {
   if (waiter_) {
     waiter_->OnFeaturesUsageObserved(nullptr, features);
+  }
+}
+
+void WaiterMetricsObserver::OnCustomUserTimingMarkObserved(
+    const std::vector<mojom::CustomUserTimingMarkPtr>& timings) {
+  if (waiter_) {
+    waiter_->OnCustomUserTimingMarksObserved(nullptr, timings);
   }
 }
 

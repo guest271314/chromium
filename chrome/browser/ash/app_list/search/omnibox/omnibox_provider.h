@@ -10,6 +10,7 @@
 #include <optional>
 
 #include "base/memory/raw_ptr.h"
+#include "base/memory/raw_ref.h"
 #include "base/time/time.h"
 #include "chrome/browser/ash/app_list/search/search_provider.h"
 #include "chromeos/ash/components/string_matching/tokenized_string.h"
@@ -20,6 +21,19 @@ class AppListControllerDelegate;
 class AutocompleteController;
 class AutocompleteResult;
 class Profile;
+class TemplateURLService;
+
+namespace bookmarks {
+class BookmarkModel;
+}  // namespace bookmarks
+
+namespace favicon {
+class FaviconService;
+}  // namespace favicon
+
+namespace history {
+class HistoryService;
+}  // namespace history
 
 namespace app_list {
 
@@ -27,10 +41,21 @@ namespace app_list {
 class OmniboxProvider : public SearchProvider,
                         public AutocompleteController::Observer {
  public:
-  // `provider_types` is a bitmap containing AutocompleteProvider::Type values
-  explicit OmniboxProvider(Profile* profile,
-                           AppListControllerDelegate* list_controller,
-                           int provider_types);
+  // `provider_types` is a bitmap containing AutocompleteProvider::Type values.
+  // `template_url_service` is forwarded to each OmniboxResult so search-engine
+  // descriptions can be formatted. Must not be nullptr and must outlive this
+  // object.
+  // `bookmark_model` may be null; results are then not annotated as
+  // bookmarked.
+  // `favicon_service` and `history_service` back the favicon cache. Either may
+  // be null, in which case favicons are simply not served from it.
+  OmniboxProvider(Profile* profile,
+                  AppListControllerDelegate* list_controller,
+                  TemplateURLService* template_url_service,
+                  bookmarks::BookmarkModel* bookmark_model,
+                  favicon::FaviconService* favicon_service,
+                  history::HistoryService* history_service,
+                  int provider_types);
 
   OmniboxProvider(const OmniboxProvider&) = delete;
   OmniboxProvider& operator=(const OmniboxProvider&) = delete;
@@ -58,6 +83,8 @@ class OmniboxProvider : public SearchProvider,
 
   raw_ptr<Profile> profile_;
   raw_ptr<AppListControllerDelegate> list_controller_;
+  const raw_ref<TemplateURLService> template_url_service_;
+  const raw_ptr<bookmarks::BookmarkModel> bookmark_model_;
 
   std::u16string last_query_;
   std::optional<ash::string_matching::TokenizedString> last_tokenized_query_;

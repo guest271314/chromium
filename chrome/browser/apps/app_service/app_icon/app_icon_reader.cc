@@ -15,6 +15,7 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/grit/chrome_unscaled_resources.h"
 #include "chrome/grit/component_extension_resources.h"
+#include "chromeos/ash/experiences/arc/app/arc_app_constants.h"
 #include "components/app_constants/constants.h"
 
 namespace {
@@ -82,7 +83,7 @@ void AppIconReader::OnUncompressedIconRead(int32_t size_in_dip,
                                            AppIconDecoder* decoder,
                                            IconValuePtr iv) {
   TRACE_EVENT0("ui", "AppIconReader::OnUncompressedIconRead");
-  DCHECK_NE(IconType::kUnknown, icon_type);
+  CHECK_NE(IconType::kUnknown, icon_type, base::NotFatalUntil::M161);
 
   auto it = std::ranges::find(decodes_, decoder,
                               &std::unique_ptr<AppIconDecoder>::get);

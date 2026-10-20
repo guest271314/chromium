@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "chrome/browser/ash/arc/tracing/arc_system_stat_collector.h"
 
 #include <fcntl.h>
@@ -16,6 +11,7 @@
 #include <array>
 #include <utility>
 
+#include "base/compiler_specific.h"
 #include "base/cpu.h"
 #include "base/files/file_enumerator.h"
 #include "base/files/file_util.h"
@@ -353,11 +349,11 @@ struct ArcSystemStatCollector::SystemReadersContext {
   // Releases |context|. Must be called on background thread.
   static void FreeOnBackgroundThread(
       std::unique_ptr<ArcSystemStatCollector::SystemReadersContext> context) {
-    DCHECK(context);
+    CHECK(context, base::NotFatalUntil::M160);
     context.reset();
   }
 
-  base::ScopedFD system_readers[SystemReader::kTotal];
+  std::array<base::ScopedFD, SystemReader::kTotal> system_readers;
   RuntimeFrame current_frame;
 };
 
@@ -408,7 +404,7 @@ void ArcSystemStatCollector::Stop() {
 void ArcSystemStatCollector::Flush(const base::TimeTicks& min_timestamp,
                                    const base::TimeTicks& max_timestamp,
                                    ArcSystemModel* system_model) {
-  DCHECK(!timer_.IsRunning());
+  CHECK(!timer_.IsRunning(), base::NotFatalUntil::M160);
   size_t sample_index =
       write_index_ >= samples_.size() ? write_index_ - samples_.size() : 0;
   ArcValueEventTrimmer mem_total(&system_model->memory_events(),
@@ -534,7 +530,7 @@ std::unique_ptr<base::Value> ArcSystemStatCollector::Serialize() const {
 
 std::string ArcSystemStatCollector::SerializeToJson() const {
   std::unique_ptr<base::Value> root = Serialize();
-  DCHECK(root);
+  CHECK(root, base::NotFatalUntil::M160);
   std::string output;
   if (!base::JSONWriter::WriteWithOptions(
           *root, base::JSONWriter::OPTIONS_PRETTY_PRINT, &output)) {
@@ -645,7 +641,7 @@ void ArcSystemStatCollector::FreeSystemReadersContext() {
 
 void ArcSystemStatCollector::OnInitOnUiThread(
     std::unique_ptr<ArcSystemStatCollector::SystemReadersContext> context) {
-  DCHECK(!context_ && context);
+  CHECK(!context_ && context, base::NotFatalUntil::M160);
   context_ = std::move(context);
 
   timer_.Start(
@@ -658,13 +654,13 @@ void ArcSystemStatCollector::OnInitOnUiThread(
 std::unique_ptr<ArcSystemStatCollector::SystemReadersContext>
 ArcSystemStatCollector::ReadSystemStatOnBackgroundThread(
     std::unique_ptr<SystemReadersContext> context) {
-  DCHECK(context);
+  CHECK(context, base::NotFatalUntil::M160);
   context->current_frame.timestamp = base::TimeTicks::Now();
   if (!context->system_readers[SystemReader::kZram].is_valid() ||
       !ParseStatFile(context->system_readers[SystemReader::kZram].get(),
                      kZramStatColumns, context->current_frame.zram_stat)) {
-    memset(context->current_frame.zram_stat, 0,
-           sizeof(context->current_frame.zram_stat));
+    UNSAFE_TODO(memset(context->current_frame.zram_stat, 0,
+                       sizeof(context->current_frame.zram_stat)));
     static bool error_reported = false;
     if (!error_reported) {
       LOG(ERROR) << "Failed to read zram stat file: " << kZramPath;
@@ -675,8 +671,8 @@ ArcSystemStatCollector::ReadSystemStatOnBackgroundThread(
   if (!context->system_readers[SystemReader::kMemoryInfo].is_valid() ||
       !ParseStatFile(context->system_readers[SystemReader::kMemoryInfo].get(),
                      kMemInfoColumns, context->current_frame.mem_info)) {
-    memset(context->current_frame.mem_info, 0,
-           sizeof(context->current_frame.mem_info));
+    UNSAFE_TODO(memset(context->current_frame.mem_info, 0,
+                       sizeof(context->current_frame.mem_info)));
     static bool error_reported = false;
     if (!error_reported) {
       LOG(ERROR) << "Failed to read mem info file: " << kMemoryInfoPath;
@@ -687,8 +683,8 @@ ArcSystemStatCollector::ReadSystemStatOnBackgroundThread(
   if (!context->system_readers[SystemReader::kGemInfo].is_valid() ||
       !ParseStatFile(context->system_readers[SystemReader::kGemInfo].get(),
                      kGemInfoColumns, context->current_frame.gem_info)) {
-    memset(context->current_frame.gem_info, 0,
-           sizeof(context->current_frame.gem_info));
+    UNSAFE_TODO(memset(context->current_frame.gem_info, 0,
+                       sizeof(context->current_frame.gem_info)));
     static bool error_reported = false;
     if (!error_reported) {
       LOG(ERROR) << "Failed to read gem info file: " << kGemInfoPath;
@@ -696,7 +692,7 @@ ArcSystemStatCollector::ReadSystemStatOnBackgroundThread(
     }
   }
 
-  OneValueReaderInfo one_value_readers[] = {
+  const auto one_value_readers = std::to_array<OneValueReaderInfo>({
       {SystemReader::kCpuTemperature, &context->current_frame.cpu_temperature,
        std::numeric_limits<int>::min()},
       {SystemReader::kCpuFrequency, &context->current_frame.cpu_frequency, 0},
@@ -705,12 +701,12 @@ ArcSystemStatCollector::ReadSystemStatOnBackgroundThread(
       {SystemReader::kCpuEnergy, &context->current_frame.cpu_energy, 0},
       {SystemReader::kGpuEnergy, &context->current_frame.gpu_energy, 0},
       {SystemReader::kMemoryEnergy, &context->current_frame.memory_energy, 0},
-  };
+  });
 
-  static bool one_value_readers_error_reported[std::size(one_value_readers)] = {
-      false};
+  static std::array<bool, one_value_readers.size()>
+      one_value_readers_error_reported = {};
 
-  for (size_t i = 0; i < std::size(one_value_readers); ++i) {
+  for (size_t i = 0; i < one_value_readers.size(); ++i) {
     if (!context->system_readers[one_value_readers[i].reader].is_valid() ||
         !ParseStatFile(
             context->system_readers[one_value_readers[i].reader].get(),
@@ -730,8 +726,8 @@ ArcSystemStatCollector::ReadSystemStatOnBackgroundThread(
 
 void ArcSystemStatCollector::UpdateSystemStatOnUiThread(
     std::unique_ptr<SystemReadersContext> context) {
-  DCHECK(!context_ && context);
-  DCHECK(!samples_.empty());
+  CHECK(!context_ && context, base::NotFatalUntil::M160);
+  CHECK(!samples_.empty(), base::NotFatalUntil::M160);
   Sample& current_sample = samples_[write_index_ % samples_.size()];
   current_sample.timestamp = context->current_frame.timestamp;
   current_sample.mem_total_kb = context->current_frame.mem_info[0];
@@ -743,7 +739,8 @@ void ArcSystemStatCollector::UpdateSystemStatOnUiThread(
 
   // We calculate delta, so ignore first update.
   if (write_index_) {
-    DCHECK_GT(context->current_frame.timestamp, previous_frame_.timestamp);
+    CHECK_GT(context->current_frame.timestamp, previous_frame_.timestamp,
+             base::NotFatalUntil::M160);
     const double to_milli_watts_scale =
         0.001 / (context->current_frame.timestamp - previous_frame_.timestamp)
                     .InSecondsF();
@@ -764,21 +761,22 @@ void ArcSystemStatCollector::UpdateSystemStatOnUiThread(
     current_sample.memory_power = static_cast<int>(
         (context->current_frame.memory_energy - previous_frame_.memory_energy) *
         to_milli_watts_scale);
-    DCHECK_GE(current_sample.cpu_power, 0);
-    DCHECK_GE(current_sample.gpu_power, 0);
-    DCHECK_GE(current_sample.memory_power, 0);
+    CHECK_GE(current_sample.cpu_power, 0, base::NotFatalUntil::M160);
+    CHECK_GE(current_sample.gpu_power, 0, base::NotFatalUntil::M160);
+    CHECK_GE(current_sample.memory_power, 0, base::NotFatalUntil::M160);
   }
   current_sample.cpu_temperature = context->current_frame.cpu_temperature;
   current_sample.cpu_frequency = context->current_frame.cpu_frequency;
   current_sample.package_power_constraint =
       static_cast<int>(context->current_frame.package_power_constraint *
                        0.001 /* micro-watts to milli-watts */);
-  DCHECK_GE(current_sample.package_power_constraint, 0);
-  DCHECK_GE(current_sample.swap_sectors_read, 0);
-  DCHECK_GE(current_sample.swap_sectors_write, 0);
-  DCHECK_GE(current_sample.swap_waiting_time_ms, 0);
-  DCHECK_GE(current_sample.mem_total_kb, 0);
-  DCHECK_GE(current_sample.mem_used_kb, 0);
+  CHECK_GE(current_sample.package_power_constraint, 0,
+           base::NotFatalUntil::M160);
+  CHECK_GE(current_sample.swap_sectors_read, 0, base::NotFatalUntil::M160);
+  CHECK_GE(current_sample.swap_sectors_write, 0, base::NotFatalUntil::M160);
+  CHECK_GE(current_sample.swap_waiting_time_ms, 0, base::NotFatalUntil::M160);
+  CHECK_GE(current_sample.mem_total_kb, 0, base::NotFatalUntil::M160);
+  CHECK_GE(current_sample.mem_used_kb, 0, base::NotFatalUntil::M160);
   previous_frame_ = context->current_frame;
   ++write_index_;
 
@@ -788,35 +786,35 @@ void ArcSystemStatCollector::UpdateSystemStatOnUiThread(
 ArcSystemStatCollector::RuntimeFrame::RuntimeFrame() = default;
 
 bool ParseStatFile(int fd, const int* columns, int64_t* output) {
-  char buffer[128];
+  std::array<char, 128> buffer;
   if (lseek(fd, 0, SEEK_SET)) {
     return false;
   }
-  const int read_bytes = read(fd, buffer, sizeof(buffer) - 1);
+  const int read_bytes = read(fd, buffer.data(), buffer.size() - 1);
   if (read_bytes < 0) {
     return false;
   }
   buffer[read_bytes] = 0;
   int column_index = 0;
-  const char* scan = buffer;
+  const char* scan = buffer.data();
   while (true) {
     // Skip whitespace.
     while (IsWhitespace(*scan)) {
-      ++scan;
+      UNSAFE_TODO(++scan);
     }
     if (*columns != column_index) {
       // Just skip this entry. It may be digits or text.
       while (!IsWhitespace(*scan)) {
-        ++scan;
+        UNSAFE_TODO(++scan);
       }
     } else {
       int64_t value = 0;
       while (IsDigit(*scan)) {
         value = 10 * value + *scan - '0';
-        ++scan;
+        UNSAFE_TODO(++scan);
       }
-      *output++ = value;
-      ++columns;
+      UNSAFE_TODO(*output++) = value;
+      UNSAFE_TODO(++columns);
       if (*columns < 0) {
         return IsEnd(*scan);  // All columns are read.
       }

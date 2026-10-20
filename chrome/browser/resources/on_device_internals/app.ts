@@ -5,7 +5,6 @@
 
 import './broker_state.js';
 import './event_log.js';
-import './model_status.js';
 import './tools.js';
 import '//resources/cr_elements/cr_page_selector/cr_page_selector.js';
 import '//resources/cr_elements/cr_tabs/cr_tabs.js';
@@ -42,6 +41,10 @@ export class OnDeviceInternalsAppElement extends CrLitElement {
   }
 
   protected accessor selectedTabIndex_: number = 0;
+
+  protected getTabNames_(): string[] {
+    return ['Tools', 'Event Logs', 'Broker State'];
+  }
 
   protected onSelectedChanged_(e: CustomEvent<{value: number}>) {
     this.selectedTabIndex_ = e.detail.value;

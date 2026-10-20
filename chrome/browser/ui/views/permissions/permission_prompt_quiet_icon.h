@@ -7,16 +7,13 @@
 
 #include "chrome/browser/ui/views/permissions/permission_prompt_desktop.h"
 
-class Browser;
-
 namespace content {
 class WebContents;
 }
 
 class PermissionPromptQuietIcon : public PermissionPromptDesktop {
  public:
-  PermissionPromptQuietIcon(Browser* browser,
-                            content::WebContents* web_contents,
+  PermissionPromptQuietIcon(content::WebContents* web_contents,
                             Delegate* delegate);
   ~PermissionPromptQuietIcon() override;
   PermissionPromptQuietIcon(const PermissionPromptQuietIcon&) = delete;
@@ -26,6 +23,7 @@ class PermissionPromptQuietIcon : public PermissionPromptDesktop {
   // permissions::PermissionPrompt:
   permissions::PermissionPromptDisposition GetPromptDisposition()
       const override;
+  std::optional<gfx::Rect> GetViewBoundsInScreen() const override;
 };
 
 #endif  // CHROME_BROWSER_UI_VIEWS_PERMISSIONS_PERMISSION_PROMPT_QUIET_ICON_H_

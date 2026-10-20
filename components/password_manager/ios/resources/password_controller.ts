@@ -5,7 +5,7 @@
 import * as fillConstants from '//components/autofill/ios/form_util/resources/fill_constants.js';
 import * as fillUtil from '//components/autofill/ios/form_util/resources/fill_util.js';
 import {unownedFormElementsAndFieldSetsToFormData, webFormElementToFormData} from '//components/autofill/ios/form_util/resources/fill_web_form.js';
-import {getFormControlElements, getFormElementFromRendererId} from '//components/autofill/ios/form_util/resources/form_utils.js';
+import {clipRect, getFormControlElements, getFormElementFromRendererId, getVisibleRectRespectingClips} from '//components/autofill/ios/form_util/resources/form_utils.js';
 import {getElementByUniqueID} from '//components/autofill/ios/form_util/resources/renderer_id.js';
 import {CrWebApi, gCrWeb} from '//ios/web/public/js_messaging/resources/gcrweb.js';
 import {isTextField, sendWebKitMessage} from '//ios/web/public/js_messaging/resources/utils.js';
@@ -86,7 +86,13 @@ function addSubmitButtonTouchEndHandler(form: HTMLFormElement) {
  * Click handler for the submit button.
  */
 function onSubmitButtonTouchEnd(evt: Event) {
-  const form = (evt.currentTarget as HTMLFormElement)['form'];
+  if (!evt.isTrusted) {
+    return;
+  }
+  const form = (evt.currentTarget as HTMLButtonElement).form;
+  if (!form) {
+    return;
+  }
   const formData = getPasswordFormData(form);
   if (!formData) {
     return;
@@ -168,10 +174,7 @@ function fillPasswordForm(
   }
 
   // Check fields that are not inside any <form> tag.
-  // TODO(crbug.com/454044167): Cleanup autofill TS type casting.
-  const unownedInputs =
-      fillUtil.getUnownedAutofillableFormFieldElements(
-          Array.from(document.all) as fillConstants.FormControlElement[], []) as
+  const unownedInputs = fillUtil.getUnownedAutofillableFormFieldElements([]) as
       HTMLInputElement[];
   if (unownedInputs.length > 0) {
     return fillUsernameAndPassword(unownedInputs, formData, username, password);
@@ -224,11 +227,9 @@ function fillGeneratedPassword(
   if (!form && hasFormTag) {
     return false;
   }
-  // TODO(crbug.com/454044167): Cleanup autofill TS type casting.
   const inputs = hasFormTag ?
       getFormInputElements(form as HTMLFormElement) :
-      fillUtil.getUnownedAutofillableFormFieldElements(
-          Array.from(document.all) as fillConstants.FormControlElement[], []) as
+      fillUtil.getUnownedAutofillableFormFieldElements([]) as
           HTMLInputElement[];
   const newPasswordField =
       findInputByFieldRendererID(inputs, newPasswordIdentifier);
@@ -378,9 +379,7 @@ function getPasswordFormDataList(formDataList: fillUtil.AutofillFormData[]) {
       addSubmitButtonTouchEndHandler(form);
     }
   }
-  // TODO(crbug.com/454044167): Cleanup autofill TS type casting.
-  const unownedFormData =
-      getPasswordFormDataFromUnownedElements() as fillUtil.AutofillFormData;
+  const unownedFormData = getPasswordFormDataFromUnownedElements();
   if (unownedFormData && isRecognizedCredentialForm(unownedFormData)) {
     formDataList.push(unownedFormData);
   }
@@ -391,13 +390,11 @@ function getPasswordFormDataList(formDataList: fillUtil.AutofillFormData[]) {
  * JS object containing the form data.
  * @return Object of data from formElement.
  */
-function getPasswordFormDataFromUnownedElements(): object|null {
-  const fieldsets: fillConstants.FormControlElement[] = [];
-  // TODO(crbug.com/454044167): Cleanup autofill TS type casting.
+function getPasswordFormDataFromUnownedElements(): fillUtil.AutofillFormData|
+    null {
+  const fieldsets: Element[] = [];
   const unownedControlElements =
-      fillUtil.getUnownedAutofillableFormFieldElements(
-          Array.from(document.all) as fillConstants.FormControlElement[],
-          fieldsets) as HTMLInputElement[];
+      fillUtil.getUnownedAutofillableFormFieldElements(fieldsets);
   if (unownedControlElements.length === 0) {
     return null;
   }
@@ -455,11 +452,8 @@ function submitPasswordForm(
     if (form) {
       inputs = getFormInputElements(form);
     } else {
-      // TODO(crbug.com/454044167): Cleanup autofill TS type casting.
-      inputs =
-          fillUtil.getUnownedAutofillableFormFieldElements(
-              Array.from(document.all) as fillConstants.FormControlElement[],
-              []) as HTMLInputElement[];
+      inputs = fillUtil.getUnownedAutofillableFormFieldElements([]) as
+          HTMLInputElement[];
     }
     const passwordInput =
         findInputByFieldRendererID(inputs, passwordIdentifier);
@@ -511,14 +505,15 @@ function preventKeyboardOnElement(elementId: number): boolean {
   element.setAttribute('inputmode', 'none');
   return true;
 }
-
 /**
  * Restores the original inputmode of the element.
+ * @param elementId Unique ID of the element to restore.
+ * @return Whether the inputmode was successfully restored.
  */
-function restoreKeyboardOnElement(elementId: number): void {
+function restoreKeyboardOnElement(elementId: number): boolean {
   const element = getElementByUniqueID(elementId) as HTMLElement;
   if (!element) {
-    return;
+    return false;
   }
 
   if (originalInputModes.has(element)) {
@@ -527,12 +522,15 @@ function restoreKeyboardOnElement(elementId: number): void {
   } else {
     element.removeAttribute('inputmode');
   }
+
   // Blur the element right away to prevent the keyboard from showing up after
   // restoring the inputmode.
   element.blur();
+
+  return true;
 }
 
-let activeShieldTargetId: number|null = null;
+let activeShieldTargetRef: WeakRef<HTMLElement>|null = null;
 let activeShieldTimeoutId: number|null = null;
 
 /**
@@ -541,11 +539,7 @@ let activeShieldTimeoutId: number|null = null;
  * that do not target the currently active shield target element.
  */
 function keystrokeShieldListener(e: Event): void {
-  if (activeShieldTargetId === null) {
-    return;
-  }
-  const targetElement =
-      getElementByUniqueID(activeShieldTargetId) as HTMLElement;
+  const targetElement = activeShieldTargetRef?.deref();
   if (!targetElement) {
     return;
   }
@@ -559,13 +553,20 @@ function keystrokeShieldListener(e: Event): void {
 const RENDERER_SHIELD_TIMEOUT_MS = 1000;
 
 /**
- * Sets up a keystroke interaction shield that prevents any keystrokes from
- * being processed if they are not targeted at the specified element.
+ * Sets up a keystroke interaction shield in the renderer to prevent
+ * keystrokes from affecting elements other than the targeted element.
+ * @param elementId Unique ID of the element to protect.
+ * @return Whether the shield was successfully set up.
  */
-function setUpRendererKeystrokeShield(elementId: number): void {
+function setUpRendererKeystrokeShield(elementId: number): boolean {
   removeRendererKeystrokeShield();  // Ensure any existing shield is cleaned up
 
-  activeShieldTargetId = elementId;
+  const element = getElementByUniqueID(elementId) as HTMLElement;
+  if (!element) {
+    return false;
+  }
+
+  activeShieldTargetRef = new WeakRef(element);
 
   // Use capture phase to intercept the event before it reaches other elements.
   document.addEventListener('keydown', keystrokeShieldListener, true);
@@ -576,6 +577,8 @@ function setUpRendererKeystrokeShield(elementId: number): void {
   activeShieldTimeoutId = window.setTimeout(() => {
     removeRendererKeystrokeShield();
   }, RENDERER_SHIELD_TIMEOUT_MS);
+
+  return true;
 }
 
 /**
@@ -587,7 +590,7 @@ function removeRendererKeystrokeShield(): void {
     activeShieldTimeoutId = null;
   }
 
-  activeShieldTargetId = null;
+  activeShieldTargetRef = null;
 
   document.removeEventListener('keydown', keystrokeShieldListener, true);
   document.removeEventListener('keypress', keystrokeShieldListener, true);
@@ -637,6 +640,94 @@ function fillPasswordFormAndSubmit(
   return result;
 }
 
+
+/**
+ * Checks if the view area of the field is visible.
+ * @param fieldIdentifier The unique ID of the field.
+ * @return Whether the field is visible in the viewport.
+ */
+function scrollAndCheckViewAreaVisible(fieldIdentifier: number): boolean {
+  // Checks the existence of element.
+  const element = getElementByUniqueID(fieldIdentifier) as HTMLElement;
+  if (!element) {
+    return false;
+  }
+
+  // Perform a virtual scroll check first to verify if it is scrollable into
+  // view.
+  let visibleRect = getVisibleRectRespectingClips(
+      element, /*shouldAdjustRectForScroll=*/ true);
+  if (!visibleRect) {
+    return false;
+  }
+
+  const viewportWidth =
+      window.innerWidth || document.documentElement.clientWidth;
+  const viewportHeight =
+      window.innerHeight || document.documentElement.clientHeight;
+  const viewportBox = {
+    left: 0,
+    top: 0,
+    right: viewportWidth,
+    bottom: viewportHeight,
+  };
+  visibleRect = clipRect(visibleRect, viewportBox);
+  if (!visibleRect) {
+    return false;
+  }
+
+  // Actually scroll the element into view.
+  element.scrollIntoView({block: 'nearest', inline: 'nearest'});
+
+  // Re-calculate the visible rect after the scroll to get the actual final
+  // coordinates.
+  let scrolledVisibleRect = getVisibleRectRespectingClips(
+      element, /*shouldAdjustRectForScroll=*/ false);
+  if (!scrolledVisibleRect) {
+    return false;
+  }
+  scrolledVisibleRect = clipRect(scrolledVisibleRect, viewportBox);
+  if (!scrolledVisibleRect) {
+    return false;
+  }
+
+  // Visual occlusion check: Performs a hit-test at the center of the clipped
+  // visible area.
+  //
+  // Handles:
+  // - Direct hits on the element or its descendants (e.g., inner input nodes).
+  // - Hits on an associated <label> or its children (via label.control).
+  // - Occlusion by floating modals, fixed headers, or cookie banners.
+  //
+  // Edge cases not covered:
+  // - Custom non-<label> floating overlays (<div>/<span>) unless they set
+  //   `pointer-events: none`.
+  // - Partial occlusion where the center point is clear but other areas are
+  // covered.
+  const centerX = scrolledVisibleRect.left + scrolledVisibleRect.width / 2;
+  const centerY = scrolledVisibleRect.top + scrolledVisibleRect.height / 2;
+  const hitElement = document.elementFromPoint(centerX, centerY);
+  const label = hitElement?.closest('label');
+  const isNotOccluded = hitElement &&
+      (element.contains(hitElement) || (label && label.control === element));
+
+  return !!isNotOccluded;
+}
+
+/**
+ * Fills the value into the specified field.
+ * @param fieldIdentifier The unique ID of the field.
+ * @param value The value to fill.
+ * @return Whether the field was successfully filled.
+ */
+function fillField(fieldIdentifier: number, value: string): boolean {
+  const element = getElementByUniqueID(fieldIdentifier) as HTMLInputElement;
+  if (!element) {
+    return false;
+  }
+  return fillUtil.setInputElementValue(value, element);
+}
+
 const passwordsApi = new CrWebApi('passwords');
 
 passwordsApi.addFunction('findPasswordForms', findPasswordForms);
@@ -657,5 +748,8 @@ passwordsApi.addFunction(
 passwordsApi.addFunction(
     'removeRendererKeystrokeShield', removeRendererKeystrokeShield);
 passwordsApi.addFunction('focusElement', focusElement);
+passwordsApi.addFunction(
+    'scrollAndCheckViewAreaVisible', scrollAndCheckViewAreaVisible);
+passwordsApi.addFunction('fillField', fillField);
 
 gCrWeb.registerApi(passwordsApi);

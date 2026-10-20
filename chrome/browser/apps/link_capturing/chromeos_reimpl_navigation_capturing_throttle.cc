@@ -25,7 +25,6 @@
 #include "chrome/browser/apps/app_service/app_service_proxy.h"
 #include "chrome/browser/apps/app_service/app_service_proxy_factory.h"
 #include "chrome/browser/apps/app_service/launch_utils.h"
-#include "chrome/browser/apps/link_capturing/link_capturing_navigation_throttle.h"
 #include "chrome/browser/apps/link_capturing/link_capturing_tab_data.h"
 #include "chrome/browser/apps/link_capturing/metrics/intent_handling_metrics.h"
 #include "chrome/browser/preloading/prefetch/no_state_prefetch/chrome_no_state_prefetch_contents_delegate.h"
@@ -35,13 +34,13 @@
 #include "chrome/browser/ui/web_applications/navigation_capturing_process.h"  // nogncheck https://crbug.com/377760841
 #include "chrome/browser/web_applications/chromeos_web_app_experiments.h"
 #include "chrome/browser/web_applications/link_capturing_features.h"
-#include "chrome/browser/web_applications/navigation_capturing_log.h"
 #include "chrome/browser/web_applications/web_app_provider.h"
 #include "chrome/browser/web_applications/web_app_tab_helper.h"
 #include "components/keep_alive_registry/keep_alive_types.h"
 #include "components/keep_alive_registry/scoped_keep_alive.h"
 #include "components/page_load_metrics/google/browser/google_url_util.h"
 #include "components/tabs/public/tab_interface.h"
+#include "components/webapps/browser/navigation_capturing_log.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/frame_type.h"
 #include "content/public/browser/navigation_handle.h"
@@ -133,25 +132,6 @@ IntentHandlingMetrics::Platform GetMetricsPlatform(AppType app_type) {
   }
 }
 
-void LaunchApp(base::WeakPtr<AppServiceProxy> proxy,
-               const std::string& app_id,
-               int32_t event_flags,
-               GURL url,
-               LaunchSource launch_source,
-               WindowInfoPtr window_info,
-               AppType app_type,
-               base::OnceClosure callback) {
-  if (!proxy) {
-    return;
-  }
-
-  proxy->LaunchAppWithUrl(app_id, event_flags, url, launch_source,
-                          std::move(window_info),
-                          base::IgnoreArgs<LaunchResult>(std::move(callback)));
-
-  IntentHandlingMetrics::RecordPreferredAppLinkClickMetrics(
-      GetMetricsPlatform(app_type));
-}
 
 ui::PageTransition MaskOutPageTransition(ui::PageTransition page_transition,
                                          ui::PageTransition mask) {
@@ -165,8 +145,9 @@ bool IsCapturableLinkNavigation(ui::PageTransition page_transition,
   // PAGE_TRANSITION_AUTO_SUBFRAME in order not to add session history items
   // (see https://crrev.com/c/3265344). So we only check |has_user_gesture|.
   if (is_in_fenced_frame_tree) {
-    DCHECK(ui::PageTransitionCoreTypeIs(page_transition,
-                                        ui::PAGE_TRANSITION_AUTO_SUBFRAME));
+    CHECK(ui::PageTransitionCoreTypeIs(page_transition,
+                                       ui::PAGE_TRANSITION_AUTO_SUBFRAME),
+          base::NotFatalUntil::M161);
     return has_user_gesture;
   }
 
@@ -288,9 +269,7 @@ bool ShouldThrottleCaptureNavigation(
           launch_app_id);
   debug_dict->Set("is_for_cros_experiment_app", is_for_cros_experiment_app);
   if (app_type == AppType::kWeb && !is_for_projector_swa) {
-    if (!base::FeatureList::IsEnabled(
-            features::kNavigationCapturingOnExistingFrames) &&
-        !is_for_cros_experiment_app) {
+    if (!is_for_cros_experiment_app) {
       debug_dict->Set("!result", "existing frame disabled");
       return false;
     }
@@ -350,7 +329,7 @@ bool ShouldThrottleCaptureNavigation(
 // static
 bool ChromeOsReimplNavigationCapturingThrottle::MaybeCreateAndAdd(
     content::NavigationThrottleRegistry& registry) {
-  if (!features::IsNavigationCapturingReimplEnabled()) {
+  if (!base::FeatureList::IsEnabled(::features::kPwaNavigationCapturing)) {
     return false;
   }
 
@@ -436,7 +415,7 @@ ChromeOsReimplNavigationCapturingThrottle::WillStartRequest() {
 
 ThrottleCheckResult
 ChromeOsReimplNavigationCapturingThrottle::WillRedirectRequest() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
   return HandleRequest();
 }
 
@@ -447,7 +426,7 @@ ChromeOsReimplNavigationCapturingThrottle::
     : content::NavigationThrottle(registry), profile_(*profile) {}
 
 ThrottleCheckResult ChromeOsReimplNavigationCapturingThrottle::HandleRequest() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
   AppServiceProxy* proxy =
       apps::AppServiceProxyFactory::GetForProfile(&profile_.get());
   if (!proxy) {
@@ -586,19 +565,17 @@ ThrottleCheckResult ChromeOsReimplNavigationCapturingThrottle::HandleRequest() {
       return content::NavigationThrottle::CANCEL_AND_IGNORE;
     }
   }
-  base::OnceClosure launch_callback = base::BindOnce(
-      [](std::unique_ptr<ScopedKeepAlive> browser_keep_alive,
-         std::unique_ptr<ScopedProfileKeepAlive> profile_keep_alive) {},
-      std::move(browser_keep_alive), std::move(profile_keep_alive));
 
-  base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
-      FROM_HERE,
-      base::BindOnce(&LaunchApp, proxy->GetWeakPtr(), launch_app_id,
-                     GetEventFlags(WindowOpenDisposition::NEW_WINDOW,
-                                   /*prefer_container=*/true),
-                     redirected_url, launch_source,
-                     std::make_unique<WindowInfo>(display::kDefaultDisplayId),
-                     app_type, std::move(launch_callback)));
+  proxy->LaunchAppWithUrl(
+      launch_app_id,
+      GetEventFlags(WindowOpenDisposition::NEW_WINDOW,
+                    /*prefer_container=*/true),
+      redirected_url, launch_source,
+      std::make_unique<WindowInfo>(display::kDefaultDisplayId),
+      base::DoNothingWithBoundArgs(std::move(browser_keep_alive),
+                                   std::move(profile_keep_alive)));
+  IntentHandlingMetrics::RecordPreferredAppLinkClickMetrics(
+      GetMetricsPlatform(app_type));
 
   return content::NavigationThrottle::CANCEL_AND_IGNORE;
 }

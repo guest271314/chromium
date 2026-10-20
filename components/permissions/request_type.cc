@@ -60,7 +60,7 @@ int GetIconIdAndroid(RequestType type) {
     case RequestType::kMidiSysex:
       return IDR_ANDROID_INFOBAR_MIDI;
     case RequestType::kMultipleDownloads:
-      return IDR_ANDROID_INFOBAR_MULTIPLE_DOWNLOADS;
+      return IDR_ANDROID_PERMISSION_MULTIPLE_DOWNLOADS;
     case RequestType::kNfcDevice:
       return IDR_ANDROID_INFOBAR_NFC;
     case RequestType::kNotifications:
@@ -68,7 +68,7 @@ int GetIconIdAndroid(RequestType type) {
     case RequestType::kSensors:
       return IDR_ANDROID_INFOBAR_SENSORS;
     case RequestType::kProtectedMediaIdentifier:
-      return IDR_ANDROID_INFOBAR_PROTECTED_MEDIA_IDENTIFIER;
+      return IDR_ANDROID_PERMISSION_PROTECTED_MEDIA;
     case RequestType::kStorageAccess:
     case RequestType::kTopLevelStorageAccess:
       return IDR_ANDROID_STORAGE_ACCESS;
@@ -85,6 +85,10 @@ int GetIconIdAndroid(RequestType type) {
 // 2 - In a separate change, remove the refresh icons.
 const gfx::VectorIcon& GetIconIdDesktop(RequestType type) {
   switch (type) {
+    case RequestType::kAmbientLogin:
+      // This icon is provided by
+      // `AmbientLoginPermissionRequest::GetIconForChip()`.
+      NOTREACHED();
     case RequestType::kArSession:
     case RequestType::kVrSession:
       return ::features::IsRoundedIconsEnabled()
@@ -105,7 +109,7 @@ const gfx::VectorIcon& GetIconIdDesktop(RequestType type) {
                  : vector_icons::kContentPasteOldIcon;
     case RequestType::kDiskQuota:
       return ::features::IsRoundedIconsEnabled()
-                 ? vector_icons::kFolderIcon
+                 ? vector_icons::kFolderFlippableIcon
                  : vector_icons::kFolderChromeRefreshOldIcon;
     case RequestType::kGeolocation:
       return ::features::IsRoundedIconsEnabled()
@@ -267,6 +271,10 @@ const gfx::VectorIcon& GetBlockedIconIdDesktop(RequestType type) {
     case RequestType::kIdentityProvider:
       // TODO(crbug.com/40252825): use a dedicated icon
       return gfx::VectorIcon::EmptyIcon();
+    case RequestType::kAmbientLogin:
+      // This icon is provided by
+      // `AmbientLoginPermissionRequest::GetBlockedIconForChip()`.
+      NOTREACHED();
     case RequestType::kKeyboardLock:
       return ::features::IsRoundedIconsEnabled()
                  ? vector_icons::kKeyboardLockOffIcon
@@ -456,6 +464,9 @@ std::optional<ContentSettingsType> RequestTypeToContentSettingsType(
       return ContentSettingsType::WEB_APP_INSTALLATION;
 #endif  // !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
       // Not associated with a ContentSettingsType.
+#if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
+    case RequestType::kAmbientLogin:
+#endif  // !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
     case RequestType::kDiskQuota:
     case RequestType::kFileSystemAccess:
     case RequestType::kIdentityProvider:
@@ -507,6 +518,10 @@ IconId GetBlockedIconId(RequestType type) {
 
 const char* PermissionKeyForRequestType(permissions::RequestType request_type) {
   switch (request_type) {
+#if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
+    case permissions::RequestType::kAmbientLogin:
+      return "ambient_login";
+#endif  // !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
     case permissions::RequestType::kArSession:
       return "ar_session";
 #if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)

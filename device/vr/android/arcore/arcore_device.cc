@@ -42,7 +42,6 @@ const std::vector<mojom::XRSessionFeature>& GetSupportedFeatures() {
                           mojom::XRSessionFeature::LIGHT_ESTIMATION,
                           mojom::XRSessionFeature::ANCHORS,
                           mojom::XRSessionFeature::DEPTH,
-                          mojom::XRSessionFeature::IMAGE_TRACKING,
                           mojom::XRSessionFeature::HIT_TEST}};
 
   return *kSupportedFeatures;
@@ -93,9 +92,11 @@ ArCoreDevice::ArCoreDevice(
     device_features.emplace_back(mojom::XRSessionFeature::WEBGPU);
   }
 
-  // Only support Front Facing mode if the WebXR incubations flag is enabled.
+  // Only support Front Facing mode and Image Tracking if the WebXR incubations
+  // flag is enabled.
   if (base::FeatureList::IsEnabled(features::kWebXRIncubations)) {
     device_features.emplace_back(mojom::XRSessionFeature::FRONT_FACING);
+    device_features.emplace_back(mojom::XRSessionFeature::IMAGE_TRACKING);
   }
 
   SetSupportedFeatures(device_features);
@@ -297,10 +298,6 @@ void ArCoreDevice::OnSessionEnded() {
   // session with fresh associated resources. Also go through these steps in
   // case the GL thread hadn't completed, or had initialized partially, to
   // ensure consistent state.
-
-  // TODO(crbug.com/41392761): Instead of splitting the initialization
-  // of this class between construction and RequestSession, perform all the
-  // initialization at once on the first successful RequestSession call.
 
   // If we have a frame sink client, notify it that it's surface has been
   // destroyed. While this is required in the case of the surface actually being

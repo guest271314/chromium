@@ -9,9 +9,12 @@ import static org.hamcrest.Matchers.contains;
 import static org.hamcrest.Matchers.notNullValue;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertThrows;
 import static org.mockito.Mockito.atLeastOnce;
+import static org.mockito.Mockito.clearInvocations;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 
 import static org.chromium.components.search_engines.TemplateUrlTestHelpers.buildMockTemplateUrl;
@@ -29,12 +32,12 @@ import org.junit.runner.RunWith;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
-import org.robolectric.annotation.Config;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.base.version_info.VersionInfo;
+import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.regional_capabilities.RegionalCapabilitiesServiceFactory;
 import org.chromium.chrome.browser.search_engines.R;
@@ -43,6 +46,8 @@ import org.chromium.components.favicon.LargeIconBridge;
 import org.chromium.components.favicon.LargeIconBridgeJni;
 import org.chromium.components.omnibox.OmniboxFeatureList;
 import org.chromium.components.regional_capabilities.RegionalCapabilitiesService;
+import org.chromium.components.search_engines.PrepopulatedAndRecentlyVisitedTemplateURLs;
+import org.chromium.components.search_engines.SearchEngineSettingsDataProvider;
 import org.chromium.components.search_engines.TemplateUrl;
 import org.chromium.components.search_engines.TemplateUrlService;
 import org.chromium.ui.base.TestActivity;
@@ -52,8 +57,11 @@ import java.util.List;
 
 /** Unit tests for {@link SearchEngineAdapter}. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
-@DisableFeatures(OmniboxFeatureList.OMNIBOX_SITE_SEARCH)
+@DisableFeatures({
+    OmniboxFeatureList.OMNIBOX_SITE_SEARCH,
+    ChromeFeatureList.SEARCH_SETTINGS_UPDATE_V2,
+    ChromeFeatureList.PREPOPULATED_ENGINES_SHADOW_VARIANTS
+})
 public class SearchEngineAdapterTest {
     public @Rule MockitoRule mMockitoRule = MockitoJUnit.rule();
 
@@ -63,6 +71,7 @@ public class SearchEngineAdapterTest {
 
     private @Mock Profile mProfile;
     private @Mock TemplateUrlService mTemplateUrlService;
+    private @Mock SearchEngineSettingsDataProvider mSettingsDataProvider;
     private @Mock RegionalCapabilitiesService mRegionalCapabilities;
     private @Mock LargeIconBridge.Natives mLargeIconBridgeNativeMock;
     private Context mContext;
@@ -71,6 +80,9 @@ public class SearchEngineAdapterTest {
     public void setUp() {
         LargeIconBridgeJni.setInstanceForTesting(mLargeIconBridgeNativeMock);
         mActivityScenarioRule.getScenario().onActivity(activity -> mContext = activity);
+        doReturn(mSettingsDataProvider).when(mTemplateUrlService).createSettingsDataProvider();
+        TemplateUrlServiceFactory.setInstanceForTesting(mTemplateUrlService);
+        RegionalCapabilitiesServiceFactory.setInstanceForTesting(mRegionalCapabilities);
     }
 
     @Test
@@ -239,7 +251,113 @@ public class SearchEngineAdapterTest {
     }
 
     @Test
-    public void testGetView() {
+    @EnableFeatures(ChromeFeatureList.SEARCH_SETTINGS_UPDATE_V2)
+    public void testGetView_New() {
+        TemplateUrl p1 = buildMockTemplateUrl("prepopulated1", 1);
+        TemplateUrl p2 = buildMockTemplateUrl("", 2);
+        TemplateUrl c1 = buildMockTemplateUrl("custom1", 0);
+
+        doReturn(true).when(mTemplateUrlService).isLoaded();
+        doReturn(new PrepopulatedAndRecentlyVisitedTemplateURLs(List.of(p1, p2), List.of(c1)))
+                .when(mSettingsDataProvider)
+                .getPrepopulatedAndRecentlyVisitedTemplateURLs();
+        doReturn(p2).when(mTemplateUrlService).getDefaultSearchEngineTemplateUrl();
+        TemplateUrlServiceFactory.setInstanceForTesting(mTemplateUrlService);
+
+        var adapter =
+                new SearchEngineAdapter(mContext, mProfile, /* siteSearchClickHandler= */ null);
+        adapter.start();
+
+        assertEquals(4, adapter.getCount());
+
+        // Checking the data that was used to render the view.
+        assertEquals(SearchEngineAdapter.ViewType.ITEM, adapter.getItemViewType(0));
+        View v = adapter.getView(0, null, null);
+        verify(p1, atLeastOnce()).getShortName();
+        assertEquals(View.VISIBLE, v.findViewById(R.id.url).getVisibility());
+        assertThat(v.findViewById(R.id.logo), notNullValue());
+
+        assertEquals(SearchEngineAdapter.ViewType.ITEM, adapter.getItemViewType(1));
+        v = adapter.getView(1, null, null);
+        verify(p2, atLeastOnce()).getShortName();
+        assertEquals(View.GONE, v.findViewById(R.id.url).getVisibility()); // Because no keyword.
+        assertThat(v.findViewById(R.id.logo), notNullValue());
+
+        assertEquals(SearchEngineAdapter.ViewType.DIVIDER, adapter.getItemViewType(2));
+        assertNotNull(adapter.getView(2, null, null));
+
+        assertEquals(SearchEngineAdapter.ViewType.ITEM, adapter.getItemViewType(3));
+        v = adapter.getView(3, null, null);
+        verify(c1, atLeastOnce()).getShortName();
+        assertEquals(View.VISIBLE, v.findViewById(R.id.url).getVisibility());
+        assertThat(v.findViewById(R.id.logo), notNullValue());
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.SEARCH_SETTINGS_UPDATE_V2)
+    public void refreshData_unknownDseAddedToRecents() {
+        // Avoid JavaExceptionReporter misfires on bots that test official builds.
+        if (VersionInfo.isOfficialBuild()) return;
+        long lastVisitedTime = System.currentTimeMillis();
+        TemplateUrl p1 = buildMockTemplateUrl("prepopulated1", 1, lastVisitedTime);
+        TemplateUrl p2 = buildMockTemplateUrl("prepopulated2", 2, lastVisitedTime);
+        TemplateUrl unknownDse = buildMockTemplateUrl("unknown", 0, lastVisitedTime);
+
+        doReturn(true).when(mTemplateUrlService).isLoaded();
+        doReturn(new PrepopulatedAndRecentlyVisitedTemplateURLs(List.of(p1, p2), List.of()))
+                .when(mSettingsDataProvider)
+                .getPrepopulatedAndRecentlyVisitedTemplateURLs();
+        doReturn(unknownDse).when(mTemplateUrlService).getDefaultSearchEngineTemplateUrl();
+        TemplateUrlServiceFactory.setInstanceForTesting(mTemplateUrlService);
+
+        var adapter =
+                new SearchEngineAdapter(mContext, mProfile, /* siteSearchClickHandler= */ null);
+        adapter.start();
+
+        // The adapter will show 2 prepopulated engines, a divider, and the unknown DSE.
+        assertEquals(4, adapter.getCount());
+        assertEquals(p1.getKeyword(), adapter.getItem(0).getKeyword());
+        assertEquals(p2.getKeyword(), adapter.getItem(1).getKeyword());
+        // Item 2 is a divider.
+        assertEquals(unknownDse.getKeyword(), adapter.getItem(3).getKeyword());
+        assertEquals("3", adapter.getValueForTesting());
+
+        // Subsequent refreshes with the same engines should exit early via didSearchEnginesChange
+        // without re-snapshotting or duplicating the fallback DSE.
+        clearInvocations(p1, p2, unknownDse);
+        adapter.onTemplateURLServiceChanged();
+        assertEquals(4, adapter.getCount());
+        verify(unknownDse, never()).getShortName();
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.SEARCH_SETTINGS_UPDATE_V2)
+    public void refreshData_dseSuppressedByPolicy() {
+        // Avoid JavaExceptionReporter misfires on bots that test official builds.
+        if (VersionInfo.isOfficialBuild()) return;
+        long lastVisitedTime = System.currentTimeMillis();
+        TemplateUrl p1 = buildMockTemplateUrl("prepopulated1", 1, lastVisitedTime);
+        TemplateUrl p2 = buildMockTemplateUrl("prepopulated2", 2, lastVisitedTime);
+
+        doReturn(true).when(mTemplateUrlService).isLoaded();
+        doReturn(new PrepopulatedAndRecentlyVisitedTemplateURLs(List.of(p1, p2), List.of()))
+                .when(mSettingsDataProvider)
+                .getPrepopulatedAndRecentlyVisitedTemplateURLs();
+        doReturn(null).when(mTemplateUrlService).getDefaultSearchEngineTemplateUrl();
+        TemplateUrlServiceFactory.setInstanceForTesting(mTemplateUrlService);
+
+        var adapter =
+                new SearchEngineAdapter(mContext, mProfile, /* siteSearchClickHandler= */ null);
+        adapter.start();
+
+        // The adapter will show 2 prepopulated engines, a divider, and the unknown DSE.
+        assertEquals(2, adapter.getCount());
+        assertEquals(p1.getKeyword(), adapter.getItem(0).getKeyword());
+        assertEquals(p2.getKeyword(), adapter.getItem(1).getKeyword());
+    }
+
+    @Test
+    public void testGetView_Legacy() {
         TemplateUrl p1 = buildMockTemplateUrl("prepopulated1", 1);
         TemplateUrl p2 = buildMockTemplateUrl("", 2);
         TemplateUrl c1 = buildMockTemplateUrl("custom1", 0);
@@ -260,14 +378,12 @@ public class SearchEngineAdapterTest {
 
         // Checking the data that was used to render the view.
         assertEquals(SearchEngineAdapter.ViewType.ITEM, adapter.getItemViewType(0));
-        verify(p1, never()).getShortName();
         View v = adapter.getView(0, null, null);
         verify(p1, atLeastOnce()).getShortName();
         assertEquals(View.VISIBLE, v.findViewById(R.id.url).getVisibility());
         assertThat(v.findViewById(R.id.logo), notNullValue());
 
         assertEquals(SearchEngineAdapter.ViewType.ITEM, adapter.getItemViewType(1));
-        verify(p2, never()).getShortName();
         v = adapter.getView(1, null, null);
         verify(p2, atLeastOnce()).getShortName();
         assertEquals(View.GONE, v.findViewById(R.id.url).getVisibility()); // Because no keyword.
@@ -277,7 +393,6 @@ public class SearchEngineAdapterTest {
         assertNotNull(adapter.getView(2, null, null));
 
         assertEquals(SearchEngineAdapter.ViewType.ITEM, adapter.getItemViewType(3));
-        verify(c1, never()).getShortName();
         v = adapter.getView(3, null, null);
         verify(c1, atLeastOnce()).getShortName();
         assertEquals(View.VISIBLE, v.findViewById(R.id.url).getVisibility());
@@ -285,7 +400,7 @@ public class SearchEngineAdapterTest {
     }
 
     @Test
-    public void refreshData_unknownDseAddedToRecents() {
+    public void refreshData_unknownDseAddedToRecents_Legacy() {
         // Avoid JavaExceptionReporter misfires on bots that test official builds.
         if (VersionInfo.isOfficialBuild()) return;
         long lastVisitedTime = System.currentTimeMillis();
@@ -308,10 +423,11 @@ public class SearchEngineAdapterTest {
 
         // The adapter will show 2 prepopulated engines, a divider, and the unknown DSE.
         assertEquals(4, adapter.getCount());
-        assertEquals(p1, adapter.getItem(0));
-        assertEquals(p2, adapter.getItem(1));
+        assertEquals(p1.getKeyword(), adapter.getItem(0).getKeyword());
+        assertEquals(p2.getKeyword(), adapter.getItem(1).getKeyword());
         // Item 2 is a divider.
-        assertEquals(unknownDse, adapter.getItem(3));
+        assertEquals(unknownDse.getKeyword(), adapter.getItem(3).getKeyword());
+        assertEquals("3", adapter.getValueForTesting());
 
         // Test for EEA country.
         doReturn(true).when(mRegionalCapabilities).isInEeaCountry();
@@ -322,14 +438,15 @@ public class SearchEngineAdapterTest {
 
         // The adapter will show 2 prepopulated engines, a divider, and the unknown DSE.
         assertEquals(4, adapter.getCount());
-        assertEquals(p1, adapter.getItem(0));
-        assertEquals(p2, adapter.getItem(1));
+        assertEquals(p1.getKeyword(), adapter.getItem(0).getKeyword());
+        assertEquals(p2.getKeyword(), adapter.getItem(1).getKeyword());
         // Item 2 is a divider.
-        assertEquals(unknownDse, adapter.getItem(3));
+        assertEquals(unknownDse.getKeyword(), adapter.getItem(3).getKeyword());
+        assertEquals("3", adapter.getValueForTesting());
     }
 
     @Test
-    public void refreshData_dseSuppressedByPolicy() {
+    public void refreshData_dseSuppressedByPolicy_Legacy() {
         // Avoid JavaExceptionReporter misfires on bots that test official builds.
         if (VersionInfo.isOfficialBuild()) return;
         long lastVisitedTime = System.currentTimeMillis();
@@ -351,7 +468,138 @@ public class SearchEngineAdapterTest {
 
         // The adapter will show 2 prepopulated engines, a divider, and the unknown DSE.
         assertEquals(2, adapter.getCount());
-        assertEquals(p1, adapter.getItem(0));
-        assertEquals(p2, adapter.getItem(1));
+        assertEquals(p1.getKeyword(), adapter.getItem(0).getKeyword());
+        assertEquals(p2.getKeyword(), adapter.getItem(1).getKeyword());
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.SEARCH_SETTINGS_UPDATE_V2)
+    @DisableFeatures(OmniboxFeatureList.OMNIBOX_SITE_SEARCH)
+    public void refreshData_V2_doesNotDereferenceStaleTemplateUrls() {
+        TemplateUrl p1 = buildMockTemplateUrl("p1", 1);
+        TemplateUrl r1 = buildMockTemplateUrl("r1", 0);
+
+        doReturn(true).when(mTemplateUrlService).isLoaded();
+        doReturn(new PrepopulatedAndRecentlyVisitedTemplateURLs(List.of(p1), List.of(r1)))
+                .when(mSettingsDataProvider)
+                .getPrepopulatedAndRecentlyVisitedTemplateURLs();
+        TemplateUrlServiceFactory.setInstanceForTesting(mTemplateUrlService);
+
+        var adapter = new SearchEngineAdapter(mContext, mProfile, null);
+        adapter.start();
+
+        // New list: r1 is replaced by r2.
+        TemplateUrl r2 = buildMockTemplateUrl("r2", 0);
+        doReturn(new PrepopulatedAndRecentlyVisitedTemplateURLs(List.of(p1), List.of(r2)))
+                .when(mSettingsDataProvider)
+                .getPrepopulatedAndRecentlyVisitedTemplateURLs();
+
+        // Simulate r1 being freed in native.
+        clearInvocations(r1);
+
+        // This should not crash if the fix is correct.
+        adapter.onTemplateURLServiceChanged();
+
+        verify(r1, never()).getKeyword();
+        verify(r1, never()).getShortName();
+        verify(r1, never()).getIsPrepopulated();
+    }
+
+    @Test
+    @DisableFeatures({
+        ChromeFeatureList.SEARCH_SETTINGS_UPDATE_V2,
+        OmniboxFeatureList.OMNIBOX_SITE_SEARCH
+    })
+    public void refreshData_Legacy_doesNotDereferenceStaleTemplateUrls() {
+        TemplateUrl p1 = buildMockTemplateUrl("p1", 1);
+        TemplateUrl r1 = buildMockTemplateUrl("r1", 0);
+
+        doReturn(true).when(mTemplateUrlService).isLoaded();
+        // In legacy mode, it uses getTemplateUrls() and sorts them.
+        doReturn(new ArrayList<>(List.of(p1, r1))).when(mTemplateUrlService).getTemplateUrls();
+        TemplateUrlServiceFactory.setInstanceForTesting(mTemplateUrlService);
+        RegionalCapabilitiesServiceFactory.setInstanceForTesting(mRegionalCapabilities);
+
+        var adapter = new SearchEngineAdapter(mContext, mProfile, null);
+        adapter.start();
+
+        // New list: r1 is replaced by r2.
+        TemplateUrl r2 = buildMockTemplateUrl("r2", 0);
+        doReturn(new ArrayList<>(List.of(p1, r2))).when(mTemplateUrlService).getTemplateUrls();
+
+        // Simulate r1 being freed in native.
+        clearInvocations(r1);
+
+        // This should not crash if the fix is correct.
+        adapter.onTemplateURLServiceChanged();
+
+        verify(r1, never()).getKeyword();
+        verify(r1, never()).getShortName();
+        verify(r1, never()).getIsPrepopulated();
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.SEARCH_SETTINGS_UPDATE_V2)
+    public void startAndRefresh_recordsMetricsAndDestroysProvider() {
+        TemplateUrl p1 = buildMockTemplateUrl("p1", 1);
+        doReturn(true).when(mTemplateUrlService).isLoaded();
+        doReturn(new PrepopulatedAndRecentlyVisitedTemplateURLs(List.of(p1), List.of()))
+                .when(mSettingsDataProvider)
+                .getPrepopulatedAndRecentlyVisitedTemplateURLs();
+
+        var adapter = new SearchEngineAdapter(mContext, mProfile, null);
+        adapter.start();
+
+        // Verifies maybeRecordSettingsPageLoadMetrics is called with displayed engines on start.
+        verify(mSettingsDataProvider)
+                .maybeRecordSettingsPageLoadMetrics(List.of(List.of(p1), List.of()));
+
+        // Unchanged refresh returns early before calling maybeRecordSettingsPageLoadMetrics again.
+        adapter.onTemplateURLServiceChanged();
+        verify(mSettingsDataProvider, times(1))
+                .maybeRecordSettingsPageLoadMetrics(List.of(List.of(p1), List.of()));
+
+        // Destroying adapter closes the data provider.
+        adapter.destroy();
+        verify(mSettingsDataProvider).close();
+    }
+
+    @Test
+    @DisableFeatures(ChromeFeatureList.SEARCH_SETTINGS_UPDATE_V2)
+    @EnableFeatures(ChromeFeatureList.PREPOPULATED_ENGINES_SHADOW_VARIANTS)
+    public void testLegacyPath_ThrowsWhenShadowVariantsEnabled() {
+        doReturn(true).when(mTemplateUrlService).isLoaded();
+
+        SearchEngineAdapter adapter =
+                new SearchEngineAdapter(mContext, mProfile, /* siteSearchClickHandler= */ null);
+        assertThrows(AssertionError.class, adapter::start);
+    }
+
+    /**
+     * Covers the intended end state of the rollout, where both flags are on. The V2 path must be
+     * taken, so the legacy assert must not fire and metrics must still be recorded.
+     */
+    @Test
+    @EnableFeatures({
+        ChromeFeatureList.SEARCH_SETTINGS_UPDATE_V2,
+        ChromeFeatureList.PREPOPULATED_ENGINES_SHADOW_VARIANTS
+    })
+    public void startAndRefresh_v2PathWithShadowVariantsEnabled() {
+        TemplateUrl p1 = buildMockTemplateUrl("p1", 1);
+        doReturn(true).when(mTemplateUrlService).isLoaded();
+        doReturn(new PrepopulatedAndRecentlyVisitedTemplateURLs(List.of(p1), List.of()))
+                .when(mSettingsDataProvider)
+                .getPrepopulatedAndRecentlyVisitedTemplateURLs();
+
+        SearchEngineAdapter adapter =
+                new SearchEngineAdapter(mContext, mProfile, /* siteSearchClickHandler= */ null);
+        adapter.start();
+
+        verify(mSettingsDataProvider).getPrepopulatedAndRecentlyVisitedTemplateURLs();
+        verify(mSettingsDataProvider)
+                .maybeRecordSettingsPageLoadMetrics(List.of(List.of(p1), List.of()));
+
+        adapter.destroy();
+        verify(mSettingsDataProvider).close();
     }
 }

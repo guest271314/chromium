@@ -15,6 +15,7 @@
 #include "base/memory/read_only_shared_memory_region.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/memory/unsafe_shared_memory_pool.h"
+#include "base/memory/weak_ptr.h"
 #include "base/sequence_checker.h"
 #include "base/synchronization/lock.h"
 #include "base/time/time.h"
@@ -61,6 +62,9 @@ class MEDIA_EXPORT VideoEncodeAcceleratorAdapter
   enum class InputBufferKind { Any, GpuMemBuf, CpuMemBuf };
   // A way to force a certain way of submitting frames to VEA.
   void SetInputBufferPreferenceForTesting(InputBufferKind type);
+
+  static VideoPixelFormat GetInputPixelFormat(VideoCodecProfile profile,
+                                              const Options& options);
 
   // VideoEncoder implementation.
   void Initialize(VideoCodecProfile profile,
@@ -127,9 +131,9 @@ class MEDIA_EXPORT VideoEncodeAcceleratorAdapter
 
   template <class T>
   T WrapCallback(T cb);
-  EncoderStatus::Or<scoped_refptr<VideoFrame>> PrepareGpuFrame(
+  base::expected<scoped_refptr<VideoFrame>, EncoderStatus> PrepareGpuFrame(
       scoped_refptr<VideoFrame> src_frame);
-  EncoderStatus::Or<scoped_refptr<VideoFrame>> PrepareCpuFrame(
+  base::expected<scoped_refptr<VideoFrame>, EncoderStatus> PrepareCpuFrame(
       scoped_refptr<VideoFrame> src_frame);
 
   scoped_refptr<ReadOnlyRegionPool> input_pool_;
@@ -205,8 +209,11 @@ class MEDIA_EXPORT VideoEncodeAcceleratorAdapter
 #else
   static constexpr VideoPixelFormat kDefaultPixelFormat = PIXEL_FORMAT_NV12;
 #endif
+  VideoPixelFormat input_pixel_format_ = kDefaultPixelFormat;
   bool supports_frame_size_change_ = false;
   bool supports_gpu_shared_images_ = false;
+
+  base::WeakPtrFactory<VideoEncodeAcceleratorAdapter> weak_factory_{this};
 };
 
 }  // namespace media

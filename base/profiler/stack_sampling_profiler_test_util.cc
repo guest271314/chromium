@@ -174,8 +174,7 @@ std::unique_ptr<Unwinder> CreateChromeUnwinderAndroid32ForTesting(
   DCHECK(ok);
   return std::make_unique<ChromeUnwinderAndroid32ForTesting>(
       std::move(cfi_file),
-      base::CreateChromeUnwindInfoAndroid32(
-          UNSAFE_TODO({cfi_file->data(), cfi_file->length()})),
+      base::CreateChromeUnwindInfoAndroid32(cfi_file->bytes()),
       chrome_module_base_address,
       /* text_section_start_address= */ base::android::kStartOfText);
 }
@@ -324,7 +323,7 @@ void WithTargetThread(UnwindScenario* scenario,
   target_thread.Start();
   events.ready_for_sample.Wait();
 
-  std::move(profile_callback).Run(target_thread.thread_token());
+  std::move(profile_callback).Run(target_thread.thread_token().Clone());
 
   events.sample_finished.Signal();
   target_thread.Join();
@@ -346,7 +345,7 @@ std::vector<Frame> SampleScenario(UnwindScenario* scenario,
                 WaitableEvent::ResetPolicy::MANUAL,
                 WaitableEvent::InitialState::NOT_SIGNALED);
             StackSamplingProfiler profiler(
-                target_thread_token, params,
+                std::move(target_thread_token), params,
                 std::make_unique<TestProfileBuilder>(
                     module_cache,
                     BindLambdaForTesting([&sample, &sampling_thread_completed](

@@ -1,5 +1,5 @@
 // Symphonia
-// Copyright (c) 2019-2022 The Project Symphonia Developers.
+// Copyright (c) 2019-2026 The Project Symphonia Developers.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
 // License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -27,8 +27,7 @@ lazy_static! {
     /// value of s(i) is bound between 0..8207.
     static ref POW43: Box<[f32; POW43_LEN]> = {
         let pow43: Vec<f32> = (0..POW43_LEN).map(|i| f32::powf(i as f32, 4.0 / 3.0)).collect();
-        // UNWRAP: The vector was initialized to be the correct size.
-        pow43.into_boxed_slice().try_into().unwrap()
+        pow43.into_boxed_slice().try_into().expect("vec initialized to POW43_LEN")
     };
 }
 

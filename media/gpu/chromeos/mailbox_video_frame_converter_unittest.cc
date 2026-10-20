@@ -147,7 +147,7 @@ class MockSharedImageInterface : public gpu::SharedImageInterface {
                     std::unique_ptr<gfx::GpuFence> acquire_fence,
                     const gpu::Mailbox& mailbox));
   MOCK_METHOD2(DestroySharedImage,
-               void(const gpu::SyncToken& sync_token,
+               void(std::vector<gpu::SyncToken> sync_tokens,
                     const gpu::Mailbox& mailbox));
   MOCK_METHOD2(DestroySharedImage,
                void(const gpu::SyncToken& sync_token,
@@ -525,8 +525,9 @@ TEST_P(MailboxVideoFrameConverterWithUnwrappedFramesTest,
                           const gpu::Mailbox& mailbox) {
               mailboxes_seen_by_gpu_delegate[i] = mailbox;
             });
-        EXPECT_CALL(*mock_shared_image_interface_, GenVerifiedSyncToken())
+        EXPECT_CALL(*mock_shared_image_interface_, GenUnverifiedSyncToken())
             .Times(1);
+        EXPECT_CALL(*mock_shared_image_interface_, VerifySyncToken(_)).Times(1);
       }
       EXPECT_CALL(mock_output_cb_, Run(_))
           .WillOnce(SaveArg<0>(&converted_frames[i]));

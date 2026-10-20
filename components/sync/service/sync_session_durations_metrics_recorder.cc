@@ -262,13 +262,15 @@ void SyncSessionDurationsMetricsRecorder::LogSigninDuration(
     base::TimeDelta session_length) {
   FeatureState cookie_status_to_log = cookie_signin_status_;
   if (cookie_status_to_log == FeatureState::UNKNOWN) {
+    base::UmaHistogramLongTimes(
+        "Signin.SessionWithCookieSigninStatusUnknown.Duration", session_length);
     if (base::FeatureList::IsEnabled(
             kSyncFixWebSigninSessionDurationForShortLivedSessions)) {
       // Compute the cookie signin status even if the accounts in the cookie jar
       // are stale. This ensures that we log the last known cookie signin status
       // for short-lived sessions.
       cookie_status_to_log = DetermineCookieSigninStatus(
-          identity_manager_->GetAccountsInCookieJar());
+          identity_manager_->GetCachedAccountsInCookieJar());
     } else {
       // Since the feature wasn't working for the user if we didn't know its
       // state, log the status as off.

@@ -96,6 +96,9 @@ constexpr char kExperimentsAndConfigsOAuth2Scope[] =
     "https://www.googleapis.com/auth/experimentsandconfigs";
 // OAuth 2 scope for the Discover feed.
 constexpr char kFeedOAuth2Scope[] = "https://www.googleapis.com/auth/googlenow";
+// OAuth2 scope for Footprints Service.
+constexpr char kFpopOAuth2Scope[] =
+    "https://www.googleapis.com/auth/webhistory";
 // OAuth2 scopes for access to GCM.
 constexpr char kGCMCheckinServerOAuth2Scope[] =
     "https://www.googleapis.com/auth/android_checkin";
@@ -122,18 +125,12 @@ constexpr char kKidManagementPrivilegedOAuth2Scope[] =
 // OAuth2 scope for access to Google Family Link Supervision Setup.
 constexpr char kKidsSupervisionSetupChildOAuth2Scope[] =
     "https://www.googleapis.com/auth/kids.supervision.setup.child";
-// OAuth2 scope for app license check.
-constexpr char kLicenseCheckOAuth2Scope[] =
-    "https://www.googleapis.com/auth/applicense.bytebot";
 // OAuth2 scope for manta.
 constexpr char kMantaOAuth2Scope[] =
     "https://www.googleapis.com/auth/mdi.aratea";
 // OAuth2 scope for access to nearby devices (fast pair) APIs.
 constexpr char kNearbyDevicesOAuth2Scope[] =
     "https://www.googleapis.com/auth/nearbydevices-pa";
-// OAuth2 scope for access to nearby sharing.
-constexpr char kNearbyPresenceOAuth2Scope[] =
-    "https://www.googleapis.com/auth/nearbypresence-pa";
 // OAuth2 scope for access to nearby sharing.
 constexpr char kNearbyShareOAuth2Scope[] =
     "https://www.googleapis.com/auth/nearbysharing-pa";
@@ -148,6 +145,9 @@ constexpr char kOptimizationGuideServiceModelExecutionOAuth2Scope[] =
 // OAuth2 scope for access to the parent approval widget.
 constexpr char kParentApprovalOAuth2Scope[] =
     "https://www.googleapis.com/auth/kids.parentapproval";
+// OAuth2 scope for Passbox credential sharing.
+constexpr char kPassboxCredentialOAuth2Scope[] =
+    "https://www.googleapis.com/auth/passbox.credential";
 // OAuth 2 scope for Google Password Manager passkey enclaves.
 constexpr char kPasskeysEnclaveOAuth2Scope[] =
     "https://www.googleapis.com/auth/secureidentity.action";
@@ -211,6 +211,7 @@ constexpr char kYouTubeMusicOAuth2Scope[] =
 
 constexpr char kSyncName[] = "sync";
 constexpr char kSecureGatewayServiceName[] = "secure_gateway_service";
+constexpr char kFpopServiceName[] = "fpop_service";
 constexpr char kWallpaperGooglePhotosFetcherName[] =
     "wallpaper_google_photos_fetcher";
 constexpr char kWallpaperFetcherDelegateName[] = "wallpaper_fetcher_delegate";
@@ -224,7 +225,6 @@ constexpr char kProjectorTokenFetcherName[] = "projector_token_fetcher";
 constexpr char kAddSupervisionName[] = "add_supervision";
 constexpr char kParentAccessName[] = "parent_access";
 constexpr char kDataSharingName[] = "data_sharing";
-constexpr char kLauncherItemSuggestName[] = "launcher_item_suggest";
 constexpr char kMarketingBackendConnectorName[] = "marketing_backend_connector";
 constexpr char kPasswordSyncTokenFetcherName[] = "password_sync_token_fetcher";
 constexpr char kLocaleSwitchScreenName[] = "locale_switch_screen";
@@ -285,10 +285,7 @@ constexpr char kArcBackgroundAuthCodeFetcherName[] =
     "arc_background_auth_code_fetcher";
 constexpr char kGcmAccountTrackerName[] = "gcm_account_tracker";
 constexpr char kPolicyTokenForwarderName[] = "policy_token_forwarder";
-constexpr char kPluginVmLicenseCheckerName[] = "plugin_vm_license_checker";
 constexpr char kDrivefsAuthName[] = "drivefs_auth";
-constexpr char kNearbyPresenceServerClientName[] =
-    "nearby_presence_server_client";
 constexpr char kCryptAuthClientName[] = "crypt_auth_client";
 constexpr char kAmbientModeName[] = "ambient_mode";
 constexpr char kProfileDownloaderName[] = "profile_downloader";
@@ -320,14 +317,19 @@ constexpr char kSyncDeviceStatisticsMetricsName[] =
 constexpr char kPrivateAiServiceName[] = "private_ai_service";
 constexpr char kWalletPassesName[] = "wallet_passes";
 constexpr char kAimEligibilityServiceName[] = "aim_eligibility_service";
-constexpr char kAccessibilityAnnotatorName[] = "accessibility_annotator";
 constexpr char kActorLoginPermissionServiceName[] =
     "actor_login_permission_service";
 constexpr char kGapisServiceName[] = "gapis_service";
 constexpr char kOneTimeTokenServiceName[] = "one_time_token_service";
-constexpr char kDrivePickerHostName[] = "drive_picker_host";
 constexpr char kMultistepFilterName[] = "multistep_filter";
 constexpr char kContextMemoryServiceName[] = "context_memory_service";
+constexpr char kSyncPreviewName[] = "chromesync_preview";
+constexpr char kNotebooksServiceName[] = "notebooks_service";
+constexpr char kRemoteActorLoginCredentialsServiceName[] =
+    "remote_actor_login_credentials_service";
+constexpr char kDeviceAuthorizationRequestName[] =
+    "device_authorization_request";
+constexpr char kCmtgDeviceKeyProviderName[] = "cmtg_device_key_provider";
 }  // namespace
 
 namespace signin {
@@ -402,10 +404,6 @@ OAuthConsumer OAuthConsumerRegistry::GetOAuthConsumerFromId(
           /*scopes=*/{kPeopleApiReadWriteOAuth2Scope,
                       kPeopleApiReadOnlyOAuth2Scope,
                       GaiaConstants::kClearCutOAuth2Scope});
-    case OAuthConsumerId::kLauncherItemSuggest:
-      return OAuthConsumer(
-          /*name=*/kLauncherItemSuggestName,
-          /*scopes=*/{kDriveReadOnlyOAuth2Scope});
     case OAuthConsumerId::kMarketingBackendConnector:
       return OAuthConsumer(
           /*name=*/kMarketingBackendConnectorName,
@@ -600,20 +598,12 @@ OAuthConsumer OAuthConsumerRegistry::GetOAuthConsumerFromId(
           /*name=*/kPolicyTokenForwarderName,
           /*scopes=*/{GaiaConstants::kDeviceManagementServiceOAuth,
                       GaiaConstants::kGoogleUserInfoEmail});
-    case OAuthConsumerId::kPluginVmLicenseChecker:
-      return OAuthConsumer(
-          /*name=*/kPluginVmLicenseCheckerName,
-          /*scopes=*/{kLicenseCheckOAuth2Scope});
     case OAuthConsumerId::kDrivefsAuth:
       return OAuthConsumer(
           /*name=*/kDrivefsAuthName,
           /*scopes=*/{kClientChannelOAuth2Scope,
                       GaiaConstants::kDriveOAuth2Scope,
                       kExperimentsAndConfigsOAuth2Scope});
-    case OAuthConsumerId::kNearbyPresenceServerClient:
-      return OAuthConsumer(
-          /*name=*/kNearbyPresenceServerClientName,
-          /*scopes=*/{kNearbyPresenceOAuth2Scope});
     case OAuthConsumerId::kCryptAuthClient:
       return OAuthConsumer(
           /*name=*/kCryptAuthClientName,
@@ -689,8 +679,6 @@ OAuthConsumer OAuthConsumerRegistry::GetOAuthConsumerFromId(
           /*scopes=*/{kYouTubeMusicOAuth2Scope});
     case OAuthConsumerId::kContextualTasks:
       return GetOAuthConsumerForContextualTasks();
-    case OAuthConsumerId::kEnterprisePlusAddress:
-      return GetOAuthConsumerForEnterprisePlusAddress();
     case OAuthConsumerId::kGlicUserStatus:
       return GetOAuthConsumerForGlicUserStatus();
     case OAuthConsumerId::kIndigo:
@@ -743,11 +731,6 @@ OAuthConsumer OAuthConsumerRegistry::GetOAuthConsumerFromId(
       return OAuthConsumer(
           /*name=*/kDevtoolsAiCodeName,
           /*scopes=*/{kAiCodeOAuth2Scope});
-    case OAuthConsumerId::kAccessibilityAnnotator:
-      // TODO(b/493530228): Use narrow scope for the accessibility annotator.
-      return OAuthConsumer(
-          /*name=*/kAccessibilityAnnotatorName,
-          /*scopes=*/{GaiaConstants::kChromeSyncOAuth2Scope});
     case OAuthConsumerId::kActorLoginPermissionService:
       return OAuthConsumer(
           /*name=*/kActorLoginPermissionServiceName,
@@ -760,10 +743,7 @@ OAuthConsumer OAuthConsumerRegistry::GetOAuthConsumerFromId(
       return OAuthConsumer(
           /*name=*/kOneTimeTokenServiceName,
           /*scopes=*/{kOneTimeTokenOAuth2Scope, kGmailMetadataOAuth2Scope,
-                      kGmailOtpReadonlyOAuth2Scope,
-                      // TODO(b/506950478): Remove kGoogleUserInfoEmail scope
-                      // once the service accepts kOneTimeTokenOAuth2Scope.
-                      GaiaConstants::kGoogleUserInfoEmail});
+                      kGmailOtpReadonlyOAuth2Scope});
     case OAuthConsumerId::kMultistepFilter:
       return OAuthConsumer(
           /*name=*/kMultistepFilterName,
@@ -777,13 +757,44 @@ OAuthConsumer OAuthConsumerRegistry::GetOAuthConsumerFromId(
           /*name=*/kSecureGatewayServiceName,
           /*scopes=*/{GaiaConstants::kSecureGatewayOAuth2Scope});
     case OAuthConsumerId::kDrivePickerHost:
-      return OAuthConsumer(
-          /*name=*/kDrivePickerHostName,
-          /*scopes=*/{kDriveReadOnlyOAuth2Scope});
+      return GetOAuthConsumerForDrivePickerHost();
     case OAuthConsumerId::kContextMemoryService:
       return OAuthConsumer(
           /*name=*/kContextMemoryServiceName,
-          /*scopes=*/{kContextMemoryServiceOAuth2Scope});
+          /*scopes=*/{kContextMemoryServiceOAuth2Scope,
+                      kWebHistoryOAuth2Scope});
+    case OAuthConsumerId::kSyncPreview:
+      return OAuthConsumer(
+          /*name=*/kSyncPreviewName,
+          /*scopes=*/{GaiaConstants::kChromeSyncPreviewOAuth2Scope});
+    case OAuthConsumerId::kFpopService:
+      return OAuthConsumer(
+          /*name=*/kFpopServiceName,
+          /*scopes=*/{kFpopOAuth2Scope});
+    case OAuthConsumerId::kNotebooksService:
+      return OAuthConsumer(
+          /*name=*/kNotebooksServiceName,
+          /*scopes=*/{GaiaConstants::kGoogleUserInfoEmail});
+    case OAuthConsumerId::kRemoteActorLoginCredentialsService:
+      return OAuthConsumer(
+          /*name=*/kRemoteActorLoginCredentialsServiceName,
+          /*scopes=*/{kPassboxCredentialOAuth2Scope});
+    case OAuthConsumerId::kBrowserActuator:
+      return GetOAuthConsumerForBrowserActuator();
+    case OAuthConsumerId::kTabContextContainersService:
+      return OAuthConsumer(
+          /*name=*/oauth_consumer_name::kTabContextContainersServiceName,
+          /*scopes=*/{GaiaConstants::kChromeSyncOAuth2Scope});
+    case OAuthConsumerId::kSiteTokenProvider:
+      return GetOAuthConsumerForSiteTokenProvider();
+    case OAuthConsumerId::kDeviceAuthorizationRequest:
+      return OAuthConsumer(
+          /*name=*/kDeviceAuthorizationRequestName,
+          /*scopes=*/{GaiaConstants::kChromeSyncOAuth2Scope});
+    case OAuthConsumerId::kCmtgDeviceKeyProvider:
+      return OAuthConsumer(
+          /*name=*/kCmtgDeviceKeyProviderName,
+          /*scopes=*/{kCryptAuthOAuth2Scope});
   }
 }
 

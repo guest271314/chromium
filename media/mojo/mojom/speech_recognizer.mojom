@@ -10,13 +10,16 @@ import "media/mojo/mojom/speech_recognition_grammar.mojom";
 import "media/mojo/mojom/speech_recognition_result.mojom";
 import "media/mojo/mojom/speech_recognition_recognition_context.mojom";
 
-// Next MinVersion: 2
+// Next MinVersion: 3
 
 enum AvailabilityStatus {
   kUnavailable,
   kDownloadable,
   kDownloading,
   kAvailable,
+  // Downloadable without transient activation; sticky activation is still
+  // required before calling Install().
+  kDownloadableWithoutTransientUserActivation,
 };
 
 enum SpeechRecognitionQuality {
@@ -73,6 +76,10 @@ struct StartSpeechRecognitionRequestParams {
 
   // Quality of the speech recognition to use.
   SpeechRecognitionQuality quality = kCommand;
+
+  // Whether the user requested unspoken punctuation (e.g., formatting).
+  [MinVersion=1]
+  bool unspoken_punctuation = false;
 };
 
 // API for the renderer process to manage speech recognition in the browser

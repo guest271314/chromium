@@ -181,6 +181,22 @@ class CheckMultiversionCratesTests(unittest.TestCase):
         self.assertTrue("[crate.foo.extra_kv]" in msg)
         self.assertTrue("multiversion_cleanup_bug = " in msg)
 
+    def testStaleTag(self):
+        crate_ids = set(["foo@1.2.3"])
+        gnrt_config = {
+            "crate": {
+                "foo": {
+                    "extra_kv": {
+                        "multiversion_cleanup_bug": "blah"
+                    }
+                }
+            }
+        }
+        msg = CheckMultiversionCrates(crate_ids, gnrt_config)
+        print(msg)
+        self.assertTrue("unnecessary `multiversion_cleanup_bug`" in msg)
+        self.assertTrue("foo" in msg)
+
     def testPlaceholderCratesAreIgnored(self):
         placeholder_crate_id = crate_utils.GetPlaceholderCrateIdForTesting()
         placeholder_crate_name = crate_utils.ConvertCrateIdToCrateName(
@@ -215,6 +231,21 @@ class CheckNonapplicableGnrtConfigEntriesTests(unittest.TestCase):
         gnrt_config = {"crate": {crate_name: {"bar": 123}}}
         msg = CheckNonapplicableGnrtConfigEntries(crate_ids, gnrt_config)
         self.assertTrue(msg != "")
+
+    def testPlaceholderCrateWithReplaceWith(self):
+        crate_id = crate_utils.GetPlaceholderCrateIdForTesting()
+        crate_name = crate_utils.ConvertCrateIdToCrateName(crate_id)
+        crate_ids = set([crate_id])
+        gnrt_config = {
+            "crate": {
+                crate_name: {
+                    "replace_with": "//third_party/rust/custom:lib"
+                }
+            }
+        }
+        self.assertEqual(
+            "", CheckNonapplicableGnrtConfigEntries(crate_ids, gnrt_config))
+
 
 
 class GetExtraKvForCrateNameTests(unittest.TestCase):

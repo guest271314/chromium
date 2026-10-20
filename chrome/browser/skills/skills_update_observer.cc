@@ -4,17 +4,20 @@
 
 #include "chrome/browser/skills/skills_update_observer.h"
 
+#include "chrome/browser/glic/host/glic.mojom.h"
 #include "chrome/browser/glic/host/glic_skills_manager.h"
 #include "chrome/browser/glic/public/glic_keyed_service.h"
 #include "chrome/browser/optimization_guide/optimization_guide_keyed_service.h"
 #include "chrome/browser/optimization_guide/optimization_guide_keyed_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/skills/skills_service_factory.h"
 #include "chrome/browser/ui/tabs/public/tab_features.h"
 #include "components/optimization_guide/core/hints/optimization_guide_decider.h"
 #include "components/optimization_guide/core/hints/optimization_guide_decision.h"
 #include "components/optimization_guide/core/hints/optimization_metadata.h"
 #include "components/skills/features.h"
 #include "components/skills/proto/skill.pb.h"
+#include "components/skills/public/skills_features.h"
 #include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/web_contents.h"
@@ -103,6 +106,11 @@ void SkillsUpdateObserver::OnOptimizationGuideDecision(
 }
 
 void SkillsUpdateObserver::MaybeUpdateContextualSkills() {
+  Profile* profile =
+      Profile::FromBrowserContext(tab_->GetContents()->GetBrowserContext());
+  if (!skills::SkillsServiceFactory::IsSkillsEnabledForProfile(profile)) {
+    return;
+  }
   glic::GlicKeyedService* glic_keyed_service = glic::GlicKeyedService::Get(
       Profile::FromBrowserContext(tab_->GetContents()->GetBrowserContext()));
   if (!glic_keyed_service) {
@@ -110,12 +118,17 @@ void SkillsUpdateObserver::MaybeUpdateContextualSkills() {
   }
   if (glic::GlicInstance* instance =
           glic_keyed_service->GetInstanceForTab(&(*tab_))) {
-    instance->host().skills_manager().UpdateSkillPreviews(&(*tab_));
+    instance->UpdateSkillPreviews(&(*tab_));
   }
 }
 
 std::vector<glic::mojom::SkillPreviewPtr>
 SkillsUpdateObserver::GetContextualSkillPreviews() const {
+  Profile* profile =
+      Profile::FromBrowserContext(tab_->GetContents()->GetBrowserContext());
+  if (!skills::SkillsServiceFactory::IsSkillsEnabledForProfile(profile)) {
+    return {};
+  }
   return ConvertSkillsListToSkillPreviews(contextual_skills_.get());
 }
 

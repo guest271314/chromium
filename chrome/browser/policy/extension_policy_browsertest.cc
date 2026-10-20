@@ -36,7 +36,6 @@
 #include "chrome/browser/extensions/shared_module_service_factory.h"
 #include "chrome/browser/extensions/sync/extension_sync_data.h"
 #include "chrome/browser/extensions/sync/extension_sync_service.h"
-#include "chrome/browser/extensions/updater/chrome_update_client_config.h"
 #include "chrome/browser/extensions/updater/extension_updater.h"
 #include "chrome/browser/policy/extension_policy_test_base.h"
 #include "chrome/browser/policy/policy_test_utils.h"
@@ -46,8 +45,9 @@
 #include "chrome/browser/profiles/profile_test_util.h"
 #include "chrome/common/extensions/extension_test_util.h"
 #include "chrome/common/extensions/manifest_handlers/app_launch_info.h"
+#include "chrome/common/pref_names.h"
+#include "chrome/test/base/chrome_test_path_utils.h"
 #include "chrome/test/base/chrome_test_utils.h"
-#include "components/crx_file/crx_verifier.h"
 #include "components/policy/core/browser/browser_policy_connector.h"
 #include "components/policy/policy_constants.h"
 #include "components/sync/model/sync_change.h"
@@ -82,6 +82,7 @@
 #include "extensions/browser/unpacked_installer.h"
 #include "extensions/browser/updater/extension_cache_fake.h"
 #include "extensions/browser/updater/extension_downloader_test_helper.h"
+#include "extensions/buildflags/buildflags.h"
 #include "extensions/common/constants.h"
 #include "extensions/common/feature_switch.h"
 #include "extensions/common/features/feature_channel.h"
@@ -99,7 +100,6 @@
 #if BUILDFLAG(ENABLE_EXTENSIONS)
 #include "chrome/browser/background/background_contents_service.h"
 #include "chrome/browser/extensions/scoped_test_mv2_enabler.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/web_applications/os_integration/os_integration_manager.h"
 #include "chrome/browser/web_applications/proto/web_app_install_state.pb.h"  // nogncheck
 #include "chrome/browser/web_applications/test/web_app_test_observers.h"
@@ -424,9 +424,8 @@ IN_PROC_BROWSER_TEST_F(ExtensionPolicyTest,
                        ExtensionInstallBlocklistComponentApps) {
   // Load all component extensions.
   extensions::ComponentLoader::EnableBackgroundExtensionsForTesting();
-  auto* loader = extensions::ComponentLoader::Get(browser()->profile());
+  auto* loader = extensions::ComponentLoader::Get(browser()->GetProfile());
   loader->AddDefaultComponentExtensions(false);
-  base::RunLoop().RunUntilIdle();
 
   extensions::ExtensionRegistry* registry = extension_registry();
   ASSERT_TRUE(
@@ -557,23 +556,19 @@ IN_PROC_BROWSER_TEST_F(ExtensionPolicyTest, ExtensionInstallBlocklistWildcard) {
 IN_PROC_BROWSER_TEST_F(ExtensionPolicyTest,
                        ExtensionInstallBlocklistSharedModules) {
   // Verifies that shared_modules are not affected by the blocklist.
-  auto disable_cup =
-      extensions::ChromeUpdateClientConfig::ScopedDisableCupSigningForTests();
-  auto disable_publisher_key =
-      extensions::DisablePublisherKeyVerificationForTests();
 
   base::FilePath base_path;
   GetTestDataDirectory(&base_path);
-  base::FilePath update_json_template_path =
+  base::FilePath update_xml_template_path =
       base_path.Append(kTestExtensionsDir)
           .AppendASCII("policy_shared_module")
-          .AppendASCII("update_template.json");
+          .AppendASCII("update_template.xml");
 
-  std::string update_json_path =
+  std::string update_xml_path =
       "/" + base::FilePath(kTestExtensionsDir).MaybeAsASCII() +
-      "/policy_shared_module/gen_update.json";
-  RegisterURLReplacingHandler(embedded_test_server(), update_json_path,
-                              update_json_template_path);
+      "/policy_shared_module/gen_update.xml";
+  RegisterURLReplacingHandler(embedded_test_server(), update_xml_path,
+                              update_xml_template_path);
   ASSERT_TRUE(embedded_test_server()->Start());
 
   const char kImporterId[] = "pchakhniekfaeoddkifplhnfbffomabh";
@@ -592,16 +587,16 @@ IN_PROC_BROWSER_TEST_F(ExtensionPolicyTest,
 
   // Mock the webstore update URL. This is where the shared module extension
   // will be installed from.
-  GURL update_json_url = embedded_test_server()->GetURL(update_json_path);
-  extension_test_util::SetGalleryUpdateURL(update_json_url);
-  NavigateToURL(update_json_url);
+  GURL update_xml_url = embedded_test_server()->GetURL(update_xml_path);
+  extension_test_util::SetGalleryUpdateURL(update_xml_url);
+  NavigateToURL(update_xml_url);
 
   // Blocklist "*" but force-install the importer extension. The shared module
   // should be automatically installed too.
   base::ListValue blocklist;
   blocklist.Append("*");
   PolicyMap policies;
-  AddExtensionToForceList(&policies, kImporterId, update_json_url);
+  AddExtensionToForceList(&policies, kImporterId, update_xml_url);
   policies.Set(key::kExtensionInstallBlocklist, POLICY_LEVEL_MANDATORY,
                POLICY_SCOPE_USER, POLICY_SOURCE_CLOUD,
                base::Value(std::move(blocklist)), nullptr);
@@ -694,13 +689,6 @@ class ExtensionRequestInterceptor {
         params->url_request.url.GetPath() == "/service/update2/crx") {
       content::URLLoaderInterceptor::WriteResponse(
           "chrome/test/data/extensions/good2_update_manifest.xml",
-          params->client.get());
-      return true;
-    }
-
-    if (params->url_request.url.GetPath() == "/service/update2/json") {
-      content::URLLoaderInterceptor::WriteResponse(
-          "chrome/test/data/extensions/good2_update_manifest.json",
           params->client.get());
       return true;
     }
@@ -1883,10 +1871,7 @@ IN_PROC_BROWSER_TEST_F(ExtensionPolicyTest,
                        ExtensionInstallForcelist_DefaultedUpdateUrl) {
   // Verifies the ExtensionInstallForcelist policy with an empty (defaulted)
   // "update" URL.
-  auto disable_cup =
-      extensions::ChromeUpdateClientConfig::ScopedDisableCupSigningForTests();
-  auto disable_publisher_key =
-      extensions::DisablePublisherKeyVerificationForTests();
+
   ExtensionRequestInterceptor interceptor;
 
   extensions::ExtensionRegistry* registry = extension_registry();
@@ -2460,9 +2445,9 @@ class WebAppInstallForceListPolicyTest : public ExtensionPolicyTest {
 
 IN_PROC_BROWSER_TEST_F(WebAppInstallForceListPolicyTest, StartUpInstallation) {
   const web_app::WebAppRegistrar& registrar =
-      web_app::WebAppProvider::GetForTest(browser()->profile())
+      web_app::WebAppProvider::GetForTest(browser()->GetProfile())
           ->registrar_unsafe();
-  web_app::WebAppTestInstallObserver install_observer(browser()->profile());
+  web_app::WebAppTestInstallObserver install_observer(browser()->GetProfile());
   std::optional<webapps::AppId> app_id = registrar.FindBestAppWithUrlInScope(
       policy_app_url_,
       web_app::WebAppFilter::InstalledInOperatingSystemForTesting());
@@ -2494,9 +2479,9 @@ IN_PROC_BROWSER_TEST_F(
     WebAppInstallForceListPolicyWithAppFallbackNameManifestTest,
     StartUpInstallationPWAFallbackName) {
   const web_app::WebAppRegistrar& registrar =
-      web_app::WebAppProvider::GetForTest(browser()->profile())
+      web_app::WebAppProvider::GetForTest(browser()->GetProfile())
           ->registrar_unsafe();
-  web_app::WebAppTestInstallObserver install_observer(browser()->profile());
+  web_app::WebAppTestInstallObserver install_observer(browser()->GetProfile());
   std::optional<webapps::AppId> app_id = registrar.FindBestAppWithUrlInScope(
       policy_app_url_,
       web_app::WebAppFilter::InstalledInOperatingSystemForTesting());
@@ -2528,9 +2513,9 @@ class WebAppInstallForceListPolicySAATest
 IN_PROC_BROWSER_TEST_F(WebAppInstallForceListPolicySAATest,
                        StartUpInstallationSAA) {
   const web_app::WebAppRegistrar& registrar =
-      web_app::WebAppProvider::GetForTest(browser()->profile())
+      web_app::WebAppProvider::GetForTest(browser()->GetProfile())
           ->registrar_unsafe();
-  web_app::WebAppTestInstallObserver install_observer(browser()->profile());
+  web_app::WebAppTestInstallObserver install_observer(browser()->GetProfile());
   std::optional<webapps::AppId> app_id = registrar.FindBestAppWithUrlInScope(
       policy_app_url_,
       web_app::WebAppFilter::InstalledInOperatingSystemForTesting());
@@ -2559,9 +2544,9 @@ class WebAppInstallForceListPolicyWithAppFallbackNameSAATest
 IN_PROC_BROWSER_TEST_F(WebAppInstallForceListPolicyWithAppFallbackNameSAATest,
                        StartUpInstallationSAAFallbackName) {
   const web_app::WebAppRegistrar& registrar =
-      web_app::WebAppProvider::GetForTest(browser()->profile())
+      web_app::WebAppProvider::GetForTest(browser()->GetProfile())
           ->registrar_unsafe();
-  web_app::WebAppTestInstallObserver install_observer(browser()->profile());
+  web_app::WebAppTestInstallObserver install_observer(browser()->GetProfile());
   std::optional<webapps::AppId> app_id = registrar.FindBestAppWithUrlInScope(
       policy_app_url_,
       web_app::WebAppFilter::InstalledInOperatingSystemForTesting());
@@ -2601,10 +2586,10 @@ IN_PROC_BROWSER_TEST_F(
     WebAppInstallForceListPolicyPlaceholderWithAppFallbackNameTest,
     MAYBE_StartUpInstallationPlaceholderFallbackName) {
   const web_app::WebAppRegistrar& registrar =
-      web_app::WebAppProvider::GetForTest(browser()->profile())
+      web_app::WebAppProvider::GetForTest(browser()->GetProfile())
           ->registrar_unsafe();
   web_app::WebAppTestInstallWithOsHooksObserver install_observer(
-      browser()->profile());
+      browser()->GetProfile());
   std::optional<webapps::AppId> app_id = registrar.FindBestAppWithUrlInScope(
       policy_app_url_,
       web_app::WebAppFilter::InstalledInOperatingSystemForTesting());

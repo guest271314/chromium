@@ -11,7 +11,11 @@
 #include "base/strings/string_util.h"
 #include "base/test/bind.h"
 #include "base/test/task_environment.h"
+#include "net/http/http_request_headers.h"
+#include "net/url_request/redirect_info.h"
+#include "services/network/public/cpp/http_request_headers_update_params.h"
 #include "services/network/public/cpp/resource_request.h"
+#include "services/network/public/mojom/url_response_head.mojom.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/common/loader/url_loader_throttle.h"
 
@@ -348,6 +352,102 @@ TEST_F(URLLoaderThrottleTest, AllowAndDeny) {
   network::ResourceRequest request2;
   request2.url = GURL("http://blocked.net");
   throttle.WillStartRequest(&request2, &unused_defer);
+  EXPECT_TRUE(delegate.canceled());
+  EXPECT_EQ(delegate.cancel_reason(),
+            "Resource load blocked by embedder policy.");
+}
+
+TEST_F(URLLoaderThrottleTest, RedirectsRemoveHeaders) {
+  mojom::UrlRequestRewriteAddHeadersPtr add_headers =
+      mojom::UrlRequestRewriteAddHeaders::New();
+  add_headers->headers.push_back(mojom::UrlHeader::New("Header", "Value"));
+  add_headers->headers.push_back(
+      mojom::UrlHeader::New("CorsExemptHeader", "Value"));
+  mojom::UrlRequestActionPtr rewrite =
+      mojom::UrlRequestAction::NewAddHeaders(std::move(add_headers));
+  std::vector<mojom::UrlRequestActionPtr> actions;
+  actions.push_back(std::move(rewrite));
+  mojom::UrlRequestRulePtr rule = mojom::UrlRequestRule::New();
+  rule->hosts_filter = std::optional<std::vector<std::string>>({"*.test.net"});
+  rule->actions = std::move(actions);
+  mojom::UrlRequestRewriteRulesPtr rules = mojom::UrlRequestRewriteRules::New();
+  rules->rules.push_back(std::move(rule));
+
+  URLLoaderThrottle throttle(
+      base::MakeRefCounted<UrlRequestRewriteRules>(std::move(rules)),
+      CreateCorsExemptHeadersCallback({"CorsExemptHeader"}));
+  bool unused_defer = false;
+
+  network::ResourceRequest request;
+  request.url = GURL("http://test.net");
+  throttle.WillStartRequest(&request, &unused_defer);
+  EXPECT_TRUE(request.headers.HasHeader("Header"));
+  EXPECT_TRUE(request.cors_exempt_headers.HasHeader("CorsExemptHeader"));
+
+  net::RedirectInfo redirect_info;
+  network::mojom::URLResponseHead response_head;
+
+  // Test same-origin redirect
+  redirect_info.new_url = GURL("http://test.net/redirect");
+  {
+    network::HttpRequestHeadersUpdateParams headers_update_params;
+    throttle.WillRedirectRequest(&redirect_info, response_head, &unused_defer,
+                                 &headers_update_params);
+    EXPECT_TRUE(headers_update_params.removed_headers.empty());
+  }
+
+  // Test cross-origin redirect
+  redirect_info.new_url = GURL("http://other.com");
+  {
+    network::HttpRequestHeadersUpdateParams headers_update_params;
+    throttle.WillRedirectRequest(&redirect_info, response_head, &unused_defer,
+                                 &headers_update_params);
+    EXPECT_EQ(headers_update_params.removed_headers.size(), 2u);
+    EXPECT_EQ(headers_update_params.removed_headers[0], "Header");
+    EXPECT_EQ(headers_update_params.removed_headers[1], "CorsExemptHeader");
+  }
+}
+
+TEST_F(URLLoaderThrottleTest, ReplaceUrlReevaluatesPolicy) {
+  mojom::UrlRequestRewriteRulesPtr rules = mojom::UrlRequestRewriteRules::New();
+
+  {
+    mojom::UrlRequestRewriteReplaceUrlPtr replace_url =
+        mojom::UrlRequestRewriteReplaceUrl::New();
+    replace_url->url_ends_with = "/partner-endpoint";
+    replace_url->new_url = GURL("http://internal.host/api");
+
+    mojom::UrlRequestRulePtr rule = mojom::UrlRequestRule::New();
+    rule->hosts_filter =
+        std::optional<std::vector<std::string>>({"allowed.com"});
+    rule->actions.push_back(
+        mojom::UrlRequestAction::NewReplaceUrl(std::move(replace_url)));
+    rules->rules.push_back(std::move(rule));
+  }
+
+  {
+    mojom::UrlRequestRulePtr rule = mojom::UrlRequestRule::New();
+    rule->hosts_filter =
+        std::optional<std::vector<std::string>>({"internal.host"});
+    rule->actions.push_back(mojom::UrlRequestAction::NewPolicy(
+        mojom::UrlRequestAccessPolicy::kDeny));
+    rules->rules.push_back(std::move(rule));
+  }
+
+  TestThrottleDelegate delegate;
+  URLLoaderThrottle throttle(
+      base::MakeRefCounted<UrlRequestRewriteRules>(std::move(rules)),
+      CreateCorsExemptHeadersCallback({}));
+  throttle.set_delegate(&delegate);
+
+  bool unused_defer = false;
+
+  // Request to allowed.com/partner-endpoint should be rewritten to
+  // internal.host, which is denied, thus the request should be canceled.
+  network::ResourceRequest request;
+  request.url = GURL("http://allowed.com/partner-endpoint?q=ATTACKER");
+  throttle.WillStartRequest(&request, &unused_defer);
+
   EXPECT_TRUE(delegate.canceled());
   EXPECT_EQ(delegate.cancel_reason(),
             "Resource load blocked by embedder policy.");

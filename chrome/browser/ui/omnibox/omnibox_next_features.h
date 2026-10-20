@@ -17,16 +17,48 @@ class Profile;
 
 namespace omnibox {
 
+namespace internal {
 // The `internal` namespace contains implementation details for omnibox
 // features. It is exposed only for use by about_flags.cc and in unit tests.
 //
-// DO NOT USE THESE FEATURE FLAGS DIRECTLY FROM OTHER CODE.
-// Instead, use the helper functions defined below (e.g., `IsAimPopupEnabled`).
-namespace internal {
+// DO NOT USE THESE FEATURE FLAGS DIRECTLY.
+//
+// These flags are placed in `internal` to signify that they often require
+// specific initialization sequences
+// (e.g., in `chrome/browser/chrome_browser_interface_binders_webui_parts.h`)
+// or have lifecycle-sensitive dependencies that could lead to crashes if
+// checked improperly.
+//
+// USE THE APPROPRIATE HELPER:
+// - Use the feature-specific `...FeatureEnabled()` function when you only
+//   need to check the raw feature state (appropriate for lifecycle-sensitive
+//   code).
+// - Use the profile-based `...Enabled(profile)` function for standard UI
+//   logic (e.g., `IsAimPopupEnabled(profile)`), as it handles necessary
+//   eligibility and initialization checks.
+//
+// If you are adding a new feature that does not have these complex lifecycle
+// dependencies, you may define it in the main `omnibox` namespace.
 
 BASE_DECLARE_FEATURE(kWebUIOmniboxPopup);
 BASE_DECLARE_FEATURE(kWebUIOmniboxAimPopup);
+// TODO(crbug.com/521521553): Remove this feature flag once the
+// feature flag is fully rolled out.
 BASE_DECLARE_FEATURE(kWebUIOmniboxSimplification);
+BASE_DECLARE_FEATURE(kWebUIOmniboxFullPopup);
+// Safety guard on `kWebUIOmniboxFullPopup`. When enabled, the full WebUI
+// omnibox popup is not used if a screen reader is detected at startup.
+BASE_DECLARE_FEATURE(kDisableFullWebuiOmniboxForScreenreaderUsers);
+
+// Returns true if `kWebUIOmniboxFullPopup` is enabled, and it has not been
+// suppressed by `kDisableFullWebuiOmniboxForScreenreaderUsers` because a screen
+// reader was active the first time this was queried (i.e. at startup). The
+// screen reader state is latched on first query for the rest of the session.
+// UI and model callers must instead query:
+// - `OmniboxPopupPresenterDelegate::is_full_webui_omnibox()`
+// - `OmniboxView::IsFullWebUIOmnibox()`
+// - `OmniboxViewViews::IsFullWebUIOmniboxReady()`
+bool IsWebUIOmniboxFullPopupEnabled();
 
 }  // namespace internal
 
@@ -41,18 +73,34 @@ extern const base::FeatureParam<AddContextButtonVariant>
     kWebUIOmniboxAimPopupAddContextButtonVariantParam;
 extern const base::FeatureParam<bool> kHideClassicContextButton;
 BASE_DECLARE_FEATURE(kAiModeEntryPointAlwaysNavigates);
+BASE_DECLARE_FEATURE(kOmniboxEverywhereFre);
 BASE_DECLARE_FEATURE(kAiModeSpaceDoesNotActivate);
 BASE_DECLARE_FEATURE(kWebUIOmniboxDisableCaretColorAnimation);
 BASE_DECLARE_FEATURE(kWebUIOmniboxAimPopupDisableAnimation);
-BASE_DECLARE_FEATURE(kWebUIOmniboxFullPopup);
-BASE_DECLARE_FEATURE(kWebUIOmniboxFullPopupV2);
+BASE_DECLARE_FEATURE(kWebUIOmniboxFullPopupDoubleClick);
+BASE_DECLARE_FEATURE(kOmniboxEverywhere);
+BASE_DECLARE_FEATURE(kOmniboxEverywhereScreenshotNewWindow);
+extern const base::FeatureParam<int>
+    kOmniboxEverywhereScreenshotNewWindowWidthParam;
+extern const base::FeatureParam<int>
+    kOmniboxEverywhereScreenshotNewWindowHeightParam;
+extern const base::FeatureParam<int>
+    kOmniboxEverywhereScreenshotNewWindowVerticalOffsetParam;
 BASE_DECLARE_FEATURE(kWebUIOmniboxPopupDebug);
 BASE_DECLARE_FEATURE(kWebUIOmniboxPopupSelectionControl);
 // Caret animation for omnibox
 BASE_DECLARE_FEATURE(kOmniboxAnimatedCaret);
 // Enables energy effect in the omnibox.
 BASE_DECLARE_FEATURE(kEnergyEffectInOmnibox);
+BASE_DECLARE_FEATURE(kWebUIOmniboxDynamicAiModeButton);
+// Prevents closing popup while file chooser is open.
+BASE_DECLARE_FEATURE(kOmniboxKeepOpenOnFileSelection);
+
 extern const base::FeatureParam<bool> kWebUIOmniboxPopupDebugSxSParam;
+extern const base::FeatureParam<bool> kOmniboxEverywhereProfilePickerParam;
+extern const base::FeatureParam<bool> kOmniboxEverywhereMultilineParam;
+extern const base::FeatureParam<bool>
+    kOmniboxEverywhereSingleLineOnInlineAutocompleteParam;
 
 // The serialized base64 encoded `omnibox::NTPComposeboxConfig`.
 extern const base::FeatureParam<std::string> kConfigParam;
@@ -69,6 +117,21 @@ extern const base::FeatureParam<bool> kShowComposeboxZps;
 // Whether to show the + entrypoint and contextual input menu in the realbox and
 // composebox.
 extern const base::FeatureParam<bool> kShowContextMenu;
+// Controls showing most visited tiles in OmniboxEverywhere.
+extern const base::FeatureParam<bool> kOmniboxEverywhereMostVisitedParam;
+// Controls whether small Loomnibox (480px width) is enabled.
+extern const base::FeatureParam<bool> kOmniboxEverywhereSmallLoomniboxParam;
+// Controls whether dynamic sizing is enabled for OmniboxEverywhere.
+extern const base::FeatureParam<bool> kOmniboxEverywhereDynamicSizingParam;
+// Controls the expanded content width (680 or 600) when DynamicSizing is
+// enabled.
+extern const base::FeatureParam<int> kOmniboxEverywhereDynamicSizingWidthParam;
+// Controls whether small (14px) font size is enabled for OmniboxEverywhere.
+extern const base::FeatureParam<bool> kOmniboxEverywhereSmallFontParam;
+
+// Controls showing titles under most visited tiles in OmniboxEverywhere.
+extern const base::FeatureParam<bool>
+    kOmniboxEverywhereMostVisitedShowTitleParam;
 // Whether or not to show a description in the context menu entrypoint, or just
 // the icon.
 // TODO (crbug.com/509939902): Remove this when finch experiment reference
@@ -78,18 +141,12 @@ extern const base::FeatureParam<bool> kShowContextMenuDescription;
 extern const base::FeatureParam<bool> kShowContextMenuTabPreviews;
 // Whether to show the lens search chip in the composebox.
 extern const base::FeatureParam<bool> kShowLensSearchChip;
-// Whether to delay an upload if tab context is added from the recent tab chip.
-extern const base::FeatureParam<bool> kAddTabUploadDelayOnRecentTabChipClick;
-// Whether to show the recent tab chip in the composebox.
-extern const base::FeatureParam<bool> kShowRecentTabChip;
 // Whether to show the smart compose in the composebox.
 extern const base::FeatureParam<bool> kShowSmartCompose;
 // Whether to show the tools and models in the composebox.
 extern const base::FeatureParam<bool> kShowToolsAndModels;
 // Whether to show section headers in the context menu.
 extern const base::FeatureParam<bool> kShowContextMenuHeaders;
-// Whether to use the composebox fork.
-extern const base::FeatureParam<bool> kUseComposeboxFork;
 // Whether to use the grey oblong background for context menu entrypoint.
 extern const base::FeatureParam<bool> kContextButtonHasBackground;
 // Whether the button should be an oblong shape vs circular.
@@ -98,14 +155,24 @@ extern const base::FeatureParam<bool> kContextButtonShapeIsOblong;
 extern const base::FeatureParam<bool> kContextButtonShowSuggestionLabel;
 // If enabled, then the WebUI Omnibox will be rendered in a WebView in the
 // BrowserView.
-extern const base::FeatureParam<bool> kWebUIOmniboxFullPopupV2UseBrowserView;
+extern const base::FeatureParam<bool> kWebUIOmniboxFullPopupUseBrowserView;
+extern const base::FeatureParam<bool> kWebUIOmniboxFullPopupMultiline;
+// If enabled, the Full WebUI Omnibox shows a button in the input that opens a
+// form to file dogfood feedback.
+extern const base::FeatureParam<bool> kWebUIOmniboxFullPopupDogfoodFeedback;
+// The maximum number of autocomplete result snapshots cached for stale match
+// activation.
+extern const base::FeatureParam<int> kWebUIOmniboxFullPopupSnapshotCacheSize;
+// Whether to enable dynamic animation for the WebUI Omnibox.
+extern const base::FeatureParam<bool> kWebUIOmniboxDynamicAnimation;
+// Whether to enable dynamic color scheme for the WebUI Omnibox.
+extern const base::FeatureParam<bool> kWebUIOmniboxDynamicColorScheme;
 
 // Returns true if `kWebUIOmniboxPopup` is enabled.
 bool IsWebUIOmniboxPopupEnabled();
 
-// Returns true if either `kWebUIOmniboxFullPopup` or `kWebUIOmniboxFullPopupV2`
-// is enabled.
-bool IsWebUIOmniboxFullPopupEnabled();
+// Returns true if the webui omnibox should use the WebuiOmniboxFullHandler
+bool ShouldUseWebUIOmniboxFullHandler();
 
 // Returns true if `kWebUIOmniboxInBrowserView` is enabled.
 bool IsWebUIOmniboxInBrowserViewEnabled();
@@ -115,12 +182,42 @@ bool IsWebUIOmniboxInBrowserViewEnabled();
 // profile-based `IsAimPopupEnabled()` function below instead.
 bool IsAimPopupFeatureEnabled();
 
+// Whether the page, rather than the Views frame, paints the popup's drop
+// shadow. The Views layer and the page must agree exactly: if they disagree
+// the shadow margin is either reserved twice or not at all. Call these from
+// both sides rather than recombining the underlying flags.
+bool ShouldDrawAimShadowInWebUI();
+bool ShouldDrawFullPopupShadowInWebUI();
+
+// Enables the use of separate flags for pre/post Full WebUI Omnibox. There
+// are new flicker issues with AIM + Full WebUI and these functions will allow
+// us to control the fixes independently of if Full WebUI is enabled.
+bool ShouldDeferAimShowUntilVisualStateReady();
+bool ShouldApplyAimHeightWorkarounds();
+bool ShouldAimEvictOnHide();
+
 // Returns true if the AIM Popup feature is fully enabled for the given
 // `profile`. This is the correct function for external code to use, as it
 // checks both the base::Feature flag and all other requirements like user
 // eligibility.
 bool IsAimPopupEnabled(Profile* profile);
 bool ShouldShowAimContextMenuOption(Profile* profile);
+
+// Returns true if a location bar for `profile` should create its AI Mode popup
+// presenter now. Returns false when the feature is off, or while the profile is
+// not eligible; in the latter case callers should check again when
+// `AimEligibilityService` reports an eligibility change.
+bool ShouldCreateAimPopupPresenter(Profile* profile);
+
+// Returns true if the Omnibox Everywhere feature is eligible for the given
+// `profile`. This checks the base::Feature flag, that the profile is valid and
+// not off-the-record, and that Google is the default search provider.
+bool IsOmniboxEverywhereEligible(Profile* profile);
+
+// Returns true if the Omnibox Everywhere feature is fully enabled for the given
+// `profile`. This checks that the profile is eligible and that the feature has
+// not been disabled by user preference.
+bool IsOmniboxEverywhereEnabled(Profile* profile);
 
 // Returns true if search content sharing is permitted by enterprise policy.
 bool IsContentSharingEnabled(
@@ -129,6 +226,12 @@ bool IsContentSharingEnabled(
 
 bool IsCreateImagesEnabled(Profile* profile);
 bool IsDeepSearchEnabled(Profile* profile);
+
+// Returns true if Contextual Tasks experiments are enabled and the user meets
+// the required authentication criteria (signed in with valid credentials and
+// synchronized primary account in cookie jar, or signed-out usage is explicitly
+// allowed).
+bool AreContextualTasksEligible(Profile* profile);
 
 // Helper to create a QueryControllerConfigParams object from the feature
 // params.

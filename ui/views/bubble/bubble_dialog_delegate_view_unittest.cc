@@ -248,6 +248,46 @@ TEST_F(BubbleDialogDelegateViewTest, CreateDelegate) {
   EXPECT_TRUE(bubble_observer.widget_closed());
 }
 
+TEST_F(BubbleDialogDelegateViewTest, BorderStyleInsetsAppliedToBorder) {
+  std::unique_ptr<Widget> anchor_widget = CreateTestWidget(
+      Widget::InitParams::CLIENT_OWNS_WIDGET, Widget::InitParams::TYPE_WINDOW);
+  TestBubbleDialogDelegateView* bubble_delegate =
+      new TestBubbleDialogDelegateView(anchor_widget->GetContentsView());
+  const gfx::Insets kInsets = gfx::Insets::VH(3, 7);
+  bubble_delegate->set_border_style(
+      {.insets = kInsets, .draw_border_stroke = true});
+  EXPECT_EQ(kInsets, bubble_delegate->border_style().insets);
+  EXPECT_EQ(true, bubble_delegate->border_style().draw_border_stroke);
+
+  Widget* bubble_widget =
+      BubbleDialogDelegateView::CreateBubble(bubble_delegate);
+  bubble_widget->Show();
+
+  BubbleBorder* border = bubble_delegate->GetBubbleFrameView()->bubble_border();
+  EXPECT_EQ(kInsets, border->GetInsets());
+  bubble_widget->CloseNow();
+}
+
+TEST_F(BubbleDialogDelegateViewTest, DefaultBorderStyleKeepsDefaultInsets) {
+  std::unique_ptr<Widget> anchor_widget = CreateTestWidget(
+      Widget::InitParams::CLIENT_OWNS_WIDGET, Widget::InitParams::TYPE_WINDOW);
+  TestBubbleDialogDelegateView* bubble_delegate =
+      new TestBubbleDialogDelegateView(anchor_widget->GetContentsView());
+  EXPECT_FALSE(bubble_delegate->border_style().insets.has_value());
+  EXPECT_FALSE(bubble_delegate->border_style().draw_border_stroke.has_value());
+
+  Widget* bubble_widget =
+      BubbleDialogDelegateView::CreateBubble(bubble_delegate);
+  bubble_widget->Show();
+
+  BubbleBorder* border = bubble_delegate->GetBubbleFrameView()->bubble_border();
+  // A border with the same arrow/shadow and no explicit insets.
+  BubbleBorder expected_border(border->arrow(), border->shadow());
+  expected_border.set_visible_arrow(border->visible_arrow());
+  EXPECT_EQ(expected_border.GetInsets(), border->GetInsets());
+  bubble_widget->CloseNow();
+}
+
 TEST_F(BubbleDialogDelegateViewTest, CreateBubbleWithUniquePtrAndCallback) {
   std::unique_ptr<Widget> anchor_widget = CreateTestWidget(
       Widget::InitParams::CLIENT_OWNS_WIDGET, Widget::InitParams::TYPE_WINDOW);
@@ -1228,7 +1268,7 @@ TEST_F(BubbleDialogDelegateViewTest, ClientViewIsPaintedToLayer) {
 
   auto* client_view_layer = bubble_widget->client_view()->layer();
   EXPECT_TRUE(client_view_layer);
-  EXPECT_EQ(client_view_layer->type(), ui::LAYER_TEXTURED);
+  EXPECT_TRUE(client_view_layer->AsTextured());
 }
 
 TEST_F(BubbleDialogDelegateViewTest, AlertAccessibleEvent) {
@@ -1296,13 +1336,68 @@ TEST_F(BubbleDialogDelegateViewTest, TrackedElementAnchorUpdates) {
   EXPECT_EQ(updated_screen_bounds, bubble_delegate->GetAnchorRect());
 }
 
+// Tests that when a bubble is anchored to a non-Views TrackedElement (e.g. a
+// WebUI element) that is subsequently hidden and destroyed while the bubble is
+// still open, BubbleDialogDelegate safely drops its reference without dangling
+// pointers or UAFs, and GetAnchorRect() falls back to the last known anchor
+// bounds.
+TEST_F(BubbleDialogDelegateViewTest,
+       NonViewsTrackedElementAnchorDestroyedWhileOpen) {
+  DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kTestElementId);
+
+  std::unique_ptr<Widget> anchor_widget = CreateTestWidget(
+      Widget::InitParams::CLIENT_OWNS_WIDGET, Widget::InitParams::TYPE_WINDOW);
+  anchor_widget->Show();
+  const ui::ElementContext kTestElementContext =
+      ElementTrackerViews::GetContextForWidget(anchor_widget.get());
+
+  const gfx::Rect initial_bounds(100, 150, 50, 60);
+  auto tracked_element = std::make_unique<ui::test::TestElement>(
+      kTestElementId, kTestElementContext);
+  tracked_element->SetScreenBounds(initial_bounds);
+  tracked_element->SetNativeView(anchor_widget->GetNativeView());
+  tracked_element->Show();
+
+  TestBubbleDialogDelegateView* bubble_delegate =
+      new TestBubbleDialogDelegateView(
+          views::BubbleAnchor(tracked_element.get()));
+  bubble_delegate->set_close_on_deactivate(false);
+  Widget* bubble_widget =
+      BubbleDialogDelegateView::CreateBubble(bubble_delegate);
+  bubble_widget->Show();
+
+  EXPECT_EQ(tracked_element.get(), bubble_delegate->GetAnchor().GetIfElement());
+  EXPECT_EQ(initial_bounds, bubble_delegate->GetAnchorRect());
+
+  // Update the non-Views tracked element bounds and verify GetAnchorRect()
+  // updates.
+  const gfx::Rect updated_bounds(200, 250, 70, 80);
+  tracked_element->SetScreenBounds(updated_bounds);
+  EXPECT_EQ(updated_bounds, bubble_delegate->GetAnchorRect());
+
+  // Hide and destroy the TrackedElement while the bubble remains open.
+  tracked_element->Hide();
+  tracked_element.reset();
+
+  // The anchor should now be null (SafeElementReference automatically cleared),
+  // and GetAnchorRect() should safely return the cached screen bounds.
+  EXPECT_TRUE(bubble_delegate->GetAnchor().IsNull());
+  EXPECT_EQ(updated_bounds, bubble_delegate->GetAnchorRect());
+
+  // Resizing and closing the bubble should not crash or trigger dangling
+  // pointer checks.
+  bubble_delegate->SizeToContents();
+  bubble_widget->CloseNow();
+}
+
 // Anchoring Tests -------------------------------------------------------------
 
 class AnchorTestBubbleDialogDelegateView : public BubbleDialogDelegateView {
  public:
+  explicit AnchorTestBubbleDialogDelegateView(BubbleAnchor anchor)
+      : BubbleDialogDelegateView(anchor, BubbleBorder::TOP_LEFT) {}
   explicit AnchorTestBubbleDialogDelegateView(View* anchor_view)
-      : BubbleDialogDelegateView(views::BubbleAnchor(anchor_view),
-                                 BubbleBorder::TOP_LEFT) {}
+      : AnchorTestBubbleDialogDelegateView(BubbleAnchor(anchor_view)) {}
 
   AnchorTestBubbleDialogDelegateView(
       const AnchorTestBubbleDialogDelegateView&) = delete;
@@ -1316,6 +1411,7 @@ class AnchorTestBubbleDialogDelegateView : public BubbleDialogDelegateView {
   // system is not fully initialized for these tests and can cause crashes.
   View* GetInitiallyFocusedView() override { return nullptr; }
 
+  using BubbleDialogDelegateView::SetAnchor;
   using BubbleDialogDelegateView::SetAnchorView;
 };
 
@@ -1349,7 +1445,11 @@ class BubbleDialogDelegateViewAnchorTest : public test::WidgetTest {
       anchor_to = dummy_widget();
     }
     View* const anchor_view = anchor_to ? GetAnchorView(anchor_to) : nullptr;
-    auto* bubble_delegate = new AnchorTestBubbleDialogDelegateView(anchor_view);
+    return CreateBubbleForAnchor(BubbleAnchor(anchor_view));
+  }
+
+  Widget* CreateBubbleForAnchor(BubbleAnchor anchor) {
+    auto* bubble_delegate = new AnchorTestBubbleDialogDelegateView(anchor);
     bubble_delegate->set_close_on_deactivate(false);
     return BubbleDialogDelegateView::CreateBubble(bubble_delegate);
   }
@@ -1579,6 +1679,80 @@ TEST_F(BubbleDialogDelegateViewAnchorTest, IsSameAnchor) {
   EXPECT_FALSE(delegate->IsSameAnchor(BubbleAnchor(other_tracked_element)));
 }
 
+TEST_F(BubbleDialogDelegateViewAnchorTest, GetAnchoredDialog) {
+  auto other_widget = CreateTopLevelWidget();
+  auto* anchor_view = GetAnchorView(dummy_widget());
+  auto* other_view = GetAnchorView(other_widget.get());
+  ui::TrackedElement* as_tracked_element =
+      ElementTrackerViews::GetInstance()->GetElementForView(
+          anchor_view,
+          /*assign_temporary_id=*/true);
+  ui::TrackedElement* other_tracked_element =
+      ElementTrackerViews::GetInstance()->GetElementForView(
+          other_view,
+          /*assign_temporary_id=*/true);
+
+  EXPECT_EQ(nullptr, BubbleDialogDelegate::GetAnchoredDialog(BubbleAnchor()));
+  EXPECT_EQ(nullptr,
+            BubbleDialogDelegate::GetAnchoredDialog(BubbleAnchor(anchor_view)));
+  EXPECT_EQ(nullptr, BubbleDialogDelegate::GetAnchoredDialog(
+                         BubbleAnchor(as_tracked_element)));
+
+  // 1. Anchored to a View (queried via View* and TrackedElementViews*).
+  auto* view_bubble = CreateBubble(dummy_widget());
+  auto* view_delegate =
+      view_bubble->widget_delegate()->AsBubbleDialogDelegate();
+  EXPECT_EQ(view_delegate,
+            BubbleDialogDelegate::GetAnchoredDialog(BubbleAnchor(anchor_view)));
+  EXPECT_EQ(view_delegate, BubbleDialogDelegate::GetAnchoredDialog(
+                               BubbleAnchor(as_tracked_element)));
+  EXPECT_EQ(nullptr,
+            BubbleDialogDelegate::GetAnchoredDialog(BubbleAnchor(other_view)));
+  EXPECT_EQ(nullptr, BubbleDialogDelegate::GetAnchoredDialog(
+                         BubbleAnchor(other_tracked_element)));
+
+  view_bubble->CloseNow();
+  EXPECT_EQ(nullptr,
+            BubbleDialogDelegate::GetAnchoredDialog(BubbleAnchor(anchor_view)));
+  EXPECT_EQ(nullptr, BubbleDialogDelegate::GetAnchoredDialog(
+                         BubbleAnchor(as_tracked_element)));
+
+  // 2. Anchored to a non-Views TrackedElement (e.g. WebUI element).
+  DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kTestElementId);
+  const ui::ElementContext context =
+      ElementTrackerViews::GetContextForWidget(dummy_widget());
+  auto non_views_element =
+      std::make_unique<ui::test::TestElement>(kTestElementId, context);
+  non_views_element->SetScreenBounds(gfx::Rect(10, 10, 50, 50));
+  non_views_element->SetNativeView(dummy_widget()->GetNativeView());
+  non_views_element->Show();
+
+  const BubbleAnchor element_anchor(non_views_element.get());
+  EXPECT_EQ(nullptr, BubbleDialogDelegate::GetAnchoredDialog(element_anchor));
+
+  auto* element_bubble1 = CreateBubbleForAnchor(element_anchor);
+  auto* element_delegate1 =
+      element_bubble1->widget_delegate()->AsBubbleDialogDelegate();
+  EXPECT_EQ(element_delegate1,
+            BubbleDialogDelegate::GetAnchoredDialog(element_anchor));
+
+  // A second bubble anchored to the same element takes precedence.
+  auto* element_bubble2 = CreateBubbleForAnchor(element_anchor);
+  auto* element_delegate2 =
+      element_bubble2->widget_delegate()->AsBubbleDialogDelegate();
+  EXPECT_EQ(element_delegate2,
+            BubbleDialogDelegate::GetAnchoredDialog(element_anchor));
+
+  // Closing the second bubble restores the first bubble as the anchored dialog.
+  element_bubble2->CloseNow();
+  EXPECT_EQ(element_delegate1,
+            BubbleDialogDelegate::GetAnchoredDialog(element_anchor));
+
+  // Closing the first bubble clears the anchored dialog completely.
+  element_bubble1->CloseNow();
+  EXPECT_EQ(nullptr, BubbleDialogDelegate::GetAnchoredDialog(element_anchor));
+}
+
 // Tests that if the anchor view has kWidgetForAnchoringKey property,
 // uses that widget for anchoring.
 TEST_F(BubbleDialogDelegateViewAnchorTest, WidgetForAnchoring) {
@@ -1677,6 +1851,106 @@ TEST_F(BubbleUmaLoggerTest, DoNotLogMetricNotFromAllowedClasses) {
   logger.LogMetric(base::UmaHistogramTimes, "Metric1", base::Seconds(1));
   histogram.ExpectTotalCount("Bubble.All.Metric1", 1);
   histogram.ExpectTotalCount("Bubble.Label.Metric1", 0);
+}
+
+namespace {
+
+class SizeToContentsOnDestroyingObserver : public WidgetObserver {
+ public:
+  explicit SizeToContentsOnDestroyingObserver(BubbleDialogDelegate* delegate)
+      : delegate_(delegate) {}
+  ~SizeToContentsOnDestroyingObserver() override = default;
+
+  SizeToContentsOnDestroyingObserver(
+      const SizeToContentsOnDestroyingObserver&) = delete;
+  SizeToContentsOnDestroyingObserver& operator=(
+      const SizeToContentsOnDestroyingObserver&) = delete;
+
+  void OnWidgetDestroying(Widget* widget) override {
+    delegate_->SizeToContents();
+    delegate_ = nullptr;
+  }
+
+ private:
+  raw_ptr<BubbleDialogDelegate> delegate_;
+};
+
+}  // namespace
+
+TEST_F(BubbleDialogDelegateViewTest, SizeToContentsDuringDestruction) {
+  std::unique_ptr<Widget> anchor_widget = CreateTestWidget(
+      Widget::InitParams::CLIENT_OWNS_WIDGET, Widget::InitParams::TYPE_WINDOW);
+  TestBubbleDialogDelegateView* bubble_delegate =
+      new TestBubbleDialogDelegateView(anchor_widget->GetContentsView());
+
+  Widget* bubble_widget =
+      BubbleDialogDelegateView::CreateBubble(bubble_delegate);
+  bubble_widget->Show();
+
+  SizeToContentsOnDestroyingObserver observer(bubble_delegate);
+  bubble_widget->AddObserver(&observer);
+
+  // This will trigger OnWidgetDestroying synchronously.
+  bubble_widget->CloseNow();
+}
+
+TEST_F(BubbleDialogDelegateViewTest, AdjustIfOffscreenClampsToWorkArea) {
+#if BUILDFLAG(IS_OZONE)
+  if (!ui::OzonePlatform::GetInstance()
+           ->GetPlatformProperties()
+           .supports_global_screen_coordinates) {
+    GTEST_SKIP();
+  }
+#endif
+  std::unique_ptr<Widget> anchor_widget = CreateTestWidget(
+      Widget::InitParams::CLIENT_OWNS_WIDGET, Widget::InitParams::TYPE_WINDOW);
+  TestBubbleDialogDelegateView* bubble_delegate =
+      new TestBubbleDialogDelegateView(nullptr);
+  bubble_delegate->set_parent_window(anchor_widget->GetNativeView());
+  const gfx::Rect work_area{800, 600};
+  bubble_delegate->set_available_screen_bounds_callback(base::BindRepeating(
+      [](const gfx::Rect& work_area, const gfx::Rect&) { return work_area; },
+      work_area));
+
+  bubble_delegate->set_adjust_if_offscreen(true);
+  Widget* bubble_widget =
+      BubbleDialogDelegateView::CreateBubble(bubble_delegate);
+  bubble_widget->Show();
+
+  // Set an anchor rect outside the work area; when `adjust_if_offscreen()` is
+  // true, the bubble bounds should be clamped to `work_area`.
+  bubble_delegate->SetAnchorRect({900, 700, 10, 10});
+  EXPECT_TRUE(work_area.Contains(bubble_delegate->GetBubbleBounds()));
+  EXPECT_TRUE(work_area.Contains(bubble_widget->GetWindowBoundsInScreen()));
+
+  bubble_widget->CloseNow();
+
+  // When `adjust_if_offscreen()` is false, the bubble bounds should not be
+  // clamped to `work_area`.
+  auto* unadjusted_delegate = new TestBubbleDialogDelegateView(nullptr);
+  unadjusted_delegate->set_parent_window(anchor_widget->GetNativeView());
+  unadjusted_delegate->set_available_screen_bounds_callback(base::BindRepeating(
+      [](const gfx::Rect& work_area, const gfx::Rect&) { return work_area; },
+      work_area));
+  unadjusted_delegate->set_adjust_if_offscreen(false);
+  Widget* unadjusted_widget =
+      BubbleDialogDelegateView::CreateBubble(unadjusted_delegate);
+  unadjusted_widget->Show();
+
+  unadjusted_delegate->SetAnchorRect({900, 700, 10, 10});
+  EXPECT_FALSE(work_area.Contains(unadjusted_delegate->GetBubbleBounds()));
+  EXPECT_FALSE(
+      work_area.Contains(unadjusted_widget->GetWindowBoundsInScreen()));
+
+  unadjusted_widget->CloseNow();
+}
+
+TEST_F(BubbleDialogDelegateViewTest, AcceptDragDrop) {
+  auto bubble_delegate =
+      std::make_unique<TestBubbleDialogDelegateView>(nullptr);
+  EXPECT_TRUE(bubble_delegate->accept_drag_drop());
+  bubble_delegate->set_accept_drag_drop(false);
+  EXPECT_FALSE(bubble_delegate->accept_drag_drop());
 }
 
 }  // namespace views

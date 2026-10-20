@@ -15,9 +15,9 @@
 #include "base/task/sequenced_task_runner_helpers.h"
 #include "base/uuid.h"
 #include "base/values.h"
-#include "chrome/browser/ash/profiles/profile_helper.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/common/extensions/api/vpn_provider.h"
+#include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
 #include "chromeos/ash/components/dbus/shill/shill_third_party_vpn_driver_client.h"
 #include "chromeos/ash/components/dbus/shill/shill_third_party_vpn_observer.h"
 #include "chromeos/ash/components/network/network_configuration_handler.h"
@@ -96,8 +96,8 @@ void VpnService::VpnConfiguration::OnPacketReceived(
 
 void VpnService::VpnConfiguration::OnPlatformMessage(
     uint32_t platform_message) {
-  DCHECK_GE(static_cast<uint32_t>(api_vpn::PlatformMessage::kMaxValue),
-            platform_message);
+  CHECK_GE(static_cast<uint32_t>(api_vpn::PlatformMessage::kMaxValue),
+           platform_message, base::NotFatalUntil::M161);
 
   if (platform_message ==
       std::to_underlying(api_vpn::PlatformMessage::kConnected)) {
@@ -130,26 +130,28 @@ VpnService::VpnService(content::BrowserContext* browser_context)
 VpnService::~VpnService() = default;
 
 void VpnService::SendShowAddDialogToExtension(const std::string& extension_id) {
+  auto event_args =
+      base::MakeRefCounted<extensions::EventArgs>(api_vpn::OnUIEvent::Create(
+          api_vpn::UIEvent::kShowAddDialog, std::string()));
   SendToExtension(
       extension_id,
       std::make_unique<extensions::Event>(
           extensions::events::HistogramValue::VPN_PROVIDER_ON_UI_EVENT,
-          api_vpn::OnUIEvent::kEventName,
-          api_vpn::OnUIEvent::Create(api_vpn::UIEvent::kShowAddDialog,
-                                     std::string()),
+          api_vpn::OnUIEvent::kEventName, std::move(event_args),
           &browser_context_.get()));
 }
 
 void VpnService::SendShowConfigureDialogToExtension(
     const std::string& extension_id,
     const std::string& configuration_name) {
+  auto event_args =
+      base::MakeRefCounted<extensions::EventArgs>(api_vpn::OnUIEvent::Create(
+          api_vpn::UIEvent::kShowConfigureDialog, configuration_name));
   SendToExtension(
       extension_id,
       std::make_unique<extensions::Event>(
           extensions::events::HistogramValue::VPN_PROVIDER_ON_UI_EVENT,
-          api_vpn::OnUIEvent::kEventName,
-          api_vpn::OnUIEvent::Create(api_vpn::UIEvent::kShowConfigureDialog,
-                                     configuration_name),
+          api_vpn::OnUIEvent::kEventName, std::move(event_args),
           &browser_context_.get()));
 }
 
@@ -170,40 +172,42 @@ VpnService::VpnConfiguration* VpnService::GetActiveConfigurationForExtension(
 void VpnService::SendOnPacketReceivedToExtension(
     const std::string& extension_id,
     const std::vector<char>& data) {
+  auto event_args = base::MakeRefCounted<extensions::EventArgs>(
+      api_vpn::OnPacketReceived::Create(
+          std::vector<uint8_t>(data.begin(), data.end())));
   SendToExtension(extension_id,
                   std::make_unique<extensions::Event>(
                       extensions::events::VPN_PROVIDER_ON_PACKET_RECEIVED,
                       api_vpn::OnPacketReceived::kEventName,
-                      api_vpn::OnPacketReceived::Create(
-                          std::vector<uint8_t>(data.begin(), data.end())),
-                      &browser_context_.get()));
+                      std::move(event_args), &browser_context_.get()));
 }
 
 void VpnService::SendOnPlatformMessageToExtension(
     const std::string& extension_id,
     const std::string& configuration_name,
     uint32_t platform_message) {
-  SendToExtension(
-      extension_id,
-      std::make_unique<extensions::Event>(
-          extensions::events::VPN_PROVIDER_ON_PLATFORM_MESSAGE,
-          api_vpn::OnPlatformMessage::kEventName,
-          api_vpn::OnPlatformMessage::Create(
-              configuration_name,
-              static_cast<api_vpn::PlatformMessage>(platform_message),
-              std::string{}),
-          &browser_context_.get()));
+  auto event_args = base::MakeRefCounted<extensions::EventArgs>(
+      api_vpn::OnPlatformMessage::Create(
+          configuration_name,
+          static_cast<api_vpn::PlatformMessage>(platform_message),
+          std::string{}));
+  SendToExtension(extension_id,
+                  std::make_unique<extensions::Event>(
+                      extensions::events::VPN_PROVIDER_ON_PLATFORM_MESSAGE,
+                      api_vpn::OnPlatformMessage::kEventName,
+                      std::move(event_args), &browser_context_.get()));
 }
 
 void VpnService::SendOnConfigRemovedToExtension(
     const std::string& extension_id,
     const std::string& configuration_name) {
+  auto event_args = base::MakeRefCounted<extensions::EventArgs>(
+      api_vpn::OnConfigRemoved::Create(configuration_name));
   SendToExtension(
       extension_id,
       std::make_unique<extensions::Event>(
           extensions::events::HistogramValue::VPN_PROVIDER_ON_CONFIG_REMOVED,
-          api_vpn::OnConfigRemoved::kEventName,
-          api_vpn::OnConfigRemoved::Create(configuration_name),
+          api_vpn::OnConfigRemoved::kEventName, std::move(event_args),
           &browser_context_.get()));
 }
 
@@ -253,8 +257,9 @@ void VpnService::CreateConfiguration(const std::string& extension_id,
   const ash::NetworkProfile* profile =
       ash::NetworkHandler::Get()
           ->network_profile_handler()
-          ->GetProfileForUserhash(ash::ProfileHelper::GetUserIdHashFromProfile(
-              ProfileManager::GetPrimaryUserProfile()));
+          ->GetProfileForUserhash(
+              ash::BrowserContextHelper::GetUserIdHashFromBrowserContext(
+                  ProfileManager::GetPrimaryUserProfile()));
   if (!profile) {
     std::move(failure).Run(
         /*error_name=*/"",

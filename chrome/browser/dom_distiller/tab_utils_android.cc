@@ -84,20 +84,11 @@ static void JNI_DomDistillerTabUtils_SetInterceptNavigationDelegate(
     const JavaRef<jobject>& j_web_contents) {
   content::WebContents* web_contents =
       content::WebContents::FromJavaWebContents(j_web_contents);
-  DCHECK(web_contents);
+  CHECK(web_contents, base::NotFatalUntil::M161);
   navigation_interception::InterceptNavigationDelegate::Associate(
       web_contents,
       std::make_unique<navigation_interception::InterceptNavigationDelegate>(
           env, delegate));
-}
-
-static void JNI_DomDistillerTabUtils_RunReadabilityHeuristicsOnWebContents(
-    JNIEnv* env,
-    const JavaRef<jobject>& j_web_contents,
-    base::OnceCallback<void(bool)> callback) {
-  content::WebContents* web_contents =
-      content::WebContents::FromJavaWebContents(j_web_contents);
-  ::RunReadabilityHeuristicsOnWebContents(web_contents, std::move(callback));
 }
 
 }  // namespace android

@@ -61,7 +61,8 @@ enum class IOSOverflowMenuDestination {
   kPriceNotifications = 10,
   kCobalt = 11,
   kLevelUp = 12,
-  kMaxValue = kLevelUp,
+  kDefaultBrowser = 13,
+  kMaxValue = kDefaultBrowser,
 };
 // LINT.ThenChange(
 // /ios/chrome/browser/popup_menu/overflow_menu/public/overflow_menu_constants.h:destination,
@@ -99,12 +100,16 @@ enum class IOSOverflowMenuAction {
   kSetTabReminder = 18,
   kReaderMode = 19,
   kAskBWG = 20,
-  kHideToolbars = 21,
-  kTabGroup = 22,
-  kShareThisPage = 23,
-  kMaxValue = kShareThisPage,
+  // kHideToolbarsDeprecated = 21,  // Deprecated M154.
+  // kTabGroupDeprecated = 22,  // Deprecated M150.
+  // kShareThisPage = 23,  // Deprecated M155.
+  // kSigninDeprecated = 24,  // Deprecated M152.
+  kIdentity = 25,
+  kCustomizeHomePage = 26,
+  kDefaultBrowser = 27,
+  kMaxValue = kDefaultBrowser,
 };
-// LINT.ThenChange(ios/chrome/browser/popup_menu/overflow_menu/public/overflow_menu_constants.h:actionType,
+// LINT.ThenChange(/ios/chrome/browser/popup_menu/overflow_menu/public/overflow_menu_constants.h:actionType,
 // /tools/metrics/histograms/metadata/ios/enums.xml:IOSOverflowMenuAction)
 
 // Returns the correct action histogram enum value for the given `action_type`.

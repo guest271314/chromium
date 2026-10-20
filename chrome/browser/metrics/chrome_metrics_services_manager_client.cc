@@ -32,6 +32,7 @@
 #include "components/metrics/enabled_state_provider.h"
 #include "components/metrics/metrics_pref_names.h"
 #include "components/metrics/metrics_state_manager.h"
+#include "components/metrics/startup_visibility.h"
 #include "components/prefs/pref_service.h"
 #include "components/variations/service/variations_service.h"
 #include "components/variations/synthetic_trial_registry.h"
@@ -189,7 +190,7 @@ ChromeMetricsServicesManagerClient::ChromeMetricsServicesManagerClient(
     : enabled_state_provider_(
           std::make_unique<ChromeEnabledStateProvider>(local_state)),
       local_state_(local_state) {
-  DCHECK(local_state);
+  CHECK(local_state, base::NotFatalUntil::M161);
 }
 
 ChromeMetricsServicesManagerClient::~ChromeMetricsServicesManagerClient() =
@@ -262,11 +263,13 @@ bool ChromeMetricsServicesManagerClient::GetSamplingRatePerMille(int* rate) {
 #endif  // BUILDFLAG(IS_ANDROID)
   std::string rate_str = base::GetFieldTrialParamValueByFeature(
       feature, metrics::internal::kRateParamName);
-  if (rate_str.empty())
+  if (rate_str.empty()) {
     return false;
+  }
 
-  if (!base::StringToInt(rate_str, rate) || *rate > 1000)
+  if (!base::StringToInt(rate_str, rate) || *rate > 1000) {
     return false;
+  }
 
   return true;
 }
@@ -336,10 +339,6 @@ ChromeMetricsServicesManagerClient::GetMetricsStateManager() {
   return metrics_state_manager_.get();
 }
 
-PrefService* ChromeMetricsServicesManagerClient::GetLocalState() {
-  return local_state_;
-}
-
 scoped_refptr<network::SharedURLLoaderFactory>
 ChromeMetricsServicesManagerClient::GetURLLoaderFactory() {
   return g_browser_process->system_network_context_manager()
@@ -361,8 +360,9 @@ bool ChromeMetricsServicesManagerClient::IsOffTheRecordSessionActive() {
   // TODO(crbug.com/40107157): This function should return true for Incognito
   // CCTs.
   for (const TabModel* model : TabModelList::models()) {
-    if (model->IsOffTheRecord())
+    if (model->IsOffTheRecord()) {
       return true;
+    }
   }
 
   return false;
@@ -371,17 +371,23 @@ bool ChromeMetricsServicesManagerClient::IsOffTheRecordSessionActive() {
 #endif
 }
 
+void ChromeMetricsServicesManagerClient::OnFieldTrialsInitialized() {
+  DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
+#if BUILDFLAG(IS_WIN)
+  // Set the registry value so that Crashpad will have the sampling state now
+  // and for subsequent runs. Note that Crashpad uses *both* the registry value
+  // and the value sent from SetUploadConsent() below.
+  // We use IsClientInSampleForCrashes() which checks the feature for whether
+  // crash reports should be sent.
+  install_static::SetCollectStatsInSample(IsClientInSampleForCrashes());
+#endif  // BUILDFLAG(IS_WIN)
+}
+
 #if BUILDFLAG(IS_WIN)
 void ChromeMetricsServicesManagerClient::UpdateRunningServices(
     bool may_record,
     bool may_upload) {
-  // First, set the registry value so that Crashpad will have the sampling state
-  // now and for subsequent runs. Note that Crashpad uses *both* the registry
-  // value and the value sent from SetUploadConsent below.
-  // We use IsClientInSampleForCrash() which checks the feature for if crashes
-  // are allowed.
-  install_static::SetCollectStatsInSample(IsClientInSampleForCrashes());
-
+  DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
   // The intent here is to set the value of the consent. However, since right
   // now we have may_record which is based off both consent and the Feature
   // state, this is redundant with the above value. This is pretty confusing

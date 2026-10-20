@@ -71,15 +71,14 @@ class TestRenderWidgetHostView : public RenderWidgetHostViewBase,
 
   // RenderWidgetHostView:
   void InitAsChild(gfx::NativeView parent_view) override {}
-  void SetSize(const gfx::Size& size) override {}
-  void SetBounds(const gfx::Rect& rect) override {}
+  void SetSize(const gfx::Size& size) override;
+  void SetBounds(const gfx::Rect& rect) override;
   gfx::NativeView GetNativeView() override;
   gfx::NativeViewAccessible GetNativeViewAccessible() override;
   ui::TextInputClient* GetTextInputClient() override;
   bool HasFocus() override;
   void Hide() override;
   bool IsShowing() override;
-  void WasUnOccluded() override;
   void WasOccluded() override;
   gfx::Rect GetViewBounds() override;
 #if BUILDFLAG(IS_MAC)
@@ -120,10 +119,8 @@ class TestRenderWidgetHostView : public RenderWidgetHostViewBase,
   void OnUnconfirmedTapConvertedToTap() override;
 
   void TakeFallbackContentFrom(RenderWidgetHostView* view) override;
-  void EnsureSurfaceSynchronizedForWebTest() override;
 
   // RenderWidgetHostViewBase:
-  uint32_t GetCaptureSequenceNumber() const override;
   void InitAsPopup(RenderWidgetHostView* parent_host_view,
                    const gfx::Rect& bounds,
                    const gfx::Rect& anchor_rect) override {}
@@ -132,12 +129,12 @@ class TestRenderWidgetHostView : public RenderWidgetHostViewBase,
   void UpdateCursor(const ui::Cursor& cursor) override;
   void RenderProcessGone() override;
   void ShowWithVisibility(PageVisibilityState page_visibility) override;
-  void Destroy() override;
+  void DestroyImpl() override;
   void UpdateTooltipUnderCursor(const std::u16string& tooltip_text) override {}
   void UpdateTooltipFromKeyboard(const std::u16string& tooltip_text,
                                  const gfx::Rect& bounds) override {}
   void ClearKeyboardTriggeredTooltip() override {}
-  gfx::Rect GetBoundsInRootWindow() override;
+  gfx::Rect GetBoundsInScreen() override;
   const viz::LocalSurfaceId& IncrementSurfaceIdForNavigation() override;
   blink::mojom::PointerLockResult LockPointer(bool) override;
   blink::mojom::PointerLockResult ChangePointerLock(bool) override;
@@ -188,6 +185,7 @@ class TestRenderWidgetHostView : public RenderWidgetHostViewBase,
   void RequestSuccessfulPresentationTimeFromHostOrDelegate(
       blink::RecordContentToVisibleTimeRequest) override;
   void CancelSuccessfulPresentationTimeRequestForHostAndDelegate() override;
+  void CleanUpHostObservers() override {}
 
   viz::FrameSinkId frame_sink_id_;
 
@@ -199,11 +197,6 @@ class TestRenderWidgetHostView : public RenderWidgetHostViewBase,
   ui::DummyTextInputClient text_input_client_;
 #endif
   ui::Cursor last_cursor_;
-
-  // Latest capture sequence number which is incremented when the caller
-  // requests surfaces be synchronized via
-  // EnsureSurfaceSynchronizedForWebTest().
-  uint32_t latest_capture_sequence_number_ = 0u;
 
   bool clear_fallback_surface_for_commit_pending_called_ = false;
   bool take_fallback_content_from_called_ = false;
@@ -217,6 +210,8 @@ class TestRenderWidgetHostView : public RenderWidgetHostViewBase,
   raw_ptr<ui::Compositor, DanglingUntriaged> compositor_ = nullptr;
 
   input::CursorManager cursor_manager_;
+
+  gfx::Rect bounds_;
 };
 
 // TestRenderWidgetHostViewChildFrame -----------------------------------------

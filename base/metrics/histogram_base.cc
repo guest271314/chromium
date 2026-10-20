@@ -12,6 +12,7 @@
 #include <utility>
 
 #include "base/check_op.h"
+#include "base/functional/callback.h"
 #include "base/json/json_string_value_serializer.h"
 #include "base/metrics/histogram.h"
 #include "base/metrics/histogram_samples.h"
@@ -63,6 +64,46 @@ HistogramBase::CountAndBucketData& HistogramBase::CountAndBucketData::operator=(
 
 const HistogramBase::Sample32 HistogramBase::kSampleType_MAX = INT_MAX;
 
+// static
+HistogramBase* HistogramBase::DeserializeInfo(
+    PickleIterator* iter,
+    HistogramBase::NameMapper mapper) {
+  int type;
+  if (!iter->ReadInt(&type)) {
+    return nullptr;
+  }
+
+  HistogramBase* result;
+  switch (type) {
+    case HISTOGRAM:
+      result = Histogram::DeserializeInfoImpl(iter, mapper);
+      break;
+    case LINEAR_HISTOGRAM:
+      result = LinearHistogram::DeserializeInfoImpl(iter, mapper);
+      break;
+    case BOOLEAN_HISTOGRAM:
+      result = BooleanHistogram::DeserializeInfoImpl(iter, mapper);
+      break;
+    case CUSTOM_HISTOGRAM:
+      result = CustomHistogram::DeserializeInfoImpl(iter, mapper);
+      break;
+    case SPARSE_HISTOGRAM:
+      result = SparseHistogram::DeserializeInfoImpl(iter, mapper);
+      break;
+    default:
+      return nullptr;
+  }
+
+  if (result != nullptr &&
+      result->GetHistogramType() != static_cast<HistogramType>(type)) {
+    // If there's a type mismatch, this could be a DummyHistogram returned by
+    // FactoryGetInternal() due to invalid arguments. In this case, return
+    // nullptr to indicate an error.
+    return nullptr;
+  }
+  return result;
+}
+
 HistogramBase::HistogramBase(DurableStringView name)
     : histogram_name_(name->data()),
       histogram_name_length_(base::saturated_cast<uint16_t>(name->length())),
@@ -93,11 +134,11 @@ bool HistogramBase::HasFlags(int32_t flags) const {
   return (this->flags() & flags) == flags;
 }
 
-void HistogramBase::AddTimeMillisecondsGranularity(const TimeDelta& time) {
+void HistogramBase::AddTimeMillisecondsGranularity(TimeDelta time) {
   Add(saturated_cast<Sample32>(time.InMilliseconds()));
 }
 
-void HistogramBase::AddTimeMicrosecondsGranularity(const TimeDelta& time) {
+void HistogramBase::AddTimeMicrosecondsGranularity(TimeDelta time) {
   // Intentionally drop high-resolution reports on clients with low-resolution
   // clocks. High-resolution metrics cannot make use of low-resolution data and
   // reporting it merely adds noise to the metric. https://crbug.com/807615#c16
@@ -184,31 +225,6 @@ HistogramBase::CountAndBucketData HistogramBase::GetCountAndBucketData() const {
   return CountAndBucketData(count, sum, std::move(buckets));
 }
 
-void HistogramBase::WriteAsciiBucketGraph(double x_count,
-                                          int line_length,
-                                          std::string* output) const {
-  int x_remainder = line_length - x_count;
-
-  while (0 < x_count--) {
-    output->append("-");
-  }
-  output->append("O");
-  while (0 < x_remainder--) {
-    output->append(" ");
-  }
-}
-
-const std::string HistogramBase::GetSimpleAsciiBucketRange(
-    Sample32 sample) const {
-  return StringPrintf("%d", sample);
-}
-
-void HistogramBase::WriteAsciiBucketValue(Count32 current,
-                                          double scaled_sum,
-                                          std::string* output) const {
-  StringAppendF(output, " (%d = %3.1f%%)", current, current / scaled_sum);
-}
-
 void HistogramBase::WriteAscii(std::string* output) const {
   base::DictValue graph_dict = ToGraphDict();
   output->append(*graph_dict.FindString("header"));
@@ -232,29 +248,6 @@ DurableStringView HistogramBase::GetPermanentName(std::string_view name) {
     it = permanent_names->emplace_hint(it, name);
   }
   return DurableStringView(*it);
-}
-
-HistogramBase* DeserializeHistogramInfo(PickleIterator* iter,
-                                        HistogramBase::NameMapper mapper) {
-  int type;
-  if (!iter->ReadInt(&type)) {
-    return nullptr;
-  }
-
-  switch (type) {
-    case HISTOGRAM:
-      return Histogram::DeserializeInfoImpl(iter, mapper);
-    case LINEAR_HISTOGRAM:
-      return LinearHistogram::DeserializeInfoImpl(iter, mapper);
-    case BOOLEAN_HISTOGRAM:
-      return BooleanHistogram::DeserializeInfoImpl(iter, mapper);
-    case CUSTOM_HISTOGRAM:
-      return CustomHistogram::DeserializeInfoImpl(iter, mapper);
-    case SPARSE_HISTOGRAM:
-      return SparseHistogram::DeserializeInfoImpl(iter, mapper);
-    default:
-      return nullptr;
-  }
 }
 
 }  // namespace base

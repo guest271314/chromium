@@ -20,9 +20,11 @@
 #import "base/task/sequenced_task_runner.h"
 #import "components/autofill/core/browser/data_manager/addresses/address_data_manager.h"
 #import "components/autofill/core/browser/data_manager/autofill_ai/entity_data_manager.h"
+#import "components/autofill/core/browser/data_manager/autofill_ai/entity_suppression_manager.h"
 #import "components/autofill/core/browser/data_manager/payments/payments_data_manager.h"
 #import "components/autofill/core/browser/data_manager/personal_data_manager.h"
 #import "components/autofill/core/browser/webdata/autofill_webdata_service.h"
+#import "components/autofill/core/common/autofill_features.h"
 #import "components/autofill/core/common/autofill_payments_features.h"
 #import "components/browsing_data/core/cookie_or_cache_deletion_choice.h"
 #import "components/desktop_to_mobile_promos/features.h"
@@ -39,6 +41,7 @@
 #import "components/signin/public/base/signin_pref_names.h"
 #import "components/strike_database/strike_database.h"
 #import "ios/chrome/browser/autofill/model/ios_autofill_entity_data_manager_factory.h"
+#import "ios/chrome/browser/autofill/model/ios_autofill_entity_suppression_manager_factory.h"
 #import "ios/chrome/browser/autofill/model/personal_data_manager_factory.h"
 #import "ios/chrome/browser/autofill/model/strike_database_factory.h"
 #import "ios/chrome/browser/bookmarks/model/bookmark_remover_helper.h"
@@ -624,6 +627,15 @@ void BrowsingDataRemoverImpl::RemoveImpl(base::Time delete_begin,
         entity_data_manager->RemoveEntityInstancesModifiedBetween(delete_begin,
                                                                   delete_end);
       }
+      if (base::FeatureList::IsEnabled(
+              autofill::features::kAutofillAmbientAutofillSuppression)) {
+        if (autofill::EntitySuppressionManager* entity_suppression_manager =
+                IOSAutofillEntitySuppressionManagerFactory::GetForProfile(
+                    profile_)) {
+          entity_suppression_manager->ClearSuppressions(delete_begin,
+                                                        delete_end);
+        }
+      }
 
       // Clear out the Autofill StrikeDatabase in its entirety.
       strike_database::StrikeDatabase* strike_database =
@@ -744,15 +756,14 @@ void BrowsingDataRemoverImpl::RemoveImpl(base::Time delete_begin,
 
   UMA_HISTOGRAM_ENUMERATION(
       "History.ClearBrowsingData.UserDeletedCookieOrCache", choice);
+  base::RecordAction(
+      base::UserMetricsAction("ClearBrowsingData_UserDeletedCookieOrCache"));
 }
 
 void BrowsingDataRemoverImpl::RemoveDataFromWKWebsiteDataStore(
     base::Time delete_begin,
     BrowsingDataRemoveMask mask) {
   web::ClearBrowsingDataMask types = web::ClearBrowsingDataMask::kRemoveNothing;
-  if (IsRemoveDataMaskSet(mask, BrowsingDataRemoveMask::REMOVE_APPCACHE)) {
-    types |= web::ClearBrowsingDataMask::kRemoveAppCache;
-  }
   if (IsRemoveDataMaskSet(mask, BrowsingDataRemoveMask::REMOVE_COOKIES)) {
     types |= web::ClearBrowsingDataMask::kRemoveCookies;
   }

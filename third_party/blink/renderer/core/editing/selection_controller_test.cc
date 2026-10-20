@@ -11,8 +11,11 @@
 #include "third_party/blink/renderer/core/frame/local_frame.h"
 #include "third_party/blink/renderer/core/frame/local_frame_view.h"
 #include "third_party/blink/renderer/core/frame/settings.h"
+#include "third_party/blink/renderer/core/geometry/dom_rect.h"
 #include "third_party/blink/renderer/core/input/event_handler.h"
 #include "third_party/blink/renderer/core/layout/layout_object.h"
+#include "third_party/blink/renderer/core/page/focus_controller.h"
+#include "third_party/blink/renderer/core/page/page.h"
 #include "third_party/blink/renderer/core/testing/core_unit_test_helper.h"
 
 namespace blink {
@@ -47,8 +50,8 @@ class SelectionControllerTest : public EditingTestBase {
     return hit_test_result.GetPosition();
   }
 
-  VisibleSelection VisibleSelectionInDOMTree() const {
-    return Selection().ComputeVisibleSelectionInDOMTree();
+  VisibleSelection VisibleSelectionInDomTree() const {
+    return Selection().ComputeVisibleSelectionInDomTree();
   }
 
   VisibleSelectionInFlatTree GetVisibleSelectionInFlatTree() const {
@@ -106,12 +109,11 @@ TEST_F(SelectionControllerTest, setNonDirectionalSelectionIfNeeded) {
                                          .Extend(PositionInFlatTree(bottom, 3))
                                          .Build(),
                                      TextGranularity::kCharacter);
-  EXPECT_EQ(VisibleSelectionInDOMTree().Start(),
-            VisibleSelectionInDOMTree().Anchor());
-  EXPECT_EQ(VisibleSelectionInDOMTree().End(),
-            VisibleSelectionInDOMTree().Focus());
-  EXPECT_EQ(Position(top, 1), VisibleSelectionInDOMTree().Start());
-  EXPECT_EQ(Position(top, 3), VisibleSelectionInDOMTree().End());
+  auto selection = VisibleSelectionInDomTree();
+  EXPECT_EQ(selection.Start(), selection.Anchor());
+  EXPECT_EQ(selection.End(), selection.Focus());
+  EXPECT_EQ(Position(top, 1), selection.Start());
+  EXPECT_EQ(Position(top, 3), selection.End());
 
   EXPECT_EQ(PositionInFlatTree(top, 1),
             GetVisibleSelectionInFlatTree().Anchor());
@@ -129,12 +131,11 @@ TEST_F(SelectionControllerTest, setNonDirectionalSelectionIfNeeded) {
           .Extend(PositionInFlatTree(top, 1))
           .Build(),
       TextGranularity::kCharacter);
-  EXPECT_EQ(VisibleSelectionInDOMTree().End(),
-            VisibleSelectionInDOMTree().Anchor());
-  EXPECT_EQ(VisibleSelectionInDOMTree().Start(),
-            VisibleSelectionInDOMTree().Focus());
-  EXPECT_EQ(Position(bottom, 0), VisibleSelectionInDOMTree().Start());
-  EXPECT_EQ(Position(bottom, 3), VisibleSelectionInDOMTree().End());
+  selection = VisibleSelectionInDomTree();
+  EXPECT_EQ(selection.End(), selection.Anchor());
+  EXPECT_EQ(selection.Start(), selection.Focus());
+  EXPECT_EQ(Position(bottom, 0), selection.Start());
+  EXPECT_EQ(Position(bottom, 3), selection.End());
 
   EXPECT_EQ(PositionInFlatTree(bottom, 3),
             GetVisibleSelectionInFlatTree().Anchor());
@@ -177,7 +178,7 @@ TEST_F(SelectionControllerTest, setCaretAtHitTestResultWithNullPosition) {
   SetCaretAtHitTestResult(
       GetFrame().GetEventHandler().HitTestResultAtLocation(location));
 
-  EXPECT_TRUE(Selection().GetSelectionInDOMTree().IsNone());
+  EXPECT_TRUE(Selection().GetSelectionInDomTree().IsNone());
 }
 
 // For http://crbug.com/759971
@@ -220,7 +221,7 @@ TEST_F(SelectionControllerTest,
   // crashing.
 
   // Verify no selection was set.
-  EXPECT_TRUE(Selection().GetSelectionInDOMTree().IsNone());
+  EXPECT_TRUE(Selection().GetSelectionInDomTree().IsNone());
 }
 
 // For http://crbug.com/700368
@@ -256,7 +257,7 @@ TEST_F(SelectionControllerTest,
       GetFrame().GetEventHandler().HitTestResultAtLocation(location);
   ASSERT_EQ("<pre>(1)|\n(2)</pre>",
             GetSelectionTextFromBody(
-                SelectionInDOMTree::Builder()
+                SelectionInDomTree::Builder()
                     .Collapse(GetPositionFromHitTestResult(result))
                     .Build()));
 
@@ -285,7 +286,7 @@ TEST_F(SelectionControllerTest,
       GetFrame().GetEventHandler().HitTestResultAtLocation(location);
   ASSERT_EQ("<pre>ab:|\ncd</pre>",
             GetSelectionTextFromBody(
-                SelectionInDOMTree::Builder()
+                SelectionInDomTree::Builder()
                     .Collapse(GetPositionFromHitTestResult(result))
                     .Build()));
 
@@ -324,7 +325,7 @@ TEST_F(SelectionControllerTest, SelectWordToEndOfLine) {
       MouseEventWithHitTestResults(double_click, location, result));
   ASSERT_EQ("<div>ab|c def<br>ghi</div>",
             GetSelectionTextFromBody(
-                SelectionInDOMTree::Builder()
+                SelectionInDomTree::Builder()
                     .Collapse(GetPositionFromHitTestResult(result))
                     .Build()));
 
@@ -376,7 +377,7 @@ TEST_F(SelectionControllerTest, SelectWordToEndOfTableCell) {
       MouseEventWithHitTestResults(double_click, location, result));
   ASSERT_EQ("<table><tbody><tr><td>fo|o</td><td>bar</td></tr></tbody></table>",
             GetSelectionTextFromBody(
-                SelectionInDOMTree::Builder()
+                SelectionInDomTree::Builder()
                     .Collapse(GetPositionFromHitTestResult(result))
                     .Build()));
   // Select word by mouse
@@ -594,6 +595,31 @@ TEST_F(SelectionControllerTest, AdjustSelectionByUserSelectWithComment) {
             PositionInFlatTree::LastPositionInNode(*two->firstChild()));
 }
 
+// http://crbug.com/553831659
+TEST_F(SelectionControllerTest,
+       AdjustSelectionByUserSelectWithNonEditableWidget) {
+  SetBodyContent(R"HTML(
+    <div contenteditable><p>
+      <span id="one">Triple click this line, which has an</span>
+      <span contenteditable="false"><span
+          style="user-select:none">EMBED</span></span>
+      <span id="two">inline widget inside it</span></p></div>)HTML");
+
+  Node* const one =
+      GetDocument().getElementById(AtomicString("one"))->firstChild();
+  const SelectionInFlatTree& selection =
+      ExpandWithGranularity(SelectionInFlatTree::Builder()
+                                .Collapse(PositionInFlatTree(one, 0))
+                                .Build(),
+                            TextGranularity::kParagraph);
+  const SelectionInFlatTree adjusted_selection =
+      AdjustSelectionByUserSelect(one, selection);
+
+  EXPECT_EQ(adjusted_selection.Anchor(), selection.Anchor());
+  EXPECT_EQ(adjusted_selection.Focus(), selection.Focus());
+  EXPECT_TRUE(CreateVisibleSelection(adjusted_selection).IsRange());
+}
+
 // https://crbug.com/399412221
 #if BUILDFLAG(IS_OZONE)
 #define MAYBE_MiddleClickPasteToggle MiddleClickPasteToggle
@@ -623,6 +649,37 @@ TEST_F(SelectionControllerTest, MAYBE_MiddleClickPasteToggle) {
                                  WebInputEvent::kIsCompatibilityEventForTouch,
                                  WebInputEvent::GetStaticTimeStampForTests());
   EXPECT_FALSE(Controller().HandlePasteGlobalSelection(mouse_event_down));
+}
+
+// http://crbug.com/362901608
+TEST_F(SelectionControllerTest, ClickOnPseudoElementLockedByItsOwnFocus) {
+  InsertStyleElement(
+      "li:focus-within > ul { display: block; }"
+      "li:focus-within > ul:focus { content-visibility: hidden; }"
+      "li:focus-within > ul:not(:focus)::before {"
+      "  content: '#'; display: block; position: absolute;"
+      "  top: 0px; left: 0px; width: 20px; height: 20px; }"
+      "ul ul { display: none; position: relative; }"
+      "li { position: relative; }");
+  SetBodyContent(
+      "<ul><li id=item tabindex=0>item"
+      "<ul id=sub tabindex=-1><li tabindex=0>sub item</li></ul>"
+      "</li></ul>");
+  GetPage().GetFocusController().SetActive(true);
+  GetPage().GetFocusController().SetFocused(true);
+  GetElementById("item")->Focus();
+  UpdateAllLifecyclePhasesForTest();
+
+  Element* const sub = GetElementById("sub");
+  DOMRect* const rect = sub->GetBoundingClientRect();
+  const gfx::PointF point(rect->x() + 3, rect->y() + 3);
+  WebMouseEvent mouse_down(WebInputEvent::Type::kMouseDown, point, point,
+                           WebMouseEvent::Button::kLeft, 1,
+                           WebInputEvent::Modifiers::kLeftButtonDown,
+                           WebInputEvent::GetStaticTimeStampForTests());
+  GetFrame().GetEventHandler().HandleMousePressEvent(mouse_down);
+
+  EXPECT_EQ(sub, GetDocument().FocusedElement());
 }
 
 }  // namespace blink

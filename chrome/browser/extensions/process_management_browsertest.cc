@@ -14,11 +14,12 @@
 #include "chrome/browser/extensions/extension_service.h"
 #include "chrome/browser/preloading/scoped_prewarm_feature_list.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/common/chrome_switches.h"
 #include "chrome/common/url_constants.h"
 #include "chrome/test/base/ui_test_utils.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_process_host.h"
 #include "content/public/browser/render_view_host.h"
@@ -41,6 +42,7 @@
 #include "extensions/common/switches.h"
 #include "net/dns/mock_host_resolver.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
+#include "ui/base/window_open_disposition.h"
 
 using content::NavigationController;
 using content::WebContents;
@@ -228,40 +230,40 @@ IN_PROC_BROWSER_TEST_F(ProcessManagementTest, ProcessOverflow) {
   GURL extension2_url = extension2->url();
 
   // Get tab processes.
-  ASSERT_EQ(7, browser()->tab_strip_model()->count());
+  ASSERT_EQ(7, browser()->GetTabStripModel()->count());
   content::RenderProcessHost* ntp1_host = browser()
-                                              ->tab_strip_model()
+                                              ->GetTabStripModel()
                                               ->GetWebContentsAt(0)
                                               ->GetPrimaryMainFrame()
                                               ->GetProcess();
   content::RenderProcessHost* hosted1_host = browser()
-                                                 ->tab_strip_model()
+                                                 ->GetTabStripModel()
                                                  ->GetWebContentsAt(1)
                                                  ->GetPrimaryMainFrame()
                                                  ->GetProcess();
   content::RenderProcessHost* web1_host = browser()
-                                              ->tab_strip_model()
+                                              ->GetTabStripModel()
                                               ->GetWebContentsAt(2)
                                               ->GetPrimaryMainFrame()
                                               ->GetProcess();
 
   content::RenderProcessHost* ntp2_host = browser()
-                                              ->tab_strip_model()
+                                              ->GetTabStripModel()
                                               ->GetWebContentsAt(3)
                                               ->GetPrimaryMainFrame()
                                               ->GetProcess();
   content::RenderProcessHost* hosted2_host = browser()
-                                                 ->tab_strip_model()
+                                                 ->GetTabStripModel()
                                                  ->GetWebContentsAt(4)
                                                  ->GetPrimaryMainFrame()
                                                  ->GetProcess();
   content::RenderProcessHost* web2_host = browser()
-                                              ->tab_strip_model()
+                                              ->GetTabStripModel()
                                               ->GetWebContentsAt(5)
                                               ->GetPrimaryMainFrame()
                                               ->GetProcess();
   content::RenderProcessHost* hosted1_second_host = browser()
-                                                        ->tab_strip_model()
+                                                        ->GetTabStripModel()
                                                         ->GetWebContentsAt(6)
                                                         ->GetPrimaryMainFrame()
                                                         ->GetProcess();
@@ -364,13 +366,13 @@ IN_PROC_BROWSER_TEST_F(ProcessManagementTest, ExtensionAndWebProcessOverflow) {
       browser(), web_url1, WindowOpenDisposition::CURRENT_TAB,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
   WebContents* web_contents1 =
-      browser()->tab_strip_model()->GetActiveWebContents();
+      browser()->GetTabStripModel()->GetActiveWebContents();
   NavigateToURLInNewTab(web_url2);
   WebContents* web_contents2 =
-      browser()->tab_strip_model()->GetActiveWebContents();
+      browser()->GetTabStripModel()->GetActiveWebContents();
   NavigateToURLInNewTab(web_url3);
   WebContents* web_contents3 =
-      browser()->tab_strip_model()->GetActiveWebContents();
+      browser()->GetTabStripModel()->GetActiveWebContents();
 
   // Verify the number of processes across extensions and tabs.
   process_ids.insert(

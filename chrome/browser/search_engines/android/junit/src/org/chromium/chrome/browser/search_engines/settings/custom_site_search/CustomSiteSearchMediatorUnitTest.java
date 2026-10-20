@@ -10,6 +10,7 @@ import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -23,19 +24,26 @@ import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 import org.robolectric.RuntimeEnvironment;
-import org.robolectric.annotation.Config;
 
 import org.chromium.base.Callback;
 import org.chromium.base.test.BaseRobolectricTestRunner;
+import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.chrome.browser.profiles.Profile;
+import org.chromium.chrome.browser.search_engines.AimEligibilityServiceFactory;
+import org.chromium.chrome.browser.search_engines.AimEligibilityServiceFactoryJni;
 import org.chromium.chrome.browser.search_engines.R;
 import org.chromium.chrome.browser.search_engines.TemplateUrlServiceFactory;
 import org.chromium.chrome.browser.search_engines.settings.common.SiteSearchProperties;
 import org.chromium.components.favicon.LargeIconBridgeJni;
+import org.chromium.components.omnibox.OmniboxFeatureList;
+import org.chromium.components.prefs.PrefService;
+import org.chromium.components.search_engines.SearchEngineSettingsDataProvider;
 import org.chromium.components.search_engines.StarterPackId;
 import org.chromium.components.search_engines.TemplateUrl;
 import org.chromium.components.search_engines.TemplateUrlCategory;
 import org.chromium.components.search_engines.TemplateUrlService;
+import org.chromium.components.user_prefs.UserPrefs;
+import org.chromium.components.user_prefs.UserPrefsJni;
 import org.chromium.ui.listmenu.BasicListMenu;
 import org.chromium.ui.listmenu.ListMenuDelegate;
 import org.chromium.ui.listmenu.ListMenuItemProperties;
@@ -50,13 +58,17 @@ import java.util.List;
 
 /** Unit tests for {@link CustomSiteSearchMediator}. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
+@EnableFeatures(OmniboxFeatureList.STARTER_PACK_EXPANSION)
 public class CustomSiteSearchMediatorUnitTest {
     @Rule public MockitoRule mockitoRule = MockitoJUnit.rule();
 
     @Mock private Profile mProfile;
     @Mock private TemplateUrlService mTemplateUrlService;
+    @Mock private SearchEngineSettingsDataProvider mSettingsDataProvider;
     @Mock private LargeIconBridgeJni mLargeIconBridgeJni;
+    @Mock private AimEligibilityServiceFactory.Natives mAimEligibilityNativesMock;
+    @Mock private UserPrefs.Natives mUserPrefsJniMock;
+    @Mock private PrefService mPrefServiceMock;
     @Mock private Runnable mOnAddSearchEngine;
     @Mock private Callback<TemplateUrl> mOnEditSearchEngine;
     @Mock private Callback<TemplateUrl> mOnRemoveSearchEngine;
@@ -67,8 +79,11 @@ public class CustomSiteSearchMediatorUnitTest {
 
     @Before
     public void setUp() {
-        mContext = RuntimeEnvironment.application;
+        mContext = RuntimeEnvironment.getApplication();
+        UserPrefsJni.setInstanceForTesting(mUserPrefsJniMock);
+        doReturn(mPrefServiceMock).when(mUserPrefsJniMock).get(any(Profile.class));
         TemplateUrlServiceFactory.setInstanceForTesting(mTemplateUrlService);
+        AimEligibilityServiceFactoryJni.setInstanceForTesting(mAimEligibilityNativesMock);
         LargeIconBridgeJni.setInstanceForTesting(mLargeIconBridgeJni);
 
         mModelList = new ModelList();
@@ -96,7 +111,8 @@ public class CustomSiteSearchMediatorUnitTest {
         for (int i = 0; i < searchEngineCount; i++) {
             urls.add(createMockTemplateUrl("keyword" + i, "test site " + i));
         }
-        when(mTemplateUrlService.getTemplateUrlsByCategory(TemplateUrlCategory.ACTIVE_SITE_SEARCH))
+        when(mSettingsDataProvider.getTemplateUrlsByCategory(
+                        TemplateUrlCategory.ACTIVE_SITE_SEARCH))
                 .thenReturn(urls);
     }
 
@@ -105,6 +121,7 @@ public class CustomSiteSearchMediatorUnitTest {
                 mContext,
                 mModelList,
                 mProfile,
+                mSettingsDataProvider,
                 mOnAddSearchEngine,
                 mOnEditSearchEngine,
                 mOnRemoveSearchEngine);
@@ -183,7 +200,8 @@ public class CustomSiteSearchMediatorUnitTest {
     @Test
     public void testMenuDelegate_NormalUrl() {
         TemplateUrl templateUrl = createMockTemplateUrl("keyword", "shortName");
-        when(mTemplateUrlService.getTemplateUrlsByCategory(TemplateUrlCategory.ACTIVE_SITE_SEARCH))
+        when(mSettingsDataProvider.getTemplateUrlsByCategory(
+                        TemplateUrlCategory.ACTIVE_SITE_SEARCH))
                 .thenReturn(List.of(templateUrl));
         when(templateUrl.getStarterPackId()).thenReturn(StarterPackId.NONE);
 
@@ -221,7 +239,8 @@ public class CustomSiteSearchMediatorUnitTest {
     @Test
     public void testMenuDelegate_StarterPackUrl() {
         TemplateUrl templateUrl = createMockTemplateUrl("keyword", "shortName");
-        when(mTemplateUrlService.getTemplateUrlsByCategory(TemplateUrlCategory.ACTIVE_SITE_SEARCH))
+        when(mSettingsDataProvider.getTemplateUrlsByCategory(
+                        TemplateUrlCategory.ACTIVE_SITE_SEARCH))
                 .thenReturn(List.of(templateUrl));
         when(templateUrl.getStarterPackId()).thenReturn(StarterPackId.GEMINI);
 

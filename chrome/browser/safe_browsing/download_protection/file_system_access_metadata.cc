@@ -99,6 +99,12 @@ bool FileSystemAccessMetadata::IsObfuscated() const {
   return false;
 }
 
+void FileSystemAccessMetadata::MarkDeobfuscated() {
+  // TODO(crbug.com/367259664): Ensure this doesn't run too soon.
+
+  // No-op: these files are never obfuscated.
+}
+
 bool FileSystemAccessMetadata::IsTopLevelEncryptedArchive() const {
   // No support for password-protected files for filesystem access API.
   return false;
@@ -162,7 +168,8 @@ google::protobuf::RepeatedPtrField<std::string>
 FileSystemAccessMetadata::CollectFrameUrls() const {
   return enterprise_connectors::CollectFrameUrls(
       item_->web_contents.get(),
-      enterprise_connectors::DeepScanAccessPoint::DOWNLOAD);
+      enterprise_connectors::DeepScanAccessPoint::DOWNLOAD,
+      std::make_optional(item_->initiating_frame_id));
 }
 
 content::WebContents* FileSystemAccessMetadata::web_contents() const {

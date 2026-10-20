@@ -17,6 +17,7 @@
 #include "components/autofill/core/browser/data_manager/test_personal_data_manager.h"
 #include "components/autofill/core/browser/webdata/autofill_webdata_service.h"
 #include "components/browsing_data/core/counters/autofill_counter.h"
+#include "components/browsing_data/core/counters/browsing_data_counter.h"
 #include "components/browsing_data/core/counters/history_counter.h"
 #include "components/browsing_data/core/counters/passwords_counter.h"
 #include "components/browsing_data/core/features.h"
@@ -46,6 +47,15 @@ class FakeWebDataService : public autofill::AutofillWebDataService {
   ~FakeWebDataService() override = default;
 };
 
+// A counter that is only used to produce results for the Skills data type.
+class FakeSkillsCounter : public BrowsingDataCounter {
+ public:
+  const char* GetPrefName() const override { return prefs::kDeleteSkills; }
+
+ private:
+  void Count() override {}
+};
+
 }  // namespace
 
 class BrowsingDataUtilsTest : public testing::Test {
@@ -67,54 +77,82 @@ class BrowsingDataUtilsTest : public testing::Test {
 TEST_F(BrowsingDataUtilsTest,
        AutofillCounterResultWithReplaceSyncPromosWithSignInPromosDisabled) {
   base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndDisableFeature(
-      syncer::kReplaceSyncPromosWithSignInPromos);
+  feature_list.InitWithFeatures(
+      /*enabled_features=*/{},
+      /*disabled_features=*/{
+          syncer::kReplaceSyncPromosWithSignInPromos,
+          syncer::kReplaceSyncPromosWithSigninPromosNewSignin});
 
   autofill::TestPersonalDataManager test_personal_data_manager;
   AutofillCounter counter(&test_personal_data_manager,
                           base::MakeRefCounted<FakeWebDataService>(),
-                          /*entity_data_manager=*/nullptr, nullptr);
+                          /*entity_data_manager=*/nullptr,
+                          /*entity_suppression_manager=*/nullptr, nullptr);
 
-  // Test all configurations of zero and nonzero partial results for datatypes.
-  // Test singular and plural for each datatype.
+  // Test cases are grouped by the shape of the resulting string. Each group
+  // covers singular and plural counts, the different data types that map onto
+  // the "Other data" / "and more" bucket, and the synced variant.
   const struct TestCase {
     int num_credit_cards;
     int num_addresses;
     int num_suggestions;
     int num_entities;
+    int num_suppressions;
     bool sync_enabled;
     std::string expected_output;
   } kTestCases[] = {
-      {0, 0, 0, 0, false, "None"},
-      {0, 0, 0, 0, true, "None"},
-      {1, 0, 0, 0, false, "1 payment method"},
-      {0, 5, 0, 0, false, "5 addresses"},
-      {0, 0, 1, 0, false, "1 suggestion"},
-      {0, 0, 2, 0, false, "2 suggestions"},
-      {0, 0, 2, 1, false, "3 suggestions"},
-      {0, 0, 0, 2, false, "2 suggestions"},
-      {0, 0, 2, 0, true, "2 suggestions (synced)"},
-      {4, 7, 0, 0, false, "4 payment methods, 7 addresses"},
-      {4, 7, 0, 0, true, "4 payment methods, 7 addresses (synced)"},
-      {3, 0, 9, 0, false, "3 payment methods, 9 other suggestions"},
-      {0, 1, 1, 0, false, "1 address, 1 other suggestion"},
-      {9, 6, 3, 0, false, "9 payment methods, 6 addresses, 3 others"},
-      {9, 6, 3, 5, false, "9 payment methods, 6 addresses, 8 others"},
-      {4, 2, 1, 0, false, "4 payment methods, 2 addresses, 1 other"},
-      {4, 2, 1, 0, true, "4 payment methods, 2 addresses, 1 other (synced)"},
+      // "None"
+      {0, 0, 0, 0, 0, false, "None"},
+      {0, 0, 0, 0, 0, true, "None"},
+      // "N payment methods"
+      {1, 0, 0, 0, 0, false, "1 payment method"},
+      {4, 0, 0, 0, 0, false, "4 payment methods"},
+      {4, 0, 0, 0, 0, true, "4 payment methods (synced)"},
+      // "N addresses"
+      {0, 1, 0, 0, 0, false, "1 address"},
+      {0, 5, 0, 0, 0, false, "5 addresses"},
+      {0, 5, 0, 0, 0, true, "5 addresses (synced)"},
+      // "N payment methods, N addresses"
+      {1, 1, 0, 0, 0, false, "1 payment method, 1 address"},
+      {4, 7, 0, 0, 0, false, "4 payment methods, 7 addresses"},
+      {4, 7, 0, 0, 0, true, "4 payment methods, 7 addresses (synced)"},
+      // "Other data": autocomplete suggestions, Autofill AI entities and entity
+      // suppressions are not counted individually.
+      {0, 0, 1, 0, 0, false, "Other data"},
+      {0, 0, 0, 1, 0, false, "Other data"},
+      {0, 0, 0, 0, 1, false, "Other data"},
+      {0, 0, 2, 1, 3, false, "Other data"},
+      {0, 0, 2, 1, 3, true, "Other data (synced)"},
+      // "N payment methods, and more"
+      {1, 0, 1, 0, 0, false, "1 payment method, and more"},
+      {3, 0, 0, 2, 0, false, "3 payment methods, and more"},
+      {3, 0, 0, 0, 1, false, "3 payment methods, and more"},
+      {3, 0, 2, 1, 3, true, "3 payment methods, and more (synced)"},
+      // "N addresses, and more"
+      {0, 1, 1, 0, 0, false, "1 address, and more"},
+      {0, 5, 0, 2, 0, false, "5 addresses, and more"},
+      {0, 5, 0, 0, 1, false, "5 addresses, and more"},
+      {0, 5, 2, 1, 3, true, "5 addresses, and more (synced)"},
+      // "N payment methods, N addresses, and more"
+      {1, 1, 1, 0, 0, false, "1 payment method, 1 address, and more"},
+      {9, 6, 0, 5, 0, false, "9 payment methods, 6 addresses, and more"},
+      {9, 6, 0, 0, 4, false, "9 payment methods, 6 addresses, and more"},
+      {9, 6, 3, 5, 4, true,
+       "9 payment methods, 6 addresses, and more (synced)"},
   };
 
   for (const TestCase& test_case : kTestCases) {
     AutofillCounter::AutofillResult result(
         &counter, test_case.num_suggestions, test_case.num_credit_cards,
         test_case.num_addresses, test_case.num_entities,
-        test_case.sync_enabled);
+        test_case.num_suppressions, test_case.sync_enabled);
 
-    SCOPED_TRACE(
-        base::StringPrintf("Test params: %d payment method(s), "
-                           "%d address(es), %d suggestion(s), %d entities",
-                           test_case.num_credit_cards, test_case.num_addresses,
-                           test_case.num_suggestions, test_case.num_entities));
+    SCOPED_TRACE(base::StringPrintf(
+        "Test params: %d payment method(s), %d address(es), %d suggestion(s), "
+        "%d entities, %d suppressions",
+        test_case.num_credit_cards, test_case.num_addresses,
+        test_case.num_suggestions, test_case.num_entities,
+        test_case.num_suppressions));
 
     std::u16string output = browsing_data::GetCounterTextFromResult(&result);
     EXPECT_EQ(output, base::ASCIIToUTF16(test_case.expected_output));
@@ -129,48 +167,72 @@ TEST_F(BrowsingDataUtilsTest,
   autofill::TestPersonalDataManager test_personal_data_manager;
   AutofillCounter counter(&test_personal_data_manager,
                           base::MakeRefCounted<FakeWebDataService>(),
-                          /*entity_data_manager=*/nullptr, nullptr);
+                          /*entity_data_manager=*/nullptr,
+                          /*entity_suppression_manager=*/nullptr, nullptr);
 
-  // Test all configurations of zero and nonzero partial results for datatypes.
-  // Test singular and plural for each datatype.
+  // Test cases are grouped by the shape of the resulting string. Each group
+  // covers singular and plural counts, the different data types that map onto
+  // the "Other data" / "and more" bucket, and the synced variant.
   const struct TestCase {
     int num_credit_cards;
     int num_addresses;
     int num_suggestions;
     int num_entities;
+    int num_suppressions;
     bool sync_enabled;
     std::string expected_output;
   } kTestCases[] = {
-      {0, 0, 0, 0, false, "None"},
-      {0, 0, 0, 0, true, "None"},
-      {1, 0, 0, 0, false, "1 payment method"},
-      {0, 5, 0, 0, false, "5 addresses"},
-      {0, 0, 1, 0, false, "1 suggestion"},
-      {0, 0, 2, 0, false, "2 suggestions"},
-      {0, 0, 2, 1, false, "3 suggestions"},
-      {0, 0, 0, 2, false, "2 suggestions"},
-      {0, 0, 2, 0, true, "2 suggestions"},
-      {4, 7, 0, 0, false, "4 payment methods, 7 addresses"},
-      {4, 7, 0, 0, true, "4 payment methods, 7 addresses"},
-      {3, 0, 9, 0, false, "3 payment methods, 9 other suggestions"},
-      {0, 1, 1, 0, false, "1 address, 1 other suggestion"},
-      {9, 6, 3, 0, false, "9 payment methods, 6 addresses, 3 others"},
-      {9, 6, 3, 5, false, "9 payment methods, 6 addresses, 8 others"},
-      {4, 2, 1, 0, false, "4 payment methods, 2 addresses, 1 other"},
-      {4, 2, 1, 0, true, "4 payment methods, 2 addresses, 1 other"},
+      // "None"
+      {0, 0, 0, 0, 0, false, "None"},
+      {0, 0, 0, 0, 0, true, "None"},
+      // "N payment methods"
+      {1, 0, 0, 0, 0, false, "1 payment method"},
+      {4, 0, 0, 0, 0, false, "4 payment methods"},
+      {4, 0, 0, 0, 0, true, "4 payment methods"},
+      // "N addresses"
+      {0, 1, 0, 0, 0, false, "1 address"},
+      {0, 5, 0, 0, 0, false, "5 addresses"},
+      {0, 5, 0, 0, 0, true, "5 addresses"},
+      // "N payment methods, N addresses"
+      {1, 1, 0, 0, 0, false, "1 payment method, 1 address"},
+      {4, 7, 0, 0, 0, false, "4 payment methods, 7 addresses"},
+      {4, 7, 0, 0, 0, true, "4 payment methods, 7 addresses"},
+      // "Other data": autocomplete suggestions, Autofill AI entities and entity
+      // suppressions are not counted individually.
+      {0, 0, 1, 0, 0, false, "Other data"},
+      {0, 0, 0, 1, 0, false, "Other data"},
+      {0, 0, 0, 0, 1, false, "Other data"},
+      {0, 0, 2, 1, 3, false, "Other data"},
+      {0, 0, 2, 1, 3, true, "Other data"},
+      // "N payment methods, and more"
+      {1, 0, 1, 0, 0, false, "1 payment method, and more"},
+      {3, 0, 0, 2, 0, false, "3 payment methods, and more"},
+      {3, 0, 0, 0, 1, false, "3 payment methods, and more"},
+      {3, 0, 2, 1, 3, true, "3 payment methods, and more"},
+      // "N addresses, and more"
+      {0, 1, 1, 0, 0, false, "1 address, and more"},
+      {0, 5, 0, 2, 0, false, "5 addresses, and more"},
+      {0, 5, 0, 0, 1, false, "5 addresses, and more"},
+      {0, 5, 2, 1, 3, true, "5 addresses, and more"},
+      // "N payment methods, N addresses, and more"
+      {1, 1, 1, 0, 0, false, "1 payment method, 1 address, and more"},
+      {9, 6, 0, 5, 0, false, "9 payment methods, 6 addresses, and more"},
+      {9, 6, 0, 0, 4, false, "9 payment methods, 6 addresses, and more"},
+      {9, 6, 3, 5, 4, true, "9 payment methods, 6 addresses, and more"},
   };
 
   for (const TestCase& test_case : kTestCases) {
     AutofillCounter::AutofillResult result(
         &counter, test_case.num_suggestions, test_case.num_credit_cards,
         test_case.num_addresses, test_case.num_entities,
-        test_case.sync_enabled);
+        test_case.num_suppressions, test_case.sync_enabled);
 
-    SCOPED_TRACE(
-        base::StringPrintf("Test params: %d payment method(s), "
-                           "%d address(es), %d suggestion(s), %d entities",
-                           test_case.num_credit_cards, test_case.num_addresses,
-                           test_case.num_suggestions, test_case.num_entities));
+    SCOPED_TRACE(base::StringPrintf(
+        "Test params: %d payment method(s), %d address(es), %d suggestion(s), "
+        "%d entities, %d suppressions",
+        test_case.num_credit_cards, test_case.num_addresses,
+        test_case.num_suggestions, test_case.num_entities,
+        test_case.num_suppressions));
 
     std::u16string output = browsing_data::GetCounterTextFromResult(&result);
     EXPECT_EQ(output, base::ASCIIToUTF16(test_case.expected_output));
@@ -238,48 +300,68 @@ TEST_F(BrowsingDataUtilsTest, PasswordsCounterResult) {
 TEST_F(BrowsingDataUtilsTest, HistoryCounterResult) {
   history::HistoryService history_service;
   HistoryCounter counter(&history_service,
-                         HistoryCounter::GetUpdatedWebHistoryServiceCallback(),
-                         nullptr);
-  counter.Init(prefs(), ClearBrowsingDataTab::ADVANCED, base::DoNothing());
+                         /*web_history_service=*/nullptr, nullptr);
+  counter.Init(prefs(), base::DoNothing());
 
   const struct TestCase {
-    int num_history;
+    int unique_domains;
     int is_sync_enabled;
     int has_sync_visits;
     std::string last_visited_domain;
-    int unique_domains;
     std::string expected_output;
   } kTestCases[] = {
       // No sync, no synced visits:
-      {0, false, false, "", 0, "None"},
-      {0, false, false, "google.com", 1, "From google.com"},
-      {1, false, false, "google.com", 1, "From google.com"},
-      {5, false, false, "google.com", 5, "From google.com + 4 sites"},
+      {0, false, false, "", "None"},
+      {1, false, false, "google.com", "From google.com"},
+      {5, false, false, "google.com", "From google.com + 4 sites"},
       // Sync but not synced visits:
-      {0, true, false, "", 0, "None"},
-      {1, true, false, "google.com", 1, "From google.com"},
-      {0, true, false, "google.com", 1, "From google.com"},
-      {5, true, false, "google.com", 5, "From google.com + 4 sites"},
+      {0, true, false, "", "None"},
+      {1, true, false, "google.com", "From google.com"},
+      {5, true, false, "google.com", "From google.com + 4 sites"},
       // Sync and synced visits:
-      {0, true, true, "", 0, "From at least 1 site on synced devices"},
-      {1, true, true, "google.com", 1,
-       "From google.com (more on synced devices)"},
-      {0, true, true, "google.com", 1,
-       "From google.com (more on synced devices)"},
-      {5, true, true, "google.com", 5,
+      {0, true, true, "", "From at least 1 site on synced devices"},
+      {1, true, true, "google.com", "From google.com (more on synced devices)"},
+      {5, true, true, "google.com",
        "From google.com + 4 sites (more on synced devices)"},
   };
 
   for (const TestCase& test_case : kTestCases) {
     HistoryCounter::HistoryResult result(
-        &counter, test_case.num_history, test_case.is_sync_enabled,
-        test_case.has_sync_visits, test_case.last_visited_domain,
-        test_case.unique_domains);
-    SCOPED_TRACE(
-        base::StringPrintf("Test params: %d history, %d has_synced_visits, "
-                           "last visted domain is %s",
-                           test_case.num_history, test_case.has_sync_visits,
-                           test_case.last_visited_domain));
+        &counter, test_case.unique_domains, test_case.is_sync_enabled,
+        test_case.has_sync_visits, test_case.last_visited_domain);
+    SCOPED_TRACE(base::StringPrintf(
+        "Test params: %d unique domains, %d has_synced_visits, "
+        "last visted domain is %s",
+        test_case.unique_domains, test_case.has_sync_visits,
+        test_case.last_visited_domain));
+    std::u16string output = browsing_data::GetCounterTextFromResult(&result);
+    EXPECT_EQ(output, base::ASCIIToUTF16(test_case.expected_output));
+  }
+}
+
+// Tests the output of the Skills counter.
+TEST_F(BrowsingDataUtilsTest, SkillsCounterResult) {
+  FakeSkillsCounter counter;
+
+  const struct TestCase {
+    int num_skills;
+    bool sync_enabled;
+    std::string expected_output;
+  } kTestCases[] = {
+      {0, false, "None"},
+      {1, false, "1 skill"},
+      {5, false, "5 skills"},
+      {0, true, "None"},
+      {1, true, "1 skill (synced)"},
+      {5, true, "5 skills (synced)"},
+  };
+
+  for (const TestCase& test_case : kTestCases) {
+    BrowsingDataCounter::SyncResult result(&counter, test_case.num_skills,
+                                           test_case.sync_enabled);
+    SCOPED_TRACE(base::StringPrintf("Test params: %d skill(s), sync: %d",
+                                    test_case.num_skills,
+                                    test_case.sync_enabled));
     std::u16string output = browsing_data::GetCounterTextFromResult(&result);
     EXPECT_EQ(output, base::ASCIIToUTF16(test_case.expected_output));
   }

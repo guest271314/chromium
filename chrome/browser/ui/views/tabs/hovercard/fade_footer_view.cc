@@ -11,7 +11,6 @@
 #include "chrome/browser/ui/layout_constants.h"
 #include "chrome/browser/ui/tabs/alert/tab_alert_controller.h"
 #include "chrome/browser/ui/tabs/alert/tab_alert_icon.h"
-#include "chrome/browser/ui/views/tabs/tab/alert_indicator_button.h"
 #include "chrome/grit/generated_resources.h"
 #include "components/tabs/public/tab_alert.h"
 #include "ui/base/l10n/l10n_util.h"
@@ -24,7 +23,6 @@
 #include "ui/gfx/color_palette.h"
 #include "ui/views/border.h"
 #include "ui/views/layout/flex_layout_types.h"
-#include "ui/views/layout/layout_provider.h"
 #include "ui/views/view.h"
 #include "ui/views/view_class_properties.h"
 
@@ -54,6 +52,7 @@ ui::ColorId GetTabAlertColor(tabs::TabAlert alert_state) {
     case tabs::TabAlert::kActorWaitingOnUser:
     case tabs::TabAlert::kGlicAccessing:
     case tabs::TabAlert::kGlicSharing:
+    case tabs::TabAlert::kAiModeSharing:
       icon_color = kColorHoverCardTabAlertPipPlayingIcon;
       break;
     case tabs::TabAlert::kAudioPlaying:
@@ -66,6 +65,8 @@ ui::ColorId GetTabAlertColor(tabs::TabAlert alert_state) {
     case tabs::TabAlert::kVrPresentingInHeadset:
       icon_color = kColorHoverCardTabAlertAudioPlayingIcon;
       break;
+    case tabs::TabAlert::kNone:
+      NOTREACHED();
   }
 
   return icon_color;

@@ -310,7 +310,7 @@ class DataTypeWorkerTest : public ::testing::Test {
            cryptographer_.GetDefaultEncryptionKeyName() ==
                GetNthKeyName(encryption_keys_count_));
     encryption_keys_count_++;
-    cryptographer_.ClearDefaultEncryptionKey();
+    cryptographer_.InvalidateDefaultEncryptionKey();
     if (worker()) {
       worker()->OnCryptographerChange();
     }
@@ -833,6 +833,27 @@ TEST_F(DataTypeWorkerTest,
   NormalInitialize();
   TriggerTombstoneFromServer(10, kTag1);
   EXPECT_EQ(status_controller()->get_updated_types(), DataTypeSet());
+}
+
+TEST_F(DataTypeWorkerTest, ReceiveUpdates_ShouldDropUncommittedVersion) {
+  NormalInitialize();
+
+  sync_pb::SyncEntity entity;
+  entity.set_id_string("SomeID");
+  entity.set_folder(false);
+  entity.set_version(kUncommittedVersion);
+  entity.set_client_tag_hash(GeneratePreferenceTagHash(kTag1).value());
+  entity.set_deleted(false);
+  *entity.mutable_specifics() = GenerateSpecifics(kTag1, kValue1);
+
+  worker()->ProcessGetUpdatesResponse(server()->GetProgress(),
+                                      server()->GetContext(), {&entity},
+                                      status_controller());
+  worker()->ApplyUpdates(status_controller(), /*cycle_done=*/true);
+
+  // The update should have been dropped.
+  ASSERT_EQ(1U, processor()->GetNumUpdateResponses());
+  EXPECT_EQ(0U, processor()->GetNthUpdateResponse(0).size());
 }
 
 TEST_F(DataTypeWorkerTest, ReceiveUpdates_NoDuplicateHash) {
@@ -1730,7 +1751,6 @@ TEST(DataTypeWorkerPopulateUpdateResponseDataTest,
   sync_pb::SyncEntity entity;
   *entity.mutable_unique_position() = kUniquePosition.ToProto();
   entity.set_client_tag_hash("CLIENT_TAG");
-  entity.set_server_defined_unique_tag("SERVER_TAG");
   entity.mutable_specifics()->mutable_bookmark();
 
   UpdateResponseData response_data;
@@ -1749,7 +1769,6 @@ TEST(DataTypeWorkerPopulateUpdateResponseDataTest,
   sync_pb::SyncEntity entity;
   entity.set_position_in_parent(5);
   entity.set_client_tag_hash("CLIENT_TAG");
-  entity.set_server_defined_unique_tag("SERVER_TAG");
   entity.mutable_specifics()->mutable_bookmark();
 
   UpdateResponseData response_data;
@@ -1768,7 +1787,6 @@ TEST(DataTypeWorkerPopulateUpdateResponseDataTest,
   sync_pb::SyncEntity entity;
   entity.set_insert_after_item_id("ITEM_ID");
   entity.set_client_tag_hash("CLIENT_TAG");
-  entity.set_server_defined_unique_tag("SERVER_TAG");
   entity.mutable_specifics()->mutable_bookmark();
 
   UpdateResponseData response_data;
@@ -1786,7 +1804,6 @@ TEST(DataTypeWorkerPopulateUpdateResponseDataTest,
      BookmarkWithMissingPositionFallsBackToRandom) {
   sync_pb::SyncEntity entity;
   entity.set_client_tag_hash("CLIENT_TAG");
-  entity.set_server_defined_unique_tag("SERVER_TAG");
   entity.mutable_specifics()->mutable_bookmark();
 
   UpdateResponseData response_data;
@@ -1914,24 +1931,6 @@ TEST(DataTypeWorkerPopulateUpdateResponseDataTest,
   // The client tag hash makes it through.
   EXPECT_EQ(response_data.entity.client_tag_hash.value(),
             kTestClientTagHash.value());
-}
-
-TEST(DataTypeWorkerPopulateUpdateResponseDataTest,
-     OfferDataWithMissingClientTagHash) {
-  UpdateResponseData response_data;
-
-  // Set up the entity with an arbitrary value for an arbitrary field in the
-  // specifics (so that it _has_ autofill offer specifics).
-  sync_pb::SyncEntity entity;
-  entity.mutable_specifics()->mutable_autofill_offer()->set_id(1234567);
-
-  ASSERT_EQ(
-      DataTypeWorker::SUCCESS,
-      DataTypeWorker::PopulateUpdateResponseData(
-          FakeCryptographer(), AUTOFILL_WALLET_OFFER, entity, &response_data));
-
-  // The client tag hash gets filled in by the worker.
-  EXPECT_FALSE(response_data.entity.client_tag_hash.value().empty());
 }
 
 TEST(DataTypeWorkerPopulateUpdateResponseDataTest,

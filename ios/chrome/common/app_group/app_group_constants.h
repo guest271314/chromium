@@ -45,6 +45,13 @@ extern NSString* const kChromeCapabilitiesPreference;
 // Show default browser promo capability.
 extern NSString* const kChromeShowDefaultBrowserPromoCapability;
 
+// Capability declaring whether the current version of Chrome supports AI
+// summarization.
+extern NSString* const kChromeSupportsAISummarizationCapability;
+
+// Capability declaring whether the active user is eligible for Gemini.
+extern NSString* const kChromeUserIsEligibleForGeminiCapability;
+
 // Capability declaring a list of supported bundle IDs that can open incognito
 // links in chrome.
 extern NSString* const kChromeSupportOpenLinksParametersFromCapability;
@@ -120,6 +127,10 @@ extern const char kChromeAppGroupSearchPasswordsCommand[];
 // `kChromeAppGroupCommandAppPreference` issued the command.
 extern const char kChromeAppGroupCommandTimePreference[];
 
+// The timeout after which an app group command is considered expired (in
+// seconds).
+extern const NSTimeInterval kAppGroupCommandTimeout;
+
 // The key in kChromeAppGroupCommandPreference containing the text use for the
 // command if it requires one. This could be a URL, a string, etc.
 extern const char kChromeAppGroupCommandTextPreference[];
@@ -172,12 +183,6 @@ extern NSString* const kShareItemSourceShareExtension;
 extern NSString* const kOpenCommandSourceShareExtension;
 extern NSString* const kOpenCommandSourceCredentialsExtension;
 extern NSString* const kOpenCommandSourceOpenExtension;
-
-// The value of the key for the sharedDefaults used by the Shortcuts Widget.
-extern NSString* const kSuggestedItems;
-// The value of the key for the sharedDefaults last modification date used by
-// the Shortcuts Widget.
-extern NSString* const kSuggestedItemsLastModificationDate;
 
 // NSUserDefaults key containing a dictionary with most visited sites data for a
 // given gaiaID. Used by the Shortcuts Widget.

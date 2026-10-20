@@ -7,6 +7,7 @@
 
 #import <Foundation/Foundation.h>
 
+enum class AssistantAimEntrypoint;
 @class ComposeboxInputItem;
 class GURL;
 
@@ -16,10 +17,6 @@ class GURL;
 // The triggering URL.
 @property(nonatomic, assign, readonly) const GURL& url;
 
-// The unique server-side identifier for this specific conversation turn.
-// Corresponds to the "mstk" query parameter.
-@property(nonatomic, copy, readonly) NSString* conversationTurnID;
-
 // The search query text.
 // Corresponds to the "q" query parameter.
 @property(nonatomic, copy, readonly) NSString* searchQuery;
@@ -28,12 +25,26 @@ class GURL;
 // Corresponds to the "mtid" query parameter.
 @property(nonatomic, copy, readonly) NSString* serverID;
 
+// The turn ID (state token) of the conversation.
+// Corresponds to the "mstk" query parameter.
+@property(nonatomic, copy, readonly) NSString* turnID;
+
 // The items attached from the composebox.
 @property(nonatomic, copy) NSArray<ComposeboxInputItem*>* attachedItems;
+
+// Entrypoint that initiated the cobrowse session.
+@property(nonatomic, assign) AssistantAimEntrypoint entrypoint;
+
+// Whether the context contains server session tokens (mstk, mtid, or cinpts).
+@property(nonatomic, assign, readonly) BOOL hasServerSessionTokens;
 
 // Returns a default context with the base search URL, used mainly for debugging
 // purposes.
 + (instancetype)defaultContext;
+
+// Returns a context initialized with `searchQuery`, using the default base
+// search URL.
++ (instancetype)cobrowseContextWithSearchQuery:(NSString*)searchQuery;
 
 // Initializes the context with `url`, adding cobrowse query parameters.
 // Note: `url` may be ignored if the "CobrowseGwsURL" experimental setting is

@@ -4,10 +4,10 @@
 
 #include "chrome/browser/ui/views/toolbar/toolbar_glic_actor_task_icon.h"
 
-#include "chrome/browser/actor/resources/grit/actor_browser_resources.h"
-#include "chrome/browser/glic/browser_ui/glic_vector_icon_manager.h"
+#include "chrome/app/vector_icons/vector_icons.h"
 #include "chrome/browser/glic/public/features.h"
 #include "chrome/browser/ui/color/chrome_color_id.h"
+#include "chrome/browser/ui/layout_constants.h"
 #include "chrome/browser/ui/views/glic/glic_actor_task_icon.h"
 #include "chrome/browser/ui/views/toolbar/toolbar_button.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
@@ -19,6 +19,7 @@ ToolbarGlicActorTaskIcon::ToolbarGlicActorTaskIcon(
     PressedCallback pressed_callback)
     : GlicActorTaskIcon<ToolbarButton>(browser_window_interface,
                                        pressed_callback) {
+  SetImageLabelSpacing(0);
   SetTaskIconToDefault();
 
   // The task icon will only ever be shown with the GlicButton, so can always
@@ -36,9 +37,14 @@ void ToolbarGlicActorTaskIcon::AddedToWidget() {
   SetLeftRightCornerRadii(kSplitLeftEdgeRadius, GetSplitRoundedEdgeRadius());
 
   SetDefaultBackgroundColorId(kColorToolbarGlicButtonBackgroundDefault);
-  UpdateIconsWithStandardColors(
-      glic::GlicVectorIconManager::GetVectorIcon(IDR_ACTOR_AUTO_BROWSE_ICON));
+  UpdateIconsWithStandardColors(kCursorSparkIcon);
   GlicActorTaskIcon<ToolbarButton>::AddedToWidget();
+}
+
+gfx::Size ToolbarGlicActorTaskIcon::GetMinimumSize() const {
+  int size = GetLayoutConstant(LayoutConstant::kToolbarButtonHeight) +
+             kActorNudgeLabelMargin;
+  return gfx::Size(size, size);
 }
 
 void ToolbarGlicActorTaskIcon::SetForegroundFrameActiveColorId(
@@ -62,7 +68,12 @@ void ToolbarGlicActorTaskIcon::SetBackgroundFrameInactiveColorId(
 }
 
 void ToolbarGlicActorTaskIcon::UpdateColors() {
+  UpdateColorsAndInsets();
+}
+
+void ToolbarGlicActorTaskIcon::UpdateColorsAndInsets() {
   ToolbarButton::UpdateColorsAndInsets();
+  label()->SetBorder(nullptr);
 }
 
 void ToolbarGlicActorTaskIcon::SetIsShowingNudge(bool is_showing) {

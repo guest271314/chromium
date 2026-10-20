@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cstdint>
 #include <numeric>
 
 #include "base/bits.h"
@@ -218,9 +219,11 @@ bool VP9VaapiVideoEncoderDelegate::Initialize(
   }
 
   visible_size_ = config.input_visible_size;
-  coded_size_ = gfx::Size(
-      base::bits::AlignUpDeprecatedDoNotUse(visible_size_.width(), 16),
-      base::bits::AlignUpDeprecatedDoNotUse(visible_size_.height(), 16));
+  coded_size_ =
+      gfx::Size(base::bits::AlignUp(
+                    base::checked_cast<uint32_t>(visible_size_.width()), 16u),
+                base::bits::AlignUp(
+                    base::checked_cast<uint32_t>(visible_size_.height()), 16u));
   current_params_ = EncodeParams();
   if (config.content_type ==
       VideoEncodeAccelerator::Config::ContentType::kDisplay) {
@@ -261,6 +264,13 @@ bool VP9VaapiVideoEncoderDelegate::Initialize(
       return false;
     }
     for (const auto& spatial_layer : config.spatial_layers) {
+      // Only down scaling is supported in spatial layer encoding.
+      if (spatial_layer.width > visible_size_.width() ||
+          spatial_layer.height > visible_size_.height()) {
+        VLOGF(1) << "Spatial layer resolution is larger than visible size";
+        return false;
+      }
+
       spatial_layer_resolutions.emplace_back(
           gfx::Size(spatial_layer.width, spatial_layer.height));
     }

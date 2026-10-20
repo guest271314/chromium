@@ -43,7 +43,6 @@ class CdmWrapper;
 class MEDIA_EXPORT CdmAdapter final : public ContentDecryptionModule,
                                       public CdmContext,
                                       public Decryptor,
-                                      public cdm::Host_10,
                                       public cdm::Host_11,
                                       public cdm::Host_12 {
  public:
@@ -137,7 +136,7 @@ class MEDIA_EXPORT CdmAdapter final : public ContentDecryptionModule,
                            const cdm::KeyInformation_2* keys_info,
                            uint32_t keys_info_count) override;
 
-  // cdm::Host_10 and cdm::Host_11 implementation.
+  // cdm::Host_11 implementation.
   void OnResolveKeyStatusPromise(uint32_t promise_id,
                                  cdm::KeyStatus key_status) override;
   void OnSessionKeysChange(const char* session_id,
@@ -146,7 +145,7 @@ class MEDIA_EXPORT CdmAdapter final : public ContentDecryptionModule,
                            const cdm::KeyInformation* keys_info,
                            uint32_t keys_info_count) override;
 
-  // Common cdm::Host_10, cdm::Host_11, cdm::Host_12 implementation.
+  // Common cdm::Host_11, cdm::Host_12 implementation.
   cdm::Buffer* Allocate(uint32_t capacity) override;
   void SetTimer(int64_t delay_ms, void* context) override;
   cdm::Time GetCurrentWallTime() override;
@@ -191,10 +190,10 @@ class MEDIA_EXPORT CdmAdapter final : public ContentDecryptionModule,
   // otherwise.
   void Initialize(std::unique_ptr<media::SimpleCdmPromise> promise);
 
-  // Create an instance of the CDM for |key_system|.
+  // Create an instance of the CDM.
   // Caller owns the returned pointer. Returns nullptr on error, e.g. does not
-  // support |key_system|, does not support an supported interface, etc.
-  CdmWrapper* CreateCdmInstance(const std::string& key_system);
+  // support the key system, does not support a supported interface, etc.
+  CdmWrapper* CreateCdmInstance();
 
   // Helper for SetTimer().
   void TimerExpired(void* context);

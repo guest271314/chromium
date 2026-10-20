@@ -4,12 +4,10 @@
 
 #include "chrome/browser/ash/file_suggest/file_suggest_keyed_service.h"
 
-#include "ash/constants/ash_features.h"
 #include "ash/constants/ash_pref_names.h"
 #include "ash/public/cpp/app_list/app_list_types.h"
 #include "base/functional/bind.h"
 #include "chrome/browser/ash/file_manager/fileapi_util.h"
-#include "chrome/browser/ash/file_suggest/drive_file_suggestion_provider.h"
 #include "chrome/browser/ash/file_suggest/drive_recent_file_suggestion_provider.h"
 #include "chrome/browser/ash/file_suggest/file_suggest_util.h"
 #include "chrome/browser/ash/file_suggest/local_file_suggestion_provider.h"
@@ -23,11 +21,11 @@ using SuggestResults = std::vector<FileSuggestData>;
 }  // namespace
 
 FileSuggestKeyedService::FileSuggestKeyedService(
-    const ApplicationLocaleStorage* application_locale_storage,
+    PrefService* local_state,
     Profile* profile,
     PersistentProto<app_list::RemovedResultsProto> proto)
     : profile_(profile), proto_(std::move(proto)) {
-  DCHECK(profile_);
+  CHECK(profile_, base::NotFatalUntil::M160);
 
   // `proto_` is a class member so it is safe to call `RegisterOnInitUnsafe()`.
   proto_.RegisterOnInitUnsafe(
@@ -44,18 +42,13 @@ FileSuggestKeyedService::FileSuggestKeyedService(
 
   local_file_suggestion_provider_ =
       std::make_unique<LocalFileSuggestionProvider>(
-          profile, base::BindRepeating(
-                       &FileSuggestKeyedService::OnSuggestionProviderUpdated,
-                       weak_factory_.GetWeakPtr()));
+          local_state, profile,
+          base::BindRepeating(
+              &FileSuggestKeyedService::OnSuggestionProviderUpdated,
+              weak_factory_.GetWeakPtr()));
 }
 
 FileSuggestKeyedService::~FileSuggestKeyedService() = default;
-
-void FileSuggestKeyedService::MaybeUpdateItemSuggestCache(
-    base::PassKey<app_list::ZeroStateDriveProvider>) {
-  drive_file_suggestion_provider_->MaybeUpdateItemSuggestCache(
-      base::PassKey<FileSuggestKeyedService>());
-}
 
 void FileSuggestKeyedService::GetSuggestFileData(
     FileSuggestionType type,
@@ -108,7 +101,7 @@ void FileSuggestKeyedService::RemoveSuggestionsAndNotify(
 
   std::vector<std::pair<FileSuggestionType, std::string>> type_id_pairs;
   for (const auto& file_path : absolute_file_paths) {
-    DCHECK(file_path.IsAbsolute());
+    CHECK(file_path.IsAbsolute(), base::NotFatalUntil::M160);
 
     // Calculate the suggestion type based on `file_path`.
     GURL crack_url;
@@ -116,11 +109,11 @@ void FileSuggestKeyedService::RemoveSuggestionsAndNotify(
         file_manager::util::ConvertAbsoluteFilePathToFileSystemUrl(
             profile_, file_path, file_manager::util::GetFileManagerURL(),
             &crack_url);
-    DCHECK(resolve_success);
+    CHECK(resolve_success, base::NotFatalUntil::M160);
     const storage::FileSystemURL& file_system_url =
         file_manager::util::GetFileManagerFileSystemContext(profile_)
             ->CrackURLInFirstPartyContext(crack_url);
-    DCHECK(file_system_url.is_valid());
+    CHECK(file_system_url.is_valid(), base::NotFatalUntil::M160);
     const FileSuggestionType type =
         file_system_url.type() == storage::kFileSystemTypeDriveFs
             ? FileSuggestionType::kDriveFile
@@ -138,10 +131,11 @@ void FileSuggestKeyedService::RemoveSuggestionBySearchResultAndNotify(
   }
 
   // `search_result` should refer to a suggested file.
-  DCHECK(search_result.result_type ==
-             ash::AppListSearchResultType::kZeroStateDrive ||
-         search_result.result_type ==
-             ash::AppListSearchResultType::kZeroStateFile);
+  CHECK(search_result.result_type ==
+                ash::AppListSearchResultType::kZeroStateDrive ||
+            search_result.result_type ==
+                ash::AppListSearchResultType::kZeroStateFile,
+        base::NotFatalUntil::M160);
 
   RemoveSuggestionsByTypeIdPairs(
       {{search_result.result_type ==
@@ -206,7 +200,7 @@ void FileSuggestKeyedService::FilterDuplicateSuggestions(
 void FileSuggestKeyedService::FilterRemovedSuggestions(
     GetSuggestFileDataCallback callback,
     const std::optional<std::vector<FileSuggestData>>& suggestions) {
-  DCHECK(IsProtoInitialized());
+  CHECK(IsProtoInitialized(), base::NotFatalUntil::M160);
 
   // There are no candidate suggestions to filter. Therefore, return early.
   if (!suggestions.has_value() || suggestions->empty()) {
@@ -240,7 +234,7 @@ void FileSuggestKeyedService::OnRemovedSuggestionProtoReady() {
 void FileSuggestKeyedService::RemoveSuggestionsByTypeIdPairs(
     const std::vector<std::pair<FileSuggestionType, std::string>>&
         type_id_pairs) {
-  DCHECK(IsProtoInitialized());
+  CHECK(IsProtoInitialized(), base::NotFatalUntil::M160);
 
   // Record the types of the removed suggestions. `observers_` should be
   // notified of the updates on these types.

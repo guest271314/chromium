@@ -4,6 +4,7 @@
 
 #include "components/safe_browsing/core/browser/db/v5_update_protocol_manager.h"
 
+#include <optional>
 #include <utility>
 
 #include "base/base64url.h"
@@ -15,7 +16,10 @@
 #include "base/sequence_checker.h"
 #include "base/strings/escape.h"
 #include "base/strings/stringprintf.h"
+#include "components/safe_browsing/core/browser/db/v5_hash_list_rice_decoder.h"
+#include "components/safe_browsing/core/browser/db/v5_rice.h"
 #include "components/safe_browsing/core/common/utils.h"
+#include "crypto/hash.h"
 #include "google_apis/google_api_keys.h"
 #include "net/base/load_flags.h"
 #include "net/http/http_response_headers.h"
@@ -27,6 +31,28 @@
 #include "services/network/public/mojom/url_response_head.mojom.h"
 
 namespace {
+
+// Backoff policy for V5 update requests.
+// With initial_delay_ms = 30 minutes, multiply_factor = 2.0, and
+// jitter_factor = 0.5, the backoff delay increases exponentially with
+// subsequent failures and has random jitter in [0.5 * base, base]:
+//  - 1st failure: 15 min - 30 min
+//  - 2nd failure: 30 min to 1 hour
+//  - 3rd failure: 1 hour to 2 hours
+//  - 4th failure: 2 hours to 4 hours
+//  - Subsequent failures continue doubling up to the 24 hour maximum backoff
+//    cap.
+const net::BackoffEntry::Policy kV5UpdateBackoffPolicy = {
+    0,                    // num_errors_to_ignore
+    30 * 60 * 1000,       // initial_delay_ms (30 minutes)
+    2.0,                  // multiply_factor (exponentially increases delays
+                          // by 2x for each new failure)
+    0.5,                  // jitter_factor (randomly reduces the delay by up
+                          // to 50%)
+    24 * 60 * 60 * 1000,  // maximum_backoff_ms (24 hours)
+    -1,                   // entry_lifetime_ms (never discard)
+    false,                // always_use_initial_delay
+};
 
 void RecordSBUpdateResult(safe_browsing::V4OperationResult v4_result) {
   UMA_HISTOGRAM_ENUMERATION(
@@ -42,12 +68,13 @@ namespace safe_browsing {
 
 V5UpdateProtocolManager::V5UpdateProtocolManager(
     scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
-    // TODO(crbug.com/362791941): remove v4 references
-    const V4ProtocolConfig& config,
+    const SBProtocolConfig& config,
     V5UpdateCallback update_callback)
     : SBUpdateProtocolManager(std::move(url_loader_factory), config),
-      update_callback_(update_callback) {
-  // Do not auto-schedule updates. Let the owner (V4LocalDatabaseManager) do it
+      update_callback_(update_callback),
+      backoff_entry_(
+          std::make_unique<net::BackoffEntry>(&kV5UpdateBackoffPolicy)) {
+  // Do not auto-schedule updates. Let the owner (SBLocalDatabaseManager) do it
   // when it is ready to process updates.
 }
 
@@ -161,9 +188,8 @@ void V5UpdateProtocolManager::IssueUpdateRequest(
   std::string request_base64 =
       GetBase64SerializedUpdateRequestProto(list_identifier_to_version_mapping);
   std::string url = base::StringPrintf(
-      "https://safebrowsing.googleapis.com/v5/hashLists:batchGet"
-      "?$req=%s&$ct=application/x-protobuf",
-      request_base64.c_str());
+      "%s/hashLists:batchGet?$req=%s&$ct=application/x-protobuf",
+      GetSbV5UrlPrefix(), request_base64.c_str());
   auto api_key = google_apis::GetAPIKey();
   if (!api_key.empty()) {
     base::StringAppendF(&url, "&key=%s",
@@ -173,15 +199,8 @@ void V5UpdateProtocolManager::IssueUpdateRequest(
   resource_request->method = "GET";
   resource_request->load_flags = net::LOAD_DISABLE_CACHE;
   resource_request->credentials_mode = network::mojom::CredentialsMode::kOmit;
-  // The v5 User-Agent header docs state: "While there is no prescribed format
-  // for supplying the client identification in this header, we suggest simply
-  // including the original client ID and client version separated by a space
-  // character or a slash character."
-  // Thus, this uses the same `client_name` and `version` originally used for
-  // v4, here separated with a space character.
-  resource_request->headers.SetHeader(
-      net::HttpRequestHeaders::kUserAgent,
-      base::StrCat({config_.client_name, " ", config_.version}));
+  SBProtocolManagerUtil::SetV5UserAgentHeader(&resource_request->headers,
+                                              config_);
 
   std::unique_ptr<network::SimpleURLLoader> loader =
       network::SimpleURLLoader::Create(std::move(resource_request),
@@ -330,7 +349,6 @@ V5UpdateProtocolManager::ParseUpdateResponse(
     return base::unexpected(V5ParseResult::kMismatchedSizeError);
   }
   std::map<ListIdentifier, V5::HashList> parsed_response;
-  // TODO(crbug.com/362791941): consider non-optional + initialize to max time
   std::optional<base::TimeDelta> overall_minimum_wait_duration;
   for (int i = 0; i < server_response.hash_lists_size(); ++i) {
     V5::HashList& hash_list = *server_response.mutable_hash_lists(i);
@@ -343,17 +361,50 @@ V5UpdateProtocolManager::ParseUpdateResponse(
       return base::unexpected(V5ParseResult::kMismatchedNameError);
     }
 
-    PrefixSize expected_hash_prefix_lengths =
+    PrefixSize expected_hash_prefix_length =
         GetV5ListPrefixSize(list_identifier);
-    if ((hash_list.has_additions_four_bytes() &&
-         expected_hash_prefix_lengths != 4) ||
-        (hash_list.has_additions_eight_bytes() &&
-         expected_hash_prefix_lengths != 8) ||
-        (hash_list.has_additions_sixteen_bytes() &&
-         expected_hash_prefix_lengths != 16) ||
-        (hash_list.has_additions_thirty_two_bytes() &&
-         expected_hash_prefix_lengths != 32)) {
+    std::optional<PrefixSize> actual_hash_prefix_length;
+    switch (hash_list.compressed_additions_case()) {
+      case V5::HashList::kAdditionsFourBytes:
+        actual_hash_prefix_length = 4;
+        break;
+      case V5::HashList::kAdditionsEightBytes:
+        actual_hash_prefix_length = 8;
+        break;
+      case V5::HashList::kAdditionsSixteenBytes:
+        actual_hash_prefix_length = 16;
+        break;
+      case V5::HashList::kAdditionsThirtyTwoBytes:
+        actual_hash_prefix_length = 32;
+        break;
+      case V5::HashList::COMPRESSED_ADDITIONS_NOT_SET:
+        break;
+    }
+    if (actual_hash_prefix_length.has_value() &&
+        expected_hash_prefix_length != actual_hash_prefix_length.value()) {
       return base::unexpected(V5ParseResult::kMismatchedPrefixLengthError);
+    }
+
+    V5InputValidationResult validation_result =
+        v5_hash_list_rice_decoder::ValidateHashList(hash_list);
+    base::UmaHistogramEnumeration(
+        "SafeBrowsing.V5Update.RiceInputValidationResult", validation_result);
+    if (validation_result != V5InputValidationResult::kSuccess) {
+      return base::unexpected(V5ParseResult::kInvalidRiceFieldError);
+    }
+
+    bool has_additions = hash_list.compressed_additions_case() !=
+                         V5::HashList::COMPRESSED_ADDITIONS_NOT_SET;
+    bool has_removals = hash_list.has_compressed_removals();
+    bool has_changes = has_additions || has_removals;
+
+    const std::string& expected_checksum = hash_list.sha256_checksum();
+    if (has_changes && expected_checksum.empty()) {
+      return base::unexpected(V5ParseResult::kChecksumMissingError);
+    }
+    if (!expected_checksum.empty() &&
+        expected_checksum.size() != crypto::hash::kSha256Size) {
+      return base::unexpected(V5ParseResult::kChecksumSizeError);
     }
 
     // Save off the smallest minimum_wait_duration across lists and use that to
@@ -412,6 +463,15 @@ V5UpdateProtocolManager::ParsedResponse::ParsedResponse(ParsedResponse&&) =
     default;
 V5UpdateProtocolManager::ParsedResponse&
 V5UpdateProtocolManager::ParsedResponse::operator=(ParsedResponse&&) = default;
+
+void V5UpdateProtocolManager::ResetUpdateErrors() {
+  backoff_entry_->Reset();
+}
+
+base::TimeDelta V5UpdateProtocolManager::GetNextBackOffInterval() {
+  backoff_entry_->InformOfRequest(/*succeeded=*/false);
+  return backoff_entry_->GetTimeUntilRelease();
+}
 
 void V5UpdateProtocolManager::RecordProtocolSpecificNextUpdateInterval(
     base::TimeDelta interval) {

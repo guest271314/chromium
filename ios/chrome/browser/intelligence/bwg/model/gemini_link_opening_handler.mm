@@ -6,13 +6,14 @@
 
 #import "base/strings/sys_string_conversions.h"
 #import "ios/chrome/browser/intelligence/bwg/metrics/gemini_metrics.h"
-#import "ios/chrome/browser/intelligence/bwg/model/gemini_view_state_delegate.h"
 #import "ios/chrome/browser/intelligence/features/features.h"
 #import "ios/chrome/browser/shared/public/commands/command_dispatcher.h"
+#import "ios/chrome/browser/shared/public/commands/gemini_commands.h"
+#import "ios/chrome/browser/shared/public/commands/open_new_tab_command.h"
 #import "ios/chrome/browser/shared/public/commands/scene_commands.h"
 #import "ios/chrome/browser/url_loading/model/url_loading_browser_agent.h"
 #import "ios/chrome/browser/url_loading/model/url_loading_params.h"
-#import "ios/public/provider/chrome/browser/bwg/bwg_api.h"
+#import "net/base/apple/url_conversions.h"
 #import "url/gurl.h"
 
 @implementation GeminiLinkOpeningHandler {
@@ -41,11 +42,29 @@
 }
 
 - (void)openURLInNewTab:(NSString*)URL {
-  [self openURL:URL closePresentedViews:!IsGeminiCopresenceEnabled()];
+  [self openURL:URL closePresentedViews:NO];
 }
 
 - (void)closePresentedViewsAndOpenURLInNewTab:(NSString*)URL {
-  [self openURL:URL closePresentedViews:true];
+  [self openURL:URL closePresentedViews:YES];
+}
+
+- (void)openImmersiveLearningCardURLInWebModal:(NSURL*)URL {
+  if (ShouldOpenGeminiQuizzesInNewTab()) {
+    [self openURLInNewTab:URL.absoluteString];
+    return;
+  }
+
+  GURL gurl = net::GURLWithNSURL(URL);
+  if (!gurl.is_valid()) {
+    return;
+  }
+
+  RecordURLOpened();
+  RecordGeminiImmersiveLearningCardWebModalOpened();
+  id<GeminiCommands> geminiHandler =
+      HandlerForProtocol(_dispatcher, GeminiCommands);
+  [geminiHandler showGeminiWebModalForURL:gurl];
 }
 
 - (void)openURL:(NSString*)URL closePresentedViews:(BOOL)closePresentedViews {
@@ -71,12 +90,9 @@
 
   RecordURLOpened();
 
-  if (!IsGeminiCopresenceEnabled()) {
-    return;
-  }
-
-  [self.geminiViewStateDelegate
-      switchToViewState:ios::provider::GeminiViewState::kCollapsed];
+  id<GeminiCommands> geminiHandler =
+      HandlerForProtocol(_dispatcher, GeminiCommands);
+  [geminiHandler minimizeGeminiIfInvoked];
 }
 
 @end

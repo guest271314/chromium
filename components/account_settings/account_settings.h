@@ -30,25 +30,21 @@ struct AccountSetting {
 inline constexpr AccountSetting kWalletPrivacyContextualSurfacing{
     "WALLET_PRIVACY_CONTEXTUAL_SURFACING", base::Value::Type::BOOLEAN};
 
-inline constexpr AccountSetting kAccountSettingContext{
-    "GEMINI_PERSONAL_CONTEXT_GEMINI", base::Value::Type::BOOLEAN,
-    &features::kAccountSettingContext};
-
-inline constexpr AccountSetting kAccountSettingContextWorkspace{
-    "PERSONAL_CONTEXT_GEMINI_USING_WORKSPACE", base::Value::Type::BOOLEAN,
-    &features::kAccountSettingContext};
-
-inline constexpr AccountSetting kAccountSettingContextPhotos{
-    "PERSONAL_CONTEXT_GEMINI_USING_PHOTOS", base::Value::Type::BOOLEAN,
-    &features::kAccountSettingContext};
-
 inline constexpr AccountSetting kAccountSettingContextSearch{
-    "GEMINI_PERSONAL_CONTEXT_SEARCH", base::Value::Type::BOOLEAN,
-    &features::kAccountSettingContext};
+    "144", base::Value::Type::BOOLEAN,
+    &features::kAccountSettingContextKillSwitch};
 
 inline constexpr AccountSetting kAccountSettingContextYoutube{
-    "GEMINI_PERSONAL_CONTEXT_YOUTUBE", base::Value::Type::BOOLEAN,
-    &features::kAccountSettingContext};
+    "161", base::Value::Type::BOOLEAN,
+    &features::kAccountSettingContextKillSwitch};
+
+inline constexpr AccountSetting kAccountSettingContextWorkspace{
+    "185", base::Value::Type::BOOLEAN,
+    &features::kAccountSettingContextKillSwitch};
+
+inline constexpr AccountSetting kAccountSettingContextPhotos{
+    "186", base::Value::Type::BOOLEAN,
+    &features::kAccountSettingContextKillSwitch};
 
 }  // namespace account_settings
 

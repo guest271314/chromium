@@ -54,7 +54,6 @@ class PrefetchRequest;
 class PrefetchResponseReader;
 class PrefetchService;
 class PrefetchServingHandle;
-class PrefetchServingPageMetricsContainer;
 class PrefetchSingleRedirectHop;
 class PrefetchStreamingURLLoader;
 enum class PrefetchPotentialCandidateServingResult;
@@ -223,6 +222,10 @@ class CONTENT_EXPORT PrefetchContainer
   // Equivalent to `request().key().url()`.
   const GURL& GetURL() const override;
 
+  // Returns true if the prefetch URL matches the query parameter configured for
+  // burst (e.g., pf=op).
+  bool MatchesBurstQueryParam() const { return matches_burst_query_param_; }
+
   // Equivalent to `request().no_vary_search_hint()`.
   // Exposed for `PrefetchMatchResolver`.
   const std::optional<net::HttpNoVarySearchData>& GetNoVarySearchHint()
@@ -313,8 +316,6 @@ class CONTENT_EXPORT PrefetchContainer
   const network::ResourceRequest* GetResourceRequest() const {
     return resource_request_.get();
   }
-
-  const GURL& GetActivationBeaconUrl() const { return activation_beacon_url_; }
 
   base::WeakPtr<PrefetchContainer> GetWeakPtr() {
     return weak_method_factory_.GetWeakPtr();
@@ -439,13 +440,11 @@ class CONTENT_EXPORT PrefetchContainer
   // - `SimulatePrefetchEligibleForTest()`
   // - `SimulatePrefetchStartedForTest()`
   // - `SetStreamingURLLoader()`
-  // - `SimulatePrefetchCompletedForTest()`
   void SimulatePrefetchEligibleForTest();
   void SimulatePrefetchStartedForTest();
   void SimulatePrefetchRedirectedForTest(
       const GURL& redirect_url,
       PreloadingEligibility eligibility = PreloadingEligibility::kEligible);
-  void SimulatePrefetchCompletedForTest();
 
   // Simulates a prefetch container that failed at the eligibility check
   // (`LoadState::FailedIneligible`).
@@ -570,6 +569,8 @@ class CONTENT_EXPORT PrefetchContainer
   // Handles loader related events. Currently used for DevTools and metrics.
   void NotifyPrefetchRequestWillBeSent(
       const network::mojom::URLResponseHeadPtr* redirect_head);
+  void NotifyPrefetchRedirectResponseReceived(
+      const network::mojom::URLResponseHead& redirect_head);
 
   bool is_in_dtor() const { return is_in_dtor_; }
 
@@ -597,23 +598,16 @@ class CONTENT_EXPORT PrefetchContainer
   // `time_prefetch_match_missed_` for more details.
   void SetPrefetchMatchMissedTimeForMetrics(base::TimeTicks time);
 
-  // Returns the time between the prefetch request was sent and the time the
-  // response headers were received. Not set if the prefetch request hasn't been
-  // sent or the response headers haven't arrived.
-  std::optional<base::TimeDelta> GetPrefetchHeaderLatency() const {
-    return header_latency_;
-  }
-
-  // Allow for the serving page to metrics when changes to the prefetch occur.
-  void SetServingPageMetrics(base::WeakPtr<PrefetchServingPageMetricsContainer>
-                                 serving_page_metrics_container);
-  void UpdateServingPageMetrics();
-
   const PrefetchContainerMetrics& GetPrefetchContainerMetrics() const {
     return prefetch_container_metrics_;
   }
 
   bool HasPreloadPipelineInfoForMetrics(const PreloadPipelineInfo& other) const;
+
+  // TODO(crbug.com/532560786): Remove it if `CHECK` is removed.
+  bool during_observer_notification() const {
+    return during_observer_notification_;
+  }
 
  private:
   // Update |prefetch_status_| and report prefetch status to
@@ -672,6 +666,10 @@ class CONTENT_EXPORT PrefetchContainer
       const network::mojom::URLResponseHead& head);
   void NotifyPrefetchRequestComplete();
 
+  // Notifies observers when the prefetch becomes stale, if not already
+  // notified.
+  void OnStale();
+
   // ----------------------------------------------------------------
   // Metrics:
 
@@ -705,10 +703,6 @@ class CONTENT_EXPORT PrefetchContainer
   // UMAs.
   void RecordPrefetchPotentialCandidateServingResultHistogram(
       PrefetchPotentialCandidateServingResult matching_result);
-
-  // Updates metrics based on the result of the prefetch request.
-  void UpdatePrefetchRequestMetrics(
-      const network::mojom::URLResponseHead* head);
 
   // The prefetch request parameters of the very first initiator/requester of
   // this prefetch at the time of request creation.
@@ -802,9 +796,6 @@ class CONTENT_EXPORT PrefetchContainer
   mojo::PendingReceiver<network::mojom::URLLoaderClient>
       pre_prefetch_loader_client_receiver_;
 
-  // The amount of time it took for the headers to be received.
-  std::optional<base::TimeDelta> header_latency_;
-
   // Counts how many times this container has been served to the navigation.
   // Only used for the metrics.
   base::ClampedNumeric<uint32_t> served_count_ = 0;
@@ -816,11 +807,6 @@ class CONTENT_EXPORT PrefetchContainer
   // further processing may need to affect how the response is processed to make
   // inferences about this logic less practical.
   bool is_cross_site_contaminated_ = false;
-
-  // Reference to metrics related to the page that considered using this
-  // prefetch.
-  base::WeakPtr<PrefetchServingPageMetricsContainer>
-      serving_page_metrics_container_;
 
   // Container id used by test utilities.
   const std::string container_id_for_testing_;
@@ -864,6 +850,15 @@ class CONTENT_EXPORT PrefetchContainer
   // True iff the destructor was called.
   bool is_in_dtor_ = false;
 
+  // True if `OnPrefetchStale()` has already been notified to observers.
+  // Per `PrefetchContainerObserver` at-most-once contract, this latch prevents
+  // duplicate notifications across multiple failure transitions and dtor.
+  // TODO(crbug.com/551306029): Eventually this should be the same as the return
+  // value of `PrefetchContainer::IsPrefetchStale()`. After that, rename this to
+  // `is_stale_` and make `PrefetchContainer::IsPrefetchStale()` refer to
+  // `is_stale_`.
+  bool is_stale_notified_ = false;
+
   // True during notifying `observers_`.
   // This is used to `DUMP_WILL_BE_CHECK()` the disallowed operations during
   // `PrefetchContainerObserver` callbacks. Theoretically there can still be
@@ -875,15 +870,13 @@ class CONTENT_EXPORT PrefetchContainer
       base::ObserverListPolicy::EXISTING_ONLY};
 
   bool is_likely_ahead_of_prerender_ = false;
+  const bool matches_burst_query_param_;
 
   // The time that the latest earlier prefetch unmatch happened that this
   // prefetch could've been served to.
   // Set via `SetPrefetchMatchMissedTimeForMetrics()` which can be called during
   // prefetch start (`PrefetchService::StartSinglePrefetch()`).
   std::optional<base::TimeTicks> time_prefetch_match_missed_;
-
-  // The resolved and validated full URL for the activation beacon.
-  GURL activation_beacon_url_;
 
   PrefetchContainerMetrics prefetch_container_metrics_;
 

@@ -6,6 +6,8 @@
 
 #include <algorithm>
 #include <optional>
+#include <ranges>
+#include <variant>
 
 #include "base/android/callback_android.h"
 #include "base/android/jni_android.h"
@@ -14,8 +16,8 @@
 #include "base/check_deref.h"
 #include "base/containers/to_vector.h"
 #include "base/strings/utf_string_conversions.h"
-#include "base/types/zip.h"
 #include "chrome/browser/account_settings/account_setting_service_factory.h"
+#include "chrome/browser/autofill/android/details_for_upsert_pass_android.h"
 #include "chrome/browser/autofill/android/entity_instance_android.h"
 #include "chrome/browser/autofill/android/entity_instance_with_labels.h"
 #include "chrome/browser/autofill/android/entity_type_android.h"
@@ -24,28 +26,35 @@
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/consent_auditor/consent_auditor_factory.h"
 #include "chrome/browser/metrics/variations/google_groups_manager_factory.h"
-#include "chrome/browser/personal_context/personal_context_enablement_service_factory.h"
+#include "chrome/browser/personal_context/personal_context_eligibility_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
+#include "chrome/browser/subscription_eligibility/subscription_eligibility_service_factory.h"
 #include "chrome/browser/sync/sync_service_factory.h"
-#include "components/accessibility_annotator/core/url_constants.h"
 #include "components/account_settings/account_setting_service.h"
 #include "components/autofill/core/browser/autofill_field.h"
 #include "components/autofill/core/browser/data_manager/autofill_ai/entity_data_manager.h"
 #include "components/autofill/core/browser/data_model/autofill_ai/entity_instance.h"
+#include "components/autofill/core/browser/data_model/autofill_ai/entity_type.h"
 #include "components/autofill/core/browser/data_model/autofill_ai/entity_type_names.h"
+#include "components/autofill/core/browser/integrators/autofill_ai/autofill_ai_import_util.h"
 #include "components/autofill/core/browser/integrators/autofill_ai/autofill_ai_labels.h"
-#include "components/autofill/core/browser/integrators/autofill_ai/autofill_ai_wallet_utils.h"
-#include "components/autofill/core/browser/integrators/autofill_ai/management_utils.h"
+#include "components/autofill/core/browser/integrators/autofill_ai/autofill_ai_wallet_util.h"
+#include "components/autofill/core/browser/integrators/autofill_ai/management_util.h"
 #include "components/autofill/core/browser/integrators/autofill_ai/metrics/autofill_ai_metrics.h"
+#include "components/autofill/core/browser/integrators/personal_context/personal_context_autofill_util.h"
 #include "components/autofill/core/browser/network/autofill_ai/wallet_pass_access_manager.h"
-#include "components/autofill/core/browser/permissions/autofill_ai/autofill_ai_permission_utils.h"
+#include "components/autofill/core/browser/permissions/autofill_ai/autofill_ai_permission_util.h"
+#include "components/autofill/core/browser/permissions/autofill_policy_service.h"
 #include "components/autofill/core/common/autofill_features.h"
 #include "components/autofill/core/common/autofill_prefs.h"
 #include "components/consent_auditor/consent_auditor.h"
-#include "components/personal_context/core/personal_context_enablement_service.h"
-#include "components/personal_context/core/personal_context_features.h"
+#include "components/optimization_guide/core/feature_registry/feature_registration.h"
+#include "components/optimization_guide/core/model_execution/model_execution_prefs.h"
+#include "components/personal_context/core/personal_context_eligibility_service.h"
+#include "components/personal_context/core/personal_context_prefs.h"
 #include "components/personal_context/core/personal_context_types.h"
+#include "components/personal_context/core/url_constants.h"
 #include "components/wallet/core/common/wallet_features.h"
 #include "third_party/jni_zero/jni_zero.h"
 
@@ -64,6 +73,10 @@ EntityDataManagerAndroid::EntityDataManagerAndroid(
     const syncer::SyncService* sync_service,
     const account_settings::AccountSettingService* account_setting_service,
     consent_auditor::ConsentAuditor* consent_auditor,
+    personal_context::PersonalContextEligibilityService*
+        personal_context_eligibility_service,
+    subscription_eligibility::SubscriptionEligibilityService*
+        subscription_eligibility_service,
     bool is_off_the_record,
     WalletPassAccessManager* wallet_pass_access_manager,
     EntityDataManager* entity_data_manager)
@@ -74,6 +87,9 @@ EntityDataManagerAndroid::EntityDataManagerAndroid(
       sync_service_(sync_service),
       account_setting_service_(account_setting_service),
       consent_auditor_(consent_auditor),
+      personal_context_eligibility_service_(
+          personal_context_eligibility_service),
+      subscription_eligibility_service_(subscription_eligibility_service),
       is_off_the_record_(is_off_the_record),
       wallet_pass_access_manager_(wallet_pass_access_manager),
       entity_data_manager_(CHECK_DEREF(entity_data_manager)) {
@@ -82,27 +98,47 @@ EntityDataManagerAndroid::EntityDataManagerAndroid(
 
 EntityDataManagerAndroid::~EntityDataManagerAndroid() = default;
 
-static jboolean JNI_EntityDataManager_IsPersonalContextSettingVisible(
-    JNIEnv* env,
-    Profile* profile) {
-  CHECK(profile);
-
-  if (!base::FeatureList::IsEnabled(
-          personal_context::features::kPersonalContext)) {
-    return false;
-  }
-
-  personal_context::PersonalContextEnablementService* enablement_service =
-      PersonalContextEnablementServiceFactory::GetForProfile(profile);
-  return enablement_service &&
-         enablement_service->GetEnablementState() ==
-             personal_context::PersonalContextEnablementState::kEnabled;
+bool EntityDataManagerAndroid::IsPersonalContextPreferenceVisible(JNIEnv* env) {
+  return autofill::ShouldShowPersonalContextAutofillSetting(
+      google_groups_manager_, prefs_, &entity_data_manager(), identity_manager_,
+      sync_service_, IsWalletPublicPassStorageEnabledHelper(),
+      is_off_the_record_, entity_data_manager_->GetVariationCountryCode(),
+      personal_context_eligibility_service_, subscription_eligibility_service_);
 }
 
-static std::string JNI_EntityDataManager_GetPersonalContextSettingsUrl(
-    JNIEnv* env) {
-  // TODO(b/511173039): Rename when service files are updated.
-  return accessibility_annotator::kAccessibilityAnnotatorSettingsURL;
+bool EntityDataManagerAndroid::IsPersonalContextEnabled(JNIEnv* env) {
+  if (IsPersonalContextDisabledByEnterprisePolicy(env)) {
+    return false;
+  }
+  return prefs_->GetBoolean(
+      personal_context::prefs::kPersonalContextInAutofillSettingsToggleStatus);
+}
+
+bool EntityDataManagerAndroid::IsPersonalContextDisabledByEnterprisePolicy(
+    JNIEnv* env) const {
+  const PrefService::Preference* policy_pref = prefs_->FindPreference(
+      optimization_guide::prefs::kFindAndFillWithGeminiSettings);
+  if (!policy_pref) {
+    return false;
+  }
+  return policy_pref->GetValue()->GetInt() ==
+         std::to_underlying(optimization_guide::model_execution::prefs::
+                                ModelExecutionEnterprisePolicyValue::kDisable);
+}
+
+void EntityDataManagerAndroid::SetPersonalContextEnabled(JNIEnv* env,
+                                                         bool enabled) {
+  if (IsPersonalContextDisabledByEnterprisePolicy(env)) {
+    return;
+  }
+  prefs_->SetBoolean(
+      personal_context::prefs::kPersonalContextInAutofillSettingsToggleStatus,
+      enabled);
+}
+
+static std::string
+JNI_EntityDataManager_GetPersonalContextManageConnectedAppsUrl(JNIEnv* env) {
+  return personal_context::kPersonalContextConnectedAppsURL;
 }
 
 static int64_t JNI_EntityDataManager_Init(JNIEnv* env,
@@ -122,6 +158,9 @@ static int64_t JNI_EntityDataManager_Init(JNIEnv* env,
           SyncServiceFactory::GetForProfile(profile),
           AccountSettingServiceFactory::GetForBrowserContext(profile),
           ConsentAuditorFactory::GetForProfile(profile),
+          PersonalContextEligibilityServiceFactory::GetForProfile(profile),
+          subscription_eligibility::SubscriptionEligibilityServiceFactory::
+              GetForProfile(profile),
           profile->IsOffTheRecord(),
           WalletPassAccessManagerFactory::GetForProfile(profile),
           entity_data_manager);
@@ -138,7 +177,7 @@ bool EntityDataManagerAndroid::IsEligibleToAutofillAi(JNIEnv* env) {
 }
 
 bool EntityDataManagerAndroid::IsEligibleToAutofillAiForType(JNIEnv* env,
-                                                              int entity_type) {
+                                                             int entity_type) {
   EntityType type(static_cast<EntityTypeName>(entity_type));
   return RunMayPerformAutofillAiAction(AutofillAiAction::kOptIn, type);
 }
@@ -156,10 +195,18 @@ bool EntityDataManagerAndroid::SetAutofillAiOptInStatus(
           ->GetBoolean(account_settings::kWalletPrivacyContextualSurfacing)
           .value_or(false);
 
+  const personal_context::PersonalContextEligibilityState
+      personal_context_eligibility_state =
+          personal_context_eligibility_service_
+              ? personal_context_eligibility_service_->GetEligibilityState()
+              : personal_context::PersonalContextEligibilityState::
+                    kDisabledNotEligible;
+
   return autofill::SetAutofillAiOptInStatus(
       google_groups_manager_, prefs_, &entity_data_manager(), identity_manager_,
       sync_service_, is_wallet_public_pass_storage_enabled, is_off_the_record_,
-      entity_data_manager_->GetVariationCountryCode(), opt_in_status);
+      entity_data_manager_->GetVariationCountryCode(),
+      personal_context_eligibility_state, opt_in_status);
 }
 
 std::optional<EntityInstanceAndroid>
@@ -201,6 +248,7 @@ void EntityDataManagerAndroid::AddOrUpdateEntityInstance(
     const jni_zero::JavaRef<jobject>& jEntity,
     int32_t description_string_id,
     int32_t accept_button_string_id,
+    const jni_zero::JavaRef<jbyteArray>& j_legal_message_token,
     base::OnceClosure on_local_save_fallback) {
   EntityInstanceAndroid entity_android =
       EntityInstanceAndroid::FromJavaEntityInstance(env, jEntity);
@@ -215,9 +263,43 @@ void EntityDataManagerAndroid::AddOrUpdateEntityInstance(
       entity_android.ToEntityInstance(entity_data_manager_->GetEntityInstance(
           EntityInstance::EntityId(entity_android.metadata.guid)));
 
+  std::optional<std::string> legal_message_token;
+  if (j_legal_message_token) {
+    base::android::JavaByteArrayToString(env, j_legal_message_token,
+                                         &legal_message_token.emplace());
+  }
+
   AddOrUpdateEntityInstance(std::move(entity_instance), targeted_record_type,
                             description_string_id, accept_button_string_id,
+                            std::move(legal_message_token),
                             std::move(on_local_save_fallback));
+}
+
+void EntityDataManagerAndroid::PreloadDetailsForUpsertPass(JNIEnv* env,
+                                                           int entity_type) {
+  std::optional<EntityTypeName> type_name = ToSafeEntityTypeName(entity_type);
+  if (!type_name || !wallet_pass_access_manager_) {
+    return;
+  }
+  wallet_pass_access_manager_->PreloadDetailsForUpsertPass(
+      EntityType(*type_name));
+}
+
+std::optional<WalletPassAccessManager::GetDetailsForUpsertPassResponse>
+EntityDataManagerAndroid::ExtractPreloadedDetailsForUpsertPass(
+    JNIEnv* env,
+    int entity_type) {
+  std::optional<EntityTypeName> type_name = ToSafeEntityTypeName(entity_type);
+  if (!type_name || !wallet_pass_access_manager_) {
+    return std::nullopt;
+  }
+  std::optional<WalletPassAccessManager::GetDetailsForUpsertPassResponse>
+      response =
+          wallet_pass_access_manager_->ExtractPreloadedDetailsForUpsertPass(
+              EntityType(*type_name));
+  return response.has_value() && IsValidUpsertPassDetailsResponse(*response)
+             ? response
+             : std::nullopt;
 }
 
 void EntityDataManagerAndroid::AddOrUpdateEntityInstance(
@@ -225,6 +307,7 @@ void EntityDataManagerAndroid::AddOrUpdateEntityInstance(
     EntityInstance::RecordType targeted_record_type,
     int description_string_id,
     int accept_button_string_id,
+    std::optional<std::string> legal_message_token,
     base::OnceClosure on_local_save_fallback) {
   const bool is_new_entity =
       !entity_data_manager().GetEntityInstance(entity_instance.guid());
@@ -267,10 +350,11 @@ void EntityDataManagerAndroid::AddOrUpdateEntityInstance(
         std::move(on_local_save_fallback).Run();
       }
       entity_data_manager().AddOrUpdateEntityInstance(
-          std::move(entity_instance));
+          std::move(entity_instance), std::move(legal_message_token));
     }
   } else {
-    entity_data_manager().AddOrUpdateEntityInstance(std::move(entity_instance));
+    entity_data_manager().AddOrUpdateEntityInstance(
+        std::move(entity_instance), std::move(legal_message_token));
   }
 }
 
@@ -279,8 +363,8 @@ EntityDataManagerAndroid::GetEntitiesWithLabels(JNIEnv* env) {
   // Entity labels should be generated based on other entities of the same
   // type. This is because the disambiguation values of attributes are only
   // relevant inside a specific entity type.
-  base::span<const EntityInstance> entities =
-      entity_data_manager().GetEntityInstances();
+  const std::vector<EntityInstance> entities =
+      GetEntityInstancesForSettings(entity_data_manager().GetEntityInstances());
   std::map<EntityType, std::vector<const EntityInstance*>> entities_per_type;
   for (const EntityInstance& entity : entities) {
     entities_per_type[entity.type()].push_back(&entity);
@@ -298,9 +382,13 @@ EntityDataManagerAndroid::GetEntitiesWithLabels(JNIEnv* env) {
                              g_browser_process->GetApplicationLocale());
     CHECK_EQ(entities_of_type.size(), labels.size());
 
-    for (const auto [entity, label] : base::zip(entities_of_type, labels)) {
+    for (const auto [entity, label] :
+         std::views::zip(entities_of_type, labels)) {
       const bool stored_in_wallet =
           entity->record_type() == EntityInstance::RecordType::kServerWallet;
+      CHECK(!stored_in_wallet ||
+            std::holds_alternative<EntityInstance::WalletRecordTypePayload>(
+                entity->record_type_data()));
       entities_with_labels.emplace_back(
           entity->guid().value(),
           EntityTypeAndroid(
@@ -311,8 +399,14 @@ EntityDataManagerAndroid::GetEntitiesWithLabels(JNIEnv* env) {
                   EntityInstance::WalletPassType::kPrivate),
           entity->type().GetNameForI18n(),
           base::JoinString(label, kLabelSeparator), stored_in_wallet,
-          stored_in_wallet ? std::make_optional(GetWalletManagementURL(*entity))
-                           : std::nullopt);
+          stored_in_wallet
+              ? std::make_optional(
+                    std::get<EntityInstance::WalletRecordTypePayload>(
+                        entity->record_type_data())
+                        .GetManagementUrlWithFallback(entity->type(),
+                                                      entity->guid())
+                        .spec())
+              : std::nullopt);
     }
   }
   return entities_with_labels;
@@ -363,6 +457,39 @@ bool EntityDataManagerAndroid::GetIsAutofillAiDisabledByEnterprisePolicy(
   return IsAutofillAiDisabledByEnterprisePolicy(prefs_);
 }
 
+bool EntityDataManagerAndroid::
+    GetIsAutofillAiEntityTypeDisabledByEnterprisePolicy(JNIEnv* env,
+                                                        int entity_type_name) {
+  if (IsAutofillAiDisabledByEnterprisePolicy(prefs_)) {
+    return true;
+  }
+  std::optional<EntityTypeName> type_name =
+      ToSafeEntityTypeName(entity_type_name);
+  if (!type_name) {
+    return false;
+  }
+  switch (*type_name) {
+    case EntityTypeName::kNationalIdCard:
+    case EntityTypeName::kPassport:
+    case EntityTypeName::kDriversLicense:
+      return AutofillPolicyService::IsAutofillTypeDisabledByEnterprisePolicy(
+          *prefs_, GURL(),
+          AutofillClient::AutofillPolicyDataCategory::kIdentityDocs);
+    case EntityTypeName::kVehicle:
+    case EntityTypeName::kFlightReservation:
+    case EntityTypeName::kRedressNumber:
+    case EntityTypeName::kKnownTravelerNumber:
+      return AutofillPolicyService::IsAutofillTypeDisabledByEnterprisePolicy(
+          *prefs_, GURL(), AutofillClient::AutofillPolicyDataCategory::kTravel);
+    case EntityTypeName::kOrder:
+    case EntityTypeName::kShipment:
+      return AutofillPolicyService::IsAutofillTypeDisabledByEnterprisePolicy(
+          *prefs_, GURL(),
+          AutofillClient::AutofillPolicyDataCategory::kShopping);
+  }
+  return false;
+}
+
 bool EntityDataManagerAndroid::GetIsAutofillAiAllowedByEnterprisePolicy(
     JNIEnv* env) {
   return IsAutofillAiAllowedByEnterprisePolicy(prefs_);
@@ -374,7 +501,8 @@ bool EntityDataManagerAndroid::CanEnableOrDisableAutofillAi(JNIEnv* env) {
 }
 
 bool EntityDataManagerAndroid::CanEnableOrDisableAutofillAiForType(
-    JNIEnv* env, int entity_type) {
+    JNIEnv* env,
+    int entity_type) {
   EntityType type(static_cast<EntityTypeName>(entity_type));
   return RunMayPerformAutofillAiAction(AutofillAiAction::kEnableOrDisable,
                                        type);
@@ -403,23 +531,41 @@ bool EntityDataManagerAndroid::IsWalletPublicPassStorageEnabled(JNIEnv* env) {
   return IsWalletPublicPassStorageEnabledHelper();
 }
 
+bool EntityDataManagerAndroid::IsEligibleForWalletNotice(
+    JNIEnv* env,
+    int entity_type,
+    int record_type) const {
+  std::optional<EntityTypeName> type_name = ToSafeEntityTypeName(entity_type);
+  if (!type_name) {
+    return false;
+  }
+  return autofill::IsEligibleForWalletNotice(
+      EntityType(*type_name),
+      static_cast<EntityInstance::RecordType>(record_type));
+}
+
 bool EntityDataManagerAndroid::RunMayPerformAutofillAiAction(
     AutofillAiAction action,
     std::optional<EntityType> entity_type) const {
+  const personal_context::PersonalContextEligibilityState
+      personal_context_eligibility_state =
+          personal_context_eligibility_service_
+              ? personal_context_eligibility_service_->GetEligibilityState()
+              : personal_context::PersonalContextEligibilityState::
+                    kDisabledNotEligible;
+
   return MayPerformAutofillAiAction(
       google_groups_manager_, prefs_, &entity_data_manager(), identity_manager_,
       sync_service_, IsWalletPublicPassStorageEnabledHelper(),
       is_off_the_record_, entity_data_manager_->GetVariationCountryCode(),
-      action, entity_type);
+      personal_context_eligibility_state, action, entity_type);
 }
 
 // Returns true if the `entity_type` supports wallet storage.
 bool EntityDataManagerAndroid::IsEligibleForWalletStorage(
     EntityType entity_type) const {
   return RunMayPerformAutofillAiAction(AutofillAiAction::kImportToWallet,
-                                       entity_type) &&
-         base::FeatureList::IsEnabled(
-             features::kAutofillEnableSaveToWalletFromSettings);
+                                       entity_type);
 }
 
 void EntityDataManagerAndroid::OnSavePrivatePassToWalletFinished(

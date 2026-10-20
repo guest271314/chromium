@@ -4,9 +4,7 @@
 
 #include "chrome/browser/web_applications/commands/launch_web_app_command.h"
 
-#include "base/feature_list.h"
 #include "base/functional/bind.h"
-#include "base/functional/callback_helpers.h"
 #include "base/functional/concurrent_closures.h"
 #include "base/memory/weak_ptr.h"
 #include "chrome/browser/profiles/profile.h"
@@ -16,8 +14,7 @@
 #include "chrome/browser/web_applications/mojom/user_display_mode.mojom-shared.h"
 #include "chrome/browser/web_applications/os_integration/os_integration_test_override.h"
 #include "chrome/browser/web_applications/proto/web_app_install_state.pb.h"
-#include "chrome/browser/web_applications/scheduler/add_validated_origin_associations_result.h"
-#include "chrome/browser/web_applications/web_app_command_scheduler.h"
+#include "chrome/browser/web_applications/web_app.h"
 #include "chrome/browser/web_applications/web_app_filter.h"
 #include "chrome/browser/web_applications/web_app_provider.h"
 #include "chrome/browser/web_applications/web_app_registrar.h"
@@ -27,7 +24,6 @@
 #include "components/services/app_service/public/cpp/app_launch_params.h"
 #include "components/services/app_service/public/cpp/app_launch_util.h"
 #include "components/webapps/common/web_app_id.h"
-#include "third_party/blink/public/common/features.h"
 
 namespace web_app {
 
@@ -146,16 +142,6 @@ void LaunchWebAppCommand::OnAppLaunched(
     base::WeakPtr<content::WebContents> web_contents,
     apps::LaunchContainer container,
     base::Value debug_value) {
-  if (base::FeatureList::IsEnabled(
-          blink::features::kWebAppEnableScopeExtensionsForIsolatedWebApps) &&
-      container == apps::LaunchContainer::kLaunchContainerWindow &&
-      lock_->registrar().AppMatches(
-          app_id_,
-          WebAppFilter::IsIsolatedApp() | WebAppFilter::IsIsolatedSubApp())) {
-    provider_->scheduler().ScheduleAddValidatedOriginAssociations(
-        app_id_, base::DoNothing());
-  }
-
   GetMutableDebugValue().Set("launch_web_app_debug_value",
                              std::move(debug_value));
   CompleteAndSelfDestruct(CommandResult::kSuccess, std::move(browser),

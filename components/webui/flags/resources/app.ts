@@ -5,12 +5,19 @@
 // <if expr="is_ios">
 import 'chrome://resources/js/ios/web_ui.js';
 // </if>
-
+import 'chrome://resources/cr_elements/cr_action_menu/cr_action_menu.js';
+import 'chrome://resources/cr_elements/cr_toast/cr_toast.js';
+import 'chrome://resources/cr_elements/cr_tooltip/cr_tooltip.js';
+import 'chrome://resources/cr_elements/cr_icon_button/cr_icon_button.js';
+import 'chrome://resources/cr_elements/icons.html.js';
+import './icons.html.js';
 import 'chrome://resources/cr_elements/cr_button/cr_button.js';
 import 'chrome://resources/cr_elements/cr_tabs/cr_tabs.js';
 import '/strings.m.js';
 import './experiment.js';
 
+import type {CrActionMenuElement} from 'chrome://resources/cr_elements/cr_action_menu/cr_action_menu.js';
+import type {CrToastElement} from 'chrome://resources/cr_elements/cr_toast/cr_toast.js';
 import {assert} from 'chrome://resources/js/assert.js';
 import {EventTracker} from 'chrome://resources/js/event_tracker.js';
 import {FocusOutlineManager} from 'chrome://resources/js/focus_outline_manager.js';
@@ -25,7 +32,24 @@ import {getHtml} from './app.html.js';
 import type {ExperimentElement as FlagsExperimentElement} from './experiment.js';
 import type {ExperimentalFeaturesData, Feature} from './flags_browser_proxy.js';
 import {FlagsBrowserProxyImpl} from './flags_browser_proxy.js';
+import {ImportExportFileProxyImpl} from './import_export_file_proxy.js';
 
+
+
+/**
+ * Map of updated flag entry names to redirect legacy hashes to new hashes.
+ * TODO(crbug.com/524236481): Remove built-in AI API flag entries by June 2027.
+ */
+// LINT.IfChange(FLAG_REDIRECTS)
+const FLAG_REDIRECTS: Record<string, string> = {
+  '#prompt-api-for-gemini-nano': '#prompt-api',
+  '#prompt-api-for-gemini-nano-multimodal-input':
+      '#prompt-api-multimodal-input',
+  '#rewriter-api-for-gemini-nano': '#rewriter-api',
+  '#summarizer-api-for-gemini-nano': '#summarizer-api',
+  '#writer-api-for-gemini-nano': '#writer-api',
+};
+// LINT.ThenChange(//components/webui/flags/flags_state.cc:kRenamedFlags)
 
 /**
  * Goes through all experiment text and highlights the relevant matches.
@@ -122,8 +146,15 @@ export class FlagsAppElement extends CrLitElement {
         type: Boolean,
       },
 
+      importError: {
+        type: String,
+      },
+      toastMessage_: {type: String},
+
       tabNames_: {type: Array},
       selectedTabIndex_: {type: Number},
+      isImportExportEnabled_: {type: Boolean},
+      webuiRoundedIconsEnabled_: {type: Boolean},
     };
   }
 
@@ -143,6 +174,7 @@ export class FlagsAppElement extends CrLitElement {
     needsRestart: false,
     showBetaChannelPromotion: false,
     showDevChannelPromotion: false,
+    importExportEnabled: false,
     // <if expr="is_chromeos">
     showOwnerWarning: false,
     // </if>
@@ -152,10 +184,15 @@ export class FlagsAppElement extends CrLitElement {
   protected accessor nonDefaultFeatures: Feature[] = [];
   protected accessor searching: boolean = false;
   protected accessor needsRestart: boolean = false;
+  protected accessor importError: string = '';
+  protected accessor toastMessage_: string = '';
+  protected accessor webuiRoundedIconsEnabled_: boolean =
+      loadTimeData.getBoolean('webuiRoundedIconsEnabled');
 
   private announceStatusDelayMs: number = 100;
   private featuresResolver: PromiseResolver<void> = new PromiseResolver();
   private flagSearch: FlagSearch|null = null;
+  private flagsRedirects_: Record<string, string> = FLAG_REDIRECTS;
   private lastChanged: HTMLElement|null = null;
   // <if expr="not is_ios">
   private lastFocused: HTMLElement|null = null;
@@ -305,6 +342,10 @@ export class FlagsAppElement extends CrLitElement {
     this.flagSearch.setSearchDebounceDelayMsForTesting(delay);
   }
 
+  setFlagRedirectsForTesting(redirects: Record<string, string>) {
+    this.flagsRedirects_ = redirects;
+  }
+
   experimentalFeaturesReadyForTesting() {
     return this.featuresResolver.promise;
   }
@@ -410,12 +451,19 @@ export class FlagsAppElement extends CrLitElement {
       return;
     }
 
+    let hash = window.location.hash;
+    const redirectedHash = this.flagsRedirects_[hash];
+    if (redirectedHash) {
+      hash = redirectedHash;
+      window.history.replaceState(null, '', hash);
+    }
+
     let experiment = null;
     try {
-      experiment = this.shadowRoot.querySelector(window.location.hash);
+      experiment = this.shadowRoot.querySelector(hash);
     } catch {
       // Remove invalid hash from the URL.
-      window.history.replaceState(null, '', window.location.origin);
+      window.history.replaceState(null, '', window.location.pathname);
       return;
     }
     if (!experiment || experiment.classList.contains('referenced')) {
@@ -482,6 +530,121 @@ export class FlagsAppElement extends CrLitElement {
     this.clearSearch();
   }
 
+  protected async onExportClick_() {
+    const data = await FlagsBrowserProxyImpl.getInstance().exportFlags();
+    const content = JSON.stringify(data, null, 2);
+
+    try {
+      await ImportExportFileProxyImpl.getInstance().copyToClipboard(content);
+      this.showToast_('Flags exported and copied to clipboard.');
+    } catch (error) {
+      console.error('Unable to copy exported flags to clipboard:', error);
+      this.showToast_('Flags exported.');
+    }
+
+    const blob = new Blob([content], {type: 'application/json'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'flags.json';
+    ImportExportFileProxyImpl.getInstance().downloadFile(a);
+
+    setTimeout(() => {
+      URL.revokeObjectURL(url);
+    }, 0);
+  }
+
+  protected onImportClick_(e: Event) {
+    const menu = this.getRequiredElement<CrActionMenuElement>('#import-menu');
+    menu.showAt(e.currentTarget as HTMLElement);
+  }
+
+  protected onImportFromFileClick_() {
+    const menu = this.getRequiredElement<CrActionMenuElement>('#import-menu');
+    menu.close();
+    const fileInput =
+        this.getRequiredElement<HTMLInputElement>('#import-file-input');
+    ImportExportFileProxyImpl.getInstance().selectFile(fileInput);
+  }
+
+  protected async onImportFromClipboardClick_() {
+    const menu = this.getRequiredElement<CrActionMenuElement>('#import-menu');
+    menu.close();
+    try {
+      const text =
+          await ImportExportFileProxyImpl.getInstance().readFromClipboard();
+      await this.importFlagsFromJson_(text, 'Invalid clipboard format.');
+    } catch {
+      this.rejectImport_('Invalid clipboard format.');
+    }
+  }
+
+  protected async onImportFileChange_(e: Event) {
+    const input = e.target as HTMLInputElement;
+    if (!input.files || input.files.length === 0) {
+      return;
+    }
+    const file = input.files[0]!;
+    input.value = '';
+
+    try {
+      const text = await file.text();
+      await this.importFlagsFromJson_(text, 'Invalid file format.');
+    } catch {
+      this.rejectImport_('Invalid file format.');
+    }
+  }
+
+  private async importFlagsFromJson_(text: string, errorMessage: string) {
+    try {
+      const data = JSON.parse(text);
+
+      if (!data || typeof data !== 'object' || Array.isArray(data)) {
+        throw new Error();
+      }
+
+      const allowedKeys = ['enabled_flags', 'customized_flags'];
+      const keys = Object.keys(data);
+      if (keys.length === 0 || keys.some(k => !allowedKeys.includes(k))) {
+        throw new Error();
+      }
+
+      if ('enabled_flags' in data && !Array.isArray(data.enabled_flags)) {
+        throw new Error();
+      }
+
+      if ('customized_flags' in data &&
+          (typeof data.customized_flags !== 'object' ||
+           data.customized_flags === null ||
+           Array.isArray(data.customized_flags))) {
+        throw new Error();
+      }
+
+      this.importError = '';
+      FlagsBrowserProxyImpl.getInstance().resetAllFlags();
+      await FlagsBrowserProxyImpl.getInstance().importFlags(data);
+      this.needsRestart = true;
+      this.showToast_('Flags imported successfully.');
+      await this.requestExperimentalFeaturesData();
+      await this.updateComplete;
+    } catch {
+      this.rejectImport_(errorMessage);
+    }
+  }
+
+  private showToast_(msg: string) {
+    this.toastMessage_ = msg;
+    this.announceStatus(msg);
+    this.getRequiredElement<CrToastElement>('#toast').show();
+  }
+
+  private rejectImport_(msg: string) {
+    this.importError = msg;
+    this.announceStatus(msg);
+    console.error(msg);
+    this.getRequiredElement<CrToastElement>('#errorToast').show();
+  }
+
   protected onSearchInput_() {
     assert(this.flagSearch);
     this.flagSearch.debounceSearch();
@@ -545,6 +708,9 @@ export class FlagsAppElement extends CrLitElement {
     return this.data.showBetaChannelPromotion ||
         this.data.showDevChannelPromotion;
   }
+
+  protected accessor isImportExportEnabled_: boolean =
+      loadTimeData.getBoolean('importExportEnabled');
 
   protected onTabsSelectedChanged_(e: CustomEvent<{value: number}>) {
     this.selectedTabIndex_ = e.detail.value;

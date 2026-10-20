@@ -63,13 +63,15 @@ class SearchboxOmniboxClient : public OmniboxClient {
       TemplateURLRef::PostContent* post_content,
       WindowOpenDisposition disposition,
       ui::PageTransition transition,
-      AutocompleteMatchType::Type match_type,
+      omnibox::AutocompleteMatchType match_type,
       base::TimeTicks match_selection_timestamp,
       bool destination_url_entered_without_scheme,
       bool destination_url_entered_with_http_scheme,
       const std::u16string& text,
       const AutocompleteMatch& match,
       const AutocompleteMatch& alternative_nav_match) override;
+  void OpenUrl(GURL gurl,
+               WindowOpenDisposition disposition) override;
   base::WeakPtr<OmniboxClient> AsWeakPtr() override;
 
  protected:

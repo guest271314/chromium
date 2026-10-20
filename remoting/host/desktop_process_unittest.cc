@@ -43,6 +43,10 @@
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
+#if BUILDFLAG(IS_POSIX)
+#include "remoting/host/security_key/security_key_auth_handler_posix.h"
+#endif
+
 using testing::_;
 using testing::AnyNumber;
 using testing::AtMost;
@@ -118,6 +122,7 @@ class DesktopProcessTest : public testing::Test {
  public:
   DesktopProcessTest();
   ~DesktopProcessTest() override;
+  void TearDown() override;
 
   // Methods invoked when MockDaemonListener::ConnectDesktopChannel is called.
   void CreateNetworkChannel(mojo::ScopedMessagePipeHandle desktop_pipe);
@@ -173,8 +178,8 @@ class DesktopProcessTest : public testing::Test {
   mojo::AssociatedRemote<mojom::WorkerProcessControl> worker_process_control_;
 
   // Runs the daemon's end of the channel.
-  base::test::SingleThreadTaskEnvironment task_environment_{
-      base::test::SingleThreadTaskEnvironment::MainThreadType::UI};
+  base::test::TaskEnvironment task_environment_{
+      base::test::TaskEnvironment::MainThreadType::UI};
 
   scoped_refptr<AutoThreadTaskRunner> io_task_runner_;
 
@@ -191,10 +196,16 @@ DesktopProcessTest::DesktopProcessTest() = default;
 
 DesktopProcessTest::~DesktopProcessTest() = default;
 
+void DesktopProcessTest::TearDown() {
+#if BUILDFLAG(IS_POSIX)
+  SecurityKeyAuthHandlerPosix::ResetTaskRunnerForTesting();
+#endif
+}
+
 void DesktopProcessTest::CreateNetworkChannel(
     mojo::ScopedMessagePipeHandle desktop_pipe) {
   network_channel_ = IPC::ChannelProxy::Create(
-      desktop_pipe.release(), IPC::Channel::MODE_CLIENT, &network_listener_,
+      std::move(desktop_pipe), IPC::Channel::MODE_CLIENT, &network_listener_,
       io_task_runner_.get(), base::SingleThreadTaskRunner::GetCurrentDefault());
 }
 
@@ -283,7 +294,7 @@ void DesktopProcessTest::RunDesktopProcess() {
 
   mojo::MessagePipe pipe;
   daemon_channel_ = IPC::ChannelProxy::Create(
-      pipe.handle0.release(), IPC::Channel::MODE_SERVER, &daemon_listener_,
+      std::move(pipe.handle0), IPC::Channel::MODE_SERVER, &daemon_listener_,
       io_task_runner_.get(), base::SingleThreadTaskRunner::GetCurrentDefault());
 
   std::unique_ptr<MockDesktopEnvironmentFactory> desktop_environment_factory(

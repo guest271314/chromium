@@ -8,6 +8,7 @@
 
 #![allow(non_camel_case_types)]
 #![allow(non_snake_case)]
+#![allow(non_upper_case_globals)]
 {#- TODO(crbug.com/500058268): See if we can only add imports that are actually needed #}
 #![allow(unused_imports)]
 
@@ -16,12 +17,13 @@ chromium::import! {
     "//mojo/public/rust/bindings";
     "//mojo/public/rust/system";
 {% for imprt in imports %}
-    "{{imprt}}";
+    "{{imprt.target}}" as {{imprt.alias}};
 {%- endfor %}
 }
 
 use std::collections::HashMap;
 use ordered_float::OrderedFloat;
+use bindings::interface::{Registrar, ResponseSender};
 
 use mojom_value_parser::*;
 
@@ -60,4 +62,25 @@ use mojom_value_parser::*;
 #[path = r"{{traits.path}}"]
 mod {{traits.name}};
 pub use {{traits.name}}::*;
+{% endfor %}
+
+{% for t in typemapped_types %}
+impl<__MojomContext> mojom_value_parser::MojomParse<{{t.mojom_name}}, __MojomContext> for {{t.rust_name}}
+where
+    {{t.mojom_name}}: mojom_value_parser::MojomParse<{{t.mojom_name}}, __MojomContext>,
+{
+    fn mojom_type() -> mojom_value_parser::MojomType {
+        <{{t.mojom_name}} as mojom_value_parser::MojomParse<{{t.mojom_name}}, __MojomContext>>::mojom_type()
+    }
+
+    fn into_mojom_value(self, context: &__MojomContext) -> mojom_value_parser::MojomValue {
+        let wire_val: {{t.mojom_name}} = self.into();
+        <{{t.mojom_name}} as mojom_value_parser::MojomParse<{{t.mojom_name}}, __MojomContext>>::into_mojom_value(wire_val, context)
+    }
+
+    fn try_from_mojom_value(val: mojom_value_parser::MojomValue, context: &__MojomContext) -> anyhow::Result<Self> {
+        let wire_val: {{t.mojom_name}} = <{{t.mojom_name}} as mojom_value_parser::MojomParse<{{t.mojom_name}}, __MojomContext>>::try_from_mojom_value(val, context)?;
+        std::convert::TryInto::try_into(wire_val).map_err(Into::into)
+    }
+}
 {% endfor %}

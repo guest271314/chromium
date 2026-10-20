@@ -11,8 +11,10 @@
 #include "base/strings/stringprintf.h"
 #include "base/test/bind.h"
 #include "base/test/metrics/histogram_tester.h"
+#include "base/test/scoped_feature_list.h"
 #include "base/test/test_future.h"
 #include "base/time/time.h"
+#include "chrome/browser/glic/public/features.h"
 #include "chrome/browser/glic/public/glic_enabling.h"
 #include "chrome/common/chrome_features.h"
 #include "chrome/test/base/testing_profile.h"
@@ -33,6 +35,7 @@
 #include "services/network/test/test_cookie_manager.h"
 #include "services/network/test/test_url_loader_factory.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/blink/public/common/storage_key/storage_key.h"
 #include "url/gurl.h"
 
 namespace glic {
@@ -112,6 +115,30 @@ class GlicTestCookieManager : public network::TestCookieManager {
   int delete_cookies_called_count_ = 0;
 };
 
+class GlicTestStoragePartition : public content::TestStoragePartition {
+ public:
+  GlicTestStoragePartition() = default;
+  ~GlicTestStoragePartition() override = default;
+
+  void ClearData(uint32_t remove_mask,
+                 const blink::StorageKey& storage_key,
+                 const base::Time begin,
+                 const base::Time end,
+                 base::OnceClosure callback) override {
+    clear_data_called_count_++;
+    last_remove_mask_ = remove_mask;
+    base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+        FROM_HERE, std::move(callback));
+  }
+
+  int clear_data_called_count() const { return clear_data_called_count_; }
+  uint32_t last_remove_mask() const { return last_remove_mask_; }
+
+ private:
+  int clear_data_called_count_ = 0;
+  uint32_t last_remove_mask_ = 0;
+};
+
 class GlicCookieSynchronizerTest : public testing::Test {
  public:
   GlicCookieSynchronizerTest() = default;
@@ -124,14 +151,16 @@ class GlicCookieSynchronizerTest : public testing::Test {
 
   // Sets the network response to the given result. Applies to all subsequent
   // network requests.
-  void SetResponseForResult(signin::SetAccountsInCookieResult result) {
+  void SetResponseForResult(signin::SetAccountsInCookieResult result,
+                            bool reuse_cookies = false) {
     test_signin_client_.GetTestURLLoaderFactory()->AddResponse(
-        RequestURL().spec(), GetResponseFromResult(result));
+        RequestURL(reuse_cookies).spec(), GetResponseFromResult(result));
   }
 
-  GURL RequestURL() const {
+  GURL RequestURL(bool reuse_cookies = false) const {
     return GaiaUrls::GetInstance()->oauth_multilogin_url().Resolve(
-        base::StringPrintf("?source=%s&reuseCookies=0", "ChromiumGlic"));
+        base::StringPrintf("?source=%s&reuseCookies=%d", "ChromiumGlic",
+                           reuse_cookies ? 1 : 0));
   }
 
   void SetUp() override {
@@ -159,7 +188,7 @@ class GlicCookieSynchronizerTest : public testing::Test {
   signin::IdentityTestEnvironment identity_test_env_{
       /*test_url_loader_factory=*/nullptr, &prefs_, &test_signin_client_};
 
-  content::TestStoragePartition test_storage_partition_;
+  GlicTestStoragePartition test_storage_partition_;
   GlicTestCookieManager test_cookie_manager_;
 
   GlicCookieSynchronizerWithTestPartition cookie_synchronizer_{
@@ -171,6 +200,23 @@ TEST_F(GlicCookieSynchronizerTest, AuthSuccess) {
   base::HistogramTester histogram_tester;
   base::test::TestFuture<bool> result;
   SetResponseForResult(signin::SetAccountsInCookieResult::kSuccess);
+
+  cookie_synchronizer().CopyCookiesToWebviewStoragePartition(
+      result.GetCallback());
+  EXPECT_TRUE(result.Get());
+
+  histogram_tester.ExpectTotalCount(
+      "Glic.CookieSynchronization.Latency.Success", 1);
+  histogram_tester.ExpectTotalCount("Glic.CookieSynchronization.Latency.Error",
+                                    0);
+}
+
+TEST_F(GlicCookieSynchronizerTest, AuthSuccessReuseCookies) {
+  base::test::ScopedFeatureList feature_list(features::kGlicReuseCookies);
+  base::HistogramTester histogram_tester;
+  base::test::TestFuture<bool> result;
+  SetResponseForResult(signin::SetAccountsInCookieResult::kSuccess,
+                       /*reuse_cookies=*/true);
 
   cookie_synchronizer().CopyCookiesToWebviewStoragePartition(
       result.GetCallback());
@@ -285,15 +331,50 @@ TEST_F(GlicCookieSynchronizerTest, WorksAfterTimeout) {
   EXPECT_TRUE(result.Get());
 }
 
-TEST_F(GlicCookieSynchronizerTest, ClearsCookiesOnFirstSync) {
+TEST_F(GlicCookieSynchronizerTest, ClearsAllDataOnFirstSync) {
+  base::test::ScopedFeatureList feature_list(
+      features::kGlicClearDeviceBoundSessionsOnFirstSync);
+
   base::test::TestFuture<bool> result;
   SetResponseForResult(signin::SetAccountsInCookieResult::kSuccess);
   EXPECT_EQ(0, test_cookie_manager().delete_cookies_called_count());
+  EXPECT_EQ(0, test_storage_partition_.clear_data_called_count());
+
+  cookie_synchronizer().CopyCookiesToWebviewStoragePartition(
+      result.GetCallback());
+  EXPECT_TRUE(result.Get());
+
+  EXPECT_EQ(0, test_cookie_manager().delete_cookies_called_count());
+  EXPECT_EQ(1, test_storage_partition_.clear_data_called_count());
+  EXPECT_EQ((content::StoragePartition::REMOVE_DATA_MASK_COOKIES |
+             content::StoragePartition::REMOVE_DATA_MASK_DEVICE_BOUND_SESSIONS),
+            test_storage_partition_.last_remove_mask());
+
+  // Second sync should not clear data again.
+  result.Clear();
+  SetResponseForResult(signin::SetAccountsInCookieResult::kSuccess);
+  cookie_synchronizer().CopyCookiesToWebviewStoragePartition(
+      result.GetCallback());
+  EXPECT_TRUE(result.Get());
+  EXPECT_EQ(0, test_cookie_manager().delete_cookies_called_count());
+  EXPECT_EQ(1, test_storage_partition_.clear_data_called_count());
+}
+
+TEST_F(GlicCookieSynchronizerTest, ClearsCookiesOnFirstSync) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndDisableFeature(
+      features::kGlicClearDeviceBoundSessionsOnFirstSync);
+
+  base::test::TestFuture<bool> result;
+  SetResponseForResult(signin::SetAccountsInCookieResult::kSuccess);
+  EXPECT_EQ(0, test_cookie_manager().delete_cookies_called_count());
+  EXPECT_EQ(0, test_storage_partition_.clear_data_called_count());
   cookie_synchronizer().CopyCookiesToWebviewStoragePartition(
       result.GetCallback());
   EXPECT_TRUE(result.Get());
 
   EXPECT_EQ(1, test_cookie_manager().delete_cookies_called_count());
+  EXPECT_EQ(0, test_storage_partition_.clear_data_called_count());
 
   // Second sync should not clear cookies again.
   result.Clear();
@@ -302,6 +383,7 @@ TEST_F(GlicCookieSynchronizerTest, ClearsCookiesOnFirstSync) {
       result.GetCallback());
   EXPECT_TRUE(result.Get());
   EXPECT_EQ(1, test_cookie_manager().delete_cookies_called_count());
+  EXPECT_EQ(0, test_storage_partition_.clear_data_called_count());
 }
 
 }  // namespace glic

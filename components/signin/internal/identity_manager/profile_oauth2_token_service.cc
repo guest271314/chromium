@@ -242,8 +242,8 @@ void ProfileOAuth2TokenService::InvalidateAccessToken(
     const CoreAccountId& account_id,
     const OAuth2AccessTokenManager::ScopeSet& scopes,
     const std::string& access_token) {
-  CHECK(!account_id.empty(), base::NotFatalUntil::M145);
-  CHECK(!access_token.empty(), base::NotFatalUntil::M145);
+  CHECK(!account_id.empty());
+  CHECK(!access_token.empty());
 
   token_manager_->InvalidateAccessToken(account_id, scopes, access_token);
 }
@@ -353,7 +353,7 @@ void ProfileOAuth2TokenService::UpdateAuthErrorForTesting(
 
 #if BUILDFLAG(ENABLE_DICE_SUPPORT)
 bool ProfileOAuth2TokenService::GenerateBindingKeyRegistrationToken(
-    std::string_view supported_algorithms,
+    base::span<const crypto::sign::SignatureKind> supported_algorithms,
     std::string_view auth_code,
     base::OnceCallback<void(
         std::optional<signin::BindingKeyRegistrationTokenResult>)> callback) {
@@ -364,6 +364,11 @@ bool ProfileOAuth2TokenService::GenerateBindingKeyRegistrationToken(
 std::vector<uint8_t> ProfileOAuth2TokenService::GetWrappedBindingKey(
     const CoreAccountId& account_id) const {
   return delegate_->GetWrappedBindingKey(account_id);
+}
+
+bool ProfileOAuth2TokenService::IsRefreshTokenBoundToMtls(
+    const CoreAccountId& account_id) const {
+  return delegate_->IsRefreshTokenBoundToMtls(account_id);
 }
 
 bool ProfileOAuth2TokenService::AllBoundTokensShareSameBindingKey() const {

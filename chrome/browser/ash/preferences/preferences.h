@@ -16,6 +16,8 @@
 #include "components/prefs/pref_member.h"
 #include "components/sync_preferences/pref_service_syncable_observer.h"
 #include "components/user_manager/user_manager.h"
+#include "mojo/public/cpp/bindings/remote.h"
+#include "services/media_session/public/mojom/audio_focus.mojom.h"
 #include "ui/base/ime/ash/input_method_manager.h"
 
 class ApplicationLocaleStorage;
@@ -37,6 +39,10 @@ class PrefRegistrySyncable;
 
 namespace ash {
 
+namespace system {
+class TimeZoneResolverManager;
+}
+
 namespace input_method {
 class InputMethodSyncer;
 }
@@ -51,11 +57,15 @@ class Preferences : public sync_preferences::PrefServiceSyncableObserver,
  public:
   // `local_state` and `application_locale_storage` must be non-null and must
   // outlive `this`.
+  // `timezone_resolver_manager` must outlive `this`. It must be non-null in
+  // production, but may be null in unit tests.
   Preferences(PrefService* local_state,
-              ApplicationLocaleStorage* application_locale_storage);
+              ApplicationLocaleStorage* application_locale_storage,
+              system::TimeZoneResolverManager* timezone_resolver_manager);
   // for testing
   Preferences(PrefService* local_state,
               ApplicationLocaleStorage* application_locale_storage,
+              system::TimeZoneResolverManager* timezone_resolver_manager,
               input_method::InputMethodManager* input_method_manager);
 
   Preferences(const Preferences&) = delete;
@@ -69,8 +79,11 @@ class Preferences : public sync_preferences::PrefServiceSyncableObserver,
                                    user_prefs::PrefRegistrySyncable* registry);
 
   // This method will initialize Chrome OS settings to values in user prefs.
-  // |user| is the user owning this preferences.
-  void Init(Profile* profile, const user_manager::User* user);
+  // |user| is the user owning this preferences. `prefs` is `profile`'s pref
+  // service, narrowed to the syncable type by the caller.
+  void Init(const user_manager::User* user,
+            Profile* profile,
+            sync_preferences::PrefServiceSyncable* prefs);
 
   void InitPrefsForTesting(sync_preferences::PrefServiceSyncable* prefs);
   void InitUserPrefsForTesting(
@@ -133,6 +146,10 @@ class Preferences : public sync_preferences::PrefServiceSyncableObserver,
   // underlying XKB API requires it.
   void UpdateAutoRepeatRate();
 
+  // Binds the AudioFocusManager remote if not already bound.
+  void EnsureAudioFocusManagerBound();
+  void OnAudioFocusManagerDisconnected();
+
   // Force natural scroll to on if --enable-natural-scroll-default is specified
   // on the cmd line.
   void ForceNaturalScrollDefault();
@@ -149,6 +166,7 @@ class Preferences : public sync_preferences::PrefServiceSyncableObserver,
 
   const raw_ref<PrefService> local_state_;
   const raw_ref<ApplicationLocaleStorage> application_locale_storage_;
+  const raw_ptr<system::TimeZoneResolverManager> timezone_resolver_manager_;
 
   raw_ptr<sync_preferences::PrefServiceSyncable> prefs_;
 
@@ -200,6 +218,11 @@ class Preferences : public sync_preferences::PrefServiceSyncableObserver,
   BooleanPrefMember pci_data_access_enabled_pref_;
 
   BooleanPrefMember consumer_auto_update_toggle_pref_;
+
+  BooleanPrefMember audio_focus_enforcement_enabled_;
+
+  // Remote to the global AudioFocusManager service.
+  mojo::Remote<media_session::mojom::AudioFocusManager> audio_focus_manager_;
 
   PrefChangeRegistrar pref_change_registrar_;
 

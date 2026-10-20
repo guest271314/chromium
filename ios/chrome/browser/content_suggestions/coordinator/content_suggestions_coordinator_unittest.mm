@@ -9,11 +9,16 @@
 #import "components/commerce/core/mock_shopping_service.h"
 #import "components/feature_engagement/test/mock_tracker.h"
 #import "components/pref_registry/pref_registry_syncable.h"
+#import "components/segmentation_platform/embedder/home_modules/tips_manager/constants.h"
 #import "components/sync_preferences/testing_pref_service_syncable.h"
 #import "ios/chrome/browser/commerce/model/shopping_service_factory.h"
+#import "ios/chrome/browser/content_suggestions/coordinator/content_suggestions_delegate.h"
 #import "ios/chrome/browser/content_suggestions/magic_stack/ui/magic_stack_collection_view.h"
 #import "ios/chrome/browser/content_suggestions/magic_stack/ui/magic_stack_module_container_delegate.h"
 #import "ios/chrome/browser/content_suggestions/public/content_suggestions_constants.h"
+#import "ios/chrome/browser/content_suggestions/tips/coordinator/tips_magic_stack_mediator.h"
+#import "ios/chrome/browser/content_suggestions/tips/model/tips_metrics.h"
+#import "ios/chrome/browser/content_suggestions/ui/content_suggestions_view_controller_audience.h"
 #import "ios/chrome/browser/default_browser/model/utils_test_support.h"
 #import "ios/chrome/browser/favicon/model/ios_chrome_large_icon_cache_factory.h"
 #import "ios/chrome/browser/favicon/model/ios_chrome_large_icon_service_factory.h"
@@ -31,7 +36,6 @@
 #import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/signin/model/authentication_service.h"
 #import "ios/chrome/browser/signin/model/authentication_service_factory.h"
-#import "ios/chrome/browser/signin/model/fake_authentication_service_delegate.h"
 #import "ios/chrome/browser/signin/model/identity_manager_factory.h"
 #import "ios/chrome/browser/start_surface/ui_bundled/start_surface_recent_tab_browser_agent.h"
 #import "ios/chrome/browser/sync/model/mock_sync_service_utils.h"
@@ -39,12 +43,17 @@
 #import "ios/chrome/test/ios_chrome_scoped_testing_local_state.h"
 #import "ios/chrome/test/ios_chrome_scoped_testing_variations_service.h"
 #import "ios/chrome/test/scoped_key_window.h"
+#import "ios/web/public/test/fakes/fake_web_state.h"
 #import "ios/web/public/test/web_task_environment.h"
 #import "testing/platform_test.h"
 #import "third_party/ocmock/OCMock/OCMock.h"
 #import "third_party/ocmock/gtest_support.h"
 
 namespace {
+
+constexpr char kPriceTrackingPromoCounterPref[] =
+    "ephemeral_pref_counter.price_tracking_promo_counter";
+
 std::unique_ptr<KeyedService> BuildFeatureEngagementMockTracker(
     ProfileIOS* profile) {
   return std::make_unique<feature_engagement::test::MockTracker>();
@@ -52,8 +61,10 @@ std::unique_ptr<KeyedService> BuildFeatureEngagementMockTracker(
 }  // namespace
 
 @interface ContentSuggestionsCoordinator (Testing) <
+    ContentSuggestionsViewControllerAudience,
     MagicStackModuleContainerDelegate>
 - (void)logEphemeralCardVisibility:(ContentSuggestionsModuleType)card;
+- (void)logTopModuleImpressionForType:(ContentSuggestionsModuleType)moduleType;
 @end
 
 // Testing Suite for ContentSuggestionsCoordinator
@@ -63,8 +74,7 @@ class ContentSuggestionsCoordinatorTest : public PlatformTest {
     TestProfileIOS::Builder builder;
     builder.AddTestingFactory(
         AuthenticationServiceFactory::GetInstance(),
-        AuthenticationServiceFactory::GetFactoryWithDelegate(
-            std::make_unique<FakeAuthenticationServiceDelegate>()));
+        AuthenticationServiceFactory::GetDefaultFactory());
     builder.AddTestingFactory(SyncServiceFactory::GetInstance(),
                               base::BindRepeating(&CreateMockSyncService));
     builder.AddTestingFactory(
@@ -113,10 +123,103 @@ class ContentSuggestionsCoordinatorTest : public PlatformTest {
   ContentSuggestionsCoordinator* coordinator_;
 };
 
-// Tests that calling -logEphemeralCardVisibility: updates the correct counter.
+// Tests that calling `-logEphemeralCardVisibility:` updates the correct counter
+// without duplicating the top module impression histogram.
 TEST_F(ContentSuggestionsCoordinatorTest, TestLogEphemeralCardVisibility) {
+  base::HistogramTester histogram_tester;
+  [coordinator_ logTopModuleImpressionForType:ContentSuggestionsModuleType::
+                                                  kPriceTrackingPromo];
   [coordinator_ logEphemeralCardVisibility:ContentSuggestionsModuleType::
                                                kPriceTrackingPromo];
   EXPECT_EQ(1, profile_->GetTestingPrefService()->GetInteger(
-                   "ephemeral_pref_counter.price_tracking_promo_counter"));
+                   kPriceTrackingPromoCounterPref));
+  histogram_tester.ExpectUniqueSample(
+      "IOS.MagicStack.Module.TopImpression",
+      ContentSuggestionsModuleType::kPriceTrackingPromo, 1);
+}
+
+// Tests that calling `-didSelectTip:` logs the tap metrics and marks the card
+// as interacted immediately, without waiting for the module removal completion
+// block.
+TEST_F(ContentSuggestionsCoordinatorTest,
+       TestDidSelectTipLogsMetricsImmediately) {
+  base::HistogramTester histogram_tester;
+  id tips_mediator_mock = OCMClassMock([TipsMagicStackMediator class]);
+  [coordinator_ setValue:tips_mediator_mock forKey:@"_tipsMediator"];
+
+  OCMExpect([tips_mediator_mock removeModuleWithCompletion:[OCMArg any]]);
+  OCMExpect([coordinator_.NTPActionsDelegate tipsOpened]);
+
+  [coordinator_
+      didSelectTip:segmentation_platform::TipIdentifier::kEnhancedSafeBrowsing];
+
+  histogram_tester.ExpectUniqueSample(
+      kTipsMagicStackModuleTappedTypeHistogram,
+      segmentation_platform::TipIdentifier::kEnhancedSafeBrowsing, 1);
+  EXPECT_TRUE(profile_->GetTestingPrefService()->GetBoolean(
+      "ephemeral_pref_interacted."
+      "enhanced_safe_browsing_ephemeral_module_interacted"));
+  EXPECT_OCMOCK_VERIFY(tips_mediator_mock);
+  EXPECT_OCMOCK_VERIFY((id)coordinator_.NTPActionsDelegate);
+}
+
+// Tests that calling `-logEphemeralCardVisibility:` defers updating the
+// impression counter when `[delegate isNTPBypassed]` returns `YES`, and logs
+// it when `-logDeferredEphemeralCardVisibilityIfNeeded` is called after the
+// overlay is dismissed without navigating.
+TEST_F(ContentSuggestionsCoordinatorTest,
+       TestLogEphemeralCardVisibilityDeferredWhenNTPBypassed) {
+  __block BOOL is_ntp_bypassed = YES;
+  id mockDelegate =
+      OCMStrictProtocolMock(@protocol(ContentSuggestionsDelegate));
+  OCMStub([mockDelegate isNTPBypassed]).andDo(^(NSInvocation* invocation) {
+    [invocation setReturnValue:&is_ntp_bypassed];
+  });
+  coordinator_.delegate = mockDelegate;
+
+  [coordinator_ logEphemeralCardVisibility:ContentSuggestionsModuleType::
+                                               kPriceTrackingPromo];
+  EXPECT_EQ(0, profile_->GetTestingPrefService()->GetInteger(
+                   kPriceTrackingPromoCounterPref));
+
+  // Dismissing the overlay without navigating away from the NTP should log the
+  // deferred ephemeral card visibility once.
+  is_ntp_bypassed = NO;
+  [coordinator_ logDeferredEphemeralCardVisibilityIfNeeded];
+  EXPECT_EQ(1, profile_->GetTestingPrefService()->GetInteger(
+                   kPriceTrackingPromoCounterPref));
+
+  // Subsequent calls should not duplicate the impression.
+  [coordinator_ logDeferredEphemeralCardVisibilityIfNeeded];
+  EXPECT_EQ(1, profile_->GetTestingPrefService()->GetInteger(
+                   kPriceTrackingPromoCounterPref));
+}
+
+// Tests that a deferred ephemeral card impression is cleared and not logged if
+// the user navigates away from the NTP (`webState` changes) before the overlay
+// finishes dismissing.
+TEST_F(ContentSuggestionsCoordinatorTest,
+       TestDeferredEphemeralCardVisibilityClearedOnNavigationAway) {
+  web::FakeWebState fake_web_state;
+  coordinator_.webState = &fake_web_state;
+
+  __block BOOL is_ntp_bypassed = YES;
+  id mockDelegate =
+      OCMStrictProtocolMock(@protocol(ContentSuggestionsDelegate));
+  OCMStub([mockDelegate isNTPBypassed]).andDo(^(NSInvocation* invocation) {
+    [invocation setReturnValue:&is_ntp_bypassed];
+  });
+  coordinator_.delegate = mockDelegate;
+
+  [coordinator_ logEphemeralCardVisibility:ContentSuggestionsModuleType::
+                                               kPriceTrackingPromo];
+  EXPECT_EQ(0, profile_->GetTestingPrefService()->GetInteger(
+                   kPriceTrackingPromoCounterPref));
+
+  // Simulate navigating away from the NTP before the overlay is dismissed.
+  coordinator_.webState = nullptr;
+  is_ntp_bypassed = NO;
+  [coordinator_ logDeferredEphemeralCardVisibilityIfNeeded];
+  EXPECT_EQ(0, profile_->GetTestingPrefService()->GetInteger(
+                   kPriceTrackingPromoCounterPref));
 }

@@ -9,10 +9,6 @@
 
 namespace bookmarks::prefs {
 
-// Boolean which specifies the ids of the bookmark nodes that are expanded in
-// the bookmark editor.
-inline constexpr char kBookmarkEditorExpandedNodes[] =
-    "bookmark_editor.expanded_nodes";
 // Modifying bookmarks is completely disabled when this is set to false.
 // This includes uploading bookmarks to a sync-ing account.
 inline constexpr char kEditBookmarksEnabled[] = "bookmarks.editing_enabled";
@@ -43,6 +39,11 @@ inline constexpr char kShowManagedBookmarksInBookmarkBar[] =
     "bookmark_bar.show_managed_bookmarks";
 // Boolean which specifies whether the bookmark bar is visible on all tabs.
 inline constexpr char kShowBookmarkBar[] = "bookmark_bar.show_on_all_tabs";
+
+// Integer pref which specifies the visibility state of the bookmark bar.
+// Maps to bookmarks::BookmarkBarVisibilityState.
+inline constexpr char kBookmarkBarVisibilityState[] =
+    "bookmark_bar.visibility_state";
 
 }  // namespace bookmarks::prefs
 

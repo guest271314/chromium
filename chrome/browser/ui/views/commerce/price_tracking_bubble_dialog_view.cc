@@ -6,12 +6,10 @@
 
 #include "base/functional/callback_helpers.h"
 #include "base/metrics/user_metrics.h"
-#include "base/strings/string_util.h"
 #include "chrome/browser/bookmarks/bookmark_model_factory.h"
 #include "chrome/browser/commerce/shopping_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/bookmarks/bookmark_editor.h"
-#include "chrome/browser/ui/views/chrome_layout_provider.h"
 #include "components/bookmarks/browser/bookmark_model.h"
 #include "components/bookmarks/browser/bookmark_utils.h"
 #include "components/commerce/core/price_tracking_utils.h"
@@ -22,6 +20,7 @@
 #include "ui/base/mojom/dialog_button.mojom.h"
 #include "ui/views/controls/styled_label.h"
 #include "ui/views/layout/fill_layout.h"
+#include "ui/views/layout/layout_provider.h"
 #include "ui/views/metadata/view_factory.h"
 #include "ui/views/view_class_properties.h"
 #include "ui/views/view_tracker.h"
@@ -146,10 +145,10 @@ PriceTrackingBubbleDialogView::PriceTrackingBubbleDialogView(
 PriceTrackingBubbleDialogView::~PriceTrackingBubbleDialogView() = default;
 
 void PriceTrackingBubbleDialogView::ShowBookmarkEditor() {
-  DCHECK(anchor_widget());
+  CHECK(anchor_widget(), base::NotFatalUntil::M162);
 
   gfx::NativeWindow native_parent = anchor_widget()->GetNativeWindow();
-  DCHECK(native_parent);
+  CHECK(native_parent, base::NotFatalUntil::M162);
 
   GetWidget()->Close();
 
@@ -200,7 +199,8 @@ PriceTrackingBubbleCoordinator::PriceTrackingBubbleCoordinator(
 PriceTrackingBubbleCoordinator::~PriceTrackingBubbleCoordinator() = default;
 
 void PriceTrackingBubbleCoordinator::OnWidgetDestroying(views::Widget* widget) {
-  DCHECK(bubble_widget_observation_.IsObservingSource(widget));
+  CHECK(bubble_widget_observation_.IsObservingSource(widget),
+        base::NotFatalUntil::M162);
   bubble_widget_observation_.Reset();
 
   std::move(on_dialog_closing_callback_).Run();
@@ -215,7 +215,7 @@ void PriceTrackingBubbleCoordinator::Show(
     base::OnceClosure on_dialog_closing_callback,
     PriceTrackingBubbleDialogView::Type type,
     std::optional<std::u16string> bookmark_folder_name) {
-  DCHECK(!tracker_.view());
+  CHECK(!tracker_.view(), base::NotFatalUntil::M162);
   on_dialog_closing_callback_ = std::move(on_dialog_closing_callback);
 
   if (type == PriceTrackingBubbleDialogView::Type::TYPE_FIRST_USE_EXPERIENCE) {

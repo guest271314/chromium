@@ -30,7 +30,7 @@ enum class TrackedElementFeature : int32_t {
   kIframeTracking = 0,
   kPasswordTracking = 1,
   kTrackedElementFeatureEnd,
-  kTrackedElementFeatureMax = kTrackedElementFeatureEnd + 1,
+  kTrackedElementFeatureMax = kTrackedElementFeatureEnd + 2,
 };
 
 // New struct to hold the tracked element clipped/visible bounds and other data.
@@ -40,12 +40,15 @@ struct VIZ_COMMON_EXPORT TrackedElementRect {
       TrackedElementId id,
       gfx::Rect visible_bounds,
       bool should_add_to_compositor_frame_metadata = false,
+      bool should_exclude_fixed_and_sticky_occlusions = false,
       std::optional<blink::FrameToken> frame_token = std::nullopt,
       std::optional<blink::LocalFrameToken> parent_frame_token = std::nullopt)
       : id(id),
         visible_bounds(visible_bounds),
         should_add_to_compositor_frame_metadata(
             should_add_to_compositor_frame_metadata),
+        should_exclude_fixed_and_sticky_occlusions(
+            should_exclude_fixed_and_sticky_occlusions),
         frame_token(frame_token),
         parent_frame_token(parent_frame_token) {}
 
@@ -59,6 +62,12 @@ struct VIZ_COMMON_EXPORT TrackedElementRect {
   // Whether the element should be added to the compositor frame metadata. If
   // false, the element will be added to the render frame metadata.
   bool should_add_to_compositor_frame_metadata = false;
+
+  // Whether the element should exclude parts occluded by fixed or sticky
+  // elements (e.g., fixed headers, sticky banners). This subtraction is
+  // heuristic (based on compositor-level property trees) and not completely
+  // reliable.
+  bool should_exclude_fixed_and_sticky_occlusions = false;
 
   // The frame token of the frame containing the element being tracked.
   std::optional<blink::FrameToken> frame_token;

@@ -77,7 +77,10 @@
 #include "ash/wm/workspace_controller.h"
 #include "base/command_line.h"
 #include "base/functional/bind.h"
+#include "base/i18n/language_tag.h"
 #include "base/i18n/rtl.h"
+#include "base/i18n/tag_converters.h"
+#include "base/i18n/test/scoped_icu_locale.h"
 #include "base/memory/raw_ptr.h"
 #include "base/run_loop.h"
 #include "base/strings/string_number_conversions.h"
@@ -262,6 +265,12 @@ class AutoHideStateDetector : public ShelfLayoutManagerObserver {
 class ShelfLayoutManagerTest : public ShelfLayoutManagerTestBase {
  public:
   ShelfLayoutManagerTest() = default;
+
+  // ShelfLayoutManagerTestBase:
+  void SetUpInitParams(AshTestHelper::InitParams& init_params) override {
+    ShelfLayoutManagerTestBase::SetUpInitParams(init_params);
+    init_params.add_default_shelf_icon = false;
+  }
 
   // Sets up a Kiosk session after the app has launched.
   void SetUpKioskSession() {
@@ -2329,7 +2338,7 @@ TEST_F(ShelfLayoutManagerTest, ShutdownHandlesWindowActivation) {
 
 TEST_F(ShelfLayoutManagerTest, ShelfLayoutInUnifiedDesktop) {
   Shell::Get()->display_manager()->SetUnifiedDesktopEnabled(true);
-  UpdateDisplay("500x400, 500x400");
+  UpdateDisplay("500x400, 500x400", false, false);
 
   // When the unified desktop is enabled, UpdateDisplay() adds a display so the
   // shelf is recreated. Therefore, update the shelf related data members.
@@ -2823,32 +2832,34 @@ TEST_F(ShelfLayoutManagerTest, RtlPlacement) {
   // Helper function to check that the given widget is placed symmetrically
   // between LTR and RTL.
   auto check_mirrored_placement = [](views::Widget* widget) {
-    base::i18n::SetICUDefaultLocale("en");
-    EXPECT_FALSE(base::i18n::IsRTL());
-    GetShelfLayoutManager()->LayoutShelf();
-    const int ltr_left_position =
-        widget->GetNativeWindow()->GetBoundsInScreen().x();
+    int ltr_left_position = 0;
+    {
+      base::i18n::ScopedDefaultIcuLocale scoped_locale(
+          base::i18n::GetKnownLanguageTag("en"));
+      EXPECT_FALSE(base::i18n::IsRTL());
+      GetShelfLayoutManager()->LayoutShelf();
+      ltr_left_position = widget->GetNativeWindow()->GetBoundsInScreen().x();
+    }
 
-    base::i18n::SetICUDefaultLocale("ar");
-    EXPECT_TRUE(base::i18n::IsRTL());
-    GetShelfLayoutManager()->LayoutShelf();
-    const int rtl_right_position =
-        widget->GetNativeWindow()->GetBoundsInScreen().right();
+    int rtl_right_position = 0;
+    {
+      base::i18n::ScopedDefaultIcuLocale scoped_locale(
+          base::i18n::GetKnownLanguageTag("ar"));
+      EXPECT_TRUE(base::i18n::IsRTL());
+      GetShelfLayoutManager()->LayoutShelf();
+      rtl_right_position =
+          widget->GetNativeWindow()->GetBoundsInScreen().right();
+    }
 
     EXPECT_EQ(
         GetShelfWidget()->GetWindowBoundsInScreen().width() - ltr_left_position,
         rtl_right_position);
   };
 
-  const std::string locale = base::i18n::GetConfiguredLocale();
-
   ShelfWidget* shelf_widget = GetPrimaryShelf()->shelf_widget();
   check_mirrored_placement(shelf_widget->navigation_widget());
   check_mirrored_placement(shelf_widget->status_area_widget());
   check_mirrored_placement(shelf_widget);
-
-  // Reset the lauguage setting.
-  base::i18n::SetICUDefaultLocale(locale);
 }
 
 // Tests the auto-hide shelf status when opening and closing a context menu.
@@ -4321,6 +4332,12 @@ class QuickActionShowBubbleTest : public ShelfLayoutManagerTestBase,
   QuickActionShowBubbleTest() : scoped_locale_(GetParam() ? "ar" : "") {}
   ~QuickActionShowBubbleTest() override = default;
 
+  // ShelfLayoutManagerTestBase:
+  void SetUpInitParams(AshTestHelper::InitParams& init_params) override {
+    ShelfLayoutManagerTestBase::SetUpInitParams(init_params);
+    init_params.add_default_shelf_icon = false;
+  }
+
  private:
   base::test::ScopedRestoreICUDefaultLocale scoped_locale_;
 };
@@ -4439,6 +4456,7 @@ TEST_P(QuickActionShowBubbleTest, ScrollFromShelfToShowAppListOverShelfApps) {
   const size_t max_app_count = 4;
   for (size_t app_count = 1; app_count <= max_app_count; ++app_count)
     AddApp();
+
   EXPECT_EQ(max_app_count, shelf_view->number_of_visible_apps());
 
   for (auto test : test_table) {
@@ -5150,15 +5168,14 @@ TEST_F(ShelfLayoutManagerWithEcheTest, AutoHideShelfWithEcheHidden) {
   EXPECT_EQ(SHELF_AUTO_HIDE_HIDDEN, shelf->GetAutoHideState());
 }
 
-class LockedFullscreenShelfLayoutManagerTest
+class TrustedPinnedShelfLayoutManagerTest
     : public ShelfLayoutManagerTestBase,
       public testing::WithParamInterface<bool> {
  protected:
-  bool IsLocked() const { return GetParam(); }
+  bool IsTrustedPinned() const { return GetParam(); }
 };
 
-TEST_P(LockedFullscreenShelfLayoutManagerTest,
-       HotseatVisibilityWithPinnedWindow) {
+TEST_P(TrustedPinnedShelfLayoutManagerTest, HotseatVisibilityWithPinnedWindow) {
   TabletModeControllerTestApi().EnterTabletMode();
 
   // Create test window.
@@ -5170,14 +5187,14 @@ TEST_P(LockedFullscreenShelfLayoutManagerTest,
   ASSERT_EQ(GetShelfLayoutManager()->hotseat_state(), HotseatState::kExtended);
 
   // Verify hotseat visibility after the window is pinned.
-  PinWindow(window.get(), /*trusted=*/IsLocked());
+  PinWindow(window.get(), /*trusted=*/IsTrustedPinned());
   const HotseatState expected_hotseat_state =
-      IsLocked() ? HotseatState::kHidden : HotseatState::kExtended;
+      IsTrustedPinned() ? HotseatState::kHidden : HotseatState::kExtended;
   EXPECT_EQ(GetShelfLayoutManager()->hotseat_state(), expected_hotseat_state);
 }
 
-INSTANTIATE_TEST_SUITE_P(LockedFullscreenShelfLayoutManagerTests,
-                         LockedFullscreenShelfLayoutManagerTest,
+INSTANTIATE_TEST_SUITE_P(TrustedPinnedShelfLayoutManagerTests,
+                         TrustedPinnedShelfLayoutManagerTest,
                          testing::Bool());
 
 }  // namespace ash

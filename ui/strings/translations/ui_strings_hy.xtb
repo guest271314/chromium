@@ -11,7 +11,6 @@
 <translation id="1253734725326687145">Հպման թիրախը տեղափոխվեց վերևի աջ անկյուն։ Հպեք այստեղ։</translation>
 <translation id="1266864766717917324">Չհաջողվեց ուղարկել բովանդակությունը (<ph name="CONTENT_TYPE" />)</translation>
 <translation id="1269641567813814718">Win</translation>
-<translation id="1291104554099683393">Փորձեք ուղարկել տեքստը մաս-մաս։</translation>
 <translation id="1293699935367580298">Esc</translation>
 <translation id="1368832886055348810">Ձախից աջ</translation>
 <translation id="1383876407941801731">Որոնում</translation>
@@ -38,13 +37,11 @@
 <translation id="1901303067676059328">Ընտրել &amp;բոլորը</translation>
 <translation id="19085484004813472">Սա նոր գործառույթ է</translation>
 <translation id="2006524834898217237">Համոզվեք, որ սարքը միացված է ինտերնետին։</translation>
-<translation id="208586643495776849">Նորից փորձեք</translation>
 <translation id="2111134541987263231">Միացրեք <ph name="BEGIN_BOLD" />Թույլ տալ ինկոգնիտո ռեժիմում<ph name="END_BOLD" /> կարգավորումը</translation>
 <translation id="2141853158323869627">{DAYS,plural, =1{1 օր}one{# օր}other{# օր}}</translation>
 <translation id="2148716181193084225">Այսօր</translation>
 <translation id="2168039046890040389">Էջը վեր</translation>
 <translation id="2190355936436201913">(դատարկ)</translation>
-<translation id="2192232475740621500">Ցույց տալ ավելի քիչ պատուհաններ</translation>
 <translation id="2267918077332197517">Արգելափակել այս կայքի բոլոր ծանուցումները</translation>
 <translation id="2283117145434822734">F6</translation>
 <translation id="2289052229480071835">Ձեր էկրանին հպեք ինտերակտիվ տարրերին:</translation>
@@ -56,7 +53,6 @@
 <translation id="2388990488038464401">Զանգե՞լ այս համարին ձեր հեռախոսից</translation>
 <translation id="2435457462613246316">Ցույց տալ գաղտնաբառը</translation>
 <translation id="24452542372838207">Ընդարձակել</translation>
-<translation id="2445449901874883781">Ցույց տալ ավելի շատ պատուհաններ</translation>
 <translation id="2448407890032181691">Հպման թիրախը տեղափոխվեց ներքևի աջ անկյուն։ Հպեք այստեղ։</translation>
 <translation id="2482878487686419369">Ծանուցումներ</translation>
 <translation id="2497284189126895209">Բոլոր ֆայլերը</translation>
@@ -87,7 +83,6 @@
 <translation id="3306688585798492231">Ներ­կա­­ռուց­ված էկրան</translation>
 <translation id="335581015389089642">Speech</translation>
 <translation id="3372635229069101468">Սեղմեք <ph name="BEGIN_BOLD" />Մանրամասներ<ph name="END_BOLD" /></translation>
-<translation id="3389286852084373014">Տեքստը չափազանց մեծ է</translation>
 <translation id="3406306243914553062">HTML բովանդակություն</translation>
 <translation id="3600566671520689681">{DAYS,plural, =1{Մնացել է 1 օր}one{Մնացել է # օր}other{Մնացել է # օր}}</translation>
 <translation id="3600969208114796418"><ph name="SAVEAS_EXTENSION_TYPE" /> Ֆայլ</translation>
@@ -130,7 +125,6 @@
 <translation id="5046499563572181734">Հպեք այստեղ</translation>
 <translation id="5076340679995252485">&amp;Տեղադրել</translation>
 <translation id="520299402983819650"><ph name="QUANTITY" /> ՊԲ</translation>
-<translation id="5278860589123563674">Չհաջողվեց ուղարկել</translation>
 <translation id="5283101102242354279">Միացրեք ընդլայնումը ինկոգնիտո ռեժիմում՝</translation>
 <translation id="528468243742722775">Վերջ</translation>
 <translation id="5329858601952122676">&amp;Ջնջել</translation>
@@ -190,7 +184,6 @@
 <translation id="6965382102122355670">Եղավ</translation>
 <translation id="6974053822202609517">Աջից ձախ</translation>
 <translation id="7052633198403197513">F1</translation>
-<translation id="7170202025028120564">Հավելվածի էկրանի ձեր կարգավորումները կկիրառվեն, երբ հաջորդ անգան վերագործարկեք այն։</translation>
 <translation id="7222373446505536781">F11</translation>
 <translation id="7238427729722629793">{MINUTES,plural, =1{Մնացել է 1 րոպե}one{Մնացել է # րոպե}other{Մնացել է # րոպե}}</translation>
 <translation id="7252604552361840748">Գտեք վերևում նշված ընդլայնումը</translation>

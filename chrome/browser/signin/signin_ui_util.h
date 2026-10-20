@@ -11,24 +11,36 @@
 #include "base/auto_reset.h"
 #include "base/functional/callback_forward.h"
 #include "build/buildflag.h"
+#include "chrome/browser/signin/cross_device_signin_promo_manager.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "components/signin/public/base/signin_buildflags.h"
 #include "components/signin/public/base/signin_metrics.h"
+#include "url/gurl.h"
 
-struct AccountInfo;
+class AccountInfo;
 struct CoreAccountInfo;
-class Browser;
 class Profile;
 class ProfileAttributesEntry;
 class ProfileAttributesStorage;
 
 namespace signin {
+class AccountPreviewDataService;
 class IdentityManager;
 }
 
 // Utility functions to gather status information from the various signed in
 // services and construct messages suitable for showing in UI.
 namespace signin_ui_util {
+
+#if BUILDFLAG(ENABLE_DICE_SUPPORT)
+// Shows a bubble containing a QR code to transfer credentials to a mobile
+// device.
+void ShowCrossDeviceSigninQrBubble(
+    BrowserWindowInterface* browser_window_interface,
+    GURL qr_code_url,
+    base::OnceClosure closing_callback,
+    CrossDeviceSigninPromoEntryPoint entry_point);
+#endif  // BUILDFLAG(ENABLE_DICE_SUPPORT)
 
 // Enables history sync for the primary account.
 // If the user is already signed in, the history datatype is enabled
@@ -59,12 +71,6 @@ void ShowReauthForPrimaryAccountWithAuthError(
 void ShowReauthForAccount(Profile* profile,
                           const std::string& email,
                           signin_metrics::AccessPoint access_point);
-
-// Delegates to an existing sign-in tab if one exists. If not, a new sign-in tab
-// is created.
-void ShowExtensionSigninPrompt(Profile* profile,
-                               bool enable_sync,
-                               const std::string& email_hint);
 
 // This function is used to sign in a given account:
 // * This function does nothing if the user is already signed in to Chrome.
@@ -106,22 +112,27 @@ void EnableSyncFromMultiAccountPromo(Profile* profile,
                                      signin_metrics::AccessPoint access_point,
                                      bool is_default_promo_account);
 
-// Returns the list of all accounts that have a token. The unconsented primary
-// account will be the first account in the list. If
-// |restrict_to_accounts_eligible_for_sync| is true, removes the account that
-// are not suitable for sync promos.
+// Returns the list of all accounts that have a token. If the user is signed
+// in to Chrome, the primary account is always returned first. Otherwise, the
+// default (first account in the cookie jar) account will be the first account
+// in the list. If `restrict_to_accounts_eligible_for_signin` is true, removes
+// accounts that are not suitable for signin promos. If
+// `account_preview_data_service` is provided and has a preferred account for
+// signin, that account is placed at the front of the list when the user is not
+// signed in.
 std::vector<AccountInfo> GetOrderedAccountsForDisplay(
     const signin::IdentityManager* identity_manager,
-    bool restrict_to_accounts_eligible_for_sync);
-
-#if !BUILDFLAG(IS_CHROMEOS)
-// Returns single account to use in promos.
-AccountInfo GetSingleAccountForPromos(
-    const signin::IdentityManager* identity_manager);
-
-#endif
+    const signin::AccountPreviewDataService* account_preview_data_service,
+    bool restrict_to_accounts_eligible_for_signin);
 
 #if BUILDFLAG(ENABLE_DICE_SUPPORT)
+// Returns single account to use in promos. If `account_preview_data_service` is
+// non-null and has a preferred account for signin, that account is returned.
+// Otherwise, returns the default account for promo.
+AccountInfo GetSingleAccountForPromos(
+    const signin::IdentityManager* identity_manager,
+    const signin::AccountPreviewDataService* account_preview_data_service);
+
 // Returns an existing re-usable Dice signin tab with the given access point.
 content::WebContents* GetSignInTabWithAccessPoint(
     BrowserWindowInterface* browser_window_interface,
@@ -145,6 +156,11 @@ bool ShouldShowAnimatedIdentityOnOpeningWindow(Profile& profile);
 // replay zero.
 base::AutoReset<std::optional<base::TimeDelta>>
 CreateZeroOverrideDelayForCrossWindowAnimationReplayForTesting();
+
+// Creates a scoped override that makes the delay for cross window animation
+// replay infinite.
+base::AutoReset<std::optional<base::TimeDelta>>
+CreateInfiniteOverrideDelayForCrossWindowAnimationReplayForTesting();
 
 #if BUILDFLAG(ENABLE_DICE_SUPPORT)
 base::AutoReset<SigninUiDelegate*> SetSigninUiDelegateForTesting(

@@ -4,17 +4,15 @@
 
 package org.chromium.chrome.browser.browserservices.ui.controller;
 
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
-
-import static org.chromium.chrome.browser.flags.ChromeFeatureList.sCctAuthTabEnableHttpsRedirectsVerificationTimeoutMs;
 
 import android.app.Activity;
 import android.app.Application;
@@ -35,11 +33,13 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
+import org.robolectric.Robolectric;
 import org.robolectric.Shadows;
 import org.robolectric.annotation.Config;
 import org.robolectric.shadows.ShadowSystemClock;
 
 import org.chromium.base.ContextUtils;
+import org.chromium.base.TriState;
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.RobolectricUtil;
 import org.chromium.base.test.util.HistogramWatcher;
@@ -73,11 +73,11 @@ public class AuthTabVerifierTest {
     @Mock AuthTabIntentDataProvider mIntentDataProvider;
     @Mock ChromeOriginVerifier mOriginVerifier;
     @Mock CustomTabActivityTabProvider mActivityTabProvider;
-    @Mock Activity mActivity;
     @Mock Context mContext;
     @Mock DomainVerificationManager mDomainVerificationManager;
     @Mock DomainVerificationUserState mDomainVerificationUserState;
 
+    private Activity mActivity;
     private AuthTabVerifier mDelegate;
 
     @Before
@@ -92,6 +92,7 @@ public class AuthTabVerifierTest {
         when(mIntentDataProvider.getAuthRedirectPath()).thenReturn(REDIRECT_PATH);
         when(mIntentDataProvider.getClientPackageName()).thenReturn("org.chromium.authtab");
         ChromeOriginVerifierFactory.setInstanceForTesting(mOriginVerifier);
+        mActivity = Robolectric.buildActivity(Activity.class).get();
 
         mDelegate =
                 new AuthTabVerifier(
@@ -108,7 +109,7 @@ public class AuthTabVerifierTest {
         ArgumentCaptor<OriginVerificationListener> verifyCallback =
                 ArgumentCaptor.forClass(OriginVerificationListener.class);
         verify(mOriginVerifier).start(verifyCallback.capture(), eq(Origin.create(url)));
-        verifyCallback.getValue().onOriginVerified(null, null, success, true);
+        verifyCallback.getValue().onOriginVerified(null, null, success, TriState.TRUE);
         assertTrue(mDelegate.hasValidatedHttps());
     }
 
@@ -130,7 +131,7 @@ public class AuthTabVerifierTest {
         HistogramWatcher histograms =
                 HistogramWatcher.newBuilder()
                         .expectIntRecord(
-                                "CustomTabs.AuthTab.TimeToDalVerification.SinceStart", 1000)
+                                "CustomTabs.AuthTab.TimeToDalVerification.SinceStart2", 1000)
                         .build();
 
         String url = REDIRECT_URL;
@@ -140,8 +141,8 @@ public class AuthTabVerifierTest {
         simulateVerificationResultFromNetwork(url, true);
 
         mDelegate.returnAsActivityResult(new GURL(url));
-        verify(mActivity).setResult(eq(Activity.RESULT_OK), any());
-        verify(mActivity).finish();
+        assertEquals(Activity.RESULT_OK, Shadows.shadowOf(mActivity).getResultCode());
+        assertTrue(mActivity.isFinishing());
         histograms.assertExpected();
     }
 
@@ -149,7 +150,8 @@ public class AuthTabVerifierTest {
     public void validatedHttpsReturnsResult_failure() {
         HistogramWatcher histograms =
                 HistogramWatcher.newBuilder()
-                        .expectIntRecord("CustomTabs.AuthTab.TimeToDalVerification.SinceStart", 300)
+                        .expectIntRecord(
+                                "CustomTabs.AuthTab.TimeToDalVerification.SinceStart2", 300)
                         .build();
         String url = REDIRECT_URL;
         mDelegate.onFinishNativeInitialization();
@@ -158,8 +160,10 @@ public class AuthTabVerifierTest {
         simulateVerificationResultFromNetwork(url, false);
 
         mDelegate.returnAsActivityResult(new GURL(url));
-        verify(mActivity).setResult(eq(AuthTabIntent.RESULT_VERIFICATION_FAILED), any());
-        verify(mActivity).finish();
+        assertEquals(
+                AuthTabIntent.RESULT_VERIFICATION_FAILED,
+                Shadows.shadowOf(mActivity).getResultCode());
+        assertTrue(mActivity.isFinishing());
         histograms.assertExpected();
     }
 
@@ -168,9 +172,10 @@ public class AuthTabVerifierTest {
         HistogramWatcher histograms =
                 HistogramWatcher.newBuilder()
                         .expectIntRecord(
-                                "CustomTabs.AuthTab.TimeToDalVerification.SinceStart", 5300)
+                                "CustomTabs.AuthTab.TimeToDalVerification.SinceStart2", 5300)
                         .expectIntRecord(
-                                "CustomTabs.AuthTab.TimeToDalVerification.SinceFlowCompletion", 300)
+                                "CustomTabs.AuthTab.TimeToDalVerification.SinceFlowCompletion2",
+                                300)
                         .build();
 
         String url = REDIRECT_URL;
@@ -183,14 +188,14 @@ public class AuthTabVerifierTest {
         mDelegate.returnAsActivityResult(gurl);
         assertFalse(mDelegate.hasValidatedHttps());
 
-        verify(mActivity, never()).setResult(anyInt(), any());
-        verify(mActivity, never()).finish();
+        assertEquals(Activity.RESULT_CANCELED, Shadows.shadowOf(mActivity).getResultCode());
+        assertFalse(mActivity.isFinishing());
 
         ShadowSystemClock.advanceBy(300, TimeUnit.MILLISECONDS);
         simulateVerificationResultFromNetwork(url, true);
 
-        verify(mActivity).setResult(eq(Activity.RESULT_OK), any());
-        verify(mActivity).finish();
+        assertEquals(Activity.RESULT_OK, Shadows.shadowOf(mActivity).getResultCode());
+        assertTrue(mActivity.isFinishing());
         histograms.assertExpected();
     }
 
@@ -198,9 +203,9 @@ public class AuthTabVerifierTest {
     public void returnsResultLaterForDelayedNetworkResponse_timeout() {
         HistogramWatcher histograms =
                 HistogramWatcher.newBuilder()
-                        .expectAnyRecord("CustomTabs.AuthTab.TimeToDalVerification.SinceStart")
+                        .expectAnyRecord("CustomTabs.AuthTab.TimeToDalVerification.SinceStart2")
                         .expectAnyRecord(
-                                "CustomTabs.AuthTab.TimeToDalVerification.SinceFlowCompletion")
+                                "CustomTabs.AuthTab.TimeToDalVerification.SinceFlowCompletion2")
                         .build();
         String url = REDIRECT_URL;
         GURL gurl = new GURL(url);
@@ -212,17 +217,17 @@ public class AuthTabVerifierTest {
         mDelegate.returnAsActivityResult(gurl);
         assertFalse(mDelegate.hasValidatedHttps());
 
-        verify(mActivity, never()).setResult(anyInt(), any());
-        verify(mActivity, never()).finish();
+        assertEquals(Activity.RESULT_CANCELED, Shadows.shadowOf(mActivity).getResultCode());
+        assertFalse(mActivity.isFinishing());
 
-        ShadowSystemClock.advanceBy(
-                sCctAuthTabEnableHttpsRedirectsVerificationTimeoutMs.getValue(),
-                TimeUnit.MILLISECONDS);
+        ShadowSystemClock.advanceBy(AuthTabVerifier.VERIFICATION_TIMEOUT_MS, TimeUnit.MILLISECONDS);
         // Simulate timeout.
         RobolectricUtil.runAllBackgroundAndUiIncludingDelayed();
 
-        verify(mActivity).setResult(eq(AuthTabIntent.RESULT_VERIFICATION_TIMED_OUT), any());
-        verify(mActivity).finish();
+        assertEquals(
+                AuthTabIntent.RESULT_VERIFICATION_TIMED_OUT,
+                Shadows.shadowOf(mActivity).getResultCode());
+        assertTrue(mActivity.isFinishing());
         histograms.assertExpected();
     }
 

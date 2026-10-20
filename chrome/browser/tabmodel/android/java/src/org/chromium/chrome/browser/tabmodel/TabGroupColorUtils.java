@@ -11,8 +11,8 @@ import androidx.annotation.VisibleForTesting;
 import org.chromium.base.Token;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.components.tab_groups.TabGroupColorId;
+import org.chromium.components.tab_groups.TabGroupColorPickerUtils;
 
-import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -22,44 +22,6 @@ import java.util.Set;
 @NullMarked
 public class TabGroupColorUtils {
     public static final int INVALID_COLOR_ID = -1;
-
-    /**
-     * This method assigns a color to all tab groups which do not have an assigned tab color at
-     * startup. If a migration for all existing tabs has already been performed, skip this logic.
-     *
-     * @param tabModel The {@link TabModel} that governs the current tab groups.
-     */
-    public static void assignTabGroupColorsIfApplicable(TabModel tabModel) {
-        // TODO(b/41490324): Consider removing the migration logic when tab group colors are
-        // launched. There may be an argument to keep this around in case the color info is somehow
-        // lost between startups, in which case this will at least set some default colors up. In
-        // theory, once the migrations have been applied to everyone there won't be a need for this.
-        //
-        // If the migration is already done, skip the below logic.
-        if (TabGroupVisualDataStore.isColorInitialMigrationDone()) {
-            return;
-        }
-
-        Map<Integer, Integer> currentColorCountMap = getCurrentColorCountMap(tabModel);
-        Set<Token> tabGroupIds = tabModel.getAllTabGroupIds();
-
-        // Assign a color to all tab groups that don't have a color.
-        for (Token tabGroupId : tabGroupIds) {
-            int colorId = tabModel.getTabGroupColor(tabGroupId);
-
-            // Retrieve the next suggested colorId if the current tab group does not have a color.
-            if (colorId == INVALID_COLOR_ID) {
-                int suggestedColorId = getNextSuggestedColorId(currentColorCountMap);
-                tabModel.setTabGroupColor(tabGroupId, suggestedColorId);
-                currentColorCountMap.put(
-                        suggestedColorId,
-                        assumeNonNull(currentColorCountMap.get(suggestedColorId)) + 1);
-            }
-        }
-
-        // Mark that the initial migration of tab colors is complete.
-        TabGroupVisualDataStore.setColorInitialMigrationDone();
-    }
 
     /**
      * This method returns the next suggested colorId to be assigned to a tab group if that tab
@@ -77,24 +39,9 @@ public class TabGroupColorUtils {
         return getNextSuggestedColorId(currentColorCountMap);
     }
 
-    /**
-     * This method returns the color id list attributed to tab groups specifically.
-     *
-     * @return An array list of ids from 0 to n representing all colors in the palette
-     */
-    public static List<Integer> getTabGroupColorIdList() {
-        // The color ids used here can be found in {@link TabGroupColorId}. Note that it is assumed
-        // the id list is contiguous from 0 to size-1.
-        List<Integer> colors = new ArrayList<>(TabGroupColorId.NUM_ENTRIES);
-        for (int i = 0; i < TabGroupColorId.NUM_ENTRIES; i++) {
-            colors.add(i);
-        }
-        return colors;
-    }
-
     /** Get a map that indicates the current usage count of each tab group color. */
     private static Map<Integer, Integer> getCurrentColorCountMap(TabModel tabModel) {
-        List<Integer> colorList = getTabGroupColorIdList();
+        List<Integer> colorList = TabGroupColorPickerUtils.getTabGroupColorIdList();
         Map<Integer, Integer> colorCountMap = new LinkedHashMap<>(colorList.size());
         for (Integer colorId : colorList) {
             colorCountMap.put(colorId, 0);

@@ -14,8 +14,8 @@
 #include "components/autofill/core/browser/field_types.h"
 #include "components/autofill/core/browser/heuristic_source.h"
 #include "components/autofill/core/browser/ml_model/field_classification_model_handler.h"
-#include "components/autofill/core/browser/test_utils/autofill_form_test_utils.h"
-#include "components/autofill/core/browser/test_utils/autofill_test_utils.h"
+#include "components/autofill/core/browser/test_utils/autofill_form_test_util.h"
+#include "components/autofill/core/browser/test_utils/autofill_test_util.h"
 #include "components/autofill/core/browser/test_utils/field_prediction_test_matchers.h"
 #include "components/autofill/core/common/autofill_clock.h"
 #include "components/autofill/core/common/autofill_features.h"
@@ -262,52 +262,43 @@ TEST_F(AutofillFieldTest, UnionTypesFromHtmlAndServerTypes) {
     return field.Type();
   };
 
-  auto is_type = [](FieldTypeSet types, bool is_country_code = false) {
-    return AllOf(Property(&AutofillType::GetTypes, types),
-                 Property(&AutofillType::is_country_code, is_country_code));
+  auto is_type = [](FieldTypeSet types) {
+    return Property(&AutofillType::GetTypes, types);
   };
 
   using enum HtmlFieldType;
 
   EXPECT_THAT(f(kUnrecognized, ADDRESS_HOME_ZIP), is_type({ADDRESS_HOME_ZIP}));
 
-  EXPECT_THAT(f(kCountryName), is_type({ADDRESS_HOME_COUNTRY}, false));
-  EXPECT_THAT(f(kCountryCode), is_type({ADDRESS_HOME_COUNTRY}, true));
+  EXPECT_THAT(f(kCountryName), is_type({ADDRESS_HOME_COUNTRY}));
+  EXPECT_THAT(f(kCountryCode), is_type({ADDRESS_HOME_COUNTRY}));
 
   // `PASSPORT_NUMBER` is added to the union type.
   EXPECT_THAT(f(kCountryName, PASSPORT_NUMBER),
-              is_type({ADDRESS_HOME_COUNTRY, PASSPORT_NUMBER}, false));
+              is_type({ADDRESS_HOME_COUNTRY, PASSPORT_NUMBER}));
   EXPECT_THAT(f(kCountryCode, PASSPORT_NUMBER),
-              is_type({ADDRESS_HOME_COUNTRY, PASSPORT_NUMBER}, true));
+              is_type({ADDRESS_HOME_COUNTRY, PASSPORT_NUMBER}));
 
   // `ADDRESS_HOME_ZIP` is not added to the union type because it is not an
   // Autofill AI type.
   EXPECT_THAT(f(kCountryName, ADDRESS_HOME_ZIP),
-              is_type({ADDRESS_HOME_COUNTRY}, false));
-  EXPECT_THAT(f(kCountryCode, ADDRESS_HOME_ZIP),
-              is_type({ADDRESS_HOME_COUNTRY}, true));
+              is_type({ADDRESS_HOME_COUNTRY}));
 
   // `PASSPORT_NUMBER` is added to the union type.
   // `ADDRESS_HOME_ZIP` is ignored because it is not an Autofill AI type.
   EXPECT_THAT(f(kCountryName, PASSPORT_NUMBER, ADDRESS_HOME_ZIP),
-              is_type({ADDRESS_HOME_COUNTRY, PASSPORT_NUMBER}, false));
-  EXPECT_THAT(f(kCountryCode, PASSPORT_NUMBER, ADDRESS_HOME_ZIP),
-              is_type({ADDRESS_HOME_COUNTRY, PASSPORT_NUMBER}, true));
+              is_type({ADDRESS_HOME_COUNTRY, PASSPORT_NUMBER}));
 
   // `PASSPORT_NUMBER` is added to the union type.
   // `ADDRESS_HOME_ZIP` is ignored because it is not an Autofill AI type.
   EXPECT_THAT(f(kCountryName, ADDRESS_HOME_ZIP, PASSPORT_NUMBER),
-              is_type({ADDRESS_HOME_COUNTRY, PASSPORT_NUMBER}, false));
-  EXPECT_THAT(f(kCountryCode, ADDRESS_HOME_ZIP, PASSPORT_NUMBER),
-              is_type({ADDRESS_HOME_COUNTRY, PASSPORT_NUMBER}, true));
+              is_type({ADDRESS_HOME_COUNTRY, PASSPORT_NUMBER}));
 }
 
 // Tests that `AutofillField::UpdateFieldData()` correctly updates information
 // of `AutofillField` coming from `FormFieldData` and leaves other information
 // unchanged.
 TEST_F(AutofillFieldTest, UpdateFieldData) {
-  base::test::ScopedFeatureList scoped_feature_list{
-      features::kAutofillFixFormEquality};
   FormFieldData field = test::GetFormFieldData(
       {.role = NAME_FULL, .autocomplete_attribute = "name"});
 
@@ -360,14 +351,14 @@ class AutofillFieldTest_MLPredictions : public AutofillFieldTest {
 TEST_F(AutofillFieldTest_MLPredictions, PredictionsUsed) {
   field().set_heuristic_type(kMlSource, ADDRESS_HOME_STREET_ADDRESS);
   field().set_heuristic_type(kRegexSource, ADDRESS_HOME_LINE1);
-  EXPECT_EQ(ADDRESS_HOME_STREET_ADDRESS, field().heuristic_type());
+  EXPECT_EQ(field().heuristic_type(), ADDRESS_HOME_STREET_ADDRESS);
 }
 
 // Test that the regex prediction is used if the model returned NO_SERVER_DATA.
 TEST_F(AutofillFieldTest_MLPredictions, FallbackToRegex_OnNoServerData) {
   field().set_heuristic_type(kMlSource, NO_SERVER_DATA);
   field().set_heuristic_type(kRegexSource, ADDRESS_HOME_LINE1);
-  EXPECT_EQ(ADDRESS_HOME_LINE1, field().heuristic_type());
+  EXPECT_EQ(field().heuristic_type(), ADDRESS_HOME_LINE1);
 }
 
 // Test that the regex prediction is used if the regex prediction is a type
@@ -375,11 +366,11 @@ TEST_F(AutofillFieldTest_MLPredictions, FallbackToRegex_OnNoServerData) {
 TEST_F(AutofillFieldTest_MLPredictions, FallbackToRegex_OnUnsupportedType) {
   field().set_heuristic_type(kMlSource, NAME_FIRST);
   field().set_heuristic_type(kRegexSource, IBAN_VALUE);
-  EXPECT_EQ(IBAN_VALUE, field().heuristic_type());
+  EXPECT_EQ(field().heuristic_type(), IBAN_VALUE);
 
   field().set_heuristic_type(kMlSource, NAME_FIRST);
   field().set_heuristic_type(kRegexSource, PASSPORT_NUMBER);
-  EXPECT_EQ(PASSPORT_NUMBER, field().heuristic_type());
+  EXPECT_EQ(field().heuristic_type(), PASSPORT_NUMBER);
 }
 
 class AutofillFieldWithAutofillAiTest : public base::test::WithFeatureOverride,
@@ -601,8 +592,6 @@ class AutofillPredictionPreferenceTest
 // overall field type.
 TEST_P(AutofillPredictionPreferenceTest,
        AutofillPredictionPreferenceTestParams) {
-  base::test::ScopedFeatureList scoped_feature_list{
-      features::kAutofillPreferPhoneCountryCodeTypeOverCountryHtmlType};
   AutofillPredictionPreferenceTestParams test_case = GetParam();
   AutofillField field;
   field.set_form_control_type(test_case.form_control_type);
@@ -985,8 +974,6 @@ INSTANTIATE_TEST_SUITE_P(
 // Tests the behavior of `AutofillField::last_modifier()` when the purpose is to
 // figure out whether a field was last modified by autofill.
 TEST_F(AutofillFieldTest, IsLastModifierAutofill) {
-  base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitAndEnableFeature(features::kAutofillFixIsAutofilled);
   AutofillField field;
   EXPECT_NE(field.last_modifier(), FieldModifier::kAutofill);
 
@@ -1003,8 +990,6 @@ TEST_F(AutofillFieldTest, IsLastModifierAutofill) {
 // Tests the behavior of `AutofillField::[last|all]_modifier()` when the purpose
 // is to figure out whether a field was previously autofilled (but now is not).
 TEST_F(AutofillFieldTest, PreviouslyAutofilled) {
-  base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitAndEnableFeature(features::kAutofillFixIsAutofilled);
   AutofillField field;
   auto previously_autofilled = [](const AutofillField& field) {
     return field.all_modifiers().contains(FieldModifier::kAutofill) &&
@@ -1028,8 +1013,6 @@ TEST_F(AutofillFieldTest, PreviouslyAutofilled) {
 // Tests the behavior of `AutofillField::[last|all]_modifier()` when the purpose
 // is to figure out whether a field was ever edited by the user.
 TEST_F(AutofillFieldTest, IsUserEdited) {
-  base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitAndEnableFeature(features::kAutofillFixIsAutofilled);
   AutofillField field;
   EXPECT_FALSE(field.all_modifiers().contains(FieldModifier::kUser));
 

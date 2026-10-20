@@ -13,11 +13,13 @@ import androidx.test.filters.SmallTest;
 import org.hamcrest.Matchers;
 import org.junit.Assert;
 import org.junit.Before;
-import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
+import org.mockito.Mockito;
 
+import org.chromium.base.DeviceInfo;
 import org.chromium.base.FeatureOverrides;
+import org.chromium.base.ResettersForTesting;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.Criteria;
@@ -25,7 +27,6 @@ import org.chromium.base.test.util.CriteriaHelper;
 import org.chromium.base.test.util.Feature;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.profiles.OtrProfileId;
-import org.chromium.chrome.test.ChromeBrowserTestRule;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.components.download.DownloadDangerType;
 import org.chromium.components.messages.MessageDispatcher;
@@ -33,6 +34,7 @@ import org.chromium.components.offline_items_collection.FailState;
 import org.chromium.components.offline_items_collection.LegacyHelpers;
 import org.chromium.components.offline_items_collection.OfflineItem;
 import org.chromium.components.offline_items_collection.OfflineItemState;
+import org.chromium.content_public.browser.test.NativeLibraryTestUtils;
 import org.chromium.ui.modaldialog.ModalDialogManager;
 import org.chromium.url.GURL;
 import org.chromium.url.JUnitTestGURLs;
@@ -46,8 +48,6 @@ import java.util.UUID;
 @RunWith(ChromeJUnit4ClassRunner.class)
 @Batch(Batch.PER_CLASS)
 public class DownloadMessageUiControllerTest {
-    @Rule public final ChromeBrowserTestRule mBrowserTestRule = new ChromeBrowserTestRule();
-
     private static final String MESSAGE_DOWNLOADING_FILE = "Downloading file…";
     private static final String MESSAGE_DOWNLOADING_TWO_FILES = "Downloading 2 files…";
     private static final String MESSAGE_SINGLE_DOWNLOAD_COMPLETE = "File downloaded";
@@ -76,6 +76,7 @@ public class DownloadMessageUiControllerTest {
 
     @Before
     public void before() {
+        NativeLibraryTestUtils.loadNativeLibraryAndInitBrowserProcess();
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
                     mTestController = new TestDownloadMessageUiController();
@@ -87,6 +88,17 @@ public class DownloadMessageUiControllerTest {
                 .enable(ChromeFeatureList.MALICIOUS_APK_DOWNLOAD_CHECK)
                 .param(ChromeFeatureList.sMaliciousApkDownloadCheckTelemetryOnly.getName(), false)
                 .apply();
+    }
+
+    /** Satisfies both conditions of {@link DownloadFeatures#isDownloadToolbarButtonEnabled()}. */
+    public void enableDownloadToolbarButton() {
+        FeatureOverrides.newBuilder()
+                .enable(ChromeFeatureList.DOWNLOAD_TOOLBAR_BUTTON_FOR_DESKTOP)
+                .apply();
+        DeviceInfo.setIsDesktopForTesting(true);
+        // setIsDesktopForTesting() only resets the Java override; this also re-syncs native, which
+        // was updated because the library is already loaded.
+        ResettersForTesting.register(DeviceInfo::resetIsDesktopForTesting);
     }
 
     public void enableShowBlockedSensitiveDownload(boolean enabled) {
@@ -103,15 +115,19 @@ public class DownloadMessageUiControllerTest {
 
     static class TestDelegate implements DownloadMessageUiController.Delegate {
         public boolean mMaybeSwitchToFocusedActivityCalled;
+        public @Nullable Context mContext = ApplicationProvider.getApplicationContext();
+        public @Nullable MessageDispatcher mMessageDispatcher =
+                Mockito.mock(MessageDispatcher.class);
+        public boolean mSwitchToFocusedActivityResult;
 
         @Override
         public @Nullable Context getContext() {
-            return ApplicationProvider.getApplicationContext();
+            return mContext;
         }
 
         @Override
         public @Nullable MessageDispatcher getMessageDispatcher() {
-            return null;
+            return mMessageDispatcher;
         }
 
         @Override
@@ -122,6 +138,11 @@ public class DownloadMessageUiControllerTest {
         @Override
         public boolean maybeSwitchToFocusedActivity() {
             mMaybeSwitchToFocusedActivityCalled = true;
+            if (mSwitchToFocusedActivityResult) {
+                mContext = ApplicationProvider.getApplicationContext();
+                mSwitchToFocusedActivityResult = false;
+                return true;
+            }
             return false;
         }
 
@@ -139,6 +160,8 @@ public class DownloadMessageUiControllerTest {
     static class TestDownloadMessageUiController extends DownloadMessageUiControllerImpl {
         private DownloadProgressMessageUiData mInfo;
         public final TestDelegate mDelegate;
+        public int mShowMessageCallCount;
+        public int mClosePreviousMessageCallCount;
 
         public TestDownloadMessageUiController() {
             this(new TestDelegate());
@@ -151,11 +174,14 @@ public class DownloadMessageUiControllerTest {
 
         @Override
         protected void showMessage(@UiState int state, DownloadProgressMessageUiData info) {
+            mShowMessageCallCount++;
             mInfo = info;
         }
 
         @Override
         protected void closePreviousMessage() {
+            super.closePreviousMessage();
+            mClosePreviousMessageCallCount++;
             mInfo = null;
         }
 
@@ -246,6 +272,52 @@ public class DownloadMessageUiControllerTest {
     @Test
     @SmallTest
     @Feature({"Download"})
+    public void testToolbarButtonEnabled_suppressesRoutineMessages() {
+        enableDownloadToolbarButton();
+        mTestController.onDownloadStarted();
+        mTestController.verifyMessageGone();
+
+        OfflineItem item = createOfflineItem(OfflineItemState.IN_PROGRESS);
+        mTestController.onItemUpdated(item);
+        mTestController.verifyMessageGone();
+
+        markItemComplete(item);
+        mTestController.onItemUpdated(item);
+        mTestController.verifyMessageGone();
+    }
+
+    @Test
+    @SmallTest
+    @Feature({"Download"})
+    public void testToolbarButtonEnabled_stillShowsDangerousMessage() {
+        enableDangerousDownloadMessage();
+        enableDownloadToolbarButton();
+        OfflineItem item = createOfflineItem(OfflineItemState.IN_PROGRESS);
+        mTestController.onItemUpdated(item);
+        mTestController.verifyMessageGone();
+
+        markItemDangerous(item);
+        mTestController.onItemUpdated(item);
+        mTestController.verify(MESSAGE_DOWNLOAD_DANGEROUS_BLOCKED, TEST_FILE_NAME);
+    }
+
+    @Test
+    @SmallTest
+    @Feature({"Download"})
+    public void testToolbarButtonEnabled_stillShowsFailedMessage() {
+        enableDownloadToolbarButton();
+        OfflineItem item = createOfflineItem(OfflineItemState.IN_PROGRESS);
+        mTestController.onItemUpdated(item);
+        mTestController.verifyMessageGone();
+
+        item.state = OfflineItemState.FAILED;
+        mTestController.onItemUpdated(item);
+        mTestController.verify(MESSAGE_DOWNLOAD_FAILED, null);
+    }
+
+    @Test
+    @SmallTest
+    @Feature({"Download"})
     public void testMultipleOfflineItemComplete() {
         OfflineItem item = createOfflineItem(OfflineItemState.IN_PROGRESS);
         mTestController.onItemUpdated(item);
@@ -301,13 +373,25 @@ public class DownloadMessageUiControllerTest {
     @Feature({"Download"})
     public void testSingleOfflineItemBlockedSensitive() {
         enableShowBlockedSensitiveDownload(true);
-        OfflineItem item = createOfflineItem(OfflineItemState.FAILED);
-        item.failState = FailState.FILE_BLOCKED;
-        item.isDangerous = true;
-        item.dangerType = DownloadDangerType.SENSITIVE_CONTENT_BLOCK;
-        mTestController.onItemUpdated(item);
-        mTestController.verify(MESSAGE_DOWNLOAD_FAILED, DESCRIPTION_BLOCKED);
-        mTestController.verifyIgnoreAction(true);
+        int[] enterpriseBlockedTypes = {
+            DownloadDangerType.SENSITIVE_CONTENT_BLOCK,
+            DownloadDangerType.BLOCKED_PASSWORD_PROTECTED,
+            DownloadDangerType.BLOCKED_TOO_LARGE,
+            DownloadDangerType.BLOCKED_SCAN_FAILED,
+            DownloadDangerType.FORCE_SAVE_TO_GDRIVE,
+            DownloadDangerType.FORCE_SAVE_TO_ONEDRIVE
+        };
+        for (int dangerType : enterpriseBlockedTypes) {
+            OfflineItem item = createOfflineItem(OfflineItemState.FAILED);
+            item.failState = FailState.FILE_BLOCKED;
+            item.isDangerous = true;
+            item.dangerType = dangerType;
+            mTestController.onItemUpdated(item);
+            mTestController.verify(MESSAGE_DOWNLOAD_FAILED, DESCRIPTION_BLOCKED);
+            mTestController.verifyIgnoreAction(true);
+            mTestController.closePreviousMessage();
+            mTestController.onItemRemoved(item.id);
+        }
     }
 
     @Test
@@ -315,12 +399,22 @@ public class DownloadMessageUiControllerTest {
     @Feature({"Download"})
     public void testSingleOfflineItemBlockedSensitiveWithFeatureDisabled() {
         enableShowBlockedSensitiveDownload(false);
-        OfflineItem item = createOfflineItem(OfflineItemState.FAILED);
-        item.failState = FailState.FILE_BLOCKED;
-        item.isDangerous = true;
-        item.dangerType = DownloadDangerType.SENSITIVE_CONTENT_BLOCK;
-        mTestController.onItemUpdated(item);
-        mTestController.verifyMessageGone();
+        int[] enterpriseBlockedTypes = {
+            DownloadDangerType.SENSITIVE_CONTENT_BLOCK,
+            DownloadDangerType.BLOCKED_PASSWORD_PROTECTED,
+            DownloadDangerType.BLOCKED_TOO_LARGE,
+            DownloadDangerType.BLOCKED_SCAN_FAILED,
+            DownloadDangerType.FORCE_SAVE_TO_GDRIVE,
+            DownloadDangerType.FORCE_SAVE_TO_ONEDRIVE
+        };
+        for (int dangerType : enterpriseBlockedTypes) {
+            OfflineItem item = createOfflineItem(OfflineItemState.FAILED);
+            item.failState = FailState.FILE_BLOCKED;
+            item.isDangerous = true;
+            item.dangerType = dangerType;
+            mTestController.onItemUpdated(item);
+            mTestController.verifyMessageGone();
+        }
     }
 
     @Test
@@ -926,5 +1020,75 @@ public class DownloadMessageUiControllerTest {
         mTestController.mDelegate.mMaybeSwitchToFocusedActivityCalled = false;
         mTestController.showIncognitoDownloadMessage((result) -> {});
         Assert.assertTrue(mTestController.mDelegate.mMaybeSwitchToFocusedActivityCalled);
+    }
+
+    @Test
+    @SmallTest
+    @Feature({"Download"})
+    public void testCreateMessageSwitchesToFocusedActivityWhenPreviousContextIsNull() {
+        mTestController.mDelegate.mContext = null;
+        mTestController.mDelegate.mSwitchToFocusedActivityResult = true;
+
+        OfflineItem item = createOfflineItem(OfflineItemState.IN_PROGRESS);
+        mTestController.onItemUpdated(item);
+
+        mTestController.verify(MESSAGE_DOWNLOADING_FILE, DESCRIPTION_DOWNLOADING);
+    }
+
+    @Test
+    @SmallTest
+    @Feature({"Download"})
+    public void testCreateMessageResetsCurrentInfoWhenSwitchingActivity() {
+        OfflineItem item = createOfflineItem(OfflineItemState.IN_PROGRESS);
+        mTestController.onItemUpdated(item);
+        mTestController.verify(MESSAGE_DOWNLOADING_FILE, DESCRIPTION_DOWNLOADING);
+        Assert.assertEquals(1, mTestController.mShowMessageCallCount);
+
+        mTestController.mDelegate.mSwitchToFocusedActivityResult = true;
+        mTestController.onItemUpdated(item);
+
+        Assert.assertEquals(1, mTestController.mClosePreviousMessageCallCount);
+        Assert.assertEquals(2, mTestController.mShowMessageCallCount);
+        Assert.assertTrue(mTestController.mInfo.forceShow);
+        mTestController.verify(MESSAGE_DOWNLOADING_FILE, DESCRIPTION_DOWNLOADING);
+    }
+
+    @Test
+    @SmallTest
+    @Feature({"Download"})
+    public void testNullMessageDispatcherClearsCurrentInfoAndAllowsRetry() {
+        mTestController.mDelegate.mMessageDispatcher = null;
+        OfflineItem item = createOfflineItem(OfflineItemState.IN_PROGRESS);
+        mTestController.onItemUpdated(item);
+        mTestController.verifyMessageGone();
+
+        mTestController.mDelegate.mMessageDispatcher = Mockito.mock(MessageDispatcher.class);
+        mTestController.onItemUpdated(item);
+
+        Assert.assertTrue(mTestController.mInfo.forceShow);
+        mTestController.verify(MESSAGE_DOWNLOADING_FILE, DESCRIPTION_DOWNLOADING);
+    }
+
+    @Test
+    @SmallTest
+    @Feature({"Download"})
+    public void testNullMessageDispatcherDuringDangerousResultAllowsImmediateValidation() {
+        enableDangerousDownloadMessage();
+        OfflineItem item = createOfflineItem(OfflineItemState.IN_PROGRESS);
+        mTestController.onItemUpdated(item);
+        mTestController.verify(MESSAGE_DOWNLOADING_FILE, DESCRIPTION_DOWNLOADING);
+        Assert.assertEquals(1, mTestController.mShowMessageCallCount);
+
+        mTestController.mDelegate.mMessageDispatcher = null;
+        markItemDangerous(item);
+        mTestController.onItemUpdated(item);
+        mTestController.verifyMessageGone();
+
+        mTestController.mDelegate.mMessageDispatcher = Mockito.mock(MessageDispatcher.class);
+        markItemValidated(item);
+        mTestController.onItemUpdated(item);
+
+        Assert.assertEquals(2, mTestController.mShowMessageCallCount);
+        mTestController.verify(MESSAGE_DOWNLOADING_FILE, DESCRIPTION_DOWNLOADING);
     }
 }

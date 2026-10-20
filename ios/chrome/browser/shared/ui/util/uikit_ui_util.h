@@ -11,6 +11,7 @@
 
 #import <optional>
 
+#import "base/ios/block_types.h"
 #import "ios/web/common/uikit_ui_util.h"
 
 // UI Util containing functions that require UIKit.
@@ -29,16 +30,6 @@ void SetA11yLabelAndUiAutomationName(
     int idsAccessibilityLabel,
     NSString* englishUiAutomationName);
 
-// Sets dynamic font for the given `font` on iOS 11+ on the givel `label` or
-// `textField`. Use `maybe` versions to keep code short when dynamic types are
-// not in use yet.
-void SetUILabelScaledFont(UILabel* label, UIFont* font);
-void MaybeSetUILabelScaledFont(BOOL maybe, UILabel* label, UIFont* font);
-void SetUITextFieldScaledFont(UITextField* textField, UIFont* font);
-void MaybeSetUITextFieldScaledFont(BOOL maybe,
-                                   UITextField* textField,
-                                   UIFont* font);
-
 // Returns a UIFont for the given `style` and `weight` that can be used with
 // `adjustsFontForContentSizeCategory = YES` to allow a UILabel to
 // automatically adjust to changes in the `preferredContentSize` trait. When
@@ -48,14 +39,6 @@ UIFont* PreferredFontForTextStyle(
     UIFontTextStyle style,
     std::optional<UIFontWeight> weight = std::nullopt,
     std::optional<CGFloat> max_size = std::nullopt);
-
-// Creates a dynamically scablable custom font based on the given parameters.
-// Fonts returned do not automatically adjust when
-// `adjustsFontForContentSizeCategory` is set to `YES`.
-UIFont* CreateDynamicFont(UIFontTextStyle style, UIFontWeight weight);
-UIFont* CreateDynamicFont(UIFontTextStyle style,
-                          UIFontWeight weight,
-                          id<UITraitEnvironment> environment);
 
 enum CaptureViewOption {
   kNoCaptureOption,      // Equivalent to calling CaptureView without options.
@@ -233,10 +216,28 @@ bool IsBottomOmniboxAvailable();
 // Returns the `traits` array provided in the function's parameter if the
 // feature flag for the 'traitCollectionDidChange' refactor work is enabled.
 // Otherwise, return an array containing every iOS UITrait.
-NSArray<UITrait>* TraitCollectionSetForTraits(NSArray<UITrait>* traits)
-    API_AVAILABLE(ios(17.0));
+NSArray<UITrait>* TraitCollectionSetForTraits(NSArray<UITrait>* traits);
 
 // Returns the memory footprint of an image in KB.
 size_t MemoryFootprintForImage(UIImage* image);
+
+// An interface for view controllers that manage transient context menu
+// interactions. Provides access to the active context menu animator to allow
+// coordinating actions (such as presenting new UI) after the context menu is
+// dismissed.
+@protocol ContextMenuTransitionStateProviding <NSObject>
+@property(nonatomic, readonly) id<UIContextMenuInteractionAnimating>
+    activeContextMenuAnimator;
+@end
+
+// Executes the given `action` block as soon as active transitions on the
+// `viewController` complete. Handles both regular view controller transitions
+// (via `transitionCoordinator`) and context menu transitions (if the
+// `viewController` conforms to `ContextMenuTransitionStateProviding`). If no
+// active transition or context menu animation is detected, `action` is executed
+// synchronously. If `viewController` gets destroyed before the transition(s)
+// complete, `action` will not be executed.
+void ExecuteWhenTransitionsComplete(ProceduralBlock action,
+                                    UIViewController* viewController);
 
 #endif  // IOS_CHROME_BROWSER_SHARED_UI_UTIL_UIKIT_UI_UTIL_H_

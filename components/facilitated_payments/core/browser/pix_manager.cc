@@ -19,10 +19,8 @@
 #include "components/facilitated_payments/core/browser/network_api/facilitated_payments_network_interface.h"
 #include "components/facilitated_payments/core/features/features.h"
 #include "components/facilitated_payments/core/metrics/facilitated_payments_metrics.h"
-#include "components/facilitated_payments/core/mojom/pix_code_validator.mojom.h"
 #include "components/facilitated_payments/core/utils/facilitated_payments_ui_utils.h"
 #include "components/facilitated_payments/core/utils/facilitated_payments_utils.h"
-#include "components/facilitated_payments/core/validation/pix_code_validator.h"
 #include "components/optimization_guide/core/hints/optimization_guide_decider.h"
 
 namespace payments::facilitated {
@@ -35,18 +33,16 @@ static constexpr FacilitatedPaymentsType kPaymentsType =
 constexpr int64_t kIframeExperimentId = 3397365;
 constexpr int64_t kIframeControlId = 3397366;
 
-PixCodeValidationResult ConvertPixQrCodeTypeToValidationResult(
-    base::expected<mojom::PixQrCodeType, std::string> pix_qr_code_type) {
-  if (!pix_qr_code_type.has_value()) {
-    return PixCodeValidationResult::kValidatorFailed;
-  }
-  switch (pix_qr_code_type.value()) {
-    case mojom::PixQrCodeType::kDynamic:
-      return PixCodeValidationResult::kDynamic;
-    case mojom::PixQrCodeType::kStatic:
-      return PixCodeValidationResult::kStatic;
-    case mojom::PixQrCodeType::kInvalid:
-      return PixCodeValidationResult::kInvalid;
+bool IsValidPixCode(PixCodeRustValidationResult validation_result) {
+  switch (validation_result) {
+    case PixCodeRustValidationResult::kDynamic:
+    case PixCodeRustValidationResult::kStatic:
+      return true;
+    case PixCodeRustValidationResult::kNonPixMerchantPresentedCode:
+    case PixCodeRustValidationResult::kEmptyAdditionalDataFieldTemplate:
+    case PixCodeRustValidationResult::kNonFinalCrc:
+    case PixCodeRustValidationResult::kUnknownPixCodeType:
+      return false;
   }
 }
 
@@ -84,7 +80,8 @@ void PixManager::OnPixCodeCopiedToClipboard(
     const GURL& main_frame_url,
     const std::optional<GURL>& iframe_url,
     const url::Origin& main_frame_origin,
-    std::optional<PixCodeRustValidationResult> rust_validation_result,
+    bool is_same_origin,
+    PixCodeRustValidationResult validation_result,
     std::string pix_code,
     ukm::SourceId ukm_source_id) {
   pix_code_is_in_iframe_ = iframe_url.has_value();
@@ -112,9 +109,10 @@ void PixManager::OnPixCodeCopiedToClipboard(
   // is allowlisted. Otherwise, check whether the main frame URL is allowlisted.
   if (pix_code_is_in_iframe_) {
     LogPixCodeCopiedInIframe();
-    if (!IsIframeUrlAllowlisted(iframe_url.value())) {
-      // The iframe URL is not part of the allowlist, ignore the copy event.
-      LogPixFlowExitedReason(PixFlowExitedReason::kIframeUrlNotAllowlisted);
+    std::optional<PixFlowExitedReason> exited_reason = GetExitedReasonForIframe(
+        iframe_url.value(), main_frame_url, is_same_origin);
+    if (exited_reason.has_value()) {
+      LogPixFlowExitedReason(exited_reason.value());
       return;
     }
     // Set psp hostname to initiate payment request details.
@@ -127,32 +125,11 @@ void PixManager::OnPixCodeCopiedToClipboard(
   initiate_payment_request_details_->merchant_payment_page_hostname_ =
       main_frame_url.GetHost();
   pix_payment_page_main_frame_origin_ = main_frame_origin;
-  if (base::FeatureList::IsEnabled(kUseRustPixCodeValidator)) {
-    // This logic is duplicated into faciliated_payments_metrics.h, but it's
-    // temporary and will be cleaned up once the validator is fully switched
-    // over to Rust.
-    mojom::PixQrCodeType mapped_type = [&]() {
-      switch (*rust_validation_result) {
-        case PixCodeRustValidationResult::kStatic:
-          return mojom::PixQrCodeType::kStatic;
-        case PixCodeRustValidationResult::kDynamic:
-          return mojom::PixQrCodeType::kDynamic;
-        case PixCodeRustValidationResult::kNonPixMerchantPresentedCode:
-        case PixCodeRustValidationResult::kEmptyAdditionalDataFieldTemplate:
-        case PixCodeRustValidationResult::kNonFinalCrc:
-        case PixCodeRustValidationResult::kUnknownPixCodeType:
-          return mojom::PixQrCodeType::kInvalid;
-      }
-    }();
-    OnPixCodeValidated(rust_validation_result, std::move(pix_code),
-                       base::TimeTicks::Now(), mapped_type);
-  } else {
-    utility_process_validator_.ValidatePixCode(
-        pix_code,
-        base::BindOnce(&PixManager::OnPixCodeValidated,
-                       weak_ptr_factory_.GetWeakPtr(), rust_validation_result,
-                       pix_code, base::TimeTicks::Now()));
+  if (!IsValidPixCode(validation_result)) {
+    LogPixFlowExitedReason(PixFlowExitedReason::kInvalidCode);
+    return;
   }
+  OnValidPixCode(std::move(pix_code), validation_result);
 }
 
 bool PixManager::IsMerchantAllowlisted(const GURL& url) const {
@@ -182,32 +159,23 @@ bool PixManager::IsIframeUrlAllowlisted(const GURL& url) const {
          optimization_guide::OptimizationGuideDecision::kTrue;
 }
 
-void PixManager::OnPixCodeValidated(
-    std::optional<PixCodeRustValidationResult> rust_validation_result,
-    std::string pix_code,
-    base::TimeTicks start_time,
-    base::expected<mojom::PixQrCodeType, std::string> pix_qr_code_type) {
-  LogPaymentCodeValidationResultAndLatency(
-      ConvertPixQrCodeTypeToValidationResult(pix_qr_code_type),
-      rust_validation_result, base::TimeTicks::Now() - start_time);
-  if (!pix_qr_code_type.has_value()) {
-    // Pix code validator encountered an error.
-    LogPixFlowExitedReason(PixFlowExitedReason::kCodeValidatorFailed);
-    return;
+std::optional<PixFlowExitedReason> PixManager::GetExitedReasonForIframe(
+    const GURL& iframe_url,
+    const GURL& main_frame_url,
+    bool is_same_origin) const {
+  if (IsIframeUrlAllowlisted(iframe_url)) {
+    return std::nullopt;
   }
-
-  if (pix_qr_code_type.value() == mojom::PixQrCodeType::kInvalid) {
-    // Pix code is not valid.
-    LogPixFlowExitedReason(PixFlowExitedReason::kInvalidCode);
-    return;
+  if (is_same_origin && IsMerchantAllowlisted(main_frame_url)) {
+    return std::nullopt;
   }
-
-  OnValidPixCode(std::move(pix_code), *pix_qr_code_type);
+  return is_same_origin ? PixFlowExitedReason::kSameOriginMerchantNotAllowlisted
+                        : PixFlowExitedReason::kIframeUrlNotAllowlisted;
 }
 
 void PixManager::OnValidPixCode(std::string pix_code,
-                                mojom::PixQrCodeType pix_qr_code_type) {
-  if (pix_qr_code_type == mojom::PixQrCodeType::kStatic &&
+                                PixCodeRustValidationResult validation_result) {
+  if (validation_result == PixCodeRustValidationResult::kStatic &&
       !base::FeatureList::IsEnabled(
           payments::facilitated::kEnableStaticQrCodeForPix)) {
     // Pix code is static and not supported.
@@ -478,7 +446,7 @@ void PixManager::ShowPixPaymentPrompt(
 
 void PixManager::ShowProgressScreen() {
   ui_state_ = UiState::kProgressScreen;
-  client_->ShowProgressScreen();
+  client_->ShowProgressScreen(ProgressScreenType::kPayment);
 }
 
 void PixManager::ShowErrorScreen() {

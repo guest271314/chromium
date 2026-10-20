@@ -87,6 +87,10 @@ class ClearBrowsingDataHandler : public SettingsPageUIHandler,
   // executed and prefs updated.
   void HandleRestartCounters(const base::ListValue& args);
 
+  // Called by WebUI when the user cancels or closes the dialog without
+  // clearing browsing data.
+  void HandleClearBrowsingDataCancelled(const base::ListValue& args);
+
   // Implementation of SyncServiceObserver.
   void OnStateChanged(syncer::SyncService* sync) override;
   void OnSyncShutdown(syncer::SyncService* sync) override;
@@ -107,17 +111,15 @@ class ClearBrowsingDataHandler : public SettingsPageUIHandler,
   void UpdateHistoryDeletionDialog(bool show);
 
   // Adds a browsing data |counter|.
-  void AddCounter(std::unique_ptr<browsing_data::BrowsingDataCounter> counter,
-                  browsing_data::ClearBrowsingDataTab tab);
+  void AddCounter(std::unique_ptr<browsing_data::BrowsingDataCounter> counter);
 
   // Updates a counter text according to the |result|.
   void UpdateCounterText(
       std::unique_ptr<browsing_data::BrowsingDataCounter::Result> result);
 
-  // Restarts |counters_basic_| or |counters_advanced_| depending on the |basic|
-  // argument, and instructs them to calculate the data volume for
+  // Restarts |counters_| and instructs them to calculate the data volume for
   // the |time_period|.
-  void RestartCounters(bool basic, browsing_data::TimePeriod time_period);
+  void RestartCounters(browsing_data::TimePeriod time_period);
 
   // Record changes to the time period preferences.
   void HandleTimePeriodChanged(const std::string& pref_name);
@@ -129,10 +131,7 @@ class ClearBrowsingDataHandler : public SettingsPageUIHandler,
   raw_ptr<Profile> profile_;
 
   // Counters that calculate the data volume for individual data types.
-  std::vector<std::unique_ptr<browsing_data::BrowsingDataCounter>>
-      counters_basic_;
-  std::vector<std::unique_ptr<browsing_data::BrowsingDataCounter>>
-      counters_advanced_;
+  std::vector<std::unique_ptr<browsing_data::BrowsingDataCounter>> counters_;
 
   // SyncService to observe sync state changes.
   raw_ptr<syncer::SyncService> sync_service_;

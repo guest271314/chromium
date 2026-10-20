@@ -26,7 +26,8 @@
 
 #include "third_party/blink/renderer/core/html/parser/html_element_stack.h"
 
-#include "third_party/blink/renderer/core/dom/element.h"
+#include <ranges>
+
 #include "third_party/blink/renderer/core/html/forms/html_form_control_element.h"
 #include "third_party/blink/renderer/core/html/forms/html_select_element.h"
 #include "third_party/blink/renderer/core/html/html_body_element.h"
@@ -150,6 +151,10 @@ inline bool IsButtonScopeMarker(HTMLStackItem* item) {
   return IsScopeMarkerNonHTML(item);
 }
 
+inline bool IsHTMLPElement(HTMLStackItem* item) {
+  return item->IsHTMLNamespace() && item->GetHTMLTag() == HTMLTag::kP;
+}
+
 }  // namespace
 
 HTMLElementStack::HTMLElementStack()
@@ -209,8 +214,8 @@ void HTMLElementStack::Pop() {
 }
 
 void HTMLElementStack::PopUntil(html_names::HTMLTag tag) {
-  // kUnknown by itself is not enough to uniquely a tag. This code should only
-  // be called with HTMLTags other than kUnknown.
+  // kUnknown by itself is not enough to uniquely identify a tag. This code
+  // should only be called with HTMLTags other than kUnknown.
   DCHECK_NE(tag, HTMLTag::kUnknown);
   while (!TopStackItem()->IsHTMLNamespace() ||
          TopStackItem()->GetHTMLTag() != tag) {
@@ -347,15 +352,20 @@ void HTMLElementStack::InsertAbove(HTMLStackItem* item,
     return;
   }
 
+  HeapVector<Member<HTMLStackItem>> items_above;
   for (HTMLStackItem* item_above = top_.Get(); item_above;
        item_above = item_above->NextItemInStack()) {
+    items_above.push_back(item_above);
     if (item_above->NextItemInStack() != item_below) {
       continue;
     }
 
     stack_depth_++;
+    item->SetSanitizer(item_below->GetSanitizer());
     item->SetNextItemInStack(item_above->ReleaseNextItemInStack());
     item_above->SetNextItemInStack(item);
+    items_above.push_back(item);
+    UpdatePElementInButtonScope(items_above);
     item->GetElement()->BeginParsingChildren();
     return;
   }
@@ -401,8 +411,8 @@ HTMLStackItem* HTMLElementStack::Find(Element* element) const {
 }
 
 HTMLStackItem* HTMLElementStack::Topmost(html_names::HTMLTag tag) const {
-  // kUnknown by itself is not enough to uniquely a tag. This code should only
-  // be called with HTMLTags other than kUnknown.
+  // kUnknown by itself is not enough to uniquely identify a tag. This code
+  // should only be called with HTMLTags other than kUnknown.
   DCHECK_NE(tag, HTMLTag::kUnknown);
   for (HTMLStackItem* item = top_.Get(); item; item = item->NextItemInStack()) {
     if (item->IsHTMLNamespace() && tag == item->GetHTMLTag()) {
@@ -418,12 +428,35 @@ bool HTMLElementStack::Contains(Element* element) const {
 
 template <bool isMarker(HTMLStackItem*)>
 bool InScopeCommon(HTMLStackItem* top, html_names::HTMLTag tag) {
-  // kUnknown by itself is not enough to uniquely a tag. This code should only
-  // be called with HTMLTags other than kUnknown.
+  // kUnknown by itself is not enough to uniquely identify a tag. This code
+  // should only be called with HTMLTags other than kUnknown.
   DCHECK_NE(HTMLTag::kUnknown, tag);
   for (HTMLStackItem* item = top; item; item = item->NextItemInStack()) {
     if (tag == item->GetHTMLTag() && item->IsHTMLNamespace())
       return true;
+    if (isMarker(item))
+      return false;
+  }
+  NOTREACHED();  // <html> is always on the stack and is a scope marker.
+}
+
+// Like InScopeCommon above, but matches any of |tags| in a single walk of the
+// stack instead of requiring one walk per tag.
+template <bool isMarker(HTMLStackItem*)>
+bool InScopeCommon(HTMLStackItem* top,
+                   std::initializer_list<html_names::HTMLTag> tags) {
+  // kUnknown by itself is not enough to uniquely identify a tag. This code
+  // should only be called with HTMLTags other than kUnknown.
+  for (html_names::HTMLTag tag : tags) {
+    DCHECK_NE(HTMLTag::kUnknown, tag);
+  }
+  for (HTMLStackItem* item = top; item; item = item->NextItemInStack()) {
+    if (item->IsHTMLNamespace()) {
+      for (html_names::HTMLTag tag : tags) {
+        if (tag == item->GetHTMLTag())
+          return true;
+      }
+    }
     if (isMarker(item))
       return false;
   }
@@ -462,7 +495,15 @@ bool HTMLElementStack::InTableScope(html_names::HTMLTag tag) const {
   return InScopeCommon<IsTableScopeMarker>(top_.Get(), tag);
 }
 
+bool HTMLElementStack::InTableScope(
+    std::initializer_list<html_names::HTMLTag> tags) const {
+  return InScopeCommon<IsTableScopeMarker>(top_.Get(), tags);
+}
+
 bool HTMLElementStack::InButtonScope(html_names::HTMLTag tag) const {
+  if (tag == HTMLTag::kP) {
+    return top_->has_p_element_in_button_scope_;
+  }
   return InScopeCommon<IsButtonScopeMarker>(top_.Get(), tag);
 }
 
@@ -494,6 +535,12 @@ void HTMLElementStack::PushCommon(HTMLStackItem* item) {
   DCHECK(root_node_);
 
   stack_depth_++;
+  item->has_p_element_in_button_scope_ =
+      IsHTMLPElement(item) || (!IsButtonScopeMarker(item) && top_ &&
+                               top_->has_p_element_in_button_scope_);
+  if (top_) {
+    item->SetSanitizer(top_->GetSanitizer());
+  }
   item->SetNextItemInStack(top_.Release());
   top_ = item;
 }
@@ -513,7 +560,9 @@ void HTMLElementStack::RemoveNonTopCommon(Element* element) {
   DCHECK(!IsA<HTMLHtmlElement>(element));
   DCHECK(!IsA<HTMLBodyElement>(element));
   DCHECK_NE(Top(), element);
+  HeapVector<Member<HTMLStackItem>> items_above;
   for (HTMLStackItem* item = top_.Get(); item; item = item->NextItemInStack()) {
+    items_above.push_back(item);
     if (item->NextItemInStack()->GetElement() == element) {
       // FIXME: Is it OK to call finishParsingChildren()
       // when the children aren't actually finished?
@@ -522,10 +571,26 @@ void HTMLElementStack::RemoveNonTopCommon(Element* element) {
       item->SetNextItemInStack(
           item->ReleaseNextItemInStack()->ReleaseNextItemInStack());
       stack_depth_--;
+      UpdatePElementInButtonScope(items_above);
       return;
     }
   }
   NOTREACHED();
+}
+
+// `items_above` holds the stack items from `top_` down to the deepest item
+// whose cached bit may be stale after a stack mutation. Items below the last
+// entry are unaffected, since each item's bit only depends on the items below
+// it, so recompute bottom-up from there.
+void HTMLElementStack::UpdatePElementInButtonScope(
+    const HeapVector<Member<HTMLStackItem>>& items_above) {
+  for (const auto& it : std::views::reverse(items_above)) {
+    HTMLStackItem* item = it.Get();
+    HTMLStackItem* below = item->NextItemInStack();
+    item->has_p_element_in_button_scope_ =
+        IsHTMLPElement(item) || (!IsButtonScopeMarker(item) && below &&
+                                 below->has_p_element_in_button_scope_);
+  }
 }
 
 HTMLStackItem* HTMLElementStack::FurthestBlockForFormattingElement(
@@ -548,6 +613,7 @@ void HTMLElementStack::Replace(HTMLStackItem* old_item,
   DCHECK(new_item);
   DCHECK(!new_item->NextItemInStack());
   HTMLStackItem* previous_item = nullptr;
+  HeapVector<Member<HTMLStackItem>> items_above;
   for (HTMLStackItem* item = top_.Get(); item; item = item->NextItemInStack()) {
     if (item == old_item) {
       if (previous_item) {
@@ -555,8 +621,11 @@ void HTMLElementStack::Replace(HTMLStackItem* old_item,
         previous_item->SetNextItemInStack(new_item);
       }
       new_item->SetNextItemInStack(old_item->ReleaseNextItemInStack());
+      items_above.push_back(new_item);
+      UpdatePElementInButtonScope(items_above);
       return;
     }
+    items_above.push_back(item);
     previous_item = item;
   }
   // This should only be called with items in the stack.

@@ -17,11 +17,13 @@
 #include "base/memory/raw_ptr.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/observer_list.h"
+#include "base/timer/elapsed_timer.h"
 #include "build/build_config.h"
 #include "components/signin/public/base/signin_buildflags.h"
 #include "components/signin/public/identity_manager/account_info.h"
 #include "components/signin/public/identity_manager/load_credentials_state.h"
 #include "components/signin/public/identity_manager/token_binding_info.h"
+#include "crypto/sign.h"
 #include "google_apis/gaia/gaia_auth_util.h"
 #include "google_apis/gaia/google_service_auth_error.h"
 #include "google_apis/gaia/oauth2_access_token_manager.h"
@@ -114,13 +116,13 @@ class ProfileOAuth2TokenServiceDelegate {
 #if BUILDFLAG(ENABLE_DICE_SUPPORT)
   // Asynchronously generates a registration token for binding a refresh token
   // to a shared binding key.
-  // `supported_algorithms` is a space-separated list of acceptable signature
-  // algorithm names (e.g., "ES256 RS256"). This parameter may be ignored if an
-  // existing binding key is reused instead of generating a new one.
+  // `supported_algorithms` is a list of acceptable signature algorithms. This
+  // parameter may be ignored if an existing binding key is reused instead of
+  // generating a new one.
   // Returns false if the generation cannot be started. In that case, `callback`
   // will not be invoked.
   virtual bool GenerateBindingKeyRegistrationToken(
-      std::string_view supported_algorithms,
+      base::span<const crypto::sign::SignatureKind> supported_algorithms,
       std::string_view auth_code,
       base::OnceCallback<
           void(std::optional<signin::BindingKeyRegistrationTokenResult>)>
@@ -136,6 +138,11 @@ class ProfileOAuth2TokenServiceDelegate {
   // Returns a non-empty vector iff (a) a refresh token exists for `account_id`,
   // and (b) the refresh token is bound to a device.
   virtual std::vector<uint8_t> GetWrappedBindingKey(
+      const CoreAccountId& account_id) const = 0;
+
+  // Returns true if a refresh token exists for `account_id` and it is bound to
+  // an mTLS certificate.
+  virtual bool IsRefreshTokenBoundToMtls(
       const CoreAccountId& account_id) const = 0;
 
   // Returns whether all bound refresh tokens share the same binding key.
@@ -398,6 +405,9 @@ class ProfileOAuth2TokenServiceDelegate {
   // The state of the load credentials operation.
   signin::LoadCredentialsState load_credentials_state_ =
       signin::LoadCredentialsState::LOAD_CREDENTIALS_NOT_STARTED;
+
+  // The timer measuring the duration of the load credentials operation.
+  std::optional<base::ElapsedTimer> load_credentials_timer_;
 
   void StartBatchChanges();
   void EndBatchChanges();

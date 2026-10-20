@@ -1,3 +1,8 @@
+// Copyright 2026 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+#include "base/test/metrics/histogram_tester.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_binding_for_testing.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_union_boolean_string.h"
@@ -14,15 +19,22 @@
 #include "third_party/blink/renderer/bindings/modules/v8/v8_union_constraindoublerange_double.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_union_constrainlongrange_long.h"
 #include "third_party/blink/renderer/core/dom/document.h"
+#include "third_party/blink/renderer/core/html/html_body_element.h"
+#include "third_party/blink/renderer/core/html/html_camera_element.h"
+#include "third_party/blink/renderer/core/html/html_microphone_element.h"
 #include "third_party/blink/renderer/core/html/html_user_media_element.h"
-#include "third_party/blink/renderer/modules/mediastream/user_media_element_constraints.h"
+#include "third_party/blink/renderer/modules/mediastream/media_capture_element_constraints.h"
+#include "third_party/blink/renderer/platform/testing/runtime_enabled_features_test_helpers.h"
 #include "third_party/blink/renderer/platform/testing/task_environment.h"
 
 namespace blink {
 
 class UserMediaElementTest : public ::testing::Test {
  public:
+  UserMediaElementTest() : scoped_user_media_(true) {}
+
   test::TaskEnvironment task_environment_;
+  ScopedUserMediaElementForTest scoped_user_media_;
 };
 
 TEST_F(UserMediaElementTest, SetConstraintsStoresValue) {
@@ -32,30 +44,67 @@ TEST_F(UserMediaElementTest, SetConstraintsStoresValue) {
   HTMLMediaStreamConstraints* constraints = HTMLMediaStreamConstraints::Create();
   constraints->setVideo(MediaTrackConstraintSet::Create());
 
-  UserMediaElementConstraints::setConstraints(*element, constraints);
+  MediaCaptureElementConstraints::setConstraints(*element, constraints);
 
-  EXPECT_TRUE(UserMediaElementConstraints::From(*element).Constraints());
+  EXPECT_TRUE(MediaCaptureElementConstraints::From(*element).Constraints());
 }
 
 TEST_F(UserMediaElementTest, SetConstraintsOnlySetsOnce) {
   V8TestingScope scope;
+  base::HistogramTester histogram_tester;
   auto* element =
       MakeGarbageCollected<HTMLUserMediaElement>(scope.GetDocument());
   HTMLMediaStreamConstraints* constraints = HTMLMediaStreamConstraints::Create();
   constraints->setVideo(MediaTrackConstraintSet::Create());
 
-  UserMediaElementConstraints::setConstraints(*element, constraints);
+  MediaCaptureElementConstraints::setConstraints(*element, constraints);
   const HTMLMediaStreamConstraints* sanitized_constraints =
-      UserMediaElementConstraints::From(*element).Constraints();
+      MediaCaptureElementConstraints::From(*element).Constraints();
 
   EXPECT_TRUE(sanitized_constraints);
+  histogram_tester.ExpectUniqueSample(
+      "Blink.CapabilityElement.UserMedia.SetConstraints.RepeatedCall", false,
+      1);
 
   HTMLMediaStreamConstraints* constraints2 =
       HTMLMediaStreamConstraints::Create();
   constraints2->setAudio(MediaTrackConstraintSet::Create());
-  UserMediaElementConstraints::setConstraints(*element, constraints2);
-  EXPECT_EQ(UserMediaElementConstraints::From(*element).Constraints(),
+  MediaCaptureElementConstraints::setConstraints(*element, constraints2);
+  EXPECT_EQ(MediaCaptureElementConstraints::From(*element).Constraints(),
             sanitized_constraints);
+  histogram_tester.ExpectBucketCount(
+      "Blink.CapabilityElement.UserMedia.SetConstraints.RepeatedCall", true, 1);
+}
+
+TEST_F(UserMediaElementTest, SetConstraintsRepeatedCallCameraAndMicrophone) {
+  V8TestingScope scope;
+  ScopedCameraAndMicrophoneElementsForTest scoped_feature(true);
+  base::HistogramTester histogram_tester;
+
+  auto* camera = MakeGarbageCollected<HTMLCameraElement>(scope.GetDocument());
+  auto* mic = MakeGarbageCollected<HTMLMicrophoneElement>(scope.GetDocument());
+
+  auto* camera_constraints = MediaTrackConstraintSet::Create();
+
+  MediaCaptureElementConstraints::setConstraints(*camera, camera_constraints);
+  histogram_tester.ExpectUniqueSample(
+      "Blink.CapabilityElement.Camera.SetConstraints.RepeatedCall", false, 1);
+
+  MediaCaptureElementConstraints::setConstraints(*camera, camera_constraints);
+  histogram_tester.ExpectBucketCount(
+      "Blink.CapabilityElement.Camera.SetConstraints.RepeatedCall", true, 1);
+
+  auto* mic_constraints = MediaTrackConstraintSet::Create();
+
+  MediaCaptureElementConstraints::setConstraints(*mic, mic_constraints);
+  histogram_tester.ExpectUniqueSample(
+      "Blink.CapabilityElement.Microphone.SetConstraints.RepeatedCall", false,
+      1);
+
+  MediaCaptureElementConstraints::setConstraints(*mic, mic_constraints);
+  histogram_tester.ExpectBucketCount(
+      "Blink.CapabilityElement.Microphone.SetConstraints.RepeatedCall", true,
+      1);
 }
 
 TEST_F(UserMediaElementTest, SanitizeTrackConstraints) {
@@ -99,10 +148,10 @@ TEST_F(UserMediaElementTest, SanitizeTrackConstraints) {
   constraints->setVideo(video_constraints);
   constraints->setAudio(audio_constraints);
 
-  UserMediaElementConstraints::setConstraints(*element, constraints);
+  MediaCaptureElementConstraints::setConstraints(*element, constraints);
 
   const HTMLMediaStreamConstraints* sanitized_constraints =
-      UserMediaElementConstraints::From(*element).Constraints();
+      MediaCaptureElementConstraints::From(*element).Constraints();
 
   // Valid constraints should be preserved
   EXPECT_TRUE(sanitized_constraints->video()->hasHeight());
@@ -150,10 +199,10 @@ TEST_F(UserMediaElementTest, SanitizeTrackConstraintsMutatesCopy) {
   constraints->setVideo(video_constraints);
   constraints->setAudio(audio_constraints);
 
-  UserMediaElementConstraints::setConstraints(*element, constraints);
+  MediaCaptureElementConstraints::setConstraints(*element, constraints);
 
   const HTMLMediaStreamConstraints* sanitized_constraints =
-      UserMediaElementConstraints::From(*element).Constraints();
+      MediaCaptureElementConstraints::From(*element).Constraints();
 
   // Test that original constraints are unmodified
   EXPECT_TRUE(constraints->video()->width()->IsConstrainLongRange());
@@ -166,4 +215,112 @@ TEST_F(UserMediaElementTest, SanitizeTrackConstraintsMutatesCopy) {
   EXPECT_FALSE(sanitized_constraints->audio()->hasEchoCancellation());
 }
 
+TEST_F(UserMediaElementTest, DefaultConstraintsNoSetConstraints) {
+  V8TestingScope scope;
+  auto* element =
+      MakeGarbageCollected<HTMLUserMediaElement>(scope.GetDocument());
+
+  scope.GetDocument().body()->AppendChild(element);
+  task_environment_.RunUntilIdle();
+
+  const auto& descriptors = element->GetPermissionDescriptors();
+  ASSERT_EQ(descriptors.size(), 2U);
+  EXPECT_EQ(descriptors[0]->name, mojom::blink::PermissionName::VIDEO_CAPTURE);
+  EXPECT_EQ(descriptors[1]->name, mojom::blink::PermissionName::AUDIO_CAPTURE);
+}
+
+TEST_F(UserMediaElementTest, EmptyConstraintsDefaultsToBoth) {
+  V8TestingScope scope;
+  auto* element =
+      MakeGarbageCollected<HTMLUserMediaElement>(scope.GetDocument());
+  scope.GetDocument().body()->AppendChild(element);
+
+  HTMLMediaStreamConstraints* constraints = HTMLMediaStreamConstraints::Create();
+  constraints->setVideo(MediaTrackConstraintSet::Create());
+  constraints->setAudio(MediaTrackConstraintSet::Create());
+
+  MediaCaptureElementConstraints::setConstraints(*element, constraints);
+  task_environment_.RunUntilIdle();
+
+  const auto& descriptors = element->GetPermissionDescriptors();
+  ASSERT_EQ(descriptors.size(), 2U);
+  EXPECT_EQ(descriptors[0]->name, mojom::blink::PermissionName::VIDEO_CAPTURE);
+  EXPECT_EQ(descriptors[1]->name, mojom::blink::PermissionName::AUDIO_CAPTURE);
+}
+
+TEST_F(UserMediaElementTest, EmptyConstraintsObjectDefaultsToBoth) {
+  V8TestingScope scope;
+  auto* element =
+      MakeGarbageCollected<HTMLUserMediaElement>(scope.GetDocument());
+  scope.GetDocument().body()->AppendChild(element);
+
+  // setConstraints({})
+  HTMLMediaStreamConstraints* constraints = HTMLMediaStreamConstraints::Create();
+  MediaCaptureElementConstraints::setConstraints(*element, constraints);
+  task_environment_.RunUntilIdle();
+
+  const auto& descriptors = element->GetPermissionDescriptors();
+  ASSERT_EQ(descriptors.size(), 2U);
+  EXPECT_EQ(descriptors[0]->name, mojom::blink::PermissionName::VIDEO_CAPTURE);
+  EXPECT_EQ(descriptors[1]->name, mojom::blink::PermissionName::AUDIO_CAPTURE);
+
+  // Stored constraints should be populated with defaults
+  const HTMLMediaStreamConstraints* stored =
+      MediaCaptureElementConstraints::From(*element).Constraints();
+  ASSERT_TRUE(stored);
+  EXPECT_TRUE(stored->hasVideo());
+  EXPECT_TRUE(stored->hasAudio());
+}
+
+TEST_F(UserMediaElementTest, AudioMissingDefaultsToEnabled) {
+  V8TestingScope scope;
+  auto* element =
+      MakeGarbageCollected<HTMLUserMediaElement>(scope.GetDocument());
+  scope.GetDocument().body()->AppendChild(element);
+
+  // setConstraints({video: {}}) -> audio missing
+  HTMLMediaStreamConstraints* constraints = HTMLMediaStreamConstraints::Create();
+  constraints->setVideo(MediaTrackConstraintSet::Create());
+
+  MediaCaptureElementConstraints::setConstraints(*element, constraints);
+  task_environment_.RunUntilIdle();
+
+  const auto& descriptors = element->GetPermissionDescriptors();
+  ASSERT_EQ(descriptors.size(), 2U);
+  EXPECT_EQ(descriptors[0]->name, mojom::blink::PermissionName::VIDEO_CAPTURE);
+  EXPECT_EQ(descriptors[1]->name, mojom::blink::PermissionName::AUDIO_CAPTURE);
+
+  const HTMLMediaStreamConstraints* stored =
+      MediaCaptureElementConstraints::From(*element).Constraints();
+  ASSERT_TRUE(stored);
+  EXPECT_TRUE(stored->hasVideo());
+  EXPECT_TRUE(stored->hasAudio()); // defaulted to enabled
+}
+
+TEST_F(UserMediaElementTest, VideoMissingDefaultsToEnabled) {
+  V8TestingScope scope;
+  auto* element =
+      MakeGarbageCollected<HTMLUserMediaElement>(scope.GetDocument());
+  scope.GetDocument().body()->AppendChild(element);
+
+  // setConstraints({audio: {}}) -> video missing
+  HTMLMediaStreamConstraints* constraints = HTMLMediaStreamConstraints::Create();
+  constraints->setAudio(MediaTrackConstraintSet::Create());
+
+  MediaCaptureElementConstraints::setConstraints(*element, constraints);
+  task_environment_.RunUntilIdle();
+
+  const auto& descriptors = element->GetPermissionDescriptors();
+  ASSERT_EQ(descriptors.size(), 2U);
+  EXPECT_EQ(descriptors[0]->name, mojom::blink::PermissionName::VIDEO_CAPTURE);
+  EXPECT_EQ(descriptors[1]->name, mojom::blink::PermissionName::AUDIO_CAPTURE);
+
+  const HTMLMediaStreamConstraints* stored =
+      MediaCaptureElementConstraints::From(*element).Constraints();
+  ASSERT_TRUE(stored);
+  EXPECT_TRUE(stored->hasVideo()); // defaulted to enabled
+  EXPECT_TRUE(stored->hasAudio());
+}
+
 }  // namespace blink
+

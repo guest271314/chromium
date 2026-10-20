@@ -4,6 +4,8 @@
 
 #include "components/viz/test/stub_gpu_service.h"
 
+#include <utility>
+
 #include "components/persistent_cache/pending_backend.h"
 
 namespace viz {
@@ -14,8 +16,7 @@ StubGpuService::~StubGpuService() = default;
 void StubGpuService::EstablishGpuChannel(
     int32_t client_id,
     uint64_t client_tracing_id,
-    bool is_gpu_host,
-    bool enable_extra_handles_validation,
+    mojom::GpuClientType client_type,
     mojo::ScopedMessagePipeHandle channel_handle,
     EstablishGpuChannelCallback callback) {}
 
@@ -84,8 +85,6 @@ void StubGpuService::LoadedBlob(const gpu::GpuDiskCacheHandle& handle,
 
 void StubGpuService::WakeUpGpu() {}
 
-void StubGpuService::GpuSwitched() {}
-
 void StubGpuService::DisplayAdded() {}
 
 void StubGpuService::DisplayRemoved() {}
@@ -119,6 +118,9 @@ void StubGpuService::Crash() {}
 void StubGpuService::Hang() {}
 
 void StubGpuService::ThrowJavaException() {}
+
+void StubGpuService::InduceMemoryInvalidAccess(
+    mojom::MemoryInvalidAccessType action) {}
 
 #if BUILDFLAG(ENABLE_VRP_FLAGS)
 void StubGpuService::GetVrpFlags(GetVrpFlagsCallback callback) {

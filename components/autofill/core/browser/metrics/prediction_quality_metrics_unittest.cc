@@ -4,19 +4,20 @@
 
 #include "components/autofill/core/browser/metrics/prediction_quality_metrics.h"
 
+#include <ranges>
+
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
-#include "base/types/zip.h"
 #include "components/autofill/core/browser/autofill_field.h"
 #include "components/autofill/core/browser/field_types.h"
-#include "components/autofill/core/browser/form_parsing/autofill_parsing_utils.h"
+#include "components/autofill/core/browser/form_parsing/autofill_parsing_util.h"
 #include "components/autofill/core/browser/form_structure_test_api.h"
 #include "components/autofill/core/browser/heuristic_source.h"
 #include "components/autofill/core/browser/metrics/autofill_metrics_test_base.h"
-#include "components/autofill/core/browser/test_utils/autofill_form_test_utils.h"
-#include "components/autofill/core/browser/test_utils/autofill_test_utils.h"
+#include "components/autofill/core/browser/test_utils/autofill_form_test_util.h"
+#include "components/autofill/core/browser/test_utils/autofill_test_util.h"
 #include "components/autofill/core/common/autofill_features.h"
-#include "components/autofill/core/common/autofill_test_utils.h"
+#include "components/autofill/core/common/autofill_test_util.h"
 #include "components/autofill/core/common/form_data_test_api.h"
 #include "components/autofill/core/common/html_field_types.h"
 #include "components/autofill/core/common/mojom/autofill_types.mojom-shared.h"
@@ -35,6 +36,7 @@ using ::autofill::test::CreateTestFormField;
 using ::base::Bucket;
 using ::base::BucketsAre;
 using ::testing::ElementsAre;
+using ::testing::Values;
 using ::testing::WithParamInterface;
 
 class PredictionQualityMetricsTest : public AutofillMetricsBaseTest,
@@ -80,8 +82,8 @@ TEST_F(PredictionQualityMetricsTest, SaneMetricsWithCacheMismatch) {
   std::unique_ptr<FormStructure> form_structure =
       std::make_unique<FormStructure>(test::WithoutValues(form));
 
-  for (auto [field, heuristic_type, server_type] :
-       base::zip(form_structure->fields(), heuristic_types, server_types)) {
+  for (auto [field, heuristic_type, server_type] : std::views::zip(
+           form_structure->fields(), heuristic_types, server_types)) {
     field->set_heuristic_type(GetActiveHeuristicSource(), heuristic_type);
     field->set_server_predictions({test::CreateFieldPrediction(server_type)});
   }
@@ -457,118 +459,6 @@ TEST_F(PredictionQualityMetricsTest,
       1);
 }
 
-TEST_F(PredictionQualityMetricsTest,
-       PhoneNumberExperimentMetrics_AugmentedPhoneCountryCode) {
-  FormData form_without_options = test::GetFormData(
-      {.fields = {{.role = NAME_FULL, .autocomplete_attribute = "name"},
-                  // No role so that regexes don't match.
-                  {.autocomplete_attribute = "tel-country-code",
-                   .form_control_type = FormControlType::kSelectOne},
-                  {.role = PHONE_HOME_CITY_AND_NUMBER,
-                   .autocomplete_attribute = "tel-national"}}});
-  SeeForm(form_without_options);
-
-  FormData form_with_options = test::GetFormData(
-      {.fields = {{.role = NAME_FULL, .autocomplete_attribute = "name"},
-                  // No role so that regexes don't match.
-                  {.autocomplete_attribute = "tel-country-code",
-                   .form_control_type = FormControlType::kSelectOne,
-                   .select_options =
-                       {
-                           {.value = u"US", .text = u"United States (+1)"},
-                           {.value = u"CA", .text = u"Canada (+1)"},
-                           {.value = u"FR", .text = u"France (+33)"},
-                           {.value = u"DE", .text = u"Germany (+49)"},
-                           {.value = u"LB", .text = u"Lebanon (+961)"},
-                       }},
-                  {.role = PHONE_HOME_CITY_AND_NUMBER,
-                   .autocomplete_attribute = "tel-national"}}});
-  SeeForm(form_with_options);
-
-  {
-    base::HistogramTester histogram_tester;
-    SubmitForm(form_without_options);
-    histogram_tester.ExpectTotalCount(
-        "Autofill.FieldPrediction.AugmentedPhoneCountryCode.Heuristics", 0);
-    histogram_tester.ExpectUniqueSample(
-        "Autofill.FieldPrediction.AugmentedPhoneCountryCode.Overall", 0, 1);
-  }
-
-  {
-    base::HistogramTester histogram_tester;
-    SubmitForm(form_with_options);
-    histogram_tester.ExpectUniqueSample(
-        "Autofill.FieldPrediction.AugmentedPhoneCountryCode.Heuristics", 1, 1);
-    histogram_tester.ExpectUniqueSample(
-        "Autofill.FieldPrediction.AugmentedPhoneCountryCode.Overall", 1, 1);
-  }
-}
-
-TEST_F(PredictionQualityMetricsTest,
-       PhoneNumberExperimentMetrics_PhoneCountryRationalizedToUnknownType) {
-  // Form where the country code field is relevant.
-  FormData relevant_form = test::GetFormData(
-      {.fields = {{.role = PHONE_HOME_COUNTRY_CODE,
-                   .autocomplete_attribute = "tel-country-code",
-                   .form_control_type = FormControlType::kSelectOne},
-                  {.role = PHONE_HOME_CITY_AND_NUMBER,
-                   .autocomplete_attribute = "tel-national"}}});
-  SeeForm(relevant_form);
-
-  // Form where the country code field is irrelevant.
-  FormData irrelevant_form = test::GetFormData(
-      {.fields = {{.role = NAME_FULL, .autocomplete_attribute = "name"},
-                  {.role = PHONE_HOME_COUNTRY_CODE,
-                   .autocomplete_attribute = "tel-country-code",
-                   .form_control_type = FormControlType::kSelectOne}}});
-  SeeForm(irrelevant_form);
-
-  {
-    base::HistogramTester histogram_tester;
-    SubmitForm(relevant_form);
-    histogram_tester.ExpectUniqueSample(
-        "Autofill.FieldPrediction.PhoneCountryCodeRationalizedToUnknown", 0, 1);
-  }
-
-  {
-    base::HistogramTester histogram_tester;
-    SubmitForm(irrelevant_form);
-    histogram_tester.ExpectUniqueSample(
-        "Autofill.FieldPrediction.PhoneCountryCodeRationalizedToUnknown", 1, 1);
-  }
-}
-
-TEST_F(PredictionQualityMetricsTest,
-       PhoneNumberExperimentMetrics_CorrectPredictionSource) {
-  // Country code field classified by heuristics.
-  AutofillField heuristics_field(test::GetFormFieldData({.value = u"+1"}));
-  heuristics_field.set_heuristic_type(HeuristicSource::kRegexes,
-                                      PHONE_HOME_COUNTRY_CODE);
-  heuristics_field.set_possible_types({PHONE_HOME_COUNTRY_CODE});
-
-  // Country code field classified by the autocomplete attribute.
-  AutofillField html_field(test::GetFormFieldData({.value = u"+1"}));
-  html_field.SetHtmlType(HtmlFieldType::kTelCountryCode,
-                         HtmlFieldMode::kShipping);
-  html_field.set_possible_types({PHONE_HOME_COUNTRY_CODE});
-
-  {
-    base::HistogramTester histogram_tester;
-    LogPhoneNumberDetectionExperimentMetrics(heuristics_field);
-    histogram_tester.ExpectUniqueSample(
-        "Autofill.FieldPrediction.PhoneCountryCode.CorrectPredictionSource",
-        AutofillPredictionSource::kHeuristics, 1);
-  }
-
-  {
-    base::HistogramTester histogram_tester;
-    LogPhoneNumberDetectionExperimentMetrics(html_field);
-    histogram_tester.ExpectUniqueSample(
-        "Autofill.FieldPrediction.PhoneCountryCode.CorrectPredictionSource",
-        AutofillPredictionSource::kAutocomplete, 1);
-  }
-}
-
 TEST_F(PredictionQualityMetricsTest, FieldTypeAtSubmission) {
   GetAndAddSeenForm(
       {.fields = {
@@ -653,6 +543,151 @@ TEST_F(PredictionQualityMetricsTest, FieldTypeAtSubmission) {
           Bucket(get_bucket(PHONE_HOME_CITY_AND_NUMBER,
                             AutofillPredictionSource::kHeuristics),
                  1)));
+}
+
+AutofillField CreateAutofillFieldForLowQualityLabelTest(
+    FormFieldData::LabelSource label_source =
+        FormFieldData::LabelSource::kLabelTag) {
+  AutofillField field;
+  field.set_label(u"Label");
+  field.set_placeholder(u"placeholder");
+  field.set_label_source(label_source);
+  field.set_regex_match_info(MatchInfo{
+      .matched_attribute = MatchInfo::MatchAttribute::kLowQualityLabel});
+  return field;
+}
+
+// Validates that no metrics are reported when `regex_match_info` is missing.
+TEST_F(PredictionQualityMetricsTest,
+       PredictionQualityForLowQualityLabels_MissingMatchInfo) {
+  base::HistogramTester histogram_tester;
+  AutofillField field = CreateAutofillFieldForLowQualityLabelTest();
+  field.set_regex_match_info(std::nullopt);
+
+  LogHeuristicPredictionQualityForLowQualityLabels(
+      field, /*was_prediction_correct=*/true);
+
+  EXPECT_EQ(histogram_tester.GetTotalSum(), 0);
+}
+
+// Validates that no metrics are reported when the field label is empty.
+TEST_F(PredictionQualityMetricsTest,
+       PredictionQualityForLowQualityLabels_EmptyLabel) {
+  base::HistogramTester histogram_tester;
+  AutofillField field = CreateAutofillFieldForLowQualityLabelTest();
+  field.set_label(u"");
+
+  LogHeuristicPredictionQualityForLowQualityLabels(
+      field, /*was_prediction_correct=*/true);
+
+  EXPECT_EQ(histogram_tester.GetTotalSum(), 0);
+}
+
+// Validates that no metrics are reported when the field placeholder is empty.
+TEST_F(PredictionQualityMetricsTest,
+       PredictionQualityForLowQualityLabels_EmptyPlaceholder) {
+  base::HistogramTester histogram_tester;
+  AutofillField field = CreateAutofillFieldForLowQualityLabelTest();
+  field.set_placeholder(u"");
+
+  LogHeuristicPredictionQualityForLowQualityLabels(
+      field, /*was_prediction_correct=*/true);
+
+  EXPECT_EQ(histogram_tester.GetTotalSum(), 0);
+}
+
+// Validates that no metrics are reported when `matched_attribute` is not
+// `kLowQualityLabel`.
+TEST_F(PredictionQualityMetricsTest,
+       PredictionQualityForLowQualityLabels_HighQualityMatchAttribute) {
+  base::HistogramTester histogram_tester;
+  AutofillField field = CreateAutofillFieldForLowQualityLabelTest();
+  field.set_regex_match_info(MatchInfo{
+      .matched_attribute = MatchInfo::MatchAttribute::kHighQualityLabel});
+
+  LogHeuristicPredictionQualityForLowQualityLabels(
+      field, /*was_prediction_correct=*/true);
+
+  EXPECT_EQ(histogram_tester.GetTotalSum(), 0);
+}
+
+// Validates that `PlaceholderMatchWithHighQualityLabelPresent` metric is
+// reported correctly for a field with a high quality label and placeholder
+// match.
+TEST_F(PredictionQualityMetricsTest,
+       PredictionQualityForLowQualityLabels_PlaceholderMatch) {
+  base::HistogramTester histogram_tester;
+  AutofillField field = CreateAutofillFieldForLowQualityLabelTest();
+
+  LogHeuristicPredictionQualityForLowQualityLabels(
+      field, /*was_prediction_correct=*/true);
+
+  histogram_tester.ExpectUniqueSample(
+      "Autofill.FieldPredictionQuality.Aggregate.Heuristic."
+      "PlaceholderMatchWithHighQualityLabelPresent",
+      true, 1);
+  histogram_tester.ExpectTotalCount(
+      "Autofill.FieldPredictionQuality.Aggregate.Heuristic."
+      "LowQualityLabelMatchWithPlaceholderPresent",
+      0);
+}
+
+// Validates that `LowQualityLabelMatchWithPlaceholderPresent` metric is
+// reported correctly for a field with placeholder and low quality label match.
+TEST_F(PredictionQualityMetricsTest,
+       PredictionQualityForLowQualityLabels_LabelMatch) {
+  base::HistogramTester histogram_tester;
+  AutofillField field = CreateAutofillFieldForLowQualityLabelTest(
+      FormFieldData::LabelSource::kAriaLabel);
+
+  LogHeuristicPredictionQualityForLowQualityLabels(
+      field, /*was_prediction_correct=*/true);
+
+  histogram_tester.ExpectTotalCount(
+      "Autofill.FieldPredictionQuality.Aggregate.Heuristic."
+      "PlaceholderMatchWithHighQualityLabelPresent",
+      0);
+  histogram_tester.ExpectUniqueSample(
+      "Autofill.FieldPredictionQuality.Aggregate.Heuristic."
+      "LowQualityLabelMatchWithPlaceholderPresent",
+      true, 1);
+}
+
+// Validates that metrics for low quality label matches are reported
+// for each field in the form upon form submission with correct
+// parameters.
+TEST_F(PredictionQualityMetricsTest,
+       PredictionQualityForLowQualityLabels_LoggingTriggeredForEachField) {
+  base::HistogramTester histogram_tester;
+  FormData form = GetAndAddSeenForm(
+      {.fields = {{.role = NAME_FIRST,
+                   .label = u"First Name",
+                   .value = u"Elvis",
+                   .placeholder = u"placeholder",
+                   .label_source = FormFieldData::LabelSource::kLabelTag},
+                  {.role = NAME_LAST,
+                   .label = u"Last Name",
+                   .value = u"Presley",
+                   .placeholder = u"placeholder",
+                   .label_source = FormFieldData::LabelSource::kAriaLabel}}});
+  FormStructure* form_structure =
+      test_api(autofill_manager()).FindCachedFormById(form.global_id());
+  ASSERT_TRUE(form_structure);
+  for (const std::unique_ptr<AutofillField>& field : form_structure->fields()) {
+    field->set_regex_match_info(MatchInfo{
+        .matched_attribute = MatchInfo::MatchAttribute::kLowQualityLabel});
+  }
+
+  SubmitForm(form);
+
+  histogram_tester.ExpectUniqueSample(
+      "Autofill.FieldPredictionQuality.Aggregate.Heuristic."
+      "PlaceholderMatchWithHighQualityLabelPresent",
+      true, 1);
+  histogram_tester.ExpectUniqueSample(
+      "Autofill.FieldPredictionQuality.Aggregate.Heuristic."
+      "LowQualityLabelMatchWithPlaceholderPresent",
+      true, 1);
 }
 
 }  // namespace

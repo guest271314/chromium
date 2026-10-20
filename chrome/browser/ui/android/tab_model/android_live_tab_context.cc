@@ -17,6 +17,7 @@
 #include "chrome/browser/ui/android/tab_model/tab_model_list.h"
 #include "components/sessions/content/content_live_tab.h"
 #include "components/sessions/content/content_serialized_navigation_builder.h"
+#include "components/sessions/core/session_id.h"
 #include "components/sessions/core/session_types.h"
 #include "components/sessions/core/tab_restore_types.h"
 #include "components/split_tabs/split_tab_id.h"
@@ -27,6 +28,7 @@
 #include "content/public/browser/navigation_entry.h"
 #include "content/public/browser/restore_type.h"
 #include "ui/base/mojom/window_show_state.mojom.h"
+#include "ui/base/window_open_disposition.h"
 
 AndroidLiveTabContext::AndroidLiveTabContext(TabModel* tab_model)
     : tab_model_(tab_model) {}
@@ -118,6 +120,14 @@ AndroidLiveTabContext::GetVisualDataForGroup(
   NOTREACHED();
 }
 
+const split_tabs::SplitTabVisualData*
+AndroidLiveTabContext::GetVisualDataForSplit(
+    const split_tabs::SplitTabId& split_id) const {
+  // Split views are not currently supported on the Android platform. This
+  // function would return the visual data of the split (orientation and ratio).
+  return nullptr;
+}
+
 const std::optional<base::Uuid>
 AndroidLiveTabContext::GetSavedTabGroupIdForGroup(
     const tab_groups::TabGroupId& group) const {
@@ -145,6 +155,24 @@ void AndroidLiveTabContext::SetVisualDataForGroup(
   // NOTREACHED) if we implement restoring groups for foreign session
   // windows.
   NOTREACHED();
+}
+
+const std::optional<tab_groups::TabGroupId>
+AndroidLiveTabContext::GetInitialFocusedTabGroup() const {
+  // Android does not support focused tab groups.
+
+  // This function would return the tab group ID that was focused when the
+  // window was closed, so it can be restored to focus.
+  return std::nullopt;
+}
+
+void AndroidLiveTabContext::SetFocusedTabGroup(
+    const tab_groups::TabGroupId& group) {
+  // Android does not support focused tab groups.
+
+  // This function would set the focused tab group for the window, removing the
+  // visibility of other tabs to instead show just the given tab group.
+  NOTIMPLEMENTED();
 }
 
 const gfx::Rect AndroidLiveTabContext::GetRestoredBounds() const {
@@ -191,14 +219,16 @@ sessions::LiveTab* AndroidLiveTabContext::AddRestoredTab(
 
   // Create new tab. Ownership is passed into java, which in turn creates a new
   // TabAndroid instance to own the WebContents. Only select the restored tab
-  // when restoring a single tab from a TAB session.
+  // when restoring a single tab (not as part of a bulk window/group
+  // restoration).
 
   // `tab_index` is ignored because TabRestoreServiceHelper resets it to the tab
   // count when the disposition is not `UNKNOWN`. We want to restore the tab to
   // its original index, so we use `tab.tabstrip_index` instead. The tab model
   // will handle the case where the index is out of bounds.
   TabModel::TabLaunchType type =
-      original_session_type == sessions::tab_restore::TAB
+      (original_session_type == sessions::tab_restore::TAB ||
+       (!is_restoring_group_or_window && select))
           ? TabModel::TabLaunchType::FROM_RECENT_TABS_FOREGROUND
           : TabModel::TabLaunchType::FROM_RECENT_TABS;
   tab_model_->CreateTab(nullptr, std::move(web_contents), tab.tabstrip_index,
@@ -225,9 +255,11 @@ sessions::LiveTab* AndroidLiveTabContext::ReplaceRestoredTab(
   return sessions::ContentLiveTab::GetOrCreateForWebContents(web_contents);
 }
 
-void AndroidLiveTabContext::ReconstructSplit(sessions::LiveTab* leading_tab,
-                                             sessions::LiveTab* trailing_tab,
-                                             split_tabs::SplitTabId split_id) {
+void AndroidLiveTabContext::ReconstructSplit(
+    sessions::LiveTab* leading_tab,
+    sessions::LiveTab* trailing_tab,
+    split_tabs::SplitTabId split_id,
+    const split_tabs::SplitTabVisualData& visual_data) {
   // Split views are currently not supported on the Android platform.
   // This function serves as a placeholder to store the logic that would combine
   // two tabs into a singular SplitView object.

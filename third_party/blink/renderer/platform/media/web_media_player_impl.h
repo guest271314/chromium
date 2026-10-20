@@ -40,9 +40,9 @@
 #include "media/base/routing_token_callback.h"
 #include "media/base/simple_watch_timer.h"
 #include "media/filters/demuxer_manager.h"
+#include "media/gfx/paint_canvas_video_renderer.h"
 #include "media/mojo/mojom/media_metrics_provider.mojom-blink.h"
 #include "media/mojo/mojom/playback_events_recorder.mojom-blink.h"
-#include "media/renderers/paint_canvas_video_renderer.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
 #include "mojo/public/cpp/bindings/remote.h"
 #include "services/media_session/public/cpp/media_position.h"
@@ -53,6 +53,7 @@
 #include "third_party/blink/public/platform/web_media_player.h"
 #include "third_party/blink/public/platform/web_surface_layer_bridge.h"
 #include "third_party/blink/renderer/platform/bindings/v8_external_memory_accounter.h"
+#include "third_party/blink/renderer/platform/heap/persistent.h"
 #include "third_party/blink/renderer/platform/media/media_player_client.h"
 #include "third_party/blink/renderer/platform/media/multi_buffer_data_source.h"
 #include "third_party/blink/renderer/platform/platform_export.h"
@@ -67,10 +68,6 @@ struct MemoryDumpArgs;
 class ProcessMemoryDump;
 }  // namespace trace_event
 }  // namespace base
-
-namespace cc {
-class VideoLayer;
-}
 
 namespace gfx {
 class Size;
@@ -93,8 +90,10 @@ class RasterContextProvider;
 namespace blink {
 
 class BufferedDataSourceHostImpl;
+class FrameScheduler;
 class PowerStatusHelper;
 class KURL;
+class SecurityOrigin;
 class ThreadSafeBrowserInterfaceBrokerProxy;
 class UrlIndex;
 class VideoDecodeStatsReporter;
@@ -102,8 +101,9 @@ class VideoFrameCompositor;
 class WatchTimeReporter;
 class WebAudioSourceProviderImpl;
 class WebContentDecryptionModule;
-class WebLocalFrame;
 class WebMediaPlayerEncryptedMediaClient;
+class WebString;
+class WebURL;
 
 // The set of split histograms that are supported. Keeping them in an enum
 // helps prevent raw strings from being scattered throughout the source, and
@@ -131,7 +131,12 @@ class PLATFORM_EXPORT WebMediaPlayerImpl
   // Constructs a WebMediaPlayer implementation using Chromium's media stack.
   // |delegate| and |renderer_factory_selector| must not be null.
   WebMediaPlayerImpl(
-      WebLocalFrame* frame,
+      FrameScheduler* frame_scheduler,
+      scoped_refptr<const SecurityOrigin> security_origin,
+      const WebURL& document_url,
+      const WebString& document_title,
+      WebMediaPlayerBuilder::HasTransientUserActivationCB
+          has_transient_user_activation_cb,
       MediaPlayerClient* client,
       WebMediaPlayerEncryptedMediaClient* encrypted_client,
       WebMediaPlayerDelegate* delegate,
@@ -155,7 +160,6 @@ class PLATFORM_EXPORT WebMediaPlayerImpl
           metrics_provider,
       CreateSurfaceLayerBridgeCB create_bridge_callback,
       scoped_refptr<viz::RasterContextProvider> raster_context_provider,
-      bool use_surface_layer,
       bool is_background_suspend_enabled,
       bool is_background_video_play_enabled,
       bool is_background_video_track_optimization_supported,
@@ -206,7 +210,7 @@ class PLATFORM_EXPORT WebMediaPlayerImpl
   void Paint(cc::PaintCanvas* canvas,
              const gfx::Rect& rect,
              const cc::PaintFlags& flags,
-             bool force_pixel_readback) override;
+             bool acquire_texture_backing) override;
   scoped_refptr<media::VideoFrame> GetCurrentFrameThenUpdate() override;
   std::optional<media::VideoFrame::ID> CurrentFrameId() const override;
   media::PaintCanvasVideoRenderer* GetPaintCanvasVideoRenderer() override;
@@ -216,6 +220,8 @@ class PLATFORM_EXPORT WebMediaPlayerImpl
   // True if the loaded media has a playable video/audio track.
   bool HasVideo() const override;
   bool HasAudio() const override;
+  bool IsHDR() const override;
+  bool IsVideoBeingCaptured() const override;
 
   void EnabledAudioTracksChanged(
       std::optional<WebMediaPlayer::TrackId> enabled_track_id) override;
@@ -226,6 +232,8 @@ class PLATFORM_EXPORT WebMediaPlayerImpl
   gfx::Size NaturalSize() const override;
 
   gfx::Size VisibleSize() const override;
+
+  media::VideoSpatialFormat GetSpatialFormat() const override;
 
   // Getters of playback state.
   bool Paused() const override;
@@ -247,7 +255,7 @@ class PLATFORM_EXPORT WebMediaPlayerImpl
   bool DidLoadingProgress() override;
   bool WouldTaintOrigin() const override;
 
-  double MediaTimeForTimeValue(double timeValue) const override;
+  double MediaTimeForTimeValue(double time_value) const override;
 
   unsigned DecodedFrameCount() const override;
   unsigned DroppedFrameCount() const override;
@@ -284,9 +292,10 @@ class PLATFORM_EXPORT WebMediaPlayerImpl
   // WebMediaPlayerDelegate::Observer implementation.
   void OnPageHidden() override;
   void OnPageShown() override;
+  void OnIdleTimeout() override;
+
   void OnFrameHidden() override;
   void OnFrameShown() override;
-  void OnIdleTimeout() override;
 
   void RequestRemotePlaybackDisabled(bool disabled) override;
   void RequestMediaRemoting() override;
@@ -397,9 +406,9 @@ class PLATFORM_EXPORT WebMediaPlayerImpl
   // so we won't even compile in strings such as "Media.TimeToPlayReady.All"
   // if it's not specified.
   template <uint32_t Flags, typename... T>
-  void WriteSplitHistogram(void (*UmaFunction)(std::string_view, T...),
+  void WriteSplitHistogram(void (*uma_function)(std::string_view, T...),
                            SplitHistogramName key,
-                           const T&... value);
+                           const T&... values);
 
   void EnableOverlay();
   void DisableOverlay();
@@ -577,10 +586,6 @@ class PLATFORM_EXPORT WebMediaPlayerImpl
       const base::trace_event::MemoryDumpArgs& args,
       base::trace_event::ProcessMemoryDump* pmd);
 
-  // Called during OnHidden() when we want a suspended player to enter the
-  // paused state after some idle timeout.
-  void ScheduleIdlePauseTimer();
-
   // Returns |true| before HaveFutureData whenever there has been loading
   // progress and we have not been resumed for at least kLoadingToIdleTimeout
   // since then.
@@ -728,8 +733,6 @@ class PLATFORM_EXPORT WebMediaPlayerImpl
   // allowed to play it.
   bool HasUnmutedAudio() const;
 
-  // Returns true if the video frame from this player are being captured.
-  bool IsVideoBeingCaptured() const;
 
   // Report UMAs when this object instance is destroyed.
   void ReportSessionUMAs() const;
@@ -745,7 +748,13 @@ class PLATFORM_EXPORT WebMediaPlayerImpl
   // Notifies the `client_` and the `delegate_` about metadata change.
   void DidMediaMetadataChange();
 
-  raw_ptr<WebLocalFrame> frame_ = nullptr;
+  // Scheduler of the frame the player belongs to.
+  raw_ptr<FrameScheduler> frame_scheduler_ = nullptr;
+
+  // Returns whether the user recently interacted with the frame, to tell
+  // user-initiated play and pause apart.
+  const WebMediaPlayerBuilder::HasTransientUserActivationCB
+      has_transient_user_activation_cb_;
 
   WebMediaPlayer::NetworkState network_state_ =
       WebMediaPlayer::kNetworkStateEmpty;
@@ -841,7 +850,7 @@ class PLATFORM_EXPORT WebMediaPlayerImpl
   // this flag is set, it may never be unset.
   bool is_origin_tainted_ = false;
 
-  raw_ptr<MediaPlayerClient> client_ = nullptr;
+  WeakPersistent<MediaPlayerClient> client_ = nullptr;
   raw_ptr<WebMediaPlayerEncryptedMediaClient> encrypted_client_ = nullptr;
 
   // WebMediaPlayer notifies the |delegate_| of playback state changes using
@@ -887,6 +896,7 @@ class PLATFORM_EXPORT WebMediaPlayerImpl
 
   std::unique_ptr<BufferedDataSourceHostImpl> buffered_data_source_host_;
   raw_ptr<UrlIndex> url_index_ = nullptr;
+  const scoped_refptr<const SecurityOrigin> security_origin_;
   scoped_refptr<viz::RasterContextProvider> raster_context_provider_;
 
   // Video rendering members.
@@ -899,10 +909,6 @@ class PLATFORM_EXPORT WebMediaPlayerImpl
   media::PaintCanvasVideoRenderer video_renderer_;
   media::VideoFrameSharedImageCache rgb_shared_image_cache_;
   media::VideoFrameSharedImageCache yuv_shared_image_cache_;
-
-  // The compositor layer for displaying the video content when using composited
-  // playback.
-  scoped_refptr<cc::VideoLayer> video_layer_;
 
   std::unique_ptr<WebContentDecryptionModuleResult> set_cdm_result_;
 
@@ -969,10 +975,6 @@ class PLATFORM_EXPORT WebMediaPlayerImpl
   // Stores the current position state of the media.
   media_session::MediaPosition media_position_state_;
 
-  // Called sometime after the media is suspended in a playing state in
-  // OnFrameHidden(), causing the state to change to paused.
-  base::OneShotTimer background_pause_timer_;
-
   // Monitors the watch time of the played content.
   std::unique_ptr<WatchTimeReporter> watch_time_reporter_;
   media::AudioDecoderType audio_decoder_type_ =
@@ -1038,9 +1040,6 @@ class PLATFORM_EXPORT WebMediaPlayerImpl
 
   // Whether embedded media experience is currently enabled.
   bool embedded_media_experience_enabled_ = false;
-
-  // When should we use SurfaceLayer for video?
-  bool use_surface_layer_ = false;
 
   // Whether surface layer is currently in use to display frames.
   bool surface_layer_for_video_enabled_ = false;
@@ -1121,6 +1120,11 @@ class PLATFORM_EXPORT WebMediaPlayerImpl
   // suspended.
   bool pending_oneshot_suspend_ = false;
 
+  // Last rendered status sent to the player from the containing frame.
+  bool is_frame_hidden_ = false;
+
+  // Whether we should pause playback when the frame is hidden due to the
+  // "media-playback-while-not-visible" permission policy.
   bool should_pause_when_frame_is_hidden_ = false;
 
   bool is_dominant_visible_content_ = false;

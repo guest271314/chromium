@@ -35,6 +35,7 @@
 -BackForwardCacheBrowserTest.BlockAndUnblockFromHTMLFile
 -BackForwardCacheBrowserTest.BlockAndUnblockFromJavaScriptFile
 -BackForwardCacheBrowserTest.DoesNotCacheIfRunFileChooserIsInvoked
+-BackForwardCacheBrowserTest.Events
 -BackForwardCacheBrowserTest.MultipleBlocksFromHTMLFile
 -BackForwardCacheBrowserTest.MultipleBlocksFromJavaScriptFile
 -BackForwardCacheBrowserTest.StickyFeaturesWithDetails
@@ -95,6 +96,7 @@
 -SitePerProcessHitTestBrowserTest.CrossProcessMouseCapture
 -SitePerProcessHitTestBrowserTest.CrossProcessTooltipTest
 -SitePerProcessHitTestBrowserTest.CursorUpdateReceivedFromCrossSiteIframe
+-SitePerProcessHitTestBrowserTest.KeyboardTooltipBoundsInChildFrame
 -SitePerProcessHitTestBrowserTest.PopupMenuTest
 -SitePerProcessHitTestBrowserTest.ScrolledNestedPopupMenuTest
 -SitePerProcessHitTestBrowserTest.TouchpadDoubleTapZoomOverOOPIF
@@ -161,11 +163,6 @@
 -OpenCodec/WebRtcMediaRecorderTest.PeerConnection/2
 -OpenCodec/WebRtcMediaRecorderTest.PeerConnection/3
 -OpenCodec/WebRtcMediaRecorderTest.PeerConnection/4
--OpenCodec/WebRtcMediaRecorderTest.TwoChannelAudioRecording/0
--OpenCodec/WebRtcMediaRecorderTest.TwoChannelAudioRecording/1
--OpenCodec/WebRtcMediaRecorderTest.TwoChannelAudioRecording/2
--OpenCodec/WebRtcMediaRecorderTest.TwoChannelAudioRecording/3
--OpenCodec/WebRtcMediaRecorderTest.TwoChannelAudioRecording/4
 -WebRtcAudioBrowserTest.CanMakeVideoCallAndThenRenegotiateToAudio
 -WebRtcAudioBrowserTest.EnsureLocalVideoMuteDoesntMuteAudio
 -WebRtcAudioBrowserTest.EnsureRemoteVideoMuteDoesntMuteAudio
@@ -176,7 +173,6 @@
 -WebRtcAudioBrowserTest.EstablishAudioVideoCallAndVerifyRemoteMutingWorks
 -WebRtcAudioBrowserTest.EstablishAudioVideoCallAndVerifyUnmutingWorks
 -WebRtcAudioDebugRecordingsBrowserTest.CallWithAudioDebugRecordings
--WebRtcMediaRecorderTest.TwoChannelAudioRecording
 
 # TODO(crbug.com/40285557): reports the wrong width/height.
 -RenderWidgetHostFoldableCSSTest.ViewportSegmentsWorksInUAFullscreenCSS
@@ -241,6 +237,7 @@
 -All/AccessibilityHitTestingBrowserTest.HitTestInPopup/ZoomFactor1
 -All/AccessibilityHitTestingBrowserTest.HitTestInPopup/ZoomFactor2
 -All/DumpAccessibilityTreeTest.AccessibilityInputDate/blink
+-All/DumpAccessibilityTreeTest.AccessibilityApgPatternThirdPartyButtonIdl/blink
 -All/DumpAccessibilityTreeTest.AccessibilityInputDateDisabled/blink
 -All/DumpAccessibilityTreeTest.AccessibilityInputDateWithPopupOpenMultiple/blink
 -All/DumpAccessibilityTreeTest.AccessibilityInputMonth/blink
@@ -251,10 +248,6 @@
 -All/DumpAccessibilityTreeTest.ReloadSelectionCrash/blink
 -All/YieldingParserDumpAccessibilityTreeTest.AccessibilityInputDateWithPopupOpenMultiple/blink
 -All/YieldingParserDumpAccessibilityTreeTest.AccessibilityInputTimeWithPopupOpen/blink
--AttributionInternalsWebUiBrowserTest.ClearButton_ClearsSourceTable
--AttributionInternalsWebUiBrowserTest.WebUIShownWithActiveImpression_ImpressionsDisplayed
--AttributionInternalsWebUiBrowserTest.WebUIShownWithPendingAggregatableReports_ReportsDisplayed
--AttributionInternalsWebUiBrowserTest.WebUIShownWithPendingReports_ReportsDisplayed
 -BackForwardCacheBrowserTestWithJavaScriptDetails.StickyFeaturesWithDetails
 -BrowserChildProcessObserverBrowserTest.LaunchAndDisconnect
 -BrowserChildProcessObserverBrowserTest.LaunchAndForceShutdown
@@ -265,7 +258,6 @@
 -CrossPlatformAccessibilityBrowserTest.ControlsIdsForDateTimePopup
 -CrossSiteTransferTest.MaliciousPostWithFileData
 -DataDecoderBrowserTest.NoCallbackAfterDestruction_Gzip
--DataDecoderBrowserTest.NoCallbackAfterDestruction_Json
 -DataDecoderBrowserTest.NoCallbackAfterDestruction_Xml
 -FencedFrameSecurityExploitBrowserTestWithTrustTokensEnabled.BrowserForbidsTrustTokenParamsOnFencedFrameNav
 -IndexedDBBrowserTest.DoesntHangTest
@@ -287,8 +279,6 @@
 -NetworkServiceBrowserTest.WebUIBindingsNoHttp
 -NetworkServiceNetLogBrowserTest.LogCreated
 -PowerMonitorTest.TestRendererProcess
--PrivateAggregationInternalsWebUiBrowserTest.WebUIClearStorage_ReportsRemoved
--PrivateAggregationInternalsWebUiBrowserTest.WebUIShownWithReports_ReportsDisplayed
 -PrivateNetworkAccessBrowserTestRespectPreflightResultsForWorkers.FetchSharedWorkerFromSecureTreatAsPublicToLocal
 -RenderFrameDevToolsAgentHostFencedFrameBrowserTest.PageCrashInFencedFrame
 -RenderAccessibilityImplTest.TestHitTestPopupDoesNotCrash
@@ -398,6 +388,7 @@
 
 # TODO(crbug.com/382316457): This test has been failing on the bot.
 -FormControlsBrowserTest.Meter
+-FormControlsBrowserTest.DarkModeTextSelection
 
 # TODO(crbug.com/385300330): This test has been failing since
 # https://crrev.com/c/5953628.
@@ -469,6 +460,8 @@
 # https://crrev.com/c/6777074.
 -All/IndexedDBBrowserTest.SchedulingPriority/WithLevelDb
 -All/IndexedDBBrowserTest.SchedulingPriority/WithSqlite
+-All/InlineScriptCodeCacheBrowserTest.NotProducedForShortScript/0
+-All/InlineScriptCodeCacheBrowserTest.NotProducedForShortScript/1
 
 # TODO(crbug.com/437957113): The test has been failing since
 # https://crrev.com/c/6566111.
@@ -489,6 +482,7 @@
 # https://crrev.com/c/6966639.
 -FileSystemChooserBrowserTest.DontShowWhileHidden
 -FileSystemChooserBrowserTest.ShowThenHide
+-FileSystemChooserBrowserTest.ShowThenResizeSmall
 
 # TODO(crbug.com/454067890): The test has been failing since
 # https://crrev.com/c/6734221.
@@ -511,7 +505,6 @@
 
 # TODO(crbug.com/514423254): Miscellaneous content_browsertests failures on iOS
 # Blink.
--All/AttributionsBrowserTest.ServiceWorkerPerformsAttributionSrcRegistration_SupportHeaderSet_createAttributionEligibleScriptSrc/1
 -All/EmergencyStopTracingTest.StopOnThreadPool/0
 -All/EmergencyStopTracingTest.StopOnThreadPoolTwice/0
 -All/EmergencyStopTracingTest.StopOnUIThread/0
@@ -530,6 +523,8 @@
 -All/ServiceWorkerStaticRouterRaceNetworkAndFetchHandlerSourceBrowserTest.FetchHandler_Wins_Redirect_PassThrough/0
 -All/ServiceWorkerStaticRouterRaceNetworkAndFetchHandlerSourceBrowserTest.FetchHandler_Wins_Redirect_PassThrough/2
 -All/ServiceWorkerStaticRouterRaceNetworkAndFetchHandlerSourceBrowserTest.NetworkRequest_Wins_Redirect_PassThrough/3
+-ServiceWorkerNoBestEffortTasksTest.ValidatePreconditions
+-ServiceWorkerSyntheticResponseBrowserTest.HeaderMis
 -All/SitePerProcessPerDocumentIsolatedSandboxedIframeTest.SiblingSrcdocIframesGetDifferentProcesses/1
 -All/SoapByDefaultVirtualBrowsingContextGroupTest.NoHeader/RDAllFrames_BFCacheEnabled
 -All/StartupTracingTest.TestEnableTracing/0
@@ -537,14 +532,24 @@
 -All/StartupTracingTest.TestEnableTracing/4
 -All/StartupTracingTest.TestEnableTracing/5
 -AutoSpeculationRulesPrerenderBrowserTestWithHoldback.Metrics/1
+-DeclarativePerformanceObserverBrowserTest.SendsReportImmediatelyOnBFCacheEntry
+-DeclarativePerformanceObserverBrowserTest.SendsReportImmediatelyOnRFHDestructionWithoutBFCache
+-DeclarativePerformanceObserverBrowserTest.SendsReportImmediatelyOnRendererCrash
 -DevToolsProtocolTest.CookiePermissions
 -FileSystemAccessSyncAccessHandleBrowserTest.WriteRejectsOversizedBuffer
 -FileSystemURLDragDropBrowserTest.FileSystemFileLeave
+-HidTest.FrameDetachDuringRunChooser
+-IdpSigninStatusBrowserTest.EarlyHintsSameOriginSubresource
 -IsolatedOriginTest.LocalStorage_EmptyLocalFrameToken
 -MojoBindingsTestBrowserTest.InvokeMojoEmptyConstructor
 -NetworkServiceBrowserCacheResetTest.CacheResetTest
 -NetworkServiceBrowserCacheResetTest.PRE_CacheResetTest
+-ObservedServiceRemoteBrowserTest.Lifecycle
+-RenderWidgetHostSitePerProcessTest.VerifyPopupCreatorFrameIdPlumbing
 -RustMojoTestBrowserTest.LoadRustMojoService
+-RustMojoTestBrowserTestWithCommandLineSwitch.LoadRustMojoServiceWithCommandLineSwitch
+-RustMojoTestBrowserTestWithFeatureEnabled.LoadRustMojoServiceWithFeatureEnabled
+-ServiceProcessHostBrowserTest.PerInstanceObserverIsolation
 -StorageBucketsIntegrationTestSuite/ClearSiteDataHandlerStorageBucketsBrowserTest.StorageBucketsIntegrationTest/0
 -WebThemeEngineImplDefaultBrowserTest.ActiveLinkAndVisitedTextAreDistinctInDarkMode
 -WebThemeEngineImplDefaultBrowserTest.FieldAndCanvasAreDistinctInDarkMode

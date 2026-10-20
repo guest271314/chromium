@@ -61,6 +61,7 @@ shared_library("chrome_elf") {
     ":crash",
     ":security",
     ":third_party_dlls",
+    "//base:compiler_specific",
     "//chrome/install_static:install_static_util",
     "//chrome/install_static:primary_module",
     "//components/crash/core/app:crash_export_thunks",
@@ -106,6 +107,7 @@ static_library("crash") {
     "//chrome/install_static:install_static_util",
     "//components/crash/core/app",
     "//components/crash/core/common",  # crash_keys
+    "//components/metrics:system_profile_user_stream",
     "//components/version_info:channel",
     "//sandbox/policy:win_hook_util",
     "//third_party/crashpad/crashpad/client",  # DumpWithoutCrash
@@ -124,6 +126,7 @@ executable("dll_hash_main") {
   sources = [ "dll_hash/dll_hash_main.cc" ]
   deps = [
     ":dll_hash",
+    "//base",
     "//build/win:default_exe_manifest",
   ]
 }
@@ -137,6 +140,8 @@ static_library("nt_registry") {
     "nt_registry/nt_registry_functions.h",
   ]
 
+  deps = [ "//base:compiler_specific" ]
+
   libs = [
     "kernel32.lib",
     "ntdll.lib",
@@ -148,6 +153,7 @@ source_set("pe_image_safe") {
     "pe_image_safe/pe_image_safe.cc",
     "pe_image_safe/pe_image_safe.h",
   ]
+  deps = [ "//base:compiler_specific" ]
 }
 
 source_set("security") {

@@ -48,6 +48,7 @@
 #include "gpu/config/gpu_finch_features.h"
 #include "gpu/config/gpu_info.h"
 #include "gpu/config/gpu_info_collector.h"
+#include "gpu/config/gpu_mode.h"
 #include "gpu/config/gpu_preferences.h"
 #include "gpu/config/gpu_switches.h"
 #include "gpu/vulkan/buildflags.h"
@@ -61,6 +62,7 @@
 #include "ui/gl/gl_utils.h"
 
 #if BUILDFLAG(IS_ANDROID)
+#include "base/android/device_info.h"
 #include "base/no_destructor.h"
 #include "base/synchronization/lock.h"
 #include "ui/gfx/android/android_surface_control_compat.h"
@@ -125,15 +127,29 @@ inline D3D11FeatureLevel ConvertToHistogramD3D11FeatureLevel(
 
 GpuFeatureStatus GetVulkanFeatureStatus(
     const std::set<int>& blocklisted_features,
-    const GpuPreferences& gpu_preferences) {
+    const GpuPreferences& gpu_preferences,
+    const base::CommandLine* command_line) {
 #if BUILDFLAG(ENABLE_VULKAN)
   // Only blocklist native vulkan.
   if (gpu_preferences.use_vulkan == VulkanImplementationName::kNative &&
       blocklisted_features.count(GPU_FEATURE_TYPE_VULKAN))
     return kGpuFeatureStatusBlocklisted;
 
+  if (gpu_preferences.gr_context_type != GrContextType::kVulkan) {
+    return kGpuFeatureStatusDisabled;
+  }
+
   if (gpu_preferences.use_vulkan == VulkanImplementationName::kNone)
     return kGpuFeatureStatusDisabled;
+
+  // TODO(crbug.com/522211393): If Graphite is enabled but SKIA_USE_DAWN is not
+  // defined, we fall back to GL instead of Vulkan. This was an old behavior,
+  // failing to keep it would lead to test failures.
+#if !BUILDFLAG(SKIA_USE_DAWN)
+  if (features::IsSkiaGraphiteEnabled(command_line)) {
+    return kGpuFeatureStatusDisabled;
+  }
+#endif
 
   return kGpuFeatureStatusEnabled;
 #else
@@ -290,12 +306,59 @@ GpuFeatureStatus GetGLFeatureStatus(const std::set<int>& blocklisted_features,
 
 GpuFeatureStatus GetSkiaGraphiteFeatureStatus(
     const std::set<int>& blocklisted_features,
-    const GpuPreferences& gpu_preferences) {
+    const GpuPreferences& gpu_preferences,
+    const base::CommandLine* command_line,
+    const GPUInfo& gpu_info) {
   if (blocklisted_features.count(GPU_FEATURE_TYPE_SKIA_GRAPHITE)) {
     return kGpuFeatureStatusBlocklisted;
   }
+  if (gpu_preferences.gr_context_type != GrContextType::kGraphiteDawn &&
+      gpu_preferences.gr_context_type != GrContextType::kGraphiteVulkan) {
+    return kGpuFeatureStatusDisabled;
+  }
+  const bool can_use_graphite = [command_line]() -> bool {
+#if BUILDFLAG(IS_APPLE)
+    constexpr gl::ANGLEImplementation kRequired =
+        gl::ANGLEImplementation::kMetal;
+#elif BUILDFLAG(IS_WIN)
+    constexpr gl::ANGLEImplementation kRequired =
+        gl::ANGLEImplementation::kD3D11;
+#else
+    constexpr gl::ANGLEImplementation kRequired =
+        gl::ANGLEImplementation::kNone;
+#endif
+    // Allow SwiftShader for testing.
+    if (gl::GetANGLEImplementation() == gl::ANGLEImplementation::kSwiftShader) {
+      return true;
+    }
+    if (kRequired == gl::ANGLEImplementation::kNone ||
+        gl::GetANGLEImplementation() == kRequired) {
+      return true;
+    }
+    if (command_line->HasSwitch(switches::kEnableSkiaGraphite)) {
+      return true;
+    }
+    return false;
+  }();
+  if (!can_use_graphite) {
+    return kGpuFeatureStatusDisabled;
+  }
 #if BUILDFLAG(SKIA_USE_DAWN)
-  if (gpu_preferences.gr_context_type == GrContextType::kGraphiteDawn) {
+  bool is_win_intel = false;
+#if BUILDFLAG(IS_WIN)
+  is_win_intel = (gpu_info.active_gpu().vendor_id == 0x8086);
+#endif
+
+  bool is_graphite_enabled = false;
+  if (is_win_intel &&
+      !command_line->HasSwitch(switches::kDisableSkiaGraphite) &&
+      !command_line->HasSwitch(switches::kEnableSkiaGraphite)) {
+    is_graphite_enabled = features::IsSkiaGraphiteWinIntelEnabled();
+  } else {
+    is_graphite_enabled = features::IsSkiaGraphiteEnabled(command_line);
+  }
+
+  if (is_graphite_enabled) {
     return kGpuFeatureStatusEnabled;
   }
 #endif  // BUILDFLAG(SKIA_USE_DAWN)
@@ -362,18 +425,11 @@ void AdjustGpuFeatureStatusToWorkarounds(GpuFeatureInfo* gpu_feature_info,
   }
   // If disable_webnn_for_gpu workaround is enabled for the GPU device, we need
   // to check to see if there is a NPU device available before setting the WebNN
-  // gpu feature status. If there is a NPU device, check the
-  // disable_webnn_for_npu workaround.
-  if (gpu_feature_info->IsWorkaroundEnabled(DISABLE_WEBNN_FOR_GPU)) {
-    if (gpu_info.npus.size() > 0) {
-      if (gpu_feature_info->IsWorkaroundEnabled(DISABLE_WEBNN_FOR_NPU)) {
-        gpu_feature_info->status_values[GPU_FEATURE_TYPE_WEBNN] =
-            kGpuFeatureStatusSoftware;
-      }
-    } else {
-      gpu_feature_info->status_values[GPU_FEATURE_TYPE_WEBNN] =
-          kGpuFeatureStatusSoftware;
-    }
+  // gpu feature status to software.
+  if (gpu_feature_info->IsWorkaroundEnabled(DISABLE_WEBNN_FOR_GPU) &&
+      gpu_info.npus.empty()) {
+    gpu_feature_info->status_values[GPU_FEATURE_TYPE_WEBNN] =
+        kGpuFeatureStatusSoftware;
   }
 }
 
@@ -650,9 +706,11 @@ GpuFeatureInfo ComputeGpuFeatureInfo(const GPUInfo& gpu_info,
   gpu_feature_info.status_values[GPU_FEATURE_TYPE_ACCELERATED_GL] =
       GetGLFeatureStatus(blocklisted_features, use_software_gl);
   gpu_feature_info.status_values[GPU_FEATURE_TYPE_VULKAN] =
-      GetVulkanFeatureStatus(blocklisted_features, gpu_preferences);
+      GetVulkanFeatureStatus(blocklisted_features, gpu_preferences,
+                             command_line);
   gpu_feature_info.status_values[GPU_FEATURE_TYPE_SKIA_GRAPHITE] =
-      GetSkiaGraphiteFeatureStatus(blocklisted_features, gpu_preferences);
+      GetSkiaGraphiteFeatureStatus(blocklisted_features, gpu_preferences,
+                                   command_line, gpu_info);
   gpu_feature_info.status_values[GPU_FEATURE_TYPE_WEBNN] =
       GetWebNNFeatureStatus(blocklisted_features);
   gpu_feature_info
@@ -695,6 +753,14 @@ GpuFeatureInfo ComputeGpuFeatureInfo(const GPUInfo& gpu_info,
     enabled_driver_bug_workarounds = list->MakeDecision(
         GpuControlList::kOsAny, std::string(), gpu_info, target_test_group,
         gpu_preferences.ignored_gpu_blocklist_entries);
+#if BUILDFLAG(IS_ANDROID)
+    // On Android Desktop, site isolation is active. enable
+    // enable_webgl_timer_query_extensions.
+    if (base::android::device_info::is_desktop()) {
+      enabled_driver_bug_workarounds.insert(
+          gpu::ENABLE_WEBGL_TIMER_QUERY_EXTENSIONS);
+    }
+#endif
     gpu_feature_info.applied_gpu_driver_bug_list_entries =
         list->GetActiveEntries();
 
@@ -730,6 +796,61 @@ GpuFeatureInfo ComputeGpuFeatureInfo(const GPUInfo& gpu_info,
   SetProcessGlWorkaroundsFromGpuFeatures(gpu_feature_info);
 
   return gpu_feature_info;
+}
+
+GrContextType GpuModeToGrContextType(GpuMode mode) {
+  switch (mode) {
+    case GpuMode::HARDWARE_GL:
+      return GrContextType::kGL;
+    case GpuMode::HARDWARE_VULKAN:
+      return GrContextType::kVulkan;
+    case GpuMode::HARDWARE_GRAPHITE:
+      return base::CommandLine::ForCurrentProcess()->HasSwitch(
+                 switches::kSkiaGraphiteVulkanBackend)
+                 ? GrContextType::kGraphiteVulkan
+                 : GrContextType::kGraphiteDawn;
+    case GpuMode::UNKNOWN:
+    case GpuMode::SOFTWARE_GL:
+    case GpuMode::DISPLAY_COMPOSITOR:
+      return GrContextType::kNone;
+  }
+}
+
+bool IsGrContextTypeSupported(GrContextType gr_context_type,
+                              const GpuFeatureInfo& gpu_feature_info) {
+  switch (gr_context_type) {
+    case GrContextType::kGraphiteDawn:
+    case GrContextType::kGraphiteVulkan:
+      return gpu_feature_info.status_values[GPU_FEATURE_TYPE_SKIA_GRAPHITE] ==
+             kGpuFeatureStatusEnabled;
+    case GrContextType::kVulkan:
+      return gpu_feature_info.status_values[GPU_FEATURE_TYPE_VULKAN] ==
+             kGpuFeatureStatusEnabled;
+    case GrContextType::kGL:
+      return gpu_feature_info.status_values[GPU_FEATURE_TYPE_ACCELERATED_GL] ==
+             kGpuFeatureStatusEnabled;
+    case GrContextType::kNone:
+      return true;
+  }
+}
+
+bool TryFallbackGrContextTypesIfNeeded(GpuFeatureInfo& gpu_feature_info,
+                                       GpuPreferences& gpu_preferences,
+                                       const GPUInfo& gpu_info,
+                                       base::CommandLine* command_line) {
+  while (true) {
+    const bool supported = IsGrContextTypeSupported(
+        gpu_preferences.gr_context_type, gpu_feature_info);
+    if (supported || gpu_preferences.fallback_gr_context_types.empty()) {
+      return supported;
+    }
+    // Switch to the next fallback type and re-evaluate the blocklist.
+    gpu_preferences.gr_context_type =
+        gpu_preferences.fallback_gr_context_types.front();
+    gpu_preferences.fallback_gr_context_types.pop_front();
+    gpu_feature_info =
+        ComputeGpuFeatureInfo(gpu_info, gpu_preferences, command_line, nullptr);
+  }
 }
 
 void SetKeysForCrashLogging(const GPUInfo& gpu_info) {
@@ -829,6 +950,9 @@ gl::GLDisplay* InitializeGLThreadSafe(base::CommandLine* command_line,
   } else {
     gl_display = gl::GetDefaultDisplayEGL();
   }
+  out_gpu_info->gl_implementation_parts = gl::GetGLImplementationParts();
+  out_gpu_info->passthrough_cmd_decoder =
+      gpu_preferences.use_passthrough_cmd_decoder;
   CollectContextGraphicsInfo(out_gpu_info);
   *out_gpu_feature_info = ComputeGpuFeatureInfo(*out_gpu_info, gpu_preferences,
                                                 command_line, nullptr);
@@ -1068,8 +1192,8 @@ IntelGpuGeneration GetIntelGpuGeneration(const GPUInfo& gpu_info) {
 void CollectDevicePerfInfo(DevicePerfInfo* device_perf_info,
                            bool in_browser_process) {
   DCHECK(device_perf_info);
-  device_perf_info->total_physical_memory_mb =
-      static_cast<uint32_t>(base::SysInfo::AmountOfPhysicalMemory().InMiB());
+  device_perf_info->total_physical_memory_mb = static_cast<uint32_t>(
+      base::SysInfo::AmountOfTotalPhysicalMemory().InMiB());
   if (!in_browser_process)
     device_perf_info->total_disk_space_mb = EstimateAmountOfTotalDiskSpaceMB();
   device_perf_info->hardware_concurrency =
@@ -1127,6 +1251,24 @@ void RecordNpuHistograms(const GPUInfo& gpu_info) {
 }
 
 #if BUILDFLAG(IS_WIN)
+unsigned int DirectCompositionRootSurfaceBufferCount(
+    GrContextType gr_context_type) {
+  if (switches::GetFakeVsyncIntervalFromCommandLine().has_value()) {
+    // We assume 2 swapchain buffers are intended for a standard 60Hz display.
+    // If we are simulating a high refresh rate, we increase the buffer count
+    // to 10 to prevent blocking on presentation if the actual hardware
+    // display refresh rate is slower.
+    // Note: The simulated refresh rate is used here as a heuristic for
+    // debugging high refresh rate behaviors and does not need to be exact.
+    return 10u;
+  }
+  if (gr_context_type == GrContextType::kGraphiteDawn &&
+      features::SkiaGraphiteTripleBufferedDCompRootSurface()) {
+    return 3u;
+  }
+  return 2u;
+}
+
 std::string DirectMLFeatureLevelToString(uint32_t directml_feature_level) {
   if (directml_feature_level == 0) {
     return "Not supported";

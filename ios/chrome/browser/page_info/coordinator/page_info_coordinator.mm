@@ -43,8 +43,8 @@
 #import "ios/web/public/navigation/navigation_manager.h"
 #import "ios/web/public/web_state.h"
 
-@interface PageInfoCoordinator () <PageInfoPresentationCommands,
-                                   HistoryCoordinatorDelegate>
+@interface PageInfoCoordinator () <HistoryCoordinatorDelegate,
+                                   PageInfoPresentationCommands>
 
 @property(nonatomic, strong) UINavigationController* navigationController;
 @property(nonatomic, strong) CommandDispatcher* dispatcher;
@@ -64,8 +64,6 @@
   // Mediator for the Last Visited feature.
   PageInfoHistoryMediator* _pageInfoHistoryMediator;
 }
-
-@synthesize presentationProvider = _presentationProvider;
 
 #pragma mark - ChromeCoordinator
 
@@ -92,8 +90,11 @@
   self.viewController.pageInfoCommandsHandler =
       HandlerForProtocol(self.dispatcher, PageInfoCommands);
 
-  self.permissionsMediator =
-      [[PageInfoPermissionsMediator alloc] initWithWebState:webState];
+  self.permissionsMediator = [[PageInfoPermissionsMediator alloc]
+            initWithWebState:webState
+      hostContentSettingsMap:ios::HostContentSettingsMapFactory::GetForProfile(
+                                 self.profile)
+                                 .get()];
   self.viewController.permissionsDelegate = self.permissionsMediator;
   self.permissionsMediator.consumer = self.viewController;
 

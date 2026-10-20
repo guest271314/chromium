@@ -6,16 +6,18 @@
 
 #include "base/functional/callback.h"
 #include "content/browser/renderer_host/render_frame_host_impl.h"
+#include "content/browser/webid/request_handler.h"
 #include "content/browser/webid/request_page_data.h"
-#include "content/browser/webid/request_service.h"
 #include "content/browser/webid/webid_utils.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/page.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/webid/federated_embedder_login_request.h"
-#include "third_party/blink/public/mojom/webid/federated_auth_request.mojom.h"
+#include "third_party/blink/public/mojom/webid/federated_request.mojom.h"
 
 namespace content::webid {
+
+using MediationRequirement = ::password_manager::CredentialMediationRequirement;
 
 DOCUMENT_USER_DATA_KEY_IMPL(IdentityCredentialSourceImpl);
 
@@ -46,19 +48,19 @@ void IdentityCredentialSourceImpl::GetIdentityCredentialSuggestions(
   // Note that the pending FedCM request may come from an iframe. For now, we
   // assume these will login the user to the top-level page, and return these
   // options.
-  if (page_data && page_data->PendingWebIdentityRequest()) {
-    RequestService* request_service = page_data->PendingWebIdentityRequest();
+  if (page_data && page_data->PendingRequestHandler()) {
+    RequestHandler* request_handler = page_data->PendingRequestHandler();
     // These are the accounts that would be displayed in the UI, so filters such
     // as login hint have been applied already. But they may be in the accounts
     // in edge cases where they will be shown in the UI.
-    const std::vector<IdentityRequestAccountPtr>& request_accounts =
-        request_service->GetAccounts();
-    std::vector<IdentityRequestAccountPtr> signin_accounts;
+    const std::vector<scoped_refptr<IdentityRequestAccount>>& request_accounts =
+        request_handler->GetAccounts();
+    std::vector<scoped_refptr<IdentityRequestAccount>> signin_accounts;
     for (const auto& account : request_accounts) {
       const GURL& idp_config_url =
           account->identity_provider->idp_metadata.config_url;
-      auto it = request_service->idp_infos_.find(idp_config_url);
-      if (it != request_service->idp_infos_.end() &&
+      auto it = request_handler->idp_infos_.find(idp_config_url);
+      if (it != request_handler->idp_infos_.end() &&
           it->second->client_is_third_party_to_top_frame_origin) {
         continue;
       }
@@ -138,7 +140,7 @@ void IdentityCredentialSourceImpl::GetIdentityCredentialSuggestions(
 
 bool IdentityCredentialSourceImpl::HasPendingRequest() {
   RequestPageData* page_data = GetPageData(render_frame_host().GetPage());
-  return page_data && page_data->PendingWebIdentityRequest();
+  return page_data && page_data->PendingRequestHandler();
 }
 
 bool IdentityCredentialSourceImpl::SelectAccount(
@@ -148,12 +150,12 @@ bool IdentityCredentialSourceImpl::SelectAccount(
   if (!page_data) {
     return false;
   }
-  RequestService* request_service = page_data->PendingWebIdentityRequest();
-  if (!request_service) {
+  RequestHandler* request_handler = page_data->PendingRequestHandler();
+  if (!request_handler) {
     return false;
   }
 
-  const auto& accounts = request_service->GetAccounts();
+  const auto& accounts = request_handler->GetAccounts();
   for (const auto& account : accounts) {
     const GURL& idp_config_url =
         account->identity_provider->idp_metadata.config_url;
@@ -163,13 +165,13 @@ bool IdentityCredentialSourceImpl::SelectAccount(
                    account->browser_trusted_login_state),
                IdentityRequestAccount::LoginState::kSignIn);
 
-      auto it = request_service->idp_infos_.find(idp_config_url);
-      CHECK(it != request_service->idp_infos_.end());
+      auto it = request_handler->idp_infos_.find(idp_config_url);
+      CHECK(it != request_handler->idp_infos_.end());
       if (it->second->client_is_third_party_to_top_frame_origin) {
         return false;
       }
 
-      request_service->OnAccountSelected(idp_config_url, account->id,
+      request_handler->OnAccountSelected(idp_config_url, account->id,
                                          /*is_sign_in=*/true);
       return true;
     }

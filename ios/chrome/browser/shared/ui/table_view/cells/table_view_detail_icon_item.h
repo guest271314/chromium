@@ -14,6 +14,13 @@ enum class BadgeType {
   kNone,             // No badge.
   kNotificationDot,  // The blue notification dot.
   kNew,              // The "new" ("N") IPH badge.
+  kWarning,          // The warning badge.
+};
+
+// Enum defining the layout of the badge in the cell.
+enum class BadgeLayout {
+  kInline,    // The badge is inlined at the end of the text.
+  kTrailing,  // The badge is displayed at the trailing side of the cell.
 };
 
 // TableViewDetailIconItem is a model class for a cell with details and icon.
@@ -40,6 +47,10 @@ enum class BadgeType {
 // The detail text string.
 @property(nonatomic, copy) NSString* detailText;
 
+// The trailing detail text string. Used when `textLayoutConstraintAxis` is
+// `UILayoutConstraintAxisVertical`.
+@property(nonatomic, copy) NSString* trailingDetailText;
+
 // The layout constraint axis at which `text` and `detailText` should be
 // aligned. In the case of a vertical layout, the text will adapt its font
 // size to a title/subtitle style.
@@ -48,8 +59,11 @@ enum class BadgeType {
 
 // Selects the badge shown in the Cell. These are only supported when
 // `textLayoutConstraintAxis` is set to `UILayoutConstraintAxisHorizontal`.
-// Default in no badge (BadgeType::kNone).
+// Default is no badge (BadgeType::kNone).
 @property(nonatomic, assign) BadgeType badgeType;
+
+// Layout of the badge. Default is BadgeLayout::kInline.
+@property(nonatomic, assign) BadgeLayout badgeLayout;
 
 // Maximum number of lines for the `text`. Default is 1.
 @property(nonatomic, assign) NSInteger textNumberOfLines;
@@ -61,6 +75,15 @@ enum class BadgeType {
 // Line break mode for the labels. Defaults to NSLineBreakByTruncatingTail.
 @property(nonatomic, assign) NSLineBreakMode textLineBreakMode;
 @property(nonatomic, assign) NSLineBreakMode detailTextLineBreakMode;
+
+// The vertical alignment of the cell content. Defaults to
+// UIStackViewAlignmentCenter.
+@property(nonatomic, assign) UIStackViewAlignment verticalAlignment;
+
+// Whether the cell should reserve horizontal space for a leading icon even if
+// no icon is provided. Used to align text with other cells that display an
+// icon. Defaults to NO.
+@property(nonatomic, assign) BOOL reservesLeadingSpace;
 
 @end
 

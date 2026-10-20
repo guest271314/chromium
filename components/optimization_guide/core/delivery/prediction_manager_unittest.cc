@@ -32,13 +32,14 @@
 #include "components/optimization_guide/core/delivery/model_util.h"
 #include "components/optimization_guide/core/delivery/optimization_target_model_observer.h"
 #include "components/optimization_guide/core/delivery/prediction_model_download_manager.h"
+#include "components/optimization_guide/core/delivery/prediction_model_override.h"
 #include "components/optimization_guide/core/delivery/prediction_model_fetcher.h"
 #include "components/optimization_guide/core/delivery/prediction_model_fetcher_impl.h"
 #include "components/optimization_guide/core/delivery/prediction_model_store.h"
+#include "components/optimization_guide/core/delivery/prefs.h"
 #include "components/optimization_guide/core/optimization_guide_features.h"
 #include "components/optimization_guide/core/optimization_guide_logger.h"
-#include "components/optimization_guide/core/optimization_guide_prefs.h"
-#include "components/optimization_guide/core/optimization_guide_switches.h"
+#include "components/optimization_guide/core/optimization_guide_permissions_util.h"
 #include "components/optimization_guide/core/optimization_guide_util.h"
 #include "components/optimization_guide/proto/hint_cache.pb.h"
 #include "components/optimization_guide/proto/models.pb.h"
@@ -90,15 +91,14 @@ proto::PredictionModel CreatePredictionModelForGetModelsResponse(
   return prediction_model;
 }
 
-std::unique_ptr<proto::GetModelsResponse> BuildGetModelsResponse(
+proto::GetModelsResponse BuildGetModelsResponse(
     std::set<proto::OptimizationTarget> optimization_targets) {
-  std::unique_ptr<proto::GetModelsResponse> get_models_response =
-      std::make_unique<proto::GetModelsResponse>();
+  proto::GetModelsResponse get_models_response;
 
   for (const auto& optimization_target : optimization_targets) {
     proto::PredictionModel prediction_model =
         CreatePredictionModelForGetModelsResponse(optimization_target);
-    *get_models_response->add_models() = std::move(prediction_model);
+    *get_models_response.add_models() = std::move(prediction_model);
   }
 
   return get_models_response;
@@ -205,6 +205,7 @@ enum class PredictionModelFetcherEndState {
   kFetchFailed = 0,
   kFetchSuccessWithModels = 1,
   kFetchSuccessWithEmptyResponse = 2,
+  kFetchFailedWithBadRequest = 3,
 };
 
 // A mock class implementation of PredictionModelFetcherImpl.
@@ -227,29 +228,32 @@ class TestPredictionModelFetcher : public PredictionModelFetcherImpl {
       const std::string& locale,
       ModelsFetchedCallback models_fetched_callback) override {
     if (!ValidateModelsInfoForFetch(models_request_info)) {
-      std::move(models_fetched_callback).Run(nullptr);
+      std::move(models_fetched_callback)
+          .Run(base::unexpected(PredictionModelFetchError::kRetryable));
       return false;
     }
 
-    std::unique_ptr<proto::GetModelsResponse> get_models_response;
+    base::expected<proto::GetModelsResponse, PredictionModelFetchError> result;
     locale_requested_ = locale;
     switch (fetch_state_) {
       case PredictionModelFetcherEndState::kFetchFailed:
-        get_models_response = nullptr;
+        result = base::unexpected(PredictionModelFetchError::kRetryable);
+        break;
+      case PredictionModelFetcherEndState::kFetchFailedWithBadRequest:
+        result = base::unexpected(PredictionModelFetchError::kNotRetryable);
         break;
       case PredictionModelFetcherEndState::kFetchSuccessWithModels:
         models_fetched_ = true;
-        get_models_response =
-            BuildGetModelsResponse(success_fetch_optimization_targets_);
+        result = BuildGetModelsResponse(success_fetch_optimization_targets_);
         break;
       case PredictionModelFetcherEndState::kFetchSuccessWithEmptyResponse:
         models_fetched_ = true;
-        get_models_response = std::make_unique<proto::GetModelsResponse>();
+        result = proto::GetModelsResponse();
         break;
     }
     base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
-        FROM_HERE, base::BindOnce(std::move(models_fetched_callback),
-                                  std::move(get_models_response)));
+        FROM_HERE,
+        base::BindOnce(std::move(models_fetched_callback), std::move(result)));
     return true;
   }
 
@@ -373,7 +377,7 @@ class PredictionManagerTestBase : public testing::Test {
 
   void SetUp() override {
     base::CommandLine::ForCurrentProcess()->AppendSwitch(
-        switches::kGoogleApiKeyConfigurationCheckOverride);
+        kGoogleApiKeyConfigurationCheckOverrideSwitch);
 
     ASSERT_TRUE(temp_dir_.CreateUniqueTempDir());
     local_state_prefs_ = std::make_unique<TestingPrefServiceSimple>();
@@ -386,7 +390,7 @@ class PredictionManagerTestBase : public testing::Test {
         base::MakeRefCounted<network::WeakWrapperSharedURLLoaderFactory>(
             &test_url_loader_factory_);
     base::CommandLine::ForCurrentProcess()->AppendSwitch(
-        switches::kGoogleApiKeyConfigurationCheckOverride);
+        kGoogleApiKeyConfigurationCheckOverrideSwitch);
 
     test_download_service_tracker_ =
         std::make_unique<TestProfileDownloadServiceTracker>();
@@ -612,8 +616,7 @@ TEST_F(PredictionManagerTest, AddObserverForOptimizationTargetModel) {
       "google.internal.chrome.optimizationguide.v1.PageTopicsModelMetadata");
   prediction_model_fetcher()->SetExpectedModelMetadataForOptimizationTarget(
       proto::OPTIMIZATION_TARGET_PAINFUL_PAGE_LOAD, model_metadata);
-  histogram_tester.ExpectTotalCount(
-      "OptimizationGuide.PredictionManager.FirstModelFetchSinceServiceInit", 0);
+  EXPECT_FALSE(prediction_model_fetcher()->models_fetched());
 
   FakeOptimizationTargetModelObserver observer;
   prediction_manager()->AddObserverForOptimizationTargetModel(
@@ -632,8 +635,6 @@ TEST_F(PredictionManagerTest, AddObserverForOptimizationTargetModel) {
   // since that is too much toil for someone whenever they add a new version.
   histogram_tester.ExpectTotalCount(
       "OptimizationGuide.PredictionManager.SupportedModelEngineVersion", 1);
-  histogram_tester.ExpectTotalCount(
-      "OptimizationGuide.PredictionManager.FirstModelFetchSinceServiceInit", 1);
 
   EXPECT_TRUE(prediction_manager()->GetRegisteredOptimizationTargets().contains(
       proto::OPTIMIZATION_TARGET_PAINFUL_PAGE_LOAD));
@@ -664,9 +665,9 @@ TEST_F(PredictionManagerTest, AddObserverForOptimizationTargetModel) {
     std::optional<ModelInfo> received_model =
         observer.last_received_model_for_target(
             proto::OPTIMIZATION_TARGET_PAINFUL_PAGE_LOAD);
-    EXPECT_EQ(received_model->GetModelMetadata()->type_url(), "sometypeurl");
+    EXPECT_EQ(received_model->model_metadata->type_url(), "sometypeurl");
     EXPECT_EQ(base_model_dir.Append(GetBaseFileNameForModels()),
-              received_model->GetModelFilePath());
+              received_model->model_file_path);
     auto additional_file = received_model->GetAdditionalFileWithBaseName(
         base::FilePath::StringType(FILE_PATH_LITERAL("additional_file.txt")));
     ASSERT_TRUE(additional_file);
@@ -694,8 +695,6 @@ TEST_F(PredictionManagerTest, AddObserverForOptimizationTargetModel) {
         "OptimizationGuide.PredictionModelUpdateVersion.PainfulPageLoad", 0);
     histogram_tester2.ExpectTotalCount(
         "OptimizationGuide.PredictionModelLoadedVersion.PainfulPageLoad", 0);
-    histogram_tester2.ExpectTotalCount(
-        "OptimizationGuide.PredictionModelRemoved.PainfulPageLoad", 0);
   }
 
   // Now remove and reset observer.
@@ -744,7 +743,7 @@ TEST_F(PredictionManagerTest,
             observer1
                 .last_received_model_for_target(
                     proto::OPTIMIZATION_TARGET_PAINFUL_PAGE_LOAD)
-                ->GetModelFilePath());
+                ->model_file_path);
 
   // Now, register a new observer. It should get the model.
   FakeOptimizationTargetModelObserver observer2;
@@ -756,7 +755,7 @@ TEST_F(PredictionManagerTest,
             observer2
                 .last_received_model_for_target(
                     proto::OPTIMIZATION_TARGET_PAINFUL_PAGE_LOAD)
-                ->GetModelFilePath());
+                ->model_file_path);
 
   // Now send a new model and make sure both get it.
   auto base_model_dir2 =
@@ -775,12 +774,12 @@ TEST_F(PredictionManagerTest,
             observer1
                 .last_received_model_for_target(
                     proto::OPTIMIZATION_TARGET_PAINFUL_PAGE_LOAD)
-                ->GetModelFilePath());
+                ->model_file_path);
   EXPECT_EQ(base_model_dir2.Append(GetBaseFileNameForModels()),
             observer2
                 .last_received_model_for_target(
                     proto::OPTIMIZATION_TARGET_PAINFUL_PAGE_LOAD)
-                ->GetModelFilePath());
+                ->model_file_path);
 }
 
 // See crbug/1227996.
@@ -799,7 +798,7 @@ TEST_F(PredictionManagerTest,
   metadata.SerializeToString(&encoded_metadata);
   encoded_metadata = base::Base64Encode(encoded_metadata);
   base::CommandLine::ForCurrentProcess()->AppendSwitchASCII(
-      switches::kModelOverride,
+      kModelOverrideSwitch,
       base::StringPrintf("OPTIMIZATION_TARGET_PAINFUL_PAGE_LOAD:%s:%s",
                          fake_path.AsUTF8Unsafe(), encoded_metadata));
 
@@ -835,14 +834,13 @@ TEST_F(PredictionManagerTest,
       observer
           .last_received_model_for_target(
               proto::OPTIMIZATION_TARGET_PAINFUL_PAGE_LOAD)
-          ->GetModelMetadata()
-          ->type_url(),
+          ->model_metadata->type_url(),
       "type.googleapis.com/"
       "google.internal.chrome.optimizationguide.v1.PageTopicsModelMetadata");
   EXPECT_EQ(observer
                 .last_received_model_for_target(
                     proto::OPTIMIZATION_TARGET_PAINFUL_PAGE_LOAD)
-                ->GetModelFilePath(),
+                ->model_file_path,
             fake_path);
 
   // Now reset observer. New model downloads should not update the observer.
@@ -1201,6 +1199,39 @@ TEST_F(PredictionManagerTest, ModelFetcherTimerRetryDelay) {
           PredictionModelFetcherEndState::kFetchSuccessWithModels));
 
   MoveClockForwardBy(base::Seconds(kTestFetchRetryDelaySecs));
+  EXPECT_TRUE(prediction_model_fetcher()->models_fetched());
+}
+
+TEST_F(PredictionManagerTest, ModelFetcherTimerRetryDelayOnBadRequest) {
+  CreatePredictionManager();
+  prediction_manager()->SetPredictionModelFetcherForTesting(
+      BuildTestPredictionModelFetcher(
+          PredictionModelFetcherEndState::kFetchFailedWithBadRequest));
+
+  FakeOptimizationTargetModelObserver observer;
+  prediction_manager()->AddObserverForOptimizationTargetModel(
+      proto::OPTIMIZATION_TARGET_PAINFUL_PAGE_LOAD, std::nullopt, task_runner(),
+      &observer);
+
+  SetStoreInitialized();
+  EXPECT_FALSE(prediction_model_fetcher()->models_fetched());
+
+  // Fast forward by retry delay: HTTP 400 Bad Request is non-retryable, so no
+  // retry should occur after the fast retry delay.
+  MoveClockForwardBy(base::Seconds(kTestFetchRetryDelaySecs));
+  EXPECT_FALSE(prediction_model_fetcher()->models_fetched());
+
+  // Set the fetcher to succeed on the next attempt.
+  prediction_manager()->SetPredictionModelFetcherForTesting(
+      BuildTestPredictionModelFetcher(
+          PredictionModelFetcherEndState::kFetchSuccessWithModels));
+
+  // Fast forward again by the fast retry delay: still should not have fetched.
+  MoveClockForwardBy(base::Seconds(kTestFetchRetryDelaySecs));
+  EXPECT_FALSE(prediction_model_fetcher()->models_fetched());
+
+  // Fast forward by the periodic update time: fetch should now occur and succeed.
+  MoveClockForwardBy(base::Seconds(kUpdateFetchModelAndFeaturesTimeSecs));
   EXPECT_TRUE(prediction_model_fetcher()->models_fetched());
 }
 

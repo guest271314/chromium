@@ -7,6 +7,7 @@
 #include <stddef.h>
 
 #include <algorithm>
+#include <limits>
 
 #include "base/check_op.h"
 #include "base/logging.h"
@@ -177,7 +178,7 @@ bool RenderSurfaceImpl::IsViewTransitionElement() const {
 
 // Returns true if this render surface is for an unbounded element.
 bool RenderSurfaceImpl::IsUnbounded() const {
-  return !layer_tree_impl_->settings().TreesInVizInClientProcess() &&
+  return layer_tree_impl_->settings().enable_unbounded_element &&
          OwningEffectNode() &&
          OwningEffectNode()->render_surface_reason ==
              RenderSurfaceReason::kUnboundedElement;
@@ -198,6 +199,10 @@ int RenderSurfaceImpl::ClipTreeIndex() const {
 
 int RenderSurfaceImpl::EffectTreeIndex() const {
   return effect_tree_index_;
+}
+
+const EffectTree* RenderSurfaceImpl::effect_tree() const {
+  return &layer_tree_impl_->property_trees()->effect_tree();
 }
 
 const EffectNode* RenderSurfaceImpl::OwningEffectNode() const {
@@ -283,8 +288,9 @@ gfx::Rect RenderSurfaceImpl::CalculateClippedAccumulatedContentRect() {
     return gfx::Rect();
 
   gfx::Rect clipped_accumulated_rect_in_local_space =
-      MathUtil::ProjectEnclosingClippedRect(
-          target_to_surface, clipped_accumulated_rect_in_target_space);
+      MathUtil::ProjectEnclosingClippedRectIgnoringError(
+          target_to_surface, clipped_accumulated_rect_in_target_space,
+          std::numeric_limits<float>::epsilon());
   // Bringing clipped accumulated rect back to local space may result
   // in inflation due to axis-alignment.
   clipped_accumulated_rect_in_local_space.Intersect(accumulated_content_rect());
@@ -415,8 +421,9 @@ void RenderSurfaceImpl::AccumulateContentRectFromContributingRenderSurface(
   // The content rect of contributing surface is in its own space. Instead, we
   // will use contributing surface's DrawableContentRect which is in target
   // space (local space for this render surface) as required.
-  accumulated_content_rect_.Union(
-      gfx::ToEnclosedRect(contributing_surface->DrawableContentRect()));
+  accumulated_content_rect_.Union(gfx::ToEnclosingRectIgnoringError(
+      contributing_surface->DrawableContentRect(),
+      std::numeric_limits<float>::epsilon()));
 
   // Now if contributing surface is a *matching* view transition element,
   // meaning that we're doing a capture, then above we ensure that we can use
@@ -446,7 +453,7 @@ bool RenderSurfaceImpl::AncestorPropertyChanged() const {
          property_trees->transform_tree()
              .Node(TransformTreeIndex())
              .transform_changed() ||
-         property_trees->effect_tree().Node(EffectTreeIndex()).effect_changed;
+         property_trees->effect_tree().Node(EffectTreeIndex()).effect_changed();
 }
 
 void RenderSurfaceImpl::NoteAncestorPropertyChanged() {
@@ -525,9 +532,6 @@ RenderSurfaceImpl::CreateRenderPassCommon(viz::CompositorRenderPassId id,
   damage_rect.Intersect(output_rect);
   pass->SetNew(id, output_rect, damage_rect,
                draw_properties_.screen_space_transform);
-  pass->filters = Filters();
-  pass->backdrop_filters = BackdropFilters();
-  pass->backdrop_filter_bounds = BackdropFilterBounds();
   pass->generate_mipmap = TrilinearFiltering();
   // The subtree size may be slightly larger than our content rect during
   // some animations, so we clamp it here.
@@ -656,12 +660,13 @@ void RenderSurfaceImpl::AppendQuads(const AppendQuadsContext& context,
       /*needs_blending=*/true, append_render_pass_id, mask_resource_id,
       mask_uv_rect, mask_texture_size, surface_contents_scale, gfx::PointF(),
       !layer_tree_impl_->settings().enable_edge_anti_aliasing,
-      OwningEffectNode()->backdrop_filter_quality, intersects_damage_under_);
+      OwningEffectNode()->backdrop_filter_quality, intersects_damage_under_,
+      Filters(), BackdropFilters(), BackdropFilterBounds());
 }
 
 bool RenderSurfaceImpl::ShouldClip() const {
   return !HasCopyRequest() && !ShouldCacheRenderSurface() &&
-         !IsViewTransitionElement();
+         !IsViewTransitionElement() && !IsUnbounded();
 }
 
 }  // namespace cc

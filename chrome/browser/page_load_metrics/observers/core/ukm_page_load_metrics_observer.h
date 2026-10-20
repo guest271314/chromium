@@ -7,29 +7,27 @@
 
 #include <optional>
 
-#include "base/byte_count.h"
+#include "base/byte_size.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/time/time.h"
 #include "base/trace_event/typed_macros.h"
-#include "components/page_load_metrics/browser/navigation_handle_user_data.h"
+#include "components/page_load_metrics/browser/navigation_initiator.h"
 #include "components/page_load_metrics/browser/page_load_metrics_observer.h"
 #include "content/public/browser/navigation_handle_timing.h"
 #include "content/public/browser/site_instance_process_assignment.h"
 #include "net/base/load_timing_info.h"
 #include "net/http/http_connection_info.h"
 #include "net/nqe/effective_connection_type.h"
-#include "services/metrics/public/cpp/ukm_source.h"
-#include "third_party/perfetto/include/perfetto/tracing/event_context.h"
 #include "ui/base/page_transition_types.h"
 
 namespace content {
 class BrowserContext;
-}
+}  // namespace content
 
 namespace network {
 class NetworkQualityTracker;
-}
+}  // namespace network
 
 namespace ukm {
 namespace builders {
@@ -57,7 +55,6 @@ class UkmPageLoadMetricsObserver
 
   // page_load_metrics::PageLoadMetricsObserver implementation:
   const char* GetObserverName() const override;
-  ObservePolicy ShouldObserveScheme(const GURL& url) const override;
   ObservePolicy OnStart(content::NavigationHandle* navigation_handle,
                         const GURL& currently_committed_url,
                         bool started_in_foreground) override;
@@ -109,7 +106,9 @@ class UkmPageLoadMetricsObserver
   void OnFirstContentfulPaintInPage(
       const page_load_metrics::mojom::PageLoadTiming& timing) override;
 
-  void OnSoftNavigation() override;
+  void OnSoftNavigationFirstContentfulPaint(
+      const page_load_metrics::mojom::SoftNavigationMetrics&
+          soft_navigation_metrics) override;
 
   // Whether the current page load is an Offline Preview. Must be called from
   // OnCommit. Virtual for testing.
@@ -152,7 +151,6 @@ class UkmPageLoadMetricsObserver
   // Returns the current Core Web Vital definition of Cumulative Layout Shift.
   // Returns nullopt if current value should not be reported to UKM.
   std::optional<float> GetCoreWebVitalsCLS();
-  std::optional<float> GetCoreWebVitalsSoftNavigationIntervalCLS();
 
   // Returns the current Core Web Vital definition of Largest Contentful Paint.
   // The caller needs to check whether the value should be reported to UKM based
@@ -162,9 +160,6 @@ class UkmPageLoadMetricsObserver
 
   bool PageLoadMayOriginGate(
       content::NavigationHandle* navigation_handle) const;
-
-  const page_load_metrics::ContentfulPaintTimingInfo&
-  GetSoftNavigationLargestContentfulPaint() const;
 
   void RecordLargestContentfulPaintBeforeSoftNavigation();
 
@@ -204,6 +199,10 @@ class UkmPageLoadMetricsObserver
   // engine) for starting URL and committed URL.
   void RecordGeneratedNavigationUKM(ukm::SourceId source_id,
                                     const GURL& committed_url);
+
+  // Records the metrics for Navigation.TypedAndDefault.
+  void RecordTypedAndDefaultUKM(ukm::SourceId source_id,
+                                const GURL& committed_url);
 
   // Records some metrics at the end of a page, even for failed provisional
   // loads.
@@ -254,19 +253,19 @@ class UkmPageLoadMetricsObserver
 
   // The number of body (not header) prefilter bytes consumed by requests for
   // the page.
-  base::ByteCount cache_bytes_;
-  base::ByteCount network_bytes_;
+  base::ByteSize cache_bytes_;
+  base::ByteSize network_bytes_;
 
   // Sum of decoded body lengths of JS resources.
-  base::ByteCount js_decoded_bytes_;
+  base::ByteSize js_decoded_bytes_;
 
   // Max decoded body length of JS resources.
-  base::ByteCount js_max_decoded_bytes_;
+  base::ByteSize js_max_decoded_bytes_;
 
   // Network data use broken down by resource type.
-  base::ByteCount image_total_bytes_;
-  base::ByteCount image_subframe_bytes_;
-  base::ByteCount media_bytes_;
+  base::ByteSize image_total_bytes_;
+  base::ByteSize image_subframe_bytes_;
+  base::ByteSize media_bytes_;
 
   // Network quality estimates.
   net::EffectiveConnectionType effective_connection_type_ =
@@ -368,11 +367,10 @@ class UkmPageLoadMetricsObserver
   // battery being recharged above 20%.
   bool refresh_rate_throttled_ = false;
 
-  // The type of initiator starts the navigation, for more details, please refer
-  // to `page_load_metrics::NavigationHandleUserData::InitiatorLocation`.
-  page_load_metrics::NavigationHandleUserData::InitiatorLocation
-      navigation_trigger_type_ = page_load_metrics::NavigationHandleUserData::
-          InitiatorLocation::kOther;
+  // The id of the `page_load_metrics::NavigationInitiator` of the navigation,
+  // i.e. who triggered the navigation.
+  int64_t navigation_initiator_id_ =
+      page_load_metrics::navigation_initiator::kOther.id();
 
   // Counts the soft navigations since the beginning of the page load.
   int64_t soft_navigation_count_ = 0;

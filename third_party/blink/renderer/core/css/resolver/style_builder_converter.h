@@ -46,7 +46,7 @@
 #include "third_party/blink/renderer/core/style/basic_shapes.h"
 #include "third_party/blink/renderer/core/style/computed_style.h"
 #include "third_party/blink/renderer/core/style/computed_style_constants.h"
-#include "third_party/blink/renderer/core/style/flow_tolerance.h"
+#include "third_party/blink/renderer/core/style/fit_tolerance.h"
 #include "third_party/blink/renderer/core/style/grid_area.h"
 #include "third_party/blink/renderer/core/style/max_lines_data.h"
 #include "third_party/blink/renderer/core/style/named_grid_lines_map.h"
@@ -81,15 +81,18 @@ class ComputedGridTrackList;
 class CSSToLengthConversionData;
 class Font;
 class FontBuilder;
+class LinkParameterList;
 class OffsetPathOperation;
 class RotateTransformOperation;
 class ScaleTransformOperation;
 class ScopedCSSName;
+class ScopedCSSNameList;
 class StyleAutoColor;
 class StyleCaretColor;
 class StylePath;
 class StyleResolverState;
 class StyleSVGResource;
+class TextDecorationInset;
 class TextSizeAdjust;
 class TranslateTransformOperation;
 class UnzoomedLength;
@@ -222,8 +225,8 @@ class StyleBuilderConverter {
                                             const CSSValue&);
   static GridTrackList ConvertGridTrackSizeList(StyleResolverState&,
                                                 const CSSValue&);
-  static FlowTolerance ConvertFlowTolerance(const StyleResolverState&,
-                                            const CSSValue&);
+  static FitTolerance ConvertFitTolerance(const StyleResolverState&,
+                                          const CSSValue&);
   static GridLanesDirection ConvertGridLanesDirection(const StyleResolverState&,
                                                       const CSSValue&);
   static StyleHyphenateLimitChars ConvertHyphenateLimitChars(
@@ -256,8 +259,10 @@ class StyleBuilderConverter {
   static Length ConvertLengthMaxSizing(StyleResolverState&, const CSSValue&);
   static TabSize ConvertLengthOrTabSpaces(StyleResolverState&, const CSSValue&);
   static Length ConvertLineHeight(StyleResolverState&, const CSSValue&);
+  static LinkParameterList* ConvertLinkParameters(StyleResolverState&,
+                                                  const CSSValue&);
   static float ConvertNumberOrPercentage(StyleResolverState&, const CSSValue&);
-  static float ConvertPathLength(StyleResolverState&, const CSSValue&);
+  static Length ConvertPathLength(StyleResolverState&, const CSSValue&);
   static int ConvertInteger(StyleResolverState&, const CSSValue&);
   template <int NoneValue = 0>
   static int ConvertIntegerOrNone(StyleResolverState&, const CSSValue&);
@@ -337,6 +342,8 @@ class StyleBuilderConverter {
   static TextDecorationThickness ConvertTextDecorationThickness(
       StyleResolverState&,
       const CSSValue&);
+  static TextDecorationInset ConvertTextDecorationInset(StyleResolverState&,
+                                                        const CSSValue&);
   static TextEmphasisPosition ConvertTextTextEmphasisPosition(
       StyleResolverState&,
       const CSSValue&);
@@ -413,8 +420,8 @@ class StyleBuilderConverter {
   static ScrollbarGutter ConvertScrollbarGutter(StyleResolverState& state,
                                                 const CSSValue& value);
 
-  static ScopedCSSNameList* ConvertContainerName(StyleResolverState&,
-                                                 const CSSValue&);
+  static Vector<AtomicString> ConvertContainerName(StyleResolverState&,
+                                                   const CSSValue&);
 
   static StyleIntrinsicLength ConvertIntrinsicDimension(
       const StyleResolverState&,
@@ -455,8 +462,10 @@ class StyleBuilderConverter {
                                                       const CSSValue&);
   static Vector<TimelineInset> ConvertViewTimelineInset(StyleResolverState&,
                                                         const CSSValue&);
-  static Vector<AtomicString> ConvertViewTimelineName(StyleResolverState&,
+  static ScopedCSSNameList* ConvertScrollTimelineName(StyleResolverState&,
                                                       const CSSValue&);
+  static ScopedCSSNameList* ConvertViewTimelineName(StyleResolverState&,
+                                                    const CSSValue&);
   static StyleTimelineScope ConvertTimelineScope(StyleResolverState&,
                                                  const CSSValue&);
 
@@ -467,13 +476,10 @@ class StyleBuilderConverter {
       StyleResolverState&,
       const CSSValue&,
       bool allow_any_keyword_in_position_area = false);
-  static FitText ConvertFitText(StyleResolverState&, const CSSValue&);
+  static TextFit ConvertTextFit(StyleResolverState&, const CSSValue&);
   static TextOverflowData ConvertTextOverflow(StyleResolverState&,
                                               const CSSValue&);
   static MaxLinesData ConvertMaxLines(StyleResolverState&, const CSSValue&);
-
-  static ScopedCSSNameList* ConvertTimelineTriggerName(StyleResolverState&,
-                                                       const CSSValue&);
 
   static StyleTriggerScope ConvertTriggerScope(StyleResolverState&,
                                                const CSSValue&);
@@ -598,10 +604,7 @@ struct ResolveColorValueContext {
  public:
   const CSSLengthResolver& length_resolver;
   const TextLinkColors& text_link_colors;
-  const mojom::blink::ColorScheme used_color_scheme =
-      mojom::blink::ColorScheme::kLight;
-  const ui::ColorProvider* color_provider = nullptr;
-  const bool can_expose_accent_color = false;
+  const ColorThemeInfo theme_info;
   const bool for_visited_link = false;
 };
 

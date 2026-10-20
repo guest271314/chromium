@@ -29,6 +29,7 @@ import org.chromium.base.ApiCompatibilityUtils;
 import org.chromium.base.Callback;
 import org.chromium.base.Log;
 import org.chromium.base.metrics.RecordUserAction;
+import org.chromium.base.supplier.SupplierUtils;
 import org.chromium.build.annotations.MonotonicNonNull;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
@@ -103,23 +104,7 @@ public class CustomTabBottomBarDelegate
      */
     private int mBottomBarHeightOverride = -1;
 
-    private final OnClickListener mBottomBarClickListener =
-            new OnClickListener() {
-                @Override
-                public void onClick(View v) {
-                    if (mClickPendingIntent == null) return;
-                    Intent extraIntent = new Intent();
-                    int originalId = (Integer) v.getTag(R.id.view_id_tag_key);
-                    extraIntent.putExtra(CustomTabsIntent.EXTRA_REMOTEVIEWS_CLICKED_ID, originalId);
-                    sendPendingIntentWithUrl(
-                            mClickPendingIntent,
-                            extraIntent,
-                            mActivity,
-                            mTabProvider,
-                            mDataProvider,
-                            originalId);
-                }
-            };
+    private final OnClickListener mBottomBarClickListener;
 
     public CustomTabBottomBarDelegate(
             Activity activity,
@@ -147,6 +132,20 @@ public class CustomTabBottomBarDelegate
         mShadowHeightPx =
                 activity.getResources()
                         .getDimensionPixelSize(R.dimen.custom_tabs_bottom_bar_shadow_height);
+        mBottomBarClickListener =
+                v -> {
+                    if (mClickPendingIntent == null) return;
+                    Intent extraIntent = new Intent();
+                    int originalId = (Integer) v.getTag(R.id.view_id_tag_key);
+                    extraIntent.putExtra(CustomTabsIntent.EXTRA_REMOTEVIEWS_CLICKED_ID, originalId);
+                    sendPendingIntentWithUrl(
+                            mClickPendingIntent,
+                            extraIntent,
+                            mActivity,
+                            mTabProvider,
+                            mDataProvider,
+                            originalId);
+                };
     }
 
     /** Cleans up observers registered in the constructor. */
@@ -216,7 +215,7 @@ public class CustomTabBottomBarDelegate
             OnClickListener clickListener = null;
             if (pendingIntent != null) {
                 clickListener =
-                        v ->
+                        _ ->
                                 sendPendingIntentWithUrl(
                                         pendingIntent,
                                         null,
@@ -307,6 +306,7 @@ public class CustomTabBottomBarDelegate
 
     /**
      * Updates the {@link PendingIntent} to be sent when the user swipes up from the toolbar.
+     *
      * @param pendingIntent The {@link PendingIntent}.
      * @return Whether the update is successful.
      */
@@ -411,8 +411,8 @@ public class CustomTabBottomBarDelegate
     }
 
     /**
-     * This method remove bottomBarView completely.
-     * If you need to hide it temporarily use {@link #hideBottomBar(boolean)}.
+     * This method remove bottomBarView completely. If you need to hide it temporarily use {@link
+     * #hideBottomBar(boolean)}.
      */
     private void hideBottomBar() {
         if (mBottomBarView == null) return;
@@ -424,13 +424,10 @@ public class CustomTabBottomBarDelegate
                 .setInterpolator(Interpolators.FAST_OUT_SLOW_IN_INTERPOLATOR)
                 .setDuration(SLIDE_ANIMATION_DURATION_MS)
                 .withEndAction(
-                        new Runnable() {
-                            @Override
-                            public void run() {
-                                assumeNonNull(mBottomBarView);
-                                ((ViewGroup) mBottomBarView.getParent()).removeView(mBottomBarView);
-                                mBottomBarView = null;
-                            }
+                        () -> {
+                            assumeNonNull(mBottomBarView);
+                            ((ViewGroup) mBottomBarView.getParent()).removeView(mBottomBarView);
+                            mBottomBarView = null;
                         })
                 .start();
         setBottomControlsHeight(0);
@@ -525,6 +522,7 @@ public class CustomTabBottomBarDelegate
 
     /**
      * Returns whether the view was or can be inflated.
+     *
      * @return True if the ViewStub is present or was inflated. False otherwise.
      */
     private boolean isViewReady() {
@@ -566,10 +564,10 @@ public class CustomTabBottomBarDelegate
             int bottomControlsHeight, int bottomControlsMinHeight) {
         if (!isViewReady()) return;
         // Bottom offset might not have been received by BrowserControlsManager at this point, so
-        // using getBrowserControlHiddenRatio(), http://crbug.com/40612650.
+        // using getBottomControlHiddenRatio(), http://crbug.com/40612650.
         getBottomBarView()
                 .setTranslationY(
-                        mBrowserControlsSizer.getBrowserControlHiddenRatio() * bottomControlsHeight
+                        mBrowserControlsSizer.getBottomControlHiddenRatio() * bottomControlsHeight
                                 - mBrowserControlsSizer.getBottomControlsMinHeightOffset());
     }
 
@@ -603,6 +601,7 @@ public class CustomTabBottomBarDelegate
 
     /**
      * Starts listening for swipe up gesture to send the {@link PendingIntent}.
+     *
      * @param pendingIntent The {@link PendingIntent} to be sent.
      */
     private void startListeningForSwipeUpGestures(PendingIntent pendingIntent) {
@@ -622,8 +621,8 @@ public class CustomTabBottomBarDelegate
 
         // Make the bottom controls height smaller by the shadow height so that
         // the shadow is displayed over the bottom of the WebContents.
-        mBrowserControlsSizer.setBottomControlsHeight(
-                minHeight + height - mShadowHeightPx, minHeight);
+        int bottomControlsHeight = Math.max(0, height - mShadowHeightPx);
+        mBrowserControlsSizer.setBottomControlsHeight(minHeight + bottomControlsHeight, minHeight);
     }
 
     // SwipeGestureListener.SwipeHandler methods
@@ -636,7 +635,7 @@ public class CustomTabBottomBarDelegate
                 mSwipeUpPendingIntent,
                 null,
                 mActivity,
-                () -> null,
+                SupplierUtils.ofNull(),
                 mDataProvider,
                 /* viewId= */ null);
     }

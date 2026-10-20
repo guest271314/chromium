@@ -11,31 +11,22 @@ export function getHtml(this: SignInPromoRefreshElement) {
   // TODO(crbug.com/504301457): Enable animations once there is a mechanism to
   // pause/stop them.
   return html`<!--_html_template_start_-->
-<cr-lottie id="left-animation" class="animation"
-    animation-url="${this.getAnimationUrl_('left')}">
+<cr-lottie id="leftAnimation" class="animation"
+    animation-url="${this.getAnimationUrl_('left')}"
+    ?autoplay="${!this.shouldDisableAnimations_}">
 </cr-lottie>
-<cr-lottie id="right-animation" class="animation"
-    animation-url="${this.getAnimationUrl_('right')}">
+<cr-lottie id="rightAnimation" class="animation"
+    animation-url="${this.getAnimationUrl_('right')}"
+    ?autoplay="${!this.shouldDisableAnimations_}">
 </cr-lottie>
-<cr-lottie id="bottom-animation" class="animation"
-    animation-url="${this.getAnimationUrl_('bottom')}">
+<cr-lottie id="bottomAnimation" class="animation"
+    animation-url="${this.getAnimationUrl_('bottom')}"
+    ?autoplay="${!this.shouldDisableAnimations_}">
 </cr-lottie>
-
-${this.isTopRightCornerVariation_() ? html`
-  <div id="top-right-corner-container">
-    <cr-button id="declineSignInButton"
-        class="tangible-button ${this.usePrimaryAndTonalButtonsForPromos_ ?
-          'tonal-button' : ''}"
-        ?disabled="${this.shouldDisableButtons_()}"
-        @click="${this.onDeclineSignInButtonClick_}">
-      $i18n{declineSignInButtonTitle}
-    </cr-button>
-  </div>
-` : ''}
 
 <div id="product-logo-container">
   <img id="product-logo-animation" src="images/product-logo-animation.svg"
-    alt="$i18n{productLogoAltText}">
+      alt="$i18n{productLogoAltText}">
 </div>
 
 <h1 class="title fade-in">$i18n{pageTitle}</h1>
@@ -51,8 +42,7 @@ ${this.isTopRightCornerVariation_() ? html`
     `)}
   </div>
 
-  <div id="managedDeviceDisclaimer"
-      ?hidden="${!this.isDeviceManaged_}"
+  <div id="managedDeviceDisclaimer" ?hidden="${!this.isDeviceManaged_}"
       class="${this.getDisclaimerVisibilityClass_()}">
     <div id="iconContainer">
       <cr-icon icon="cr:domain" aria-hidden="true"></cr-icon>
@@ -61,39 +51,26 @@ ${this.isTopRightCornerVariation_() ? html`
   </div>
 </div>
 
-<div id="buttonRow" class="fade-in">
-  ${this.isTopRightCornerVariation_() ? html`
-    <p id="create-account-disclaimer">$i18n{createAccountDisclaimer}</p>
-  ` : ''}
-  <div id="buttonContainer">
-    <if expr="not is_win">
-      ${this.isDefaultVariation_() ? html`
-      <cr-button id="declineSignInButton"
-          class="tangible-button ${this.usePrimaryAndTonalButtonsForPromos_ ?
-              'tonal-button' : ''}"
-          ?disabled="${this.shouldDisableButtons_()}"
-          @click="${this.onDeclineSignInButtonClick_}">
-        $i18n{declineSignInButtonTitle}
-      </cr-button>
-      ` : ''}
-    </if>
-    <cr-button id="acceptSignInButton" class="tangible-button action-button"
-        ?disabled="${this.shouldDisableButtons_()}"
-        @click="${this.onAcceptSignInButtonClick_}">
-      $i18n{acceptSignInButtonTitle}
-    </cr-button>
-    <if expr="is_win">
-      ${this.isDefaultVariation_() ? html`
-      <cr-button id="declineSignInButton"
-          class="tangible-button ${this.usePrimaryAndTonalButtonsForPromos_ ?
-              'tonal-button' : ''}"
-          ?disabled="${this.shouldDisableButtons_()}"
-          @click="${this.onDeclineSignInButtonClick_}">
-        $i18n{declineSignInButtonTitle}
-      </cr-button>
-      ` : ''}
-    </if>
-  </div>
+<div id="buttonContainer" class="fade-in">
+<if expr="not is_win">
+  <cr-button id="declineSignInButton" class="tangible-button tonal-button"
+      ?disabled="${this.shouldDisableButtons_()}"
+      @click="${this.onDeclineSignInButtonClick_}">
+    $i18n{declineSignInButtonTitle}
+  </cr-button>
+</if>
+  <cr-button id="acceptSignInButton" class="tangible-button action-button"
+      ?disabled="${this.shouldDisableButtons_()}"
+      @click="${this.onAcceptSignInButtonClick_}">
+    $i18n{acceptSignInButtonTitle}
+  </cr-button>
+<if expr="is_win">
+  <cr-button id="declineSignInButton" class="tangible-button tonal-button"
+      ?disabled="${this.shouldDisableButtons_()}"
+      @click="${this.onDeclineSignInButtonClick_}">
+    $i18n{declineSignInButtonTitle}
+  </cr-button>
+</if>
 </div>
 <!--_html_template_end_-->`;
   // clang-format on

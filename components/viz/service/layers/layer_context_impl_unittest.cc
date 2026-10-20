@@ -2093,60 +2093,6 @@ TEST_F(LayerContextImplUpdateDisplayTreeTileDisplayLayerPropertiesTest,
 }
 
 TEST_F(LayerContextImplUpdateDisplayTreeTileDisplayLayerPropertiesTest,
-       UpdateContentColorUsage) {
-  constexpr int kLayerId = 2;
-
-  // Initial update: Create TileDisplayLayer with default properties.
-  auto update1 = CreateDefaultUpdate();
-  AddDefaultLayerToUpdate(update1.get(), cc::mojom::LayerType::kTileDisplay,
-                          kLayerId);
-  EXPECT_TRUE(
-      layer_context_impl_->DoUpdateDisplayTree(std::move(update1)).has_value());
-
-  cc::LayerImpl* layer_impl_base = GetLayerFromActiveTree(kLayerId);
-  ASSERT_NE(nullptr, layer_impl_base);
-  ASSERT_EQ(layer_impl_base->GetLayerType(),
-            cc::mojom::LayerType::kTileDisplay);
-  auto* tile_display_layer_impl =
-      static_cast<cc::TileDisplayLayerImpl*>(layer_impl_base);
-
-  EXPECT_EQ(tile_display_layer_impl->GetContentColorUsage(),
-            gfx::ContentColorUsage::kSRGB);
-
-  // Second update: Set content_color_usage to kHDR.
-  auto update2 = CreateDefaultUpdate();
-  auto layer_props2 =
-      CreateManualLayer(kLayerId, cc::mojom::LayerType::kTileDisplay);
-  auto tile_extra2 = mojom::TileDisplayLayerExtra::New();
-  tile_extra2->content_color_usage = gfx::ContentColorUsage::kHDR;
-  SetLayerExtra(layer_props2.get(), mojom::LayerExtra::NewTileDisplayLayerExtra(
-                                        std::move(tile_extra2)));
-  update2->layers.push_back(std::move(layer_props2));
-
-  EXPECT_TRUE(
-      layer_context_impl_->DoUpdateDisplayTree(std::move(update2)).has_value());
-
-  EXPECT_EQ(tile_display_layer_impl->GetContentColorUsage(),
-            gfx::ContentColorUsage::kHDR);
-
-  // Third update: Set content_color_usage to kWideColorGamut.
-  auto update3 = CreateDefaultUpdate();
-  auto layer_props3 =
-      CreateManualLayer(kLayerId, cc::mojom::LayerType::kTileDisplay);
-  auto tile_extra3 = mojom::TileDisplayLayerExtra::New();
-  tile_extra3->content_color_usage = gfx::ContentColorUsage::kWideColorGamut;
-  SetLayerExtra(layer_props3.get(), mojom::LayerExtra::NewTileDisplayLayerExtra(
-                                        std::move(tile_extra3)));
-  update3->layers.push_back(std::move(layer_props3));
-
-  EXPECT_TRUE(
-      layer_context_impl_->DoUpdateDisplayTree(std::move(update3)).has_value());
-
-  EXPECT_EQ(tile_display_layer_impl->GetContentColorUsage(),
-            gfx::ContentColorUsage::kWideColorGamut);
-}
-
-TEST_F(LayerContextImplUpdateDisplayTreeTileDisplayLayerPropertiesTest,
        UpdateRecordedBounds) {
   constexpr int kLayerId = 2;
   const gfx::Rect kBounds1(10, 20, 30, 40);
@@ -4969,6 +4915,61 @@ TEST_F(LayerContextImplTest, InvalidViewportConfiguration) {
         result.error(),
         "Cannot set outer_clip or outer_scroll without valid inner_scroll");
   }
+}
+
+TEST_F(LayerContextImplTest, ReproCrashDanglingTransformIndex) {
+  // 1. Create an update with several transform nodes.
+  auto update1 = CreateDefaultUpdate();
+
+  // Add some transform nodes beyond the default ones.
+  // Default ones are: 0 (root), 1 (secondary), 2 (overscroll), 3 (page scale).
+  // So t4 will be id 4.
+  int t4 = AddTransformNode(update1.get(), 3);
+  int t5 = AddTransformNode(update1.get(), t4);
+  AddTransformNode(update1.get(), t5);
+
+  // Add an effect node that induces a render surface and points to t6.
+  // Default effect nodes are: 0 (root), 1 (secondary).
+  AddEffectNode(update1.get(), 1);
+  auto& effect_node = update1->effect_nodes.back();
+  effect_node->transform_id = 6;
+  effect_node->render_surface_reason = cc::RenderSurfaceReason::kOpacity;
+  effect_node->element_id = cc::ElementId(100);
+
+  auto result1 = layer_context_impl_->DoUpdateDisplayTree(std::move(update1));
+  ASSERT_TRUE(result1.has_value()) << result1.error();
+
+  // 2. Create an update that shrinks transform tree but keeps the effect node.
+  auto update2 = CreateDefaultUpdate();
+  // Shrink transform tree to 2 nodes (root + secondary).
+  update2->num_transform_nodes = 2;
+  // Clear transform_nodes array so we don't accidentally add more.
+  update2->transform_nodes.clear();
+
+  // Reset viewport property IDs so they don't point out of bounds.
+  update2->overscroll_elasticity_transform = cc::kInvalidPropertyNodeId;
+  update2->page_scale_transform = cc::kInvalidPropertyNodeId;
+  update2->inner_scroll = cc::kInvalidPropertyNodeId;
+  update2->outer_clip = cc::kInvalidPropertyNodeId;
+  update2->outer_scroll = cc::kInvalidPropertyNodeId;
+
+  // Keep num_effect_nodes as it was (which includes e2).
+  // update2->num_effect_nodes is set in AddDefaultPropertyUpdates from
+  // next_effect_id_.
+
+  // We don't update effect node e2. It remains in the tree with transform_id =
+  // t6.
+
+  // UpdateDisplayTree will:
+  // - Resize transform tree to 2.
+  // - Keep effect node e2 in the tree with transform_id = 6.
+  // - MoveChangeTrackingToLayers will call AncestorPropertyChanged on effect
+  // node e2's surface.
+  // - Crash in transform_tree.Node(6).
+
+  auto result2 = layer_context_impl_->DoUpdateDisplayTree(std::move(update2));
+  // The update should be rejected because of dangling property tree indices.
+  EXPECT_FALSE(result2.has_value());
 }
 
 }  // namespace

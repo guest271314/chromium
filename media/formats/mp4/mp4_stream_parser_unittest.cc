@@ -32,13 +32,13 @@
 #include "media/base/test_data_util.h"
 #include "media/base/test_helpers.h"
 #include "media/base/video_decoder_config.h"
+#include "media/base/video_spatial_format.h"
 #include "media/formats/mp4/es_descriptor.h"
 #include "media/formats/mp4/fourccs.h"
 #include "media/media_buildflags.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest-param-test.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "ui/gfx/switches.h"
 
 using ::testing::InSequence;
 using ::testing::StrictMock;
@@ -63,19 +63,19 @@ std::ostream& operator<<(std::ostream& os, Keyframeness k) {
 
 // Matchers for verifying common media log entry strings.
 MATCHER(SampleEncryptionInfoUnavailableLog, "") {
-  return CONTAINS_STRING(arg, "Sample encryption info is not available.");
+  return arg.contains("Sample encryption info is not available.");
 }
 
 MATCHER_P(InfoLog, error_string, "") {
-  return CONTAINS_STRING(arg, error_string) && CONTAINS_STRING(arg, "info");
+  return arg.contains(error_string) && arg.contains("info");
 }
 
 MATCHER_P(ErrorLog, error_string, "") {
-  return CONTAINS_STRING(arg, error_string) && CONTAINS_STRING(arg, "error");
+  return arg.contains(error_string) && arg.contains("error");
 }
 
 MATCHER_P(DebugLog, debug_string, "") {
-  return CONTAINS_STRING(arg, debug_string) && CONTAINS_STRING(arg, "debug");
+  return arg.contains(debug_string) && arg.contains("debug");
 }
 
 class MP4StreamParserTest : public testing::Test {
@@ -1199,9 +1199,7 @@ TEST_F(MP4StreamParserTest, MultiTrackFile) {
 #define MAYBE_TimedMetadataTrack DISABLED_TimedMetadataTrack
 #endif
 TEST_F(MP4StreamParserTest, MAYBE_TimedMetadataTrack) {
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitWithFeatures({kMP4TimedMetadataTrack, features::kHdrAgtm},
-                                {});
+  base::test::ScopedFeatureList feature_list(kMP4TimedMetadataTrack);
 
   auto params = GetDefaultInitParametersExpectations();
   params.liveness = StreamLiveness::kRecorded;
@@ -1293,6 +1291,20 @@ MatrixRotationTestCaseParam rotation_test_cases[6] = {
 INSTANTIATE_TEST_SUITE_P(CheckMath,
                          MP4StreamParserRotationMatrixEvaluatorTest,
                          testing::ValuesIn(rotation_test_cases));
+
+TEST_F(MP4StreamParserTest, ParseEquirectangularProjection) {
+  auto params = GetDefaultInitParametersExpectations();
+  params.detected_audio_track_count = 0;
+  params.duration = base::Milliseconds(6700);
+  params.liveness = StreamLiveness::kRecorded;
+  InitializeParserWithInitParametersExpectations(params);
+  ParseMP4File("spherical_frag.mp4", 512);
+
+  EXPECT_EQ(video_decoder_config_.spatial_format().stereo_mode,
+            VideoStereoMode::kTopBottomLeftFirst);
+  EXPECT_EQ(video_decoder_config_.spatial_format().projection_type,
+            VideoProjectionType::kEquirect360);
+}
 
 }  // namespace mp4
 }  // namespace media

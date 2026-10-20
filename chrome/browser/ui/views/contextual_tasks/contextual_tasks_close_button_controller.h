@@ -10,8 +10,8 @@
 #include "base/memory/weak_ptr.h"
 #include "base/scoped_observation.h"
 #include "chrome/browser/contextual_tasks/contextual_tasks_panel_controller.h"
+#include "chrome/browser/ui/immersive/immersive_mode_controller.h"
 #include "chrome/browser/ui/side_panel/side_panel_entry_observer.h"
-#include "chrome/browser/ui/views/frame/immersive_mode_controller.h"
 #include "ui/base/unowned_user_data/scoped_unowned_user_data.h"
 
 namespace contextual_tasks {
@@ -52,6 +52,9 @@ class ContextualTasksCloseButtonController
 
   // SidePanelEntryObserver:
   void OnEntryShown(SidePanelEntry* entry) override;
+  void OnEntryWillHide(SidePanelEntry* entry,
+                       SidePanelEntryHideReason reason) override;
+  void OnEntryHideCancelled(SidePanelEntry* entry) override;
   void OnEntryHidden(SidePanelEntry* entry) override;
 
   // contextual_tasks::ContextualTasksPanelController::Observer:
@@ -85,6 +88,9 @@ class ContextualTasksCloseButtonController
       contextual_tasks::ContextualTasksPanelController,
       contextual_tasks::ContextualTasksPanelController::Observer>
       panel_controller_observation_{this};
+
+  bool is_panel_visible_ = false;
+  bool is_panel_hiding_ = false;
 
   ShouldUpdateVisibilityCallbackList should_update_visibility_callbacks_;
 

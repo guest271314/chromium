@@ -17,8 +17,10 @@
 #include "components/signin/public/identity_manager/account_info.h"
 #include "content/public/browser/global_routing_id.h"
 #include "content/public/browser/render_frame_host.h"
+#include "content/public/browser/web_contents.h"
 
 // Must come after all headers that specialize FromJniType() / ToJniType().
+#include "components/facilitated_payments/android/java/jni_headers/AccountLinkingResult_jni.h"
 #include "components/facilitated_payments/android/java/jni_headers/FacilitatedPaymentsApiClientBridge_jni.h"
 
 namespace payments::facilitated {
@@ -34,6 +36,16 @@ LazyInitFacilitatedPaymentsApiClient(
              : nullptr;
 }
 
+std::unique_ptr<FacilitatedPaymentsApiClient>
+LazyInitFacilitatedPaymentsApiClientForWebContents(
+    base::WeakPtr<content::WebContents> web_contents) {
+  if (!web_contents || !web_contents->GetPrimaryMainFrame()) {
+    return nullptr;
+  }
+  return std::make_unique<FacilitatedPaymentsApiClientAndroid>(
+      web_contents->GetPrimaryMainFrame());
+}
+
 // Declared in the cross-platform header
 // `facilitated_payments_api_client_factory.h`.
 FacilitatedPaymentsApiClientCreator GetFacilitatedPaymentsApiClientCreator(
@@ -42,9 +54,18 @@ FacilitatedPaymentsApiClientCreator GetFacilitatedPaymentsApiClientCreator(
                              render_frame_host_id);
 }
 
+FacilitatedPaymentsApiClientCreator GetFacilitatedPaymentsApiClientCreator(
+    base::WeakPtr<content::WebContents> web_contents) {
+  return base::BindRepeating(
+      &LazyInitFacilitatedPaymentsApiClientForWebContents, web_contents);
+}
+
 FacilitatedPaymentsApiClientAndroid::FacilitatedPaymentsApiClientAndroid(
     content::RenderFrameHost* render_frame_host)
-    : java_bridge_(Java_FacilitatedPaymentsApiClientBridge_Constructor(
+    : web_contents_(content::WebContents::FromRenderFrameHost(render_frame_host)
+                        ->GetWeakPtr()),
+      render_frame_host_id_(render_frame_host->GetGlobalId()),
+      java_bridge_(Java_FacilitatedPaymentsApiClientBridge_Constructor(
           base::android::AttachCurrentThread(),
           reinterpret_cast<intptr_t>(this),
           render_frame_host->GetJavaRenderFrameHost())) {}
@@ -90,6 +111,34 @@ void FacilitatedPaymentsApiClientAndroid::InvokePurchaseAction(
       ConvertSecurePayloadToJavaObject(secure_payload));
 }
 
+void FacilitatedPaymentsApiClientAndroid::InvokeInstrumentManager(
+    CoreAccountInfo primary_account,
+    const std::vector<uint8_t>& action_token,
+    base::OnceCallback<void(AccountLinkingResult)> callback) {
+  DCHECK(!IsAnyCallbackPending());
+
+  invoke_instrument_manager_callback_ = std::move(callback);
+  JNIEnv* env = base::android::AttachCurrentThread();
+  // If the user navigated to another page on the same merchant origin in the
+  // same tab after the API client was created (e.g. during `GetClientToken()`),
+  // recreate `java_bridge_` with the new active primary main frame.
+  if (web_contents_ && web_contents_->GetPrimaryMainFrame() &&
+      web_contents_->GetPrimaryMainFrame()->GetGlobalId() !=
+          render_frame_host_id_) {
+    content::RenderFrameHost* current_rfh =
+        web_contents_->GetPrimaryMainFrame();
+    Java_FacilitatedPaymentsApiClientBridge_resetNativePointer(env,
+                                                               java_bridge_);
+    render_frame_host_id_ = current_rfh->GetGlobalId();
+    java_bridge_ = Java_FacilitatedPaymentsApiClientBridge_Constructor(
+        env, reinterpret_cast<intptr_t>(this),
+        current_rfh->GetJavaRenderFrameHost());
+  }
+  Java_FacilitatedPaymentsApiClientBridge_invokeInstrumentManager(
+      env, java_bridge_, primary_account,
+      base::android::ToJavaByteArray(env, action_token));
+}
+
 void FacilitatedPaymentsApiClientAndroid::OnIsAvailable(JNIEnv* env,
                                                         bool is_api_available) {
   if (is_available_callback_) {
@@ -125,10 +174,41 @@ void FacilitatedPaymentsApiClientAndroid::OnPurchaseActionResultEnum(
       .Run(static_cast<PurchaseActionResult>(purchase_action_result));
 }
 
+void FacilitatedPaymentsApiClientAndroid::OnInvokeInstrumentManagerResult(
+    JNIEnv* env,
+    const base::android::JavaRef<jobject>& jaccount_linking_result) {
+  if (!invoke_instrument_manager_callback_ || !jaccount_linking_result) {
+    return;
+  }
+
+  bool is_successful =
+      Java_AccountLinkingResult_isSuccessful(env, jaccount_linking_result);
+  int64_t instrument_id =
+      Java_AccountLinkingResult_getInstrumentId(env, jaccount_linking_result);
+  int error_code =
+      Java_AccountLinkingResult_getErrorCode(env, jaccount_linking_result);
+  int64_t billing_customer_number =
+      Java_AccountLinkingResult_getBillingCustomerNumber(
+          env, jaccount_linking_result);
+
+  if (error_code <
+          static_cast<int>(AccountLinkingResultCode::kCouldNotInvoke) ||
+      error_code > static_cast<int>(AccountLinkingResultCode::kResultError)) {
+    return;
+  }
+
+  std::move(invoke_instrument_manager_callback_)
+      .Run(AccountLinkingResult{
+          is_successful, instrument_id,
+          static_cast<AccountLinkingResultCode>(error_code),
+          billing_customer_number});
+}
+
 bool FacilitatedPaymentsApiClientAndroid::IsAnyCallbackPending() const {
   return !is_available_callback_.is_null() ||
          !get_client_token_callback_.is_null() ||
-         !purchase_action_callback_.is_null();
+         !purchase_action_callback_.is_null() ||
+         !invoke_instrument_manager_callback_.is_null();
 }
 
 }  // namespace payments::facilitated

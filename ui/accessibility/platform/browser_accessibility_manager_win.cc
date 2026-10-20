@@ -19,6 +19,7 @@
 #include "base/win/scoped_bstr.h"
 #include "base/win/scoped_variant.h"
 #include "base/win/windows_version.h"
+#include "third_party/abseil-cpp/absl/container/flat_hash_map.h"
 #include "ui/accessibility/accessibility_features.h"
 #include "ui/accessibility/ax_role_properties.h"
 #include "ui/accessibility/platform/assistive_tech.h"
@@ -26,6 +27,7 @@
 #include "ui/accessibility/platform/ax_platform.h"
 #include "ui/accessibility/platform/ax_platform_node_delegate_utils_win.h"
 #include "ui/accessibility/platform/ax_platform_node_textprovider_win.h"
+#include "ui/accessibility/platform/ax_platform_node_win.h"
 #include "ui/accessibility/platform/ax_platform_tree_manager_delegate.h"
 #include "ui/accessibility/platform/browser_accessibility_win.h"
 #include "ui/accessibility/platform/uia_registrar_win.h"
@@ -63,6 +65,14 @@ BrowserAccessibility* GetUiaTextPatternProvider(BrowserAccessibility& node) {
 constexpr char kBrowserRootViewClassName[] = "BrowserRootView";
 constexpr char kTabClassName[] = "Tab";
 
+BrowserAccessibilityComWin* ToBrowserAccessibilityComWin(AXPlatformNode* node) {
+  if (!node) {
+    return nullptr;
+  }
+  return ::ui::ToBrowserAccessibilityComWin(
+      BrowserAccessibility::FromAXPlatformNodeDelegate(node->GetDelegate()));
+}
+
 }  // namespace
 
 // static
@@ -93,12 +103,12 @@ BrowserAccessibilityManagerWin::BrowserAccessibilityManagerWin(
     AXNodeIdDelegate& node_id_delegate,
     AXPlatformTreeManagerDelegate* delegate)
     : BrowserAccessibilityManager(node_id_delegate, delegate) {
-  // Hydrate the custom property registry if MathML support is enabled.
-  // Since we don't fire any events that call into the registrar like the other
-  // custom properties, we need to ensure it's initialized here.
-  if (features::IsUiaMathMlSupportEnabled()) {
-    ui::UiaRegistrarWin::GetInstance();
-  }
+  // Hydrate the custom property registry. Properties like MathML and
+  // AriaActions don't fire events that call into the registrar like the other
+  // custom properties, so we ensure it's initialized here. The AriaActions
+  // property is registered unconditionally; MathML is registered when its
+  // feature flag is enabled.
+  ui::UiaRegistrarWin::GetInstance();
   Initialize(initial_tree);
 }
 
@@ -134,22 +144,11 @@ AXTreeUpdate BrowserAccessibilityManagerWin::GetEmptyDocument() {
 }
 
 HWND BrowserAccessibilityManagerWin::GetParentHWND() const {
-  if (!delegate()) {
+  AXPlatformTreeManagerDelegate* delegate = GetDelegateForNativeView();
+  if (!delegate) {
     return nullptr;
   }
-
-  // For non-web-content sources (e.g., Views), the delegate directly provides
-  // the HWND. For web content, we must walk up to the root frame manager to
-  // find the HWND, because child frames (iframes) share the top-level HWND.
-  if (!delegate()->AccessibilityIsWebContentSource()) {
-    return delegate()->AccessibilityGetAcceleratedWidget();
-  }
-
-  AXPlatformTreeManagerDelegate* root_delegate = GetDelegateFromRootManager();
-  if (!root_delegate) {
-    return nullptr;
-  }
-  return root_delegate->AccessibilityGetAcceleratedWidget();
+  return delegate->AccessibilityGetAcceleratedWidget();
 }
 
 void BrowserAccessibilityManagerWin::UserIsReloading() {
@@ -345,12 +344,14 @@ void BrowserAccessibilityManagerWin::FireSourceEvent(
       // but Alt+Tabbing between windows does not, so the correct state is
       // not restored. Re-fire the event on the last selected tab when the
       // browser window is activated to bridge that gap. Only applies to
-      // BrowserRootView (not dialogs/popups).
-      // TODO(crbug.com/505781387): Collaborating with the JAWS team on a
-      // more robust signal; remove once adopted.
+      // BrowserRootView (not dialogs/popups), and only for older versions of
+      // JAWS. Newer versions detect the active tab on their own.
+      // TODO(crbug.com/505781387): Remove once the oldest supported JAWS
+      // version no longer needs this event.
       if (node == GetBrowserAccessibilityRoot() &&
           AXPlatform::GetInstance().active_assistive_tech() ==
-              AssistiveTech::kJaws) {
+              AssistiveTech::kJaws &&
+          AXPlatform::GetInstance().JawsNeedsTabSelectionEvent()) {
         const std::string& root_class = node->GetData().GetStringAttribute(
             ax::mojom::StringAttribute::kClassName);
         if (root_class == kBrowserRootViewClassName) {
@@ -364,6 +365,17 @@ void BrowserAccessibilityManagerWin::FireSourceEvent(
     default:
       break;
   }
+}
+
+// static
+LONG BrowserAccessibilityManagerWin::GetCheckedStateChangedUiaProperty(
+    const BrowserAccessibility& node) {
+  // Buttons that expose ExpandCollapse suppress Toggle (see IsToggleSupported),
+  // so their state change is reported through ExpandCollapseState.
+  if (ToBrowserAccessibilityWin(&node)->GetCOM()->IsExpandCollapseButton()) {
+    return UIA_ExpandCollapseExpandCollapseStatePropertyId;
+  }
+  return UIA_ToggleToggleStatePropertyId;
 }
 
 void BrowserAccessibilityManagerWin::FireGeneratedEvent(
@@ -400,7 +412,8 @@ void BrowserAccessibilityManagerWin::FireGeneratedEvent(
         HandleSelectedStateChanged(uia_selection_events_, wrapper,
                                    IsUIANodeSelected(wrapper));
       }
-      FireUiaPropertyChangedEvent(UIA_ToggleToggleStatePropertyId, wrapper);
+      FireUiaPropertyChangedEvent(GetCheckedStateChangedUiaProperty(*wrapper),
+                                  wrapper);
       HandleAriaPropertiesChangedEvent(*wrapper);
       break;
     case AXEventGenerator::Event::CHILDREN_CHANGED: {
@@ -458,7 +471,7 @@ void BrowserAccessibilityManagerWin::FireGeneratedEvent(
           // Fire the event on the root object, which in the absence of a text
           // field ancestor is the closest UIA text provider (other than the
           // focused object) in which the selection has changed.
-          DCHECK(IsPlatformDocument(wrapper->GetRole()));
+          DCHECK(wrapper->IsPlatformDocument());
           EnqueueSelectionChangedEvent(*wrapper);
 
           // "IA2_EVENT_TEXT_CARET_MOVED" should only be fired when a visible
@@ -1012,12 +1025,69 @@ bool BrowserAccessibilityManagerWin::CanFireEvents() const {
     return false;
   }
 
-  if (delegate()->AccessibilityIsWebContentSource()) {
-    return GetDelegateFromRootManager() &&
-           GetDelegateFromRootManager()->AccessibilityGetAcceleratedWidget();
+  AXPlatformTreeManagerDelegate* delegate = GetDelegateForNativeView();
+  return delegate && delegate->AccessibilityGetAcceleratedWidget();
+}
+
+void BrowserAccessibilityManagerWin::SetLocationChangeEventCallbackForTesting(
+    const LocationChangeEventCallbackForTesting& callback) {
+  location_change_event_callback_for_testing_ = callback;
+}
+
+void BrowserAccessibilityManagerWin::SendLocationChangeEvents(
+    const std::vector<AXLocationChange>& changes) {
+  if (!features::IsAccessibilityGroupLocationChangeByCommonAncestorEnabled()) {
+    BrowserAccessibilityManager::SendLocationChangeEvents(changes);
+    return;
   }
 
-  return delegate()->AccessibilityGetAcceleratedWidget();
+  if (changes.empty()) {
+    return;
+  } else if (changes.size() == 1) {
+    BrowserAccessibility* obj = GetFromID(changes.front().id);
+    if (obj) {
+      obj->OnLocationChanged();
+      if (!location_change_event_callback_for_testing_.is_null()) {
+        location_change_event_callback_for_testing_.Run(obj);
+      }
+    }
+    return;
+  }
+
+  // Track changed subtrees per node, updating the least common ancestor of the
+  // set of nodes each iteration.
+  absl::flat_hash_map<BrowserAccessibility*, size_t> changed_children;
+  BrowserAccessibility* least_ancestor = nullptr;
+  for (const auto& change : changes) {
+    BrowserAccessibility* obj = GetFromID(change.id);
+    BrowserAccessibility* obj_least_ancestor = nullptr;
+    size_t max_changed_children = 0;
+
+    // Search upward, finding the lowest parent with the most changed children.
+    while (obj) {
+      size_t obj_changed_children = ++changed_children[obj];
+      if (obj_changed_children > max_changed_children) {
+        obj_least_ancestor = obj;
+        max_changed_children = obj_changed_children;
+      }
+      obj = obj->PlatformGetParent();
+    }
+
+    // The least ancestor of the whole set will always be an ancestor of this
+    // node.
+    if (obj_least_ancestor != nullptr) {
+      least_ancestor = obj_least_ancestor;
+    }
+  }
+
+  // At this point, `least_ancestor` is the lowest common ancestor of all the
+  // nodes with location changes; fire a single location changed event on it.
+  if (least_ancestor) {
+    least_ancestor->OnLocationChanged();
+    if (!location_change_event_callback_for_testing_.is_null()) {
+      location_change_event_callback_for_testing_.Run(least_ancestor);
+    }
+  }
 }
 
 void BrowserAccessibilityManagerWin::OnSubtreeWillBeDeleted(AXTree* tree,
@@ -1053,8 +1123,9 @@ void BrowserAccessibilityManagerWin::OnAtomicUpdateFinished(
   // recomputes all of win_attributes_ other than IAccessibleText.
   auto state_scan = update_states.begin();
   for (auto* node : objs_to_update) {
-    static_cast<BrowserAccessibilityComWin*>(node)
-        ->UpdateStep1ComputeWinAttributes(&*state_scan);
+    if (auto* com_win = ToBrowserAccessibilityComWin(node)) {
+      com_win->UpdateStep1ComputeWinAttributes(&*state_scan);
+    }
     ++state_scan;
   }
 
@@ -1062,8 +1133,9 @@ void BrowserAccessibilityManagerWin::OnAtomicUpdateFinished(
   // concatenation of all of its child text nodes, so it can't run until
   // the text of all of the nodes was computed in the previous step.
   for (auto* node : objs_to_update) {
-    static_cast<BrowserAccessibilityComWin*>(node)
-        ->UpdateStep2ComputeHypertext();
+    if (auto* com_win = ToBrowserAccessibilityComWin(node)) {
+      com_win->UpdateStep2ComputeHypertext();
+    }
   }
 
   // The third step fires events on nodes based on what's changed - like
@@ -1075,7 +1147,9 @@ void BrowserAccessibilityManagerWin::OnAtomicUpdateFinished(
   // At the end, it deletes old_win_attributes_ since they're not needed
   // anymore.
   for (auto* node : objs_to_update) {
-    static_cast<BrowserAccessibilityComWin*>(node)->UpdateStep3FireEvents();
+    if (auto* com_win = ToBrowserAccessibilityComWin(node)) {
+      com_win->UpdateStep3FireEvents();
+    }
   }
 }
 
@@ -1167,9 +1241,10 @@ void BrowserAccessibilityManagerWin::HandleSelectedStateChanged(
   // selection container as the key because |FinalizeSelectionEvents| needs to
   // determine whether or not there is only one element selected in order to
   // optimize what platform events are sent.
-  BrowserAccessibility* key = node;
-  if (auto* selection_container = node->PlatformGetSelectionContainer())
-    key = selection_container;
+  AXNodeID key = node->node()->id();
+  if (auto* selection_container = node->PlatformGetSelectionContainer()) {
+    key = selection_container->node()->id();
+  }
 
   if (is_selected)
     selection_events_map[key].added.push_back(node);
@@ -1177,20 +1252,20 @@ void BrowserAccessibilityManagerWin::HandleSelectedStateChanged(
     selection_events_map[key].removed.push_back(node);
 }
 
-// static
 void BrowserAccessibilityManagerWin::FinalizeSelectionEvents(
     SelectionEventsMap& selection_events_map,
     IsSelectedPredicate is_selected_predicate,
     FirePlatformSelectionEventsCallback fire_platform_events_callback) {
   for (auto&& selected : selection_events_map) {
-    BrowserAccessibility* key_node = selected.first;
+    AXNodeID key_node_id = selected.first;
     SelectionEvents& changes = selected.second;
 
     // Determine if |node| is a selection container with one selected child in
     // order to optimize what platform events are sent.
     BrowserAccessibility* container = nullptr;
     BrowserAccessibility* only_selected_child = nullptr;
-    if (IsContainerWithSelectableChildren(key_node->GetRole())) {
+    BrowserAccessibility* key_node = GetFromID(key_node_id);
+    if (key_node && IsContainerWithSelectableChildren(key_node->GetRole())) {
       container = key_node;
       for (auto it = container->InternalChildrenBegin();
            it != container->InternalChildrenEnd(); ++it) {
@@ -1239,12 +1314,7 @@ void BrowserAccessibilityManagerWin::EnqueueSelectionChangedEvent(
 
 gfx::Rect BrowserAccessibilityManagerWin::GetViewBoundsInScreenCoordinates()
     const {
-  // For views-sourced managers, use own delegate directly (no root-frame
-  // hierarchy).  For web content, walk up to the root frame manager.
-  AXPlatformTreeManagerDelegate* target_delegate =
-      (delegate() && !delegate()->AccessibilityIsWebContentSource())
-          ? delegate()
-          : GetDelegateFromRootManager();
+  AXPlatformTreeManagerDelegate* target_delegate = GetDelegateForNativeView();
   if (!target_delegate) {
     return gfx::Rect();
   }

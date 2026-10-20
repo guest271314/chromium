@@ -44,9 +44,10 @@ class TestTabStripModelDelegate : public TabStripModelDelegate {
                 bool foregroud,
                 std::optional<tab_groups::TabGroupId> group,
                 bool pinned) override;
-  Browser* CreateNewStripWithTabs(std::vector<NewStripContents> tabs,
-                                  const gfx::Rect& window_bounds,
-                                  bool maximize) override;
+  BrowserWindowInterface* CreateNewStripWithTabs(
+      std::vector<NewStripContents> tabs,
+      const gfx::Rect& window_bounds,
+      bool maximize) override;
   void WillAddWebContents(content::WebContents* contents) override;
   int GetDragActions() const override;
   bool CanDuplicateContentsAt(int index) override;
@@ -89,12 +90,11 @@ class TestTabStripModelDelegate : public TabStripModelDelegate {
   void OnRemovingAllTabsFromGroups(
       const std::vector<tab_groups::TabGroupId>& group_ids,
       base::OnceCallback<void()> callback) override;
-  bool IsTabGlicPinned(tabs::TabHandle tab_handle) override;
-  bool GlicPinTabs(base::span<const tabs::TabHandle> tab_handles) override;
-  bool GlicUnpinTabs(base::span<const tabs::TabHandle> tab_handles) override;
-  void OpenGlicWindowFromSharedTab() override;
   void GlicUnpinTabsFromAllConversations(
       base::span<const tabs::TabHandle> tab_handles) override;
+  void CloseTab(const tabs::TabInterface* tab,
+                CloseTabSource source,
+                base::OnceCallback<void(CloseTabSource)> on_approved) override;
 
  private:
   raw_ptr<BrowserWindowInterface> browser_window_interface_;

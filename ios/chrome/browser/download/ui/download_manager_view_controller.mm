@@ -131,14 +131,12 @@ UIButton* CreateActionButton(NSString* title,
   return button;
 }
 
-// Creates an icon to be added in the center of the radial progress view.
-UIImageView* CreateProgressIcon(NSString* symbol_name) {
+UIImageView* CreateProgressIcon(Symbol symbol) {
   UIImageConfiguration* image_configuration = [UIImageSymbolConfiguration
       configurationWithPointSize:kSymbolDownloadInfobarPointSize
                           weight:UIImageSymbolWeightBold
                            scale:UIImageSymbolScaleSmall];
-  UIImage* image;
-  image = DefaultSymbolWithConfiguration(symbol_name, image_configuration);
+  UIImage* image = SymbolWithConfiguration(symbol, image_configuration);
   UIImageView* icon = [[UIImageView alloc] initWithImage:image];
   icon.tintColor = [UIColor colorNamed:kTextQuaternaryColor];
   icon.translatesAutoresizingMaskIntoConstraints = NO;
@@ -273,18 +271,29 @@ UIImageView* CreateProgressIcon(NSString* symbol_name) {
   UIView* view = self.view;
   UILayoutGuide* bottomMarginGuide = self.bottomMarginGuide;
   UIView* downloadRow = self.downloadControlsRow;
-  UILayoutGuide* secondaryToolbarGuide =
-      [self.layoutGuideCenter makeLayoutGuideNamed:kSecondaryToolbarGuide];
-  [view addLayoutGuide:secondaryToolbarGuide];
+  UIView* secondaryToolbar =
+      [self.layoutGuideCenter referencedViewUnderName:kSecondaryToolbarGuide];
+
+  if (IsChromeNextIaEnabled() && IsFullscreenRefactoringEnabled()) {
+    [NSLayoutConstraint activateConstraints:@[
+      [bottomMarginGuide.bottomAnchor
+          constraintEqualToAnchor:view.bottomAnchor],
+      [bottomMarginGuide.topAnchor
+          constraintEqualToAnchor:secondaryToolbar.topAnchor],
+    ]];
+  } else {
+    [NSLayoutConstraint activateConstraints:@[
+      [bottomMarginGuide.bottomAnchor
+          constraintEqualToAnchor:view.bottomAnchor],
+      [bottomMarginGuide.heightAnchor
+          constraintGreaterThanOrEqualToAnchor:secondaryToolbar.heightAnchor],
+      [bottomMarginGuide.topAnchor
+          constraintLessThanOrEqualToAnchor:view.safeAreaLayoutGuide
+                                                .bottomAnchor],
+    ]];
+  }
 
   [NSLayoutConstraint activateConstraints:@[
-    [bottomMarginGuide.bottomAnchor constraintEqualToAnchor:view.bottomAnchor],
-    [bottomMarginGuide.heightAnchor
-        constraintGreaterThanOrEqualToAnchor:secondaryToolbarGuide
-                                                 .heightAnchor],
-    [bottomMarginGuide.topAnchor
-        constraintLessThanOrEqualToAnchor:view.safeAreaLayoutGuide
-                                              .bottomAnchor],
     [downloadRow.bottomAnchor
         constraintEqualToAnchor:bottomMarginGuide.topAnchor
                        constant:-kRowVerticalMargins],
@@ -510,8 +519,8 @@ UIImageView* CreateProgressIcon(NSString* symbol_name) {
     [_leadingIconNotStarted
         setContentHuggingPriority:UILayoutPriorityRequired
                           forAxis:UILayoutConstraintAxisHorizontal];
-    _leadingIconNotStarted.image = DefaultSymbolTemplateWithPointSize(
-        kOpenInDownloadsSymbol, kSymbolDownloadInfobarPointSize);
+    _leadingIconNotStarted.image = SymbolTemplateWithPointSize(
+        SymbolOpenInDownloads, kSymbolDownloadInfobarPointSize);
   }
 
   return _leadingIconNotStarted;
@@ -593,7 +602,7 @@ UIImageView* CreateProgressIcon(NSString* symbol_name) {
 
 - (UIImageView*)filesProgressIcon {
   if (!_filesProgressIcon) {
-    _filesProgressIcon = CreateProgressIcon(kArrowDownSymbol);
+    _filesProgressIcon = CreateProgressIcon(SymbolArrowDown);
   }
 
   return _filesProgressIcon;
@@ -601,7 +610,7 @@ UIImageView* CreateProgressIcon(NSString* symbol_name) {
 
 - (UIImageView*)driveProgressIcon {
   if (!_driveProgressIcon) {
-    _driveProgressIcon = CreateProgressIcon(kArrowUpSymbol);
+    _driveProgressIcon = CreateProgressIcon(SymbolArrowUp);
   }
 
   return _driveProgressIcon;
@@ -686,13 +695,11 @@ UIImageView* CreateProgressIcon(NSString* symbol_name) {
 
 - (UIButton*)closeButton {
   if (!_closeButton) {
-    UIImage* closeButtonImage =
-        SymbolWithPalette(DefaultSymbolWithPointSize(kXMarkCircleFillSymbol,
-                                                     kCloseButtonIconSize),
-                          @[
-                            [UIColor colorNamed:kGrey600Color],
-                            [UIColor colorNamed:kGrey200Color],
-                          ]);
+    UIImage* closeButtonImage = SymbolWithPalette(
+        SymbolWithPointSize(SymbolXMarkCircleFill, kCloseButtonIconSize), @[
+          [UIColor colorNamed:kGrey600Color],
+          [UIColor colorNamed:kGrey200Color],
+        ]);
     UIButtonConfiguration* closeButtonConf =
         [UIButtonConfiguration plainButtonConfiguration];
     closeButtonConf.image = closeButtonImage;

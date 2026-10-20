@@ -26,12 +26,19 @@ class OpenXrCompositionLayer {
     kCube = 4,
   };
 
+  enum class SwapchainImageState {
+    kReleased,
+    kAcquired,
+    kWaited,
+  };
+
   // Base class for graphics binding specific layer data.
   struct GraphicsBindingData {
     enum GraphicsBindingDataType {
       kInvalid,
       kOpenGLES,
       kD3D,
+      kVulkan,
     };
 
     virtual ~GraphicsBindingData() = default;
@@ -86,9 +93,11 @@ class OpenXrCompositionLayer {
   // up those SharedImages.
   void DestroySwapchain(gpu::SharedImageInterface* sii);
 
-  // Acquire and activate a Swapchain image from the OpenXr system. This is the
-  // swapchain image that will be in use for the next render.
-  XrResult ActivateSwapchainImage(gpu::SharedImageInterface* sii);
+  // Acquire a Swapchain image from the OpenXr system.
+  XrResult AcquireSwapchainImage(gpu::SharedImageInterface* sii);
+
+  // Wait for the acquired Swapchain image to be ready for writing.
+  XrResult WaitSwapchainImage(gpu::SharedImageInterface* sii);
 
   // Release the active swapchain image from the OpenXr system. This is called
   // before calling EndFrame and will enable acquiring a new swapchain image for
@@ -105,6 +114,13 @@ class OpenXrCompositionLayer {
   // or not.
   bool IsUsingSharedImages() const;
 
+  // Tell if the layer's swapchain uses texture array. It returns true only
+  // when the "textureType" is "texture-array".
+  bool SharedImageUsesTextureArray() const;
+
+  // True if swapchain images are texture arrays.
+  bool SwapchainUsesTextureArray() const;
+
   // Update the layer's size and transform.
   void UpdateMutableLayerData(mojom::XRLayerMutableDataPtr);
 
@@ -120,12 +136,17 @@ class OpenXrCompositionLayer {
   // which should be used for the OpenXR composition.
   std::vector<XrEyeVisibility> GetXrEyesForComposition() const;
   // Returns a viewport for the specified eye.
-  const gfx::Rect GetSubImageViewport(XrEyeVisibility eye) const;
+  gfx::Rect GetSubImageViewport(XrEyeVisibility eye) const;
+  // Returns the image array index for the specified eye.
+  uint32_t GetSubImageArrayIndex(XrEyeVisibility eye) const;
 
   // A group of simple getters.
   XrSwapchain color_swapchain() const { return color_swapchain_; }
   bool has_active_swapchain_image() const {
-    return has_active_swapchain_image_;
+    return swapchain_image_state_ == SwapchainImageState::kWaited;
+  }
+  SwapchainImageState swapchain_image_state() const {
+    return swapchain_image_state_;
   }
   GraphicsBindingData* graphics_binding_data() {
     return graphics_binding_data_.get();
@@ -145,6 +166,10 @@ class OpenXrCompositionLayer {
     DCHECK(creation_data_);
     return *creation_data_->mutable_data;
   }
+  bool flip_y() const {
+    DCHECK(creation_data_);
+    return creation_data_->read_only_data->flip_y;
+  }
 
  private:
   Type type_ = Type::kProjection;
@@ -160,9 +185,8 @@ class OpenXrCompositionLayer {
   // as was returned by the OpenXr system when querying for the swapchain info.
   uint32_t active_swapchain_index_ = 0;
 
-  // Indicates whether or not we actually have an active swapchain image (e.g.
-  // ActivateSwapchainImage has been called, but ReleaseSwapchainImage has not).
-  bool has_active_swapchain_image_ = false;
+  // Indicates the state of the swapchain image in its lifecycle.
+  SwapchainImageState swapchain_image_state_ = SwapchainImageState::kReleased;
 
   // Indicates whether the layer has been rendered at least once, in other
   // words, if it contains some contents.

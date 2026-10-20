@@ -6,6 +6,8 @@
 #define THIRD_PARTY_BLINK_RENDERER_CORE_LAYOUT_GRID_GRID_TRACK_COLLECTION_H_
 
 #include "base/check_op.h"
+#include "base/dcheck_is_on.h"
+#include "base/memory/raw_ptr.h"
 #include "third_party/blink/renderer/core/core_export.h"
 #include "third_party/blink/renderer/core/style/computed_style.h"
 #include "third_party/blink/renderer/platform/wtf/wtf_size_t.h"
@@ -147,7 +149,8 @@ class CORE_EXPORT GridRangeBuilder {
         : grid_line(grid_line),
           grid_item_range_index_to_cache(grid_item_range_index_to_cache) {}
     wtf_size_t grid_line;
-    wtf_size_t* grid_item_range_index_to_cache;
+    raw_ptr<wtf_size_t, UnprotectedInRelease | DanglingUntriaged>
+        grid_item_range_index_to_cache;
   };
 
   GridRangeBuilder(const GridTrackList& explicit_tracks,
@@ -213,15 +216,17 @@ class CORE_EXPORT GridLayoutTrackCollection
   LayoutUnit GetSetOffset(wtf_size_t set_index) const;
   wtf_size_t GetSetTrackCount(wtf_size_t set_index) const;
 
-  // Builds a mapping from track index to set index. The vector is sized to
-  // the total number of tracks, where each entry contains the set index
-  // that the track belongs to.
-  Vector<wtf_size_t> BuildTrackToSetMapping() const;
-
   // Returns the accumulated extra margin at the start/end of the specified set;
   // if no index is specified, returns the extra margin of the grid container.
   LayoutUnit StartExtraMargin(wtf_size_t set_index = 0) const;
   LayoutUnit EndExtraMargin(wtf_size_t set_index = kNotFound) const;
+
+  // The accumulated difference between this subgrid's gutter size and its
+  // ancestors' gutter sizes. Positive when the subgrid's gutter is larger than
+  // the parent's gutter.
+  LayoutUnit AccumulatedGutterSizeDelta() const {
+    return accumulated_gutter_size_delta_;
+  }
 
   // Increase by `delta` the offset of the set at `set_index`.
   void AdjustSingleSetOffset(wtf_size_t set_index, LayoutUnit delta);
@@ -237,6 +242,10 @@ class CORE_EXPORT GridLayoutTrackCollection
 
   // Creates a track collection containing every |Range| with index in the range
   // [begin, end], including their respective |SetGeometry|.
+  //
+  // `is_subgrid_auto_placed` should be true when the subgrid's position in
+  // this parent is not yet known (e.g., it is auto-placed inside a grid-lanes
+  // ancestor).
   GridLayoutTrackCollection* CreateSubgridTrackCollection(
       wtf_size_t begin_range_index,
       wtf_size_t end_range_index,
@@ -244,7 +253,8 @@ class CORE_EXPORT GridLayoutTrackCollection
       const BoxStrut& subgrid_margin,
       const BoxStrut& subgrid_border_scrollbar_padding,
       GridTrackSizingDirection subgrid_track_direction,
-      bool is_opposite_direction_in_root_grid) const;
+      bool is_opposite_direction_in_root_grid,
+      bool is_subgrid_auto_placed = false) const;
 
   // Creates adjusted baselines for a subgrid's span within its parent,
   // accounting for margins, padding, and gutter size differences.
@@ -268,9 +278,35 @@ class CORE_EXPORT GridLayoutTrackCollection
   bool IsDependentOnAvailableSize() const;
 
   wtf_size_t FirstNonCollapsedLineIndex() const;
+  bool HasNonCollapsedLine() const {
+    return FirstNonCollapsedLineIndex() != kNotFound;
+  }
 
   const Vector<wtf_size_t>& CollapsedTrackIndexes() const {
     return collapsed_track_indexes_;
+  }
+
+  virtual void ReleaseTrackSizingData() {
+    // `FinalizeSetsGeometry` empties this vector but only shrinks its size, so
+    // clearing here releases the backing buffer.
+    if (last_indefinite_index_.empty()) {
+      last_indefinite_index_.clear();
+    }
+#if DCHECK_IS_ON()
+    sizing_data_released_ = true;
+#endif
+  }
+
+  void ValidateSizingData() const {
+#if DCHECK_IS_ON()
+    DCHECK(!sizing_data_released_);
+#endif
+  }
+
+  void RestoreSizingData() {
+#if DCHECK_IS_ON()
+    sizing_data_released_ = false;
+#endif
   }
 
   virtual void Trace(Visitor* visitor) const {}
@@ -319,6 +355,10 @@ class CORE_EXPORT GridLayoutTrackCollection
   // Collapsed track indexes from auto-fit ranges, populated when
   // `should_store_collapsed_track_indexes` is true at construction.
   Vector<wtf_size_t> collapsed_track_indexes_;
+
+#if DCHECK_IS_ON()
+  bool sizing_data_released_ = false;
+#endif
 };
 
 // |GridRangeBuilder::EnsureTrackCoverage| may introduce a range start and/or
@@ -477,6 +517,11 @@ class CORE_EXPORT GridSizingTrackCollection final
   void BuildSets(const ComputedStyle& container_style,
                  const LogicalSize& container_available_size);
   void SetIndefiniteGrowthLimitsToBaseSize();
+
+  void ReleaseTrackSizingData() override {
+    sets_.clear();
+    GridLayoutTrackCollection::ReleaseTrackSizingData();
+  }
 
   // Caches the geometry of definite sets; this is useful when building the sets
   // of a subgrid since we need to determine whether its available size (i.e.,

@@ -96,6 +96,8 @@ class RegionalCapabilitiesService : public KeyedService {
     // String id for the learn more accessibility.
     int subtitle_1_learn_more_a11y_string_id;
     std::optional<int> subtitle_2_string_id;
+    // String id for the third paragraph in the learn more dialog.
+    int learn_more_third_paragraph_string_id;
   };
 
   RegionalCapabilitiesService(
@@ -105,8 +107,15 @@ class RegionalCapabilitiesService : public KeyedService {
 
   // -- Getters for regional capabilities -------------------------------------
 
-  std::vector<const TemplateURLPrepopulateData::PrepopulatedEngine*>
+  std::vector<raw_ptr<const TemplateURLPrepopulateData::PrepopulatedEngine>>
   GetRegionalPrepopulatedEngines();
+
+  std::vector<raw_ptr<const TemplateURLPrepopulateData::PrepopulatedEngine>>
+  GetRegionalVariants();
+
+  // Returns whether the profile is associated with a region in which a search
+  // engine split migration is active.
+  bool IsSearchEngineSplitRegion();
 
   // Returns whether the profile is associated with a region in which we can
   // show a search engine choice screen.
@@ -134,10 +143,16 @@ class RegionalCapabilitiesService : public KeyedService {
   static bool IsInAnySearchEngineChoiceScreenRegion(Client& client);
 #endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
 
-  // Returns true when the choice screen eligibility check against country
-  // association is not required, or if the current location is compatible with
-  // the regional scope.
-  bool IsChoiceScreenCompatibleWithCurrentLocation();
+  enum class LocationCompatibility {
+    kCompatible,
+    kIncompatible,
+    kLocationUnknown,
+  };
+
+  // Returns `kCompatible` when the choice screen eligibility check against
+  // country association is not required, or if the current location is
+  // compatible with the regional scope.
+  LocationCompatibility IsChoiceScreenCompatibleWithCurrentLocation();
 
   // Returns whether display state metrics can be recorded.
   // `display_state_country_id` is passed by the caller as this may be used to
@@ -153,6 +168,12 @@ class RegionalCapabilitiesService : public KeyedService {
   // require a search engine choice screen.
   std::optional<ChoiceScreenDesign> GetChoiceScreenDesign();
 #endif  // !BUILDFLAG(IS_ANDROID)
+
+#if BUILDFLAG(IS_IOS)
+  // Returns `true` if a snackbar should be shown after presenting the search
+  // engine choice screen for existing users.
+  bool ShouldShowChoiceConfirmationSnackbar();
+#endif  // BUILDFLAG(IS_IOS)
 
   const std::optional<ChoiceScreenEligibilityConfig>&
   GetChoiceScreenEligibilityConfig();
@@ -178,6 +199,13 @@ class RegionalCapabilitiesService : public KeyedService {
   // Returns the metrics enum for the active regional program. This is used for
   // logging only.
   ActiveRegionalProgram GetActiveProgramForMetrics();
+
+  // Returns the metrics enum for the regional program that would be active if
+  // the current profile country was used, rather than the one persisted at
+  // profile creation. I.e. what `GetActiveProgramForMetrics()` would return if
+  // the `kDynamicProfileCountry` feature was enabled. This is used for logging
+  // only.
+  ActiveRegionalProgram GetDynamicCountryProgramForMetrics();
 
   // Returns an opaque `int` value representing the program.
   int GetSerializedActiveProgram();
@@ -250,6 +278,9 @@ class RegionalCapabilitiesService : public KeyedService {
   // though).
   std::optional<country_codes::CountryId> country_id_cache_;
   std::optional<raw_ref<const ProgramSettings>> program_settings_cache_;
+  // Program that would be active if the current country was preferred over
+  // the persisted one. Used for metrics only.
+  std::optional<Program> dynamic_country_program_cache_;
   // -- cache end --
 
 #if BUILDFLAG(IS_ANDROID)

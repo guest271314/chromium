@@ -10,8 +10,6 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
-import androidx.test.filters.SmallTest;
-
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
@@ -30,7 +28,6 @@ import org.chromium.chrome.browser.tabmodel.TabModel;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController.StateChangeReason;
 
 /** Unit test for {@link AutofillSaveCardBottomSheetLifecycle}. */
-@SmallTest
 @RunWith(BaseRobolectricTestRunner.class)
 public class AutofillSaveCardBottomSheetLifecycleTest {
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
@@ -112,7 +109,7 @@ public class AutofillSaveCardBottomSheetLifecycleTest {
 
     @Test
     public void testStartedShowing_whenLayoutTypeIsNotBrowsing() {
-        mLifecycle.onStartedShowing(LayoutType.TAB_SWITCHER);
+        mLifecycle.onStartedShowing(LayoutType.HUB);
         verify(mDelegate).onIgnored();
     }
 
@@ -124,9 +121,9 @@ public class AutofillSaveCardBottomSheetLifecycleTest {
 
     @Test
     public void testStartedShowing_whenLayoutTypeIsNotBrowsing_whenCalledAgain() {
-        mLifecycle.onStartedShowing(LayoutType.TAB_SWITCHER);
+        mLifecycle.onStartedShowing(LayoutType.HUB);
         clearInvocations(mDelegate);
-        mLifecycle.onStartedShowing(LayoutType.TAB_SWITCHER);
+        mLifecycle.onStartedShowing(LayoutType.HUB);
 
         verifyNoInteractions(mDelegate);
     }

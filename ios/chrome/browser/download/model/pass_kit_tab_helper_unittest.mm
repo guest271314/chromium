@@ -17,6 +17,7 @@
 #import "ios/chrome/browser/shared/model/utils/mime_type_util.h"
 #import "ios/chrome/test/fakes/fake_web_content_handler.h"
 #import "ios/web/public/test/fakes/fake_download_task.h"
+#import "ios/web/public/test/fakes/fake_navigation_context.h"
 #import "ios/web/public/test/fakes/fake_web_state.h"
 #import "ios/web/public/test/web_task_environment.h"
 #import "net/base/io_buffer.h"
@@ -358,4 +359,61 @@ TEST_F(PassKitTabHelperTest, DeferPassKitPresentationWhenHidden) {
       static_cast<base::HistogramBase::Sample32>(
           DownloadPassKitResult::kSuccessful),
       1);
+}
+
+// Tests that PassKit dialog presentation deferred while the WebState was hidden
+// is dropped upon observing a cross-document navigation start.
+TEST_F(PassKitTabHelperTest, DeferredPassKitDroppedOnNavigationStart) {
+  web_state_.WasHidden();
+
+  auto task =
+      std::make_unique<web::FakeDownloadTask>(GURL(kUrl), kPkPassMimeType);
+  web::FakeDownloadTask* task_ptr = task.get();
+  tab_helper()->Download(std::move(task));
+
+  std::string pass_data =
+      testing::GetTestFileContents(testing::kPkPassFilePath);
+  NSData* data = [NSData dataWithBytes:pass_data.data()
+                                length:pass_data.size()];
+  task_ptr->SetResponseData(data);
+  task_ptr->SetDone(true);
+
+  EXPECT_EQ(0U, handler_.passes.count);
+
+  web::FakeNavigationContext context;
+  context.SetIsSameDocument(false);
+  web_state_.OnNavigationStarted(&context);
+
+  web_state_.WasShown();
+  EXPECT_EQ(0U, handler_.passes.count);
+}
+
+// Tests that PassKit dialog presentation deferred during provisional navigation
+// is dropped upon observing a committed cross-document navigation finish.
+TEST_F(PassKitTabHelperTest, DeferredPassKitDroppedOnNavigationFinish) {
+  web_state_.WasHidden();
+
+  web::FakeNavigationContext context;
+  context.SetIsSameDocument(false);
+  context.SetHasCommitted(true);
+  web_state_.OnNavigationStarted(&context);
+
+  auto task =
+      std::make_unique<web::FakeDownloadTask>(GURL(kUrl), kPkPassMimeType);
+  web::FakeDownloadTask* task_ptr = task.get();
+  tab_helper()->Download(std::move(task));
+
+  std::string pass_data =
+      testing::GetTestFileContents(testing::kPkPassFilePath);
+  NSData* data = [NSData dataWithBytes:pass_data.data()
+                                length:pass_data.size()];
+  task_ptr->SetResponseData(data);
+  task_ptr->SetDone(true);
+
+  EXPECT_EQ(0U, handler_.passes.count);
+
+  web_state_.OnNavigationFinished(&context);
+
+  web_state_.WasShown();
+  EXPECT_EQ(0U, handler_.passes.count);
 }

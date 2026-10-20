@@ -70,11 +70,6 @@ bool SupportsHEVC() {
 }
 #endif  // BUILDFLAG(ENABLE_HEVC_PARSER_AND_HW_DECODER)
 
-// If this feature is enabled, we use the default color space based on format
-// for SharedImage instead of passing an invalid color space.
-BASE_FEATURE(kUseDefaultColorSpaceInVideoToolbox,
-             base::FEATURE_ENABLED_BY_DEFAULT);
-
 }  // namespace
 
 VideoToolboxVideoDecoder::VideoToolboxVideoDecoder(
@@ -361,8 +356,7 @@ void VideoToolboxVideoDecoder::OnAcceleratorDecode(
     // to them.
     metadata->color_space = config_.color_space_info().ToGfxColorSpace();
   }
-  if (!metadata->color_space.IsValid() &&
-      base::FeatureList::IsEnabled(kUseDefaultColorSpaceInVideoToolbox)) {
+  if (!metadata->color_space.IsValid()) {
     // VideoToolbox video frames are always multiplanar, so use BT.709 color
     // space as default.
     // TODO(crbug.com/491815851): Verify that this is a good/correct default for
@@ -379,6 +373,12 @@ void VideoToolboxVideoDecoder::OnAcceleratorDecode(
   metadata->hdr_metadata = config_.hdr_metadata();
   metadata->hdr_metadata.MergeMetadataFrom(
       metadata->picture->dynamic_hdr_metadata());
+
+  // Match the output pixel format range to the resolved color space so
+  // VideoToolbox does not rescale code values.
+  session_metadata.full_range =
+      base::FeatureList::IsEnabled(kVideoToolboxFullRangeOutput) &&
+      metadata->color_space.GetRangeID() == gfx::ColorSpace::RangeID::FULL;
 
   metadata->session_metadata = session_metadata;
 

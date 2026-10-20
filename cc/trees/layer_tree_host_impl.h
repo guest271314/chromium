@@ -38,12 +38,12 @@
 #include "cc/input/scrollbar_animation_controller.h"
 #include "cc/layers/layer_collections.h"
 #include "cc/metrics/average_lag_tracking_manager.h"
-#include "cc/metrics/event_latency_tracker.h"
 #include "cc/metrics/event_metrics.h"
 #include "cc/metrics/events_metrics_manager.h"
 #include "cc/metrics/frame_sequence_metrics.h"
 #include "cc/metrics/frame_sequence_tracker.h"
 #include "cc/metrics/frame_sequence_tracker_collection.h"
+#include "cc/metrics/scroll_jank_os_reporter.h"
 #include "cc/metrics/submit_info.h"
 #include "cc/paint/paint_worklet_job.h"
 #include "cc/scheduler/begin_frame_tracker.h"
@@ -69,6 +69,7 @@
 #include "components/viz/common/frame_sinks/begin_frame_args.h"
 #include "components/viz/common/gpu/context_cache_controller.h"
 #include "components/viz/common/quads/compositor_render_pass.h"
+#include "components/viz/common/quads/frame_interval_inputs.h"
 #include "components/viz/common/quads/trees_in_viz_timing.h"
 #include "components/viz/common/surfaces/child_local_surface_id_allocator.h"
 #include "components/viz/common/surfaces/local_surface_id.h"
@@ -89,6 +90,10 @@ namespace viz {
 class ClientResourceProvider;
 }
 
+namespace perfetto {
+class NamedTrack;
+}
+
 namespace cc {
 
 class BrowserControlsOffsetManager;
@@ -98,7 +103,6 @@ class DebugRectHistory;
 class EvictionTilePriorityQueue;
 class ImageAnimationController;
 class ImageDecodeCache;
-class LCDTextMetricsReporter;
 class LatencyInfoSwapPromiseMonitor;
 class LayerContext;
 class LayerImpl;
@@ -120,6 +124,7 @@ class SwapPromise;
 class SynchronousTaskGraphRunner;
 class TaskGraphRunner;
 class UIResourceBitmap;
+class UnboundedFrameSinkHandler;
 class Viewport;
 
 struct UIResourceChange {
@@ -139,7 +144,7 @@ class CC_EXPORT LayerTreeHostImpl : public TileManagerClient,
                                     public MutatorHostDelegate,
                                     public ImageAnimationController::Delegate,
                                     public CompositorDelegateForInput,
-                                    public EventLatencyTracker {
+                                    public ScrollJankOsReporter {
  public:
   // A struct of data for a single UIResource, including the backing
   // pixels, and metadata about it.
@@ -196,6 +201,7 @@ class CC_EXPORT LayerTreeHostImpl : public TileManagerClient,
   float CurrentTopControlsShownRatio() const override;
   float CurrentBottomControlsShownRatio() const override;
   gfx::PointF ViewportScrollOffset() const override;
+  float MaxViewportScrollOffsetY() const override;
   void DidChangeBrowserControlsPosition() override;
   void DidObserveScrollDelay(int source_frame_number,
                              base::TimeDelta scroll_delay,
@@ -280,7 +286,6 @@ class CC_EXPORT LayerTreeHostImpl : public TileManagerClient,
   // Already overridden for BrowserControlsOffsetManagerClient which declares a
   // method of the same name.
   // void SetNeedsCommit();
-  void SetNeedsFullViewportRedraw() override;
   void DidUpdateScrollAnimationCurve() override;
   void DidStartPinchZoom() override;
   void DidUpdatePinchZoom() override;
@@ -425,6 +430,7 @@ class CC_EXPORT LayerTreeHostImpl : public TileManagerClient,
       FrameData& frame,
       std::vector<ui::LatencyInfo> latency_info,
       viz::TrackedElementRects tracked_element_rects,
+      std::optional<viz::FrameIntervalInputs> frame_interval_inputs,
       bool is_flush = false);
 
   // Synchronizes the current tree state to Viz without triggering a draw.
@@ -534,10 +540,18 @@ class CC_EXPORT LayerTreeHostImpl : public TileManagerClient,
       uint32_t sequence_id) override;
   void OnSurfaceEvicted(const viz::LocalSurfaceId& local_surface_id) override;
 
-  // EventLatencyTracker implementation.
-  void ReportEventLatency(
-      const viz::BeginFrameArgs& args,
-      std::vector<EventLatencyTracker::LatencyData> latencies) override;
+  // ScrollJankOsReporter implementation.
+  void ReportScrollJankStats(uint32_t total_frames,
+                             uint32_t janky_frames) override;
+
+  // Unbounded element implementation.
+  void SetUnboundedFrameSink(
+      std::unique_ptr<LayerTreeFrameSink> unbounded_frame_sink,
+      const viz::LocalSurfaceId& local_surface_id);
+  void SetUnboundedFrameSinkId(const viz::FrameSinkId& frame_sink_id,
+                               const viz::LocalSurfaceId& local_surface_id);
+  void DismissUnboundedFrameSink();
+  void SetUnboundedLocalSurfaceId(const viz::LocalSurfaceId& local_surface_id);
 
   // Called from LayerTreeImpl.
   void OnCanDrawStateChangedForTree();
@@ -565,7 +579,7 @@ class CC_EXPORT LayerTreeHostImpl : public TileManagerClient,
   ImageAnimationController* image_animation_controller() {
     return image_animation_controller_.get();
   }
-  base::flat_map<PaintImage::Id, bool> GatherImageAnimationState() const;
+  AnimatedImageDriverMap GatherAnimatedImageDriverState() const;
 
   ImageDecodeCache* GetImageDecodeCache() const;
 
@@ -735,10 +749,12 @@ class CC_EXPORT LayerTreeHostImpl : public TileManagerClient,
 
   viz::RegionCaptureBounds CollectRegionCaptureBounds();
   viz::TrackedElementRects CollectTrackedElementRects(
-      bool is_for_compositor_frame_metadata);
+      bool is_for_compositor_frame_metadata,
+      bool need_occlusion);
 
-  viz::CompositorFrameMetadata MakeCompositorFrameMetadata();
-  RenderFrameMetadata MakeRenderFrameMetadata(FrameData* frame);
+  viz::CompositorFrameMetadata MakeCompositorFrameMetadata(
+      const FrameData& frame);
+  RenderFrameMetadata MakeRenderFrameMetadata(const FrameData& frame);
 
   const gfx::Rect& external_viewport() const { return external_viewport_; }
 
@@ -848,6 +864,10 @@ class CC_EXPORT LayerTreeHostImpl : public TileManagerClient,
 
   FrameSorter* frame_sorter_for_testing() { return &frame_sorter_; }
 
+  EventMetrics::List TakeSavedEventsMetricsForTesting() {
+    return events_metrics_manager_.TakeSavedEventsMetrics();
+  }
+
   // Returns true if the client is currently compositing synchronously.
   bool IsInSynchronousComposite() const;
 
@@ -871,6 +891,7 @@ class CC_EXPORT LayerTreeHostImpl : public TileManagerClient,
   const LayerTreeHostImplDelegate* delegate_for_testing() const {
     return delegate_;
   }
+  LayerTreeHostImplDelegate* delegate_for_testing() { return delegate_; }
 
   void SetViewTransitionContentRect(
       uint32_t sequence_id,
@@ -890,6 +911,8 @@ class CC_EXPORT LayerTreeHostImpl : public TileManagerClient,
   }
 
  protected:
+  static perfetto::NamedTrack GetTracingTrack(const LayerTreeImpl* tree);
+
   LayerTreeHostImpl(
       const LayerTreeSettings& settings,
       LayerTreeHostImplDelegate* delegate,
@@ -1031,14 +1054,8 @@ class CC_EXPORT LayerTreeHostImpl : public TileManagerClient,
   // Requests scrollbars' flashes. Returns true if a scrollbar with
   // |tracking_element_id| has been flashed as part of the bulk flash. If
   // `settings.scrollbar_flash_once_after_scroll_update` is true, invokes
-  // `MaybeFlashAllScrollbarsOnce`. If
-  // `settings.scrollbar_flash_after_any_scroll_update` is true, invokes
-  // FlashAllScrollbars.
+  // `MaybeFlashAllScrollbarsOnce`.
   bool MaybeFlashAllScrollbars(ElementId tracking_element_id, bool did_scroll);
-
-  // Flashes all scrollbars. Can be used when
-  // `settings.scrollbar_flash_after_any_scroll_update` is true.
-  void FlashAllScrollbars(bool did_scroll);
 
   // Erases track of flashed scrollbars. Can be used when
   // `settings.scrollbar_flash_once_after_scroll_update` is true.
@@ -1232,10 +1249,6 @@ class CC_EXPORT LayerTreeHostImpl : public TileManagerClient,
   // <meta name="viewport" content="initial-scale=1.0">
   bool is_viewport_mobile_optimized_ = false;
 
-  // If true, forwards a request to viz/ to use ADPF's
-  // setPreferEfficientScheduling API on Android. No-op for other platforms.
-  bool prefer_efficient_scheduling_ = false;
-
   bool prefers_reduced_motion_ = false;
 
   bool may_throttle_if_undrawn_frames_ = true;
@@ -1308,8 +1321,6 @@ class CC_EXPORT LayerTreeHostImpl : public TileManagerClient,
 
   EventsMetricsManager events_metrics_manager_;
 
-  std::unique_ptr<LCDTextMetricsReporter> lcd_text_metrics_reporter_;
-
   bool has_input_for_frame_interval_ = false;
   DelayedUniqueNotifier has_input_resetter_;
   bool has_non_fling_input_since_last_frame_ = false;
@@ -1374,11 +1385,21 @@ class CC_EXPORT LayerTreeHostImpl : public TileManagerClient,
   // client so that they can be added to generated frame metadata in Viz.
   viz::TrackedElementRects tracked_element_rects_from_client_;
 
+  // Only used in TreesInViz mode. Stores the frame interval inputs of the frame
+  // the client drew for its latest update, if any. Used once, by the next frame
+  // generated in Viz.
+  std::optional<viz::FrameIntervalInputs> frame_interval_inputs_from_client_;
+
   // Settings whether we dump generated compositor frame during DrawLayers.
   // They are for debug purposes for TreesInViz and TreeAnimationsInViz.
   bool dump_compositor_frame_ = false;
   uint32_t dump_compositor_frame_begin_ = 0;
   uint32_t dump_compositor_frame_end_ = 0;
+
+  std::unique_ptr<UnboundedFrameSinkHandler> unbounded_frame_sink_handler_;
+
+  viz::FrameSinkId unbounded_frame_sink_id_;
+  viz::LocalSurfaceId unbounded_local_surface_id_;
 
   // Must be the last member to ensure this is destroyed first in the
   // destruction order and invalidates all weak pointers.

@@ -44,6 +44,7 @@ source_set("coordinator") {
     "//ios/chrome/browser/shared/ui/table_view:utils",
     "//ios/chrome/browser/tabs/model",
     "//ios/chrome/browser/welcome_back/model:features",
+    "//ios/chrome/common/ui/util",
     "//ios/web/public",
     "//url",
   ]
@@ -154,6 +155,7 @@ source_set("eg2_tests") {
     "//components/strings",
     "//ios/chrome/app/strings",
     "//ios/chrome/browser/authentication/test:eg_test_support+eg2",
+    "//ios/chrome/browser/shared/public/features",
     "//ios/chrome/browser/shared/ui/table_view:constants",
     "//ios/chrome/browser/signin/model:fake_system_identity",
     "//ios/chrome/test/earl_grey:eg_test_support+eg2",

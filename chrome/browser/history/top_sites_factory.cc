@@ -18,7 +18,6 @@
 #include "chrome/browser/history/history_utils.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/search_engines/template_url_service_factory.h"
-#include "chrome/grit/branded_strings.h"
 #include "chrome/grit/generated_resources.h"
 #include "chrome/grit/locale_settings.h"
 #include "chrome/grit/theme_resources.h"
@@ -65,7 +64,7 @@ void InitializePrepopulatedPageList(
     Profile* profile,
     history::PrepopulatedPageList* prepopulated_pages) {
 #if !BUILDFLAG(IS_ANDROID)
-  DCHECK(prepopulated_pages);
+  CHECK(prepopulated_pages, base::NotFatalUntil::M161);
   PrefService* pref_service = profile->GetPrefs();
   bool hide_web_store_icon =
       pref_service->GetBoolean(policy::policy_prefs::kHideWebStoreIcon);

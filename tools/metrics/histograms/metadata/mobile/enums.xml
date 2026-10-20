@@ -116,6 +116,7 @@ chromium-metrics-reviews@google.com.
   <int value="4" label="NAME_CONFLICT"/>
   <int value="5" label="NAME_TOO_LONG"/>
   <int value="6" label="LOCATION_SUGGESTION"/>
+  <int value="7" label="FORCE_PROMPT"/>
 </enum>
 
 <enum name="DownloadLocationDirectoryType">
@@ -225,7 +226,7 @@ chromium-metrics-reviews@google.com.
   <int value="58" label="Sort Drive Items By Opening Time"/>
   <int value="59" label="Select Drive Identity"/>
   <int value="60" label="Add Drive Account"/>
-  <int value="61" label="Manage In New Tab"/>
+  <int value="61" label="Manage In New Tab (Obsolete)"/>
   <int value="62" label="Recent Activity in Shared Tab Group"/>
   <int value="63" label="AI Prototyping"/>
   <int value="64" label="Manage shared tab group"/>
@@ -238,6 +239,7 @@ chromium-metrics-reviews@google.com.
   <int value="71" label="Edit on pinned site on most visited sites section"/>
   <int value="72" label="Delete browsing data"/>
   <int value="73" label="Create empty tab group"/>
+  <int value="74" label="Send tab to self"/>
 </enum>
 
 <enum name="IOSMenuScenario">
@@ -272,13 +274,14 @@ chromium-metrics-reviews@google.com.
   <int value="28" label="Sort Drive Items Entry"/>
   <int value="29" label="Select Drive Identity Entry"/>
   <int value="30" label="Tab Group Indicator Entry"/>
-  <int value="31" label="Autofill Manual Fallback Plus Address Entry"/>
+  <int value="31"
+      label="Autofill Manual Fallback Plus Address Entry (Obsolete)"/>
   <int value="32" label="Tab Group Indicator on NTP Entry"/>
   <int value="33" label="Last Visited History Entry"/>
   <int value="34" label="Image on a Reader Mode page"/>
   <int value="35" label="Image-Link on a Reader Mode page"/>
   <int value="36" label="Link on a Reader Mode page"/>
-  <int value="37" label="Tab Group button in the Overflow Menu"/>
+  <int value="37" label="Tab Group button in the Overflow Menu (Obsolete)"/>
   <int value="38" label="Sad Tab Menu"/>
 </enum>
 
@@ -395,6 +398,9 @@ chromium-metrics-reviews@google.com.
   <int value="15" label="Default browser promo shown"/>
   <int value="16" label="The user accepted the default browser promo"/>
   <int value="17" label="The user rejected the default browser promo"/>
+  <int value="18" label="Safety promo shown"/>
+  <int value="19"
+      label="The user clicked the start browsing button on safety promo"/>
 </enum>
 
 <!-- LINT.ThenChange(/chrome/browser/first_run/android/java/src/org/chromium/chrome/browser/firstrun/MobileFreProgress.java:MobileFreProgress) -->
@@ -509,9 +515,9 @@ chromium-metrics-reviews@google.com.
 <!-- LINT.IfChange(ShareThisPageLocation) -->
 
 <enum name="ShareThisPageLocation">
-  <int value="0" label="Omnibox Long Press"/>
-  <int value="1" label="Overflow Menu"/>
-  <int value="2" label="Omnibox Verbatim Match"/>
+  <int value="0" label="(Obsolete) Omnibox Long Press"/>
+  <int value="1" label="(Obsolete) Overflow Menu"/>
+  <int value="2" label="(Obsolete) Omnibox Verbatim Match"/>
   <int value="3" label="Location bar"/>
 </enum>
 
@@ -567,6 +573,29 @@ chromium-metrics-reviews@google.com.
   <int value="45" label="View actor task"/>
 </enum>
 
+<!-- LINT.IfChange(SystemNotificationChannelStatus) -->
+
+<enum name="SystemNotificationChannelStatus">
+  <int value="0" label="Blocked (IMPORTANCE_NONE)"/>
+  <int value="1" label="Enabled (Default / High / Low / Min)"/>
+  <int value="2" label="Unavailable / Not Created"/>
+</enum>
+
+<!-- LINT.ThenChange(//chrome/browser/notifications/android/java/src/org/chromium/chrome/browser/notifications/NotificationUmaTracker.java:SystemNotificationChannelStatus) -->
+
+<!-- LINT.IfChange(SystemNotificationLifecycleEvent) -->
+
+<enum name="SystemNotificationLifecycleEvent">
+  <int value="0" label="Queued"/>
+  <int value="1" label="Shown"/>
+  <int value="2" label="Clicked"/>
+  <int value="3" label="Dismissed"/>
+</enum>
+
+<!-- LINT.ThenChange(//chrome/browser/notifications/android/java/src/org/chromium/chrome/browser/notifications/NotificationUmaTracker.java:SystemNotificationLifecycleEvent) -->
+
+<!-- LINT.IfChange(SystemNotificationType2) -->
+
 <enum name="SystemNotificationType2">
   <int value="0" label="Unknown"/>
   <int value="1" label="Downloads - Files"/>
@@ -616,6 +645,8 @@ chromium-metrics-reviews@google.com.
   <int value="45" label="Actor"/>
   <int value="46" label="Chrome Finds"/>
 </enum>
+
+<!-- LINT.ThenChange(//chrome/browser/notifications/android/java/src/org/chromium/chrome/browser/notifications/NotificationUmaTracker.java:SystemNotificationType) -->
 
 </enums>
 

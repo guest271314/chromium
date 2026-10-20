@@ -15,6 +15,7 @@
 #include <utility>
 
 #include "base/containers/heap_array.h"
+#include "base/containers/span.h"
 #include "base/functional/bind.h"
 #include "base/logging.h"
 #include "base/memory/weak_ptr.h"
@@ -293,8 +294,10 @@ HRESULT CreateMFSampleFromAudioBus(const AudioBus& audio_bus,
 
   // Convert data from `audio_bus` to interleaved signed int16_t data, as this
   // is the format required by the encoder.
-  audio_bus.ToInterleaved<SignedInt16SampleTypeTraits>(
-      audio_bus.frames(), reinterpret_cast<int16_t*>(dest_buffer_ptr));
+  // SAFETY: `dest_buffer_ptr` points to the `dest_buffer` we just allocated,
+  // which has at least `source_data_size` bytes (checked above).
+  audio_bus.ToInterleavedBytes<SignedInt16SampleTypeTraits>(
+      UNSAFE_BUFFERS(base::span<uint8_t>(dest_buffer_ptr, source_data_size)));
   RETURN_IF_FAILED(dest_buffer->Unlock());
   RETURN_IF_FAILED(dest_buffer->SetCurrentLength(source_data_size));
 
@@ -565,13 +568,18 @@ void MFAudioEncoder::Flush(EncoderStatusCB done_cb) {
     return;
   }
 
-  if (input_queue_.empty() && samples_in_encoder_ == 0) {
+  int total_samples = samples_in_encoder_;
+  for (const auto& input : input_queue_) {
+    total_samples += input.sample_count;
+  }
+
+  if (total_samples == 0) {
     std::move(done_cb).Run(EncoderStatus::Codes::kOk);
     return;
   }
 
   if (state_ == EncoderState::kError || state_ == EncoderState::kFlushing ||
-      state_ == EncoderState::kDraining || !can_flush_) {
+      state_ == EncoderState::kDraining) {
     std::move(done_cb).Run(EncoderStatus::Codes::kEncoderFailedFlush);
     return;
   }
@@ -582,12 +590,34 @@ void MFAudioEncoder::Flush(EncoderStatusCB done_cb) {
   have_queued_input_task_ = false;
   have_queued_output_task_ = false;
   state_ = EncoderState::kFlushing;
+
+  // The Media Foundation AAC encoder requires at least `kMinSamplesForFlush`
+  // (2 full frames) to successfully drain. If fewer samples have been provided,
+  // pad with silence to satisfy the minimum requirement.
+  if (total_samples < kMinSamplesForFlush) {
+    const int min_input_frames =
+        std::ceil(static_cast<float>(min_input_buffer_size_) /
+                  (channel_count_ * kBytesPerSample));
+    const int padding_frames =
+        std::max(kMinSamplesForFlush - total_samples, min_input_frames);
+    auto silence_bus = AudioBus::Create(channel_count_, padding_frames);
+    silence_bus->Zero();
+    if (!EnqueueInput(
+            std::move(silence_bus),
+            base::TimeTicks() + input_timestamp_tracker_->GetTimestamp(),
+            base::DoNothing())) {
+      OnError();
+      std::move(done_cb).Run(EncoderStatus::Codes::kEncoderFailedFlush);
+      return;
+    }
+  }
+
   TryProcessOutput(base::BindOnce(&MFAudioEncoder::OnFlushComplete,
                                   weak_ptr_factory_.GetWeakPtr(),
                                   std::move(done_cb)));
 }
 
-void MFAudioEncoder::EnqueueInput(std::unique_ptr<AudioBus> audio_bus,
+bool MFAudioEncoder::EnqueueInput(std::unique_ptr<AudioBus> audio_bus,
                                   base::TimeTicks capture_time,
                                   EncoderStatusCB done_cb) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
@@ -606,14 +636,14 @@ void MFAudioEncoder::EnqueueInput(std::unique_ptr<AudioBus> audio_bus,
                                      /*message_param=*/0);
     if (FAILED(hr)) {
       std::move(done_cb).Run(EncoderStatus::Codes::kEncoderFailedEncode);
-      return;
+      return false;
     }
 
     hr = mf_encoder_->ProcessMessage(MFT_MESSAGE_NOTIFY_START_OF_STREAM,
                                      /*message_param=*/0);
     if (FAILED(hr)) {
       std::move(done_cb).Run(EncoderStatus::Codes::kEncoderFailedEncode);
-      return;
+      return false;
     }
 
     input_timestamp_tracker_->SetBaseTimestamp(capture_time -
@@ -627,7 +657,7 @@ void MFAudioEncoder::EnqueueInput(std::unique_ptr<AudioBus> audio_bus,
   if (static_cast<size_t>(audio_bus->frames() * channel_count_ *
                           kBytesPerSample) < min_input_buffer_size_) {
     std::move(done_cb).Run(EncoderStatus::Codes::kEncoderFailedEncode);
-    return;
+    return false;
   }
 
   // MF requires the duration and timestamp to be in 100 nanosecond units.
@@ -644,13 +674,14 @@ void MFAudioEncoder::EnqueueInput(std::unique_ptr<AudioBus> audio_bus,
                                   timestamp, &input_sample);
   if (FAILED(hr)) {
     std::move(done_cb).Run(EncoderStatus::Codes::kEncoderFailedEncode);
-    return;
+    return false;
   }
 
   input_queue_.emplace_back(std::move(input_sample), audio_bus->frames(),
                             std::move(done_cb));
   if (state_ == EncoderState::kIdle)
     TryProcessInput(/*flush_cb=*/base::NullCallback());
+  return true;
 }
 
 void MFAudioEncoder::RunTryProcessInput(FlushCB flush_cb) {
@@ -678,12 +709,8 @@ void MFAudioEncoder::TryProcessInput(FlushCB flush_cb) {
   if (state_ == EncoderState::kDraining) {
     DCHECK(flush_cb);
     DCHECK(input_queue_.empty());
-
-    if (samples_in_encoder_ <= 0)
-      std::move(flush_cb).Run();
-    else
-      TryProcessOutput(std::move(flush_cb));
-
+    DCHECK_LE(samples_in_encoder_, 0);
+    std::move(flush_cb).Run();
     return;
   }
 
@@ -716,9 +743,6 @@ void MFAudioEncoder::TryProcessInput(FlushCB flush_cb) {
 
   if (samples_in_encoder_ >= kMinSamplesForOutput)
     can_produce_output_ = true;
-
-  if (samples_in_encoder_ >= kMinSamplesForFlush)
-    can_flush_ = true;
 
   // We must call `TryProcessOutput` if `not_accepting` is true in order for
   // the `mf_encoder_` to move data from its input buffer to a staging buffer,
@@ -821,17 +845,15 @@ void MFAudioEncoder::TryProcessOutput(FlushCB flush_cb) {
       OnError();
       return;
     }
+
+    TryProcessOutput(std::move(flush_cb));
+    return;
   }
 
   if (state_ == EncoderState::kDraining) {
-    // When draining, the encoder will produce output even if it has less than
-    // `kMinSamplesForOutput` buffered. It will 0 pad what data it has so that
-    // it can produce the final frame.
-    if (samples_in_encoder_ > 0)
-      TryProcessOutput(std::move(flush_cb));
-    else
-      std::move(flush_cb).Run();
-
+    DCHECK(flush_cb);
+    DCHECK_LE(samples_in_encoder_, 0);
+    std::move(flush_cb).Run();
     return;
   }
 
@@ -947,7 +969,6 @@ void MFAudioEncoder::OnFlushComplete(EncoderStatusCB done_cb) {
 
   samples_in_encoder_ = 0;
   can_produce_output_ = false;
-  can_flush_ = false;
   input_timestamp_tracker_->Reset();
   output_timestamp_tracker_->Reset();
   state_ = EncoderState::kIdle;

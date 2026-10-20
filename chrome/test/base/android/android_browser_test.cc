@@ -10,18 +10,21 @@
 #include "base/command_line.h"
 #include "base/memory/raw_ptr.h"
 #include "base/strings/string_util.h"
+#include "chrome/browser/net/stub_resolver_config_reader.h"
 #include "chrome/browser/ui/android/tab_model/tab_model.h"
 #include "chrome/browser/ui/android/tab_model/tab_model_list.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface_iterator.h"
-#include "chrome/test/base/chrome_test_utils.h"
+#include "chrome/test/base/chrome_test_path_utils.h"
 #include "chrome/test/base/test_launcher_utils.h"
 #include "components/keyed_service/content/browser_context_dependency_manager.h"
+#include "content/public/browser/network_service_instance.h"
 #include "content/public/test/test_utils.h"
 #include "extensions/buildflags/buildflags.h"
+#include "services/network/test/test_network_connection_tracker.h"
 
 #if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
-#include "extensions/common/extension_features.h"
+#include "chrome/browser/extensions/extension_management.h"
 #endif
 
 namespace {
@@ -38,9 +41,8 @@ AndroidBrowserTest::AndroidBrowserTest() {
 
   CreateTestServer(base::FilePath(FILE_PATH_LITERAL("chrome/test/data")));
 #if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
-  // Allow unpacked extensions without developer mode for testing.
-  feature_list_.InitAndDisableFeature(
-      extensions_features::kExtensionDisableUnsupportedDeveloper);
+  allow_unpacked_without_developer_mode_ = extensions::ExtensionManagement::
+      AllowUnpackedWithoutDeveloperModeForTesting();
 #endif
   g_current_test = this;
 
@@ -69,7 +71,28 @@ void AndroidBrowserTest::SetUp() {
 
   ASSERT_TRUE(SetUpUserDataDirectory());
 
+  if (use_test_network_connection_tracker_ &&
+      !network::TestNetworkConnectionTracker::HasInstance()) {
+    // Report an online network, since emulators often don't. Leaked on purpose:
+    // Android never tears down the browser, so its observers are never removed.
+    content::SetNetworkConnectionTrackerForTesting(
+        network::TestNetworkConnectionTracker::CreateInstance().release());
+  }
+
   BrowserTestBase::SetUp();
+}
+
+void AndroidBrowserTest::TearDown() {
+  BrowserTestBase::TearDown();
+  StubResolverConfigReader::SetDnsOverriddenForTesting(false);
+}
+
+void AndroidBrowserTest::CreatedBrowserMainParts(
+    content::BrowserMainParts* parts) {
+  BrowserTestBase::CreatedBrowserMainParts(parts);
+  if (host_resolver()) {
+    StubResolverConfigReader::SetDnsOverriddenForTesting(true);
+  }
 }
 
 void AndroidBrowserTest::SetUpDefaultCommandLine(

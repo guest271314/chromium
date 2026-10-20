@@ -38,6 +38,8 @@
 #include "base/auto_reset.h"
 #include "base/compiler_specific.h"
 #include "base/containers/heap_array.h"
+#include "base/memory/raw_ptr.h"
+#include "base/memory/raw_ptr_exclusion.h"
 #include "base/numerics/safe_conversions.h"
 #include "third_party/blink/renderer/core/css/style_engine.h"
 #include "third_party/blink/renderer/core/dom/cdata_section.h"
@@ -57,6 +59,7 @@
 #include "third_party/blink/renderer/core/html/custom/ce_reactions_scope.h"
 #include "third_party/blink/renderer/core/html/custom/custom_element_registry.h"
 #include "third_party/blink/renderer/core/html/html_html_element.h"
+#include "third_party/blink/renderer/core/html/html_iframe_element.h"
 #include "third_party/blink/renderer/core/html/html_template_element.h"
 #include "third_party/blink/renderer/core/html/parser/html_construction_site.h"
 #include "third_party/blink/renderer/core/html/parser/html_entity_parser.h"
@@ -121,14 +124,38 @@ static inline AtomicString ToAtomicString(const xmlChar* string) {
 
 static inline bool HasNoStyleInformation(Document* document) {
   if (document->SawElementsInKnownNamespaces() ||
-      DocumentXSLT::HasTransformSourceDocument(*document))
+      DocumentXSLT::HasTransformSourceDocument(*document)) {
     return false;
+  }
 
   if (!document->GetFrame() || !document->GetFrame()->GetPage())
     return false;
 
-  if (!document->IsInMainFrame() || document->GetFrame()->IsInFencedFrameTree())
+  if (document->GetFrame()->IsInFencedFrameTree()) {
     return false;  // This document has style information from a parent.
+  }
+
+  if (!document->IsInMainFrame()) {
+    if (!RuntimeEnabledFeatures::XMLViewerForIframesEnabled()) {
+      return false;
+    }
+    auto* owner = document->GetFrame()->DeprecatedLocalOwner();
+    if (!owner || !IsA<HTMLIFrameElement>(*owner)) {
+      return false;
+    }
+
+    // Script-created blob XML documents can be embedded in iframes as
+    // ordinary content. Do not replace them with the XML tree viewer.
+    if (document->Url().ProtocolIs("blob")) {
+      return false;
+    }
+
+    // SVG documents have their own rendering path and should not use the XML
+    // tree viewer.
+    if (document->contentType() == "image/svg+xml") {
+      return false;
+    }
+  }
 
   if (SVGImage::IsInSVGImage(document))
     return false;
@@ -137,8 +164,10 @@ static inline bool HasNoStyleInformation(Document* document) {
 }
 
 struct xmlSAX2Namespace {
-  xmlChar* prefix;
-  xmlChar* uri;
+  // RAW_PTR_EXCLUSION: #reinterpret-cast-trivial-type
+  RAW_PTR_EXCLUSION xmlChar* prefix;
+  // RAW_PTR_EXCLUSION: #reinterpret-cast-trivial-type
+  RAW_PTR_EXCLUSION xmlChar* uri;
 
   void CloneTo(xmlSAX2Namespace& to_ns) const {
     to_ns.prefix = xmlStrdup(prefix);
@@ -155,17 +184,22 @@ static_assert(std::is_trivial_v<xmlSAX2Namespace> &&
 static_assert(sizeof(xmlSAX2Namespace) == sizeof(xmlChar*) * 2);
 
 struct xmlSAX2Attributes {
-  xmlChar* localname;
-  xmlChar* prefix;
-  xmlChar* uri;
-  xmlChar* value;
-  xmlChar* end;
+  // RAW_PTR_EXCLUSION: #reinterpret-cast-trivial-type
+  RAW_PTR_EXCLUSION xmlChar* localname;
+  // RAW_PTR_EXCLUSION: #reinterpret-cast-trivial-type
+  RAW_PTR_EXCLUSION xmlChar* prefix;
+  // RAW_PTR_EXCLUSION: #reinterpret-cast-trivial-type
+  RAW_PTR_EXCLUSION xmlChar* uri;
+  // RAW_PTR_EXCLUSION: #reinterpret-cast-trivial-type
+  RAW_PTR_EXCLUSION xmlChar* value;
+  // RAW_PTR_EXCLUSION: #reinterpret-cast-trivial-type
+  RAW_PTR_EXCLUSION xmlChar* end;
 
   base::span<const xmlChar> ValueSpan() const {
     // SAFETY: ValueLength() returns the distance between `end` and
     // `value`. libxml provides the attribute value as a sequence of xmlChars
     // that start at `value` and end at `end`.
-    return UNSAFE_BUFFERS(base::span(value, ValueLength()));
+    return UNSAFE_BUFFERS(base::span(base::unchecked, value, ValueLength()));
   }
 
   size_t ValueLength() const { return static_cast<size_t>(end - value); }
@@ -349,13 +383,13 @@ class PendingErrorCallback final : public XMLDocumentParser::PendingCallback {
   ~PendingErrorCallback() override { xmlFree(message_); }
 
   void Call(XMLDocumentParser* parser) override {
-    parser->HandleError(type_, reinterpret_cast<char*>(message_),
+    parser->HandleError(type_, reinterpret_cast<char*>(message_.get()),
                         GetTextPosition());
   }
 
  private:
   XMLErrors::ErrorType type_;
-  xmlChar* message_;
+  raw_ptr<xmlChar, UnprotectedInRelease | DanglingUntriaged> message_;
 };
 
 void XMLDocumentParser::PushCurrentNode(ContainerNode* n) {
@@ -394,7 +428,7 @@ void XMLDocumentParser::Append(const String& input_source) {
   if (IsStopped() || saw_xsl_transform_)
     return;
 
-  if (parser_paused_) {
+  if (parser_paused_ || in_parse_chunk_) {
     pending_src_.Append(source);
     return;
   }
@@ -466,6 +500,10 @@ void XMLDocumentParser::end() {
   if (parser_paused_)
     return;
 
+  // Any deferred Finish() is carried out below; reset the flag so that
+  // DoWrite() and ResumeParsing() do not call end() a second time.
+  finish_called_ = false;
+
   // StopParsing() calls InsertErrorMessageBlock() if there was a parsing
   // error. Avoid showing the error message block twice.
   // TODO(crbug.com/898775): Rationalize this.
@@ -481,6 +519,11 @@ void XMLDocumentParser::end() {
   if (IsParsing())
     PrepareToStopParsing();
   GetDocument()->SetReadyState(Document::kInteractive);
+  // SetReadyState can fire a readystatechange event which can run script and
+  // detach the document.
+  if (IsDetached()) {
+    return;
+  }
   ClearCurrentNodeStack();
   GetDocument()->FinishedParsing();
 }
@@ -494,10 +537,14 @@ void XMLDocumentParser::Finish() {
   if (IsDetached())
     return;
 
-  if (parser_paused_)
+  // If ParseChunk() is on the stack, ending the document now would re-enter
+  // libxml2 (see DoWrite()). Defer exactly like the paused case; DoWrite()
+  // honors finish_called_ once the current chunk has been parsed.
+  if (parser_paused_ || in_parse_chunk_) {
     finish_called_ = true;
-  else
+  } else {
     end();
+  }
 }
 
 void XMLDocumentParser::InsertErrorMessageBlock() {
@@ -730,8 +777,8 @@ static int ReadFunc(void* context, char* buffer, int len) {
 
   SharedBufferReader* data = static_cast<SharedBufferReader*>(context);
   // SAFETY: libxml provides `buffer` that points to at least `len` bytes.
-  auto buffer_span =
-      UNSAFE_BUFFERS(base::span(buffer, base::checked_cast<size_t>(len)));
+  auto buffer_span = UNSAFE_BUFFERS(
+      base::span(base::unchecked, buffer, base::checked_cast<size_t>(len)));
   return base::checked_cast<int>(data->ReadData(buffer_span));
 }
 
@@ -945,28 +992,59 @@ void XMLDocumentParser::DoWrite(const String& parse_string) {
   // Protect the libxml context from deletion during a callback
   scoped_refptr<XMLParserContext> context = context_;
 
-  // libXML throws an error if you try to switch the encoding for an empty
-  // string.
-  if (parse_string.length()) {
-    XMLDocumentParserScope scope(GetDocument());
-    base::AutoReset<bool> encoding_scope(&is_currently_parsing8_bit_chunk_,
-                                         parse_string.Is8Bit());
-    ParseChunk(context->Context(), parse_string);
+  {
+    // libxml2's push parser is not re-entrant: xmlParseEndTag2 holds multiple
+    // raw pointers inside ctxt, and a nested xmlParseChunk can xmlRealloc()
+    // those buffers. Crash safely rather than corrupt the heap. (Append()
+    // routes re-entrant data to pending_src_ and Finish() defers to
+    // finish_called_, so this should be unreachable.)
+    CHECK(!in_parse_chunk_);
+    base::AutoReset<bool> reentrancy_guard(&in_parse_chunk_, true);
 
-    // JavaScript (which may be run under the parseChunk callstack) may
-    // cause the parser to be stopped or detached.
-    if (IsStopped())
-      return;
+    // libXML throws an error if you try to switch the encoding for an empty
+    // string.
+    if (parse_string.length()) {
+      XMLDocumentParserScope scope(GetDocument());
+      base::AutoReset<bool> encoding_scope(&is_currently_parsing8_bit_chunk_,
+                                           parse_string.Is8Bit());
+      ParseChunk(context->Context(), parse_string);
+
+      // JavaScript (which may be run under the parseChunk callstack) may
+      // cause the parser to be stopped or detached.
+      if (IsStopped() && !finish_called_) {
+        return;
+      }
+    }
+
+    // FIXME: Why is this here? And why is it after we process the passed
+    // source?
+    if (!IsStopped() && GetDocument()->SawDecodingError()) {
+      // If the decoder saw an error, report it as fatal (stops parsing)
+      TextPosition position(
+          OrdinalNumber::FromOneBasedInt(context->Context()->input->line),
+          OrdinalNumber::FromOneBasedInt(context->Context()->input->col));
+      HandleError(XMLErrors::kErrorTypeFatal, "Encoding error", position);
+    }
   }
 
-  // FIXME: Why is this here? And why is it after we process the passed
-  // source?
-  if (GetDocument()->SawDecodingError()) {
-    // If the decoder saw an error, report it as fatal (stops parsing)
-    TextPosition position(
-        OrdinalNumber::FromOneBasedInt(context->Context()->input->line),
-        OrdinalNumber::FromOneBasedInt(context->Context()->input->col));
-    HandleError(XMLErrors::kErrorTypeFatal, "Encoding error", position);
+  if (IsDetached() || parser_paused_) {
+    return;
+  }
+
+  // Data appended and a Finish() call received while ParseChunk() was on the
+  // stack above were deferred; take care of them now that the chunk has been
+  // parsed.
+  if (!pending_src_.IsEmpty()) {
+    SegmentedString rest = pending_src_;
+    pending_src_.Clear();
+    Append(rest.ToString());
+    if (IsDetached() || parser_paused_) {
+      return;
+    }
+  }
+
+  if (finish_called_ && pending_callbacks_.empty()) {
+    end();
   }
 }
 
@@ -1067,6 +1145,43 @@ void XMLDocumentParser::StartElementNs(
   bool is_first_element = !saw_first_element_;
   saw_first_element_ = true;
 
+  if (!parsing_fragment_ && is_first_element && local_name == "alert" &&
+      IsCAPAlertNamespace(uri)) {
+    UseCounter::Count(document_, WebFeature::kXmlCAPAlert);
+    if (document_) {
+      // We set this here so that XSLT processing can be conditionally enabled
+      // for this document, and so the XSLT engine knows to inject the CAP alert
+      // banner and record use counters.
+      document_->SetIsCAPAlert(true);
+      if (RuntimeEnabledFeatures::EnableXSLTForCAPAlertsEnabled(
+              document_->GetExecutionContext())) {
+        for (Node* child = document_->firstChild(); child;
+             child = child->nextSibling()) {
+          if (auto* pi = DynamicTo<ProcessingInstruction>(child)) {
+            if (!pi->IsXSL()) {
+              // The PI was initially inserted into the document before
+              // IsCAPAlert() was set, so IsXSL() returned false and it was
+              // treated as a regular CSS stylesheet. Remove it from the CSS
+              // engine, re-evaluate it, and manually trigger the XSLT
+              // processing logic since it was missed during insertion.
+              document_->GetStyleEngine().RemoveStyleSheetCandidateNode(
+                  *pi, *document_);
+              pi->UpdateStylesheetIfNeeded();
+              if (pi->IsXSL()) {
+                DocumentXSLT::ProcessingInstructionInsertedIntoDocument(
+                    *document_, pi);
+                saw_xsl_transform_ = true;
+                if (!DocumentXSLT::HasTransformSourceDocument(*GetDocument())) {
+                  StopParsing();
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
   Vector<Attribute, kAttributePrealloc> prefixed_attributes;
   bool encountered_namespace_reset = false;
   if (!HandleNamespaceAttributes(prefixed_attributes, namespaces,
@@ -1113,8 +1228,7 @@ void XMLDocumentParser::StartElementNs(
   for (const auto& attr : prefixed_attributes) {
     if (attr.GetName() == html_names::kIsAttr) {
       is = attr.Value();
-    } else if (RuntimeEnabledFeatures::ScopedCustomElementRegistryEnabled() &&
-               attr.GetName() == html_names::kCustomelementregistryAttr) {
+    } else if (attr.GetName() == html_names::kCustomelementregistryAttr) {
       has_customelementregistry_attr = true;
     }
   }
@@ -1127,8 +1241,7 @@ void XMLDocumentParser::StartElementNs(
   }
 
   CustomElementRegistry* registry = nullptr;
-  if (RuntimeEnabledFeatures::ScopedCustomElementRegistryEnabled() &&
-      !has_customelementregistry_attr) {
+  if (!has_customelementregistry_attr) {
     // If the element doesn't have the customelementregistry attribute, then
     // it should inherit its registry from its parent.
     if (auto* parent_element = DynamicTo<Element>(current_node_.Get())) {
@@ -1156,11 +1269,15 @@ void XMLDocumentParser::StartElementNs(
     }
   }
 
-  Element* new_element = current_node_->GetDocument().CreateElement(
-      q_name,
+  CreateElementFlags flags =
       parsing_fragment_ ? CreateElementFlags::ByFragmentParser(document_)
-                        : CreateElementFlags::ByParser(document_),
-      is, registry);
+                        : CreateElementFlags::ByParser(document_);
+  if (ShouldMarkScriptAlreadyStarted()) {
+    flags.SetAlreadyStarted(true);
+  }
+
+  Element* new_element =
+      current_node_->GetDocument().CreateElement(q_name, flags, is, registry);
   // Check IsStopped() because custom element constructors may synchronously
   // trigger removal of the document and cancellation of this parser.
   if (IsStopped()) {
@@ -1171,7 +1288,20 @@ void XMLDocumentParser::StartElementNs(
     return;
   }
 
-  SetAttributes(new_element, prefixed_attributes, GetParserContentPolicy());
+  if (reactions.has_value()) {
+    // A synchronous custom element constructor ran and may have manipulated
+    // the element (set attributes, appended children, or inserted it into the
+    // tree), so the batched ParserSetAttributes() path is no longer safe. Set
+    // the attributes one by one, as HTMLConstructionSite::CreateElement does.
+    if (!ScriptingContentIsAllowed(GetParserContentPolicy())) {
+      new_element->StripScriptingAttributes(prefixed_attributes);
+    }
+    for (const auto& attribute : prefixed_attributes) {
+      new_element->setAttribute(attribute.GetName(), attribute.Value());
+    }
+  } else {
+    SetAttributes(new_element, prefixed_attributes, GetParserContentPolicy());
+  }
 
   if (parsing_fragment_ && encountered_namespace_reset &&
       !ancestor_resetting_namespace_) {
@@ -1357,7 +1487,9 @@ void XMLDocumentParser::GetProcessingInstruction(const String& target,
   CheckIfBlockingStyleSheetAdded();
 
   saw_xsl_transform_ = !saw_first_element_ && pi->IsXSL();
-  CHECK(!saw_xsl_transform_ || RuntimeEnabledFeatures::XSLTEnabled());
+  CHECK(!saw_xsl_transform_ ||
+        XSLTProcessor::IsXSLTEnabled(
+            GetDocument() ? GetDocument()->GetExecutionContext() : nullptr));
   if (saw_xsl_transform_ &&
       !DocumentXSLT::HasTransformSourceDocument(*GetDocument())) {
     // This behavior is very tricky. We call stopParsing() here because we
@@ -1478,7 +1610,8 @@ static void StartElementNsHandler(void* closure,
   // xmlChar* for each 'nb_namespaces'. The xmlSAX2Namespace struct
   // encapsulates these two pointers.
   auto namespaces = UNSAFE_BUFFERS(
-      base::span(reinterpret_cast<const xmlSAX2Namespace*>(libxml_namespaces),
+      base::span(base::unchecked,
+                 reinterpret_cast<const xmlSAX2Namespace*>(libxml_namespaces),
                  base::checked_cast<size_t>(nb_namespaces)));
   // SAFETY: libxml provides `libxml_attributes` which points to 5 const
   // xmlChar* for each 'nb_attributes' . The xmlSAX2Attributes struct
@@ -1500,8 +1633,8 @@ static void EndElementNsHandler(void* closure,
 
 static void CharactersHandler(void* closure, const xmlChar* chars, int length) {
   // SAFETY: libxml provides `chars` that point at `length` xmlChars.
-  auto chars_span =
-      UNSAFE_BUFFERS(base::span(chars, base::checked_cast<size_t>(length)));
+  auto chars_span = UNSAFE_BUFFERS(
+      base::span(base::unchecked, chars, base::checked_cast<size_t>(length)));
   GetParser(closure)->Characters(chars_span);
 }
 
@@ -1514,8 +1647,8 @@ static void ProcessingInstructionHandler(void* closure,
 
 static void CdataBlockHandler(void* closure, const xmlChar* text, int length) {
   // SAFETY: libxml provides `text` that point at `length` xmlChars.
-  auto text_span =
-      UNSAFE_BUFFERS(base::span(text, base::checked_cast<size_t>(length)));
+  auto text_span = UNSAFE_BUFFERS(
+      base::span(base::unchecked, text, base::checked_cast<size_t>(length)));
   GetParser(closure)->CdataBlock(ToString(text_span));
 }
 
@@ -1731,7 +1864,10 @@ void XMLDocumentParser::InitializeParserContext(const std::string& chunk) {
 void XMLDocumentParser::DoEnd() {
   if (!IsStopped()) {
     if (context_) {
-      // Tell libxml we're done.
+      // Tell libxml we're done. The terminating chunk may run SAX callbacks,
+      // so it needs the same re-entrancy protection as DoWrite().
+      CHECK(!in_parse_chunk_);
+      base::AutoReset<bool> reentrancy_guard(&in_parse_chunk_, true);
       {
         XMLDocumentParserScope scope(GetDocument());
         FinishParsing(Context());
@@ -1745,7 +1881,9 @@ void XMLDocumentParser::DoEnd() {
                          HasNoStyleInformation(GetDocument());
   if (xml_viewer_mode) {
     GetDocument()->SetIsViewSource(true);
-    TransformDocumentToXMLTreeView(*GetDocument());
+    TransformDocumentToXMLTreeView(
+        *GetDocument(),
+        /*preserve_document_element=*/!GetDocument()->IsInMainFrame());
   } else if (saw_xsl_transform_) {
     xmlDocPtr doc = XmlDocPtrForString(
         GetDocument(), original_source_for_transform_.ToString(),
@@ -1872,6 +2010,42 @@ void XMLDocumentParser::CheckIfBlockingStyleSheetAdded() {
   added_pending_parser_blocking_stylesheet_ = false;
   waiting_for_stylesheets_ = true;
   PauseParsing();
+}
+
+bool XMLDocumentParser::ShouldMarkScriptAlreadyStarted() const {
+  if (!RuntimeEnabledFeatures::DOMParserXmlScriptAlreadyStartedEnabled()) {
+    return false;
+  }
+
+  return
+      // DOMParser.parseFromString parses with XML scripting support disabled:
+      // See: https://html.spec.whatwg.org/#dom-domparser-parsefromstring
+      //      step 3, "Otherwise", step 1.
+      document_->IsDOMParserDocument() ||
+      // XMLHTTPRequest.responseXML parses with XML scripting support disabled:
+      // See: https://xhr.spec.whatwg.org/#document-response, step 6
+      document_->IsXHRDocument() ||
+      // XSLTProcessor.transformToDocument (and any other XML document with a
+      // null browsing context) must mark script elements as already started
+      // and never execute them.
+      // See:
+      // https://html.spec.whatwg.org/multipage/scripting.html#scriptTagXSLT
+      // Documents without a frame (a null browsing context) do not have a
+      // `script_runner_` in XMLDocumentParser, so `EndElementNs()` returns
+      // early without calling `ScriptLoader::PrepareScript()` (which would
+      // otherwise mark scripts as already started and bail out before execution
+      // due to the null browsing context). Checking `!document_->GetFrame()`
+      // marks scripts as already started upon creation in frameless XML
+      // documents, covering `XSLTProcessor.transformToDocument()` (which
+      // creates a frameless Document and parses via `Document::SetContent()`
+      // without setting `IsDOMParserDocument()` or `IsXHRDocument()`):
+      !document_->GetFrame() ||
+      // All XML parse results created as part of XML fragment parsing:
+      // See:
+      // https://html.spec.whatwg.org/multipage/xhtml.html#xml-scripting-support-disabled,
+      // "If the parser was created as part of the XML fragment parsing
+      // algorithm, then the element's already started must be set to true."
+      parsing_fragment_;
 }
 
 void XMLDocumentParser::ExecuteScriptsWaitingForResources() {

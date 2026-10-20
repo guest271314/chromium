@@ -28,6 +28,8 @@ inline constexpr char kManagedDefaultAdsSetting[] =
     "profile.managed_default_content_settings.ads";
 inline constexpr char kManagedDefaultClipboardSetting[] =
     "profile.managed_default_content_settings.clipboard";
+inline constexpr char kManagedDefaultAutomaticDownloadsSetting[] =
+    "profile.managed_default_content_settings.automatic_downloads";
 inline constexpr char kManagedDefaultCookiesSetting[] =
     "profile.managed_default_content_settings.cookies";
 inline constexpr char kManagedDefaultGeolocationSetting[] =
@@ -72,9 +74,6 @@ inline constexpr char kManagedDefaultWebPrintingSetting[] =
     "profile.managed_default_content_settings.web_printing";
 inline constexpr char kManagedDefaultDirectSocketsSetting[] =
     "profile.managed_default_content_settings.direct_sockets";
-inline constexpr char
-    kManagedDefaultDirectSocketsPrivateNetworkAccessSetting[] =
-        "profile.managed_default_content_settings.direct_sockets_pna";
 inline constexpr char kManagedDefaultSubAppsWithoutPromptsSetting[] =
     "profile.managed_default_content_settings.sub_apps_without_prompts";
 inline constexpr char kManagedDefaultLegacyCookieScope[] =
@@ -90,6 +89,10 @@ inline constexpr char kManagedDefaultDeviceAttributesSetting[] =
 
 // Preferences that are exclusively used to store managed content settings
 // patterns.
+inline constexpr char kManagedAutomaticDownloadsAllowedForUrls[] =
+    "profile.managed_automatic_downloads_allowed_for_urls";
+inline constexpr char kManagedAutomaticDownloadsBlockedForUrls[] =
+    "profile.managed_automatic_downloads_blocked_for_urls";
 inline constexpr char kManagedAutomaticFullscreenAllowedForUrls[] =
     "profile.managed_automatic_fullscreen_allowed_for_urls";
 inline constexpr char kManagedAutomaticFullscreenBlockedForUrls[] =
@@ -190,12 +193,6 @@ inline constexpr char kManagedDirectSocketsAllowedForUrls[] =
     "profile.managed_direct_sockets_allowed_for_urls";
 inline constexpr char kManagedDirectSocketsBlockedForUrls[] =
     "profile.managed_direct_sockets_blocked_for_urls";
-inline constexpr char
-    kManagedDirectSocketsPrivateNetworkAccessAllowedForUrls[] =
-        "profile.managed_direct_sockets_pna_allowed_for_urls";
-inline constexpr char
-    kManagedDirectSocketsPrivateNetworkAccessBlockedForUrls[] =
-        "profile.managed_direct_sockets_pna_blocked_for_urls";
 inline constexpr char kManagedSubAppsWithoutPromptsAllowedForOrigins[] =
     "profile.managed_sub_apps_without_prompts_allowed_for_origins";
 inline constexpr char kManagedSubAppsWithoutPromptsBlockedForOrigins[] =

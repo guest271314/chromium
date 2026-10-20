@@ -2,18 +2,15 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "chrome/utility/importer/safari_importer.h"
 
 #include <stddef.h>
 #include <stdint.h>
 
+#include <array>
 #include <string>
 
+#include "base/compiler_specific.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/files/scoped_temp_dir.h"
@@ -30,6 +27,18 @@
 #include "components/user_data_importer/common/imported_bookmark_entry.h"
 #include "sql/database.h"
 #include "testing/platform_test.h"
+
+namespace {
+
+struct BookmarkData {
+  bool in_toolbar;
+  GURL url;
+  // We store the path with levels of nesting delimited by forward slashes.
+  std::u16string path;
+  std::u16string title;
+};
+
+}  // namespace
 
 // In order to test the Safari import functionality effectively, we store a
 // simulated Library directory containing dummy data files in the same
@@ -59,13 +68,7 @@ class SafariImporterTest : public PlatformTest {
 
 TEST_F(SafariImporterTest, BookmarkImport) {
   // Expected results
-  const struct {
-    bool in_toolbar;
-    GURL url;
-    // We store the path with levels of nesting delimited by forward slashes.
-    std::u16string path;
-    std::u16string title;
-  } kImportedBookmarksData[] = {
+  const auto kImportedBookmarksData = std::to_array<BookmarkData>({
       {true, GURL("http://www.apple.com/"), u"Toolbar/", u"Apple"},
       {true, GURL("http://www.yahoo.com/"), u"Toolbar/", u"Yahoo!"},
       {true, GURL("http://www.cnn.com/"), u"Toolbar/News", u"CNN"},
@@ -76,7 +79,7 @@ TEST_F(SafariImporterTest, BookmarkImport) {
       {false, GURL(), std::u16string(), u"Empty Folder"},
       {false, GURL("http://www.webkit.org/blog/"), std::u16string(),
        u"Surfin' Safari - The WebKit Blog"},
-  };
+  });
 
   scoped_refptr<SafariImporter> importer(GetSafariImporter());
   std::vector<user_data_importer::ImportedBookmarkEntry> bookmarks;
@@ -103,13 +106,7 @@ TEST_F(SafariImporterTest, BookmarkImport) {
 
 TEST_F(SafariImporterTest, BookmarkImportWithEmptyBookmarksMenu) {
   // Expected results.
-  const struct {
-    bool in_toolbar;
-    GURL url;
-    // We store the path with levels of nesting delimited by forward slashes.
-    std::u16string path;
-    std::u16string title;
-  } kImportedBookmarksData[] = {
+  const auto kImportedBookmarksData = std::to_array<BookmarkData>({
       {true, GURL("http://www.apple.com/"), u"Toolbar/", u"Apple"},
       {true, GURL("http://www.yahoo.com/"), u"Toolbar/", u"Yahoo!"},
       {true, GURL("http://www.cnn.com/"), u"Toolbar/News", u"CNN"},
@@ -117,7 +114,7 @@ TEST_F(SafariImporterTest, BookmarkImportWithEmptyBookmarksMenu) {
        u"The New York Times"},
       {false, GURL("http://www.webkit.org/blog/"), std::u16string(),
        u"Surfin' Safari - The WebKit Blog"},
-  };
+  });
 
   scoped_refptr<SafariImporter> importer(
       GetSafariImporterWithPathSuffix("empty_bookmarks_menu"));

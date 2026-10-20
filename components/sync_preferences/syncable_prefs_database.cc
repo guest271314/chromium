@@ -8,7 +8,6 @@
 
 #include "base/feature_list.h"
 #include "base/logging.h"
-#include "components/sync/base/features.h"
 #include "components/sync_preferences/features.h"
 
 namespace sync_preferences {
@@ -20,24 +19,20 @@ WriteBehavior SyncablePrefMetadata::write_behavior() const {
 
 bool SyncablePrefsDatabase::IsPreferenceSyncable(
     std::string_view pref_name) const {
-  return GetSyncablePrefMetadata(pref_name).has_value();
+  return GetSyncablePrefMetadata(pref_name);
 }
 
 bool SyncablePrefsDatabase::IsPreferenceMergeable(
     std::string_view pref_name) const {
-  std::optional<SyncablePrefMetadata> metadata =
-      GetSyncablePrefMetadata(pref_name);
-  CHECK(metadata.has_value());
+  const SyncablePrefMetadata* metadata = GetSyncablePrefMetadata(pref_name);
+  CHECK(metadata);
   return metadata->merge_behavior() != MergeBehavior::kNone;
 }
 
 bool SyncablePrefsDatabase::IsPreferenceAlwaysSyncing(
     std::string_view pref_name) const {
-  CHECK(base::FeatureList::IsEnabled(
-      syncer::kSyncSupportAlwaysSyncingPriorityPreferences));
-  std::optional<SyncablePrefMetadata> metadata =
-      GetSyncablePrefMetadata(pref_name);
-  CHECK(metadata.has_value());
+  const SyncablePrefMetadata* metadata = GetSyncablePrefMetadata(pref_name);
+  CHECK(metadata);
   return metadata->pref_sensitivity() ==
          PrefSensitivity::kExemptFromUserControlWhileSignedIn;
 }

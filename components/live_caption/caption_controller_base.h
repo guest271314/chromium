@@ -8,9 +8,11 @@
 #include <list>
 #include <memory>
 #include <optional>
+#include <set>
 #include <string>
 
 #include "base/memory/raw_ptr.h"
+#include "base/memory/weak_ptr.h"
 #include "media/mojo/mojom/speech_recognition.mojom.h"
 #include "ui/native_theme/caption_style.h"
 #include "ui/native_theme/native_theme_observer.h"
@@ -60,6 +62,10 @@ class CaptionControllerBase : public ui::NativeThemeObserver {
    public:
     virtual ~Listener() = default;
 
+    // Returns whether transcription is allowed for audio that originated in
+    // the RFH.
+    virtual bool IsTranscriptionAllowed(content::RenderFrameHost* rfh);
+
     // Called when a transcription is received from the service for audio that
     // originated in the RFH.  This may be null if the audio was not associated
     // with any particulat RFH.
@@ -95,6 +101,14 @@ class CaptionControllerBase : public ui::NativeThemeObserver {
   // Add or remove a `Listener`.  We maintain ownership, and destroy the
   // listener when it is removed.
   void AddListener(std::unique_ptr<Listener>);
+
+  // Schedules the removal of a `Listener`. It will not be removed immediately
+  // to avoid issues if called during listener iteration.
+  void RemoveSoon(Listener*);
+
+  // Returns whether at least one listener allows transcription for audio from
+  // `rfh`.
+  bool IsTranscriptionAllowed(content::RenderFrameHost* rfh);
 
   // Routes a transcription to all listeners.  Returns whether the transcription
   // was routed successfully, which currently means that at least one listener
@@ -180,6 +194,8 @@ class CaptionControllerBase : public ui::NativeThemeObserver {
   // create it.  While it exists, `caption_bubble_controller_` aliases it.  This
   // alias is cleared when it's destroyed.
   raw_ptr<CaptionBubbleController> caption_bubble_controller_ = nullptr;
+
+  base::WeakPtrFactory<CaptionControllerBase> weak_ptr_factory_{this};
 };
 
 }  // namespace captions

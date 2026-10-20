@@ -54,7 +54,7 @@ class MockDelegate : public ProfileTokenWebSigninInterceptor::Delegate {
               (override));
   MOCK_METHOD(void,
               ShowFirstRunExperienceInNewProfile,
-              (Browser*,
+              (BrowserWindowInterface*,
                const CoreAccountId&,
                WebSigninInterceptor::SigninInterceptionType),
               (override));
@@ -65,7 +65,7 @@ class MockDelegate : public ProfileTokenWebSigninInterceptor::Delegate {
 };
 
 MATCHER_P(HasSameAccountIdAs, other, "") {
-  return arg.account_id == other.account_id;
+  return arg.GetAccountId() == other.GetAccountId();
 }
 
 // Matches BubbleParameters fields excepting the color. This is useful in the
@@ -129,7 +129,7 @@ class ProfileTokenWebSigninInterceptorTest
     auto delegate = std::make_unique<MockDelegate>();
     delegate_ = delegate.get();
     interceptor_ = std::make_unique<ProfileTokenWebSigninInterceptor>(
-        browser()->profile(), std::move(delegate));
+        browser()->GetProfile(), std::move(delegate));
     interceptor_->SetDisableBrowserCreationAfterInterceptionForTesting(true);
   }
 
@@ -178,7 +178,7 @@ IN_PROC_BROWSER_TEST_F(ProfileTokenWebSigninInterceptorTest,
   auto* entry =
       g_browser_process->profile_manager()
           ->GetProfileAttributesStorage()
-          .GetProfileAttributesWithPath(browser()->profile()->GetPath());
+          .GetProfileAttributesWithPath(browser()->GetProfile()->GetPath());
   entry->SetProfileManagementId("id");
   entry->SetProfileManagementEnrollmentToken("token");
   entry->SetDasherlessManagement(true);

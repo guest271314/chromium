@@ -2,13 +2,19 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "chrome/browser/safe_browsing/download_protection/download_protection_service.h"
+
 #include <string_view>
 
 #include "base/files/file_path.h"
 #include "base/path_service.h"
 #include "base/run_loop.h"
+#include "base/test/scoped_feature_list.h"
+#include "chrome/browser/browser_process.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser.h"
+#include "chrome/browser/safe_browsing/safe_browsing_service.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/omnibox/omnibox_next_features.h"
 #include "chrome/common/chrome_paths.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
@@ -26,6 +32,16 @@
 namespace safe_browsing {
 
 class DownloadProtectionServiceBrowserTest : public InProcessBrowserTest {
+ public:
+  DownloadProtectionServiceBrowserTest() {
+    // TODO(crbug.com/452061489): Fix tests that fail when the WebUI Omnibox is
+    // enabled and then remove this.
+    scoped_feature_list_.InitWithFeatures(
+        /*enabled_features=*/{},
+        /*disabled_features=*/{omnibox::internal::kWebUIOmniboxPopup,
+                               omnibox::internal::kWebUIOmniboxAimPopup});
+  }
+
  protected:
   base::FilePath GetTestDataDirectory() {
     base::FilePath test_file_directory;
@@ -35,7 +51,7 @@ class DownloadProtectionServiceBrowserTest : public InProcessBrowserTest {
 
   void DownloadAndWait(GURL url) {
     content::DownloadManager* download_manager =
-        browser()->profile()->GetDownloadManager();
+        browser()->GetProfile()->GetDownloadManager();
     content::DownloadTestObserverTerminal observer(
         download_manager, 1,
         content::DownloadTestObserver::ON_DANGEROUS_DOWNLOAD_IGNORE);
@@ -62,6 +78,19 @@ class DownloadProtectionServiceBrowserTest : public InProcessBrowserTest {
   static constexpr std::string_view kBZipDigest =
       "\x94\x1e\x17\x3f\x62\xbc\x04\x50\x6f\xeb\xb5\xe2\x8c\x38\x6c\xb2\x11\x91"
       "\xf3\x77\xa7\x2c\x11\x92\xe0\x25\xb0\xe5\xc7\x70\x3b\x23";
+
+  void SetUpOnMainThread() override {
+    InProcessBrowserTest::SetUpOnMainThread();
+    if (auto* sb_service = g_browser_process->safe_browsing_service()) {
+      if (auto* download_service = sb_service->download_protection_service()) {
+        download_service->SetDownloadRequestTimeoutForTesting(
+            base::Seconds(60));
+      }
+    }
+  }
+
+ private:
+  base::test::ScopedFeatureList scoped_feature_list_;
 };
 
 IN_PROC_BROWSER_TEST_F(DownloadProtectionServiceBrowserTest, VerifyZipHash) {

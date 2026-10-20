@@ -17,6 +17,15 @@
 #include "third_party/metrics_proto/user_demographics.pb.h"
 #include "url/gurl.h"
 
+#if !defined(__IPHONE_27_1) || __IPHONE_OS_VERSION_MAX_ALLOWED < __IPHONE_27_1
+typedef NS_ENUM(NSInteger, UIHingeStatus) {
+  UIHingeStatusUnknown = 0,
+  UIHingeStatusClosed = 1,
+  UIHingeStatusPartiallyOpen = 2,
+  UIHingeStatusFullyOpen = 3,
+};
+#endif
+
 @class FakeSystemIdentity;
 @class ElementSelector;
 @class JavaScriptExecutionResult;
@@ -34,7 +43,8 @@ UIWindow* GetAnyKeyWindow();
 void GREYAssertErrorNil(NSError* error);
 
 // Assert the error is nil. Postpone the error description to the error message.
-void GREYAssertErrorNil(NSError* error, NSString* description);
+void GREYAssertErrorNil(NSError* error, NSString* format, ...)
+    NS_FORMAT_FUNCTION(2, 3);
 
 }  // namespace chrome_test_util
 
@@ -57,6 +67,28 @@ id<GREYAction> grey_longPressWithDuration(base::TimeDelta duration);
 // Wait until `matcher` is accessible (not nil) on the device.
 - (void)waitForMatcher:(id<GREYMatcher>)matcher;
 
+// Stops startup tracing, flushes trace file to disk, and returns trace file
+// path.
+- (NSString*)stopStartupTracing;
+
+// Starts manual tracing. Returns YES on success.
+- (BOOL)startManualTracing;
+
+// Stops manual tracing, flushes trace file to disk, and returns trace file
+// path.
+- (NSString*)stopManualTracing;
+
+// Returns YES if the trace file at `filePath` exists and has a size greater
+// than 0.
+- (BOOL)isTraceFileReadyAtPath:(NSString*)filePath;
+
+// Returns the content of the trace file at `filePath` as NSData, or nil if
+// reading failed.
+- (NSData*)traceDataForPath:(NSString*)filePath;
+
+// Removes the trace file at `filePath`. Returns YES if successfully deleted.
+- (BOOL)removeTraceFileAtPath:(NSString*)filePath;
+
 // Returns YES if `matcher` is sufficiently_visible;
 - (BOOL)isMatcherSufficientlyVisible:(id<GREYMatcher>)matcher;
 
@@ -67,9 +99,6 @@ id<GREYAction> grey_longPressWithDuration(base::TimeDelta duration);
 
 // Returns YES if running on an iPhone.
 - (BOOL)isIPhoneIdiom;
-
-// YES if the TabGridViewController's child views have been set up.
-- (BOOL)isTabGridSetUp;
 
 // YES if the current interface language uses RTL layout.
 - (BOOL)isRTL;
@@ -90,6 +119,9 @@ id<GREYAction> grey_longPressWithDuration(base::TimeDelta duration);
 // vertical and regular horizontal size class.
 - (BOOL)isRegularXRegularSizeClass;
 
+// Returns YES if the application window is in windowed mode (multitasking).
+- (BOOL)isWindowedMode;
+
 // Stops primes performance metrics logging by calling into the
 // internal framework (should only be used by performance tests)
 - (void)primesStopLogging;
@@ -101,20 +133,27 @@ id<GREYAction> grey_longPressWithDuration(base::TimeDelta duration);
 // Returns whether the bottom omnibox steady state feature is enabled.
 - (BOOL)isBottomOmniboxAvailable;
 
+// Returns whether the Pinned Tabs feature is enabled.
+- (BOOL)isPinnedTabsEnabled;
+
 // Returns whether the current layout is showing the bottom omnibox.
 - (BOOL)isCurrentLayoutBottomOmnibox;
-
-// Returns whether the Ask Gemini Chip feature is enabled.
-- (BOOL)isAskGeminiChipEnabled;
-
-// Returns whether the ComposeboxIOS feature is enabled.
-- (BOOL)isComposeboxIOSEnabled;
 
 // Returns whether the Proactive Suggestions Framework feature is enabled.
 - (BOOL)isProactiveSuggestionsFrameworkEnabled;
 
 // Returns the interface orientation of the scene.
 - (UIInterfaceOrientation)interfaceOrientation;
+
+// Returns YES if running on an iPhone Duo simulator.
+- (BOOL)isDuoSimulator;
+
+// Sets the simulated hinge posture on an iPhone Duo simulator.
+- (void)setSimulatedDuoHingeStatus:(UIHingeStatus)hingeStatus
+    API_AVAILABLE(ios(27.1));
+
+// Sets the simulated device orientation on an iPhone Duo simulator.
+- (void)setSimulatedDuoOrientation:(UIDeviceOrientation)orientation;
 
 #pragma mark - Profile Utilities (EG2)
 
@@ -127,6 +166,9 @@ id<GREYAction> grey_longPressWithDuration(base::TimeDelta duration);
 // profile (as opposed to managed profiles), as per
 // `ProfileAttributesStorageIOS::GetPersonalProfileName()`.
 - (NSString*)personalProfileName;
+
+// Waits for the current profile name to match `profileName`.
+- (void)waitForCurrentProfileName:(NSString*)profileName;
 
 #pragma mark - History Utilities (EG2)
 
@@ -204,6 +246,10 @@ id<GREYAction> grey_longPressWithDuration(base::TimeDelta duration);
 // within a timeout, or a GREYAssert is induced.
 - (void)goBack;
 
+// Starts navigating forward to the next page without waiting for the loading to
+// complete.
+- (void)startGoingForward;
+
 // Navigates forward to the next page and waits for the loading to complete
 // within a timeout, or a GREYAssert is induced.
 - (void)goForward;
@@ -211,6 +257,14 @@ id<GREYAction> grey_longPressWithDuration(base::TimeDelta duration);
 // Waits for the page to finish loading within a timeout, or a GREYAssert is
 // induced.
 - (void)waitForPageToFinishLoading;
+
+// Waits for all WebStates across foreground tabs to finish loading within a
+// timeout, or a GREYAssert is induced.
+- (void)waitForAllWebStatesToFinishLoading;
+
+// Waits for the page to finish loading within the given `timeout`. Returns nil
+// on success, or else an NSError indicating why the operation failed.
+- (NSError*)waitForPageToFinishLoadingWithTimeout:(base::TimeDelta)timeout;
 
 // Waits for the matcher to return an element that is sufficiently visible.
 - (void)waitForSufficientlyVisibleElementWithMatcher:(id<GREYMatcher>)matcher;
@@ -344,6 +398,35 @@ id<GREYAction> grey_longPressWithDuration(base::TimeDelta duration);
 - (void)addFakeSyncServerDeviceInfo:(NSString*)deviceName
                lastUpdatedTimestamp:(base::Time)lastUpdatedTimestamp;
 
+// Injects a send tab to self entry to sync FakeServer.
+- (void)addFakeSyncServerSendTabToSelfEntryWithURL:(NSString*)URL
+                                             title:(NSString*)title
+                                        deviceName:(NSString*)deviceName
+                                  targetDeviceGUID:(NSString*)targetDeviceGUID;
+
+// Adds a fake Send Tab To Self entry to the local model and returns its GUID.
+// `formFieldData` is a dictionary where keys are form control names and
+// values are the values to fill.
+- (NSString*)addFakeSendTabToSelfEntryWithURL:(NSString*)url
+                                        title:(NSString*)title
+                                formFieldData:
+                                    (NSDictionary<NSString*, NSString*>*)
+                                        formFieldData;
+
+// Adds a fake Send Tab To Self entry with the given text fragment to the local
+// model and returns its GUID.
+- (NSString*)addFakeSendTabToSelfEntryWithURL:(NSString*)url
+                                        title:(NSString*)title
+                                 textFragment:(NSString*)textFragment;
+
+// Waits for the local Send Tab To Self model to contain an entry with the
+// given GUID.
+- (void)waitForSendTabToSelfEntryWithGUID:(NSString*)guid;
+
+// Waits for the local Send Tab To Self model to contain a target device with
+// the given `deviceName`.
+- (void)waitForSendTabToSelfTargetDevice:(NSString*)deviceName;
+
 // Returns the generated text fragment for the given URL, or nil if no entry
 // exists or no fragment is set.
 - (NSString*)textFragmentForSendTabToSelfEntryWithURL:(NSString*)URL;
@@ -352,8 +435,17 @@ id<GREYAction> grey_longPressWithDuration(base::TimeDelta duration);
 // internal NavigationItem to trigger scroll restoration upon page load.
 - (void)openNewTabWithURL:(NSString*)url textFragment:(NSString*)textFragment;
 
-// Triggers a sync cycle for a `type`.
-- (void)triggerSyncCycleForType:(syncer::DataType)type;
+// Opens a new tab with the given URL, text fragment, and marks it as
+// originating from Send Tab To Self with the given entry GUID.
+- (void)openSendTabToSelfNewTabWithURL:(NSString*)url
+                          textFragment:(NSString*)textFragment
+                             entryGUID:(NSString*)guid;
+
+// Opens a new background tab with the given URL, text fragment, and marks it
+// as originating from Send Tab To Self with the given entry GUID.
+- (void)openSendTabToSelfNewBackgroundTabWithURL:(NSString*)url
+                                    textFragment:(NSString*)textFragment
+                                       entryGUID:(NSString*)guid;
 
 // Deletes an autofill profile from the fake sync server with `GUID`, if it
 // exists. If it doesn't exist, nothing is done.
@@ -480,6 +572,9 @@ id<GREYAction> grey_longPressWithDuration(base::TimeDelta duration);
 // Returns the tab title of the current tab.
 - (NSString*)currentTabTitle;
 
+// Waits for the tab title of the current tab to match `tabTitle`.
+- (void)waitForCurrentTabTitle:(NSString*)tabTitle;
+
 // Returns the tab title of the next tab. Assumes that next tab exists.
 - (NSString*)nextTabTitle;
 
@@ -497,6 +592,9 @@ id<GREYAction> grey_longPressWithDuration(base::TimeDelta duration);
 // Shows the tab switcher by tapping the switcher button.  Works on both phone
 // and tablet.
 - (void)showTabSwitcher;
+
+// Hides the tab switcher.
+- (void)hideTabSwitcher;
 
 #pragma mark - Window utilities (EG2)
 
@@ -595,6 +693,10 @@ id<GREYAction> grey_longPressWithDuration(base::TimeDelta duration);
 // secondary windows.
 - (void)openSettingsInWindowWithNumber:(int)windowNumber;
 
+// Shows the tab switcher directly (not via the UI) in the window with the
+// given number.
+- (void)showTabSwitcherInWindowWithNumber:(int)windowNumber;
+
 #pragma mark - SignIn Utilities (EG2)
 
 // Signs the user out, clears the known accounts & browsing data, and wait for
@@ -656,6 +758,11 @@ id<GREYAction> grey_longPressWithDuration(base::TimeDelta duration);
 // Waits for the main frame or an iframe to contain `UTF8Text`. If the condition
 // is not met within a timeout a GREYAssert is induced.
 - (void)waitForWebStateFrameContainingText:(const std::string&)UTF8Text;
+
+// Waits for the main frame or an iframe to contain `UTF8Text`. If the condition
+// is not met within the given `timeout` a GREYAssert is induced.
+- (void)waitForWebStateFrameContainingText:(const std::string&)UTF8Text
+                                   timeout:(base::TimeDelta)timeout;
 
 // Waits for the current web state to contain `UTF8Text`. If the condition is
 // not met within the given `timeout` a GREYAssert is induced.
@@ -782,6 +889,9 @@ id<GREYAction> grey_longPressWithDuration(base::TimeDelta duration);
 // Returns YES if kTestFeature is enabled.
 - (BOOL)isTestFeatureEnabled;
 
+// Returns YES if kOverflowMenuHomeCustomizationEntrypoint is enabled.
+- (BOOL)isOverflowMenuHomeCustomizationEntrypointEnabled;
+
 // Returns YES if Fullscreen smooth scrolling is supported.
 - (BOOL)isFullscreenSmoothScrollingSupported;
 
@@ -806,11 +916,31 @@ id<GREYAction> grey_longPressWithDuration(base::TimeDelta duration);
 // Returns whether the UseLensToSearchForImage feature is enabled;
 - (BOOL)isUseLensToSearchForImageEnabled;
 
+// Returns whether the YourSavedInfoSettingsPageIos feature is enabled.
+- (BOOL)isYourSavedInfoSettingsPageIosEnabled;
+
 // Returns whether the unfocused omnibox is at the bottom.
 - (BOOL)isUnfocusedOmniboxAtBottom;
 
 // Returns whether Chrome Next is enabled.
 - (BOOL)isChromeNextEnabled;
+
+// Returns whether Next Old Design is enabled.
+- (BOOL)isNextOldDesignEnabled;
+
+// Returns whether overflow menu refactoring on the NTP is enabled.
+- (BOOL)isOverflowMenuNTPRefactorEnabled;
+
+// Returns whether Aim Cobrowse Web Selection Search is enabled.
+- (BOOL)isAimCobrowseWebSelectionSearchEnabled;
+
+// Returns YES if the view with `accessibilityID` or any of its ancestors is
+// animating.
+- (BOOL)isViewAnimatingWithAccessibilityID:(NSString*)accessibilityID;
+
+// Waits for the view with `accessibilityID` to stop animating within `timeout`.
+- (void)waitForViewToStopAnimatingWithAccessibilityID:(NSString*)accessibilityID
+                                              timeout:(base::TimeDelta)timeout;
 
 #pragma mark - ContentSettings
 
@@ -1074,6 +1204,9 @@ id<GREYAction> grey_longPressWithDuration(base::TimeDelta duration);
 
 // Hides Reader mode in the current tab.
 - (void)hideReaderMode;
+
+// Programmatically crashes the host application.
+- (void)induceCrash;
 
 @end
 

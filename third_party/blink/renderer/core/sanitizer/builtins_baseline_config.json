@@ -21,6 +21,10 @@
       "name": "script"
     },
     {
+      "namespace": "http://www.w3.org/1999/xhtml",
+      "name": "base"
+    },
+    {
       "namespace": "http://www.w3.org/2000/svg",
       "name": "script"
     },
@@ -64,7 +68,6 @@
     "oncuechange",
     "oncut",
     "ondblclick",
-    "ondismiss",
     "ondrag",
     "ondragend",
     "ondragenter",
@@ -84,6 +87,7 @@
     "ongotpointercapture",
     "onhashchange",
     "oninput",
+    "oninstallresult",
     "oninvalid",
     "onkeydown",
     "onkeypress",
@@ -132,7 +136,6 @@
     "onrepeat",
     "onreset",
     "onresize",
-    "onresolve",
     "onscroll",
     "onscrollend",
     "onscrollsnapchange",
@@ -170,5 +173,6 @@
     "onwebkitfullscreenerror",
     "onwebkittransitionend",
     "onwheel"
-  ]
+  ],
+  "removeProcessingInstructions": []
 }

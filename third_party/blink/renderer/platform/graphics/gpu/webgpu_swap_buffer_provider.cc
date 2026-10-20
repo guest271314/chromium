@@ -14,6 +14,7 @@
 #include "gpu/command_buffer/client/webgpu_interface.h"
 #include "gpu/command_buffer/common/shared_image_capabilities.h"
 #include "gpu/command_buffer/common/shared_image_usage.h"
+#include "third_party/blink/renderer/platform/wtf/cross_thread_functional.h"
 
 namespace blink {
 
@@ -55,7 +56,7 @@ WebGPUSwapBufferProvider::WebGPUSwapBufferProvider(
       surface_origin_(surface_origin) {
   wgpu::Limits limits = {};
   auto get_limits_succeeded = device_.GetLimits(&limits);
-  CHECK(get_limits_succeeded);
+  CHECK(get_limits_succeeded == wgpu::Status::Success);
 
   max_texture_size_ = limits.maxTextureDimension2D;
 }
@@ -233,22 +234,25 @@ scoped_refptr<WebGPUMailboxTexture> WebGPUSwapBufferProvider::GetNewTexture(
   // NOTE: Passing WEBGPU_MAILBOX_DISCARD to request clearing requires passing a
   // usage that supports clearing. Swapbuffer textures will always be
   // renderable, so we can pass RenderAttachment.
-  current_swap_buffer_->mailbox_texture =
-      WebGPUMailboxTexture::FromExistingSharedImage(
-          dawn_control_client_, device_, desc,
-          current_swap_buffer_->GetSharedImage(),
-          // Wait on the last usage of this swap buffer.
-          current_swap_buffer_->GetSyncToken(),
-          gpu::webgpu::WEBGPU_MAILBOX_DISCARD,
-          wgpu::TextureUsage::RenderAttachment,
-          // When the mailbox texture is dissociated, set the access finished
-          // token back on the swap buffer for the next time it is used.
-          base::BindOnce(
-              [](scoped_refptr<SwapBuffer> swap_buffer,
-                 const gpu::SyncToken& access_finished_token) {
-                swap_buffer->SetReleaseSyncToken(access_finished_token);
-              },
-              current_swap_buffer_));
+  current_swap_buffer_
+      ->mailbox_texture = WebGPUMailboxTexture::FromExistingSharedImage(
+      dawn_control_client_, device_, desc,
+      current_swap_buffer_->GetSharedImage(),
+      // Wait on the last usage of this swap buffer.
+      current_swap_buffer_->GetSyncToken(), gpu::webgpu::WEBGPU_MAILBOX_DISCARD,
+      wgpu::TextureUsage::RenderAttachment,
+      base::BindOnce(
+          [](scoped_refptr<SwapBuffer> swap_buffer,
+             std::unique_ptr<gpu::WebGPUTextureScopedAccess> scoped_access) {
+            gpu::SyncToken access_finished_token;
+            if (scoped_access) {
+              access_finished_token = gpu::WebGPUTextureScopedAccess::EndAccess(
+                  std::move(scoped_access));
+            }
+            swap_buffer->SetReleaseSyncToken(access_finished_token);
+            return access_finished_token;
+          },
+          current_swap_buffer_));
 
   if (!layer_) {
     // Create a layer that will be used by the canvas and will ask for a
@@ -307,10 +311,10 @@ WebGPUSwapBufferProvider::ExportCurrentSharedImage(
   // any thread in case this thread was terminated. Ref to SwapBuffers is enough
   // to keep underlying resources alive, so we don't need to hold ref to
   // WebGPUSwapBufferProvider itself.
-  *out_release_callback = blink::BindOnce(
+  *out_release_callback = ConvertToBaseOnceCallback(CrossThreadBindOnce(
       &WebGPUSwapBufferProvider::MailboxReleased,
       weak_ptr_factory_.GetWeakPtr(), base::PlatformThread::CurrentRef(),
-      std::move(current_swap_buffer_));
+      std::move(current_swap_buffer_)));
 
   return shared_image;
 }

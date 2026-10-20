@@ -50,6 +50,12 @@
 #import "services/network/public/cpp/shared_url_loader_factory.h"
 #import "ui/base/device_form_factor.h"
 
+namespace {
+
+const int64_t kMaxFaviconDownloadBytes = 1024 * 1024 * 5;
+
+}  // namespace
+
 @interface OmniboxPopupCoordinator () <OmniboxPopupMediatorProtocolProvider,
                                        OmniboxPopupMediatorSharingDelegate>
 
@@ -100,6 +106,7 @@
   std::unique_ptr<image_fetcher::ImageDataFetcher> imageFetcher =
       std::make_unique<image_fetcher::ImageDataFetcher>(
           self.profile->GetSharedURLLoaderFactory());
+  imageFetcher->SetImageDownloadLimit(kMaxFaviconDownloadBytes);
 
   _omniboxImageFetcher = [[OmniboxImageFetcher alloc]
       initWithFaviconLoader:IOSChromeFaviconLoaderFactory::GetForProfile(
@@ -222,6 +229,7 @@
       initWithURL:URL
             title:title
          scenario:SharingScenario::OmniboxMostVisitedEntry];
+  [self.sharingCoordinator stop];
   self.sharingCoordinator = [[SharingCoordinator alloc]
       initWithBaseViewController:self.popupViewController
                          browser:self.browser
@@ -236,8 +244,7 @@
   DCHECK(experimental_flags::IsOmniboxDebuggingEnabled());
 
   RemoteSuggestionsService* remoteSuggestionsService =
-      RemoteSuggestionsServiceFactory::GetForProfile(
-          self.profile, /*create_if_necessary=*/true);
+      RemoteSuggestionsServiceFactory::GetForProfile(self.profile);
 
   _omniboxDebuggerMediator = [[OmniboxDebuggerMediator alloc]
       initWithAutocompleteController:_autocompleteController

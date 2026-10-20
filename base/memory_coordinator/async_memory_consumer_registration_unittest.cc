@@ -27,7 +27,7 @@ namespace {
 class TestAsyncMemoryConsumer : public MemoryConsumer {
  public:
   explicit TestAsyncMemoryConsumer(std::string_view consumer_name,
-                                   std::optional<MemoryConsumerTraits> traits)
+                                   MemoryConsumerTraits traits)
       : async_memory_consumer_registration_(consumer_name, traits, this) {}
 
   MOCK_METHOD(void, OnUpdateMemoryLimit, (), (override));
@@ -43,6 +43,22 @@ class TestAsyncMemoryConsumer : public MemoryConsumer {
   AsyncMemoryConsumerRegistration async_memory_consumer_registration_;
 };
 
+class TestPassiveAsyncMemoryConsumer : public PassiveMemoryConsumer {
+ public:
+  explicit TestPassiveAsyncMemoryConsumer(std::string_view consumer_name,
+                                          MemoryConsumerTraits traits)
+      : async_memory_consumer_registration_(consumer_name, traits, this) {}
+
+ private:
+  AsyncMemoryConsumerRegistration async_memory_consumer_registration_;
+};
+
+constexpr MemoryConsumerTraits kActiveTraits(
+    MemoryConsumerTraits::EstimatedMemoryUsage::kSmall,
+    MemoryConsumerTraits::ReleaseMemoryDataAccess::kNone,
+    MemoryConsumerTraits::InformationRetention::kLossless,
+    MemoryConsumerTraits::ExecutionType::kAsynchronous);
+
 class AsyncMemoryConsumerRegistrationTest : public testing::Test {
  protected:
   test::TaskEnvironment task_environment_;
@@ -56,13 +72,14 @@ TEST_F(AsyncMemoryConsumerRegistrationTest, RegisterOnAnotherSequence) {
   auto async_task_runner = ThreadPool::CreateSequencedTaskRunner({});
 
   SequenceBound<TestAsyncMemoryConsumer> consumer(async_task_runner, "consumer",
-                                                  std::nullopt);
+                                                  kActiveTraits);
 
   ASSERT_TRUE(test::RunUntil([&]() { return registry.size() == 1u; }));
 
   {
     consumer.AsyncCall(&TestAsyncMemoryConsumer::ExpectOnUpdateMemoryLimitCall);
-    registry.NotifyUpdateMemoryLimitAsync(22, task_environment_.QuitClosure());
+    registry.NotifyUpdateMemoryLimitAsync(MemoryLimit::FromPercent(22),
+                                          task_environment_.QuitClosure());
     task_environment_.RunUntilQuit();
   }
 
@@ -82,7 +99,7 @@ TEST_F(AsyncMemoryConsumerRegistrationTest, DestroyRegistryBeforeAsyncCleanup) {
   auto async_task_runner = ThreadPool::CreateSequencedTaskRunner({});
 
   SequenceBound<TestAsyncMemoryConsumer> consumer(async_task_runner, "consumer",
-                                                  std::nullopt);
+                                                  kActiveTraits);
 
   // Wait for registration.
   ASSERT_TRUE(test::RunUntil([&]() { return registry->size() == 1u; }));
@@ -100,6 +117,22 @@ TEST_F(AsyncMemoryConsumerRegistrationTest, DestroyRegistryBeforeAsyncCleanup) {
   // run yet, the destruction observer will be triggered. It should see that
   // the parent has been destroyed and skip the CHECK.
   registry.reset();
+}
+
+TEST_F(AsyncMemoryConsumerRegistrationTest, RegisterPassiveConsumer) {
+  TestMemoryConsumerRegistry registry;
+
+  auto async_task_runner = ThreadPool::CreateSequencedTaskRunner({});
+
+  MemoryConsumerTraits traits(MemoryConsumerTraits::ConsumerType::kPassive);
+  SequenceBound<TestPassiveAsyncMemoryConsumer> consumer(
+      async_task_runner, "passive_consumer", traits);
+
+  // Wait for registration.
+  ASSERT_TRUE(test::RunUntil([&]() { return registry.size() == 1u; }));
+
+  consumer.Reset();
+  ASSERT_TRUE(test::RunUntil([&]() { return registry.size() == 0u; }));
 }
 
 }  // namespace base

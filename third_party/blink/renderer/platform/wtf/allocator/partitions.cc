@@ -47,6 +47,7 @@
 #include "partition_alloc/page_allocator.h"
 #include "partition_alloc/partition_alloc.h"
 #include "partition_alloc/partition_alloc_constants.h"
+#include "partition_alloc/partition_alloc_public_constants.h"
 #include "partition_alloc/partition_root.h"
 #include "third_party/blink/renderer/platform/wtf/wtf.h"
 
@@ -76,7 +77,7 @@ namespace {
 // `Partitions::DumpMemoryStats`. This involves traversing the free list which
 // is expensive.
 BASE_FEATURE(kPartitionsDumpPopulateDiscardableBytes,
-             base::FEATURE_ENABLED_BY_DEFAULT);
+             base::FEATURE_DISABLED_BY_DEFAULT);
 
 // Reads feature configuration and returns a suitable
 // `PartitionOptions`.
@@ -168,12 +169,10 @@ void Partitions::InitializeArrayBufferPartition() {
   CHECK(initialized_);
   CHECK(!ArrayBufferPartitionInitialized());
 
-  // BackupRefPtr disallowed because it will prevent allocations from being 16B
-  // aligned as required by ArrayBufferContents.
+
   static base::NoDestructor<partition_alloc::PartitionAllocator>
       array_buffer_allocator([]() {
         partition_alloc::PartitionOptions opts;
-        opts.backup_ref_ptr = partition_alloc::PartitionOptions::kDisabled;
         // When the V8 virtual memory cage is enabled, the ArrayBuffer
         // partition must be placed inside of it. For that, PA's
         // ConfigurablePool is created inside the V8 Cage during
@@ -185,6 +184,8 @@ void Partitions::InitializeArrayBufferPartition() {
             partition_alloc::PartitionOptions::kAllowed;
         opts.memory_tagging = {
             .enabled = partition_alloc::PartitionOptions::kDisabled};
+        opts.allow_giga_allocations =
+            partition_alloc::PartitionOptions::kAllowed;
         return opts;
       }());
 
@@ -232,7 +233,7 @@ namespace {
 class LightPartitionStatsDumperImpl
     : public partition_alloc::PartitionStatsDumper {
  public:
-  LightPartitionStatsDumperImpl() : total_active_bytes_(0) {}
+  LightPartitionStatsDumperImpl() = default;
 
   void PartitionDumpTotals(
       const char* partition_name,
@@ -247,7 +248,7 @@ class LightPartitionStatsDumperImpl
   size_t TotalActiveBytes() const { return total_active_bytes_; }
 
  private:
-  size_t total_active_bytes_;
+  size_t total_active_bytes_ = 0;
 };
 
 }  // namespace
@@ -372,7 +373,7 @@ void Partitions::BufferAlignedFree(void* p) {
 
 // static
 void Partitions::BufferFreeWithSize(void* p, size_t size) {
-  BufferPartition()->FreeWithSize(p, size);
+  BufferPartition()->Free(p, partition_alloc::FreeSizeHint{size});
 }
 
 // static
@@ -398,8 +399,8 @@ void* Partitions::FastMalloc(size_t n, const char* type_name) {
 void* Partitions::FastZeroedMalloc(size_t n, const char* type_name) {
   auto* fast_malloc_partition = FastMallocPartition();
   if (fast_malloc_partition) [[unlikely]] {
-    return fast_malloc_partition
-        ->AllocInline<partition_alloc::AllocFlags::kZeroFill>(n, type_name);
+    return fast_malloc_partition->Alloc<partition_alloc::AllocFlags::kZeroFill>(
+        n, type_name);
   } else {
     return calloc(n, 1);
   }

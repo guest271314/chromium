@@ -20,6 +20,7 @@
 #include "ash/wm/overview/birch/birch_chip_button_base.h"
 #include "ash/wm/overview/birch/coral_chip_button.h"
 #include "ash/wm/overview/overview_test_util.h"
+#include "base/check_deref.h"
 #include "base/command_line.h"
 #include "base/scoped_observation.h"
 #include "base/test/run_until.h"
@@ -29,14 +30,16 @@
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/ui/ash/birch/birch_test_util.h"
 #include "chrome/browser/ui/ash/system_web_apps/system_web_app_ui_utils.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface_iterator.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/test/base/ash/util/ash_test_util.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
+#include "chromeos/ash/components/browser_delegate/browser_controller.h"
+#include "chromeos/ash/components/browser_delegate/browser_delegate.h"
 #include "chromeos/ash/components/system_web_apps/system_web_app_type.h"
 #include "chromeos/ash/services/coral/public/mojom/coral_service.mojom.h"
 #include "components/app_restore/restore_data.h"
@@ -53,14 +56,14 @@ std::vector<GURL> CollectTabURLsFromWindows(
     const MruWindowTracker::WindowList& windows) {
   std::vector<GURL> tab_urls;
   for (aura::Window* window : windows) {
-    Browser* browser =
+    BrowserWindowInterface* browser =
         BrowserView::GetBrowserViewForNativeWindow(window)->browser();
 
     if (!browser) {
       continue;
     }
 
-    TabStripModel* tab_strip_model = browser->tab_strip_model();
+    TabStripModel* tab_strip_model = browser->GetTabStripModel();
     for (int idx = 0; idx < tab_strip_model->count(); idx++) {
       tab_urls.push_back(
           tab_strip_model->GetWebContentsAt(idx)->GetVisibleURL());
@@ -86,7 +89,10 @@ aura::Window* GetNativeWindowForSwa(SystemWebAppType swa_type) {
   aura::Window* found_window = nullptr;
   ForEachCurrentBrowserWindowInterfaceOrderedByActivation(
       [swa_type, &found_window](BrowserWindowInterface* browser) {
-        if (IsBrowserForSystemWebApp(browser, swa_type)) {
+        if (ash::IsBrowserForSystemWebApp(
+                CHECK_DEREF(ash::BrowserController::GetInstance()->GetDelegate(
+                    browser)),
+                swa_type)) {
           found_window = browser->GetWindow()->GetNativeWindow();
         }
         return !found_window;

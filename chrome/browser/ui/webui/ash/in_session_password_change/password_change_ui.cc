@@ -9,6 +9,7 @@
 #include "ash/constants/ash_login_pref_names.h"
 #include "ash/constants/ash_switches.h"
 #include "ash/constants/webui_url_constants.h"
+#include "ash/login/resources/grit/ash_login_strings.h"
 #include "ash/webui/common/trusted_types_util.h"
 #include "base/command_line.h"
 #include "base/functional/bind.h"
@@ -22,7 +23,6 @@
 #include "chrome/browser/ui/webui/ash/in_session_password_change/password_change_handler.h"
 #include "chrome/browser/ui/webui/ash/in_session_password_change/urgent_password_expiry_notification_handler.h"
 #include "chrome/grit/gaia_auth_host_resources_map.h"
-#include "chrome/grit/generated_resources.h"
 #include "chrome/grit/password_change_resources.h"
 #include "chrome/grit/password_change_resources_map.h"
 #include "chromeos/ash/components/login/auth/public/saml_password_attributes.h"
@@ -67,7 +67,7 @@ std::string GetPasswordChangeUrl(Profile* profile) {
 std::u16string GetHostedHeaderText(const std::string& password_change_url) {
   std::u16string host =
       base::UTF8ToUTF16(net::GetHostAndOptionalPort(GURL(password_change_url)));
-  DCHECK(!host.empty());
+  CHECK(!host.empty(), base::NotFatalUntil::M162);
   return l10n_util::GetStringFUTF16(IDS_LOGIN_SAML_PASSWORD_CHANGE_NOTICE,
                                     host);
 }

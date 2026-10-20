@@ -19,6 +19,7 @@
 #include "chrome/common/url_constants.h"
 #include "content/public/browser/url_data_source.h"
 #include "content/public/test/browser_task_environment.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "services/network/public/cpp/weak_wrapper_shared_url_loader_factory.h"
 #include "services/network/test/test_shared_url_loader_factory.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -360,6 +361,18 @@ TEST_F(DevToolsUIDataSourceTest, TestDevToolsNoRouteWithSwitch) {
   EXPECT_TRUE(data_received());
   ASSERT_TRUE(base::StartsWith(data(), kDevToolsUITest404Response,
                                base::CompareCase::SENSITIVE));
+}
+
+TEST_F(DevToolsUIDataSourceTest, ShouldServiceRequest) {
+  EXPECT_TRUE(data_source()->ShouldServiceRequest(
+      GURL("devtools://devtools/bundled/devtools_app.html"), nullptr, -1));
+  EXPECT_FALSE(data_source()->ShouldServiceRequest(
+      GURL("chrome://devtools/bundled/devtools_app.html"), nullptr, -1));
+  EXPECT_FALSE(data_source()->ShouldServiceRequest(
+      GURL("chrome-untrusted://devtools/bundled/devtools_app.html"), nullptr,
+      -1));
+  EXPECT_FALSE(data_source()->ShouldServiceRequest(
+      GURL("https://devtools/bundled/devtools_app.html"), nullptr, -1));
 }
 
 class DevToolsUIDataSourceWithTaskEnvTest : public testing::Test {

@@ -8,10 +8,12 @@
 #include <memory>
 #include <optional>
 
+#include "base/component_export.h"
 #include "base/files/file_path.h"
 #include "base/files/scoped_temp_file.h"
 #include "base/functional/callback.h"
 #include "base/memory/scoped_refptr.h"
+#include "services/network/public/mojom/ip_address_space.mojom.h"
 #include "url/gurl.h"
 
 namespace network {
@@ -25,7 +27,7 @@ struct PartialNetworkTrafficAnnotationTag;
 
 namespace web_app {
 
-class ScopedTempWebBundleFile {
+class COMPONENT_EXPORT(ISOLATED_WEB_APPS) ScopedTempWebBundleFile {
  public:
   // Creates a ScopedTempWebBundleFile on a non-blocking thread.
   // The result might be null if something goes wrong during the operation.
@@ -56,7 +58,7 @@ class ScopedTempWebBundleFile {
 };
 
 // Helper class to download the Signed Web Bundle of an Isolated Web App.
-class IsolatedWebAppDownloader {
+class COMPONENT_EXPORT(ISOLATED_WEB_APPS) IsolatedWebAppDownloader {
  public:
   using DownloadCallback = base::OnceCallback<void(int32_t net_error)>;
   using PartialDownloadCallback =
@@ -65,26 +67,48 @@ class IsolatedWebAppDownloader {
   static std::unique_ptr<IsolatedWebAppDownloader> Create(
       scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory);
   // Creates a new instance of this class and starts the download process.
+  // `client_security_state_address_space`: If specified, represents the
+  // `network::mojom::IPAddressSpace` assigned to the request's
+  // `ClientSecurityState` for Local Network Access (LNA) checks (e.g. inherited
+  // from an update manifest response). When `std::nullopt` (e.g. in dev-mode),
+  // no `ClientSecurityState` is assigned to the request.
   static std::unique_ptr<IsolatedWebAppDownloader> CreateAndStartDownloading(
       GURL url,
       base::FilePath destination,
       net::PartialNetworkTrafficAnnotationTag partial_traffic_annotation,
       scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
+      std::optional<network::mojom::IPAddressSpace>
+          client_security_state_address_space,
       DownloadCallback download_callback);
 
   explicit IsolatedWebAppDownloader(
       scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory);
   ~IsolatedWebAppDownloader();
 
+  // Downloads the Signed Web Bundle to `destination`.
+  // `client_security_state_address_space`: If specified, represents the
+  // `network::mojom::IPAddressSpace` assigned to the request's
+  // `ClientSecurityState` for Local Network Access (LNA) checks (e.g. inherited
+  // from an update manifest response). When `std::nullopt` (e.g. in dev-mode),
+  // no `ClientSecurityState` is assigned to the request.
   void DownloadSignedWebBundle(
       GURL url,
       base::FilePath destination,
       net::PartialNetworkTrafficAnnotationTag partial_traffic_annotation,
+      std::optional<network::mojom::IPAddressSpace>
+          client_security_state_address_space,
       DownloadCallback download_callback);
-  // Downloads leading min(bundle_size, 8 KiB) bytes to string
+  // Downloads leading min(bundle_size, 8 KiB) bytes to string.
+  // `client_security_state_address_space`: If specified, represents the
+  // `network::mojom::IPAddressSpace` assigned to the request's
+  // `ClientSecurityState` for Local Network Access (LNA) checks (e.g. inherited
+  // from an update manifest response). When `std::nullopt`, no
+  // `ClientSecurityState` is assigned to the request.
   void DownloadInitialBytes(
       GURL url,
       net::PartialNetworkTrafficAnnotationTag partial_traffic_annotation,
+      std::optional<network::mojom::IPAddressSpace>
+          client_security_state_address_space,
       PartialDownloadCallback download_callback);
 
  private:

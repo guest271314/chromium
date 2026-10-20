@@ -32,7 +32,6 @@
 #include "net/base/host_port_pair.h"
 #include "net/base/net_errors.h"
 #include "net/base/network_anonymization_key.h"
-#include "net/dns/canary_domain_service.h"
 #include "net/dns/host_resolver.h"
 #include "net/dns/host_resolver_proc.h"
 #include "net/dns/public/dns_query_type.h"
@@ -52,6 +51,7 @@ namespace net {
 
 class HostCache;
 class IPEndPoint;
+class ResolveContext;
 class URLRequestContext;
 
 // Fills `ip_endpoints` with a socket address for `host_list` which should be a
@@ -284,16 +284,19 @@ class MockHostResolverBase : public HostResolver {
   std::unique_ptr<ResolveHostRequest> CreateRequest(
       url::SchemeHostPort host,
       NetworkAnonymizationKey network_anonymization_key,
+      handles::NetworkHandle target_network,
       NetLogWithSource net_log,
       std::optional<ResolveHostParameters> optional_parameters) override;
   std::unique_ptr<ResolveHostRequest> CreateRequest(
       const HostPortPair& host,
       const NetworkAnonymizationKey& network_anonymization_key,
+      handles::NetworkHandle target_network,
       const NetLogWithSource& net_log,
       const std::optional<ResolveHostParameters>& optional_parameters) override;
   std::unique_ptr<ServiceEndpointRequest> CreateServiceEndpointRequest(
       Host host,
       NetworkAnonymizationKey network_anonymization_key,
+      handles::NetworkHandle target_network,
       NetLogWithSource net_log,
       ResolveHostParameters parameters) override;
   std::unique_ptr<ProbeRequest> CreateDohProbeRequest() override;
@@ -303,7 +306,6 @@ class MockHostResolverBase : public HostResolver {
   HostCache* GetHostCache() override;
   void SetRequestContext(URLRequestContext* request_context) override {}
   bool IsHappyEyeballsV3Enabled() const override;
-  std::unique_ptr<CanaryDomainService> CreateCanaryDomainService() override;
 
   // Preloads the cache with what would currently be the result of a request
   // with the given parameters. Returns the net error of the cached result.
@@ -347,6 +349,10 @@ class MockHostResolverBase : public HostResolver {
 
   // Returns the priority of the request with the given id.
   RequestPriority request_priority(size_t id);
+
+  // Returns the number of times ChangeRequestPriority() has been called for the
+  // request with the given id.
+  size_t num_change_request_priority_calls(size_t id);
 
   // Returns NetworkAnonymizationKey of the request with the given id.
   const NetworkAnonymizationKey& request_network_anonymization_key(size_t id);
@@ -430,6 +436,10 @@ class MockHostResolverBase : public HostResolver {
     default_resolution_details_ = std::move(details);
   }
 
+  void set_is_stale_while_refreshing(bool is_stale_while_refreshing) {
+    is_stale_while_refreshing_ = is_stale_while_refreshing;
+  }
+
  private:
   friend class MockHostResolver;
   friend class MockCachingHostResolver;
@@ -492,6 +502,8 @@ class MockHostResolverBase : public HostResolver {
   scoped_refptr<State> state_;
 
   std::optional<ResolutionDetails> default_resolution_details_;
+
+  bool is_stale_while_refreshing_ = false;
 
   THREAD_CHECKER(thread_checker_);
 
@@ -736,16 +748,19 @@ class HangingHostResolver : public HostResolver {
   std::unique_ptr<ResolveHostRequest> CreateRequest(
       url::SchemeHostPort host,
       NetworkAnonymizationKey network_anonymization_key,
+      handles::NetworkHandle target_network,
       NetLogWithSource net_log,
       std::optional<ResolveHostParameters> optional_parameters) override;
   std::unique_ptr<ResolveHostRequest> CreateRequest(
       const HostPortPair& host,
       const NetworkAnonymizationKey& network_anonymization_key,
+      handles::NetworkHandle target_network,
       const NetLogWithSource& net_log,
       const std::optional<ResolveHostParameters>& optional_parameters) override;
   std::unique_ptr<ServiceEndpointRequest> CreateServiceEndpointRequest(
       Host host,
       NetworkAnonymizationKey network_anonymization_key,
+      handles::NetworkHandle target_network,
       NetLogWithSource net_log,
       ResolveHostParameters parameters) override;
 
@@ -770,6 +785,7 @@ class HangingHostResolver : public HostResolver {
 
  private:
   class RequestImpl;
+  class ServiceEndpointRequestImpl;
   class ProbeRequestImpl;
 
   HostPortPair last_host_;

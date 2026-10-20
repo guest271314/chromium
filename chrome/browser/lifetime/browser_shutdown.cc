@@ -13,6 +13,7 @@
 #include "base/auto_reset.h"
 #include "base/clang_profiling_buildflags.h"
 #include "base/command_line.h"
+#include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/notimplemented.h"
@@ -22,13 +23,10 @@
 #include "base/time/time.h"
 #include "build/build_config.h"
 #include "build/config/compiler/compiler_buildflags.h"
-#include "chrome/browser/about_flags.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/buildflags.h"
-#include "chrome/browser/lifetime/switch_utils.h"
 #include "chrome/browser/profiles/nuke_profile_directory_utils.h"
 #include "chrome/common/chrome_paths.h"
-#include "chrome/common/chrome_switches.h"
 #include "chrome/common/pref_names.h"
 #include "components/crash/core/common/crash_key.h"
 #include "components/metrics/metrics_service.h"
@@ -45,6 +43,10 @@
 #if BUILDFLAG(IS_WIN)
 #include "chrome/browser/first_run/upgrade_util_win.h"
 #include "chrome/browser/win/browser_util.h"
+#include "chrome/common/chrome_features.h"
+#include "chrome/common/chrome_result_codes.h"
+#include "chrome/common/chrome_switches.h"
+#include "content/public/browser/browser_main_runner.h"
 #endif
 
 #if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_CHROMEOS)
@@ -101,9 +103,10 @@ const char* ToShutdownTypeString(ShutdownType type) {
 void CheckAccessedOnCorrectThread() {
   // Some APIs below are accessed after UI thread has been torn down, so cater
   // for both situations here.
-  DCHECK(
-      content::BrowserThread::CurrentlyOn(content::BrowserThread::UI) ||
-      !content::BrowserThread::IsThreadInitialized(content::BrowserThread::UI));
+  CHECK(content::BrowserThread::CurrentlyOn(content::BrowserThread::UI) ||
+            !content::BrowserThread::IsThreadInitialized(
+                content::BrowserThread::UI),
+        base::NotFatalUntil::M161);
 }
 
 }  // namespace
@@ -127,7 +130,7 @@ void OnShutdownStarting(ShutdownType type) {
   // since we can't safely count the number of plugin processes from this
   // thread, and we'd really like to avoid anything which might add further
   // delays to shutdown time.
-  DCHECK(!g_shutdown_started);
+  CHECK(!g_shutdown_started, base::NotFatalUntil::M161);
   g_shutdown_started = new base::Time(base::Time::Now());
 
   // TODO(crbug.com/469788783):  Coverage builds appear to work without this. Check
@@ -226,7 +229,7 @@ void RecordShutdownMetrics() {
       time_metric_name = "Shutdown.OtherExit.Time2";
       break;
   }
-  DCHECK(time_metric_name);
+  CHECK(time_metric_name, base::NotFatalUntil::M161);
 
   if (g_shutdown_started) {
     base::TimeDelta shutdown_delta = base::Time::Now() - *g_shutdown_started;
@@ -281,45 +284,28 @@ void ShutdownPostThreadsStop(RestartMode restart_mode) {
 #if BUILDFLAG(IS_CHROMEOS)
     NOTIMPLEMENTED();
 #else
-    const base::CommandLine& old_cl(*base::CommandLine::ForCurrentProcess());
-    base::CommandLine new_cl(old_cl.GetProgram());
-    base::CommandLine::SwitchMap switches = old_cl.GetSwitches();
-
-    // Remove switches that shouldn't persist across any restart.
-    about_flags::RemoveFlagsSwitches(&switches);
-
-    switch (restart_mode) {
-      case RestartMode::kNoRestart:
-        NOTREACHED();
-
-      case RestartMode::kRestartInBackground:
-        new_cl.AppendSwitch(switches::kNoStartupWindow);
-        [[fallthrough]];
-
-      case RestartMode::kRestartLastSession:
-        // Relaunch the browser without any command line URLs or certain one-off
-        // switches.
-        switches::RemoveSwitchesForAutostart(&switches);
-        break;
-
-      case RestartMode::kRestartThisSession:
-        // Copy URLs and other arguments to the new command line.
-        for (const auto& arg : old_cl.GetArgs()) {
-          new_cl.AppendArgNative(arg);
-        }
-        break;
+    base::CommandLine new_cl = upgrade_util::GetRelaunchCommandLine(
+        *base::CommandLine::ForCurrentProcess(), restart_mode);
+#if BUILDFLAG(IS_WIN)
+    // An isolated browser must communicate its need for a restart to the stub
+    // via its process exit code. Select the exit code based on the flavor of
+    // restart and tell the runner to return this value so that it bubbles up
+    // and out of ChromeMain and is eventually returned from wWinMain.
+    if (base::CommandLine::ForCurrentProcess()->HasSwitch(
+            switches::kIsolated)) {
+      content::BrowserMainRunner::SetOverrideResultCode(
+          restart_mode == RestartMode::kRestartInBackground
+              ? CHROME_RESULT_CODE_NORMAL_EXIT_RELAUNCH_BACKGROUND
+              : CHROME_RESULT_CODE_NORMAL_EXIT_RELAUNCH_REQUESTED);
     }
-
-    // Append the old switches to the new command line.
-    for (const auto& it : switches) {
-      new_cl.AppendSwitchNative(it.first, it.second);
-    }
-
-    if (restart_mode == RestartMode::kRestartLastSession ||
-        restart_mode == RestartMode::kRestartThisSession) {
-      new_cl.AppendSwitch(switches::kRestart);
-    }
+    const bool wait_for_parent =
+        base::FeatureList::IsEnabled(features::kRelaunchWaitForParentProcess);
+    upgrade_util::RelaunchChromeBrowser(new_cl,
+                                        /*force_breakaway_from_job=*/false,
+                                        wait_for_parent);
+#else
     upgrade_util::RelaunchChromeBrowser(new_cl);
+#endif  // BUILDFLAG(IS_WIN)
 #endif  // BUILDFLAG(IS_CHROMEOS)
   }
 

@@ -37,6 +37,15 @@ class WebUIHomeControl {
   // there's enough room for it on the toolbar.
   bool IsPinned() const;
 
+  // Sets whether or not the button has overflowed - that is, not displayed on
+  // the toolbar because there's no space for it. When not pinned, overflowed
+  // should be set to false. Updates state if needed.
+  //
+  // May only be set to true if features::IsWebUIToolbarFullyEnabled() is false.
+  // Otherwise, overflow is managed in Javascript.
+  void SetIsOverflowed(bool is_overflowed);
+  bool is_overflowed() const { return is_overflowed_; }
+
   // Handles context menu requests from the WebUI.
   void HandleContextMenu(const gfx::Rect& screen_rect,
                          ui::mojom::MenuSourceType source);
@@ -45,14 +54,20 @@ class WebUIHomeControl {
   // and displays the undo bubble.
   void OnHomeButtonDropUrl(const GURL& url);
 
+  // Called when plain text is dropped on the home button. Returns whether the
+  // text should be forwarded to the shared toolbar text navigation logic.
+  // Returning false consumes the pending drag state so it does not leak into
+  // subsequent navigations.
+  bool ShouldHandleDropText();
+
   ui::MenuModel* GetMenuModelForTesting() { return &home_menu_; }
 
  private:
   FRIEND_TEST_ALL_PREFIXES(WebUIToolbarWebViewPixelBrowserTest,
                            CheckHomeButtonColor);
-  FRIEND_TEST_ALL_PREFIXES(WebUIToolbarWebViewHomeButtonBrowserTest,
-                           RightClickHomeButton);
-  FRIEND_TEST_ALL_PREFIXES(WebUIToolbarWebViewHomeButtonBrowserTest,
+  FRIEND_TEST_ALL_PREFIXES(WebUIToolbarRightClickContextMenuTest,
+                           RightClickShowsContextMenu);
+  FRIEND_TEST_ALL_PREFIXES(WebUIHomeControlInteractiveUiTest,
                            LongPressHomeButton);
   FRIEND_TEST_ALL_PREFIXES(WebUIToolbarButtonPressAndDragTest,
                            PressAndDragDown);
@@ -68,6 +83,7 @@ class WebUIHomeControl {
   BooleanPrefMember pin_state_;
   bool is_pinned_ = false;
   bool is_context_menu_visible_ = false;
+  bool is_overflowed_ = false;
 
   ui::mojom::MenuSourceType last_source_type_for_testing_ =
       ui::mojom::MenuSourceType::kNone;

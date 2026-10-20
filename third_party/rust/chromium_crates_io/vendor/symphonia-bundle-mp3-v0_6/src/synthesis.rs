@@ -1,5 +1,5 @@
 // Symphonia
-// Copyright (c) 2019-2022 The Project Symphonia Developers.
+// Copyright (c) 2019-2026 The Project Symphonia Developers.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
 // License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -10,7 +10,7 @@
 /// Synthesis window D[i], defined in Table B.3 of ISO/IEC 11172-3.
 #[allow(clippy::unreadable_literal)]
 #[rustfmt::skip]
-const SYNTHESIS_D: [f32; 512] = [
+static SYNTHESIS_D: [f32; 512] = [
      0.000000000, -0.000015259, -0.000015259, -0.000015259,
     -0.000015259, -0.000015259, -0.000015259, -0.000030518,
     -0.000030518, -0.000030518, -0.000030518, -0.000045776,

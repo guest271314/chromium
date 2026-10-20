@@ -7,6 +7,7 @@
 #include <optional>
 #include <string>
 
+#include "base/json/json_reader.h"
 #include "base/json/json_string_value_serializer.h"
 #include "base/json/json_writer.h"
 #include "components/version_info/version_info.h"
@@ -16,7 +17,6 @@
 #include "net/base/url_util.h"
 #include "net/http/http_request_headers.h"
 #include "net/http/http_status_code.h"
-#include "services/data_decoder/public/cpp/data_decoder.h"
 #include "services/network/public/cpp/resource_request.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "services/network/public/cpp/simple_url_loader.h"
@@ -44,7 +44,7 @@ SocsCookieFetcher::SocsCookieFetcher(
     scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
     Consumer* consumer)
     : consumer_(consumer), url_loader_factory_(std::move(url_loader_factory)) {
-  DCHECK(consumer_);
+  CHECK(consumer_, base::NotFatalUntil::M160);
 }
 
 SocsCookieFetcher::~SocsCookieFetcher() = default;
@@ -101,7 +101,7 @@ void SocsCookieFetcher::StartFetching() {
                                       kContentTypeJSON);
   resource_request->headers.SetHeader(net::HttpRequestHeaders::kAccept,
                                       kAcceptValue);
-  DCHECK(!simple_url_loader_);
+  CHECK(!simple_url_loader_, base::NotFatalUntil::M160);
 
   simple_url_loader_ = network::SimpleURLLoader::Create(
       std::move(resource_request), traffic_annotation);
@@ -129,26 +129,22 @@ void SocsCookieFetcher::OnSimpleLoaderComplete(
   }
   simple_url_loader_.reset();
 
-  // Parse the JSON response.
-  data_decoder::DataDecoder::ParseJsonIsolated(
-      *json_response, base::BindOnce(&SocsCookieFetcher::OnJsonParsed,
-                                     weak_ptr_factory_.GetWeakPtr()));
-}
-
-void SocsCookieFetcher::OnJsonParsed(
-    data_decoder::DataDecoder::ValueOrError result) {
+  // JSONReader is now safe for rule of 2.
+  std::optional<base::Value> result =
+      base::JSONReader::Read(*json_response, base::JSON_PARSE_RFC);
   if (!result.has_value()) {
     consumer_->OnApiCallFailed(Status::kJsonParseFailure);
     return;
   }
 
-  if (!result->is_dict()) {
+  base::DictValue* dict = result->GetIfDict();
+  if (!dict) {
     LOG(WARNING) << "Response is not a JSON dictionary.";
     consumer_->OnApiCallFailed(Status::kNotJsonDict);
     return;
   }
 
-  ProcessValidTokenResponse(std::move(result->GetDict()));
+  ProcessValidTokenResponse(std::move(*dict));
 }
 
 void SocsCookieFetcher::ProcessValidTokenResponse(

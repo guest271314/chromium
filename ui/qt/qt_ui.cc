@@ -23,6 +23,8 @@
 #include "base/scoped_environment_variable_override.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
+#include "base/strings/string_split.h"
+#include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
 #include "base/task/single_thread_task_runner.h"
 #include "cc/paint/paint_canvas.h"
@@ -58,6 +60,10 @@
 
 #if BUILDFLAG(ENABLE_PRINTING)
 #include "printing/print_dialog_linux_interface.h"  // nogncheck
+#endif
+
+#if defined(USE_GSETTINGS)
+#include "ui/base/glib/gsettings.h"
 #endif
 
 namespace qt {
@@ -131,6 +137,144 @@ gfx::FontRenderParams::Hinting QtHintingToGfxHinting(
   }
 }
 
+bool IsGtk4Loaded() {
+  void* handle = dlopen("libgtk-4.so.1", RTLD_LAZY | RTLD_NOLOAD);
+  if (!handle) {
+    handle = dlopen("libgtk-4.so", RTLD_LAZY | RTLD_NOLOAD);
+  }
+  if (handle) {
+    dlclose(handle);
+    return true;
+  }
+  return false;
+}
+
+// Determines if running in a GTK-based desktop environment by inspecting the
+// same environment variables that Qt's QGenericUnixTheme uses.
+// This logic has been stable across Qt 5 and Qt 6 and is unlikely to change,
+// as doing so would break theme auto-detection across standard Unix desktop
+// environments.
+bool IsGtkDesktop(base::Environment* env) {
+  std::string xdg_desktop = env->GetVar("XDG_CURRENT_DESKTOP").value_or("");
+  if (!xdg_desktop.empty()) {
+    xdg_desktop = base::ToUpperASCII(xdg_desktop);
+    // Qt splits XDG_CURRENT_DESKTOP by ':' and checks if any part is one of
+    // the GTK-based environments: GNOME, X-CINNAMON, UNITY, MATE, XFCE, LXDE.
+    // PANTHEON and COSMIC are also checked as they are GTK-based or
+    // GNOME-derived.
+    for (const auto& part :
+         base::SplitStringPiece(xdg_desktop, ":", base::TRIM_WHITESPACE,
+                                base::SPLIT_WANT_NONEMPTY)) {
+      if (part == "GNOME" || part == "X-CINNAMON" || part == "CINNAMON" ||
+          part == "UNITY" || part == "MATE" || part == "XFCE" ||
+          part == "LXDE" || part == "PANTHEON" || part == "COSMIC") {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  // Classic fallbacks used by Qt when XDG_CURRENT_DESKTOP is empty.
+  if (env->HasVar("GNOME_DESKTOP_SESSION_ID")) {
+    return true;
+  }
+
+  std::string desktop_session = env->GetVar("DESKTOP_SESSION").value_or("");
+  desktop_session = base::ToLowerASCII(desktop_session);
+  // Extract the basename of the desktop session if it's a path.
+  size_t last_slash = desktop_session.find_last_of('/');
+  if (last_slash != std::string::npos) {
+    desktop_session = desktop_session.substr(last_slash + 1);
+  }
+  return desktop_session == "gnome" || desktop_session == "mate" ||
+         desktop_session == "xfce" || desktop_session == "xubuntu" ||
+         desktop_session == "cinnamon" || desktop_session == "lxde" ||
+         desktop_session == "pantheon";
+}
+
+// Returns true if QT must be prevented from loading GTK3 (eg. via its GTK3
+// platform theme or style plugins).
+bool ShouldPreventQtFromLoadingGtk3(ui::LinuxUiBackend backend) {
+  // GTK3 and GTK4 symbols collide, so GTK3 can't be loaded if Chrome is using
+  // GTK4.
+  if (IsGtk4Loaded()) {
+    return true;
+  }
+  // On Wayland, GDK3 aborts during initialization if the GSettings font
+  // schemas are invalid.  This is the case where GtkUi refuses to initialize,
+  // and QT is used as a fallback.  See https://crbug.com/573086583.
+#if defined(USE_GSETTINGS)
+  return backend == ui::LinuxUiBackend::kWayland &&
+         !ui::AreGdkWaylandFontSchemasValid();
+#else
+  return false;
+#endif
+}
+
+std::vector<std::unique_ptr<base::ScopedEnvironmentVariableOverride>>
+GetGtkQtCollisionPreventionOverrides(ui::LinuxUiBackend backend) {
+  std::vector<std::unique_ptr<base::ScopedEnvironmentVariableOverride>>
+      env_overrides;
+  if (!ShouldPreventQtFromLoadingGtk3(backend)) {
+    return env_overrides;
+  }
+
+  auto env = base::Environment::Create();
+  const bool is_gtk_desktop = IsGtkDesktop(env.get());
+
+  auto platform_theme_opt = env->GetVar("QT_QPA_PLATFORMTHEME");
+  bool has_gtk_platform_theme = false;
+  if (platform_theme_opt.has_value()) {
+    const std::string& value = platform_theme_opt.value();
+    if (value == "gnome" || value == "gtk3" || value == "gtk2") {
+      has_gtk_platform_theme = true;
+    }
+  }
+
+  // If the platform theme is explicitly set to a clashing GTK-based theme,
+  // or if it is unset and the current desktop environment is GTK-based,
+  // override it to a custom non-existent theme to prevent loading GTK
+  // plugins.
+  if (has_gtk_platform_theme ||
+      (!platform_theme_opt.has_value() && is_gtk_desktop)) {
+    env_overrides.push_back(
+        std::make_unique<base::ScopedEnvironmentVariableOverride>(
+            "QT_QPA_PLATFORMTHEME", "chromium-fallback"));
+  }
+
+  // To prevent Qt's fallback/auto-detection logic from loading the GTK3
+  // platform theme plugin (e.g. if the explicitly set theme plugin like qt5ct
+  // is missing, or if overridden to "chromium-fallback"), unset the
+  // desktop environment variables during initialization if running on a
+  // GTK-based desktop or if a GTK-based platform theme was requested.
+  if (is_gtk_desktop || has_gtk_platform_theme) {
+    env_overrides.push_back(
+        std::make_unique<base::ScopedEnvironmentVariableOverride>(
+            "XDG_CURRENT_DESKTOP"));
+    env_overrides.push_back(
+        std::make_unique<base::ScopedEnvironmentVariableOverride>(
+            "DESKTOP_SESSION"));
+    env_overrides.push_back(
+        std::make_unique<base::ScopedEnvironmentVariableOverride>(
+            "GNOME_DESKTOP_SESSION_ID"));
+    env_overrides.push_back(
+        std::make_unique<base::ScopedEnvironmentVariableOverride>(
+            "KDE_FULL_SESSION"));
+  }
+
+  auto style_override_opt = env->GetVar("QT_STYLE_OVERRIDE");
+  if (style_override_opt.has_value()) {
+    const std::string& value = style_override_opt.value();
+    if (value == "gtk3" || value == "gtk2" || value == "gtk") {
+      env_overrides.push_back(
+          std::make_unique<base::ScopedEnvironmentVariableOverride>(
+              "QT_STYLE_OVERRIDE", "chromium-fallback"));
+    }
+  }
+
+  return env_overrides;
+}
+
 }  // namespace
 
 QtUi::QtUi(ui::LinuxUi* fallback_linux_ui)
@@ -176,24 +320,31 @@ bool QtUi::Initialize() {
   // [3] https://crbug.com/396193145
   base::ScopedEnvironmentVariableOverride qt_xcb_no_xi2("QT_XCB_NO_XI2", "1");
 
+  auto* delegate = ui::LinuxUiDelegate::GetInstance();
+  const auto backend =
+      delegate ? delegate->GetBackend() : ui::LinuxUiBackend::kStub;
+
+  // Prevent QT from loading GTK3 if it would crash the browser process: either
+  // because Chrome is using GTK4 and the symbols from both versions would
+  // collide, or because GDK3 would abort due to invalid GSettings schemas.
+  auto env_overrides = GetGtkQtCollisionPreventionOverrides(backend);
+
   // Set up command line.
   auto cmd_line = *base::CommandLine::ForCurrentProcess();
-  if (auto* delegate = ui::LinuxUiDelegate::GetInstance()) {
-    // Ensure QT is initialized with the same display server protocol as Chrome.
-    // In particular, when running under XWayland, make sure to use the xcb QT
-    // backend instead of the wayland backend.
-    switch (delegate->GetBackend()) {
-      case ui::LinuxUiBackend::kStub:
-        break;
-      case ui::LinuxUiBackend::kX11:
-        cmd_line.AppendArg("-platform");
-        cmd_line.AppendArg("xcb");
-        break;
-      case ui::LinuxUiBackend::kWayland:
-        cmd_line.AppendArg("-platform");
-        cmd_line.AppendArg("wayland");
-        break;
-    }
+  // Ensure QT is initialized with the same display server protocol as Chrome.
+  // In particular, when running under XWayland, make sure to use the xcb QT
+  // backend instead of the wayland backend.
+  switch (backend) {
+    case ui::LinuxUiBackend::kStub:
+      break;
+    case ui::LinuxUiBackend::kX11:
+      cmd_line.AppendArg("-platform");
+      cmd_line.AppendArg("xcb");
+      break;
+    case ui::LinuxUiBackend::kWayland:
+      cmd_line.AppendArg("-platform");
+      cmd_line.AppendArg("wayland");
+      break;
   }
   cmd_line_ = CopyCmdLine(cmd_line);
 
@@ -383,10 +534,21 @@ void QtUi::SetDarkTheme(bool dark) {
   // Qt::ColorScheme is only available in QT 6.5 and later.
 }
 
+void QtUi::SetColorScheme(std::optional<bool> prefer_dark) {
+  // Route the color scheme through the OS settings provider, which sources the
+  // web `NativeTheme::preferred_color_scheme()` via
+  // `UpdateVariablesForToolkitSettings()`.
+  os_settings_provider_->SetColorScheme(prefer_dark);
+}
+
 DISABLE_CFI_VCALL
 void QtUi::SetAccentColor(std::optional<SkColor> accent_color) {
   accent_color_ = accent_color;
-  native_theme_->NotifyOnNativeThemeUpdated();
+  // Route the accent color through the OS settings provider. This updates
+  // `NativeTheme::user_color()` (via `UpdateVariablesForToolkitSettings()`) and
+  // notifies all observing native themes, which re-runs the native color mixer
+  // above using the freshly-set `accent_color_`.
+  os_settings_provider_->SetAccentColor(accent_color);
 }
 
 DISABLE_CFI_VCALL
@@ -465,6 +627,11 @@ void QtUi::FontChanged() {
 
 void QtUi::ThemeChanged() {
   native_theme_->OnQtThemeChanged();
+  // Unlike GTK (which has settings signals), the Qt provider must be told to
+  // re-derive the toolkit color scheme when the Qt theme changes.
+  os_settings_provider_->OnThemeChanged();
+  // Animations enabled depends on the theme animation duration.
+  NotifyAnimationsEnabledChanged();
 }
 
 void QtUi::ScaleFactorMaybeChanged() {
@@ -494,15 +661,10 @@ void QtUi::AddNativeColorMixer(ui::ColorProvider* provider,
     ColorState state = ColorState::kNormal;
   } const kMaps[] = {
       // Core colors
-      {ui::kColorDisabledForeground, ColorType::kWindowFg,
-       ColorState::kDisabled},
       {ui::kColorEndpointBackground, ColorType::kEntryBg},
       {ui::kColorEndpointForeground, ColorType::kEntryFg},
       {ui::kColorMidground, ColorType::kMidground},
       {ui::kColorPrimaryBackground, ColorType::kWindowBg},
-      {ui::kColorPrimaryForeground, ColorType::kWindowFg},
-      {ui::kColorSecondaryForeground, ColorType::kWindowFg,
-       ColorState::kDisabled},
       {ui::kColorSubtleAccent, ColorType::kHighlightBg, ColorState::kInactive},
       {ui::kColorSubtleEmphasisBackground, ColorType::kWindowBg},
 
@@ -531,6 +693,22 @@ void QtUi::AddNativeColorMixer(ui::ColorProvider* provider,
   for (const auto& map : kMaps) {
     mixer[map.id] = {shim_->GetColor(map.role, map.state)};
   }
+
+  // Some palettes provide text colors with little or no contrast against their
+  // own window background (e.g. a white disabled text color on a light
+  // window). Nudge them just enough to stay legible: readable for regular and
+  // secondary text, and visible for disabled text.
+  const SkColor window_fg =
+      shim_->GetColor(ColorType::kWindowFg, ColorState::kNormal);
+  const SkColor window_fg_disabled =
+      shim_->GetColor(ColorType::kWindowFg, ColorState::kDisabled);
+  mixer[ui::kColorDisabledForeground] = ui::BlendForMinContrast(
+      window_fg_disabled, ui::kColorPrimaryBackground, std::nullopt,
+      color_utils::kMinimumVisibleContrastRatio);
+  mixer[ui::kColorPrimaryForeground] =
+      ui::BlendForMinContrast(window_fg, ui::kColorPrimaryBackground);
+  mixer[ui::kColorSecondaryForeground] =
+      ui::BlendForMinContrast(window_fg_disabled, ui::kColorPrimaryBackground);
 
   const ui::ColorId kAccentIds[] = {
       ui::kColorAccent,

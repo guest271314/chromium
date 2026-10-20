@@ -23,13 +23,19 @@ public interface PdfToolbarActionsDelegate {
      */
     void changeZoomLevel(float zoomLevel);
 
+    /** Enters edit mode. */
+    void enterEditMode();
+
+    /** Exits edit mode and applies any draft edits. */
+    void exitEditMode();
+
     /**
-     * Toggles between "fit to page height" and "fit to page width" modes.
+     * Toggles between "fit to page" and "fit to page width" modes.
      *
-     * @param fitToPageHeight Whether to fit to page height or fit to page width.
+     * @param fitToPage Whether to fit to page or fit to page width.
      * @param pageIndex The 0-based index of the page to navigate to.
      */
-    void toggleFitToPage(boolean fitToPageHeight, int pageIndex);
+    void toggleFitToPage(boolean fitToPage, int pageIndex);
 
     /**
      * Toggles whether the PDF viewer should display two pages per row.
@@ -41,4 +47,23 @@ public interface PdfToolbarActionsDelegate {
      *     position when toggling between one and two pages per row.
      */
     void toggleTwoPagesPerRow(boolean twoPagesPerRowEnabled, float zoomLevel, int currentPageIndex);
+
+    /** Downloads the PDF document. */
+    void download();
+
+    /** Triggers printing for the PDF document. */
+    void print();
+
+
+
+    /** Shows the document properties dialog. */
+    void showDocumentProperties();
+
+    /**
+     * Called when the visibility of the page navigation and edit button changes.
+     *
+     * @param visible Whether the page navigation and edit button are visible.
+     */
+    void onPageNavAndEditVisibilityChanged(boolean visible);
 }
+

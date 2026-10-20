@@ -23,7 +23,10 @@ enum class ModelExecutionEnterprisePolicyValue {
   kAllowWithoutLogging = 1,
   kDisable = 2,
 };
-// LINT.ThenChange(/chrome/browser/resources/settings/ai_page/constants.ts:ModelExecutionEnterprisePolicyValue)
+// LINT.ThenChange(
+//    //chrome/browser/resources/settings/ai_page/constants.ts:ModelExecutionEnterprisePolicyValue,
+//    //chrome/browser/ui/android/autofill/internal/java/src/org/chromium/chrome/browser/ui/autofill/AtMemoryBottomSheetMediator.java:AllowLogging
+// )
 
 enum class GenAILocalFoundationalModelEnterprisePolicySettings {
   kAllowed = 0,
@@ -52,11 +55,11 @@ extern const char kOnDevicePerformanceClassVersion[];
 COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
 extern const char kOnDeviceVramMb[];
 COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
+extern const char kOnDevicePerformanceClassGPUId[];
+COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
 extern const char kLastUsageByFeature[];
 COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
 extern const char kLastTimeEligibleForOnDeviceModelDownload[];
-COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
-extern const char kModelQualityLoggingClientId[];
 COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
 extern const char kGenAILocalFoundationalModelEnterprisePolicySettings[];
 
@@ -67,30 +70,18 @@ COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
 extern const char kOnDeviceAiUserSettingsEnabled[];
 
 COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
+extern const char kOnDeviceAiAutoRemoveUnusedModelsEnabled[];
+
+COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
+extern const char kEmbeddingApiModelDownloadEligible[];
+
+COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
 extern const char kManifestAssetLedger[];
 
 }  // namespace localstate
 
 COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
 void RegisterLocalStatePrefs(PrefRegistrySimple* registry);
-
-COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
-void PruneOldUsagePrefs(PrefService* local_state);
-COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
-void RecordFeatureUsage(PrefService* local_state,
-                        mojom::OnDeviceFeature feature);
-COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
-bool WasFeatureRecentlyUsed(const PrefService* local_state,
-                            mojom::OnDeviceFeature feature);
-COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
-void RecordUseCaseUsage(PrefService* local_state,
-                        const std::string& use_case_name);
-COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
-void ClearUseCaseUsage(PrefService* local_state,
-                       const std::string& use_case_name);
-COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
-bool WasUseCaseRecentlyUsed(const PrefService* local_state,
-                            const std::string& use_case_name);
 
 }  // namespace optimization_guide::model_execution::prefs
 

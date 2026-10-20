@@ -13,7 +13,7 @@
 #include "base/feature_list.h"
 #include "base/functional/callback.h"
 #include "components/optimization_guide/core/feature_registry/enterprise_policy_registry.h"
-#include "components/optimization_guide/core/model_execution/feature_keys.h"
+#include "components/optimization_guide/core/feature_registry/feature_keys.h"
 #include "components/optimization_guide/proto/features/common_quality_data.pb.h"
 #include "components/optimization_guide/proto/model_quality_service.pb.h"
 
@@ -93,7 +93,9 @@ class MqlsFeatureMetadata {
 
 class MqlsFeatureRegistry {
  public:
+  COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
   MqlsFeatureRegistry();
+  COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
   ~MqlsFeatureRegistry();
 
   COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)

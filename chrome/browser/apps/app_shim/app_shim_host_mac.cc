@@ -11,8 +11,10 @@
 #include "base/files/file_path.h"
 #include "base/functional/bind.h"
 #include "base/logging.h"
+#include "base/metrics/histogram_functions.h"
 #include "base/metrics/histogram_shared_memory.h"
 #include "base/metrics/persistent_histogram_allocator.h"
+#include "base/strings/strcat.h"
 #include "chrome/browser/apps/app_shim/app_shim_host_bootstrap_mac.h"
 #include "chrome/browser/web_applications/os_integration/mac/web_app_shortcut_mac.h"
 #include "chrome/common/chrome_features.h"
@@ -36,7 +38,7 @@ AppShimHost::AppShimHost(AppShimHost::Client* client,
       app_id_(app_id),
       profile_path_(profile_path),
       uses_remote_views_(uses_remote_views),
-      child_process_host_id_(
+      child_process_id_(
           content::ChildProcessHost::GenerateChildProcessUniqueId()),
       launch_weak_factory_(this) {
   // Create the interfaces used to host windows, so that browser windows may be
@@ -56,7 +58,7 @@ AppShimHost::AppShimHost(AppShimHost::Client* client,
   }
 
   auto shared_memory = base::HistogramSharedMemory::Create(
-      child_process_host_id_,
+      child_process_id_.value(),
       {content::PROCESS_TYPE_UTILITY, "AppShimMetrics", 512 << 10});
   if (shared_memory) {
     histogram_allocator_ = std::move(shared_memory->allocator);
@@ -70,7 +72,8 @@ AppShimHost::AppShimHost(AppShimHost::Client* client,
 
 AppShimHost::~AppShimHost() {
   DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
-  metrics::HistogramController::GetInstance()->NotifyChildDied(this);
+  metrics::HistogramController::GetInstance()->NotifyChildDied(
+      GetProcessIdForHistogram());
   // If this instance gets destructed while a test is still waiting for it to be
   // connected, we should unblock the test. The shim would have never connected,
   // but unblocking the test at least can cause the test to fail gracefully
@@ -86,7 +89,7 @@ void AppShimHost::ChannelError(uint32_t custom_reason,
              << " description: " << description;
 
   if (auto* provider = metrics::SubprocessMetricsProvider::GetInstance()) {
-    provider->DeregisterSubprocessAllocator(child_process_host_id_);
+    provider->DeregisterSubprocessAllocator(child_process_id_);
   } else {
     // SubprocessMetricsProvider can be null in tests.
     CHECK_IS_TEST();
@@ -99,9 +102,10 @@ void AppShimHost::ChannelError(uint32_t custom_reason,
 void AppShimHost::LaunchShimInternal(
     web_app::LaunchShimUpdateBehavior update_behavior,
     web_app::ShimLaunchMode launch_mode) {
-  DCHECK(launch_shim_has_been_called_);
-  DCHECK(!bootstrap_);
+  CHECK(launch_shim_has_been_called_, base::NotFatalUntil::M161);
+  CHECK(!bootstrap_, base::NotFatalUntil::M161);
   launch_weak_factory_.InvalidateWeakPtrs();
+  pending_chrome_initiated_launch_mode_ = launch_mode;
   client_->OnShimLaunchRequested(
       this, update_behavior, launch_mode,
       base::BindOnce(&AppShimHost::OnShimProcessLaunched,
@@ -118,7 +122,7 @@ void AppShimHost::OnShimProcessLaunched(
     base::Process shim_process) {
   // If a bootstrap connected, then it should have invalidated all weak
   // pointers, preventing this from being called.
-  DCHECK(!bootstrap_);
+  CHECK(!bootstrap_, base::NotFatalUntil::M161);
 
   // If the shim process was created, then await either an AppShimHostBootstrap
   // connecting or the process exiting.
@@ -128,16 +132,19 @@ void AppShimHost::OnShimProcessLaunched(
 
   // Shim launch failing is treated the same as the shim launching but
   // terminating before connecting.
+  if (web_app::RecreateShimsRequested(update_behavior)) {
+    MaybeRecordLaunchResult(LaunchResult::kFailedProcessCreation);
+  }
   OnShimProcessTerminated(update_behavior, launch_mode);
 }
 
 void AppShimHost::OnShimProcessTerminated(
     web_app::LaunchShimUpdateBehavior update_behavior,
     web_app::ShimLaunchMode launch_mode) {
-  DCHECK(!bootstrap_);
+  CHECK(!bootstrap_, base::NotFatalUntil::M161);
 
   if (auto* provider = metrics::SubprocessMetricsProvider::GetInstance()) {
-    provider->DeregisterSubprocessAllocator(child_process_host_id_);
+    provider->DeregisterSubprocessAllocator(child_process_id_);
   } else {
     // SubprocessMetricsProvider can be null in tests.
     CHECK_IS_TEST();
@@ -148,6 +155,7 @@ void AppShimHost::OnShimProcessTerminated(
   // date. Try again, recreating the shims this time.
   if (!web_app::RecreateShimsRequested(update_behavior)) {
     DLOG(ERROR) << "Failed to launch shim, attempting to recreate.";
+    shim_recreated_ = true;
     LaunchShimInternal(
         web_app::LaunchShimUpdateBehavior::kRecreateUnconditionally,
         launch_mode);
@@ -160,6 +168,8 @@ void AppShimHost::OnShimProcessTerminated(
   // TODO(crbug.com/40605763): Consider adding some UI to tell the
   // user that the process launch failed.
   DLOG(ERROR) << "Failed to launch recreated shim, giving up.";
+
+  MaybeRecordLaunchResult(LaunchResult::kFailedTerminatedBeforeConnection);
 
   // OnShimProcessDisconnected will delete |this|.
   client_->OnShimProcessDisconnected(this);
@@ -193,7 +203,9 @@ void AppShimHost::OnBootstrapConnected(
   // external launch happen to race).
   launch_weak_factory_.InvalidateWeakPtrs();
 
-  DCHECK(!bootstrap_);
+  MaybeRecordLaunchResult(LaunchResult::kSuccess);
+
+  CHECK(!bootstrap_, base::NotFatalUntil::M161);
   bootstrap_ = std::move(bootstrap);
   bootstrap_->OnConnectedToHost(std::move(app_shim_receiver_));
 
@@ -207,9 +219,8 @@ void AppShimHost::OnBootstrapConnected(
     CHECK_IS_TEST();
   } else if (histogram_allocator_) {
     provider->RegisterSubprocessAllocator(
-        child_process_host_id_,
-        std::make_unique<base::PersistentHistogramAllocator>(
-            std::move(histogram_allocator_)));
+        child_process_id_, std::make_unique<base::PersistentHistogramAllocator>(
+                               std::move(histogram_allocator_)));
   }
 
   if (on_shim_connected_for_testing_) {
@@ -290,11 +301,15 @@ void AppShimHost::ApplicationWillTerminate() {
 
 void AppShimHost::NotificationPermissionStatusChanged(
     mac_notifications::mojom::PermissionStatus status) {
-  client_->OnNotificationPermissionStatusChanged(this, status);
+  client_->OnNotificationPermissionStatusChanged(
+      this, last_notification_permission_status_, status);
+  last_notification_permission_status_ = status;
 }
 
 base::FilePath AppShimHost::GetProfilePath() const {
   // This should only be used by single-profile-app paths.
+  // TODO(crbug.com/572515497): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
   DCHECK(!profile_path_.empty());
   return profile_path_;
 }
@@ -320,4 +335,25 @@ void AppShimHost::BindChildHistogramFetcherFactory(
 
 bool AppShimHost::IsWebiumRenderer() const {
   return false;
+}
+
+void AppShimHost::MaybeRecordLaunchResult(LaunchResult result) {
+  if (!pending_chrome_initiated_launch_mode_) {
+    return;
+  }
+  if (result == LaunchResult::kSuccess && shim_recreated_) {
+    result = LaunchResult::kSuccessAfterRecreate;
+  }
+  std::string mode_str = (*pending_chrome_initiated_launch_mode_ ==
+                          web_app::ShimLaunchMode::kBackground)
+                             ? "Background"
+                             : "Normal";
+  base::UmaHistogramEnumeration(
+      base::StrCat({"Apps.AppShim.LaunchResult.", mode_str}), result);
+  pending_chrome_initiated_launch_mode_.reset();
+}
+
+uint64_t AppShimHost::GetProcessIdForHistogram() const {
+  // TODO(crbug.com/379869738): Remove GetUnsafeValue.
+  return child_process_id_.GetUnsafeValue();
 }

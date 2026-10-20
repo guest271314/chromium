@@ -128,6 +128,22 @@ public interface ExternalNavigationDelegate {
     /** Whether WebAPKs should be launched even on the initial Intent. */
     boolean shouldLaunchWebApksOnInitialIntent();
 
+    /**
+     * Per-package "Open supported links" setting, not per-host verification. Default true so
+     * embedders that do not read the setting keep existing incoming VIEW WebAPK launches.
+     */
+    default boolean isWebApkLinkHandlingAllowed(@Nullable String packageName) {
+        return packageName != null;
+    }
+
+    /**
+     * Cheap precheck for renderer navigations before querying non-default WebAPK handlers. Default
+     * true preserves behavior for embedders that do not keep an in-memory WebAPK registry.
+     */
+    default boolean maybeHasWebApkForUrl(GURL url) {
+        return true;
+    }
+
     /** Adds a target package to the Intent. Only called if isForTrustedCallingApp is true. */
     void setPackageForTrustedCallingApp(Intent intent);
 
@@ -161,20 +177,10 @@ public interface ExternalNavigationDelegate {
     void returnAsActivityResult(GURL url);
 
     /**
-     * Records the scheme of the external navigation if this is likely a CCT launched for auth
-     * purposes.
-     *
-     * @param url The {@link GURL} of the external navigation.
-     */
-    void maybeRecordExternalNavigationSchemeHistogram(GURL url);
-
-    /**
      * Records metrics relevant to password saving in CCTs if the recorder exists. A recorder might
      * not exist if there was no form submission preceding the external navigation.
      */
     void notifyCctPasswordSavingRecorderOfExternalNavigation();
-
-    void reportIntentToSafeBrowsing(Intent intent);
 
     /**
      * Returns an intent that targets the embedder application if opening the url in incognito
@@ -216,10 +222,23 @@ public interface ExternalNavigationDelegate {
     void setExternalNavigationHelper(ExternalNavigationHelper helper);
 
     /**
-     * Returns whether the external navigation should be blocked now because an app should be set
-     * for the current page to be opened by the user on demand at a later time.
+     * Returns whether the external navigation should be allowed for HTTP protocols. If this returns
+     * true, normal external navigation checks will continue. If this returns false, the navigation
+     * will be kept inside the browser to be opened by the user on demand at a later time.
      *
      * @param url The {@link GURL} of the current page.
      */
     boolean allowExternalNavigationForHttpProtocols(GURL url);
+
+    /**
+     * Returns whether the given URL is within the scope of the current PWA/TWA.
+     *
+     * @param url The {@link GURL} to check.
+     */
+    default boolean isUrlInPwaScope(GURL url) {
+        return false;
+    }
+
+    /** Reparents the tab associated with this delegate to a new instance of the same PWA. */
+    default void reparentTabToSamePwa() {}
 }

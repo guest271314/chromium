@@ -15,7 +15,6 @@
 #include <utility>
 
 #include "base/memory/raw_ptr.h"
-#include "base/metrics/histogram_macros.h"
 #include "base/no_destructor.h"
 #include "base/system/sys_info.h"
 #include "base/time/time.h"
@@ -120,14 +119,14 @@ std::unique_ptr<LayerImpl> PictureLayerImpl::CreateLayerImpl(
 void PictureLayerImpl::CopyPropertiesTo(LayerImpl* base_layer) const {
   PictureLayerImpl* layer_impl = static_cast<PictureLayerImpl*>(base_layer);
 
-  layer_impl->has_animated_image_update_rect_ = has_animated_image_update_rect_;
-  layer_impl->has_non_animated_image_update_rect_ =
-      has_non_animated_image_update_rect_;
-
   LayerImpl::CopyPropertiesTo(base_layer);
 
   bool changed_other_props = GetChangeFlag(kChangedGeneralProperty);
   if (changed_other_props) {
+    layer_impl->has_animated_image_update_rect_ =
+        has_animated_image_update_rect_;
+    layer_impl->has_non_animated_image_update_rect_ =
+        has_non_animated_image_update_rect_;
     layer_impl->SetIsBackdropFilterMask(is_backdrop_filter_mask());
 
     // Solid color layers have no tilings.
@@ -279,20 +278,8 @@ bool PictureLayerImpl::ShouldReportTileAsMissing(
 
 void PictureLayerImpl::DidAppendQuad(
     viz::DrawQuad* quad,
-    const TilingSetCoverageIterator<PictureLayerTiling>& iter,
-    AppendQuadsData* append_quads_data,
-    bool is_checkerboard) {
+    const TilingSetCoverageIterator<PictureLayerTiling>& iter) {
   ValidateQuadResources(quad);
-
-  if (is_checkerboard) {
-    // Report data on any missing images that might be the largest
-    // contentful image.
-    if (*iter) {
-      UMA_HISTOGRAM_BOOLEAN(
-          "Compositing.DecodeLCPCandidateImage.MissedDeadline",
-          iter->HasMissingLCPCandidateImages());
-    }
-  }
 }
 
 void PictureLayerImpl::WillProcessReadyToDrawTile(
@@ -462,15 +449,15 @@ bool PictureLayerImpl::HasAnimatedImages() const {
 }
 
 void PictureLayerImpl::AnnotateAnimatedImages(
-    base::flat_map<PaintImage::Id, bool>& image_map) const {
+    AnimatedImageDriverMap& driver_map) const {
   if (!discardable_image_map_) {
     return;
   }
   for (const auto& data : discardable_image_map_->animated_images_metadata()) {
-    if (ShouldAnimate(data.first)) {
-      image_map.insert_or_assign(data.first, true);
-    } else {
-      image_map.try_emplace(data.first, false);
+    auto& driver_state = driver_map[data.first];
+    driver_state.first |= ShouldAnimate(data.first);
+    if (canvas_drawable_id()) {
+      driver_state.second.push_back(canvas_drawable_id());
     }
   }
 }
@@ -822,7 +809,7 @@ void PictureLayerImpl::ResetChangeTracking() {
 }
 
 void PictureLayerImpl::DidBeginTracing() {
-  raster_source_->DidBeginTracing();
+  raster_source_->DidBeginTracing(id());
 }
 
 void PictureLayerImpl::ReleaseResources() {
@@ -968,14 +955,21 @@ bool PictureLayerImpl::ShouldAnimate(PaintImage::Id paint_image_id) const {
   //
   //  Additionally only animate images which are on-screen, animations are
   //  paused once they are not visible.
-  if (!HasValidTilePriorities())
+  //
+  // An exception to the above is animated images inside a <canvas>, which we
+  // animate to trigger a "paint" event when the animation advances.
+  if (!HasValidTilePriorities() && !canvas_drawable_id()) {
     return false;
+  }
 
   if (auto it = discardable_image_map_->animated_images_metadata().find(
           paint_image_id);
       it != discardable_image_map_->animated_images_metadata().end()) {
     if (it->second.repetition_count == kAnimationPaused) {
       return false;
+    }
+    if (canvas_drawable_id()) {
+      return true;
     }
   }
 
@@ -1893,8 +1887,11 @@ PictureLayerImpl::InvalidateRegionForImages(
   auto* controller = layer_tree_impl()->image_animation_controller();
   InvalidationRegion image_invalidation;
   for (auto image_id : images_to_invalidate) {
-    all_animated_image &= controller->IsRegistered(image_id);
     const auto& rects = discardable_image_map_->GetRectsForImage(image_id);
+    if (rects.empty()) {
+      continue;
+    }
+    all_animated_image &= controller->IsRegistered(image_id);
     for (const auto& r : rects) {
       image_invalidation.Union(r);
     }
@@ -1916,8 +1913,7 @@ PictureLayerImpl::InvalidateRegionForImages(
 
   invalidation_.Union(invalidation);
   tilings_->Invalidate(invalidation);
-  // TODO(crbug.com/40335690): SetNeedsPushProperties() would be needed here if
-  // PictureLayerImpl didn't always push properties every activation.
+  SetNeedsPushProperties(kChangedGeneralProperty);
   return ImageInvalidationResult::kInvalidated;
 }
 
@@ -1950,6 +1946,7 @@ void PictureLayerImpl::InvalidateRasterInducingScrolls(
     }
     invalidation_.Union(invalidation);
     tilings_->Invalidate(invalidation);
+    SetNeedsPushProperties(kChangedGeneralProperty);
   }
 }
 
@@ -2061,17 +2058,6 @@ PictureLayerImpl::TileUpdateSet PictureLayerImpl::TakeAllTiles() {
   // them.
   should_batch_updated_tiles_ = false;
   return updates;
-}
-
-gfx::ContentColorUsage PictureLayerImpl::GetContentColorUsage() const {
-  if (!raster_source_) {
-    return gfx::ContentColorUsage::kSRGB;
-  }
-  auto display_item_list = raster_source_->GetDisplayItemList();
-  if (!display_item_list)
-    return gfx::ContentColorUsage::kSRGB;
-
-  return display_item_list->content_color_usage();
 }
 
 DamageReasonSet PictureLayerImpl::GetDamageReasons() const {

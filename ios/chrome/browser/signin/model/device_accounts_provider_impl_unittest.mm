@@ -7,13 +7,14 @@
 #import "base/memory/raw_ptr.h"
 #import "base/scoped_observation.h"
 #import "base/strings/sys_string_conversions.h"
+#import "base/test/scoped_feature_list.h"
+#import "components/signin/public/base/signin_switches.h"
 #import "components/signin/public/identity_manager/ios/device_accounts_provider.h"
 #import "google_apis/gaia/gaia_id.h"
 #import "ios/chrome/browser/shared/model/application_context/application_context.h"
 #import "ios/chrome/browser/shared/model/profile/test/test_profile_ios.h"
 #import "ios/chrome/browser/signin/model/authentication_service_factory.h"
 #import "ios/chrome/browser/signin/model/chrome_account_manager_service_factory.h"
-#import "ios/chrome/browser/signin/model/fake_authentication_service_delegate.h"
 #import "ios/chrome/browser/signin/model/fake_system_identity.h"
 #import "ios/chrome/browser/signin/model/fake_system_identity_manager.h"
 #import "ios/chrome/test/ios_chrome_scoped_testing_local_state.h"
@@ -45,8 +46,7 @@ class DeviceAccountsProviderImplTest : public PlatformTest {
     TestProfileIOS::Builder builder;
     builder.AddTestingFactory(
         AuthenticationServiceFactory::GetInstance(),
-        AuthenticationServiceFactory::GetFactoryWithDelegate(
-            std::make_unique<FakeAuthenticationServiceDelegate>()));
+        AuthenticationServiceFactory::GetDefaultFactory());
     profile_ = std::move(builder).Build();
     fake_system_identity_manager_ =
         FakeSystemIdentityManager::FromSystemIdentityManager(
@@ -91,6 +91,33 @@ TEST_F(DeviceAccountsProviderImplTest, TestFetchWithUnknownIdentity) {
 
 // Tests no error returned, while fetching an access token.
 TEST_F(DeviceAccountsProviderImplTest, TestFetchWithFakeIdentity) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndDisableFeature(
+      switches::kHandleMdmErrorsForDasherAccounts);
+  const FakeSystemIdentity* fake_identity = [FakeSystemIdentity fakeIdentity1];
+  fake_system_identity_manager_->AddIdentity(fake_identity);
+  DeviceAccountsProviderImpl* provider = GetDeviceAccountsProviderImpl();
+  base::RunLoop run_loop;
+  std::set<std::string> scopes;
+  DeviceAccountsProvider::AccessTokenCallback callback = base::BindOnce(
+      [](base::RunLoop* run_loop,
+         DeviceAccountsProvider::AccessTokenResult result) {
+        EXPECT_TRUE(result.has_value());
+        run_loop->Quit();
+      },
+      &run_loop);
+  provider->GetAccessToken(fake_identity.gaiaId, kClientID, scopes,
+                           std::move(callback));
+  run_loop.Run();
+}
+
+// Tests no error returned, while fetching an access token with the
+// AccessTokenRequestCallback pathway.
+TEST_F(DeviceAccountsProviderImplTest,
+       TestFetchWithFakeIdentityAndAccessTokenRequestCallback) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(
+      switches::kHandleMdmErrorsForDasherAccounts);
   const FakeSystemIdentity* fake_identity = [FakeSystemIdentity fakeIdentity1];
   fake_system_identity_manager_->AddIdentity(fake_identity);
   DeviceAccountsProviderImpl* provider = GetDeviceAccountsProviderImpl();

@@ -7,9 +7,10 @@
 #include "base/types/to_address.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/immersive/immersive_mode_controller.h"
 #include "chrome/browser/ui/interaction/browser_elements.h"
 #include "chrome/browser/ui/views/frame/browser_frame_view.h"
-#include "chrome/browser/ui/views/frame/immersive_mode_controller.h"
+#include "chrome/browser/ui/views/interaction/browser_elements_views.h"
 #include "ui/views/interaction/element_tracker_views.h"
 #include "ui/views/view_utils.h"
 #include "ui/views/widget/widget.h"
@@ -19,22 +20,25 @@ DEFINE_USER_DATA(BrowserWindowFullscreenController);
 namespace {
 
 const BrowserFrameView* GetBrowserFrameView(BrowserWindowInterface* browser) {
-  auto* browser_elements = BrowserElements::From(browser);
-  if (!browser_elements) {
+  auto* browser_elements = BrowserElementsViews::From(browser);
+  if (!browser_elements || !browser_elements->GetContext()) {
     return nullptr;
   }
 
-  const ui::TrackedElement* element =
-      browser_elements->GetElement(kBrowserFrameElementId);
-  if (!element) {
-    return nullptr;
+  // Attempt to fetch the visible frame first if it exists.
+  const BrowserFrameView* browser_frame_view =
+      browser_elements->GetViewAs<BrowserFrameView>(kBrowserFrameElementId,
+                                                    /*require_visible=*/true);
+
+  if (!browser_frame_view) {
+    // If not visible, fallback to fetching it regardless of visibility, as the
+    // fullscreen controller may need to check frame state before the browser
+    // has been shown.
+    browser_frame_view = browser_elements->GetViewAs<BrowserFrameView>(
+        kBrowserFrameElementId, /*require_visible=*/false);
   }
 
-  const views::TrackedElementViews* element_views =
-      element->AsA<views::TrackedElementViews>();
-  return element_views
-             ? views::AsViewClass<BrowserFrameView>(element_views->view())
-             : nullptr;
+  return browser_frame_view;
 }
 
 }  // namespace

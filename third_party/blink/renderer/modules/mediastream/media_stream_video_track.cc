@@ -22,6 +22,7 @@
 #include "media/base/limits.h"
 #include "media/capture/video_capture_types.h"
 #include "third_party/blink/public/mojom/mediastream/media_stream.mojom-blink.h"
+#include "third_party/blink/public/platform/modules/mediastream/web_media_stream_sink.h"
 #include "third_party/blink/public/web/modules/mediastream/media_stream_video_sink.h"
 #include "third_party/blink/public/web/web_local_frame.h"
 #include "third_party/blink/renderer/modules/mediastream/media_stream_constraints_util_video_device.h"
@@ -79,40 +80,31 @@ base::TimeDelta ComputeRefreshIntervalFromBounds(
 
 void LogVideoFrameDropUMA(media::VideoCaptureFrameDropReason reason,
                           mojom::blink::MediaStreamType stream_type) {
-  const int kEnumCount =
-      static_cast<int>(media::VideoCaptureFrameDropReason::kMaxValue) + 1;
-  UMA_HISTOGRAM_ENUMERATION("Media.VideoCapture.Track.FrameDrop", reason,
-                            kEnumCount);
+  UMA_HISTOGRAM_ENUMERATION("Media.VideoCapture.Track.FrameDrop", reason);
   switch (stream_type) {
     case mojom::blink::MediaStreamType::DEVICE_VIDEO_CAPTURE:
       UMA_HISTOGRAM_ENUMERATION(
-          "Media.VideoCapture.Track.FrameDrop.DeviceCapture", reason,
-          kEnumCount);
+          "Media.VideoCapture.Track.FrameDrop.DeviceCapture", reason);
       break;
     case mojom::blink::MediaStreamType::GUM_TAB_VIDEO_CAPTURE:
       UMA_HISTOGRAM_ENUMERATION(
-          "Media.VideoCapture.Track.FrameDrop.GumTabCapture", reason,
-          kEnumCount);
+          "Media.VideoCapture.Track.FrameDrop.GumTabCapture", reason);
       break;
     case mojom::blink::MediaStreamType::GUM_DESKTOP_VIDEO_CAPTURE:
       UMA_HISTOGRAM_ENUMERATION(
-          "Media.VideoCapture.Track.FrameDrop.GumDesktopCapture", reason,
-          kEnumCount);
+          "Media.VideoCapture.Track.FrameDrop.GumDesktopCapture", reason);
       break;
     case mojom::blink::MediaStreamType::DISPLAY_VIDEO_CAPTURE:
       UMA_HISTOGRAM_ENUMERATION(
-          "Media.VideoCapture.Track.FrameDrop.DisplayCapture", reason,
-          kEnumCount);
+          "Media.VideoCapture.Track.FrameDrop.DisplayCapture", reason);
       break;
     case mojom::blink::MediaStreamType::DISPLAY_VIDEO_CAPTURE_THIS_TAB:
       UMA_HISTOGRAM_ENUMERATION(
-          "Media.VideoCapture.Track.FrameDrop.DisplayCaptureCurrentTab", reason,
-          kEnumCount);
+          "Media.VideoCapture.Track.FrameDrop.DisplayCaptureCurrentTab", reason);
       break;
     case mojom::blink::MediaStreamType::DISPLAY_VIDEO_CAPTURE_SET:
       UMA_HISTOGRAM_ENUMERATION(
-          "Media.VideoCapture.Track.FrameDrop.DisplayCaptureSet", reason,
-          kEnumCount);
+          "Media.VideoCapture.Track.FrameDrop.DisplayCaptureSet", reason);
       break;
     case mojom::blink::MediaStreamType::NO_SERVICE:
     case mojom::blink::MediaStreamType::DEVICE_AUDIO_CAPTURE:
@@ -614,9 +606,9 @@ void MediaStreamVideoTrack::FrameDeliverer::DeliverFrameOnVideoTaskRunner(
 
   frame_drop_log_state_ = FrameDropLogState();
 
-  OnCaptureVersion(frame->metadata().capture_version);
+  OnCaptureVersion(frame->metadata().capture.version);
 
-  if (frame->metadata().capture_version < capture_version_) {
+  if (frame->metadata().capture.version < capture_version_) {
     OnFrameDroppedOnVideoTaskRunner(
         media::VideoCaptureFrameDropReason::kOldCaptureVersion);
     return;
@@ -947,7 +939,7 @@ MediaStreamVideoTrack::CreateFromComponent(
   MediaStreamVideoTrack* original_track =
       MediaStreamVideoTrack::From(component);
   DCHECK(original_track);
-  return std::make_unique<MediaStreamVideoTrack>(
+  auto cloned_track = std::make_unique<MediaStreamVideoTrack>(
       native_source, original_track->adapter_settings(),
       original_track->noise_reduction(), original_track->is_screencast(),
       original_track->min_frame_rate(),
@@ -956,6 +948,8 @@ MediaStreamVideoTrack::CreateFromComponent(
           : nullptr,
       original_track->pan_tilt_zoom_allowed(),
       MediaStreamVideoSource::ConstraintsOnceCallback(), component->Enabled());
+  native_source->OnTrackCloned(original_track, cloned_track.get());
+  return cloned_track;
 }
 
 static void AddSinkInternal(Vector<WebMediaStreamSink*>* sinks,
@@ -971,18 +965,17 @@ static void RemoveSinkInternal(Vector<WebMediaStreamSink*>* sinks,
   sinks->erase(it);
 }
 
-void MediaStreamVideoTrack::AddSink(
-    WebMediaStreamSink* sink,
-    const VideoCaptureDeliverFrameCB& callback,
-    MediaStreamVideoSink::IsSecure is_secure,
-    MediaStreamVideoSink::UsesAlpha uses_alpha) {
+void MediaStreamVideoTrack::AddSink(WebMediaStreamSink* sink,
+                                    const VideoCaptureDeliverFrameCB& callback,
+                                    WebMediaStreamSink::IsSecure is_secure,
+                                    WebMediaStreamSink::UsesAlpha uses_alpha) {
   DCHECK_CALLED_ON_VALID_THREAD(main_render_thread_checker_);
   AddSinkInternal(&sinks_, sink);
   frame_deliverer_->AddCallback(sink, callback);
-  secure_tracker_.Add(sink, is_secure == MediaStreamVideoSink::IsSecure::kYes);
-  if (uses_alpha == MediaStreamVideoSink::UsesAlpha::kDefault) {
+  secure_tracker_.Add(sink, is_secure == WebMediaStreamSink::IsSecure::kYes);
+  if (uses_alpha == WebMediaStreamSink::UsesAlpha::kDefault) {
     alpha_using_sinks_.insert(sink);
-  } else if (uses_alpha == MediaStreamVideoSink::UsesAlpha::kNo) {
+  } else if (uses_alpha == WebMediaStreamSink::UsesAlpha::kNo) {
     alpha_discarding_sinks_.insert(sink);
   }
 

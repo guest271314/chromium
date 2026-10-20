@@ -20,12 +20,15 @@ import org.chromium.base.ContextUtils;
 import org.chromium.base.JniOnceCallback;
 import org.chromium.base.Log;
 import org.chromium.base.Promise;
+import org.chromium.base.ResettersForTesting;
+import org.chromium.base.metrics.RecordHistogram;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 
 import java.io.IOException;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.function.Supplier;
 
 /**
  * JNI bridge for tapping into the ContentRestrictionManager system service in order to enforce
@@ -51,6 +54,9 @@ public class AwContentRestrictionManagerBridge {
                 }
             };
 
+    private static @Nullable Supplier<@Nullable AconfigFlaggedApiDelegate>
+            sDelegateSupplierForTesting;
+
     private final Map<Long, ParcelFileDescriptor> mReadFileDescriptorMap = new HashMap<>();
 
     @CalledByNative
@@ -61,6 +67,13 @@ public class AwContentRestrictionManagerBridge {
             return null;
         }
         return Uri.parse(url);
+    }
+
+    private static @Nullable AconfigFlaggedApiDelegate getDelegate() {
+        if (sDelegateSupplierForTesting != null) {
+            return sDelegateSupplierForTesting.get();
+        }
+        return AconfigFlaggedApiDelegate.getInstance();
     }
 
     @CalledByNative
@@ -92,10 +105,14 @@ public class AwContentRestrictionManagerBridge {
         if (!AwFeatureMap.isEnabled(AwFeatures.WEBVIEW_CONTENT_RESTRICTION_SUPPORT)) {
             return false;
         }
-        if (!Boolean.TRUE.equals(ManifestMetadataUtil.getContentRestrictionAppOptInPreference())) {
+        boolean appOptIn =
+                Boolean.TRUE.equals(ManifestMetadataUtil.getContentRestrictionAppOptInPreference());
+        RecordHistogram.recordBooleanHistogram(
+                "Android.WebView.ContentRestriction.AppOptIn", appOptIn);
+        if (!appOptIn) {
             return false;
         }
-        @Nullable AconfigFlaggedApiDelegate delegate = AconfigFlaggedApiDelegate.getInstance();
+        @Nullable AconfigFlaggedApiDelegate delegate = getDelegate();
         if (delegate == null) {
             Log.w(TAG, "Unable to retrieve the AconfigFlaggedApiDelegate instance.");
             return false;
@@ -111,13 +128,21 @@ public class AwContentRestrictionManagerBridge {
             JniOnceCallback<Boolean> callback) {
         @Nullable Uri uri = parseUrl(url);
         if (uri == null) {
-            callback.onResult(false);
+            RecordHistogram.recordEnumeratedHistogram(
+                    "Android.WebView.ContentRestriction.FailureFallbackReason",
+                    ContentRestrictionFailureFallbackReason.INVALID_URL,
+                    ContentRestrictionFailureFallbackReason.MAX_VALUE + 1);
+            callback.onResult(true);
             return;
         }
-        @Nullable AconfigFlaggedApiDelegate delegate = AconfigFlaggedApiDelegate.getInstance();
+        @Nullable AconfigFlaggedApiDelegate delegate = getDelegate();
         if (delegate == null) {
             Log.w(TAG, "Unable to retrieve the AconfigFlaggedApiDelegate instance.");
-            callback.onResult(false);
+            RecordHistogram.recordEnumeratedHistogram(
+                    "Android.WebView.ContentRestriction.FailureFallbackReason",
+                    ContentRestrictionFailureFallbackReason.ACONFIG_FLAGGED_API_DELEGATE_MISSING,
+                    ContentRestrictionFailureFallbackReason.MAX_VALUE + 1);
+            callback.onResult(true);
             return;
         }
 
@@ -136,8 +161,21 @@ public class AwContentRestrictionManagerBridge {
                     if (error != null) {
                         Log.w(TAG, "Failed to classify content", error);
                     }
-                    callback.onResult(false);
+                    RecordHistogram.recordEnumeratedHistogram(
+                            "Android.WebView.ContentRestriction.FailureFallbackReason",
+                            ContentRestrictionFailureFallbackReason.CLASSIFICATION_ERROR,
+                            ContentRestrictionFailureFallbackReason.MAX_VALUE + 1);
+                    callback.onResult(true);
                 });
+
+        // Close the request body file descriptor soon after it has been sent to the platform.
+        if (requestBody != null) {
+            try {
+                requestBody.close();
+            } catch (IOException e) {
+                Log.e(TAG, e);
+            }
+        }
     }
 
     @CalledByNative
@@ -146,12 +184,17 @@ public class AwContentRestrictionManagerBridge {
         if (uri == null) {
             return false;
         }
-        @Nullable AconfigFlaggedApiDelegate delegate = AconfigFlaggedApiDelegate.getInstance();
+        @Nullable AconfigFlaggedApiDelegate delegate = getDelegate();
         if (delegate == null) {
             Log.w(TAG, "Unable to retrieve the AconfigFlaggedApiDelegate instance.");
             return false;
         }
         return delegate.sendShowRestrictedContentIntent(uri);
+    }
+
+    public static void setDelegateForTesting(@Nullable AconfigFlaggedApiDelegate delegate) {
+        sDelegateSupplierForTesting = () -> delegate;
+        ResettersForTesting.register(() -> sDelegateSupplierForTesting = null);
     }
 
     public static void setParcelFileDescriptorPipeFactoryForTesting(

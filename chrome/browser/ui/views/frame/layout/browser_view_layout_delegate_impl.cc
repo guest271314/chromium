@@ -4,21 +4,25 @@
 
 #include "chrome/browser/ui/views/frame/layout/browser_view_layout_delegate_impl.h"
 
+#include "base/callback_list.h"
 #include "base/feature_list.h"
 #include "build/build_config.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/ui/animation/browser_animation_controller.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
 #include "chrome/browser/ui/find_bar/find_bar.h"
 #include "chrome/browser/ui/find_bar/find_bar_controller.h"
 #include "chrome/browser/ui/tabs/features.h"
+#include "chrome/browser/ui/tabs/tab_model.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/tabs/tab_strip_prefs.h"
 #include "chrome/browser/ui/tabs/vertical_tab_strip_state_controller.h"
-#include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/views/frame/browser_frame_view.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/frame/browser_widget.h"
+#include "chrome/browser/ui/views/frame/glass_frame_service.h"
 #include "chrome/browser/ui/views/infobars/infobar_container_view.h"
-#include "chrome/browser/ui/views/tabs/projects/projects_panel_utils.h"
+#include "chrome/browser/ui/views/tabs/organizer/organizer_panel_host.h"
 #include "chrome/browser/ui/views/toolbar/toolbar_view.h"
 #include "chrome/browser/ui/views/web_apps/frame_toolbar/web_app_frame_toolbar_view.h"
 #include "chrome/common/buildflags.h"
@@ -34,7 +38,6 @@
 BrowserViewLayoutDelegateImpl::BrowserViewLayoutDelegateImpl(
     BrowserView& browser_view)
     : browser_view_(browser_view) {
-  if (base::FeatureList::IsEnabled(tabs::kHorizontalTabStripComboButton)) {
     PrefService* prefs = browser_view_->GetProfile()->GetPrefs();
     tab_search_pinned_to_tab_strip_ =
         prefs->GetBoolean(prefs::kTabSearchPinnedToTabstrip);
@@ -45,16 +48,37 @@ BrowserViewLayoutDelegateImpl::BrowserViewLayoutDelegateImpl(
         base::BindRepeating(
             &BrowserViewLayoutDelegateImpl::OnTabSearchPinnedStateChanged,
             base::Unretained(this)));
-  }
 }
 BrowserViewLayoutDelegateImpl::~BrowserViewLayoutDelegateImpl() = default;
 
-bool BrowserViewLayoutDelegateImpl::ShouldDrawTabStrip() const {
-  return browser_view_->ShouldDrawTabStrip();
-}
+BrowserViewLayoutDelegate::TabStripType
+BrowserViewLayoutDelegateImpl::GetTabStripType() const {
+  // Can there be a tabstrip at all right now?
+  if (!browser_view_->ShouldDrawTabStrip()) {
+    return TabStripType::kNone;
+  }
 
-bool BrowserViewLayoutDelegateImpl::ShouldDrawVerticalTabStrip() const {
-  return browser_view_->ShouldDrawVerticalTabStrip();
+  // Determine if there is a vertical tab strip.
+  if (browser_view_->browser()->GetType() ==
+      BrowserWindowInterface::Type::TYPE_NORMAL) {
+    const auto* const controller =
+        tabs::VerticalTabStripStateController::From(browser_view_->browser());
+    if (controller && controller->ShouldDisplayVerticalTabs()) {
+#if BUILDFLAG(IS_MAC)
+      // Do not lay out the vertical tabstrip in content-fullscreen on Mac. This
+      // check cannot be done in BrowserView because the immersive mode
+      // controller itself relies on BrowserView reporting which tab strip it
+      // *would* draw, creating a circular dependency/race condition.
+      if (fullscreen_utils::IsInContentFullscreen(browser_view_->browser())) {
+        return TabStripType::kNone;
+      }
+#endif
+      return TabStripType::kVertical;
+    }
+  }
+
+  // Default is horizontal tab strip.
+  return TabStripType::kHorizontal;
 }
 
 bool BrowserViewLayoutDelegateImpl::IsVerticalTabStripCollapsed() const {
@@ -145,7 +169,7 @@ bool BrowserViewLayoutDelegateImpl::IsContentsSeparatorEnabled() const {
   // based on whether it is visible instead of setting the height to 0px. This
   // will enable BrowserViewLayout to hide the contents separator on its own
   // using the same logic used by normal BrowserElementsViews.
-  return !browser_view_->browser()->app_controller();
+  return !web_app::AppBrowserController::From(browser_view_->browser());
 }
 
 bool BrowserViewLayoutDelegateImpl::IsActiveTabSplit() const {
@@ -153,7 +177,9 @@ bool BrowserViewLayoutDelegateImpl::IsActiveTabSplit() const {
   // when the multi contents view hasn't been fully setup and this
   // inconsistency would cause unnecessary re-layout of content view during
   // tab switch.
-  return browser_view_->browser()->tab_strip_model()->IsActiveTabSplit();
+  auto* const active_tab =
+      browser_view_->browser()->GetTabStripModel()->GetActiveTab();
+  return active_tab && active_tab->IsSplit();
 }
 
 bool BrowserViewLayoutDelegateImpl::IsActiveTabAtLeadingWindowEdge() const {
@@ -161,13 +187,11 @@ bool BrowserViewLayoutDelegateImpl::IsActiveTabAtLeadingWindowEdge() const {
     bool has_leading_search_button =
         tabs::GetTabSearchPosition(browser_view_->browser()) ==
         tabs::TabSearchPosition::kLeadingHorizontalTabstrip;
-    if (base::FeatureList::IsEnabled(tabs::kHorizontalTabStripComboButton)) {
-      // Tab search button can be unpinned so including it in the determination
-      // of leading edge of horizontal tab strip.
-      has_leading_search_button &= tab_search_pinned_to_tab_strip_;
-    }
+    // Tab search button can be unpinned so including it in the determination
+    // of leading edge of horizontal tab strip.
+    has_leading_search_button &= tab_search_pinned_to_tab_strip_;
     if (!frame->CaptionButtonsOnLeadingEdge() && !has_leading_search_button) {
-      return browser_view_->browser()->tab_strip_model()->IsTabInForeground(0);
+      return browser_view_->browser()->GetTabStripModel()->IsTabInForeground(0);
     }
   }
   return false;
@@ -178,9 +202,19 @@ BrowserViewLayoutDelegateImpl::GetImmersiveModeController() const {
   return ImmersiveModeController::From(browser_view_->browser());
 }
 
+BrowserAnimationController*
+BrowserViewLayoutDelegateImpl::GetAnimationController() const {
+  return BrowserAnimationController::From(browser_view_->browser());
+}
+
 ExclusiveAccessBubbleViews*
 BrowserViewLayoutDelegateImpl::GetExclusiveAccessBubble() const {
   return browser_view_->GetExclusiveAccessBubble();
+}
+
+OrganizerPanelLocation
+BrowserViewLayoutDelegateImpl::GetOrganizerPanelLocation() const {
+  return OrganizerPanelHost::GetPreferredLocation(*browser_view_->browser());
 }
 
 bool BrowserViewLayoutDelegateImpl::IsTopControlsSlideBehaviorEnabled() const {
@@ -197,12 +231,12 @@ gfx::NativeView BrowserViewLayoutDelegateImpl::GetHostViewForAnchoring() const {
 }
 
 bool BrowserViewLayoutDelegateImpl::HasFindBarController() const {
-  return browser_view_->browser()->GetFeatures().HasFindBarController();
+  auto* const controller = FindBarController::From(browser_view_->browser());
+  return controller && controller->HasFindBar();
 }
 
 void BrowserViewLayoutDelegateImpl::MoveWindowForFindBarIfNecessary() const {
-  auto* const controller =
-      browser_view_->browser()->GetFeatures().GetFindBarController();
+  auto* const controller = FindBarController::From(browser_view_->browser());
   return controller->find_bar()->MoveWindowIfNecessary();
 }
 
@@ -251,11 +285,6 @@ int BrowserViewLayoutDelegateImpl::GetExtraInfobarOffset() const {
   return 0;
 }
 
-bool BrowserViewLayoutDelegateImpl::IsProjectsPanelVisible() const {
-  return projects_panel::IsProjectsPanelVisibleForProfile(
-      browser_view_->GetProfile());
-}
-
 const BrowserFrameView* BrowserViewLayoutDelegateImpl::GetFrameView() const {
   return browser_view_->browser_widget()
              ? browser_view_->browser_widget()->GetFrameView()
@@ -266,4 +295,23 @@ void BrowserViewLayoutDelegateImpl::OnTabSearchPinnedStateChanged() {
   tab_search_pinned_to_tab_strip_ =
       browser_view_->GetProfile()->GetPrefs()->GetBoolean(
           prefs::kTabSearchPinnedToTabstrip);
+}
+
+base::CallbackListSubscription
+BrowserViewLayoutDelegateImpl::AddOnGlassModeChangedCallback(
+    base::RepeatingCallback<void(bool)> callback,
+    bool* current_state_out) {
+  if (auto* const glass_frame_service = GlassFrameService::GetInstance()) {
+    auto* const browser = browser_view_->browser();
+    if (current_state_out) {
+      *current_state_out =
+          glass_frame_service->IsBrowserWindowEligible(browser);
+    }
+    return glass_frame_service->RegisterGlassFrameEligibilityChangedCallback(
+        browser, std::move(callback));
+  }
+  if (current_state_out) {
+    *current_state_out = false;
+  }
+  return base::CallbackListSubscription();
 }

@@ -3,24 +3,24 @@
 // found in the LICENSE file.
 
 import type {CrIconElement, CrToastManagerElement, DownloadsItemElement} from 'chrome://downloads/downloads.js';
-import {BrowserProxy, DangerType, IconLoaderImpl, loadTimeData, SafeBrowsingState, State, TailoredWarningType} from 'chrome://downloads/downloads.js';
+import {browserProxyFactory, DangerType, IconLoaderImpl, loadTimeData, SafeBrowsingState, State, TailoredWarningType} from 'chrome://downloads/downloads.js';
 import {assertEquals, assertFalse, assertNotReached, assertTrue} from 'chrome://webui-test/chai_assert.js';
 import {eventToPromise, isVisible, microtasksFinished} from 'chrome://webui-test/test_util.js';
 
-import {createDownload, TestDownloadsProxy, TestIconLoader} from './test_support.js';
+import {createDownload, FakePageHandler, TestIconLoader} from './test_support.js';
 
 suite('ItemTest', function() {
   let item: DownloadsItemElement;
-  let testDownloadsProxy: TestDownloadsProxy;
+  let handler: FakePageHandler;
   let testIconLoader: TestIconLoader;
   let toastManager: CrToastManagerElement;
 
   setup(function() {
     document.body.innerHTML = window.trustedTypes!.emptyHTML;
 
-    testDownloadsProxy = new TestDownloadsProxy();
-
-    BrowserProxy.setInstance(testDownloadsProxy);
+    handler = new FakePageHandler();
+    const {instance} = browserProxyFactory.createForTest(handler);
+    browserProxyFactory.setInstance(instance);
 
     testIconLoader = new TestIconLoader();
     IconLoaderImpl.setInstance(testIconLoader);
@@ -119,7 +119,8 @@ suite('ItemTest', function() {
       dangerType: DangerType.kSensitiveContentBlock,
     });
     await microtasksFinished();
-    assertEquals('cr:error', item.shadowRoot.querySelector('cr-icon')!.icon);
+    assertEquals(
+        'cr:error-filled', item.shadowRoot.querySelector('cr-icon')!.icon);
     assertTrue(item.$.fileIcon.hidden);
     assertEquals(
         'red',
@@ -132,7 +133,8 @@ suite('ItemTest', function() {
     });
     await microtasksFinished();
 
-    assertEquals('cr:warning', item.shadowRoot.querySelector('cr-icon')!.icon);
+    assertEquals(
+        'cr:warning-filled', item.shadowRoot.querySelector('cr-icon')!.icon);
     assertTrue(item.$.fileIcon.hidden);
     assertEquals(
         'grey',
@@ -146,7 +148,8 @@ suite('ItemTest', function() {
     });
     await microtasksFinished();
 
-    assertEquals('cr:warning', item.shadowRoot.querySelector('cr-icon')!.icon);
+    assertEquals(
+        'cr:warning-filled', item.shadowRoot.querySelector('cr-icon')!.icon);
     assertTrue(item.$.fileIcon.hidden);
     assertEquals(
         'grey',
@@ -161,7 +164,8 @@ suite('ItemTest', function() {
     });
     await microtasksFinished();
 
-    assertEquals('cr:warning', item.shadowRoot.querySelector('cr-icon')!.icon);
+    assertEquals(
+        'cr:warning-filled', item.shadowRoot.querySelector('cr-icon')!.icon);
     assertTrue(item.$.fileIcon.hidden);
     assertEquals(
         'grey',
@@ -176,7 +180,8 @@ suite('ItemTest', function() {
     });
     await microtasksFinished();
 
-    assertEquals('cr:warning', item.shadowRoot.querySelector('cr-icon')!.icon);
+    assertEquals(
+        'cr:warning-filled', item.shadowRoot.querySelector('cr-icon')!.icon);
     assertTrue(item.$.fileIcon.hidden);
     assertEquals(
         'grey',
@@ -189,7 +194,8 @@ suite('ItemTest', function() {
     });
     await microtasksFinished();
 
-    assertEquals('cr:warning', item.shadowRoot.querySelector('cr-icon')!.icon);
+    assertEquals(
+        'cr:warning-filled', item.shadowRoot.querySelector('cr-icon')!.icon);
     assertTrue(item.$.fileIcon.hidden);
     assertEquals(
         'grey',
@@ -202,8 +208,10 @@ suite('ItemTest', function() {
     });
     await microtasksFinished();
 
-    assertEquals(
-        'downloads:dangerous', item.shadowRoot.querySelector('cr-icon')!.icon);
+    const iconName = loadTimeData.getBoolean('webuiRoundedIconsEnabled') ?
+        'downloads:dangerous-filled' :
+        'downloads:dangerous-old';
+    assertEquals(iconName, item.shadowRoot.querySelector('cr-icon')!.icon);
     assertTrue(item.$.fileIcon.hidden);
     assertEquals(
         'red',
@@ -216,8 +224,7 @@ suite('ItemTest', function() {
     });
     await microtasksFinished();
 
-    assertEquals(
-        'downloads:dangerous', item.shadowRoot.querySelector('cr-icon')!.icon);
+    assertEquals(iconName, item.shadowRoot.querySelector('cr-icon')!.icon);
     assertTrue(item.$.fileIcon.hidden);
     assertEquals(
         'red',
@@ -429,8 +436,7 @@ suite('ItemTest', function() {
     saveDangerousButton.click();
     await microtasksFinished();
     // The mojo handler is called directly, no event for the dialog is fired.
-    const id = await testDownloadsProxy.handler.whenCalled(
-        'saveSuspiciousRequiringGesture');
+    const id = await handler.whenCalled('saveSuspiciousRequiringGesture');
     assertEquals('itemId', id);
   });
 
@@ -462,7 +468,7 @@ suite('ItemTest', function() {
     const icon = item.shadowRoot.querySelector<CrIconElement>(
         'cr-icon[icon-color=grey]');
     assertTrue(!!icon);
-    assertEquals('cr:warning', icon.icon);
+    assertEquals('cr:warning-filled', icon.icon);
     assertEquals(
         loadTimeData.getString('controlLocalPasswordScan'),
         item.shadowRoot.querySelector<HTMLElement>(
@@ -560,7 +566,7 @@ suite('ItemTest', function() {
     assertTrue(isVisible(quickRemoveButton));
     quickRemoveButton.click();
     await microtasksFinished();
-    const id = await testDownloadsProxy.handler.whenCalled('discardDangerous');
+    const id = await handler.whenCalled('discardDangerous');
     assertEquals('itemId', id);
   });
 
@@ -577,7 +583,7 @@ suite('ItemTest', function() {
     assertTrue(isVisible(quickRemoveButton));
     quickRemoveButton.click();
     await microtasksFinished();
-    const id = await testDownloadsProxy.handler.whenCalled('remove');
+    const id = await handler.whenCalled('remove');
     assertEquals('itemId', id);
   });
 
@@ -609,7 +615,7 @@ suite('ItemTest', function() {
     assertTrue(!!esbPromo);
     assertTrue(isVisible(esbPromo));
     esbPromo.click();
-    await testDownloadsProxy.handler.whenCalled('openEsbSettings');
+    await handler.whenCalled('openEsbSettings');
   });
 
   test('ESBDownloadRowPromoNotShown', async () => {
@@ -656,7 +662,7 @@ suite('ItemTest', function() {
 
 suite('ItemFocusTest', function() {
   let item: DownloadsItemElement;
-  let testDownloadsProxy: TestDownloadsProxy;
+  let handler: FakePageHandler;
   let testIconLoader: TestIconLoader;
   let toastManager: CrToastManagerElement;
 
@@ -679,9 +685,9 @@ suite('ItemFocusTest', function() {
   setup(function() {
     document.body.innerHTML = window.trustedTypes!.emptyHTML;
 
-    testDownloadsProxy = new TestDownloadsProxy();
-
-    BrowserProxy.setInstance(testDownloadsProxy);
+    handler = new FakePageHandler();
+    const {instance} = browserProxyFactory.createForTest(handler);
+    browserProxyFactory.setInstance(instance);
 
     testIconLoader = new TestIconLoader();
     IconLoaderImpl.setInstance(testIconLoader);

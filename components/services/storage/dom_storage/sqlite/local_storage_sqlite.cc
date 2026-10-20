@@ -5,11 +5,14 @@
 #include "components/services/storage/dom_storage/sqlite/local_storage_sqlite.h"
 
 #include "base/byte_size.h"
+#include "base/metrics/histogram_functions.h"
+#include "base/notreached.h"
 #include "base/numerics/safe_conversions.h"
 #include "base/strings/stringprintf.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/trace_event/memory_dump_manager.h"
 #include "base/types/expected_macros.h"
+#include "components/services/storage/dom_storage/dom_storage_histogram_helper.h"
 #include "components/services/storage/dom_storage/sqlite/map_entries_table.h"
 #include "components/services/storage/dom_storage/sqlite/sqlite_database_macros.h"
 #include "components/services/storage/dom_storage/sqlite/sqlite_database_utils.h"
@@ -96,11 +99,18 @@ void BindOptionalByteSize(sql::Statement& statement,
   }
 }
 
+void OnSqlError(int error, sql::Statement*) {
+  base::UmaHistogramSparse("Storage.LocalStorage.Database.Error", error);
+}
+
 }  // namespace
 
 LocalStorageSqlite::LocalStorageSqlite(PassKey) {}
 
 LocalStorageSqlite::~LocalStorageSqlite() {
+  if (database_) {
+    database_->reset_error_callback();
+  }
   base::trace_event::MemoryDumpManager::GetInstance()->UnregisterDumpProvider(
       this);
   if (destruction_callback_for_testing_) {
@@ -124,7 +134,7 @@ DbStatus LocalStorageSqlite::Open(
           database_path,
           database_path.empty() ? kLocalStorageTag : kLocalStorageTagInMemory,
           kCurrentSchemaVersion, kCompatibleSchemaVersion,
-          base::BindOnce(&CreateSchema)));
+          base::BindOnce(&CreateSchema), base::BindRepeating(&OnSqlError)));
 
   map_entries_table_ = std::make_unique<MapEntriesTable>(*database_);
 
@@ -133,6 +143,10 @@ DbStatus LocalStorageSqlite::Open(
           this, "LocalStorageSqlite",
           base::SequencedTaskRunner::GetCurrentDefault(),
           base::trace_event::MemoryDumpProvider::Options());
+
+  if (!database_path.empty()) {
+    RecordOnDiskSqliteVacuumMetrics("LocalStorage", *database_);
+  }
 
   return DbStatus::OK();
 }
@@ -258,9 +272,6 @@ StatusOr<DomStorageDatabase::Metadata> LocalStorageSqlite::ReadAllMetadata() {
 }
 
 DbStatus LocalStorageSqlite::PutMetadata(Metadata metadata) {
-  // Local storage does not record the next map id in SQLite.
-  CHECK(!metadata.next_map_id);
-
   sql::Transaction transaction(database_.get());
   RETURN_STATUS_ON_ERROR(transaction.Begin());
 
@@ -324,6 +335,21 @@ DbStatus LocalStorageSqlite::PurgeOrigins(std::set<url::Origin> origins) {
 DbStatus LocalStorageSqlite::CleanUpStaleData() {
   RETURN_STATUS_ON_ERROR(database_->CheckpointDatabase(/*truncate=*/true));
   return DbStatus::OK();
+}
+
+void LocalStorageSqlite::Close() {
+  NOTREACHED();
+}
+
+void LocalStorageSqlite::DetachFromSequence() {
+  // The dump provider was registered on the sequence this database was opened
+  // on, which is not the one that will use it. Unregister rather than leave it
+  // bound to the wrong sequence.
+  // TODO(crbug.com/377242771): Re-register the dump provider on the adopting
+  // sequence so memory usage reporting resumes.
+  base::trace_event::MemoryDumpManager::GetInstance()->UnregisterDumpProvider(
+      this);
+  database_->DetachFromSequence();
 }
 
 void LocalStorageSqlite::MakeAllCommitsFailForTesting() {

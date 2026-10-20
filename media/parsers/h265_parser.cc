@@ -193,14 +193,28 @@ uint8_t H265ScalingListData::GetScalingList32x32EntryInRasterOrder(
 }
 
 H265SPS::H265SPS() = default;
-
+H265SPS::H265SPS(const H265SPS&) = default;
+H265SPS& H265SPS::operator=(const H265SPS&) = default;
 H265SPS::H265SPS(H265SPS&&) noexcept = default;
+H265SPS& H265SPS::operator=(H265SPS&&) noexcept = default;
 
 H265ProfileTierLevel::H265ProfileTierLevel() = default;
+H265ProfileTierLevel::H265ProfileTierLevel(const H265ProfileTierLevel&) =
+    default;
+H265ProfileTierLevel& H265ProfileTierLevel::operator=(
+    const H265ProfileTierLevel&) = default;
+H265ProfileTierLevel::H265ProfileTierLevel(H265ProfileTierLevel&&) noexcept =
+    default;
+H265ProfileTierLevel& H265ProfileTierLevel::operator=(
+    H265ProfileTierLevel&&) noexcept = default;
 
 H265VUIParameters::H265VUIParameters() = default;
-
+H265VUIParameters::H265VUIParameters(const H265VUIParameters&) = default;
+H265VUIParameters& H265VUIParameters::operator=(const H265VUIParameters&) =
+    default;
 H265VUIParameters::H265VUIParameters(H265VUIParameters&&) noexcept = default;
+H265VUIParameters& H265VUIParameters::operator=(H265VUIParameters&&) noexcept =
+    default;
 
 H265PPS::H265PPS() = default;
 
@@ -239,8 +253,15 @@ int H265ProfileTierLevel::GetMaxLumaPs() const {
     return 2228224;
   if (general_level_idc <= 156)  // level 5, 5.1, 5.2
     return 8912896;
-  // level 6, 6.1, 6.2 - beyond that there's no actual limit.
-  return 35651584;
+  if (general_level_idc <= 186) {  // level 6, 6.1, 6.2
+    return 35651584;
+  }
+  if (general_level_idc <= 189) {  // level 6.3
+    return 80216064;
+  }
+  // level 7, 7.1, 7.2. Table A.8 does not specify limits for level 8.5, so use
+  // the highest tabulated value for it as well.
+  return 142606336;
 }
 
 size_t H265ProfileTierLevel::GetDpbMaxPicBuf() const {
@@ -395,24 +416,28 @@ H265Parser::Result H265Parser::ParseVPS(int* vps_id) {
     READ_UE_OR_RETURN(&vps_num_hrd_parameters);
     IN_RANGE_OR_RETURN(vps_num_hrd_parameters, 0,
                        vps->vps_num_layer_sets_minus1 + 1);
+    // 7.4.3.1: when cprms_present_flag[i] is 0, the parameters that are common
+    // for all sub-layers are not present and are the same as the ones of the
+    // (i - 1)-th hrd_parameters(), so they must persist across iterations.
+    bool nal_hrd_parameters_present_flag = false;
+    bool vcl_hrd_parameters_present_flag = false;
+    bool sub_pic_hrd_params_present_flag = false;
     for (int i = 0; i < vps_num_hrd_parameters; ++i) {
       int hrd_layer_set_idx_i;
       READ_UE_OR_RETURN(&hrd_layer_set_idx_i);
       IN_RANGE_OR_RETURN(hrd_layer_set_idx_i,
                          vps->vps_base_layer_internal_flag ? 0 : 1,
-                         vps->vps_num_layer_sets_minus1 + 1);
+                         vps->vps_num_layer_sets_minus1);
       bool cprms_present_flag = true;
       if (i > 0) {
         READ_BOOL_OR_RETURN(&cprms_present_flag);
       }
 
       // E.2.2 hrd_parameters()
-      bool nal_hrd_parameters_present_flag = false;
-      bool vcl_hrd_parameters_present_flag = false;
-      bool sub_pic_hrd_params_present_flag = false;
       if (cprms_present_flag) {
         READ_BOOL_OR_RETURN(&nal_hrd_parameters_present_flag);
         READ_BOOL_OR_RETURN(&vcl_hrd_parameters_present_flag);
+        sub_pic_hrd_params_present_flag = false;
         if (nal_hrd_parameters_present_flag ||
             vcl_hrd_parameters_present_flag) {
           READ_BOOL_OR_RETURN(&sub_pic_hrd_params_present_flag);
@@ -622,8 +647,14 @@ H265Parser::Result H265Parser::ParseSPS(int* sps_id) {
   }
   READ_UE_OR_RETURN(&sps->pic_width_in_luma_samples);
   READ_UE_OR_RETURN(&sps->pic_height_in_luma_samples);
-  TRUE_OR_RETURN(sps->pic_width_in_luma_samples != 0);
-  TRUE_OR_RETURN(sps->pic_height_in_luma_samples != 0);
+  // A.4.1 restricts each frame dimension to Sqrt(MaxLumaPs * 8). Rather than
+  // enforcing the limit of the signalled level, which streams in the wild are
+  // known to understate, only reject dimensions that no level allows.
+  constexpr int kMaxLumaSamplesPerDimension = 33776;  // Level 7.2.
+  IN_RANGE_OR_RETURN(sps->pic_width_in_luma_samples, 1,
+                     kMaxLumaSamplesPerDimension);
+  IN_RANGE_OR_RETURN(sps->pic_height_in_luma_samples, 1,
+                     kMaxLumaSamplesPerDimension);
 
   // Equation A-2: Calculate max_dpb_size.
   int max_luma_ps = sps->profile_tier_level.GetMaxLumaPs();
@@ -1155,6 +1186,11 @@ H265Parser::Result H265Parser::ParseSliceHeader(const H265NALU& nalu,
       std::min(shdr->temporal_id, sps->sps_max_sub_layers_minus1);
 
   if (!shdr->first_slice_segment_in_pic_flag) {
+    if (validate_extended_bitstream_ && !prior_shdr) {
+      DVLOG(1) << "First slice segment in picture must have "
+               << "first_slice_segment_in_pic_flag equal to 1";
+      return kInvalidStream;
+    }
     if (pps->dependent_slice_segments_enabled_flag)
       READ_BOOL_OR_RETURN(&shdr->dependent_slice_segment_flag);
     READ_BITS_OR_RETURN(base::bits::Log2Ceiling(sps->pic_size_in_ctbs_y),
@@ -1470,11 +1506,20 @@ H265Parser::Result H265Parser::ParseSliceHeader(const H265NALU& nalu,
   if (prior_shdr && !shdr->first_slice_segment_in_pic_flag) {
     // Validate the fields that must match between slice headers for the same
     // picture.
+    // 7.4.2.2: All coded slice segment NAL units of an access unit shall have
+    // the same value of nal_unit_type.
+    EQ_OR_RETURN(shdr, prior_shdr, nal_unit_type);
     EQ_OR_RETURN(shdr, prior_shdr, slice_pic_parameter_set_id);
     EQ_OR_RETURN(shdr, prior_shdr, pic_output_flag);
     EQ_OR_RETURN(shdr, prior_shdr, no_output_of_prior_pics_flag);
     EQ_OR_RETURN(shdr, prior_shdr, slice_pic_order_cnt_lsb);
     EQ_OR_RETURN(shdr, prior_shdr, short_term_ref_pic_set_sps_flag);
+    // 7.4.7.1: all syntax elements for short-term reference picture set
+    // derivation shall have the same values for all coded slice segment
+    // NAL units of a codec picture.
+    EQ_OR_RETURN(shdr, prior_shdr, st_ref_pic_set);
+    EQ_OR_RETURN(shdr, prior_shdr, st_rps_bits);
+    EQ_OR_RETURN(shdr, prior_shdr, lt_rps_bits);
 
     // All the other fields we need to compare are contiguous, so compare them
     // as one memory range.
@@ -1534,30 +1579,7 @@ VideoCodecProfile H265Parser::ProfileIDCToVideoCodecProfile(int profile_idc) {
   }
 }
 
-skhdr::ContentLightLevelInformation H265SEIContentLightLevelInfo::ToSkHdr()
-    const {
-  return skhdr::ContentLightLevelInformation::MakeUint16(
-      /*maxCLL=*/max_content_light_level,
-      /*maxFALL=*/max_picture_average_light_level);
-}
 
-skhdr::MasteringDisplayColorVolume H265SEIMasteringDisplayInfo::ToSkHdr()
-    const {
-  constexpr auto kChromaDenominator = 50000.0f;
-  constexpr auto kLumaDenoninator = 10000.0f;
-  // display primaries are in G/B/R order in MDCV SEI.
-  return {
-      .fDisplayPrimaries = {display_primaries[2][0] / kChromaDenominator,
-                            display_primaries[2][1] / kChromaDenominator,
-                            display_primaries[0][0] / kChromaDenominator,
-                            display_primaries[0][1] / kChromaDenominator,
-                            display_primaries[1][0] / kChromaDenominator,
-                            display_primaries[1][1] / kChromaDenominator,
-                            white_points[0] / kChromaDenominator,
-                            white_points[1] / kChromaDenominator},
-      .fMaximumDisplayMasteringLuminance = max_luminance / kLumaDenoninator,
-      .fMinimumDisplayMasteringLuminance = min_luminance / kLumaDenoninator};
-}
 
 H265Parser::Result H265Parser::ParseProfileTierLevel(
     bool profile_present,
@@ -1590,10 +1612,54 @@ H265Parser::Result H265Parser::ParseProfileTierLevel(
         &profile_tier_level->general_non_packed_constraint_flag);
     READ_BOOL_OR_RETURN(
         &profile_tier_level->general_frame_only_constraint_flag);
-    SKIP_BITS_OR_RETURN(7);  // general_reserved_zero_7bits
-    READ_BOOL_OR_RETURN(
-        &profile_tier_level->general_one_picture_only_constraint_flag);
-    SKIP_BITS_OR_RETURN(35);  // general_reserved_zero_35bits
+    // The 44 bits following the frame-only constraint flag carry the
+    // general_constraint_indicator_flags when a range extension capable
+    // profile is signalled (profile_idc >= 4, or one of the compatibility
+    // flags for those profiles is set), and are reserved zeroes otherwise.
+    constexpr uint32_t kRangeExtensionCompatibilityFlags =
+        0x0FF00000;  // general_profile_compatibility_flag[4]..[11].
+    if (profile_tier_level->general_profile_idc >= 4 ||
+        (profile_tier_level->general_profile_compatibility_flags &
+         kRangeExtensionCompatibilityFlags)) {
+      READ_BOOL_OR_RETURN(
+          &profile_tier_level->general_max_12bit_constraint_flag);
+      READ_BOOL_OR_RETURN(
+          &profile_tier_level->general_max_10bit_constraint_flag);
+      READ_BOOL_OR_RETURN(
+          &profile_tier_level->general_max_8bit_constraint_flag);
+      READ_BOOL_OR_RETURN(
+          &profile_tier_level->general_max_422chroma_constraint_flag);
+      READ_BOOL_OR_RETURN(
+          &profile_tier_level->general_max_420chroma_constraint_flag);
+      READ_BOOL_OR_RETURN(
+          &profile_tier_level->general_max_monochrome_constraint_flag);
+      READ_BOOL_OR_RETURN(&profile_tier_level->general_intra_constraint_flag);
+      READ_BOOL_OR_RETURN(
+          &profile_tier_level->general_one_picture_only_constraint_flag);
+      READ_BOOL_OR_RETURN(
+          &profile_tier_level->general_lower_bit_rate_constraint_flag);
+      // general_max_14bit_constraint_flag is only present for the 12/14-bit
+      // profiles (profile_idc 5, 9, 10, 11, H.265 7.3.3); the remaining bits
+      // are reserved zeroes otherwise.
+      constexpr uint32_t k14BitProfileCompatibilityFlags =
+          0x04700000;  // general_profile_compatibility_flag[5],[9],[10],[11].
+      const int profile_idc = profile_tier_level->general_profile_idc;
+      if (profile_idc == 5 || profile_idc == 9 || profile_idc == 10 ||
+          profile_idc == 11 ||
+          (profile_tier_level->general_profile_compatibility_flags &
+           k14BitProfileCompatibilityFlags)) {
+        READ_BOOL_OR_RETURN(
+            &profile_tier_level->general_max_14bit_constraint_flag);
+        SKIP_BITS_OR_RETURN(33);  // general_reserved_zero_33bits
+      } else {
+        SKIP_BITS_OR_RETURN(34);  // general_reserved_zero_34bits
+      }
+    } else {
+      SKIP_BITS_OR_RETURN(7);  // general_reserved_zero_7bits
+      READ_BOOL_OR_RETURN(
+          &profile_tier_level->general_one_picture_only_constraint_flag);
+      SKIP_BITS_OR_RETURN(35);  // general_reserved_zero_35bits
+    }
     SKIP_BITS_OR_RETURN(1);   // general_inbld_flag
   }
   READ_BITS_OR_RETURN(8, &profile_tier_level->general_level_idc);
@@ -2082,8 +2148,10 @@ H265Parser::Result H265Parser::ParsePredWeightTable(
         pred_weight_table->luma_log2_weight_denom;
     IN_RANGE_OR_RETURN(pred_weight_table->chroma_log2_weight_denom, 0, 7);
   }
-  std::array<bool, kMaxRefIdxActive> luma_weight_flag;
-  std::array<bool, kMaxRefIdxActive> chroma_weight_flag;
+  // 7.4.7.3: when a weight flag is not present, it is inferred to be 0. The
+  // chroma flags are only present when ChromaArrayType is not 0.
+  std::array<bool, kMaxRefIdxActive> luma_weight_flag = {};
+  std::array<bool, kMaxRefIdxActive> chroma_weight_flag = {};
   for (int i = 0; i <= shdr.num_ref_idx_l0_active_minus1; ++i) {
     READ_BOOL_OR_RETURN(&luma_weight_flag[i]);
   }
@@ -2214,6 +2282,7 @@ H265Parser::Result H265Parser::ParseSEI(H265SEI* sei) {
              << " payload size: " << payload_size;
 
     enum SEIType {
+      kSEIUserDataRegisteredItuTT35 = 4,
       kSEIMasteringDisplayInfo = 137,
       kSEIContentLightLevelInfo = 144,
       kSEIAlphaChannelInfo = 165,
@@ -2221,6 +2290,25 @@ H265Parser::Result H265Parser::ParseSEI(H265SEI* sei) {
 
     H265SEIMessage sei_msg;
     switch (type) {
+      case kSEIUserDataRegisteredItuTT35: {
+        auto& itu_t_t35 = sei_msg.emplace<H26xSEIUserDataRegisteredT35>();
+        READ_BITS_AND_MINUS_BITS_READ_OR_RETURN(8, &byte, &num_bits_remain);
+        itu_t_t35.country_code = byte;
+        if (itu_t_t35.country_code == 0xff) {
+          READ_BITS_AND_MINUS_BITS_READ_OR_RETURN(8, &byte, &num_bits_remain);
+          itu_t_t35.country_code_extension_byte = byte;
+        }
+        RETURN_IF_NUM_BITS_REMAIN_NEGATIVE(num_bits_remain);
+        size_t payload_bytes = num_bits_remain / 8;
+        if (payload_bytes > 0) {
+          itu_t_t35.payload = base::HeapArray<uint8_t>::Uninit(payload_bytes);
+          for (size_t i = 0; i < payload_bytes; ++i) {
+            READ_BITS_AND_MINUS_BITS_READ_OR_RETURN(8, &byte, &num_bits_remain);
+            itu_t_t35.payload[i] = byte;
+          }
+        }
+        break;
+      }
       case kSEIAlphaChannelInfo: {
         auto& info = sei_msg.emplace<H265SEIAlphaChannelInfo>();
         READ_BOOL_AND_MINUS_BITS_READ_OR_RETURN(&info.alpha_channel_cancel_flag,
@@ -2251,7 +2339,7 @@ H265Parser::Result H265Parser::ParseSEI(H265SEI* sei) {
         break;
       }
       case kSEIContentLightLevelInfo: {
-        auto& info = sei_msg.emplace<H265SEIContentLightLevelInfo>();
+        auto& info = sei_msg.emplace<H26xSEIContentLightLevelInfo>();
         READ_BITS_AND_MINUS_BITS_READ_OR_RETURN(
             16, &info.max_content_light_level, &num_bits_remain);
         READ_BITS_AND_MINUS_BITS_READ_OR_RETURN(
@@ -2259,7 +2347,7 @@ H265Parser::Result H265Parser::ParseSEI(H265SEI* sei) {
         break;
       }
       case kSEIMasteringDisplayInfo: {
-        auto& info = sei_msg.emplace<H265SEIMasteringDisplayInfo>();
+        auto& info = sei_msg.emplace<H26xSEIMasteringDisplayInfo>();
         for (auto& primary : info.display_primaries) {
           for (auto& component : primary) {
             READ_BITS_AND_MINUS_BITS_READ_OR_RETURN(16, &component,
@@ -2295,7 +2383,7 @@ H265Parser::Result H265Parser::ParseSEI(H265SEI* sei) {
       SKIP_BITS_OR_RETURN(num_bits_remain);
     // Only add parsed SEI messages.
     if (num_bits_remain < payload_size * 8) {
-      sei->msgs.push_back(sei_msg);
+      sei->msgs.push_back(std::move(sei_msg));
     }
     // In case the loop endless.
     if (++num_parsed_sei_msg > kMaxParsedSEIMessages)

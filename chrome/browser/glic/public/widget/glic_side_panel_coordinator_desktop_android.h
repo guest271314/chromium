@@ -13,6 +13,7 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/side_panel/side_panel_entry_observer.h"
 #include "chrome/browser/ui/side_panel/side_panel_native_view.h"
+#include "third_party/jni_zero/jni_zero.h"
 
 class SidePanelEntryScope;
 class SidePanelRegistry;
@@ -24,6 +25,7 @@ class CoBrowseViewsBridge;
 
 namespace glic {
 class GlicKeyedService;
+class GlicToast;
 
 // GlicSidePanelCoordinatorDesktopAndroid handles the creation and registration
 // of the glic SidePanelEntry for Android Desktop.
@@ -49,6 +51,8 @@ class GlicSidePanelCoordinatorDesktopAndroid : public GlicSidePanelCoordinator,
   int GetPreferredWidth() override;
   bool IsGlicSidePanelActive() override;
 
+  SidePanelEntry* GetEntryForTesting() { return entry_.get(); }
+
   // Called when the Glic enabled status changes for `profile_`.
   void OnGlicEnabledChanged();
 
@@ -57,6 +61,7 @@ class GlicSidePanelCoordinatorDesktopAndroid : public GlicSidePanelCoordinator,
   void OnEntryHiddenWithReason(SidePanelEntry* entry,
                                SidePanelEntryHideReason reason) override;
   void OnEntryShown(SidePanelEntry* entry) override;
+  void OnEntryShowDeferred(SidePanelEntry* entry) override;
 
  private:
   void CheckStateAfterHidden();
@@ -73,6 +78,13 @@ class GlicSidePanelCoordinatorDesktopAndroid : public GlicSidePanelCoordinator,
   // Sets a new state and notifies about a state change.
   void SetState(State new_state);
 
+  // Shows the message when Glic side panel is auto-closed due to window size
+  // constraint, if applicable.
+  //
+  // TODO(crbug.com/515493573): Remove this once Glic transitions to using the
+  // bottom sheet for narrow windows.
+  void MaybeShowResizeToast();
+
   raw_ptr<tabs::TabInterface> tab_ = nullptr;
   raw_ptr<SidePanelRegistry> side_panel_registry_ = nullptr;
   base::WeakPtr<SidePanelEntry> entry_;
@@ -84,6 +96,10 @@ class GlicSidePanelCoordinatorDesktopAndroid : public GlicSidePanelCoordinator,
   std::unique_ptr<context_sharing::CoBrowseViewsBridge> cobrowse_views_bridge_;
   raw_ptr<content::WebContents> web_contents_ = nullptr;
   raw_ptr<GlicKeyedService> glic_service_ = nullptr;
+
+  std::unique_ptr<GlicToast> resize_toast_;
+
+  jni_zero::ScopedJavaGlobalRef<jobject> java_component_provider_;
 
   base::WeakPtrFactory<GlicSidePanelCoordinatorDesktopAndroid>
       weak_ptr_factory_{this};

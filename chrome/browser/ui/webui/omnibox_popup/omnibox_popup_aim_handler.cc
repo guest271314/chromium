@@ -39,7 +39,8 @@ OmniboxPopupAimHandler::OmniboxPopupAimHandler(
 
 OmniboxPopupAimHandler::~OmniboxPopupAimHandler() = default;
 
-void OmniboxPopupAimHandler::RequestClose() {
+void OmniboxPopupAimHandler::RequestClose(const std::string& input) {
+  cached_draft_text_ = input;
   if (auto* aim_popup_content = GetAimPopupContent()) {
     // For screen readers, focus the location bar since the user requested a
     // manual close of the popup, as opposed to the popup closing because the
@@ -70,7 +71,7 @@ void OmniboxPopupAimHandler::SetPreserveContextOnClose(
 }
 
 void OmniboxPopupAimHandler::ClearPopup(
-    base::OnceCallback<void(const std::string&)> callback) {
+    base::OnceCallback<void(const std::string&, bool)> callback) {
   page_->ClearPopup(std::move(callback));
 }
 

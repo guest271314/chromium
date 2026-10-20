@@ -108,10 +108,11 @@ public interface ImeAdapter {
 
     /**
      * Replace the currently composing text with the given text, and set the new cursor position.
+     *
      * @param text The composing text.
      * @param newCursorPosition The new cursor position around the text.
      */
-    void setComposingTextForTest(final CharSequence text, final int newCursorPosition);
+    void setComposingTextForTest(CharSequence text, int newCursorPosition);
 
     /**
      * Call this when we get result from ResultReceiver passed in calling showSoftInput().
@@ -138,4 +139,9 @@ public interface ImeAdapter {
      * @param suppressed True to suppress the soft keyboard, false to allow it.
      */
     void setKeyboardSuppressed(boolean suppressed);
+
+    /**
+     * @return the active {@link InputMethodManagerWrapper} that the ImeAdapter uses.
+     */
+    InputMethodManagerWrapper getInputMethodManagerWrapper();
 }

@@ -21,12 +21,12 @@
 #include "base/task/thread_pool/thread_pool_instance.h"
 #include "base/values.h"
 #include "build/build_config.h"
-#include "content/browser/child_process_security_policy_impl.h"
 #include "content/browser/font_access/font_enumeration_cache.h"
 #include "content/browser/origin_agent_cluster_isolation_state.h"
 #include "content/browser/renderer_host/page_impl.h"
 #include "content/browser/renderer_host/render_frame_host_delegate.h"
 #include "content/browser/renderer_host/render_frame_host_impl.h"
+#include "content/browser/security/cpsp/child_process_security_policy_impl.h"
 #include "content/browser/site_info.h"
 #include "content/browser/site_instance_impl.h"
 #include "content/browser/web_contents/web_contents_impl.h"
@@ -258,12 +258,19 @@ std::string GetWebUIURLString(const std::string& host) {
          host;
 }
 
-WebContents* CreateAndAttachInnerContents(RenderFrameHost* rfh) {
+WebContents* CreateAndAttachInnerContents(
+    RenderFrameHost* rfh,
+    std::optional<WebContents::CreateParams> create_params) {
   auto* outer_contents = WebContents::FromRenderFrameHost(rfh);
-  if (!outer_contents)
+  if (!outer_contents) {
     return nullptr;
+  }
 
-  WebContents::CreateParams inner_params(outer_contents->GetBrowserContext());
+  CHECK(!create_params ||
+        create_params->browser_context == outer_contents->GetBrowserContext());
+
+  WebContents::CreateParams inner_params = create_params.value_or(
+      WebContents::CreateParams(outer_contents->GetBrowserContext()));
 
   std::unique_ptr<WebContents> inner_contents_ptr =
       WebContents::Create(inner_params);

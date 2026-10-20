@@ -24,9 +24,6 @@ enum class AIPrototypingFeature : NSInteger {
   // Represents the `kBlingPrototyping` feature used for flexible model
   // querying.
   kFreeform,
-  // TODO(crbug.com/460813653): Remove deprecated TabOrganization constants.
-  // Represents the tab organization/grouping feature.
-  kTabOrganization,
   // Represents the enhanced calendar feature.
   kEnhancedCalendar,
   // Represents the new smart tab grouping feature.
@@ -35,6 +32,10 @@ enum class AIPrototypingFeature : NSInteger {
   kActorTools,
   // Represents the APC extraction feature.
   kAPC,
+  // Represents the UI Catalog feature.
+  kUICatalog,
+  // Represents the TTC feature.
+  kTTC,
 };
 
 #endif  // IOS_CHROME_BROWSER_AI_PROTOTYPING_UTILS_AI_PROTOTYPING_CONSTANTS_H_

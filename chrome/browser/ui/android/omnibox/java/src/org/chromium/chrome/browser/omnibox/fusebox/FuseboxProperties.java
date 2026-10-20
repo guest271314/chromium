@@ -8,7 +8,6 @@ import android.graphics.Bitmap;
 
 import androidx.annotation.IntDef;
 
-import org.chromium.base.Callback;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.omnibox.fusebox.FuseboxCoordinator.FuseboxLayoutMode;
@@ -16,115 +15,95 @@ import org.chromium.chrome.browser.omnibox.fusebox.FuseboxCoordinator.FuseboxSta
 import org.chromium.chrome.browser.omnibox.fusebox.FuseboxCoordinator.PopupState;
 import org.chromium.chrome.browser.ui.theme.BrandedColorScheme;
 import org.chromium.components.omnibox.AutocompleteRequestType;
+import org.chromium.components.omnibox.IconResourceIdsProtoIntDef.IconResourceIds;
 import org.chromium.ui.modelutil.PropertyKey;
+import org.chromium.ui.modelutil.PropertyModel.ReadableBooleanPropertyKey;
 import org.chromium.ui.modelutil.PropertyModel.WritableBooleanPropertyKey;
+import org.chromium.ui.modelutil.PropertyModel.WritableIntDefPropertyKey;
 import org.chromium.ui.modelutil.PropertyModel.WritableObjectPropertyKey;
 import org.chromium.ui.modelutil.SimpleRecyclerViewAdapter;
 
+import java.lang.annotation.ElementType;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
+import java.lang.annotation.Target;
 import java.util.List;
 
 /** The properties associated with the Fusebox bar. */
 @NullMarked
 class FuseboxProperties {
-    @IntDef({PopupButtonType.RECENT_TAB, PopupButtonType.TOOL, PopupButtonType.MODEL})
+    @IntDef({
+        AnchoringMode.UNSET,
+        AnchoringMode.POPOVER,
+        AnchoringMode.TOOLBAR_SINGLE_LINE,
+        AnchoringMode.TOOLBAR_MULTI_LINE,
+    })
     @Retention(RetentionPolicy.SOURCE)
-    public @interface PopupButtonType {
-        int RECENT_TAB = 0;
-        int TOOL = 1;
-        int MODEL = 2;
+    @Target(ElementType.TYPE_USE)
+    public @interface AnchoringMode {
+        int UNSET = 0;
+        int POPOVER = 1;
+        int TOOLBAR_SINGLE_LINE = 2;
+        int TOOLBAR_MULTI_LINE = 3;
     }
 
-    /** Encapsulates the state for a button in the Fusebox popup. */
-    public static class PopupButtonData {
-        public final Runnable onClicked;
-        public final String text;
-        // Either iconId (predefined vector drawable) or customIcon (bitmap favicon) is set.
-        public final /*IconResourceIds*/ int iconId;
-        public final @Nullable Bitmap customIcon;
-        public final boolean enabled;
-        public final boolean selected;
-        public final @PopupButtonType int type;
-        public final int protoId;
-        public final boolean hasColor;
-
-        public PopupButtonData(
-                Callback<PopupButtonData> onClicked,
-                String text,
-                int iconId,
-                boolean enabled,
-                boolean selected,
-                @PopupButtonType int type,
-                int protoId,
-                boolean hasColor) {
-            this.onClicked = onClicked.bind(this);
-            this.text = text;
-            this.iconId = iconId;
-            this.customIcon = null;
-            this.enabled = enabled;
-            this.selected = selected;
-            this.type = type;
-            this.protoId = protoId;
-            this.hasColor = hasColor;
-        }
-
-        public PopupButtonData(
-                Callback<PopupButtonData> onClicked,
-                String text,
-                @Nullable Bitmap customIcon,
-                boolean enabled,
-                boolean selected,
-                @PopupButtonType int type,
-                int protoId,
-                boolean hasColor) {
-            this.onClicked = onClicked.bind(this);
-            this.text = text;
-            this.iconId = 0;
-            this.customIcon = customIcon;
-            this.enabled = enabled;
-            this.selected = selected;
-            this.type = type;
-            this.protoId = protoId;
-            this.hasColor = hasColor;
-        }
+    @IntDef({BackgroundStyle.INTERACT_ONLY_SMALL, BackgroundStyle.ALWAYS_VISIBLE_WIDE})
+    @Retention(RetentionPolicy.SOURCE)
+    @Target(ElementType.TYPE_USE)
+    public @interface BackgroundStyle {
+        // Small background that is only visible during hover or touch.
+        int INTERACT_ONLY_SMALL = 0;
+        // Wide background that is always visible.
+        int ALWAYS_VISIBLE_WIDE = 1;
     }
 
     /** The adapter for the attachments RecyclerView. */
     public static final WritableObjectPropertyKey<SimpleRecyclerViewAdapter> ADAPTER =
             new WritableObjectPropertyKey<>();
 
-    /** Whether the add button is visible. */
-    public static final WritableBooleanPropertyKey ADD_BUTTON_VISIBLE =
-            new WritableBooleanPropertyKey();
+    /** The layout anchoring mode for views in Fusebox; see {@link AnchoringMode}. */
+    public static final WritableIntDefPropertyKey<AnchoringMode> ANCHORING_MODE =
+            new WritableIntDefPropertyKey<>(AnchoringMode.UNSET);
 
     /** Whether the attachments RecyclerView is visible. */
     public static final WritableBooleanPropertyKey ATTACHMENTS_VISIBLE =
             new WritableBooleanPropertyKey();
 
-    /** Tracks the {@link AutocompleteRequestType}. */
-    public static final WritableObjectPropertyKey<@AutocompleteRequestType Integer>
-            AUTOCOMPLETE_REQUEST_TYPE = new WritableObjectPropertyKey<>();
-
-    /** Action to perform when the user clicks the Autocomplete Request Type button. */
-    public static final WritableObjectPropertyKey<Runnable> AUTOCOMPLETE_REQUEST_TYPE_CLICKED =
-            new WritableObjectPropertyKey<>();
-
-    /** Action to perform when the user clicks the Add button. */
-    public static final WritableObjectPropertyKey<Runnable> BUTTON_ADD_CLICKED =
-            new WritableObjectPropertyKey<>();
-
     /** The variant of {@link BrandedColorScheme} to apply to the UI elements. */
-    public static final WritableObjectPropertyKey<@BrandedColorScheme Integer> COLOR_SCHEME =
-            new WritableObjectPropertyKey<>();
+    public static final WritableIntDefPropertyKey<BrandedColorScheme> COLOR_SCHEME =
+            new WritableIntDefPropertyKey<>(BrandedColorScheme.APP_DEFAULT);
 
     /** The layout mode of fusebox views; see {@link FuseboxLayoutMode}. */
-    public static final WritableObjectPropertyKey<@FuseboxLayoutMode Integer> FUSEBOX_LAYOUT_MODE =
-            new WritableObjectPropertyKey<>();
+    public static final WritableIntDefPropertyKey<FuseboxLayoutMode> FUSEBOX_LAYOUT_MODE =
+            new WritableIntDefPropertyKey<>(FuseboxLayoutMode.TOOLBAR);
 
     /** The state of the UI of the fusebox should currently be in. */
-    public static final WritableObjectPropertyKey<@FuseboxState Integer> FUSEBOX_STATE =
+    public static final WritableIntDefPropertyKey<FuseboxState> FUSEBOX_STATE =
+            new WritableIntDefPropertyKey<>(FuseboxState.DISABLED);
+
+    /** The content description for the navigate button. */
+    public static final WritableObjectPropertyKey<String> NAVIGATE_BUTTON_CONTENT_DESCRIPTION =
             new WritableObjectPropertyKey<>();
+
+    /** The style of the background for the plus button. */
+    public static final WritableIntDefPropertyKey<BackgroundStyle> PLUS_BUTTON_BACKGROUND_STYLE =
+            new WritableIntDefPropertyKey<>(BackgroundStyle.INTERACT_ONLY_SMALL);
+
+    /** Action to perform when the user clicks the Plus button. */
+    public static final WritableObjectPropertyKey<Runnable> PLUS_BUTTON_CLICKED =
+            new WritableObjectPropertyKey<>();
+
+    /** Whether the plus button is visible. */
+    public static final WritableBooleanPropertyKey PLUS_BUTTON_VISIBLE =
+            new WritableBooleanPropertyKey();
+
+    /** Whether the accordion menu in the popup is expanded. */
+    public static final WritableBooleanPropertyKey POPUP_ACCORDION_EXPANDED =
+            new WritableBooleanPropertyKey();
+
+    /** Whether the attachments header in the popup is visible. */
+    public static final WritableBooleanPropertyKey POPUP_ATTACHMENTS_HEADER_VISIBLE =
+            new WritableBooleanPropertyKey();
 
     /** Action to perform when the user clicks the Camera button in the popup. */
     public static final WritableObjectPropertyKey<Runnable> POPUP_ATTACH_CAMERA_CLICKED =
@@ -138,19 +117,7 @@ class FuseboxProperties {
     public static final WritableBooleanPropertyKey POPUP_ATTACH_CAMERA_VISIBLE =
             new WritableBooleanPropertyKey();
 
-    /** Action to perform when the user clicks the Clipboard button in the popup. */
-    public static final WritableObjectPropertyKey<Runnable> POPUP_ATTACH_CLIPBOARD_CLICKED =
-            new WritableObjectPropertyKey<>();
-
-    /** Whether the Clipboard button in the popup is enabled. */
-    public static final WritableBooleanPropertyKey POPUP_ATTACH_CLIPBOARD_ENABLED =
-            new WritableBooleanPropertyKey();
-
-    /** Whether the Clipboard button in the popup is visible. */
-    public static final WritableBooleanPropertyKey POPUP_ATTACH_CLIPBOARD_VISIBLE =
-            new WritableBooleanPropertyKey();
-
-    /** Action to perform when the user clicks the "add current tab" button */
+    /** Action to perform when the user clicks the "add current tab" button. */
     public static final WritableObjectPropertyKey<Runnable> POPUP_ATTACH_CURRENT_TAB_CLICKED =
             new WritableObjectPropertyKey<>();
 
@@ -170,6 +137,18 @@ class FuseboxProperties {
 
     /** Whether the current tab button is visible. */
     public static final WritableBooleanPropertyKey POPUP_ATTACH_CURRENT_TAB_VISIBLE =
+            new WritableBooleanPropertyKey();
+
+    /** Action to perform when the user clicks the Drive button in the popup. */
+    public static final WritableObjectPropertyKey<Runnable> POPUP_ATTACH_DRIVE_CLICKED =
+            new WritableObjectPropertyKey<>();
+
+    /** Whether the Drive button in the popup is enabled. */
+    public static final WritableBooleanPropertyKey POPUP_ATTACH_DRIVE_ENABLED =
+            new WritableBooleanPropertyKey();
+
+    /** Whether the Drive button in the popup is visible. */
+    public static final WritableBooleanPropertyKey POPUP_ATTACH_DRIVE_VISIBLE =
             new WritableBooleanPropertyKey();
 
     /** Action to perform when the user clicks the File button in the popup. */
@@ -208,6 +187,10 @@ class FuseboxProperties {
     public static final WritableBooleanPropertyKey POPUP_ATTACH_TAB_PICKER_VISIBLE =
             new WritableBooleanPropertyKey();
 
+    /** Whether the popup is shown as a bottom sheet. */
+    public static final ReadableBooleanPropertyKey POPUP_IS_BOTTOM_SHEET =
+            new ReadableBooleanPropertyKey();
+
     /** Holds button data objects for each model that is to be shown. */
     public static final WritableObjectPropertyKey<List<PopupButtonData>>
             POPUP_MODEL_BUTTON_DATA_LIST = new WritableObjectPropertyKey<>();
@@ -216,37 +199,33 @@ class FuseboxProperties {
     public static final WritableBooleanPropertyKey POPUP_MODEL_DIVIDER_VISIBLE =
             new WritableBooleanPropertyKey();
 
-    /** Whether the models header in the popup is visible. */
-    public static final WritableBooleanPropertyKey POPUP_MODEL_HEADER_VISIBLE =
-            new WritableBooleanPropertyKey();
-
     /** The text for the models header in the popup. */
     public static final WritableObjectPropertyKey<String> POPUP_MODEL_HEADER_TEXT =
             new WritableObjectPropertyKey<>();
 
-    /** The state of the popup. */
-    public static final WritableObjectPropertyKey<@PopupState Integer> POPUP_STATE =
+    /** Whether the models header in the popup is visible. */
+    public static final WritableBooleanPropertyKey POPUP_MODEL_HEADER_VISIBLE =
+            new WritableBooleanPropertyKey();
+
+    /** Action to perform when the user clicks the More Options button in the popup. */
+    public static final WritableObjectPropertyKey<Runnable> POPUP_MORE_OPTIONS_CLICKED =
             new WritableObjectPropertyKey<>();
 
-    /** Holds button data objects for each tool that is to be shown. */
+    /** Whether the More Options button in the popup is visible. */
+    public static final WritableBooleanPropertyKey POPUP_MORE_OPTIONS_VISIBLE =
+            new WritableBooleanPropertyKey();
+
+    /** Whether the divider below the pinned section (current tab and tools) is visible. */
+    public static final WritableBooleanPropertyKey POPUP_PINNED_SECTION_BOTTOM_DIVIDER_VISIBLE =
+            new WritableBooleanPropertyKey();
+
+    /** Whether the divider above the pinned section (current tab and tools) is visible. */
+    public static final WritableBooleanPropertyKey POPUP_PINNED_SECTION_TOP_DIVIDER_VISIBLE =
+            new WritableBooleanPropertyKey();
+
+    /** Holds button data objects for each pinned tool that is to be shown. */
     public static final WritableObjectPropertyKey<List<PopupButtonData>>
-            POPUP_TOOL_BUTTON_DATA_LIST = new WritableObjectPropertyKey<>();
-
-    /** Whether the tools divider in the popup is visible. */
-    public static final WritableBooleanPropertyKey POPUP_TOOL_DIVIDER_VISIBLE =
-            new WritableBooleanPropertyKey();
-
-    /** Whether the tools header in the popup is visible. */
-    public static final WritableBooleanPropertyKey POPUP_TOOL_HEADER_VISIBLE =
-            new WritableBooleanPropertyKey();
-
-    /** The text for the tools header in the popup. */
-    public static final WritableObjectPropertyKey<String> POPUP_TOOL_HEADER_TEXT =
-            new WritableObjectPropertyKey<>();
-
-    /** Whether to show the request type button. */
-    public static final WritableBooleanPropertyKey SHOW_REQUEST_TYPE_BUTTON =
-            new WritableBooleanPropertyKey();
+            POPUP_PINNED_TOOL_BUTTON_DATA_LIST = new WritableObjectPropertyKey<>();
 
     /** Holds button data objects for each recent tab that is to be shown. */
     public static final WritableObjectPropertyKey<List<PopupButtonData>>
@@ -256,35 +235,86 @@ class FuseboxProperties {
     public static final WritableBooleanPropertyKey POPUP_RECENT_TABS_DIVIDER_VISIBLE =
             new WritableBooleanPropertyKey();
 
+    /** Whether the recent tab buttons in the popup are enabled. */
+    public static final WritableBooleanPropertyKey POPUP_RECENT_TABS_ENABLED =
+            new WritableBooleanPropertyKey();
+
     /** Whether the recent tabs header in the popup is visible. */
     public static final WritableBooleanPropertyKey POPUP_RECENT_TABS_HEADER_VISIBLE =
             new WritableBooleanPropertyKey();
 
-    /** Whether the recent tab buttons in the popup are enabled. */
-    public static final WritableBooleanPropertyKey POPUP_RECENT_TABS_ENABLED =
+    /** The state of the popup. */
+    public static final WritableIntDefPropertyKey<PopupState> POPUP_STATE =
+            new WritableIntDefPropertyKey<>(PopupState.HIDDEN);
+
+    /** Holds button data objects for each tool that is to be shown. */
+    public static final WritableObjectPropertyKey<List<PopupButtonData>>
+            POPUP_TOOL_BUTTON_DATA_LIST = new WritableObjectPropertyKey<>();
+
+    /** Whether the tools divider in the popup is visible. */
+    public static final WritableBooleanPropertyKey POPUP_TOOL_DIVIDER_VISIBLE =
+            new WritableBooleanPropertyKey();
+
+    /** The text for the tools header in the popup. */
+    public static final WritableObjectPropertyKey<String> POPUP_TOOL_HEADER_TEXT =
+            new WritableObjectPropertyKey<>();
+
+    /** Whether the tools header in the popup is visible. */
+    public static final WritableBooleanPropertyKey POPUP_TOOL_HEADER_VISIBLE =
+            new WritableBooleanPropertyKey();
+
+    /** Whether the popup should use the carousel layout. */
+    public static final ReadableBooleanPropertyKey POPUP_USE_CAROUSEL =
+            new ReadableBooleanPropertyKey();
+
+    /** Tracks the {@link AutocompleteRequestType}. */
+    public static final WritableIntDefPropertyKey<AutocompleteRequestType> REQUEST_TYPE =
+            new WritableIntDefPropertyKey<>(AutocompleteRequestType.SEARCH);
+
+    /** Action to perform when the user clicks the request type button. */
+    public static final WritableObjectPropertyKey<Runnable> REQUEST_TYPE_BUTTON_CLICKED =
+            new WritableObjectPropertyKey<>();
+
+    /** The start icon, an {@link IconResourceIds} value, for the request type button. */
+    public static final WritableIntDefPropertyKey<IconResourceIds> REQUEST_TYPE_BUTTON_ICON_ID =
+            new WritableIntDefPropertyKey<>(IconResourceIds.SEARCH_LOUPE_WITH_SPARKLE);
+
+    /** Whether to tint the start icon of the request type button. */
+    public static final WritableBooleanPropertyKey REQUEST_TYPE_BUTTON_SHOULD_TINT_ICON =
+            new WritableBooleanPropertyKey();
+
+    /** The text for the request type button. */
+    public static final WritableObjectPropertyKey<String> REQUEST_TYPE_BUTTON_TEXT =
+            new WritableObjectPropertyKey<>();
+
+    /** Whether the request type button is visible. */
+    public static final WritableBooleanPropertyKey REQUEST_TYPE_BUTTON_VISIBLE =
             new WritableBooleanPropertyKey();
 
     public static final PropertyKey[] ALL_KEYS = {
         // go/keep-sorted start
         ADAPTER,
-        ADD_BUTTON_VISIBLE,
+        ANCHORING_MODE,
         ATTACHMENTS_VISIBLE,
-        AUTOCOMPLETE_REQUEST_TYPE,
-        AUTOCOMPLETE_REQUEST_TYPE_CLICKED,
-        BUTTON_ADD_CLICKED,
         COLOR_SCHEME,
         FUSEBOX_LAYOUT_MODE,
         FUSEBOX_STATE,
+        NAVIGATE_BUTTON_CONTENT_DESCRIPTION,
+        PLUS_BUTTON_BACKGROUND_STYLE,
+        PLUS_BUTTON_CLICKED,
+        PLUS_BUTTON_VISIBLE,
+        POPUP_ACCORDION_EXPANDED,
+        POPUP_ATTACHMENTS_HEADER_VISIBLE,
         POPUP_ATTACH_CAMERA_CLICKED,
         POPUP_ATTACH_CAMERA_ENABLED,
         POPUP_ATTACH_CAMERA_VISIBLE,
-        POPUP_ATTACH_CLIPBOARD_CLICKED,
-        POPUP_ATTACH_CLIPBOARD_ENABLED,
-        POPUP_ATTACH_CLIPBOARD_VISIBLE,
         POPUP_ATTACH_CURRENT_TAB_CLICKED,
         POPUP_ATTACH_CURRENT_TAB_ENABLED,
         POPUP_ATTACH_CURRENT_TAB_FAVICON,
         POPUP_ATTACH_CURRENT_TAB_VISIBLE,
+        POPUP_ATTACH_DRIVE_CLICKED,
+        POPUP_ATTACH_DRIVE_ENABLED,
+        POPUP_ATTACH_DRIVE_VISIBLE,
         POPUP_ATTACH_FILE_CLICKED,
         POPUP_ATTACH_FILE_ENABLED,
         POPUP_ATTACH_FILE_VISIBLE,
@@ -294,10 +324,16 @@ class FuseboxProperties {
         POPUP_ATTACH_TAB_PICKER_CLICKED,
         POPUP_ATTACH_TAB_PICKER_ENABLED,
         POPUP_ATTACH_TAB_PICKER_VISIBLE,
+        POPUP_IS_BOTTOM_SHEET,
         POPUP_MODEL_BUTTON_DATA_LIST,
         POPUP_MODEL_DIVIDER_VISIBLE,
         POPUP_MODEL_HEADER_TEXT,
         POPUP_MODEL_HEADER_VISIBLE,
+        POPUP_MORE_OPTIONS_CLICKED,
+        POPUP_MORE_OPTIONS_VISIBLE,
+        POPUP_PINNED_SECTION_BOTTOM_DIVIDER_VISIBLE,
+        POPUP_PINNED_SECTION_TOP_DIVIDER_VISIBLE,
+        POPUP_PINNED_TOOL_BUTTON_DATA_LIST,
         POPUP_RECENT_TABS_BUTTON_DATA_LIST,
         POPUP_RECENT_TABS_DIVIDER_VISIBLE,
         POPUP_RECENT_TABS_ENABLED,
@@ -307,7 +343,13 @@ class FuseboxProperties {
         POPUP_TOOL_DIVIDER_VISIBLE,
         POPUP_TOOL_HEADER_TEXT,
         POPUP_TOOL_HEADER_VISIBLE,
-        SHOW_REQUEST_TYPE_BUTTON
+        POPUP_USE_CAROUSEL,
+        REQUEST_TYPE,
+        REQUEST_TYPE_BUTTON_CLICKED,
+        REQUEST_TYPE_BUTTON_ICON_ID,
+        REQUEST_TYPE_BUTTON_SHOULD_TINT_ICON,
+        REQUEST_TYPE_BUTTON_TEXT,
+        REQUEST_TYPE_BUTTON_VISIBLE
         // go/keep-sorted end
     };
 }

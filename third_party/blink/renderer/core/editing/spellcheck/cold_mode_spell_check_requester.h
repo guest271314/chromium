@@ -5,6 +5,7 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_CORE_EDITING_SPELLCHECK_COLD_MODE_SPELL_CHECK_REQUESTER_H_
 #define THIRD_PARTY_BLINK_RENDERER_CORE_EDITING_SPELLCHECK_COLD_MODE_SPELL_CHECK_REQUESTER_H_
 
+#include "third_party/blink/renderer/core/dom/range.h"
 #include "third_party/blink/renderer/core/editing/forward.h"
 #include "third_party/blink/renderer/core/editing/position.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
@@ -108,7 +109,7 @@ class ColdModeSpellCheckRequester
       fully_checked_root_editables_;
 
   // A test-only flag for forcing lifecycle advancing.
-  mutable bool needs_more_invocation_for_testing_;
+  mutable bool needs_more_invocation_for_testing_ = false;
 };
 }
 

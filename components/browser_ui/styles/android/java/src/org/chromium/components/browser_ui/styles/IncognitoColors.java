@@ -11,7 +11,6 @@ import androidx.annotation.ColorInt;
 import androidx.annotation.StyleRes;
 
 import org.chromium.build.annotations.NullMarked;
-import org.chromium.ui.util.ColorUtils;
 
 /**
  * Provides helper methods for fetching colors and text styles with a boolean param that will load
@@ -21,32 +20,47 @@ import org.chromium.ui.util.ColorUtils;
  */
 @NullMarked
 public class IncognitoColors {
-    /** {@see SemanticColorUtils#getColorSurface} */
+    /** {@link SemanticColorUtils#getColorSurface} */
     public static @ColorInt int getColorSurface(Context context, boolean isIncognito) {
         return isIncognito
                 ? context.getColor(R.color.gm3_baseline_surface_dark)
                 : SemanticColorUtils.getColorSurface(context);
     }
 
-    /** {@see SemanticColorUtils#getColorSurfaceBright} */
+    /** {@link SemanticColorUtils#getColorSurfaceBright} */
     public static @ColorInt int getColorSurfaceBright(Context context, boolean isIncognito) {
         return isIncognito
                 ? context.getColor(R.color.gm3_baseline_surface_bright_dark)
                 : SemanticColorUtils.getColorSurfaceBright(context);
     }
 
-    /** {@see SemanticColorUtils#getColorSurfaceContainerHigh} */
+    /** {@link SemanticColorUtils#getColorSurfaceContainerHigh} */
     public static @ColorInt int getColorSurfaceContainerHigh(Context context, boolean isIncognito) {
         return isIncognito
                 ? context.getColor(R.color.gm3_baseline_surface_container_high_dark)
                 : SemanticColorUtils.getColorSurfaceContainerHigh(context);
     }
 
-    /** {@see SemanticColorUtils#getColorSurfaceContainerLow} */
+    /** {@link SemanticColorUtils#getColorSurfaceContainerHighest} */
+    public static @ColorInt int getColorSurfaceContainerHighest(
+            Context context, boolean isIncognito) {
+        return isIncognito
+                ? context.getColor(R.color.gm3_baseline_surface_container_highest_dark)
+                : SemanticColorUtils.getColorSurfaceContainerHighest(context);
+    }
+
+    /** {@link SemanticColorUtils#getColorSurfaceContainerLow} */
     public static @ColorInt int getColorSurfaceContainerLow(Context context, boolean isIncognito) {
         return isIncognito
                 ? context.getColor(R.color.gm3_baseline_surface_container_low_dark)
                 : SemanticColorUtils.getColorSurfaceContainerLow(context);
+    }
+
+    /** {@link SemanticColorUtils#getInteractableChipBgColor} */
+    public static @ColorInt int getInteractableChipBgColor(Context context, boolean isIncognito) {
+        return isIncognito
+                ? context.getColor(R.color.gm3_baseline_surface_container_high_dark)
+                : SemanticColorUtils.getInteractableChipBgColor(context);
     }
 
     /** Returns a color state list for the surface container color. */
@@ -57,59 +71,74 @@ public class IncognitoColors {
                 : SemanticColorUtils.getColorSurfaceContainerTintList(context);
     }
 
-    /** {@see SemanticColorUtils#getColorPrimaryContainer} */
+    /** {@link SemanticColorUtils#getColorPrimaryContainer} */
     public static @ColorInt int getColorPrimaryContainer(Context context, boolean isIncognito) {
         return isIncognito
                 ? context.getColor(R.color.baseline_primary_30)
                 : SemanticColorUtils.getColorPrimaryContainer(context);
     }
 
-    /** {@see SemanticColorUtils#getColorPrimary} */
+    /** {@link SemanticColorUtils#getColorPrimary} */
     public static @ColorInt int getColorPrimary(Context context, boolean isIncognito) {
         return isIncognito
                 ? context.getColor(R.color.baseline_primary_80)
                 : SemanticColorUtils.getColorPrimary(context);
     }
 
-    /** {@see SemanticColorUtils#getDefaultIconColor} */
+    /** {@link SemanticColorUtils#getDefaultIconColor} */
     public static @ColorInt int getDefaultIconColor(Context context, boolean isIncognito) {
         return isIncognito
                 ? context.getColor(R.color.baseline_neutral_90)
                 : SemanticColorUtils.getDefaultIconColor(context);
     }
 
-    /** {@see SemanticColorUtils#getDefaultIconColorSecondary} */
+    /** {@link SemanticColorUtils#getDefaultIconColorSecondary} */
     public static @ColorInt int getDefaultIconColorSecondary(Context context, boolean isIncognito) {
         return isIncognito
                 ? context.getColor(R.color.baseline_neutral_variant_80)
                 : SemanticColorUtils.getDefaultIconColorSecondary(context);
     }
 
-    /** {@see SemanticColorUtils#getColorOnSurface} */
+    /** {@link SemanticColorUtils#getColorOnSurface} */
     public static @ColorInt int getColorOnSurface(Context context, boolean isIncognito) {
         return isIncognito
                 ? context.getColor(R.color.baseline_neutral_90)
                 : SemanticColorUtils.getColorOnSurface(context);
     }
 
-    /** Returns colorOnSurface but with the alpha channel set to 16%. */
-    public static @ColorInt int getColorOnSurfaceWithAlpha16(Context context, boolean isIncognito) {
-        @ColorInt int colorOnSurface = getColorOnSurface(context, isIncognito);
-        return ColorUtils.setAlphaComponentWithFloat(colorOnSurface, /* alpha= */ 0.16f);
-    }
-
-    /** {@see SemanticColorUtils#getDividerLineBgColor} */
+    /** {@link SemanticColorUtils#getDividerLineBgColor} */
     public static @ColorInt int getDividerLineBgColor(Context context, boolean isIncognito) {
         return isIncognito
                 ? context.getColor(R.color.divider_color_light)
                 : SemanticColorUtils.getDividerColor(context);
     }
 
-    /** {@see SemanticColorUtils#getColorOnPrimary} */
+    /** {@link SemanticColorUtils#getColorOnPrimary} */
     public static @ColorInt int getColorOnPrimary(Context context, boolean isIncognito) {
         return isIncognito
                 ? context.getColor(R.color.baseline_primary_20)
                 : SemanticColorUtils.getColorOnPrimary(context);
+    }
+
+    /** Returns the correct text appearance style res for primary colored headline text. */
+    public static @StyleRes int getHeadlinePrimary(boolean isIncognito) {
+        return isIncognito
+                ? R.style.TextAppearance_Headline_Primary_Baseline_Light
+                : R.style.TextAppearance_Headline_Primary;
+    }
+
+    /** Returns the correct text appearance style res for primary colored thick headline2 text. */
+    public static @StyleRes int getHeadline2ThickPrimary(boolean isIncognito) {
+        return isIncognito
+                ? R.style.TextAppearance_Headline2Thick_Primary_Baseline_Light
+                : R.style.TextAppearance_Headline2Thick_Primary;
+    }
+
+    /** Returns the correct text appearance style res for primary colored large text. */
+    public static @StyleRes int getTextLargePrimary(boolean isIncognito) {
+        return isIncognito
+                ? R.style.TextAppearance_TextLarge_Primary_Baseline_Light
+                : R.style.TextAppearance_TextLarge_Primary;
     }
 
     /** Returns the correct text appearance style res for primary colored medium text. */

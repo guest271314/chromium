@@ -79,8 +79,6 @@ ChildMemoryConsumerRegistryHost::ChildMemoryConsumerRegistryHost(
       disconnect_handler_(std::move(disconnect_handler)) {
   CHECK(disconnect_handler_);
 
-  controller_->AddMemoryConsumerGroupHost(child_process_id_, this);
-
   // The use of Unretained is safe here because `this` owns the receiver and
   // will always outlive it.
   receiver_.set_disconnect_handler(
@@ -103,7 +101,9 @@ ChildMemoryConsumerRegistryHost::~ChildMemoryConsumerRegistryHost() {
   for (const auto& consumer_id : consumers_) {
     controller_->OnConsumerGroupRemoved(consumer_id, child_process_id_);
   }
-  controller_->RemoveMemoryConsumerGroupHost(child_process_id_);
+  if (registered_with_controller_) {
+    controller_->RemoveMemoryConsumerGroupHost(child_process_id_);
+  }
 }
 
 void ChildMemoryConsumerRegistryHost::BindCoordinator(
@@ -119,6 +119,14 @@ void ChildMemoryConsumerRegistryHost::BindCoordinator(
       base::BindOnce(&ChildMemoryConsumerRegistryHost::RunDisconnectHandler,
                      base::Unretained(this)));
 
+  // Register with the controller now that the Mojo remote is bound.
+  // This ensures that the manager can immediately propagate any pending
+  // overrides to the child process without racing with Mojo binding.
+  CHECK(!registered_with_controller_);
+  controller_->AddMemoryConsumerGroupHost(process_type_, child_process_id_,
+                                          this);
+  registered_with_controller_ = true;
+
 #if BUILDFLAG(ENABLE_MEMORY_COORDINATOR_INTERNALS)
   // If diagnostics were enabled before BindCoordinator, now we can bind the
   // diagnostic interface.
@@ -129,42 +137,58 @@ void ChildMemoryConsumerRegistryHost::BindCoordinator(
 }
 
 void ChildMemoryConsumerRegistryHost::Register(
+    std::vector<mojom::MemoryConsumerRegistrationPtr> registrations) {
+  for (auto& registration : registrations) {
+    if (!RegisterImpl(registration->consumer_id, registration->consumer_name,
+                      registration->traits)) {
+      // RegisterImpl() reported a bad message; stop processing the rest of the
+      // (now-rejected) batch. We don't need to unregister any that succeeded
+      // prior to the one that failed since that will happen automatically when
+      // the remote process is terminated, which will happen on the first bad
+      // message.
+      return;
+    }
+  }
+}
+
+bool ChildMemoryConsumerRegistryHost::RegisterImpl(
     uint32_t consumer_id,
     const std::string& consumer_name,
-    std::optional<base::MemoryConsumerTraits> traits) {
+    base::MemoryConsumerTraits traits) {
   if (!coordinator_remote_.is_bound()) {
     mojo::ReportBadMessage("Register called before BindCoordinator");
-    return;
+    return false;
   }
 
   // Ensure a child process cannot flood the browser with too many memory
   // consumers.
   if (consumers_.size() >= kMaxMemoryConsumersPerProcess) {
     mojo::ReportBadMessage("Too many memory consumers registered");
-    return;
+    return false;
   }
 
   // Ensure a child process cannot send overly large strings to the browser
   // process.
   if (consumer_name.length() > kMaxMemoryConsumerNameLength) {
     mojo::ReportBadMessage("Memory consumer name is too long");
-    return;
+    return false;
   }
 
   if (consumer_id != base::PersistentHash(consumer_name)) {
     mojo::ReportBadMessage(
         "consumer_id does not match the hash of consumer_name");
-    return;
+    return false;
   }
 
   auto [_, inserted] = consumers_.insert(consumer_id);
   if (!inserted) {
     mojo::ReportBadMessage("Register called for an existing consumer_id");
-    return;
+    return false;
   }
 
   controller_->OnConsumerGroupAdded(consumer_id, consumer_name, traits,
-                                    process_type_, child_process_id_);
+                                    child_process_id_);
+  return true;
 }
 
 void ChildMemoryConsumerRegistryHost::Unregister(uint32_t consumer_id) {
@@ -183,15 +207,22 @@ void ChildMemoryConsumerRegistryHost::UpdateConsumers(
   coordinator_remote_->UpdateConsumers(std::move(updates));
 }
 
+void ChildMemoryConsumerRegistryHost::SetOverrideLimit(
+    uint32_t consumer_id,
+    base::MemoryLimit memory_limit) {
+  coordinator_remote_->SetOverrideLimit(consumer_id, memory_limit);
+}
+
+void ChildMemoryConsumerRegistryHost::ClearOverrideLimit(
+    uint32_t consumer_id,
+    base::MemoryLimit policy_limit) {
+  coordinator_remote_->ClearOverrideLimit(consumer_id, policy_limit);
+}
+
 #if BUILDFLAG(ENABLE_MEMORY_COORDINATOR_INTERNALS)
 void ChildMemoryConsumerRegistryHost::OnMemoryLimitChanged(
     uint32_t consumer_id,
-    int32_t memory_limit) {
-  if (memory_limit < 0) {
-    mojo::ReportBadMessage("OnMemoryLimitChanged: out of range");
-    return;
-  }
-
+    base::MemoryLimit memory_limit) {
   // Ensure a child process can only report diagnostics for registered
   // consumers.
   if (consumers_.find(consumer_id) == consumers_.end()) {

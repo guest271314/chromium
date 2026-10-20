@@ -34,19 +34,19 @@ class ManagementUninstallFunctionBase;
 // Manages the lifetime of the install prompt.
 class InstallPromptDelegate {
  public:
-  virtual ~InstallPromptDelegate() {}
+  virtual ~InstallPromptDelegate() = default;
 };
 
 // Manages the lifetime of the uninstall prompt.
 class UninstallDialogDelegate {
  public:
-  virtual ~UninstallDialogDelegate() {}
+  virtual ~UninstallDialogDelegate() = default;
 };
 
 // Manages the lifetime of the bookmark app creation.
 class AppForLinkDelegate {
  public:
-  virtual ~AppForLinkDelegate() {}
+  virtual ~AppForLinkDelegate() = default;
 
   virtual extensions::api::management::ExtensionInfo
   CreateExtensionInfoFromWebApp(const std::string& app_id,
@@ -55,7 +55,7 @@ class AppForLinkDelegate {
 
 class ManagementAPIDelegate {
  public:
-  virtual ~ManagementAPIDelegate() {}
+  virtual ~ManagementAPIDelegate() = default;
 
   enum class InstallOrLaunchWebAppResult {
     kSuccess,
@@ -149,14 +149,6 @@ class ManagementAPIDelegate {
   virtual GURL GetEffectiveUpdateURL(
       const Extension& extension,
       content::BrowserContext* context) const = 0;
-
-  // Displays the re-enable dialog when `extension` was disabled due to the MV2
-  // deprecation. Calls `done_callback` when accepted/cancelled.
-  virtual void ShowMv2DeprecationReEnableDialog(
-      content::BrowserContext* context,
-      content::WebContents* web_contents,
-      const Extension& extension,
-      base::OnceCallback<void(bool)> done_callback) const = 0;
 };
 
 }  // namespace extensions

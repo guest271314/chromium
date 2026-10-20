@@ -40,9 +40,6 @@
 namespace feed {
 namespace test {
 namespace {
-
-using ::feedwire::webfeed::WebFeedChangeReason;
-
 const int kTestInfoCardType1 = 101;
 const int kTestInfoCardType2 = 8888;
 const int kMinimumViewIntervalSeconds = 5 * 60;
@@ -446,8 +443,6 @@ TEST_P(FeedStreamTestForAllStreamTypes, LoadFromNetwork) {
   if (GetStreamType().IsForYou()) {
     EXPECT_EQ(1,
               network_.GetApiRequestCount<QueryInteractiveFeedDiscoverApi>());
-  } else {
-    EXPECT_EQ(1, network_.GetApiRequestCount<WebFeedListContentsDiscoverApi>());
   }
   EXPECT_EQ(
       "token",
@@ -475,7 +470,6 @@ TEST_P(FeedStreamTestForAllStreamTypes, UseFeedQueryOverride) {
   ASSERT_TRUE(network_.query_request_sent);
   // There should be no API refresh requests when using use_feed_query_requests.
   auto api_request_counts = network_.GetApiRequestCounts();
-  api_request_counts.erase(NetworkRequestType::kListWebFeeds);  // ignore
   EXPECT_EQ((std::map<NetworkRequestType, int>()), api_request_counts);
   EXPECT_EQ("loading -> [user@foo] 2 slices", surface.DescribeUpdates());
 }
@@ -548,8 +542,6 @@ TEST_F(FeedApiTest, BackgroundRefreshDiscoFeedEnabled) {
 }
 
 TEST_P(FeedStreamTestForAllStreamTypes, ForceRefreshForDebugging) {
-  // WebFeed stream is only fetched when there's a subscription.
-  network_.InjectListWebFeedsResponse({MakeWireWebFeed("cats")});
   response_translator_.InjectResponse(MakeTypicalInitialModelState());
 
   stream_->ForceRefreshForDebugging(GetStreamType());
@@ -743,8 +735,6 @@ TEST_P(FeedStreamTestForAllStreamTypes, LoadFromNetworkBecauseStoreIsStale) {
       MakeTypicalInitialModelState(
           /*first_cluster_id=*/0,
           kTestTimeEpoch -
-              // TODO(crbug.com/407797637): Remove hardcoded false once WebFeed
-              // is fully removed.
               GetFeedConfig().GetStalenessThreshold(GetStreamType()) -
               base::Minutes(1)),
       base::DoNothing());
@@ -2523,6 +2513,43 @@ TEST_F(FeedApiTest, ClearAllOnStartupIfFeedIsDisabledByDse) {
                /*is_new_tab_search_engine_url_android_enabled*/ true);
 
   EXPECT_FALSE(on_clear_all.called());
+}
+
+TEST_F(FeedApiTest,
+       OnUserFeedbackPolicyChanged_MarksStreamStaleAndSendsNetworkCapability) {
+  // Verify initial state is completely fresh.
+  EXPECT_FALSE(
+      IsKnownStale(stream_->GetMetadata(), StreamType(StreamKind::kForYou)));
+
+  // Disabling user feedback triggers a stale content state.
+  profile_prefs_.SetBoolean(kFeedbackAllowedPref, false);
+  EXPECT_TRUE(
+      IsKnownStale(stream_->GetMetadata(), StreamType(StreamKind::kForYou)));
+
+  // Re-enabling user feedback should also mark the stream stale to fetch
+  // compliant cards.
+  profile_prefs_.SetBoolean(kFeedbackAllowedPref, true);
+  EXPECT_TRUE(
+      IsKnownStale(stream_->GetMetadata(), StreamType(StreamKind::kForYou)));
+
+  // Disabling feedback again attaches the correct capability to outgoing
+  // network refreshes.
+  profile_prefs_.SetBoolean(kFeedbackAllowedPref, false);
+
+  // Trigger a manual refresh to force a network fetch.
+  TestForYouSurface surface(stream_.get());
+  WaitForIdleTaskQueue();
+
+  response_translator_.InjectResponse(MakeTypicalInitialModelState());
+  stream_->ManualRefresh(surface.GetSurfaceId(), base::DoNothing());
+  WaitForIdleTaskQueue();
+
+  // Verify the outgoing wire request carries the correct policy restriction
+  // capability.
+  ASSERT_TRUE(network_.query_request_sent);
+  EXPECT_THAT(network_.query_request_sent->feed_request().client_capability(),
+              testing::Contains(
+                  feedwire::Capability::USER_FEEDBACK_DISABLED_BY_POLICY));
 }
 #endif  // BUILDFLAG(IS_ANDROID)
 

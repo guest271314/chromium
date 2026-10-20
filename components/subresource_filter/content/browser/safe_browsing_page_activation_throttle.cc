@@ -18,6 +18,7 @@
 #include "base/timer/timer.h"
 #include "base/trace_event/trace_event.h"
 #include "base/trace_event/traced_value.h"
+#include "components/safe_browsing/core/browser/db/v5_get_hash_protocol_manager.h"
 #include "components/safe_browsing/core/common/features.h"
 #include "components/subresource_filter/content/browser/content_activation_list_utils.h"
 #include "components/subresource_filter/content/browser/devtools_interaction_tracker.h"
@@ -50,7 +51,7 @@ std::optional<RedirectPosition> GetEnforcementRedirectPosition(
   for (int i = num_results - 1; i >= 0; --i) {
     bool warning = false;
     ActivationList list = GetListForThreatTypeAndMetadata(
-        results[i].threat_type, results[i].threat_metadata, &warning);
+        results[i].threat_type, results[i].subresource_filter_match, &warning);
     if (!warning && list != ActivationList::NONE) {
       if (num_results == 1) {
         return RedirectPosition::kOnly;
@@ -92,7 +93,8 @@ SafeBrowsingPageActivationThrottle::SafeBrowsingPageActivationThrottle(
       delegate_(delegate) {
   database_client_.reset(new SubresourceFilterSafeBrowsingClient(
       std::move(database_manager), this,
-      base::SingleThreadTaskRunner::GetCurrentDefault()));
+      base::SingleThreadTaskRunner::GetCurrentDefault(),
+      delegate_ ? delegate_->GetV5GetHashProtocolManager() : nullptr));
 
   CHECK(IsInSubresourceFilterRoot(&registry.GetNavigationHandle()));
   CheckCurrentUrl();
@@ -297,7 +299,7 @@ SafeBrowsingPageActivationThrottle::GetHighestPriorityConfiguration(
   bool warning = false;
   bool matched = false;
   ActivationList matched_list = GetListForThreatTypeAndMetadata(
-      result.threat_type, result.threat_metadata, &warning);
+      result.threat_type, result.subresource_filter_match, &warning);
   // If it's http or https, find the best config.
   if (navigation_handle()->GetURL().SchemeIsHTTPOrHTTPS()) {
     const auto& decreasing_configs =
@@ -358,12 +360,6 @@ bool SafeBrowsingPageActivationThrottle::
         return true;
       }
 
-      if (conditions.activation_list == ActivationList::PHISHING_INTERSTITIAL &&
-          matched_list == ActivationList::SOCIAL_ENG_ADS_INTERSTITIAL) {
-        // Handling special case, where activation on the phishing sites also
-        // mean the activation on the sites with social engineering metadata.
-        return true;
-      }
       if (conditions.activation_list == ActivationList::BETTER_ADS &&
           matched_list == ActivationList::ABUSIVE &&
           base::FeatureList::IsEnabled(kFilterAdsOnAbusiveSites)) {

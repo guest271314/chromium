@@ -16,8 +16,8 @@ import android.view.View;
 import android.view.ViewGroup;
 
 import org.chromium.base.Callback;
+import org.chromium.base.Token;
 import org.chromium.base.ValueChangedCallback;
-import org.chromium.base.metrics.RecordHistogram;
 import org.chromium.base.metrics.RecordUserAction;
 import org.chromium.base.supplier.LazyOneshotSupplier;
 import org.chromium.base.supplier.MonotonicObservableSupplier;
@@ -28,29 +28,31 @@ import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.hub.HubUtils;
 import org.chromium.chrome.browser.tab.Tab;
+import org.chromium.chrome.browser.tab.TabId;
 import org.chromium.chrome.browser.tab_ui.TabSwitcherCustomViewManager;
 import org.chromium.chrome.browser.tabmodel.TabClosingSource;
 import org.chromium.chrome.browser.tabmodel.TabModel;
 import org.chromium.chrome.browser.tabmodel.TabModelObserver;
 import org.chromium.chrome.browser.tasks.tab_management.PriceMessageService.PriceWelcomeMessageReviewActionProvider;
+import org.chromium.chrome.browser.tasks.tab_management.TabActionButtonData.TabActionButtonType;
 import org.chromium.chrome.browser.tasks.tab_management.TabGridDialogMediator.DialogController;
 import org.chromium.chrome.browser.tasks.tab_management.TabListContainerProperties.SupplementaryContainerAnimationMetadata;
 import org.chromium.chrome.browser.tasks.tab_management.TabListEditorCoordinator.TabListEditorController;
-import org.chromium.chrome.browser.tasks.tab_management.TabListMediator.GridCardOnClickListenerProvider;
+import org.chromium.chrome.browser.tasks.tab_management.TabListMediator.TabListItemOnClickListenerProvider;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController.StateChangeReason;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetObserver;
-import org.chromium.components.browser_ui.bottomsheet.EmptyBottomSheetObserver;
 import org.chromium.components.browser_ui.util.motion.MotionEventInfo;
 import org.chromium.components.browser_ui.widget.gesture.BackPressHandler;
 import org.chromium.ui.modelutil.PropertyModel;
 
 import java.util.List;
+import java.util.function.Supplier;
 
 /** Mediator for {@link TabSwitcherPaneCoordinator}. */
 @NullMarked
 public class TabSwitcherPaneMediator
-        implements GridCardOnClickListenerProvider,
+        implements TabListItemOnClickListenerProvider,
                 PriceWelcomeMessageReviewActionProvider,
                 TabSwitcherCustomViewManager.Delegate,
                 BackPressHandler {
@@ -62,7 +64,9 @@ public class TabSwitcherPaneMediator
             new TabActionListener() {
                 @Override
                 public void run(View view, int tabId, @Nullable MotionEventInfo triggeringMotion) {
-                    openTabGroupDialog(tabId);
+                    Tab tab = assumeNonNull(mTabModelSupplier.get()).getTabById(tabId);
+                    openTabGroupDialog(
+                            tab != null ? tab.getTabGroupId() : null, /* shouldScroll= */ false);
                     RecordUserAction.record("TabGridDialog.ExpandedFromSwitcher");
                 }
 
@@ -113,7 +117,7 @@ public class TabSwitcherPaneMediator
             };
 
     private final BottomSheetObserver mBottomSheetObserver =
-            new EmptyBottomSheetObserver() {
+            new BottomSheetObserver() {
                 @Override
                 public void onSheetOpened(@StateChangeReason int reason) {
                     suppressAccessibility(true);
@@ -128,17 +132,18 @@ public class TabSwitcherPaneMediator
     private final Callback<Boolean> mOnAnimatingChanged = this::onAnimatingChanged;
     private final Callback<Boolean> mOnVisibilityChanged = this::onVisibilityChanged;
     private final Callback<Boolean> mNotifyBackPressedCallback =
-            ignored -> {
-                notifyBackPressStateChangedInternal();
-            };
+            _ -> notifyBackPressStateChangedInternal();
 
     /** Interface for getting scroll positions of tabs. */
     @FunctionalInterface
     public interface TabIndexLookup {
         /**
-         * Returns the scroll position of a tab from its filter index in the TabListRecyclerView.
+         * Returns the scroll position of a tab or tab group from its tab ID in the
+         * TabListRecyclerView.
+         *
+         * @param tabId The ID of the tab to look up.
          */
-        int getNthTabIndexInModel(int filterIndex);
+        int getIndexFromTabId(@TabId int tabId);
     }
 
     private final Context mContext;
@@ -176,7 +181,7 @@ public class TabSwitcherPaneMediator
      * @param isVisibleSupplier Supplier for visibility of the pane.
      * @param isAnimatingSupplier Supplier for when the pane is animating in or out of visibility.
      * @param onTabClickCallback Callback to invoke when a tab is clicked.
-     * @param tabIndexLookup Lookup for scroll position from tab index.
+     * @param tabIndexLookup Lookup for scroll position from tab ID.
      * @param bottomSheetController The {@link BottomSheetController} for the current activity.
      * @param addOnLayoutChangedAfterInitialScrollListener Runnable that adds a listener after an
      *     initial scroll event.
@@ -204,7 +209,7 @@ public class TabSwitcherPaneMediator
         mOnTabClickCallback = onTabClickCallback;
         mTabModelSupplier = tabModelSupplier;
         var tabModel = mTabModelSupplier.addSyncObserverAndPostIfNonNull(mOnTabModelChanged);
-        mTryToShowOnFilterChanged = tabModel == null || !tabModel.isTabModelRestored();
+        mTryToShowOnFilterChanged = tabModel == null || !tabModel.isTabStateInitialized();
 
         mTabGridDialogControllerSupplier = tabGridDialogControllerSupplier;
         tabGridDialogControllerSupplier.onAvailable(
@@ -268,18 +273,12 @@ public class TabSwitcherPaneMediator
 
     /** Requests accessibility focus on the currently selected tab. */
     public void requestAccessibilityFocusOnCurrentTab() {
-        TabModel tabModel = mTabModelSupplier.get();
-        assumeNonNull(tabModel);
-        mContainerViewModel.set(
-                FOCUS_TAB_INDEX_FOR_ACCESSIBILITY, tabModel.getCurrentRepresentativeTabIndex());
+        mContainerViewModel.set(FOCUS_TAB_INDEX_FOR_ACCESSIBILITY, getCurrentTabIndexInModel());
     }
 
     /** Scrolls to the currently selected tab. */
     public void setInitialScrollIndexOffset() {
-        TabModel tabModel = mTabModelSupplier.get();
-        assumeNonNull(tabModel);
-        scrollToTab(
-                mTabIndexLookup.getNthTabIndexInModel(tabModel.getCurrentRepresentativeTabIndex()));
+        scrollToTab(getCurrentTabIndexInModel());
     }
 
     @Override
@@ -334,8 +333,22 @@ public class TabSwitcherPaneMediator
     }
 
     @Override
-    public void onTabSelecting(int tabId, boolean fromActionButton) {
+    public void onTabSelecting(int tabId) {
         mOnTabClickCallback.onResult(tabId);
+    }
+
+    @Override
+    public @Nullable Boolean isTabGroupSelected(Tab tab, PropertyModel model) {
+        return null;
+    }
+
+    @Override
+    public @Nullable TabActionButtonData getTabGroupActionButtonData(
+            Tab tab,
+            PropertyModel model,
+            Supplier<TabActionListener> defaultOverflowListenerSupplier) {
+        return new TabActionButtonData(
+                TabActionButtonType.OVERFLOW, defaultOverflowListenerSupplier.get());
     }
 
     @Override
@@ -344,20 +357,16 @@ public class TabSwitcherPaneMediator
         mContainerViewModel.set(INITIAL_SCROLL_INDEX, tabIndexInModel);
     }
 
-    /** Scroll to a given tab or tab group by id. */
-    public void scrollToTabById(int tabId) {
-        TabModel tabModel = mTabModelSupplier.get();
-        assumeNonNull(tabModel);
-        Tab tab = tabModel.getTabById(tabId);
+    /**
+     * Scrolls to a given tab or tab group by ID.
+     *
+     * @param tabId The ID of the tab to scroll to.
+     */
+    public void scrollToTabById(@TabId int tabId) {
+        int index = mTabIndexLookup.getIndexFromTabId(tabId);
+        if (index == TabModel.INVALID_TAB_INDEX) return;
 
-        // TODO(crbug.com/375309394): Figure out why the tab is null here and prevent it.
-        boolean hasTab = tab != null;
-        RecordHistogram.recordBooleanHistogram(
-                "Tabs.GridTabSwitcher.ScrollToTabById.HasTab", hasTab);
-        if (!hasTab) return;
-
-        int index = tabModel.representativeIndexOf(tab);
-        scrollToTab(mTabIndexLookup.getNthTabIndexInModel(index));
+        scrollToTab(index);
     }
 
     @Override
@@ -441,12 +450,20 @@ public class TabSwitcherPaneMediator
         return tabModel.isIncognito() == tab.isIncognito() && tabModel.isTabInTabGroup(tab);
     }
 
-    public void openTabGroupDialog(int tabId) {
-        List<Tab> relatedTabs = assumeNonNull(mTabModelSupplier.get()).getRelatedTabList(tabId);
-        if (relatedTabs.size() == 0) {
-            relatedTabs = null;
+    /**
+     * Opens the tab group dialog for the given tab group ID.
+     *
+     * @param tabGroupId The tab group ID of the group to show.
+     * @param shouldScroll Whether to scroll to the group's card before opening the dialog.
+     */
+    public void openTabGroupDialog(@Nullable Token tabGroupId, boolean shouldScroll) {
+        List<Tab> tabsInGroup = assumeNonNull(mTabModelSupplier.get()).getTabsInGroup(tabGroupId);
+        if (tabsInGroup.isEmpty()) {
+            tabsInGroup = null;
+        } else if (shouldScroll) {
+            scrollToTabById(tabsInGroup.get(0).getId());
         }
-        assumeNonNull(mTabGridDialogControllerSupplier.get()).resetWithListOfTabs(relatedTabs);
+        assumeNonNull(mTabGridDialogControllerSupplier.get()).resetWithListOfTabs(tabsInGroup);
     }
 
     private void notifyBackPressStateChangedInternal() {
@@ -557,6 +574,14 @@ public class TabSwitcherPaneMediator
                     assumeNonNull(mTabModelSupplier.get()).getRepresentativeTabList());
             setInitialScrollIndexOffset();
         }
+    }
+
+    private int getCurrentTabIndexInModel() {
+        TabModel tabModel = assumeNonNull(mTabModelSupplier.get());
+        Tab currentTab = tabModel.getCurrentTabSupplier().get();
+        return currentTab != null
+                ? mTabIndexLookup.getIndexFromTabId(currentTab.getId())
+                : TabModel.INVALID_TAB_INDEX;
     }
 
     private void suppressAccessibility(boolean suppress) {

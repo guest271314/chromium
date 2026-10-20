@@ -56,6 +56,19 @@ void NoStatePrefetchProcessorImpl::Start(
     return;
   }
 
+  // The referrer is supplied by the renderer and is forwarded to the prefetch
+  // navigation, so it must be same-origin with the initiator that bound this
+  // receiver.
+  if (!attributes->referrer->url.is_empty() &&
+      !initiator_origin_.IsSameOriginWith(attributes->referrer->url)) {
+    receiver_.ReportBadMessage("NSPPI_INVALID_REFERRER_ORIGIN");
+    // The above ReportBadMessage() closes |receiver_| but does not trigger its
+    // disconnect handler, so we need to call the handler explicitly
+    // here to do some necessary work.
+    Abandon();
+    return;
+  }
+
   // Start() must be called only one time.
   if (link_trigger_id_) {
     receiver_.ReportBadMessage("NSPPI_START_TWICE");
@@ -72,6 +85,21 @@ void NoStatePrefetchProcessorImpl::Start(
     return;
   }
 
+  // NoStatePrefetch is not yet compatible with Connection-Allowlist: the
+  // prefetch is driven by a separate NoStatePrefetchContents that does not
+  // carry the initiating document's allowlist, so its requests would escape
+  // enforcement. Until PrerenderUntilScript
+  // (https://chromestatus.com/feature/6324676351623168) replaces
+  // NoStatePrefetch and is made allowlist-aware, do not start it when the
+  // initiating document enforces a Connection-Allowlist. A report-only
+  // allowlist does not block, matching report-only semantics. (An enforced
+  // allowlist is only ever committed when the kConnectionAllowlists feature is
+  // enabled, so no explicit feature check is needed here -- which keeps this
+  // component free of network-service deps.)
+  if (render_frame_host->GetConnectionAllowlists().enforced.has_value()) {
+    return;
+  }
+
   auto* link_manager = GetNoStatePrefetchLinkManager();
   if (!link_manager) {
     return;
@@ -81,7 +109,8 @@ void NoStatePrefetchProcessorImpl::Start(
   link_trigger_id_ = link_manager->OnStartLinkTrigger(
       render_process_id_,
       render_frame_host->GetRenderViewHost()->GetRoutingID(), render_frame_id_,
-      std::move(attributes), initiator_origin_);
+      std::move(attributes), initiator_origin_,
+      render_frame_host->GetCurrentInitiatorNavigationState());
 }
 
 void NoStatePrefetchProcessorImpl::Cancel() {

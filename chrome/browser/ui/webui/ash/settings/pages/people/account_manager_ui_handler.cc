@@ -9,10 +9,11 @@
 #include "ash/constants/notifier_catalogs.h"
 #include "ash/public/cpp/system/toast_data.h"
 #include "ash/public/cpp/system/toast_manager.h"
+#include "ash/strings/grit/ash_strings.h"
 #include "base/check.h"
+#include "base/check_deref.h"
 #include "base/check_op.h"
 #include "base/functional/bind.h"
-#include "base/logging.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/values.h"
@@ -21,20 +22,16 @@
 #include "chrome/browser/enterprise/util/managed_browser_utils.h"
 #include "chrome/browser/policy/profile_policy_connector.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/ui/ash/account_manager/account_manager_dialog_coordinator.h"
+#include "chrome/browser/ui/ash/account_manager/account_manager_dialog_coordinator_factory.h"
 #include "chrome/browser/ui/webui/ash/account_manager/account_migration_welcome_dialog.h"
-#include "chrome/grit/generated_resources.h"
-#include "chromeos/ash/components/account_manager/account_manager_factory.h"
+#include "components/account_manager_core/account_addition_options.h"
 #include "components/account_manager_core/account_manager_facade.h"
 #include "components/account_manager_core/account_manager_metrics.h"
-#include "components/account_manager_core/account_manager_util.h"
-#include "components/account_manager_core/account_upsertion_result.h"
-#include "components/account_manager_core/chromeos/account_manager_mojo_service.h"
 #include "components/signin/public/base/consent_level.h"
 #include "components/signin/public/identity_manager/tribool.h"
 #include "components/user_manager/user.h"
-#include "content/public/browser/browser_context.h"
 #include "content/public/browser/web_ui_message_handler.h"
-#include "google_apis/gaia/gaia_auth_util.h"
 #include "google_apis/gaia/gaia_id.h"
 #include "google_apis/gaia/google_service_auth_error.h"
 #include "third_party/skia/include/core/SkBitmap.h"
@@ -56,12 +53,12 @@ constexpr char kAccountRemovedToastId[] =
 ::account_manager::AccountKey GetAccountKeyFromJsCallback(
     const base::DictValue& dictionary) {
   const std::string* id = dictionary.FindString("id");
-  DCHECK(id);
-  DCHECK(!id->empty());
+  CHECK(id, base::NotFatalUntil::M162);
+  CHECK(!id->empty(), base::NotFatalUntil::M162);
 
   const std::optional<int> account_type_value =
       dictionary.FindInt("accountType");
-  DCHECK(account_type_value);
+  CHECK(account_type_value, base::NotFatalUntil::M162);
 
   // Currently, we only support `kGaia` account type. Should a new type be added
   // in the future, consider removing the `CHECK_EQ()` below and handling the
@@ -92,58 +89,29 @@ void ShowToast(const std::string& id,
   ToastManager::Get()->Show(ToastData(id, catalog_name, message));
 }
 
-void RecordMojoAccountUpsertionResultStatus(
-    crosapi::mojom::AccountUpsertionResultPtr mojo_result) {
-  const auto result =
-      account_manager::FromMojoAccountUpsertionResult(mojo_result);
-  account_manager::RecordAccountUpsertionResultStatus(
-      result.has_value() ? result->status()
-                         : account_manager::AccountUpsertionResult::Status::
-                               kUnexpectedResponse);
+AccountManagerDialogCoordinator& GetAccountManagerDialogCoordinatorForSettings(
+    Profile* profile) {
+  CHECK(profile);
+  return CHECK_DEREF(
+      AccountManagerDialogCoordinatorFactory::GetForProfile(profile));
 }
 
-crosapi::AccountManagerMojoService& GetAccountManagerMojoServiceForSettings(
-    content::BrowserContext* browser_context) {
-  CHECK(browser_context);
+void ShowSettingsAddAccountDialog(Profile* profile) {
+  account_manager::AccountAdditionOptions options;
+  options.is_available_in_arc = true;
+  options.show_arc_availability_picker = false;
 
-  crosapi::AccountManagerMojoService* account_manager_mojo_service =
-      AccountManagerFactory::Get()->GetAccountManagerMojoService(
-          browser_context->GetPath().value());
-  CHECK(account_manager_mojo_service);
-  return *account_manager_mojo_service;
+  GetAccountManagerDialogCoordinatorForSettings(profile).ShowAddAccountDialog(
+      account_manager::AccountAdditionSource::kSettingsAddAccountButton,
+      std::move(options), base::DoNothing());
 }
 
-void ShowSettingsAddAccountDialog(content::BrowserContext* browser_context) {
-  crosapi::AccountManagerMojoService& account_manager_mojo_service =
-      GetAccountManagerMojoServiceForSettings(browser_context);
-
-  account_manager::RecordAccountAdditionSource(
-      account_manager::AccountAdditionSource::kSettingsAddAccountButton);
-
-  crosapi::mojom::AccountAdditionOptionsPtr options =
-      crosapi::mojom::AccountAdditionOptions::New();
-  options->is_available_in_arc = true;
-  options->show_arc_availability_picker = false;
-
-  // TODO(b/365741912, b/365902693): Route Settings add-account through the
-  // replacement Account Manager dialog path once it exists.
-  account_manager_mojo_service.ShowAddAccountDialog(
-      std::move(options),
-      base::BindOnce(&RecordMojoAccountUpsertionResultStatus));
-}
-
-void ShowSettingsAccountReauthDialog(content::BrowserContext* browser_context,
+void ShowSettingsAccountReauthDialog(Profile* profile,
                                      const std::string& email) {
-  crosapi::AccountManagerMojoService& account_manager_mojo_service =
-      GetAccountManagerMojoServiceForSettings(browser_context);
-
-  account_manager::RecordAccountAdditionSource(
-      account_manager::AccountAdditionSource::kSettingsReauthAccountButton);
-
-  // TODO(b/365741912, b/365902693): Route Settings reauth through the
-  // replacement Account Manager dialog path once it exists.
-  account_manager_mojo_service.ShowReauthAccountDialog(
-      email, base::BindOnce(&RecordMojoAccountUpsertionResultStatus));
+  GetAccountManagerDialogCoordinatorForSettings(profile)
+      .ShowReauthAccountDialog(
+          account_manager::AccountAdditionSource::kSettingsReauthAccountButton,
+          email, base::DoNothing());
 }
 
 class AccountBuilder {
@@ -217,15 +185,15 @@ class AccountBuilder {
   // Should be called only once.
   base::DictValue Build() {
     // Check that values were set.
-    DCHECK(account_.FindString("id"));
-    DCHECK(account_.FindString("email"));
-    DCHECK(account_.FindString("fullName"));
-    DCHECK(account_.FindInt("accountType"));
-    DCHECK(account_.FindBool("isDeviceAccount"));
-    DCHECK(account_.FindBool("isSignedIn"));
-    DCHECK(account_.FindBool("unmigrated"));
-    DCHECK(account_.FindString("pic"));
-    DCHECK(account_.FindBool("isAvailableInArc"));
+    CHECK(account_.FindString("id"), base::NotFatalUntil::M162);
+    CHECK(account_.FindString("email"), base::NotFatalUntil::M162);
+    CHECK(account_.FindString("fullName"), base::NotFatalUntil::M162);
+    CHECK(account_.FindInt("accountType"), base::NotFatalUntil::M162);
+    CHECK(account_.FindBool("isDeviceAccount"), base::NotFatalUntil::M162);
+    CHECK(account_.FindBool("isSignedIn"), base::NotFatalUntil::M162);
+    CHECK(account_.FindBool("unmigrated"), base::NotFatalUntil::M162);
+    CHECK(account_.FindString("pic"), base::NotFatalUntil::M162);
+    CHECK(account_.FindBool("isAvailableInArc"), base::NotFatalUntil::M162);
     // "organization" is an optional field.
 
     return std::move(account_);
@@ -245,11 +213,11 @@ AccountManagerUIHandler::AccountManagerUIHandler(
     : account_manager_(account_manager),
       account_manager_facade_(account_manager_facade),
       identity_manager_(identity_manager) {
-  DCHECK(account_manager_);
-  DCHECK(account_manager_facade_);
-  DCHECK(identity_manager_);
+  CHECK(account_manager_, base::NotFatalUntil::M162);
+  CHECK(account_manager_facade_, base::NotFatalUntil::M162);
+  CHECK(identity_manager_, base::NotFatalUntil::M162);
   account_apps_availability_ = account_apps_availability;
-  DCHECK(account_apps_availability_);
+  CHECK(account_apps_availability_, base::NotFatalUntil::M162);
 }
 
 AccountManagerUIHandler::~AccountManagerUIHandler() = default;
@@ -320,7 +288,7 @@ void AccountManagerUIHandler::FinishHandleGetAccounts(
   }
 
   user_manager::User* user = ProfileHelper::Get()->GetUserByProfile(profile_);
-  DCHECK(user);
+  CHECK(user, base::NotFatalUntil::M162);
 
   base::DictValue gaia_device_account;
   base::ListValue accounts = GetSecondaryGaiaAccounts(
@@ -459,8 +427,8 @@ void AccountManagerUIHandler::HandleRemoveAccount(const base::ListValue& args) {
 
   // Show toast with removal message.
   const std::string* email = dictionary->FindString("email");
-  DCHECK(email);
-  DCHECK(!email->empty());
+  CHECK(email, base::NotFatalUntil::M162);
+  CHECK(!email->empty(), base::NotFatalUntil::M162);
 
   ShowToast(kAccountRemovedToastId, ToastCatalogName::kAccountRemoved,
             l10n_util::GetStringFUTF16(

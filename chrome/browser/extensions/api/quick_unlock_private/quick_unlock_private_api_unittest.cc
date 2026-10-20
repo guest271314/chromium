@@ -33,7 +33,6 @@
 #include "chrome/browser/ash/login/smart_lock/smart_lock_service.h"
 #include "chrome/browser/ash/login/smart_lock/smart_lock_service_factory.h"
 #include "chrome/browser/ash/profiles/profile_helper.h"
-#include "chrome/browser/browser_process.h"
 #include "chrome/browser/extensions/extension_api_unittest.h"
 #include "chrome/browser/prefs/browser_prefs.h"
 #include "chrome/test/base/testing_browser_process.h"
@@ -50,8 +49,9 @@
 #include "chromeos/ash/services/secure_channel/public/cpp/client/fake_secure_channel_client.h"
 #include "components/prefs/pref_service.h"
 #include "components/prefs/testing_pref_service.h"
+#include "components/session_manager/core/fake_session_manager_delegate.h"
+#include "components/session_manager/core/session_manager.h"
 #include "components/sync_preferences/testing_pref_service_syncable.h"
-#include "components/user_manager/fake_user_manager.h"
 #include "components/user_manager/known_user.h"
 #include "components/user_manager/test_helper.h"
 #include "content/public/test/test_utils.h"
@@ -153,6 +153,13 @@ class QuickUnlockPrivateUnitTest
 
  protected:
   void SetUp() override {
+    // ExtensionServiceTestBase owns the UserManager.
+    // TODO(crbug.com/534323787): Create a UserSessionTestEnvironment in
+    // ExtensionServiceTestBase instead of its UserManager, and drop this.
+    session_manager_ = std::make_unique<session_manager::SessionManager>(
+        std::make_unique<session_manager::FakeSessionManagerDelegate>());
+    session_manager_->OnUserManagerCreated(user_manager::UserManager::Get());
+
     const auto param = GetParam();
 
     ash::CryptohomeMiscClient::InitializeFake();
@@ -193,12 +200,12 @@ class QuickUnlockPrivateUnitTest
         std::make_unique<ash::AuthSessionStorageImpl>(
             ash::UserDataAuthClient::Get()));
 
+    // Manually call InitializeExtensionService() instead of calling
+    // ExtensionApiUnittest::SetUp().
     ExtensionServiceTestBase::SetUp();
-
     ExtensionServiceInitParams params;
     params.testing_factories = GetTestingFactories();
     InitializeExtensionService(std::move(params));
-
     set_extension(ExtensionBuilder("Test").Build());
 
     // Retrieve the TestingPrefServiceSyncable that was automatically created.
@@ -208,14 +215,14 @@ class QuickUnlockPrivateUnitTest
     AccountId auth_account_id =
         AccountId::FromUserEmailGaiaId(kTestUserEmail, GaiaId("gaia"));
 
-    // Ensure the primary user exists by explicitly logging them in to the
-    // UserManager.
+    // Ensure the primary user exists by explicitly logging them in.
     auto* user_manager = user_manager::UserManager::Get();
     ASSERT_TRUE(
         user_manager::TestHelper(user_manager).AddRegularUser(auth_account_id));
-    user_manager->UserLoggedIn(
+    session_manager_->CreateSession(
         auth_account_id,
-        user_manager::FakeUserManager::GetFakeUsernameHash(auth_account_id));
+        user_manager::TestHelper::GetFakeUsernameHash(auth_account_id),
+        /*new_user=*/false, /*has_active_session=*/false);
 
     // Setup the primary user mapping.
     ash::ProfileHelper::Get()->SetUserToProfileMappingForTesting(
@@ -225,7 +232,7 @@ class QuickUnlockPrivateUnitTest
     // Generate an auth token.
     auth_token_user_context_.SetAccountId(auth_account_id);
     auth_token_user_context_.SetUserIDHash(
-        user_manager::FakeUserManager::GetFakeUsernameHash(auth_account_id));
+        user_manager::TestHelper::GetFakeUsernameHash(auth_account_id));
     auth_token_user_context_.SetSessionLifetime(
         base::Time::Now() + ash::quick_unlock::AuthToken::kTokenExpiration);
 
@@ -254,7 +261,8 @@ class QuickUnlockPrivateUnitTest
     test_api_ = std::make_unique<ash::quick_unlock::TestApi>(
         /*override_quick_unlock=*/true);
     test_api_->EnablePinByPolicy(ash::quick_unlock::Purpose::kAny);
-    ash::quick_unlock::PinBackend::ResetForTesting();
+    ash::quick_unlock::PinBackend::Initialize(
+        TestingBrowserProcess::GetGlobal()->local_state());
 
     base::RunLoop().RunUntilIdle();
 
@@ -267,15 +275,17 @@ class QuickUnlockPrivateUnitTest
   void TearDown() override {
     base::RunLoop().RunUntilIdle();
 
-    ExtensionApiUnittest::TearDown();
-
     test_api_.reset();
+    test_pref_service_ = nullptr;
+
+    ExtensionApiUnittest::TearDown();
 
     ash::SystemSaltGetter::Shutdown();
     ash::UserDataAuthClient::Shutdown();
     ash::CryptohomeMiscClient::Shutdown();
 
     ash::quick_unlock::PinBackend::Shutdown();
+    session_manager_.reset();
   }
 
   TestingProfile::TestingFactories GetTestingFactories() {
@@ -530,31 +540,33 @@ class QuickUnlockPrivateUnitTest
 
   int GetExposedPinLength() {
     const AccountId account_id = AccountId::FromUserEmail(kTestUserEmail);
-    return user_manager::KnownUser(g_browser_process->local_state())
+    return user_manager::KnownUser(
+               TestingBrowserProcess::GetGlobal()->local_state())
         .GetUserPinLength(account_id);
   }
 
   void ClearExposedPinLength() {
     const AccountId account_id = AccountId::FromUserEmail(kTestUserEmail);
-    user_manager::KnownUser(g_browser_process->local_state())
+    user_manager::KnownUser(TestingBrowserProcess::GetGlobal()->local_state())
         .SetUserPinLength(account_id, 0);
   }
 
   bool IsBackfillNeeded() {
     const AccountId account_id = AccountId::FromUserEmail(kTestUserEmail);
-    return user_manager::KnownUser(g_browser_process->local_state())
+    return user_manager::KnownUser(
+               TestingBrowserProcess::GetGlobal()->local_state())
         .PinAutosubmitIsBackfillNeeded(account_id);
   }
 
   void SetBackfillNotNeeded() {
     const AccountId account_id = AccountId::FromUserEmail(kTestUserEmail);
-    user_manager::KnownUser(g_browser_process->local_state())
+    user_manager::KnownUser(TestingBrowserProcess::GetGlobal()->local_state())
         .PinAutosubmitSetBackfillNotNeeded(account_id);
   }
 
   void SetBackfillNeededForTests() {
     const AccountId account_id = AccountId::FromUserEmail(kTestUserEmail);
-    user_manager::KnownUser(g_browser_process->local_state())
+    user_manager::KnownUser(TestingBrowserProcess::GetGlobal()->local_state())
         .PinAutosubmitSetBackfillNeededForTests(account_id);
   }
 
@@ -618,8 +630,8 @@ class QuickUnlockPrivateUnitTest
         /*override_quick_unlock=*/true);
   }
 
-  raw_ptr<sync_preferences::TestingPrefServiceSyncable, DanglingUntriaged>
-      test_pref_service_;
+  raw_ptr<sync_preferences::TestingPrefServiceSyncable> test_pref_service_ =
+      nullptr;
 
  private:
   // Runs the given |func| with the given |params|.
@@ -653,6 +665,7 @@ class QuickUnlockPrivateUnitTest
     expect_modes_changed_ = false;
   }
 
+  std::unique_ptr<session_manager::SessionManager> session_manager_;
   std::unique_ptr<ash::AuthPartsImpl> auth_parts_;
   QuickUnlockPrivateSetModesFunction::ModesChangedEventHandler
       modes_changed_handler_;
@@ -882,7 +895,7 @@ TEST_P(QuickUnlockPrivateUnitTest, GetCredentialRequirements) {
   CheckGetCredentialRequirements(6, 8);
 
   // Verify that by setting a maximum length to be nonzero and smaller than the
-  // minimum length, the resulting maxium length will be equal to the minimum
+  // minimum length, the resulting maximum length will be equal to the minimum
   // length pref.
   pref_service->SetInteger(ash::prefs::kPinUnlockMaximumLength, 4);
   CheckGetCredentialRequirements(6, 6);

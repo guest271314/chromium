@@ -12,6 +12,9 @@ import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 import android.app.Activity;
 import android.app.SearchManager;
@@ -28,18 +31,27 @@ import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 import org.robolectric.Robolectric;
 import org.robolectric.Shadows;
-import org.robolectric.annotation.Config;
 
 import org.chromium.base.ContextUtils;
 import org.chromium.base.IntentUtils;
 import org.chromium.base.test.BaseRobolectricTestRunner;
+import org.chromium.base.test.util.Features.DisableFeatures;
+import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.chrome.browser.IntentHandler;
 import org.chromium.chrome.browser.document.ChromeLauncherActivity;
+import org.chromium.chrome.browser.flags.ChromeFeatureList;
+import org.chromium.chrome.browser.multiwindow.MultiWindowUtils;
 import org.chromium.chrome.browser.omnibox.suggestions.OmniboxLoadUrlParams;
+import org.chromium.chrome.browser.tab.Tab;
+import org.chromium.chrome.browser.tab.TabSelectionType;
+import org.chromium.chrome.browser.tabmodel.TabModel;
+import org.chromium.chrome.browser.tabmodel.TabModelSelector;
+import org.chromium.chrome.browser.tabwindow.TabWindowInfo;
 import org.chromium.chrome.browser.ui.searchactivityutils.SearchActivityExtras;
 import org.chromium.chrome.browser.ui.searchactivityutils.SearchActivityExtras.IntentOrigin;
 import org.chromium.chrome.browser.ui.searchactivityutils.SearchActivityExtras.ResolutionType;
 import org.chromium.chrome.browser.ui.searchactivityutils.SearchActivityExtras.SearchType;
+import org.chromium.components.omnibox.AutocompleteRequestType;
 import org.chromium.content_public.common.ResourceRequestBody;
 import org.chromium.ui.base.PageTransition;
 import org.chromium.url.GURL;
@@ -48,7 +60,6 @@ import java.util.List;
 import java.util.Map;
 
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 public class SearchActivityUtilsUnitTest {
     // Placeholder Activity class that guarantees the PackageName is valid for IntentUtils.
     private static class TestActivity extends Activity {}
@@ -66,10 +77,13 @@ public class SearchActivityUtilsUnitTest {
 
     private final Activity mActivity = Robolectric.buildActivity(TestActivity.class).setup().get();
     private final SearchActivityClientImpl mClient =
-            new SearchActivityClientImpl(mActivity, IntentOrigin.CUSTOM_TAB);
+            new SearchActivityClientImpl(mActivity, IntentOrigin.HUB);
 
     public @Rule MockitoRule mMockitoRule = MockitoJUnit.rule();
     private @Mock ResourceRequestBody.Natives mResourceRequestBodyJni;
+    private @Mock TabModelSelector mTabModelSelector;
+    private @Mock TabModel mTabModel;
+    private @Mock Tab mTab;
 
     @Before
     public void setUp() {
@@ -99,7 +113,7 @@ public class SearchActivityUtilsUnitTest {
         mClient.requestOmniboxForResult(mClient.newIntentBuilder().setPageUrl(EMPTY_URL).build());
 
         var intent = Shadows.shadowOf(mActivity).getNextStartedActivityForResult().intent;
-        assertEquals(IntentOrigin.CUSTOM_TAB, SearchActivityUtils.getIntentOrigin(intent));
+        assertEquals(IntentOrigin.HUB, SearchActivityUtils.getIntentOrigin(intent));
     }
 
     @Test
@@ -123,7 +137,7 @@ public class SearchActivityUtilsUnitTest {
         mClient.requestOmniboxForResult(mClient.newIntentBuilder().setPageUrl(EMPTY_URL).build());
 
         var intent = Shadows.shadowOf(mActivity).getNextStartedActivityForResult().intent;
-        assertEquals(IntentOrigin.CUSTOM_TAB, SearchActivityUtils.getIntentOrigin(intent));
+        assertEquals(IntentOrigin.HUB, SearchActivityUtils.getIntentOrigin(intent));
 
         // Invalid variants
         intent.setAction(null);
@@ -140,6 +154,77 @@ public class SearchActivityUtilsUnitTest {
         var intent = Shadows.shadowOf(mActivity).getNextStartedActivityForResult().intent;
         intent.removeExtra(IntentUtils.TRUSTED_APPLICATION_CODE_EXTRA);
         assertEquals(SearchType.TEXT, SearchActivityUtils.getIntentSearchType(intent));
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.ONE_STEP_AIM_ACCESS)
+    public void getIntentRequestType_trustedIntent() {
+        var intent =
+                mClient.newIntentBuilder().setRequestType(AutocompleteRequestType.AI_MODE).build();
+        assertEquals(
+                AutocompleteRequestType.AI_MODE, SearchActivityUtils.getIntentRequestType(intent));
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.ONE_STEP_AIM_ACCESS)
+    public void getIntentRequestType_untrustedIntent() {
+        var intent =
+                mClient.newIntentBuilder().setRequestType(AutocompleteRequestType.AI_MODE).build();
+        intent.removeExtra(IntentUtils.TRUSTED_APPLICATION_CODE_EXTRA);
+        assertEquals(
+                AutocompleteRequestType.SEARCH, SearchActivityUtils.getIntentRequestType(intent));
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.ONE_STEP_AIM_ACCESS)
+    public void getIntentRequestType_webSearch() {
+        Intent intent = buildWebSearchIntent("query");
+        intent.putExtra(SearchActivityExtras.EXTRA_REQUEST_TYPE, AutocompleteRequestType.AI_MODE);
+        assertEquals(
+                AutocompleteRequestType.SEARCH, SearchActivityUtils.getIntentRequestType(intent));
+    }
+
+    @Test
+    @DisableFeatures(ChromeFeatureList.ONE_STEP_AIM_ACCESS)
+    public void getIntentRequestType_featureDisabled() {
+        var intent =
+                mClient.newIntentBuilder().setRequestType(AutocompleteRequestType.AI_MODE).build();
+        assertEquals(
+                AutocompleteRequestType.SEARCH, SearchActivityUtils.getIntentRequestType(intent));
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.ONE_STEP_AIM_ACCESS)
+    public void getIntentSession_trustedIntent() {
+        var intent =
+                mClient.newIntentBuilder()
+                        .setSearchType(SearchType.VOICE)
+                        .setRequestType(AutocompleteRequestType.AI_MODE)
+                        .build();
+        intent.putExtra(SearchManager.QUERY, "query");
+
+        SearchActivitySession session = SearchActivityUtils.getIntentSession(intent);
+        assertEquals(IntentOrigin.HUB, session.intentOrigin);
+        assertEquals(SearchType.VOICE, session.searchType);
+        assertEquals(AutocompleteRequestType.AI_MODE, session.requestType);
+        assertEquals("query", session.query);
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.ONE_STEP_AIM_ACCESS)
+    public void getIntentSession_untrustedIntent() {
+        var intent =
+                mClient.newIntentBuilder()
+                        .setSearchType(SearchType.VOICE)
+                        .setRequestType(AutocompleteRequestType.AI_MODE)
+                        .build();
+        intent.removeExtra(IntentUtils.TRUSTED_APPLICATION_CODE_EXTRA);
+
+        SearchActivitySession session = SearchActivityUtils.getIntentSession(intent);
+        assertEquals(IntentOrigin.UNKNOWN, session.intentOrigin);
+        assertEquals(SearchType.TEXT, session.searchType);
+        assertEquals(AutocompleteRequestType.SEARCH, session.requestType);
+        assertNull(session.query);
     }
 
     @Test
@@ -306,7 +391,7 @@ public class SearchActivityUtilsUnitTest {
                 mClient.newIntentBuilder().setPageUrl(GOOD_URL).setReferrer("").build());
 
         var intent = Shadows.shadowOf(mActivity).getNextStartedActivityForResult().intent;
-        assertEquals(IntentOrigin.CUSTOM_TAB, SearchActivityUtils.getIntentOrigin(intent));
+        assertEquals(IntentOrigin.HUB, SearchActivityUtils.getIntentOrigin(intent));
         assertNull(SearchActivityUtils.getReferrer(intent));
 
         // Remove trust
@@ -320,7 +405,7 @@ public class SearchActivityUtilsUnitTest {
                 mClient.newIntentBuilder().setPageUrl(GOOD_URL).setReferrer(null).build());
 
         var intent = Shadows.shadowOf(mActivity).getNextStartedActivityForResult().intent;
-        assertEquals(IntentOrigin.CUSTOM_TAB, SearchActivityUtils.getIntentOrigin(intent));
+        assertEquals(IntentOrigin.HUB, SearchActivityUtils.getIntentOrigin(intent));
         assertNull(SearchActivityUtils.getReferrer(intent));
 
         // Remove trust
@@ -596,5 +681,79 @@ public class SearchActivityUtilsUnitTest {
         assertEquals(Uri.parse("https://abc.xyz/"), intent.getData());
         assertTrue(intent.getBooleanExtra(SearchActivity.EXTRA_FROM_SEARCH_ACTIVITY, false));
         assertEquals(ChromeLauncherActivity.class.getName(), intent.getComponent().getClassName());
+    }
+
+    @Test
+    public void bringTabToFront_sameModel() {
+        int tabId = 123;
+        when(mTab.getId()).thenReturn(tabId);
+        when(mTabModelSelector.getCurrentModel()).thenReturn(mTabModel);
+        when(mTabModel.getCount()).thenReturn(1);
+        when(mTabModel.getTabAt(0)).thenReturn(mTab);
+        when(mTabModel.iterator()).thenReturn(List.of(mTab).iterator());
+
+        TabWindowInfo tabWindowInfo = new TabWindowInfo(1, mTabModelSelector, mTabModel, mTab);
+        boolean[] callbackCalled = new boolean[1];
+
+        SearchActivityUtils.bringTabToFront(
+                mActivity,
+                mTabModelSelector,
+                tabWindowInfo,
+                GOOD_URL,
+                TabSelectionType.FROM_OMNIBOX,
+                () -> callbackCalled[0] = true);
+
+        verify(mTabModel).setIndex(0, TabSelectionType.FROM_OMNIBOX);
+        assertTrue(callbackCalled[0]);
+    }
+
+    @Test
+    public void bringTabToFront_sameModel_customSelectionType() {
+        int tabId = 123;
+        when(mTab.getId()).thenReturn(tabId);
+        when(mTabModelSelector.getCurrentModel()).thenReturn(mTabModel);
+        when(mTabModel.getCount()).thenReturn(1);
+        when(mTabModel.getTabAt(0)).thenReturn(mTab);
+        when(mTabModel.iterator()).thenReturn(List.of(mTab).iterator());
+
+        TabWindowInfo tabWindowInfo = new TabWindowInfo(1, mTabModelSelector, mTabModel, mTab);
+        boolean[] callbackCalled = new boolean[1];
+
+        SearchActivityUtils.bringTabToFront(
+                mActivity,
+                mTabModelSelector,
+                tabWindowInfo,
+                GOOD_URL,
+                TabSelectionType.FROM_USER,
+                () -> callbackCalled[0] = true);
+
+        verify(mTabModel).setIndex(0, TabSelectionType.FROM_USER);
+        assertTrue(callbackCalled[0]);
+    }
+
+    @Test
+    public void bringTabToFront_differentModelOrWindow() {
+        MultiWindowUtils.setMultiInstanceApi31EnabledForTesting(true);
+        int tabId = 123;
+        when(mTab.getId()).thenReturn(tabId);
+        TabModel differentModel = mock(TabModel.class);
+        when(mTabModelSelector.getCurrentModel()).thenReturn(differentModel);
+
+        TabWindowInfo tabWindowInfo = new TabWindowInfo(2, mTabModelSelector, mTabModel, mTab);
+        boolean[] callbackCalled = new boolean[1];
+
+        SearchActivityUtils.bringTabToFront(
+                mActivity,
+                mTabModelSelector,
+                tabWindowInfo,
+                GOOD_URL,
+                TabSelectionType.FROM_OMNIBOX,
+                () -> callbackCalled[0] = true);
+
+        Intent intent = Shadows.shadowOf(mActivity).getNextStartedActivity();
+        assertNotNull(intent);
+        assertNull(intent.getAction());
+        assertEquals("https://abc.xyz/", intent.getDataString());
+        assertTrue(callbackCalled[0]);
     }
 }

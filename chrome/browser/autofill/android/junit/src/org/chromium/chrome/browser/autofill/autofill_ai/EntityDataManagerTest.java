@@ -23,14 +23,14 @@ import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
-import org.chromium.base.test.util.Features.EnableFeatures;
-import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.components.autofill.autofill_ai.AutofillAiOptInStatus;
+import org.chromium.components.autofill.autofill_ai.DetailsForUpsertPass;
 import org.chromium.components.autofill.autofill_ai.EntityInstance;
 import org.chromium.components.autofill.autofill_ai.EntityInstanceWithLabels;
 import org.chromium.components.autofill.autofill_ai.EntityType;
 import org.chromium.components.autofill.autofill_ai.EntityTypeName;
+import org.chromium.components.autofill.autofill_ai.RecordType;
 import org.chromium.components.autofill.autofill_ai.utils.TestUtils;
 
 import java.util.ArrayList;
@@ -41,7 +41,6 @@ import java.util.List;
 
 /** Unit tests for {@link EntityDataManager}. */
 @RunWith(BaseRobolectricTestRunner.class)
-@EnableFeatures({ChromeFeatureList.AUTOFILL_AI_CREATE_ENTITY_DATA_MANAGER})
 public class EntityDataManagerTest {
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
 
@@ -90,14 +89,75 @@ public class EntityDataManagerTest {
         int descriptionStringId = 123;
         int acceptButtonStringId = 456;
         mEntityDataManager.addOrUpdateEntityInstance(
-                mEntityInstance, descriptionStringId, acceptButtonStringId, localSaveFallback);
+                mEntityInstance,
+                descriptionStringId,
+                acceptButtonStringId,
+                /* legalMessageToken= */ null,
+                localSaveFallback);
         verify(mEntityDataManagerJniMock)
                 .addOrUpdateEntityInstance(
                         NATIVE_PTR,
                         mEntityInstance,
                         descriptionStringId,
                         acceptButtonStringId,
+                        null,
                         localSaveFallback);
+    }
+
+    @Test
+    public void testAddOrUpdateEntityInstance_withLegalMessageToken() {
+        Runnable localSaveFallback = () -> {};
+        int descriptionStringId = 123;
+        int acceptButtonStringId = 456;
+        byte[] legalMessageToken = new byte[] {1, 2, 3};
+        mEntityDataManager.addOrUpdateEntityInstance(
+                mEntityInstance,
+                descriptionStringId,
+                acceptButtonStringId,
+                legalMessageToken,
+                localSaveFallback);
+        verify(mEntityDataManagerJniMock)
+                .addOrUpdateEntityInstance(
+                        NATIVE_PTR,
+                        mEntityInstance,
+                        descriptionStringId,
+                        acceptButtonStringId,
+                        legalMessageToken,
+                        localSaveFallback);
+    }
+
+    @Test
+    public void testIsEligibleForWalletNotice() {
+        when(mEntityDataManagerJniMock.isEligibleForWalletNotice(
+                        NATIVE_PTR, EntityTypeName.VEHICLE, RecordType.SERVER_WALLET))
+                .thenReturn(true);
+        assertTrue(
+                mEntityDataManager.isEligibleForWalletNotice(
+                        EntityTypeName.VEHICLE, RecordType.SERVER_WALLET));
+        verify(mEntityDataManagerJniMock)
+                .isEligibleForWalletNotice(
+                        NATIVE_PTR, EntityTypeName.VEHICLE, RecordType.SERVER_WALLET);
+    }
+
+    @Test
+    public void testPreloadDetailsForUpsertPass() {
+        mEntityDataManager.preloadDetailsForUpsertPass(EntityTypeName.VEHICLE);
+        verify(mEntityDataManagerJniMock)
+                .preloadDetailsForUpsertPass(NATIVE_PTR, EntityTypeName.VEHICLE);
+    }
+
+    @Test
+    public void testExtractPreloadedDetailsForUpsertPass() {
+        DetailsForUpsertPass details =
+                new DetailsForUpsertPass(Collections.emptyList(), new byte[] {1, 2, 3});
+        when(mEntityDataManagerJniMock.extractPreloadedDetailsForUpsertPass(
+                        NATIVE_PTR, EntityTypeName.VEHICLE))
+                .thenReturn(details);
+        assertEquals(
+                details,
+                mEntityDataManager.extractPreloadedDetailsForUpsertPass(EntityTypeName.VEHICLE));
+        verify(mEntityDataManagerJniMock)
+                .extractPreloadedDetailsForUpsertPass(NATIVE_PTR, EntityTypeName.VEHICLE);
     }
 
     @Test
@@ -255,6 +315,16 @@ public class EntityDataManagerTest {
     }
 
     @Test
+    public void testIsAutofillAiEntityTypeDisabledByEnterprisePolicy() {
+        when(mEntityDataManagerJniMock.getIsAutofillAiEntityTypeDisabledByEnterprisePolicy(
+                        NATIVE_PTR, EntityTypeName.PASSPORT))
+                .thenReturn(true);
+        assertTrue(
+                mEntityDataManager.getIsAutofillAiEntityTypeDisabledByEnterprisePolicy(
+                        EntityTypeName.PASSPORT));
+    }
+
+    @Test
     public void testIsAutofillAiAllowedByEnterprisePolicy() {
         when(mEntityDataManagerJniMock.getIsAutofillAiAllowedByEnterprisePolicy(NATIVE_PTR))
                 .thenReturn(true);
@@ -282,6 +352,35 @@ public class EntityDataManagerTest {
                         NATIVE_PTR, EntityTypeName.PASSPORT))
                 .thenReturn(true);
         assertTrue(mEntityDataManager.canEnableOrDisableAutofillAiForType(EntityTypeName.PASSPORT));
+    }
+
+    @Test
+    public void testIsPersonalContextPreferenceVisible() {
+        when(mEntityDataManagerJniMock.isPersonalContextPreferenceVisible(NATIVE_PTR))
+                .thenReturn(true);
+        assertTrue(mEntityDataManager.isPersonalContextPreferenceVisible());
+        verify(mEntityDataManagerJniMock).isPersonalContextPreferenceVisible(NATIVE_PTR);
+    }
+
+    @Test
+    public void testIsPersonalContextEnabled() {
+        when(mEntityDataManagerJniMock.isPersonalContextEnabled(NATIVE_PTR)).thenReturn(true);
+        assertTrue(mEntityDataManager.isPersonalContextEnabled());
+        verify(mEntityDataManagerJniMock).isPersonalContextEnabled(NATIVE_PTR);
+    }
+
+    @Test
+    public void testIsPersonalContextDisabledByEnterprisePolicy() {
+        when(mEntityDataManagerJniMock.isPersonalContextDisabledByEnterprisePolicy(NATIVE_PTR))
+                .thenReturn(true);
+        assertTrue(mEntityDataManager.isPersonalContextDisabledByEnterprisePolicy());
+        verify(mEntityDataManagerJniMock).isPersonalContextDisabledByEnterprisePolicy(NATIVE_PTR);
+    }
+
+    @Test
+    public void testSetPersonalContextEnabled() {
+        mEntityDataManager.setPersonalContextEnabled(true);
+        verify(mEntityDataManagerJniMock).setPersonalContextEnabled(NATIVE_PTR, true);
     }
 
     @Test

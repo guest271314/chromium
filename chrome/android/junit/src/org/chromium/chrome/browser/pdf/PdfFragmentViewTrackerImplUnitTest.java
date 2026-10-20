@@ -7,15 +7,13 @@ package org.chromium.chrome.browser.pdf;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
-import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-import android.app.Activity;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.FrameLayout;
 
+import androidx.fragment.app.FragmentActivity;
 import androidx.pdf.viewer.fragment.PdfViewerFragment;
 
 import org.junit.Before;
@@ -26,7 +24,10 @@ import org.mockito.Mock;
 import org.mockito.Mockito;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
+import org.robolectric.Robolectric;
 
+import org.chromium.base.ContextUtils;
+import org.chromium.base.supplier.ObservableSuppliers;
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.tab.Tab;
@@ -44,32 +45,32 @@ public class PdfFragmentViewTrackerImplUnitTest {
 
     @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
     @Mock private TabModelSelector mTabModelSelector;
-    @Mock private View mPdfViewerFragmentView1;
-    @Mock private View mPdfViewerFragmentView2;
-    @Mock private View mPdfViewerFragmentView3;
 
+    private View mPdfViewerFragmentView1;
+    private View mPdfViewerFragmentView2;
+    private View mPdfViewerFragmentView3;
     private PdfFragmentViewTrackerImpl mPdfFragmentViewTracker;
 
     @Before
     public void setUp() {
+        when(mTabModelSelector.getCurrentTabModelSupplier())
+                .thenReturn(ObservableSuppliers.createMonotonic());
         String tabId1 = String.valueOf(TAB_ID1);
         String tabId2 = String.valueOf(TAB_ID2);
         String tabId3 = String.valueOf(TAB_ID3);
         var fragment = new PdfViewerFragment();
         var fragmentTagKey = R.id.fragment_container_view_tag;
-        var lp =
-                new FrameLayout.LayoutParams(
-                        ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
 
-        when(mPdfViewerFragmentView1.getTag()).thenReturn(tabId1);
-        when(mPdfViewerFragmentView2.getTag()).thenReturn(tabId2);
-        when(mPdfViewerFragmentView3.getTag()).thenReturn(tabId3);
-        when(mPdfViewerFragmentView1.getTag(eq(fragmentTagKey))).thenReturn(fragment);
-        when(mPdfViewerFragmentView2.getTag(eq(fragmentTagKey))).thenReturn(fragment);
-        when(mPdfViewerFragmentView3.getTag(eq(fragmentTagKey))).thenReturn(fragment);
-        when(mPdfViewerFragmentView1.getLayoutParams()).thenReturn(lp);
-        when(mPdfViewerFragmentView2.getLayoutParams()).thenReturn(lp);
-        when(mPdfViewerFragmentView3.getLayoutParams()).thenReturn(lp);
+        var context = ContextUtils.getApplicationContext();
+        mPdfViewerFragmentView1 = new View(context);
+        mPdfViewerFragmentView2 = new View(context);
+        mPdfViewerFragmentView3 = new View(context);
+        mPdfViewerFragmentView1.setTag(tabId1);
+        mPdfViewerFragmentView2.setTag(tabId2);
+        mPdfViewerFragmentView3.setTag(tabId3);
+        mPdfViewerFragmentView1.setTag(fragmentTagKey, fragment);
+        mPdfViewerFragmentView2.setTag(fragmentTagKey, fragment);
+        mPdfViewerFragmentView3.setTag(fragmentTagKey, fragment);
 
         // Starts with all the views in |mPdfFragmentViews|.
         var pdfFragmentViews = new ArrayList<View>();
@@ -78,35 +79,36 @@ public class PdfFragmentViewTrackerImplUnitTest {
         pdfFragmentViews.add(mPdfViewerFragmentView3);
 
         mPdfFragmentViewTracker =
-                new PdfFragmentViewTrackerImpl(mTabModelSelector, Mockito.mock(Activity.class));
+                new PdfFragmentViewTrackerImpl(
+                        mTabModelSelector, Robolectric.buildActivity(FragmentActivity.class).get());
         mPdfFragmentViewTracker.setFragmentSupplierForTesting(() -> pdfFragmentViews);
     }
 
     @Test
     public void test_maybeRelocatedViews_removeMismatchedView() {
-        ViewGroup container = Mockito.mock(ViewGroup.class);
-        when(container.getChildCount()).thenReturn(2);
-        when(container.getChildAt(eq(0))).thenReturn(mPdfViewerFragmentView1);
-        when(container.getChildAt(eq(1))).thenReturn(mPdfViewerFragmentView2);
+        ViewGroup container = new FrameLayout(ContextUtils.getApplicationContext());
+        container.addView(mPdfViewerFragmentView1);
+        container.addView(mPdfViewerFragmentView2);
         assertEquals(3, mPdfFragmentViewTracker.getViewsForTesting().size());
 
         String tabId = String.valueOf(TAB_ID1);
         mPdfFragmentViewTracker.maybeRelocateViews(container, tabId);
 
-        verify(container).removeView(eq(mPdfViewerFragmentView2));
+        assertEquals(1, container.getChildCount());
+        assertEquals(mPdfViewerFragmentView1, container.getChildAt(0));
         assertEquals(2, mPdfFragmentViewTracker.getViewsForTesting().size());
     }
 
     @Test
     public void test_maybeRelocatedViews_placeMatchedView() {
-        ViewGroup container = Mockito.mock(ViewGroup.class);
-        when(container.getChildCount()).thenReturn(0);
+        ViewGroup container = new FrameLayout(ContextUtils.getApplicationContext());
         assertEquals(3, mPdfFragmentViewTracker.getViewsForTesting().size());
 
         String tabId = String.valueOf(TAB_ID1);
         mPdfFragmentViewTracker.maybeRelocateViews(container, tabId);
 
-        verify(container).addView(eq(mPdfViewerFragmentView1));
+        assertEquals(1, container.getChildCount());
+        assertEquals(mPdfViewerFragmentView1, container.getChildAt(0));
         assertEquals(2, mPdfFragmentViewTracker.getViewsForTesting().size());
         assertFalse(mPdfFragmentViewTracker.getViewsForTesting().contains(mPdfViewerFragmentView1));
     }

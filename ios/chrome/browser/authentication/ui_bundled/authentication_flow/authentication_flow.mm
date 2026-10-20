@@ -22,7 +22,6 @@
 #import "components/signin/public/base/consent_level.h"
 #import "components/signin/public/base/gaia_id_hash.h"
 #import "components/signin/public/base/signin_pref_names.h"
-#import "components/signin/public/base/signin_switches.h"
 #import "components/signin/public/identity_manager/tribool.h"
 #import "components/sync/base/account_pref_utils.h"
 #import "components/sync/service/sync_service.h"
@@ -38,14 +37,12 @@
 #import "ios/chrome/browser/authentication/ui_bundled/authentication_ui_util.h"
 #import "ios/chrome/browser/flags/ios_chrome_flag_descriptions.h"
 #import "ios/chrome/browser/ntp/ui_bundled/new_tab_page_feature.h"
-#import "ios/chrome/browser/policy/model/browser_policy_connector_ios.h"
 #import "ios/chrome/browser/shared/coordinator/scene/scene_state.h"
 #import "ios/chrome/browser/shared/model/application_context/application_context.h"
 #import "ios/chrome/browser/shared/model/browser/browser.h"
 #import "ios/chrome/browser/shared/model/browser/browser_provider.h"
 #import "ios/chrome/browser/shared/model/browser/browser_provider_interface.h"
 #import "ios/chrome/browser/shared/model/prefs/pref_names.h"
-#import "ios/chrome/browser/shared/model/profile/features.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
 #import "ios/chrome/browser/shared/public/commands/command_dispatcher.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
@@ -90,6 +87,11 @@ enum class AuthenticationState {
   // Checks with AuthenticationService is sign-in is allowed. If not,
   // the sign-in is canceled.
   kCheckSignInAllowed,
+  // Determine if switching profile is needed.
+  kDetermineIfSwitchingProfileIsNeeded,
+  // If switching profile is needed and `confirmChangeProfile` is set, allow
+  // the user to confirm or cancel the switch.
+  kConfirmSwitchProfileIfNeeded,
   // After this step, sign-in should not be canceled or stopped.
   // This steps calls `-[<AuthenticationFlowDelegate>
   // authenticationFlowWillSwitchProfileWithReadyCompletion:]` if needed.
@@ -250,6 +252,8 @@ void RecordUnsyncedDataHistogramIfNeeded(UnsyncedDataTypeHistogram histogram,
   // State machine tracking.
   AuthenticationState _state;
   signin_ui::CancelationReason _cancelationReason;
+  // Whether switching profile is needed.
+  BOOL _shouldSwitchProfile;
   // YES if the personal profile should be converted to a managed (work) profile
   // as part of the signin flow. Can only be true if the to-be-signed-in account
   // is managed.
@@ -311,10 +315,9 @@ void RecordUnsyncedDataHistogramIfNeeded(UnsyncedDataTypeHistogram histogram,
   if ((self = [super init])) {
     CHECK(browser);
     // Sign-in related work should be done on regular browser.
-    CHECK_EQ(browser->type(), Browser::Type::kRegular,
-             base::NotFatalUntil::M145);
-    CHECK(presentingViewController, base::NotFatalUntil::M145);
-    CHECK(identity, base::NotFatalUntil::M142);
+    CHECK_EQ(browser->type(), Browser::Type::kRegular);
+    CHECK(presentingViewController);
+    CHECK(identity);
     _browser = browser;
 
     _identityToSignIn = identity;
@@ -337,8 +340,7 @@ void RecordUnsyncedDataHistogramIfNeeded(UnsyncedDataTypeHistogram histogram,
         authenticationService->GetPrimaryIdentity();
     // The user should not be allowed to sign-in to the current primary
     // identity.
-    CHECK(![current_primary_identity isEqual:identity],
-          base::NotFatalUntil::M142);
+    CHECK(![current_primary_identity isEqual:identity]);
     if (current_primary_identity) {
       _wasPrimaryAccountManaged =
           authenticationService->HasPrimaryIdentityManaged();
@@ -402,6 +404,8 @@ void RecordUnsyncedDataHistogramIfNeeded(UnsyncedDataTypeHistogram histogram,
     case AuthenticationState::kShowManagedConfirmationIfNeeded:
     case AuthenticationState::kConvertPersonalProfileToManagedIfNeeded:
     case AuthenticationState::kCheckSignInAllowed:
+    case AuthenticationState::kDetermineIfSwitchingProfileIsNeeded:
+    case AuthenticationState::kConfirmSwitchProfileIfNeeded:
     case AuthenticationState::kSwitchProfileIfNeeded:
     case AuthenticationState::kHandOverToAuthenticationFlowInProfile:
       return AuthenticationState::kCompleteWithFailure;
@@ -441,6 +445,10 @@ void RecordUnsyncedDataHistogramIfNeeded(UnsyncedDataTypeHistogram histogram,
     case AuthenticationState::kConvertPersonalProfileToManagedIfNeeded:
       return AuthenticationState::kCheckSignInAllowed;
     case AuthenticationState::kCheckSignInAllowed:
+      return AuthenticationState::kDetermineIfSwitchingProfileIsNeeded;
+    case AuthenticationState::kDetermineIfSwitchingProfileIsNeeded:
+      return AuthenticationState::kConfirmSwitchProfileIfNeeded;
+    case AuthenticationState::kConfirmSwitchProfileIfNeeded:
       return AuthenticationState::kSwitchProfileIfNeeded;
     case AuthenticationState::kSwitchProfileIfNeeded:
       return AuthenticationState::kHandOverToAuthenticationFlowInProfile;
@@ -508,6 +516,14 @@ void RecordUnsyncedDataHistogramIfNeeded(UnsyncedDataTypeHistogram histogram,
       [self checkSignInAllowedStep];
       return;
 
+    case AuthenticationState::kDetermineIfSwitchingProfileIsNeeded:
+      [self determineIfSwitchingProfileIsNeededStep];
+      return;
+
+    case AuthenticationState::kConfirmSwitchProfileIfNeeded:
+      [self confirmSwitchProfileIfNeededStep];
+      return;
+
     case AuthenticationState::kSwitchProfileIfNeeded:
       [self switchProfileIfNeededStep];
       return;
@@ -558,8 +574,7 @@ void RecordUnsyncedDataHistogramIfNeeded(UnsyncedDataTypeHistogram histogram,
   id<SystemIdentity> currentIdentity =
       authenticationService->GetPrimaryIdentity();
   // AuthenticationFlow should not switch to the same identity.
-  CHECK(![currentIdentity isEqual:_identityToSignIn],
-        base::NotFatalUntil::M145);
+  CHECK(![currentIdentity isEqual:_identityToSignIn]);
   if (!currentIdentity) {
     _unsyncedDataTypes = syncer::DataTypeSet();
     [self continueFlow];
@@ -571,7 +586,11 @@ void RecordUnsyncedDataHistogramIfNeeded(UnsyncedDataTypeHistogram histogram,
 }
 
 - (void)showLeavingPrimaryAccountConfirmationIfNeededStep {
-  CHECK(_unsyncedDataTypes.has_value(), base::NotFatalUntil::M140);
+  CHECK(_unsyncedDataTypes.has_value());
+  if (_unsyncedDataTypes.value().empty()) {
+    [self continueFlow];
+    return;
+  }
   ProfileIOS* profile = [self profile];
   AuthenticationService* authenticationService =
       AuthenticationServiceFactory::GetForProfile(profile);
@@ -580,12 +599,6 @@ void RecordUnsyncedDataHistogramIfNeeded(UnsyncedDataTypeHistogram histogram,
   PrefService* profilePrefService = profile->GetPrefs();
   SignedInUserState signedInUserState = GetSignedInUserState(
       authenticationService, identityManager, profilePrefService);
-  if (!ForceLeavingPrimaryAccountConfirmationDialog(signedInUserState,
-                                                    profile) &&
-      _unsyncedDataTypes.value().empty()) {
-    [self continueFlow];
-    return;
-  }
   [_performer
       showLeavingPrimaryAccountConfirmationWithBaseViewController:
           _presentingViewController
@@ -597,33 +610,22 @@ void RecordUnsyncedDataHistogramIfNeeded(UnsyncedDataTypeHistogram histogram,
 }
 
 - (void)fetchCanSignInToChromeCapabilityStep {
-  if (base::FeatureList::IsEnabled(switches::kBuildExternalPrivacyContext)) {
-    [_performer fetchCanSignInToChromeCapability:_identityToSignIn
-                                         profile:[self profile]];
-  } else {
-    [self continueFlow];
-  }
+  [_performer fetchCanSignInToChromeCapability:_identityToSignIn
+                                       profile:[self profile]];
 }
 
 - (void)showAgeMismatchDialogIfNeededStep {
-  if (base::FeatureList::IsEnabled(switches::kBuildExternalPrivacyContext) &&
-      !_canSignInToChrome) {
-    [_performer showAgeMismatchDialogForIdentity:_identityToSignIn
-                                  viewController:_presentingViewController
-                                         browser:_browser];
-  } else {
+  if (_canSignInToChrome) {
     [self continueFlow];
+    return;
   }
+  [_performer showAgeMismatchDialogForIdentity:_identityToSignIn
+                                viewController:_presentingViewController
+                                       browser:_browser];
 }
 
 // Fetches ManagedAccountsSigninRestriction policy, if needed.
 - (void)fetchProfileSeparationPoliciesIfNeededStep {
-  if (!AreSeparateProfilesForManagedAccountsEnabled()) {
-    // As there is a single profile, the profile separation policy is not
-    // needed.
-    [self continueFlow];
-    return;
-  }
   std::optional<signin::ManagedAccountSigninMode> mode =
       [self managedProfileCreationMode];
   if (!mode) {
@@ -695,10 +697,9 @@ void RecordUnsyncedDataHistogramIfNeeded(UnsyncedDataTypeHistogram histogram,
   [self continueFlow];
 }
 
-// Switches profile if `_identityToSignIn` is assigned to another profile.
-// If `_identityToSignIn` doesn't exist anymore, an error is generated.
-// If the identity is assigned to the current profile this step is a no-op.
-- (void)switchProfileIfNeededStep {
+// Determines if switching profile is needed. The answer belongs to
+// `_shouldSwitchProfile`.
+- (void)determineIfSwitchingProfileIsNeededStep {
   CHECK(_unsyncedDataTypes.has_value());
   ProfileIOS* profile = [self profile];
   signin::IdentityManager* identityManager =
@@ -708,14 +709,12 @@ void RecordUnsyncedDataHistogramIfNeeded(UnsyncedDataTypeHistogram histogram,
   std::vector<AccountInfo> accountsOnDevice =
       identityManager->GetAccountsOnDevice();
   BOOL isValidIdentityOnDevice = std::ranges::contains(
-      accountsOnDevice, _identityToSignIn.gaiaId, &AccountInfo::gaia);
+      accountsOnDevice, _identityToSignIn.gaiaId, &AccountInfo::GetGaiaId);
   std::vector<CoreAccountInfo> accountsInProfile =
       identityManager->GetAccountsWithRefreshTokens();
   BOOL isValidIdentityInCurrentProfile = std::ranges::contains(
       accountsInProfile, _identityToSignIn.gaiaId, &CoreAccountInfo::gaia);
-  if (!isValidIdentityOnDevice ||
-      (!isValidIdentityInCurrentProfile &&
-       !AreSeparateProfilesForManagedAccountsEnabled())) {
+  if (!isValidIdentityOnDevice) {
     // Handle the case where the identity is no longer valid.
     NSError* error = ios::provider::CreateMissingIdentitySigninError();
     [self handleAuthenticationError:error];
@@ -743,19 +742,54 @@ void RecordUnsyncedDataHistogramIfNeeded(UnsyncedDataTypeHistogram histogram,
     // deallocated by the time the `signinCompletion` is executed.
     _signInInProfileCompletion = ^(
         signin_ui::CancelationReason cancelationReason) {
-      [delegate
-          authenticationFlowDidSignInInSameProfileWithCancelationReason:
-              cancelationReason
-                                                               identity:
-                                                                   identityToSignIn];
-      if (Browser* browser = weakBrowser.get()) {
-        CompletePostSignInActions(postSignInActions, identityToSignIn, browser,
-                                  accessPoint);
+      ProceduralBlock completion = ^() {
+        if (Browser* browser = weakBrowser.get()) {
+          CompletePostSignInActions(postSignInActions, identityToSignIn,
+                                    browser, accessPoint);
+        }
+      };
+      if (delegate) {
+        [delegate
+            authenticationFlowDidSignInInSameProfileWithIdentity:
+                identityToSignIn
+                                               cancelationReason:
+                                                   cancelationReason
+                                                      completion:completion];
+      } else {
+        completion();
       }
     };
     [self continueFlow];
     return;
   }
+
+  _shouldSwitchProfile = YES;
+  [self continueFlow];
+}
+
+// Confirms switch profile if `_shouldSwitchProfile`.
+- (void)confirmSwitchProfileIfNeededStep {
+  if (!_shouldSwitchProfile) {
+    [self continueFlow];
+    return;
+  }
+
+  [_performer confirmChangeProfile:self.confirmChangeProfile
+                       forIdentity:_identityToSignIn];
+  self.confirmChangeProfile = nil;
+}
+
+// Switches profile if `_shouldSwitchProfile` is YES. If the identity doesn't
+// exist anymore, an error is generated.
+- (void)switchProfileIfNeededStep {
+  if (!_shouldSwitchProfile) {
+    [self continueFlow];
+    return;
+  }
+
+  ProfileIOS* profile = [self profile];
+  signin::IdentityManager* identityManager =
+      IdentityManagerFactory::GetForProfile(profile);
   BOOL isValidIdentityInSomeProfile =
       GetApplicationContext()
           ->GetAccountProfileMapper()
@@ -765,8 +799,8 @@ void RecordUnsyncedDataHistogramIfNeeded(UnsyncedDataTypeHistogram histogram,
     __weak __typeof(self) weakSelf = self;
     base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
         FROM_HERE, base::BindOnce(
-                       [](__typeof(self) weakSelf) {
-                         [weakSelf didFailToSwitchToProfile];
+                       [](__typeof(self) strongSelf) {
+                         [strongSelf failToSwitchToProfile];
                        },
                        weakSelf));
     return;
@@ -846,9 +880,10 @@ void RecordUnsyncedDataHistogramIfNeeded(UnsyncedDataTypeHistogram histogram,
 - (void)completeWithFailureStep {
   CHECK_NE(_cancelationReason, signin_ui::CancelationReason::kNotCanceled);
   [[self takeDelegate]
-      authenticationFlowDidSignInInSameProfileWithCancelationReason:
-          _cancelationReason
-                                                           identity:nil];
+      authenticationFlowDidSignInInSameProfileWithIdentity:nil
+                                         cancelationReason:_cancelationReason
+                                                completion:^{
+                                                }];
   [self continueFlow];
 }
 
@@ -861,6 +896,7 @@ void RecordUnsyncedDataHistogramIfNeeded(UnsyncedDataTypeHistogram histogram,
   _identityToSignIn = nil;
   _identityToSignInHostedDomain = nil;
   _browserForAuthenticationFlowInProfile = nullptr;
+  _confirmChangeProfile = nil;
 }
 
 - (BOOL)canceled {
@@ -885,7 +921,7 @@ void RecordUnsyncedDataHistogramIfNeeded(UnsyncedDataTypeHistogram histogram,
     return;
   }
   DCHECK(error);
-  CHECK(_browser, base::NotFatalUntil::M150);
+  CHECK(_browser);
   _cancelationReason = signin_ui::CancelationReason::kFailed;
   self.handlingError = YES;
   __weak AuthenticationFlow* weakSelf = self;
@@ -899,8 +935,10 @@ void RecordUnsyncedDataHistogramIfNeeded(UnsyncedDataTypeHistogram histogram,
 
 #pragma mark AuthenticationFlowPerformerDelegate
 
-- (void)didCompleteReauthWithSuccess:(BOOL)success {
+- (void)authenticationFlowPerformer:(AuthenticationFlowPerformer*)performer
+       didCompleteReauthWithSuccess:(BOOL)success {
   // Success means the user reauthenticated with `_identityToSignIn`.
+  CHECK_EQ(performer, _performer);
   CHECK_EQ(AuthenticationState::kReauthIfNeeded, _state);
   if (!success) {
     _cancelationReason = signin_ui::CancelationReason::kUserCanceled;
@@ -908,13 +946,17 @@ void RecordUnsyncedDataHistogramIfNeeded(UnsyncedDataTypeHistogram histogram,
   [self continueFlow];
 }
 
-- (void)didFetchUnsyncedDataWithUnsyncedDataTypes:
-    (syncer::DataTypeSet)unsyncedDataTypes {
+- (void)authenticationFlowPerformer:(AuthenticationFlowPerformer*)performer
+    didFetchUnsyncedDataWithUnsyncedDataTypes:
+        (syncer::DataTypeSet)unsyncedDataTypes {
+  CHECK_EQ(performer, _performer);
   _unsyncedDataTypes = unsyncedDataTypes;
   [self continueFlow];
 }
 
-- (void)didAcceptToLeavePrimaryAccount:(BOOL)acceptToContinue {
+- (void)authenticationFlowPerformer:(AuthenticationFlowPerformer*)performer
+     didAcceptToLeavePrimaryAccount:(BOOL)acceptToContinue {
+  CHECK_EQ(performer, _performer);
   if (acceptToContinue) {
     [self continueFlow];
   } else {
@@ -922,11 +964,14 @@ void RecordUnsyncedDataHistogramIfNeeded(UnsyncedDataTypeHistogram histogram,
   }
 }
 
-- (void)didFetchManagedStatus:(NSString*)hostedDomain {
+- (void)authenticationFlowPerformer:(AuthenticationFlowPerformer*)performer
+              didFetchManagedStatus:(NSString*)hostedDomain {
+  CHECK_EQ(performer, _performer);
   DCHECK_EQ(AuthenticationState::kFetchManagedStatus, _state);
   _identityToSignInHostedDomain = hostedDomain;
-  if ([self.delegate respondsToSelector:@selector
-                     (authenticationFlowDidFetchHostedDomain:)]) {
+  if ([self.delegate
+          respondsToSelector:@selector(
+                                 authenticationFlowDidFetchHostedDomain:)]) {
     [self.delegate authenticationFlowDidFetchHostedDomain:hostedDomain];
   }
   [self continueFlow];
@@ -934,6 +979,7 @@ void RecordUnsyncedDataHistogramIfNeeded(UnsyncedDataTypeHistogram histogram,
 
 - (void)authenticationFlowPerformer:(AuthenticationFlowPerformer*)performer
     didFetchCanSignInToChromeCapability:(signin::Tribool)capability {
+  CHECK_EQ(performer, _performer);
   CHECK_EQ(AuthenticationState::kFetchCanSignInToChromeCapability, _state);
   if (capability == signin::Tribool::kFalse) {
     _canSignInToChrome = NO;
@@ -941,14 +987,18 @@ void RecordUnsyncedDataHistogramIfNeeded(UnsyncedDataTypeHistogram histogram,
   [self continueFlow];
 }
 
-- (void)didDismissAgeMismatchDialogWithCancelationReason:
-    (signin_ui::CancelationReason)reason {
+- (void)authenticationFlowPerformer:(AuthenticationFlowPerformer*)performer
+    didDismissAgeMismatchDialogWithCancelationReason:
+        (signin_ui::CancelationReason)reason {
+  CHECK_EQ(performer, _performer);
   CHECK_EQ(AuthenticationState::kShowAgeMismatchDialogIfNeeded, _state);
   _cancelationReason = reason;
   [self continueFlow];
 }
 
-- (void)didFailFetchManagedStatus:(NSError*)error {
+- (void)authenticationFlowPerformer:(AuthenticationFlowPerformer*)performer
+          didFailFetchManagedStatus:(NSError*)error {
+  CHECK_EQ(performer, _performer);
   DCHECK_EQ(AuthenticationState::kFetchManagedStatus, _state);
   NSError* flowError =
       [NSError errorWithDomain:kAuthenticationErrorDomain
@@ -961,25 +1011,21 @@ void RecordUnsyncedDataHistogramIfNeeded(UnsyncedDataTypeHistogram histogram,
   [self handleAuthenticationError:flowError];
 }
 
-- (void)didFetchProfileSeparationPolicies:
-    (policy::ProfileSeparationDataMigrationSettings)
-        profile_separation_data_migration_settings {
+- (void)authenticationFlowPerformer:(AuthenticationFlowPerformer*)performer
+    didFetchProfileSeparationPolicies:
+        (policy::ProfileSeparationDataMigrationSettings)
+            profile_separation_data_migration_settings {
+  CHECK_EQ(performer, _performer);
   _profileSeparationDataMigrationCloudSettings =
       profile_separation_data_migration_settings;
   [self continueFlow];
 }
 
-- (void)didAcceptManagedConfirmationWithBrowsingDataSeparate:
-    (BOOL)browsingDataSeparate {
-  // Only show the dialog once per account.
-  signin::GaiaIdHash gaiaIDHash =
-      signin::GaiaIdHash::FromGaiaId(_identityToSignIn.gaiaId);
-  syncer::SetAccountKeyedPrefValue([self prefs],
-                                   prefs::kSigninHasAcceptedManagementDialog,
-                                   gaiaIDHash, base::Value(true));
-
-  _shouldConvertPersonalProfileToManaged =
-      AreSeparateProfilesForManagedAccountsEnabled() && !browsingDataSeparate;
+- (void)authenticationFlowPerformer:(AuthenticationFlowPerformer*)performer
+    didAcceptManagedConfirmationWithBrowsingDataSeparate:
+        (BOOL)browsingDataSeparate {
+  CHECK_EQ(performer, _performer);
+  _shouldConvertPersonalProfileToManaged = !browsingDataSeparate;
 
   // When we show the managed profile screen, the profile is a new one, ensure
   // the history sync screen is shown then in case a separate profile is
@@ -987,8 +1033,7 @@ void RecordUnsyncedDataHistogramIfNeeded(UnsyncedDataTypeHistogram histogram,
   // destroyed.
   // TODO(crbug.com/403183877): Make sure that only one entity is responsible
   // for showing the sync screen.
-  if (AreSeparateProfilesForManagedAccountsEnabled() &&
-      !_shouldConvertPersonalProfileToManaged) {
+  if (!_shouldConvertPersonalProfileToManaged) {
     // Note that the history sync screen may not be displayed for any reason
     // considered in `GetSkipReason`.
     _postSignInActions.Put(
@@ -998,33 +1043,50 @@ void RecordUnsyncedDataHistogramIfNeeded(UnsyncedDataTypeHistogram histogram,
   [self continueFlow];
 }
 
-- (void)didCancelManagedConfirmation {
+- (void)authenticationFlowPerformerDidCancelManagedConfirmation:
+    (AuthenticationFlowPerformer*)performer {
+  CHECK_EQ(performer, _performer);
   [self cancelFlowWithReason:signin_ui::CancelationReason::kUserCanceled];
 }
 
-- (void)managedConfirmationCouldNotProceed {
+- (void)authenticationFlowPerformerDidFailToProceedWithManagedConfirmation:
+    (AuthenticationFlowPerformer*)performer {
+  CHECK_EQ(performer, _performer);
   [self cancelFlowWithReason:signin_ui::CancelationReason::kFailed];
 }
 
-- (void)didFailToSwitchToProfile {
-  CHECK(AreSeparateProfilesForManagedAccountsEnabled());
-  NSError* error = ios::provider::CreateMissingIdentitySigninError();
-  [self handleAuthenticationError:error];
+- (void)authenticationFlowPerformerDidMakePersonalProfileManaged:
+    (AuthenticationFlowPerformer*)performer {
+  CHECK_EQ(performer, _performer);
+  [self continueFlow];
 }
 
-- (void)didSwitchToProfileWithNewProfileBrowser:(Browser*)newProfileBrowser
-                                     completion:(base::OnceClosure)completion {
-  CHECK(AreSeparateProfilesForManagedAccountsEnabled());
+- (void)authenticationFlowPerformer:(AuthenticationFlowPerformer*)performer
+    didConfirmChangeProfileCanProceed:(BOOL)canProceed {
+  CHECK_EQ(performer, _performer);
+  if (canProceed) {
+    [self continueFlow];
+  } else {
+    [self cancelFlowWithReason:signin_ui::CancelationReason::kUserCanceled];
+  }
+}
+
+#pragma mark - AuthenticationFlowPerformerBaseDelegate
+
+- (void)authenticationFlowPerformerBase:
+            (AuthenticationFlowPerformerBase*)performer
+    didSwitchToProfileWithNewProfileBrowser:(Browser*)newProfileBrowser
+                                 completion:(base::OnceClosure)completion {
+  CHECK_EQ(performer, _performer);
   CHECK(completion);
   CHECK(newProfileBrowser);
   // Sign-in related work should be done on regular browser.
-  CHECK_EQ(newProfileBrowser->type(), Browser::Type::kRegular,
-           base::NotFatalUntil::M145);
+  CHECK_EQ(newProfileBrowser->type(), Browser::Type::kRegular);
   // With the profile switching `_browser` and `_presentingViewController` are
   // not valid anymore.
-  CHECK(!_browser, base::NotFatalUntil::M145);
-  CHECK(!_presentingViewController, base::NotFatalUntil::M145);
-  CHECK(!_browserForAuthenticationFlowInProfile, base::NotFatalUntil::M145);
+  CHECK(!_browser);
+  CHECK(!_presentingViewController);
+  CHECK(!_browserForAuthenticationFlowInProfile);
   _browserForAuthenticationFlowInProfile = newProfileBrowser;
   CHECK(!_signInInProfileCompletion);
   _signInInProfileCompletion = base::CallbackToBlock(
@@ -1033,43 +1095,22 @@ void RecordUnsyncedDataHistogramIfNeeded(UnsyncedDataTypeHistogram histogram,
   [self continueFlow];
 }
 
-- (void)didMakePersonalProfileManaged {
-  [self continueFlow];
-}
-
 #pragma mark - Private methods
 
-// Returns the mode for Managed Profile Creation view, or any non-null value if
-// profiles are not separated. Returns nullopt if there is no need for this
-// view.
+// Handles the failure to switch to a different profile.
+- (void)failToSwitchToProfile {
+  NSError* error = ios::provider::CreateMissingIdentitySigninError();
+  [self handleAuthenticationError:error];
+}
+
+// Returns the mode for Managed Profile Creation view. Returns nullopt if there
+// is no need for this view.
 - (std::optional<signin::ManagedAccountSigninMode>)managedProfileCreationMode {
   if ([_identityToSignInHostedDomain length] == 0) {
     // No hosted domain, don't show the dialog as there is no host.
     return std::nullopt;
   }
   GaiaId gaiaId = _identityToSignIn.gaiaId;
-  if (!AreSeparateProfilesForManagedAccountsEnabled()) {
-    BrowserPolicyConnectorIOS* policy_connector =
-        GetApplicationContext()->GetBrowserPolicyConnector();
-    bool hasMachineLevelPolicies =
-        policy_connector && policy_connector->HasMachineLevelPolicies();
-    if (hasMachineLevelPolicies) {
-      // Don't show the dialog if the browser has already machine level policies
-      // as the user already knows that their browser is managed.
-      return std::nullopt;
-    }
-
-    signin::GaiaIdHash gaia_id_hash = signin::GaiaIdHash::FromGaiaId(gaiaId);
-    const base::Value* already_seen = syncer::GetAccountKeyedPrefValue(
-        [self prefs], prefs::kSigninHasAcceptedManagementDialog, gaia_id_hash);
-
-    if (already_seen && already_seen->GetIfBool().value_or(false)) {
-      return std::nullopt;
-    }
-    // The exact value is not actually used. Only the fact that this is not
-    // nullopt.
-    return signin::ManagedAccountSigninMode::kMergeProfileData;
-  }
   if (GetApplicationContext()
           ->GetAccountProfileMapper()
           ->IsProfileForGaiaIDFullyInitialized(gaiaId)) {

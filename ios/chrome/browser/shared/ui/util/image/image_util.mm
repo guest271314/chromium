@@ -11,6 +11,7 @@
 #import <algorithm>
 
 #import "base/apple/foundation_util.h"
+#import "base/trace_event/trace_event.h"
 #import "ui/gfx/color_analysis.h"
 #import "ui/gfx/image/image.h"
 
@@ -36,6 +37,7 @@ bool starts_with(base::span<T> span, base::span<T, E> prefix) {
 UIImage* CreateDownsampledImage(CGImageSourceRef source,
                                 CGSize point_size,
                                 CGFloat scale) {
+  TRACE_EVENT("ui", "ImageUtil::CreateDownsampledImage");
   CGFloat max_dimension_in_pixels =
       std::max(point_size.width, point_size.height) * scale;
   NSDictionary* downsample_options = @{
@@ -57,6 +59,36 @@ UIImage* CreateDownsampledImage(CGImageSourceRef source,
                                         orientation:UIImageOrientationUp];
   CGImageRelease(downsampled_image);
   return image;
+}
+
+// Returns the logical size of the image, swapping width and height if the
+// EXIF orientation indicates a 90 or 270 degree rotation.
+CGSize GetOrientedImageSize(NSDictionary* properties) {
+  NSNumber* width = properties[(__bridge id)kCGImagePropertyPixelWidth];
+  NSNumber* height = properties[(__bridge id)kCGImagePropertyPixelHeight];
+  if (!width || !height) {
+    return CGSizeZero;
+  }
+
+  CGSize size = CGSizeMake(width.doubleValue, height.doubleValue);
+
+  NSNumber* orientation_num =
+      properties[(__bridge id)kCGImagePropertyOrientation];
+  if (orientation_num) {
+    CGImagePropertyOrientation orientation =
+        static_cast<CGImagePropertyOrientation>(orientation_num.intValue);
+    switch (orientation) {
+      case kCGImagePropertyOrientationLeftMirrored:
+      case kCGImagePropertyOrientationRight:
+      case kCGImagePropertyOrientationRightMirrored:
+      case kCGImagePropertyOrientationLeft:
+        return CGSizeMake(size.height, size.width);
+      default:
+        break;
+    }
+  }
+
+  return size;
 }
 
 }  // namespace
@@ -180,13 +212,7 @@ CGSize ImageSizeFromData(NSData* data) {
   }
 
   NSDictionary* dict = CFBridgingRelease(properties);
-  NSNumber* width = dict[(__bridge id)kCGImagePropertyPixelWidth];
-  NSNumber* height = dict[(__bridge id)kCGImagePropertyPixelHeight];
-  if (!width || !height) {
-    return CGSizeZero;
-  }
-
-  return CGSizeMake(width.doubleValue, height.doubleValue);
+  return GetOrientedImageSize(dict);
 }
 
 CGSize ImageSizeFromURL(NSURL* fileURL) {
@@ -211,13 +237,7 @@ CGSize ImageSizeFromURL(NSURL* fileURL) {
   }
 
   NSDictionary* dict = CFBridgingRelease(properties);
-  NSNumber* width = dict[(__bridge id)kCGImagePropertyPixelWidth];
-  NSNumber* height = dict[(__bridge id)kCGImagePropertyPixelHeight];
-  if (!width || !height) {
-    return CGSizeZero;
-  }
-
-  return CGSizeMake(width.doubleValue, height.doubleValue);
+  return GetOrientedImageSize(dict);
 }
 
 UIImage* DownsampledImageFromData(NSData* data,

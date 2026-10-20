@@ -46,7 +46,6 @@
 #include "services/viz/public/cpp/gpu/command_buffer_metrics.h"
 #include "skia/buildflags.h"
 #include "third_party/skia/include/core/SkTraceMemoryDump.h"
-#include "ui/gl/trace_util.h"
 
 class SkDiscardableMemory;
 
@@ -547,6 +546,18 @@ void ContextProviderCommandBuffer::AddObserver(ContextLostObserver* obs) {
 void ContextProviderCommandBuffer::RemoveObserver(ContextLostObserver* obs) {
   CheckValidSequenceOrLockAcquired();
   observers_.RemoveObserver(obs);
+}
+
+bool ContextProviderCommandBuffer::IsLost() {
+  CheckValidSequenceOrLockAcquired();
+  if (gles2_impl_) {
+    return gles2_impl_->GetGraphicsResetStatusKHR() != GL_NO_ERROR;
+  }
+  if (raster_interface_) {
+    return raster_interface_->GetGraphicsResetStatusKHR() != GL_NO_ERROR;
+  }
+
+  NOTREACHED();
 }
 
 gpu::webgpu::WebGPUInterface* ContextProviderCommandBuffer::WebGPUInterface() {

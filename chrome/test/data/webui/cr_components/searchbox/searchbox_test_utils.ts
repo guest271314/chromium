@@ -2,6 +2,11 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+import {createAutocompleteMatch, createFormattedString, createSuggestTemplateInfo as createSuggestTemplateInfoBase} from '//resources/cr_components/searchbox/searchbox_browser_proxy.js';
+import type {SearchboxIconElement} from '//resources/cr_components/searchbox/searchbox_icon.js';
+import type {AutocompleteMatch} from '//resources/mojo/components/omnibox/browser/searchbox.mojom-webui.js';
+import {ColorType} from '//resources/mojo/components/omnibox/browser/suggest_template_info.mojom-webui.js';
+import type {FormattedString, FormattedStringFragment, SuggestTemplateInfo} from '//resources/mojo/components/omnibox/browser/suggest_template_info.mojom-webui.js';
 import type {InputState} from '//resources/mojo/components/omnibox/composebox/composebox_query.mojom-webui.js';
 import {ToolMode as ComposeboxToolMode} from '//resources/mojo/components/omnibox/composebox/composebox_query.mojom-webui.js';
 import {assertEquals} from '//webui-test/chai_assert.js';
@@ -67,6 +72,8 @@ export class MockInputState implements InputState {
       chipLabel: '',
       disableActiveModelSelection: false,
       aimUrlParams: [],
+      menuTooltip: '',
+      icon: 0,
     },
     {
       tool: ComposeboxToolMode.kImageGen,
@@ -75,6 +82,8 @@ export class MockInputState implements InputState {
       chipLabel: '',
       disableActiveModelSelection: false,
       aimUrlParams: [],
+      menuTooltip: '',
+      icon: 0,
     },
     {
       tool: ComposeboxToolMode.kCanvas,
@@ -83,6 +92,8 @@ export class MockInputState implements InputState {
       chipLabel: '',
       disableActiveModelSelection: false,
       aimUrlParams: [],
+      menuTooltip: '',
+      icon: 0,
     },
   ];
   toolsSectionConfig: any|null = null;
@@ -107,3 +118,80 @@ export class MockInputState implements InputState {
   }
 }
 // LINT.ThenChange(//chrome/test/data/webui/cr_components/composebox/composebox_test_utils.ts)
+
+export function createClipboardEvent(name: string): ClipboardEvent {
+  return new ClipboardEvent(
+      name, {cancelable: true, clipboardData: new DataTransfer()});
+}
+
+/**
+ * Like `Partial<SuggestTemplateInfo>`, but the primary and secondary text can
+ * also be plain strings.
+ */
+export interface SuggestTemplateInfoModifiers extends
+    Omit<Partial<SuggestTemplateInfo>, 'primaryText'|'secondaryText'> {
+  primaryText?: string|FormattedString;
+  secondaryText?: string|FormattedString;
+}
+
+/**
+ * Like createSuggestTemplateInfo() in searchbox_browser_proxy.ts, but plain
+ * string text becomes an unstyled FormattedString.
+ */
+export function createSuggestTemplateInfo(
+    modifiers: SuggestTemplateInfoModifiers = {}): SuggestTemplateInfo {
+  const {primaryText = '', secondaryText = '', ...otherModifiers} = modifiers;
+  return createSuggestTemplateInfoBase({
+    ...otherModifiers,
+    primaryText: toFormattedString(primaryText),
+    secondaryText: toFormattedString(secondaryText),
+  });
+}
+
+function toFormattedString(text: string|FormattedString): FormattedString {
+  return typeof text === 'string' ? createFormattedString(text) : text;
+}
+
+export function createFormattedStringFragment(
+    modifiers: Partial<FormattedStringFragment> = {}): FormattedStringFragment {
+  return {
+    startIndex: 0,
+    color: ColorType.kUnknown,
+    isBolded: false,
+    ...modifiers,
+  };
+}
+
+export function createUrlMatch(modifiers: Partial<AutocompleteMatch> = {}):
+    AutocompleteMatch {
+  return createAutocompleteMatch({
+    destinationUrl: 'https://helloworld.com/',
+    fillIntoEdit: 'https://helloworld.com',
+    type: 'url-what-you-typed',
+    suggestTemplate: createSuggestTemplateInfo({
+      primaryText: createFormattedString(
+          'helloworld.com',
+          [createFormattedStringFragment({color: ColorType.kPrimary})]),
+    }),
+    ...modifiers,
+  });
+}
+
+export function assertIconMaskImageUrl(
+    iconElement: SearchboxIconElement, url: string) {
+  assertStyle(
+      iconElement.$.icon, '-webkit-mask-image',
+      `url("${new URL(url, document.baseURI).href}")`);
+  assertStyle(iconElement.$.icon, 'background-image', 'none');
+}
+
+export function createKeyboardEvent(
+    key: string, modifiers?: Partial<KeyboardEventInit>): KeyboardEvent {
+  return new KeyboardEvent('keydown', {
+    bubbles: true,
+    cancelable: true,
+    composed: true,
+    key,
+    ...modifiers,
+  });
+}

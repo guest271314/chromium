@@ -5,7 +5,6 @@
 #ifndef CHROME_BROWSER_TAB_STORAGE_RESTORE_ORCHESTRATOR_H_
 #define CHROME_BROWSER_TAB_STORAGE_RESTORE_ORCHESTRATOR_H_
 
-#include <memory>
 #include <optional>
 
 #include "base/memory/raw_ptr.h"
@@ -73,7 +72,7 @@ class StorageRestoreOrchestrator
   raw_ptr<TabStateStorageService> service_;
   raw_ptr<StorageLoadedData> loaded_data_;
 
-  bool is_restore_cancelled_;
+  bool is_restore_cancelled_ = false;
 };
 
 }  // namespace tabs

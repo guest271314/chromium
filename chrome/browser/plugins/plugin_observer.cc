@@ -13,6 +13,7 @@
 #include "chrome/common/buildflags.h"
 #include "components/download/public/common/download_url_parameters.h"
 #include "components/metrics_services_manager/metrics_services_manager.h"
+#include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/download_manager.h"
 #include "content/public/browser/render_frame_host.h"
@@ -27,31 +28,43 @@
 
 // PluginObserver -------------------------------------------------------------
 
+DEFINE_USER_DATA(PluginObserver);
+
 void PluginObserver::BindPluginHost(
     mojo::PendingAssociatedReceiver<chrome::mojom::PluginHost> receiver,
     content::RenderFrameHost* rfh) {
   auto* web_contents = content::WebContents::FromRenderFrameHost(rfh);
-  if (!web_contents)
+  if (!web_contents) {
     return;
-  auto* plugin_helper = PluginObserver::FromWebContents(web_contents);
-  if (!plugin_helper)
+  }
+  auto* tab = tabs::TabInterface::MaybeGetFromContents(web_contents);
+  auto* plugin_helper = tab ? PluginObserver::From(tab) : nullptr;
+  if (!plugin_helper) {
     return;
+  }
   plugin_helper->plugin_host_receivers_.Bind(rfh, std::move(receiver));
 }
 
-PluginObserver::PluginObserver(content::WebContents* web_contents)
+// static
+PluginObserver* PluginObserver::From(tabs::TabInterface* tab) {
+  return tab ? Get(tab->GetUnownedUserDataHost()) : nullptr;
+}
+
+PluginObserver::PluginObserver(tabs::TabInterface& tab,
+                               content::WebContents* web_contents)
     : content::WebContentsObserver(web_contents),
-      content::WebContentsUserData<PluginObserver>(*web_contents),
-      plugin_host_receivers_(web_contents, this) {}
+      plugin_host_receivers_(web_contents, this),
+      scoped_unowned_user_data_(tab.GetUnownedUserDataHost(), *this) {}
 
 PluginObserver::~PluginObserver() = default;
 
 void PluginObserver::OpenPDF(const GURL& url) {
-  content::RenderFrameHost* render_frame_host =
-      plugin_host_receivers_.GetCurrentTargetFrame();
+  content::RenderFrameHost& render_frame_host =
+      plugin_host_receivers_.CurrentTargetFrame();
   // WebViews should never trigger PDF downloads.
-  if (extensions::WebViewGuest::FromRenderFrameHost(render_frame_host))
+  if (extensions::WebViewGuest::FromRenderFrameHost(&render_frame_host)) {
     return;
+  }
 
   content::Referrer referrer;
   if (!CanOpenPdfUrl(render_frame_host, url,
@@ -85,7 +98,7 @@ void PluginObserver::OpenPDF(const GURL& url) {
           }
         })");
   std::unique_ptr<download::DownloadUrlParameters> params =
-      render_frame_host->CreateDownloadUrlParameters(url, traffic_annotation);
+      render_frame_host.CreateDownloadUrlParameters(url, traffic_annotation);
   params->set_referrer(referrer.url);
   params->set_referrer_policy(
       content::Referrer::ReferrerPolicyForUrlRequest(referrer.policy));
@@ -93,5 +106,3 @@ void PluginObserver::OpenPDF(const GURL& url) {
   web_contents()->GetBrowserContext()->GetDownloadManager()->DownloadUrl(
       std::move(params));
 }
-
-WEB_CONTENTS_USER_DATA_KEY_IMPL(PluginObserver);

@@ -10,6 +10,7 @@
 #include <string_view>
 
 #include "base/check.h"
+#include "base/containers/to_vector.h"
 #include "base/feature_list.h"
 #include "base/files/file_path.h"
 #include "base/strings/utf_string_conversions.h"
@@ -60,6 +61,16 @@ void OSExchangeDataProviderNonBacked::MarkAsFromPrivileged() {
 
 bool OSExchangeDataProviderNonBacked::IsFromPrivileged() const {
   return is_from_privileged_;
+}
+
+void OSExchangeDataProviderNonBacked::SetChromeDragId(
+    const base::UnguessableToken& drag_id) {
+  chrome_drag_id_ = drag_id;
+}
+
+std::optional<base::UnguessableToken>
+OSExchangeDataProviderNonBacked::GetChromeDragId() const {
+  return chrome_drag_id_;
 }
 
 void OSExchangeDataProviderNonBacked::SetString(std::u16string_view data) {
@@ -190,9 +201,9 @@ bool OSExchangeDataProviderNonBacked::HasCustomFormat(
 
 void OSExchangeDataProviderNonBacked::SetFileContents(
     const base::FilePath& filename,
-    const std::string& file_contents) {
+    base::span<const uint8_t> file_contents) {
   file_contents_filename_ = filename;
-  file_contents_ = file_contents;
+  file_contents_ = base::ToVector(file_contents);
 }
 
 std::optional<OSExchangeDataProvider::FileContentsInfo>
@@ -307,6 +318,7 @@ void OSExchangeDataProviderNonBacked::CopyData(
               : nullptr;
   provider->tainted_by_renderer_origin_ = tainted_by_renderer_origin_;
   provider->is_from_privileged_ = is_from_privileged_;
+  provider->chrome_drag_id_ = chrome_drag_id_;
   provider->drag_image_ = drag_image_;
   provider->drag_image_offset_ = drag_image_offset_;
 }

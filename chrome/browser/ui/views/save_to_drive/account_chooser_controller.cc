@@ -14,6 +14,8 @@
 #include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/web_contents_delegate.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/base/page_transition_types.h"
+#include "ui/base/window_open_disposition.h"
 #include "ui/display/screen.h"
 
 namespace save_to_drive {
@@ -90,9 +92,11 @@ class AccountChooserController::AddAccountPopupObserver
 
 AccountChooserController::AccountChooserController(
     content::WebContents* web_contents,
-    signin::IdentityManager* identity_manager)
+    signin::IdentityManager* identity_manager,
+    const std::u16string& upload_title)
     : tab_(tabs::TabInterface::MaybeGetFromContents(web_contents)),
       identity_manager_(identity_manager),
+      upload_title_(upload_title),
       add_account_popup_observer_(
           std::make_unique<AddAccountPopupObserver>(this)) {
   CHECK(identity_manager_);
@@ -170,7 +174,8 @@ void AccountChooserController::ShowAccountChooserDialog(
   }
   std::unique_ptr<AccountChooserView> account_chooser_view =
       std::make_unique<AccountChooserView>(this, profile_info.accounts,
-                                           profile_info.primary_account_id);
+                                           profile_info.primary_account_id,
+                                           upload_title_);
   account_chooser_view_ = account_chooser_view.get();
 
   account_chooser_dialog_delegate_ =
@@ -200,10 +205,10 @@ void AccountChooserController::ShowAddAccountDialog() {
     return;
   }
   content::WebContents* source_window = tab_->GetContents();
-  content::OpenURLParams params(
-      signin::GetAddAccountURLForDice("", GURL()), content::Referrer(),
-      WindowOpenDisposition::NEW_POPUP, ui::PAGE_TRANSITION_AUTO_TOPLEVEL,
-      /*is_renderer_initiated=*/false);
+  content::OpenURLParams params =
+      content::OpenURLParams::CreateBrowserInitiated(
+          signin::GetAddAccountURLForDice("", GURL()),
+          WindowOpenDisposition::NEW_POPUP, ui::PAGE_TRANSITION_AUTO_TOPLEVEL);
   add_account_popup_ = source_window->GetDelegate()->OpenURLFromTab(
       source_window, params, /*navigation_handle_callback=*/{});
   ResizeAndFocusAddAccountPopup();
@@ -244,7 +249,7 @@ AccountChooserController::GetProfileInfo() {
   // Remove accounts that are not fully populated; they cannot be shown.
   std::erase_if(accounts, std::not_fn(&HasCriticalAccountInfo));
 
-  std::optional<CoreAccountId> primary_account_id = std::nullopt;
+  std::optional<CoreAccountId> primary_account_id;
   if (identity_manager_->HasPrimaryAccount(signin::ConsentLevel::kSignin)) {
     primary_account_id =
         identity_manager_->GetPrimaryAccountId(signin::ConsentLevel::kSignin);

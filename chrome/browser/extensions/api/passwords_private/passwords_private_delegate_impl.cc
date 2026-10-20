@@ -11,10 +11,12 @@
 
 #include "ash/constants/web_app_id_constants.h"
 #include "base/check.h"
+#include "base/check_deref.h"
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
-#include "base/i18n/time_formatting.h"
+#include "base/i18n/icubridge/date_time_formatter.h"
+#include "base/i18n/icubridge/icu_bridge.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/metrics/user_metrics.h"
 #include "base/metrics/user_metrics_action.h"
@@ -23,58 +25,41 @@
 #include "base/strings/utf_string_conversions.h"
 #include "build/build_config.h"
 #include "build/chromeos_buildflags.h"
-#include "chrome/browser/affiliations/affiliation_service_factory.h"
-#include "chrome/browser/device_reauth/chrome_device_authenticator_factory.h"
 #include "chrome/browser/extensions/api/passwords_private/passwords_private_event_router.h"
-#include "chrome/browser/extensions/api/passwords_private/passwords_private_event_router_factory.h"
-#include "chrome/browser/extensions/profile_util.h"
 #include "chrome/browser/password_manager/chrome_password_change_service.h"
-#include "chrome/browser/password_manager/chrome_password_manager_client.h"
-#include "chrome/browser/password_manager/factories/account_password_store_factory.h"
-#include "chrome/browser/password_manager/factories/password_sender_service_factory.h"
-#include "chrome/browser/password_manager/factories/profile_password_store_factory.h"
-#include "chrome/browser/password_manager/password_change_service_factory.h"
 #include "chrome/browser/platform_util.h"
-#include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/signin/identity_manager_factory.h"
-#include "chrome/browser/sync/sync_service_factory.h"
-#include "chrome/browser/ui/browser.h"
-#include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/hats/trust_safety_sentiment_service.h"
-#include "chrome/browser/ui/hats/trust_safety_sentiment_service_factory.h"
 #include "chrome/browser/ui/navigator/browser_navigator.h"
 #include "chrome/browser/ui/navigator/browser_navigator_params.h"
 #include "chrome/browser/ui/user_education/browser_user_education_interface.h"
-#include "chrome/browser/ui/web_applications/app_browser_controller.h"
 #include "chrome/browser/ui/web_applications/web_app_dialog_utils.h"
+#include "chrome/browser/web_applications/web_app_install_manager.h"
 #include "chrome/browser/web_applications/web_app_install_params.h"
-#include "chrome/browser/web_applications/web_app_provider.h"
 #include "chrome/browser/webauthn/change_pin_controller.h"
 #include "chrome/browser/webauthn/enclave_manager.h"
-#include "chrome/browser/webauthn/enclave_manager_factory.h"
-#include "chrome/browser/webauthn/passkey_model_factory.h"
 #include "chrome/common/channel_info.h"
 #include "chrome/common/extensions/api/passwords_private.h"
 #include "chrome/grit/branded_strings.h"
 #include "chrome/grit/generated_resources.h"
-#include "chromeos/constants/chromeos_features.h"
 #include "components/affiliations/core/browser/affiliation_utils.h"
 #include "components/feature_engagement/public/feature_constants.h"
 #include "components/keyed_service/core/service_access_type.h"
 #include "components/password_manager/core/browser/features/password_features.h"
 #include "components/password_manager/core/browser/features/password_manager_features_util.h"
+#include "components/password_manager/core/browser/form_parsing/form_data_parser.h"
 #include "components/password_manager/core/browser/leak_detection/leak_detection_request_utils.h"
 #include "components/password_manager/core/browser/password_form.h"
 #include "components/password_manager/core/browser/password_manager_metrics_util.h"
 #include "components/password_manager/core/browser/password_manager_util.h"
+#include "components/password_manager/core/browser/password_store/password_form_converters.h"
+#include "components/password_manager/core/browser/password_store/password_store_util.h"
 #include "components/password_manager/core/browser/password_sync_util.h"
 #include "components/password_manager/core/browser/sharing/password_sender_service.h"
 #include "components/password_manager/core/browser/sharing/recipients_fetcher_impl.h"
 #include "components/password_manager/core/browser/ui/credential_ui_entry.h"
 #include "components/password_manager/core/browser/ui/credential_utils.h"
-#include "components/password_manager/core/browser/ui/passwords_provider.h"
 #include "components/password_manager/core/browser/ui/saved_passwords_presenter.h"
 #include "components/password_manager/core/common/password_manager_constants.h"
 #include "components/password_manager/core/common/password_manager_features.h"
@@ -88,14 +73,14 @@
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/storage_partition.h"
 #include "content/public/browser/web_contents.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
+#include "ui/base/clipboard/clipboard.h"
+#include "ui/base/clipboard/clipboard_sequence_number_token.h"
 #include "ui/base/clipboard/scoped_clipboard_writer.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/base/l10n/time_format.h"
 #include "url/gurl.h"
 #include "url/scheme_host_port.h"
-
-#if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN) || BUILDFLAG(IS_CHROMEOS)
-#include "chrome/browser/device_reauth/chrome_device_authenticator_factory.h"
-#endif
 
 #if BUILDFLAG(IS_CHROMEOS)
 #include "chrome/browser/extensions/api/passwords_private/passwords_private_utils_chromeos.h"
@@ -107,37 +92,8 @@ using password_manager::CredentialFacet;
 using password_manager::CredentialUIEntry;
 using password_manager::FetchFamilyMembersRequestStatus;
 using password_manager::constants::kPasswordManagerAuthValidity;
-
-// The error message returned to the UI when Chrome refuses to start multiple
-// exports.
-const char kExportInProgress[] = "in-progress";
-// The error message returned to the UI when the user fails to reauthenticate.
-const char kReauthenticationFailed[] = "reauth-failed";
-
-// Map password_manager::ExportProgressStatus to
-// extensions::api::passwords_private::ExportProgressStatus.
-extensions::api::passwords_private::ExportProgressStatus ConvertStatus(
-    password_manager::ExportProgressStatus status) {
-  switch (status) {
-    case password_manager::ExportProgressStatus::kNotStarted:
-      return extensions::api::passwords_private::ExportProgressStatus::
-          kNotStarted;
-    case password_manager::ExportProgressStatus::kInProgress:
-      return extensions::api::passwords_private::ExportProgressStatus::
-          kInProgress;
-    case password_manager::ExportProgressStatus::kSucceeded:
-      return extensions::api::passwords_private::ExportProgressStatus::
-          kSucceeded;
-    case password_manager::ExportProgressStatus::kFailedCancelled:
-      return extensions::api::passwords_private::ExportProgressStatus::
-          kFailedCancelled;
-    case password_manager::ExportProgressStatus::kFailedWrite:
-      return extensions::api::passwords_private::ExportProgressStatus::
-          kFailedWriteFailed;
-  }
-
-  NOTREACHED();
-}
+// Time to keep password in clipboard before clearing.
+constexpr base::TimeDelta kClipboardClearDelay = base::Seconds(120);
 
 std::u16string GetReauthPurpose(
     extensions::api::passwords_private::PlaintextReason reason) {
@@ -295,30 +251,6 @@ std::u16string GetMessageForBiometricAuthenticationBeforeFillingSetting(
 
 #endif
 
-void MaybeShowProfileSwitchIPH(Profile* profile) {
-#if !BUILDFLAG(IS_CHROMEOS)
-  BrowserWindowInterface* launched_app =
-      web_app::AppBrowserController::FindForWebApp(*profile,
-                                                   ash::kPasswordManagerAppId);
-
-  // Try to show promo only if there is profile menu button and there are
-  // multiple profiles.
-  if (launched_app && web_app::AppBrowserController::IsWebApp(launched_app) &&
-      web_app::AppBrowserController::From(launched_app)
-          ->HasProfileMenuButton() &&
-      extensions::profile_util::GetNumberOfProfiles() > 1) {
-    launched_app->GetBrowserForMigrationOnly()
-        ->window()
-        ->MaybeShowProfileSwitchIPH();
-  }
-#endif
-}
-
-// Returns a passkey model instance if the feature is enabled.
-webauthn::PasskeyModel* MaybeGetPasskeyModel(Profile* profile) {
-  return PasskeyModelFactory::GetInstance()->GetForProfile(profile);
-}
-
 extensions::api::passwords_private::PasswordManagerActionableError
 ToActionableApiError(password_manager::ActionableError error) {
   using extensions::api::passwords_private::PasswordManagerActionableError;
@@ -344,52 +276,62 @@ ToActionableApiError(password_manager::ActionableError error) {
 
 namespace extensions {
 
-PasswordsPrivateDelegateImpl::PasswordsPrivateDelegateImpl(Profile* profile)
-    : profile_(profile),
-      saved_passwords_presenter_(
-          AffiliationServiceFactory::GetForProfile(profile),
-          ProfilePasswordStoreFactory::GetForProfile(
-              profile,
-              ServiceAccessType::EXPLICIT_ACCESS),
-          AccountPasswordStoreFactory::GetForProfile(
-              profile,
-              ServiceAccessType::EXPLICIT_ACCESS),
-          MaybeGetPasskeyModel(profile)),
-      password_manager_porter_(std::make_unique<PasswordManagerPorter>(
-          profile,
-          &saved_passwords_presenter_,
+PasswordsPrivateDelegateImpl::PasswordsPrivateDelegateImpl(Dependencies deps)
+    : prefs_(&CHECK_DEREF(deps.prefs)),
+      identity_manager_(deps.identity_manager),
+      url_loader_factory_(std::move(deps.url_loader_factory)),
+      password_sender_service_(deps.password_sender_service),
+      sync_service_(deps.sync_service),
+      trust_safety_sentiment_service_(deps.trust_safety_sentiment_service),
+      profile_password_store_(deps.profile_password_store),
+      account_password_store_(deps.account_password_store),
+      event_router_(deps.event_router),
+      enclave_manager_(deps.enclave_manager),
+      device_authenticator_factory_(
+          std::move(deps.device_authenticator_factory)),
+      maybe_show_profile_switch_iph_cb_(
+          std::move(deps.maybe_show_profile_switch_iph_cb)),
+      saved_passwords_presenter_(&CHECK_DEREF(deps.affiliation_service),
+                                 std::move(deps.profile_password_store),
+                                 std::move(deps.account_password_store),
+                                 deps.passkey_model),
+      password_import_controller_(std::make_unique<PasswordImportController>(
+          saved_passwords_presenter_)),
+      password_export_controller_(std::make_unique<PasswordExportController>(
+          saved_passwords_presenter_,
           base::BindRepeating(
               &PasswordsPrivateDelegateImpl::OnPasswordsExportProgress,
               base::Unretained(this)))),
-      password_check_delegate_(
-          profile,
-          &saved_passwords_presenter_,
-          &credential_id_generator_,
-          PasswordsPrivateEventRouterFactory::GetForProfile(profile_)),
+      password_check_delegate_(prefs_,
+                               &CHECK_DEREF(deps.bulk_leak_check_service),
+                               &saved_passwords_presenter_,
+                               &credential_id_generator_,
+                               event_router_),
       current_entries_initialized_(false) {
+  CHECK(identity_manager_);
+  CHECK(url_loader_factory_);
+  CHECK(maybe_show_profile_switch_iph_cb_);
+
   auth_timeout_handler_.Init(
       base::BindRepeating(&PasswordsPrivateDelegateImpl::OsReauthTimeoutCall,
                           weak_ptr_factory_.GetWeakPtr()));
   saved_passwords_presenter_.AddObserver(this);
   saved_passwords_presenter_.Init();
 
-  if (auto profile_store = ProfilePasswordStoreFactory::GetForProfile(
-          profile_, ServiceAccessType::EXPLICIT_ACCESS)) {
-    profile_password_store_observation_.Observe(profile_store.get());
+  if (profile_password_store_) {
+    profile_password_store_observation_.Observe(profile_password_store_.get());
   }
-  if (auto account_store = AccountPasswordStoreFactory::GetForProfile(
-          profile_, ServiceAccessType::EXPLICIT_ACCESS)) {
-    account_password_store_observation_.Observe(account_store.get());
+  if (account_password_store_) {
+    account_password_store_observation_.Observe(account_password_store_.get());
   }
 
-  if (syncer::SyncService* service =
-          SyncServiceFactory::GetForProfile(profile_)) {
-    sync_service_observation_.Observe(service);
+  if (sync_service_) {
+    sync_service_observation_.Observe(sync_service_);
   }
 
 #if !BUILDFLAG(IS_CHROMEOS)
-  auto* provider = web_app::WebAppProvider::GetForWebApps(profile);
-  install_manager_observation_.Observe(&provider->install_manager());
+  CHECK(deps.web_app_install_manager);
+  install_manager_observation_.Observe(deps.web_app_install_manager.get());
 #endif
 }
 
@@ -407,7 +349,6 @@ PasswordsPrivateDelegateImpl::~PasswordsPrivateDelegateImpl() {
 #if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN) || BUILDFLAG(IS_CHROMEOS)
 std::unique_ptr<device_reauth::DeviceAuthenticator>
 PasswordsPrivateDelegateImpl::GetDeviceAuthenticator(
-    content::WebContents* web_contents,
     base::TimeDelta auth_validity_period) {
   if (test_device_authenticator_) {
     return std::move(test_device_authenticator_);
@@ -417,11 +358,19 @@ PasswordsPrivateDelegateImpl::GetDeviceAuthenticator(
       auth_validity_period, device_reauth::DeviceAuthSource::kPasswordManager,
       "PasswordManager.ReauthToAccessPasswordInSettings");
 
-  return ChromeDeviceAuthenticatorFactory::GetForProfile(
-      Profile::FromBrowserContext(web_contents->GetBrowserContext()),
-      web_contents->GetTopLevelNativeWindow(), params);
+  return device_authenticator_factory_.Run(params);
 }
 #endif
+
+void PasswordsPrivateDelegateImpl::AddObserver(
+    PasswordsPrivateDelegate::Observer* observer) {
+  observers_.AddObserver(observer);
+}
+
+void PasswordsPrivateDelegateImpl::RemoveObserver(
+    PasswordsPrivateDelegate::Observer* observer) {
+  observers_.RemoveObserver(observer);
+}
 
 password_manager::SavedPasswordsPresenter*
 PasswordsPrivateDelegateImpl::GetSavedPasswordsPresenter() {
@@ -444,9 +393,7 @@ PasswordsPrivateDelegateImpl::GetCredentialGroups() {
        saved_passwords_presenter_.GetAffiliatedGroups()) {
     api::passwords_private::CredentialGroup group_api;
     group_api.name = group.GetDisplayName();
-    group_api.icon_url =
-        group.GetAllowedIconUrl(SyncServiceFactory::GetForProfile(profile_))
-            .spec();
+    group_api.icon_url = group.GetAllowedIconUrl(sync_service_).spec();
 
     CHECK(!group.GetCredentials().empty());
     for (const CredentialUIEntry& credential : group.GetCredentials()) {
@@ -479,13 +426,11 @@ PasswordsPrivateDelegateImpl::GetUrlCollection(const std::string& url) {
           password_manager_util::StripAuthAndParams(url_with_scheme)));
 }
 
-bool PasswordsPrivateDelegateImpl::AddPassword(
-    const std::string& url,
-    const std::u16string& username,
-    const std::u16string& password,
-    const std::u16string& note,
-    bool use_account_store,
-    content::WebContents* web_contents) {
+bool PasswordsPrivateDelegateImpl::AddPassword(const std::string& url,
+                                               const std::u16string& username,
+                                               const std::u16string& password,
+                                               const std::u16string& note,
+                                               bool use_account_store) {
   password_manager::PasswordForm::Store store_to_use =
       use_account_store ? password_manager::PasswordForm::Store::kAccountStore
                         : password_manager::PasswordForm::Store::kProfileStore;
@@ -497,7 +442,8 @@ bool PasswordsPrivateDelegateImpl::AddPassword(
   facet.signon_realm = password_manager::GetSignonRealm(facet.url);
   credential.facets.push_back(std::move(facet));
   credential.username = username;
-  credential.password = password;
+  credential.password =
+      password_manager::PasswordString(std::u16string(password));
   credential.note = note;
   credential.stored_in = {store_to_use};
   return saved_passwords_presenter_.AddCredential(credential);
@@ -513,7 +459,8 @@ bool PasswordsPrivateDelegateImpl::ChangeCredential(
   CredentialUIEntry updated_credential = *original_credential;
   updated_credential.username = base::UTF8ToUTF16(credential.username);
   if (credential.password) {
-    updated_credential.password = base::UTF8ToUTF16(*credential.password);
+    updated_credential.password = password_manager::PasswordString(
+        base::UTF8ToUTF16(*credential.password));
   }
   if (credential.note) {
     updated_credential.note = base::UTF8ToUTF16(*credential.note);
@@ -552,14 +499,14 @@ void PasswordsPrivateDelegateImpl::RemoveCredential(
   if (copy.stored_in.contains(
           password_manager::PasswordForm::Store::kAccountStore)) {
     AddPasswordRemovalReason(
-        profile_->GetPrefs(), password_manager::IsAccountStore(true),
+        prefs_, password_manager::IsAccountStore(true),
         password_manager::metrics_util::PasswordManagerCredentialRemovalReason::
             kSettings);
   }
   if (copy.stored_in.contains(
           password_manager::PasswordForm::Store::kProfileStore)) {
     AddPasswordRemovalReason(
-        profile_->GetPrefs(), password_manager::IsAccountStore(false),
+        prefs_, password_manager::IsAccountStore(false),
         password_manager::metrics_util::PasswordManagerCredentialRemovalReason::
             kSettings);
   }
@@ -597,10 +544,9 @@ void PasswordsPrivateDelegateImpl::UndoRemoveSavedPasswordOrException() {
 void PasswordsPrivateDelegateImpl::RequestPlaintextPassword(
     int id,
     api::passwords_private::PlaintextReason reason,
-    PlaintextPasswordCallback callback,
-    content::WebContents* web_contents) {
+    PlaintextPasswordCallback callback) {
   AuthenticateUser(
-      web_contents, kPasswordManagerAuthValidity, GetReauthPurpose(reason),
+      kPasswordManagerAuthValidity, GetReauthPurpose(reason),
       base::BindOnce(
           &PasswordsPrivateDelegateImpl::OnRequestPlaintextPasswordAuthResult,
           weak_ptr_factory_.GetWeakPtr(), id, reason, std::move(callback)));
@@ -611,7 +557,7 @@ void PasswordsPrivateDelegateImpl::RequestCredentialsDetails(
     UiEntriesCallback callback,
     content::WebContents* web_contents) {
   AuthenticateUser(
-      web_contents, kPasswordManagerAuthValidity,
+      kPasswordManagerAuthValidity,
       GetReauthPurpose(api::passwords_private::PlaintextReason::kView),
       base::BindOnce(
           &PasswordsPrivateDelegateImpl::OnRequestCredentialDetailsAuthResult,
@@ -663,10 +609,8 @@ void PasswordsPrivateDelegateImpl::OnFetchingFamilyMembersCompleted(
 
 void PasswordsPrivateDelegateImpl::OsReauthTimeoutCall() {
 #if !BUILDFLAG(IS_LINUX)
-  PasswordsPrivateEventRouter* router =
-      PasswordsPrivateEventRouterFactory::GetForProfile(profile_);
-  if (router) {
-    router->OnPasswordManagerAuthTimeout();
+  if (event_router_) {
+    event_router_->OnPasswordManagerAuthTimeout();
   }
 #endif
 }
@@ -706,11 +650,9 @@ void PasswordsPrivateDelegateImpl::SetCredentials(
     CHECK(get_password_exception_list_callbacks_.empty());
   }
 
-  PasswordsPrivateEventRouter* router =
-      PasswordsPrivateEventRouterFactory::GetForProfile(profile_);
-  if (router) {
-    router->OnSavedPasswordsListChanged(current_entries_);
-    router->OnPasswordExceptionsListChanged(current_exceptions_);
+  if (event_router_) {
+    event_router_->OnSavedPasswordsListChanged(current_entries_);
+    event_router_->OnPasswordExceptionsListChanged(current_exceptions_);
   }
 
   current_entries_initialized_ = true;
@@ -726,12 +668,8 @@ void PasswordsPrivateDelegateImpl::SetCredentials(
 }
 
 void PasswordsPrivateDelegateImpl::MovePasswordsToAccount(
-    const std::vector<int>& ids,
-    content::WebContents* web_contents) {
-  auto* client = ChromePasswordManagerClient::FromWebContents(web_contents);
-  DCHECK(client);
-
-  if (!client->GetPasswordFeatureManager()->IsAccountStorageActive()) {
+    const std::vector<int>& ids) {
+  if (!password_manager::features_util::IsAccountStorageActive(sync_service_)) {
     return;
   }
 
@@ -753,10 +691,7 @@ void PasswordsPrivateDelegateImpl::FetchFamilyMembers(
   if (!sharing_password_recipients_fetcher_) {
     sharing_password_recipients_fetcher_ =
         std::make_unique<password_manager::RecipientsFetcherImpl>(
-            chrome::GetChannel(),
-            profile_->GetDefaultStoragePartition()
-                ->GetURLLoaderFactoryForBrowserProcess(),
-            IdentityManagerFactory::GetForProfile(profile_));
+            chrome::GetChannel(), url_loader_factory_, identity_manager_);
   }
   sharing_password_recipients_fetcher_->FetchFamilyMembers(base::BindOnce(
       &PasswordsPrivateDelegateImpl::OnFetchingFamilyMembersCompleted,
@@ -772,13 +707,14 @@ void PasswordsPrivateDelegateImpl::SharePassword(
   }
 
   std::vector<password_manager::PasswordForm> corresponding_credentials =
-      saved_passwords_presenter_.GetCorrespondingPasswordForms(*entry);
+      password_manager::ToPasswordForms(
+          saved_passwords_presenter_.GetCorrespondingStoredCredentials(*entry));
   if (corresponding_credentials.empty()) {
     return;
   }
 
   password_manager::PasswordSenderService* password_sender_service =
-      PasswordSenderServiceFactory::GetForProfile(profile_);
+      password_sender_service_;
   for (const api::passwords_private::RecipientInfo& recipient_info :
        recipients) {
     CHECK(recipient_info.public_key.has_value());
@@ -795,21 +731,20 @@ void PasswordsPrivateDelegateImpl::ImportPasswords(
     api::passwords_private::PasswordStoreSet to_store,
     ImportResultsCallback results_callback,
     content::WebContents* web_contents) {
-  DCHECK_NE(api::passwords_private::PasswordStoreSet::kDeviceAndAccount,
-            to_store);
+  CHECK_NE(api::passwords_private::PasswordStoreSet::kDeviceAndAccount,
+           to_store, base::NotFatalUntil::M161);
   password_manager::PasswordForm::Store store_to_use =
       *ConvertToPasswordFormStores(to_store).begin();
-  password_manager_porter_->Import(
+  password_import_controller_->Import(
       web_contents, store_to_use,
       base::BindOnce(&ConvertImportResults).Then(std::move(results_callback)));
 }
 
 void PasswordsPrivateDelegateImpl::ContinueImport(
     const std::vector<int>& selected_ids,
-    ImportResultsCallback results_callback,
-    content::WebContents* web_contents) {
+    ImportResultsCallback results_callback) {
   if (selected_ids.empty()) {
-    password_manager_porter_->ContinueImport(
+    password_import_controller_->ContinueImport(
         selected_ids, base::BindOnce(&ConvertImportResults)
                           .Then(std::move(results_callback)));
     return;
@@ -825,18 +760,18 @@ void PasswordsPrivateDelegateImpl::ContinueImport(
 #endif
 
   AuthenticateUser(
-      web_contents, base::Seconds(0), message,
+      base::Seconds(0), message,
       base::BindOnce(&PasswordsPrivateDelegateImpl::OnImportPasswordsAuthResult,
                      weak_ptr_factory_.GetWeakPtr(),
                      std::move(results_callback), selected_ids));
 }
 
 void PasswordsPrivateDelegateImpl::ResetImporter(bool delete_file) {
-  password_manager_porter_->ResetImporter(delete_file);
+  password_import_controller_->ResetImporter(delete_file);
 }
 
 void PasswordsPrivateDelegateImpl::ExportPasswords(
-    base::OnceCallback<void(const std::string&)> accepted_callback,
+    base::OnceCallback<void(ExportPasswordsResult)> accepted_callback,
     content::WebContents* web_contents) {
   std::u16string message;
 #if BUILDFLAG(IS_MAC)
@@ -848,41 +783,19 @@ void PasswordsPrivateDelegateImpl::ExportPasswords(
 #endif
 
   AuthenticateUser(
-      web_contents, base::Seconds(0), message,
+      base::Seconds(0), message,
       base::BindOnce(&PasswordsPrivateDelegateImpl::OnExportPasswordsAuthResult,
                      weak_ptr_factory_.GetWeakPtr(),
                      std::move(accepted_callback), web_contents->GetWeakPtr()));
 }
 
-api::passwords_private::ExportProgressStatus
+password_manager::ExportProgressStatus
 PasswordsPrivateDelegateImpl::GetExportProgressStatus() {
-  return ConvertStatus(password_manager_porter_->GetExportProgressStatus());
+  return password_export_controller_->GetExportProgressStatus();
 }
 
 bool PasswordsPrivateDelegateImpl::IsAccountStorageActive() {
-  return password_manager::features_util::IsAccountStorageActive(
-      SyncServiceFactory::GetForProfile(profile_));
-}
-
-void PasswordsPrivateDelegateImpl::SetAccountStorageEnabled(
-    bool enabled,
-    content::WebContents* web_contents) {
-  auto* client = ChromePasswordManagerClient::FromWebContents(web_contents);
-  DCHECK(client);
-  // TODO(crbug.com/470332074): Verify whether this should check for "enabled"
-  // instead of "active".
-  if (enabled ==
-      client->GetPasswordFeatureManager()->IsAccountStorageActive()) {
-    return;
-  }
-  SyncServiceFactory::GetForProfile(profile_)
-      ->GetUserSettings()
-      ->SetSelectedType(syncer::UserSelectableType::kPasswords, enabled);
-}
-
-bool PasswordsPrivateDelegateImpl::ShouldShowAccountStorageSettingToggle() {
-  return password_manager::features_util::ShouldShowAccountStorageSettingToggle(
-      SyncServiceFactory::GetForProfile(profile_));
+  return password_manager::features_util::IsAccountStorageActive(sync_service_);
 }
 
 std::vector<api::passwords_private::PasswordUiEntry>
@@ -910,34 +823,20 @@ void PasswordsPrivateDelegateImpl::StartPasswordCheck(
   password_check_delegate_.StartPasswordCheck(
       password_manager::LeakDetectionInitiator::kBulkSyncedPasswordsCheck,
       std::move(callback));
-  auto* sentiment_service =
-      TrustSafetySentimentServiceFactory::GetForProfile(profile_);
-  if (!sentiment_service) {
+  if (!trust_safety_sentiment_service_) {
     return;
   }
-  sentiment_service->RanPasswordCheck();
+  trust_safety_sentiment_service_->RanPasswordCheck();
 }
 
-void PasswordsPrivateDelegateImpl::StartPasswordChange(
-    int credential_id,
-    content::WebContents* web_contents) {
-  CHECK(base::FeatureList::IsEnabled(
-      password_manager::features::kPasswordCheckupPrototype));
-  CHECK(web_contents);
-  const CredentialUIEntry* credential =
+std::optional<password_manager::CredentialUIEntry>
+PasswordsPrivateDelegateImpl::GetCredentialFromId(int credential_id) {
+  const password_manager::CredentialUIEntry* credential =
       credential_id_generator_.TryGetKey(credential_id);
   if (!credential) {
-    // TODO(crbug.com/485620841): Show error, instead of returning.
-    // There should always be a credential, unless something went wrong.
-    return;
+    return std::nullopt;
   }
-
-  auto* password_change_service =
-      PasswordChangeServiceFactory::GetForProfile(profile_);
-  if (password_change_service) {
-    password_change_service->StartPasswordChangeFromCheckup(*credential,
-                                                            web_contents);
-  }
+  return *credential;
 }
 
 api::passwords_private::PasswordCheckStatus
@@ -946,18 +845,16 @@ PasswordsPrivateDelegateImpl::GetPasswordCheckStatus() {
 }
 
 void PasswordsPrivateDelegateImpl::SwitchBiometricAuthBeforeFillingState(
-
-    content::WebContents* web_contents,
     AuthenticationCallback authentication_callback) {
 #if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN) || BUILDFLAG(IS_CHROMEOS)
   AuthResultCallback callback =
-      base::BindOnce(&ChangeBiometricAuthenticationBeforeFillingSetting,
-                     profile_->GetPrefs(), std::move(authentication_callback));
+      base::BindOnce(&ChangeBiometricAuthenticationBeforeFillingSetting, prefs_,
+                     std::move(authentication_callback));
 
-  AuthenticateUser(web_contents, base::Seconds(0),
-                   GetMessageForBiometricAuthenticationBeforeFillingSetting(
-                       profile_->GetPrefs()),
-                   std::move(callback));
+  AuthenticateUser(
+      base::Seconds(0),
+      GetMessageForBiometricAuthenticationBeforeFillingSetting(prefs_),
+      std::move(callback));
 #else
   NOTIMPLEMENTED();
 #endif
@@ -967,28 +864,18 @@ void PasswordsPrivateDelegateImpl::ShowAddShortcutDialog(
     content::WebContents* web_contents) {
   BrowserWindowInterface* browser =
       GlobalBrowserCollection::GetInstance()->FindBrowserWithTab(web_contents);
-  DCHECK(browser);
+  CHECK(browser, base::NotFatalUntil::M161);
   web_app::CreateWebAppFromCurrentWebContents(
-      browser->GetBrowserForMigrationOnly(),
-      web_app::WebAppInstallFlow::kInstallSite);
+      browser, web_app::WebAppInstallFlow::kInstallSite);
   base::UmaHistogramEnumeration(
       "PasswordManager.ShortcutMetric",
       password_manager::metrics_util::PasswordManagerShortcutMetric::
           kAddShortcutClicked);
 }
 
-void PasswordsPrivateDelegateImpl::ShowExportedFileInShell(
-    content::WebContents* web_contents,
-    std::string file_path) {
-  BrowserWindowInterface* browser =
-      GlobalBrowserCollection::GetInstance()->FindBrowserWithTab(web_contents);
-  DCHECK(browser);
-#if !BUILDFLAG(IS_WIN)
-  base::FilePath path(file_path);
-#else
-  base::FilePath path(base::UTF8ToWide(file_path));
-#endif
-  platform_util::ShowItemInFolder(browser->GetProfile(), path);
+void PasswordsPrivateDelegateImpl::ShowLastExportedFileInShell(
+    content::WebContents* web_contents) {
+  password_export_controller_->ShowLastExportedFileInShell(web_contents);
 }
 
 void PasswordsPrivateDelegateImpl::ChangePasswordManagerPin(
@@ -1014,65 +901,40 @@ void PasswordsPrivateDelegateImpl::IsPasswordManagerPinAvailable(
 }
 
 void PasswordsPrivateDelegateImpl::DisconnectCloudAuthenticator(
-    content::WebContents* web_contents,
     base::OnceCallback<void(bool)> success_callback) {
-  EnclaveManagerInterface* enclave_manager =
-      EnclaveManagerFactory::GetForProfile(
-          Profile::FromBrowserContext(web_contents->GetBrowserContext()));
-  if (enclave_manager) {
-    enclave_manager->Unenroll(std::move(success_callback));
+  if (enclave_manager_) {
+    enclave_manager_->Unenroll(std::move(success_callback));
   }
 }
 
-bool PasswordsPrivateDelegateImpl::IsConnectedToCloudAuthenticator(
-    content::WebContents* web_contents) {
-  EnclaveManagerInterface* enclave_manager =
-      EnclaveManagerFactory::GetForProfile(
-          Profile::FromBrowserContext(web_contents->GetBrowserContext()));
-
-  if (!enclave_manager) {
+bool PasswordsPrivateDelegateImpl::IsConnectedToCloudAuthenticator() {
+  if (!enclave_manager_) {
     return false;
   }
 
-  return enclave_manager->IsRegistered();
+  return enclave_manager_->IsRegistered();
 }
 
 password_manager::ActionableError
 PasswordsPrivateDelegateImpl::GetActionableError() {
-  auto profile_store = ProfilePasswordStoreFactory::GetForProfile(
-      profile_, ServiceAccessType::EXPLICIT_ACCESS);
-  auto account_store = AccountPasswordStoreFactory::GetForProfile(
-      profile_, ServiceAccessType::EXPLICIT_ACCESS);
-
-  // Only propagate profile errors if there aren't any account store errors.
-  password_manager::ActionableError error =
-      password_manager::ActionableError::kNoError;
-  if (account_store) {
-    error = account_store->GetError();
-  }
-  if (error == password_manager::ActionableError::kNoError && profile_store) {
-    error = profile_store->GetError();
-  }
-
-  return error;
+  return password_manager::GetActionableErrorFromPasswordStores(
+      account_password_store_.get(), profile_password_store_.get());
 }
 
 void PasswordsPrivateDelegateImpl::DeleteAllPasswordManagerData(
-    content::WebContents* web_contents,
     base::OnceCallback<void(bool)> success_callback) {
   std::u16string message;
 #if BUILDFLAG(IS_MAC)
   message = l10n_util::GetStringFUTF16(
       IDS_PASSWORDS_PAGE_DELETE_ALL_DATA_AUTHENTICATION_PROMPT_BIOMETRIC_SUFFIX,
-      l10n_util::GetStringUTF16(
-          IDS_PASSWORD_BUBBLES_PASSWORD_MANAGER_LINK_TEXT_SAVING_ON_DEVICE));
+      l10n_util::GetStringUTF16(IDS_PASSWORD_MANAGER_BRAND_NAME));
 #elif BUILDFLAG(IS_WIN)
   message = l10n_util::GetStringUTF16(
       IDS_PASSWORDS_PAGE_DELETE_ALL_DATA_AUTHENTICATION_PROMPT);
 #endif
 
   AuthenticateUser(
-      web_contents, base::Seconds(0), message,
+      base::Seconds(0), message,
       base::BindOnce(&PasswordsPrivateDelegateImpl::OnDeleteAllDataAuthResult,
                      weak_ptr_factory_.GetWeakPtr(),
                      std::move(success_callback)));
@@ -1092,11 +954,11 @@ void PasswordsPrivateDelegateImpl::OnDeleteAllDataAuthResult(
   // confirmation and re-authentication, indicating strong user intent to
   // remove all password data.
   AddPasswordRemovalReason(
-      profile_->GetPrefs(), password_manager::IsAccountStore(true),
+      prefs_, password_manager::IsAccountStore(true),
       password_manager::metrics_util::PasswordManagerCredentialRemovalReason::
           kDeleteAllPasswordManagerData);
   AddPasswordRemovalReason(
-      profile_->GetPrefs(), password_manager::IsAccountStore(false),
+      prefs_, password_manager::IsAccountStore(false),
       password_manager::metrics_util::PasswordManagerCredentialRemovalReason::
           kDeleteAllPasswordManagerData);
 }
@@ -1108,10 +970,9 @@ PasswordsPrivateDelegateImpl::AsWeakPtr() {
 
 void PasswordsPrivateDelegateImpl::CopyPlaintextBackupPassword(
     int id,
-    content::WebContents* web_contents,
     base::OnceCallback<void(bool)> callback) {
   AuthenticateUser(
-      web_contents, kPasswordManagerAuthValidity,
+      kPasswordManagerAuthValidity,
       GetReauthPurpose(api::passwords_private::PlaintextReason::kCopy),
       base::BindOnce(
           &PasswordsPrivateDelegateImpl::OnCopyBackupPasswordAuthResult,
@@ -1144,12 +1005,9 @@ void PasswordsPrivateDelegateImpl::MaybeShowPasswordShareButtonIPH(
 
 void PasswordsPrivateDelegateImpl::OnPasswordsExportProgress(
     const password_manager::PasswordExportInfo& progress) {
-  PasswordsPrivateEventRouter* router =
-      PasswordsPrivateEventRouterFactory::GetForProfile(profile_);
-  if (router) {
-    router->OnPasswordsExportProgress(ConvertStatus(progress.status),
-                                      progress.file_path, progress.folder_name);
-  }
+  observers_.Notify(
+      &PasswordsPrivateDelegate::Observer::OnPasswordsExportProgress,
+      progress.status, progress.folder_name);
 }
 
 void PasswordsPrivateDelegateImpl::OnRequestPlaintextPasswordAuthResult(
@@ -1169,17 +1027,45 @@ void PasswordsPrivateDelegateImpl::OnRequestPlaintextPasswordAuthResult(
   }
 
   if (reason == api::passwords_private::PlaintextReason::kCopy) {
-    ui::ScopedClipboardWriter clipboard_writer(ui::ClipboardBuffer::kCopyPaste);
-    clipboard_writer.WriteText(entry->password);
-    clipboard_writer.MarkAsConfidential();
+    WriteToClipboardAndScheduleClear(entry->password.secure_value());
+
     // In case of copy we don't need to give password back to UI. callback
     // will receive either empty string in case of success or null otherwise.
     // Copying occurs here so javascript doesn't need plaintext password.
     std::move(callback).Run(std::u16string());
   } else {
-    std::move(callback).Run(entry->password);
+    std::move(callback).Run(entry->password.value());
   }
   EmitHistogramsForCredentialAccess(*entry, reason);
+}
+
+void PasswordsPrivateDelegateImpl::ClearClipboard(
+    ui::ClipboardSequenceNumberToken sequence_number) {
+  if (ui::Clipboard::GetForCurrentThread()->GetSequenceNumber(
+          ui::ClipboardBuffer::kCopyPaste) == sequence_number) {
+    ui::Clipboard::GetForCurrentThread()->Clear(
+        ui::ClipboardBuffer::kCopyPaste);
+  }
+}
+
+void PasswordsPrivateDelegateImpl::WriteToClipboardAndScheduleClear(
+    std::u16string_view password) {
+  {
+    // ScopedClipboardWriter commits to the clipboard on destruction.
+    // This block ensures the clipboard sequence number is updated before we
+    // capture it.
+    ui::ScopedClipboardWriter clipboard_writer(ui::ClipboardBuffer::kCopyPaste);
+    clipboard_writer.WriteText(password);
+    clipboard_writer.MarkAsConfidential();
+  }
+
+  // Start timer to clear clipboard.
+  clipboard_clear_timer_.Start(
+      FROM_HERE, kClipboardClearDelay,
+      base::BindOnce(&PasswordsPrivateDelegateImpl::ClearClipboard,
+                     weak_ptr_factory_.GetWeakPtr(),
+                     ui::Clipboard::GetForCurrentThread()->GetSequenceNumber(
+                         ui::ClipboardBuffer::kCopyPaste)));
 }
 
 void PasswordsPrivateDelegateImpl::OnCopyBackupPasswordAuthResult(
@@ -1197,9 +1083,8 @@ void PasswordsPrivateDelegateImpl::OnCopyBackupPasswordAuthResult(
     return;
   }
 
-  ui::ScopedClipboardWriter clipboard_writer(ui::ClipboardBuffer::kCopyPaste);
-  clipboard_writer.WriteText(entry->backup_password->value);
-  clipboard_writer.MarkAsConfidential();
+  WriteToClipboardAndScheduleClear(entry->backup_password->value);
+
   std::move(callback).Run(true);
 }
 
@@ -1224,7 +1109,8 @@ void PasswordsPrivateDelegateImpl::OnRequestCredentialDetailsAuthResult(
 
     api::passwords_private::PasswordUiEntry password_ui_entry =
         CreatePasswordUiEntryFromCredentialUiEntry(*credential);
-    password_ui_entry.password = base::UTF16ToUTF8(credential->password);
+    password_ui_entry.password =
+        base::UTF16ToUTF8(credential->password.secure_value());
     password_ui_entry.note = base::UTF16ToUTF8(credential->note);
     // password_manager::MovePasswordsToAccountStore() takes care of moving the
     // entire equivalence class, so passing the first element is fine.
@@ -1252,17 +1138,18 @@ void PasswordsPrivateDelegateImpl::OnRequestCredentialDetailsAuthResult(
 }
 
 void PasswordsPrivateDelegateImpl::OnExportPasswordsAuthResult(
-    base::OnceCallback<void(const std::string&)> accepted_callback,
+    base::OnceCallback<void(ExportPasswordsResult)> accepted_callback,
     base::WeakPtr<content::WebContents> web_contents,
     bool authenticated) {
   if (!authenticated || !web_contents) {
-    std::move(accepted_callback).Run(kReauthenticationFailed);
+    std::move(accepted_callback).Run(ExportPasswordsResult::kReauthFailed);
     return;
   }
 
-  bool accepted = password_manager_porter_->Export(web_contents);
+  bool accepted = password_export_controller_->Export(web_contents.get());
   std::move(accepted_callback)
-      .Run(accepted ? std::string() : kExportInProgress);
+      .Run(accepted ? ExportPasswordsResult::kSuccess
+                    : ExportPasswordsResult::kInProgress);
 }
 
 void PasswordsPrivateDelegateImpl::OnImportPasswordsAuthResult(
@@ -1276,20 +1163,16 @@ void PasswordsPrivateDelegateImpl::OnImportPasswordsAuthResult(
     return;
   }
 
-  CHECK(password_manager_porter_);
-  password_manager_porter_->ContinueImport(
+  CHECK(password_import_controller_);
+  password_import_controller_->ContinueImport(
       selected_ids,
       base::BindOnce(&ConvertImportResults).Then(std::move(results_callback)));
 }
 
 void PasswordsPrivateDelegateImpl::OnStateChanged(
     syncer::SyncService* sync_service) {
-  PasswordsPrivateEventRouter* router =
-      PasswordsPrivateEventRouterFactory::GetForProfile(profile_);
-  if (router) {
-    router->OnAccountStorageActiveStateChanged(IsAccountStorageActive());
-    router->OnShouldShowAccountStorageSettingToggleChanged(
-        ShouldShowAccountStorageSettingToggle());
+  if (event_router_) {
+    event_router_->OnAccountStorageActiveStateChanged(IsAccountStorageActive());
   }
 }
 
@@ -1319,9 +1202,8 @@ void PasswordsPrivateDelegateImpl::OnLoginsRetained(
 void PasswordsPrivateDelegateImpl::OnErrorStateChanged(
     password_manager::PasswordStoreInterface* store,
     password_manager::ActionableError error) {
-  if (PasswordsPrivateEventRouter* router =
-          PasswordsPrivateEventRouterFactory::GetForProfile(profile_)) {
-    router->OnPasswordManagerActionableErrorChanged(
+  if (event_router_) {
+    event_router_->OnPasswordManagerActionableErrorChanged(
         ToActionableApiError(GetActionableError()));
   }
 }
@@ -1334,8 +1216,7 @@ void PasswordsPrivateDelegateImpl::OnWebAppInstalledWithOsHooks(
   // Post task with delay because new browser window for an app isn't created
   // yet.
   base::SequencedTaskRunner::GetCurrentDefault()->PostDelayedTask(
-      FROM_HERE, base::BindOnce(&MaybeShowProfileSwitchIPH, profile_),
-      base::Seconds(1));
+      FROM_HERE, maybe_show_profile_switch_iph_cb_, base::Seconds(1));
   base::UmaHistogramEnumeration(
       "PasswordManager.ShortcutMetric",
       password_manager::metrics_util::PasswordManagerShortcutMetric::
@@ -1356,7 +1237,6 @@ void PasswordsPrivateDelegateImpl::EmitHistogramsForCredentialAccess(
 }
 
 void PasswordsPrivateDelegateImpl::AuthenticateUser(
-    content::WebContents* web_contents,
     base::TimeDelta auth_validity_period,
     const std::u16string& message,
     AuthResultCallback auth_callback) {
@@ -1366,7 +1246,6 @@ void PasswordsPrivateDelegateImpl::AuthenticateUser(
 #if !BUILDFLAG(IS_MAC) && !BUILDFLAG(IS_WIN) && !BUILDFLAG(IS_CHROMEOS)
   std::move(callback).Run(true);
 #else
-  CHECK(web_contents);
 
   // Authentication on Windows cannot be canceled.
   // TODO(crbug.com/40241199): Remove Cancel and instead simply destroy
@@ -1383,8 +1262,7 @@ void PasswordsPrivateDelegateImpl::AuthenticateUser(
     device_authenticator_->Cancel();
 #endif
   }
-  device_authenticator_ =
-      GetDeviceAuthenticator(web_contents, auth_validity_period);
+  device_authenticator_ = GetDeviceAuthenticator(auth_validity_period);
 
   AuthResultCallback on_reauth_completed =
       base::BindOnce(&PasswordsPrivateDelegateImpl::OnReauthCompleted,
@@ -1442,17 +1320,24 @@ PasswordsPrivateDelegateImpl::CreatePasswordUiEntryFromCredentialUiEntry(
   if (change_password_url.has_value()) {
     entry.change_password_url = change_password_url->spec();
   }
+
   if (credential.backup_password.has_value()) {
     api::passwords_private::BackupPasswordInfo backup_password_info;
     backup_password_info.value =
         base::UTF16ToUTF8(credential.backup_password->value);
-    backup_password_info.creation_date =
-        base::UTF16ToUTF8(base::LocalizedTimeFormatWithPattern(
+    backup_password_info.creation_date = base::UTF16ToUTF8(
+        base::i18n::IcuBridge::GetInstance().date_time_formatter().Format(
             credential.backup_password->creation_timestamp,
-            /*pattern=*/"MMM dd"));
+            base::i18n::datetime_options::MD::Medium()));
     entry.backup_password = std::move(backup_password_info);
   }
   entry.hidden = credential.hidden;
+  if (base::FeatureList::IsEnabled(
+          password_manager::features::
+              kPasswordCompromiseWarningInDetailsCard) &&
+      !credential.password_issues.empty()) {
+    entry.compromised_info = CreateCompromiseInfo(credential);
+  }
   entry.id = credential_id_generator_.GenerateId(std::move(credential));
   return entry;
 }

@@ -26,7 +26,11 @@
 #include "components/password_manager/core/browser/ui/insecure_credentials_manager.h"
 #include "components/password_manager/core/browser/ui/saved_passwords_presenter.h"
 
-class Profile;
+class PrefService;
+
+namespace password_manager {
+class BulkLeakCheckServiceInterface;
+}  // namespace password_manager
 
 namespace extensions {
 
@@ -34,6 +38,10 @@ extern const char kPasswordCheckDataKey[];
 
 class PasswordCheckProgress;
 class PasswordsPrivateEventRouter;
+
+// Constructs a `CompromisedInfo` object for an insecure credential.
+api::passwords_private::CompromisedInfo CreateCompromiseInfo(
+    const password_manager::CredentialUIEntry& credential);
 
 // This class handles the part of the passwordsPrivate extension API that deals
 // with the bulk password check feature.
@@ -45,10 +53,12 @@ class PasswordCheckDelegate
   using StartPasswordCheckCallback =
       PasswordsPrivateDelegate::StartPasswordCheckCallback;
 
-  PasswordCheckDelegate(Profile* profile,
-                        password_manager::SavedPasswordsPresenter* presenter,
-                        IdGenerator* id_generator,
-                        PasswordsPrivateEventRouter* event_router = nullptr);
+  PasswordCheckDelegate(
+      PrefService* prefs,
+      password_manager::BulkLeakCheckServiceInterface* bulk_leak_check_service,
+      password_manager::SavedPasswordsPresenter* presenter,
+      IdGenerator* id_generator,
+      PasswordsPrivateEventRouter* event_router = nullptr);
   PasswordCheckDelegate(const PasswordCheckDelegate&) = delete;
   PasswordCheckDelegate& operator=(const PasswordCheckDelegate&) = delete;
   ~PasswordCheckDelegate() override;
@@ -128,8 +138,7 @@ class PasswordCheckDelegate
   api::passwords_private::PasswordUiEntry ConstructInsecureCredentialUiEntry(
       password_manager::CredentialUIEntry entry);
 
-  // Raw pointer to the underlying profile. Needs to outlive this instance.
-  raw_ptr<Profile> profile_ = nullptr;
+  const raw_ptr<PrefService> prefs_;
 
   // Used by `insecure_credentials_manager_` to obtain the list of saved
   // passwords.

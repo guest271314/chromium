@@ -9,7 +9,8 @@
 
 #include "ash/constants/url_constants.h"
 #include "ash/constants/webui_url_constants.h"
-#include "base/byte_count.h"
+#include "ash/strings/grit/ash_strings.h"
+#include "base/byte_size.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/strings/strcat.h"
@@ -23,7 +24,6 @@
 #include "chrome/grit/chrome_unscaled_resources.h"
 #include "chrome/grit/crostini_installer_resources.h"
 #include "chrome/grit/crostini_installer_resources_map.h"
-#include "chrome/grit/generated_resources.h"
 #include "components/strings/grit/components_strings.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_ui_data_source.h"
@@ -192,7 +192,7 @@ void CrostiniInstallerUI::CreatePageHandler(
     mojo::PendingRemote<crostini_installer::mojom::Page> pending_page,
     mojo::PendingReceiver<crostini_installer::mojom::PageHandler>
         pending_page_handler) {
-  DCHECK(pending_page.is_valid());
+  CHECK(pending_page.is_valid(), base::NotFatalUntil::M162);
 
   page_handler_ = std::make_unique<CrostiniInstallerPageHandler>(
       crostini::CrostiniInstallerFactory::GetForProfile(

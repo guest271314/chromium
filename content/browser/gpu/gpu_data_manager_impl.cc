@@ -107,11 +107,10 @@ bool GpuDataManagerImpl::GpuAccessAllowed(std::string* reason) {
   return private_->GpuAccessAllowed(reason);
 }
 
-void GpuDataManagerImpl::RequestDx12VulkanVideoGpuInfoIfNeeded(
-    GpuInfoRequest request,
-    bool delayed) {
+void GpuDataManagerImpl::RequestGpuInfoIfNeeded(GpuInfoRequest request,
+                                                bool delayed) {
   base::AutoLock auto_lock(lock_);
-  private_->RequestDx12VulkanVideoGpuInfoIfNeeded(request, delayed);
+  private_->RequestGpuInfoIfNeeded(request, delayed);
 }
 
 bool GpuDataManagerImpl::IsEssentialGpuInfoAvailable() {
@@ -186,11 +185,6 @@ void GpuDataManagerImpl::UpdateDirectXInfo(uint32_t d3d12_feature_level,
   private_->UpdateDirectXInfo(d3d12_feature_level, directml_feature_level);
 }
 
-void GpuDataManagerImpl::UpdateVulkanInfo(uint32_t vulkan_version) {
-  base::AutoLock auto_lock(lock_);
-  private_->UpdateVulkanInfo(vulkan_version);
-}
-
 void GpuDataManagerImpl::UpdateDevicePerfInfo(
     const gpu::DevicePerfInfo& device_perf_info) {
   base::AutoLock auto_lock(lock_);
@@ -212,19 +206,9 @@ void GpuDataManagerImpl::UpdateDirectXRequestStatus(bool request_continues) {
   private_->UpdateDirectXRequestStatus(request_continues);
 }
 
-void GpuDataManagerImpl::UpdateVulkanRequestStatus(bool request_continues) {
-  base::AutoLock auto_lock(lock_);
-  private_->UpdateVulkanRequestStatus(request_continues);
-}
-
 bool GpuDataManagerImpl::DirectXRequested() const {
   base::AutoLock auto_lock(lock_);
   return private_->DirectXRequested();
-}
-
-bool GpuDataManagerImpl::VulkanRequested() const {
-  base::AutoLock auto_lock(lock_);
-  return private_->VulkanRequested();
 }
 
 void GpuDataManagerImpl::TerminateInfoCollectionGpuProcess() {
@@ -357,11 +341,6 @@ base::ListValue GpuDataManagerImpl::GetLogMessages() const {
   return private_->GetLogMessages();
 }
 
-void GpuDataManagerImpl::HandleGpuSwitch() {
-  base::AutoLock auto_lock(lock_);
-  private_->HandleGpuSwitch();
-}
-
 void GpuDataManagerImpl::BlockDomainsFrom3DAPIs(const std::set<GURL>& urls,
                                                 gpu::DomainGuilt guilt) {
   base::AutoLock auto_lock(lock_);
@@ -444,7 +423,7 @@ void GpuDataManagerImpl::BindReceiver(
     mojo::PendingReceiver<blink::mojom::GpuDataManager> receiver) {
   // This is intentionally always bound on the IO thread to ensure a low-latency
   // response to sync IPCs.
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M159);
   GetGpuDataManagerReceiver().Bind(std::move(receiver));
 }
 

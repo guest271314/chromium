@@ -10,12 +10,13 @@ import org.jni_zero.NativeMethods;
 
 import org.chromium.base.Callback;
 import org.chromium.base.ResettersForTesting;
+import org.chromium.base.TriState;
+import org.chromium.base.TriStateUtils;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.preferences.Pref;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.tab.Tab;
-import org.chromium.components.dom_distiller.core.DomDistillerFeatures;
 import org.chromium.components.navigation_interception.InterceptNavigationDelegate;
 import org.chromium.components.user_prefs.UserPrefs;
 import org.chromium.content_public.browser.WebContents;
@@ -29,7 +30,7 @@ public class DomDistillerTabUtils {
     private static @Nullable Integer sHeuristics;
 
     /** Used to specify whether mobile friendly is enabled for testing purposes. */
-    private static @Nullable Boolean sExcludeMobileFriendlyForTesting;
+    private static @TriState int sExcludeMobileFriendlyForTesting;
 
     @DistillerHeuristicsType private static @Nullable Integer sHeuristicsForTesting;
 
@@ -108,24 +109,20 @@ public class DomDistillerTabUtils {
      * Check if the distiller should report mobile-friendly pages as non-distillable.
      *
      * @return True if heuristic is ADABOOST_MODEL, and "Simplified view for accessibility" is
-     *     disabled. Or false under certain experimental conditions.
+     *     disabled.
      */
     public static boolean shouldExcludeMobileFriendly(Tab tab) {
-        if (sExcludeMobileFriendlyForTesting != null) return sExcludeMobileFriendlyForTesting;
-        // Including mobile-friendly by default only applies to the CPA, otherwise we fallback to
-        // the accessibility setting.
-        if (DomDistillerFeatures.triggerOnMobileFriendlyPages()
-                && !ReaderModeManager.shouldUseReaderModeMessages(tab)) {
-            return false;
+        if (sExcludeMobileFriendlyForTesting != TriState.NOT_SET) {
+            return sExcludeMobileFriendlyForTesting == TriState.TRUE;
         }
 
         return !isReaderModeAccessibilitySettingEnabled(tab.getProfile())
                 && getDistillerHeuristics() == DistillerHeuristicsType.ADABOOST_MODEL;
     }
 
-    public static void setExcludeMobileFriendlyForTesting(Boolean excludeForTesting) {
-        sExcludeMobileFriendlyForTesting = excludeForTesting;
-        ResettersForTesting.register(() -> sExcludeMobileFriendlyForTesting = null);
+    public static void setExcludeMobileFriendlyForTesting(boolean excludeForTesting) {
+        sExcludeMobileFriendlyForTesting = TriStateUtils.from(excludeForTesting);
+        ResettersForTesting.register(() -> sExcludeMobileFriendlyForTesting = TriState.NOT_SET);
     }
 
     /** Set a test value of DistillerHeuristicsType. */
@@ -148,24 +145,13 @@ public class DomDistillerTabUtils {
 
     /**
      * Set an InterceptNavigationDelegate on a WebContents.
+     *
      * @param delegate The navigation delegate.
      * @param webContents The WebContents to bind the delegate to.
      */
     public static void setInterceptNavigationDelegate(
             InterceptNavigationDelegate delegate, WebContents webContents) {
         DomDistillerTabUtilsJni.get().setInterceptNavigationDelegate(delegate, webContents);
-    }
-
-    /**
-     * Runs distillability heuristics on the page to determine if it's suitable for reader mode.
-     *
-     * @param webContents The web contents to run the heuristic against.
-     * @param callback The callback which informs the caller whether the given web contents are
-     *     suitable for reader mode.
-     */
-    public static void runReadabilityHeuristicsOnWebContents(
-            @Nullable WebContents webContents, Callback<Boolean> callback) {
-        DomDistillerTabUtilsJni.get().runReadabilityHeuristicsOnWebContents(webContents, callback);
     }
 
     @NativeMethods
@@ -185,9 +171,5 @@ public class DomDistillerTabUtils {
 
         void setInterceptNavigationDelegate(
                 InterceptNavigationDelegate delegate, WebContents webContents);
-
-        void runReadabilityHeuristicsOnWebContents(
-                @Nullable WebContents webContents,
-                @JniType("base::OnceCallback<void(bool)>") Callback<Boolean> callback);
     }
 }

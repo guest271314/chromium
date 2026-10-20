@@ -5,6 +5,7 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_CORE_ANIMATION_ANIMATION_TIMELINE_H_
 #define THIRD_PARTY_BLINK_RENDERER_CORE_ANIMATION_ANIMATION_TIMELINE_H_
 
+#include "base/feature_list.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/time/time.h"
 #include "cc/animation/animation_timeline.h"
@@ -15,11 +16,14 @@
 #include "third_party/blink/renderer/platform/bindings/script_wrappable.h"
 #include "third_party/blink/renderer/platform/heap/collection_support/heap_hash_map.h"
 #include "third_party/blink/renderer/platform/heap/collection_support/heap_hash_set.h"
+#include "third_party/blink/renderer/platform/heap/collection_support/heap_vector.h"
 
 namespace blink {
 
 class Document;
 class TimelineTrigger;
+
+CORE_EXPORT BASE_DECLARE_FEATURE(kSortAnimationEvents);
 
 enum class TimelinePhase { kInactive, kActive };
 
@@ -44,12 +48,13 @@ class CORE_EXPORT AnimationTimeline : public ScriptWrappable {
   }
 
   std::optional<AnimationTimeDelta> CurrentTime();
+  std::optional<base::TimeDelta> CurrentTimeDelta() {
+    return CurrentTimeInternal();
+  }
   std::optional<double> CurrentTimeMilliseconds();
   std::optional<double> CurrentTimeSeconds();
 
   virtual V8CSSNumberish* duration();
-
-  TimelinePhase Phase() { return CurrentPhaseAndTime().phase; }
 
   virtual bool IsDocumentTimeline() const { return false; }
   virtual bool IsScrollSnapshotTimeline() const { return false; }
@@ -133,6 +138,7 @@ class CORE_EXPORT AnimationTimeline : public ScriptWrappable {
   }
   virtual cc::AnimationTimeline* EnsureCompositorTimeline() = 0;
   virtual void UpdateCompositorTimeline() {}
+  virtual bool HasPendingCompositorUpdate() const { return false; }
 
   void MarkAnimationsCompositorPending(bool source_changed = false);
 
@@ -156,7 +162,7 @@ class CORE_EXPORT AnimationTimeline : public ScriptWrappable {
   virtual void RemoveTrigger(TimelineTrigger* trigger);
 
  protected:
-  virtual PhaseAndTime CurrentPhaseAndTime() = 0;
+  virtual std::optional<base::TimeDelta> CurrentTimeInternal() = 0;
 
   virtual AnimationTimeDelta CalculateIntrinsicIterationDuration(
       const TimelineRange&,
@@ -178,12 +184,12 @@ class CORE_EXPORT AnimationTimeline : public ScriptWrappable {
 
   scoped_refptr<cc::AnimationTimeline> compositor_timeline_;
 
-  std::optional<PhaseAndTime> last_current_phase_and_time_;
+  std::optional<base::TimeDelta> last_current_time_;
 
   bool in_trigger_attachments_update_ = false;
 
   // Whether or not to update the trigger at the next opportunity to do so.
-  // This could because the |last_current_phase_and_time_| changed or because a
+  // This could because the |last_current_time_| changed or because a
   // new animation which triggers on this timeline has been added since the last
   // opportunity for an update.
   bool update_triggers_;

@@ -1438,7 +1438,7 @@ IN_PROC_BROWSER_TEST_F(BackForwardCacheBrowserTest,
                      "var f = document.querySelector('iframe');"
                      "f.parentNode.removeChild(f);"));
   EXPECT_EQ(child_rfh->lifecycle_state(),
-            RenderFrameHostImpl::LifecycleStateImpl::kRunningUnloadHandlers);
+            RenderFrameHostLifecycleStateImpl::kRunningUnloadHandlers);
 
   // 2) Navigate away.
   shell()->LoadURL(embedded_test_server()->GetURL("b.com", "/title1.html"));
@@ -1453,7 +1453,7 @@ IN_PROC_BROWSER_TEST_F(BackForwardCacheBrowserTest,
   ExpectRestored(FROM_HERE);
   EXPECT_TRUE(main_rfh->IsActive());
   EXPECT_EQ(child_rfh->lifecycle_state(),
-            RenderFrameHostImpl::LifecycleStateImpl::kRunningUnloadHandlers);
+            RenderFrameHostLifecycleStateImpl::kRunningUnloadHandlers);
 }
 
 // Check that a frame with an invalid url doesn't affect the back-forward cache
@@ -2060,9 +2060,15 @@ IN_PROC_BROWSER_TEST_F(BackForwardCacheBrowserTest, DISABLED_NavigationStart) {
   // performance.timing.navigationStart returns a 64-bit integer instead of
   // double, we might be losing somewhere between 0 to 1 milliseconds of
   // precision, hence the usage of EXPECT_NEAR.
-  EXPECT_NEAR(
-      (back_navigation_start - base::TimeTicks::UnixEpoch()).InMillisecondsF(),
-      latest_page_show_time_stamp + initial_navigation_start, 1.0);
+  // Express |back_navigation_start| (a TimeTicks) as milliseconds since the
+  // Unix epoch by anchoring both clocks to the current instant, to compare
+  // against the JS wall-clock values.
+  const base::TimeTicks now_ticks = base::TimeTicks::Now();
+  const double back_navigation_start_since_epoch =
+      (base::Time::Now() - (now_ticks - back_navigation_start))
+          .InMillisecondsFSinceUnixEpochIgnoringNull();
+  EXPECT_NEAR(back_navigation_start_since_epoch,
+              latest_page_show_time_stamp + initial_navigation_start, 1.0);
   // Expect that the back navigation start value calculated from the JS results
   // are between time taken before & after navigation, just like
   // |before_navigation_start|.
@@ -2557,7 +2563,7 @@ IN_PROC_BROWSER_TEST_P(BackForwardCacheBrowsingContextStateBrowserTest,
   EXPECT_TRUE(NavigateToURL(shell(), url_d));
   EXPECT_TRUE(rfh_a->IsInBackForwardCache());
   EXPECT_TRUE(rfh_c->IsInBackForwardCache());
-  EXPECT_EQ(RenderFrameHostImpl::LifecycleStateImpl::kRunningUnloadHandlers,
+  EXPECT_EQ(RenderFrameHostLifecycleStateImpl::kRunningUnloadHandlers,
             rfh_b->lifecycle_state());
 
   rfh_b->SetUnloadACKCallbackForTesting(base::NullCallback());

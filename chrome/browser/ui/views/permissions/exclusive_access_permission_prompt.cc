@@ -11,11 +11,9 @@
 #include "content/public/browser/web_contents.h"
 
 ExclusiveAccessPermissionPrompt::ExclusiveAccessPermissionPrompt(
-    Browser* browser,
     content::WebContents* web_contents,
     permissions::PermissionPrompt::Delegate* delegate)
-    : PermissionPromptDesktop(browser, web_contents, delegate),
-      delegate_(delegate) {
+    : PermissionPromptDesktop(web_contents, delegate), delegate_(delegate) {
   if (ShowPrompt()) {
     LocationBar* lb = GetLocationBar();
 
@@ -38,6 +36,16 @@ ExclusiveAccessPermissionPrompt::GetPromptDisposition() const {
   return permissions::PermissionPromptDisposition::CUSTOM_MODAL_DIALOG;
 }
 
+std::optional<gfx::Rect>
+ExclusiveAccessPermissionPrompt::GetViewBoundsInScreen() const {
+  if (prompt_view_tracker_.view()) {
+    // This is a modal prompt, the view bounds will cover the whole content
+    // view.
+    return web_contents()->GetContainerBounds();
+  }
+  return std::nullopt;
+}
+
 void ExclusiveAccessPermissionPrompt::DismissScrim() {
   delegate_->Dismiss(/*prompt_options=*/std::monostate());
 }
@@ -55,7 +63,7 @@ ExclusiveAccessPermissionPrompt::GetViewForTesting() {
 
 bool ExclusiveAccessPermissionPrompt::ShowPrompt() {
   raw_ptr<ExclusiveAccessPermissionPromptView> prompt_view =
-      new ExclusiveAccessPermissionPromptView(browser(),
+      new ExclusiveAccessPermissionPromptView(web_contents(),
                                               GetPermissionPromptDelegate());
   prompt_view_tracker_.SetView(prompt_view);
   scoped_ignore_input_events_ = web_contents()->IgnoreInputEvents(std::nullopt);

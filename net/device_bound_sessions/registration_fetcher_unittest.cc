@@ -9,17 +9,22 @@
 #include <utility>
 
 #include "base/base64url.h"
+#include "base/check_deref.h"
+#include "base/containers/map_util.h"
+#include "base/containers/span.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
 #include "base/json/json_reader.h"
 #include "base/json/json_writer.h"
 #include "base/run_loop.h"
+#include "base/strings/strcat.h"
 #include "base/strings/string_util.h"
 #include "base/test/bind.h"
 #include "base/test/gmock_callback_support.h"
+#include "base/test/gmock_expected_support.h"
 #include "base/test/metrics/histogram_tester.h"
-#include "base/test/scoped_feature_list.h"
 #include "base/test/test_future.h"
+#include "base/test/values_test_util.h"
 #include "components/unexportable_keys/background_task_origin.h"
 #include "components/unexportable_keys/mock_unexportable_key_service.h"
 #include "components/unexportable_keys/unexportable_key_id.h"
@@ -27,6 +32,7 @@
 #include "components/unexportable_keys/unexportable_key_service_impl.h"
 #include "components/unexportable_keys/unexportable_key_task_manager.h"
 #include "crypto/scoped_fake_unexportable_key_provider.h"
+#include "crypto/sign.h"
 #include "net/base/features.h"
 #include "net/base/network_anonymization_key.h"
 #include "net/base/schemeful_site.h"
@@ -50,12 +56,15 @@
 #include "net/test/embedded_test_server/http_request.h"
 #include "net/test/embedded_test_server/http_response.h"
 #include "net/test/test_with_task_environment.h"
+#include "net/test/url_request/url_request_failed_job.h"
 #include "net/url_request/url_request_context.h"
 #include "net/url_request/url_request_context_builder.h"
+#include "net/url_request/url_request_filter.h"
 #include "net/url_request/url_request_test_util.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/abseil-cpp/absl/functional/overload.h"
+#include "third_party/abseil-cpp/absl/strings/str_format.h"
 #include "url/gurl.h"
 #include "url/origin.h"
 
@@ -63,11 +72,24 @@ namespace net::device_bound_sessions {
 
 namespace {
 
+using ::base::Bucket;
+using ::base::BucketsAre;
+using ::base::test::DictionaryHasValue;
+using ::base::test::DictionaryHasValues;
+using ::base::test::RunOnceCallback;
+using ::base::test::ValueIs;
 using ::testing::_;
 using ::testing::AllOf;
+using ::testing::Contains;
+using ::testing::DoDefault;
 using ::testing::ElementsAre;
 using ::testing::Eq;
 using ::testing::Invoke;
+using ::testing::IsEmpty;
+using ::testing::Not;
+using ::testing::Optional;
+using ::testing::Pair;
+using ::testing::Pointee;
 using ::testing::Property;
 using ::testing::Return;
 using ::testing::WithArg;
@@ -95,6 +117,53 @@ constexpr char kBasicValidJson[] =
   }]
 })";
 
+std::string GetSubdomainValidJsonWithCustomPort(int port) {
+  constexpr char kSubdomainValidJson[] =
+      R"({
+  "session_identifier": "session_id",
+  "refresh_url": "/refresh",
+  "scope": {
+    "origin": "https://a.test:%v",
+    "include_site": true,
+    "scope_specification" : [
+      {
+        "type": "include",
+        "domain": "trusted.a.test",
+        "path": "/only_trusted_path"
+      }
+    ]
+  },
+  "credentials": [{
+    "type": "cookie",
+    "name": "auth_cookie",
+    "attributes": "Domain=a.test; Path=/; Secure; SameSite=None"
+  }]
+})";
+
+  return absl::StrFormat(kSubdomainValidJson, port);
+}
+
+constexpr char kSubdomainValidJsonIncludeSiteFalse[] =
+    R"({
+  "session_identifier": "session_id",
+  "refresh_url": "/refresh",
+  "scope": {
+    "origin": "https://a.test",
+    "include_site": false,
+    "scope_specification" : [
+      {
+        "type": "include",
+        "path": "/only_trusted_path"
+      }
+    ]
+  },
+  "credentials": [{
+    "type": "cookie",
+    "name": "auth_cookie",
+    "attributes": "Domain=a.test; Path=/; Secure; SameSite=None"
+  }]
+})";
+
 constexpr char kSessionIdentifier[] = "session_id";
 constexpr char kRedirectPath[] = "/redirect";
 constexpr char kChallenge[] = "test_challenge";
@@ -107,9 +176,8 @@ constexpr char kSessionIdHeaderName[] = "Sec-Secure-Session-Id";
 constexpr unexportable_keys::BackgroundTaskOrigin kTaskOrigin =
     unexportable_keys::BackgroundTaskOrigin::kDeviceBoundSessionCredentials;
 
-std::vector<crypto::SignatureVerifier::SignatureAlgorithm> CreateAlgArray() {
-  return {crypto::SignatureVerifier::SignatureAlgorithm::ECDSA_SHA256,
-          crypto::SignatureVerifier::SignatureAlgorithm::RSA_PKCS1_SHA256};
+std::vector<crypto::sign::SignatureKind> CreateAlgArray() {
+  return {crypto::sign::ECDSA_SHA256, crypto::sign::RSA_PKCS1_SHA256};
 }
 
 struct InvokeCallbackArgumentAction {};
@@ -134,6 +202,8 @@ class TestRegistrationCallback {
     closure_ = run_loop.QuitClosure();
     run_loop.Run();
   }
+
+  bool has_called() const { return outcome_.has_value(); }
 
   const RegistrationResult& outcome() {
     EXPECT_TRUE(outcome_.has_value());
@@ -172,19 +242,20 @@ class RegistrationTest : public TestWithTaskEnvironment {
     auto network_delegate = std::make_unique<TestNetworkDelegate>();
     network_delegate_ = network_delegate.get();
     context_builder->set_network_delegate(std::move(network_delegate));
-    context_ = context_builder->Build();
-  }
 
-  void TearDown() override {
-    // Reset the `network_delegate_` to avoid a dangling pointer.
-    network_delegate_ = nullptr;
+    auto session_service = std::make_unique<SessionServiceMock>();
+    session_service_ = session_service.get();
+    context_builder->set_device_bound_session_service(
+        std::move(session_service));
+
+    context_ = context_builder->Build();
   }
 
   unexportable_keys::UnexportableKeyService& unexportable_key_service() {
     return unexportable_key_service_;
   }
 
-  SessionServiceMock& session_service() { return session_service_; }
+  SessionServiceMock& session_service() { return *session_service_; }
 
   TestNetworkDelegate* network_delegate() { return network_delegate_; }
 
@@ -222,6 +293,7 @@ class RegistrationTest : public TestWithTaskEnvironment {
             param, session_service(), unexportable_key_service(),
             context_.get(),
             IsolationInfo::CreateTransient(/*nonce=*/std::nullopt),
+            SiteForCookies(),
             /*net_log_source=*/std::nullopt,
             /*original_request_initiator=*/std::nullopt,
             unexportable_keys::BackgroundTaskPriority::kBestEffort);
@@ -231,25 +303,25 @@ class RegistrationTest : public TestWithTaskEnvironment {
   }
 
   std::unique_ptr<Session> CreateTestSession(std::string session_identifier) {
-    SessionParams::Scope scope;
-    scope.origin = url::Origin::Create(GetBaseURL()).Serialize();
-    auto session_or_error = Session::CreateIfValid(SessionParams(
-        std::move(session_identifier), GetBaseURL(), GetBaseURL().spec(),
-        std::move(scope),
-        /*creds=*/{}, unexportable_keys::UnexportableSigningKeyId(),
-        /*allowed_refresh_initiators=*/{}));
-    return std::move(*session_or_error);
+    return std::move(*Session::CreateIfValid(SessionParams{
+        .session_id = std::move(session_identifier),
+        .fetcher_url = GetBaseURL(),
+        .refresh_url = GetBaseURL().spec(),
+        .scope = {.origin = url::Origin::Create(GetBaseURL()).Serialize()},
+    }));
   }
 
   test_server::EmbeddedTestServer server_;
-  raw_ptr<TestNetworkDelegate> network_delegate_;
   std::unique_ptr<URLRequestContext> context_;
+  // `session_service_` and `network_delegate_` are owned by `context_` so they
+  // should be defined after it.
+  raw_ptr<SessionServiceMock> session_service_;
+  raw_ptr<TestNetworkDelegate> network_delegate_;
 
   const url::Origin kOrigin = url::Origin::Create(GURL("https://origin/"));
   unexportable_keys::UnexportableKeyTaskManager task_manager_;
   unexportable_keys::UnexportableKeyServiceImpl unexportable_key_service_{
       task_manager_, kTaskOrigin, crypto::UnexportableKeyProvider::Config()};
-  SessionServiceMock session_service_;
   scoped_refptr<net::RuleBasedHostResolverProc> host_resolver_;
 };
 
@@ -264,20 +336,31 @@ std::unique_ptr<test_server::HttpResponse> ReturnResponse(
   return response;
 }
 
+std::unique_ptr<test_server::HttpResponse> ReturnSubdomainResponse(
+    const test_server::EmbeddedTestServer* server,
+    const test_server::HttpRequest& request) {
+  return ReturnResponse(
+      HTTP_OK, GetSubdomainValidJsonWithCustomPort(server->port()), request);
+}
+
+std::unique_ptr<test_server::HttpResponse> ReturnChallengeResponse(
+    HttpStatusCode code,
+    std::string_view challenge) {
+  auto response = std::make_unique<test_server::BasicHttpResponse>();
+  response->set_code(code);
+  response->AddCustomHeader(kSessionChallengeHeaderName,
+                            base::StrCat({"\"", challenge, "\""}));
+  return response;
+}
+
 std::unique_ptr<test_server::HttpResponse> ReturnUnauthorized(
     const test_server::HttpRequest& request) {
-  auto response = std::make_unique<test_server::BasicHttpResponse>();
-  response->set_code(HTTP_UNAUTHORIZED);
-  response->AddCustomHeader(kSessionChallengeHeaderName, R"("challenge")");
-  return response;
+  return ReturnChallengeResponse(HTTP_UNAUTHORIZED, "challenge");
 }
 
 std::unique_ptr<test_server::HttpResponse> ReturnForbidden(
     const test_server::HttpRequest& request) {
-  auto response = std::make_unique<test_server::BasicHttpResponse>();
-  response->set_code(HTTP_FORBIDDEN);
-  response->AddCustomHeader(kSessionChallengeHeaderName, R"("challenge")");
-  return response;
+  return ReturnChallengeResponse(HTTP_FORBIDDEN, "challenge");
 }
 
 std::unique_ptr<test_server::HttpResponse> ReturnTextResponse(
@@ -412,8 +495,27 @@ MATCHER_P2(EqualsCredential, name, attributes, "") {
       arg, result_listener);
 }
 
-std::optional<std::string> GetRequestChallenge(
-    const test_server::HttpRequest& request) {
+MATCHER(IsErrorRegistrationResult, "") {
+  return arg.Visit(absl::Overload{
+      [result_listener](const SessionError& error) {
+        *result_listener << "is a SessionError of type "
+                         << static_cast<int>(error.type);
+        return true;
+      },
+      [result_listener](const std::unique_ptr<Session>& session) {
+        *result_listener << "is a valid Session"
+                         << (session ? " with ID " + session->id().value()
+                                     : "");
+        return false;
+      },
+      [result_listener](RegistrationResult::NoSessionConfigChange) {
+        *result_listener << "is NoSessionConfigChange";
+        return false;
+      }});
+}
+
+std::optional<std::string> GetJwtClaim(const test_server::HttpRequest& request,
+                                       std::string_view claim_name) {
   auto resp_iter = request.headers.find(kSessionResponseHeaderName);
   if (resp_iter == request.headers.end()) {
     return std::nullopt;
@@ -435,24 +537,36 @@ std::optional<std::string> GetRequestChallenge(
   if (!payload_json.has_value()) {
     return std::nullopt;
   }
-  const std::string* challenge = payload_json->FindString("jti");
-  if (!challenge) {
+  const std::string* claim = payload_json->FindString(claim_name);
+  if (!claim) {
     return std::nullopt;
   }
 
-  return *challenge;
+  return *claim;
+}
+
+std::optional<base::DictValue> Base64UrlEncodedJsonToDict(
+    std::string_view input) {
+  return base::Base64UrlDecode(input,
+                               base::Base64UrlDecodePolicy::DISALLOW_PADDING)
+      .and_then([](base::span<const uint8_t> json) {
+        return base::JSONReader::ReadDict(base::as_string_view(json),
+                                          base::JSON_PARSE_CHROMIUM_EXTENSIONS);
+      });
 }
 
 TEST_F(RegistrationTest, BasicSuccess) {
   base::HistogramTester histogram_tester;
   crypto::ScopedFakeUnexportableKeyProvider scoped_fake_key_provider;
-  server_.RegisterRequestHandler(
-      base::BindRepeating([](const test_server::HttpRequest& request) {
+  server_.RegisterRequestHandler(base::BindLambdaForTesting(
+      [](const test_server::HttpRequest& request)
+          -> std::unique_ptr<test_server::HttpResponse> {
         auto resp_iter = request.headers.find(kSessionResponseHeaderName);
         EXPECT_TRUE(resp_iter != request.headers.end());
         if (resp_iter != request.headers.end()) {
           EXPECT_TRUE(VerifyEs256Jwt(resp_iter->second));
         }
+        EXPECT_FALSE(GetJwtClaim(request, "aud").has_value());
         return ReturnResponse(HTTP_OK, kBasicValidJson, request);
       }));
   ASSERT_TRUE(server_.Start());
@@ -465,6 +579,7 @@ TEST_F(RegistrationTest, BasicSuccess) {
       RegistrationFetcher::CreateFetcher(
           param, session_service(), unexportable_key_service(), context_.get(),
           IsolationInfo::CreateTransient(/*nonce=*/std::nullopt),
+          SiteForCookies(),
           /*net_log_source=*/std::nullopt,
           /*original_request_initiator=*/std::nullopt,
           unexportable_keys::BackgroundTaskPriority::kBestEffort);
@@ -488,20 +603,110 @@ TEST_F(RegistrationTest, BasicSuccess) {
       "Net.DeviceBoundSessions.Registration.Network.Result", HTTP_OK, 1);
 }
 
-TEST_F(RegistrationTest, VerifyTaskPriority) {
-  unexportable_keys::MockUnexportableKeyService mock_service;
+TEST_F(RegistrationTest, BasicSuccess_AudienceClaimEnabled) {
+  AddScopedFeatureList().InitAndEnableFeature(
+      features::kDeviceBoundSessionsIncludeAudienceClaim);
+  base::HistogramTester histogram_tester;
+  crypto::ScopedFakeUnexportableKeyProvider scoped_fake_key_provider;
+  server_.RegisterRequestHandler(base::BindLambdaForTesting(
+      [&](const test_server::HttpRequest& request)
+          -> std::unique_ptr<test_server::HttpResponse> {
+        auto resp_iter = request.headers.find(kSessionResponseHeaderName);
+        EXPECT_TRUE(resp_iter != request.headers.end());
+        if (resp_iter != request.headers.end()) {
+          EXPECT_TRUE(VerifyEs256Jwt(resp_iter->second));
+        }
+        EXPECT_EQ(GetJwtClaim(request, "aud"), GetBaseURL().spec());
+        return ReturnResponse(HTTP_OK, kBasicValidJson, request);
+      }));
+  ASSERT_TRUE(server_.Start());
 
-  EXPECT_CALL(mock_service, GetAlgorithm)
-      .WillRepeatedly(
-          Return(crypto::SignatureVerifier::SignatureAlgorithm::ECDSA_SHA256));
-  EXPECT_CALL(mock_service, GetSubjectPublicKeyInfo)
-      .WillRepeatedly(Return(std::vector<uint8_t>{1, 2, 3}));
+  RecordingNetLogObserver net_log_observer;
+  TestRegistrationCallback callback;
+
+  auto param = GetBasicParam();
+  std::unique_ptr<RegistrationFetcher> fetcher =
+      RegistrationFetcher::CreateFetcher(
+          param, session_service(), unexportable_key_service(), context_.get(),
+          IsolationInfo::CreateTransient(/*nonce=*/std::nullopt),
+          SiteForCookies(),
+          /*net_log_source=*/std::nullopt,
+          /*original_request_initiator=*/std::nullopt,
+          unexportable_keys::BackgroundTaskPriority::kBestEffort);
+  fetcher->StartCreateTokenAndFetch(param, CreateAlgArray(),
+                                    callback.callback());
+  callback.WaitForCall();
+  const Session& session = callback.outcome().SessionForTesting();
+  proto::Session session_proto = session.ToProto();
+  EXPECT_TRUE(session_proto.session_inclusion_rules().do_include_site());
+  EXPECT_THAT(
+      session_proto.session_inclusion_rules().url_rules(),
+      ElementsAre(
+          EqualsInclusionRule(proto::RuleType::INCLUDE, "trusted.a.test",
+                              "/only_trusted_path"),
+          EqualsInclusionRule(proto::RuleType::EXCLUDE, "a.test", "/refresh")));
+  EXPECT_THAT(
+      session_proto.cookie_cravings(),
+      ElementsAre(EqualsCredential(
+          "auth_cookie", "Domain=.a.test; Path=/; Secure; SameSite=None")));
+  histogram_tester.ExpectUniqueSample(
+      "Net.DeviceBoundSessions.Registration.Network.Result", HTTP_OK, 1);
+}
+
+TEST_F(RegistrationTest, SiteForCookiesUsedForStrictCookies) {
+  crypto::ScopedFakeUnexportableKeyProvider scoped_fake_key_provider;
+  server_.RegisterRequestHandler(
+      base::BindRepeating([](const test_server::HttpRequest& request)
+                              -> std::unique_ptr<test_server::HttpResponse> {
+        auto response = std::make_unique<test_server::BasicHttpResponse>();
+        response->set_code(HTTP_OK);
+        response->AddCustomHeader(
+            "Set-Cookie",
+            "auth_cookie=test_value; SameSite=Strict; Secure; Path=/");
+        response->set_content(kBasicValidJson);
+        return response;
+      }));
+  ASSERT_TRUE(server_.Start());
+
+  TestRegistrationCallback callback;
+  auto param = GetBasicParam();
+
+  // Create an IsolationInfo with empty site_for_cookies, but provide an
+  // explicit valid site_for_cookies.
+  url::Origin origin = url::Origin::Create(GetBaseURL());
+  IsolationInfo isolation_info = IsolationInfo::Create(
+      IsolationInfo::RequestType::kOther, origin, origin, SiteForCookies());
+  SiteForCookies site_for_cookies = SiteForCookies::FromOrigin(origin);
+
+  std::unique_ptr<RegistrationFetcher> fetcher =
+      RegistrationFetcher::CreateFetcher(
+          param, session_service(), unexportable_key_service(), context_.get(),
+          isolation_info, site_for_cookies,
+          /*net_log_source=*/std::nullopt,
+          /*original_request_initiator=*/std::nullopt,
+          unexportable_keys::BackgroundTaskPriority::kBestEffort);
+  fetcher->StartCreateTokenAndFetch(param, CreateAlgArray(),
+                                    callback.callback());
+  callback.WaitForCall();
+  const Session& session = callback.outcome().SessionForTesting();
+  EXPECT_EQ(session.id().value(), "session_id");
+
+  base::test::TestFuture<const CookieList&> cookie_future;
+  context_->cookie_store()->GetAllCookiesAsync(cookie_future.GetCallback());
+  const CookieList& cookies = cookie_future.Get();
+  ASSERT_EQ(cookies.size(), 1u);
+  EXPECT_EQ(cookies[0].Name(), "auth_cookie");
+}
+
+TEST_F(RegistrationTest, VerifyTaskPriority) {
+  crypto::ScopedFakeUnexportableKeyProvider scoped_fake_key_provider;
+  unexportable_keys::MockUnexportableKeyService mock_service;
+  mock_service.DelegateToService(unexportable_key_service());
 
   EXPECT_CALL(
       mock_service,
       SignSlowlyAsync(
-          _, _, Eq(unexportable_keys::BackgroundTaskPriority::kUserVisible), _))
-      .WillOnce(base::test::RunOnceCallback<3>(std::vector<uint8_t>{4, 5, 6}));
+          _, _, unexportable_keys::BackgroundTaskPriority::kUserVisible, _));
 
   auto isolation_info = IsolationInfo::CreateTransient(/*nonce=*/std::nullopt);
   auto request_param = RegistrationRequestParam::CreateForTesting(
@@ -510,17 +715,325 @@ TEST_F(RegistrationTest, VerifyTaskPriority) {
 
   std::unique_ptr<RegistrationFetcher> fetcher =
       RegistrationFetcher::CreateFetcher(
-          request_param, session_service(), std::ref(mock_service),
-          context_.get(), std::ref(isolation_info),
+          request_param, session_service(), mock_service, context_.get(),
+          isolation_info, isolation_info.site_for_cookies(),
           /*net_log_source=*/std::nullopt,
           /*original_request_initiator=*/std::nullopt,
           unexportable_keys::BackgroundTaskPriority::kUserVisible);
 
   TestRegistrationCallback callback;
-  fetcher->StartFetchWithExistingKey(
-      request_param, unexportable_keys::UnexportableSigningKeyId(),
-      callback.callback());
+  fetcher->StartFetchWithExistingKey(request_param, CreateSigningKey(),
+                                     callback.callback());
   callback.WaitForCall();
+}
+
+TEST_F(RegistrationTest, SigningKeyGenerationFailure) {
+  unexportable_keys::MockUnexportableKeyService mock_service;
+
+  EXPECT_CALL(mock_service, GenerateSigningKeySlowlyAsync)
+      .WillOnce(RunOnceCallback<2>(
+          base::unexpected(unexportable_keys::ServiceError::kCryptoApiFailed)));
+
+  auto isolation_info = IsolationInfo::CreateTransient(/*nonce=*/std::nullopt);
+  auto request_param = RegistrationRequestParam::CreateForTesting(
+      GURL("https://a.test"), kSessionIdentifier, kChallenge,
+      /*authorization=*/std::nullopt);
+
+  auto fetcher = RegistrationFetcher::CreateFetcher(
+      request_param, session_service(), mock_service, context_.get(),
+      isolation_info, isolation_info.site_for_cookies(),
+      /*net_log_source=*/std::nullopt,
+      /*original_request_initiator=*/std::nullopt,
+      unexportable_keys::BackgroundTaskPriority::kBestEffort);
+
+  TestRegistrationCallback callback;
+  fetcher->StartCreateTokenAndFetch(request_param, CreateAlgArray(),
+                                    callback.callback());
+  callback.WaitForCall();
+
+  EXPECT_EQ(callback.outcome().SessionErrorForTesting()->type,
+            SessionError::kSigningKeyGenerationError);
+}
+
+TEST_F(RegistrationTest, AttestationKeyGenerationFailure) {
+  unexportable_keys::MockUnexportableKeyService mock_service;
+
+  // Required because StartCreateTokenAndFetch concurrently calls both
+  // GenerateSigningKeySlowlyAsync and GenerateAttestationKeySlowlyAsync.
+  // Expecting it without invoking its callback is enough because the
+  // attestation failure immediately aborts the fetch flow, and omitting
+  // real service delegation prevents dispatching background tasks to the
+  // thread pool that could outlive the test.
+  EXPECT_CALL(mock_service, GenerateSigningKeySlowlyAsync);
+
+  // Mock attestation key generation to fail
+  EXPECT_CALL(mock_service, GenerateAttestationKeySlowlyAsync)
+      .WillOnce(RunOnceCallback<2>(
+          base::unexpected(unexportable_keys::ServiceError::kCryptoApiFailed)));
+
+  auto isolation_info = IsolationInfo::CreateTransient(/*nonce=*/std::nullopt);
+  auto request_param = RegistrationRequestParam::CreateForTesting(
+      GURL("https://a.test"), kSessionIdentifier, kChallenge,
+      /*authorization=*/std::nullopt, AttestationMode::kRequired);
+
+  auto fetcher = RegistrationFetcher::CreateFetcher(
+      request_param, session_service(), mock_service, context_.get(),
+      isolation_info, isolation_info.site_for_cookies(),
+      /*net_log_source=*/std::nullopt,
+      /*original_request_initiator=*/std::nullopt,
+      unexportable_keys::BackgroundTaskPriority::kBestEffort);
+
+  TestRegistrationCallback callback;
+  fetcher->StartCreateTokenAndFetch(request_param, CreateAlgArray(),
+                                    callback.callback());
+  callback.WaitForCall();
+
+  EXPECT_EQ(callback.outcome().SessionErrorForTesting()->type,
+            SessionError::kAttestationKeyGenerationError);
+}
+
+TEST_F(RegistrationTest, AttestationSigningKeyGenerationFailure) {
+  unexportable_keys::MockUnexportableKeyService mock_service;
+
+  // Mock signing key generation to fail
+  EXPECT_CALL(mock_service, GenerateSigningKeySlowlyAsync)
+      .WillOnce(RunOnceCallback<2>(
+          base::unexpected(unexportable_keys::ServiceError::kCryptoApiFailed)));
+
+  auto isolation_info = IsolationInfo::CreateTransient(/*nonce=*/std::nullopt);
+  auto request_param = RegistrationRequestParam::CreateForTesting(
+      GURL("https://a.test"), /*session_identifier=*/std::nullopt, kChallenge,
+      /*authorization=*/std::nullopt, AttestationMode::kRequired);
+
+  auto fetcher = RegistrationFetcher::CreateFetcher(
+      request_param, session_service(), mock_service, context_.get(),
+      isolation_info, isolation_info.site_for_cookies(),
+      /*net_log_source=*/std::nullopt,
+      /*original_request_initiator=*/std::nullopt,
+      unexportable_keys::BackgroundTaskPriority::kBestEffort);
+
+  TestRegistrationCallback callback;
+  fetcher->StartCreateTokenAndFetch(request_param, CreateAlgArray(),
+                                    callback.callback());
+  callback.WaitForCall();
+
+  EXPECT_EQ(callback.outcome().SessionErrorForTesting()->type,
+            SessionError::kSigningKeyGenerationError);
+}
+
+TEST_F(RegistrationTest, AttestationKeyGenerationSuccess) {
+  base::HistogramTester histogram_tester;
+  crypto::ScopedFakeUnexportableKeyProvider scoped_fake_key_provider;
+  server_.RegisterRequestHandler(
+      base::BindRepeating([](const test_server::HttpRequest& request) {
+        EXPECT_TRUE(VerifyEs256Jwt(CHECK_DEREF(
+            base::FindOrNull(request.headers, kSessionResponseHeaderName))));
+        return ReturnResponse(HTTP_OK, kBasicValidJson, request);
+      }));
+  ASSERT_TRUE(server_.Start());
+
+  RecordingNetLogObserver net_log_observer;
+  TestRegistrationCallback callback;
+
+  auto param = RegistrationRequestParam::CreateForTesting(
+      GetBaseURL(), /*session_identifier=*/std::nullopt,
+      std::string(kChallenge),
+      /*authorization=*/std::nullopt, AttestationMode::kRequired);
+  auto fetcher = RegistrationFetcher::CreateFetcher(
+      param, session_service(), unexportable_key_service(), context_.get(),
+      IsolationInfo::CreateTransient(/*nonce=*/std::nullopt), SiteForCookies(),
+      /*net_log_source=*/std::nullopt,
+      /*original_request_initiator=*/std::nullopt,
+      unexportable_keys::BackgroundTaskPriority::kBestEffort);
+  fetcher->StartCreateTokenAndFetch(param, CreateAlgArray(),
+                                    callback.callback());
+  callback.WaitForCall();
+  const Session& session = callback.outcome().SessionForTesting();
+  EXPECT_THAT(session.maybe_unexportable_attestation_key_id(),
+              ValueIs(Optional(_)));
+
+  histogram_tester.ExpectUniqueSample(
+      "Net.DeviceBoundSessions.Registration.Network.Result", HTTP_OK, 1);
+}
+
+TEST_F(RegistrationTest, AttestationSuccessWithChallenge) {
+  AddScopedFeatureList().InitAndEnableFeature(
+      features::kDeviceBoundSessionsIncludeAudienceClaim);
+  base::HistogramTester histogram_tester;
+  crypto::ScopedFakeUnexportableKeyProvider scoped_fake_key_provider;
+  std::string outer_jwt;
+  server_.RegisterRequestHandler(
+      base::BindLambdaForTesting([&](const test_server::HttpRequest& request) {
+        outer_jwt = CHECK_DEREF(
+            base::FindOrNull(request.headers, kSessionResponseHeaderName));
+        return ReturnResponse(HTTP_OK, kBasicValidJson, request);
+      }));
+  ASSERT_TRUE(server_.Start());
+
+  TestRegistrationCallback callback;
+  GURL endpoint_with_query_and_fragment =
+      GURL(base::StrCat({GetBaseURL().spec(), "?query=param#fragment"}));
+  auto param = RegistrationRequestParam::CreateForTesting(
+      endpoint_with_query_and_fragment, /*session_identifier=*/std::nullopt,
+      std::string(kChallenge),
+      /*authorization=*/std::nullopt, AttestationMode::kRequired);
+  auto fetcher = RegistrationFetcher::CreateFetcher(
+      param, session_service(), unexportable_key_service(), context_.get(),
+      IsolationInfo::CreateTransient(/*nonce=*/std::nullopt), SiteForCookies(),
+      /*net_log_source=*/std::nullopt,
+      /*original_request_initiator=*/std::nullopt,
+      unexportable_keys::BackgroundTaskPriority::kBestEffort);
+  fetcher->StartCreateTokenAndFetch(param, CreateAlgArray(),
+                                    callback.callback());
+  callback.WaitForCall();
+
+  const Session& session = callback.outcome().SessionForTesting();
+  EXPECT_THAT(session.maybe_unexportable_attestation_key_id(),
+              ValueIs(Optional(_)));
+  histogram_tester.ExpectUniqueSample(
+      "Net.DeviceBoundSessions.Registration.Network.Result", HTTP_OK, 1);
+
+  EXPECT_TRUE(VerifyEs256Jwt(outer_jwt));
+
+  std::vector<std::string> outer_sections = base::SplitString(
+      outer_jwt, ".", base::KEEP_WHITESPACE, base::SPLIT_WANT_ALL);
+  ASSERT_EQ(outer_sections.size(), 3u);
+
+  ASSERT_OK_AND_ASSIGN(base::DictValue outer_header,
+                       Base64UrlEncodedJsonToDict(outer_sections[0]));
+  EXPECT_THAT(outer_header, DictionaryHasValues(base::DictValue()
+                                                    .Set("alg", "ES256")
+                                                    .Set("typ", "dbsc+aik")
+                                                    .Set("cty", "jwt")));
+  EXPECT_TRUE(outer_header.FindDict("jwk"));
+
+  ASSERT_OK_AND_ASSIGN(base::DictValue outer_payload,
+                       Base64UrlEncodedJsonToDict(outer_sections[1]));
+  EXPECT_THAT(outer_payload,
+              DictionaryHasValue("aud", base::Value(GetBaseURL().spec())));
+
+  const base::DictValue& att = CHECK_DEREF(outer_payload.FindDict("att"));
+  EXPECT_THAT(att, DictionaryHasValue("fmt", base::Value("TPM")));
+  EXPECT_THAT(att.FindString("stmt"), Pointee(Not(IsEmpty())));
+  EXPECT_THAT(att.FindString("sig"), Pointee(Not(IsEmpty())));
+  EXPECT_THAT(att.FindString("sub_key"), Pointee(Not(IsEmpty())));
+
+  const std::string& inner_jwt = CHECK_DEREF(outer_payload.FindString("jti"));
+  EXPECT_TRUE(VerifyEs256Jwt(inner_jwt));
+
+  std::vector<std::string> inner_sections = base::SplitString(
+      inner_jwt, ".", base::KEEP_WHITESPACE, base::SPLIT_WANT_ALL);
+  ASSERT_EQ(inner_sections.size(), 3u);
+
+  ASSERT_OK_AND_ASSIGN(base::DictValue inner_header,
+                       Base64UrlEncodedJsonToDict(inner_sections[0]));
+  EXPECT_THAT(
+      inner_header,
+      DictionaryHasValues(
+          base::DictValue().Set("alg", "ES256").Set("typ", "dbsc+jwt")));
+  EXPECT_TRUE(inner_header.FindDict("jwk"));
+
+  ASSERT_OK_AND_ASSIGN(base::DictValue inner_payload,
+                       Base64UrlEncodedJsonToDict(inner_sections[1]));
+  EXPECT_THAT(inner_payload,
+              DictionaryHasValue("aud", base::Value(GetBaseURL().spec())));
+  EXPECT_THAT(inner_payload,
+              DictionaryHasValue("jti", base::Value(kChallenge)));
+  EXPECT_EQ(*outer_payload.FindString("aud"), *inner_payload.FindString("aud"));
+}
+
+TEST_F(RegistrationTest, AttestationCertificationFailure) {
+  crypto::ScopedFakeUnexportableKeyProvider scoped_fake_key_provider;
+  unexportable_keys::MockUnexportableKeyService mock_service;
+  mock_service.DelegateToService(unexportable_key_service());
+
+  EXPECT_CALL(mock_service, CertifySlowlyAsync)
+      .WillOnce(RunOnceCallback<4>(
+          base::unexpected(unexportable_keys::ServiceError::kCryptoApiFailed)));
+
+  auto isolation_info = IsolationInfo::CreateTransient(/*nonce=*/std::nullopt);
+  auto request_param = RegistrationRequestParam::CreateForTesting(
+      GURL("https://a.test"), /*session_identifier=*/std::nullopt,
+      std::string(kChallenge),
+      /*authorization=*/std::nullopt, AttestationMode::kRequired);
+
+  auto fetcher = RegistrationFetcher::CreateFetcher(
+      request_param, session_service(), mock_service, context_.get(),
+      isolation_info, isolation_info.site_for_cookies(),
+      /*net_log_source=*/std::nullopt,
+      /*original_request_initiator=*/std::nullopt,
+      unexportable_keys::BackgroundTaskPriority::kBestEffort);
+
+  TestRegistrationCallback callback;
+  fetcher->StartCreateTokenAndFetch(request_param, CreateAlgArray(),
+                                    callback.callback());
+  callback.WaitForCall();
+
+  EXPECT_EQ(callback.outcome().SessionErrorForTesting()->type,
+            SessionError::kAttestationCertificationError);
+}
+
+TEST_F(RegistrationTest, AttestationInnerSigningFailure) {
+  crypto::ScopedFakeUnexportableKeyProvider scoped_fake_key_provider;
+  unexportable_keys::MockUnexportableKeyService mock_service;
+  mock_service.DelegateToService(unexportable_key_service());
+
+  EXPECT_CALL(mock_service, SignSlowlyAsync)
+      .WillOnce(RunOnceCallback<3>(
+          base::unexpected(unexportable_keys::ServiceError::kCryptoApiFailed)));
+
+  auto isolation_info = IsolationInfo::CreateTransient(/*nonce=*/std::nullopt);
+  auto request_param = RegistrationRequestParam::CreateForTesting(
+      GURL("https://a.test"), /*session_identifier=*/std::nullopt,
+      std::string(kChallenge),
+      /*authorization=*/std::nullopt, AttestationMode::kRequired);
+
+  auto fetcher = RegistrationFetcher::CreateFetcher(
+      request_param, session_service(), mock_service, context_.get(),
+      isolation_info, isolation_info.site_for_cookies(),
+      /*net_log_source=*/std::nullopt,
+      /*original_request_initiator=*/std::nullopt,
+      unexportable_keys::BackgroundTaskPriority::kBestEffort);
+
+  TestRegistrationCallback callback;
+  fetcher->StartCreateTokenAndFetch(request_param, CreateAlgArray(),
+                                    callback.callback());
+  callback.WaitForCall();
+
+  EXPECT_EQ(callback.outcome().SessionErrorForTesting()->type,
+            SessionError::kSigningError);
+}
+
+TEST_F(RegistrationTest, AttestationOuterSigningFailure) {
+  crypto::ScopedFakeUnexportableKeyProvider scoped_fake_key_provider;
+  unexportable_keys::MockUnexportableKeyService mock_service;
+  mock_service.DelegateToService(unexportable_key_service());
+
+  EXPECT_CALL(mock_service, SignSlowlyAsync)
+      .WillOnce(DoDefault())
+      .WillOnce(RunOnceCallback<3>(
+          base::unexpected(unexportable_keys::ServiceError::kCryptoApiFailed)));
+
+  auto isolation_info = IsolationInfo::CreateTransient(/*nonce=*/std::nullopt);
+  auto request_param = RegistrationRequestParam::CreateForTesting(
+      GURL("https://a.test"), /*session_identifier=*/std::nullopt,
+      std::string(kChallenge),
+      /*authorization=*/std::nullopt, AttestationMode::kRequired);
+
+  auto fetcher = RegistrationFetcher::CreateFetcher(
+      request_param, session_service(), mock_service, context_.get(),
+      isolation_info, isolation_info.site_for_cookies(),
+      /*net_log_source=*/std::nullopt,
+      /*original_request_initiator=*/std::nullopt,
+      unexportable_keys::BackgroundTaskPriority::kBestEffort);
+
+  TestRegistrationCallback callback;
+  fetcher->StartCreateTokenAndFetch(request_param, CreateAlgArray(),
+                                    callback.callback());
+  callback.WaitForCall();
+
+  EXPECT_EQ(callback.outcome().SessionErrorForTesting()->type,
+            SessionError::kAttestationSigningError);
 }
 
 TEST_F(RegistrationTest, NoScopeJson) {
@@ -546,6 +1059,7 @@ TEST_F(RegistrationTest, NoScopeJson) {
       RegistrationFetcher::CreateFetcher(
           param, session_service(), unexportable_key_service(), context_.get(),
           IsolationInfo::CreateTransient(/*nonce=*/std::nullopt),
+          SiteForCookies(),
           /*net_log_source=*/std::nullopt,
           /*original_request_initiator=*/std::nullopt,
           unexportable_keys::BackgroundTaskPriority::kBestEffort);
@@ -581,6 +1095,7 @@ TEST_F(RegistrationTest, NoSessionIdJson) {
       RegistrationFetcher::CreateFetcher(
           param, session_service(), unexportable_key_service(), context_.get(),
           IsolationInfo::CreateTransient(/*nonce=*/std::nullopt),
+          SiteForCookies(),
           /*net_log_source=*/std::nullopt,
           /*original_request_initiator=*/std::nullopt,
           unexportable_keys::BackgroundTaskPriority::kBestEffort);
@@ -617,6 +1132,7 @@ TEST_F(RegistrationTest, EmptySessionIdJson) {
       RegistrationFetcher::CreateFetcher(
           param, session_service(), unexportable_key_service(), context_.get(),
           IsolationInfo::CreateTransient(/*nonce=*/std::nullopt),
+          SiteForCookies(),
           /*net_log_source=*/std::nullopt,
           /*original_request_initiator=*/std::nullopt,
           unexportable_keys::BackgroundTaskPriority::kBestEffort);
@@ -657,6 +1173,7 @@ TEST_F(RegistrationTest, SpecificationNotDictJson) {
       RegistrationFetcher::CreateFetcher(
           param, session_service(), unexportable_key_service(), context_.get(),
           IsolationInfo::CreateTransient(/*nonce=*/std::nullopt),
+          SiteForCookies(),
           /*net_log_source=*/std::nullopt,
           /*original_request_initiator=*/std::nullopt,
           unexportable_keys::BackgroundTaskPriority::kBestEffort);
@@ -706,6 +1223,7 @@ TEST_F(RegistrationTest, MissingPathDefaults) {
       RegistrationFetcher::CreateFetcher(
           param, session_service(), unexportable_key_service(), context_.get(),
           IsolationInfo::CreateTransient(/*nonce=*/std::nullopt),
+          SiteForCookies(),
           /*net_log_source=*/std::nullopt,
           /*original_request_initiator=*/std::nullopt,
           unexportable_keys::BackgroundTaskPriority::kBestEffort);
@@ -762,6 +1280,7 @@ TEST_F(RegistrationTest, MissingDomainDefaults) {
       RegistrationFetcher::CreateFetcher(
           param, session_service(), unexportable_key_service(), context_.get(),
           IsolationInfo::CreateTransient(/*nonce=*/std::nullopt),
+          SiteForCookies(),
           /*net_log_source=*/std::nullopt,
           /*original_request_initiator=*/std::nullopt,
           unexportable_keys::BackgroundTaskPriority::kBestEffort);
@@ -817,6 +1336,7 @@ TEST_F(RegistrationTest, MissingRefreshUrlDefault) {
       RegistrationFetcher::CreateFetcher(
           param, session_service(), unexportable_key_service(), context_.get(),
           IsolationInfo::CreateTransient(/*nonce=*/std::nullopt),
+          SiteForCookies(),
           /*net_log_source=*/std::nullopt,
           /*original_request_initiator=*/std::nullopt,
           unexportable_keys::BackgroundTaskPriority::kBestEffort);
@@ -866,6 +1386,7 @@ TEST_F(RegistrationTest, OneSpecTypeInvalid) {
       RegistrationFetcher::CreateFetcher(
           param, session_service(), unexportable_key_service(), context_.get(),
           IsolationInfo::CreateTransient(/*nonce=*/std::nullopt),
+          SiteForCookies(),
           /*net_log_source=*/std::nullopt,
           /*original_request_initiator=*/std::nullopt,
           unexportable_keys::BackgroundTaskPriority::kBestEffort);
@@ -905,6 +1426,7 @@ TEST_F(RegistrationTest, InvalidTypeSpecList) {
       RegistrationFetcher::CreateFetcher(
           param, session_service(), unexportable_key_service(), context_.get(),
           IsolationInfo::CreateTransient(/*nonce=*/std::nullopt),
+          SiteForCookies(),
           /*net_log_source=*/std::nullopt,
           /*original_request_initiator=*/std::nullopt,
           unexportable_keys::BackgroundTaskPriority::kBestEffort);
@@ -946,6 +1468,7 @@ TEST_F(RegistrationTest, TypeIsNotCookie) {
       RegistrationFetcher::CreateFetcher(
           param, session_service(), unexportable_key_service(), context_.get(),
           IsolationInfo::CreateTransient(/*nonce=*/std::nullopt),
+          SiteForCookies(),
           /*net_log_source=*/std::nullopt,
           /*original_request_initiator=*/std::nullopt,
           unexportable_keys::BackgroundTaskPriority::kBestEffort);
@@ -990,6 +1513,7 @@ TEST_F(RegistrationTest, TwoTypesCookie_NotCookie) {
       RegistrationFetcher::CreateFetcher(
           param, session_service(), unexportable_key_service(), context_.get(),
           IsolationInfo::CreateTransient(/*nonce=*/std::nullopt),
+          SiteForCookies(),
           /*net_log_source=*/std::nullopt,
           /*original_request_initiator=*/std::nullopt,
           unexportable_keys::BackgroundTaskPriority::kBestEffort);
@@ -1034,6 +1558,7 @@ TEST_F(RegistrationTest, TwoTypesNotCookie_Cookie) {
       RegistrationFetcher::CreateFetcher(
           param, session_service(), unexportable_key_service(), context_.get(),
           IsolationInfo::CreateTransient(/*nonce=*/std::nullopt),
+          SiteForCookies(),
           /*net_log_source=*/std::nullopt,
           /*original_request_initiator=*/std::nullopt,
           unexportable_keys::BackgroundTaskPriority::kBestEffort);
@@ -1072,6 +1597,7 @@ TEST_F(RegistrationTest, CredEntryWithoutDict) {
       RegistrationFetcher::CreateFetcher(
           param, session_service(), unexportable_key_service(), context_.get(),
           IsolationInfo::CreateTransient(/*nonce=*/std::nullopt),
+          SiteForCookies(),
           /*net_log_source=*/std::nullopt,
           /*original_request_initiator=*/std::nullopt,
           unexportable_keys::BackgroundTaskPriority::kBestEffort);
@@ -1114,7 +1640,7 @@ TEST_F(RegistrationTest, CredEntryWithoutAttributes) {
   std::unique_ptr<RegistrationFetcher> fetcher =
       RegistrationFetcher::CreateFetcher(
           param, session_service(), unexportable_key_service(), context_.get(),
-          isolation_info,
+          isolation_info, isolation_info.site_for_cookies(),
           /*net_log_source=*/std::nullopt,
           /*original_request_initiator=*/origin,
           unexportable_keys::BackgroundTaskPriority::kBestEffort);
@@ -1151,6 +1677,7 @@ TEST_F(RegistrationTest, CredEntryWithEmptyName) {
       RegistrationFetcher::CreateFetcher(
           param, session_service(), unexportable_key_service(), context_.get(),
           IsolationInfo::CreateTransient(/*nonce=*/std::nullopt),
+          SiteForCookies(),
           /*net_log_source=*/std::nullopt,
           /*original_request_initiator=*/std::nullopt,
           unexportable_keys::BackgroundTaskPriority::kBestEffort);
@@ -1174,6 +1701,7 @@ TEST_F(RegistrationTest, ReturnTextFile) {
       RegistrationFetcher::CreateFetcher(
           params, session_service(), unexportable_key_service(), context_.get(),
           IsolationInfo::CreateTransient(/*nonce=*/std::nullopt),
+          SiteForCookies(),
           /*net_log_source=*/std::nullopt,
           /*original_request_initiator=*/std::nullopt,
           unexportable_keys::BackgroundTaskPriority::kBestEffort);
@@ -1199,6 +1727,7 @@ TEST_F(RegistrationTest, ReturnInvalidJson) {
       RegistrationFetcher::CreateFetcher(
           param, session_service(), unexportable_key_service(), context_.get(),
           IsolationInfo::CreateTransient(/*nonce=*/std::nullopt),
+          SiteForCookies(),
           /*net_log_source=*/std::nullopt,
           /*original_request_initiator=*/std::nullopt,
           unexportable_keys::BackgroundTaskPriority::kBestEffort);
@@ -1224,6 +1753,7 @@ TEST_F(RegistrationTest, ReturnEmptyJson) {
       RegistrationFetcher::CreateFetcher(
           param, session_service(), unexportable_key_service(), context_.get(),
           IsolationInfo::CreateTransient(/*nonce=*/std::nullopt),
+          SiteForCookies(),
           /*net_log_source=*/std::nullopt,
           /*original_request_initiator=*/std::nullopt,
           unexportable_keys::BackgroundTaskPriority::kBestEffort);
@@ -1249,6 +1779,7 @@ TEST_F(RegistrationTest, NetworkErrorServerShutdown) {
       RegistrationFetcher::CreateFetcher(
           param, session_service(), unexportable_key_service(), context_.get(),
           IsolationInfo::CreateTransient(/*nonce=*/std::nullopt),
+          SiteForCookies(),
           /*net_log_source=*/std::nullopt,
           /*original_request_initiator=*/std::nullopt,
           unexportable_keys::BackgroundTaskPriority::kBestEffort);
@@ -1277,6 +1808,7 @@ TEST_F(RegistrationTest, NetworkErrorInvalidResponse) {
       RegistrationFetcher::CreateFetcher(
           param, session_service(), unexportable_key_service(), context_.get(),
           IsolationInfo::CreateTransient(/*nonce=*/std::nullopt),
+          SiteForCookies(),
           /*net_log_source=*/std::nullopt,
           /*original_request_initiator=*/std::nullopt,
           unexportable_keys::BackgroundTaskPriority::kBestEffort);
@@ -1301,6 +1833,7 @@ TEST_F(RegistrationTest, ResponseErrorCaptured) {
       RegistrationFetcher::CreateFetcher(
           param, session_service(), unexportable_key_service(), context_.get(),
           IsolationInfo::CreateTransient(/*nonce=*/std::nullopt),
+          SiteForCookies(),
           /*net_log_source=*/std::nullopt,
           /*original_request_initiator=*/std::nullopt,
           unexportable_keys::BackgroundTaskPriority::kBestEffort);
@@ -1332,6 +1865,7 @@ TEST_F(RegistrationTest, NetErrorCaptured) {
       RegistrationFetcher::CreateFetcher(
           param, session_service(), unexportable_key_service(), context_.get(),
           IsolationInfo::CreateTransient(/*nonce=*/std::nullopt),
+          SiteForCookies(),
           /*net_log_source=*/std::nullopt,
           /*original_request_initiator=*/std::nullopt,
           unexportable_keys::BackgroundTaskPriority::kBestEffort);
@@ -1364,6 +1898,7 @@ TEST_F(RegistrationTest, ServerError407) {
       RegistrationFetcher::CreateFetcher(
           param, session_service(), unexportable_key_service(), context_.get(),
           IsolationInfo::CreateTransient(/*nonce=*/std::nullopt),
+          SiteForCookies(),
           /*net_log_source=*/std::nullopt,
           /*original_request_initiator=*/std::nullopt,
           unexportable_keys::BackgroundTaskPriority::kBestEffort);
@@ -1389,6 +1924,7 @@ TEST_F(RegistrationTest, ServerError400) {
       RegistrationFetcher::CreateFetcher(
           param, session_service(), unexportable_key_service(), context_.get(),
           IsolationInfo::CreateTransient(/*nonce=*/std::nullopt),
+          SiteForCookies(),
           /*net_log_source=*/std::nullopt,
           /*original_request_initiator=*/std::nullopt,
           unexportable_keys::BackgroundTaskPriority::kBestEffort);
@@ -1414,6 +1950,7 @@ TEST_F(RegistrationTest, ServerError500) {
       RegistrationFetcher::CreateFetcher(
           param, session_service(), unexportable_key_service(), context_.get(),
           IsolationInfo::CreateTransient(/*nonce=*/std::nullopt),
+          SiteForCookies(),
           /*net_log_source=*/std::nullopt,
           /*original_request_initiator=*/std::nullopt,
           unexportable_keys::BackgroundTaskPriority::kBestEffort);
@@ -1450,6 +1987,7 @@ TEST_F(RegistrationTest, ServerErrorReturnOne403ThenSuccess) {
       RegistrationFetcher::CreateFetcher(
           param, session_service(), unexportable_key_service(), context_.get(),
           IsolationInfo::CreateTransient(/*nonce=*/std::nullopt),
+          SiteForCookies(),
           /*net_log_source=*/std::nullopt,
           /*original_request_initiator=*/std::nullopt,
           unexportable_keys::BackgroundTaskPriority::kBestEffort);
@@ -1517,6 +2055,7 @@ TEST_F(RegistrationTest, FollowHttpsToHttpsRedirect) {
       RegistrationFetcher::CreateFetcher(
           param, session_service(), unexportable_key_service(), context_.get(),
           IsolationInfo::CreateTransient(/*nonce=*/std::nullopt),
+          SiteForCookies(),
           /*net_log_source=*/std::nullopt,
           /*original_request_initiator=*/std::nullopt,
           unexportable_keys::BackgroundTaskPriority::kBestEffort);
@@ -1526,6 +2065,70 @@ TEST_F(RegistrationTest, FollowHttpsToHttpsRedirect) {
 
   EXPECT_TRUE(followed);
   callback.outcome().SessionForTesting();
+}
+
+TEST_F(RegistrationTest, Registration_RedirectToCrossOrigin_Fails) {
+  crypto::ScopedFakeUnexportableKeyProvider scoped_fake_key_provider;
+  bool followed = false;
+  server_.RegisterRequestHandler(base::BindLambdaForTesting(
+      [&](const test_server::HttpRequest& request)
+          -> std::unique_ptr<test_server::HttpResponse> {
+        if (request.relative_url == "/") {
+          auto response = std::make_unique<test_server::BasicHttpResponse>();
+          response->set_code(HTTP_FOUND);
+          response->AddCustomHeader(
+              "Location",
+              server_.GetURL("subdomain.a.test", "/redirect_dest").spec());
+          response->set_content("Redirected");
+          response->set_content_type("text/plain");
+          return response;
+        }
+        if (request.relative_url == "/redirect_dest") {
+          followed = true;
+          return ReturnResponse(HTTP_OK, R"json(
+            {
+              "session_identifier": "session_id",
+              "credentials": [
+                {
+                  "type": "cookie",
+                  "name": "auth_cookie",
+                  "attributes": "Domain=.a.test; Path=/; Secure; SameSite=None"
+                }
+              ],
+              "scope": {
+                "origin": "https://a.test",
+                "include_site": false
+              }
+            }
+          )json",
+                                request);
+        }
+        return nullptr;
+      }));
+
+  server_.SetSSLConfig(EmbeddedTestServer::CERT_TEST_NAMES);
+  ASSERT_TRUE(server_.Start());
+
+  RecordingNetLogObserver net_log_observer;
+  TestRegistrationCallback callback;
+
+  RegistrationRequestParam param = GetBasicParam(server_.GetURL("a.test", "/"));
+  std::unique_ptr<RegistrationFetcher> fetcher =
+      RegistrationFetcher::CreateFetcher(
+          param, session_service(), unexportable_key_service(), context_.get(),
+          IsolationInfo::CreateTransient(/*nonce=*/std::nullopt),
+          SiteForCookies(),
+          /*net_log_source=*/std::nullopt,
+          /*original_request_initiator=*/std::nullopt,
+          unexportable_keys::BackgroundTaskPriority::kBestEffort);
+  fetcher->StartCreateTokenAndFetch(param, CreateAlgArray(),
+                                    callback.callback());
+
+  callback.WaitForCall();
+
+  EXPECT_TRUE(followed);
+  EXPECT_EQ(callback.outcome().SessionErrorForTesting()->type,
+            SessionError::kCrossOriginRegistrationSiteNotIncluded);
 }
 
 TEST_F(RegistrationTest, FailOnSslErrorExpired) {
@@ -1543,6 +2146,7 @@ TEST_F(RegistrationTest, FailOnSslErrorExpired) {
       RegistrationFetcher::CreateFetcher(
           param, session_service(), unexportable_key_service(), context_.get(),
           IsolationInfo::CreateTransient(/*nonce=*/std::nullopt),
+          SiteForCookies(),
           /*net_log_source=*/std::nullopt,
           /*original_request_initiator=*/std::nullopt,
           unexportable_keys::BackgroundTaskPriority::kBestEffort);
@@ -1581,8 +2185,14 @@ std::unique_ptr<test_server::HttpResponse> ReturnResponseForRefreshRequest(
 TEST_F(RegistrationTest, BasicSuccessForExistingKey) {
   base::HistogramTester histogram_tester;
   crypto::ScopedFakeUnexportableKeyProvider scoped_fake_key_provider;
-  server_.RegisterRequestHandler(
-      base::BindRepeating(&ReturnResponse, HTTP_OK, kBasicValidJson));
+  server_.RegisterRequestHandler(base::BindLambdaForTesting(
+      [](const test_server::HttpRequest& request)
+          -> std::unique_ptr<test_server::HttpResponse> {
+        EXPECT_TRUE(request.headers.find(kSessionResponseHeaderName) !=
+                    request.headers.end());
+        EXPECT_FALSE(GetJwtClaim(request, "aud").has_value());
+        return ReturnResponse(HTTP_OK, kBasicValidJson, request);
+      }));
   ASSERT_TRUE(server_.Start());
 
   RecordingNetLogObserver net_log_observer;
@@ -1595,9 +2205,59 @@ TEST_F(RegistrationTest, BasicSuccessForExistingKey) {
   UnexportableSigningKeyId key = CreateSigningKey();
   std::unique_ptr<RegistrationFetcher> fetcher =
       RegistrationFetcher::CreateFetcher(
-          request_param, session_service(),
-          std::ref(unexportable_key_service()), context_.get(),
-          std::ref(isolation_info),
+          request_param, session_service(), unexportable_key_service(),
+          context_.get(), isolation_info, isolation_info.site_for_cookies(),
+          /*net_log_source=*/std::nullopt,
+          /*original_request_initiator=*/std::nullopt,
+          unexportable_keys::BackgroundTaskPriority::kBestEffort);
+  fetcher->StartFetchWithExistingKey(request_param, std::move(key),
+                                     callback.callback());
+  callback.WaitForCall();
+  const auto& session = callback.outcome().SessionForTesting();
+  proto::Session session_proto = session.ToProto();
+  EXPECT_TRUE(session_proto.session_inclusion_rules().do_include_site());
+  EXPECT_THAT(
+      session_proto.session_inclusion_rules().url_rules(),
+      ElementsAre(
+          EqualsInclusionRule(proto::RuleType::INCLUDE, "trusted.a.test",
+                              "/only_trusted_path"),
+          EqualsInclusionRule(proto::RuleType::EXCLUDE, "a.test", "/refresh")));
+  EXPECT_THAT(
+      session_proto.cookie_cravings(),
+      ElementsAre(EqualsCredential(
+          "auth_cookie", "Domain=.a.test; Path=/; Secure; SameSite=None")));
+
+  histogram_tester.ExpectBucketCount(
+      "Net.DeviceBoundSessions.Refresh.Network.Result", HTTP_OK, 1);
+}
+
+TEST_F(RegistrationTest, BasicSuccessForExistingKey_AudienceClaimEnabled) {
+  AddScopedFeatureList().InitAndEnableFeature(
+      features::kDeviceBoundSessionsIncludeAudienceClaim);
+  base::HistogramTester histogram_tester;
+  crypto::ScopedFakeUnexportableKeyProvider scoped_fake_key_provider;
+  server_.RegisterRequestHandler(base::BindLambdaForTesting(
+      [&](const test_server::HttpRequest& request)
+          -> std::unique_ptr<test_server::HttpResponse> {
+        EXPECT_TRUE(request.headers.find(kSessionResponseHeaderName) !=
+                    request.headers.end());
+        EXPECT_EQ(GetJwtClaim(request, "aud"), GetBaseURL().spec());
+        return ReturnResponse(HTTP_OK, kBasicValidJson, request);
+      }));
+  ASSERT_TRUE(server_.Start());
+
+  RecordingNetLogObserver net_log_observer;
+  TestRegistrationCallback callback;
+
+  auto isolation_info = IsolationInfo::CreateTransient(/*nonce=*/std::nullopt);
+  auto request_param = RegistrationRequestParam::CreateForTesting(
+      GetBaseURL(), kSessionIdentifier, kChallenge,
+      /*authorization=*/std::nullopt);
+  UnexportableSigningKeyId key = CreateSigningKey();
+  std::unique_ptr<RegistrationFetcher> fetcher =
+      RegistrationFetcher::CreateFetcher(
+          request_param, session_service(), unexportable_key_service(),
+          context_.get(), isolation_info, isolation_info.site_for_cookies(),
           /*net_log_source=*/std::nullopt,
           /*original_request_initiator=*/std::nullopt,
           unexportable_keys::BackgroundTaskPriority::kBestEffort);
@@ -1638,9 +2298,8 @@ TEST_F(RegistrationTest, FetchRegistrationWithCachedChallenge) {
   UnexportableSigningKeyId key = CreateSigningKey();
   std::unique_ptr<RegistrationFetcher> fetcher =
       RegistrationFetcher::CreateFetcher(
-          request_param, session_service(),
-          std::ref(unexportable_key_service()), context_.get(),
-          std::ref(isolation_info),
+          request_param, session_service(), unexportable_key_service(),
+          context_.get(), isolation_info, isolation_info.site_for_cookies(),
           /*net_log_source=*/std::nullopt,
           /*original_request_initiator=*/std::nullopt,
           unexportable_keys::BackgroundTaskPriority::kBestEffort);
@@ -1662,6 +2321,123 @@ TEST_F(RegistrationTest, FetchRegistrationWithCachedChallenge) {
           "auth_cookie", "Domain=.a.test; Path=/; Secure; SameSite=None")));
 }
 
+std::unique_ptr<test_server::HttpResponse> CaptureFetchMetadataHeaders(
+    test_server::HttpRequest::HeaderMap* out_headers,
+    const test_server::HttpRequest& request) {
+  for (const char* name :
+       {"Origin", "Sec-Fetch-Site", "Sec-Fetch-Mode", "Sec-Fetch-Dest"}) {
+    auto it = request.headers.find(name);
+    if (it != request.headers.end()) {
+      (*out_headers)[name] = it->second;
+    }
+  }
+  return ReturnResponse(HTTP_OK, kBasicValidJson, request);
+}
+
+TEST_F(RegistrationTest, RefreshSendsOriginAndFetchMetadata) {
+  crypto::ScopedFakeUnexportableKeyProvider scoped_fake_key_provider;
+  test_server::HttpRequest::HeaderMap received_headers;
+  server_.RegisterRequestHandler(base::BindRepeating(
+      &CaptureFetchMetadataHeaders, base::Unretained(&received_headers)));
+  ASSERT_TRUE(server_.Start());
+
+  TestRegistrationCallback callback;
+  auto isolation_info = IsolationInfo::CreateTransient(/*nonce=*/std::nullopt);
+  auto request_param = RegistrationRequestParam::CreateForTesting(
+      GetBaseURL(), kSessionIdentifier, kChallenge,
+      /*authorization=*/std::nullopt);
+  UnexportableSigningKeyId key = CreateSigningKey();
+  std::unique_ptr<RegistrationFetcher> fetcher =
+      RegistrationFetcher::CreateFetcher(
+          request_param, session_service(),
+          std::ref(unexportable_key_service()), context_.get(),
+          std::ref(isolation_info), net::SiteForCookies(),
+          /*net_log_source=*/std::nullopt,
+          /*original_request_initiator=*/std::nullopt,
+          unexportable_keys::BackgroundTaskPriority::kBestEffort);
+  fetcher->StartFetchWithExistingKey(request_param, std::move(key),
+                                     callback.callback());
+  callback.WaitForCall();
+  callback.outcome().SessionForTesting();
+
+  EXPECT_THAT(
+      received_headers,
+      Contains(Pair("Origin", url::Origin::Create(GetBaseURL()).Serialize())));
+  EXPECT_THAT(received_headers,
+              Contains(Pair("Sec-Fetch-Site", "same-origin")));
+  EXPECT_THAT(received_headers, Contains(Pair("Sec-Fetch-Mode", "no-cors")));
+  EXPECT_THAT(received_headers, Contains(Pair("Sec-Fetch-Dest", "empty")));
+}
+
+TEST_F(RegistrationTest, RefreshSendsSameSiteFetchMetadataForCrossOrigin) {
+  crypto::ScopedFakeUnexportableKeyProvider scoped_fake_key_provider;
+  test_server::HttpRequest::HeaderMap received_headers;
+  server_.RegisterRequestHandler(base::BindRepeating(
+      &CaptureFetchMetadataHeaders, base::Unretained(&received_headers)));
+  ASSERT_TRUE(server_.Start());
+
+  // The session is scoped to a sibling origin within the same site as the
+  // refresh endpoint.
+  url::Origin scope_origin =
+      url::Origin::Create(server_.GetURL("other.a.test", "/"));
+
+  TestRegistrationCallback callback;
+  auto isolation_info = IsolationInfo::CreateTransient(/*nonce=*/std::nullopt);
+  auto request_param = RegistrationRequestParam::CreateForTesting(
+      GetBaseURL(), kSessionIdentifier, kChallenge,
+      /*authorization=*/std::nullopt, AttestationMode::kNone, scope_origin);
+  UnexportableSigningKeyId key = CreateSigningKey();
+  std::unique_ptr<RegistrationFetcher> fetcher =
+      RegistrationFetcher::CreateFetcher(
+          request_param, session_service(),
+          std::ref(unexportable_key_service()), context_.get(),
+          std::ref(isolation_info), net::SiteForCookies(),
+          /*net_log_source=*/std::nullopt,
+          /*original_request_initiator=*/std::nullopt,
+          unexportable_keys::BackgroundTaskPriority::kBestEffort);
+  fetcher->StartFetchWithExistingKey(request_param, std::move(key),
+                                     callback.callback());
+  callback.WaitForCall();
+  callback.outcome().SessionForTesting();
+
+  EXPECT_THAT(received_headers,
+              Contains(Pair("Origin", scope_origin.Serialize())));
+  EXPECT_THAT(received_headers, Contains(Pair("Sec-Fetch-Site", "same-site")));
+  EXPECT_THAT(received_headers, Contains(Pair("Sec-Fetch-Mode", "no-cors")));
+  EXPECT_THAT(received_headers, Contains(Pair("Sec-Fetch-Dest", "empty")));
+}
+
+TEST_F(RegistrationTest, RegistrationSendsOriginAndFetchMetadata) {
+  crypto::ScopedFakeUnexportableKeyProvider scoped_fake_key_provider;
+  test_server::HttpRequest::HeaderMap received_headers;
+  server_.RegisterRequestHandler(base::BindRepeating(
+      &CaptureFetchMetadataHeaders, base::Unretained(&received_headers)));
+  ASSERT_TRUE(server_.Start());
+
+  TestRegistrationCallback callback;
+  auto param = GetBasicParam();
+  std::unique_ptr<RegistrationFetcher> fetcher =
+      RegistrationFetcher::CreateFetcher(
+          param, session_service(), unexportable_key_service(), context_.get(),
+          IsolationInfo::CreateTransient(/*nonce=*/std::nullopt),
+          net::SiteForCookies(),
+          /*net_log_source=*/std::nullopt,
+          /*original_request_initiator=*/std::nullopt,
+          unexportable_keys::BackgroundTaskPriority::kBestEffort);
+  fetcher->StartCreateTokenAndFetch(param, CreateAlgArray(),
+                                    callback.callback());
+  callback.WaitForCall();
+  callback.outcome().SessionForTesting();
+
+  EXPECT_THAT(
+      received_headers,
+      Contains(Pair("Origin", url::Origin::Create(GetBaseURL()).Serialize())));
+  EXPECT_THAT(received_headers,
+              Contains(Pair("Sec-Fetch-Site", "same-origin")));
+  EXPECT_THAT(received_headers, Contains(Pair("Sec-Fetch-Mode", "no-cors")));
+  EXPECT_THAT(received_headers, Contains(Pair("Sec-Fetch-Dest", "empty")));
+}
+
 TEST_F(RegistrationTest, FetchRegistrationAndChallengeRequired) {
   crypto::ScopedFakeUnexportableKeyProvider scoped_fake_key_provider;
   server_.RegisterRequestHandler(base::BindRepeating(&ReturnForbidden));
@@ -1677,9 +2453,8 @@ TEST_F(RegistrationTest, FetchRegistrationAndChallengeRequired) {
   UnexportableSigningKeyId key = CreateSigningKey();
   std::unique_ptr<RegistrationFetcher> fetcher =
       RegistrationFetcher::CreateFetcher(
-          request_param, session_service(),
-          std::ref(unexportable_key_service()), context_.get(),
-          std::ref(isolation_info),
+          request_param, session_service(), unexportable_key_service(),
+          context_.get(), isolation_info, isolation_info.site_for_cookies(),
           /*net_log_source=*/std::nullopt,
           /*original_request_initiator=*/std::nullopt,
           unexportable_keys::BackgroundTaskPriority::kBestEffort);
@@ -1711,9 +2486,8 @@ TEST_F(RegistrationTest, FetchRefreshAndChallengeRequired_NoChallenge) {
   UnexportableSigningKeyId key = CreateSigningKey();
   std::unique_ptr<RegistrationFetcher> fetcher =
       RegistrationFetcher::CreateFetcher(
-          request_param, session_service(),
-          std::ref(unexportable_key_service()), context_.get(),
-          std::ref(isolation_info),
+          request_param, session_service(), unexportable_key_service(),
+          context_.get(), isolation_info, isolation_info.site_for_cookies(),
           /*net_log_source=*/std::nullopt,
           /*original_request_initiator=*/std::nullopt,
           unexportable_keys::BackgroundTaskPriority::kBestEffort);
@@ -1738,7 +2512,7 @@ TEST_F(RegistrationTest,
           -> std::unique_ptr<test_server::HttpResponse> {
         auto response = std::make_unique<test_server::BasicHttpResponse>();
         const std::optional<std::string> challenge =
-            GetRequestChallenge(request);
+            GetJwtClaim(request, "jti");
         if (!challenge.has_value()) {
           response->set_code(HTTP_FORBIDDEN);
           session->set_cached_challenge("updated_challenge");
@@ -1766,9 +2540,8 @@ TEST_F(RegistrationTest,
   UnexportableSigningKeyId key = CreateSigningKey();
   std::unique_ptr<RegistrationFetcher> fetcher =
       RegistrationFetcher::CreateFetcher(
-          request_param, session_service(),
-          std::ref(unexportable_key_service()), context_.get(),
-          std::ref(isolation_info),
+          request_param, session_service(), unexportable_key_service(),
+          context_.get(), isolation_info, isolation_info.site_for_cookies(),
           /*net_log_source=*/std::nullopt,
           /*original_request_initiator=*/std::nullopt,
           unexportable_keys::BackgroundTaskPriority::kBestEffort);
@@ -1792,7 +2565,7 @@ TEST_F(RegistrationTest,
           -> std::unique_ptr<test_server::HttpResponse> {
         auto response = std::make_unique<test_server::BasicHttpResponse>();
         const std::optional<std::string> challenge =
-            GetRequestChallenge(request);
+            GetJwtClaim(request, "jti");
         if (*challenge == kChallenge) {
           response->set_code(HTTP_FORBIDDEN);
           session->set_cached_challenge("updated_challenge");
@@ -1822,9 +2595,8 @@ TEST_F(RegistrationTest,
   UnexportableSigningKeyId key = CreateSigningKey();
   std::unique_ptr<RegistrationFetcher> fetcher =
       RegistrationFetcher::CreateFetcher(
-          request_param, session_service(),
-          std::ref(unexportable_key_service()), context_.get(),
-          std::ref(isolation_info),
+          request_param, session_service(), unexportable_key_service(),
+          context_.get(), isolation_info, isolation_info.site_for_cookies(),
           /*net_log_source=*/std::nullopt,
           /*original_request_initiator=*/std::nullopt,
           unexportable_keys::BackgroundTaskPriority::kBestEffort);
@@ -1853,6 +2625,7 @@ TEST_F(RegistrationTest, ContinueFalse) {
       RegistrationFetcher::CreateFetcher(
           param, session_service(), unexportable_key_service(), context_.get(),
           IsolationInfo::CreateTransient(/*nonce=*/std::nullopt),
+          SiteForCookies(),
           /*net_log_source=*/std::nullopt,
           /*original_request_initiator=*/std::nullopt,
           unexportable_keys::BackgroundTaskPriority::kBestEffort);
@@ -1870,15 +2643,7 @@ TEST_F(RegistrationTest, TerminateSessionOnRepeatedFailure_Refresh) {
   ASSERT_TRUE(server_.Start());
 
   unexportable_keys::MockUnexportableKeyService mock_service;
-
-  EXPECT_CALL(mock_service, GetAlgorithm(_))
-      .WillRepeatedly(
-          Invoke(&unexportable_key_service(),
-                 &unexportable_keys::UnexportableKeyService::GetAlgorithm));
-  EXPECT_CALL(mock_service, GetSubjectPublicKeyInfo(_))
-      .WillRepeatedly(Invoke(
-          &unexportable_key_service(),
-          &unexportable_keys::UnexportableKeyService::GetSubjectPublicKeyInfo));
+  mock_service.DelegateToService(unexportable_key_service());
   EXPECT_CALL(mock_service, SignSlowlyAsync)
       .WillRepeatedly(base::test::RunOnceCallbackRepeatedly<3>(
           base::unexpected(unexportable_keys::ServiceError::kCryptoApiFailed)));
@@ -1893,8 +2658,8 @@ TEST_F(RegistrationTest, TerminateSessionOnRepeatedFailure_Refresh) {
   UnexportableSigningKeyId key = CreateSigningKey();
   std::unique_ptr<RegistrationFetcher> fetcher =
       RegistrationFetcher::CreateFetcher(
-          request_param, session_service(), std::ref(mock_service),
-          context_.get(), std::ref(isolation_info),
+          request_param, session_service(), mock_service, context_.get(),
+          isolation_info, isolation_info.site_for_cookies(),
           /*net_log_source=*/std::nullopt,
           /*original_request_initiator=*/std::nullopt,
           unexportable_keys::BackgroundTaskPriority::kBestEffort);
@@ -1913,15 +2678,7 @@ TEST_F(RegistrationTest, TerminateSessionOnRepeatedFailure_Registration) {
   ASSERT_TRUE(server_.Start());
 
   unexportable_keys::MockUnexportableKeyService mock_service;
-
-  EXPECT_CALL(mock_service, GetAlgorithm(_))
-      .WillRepeatedly(
-          Invoke(&unexportable_key_service(),
-                 &unexportable_keys::UnexportableKeyService::GetAlgorithm));
-  EXPECT_CALL(mock_service, GetSubjectPublicKeyInfo(_))
-      .WillRepeatedly(Invoke(
-          &unexportable_key_service(),
-          &unexportable_keys::UnexportableKeyService::GetSubjectPublicKeyInfo));
+  mock_service.DelegateToService(unexportable_key_service());
   EXPECT_CALL(mock_service, SignSlowlyAsync)
       .WillRepeatedly(base::test::RunOnceCallbackRepeatedly<3>(
           base::unexpected(unexportable_keys::ServiceError::kCryptoApiFailed)));
@@ -1936,8 +2693,8 @@ TEST_F(RegistrationTest, TerminateSessionOnRepeatedFailure_Registration) {
   UnexportableSigningKeyId key = CreateSigningKey();
   std::unique_ptr<RegistrationFetcher> fetcher =
       RegistrationFetcher::CreateFetcher(
-          request_param, session_service(), std::ref(mock_service),
-          context_.get(), std::ref(isolation_info),
+          request_param, session_service(), mock_service, context_.get(),
+          isolation_info, isolation_info.site_for_cookies(),
           /*net_log_source=*/std::nullopt,
           /*original_request_initiator=*/std::nullopt,
           unexportable_keys::BackgroundTaskPriority::kBestEffort);
@@ -1962,6 +2719,7 @@ TEST_F(RegistrationTest, NetLogRegistrationResultLogged) {
       RegistrationFetcher::CreateFetcher(
           param, session_service(), unexportable_key_service(), context_.get(),
           IsolationInfo::CreateTransient(/*nonce=*/std::nullopt),
+          SiteForCookies(),
           /*net_log_source=*/std::nullopt,
           /*original_request_initiator=*/std::nullopt,
           unexportable_keys::BackgroundTaskPriority::kBestEffort);
@@ -1990,9 +2748,8 @@ TEST_F(RegistrationTest, NetLogRefreshResultLogged) {
   UnexportableSigningKeyId key = CreateSigningKey();
   std::unique_ptr<RegistrationFetcher> fetcher =
       RegistrationFetcher::CreateFetcher(
-          request_param, session_service(),
-          std::ref(unexportable_key_service()), context_.get(),
-          std::ref(isolation_info),
+          request_param, session_service(), unexportable_key_service(),
+          context_.get(), isolation_info, isolation_info.site_for_cookies(),
           /*net_log_source=*/std::nullopt,
           /*original_request_initiator=*/std::nullopt,
           unexportable_keys::BackgroundTaskPriority::kBestEffort);
@@ -2031,9 +2788,8 @@ TEST_F(RegistrationTest, TerminateSessionOnRepeatedChallenge) {
   UnexportableSigningKeyId key = CreateSigningKey();
   std::unique_ptr<RegistrationFetcher> fetcher =
       RegistrationFetcher::CreateFetcher(
-          request_param, session_service(),
-          std::ref(unexportable_key_service()), context_.get(),
-          std::ref(isolation_info),
+          request_param, session_service(), unexportable_key_service(),
+          context_.get(), isolation_info, isolation_info.site_for_cookies(),
           /*net_log_source=*/std::nullopt,
           /*original_request_initiator=*/std::nullopt,
           unexportable_keys::BackgroundTaskPriority::kBestEffort);
@@ -2046,25 +2802,11 @@ TEST_F(RegistrationTest, TerminateSessionOnRepeatedChallenge) {
 }
 
 TEST_F(RegistrationTest, RefreshCachesSignedChallenge) {
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndEnableFeature(
-      features::kDeviceBoundSessionSigningQuotaAndCaching);
-
   server_.RegisterRequestHandler(
       base::BindRepeating(&ReturnResponse, HTTP_OK, kBasicValidJson));
   ASSERT_TRUE(server_.Start());
 
-  unexportable_keys::MockUnexportableKeyService mock_key_service;
-  auto [spki, jwk] = GetRS256SpkiAndJwkForTesting();
-  std::vector<unsigned char> spki_vector(spki.begin(), spki.end());
-  EXPECT_CALL(mock_key_service, GetAlgorithm(_))
-      .WillOnce(Return(crypto::SignatureVerifier::RSA_PKCS1_SHA256));
-  EXPECT_CALL(mock_key_service, GetSubjectPublicKeyInfo(_))
-      .WillOnce(Return(spki_vector));
-  EXPECT_CALL(mock_key_service, SignSlowlyAsync(_, _, _, _))
-      .WillOnce(WithArg<3>([](auto callback) {
-        std::move(callback).Run(std::vector<uint8_t>{'s', 'i', 'g'});
-      }));
+  crypto::ScopedFakeUnexportableKeyProvider scoped_fake_key_provider;
 
   // No cached challenge initially.
   EXPECT_CALL(session_service(), GetLatestSignedRefreshChallenge(_))
@@ -2086,12 +2828,12 @@ TEST_F(RegistrationTest, RefreshCachesSignedChallenge) {
       /*authorization=*/std::nullopt);
   std::unique_ptr<RegistrationFetcher> fetcher =
       RegistrationFetcher::CreateFetcher(
-          request_param, session_service(), std::ref(mock_key_service),
-          context_.get(), std::ref(isolation_info),
+          request_param, session_service(), unexportable_key_service(),
+          context_.get(), isolation_info, isolation_info.site_for_cookies(),
           /*net_log_source=*/std::nullopt,
           /*original_request_initiator=*/std::nullopt,
           unexportable_keys::BackgroundTaskPriority::kBestEffort);
-  fetcher->StartFetchWithExistingKey(request_param, UnexportableSigningKeyId(),
+  fetcher->StartFetchWithExistingKey(request_param, CreateSigningKey(),
                                      callback.callback());
   callback.WaitForCall();
 
@@ -2099,19 +2841,15 @@ TEST_F(RegistrationTest, RefreshCachesSignedChallenge) {
 }
 
 TEST_F(RegistrationTest, RefreshCachedSignedChallengeUsed) {
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndEnableFeature(
-      features::kDeviceBoundSessionSigningQuotaAndCaching);
-
   server_.RegisterRequestHandler(
       base::BindRepeating(&ReturnResponse, HTTP_OK, kBasicValidJson));
   ASSERT_TRUE(server_.Start());
 
   // No calls to actual signing.
   unexportable_keys::MockUnexportableKeyService mock_key_service;
-  EXPECT_CALL(mock_key_service, GetAlgorithm(_)).Times(0);
-  EXPECT_CALL(mock_key_service, GetSubjectPublicKeyInfo(_)).Times(0);
-  EXPECT_CALL(mock_key_service, SignSlowlyAsync(_, _, _, _)).Times(0);
+  EXPECT_CALL(mock_key_service, GetAlgorithm).Times(0);
+  EXPECT_CALL(mock_key_service, GetSubjectPublicKeyInfo).Times(0);
+  EXPECT_CALL(mock_key_service, SignSlowlyAsync).Times(0);
 
   // Create a matching cached challenge.
   SessionService::SignedRefreshChallenge cached_challenge;
@@ -2133,8 +2871,8 @@ TEST_F(RegistrationTest, RefreshCachedSignedChallengeUsed) {
       /*authorization=*/std::nullopt);
   std::unique_ptr<RegistrationFetcher> fetcher =
       RegistrationFetcher::CreateFetcher(
-          request_param, session_service(), std::ref(mock_key_service),
-          context_.get(), std::ref(isolation_info),
+          request_param, session_service(), mock_key_service, context_.get(),
+          isolation_info, isolation_info.site_for_cookies(),
           /*net_log_source=*/std::nullopt,
           /*original_request_initiator=*/std::nullopt,
           unexportable_keys::BackgroundTaskPriority::kBestEffort);
@@ -2146,25 +2884,11 @@ TEST_F(RegistrationTest, RefreshCachedSignedChallengeUsed) {
 }
 
 TEST_F(RegistrationTest, RefreshCachedSignedChallengeDoesNotMatch) {
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndEnableFeature(
-      features::kDeviceBoundSessionSigningQuotaAndCaching);
-
   server_.RegisterRequestHandler(
       base::BindRepeating(&ReturnResponse, HTTP_OK, kBasicValidJson));
   ASSERT_TRUE(server_.Start());
 
-  unexportable_keys::MockUnexportableKeyService mock_key_service;
-  auto [spki, jwk] = GetRS256SpkiAndJwkForTesting();
-  std::vector<unsigned char> spki_vector(spki.begin(), spki.end());
-  EXPECT_CALL(mock_key_service, GetAlgorithm(_))
-      .WillOnce(Return(crypto::SignatureVerifier::RSA_PKCS1_SHA256));
-  EXPECT_CALL(mock_key_service, GetSubjectPublicKeyInfo(_))
-      .WillOnce(Return(spki_vector));
-  EXPECT_CALL(mock_key_service, SignSlowlyAsync(_, _, _, _))
-      .WillOnce(WithArg<3>([](auto callback) {
-        std::move(callback).Run(std::vector<uint8_t>{'s', 'i', 'g'});
-      }));
+  crypto::ScopedFakeUnexportableKeyProvider scoped_fake_key_provider;
 
   // Add cached signed challenge that doesn't match (the challenge used is
   // different).
@@ -2188,12 +2912,12 @@ TEST_F(RegistrationTest, RefreshCachedSignedChallengeDoesNotMatch) {
       /*authorization=*/std::nullopt);
   std::unique_ptr<RegistrationFetcher> fetcher =
       RegistrationFetcher::CreateFetcher(
-          request_param, session_service(), std::ref(mock_key_service),
-          context_.get(), std::ref(isolation_info),
+          request_param, session_service(), unexportable_key_service(),
+          context_.get(), isolation_info, isolation_info.site_for_cookies(),
           /*net_log_source=*/std::nullopt,
           /*original_request_initiator=*/std::nullopt,
           unexportable_keys::BackgroundTaskPriority::kBestEffort);
-  fetcher->StartFetchWithExistingKey(request_param, UnexportableSigningKeyId(),
+  fetcher->StartFetchWithExistingKey(request_param, CreateSigningKey(),
                                      callback.callback());
   callback.WaitForCall();
 
@@ -2201,10 +2925,6 @@ TEST_F(RegistrationTest, RefreshCachedSignedChallengeDoesNotMatch) {
 }
 
 TEST_F(RegistrationTest, RegistrationTriggersSigningOccurrence) {
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndEnableFeature(
-      features::kDeviceBoundSessionSigningQuotaAndCaching);
-
   // Expect the signing checks are done only when the feature is enabled.
   EXPECT_CALL(session_service(), AddSigningOccurrence(_)).Times(1);
   EXPECT_CALL(session_service(), SigningQuotaExceeded(_))
@@ -2227,6 +2947,7 @@ TEST_F(RegistrationTest, RegistrationTriggersSigningOccurrence) {
       RegistrationFetcher::CreateFetcher(
           param, session_service(), unexportable_key_service(), context_.get(),
           IsolationInfo::CreateTransient(/*nonce=*/std::nullopt),
+          SiteForCookies(),
           /*net_log_source=*/std::nullopt,
           /*original_request_initiator=*/std::nullopt,
           unexportable_keys::BackgroundTaskPriority::kBestEffort);
@@ -2252,9 +2973,8 @@ TEST_F(RegistrationTest, RefreshWithNewSessionIdFails) {
   UnexportableSigningKeyId key = CreateSigningKey();
   std::unique_ptr<RegistrationFetcher> fetcher =
       RegistrationFetcher::CreateFetcher(
-          request_param, session_service(),
-          std::ref(unexportable_key_service()), context_.get(),
-          std::ref(isolation_info),
+          request_param, session_service(), unexportable_key_service(),
+          context_.get(), isolation_info, isolation_info.site_for_cookies(),
           /*net_log_source=*/std::nullopt,
           /*original_request_initiator=*/std::nullopt,
           unexportable_keys::BackgroundTaskPriority::kBestEffort);
@@ -2305,9 +3025,8 @@ TEST_F(RegistrationTest, RegistrationWithNonStringRefreshInitiatorsFails) {
   UnexportableSigningKeyId key = CreateSigningKey();
   std::unique_ptr<RegistrationFetcher> fetcher =
       RegistrationFetcher::CreateFetcher(
-          request_param, session_service(),
-          std::ref(unexportable_key_service()), context_.get(),
-          std::ref(isolation_info),
+          request_param, session_service(), unexportable_key_service(),
+          context_.get(), isolation_info, isolation_info.site_for_cookies(),
           /*net_log_source=*/std::nullopt,
           /*original_request_initiator=*/std::nullopt,
           unexportable_keys::BackgroundTaskPriority::kBestEffort);
@@ -2359,6 +3078,7 @@ TEST_F(RegistrationTest, MissingIncludeSiteFails) {
       RegistrationFetcher::CreateFetcher(
           param, session_service(), unexportable_key_service(), context_.get(),
           IsolationInfo::CreateTransient(/*nonce=*/std::nullopt),
+          SiteForCookies(),
           /*net_log_source=*/std::nullopt,
           /*original_request_initiator=*/std::nullopt,
           unexportable_keys::BackgroundTaskPriority::kBestEffort);
@@ -2390,6 +3110,7 @@ TEST_F(RegistrationTest, ShutdownDuringRequest) {
       RegistrationFetcher::CreateFetcher(
           param, session_service(), unexportable_key_service(), context_.get(),
           IsolationInfo::CreateTransient(/*nonce=*/std::nullopt),
+          SiteForCookies(),
           /*net_log_source=*/std::nullopt,
           /*original_request_initiator=*/std::nullopt,
           unexportable_keys::BackgroundTaskPriority::kBestEffort);
@@ -2419,6 +3140,7 @@ TEST_F(RegistrationTest, EmptyResponseOnRegistration) {
       RegistrationFetcher::CreateFetcher(
           param, session_service(), unexportable_key_service(), context_.get(),
           IsolationInfo::CreateTransient(/*nonce=*/std::nullopt),
+          SiteForCookies(),
           /*net_log_source=*/std::nullopt,
           /*original_request_initiator=*/std::nullopt,
           unexportable_keys::BackgroundTaskPriority::kBestEffort);
@@ -2448,6 +3170,7 @@ TEST_F(RegistrationTest, EmptyResponseOnRefresh) {
           request_param, session_service(), unexportable_key_service(),
           context_.get(),
           IsolationInfo::CreateTransient(/*nonce=*/std::nullopt),
+          SiteForCookies(),
           /*net_log_source=*/std::nullopt,
           /*original_request_initiator=*/std::nullopt,
           unexportable_keys::BackgroundTaskPriority::kBestEffort);
@@ -2481,6 +3204,7 @@ TEST_F(RegistrationTest, SetChallengeOnRegistration) {
       RegistrationFetcher::CreateFetcher(
           param, session_service(), unexportable_key_service(), context_.get(),
           IsolationInfo::CreateTransient(/*nonce=*/std::nullopt),
+          SiteForCookies(),
           /*net_log_source=*/std::nullopt,
           /*original_request_initiator=*/std::nullopt,
           unexportable_keys::BackgroundTaskPriority::kBestEffort);
@@ -2501,8 +3225,8 @@ TEST_F(RegistrationTest, RegistrationBySubdomain_Success) {
                           R"json({
                             "registering_origins": [ "https://subdomain.a.test:$1" ]
                           })json")));
-  server_.RegisterRequestHandler(
-      base::BindRepeating(&ReturnResponse, HTTP_OK, kBasicValidJson));
+  server_.RegisterRequestHandler(base::BindRepeating(
+      &ReturnSubdomainResponse, base::Unretained(&server_)));
   ASSERT_TRUE(server_.Start());
 
   GURL registration_url = server_.GetURL("subdomain.a.test", "/");
@@ -2515,6 +3239,7 @@ TEST_F(RegistrationTest, RegistrationBySubdomain_Success) {
       RegistrationFetcher::CreateFetcher(
           param, session_service(), unexportable_key_service(), context_.get(),
           IsolationInfo::CreateTransient(/*nonce=*/std::nullopt),
+          SiteForCookies(),
           /*net_log_source=*/std::nullopt,
           /*original_request_initiator=*/std::nullopt,
           unexportable_keys::BackgroundTaskPriority::kBestEffort);
@@ -2530,8 +3255,8 @@ TEST_F(RegistrationTest, RegistrationBySubdomain_WellKnownUnavailable) {
   server_.RegisterRequestHandler(base::BindRepeating(
       &ReturnForHostAndPath, "a.test", "/.well-known/device-bound-sessions",
       base::BindRepeating(&ReturnResponse, HTTP_BAD_REQUEST, "")));
-  server_.RegisterRequestHandler(
-      base::BindRepeating(&ReturnResponse, HTTP_OK, kBasicValidJson));
+  server_.RegisterRequestHandler(base::BindRepeating(
+      &ReturnSubdomainResponse, base::Unretained(&server_)));
   ASSERT_TRUE(server_.Start());
 
   GURL registration_url = server_.GetURL("subdomain.a.test", "/");
@@ -2544,6 +3269,7 @@ TEST_F(RegistrationTest, RegistrationBySubdomain_WellKnownUnavailable) {
       RegistrationFetcher::CreateFetcher(
           param, session_service(), unexportable_key_service(), context_.get(),
           IsolationInfo::CreateTransient(/*nonce=*/std::nullopt),
+          SiteForCookies(),
           /*net_log_source=*/std::nullopt,
           /*original_request_initiator=*/std::nullopt,
           unexportable_keys::BackgroundTaskPriority::kBestEffort);
@@ -2561,8 +3287,8 @@ TEST_F(RegistrationTest, RegistrationBySubdomain_WellKnownMalformed) {
   server_.RegisterRequestHandler(base::BindRepeating(
       &ReturnForHostAndPath, "a.test", "/.well-known/device-bound-sessions",
       base::BindRepeating(&ReturnResponse, HTTP_OK, "invalid JSON")));
-  server_.RegisterRequestHandler(
-      base::BindRepeating(&ReturnResponse, HTTP_OK, kBasicValidJson));
+  server_.RegisterRequestHandler(base::BindRepeating(
+      &ReturnSubdomainResponse, base::Unretained(&server_)));
   ASSERT_TRUE(server_.Start());
 
   GURL registration_url = server_.GetURL("subdomain.a.test", "/");
@@ -2575,6 +3301,7 @@ TEST_F(RegistrationTest, RegistrationBySubdomain_WellKnownMalformed) {
       RegistrationFetcher::CreateFetcher(
           param, session_service(), unexportable_key_service(), context_.get(),
           IsolationInfo::CreateTransient(/*nonce=*/std::nullopt),
+          SiteForCookies(),
           /*net_log_source=*/std::nullopt,
           /*original_request_initiator=*/std::nullopt,
           unexportable_keys::BackgroundTaskPriority::kBestEffort);
@@ -2593,8 +3320,8 @@ TEST_F(RegistrationTest, RegistrationBySubdomain_WellKnownMalformedEntry) {
       &ReturnForHostAndPath, "a.test", "/.well-known/device-bound-sessions",
       base::BindRepeating(&ReturnResponse, HTTP_OK,
                           "{\"registering_origins\": [ 12345 ]}")));
-  server_.RegisterRequestHandler(
-      base::BindRepeating(&ReturnResponse, HTTP_OK, kBasicValidJson));
+  server_.RegisterRequestHandler(base::BindRepeating(
+      &ReturnSubdomainResponse, base::Unretained(&server_)));
   ASSERT_TRUE(server_.Start());
 
   GURL registration_url = server_.GetURL("subdomain.a.test", "/");
@@ -2607,6 +3334,7 @@ TEST_F(RegistrationTest, RegistrationBySubdomain_WellKnownMalformedEntry) {
       RegistrationFetcher::CreateFetcher(
           param, session_service(), unexportable_key_service(), context_.get(),
           IsolationInfo::CreateTransient(/*nonce=*/std::nullopt),
+          SiteForCookies(),
           /*net_log_source=*/std::nullopt,
           /*original_request_initiator=*/std::nullopt,
           unexportable_keys::BackgroundTaskPriority::kBestEffort);
@@ -2627,8 +3355,8 @@ TEST_F(RegistrationTest, RegistrationBySubdomain_Unauthorized) {
                           R"json({
                             "registering_origins": [ "https://subdomain.a.test:$1" ]
                           })json")));
-  server_.RegisterRequestHandler(
-      base::BindRepeating(&ReturnResponse, HTTP_OK, kBasicValidJson));
+  server_.RegisterRequestHandler(base::BindRepeating(
+      &ReturnSubdomainResponse, base::Unretained(&server_)));
   ASSERT_TRUE(server_.Start());
 
   GURL registration_url = server_.GetURL("not-allowed-subdomain.a.test", "/");
@@ -2641,6 +3369,7 @@ TEST_F(RegistrationTest, RegistrationBySubdomain_Unauthorized) {
       RegistrationFetcher::CreateFetcher(
           param, session_service(), unexportable_key_service(), context_.get(),
           IsolationInfo::CreateTransient(/*nonce=*/std::nullopt),
+          SiteForCookies(),
           /*net_log_source=*/std::nullopt,
           /*original_request_initiator=*/std::nullopt,
           unexportable_keys::BackgroundTaskPriority::kBestEffort);
@@ -2650,6 +3379,36 @@ TEST_F(RegistrationTest, RegistrationBySubdomain_Unauthorized) {
   const RegistrationResult& out_session = callback.outcome();
   EXPECT_EQ(out_session.SessionErrorForTesting()->type,
             SessionError::kSubdomainRegistrationUnauthorized);
+}
+
+TEST_F(RegistrationTest, RegistrationBySubdomain_IncludeSiteFalse_Fails) {
+  crypto::ScopedFakeUnexportableKeyProvider scoped_fake_key_provider;
+
+  server_.RegisterRequestHandler(base::BindRepeating(
+      &ReturnResponse, HTTP_OK, kSubdomainValidJsonIncludeSiteFalse));
+  ASSERT_TRUE(server_.Start());
+
+  GURL registration_url = server_.GetURL("subdomain.a.test", "/");
+
+  RecordingNetLogObserver net_log_observer;
+  TestRegistrationCallback callback;
+
+  auto param = GetBasicParam(registration_url);
+  std::unique_ptr<RegistrationFetcher> fetcher =
+      RegistrationFetcher::CreateFetcher(
+          param, session_service(), unexportable_key_service(), context_.get(),
+          IsolationInfo::CreateTransient(/*nonce=*/std::nullopt),
+          SiteForCookies(),
+          /*net_log_source=*/std::nullopt,
+          /*original_request_initiator=*/std::nullopt,
+          unexportable_keys::BackgroundTaskPriority::kBestEffort);
+  fetcher->StartCreateTokenAndFetch(param, CreateAlgArray(),
+                                    callback.callback());
+  callback.WaitForCall();
+  const RegistrationResult& out_session = callback.outcome();
+  ASSERT_NE(out_session.SessionErrorForTesting(), nullptr);
+  EXPECT_EQ(out_session.SessionErrorForTesting()->type,
+            SessionError::kCrossOriginRegistrationSiteNotIncluded);
 }
 
 TEST_F(RegistrationTest, RegistrationBySubdomain_MultipleAllowed) {
@@ -2664,8 +3423,8 @@ TEST_F(RegistrationTest, RegistrationBySubdomain_MultipleAllowed) {
                               "https://other-subdomain.a.test:$1"
                             ]
                           })json")));
-  server_.RegisterRequestHandler(
-      base::BindRepeating(&ReturnResponse, HTTP_OK, kBasicValidJson));
+  server_.RegisterRequestHandler(base::BindRepeating(
+      &ReturnSubdomainResponse, base::Unretained(&server_)));
   ASSERT_TRUE(server_.Start());
 
   GURL registration_url = server_.GetURL("subdomain.a.test", "/");
@@ -2678,6 +3437,7 @@ TEST_F(RegistrationTest, RegistrationBySubdomain_MultipleAllowed) {
             param, session_service(), unexportable_key_service(),
             context_.get(),
             IsolationInfo::CreateTransient(/*nonce=*/std::nullopt),
+            SiteForCookies(),
             /*net_log_source=*/std::nullopt,
             /*original_request_initiator=*/std::nullopt,
             unexportable_keys::BackgroundTaskPriority::kBestEffort);
@@ -2700,6 +3460,7 @@ TEST_F(RegistrationTest, RegistrationBySubdomain_MultipleAllowed) {
             param, session_service(), unexportable_key_service(),
             context_.get(),
             IsolationInfo::CreateTransient(/*nonce=*/std::nullopt),
+            SiteForCookies(),
             /*net_log_source=*/std::nullopt,
             /*original_request_initiator=*/std::nullopt,
             unexportable_keys::BackgroundTaskPriority::kBestEffort);
@@ -2708,6 +3469,40 @@ TEST_F(RegistrationTest, RegistrationBySubdomain_MultipleAllowed) {
     callback.WaitForCall();
     callback.outcome().SessionForTesting();
   }
+}
+
+TEST_F(RegistrationTest,
+       RegistrationBySubdomain_DoesNotInheritSubdomainQueryOrFragment) {
+  crypto::ScopedFakeUnexportableKeyProvider scoped_fake_key_provider;
+
+  server_.RegisterRequestHandler(base::BindRepeating(
+      &ReturnForHostAndPath, "a.test", "/.well-known/device-bound-sessions",
+      base::BindRepeating(&ReturnWellKnown,
+                          R"json({
+                            "registering_origins": [ "https://subdomain.a.test:$1" ]
+                          })json")));
+  server_.RegisterRequestHandler(base::BindRepeating(
+      &ReturnSubdomainResponse, base::Unretained(&server_)));
+  ASSERT_TRUE(server_.Start());
+
+  // Registration URL includes query parameters and fragment.
+  GURL registration_url = server_.GetURL(
+      "subdomain.a.test", "/reg?evil=ATTACKER_CONTROLLED#fragment");
+
+  TestRegistrationCallback callback;
+  auto param = GetBasicParam(registration_url);
+  std::unique_ptr<RegistrationFetcher> fetcher =
+      RegistrationFetcher::CreateFetcher(
+          param, session_service(), unexportable_key_service(), context_.get(),
+          IsolationInfo::CreateTransient(/*nonce=*/std::nullopt),
+          SiteForCookies(),
+          /*net_log_source=*/std::nullopt,
+          /*original_request_initiator=*/std::nullopt,
+          unexportable_keys::BackgroundTaskPriority::kBestEffort);
+  fetcher->StartCreateTokenAndFetch(param, CreateAlgArray(),
+                                    callback.callback());
+  callback.WaitForCall();
+  callback.outcome().SessionForTesting();
 }
 
 TEST_F(RegistrationTest, RegistrationRedirectToSubdomain) {
@@ -2735,7 +3530,9 @@ TEST_F(RegistrationTest, RegistrationRedirectToSubdomain) {
         if (request.relative_url != "/dbsc") {
           return nullptr;
         }
-        return ReturnResponse(HTTP_OK, kBasicValidJson, request);
+        return ReturnResponse(
+            HTTP_OK, GetSubdomainValidJsonWithCustomPort(server_.port()),
+            request);
       }));
 
   // 3. Monitor well-known requests
@@ -2760,6 +3557,7 @@ TEST_F(RegistrationTest, RegistrationRedirectToSubdomain) {
       RegistrationFetcher::CreateFetcher(
           param, session_service(), unexportable_key_service(), context_.get(),
           IsolationInfo::CreateTransient(/*nonce=*/std::nullopt),
+          SiteForCookies(),
           /*net_log_source=*/std::nullopt,
           /*original_request_initiator=*/std::nullopt,
           unexportable_keys::BackgroundTaskPriority::kBestEffort);
@@ -2771,6 +3569,95 @@ TEST_F(RegistrationTest, RegistrationRedirectToSubdomain) {
   EXPECT_TRUE(well_known_fetched);
   EXPECT_EQ(callback.outcome().SessionErrorForTesting()->type,
             SessionError::kSubdomainRegistrationWellKnownUnavailable);
+}
+
+TEST_F(RegistrationTest, FederatedWellKnownDiscoverySendsFetchMetadata) {
+  crypto::ScopedFakeUnexportableKeyProvider scoped_fake_key_provider;
+
+  test_server::HttpRequest::HeaderMap captured_headers;
+  bool well_known_fetched = false;
+
+  // 1. Initial Endpoint Response: Instruct the Fetcher to redirect onto a
+  // Subdomain scope, implicitly triggering the DBSC cross-origin .well-known
+  // verification pipeline.
+  server_.RegisterRequestHandler(base::BindLambdaForTesting(
+      [&](const test_server::HttpRequest& request)
+          -> std::unique_ptr<test_server::HttpResponse> {
+        if (request.relative_url != "/") {
+          return nullptr;
+        }
+        auto response = std::make_unique<test_server::BasicHttpResponse>();
+        response->set_code(HTTP_FOUND);
+        response->AddCustomHeader(
+            "Location", server_.GetURL("subdomain.a.test", "/dbsc").spec());
+        return response;
+      }));
+
+  // 2. Mock Config Delivery for the Subdomain path.
+  server_.RegisterRequestHandler(base::BindLambdaForTesting(
+      [&](const test_server::HttpRequest& request)
+          -> std::unique_ptr<test_server::HttpResponse> {
+        if (request.relative_url != "/dbsc") {
+          return nullptr;
+        }
+        return ReturnResponse(
+            HTTP_OK, GetSubdomainValidJsonWithCustomPort(server_.port()),
+            request);
+      }));
+
+  // 3. .well-known Interceptor: Capture the outbound GET metadata for the
+  // cross-origin validation check.
+  server_.RegisterRequestHandler(base::BindLambdaForTesting(
+      [&](const test_server::HttpRequest& request)
+          -> std::unique_ptr<test_server::HttpResponse> {
+        if (request.relative_url != "/.well-known/device-bound-sessions") {
+          return nullptr;
+        }
+
+        for (const char* name :
+             {"Sec-Fetch-Site", "Sec-Fetch-Mode", "Sec-Fetch-Dest"}) {
+          auto it = request.headers.find(name);
+          if (it != request.headers.end()) {
+            captured_headers[name] = it->second;
+          }
+        }
+
+        well_known_fetched = true;
+        // Yield a 404 to cleanly isolate the test strictly to the pre-flight
+        // discovery dispatch.
+        return ReturnResponse(HTTP_NOT_FOUND, "", request);
+      }));
+
+  ASSERT_TRUE(server_.Start());
+
+  GURL registration_url = server_.GetURL("a.test", "/");
+  TestRegistrationCallback callback;
+
+  // Trigger Subdomain Cross-Origin Registration, implicitly firing the
+  // .well-known discovery step on the server-bound origin.
+  auto param = GetBasicParam(registration_url);
+  std::unique_ptr<RegistrationFetcher> fetcher =
+      RegistrationFetcher::CreateFetcher(
+          param, session_service(), unexportable_key_service(), context_.get(),
+          IsolationInfo::CreateTransient(/*nonce=*/std::nullopt),
+          net::SiteForCookies(),
+          /*net_log_source=*/std::nullopt,
+          /*original_request_initiator=*/std::nullopt,
+          unexportable_keys::BackgroundTaskPriority::kBestEffort);
+  fetcher->StartCreateTokenAndFetch(param, CreateAlgArray(),
+                                    callback.callback());
+  callback.WaitForCall();
+
+  // 1. Assert the .well-known validator was indeed engaged by the DBSC
+  // state-machine.
+  EXPECT_TRUE(well_known_fetched);
+
+  // 2. Validate that our ConfigureWellKnownRequest pipeline successfully
+  // computed and appended W3C 'no-cors', 'empty', and Origin-relative Metadata.
+  EXPECT_THAT(captured_headers, Contains(Pair("Sec-Fetch-Mode", "no-cors")));
+  EXPECT_THAT(captured_headers, Contains(Pair("Sec-Fetch-Dest", "empty")));
+  EXPECT_THAT(captured_headers,
+              Contains(Pair("Sec-Fetch-Site", "same-origin")));
 }
 
 TEST_F(RegistrationTest, FederatedSuccess) {
@@ -2799,6 +3686,37 @@ TEST_F(RegistrationTest, FederatedSuccess) {
       /*authorization=*/std::nullopt);
   auto session_or_error =
       FetchWithFederatedKey(param, key, server_.GetURL("provider.a.test", "/"));
+  EXPECT_EQ(session_or_error.SessionForTesting().unexportable_key_id(), key);
+}
+
+TEST_F(RegistrationTest, Federated_DoesNotInheritQueryOrFragment) {
+  crypto::ScopedFakeUnexportableKeyProvider scoped_fake_key_provider;
+
+  server_.RegisterRequestHandler(
+      base::BindRepeating(&ReturnForHostAndPath, "provider.a.test",
+                          "/.well-known/device-bound-sessions",
+                          base::BindRepeating(&ReturnWellKnown,
+                                              R"json({
+                                                "relying_origins": [ "https://rp.a.test:$1" ]
+                                              })json")));
+  server_.RegisterRequestHandler(base::BindRepeating(
+      &ReturnForHostAndPath, "rp.a.test", "/.well-known/device-bound-sessions",
+      base::BindRepeating(&ReturnWellKnown,
+                          R"json({
+                            "provider_origin": "https://provider.a.test:$1"
+                          })json")));
+  server_.RegisterRequestHandler(
+      base::BindRepeating(&ReturnResponse, HTTP_OK, kBasicValidJson));
+  ASSERT_TRUE(server_.Start());
+
+  UnexportableSigningKeyId key = CreateSigningKey();
+  auto param = RegistrationRequestParam::CreateForTesting(
+      server_.GetURL("rp.a.test", "/reg?rp_query=1#rp_frag"),
+      kSessionIdentifier, kChallenge,
+      /*authorization=*/std::nullopt);
+  GURL provider_url =
+      server_.GetURL("provider.a.test", "/path?provider_query=1#provider_frag");
+  auto session_or_error = FetchWithFederatedKey(param, key, provider_url);
   EXPECT_EQ(session_or_error.SessionForTesting().unexportable_key_id(), key);
 }
 
@@ -3094,6 +4012,105 @@ TEST_F(RegistrationTest, FederatedNotRegistrableDoesNotCount) {
   EXPECT_EQ(session_or_error.SessionForTesting().unexportable_key_id(), key);
 }
 
+TEST_F(RegistrationTest, FederatedInvalidRelyingOriginDoesNotBypassLabelLimit) {
+  crypto::ScopedFakeUnexportableKeyProvider scoped_fake_key_provider;
+  // "https://sneaky.a.test:99999" is not a valid URL (port out of range), but
+  // `GURL` still exposes "sneaky.a.test" as its host, so it must not be able to
+  // spend -- or bypass -- the relying origin label budget.
+  server_.RegisterRequestHandler(
+      base::BindRepeating(&ReturnForHostAndPath, "provider.a.test",
+                          "/.well-known/device-bound-sessions",
+                          base::BindRepeating(&ReturnWellKnown,
+                                              R"json({
+                                                "relying_origins": [
+                                                  "https://sneaky.a.test:99999",
+                                                  "https://rp.b1.test:$1",
+                                                  "https://rp.b2.test:$1",
+                                                  "https://rp.b3.test:$1",
+                                                  "https://rp.b4.test:$1",
+                                                  "https://rp.b5.test:$1",
+                                                  "https://rp.a.test:$1"
+                                                ]
+                                              })json")));
+  ASSERT_TRUE(server_.Start());
+
+  UnexportableSigningKeyId key = CreateSigningKey();
+  auto param = RegistrationRequestParam::CreateForTesting(
+      server_.GetURL("rp.a.test", "/"), kSessionIdentifier, kChallenge,
+      /*authorization=*/std::nullopt);
+  auto session_or_error =
+      FetchWithFederatedKey(param, key, server_.GetURL("provider.a.test", "/"));
+  EXPECT_EQ(session_or_error.SessionErrorForTesting()->type,
+            SessionError::kTooManyRelyingOriginLabels);
+}
+
+TEST_F(RegistrationTest, FederatedFifthLabelAllowed) {
+  crypto::ScopedFakeUnexportableKeyProvider scoped_fake_key_provider;
+
+  // Verifies that when the target origin's label ("a") is the 5th distinct
+  // label (`kMaxLabels`), CheckRelyingOrigin matches on the label and allows
+  // registration even when another origin with the same label appears earlier
+  // and additional distinct labels follow.
+  server_.RegisterRequestHandler(
+      base::BindRepeating(&ReturnForHostAndPath, "provider.a.test",
+                          "/.well-known/device-bound-sessions",
+                          base::BindRepeating(&ReturnWellKnown,
+                                              R"json({
+                                                "relying_origins": [
+                                                  "https://rp.b1.test:$1",
+                                                  "https://rp.b2.test:$1",
+                                                  "https://rp.b3.test:$1",
+                                                  "https://rp.b4.test:$1",
+                                                  "https://other.a.test:$1",
+                                                  "https://rp.b5.test:$1",
+                                                  "https://rp.a.test:$1"
+                                                ]
+                                              })json")));
+  server_.RegisterRequestHandler(base::BindRepeating(
+      &ReturnForHostAndPath, "rp.a.test", "/.well-known/device-bound-sessions",
+      base::BindRepeating(&ReturnWellKnown,
+                          R"json({
+                            "provider_origin": "https://provider.a.test:$1"
+                          })json")));
+  server_.RegisterRequestHandler(
+      base::BindRepeating(&ReturnResponse, HTTP_OK, kBasicValidJson));
+  ASSERT_TRUE(server_.Start());
+
+  UnexportableSigningKeyId key = CreateSigningKey();
+  auto param = RegistrationRequestParam::CreateForTesting(
+      server_.GetURL("rp.a.test", "/"), kSessionIdentifier, kChallenge,
+      /*authorization=*/std::nullopt);
+  auto session_or_error =
+      FetchWithFederatedKey(param, key, server_.GetURL("provider.a.test", "/"));
+  EXPECT_EQ(session_or_error.SessionForTesting().unexportable_key_id(), key);
+}
+
+TEST_F(RegistrationTest, FederatedTargetOriginNonRegistrableRejected) {
+  crypto::ScopedFakeUnexportableKeyProvider scoped_fake_key_provider;
+
+  // An IP address origin has no registrable domain label, so it cannot satisfy
+  // the label limit check even if explicitly listed in relying_origins.
+  server_.RegisterRequestHandler(
+      base::BindRepeating(&ReturnForHostAndPath, "provider.a.test",
+                          "/.well-known/device-bound-sessions",
+                          base::BindRepeating(&ReturnWellKnown,
+                                              R"json({
+                                                "relying_origins": [
+                                                  "https://127.0.0.1:$1"
+                                                ]
+                                              })json")));
+  ASSERT_TRUE(server_.Start());
+
+  UnexportableSigningKeyId key = CreateSigningKey();
+  auto param = RegistrationRequestParam::CreateForTesting(
+      server_.GetURL("127.0.0.1", "/"), kSessionIdentifier, kChallenge,
+      /*authorization=*/std::nullopt);
+  auto session_or_error =
+      FetchWithFederatedKey(param, key, server_.GetURL("provider.a.test", "/"));
+  EXPECT_EQ(session_or_error.SessionErrorForTesting()->type,
+            SessionError::kTooManyRelyingOriginLabels);
+}
+
 TEST_F(RegistrationTest, RegistrationFailsIfCantSetCookies) {
   crypto::ScopedFakeUnexportableKeyProvider scoped_fake_key_provider;
 
@@ -3111,6 +4128,7 @@ TEST_F(RegistrationTest, RegistrationFailsIfCantSetCookies) {
       RegistrationFetcher::CreateFetcher(
           param, session_service(), unexportable_key_service(), context_.get(),
           IsolationInfo::CreateTransient(/*nonce=*/std::nullopt),
+          SiteForCookies(),
           /*net_log_source=*/std::nullopt,
           /*original_request_initiator=*/std::nullopt,
           unexportable_keys::BackgroundTaskPriority::kBestEffort);
@@ -3142,6 +4160,7 @@ TEST_F(RegistrationTest, RegisterAuthorizationNoChallenge) {
       RegistrationFetcher::CreateFetcher(
           param, session_service(), unexportable_key_service(), context_.get(),
           IsolationInfo::CreateTransient(/*nonce=*/std::nullopt),
+          SiteForCookies(),
           /*net_log_source=*/std::nullopt,
           /*original_request_initiator=*/std::nullopt,
           unexportable_keys::BackgroundTaskPriority::kBestEffort);
@@ -3151,6 +4170,415 @@ TEST_F(RegistrationTest, RegisterAuthorizationNoChallenge) {
 
   // Validate the result is a session instead of an error.
   callback.outcome().SessionForTesting();
+}
+
+TEST_F(RegistrationTest, RefreshRetryTransientError) {
+  base::test::ScopedFeatureList scoped_feature_list(
+      features::kDeviceBoundSessionsRetryTransientRefreshErrors);
+  base::HistogramTester histogram_tester;
+  crypto::ScopedFakeUnexportableKeyProvider scoped_fake_key_provider;
+
+  int request_count = 0;
+  server_.RegisterRequestHandler(base::BindLambdaForTesting(
+      [&request_count](const test_server::HttpRequest& request) {
+        request_count++;
+        if (request_count == 1) {
+          // Trigger net error on first attempt (invalid raw response)
+          return ReturnInvalidResponse(request);
+        }
+        // Success on the second attempt (the retry)
+        return ReturnResponse(HTTP_OK, kBasicValidJson, request);
+      }));
+  ASSERT_TRUE(server_.Start());
+
+  TestRegistrationCallback callback;
+  auto param = RegistrationRequestParam::CreateForTesting(
+      server_.GetURL("a.test", "/"), kSessionIdentifier, kChallenge,
+      /*authorization=*/std::nullopt);
+
+  std::unique_ptr<RegistrationFetcher> fetcher =
+      RegistrationFetcher::CreateFetcher(
+          param, session_service(), unexportable_key_service(), context_.get(),
+          IsolationInfo::CreateTransient(/*nonce=*/std::nullopt),
+          SiteForCookies(),
+          /*net_log_source=*/std::nullopt,
+          /*original_request_initiator=*/std::nullopt,
+          unexportable_keys::BackgroundTaskPriority::kBestEffort);
+
+  fetcher->StartFetchWithExistingKey(param, CreateSigningKey(),
+                                     callback.callback());
+  callback.WaitForCall();
+
+  EXPECT_THAT(callback.outcome(), testing::Not(IsErrorRegistrationResult()));
+  EXPECT_EQ(request_count, 2);
+
+  histogram_tester.ExpectUniqueSample(
+      "Net.DeviceBoundSessions.Refresh.Network.Result.FirstAttempt",
+      net::ERR_INVALID_HTTP_RESPONSE, 1);
+  histogram_tester.ExpectUniqueSample(
+      "Net.DeviceBoundSessions.Refresh.Network.Result.SecondAttempt", 200, 1);
+}
+
+TEST_F(RegistrationTest, RefreshRetryTransientErrorOnSecondRoundtrip) {
+  base::test::ScopedFeatureList scoped_feature_list(
+      features::kDeviceBoundSessionsRetryTransientRefreshErrors);
+  base::HistogramTester histogram_tester;
+  crypto::ScopedFakeUnexportableKeyProvider scoped_fake_key_provider;
+
+  int request_count = 0;
+  int jwt_request_count = 0;
+  server_.RegisterRequestHandler(
+      base::BindLambdaForTesting([&request_count, &jwt_request_count](
+                                     const test_server::HttpRequest& request) {
+        request_count++;
+        if (!request.headers.contains(kSessionResponseHeaderName)) {
+          return ReturnChallengeResponse(HTTP_FORBIDDEN, "new_challenge");
+        } else {
+          jwt_request_count++;
+          if (jwt_request_count == 1) {
+            return ReturnInvalidResponse(request);
+          }
+          return ReturnResponse(HTTP_OK, kBasicValidJson, request);
+        }
+      }));
+  ASSERT_TRUE(server_.Start());
+
+  std::unique_ptr<Session> session = CreateTestSession(kSessionIdentifier);
+  EXPECT_EQ(session->cached_challenge(), std::nullopt);
+
+  EXPECT_CALL(
+      session_service(),
+      GetSession(SessionKey{SchemefulSite(GetBaseURL()), session->id()}))
+      .WillRepeatedly(Return(session.get()));
+
+  EXPECT_CALL(session_service(), HandleResponseHeaders)
+      .WillRepeatedly(
+          [&session](DbscRequest& request, HttpResponseHeaders* headers) {
+            session->set_cached_challenge("new_challenge");
+          });
+
+  EXPECT_CALL(session_service(), GetLatestSignedRefreshChallenge)
+      .WillRepeatedly(Return(nullptr));
+  EXPECT_CALL(session_service(), AddSigningOccurrence).Times(1);
+  EXPECT_CALL(session_service(), SetLatestSignedRefreshChallenge).Times(1);
+  EXPECT_CALL(session_service(), SigningQuotaExceeded)
+      .WillRepeatedly(Return(false));
+
+  TestRegistrationCallback callback;
+  auto param = RegistrationRequestParam::CreateForTesting(
+      server_.GetURL("a.test", "/"), kSessionIdentifier,
+      /*challenge=*/std::nullopt,
+      /*authorization=*/std::nullopt);
+
+  std::unique_ptr<RegistrationFetcher> fetcher =
+      RegistrationFetcher::CreateFetcher(
+          param, session_service(), unexportable_key_service(), context_.get(),
+          IsolationInfo::CreateTransient(/*nonce=*/std::nullopt),
+          SiteForCookies(),
+          /*net_log_source=*/std::nullopt,
+          /*original_request_initiator=*/std::nullopt,
+          unexportable_keys::BackgroundTaskPriority::kBestEffort);
+
+  fetcher->StartFetchWithExistingKey(param, CreateSigningKey(),
+                                     callback.callback());
+  callback.WaitForCall();
+
+  EXPECT_THAT(callback.outcome(), Not(IsErrorRegistrationResult()));
+  EXPECT_EQ(request_count, 3);
+
+  EXPECT_THAT(
+      histogram_tester.GetAllSamples(
+          "Net.DeviceBoundSessions.Refresh.Network.Result.FirstAttempt"),
+      BucketsAre(Bucket(403, 1), Bucket(net::ERR_INVALID_HTTP_RESPONSE, 1)));
+  EXPECT_THAT(
+      histogram_tester.GetAllSamples(
+          "Net.DeviceBoundSessions.Refresh.Network.Result.SecondAttempt"),
+      BucketsAre(Bucket(200, 1)));
+}
+
+TEST_F(RegistrationTest, RefreshRetryTransientErrorOnBothRoundtrips) {
+  base::test::ScopedFeatureList scoped_feature_list(
+      features::kDeviceBoundSessionsRetryTransientRefreshErrors);
+  base::HistogramTester histogram_tester;
+  crypto::ScopedFakeUnexportableKeyProvider scoped_fake_key_provider;
+
+  int no_jwt_request_count = 0;
+  int jwt_request_count = 0;
+  server_.RegisterRequestHandler(
+      base::BindLambdaForTesting([&no_jwt_request_count, &jwt_request_count](
+                                     const test_server::HttpRequest& request) {
+        if (!request.headers.contains(kSessionResponseHeaderName)) {
+          no_jwt_request_count++;
+          if (no_jwt_request_count == 1) {
+            return ReturnInvalidResponse(request);
+          }
+          return ReturnChallengeResponse(HTTP_FORBIDDEN, "new_challenge");
+        } else {
+          jwt_request_count++;
+          if (jwt_request_count == 1) {
+            return ReturnInvalidResponse(request);
+          }
+          return ReturnResponse(HTTP_OK, kBasicValidJson, request);
+        }
+      }));
+  ASSERT_TRUE(server_.Start());
+
+  std::unique_ptr<Session> session = CreateTestSession(kSessionIdentifier);
+  EXPECT_EQ(session->cached_challenge(), std::nullopt);
+
+  EXPECT_CALL(
+      session_service(),
+      GetSession(SessionKey{SchemefulSite(GetBaseURL()), session->id()}))
+      .WillRepeatedly(Return(session.get()));
+
+  EXPECT_CALL(session_service(), HandleResponseHeaders)
+      .WillRepeatedly(
+          [&session](DbscRequest& request, HttpResponseHeaders* headers) {
+            session->set_cached_challenge("new_challenge");
+          });
+
+  EXPECT_CALL(session_service(), GetLatestSignedRefreshChallenge)
+      .WillRepeatedly(Return(nullptr));
+  EXPECT_CALL(session_service(), AddSigningOccurrence).Times(1);
+  EXPECT_CALL(session_service(), SetLatestSignedRefreshChallenge).Times(1);
+  EXPECT_CALL(session_service(), SigningQuotaExceeded)
+      .WillRepeatedly(Return(false));
+
+  TestRegistrationCallback callback;
+  auto param = RegistrationRequestParam::CreateForTesting(
+      server_.GetURL("a.test", "/"), kSessionIdentifier,
+      /*challenge=*/std::nullopt,
+      /*authorization=*/std::nullopt);
+
+  std::unique_ptr<RegistrationFetcher> fetcher =
+      RegistrationFetcher::CreateFetcher(
+          param, session_service(), unexportable_key_service(), context_.get(),
+          IsolationInfo::CreateTransient(/*nonce=*/std::nullopt),
+          SiteForCookies(),
+          /*net_log_source=*/std::nullopt,
+          /*original_request_initiator=*/std::nullopt,
+          unexportable_keys::BackgroundTaskPriority::kBestEffort);
+
+  fetcher->StartFetchWithExistingKey(param, CreateSigningKey(),
+                                     callback.callback());
+  callback.WaitForCall();
+
+  EXPECT_THAT(callback.outcome(), Not(IsErrorRegistrationResult()));
+  EXPECT_EQ(no_jwt_request_count, 2);
+  EXPECT_EQ(jwt_request_count, 2);
+
+  EXPECT_THAT(
+      histogram_tester.GetAllSamples(
+          "Net.DeviceBoundSessions.Refresh.Network.Result.FirstAttempt"),
+      BucketsAre(Bucket(net::ERR_INVALID_HTTP_RESPONSE, 2)));
+  EXPECT_THAT(
+      histogram_tester.GetAllSamples(
+          "Net.DeviceBoundSessions.Refresh.Network.Result.SecondAttempt"),
+      BucketsAre(Bucket(403, 1), Bucket(200, 1)));
+}
+
+TEST_F(RegistrationTest, RefreshRetryTransientErrorDisabled) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndDisableFeature(
+      features::kDeviceBoundSessionsRetryTransientRefreshErrors);
+  base::HistogramTester histogram_tester;
+  crypto::ScopedFakeUnexportableKeyProvider scoped_fake_key_provider;
+
+  int request_count = 0;
+  server_.RegisterRequestHandler(base::BindLambdaForTesting(
+      [&request_count](const test_server::HttpRequest& request) {
+        request_count++;
+        if (request_count == 1) {
+          // Trigger net error on first attempt (invalid raw response)
+          return ReturnInvalidResponse(request);
+        }
+        // Success on the second attempt (the retry)
+        return ReturnResponse(HTTP_OK, kBasicValidJson, request);
+      }));
+  ASSERT_TRUE(server_.Start());
+
+  TestRegistrationCallback callback;
+  auto param = RegistrationRequestParam::CreateForTesting(
+      server_.GetURL("a.test", "/"), kSessionIdentifier, kChallenge,
+      /*authorization=*/std::nullopt);
+
+  std::unique_ptr<RegistrationFetcher> fetcher =
+      RegistrationFetcher::CreateFetcher(
+          param, session_service(), unexportable_key_service(), context_.get(),
+          IsolationInfo::CreateTransient(/*nonce=*/std::nullopt),
+          SiteForCookies(),
+          /*net_log_source=*/std::nullopt,
+          /*original_request_initiator=*/std::nullopt,
+          unexportable_keys::BackgroundTaskPriority::kBestEffort);
+
+  fetcher->StartFetchWithExistingKey(param, CreateSigningKey(),
+                                     callback.callback());
+  callback.WaitForCall();
+
+  EXPECT_THAT(callback.outcome(), IsErrorRegistrationResult());
+  EXPECT_EQ(request_count, 1);
+
+  histogram_tester.ExpectUniqueSample(
+      "Net.DeviceBoundSessions.Refresh.Network.Result.FirstAttempt",
+      net::ERR_INVALID_HTTP_RESPONSE, 1);
+  histogram_tester.ExpectTotalCount(
+      "Net.DeviceBoundSessions.Refresh.Network.Result.SecondAttempt", 0);
+}
+
+TEST_F(RegistrationTest, RegistrationNoRetryTransientError) {
+  base::test::ScopedFeatureList scoped_feature_list(
+      features::kDeviceBoundSessionsRetryTransientRefreshErrors);
+  base::HistogramTester histogram_tester;
+  crypto::ScopedFakeUnexportableKeyProvider scoped_fake_key_provider;
+
+  int request_count = 0;
+  server_.RegisterRequestHandler(base::BindLambdaForTesting(
+      [&request_count](const test_server::HttpRequest& request) {
+        request_count++;
+        if (request_count == 1) {
+          return ReturnInvalidResponse(request);
+        }
+        return ReturnResponse(HTTP_OK, kBasicValidJson, request);
+      }));
+  ASSERT_TRUE(server_.Start());
+
+  TestRegistrationCallback callback;
+  auto param = RegistrationRequestParam::CreateForTesting(
+      server_.GetURL("a.test", "/"), /*session_identifier=*/std::nullopt,
+      kChallenge, /*authorization=*/std::nullopt);
+
+  std::unique_ptr<RegistrationFetcher> fetcher =
+      RegistrationFetcher::CreateFetcher(
+          param, session_service(), unexportable_key_service(), context_.get(),
+          IsolationInfo::CreateTransient(/*nonce=*/std::nullopt),
+          SiteForCookies(),
+          /*net_log_source=*/std::nullopt,
+          /*original_request_initiator=*/std::nullopt,
+          unexportable_keys::BackgroundTaskPriority::kBestEffort);
+
+  fetcher->StartCreateTokenAndFetch(param, CreateAlgArray(),
+                                    callback.callback());
+  callback.WaitForCall();
+
+  EXPECT_THAT(callback.outcome(), IsErrorRegistrationResult());
+  EXPECT_EQ(request_count, 1);
+
+  histogram_tester.ExpectUniqueSample(
+      "Net.DeviceBoundSessions.Registration.Network.Result",
+      net::ERR_INVALID_HTTP_RESPONSE, 1);
+  histogram_tester.ExpectTotalCount(
+      "Net.DeviceBoundSessions.Refresh.Network.Result.FirstAttempt", 0);
+}
+
+class RegistrationTimeoutTest : public TestWithTaskEnvironment {
+ protected:
+  RegistrationTimeoutTest()
+      : TestWithTaskEnvironment(
+            base::test::TaskEnvironment::TimeSource::MOCK_TIME),
+        context_(CreateTestURLRequestContextBuilder()->Build()) {
+    URLRequestFailedJob::AddUrlHandler();
+  }
+
+  ~RegistrationTimeoutTest() override {
+    net::URLRequestFilter::GetInstance()->ClearHandlers();
+  }
+
+  URLRequestContext* context() { return context_.get(); }
+  unexportable_keys::UnexportableKeyService& unexportable_key_service() {
+    return unexportable_key_service_;
+  }
+  SessionServiceMock& session_service() { return session_service_; }
+
+  UnexportableSigningKeyId CreateSigningKey() {
+    base::test::TestFuture<
+        unexportable_keys::ServiceErrorOr<UnexportableSigningKeyId>>
+        future;
+    unexportable_key_service_.GenerateSigningKeySlowlyAsync(
+        CreateAlgArray(), kTaskPriority, future.GetCallback());
+    return *future.Take();
+  }
+
+ private:
+  testing::NiceMock<SessionServiceMock> session_service_;
+  std::unique_ptr<URLRequestContext> context_;
+  crypto::ScopedFakeUnexportableKeyProvider scoped_fake_key_provider_;
+  unexportable_keys::UnexportableKeyTaskManager task_manager_;
+  unexportable_keys::UnexportableKeyServiceImpl unexportable_key_service_{
+      task_manager_, kTaskOrigin, crypto::UnexportableKeyProvider::Config()};
+};
+
+TEST_F(RegistrationTimeoutTest, RefreshTimeout) {
+  base::HistogramTester histogram_tester;
+  URLRequestFailedJob::AddUrlHandlerForHostname("a.test");
+
+  GURL url =
+      URLRequestFailedJob::GetMockHttpsUrlForHostname(ERR_IO_PENDING, "a.test");
+  TestRegistrationCallback callback;
+  auto param = RegistrationRequestParam::CreateForTesting(
+      url, kSessionIdentifier, kChallenge, /*authorization=*/std::nullopt);
+
+  std::unique_ptr<RegistrationFetcher> fetcher =
+      RegistrationFetcher::CreateFetcher(
+          param, session_service(), unexportable_key_service(), context(),
+          IsolationInfo::CreateTransient(/*nonce=*/std::nullopt),
+          SiteForCookies(),
+          /*net_log_source=*/std::nullopt,
+          /*original_request_initiator=*/std::nullopt,
+          unexportable_keys::BackgroundTaskPriority::kUserBlocking);
+
+  fetcher->StartFetchWithExistingKey(param, CreateSigningKey(),
+                                     callback.callback());
+  FastForwardBy(base::Seconds(20));
+  callback.WaitForCall();
+
+  EXPECT_THAT(callback.outcome(), IsErrorRegistrationResult());
+  const SessionError* error = callback.outcome().SessionErrorForTesting();
+  ASSERT_TRUE(error);
+  EXPECT_EQ(error->type, SessionError::kNetError);
+  ASSERT_TRUE(error->failed_request.has_value());
+  EXPECT_EQ(error->failed_request->net_error, net::ERR_TIMED_OUT);
+
+  histogram_tester.ExpectUniqueSample(
+      "Net.DeviceBoundSessions.Refresh.Network.Result", net::ERR_TIMED_OUT, 1);
+}
+
+TEST_F(RegistrationTimeoutTest, RegistrationTimeout) {
+  base::HistogramTester histogram_tester;
+  URLRequestFailedJob::AddUrlHandlerForHostname("a.test");
+
+  GURL url =
+      URLRequestFailedJob::GetMockHttpsUrlForHostname(ERR_IO_PENDING, "a.test");
+  TestRegistrationCallback callback;
+  auto param = RegistrationRequestParam::CreateForTesting(
+      url, /*session_identifier=*/std::nullopt, kChallenge,
+      /*authorization=*/std::nullopt);
+
+  std::unique_ptr<RegistrationFetcher> fetcher =
+      RegistrationFetcher::CreateFetcher(
+          param, session_service(), unexportable_key_service(), context(),
+          IsolationInfo::CreateTransient(/*nonce=*/std::nullopt),
+          SiteForCookies(),
+          /*net_log_source=*/std::nullopt,
+          /*original_request_initiator=*/std::nullopt,
+          unexportable_keys::BackgroundTaskPriority::kBestEffort);
+
+  fetcher->StartCreateTokenAndFetch(param, CreateAlgArray(),
+                                    callback.callback());
+  FastForwardBy(base::Seconds(20));
+  EXPECT_FALSE(callback.has_called());
+  FastForwardBy(base::Seconds(10));
+  callback.WaitForCall();
+
+  EXPECT_THAT(callback.outcome(), IsErrorRegistrationResult());
+  const SessionError* error = callback.outcome().SessionErrorForTesting();
+  ASSERT_TRUE(error);
+  EXPECT_EQ(error->type, SessionError::kNetError);
+  ASSERT_TRUE(error->failed_request.has_value());
+  EXPECT_EQ(error->failed_request->net_error, net::ERR_TIMED_OUT);
+
+  histogram_tester.ExpectUniqueSample(
+      "Net.DeviceBoundSessions.Registration.Network.Result", net::ERR_TIMED_OUT,
+      1);
 }
 
 class RegistrationTokenHelperTest : public testing::Test {

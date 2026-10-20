@@ -10,22 +10,22 @@
 #include "base/types/expected.h"
 #include "build/build_config.h"
 #include "build/config/chromebox_for_meetings/buildflags.h"  // PLATFORM_CFM
+#include "chrome/browser/enterprise/data_protection/data_protection_features.h"
+#include "chrome/browser/enterprise/data_protection/data_protection_navigation_controller.h"
 #include "chrome/browser/media/webrtc/desktop_media_list.h"
 #include "chrome/browser/media/webrtc/desktop_media_picker_manager.h"
-#include "chrome/browser/media/webrtc/desktop_media_picker_utils.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
-#include "chrome/browser/ui/color/chrome_color_id.h"
 #include "chrome/browser/ui/extensions/extensions_container.h"
 #include "chrome/browser/ui/layout_constants.h"
 #include "chrome/browser/ui/views/chrome_layout_provider.h"
-#include "chrome/browser/ui/views/desktop_capture/desktop_media_picker_views.h"
 #include "chrome/browser/ui/views/desktop_capture/share_this_tab_source_view.h"
 #include "chrome/browser/ui/views/media_picker_utils.h"
 #include "chrome/common/chrome_switches.h"
 #include "chrome/grit/generated_resources.h"
 #include "components/constrained_window/constrained_window_views.h"
+#include "components/enterprise/buildflags/buildflags.h"
 #include "components/vector_icons/vector_icons.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
@@ -36,10 +36,8 @@
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/mojom/dialog_button.mojom.h"
-#include "ui/base/mojom/ui_base_types.mojom-shared.h"
 #include "ui/base/ui_base_features.h"
 #include "ui/color/color_id.h"
-#include "ui/gfx/color_palette.h"
 #include "ui/gfx/native_ui_types.h"
 #include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/background.h"
@@ -173,6 +171,22 @@ ShareThisTabDialogView::ShareThisTabDialogView(
 
   SetupSourceView();
 
+#if BUILDFLAG(ENTERPRISE_SCREENSHOT_PROTECTION)
+  if (base::FeatureList::IsEnabled(
+          enterprise_data_protection::kEnableTabSharingProtection) &&
+      web_contents_) {
+    if (auto* controller =
+            enterprise_data_protection::DataProtectionNavigationController::
+                FromWebContents(web_contents_.get())) {
+      screenshot_callback_subscription_ =
+          controller->RegisterScreenshotAllowedUpdatedCallback(
+              base::BindRepeating(
+                  &ShareThisTabDialogView::OnScreenshotAllowedUpdated,
+                  weak_factory_.GetWeakPtr()));
+    }
+  }
+#endif
+
   if (params.request_audio) {
     SetupAudioToggle();
   }
@@ -250,6 +264,11 @@ bool ShareThisTabDialogView::ShouldShowWindowTitle() const {
 bool ShareThisTabDialogView::Accept() {
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
   CHECK(!activation_timer_.IsRunning());
+#if BUILDFLAG(ENTERPRISE_SCREENSHOT_PROTECTION)
+  if (ShareThisTabSourceView::IsTabSharingBlocked(web_contents_.get())) {
+    return false;
+  }
+#endif
   CHECK(IsDialogButtonEnabled(ui::mojom::DialogButton::kOk));
 
   source_view_->StopRefreshing();
@@ -282,6 +301,18 @@ bool ShareThisTabDialogView::Cancel() {
 bool ShareThisTabDialogView::ShouldShowCloseButton() const {
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
   return false;
+}
+
+bool ShareThisTabDialogView::IsDialogButtonEnabled(
+    ui::mojom::DialogButton button) const {
+  if (button == ui::mojom::DialogButton::kOk) {
+#if BUILDFLAG(ENTERPRISE_SCREENSHOT_PROTECTION)
+    if (ShareThisTabSourceView::IsTabSharingBlocked(web_contents_.get())) {
+      return false;
+    }
+#endif
+  }
+  return views::DialogDelegateView::IsDialogButtonEnabled(button);
 }
 
 void ShareThisTabDialogView::SetupSourceView() {
@@ -343,7 +374,13 @@ void ShareThisTabDialogView::Activate() {
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
 
   source_view_->Activate();
+#if BUILDFLAG(ENTERPRISE_SCREENSHOT_PROTECTION)
+  const bool is_blocked =
+      ShareThisTabSourceView::IsTabSharingBlocked(web_contents_.get());
+  SetButtonEnabled(ui::mojom::DialogButton::kOk, !is_blocked);
+#else
   SetButtonEnabled(ui::mojom::DialogButton::kOk, true);
+#endif
 
   // In tests.
   if (ShouldAutoAccept()) {
@@ -353,12 +390,39 @@ void ShareThisTabDialogView::Activate() {
   }
 }
 
+void ShareThisTabDialogView::ActivateForTesting() {
+  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  activation_timer_.Stop();
+  Activate();
+}
+
+#if BUILDFLAG(ENTERPRISE_SCREENSHOT_PROTECTION)
+void ShareThisTabDialogView::OnScreenshotAllowedUpdated(
+    bool screenshot_allowed) {
+  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  if (source_view_) {
+    source_view_->UpdateBlockedState();
+  }
+  if (!activation_timer_.IsRunning()) {
+    const bool is_blocked =
+        ShareThisTabSourceView::IsTabSharingBlocked(web_contents_.get());
+    SetButtonEnabled(ui::mojom::DialogButton::kOk, !is_blocked);
+  }
+}
+#endif
+
 bool ShareThisTabDialogView::ShouldAutoAccept() const {
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
 
   if (!web_contents_) {
     return false;
   }
+
+#if BUILDFLAG(ENTERPRISE_SCREENSHOT_PROTECTION)
+  if (ShareThisTabSourceView::IsTabSharingBlocked(web_contents_.get())) {
+    return false;
+  }
+#endif
 
   if (auto_accept_this_tab_capture_) {
     return true;

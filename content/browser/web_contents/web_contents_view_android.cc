@@ -13,8 +13,10 @@
 #include "base/check.h"
 #include "base/feature_list.h"
 #include "base/files/file_path.h"
+#include "base/json/json_reader.h"
 #include "base/notimplemented.h"
 #include "base/rand_util.h"
+#include "base/values.h"
 #include "cc/layers/layer.h"
 #include "cc/slim/layer.h"
 #include "components/input/features.h"
@@ -39,6 +41,7 @@
 #include "content/public/common/drop_data.h"
 #include "net/base/mime_util.h"
 #include "ui/android/overscroll_refresh_handler.h"
+#include "ui/android/ui_android_features.h"
 #include "ui/base/clipboard/clipboard.h"
 #include "ui/base/clipboard/clipboard_constants.h"
 #include "ui/base/clipboard/file_info.h"
@@ -99,17 +102,52 @@ bool IsDragAndDropEnabled() {
 bool IsDragEnabledForDropData(const DropData& drop_data) {
   return IsDragAndDropEnabled() || drop_data.text.has_value();
 }
+
+// Constructs a provisional `DropData` from `drag_metadata` during
+// `ACTION_DRAG_ENTERED` (when Android's `DragEvent` only exposes
+// `ClipDescription` MIME types, before `ACTION_DROP` provides `ClipData`) so
+// `WebContentsDelegate::CanDragEnter` can inspect the advertised drag types.
+// Note: Because actual `ClipData` values (e.g. specific URLs or text content)
+// are not available until `ACTION_DROP` on Android, if type-level inspection
+// is not sufficient, we will need to rearchitect to a "can drop" check instead
+// of a "can enter" check.
+DropData BuildProvisionalDropDataFromMetadata(
+    const std::vector<DropData::Metadata>& drag_metadata) {
+  DropData drop_data;
+  for (const auto& item : drag_metadata) {
+    switch (item.kind) {
+      case DropData::Kind::FILENAME:
+        drop_data.filenames.emplace_back(item.filename,
+                                         item.filename.BaseName());
+        break;
+      case DropData::Kind::STRING:
+        if (item.mime_type == ui::kMimeTypePlainText16) {
+          drop_data.text.emplace();
+        } else if (item.mime_type == ui::kMimeTypeHtml16) {
+          drop_data.html.emplace();
+        } else if (item.mime_type == ui::kMimeTypeMozillaUrl16) {
+          drop_data.url_infos.emplace_back(GURL(), std::u16string());
+        }
+        break;
+      case DropData::Kind::FILESYSTEMFILE:
+      case DropData::Kind::BINARY:
+        break;
+    }
+  }
+  return drop_data;
+}
+
 }  // namespace
 
 // static
 void SynchronousCompositor::SetClientForWebContents(
     WebContents* contents,
     SynchronousCompositorClient* client) {
-  DCHECK(contents);
-  DCHECK(client);
+  CHECK(contents, base::NotFatalUntil::M158);
+  CHECK(client, base::NotFatalUntil::M158);
   WebContentsViewAndroid* wcva = static_cast<WebContentsViewAndroid*>(
       static_cast<WebContentsImpl*>(contents)->GetView());
-  DCHECK(!wcva->synchronous_compositor_client());
+  CHECK(!wcva->synchronous_compositor_client(), base::NotFatalUntil::M158);
   wcva->set_synchronous_compositor_client(client);
   RenderWidgetHostViewAndroid* rwhv = static_cast<RenderWidgetHostViewAndroid*>(
       contents->GetRenderWidgetHostView());
@@ -181,11 +219,18 @@ void WebContentsViewAndroid::SetContentUiEventHandler(
 
 void WebContentsViewAndroid::SetOverscrollRefreshHandler(
     std::unique_ptr<ui::OverscrollRefreshHandler> overscroll_refresh_handler) {
-  overscroll_refresh_handler_ = std::move(overscroll_refresh_handler);
   auto* rwhv = web_contents_->GetRenderWidgetHostView();
-  if (rwhv) {
-    static_cast<RenderWidgetHostViewAndroid*>(rwhv)
-        ->OnOverscrollRefreshHandlerAvailable();
+  auto* rwhva =
+      rwhv ? static_cast<RenderWidgetHostViewAndroid*>(rwhv) : nullptr;
+
+  if (rwhva) {
+    rwhva->ResetOverscrollController();
+  }
+
+  overscroll_refresh_handler_ = std::move(overscroll_refresh_handler);
+
+  if (rwhva && overscroll_refresh_handler_) {
+    rwhva->OnOverscrollRefreshHandlerAvailable();
   }
 }
 
@@ -284,7 +329,7 @@ RenderWidgetHostViewBase* WebContentsViewAndroid::CreateViewForWidget(
     // this actually is happening (and somebody isn't accidentally creating the
     // view twice), we check for the RVH Factory, which will be set when we're
     // making special ones (which go along with the special views).
-    DCHECK(RenderViewHostFactory::has_factory());
+    CHECK(RenderViewHostFactory::has_factory(), base::NotFatalUntil::M158);
     return static_cast<RenderWidgetHostViewBase*>(
         render_widget_host->GetView());
   }
@@ -327,6 +372,7 @@ void WebContentsViewAndroid::RenderViewHostChanged(RenderViewHost* old_host,
     auto* rwhv = old_host->GetWidget()->GetView();
     if (rwhv && rwhv->GetNativeView()) {
       auto* rwhva = static_cast<RenderWidgetHostViewAndroid*>(rwhv);
+      rwhva->ResetOverscrollController();
       rwhva->UpdateNativeViewTree(/*parent_native_view=*/nullptr,
                                   /*parent_layer=*/nullptr);
       rwhva->UpdateTooltip(std::u16string());
@@ -335,9 +381,13 @@ void WebContentsViewAndroid::RenderViewHostChanged(RenderViewHost* old_host,
 
   auto* rwhv = new_host->GetWidget()->GetView();
   if (rwhv && rwhv->GetNativeView()) {
-    static_cast<RenderWidgetHostViewAndroid*>(rwhv)->UpdateNativeViewTree(
-        &view_, parent_for_web_page_widgets_.get());
+    auto* rwhva = static_cast<RenderWidgetHostViewAndroid*>(rwhv);
+    rwhva->UpdateNativeViewTree(&view_, parent_for_web_page_widgets_.get());
     SetFocus(view_.HasFocus());
+    rwhva->ResetOverscrollController();
+    if (overscroll_refresh_handler_) {
+      rwhva->OnOverscrollRefreshHandlerAvailable();
+    }
   }
 }
 
@@ -441,7 +491,7 @@ void WebContentsViewAndroid::ShowPopupMenu(
     std::vector<blink::mojom::MenuItemPtr> menu_items,
     bool right_aligned,
     bool allow_multiple_selection) {
-  GetSelectPopup()->ShowMenu(std::move(popup_client), bounds,
+  GetSelectPopup()->ShowMenu(std::move(popup_client), bounds, item_font_size,
                              std::move(menu_items), selected_item,
                              allow_multiple_selection, right_aligned);
 }
@@ -455,29 +505,27 @@ void WebContentsViewAndroid::StartDragging(
     const gfx::Rect& drag_obj_rect,
     const blink::mojom::DragEventSourceInfo& event_info) {
   // Disallow reentrant drag which could be an attempt to exploit drag state.
-  if (current_source_rwh_for_drag_) {
+  if (drag_security_info_.did_initiate()) {
     return;
   }
   RenderWidgetHostImpl* const source_rwh =
       static_cast<RenderWidgetHostImpl*>(source_rfh.GetRenderWidgetHost());
   current_source_rwh_for_drag_ = source_rwh->GetWeakPtr();
   if (!IsDragEnabledForDropData(drop_data)) {
-    // Need to clear drag and drop state in blink.
-    OnSystemDragEnded(source_rwh);
+    ClearDragStateOnStartFailure(source_rwh);
     return;
   }
 
   gfx::NativeView native_view = GetNativeView();
   if (!native_view) {
-    // Need to clear drag and drop state in blink.
-    OnSystemDragEnded(source_rwh);
+    ClearDragStateOnStartFailure(source_rwh);
     return;
   }
 
   ClipboardEndpoint source_endpoint = CreateClipboardEndpoint(source_rfh);
 
   if (!IsDragAllowedByDataControlPolicy(source_endpoint, drop_data)) {
-    OnSystemDragEnded(source_rwh);
+    ClearDragStateOnStartFailure(source_rwh);
     return;
   }
   drag_security_info_.OnDragInitiated(source_rwh, drop_data);
@@ -502,8 +550,7 @@ void WebContentsViewAndroid::StartDragging(
   if (!native_view->StartDragAndDrop(
           gfx::ConvertToJavaBitmap(*bitmap), jdrop_data, cursor_offset.x(),
           cursor_offset.y(), drag_obj_rect.width(), drag_obj_rect.height())) {
-    // Need to clear drag and drop state in blink.
-    OnSystemDragEnded(source_rwh);
+    ClearDragStateOnStartFailure(source_rwh);
     return;
   }
 
@@ -519,9 +566,22 @@ void WebContentsViewAndroid::StartDragging(
 
 void WebContentsViewAndroid::UpdateDragOperation(
     ui::mojom::DragOperation op,
-    bool document_is_handling_drag) {
-  // Intentional not storing `op` because Android does not support drag and
-  // drop cursor yet.
+    bool document_is_handling_drag,
+    RenderWidgetHostImpl* source_rwh) {
+  // On Android, ACTION_DRAG_ENTERED carries no valid coordinates, so
+  // OnDragEntered always enters the main-frame RenderWidgetHost first before
+  // ACTION_DRAG_LOCATION hit-tests into child/inner RenderWidgetHosts (such as
+  // an OOPIF or <webview> guest) — unlike Aura and Mac, where DragEnter carries
+  // coordinates and hit-tests the target RenderWidgetHost directly. Ignore
+  // stale asynchronous replies from a previously entered RenderWidgetHost (or
+  // after the drag has exited/ended) so they cannot clobber `drag_operation_`
+  // or `document_is_handling_drag_` before ACTION_DROP copies
+  // `document_is_handling_drag_` into `drop_data_`.
+  if (!current_target_rwh_for_drag_ ||
+      source_rwh != current_target_rwh_for_drag_.get()) {
+    return;
+  }
+  drag_operation_ = op;
   document_is_handling_drag_ = document_is_handling_drag;
 }
 
@@ -542,13 +602,28 @@ bool WebContentsViewAndroid::OnDragEvent(const ui::DragEventAndroid& event) {
     case DragEventJni::ACTION_DRAG_ENTERED: {
       drag_metadata_.clear();
       for (const std::u16string& mime_type : event.mime_types()) {
-        if (mime_type == ui::kMimeTypePlainText16 ||
-            mime_type == ui::kMimeTypeHtml16 ||
-            mime_type == ui::kMimeTypeMozillaUrl16 ||
-            mime_type == kMimeTypeIntent || mime_type == kMimeTypeChromeLink) {
+        // The old Android ClipData API does not let you detect whether URIs
+        // (files) are included in drag-start event, only in drop event.  We
+        // guess that text, html, and some other types are not files.  New API
+        // ClipDescription.hasContentUri() provides this information.
+        bool should_guess = true;
+        if (base::FeatureList::IsEnabled(ui::kHasContentUri)) {
+          should_guess = !event.has_files();
+        }
+        if (should_guess && (mime_type == ui::kMimeTypePlainText16 ||
+                             mime_type == ui::kMimeTypeHtml16 ||
+                             mime_type == ui::kMimeTypeMozillaUrl16 ||
+                             mime_type == kMimeTypeIntent ||
+                             mime_type == kMimeTypeChromeLink)) {
           drag_metadata_.push_back(DropData::Metadata::CreateForMimeType(
               DropData::Kind::STRING, mime_type));
+        } else if (mime_type == ui::kMimeTypeDataTransferCustomData16) {
+          // Ignore, we will unpack custom data from the event.
+          continue;
         } else {
+          if (!drag_security_info_.IsImageAccessibleFromFrame()) {
+            continue;
+          }
           // Create a file extension from the mime type.
           std::string ext = base::UTF16ToUTF8(mime_type);
           if (!net::GetPreferredExtensionForMimeType(ext, &ext)) {
@@ -559,6 +634,16 @@ bool WebContentsViewAndroid::OnDragEvent(const ui::DragEventAndroid& event) {
               base::FilePath("file." + ext)));
         }
       }
+      std::optional<base::Value> custom_data = ParseCustomDataFromEvent(event);
+      if (custom_data) {
+        for (auto item : custom_data->GetDict()) {
+          if (!item.second.is_string()) {
+            continue;
+          }
+          drag_metadata_.push_back(DropData::Metadata::CreateForMimeType(
+              DropData::Kind::STRING, base::UTF8ToUTF16(item.first)));
+        }
+      }
       OnDragEntered(event.location(), event.screen_location());
       break;
     }
@@ -566,10 +651,11 @@ bool WebContentsViewAndroid::OnDragEvent(const ui::DragEventAndroid& event) {
       OnDragUpdated(event.location(), event.screen_location());
       break;
     case DragEventJni::ACTION_DROP: {
+      drag_dropped_ = true;
       drop_data_ = std::make_unique<DropData>();
       drop_data_->did_originate_from_renderer = false;
       drop_data_->document_is_handling_drag = document_is_handling_drag_;
-      PopulateDropDataFromEvent(event, drop_data_.get());
+      PopulateDropDataFromEvent(event, drag_security_info_, drop_data_.get());
 
       OnPerformDrop(event.location(), event.screen_location());
       break;
@@ -589,6 +675,7 @@ bool WebContentsViewAndroid::OnDragEvent(const ui::DragEventAndroid& event) {
 
 void WebContentsViewAndroid::OnDragEntered(const gfx::PointF& location,
                                            const gfx::PointF& screen_location) {
+  drag_rejected_by_delegate_ = false;
   // Android does not pass a valid location for ACTION_DRAG_STARTED, so do not
   // try to find GetRenderWidgetHostAtPointAsynchronously().
   auto* rwhv = web_contents_->GetRenderWidgetHostView();
@@ -603,7 +690,7 @@ void WebContentsViewAndroid::DragEnteredCallback(
     const gfx::PointF& location,
     const gfx::PointF& screen_location,
     base::WeakPtr<RenderWidgetHostViewBase> target) {
-  if (!target) {
+  if (!target || drag_rejected_by_delegate_) {
     return;
   }
 
@@ -613,11 +700,27 @@ void WebContentsViewAndroid::DragEnteredCallback(
     return;
   }
 
-  current_target_rwh_for_drag_ = target_rwh->GetWeakPtr();
-
   blink::DragOperationsMask allowed_ops =
       static_cast<blink::DragOperationsMask>(blink::kDragOperationCopy |
                                              blink::kDragOperationMove);
+  // Give the WebContentsDelegate an opportunity to reject the drag before
+  // setting the active drag target or forwarding DragTargetDragEnter to the
+  // renderer (matching Desktop's WebContentsViewAura and WebDragDest).
+  if (WebContentsDelegate* delegate = web_contents_->GetDelegate()) {
+    DropData provisional_drop_data =
+        BuildProvisionalDropDataFromMetadata(drag_metadata_);
+    if (!delegate->CanDragEnter(web_contents_, provisional_drop_data,
+                                allowed_ops)) {
+      drag_rejected_by_delegate_ = true;
+      return;
+    }
+  }
+
+  current_target_rwh_for_drag_ = target_rwh->GetWeakPtr();
+  // Reset per-target drag state until the newly entered RWH replies via
+  // UpdateDragOperation().
+  drag_operation_ = ui::mojom::DragOperation::kNone;
+  document_is_handling_drag_ = false;
   current_target_rwh_for_drag_->DragTargetDragEnterWithMetaData(
       drag_metadata_, location, screen_location, allowed_ops, 0,
       base::DoNothing());
@@ -648,6 +751,10 @@ void WebContentsViewAndroid::OnDragUpdated(const gfx::PointF& location,
     }
   }
 
+  if (drag_rejected_by_delegate_) {
+    return;
+  }
+
   auto* rwhv = web_contents_->GetRenderWidgetHostView();
   if (rwhv) {
     web_contents_->GetRenderWidgetHostAtPointAsynchronously(
@@ -663,7 +770,7 @@ void WebContentsViewAndroid::DragUpdatedCallback(
     const gfx::PointF& screen_location,
     base::WeakPtr<RenderWidgetHostViewBase> target,
     std::optional<gfx::PointF> transformed_pt) {
-  if (!target) {
+  if (!target || drag_rejected_by_delegate_) {
     return;
   }
   RenderWidgetHostImpl* target_rwh =
@@ -689,6 +796,9 @@ void WebContentsViewAndroid::DragUpdatedCallback(
                                                         screen_location);
     }
     DragEnteredCallback(location, screen_location, target);
+    if (drag_rejected_by_delegate_) {
+      return;
+    }
   }
 
   blink::DragOperationsMask allowed_ops =
@@ -702,11 +812,21 @@ void WebContentsViewAndroid::OnDragExited() {
   if (current_target_rwh_for_drag_) {
     current_target_rwh_for_drag_->DragTargetDragLeave(gfx::PointF(),
                                                       gfx::PointF());
+    current_target_rwh_for_drag_.reset();
   }
+  // Clear target drag state so a drag that exits and ends outside the view is
+  // not treated as handled, and any in-flight UpdateDragOperation() replies are
+  // ignored.
+  drag_operation_ = ui::mojom::DragOperation::kNone;
+  document_is_handling_drag_ = false;
+  drag_rejected_by_delegate_ = false;
 }
 
 void WebContentsViewAndroid::OnPerformDrop(const gfx::PointF& location,
                                            const gfx::PointF& screen_location) {
+  if (drag_rejected_by_delegate_) {
+    return;
+  }
   auto* rwhv = web_contents_->GetRenderWidgetHostView();
   if (rwhv) {
     web_contents_->GetRenderWidgetHostAtPointAsynchronously(
@@ -722,7 +842,7 @@ void WebContentsViewAndroid::PerformDropCallback(
     const gfx::PointF& screen_location,
     base::WeakPtr<RenderWidgetHostViewBase> target,
     std::optional<gfx::PointF> transformed_pt) {
-  if (!target) {
+  if (!target || drag_rejected_by_delegate_) {
     return;
   }
   RenderWidgetHostImpl* target_rwh =
@@ -737,6 +857,9 @@ void WebContentsViewAndroid::PerformDropCallback(
                                                         screen_location);
     }
     DragEnteredCallback(location, screen_location, target);
+    if (drag_rejected_by_delegate_) {
+      return;
+    }
   }
 
   web_contents_->Focus();
@@ -758,21 +881,44 @@ void WebContentsViewAndroid::OnSystemDragEnded(RenderWidgetHost* source_rwh) {
   }
 }
 
+void WebContentsViewAndroid::ClearDragStateOnStartFailure(
+    RenderWidgetHost* source_rwh) {
+  // Notify Blink to end the drag session. Since the system/OS drag was never
+  // actually initiated, this resets renderer state without sending any DOM
+  // events.
+  OnSystemDragEnded(source_rwh);
+  current_source_rwh_for_drag_.reset();
+  drag_security_info_.OnDragEnded();
+  drag_dropped_ = false;
+  drag_operation_ = ui::mojom::DragOperation::kNone;
+}
+
 void WebContentsViewAndroid::OnDragEnded() {
   if (current_source_rwh_for_drag_) {
-    web_contents_->DragSourceEndedAt(
-        drag_location_.x(), drag_location_.y(), drag_screen_location_.x(),
-        drag_screen_location_.y(), ui::mojom::DragOperation::kNone,
-        current_source_rwh_for_drag_.get());
+    ui::mojom::DragOperation operation =
+        drag_dropped_ ? drag_operation_ : ui::mojom::DragOperation::kNone;
+    web_contents_->DragSourceEndedAt(drag_location_.x(), drag_location_.y(),
+                                     drag_screen_location_.x(),
+                                     drag_screen_location_.y(), operation,
+                                     current_source_rwh_for_drag_.get());
     OnSystemDragEnded(current_source_rwh_for_drag_.get());
   }
   drag_security_info_.OnDragEnded();
 
+  // Note: `drop_data_` is intentionally NOT reset here. The OS can fire
+  // ACTION_DRAG_ENDED asynchronously before `PerformDropCallback` finishes
+  // executing. If we destroy `drop_data_` here, we risk a race condition where
+  // the callback attempts to dereference a null pointer or dropped payload.
+  // Reset all per-drag state for the next drag session.
   drag_metadata_.clear();
   current_source_rwh_for_drag_.reset();
   current_target_rwh_for_drag_.reset();
   is_active_drag_ = false;
   drag_exceeded_movement_threshold_ = false;
+  drag_dropped_ = false;
+  drag_operation_ = ui::mojom::DragOperation::kNone;
+  document_is_handling_drag_ = false;
+  drag_rejected_by_delegate_ = false;
   drag_entered_location_ = gfx::PointF();
   drag_location_ = gfx::PointF();
   drag_screen_location_ = gfx::PointF();
@@ -900,8 +1046,9 @@ void WebContentsViewAndroid::OnSizeChanged() {
   auto* rwhv = GetRenderWidgetHostViewAndroid();
   if (rwhv) {
     web_contents_->SendScreenRects();
-    rwhv->SynchronizeVisualProperties(cc::DeadlinePolicy::UseDefaultDeadline(),
-                                      std::nullopt);
+    auto deadline_policy = cc::DeadlinePolicy::UseSpecifiedDeadline(
+        ui::DelegatedFrameHostAndroid::ResizeTimeoutFrames());
+    rwhv->SynchronizeVisualProperties(deadline_policy, std::nullopt);
   }
 }
 

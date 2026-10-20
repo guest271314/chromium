@@ -4,8 +4,6 @@
 
 package org.chromium.chrome.test.transit.hub;
 
-import static androidx.test.espresso.Espresso.onView;
-import static androidx.test.espresso.assertion.ViewAssertions.doesNotExist;
 import static androidx.test.espresso.matcher.ViewMatchers.withId;
 import static androidx.test.espresso.matcher.ViewMatchers.withText;
 
@@ -16,6 +14,7 @@ import android.widget.EditText;
 
 import org.chromium.base.test.transit.Facility;
 import org.chromium.base.test.transit.ViewElement;
+import org.chromium.base.test.transit.ViewFinder;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.history.HistoryItemView;
 import org.chromium.chrome.browser.hub.PaneId;
@@ -43,21 +42,16 @@ public class HistoryPaneStation extends HubBaseStation {
         return noopTo().enterFacility(new HistoryWithEntriesFacility(isLargeFormFactorDevice));
     }
 
-    /** Expect no history to be displayed in the history pane. */
-    public void expectEmptyState(boolean isLargeFormFactorDevice) {
+    /**
+     * Expect that the empty placeholder is shown when there are no entries. This should only be
+     * used on phones since the behavior can be buggy on LFF with varying keyboard connections.
+     */
+    public void expectEmptyState() {
         var emptyHistory = new Facility<>("EmptyState");
 
-        emptyHistory.declareView(withText("You’ll find your history here"));
+        emptyHistory.declareView(withText(R.string.history_manager_empty_state));
         emptyHistory.declareView(
-                withText(
-                        "You can see the pages you’ve visited or delete them from your"
-                                + " history"));
-
-        if (!isLargeFormFactorDevice) {
-            emptyHistory.declareNoView(withId(R.id.history_page_recycler_view));
-        } else {
-            emptyHistory.declareView(withId(R.id.history_page_recycler_view));
-        }
+                withText(R.string.history_manager_empty_state_view_or_clear_page_visited));
         noopTo().enterFacility(emptyHistory);
     }
 
@@ -83,7 +77,7 @@ public class HistoryPaneStation extends HubBaseStation {
 
         /** Expect an entry to be not displayed in the history pane. */
         public void expectNoEntry(String text) {
-            onView(withText(text)).check(doesNotExist());
+            ViewFinder.waitForNoView(withText(text));
         }
 
         /** Open the history search. */

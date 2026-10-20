@@ -19,7 +19,6 @@
 #include "chrome/browser/ui/chrome_pages.h"
 #include "chrome/common/url_constants.h"
 #include "chrome/common/webui_url_constants.h"
-#include "chrome/grit/branded_strings.h"
 #include "chrome/grit/generated_resources.h"
 #include "components/affiliations/core/browser/affiliation_utils.h"
 #include "components/autofill/core/common/autofill_features.h"
@@ -141,7 +140,7 @@ std::u16string GetManagePasswordsDialogTitleText(
     const GURL& user_visible_url,
     const url::Origin& password_origin_url,
     bool has_credentials) {
-  DCHECK(!password_origin_url.opaque());
+  CHECK(!password_origin_url.opaque(), base::NotFatalUntil::M162);
   // Check whether the registry controlled domains for user-visible URL
   // (i.e. the one seen in the omnibox) and the managed password origin URL
   // differ or not.
@@ -188,7 +187,7 @@ std::u16string GetDisplayFederation(
 
 std::u16string GetDisplayPassword(const password_manager::PasswordForm& form) {
   return !form.IsFederatedCredential()
-             ? form.password_value
+             ? form.password_value.value()
              : l10n_util::GetStringFUTF16(IDS_PASSWORDS_VIA_FEDERATION,
                                           GetDisplayFederation(form));
 }
@@ -199,8 +198,7 @@ bool IsSyncingAutosignSetting(Profile* profile) {
   return (
       sync_service &&
       sync_service->GetActiveDataTypes().Has(syncer::PRIORITY_PREFERENCES) &&
-      // With `kSyncSupportAlwaysSyncingPriorityPreferences` feature enabled,
-      // PRIORITY_PREFERENCES will always be active (decoupled from sync user
+      // PRIORITY_PREFERENCES is always active (decoupled from sync user
       // toggle). Thus, the preferences user toggle should be checked
       // separately.
       sync_service->GetUserSettings()->GetSelectedTypes().Has(
@@ -219,8 +217,6 @@ void TriggerManagePasswordsPerceptionSurvey(BrowserWindowInterface* browser,
   Profile* profile = browser->GetProfile();
   if (!base::FeatureList::IsEnabled(
           autofill::features::kManagePasswordsPerceptionSurvey) ||
-      !base::FeatureList::IsEnabled(
-          autofill::features::kYourSavedInfoSettingsPage) ||
       profile->IsOffTheRecord()) {
     return;
   }

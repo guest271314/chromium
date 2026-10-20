@@ -7,6 +7,7 @@
 
 #include <stddef.h>
 
+#include "base/containers/circular_deque.h"
 #include <string>
 #include <vector>
 
@@ -65,6 +66,7 @@ enum class GrContextType : uint32_t {
   kGL,      // Ganesh
   kVulkan,  // Ganesh
   kGraphiteDawn,
+  kGraphiteVulkan,
 };
 
 GPU_CONFIG_EXPORT std::string GrContextTypeToString(GrContextType type);
@@ -84,7 +86,8 @@ enum class SkiaBackendType {
   kGraphiteDawnD3D12 = 7,
   //  kDeprecatedGraphiteMetal = 8,
   kGraphiteDawnOpenGLES = 9,
-  kMaxValue = kGraphiteDawnOpenGLES
+  kGraphiteVulkan = 10,
+  kMaxValue = kGraphiteVulkan
 };
 // LINT.ThenChange(//tools/metrics/histograms/metadata/gpu/enums.xml:SkiaBackendType)
 
@@ -137,9 +140,6 @@ struct GPU_CONFIG_EXPORT GpuPreferences {
   // Enables using CODECAPI_AVLowLatencyMode. Windows only.
   bool enable_low_latency_dxva = true;
 
-  // Enables support for avoiding copying DXGI NV12 textures. Windows only.
-  bool enable_zero_copy_dxgi_video = false;
-
   // Enables support for outputting NV12 video frames. Windows only.
   bool enable_nv12_dxgi_video = false;
 
@@ -174,9 +174,6 @@ struct GPU_CONFIG_EXPORT GpuPreferences {
 
   // Enable logging of GPU driver debug messages.
   bool enable_gpu_driver_debug_logging = false;
-
-  // Turn off gpu program caching
-  bool disable_gpu_program_cache = false;
 
   // Enforce GL minimums.
   bool enforce_gl_minimums = false;
@@ -221,6 +218,20 @@ struct GPU_CONFIG_EXPORT GpuPreferences {
   // tracking.
   bool use_passthrough_cmd_decoder = false;
 
+  // The Skia rendering backend to use. Set by the browser based on gpu_mode.
+  // The GPU process may downgrade this (e.g. from kGraphiteDawn to kGL) after
+  // consulting the blocklist.
+  GrContextType gr_context_type = GrContextType::kGL;
+
+  // Ordered fallback GrContextTypes for the GPU process to try if
+  // gr_context_type is unavailable. Stored in priority order
+  // (front() = next to try).
+  // TODO(crbug.com/511049071): Consider merging gr_context_type to this list,
+  // so that we have a list of gr_context_type to try starting from the default
+  // type. This would involve refactoring the consumers of this struct, which
+  // currently use gr_context_type in many places.
+  base::circular_deque<GrContextType> fallback_gr_context_types;
+
   // ===================================
   // Settings from //gpu/config/gpu_switches.h
 
@@ -237,8 +248,6 @@ struct GPU_CONFIG_EXPORT GpuPreferences {
 
   // ===================================
   // Settings from //gpu/command_buffer/service/gpu_switches.h
-  // The type of the GrContext or Graphite Context.
-  GrContextType gr_context_type = GrContextType::kGL;
 
   // Use Vulkan for rasterization and display compositing.
   VulkanImplementationName use_vulkan = VulkanImplementationName::kNone;

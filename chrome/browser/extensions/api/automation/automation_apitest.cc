@@ -10,6 +10,7 @@
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/stringprintf.h"
 #include "base/task/single_thread_task_runner.h"
+#include "base/test/run_until.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/test_future.h"
 #include "base/test/tracing/trace_event_analyzer.h"
@@ -18,15 +19,18 @@
 #include "build/chromeos_buildflags.h"
 #include "chrome/browser/extensions/extension_apitest.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/browser_tabstrip.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/common/chrome_paths.h"
 #include "chrome/common/chrome_switches.h"
 #include "chrome/common/pref_names.h"
 #include "components/prefs/pref_service.h"
+#include "content/public/browser/browser_accessibility_state.h"
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/render_widget_host.h"
 #include "content/public/browser/render_widget_host_view.h"
+#include "content/public/browser/scoped_accessibility_mode.h"
 #include "content/public/browser/tracing_controller.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/content_features.h"
@@ -40,7 +44,6 @@
 #include "net/test/embedded_test_server/embedded_test_server.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/common/features.h"
-#include "ui/accessibility/accessibility_switches.h"
 #include "ui/accessibility/ax_mode.h"
 #include "ui/accessibility/ax_node.h"
 #include "ui/accessibility/ax_serializable_tree.h"
@@ -49,6 +52,7 @@
 #include "ui/accessibility/ax_updates_and_events.h"
 #include "ui/accessibility/tree_generator.h"
 #include "ui/base/accelerators/accelerator.h"
+#include "ui/base/page_transition_types.h"
 #include "ui/display/display_switches.h"
 
 #if BUILDFLAG(IS_CHROMEOS)
@@ -334,9 +338,9 @@ IN_PROC_BROWSER_TEST_P(AutomationApiTestWithContextType,
   const GURL url = GetURLForPath(kDomain, "/index.html");
   ASSERT_TRUE(NavigateToURL(GetActiveWebContents(), url));
 
-  ASSERT_EQ(1, browser()->tab_strip_model()->count());
+  ASSERT_EQ(1, browser()->GetTabStripModel()->count());
   content::WebContents* const tab =
-      browser()->tab_strip_model()->GetWebContentsAt(0);
+      browser()->GetTabStripModel()->GetWebContentsAt(0);
   ASSERT_FALSE(tab->IsFullAccessibilityModeForTesting());
   ASSERT_FALSE(tab->IsWebContentsOnlyAccessibilityModeForTesting());
 
@@ -355,9 +359,9 @@ IN_PROC_BROWSER_TEST_F(AutomationApiTest, ServiceWorker) {
   const GURL url = GetURLForPath(kDomain, "/index.html");
   ASSERT_TRUE(NavigateToURL(GetActiveWebContents(), url));
 
-  ASSERT_EQ(1, browser()->tab_strip_model()->count());
+  ASSERT_EQ(1, browser()->GetTabStripModel()->count());
   content::WebContents* const tab =
-      browser()->tab_strip_model()->GetWebContentsAt(0);
+      browser()->GetTabStripModel()->GetWebContentsAt(0);
   ASSERT_FALSE(tab->IsFullAccessibilityModeForTesting());
   ASSERT_FALSE(tab->IsWebContentsOnlyAccessibilityModeForTesting());
 
@@ -386,9 +390,9 @@ IN_PROC_BROWSER_TEST_P(AutomationApiTestWithContextType, ImageLabels) {
                                     true);
 
   // Initially there should be no accessibility mode set.
-  ASSERT_EQ(1, browser()->tab_strip_model()->count());
+  ASSERT_EQ(1, browser()->GetTabStripModel()->count());
   content::WebContents* const web_contents =
-      browser()->tab_strip_model()->GetWebContentsAt(0);
+      browser()->GetTabStripModel()->GetWebContentsAt(0);
   auto accessibility_mode = web_contents->GetAccessibilityMode();
   // Strip off kNativeAPIs, which may be set in some situations.
   accessibility_mode.set_mode(ui::AXMode::kNativeAPIs, false);
@@ -550,29 +554,6 @@ IN_PROC_BROWSER_TEST_P(AutomationApiTestWithContextType, SentenceBoundaries) {
       << message_;
 }
 
-class AutomationApiTestWithLanguageDetection
-    : public AutomationApiTestWithContextType {
- protected:
-  void SetUpCommandLine(base::CommandLine* command_line) override {
-    AutomationApiTest::SetUpCommandLine(command_line);
-    command_line->AppendSwitch(
-        ::switches::kEnableExperimentalAccessibilityLanguageDetection);
-  }
-};
-
-INSTANTIATE_TEST_SUITE_P(PersistentBackground,
-                         AutomationApiTestWithLanguageDetection,
-                         ::testing::Values(ContextType::kPersistentBackground));
-INSTANTIATE_TEST_SUITE_P(ServiceWorker,
-                         AutomationApiTestWithLanguageDetection,
-                         ::testing::Values(ContextType::kServiceWorker));
-
-IN_PROC_BROWSER_TEST_P(AutomationApiTestWithLanguageDetection,
-                       DetectedLanguage) {
-  StartEmbeddedTestServer();
-  ASSERT_TRUE(CreateExtensionAndRunTest("tabs/detected_language.js"))
-      << message_;
-}
 
 IN_PROC_BROWSER_TEST_P(AutomationApiTestWithContextType,
                        IgnoredNodesNotReturned) {
@@ -608,29 +589,9 @@ IN_PROC_BROWSER_TEST_P(AutomationApiTestWithContextType, DesktopNotSupported) {
 #endif  // !defined(USE_AURA)
 
 #if BUILDFLAG(IS_CHROMEOS)
-class AutomationApiFencedFrameTest : public AutomationApiTest {
- protected:
-  AutomationApiFencedFrameTest() {
-    feature_list_.InitWithFeaturesAndParameters(
-        /*enabled_features=*/{{blink::features::kFencedFrames, {}},
-                              {features::kPrivacySandboxAdsAPIsOverride, {}},
-                              {blink::features::kFencedFramesAPIChanges, {}},
-                              {blink::features::kFencedFramesDefaultMode, {}}},
-        /*disabled_features=*/{features::kSpareRendererForSitePerProcess});
-  }
 
-  ~AutomationApiFencedFrameTest() override = default;
 
- public:
-  base::test::ScopedFeatureList feature_list_;
-};
 
-IN_PROC_BROWSER_TEST_F(AutomationApiFencedFrameTest, DesktopFindInFencedframe) {
-  StartEmbeddedTestServer();
-  ASSERT_TRUE(RunExtensionTest("automation/tests/desktop/fencedframe",
-                               {.extension_url = "focus_fencedframe.html"}))
-      << message_;
-}
 
 IN_PROC_BROWSER_TEST_P(AutomationApiTestWithContextType, Desktop) {
   ASSERT_TRUE(
@@ -957,6 +918,112 @@ IN_PROC_BROWSER_TEST_P(AutomationApiTestWithContextType,
                        HitTestMultipleWindows) {
   StartEmbeddedTestServer();
   ASSERT_TRUE(CreateExtensionAndRunTest("desktop/hit_test_multiple_windows.js",
+                                        kPermissionsWindows))
+      << message_;
+}
+
+class AutomationApiTestWithHijackInterception
+    : public AutomationApiTestWithContextType,
+      public ui::AXActionHandlerObserver {
+ protected:
+  void InterceptAXActions() {
+    ui::AXActionHandlerRegistry* registry =
+        ui::AXActionHandlerRegistry::GetInstance();
+    ASSERT_TRUE(registry);
+    registry->AddObserver(this);
+  }
+
+  void SetTreeIds(ui::AXTreeID victim, ui::AXTreeID attacker) {
+    victim_tree_id_ = victim;
+    attacker_tree_id_ = attacker;
+  }
+
+  std::unique_ptr<content::ScopedAccessibilityMode> victim_accessibility_mode_;
+  std::unique_ptr<content::ScopedAccessibilityMode>
+      attacker_accessibility_mode_;
+
+ private:
+  // ui::AXActionHandlerObserver:
+  void PerformAction(const ui::AXActionData& action_data) override {
+    extensions::AutomationEventRouter* router =
+        extensions::AutomationEventRouter::GetInstance();
+    ASSERT_TRUE(router);
+    EXPECT_EQ(action_data.action, ax::mojom::Action::kScrollBackward);
+
+    // Verify the action is indeed for the victim tree.
+    EXPECT_EQ(action_data.target_tree_id, victim_tree_id_);
+
+    // 1. Send forged result (attacker tree ID, same request ID, result = false)
+    ui::AXActionData forged_data = action_data;
+    forged_data.target_tree_id = attacker_tree_id_;
+    router->DispatchActionResult(forged_data, /*result=*/false);
+
+    // 2. Send real result (victim tree ID, same request ID, result = true)
+    router->DispatchActionResult(action_data, /*result=*/true);
+  }
+
+  ui::AXTreeID victim_tree_id_;
+  ui::AXTreeID attacker_tree_id_;
+};
+
+INSTANTIATE_TEST_SUITE_P(PersistentBackground,
+                         AutomationApiTestWithHijackInterception,
+                         ::testing::Values(ContextType::kPersistentBackground));
+
+IN_PROC_BROWSER_TEST_P(AutomationApiTestWithHijackInterception,
+                       PreventCrossTreeCallbackHijack) {
+  StartEmbeddedTestServer();
+  InterceptAXActions();
+
+  // Create two tabs to get two different AXTreeIDs.
+  // Tab 0 will be the Victim (loaded with a text field).
+  GURL victim_url("data:text/html,<title>Victim</title><input type=\"text\">");
+  ASSERT_TRUE(NavigateToURL(GetActiveWebContents(), victim_url));
+  content::WebContents* victim_tab =
+      browser()->GetTabStripModel()->GetWebContentsAt(0);
+
+  // Enable accessibility for victim tab to ensure it gets a tree ID.
+  victim_accessibility_mode_ =
+      content::BrowserAccessibilityState::GetInstance()
+          ->CreateScopedModeForWebContents(victim_tab, ui::kAXModeComplete);
+
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return victim_tab->GetPrimaryMainFrame()->GetAXTreeID() !=
+           ui::AXTreeIDUnknown();
+  }));
+  ui::AXTreeID victim_tree_id =
+      victim_tab->GetPrimaryMainFrame()->GetAXTreeID();
+
+  // Create Tab 1 (Attacker, also loaded with a text field)
+  GURL attacker_url(
+      "data:text/html,<title>Attacker</title><input type=\"text\">");
+  chrome::AddSelectedTabWithURL(browser(), attacker_url,
+                                ui::PAGE_TRANSITION_LINK);
+  content::WebContents* attacker_tab =
+      browser()->GetTabStripModel()->GetWebContentsAt(1);
+
+  // Enable accessibility for attacker tab.
+  attacker_accessibility_mode_ =
+      content::BrowserAccessibilityState::GetInstance()
+          ->CreateScopedModeForWebContents(attacker_tab, ui::kAXModeComplete);
+
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return attacker_tab->GetPrimaryMainFrame()->GetAXTreeID() !=
+           ui::AXTreeIDUnknown();
+  }));
+  ui::AXTreeID attacker_tree_id =
+      attacker_tab->GetPrimaryMainFrame()->GetAXTreeID();
+
+  SetTreeIds(victim_tree_id, attacker_tree_id);
+
+  // Activate the victim tab so its accessibility tree is visible to the
+  // desktop.
+  browser()->GetTabStripModel()->ActivateTabAt(0);
+  ASSERT_TRUE(base::test::RunUntil(
+      [&]() { return browser()->GetTabStripModel()->active_index() == 0; }));
+
+  // Run the test extension.
+  ASSERT_TRUE(CreateExtensionAndRunTest("desktop/action_result_hijack.js",
                                         kPermissionsWindows))
       << message_;
 }

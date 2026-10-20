@@ -13,11 +13,13 @@
 
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
+#include "build/build_config.h"
 #include "chrome/browser/ui/page_action/page_action_controller.h"
 #include "chrome/browser/ui/views/web_apps/web_app_install_dialog_delegate.h"
 #include "chrome/browser/ui/views/web_apps/web_app_modal_dialog_delegate.h"
 #include "chrome/browser/ui/web_applications/web_app_dialogs.h"
 #include "chrome/browser/web_applications/web_app_install_params.h"
+#include "components/webapps/common/web_app_id.h"
 #include "ui/base/interaction/element_identifier.h"
 #include "ui/views/controls/button/button.h"
 
@@ -44,12 +46,15 @@ class WebAppInstallProgressView;
 class WebAppInstallOptionsView;
 struct WebAppInstallInfo;
 
+// LINT.IfChange(InstallDialogStep)
 enum class InstallDialogStep {
   kInstallDialog = 0,
   kInstallerOptions = 1,
   kProgress = 2,
   kSuccessful = 3,
+  kMaxValue = kSuccessful,
 };
+// LINT.ThenChange(//tools/metrics/histograms/enums.xml:WebAppInstallFlowStep)
 
 enum class InstallOsType { kMac, kWin, kCros, kOther };
 inline constexpr int kLargeImageSize = 80;
@@ -134,17 +139,22 @@ class WebAppInstallFlowDialogDelegate : public WebAppModalDialogDelegate {
  private:
   void OnLearnMoreButtonClicked();
   void UpdateDialogTitleAndHeader(InstallDialogStep step);
+  void UpdateFocusAndAnnounceStep(InstallDialogStep step);
   void UpdateProgressAndMaybeAdvance();
+
   void OnInstallResult(bool success, base::OnceClosure reparent_closure);
+  void AcceptForTesting();  // IN-TEST
+  void OnAutoAcceptInstallResultForTesting(
+      bool success,
+      base::OnceClosure reparent_closure);  // IN-TEST
+  void DeclineForTesting();                 // IN-TEST
 
-  void MeasureIphOnDialogClose();
+  void MeasureMetricsOnDialogClose(bool was_closed_by_user_action);
   void MeasureAcceptUserActionsForInstallDialog();
-  void MeasureCancelUserActionsForInstallDialog();
-
-  static bool IsWidgetCurrentSizeSmallerThanPreferredSize(
-      views::Widget* widget);
+  void MeasureCloseUserActionsForInstallDialog();
 
   std::unique_ptr<WebAppInstallInfo> install_info_;
+  webapps::AppId app_id_;
   std::unique_ptr<webapps::MlInstallOperationTracker> install_tracker_;
   WebAppInstallationAcceptanceCallback callback_;
   PwaInProductHelpState iph_state_;

@@ -16,6 +16,7 @@
 #include "media/formats/hls/playlist.h"
 #include "media/formats/hls/tags.h"
 #include "url/gurl.h"
+#include "url/origin.h"
 
 namespace media::hls {
 
@@ -137,9 +138,10 @@ class MEDIA_EXPORT MediaPlaylist final : public Playlist {
   // it should be `nullptr`. If `source` is invalid, this returns an error.
   // Otherwise, the parsed playlist is returned.
   // `tag_recorder` is an optional metrics collection helper.
-  static ParseStatus::Or<scoped_refptr<MediaPlaylist>> Parse(
+  static base::expected<scoped_refptr<MediaPlaylist>, ParseStatus> Parse(
       std::string_view source,
       GURL playlist_uri,
+      url::Origin security_origin,
       types::DecimalInteger version,
       const MultivariantPlaylist* parent_playlist);
 

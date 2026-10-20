@@ -28,8 +28,11 @@
 #include "third_party/skia/include/core/SkSurfaceProps.h"
 #include "third_party/skia/include/core/SkTextureCompressionType.h"
 #include "third_party/skia/include/gpu/GpuTypes.h"
+#include "third_party/skia/include/gpu/ganesh/SkImageGanesh.h"
 #include "third_party/skia/include/gpu/ganesh/SkSurfaceGanesh.h"
 #include "third_party/skia/include/private/chromium/GrPromiseImageTexture.h"
+#include "ui/gl/gl_context.h"
+#include "ui/gl/gl_surface.h"
 
 namespace gpu {
 
@@ -40,6 +43,43 @@ namespace {
 std::string GetLabel(const std::string& debug_label) {
   return std::string("WrappedSkImage_" + debug_label);
 }
+
+// Saves the GL context and surface that are current on construction, and
+// makes them current again on destruction if a different context or surface
+// was made current in between. Backings in this file make the
+// SharedContextState current, and may be created or destroyed while another
+// client's context (e.g. a command decoder's) is current. That client expects
+// its context to still be current afterwards.
+class ScopedRestoreCurrentGLContext {
+ public:
+  ScopedRestoreCurrentGLContext()
+      : context_(gl::GLContext::GetCurrent()),
+        surface_(gl::GLSurface::GetCurrent()) {}
+
+  ScopedRestoreCurrentGLContext(const ScopedRestoreCurrentGLContext&) = delete;
+  ScopedRestoreCurrentGLContext& operator=(
+      const ScopedRestoreCurrentGLContext&) = delete;
+
+  ~ScopedRestoreCurrentGLContext() {
+    if (!context_ || (gl::GLContext::GetCurrent() == context_.get() &&
+                      gl::GLSurface::GetCurrent() == surface_.get())) {
+      return;
+    }
+    if (!context_->MakeCurrent(surface_.get())) {
+      LOG(ERROR) << "Failed to restore the previously current GL context.";
+      // MakeCurrent can fail without changing the current context. Release
+      // whatever is current so the caller does not continue on the wrong
+      // context; it will instead fail to find its context current.
+      if (gl::GLContext* current = gl::GLContext::GetCurrent()) {
+        current->ReleaseCurrent(nullptr);
+      }
+    }
+  }
+
+ private:
+  scoped_refptr<gl::GLContext> context_;
+  scoped_refptr<gl::GLSurface> surface_;
+};
 
 }  // namespace
 
@@ -148,6 +188,7 @@ WrappedSkImageBacking::WrappedSkImageBacking(
 WrappedSkImageBacking::~WrappedSkImageBacking() {
   auto destroy_resources = [](scoped_refptr<SharedContextState> context_state,
                               std::vector<TextureHolder> textures) {
+    ScopedRestoreCurrentGLContext restore_context;
     context_state->MakeCurrent(nullptr);
 
     for (auto& texture : textures) {
@@ -188,6 +229,7 @@ bool WrappedSkImageBacking::Initialize(const std::string& debug_label) {
 
   // MakeCurrent to avoid destroying another client's state because Skia may
   // change GL state to create and upload textures (crbug.com/1095679).
+  ScopedRestoreCurrentGLContext restore_context;
   if (!context_state_->MakeCurrent(nullptr)) {
     return false;
   }
@@ -257,6 +299,7 @@ bool WrappedSkImageBacking::InitializeWithData(
 
   // MakeCurrent to avoid destroying another client's state because Skia may
   // change GL state to create and upload textures (crbug.com/1095679).
+  ScopedRestoreCurrentGLContext restore_context;
   if (!context_state_->MakeCurrent(nullptr)) {
     return false;
   }
@@ -324,7 +367,7 @@ SharedImageBackingType WrappedSkImageBacking::GetType() const {
   return SharedImageBackingType::kWrappedSkImage;
 }
 
-void WrappedSkImageBacking::Update(std::unique_ptr<gfx::GpuFence> in_fence) {
+void WrappedSkImageBacking::Update(gfx::GpuFenceHandle in_fence) {
   NOTREACHED();
 }
 
@@ -332,20 +375,83 @@ bool WrappedSkImageBacking::UploadFromMemory(
     const std::vector<SkPixmap>& pixmaps) {
   DCHECK_EQ(pixmaps.size(), textures_.size());
 
-  if (context_state_->context_lost()) {
+  SharedContextState* context_state = GetContextStateForCurrentThread();
+  if (!context_state || context_state->context_lost()) {
     return false;
   }
 
-  DCHECK(context_state_->IsCurrent(nullptr));
+  DCHECK(context_state->IsCurrent(nullptr));
 
   bool updated = true;
   for (size_t i = 0; i < textures_.size(); ++i) {
-    updated = updated && context_state_->gr_context()->updateBackendTexture(
+    updated = updated && context_state->gr_context()->updateBackendTexture(
                              textures_[i].backend_texture, &pixmaps[i],
                              /*numLevels=*/1, nullptr, nullptr);
   }
 
+  if (is_thread_safe()) {
+    context_state->gr_context()->submit();
+  }
+
   return updated;
+}
+
+bool WrappedSkImageBacking::ReadbackToMemory(
+    const std::vector<SkPixmap>& pixmaps) {
+  DCHECK_EQ(pixmaps.size(), textures_.size());
+
+  SharedContextState* context_state = GetContextStateForCurrentThread();
+  if (!context_state || context_state->context_lost()) {
+    return false;
+  }
+
+  DCHECK(context_state->IsCurrent(nullptr));
+
+  bool read = true;
+  for (size_t i = 0; i < textures_.size(); ++i) {
+    auto sk_image = SkImages::BorrowTextureFrom(
+        context_state->gr_context(), textures_[i].backend_texture,
+        surface_origin(), GetSkColorType(i), alpha_type(),
+        color_space().ToSkColorSpace());
+    if (!sk_image) {
+      read = false;
+      break;
+    }
+    if (!sk_image->readPixels(context_state->gr_context(), pixmaps[i], 0, 0)) {
+      read = false;
+      break;
+    }
+  }
+
+  return read;
+}
+
+SharedContextState* WrappedSkImageBacking::GetContextStateForCurrentThread()
+    const {
+  // `task_runner_` is only set when `is_thread_safe()` is true. On WebView,
+  // the render thread doesn't have a task runner or a thread-local
+  // SharedContextState, but `is_thread_safe()` is never true on WebView (since
+  // DrDC is disabled and WrappedSkImageBacking is only used on a single
+  // thread), so `!task_runner_` safely returns `context_state_`.
+  if (!task_runner_ || task_runner_->BelongsToCurrentThread()) {
+    return context_state_.get();
+  }
+
+  // A thread-safe backing can be accessed on a thread other than the one it was
+  // created on, e.g. the DrDC CompositorGpuThread, where `context_state_` and
+  // its GrDirectContext can't be used. Use the SharedContextState registered
+  // for the current thread instead.
+  if (SharedContextState* current_context_state =
+          SharedContextState::GetForCurrentThread()) {
+    if (!current_context_state->gr_context()) {
+      LOG(ERROR) << "SharedContextState for current thread is not Ganesh";
+      return nullptr;
+    }
+    return current_context_state;
+  }
+
+  LOG(ERROR) << "No SharedContextState registered for current thread";
+  return nullptr;
 }
 
 std::vector<sk_sp<GrPromiseImageTexture>>

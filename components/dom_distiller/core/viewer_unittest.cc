@@ -185,41 +185,49 @@ TEST_F(DomDistillerViewerTest, TestGetAddToPageJsDisplaysContent) {
   EXPECT_EQ(output, "addToPage(\"content\");");
 }
 
-TEST_F(DomDistillerViewerTest, TestGetJavaScriptPinchMinZoom_Default) {
-  base::test::ScopedFeatureList scoped_feature_list;
+TEST_F(DomDistillerViewerTest, TestGetJavaScriptPinchMinMaxZoom) {
 #if BUILDFLAG(IS_ANDROID)
-  scoped_feature_list.InitAndDisableFeature(kReaderModeDistillInApp);
-#endif
-  std::string output = viewer::GetJavaScript();
-  EXPECT_THAT(output, testing::ContainsRegex(
-                          "/\\* PINCH_SCALE \\*/ Math.max\\(0\\.5,"));
-}
-
-TEST_F(DomDistillerViewerTest, TestGetJavaScriptPinchMinMaxZoom_DistillInApp) {
-#if BUILDFLAG(IS_ANDROID)
-  base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitAndEnableFeature(kReaderModeDistillInApp);
   std::string output = viewer::GetJavaScript();
   EXPECT_THAT(output,
               testing::ContainsRegex(
                   "/\\* PINCH_SCALE \\*/ Math\\.max\\(1, Math\\.min\\(2\\.5,"));
 #else
-  SUCCEED();
-#endif
-}
-
-TEST_F(DomDistillerViewerTest,
-       TestGetJavaScriptPinchMinMaxZoom_DistillInCustomTab) {
-#if BUILDFLAG(IS_ANDROID)
-  base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitAndDisableFeature(kReaderModeDistillInApp);
   std::string output = viewer::GetJavaScript();
   EXPECT_THAT(output,
               testing::ContainsRegex(
                   "/\\* PINCH_SCALE \\*/ Math\\.max\\(0\\.5, Math\\.min\\(2,"));
-#else
-  SUCCEED();
 #endif
+}
+
+// Tests that GetArticleTemplateHtml includes a nonce-based
+// Content-Security-Policy meta tag when a csp_nonce is provided.
+TEST_F(DomDistillerViewerTest, TestGetArticleTemplateHtmlHasCspWithNonce) {
+  const std::string html = viewer::GetArticleTemplateHtml(
+      mojom::Theme::kLight, mojom::FontFamily::kSansSerif, "test_nonce_12345");
+  EXPECT_NE(html.find("<meta http-equiv=\"Content-Security-Policy\""),
+            std::string::npos);
+  EXPECT_NE(html.find("script-src 'nonce-test_nonce_12345'"),
+            std::string::npos);
+  EXPECT_NE(html.find("object-src 'none'"), std::string::npos);
+  EXPECT_NE(html.find("form-action 'none'"), std::string::npos);
+
+  EXPECT_EQ(html.find("default-src 'none'"), std::string::npos);
+  EXPECT_EQ(html.find("frame-src"), std::string::npos);
+  EXPECT_EQ(html.find("style-src"), std::string::npos);
+  EXPECT_EQ(html.find("font-src"), std::string::npos);
+  EXPECT_EQ(html.find("img-src"), std::string::npos);
+  EXPECT_EQ(html.find("base-uri 'none'"), std::string::npos);
+}
+
+// Tests that GetArticleTemplateHtml omits the Content-Security-Policy meta tag
+// when csp_nonce is empty.
+TEST_F(DomDistillerViewerTest,
+       TestGetArticleTemplateHtmlOmitsCspWhenNonceEmpty) {
+  const std::string html = viewer::GetArticleTemplateHtml(
+      mojom::Theme::kLight, mojom::FontFamily::kSansSerif,
+      /*csp_nonce=*/"");
+  EXPECT_EQ(html.find("<meta http-equiv=\"Content-Security-Policy\""),
+            std::string::npos);
 }
 
 }  // namespace dom_distiller

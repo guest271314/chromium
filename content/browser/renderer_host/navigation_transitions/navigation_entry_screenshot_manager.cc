@@ -4,6 +4,7 @@
 
 #include "content/browser/renderer_host/navigation_transitions/navigation_entry_screenshot_manager.h"
 
+#include "base/debug/crash_logging.h"
 #include "base/functional/bind.h"
 #include "base/memory/ptr_util.h"
 #include "base/metrics/histogram_functions.h"
@@ -28,9 +29,10 @@ NavigationEntryScreenshotManager::NavigationEntryScreenshotManager()
       tick_clock_(base::DefaultTickClock::GetInstance()),
       cleanup_delay_(
           NavigationTransitionConfig::GetCleanupDelayForInvisibleCaches()) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M152);
   max_cache_size_in_bytes_ =
       NavigationTransitionConfig::ComputeCacheSizeInBytes();
+
   if (auto* screen = display::Screen::Get()) {
     screen->AddObserver(this);
   }
@@ -72,6 +74,7 @@ void NavigationEntryScreenshotManager::OnScreenshotCached(
     Register(cache);
   }
   // We shouldn't be able to capture anything greater than the budget.
+  SCOPED_CRASH_KEY_NUMBER("DNT", "screenshot_size_bytes", size);
   CHECK_LE(size, max_cache_size_in_bytes_);
   current_cache_size_in_bytes_ += size;
 
@@ -128,7 +131,7 @@ bool NavigationEntryScreenshotManager::IsEmpty() const {
 }
 
 void NavigationEntryScreenshotManager::RecalculateCacheSize() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M152);
   // Recalculate the max cache size based on the size of the new primary screen.
   // Keep the maximum size calculated from all screens that were ever added.
   max_cache_size_in_bytes_ =

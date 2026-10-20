@@ -28,7 +28,7 @@
 #include "chrome/browser/sync/test/integration/status_change_checker.h"
 #include "chrome/browser/sync/test/integration/sync_service_impl_harness.h"
 #include "chrome/browser/sync/test/integration/sync_test.h"
-#include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/passwords/manage_passwords_ui_controller.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/common/chrome_constants.h"
@@ -38,10 +38,12 @@
 #include "components/password_manager/core/browser/features/password_features.h"
 #include "components/password_manager/core/browser/features/password_manager_features_util.h"
 #include "components/password_manager/core/browser/password_form.h"
+#include "components/password_manager/core/browser/password_form_manager.h"
 #include "components/password_manager/core/browser/password_manager_test_utils.h"
 #include "components/password_manager/core/browser/password_store/password_form_converters.h"
 #include "components/password_manager/core/browser/password_store/password_store_interface.h"
 #include "components/password_manager/core/browser/password_store/password_store_results_observer.h"
+#include "components/password_manager/core/browser/password_string.h"
 #include "components/password_manager/core/browser/password_sync_util.h"
 #include "components/password_manager/core/browser/ui/saved_passwords_presenter.h"
 #include "components/password_manager/core/common/password_manager_features.h"
@@ -72,6 +74,7 @@
 #include "net/http/http_status_code.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "ui/base/window_open_disposition.h"
 
 namespace {
 
@@ -147,12 +150,12 @@ class SyncActiveWithoutPasswordsChecker
 // Note: This helper applies to ChromeOS too, but is currently unused there. So
 // define it out to prevent a compile error due to the unused function.
 #if !BUILDFLAG(IS_CHROMEOS)
-content::WebContents* GetNewTab(Browser* browser) {
+content::WebContents* GetNewTab(BrowserWindowInterface* browser) {
   ui_test_utils::NavigateToURLWithDisposition(
       browser, GURL("data:text/html"),
       WindowOpenDisposition::NEW_FOREGROUND_TAB,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_TAB);
-  return browser->tab_strip_model()->GetActiveWebContents();
+  return browser->GetTabStripModel()->GetActiveWebContents();
 }
 #endif  // !BUILDFLAG(IS_CHROMEOS)
 
@@ -163,6 +166,12 @@ content::WebContents* GetNewTab(Browser* browser) {
 class PasswordManagerSyncTest : public SyncTest {
  public:
   PasswordManagerSyncTest() : SyncTest(SINGLE_CLIENT) {
+    // Avoid waiting for server predictions in browser tests, to keep filling
+    // behavior deterministic. Server-prediction-specific behavior is covered
+    // in PasswordFormManager unit tests.
+    password_manager::PasswordFormManager::
+        set_wait_for_server_predictions_for_filling(false);
+
     // Note: Enabling kFillOnAccountSelect effectively *disables* autofilling on
     // page load. This is important because if a password is autofilled, then
     // all Javascript changes to it are discarded, and thus any tests that cover
@@ -255,7 +264,7 @@ class PasswordManagerSyncTest : public SyncTest {
   void SetupSyncTransportWithPasswordAccountStorage() {
     SignIn(SyncTestAccount::kDefaultAccount);
 
-    PasswordSyncActiveChecker(GetSyncService(0)).Wait();
+    ASSERT_TRUE(PasswordSyncActiveChecker(GetSyncService(0)).Wait());
     ASSERT_TRUE(GetSyncService(0)->GetActiveDataTypes().Has(syncer::PASSWORDS));
   }
 
@@ -289,7 +298,8 @@ class PasswordManagerSyncTest : public SyncTest {
     form.signon_realm = origin.spec();
     form.url = origin;
     form.username_value = base::UTF8ToUTF16(username);
-    form.password_value = base::UTF8ToUTF16(password);
+    form.password_value =
+        password_manager::PasswordString(base::UTF8ToUTF16(password));
     form.date_created = base::Time::Now();
     return form;
   }
@@ -714,8 +724,9 @@ IN_PROC_BROWSER_TEST_F(PasswordManagerSyncTest,
   EXPECT_FALSE(bubble_observer.IsSavePromptAvailable());
 }
 
+// TODO(crbug.com/500570908): Flaky on linux-rel-cft and mac-rel-cft.
 IN_PROC_BROWSER_TEST_F(PasswordManagerSyncTest,
-                       OfferToSaveNonPrimaryAccountCredential) {
+                       DISABLED_OfferToSaveNonPrimaryAccountCredential) {
   // Disable signin interception, because it suppresses the password bubble.
   // See PasswordManagerBrowserTestWithSigninInterception for tests with
   // interception enabled.
@@ -789,13 +800,13 @@ IN_PROC_BROWSER_TEST_F(PasswordManagerSyncTest,
 
   GetSyncService(0)->GetUserSettings()->SetSelectedType(
       syncer::UserSelectableType::kPasswords, false);
-  PasswordSyncInactiveChecker(GetSyncService(0)).Wait();
+  ASSERT_TRUE(PasswordSyncInactiveChecker(GetSyncService(0)).Wait());
 
   SignOut();
 
   // The disabling should be remembered.
   SignIn();
-  PasswordSyncInactiveChecker(GetSyncService(0)).Wait();
+  ASSERT_TRUE(PasswordSyncInactiveChecker(GetSyncService(0)).Wait());
 }
 
 IN_PROC_BROWSER_TEST_F(PasswordManagerSyncTest,
@@ -938,7 +949,7 @@ IN_PROC_BROWSER_TEST_F(PasswordManagerSyncTestWithPolicy,
                base::Value(std::move(disabled_types)), nullptr);
   policy_provider()->UpdateChromePolicy(policies);
 
-  SyncActiveWithoutPasswordsChecker(GetSyncService(0)).Wait();
+  ASSERT_TRUE(SyncActiveWithoutPasswordsChecker(GetSyncService(0)).Wait());
 }
 
 IN_PROC_BROWSER_TEST_F(PasswordManagerSyncTest,
@@ -957,7 +968,7 @@ IN_PROC_BROWSER_TEST_F(PasswordManagerSyncTest,
   presenter.Init();
   {
     SavedPasswordsPresenterWaiter waiter(&presenter, 1);
-    waiter.Wait();
+    ASSERT_TRUE(waiter.Wait());
   }
 
   GetSyncService(0)->GetUserSettings()->SetSelectedType(
@@ -965,7 +976,7 @@ IN_PROC_BROWSER_TEST_F(PasswordManagerSyncTest,
 
   {
     SavedPasswordsPresenterWaiter waiter(&presenter, 0);
-    waiter.Wait();
+    ASSERT_TRUE(waiter.Wait());
   }
 }
 

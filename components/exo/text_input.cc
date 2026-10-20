@@ -20,7 +20,6 @@
 #include "ui/aura/window.h"
 #include "ui/aura/window_tree_host.h"
 #include "ui/base/ime/input_method.h"
-#include "ui/base/ime/utf_offset.h"
 #include "ui/base/ime/virtual_keyboard_controller.h"
 #include "ui/events/event.h"
 
@@ -87,22 +86,43 @@ void TextInput::Activate(Seat* seat,
   focus_reason_ = reason;
   if (surface_ == surface)
     return;
+
   DetachInputMethod();
+
+  if (surface_) {
+    surface_->RemoveSurfaceObserver(this);
+  }
   surface_ = surface;
-  seat_ = seat;
-  seat_->AddObserver(this, kTextInputSeatObserverPriority);
-  if (seat_->GetFocusedSurface() == surface_)
+  if (surface_) {
+    surface_->AddSurfaceObserver(this);
+  }
+
+  if (seat_.get() != seat) {
+    if (seat_) {
+      seat_->RemoveObserver(this);
+    }
+    seat_ = seat->GetWeakPtr();
+    if (seat_) {
+      seat_->AddObserver(this, kTextInputSeatObserverPriority);
+    }
+  }
+
+  if (seat_ && seat_->GetFocusedSurface() == surface_) {
     AttachInputMethod();
+  }
 }
 
 void TextInput::Deactivate() {
   focus_reason_ = ui::TextInputClient::FOCUS_REASON_NONE;
-  if (!surface_)
-    return;
   DetachInputMethod();
-  seat_->RemoveObserver(this);
-  surface_ = nullptr;
-  seat_ = nullptr;
+  if (surface_) {
+    surface_->RemoveSurfaceObserver(this);
+    surface_ = nullptr;
+  }
+  if (seat_) {
+    seat_->RemoveObserver(this);
+    seat_ = nullptr;
+  }
 }
 
 void TextInput::ShowVirtualKeyboardIfEnabled() {
@@ -307,8 +327,13 @@ bool TextInput::CanComposeInline() const {
 }
 
 gfx::Rect TextInput::GetCaretBounds() const {
-  return caret_bounds_ +
-         surface_->window()->GetBoundsInScreen().OffsetFromOrigin();
+  if (!surface_) {
+    return gfx::Rect();
+  }
+  const gfx::Rect surface_bounds = surface_->window()->GetBoundsInScreen();
+  gfx::Rect caret_bounds = caret_bounds_ + surface_bounds.OffsetFromOrigin();
+  caret_bounds.AdjustToFit(surface_bounds);
+  return caret_bounds;
 }
 
 gfx::Rect TextInput::GetSelectionBoundingBox() const {
@@ -488,7 +513,14 @@ gfx::Range TextInput::GetAutocorrectRange() const {
 }
 
 gfx::Rect TextInput::GetAutocorrectCharacterBounds() const {
-  return autocorrect_info_.bounds;
+  if (!surface_ || autocorrect_info_.bounds.IsEmpty()) {
+    return gfx::Rect();
+  }
+  const gfx::Rect surface_bounds = surface_->window()->GetBoundsInScreen();
+  gfx::Rect autocorrect_bounds =
+      autocorrect_info_.bounds + surface_bounds.OffsetFromOrigin();
+  autocorrect_bounds.AdjustToFit(surface_bounds);
+  return autocorrect_bounds;
 }
 
 bool TextInput::SetAutocorrectRange(const gfx::Range& range) {
@@ -609,6 +641,7 @@ void TextInput::AttachInputMethod() {
     LOG(ERROR) << "input method not found";
     return;
   }
+  input_method_->AddObserver(this);
 
   input_mode_ = ui::TEXT_INPUT_MODE_TEXT;
   input_type_ = ui::TEXT_INPUT_TYPE_TEXT;
@@ -628,6 +661,7 @@ void TextInput::DetachInputMethod() {
     return;
   input_mode_ = ui::TEXT_INPUT_MODE_DEFAULT;
   input_type_ = ui::TEXT_INPUT_TYPE_NONE;
+  input_method_->RemoveObserver(this);
   input_method_->DetachTextInputClient(this);
   virtual_keyboard_observation_.Reset();
   input_method_ = nullptr;
@@ -652,6 +686,16 @@ void TextInput::SendStagedVKOccludedBounds() {
         *staged_vk_occluded_bounds_);
     staged_vk_occluded_bounds_.reset();
   }
+}
+
+void TextInput::OnSurfaceDestroying(Surface* surface) {
+  DCHECK_EQ(surface_, surface);
+  Deactivate();
+}
+
+void TextInput::OnInputMethodDestroyed(const ui::InputMethod* input_method) {
+  DCHECK_EQ(input_method_, input_method);
+  Deactivate();
 }
 
 }  // namespace exo

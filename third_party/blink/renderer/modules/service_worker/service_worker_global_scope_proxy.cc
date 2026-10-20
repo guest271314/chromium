@@ -122,7 +122,8 @@ void ServiceWorkerGlobalScopeProxy::CountFeature(WebFeature feature) {
 void ServiceWorkerGlobalScopeProxy::ReportException(
     const String& error_message,
     const SourceLocation* location,
-    int exception_id) {
+    int exception_id,
+    SanitizeScriptErrors sanitize_script_errors) {
   DCHECK_CALLED_ON_VALID_THREAD(worker_thread_checker_);
   Client().ReportException(error_message, location->LineNumber(),
                            location->ColumnNumber(), location->Url());
@@ -176,9 +177,10 @@ void ServiceWorkerGlobalScopeProxy::DidFailToFetchModuleScript() {
 
 void ServiceWorkerGlobalScopeProxy::WillEvaluateScript() {
   DCHECK_CALLED_ON_VALID_THREAD(worker_thread_checker_);
-  TRACE_EVENT_BEGIN("ServiceWorker",
-                    "ServiceWorkerGlobalScopeProxy::EvaluateTopLevelScript",
-                    perfetto::Track::FromPointer(this));
+  TRACE_EVENT_INSTANT("ServiceWorker",
+                      "ServiceWorkerGlobalScopeProxy::EvaluateTopLevelScript",
+                      perfetto::Flow::FromPointer(
+                          this, "blink::ServiceWorkerGlobalScopeProxy"));
   ScriptState::Scope scope(
       WorkerGlobalScope()->ScriptController()->GetScriptState());
   Client().WillEvaluateScript(
@@ -196,8 +198,12 @@ void ServiceWorkerGlobalScopeProxy::DidEvaluateTopLevelScript(
       base::TimeTicks::Now() - top_level_script_evaluation_start_time_);
   WorkerGlobalScope()->DidEvaluateScript();
   Client().DidEvaluateScript(success);
-  TRACE_EVENT_END("ServiceWorker", perfetto::Track::FromPointer(this),
-                  "success", success);
+  TRACE_EVENT_INSTANT(
+      "ServiceWorker",
+      "ServiceWorkerGlobalScopeProxy::DidEvaluateTopLevelScript",
+      perfetto::TerminatingFlow::FromPointer(
+          this, "blink::ServiceWorkerGlobalScopeProxy"),
+      "success", success);
 }
 
 void ServiceWorkerGlobalScopeProxy::DidCloseWorkerGlobalScope() {

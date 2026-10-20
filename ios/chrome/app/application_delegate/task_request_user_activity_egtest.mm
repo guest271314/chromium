@@ -6,6 +6,7 @@
 #import <XCTest/XCTest.h>
 
 #import "base/strings/sys_string_conversions.h"
+#import "components/handoff/handoff_utility.h"
 #import "ios/chrome/browser/bookmarks/public/bookmarks_ui_constants.h"
 #import "ios/chrome/browser/bookmarks/test/bookmark_earl_grey.h"
 #import "ios/chrome/browser/bookmarks/test/bookmark_earl_grey_ui.h"
@@ -49,6 +50,12 @@ const char exampleURL[] = "https://example.com";
   config.additional_args.push_back("-IsEnableNewStartupFlowEnabled");
   config.additional_args.push_back("YES");
   return config;
+}
+
+- (void)tearDownHelper {
+  [ChromeEarlGrey
+      removeUserDefaultsObjectForKey:@"IsEnableNewStartupFlowEnabled"];
+  [super tearDownHelper];
 }
 
 // Tests that the "Open In Chrome" intent opens the specified URLs.
@@ -293,6 +300,18 @@ const char exampleURL[] = "https://example.com";
   // Verify that the Clear Browsing Data UI is displayed.
   [ChromeEarlGrey waitForUIElementToAppearWithMatcher:
                       chrome_test_util::ClearBrowsingDataView()];
+}
+
+// Tests that the Handoff intent opens the specified URLs.
+- (void)testHandoffActivity {
+  GURL webURL = GURL(exampleURL);
+  [ChromeEarlGrey
+      sceneContinueUserActivityWithType:handoff::kChromeHandoffActivityType
+                                    url:base::SysUTF8ToNSString(webURL.spec())];
+
+  [ChromeEarlGrey waitForWebStateVisibleURL:webURL];
+  GREYAssertTrue([ChromeEarlGrey webStateVisibleURL] == webURL,
+                 @"URL should be opened by Handoff");
 }
 
 @end

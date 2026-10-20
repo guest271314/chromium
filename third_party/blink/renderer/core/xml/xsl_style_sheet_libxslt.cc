@@ -33,6 +33,7 @@
 #include "third_party/blink/renderer/core/xml/parser/xml_document_parser_scope.h"
 #include "third_party/blink/renderer/core/xml/parser/xml_parser_input.h"
 #include "third_party/blink/renderer/core/xml/xsl_style_sheet.h"
+#include "third_party/blink/renderer/core/xml/xslt_extensions.h"
 #include "third_party/blink/renderer/core/xml/xslt_processor.h"
 #include "third_party/blink/renderer/platform/loader/fetch/fetch_initiator_type_names.h"
 #include "third_party/blink/renderer/platform/loader/fetch/fetch_parameters.h"
@@ -56,7 +57,8 @@ XSLStyleSheet::XSLStyleSheet(XSLStyleSheet* parent_style_sheet,
       compilation_failed_(false),
       parent_style_sheet_(parent_style_sheet),
       owner_document_(nullptr) {
-  CHECK(RuntimeEnabledFeatures::XSLTEnabled());
+  CHECK(XSLTProcessor::IsXSLTEnabled(
+      OwnerDocument() ? OwnerDocument()->GetExecutionContext() : nullptr));
 }
 
 XSLStyleSheet::XSLStyleSheet(Node* parent_node,
@@ -74,7 +76,8 @@ XSLStyleSheet::XSLStyleSheet(Node* parent_node,
       compilation_failed_(false),
       parent_style_sheet_(nullptr),
       owner_document_(nullptr) {
-  CHECK(RuntimeEnabledFeatures::XSLTEnabled());
+  CHECK(XSLTProcessor::IsXSLTEnabled(
+      OwnerDocument() ? OwnerDocument()->GetExecutionContext() : nullptr));
 }
 
 XSLStyleSheet::XSLStyleSheet(Document* owner_document,
@@ -93,7 +96,8 @@ XSLStyleSheet::XSLStyleSheet(Document* owner_document,
       compilation_failed_(false),
       parent_style_sheet_(nullptr),
       owner_document_(owner_document) {
-  CHECK(RuntimeEnabledFeatures::XSLTEnabled());
+  CHECK(XSLTProcessor::IsXSLTEnabled(
+      owner_document ? owner_document->GetExecutionContext() : nullptr));
 }
 
 XSLStyleSheet::~XSLStyleSheet() {
@@ -268,6 +272,8 @@ void XSLStyleSheet::LoadChildSheet(const String& href) {
 }
 
 xsltStylesheetPtr XSLStyleSheet::CompileStyleSheet() {
+  InitializeLibXSLT();
+
   // FIXME: Hook up error reporting for the stylesheet compilation process.
   if (embedded_)
     return xsltLoadStylesheetPI(GetDocument());

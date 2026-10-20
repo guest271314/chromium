@@ -32,7 +32,7 @@ class CORE_EXPORT GridLayoutAlgorithm
   using LayoutAlgorithm::Style;
 
   const LayoutResult* Layout();
-  MinMaxSizesResult ComputeMinMaxSizes(const MinMaxSizesFloatInput&);
+  MinMaxSizesResult ComputeMinMaxSizes(const MinMaxSizesInput&);
 
   LayoutUnit ComputeSubgridIntrinsicBlockSize(
       const GridSizingSubtree& sizing_subtree) const;
@@ -48,9 +48,15 @@ class CORE_EXPORT GridLayoutAlgorithm
       const LogicalRect& padding_box_rect,
       GridItemData* item);
 
+  // TODO(layout-dev): It would be cleaner to split out creating the line
+  // resolver and merging it with the parent line names (in the case of
+  // subgrids) as separate methods. This would allow us to skip the latter in
+  // the case of `can_inherit_line_names_from_parent` rather than needing to
+  // pass that in.
   GridLineResolver BuildGridLineResolver(
       const GridArea& subgrid_area = GridArea(),
-      const GridLineResolver* opt_parent_line_resolver = nullptr) const;
+      const GridLineResolver* opt_parent_line_resolver = nullptr,
+      bool can_inherit_line_names_from_parent = true) const;
 
   // Builds a sizing track collection for `track_direction` and sets it on
   // `layout_data`. `sizing_constraint`, `needs_intrinsic_track_size`, and
@@ -99,7 +105,16 @@ class CORE_EXPORT GridLayoutAlgorithm
       const GridSizingSubtree& sizing_subtree,
       const SubgriddedItemData& opt_subgrid_data,
       const std::optional<GridTrackSizingDirection>& opt_track_direction,
-      SizingConstraint sizing_constraint) const;
+      SizingConstraint sizing_constraint,
+      bool is_measure_after_layout = false) const;
+
+  // Resolves deferred nested-subgrid baselines with a bottom-up pass, so that
+  // each grid sees finalized children when it's measured.
+  void ResolveBaselinesInStandaloneAxes(
+      const GridSizingSubtree& sizing_subtree,
+      GridSizingTree* sizing_tree,
+      SizingConstraint sizing_constraint,
+      bool is_measure_after_layout = false) const;
 
  private:
   friend class GridLayoutAlgorithmTest;
@@ -131,13 +146,22 @@ class CORE_EXPORT GridLayoutAlgorithm
       wtf_size_t subgrid_span_size,
       GridTrackSizingDirection track_direction) const;
 
+  // Selects which baseline-collection phase a call performs; each phase
+  // includes a different subset of grid items.
+  enum class BaselineCollectionPhase {
+    kBaselinesForTrackSizing,
+    kFinalBaselines,
+    kBaselinesForStandaloneAxes,
+  };
+
   // Determines the major/minor alignment baselines for each row/column based on
   // each item in `grid_items`, and stores the results in `track_collection`.
   void ComputeGridItemBaselines(const GridLayoutTree* layout_tree,
                                 const GridSizingSubtree& sizing_subtree,
                                 GridTrackSizingDirection track_direction,
                                 SizingConstraint sizing_constraint,
-                                bool is_track_sizing) const;
+                                BaselineCollectionPhase phase,
+                                bool is_measure_after_layout) const;
 
   // Helper that calls the method above for the entire grid sizing tree.
   void InitializeTrackSizes(GridSizingTree* sizing_tree,

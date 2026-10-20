@@ -12,6 +12,7 @@
 #include "chrome/browser/optimization_guide/optimization_guide_global_state_holder_keyed_service.h"
 #include "chrome/browser/optimization_guide/optimization_guide_global_state_holder_keyed_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/common/chrome_features.h"
 #include "components/omnibox/browser/omnibox_field_trial.h"
 #include "components/omnibox/browser/on_device_tail_model_service.h"
 
@@ -60,13 +61,13 @@ OnDeviceTailModelServiceFactory::BuildServiceInstanceForBrowserContext(
           profile);
   return global_state_service
              ? std::make_unique<OnDeviceTailModelService>(
-                   &global_state_service->GetGlobalState().prediction_manager())
+                   &global_state_service->GetGlobalState().model_provider())
              : nullptr;
 }
 
 bool OnDeviceTailModelServiceFactory::ServiceIsCreatedWithBrowserContext()
     const {
-  return true;
+  return !features::IsLazyOptimizationGuideModelsEnabled();
 }
 
 bool OnDeviceTailModelServiceFactory::ServiceIsNULLWhileTesting() const {

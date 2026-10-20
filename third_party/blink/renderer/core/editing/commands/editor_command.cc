@@ -69,6 +69,7 @@
 #include "third_party/blink/renderer/core/frame/local_frame.h"
 #include "third_party/blink/renderer/core/frame/local_frame_view.h"
 #include "third_party/blink/renderer/core/frame/settings.h"
+#include "third_party/blink/renderer/core/html/forms/text_control_element.h"
 #include "third_party/blink/renderer/core/html/html_br_element.h"
 #include "third_party/blink/renderer/core/html_names.h"
 #include "third_party/blink/renderer/core/input/event_handler.h"
@@ -139,13 +140,9 @@ InputEvent::InputType InputTypeFromCommandType(EditingCommandType command_type,
   // granularity (deleteWord*, deleteSoftLine*).
   auto get_deletion_input_type = [&frame](InputType selection_type,
                                           InputType caret_type) -> InputType {
-    if (RuntimeEnabledFeatures::
-            InputEventsDeleteNonCollapsedSelectionEnabled()) {
-      return frame.Selection().ComputeVisibleSelectionInDOMTree().IsRange()
-                 ? selection_type
-                 : caret_type;
-    }
-    return caret_type;
+    return frame.Selection().ComputeVisibleSelectionInDomTree().IsRange()
+               ? selection_type
+               : caret_type;
   };
 
   switch (command_type) {
@@ -236,10 +233,11 @@ GCedStaticRangeVector* RangesFromCurrentSelectionOrExtendCaret(
 
   frame.GetDocument()->UpdateStyleAndLayout(DocumentUpdateReason::kEditing);
   SelectionModifier selection_modifier(
-      frame, frame.Selection().GetSelectionInDOMTree());
+      frame, frame.Selection().GetSelectionInDomTree());
   selection_modifier.SetSelectionIsDirectional(
       frame.Selection().IsDirectional());
-  if (selection_modifier.Selection().IsCaret()) {
+  const bool extended_caret = selection_modifier.Selection().IsCaret();
+  if (extended_caret) {
     selection_modifier.Modify(SelectionModifyAlteration::kExtend, direction,
                               granularity);
   }
@@ -248,14 +246,23 @@ GCedStaticRangeVector* RangesFromCurrentSelectionOrExtendCaret(
   if (selection_modifier.Selection().IsNone()) {
     return ranges;
   }
-  ranges->push_back(StaticRange::Create(
-      FirstEphemeralRangeOf(selection_modifier.Selection())));
+  SelectionInDomTree selection = selection_modifier.Selection().AsSelection();
+  // Report only the code points backward deletion actually removes, which can
+  // be a part of the grapheme cluster the caret was extended over. This must
+  // match |AdjustSelectionForBackwardDelete()| in |TypingCommand|. See
+  // https://w3c.github.io/input-events/#dom-inputevent-getTargetRanges
+  if (RuntimeEnabledFeatures::TargetRangesForBackwardDeletionUnitEnabled() &&
+      extended_caret && direction == SelectionModifyDirection::kBackward &&
+      granularity == TextGranularity::kCharacter) {
+    selection = NarrowSelectionToBackwardDeletionUnit(selection);
+  }
+  ranges->push_back(StaticRange::Create(selection.ComputeRange()));
   return ranges;
 }
 
 EphemeralRange ComputeRangeForTranspose(LocalFrame& frame) {
   const VisibleSelection& selection =
-      frame.Selection().ComputeVisibleSelectionInDOMTree();
+      frame.Selection().ComputeVisibleSelectionInDomTree();
   if (!selection.IsCaret()) {
     return EphemeralRange();
   }
@@ -309,7 +316,7 @@ static bool ExecuteApplyParagraphStyle(LocalFrame& frame,
     case EditorCommandSource::kMenuOrKeyBinding:
       frame.GetEditor().ApplyParagraphStyleToSelection(style, input_type);
       return true;
-    case EditorCommandSource::kDOM:
+    case EditorCommandSource::kDom:
       frame.GetEditor().ApplyParagraphStyle(style, input_type);
       return true;
   }
@@ -318,8 +325,8 @@ static bool ExecuteApplyParagraphStyle(LocalFrame& frame,
 
 bool ExpandSelectionToGranularity(LocalFrame& frame,
                                   TextGranularity granularity) {
-  const SelectionInDOMTree& selection = ExpandWithGranularity(
-      frame.Selection().ComputeVisibleSelectionInDOMTree().AsSelection(),
+  const SelectionInDomTree& selection = ExpandWithGranularity(
+      frame.Selection().ComputeVisibleSelectionInDomTree().AsSelection(),
       granularity);
   const EphemeralRange& new_range = NormalizeRange(selection);
   if (new_range.IsNull()) {
@@ -329,7 +336,7 @@ bool ExpandSelectionToGranularity(LocalFrame& frame,
     return false;
   }
   frame.Selection().SetSelection(
-      SelectionInDOMTree::Builder().SetBaseAndExtent(new_range).Build(),
+      SelectionInDomTree::Builder().SetBaseAndExtent(new_range).Build(),
       SetSelectionOptions::Builder().SetShouldCloseTyping(true).Build());
   return true;
 }
@@ -345,18 +352,17 @@ static EditingTriState SelectionListState(LocalFrame& frame,
   }
 
   const FrameSelection& selection = frame.Selection();
-  if (selection.ComputeVisibleSelectionInDOMTreeDeprecated().IsCaret()) {
-    if (EnclosingElementWithTag(
-            selection.ComputeVisibleSelectionInDOMTreeDeprecated().Start(),
-            tag_name)) {
+  auto visible_selection =
+      selection.ComputeVisibleSelectionInDomTreeDeprecated();
+  if (visible_selection.IsCaret()) {
+    if (EnclosingElementWithTag(visible_selection.Start(), tag_name)) {
       return EditingTriState::kTrue;
     }
-  } else if (selection.ComputeVisibleSelectionInDOMTreeDeprecated().IsRange()) {
-    Element* start_element = EnclosingElementWithTag(
-        selection.ComputeVisibleSelectionInDOMTreeDeprecated().Start(),
-        tag_name);
-    Element* end_element = EnclosingElementWithTag(
-        selection.ComputeVisibleSelectionInDOMTreeDeprecated().End(), tag_name);
+  } else if (visible_selection.IsRange()) {
+    Element* start_element =
+        EnclosingElementWithTag(visible_selection.Start(), tag_name);
+    Element* end_element =
+        EnclosingElementWithTag(visible_selection.End(), tag_name);
 
     if (start_element && end_element && start_element == end_element) {
       // If the selected list has the different type of list as child, return
@@ -454,7 +460,7 @@ static bool ExecuteDelete(LocalFrame& frame,
       PerformDelete(frame);
       return true;
     }
-    case EditorCommandSource::kDOM:
+    case EditorCommandSource::kDom:
       // If the current selection is a caret, delete the preceding character. IE
       // performs forwardDelete, but we currently side with Firefox. Doesn't
       // scroll to make the selection visible, or modify the kill ring (this
@@ -481,25 +487,19 @@ static bool DeleteWithDirection(LocalFrame& frame,
   }
 
   if (frame.Selection()
-          .ComputeVisibleSelectionInDOMTreeDeprecated()
+          .ComputeVisibleSelectionInDomTreeDeprecated()
           .IsRange() &&
       !is_typing_action) {
     if (kill_ring) {
       editor.AddToKillRing(editor.SelectedRange());
     }
-    InputEvent::InputType input_type;
-    if (RuntimeEnabledFeatures::
-            InputEventsDeleteNonCollapsedSelectionEnabled()) {
-      // When deleting a non-collapsed selection, the granularity shouldn't
-      // matter - we're just deleting the selected content. Use the appropriate
-      // "content" input type based on direction only.
-      input_type = (direction == DeleteDirection::kBackward)
-                       ? InputEvent::InputType::kDeleteContentBackward
-                       : InputEvent::InputType::kDeleteContentForward;
-    } else {
-      // use granularity-based input type.
-      input_type = DeletionInputTypeFromTextGranularity(direction, granularity);
-    }
+    // When deleting a non-collapsed selection, the granularity shouldn't
+    // matter - we're just deleting the selected content. Use the appropriate
+    // "content" input type based on direction only.
+    const InputEvent::InputType input_type =
+        (direction == DeleteDirection::kBackward)
+            ? InputEvent::InputType::kDeleteContentBackward
+            : InputEvent::InputType::kDeleteContentForward;
     editor.DeleteSelectionWithSmartDelete(
         CanSmartCopyOrDelete(frame) ? DeleteMode::kSmart : DeleteMode::kSimple,
         input_type);
@@ -623,7 +623,7 @@ static bool ExecuteDeleteToMark(LocalFrame& frame,
       frame.GetEditor().Mark().ToNormalizedEphemeralRange();
   if (mark.IsNotNull()) {
     frame.Selection().SetSelection(
-        SelectionInDOMTree::Builder()
+        SelectionInDomTree::Builder()
             .SetBaseAndExtent(
                 UnionEphemeralRanges(mark, frame.GetEditor().SelectedRange()))
             .Build(),
@@ -701,7 +701,7 @@ static bool ExecuteForwardDelete(LocalFrame& frame,
       DeleteWithDirection(frame, DeleteDirection::kForward,
                           TextGranularity::kCharacter, false, true);
       return true;
-    case EditorCommandSource::kDOM:
+    case EditorCommandSource::kDom:
       // Doesn't scroll to make the selection visible, or modify the kill ring.
       // ForwardDelete is not implemented in IE or Firefox, so this behavior is
       // only needed for backward compatibility with ourselves, and for
@@ -920,7 +920,7 @@ static bool ExecuteSelectToMark(LocalFrame& frame,
     return false;
   }
   frame.Selection().SetSelection(
-      SelectionInDOMTree::Builder()
+      SelectionInDomTree::Builder()
           .SetBaseAndExtent(UnionEphemeralRanges(mark, selection))
           .Build(),
       SetSelectionOptions::Builder().SetShouldCloseTyping(true).Build());
@@ -948,7 +948,7 @@ static bool ExecuteSwapWithMark(LocalFrame& frame,
                                 const String&) {
   const VisibleSelection mark(frame.GetEditor().Mark());
   const VisibleSelection& selection =
-      frame.Selection().ComputeVisibleSelectionInDOMTreeDeprecated();
+      frame.Selection().ComputeVisibleSelectionInDomTreeDeprecated();
   const bool mark_is_directional = frame.GetEditor().MarkIsDirectional();
   if (mark.IsNone() || selection.IsNone()) {
     return false;
@@ -1023,12 +1023,12 @@ static bool ExecuteTranspose(LocalFrame& frame,
       StrCat({StringView(new_text, new_text.length() - 1, 1),
               StringView(new_text, 0, 1)});
 
-  const SelectionInDOMTree& new_selection =
-      SelectionInDOMTree::Builder().SetBaseAndExtent(new_range).Build();
+  const SelectionInDomTree& new_selection =
+      SelectionInDomTree::Builder().SetBaseAndExtent(new_range).Build();
 
   // Select the two characters.
   if (CreateVisibleSelection(new_selection) !=
-      frame.Selection().ComputeVisibleSelectionInDOMTree()) {
+      frame.Selection().ComputeVisibleSelectionInDomTree()) {
     frame.Selection().SetSelectionAndEndTyping(new_selection);
   }
 
@@ -1137,7 +1137,7 @@ static bool Enabled(LocalFrame&, Event*, EditorCommandSource) {
 static bool EnabledVisibleSelection(LocalFrame& frame,
                                     Event* event,
                                     EditorCommandSource source) {
-  if (source == EditorCommandSource::kDOM &&
+  if (source == EditorCommandSource::kDom &&
       frame.GetInputMethodController().GetActiveEditContext()) {
     return false;
   }
@@ -1154,14 +1154,17 @@ static bool EnabledVisibleSelection(LocalFrame& frame,
   const VisibleSelection& selection =
       CreateVisibleSelection(frame.GetEditor().SelectionForCommand(event));
   return (selection.IsCaret() &&
-          (selection.IsContentEditable() || frame.IsCaretBrowsingEnabled())) ||
+          (selection.IsContentEditable() ||
+           (RuntimeEnabledFeatures::ReadOnlyTextControlSelectionEnabled() &&
+            EnclosingTextControl(selection.Anchor())) ||
+           frame.IsCaretBrowsingEnabled())) ||
          selection.IsRange();
 }
 
 static bool EnabledVisibleSelectionAndMark(LocalFrame& frame,
                                            Event* event,
                                            EditorCommandSource source) {
-  if (source == EditorCommandSource::kDOM &&
+  if (source == EditorCommandSource::kDom &&
       frame.GetInputMethodController().GetActiveEditContext()) {
     return false;
   }
@@ -1176,7 +1179,10 @@ static bool EnabledVisibleSelectionAndMark(LocalFrame& frame,
   const VisibleSelection& selection =
       CreateVisibleSelection(frame.GetEditor().SelectionForCommand(event));
   return ((selection.IsCaret() &&
-           (selection.IsContentEditable() || frame.IsCaretBrowsingEnabled())) ||
+           (selection.IsContentEditable() ||
+            (RuntimeEnabledFeatures::ReadOnlyTextControlSelectionEnabled() &&
+             EnclosingTextControl(selection.Anchor())) ||
+            frame.IsCaretBrowsingEnabled())) ||
           selection.IsRange()) &&
          !frame.GetEditor().Mark().IsNone();
 }
@@ -1184,7 +1190,7 @@ static bool EnabledVisibleSelectionAndMark(LocalFrame& frame,
 static bool EnableCaretInEditableText(LocalFrame& frame,
                                       Event* event,
                                       EditorCommandSource source) {
-  if (source == EditorCommandSource::kDOM &&
+  if (source == EditorCommandSource::kDom &&
       frame.GetInputMethodController().GetActiveEditContext()) {
     return false;
   }
@@ -1204,7 +1210,7 @@ static bool EnabledInEditableText(LocalFrame& frame,
                                   Event* event,
                                   EditorCommandSource source) {
   if (frame.GetInputMethodController().GetActiveEditContext()) {
-    if (source == EditorCommandSource::kDOM) {
+    if (source == EditorCommandSource::kDom) {
       return false;
     } else if (source == EditorCommandSource::kMenuOrKeyBinding) {
       // If there's an active EditContext, always give the EditContext
@@ -1221,17 +1227,41 @@ static bool EnabledInEditableText(LocalFrame& frame,
       !frame.Selection().SelectionHasFocus()) {
     return false;
   }
-  const SelectionInDOMTree selection =
+  const SelectionInDomTree selection =
       frame.GetEditor().SelectionForCommand(event);
   return RootEditableElementOf(
       CreateVisiblePosition(selection.Anchor()).DeepEquivalent());
+}
+
+static bool EnabledInTextControlOrEditableText(LocalFrame& frame,
+                                               Event* event,
+                                               EditorCommandSource source) {
+  if (frame.GetInputMethodController().GetActiveEditContext()) {
+    if (source == EditorCommandSource::kDom) {
+      return false;
+    } else if (source == EditorCommandSource::kMenuOrKeyBinding) {
+      return true;
+    }
+  }
+
+  frame.GetDocument()->UpdateStyleAndLayout(DocumentUpdateReason::kEditing);
+  if (source == EditorCommandSource::kMenuOrKeyBinding &&
+      !frame.Selection().SelectionHasFocus()) {
+    return false;
+  }
+  const SelectionInDomTree selection =
+      frame.GetEditor().SelectionForCommand(event);
+  Position anchor = CreateVisiblePosition(selection.Anchor()).DeepEquivalent();
+  return RootEditableElementOf(anchor) ||
+         (RuntimeEnabledFeatures::ReadOnlyTextControlSelectionEnabled() &&
+          EnclosingTextControl(anchor));
 }
 
 static bool EnabledInEditableTextOrCaretBrowsing(LocalFrame& frame,
                                                  Event* event,
                                                  EditorCommandSource source) {
   return frame.IsCaretBrowsingEnabled() ||
-         EnabledInEditableText(frame, event, source);
+         EnabledInTextControlOrEditableText(frame, event, source);
 }
 
 static bool EnabledDelete(LocalFrame& frame,
@@ -1241,7 +1271,7 @@ static bool EnabledDelete(LocalFrame& frame,
     case EditorCommandSource::kMenuOrKeyBinding:
       return frame.Selection().SelectionHasFocus() &&
              frame.GetEditor().CanDelete();
-    case EditorCommandSource::kDOM:
+    case EditorCommandSource::kDom:
       // "Delete" from DOM is like delete/backspace keypress, affects selected
       // range if non-empty, otherwise removes a character
       return EnabledInEditableText(frame, event, source);
@@ -1252,7 +1282,7 @@ static bool EnabledDelete(LocalFrame& frame,
 static bool EnabledInRichlyEditableText(LocalFrame& frame,
                                         Event*,
                                         EditorCommandSource source) {
-  if (source == EditorCommandSource::kDOM &&
+  if (source == EditorCommandSource::kDom &&
       frame.GetInputMethodController().GetActiveEditContext()) {
     return false;
   }
@@ -1263,36 +1293,15 @@ static bool EnabledInRichlyEditableText(LocalFrame& frame,
     return false;
   }
   const VisibleSelection& selection =
-      frame.Selection().ComputeVisibleSelectionInDOMTree();
+      frame.Selection().ComputeVisibleSelectionInDomTree();
   return !selection.IsNone() && IsRichlyEditablePosition(selection.Anchor()) &&
          selection.RootEditableElement();
-}
-
-static bool EnabledRangeInEditableText(LocalFrame& frame,
-                                       Event*,
-                                       EditorCommandSource source) {
-  if (source == EditorCommandSource::kDOM &&
-      frame.GetInputMethodController().GetActiveEditContext()) {
-    return false;
-  }
-
-  frame.GetDocument()->UpdateStyleAndLayout(DocumentUpdateReason::kEditing);
-  if (source == EditorCommandSource::kMenuOrKeyBinding &&
-      !frame.Selection().SelectionHasFocus()) {
-    return false;
-  }
-  return frame.Selection()
-             .ComputeVisibleSelectionInDOMTreeDeprecated()
-             .IsRange() &&
-         frame.Selection()
-             .ComputeVisibleSelectionInDOMTreeDeprecated()
-             .IsContentEditable();
 }
 
 static bool EnabledRangeInRichlyEditableText(LocalFrame& frame,
                                              Event*,
                                              EditorCommandSource source) {
-  if (source == EditorCommandSource::kDOM &&
+  if (source == EditorCommandSource::kDom &&
       frame.GetInputMethodController().GetActiveEditContext()) {
     return false;
   }
@@ -1303,18 +1312,14 @@ static bool EnabledRangeInRichlyEditableText(LocalFrame& frame,
     return false;
   }
   const VisibleSelection& selection =
-      frame.Selection().ComputeVisibleSelectionInDOMTree();
+      frame.Selection().ComputeVisibleSelectionInDomTree();
   return selection.IsRange() && IsRichlyEditablePosition(selection.Anchor());
 }
 
 static bool IsRemoveFormatAllowed(LocalFrame& frame,
                                   Event* event,
                                   EditorCommandSource source) {
-  if (RuntimeEnabledFeatures::
-          DisableRemoveFormatForPlainTextOnlyEditableDivEnabled()) {
-    return EnabledRangeInRichlyEditableText(frame, event, source);
-  }
-  return EnabledRangeInEditableText(frame, event, source);
+  return EnabledRangeInRichlyEditableText(frame, event, source);
 }
 
 static bool EnabledRedo(LocalFrame& frame, Event*, EditorCommandSource) {
@@ -1328,7 +1333,7 @@ static bool EnabledUndo(LocalFrame& frame, Event*, EditorCommandSource) {
 static bool EnabledUnselect(LocalFrame& frame,
                             Event* event,
                             EditorCommandSource source) {
-  if (source == EditorCommandSource::kDOM &&
+  if (source == EditorCommandSource::kDom &&
       frame.GetInputMethodController().GetActiveEditContext()) {
     return false;
   }
@@ -1346,7 +1351,7 @@ static bool EnabledUnselect(LocalFrame& frame,
 static bool EnabledSelectAll(LocalFrame& frame,
                              Event*,
                              EditorCommandSource source) {
-  if (source == EditorCommandSource::kDOM &&
+  if (source == EditorCommandSource::kDom &&
       frame.GetInputMethodController().GetActiveEditContext()) {
     return false;
   }
@@ -1355,7 +1360,7 @@ static bool EnabledSelectAll(LocalFrame& frame,
   // needs to be audited.  See http://crbug.com/590369 for more details.
   frame.GetDocument()->UpdateStyleAndLayout(DocumentUpdateReason::kEditing);
   const VisibleSelection& selection =
-      frame.Selection().ComputeVisibleSelectionInDOMTree();
+      frame.Selection().ComputeVisibleSelectionInDomTree();
   if (selection.IsNone()) {
     return true;
   }
@@ -1436,10 +1441,7 @@ static String ValueStateOrNull(const EditorInternalCommand& self,
 static String ValueJustifyOrStateOrNull(const EditorInternalCommand& self,
                                         LocalFrame& frame,
                                         Event* triggering_event) {
-  if (RuntimeEnabledFeatures::FixJustifyQueryCommandValueEnabled()) {
-    return StyleCommands::ValueJustify(self, frame, triggering_event);
-  }
-  return ValueStateOrNull(self, frame, triggering_event);
+  return StyleCommands::ValueJustify(self, frame, triggering_event);
 }
 
 // The command has no value.
@@ -1466,7 +1468,7 @@ static String ValueFormatBlock(const EditorInternalCommand&,
                                LocalFrame& frame,
                                Event*) {
   const VisibleSelection& selection =
-      frame.Selection().ComputeVisibleSelectionInDOMTreeDeprecated();
+      frame.Selection().ComputeVisibleSelectionInDomTreeDeprecated();
   if (selection.IsNone() || !selection.IsValidFor(*(frame.GetDocument())) ||
       !selection.IsContentEditable()) {
     return "";
@@ -1599,7 +1601,7 @@ static const EditorInternalCommand* InternalCommand(
       {EditingCommandType::kInsertBacktab, InsertCommands::ExecuteInsertBacktab,
        SupportedFromMenuOrKeyBinding, EnabledInEditableText, StateNone,
        ValueStateOrNull, kIsTextInsertion, CanNotExecuteWhenDisabled},
-      {EditingCommandType::kInsertHTML, InsertCommands::ExecuteInsertHTML,
+      {EditingCommandType::kInsertHTML, InsertCommands::ExecuteInsertHtml,
        Supported, EnabledInEditableText, StateNone, ValueStateOrNull,
        kNotTextInsertion, CanNotExecuteWhenDisabled},
       {EditingCommandType::kInsertHorizontalRule,
@@ -1818,7 +1820,7 @@ static const EditorInternalCommand* InternalCommand(
        kNotTextInsertion, CanNotExecuteWhenDisabled},
       {EditingCommandType::kMoveToLeftEndOfLineAndModifySelection,
        MoveCommands::ExecuteMoveToLeftEndOfLineAndModifySelection,
-       SupportedFromMenuOrKeyBinding, EnabledInEditableText, StateNone,
+       SupportedFromMenuOrKeyBinding, EnabledVisibleSelection, StateNone,
        ValueStateOrNull, kNotTextInsertion, CanNotExecuteWhenDisabled},
       {EditingCommandType::kMoveToRightEndOfLine,
        MoveCommands::ExecuteMoveToRightEndOfLine, SupportedFromMenuOrKeyBinding,
@@ -1826,7 +1828,7 @@ static const EditorInternalCommand* InternalCommand(
        kNotTextInsertion, CanNotExecuteWhenDisabled},
       {EditingCommandType::kMoveToRightEndOfLineAndModifySelection,
        MoveCommands::ExecuteMoveToRightEndOfLineAndModifySelection,
-       SupportedFromMenuOrKeyBinding, EnabledInEditableText, StateNone,
+       SupportedFromMenuOrKeyBinding, EnabledVisibleSelection, StateNone,
        ValueStateOrNull, kNotTextInsertion, CanNotExecuteWhenDisabled},
       {EditingCommandType::kMoveUp, MoveCommands::ExecuteMoveUp,
        SupportedFromMenuOrKeyBinding, EnabledInEditableTextOrCaretBrowsing,
@@ -1939,8 +1941,8 @@ static const EditorInternalCommand* InternalCommand(
        Supported, EnabledInRichlyEditableText,
        StyleCommands::StateStrikethrough, ValueStateOrNull, kNotTextInsertion,
        CanNotExecuteWhenDisabled},
-      {EditingCommandType::kStyleWithCSS, StyleCommands::ExecuteStyleWithCSS,
-       Supported, Enabled, StyleCommands::StateStyleWithCSS, ValueEmpty,
+      {EditingCommandType::kStyleWithCss, StyleCommands::ExecuteStyleWithCss,
+       Supported, Enabled, StyleCommands::StateStyleWithCss, ValueEmpty,
        kNotTextInsertion, CanNotExecuteWhenDisabled},
       {EditingCommandType::kSubscript, StyleCommands::ExecuteSubscript,
        Supported, EnabledInRichlyEditableText, StyleCommands::StateSubscript,
@@ -1981,7 +1983,7 @@ static const EditorInternalCommand* InternalCommand(
       {EditingCommandType::kUnselect, ExecuteUnselect, Supported,
        EnabledUnselect, StateNone, ValueStateOrNull, kNotTextInsertion,
        CanNotExecuteWhenDisabled},
-      {EditingCommandType::kUseCSS, StyleCommands::ExecuteUseCSS, Supported,
+      {EditingCommandType::kUseCss, StyleCommands::ExecuteUseCss, Supported,
        Enabled, StateNone, ValueStateOrNull, kNotTextInsertion,
        CanNotExecuteWhenDisabled},
       {EditingCommandType::kYank, ExecuteYank, SupportedFromMenuOrKeyBinding,
@@ -1993,8 +1995,8 @@ static const EditorInternalCommand* InternalCommand(
       {EditingCommandType::kAlignCenter, ExecuteJustifyCenter,
        SupportedFromMenuOrKeyBinding, EnabledInRichlyEditableText, StateNone,
        ValueJustifyOrStateOrNull, kNotTextInsertion, CanNotExecuteWhenDisabled},
-      {EditingCommandType::kPasteFromImageURL,
-       ClipboardCommands::ExecutePasteFromImageURL,
+      {EditingCommandType::kPasteFromImageUrl,
+       ClipboardCommands::ExecutePasteFromImageUrl,
        SupportedFromMenuOrKeyBinding, EnabledInEditableText, StateNone,
        ValueStateOrNull, kNotTextInsertion, CanNotExecuteWhenDisabled},
   });
@@ -2103,9 +2105,7 @@ bool Editor::IsCommandEnabled(const String& command_name) const {
 }
 
 EditorCommand::EditorCommand()
-    : command_(nullptr),
-      source_(EditorCommandSource::kMenuOrKeyBinding),
-      frame_(nullptr) {}
+    : source_(EditorCommandSource::kMenuOrKeyBinding) {}
 
 EditorCommand::EditorCommand(const EditorInternalCommand* command,
                              EditorCommandSource source,
@@ -2233,7 +2233,7 @@ bool EditorCommand::IsSupported() const {
   switch (source_) {
     case EditorCommandSource::kMenuOrKeyBinding:
       return true;
-    case EditorCommandSource::kDOM:
+    case EditorCommandSource::kDom:
       return command_->is_supported_from_dom(frame_);
   }
   NOTREACHED();
@@ -2264,7 +2264,7 @@ bool EditorCommand::IsTextInsertion() const {
   return command_ && command_->is_text_insertion;
 }
 
-bool EditorCommand::IsValueInterpretedAsHTML() const {
+bool EditorCommand::IsValueInterpretedAsHtml() const {
   return IsSupported() &&
          command_->command_type == EditingCommandType::kInsertHTML;
 }

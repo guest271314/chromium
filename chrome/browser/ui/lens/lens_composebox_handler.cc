@@ -29,6 +29,7 @@
 #include "net/base/url_util.h"
 #include "third_party/metrics_proto/omnibox_event.pb.h"
 #include "ui/base/page_transition_types.h"
+#include "ui/base/window_open_disposition.h"
 #include "ui/base/window_open_disposition_utils.h"
 #include "ui/webui/resources/cr_components/composebox/composebox.mojom.h"
 #include "url/gurl.h"
@@ -53,7 +54,7 @@ class LensComposeboxOmniboxClient final : public ContextualOmniboxClient {
       TemplateURLRef::PostContent* post_content,
       WindowOpenDisposition disposition,
       ui::PageTransition transition,
-      AutocompleteMatchType::Type match_type,
+      omnibox::AutocompleteMatchType match_type,
       base::TimeTicks match_selection_timestamp,
       bool destination_url_entered_without_scheme,
       bool destination_url_entered_with_http_scheme,
@@ -87,7 +88,7 @@ void LensComposeboxOmniboxClient::OnAutocompleteAccept(
     TemplateURLRef::PostContent* post_content,
     WindowOpenDisposition disposition,
     ui::PageTransition transition,
-    AutocompleteMatchType::Type match_type,
+    omnibox::AutocompleteMatchType match_type,
     base::TimeTicks match_selection_timestamp,
     bool destination_url_entered_without_scheme,
     bool destination_url_entered_with_http_scheme,
@@ -100,8 +101,8 @@ void LensComposeboxOmniboxClient::OnAutocompleteAccept(
       lens::GetParametersMapWithoutQuery(destination_url);
 
   /* TODO(crbug.com/465154864): Add `aep` param value in lens AIM queries. */
-  lens_composebox_controller_->IssueComposeboxQuery(query_text,
-                                                    additional_query_params);
+  lens_composebox_controller_->IssueComposeboxQuery(
+      query_text, additional_query_params, /*is_voice_search=*/false);
 }
 
 std::optional<lens::proto::LensOverlaySuggestInputs>
@@ -118,23 +119,19 @@ LensComposeboxHandler::LensComposeboxHandler(
     Profile* profile,
     content::WebContents* web_contents,
     mojo::PendingReceiver<composebox::mojom::PageHandler> pending_handler,
-    mojo::PendingRemote<composebox::mojom::Page> pending_page,
     mojo::PendingReceiver<searchbox::mojom::PageHandler>
         pending_searchbox_handler,
     mojo::PendingRemote<searchbox::mojom::Page> pending_searchbox_page)
-    : SearchboxHandler(
-          std::move(pending_searchbox_handler),
-          std::move(pending_searchbox_page),
-          profile,
-          web_contents,
-          std::make_unique<OmniboxController>(
-              std::make_unique<LensComposeboxOmniboxClient>(
-                  profile,
-                  web_contents,
-                  /*lens_composebox_controller=*/parent_controller),
-              lens::features::GetLensAimSuggestionTimeout())),
+    : SearchboxHandler(std::move(pending_searchbox_handler),
+                       std::move(pending_searchbox_page),
+                       profile,
+                       web_contents,
+                       std::make_unique<LensComposeboxOmniboxClient>(
+                           profile,
+                           web_contents,
+                           /*lens_composebox_controller=*/parent_controller),
+                       lens::features::GetLensAimSuggestionTimeout()),
       lens_composebox_controller_(parent_controller),
-      page_{std::move(pending_page)},
       handler_(this, std::move(pending_handler)) {
   autocomplete_controller_observation_.Observe(autocomplete_controller());
 }
@@ -146,10 +143,10 @@ void LensComposeboxHandler::SubmitQuery(const std::string& query_text,
                                         bool alt_key,
                                         bool ctrl_key,
                                         bool meta_key,
-                                        bool shift_key) {
+                                        bool shift_key,
+                                        bool is_voice_search) {
   lens_composebox_controller_->IssueComposeboxQuery(
-      query_text,
-      /*additional_query_params=*/{});
+      query_text, /*additional_query_params=*/{}, is_voice_search);
 }
 
 void LensComposeboxHandler::FocusChanged(bool focused) {
@@ -162,6 +159,10 @@ void LensComposeboxHandler::HandleLensButtonClick() {
 
 void LensComposeboxHandler::HandleFileUpload(bool is_image) {
   mojo::ReportBadMessage("File upload is not implemented in Lens");
+}
+
+void LensComposeboxHandler::StartPlatformVoiceRecognition() {
+  mojo::ReportBadMessage("Voice recognition is not implemented in Lens");
 }
 
 void LensComposeboxHandler::OnContextMenuOpened() {
@@ -191,6 +192,15 @@ void LensComposeboxHandler::GetSmartTabSharingActive(
 }
 
 void LensComposeboxHandler::NotifyComposeboxQuerySubmittedWithContext() {
+  // No-op for Lens composebox.
+}
+
+void LensComposeboxHandler::CanShowNextboxAnimation(
+    CanShowNextboxAnimationCallback callback) {
+  std::move(callback).Run(false);
+}
+
+void LensComposeboxHandler::RecordNextboxAnimationImpression(bool shown) {
   // No-op for Lens composebox.
 }
 

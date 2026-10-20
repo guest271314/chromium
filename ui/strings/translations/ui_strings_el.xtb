@@ -11,7 +11,6 @@
 <translation id="1253734725326687145">Ο στόχος αφής μετακινήθηκε επάνω δεξιά. Πατήστε εδώ.</translation>
 <translation id="1266864766717917324">Δεν ήταν δυνατή η κοινοποίηση <ph name="CONTENT_TYPE" /></translation>
 <translation id="1269641567813814718">Win</translation>
-<translation id="1291104554099683393">Δοκιμάστε να μοιραστείτε το κείμενο σε μικρότερα τμήματα.</translation>
 <translation id="1293699935367580298">Esc</translation>
 <translation id="1368832886055348810">Από αριστερά προς τα δεξιά</translation>
 <translation id="1383876407941801731">Αναζήτηση</translation>
@@ -38,13 +37,11 @@
 <translation id="1901303067676059328">Επιλογή όλ&amp;ων</translation>
 <translation id="19085484004813472">Αυτή είναι μια νέα λειτουργία</translation>
 <translation id="2006524834898217237">Βεβαιωθείτε ότι αυτή η συσκευή είναι συνδεδεμένη στο διαδίκτυο.</translation>
-<translation id="208586643495776849">Προσπαθήστε ξανά</translation>
 <translation id="2111134541987263231">Ενεργοποιήστε την επιλογή <ph name="BEGIN_BOLD" />Να επιτρέπεται στην ανώνυμη περιήγηση<ph name="END_BOLD" />.</translation>
 <translation id="2141853158323869627">{DAYS,plural, =1{1ημ.}other{#ημ.}}</translation>
 <translation id="2148716181193084225">Σήμερα</translation>
 <translation id="2168039046890040389">Προηγούμενη σελίδα</translation>
 <translation id="2190355936436201913">(κενό)</translation>
-<translation id="2192232475740621500">Χρήση χαμηλής πυκνότητας</translation>
 <translation id="2267918077332197517">Αποκλεισμός όλων των ειδοποιήσεων από αυτόν τον ιστότοπο</translation>
 <translation id="2283117145434822734">F6</translation>
 <translation id="2289052229480071835">Πατήστε τους στόχους αφής στην οθόνη σας.</translation>
@@ -56,7 +53,6 @@
 <translation id="2388990488038464401">Θέλετε να καλέσετε αυτόν τον αριθμό στο τηλέφωνό σας;</translation>
 <translation id="2435457462613246316">Εμφάνιση κωδικού πρόσβασης</translation>
 <translation id="24452542372838207">Ανάπτυξη ειδοποίησης</translation>
-<translation id="2445449901874883781">Χρήση υψηλής πυκνότητας</translation>
 <translation id="2448407890032181691">Ο στόχος αφής μετακινήθηκε κάτω δεξιά. Πατήστε εδώ.</translation>
 <translation id="2482878487686419369">Ειδοποιήσεις</translation>
 <translation id="2497284189126895209">Όλα τα αρχεία</translation>
@@ -87,7 +83,6 @@
 <translation id="3306688585798492231">Ενσωματωμένη οθόνη</translation>
 <translation id="335581015389089642">Ομιλία</translation>
 <translation id="3372635229069101468">Κάντε κλικ στο στοιχείο <ph name="BEGIN_BOLD" />Λεπτομέρειες<ph name="END_BOLD" />.</translation>
-<translation id="3389286852084373014">Το κείμενο είναι υπερβολικά μεγάλο</translation>
 <translation id="3406306243914553062">Περιεχόμενο HTML</translation>
 <translation id="3600566671520689681">{DAYS,plural, =1{Απομένει 1 ημέρα}other{Απομένουν # ημέρες}}</translation>
 <translation id="3600969208114796418">Αρχείο <ph name="SAVEAS_EXTENSION_TYPE" /></translation>
@@ -130,7 +125,6 @@
 <translation id="5046499563572181734">Πατήστε εδώ</translation>
 <translation id="5076340679995252485">&amp;Επικόλληση</translation>
 <translation id="520299402983819650"><ph name="QUANTITY" /> PB</translation>
-<translation id="5278860589123563674">Αποτυχία αποστολής</translation>
 <translation id="5283101102242354279">Ενεργοποιήστε μια επέκταση στην ανώνυμη περιήγηση:</translation>
 <translation id="528468243742722775">Τέλος</translation>
 <translation id="5329858601952122676">&amp;Διαγραφή</translation>
@@ -190,7 +184,6 @@
 <translation id="6965382102122355670">OK</translation>
 <translation id="6974053822202609517">Από δεξιά προς τα αριστερά</translation>
 <translation id="7052633198403197513">Πλήκτρο F1</translation>
-<translation id="7170202025028120564">Οι ρυθμίσεις προβολής της εφαρμογής σας θα τεθούν σε ισχύ κατά την επόμενη επανεκκίνηση.</translation>
 <translation id="7222373446505536781">F11</translation>
 <translation id="7238427729722629793">{MINUTES,plural, =1{Απομένει 1 λεπτό}other{Απομένουν # λεπτά}}</translation>
 <translation id="7252604552361840748">Βρείτε την επέκταση παραπάνω</translation>

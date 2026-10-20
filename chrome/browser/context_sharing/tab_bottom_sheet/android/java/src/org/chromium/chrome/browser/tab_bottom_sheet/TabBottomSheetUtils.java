@@ -5,6 +5,10 @@
 package org.chromium.chrome.browser.tab_bottom_sheet;
 
 import android.app.Activity;
+import android.content.Context;
+import android.content.res.Configuration;
+
+import androidx.annotation.VisibleForTesting;
 
 import org.chromium.base.ActivityState;
 import org.chromium.base.UnownedUserDataKey;
@@ -17,6 +21,16 @@ import org.chromium.ui.base.WindowAndroid;
 /** Utility methods used by the Tab Bottom Sheet components. */
 @NullMarked
 public final class TabBottomSheetUtils {
+    // Values are not final and may need tuning.
+    public static final float DEFAULT_HEIGHT_RATIO = 0.7f;
+    public static final float FULL_HEIGHT_RATIO = 1.0f;
+    public static final float SMALL_SCREEN_HEIGHT_RATIO = 0.9f;
+    public static final String FULL_HEIGHT_RATIO_PARAM = "full_height_ratio";
+    public static final String HALF_HEIGHT_RATIO_PARAM = "half_height_ratio";
+    public static final String RESIZING_PLACEHOLDER_PARAM = "resizing_placeholder";
+    public static final String PLACEHOLDER_SKELETON = "skeleton";
+    public static final String PLACEHOLDER_LEGACY = "legacy";
+
     private static final UnownedUserDataKey<TabBottomSheetManager> MANAGER_KEY =
             new UnownedUserDataKey<>();
     private static final UnownedUserDataKey<CoBrowseViewFactory> FACTORY_KEY =
@@ -29,7 +43,60 @@ public final class TabBottomSheetUtils {
     }
 
     public static boolean canResizeWebView() {
-        return ChromeFeatureList.sTabBottomSheetResizeWebview.getValue();
+        return isTabBottomSheetEnabled()
+                && ChromeFeatureList.sTabBottomSheetResizeWebview.isEnabled();
+    }
+
+    public static boolean isEdgeToEdgeEnabled() {
+        return isTabBottomSheetEnabled() && ChromeFeatureList.sTabBottomSheetEdgeToEdge.isEnabled();
+    }
+
+    /** Returns the resizing placeholder type configured by feature flag params. */
+    public static String getResizingPlaceholderType() {
+        if (!canResizeWebView()) {
+            return PLACEHOLDER_LEGACY;
+        }
+        String type =
+                ChromeFeatureList.getFieldTrialParamByFeature(
+                        ChromeFeatureList.TAB_BOTTOM_SHEET_RESIZE_WEBVIEW,
+                        RESIZING_PLACEHOLDER_PARAM);
+        return type.isEmpty() ? PLACEHOLDER_LEGACY : type;
+    }
+
+    /** Returns the full height ratio for the Tab Bottom Sheet. */
+    public static float getFullHeightRatio() {
+        if (ChromeFeatureList.sTabBottomSheetFullHeight.isEnabled()) {
+            return (float)
+                    ChromeFeatureList.getFieldTrialParamByFeatureAsDouble(
+                            ChromeFeatureList.TAB_BOTTOM_SHEET_FULL_HEIGHT,
+                            FULL_HEIGHT_RATIO_PARAM,
+                            FULL_HEIGHT_RATIO);
+        }
+        return FULL_HEIGHT_RATIO;
+    }
+
+    /**
+     * Returns the default height ratio for the Tab Bottom Sheet.
+     *
+     * @param context The {@link Context} to retrieve configuration from.
+     * @param isKeyboardShowing Whether the soft keyboard is currently showing.
+     */
+    public static float getDefaultHeightRatio(Context context, boolean isKeyboardShowing) {
+        Configuration configuration = context.getResources().getConfiguration();
+        if (configuration.orientation == Configuration.ORIENTATION_LANDSCAPE) {
+            return SMALL_SCREEN_HEIGHT_RATIO;
+        }
+        if (isKeyboardShowing) {
+            return SMALL_SCREEN_HEIGHT_RATIO;
+        }
+        if (ChromeFeatureList.sTabBottomSheetHalfHeight.isEnabled()) {
+            return (float)
+                    ChromeFeatureList.getFieldTrialParamByFeatureAsDouble(
+                            ChromeFeatureList.TAB_BOTTOM_SHEET_HALF_HEIGHT,
+                            HALF_HEIGHT_RATIO_PARAM,
+                            DEFAULT_HEIGHT_RATIO);
+        }
+        return DEFAULT_HEIGHT_RATIO;
     }
 
     /**
@@ -39,7 +106,9 @@ public final class TabBottomSheetUtils {
      * @param windowAndroid The {@link WindowAndroid} to attach to.
      * @param manager The {@link TabBottomSheetManager} to attach.
      */
-    static void attachManagerToWindow(WindowAndroid windowAndroid, TabBottomSheetManager manager) {
+    @VisibleForTesting(otherwise = VisibleForTesting.PACKAGE_PRIVATE)
+    public static void attachManagerToWindow(
+            WindowAndroid windowAndroid, TabBottomSheetManager manager) {
         MANAGER_KEY.attachToHost(windowAndroid.getUnownedUserDataHost(), manager);
     }
 
@@ -48,7 +117,8 @@ public final class TabBottomSheetUtils {
      *
      * @param windowAndroid The {@link WindowAndroid} to detach from.
      */
-    static void detachManagerFromWindow(WindowAndroid windowAndroid) {
+    @VisibleForTesting(otherwise = VisibleForTesting.PACKAGE_PRIVATE)
+    public static void detachManagerFromWindow(WindowAndroid windowAndroid) {
         MANAGER_KEY.detachFromHost(windowAndroid.getUnownedUserDataHost());
     }
 
@@ -109,14 +179,12 @@ public final class TabBottomSheetUtils {
 
     /**
      * Returns whether the Activity associated with the given WindowAndroid is in an inactive state
-     * (PAUSED, STOPPED, or DESTROYED). Also returns true if the WindowAndroid is null.
+     * (STOPPED or DESTROYED). Also returns true if the WindowAndroid is null.
      */
     @Contract("null -> true")
     public static boolean isActivityInactive(@Nullable WindowAndroid windowAndroid) {
         if (windowAndroid == null) return true;
         @ActivityState int activityState = windowAndroid.getActivityState();
-        return activityState == ActivityState.PAUSED
-                || activityState == ActivityState.STOPPED
-                || activityState == ActivityState.DESTROYED;
+        return activityState == ActivityState.STOPPED || activityState == ActivityState.DESTROYED;
     }
 }

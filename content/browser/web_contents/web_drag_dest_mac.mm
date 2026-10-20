@@ -15,6 +15,7 @@
 #include "base/apple/foundation_util.h"
 #include "base/byte_size.h"
 #include "base/containers/span.h"
+#include "base/containers/to_vector.h"
 #include "base/files/file_path.h"
 #include "base/functional/callback_helpers.h"
 #include "base/memory/raw_ptr.h"
@@ -242,6 +243,8 @@ void OnWebContentsViewDelegatePerformingDropComplete(
     return NSDragOperationNone;
   }
 
+  _canceled = false;
+
   // Save off the RVH so we can tell if it changes during a drag. If it does,
   // we need to send a new enter message in draggingUpdated:.
   _currentRVH = _webContents->GetRenderViewHost();
@@ -327,11 +330,14 @@ void OnWebContentsViewDelegatePerformingDropComplete(
   }
 
   // Filter |dropDataUnfiltered_| by targetRWH to populate |dropDataFiltered_|.
-  DCHECK(_dropDataUnfiltered);
+  CHECK(_dropDataUnfiltered, base::NotFatalUntil::M158);
   std::unique_ptr<DropData> dropData =
       std::make_unique<DropData>(*_dropDataUnfiltered);
   _currentRWHForDrag = targetRWH->GetWeakPtr();
   _currentRWHForDrag->FilterDropData(dropData.get());
+  if (!_dragSecurityInfo.IsImageAccessibleFromFrame()) {
+    dropData->file_contents.resize(0);
+  }
 
   NSDragOperation mask = info->operation_mask;
 
@@ -382,7 +388,7 @@ void OnWebContentsViewDelegatePerformingDropComplete(
     return;
   }
 
-  DCHECK(_currentRVH);
+  CHECK(_currentRVH, base::NotFatalUntil::M158);
   if (_currentRVH != _webContents->GetRenderViewHost()) {
     return;
   }
@@ -501,10 +507,12 @@ void OnWebContentsViewDelegatePerformingDropComplete(
       content::RenderWidgetHostViewBase* currentDragView =
           static_cast<content::RenderWidgetHostViewBase*>(
               _currentRWHForDrag->GetView());
-      rootView->TransformPointToCoordSpaceForView(
-          transformedLeavePoint, currentDragView, &transformedLeavePoint);
-      rootView->TransformPointToCoordSpaceForView(
-          transformedScreenPoint, currentDragView, &transformedScreenPoint);
+      if (rootView && currentDragView) {
+        rootView->TransformPointToCoordSpaceForView(
+            transformedLeavePoint, currentDragView, &transformedLeavePoint);
+        rootView->TransformPointToCoordSpaceForView(
+            transformedScreenPoint, currentDragView, &transformedScreenPoint);
+      }
       _currentRWHForDrag->DragTargetDragLeave(transformedLeavePoint,
                                               transformedScreenPoint);
     }
@@ -662,6 +670,9 @@ void OnWebContentsViewDelegatePerformingDropComplete(
     std::unique_ptr<DropData> dropData =
         std::make_unique<DropData>(*_dropDataUnfiltered);
     targetRWH->FilterDropData(dropData.get());
+    if (!_dragSecurityInfo.IsImageAccessibleFromFrame()) {
+      dropData->file_contents.resize(0);
+    }
     _dropDataFiltered.swap(dropData);
   }
 
@@ -729,6 +740,10 @@ void OnWebContentsViewDelegatePerformingDropComplete(
   _dragSecurityInfo.OnDragInitiated(rwhi, dropData);
 }
 
+- (bool)didInitiateDrag {
+  return _dragSecurityInfo.did_initiate();
+}
+
 - (void)endDrag:(base::OnceClosure)closure {
   _dragSecurityInfo.OnDragEnded();
 
@@ -767,12 +782,16 @@ void OnWebContentsViewDelegatePerformingDropComplete(
   _dropInProgress = true;
 }
 
+- (bool)isDragCanceledForTesting {
+  return _canceled || !_pendingDragEnteredInfo;
+}
+
 @end
 
 namespace content {
 
 DropData PopulateDropDataFromPasteboard(NSPasteboard* pboard) {
-  DCHECK(pboard);
+  CHECK(pboard, base::NotFatalUntil::M158);
   DropData drop_data;
 
   // https://crbug.com/40050499#comment22
@@ -782,6 +801,13 @@ DropData PopulateDropDataFromPasteboard(NSPasteboard* pboard) {
       [types containsObject:ui::kUTTypeChromiumRendererInitiatedDrag];
   drop_data.is_from_privileged =
       [types containsObject:ui::kUTTypeChromiumPrivilegedInitiatedDrag];
+  if ([types containsObject:ui::kUTTypeChromiumDragId]) {
+    NSString* drag_id_str = [pboard stringForType:ui::kUTTypeChromiumDragId];
+    if (drag_id_str) {
+      drop_data.drag_id = base::UnguessableToken::DeserializeFromString(
+          base::SysNSStringToUTF8(drag_id_str));
+    }
+  }
 
   // Get URL if possible. To avoid exposing file system paths to web content,
   // filenames in the drag are not converted to file URLs.
@@ -822,18 +848,40 @@ DropData PopulateDropDataFromPasteboard(NSPasteboard* pboard) {
       base::apple::CFToNSPtrCast(kPasteboardTypeFilePromiseContent);
   NSData* file_data;
   NSString* content_type_id;
-  if ([types containsObject:promise_content_type]) {
+  // A pasteboard item can advertise both a real file URL and file-promise
+  // content as two representations of the same file (e.g. an unsaved macOS
+  // screenshot). In this case, skip the promise content to avoid surfacing the
+  // file twice in `DataTransfer.files`.
+  //
+  // Note that a drag pairing a real file with a separate, distinct promise
+  // would lose that promise with this guard.
+  if (drop_data.filenames.empty() &&
+      [types containsObject:promise_content_type]) {
     content_type_id = [pboard stringForType:promise_content_type];
     if (content_type_id && [types containsObject:content_type_id]) {
       file_data = [pboard dataForType:content_type_id];
     }
   }
-  constexpr base::ByteSize kMaxDragBinarySize = base::MiBU(256);
+  // If no file promises or regular files were found on the pasteboard, try to
+  // scavenge any generic images that might be present.
+  if (file_data.length == 0 && drop_data.filenames.empty()) {
+    for (NSString* type in types) {
+      UTType* utType = [UTType typeWithIdentifier:type];
+      if (utType && [utType conformsToType:UTTypeImage]) {
+        NSData* data = [pboard dataForType:type];
+        if (data) {
+          file_data = data;
+          content_type_id = type;
+          break;
+        }
+      }
+    }
+  }
+  constexpr base::ByteSize kMaxDragBinarySize = base::MiB(256);
   if (file_data.length > 0 &&
       file_data.length <= kMaxDragBinarySize.InBytes()) {
-    auto file_span = base::apple::NSDataToSpan(file_data);
-    drop_data.file_contents.assign(
-        base::as_string_view(base::as_chars(file_span)));
+    drop_data.file_contents =
+        base::ToVector(base::apple::NSDataToSpan(file_data));
 
     if (content_type_id) {
       UTType* utType = [UTType typeWithIdentifier:content_type_id];
@@ -854,7 +902,7 @@ DropData PopulateDropDataFromPasteboard(NSPasteboard* pboard) {
       disposition =
           [pboard stringForType:ui::kUTTypeChromiumContentDisposition];
     }
-    constexpr base::ByteSize kMaxContentDispositionLength = base::KiBU(4);
+    constexpr base::ByteSize kMaxContentDispositionLength = base::KiB(4);
     if (disposition.length > 0 &&
         disposition.length <= kMaxContentDispositionLength.InBytes()) {
       drop_data.file_contents_content_disposition =

@@ -245,7 +245,7 @@ void TestImageBacking::SetPurgeable(bool purgeable) {
 bool TestImageBacking::UploadFromMemory(const std::vector<SkPixmap>& pixmap) {
   DCHECK_EQ(format().NumberOfPlanes(), static_cast<int>(pixmap.size()));
   upload_from_memory_called_ = true;
-  return true;
+  return upload_from_memory_succeeds_;
 }
 
 bool TestImageBacking::ReadbackToMemory(const std::vector<SkPixmap>& pixmaps) {
@@ -365,6 +365,13 @@ std::unique_ptr<OverlayImageRepresentation> TestImageBacking::ProduceOverlay(
                                                           tracker);
 }
 
+std::unique_ptr<VideoImageRepresentation> TestImageBacking::ProduceVideo(
+    SharedImageManager* manager,
+    MemoryTypeTracker* tracker,
+    VideoDevice device) {
+  return std::make_unique<TestVideoImageRepresentation>(manager, this, tracker);
+}
+
 bool TestOverlayImageRepresentation::BeginReadAccess(
     gfx::GpuFenceHandle& acquire_fence) {
   return true;
@@ -385,5 +392,30 @@ bool TestOverlayImageRepresentation::IsInUseByWindowServer() const {
   return static_cast<TestImageBacking*>(backing())->in_use_by_window_server();
 }
 #endif  // BUILDFLAG(IS_APPLE)
+
+bool TestVideoImageRepresentation::BeginWriteAccess() {
+  return true;
+}
+
+void TestVideoImageRepresentation::EndWriteAccess() {}
+
+bool TestVideoImageRepresentation::BeginReadAccess() {
+  return true;
+}
+
+void TestVideoImageRepresentation::EndReadAccess() {}
+
+#if BUILDFLAG(IS_WIN)
+D3D11TextureAndArrayIndex TestVideoImageRepresentation::GetD3D11Texture()
+    const {
+  return {nullptr, 0};
+}
+#endif
+
+#if BUILDFLAG(IS_ANDROID)
+AHardwareBuffer* TestVideoImageRepresentation::GetAHardwareBuffer() const {
+  return nullptr;
+}
+#endif
 
 }  // namespace gpu

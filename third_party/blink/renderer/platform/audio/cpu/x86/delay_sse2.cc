@@ -8,6 +8,7 @@
 
 #include "base/bit_cast.h"
 #include "base/compiler_specific.h"
+#include "base/numerics/safe_conversions.h"
 #include "third_party/blink/renderer/platform/audio/delay.h"
 
 namespace blink {
@@ -66,7 +67,8 @@ std::tuple<size_t, size_t> Delay::ProcessARateVector(
   // The buffer length as a float and as an int so we don't need to constant
   // convert from one to the other.
   const __m128 v_buffer_length_float = _mm_set1_ps(buffer_length);
-  const __m128i v_buffer_length_int = _mm_set1_epi32(buffer_length);
+  const __m128i v_buffer_length_int =
+      _mm_set1_epi32(base::checked_cast<int>(buffer_length));
 
   // How much to increment the write index each time through the loop.
   const __m128i v_incr = _mm_set1_epi32(4);
@@ -76,8 +78,9 @@ std::tuple<size_t, size_t> Delay::ProcessARateVector(
   std::array<float, 4> sample2 __attribute((aligned(16)));
 
   // Initialize the write index vector, and  wrap the values if needed.
+  int w_index_3 = base::CheckAdd(w_index, 3u).ValueOrDie<int>();
   __m128i v_write_index =
-      _mm_set_epi32(w_index + 3, w_index + 2, w_index + 1, w_index + 0);
+      _mm_set_epi32(w_index_3, w_index_3 - 1, w_index_3 - 2, w_index_3 - 3);
   v_write_index = WrapIndexVector(v_write_index, v_buffer_length_int);
 
   const size_t number_of_loops = frames_to_process / 4;
@@ -139,41 +142,6 @@ std::tuple<size_t, size_t> Delay::ProcessARateVector(
   }
 
   return std::make_tuple(k, w_index);
-}
-
-void Delay::HandleNaN(base::span<float> delay_times,
-                      size_t frames_to_process,
-                      float max_time) {
-  unsigned k = 0;
-  const unsigned number_of_loops = frames_to_process / 4;
-
-  __m128 v_max_time = _mm_set1_ps(max_time);
-
-  // This is approximately 4 times faster than the scalar version.
-  for (unsigned loop = 0; loop < number_of_loops; ++loop, k += 4) {
-    __m128 x = _mm_loadu_ps(delay_times.subspan(k, 4u).data());
-    // 0xffffffff if x is NaN. Otherwise 0
-    __m128 cmp = _mm_cmpunord_ps(x, x);
-
-    // Use cmp as a mask to set a component of x to 0 if is NaN.  Otherwise,
-    // preserve x.
-    x = _mm_andnot_ps(cmp, x);
-
-    // Now set cmp to be max_time if the value is 0xffffffff or 0.
-    cmp = _mm_and_ps(cmp, v_max_time);
-
-    // Merge i (bitwise or) x and cmp.  This makes x = max_time if x was NaN and
-    // preserves x if not.
-    x = _mm_or_ps(x, cmp);
-    _mm_storeu_ps(delay_times.subspan(k, 4u).data(), x);
-  }
-
-  // Handle any frames not done in the loop above.
-  for (; k < frames_to_process; ++k) {
-    if (std::isnan(delay_times[k])) {
-      delay_times[k] = max_time;
-    }
-  }
 }
 
 }  // namespace blink

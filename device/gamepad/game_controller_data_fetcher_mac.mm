@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/351564777): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "device/gamepad/game_controller_data_fetcher_mac.h"
 
 #import <GameController/GameController.h>
@@ -15,6 +10,7 @@
 #include <memory>
 #include <string>
 
+#include "base/compiler_specific.h"
 #include "base/containers/flat_map.h"
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
@@ -121,6 +117,9 @@ namespace device {
 
 namespace {
 
+// GCControllerPlayerIndex defines four assignable indices. The legacy polling
+// path below uses them as Chromium gamepad slot indices, so it can expose at
+// most four controllers even when Gamepads::kItemsLengthCap is larger.
 const int kGCControllerPlayerIndexCount = 4;
 
 // Returns GameControllerMacOutcome::kSuccess if |controller| should be
@@ -197,7 +196,7 @@ void GameControllerDataFetcherMac::GameControllerDataFetcherMacImpl::
 
   // Initialize the pad state if a slot is available. If not, GetGamepadData
   // will try again during the next polling cycle.
-  PadState* state = owner_->GetPadState(owner_->next_source_id_);
+  PadState* state = owner_->GetPadState(source_id);
   if (state) {
     state->is_initialized = true;
     gamepad->InitializeStaticData(state->data);
@@ -240,6 +239,11 @@ void GameControllerDataFetcherMac::GameControllerDataFetcherMacImpl::
     RegisterOnMainThread(
         base::WeakPtr<GameControllerDataFetcherMacImpl> impl,
         scoped_refptr<base::SingleThreadTaskRunner> polling_task_runner) {
+  // Enable background event monitoring so that controllers are detected when
+  // Chrome is running as a background application (e.g., when an installed PWA
+  // App Shim is the active foreground application).
+  GCController.shouldMonitorBackgroundEvents = YES;
+
   GameControllerNotificationHandler* handler =
       [[GameControllerNotificationHandler alloc]
           initWithImpl:impl
@@ -273,6 +277,8 @@ void GameControllerDataFetcherMac::GameControllerDataFetcherMacImpl::
 void GameControllerDataFetcherMac::GameControllerDataFetcherMacImpl::
     UnregisterOnMainThread(GameControllerNotificationHandler* handler) {
   [[NSNotificationCenter defaultCenter] removeObserver:handler];
+
+  GCController.shouldMonitorBackgroundEvents = NO;
 }
 
 GameControllerDataFetcherMac::GameControllerDataFetcherMac()
@@ -348,8 +354,7 @@ void GameControllerDataFetcherMac::GetGamepadData(bool) {
 
   // In the first pass, record which player indices are still in use so unused
   // indices can be assigned to newly connected gamepads.
-  bool player_indices[Gamepads::kItemsLengthCap];
-  std::fill(player_indices, player_indices + Gamepads::kItemsLengthCap, false);
+  std::array<bool, Gamepads::kItemsLengthCap> player_indices = {};
   for (GCController* controller in controllers) {
     if (GetSupportOutcome(controller) != GameControllerMacOutcome::kSuccess) {
       continue;
@@ -361,8 +366,9 @@ void GameControllerDataFetcherMac::GetGamepadData(bool) {
   }
 
   for (size_t i = 0; i < Gamepads::kItemsLengthCap; ++i) {
-    if (connected_[i] && !player_indices[i])
+    if (connected_[i] && !player_indices[i]) {
       connected_[i] = false;
+    }
   }
 
   // In the second pass, assign indices to newly connected gamepads and fetch
@@ -419,6 +425,7 @@ void GameControllerDataFetcherMac::GetGamepadData(bool) {
         -extended_gamepad.rightThumbstick.yAxis.value;
 
 #define BUTTON(i, b)                      \
+  pad.buttons[i].used = true;             \
   pad.buttons[i].pressed = [b isPressed]; \
   pad.buttons[i].value = [b value];
 
@@ -442,8 +449,9 @@ void GameControllerDataFetcherMac::GetGamepadData(bool) {
 
 int GameControllerDataFetcherMac::NextUnusedPlayerIndex() {
   for (int i = 0; i < kGCControllerPlayerIndexCount; ++i) {
-    if (!connected_[i])
+    if (!connected_[i]) {
       return i;
+    }
   }
   return GCControllerPlayerIndexUnset;
 }

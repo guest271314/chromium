@@ -25,7 +25,6 @@
 #include "components/autofill/core/browser/data_model/payments/credit_card.h"
 #include "components/autofill/core/browser/foundations/autofill_driver.h"
 #include "components/autofill/core/browser/foundations/browser_autofill_manager.h"
-#include "components/autofill/core/browser/metrics/form_events/credit_card_form_event_logger.h"
 #include "components/autofill/core/browser/payments/credit_card_cvc_authenticator.h"
 #include "components/autofill/core/browser/payments/credit_card_otp_authenticator.h"
 #include "components/autofill/core/browser/payments/credit_card_risk_based_authenticator.h"
@@ -33,6 +32,7 @@
 #include "components/autofill/core/browser/payments/payments_autofill_client.h"
 #include "components/autofill/core/browser/payments/payments_request_details.h"
 #include "components/autofill/core/browser/payments/payments_window_manager.h"
+#include "components/autofill/core/browser/payments/unmask_auth_flow_type.h"
 #include "components/autofill/core/browser/payments/wait_for_signal_or_timeout.h"
 
 #if !BUILDFLAG(IS_IOS)
@@ -44,34 +44,13 @@ namespace autofill {
 class AutofillClient;
 enum class WebauthnDialogCallbackType;
 
-// Flow type denotes which card unmask authentication method was used.
-// TODO(crbug.com/40216473): Deprecate kCvcThenFido, kCvcFallbackFromFido, and
-// kOtpFallbackFromFido.
-enum class UnmaskAuthFlowType {
-  kNone = 0,
-  // Only CVC prompt was shown.
-  kCvc = 1,
-  // Only WebAuthn prompt was shown.
-  kFido = 2,
-  // CVC authentication was required in addition to WebAuthn.
-  kCvcThenFido = 3,
-  // FIDO authentication failed and fell back to CVC authentication.
-  kCvcFallbackFromFido = 4,
-  // OTP authentication was offered.
-  kOtp = 5,
-  // FIDO authentication failed and fell back to OTP authentication.
-  kOtpFallbackFromFido = 6,
-  // VCN 3DS was the only challenge option returned.
-  kThreeDomainSecure = 7,
-  // VCN 3DS was one of the challenge options returned in the challenge
-  // selection dialog, and user selected the 3DS challenge option.
-  kThreeDomainSecureConsentAlreadyGiven = 8,
-  kMaxValue = kThreeDomainSecureConsentAlreadyGiven,
-};
+namespace autofill_metrics {
+enum class CardVerificationStatus;
+class CreditCardFormEventLogger;
+}  // namespace autofill_metrics
 
 // TODO(crbug.com/40927041): Remove CVC from CachedServerCardInfo.
 struct CachedServerCardInfo {
- public:
   // An unmasked CreditCard.
   CreditCard card;
 
@@ -91,6 +70,10 @@ class CreditCardAccessManager
       public CreditCardOtpAuthenticator::Requester,
       public CreditCardRiskBasedAuthenticator::Requester {
  public:
+  // Timeout to wait for unmask details from Google Payments.
+  static constexpr base::TimeDelta kUnmaskDetailsResponseTimeout =
+      base::Seconds(3);
+
   class Observer : public base::CheckedObserver {
    public:
     // Signals that `ccam` is about to be destroyed.
@@ -117,6 +100,8 @@ class CreditCardAccessManager
 
   using OnCreditCardFetchedCallback =
       base::OnceCallback<void(const CreditCard&)>;
+  using OnCreditCardRetrievedForOpaqueTokenCallback =
+      base::OnceCallback<void(std::optional<CreditCard>)>;
   using OtpAuthenticationResponse =
       CreditCardOtpAuthenticator::OtpAuthenticationResponse;
 
@@ -142,9 +127,30 @@ class CreditCardAccessManager
 
   // `on_credit_card_fetched` is run once `card` is fetched, if fetching is
   // successful.
+  // TODO(crbug.com/561395976): always request the user confirmation using
+  // biometric authentication or a modal confirmation dialog if
+  // `require_user_confirmation` is `true`.
   virtual void FetchCreditCard(
       const CreditCard* card,
+      bool require_user_confirmation,
       OnCreditCardFetchedCallback on_credit_card_fetched);
+
+  // Retrieves the credit card that Google Payments associated with
+  // `credit_card_opaque_token`. Google Payments issues the token after the user
+  // approved a purchase that an agent completes on the user's behalf. The token
+  // is single use: callers must not call this again with the same token, even
+  // if the first call failed.
+  // `callback` is invoked with std::nullopt if no card could be retrieved, and
+  // is invoked even if `this` is destroyed before the response arrives.
+  // Note: The returned card is a `CreditCard::RecordType::kLocalCard`.
+  // If a `kFullServerCard` were returned without being listed in
+  // `unmasked_card_cache_`, subsequent form filling via `FetchCreditCard`
+  // would reach a `NOTREACHED()` because `FetchCreditCard` assumes full server
+  // cards only originate from a previous unmasking on the same page and are
+  // served through the cache.
+  virtual void RetrieveCreditCardForOpaqueToken(
+      const std::string& credit_card_opaque_token,
+      OnCreditCardRetrievedForOpaqueTokenCallback callback);
 
   // Checks whether we should offer risk-based authentication for masked server
   // card retrieval.
@@ -323,8 +329,34 @@ class CreditCardAccessManager
   // `unmasked_card_cache_`.
   std::string GetKeyForUnmaskedCardsCache(const CreditCard& card) const;
 
+  // Returns whether FetchMaskedServerCard() has to wait for the
+  // GetUnmaskDetails() preflight call response before starting the
+  // authentication. `get_unmask_details_returned` is whether the response has
+  // already arrived, and `risk_based_auth_available` is whether risk-based
+  // authentication will handle the card.
+  bool ShouldWaitForPreflightCallResponse(bool get_unmask_details_returned,
+                                          bool risk_based_auth_available);
+
+  // Returns the card-on-device verification status of `card_` when
+  // card-on-device verification is enforced and a preflight call was (or was
+  // about to be) issued, or `std::nullopt` otherwise.
+  std::optional<autofill_metrics::CardVerificationStatus>
+  GetCardVerificationStatus(bool get_unmask_details_returned) const;
+
+  // Returns whether `card_` must bypass risk-based authentication and
+  // immediately undergo CVC authentication because card-on-device verification
+  // is enforced and the preflight call either timed out or reported that the
+  // card has not yet been verified on this device.
+  bool ShouldForceCvcAuthentication(bool get_unmask_details_returned) const;
+
   // Helper function to fetch masked server cards.
   void FetchMaskedServerCard();
+
+  // Helper function to start the authentication for masked server cards, once
+  // it is known whether the preflight call response is available. If
+  // OnDidGetUnmaskDetails() has been invoked, `get_unmask_details_returned`
+  // should be set to true.
+  void AuthenticateForMaskedServerCard(bool get_unmask_details_returned);
 
   // Helper function to fetch virtual cards.
   void FetchVirtualCard();
@@ -342,6 +374,12 @@ class CreditCardAccessManager
   // return. If OnDidGetUnmaskDetails() has been invoked,
   // |get_unmask_details_returned| should be set to true.
   void OnStopWaitingForUnmaskDetails(bool get_unmask_details_returned);
+
+  // Callback function invoked when the user has cancelled the masked server
+  // card unmasking from the progress dialog. The cancellation is handled by
+  // `this` while waiting for the preflight call, and is forwarded to
+  // CreditCardRiskBasedAuthenticator once it has taken over the flow.
+  void OnMaskedServerCardUnmaskCancelled();
 
   // Callback function invoked when the user has accepted the authentication
   // selection dialog and chosen an auth method to use.
@@ -483,6 +521,19 @@ class CreditCardAccessManager
   // True only if currently waiting on unmask details. This avoids making
   // unnecessary calls to payments.
   bool unmask_details_request_in_progress_ = false;
+
+  // True only while the masked server card flow is blocked on the preflight
+  // call response (`ready_to_start_authentication_`) with the unmask progress
+  // dialog shown. Determines whether a cancellation from that dialog is handled
+  // by `this` or forwarded to CreditCardRiskBasedAuthenticator.
+  //
+  // This tracks the flow, not the request, so it cannot be replaced by
+  // `unmask_details_request_in_progress_` above: that one is true whenever the
+  // GetUnmaskDetails() call is in flight, which happens without any card
+  // having been selected, continues after this flow stopped waiting because it
+  // timed out, and is still false while the wait is gated on the preceding
+  // IsUserVerifiable() call.
+  bool waiting_for_preflight_call_response_ = false;
 
   // Callback to notify the caller of the access manager when fetching the
   // card has finished. Only has a meaningful value when an authentication is in

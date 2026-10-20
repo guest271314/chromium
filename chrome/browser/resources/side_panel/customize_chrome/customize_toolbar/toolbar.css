@@ -4,10 +4,10 @@
 
 /* #css_wrapper_metadata_start
  * #type=style-lit
- * #import=chrome://customize-chrome-side-panel.top-chrome/shared/sp_shared_style_lit.css.js
+ * #import=chrome://customize-chrome-side-panel.top-chrome/shared/sp_shared_style.css.js
  * #import=chrome://resources/cr_elements/cr_icons_lit.css.js
  * #scheme=relative
- * #include=sp-shared-style-lit cr-icons-lit
+ * #include=sp-shared-style cr-icons-lit
  * #css_wrapper_metadata_end */
 
 .sp-card {
@@ -15,14 +15,15 @@
   font-weight: 500;
   line-height: 16px;
   padding: var(--sp-card-padding);
-  max-width: calc(360px - 2 * var(--sp-body-padding) - 2 * var(
-      --sp-card-inline-padding));
+  max-width: calc(var(--customize-chrome-max-width) -
+      2 * var(--sp-body-padding) - 2 * var(--sp-card-inline-padding));
 }
 
 #pinningSelectionCard {
   /* Remove horizontal padding for highlight */
   padding: 16px 0 0 0;
-  max-width: calc(360px - 2 * var(--sp-body-padding));
+  max-width: calc(
+      var(--customize-chrome-max-width) - 2 * var(--sp-body-padding));
   overflow: hidden;
 }
 
@@ -49,15 +50,15 @@
 
 .sp-hr {
   width: auto;
-  margin: 8px 16px;
+  margin: 8px var(--sp-card-inline-padding);
 }
 
 .choose-icons-row {
-  padding: 8px 16px;
+  padding: 8px var(--sp-card-inline-padding);
 }
 
 .category-title {
-  padding: 0 16px;
+  padding: 0 var(--sp-card-inline-padding);
   font-size: 12px;
   font-weight: 500;
 }

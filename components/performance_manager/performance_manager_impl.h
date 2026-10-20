@@ -20,8 +20,10 @@
 #include "components/performance_manager/public/graph/page_node.h"
 #include "components/performance_manager/public/graph/worker_node.h"
 #include "components/performance_manager/public/performance_manager.h"
+#include "components/performance_manager/public/process_priority_policy_settings.h"
 #include "components/performance_manager/public/render_process_host_proxy.h"
 #include "content/public/browser/browsing_instance_id.h"
+#include "content/public/browser/frame_tree_node_id.h"
 #include "content/public/browser/site_instance.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/process_type.h"
@@ -52,7 +54,11 @@ class PerformanceManagerImpl : public PerformanceManager {
 
   // Creates, initializes and registers an instance. Valid to call from the main
   // thread only.
-  static std::unique_ptr<PerformanceManagerImpl> Create();
+  static std::unique_ptr<PerformanceManagerImpl> Create(
+      ProcessPriorityPolicySettings process_priority_policy_settings = {});
+
+  // Returns the global process priority policy settings configured on creation.
+  static ProcessPriorityPolicySettings GetProcessPriorityPolicySettings();
 
   // Unregisters |instance| and arranges for its deletion.
   static void Destroy(std::unique_ptr<PerformanceManager> instance);
@@ -62,21 +68,22 @@ class PerformanceManagerImpl : public PerformanceManager {
       ProcessNodeImpl* process_node,
       PageNodeImpl* page_node,
       FrameNodeImpl* parent_frame_node,
-      FrameNodeImpl* outer_document_for_fenced_frame,
+      FrameNodeImpl* outer_document_for_inner_frame_root,
       int render_frame_id,
       const blink::LocalFrameToken& frame_token,
-      const perfetto::NamedTrack& tracing_track,
+      content::FrameTreeNodeId frame_tree_node_id,
+      const perfetto::Track& tracing_track,
       content::BrowsingInstanceId browsing_instance_id,
       content::SiteInstanceGroupId site_instance_group_id,
-      bool is_current,
       bool is_active);
   static std::unique_ptr<PageNodeImpl> CreatePageNode(
       base::WeakPtr<content::WebContents> web_contents,
       const content::WebContents::UniqueToken& web_contents_token,
-      const std::string& browser_context_id,
+      const base::UnguessableToken& browser_context_id,
       const GURL& visible_url,
       PagePropertyFlags initial_properties,
-      base::TimeTicks visibility_change_time);
+      base::TimeTicks visibility_change_time,
+      const perfetto::Track& tracing_track);
   static std::unique_ptr<ProcessNodeImpl> CreateProcessNode(
       BrowserProcessNodeTag tag);
   static std::unique_ptr<ProcessNodeImpl> CreateProcessNode(
@@ -86,7 +93,7 @@ class PerformanceManagerImpl : public PerformanceManager {
       content::ProcessType process_type,
       BrowserChildProcessHostProxy proxy);
   static std::unique_ptr<WorkerNodeImpl> CreateWorkerNode(
-      const std::string& browser_context_id,
+      const base::UnguessableToken& browser_context_id,
       WorkerNode::WorkerType worker_type,
       ProcessNodeImpl* process_node,
       const blink::WorkerToken& worker_token,
@@ -103,12 +110,15 @@ class PerformanceManagerImpl : public PerformanceManager {
  private:
   friend class PerformanceManager;
 
-  PerformanceManagerImpl();
+  explicit PerformanceManagerImpl(
+      ProcessPriorityPolicySettings process_priority_policy_settings);
 
   template <typename NodeType, typename... Args>
   static std::unique_ptr<NodeType> CreateNodeImpl(Args&&... constructor_args);
 
   GraphImpl graph_ GUARDED_BY_CONTEXT(sequence_checker_);
+
+  const ProcessPriorityPolicySettings process_priority_policy_settings_;
 
   SEQUENCE_CHECKER(sequence_checker_);
 };

@@ -11,6 +11,7 @@
 #include "base/check.h"
 #include "base/command_line.h"
 #include "base/functional/bind.h"
+#include "base/notimplemented.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_split.h"
 #include "base/task/single_thread_task_runner.h"
@@ -19,7 +20,6 @@
 #include "chrome/browser/actor/actor_keyed_service_factory.h"
 #include "chrome/browser/actor/actor_proto_conversion.h"
 #include "chrome/browser/actor/actor_task_metadata.h"
-#include "chrome/browser/actor/aggregated_journal_file_serializer.h"
 #include "chrome/browser/actor/enterprise_policy_checker.h"
 #include "chrome/browser/actor/tools/tab_management_tool_request.h"
 #include "chrome/browser/ai/ai_data_keyed_service.h"
@@ -30,6 +30,7 @@
 #include "chrome/common/actor/action_result.h"
 #include "chrome/common/extensions/api/experimental_actor.h"
 #include "chrome/common/extensions/api/tabs.h"
+#include "components/actor/core/aggregated_journal_file_serializer.h"
 #include "components/actor/core/journal_details_builder.h"
 #include "components/actor/core/task_id.h"
 #include "components/actor/core/task_source_info.h"
@@ -39,33 +40,13 @@
 #include "components/sessions/content/session_tab_helper.h"
 #include "components/tabs/public/tab_handle_factory.h"
 #include "components/tabs/public/tab_interface.h"
+#include "extensions/browser/api/constants.h"
 #include "extensions/common/features/feature_channel.h"
 
 namespace extensions {
 
 namespace {
 
-class NullPolicyChecker : public actor::EnterprisePolicyChecker {
- public:
-  actor::EnterprisePolicyChecker::UrlBlockReason Evaluate(
-      const GURL& url) const override {
-    return actor::EnterprisePolicyChecker::UrlBlockReason::kNotBlocked;
-  }
-
-  void ValidateContentSentToRenderer(
-      content::RenderFrameHost* frame,
-      const std::string& content,
-      actor::EnterprisePolicyChecker::ContentValidationCallback callback)
-      const override {
-    std::move(callback).Run(
-        actor::EnterprisePolicyChecker::ContentValidationReason::kAllowed);
-  }
-};
-
-NullPolicyChecker& GetNullPolicyChecker() {
-  static NullPolicyChecker checker;
-  return checker;
-}
 
 // Converts a session tab id to a tab handle.
 int32_t ConvertSessionTabIdToTabHandle(
@@ -186,7 +167,7 @@ ExtensionFunction::ResponseAction ExperimentalActorCreateTaskFunction::Run() {
   actor::TaskId task_id = actor_service->CreateTask(
       actor::TaskSourceInfo(actor::TaskSourceInfo::Client::kExperimentalActor,
                             /*id=*/std::nullopt),
-      &GetNullPolicyChecker());
+      actor::GetNullEnterprisePolicyChecker());
 
   return RespondNow(ArgumentList(
       api::experimental_actor::CreateTask::Results::Create(task_id.value())));
@@ -264,6 +245,12 @@ ExperimentalActorPerformActionsFunction::Run() {
         ConvertActionTabId(action.mutable_attempt_otp_filling(),
                            browser_context());
         break;
+      case optimization_guide::proto::Action::kChangePassword:
+        ConvertActionTabId(action.mutable_change_password(), browser_context());
+        break;
+      case optimization_guide::proto::Action::kTranslatePage:
+        ConvertActionTabId(action.mutable_translate_page(), browser_context());
+        break;
       case optimization_guide::proto::Action::kWait:
       case optimization_guide::proto::Action::kCreateTab:
       case optimization_guide::proto::Action::kCreateWindow:
@@ -274,6 +261,9 @@ ExperimentalActorPerformActionsFunction::Run() {
       case optimization_guide::proto::Action::kLoadAndExtractContent:
       case optimization_guide::proto::Action::ACTION_NOT_SET:
         // No tab id to convert.
+        break;
+      default:
+        NOTIMPLEMENTED();
         break;
     }
   }
@@ -357,7 +347,7 @@ void ExperimentalActorPerformActionsFunction::OnActionsFinished(
 
   actor::mojom::ActionResultCode result_code =
       actor::mojom::ActionResultCode::kOk;
-  std::optional<size_t> index_of_failed_action = std::nullopt;
+  std::optional<size_t> index_of_failed_action;
   for (size_t i = 0; i < action_results.size(); ++i) {
     if (!actor::IsOk(action_results[i].result->code)) {
       result_code = action_results[i].result->code;
@@ -451,18 +441,16 @@ ExperimentalActorRequestTabObservationFunction::Run() {
   if (!ExtensionTabUtil::GetTabById(params->tab_id, browser_context(),
                                     include_incognito_information(),
                                     &web_contents)) {
-    return RespondNow(Error(
-        ErrorUtils::FormatErrorMessage(ExtensionTabUtil::kTabNotFoundError,
-                                       base::NumberToString(params->tab_id))));
+    return RespondNow(Error(ErrorUtils::FormatErrorMessage(
+        kTabNotFoundError, base::NumberToString(params->tab_id))));
   }
   tabs::TabInterface* tab =
       tabs::TabInterface::MaybeGetFromContents(web_contents);
   // Can be null for pre-render web-contents.
   // TODO(crbug.com/369319589): Remove this logic.
   if (!tab) {
-    return RespondNow(Error(
-        ErrorUtils::FormatErrorMessage(ExtensionTabUtil::kTabNotFoundError,
-                                       base::NumberToString(params->tab_id))));
+    return RespondNow(Error(ErrorUtils::FormatErrorMessage(
+        kTabNotFoundError, base::NumberToString(params->tab_id))));
   }
 
   auto* actor_service = actor::ActorKeyedService::Get(browser_context());

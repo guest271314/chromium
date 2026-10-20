@@ -11,13 +11,16 @@
 #include <vector>
 
 #include "base/callback_list.h"
+#include "base/containers/flat_map.h"
 #include "base/containers/flat_set.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "build/build_config.h"
 #include "chrome/browser/glic/common/local_hotkey_manager.h"
 #include "chrome/browser/glic/glic_metrics.h"
+#include "chrome/browser/glic/glic_warming_checks.h"
 #include "chrome/browser/glic/host/glic.mojom.h"
+#include "chrome/browser/glic/host/glic_warming_scheduler.h"
 #include "chrome/browser/glic/host/glic_web_client_access.h"
 #include "chrome/browser/glic/host/host.h"
 #include "chrome/browser/glic/public/context/glic_sharing_manager.h"
@@ -25,6 +28,7 @@
 #include "chrome/browser/glic/public/glic_instance.h"
 #include "chrome/browser/glic/public/glic_invoke_options.h"
 #include "chrome/browser/glic/public/glic_passkeys.h"
+#include "chrome/browser/glic/public/glic_window_invocation_tracker.h"
 #include "chrome/common/actor.mojom-forward.h"
 #include "chrome/common/actor_webui.mojom-forward.h"
 #include "components/autofill/core/browser/integrators/actor/actor_form_filling_types.h"
@@ -48,18 +52,21 @@ namespace glic {
 
 class AuthController;
 class ContextualCueingService;
+class LegacyGlicActivityManager;
 class GlicActorPolicyChecker;
 class GlicEnabling;
-class GlicFreController;
 class GlicMetrics;
 class GlicProfileManager;
+class GlicProviderSpec;
 class GlicShareImageHandler;
+class GlicClientDataStorage;
 class GlicTabDataObserver;
 class GlicTabFaviconObserver;
 class GlicInstanceCoordinator;
-
-#if !BUILDFLAG(IS_ANDROID)
 class GlicExperimentalOptInController;
+class GlicExperimentalTriggeringTransportHandlerFactory;
+#if BUILDFLAG(IS_ANDROID)
+class MicPermissionUi;
 #endif
 
 enum class GlicPrewarmingChecksResult;
@@ -83,31 +90,54 @@ class GlicKeyedService : public KeyedService, public base::SupportsUserData {
   GlicKeyedService& operator=(const GlicKeyedService&) = delete;
   ~GlicKeyedService() override;
 
+  // Returns this profile's provider spec. Its values don't change for the
+  // lifetime of the profile.
+  const GlicProviderSpec& provider_spec();
+
 #if BUILDFLAG(IS_ANDROID)
   // Returns a Java object of the type GlicKeyedService for the given
   // GlicKeyedService.
   static base::android::ScopedJavaLocalRef<jobject> GetJavaObject(
       GlicKeyedService* glic_keyed_service);
+  bool IsGlicShortcutActive();
+  bool IsBottomBarEnabled();
+
+  class GlicNudgeController* GetOrCreateNudgeController(
+      BrowserWindowInterface* browser);
+
+  // Returns the microphone permission UI used by Glic panels.
+  MicPermissionUi& GetMicPermissionUi();
+  void SetMicPermissionUiForTesting(
+      std::unique_ptr<MicPermissionUi> mic_permission_ui);
 #endif  // BUILDFLAG(IS_ANDROID)
 
   // Convenience method, may return nullptr.
   static GlicKeyedService* Get(content::BrowserContext* context);
 
+  // Returns whether NoWebview mode is enabled for `context`. Returns false if
+  // `context` is null, ineligible for Glic, or has NoWebview disabled.
+  static bool IsNoWebviewEnabled(content::BrowserContext* context);
+
   // KeyedService
   void Shutdown() override;
+
+  // Show, summon or activate the panel. If `bwi` is non-null, attach the panel
+  // to its Browser.
+  virtual void ShowUI(BrowserWindowInterface* bwi,
+                      mojom::InvocationSource source);
 
   // Show, summon or activate the panel, or close it if it's already active and
   // prevent_close is false. If `bwi` is non-null, attach the panel to its
   // Browser.
-  // TODO(b:448888544): remove `prevent_close` in favor of a Show method.
+  // TODO(b:448888544): remove `prevent_close` in favor of ShowUI.
 
   virtual void ToggleUI(BrowserWindowInterface* bwi,
                         bool prevent_close,
-                        mojom::InvocationSource source,
-                        std::optional<std::string> prompt_suggestion);
-  virtual void ToggleUI(BrowserWindowInterface* bwi,
-                        bool prevent_close,
                         mojom::InvocationSource source);
+
+  // Returns whether `ToggleUI(bwi, /*prevent_close=*/false, ...)` would close a
+  // panel rather than open one.
+  virtual bool WouldToggleUIClose(BrowserWindowInterface* bwi) const;
 
   // Invokes Glic with the given options and automatically submits the prompt.
   // Access is restricted to authorized callers via InvokeWithAutoSubmitPasskey.
@@ -136,17 +166,16 @@ class GlicKeyedService : public KeyedService, public base::SupportsUserData {
   GlicEnabling& enabling() { return *enabling_.get(); }
 
   GlicMetrics* metrics() { return metrics_.get(); }
-  virtual GlicFreController& fre_controller();
-#if !BUILDFLAG(IS_ANDROID)
+
   virtual GlicExperimentalOptInController& opt_in_controller();
-#endif
+
   virtual GlicInstanceCoordinator& instance_coordinator() const;
 
   // Return a `GlicActiveInstanceSharingManager` which tracks the sharing state
   // for whichever instance is active. Please prefer to use the sharing manager
   // on the `GlicInstance` if you don't need one that automatically tracks the
   // active instance.
-  GlicSharingManager& active_instance_sharing_manager();
+  GlicSharingManagerInternal& active_instance_sharing_manager();
 
   // Returns true if `bwi` has a glic panel showing for its active tab. Virtual
   // for testing.
@@ -203,12 +232,16 @@ class GlicKeyedService : public KeyedService, public base::SupportsUserData {
                          content::RenderFrameHost* frame,
                          const ::GURL& src_url);
 
-  AuthController& GetAuthController() { return *auth_controller_; }
+  // Returns whether NoWebview mode is enabled for this profile.
+  bool IsNoWebviewEnabled() const;
+
+  // Null when IsNoWebviewEnabled() is true.
+  AuthController* GetAuthController() { return auth_controller_.get(); }
 
   void AddPreloadCallback(base::OnceCallback<void()> callback);
 
-  virtual void TryPreload();
-  void TryPreloadAfterDelay();
+  virtual void TryPreload(GlicWarmingTrigger trigger);
+  void TryPreloadAfterDelay(GlicWarmingTrigger trigger);
   void Reload(content::RenderFrameHost* render_frame_host);
   // Close the active embedder for an instance associated with this render frame
   // host.
@@ -220,6 +253,11 @@ class GlicKeyedService : public KeyedService, public base::SupportsUserData {
 
   // Used only for testing purposes.
   void reset_profile_for_test() { profile_ = nullptr; }
+  void ShowExperimentalOptInDialogForTesting(
+      content::WebContents* web_contents);
+  GlicWarmingScheduler& GetColdWarmingSchedulerForTesting() {
+    return cold_warming_scheduler_;
+  }
 
   base::WeakPtr<GlicKeyedService> GetWeakPtr();
 
@@ -234,6 +272,7 @@ class GlicKeyedService : public KeyedService, public base::SupportsUserData {
   GlicTabFaviconObserver& tab_favicon_observer() {
     return *tab_favicon_observer_;
   }
+  GlicClientDataStorage& client_data_storage() { return *client_data_storage_; }
 
   using ActOnWebCapabilityChangedCallback = base::RepeatingCallback<void(bool)>;
   base::CallbackListSubscription AddActOnWebCapabilityChangedCallback(
@@ -241,6 +280,10 @@ class GlicKeyedService : public KeyedService, public base::SupportsUserData {
 
   // Virtual for testing.
   virtual GlicActorPolicyChecker& actor_policy_checker();
+
+  bool HasActorPolicyChecker() const { return !!actor_policy_checker_; }
+
+  LegacyGlicActivityManager& legacy_activity_manager();
 
  private:
   // A helper function to route GetZeroStateSuggestionsForFocusedTabCallback
@@ -251,21 +294,16 @@ class GlicKeyedService : public KeyedService, public base::SupportsUserData {
           GetZeroStateSuggestionsForFocusedTabCallback callback,
       std::vector<std::string> returned_suggestions);
 
-  // Shared implementation for ToggleUI.
-  void ToggleUIInternal(BrowserWindowInterface* bwi,
-                        bool prevent_close,
-                        mojom::InvocationSource source,
-                        std::optional<std::string> prompt_suggestion);
-
-  bool MaybeInvoke(BrowserWindowInterface* bwi,
-                   mojom::InvocationSource source,
-                   const std::optional<std::string>& prompt_suggestion);
-
   void InitializeAfterConstruction();
 
-  void FinishPreload(GlicPrewarmingChecksResult reason);
+  void FinishPreload(GlicWarmingTrigger trigger,
+                     GlicPrewarmingChecksResult reason);
 
   void OnExperimentalTriggeringStateChanged();
+
+#if BUILDFLAG(IS_ANDROID)
+  void OnBrowserWindowClosed(BrowserWindowInterface* browser);
+#endif
 
   // List of callbacks to be notified when the client requests a change to the
   // context access indicator status.
@@ -279,28 +317,42 @@ class GlicKeyedService : public KeyedService, public base::SupportsUserData {
 
   raw_ptr<Profile> profile_;
 
-  // Never null - GlicActorTaskManager and GlicInstanceCoordinatorImpl hold a
-  // reference to this so it must be destroyed after them.
+  // Never null - GlicActorTaskManager, GlicInstanceCoordinatorImpl and
+  // GlicEnabling hold a reference to this so it must be destroyed after them.
   std::unique_ptr<GlicActorPolicyChecker> actor_policy_checker_;
 
   std::unique_ptr<GlicEnabling> enabling_;
+  std::unique_ptr<GlicProviderSpec> provider_spec_;
   std::unique_ptr<GlicMetrics> metrics_;
-  std::unique_ptr<GlicFreController> fre_controller_;
-#if !BUILDFLAG(IS_ANDROID)
   std::unique_ptr<GlicExperimentalOptInController> opt_in_controller_;
-#endif
+  std::unique_ptr<GlicClientDataStorage> client_data_storage_;
   // Is a GlicInstanceCoordinatorImpl.
   std::unique_ptr<GlicInstanceCoordinator> instance_coordinator_;
+  std::unique_ptr<LegacyGlicActivityManager> legacy_activity_manager_;
   std::unique_ptr<GlicShareImageHandler> share_image_handler_;
 
+  const bool is_no_webview_enabled_;
   std::unique_ptr<AuthController> auth_controller_;
+
+  GlicWarmingScheduler cold_warming_scheduler_;
 
   base::OnceCallback<void()> preload_callback_;
 
   std::unique_ptr<GlicTabDataObserver> tab_data_observer_;
   std::unique_ptr<GlicTabFaviconObserver> tab_favicon_observer_;
+  std::unique_ptr<GlicExperimentalTriggeringTransportHandlerFactory>
+      experimental_triggering_transport_handler_factory_;
 
   base::CallbackListSubscription experimental_triggering_state_subscription_;
+
+#if BUILDFLAG(IS_ANDROID)
+  base::flat_map<BrowserWindowInterface*,
+                 std::unique_ptr<class GlicSplitButtonController>>
+      button_controllers_;
+  base::flat_map<BrowserWindowInterface*, base::CallbackListSubscription>
+      window_close_subscriptions_;
+  std::unique_ptr<MicPermissionUi> mic_permission_ui_;
+#endif
 
   base::WeakPtrFactory<GlicKeyedService> weak_ptr_factory_{this};
 };

@@ -19,6 +19,7 @@
 #include "components/split_tabs/split_tab_visual_data.h"
 #include "ui/base/interaction/element_identifier.h"
 #include "ui/base/metadata/metadata_header_macros.h"
+#include "ui/gfx/geometry/rounded_corners_f.h"
 #include "ui/views/controls/resize_area_delegate.h"
 #include "ui/views/layout/proposed_layout.h"
 #include "ui/views/view.h"
@@ -64,6 +65,9 @@ class MultiContentsView
   };
 
   static constexpr int kSplitViewContentInset = 8;
+  static constexpr float kSplitViewContentCornerRadius = 6;
+  static constexpr gfx::RoundedCornersF kSplitViewContentRoundedCorners{
+      kSplitViewContentCornerRadius};
 
   MultiContentsView(BrowserView* browser_view,
                     std::unique_ptr<MultiContentsViewDelegate> delegate);
@@ -82,8 +86,12 @@ class MultiContentsView
   // Returns the currently inactive ContentsWebView.
   ContentsWebView* GetInactiveContentsView() const;
 
-  const gfx::RoundedCornersF& background_radii() const;
+  // These are the rounded corner radii to render on the multi-contents view and
+  // (if necessary) the contents views themselves. The radii should already be
+  // adjusted for RtL (so e.g. `radii.upper_left()` is actually the corner that
+  // displays on the upper left regardless of text direction).
   void SetBackgroundRadii(const gfx::RoundedCornersF& radii);
+  const gfx::RoundedCornersF& GetBackgroundRadii() const;
 
   // Returns true if more than one WebContents is displayed.
   bool IsInSplitView() const;
@@ -96,6 +104,11 @@ class MultiContentsView
   // Preserves the active WebContents and hides the second ContentsContainerView
   // and resize handle.
   void CloseSplitView();
+
+  // Visually swaps the two contents of the active split view by doing an
+  // in-place swap of contents_container_views_, while also reordering the view
+  // hierarchy and updating active_index_.
+  void SwapContentsInSplitView();
 
   // Assigns the given |web_contents| to the ContentsContainerView's
   // ContentsWebView at |index| in contents_container_views_. |index| must be
@@ -123,7 +136,7 @@ class MultiContentsView
   void ExecuteOnEachVisibleContentsView(
       base::RepeatingCallback<void(ContentsWebView*)> callback);
 
-  // If in a split view, swaps the order of the two contents views.
+  // If in a split view, swaps the positions of the two active tabs.
   void OnSwap();
 
   // If non-null, specifies an increase in target size so that web contents
@@ -150,7 +163,7 @@ class MultiContentsView
   void SetTargetContentBounds(
       std::optional<TargetContentBounds> target_content_bounds);
 
-  void SetIsAnimatingContent(bool is_animating);
+  void SetIsAnimatingContent(bool is_animating, bool is_origin_changing);
 
   // Returns accessible panes to be used in BrowserView to create the order of
   // pane traversal.
@@ -162,7 +175,8 @@ class MultiContentsView
   // views::View:
   void OnThemeChanged() override;
 
-  const std::vector<ContentsContainerView*>& contents_container_views() const {
+  const std::vector<raw_ptr<ContentsContainerView, DanglingUntriaged>>&
+  contents_container_views() const {
     return contents_container_views_;
   }
 
@@ -238,13 +252,13 @@ class MultiContentsView
   // available space after the layout.
   gfx::Rect CalculateDropTargetLayout(
       const gfx::Rect& available_space,
-      std::vector<views::ChildLayout>& child_layouts) const;
+      views::ProposedLayout::ChildLayoutList& child_layouts) const;
 
   // Adds separator layouts to the given list and returns the remaining
   // space after the layout.
   gfx::Rect CalculateSeparatorLayouts(
       const gfx::Rect& available_space,
-      std::vector<views::ChildLayout>& child_layouts) const;
+      views::ProposedLayout::ChildLayoutList& child_layouts) const;
 
   int GetInactiveIndex() const;
 
@@ -261,28 +275,35 @@ class MultiContentsView
   // allows for some flexibility when it comes to particularly narrow windows.
   ViewSizes ClampToMinSize(gfx::Rect available_space, ViewSizes sizes) const;
 
-  // Returns the minimum width for a single view within the `MultiContentsView`.
-  // Returns 0 if not in a split view.
+  // Returns the minimum size along the resize axis for a single view within the
+  // `MultiContentsView`. Returns 0 if not in a split view.
   int GetMinViewSize(gfx::Rect available_space) const;
 
   void UpdateContentsBorderAndOverlay();
 
-  double CalculateRatioWithSnapPoints(double end_width,
-                                      double total_width) const;
+  double CalculateRatioWithSnapPoints(double start_size,
+                                      double total_size) const;
+
+  // Helper function that gets the component of |size| along the resize axis.
+  int GetResizeAxisComponent(const gfx::Size& size) const;
 
   raw_ptr<BrowserView> browser_view_;
   std::unique_ptr<MultiContentsViewDelegate> delegate_;
 
   raw_ptr<MultiContentsBackgroundView> background_view_;
-  ContentsSeparators contents_separators_;
 
   // Holds ContentsContainerViews, when not in a split view the second
   // ContentsContainerView is not visible.
-  std::vector<ContentsContainerView*> contents_container_views_;
+  std::vector<raw_ptr<ContentsContainerView, DanglingUntriaged>>
+      contents_container_views_;
 
-  // Holds subscriptions for when the attached contents to ContentsContainerView
-  // are focused.
-  std::vector<base::CallbackListSubscription> contents_focused_subscriptions_;
+  ContentsSeparators contents_separators_;
+
+  // The view that contains the Lens overlay. The Lens Overlay is a UI overlay
+  // that is shown on top of the web contents. It therefore must always have the
+  // same bounds as the contents_web_view_, but also be above the
+  // contents_web_view_.
+  raw_ptr<views::View> lens_overlay_view_ = nullptr;
 
   // The handle responsible for resizing the two contents views as relative to
   // each other.
@@ -291,6 +312,10 @@ class MultiContentsView
   // The views that are shown for entering split view. E.g., this is shown when
   // the user drags a link to the edge of the contents view.
   raw_ptr<MultiContentsDropTargetView> drop_target_view_ = nullptr;
+
+  // Holds subscriptions for when the attached contents to ContentsContainerView
+  // are focused.
+  std::vector<base::CallbackListSubscription> contents_focused_subscriptions_;
 
   // Handles incoming drag events to show/hide the drop target for entering
   // split view.
@@ -307,16 +332,16 @@ class MultiContentsView
   // See `SetTargetContentBounds()`.
   std::optional<TargetContentBounds> target_content_bounds_;
 
-  // Width of `start_contents_.contents_view_` when a resize action began.
-  // Nullopt if not currently resizing.
-  std::optional<double> initial_start_width_on_resize_;
+  // Initial size of `start_contents_.contents_view_` along the resize axis when
+  // a resize action began. Nullopt if not currently resizing.
+  std::optional<int> initial_start_size_on_resize_;
 
   // Insets of the start and end contents view when in split view.
   gfx::Insets split_view_insets_;
 
   bool active_contents_view_highlighted_ = false;
 
-  std::optional<int> min_contents_size_for_testing_ = std::nullopt;
+  std::optional<int> min_contents_size_for_testing_;
 
   // Width ratios that a split view will snap to when resize is within a
   // snap distance (kSnapDistance).

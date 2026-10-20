@@ -5,17 +5,14 @@
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
 #include "chrome/browser/commerce/shopping_service_factory.h"
-#include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/resource_coordinator/tab_lifecycle_unit_external.h"
 #include "chrome/browser/resource_coordinator/tab_lifecycle_unit_source.h"
-#include "chrome/browser/resource_coordinator/tab_manager.h"
 #include "chrome/browser/ui/actions/chrome_action_id.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
-#include "chrome/browser/ui/commerce/commerce_ui_tab_helper.h"
-#include "chrome/browser/ui/commerce/mock_commerce_ui_tab_helper.h"
-#include "chrome/browser/ui/ui_features.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/location_bar/icon_label_bubble_view.h"
 #include "chrome/browser/ui/views/page_action/test_support/page_action_interactive_test_mixin.h"
+#include "chrome/browser/ui/views/page_action/test_support/page_action_test_accessor.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/interactive_test_utils.h"
 #include "chrome/test/base/ui_test_utils.h"
@@ -27,15 +24,12 @@
 #include "components/commerce/core/test_utils.h"
 #include "components/feature_engagement/public/feature_constants.h"
 #include "components/keyed_service/content/browser_context_dependency_manager.h"
-#include "components/search/ntp_features.h"
 #include "components/ukm/test_ukm_recorder.h"
 #include "content/public/test/browser_test.h"
 #include "net/dns/mock_host_resolver.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
 #include "services/metrics/public/cpp/ukm_builders.h"
 #include "ui/base/interaction/interactive_test.h"
-#include "ui/views/animation/ink_drop.h"
-#include "url/gurl.h"
 
 namespace {
 DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kShoppingTab);
@@ -122,7 +116,7 @@ class PriceInsightsIconViewBaseInteractiveTest
     EXPECT_TRUE(is_browser_context_services_created);
     mock_shopping_service_ = static_cast<commerce::MockShoppingService*>(
         commerce::ShoppingServiceFactory::GetForBrowserContext(
-            browser()->profile()));
+            browser()->GetProfile()));
     mock_account_checker_ = std::make_unique<commerce::MockAccountChecker>();
     mock_shopping_service_->SetAccountChecker(mock_account_checker_.get());
 
@@ -213,15 +207,13 @@ IN_PROC_BROWSER_TEST_F(PriceInsightsIconViewInteractiveTest,
                           embedded_test_server()->GetURL(kShoppingURL)),
       WaitForShow(kPriceInsightsChipElementId),
       PressButton(kPriceInsightsChipElementId),
-      CheckView(
-          kPriceInsightsChipElementId,
-          [](IconLabelBubbleView* icon) {
-            return views::InkDrop::Get(icon)
-                       ->GetInkDrop()
-                       ->GetTargetInkDropState() ==
-                   views::InkDropState::ACTIVATED;
+      PollUntil(
+          [&]() {
+            return page_actions::PageActionTestAccessor(
+                       browser(), kActionCommercePriceInsights)
+                       .HasIconHighlight() == expected_to_highlight;
           },
-          expected_to_highlight));
+          "Checking highlight state"));
 }
 
 // TODO(crbug.com/429709568): Disabled due to flakiness.
@@ -237,7 +229,7 @@ IN_PROC_BROWSER_TEST_F(PriceInsightsIconViewInteractiveTest,
   // Get the LifecycleUnit for the first tab (kShoppingTab).
   auto* lifecycle_unit =
       resource_coordinator::TabLifecycleUnitSource::GetTabLifecycleUnitExternal(
-          browser()->tab_strip_model()->GetWebContentsAt(0));
+          browser()->GetTabStripModel()->GetWebContentsAt(0));
 
   RunTestSequence(
       InstrumentTab(kShoppingTab),
@@ -321,17 +313,14 @@ class PriceInsightsIconViewEngagementTest
     return steps;
   }
 
-  void NavigateToAShoppingPage(bool expected_to_show_label) {
+  void NavigateToAShoppingPage() {
     mock_shopping_service_->SetResponseForGetProductInfoForUrl(product_info_);
     mock_shopping_service_->SetResponseForGetPriceInsightsInfoForUrl(
         price_insights_info_);
     RunTestSequence(
         NavigateWebContents(kShoppingTab,
                             embedded_test_server()->GetURL(kShoppingURL)),
-        WaitForPageActionChipVisible(),
-        CheckViewProperty(kPriceInsightsChipElementId,
-                          &IconLabelBubbleView::ShouldShowLabel,
-                          expected_to_show_label));
+        WaitForPageActionChipVisible());
   }
 
   void VerifyIconExpanded() {
@@ -343,7 +332,7 @@ class PriceInsightsIconViewEngagementTest
     histogram_tester.ExpectTotalCount("Commerce.PriceInsights.OmniboxIconShown",
                                       0);
 
-    NavigateToAShoppingPage(/*expected_to_show_label=*/true);
+    NavigateToAShoppingPage();
     histogram_tester.ExpectTotalCount("Commerce.PriceInsights.OmniboxIconShown",
                                       1);
     histogram_tester.ExpectBucketCount(
@@ -355,7 +344,7 @@ class PriceInsightsIconViewEngagementTest
     histogram_tester.ExpectBucketCount(
         "Commerce.PriceInsights.OmniboxIconShown", 1, 1);
 
-    NavigateToAShoppingPage(/*expected_to_show_label=*/true);
+    NavigateToAShoppingPage();
     histogram_tester.ExpectTotalCount("Commerce.PriceInsights.OmniboxIconShown",
                                       2);
     histogram_tester.ExpectBucketCount(

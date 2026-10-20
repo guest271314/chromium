@@ -10,7 +10,6 @@
 #include "base/files/file_util.h"
 #include "base/task/thread_pool.h"
 #include "base/threading/thread_restrictions.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/testing_profile.h"
 #include "content/public/test/browser_test.h"
@@ -43,7 +42,7 @@ class SvgIconTranscoderTest : public InProcessBrowserTest {
   apps::SvgIconTranscoder* svg_icon_transcoder() {
     if (!svg_icon_transcoder_) {
       svg_icon_transcoder_ =
-          std::make_unique<apps::SvgIconTranscoder>(browser()->profile());
+          std::make_unique<apps::SvgIconTranscoder>(browser()->GetProfile());
     }
     return svg_icon_transcoder_.get();
   }

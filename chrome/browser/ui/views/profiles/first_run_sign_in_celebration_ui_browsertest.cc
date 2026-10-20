@@ -9,7 +9,7 @@
 #include "base/strings/strcat.h"
 #include "base/test/scoped_feature_list.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/profiles/profile_picker.h"
 #include "chrome/browser/ui/test/test_browser_ui.h"
 #include "chrome/browser/ui/views/profiles/first_run_flow_controller.h"
@@ -17,12 +17,14 @@
 #include "chrome/browser/ui/views/profiles/profile_picker_view_test_utils.h"
 #include "chrome/browser/ui/views/profiles/profile_picker_web_contents_host.h"
 #include "chrome/browser/ui/views/profiles/profiles_pixel_test_utils.h"
+#include "chrome/browser/ui/webui/intro/intro_ui.h"
 #include "chrome/common/webui_url_constants.h"
+#include "chrome/test/base/in_process_browser_test.h"
 #include "components/signin/public/base/signin_switches.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/test_navigation_observer.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "ui/base/page_transition_types.h"
 #include "ui/views/view_tracker.h"
 #include "url/gurl.h"
 
@@ -36,6 +38,46 @@ const std::vector<PixelTestParam>& GetTestParams() {
   });
   return *kParams;
 }
+
+// Creates a step to represent the sign-in celebration screen.
+class SignInCelebrationStepControllerForTest
+    : public ProfileManagementStepController {
+ public:
+  explicit SignInCelebrationStepControllerForTest(
+      ProfilePickerWebContentsHost* host)
+      : ProfileManagementStepController(host) {}
+
+  ~SignInCelebrationStepControllerForTest() override = default;
+
+  void Show(StepSwitchFinishedCallback step_shown_callback,
+            bool reset_state) override {
+    host().ShowScreenInPickerContents(
+        GURL(chrome::kChromeUIIntroURL)
+            .Resolve(chrome::kChromeUIIntroSignInCelebrationSubPage),
+        base::BindOnce(
+            &SignInCelebrationStepControllerForTest::OnCelebrationLoaded,
+            weak_ptr_factory_.GetWeakPtr(), std::move(step_shown_callback)));
+  }
+
+  void OnCelebrationLoaded(StepSwitchFinishedCallback step_shown_callback) {
+    auto* intro_ui = host()
+                         .GetPickerContents()
+                         ->GetWebUI()
+                         ->GetController()
+                         ->GetAs<IntroUI>();
+    CHECK(intro_ui);
+    intro_ui->SetSignInCelebrationFinishedCallback(base::DoNothing());
+
+    if (!step_shown_callback->is_null()) {
+      std::move(step_shown_callback.value()).Run(/*success=*/true);
+    }
+  }
+
+ private:
+  base::WeakPtrFactory<SignInCelebrationStepControllerForTest>
+      weak_ptr_factory_{this};
+};
+
 }  // namespace
 
 class FirstRunSignInCelebrationPixelTest
@@ -45,7 +87,9 @@ class FirstRunSignInCelebrationPixelTest
   FirstRunSignInCelebrationPixelTest()
       : ProfilesPixelTestBaseT<UiBrowserTest>(GetParam()) {
     scoped_feature_list_.InitWithFeatureStates(
-        {{switches::kFirstRunDesktopRevamp, true},
+        {{switches::kFirstRunDesktopRefresh, true},
+         {switches::kFirstRunDesktopChoiceScreenRefresh, true},
+         {switches::kFirstRunDesktopRevamp, true},
          {switches::kDisableFirstRunAnimationsForTesting, true}});
   }
 
@@ -53,25 +97,16 @@ class FirstRunSignInCelebrationPixelTest
     SignInWithAccount();
 
     auto* view = new ProfileManagementStepTestView(
-        ProfilePicker::Params::ForFirstRun(browser()->profile()->GetPath(),
+        ProfilePicker::Params::ForFirstRun(browser()->GetProfile()->GetPath(),
                                            base::DoNothing()),
         ProfileManagementFlowController::Step::kIntro,
         /*step_controller_factory=*/
         base::BindRepeating([](ProfilePickerWebContentsHost* host) {
-          return CreateIntroStep(host, base::DoNothing(),
-                                 /*enable_animations=*/false);
+          return std::unique_ptr<ProfileManagementStepController>(
+              std::make_unique<SignInCelebrationStepControllerForTest>(host));
         }));
     profile_picker_view_tracker_.SetView(view);
     view->ShowAndWait();
-
-    GURL celebration_url =
-        GURL(chrome::kChromeUIIntroURL)
-            .Resolve(chrome::kChromeUIIntroSignInCelebrationSubPage);
-    content::TestNavigationObserver observer(view->GetPickerContents());
-    view->GetPickerContents()->GetController().LoadURL(
-        celebration_url, content::Referrer(), ui::PAGE_TRANSITION_AUTO_TOPLEVEL,
-        std::string());
-    observer.Wait();
   }
 
   bool VerifyUi() override {
@@ -79,8 +114,9 @@ class FirstRunSignInCelebrationPixelTest
     const testing::TestInfo* test_info =
         testing::UnitTest::GetInstance()->current_test_info();
     CHECK(test_info);
-    const std::string screenshot_name =
-        base::StrCat({test_info->test_suite_name(), "_", test_info->name()});
+    const std::string baseline = "8481376";
+    const std::string screenshot_name = base::StrCat(
+        {test_info->test_suite_name(), "_", test_info->name(), "_", baseline});
 
     return VerifyPixelUi(widget, "FirstRunSignInCelebrationPixelTest",
                          screenshot_name) != ui::test::ActionResult::kFailed;

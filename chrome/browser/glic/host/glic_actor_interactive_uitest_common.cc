@@ -26,15 +26,19 @@
 #include "chrome/browser/glic/host/context/glic_page_context_fetcher.h"
 #include "chrome/browser/glic/host/glic.mojom-shared.h"
 #include "chrome/browser/glic/public/features.h"
+#include "chrome/browser/glic/public/glic_enabling.h"
 #include "chrome/browser/glic/service/glic_instance_impl.h"
 #include "chrome/browser/glic/test_support/interactive_glic_test.h"
 #include "chrome/browser/glic/test_support/interactive_test_util.h"
 #include "chrome/common/actor/action_result.h"
 #include "chrome/common/chrome_features.h"
+#include "chrome/test/interaction/webcontents_interaction_test_util.h"
+#include "components/actor/core/actor_features.h"
 #include "components/actor/public/mojom/actor_types.mojom.h"
 #include "components/optimization_guide/core/optimization_guide_features.h"
 #include "components/optimization_guide/proto/features/actions_data.pb.h"
 #include "components/optimization_guide/proto/features/common_quality_data.pb.h"
+#include "components/sessions/core/session_id.h"
 #include "components/tabs/public/tab_interface.h"
 #include "content/public/test/browser_test_utils.h"
 #include "net/dns/mock_host_resolver.h"
@@ -88,8 +92,12 @@ GlicActorUiTest::GlicActorUiTest() {
       {// Increase timeout since tests are timing out with ASAN builds.
        {features::kGlicWebClientLoadTimes,
         {{features::kGlicMaxLoadingTimeMs.name, "30000"}}},
-       {features::kGlicActor,
-        {{features::kGlicActorPolicyControlExemption.name, "true"}}},
+       {features::kGlicActor, {}},
+       {features::kGlicActorPolicyControlExemption, {}},
+       // Decrease the timeout for observation delays to prevent test timeouts
+       // on slow builders.
+       {actor::kActorObservationDelay,
+        {{actor::kActorObservationDelayTimeout.name, "3s"}}},
        {features::kGlicActorToctouValidation, {}},
        {optimization_guide::features::
             kAnnotatedPageContentWithActionableElements,
@@ -101,13 +109,19 @@ GlicActorUiTest::GlicActorUiTest() {
 GlicActorUiTest::~GlicActorUiTest() = default;
 
 void GlicActorUiTest::SetUpOnMainThread() {
+  embedded_test_server()->ServeFilesFromSourceDirectory("components/test/data");
+  embedded_https_test_server().ServeFilesFromSourceDirectory(
+      "components/test/data");
   // Add rule for resolving cross origin host names.
   InteractiveGlicTest::SetUpOnMainThread();
   host_resolver()->AddRule("*", "127.0.0.1");
+  if (!embedded_https_test_server().Started()) {
+    ASSERT_TRUE(embedded_https_test_server().Start());
+  }
 }
 
 const actor::ActorTask* GlicActorUiTest::GetActorTask() {
-  auto* actor_service = actor::ActorKeyedService::Get(browser()->profile());
+  auto* actor_service = actor::ActorKeyedService::Get(browser()->GetProfile());
   return actor_service->GetTask(task_id_);
 }
 
@@ -279,7 +293,7 @@ MultiStep GlicActorUiTest::CreateTabAction(
     bool foreground,
     ExpectedErrorResult expected_result) {
   // Window_id is passed by value since tests currently only use one window so
-  // this allows using browser()->session_id(). Once tests are exercising
+  // this allows using browser()->GetSessionID(). Once tests are exercising
   // window creation though this will likely need to become a test-step
   // provided ref.
   auto create_tab_provider =
@@ -396,12 +410,15 @@ MultiStep GlicActorUiTest::StartActorTaskInNewTab(
     bool open_in_foreground) {
   return Steps(
       // clang-format off
-      InstrumentNextTab(new_tab_id),
+      Do([this, new_tab_id]() {
+        browser_test_impl().AddInstrumentedWebContents(
+            WebContentsInteractionTestUtil::ForNextTabInAnyBrowser(new_tab_id));
+      }),
       CreateTask(task_id_, ""),
       CreateTabAction(task_id_,
-                      browser()->session_id(),
+                      browser()->GetSessionID(),
                       /*foreground=*/open_in_foreground),
-      WaitForWebContentsReady(new_tab_id),
+      InAnyContext(WaitForWebContentsReady(new_tab_id)),
       InAnyContext(WithElement(new_tab_id, [this](ui::TrackedElement* el) {
         content::WebContents* new_tab_contents =
             AsInstrumentedWebContents(el)->web_contents();
@@ -412,7 +429,7 @@ MultiStep GlicActorUiTest::StartActorTaskInNewTab(
       NavigateAction(task_url,
                      task_id_,
                      tab_handle_),
-      WaitForWebContentsReady(new_tab_id, task_url)
+      InAnyContext(WaitForWebContentsReady(new_tab_id, task_url))
       // clang-format on
   );
 }
@@ -420,7 +437,9 @@ MultiStep GlicActorUiTest::StartActorTaskInNewTab(
 MultiStep GlicActorUiTest::RoundTrip(actor::TaskId& task_id) {
   return Steps(Do([this, &task_id]() {
     ASSERT_TRUE(content::ExecJs(GetGlicContents(), "true;"));
-    ASSERT_TRUE(content::ExecJs(GetGlicHost(task_id), "true;"));
+    if (!glic_service()->IsNoWebviewEnabled()) {
+      ASSERT_TRUE(content::ExecJs(GetGlicHost(task_id), "true;"));
+    }
   }));
 }
 
@@ -625,8 +644,8 @@ MultiStep GlicActorUiTest::InitializeWithOpenGlicWindow() {
 
   // Navigate to ensure the initial tab has some valid content loaded that the
   // Glic window can observe.
-  const GURL start_url =
-      embedded_test_server()->GetURL("/actor/blank.html?start");
+  const GURL start_url = embedded_https_test_server().GetURL(
+      "example.com", "/actor/blank.html?start");
 
   return Steps(InstrumentTab(kCurrentActiveTabId),
                NavigateWebContents(kCurrentActiveTabId, start_url),
@@ -637,35 +656,39 @@ MultiStep GlicActorUiTest::GetPageContextForActorTab() {
   return Steps(Do([&]() {
     base::RunLoop run_loop(base::RunLoop::Type::kNestableTasksAllowed);
 
-    auto options = mojom::GetTabContextOptions::New();
-    options->include_annotated_page_content = true;
-    options->include_viewport_screenshot = include_screenshot_;
+    auto options = mojom::TabContextOptions::New();
+    options->annotated_page_content = true;
+    options->viewport_screenshot = include_screenshot_;
     // TODO (crbug.com/458415347): Look into replacing GetContextFromActorForTab
     // with an AKS::RequestTabObservation
     EXPECT_NE(tab_handle_, TabHandle::Null())
         << "GetPageContextForActorTab must be called after starting a task in "
            "a tab, e.g. using StartActorTaskInNewTab";
-    GetGlicInstanceImpl()->host().sharing_manager().GetContextForActorFromTab(
-        tab_handle_, *options.get(),
-        base::BindLambdaForTesting([&](GlicGetContextResult result) {
-          if (result.has_value()) {
-            mojo_base::ProtoWrapper& serialized_apc =
-                *result.value()
-                     ->get_tab_context()
-                     ->annotated_page_data->annotated_page_content;
-            viewport_screenshot_ = std::move(
-                result.value()->get_tab_context()->viewport_screenshot);
-            annotated_page_content_ = std::make_unique<AnnotatedPageContent>(
-                serialized_apc.As<AnnotatedPageContent>().value());
-            actor::ActorTabData* tab_data =
-                actor::ActorTabData::From(tab_handle_.Get());
-            if (tab_data) {
-              tab_data->DidObserveContent(*annotated_page_content_,
-                                          actor::ApcSource::kActor);
-            }
-          }
-          run_loop.Quit();
-        }));
+    GetGlicInstanceImpl()
+        ->host()
+        .GetSharingManagerInternal()
+        .GetContextForActorFromTab(
+            tab_handle_, *options.get(),
+            base::BindLambdaForTesting([&](GlicGetContextResult result) {
+              if (result.has_value()) {
+                mojo_base::ProtoWrapper& serialized_apc =
+                    *result.value()
+                         ->get_tab_context()
+                         ->annotated_page_data->annotated_page_content;
+                viewport_screenshot_ = std::move(
+                    result.value()->get_tab_context()->viewport_screenshot);
+                annotated_page_content_ =
+                    std::make_unique<AnnotatedPageContent>(
+                        serialized_apc.As<AnnotatedPageContent>().value());
+                actor::ActorTabData* tab_data =
+                    actor::ActorTabData::From(tab_handle_.Get());
+                if (tab_data) {
+                  tab_data->DidObserveContent(*annotated_page_content_,
+                                              actor::ApcSource::kActor);
+                }
+              }
+              run_loop.Quit();
+            }));
 
     run_loop.Run();
   }));

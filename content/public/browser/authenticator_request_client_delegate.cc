@@ -22,7 +22,6 @@
 #include "device/fido/fido_discovery_base.h"
 #include "device/fido/fido_discovery_factory.h"
 #include "device/fido/fido_request_handler_base.h"
-#include "device/fido/public/cable_discovery_data.h"
 #include "device/fido/public/fido_constants.h"
 #include "device/fido/public/fido_types.h"
 #include "device/fido/public/public_key_credential_descriptor.h"
@@ -53,6 +52,10 @@ void AuthenticatorRequestClientDelegate::OnTransactionSuccessful(
     device::FidoRequestType request_type,
     device::AuthenticatorType authenticator_type) {}
 
+void AuthenticatorRequestClientDelegate::OnTransactionFailed(
+    std::optional<device::AuthenticatorType> authenticator_type,
+    InterestingFailureReason reason) {}
+
 void AuthenticatorRequestClientDelegate::RegisterActionCallbacks(
     base::OnceClosure cancel_callback,
     base::OnceClosure immediate_not_found_callback,
@@ -73,8 +76,8 @@ void AuthenticatorRequestClientDelegate::ConfigureDiscoveries(
     device::FidoRequestType request_type,
     std::optional<device::ResidentKeyRequirement> resident_key_requirement,
     device::UserVerificationRequirement user_verification_requirement,
+    bool cmtg_key_requested,
     std::optional<std::string_view> user_name,
-    base::span<const device::CableDiscoveryData> pairings_from_extension,
     bool is_enclave_authenticator_available,
     device::FidoDiscoveryFactory* fido_discovery_factory) {}
 

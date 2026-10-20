@@ -14,12 +14,11 @@
 #include "base/strings/utf_string_conversions.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/time/time.h"
-#if BUILDFLAG(IS_ANDROID)
 #include "chrome/browser/finds/android/finds_service_android.h"
-#endif
 #include "chrome/browser/finds/core/finds_features.h"
 #include "chrome/browser/finds/core/finds_metrics.h"
 #include "chrome/browser/finds/core/finds_pref_names.h"
+#include "chrome/browser/finds/core/finds_tab_helper.h"
 #include "chrome/browser/finds/core/finds_utils.h"
 #include "chrome/browser/notifications/scheduler/public/client_overview.h"
 #include "chrome/browser/notifications/scheduler/public/notification_data.h"
@@ -31,7 +30,7 @@
 #include "chrome/browser/optimization_guide/optimization_guide_keyed_service.h"
 #include "chrome/grit/generated_resources.h"
 #include "components/history/core/browser/history_service.h"
-#include "components/history/core/browser/history_types.h"
+#include "components/optimization_guide/core/model_quality/model_quality_log_entry.h"
 #include "components/optimization_guide/proto/features/finds.pb.h"
 #include "components/prefs/pref_registry_simple.h"
 #include "components/prefs/pref_service.h"
@@ -40,6 +39,7 @@
 #include "components/sync/service/sync_service.h"
 #include "components/sync/service/sync_user_settings.h"
 #include "components/unified_consent/pref_names.h"
+#include "content/public/browser/web_contents.h"
 #include "ui/base/l10n/l10n_util.h"
 
 using SuggestionTheme =
@@ -189,8 +189,11 @@ notifications::NotificationData GetNotificationData(
 
 void RecordFindsResultAndRunCallback(
     base::OnceCallback<void(FindsService::Result)> callback,
-    FindsService::Result result) {
+    FindsService::Result result,
+    base::TimeTicks start_time) {
   base::UmaHistogramEnumeration("Finds.Result", result.status);
+  base::UmaHistogramTimes("Finds.ExecutionTime",
+                          base::TimeTicks::Now() - start_time);
   if (callback) {
     std::move(callback).Run(std::move(result));
   }
@@ -289,18 +292,23 @@ void FindsService::MaybeDeleteNotificationsOnPermissionLoss() {
 
 void FindsService::ExecuteModelAndScheduleNotification(
     base::OnceCallback<void(Result)> callback) {
+  base::TimeTicks start_time = base::TimeTicks::Now();
   if (!IsAllowedByEnterprisePolicy(pref_service_)) {
     RecordFindsResultAndRunCallback(
-        std::move(callback), {Result::Status::kDisabledByEnterprisePolicy,
-                              "Error: Feature disabled by enterprise policy."});
+        std::move(callback),
+        {Result::Status::kDisabledByEnterprisePolicy,
+         "Error: Feature disabled by enterprise policy."},
+        start_time);
     return;
   }
 
   if (!IsHistorySyncAndMsbbEnabled(sync_service_, pref_service_)) {
     RecordFindsResultAndRunCallback(
-        std::move(callback), {Result::Status::kDisabledByHistorySyncOrMsbb,
-                              "Error: Feature disabled because History Sync or "
-                              "MSBB is not enabled."});
+        std::move(callback),
+        {Result::Status::kDisabledByHistorySyncOrMsbb,
+         "Error: Feature disabled because History Sync or "
+         "MSBB is not enabled."},
+        start_time);
     return;
   }
 
@@ -308,21 +316,24 @@ void FindsService::ExecuteModelAndScheduleNotification(
     RecordFindsResultAndRunCallback(
         std::move(callback),
         {Result::Status::kModelExecutionDisabledByParam,
-         "Error: Model execution disabled by feature parameter."});
+         "Error: Model execution disabled by feature parameter."},
+        start_time);
     return;
   }
 
   if (!IsModelExecutionCooldownPassed(pref_service_)) {
     RecordFindsResultAndRunCallback(std::move(callback),
                                     {Result::Status::kModelExecutionOnCooldown,
-                                     "Error: Model execution is on cooldown."});
+                                     "Error: Model execution is on cooldown."},
+                                    start_time);
     return;
   }
 
   if (!history_service_) {
     RecordFindsResultAndRunCallback(std::move(callback),
                                     {Result::Status::kHistoryServiceUnavailable,
-                                     "Error: HistoryService not available."});
+                                     "Error: HistoryService not available."},
+                                    start_time);
     return;
   }
 
@@ -330,19 +341,21 @@ void FindsService::ExecuteModelAndScheduleNotification(
     RecordFindsResultAndRunCallback(
         std::move(callback),
         {Result::Status::kOptimizationGuideUnavailable,
-         "Error: OptimizationGuideKeyedService not available."});
+         "Error: OptimizationGuideKeyedService not available."},
+        start_time);
     return;
   }
 
   history::QueryOptions options;
-  options.begin_time =
-      base::Time::Now() - GetModelExecutionCooldownDurationTimeDelta();
+  options.begin_time = base::Time::Now() - GetHistoryTimeWindowTimeDelta();
   options.max_count = finds::features::kMaxHistoryEntries.Get();
+  options.restrict_to_synced_urls = true;
 
   history_service_->QueryHistory(
       std::u16string(), options,
       base::BindOnce(&FindsService::OnHistoryQueryComplete,
-                     weak_ptr_factory_.GetWeakPtr(), std::move(callback)),
+                     weak_ptr_factory_.GetWeakPtr(), std::move(callback),
+                     start_time),
       &history_task_tracker_);
 }
 
@@ -356,16 +369,46 @@ void FindsService::RecordThemeURLVisited(
     return;
   }
 
-  // Increment the theme url visit count for the given theme type and notify
-  // observers if the threshold is met.
+  // Increment the theme url visit count for the given theme type and record
+  // if theme url visit count opt in criteria has been fulfilled.
   theme_url_visit_count_[theme_type]++;
   if (theme_url_visit_count_[theme_type] >=
       finds::features::kThemeUrlVisitCountForOptIn.Get()) {
-    NotifyOptInCriteriaFulfilled(FindsOptInTriggerReason::kThemeUrlVisitCount);
+    theme_opt_in_criteria_fulfilled_ = true;
 
     // Reset the count for the theme type.
     theme_url_visit_count_[theme_type] = 0;
   }
+}
+
+void FindsService::RecordNTPVisited() {
+  if (!IsFindsFeatureAllowedForUser()) {
+    return;
+  }
+
+  if (theme_opt_in_criteria_fulfilled_) {
+    NotifyOptInCriteriaFulfilled(FindsOptInTriggerReason::kThemeUrlVisitCount);
+    theme_opt_in_criteria_fulfilled_ = false;
+  }
+}
+
+bool FindsService::RecordRecentSearchSuggestionClickAndCheckThresholdReached() {
+  omnibox_recent_search_suggestion_click_count_++;
+  if (omnibox_recent_search_suggestion_click_count_ >=
+      features::kOmniboxRecentSearchSuggestionCountThreshold.Get()) {
+    omnibox_recent_search_suggestion_click_count_ = 0;
+    return true;
+  }
+  return false;
+}
+
+void FindsService::RecentSearchSuggestionCountForOptInReached() {
+  if (!IsFindsFeatureAllowedForUser()) {
+    return;
+  }
+
+  NotifyOptInCriteriaFulfilled(
+      FindsOptInTriggerReason::kOmniboxRecentSearchSuggestionCount);
 }
 
 void FindsService::SRPBackNavigationCountForOptInReached() {
@@ -395,43 +438,25 @@ void FindsService::MaybeRescheduleNotifications() {
                      weak_ptr_factory_.GetWeakPtr()));
 }
 
-bool FindsService::ScheduleNotificationForInternalsPage() {
-  // Mock a suggestion model response and schedule notification.
-  optimization_guide::proto::FindsSuggestionResponse::SuggestionTheme theme;
-  theme.set_theme_type(optimization_guide::proto::FindsSuggestionResponse::
-                           SuggestionTheme::SHOPPING);
-  theme.set_theme_title("Internals Test Theme");
-
-  auto* suggestion = theme.add_theme_suggested_contents();
-  suggestion->set_content_title("Test Notification");
-  suggestion->set_content_description(
-      "This is a test notification from the internals page.");
-  suggestion->set_content_url("https://www.google.com");
-
-  return ScheduleNotificationWithModelResult(theme);
-}
-
 void FindsService::CheckFindsNotificationsEnabledAndMaybeExecute() {
-#if BUILDFLAG(IS_ANDROID)
   if (!IsFindsFeatureAllowedForUser()) {
     return;
   }
   FindsServiceAndroid::CheckAreFindsNotificationsEnabledAndroid(
       base::BindOnce(&FindsService::OnCheckAreFindsNotificationsEnabled,
                      weak_ptr_factory_.GetWeakPtr()));
-#else
-  ExecuteModelAndScheduleNotification(base::DoNothing());
-#endif
 }
 
 void FindsService::OnHistoryQueryComplete(
     base::OnceCallback<void(Result)> callback,
+    base::TimeTicks start_time,
     history::QueryResults results) {
   if (!opt_guide_service_) {
     RecordFindsResultAndRunCallback(
         std::move(callback),
         {Result::Status::kOptimizationGuideUnavailable,
-         "Error: OptimizationGuideKeyedService not available."});
+         "Error: OptimizationGuideKeyedService not available."},
+        start_time);
     return;
   }
 
@@ -439,7 +464,8 @@ void FindsService::OnHistoryQueryComplete(
     RecordFindsResultAndRunCallback(
         std::move(callback),
         {Result::Status::kEmptyHistory,
-         "Error: No history available to suggest themes."});
+         "Error: No history available to suggest themes."},
+        start_time);
     return;
   }
 
@@ -453,13 +479,17 @@ void FindsService::OnHistoryQueryComplete(
   }
 
   opt_guide_service_->ExecuteModel(
-      optimization_guide::ModelBasedCapabilityKey::kFinds, request, {},
+      optimization_guide::ModelBasedCapabilityKey::kFinds, request,
+      optimization_guide::ModelExecutionOptions{
+          .execution_timeout = features::kModelExecutionRequestTimeout.Get()},
       base::BindOnce(&FindsService::OnModelExecutionComplete,
-                     weak_ptr_factory_.GetWeakPtr(), std::move(callback)));
+                     weak_ptr_factory_.GetWeakPtr(), std::move(callback),
+                     start_time));
 }
 
 void FindsService::OnModelExecutionComplete(
     base::OnceCallback<void(Result)> callback,
+    base::TimeTicks start_time,
     optimization_guide::OptimizationGuideModelExecutionResult result,
     std::unique_ptr<optimization_guide::ModelQualityLogEntry> log_entry) {
   if (!result.response.has_value()) {
@@ -468,7 +498,7 @@ void FindsService::OnModelExecutionComplete(
                            static_cast<int>(result.response.error().error()));
     RecordFindsResultAndRunCallback(
         std::move(callback),
-        {Result::Status::kModelExecutionFailed, error_message});
+        {Result::Status::kModelExecutionFailed, error_message}, start_time);
     return;
   }
 
@@ -479,14 +509,15 @@ void FindsService::OnModelExecutionComplete(
     RecordFindsResultAndRunCallback(
         std::move(callback),
         {Result::Status::kResponseParsingFailed,
-         "Model execution successful, but failed to parse response."});
+         "Model execution successful, but failed to parse response."},
+        start_time);
     return;
   }
 
   if (response->suggested_themes().empty()) {
     RecordFindsResultAndRunCallback(
         std::move(callback),
-        {Result::Status::kNoThemesFound, "No themes found."});
+        {Result::Status::kNoThemesFound, "No themes found."}, start_time);
     return;
   }
 
@@ -496,7 +527,8 @@ void FindsService::OnModelExecutionComplete(
     RecordFindsResultAndRunCallback(
         std::move(callback),
         {Result::Status::kNoNonCooldownThemesFound,
-         "No themes found that passed cooldown criteria."});
+         "No themes found that passed cooldown criteria."},
+        start_time);
     return;
   }
 
@@ -504,23 +536,28 @@ void FindsService::OnModelExecutionComplete(
   // GetHighestScoredThemeIfPossible.
   if (best_theme->theme_suggested_contents().empty()) {
     RecordFindsResultAndRunCallback(
-        std::move(callback), {Result::Status::kNoSuggestionsForTheme,
-                              "No suggestions available for this theme."});
+        std::move(callback),
+        {Result::Status::kNoSuggestionsForTheme,
+         "No suggestions available for this theme."},
+        start_time);
     return;
   }
 
   bool schedule_success = ScheduleNotificationWithModelResult(*best_theme);
   if (!schedule_success) {
     RecordFindsResultAndRunCallback(
-        std::move(callback), {Result::Status::kFailedToScheduleNotification,
-                              "Could not schedule notification."});
+        std::move(callback),
+        {Result::Status::kFailedToScheduleNotification,
+         "Could not schedule notification."},
+        start_time);
     return;
   }
 
   RecordFindsResultAndRunCallback(
       std::move(callback),
       {Result::Status::kSuccess,
-       FindsSuggestionResponseToHumanReadableString(*response)});
+       FindsSuggestionResponseToHumanReadableString(*response)},
+      start_time);
 }
 
 void FindsService::OnGetClientOverview(notifications::ClientOverview overview) {
@@ -529,8 +566,9 @@ void FindsService::OnGetClientOverview(notifications::ClientOverview overview) {
   }
 
   // There should only ever be 1 notification scheduled at a time for finds.
-  DCHECK_EQ(overview.scheduled_notifications.size(), 1u);
-  const auto* entry = overview.scheduled_notifications[0];
+  CHECK_EQ(overview.scheduled_notifications.size(), 1u,
+           base::NotFatalUntil::M162);
+  const auto* entry = overview.scheduled_notifications[0].get();
   notifications::NotificationData data = entry->notification_data;
   notifications::ScheduleParams params = GetCurrentScheduleParams();
 

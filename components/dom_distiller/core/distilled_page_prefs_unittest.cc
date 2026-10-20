@@ -7,9 +7,7 @@
 #include <memory>
 
 #include "base/run_loop.h"
-#include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
-#include "components/dom_distiller/core/dom_distiller_features.h"
 #include "components/sync_preferences/testing_pref_service_syncable.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -456,25 +454,6 @@ TEST_F(DistilledPagePrefsTest, ClearPrefs) {
 }
 
 #if BUILDFLAG(IS_ANDROID)
-class DistilledPagePrefsFeatureTest
-    : public DistilledPagePrefsTest,
-      public ::testing::WithParamInterface<bool> {
- public:
-  void SetUp() override {
-    if (GetParam()) {
-      std::vector<base::test::FeatureRef> enabled_features = {
-          kReaderModeDistillInApp, kReaderModeSupportNewFonts};
-      scoped_feature_list_.InitWithFeatures(enabled_features, {});
-    } else {
-      scoped_feature_list_.InitAndDisableFeature(kReaderModeDistillInApp);
-    }
-    DistilledPagePrefsTest::SetUp();
-  }
-
- private:
-  base::test::ScopedFeatureList scoped_feature_list_;
-};
-
 TEST_F(DistilledPagePrefsTest, SetDefaultFontScalingNoUserPref) {
   TestingObserver obs;
   distilled_page_prefs_->AddObserver(&obs);
@@ -541,16 +520,12 @@ TEST_F(DistilledPagePrefsTest,
   distilled_page_prefs_->RemoveObserver(&obs);
 }
 
-TEST_P(DistilledPagePrefsFeatureTest, TestClampDefaultFontScaling) {
+TEST_F(DistilledPagePrefsTest, TestClampDefaultFontScaling) {
   TestingObserver obs;
   distilled_page_prefs_->AddObserver(&obs);
 
-  float min_font_scale = kMinFontScaleAndroidCCT;
-  float max_font_scale = kMaxFontScaleAndroidCCT;
-  if (GetParam()) {
-    min_font_scale = kMinFontScaleAndroidInApp;
-    max_font_scale = kMaxFontScaleAndroidInApp;
-  }
+  float min_font_scale = kMinFontScaleAndroid;
+  float max_font_scale = kMaxFontScaleAndroid;
 
   // Test clamping for values smaller than the minimum.
   distilled_page_prefs_->SetDefaultFontScaling(min_font_scale - 0.5f);
@@ -572,34 +547,22 @@ TEST_P(DistilledPagePrefsFeatureTest, TestClampDefaultFontScaling) {
 
   distilled_page_prefs_->RemoveObserver(&obs);
 }
+#endif
 
-TEST_P(DistilledPagePrefsFeatureTest, TestIsUserPrefFontAvailable) {
+TEST_F(DistilledPagePrefsTest, TestingOnChangeFontLexend) {
   TestingObserver obs;
   distilled_page_prefs_->AddObserver(&obs);
 
-  // Test availability of Lexend font based on feature flag.
   distilled_page_prefs_->SetFontFamily(mojom::FontFamily::kLexend);
   base::RunLoop run_loop1;
   base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
       FROM_HERE, run_loop1.QuitClosure());
   run_loop1.Run();
 
-  if (GetParam()) {
-    // Feature enabled: Lexend should be available.
-    EXPECT_EQ(mojom::FontFamily::kLexend, obs.GetFontFamily());
-    EXPECT_EQ(mojom::FontFamily::kLexend,
-              distilled_page_prefs_->GetFontFamily());
-  } else {
-    // Feature disabled: Poppins should fallback to Sans Serif.
-    EXPECT_EQ(mojom::FontFamily::kSansSerif, obs.GetFontFamily());
-    EXPECT_EQ(mojom::FontFamily::kSansSerif,
-              distilled_page_prefs_->GetFontFamily());
-  }
+  EXPECT_EQ(mojom::FontFamily::kLexend, obs.GetFontFamily());
+  EXPECT_EQ(mojom::FontFamily::kLexend, distilled_page_prefs_->GetFontFamily());
 
   distilled_page_prefs_->RemoveObserver(&obs);
 }
-
-INSTANTIATE_TEST_SUITE_P(All, DistilledPagePrefsFeatureTest, ::testing::Bool());
-#endif
 
 }  // namespace dom_distiller

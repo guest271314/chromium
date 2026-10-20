@@ -43,6 +43,8 @@ component("network_service") {
     "data_remover_util.h",
     "device_bound_session_manager.cc",
     "device_bound_session_manager.h",
+    "device_bound_session_service_delegate.cc",
+    "device_bound_session_service_delegate.h",
     "devtools_durable_msg.cc",
     "devtools_durable_msg.h",
     "devtools_durable_msg_accounting_delegate.h",
@@ -94,6 +96,8 @@ component("network_service") {
     "local_network_access_checker.h",
     "local_network_access_url_loader_interceptor.cc",
     "local_network_access_url_loader_interceptor.h",
+    "logical_invalidation_store.cc",
+    "logical_invalidation_store.h",
     "mojo_host_resolver_impl.cc",
     "mojo_host_resolver_impl.h",
     "multiple_durable_message_writer_impl.cc",
@@ -119,13 +123,6 @@ component("network_service") {
     "oblivious_http_request_handler.cc",
     "oblivious_http_request_handler.h",
     "observer_wrapper.h",
-    "orb/orb_api.cc",
-    "orb/orb_impl.cc",
-    "orb/orb_impl.h",
-    "orb/orb_mimetypes.cc",
-    "orb/orb_mimetypes.h",
-    "orb/orb_sniffers.cc",
-    "orb/orb_sniffers.h",
     "partial_decoder.cc",
     "partial_decoder.h",
     "pending_callback_chain.cc",
@@ -142,6 +139,8 @@ component("network_service") {
     "prefetch_url_loader_client.h",
     "proxy_auto_config_library.cc",
     "proxy_auto_config_library.h",
+    "proxy_checking_host_resolver_request.cc",
+    "proxy_checking_host_resolver_request.h",
     "proxy_config_service_mojo.cc",
     "proxy_config_service_mojo.h",
     "proxy_lookup_request.cc",
@@ -158,8 +157,6 @@ component("network_service") {
     "proxy_resolving_socket_mojo.h",
     "proxy_service_mojo.cc",
     "proxy_service_mojo.h",
-    "request_header_to_enum.cc",
-    "request_header_to_enum.h",
     "resolve_host_request.cc",
     "resolve_host_request.h",
     "resource_scheduler/resource_scheduler.cc",
@@ -172,10 +169,6 @@ component("network_service") {
     "restricted_cookie_manager.h",
     "restricted_udp_socket.cc",
     "restricted_udp_socket.h",
-    "scheduler/network_service_task_queues.cc",
-    "scheduler/network_service_task_queues.h",
-    "scheduler/network_service_task_scheduler.cc",
-    "scheduler/network_service_task_scheduler.h",
     "sec_header_helpers.cc",
     "sec_header_helpers.h",
     "session_cleanup_cookie_store.cc",
@@ -295,6 +288,13 @@ component("network_service") {
     ]
   }
 
+  if (enable_disk_cache_sql_backend) {
+    sources += [
+      "disk_cache/mojo_shared_http_cache_client_remote.cc",
+      "disk_cache/mojo_shared_http_cache_client_remote.h",
+    ]
+  }
+
   if (enable_mdns) {
     sources += [
       "mdns_responder.cc",
@@ -337,8 +337,17 @@ component("network_service") {
     ]
   }
 
+  if (is_mac) {
+    sources += [
+      "mac_system_proxy_resolver_mojo.cc",
+      "mac_system_proxy_resolver_mojo.h",
+    ]
+  }
+
   if (is_linux) {
     sources += [
+      "linux_system_proxy_resolver_mojo.cc",
+      "linux_system_proxy_resolver_mojo.h",
       "network_change_notifier_passive_factory.cc",
       "network_change_notifier_passive_factory.h",
     ]
@@ -347,8 +356,6 @@ component("network_service") {
   if (!is_fuchsia) {
     sources += [ "pervasive_resources/shared_resource_checker_patterns.h" ]
   }
-
-  configs += [ "//build/config/compiler:wexit_time_destructors" ]
 
   deps = [
     "//base",
@@ -360,7 +367,7 @@ component("network_service") {
     "//components/enterprise/buildflags",
     "//components/network_session_configurator/browser",
     "//components/network_session_configurator/common",
-    "//components/os_crypt/async/common",
+    "//components/os_crypt/common",
     "//components/prefs",
     "//components/unexportable_keys/mojom:mojo_service",
     "//components/url_matcher",
@@ -369,6 +376,7 @@ component("network_service") {
     "//components/vrp_flags:buildflags",
     "//components/web_package",
     "//components/webrtc:fake_ssl_socket",
+    "//components/webrtc:features",
     "//crypto",
     "//mojo/public/cpp/base",
     "//mojo/public/cpp/base:protobuf_support",
@@ -376,15 +384,11 @@ component("network_service") {
     "//mojo/public/cpp/system",
     "//net",
     "//net:extras",
-    "//services/network/ad_auction",
-    "//services/network/attribution",
-    "//services/network/first_party_sets:first_party_sets_manager",
     "//services/network/public/cpp",
     "//services/network/public/cpp:crash_keys",
     "//services/network/public/cpp/cert_verifier:mojo_cert_verifier",
     "//services/network/public/mojom",
     "//services/network/public/proto",
-    "//services/network/shared_storage",
     "//services/network/trust_tokens",
     "//services/service_manager/public/cpp",
     "//services/service_manager/public/mojom",
@@ -456,7 +460,6 @@ if (is_linux || is_chromeos) {
       "//sandbox/linux:sandbox_services",
       "//sandbox/policy",
     ]
-    configs += [ "//build/config/compiler:wexit_time_destructors" ]
   }
 }
 
@@ -467,7 +470,6 @@ source_set("tests") {
     "accept_ch_frame_interceptor_unittest.cc",
     "chunked_data_pipe_upload_data_stream_unittest.cc",
     "connection_change_observer_unittest.cc",
-    "cookie_access_delegate_impl_unittest.cc",
     "cookie_manager_unittest.cc",
     "cookie_settings_unittest.cc",
     "cors/cors_url_loader_factory_unittest.cc",
@@ -495,6 +497,7 @@ source_set("tests") {
     "keepalive_statistics_recorder_unittest.cc",
     "known_legacy_scope_domains_delegate_unittest.cc",
     "local_network_access_checker_unittest.cc",
+    "logical_invalidation_store_unittest.cc",
     "mojo_host_resolver_impl_unittest.cc",
     "multiple_durable_message_writer_impl_unittest.cc",
     "net_log_proxy_sink_unittest.cc",
@@ -505,9 +508,6 @@ source_set("tests") {
     "network_service_proxy_delegate_unittest.cc",
     "network_service_unittest.cc",
     "oblivious_http_request_handler_unittest.cc",
-    "orb/orb_impl_unittest.cc",
-    "orb/orb_mimetypes_unittest.cc",
-    "orb/orb_sniffers_unittest.cc",
     "partial_decoder_unittest.cc",
     "pending_callback_chain_unittest.cc",
     "prefetch_cache_unittest.cc",
@@ -520,8 +520,6 @@ source_set("tests") {
     "resource_scheduler/resource_scheduler_params_manager_unittest.cc",
     "resource_scheduler/resource_scheduler_unittest.cc",
     "restricted_cookie_manager_unittest.cc",
-    "scheduler/network_service_task_queues_unittest.cc",
-    "scheduler/network_service_task_scheduler_unittest.cc",
     "sec_header_helpers_unittest.cc",
     "session_cleanup_cookie_store_unittest.cc",
     "shared_dictionary/shared_dictionary_data_pipe_writer_unittest.cc",
@@ -562,17 +560,16 @@ source_set("tests") {
     ]
   }
 
+  if (enable_disk_cache_sql_backend) {
+    sources += [ "disk_cache/mojo_shared_http_cache_client_remote_unittest.cc" ]
+  }
+
   if (enable_mdns) {
     sources += [ "mdns_responder_unittest.cc" ]
   }
 
   if (enable_websockets) {
     sources += [
-      "proxy_resolver_factory_mojo_unittest.cc",
-      "proxy_service_mojo_unittest.cc",
-      "test_mojo_proxy_resolver_factory.cc",
-      "test_mojo_proxy_resolver_factory.h",
-      "url_request_context_builder_mojo_unittest.cc",
       "websocket_factory_unittest.cc",
       "websocket_interceptor_unittest.cc",
       "websocket_throttler_unittest.cc",
@@ -581,7 +578,7 @@ source_set("tests") {
     data = [
       "//net/tools/testserver/",
       "//services/test/data/",
-      "//third_party/pywebsocket3/src/mod_pywebsocket/",
+      "//third_party/pywebsocket3/src/pywebsocket3/",
     ]
   }
 
@@ -598,8 +595,19 @@ source_set("tests") {
     ]
   }
 
+  if (is_mac) {
+    sources += [ "mac_system_proxy_resolver_mojo_unittest.cc" ]
+  }
+
+  if (is_linux) {
+    sources += [ "linux_system_proxy_resolver_mojo_unittest.cc" ]
+  }
+
   if (enable_device_bound_sessions) {
-    sources += [ "device_bound_session_manager_unittest.cc" ]
+    sources += [
+      "device_bound_session_manager_unittest.cc",
+      "device_bound_session_service_delegate_unittest.cc",
+    ]
   }
 
   if (!is_fuchsia) {
@@ -610,15 +618,17 @@ source_set("tests") {
     ":network_service",
     ":test_support",
     "//base",
+    "//base/test:test_support",
     "//components/enterprise/buildflags",
     "//components/network_session_configurator/browser",
-    "//components/os_crypt/async/browser:test_support",
+    "//components/os_crypt/browser:test_support",
     "//components/prefs:test_support",
     "//components/variations:test_support",
     "//components/variations/net",
     "//components/vrp_flags:buildflags",
     "//components/web_package",
     "//components/webrtc:fake_ssl_socket",
+    "//components/webrtc:features",
     "//crypto",
     "//crypto:test_support",
     "//mojo/public/cpp/bindings",
@@ -629,17 +639,10 @@ source_set("tests") {
     "//net:quic_test_tools",
     "//net:simple_quic_tools",
     "//net:test_support",
-    "//services/network/attribution",
-    "//services/network/attribution:tests",
-    "//services/network/first_party_sets:first_party_sets_manager",
-    "//services/network/first_party_sets:tests",
     "//services/network/public/cpp",
     "//services/network/public/cpp:buildflags",
     "//services/network/public/mojom",
     "//services/network/public/proto",
-    "//services/network/shared_storage",
-    "//services/network/shared_storage:test_support",
-    "//services/network/shared_storage:tests",
     "//services/network/trust_tokens",
     "//services/network/trust_tokens:tests",
     "//services/service_manager/public/cpp",
@@ -647,6 +650,7 @@ source_set("tests") {
     "//sql:test_support",
     "//testing/gmock",
     "//testing/gtest",
+    "//third_party/abseil-cpp:absl",
   ]
 
   if (is_ct_supported) {
@@ -659,6 +663,13 @@ source_set("tests") {
   }
 
   if (use_blink) {
+    sources += [
+      "proxy_resolver_factory_mojo_unittest.cc",
+      "proxy_service_mojo_unittest.cc",
+      "test_mojo_proxy_resolver_factory.cc",
+      "test_mojo_proxy_resolver_factory.h",
+      "url_request_context_builder_mojo_unittest.cc",
+    ]
     deps += [
       "//services/proxy_resolver:lib",
       "//third_party/blink/public/common:preloading_headers",
@@ -757,10 +768,6 @@ source_set("test_support") {
     "//net:test_support",
     "//testing/gtest",
   ]
-
-  # TODO(crbug.com/40031409): Fix code that adds exit-time destructors and
-  # enable the diagnostic by removing this line.
-  configs += [ "//build/config/compiler:no_exit_time_destructors" ]
 }
 
 fuzzer_test("network_content_security_policy_fuzzer") {

@@ -15,10 +15,12 @@
 #include "base/test/task_environment.h"
 #include "chromeos/components/kiosk/kiosk_test_utils.h"
 #include "components/metrics/metrics_state_manager.h"
+#include "components/metrics/startup_visibility.h"
 #include "components/metrics/test/test_enabled_state_provider.h"
 #include "components/prefs/pref_registry_simple.h"
 #include "components/prefs/pref_service.h"
 #include "components/prefs/testing_pref_service.h"
+#include "components/session_manager/test/user_session_test_environment.h"
 #include "components/signin/public/base/consent_level.h"
 #include "components/signin/public/identity_manager/account_capabilities.h"
 #include "components/signin/public/identity_manager/account_capabilities_test_mutator.h"
@@ -26,8 +28,6 @@
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "components/signin/public/identity_manager/identity_test_environment.h"
 #include "components/signin/public/identity_manager/identity_test_utils.h"
-#include "components/user_manager/fake_user_manager.h"
-#include "components/user_manager/scoped_user_manager.h"
 #include "components/variations/service/test_variations_service.h"
 #include "components/variations/variations_switches.h"
 #include "crypto/hash.h"
@@ -339,7 +339,7 @@ TEST_F(
 TEST_F(FeatureAccessCheckerTest, MantaAccountCapabilitiesCheckPass) {
   AccountInfo account = identity_test_environment_.MakePrimaryAccountAvailable(
       "someone@gmail.com", signin::ConsentLevel::kSignin);
-  AccountCapabilitiesTestMutator mutator(&account.capabilities);
+  AccountCapabilitiesTestMutator mutator(&account);
   mutator.set_can_use_manta_service(true);
   signin::UpdateAccountInfoForAccount(
       identity_test_environment_.identity_manager(), account);
@@ -359,7 +359,7 @@ TEST_F(FeatureAccessCheckerTest, MantaAccountCapabilitiesCheckPass) {
 TEST_F(FeatureAccessCheckerTest, MantaAccountCapabilitiesCheckFailIfFalse) {
   AccountInfo account = identity_test_environment_.MakePrimaryAccountAvailable(
       "someone@gmail.com", signin::ConsentLevel::kSignin);
-  AccountCapabilitiesTestMutator mutator(&account.capabilities);
+  AccountCapabilitiesTestMutator mutator(&account);
   mutator.set_can_use_manta_service(false);
   FeatureAccessConfig config;
   config.capability_callback =
@@ -394,7 +394,7 @@ TEST_F(FeatureAccessCheckerTest,
        MantaAccountCapabilitiesCheckFailIfNoIdentityService) {
   AccountInfo account = identity_test_environment_.MakePrimaryAccountAvailable(
       "someone@gmail.com", signin::ConsentLevel::kSignin);
-  AccountCapabilitiesTestMutator mutator(&account.capabilities);
+  AccountCapabilitiesTestMutator mutator(&account);
   mutator.set_can_use_manta_service(true);
   signin::UpdateAccountInfoForAccount(
       identity_test_environment_.identity_manager(), account);
@@ -504,9 +504,10 @@ TEST_F(FeatureAccessCheckerTest, KioskModeCheckPassIfNotInKioskMode) {
 TEST_F(FeatureAccessCheckerTest, KioskModeCheckFailIfInKioskMode) {
   FeatureAccessConfig config;
   config.disabled_in_kiosk_mode = true;
-  user_manager::UserManager::RegisterPrefs(pref_service_.registry());
-  user_manager::ScopedUserManager scoped_user_manager(
-      std::make_unique<user_manager::FakeUserManager>(&pref_service_));
+  ash::test::UserSessionTestEnvironment::RegisterLocalStatePrefs(
+      pref_service_.registry());
+  ash::test::UserSessionTestEnvironment user_session_test_environment(
+      &pref_service_);
 
   chromeos::SetUpFakeChromeAppKioskSession();
 

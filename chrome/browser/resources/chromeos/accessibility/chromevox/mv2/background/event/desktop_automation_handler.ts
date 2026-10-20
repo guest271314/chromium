@@ -241,7 +241,10 @@ export class DesktopAutomationHandler extends DesktopAutomationInterface {
     // Whenever chromevox is running together with dictation, we want to
     // announce the hints provided by the Dictation feature in a different voice
     // to differentiate them from regular UI text.
-    if (node.className === 'DictationHintView') {
+    // We also check that the node is not in a web area to prevent web content
+    // from spoofing this voice by setting class="DictationHintView".
+    if (node.className === 'DictationHintView' && node.root &&
+        node.root.role !== RoleType.ROOT_WEB_AREA) {
       output.withInitialSpeechProperties(Personality.DICTATION_HINT);
     }
     output.withSpeechCategory(TtsCategory.LIVE)
@@ -672,6 +675,10 @@ export class DesktopAutomationHandler extends DesktopAutomationInterface {
   }
 
   onSelection(evt: ChromeVoxEvent): void {
+    if (evt.target.selected === false) {
+      return;
+    }
+
     // Invalidate any previous editable text handler state since some nodes,
     // like menuitems, can receive selection while focus remains on an
     // editable leading to braille output routing to the editable.
@@ -759,7 +766,8 @@ export class DesktopAutomationHandler extends DesktopAutomationInterface {
           target.className === 'PopupRowView' ||
           target.className === 'PopupRowWithButtonView' ||
           target.className === 'PopupRowContentView' ||
-          target.className === 'PopupBnplFootnoteView') {
+          target.className === 'PopupBnplFootnoteView' ||
+          target.className === 'PopupNoticeView') {
         override = true;
       }
 
@@ -771,6 +779,12 @@ export class DesktopAutomationHandler extends DesktopAutomationInterface {
       }
 
       if (override || (focus && AutomationUtil.isDescendantOf(target, focus))) {
+        // Avoid duplicate announcements when a prior focus event (e.g. from
+        // SetPopupFocusOverride) already moved ChromeVoxRange to |target|.
+        if (ChromeVoxRange.current?.equalsWithoutRecovery(
+                CursorRange.fromNode(target))) {
+          return;
+        }
         this.onEventDefault(evt);
       }
     });

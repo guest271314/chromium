@@ -37,7 +37,10 @@ const CSSPropertyID kVisitedPropertySamples[] = {
     CSSPropertyID::kInternalVisitedCaretColor,
     CSSPropertyID::kInternalVisitedColumnRuleColor,
     CSSPropertyID::kInternalVisitedFill,
+    CSSPropertyID::kInternalVisitedFloodColor,
+    CSSPropertyID::kInternalVisitedLightingColor,
     CSSPropertyID::kInternalVisitedOutlineColor,
+    CSSPropertyID::kInternalVisitedStopColor,
     CSSPropertyID::kInternalVisitedStroke,
     CSSPropertyID::kInternalVisitedTextDecorationColor,
     CSSPropertyID::kInternalVisitedTextEmphasisColor,
@@ -65,7 +68,7 @@ class CascadeExpansionTest : public PageTestBase {
         result.GetMatchedProperties()[i], GetDocument(), i,
         [this, &ret](CascadePriority cascade_priority,
                      const AtomicString& name) {
-          ExpansionResult er(CustomProperty(name, GetDocument()));
+          ExpansionResult er(CustomProperty(&name, GetDocument()));
           er.priority = cascade_priority;
           ret.push_back(er);
         },

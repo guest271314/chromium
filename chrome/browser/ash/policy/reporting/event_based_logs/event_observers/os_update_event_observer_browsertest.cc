@@ -10,19 +10,23 @@
 #include "base/memory/raw_ptr.h"
 #include "chrome/browser/ash/login/test/login_manager_mixin.h"
 #include "chrome/browser/ash/login/test/user_policy_mixin.h"
+#include "chrome/browser/ash/policy/core/browser_policy_connector_ash.h"
 #include "chrome/browser/ash/policy/core/device_policy_cros_browser_test.h"
 #include "chrome/browser/ash/policy/reporting/event_based_logs/event_based_log_uploader.h"
 #include "chrome/browser/ash/settings/scoped_testing_cros_settings.h"
 #include "chrome/browser/ash/settings/stub_cros_settings_provider.h"
 #include "chrome/browser/browser_process.h"
+#include "chrome/browser/browser_process_platform_part_ash.h"
 #include "chrome/browser/policy/messaging_layer/proto/synced/log_upload_event.pb.h"
 #include "chrome/test/base/fake_gaia_mixin.h"
 #include "chromeos/ash/components/dbus/update_engine/fake_update_engine_client.h"
 #include "chromeos/ash/components/settings/cros_settings_names.h"
+#include "components/account_id/account_id.h"
+#include "components/account_id/account_id_literal.h"
 #include "components/prefs/pref_registry_simple.h"
 #include "components/reporting/util/status.h"
-#include "components/signin/public/identity_manager/identity_test_utils.h"
 #include "content/public/test/browser_test.h"
+#include "google_apis/gaia/gaia_id.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -34,10 +38,10 @@ using ::testing::WithArgs;
 namespace {
 
 constexpr char kTestUserEmail[] = "test@example.com";
+constexpr AccountId::Literal kTestAccountId =
+    AccountId::Literal::FromUserEmailGaiaId(kTestUserEmail,
+                                            GaiaId::Literal("1234567890"));
 constexpr char kTestAffiliationId[] = "test_affiliation_id";
-static const AccountId kTestAccountId = AccountId::FromUserEmailGaiaId(
-    kTestUserEmail,
-    signin::GetTestGaiaIdForEmail(kTestUserEmail));
 
 class MockLogUploader : public policy::EventBasedLogUploader {
  public:
@@ -129,7 +133,10 @@ IN_PROC_BROWSER_TEST_F(OsUpdateEventObserverBrowserTest,
         std::move(on_upload_completed).Run(reporting::Status::StatusOK());
       }));
 
-  policy::OsUpdateEventObserver event_observer;
+  policy::OsUpdateEventObserver event_observer(
+      g_browser_process->local_state(), g_browser_process->platform_part()
+                                            ->browser_policy_connector_ash()
+                                            ->GetDeviceCloudPolicyManager());
   event_observer.SetLogUploaderForTesting(std::move(mock_uploader));
 
   SendFakeUpdateFailure();

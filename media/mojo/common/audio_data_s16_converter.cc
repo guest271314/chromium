@@ -6,7 +6,8 @@
 
 #include <memory>
 
-#include "base/compiler_specific.h"
+#include "base/containers/span.h"
+#include "base/containers/to_vector.h"
 #include "media/base/audio_buffer.h"
 #include "media/base/audio_bus.h"
 #include "media/base/audio_sample_types.h"
@@ -37,27 +38,14 @@ mojom::AudioDataS16Ptr AudioDataS16Converter::ConvertToAudioDataS16(
     signed_buffer->channel_count = buffer->channel_count();
     signed_buffer->frame_count = buffer->frame_count();
     signed_buffer->sample_rate = buffer->sample_rate();
-    int16_t* audio_data = reinterpret_cast<int16_t*>(buffer->channel_data()[0]);
-    signed_buffer->data.assign(
-        audio_data, UNSAFE_TODO(audio_data + buffer->frame_count() *
-                                                 buffer->channel_count()));
+    signed_buffer->data =
+        base::ToVector(buffer->interleaved_data_cast<const int16_t>());
     return signed_buffer;
   }
 
   CopyBufferToTempAudioBus(*buffer);
   return ConvertToAudioDataS16(*temp_audio_bus_, buffer->sample_rate(),
                                buffer->channel_layout(),
-                               is_multichannel_supported);
-}
-
-mojom::AudioDataS16Ptr AudioDataS16Converter::ConvertToAudioDataS16(
-    std::unique_ptr<AudioBus> audio_bus,
-    int sample_rate,
-    ChannelLayout channel_layout,
-    bool is_multichannel_supported) {
-  DCHECK_GT(audio_bus->frames(), 0);
-  DCHECK_GT(audio_bus->channels(), 0);
-  return ConvertToAudioDataS16(*audio_bus, sample_rate, channel_layout,
                                is_multichannel_supported);
 }
 
@@ -119,8 +107,8 @@ void AudioDataS16Converter::ResetChannelMixerIfNeeded(
     channel_layout_ = channel_layout;
     channel_count_ = channel_count;
     channel_mixer_ = std::make_unique<ChannelMixer>(
-        channel_layout, channel_count, CHANNEL_LAYOUT_MONO,
-        1 /*output_channels*/);
+        ChannelLayoutConfig(channel_layout, channel_count),
+        ChannelLayoutConfig::Mono());
   }
 }
 

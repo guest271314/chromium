@@ -11,12 +11,14 @@ import android.content.Context;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.drawable.ColorDrawable;
+import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.ViewStub;
 
 import androidx.annotation.VisibleForTesting;
 
+import org.chromium.base.DeviceInfo;
 import org.chromium.base.metrics.RecordUserAction;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
@@ -28,8 +30,19 @@ import org.chromium.chrome.browser.toolbar.R;
 import org.chromium.chrome.browser.toolbar.top.ToolbarChild;
 import org.chromium.chrome.browser.toolbar.top.ToolbarLayout;
 import org.chromium.chrome.browser.toolbar.top.ToolbarUtils;
+import org.chromium.chrome.browser.user_education.IphCommandBuilder;
+import org.chromium.chrome.browser.user_education.UserEducationHelper;
 import org.chromium.components.browser_ui.widget.BrowserUiListMenuUtils;
 import org.chromium.components.browser_ui.widget.ListItemBuilder;
+import org.chromium.components.browser_ui.widget.containment.ContainerStyle;
+import org.chromium.components.browser_ui.widget.containment.ContainmentItemController;
+import org.chromium.components.browser_ui.widget.containment.ContainmentViewStyler;
+import org.chromium.components.browser_ui.widget.text.TextViewWithCompoundDrawables;
+import org.chromium.components.feature_engagement.EventConstants;
+import org.chromium.components.feature_engagement.FeatureConstants;
+import org.chromium.components.feature_engagement.Tracker;
+import org.chromium.components.signin.SigninFeatureMap;
+import org.chromium.components.signin.SigninFeatures;
 import org.chromium.ui.listmenu.BasicListMenu;
 import org.chromium.ui.listmenu.ListMenu.Delegate;
 import org.chromium.ui.listmenu.ListMenuItemProperties;
@@ -44,8 +57,11 @@ import java.util.function.Supplier;
 public class IncognitoIndicatorCoordinator extends ToolbarChild
         implements View.OnClickListener, View.OnLongClickListener, View.OnContextClickListener {
     private final ToolbarLayout mParentToolbar;
+    private final UserEducationHelper mUserEducationHelper;
+    private final Supplier<@Nullable Tracker> mTrackerSupplier;
     private @Nullable Boolean mIsIncognitoBranded;
     private boolean mVisible;
+    private boolean mHasSpaceToShow;
     private @Nullable View mIncognitoIndicator;
     private final int mDefaultFallbackWidth;
     private int mCachedWidth;
@@ -57,6 +73,8 @@ public class IncognitoIndicatorCoordinator extends ToolbarChild
      * toolbar.
      *
      * @param parentToolbar The parent view that contains the incognito indicator.
+     * @param userEducationHelper Helper for triggering in-product help (IPH).
+     * @param trackerSupplier A supplier for the tracker to record feature usage event.
      * @param topUiThemeColorProvider Provides theme and tint color that should be applied to the
      *     view.
      * @param incognitoStateProvider Provides incognito state to update view.
@@ -65,12 +83,16 @@ public class IncognitoIndicatorCoordinator extends ToolbarChild
      */
     public IncognitoIndicatorCoordinator(
             ToolbarLayout parentToolbar,
+            UserEducationHelper userEducationHelper,
+            Supplier<@Nullable Tracker> trackerSupplier,
             ThemeColorProvider topUiThemeColorProvider,
             IncognitoStateProvider incognitoStateProvider,
             Supplier<Integer> incognitoWindowCountSupplier,
             boolean visible) {
         super(topUiThemeColorProvider, incognitoStateProvider);
         mParentToolbar = parentToolbar;
+        mUserEducationHelper = userEducationHelper;
+        mTrackerSupplier = trackerSupplier;
         mVisible = visible;
         mIncognitoWindowCountSupplier = incognitoWindowCountSupplier;
         setVisibility(mVisible);
@@ -99,6 +121,11 @@ public class IncognitoIndicatorCoordinator extends ToolbarChild
         return mIncognitoIndicator != null && mIncognitoIndicator.getVisibility() == View.VISIBLE;
     }
 
+    @Override
+    public boolean hasSpaceToShow() {
+        return mHasSpaceToShow;
+    }
+
     /**
      * Updates the visibility of the incognito indicator.
      *
@@ -106,6 +133,7 @@ public class IncognitoIndicatorCoordinator extends ToolbarChild
      */
     public void setVisibility(boolean visible) {
         mVisible = visible;
+        boolean wasVisible = isVisible();
 
         // If the parent toolbar is null, this was called before initialization was completed. Skip
         // for now and wait until a subsequent call after initialization has finished.
@@ -123,6 +151,9 @@ public class IncognitoIndicatorCoordinator extends ToolbarChild
 
         if (mIncognitoIndicator != null) {
             mIncognitoIndicator.setVisibility(mIsIncognitoBranded && visible ? VISIBLE : GONE);
+            if (isVisible() && !wasVisible) {
+                triggerIPH();
+            }
         }
     }
 
@@ -180,7 +211,8 @@ public class IncognitoIndicatorCoordinator extends ToolbarChild
         // is less than necessary, though, that extra width should still be consumed to avoid
         // showing any more buttons, as it might be confusing to users. This extra width will end up
         // absorbed into the location bar.
-        setVisibility(availableWidth >= mCachedWidth);
+        mHasSpaceToShow = availableWidth >= mCachedWidth;
+        setVisibility(mHasSpaceToShow);
         return Math.min(availableWidth, mCachedWidth);
     }
 
@@ -227,44 +259,84 @@ public class IncognitoIndicatorCoordinator extends ToolbarChild
                         R.color.toolbar_text_box_background_incognito,
                         null);
 
-        int measuredWidth = menu.getMenuDimensions()[0];
-        mMenuWindow =
+        showMenuWindow(context, menu.getContentView(), menu.getMenuDimensions()[0]);
+    }
+
+    /**
+     * Create and display the Incognito card menu containing the Incognito card and the Close
+     * Incognito windows action row, anchored to the Incognito indicator.
+     *
+     * @param context The context of the Incognito menu.
+     */
+    private void createAndShowIncognitoCardMenu(Context context) {
+        if (mIncognitoIndicator == null) return;
+
+        View contentView = LayoutInflater.from(context).inflate(R.layout.incognito_menu, null);
+        TextViewWithCompoundDrawables closeButton =
+                contentView.findViewById(R.id.close_all_incognito_windows_button);
+        assert closeButton != null;
+        closeButton.setText(
+                getCloseAllIncognitoWindowsTitle(context, mIncognitoWindowCountSupplier.get()));
+        closeButton.setOnClickListener(
+                v -> {
+                    RecordUserAction.record("MobileIncognitoIndicatorCloseAllWindows");
+                    if (mMenuWindow != null) {
+                        mMenuWindow.dismiss();
+                    }
+                    IncognitoTabHostUtils.closeAllIncognitoTabs();
+                });
+        ContainerStyle style =
+                new ContainmentItemController(context)
+                        .createStandardBuilder(
+                                /* isTop= */ true, /* isBottom= */ true, /* isSingleLine= */ true)
+                        .build();
+        ContainmentViewStyler.applyBackgroundStyle(closeButton, style);
+        ContainmentViewStyler.applyMargins(closeButton, style);
+
+        int menuWidth = context.getResources().getDimensionPixelSize(R.dimen.account_menu_width);
+        showMenuWindow(context, contentView, menuWidth);
+    }
+
+    private void showMenuWindow(Context context, View contentView, int desiredWidth) {
+        if (mIncognitoIndicator == null) return;
+
+        AnchoredPopupWindow.Builder builder =
                 new AnchoredPopupWindow.Builder(
                                 context,
                                 mIncognitoIndicator,
                                 new ColorDrawable(Color.TRANSPARENT),
-                                menu::getContentView,
+                                (_) -> contentView,
                                 new ViewRectProvider(mIncognitoIndicator))
                         .addOnDismissListener(
                                 () -> {
                                     if (mIncognitoIndicator != null) {
                                         mIncognitoIndicator.setSelected(false);
                                     }
+                                    mMenuWindow = null;
                                 })
                         .setAnimateFromAnchor(true)
                         .setDismissOnScreenSizeChange(true)
-                        .setDismissOnTouchInteraction(true)
                         .setFocusable(true)
                         .setTouchModal(true)
-                        .setDesiredContentWidth(measuredWidth)
+                        .setDesiredContentWidth(desiredWidth)
                         .setHorizontalOverlapAnchor(true)
                         .setPreferredHorizontalOrientation(
                                 AnchoredPopupWindow.HorizontalOrientation.MAX_AVAILABLE_SPACE)
-                        .setVerticalOverlapAnchor(false)
-                        .build();
+                        .setVerticalOverlapAnchor(false);
+        if (isIncognitoCardEnabled()) {
+            builder.setOutsideTouchable(true);
+        } else {
+            builder.setDismissOnTouchInteraction(true);
+        }
+        mMenuWindow = builder.build();
 
         mMenuWindow.show();
     }
 
     @VisibleForTesting
     ModelList buildMenuItems(Context context) {
-        int incognitoWindowCount = mIncognitoWindowCountSupplier.get();
         String title =
-                context.getResources()
-                        .getQuantityString(
-                                R.plurals.menu_close_all_incognito_windows,
-                                incognitoWindowCount,
-                                incognitoWindowCount);
+                getCloseAllIncognitoWindowsTitle(context, mIncognitoWindowCountSupplier.get());
         ModelList itemList = new ModelList();
         itemList.add(
                 new ListItemBuilder()
@@ -275,11 +347,27 @@ public class IncognitoIndicatorCoordinator extends ToolbarChild
         return itemList;
     }
 
+    private static String getCloseAllIncognitoWindowsTitle(
+            Context context, int incognitoWindowCount) {
+        return context.getResources()
+                .getQuantityString(
+                        R.plurals.menu_close_all_incognito_windows,
+                        incognitoWindowCount,
+                        incognitoWindowCount);
+    }
+
     @Override
     public void onClick(View view) {
         if (mIncognitoIndicator == null || mIncognitoIndicator.getVisibility() != View.VISIBLE) {
             return;
         }
+
+        if (mTrackerSupplier.get() != null) {
+            mTrackerSupplier
+                    .get()
+                    .notifyEvent(EventConstants.INCOGNITO_INDICATOR_CLOSE_ALL_WINDOWS_USED);
+        }
+
         if (mMenuWindow != null && mMenuWindow.isShowing()) {
             mMenuWindow.dismiss();
             return;
@@ -287,7 +375,11 @@ public class IncognitoIndicatorCoordinator extends ToolbarChild
         RecordUserAction.record("MobileIncognitoIndicatorClicked");
         Context context = mIncognitoIndicator.getContext();
         mIncognitoIndicator.setSelected(true);
-        createAndShowMenu(context, buildMenuItems(context));
+        if (isIncognitoCardEnabled()) {
+            createAndShowIncognitoCardMenu(context);
+        } else {
+            createAndShowMenu(context, buildMenuItems(context));
+        }
     }
 
     @Override
@@ -300,5 +392,25 @@ public class IncognitoIndicatorCoordinator extends ToolbarChild
     public boolean onContextClick(View view) {
         onClick(view);
         return true;
+    }
+
+    private boolean isIncognitoCardEnabled() {
+        return DeviceInfo.isDesktop()
+                && SigninFeatureMap.isEnabled(SigninFeatures.SIGNIN_BUTTON_PROFILE_MENU)
+                && SigninFeatureMap.isEnabled(
+                        SigninFeatures.SIGNIN_BUTTON_PROFILE_MENU_REFINEMENTS);
+    }
+
+    private void triggerIPH() {
+        if (mIncognitoIndicator == null) return;
+        mUserEducationHelper.requestShowIph(
+                new IphCommandBuilder(
+                                mIncognitoIndicator.getResources(),
+                                FeatureConstants.IPH_INCOGNITO_INDICATOR_CLOSE_ALL_WINDOWS,
+                                R.string.iph_incognito_indicator_close_all_windows_text,
+                                R.string
+                                        .iph_incognito_indicator_close_all_windows_accessibility_text)
+                        .setAnchorView(mIncognitoIndicator)
+                        .build());
     }
 }

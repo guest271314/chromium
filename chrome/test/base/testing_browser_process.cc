@@ -36,11 +36,9 @@
 #include "chrome/common/chrome_paths.h"
 #include "chrome/test/base/testing_browser_process_platform_part.h"
 #include "chrome/test/base/testing_profile_manager.h"
-#include "components/activity_reporter/activity_reporter.h"
 #include "components/application_locale_storage/application_locale_storage.h"
 #include "components/embedder_support/origin_trials/origin_trials_settings_storage.h"
 #include "components/metrics/metrics_service.h"
-#include "components/metrics_services_manager/metrics_services_manager.h"
 #include "components/network_time/network_time_tracker.h"
 #include "components/os_crypt/async/browser/test_utils.h"
 #include "components/permissions/permissions_client.h"
@@ -61,18 +59,21 @@
 #include "testing/gtest/include/gtest/gtest.h"
 
 #if BUILDFLAG(OS_LEVEL_GEOLOCATION_PERMISSION_SUPPORTED)
-#include "services/device/public/cpp/device_features.h"
-#include "services/device/public/cpp/geolocation/geolocation_system_permission_manager.h"
-#include "services/device/public/cpp/test/fake_geolocation_system_permission_manager.h"
+#include "services/device/public/cpp/device_features.h"  // nogncheck
+#include "services/device/public/cpp/geolocation/geolocation_system_permission_manager.h"  // nogncheck
+#include "services/device/public/cpp/test/fake_geolocation_system_permission_manager.h"  // nogncheck
 #endif
 
 #if BUILDFLAG(ENABLE_BACKGROUND_MODE)
 #include "chrome/browser/background/extensions/background_mode_manager.h"
 #endif
 
-#if BUILDFLAG(ENABLE_EXTENSIONS)
+#if BUILDFLAG(ENABLE_PLATFORM_APPS)
 #include "chrome/browser/apps/platform_apps/chrome_apps_browser_api_provider.h"
 #include "chrome/browser/ui/apps/chrome_app_window_client.h"
+#endif
+
+#if BUILDFLAG(ENABLE_EXTENSIONS)
 #include "components/storage_monitor/storage_monitor.h"  // nogncheck crbug.com/40147906
 #include "components/storage_monitor/test_storage_monitor.h"  // nogncheck crbug.com/40147906
 #endif
@@ -87,6 +88,7 @@
 #endif
 
 #if !BUILDFLAG(IS_ANDROID)
+#include "chrome/browser/speech/speech_recognition_small_expert_model_installer.h"
 #if BUILDFLAG(IS_CHROMEOS)
 #include "chrome/browser/hid/hid_pinned_notification.h"
 #include "chrome/browser/usb/usb_pinned_notification.h"
@@ -115,6 +117,9 @@
 #include "components/supervised_user/core/browser/android/android_parental_controls.h"
 #endif  // BUILDFLAG(IS_ANDROID)
 
+#if !BUILDFLAG(IS_CHROMEOS)
+#include "components/activity_reporter/activity_reporter.h"
+
 namespace {
 
 class TestActivityReporter : public activity_reporter::ActivityReporter {
@@ -126,6 +131,7 @@ class TestActivityReporter : public activity_reporter::ActivityReporter {
 };
 
 }  // namespace
+#endif  // !BUILDFLAG(IS_CHROMEOS)
 
 // static
 TestingBrowserProcess* TestingBrowserProcess::GetGlobal() {
@@ -204,8 +210,16 @@ TestingBrowserProcess::~TestingBrowserProcess() {
 
 #if BUILDFLAG(ENABLE_EXTENSIONS)
   extensions::ExtensionsBrowserClient::Set(nullptr);
+#endif
+#if BUILDFLAG(ENABLE_PLATFORM_APPS)
   extensions::AppWindowClient::Set(nullptr);
 #endif
+
+#if BUILDFLAG(OS_LEVEL_GEOLOCATION_PERMISSION_SUPPORTED)
+  if (features::IsOsLevelGeolocationPermissionSupportEnabled()) {
+    device::GeolocationSystemPermissionManager::SetInstance(nullptr);
+  }
+#endif  // BUILDFLAG(OS_LEVEL_GEOLOCATION_PERMISSION_SUPPORTED)
 
   if (test_network_connection_tracker_) {
     content::SetNetworkConnectionTrackerForTesting(nullptr);
@@ -300,7 +314,7 @@ void TestingBrowserProcess::Init() {
   extensions::ExtensionsBrowserClient::Set(extensions_browser_client_.get());
 #endif  // BUILDFLAG(ENABLE_EXTENSIONS_CORE)
 
-#if BUILDFLAG(ENABLE_EXTENSIONS)
+#if BUILDFLAG(ENABLE_PLATFORM_APPS)
   extensions_browser_client_->AddAPIProvider(
       std::make_unique<chrome_apps::ChromeAppsBrowserAPIProvider>());
   extensions::AppWindowClient::Set(ChromeAppWindowClient::GetInstance());
@@ -323,18 +337,11 @@ void TestingBrowserProcess::Init() {
 #endif  // !BUILDFLAG(IS_ANDROID)
 }
 
-void TestingBrowserProcess::FlushLocalStateAndReply(base::OnceClosure reply) {
-  // This could be implemented the same way as in BrowserProcessImpl but it's
-  // not currently expected to be used by TestingBrowserProcess users so we
-  // don't bother.
-  NOTREACHED();
-}
-
 void TestingBrowserProcess::EndSession() {}
 
 metrics_services_manager::MetricsServicesManager*
 TestingBrowserProcess::GetMetricsServicesManager() {
-  return metrics_services_manager_;
+  return nullptr;
 }
 
 metrics::MetricsService* TestingBrowserProcess::metrics_service() {
@@ -371,12 +378,6 @@ TestingBrowserProcess::network_quality_tracker() {
 
 ProfileManager* TestingBrowserProcess::profile_manager() {
   return profile_manager_.get();
-}
-
-void TestingBrowserProcess::SetMetricsServicesManager(
-    metrics_services_manager::MetricsServicesManager*
-        metrics_services_manager) {
-  metrics_services_manager_ = metrics_services_manager;
 }
 
 void TestingBrowserProcess::SetMetricsService(
@@ -516,11 +517,9 @@ TestingBrowserProcess::notification_platform_bridge() {
   return notification_platform_bridge_.get();
 }
 
-#if !BUILDFLAG(IS_ANDROID)
 IntranetRedirectDetector* TestingBrowserProcess::intranet_redirect_detector() {
   return nullptr;
 }
-#endif
 
 void TestingBrowserProcess::CreateDevToolsProtocolHandler() {}
 
@@ -606,6 +605,7 @@ DownloadRequestLimiter* TestingBrowserProcess::download_request_limiter() {
   return download_request_limiter_.get();
 }
 
+#if !BUILDFLAG(IS_CHROMEOS)
 activity_reporter::ActivityReporter*
 TestingBrowserProcess::activity_reporter() {
   if (!activity_reporter_) {
@@ -613,6 +613,7 @@ TestingBrowserProcess::activity_reporter() {
   }
   return activity_reporter_.get();
 }
+#endif  // !BUILDFLAG(IS_CHROMEOS)
 
 component_updater::ComponentUpdateService*
 TestingBrowserProcess::component_updater() {
@@ -639,7 +640,8 @@ TestingBrowserProcess::network_time_tracker() {
     network_time_tracker_ = std::make_unique<network_time::NetworkTimeTracker>(
         std::unique_ptr<base::Clock>(new base::DefaultClock()),
         std::unique_ptr<base::TickClock>(new base::DefaultTickClock()),
-        local_state(), nullptr, std::nullopt);
+        local_state(), nullptr,
+        network_time::NetworkTimeTracker::FETCHES_ON_DEMAND_ONLY);
   }
   return network_time_tracker_.get();
 }
@@ -820,10 +822,21 @@ void TestingBrowserProcess::SetStatusTray(
 }
 
 #if !BUILDFLAG(IS_ANDROID)
+speech::SpeechRecognitionSmallExpertModelInstaller*
+TestingBrowserProcess::speech_recognition_small_expert_model_installer() {
+  return speech_recognition_small_expert_model_installer_.get();
+}
+
 void TestingBrowserProcess::SetComponentUpdater(
     std::unique_ptr<component_updater::ComponentUpdateService>
         component_updater) {
   component_updater_ = std::move(component_updater);
+}
+
+void TestingBrowserProcess::SetSpeechRecognitionSmallExpertModelInstaller(
+    std::unique_ptr<speech::SpeechRecognitionSmallExpertModelInstaller>
+        installer) {
+  speech_recognition_small_expert_model_installer_ = std::move(installer);
 }
 #endif
 

@@ -31,6 +31,7 @@
 #include "extensions/browser/pref_names.h"
 #include "extensions/browser/pref_types.h"
 #include "extensions/browser/renderer_startup_helper.h"
+#include "extensions/browser/script_injection_tracker.h"
 #include "extensions/common/extension.h"
 #include "extensions/common/extension_features.h"
 #include "extensions/common/extension_id.h"
@@ -854,7 +855,7 @@ PermissionsManager::GetExtensionGrantedPermissions(
              : extension_prefs_->GetGrantedPermissions(extension.id());
 }
 
-void PermissionsManager::AddHostAccessRequest(
+PermissionsManager::AddRequestResult PermissionsManager::AddHostAccessRequest(
     content::WebContents* web_contents,
     int tab_id,
     const Extension& extension,
@@ -871,12 +872,12 @@ void PermissionsManager::AddHostAccessRequest(
   std::string error;
   if (extension.permissions_data()->IsPolicyBlockedHost(url) ||
       extension.permissions_data()->IsRestrictedUrl(url, &error)) {
-    return;
+    return AddRequestResult::kSuccess;
   }
   if (!site_access.withheld_site_access &&
       !PermissionsParser::GetOptionalPermissions(&extension)
            .HasEffectiveAccessToURL(web_contents->GetLastCommittedURL())) {
-    return;
+    return AddRequestResult::kSuccess;
   }
 
   HostAccessRequestsHelper* helper =
@@ -888,49 +889,55 @@ void PermissionsManager::AddHostAccessRequest(
   if (filter.has_value() && !filter.value().MatchesSecurityOrigin(
                                 web_contents->GetLastCommittedURL())) {
     // Remove the existent request, if any, since the new request overrides it.
-    if (helper->RemoveRequest(extension.id(), /*filter=*/std::nullopt)) {
+    if (helper->RemoveRequest(extension.id(), /*filter=*/std::nullopt,
+                              /*bypass_cooldown=*/true) ==
+        RemoveRequestResult::kSuccess) {
       for (auto& observer : observers_) {
         observer.OnHostAccessRequestRemoved(extension.id(), tab_id);
       }
     }
-    return;
+    return AddRequestResult::kSuccess;
   }
 
   if (helper->HasRequest(extension.id())) {
-    helper->UpdateRequest(extension, filter);
-    for (auto& observer : observers_) {
-      observer.OnHostAccessRequestUpdated(extension.id(), tab_id);
+    AddRequestResult result = helper->UpdateRequest(extension, filter);
+    if (result == AddRequestResult::kSuccess) {
+      for (auto& observer : observers_) {
+        observer.OnHostAccessRequestUpdated(extension.id(), tab_id);
+      }
     }
+    return result;
   } else {
-    helper->AddRequest(extension, filter);
-    for (auto& observer : observers_) {
-      observer.OnHostAccessRequestAdded(extension.id(), tab_id);
+    AddRequestResult result = helper->AddRequest(extension, filter);
+    if (result == AddRequestResult::kSuccess) {
+      for (auto& observer : observers_) {
+        observer.OnHostAccessRequestAdded(extension.id(), tab_id);
+      }
     }
+    return result;
   }
 }
 
-bool PermissionsManager::RemoveHostAccessRequest(
+PermissionsManager::RemoveRequestResult
+PermissionsManager::RemoveHostAccessRequest(
     int tab_id,
     const ExtensionId& extension_id,
-    const std::optional<URLPattern>& filter) {
+    const std::optional<URLPattern>& filter,
+    bool bypass_cooldown) {
   HostAccessRequestsHelper* helper = GetHostAccessRequestsHelperFor(tab_id);
   if (!helper) {
-    return false;
+    return RemoveRequestResult::kNotFound;
   }
 
-  bool request_removed = helper->RemoveRequest(extension_id, filter);
-  if (!request_removed) {
-    return false;
+  RemoveRequestResult result =
+      helper->RemoveRequest(extension_id, filter, bypass_cooldown);
+  if (result == RemoveRequestResult::kSuccess) {
+    for (auto& observer : observers_) {
+      observer.OnHostAccessRequestRemoved(extension_id, tab_id);
+    }
   }
 
-  if (!helper->HasRequests()) {
-    DeleteHostAccessRequestHelperFor(tab_id);
-  }
-
-  for (auto& observer : observers_) {
-    observer.OnHostAccessRequestRemoved(extension_id, tab_id);
-  }
-  return true;
+  return result;
 }
 
 void PermissionsManager::UserDismissedHostAccessRequest(
@@ -1003,7 +1010,8 @@ void PermissionsManager::NotifyActiveTabPermisssionGranted(
     content::WebContents* web_contents,
     int tab_id,
     const Extension& extension) {
-  RemoveHostAccessRequest(tab_id, extension.id());
+  RemoveHostAccessRequest(tab_id, extension.id(), std::nullopt,
+                          /*bypass_cooldown=*/true);
 
   for (Observer& observer : observers_) {
     observer.OnActiveTabPermissionGranted(extension);
@@ -1035,6 +1043,12 @@ void PermissionsManager::OnUserPermissionsSettingsChanged() {
   for (const auto& extension : all_extensions) {
     UpdatePermissionsWithUserSettings(*extension, user_allowed_set);
   }
+
+  // Update the browser-side user host restrictions before notifying
+  // ScriptInjectionTracker below, which reads them.
+  PermissionsData::SetUserHostRestrictions(
+      util::GetBrowserContextId(browser_context_), user_blocked_sites.Clone(),
+      user_allowed_sites.Clone());
 
   // Send the new permissions states to the renderers, including both the
   // updated user host settings and the updated permissions for each extension.
@@ -1068,13 +1082,17 @@ void PermissionsManager::OnUserPermissionsSettingsChanged() {
                 permissions_data->UsesDefaultPolicyHostRestrictions());
           }
         }
+
+        // Unrestricting a site may allow scripts to inject into it. This runs
+        // in the same task as the renderer updates above, so it precedes any
+        // IPC the renderer sends in response.
+        for (const auto& extension : registry->enabled_extensions()) {
+          ScriptInjectionTracker::DidUpdatePermissionsInRenderer(
+              base::PassKey<PermissionsManager>(), *extension, *host);
+        }
       }
     }
   }
-
-  PermissionsData::SetUserHostRestrictions(
-      util::GetBrowserContextId(browser_context_),
-      std::move(user_blocked_sites), std::move(user_allowed_sites));
 
   // Notify observers of a permissions change once the changes have taken
   // effect in the network layer.

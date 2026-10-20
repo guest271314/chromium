@@ -11,6 +11,7 @@
 #include <string>
 #include <vector>
 
+#include "base/functional/callback_helpers.h"
 #include "base/i18n/rtl.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
@@ -86,7 +87,7 @@ class PasswordGenerationPopupControllerImpl
       autofill::password_generation::PasswordGenerationType generation_type);
 
   // Create a PasswordGenerationPopupView if one doesn't already exist.
-  void Show(GenerationUIState state);
+  void Show(GenerationUIState state, bool is_manually_triggered = false);
 
   // Update the value of the generated password to be displayed in the UI (e.g.
   // upon editing the generated password).
@@ -133,6 +134,16 @@ class PasswordGenerationPopupControllerImpl
   }
   void SelectCancelButtonForTesting() {
     SelectElement(PasswordGenerationPopupElement::kCancelButton);
+  }
+  bool HandleKeyPressEventForTesting(
+      const input::NativeWebKeyboardEvent& event) {
+    return HandleKeyPressEvent(event);
+  }
+  bool accept_button_selected_for_testing() const {
+    return accept_button_selected();
+  }
+  bool cancel_button_selected_for_testing() const {
+    return cancel_button_selected();
   }
 #endif
 
@@ -227,6 +238,9 @@ class PasswordGenerationPopupControllerImpl
   GenerationUIState state_;
 
   std::unique_ptr<KeyPressRegistrator> key_press_handler_manager_;
+
+  // Fullscreen block held while the popup is showing.
+  base::ScopedClosureRunner fullscreen_blocker_;
 
   base::ScopedObservation<zoom::ZoomController, zoom::ZoomObserver>
       zoom_observation_{this};

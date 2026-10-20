@@ -29,6 +29,18 @@
 
 namespace media {
 
+namespace {
+perfetto::NamedTrack GetTracingTrack(
+    const DecoderStream<DemuxerStream::VIDEO>* stream) {
+  return perfetto::NamedTrack::FromPointer("VideoDecoderStream", stream);
+}
+
+perfetto::NamedTrack GetTracingTrack(
+    const DecoderStream<DemuxerStream::AUDIO>* stream) {
+  return perfetto::NamedTrack::FromPointer("AudioDecoderStream", stream);
+}
+}  // namespace
+
 #define FUNCTION_DVLOG(level) \
   DVLOG(level) << __func__ << "<" << GetStreamTypeString() << ">"
 
@@ -81,15 +93,16 @@ const char* GetPrepareTraceString<DemuxerStream::AUDIO>() {
   return "AudioDecoderStream::PrepareOutput";
 }
 
-const char* GetStatusString(const DecoderStatus& status) {
+template <DemuxerStream::Type Type>
+const char* GetStatusString(
+    const typename DecoderStream<Type>::ReadResult& result) {
   // TODO(crbug.com/40149493): Replace this with generic Status-to-string.
-  switch (status.code()) {
-    case DecoderStatus::Codes::kOk:
-      return "okay";
-    case DecoderStatus::Codes::kAborted:
-      return "aborted";
-    default:
-      return "decode_error";
+  if (result.has_value()) {
+    return "okay";
+  } else if (result.error().code() == DecoderStatus::Codes::kAborted) {
+    return "aborted";
+  } else {
+    return "decode_error";
   }
 }
 
@@ -101,7 +114,7 @@ DecoderStream<StreamType>::DecoderStream(
     MediaLog* media_log)
     : traits_(std::move(traits)),
       task_runner_(std::move(task_runner)),
-      media_log_(media_log),
+      media_log_(MediaLog::CloneSafely(media_log)),
       state_(State::kStateUninitialized),
       stream_(nullptr),
       cdm_context_(nullptr),
@@ -131,7 +144,7 @@ DecoderStream<StreamType>::~DecoderStream() {
   }
   if (read_cb_) {
     read_cb_ = base::BindPostTaskToCurrentDefault(std::move(read_cb_));
-    SatisfyRead(DecoderStatus::Codes::kAborted);
+    SatisfyRead(base::unexpected(DecoderStatus::Codes::kAborted));
   }
   if (reset_cb_)
     task_runner_->PostTask(FROM_HERE, std::move(reset_cb_));
@@ -190,12 +203,13 @@ void DecoderStream<StreamType>::Read(ReadCB read_cb) {
 
   TRACE_EVENT_BEGIN("media",
                     perfetto::StaticString(GetReadTraceString<StreamType>()),
-                    perfetto::Track::FromPointer(this));
+                    GetTracingTrack(this));
   if (state_ == State::kStateError) {
     read_cb_ = base::BindPostTaskToCurrentDefault(std::move(read_cb));
     // OnDecodeDone, OnBufferReady, and CompleteDecoderReinitialization all set
     // kStateError and call SatisfyRead, passing the error back to a ReadCB.
-    SatisfyRead(DecoderStatus::Codes::kDecoderStreamInErrorState);
+    SatisfyRead(
+        base::unexpected(DecoderStatus::Codes::kDecoderStreamInErrorState));
     return;
   }
 
@@ -231,7 +245,7 @@ void DecoderStream<StreamType>::Reset(base::OnceClosure closure) {
 
   if (read_cb_) {
     read_cb_ = base::BindPostTaskToCurrentDefault(std::move(read_cb_));
-    SatisfyRead(DecoderStatus::Codes::kAborted);
+    SatisfyRead(base::unexpected(DecoderStatus::Codes::kAborted));
   }
 
   ClearOutputs();
@@ -377,11 +391,12 @@ void DecoderStream<StreamType>::ResumeDecoderSelection(
 
 template <DemuxerStream::Type StreamType>
 void DecoderStream<StreamType>::OnDecoderSelected(
-    DecoderStatus::Or<std::unique_ptr<Decoder>> decoder_or_error,
+    base::expected<std::unique_ptr<Decoder>, DecoderStatus> decoder_or_error,
     std::unique_ptr<DecryptingDemuxerStream> decrypting_demuxer_stream) {
   FUNCTION_DVLOG(1) << ": "
                     << (decoder_or_error.has_value()
-                            ? GetDecoderName(decoder_or_error->GetDecoderType())
+                            ? GetDecoderName(
+                                  decoder_or_error.value()->GetDecoderType())
                             : "No decoder selected.");
   DCHECK(task_runner_->RunsTasksInCurrentSequence());
   DCHECK(state_ == State::kStateInitializing ||
@@ -481,8 +496,8 @@ void DecoderStream<StreamType>::OnDecoderSelected(
 template <DemuxerStream::Type StreamType>
 void DecoderStream<StreamType>::SatisfyRead(ReadResult result) {
   DCHECK(read_cb_);
-  TRACE_EVENT_END("media", perfetto::Track::FromPointer(this), "status",
-                  GetStatusString(result.code()));
+  TRACE_EVENT_END("media", GetTracingTrack(this), "status",
+                  GetStatusString<StreamType>(result));
   std::move(read_cb_).Run(std::move(result));
 }
 
@@ -677,7 +692,7 @@ void DecoderStream<StreamType>::OnDecodeDone(
         state_ = State::kStateError;
         ClearOutputs();
         if (read_cb_)
-          SatisfyRead(std::move(status));
+          SatisfyRead(base::unexpected(std::move(status)));
       }
       return;
   }
@@ -760,7 +775,7 @@ void DecoderStream<StreamType>::ReadFromDemuxerStream() {
 
   TRACE_EVENT_BEGIN(
       "media", perfetto::StaticString(GetDemuxerReadTraceString<StreamType>()),
-      perfetto::Track::FromPointer(this));
+      GetTracingTrack(this));
   pending_demuxer_read_ = true;
   uint32_t buffer_read_count = 1;
   // Do not batch with software video decoder.
@@ -788,7 +803,7 @@ void DecoderStream<StreamType>::OnBuffersReady(
     return;
   }
 
-  TRACE_EVENT_END("media", perfetto::Track::FromPointer(this), "status",
+  TRACE_EVENT_END("media", GetTracingTrack(this), "status",
                   DemuxerStream::GetStatusName(status));
 
   DCHECK(task_runner_->RunsTasksInCurrentSequence());
@@ -811,7 +826,7 @@ void DecoderStream<StreamType>::OnBuffersReady(
         // Save valid buffers to be consumed by the new decoder.
         // |pending_buffers_| is copied to |fallback_buffers_| in
         // OnDecoderSelected().
-        for (const auto& buffer : buffers) {
+        for (auto& buffer : buffers) {
           pending_buffers_.push_back(std::move(buffer));
         }
         buffers.clear();
@@ -843,7 +858,8 @@ void DecoderStream<StreamType>::OnBuffersReady(
     // TODO(crbug.com/c/1326324): Convert |status| into a typed status so that
     // it can be set as a cause here.
     if (read_cb_) {
-      SatisfyRead(DecoderStatus::Codes::kDecoderStreamDemuxerError);
+      SatisfyRead(
+          base::unexpected(DecoderStatus::Codes::kDecoderStreamDemuxerError));
     }
   }
 
@@ -924,7 +940,7 @@ void DecoderStream<StreamType>::OnBuffersReady(
 
   if (status == DemuxerStream::kAborted) {
     if (read_cb_) {
-      SatisfyRead(DecoderStatus::Codes::kAborted);
+      SatisfyRead(base::unexpected(DecoderStatus::Codes::kAborted));
     }
     return;
   }
@@ -939,7 +955,7 @@ void DecoderStream<StreamType>::OnBuffersReady(
     ReportEncryptionType(buffers[0]);
   }
 
-  for (const auto& buffer : buffers) {
+  for (auto& buffer : buffers) {
     Decode(std::move(buffer));
   }
   buffers.clear();
@@ -997,7 +1013,7 @@ void DecoderStream<StreamType>::CompleteDecoderReinitialization(
     return;
 
   if (state_ == State::kStateError) {
-    SatisfyRead(std::move(status));
+    SatisfyRead(base::unexpected(std::move(status)));
     return;
   }
 
@@ -1092,7 +1108,7 @@ void DecoderStream<StreamType>::MaybePrepareAnotherOutput() {
   const scoped_refptr<Output> output = unprepared_outputs_.front();
   TRACE_EVENT_BEGIN("media",
                     perfetto::StaticString(GetPrepareTraceString<StreamType>()),
-                    perfetto::Track::FromPointer(this), "timestamp_us",
+                    GetTracingTrack(this), "timestamp_us",
                     output->timestamp().InMicroseconds());
   preparing_output_ = true;
   prepare_cb_.Run(
@@ -1138,7 +1154,7 @@ template <DemuxerStream::Type StreamType>
 void DecoderStream<StreamType>::CompletePrepare(const Output* output) {
   DCHECK(preparing_output_);
   TRACE_EVENT_END(
-      "media", perfetto::Track::FromPointer(this), "timestamp_us",
+      "media", GetTracingTrack(this), "timestamp_us",
       (output ? output->timestamp() : kNoTimestamp).InMicroseconds());
   preparing_output_ = false;
 }

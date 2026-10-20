@@ -149,17 +149,15 @@ class IsolatedWebAppURLLoaderImpl : public network::mojom::URLLoader {
     network::URLLoaderCompletionStatus status(net_error);
     // For these values we use the same `body_length_` as we don't currently
     // provide encoding in Web Bundles.
-    status.encoded_data_length = (body_length_ + header_length_).InBytes();
-    status.encoded_body_length = body_length_.InBytes();
-    status.decoded_body_length = body_length_.InBytes();
+    status.encoded_data_length = body_length_ + header_length_;
+    status.encoded_body_length = body_length_;
+    status.decoded_body_length = body_length_;
     loader_client_->OnComplete(status);
   }
 
   // network::mojom::URLLoader implementation
   void FollowRedirect(
-      const std::vector<std::string>& removed_headers,
-      const net::HttpRequestHeaders& modified_headers,
-      const net::HttpRequestHeaders& modified_cors_exempt_headers,
+      network::HttpRequestHeadersUpdateParams headers_update_params,
       const std::optional<GURL>& new_url) override {
     NOTREACHED();
   }

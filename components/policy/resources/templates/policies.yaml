@@ -1216,7 +1216,7 @@ policies:
   1215: ProvisionManagedClientCertificateForUser
   1216: LocalUserFilesAllowed
   1217: ''
-  1218: SubAppsAPIsAllowedWithoutGestureAndAuthorizationForOrigins
+  1218: ''
   1219: DefaultWebPrintingSetting
   1220: WebPrintingAllowedForUrls
   1221: WebPrintingBlockedForUrls
@@ -1301,9 +1301,9 @@ policies:
   1300: AutofillPredictionSettings
   1301: ArcOpenLinksInBrowserByDefault
   1302: EnterpriseProfileBadgeToolbarSettings
-  1303: DefaultDirectSocketsPrivateNetworkAccessSetting
-  1304: DirectSocketsPrivateNetworkAccessAllowedForUrls
-  1305: DirectSocketsPrivateNetworkAccessBlockedForUrls
+  1303: ''
+  1304: ''
+  1305: ''
   1306: SelectParserRelaxationEnabled
   1307: ClassManagementEnabled
   1308: EnterpriseSearchAggregatorSettings
@@ -1438,8 +1438,8 @@ policies:
   1437: KrispNoiseCancellationEnabled
   1438: AndroidEntraSsoEnabled
   1439: FindsSettings
-  1440: MetricsReportingLevel
-  1441: DeviceMetricsReportingLevel
+  1440: ''
+  1441: ''
   1442: CpuPerformanceTierOverride
   1443: ForceForegroundPriorityForUrls
   1444: DataUrlInWebWorkerOpaqueOriginEnabled
@@ -1455,6 +1455,46 @@ policies:
   1454: HttpHeaderInjection
   1455: ChromeSuggestionsSettings
   1456: RestrictBackgroundFetchFromServiceWorkerEnabled
+  1457: GeminiEnterpriseSettings
+  1458: RestrictYouTubeCookiesDeletion
+  1459: AutofillSettings
+  1460: IsolateOriginsShortlist
+  1461: DeviceWeeklyScheduledResuspendDelayMs
+  1462: DefaultAutomaticDownloadsSetting
+  1463: AutomaticDownloadsAllowedForUrls
+  1464: AutomaticDownloadsBlockedForUrls
+  1465: VoiceTypingSettings
+  1466: ProxyProvisioningDomains
+  1467: ThirdPartyAiChatSettings
+  1468: ProcessIsolationEnabled
+  1469: TryOnYouSettings
+  1470: DeviceOnlinePasswordMismatchBehavior
+  1471: UpdateOnZeroWindowEnabled
+  1472: BackForwardCacheForWebSocketsAllowed
+  1473: GeminiChromeFileUploadSettings
+  1474: AutofillGenAiSettings
+  1475: OnNetworkRequestEnterpriseConnector
+  1476: EnterprisePublishedSkills
+  1477: OnDataCopiedEnterpriseConnector
+  1478: ""
+  1479: ""
+  1480: ""
+  1481: DeviceOsMigrationTargetDate
+  1482: RendererAccessibilityEnabled
+  1483: ExtensionReviewPromptsEnabled
+  1484: BackgroundTabFreezingEnabled
+  1485: ShowInputOptionsInShelfEnabled
+  1486: AdminInstalledChromeAppsForceAllowed
+  1487: DeviceMaxUserProfiles
+  1488: AutoLaunchAndroidApps
+  1489: LaunchOnStartupEnabled
+  1490: DynamicPatchingEnabled
+  1491: AllHttpAuthSchemesAllowedForProxies
+  1492: ClipboardHistoryEnabled
+  1493: ExtensionForceInstallWithSearchOrNewTabOverridesEnabled
+  1494: ManagedClientCertificateForBrowserConfig
+  1495: ManagedClientCertificateForUserConfig
+  1496: GeminiEnterpriseUrl
 
 atomic_groups:
   1: Homepage
@@ -1521,3 +1561,4 @@ atomic_groups:
   62: GeolocationSettings
   63: SocketPoolSizeSettings
   64: SubAppsWithoutPromptsSettings
+  65: AutomaticDownloadsSettings

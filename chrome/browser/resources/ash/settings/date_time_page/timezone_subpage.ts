@@ -90,18 +90,18 @@ export class TimezoneSubpageElement extends TimezoneSubpageElementBase {
     };
   }
 
-  activeTimeZoneDisplayName: string;
+  declare activeTimeZoneDisplayName: string;
 
   // DeepLinkingMixin override
   override supportedSettingIds = new Set<Setting>([
     Setting.kChangeTimeZone,
   ]);
 
-  private canSetSystemTimezone_: boolean;
+  declare private canSetSystemTimezone_: boolean;
   private browserProxy_: DateTimeBrowserProxy;
-  private geolocationWarningText_: string;
-  private showEnableSystemGeolocationDialog_: boolean;
-  private shouldShowGeolocationWarningText_: boolean;
+  declare private geolocationWarningText_: string;
+  declare private showEnableSystemGeolocationDialog_: boolean;
+  declare private shouldShowGeolocationWarningText_: boolean;
 
   /**
    * Returns the browser proxy page handler (to invoke functions).
@@ -139,7 +139,13 @@ export class TimezoneSubpageElement extends TimezoneSubpageElementBase {
    * 'access-code-validation-complete' event is triggered which invokes
    * enableTimeZoneSetting_.
    */
-  override currentRouteChanged(newRoute: Route, _oldRoute?: Route): void {
+  override currentRouteChanged(newRoute: Route, oldRoute?: Route): void {
+    if (oldRoute === routes.DATETIME_TIMEZONE_SUBPAGE) {
+      if (isChild()) {
+        this.disableTimeZoneSetting_();
+        this.pageHandler.onSubpageClosed();
+      }
+    }
     if (newRoute !== routes.DATETIME_TIMEZONE_SUBPAGE) {
       return;
     }

@@ -44,8 +44,8 @@ bool StructTraits<blink::mojom::WebPreferencesDataView,
       !data.ReadNetworkQualityEstimatorWebHoldback(
           &out->network_quality_estimator_web_holdback) ||
       !data.ReadWebAppScope(&out->web_app_scope) ||
-      !data.ReadRootScrollbarThemeColor(&out->root_scrollbar_theme_color) ||
-      !data.ReadDuplicateNavThreshold(&out->duplicate_nav_threshold)
+      !data.ReadWebAppCustomManifestUrl(&out->web_app_custom_manifest_url) ||
+      !data.ReadRootScrollbarThemeColor(&out->root_scrollbar_theme_color)
 #if BUILDFLAG(IS_ANDROID)
       || !data.ReadDefaultVideoPosterUrl(&out->default_video_poster_url)
 #endif
@@ -68,6 +68,7 @@ bool StructTraits<blink::mojom::WebPreferencesDataView,
   out->text_areas_are_resizable = data.text_areas_are_resizable();
   out->allow_scripts_to_close_windows = data.allow_scripts_to_close_windows();
   out->allow_unrestricted_window_focus = data.allow_unrestricted_window_focus();
+  out->clipboard_focus_exempt = data.clipboard_focus_exempt();
   out->remote_fonts_enabled = data.remote_fonts_enabled();
   out->javascript_can_access_clipboard = data.javascript_can_access_clipboard();
   out->dns_prefetching_enabled = data.dns_prefetching_enabled();
@@ -163,6 +164,7 @@ bool StructTraits<blink::mojom::WebPreferencesDataView,
   out->double_tap_to_zoom_enabled = data.double_tap_to_zoom_enabled();
   out->fullscreen_supported = data.fullscreen_supported();
   out->is_initial_profile = data.is_initial_profile();
+  out->text_size_adjust_enabled = data.text_size_adjust_enabled();
 #if BUILDFLAG(IS_ANDROID)
   out->font_scale_factor = data.font_scale_factor();
   out->font_weight_adjustment = data.font_weight_adjustment();
@@ -240,11 +242,8 @@ bool StructTraits<blink::mojom::WebPreferencesDataView,
   out->renderer_wide_named_frame_lookup =
       data.renderer_wide_named_frame_lookup();
   out->modal_context_menu = data.modal_context_menu();
-  out->subapps_apis_require_user_gesture_and_authorization =
-      data.require_transient_activation_and_user_confirmation_for_subapps_api();
   out->payment_request_enabled = data.payment_request_enabled();
   out->ai_ot_apis_enabled = data.ai_ot_apis_enabled();
-  out->ignore_duplicate_nav_enabled = data.ignore_duplicate_nav_enabled();
 
 #if BUILDFLAG(IS_MAC)
   out->should_disable_external_popups = data.should_disable_external_popups();
@@ -256,6 +255,9 @@ bool StructTraits<blink::mojom::WebPreferencesDataView,
 #endif  // BUILDFLAG(IS_ANDROID)
 
   out->is_indigo_onboarding = data.is_indigo_onboarding();
+
+  out->is_xslt_deprecation_banner_suppressed =
+      data.is_xslt_deprecation_banner_suppressed();
 
   return true;
 }

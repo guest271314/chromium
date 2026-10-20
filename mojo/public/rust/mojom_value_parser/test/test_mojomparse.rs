@@ -22,13 +22,17 @@
 chromium::import! {
     "//mojo/public/rust/mojom_value_parser:mojom_value_parser_core";
     "//mojo/public/rust/mojom_value_parser:parser_unittests_rust";
+    "//mojo/public/rust/mojom_value_parser:dup_enum_unittest_rust";
+    "//mojo/public/rust/mojom_value_parser:shadowing_unittest_rust";
     "//mojo/public/rust/bindings";
 }
 
 use rust_gtest_interop::prelude::*;
 
-use bindings::receiver::PendingReceiver;
-use bindings::remote::PendingRemote;
+use bindings::for_testing::DummyRegistrarForTesting;
+use bindings::receiver::{PendingAssociatedReceiver, PendingReceiver};
+use bindings::remote::{PendingAssociatedRemote, PendingRemote};
+use mojom_value_parser_core::Predicate;
 use mojom_value_parser_core::*;
 use ordered_float::OrderedFloat;
 use parser_unittests_rust::parser_unittests::*;
@@ -142,13 +146,13 @@ impl TestType {
     /// (1) T's associated MojomType and MojomWireType match ours, and
     /// (2) The input value of type T can be converted to and from the input
     ///     MojomValue
-    fn validate_mojomparse<T: MojomParse<()> + std::fmt::Debug + Clone + PartialEq>(
+    fn validate_mojomparse<T: MojomParse + std::fmt::Debug + Clone + PartialEq>(
         &self,
         rust_val: T,
         mojom_val: MojomValue,
     ) {
-        // FOR RELEASE: These assertion macros seem to print a massive (and utterly
-        // useless) stack trace. See if we can turn that off.
+        // FOR RELEASE: These assertion macros seem to print a massive (and
+        // utterly useless) stack trace. See if we can turn that off.
         expect_eq!(
             T::mojom_type(),
             self.base_type,
@@ -171,7 +175,10 @@ impl TestType {
     /// Similar to `validate_mojomparse`, but for types which contain handles.
     /// Since no two different handle values will ever be equal, it uses a
     /// special comparison operator that ignores handles.
-    fn validate_mojomparse_handles<T: MojomParse<()> + std::fmt::Debug + PartialEq>(
+    ///
+    /// Note: This will panic if you pass in types which contain associated
+    /// endpoints, use `validate_mojomparse_associated` for those.
+    fn validate_mojomparse_handles<T: MojomParse + std::fmt::Debug + PartialEq>(
         &self,
         rust_val: T,
         get_mojom_val: impl Fn() -> MojomValue,
@@ -199,6 +206,45 @@ impl TestType {
             // The function we really want to test here is T::try_from_mojom_value
             &into_mojom_value(try_from_mojom_value::<T>(get_mojom_val()).unwrap())
         ));
+    }
+
+    /// Similar to `validate_mojomparse`, but for types which contain associated
+    /// endpoints. It requires the user to specify the comparison operator used
+    /// after deparsing; typically, this should be a closure that compares the
+    /// associated endpoints to their paired counterparts using
+    /// `same_interface_for_testing`.
+    fn validate_mojomparse_associated<
+        T: MojomParse<T, DummyRegistrarForTesting> + std::fmt::Debug + PartialEq,
+    >(
+        &self,
+        rust_val: T,
+        mojom_val: MojomValue,
+        has_expected_value: impl Fn(&T) -> bool,
+    ) {
+        let parsing_registrar = DummyRegistrarForTesting::new(true);
+        let deparsing_registrar = DummyRegistrarForTesting::new(false);
+
+        expect_eq!(
+            T::mojom_type(),
+            self.base_type,
+            "Type {} had the wrong associated MojomType!",
+            self.type_name
+        );
+
+        expect_eq!(
+            *T::wire_type(),
+            self.packed_type,
+            "Type {} failed to pack correctly!",
+            self.type_name
+        );
+
+        expect_true!(equivalent_value(
+            &mojom_val,
+            &rust_val.into_mojom_value(&deparsing_registrar)
+        ));
+
+        let parsed_val = T::try_from_mojom_value(mojom_val, &parsing_registrar).unwrap();
+        expect_true!(has_expected_value(&parsed_val));
     }
 }
 
@@ -1048,7 +1094,7 @@ fn test_unions() {
         BaseUnion::f1(FourInts { a: 5, b: 6, c: 7, d: 8 }),
         base_union_mojom_f1(four_ints_mojom(5, 6, 7, 8)),
     );
-    BASE_UNION_TY.validate_mojomparse(BaseUnion::fl(3.14), base_union_mojom_fl(3.14));
+    BASE_UNION_TY.validate_mojomparse(BaseUnion::fl(OrderedFloat(3.14)), base_union_mojom_fl(3.14));
 
     expect_true!(try_from_mojom_value::<BaseUnion>(MojomValue::Union(
         99,
@@ -1088,7 +1134,7 @@ fn test_unions() {
             u1: NestedUnion::n(50),
             i1: 11,
             u2: NestederUnion::b(false),
-            d1: 3.14159,
+            d1: OrderedFloat(3.14159),
             u3: BaseUnion::n1(55),
             u4: NestederUnion::n(12),
             i2: 33,
@@ -1448,7 +1494,7 @@ fn test_arrays() {
             bool_sized: [
                 false, false, true, false, true, true, false, false, true, false, true, true, false,
             ],
-            floats: vec![1.1, 2.2, 3.3],
+            floats: vec![OrderedFloat(1.1), OrderedFloat(2.2), OrderedFloat(3.3)],
             enums: vec![TestEnum::Four, TestEnum::Zero, TestEnum::Seven],
             unions: vec![BaseUnion::n1(12), BaseUnion::u1(22), BaseUnion::e1(TestEnum::Four)],
             unions_nested: vec![NestedUnion::n(32), NestedUnion::u(BaseUnion::n1(42))],
@@ -2286,11 +2332,11 @@ fn test_nullables() {
             b: Some(true),
             n1: Some(33),
             n2: Some(12),
-            empty: Some(Empty {}),
+            empty: Some(Box::new(Empty {})),
             e: Some(TestEnum::Four),
-            fourints: Some(FourInts { a: 1, b: 2, c: 3, d: 4 }),
-            f1: Some(3.14),
-            f2: Some(2.71828),
+            fourints: Some(Box::new(FourInts { a: 1, b: 2, c: 3, d: 4 })),
+            f1: Some(OrderedFloat(3.14)),
+            f2: Some(OrderedFloat(2.71828)),
         },
         nullable_basics_mojom(
             Some(true),
@@ -2307,9 +2353,13 @@ fn test_nullables() {
     ARRAYS_OF_NULLABLES_TY.validate_mojomparse(
         ArraysOfNullables {
             bools: vec![Some(true), None, Some(false)],
-            empties: vec![None, Some(Empty {}), None, None, None],
+            empties: vec![None, Some(Box::new(Empty {})), None, None, None],
             enums: vec![Some(TestEnum::Seven), None, Some(TestEnum::Zero), Some(TestEnum::Seven)],
-            unions: vec![Some(BaseUnion::n1(5)), None, Some(BaseUnion::b1(true))],
+            unions: vec![
+                Some(Box::new(BaseUnion::n1(5))),
+                None,
+                Some(Box::new(BaseUnion::b1(true))),
+            ],
         },
         arrays_of_nullables_mojom(
             vec![Some(true), None, Some(false)],
@@ -2342,7 +2392,7 @@ fn test_nullables() {
         .validate_mojomparse(UnionWithNullables::u(None), union_with_nullables_mojom_u(None));
 
     UNION_WITH_NULLABLES_TY.validate_mojomparse(
-        UnionWithNullables::e(Some(Empty {})),
+        UnionWithNullables::e(Some(Box::new(Empty {}))),
         union_with_nullables_mojom_e(Some(Empty {})),
     );
     UNION_WITH_NULLABLES_TY.validate_mojomparse(
@@ -2350,15 +2400,15 @@ fn test_nullables() {
         union_with_nullables_mojom_str(Some("hello")),
     );
     UNION_WITH_NULLABLES_TY.validate_mojomparse(
-        UnionWithNullables::u(Some(BaseUnion::n1(123))),
+        UnionWithNullables::u(Some(Box::new(BaseUnion::n1(123)))),
         union_with_nullables_mojom_u(Some(base_union_mojom_n1(123))),
     );
     UNION_WITH_NULLABLES_TY.validate_mojomparse(
-        UnionWithNullables::u(Some(BaseUnion::b1(true))),
+        UnionWithNullables::u(Some(Box::new(BaseUnion::b1(true)))),
         union_with_nullables_mojom_u(Some(base_union_mojom_b1(true))),
     );
     UNION_WITH_NULLABLES_TY.validate_mojomparse(
-        UnionWithNullables::u(Some(BaseUnion::f1(FourInts { a: 1, b: 2, c: 3, d: 4 }))),
+        UnionWithNullables::u(Some(Box::new(BaseUnion::f1(FourInts { a: 1, b: 2, c: 3, d: 4 })))),
         union_with_nullables_mojom_u(Some(base_union_mojom_f1(four_ints_mojom(1, 2, 3, 4)))),
     );
 
@@ -2368,7 +2418,7 @@ fn test_nullables() {
     );
     NULLABLE_OTHERS_TY.validate_mojomparse(
         NullableOthers {
-            u: Some(UnionWithNullables::u(Some(BaseUnion::n1(42)))),
+            u: Some(Box::new(UnionWithNullables::u(Some(Box::new(BaseUnion::n1(42)))))),
             m: Some([(1, 2), (3, 4)].into()),
             str: Some("hello".to_string()),
         },
@@ -2655,4 +2705,200 @@ fn test_pending_types() {
         },
         || with_pending_types_mojom(dummy_handle(), dummy_handle(), dummy_handle(), dummy_handle()),
     );
+}
+
+static WITH_PENDING_ASSOCIATED_TYPES_TY: LazyLock<TestType> = LazyLock::new(|| TestType {
+    type_name: "WithPendingAssociatedTypes",
+    base_type: wrap_struct_fields_type(vec![
+        ("rec".to_string(), nullable_ty!(MojomType::PendingAssociatedReceiver)),
+        ("rem".to_string(), nullable_ty!(MojomType::PendingAssociatedRemote)),
+        ("rec2".to_string(), nullable_ty!(MojomType::PendingAssociatedReceiver)),
+        ("rem2".to_string(), nullable_ty!(MojomType::PendingAssociatedRemote)),
+    ]),
+    packed_type: wrap_packed_struct_fields(
+        vec![
+            ("rec".to_string(), struct_leaf!(0, PackedLeafType::PendingAssociatedReceiver, true)),
+            ("rem".to_string(), struct_leaf!(1, PackedLeafType::PendingAssociatedRemote, true)),
+            ("rec2".to_string(), struct_leaf!(2, PackedLeafType::PendingAssociatedReceiver, true)),
+            ("rem2".to_string(), struct_leaf!(3, PackedLeafType::PendingAssociatedRemote, true)),
+        ],
+        4,
+    ),
+});
+
+fn with_pending_associated_types_mojom(rec: u32, rem: u32, rec2: u32, rem2: u32) -> MojomValue {
+    wrap_struct_fields_value(vec![
+        (
+            "rec".to_string(),
+            nullable_val!(Some(MojomValue::PendingAssociatedReceiver(rec.try_into().unwrap()))),
+        ),
+        (
+            "rem".to_string(),
+            nullable_val!(Some(MojomValue::PendingAssociatedRemote(rem.try_into().unwrap()))),
+        ),
+        (
+            "rec2".to_string(),
+            nullable_val!(Some(MojomValue::PendingAssociatedReceiver(rec2.try_into().unwrap()))),
+        ),
+        (
+            "rem2".to_string(),
+            nullable_val!(Some(MojomValue::PendingAssociatedRemote(rem2.try_into().unwrap()))),
+        ),
+    ])
+}
+
+#[gtest(RustTestMojomParsingAttr, TestPendingAssociatedTypes)]
+fn test_pending_associated_types() {
+    let (rem_a, rec_a) = PendingAssociatedRemote::new_pair();
+    let (rem_b, rec_b) = PendingAssociatedReceiver::new_pair();
+    let (rem_c, rec_c) = PendingAssociatedRemote::new_pair();
+    let (rem_d, rec_d) = PendingAssociatedReceiver::new_pair();
+
+    WITH_PENDING_ASSOCIATED_TYPES_TY.validate_mojomparse_associated(
+        WithPendingAssociatedTypes {
+            rec: Some(rec_a),
+            rem: Some(rem_b),
+            rec2: Some(rec_c),
+            rem2: Some(rem_d),
+        },
+        with_pending_associated_types_mojom(1, 2, 3, 4),
+        |parsed| {
+            parsed.rec.as_ref().unwrap().same_interface_for_testing(&rem_a)
+                && parsed.rem.as_ref().unwrap().same_interface_for_testing(&rec_b)
+                && parsed.rec2.as_ref().unwrap().same_interface_for_testing(&rem_c)
+                && parsed.rem2.as_ref().unwrap().same_interface_for_testing(&rec_d)
+        },
+    );
+
+    WITH_PENDING_ASSOCIATED_TYPES_TY.validate_mojomparse_associated(
+        WithPendingAssociatedTypes { rec: None, rem: None, rec2: None, rem2: None },
+        wrap_struct_fields_value(vec![
+            ("rec".to_string(), MojomValue::Nullable(None)),
+            ("rem".to_string(), MojomValue::Nullable(None)),
+            ("rec2".to_string(), MojomValue::Nullable(None)),
+            ("rem2".to_string(), MojomValue::Nullable(None)),
+        ]),
+        |parsed| {
+            parsed.rec.is_none()
+                && parsed.rem.is_none()
+                && parsed.rec2.is_none()
+                && parsed.rem2.is_none()
+        },
+    );
+
+    let (rem_e, rec_e) = PendingAssociatedRemote::new_pair();
+    let (rem_f, rec_f) = PendingAssociatedReceiver::new_pair();
+    WITH_PENDING_ASSOCIATED_TYPES_TY.validate_mojomparse_associated(
+        WithPendingAssociatedTypes { rec: Some(rec_e), rem: None, rec2: None, rem2: Some(rem_f) },
+        wrap_struct_fields_value(vec![
+            (
+                "rec".to_string(),
+                nullable_val!(Some(MojomValue::PendingAssociatedReceiver(1.try_into().unwrap()))),
+            ),
+            ("rem".to_string(), MojomValue::Nullable(None)),
+            ("rec2".to_string(), MojomValue::Nullable(None)),
+            (
+                "rem2".to_string(),
+                nullable_val!(Some(MojomValue::PendingAssociatedRemote(2.try_into().unwrap()))),
+            ),
+        ]),
+        |parsed| {
+            parsed.rec.as_ref().unwrap().same_interface_for_testing(&rem_e)
+                && parsed.rem.is_none()
+                && parsed.rec2.is_none()
+                && parsed.rem2.as_ref().unwrap().same_interface_for_testing(&rec_f)
+        },
+    );
+}
+
+#[gtest(MojomParseTest, DuplicateEnumValues)]
+fn test_duplicate_enum_values() {
+    use dup_enum_unittest_rust::dup_enum_unittest::DupEnum;
+    assert_eq!(DupEnum::kFoo as i32, 0);
+    assert_eq!(DupEnum::kBar as i32, 1);
+    assert_eq!(DupEnum::kLast as i32, 1);
+    assert_eq!(DupEnum::kBar, DupEnum::kLast);
+    assert_eq!(DupEnum::try_from(1).unwrap(), DupEnum::kBar);
+    assert_eq!(DupEnum::try_from(1).unwrap(), DupEnum::kLast);
+}
+
+#[gtest(MojomParseTest, RecursiveType)]
+fn test_recursive_type() {
+    let node =
+        RecursiveNode { value: 1, next: Some(Box::new(RecursiveNode { value: 2, next: None })) };
+
+    let mojom_val = into_mojom_value(node.clone());
+    let parsed: RecursiveNode = try_from_mojom_value(mojom_val).unwrap();
+    assert_eq!(node, parsed);
+}
+
+#[gtest(MojomParseTest, MutuallyRecursiveTypes)]
+fn test_mutually_recursive_types() {
+    let a = MutuallyRecursiveA {
+        value: 1,
+        b: Some(Box::new(MutuallyRecursiveB {
+            value: 2,
+            a: Some(Box::new(MutuallyRecursiveA { value: 3, b: None })),
+        })),
+    };
+
+    let mojom_val = into_mojom_value(a.clone());
+    let parsed: MutuallyRecursiveA = try_from_mojom_value(mojom_val).unwrap();
+    assert_eq!(a, parsed);
+}
+
+#[gtest(MojomParseTest, ContextShadowing)]
+fn test_context_shadowing() {
+    use shadowing_unittest_rust::shadowing_unittest::{
+        Context as StructContext, StructWithContextAndValueFields,
+    };
+    use shadowing_unittest_rust::shadowing_unittest_enum::Context as EnumContext;
+    use shadowing_unittest_rust::shadowing_unittest_union::Context as UnionContext;
+
+    let registrar = DummyRegistrarForTesting::new(false);
+
+    // 1. Struct named Context
+    let struct_val = StructContext { value: 42 };
+    let mojom_val = struct_val.clone().into_mojom_value(&registrar);
+    let parsed_struct = StructContext::try_from_mojom_value(mojom_val, &registrar).unwrap();
+    assert_eq!(struct_val, parsed_struct);
+
+    // 2. Struct with fields named context and value
+    let struct_fields = StructWithContextAndValueFields { context: 1, value: 2 };
+    let mojom_val = struct_fields.clone().into_mojom_value(&registrar);
+    let parsed_fields =
+        StructWithContextAndValueFields::try_from_mojom_value(mojom_val, &registrar).unwrap();
+    assert_eq!(struct_fields, parsed_fields);
+
+    // 3. Enum named Context
+    let enum_val = EnumContext::kPrivilegedUtility;
+    let mojom_val = enum_val.clone().into_mojom_value(&registrar);
+    let parsed_enum = EnumContext::try_from_mojom_value(mojom_val, &registrar).unwrap();
+    assert_eq!(enum_val, parsed_enum);
+
+    // 4. Union named Context
+    let union_val = UnionContext::int_val(99);
+    let mojom_val = union_val.clone().into_mojom_value(&registrar);
+    let parsed_union = UnionContext::try_from_mojom_value(mojom_val, &registrar).unwrap();
+    assert_eq!(union_val, parsed_union);
+}
+
+#[gtest(MojomParseTest, ParsingResultShadowing)]
+fn test_parsing_result_shadowing() {
+    use parser_unittests_rust::parser_unittests::ParsingResult;
+    let registrar = DummyRegistrarForTesting::new(false);
+    let original = ParsingResult { value: 12345 };
+    let mojom_val = original.clone().into_mojom_value(&registrar);
+    let parsed = ParsingResult::try_from_mojom_value(mojom_val, &registrar).unwrap();
+    assert_eq!(original, parsed);
+}
+
+#[gtest(MojomParseTest, PredicateShadowing)]
+fn test_predicate_shadowing() {
+    use parser_unittests_rust::parser_unittests::Predicate as TestPredicate;
+    let registrar = DummyRegistrarForTesting::new(false);
+    let original = TestPredicate { value: 67890 };
+    let mojom_val = original.clone().into_mojom_value(&registrar);
+    let parsed = TestPredicate::try_from_mojom_value(mojom_val, &registrar).unwrap();
+    assert_eq!(original, parsed);
 }

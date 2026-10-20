@@ -4,15 +4,35 @@
 
 #include "components/enterprise/data_protection/features.h"
 
+#include "build/build_config.h"
+
 namespace enterprise_data_protection {
 
-BASE_FEATURE(kEnableDeepScanVerdictCacheSize,
-             base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kEnableAndroidEnterpriseScreenshotProtection,
+             base::FEATURE_ENABLED_BY_DEFAULT);
+
+BASE_FEATURE(kEnableDeepScanVerdictCacheSize, base::FEATURE_ENABLED_BY_DEFAULT);
+
+// TODO(crbug.com/533005087): Disable the flag on iOS when changing default
+// state to enabled, then support timestamp timezone formatting for iOS.
+BASE_FEATURE(kEnableWatermarkTimestampTimezone,
+#if BUILDFLAG(IS_IOS)
+             base::FEATURE_DISABLED_BY_DEFAULT
+#else
+             base::FEATURE_ENABLED_BY_DEFAULT
+#endif
+);
 
 BASE_FEATURE_PARAM(size_t,
                    kVerdictCacheMaxSize,
                    &kEnableDeepScanVerdictCacheSize,
                    /*name=*/"verdict_cache_max_size",
                    /*default_value=*/200);
+
+BASE_FEATURE_PARAM(bool,
+                   kVerdictCacheRemoveQueryParams,
+                   &kEnableDeepScanVerdictCacheSize,
+                   /*name=*/"remove_query_params",
+                   /*default_value=*/true);
 
 }  // namespace enterprise_data_protection

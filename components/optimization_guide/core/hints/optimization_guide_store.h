@@ -10,6 +10,7 @@
 #include <string>
 
 #include "base/containers/flat_set.h"
+#include "base/files/file_path.h"
 #include "base/functional/callback.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
@@ -27,6 +28,10 @@ class SequencedTaskRunner;
 }  // namespace base
 
 namespace optimization_guide {
+
+// The folder where the hint data will be stored on disk.
+extern const base::FilePath::CharType kOptimizationGuideHintStore[];
+
 namespace proto {
 class StoreEntry;
 }  // namespace proto
@@ -73,8 +78,6 @@ class OptimizationGuideStore {
   //     ==> "2_55_foo.com"
   // NOTE: The order and value of the existing store entry types within the enum
   // cannot be changed, but new types can be added to the end.
-  // StoreEntryType should remain synchronized with the
-  // HintCacheStoreEntryType in enums.xml.
   enum class StoreEntryType {
     kEmpty = 0,
     kMetadata = 1,

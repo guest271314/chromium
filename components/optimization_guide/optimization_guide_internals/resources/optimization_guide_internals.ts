@@ -80,6 +80,16 @@ class TableFilter {
     this.filterCellIndices = [];
     this.readFilterCellIndices();
 
+    const params = new URLSearchParams(window.location.search);
+    const includeParam = params.get('include');
+    if (includeParam) {
+      this.includeInput.value = includeParam;
+    }
+    const excludeParam = params.get('exclude');
+    if (excludeParam) {
+      this.excludeInput.value = excludeParam;
+    }
+
     this.includeFun = this.readFilter(this.includeInput);
     this.excludeFun = this.readFilter(this.excludeInput);
     this.filterDelayTimeoutId = null;
@@ -88,6 +98,13 @@ class TableFilter {
 
     this.includeInput.addEventListener('input', (e) => this.triggerUpdate(e));
     this.excludeInput.addEventListener('input', (e) => this.triggerUpdate(e));
+
+    window.addEventListener('popstate', () => {
+      const searchParams = new URLSearchParams(window.location.search);
+      this.includeInput.value = searchParams.get('include') ?? '';
+      this.excludeInput.value = searchParams.get('exclude') ?? '';
+      this.readAndApplyAllFilters();
+    });
   }
 
   readFilterCellIndices() {
@@ -152,6 +169,25 @@ class TableFilter {
   }
 
   /**
+   * Updates the URL query parameters to reflect the current input filter
+   * values.
+   */
+  updateUrlParams() {
+    const url = new URL(window.location.href);
+    if (this.includeInput.value) {
+      url.searchParams.set('include', this.includeInput.value);
+    } else {
+      url.searchParams.delete('include');
+    }
+    if (this.excludeInput.value) {
+      url.searchParams.set('exclude', this.excludeInput.value);
+    } else {
+      url.searchParams.delete('exclude');
+    }
+    window.history.replaceState(null, '', url);
+  }
+
+  /**
    * Visits every row (except the first, which is the titles) of `this.table`
    * and shows and hides it. Displays the number of hidden rows (as negative
    * value) in `filterStatsSpan`.
@@ -191,6 +227,7 @@ class TableFilter {
    */
   triggerUpdate(e: Event) {
     const elt = e.target as HTMLElement;
+    this.updateUrlParams();
     // Debounce: New trigger cancels an existing trigger's timeout.
     if (this.filterDelayTimeoutId != null) {
       clearTimeout(this.filterDelayTimeoutId);
@@ -220,7 +257,7 @@ function convertMojoTimeToJS(mojoTime: Time) {
   // conversion from microseconds to milliseconds.
   const windowsEpoch = Date.UTC(1601, 0, 1, 0, 0, 0, 0);
   const unixEpoch = Date.UTC(1970, 0, 1, 0, 0, 0, 0);
-  // |epochDeltaInMs| equals to base::Time::kTimeTToMicrosecondsOffset.
+  // |epochDeltaInMs| equals to base::Time::kMicrosecondsFromWindowsToUnixEpoch.
   const epochDeltaInMs = unixEpoch - windowsEpoch;
   const timeInMs = Number(mojoTime.internalValue) / 1000;
 

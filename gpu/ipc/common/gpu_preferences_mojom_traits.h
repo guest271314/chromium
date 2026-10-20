@@ -7,6 +7,7 @@
 
 #include <vector>
 
+#include "base/containers/circular_deque.h"
 #include "base/notreached.h"
 #include "build/build_config.h"
 #include "gpu/config/gpu_preferences.h"
@@ -21,8 +22,8 @@
 namespace mojo {
 
 template <>
-struct GPU_IPC_COMMON_EXPORT EnumTraits<gpu::mojom::GrContextType,
-                                        gpu::GrContextType> {
+struct GPU_IPC_COMMON_EXPORT
+    EnumTraits<gpu::mojom::GrContextType, gpu::GrContextType> {
   static gpu::mojom::GrContextType ToMojom(gpu::GrContextType input) {
     switch (input) {
       case gpu::GrContextType::kNone:
@@ -33,6 +34,8 @@ struct GPU_IPC_COMMON_EXPORT EnumTraits<gpu::mojom::GrContextType,
         return gpu::mojom::GrContextType::kVulkan;
       case gpu::GrContextType::kGraphiteDawn:
         return gpu::mojom::GrContextType::kGraphiteDawn;
+      case gpu::GrContextType::kGraphiteVulkan:
+        return gpu::mojom::GrContextType::kGraphiteVulkan;
     }
     NOTREACHED();
   }
@@ -46,6 +49,8 @@ struct GPU_IPC_COMMON_EXPORT EnumTraits<gpu::mojom::GrContextType,
         return gpu::GrContextType::kVulkan;
       case gpu::mojom::GrContextType::kGraphiteDawn:
         return gpu::GrContextType::kGraphiteDawn;
+      case gpu::mojom::GrContextType::kGraphiteVulkan:
+        return gpu::GrContextType::kGraphiteVulkan;
     }
     NOTREACHED();
   }
@@ -195,7 +200,6 @@ struct GPU_IPC_COMMON_EXPORT StructTraits<gpu::mojom::GpuPreferencesDataView,
     out->disable_gpu_watchdog = prefs.disable_gpu_watchdog();
     out->gpu_sandbox_start_early = prefs.gpu_sandbox_start_early();
     out->enable_low_latency_dxva = prefs.enable_low_latency_dxva();
-    out->enable_zero_copy_dxgi_video = prefs.enable_zero_copy_dxgi_video();
     out->enable_nv12_dxgi_video = prefs.enable_nv12_dxgi_video();
     out->disable_software_rasterizer = prefs.disable_software_rasterizer();
     out->log_gpu_control_list_decisions =
@@ -211,7 +215,6 @@ struct GPU_IPC_COMMON_EXPORT StructTraits<gpu::mojom::GpuPreferencesDataView,
         prefs.enable_gpu_service_logging_gpu();
     out->enable_gpu_driver_debug_logging =
         prefs.enable_gpu_driver_debug_logging();
-    out->disable_gpu_program_cache = prefs.disable_gpu_program_cache();
     out->enforce_gl_minimums = prefs.enforce_gl_minimums();
     out->force_gpu_mem_discardable_limit_bytes =
         prefs.force_gpu_mem_discardable_limit_bytes();
@@ -234,6 +237,9 @@ struct GPU_IPC_COMMON_EXPORT StructTraits<gpu::mojom::GpuPreferencesDataView,
     }
     out->watchdog_starts_backgrounded = prefs.watchdog_starts_backgrounded();
     if (!prefs.ReadGrContextType(&out->gr_context_type)) {
+      return false;
+    }
+    if (!prefs.ReadFallbackGrContextTypes(&out->fallback_gr_context_types)) {
       return false;
     }
     if (!prefs.ReadUseVulkan(&out->use_vulkan)) {
@@ -305,9 +311,6 @@ struct GPU_IPC_COMMON_EXPORT StructTraits<gpu::mojom::GpuPreferencesDataView,
   static bool enable_low_latency_dxva(const gpu::GpuPreferences& prefs) {
     return prefs.enable_low_latency_dxva;
   }
-  static bool enable_zero_copy_dxgi_video(const gpu::GpuPreferences& prefs) {
-    return prefs.enable_zero_copy_dxgi_video;
-  }
   static bool enable_nv12_dxgi_video(const gpu::GpuPreferences& prefs) {
     return prefs.enable_nv12_dxgi_video;
   }
@@ -341,9 +344,6 @@ struct GPU_IPC_COMMON_EXPORT StructTraits<gpu::mojom::GpuPreferencesDataView,
   static bool enable_gpu_driver_debug_logging(
       const gpu::GpuPreferences& prefs) {
     return prefs.enable_gpu_driver_debug_logging;
-  }
-  static bool disable_gpu_program_cache(const gpu::GpuPreferences& prefs) {
-    return prefs.disable_gpu_program_cache;
   }
   static bool enforce_gl_minimums(const gpu::GpuPreferences& prefs) {
     return prefs.enforce_gl_minimums;
@@ -393,6 +393,10 @@ struct GPU_IPC_COMMON_EXPORT StructTraits<gpu::mojom::GpuPreferencesDataView,
   }
   static gpu::GrContextType gr_context_type(const gpu::GpuPreferences& prefs) {
     return prefs.gr_context_type;
+  }
+  static const base::circular_deque<gpu::GrContextType>&
+  fallback_gr_context_types(const gpu::GpuPreferences& prefs) {
+    return prefs.fallback_gr_context_types;
   }
   static gpu::VulkanImplementationName use_vulkan(
       const gpu::GpuPreferences& prefs) {

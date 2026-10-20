@@ -12,17 +12,16 @@
 #include "base/functional/bind.h"
 #include "base/memory/raw_ptr.h"
 #include "base/metrics/user_metrics.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/chrome_pages.h"
 #include "chrome/browser/ui/color/chrome_color_id.h"
 #include "chrome/browser/ui/extensions/extension_action_view_model.h"
+#include "chrome/browser/ui/extensions/extensions_menu_handler.h"
 #include "chrome/browser/ui/views/chrome_layout_provider.h"
 #include "chrome/browser/ui/views/chrome_typography.h"
 #include "chrome/browser/ui/views/controls/hover_button.h"
 #include "chrome/browser/ui/views/extensions/extensions_menu_entry_view.h"
-#include "chrome/browser/ui/views/extensions/extensions_menu_handler.h"
 #include "chrome/grit/generated_resources.h"
 #include "components/vector_icons/vector_icons.h"
 #include "extensions/common/extension_id.h"
@@ -33,21 +32,18 @@
 #include "ui/base/ui_base_types.h"
 #include "ui/gfx/geometry/insets.h"
 #include "ui/gfx/text_constants.h"
-#include "ui/gfx/vector_icon_types.h"
 #include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/animation/ink_drop.h"
 #include "ui/views/bubble/bubble_border.h"
 #include "ui/views/bubble/bubble_frame_view.h"
 #include "ui/views/bubble/tooltip_icon.h"
 #include "ui/views/controls/button/button.h"
-#include "ui/views/controls/button/image_button.h"
-#include "ui/views/controls/button/image_button_factory.h"
 #include "ui/views/controls/button/md_text_button.h"
 #include "ui/views/controls/button/toggle_button.h"
 #include "ui/views/controls/highlight_path_generator.h"
 #include "ui/views/controls/label.h"
 #include "ui/views/controls/scroll_view.h"
-#include "ui/views/controls/separator.h"
+#include "ui/views/input_event_activation_protector.h"
 #include "ui/views/layout/box_layout.h"
 #include "ui/views/layout/flex_layout_view.h"
 #include "ui/views/layout/layout_types.h"
@@ -78,7 +74,8 @@ constexpr int kRequestEntryLabelIndex = 1;
 // when the view is known to be one). It is only used as an extra measure to
 // prevent bad static casts.
 ExtensionsMenuEntryView* GetAsMenuEntry(views::View* view) {
-  DCHECK(views::IsViewClass<ExtensionsMenuEntryView>(view));
+  CHECK(views::IsViewClass<ExtensionsMenuEntryView>(view),
+        base::NotFatalUntil::M162);
   return views::AsViewClass<ExtensionsMenuEntryView>(view);
 }
 
@@ -92,6 +89,69 @@ struct ExtensionIdWrapper {
 };
 DEFINE_UI_CLASS_PROPERTY_TYPE(ExtensionIdWrapper*)
 DEFINE_OWNED_UI_CLASS_PROPERTY_KEY(ExtensionIdWrapper, kExtensionIdKey)
+
+// TODO(crbug.com/563454001): Revisit this once Benjamin's (bkeen@) widget-level
+// input protection system is landed.
+// A button in the extensions menu requesting access section that grants one
+// time site access to the extension. It uses an input event activation
+// protector to prevent unintended clicks.
+class ExtensionsMenuAllowButton : public views::MdTextButton {
+ public:
+  ExtensionsMenuAllowButton() = default;
+  ExtensionsMenuAllowButton(const ExtensionsMenuAllowButton&) = delete;
+  ExtensionsMenuAllowButton& operator=(const ExtensionsMenuAllowButton&) =
+      delete;
+  ~ExtensionsMenuAllowButton() override = default;
+
+  // views::View:
+  void VisibilityChanged(views::View* starting_from, bool is_visible) override {
+    views::MdTextButton::VisibilityChanged(starting_from, is_visible);
+    input_protector_.VisibilityChanged(is_visible);
+  }
+
+  void AddedToWidget() override {
+    views::MdTextButton::AddedToWidget();
+    if (IsDrawn()) {
+      input_protector_.VisibilityChanged(/*is_visible=*/true);
+    }
+  }
+
+  void RemovedFromWidget() override {
+    views::MdTextButton::RemovedFromWidget();
+    input_protector_.VisibilityChanged(/*is_visible=*/false);
+  }
+
+  bool GetNeedsNotificationWhenVisibleBoundsChange() const override {
+    return true;
+  }
+
+  void OnVisibleBoundsChanged() override {
+    input_protector_.MaybeUpdateViewProtectedTimeStamp();
+  }
+
+  void OnBoundsChanged(const gfx::Rect& previous_bounds) override {
+    views::MdTextButton::OnBoundsChanged(previous_bounds);
+    input_protector_.MaybeUpdateViewProtectedTimeStamp();
+  }
+
+  void NotifyClick(const ui::Event& event) override {
+    if (input_protector_.IsPossiblyUnintendedInteraction(
+            event, /*allow_key_events=*/false)) {
+      return;
+    }
+    views::MdTextButton::NotifyClick(event);
+  }
+
+ private:
+  views::InputEventActivationProtector input_protector_;
+};
+
+BEGIN_VIEW_BUILDER(/* No Export */,
+                   ExtensionsMenuAllowButton,
+                   views::MdTextButton)
+END_VIEW_BUILDER
+
+DEFINE_VIEW_BUILDER(/* No Export */, ExtensionsMenuAllowButton)
 
 // Base class for a container inside the extensions menu.
 class SectionContainer : public views::BoxLayoutView {
@@ -286,7 +346,7 @@ void ExtensionsMenuMainPageView::AddExtensionRequestingAccess(
                   .SetAccessibleName(l10n_util::GetStringFUTF16(
                       IDS_EXTENSIONS_MENU_REQUESTS_ACCESS_SECTION_DISMISS_BUTTON_ACCESSIBLE_NAME,
                       request.extension_name)),
-              views::Builder<views::MdTextButton>()
+              views::Builder<ExtensionsMenuAllowButton>()
                   .SetCallback(base::BindRepeating(
                       &ExtensionsMenuHandler::OnAllowExtensionClicked,
                       base::Unretained(menu_handler_), request.extension_id))
@@ -360,8 +420,6 @@ void ExtensionsMenuMainPageView::SetOptionalSectionVisibility(
       requests_section_->SetVisible(false);
       break;
   }
-
-  SizeToPreferredSize();
 }
 
 std::vector<ExtensionsMenuEntryView*>

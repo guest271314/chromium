@@ -10,9 +10,9 @@
 
 #include <cstdint>
 
-#include "base/compiler_specific.h"
 #include "base/feature_list.h"
 #include "base/features.h"
+#include "base/synchronization/lock_metrics_recorder_tags.h"
 
 #if DCHECK_IS_ON()
 #include <array>
@@ -23,8 +23,10 @@
 #endif  // DCHECK_IS_ON()
 
 namespace base {
-
 namespace {
+
+constexpr LockMetricTag g_base_lock_tag("BaseLock");
+constexpr LockMetricTagList g_base_lock_tag_list{g_base_lock_tag};
 
 #if DCHECK_IS_ON()
 // List of locks held by a thread.
@@ -58,13 +60,28 @@ int GetBaseLockSpinCount() {
 
 }  // namespace
 
+// static
+const LockMetricTag& Lock::GetBaseLockMetricTag() {
+  return g_base_lock_tag;
+}
+
+// static
+const LockMetricTagList& Lock::GetBaseLockMetricTagList() {
+  return g_base_lock_tag_list;
+}
+
 #if DCHECK_IS_ON()
 Lock::~Lock() {
   DCHECK(owning_thread_ref_.is_null());
 }
 
 void Lock::Acquire(subtle::LockTracking tracking) {
-  lock_.Lock();
+  Acquire(GetBaseLockMetricTagList(), tracking);
+}
+
+void Lock::Acquire(const LockMetricTagList& tags,
+                   subtle::LockTracking tracking) {
+  lock_.Lock(tags);
   if (tracking == subtle::LockTracking::kEnabled) {
     AddToLocksHeldOnCurrentThread();
   }
@@ -147,9 +164,8 @@ void Lock::RemoveFromLocksHeldOnCurrentThread() {
 namespace subtle {
 
 span<const uintptr_t> GetTrackedLocksHeldByCurrentThread() {
-  return UNSAFE_TODO(
-      span<const uintptr_t>(g_tracked_locks_held_by_thread.begin(),
-                            g_num_tracked_locks_held_by_thread));
+  return span(g_tracked_locks_held_by_thread)
+      .first(g_num_tracked_locks_held_by_thread);
 }
 
 }  // namespace subtle

@@ -2,6 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "ash/constants/ash_features.h"
 #include "ash/public/cpp/app_menu_constants.h"
 #include "ash/public/cpp/shelf_item_delegate.h"
 #include "ash/public/cpp/shelf_model.h"
@@ -13,7 +14,6 @@
 #include "base/test/bind.h"
 #include "base/test/metrics/user_action_tester.h"
 #include "base/test/scoped_feature_list.h"
-#include "chrome/app/vector_icons/vector_icons.h"
 #include "chrome/browser/apps/app_service/app_service_proxy.h"
 #include "chrome/browser/apps/app_service/app_service_proxy_factory.h"
 #include "chrome/browser/ash/bruschetta/bruschetta_service.h"
@@ -28,7 +28,7 @@
 #include "chrome/browser/ash/guest_os/guest_os_terminal.h"
 #include "chrome/browser/ash/system_web_apps/system_web_app_manager.h"
 #include "chrome/browser/ui/ash/shelf/chrome_shelf_controller_util.h"
-#include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/web_applications/app_browser_controller.h"
 #include "chrome/browser/ui/web_applications/test/web_app_browsertest_util.h"
 #include "chrome/browser/web_applications/model/display_override.h"
@@ -37,7 +37,6 @@
 #include "chrome/browser/web_applications/web_app_command_manager.h"
 #include "chrome/browser/web_applications/web_app_install_info.h"
 #include "chrome/browser/web_applications/web_app_provider.h"
-#include "chrome/common/chrome_features.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chromeos/constants/chromeos_features.h"
 #include "components/webapps/common/web_app_id.h"
@@ -129,7 +128,7 @@ class AppServiceShelfContextMenuWebAppBrowserTest
 
 IN_PROC_BROWSER_TEST_P(AppServiceShelfContextMenuWebAppBrowserTest,
                        WindowCommandCheckedForMinimalUi) {
-  Profile* profile = browser()->profile();
+  Profile* profile = browser()->GetProfile();
   base::UserActionTester user_action_tester;
 
   auto web_app_install_info =
@@ -174,7 +173,7 @@ IN_PROC_BROWSER_TEST_P(AppServiceShelfContextMenuWebAppBrowserTest,
     GTEST_SKIP();
   }
 
-  Profile* profile = browser()->profile();
+  Profile* profile = browser()->GetProfile();
   base::UserActionTester user_action_tester;
 
   auto web_app_install_info =
@@ -197,8 +196,10 @@ IN_PROC_BROWSER_TEST_P(AppServiceShelfContextMenuWebAppBrowserTest,
             1);
 
   // App window should have tab strip.
-  Browser* app_browser = web_app::LaunchWebAppBrowser(profile, app_id);
-  EXPECT_TRUE(app_browser->app_controller()->has_tab_strip());
+  BrowserWindowInterface* app_browser =
+      web_app::LaunchWebAppBrowser(profile, app_id);
+  EXPECT_TRUE(
+      web_app::AppBrowserController::From(app_browser)->has_tab_strip());
 }
 
 IN_PROC_BROWSER_TEST_P(AppServiceShelfContextMenuWebAppBrowserTest,
@@ -208,7 +209,7 @@ IN_PROC_BROWSER_TEST_P(AppServiceShelfContextMenuWebAppBrowserTest,
   if (IsShortstandEnabled()) {
     GTEST_SKIP();
   }
-  Profile* profile = browser()->profile();
+  Profile* profile = browser()->GetProfile();
   base::UserActionTester user_action_tester;
 
   auto web_app_install_info =
@@ -239,7 +240,7 @@ IN_PROC_BROWSER_TEST_P(AppServiceShelfContextMenuWebAppBrowserTest,
     GTEST_SKIP();
   }
 
-  Profile* profile = browser()->profile();
+  Profile* profile = browser()->GetProfile();
   auto web_app_install_info =
       web_app::WebAppInstallInfo::CreateWithStartUrlForTesting(
           GURL("https://example.org"));
@@ -296,7 +297,7 @@ class AppServiceShelfContextMenuTabbedWebAppBrowserTest
 
 IN_PROC_BROWSER_TEST_F(AppServiceShelfContextMenuTabbedWebAppBrowserTest,
                        SetOpenInWindow) {
-  Profile* profile = browser()->profile();
+  Profile* profile = browser()->GetProfile();
   base::UserActionTester user_action_tester;
 
   auto web_app_install_info =
@@ -322,8 +323,10 @@ IN_PROC_BROWSER_TEST_F(AppServiceShelfContextMenuTabbedWebAppBrowserTest,
             1);
 
   // App window should have tab strip.
-  Browser* app_browser = web_app::LaunchWebAppBrowser(profile, app_id);
-  EXPECT_TRUE(app_browser->app_controller()->has_tab_strip());
+  BrowserWindowInterface* app_browser =
+      web_app::LaunchWebAppBrowser(profile, app_id);
+  EXPECT_TRUE(
+      web_app::AppBrowserController::From(app_browser)->has_tab_strip());
 }
 
 class AppServiceShelfContextMenuNonTabbedWebAppBrowserTest
@@ -342,7 +345,7 @@ class AppServiceShelfContextMenuNonTabbedWebAppBrowserTest
 
 IN_PROC_BROWSER_TEST_F(AppServiceShelfContextMenuNonTabbedWebAppBrowserTest,
                        SetOpenInWindow) {
-  Profile* profile = browser()->profile();
+  Profile* profile = browser()->GetProfile();
   base::UserActionTester user_action_tester;
 
   auto web_app_install_info =
@@ -368,8 +371,10 @@ IN_PROC_BROWSER_TEST_F(AppServiceShelfContextMenuNonTabbedWebAppBrowserTest,
             1);
 
   // App window should not have a tab strip since the flag is disabled.
-  Browser* app_browser = web_app::LaunchWebAppBrowser(profile, app_id);
-  EXPECT_FALSE(app_browser->app_controller()->has_tab_strip());
+  BrowserWindowInterface* app_browser =
+      web_app::LaunchWebAppBrowser(profile, app_id);
+  EXPECT_FALSE(
+      web_app::AppBrowserController::From(app_browser)->has_tab_strip());
 }
 
 class AppServiceShelfContextMenuCrostiniAppBrowserTest
@@ -385,7 +390,8 @@ class AppServiceShelfContextMenuCrostiniAppBrowserTest
     *crostini_list.add_apps() = crostini::CrostiniTestHelper::BasicApp(
         "app-service-context-menu-test-app");
 
-    guest_os::GuestOsRegistryServiceFactory::GetForProfile(browser()->profile())
+    guest_os::GuestOsRegistryServiceFactory::GetForProfile(
+        browser()->GetProfile())
         ->UpdateApplicationList(crostini_list);
 
     return crostini::CrostiniTestHelper::GenerateAppId(
@@ -394,7 +400,7 @@ class AppServiceShelfContextMenuCrostiniAppBrowserTest
   }
 
  private:
-  base::test::ScopedFeatureList scoped_feature_list_{features::kCrostini};
+  base::test::ScopedFeatureList scoped_feature_list_{ash::features::kCrostini};
 };
 
 // Crostini apps have `LAUNCH_NEW` menu item at non-0 position without submenu.
@@ -420,14 +426,14 @@ IN_PROC_BROWSER_TEST_F(AppServiceShelfContextMenuCrostiniAppBrowserTest,
 
 IN_PROC_BROWSER_TEST_F(AppServiceShelfContextMenuCrostiniAppBrowserTest,
                        ShutDownGuestOs) {
-  ash::SystemWebAppManager::Get(browser()->profile())
+  ash::SystemWebAppManager::Get(browser()->GetProfile())
       ->InstallSystemAppsForTesting();
   auto menu_section = GetContextMenuSectionForAppCommand(
       guest_os::kTerminalSystemAppId, ash::SHUTDOWN_GUEST_OS);
   ASSERT_FALSE(menu_section);
 
   auto* crostini_manager =
-      crostini::CrostiniManager::GetForProfile(browser()->profile());
+      crostini::CrostiniManager::GetForProfile(browser()->GetProfile());
   crostini_manager->AddRunningVmForTesting(crostini::kCrostiniDefaultVmName);
   base::RunLoop run_loop;
   run_loop.RunUntilIdle();
@@ -449,7 +455,7 @@ IN_PROC_BROWSER_TEST_F(AppServiceShelfContextMenuCrostiniAppBrowserTest,
 
 IN_PROC_BROWSER_TEST_F(AppServiceShelfContextMenuCrostiniAppBrowserTest,
                        ShutDownBruschettaOs) {
-  ash::SystemWebAppManager::Get(browser()->profile())
+  ash::SystemWebAppManager::Get(browser()->GetProfile())
       ->InstallSystemAppsForTesting();
   auto menu_section = GetContextMenuSectionForAppCommand(
       guest_os::kTerminalSystemAppId, ash::SHUTDOWN_BRUSCHETTA_OS);
@@ -457,11 +463,12 @@ IN_PROC_BROWSER_TEST_F(AppServiceShelfContextMenuCrostiniAppBrowserTest,
 
   guest_os::GuestId id(guest_os::VmType::BRUSCHETTA,
                        bruschetta::kBruschettaVmName, "");
-  guest_os::GuestOsSessionTrackerFactory::GetForProfile(browser()->profile())
+  guest_os::GuestOsSessionTrackerFactory::GetForProfile(browser()->GetProfile())
       ->AddGuestForTesting(id, guest_os::GuestInfo{id, 0, {}, {}, {}, {}});
 
   auto* bruschetta_service =
-      bruschetta::BruschettaServiceFactory::GetForProfile(browser()->profile());
+      bruschetta::BruschettaServiceFactory::GetForProfile(
+          browser()->GetProfile());
   bruschetta_service->RegisterVmLaunch(bruschetta::kBruschettaVmName,
                                        bruschetta::RunningVmPolicy{false});
   base::RunLoop run_loop;

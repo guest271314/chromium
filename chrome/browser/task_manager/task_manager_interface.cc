@@ -4,7 +4,7 @@
 
 #include "chrome/browser/task_manager/task_manager_interface.h"
 
-#include "base/byte_count.h"
+#include "base/byte_size.h"
 #include "base/functional/bind.h"
 #include "base/observer_list.h"
 #include "build/build_config.h"
@@ -39,7 +39,7 @@ bool TaskManagerInterface::IsEndProcessEnabled() {
 
 // static
 TaskManagerInterface* TaskManagerInterface::GetTaskManager() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
 
   return TaskManagerImpl::GetInstance();
 }

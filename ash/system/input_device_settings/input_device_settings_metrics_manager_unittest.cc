@@ -23,7 +23,6 @@
 #include "base/time/time.h"
 #include "base/values.h"
 #include "device/udev_linux/fake_udev_loader.h"
-#include "ui/base/ui_base_features.h"
 #include "ui/events/ash/keyboard_info_metrics.h"
 #include "ui/events/ash/mojom/extended_fkeys_modifier.mojom-shared.h"
 #include "ui/events/ash/mojom/simulate_right_click_modifier.mojom-shared.h"
@@ -102,12 +101,6 @@ class InputDeviceSettingsMetricsManagerTest : public AshTestBase {
 
   // testing::Test:
   void SetUp() override {
-    scoped_feature_list_.InitWithFeatures(
-        {
-            features::kAltClickAndSixPackCustomization,
-            ::features::kSupportF11AndF12KeyShortcuts,
-        },
-        /*disabled_features=*/{});
     AshTestBase::SetUp();
     manager_ = std::make_unique<InputDeviceSettingsMetricsManager>();
   }
@@ -115,7 +108,6 @@ class InputDeviceSettingsMetricsManagerTest : public AshTestBase {
   void TearDown() override {
     manager_.reset();
     AshTestBase::TearDown();
-    scoped_feature_list_.Reset();
   }
 
   // Add a fake keyboard to DeviceDataManagerTestApi and provide layout info to
@@ -276,9 +268,6 @@ TEST_F(InputDeviceSettingsMetricsManagerTest, RecordsKeyboardSettings) {
 
 TEST_F(InputDeviceSettingsMetricsManagerTest,
        RecordMetricForSplitModifierKeyboard) {
-  // Enable the modifier split feature flag.
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndEnableFeature(features::kModifierSplit);
   mojom::Keyboard split_modifier_keyboard;
 
   split_modifier_keyboard.device_key = kInternalKeyboardDeviceKey;

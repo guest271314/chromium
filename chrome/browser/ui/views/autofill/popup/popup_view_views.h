@@ -20,6 +20,7 @@
 #include "chrome/browser/ui/autofill/autofill_popup_view.h"
 #include "chrome/browser/ui/views/autofill/popup/password_favicon_loader.h"
 #include "chrome/browser/ui/views/autofill/popup/popup_base_view.h"
+#include "chrome/browser/ui/views/autofill/popup/popup_interactive_row_view.h"
 #include "chrome/browser/ui/views/autofill/popup/popup_row_view.h"
 #include "chrome/browser/ui/views/autofill/popup/popup_search_bar_view.h"
 #include "components/autofill/core/browser/metrics/autofill_metrics.h"
@@ -41,8 +42,8 @@ class TabbedPane;
 namespace autofill {
 
 class AutofillPopupController;
-class AutofillSuggestionController;
 class PopupBnplFootnoteView;
+class PopupCenteredTextView;
 class PopupSeparatorView;
 class PopupTitleView;
 class PopupWarningView;
@@ -81,6 +82,8 @@ class PopupViewViews : public PopupBaseView,
   DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(
       kAutofillCreditCardSuggestionEntryElementId);
   DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kAutofillAiOptInIphElementId);
+  DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(
+      kAutofillWalletDirectOffersIphElementId);
   DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kAutofillAiValuablesElementId);
   DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(
       kAutofillStandaloneCvcSuggestionElementId);
@@ -90,18 +93,28 @@ class PopupViewViews : public PopupBaseView,
   DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(
       kAutofillAccountNameEmailSuggestionElementId);
 
-  using RowPointer = std::variant<PopupRowView*,
-                                  PopupSeparatorView*,
-                                  PopupTitleView*,
-                                  PopupWarningView*,
-                                  PopupLoadingView*,
-                                  PopupBnplFootnoteView*>;
+  using RowPointer = std::variant<raw_ptr<PopupRowView>,
+                                  raw_ptr<PopupInteractiveRowView>,
+                                  raw_ptr<PopupSeparatorView>,
+                                  raw_ptr<PopupTitleView>,
+                                  raw_ptr<PopupWarningView>,
+                                  raw_ptr<PopupLoadingView>,
+                                  raw_ptr<PopupCenteredTextView>,
+                                  raw_ptr<PopupBnplFootnoteView>>;
 
   // The maximum width of the popup.
   static constexpr int kAutofillPopupMaxWidth = 456;
 
-  // The width of the @memory popup.
+  // The maximum width of an Autofill AI sub-popup.
+  static constexpr int kAutofillAiSubPopupMaxWidth = 320;
+
+  // The width of the AtMemory popup.
   static constexpr int kAtMemoryPopupWidth = 320;
+
+  // The maximum number of entries shown before making the popup scrollable. A
+  // decimal number means the last element will appear "cut-off" to indicate
+  // the scroll area.
+  static constexpr double kAutofillPopupMaxVisibleEntries = 5.3;
 
   // The time it takes for a selected cell to open a sub-popup if it has one.
   static constexpr base::TimeDelta kMouseOpenSubPopupDelay =
@@ -117,7 +130,9 @@ class PopupViewViews : public PopupBaseView,
   // Constructor for creating sub-popups.
   PopupViewViews(base::WeakPtr<AutofillPopupController> controller,
                  base::WeakPtr<ExpandablePopupParentView> parent,
-                 views::Widget* parent_widget);
+                 views::Widget* parent_widget,
+                 std::optional<const AutofillPopupView::SubPopupConfig>
+                     sub_popup_config = std::nullopt);
 
   // Constructor for creating root level popups.
   // Providing `std::nullopt` to the `search_bar_config` results in creating a
@@ -129,7 +144,9 @@ class PopupViewViews : public PopupBaseView,
       std::optional<const AutofillPopupView::SearchBarConfig>
           search_bar_config = std::nullopt,
       std::optional<const AutofillPopupView::TabbedPaneConfig>
-          tabbed_pane_config = std::nullopt);
+          tabbed_pane_config = std::nullopt,
+      std::optional<const AutofillPopupView::SubPopupConfig> sub_popup_config =
+          std::nullopt);
   PopupViewViews(const PopupViewViews&) = delete;
   PopupViewViews& operator=(const PopupViewViews&) = delete;
   ~PopupViewViews() override;
@@ -153,7 +170,8 @@ class PopupViewViews : public PopupBaseView,
   std::optional<int32_t> GetAxUniqueId() override;
   void AxAnnounce(const std::u16string& text) override;
   base::WeakPtr<AutofillPopupView> CreateSubPopupView(
-      base::WeakPtr<AutofillSuggestionController> controller) override;
+      base::WeakPtr<AutofillPopupController> controller) override;
+  std::optional<size_t> GetIndexOfSubPopupAnchorSuggestion() const override;
   bool HasFocus() const override;
   base::WeakPtr<AutofillPopupView> GetWeakPtr() override;
 
@@ -195,6 +213,9 @@ class PopupViewViews : public PopupBaseView,
   // metadata.
   void ShowIPHFeaturePromos();
 
+  // Automatically selects the first interactive row in the popup.
+  void AutoSelectFirstSuggestion();
+
   // If the current suggestions are for password recovery, announces it to the
   // user.
   void MaybeAnnouncePasswordRecoveryPopup();
@@ -202,26 +223,41 @@ class PopupViewViews : public PopupBaseView,
   // If the current suggestions are for loading, announces it to the user.
   void MaybeAnnounceLoadingState();
 
+  // Announces the first non-empty `a11y_announcement` found in the current
+  // suggestions.
+  void MaybeAnnounceA11yOverride();
+
   // Announces the title of the currently selected tab in `tabbed_pane_`, if it
   // exists. If the current suggestions also contains a BNPL footnote, announces
   // it to the user in the same message, separated by a comma.
   void MaybeAnnounceCurrentTabAndFootnote();
 
-  // Returns the `PopupRowView` at line number `index`. Assumes that there is
-  // such a view at that line number - otherwise the underlying variant will
-  // check false.
-  PopupRowView& GetPopupRowViewAt(size_t index) {
-    return *std::get<PopupRowView*>(rows_[index]);
+  // Returns the `PopupInteractiveRowView` at line number `index`. Assumes that
+  // there is such a view at that line number - otherwise the underlying variant
+  // will check false.
+  PopupInteractiveRowView& GetPopupInteractiveRowViewAt(size_t index) {
+    if (auto* row = std::get_if<raw_ptr<PopupRowView>>(&rows_[index])) {
+      return **row;
+    }
+    return *std::get<raw_ptr<PopupInteractiveRowView>>(rows_[index]);
   }
-  const PopupRowView& GetPopupRowViewAt(size_t index) const {
-    return *std::get<PopupRowView*>(rows_[index]);
+  const PopupInteractiveRowView& GetPopupInteractiveRowViewAt(
+      size_t index) const {
+    if (auto* row = std::get_if<raw_ptr<PopupRowView>>(&rows_[index])) {
+      return **row;
+    }
+    return *std::get<raw_ptr<PopupInteractiveRowView>>(rows_[index]);
   }
+
+  // Returns the `PopupRowView` if a row at the line number `index` is of
+  // `PopupRowView` type, otherwise null.
+  PopupRowView* MaybeGetPopupRowViewAt(size_t index);
 
   void UpdateAccessibleStates() const;
 
   // Returns whether the row at `index` exists, is a `PopupRowView` and is
   // selectable.
-  bool HasSelectablePopupRowViewAt(size_t index) const;
+  bool HasSelectablePopupInteractiveRowViewAt(size_t index) const;
 
   PopupBnplFootnoteView* GetBnplFootnoteView() const;
 
@@ -271,7 +307,7 @@ class PopupViewViews : public PopupBaseView,
       const input::NativeWebKeyboardEvent& event);
 
   // Reacts to key events under the assumption that the currently shown popup
-  // contains @memory content.
+  // contains AtMemory content.
   bool HandleKeyPressEventForAtMemory(
       const input::NativeWebKeyboardEvent& event);
 
@@ -300,6 +336,9 @@ class PopupViewViews : public PopupBaseView,
   // the non-footer suggestions are scrolled independently).
   bool IsFooterScrollable() const;
 
+  int GetPopupMinWidth() const;
+  int GetPopupMaxWidth() const;
+
   bool CanShowDropdownInBounds(const gfx::Rect& bounds) const;
 
   // Opens a sub-popup on a new row (and closes the open one if any), or just
@@ -314,13 +353,19 @@ class PopupViewViews : public PopupBaseView,
   // level up. Returns whether this was successful.
   bool SelectParentPopupContentCell();
 
+  // Schedules or stops closing of the open sub-popup.
+  void ScheduleSubPopupClosing();
+  void StopSubPopupClosing();
+
   // The popup can be used for informing the user without providing suggestions
   // to select, e.g. when the suggestions are loading. It has only one
   // suggestion with a special type in this case. This method makes sure
   // the suggestion's message is being announced to the user by focusing the row
   // view (which must be selectable). Currently, only `PopupWarningView` is
   // supported.
-  void MaybeA11yFocusInformationalSuggestion();
+  // Returns true if the popup survived the accessibility event dispatch, false
+  // if it was destroyed. DO NOT access the popup if it has been destroyed.
+  [[nodiscard]] bool MaybeA11yFocusInformationalSuggestion();
 
   // Controller for this view.
   base::WeakPtr<AutofillPopupController> controller_ = nullptr;
@@ -343,13 +388,15 @@ class PopupViewViews : public PopupBaseView,
   std::optional<size_t> row_with_open_sub_popup_;
 
   // Stores the initial width of the popup to maintain when switching tabs.
-  std::optional<int> tabbed_pane_initial_width_ = std::nullopt;
+  std::optional<int> tabbed_pane_initial_width_;
 
   std::vector<RowPointer> rows_;
   const std::optional<const AutofillPopupView::SearchBarConfig>
       search_bar_config_;
   const std::optional<const AutofillPopupView::TabbedPaneConfig>
       tabbed_pane_config_;
+  const std::optional<const AutofillPopupView::SubPopupConfig>
+      sub_popup_config_;
   raw_ptr<PopupSearchBarView> search_bar_ = nullptr;
   raw_ptr<views::TabbedPane> tabbed_pane_ = nullptr;
   raw_ptr<views::BoxLayoutView> suggestions_container_ = nullptr;

@@ -64,9 +64,10 @@ GURL TranslateUrl(
 
 std::unique_ptr<ProtocolHandlerRegistry> ProtocolHandlerRegistry::Create(
     PrefService* prefs,
-    std::unique_ptr<Delegate> delegate) {
-  auto registry =
-      std::make_unique<ProtocolHandlerRegistry>(prefs, std::move(delegate));
+    std::unique_ptr<Delegate> delegate,
+    bool is_off_the_record) {
+  auto registry = std::make_unique<ProtocolHandlerRegistry>(
+      prefs, std::move(delegate), is_off_the_record);
 
   // If installing defaults, they must be installed prior calling
   // InitProtocolSettings.
@@ -79,12 +80,19 @@ std::unique_ptr<ProtocolHandlerRegistry> ProtocolHandlerRegistry::Create(
 
 ProtocolHandlerRegistry::ProtocolHandlerRegistry(
     PrefService* prefs,
-    std::unique_ptr<Delegate> delegate)
+    std::unique_ptr<Delegate> delegate,
+    bool is_off_the_record)
     : prefs_(prefs),
       delegate_(std::move(delegate)),
       enabled_(true),
       is_loading_(false),
-      is_loaded_(false) {}
+      is_loaded_(false),
+      is_off_the_record_(is_off_the_record) {}
+
+bool ProtocolHandlerRegistry::IsHandlerAccessible(
+    const ProtocolHandler& handler) const {
+  return !is_off_the_record_ || handler.is_allowed_in_incognito();
+}
 
 bool ProtocolHandlerRegistry::SilentlyHandleRegisterHandlerRequest(
     const ProtocolHandler& handler) {
@@ -103,9 +111,17 @@ bool ProtocolHandlerRegistry::SilentlyHandleRegisterHandlerRequest(
 void ProtocolHandlerRegistry::OnAcceptRegisterProtocolHandler(
     const ProtocolHandler& handler) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
-  if (!RegisterProtocolHandler(handler, USER))
+  // A handler explicitly accepted in an incognito session is usable there.
+  // Extension handlers are exempt: their incognito access is governed by the
+  // extension's incognito permission toggle, not by where they're accepted.
+  ProtocolHandler effective_handler = handler;
+  if (is_off_the_record_ && !handler.IsExtensionHandler()) {
+    effective_handler.set_is_allowed_in_incognito(true);
+  }
+  if (!RegisterProtocolHandler(effective_handler, USER)) {
     return;
-  SetDefault(handler);
+  }
+  SetDefault(effective_handler);
   Save();
   NotifyChanged();
 }
@@ -121,6 +137,18 @@ void ProtocolHandlerRegistry::OnDenyRegisterProtocolHandler(
 void ProtocolHandlerRegistry::OnIgnoreRegisterProtocolHandler(
     const ProtocolHandler& handler) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  // The registered handlers are the ones allowed to handle the protocol, so a
+  // handler the user just refused must not stay among them: it would be
+  // offered in chrome://settings/handlers and be eligible for the promotion
+  // RemoveHandler() performs when the default handler goes away. The user may
+  // have accepted it first in the same bubble; removing it then hands the
+  // default back to the previous one.
+  //
+  // Remove before ignoring: RemoveHandler() short-circuits to
+  // RemoveIgnoredHandler() for handlers that are already ignored.
+  if (IsRegistered(handler)) {
+    RemoveHandler(handler, /*save=*/false);
+  }
   IgnoreProtocolHandler(handler, USER);
   Save();
   NotifyChanged();
@@ -142,6 +170,12 @@ static bool CanReplaceHandler(const ProtocolHandler& handler1,
 
 bool ProtocolHandlerRegistry::AttemptReplace(const ProtocolHandler& handler) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  // Refuse destructive removals if the new handler isn't accessible. Only
+  // OnAcceptRegisterProtocolHandler auto-promotes the OTR flag; the silent
+  // path here must not.
+  if (!IsHandlerAccessible(handler)) {
+    return false;
+  }
   ProtocolHandler old_default = GetHandlerForInternal(handler.protocol());
   bool make_new_handler_default = CanReplaceHandler(handler, old_default);
   ProtocolHandlerList to_replace(GetReplacedHandlers(handler));
@@ -191,8 +225,10 @@ bool ProtocolHandlerRegistry::IsDefault(const ProtocolHandler& handler) const {
 
 void ProtocolHandlerRegistry::InstallPredefinedHandlers() {
   for (const auto& [scheme, handler] : url::GetPredefinedHandlerSchemes()) {
-    AddPredefinedHandler(
-        ProtocolHandler::CreateProtocolHandler(scheme, GURL(handler)));
+    ProtocolHandler ph =
+        ProtocolHandler::CreateProtocolHandler(scheme, GURL(handler));
+    ph.set_is_allowed_in_incognito(true);
+    AddPredefinedHandler(ph);
   }
 }
 
@@ -516,11 +552,15 @@ const ProtocolHandler& ProtocolHandlerRegistry::GetHandlerFor(
                : ProtocolHandler::EmptyProtocolHandler();
   CHECK(handler.IsEmpty() || handler.is_confirmed() ||
         handler.IsExtensionHandler());
+  CHECK(handler.IsEmpty() || IsHandlerAccessible(handler))
+      << "OTR registry storage invariant violated: insertion guard let a "
+         "disallowed handler through.";
   return handler;
 }
 
 GURL ProtocolHandlerRegistry::Translate(const GURL& url) const {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK(IsHandledProtocol(url.scheme()));
   return TranslateUrl(default_handlers_, url);
 }
 
@@ -717,6 +757,23 @@ bool ProtocolHandlerRegistry::RegisterProtocolHandler(
   // Ignore invalid handlers.
   if (!handler.IsValid())
     return false;
+
+  // Reject extension-privileged handlers that are not associated with an
+  // extension. All addition paths funnel through here (including handlers
+  // loaded from prefs), so enforcing it once drops orphaned handlers persisted
+  // by builds that predate recording the extension id, whose elevated
+  // privileges would otherwise survive the registering extension's removal.
+  if (!handler.IsAllowedExtensionHandler()) {
+    return false;
+  }
+
+  // OTR invariant: this registry only stores handlers usable in incognito.
+  // All addition paths funnel through here (including those loaded from prefs
+  // via the OverlayUserPrefStore), so enforcing the invariant once here lets
+  // read methods iterate storage without per-call filtering.
+  if (!IsHandlerAccessible(handler)) {
+    return false;
+  }
 
   ProtocolHandlerMultiMap& map =
       (source == POLICY) ? policy_protocol_handlers_ : user_protocol_handlers_;

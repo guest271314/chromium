@@ -12,17 +12,18 @@
 #include "base/compiler_specific.h"
 #include "base/containers/span.h"
 #include "base/containers/span_reader.h"
+#include "base/feature_list.h"
 #include "base/logging.h"
 #include "base/notreached.h"
 #include "base/strings/stringprintf.h"
 #include "base/time/time.h"
-#include "build/build_config.h"
 #include "pdf/pdf_accessibility_constants.h"
 #include "printing/buildflags/buildflags.h"
 #include "printing/mojom/print.mojom.h"
 #include "skia/ext/codec_utils.h"
 #include "skia/ext/font_utils.h"
 #include "skia/ext/skia_utils_base.h"
+#include "third_party/blink/public/common/features.h"
 #include "third_party/skia/include/core/SkCanvas.h"
 #include "third_party/skia/include/core/SkFontMgr.h"
 #include "third_party/skia/include/core/SkImage.h"
@@ -38,15 +39,6 @@
 #include "ui/accessibility/ax_tree.h"
 #include "ui/accessibility/ax_tree_update.h"
 #include "ui/gfx/skia_span_util.h"
-
-#if BUILDFLAG(IS_WIN)
-#include <objbase.h>
-
-#include <XpsObjectModel.h>
-
-#include "third_party/skia/include/docs/SkXPSDocument.h"
-#include "third_party/skia/include/encode/SkPngRustEncoder.h"
-#endif  // BUILDFLAG(IS_WIN)
 
 namespace {
 
@@ -367,13 +359,13 @@ bool RecursiveBuildStructureTree(const ui::AXNode* ax_node,
   }
 
   if (ui::IsCellOrTableHeader(ax_node->GetRole())) {
-    std::optional<int> row_span = ax_node->GetTableCellRowSpan();
+    std::optional<int> row_span = ax_node->GetTableCellDomRowSpan();
     if (row_span.has_value()) {
       tag->fAttributes.appendInt(chrome_pdf::kPDFTableAttributeOwner,
                                  chrome_pdf::kPDFTableCellRowSpanAttribute,
                                  row_span.value());
     }
-    std::optional<int> col_span = ax_node->GetTableCellColSpan();
+    std::optional<int> col_span = ax_node->GetTableCellDomColSpan();
     if (col_span.has_value()) {
       tag->fAttributes.appendInt(chrome_pdf::kPDFTableAttributeOwner,
                                  chrome_pdf::kPDFTableCellColSpanAttribute,
@@ -431,6 +423,11 @@ sk_sp<SkDocument> MakePdfDocument(
   metadata.fTitle = SkString(title);
   metadata.fRasterDPI = 300.0f;
 
+#if BUILDFLAG(IS_MAC)
+  // Avoid macOS PDF-to-PostScript aborts on Skia alpha-gradient soft masks.
+  metadata.fRasterizeAlphaGradientsForPrinting = true;
+#endif  // BUILDFLAG(IS_MAC)
+
   SkPDF::StructureElementNode tag_root = {};
   if (!accessibility_tree.nodes.empty()) {
     ui::AXTree tree(accessibility_tree);
@@ -445,25 +442,6 @@ sk_sp<SkDocument> MakePdfDocument(
 
   return SkPDF::MakeDocument(stream, metadata);
 }
-
-#if BUILDFLAG(IS_WIN)
-sk_sp<SkDocument> MakeXpsDocument(SkWStream* stream) {
-  IXpsOMObjectFactory* factory = nullptr;
-  HRESULT hr = CoCreateInstance(CLSID_XpsOMObjectFactory, nullptr,
-                                CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&factory));
-  if (FAILED(hr) || !factory) {
-    DLOG(ERROR) << "Unable to create XPS object factory: "
-                << logging::SystemErrorCodeToString(hr);
-    return nullptr;
-  }
-
-  SkXPS::Options opts;
-  opts.pngEncoder = [](SkWStream* dst, const SkPixmap& src) {
-    return SkPngRustEncoder::Encode(dst, src, {});
-  };
-  return SkXPS::MakeDocument(stream, factory, opts);
-}
-#endif
 
 SkSerialReturnType SerializeOopPicture(SkPicture* pic, void* ctx) {
   const auto* context = reinterpret_cast<const ContentToProxyTokenMap*>(ctx);
@@ -508,7 +486,18 @@ SkSerialReturnType SerializeOopTypeface(SkTypeface* typeface, void* ctx) {
   stream.write32(typeface_id);
   stream.writeBool(data_included);
   if (data_included) {
-    typeface->serialize(&stream, SkTypeface::SerializeBehavior::kDoIncludeData);
+    SkTypeface::SerializeBehavior mode =
+        SkTypeface::SerializeBehavior::kDoIncludeData;
+#if BUILDFLAG(IS_MAC)
+    constexpr SkFontTableTag kHvglTag = SkSetFourByteTag('h', 'v', 'g', 'l');
+    if (typeface->getTableSize(kHvglTag) > 0) {
+      // hvgl fonts on MacOS cannot be successfully deserialized when
+      // kDoIncludeData was used due to restrictions in the CoreText API.
+      // See: https://crbug.com/455517173#comment4
+      mode = SkTypeface::SerializeBehavior::kIncludeDataIfLocal;
+    }
+#endif
+    typeface->serialize(&stream, mode);
   }
   return stream.detachAsData();
 }
@@ -532,8 +521,13 @@ sk_sp<SkTypeface> DeserializeOopTypeface(SkStream& stream, void* ctx) {
 
   // Typeface not encountered before, expect it to be present in the stream.
   DCHECK(data_included);
-  sk_sp<SkTypeface> typeface =
-      SkTypeface::MakeDeserialize(&stream, skia::DefaultFontMgr());
+  sk_sp<SkTypeface> typeface;
+  if (base::FeatureList::IsEnabled(blink::features::kFontationsPrinting)) {
+    typeface = skia::MakeTypefaceWithFontations(&stream);
+  } else {
+    typeface = SkTypeface::MakeDeserialize(&stream, skia::DefaultFontMgr());
+  }
+
   context->emplace(id, typeface);
   return typeface;
 }

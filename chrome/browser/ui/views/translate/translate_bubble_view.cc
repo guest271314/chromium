@@ -83,9 +83,28 @@
 #include "ui/views/metadata/view_factory.h"
 #include "ui/views/style/platform_style.h"
 #include "ui/views/view_class_properties.h"
+#include "ui/views/view_utils.h"
 #include "ui/views/widget/widget.h"
 
 namespace {
+
+void SetInteractiveControlsAlwaysFocusable(views::View* view) {
+  if (!view) {
+    return;
+  }
+  if (auto* tabbed_pane = views::AsViewClass<views::TabbedPane>(view)) {
+    tabbed_pane->SetTabFocusBehavior(views::View::FocusBehavior::ALWAYS);
+  } else if (auto* tab_strip =
+                 views::AsViewClass<views::TabbedPaneTabStrip>(view)) {
+    tab_strip->SetTabFocusBehavior(views::View::FocusBehavior::ALWAYS);
+  } else if (view->GetFocusBehavior() ==
+             views::View::FocusBehavior::ACCESSIBLE_ONLY) {
+    view->SetFocusBehavior(views::View::FocusBehavior::ALWAYS);
+  }
+  for (views::View* child : view->children()) {
+    SetInteractiveControlsAlwaysFocusable(child);
+  }
+}
 
 bool UseGoogleTranslateBranding() {
   // Only use Google Translate branding in Chrome branded builds.
@@ -125,7 +144,7 @@ void OpenLanguageSettings(TranslateBubbleModel* model_,
   }
 
   chrome::ScopedTabbedBrowserDisplayer displayer(profile);
-  Browser* browser = displayer.browser();
+  BrowserWindowInterface* browser = displayer.browser_window_interface();
   if (!browser) {
     return;
   }
@@ -175,6 +194,7 @@ TranslateBubbleView::~TranslateBubbleView() {
   translate_language_search_view_ = nullptr;
   always_translate_checkbox_ = nullptr;
   advanced_always_translate_checkbox_ = nullptr;
+  choose_language_button_ = nullptr;
   tabbed_pane_ = nullptr;
   advanced_reset_button_source_ = nullptr;
   advanced_reset_button_target_ = nullptr;
@@ -226,11 +246,18 @@ void TranslateBubbleView::Init() {
   should_never_translate_language_ = model_->ShouldNeverTranslateLanguage();
   should_never_translate_site_ = model_->ShouldNeverTranslateSite();
   translate_view_ = AddChildView(CreateView());
-  advanced_view_source_ = AddChildView(CreateViewAdvancedSource());
-  advanced_view_target_ = AddChildView(CreateViewAdvancedTarget());
   error_view_ = AddChildView(CreateViewError());
 
   AddAccelerator(ui::Accelerator(ui::VKEY_RETURN, ui::EF_NONE));
+
+  // Create the target / source languages search view only when a user selects
+  // the option to change the target / source language.
+  if (GetViewState() == TranslateBubbleModel::VIEW_STATE_SOURCE_LANGUAGE) {
+    advanced_view_source_ = AddChildView(CreateViewAdvancedSource());
+  } else if (GetViewState() ==
+             TranslateBubbleModel::VIEW_STATE_TARGET_LANGUAGE) {
+    advanced_view_target_ = AddChildView(CreateViewAdvancedTarget());
+  }
 
   UpdateChildVisibilities();
 
@@ -240,6 +267,14 @@ void TranslateBubbleView::Init() {
 }
 
 views::View* TranslateBubbleView::GetInitiallyFocusedView() {
+  // Focus the selected tab of the tabbed pane (source / target language tabs)
+  // initially when visible. Focus should not fall back to default focus
+  // traversal because it may set focus to the "Choose target language" button.
+  if (tabbed_pane_ && tabbed_pane_->GetVisible() &&
+      tabbed_pane_->GetSelectedTabIndex() !=
+          views::TabbedPaneTabStrip::kNoSelectedTab) {
+    return tabbed_pane_->GetTabAt(tabbed_pane_->GetSelectedTabIndex());
+  }
   return GetCurrentView()->GetNextFocusableView();
 }
 
@@ -268,6 +303,12 @@ void TranslateBubbleView::ResetLanguage() {
         previous_source_language_index_);
     model_->UpdateSourceLanguageIndex(
         source_language_combobox_->GetSelectedIndex().value());
+    // SetSelectedIndex() does not trigger SourceLanguageChanged(), so refresh
+    // the source-language-dependent state explicitly.
+    should_always_translate_ = model_->GetSourceLanguageCode() !=
+                                   language_detection::kUnknownLanguageCode &&
+                               model_->ShouldAlwaysTranslate();
+    UpdateChildVisibilities();
   } else {
     if (base::FeatureList::IsEnabled(translate::kTranslateLanguageSearchUI)) {
       translate_language_search_view_->ResetLanguageIndex(
@@ -545,7 +586,7 @@ void TranslateBubbleView::ConfirmAdvancedOptions() {
   } else {
     std::u16string source_language_name;
     std::u16string target_language_name;
-    DCHECK(tabbed_pane_);
+    CHECK(tabbed_pane_, base::NotFatalUntil::M162);
     UpdateLanguageNames(&source_language_name, &target_language_name);
     tabbed_pane_->GetTabAt(0)->SetTitleText(source_language_name);
     tabbed_pane_->GetTabAt(1)->SetTitleText(target_language_name);
@@ -557,8 +598,17 @@ void TranslateBubbleView::ConfirmAdvancedOptions() {
 
 void TranslateBubbleView::SourceLanguageChanged() {
   model_->ReportUIInteraction(translate::UIInteraction::kChangeSourceLanguage);
-  model_->UpdateSourceLanguageIndex(
-      source_language_combobox_->GetSelectedIndex().value());
+  const int source_language_index =
+      source_language_combobox_->GetSelectedIndex().value();
+  const bool source_language_changed =
+      source_language_index != model_->GetSourceLanguageIndex();
+  model_->UpdateSourceLanguageIndex(source_language_index);
+  if (source_language_changed) {
+    should_always_translate_ = model_->GetSourceLanguageCode() !=
+                                   language_detection::kUnknownLanguageCode &&
+                               model_->ShouldAlwaysTranslate();
+  }
+  UpdateChildVisibilities();
   UpdateAdvancedView();
 }
 
@@ -587,16 +637,44 @@ void TranslateBubbleView::AlwaysTranslatePressed() {
 }
 
 void TranslateBubbleView::UpdateChildVisibilities() {
-  // Update the state of the always translate checkbox
+  const bool has_valid_source_language =
+      model_->GetSourceLanguageCode() !=
+      language_detection::kUnknownLanguageCode;
+  const bool show_always_translate_shortcut =
+      has_valid_source_language && ShouldShowAlwaysTranslate();
+  const bool show_advanced_always_translate =
+      advanced_always_translate_checkbox_ && has_valid_source_language;
+  const int vertical_spacing = ChromeLayoutProvider::Get()->GetDistanceMetric(
+      views::DISTANCE_RELATED_CONTROL_VERTICAL);
+
   if (advanced_always_translate_checkbox_) {
+    advanced_always_translate_checkbox_->SetVisible(
+        show_advanced_always_translate);
     advanced_always_translate_checkbox_->SetChecked(should_always_translate_);
   }
   if (always_translate_checkbox_) {
+    always_translate_checkbox_->SetVisible(show_always_translate_shortcut);
     always_translate_checkbox_->SetText(l10n_util::GetStringFUTF16(
         IDS_TRANSLATE_BUBBLE_ALWAYS_TRANSLATE_LANG,
         model_->GetSourceLanguageNameAt(model_->GetSourceLanguageIndex())));
     always_translate_checkbox_->SetChecked(should_always_translate_);
   }
+  if (choose_language_button_) {
+    choose_language_button_->SetVisible(!show_always_translate_shortcut);
+  }
+  if (tabbed_pane_) {
+    tabbed_pane_->parent()->SetProperty(
+        views::kMarginsKey,
+        gfx::Insets().set_bottom(
+            show_always_translate_shortcut ? vertical_spacing : 0));
+  }
+  if (advanced_done_button_source_) {
+    advanced_done_button_source_->parent()->SetProperty(
+        views::kMarginsKey, gfx::Insets().set_top(show_advanced_always_translate
+                                                      ? vertical_spacing
+                                                      : 2 * vertical_spacing));
+  }
+
   for (views::View* view : children()) {
     view->SetVisible(view == GetCurrentView());
   }
@@ -656,12 +734,9 @@ std::unique_ptr<views::View> TranslateBubbleView::CreateView() {
   auto* options_menu = horizontal_view->AddChildView(CreateOptionsMenuButton());
   horizontal_view->AddChildView(CreateCloseButton());
 
-  // Don't show the the always translate checkbox if the source language is
-  // unknown.
-  auto source_language_code = model_->GetSourceLanguageCode();
-  bool should_show_always_translate = ShouldShowAlwaysTranslate();
-
-  if (should_show_always_translate) {
+  // Create the checkbox even when it is initially hidden so its visibility can
+  // follow source language changes during this bubble's lifetime.
+  if (!is_in_incognito_window_) {
     auto before_always_translate_checkbox = std::make_unique<views::Checkbox>(
         l10n_util::GetStringFUTF16(
             IDS_TRANSLATE_BUBBLE_ALWAYS_TRANSLATE_LANG,
@@ -671,8 +746,8 @@ std::unique_ptr<views::View> TranslateBubbleView::CreateView() {
     before_always_translate_checkbox->SetID(BUTTON_ID_ALWAYS_TRANSLATE);
     always_translate_checkbox_ =
         view->AddChildView(std::move(before_always_translate_checkbox));
-  } else if (base::FeatureList::IsEnabled(
-                 translate::kTranslateLanguageSearchUI)) {
+  }
+  if (base::FeatureList::IsEnabled(translate::kTranslateLanguageSearchUI)) {
     auto choose_language_button = std::make_unique<HoverButton>(
         base::BindRepeating(&TranslateBubbleView::SwitchView,
                             base::Unretained(this),
@@ -688,7 +763,10 @@ std::unique_ptr<views::View> TranslateBubbleView::CreateView() {
             ui::kColorIcon, 16)));
     choose_language_button->SetProperty(views::kElementIdentifierKey,
                                         kChangeTargetLanguage);
-    view->AddChildView(std::move(choose_language_button));
+    choose_language_button->SetProperty(views::kMarginsKey,
+                                        gfx::Insets::TLBR(7, 0, 0, 0));
+    choose_language_button_ =
+        view->AddChildView(std::move(choose_language_button));
   }
 
   const int button_horizontal_spacing =
@@ -711,16 +789,11 @@ std::unique_ptr<views::View> TranslateBubbleView::CreateView() {
   options_menu->SetProperty(views::kMarginsKey,
                             gfx::Insets::VH(0, button_horizontal_spacing));
   if (always_translate_checkbox_) {
-    horizontal_view->SetProperty(
-        views::kMarginsKey,
-        gfx::Insets::TLBR(0, 0,
-                          provider->GetDistanceMetric(
-                              views::DISTANCE_RELATED_CONTROL_VERTICAL),
-                          0));
     always_translate_checkbox_->SetProperty(views::kMarginsKey,
                                             gfx::Insets::VH(2, 0));
   }
 
+  SetInteractiveControlsAlwaysFocusable(view.get());
   return view;
 }
 
@@ -792,6 +865,7 @@ std::unique_ptr<views::View> TranslateBubbleView::CreateViewErrorNoTitle(
   button_row->AddChildView(std::move(advanced_button));
   view->AddChildView(std::move(button_row));
 
+  SetInteractiveControlsAlwaysFocusable(view.get());
   return view;
 }
 
@@ -812,12 +886,10 @@ std::unique_ptr<views::View> TranslateBubbleView::CreateViewAdvancedSource() {
   source_language_combobox->SetProperty(views::kElementIdentifierKey,
                                         kSourceLanguageCombobox);
 
-  // In an incognito window or when the source language is unknown, "Always
-  // translate" checkbox shouldn't be shown.
+  // Create the checkbox even when the source language is initially unknown so
+  // its visibility can follow source language changes.
   std::unique_ptr<views::Checkbox> advanced_always_translate_checkbox;
-  auto source_language_code = model_->GetSourceLanguageCode();
-  if (!is_in_incognito_window_ &&
-      source_language_code != language_detection::kUnknownLanguageCode) {
+  if (!is_in_incognito_window_) {
     advanced_always_translate_checkbox = std::make_unique<views::Checkbox>(
         l10n_util::GetStringUTF16(IDS_TRANSLATE_BUBBLE_ALWAYS),
         base::BindRepeating(&TranslateBubbleView::AlwaysTranslatePressed,
@@ -925,10 +997,15 @@ std::unique_ptr<views::View> TranslateBubbleView::CreateViewAdvancedTarget() {
   advanced_done_button_target_ = advanced_done_button.get();
   advanced_done_button_target_->SetProperty(views::kElementIdentifierKey,
                                             kTargetLanguageDoneButton);
+  // Use a different header title depending on whether the searchable target
+  // language UI is enabled.
+  int title_id =
+      base::FeatureList::IsEnabled(translate::kTranslateLanguageSearchUI)
+          ? IDS_TRANSLATE_HEADER
+          : IDS_TRANSLATE_BUBBLE_ADVANCED_TARGET;
   std::unique_ptr<views::Label> target_language_title_label =
-      std::make_unique<views::Label>(
-          l10n_util::GetStringUTF16(IDS_TRANSLATE_BUBBLE_ADVANCED_TARGET),
-          views::style::CONTEXT_DIALOG_TITLE);
+      std::make_unique<views::Label>(l10n_util::GetStringUTF16(title_id),
+                                     views::style::CONTEXT_DIALOG_TITLE);
 
   return CreateViewAdvanced(std::move(child_view),
                             std::move(target_language_title_label),
@@ -1022,6 +1099,7 @@ std::unique_ptr<views::View> TranslateBubbleView::CreateViewAdvanced(
 
   UpdateAdvancedView();
 
+  SetInteractiveControlsAlwaysFocusable(view.get());
   return view;
 }
 
@@ -1124,6 +1202,16 @@ void TranslateBubbleView::SwitchView(
 
   SwitchTabForViewState(view_state);
 
+  // Only create the target / source language search view when the user wants
+  // to change the target / source language.
+  if (view_state == TranslateBubbleModel::VIEW_STATE_SOURCE_LANGUAGE &&
+      !advanced_view_source_) {
+    advanced_view_source_ = AddChildView(CreateViewAdvancedSource());
+  } else if (view_state == TranslateBubbleModel::VIEW_STATE_TARGET_LANGUAGE &&
+             !advanced_view_target_) {
+    advanced_view_target_ = AddChildView(CreateViewAdvancedTarget());
+  }
+
   UpdateViewState(view_state);
   if (view_state == TranslateBubbleModel::VIEW_STATE_SOURCE_LANGUAGE ||
       view_state == TranslateBubbleModel::VIEW_STATE_TARGET_LANGUAGE) {
@@ -1131,6 +1219,16 @@ void TranslateBubbleView::SwitchView(
   }
 
   UpdateChildVisibilities();
+
+  // When the bubble menu transitions to the target language search view,
+  // request focus on the search bar instead of keeping it on the previous
+  // focused element.
+  if (view_state == TranslateBubbleModel::VIEW_STATE_TARGET_LANGUAGE &&
+      base::FeatureList::IsEnabled(translate::kTranslateLanguageSearchUI)) {
+    if (translate_language_search_view_) {
+      translate_language_search_view_->RequestFocus();
+    }
+  }
 
   if (view_state == TranslateBubbleModel::VIEW_STATE_AFTER_TRANSLATE) {
     AnnounceTextToScreenReader(l10n_util::GetStringFUTF16(
@@ -1195,7 +1293,8 @@ void TranslateBubbleView::UpdateAdvancedView() {
 void TranslateBubbleView::UpdateLanguageNames(
     std::u16string* source_language_name,
     std::u16string* target_language_name) {
-  DCHECK(source_language_name && target_language_name);
+  CHECK(source_language_name && target_language_name,
+        base::NotFatalUntil::M162);
   previous_source_language_index_ = model_->GetSourceLanguageIndex();
   *source_language_name =
       model_->GetSourceLanguageNameAt(previous_source_language_index_);

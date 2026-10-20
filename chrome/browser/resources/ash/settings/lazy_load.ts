@@ -169,7 +169,7 @@ export {setShortcutInputProviderForTesting} from './device_page/shortcut_input_m
 export {SettingsStorageElement} from './device_page/storage.js';
 export {SettingsStylusElement} from './device_page/stylus.js';
 export type {ContainerInfo, GuestId, GuestOsBrowserProxy, GuestOsSharedUsbDevice, ShareableDevices} from './guest_os/guest_os_browser_proxy.js';
-export {CROSTINI_TYPE, GuestOsBrowserProxyImpl, PLUGIN_VM_TYPE} from './guest_os/guest_os_browser_proxy.js';
+export {CROSTINI_TYPE, GuestOsBrowserProxyImpl} from './guest_os/guest_os_browser_proxy.js';
 export {SettingsGuestOsConfirmationDialogElement} from './guest_os/guest_os_confirmation_dialog.js';
 export {ContainerSelectElement} from './guest_os/guest_os_container_select.js';
 export {SettingsGuestOsSharedPathsElement} from './guest_os/guest_os_shared_paths.js';
@@ -188,7 +188,6 @@ export {NetworkDeviceInfoDialogElement} from './internet_page/network_device_inf
 export {NetworkProxySectionElement} from './internet_page/network_proxy_section.js';
 export {PasspointRemoveDialogElement} from './internet_page/passpoint_remove_dialog.js';
 export {SettingsPasspointSubpageElement} from './internet_page/passpoint_subpage.js';
-export {SettingsTrafficCountersElement} from './internet_page/settings_traffic_counters.js';
 export {TetherConnectionDialogElement} from './internet_page/tether_connection_dialog.js';
 export type {KerberosAccount, KerberosAccountsBrowserProxy, ValidateKerberosConfigResult} from './kerberos_page/kerberos_accounts_browser_proxy.js';
 export {KerberosAccountsBrowserProxyImpl, KerberosConfigErrorCode, KerberosErrorType} from './kerberos_page/kerberos_accounts_browser_proxy.js';
@@ -254,7 +253,6 @@ export {AppManagementMainViewElement} from './os_apps_page/app_management_page/m
 export {AppManagementPermissionHeadingElement} from './os_apps_page/app_management_page/permission_heading.js';
 export {AppManagementPermissionItemElement} from './os_apps_page/app_management_page/permission_item.js';
 export {AppManagementPinToShelfItemElement} from './os_apps_page/app_management_page/pin_to_shelf_item.js';
-export {AppManagementPluginVmDetailViewElement} from './os_apps_page/app_management_page/plugin_vm_page/plugin_vm_detail_view.js';
 export {AppManagementPwaDetailViewElement} from './os_apps_page/app_management_page/pwa_detail_view.js';
 export {AppManagementResizeLockItemElement} from './os_apps_page/app_management_page/resize_lock_item.js';
 export {AppManagementSubAppsItemElement} from './os_apps_page/app_management_page/sub_apps_item.js';
@@ -270,7 +268,6 @@ export {AppSetupPinKeyboardElement} from './os_apps_page/app_parental_controls/a
 export {AppVerifyPinDialogElement} from './os_apps_page/app_parental_controls/app_verify_pin_dialog.js';
 export {BlockAppItemElement} from './os_apps_page/app_parental_controls/block_app_item.js';
 export {ParentalControlsDialogAction, ParentalControlsPinDialogError} from './os_apps_page/app_parental_controls/metrics_utils.js';
-
 export {SettingsBluetoothChangeDeviceNameDialogElement} from './os_bluetooth_page/os_bluetooth_change_device_name_dialog.js';
 export {SettingsBluetoothDeviceDetailSubpageElement} from './os_bluetooth_page/os_bluetooth_device_detail_subpage.js';
 export {SettingsBluetoothDevicesSubpageElement} from './os_bluetooth_page/os_bluetooth_devices_subpage.js';

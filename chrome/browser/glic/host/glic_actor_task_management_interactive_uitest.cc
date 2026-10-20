@@ -4,6 +4,7 @@
 
 #include "base/test/metrics/user_action_tester.h"
 #include "build/build_config.h"
+#include "chrome/browser/actor/ui/actor_task_unload_handler.h"
 #include "chrome/browser/download/download_test_file_activity_observer.h"
 #include "chrome/browser/glic/host/glic_actor_interactive_uitest_common.h"
 #include "chrome/browser/glic/host/glic_features.mojom-features.h"
@@ -17,6 +18,7 @@
 #include "content/public/test/browser_test_utils.h"
 #include "content/public/test/download_test_observer.h"
 #include "content/public/test/test_utils.h"
+#include "ui/views/window/dialog_delegate.h"
 
 #if BUILDFLAG(IS_LINUX)
 #include "ui/ozone/public/ozone_platform.h"
@@ -53,8 +55,8 @@ IN_PROC_BROWSER_TEST_F(GlicActorTaskManagementUiTest, StopActorTask) {
   DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kNewActorTabId);
   constexpr std::string_view kClickableButtonLabel = "clickable";
 
-  const GURL task_url =
-      embedded_test_server()->GetURL("/actor/page_with_clickable_element.html");
+  const GURL task_url = embedded_https_test_server().GetURL(
+      "example.com", "/actor/page_with_clickable_element.html");
 
   RunTestSequence(
       // clang-format off
@@ -72,11 +74,24 @@ IN_PROC_BROWSER_TEST_F(GlicActorTaskManagementUiTest, StopActorTask) {
 }
 
 // Tests that closing a tab that's being acted on stops the associated task.
-IN_PROC_BROWSER_TEST_F(GlicActorTaskManagementUiTest, StopActorTaskOnTabClose) {
+class GlicActorTaskManagementTabCloseUiTest
+    : public GlicActorTaskManagementUiTest {
+ public:
+  GlicActorTaskManagementTabCloseUiTest() {
+    scoped_feature_list_.InitAndEnableFeature(features::kGlicConfirmTabClose);
+    actor::ActorTaskTabCloseConfirmDialog::SetSuppressForTesting(false);
+  }
+
+ private:
+  base::test::ScopedFeatureList scoped_feature_list_;
+};
+
+IN_PROC_BROWSER_TEST_F(GlicActorTaskManagementTabCloseUiTest,
+                       StopActorTaskOnTabClose) {
   DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kNewActorTabId);
 
-  const GURL task_url =
-      embedded_test_server()->GetURL("/actor/page_with_clickable_element.html");
+  const GURL task_url = embedded_https_test_server().GetURL(
+      "example.com", "/actor/page_with_clickable_element.html");
 
   RunTestSequence(
       // clang-format off
@@ -85,6 +100,17 @@ IN_PROC_BROWSER_TEST_F(GlicActorTaskManagementUiTest, StopActorTaskOnTabClose) {
     CheckIsActingOnTab(kNewActorTabId, true),
     PrepareForStopStateChange(task_id_),
     CloseTab(kNewActorTabId),
+    InAnyContext(WaitForShow(
+        actor::ActorTaskTabCloseConfirmDialog::kViewId)),
+    InAnyContext(WithView(actor::ActorTaskTabCloseConfirmDialog::kViewId,
+             [](views::View* view) {
+               auto* widget = view->GetWidget();
+               if (widget) {
+                 widget->widget_delegate()->AsDialogDelegate()->AcceptDialog();
+               }
+             })),
+    InAnyContext(WaitForHide(
+        actor::ActorTaskTabCloseConfirmDialog::kViewId)),
     WaitForActorTaskStateChangeToStopped());
   // clang-format on
 }
@@ -96,8 +122,8 @@ IN_PROC_BROWSER_TEST_F(GlicActorTaskManagementUiTest, StopThenStartActTask) {
   DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kSecondTabId);
   DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kThirdTabId);
 
-  const GURL task_url =
-      embedded_test_server()->GetURL("/actor/page_with_clickable_element.html");
+  const GURL task_url = embedded_https_test_server().GetURL(
+      "example.com", "/actor/page_with_clickable_element.html");
 
   RunTestSequence(
       // clang-format off
@@ -128,8 +154,8 @@ IN_PROC_BROWSER_TEST_F(GlicActorTaskManagementUiTest, PauseActorTask) {
   DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kNewActorTabId);
   constexpr std::string_view kClickableButtonLabel = "clickable";
 
-  const GURL task_url =
-      embedded_test_server()->GetURL("/actor/page_with_clickable_element.html");
+  const GURL task_url = embedded_https_test_server().GetURL(
+      "example.com", "/actor/page_with_clickable_element.html");
 
   RunTestSequence(
       // clang-format off
@@ -156,8 +182,8 @@ IN_PROC_BROWSER_TEST_F(GlicActorTaskManagementUiTest, PauseThenStopActorTask) {
   DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kNewActorTabId);
   constexpr std::string_view kClickableButtonLabel = "clickable";
 
-  const GURL task_url =
-      embedded_test_server()->GetURL("/actor/page_with_clickable_element.html");
+  const GURL task_url = embedded_https_test_server().GetURL(
+      "example.com", "/actor/page_with_clickable_element.html");
 
   RunTestSequence(
       // clang-format off
@@ -186,8 +212,8 @@ IN_PROC_BROWSER_TEST_F(GlicActorTaskManagementUiTest,
   DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kNewActorTabId);
   constexpr std::string_view kClickableButtonLabel = "clickable";
 
-  const GURL task_url =
-      embedded_test_server()->GetURL("/actor/page_with_clickable_element.html");
+  const GURL task_url = embedded_https_test_server().GetURL(
+      "example.com", "/actor/page_with_clickable_element.html");
 
   RunTestSequence(
       // clang-format off
@@ -212,8 +238,8 @@ IN_PROC_BROWSER_TEST_F(GlicActorTaskManagementUiTest,
   DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kNewActorTabId);
   constexpr std::string_view kClickableButtonLabel = "clickable";
 
-  const GURL task_url =
-      embedded_test_server()->GetURL("/actor/page_with_clickable_element.html");
+  const GURL task_url = embedded_https_test_server().GetURL(
+      "example.com", "/actor/page_with_clickable_element.html");
 
   RunTestSequence(
       // clang-format off
@@ -242,8 +268,8 @@ IN_PROC_BROWSER_TEST_F(GlicActorTaskManagementUiTest,
                        PauseThenResumeActorTaskBeforePerformAction) {
   DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kNewActorTabId);
   constexpr std::string_view kClickableButtonLabel = "clickable";
-  const GURL task_url =
-      embedded_test_server()->GetURL("/actor/page_with_clickable_element.html");
+  const GURL task_url = embedded_https_test_server().GetURL(
+      "example.com", "/actor/page_with_clickable_element.html");
   RunTestSequence(
       // clang-format off
     InitializeWithOpenGlicWindow(),
@@ -272,8 +298,8 @@ IN_PROC_BROWSER_TEST_F(GlicActorTaskManagementUiTest,
                        ResumeActorTaskWithoutATask) {
   DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kNewActorTabId);
 
-  const GURL task_url =
-      embedded_test_server()->GetURL("/actor/page_with_clickable_element.html");
+  const GURL task_url = embedded_https_test_server().GetURL(
+      "example.com", "/actor/page_with_clickable_element.html");
 
   RunTestSequence(
       // clang-format off
@@ -294,8 +320,8 @@ IN_PROC_BROWSER_TEST_F(GlicActorTaskManagementUiTest,
                        ResumeActorTaskWhenAlreadyResumed) {
   DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kNewActorTabId);
 
-  const GURL task_url =
-      embedded_test_server()->GetURL("/actor/page_with_clickable_element.html");
+  const GURL task_url = embedded_https_test_server().GetURL(
+      "example.com", "/actor/page_with_clickable_element.html");
 
   RunTestSequence(InitializeWithOpenGlicWindow(),
                   StartActorTaskInNewTab(task_url, kNewActorTabId),
@@ -312,8 +338,8 @@ IN_PROC_BROWSER_TEST_F(GlicActorTaskManagementUiTest,
 
   constexpr std::string_view kClickableButtonLabel = "clickable";
 
-  const GURL task_url =
-      embedded_test_server()->GetURL("/actor/page_with_clickable_element.html");
+  const GURL task_url = embedded_https_test_server().GetURL(
+      "example.com", "/actor/page_with_clickable_element.html");
 
   RunTestSequence(
       // clang-format off
@@ -341,8 +367,8 @@ IN_PROC_BROWSER_TEST_F(GlicActorTaskManagementUiTest,
 }
 
 IN_PROC_BROWSER_TEST_F(GlicActorTaskManagementUiTest, CreateTaskWithTitle) {
-  const GURL task_url =
-      embedded_test_server()->GetURL("/actor/page_with_clickable_element.html");
+  const GURL task_url = embedded_https_test_server().GetURL(
+      "example.com", "/actor/page_with_clickable_element.html");
   const std::string task_title = "My test title";
 
   RunTestSequence(InitializeWithOpenGlicWindow(),    //
@@ -357,8 +383,8 @@ IN_PROC_BROWSER_TEST_F(GlicActorTaskManagementUiTest, CreateTaskWithTitle) {
 }
 
 IN_PROC_BROWSER_TEST_F(GlicActorTaskManagementUiTest, CreateTaskNoTitle) {
-  const GURL task_url =
-      embedded_test_server()->GetURL("/actor/page_with_clickable_element.html");
+  const GURL task_url = embedded_https_test_server().GetURL(
+      "example.com", "/actor/page_with_clickable_element.html");
 
   RunTestSequence(InitializeWithOpenGlicWindow(),  //
                   CreateTask(task_id_, ""),        //
@@ -394,9 +420,10 @@ IN_PROC_BROWSER_TEST_F(GlicActorTaskManagementUiTest,
   }
 #endif
 
-  const GURL task_url =
-      embedded_test_server()->GetURL("/actor/page_with_clickable_element.html");
-  const GURL other_url = embedded_test_server()->GetURL("/title1.html");
+  const GURL task_url = embedded_https_test_server().GetURL(
+      "example.com", "/actor/page_with_clickable_element.html");
+  const GURL other_url =
+      embedded_https_test_server().GetURL("example.com", "/title1.html");
   base::UserActionTester user_action_tester;
 
   RunTestSequence(
@@ -427,12 +454,12 @@ class GlicActorTaskManagementDownloadUiTest
   }
   void SetUpOnMainThread() override {
     GlicActorTaskManagementUiTest::SetUpOnMainThread();
-    browser()->profile()->GetPrefs()->SetBoolean(::prefs::kPromptForDownload,
-                                                 true);
+    browser()->GetProfile()->GetPrefs()->SetBoolean(::prefs::kPromptForDownload,
+                                                    true);
 
     file_activity_observer_ =
         std::make_unique<DownloadTestFileActivityObserver>(
-            browser()->profile());
+            browser()->GetProfile());
 
     file_activity_observer_->EnableFileChooser(true);
   }
@@ -456,10 +483,11 @@ IN_PROC_BROWSER_TEST_F(GlicActorTaskManagementDownloadUiTest,
   DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kNewActorTabId);
   constexpr std::string_view kDownloadLabel = "download";
 
-  const GURL task_url = embedded_test_server()->GetURL("/actor/download.html");
+  const GURL task_url = embedded_https_test_server().GetURL(
+      "example.com", "/actor/download.html");
 
   content::DownloadManager* download_manager =
-      browser()->profile()->GetDownloadManager();
+      browser()->GetProfile()->GetDownloadManager();
   std::unique_ptr<content::DownloadTestObserverTerminal> download_observer;
   RunTestSequence(
       InitializeWithOpenGlicWindow(),
@@ -500,10 +528,11 @@ IN_PROC_BROWSER_TEST_F(GlicActorTaskManagementDownloadUiTest,
   DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kNewActorTabId);
   constexpr std::string_view kDownloadLabel = "download";
 
-  const GURL task_url = embedded_test_server()->GetURL("/actor/download.html");
+  const GURL task_url = embedded_https_test_server().GetURL(
+      "example.com", "/actor/download.html");
 
   content::DownloadManager* download_manager =
-      browser()->profile()->GetDownloadManager();
+      browser()->GetProfile()->GetDownloadManager();
   std::unique_ptr<content::DownloadTestObserverTerminal> download_observer;
   RunTestSequence(
       InitializeWithOpenGlicWindow(),
@@ -545,12 +574,13 @@ IN_PROC_BROWSER_TEST_F(GlicActorTaskManagementDownloadUiTest,
 
   constexpr std::string_view kDownloadLabel = "download";
 
-  const GURL task_url = embedded_test_server()->GetURL("/actor/download.html");
+  const GURL task_url = embedded_https_test_server().GetURL(
+      "example.com", "/actor/download.html");
   const GURL other_url =
-      embedded_test_server()->GetURL("example.com", "/actor/download.html");
+      embedded_https_test_server().GetURL("foo.com", "/actor/download.html");
 
   content::DownloadManager* download_manager =
-      browser()->profile()->GetDownloadManager();
+      browser()->GetProfile()->GetDownloadManager();
   std::unique_ptr<content::DownloadTestObserverTerminal> download_observer;
   RunTestSequence(
       InitializeWithOpenGlicWindow(),

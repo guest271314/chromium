@@ -6,17 +6,17 @@ package org.chromium.chrome.browser.omnibox.suggestions;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
-import static org.mockito.ArgumentMatchers.anyBoolean;
-import static org.mockito.Mockito.atLeastOnce;
-import static org.mockito.Mockito.clearInvocations;
-import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.verifyNoMoreInteractions;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
+import static org.chromium.ui.test.util.MockitoHelper.clearInvocations;
+
+import android.content.Context;
 import android.view.View;
 
 import androidx.recyclerview.widget.RecyclerView.LayoutManager;
@@ -28,27 +28,44 @@ import org.junit.runner.RunWith;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
-import org.robolectric.annotation.Config;
+import org.mockito.quality.Strictness;
 
+import org.chromium.base.Callback;
+import org.chromium.base.ContextUtils;
 import org.chromium.base.test.BaseRobolectricTestRunner;
+import org.chromium.chrome.browser.omnibox.suggestions.SelectionController.TraversalMode;
 
 /** Tests for {@link RecyclerViewSelectionController}. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 public class RecyclerViewSelectionControllerUnitTest {
-    public @Rule MockitoRule mMockitoRule = MockitoJUnit.rule();
+    @Rule
+    public final MockitoRule mMockitoRule = MockitoJUnit.rule().strictness(Strictness.STRICT_STUBS);
 
-    private @Mock LayoutManager mLayoutManager;
-    private @Mock View mChildView1;
-    private @Mock View mChildView2;
-    private @Mock View mChildView3;
-    private @Mock View mChildView4;
-    private @Mock View mChildView5;
+    @Mock private LayoutManager mLayoutManager;
+    @Mock private Callback<Boolean> mVirtualCallback;
+    private View mChildView1;
+    private View mChildView2;
+    private View mChildView3;
+    private View mChildView4;
+    private View mChildView5;
     RecyclerViewSelectionController mSelectionController;
     RecyclerViewSelectionController mSelectionControllerWithSentinel;
 
     @Before
     public void setUp() {
+        Context context = ContextUtils.getApplicationContext();
+        mChildView1 = new View(context);
+        mChildView2 = new View(context);
+        mChildView3 = new View(context);
+        mChildView4 = new View(context);
+        mChildView5 = new View(context);
+
+        mChildView1.setFocusable(true);
+        mChildView2.setFocusable(true);
+        mChildView3.setFocusable(true);
+        mChildView4.setFocusable(true);
+        mChildView5.setFocusable(true);
+
         lenient().when(mLayoutManager.getItemCount()).thenReturn(5);
         lenient().when(mLayoutManager.findViewByPosition(0)).thenReturn(mChildView1);
         lenient().when(mLayoutManager.findViewByPosition(1)).thenReturn(mChildView2);
@@ -56,22 +73,14 @@ public class RecyclerViewSelectionControllerUnitTest {
         lenient().when(mLayoutManager.findViewByPosition(3)).thenReturn(mChildView4);
         lenient().when(mLayoutManager.findViewByPosition(4)).thenReturn(mChildView5);
 
-        lenient().doReturn(true).when(mChildView1).isFocusable();
-        lenient().doReturn(true).when(mChildView2).isFocusable();
-        lenient().doReturn(true).when(mChildView3).isFocusable();
-        lenient().doReturn(true).when(mChildView4).isFocusable();
-        lenient().doReturn(true).when(mChildView5).isFocusable();
-
         mSelectionController =
-                new RecyclerViewSelectionController(
-                        mLayoutManager, RecyclerViewSelectionController.Mode.SATURATING);
+                new RecyclerViewSelectionController(mLayoutManager, TraversalMode.SATURATING);
         mSelectionControllerWithSentinel =
                 new RecyclerViewSelectionController(
-                        mLayoutManager,
-                        RecyclerViewSelectionController.Mode.SATURATING_WITH_SENTINEL);
+                        mLayoutManager, TraversalMode.SATURATING_WITH_SENTINEL);
 
         // Saturating controller will initialize selection, impacting tests. Reset this right away.
-        clearInvocations(mChildView1);
+        mChildView1.setSelected(false);
     }
 
     @Test
@@ -180,7 +189,7 @@ public class RecyclerViewSelectionControllerUnitTest {
         assertEquals(mChildView3, mSelectionController.getSelectedView());
 
         // View at position 1 is not focusable:
-        doReturn(false).when(mChildView2).isFocusable();
+        mChildView2.setFocusable(false);
 
         // Focus skips position 1.
         mSelectionController.selectPreviousItem();
@@ -195,7 +204,7 @@ public class RecyclerViewSelectionControllerUnitTest {
         assertEquals(mChildView1, mSelectionController.getSelectedView());
 
         // View at position 1 is not focusable:
-        doReturn(false).when(mChildView2).isFocusable();
+        mChildView2.setFocusable(false);
 
         // Focus skips position 1.
         mSelectionController.selectNextItem();
@@ -209,18 +218,16 @@ public class RecyclerViewSelectionControllerUnitTest {
         mSelectionControllerWithSentinel.setPosition(1);
         assertEquals(Integer.valueOf(1), mSelectionControllerWithSentinel.getPosition());
 
-        verify(mChildView2, atLeastOnce()).isFocusable();
-        verify(mChildView2, times(1)).setSelected(true);
-        verify(mChildView2, times(1)).setSelected(anyBoolean());
-        verifyNoMoreInteractions(mChildView1, mChildView2, mChildView3);
+        assertFalse(mChildView1.isSelected());
+        assertTrue(mChildView2.isSelected());
+        assertFalse(mChildView3.isSelected());
 
         // Reset selection back to none.
 
         mSelectionControllerWithSentinel.reset();
-        verify(mChildView2, atLeastOnce()).isFocusable();
-        verify(mChildView2, times(1)).setSelected(false);
-        verify(mChildView2, times(2)).setSelected(anyBoolean());
-        verifyNoMoreInteractions(mChildView1, mChildView2, mChildView3);
+        assertFalse(mChildView1.isSelected());
+        assertFalse(mChildView2.isSelected());
+        assertFalse(mChildView3.isSelected());
 
         assertEquals(null, mSelectionControllerWithSentinel.getPosition());
     }
@@ -229,31 +236,28 @@ public class RecyclerViewSelectionControllerUnitTest {
     public void setSelectedItem_moveSelectionFromAnotherItem_withSentinel() {
         assertEquals(null, mSelectionControllerWithSentinel.getPosition());
         mSelectionControllerWithSentinel.setPosition(1);
-        clearInvocations(mChildView2);
+        assertTrue(mChildView2.isSelected());
 
         mSelectionControllerWithSentinel.setPosition(2);
         assertEquals(Integer.valueOf(2), mSelectionControllerWithSentinel.getPosition());
 
-        verify(mChildView1, times(0)).setSelected(anyBoolean());
-        verify(mChildView2, times(0)).setSelected(true);
-        verify(mChildView2, times(1)).setSelected(false);
-        verify(mChildView3, times(1)).setSelected(true);
-        verify(mChildView3, times(0)).setSelected(false);
+        assertFalse(mChildView1.isSelected());
+        assertFalse(mChildView2.isSelected());
+        assertTrue(mChildView3.isSelected());
     }
 
     @Test
     public void setSelectedItem_moveSelectionToNone_withSentinel() {
         assertTrue(mSelectionControllerWithSentinel.isParkedAtSentinel());
         mSelectionControllerWithSentinel.setPosition(1);
-        clearInvocations(mChildView2);
+        assertTrue(mChildView2.isSelected());
 
         mSelectionControllerWithSentinel.reset();
         assertTrue(mSelectionControllerWithSentinel.isParkedAtSentinel());
 
-        verify(mChildView1, times(0)).setSelected(anyBoolean());
-        verify(mChildView3, times(0)).setSelected(anyBoolean());
-        verify(mChildView2, times(0)).setSelected(true);
-        verify(mChildView2, times(1)).setSelected(false);
+        assertFalse(mChildView1.isSelected());
+        assertFalse(mChildView2.isSelected());
+        assertFalse(mChildView3.isSelected());
     }
 
     @Test
@@ -305,37 +309,101 @@ public class RecyclerViewSelectionControllerUnitTest {
 
         // Select View at position 1.
         mSelectionControllerWithSentinel.setPosition(1);
-        verify(mChildView2, atLeastOnce()).isFocusable();
-        verify(mChildView2).setSelected(true);
-        verifyNoMoreInteractions(mChildView2);
-        clearInvocations(mChildView2);
+        assertTrue(mChildView2.isSelected());
 
         // Pretend that the view is out of screen.
         // This should not result in view selection being cleared.
         when(mLayoutManager.findViewByPosition(1)).thenReturn(null);
         mSelectionControllerWithSentinel.onChildViewDetachedFromWindow(mChildView2);
-        verify(mChildView2).setSelected(false);
-        verifyNoMoreInteractions(mChildView2);
-        clearInvocations(mChildView2);
+        assertFalse(mChildView2.isSelected());
 
         // Pretend that the View 1 is now reused as View 3.
         // We should see that the Selected state is cleared.
-        when(mLayoutManager.findViewByPosition(3)).thenReturn(mChildView2);
         mSelectionControllerWithSentinel.onChildViewAttachedToWindow(mChildView2);
-        verifyNoMoreInteractions(mChildView2);
+        assertFalse(mChildView2.isSelected());
 
         // Finally, pretend that the view 1 is back on screen.
         // This happens in 2 steps:
         // - 1. the view is removed from last position
-        when(mLayoutManager.findViewByPosition(3)).thenReturn(null);
         mSelectionControllerWithSentinel.onChildViewDetachedFromWindow(mChildView2);
+        assertFalse(mChildView2.isSelected());
         // - 2. the view is inserted at position 1.
         when(mLayoutManager.findViewByPosition(1)).thenReturn(mChildView2);
         mSelectionControllerWithSentinel.onChildViewAttachedToWindow(mChildView2);
-        // This will result in the setSelected(false) being called once, when we signal the view
-        // is detached.
-        verify(mChildView2).setSelected(false);
-        verify(mChildView2).setSelected(true);
-        verifyNoMoreInteractions(mChildView2);
+        assertTrue(mChildView2.isSelected());
+    }
+
+    @Test
+    public void virtualViews_navigationAndCallbacks() {
+        when(mLayoutManager.getItemCount()).thenReturn(4);
+        mSelectionController.addVirtualView(1, mVirtualCallback);
+        assertEquals(5, mSelectionController.getItemCount());
+
+        mSelectionController.setPosition(0);
+        assertEquals(Integer.valueOf(0), mSelectionController.getPosition());
+        assertTrue(mChildView1.isSelected());
+
+        mSelectionController.selectNextItem();
+
+        assertEquals(Integer.valueOf(1), mSelectionController.getPosition());
+        verify(mVirtualCallback).onResult(/* result= */ true);
+        assertFalse(mChildView1.isSelected());
+        assertFalse(mChildView2.isSelected());
+
+        mSelectionController.selectNextItem();
+
+        assertEquals(Integer.valueOf(2), mSelectionController.getPosition());
+        verify(mVirtualCallback).onResult(/* result= */ false);
+        assertTrue(mChildView2.isSelected());
+
+        mSelectionController.selectPreviousItem();
+
+        assertEquals(Integer.valueOf(1), mSelectionController.getPosition());
+        verify(mVirtualCallback, times(2)).onResult(/* result= */ true);
+        assertFalse(mChildView2.isSelected());
+    }
+
+    @Test
+    public void virtualViews_removeVirtualView() {
+        mSelectionController.addVirtualView(1, mVirtualCallback);
+        mSelectionController.removeVirtualView(1);
+
+        mSelectionController.setPosition(0);
+        assertEquals(Integer.valueOf(0), mSelectionController.getPosition());
+        assertTrue(mChildView1.isSelected());
+
+        mSelectionController.selectNextItem();
+
+        assertEquals(Integer.valueOf(1), mSelectionController.getPosition());
+        assertTrue(mChildView2.isSelected());
+
+        verifyNoInteractions(mVirtualCallback);
+    }
+
+    @Test
+    public void virtualViews_removeCurrentlySelectedVirtualView() {
+        mSelectionController.addVirtualView(1, mVirtualCallback);
+        mSelectionController.setPosition(1);
+        assertEquals(Integer.valueOf(1), mSelectionController.getPosition());
+        verify(mVirtualCallback).onResult(/* result= */ true);
+
+        clearInvocations(mVirtualCallback);
+        mSelectionController.removeVirtualView(1);
+        assertEquals(Integer.valueOf(0), mSelectionController.getPosition());
+        verify(mVirtualCallback).onResult(/* result= */ false);
+        assertTrue(mChildView1.isSelected());
+    }
+
+    @Test
+    public void virtualViews_removeCurrentlySelectedVirtualView_withSentinel() {
+        mSelectionControllerWithSentinel.addVirtualView(1, mVirtualCallback);
+        mSelectionControllerWithSentinel.setPosition(1);
+        assertEquals(Integer.valueOf(1), mSelectionControllerWithSentinel.getPosition());
+        verify(mVirtualCallback).onResult(/* result= */ true);
+
+        clearInvocations(mVirtualCallback);
+        mSelectionControllerWithSentinel.removeVirtualView(1);
+        assertNull(mSelectionControllerWithSentinel.getPosition());
+        verify(mVirtualCallback).onResult(/* result= */ false);
     }
 }

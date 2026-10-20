@@ -5,6 +5,7 @@
 package org.chromium.android_webview.test;
 
 import android.net.Uri;
+import android.util.Pair;
 import android.webkit.JavascriptInterface;
 
 import androidx.test.filters.MediumTest;
@@ -29,11 +30,11 @@ import org.chromium.android_webview.WebMessageListener;
 import org.chromium.android_webview.test.TestAwContentsClient.OnReceivedTitleHelper;
 import org.chromium.android_webview.test.util.CommonResources;
 import org.chromium.base.ThreadUtils;
-import org.chromium.base.test.util.DisabledTest;
 import org.chromium.base.test.util.DoNotBatch;
 import org.chromium.base.test.util.Feature;
 import org.chromium.content_public.browser.MessagePayload;
 import org.chromium.content_public.browser.MessagePort;
+import org.chromium.content_public.browser.SharedArrayBuffer;
 import org.chromium.content_public.browser.test.util.TestCallbackHelperContainer.OnPageFinishedHelper;
 import org.chromium.js_injection.mojom.DocumentInjectionTime;
 import org.chromium.js_injection.mojom.JavaScriptExecutionError;
@@ -41,8 +42,12 @@ import org.chromium.net.test.EmbeddedTestServer;
 import org.chromium.net.test.EmbeddedTestServerRule;
 import org.chromium.net.test.util.TestWebServer;
 
+import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
+import java.util.List;
+import java.util.Locale;
 import java.util.Random;
+import java.util.Set;
 import java.util.concurrent.LinkedBlockingQueue;
 
 /** Test suite for JavaScript Java interaction. */
@@ -745,6 +750,250 @@ public class JsJavaInteractionTest extends AwParameterizedTest {
     @Test
     @MediumTest
     @Feature({"AndroidWebView", "JsJavaInteraction"})
+    public void testPostSharedArrayBufferWorks() throws Throwable {
+        mActivityTestRule.getAwBrowserContext().setCrossOriginIsolatedAllowList(Set.of("*"));
+        addWebMessageListenerOnUiThread(mAwContents, JS_OBJECT_NAME, new String[] {"*"}, mListener);
+
+        List<Pair<String, String>> requestHeaders =
+                List.of(new Pair<>("Document-Isolation-Policy", "isolate-and-credentialless"));
+        String html =
+                """
+                <html>
+                <head>
+                  <script>
+                    myObject.onmessage = function (event) {
+                      if (event.data instanceof SharedArrayBuffer) {
+                        const view = new Int32Array(event.data);
+                        myObject.postMessage('SharedArrayBuffer:' + view[0]);
+                      } else {
+                        myObject.postMessage('NotSharedArrayBuffer');
+                      }
+                    };
+                    myObject.postMessage('Hello');
+                  </script>
+                </head>
+                <body></body>
+                </html>
+                """;
+        try (TestWebServer webServer = TestWebServer.start()) {
+            String url = webServer.setResponse("/test_sab_reply.html", html, requestHeaders);
+            mActivityTestRule.loadUrlSync(
+                    mAwContents, mContentsClient.getOnPageFinishedHelper(), url);
+        }
+
+        TestWebMessageListener.Data data = mListener.waitForOnPostMessage();
+        Assert.assertEquals(HELLO, data.getAsString());
+
+        try (SharedArrayBuffer sab = SharedArrayBuffer.allocate(null, 4)) {
+            ByteBuffer buffer = sab.mapAndCreateByteBuffer();
+            buffer.putInt(0, 42);
+
+            data.mReplyProxy.postMessage(new MessagePayload(sab));
+
+            data = mListener.waitForOnPostMessage();
+            Assert.assertEquals("SharedArrayBuffer:42", data.getAsString());
+            Assert.assertTrue(mListener.hasNoMoreOnPostMessage());
+        }
+    }
+
+    @Test
+    @MediumTest
+    @Feature({"AndroidWebView", "JsJavaInteraction"})
+    public void testPostSharedArrayBufferFromJsShouldThrowException() throws Throwable {
+        mActivityTestRule.getAwBrowserContext().setCrossOriginIsolatedAllowList(Set.of("*"));
+        addWebMessageListenerOnUiThread(mAwContents, JS_OBJECT_NAME, new String[] {"*"}, mListener);
+
+        List<Pair<String, String>> requestHeaders =
+                List.of(new Pair<>("Document-Isolation-Policy", "isolate-and-credentialless"));
+        String html =
+                """
+                <html>
+                <head>
+                  <script>
+                    myObject.onmessage = function (event) {
+                      if (event.data instanceof SharedArrayBuffer) {
+                        try {
+                          myObject.postMessage(event.data);
+                          myObject.postMessage('unexpected-success');
+                        } catch (e) {
+                          myObject.postMessage('received:' + e.toString());
+                        }
+                      }
+                    };
+                    try {
+                      const sab = new SharedArrayBuffer(4);
+                      myObject.postMessage(sab);
+                      myObject.postMessage('unexpected-success');
+                    } catch (e) {
+                      myObject.postMessage('created:' + e.toString());
+                    }
+                  </script>
+                </head>
+                <body></body>
+                </html>
+                """;
+        try (TestWebServer webServer = TestWebServer.start()) {
+            String url = webServer.setResponse("/test_sab_throw.html", html, requestHeaders);
+            mActivityTestRule.loadUrlSync(
+                    mAwContents, mContentsClient.getOnPageFinishedHelper(), url);
+        }
+
+        // Assert that a SharedArrayBuffer created in JS cannot be sent to the app.
+        TestWebMessageListener.Data data = mListener.waitForOnPostMessage();
+        String errorString = data.getAsString();
+        Assert.assertTrue(errorString.startsWith("created:"));
+        Assert.assertTrue(errorString.contains("Error"));
+
+        // Assert that a SharedArrayBuffer received from the app cannot be sent back to the app.
+        try (SharedArrayBuffer sab = SharedArrayBuffer.allocate(null, 4)) {
+            ByteBuffer buffer = sab.mapAndCreateByteBuffer();
+            buffer.putInt(0, 42);
+
+            data.mReplyProxy.postMessage(new MessagePayload(sab));
+
+            data = mListener.waitForOnPostMessage();
+            errorString = data.getAsString();
+            Assert.assertTrue(errorString.startsWith("received:"));
+            Assert.assertTrue(errorString.contains("Error"));
+        }
+
+        Assert.assertTrue(mListener.hasNoMoreOnPostMessage());
+    }
+
+    // Loads a page (served with `responseHeaders`) that posts a message to the app so that the
+    // test can obtain a JsReplyProxy for it, then asserts that replying with a SharedArrayBuffer
+    // payload throws because the frame is not cross-origin isolated.
+    private void assertPostSharedArrayBufferThrowsForNonIsolatedFrame(
+            List<Pair<String, String>> responseHeaders) throws Throwable {
+        addWebMessageListenerOnUiThread(mAwContents, JS_OBJECT_NAME, new String[] {"*"}, mListener);
+
+        String html =
+                """
+                <html>
+                <head>
+                  <script>
+                    myObject.postMessage('Hello');
+                  </script>
+                </head>
+                <body></body>
+                </html>
+                """;
+        try (TestWebServer webServer = TestWebServer.start()) {
+            String url =
+                    webServer.setResponse("/test_sab_not_isolated.html", html, responseHeaders);
+            mActivityTestRule.loadUrlSync(
+                    mAwContents, mContentsClient.getOnPageFinishedHelper(), url);
+        }
+
+        TestWebMessageListener.Data data = mListener.waitForOnPostMessage();
+        Assert.assertEquals(HELLO, data.getAsString());
+
+        JsReplyProxy replyProxy = data.mReplyProxy;
+        try (SharedArrayBuffer sab = SharedArrayBuffer.allocate(null, 4)) {
+            ByteBuffer buffer = sab.mapAndCreateByteBuffer();
+            buffer.putInt(0, 42);
+
+            // The isolation check runs inside the posted task, which executes inline when
+            // the caller is already on the UI thread, so the exception is raised on the
+            // caller's stack before the shared memory file descriptor is duplicated or
+            // handed to the renderer.
+            ThreadUtils.runOnUiThreadBlocking(
+                    () -> {
+                        MessagePayload payload = new MessagePayload(sab);
+                        Assert.assertThrows(
+                                IllegalStateException.class, () -> replyProxy.postMessage(payload));
+                    });
+        }
+
+        Assert.assertTrue(mListener.hasNoMoreOnPostMessage());
+    }
+
+    // The page sets Document-Isolation-Policy, but its origin is not in the cross-origin isolated
+    // allowlist, so the frame is not cross-origin isolated.
+    @Test
+    @MediumTest
+    @Feature({"AndroidWebView", "JsJavaInteraction"})
+    public void testPostSharedArrayBufferWithoutAllowlistShouldThrowException() throws Throwable {
+        mActivityTestRule
+                .getAwBrowserContext()
+                .setCrossOriginIsolatedAllowList(Set.of("https://example.com"));
+
+        assertPostSharedArrayBufferThrowsForNonIsolatedFrame(
+                List.of(new Pair<>("Document-Isolation-Policy", "isolate-and-credentialless")));
+    }
+
+    // The page's origin is in the cross-origin isolated allowlist, but the response is missing the
+    // Document-Isolation-Policy header, so the frame is not cross-origin isolated.
+    @Test
+    @MediumTest
+    @Feature({"AndroidWebView", "JsJavaInteraction"})
+    public void testPostSharedArrayBufferWithoutResponseHeadersShouldThrowException()
+            throws Throwable {
+        mActivityTestRule.getAwBrowserContext().setCrossOriginIsolatedAllowList(Set.of("*"));
+
+        assertPostSharedArrayBufferThrowsForNonIsolatedFrame(/* responseHeaders= */ null);
+    }
+
+    // A reply proxy whose document is gone must drop messages silently rather than report an
+    // isolation failure: the cross-origin isolation requirement only applies when the message is
+    // actually going to be sent. Regression test for the isolation check being unable to tell
+    // "the frame is not isolated" apart from "the frame is gone".
+    @Test
+    @MediumTest
+    @Feature({"AndroidWebView", "JsJavaInteraction"})
+    public void testPostSharedArrayBufferAfterFrameIsGoneDropsMessage() throws Throwable {
+        mActivityTestRule.getAwBrowserContext().setCrossOriginIsolatedAllowList(Set.of("*"));
+
+        List<Pair<String, String>> requestHeaders =
+                List.of(new Pair<>("Document-Isolation-Policy", "isolate-and-credentialless"));
+        String html =
+                """
+                <html>
+                <head>
+                  <script>
+                    myObject.postMessage('Hello');
+                  </script>
+                </head>
+                <body></body>
+                </html>
+                """;
+        try (TestWebServer webServer = TestWebServer.start()) {
+            String url = webServer.setResponse("/test_sab_frame_gone.html", html, requestHeaders);
+
+            // Restrict the listener to this server's origin so that navigating away below does not
+            // inject a new JS object, which would replace the reply proxy obtained here.
+            String baseUrl = webServer.getBaseUrl();
+            String origin = baseUrl.substring(0, baseUrl.length() - 1);
+            addWebMessageListenerOnUiThread(
+                    mAwContents, JS_OBJECT_NAME, new String[] {origin}, mListener);
+
+            mActivityTestRule.loadUrlSync(
+                    mAwContents, mContentsClient.getOnPageFinishedHelper(), url);
+        }
+
+        TestWebMessageListener.Data data = mListener.waitForOnPostMessage();
+        Assert.assertEquals(HELLO, data.getAsString());
+        JsReplyProxy replyProxy = data.mReplyProxy;
+
+        // Navigate to a different origin, destroying the document `replyProxy` belongs to.
+        loadUrlFromPath(HELLO_WORLD_HTML);
+
+        try (SharedArrayBuffer sab = SharedArrayBuffer.allocate(null, 4)) {
+            ByteBuffer buffer = sab.mapAndCreateByteBuffer();
+            buffer.putInt(0, 42);
+
+            // The message cannot be delivered, so it is dropped without throwing, even though
+            // there is no longer a cross-origin isolated frame to send it to.
+            ThreadUtils.runOnUiThreadBlocking(
+                    () -> replyProxy.postMessage(new MessagePayload(sab)));
+        }
+
+        Assert.assertTrue(mListener.hasNoMoreOnPostMessage());
+    }
+
+    @Test
+    @MediumTest
+    @Feature({"AndroidWebView", "JsJavaInteraction"})
     public void testPostNullOrUndefinedShouldThrowExceptionWithArrayBufferFeature()
             throws Throwable {
         final byte[] content = (HELLO + "FromJava").getBytes(StandardCharsets.UTF_8);
@@ -939,7 +1188,6 @@ public class JsJavaInteractionTest extends AwParameterizedTest {
     @Test
     @MediumTest
     @Feature({"AndroidWebView", "JsJavaInteraction"})
-    @DisabledTest(message = "The test was very flaky, see https://crbug.com/383517164")
     public void testJsObjectRemoveOnMessage() throws Throwable {
         addWebMessageListenerOnUiThread(mAwContents, JS_OBJECT_NAME, new String[] {"*"}, mListener);
 
@@ -1617,6 +1865,43 @@ public class JsJavaInteractionTest extends AwParameterizedTest {
     @Test
     @SmallTest
     @Feature({"AndroidWebView", "JsJavaInteraction"})
+    public void testBridgePrototypeChainEndsInIsolatedWorld() throws Throwable {
+        String isolatedWorld = "testWorld";
+        registerWorld(mAwContents, isolatedWorld);
+
+        addWebMessageListenerOnUiThreadInIsolatedWorld(
+                mAwContents, JS_OBJECT_NAME, new String[] {"*"}, mListener, isolatedWorld);
+
+        final String script =
+                String.format(
+                        Locale.ROOT,
+                        """
+                            let p = %s;
+                            while (Object.getPrototypeOf(p)) {
+                                p = Object.getPrototypeOf(p);
+                            }
+                            %s.postMessage(p === Object.prototype ? 'true' : 'false');
+                        """,
+                        JS_OBJECT_NAME,
+                        JS_OBJECT_NAME);
+
+        addJavaScriptOnEventOnUiThread(
+                mAwContents,
+                script,
+                DocumentInjectionTime.DOCUMENT_START,
+                new String[] {"*"},
+                isolatedWorld);
+
+        loadUrlFromPath(POST_MESSAGE_SIMPLE_HTML);
+
+        TestWebMessageListener.Data data = mListener.waitForOnPostMessage();
+        Assert.assertEquals("true", data.getAsString());
+        Assert.assertTrue(mListener.hasNoMoreOnPostMessage());
+    }
+
+    @Test
+    @SmallTest
+    @Feature({"AndroidWebView", "JsJavaInteraction"})
     public void testAddJavaScriptOnEvent_unregisteredWorldThrowsException() throws Throwable {
         String unregisteredWorld = "unregisteredWorld";
 
@@ -2117,6 +2402,51 @@ public class JsJavaInteractionTest extends AwParameterizedTest {
                 mListener.hasNoMoreOnPostMessage());
     }
 
+    @Test
+    @SmallTest
+    @Feature({"AndroidWebView", "JsJavaInteraction"})
+    public void testNavigationDoesNotClearNewPageListeners() throws Throwable {
+        addWebMessageListenerOnUiThread(mAwContents, JS_OBJECT_NAME, new String[] {"*"}, mListener);
+
+        loadUrlFromPath(POST_MESSAGE_SIMPLE_HTML);
+        // Consume Page 1's postMessage so the queue is empty
+        TestWebMessageListener.Data initialData = mListener.waitForOnPostMessage();
+        Assert.assertEquals("Hello", initialData.getAsString());
+
+        String html =
+                "<html><head><title>Initial</title></head><body>"
+                        + "<script>"
+                        + "  "
+                        + JS_OBJECT_NAME
+                        + ".onmessage = function(e) {"
+                        + "    document.title = e.data;"
+                        + "  };"
+                        + "  "
+                        + JS_OBJECT_NAME
+                        + ".postMessage('READY');"
+                        + "</script>"
+                        + "</body></html>";
+        mActivityTestRule.loadDataWithBaseUrlSync(
+                mAwContents,
+                mContentsClient.getOnPageFinishedHelper(),
+                html,
+                "text/html",
+                false,
+                "https://stress-test.example.com",
+                null);
+
+        TestWebMessageListener.Data data = mListener.waitForOnPostMessage();
+        Assert.assertEquals("READY", data.getAsString());
+
+        final OnReceivedTitleHelper onReceivedTitleHelper =
+                mContentsClient.getOnReceivedTitleHelper();
+        final int titleCallCount = onReceivedTitleHelper.getCallCount();
+        data.mReplyProxy.postMessage(new MessagePayload("REPLY_OK"));
+
+        onReceivedTitleHelper.waitForCallback(titleCallCount);
+        Assert.assertEquals("REPLY_OK", onReceivedTitleHelper.getTitle());
+    }
+
     private boolean isJsObjectInjectedWhenLoadingUrl(
             final String baseUrl, final String jsObjectName) throws Throwable {
         mActivityTestRule.loadDataWithBaseUrlSync(
@@ -2166,8 +2496,7 @@ public class JsJavaInteractionTest extends AwParameterizedTest {
     }
 
     private static ScriptHandler addDocumentStartJavaScriptOnUiThread(
-            final AwContents awContents, final String script, final String[] allowedOriginRules)
-            throws Exception {
+            final AwContents awContents, final String script, final String[] allowedOriginRules) {
         AwActivityTestRule.checkJavaScriptEnabled(awContents);
         return ThreadUtils.runOnUiThreadBlocking(
                 () -> awContents.addDocumentStartJavaScript(script, allowedOriginRules));
@@ -2177,14 +2506,13 @@ public class JsJavaInteractionTest extends AwParameterizedTest {
             final AwContents awContents,
             final String jsObjectName,
             final String[] allowedOriginRules,
-            final WebMessageListener listener)
-            throws Exception {
+            final WebMessageListener listener) {
         TestWebMessageListener.addWebMessageListenerOnUiThread(
                 awContents, jsObjectName, allowedOriginRules, listener);
     }
 
     private static void removeWebMessageListenerOnUiThread(
-            final AwContents awContents, final String jsObjectName) throws Exception {
+            final AwContents awContents, final String jsObjectName) {
         TestWebMessageListener.removeWebMessageListenerOnUiThread(awContents, jsObjectName);
     }
 
@@ -2252,8 +2580,7 @@ public class JsJavaInteractionTest extends AwParameterizedTest {
             final String script,
             @DocumentInjectionTime.EnumType int injectionEvent,
             final String[] allowedOriginRules,
-            final String worldName)
-            throws Exception {
+            final String worldName) {
         AwActivityTestRule.checkJavaScriptEnabled(awContents);
         return ThreadUtils.runOnUiThreadBlocking(
                 () -> {
@@ -2267,8 +2594,7 @@ public class JsJavaInteractionTest extends AwParameterizedTest {
             final String script,
             @DocumentInjectionTime.EnumType int injectionEvent,
             final String[] allowedOriginRules,
-            final String worldName)
-            throws Exception {
+            final String worldName) {
         AwActivityTestRule.checkJavaScriptEnabled(awContents);
         return ThreadUtils.runOnUiThreadBlocking(
                 () -> {

@@ -12,6 +12,7 @@ import org.jni_zero.JNINamespace;
 import org.jni_zero.JniType;
 import org.jni_zero.NativeMethods;
 
+import org.chromium.base.Callback;
 import org.chromium.base.ContextUtils;
 import org.chromium.base.UnownedUserDataKey;
 import org.chromium.base.supplier.MonotonicObservableSupplier;
@@ -19,8 +20,11 @@ import org.chromium.base.supplier.ObservableSuppliers;
 import org.chromium.base.supplier.SettableMonotonicObservableSupplier;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
-import org.chromium.chrome.browser.contextual_tasks.fusebox.ContextualTasksFuseboxManager;
+import org.chromium.chrome.browser.feedback.FeedbackPolicyManager;
 import org.chromium.chrome.browser.feedback.HelpAndFeedbackLauncherFactory;
+import org.chromium.chrome.browser.omnibox.voice.VoiceRecognitionIntentHandler;
+import org.chromium.chrome.browser.omnibox.voice.VoiceRecognitionIntentHandler.VoiceInteractionSource;
+import org.chromium.chrome.browser.omnibox.voice.VoiceRecognitionIntentHandler.VoiceResult;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.ui.browser_window.ChromeAndroidTaskFeature;
@@ -32,7 +36,8 @@ import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManagerProvider;
 import org.chromium.content_public.browser.WebContents;
 import org.chromium.ui.base.ActivityWindowAndroid;
 import org.chromium.ui.base.WindowAndroid;
-import org.chromium.url.GURL;
+
+import java.util.List;
 
 /**
  * Java bridge for Contextual Tasks. Owned by the activity's TabbedRootUiCoordinator. Owns its
@@ -105,7 +110,10 @@ public class ContextualTasksBridge implements ChromeAndroidTaskFeature {
     }
 
     @CalledByNative
-    void openFeedbackUi(String pageUrl) {
+    void openFeedbackUi(@JniType("std::string") String pageUrl) {
+        if (!FeedbackPolicyManager.getInstance().isUserFeedbackAllowed()) {
+            return;
+        }
         Activity activity = mWindowAndroid.getActivity().get();
         if (activity == null) return;
 
@@ -114,27 +122,28 @@ public class ContextualTasksBridge implements ChromeAndroidTaskFeature {
     }
 
     @CalledByNative
-    void onWebUIReady(String taskId, WebContents webContents) {
-        ContextualTasksFuseboxManager fuseboxManager =
-                ContextualTasksFuseboxManager.from(mWindowAndroid);
-        if (fuseboxManager == null) return;
-        fuseboxManager.onWebUIReady(taskId, webContents);
-    }
+    void startVoiceRecognition() {
+        if (mWindowAndroid == null) return;
 
-    @CalledByNative
-    void onWebUIDestroyed(String taskId) {
-        ContextualTasksFuseboxManager fuseboxManager =
-                ContextualTasksFuseboxManager.from(mWindowAndroid);
-        if (fuseboxManager == null) return;
-        fuseboxManager.onWebUIDestroyed(taskId);
-    }
+        VoiceRecognitionIntentHandler handler = new VoiceRecognitionIntentHandler(mWindowAndroid);
+        handler.startVoiceRecognition(
+                VoiceInteractionSource.COMPOSEBOX,
+                new VoiceRecognitionIntentHandler.RecognitionCallback() {
+                    @Override
+                    public void onCompleted(List<VoiceResult> results) {
+                        if (results.isEmpty()) return;
+                        String query = results.get(0).getMatch();
+                        if (mNativeContextualTasksBridge == 0) return;
+                        ContextualTasksBridgeJni.get()
+                                .onVoiceTranscribed(mNativeContextualTasksBridge, query);
+                    }
 
-    @CalledByNative
-    void onTaskChanged(String oldTaskId, String newTaskId) {
-        ContextualTasksFuseboxManager fuseboxManager =
-                ContextualTasksFuseboxManager.from(mWindowAndroid);
-        if (fuseboxManager == null) return;
-        fuseboxManager.onTaskChanged(oldTaskId, newTaskId);
+                    @Override
+                    public void onCanceled() {}
+
+                    @Override
+                    public void onAvailabilityImpacted() {}
+                });
     }
 
     @CalledByNative
@@ -154,24 +163,28 @@ public class ContextualTasksBridge implements ChromeAndroidTaskFeature {
     }
 
     /**
-     * Returns the task ID associated with the given tab.
+     * Asynchronously requests the task title associated with the given tab.
      *
      * @param tab The tab to check.
-     * @return The task ID, or null if no task is associated.
+     * @param callback The callback to receive the task title.
      */
-    public static @Nullable String getTaskIdForTab(@Nullable Tab tab) {
-        if (tab == null || tab.getWebContents() == null) return null;
-        return ContextualTasksBridgeJni.get().getTaskIdForTab(tab.getWebContents());
+    public static void getTaskTitleForTab(@Nullable Tab tab, Callback<String> callback) {
+        if (tab == null || tab.getWebContents() == null) {
+            callback.onResult("");
+            return;
+        }
+        ContextualTasksBridgeJni.get().getTaskTitleForTab(tab.getWebContents(), callback);
     }
 
     /**
-     * Returns whether the given URL is a contextual tasks WebUI URL.
+     * Returns whether the Contextual Tasks side panel is open for the given tab.
      *
-     * @param url The URL to check.
-     * @return True if it is a contextual tasks URL.
+     * @param tab The tab to check.
+     * @return True if the panel is open.
      */
-    public static boolean isContextualTasksUrl(GURL url) {
-        return ContextualTasksBridgeJni.get().isContextualTasksUrl(url);
+    public static boolean isPanelOpen(@Nullable Tab tab) {
+        if (tab == null || tab.getWebContents() == null) return false;
+        return ContextualTasksBridgeJni.get().isPanelOpen(tab.getWebContents());
     }
 
     @NativeMethods
@@ -185,9 +198,13 @@ public class ContextualTasksBridge implements ChromeAndroidTaskFeature {
 
         void undoClose(long nativeContextualTasksBridge);
 
-        @JniType("std::string")
-        String getTaskIdForTab(@JniType("content::WebContents*") WebContents webContents);
+        void onVoiceTranscribed(
+                long nativeContextualTasksBridge, @JniType("std::string") String query);
 
-        boolean isContextualTasksUrl(@JniType("GURL") GURL url);
+        void getTaskTitleForTab(
+                @JniType("content::WebContents*") WebContents webContents,
+                @JniType("base::OnceCallback<void(std::string)>") Callback<String> callback);
+
+        boolean isPanelOpen(@JniType("content::WebContents*") WebContents webContents);
     }
 }

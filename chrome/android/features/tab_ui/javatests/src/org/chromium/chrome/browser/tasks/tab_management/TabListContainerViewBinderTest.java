@@ -45,6 +45,7 @@ import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.DisableIf;
 import org.chromium.base.test.util.MinAndroidSdkLevel;
 import org.chromium.chrome.R;
+import org.chromium.chrome.browser.tab_ui.TabListMode;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.ui.base.DeviceFormFactor;
 import org.chromium.ui.modelutil.PropertyKey;
@@ -62,6 +63,7 @@ public class TabListContainerViewBinderTest {
 
     private PropertyModel mContainerModel;
     private PropertyModelChangeProcessor mMCP;
+    private TabListContainerViewBinder.ViewHolder mViewHolder;
     private TabListRecyclerView mRecyclerView;
     private FrameLayout mContentView;
     private ImageView mHairline;
@@ -90,13 +92,13 @@ public class TabListContainerViewBinderTest {
                     mHairline = mContentView.findViewById(R.id.pane_hairline);
                     mSupplementaryContainer = new LinearLayout(activity);
                     mContainerModel = new PropertyModel(TabListContainerProperties.ALL_KEYS);
+                    mViewHolder =
+                            new TabListContainerViewBinder.ViewHolder(
+                                    mRecyclerView, mHairline, mSupplementaryContainer);
 
                     mMCP =
                             PropertyModelChangeProcessor.create(
-                                    mContainerModel,
-                                    new TabListContainerViewBinder.ViewHolder(
-                                            mRecyclerView, mHairline, mSupplementaryContainer),
-                                    TabListContainerViewBinder::bind);
+                                    mContainerModel, mViewHolder, TabListContainerViewBinder::bind);
                 });
     }
 
@@ -151,13 +153,16 @@ public class TabListContainerViewBinderTest {
 
     @Test
     @MediumTest
-    @DisableIf.Device(DeviceFormFactor.DESKTOP) // crbug.com/376527109
+    @DisableIf.Device({
+        DeviceFormFactor.DESKTOP, // crbug.com/376527109
+        DeviceFormFactor.AUTOMOTIVE // crbug.com/572803367
+    })
     @UiThreadTest
     public void testSetInitialScrollIndex_Grid() {
         setUpGridLayoutManager();
         mRecyclerView.layout(0, 0, 100, 500);
 
-        mContainerModel.set(TabListContainerProperties.MODE, TabListCoordinator.TabListMode.GRID);
+        mContainerModel.set(TabListContainerProperties.MODE, TabListMode.GRID);
         mContainerModel.set(TabListContainerProperties.INITIAL_SCROLL_INDEX, 5);
 
         // Offset will be view height (500) / 2 - tab card height calculated from TabUtils / 2
@@ -224,12 +229,12 @@ public class TabListContainerViewBinderTest {
 
         // Initial state: visible, not animating
         mContainerModel = new PropertyModel(TabListContainerProperties.ALL_KEYS);
+        mViewHolder =
+                new TabListContainerViewBinder.ViewHolder(
+                        mRecyclerView, mHairline, mSupplementaryContainer);
         mMCP =
                 PropertyModelChangeProcessor.create(
-                        mContainerModel,
-                        new TabListContainerViewBinder.ViewHolder(
-                                mRecyclerView, mHairline, mSupplementaryContainer),
-                        TabListContainerViewBinder::bind);
+                        mContainerModel, mViewHolder, TabListContainerViewBinder::bind);
         mContainerModel.set(TabListContainerProperties.IS_NON_ZERO_Y_OFFSET, true);
         mContainerModel.set(
                 TabListContainerProperties.IS_PINNED_TAB_STRIP_ANIMATING_SUPPLIER,
@@ -270,7 +275,7 @@ public class TabListContainerViewBinderTest {
         assertEquals(0f, fractionSupplier.get(), 0.001f);
 
         // Simulate animation end.
-        TabListContainerViewBinder.sSupplementaryContainerAnimationHandler.forceFinishAnimation();
+        mViewHolder.mSupplementaryContainerAnimationHandler.forceFinishAnimation();
         assertFalse(manualAnimationSupplier.get());
         assertTrue(hubVisibilitySupplier.get());
         assertEquals(1f, fractionSupplier.get(), 0.001f);
@@ -287,7 +292,7 @@ public class TabListContainerViewBinderTest {
         assertEquals(1f, fractionSupplier.get(), 0.001f);
 
         // Simulate animation end.
-        TabListContainerViewBinder.sSupplementaryContainerAnimationHandler.forceFinishAnimation();
+        mViewHolder.mSupplementaryContainerAnimationHandler.forceFinishAnimation();
         assertFalse(manualAnimationSupplier.get());
         assertFalse(hubVisibilitySupplier.get());
         assertEquals(0f, fractionSupplier.get(), 0.001f);
@@ -301,9 +306,7 @@ public class TabListContainerViewBinderTest {
         mContainerModel.set(TabListContainerProperties.ANIMATE_SUPPLEMENTARY_CONTAINER, metadata);
 
         // No animation should start if not forced and already at target.
-        assertFalse(
-                TabListContainerViewBinder.sSupplementaryContainerAnimationHandler
-                        .isAnimationPresent());
+        assertFalse(mViewHolder.mSupplementaryContainerAnimationHandler.isAnimationPresent());
 
         metadata =
                 new TabListContainerProperties.SupplementaryContainerAnimationMetadata(
@@ -311,9 +314,7 @@ public class TabListContainerViewBinderTest {
         mContainerModel.set(TabListContainerProperties.ANIMATE_SUPPLEMENTARY_CONTAINER, metadata);
 
         // Animation should start because it's forced.
-        assertTrue(
-                TabListContainerViewBinder.sSupplementaryContainerAnimationHandler
-                        .isAnimationPresent());
+        assertTrue(mViewHolder.mSupplementaryContainerAnimationHandler.isAnimationPresent());
     }
 
     @Test

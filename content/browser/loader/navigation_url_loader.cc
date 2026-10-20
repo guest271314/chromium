@@ -7,6 +7,7 @@
 #include <utility>
 
 #include "base/command_line.h"
+#include "base/task/single_thread_task_runner.h"
 #include "base/trace_event/trace_event.h"
 #include "content/browser/loader/cached_navigation_url_loader.h"
 #include "content/browser/loader/navigation_loader_interceptor.h"
@@ -15,6 +16,8 @@
 #include "content/browser/renderer_host/navigation_request_info.h"
 #include "content/browser/web_package/prefetched_signed_exchange_cache.h"
 #include "content/browser/webui/initial_webui_navigation_url_loader.h"
+#include "content/public/browser/browser_task_traits.h"
+#include "content/public/browser/browser_thread.h"
 #include "content/public/browser/navigation_ui_data.h"
 #include "services/network/public/cpp/features.h"
 
@@ -43,15 +46,13 @@ std::unique_ptr<NavigationURLLoader> NavigationURLLoader::Create(
     mojo::PendingRemote<network::mojom::DevToolsObserver> devtools_observer,
     mojo::PendingRemote<network::mojom::DeviceBoundSessionAccessObserver>
         device_bound_session_observer,
-    network::mojom::URLResponseHeadPtr cached_response_head,
-    std::vector<std::unique_ptr<NavigationLoaderInterceptor>>
-        initial_interceptors) {
+    network::mojom::URLResponseHeadPtr cached_response_head) {
   TRACE_EVENT0("navigation", "NavigationURLLoader::Create");
   // Prioritize CachedNavigationURLLoader over `g_loader_factory` even for tests
   // as prerendered page activation needs to run synchronously and
   // CachedNavigationURLLoader serves a fake response synchronously.
   if (loader_type == LoaderType::kNoopForPrerender) {
-    DCHECK(cached_response_head);
+    CHECK(cached_response_head, base::NotFatalUntil::M160);
     return CachedNavigationURLLoader::Create(loader_type,
                                              std::move(request_info), delegate,
                                              std::move(cached_response_head));
@@ -67,7 +68,7 @@ std::unique_ptr<NavigationURLLoader> NavigationURLLoader::Create(
   // TODO(crbug.com/40188852): Merge this into the kNoopForPrerender path
   // above.
   if (loader_type == LoaderType::kNoopForBackForwardCache) {
-    DCHECK(cached_response_head);
+    CHECK(cached_response_head, base::NotFatalUntil::M160);
     return CachedNavigationURLLoader::Create(loader_type,
                                              std::move(request_info), delegate,
                                              std::move(cached_response_head));
@@ -87,13 +88,14 @@ std::unique_ptr<NavigationURLLoader> NavigationURLLoader::Create(
       std::move(shared_dictionary_observer),
       std::move(url_loader_network_observer), std::move(devtools_observer),
       std::move(device_bound_session_observer),
-      std::move(initial_interceptors));
+      std::vector<std::unique_ptr<NavigationLoaderInterceptor>>());
 }
 
 // static
 void NavigationURLLoader::SetFactoryForTesting(
     NavigationURLLoaderFactory* factory) {
-  DCHECK(g_loader_factory == nullptr || factory == nullptr);
+  CHECK(g_loader_factory == nullptr || factory == nullptr,
+        base::NotFatalUntil::M160);
   g_loader_factory = factory;
 }
 
@@ -119,4 +121,17 @@ uint32_t NavigationURLLoader::GetURLLoaderOptions(
 
   return options;
 }
+
+// static
+scoped_refptr<base::SingleThreadTaskRunner>
+NavigationURLLoader::GetNavigationNetworkResponseTaskRunner(
+    bool is_primary_main_frame,
+    bool is_visible) {
+  if (is_primary_main_frame && is_visible) {
+    return GetUIThreadTaskRunner(
+        {BrowserTaskType::kMainFrameNavigationNetworkResponse});
+  }
+  return GetUIThreadTaskRunner({BrowserTaskType::kNavigationNetworkResponse});
+}
+
 }  // namespace content

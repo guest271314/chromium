@@ -8,12 +8,14 @@
 #include "base/run_loop.h"
 #include "base/strings/string_util.h"
 #include "base/task/single_thread_task_runner.h"
+#include "base/test/scoped_feature_list.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
 #include "chrome/browser/ui/browser_window.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
+#include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/views/frame/app_menu_button.h"
 #include "chrome/browser/ui/views/frame/app_menu_button_observer.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
@@ -24,9 +26,11 @@
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/interactive_test_utils.h"
 #include "chrome/test/base/ui_test_utils.h"
+#include "chrome/test/interaction/interactive_browser_test.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/test_navigation_observer.h"
 #include "ui/base/test/ui_controls.h"
+#include "ui/base/window_open_disposition.h"
 #include "ui/events/event_constants.h"
 #include "ui/events/keycodes/keyboard_codes.h"
 #include "ui/views/focus/focus_manager.h"
@@ -40,8 +44,8 @@ namespace {
 
 // An async version of SendKeyPressSync since we don't get notified when a
 // menu is showing.
-void SendKeyPress(Browser* browser, ui::KeyboardCode key) {
-  ASSERT_TRUE(ui_controls::SendKeyPress(browser->window()->GetNativeWindow(),
+void SendKeyPress(BrowserWindowInterface* browser, ui::KeyboardCode key) {
+  ASSERT_TRUE(ui_controls::SendKeyPress(browser->GetWindow()->GetNativeWindow(),
                                         key, false, false, false, false));
 }
 
@@ -86,7 +90,7 @@ class ViewFocusChangeWaiter : public views::FocusChangeListener {
 class SendKeysMenuListener : public AppMenuButtonObserver {
  public:
   SendKeysMenuListener(AppMenuButton* app_menu_button,
-                       Browser* browser,
+                       BrowserWindowInterface* browser,
                        bool test_dismiss_menu)
       : browser_(browser),
         menu_open_count_(0),
@@ -109,7 +113,7 @@ class SendKeysMenuListener : public AppMenuButtonObserver {
       base::SingleThreadTaskRunner::GetCurrentDefault()->PostDelayedTask(
           FROM_HERE, loop_.QuitWhenIdleClosure(), base::Milliseconds(200));
     } else {
-      DCHECK(observation_.IsObserving());
+      CHECK(observation_.IsObserving(), base::NotFatalUntil::M162);
       observation_.Reset();
       if (!views::PlatformStyle::kAutoSelectFirstMenuItemFromKeyboard) {
         // Press DOWN to select the first item, then RETURN to select it. Only
@@ -124,7 +128,7 @@ class SendKeysMenuListener : public AppMenuButtonObserver {
   int menu_open_count() const { return menu_open_count_; }
 
  private:
-  raw_ptr<Browser> browser_;
+  raw_ptr<BrowserWindowInterface> browser_;
   // Keeps track of the number of times the menu was opened.
   int menu_open_count_;
   // If this is set then on receiving a notification that the menu was opened
@@ -141,7 +145,9 @@ class SendKeysMenuListener : public AppMenuButtonObserver {
 
 class KeyboardAccessTest : public InProcessBrowserTest {
  public:
-  KeyboardAccessTest() = default;
+  KeyboardAccessTest() {
+    scoped_feature_list_.InitAndDisableFeature(features::kMenuSimplification);
+  }
 
   KeyboardAccessTest(const KeyboardAccessTest&) = delete;
   KeyboardAccessTest& operator=(const KeyboardAccessTest&) = delete;
@@ -160,7 +166,7 @@ class KeyboardAccessTest : public InProcessBrowserTest {
                               bool focus_omnibox);
 
   int GetFocusedViewID() {
-    gfx::NativeWindow window = browser()->window()->GetNativeWindow();
+    gfx::NativeWindow window = browser()->GetWindow()->GetNativeWindow();
     views::Widget* widget = views::Widget::GetWidgetForNativeWindow(window);
     const views::FocusManager* focus_manager = widget->GetFocusManager();
     const views::View* focused_view = focus_manager->GetFocusedView();
@@ -171,7 +177,7 @@ class KeyboardAccessTest : public InProcessBrowserTest {
     if (GetFocusedViewID() != original_view_id) {
       return;
     }
-    gfx::NativeWindow window = browser()->window()->GetNativeWindow();
+    gfx::NativeWindow window = browser()->GetWindow()->GetNativeWindow();
     views::Widget* widget = views::Widget::GetWidgetForNativeWindow(window);
     views::FocusManager* focus_manager = widget->GetFocusManager();
     ViewFocusChangeWaiter waiter(focus_manager, original_view_id);
@@ -189,6 +195,9 @@ class KeyboardAccessTest : public InProcessBrowserTest {
   // It verifies that the menu when dismissed by sending the ESC key it does
   // not display twice.
   void TestMenuKeyboardAccessAndDismiss();
+
+ private:
+  base::test::ScopedFeatureList scoped_feature_list_;
 };
 
 void KeyboardAccessTest::TestMenuKeyboardAccess(bool alternate_key_sequence,
@@ -200,7 +209,7 @@ void KeyboardAccessTest::TestMenuKeyboardAccess(bool alternate_key_sequence,
       ui_test_utils::NavigateToURL(browser(), GURL("chrome://version/")));
 
   // The initial tab index should be 0.
-  ASSERT_EQ(0, browser()->tab_strip_model()->active_index());
+  ASSERT_EQ(0, browser()->GetTabStripModel()->active_index());
 
   ASSERT_TRUE(ui_test_utils::BringBrowserWindowToFront(browser()));
 
@@ -210,7 +219,7 @@ void KeyboardAccessTest::TestMenuKeyboardAccess(bool alternate_key_sequence,
 
   ui_test_utils::TabAddedWaiter tab_add(browser());
 
-  BrowserView* browser_view = static_cast<BrowserView*>(browser()->window());
+  BrowserView* browser_view = BrowserView::GetBrowserViewForBrowser(browser());
   SendKeysMenuListener menu_listener(
       views::AsViewClass<AppMenuButton>(
           views::ElementTrackerViews::GetInstance()->GetFirstMatchingView(
@@ -219,7 +228,7 @@ void KeyboardAccessTest::TestMenuKeyboardAccess(bool alternate_key_sequence,
       browser(), false);
 
   if (focus_omnibox) {
-    browser()->window()->GetLocationBar()->FocusLocation(
+    browser_view->GetLocationBar()->FocusLocation(
         /*is_user_initiated=*/false, /*clear_focus_if_failed=*/false);
   }
 
@@ -260,7 +269,7 @@ void KeyboardAccessTest::TestMenuKeyboardAccess(bool alternate_key_sequence,
   tab_add.Wait();
 
   // Make sure that the new tab index is 1.
-  ASSERT_EQ(1, browser()->tab_strip_model()->active_index());
+  ASSERT_EQ(1, browser()->GetTabStripModel()->active_index());
 }
 
 #if BUILDFLAG(IS_WIN)
@@ -309,7 +318,7 @@ void KeyboardAccessTest::TestSystemMenuWithKeyboard() {
     // Wait for the new tab to appear.
     tab_add.Wait();
     // Make sure that the new tab index is 1.
-    EXPECT_EQ(1, browser()->tab_strip_model()->active_index());
+    EXPECT_EQ(1, browser()->GetTabStripModel()->active_index());
   }
   ::UnhookWindowsHookEx(cbt_hook);
 }
@@ -344,14 +353,14 @@ void KeyboardAccessTest::TestSystemMenuReopenClosedTabWithKeyboard() {
       WindowOpenDisposition::NEW_FOREGROUND_TAB,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
 
-  ASSERT_EQ(1, browser()->tab_strip_model()->active_index());
+  ASSERT_EQ(1, browser()->GetTabStripModel()->active_index());
   content::WebContents* tab_to_close =
-      browser()->tab_strip_model()->GetActiveWebContents();
+      browser()->GetTabStripModel()->GetActiveWebContents();
   content::WebContentsDestroyedWatcher destroyed_watcher(tab_to_close);
-  browser()->tab_strip_model()->CloseSelectedTabs();
+  browser()->GetTabStripModel()->CloseSelectedTabs();
   destroyed_watcher.Wait();
-  ASSERT_EQ(1, browser()->tab_strip_model()->count());
-  ASSERT_EQ(0, browser()->tab_strip_model()->active_index());
+  ASSERT_EQ(1, browser()->GetTabStripModel()->count());
+  ASSERT_EQ(0, browser()->GetTabStripModel()->active_index());
 
   ASSERT_TRUE(ui_test_utils::BringBrowserWindowToFront(browser()));
 
@@ -372,7 +381,7 @@ void KeyboardAccessTest::TestSystemMenuReopenClosedTabWithKeyboard() {
     // Wait for the new tab to appear.
     tab_add.Wait();
     // Make sure that the new tab index is 1.
-    EXPECT_EQ(1, browser()->tab_strip_model()->active_index());
+    EXPECT_EQ(1, browser()->GetTabStripModel()->active_index());
   }
 
   ::UnhookWindowsHookEx(cbt_hook);
@@ -383,20 +392,20 @@ void KeyboardAccessTest::TestMenuKeyboardAccessAndDismiss() {
   ASSERT_TRUE(
       ui_test_utils::NavigateToURL(browser(), GURL("chrome://version/")));
 
-  ASSERT_EQ(0, browser()->tab_strip_model()->active_index());
+  ASSERT_EQ(0, browser()->GetTabStripModel()->active_index());
 
   ASSERT_TRUE(ui_test_utils::BringBrowserWindowToFront(browser()));
 
   int original_view_id = GetFocusedViewID();
 
-  BrowserView* browser_view = static_cast<BrowserView*>(browser()->window());
+  BrowserView* browser_view = BrowserView::GetBrowserViewForBrowser(browser());
   SendKeysMenuListener menu_listener(
       views::AsViewClass<AppMenuButton>(
           views::ElementTrackerViews::GetInstance()->GetFirstMatchingView(
               kToolbarAppMenuButtonElementId,
               views::ElementTrackerViews::GetContextForView(browser_view))),
       browser(), true);
-  browser()->window()->GetLocationBar()->FocusLocation(
+  browser_view->GetLocationBar()->FocusLocation(
       /*is_user_initiated=*/false, /*clear_focus_if_failed=*/false);
 
   ASSERT_TRUE(ui_test_utils::SendKeyPressSync(browser(), ui::VKEY_F10, false,
@@ -490,12 +499,12 @@ IN_PROC_BROWSER_TEST_F(KeyboardAccessTest, ReserveKeyboardAccelerators) {
 
   ASSERT_TRUE(ui_test_utils::SendKeyPressSync(browser(), ui::VKEY_TAB, true,
                                               false, false, false));
-  ASSERT_EQ(0, browser()->tab_strip_model()->active_index());
+  ASSERT_EQ(0, browser()->GetTabStripModel()->active_index());
 
   ui_test_utils::NavigateToURLWithDisposition(
       browser(), url, WindowOpenDisposition::NEW_FOREGROUND_TAB,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
-  ASSERT_EQ(2, browser()->tab_strip_model()->active_index());
+  ASSERT_EQ(2, browser()->GetTabStripModel()->active_index());
 
   ASSERT_TRUE(ui_test_utils::SendKeyPressSync(
 #if BUILDFLAG(IS_MAC)
@@ -503,7 +512,7 @@ IN_PROC_BROWSER_TEST_F(KeyboardAccessTest, ReserveKeyboardAccelerators) {
 #else
       browser(), ui::VKEY_W, true, false, false, false));
 #endif
-  ASSERT_EQ(0, browser()->tab_strip_model()->active_index());
+  ASSERT_EQ(0, browser()->GetTabStripModel()->active_index());
 }
 
 #if BUILDFLAG(IS_WIN)  // These keys are Windows-only.
@@ -516,7 +525,7 @@ IN_PROC_BROWSER_TEST_F(KeyboardAccessTest, BackForwardKeys) {
   std::u16string before_back;
   ASSERT_TRUE(ui_test_utils::GetCurrentTabTitle(browser(), &before_back));
   content::WebContents* web_contents =
-      browser()->tab_strip_model()->GetActiveWebContents();
+      browser()->GetTabStripModel()->GetActiveWebContents();
 
   // Navigate back.
   {
@@ -545,5 +554,63 @@ IN_PROC_BROWSER_TEST_F(KeyboardAccessTest, BackForwardKeys) {
   }
 }
 #endif
+
+#if BUILDFLAG(IS_WIN)
+class KeyboardAccessSimplificationKombuchaTest : public InteractiveBrowserTest {
+ public:
+  KeyboardAccessSimplificationKombuchaTest() {
+    scoped_feature_list_.InitAndEnableFeature(features::kMenuSimplification);
+  }
+  ~KeyboardAccessSimplificationKombuchaTest() override = default;
+
+ private:
+  base::test::ScopedFeatureList scoped_feature_list_;
+};
+
+IN_PROC_BROWSER_TEST_F(KeyboardAccessSimplificationKombuchaTest,
+                       TestSystemMenuWithKeyboard) {
+  RunTestSequence(
+      Do([this]() {
+        ASSERT_TRUE(
+            ui_test_utils::NavigateToURL(browser(), GURL("chrome://version/")));
+      }),
+      SendKeyPress(kBrowserViewElementId, ui::KeyboardCode::VKEY_SPACE,
+                   ui::EF_ALT_DOWN),
+      WaitForShow(kSystemMenuNewTabElementId),
+      SelectMenuItem(kSystemMenuNewTabElementId),
+      CheckResult([this]() { return browser()->GetTabStripModel()->count(); },
+                  2),
+      CheckResult(
+          [this]() { return browser()->GetTabStripModel()->active_index(); },
+          1));
+}
+
+IN_PROC_BROWSER_TEST_F(KeyboardAccessSimplificationKombuchaTest,
+                       TestSystemMenuReopenClosedTabWithKeyboard) {
+  RunTestSequence(
+      Do([this]() {
+        ASSERT_TRUE(
+            ui_test_utils::NavigateToURL(browser(), GURL("chrome://version/")));
+        ui_test_utils::NavigateToURLWithDisposition(
+            browser(), GURL("chrome://version/"),
+            WindowOpenDisposition::NEW_FOREGROUND_TAB,
+            ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
+        ASSERT_EQ(1, browser()->GetTabStripModel()->active_index());
+        browser()->GetTabStripModel()->CloseSelectedTabs();
+        ASSERT_EQ(1, browser()->GetTabStripModel()->count());
+        ASSERT_EQ(0, browser()->GetTabStripModel()->active_index());
+      }),
+      SendKeyPress(kBrowserViewElementId, ui::KeyboardCode::VKEY_SPACE,
+                   ui::EF_ALT_DOWN),
+      WaitForShow(kSystemMenuRestoreTabElementId),
+      SelectMenuItem(kSystemMenuRestoreTabElementId),
+      CheckResult([this]() { return browser()->GetTabStripModel()->count(); },
+                  2),
+      CheckResult(
+          [this]() { return browser()->GetTabStripModel()->active_index(); },
+          1));
+}
+
+#endif  // BUILDFLAG(IS_WIN)
 
 }  // namespace

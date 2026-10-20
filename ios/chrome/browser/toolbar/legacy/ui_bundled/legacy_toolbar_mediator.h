@@ -15,7 +15,7 @@
 class WebStateList;
 
 /// Delegate for events in `LegacyToolbarMediator`.
-@protocol ToolbarMediatorDelegate <NSObject>
+@protocol LegacyToolbarMediatorDelegate <NSObject>
 
 /// Updates toolbar appearance.
 - (void)updateToolbar;
@@ -35,7 +35,7 @@ class WebStateList;
 @interface LegacyToolbarMediator : NSObject
 
 /// Delegate for events in `LegacyToolbarMediator`.
-@property(nonatomic, weak) id<ToolbarMediatorDelegate> delegate;
+@property(nonatomic, weak) id<LegacyToolbarMediatorDelegate> delegate;
 /// The omnibox consumer for this object.
 @property(nonatomic, weak) id<ToolbarOmniboxConsumer> omniboxConsumer;
 
@@ -56,10 +56,6 @@ class WebStateList;
 
 /// Location bar (omnibox) focus has changed to `focused`.
 - (void)locationBarFocusChangedTo:(BOOL)focused;
-
-/// NTP became active on the active web state. This can happen after web state
-/// finish navigation.
-- (void)didNavigateToNTPOnActiveWebState;
 
 /// Toolbar's trait collection changed to `traitCollection`.
 - (void)toolbarTraitCollectionChangedTo:(UITraitCollection*)traitCollection;

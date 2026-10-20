@@ -11,6 +11,9 @@ import 'chrome://resources/cr_elements/cr_icon/cr_icon.js';
 import 'chrome://resources/cr_elements/cr_icon_button/cr_icon_button.js';
 import 'chrome://resources/cr_elements/cr_progress/cr_progress.js';
 
+// <if expr="not is_android">
+import {ColorChangeUpdater} from '//resources/cr_components/color_change_listener/colors_css_updater.js';
+// </if>
 import {loadTimeData} from '//resources/js/load_time_data.js';
 
 import {AppRouter} from './app_router.js';
@@ -49,15 +52,6 @@ function setupListeners(controller: AppRouter) {
       }
     });
   }
-
-  const debugButton = document.getElementById('debug');
-  if (debugButton) {
-    debugButton.addEventListener('click', () => {
-      if ('showDebug' in controller) {
-        controller.showDebug();
-      }
-    });
-  }
 }
 
 
@@ -65,6 +59,9 @@ window.addEventListener('DOMContentLoaded', () => {
   if (loadTimeData.getBoolean('isAndroidMobile')) {
     document.body.classList.add('androidMobile');
   }
+  // <if expr="not is_android">
+  ColorChangeUpdater.forDocument().start();
+  // </if>
   const appRouter = new AppRouter();
   window.appRouter = appRouter;
   setupListeners(appRouter);

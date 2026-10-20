@@ -40,6 +40,7 @@ import org.chromium.chrome.browser.tabmodel.AsyncTabParams;
 import org.chromium.chrome.browser.tabmodel.AsyncTabParamsManager;
 import org.chromium.chrome.browser.tabmodel.MismatchedIndicesHandler;
 import org.chromium.chrome.browser.tabmodel.NextTabPolicy.NextTabPolicySupplier;
+import org.chromium.chrome.browser.tabmodel.StubTabModel;
 import org.chromium.chrome.browser.tabmodel.SupportedProfileType;
 import org.chromium.chrome.browser.tabmodel.TabCreatorManager;
 import org.chromium.chrome.browser.tabmodel.TabGroupVisualDataStore;
@@ -478,6 +479,11 @@ public class TabWindowManagerImpl implements TabWindowManager {
             }
         }
 
+        if (mArchivedTabModelSelector != null) {
+            TabModel tabModel = mArchivedTabModelSelector.getModelForTabId(tab.getId());
+            if (tabModel != null) return tabModel;
+        }
+
         return null;
     }
 
@@ -524,6 +530,16 @@ public class TabWindowManagerImpl implements TabWindowManager {
             }
         }
 
+        if (mArchivedTabModelSelector != null) {
+            for (TabModel tabModel : mArchivedTabModelSelector.getModels()) {
+                @Nullable final Tab tab = tabModel.getTabById(tabId);
+                if (tab != null) {
+                    return new TabWindowInfo(
+                            INVALID_WINDOW_ID, mArchivedTabModelSelector, tabModel, tab);
+                }
+            }
+        }
+
         return null;
     }
 
@@ -534,6 +550,15 @@ public class TabWindowManagerImpl implements TabWindowManager {
         if (tabModelSelector == null) return null;
 
         return tabModelSelector.getModel(isIncognito).getTabsInGroup(tabGroupId);
+    }
+
+    private static boolean hasGroupInComprehensiveModel(TabModel tabModel, Token tabGroupId) {
+        for (Tab tab : tabModel.getComprehensiveModel()) {
+            if (tabGroupId.equals(tab.getTabGroupId())) {
+                return true;
+            }
+        }
+        return false;
     }
 
     @Override
@@ -627,14 +652,18 @@ public class TabWindowManagerImpl implements TabWindowManager {
                         observer.onTabStateInitialized();
                     }
 
-                    TabModel model = tabModelSelectorList.get(0).getModel(/* incognito= */ false);
-
                     // TODO(https://crbug.com/420738506): Remove this post once the order is
                     // flipped.
                     PostTask.postTask(
                             TaskTraits.UI_DEFAULT,
                             () -> {
-                                model.broadcastSessionRestoreComplete();
+                                for (TabModelSelector s : tabModelSelectorList) {
+                                    TabModel model = s.getModel(/* incognito= */ false);
+                                    if (!(model instanceof StubTabModel)) {
+                                        model.broadcastSessionRestoreComplete();
+                                        break;
+                                    }
+                                }
                                 unmapOrphanedTabGroups(profile, tabModelSelectorList);
                                 deleteOrphanedTabGroupData(tabModelSelectorList);
                             });
@@ -699,16 +728,24 @@ public class TabWindowManagerImpl implements TabWindowManager {
     }
 
     @Override
-    public @WindowId int findWindowIdForTabGroup(Token tabGroupId) {
+    public @WindowId int findWindowIdForTabGroup(Token tabGroupId, boolean includeClosingGroups) {
         for (Map.Entry<TabModelSelector, @WindowId Integer> entry :
                 mSelectorsToWindowId.entrySet()) {
             TabModelSelector selector = entry.getKey();
             if (!selector.isTabStateInitialized()) continue;
 
-            TabModel tabModel = selector.getModel(/* incognito= */ false);
-
-            if (TabGroupSyncUtils.isInCurrentWindow(tabModel, new LocalTabGroupId(tabGroupId))) {
-                return entry.getValue();
+            for (TabModel tabModel : selector.getModels()) {
+                if (tabModel.isIncognito()
+                        && !ChromeFeatureList.sCrossWindowTabGroupOperations.isEnabled()) {
+                    continue;
+                }
+                if (TabGroupSyncUtils.isInCurrentWindow(
+                        tabModel, new LocalTabGroupId(tabGroupId))) {
+                    return entry.getValue();
+                }
+                if (includeClosingGroups && hasGroupInComprehensiveModel(tabModel, tabGroupId)) {
+                    return entry.getValue();
+                }
             }
         }
 

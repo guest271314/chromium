@@ -19,7 +19,7 @@
 #import "ios/chrome/browser/shared/model/profile/test/test_profile_manager_ios.h"
 #import "ios/chrome/browser/shared/public/commands/command_dispatcher.h"
 #import "ios/chrome/browser/shared/public/commands/scene_commands.h"
-#import "ios/chrome/common/ui/reauthentication/mock_reauthentication_module.h"
+#import "ios/chrome/common/ui/reauthentication/fake_reauthentication_module.h"
 #import "ios/chrome/test/ios_chrome_scoped_testing_local_state.h"
 #import "ios/chrome/test/scoped_key_window.h"
 #import "ios/web/public/test/web_task_environment.h"
@@ -63,13 +63,25 @@ using base::test::ios::WaitUntilConditionOrTimeout;
 
 @end
 
+@interface FailedPushNavigationController : UINavigationController
+@end
+
+@implementation FailedPushNavigationController
+
+- (void)pushViewController:(UIViewController*)viewController
+                  animated:(BOOL)animated {
+  // Simulate push failure by doing nothing.
+}
+
+@end
+
 // Test fixture for LocalReauthenticationCoordinator.
 class ReauthenticationCoordinatorTest : public PlatformTest {
  protected:
   void SetUp() override {
     PlatformTest::SetUp();
 
-    scene_state_ = [[SceneState alloc] initWithAppState:nil];
+    scene_state_ = [[SceneState alloc] init];
     scene_state_.activationLevel = SceneActivationLevelForegroundActive;
 
     TestProfileIOS::Builder builder;
@@ -85,8 +97,8 @@ class ReauthenticationCoordinatorTest : public PlatformTest {
     // Init navigation controller with a root vc.
     base_navigation_controller_ = [[UINavigationController alloc]
         initWithRootViewController:[[UIViewController alloc] init]];
-    mock_reauth_module_ =
-        base::apple::ObjCCastStrict<MockReauthenticationModule>(
+    fake_reauth_module_ =
+        base::apple::ObjCCastStrict<FakeReauthenticationModule>(
             ReauthenticationServiceFactory::GetForProfile(profile_.get())
                 ->GetReauthModule());
     delegate_ = [[FakeReauthenticationCoordinatorDelegate alloc] init];
@@ -153,7 +165,7 @@ class ReauthenticationCoordinatorTest : public PlatformTest {
     ASSERT_FALSE(delegate_.successfulReauth);
 
     // Mock reauth result when app is in the foreground and active again.
-    mock_reauth_module_.expectedResult = ReauthenticationResult::kSuccess;
+    fake_reauth_module_.expectedResult = ReauthenticationResult::kSuccess;
     scene_state_.activationLevel = SceneActivationLevelForegroundActive;
 
     // Reauth vc should be gone and delegate should be notified about the
@@ -170,7 +182,7 @@ class ReauthenticationCoordinatorTest : public PlatformTest {
   std::unique_ptr<TestBrowser> browser_;
   ScopedKeyWindow scoped_window_;
   UINavigationController* base_navigation_controller_ = nil;
-  MockReauthenticationModule* mock_reauth_module_ = nil;
+  FakeReauthenticationModule* fake_reauth_module_ = nil;
   FakeReauthenticationCoordinatorDelegate* delegate_ = nil;
   id mocked_scene_handler_;
   LocalReauthenticationCoordinator* coordinator_ = nil;
@@ -241,7 +253,7 @@ TEST_F(ReauthenticationCoordinatorTest,
   ASSERT_FALSE(delegate_.dismissUICalled);
 
   // Mock reauth result when app is in the foreground and active again.
-  mock_reauth_module_.expectedResult = ReauthenticationResult::kFailure;
+  fake_reauth_module_.expectedResult = ReauthenticationResult::kFailure;
   scene_state_.activationLevel = SceneActivationLevelForegroundActive;
 
   // Reauth vc shouldn't be removed.
@@ -260,8 +272,8 @@ TEST_F(ReauthenticationCoordinatorTest,
 TEST_F(ReauthenticationCoordinatorTest,
        ReauthViewControllerDismissedBeforeTheSceneIsForegrounded) {
   CheckReauthenticationViewControllerNotPresented();
-  mock_reauth_module_.shouldSkipReAuth = NO;
-  mock_reauth_module_.expectedResult = ReauthenticationResult::kSuccess;
+  fake_reauth_module_.shouldSkipReAuth = NO;
+  fake_reauth_module_.expectedResult = ReauthenticationResult::kSuccess;
 
   // Simulate transition to inactive state before background state.
   scene_state_.activationLevel = SceneActivationLevelForegroundInactive;
@@ -287,7 +299,7 @@ TEST_F(ReauthenticationCoordinatorTest,
   // Then back to foreground, delivering the reauthentication result before
   // reaching the foreground state.
   scene_state_.activationLevel = SceneActivationLevelForegroundInactive;
-  [mock_reauth_module_ returnMockedReauthenticationResult];
+  [fake_reauth_module_ returnMockedReauthenticationResult];
   ASSERT_TRUE(delegate_.successfulReauth);
   scene_state_.activationLevel = SceneActivationLevelForegroundActive;
 
@@ -301,8 +313,8 @@ TEST_F(
     ReauthenticationCoordinatorTest,
     ReauthViewControllerNotDismissedAfterBackgroundedWithPendingAuthentication) {
   CheckReauthenticationViewControllerNotPresented();
-  mock_reauth_module_.shouldSkipReAuth = NO;
-  mock_reauth_module_.expectedResult = ReauthenticationResult::kSuccess;
+  fake_reauth_module_.shouldSkipReAuth = NO;
+  fake_reauth_module_.expectedResult = ReauthenticationResult::kSuccess;
 
   // Simulate transition to inactive state before background state.
   scene_state_.activationLevel = SceneActivationLevelForegroundInactive;
@@ -332,7 +344,7 @@ TEST_F(
 
   // Delivering successful reauth result should remove the reauth view
   // controller.
-  [mock_reauth_module_ returnMockedReauthenticationResult];
+  [fake_reauth_module_ returnMockedReauthenticationResult];
   ASSERT_TRUE(delegate_.successfulReauth);
   CheckReauthenticationViewControllerNotPresented();
 }
@@ -350,4 +362,27 @@ TEST_F(ReauthenticationCoordinatorTest,
   UIViewController* topViewController =
       base_navigation_controller_.topViewController;
   EXPECT_TRUE(topViewController.modalInPresentation);
+}
+
+// Tests that if pushing the reauth view controller fails on ForegroundInactive,
+// the coordinator dismisses the sensitive UI.
+TEST_F(ReauthenticationCoordinatorTest,
+       ReauthViewControllerClosesUIOnFailedVCPush) {
+  FailedPushNavigationController* navigation_controller =
+      [[FailedPushNavigationController alloc]
+          initWithRootViewController:[[UIViewController alloc] init]];
+  scoped_window_.Get().rootViewController = navigation_controller;
+
+  LocalReauthenticationCoordinator* coordinator =
+      [[LocalReauthenticationCoordinator alloc]
+          initWithBaseNavigationController:navigation_controller
+                                   browser:browser_.get()
+                               authOnStart:NO];
+  coordinator.delegate = delegate_;
+  [coordinator start];
+
+  scene_state_.activationLevel = SceneActivationLevelForegroundInactive;
+  EXPECT_TRUE(delegate_.dismissUICalled);
+
+  [coordinator stop];
 }

@@ -11,18 +11,23 @@ import type {ContextualTasksAppElement} from './app.js';
 // clang-format off
 export function getHtml(this: ContextualTasksAppElement) {
   return html`<!--_html_template_start_-->
-  ${this.isShownInTab_ ? '' : html`
+<if expr="not is_android">
+  <link rel="stylesheet" href="layout_constants.css">
+</if>
+  ${!this.isShownInTab_ ? html`
     <div id="toolbarOverlay">
       <top-toolbar id="toolbar"
           .title="${this.threadTitle_}"
           .darkMode="${this.darkMode_}"
           .isAiPage="${this.isAiPage_}"
           .isAimEligible="${this.isAimEligible_}"
+          .isUserSignedIn="${this.isUserSignedIn_}"
           .enableOpenInNewTabButton="${this.isAiPage_ && !this.isErrorPageVisible_}"
+          .onboardingTooltipShowing="${this.onboardingTooltipShowing_}"
           @new-thread-click="${this.onNewThreadClick_}">
       </top-toolbar>
     </div>
-  `}
+  ` : ''}
   <webview id="threadFrame" allowtransparency="on"
       partition="persist:contextual-tasks"
       style="${this.getThreadFrameStyles()}">
@@ -34,24 +39,20 @@ export function getHtml(this: ContextualTasksAppElement) {
     <div id="composeboxHeaderWrapper"
         ?hidden="${this.isComposeboxHeaderWrapperHidden_()}">
       <h1 class="thread-header" id="composeboxHeader">
-        ${this.userName_
-            ? [
-              html`<span>${this.friendlyZeroStateTitleBeforeName_}</span>`,
-              html`<span id="nameShimmer" class="name-shimmer">${this.userName_}</span>`,
-              html`<span>${this.friendlyZeroStateTitleAfterName_}</span>`,
-            ]
-            : html`<span>${this.friendlyZeroStateTitle}</span>`
-        }
+        ${this.userName_ ? html`
+          <!-- Comments between spans to eliminate whitespace -->
+          <span>${this.friendlyZeroStateTitleBeforeName_}</span><!--
+          --><span id="nameShimmer" class="name-shimmer">${this.userName_}</span><!--
+          --><span>${this.friendlyZeroStateTitleAfterName_}</span>
+        ` : html`
+          <span>${this.friendlyZeroStateTitle}</span>
+        `}
         ${this.friendlyZeroStateSubtitle.length > 0 ?
             html`<br>
             ${this.friendlyZeroStateSubtitle}` : ''}
       </h1>
     </div>
 <if expr="not is_android">
-    ${this.showOnboardingTooltip_ ? html`
-      <contextual-tasks-onboarding-tooltip id="onboardingTooltip">
-      </contextual-tasks-onboarding-tooltip>
-    ` : ''}
     ${this.showSmartTabSharingTryItIph_ ? html`
       <contextual-tasks-banner-promo id="stsTryItPromo"
           style="${this.getBannerPromoBoundsStyles_()}"
@@ -60,12 +61,7 @@ export function getHtml(this: ContextualTasksAppElement) {
           @dismiss="${this.onStsTryItDismiss_}"
           @accept="${this.onStsTryItAccept_}">
         <span slot="header">$i18n{stsTryItHeader}</span>
-        <span slot="body">
-          $i18n{stsTryItBody}
-          <a href="chrome://settings/ai"
-              target="_blank">$i18n{stsTryItLink}</a>
-          $i18n{stsTryItBodyEnd}
-        </span>
+        <span slot="body">$i18n{stsTryItBody}</span>
       </contextual-tasks-banner-promo>
     ` : ''}
     ${this.showSmartTabSharingDefaultOnIph_ ? html`
@@ -86,10 +82,12 @@ export function getHtml(this: ContextualTasksAppElement) {
     ` : ''}
 </if>
 <if expr="not is_android or enable_webui_contextual_tasks_composebox">
+
+
     <contextual-tasks-composebox id="composebox"
           style="${this.getComposeboxBoundsStyles()}"
           ?hidden="${this.isComposeboxHidden_()}"
-          .isZeroState="${!!this.isZeroState_}"
+          .isZeroState="${this.isZeroState_}"
           .isSidePanel="${!this.isShownInTab_}"
           .isLensOverlayShowing="${this.isLensOverlayShowing_}"
           .isOverlayOpenForAimVisualSearch="${
@@ -103,6 +101,28 @@ export function getHtml(this: ContextualTasksAppElement) {
   </div>
   <error-page id="errorPage"></error-page>
   <div id="iphMenuSmartTabSharingAnchor"></div>
+<if expr="not is_android or enable_webui_contextual_tasks_composebox">
+  <!-- Placed at the top level to ensure it sits on top of all other elements in the z-order stacking context, avoiding confinement by container boundaries or lower z-index stacking contexts (like #flexCenterContainer). -->
+  ${this.showOnboardingTooltip_ ? html`
+    <contextual-tasks-onboarding-tooltip id="onboardingTooltip"
+        @onboarding-tooltip-dismissed="${this.onOnboardingTooltipDismissed_}">
+    </contextual-tasks-onboarding-tooltip>
+  ` : ''}
+</if>
+<if expr="not is_android">
+    <contextual-tasks-info-tooltip id="askGTooltip"
+        .target="${this.askGTooltipTarget_}"
+        .container="${this.composeboxElement_}"
+        title-text="$i18n{askGFirstRunTitle}"
+        body-text="$i18n{askGFirstRunBody}"
+        close-button-type="text"
+        button-text="$i18n{onboardingAcceptButton}"
+        link-url="$i18n{askGHelpUrl}"
+        link-text="$i18n{learnMore}"
+        horizontal-align="left"
+        @tooltip-dismissed="${this.onAskGTooltipDismissed_}">
+    </contextual-tasks-info-tooltip>
+</if>
   <!--_html_template_end_-->`;
 }
 // clang-format on

@@ -4,6 +4,7 @@
 
 #include "components/page_load_metrics/renderer/metrics_render_frame_observer.h"
 
+#include <map>
 #include <string>
 #include <utility>
 
@@ -25,6 +26,7 @@
 #include "third_party/blink/public/web/web_local_frame.h"
 #include "third_party/blink/public/web/web_local_frame_client.h"
 #include "third_party/blink/public/web/web_performance_metrics_for_reporting.h"
+#include "third_party/icu/source/common/unicode/uscript.h"
 #include "url/gurl.h"
 
 namespace page_load_metrics {
@@ -45,6 +47,37 @@ base::TimeDelta CreateTimeDeltaFromTimestampsInSeconds(
 
 base::TimeTicks ClampToStart(base::TimeTicks event, base::TimeTicks start) {
   return event < start ? start : event;
+}
+
+mojom::ScriptType MapToMojoScriptType(UScriptCode script_code, bool is_emoji) {
+  if (is_emoji) {
+    return mojom::ScriptType::kEmoji;
+  }
+  switch (script_code) {
+    case USCRIPT_LATIN:
+      return mojom::ScriptType::kLatin;
+    case USCRIPT_HAN:
+      return mojom::ScriptType::kHan;
+    case USCRIPT_HANGUL:
+      return mojom::ScriptType::kHangul;
+    case USCRIPT_HIRAGANA:
+      return mojom::ScriptType::kHiragana;
+    case USCRIPT_KATAKANA:
+      return mojom::ScriptType::kKatakana;
+    case USCRIPT_ARABIC:
+    case USCRIPT_ARABIC_NASTALIQ:
+      return mojom::ScriptType::kArabic;
+    case USCRIPT_BENGALI:
+      return mojom::ScriptType::kBengali;
+    case USCRIPT_DEVANAGARI:
+      return mojom::ScriptType::kDevanagari;
+    case USCRIPT_CYRILLIC:
+      return mojom::ScriptType::kCyrillic;
+    case USCRIPT_COMMON:
+      return mojom::ScriptType::kCommon;
+    default:
+      return mojom::ScriptType::kOther;
+  }
 }
 
 class MojoPageTimingSender : public PageTimingSender {
@@ -72,14 +105,16 @@ class MojoPageTimingSender : public PageTimingSender {
       std::vector<mojom::SoftNavigationMetricsPtr> soft_navigation_metrics,
       std::vector<mojom::LargestContentfulPaintTimingPtr>
           soft_largest_contentful_paint,
-      std::vector<mojom::CustomUserTimingMarkPtr> user_timings) override {
+      std::vector<mojom::CustomUserTimingMarkPtr> user_timings,
+      const mojom::FontLoadingMetricsPtr& font_loading_metrics) override {
     DCHECK(page_load_metrics_);
     page_load_metrics_->UpdateTiming(
         limited_sending_mode_ ? CreatePageLoadTiming() : timing->Clone(),
         metadata->Clone(), new_features, std::move(resources),
         render_data.Clone(), cpu_timing->Clone(), std::move(event_timings),
         subresource_load_metrics, std::move(soft_navigation_metrics),
-        std::move(soft_largest_contentful_paint), std::move(user_timings));
+        std::move(soft_largest_contentful_paint), std::move(user_timings),
+        font_loading_metrics.Clone());
   }
 
   void SendCustomUserTiming(mojom::CustomUserTimingMarkPtr timing) override {
@@ -154,13 +189,15 @@ void MetricsRenderFrameObserver::DidObserveUserInteraction(
     base::TimeTicks max_event_processing_start,
     base::TimeTicks max_event_commit_finish,
     base::TimeTicks max_event_end,
-    uint64_t interaction_offset) {
+    uint64_t interaction_offset,
+    uint64_t performance_timeline_navigation_id) {
   if (!page_timing_metrics_sender_ || HasNoRenderFrame()) {
     return;
   }
   page_timing_metrics_sender_->DidObserveUserInteraction(
       max_event_start, max_event_queued_main_thread, max_event_processing_start,
-      max_event_commit_finish, max_event_end, interaction_offset);
+      max_event_commit_finish, max_event_end, interaction_offset,
+      performance_timeline_navigation_id);
 }
 
 void MetricsRenderFrameObserver::DidChangeCpuTiming(base::TimeDelta time) {
@@ -212,6 +249,18 @@ void MetricsRenderFrameObserver::DidObserveSoftNavigation(
   }
 }
 
+void MetricsRenderFrameObserver::DidObserveSoftNavigationFirstContentfulPaint(
+    uint64_t performance_timeline_navigation_id,
+    base::TimeDelta first_contentful_paint) {
+  if (page_timing_metrics_sender_) {
+    // Make soft navigation FCP relative to navigation start.
+    first_contentful_paint = CreateTimeDeltaFromTimestampsInSeconds(
+        first_contentful_paint.InSecondsF(), GetNavigationStart());
+    page_timing_metrics_sender_->DidObserveSoftNavigationFirstContentfulPaint(
+        performance_timeline_navigation_id, first_contentful_paint);
+  }
+}
+
 void MetricsRenderFrameObserver::DidObserveSoftLargestContentfulPaint(
     const blink::LargestContentfulPaintDetailsForReporting& lcp) {
   if (page_timing_metrics_sender_) {
@@ -219,7 +268,8 @@ void MetricsRenderFrameObserver::DidObserveSoftLargestContentfulPaint(
     // to the (hard) navigation start time.
     mojom::LargestContentfulPaintTimingPtr relative_lcp =
         CreateLargestContentfulPaintTiming();
-    relative_lcp->soft_navigation_offset = lcp.soft_navigation_offset;
+    relative_lcp->performance_timeline_navigation_id =
+        lcp.performance_timeline_navigation_id;
 
     if (lcp.image_paint_size > 0) {
       // Set largest image time.
@@ -297,10 +347,11 @@ void MetricsRenderFrameObserver::DidObserveSoftLargestContentfulPaint(
 
 void MetricsRenderFrameObserver::DidObserveLayoutShift(
     double score,
-    bool after_input_or_scroll) {
+    bool after_input_or_scroll,
+    uint64_t performance_timeline_navigation_id) {
   if (page_timing_metrics_sender_) {
-    page_timing_metrics_sender_->DidObserveLayoutShift(score,
-                                                       after_input_or_scroll);
+    page_timing_metrics_sender_->DidObserveLayoutShift(
+        score, after_input_or_scroll, performance_timeline_navigation_id);
   }
 }
 
@@ -312,10 +363,6 @@ void MetricsRenderFrameObserver::DidStartResponse(
     bool is_ad_resource) {
   if (provisional_frame_resource_data_use_ &&
       blink::IsRequestDestinationFrame(request_destination)) {
-    // TODO(rajendrant): This frame request might start before the provisional
-    // load starts, and data use of the frame request might be missed in that
-    // case. There should be a guarantee that DidStartProvisionalLoad be called
-    // before DidStartResponse for the frame request.
     provisional_frame_resource_data_use_->DidStartResponse(
         final_response_url, request_id, response_head, request_destination,
         is_ad_resource);
@@ -351,7 +398,7 @@ void MetricsRenderFrameObserver::DidCancelResponse(int request_id) {
 
 void MetricsRenderFrameObserver::DidReceiveTransferSizeUpdate(
     int request_id,
-    base::ByteCount received_data_length) {
+    base::ByteSize received_data_length) {
   if (provisional_frame_resource_data_use_ &&
       provisional_frame_resource_data_use_->resource_id() == request_id) {
     provisional_frame_resource_data_use_->DidReceiveTransferSizeUpdate(
@@ -366,7 +413,7 @@ void MetricsRenderFrameObserver::DidReceiveTransferSizeUpdate(
 void MetricsRenderFrameObserver::DidLoadResourceFromMemoryCache(
     const GURL& response_url,
     int request_id,
-    base::ByteCount encoded_body_length,
+    base::ByteSize encoded_body_length,
     const std::string& mime_type,
     bool from_archive) {
   // Resources from archives, such as subresources from a MHTML archive, do not
@@ -560,8 +607,10 @@ void MetricsRenderFrameObserver::SendMetrics() {
     return;
   }
   Timing timing = GetTiming();
+  mojom::FontLoadingMetricsPtr font_metrics = GetFontLoadingMetrics();
   page_timing_metrics_sender_->Update(std::move(timing.relative_timing),
-                                      timing.monotonic_timing);
+                                      timing.monotonic_timing,
+                                      std::move(font_metrics));
 
   mojom::CustomUserTimingMarkPtr user_timing = GetCustomUserTimingMark();
   if (user_timing) {
@@ -798,6 +847,22 @@ MetricsRenderFrameObserver::Timing MetricsRenderFrameObserver::GetTiming()
         LargestContentfulPaintTypeToUKMFlags(
             largest_contentful_paint_details.type);
   }
+
+  if (largest_contentful_paint_details.image_paint_size > 0 ||
+      largest_contentful_paint_details.text_paint_size > 0) {
+    // Hard navigation LCP has an expected navigation_id of 1
+    // (kHardNavigationId). Note: In principle, this should be the navigation ID
+    // from the global WindowPerformance object. However, because hard
+    // navigation LCP is read lazily (after presentation feedback), a subsequent
+    // soft navigation might have already incremented the global navigation ID
+    // before this is read. Therefore, we cannot rely on the current global
+    // navigation ID here. Once LCP is captured at paint time, this can be
+    // plumbed directly.
+    timing->paint_timing->largest_contentful_paint
+        ->performance_timeline_navigation_id =
+        kHardNavigationPerformanceTimelineNavigationId;
+  }
+
   // It is possible for a frame to switch from eligible for painting to
   // ineligible for it prior to the first paint. If this occurs, we need to
   // propagate the null value.
@@ -868,9 +933,46 @@ MetricsRenderFrameObserver::Timing MetricsRenderFrameObserver::GetTiming()
       timing->monotonic_paint_timing->first_contentful_paint =
           perf.FirstContentfulPaintAsMonotonicTime();
     }
+    if (!perf.FirstContentfulPaintRenderedButNotPresentedAsMonotonicTime()
+             .is_null()) {
+      if (!timing->monotonic_paint_timing) {
+        timing->monotonic_paint_timing = mojom::MonotonicPaintTiming::New();
+      }
+      timing->monotonic_paint_timing->first_contentful_paint_submitted =
+          perf.FirstContentfulPaintRenderedButNotPresentedAsMonotonicTime();
+    }
   }
 
   return Timing(std::move(timing), monotonic_timing);
+}
+
+mojom::FontLoadingMetricsPtr MetricsRenderFrameObserver::GetFontLoadingMetrics()
+    const {
+  const blink::WebPerformanceMetricsForReporting& perf =
+      render_frame()->GetWebFrame()->PerformanceMetricsForReporting();
+  if (perf.SystemFallbackFontCount() > 0 || perf.ShapeCacheHitCount() > 0 ||
+      perf.ShapeCacheMissCount() > 0) {
+    auto font_metrics = mojom::FontLoadingMetrics::New();
+    font_metrics->fallback_duration = perf.SystemFallbackFontTime();
+    font_metrics->fallback_count = perf.SystemFallbackFontCount();
+    font_metrics->fallback_initial_duration =
+        perf.SystemFallbackFontInitialDuration();
+    font_metrics->shape_cache_hit_count = perf.ShapeCacheHitCount();
+    font_metrics->shape_cache_miss_count = perf.ShapeCacheMissCount();
+    std::map<mojom::ScriptType, size_t> aggregated;
+    for (const auto& details : perf.GetScriptFontFallbackDetails()) {
+      aggregated[MapToMojoScriptType(details.script_code, details.is_emoji)] +=
+          details.fallback_count;
+    }
+    for (const auto& [type, count] : aggregated) {
+      auto info = mojom::ScriptFallbackInfo::New();
+      info->script_type = type;
+      info->fallback_count = static_cast<uint32_t>(count);
+      font_metrics->script_fallback_metrics.push_back(std::move(info));
+    }
+    return font_metrics;
+  }
+  return nullptr;
 }
 
 mojom::CustomUserTimingMarkPtr

@@ -4,6 +4,7 @@
 
 #include "chrome/browser/ui/search_engines/keyword_editor_controller.h"
 
+#include <algorithm>
 #include <array>
 #include <memory>
 #include <string>
@@ -15,7 +16,6 @@
 #include "chrome/browser/search_engines/template_url_service_factory_test_util.h"
 #include "chrome/browser/search_engines/template_url_service_test_util.h"
 #include "chrome/browser/ui/search_engines/template_url_table_model.h"
-#include "chrome/grit/generated_resources.h"
 #include "chrome/test/base/testing_profile.h"
 #include "components/omnibox/common/omnibox_features.h"
 #include "components/search_engines/choice_made_location.h"
@@ -28,6 +28,7 @@
 #include "components/sync_preferences/testing_pref_service_syncable.h"
 #include "content/public/test/browser_task_environment.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/search_engines_data/resources/definitions/prepopulated_engines.h"
 
 using base::ASCIIToUTF16;
 
@@ -150,11 +151,12 @@ TEST_F(KeywordEditorControllerTest, Add) {
 
 // Tests modifying a TemplateURL.
 TEST_F(KeywordEditorControllerTest, Modify) {
-  controller()->AddTemplateURL(kA, kB, "http://c");
+  const TemplateURLID turl_id =
+      controller()->AddTemplateURL(kA, kB, "http://c");
   ClearChangeCount();
 
   // Modify the entry.
-  TemplateURL* turl = util()->model()->GetTemplateURLs()[0];
+  TemplateURL* turl = controller()->GetTemplateURL(turl_id);
   controller()->ModifyTemplateURL(turl, kA1, kB1, "http://c1");
 
   // Make sure it was updated appropriately.
@@ -336,6 +338,49 @@ TEST_F(KeywordEditorControllerManagedDSPTest, CannotSetDefaultWhileManaged) {
       controller()->IsManaged(util()->model()->GetDefaultSearchProvider()));
 }
 
+// Tests making a prepopulated engine that isn't in the model yet the default.
+TEST_F(KeywordEditorControllerTest, MakeDefaultByPrepopulatedId) {
+  const int prepopulate_id = TemplateURLPrepopulateData::naver.id;
+  ASSERT_FALSE(std::ranges::contains(util()->model()->GetTemplateURLs(),
+                                     prepopulate_id,
+                                     &TemplateURL::prepopulate_id));
+
+  controller()->MakeDefaultTemplateURL(
+      KeywordEditorController::PrepopulatedId(prepopulate_id),
+      search_engines::ChoiceMadeLocation::kOther);
+
+  const TemplateURL* dse = util()->model()->GetDefaultSearchProvider();
+  ASSERT_TRUE(dse);
+  EXPECT_EQ(prepopulate_id, dse->prepopulate_id());
+  EXPECT_TRUE(std::ranges::contains(util()->model()->GetTemplateURLs(), dse));
+
+  // Making it default a second time does nothing.
+  ClearChangeCount();
+  controller()->MakeDefaultTemplateURL(
+      KeywordEditorController::PrepopulatedId(prepopulate_id),
+      search_engines::ChoiceMadeLocation::kOther);
+  VerifyNotChanged();
+  EXPECT_EQ(dse, util()->model()->GetDefaultSearchProvider());
+}
+
+// Tests that a prepopulated engine can't be made the default if the default
+// search provider is managed via policy.
+TEST_F(KeywordEditorControllerManagedDSPTest,
+       CannotSetDefaultByPrepopulatedIdWhileManaged) {
+  SimulateDefaultSearchIsManaged("http://managed/{searchTerms}",
+                                 /*is_mandatory=*/true);
+  const TemplateURL* managed_dse = util()->model()->GetDefaultSearchProvider();
+  const size_t initial_count = util()->model()->GetTemplateURLs().size();
+
+  controller()->MakeDefaultTemplateURL(
+      KeywordEditorController::PrepopulatedId(
+          TemplateURLPrepopulateData::naver.id),
+      search_engines::ChoiceMadeLocation::kOther);
+
+  EXPECT_EQ(managed_dse, util()->model()->GetDefaultSearchProvider());
+  EXPECT_EQ(initial_count, util()->model()->GetTemplateURLs().size());
+}
+
 // Tests that a TemplateURL can be made the default if the default search
 // provider is recommended via policy.
 TEST_F(KeywordEditorControllerManagedDSPTest, SetDefaultWhileRecommended) {
@@ -373,7 +418,7 @@ TEST_F(KeywordEditorControllerManagedDSPTest, SetDefaultWhileRecommended) {
   ASSERT_NE(util()->model()->GetTemplateURLForKeyword(kManaged), nullptr);
 }
 
-// Tests that a recomended search provider does not persist when a different
+// Tests that a recommended search provider does not persist when a different
 // recommended provider is applied via policy.
 TEST_F(KeywordEditorControllerManagedDSPTest, UpdateRecommended) {
   // Simulate setting a recommended default provider.
@@ -397,7 +442,7 @@ TEST_F(KeywordEditorControllerManagedDSPTest, UpdateRecommended) {
   EXPECT_EQ(original_size, util()->model()->GetTemplateURLs().size());
 }
 
-// Tests that a recomended search provider does not persist when a managed
+// Tests that a recommended search provider does not persist when a managed
 // provider is applied via policy.
 TEST_F(KeywordEditorControllerManagedDSPTest, SetManagedWhileRecommended) {
   // Simulate setting a recommended default provider.

@@ -11,21 +11,32 @@ import shutil
 import sys
 
 import common
+import gen_register_natives
 import jni_generator
 import jni_registration_generator
 
 # jni_zero.py requires Python 3.8+.
 _MIN_PYTHON_MINOR = 8
 
+_THIS_DIR = posixpath.abspath(posixpath.dirname(__file__))
+_ROOT_DIR = posixpath.dirname(posixpath.dirname(_THIS_DIR))
+
 
 def _add_io_args(parser, *, is_final=False, is_javap=False):
   inputs = parser.add_argument_group(title='Inputs')
   outputs = parser.add_argument_group(title='Outputs')
+  inputs.add_argument('--type-catalog',
+                      action='append',
+                      dest='type_catalogs',
+                      help='Path to input type catalog JSON files.')
+  inputs.add_argument(
+      '--type-catalogs-file',
+      help='JSON file containing a list of paths to type catalog JSON files.')
   if is_final:
     inputs.add_argument(
         '--java-sources-file',
         required=True,
-        help='JSON file containing paths to .java or .jni.pickle files '
+        help='JSON file containing paths to .java, .kt, or .jni.pickle files '
         'and their module names, taken from Java dependency tree.')
     inputs.add_argument(
         '--priority-java-sources-file',
@@ -38,7 +49,7 @@ def _add_io_args(parser, *, is_final=False, is_javap=False):
         'omitting switch_num for unique signatures.')
     inputs.add_argument(
         '--native-sources-file',
-        help='JSON file containing paths to .java or .jni.pickle files '
+        help='JSON file containing paths to .java, .kt, or .jni.pickle files '
         'and their module names, taken from Native dependency tree.')
   else:
     if is_javap:
@@ -49,7 +60,7 @@ def _add_io_args(parser, *, is_final=False, is_javap=False):
 
       help_text = 'Paths within the .jar'
     else:
-      help_text = 'Paths to .java files to parse.'
+      help_text = 'Paths to .java or .kt files to parse.'
     inputs.add_argument('--input-file',
                         action='append',
                         required=True,
@@ -75,6 +86,10 @@ def _add_io_args(parser, *, is_final=False, is_javap=False):
     outputs.add_argument('--placeholder-srcjar-path',
                          help='Path to output srcjar with placeholders for '
                          'all referenced classes in |input_files|')
+    if not is_javap:
+      outputs.add_argument('--resolved-types-path',
+                           help='Path to output list of resolved types '
+                           '(for use by the annotation processor)')
 
   outputs.add_argument('--header-path', help='Path to output header file.')
 
@@ -87,9 +102,13 @@ def _add_io_args(parser, *, is_final=False, is_javap=False):
         ' hash is enabled).')
     outputs.add_argument('--jni-pickle',
                          help='Path to write intermediate .jni.pickle file.')
+    outputs.add_argument('--output-type-catalog',
+                         help='Path to output type catalog JSON file.')
   if is_final:
-    outputs.add_argument(
-        '--depfile', help='Path to depfile (for use with ninja build system)')
+    outputs.add_argument('--impl-path',
+                         help='Path to output C++ implementation file.')
+  outputs.add_argument('--depfile',
+                       help='Path to depfile (for use with ninja build system)')
 
 
 def _add_codegen_args(parser, *, is_final=False, is_javap=False):
@@ -99,9 +118,7 @@ def _add_codegen_args(parser, *, is_final=False, is_javap=False):
       '--module-name',
       default='',
       help='Only look at natives annotated with a specific module name.')
-  this_dir = posixpath.abspath(posixpath.dirname(__file__))
-  root_dir = posixpath.dirname(posixpath.dirname(this_dir))
-  default_path_prefix = os.path.relpath(this_dir, root_dir) + '/'
+  default_path_prefix = os.path.relpath(_THIS_DIR, _ROOT_DIR) + '/'
   group.add_argument('--include-path-prefix',
                      help='Value for #include "${PREFIX}jni_zero.h" '
                      f'(default={default_path_prefix})',
@@ -110,10 +127,6 @@ def _add_codegen_args(parser, *, is_final=False, is_javap=False):
                      action='append',
                      dest='extra_includes',
                      help='Header file to #include in the generated header.')
-  group.add_argument(
-      '--enable-legacy-natives',
-      action='store_true',
-      help='Whether to generate code from "native" java methods.')
   if is_final:
     group.add_argument(
         '--add-stubs-for-missing-native',
@@ -133,29 +146,30 @@ def _add_codegen_args(parser, *, is_final=False, is_javap=False):
     group.add_argument('--manual-jni-registration',
                        action='store_true',
                        help='Generate a call to RegisterNatives()')
+    group.add_argument('--register-natives-name',
+                       default='RegisterNatives',
+                       help='Name of the main RegisterNatives function.')
     group.add_argument('--include-test-only',
                        action='store_true',
                        help='Whether to maintain ForTesting JNI methods.')
-  else:
+  elif not is_javap:
     group.add_argument(
         '--split-name',
         help='Split name that the Java classes should be loaded from.')
+    group.add_argument('--allow-private-called-by-natives',
+                       action='store_true',
+                       help='Whether to allow private @CalledByNative symbols.')
     mode_group.add_argument(
         '--per-file-natives',
         action='store_true',
         help='Generate .srcjar and .h such that a final generate-final '
         'step is not necessary')
-    group.add_argument('--use-std-primitive-types',
-                       action='store_true',
-                       help='Use e.g.: int32_t rather than jint in codegen')
-    if not is_javap:
-      group.add_argument(
-          '--enable-definition-macros',
-          action='store_true',
-          help='Generate JNI glue code in DEFINE_JNI_FOR_MyClass() macros')
-    group.add_argument('--allow-private-called-by-natives',
-                       action='store_true',
-                       help='Whether to allow private @CalledByNative symbols.')
+    group.add_argument(
+        '--weak-called-by-natives',
+        action='store_true',
+        help='When using --enable-jni-multiplexing, emit weak definitions for '
+        '@CalledByNative methods, so that they will function even if no '
+        'generate_final_jni() exists.')
 
   if is_javap:
     group.add_argument('--unchecked-exceptions',
@@ -171,6 +185,10 @@ def _add_codegen_args(parser, *, is_final=False, is_javap=False):
         '--enable-jni-multiplexing',
         action='store_true',
         help='Enables JNI multiplexing for Java native methods')
+    group.add_argument(
+        '--enable-safe-pointers',
+        action='store_true',
+        help='Enables parsing and generation of safe JNI pointers.')
     group.add_argument(
         '--package-prefix',
         help='Adds a prefix to the classes fully qualified-name. Effectively '
@@ -216,6 +234,45 @@ def _add_args(parser, *, is_final=False, is_javap=False):
   _add_codegen_args(parser, is_final=is_final, is_javap=is_javap)
 
 
+def _add_gen_register_natives_args(parser):
+  inputs = parser.add_argument_group(title='Inputs')
+  outputs = parser.add_argument_group(title='Outputs')
+
+  inputs.add_argument('--javap', help='The path to javap command.')
+  inputs.add_argument(
+      '--class-blocklist',
+      help='A comma-separated list of globs matching class names to exclude. '
+      'If specified, matching classes will be ignored.')
+  inputs.add_argument('jar_files',
+                      nargs='+',
+                      help='Path to .jar files to scan for native methods.')
+
+  outputs.add_argument('--header-path',
+                       required=True,
+                       help='Path to output header file.')
+
+  outputs.add_argument('--linker-script-path',
+                       help='Path to output linker version script.')
+
+  group = parser.add_argument_group(title='Codegen Options')
+  group.add_argument('--namespace',
+                     help='Uses as a namespace in the generated header.')
+
+  group.add_argument('--register-natives-name',
+                     default='RegisterNatives',
+                     help='Name of the main RegisterNatives function.')
+
+  default_path_prefix = os.path.relpath(_THIS_DIR, _ROOT_DIR) + '/'
+  group.add_argument('--include-path-prefix',
+                     help='Value for #include "${PREFIX}jni_zero.h" '
+                     f'(default={default_path_prefix})',
+                     default=default_path_prefix)
+  group.add_argument('--extra-include',
+                     action='append',
+                     dest='extra_includes',
+                     help='Header file to #include in the generated header.')
+
+
 def main():
   parser = argparse.ArgumentParser(description=__doc__)
   subparsers = parser.add_subparsers(required=True)
@@ -236,6 +293,12 @@ def main():
   _add_args(subp, is_final=True)
   subp.set_defaults(func=jni_registration_generator.main)
 
+  subp = subparsers.add_parser(
+      'gen-register-natives',
+      help='Generates RegisterNatives header from a list of .jar files.')
+  _add_gen_register_natives_args(subp)
+  subp.set_defaults(func=gen_register_natives.GenerateRegisterNativesFromJars)
+
   # Default to showing full help text when no args are passed.
   if len(sys.argv) == 1:
     parser.print_help()
@@ -249,6 +312,7 @@ def main():
                               is_muxing=bool_arg('enable_jni_multiplexing'),
                               is_per_file=bool_arg('per_file_natives'))
     args.func(parser, args, jni_mode)
+
 
 if __name__ == '__main__':
   _maybe_relaunch_with_newer_python()

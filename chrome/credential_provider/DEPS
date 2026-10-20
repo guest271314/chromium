@@ -2,6 +2,7 @@ include_rules = [
   "+chrome/common",
   "+chrome/installer/launcher_support",
   "+chrome/installer/util",
+  "+chrome/updater/app/server/win",
   "+chrome/updater/protos",
   "+components/crash",
   "+components/policy/proto",
@@ -16,7 +17,7 @@ include_rules = [
 ]
 
 specific_include_rules = {
-  ".+_unittests*\.cc": [
+  ".+_unittests*\\.cc": [
     "+chrome/browser/ui/startup/credential_provider_signin_dialog_win_test_data.h",
   ],
 }

@@ -168,7 +168,7 @@ void ReportViolationWithLocation(
     const String& console_message,
     const KURL& blocked_url,
     const String& context_url,
-    const OrdinalNumber& context_line,
+    const TextPosition& context_position,
     Element* element,
     const String& source) {
   String message =
@@ -182,7 +182,8 @@ void ReportViolationWithLocation(
                          ? mojom::blink::ConsoleMessageLevel::kInfo
                          : mojom::blink::ConsoleMessageLevel::kError;
   SourceLocation* source_location =
-      CaptureSourceLocation(context_url, context_line.OneBasedInt(), 0);
+      CaptureSourceLocation(context_url, context_position.line_.OneBasedInt(),
+                            context_position.column_.OneBasedInt());
   policy->LogToConsole(MakeGarbageCollected<ConsoleMessage>(
       mojom::ConsoleMessageSource::kSecurity, error_level, message,
       source_location));
@@ -485,7 +486,7 @@ bool CheckInlineAndReportViolation(
     Element* element,
     const String& source,
     const String& context_url,
-    const OrdinalNumber& context_line,
+    const TextPosition& context_position,
     ContentSecurityPolicy::InlineType inline_type,
     const String& hash_value,
     CSPDirectiveName effective_type) {
@@ -557,7 +558,7 @@ bool CheckInlineAndReportViolation(
       StrCat({console_message,
               " violates the following Content Security Policy directive '",
               raw_directive, "'.", suffix}),
-      NullUrl(), context_url, context_line, element,
+      NullUrl(), context_url, context_position, element,
       directive.source_list->report_sample ? source : g_empty_string);
 
   if (!CSPDirectiveListIsReportOnly(csp)) {
@@ -778,7 +779,7 @@ bool CSPDirectiveListAllowInline(
     const String& content,
     const String& nonce,
     const String& context_url,
-    const OrdinalNumber& context_line,
+    const TextPosition& context_position,
     ReportingDisposition reporting_disposition) {
   CSPDirectiveName type = EffectiveDirectiveForInlineCheck(inline_type);
 
@@ -812,7 +813,7 @@ bool CSPDirectiveListAllowInline(
     }
 
     return CheckInlineAndReportViolation(csp, policy, directive, element,
-                                         content, context_url, context_line,
+                                         content, context_url, context_position,
                                          inline_type, hash_value, type);
   }
 
@@ -834,7 +835,14 @@ bool CSPDirectiveListAllowEval(
     ContentSecurityPolicy::ExceptionStatus exception_status,
     const String& content,
     const Vector<network::IntegrityMetadata>& script_hash_values,
-    bool csp_extended_script_src_hashes_enabled) {
+    bool csp_extended_script_src_hashes_enabled,
+    bool trusted_types_enforced) {
+  // https://w3c.github.io/webappsec-csp/#can-compile-strings: If Trusted Types
+  // are enforced and this policy's source list contains 'trusted-types-eval',
+  // this policy does not block (nor report) the evaluation.
+  if (trusted_types_enforced && CheckTrustedTypesEval(csp, policy)) {
+    return true;
+  }
   CSPOperativeDirective directive =
       OperativeDirective(csp, CSPDirectiveName::ScriptSrc);
   if (reporting_disposition == ReportingDisposition::kReport) {
@@ -903,16 +911,6 @@ bool CSPDirectiveListAllowWasmCodeGeneration(
         exception_status, content);
   }
   return CSPDirectiveListIsReportOnly(csp) || CheckWasmEval(csp, policy);
-}
-
-CORE_EXPORT
-bool CSPDirectiveListAllowTrustedTypesEval(
-    const network::mojom::blink::ContentSecurityPolicy& csp,
-    ContentSecurityPolicy* policy,
-    ReportingDisposition reporting_disposition,
-    ContentSecurityPolicy::ExceptionStatus exception_status) {
-  return !CSPDirectiveListIsReportOnly(csp) &&
-         CheckTrustedTypesEval(csp, policy);
 }
 
 bool CSPDirectiveListShouldDisableEval(
@@ -1021,8 +1019,8 @@ String GetRelativeScriptUrl(const KURL& document_url, const KURL& script_url) {
   Vector<StringView> script_path_tokens =
       StringView(script_path).substr(1).SplitSkippingEmpty('/');
 
-  size_t common_prefix_len = 0;
-  size_t min_len =
+  wtf_size_t common_prefix_len = 0;
+  wtf_size_t min_len =
       std::min(document_path_tokens.size(), script_path_tokens.size());
   while (common_prefix_len < min_len &&
          document_path_tokens[common_prefix_len] ==
@@ -1030,14 +1028,13 @@ String GetRelativeScriptUrl(const KURL& document_url, const KURL& script_url) {
     common_prefix_len++;
   }
 
-  int level_difference = document_path_tokens.size() - common_prefix_len;
+  wtf_size_t level_difference = document_path_tokens.size() - common_prefix_len;
   Vector<StringView> relative_path_tokens;
-  for (int i = 0; i < level_difference; i++) {
+  for (wtf_size_t i = 0; i < level_difference; ++i) {
     relative_path_tokens.push_back("..");
   }
-  for (size_t i = common_prefix_len; i < script_path_tokens.size(); i++) {
-    relative_path_tokens.push_back(script_path_tokens[i]);
-  }
+  relative_path_tokens.append_range(
+      base::span(script_path_tokens).subspan(common_prefix_len));
   return JoinPath(relative_path_tokens);
 }
 

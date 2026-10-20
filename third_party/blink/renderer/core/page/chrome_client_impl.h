@@ -35,6 +35,7 @@
 #include <memory>
 
 #include "base/gtest_prod_util.h"
+#include "base/memory/raw_ptr.h"
 #include "cc/input/overscroll_behavior.h"
 #include "third_party/blink/public/common/widget/constants.h"
 #include "third_party/blink/public/mojom/input/focus_type.mojom-blink-forward.h"
@@ -69,6 +70,8 @@ class CORE_EXPORT ChromeClientImpl final : public ChromeClient {
   WebViewImpl* GetWebView() const override;
   void ChromeDestroyed() override;
   void SetWindowRect(const gfx::Rect&, LocalFrame&) override;
+  void MoveWindowTo(const gfx::Point&, LocalFrame&) override;
+  void ResizeWindowTo(const gfx::Size&, LocalFrame&) override;
 #if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
   void Minimize(LocalFrame&, WindowingControlsChangeCallback) override;
   void Maximize(LocalFrame&, WindowingControlsChangeCallback) override;
@@ -97,9 +100,7 @@ class CORE_EXPORT ChromeClientImpl final : public ChromeClient {
   bool StartDeferringCommits(LocalFrame& main_frame,
                              base::TimeDelta timeout,
                              cc::PaintHoldingReason reason) override;
-  void StopDeferringCommits(LocalFrame& main_frame,
-                            cc::PaintHoldingCommitTrigger) override;
-  void SetShouldThrottleFrameRate(bool flag, LocalFrame& main_frame) override;
+  void StopDeferringCommits(LocalFrame& main_frame) override;
   void RequestMainFrameOnCompositorAnimation(
       LocalFrame&,
       cc::PropertyChangeForcesCommitCriteria criteria,
@@ -279,8 +280,8 @@ class CORE_EXPORT ChromeClientImpl final : public ChromeClient {
       LocalFrame*,
       HTMLElement*,
       WebFormRelatedChangeType) override;
-  void HandleKeyboardEventOnTextField(HTMLInputElement&,
-                                      KeyboardEvent&) override;
+  bool HandleKeyboardEventOnEditableElement(HTMLElement&,
+                                            KeyboardEvent&) override;
   void DidChangeValueInTextField(HTMLFormControlElement&) override;
   void DidClearValueInTextField(HTMLFormControlElement&) override;
   void DidUserChangeContentEditableContent(Element&) override;
@@ -290,16 +291,18 @@ class CORE_EXPORT ChromeClientImpl final : public ChromeClient {
   void DidChangeSelectionInSelectControl(HTMLFormControlElement&) override;
   void SelectFieldOptionsChanged(HTMLFormControlElement&) override;
   void AjaxSucceeded(LocalFrame*) override;
-  void JavaScriptChangedValue(HTMLFormControlElement&,
-                              const String& old_value,
-                              bool was_autofilled) override;
+  void JavaScriptSetValue(HTMLFormControlElement&,
+                          const String& old_value,
+                          bool was_autofilled,
+                          bool value_changed) override;
   bool IsAutofillableElement(const HTMLFormControlElement&) override;
 
   void ShowVirtualKeyboardOnElementFocus(LocalFrame&) override;
 
   gfx::Transform GetDeviceEmulationTransform() const override;
 
-  void OnMouseDown(Node&) override;
+  void WillDispatchPointerDown(Node&) override;
+  void DidDispatchMouseDown(Node&) override;
   void DidUpdateBrowserControls() const override;
 
   void DidUpdateMaxSafeAreaInsets(
@@ -332,7 +335,11 @@ class CORE_EXPORT ChromeClientImpl final : public ChromeClient {
 
   float ZoomFactorForViewportLayout() override;
 
-  void OnFirstContentfulPaint(const base::TimeDelta& duration) override;
+  void OnFirstContentfulPaint(
+      const base::TimeTicks& presentation_time) override;
+
+  void OnLargestContentfulPaint(
+      const base::TimeTicks& presentation_time) override;
 
  private:
   bool IsChromeClientImpl() const override { return true; }
@@ -359,7 +366,8 @@ class CORE_EXPORT ChromeClientImpl final : public ChromeClient {
       LocalFrame& frame,
       int minimum_size = blink::kMinimumWindowSize);
 
-  WebViewImpl* web_view_;  // Weak pointer.
+  raw_ptr<WebViewImpl, UnprotectedInRelease | DanglingUntriaged>
+      web_view_;  // Weak pointer.
   HeapHashSet<WeakMember<PopupOpeningObserver>> popup_opening_observers_;
   Vector<scoped_refptr<FileChooser>> file_chooser_queue_;
   ui::Cursor last_set_mouse_cursor_for_testing_;

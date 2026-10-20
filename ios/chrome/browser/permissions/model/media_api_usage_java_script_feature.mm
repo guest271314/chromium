@@ -72,11 +72,11 @@ void MediaAPIUsageJavaScriptFeature::ScriptMessageReceived(
     const web::ScriptMessage& script_message) {
   std::optional<bool> audio;
   std::optional<bool> video;
-  const base::DictValue* script_dict =
-      script_message.body() ? script_message.body()->GetIfDict() : nullptr;
-  if (script_dict) {
-    audio = script_dict->FindBool(kScriptMessageResponseAudioKey);
-    video = script_dict->FindBool(kScriptMessageResponseVideoKey);
+  const web::ScriptMessageValue& body = script_message.body();
+  if (body.type() == base::Value::Type::DICT) {
+    const web::ScriptMessageDictValue& script_dict = body.GetDict();
+    audio = script_dict.FindBool(kScriptMessageResponseAudioKey);
+    video = script_dict.FindBool(kScriptMessageResponseVideoKey);
   }
 
   std::string metric_name;

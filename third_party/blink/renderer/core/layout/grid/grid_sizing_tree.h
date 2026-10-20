@@ -67,6 +67,19 @@ class SubgriddedItemData {
                : parent_layout_data_->Columns();
   }
 
+  bool ParentHasTrackCollection(
+      GridTrackSizingDirection track_direction,
+      std::optional<WritingMode> container_writing_mode = std::nullopt) const {
+    DCHECK(parent_layout_data_);
+    const bool is_parallel =
+        !container_writing_mode ||
+        IsParallelWritingMode(*container_writing_mode, parent_writing_mode_);
+    const auto direction_in_parent =
+        is_parallel ? track_direction
+                    : (track_direction == kForColumns ? kForRows : kForColumns);
+    return parent_layout_data_->HasTrackCollection(direction_in_parent);
+  }
+
   const GridLayoutData* ParentLayoutData() const { return parent_layout_data_; }
 
  private:
@@ -139,6 +152,19 @@ class CORE_EXPORT GridSizingTree {
   // `GridLayoutTree` instance, which doesn't hold the grid items.
   const GridLayoutTree* FinalizeTree() const;
 
+  // Same as `FinalizeTree`, but only includes the subtree rooted at
+  // `subtree_root`. The returned `GridLayoutTree` is a fresh, standalone tree
+  // (the subtree's root is at index 0 in the returned tree).
+  const GridLayoutTree* FinalizeSubtreeAt(wtf_size_t subtree_root) const;
+
+  void ReleaseTrackSizingData() {
+    for (auto& tree_node : tree_data_) {
+      if (tree_node.layout_data) {
+        tree_node.layout_data->ReleaseTrackSizingData();
+      }
+    }
+  }
+
   SubgriddedItemData LookupSubgriddedItemData(
       const GridItemData& grid_item) const;
 
@@ -148,6 +174,37 @@ class CORE_EXPORT GridSizingTree {
 
   wtf_size_t SubtreeSize(wtf_size_t index) const {
     return At(index).subtree_size;
+  }
+
+  // Includes baseline alignment in descendant subgrids, not just the root.
+  bool HasBaselines() const { return tree_has_baselines_; }
+
+  bool HasSubgridWithIndefiniteStandaloneAxis() const {
+    return has_subgrid_with_indefinite_standalone_axis_;
+  }
+
+  void SetSubgridHasIndefiniteStandaloneAxis() {
+    has_subgrid_with_indefinite_standalone_axis_ = true;
+  }
+
+  // True if any grid item in the tree (at any depth) has a contribution that
+  // depends on the block-size of its grid area. This is aggregated as items are
+  // measured.
+  bool HasBlockSizeDependentGridItem() const {
+    return has_block_size_dependent_grid_item_;
+  }
+
+  void SetHasBlockSizeDependentGridItem() {
+    has_block_size_dependent_grid_item_ = true;
+  }
+
+  // True if any nested subgrid's baseline was deferred during track sizing
+  // because its layout subtree had unresolved geometry.
+  bool HasDeferredSubgridBaseline() const {
+    return has_deferred_subgrid_baseline_;
+  }
+  void SetHasDeferredSubgridBaseline() {
+    has_deferred_subgrid_baseline_ = true;
   }
 
  private:
@@ -179,6 +236,15 @@ class CORE_EXPORT GridSizingTree {
 
   HeapVector<GridTreeNode, 16> tree_data_;
   bool tree_has_baselines_{false};
+
+  // True if any subgrid in the tree has an indefinite standalone-axis track.
+  bool has_subgrid_with_indefinite_standalone_axis_{false};
+
+  // True if any grid item in the tree depends on the block-size of its area.
+  bool has_block_size_dependent_grid_item_{false};
+
+  // True if a nested subgrid's baseline was deferred during track sizing.
+  bool has_deferred_subgrid_baseline_{false};
 };
 
 // This class represents a subtree in a `GridSizingTree` and provides seamless
@@ -213,6 +279,10 @@ class GridSizingSubtree : public GridSubtree<GridSizingTree> {
   wtf_size_t LookupSubgridIndex(const GridItemData& subgrid_data) const {
     DCHECK(subgrid_data.IsSubgrid());
     return SizingTree().LookupSubgridIndex(subgrid_data.node);
+  }
+
+  wtf_size_t LookupSubgridSubtreeIndex(const GridItemData& subgrid_data) const {
+    return LookupSubgridIndex(subgrid_data) - subtree_root_;
   }
 
   GridSizingSubtree SubgridSizingSubtree(
@@ -250,6 +320,25 @@ class GridSizingSubtree : public GridSubtree<GridSizingTree> {
   GridSizingTrackCollection& SizingCollection(
       GridTrackSizingDirection track_direction) const {
     return LayoutData().SizingCollection(track_direction);
+  }
+
+  // Finalizes the current subtree into a fresh `GridLayoutTree` that contains
+  // only this subtree's nodes (the subtree's root is at index 0). See
+  // `GridSizingTree::FinalizeSubtreeAt`.
+  const GridLayoutTree* FinalizeTree() const {
+    return SizingTree().FinalizeSubtreeAt(subtree_root_);
+  }
+
+  void SetSubgridHasIndefiniteStandaloneAxis() const {
+    SizingTree().SetSubgridHasIndefiniteStandaloneAxis();
+  }
+
+  void SetHasBlockSizeDependentGridItem() const {
+    SizingTree().SetHasBlockSizeDependentGridItem();
+  }
+
+  void SetHasDeferredSubgridBaseline() const {
+    SizingTree().SetHasDeferredSubgridBaseline();
   }
 
  private:

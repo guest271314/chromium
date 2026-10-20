@@ -13,6 +13,7 @@
 #include "components/dom_distiller/core/url_utils.h"
 #include "components/omnibox/browser/autocomplete_classifier.h"
 #include "components/omnibox/browser/autocomplete_match.h"
+#include "components/omnibox/browser/location_bar_model_util.h"
 #include "components/omnibox/browser/omnibox_client.h"
 #include "content/public/common/url_constants.h"
 #include "third_party/metrics_proto/omnibox_event.pb.h"
@@ -21,6 +22,7 @@
 
 namespace omnibox {
 
+// LINT.IfChange(StripJavascriptSchemas)
 std::u16string StripJavascriptSchemas(const std::u16string& text) {
   const std::u16string kJsPrefix(
       base::StrCat({url::kJavaScriptScheme16, u":"}));
@@ -54,7 +56,9 @@ std::u16string StripJavascriptSchemas(const std::u16string& text) {
 
   return text;
 }
+// LINT.ThenChange(//ui/webui/resources/cr_components/searchbox/utils.ts:StripJavascriptSchemas)
 
+// LINT.IfChange(SanitizeTextForPaste)
 std::u16string SanitizeTextForPaste(const std::u16string& text) {
   if (text.empty()) {
     return std::u16string();  // Nothing to do.
@@ -129,6 +133,7 @@ std::u16string SanitizeTextForPaste(const std::u16string& text) {
 
   return StripJavascriptSchemas(output);
 }
+// LINT.ThenChange(//ui/webui/resources/cr_components/searchbox/utils.ts:SanitizeTextForPaste)
 
 void AdjustTextForCopy(
     int sel_min,
@@ -168,6 +173,12 @@ void AdjustTextForCopy(
       *url_from_text = dom_distiller::url_utils::GetOriginalUrlFromDistillerUrl(
           *url_from_text);
     }
+    // Don't let users copy Contextual Task URLs. We should let them copy the
+    // inner frame URL instead.
+    if (!contextual_tasks_inner_frame_url.is_empty()) {
+      *url_from_text = contextual_tasks_inner_frame_url;
+    }
+
     *text = base::UTF8ToUTF16(url_from_text->spec());
     return;
   }
@@ -204,23 +215,10 @@ void AdjustTextForCopy(
 
   // If `url_from_text` looks like a "contextual tasks" display URL, then apply
   // "origin-swapping" logic to generate a valid shareable URL.
-  if (url_from_text->is_valid() &&
-      url_from_text->SchemeIs(
-          contextual_tasks::GetContextualTasksDisplayUrlScheme()) &&
-      url_from_text->GetHost() ==
-          contextual_tasks::GetContextualTasksDisplayUrlHost() &&
-      url_from_text->GetPath() ==
-          contextual_tasks::GetContextualTasksDisplayUrlPath()) {
-    if (!contextual_tasks_inner_frame_url.is_valid()) {
-      return;
-    }
-
-    GURL::Replacements replacements;
-    replacements.SetSchemeStr(contextual_tasks_inner_frame_url.scheme());
-    replacements.SetHostStr(contextual_tasks_inner_frame_url.host());
-    replacements.SetPathStr(contextual_tasks_inner_frame_url.path());
-
-    *url_from_text = url_from_text->ReplaceComponents(replacements);
+  GURL replacement_url = location_bar_model::AdjustContextualTasksURLForCopy(
+      *url_from_text, contextual_tasks_inner_frame_url);
+  if (replacement_url.is_valid()) {
+    *url_from_text = replacement_url;
     *text = base::UTF8ToUTF16(url_from_text->spec());
     // In order for "origin-swapping" to work properly, we need to ensure that
     // callers interpret the copied text as "plain text" content.

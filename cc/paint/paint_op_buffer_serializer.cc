@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "base/compiler_specific.h"
+#include "base/containers/span.h"
 #include "base/functional/bind.h"
 #include "base/trace_event/trace_event.h"
 #include "cc/paint/clear_for_opaque_raster.h"
@@ -60,7 +61,9 @@ PlaybackParams PaintOpBufferSerializer::MakeParams(
     const SkCanvas* canvas) const {
   // We don't use an ImageProvider here since the ops are played onto a no-draw
   // canvas for state tracking and don't need decoded images.
-  PlaybackParams params(nullptr, canvas->getLocalToDevice());
+  PlaybackCallbacks callbacks;
+  callbacks.custom_callback = options_.custom_callback;
+  PlaybackParams params(nullptr, canvas->getLocalToDevice(), callbacks);
   params.raster_inducing_scroll_offsets =
       options_.raster_inducing_scroll_offsets;
   params.is_analyzing = true;
@@ -399,12 +402,19 @@ bool PaintOpBufferSerializer::SerializeOp(SkCanvas* canvas,
   if (!valid_)
     return false;
 
+  std::optional<DrawTextSlugsOp> text_slugs_op;
+  if (op.GetType() == PaintOpType::kDrawTextBlob) {
+    text_slugs_op.emplace(static_cast<const DrawTextBlobOp&>(op));
+  }
+  const PaintOp& op_to_serialize = text_slugs_op ? *text_slugs_op : op;
+
   // Playback on analysis canvas first to make sure the canvas transform is set
   // correctly for analysis of records in filters.
-  PlaybackOnAnalysisCanvas(canvas, op, flags_to_serialize, params);
+  PlaybackOnAnalysisCanvas(canvas, op_to_serialize, flags_to_serialize, params);
 
-  size_t bytes = serialize_cb_(callback_data_, op, options_, flags_to_serialize,
-                               canvas->getLocalToDevice(), params.original_ctm);
+  size_t bytes = serialize_cb_(callback_data_, op_to_serialize, options_,
+                               flags_to_serialize, canvas->getLocalToDevice(),
+                               params.original_ctm);
   if (!bytes) {
     valid_ = false;
     return false;
@@ -425,10 +435,10 @@ void PaintOpBufferSerializer::PlaybackOnAnalysisCanvas(
   //    we need the correct ctm at which text and images will be rasterized, and
   //    the clip rect so we can skip sending data for ops which will not be
   //    rasterized.
-  // 2) kDrawtextblob ops since they need to be analyzed by the cache diff
-  // canvas
-  //    to serialize/lock the requisite glyphs for this op.
-  if (op.IsDrawOp() && op.GetType() != PaintOpType::kDrawTextBlob) {
+  // 2) kDrawTextSlugsOps since they need to be analyzed by the cache diff
+  //    canvas to serialize/lock the requisite glyphs for this op.
+  DCHECK(op.GetType() != PaintOpType::kDrawTextBlob);
+  if (op.IsDrawOp() && op.GetType() != PaintOpType::kDrawTextSlugs) {
     return;
   }
 

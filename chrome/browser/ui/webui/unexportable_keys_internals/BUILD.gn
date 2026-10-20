@@ -17,8 +17,8 @@ mojom("mojo_bindings") {
     {
       types = [
         {
-          mojom = "unexportable_keys_internals.mojom.UnexportableKeyId"
-          cpp = "::unexportable_keys::UnexportableKeyId"
+          mojom = "unexportable_keys_internals.mojom.UnexportableSigningKeyId"
+          cpp = "::unexportable_keys::UnexportableSigningKeyId"
         },
       ]
       traits_headers = [
@@ -55,13 +55,12 @@ source_set("impl") {
     "unexportable_keys_internals_ui.cc",
   ]
 
-  public_deps = [ "//chrome/browser:browser_public_dependencies" ]
-
   deps = [
     ":unexportable_keys_internals",
     "//base",
     "//chrome/browser/profiles:profile",
     "//chrome/browser/resources/unexportable_keys_internals:resources",
+    "//chrome/browser/signin",
     "//chrome/common",
     "//components/unexportable_keys",
   ]

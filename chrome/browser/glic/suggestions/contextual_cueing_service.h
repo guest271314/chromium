@@ -12,11 +12,12 @@
 #include "base/callback_list.h"
 #include "base/containers/lru_cache.h"
 #include "base/containers/queue.h"
+#include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/sequence_checker.h"
 #include "base/time/time.h"
-#include "chrome/browser/contextual_cueing/nudge_cap_tracker.h"
 #include "chrome/browser/glic/suggestions/contextual_cueing_enums.h"
+#include "components/contextual_cueing/nudge_cap_tracker.h"
 #include "components/keyed_service/core/keyed_service.h"
 #include "components/page_content_annotations/content/page_content_extraction_service.h"
 #include "services/metrics/public/cpp/ukm_source_id.h"
@@ -26,10 +27,6 @@
 class OptimizationGuideKeyedService;
 class PrefService;
 class TemplateURLService;
-
-namespace signin {
-class IdentityManager;
-}
 
 namespace content {
 class WebContents;
@@ -57,7 +54,6 @@ class ContextualCueingService
           page_content_extraction_service,
       OptimizationGuideKeyedService* optimization_guide_keyed_service,
       predictors::LoadingPredictor* loading_predictor,
-      signin::IdentityManager* identity_manager,
       PrefService* pref_service,
       TemplateURLService* template_url_service);
   ~ContextualCueingService() override;
@@ -67,7 +63,7 @@ class ContextualCueingService
   void ReportPageLoad();
 
   // Called when cueing nudge activity happens.
-  void OnNudgeActivity(content::WebContents* web_contents,
+  void OnNudgeActivity(base::WeakPtr<content::WebContents> web_contents,
                        base::TimeTicks document_available_time,
                        bool is_dynamic,
                        glic::GlicNudgeActivity activity);
@@ -108,17 +104,19 @@ class ContextualCueingService
   // with zero state suggestions for pinned tabs as represented by
   // `pinned_web_contents`. Virtual for testing.
   virtual bool GetContextualGlicZeroStateSuggestionsForPinnedTabs(
-      std::vector<content::WebContents*> pinned_web_contents,
+      std::vector<raw_ptr<content::WebContents>> pinned_web_contents,
       bool is_fre,
       std::optional<std::vector<std::string>> supported_tools,
       const content::WebContents* focused_tab,
       GlicSuggestionsCallback callback);
 
   // Returns the pinned tabs that are in an outstanding request if there is one.
-  std::optional<std::vector<content::WebContents*>>
+  std::optional<std::vector<raw_ptr<content::WebContents>>>
   GetOutstandingPinnedTabsContents();
 
  private:
+  friend class ContextualCueingServiceTest;
+
   // page_content_annotations::PageContentExtractionService::Observer:
   void OnPageContentExtracted(
       content::Page& page,
@@ -129,11 +127,11 @@ class ContextualCueingService
 
   // Returns true if the given url is of a page type eligible for contextual
   // suggestions.
-  bool IsPageTypeEligibleForContextualSuggestions(GURL url) const;
+  bool IsPageTypeEligibleForContextualSuggestions(const GURL& url) const;
 
   // Utility method to create the initial zero state suggestions request.
   std::unique_ptr<ZeroStateSuggestionsRequest> MakeZeroStateSuggestionsRequest(
-      const std::vector<content::WebContents*>& web_contents_list,
+      const std::vector<raw_ptr<content::WebContents>>& web_contents_list,
       bool is_fre,
       std::optional<std::vector<std::string>> supported_tools,
       const content::WebContents* focused_tab);
@@ -183,8 +181,6 @@ class ContextualCueingService
   raw_ptr<PrefService> pref_service_ = nullptr;
 
   raw_ptr<TemplateURLService> template_url_service_ = nullptr;
-
-  raw_ptr<signin::IdentityManager> identity_manager_ = nullptr;
 
   // Stores model execution url to save look up time.
   GURL mes_url_;

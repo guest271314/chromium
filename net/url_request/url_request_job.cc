@@ -4,8 +4,10 @@
 
 #include "net/url_request/url_request_job.h"
 
+#include <optional>
 #include <utility>
 
+#include "base/byte_size.h"
 #include "base/compiler_specific.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
@@ -340,16 +342,6 @@ GURL URLRequestJob::ComputeReferrerForPolicy(
   if (same_origin_out_for_metrics)
     *same_origin_out_for_metrics = same_origin;
 
-  // 7. The user agent MAY alter referrerURL or referrerOrigin at this point to
-  // enforce arbitrary policy considerations in the interests of minimizing data
-  // leakage. For example, the user agent could strip the URL down to an origin,
-  // modify its host, replace it with an empty string, etc.
-  if (base::FeatureList::IsEnabled(
-          features::kCapReferrerToOriginOnCrossOrigin) &&
-      !same_origin) {
-    should_strip_to_origin = true;
-  }
-
   bool secure_referrer_but_insecure_destination =
       original_referrer.SchemeIsCryptographic() &&
       !destination.SchemeIsCryptographic();
@@ -427,10 +419,8 @@ void URLRequestJob::NotifySSLCertificateError(int net_error,
 bool URLRequestJob::CanSetCookie(
     const net::CanonicalCookie& cookie,
     CookieOptions* options,
-    const net::FirstPartySetMetadata& first_party_set_metadata,
     CookieInclusionStatus* inclusion_status) const {
-  return request_->CanSetCookie(cookie, options, first_party_set_metadata,
-                                inclusion_status);
+  return request_->CanSetCookie(cookie, options, inclusion_status);
 }
 
 void URLRequestJob::NotifyHeadersComplete() {
@@ -530,7 +520,7 @@ void URLRequestJob::NotifyFinalHeadersReceived() {
       if (expected_content_size_ == -1 && request_->response_headers()) {
         // This keeps |expected_content_size_| at its value of -1 if there's no
         // Content-Length header.
-        std::optional<base::ByteCount> content_length =
+        std::optional<base::ByteSize> content_length =
             request_->response_headers()->GetContentLength();
         expected_content_size_ =
             content_length ? content_length->InBytes() : -1;

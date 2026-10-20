@@ -278,7 +278,7 @@ class ASH_EXPORT WindowState : public aura::WindowObserver {
   bool IsFullscreen() const;
   bool IsSnapped() const;
   bool IsPinned() const;
-  bool IsLockedFullscreen() const;
+  bool IsTrustedPinned() const;
   bool IsPip() const;
   bool IsFloated() const;
 
@@ -515,6 +515,10 @@ class ASH_EXPORT WindowState : public aura::WindowObserver {
    public:
     static State* GetStateImpl(WindowState* window_state) {
       return window_state->current_state_.get();
+    }
+    static WindowStateDelegate* GetWindowStateDelegate(
+        WindowState* window_state) {
+      return window_state->delegate();
     }
   };
 

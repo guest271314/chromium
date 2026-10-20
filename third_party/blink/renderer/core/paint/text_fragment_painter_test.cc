@@ -191,7 +191,7 @@ class BlockCaretTextColorPainterTest : public TextFragmentPainterTest {
     auto* target = GetElementById("target");
     auto* text = target->firstChild();
     auto& selection = Selection();
-    selection.SetSelection(SelectionInDOMTree::Builder()
+    selection.SetSelection(SelectionInDomTree::Builder()
                                .Collapse(Position(text, dom_offset))
                                .Build(),
                            SetSelectionOptions());
@@ -270,7 +270,7 @@ TEST_P(BlockCaretTextColorPainterTest, NoOverrideColorWhenSecondValueIsAuto) {
 
   // Still returns 0 from the offset help function. The painter is aware that
   // the color value is auto.
-  EXPECT_TRUE(target->GetLayoutObject()->StyleRef().IsCaretTextColorAuto());
+  EXPECT_TRUE(target->GetLayoutObject()->Style().IsCaretTextColorAuto());
   EXPECT_EQ(CaretFragmentOffset(), 0u);
 }
 

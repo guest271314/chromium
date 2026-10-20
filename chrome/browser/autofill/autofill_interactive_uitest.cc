@@ -62,7 +62,7 @@
 #include "components/autofill/core/browser/foundations/browser_autofill_manager_test_delegate.h"
 #include "components/autofill/core/browser/foundations/mock_autofill_manager_observer.h"
 #include "components/autofill/core/browser/foundations/test_autofill_manager_waiter.h"
-#include "components/autofill/core/browser/test_utils/autofill_test_utils.h"
+#include "components/autofill/core/browser/test_utils/autofill_test_util.h"
 #include "components/autofill/core/common/autofill_constants.h"
 #include "components/autofill/core/common/autofill_debug_features.h"
 #include "components/autofill/core/common/autofill_features.h"
@@ -80,11 +80,11 @@
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "content/public/test/content_mock_cert_verifier.h"
-#include "content/public/test/fenced_frame_test_util.h"
 #include "content/public/test/scoped_accessibility_mode_override.h"
 #include "content/public/test/test_renderer_host.h"
 #include "content/public/test/test_utils.h"
 #include "content/public/test/url_loader_interceptor.h"
+#include "extensions/buildflags/buildflags.h"
 #include "net/base/net_errors.h"
 #include "net/cert/mock_cert_verifier.h"
 #include "net/dns/mock_host_resolver.h"
@@ -181,8 +181,8 @@ content::RenderFrameHost* RenderFrameHostForName(
       base::BindRepeating(&content::FrameMatchesName, name));
 }
 
-autofill::ElementExpr GetElementById(const std::string& id) {
-  return autofill::ElementExpr(
+ElementExpr GetElementById(const std::string& id) {
+  return ElementExpr(
       base::StringPrintf("document.getElementById(`%s`)", id.c_str()));
 }
 
@@ -230,7 +230,7 @@ std::vector<FieldValue> GetFieldValues(
 
 // Types the characters of `value` after focusing field `e`.
 [[nodiscard]] AssertionResult EnterTextIntoField(
-    const autofill::ElementExpr& e,
+    const ElementExpr& e,
     std::string_view value,
     AutofillUiTest* test,
     content::ToRenderFrameHost execution_target) {
@@ -414,7 +414,7 @@ class ValueWaiter {
 // Event 9 happens no later than 5 seconds after that.
 [[nodiscard]] ValueWaiter ListenForValueChange(
     const std::string& id,
-    const std::optional<std::string>& unblock_variable,
+    const std::string& unblock_variable,
     content::ToRenderFrameHost execution_target) {
   const std::string kFunction = R"(
     // This function observes the DOM for an attached form-control element `id`.
@@ -487,9 +487,8 @@ class ValueWaiter {
       return waiterId;
     }
   )";
-  std::string call =
-      base::StringPrintf("listenForValueChange(`%s`, `%s`)", id.c_str(),
-                         unblock_variable.value_or("").c_str());
+  std::string call = base::StringPrintf("listenForValueChange(`%s`, `%s`)",
+                                        id.c_str(), unblock_variable.c_str());
   content::EvalJsResult r = content::EvalJs(execution_target, kFunction + call);
   int waiterId = r.ExtractInt();
   return ValueWaiter(waiterId, execution_target);
@@ -709,7 +708,7 @@ class AutofillInteractiveTestBase : public AutofillUiTest {
                                        .Build());
     profile.usage_history().set_use_count(
         9999999);  // We want this to be the first profile.
-    AddTestProfile(browser()->profile(), profile);
+    AddTestProfile(browser()->GetProfile(), profile);
   }
 
   void CreateSecondTestProfile() {
@@ -728,14 +727,14 @@ class AutofillInteractiveTestBase : public AutofillUiTest {
                                        .with_country("US")
                                        .with_phone("15166900292")
                                        .Build());
-    AddTestProfile(browser()->profile(), profile);
+    AddTestProfile(browser()->GetProfile(), profile);
   }
 
   void CreateTestCreditCart() {
     CreditCard card;
     test::SetCreditCardInfo(&card, "Milton Waddams", "4111111111111111", "09",
                             "2999", "");
-    AddTestCreditCard(browser()->profile(), card);
+    AddTestCreditCard(browser()->GetProfile(), card);
   }
 
   void SimulateURLFetch() {
@@ -953,18 +952,6 @@ IN_PROC_BROWSER_TEST_F(AutofillInteractiveTest, FillHiddenSelect) {
   EXPECT_EQ(kDefaultAddressValues.state_short, GetFieldValueById("state"));
 }
 
-class AutofillInteractiveTest_PrefillFormAndFill
-    : public AutofillInteractiveTest {
- public:
-  AutofillInteractiveTest_PrefillFormAndFill() {
-    scoped_feature_list_.InitAndDisableFeature(
-        features::kAutofillSkipPreFilledFields);
-  }
-
- private:
-  base::test::ScopedFeatureList scoped_feature_list_;
-};
-
 IN_PROC_BROWSER_TEST_F(AutofillInteractiveTest, BasicUndoAutofill) {
   CreateTestProfile();
   SetTestUrlResponse(kTestShippingFormString);
@@ -1012,7 +999,7 @@ IN_PROC_BROWSER_TEST_F(AutofillInteractiveTest, ModifyTextNotifiesObserver) {
   SetTestUrlResponse(kTestShippingFormString);
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), GetTestUrl()));
 
-  autofill::MockAutofillManagerObserver observer;
+  MockAutofillManagerObserver observer;
   BrowserAutofillManager* autofill_manager = GetBrowserAutofillManager();
   autofill_manager->AddObserver(&observer);
 
@@ -1063,7 +1050,7 @@ IN_PROC_BROWSER_TEST_F(AutofillInteractiveTest,
   SetTestUrlResponse(kForm);
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), GetTestUrl()));
 
-  autofill::MockAutofillManagerObserver observer;
+  MockAutofillManagerObserver observer;
   BrowserAutofillManager* autofill_manager = GetBrowserAutofillManager();
   autofill_manager->AddObserver(&observer);
 
@@ -1111,31 +1098,6 @@ void DoModifySelectFieldAndFill(AutofillInteractiveTest* test) {
 // user.
 IN_PROC_BROWSER_TEST_F(AutofillInteractiveTest, ModifySelectFieldAndFill) {
   DoModifySelectFieldAndFill(this);
-}
-
-// Test that autofill works when the website prefills the form.
-IN_PROC_BROWSER_TEST_F(AutofillInteractiveTest_PrefillFormAndFill,
-                       PrefillFormAndFill) {
-  const char kPrefillScript[] =
-      R"( <script>
-            document.getElementById('firstname').value = 'Seb';
-            document.getElementById('lastname').value = 'Bell';
-            document.getElementById('address1').value = '3243 Notre-Dame Ouest';
-            document.getElementById('address2').value = 'apt 843';
-            document.getElementById('city').value = 'Montreal';
-            document.getElementById('zip').value = 'H5D 4D3';
-            document.getElementById('phone').value = '15142223344';
-          </script>)";
-  CreateTestProfile();
-  SetTestUrlResponse(base::StrCat({kTestShippingFormString, kPrefillScript}));
-  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), GetTestUrl()));
-
-  // We need to delete the prefilled value and then trigger the autofill.
-  auto Delete = [this] { DeleteElementValue(GetElementById("firstname")); };
-  ASSERT_TRUE(
-      AutofillFlow(GetElementById("firstname"), this,
-                   {.after_focus = base::BindLambdaForTesting(Delete)}));
-  EXPECT_THAT(GetFormValues(), ValuesAre(kDefaultAddress));
 }
 
 // Test that form filling can be initiated by pressing the down arrow.
@@ -1879,7 +1841,7 @@ IN_PROC_BROWSER_TEST_F(AutofillInteractiveTest, ComparePhoneNumbers) {
   profile.SetRawInfo(ADDRESS_HOME_STATE, u"CA");
   profile.SetRawInfo(ADDRESS_HOME_ZIP, u"95110");
   profile.SetRawInfo(PHONE_HOME_WHOLE_NUMBER, u"1-408-555-4567");
-  AddTestProfile(browser()->profile(), profile);
+  AddTestProfile(browser()->GetProfile(), profile);
 
   GURL url = embedded_test_server()->GetURL("/autofill/form_phones.html");
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), url));
@@ -1932,7 +1894,7 @@ IN_PROC_BROWSER_TEST_F(AutofillInteractiveTest, NoAutofillForCompanyName) {
   profile.SetRawInfo(ADDRESS_HOME_ZIP, u"95110");
   profile.SetRawInfo(COMPANY_NAME, ASCIIToUTF16(company_name));
   profile.SetRawInfo(PHONE_HOME_WHOLE_NUMBER, u"408-871-4567");
-  AddTestProfile(browser()->profile(), profile);
+  AddTestProfile(browser()->GetProfile(), profile);
 
   GURL url =
       embedded_test_server()->GetURL("/autofill/read_only_field_test.html");
@@ -2003,7 +1965,7 @@ IN_PROC_BROWSER_TEST_F(AutofillInteractiveTest, NoAutofillForReadOnlyFields) {
   profile.SetRawInfo(ADDRESS_HOME_ZIP, u"95110");
   profile.SetRawInfo(COMPANY_NAME, u"Company X");
   profile.SetRawInfo(PHONE_HOME_WHOLE_NUMBER, u"408-871-4567");
-  AddTestProfile(browser()->profile(), profile);
+  AddTestProfile(browser()->GetProfile(), profile);
 
   GURL url =
       embedded_test_server()->GetURL("/autofill/read_only_field_test.html");
@@ -2067,7 +2029,7 @@ IN_PROC_BROWSER_TEST_F(AutofillInteractiveTest,
   profile.SetRawInfo(NAME_LAST, u"Smith");
   profile.SetRawInfo(EMAIL_ADDRESS, ASCIIToUTF16(email));
   profile.SetRawInfo(PHONE_HOME_WHOLE_NUMBER, u"4088714567");
-  AddTestProfile(browser()->profile(), profile);
+  AddTestProfile(browser()->GetProfile(), profile);
 
   GURL url = embedded_test_server()->GetURL(
       "/autofill/autofill_confirmemail_form.html");
@@ -2115,95 +2077,6 @@ IN_PROC_BROWSER_TEST_F(AutofillInteractiveTest,
       AutofillFlow(name, this, {.show_method = ShowMethod::ByChar('M')}));
   EXPECT_EQ("Milton C. Waddams", GetFieldValue(name));
   EXPECT_EQ("red.swingline@initech.com", GetFieldValue(email));
-}
-
-// The following four tests verify that we can autofill forms with multiple
-// nameless forms, and repetitive field names and make sure that the dynamic
-// refill would not trigger a wrong refill, regardless of the form.
-IN_PROC_BROWSER_TEST_F(AutofillInteractiveTest,
-                       Dynamic_MultipleNoNameForms_BadNames_FourthForm) {
-  CreateTestProfile();
-  GURL url = embedded_test_server()->GetURL(
-      "a.com", "/autofill/multiple_noname_forms_badnames.html");
-  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), url));
-
-  ASSERT_TRUE(AutofillFlow(GetElementById("firstname_4"), this));
-  DoNothingAndWait(base::Seconds(2));  // Wait to for possible refills.
-  EXPECT_EQ("", GetFieldValueById("firstname_1"));
-  EXPECT_EQ("", GetFieldValueById("lastname_1"));
-  EXPECT_EQ("", GetFieldValueById("email_1"));
-  EXPECT_EQ("", GetFieldValueById("firstname_2"));
-  EXPECT_EQ("", GetFieldValueById("lastname_2"));
-  EXPECT_EQ("", GetFieldValueById("email_2"));
-  EXPECT_EQ("", GetFieldValueById("firstname_3"));
-  EXPECT_EQ("", GetFieldValueById("lastname_3"));
-  EXPECT_EQ("", GetFieldValueById("email_3"));
-  EXPECT_EQ("Milton", GetFieldValueById("firstname_4"));
-  EXPECT_EQ("Waddams", GetFieldValueById("lastname_4"));
-  EXPECT_EQ("red.swingline@initech.com", GetFieldValueById("email_4"));
-}
-
-IN_PROC_BROWSER_TEST_F(AutofillInteractiveTest,
-                       Dynamic_MultipleNoNameForms_BadNames_ThirdForm) {
-  CreateTestProfile();
-  GURL url = embedded_test_server()->GetURL(
-      "a.com", "/autofill/multiple_noname_forms_badnames.html");
-  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), url));
-
-  ASSERT_TRUE(AutofillFlow(GetElementById("firstname_3"), this));
-  DoNothingAndWait(base::Seconds(2));  // Wait to for possible refills.
-  EXPECT_EQ("", GetFieldValueById("firstname_1"));
-  EXPECT_EQ("", GetFieldValueById("lastname_1"));
-  EXPECT_EQ("", GetFieldValueById("email_1"));
-  EXPECT_EQ("", GetFieldValueById("firstname_2"));
-  EXPECT_EQ("", GetFieldValueById("lastname_2"));
-  EXPECT_EQ("", GetFieldValueById("email_2"));
-  EXPECT_EQ("Milton", GetFieldValueById("firstname_3"));
-  EXPECT_EQ("Waddams", GetFieldValueById("lastname_3"));
-  EXPECT_EQ("red.swingline@initech.com", GetFieldValueById("email_3"));
-  EXPECT_EQ("", GetFieldValueById("firstname_4"));
-  EXPECT_EQ("", GetFieldValueById("lastname_4"));
-  EXPECT_EQ("", GetFieldValueById("email_4"));
-}
-
-IN_PROC_BROWSER_TEST_F(AutofillInteractiveTest,
-                       Dynamic_MultipleNoNameForms_BadNames_SecondForm) {
-  CreateTestProfile();
-  GURL url = embedded_test_server()->GetURL(
-      "a.com", "/autofill/multiple_noname_forms_badnames.html");
-  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), url));
-
-  ASSERT_TRUE(AutofillFlow(GetElementById("firstname_2"), this));
-  DoNothingAndWait(base::Seconds(2));  // Wait to for possible refills.
-  EXPECT_EQ("", GetFieldValueById("firstname_1"));
-  EXPECT_EQ("", GetFieldValueById("lastname_1"));
-  EXPECT_EQ("", GetFieldValueById("email_1"));
-  EXPECT_EQ("Milton", GetFieldValueById("firstname_2"));
-  EXPECT_EQ("Waddams", GetFieldValueById("lastname_2"));
-  EXPECT_EQ("red.swingline@initech.com", GetFieldValueById("email_2"));
-  EXPECT_EQ("", GetFieldValueById("firstname_3"));
-  EXPECT_EQ("", GetFieldValueById("lastname_3"));
-  EXPECT_EQ("", GetFieldValueById("email_3"));
-}
-
-IN_PROC_BROWSER_TEST_F(AutofillInteractiveTest,
-                       Dynamic_MultipleNoNameForms_BadNames_FirstForm) {
-  CreateTestProfile();
-  GURL url = embedded_test_server()->GetURL(
-      "a.com", "/autofill/multiple_noname_forms_badnames.html");
-  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), url));
-
-  ASSERT_TRUE(AutofillFlow(GetElementById("firstname_1"), this));
-  DoNothingAndWait(base::Seconds(2));  // Wait to for possible refills.
-  EXPECT_EQ("Milton", GetFieldValueById("firstname_1"));
-  EXPECT_EQ("Waddams", GetFieldValueById("lastname_1"));
-  EXPECT_EQ("red.swingline@initech.com", GetFieldValueById("email_1"));
-  EXPECT_EQ("", GetFieldValueById("firstname_2"));
-  EXPECT_EQ("", GetFieldValueById("lastname_2"));
-  EXPECT_EQ("", GetFieldValueById("email_2"));
-  EXPECT_EQ("", GetFieldValueById("firstname_3"));
-  EXPECT_EQ("", GetFieldValueById("lastname_3"));
-  EXPECT_EQ("", GetFieldValueById("email_3"));
 }
 
 // Test that we can Autofill forms where some fields name change during the
@@ -2312,78 +2185,56 @@ class AutofillInteractiveIsolationTest : public AutofillInteractiveTestBase {
   }
 };
 
-enum class FrameType { kIFrame, kFencedFrame };
-
-class AutofillInteractiveFencedFrameTest
-    : public AutofillInteractiveIsolationTest,
-      public ::testing::WithParamInterface<FrameType> {
+class AutofillInteractiveIframeTest : public AutofillInteractiveIsolationTest {
  protected:
-  AutofillInteractiveFencedFrameTest() {
-    std::vector<base::test::FeatureRefAndParams> enabled;
-    std::vector<base::test::FeatureRef> disabled;
-    if (GetParam() != FrameType::kIFrame) {
-      enabled.push_back({network::features::kBrowsingTopics, {}});
-      enabled.push_back({blink::features::kFencedFramesAPIChanges, {}});
-      scoped_feature_list_.InitWithFeaturesAndParameters(enabled, disabled);
-      fenced_frame_test_helper_ =
-          std::make_unique<content::test::FencedFrameTestHelper>();
-    }
-  }
-  ~AutofillInteractiveFencedFrameTest() override = default;
+  class TestAutofillManager : public BrowserAutofillManager {
+   public:
+    explicit TestAutofillManager(ContentAutofillDriver* driver)
+        : BrowserAutofillManager(driver) {}
 
-  content::RenderFrameHost* primary_main_frame_host() {
-    return GetWebContents()->GetPrimaryMainFrame();
+    [[nodiscard]] AssertionResult WaitForFormsSeen(
+        int min_num_awaited_calls = 1) {
+      return forms_seen_waiter_.Wait(min_num_awaited_calls);
+    }
+
+   private:
+    TestAutofillManagerWaiter forms_seen_waiter_{
+        *this,
+        {AutofillManagerEvent::kFormsSeen}};
+  };
+
+  AutofillInteractiveIframeTest() = default;
+  ~AutofillInteractiveIframeTest() override = default;
+
+  TestAutofillManager* autofill_manager(content::RenderFrameHost* rfh) {
+    return autofill_manager_injector_[rfh];
   }
 
   content::RenderFrameHost* LoadSubFrame(std::string relative_url) {
-    GURL frame_url = https_server()->GetURL(
-        "b.com", (GetParam() == FrameType::kIFrame ? "" : "/fenced_frames") +
-                     relative_url);
-    switch (GetParam()) {
-      case FrameType::kIFrame: {
-        EXPECT_TRUE(content::NavigateIframeToURL(GetWebContents(), "crossFrame",
-                                                 frame_url));
-        // TODO(crbug.com/40838553) Use AutofillManager::OnFormParsed instead of
-        // DoNothingAndWait.
-        // Wait to make sure the cross-frame form is parsed.
-        DoNothingAndWait(base::Seconds(2));
-        content::RenderFrameHost* cross_frame =
-            RenderFrameHostForName(GetWebContents(), "crossFrame");
-        return cross_frame;
-      }
-      case FrameType::kFencedFrame: {
-        // Creates a <fencedframe> element in the renderer.
-        content::RenderFrameHost* cross_frame =
-            fenced_frame_test_helper_->CreateFencedFrame(
-                primary_main_frame_host(), frame_url);
-        // TODO(crbug.com/40838553) Use AutofillManager::OnFormParsed instead of
-        // DoNothingAndWait.
-        // Wait to make sure the cross-frame form is parsed.
-        DoNothingAndWait(base::Seconds(2));
-        return cross_frame;
+    GURL frame_url = https_server()->GetURL("b.com", relative_url);
+    EXPECT_TRUE(content::NavigateIframeToURL(GetWebContents(), "crossFrame",
+                                             frame_url));
+    content::RenderFrameHost* cross_frame =
+        RenderFrameHostForName(GetWebContents(), "crossFrame");
+    // Wait to make sure the cross-frame form is parsed.
+    if (cross_frame) {
+      if (TestAutofillManager* manager = autofill_manager(cross_frame)) {
+        EXPECT_TRUE(manager->WaitForFormsSeen());
       }
     }
-    NOTREACHED();
+    return cross_frame;
   }
 
  private:
-  base::test::ScopedFeatureList scoped_feature_list_;
-  std::unique_ptr<content::test::FencedFrameTestHelper>
-      fenced_frame_test_helper_;
+  TestAutofillManagerInjector<TestAutofillManager> autofill_manager_injector_;
 };
 
-INSTANTIATE_TEST_SUITE_P(AutofillInteractiveTest,
-                         AutofillInteractiveFencedFrameTest,
-                         ::testing::Values(FrameType::kFencedFrame,
-                                           FrameType::kIFrame));
-
-IN_PROC_BROWSER_TEST_P(AutofillInteractiveFencedFrameTest,
-                       SimpleCrossSiteFill) {
+IN_PROC_BROWSER_TEST_F(AutofillInteractiveIframeTest, SimpleCrossSiteFill) {
   test_delegate()->SetIgnoreBackToBackMessages(
       ObservedUiEvents::kPreviewFormData, true);
   CreateTestProfile();
 
-  // Main frame is on a.com, iframe/fenced frame is on b.com.
+  // Main frame is on a.com, iframe is on b.com.
   GURL url =
       https_server()->GetURL("a.com", "/autofill/cross_origin_iframe.html");
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), url));
@@ -2405,11 +2256,10 @@ IN_PROC_BROWSER_TEST_P(AutofillInteractiveFencedFrameTest,
 }
 
 // This test verifies that credit card (payment card list) popup works when the
-// form is inside an OOPIF/Fenced Frame.
-IN_PROC_BROWSER_TEST_P(AutofillInteractiveFencedFrameTest,
-                       CrossSitePaymentForms) {
+// form is inside an OOPIF.
+IN_PROC_BROWSER_TEST_F(AutofillInteractiveIframeTest, CrossSitePaymentForms) {
   CreateTestCreditCart();
-  // Main frame is on a.com, iframe/fenced frame is on b.com.
+  // Main frame is on a.com, iframe is on b.com.
   GURL url =
       https_server()->GetURL("a.com", "/autofill/cross_origin_iframe.html");
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), url));
@@ -2424,19 +2274,25 @@ IN_PROC_BROWSER_TEST_P(AutofillInteractiveFencedFrameTest,
   // Let `test_delegate()` also observe autofill events in the iframe.
   test_delegate()->Observe(cross_driver->GetAutofillManager());
 
-  auto Wait = [this] { DoNothingAndWait(base::Seconds(2)); };
   ASSERT_TRUE(AutofillFlow(GetElementById("CREDIT_CARD_NUMBER"), this,
-                           {.after_focus = base::BindLambdaForTesting(Wait),
-                            .execution_target = cross_frame_host}));
+                           {.execution_target = cross_frame_host}));
+
+  // Verify that the credit card was actually filled into the cross-site frame.
+  EXPECT_EQ(
+      "Milton Waddams",
+      GetFieldValue(GetElementById("CREDIT_CARD_NAME_FULL"), cross_frame_host));
+  EXPECT_EQ(
+      "4111111111111111",
+      GetFieldValue(GetElementById("CREDIT_CARD_NUMBER"), cross_frame_host));
 }
 
 // Tests that deleting the subframe that has opened the Autofill popup closes
 // the popup.
-IN_PROC_BROWSER_TEST_P(AutofillInteractiveFencedFrameTest,
+IN_PROC_BROWSER_TEST_F(AutofillInteractiveIframeTest,
                        DeletingFrameClosesPopup) {
   CreateTestProfile();
 
-  // Main frame is on a.com, fenced frame is on b.com.
+  // Main frame is on a.com, iframe is on b.com.
   ASSERT_TRUE(ui_test_utils::NavigateToURL(
       browser(),
       https_server()->GetURL("a.com", "/autofill/cross_origin_iframe.html")));
@@ -2444,13 +2300,6 @@ IN_PROC_BROWSER_TEST_P(AutofillInteractiveFencedFrameTest,
   content::RenderFrameHost* cross_frame_host =
       LoadSubFrame("/autofill/autofill_test_form.html");
   ASSERT_TRUE(cross_frame_host);
-
-  // We need the fencedframe element to have id set to a known value
-  if (GetParam() != FrameType::kIFrame) {
-    ASSERT_TRUE(content::ExecJs(
-        GetWebContents(),
-        "document.getElementsByTagName('fencedframe')[0].id = 'crossFF';"));
-  }
 
   ContentAutofillDriver* cross_driver =
       ContentAutofillDriver::GetForRenderFrameHost(cross_frame_host);
@@ -2466,10 +2315,9 @@ IN_PROC_BROWSER_TEST_P(AutofillInteractiveFencedFrameTest,
   // Do not accept the suggestion yet, to keep the pop-up shown.
   EXPECT_TRUE(IsPopupShown());
 
-  // Delete the iframe/fenced frame.
-  std::string script_delete = base::StringPrintf(
-      "document.body.removeChild(document.getElementById('%s'))",
-      GetParam() == FrameType::kIFrame ? "crossFrame" : "crossFF");
+  // Delete the iframe.
+  std::string script_delete =
+      "document.body.removeChild(document.getElementById('crossFrame'))";
   ASSERT_TRUE(content::ExecJs(GetWebContents(), script_delete));
 
   EXPECT_FALSE(IsPopupShown());
@@ -2508,9 +2356,8 @@ class AutofillInteractiveTestDynamicForm : public AutofillInteractiveTest {
         .set_limit_before_refill(base::Hours(1));
   }
 
-  ValueWaiter ListenForRefill(
-      const std::string& id,
-      std::optional<std::string> unblock_variable = "refill") {
+  ValueWaiter ListenForRefill(const std::string& id,
+                              const std::string& unblock_variable = "refill") {
     return ListenForValueChange(id, unblock_variable, GetWebContents());
   }
 };
@@ -2609,8 +2456,12 @@ IN_PROC_BROWSER_TEST_F(AutofillInteractiveTestDynamicForm,
 
   ValueWaiter refill = ListenForRefill("firstname_form1");
   ASSERT_TRUE(AutofillFlow(GetElementById("firstname"), this));
-  DoNothingAndWaitAndIgnoreEvents(kLimitBeforeRefillForTest +
-                                  base::Milliseconds(1));
+  // Wait until the HTML script completes sleep(2000), appends the new form
+  // address to the DOM, and sets window['refill'] = true.
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return content::EvalJs(GetWebContents(), "window['refill'] === true") ==
+           true;
+  }));
   ASSERT_FALSE(std::move(refill).Wait());
 
   // Make sure that the new form was not filled.
@@ -3161,23 +3012,8 @@ INSTANTIATE_TEST_SUITE_P(AutofillInteractiveTest,
                          ::testing::Values(0, 1));
 
 // Tests that in a shadow-DOM-transcending form, Autofill detects labels
-// *outside* of the field's shadow DOM.
-IN_PROC_BROWSER_TEST_P(AutofillInteractiveTestShadowDom,
-                       LabelInHostingDomOfField) {
-  CreateTestProfile();
-  GURL url =
-      embedded_test_server()->GetURL("a.com", "/autofill/shadowdom.html");
-  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), url));
-  ASSERT_TRUE(AutofillFlow(JsElement("getNameElement($1)"), this));
-  EXPECT_EQ("Milton C. Waddams", Js("getName($1)"));
-  EXPECT_EQ("4120 Freidrich Lane", Js("getAddress($1)"));
-  EXPECT_EQ("Austin", Js("getCity($1)"));
-  EXPECT_EQ("TX", Js("getState($1)"));
-  EXPECT_EQ("78744", Js("getZip($1)"));
-}
-
-// Tests that in a shadow-DOM-transcending form, Autofill detects labels
-// *inside* of the field's shadow DOM.
+// *inside* of the field's shadow DOM. Labels *outside* of the field's
+// shadow DOM are not expected to be found (removed due to low utility).
 IN_PROC_BROWSER_TEST_P(AutofillInteractiveTestShadowDom,
                        LabelInSameShadowDomAsField) {
   CreateTestProfile();
@@ -3280,7 +3116,7 @@ IN_PROC_BROWSER_TEST_P(AutofillInteractiveTestChromeVox,
   sm()->Call([this] {
     test_delegate()->SetExpectations({ObservedUiEvents::kPreviewFormData});
     ASSERT_TRUE(
-        ui_controls::SendKeyPress(browser()->window()->GetNativeWindow(),
+        ui_controls::SendKeyPress(browser()->GetWindow()->GetNativeWindow(),
                                   ui::VKEY_DOWN, false, false, false, false));
   });
   sm()->ExpectSpeechPattern("Autofill menu opened");

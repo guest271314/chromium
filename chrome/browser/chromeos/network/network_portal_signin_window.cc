@@ -4,9 +4,7 @@
 
 #include "chrome/browser/chromeos/network/network_portal_signin_window.h"
 
-#include "chrome/browser/prefs/incognito_mode_prefs.h"
 #include "chrome/browser/profiles/profile_manager.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/dialogs/browser_dialogs.h"
@@ -18,8 +16,11 @@
 #include "components/policy/core/common/policy_pref_names.h"
 #include "components/prefs/pref_service.h"
 #include "components/proxy_config/proxy_prefs.h"
+#include "components/sessions/core/session_id.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/web_contents_observer.h"
+#include "ui/base/page_transition_types.h"
+#include "ui/base/window_open_disposition.h"
 
 namespace chromeos {
 
@@ -27,7 +28,7 @@ namespace {
 
 Profile* GetOTROrActiveProfile() {
   Profile* profile = ProfileManager::GetActiveUserProfile();
-  DCHECK(profile);
+  CHECK(profile, base::NotFatalUntil::M161);
 
   // In Guest mode, the active profile is OTR. Since we do not support creating
   // an OTR profile from another OTR profile we use the active profile for
@@ -44,7 +45,7 @@ Profile* GetOTROrActiveProfile() {
   Profile* otr_profile =
       profile->GetOffTheRecordProfile(*otr_profile_id,
                                       /*create_if_needed=*/true);
-  DCHECK(otr_profile);
+  CHECK(otr_profile, base::NotFatalUntil::M161);
   return otr_profile;
 }
 

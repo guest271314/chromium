@@ -6,21 +6,28 @@
 
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
+#include "components/record_replay/core/browser/record_replay_client.h"
 #include "components/record_replay/core/browser/recording.pb.h"
-#include "components/record_replay/core/browser/recording_data_manager.h"
 #include "components/record_replay/core/browser/task_definition.pb.h"
 #include "components/record_replay/core/browser/task_observer.h"
+#include "components/record_replay/core/browser/task_store.h"
 #include "url/gurl.h"
 
 namespace record_replay {
 
-TaskService::TaskService(RecordingDataManager* recording_data_manager)
-    : recording_data_manager_(recording_data_manager) {}
+TaskService::TaskService(TaskStore* task_store,
+                         TaskParametersExtractor* task_parameters_extractor,
+                         ExecutionCallback execution_callback)
+    : task_store_(task_store),
+      task_parameters_extractor_(task_parameters_extractor),
+      predictor_(task_store),
+      execution_callback_(std::move(execution_callback)) {}
 
 TaskService::~TaskService() = default;
 
-void TaskService::OnURLVisited(const GURL& visited_url) {
-  if (!recording_data_manager_) {
+void TaskService::OnURLVisited(RecordReplayClient* client,
+                               const GURL& visited_url) {
+  if (!task_store_) {
     return;
   }
 
@@ -31,42 +38,70 @@ void TaskService::OnURLVisited(const GURL& visited_url) {
     return;
   }
 
-  recording_data_manager_->GetTaskDefinitionsByUrl(
+  task_store_->GetTaskDefinitionsByUrl(
       visited_url.spec(),
       base::BindOnce(&TaskService::OnTaskDefinitionsRetrieved,
-                     weak_ptr_factory_.GetWeakPtr(), visited_url));
+                     weak_ptr_factory_.GetWeakPtr(),
+                     client ? client->GetWeakPtr() : nullptr, visited_url));
 }
 
 void TaskService::OnTaskDefinitionsRetrieved(
+    base::WeakPtr<RecordReplayClient> client,
     const GURL& visited_url,
-    std::vector<std::pair<int64_t, TaskDefinition>> task_definitions) {
-  for (const auto& pair : task_definitions) {
-    const auto& definition = pair.second;
+    std::vector<TaskDefinition> task_definitions) {
+  for (TaskDefinition definition : task_definitions) {
     if (definition.url() == visited_url.spec()) {
-      observer_ = std::make_unique<TaskObserver>(
-          definition, base::BindRepeating(&TaskService::OnTaskCompleted,
-                                          weak_ptr_factory_.GetWeakPtr()));
-      observer_->StartObserving(visited_url);
-      observer_->OnURLVisited(visited_url);
+      StartObserving(visited_url, definition);
+      if (client) {
+        OfferExecuting(client, visited_url, definition);
+      }
     }
   }
 }
 
+void TaskService::StartObserving(const GURL& visited_url,
+                                 TaskDefinition definition) {
+  observer_ = std::make_unique<TaskObserver>(
+      definition,
+      base::BindRepeating(&TaskService::OnTaskCompleted,
+                          weak_ptr_factory_.GetWeakPtr()),
+      task_parameters_extractor_);
+  observer_->StartObserving(visited_url);
+  observer_->OnURLVisited(visited_url);
+}
+
+void TaskService::OfferExecuting(base::WeakPtr<RecordReplayClient> client,
+                                 const GURL& visited_url,
+                                 TaskDefinition definition) {
+  predictor_.Predict(
+      definition,
+      base::BindOnce(&TaskService::OnParametersPredicted,
+                     weak_ptr_factory_.GetWeakPtr(), client, definition));
+}
+
+void TaskService::OnParametersPredicted(
+    base::WeakPtr<RecordReplayClient> client,
+    TaskDefinition definition,
+    std::optional<std::vector<TaskParameter>> predicted_parameters) {
+  if (!client || !predicted_parameters.has_value()) {
+    return;
+  }
+  client->OfferExecuting(
+      std::move(definition),
+      predicted_parameters.value_or(std::vector<TaskParameter>()));
+}
+
 void TaskService::OnTaskCompleted(const TaskObservation& observation) {
-  recording_data_manager_->SaveTaskDefinition(
-      /*task_definition_id=*/std::nullopt, observation.definition(),
-      observation.definition().url(),
-      /*recording_id=*/std::nullopt,
-      // TODO(crbug.com/515729820): Implement a callback that uses the newly
-      // stored observation.
-      base::DoNothing());
+  task_store_->SaveObservation(observation, base::DoNothing());
   observer_.reset();
 }
 
-void TaskService::OnExecutionAccepted(const TaskDefinition& definition,
-                                      const TaskParameterValues& values) {
-  // TODO(crbug.com/514303674): Handle user accepting task execution callback
-  // from UI.
+void TaskService::OnExecutionAccepted(
+    const TaskDefinition& definition,
+    const std::vector<TaskParameter>& values) {
+  if (execution_callback_) {
+    execution_callback_.Run(definition, values);
+  }
 }
 
 }  // namespace record_replay

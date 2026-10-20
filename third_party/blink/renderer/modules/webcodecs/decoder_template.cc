@@ -14,7 +14,6 @@
 #include "base/metrics/histogram_functions.h"
 #include "base/trace_event/trace_event.h"
 #include "media/base/decoder_status.h"
-#include "media/base/media_switches.h"
 #include "media/base/media_util.h"
 #include "media/media_buildflags.h"
 #include "media/video/gpu_video_accelerator_factories.h"
@@ -58,7 +57,7 @@ base::AtomicSequenceNumber g_sequence_num_for_counters;
 // static
 template <typename Traits>
 const CodecTraceNames* DecoderTemplate<Traits>::GetTraceNames() {
-  DEFINE_THREAD_SAFE_STATIC_LOCAL(CodecTraceNames, trace_names,
+  DEFINE_THREAD_SAFE_STATIC_LOCAL(const CodecTraceNames, trace_names,
                                   (Traits::GetName()));
   return &trace_names;
 }
@@ -99,9 +98,7 @@ template <typename Traits>
 DecoderTemplate<Traits>::~DecoderTemplate() {
   DVLOG(1) << __func__;
   base::UmaHistogramSparse(
-      UNSAFE_TODO(
-          String::Format("Blink.WebCodecs.%s.FinalStatus", Traits::GetName()))
-          .Ascii(),
+      StrCat({"Blink.WebCodecs.", Traits::GetName(), ".FinalStatus"}).Ascii(),
       static_cast<int>(logger_->status_code()));
 }
 
@@ -131,6 +128,9 @@ void DecoderTemplate<Traits>::SetHardwarePreference(HardwarePreference) {}
 
 template <typename Traits>
 void DecoderTemplate<Traits>::OnActiveConfigChanged(const MediaConfigType&) {}
+
+template <typename Traits>
+void DecoderTemplate<Traits>::OnReset() {}
 
 template <typename Traits>
 void DecoderTemplate<Traits>::configure(const ConfigType* config,
@@ -210,6 +210,7 @@ void DecoderTemplate<Traits>::decode(const InputType* chunk,
 
 template <typename Traits>
 ScriptPromise<IDLUndefined> DecoderTemplate<Traits>::flush(
+    ScriptState* script_state,
     ExceptionState& exception_state) {
   DVLOG(3) << __func__;
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
@@ -226,7 +227,7 @@ ScriptPromise<IDLUndefined> DecoderTemplate<Traits>::flush(
   Request* request = MakeGarbageCollected<Request>();
   request->type = Request::Type::kFlush;
   auto* resolver =
-      MakeGarbageCollected<ScriptPromiseResolver<IDLUndefined>>(script_state_);
+      MakeGarbageCollected<ScriptPromiseResolver<IDLUndefined>>(script_state);
   request->resolver = resolver;
   request->reset_generation = reset_generation_;
   requests_.push_back(request);
@@ -389,9 +390,7 @@ void DecoderTemplate<Traits>::ContinueConfigureWithGpuFactories(
   // some platforms, providing the next config may allow the decoder to elide
   // costly reinitialization work.
   auto eos_buffer =
-      base::FeatureList::IsEnabled(media::kWebCodecsDecoderFlushOptimizations)
-          ? media::DecoderBuffer::CreateEOSBuffer(*request->media_config)
-          : media::DecoderBuffer::CreateEOSBuffer();
+      media::DecoderBuffer::CreateEOSBuffer(*request->media_config);
 
   // Processing continues in OnFlushDone().
   decoder()->Decode(
@@ -599,6 +598,7 @@ void DecoderTemplate<Traits>::ResetAlgorithm() {
   // configuration.
   active_config_.reset();
   active_preference_.reset();
+  OnReset();
 
   Request* request = MakeGarbageCollected<Request>();
   request->type = Request::Type::kReset;
@@ -687,8 +687,9 @@ void DecoderTemplate<Traits>::OnInitializeDone(media::DecoderStatus status) {
     } else if (status.code() ==
                media::DecoderStatus::Codes::kUnsupportedConfig) {
       error_message =
-          "Unsupported configuration. Check isConfigSupported() prior to "
-          "calling configure().";
+          "Unsupported configuration. Check isConfigSupported() and "
+          "separately verify the description (if required) prior to calling "
+          "configure().";
     } else {
       error_message = "Decoder initialization error.";
     }
@@ -786,12 +787,12 @@ void DecoderTemplate<Traits>::OnOutput(uint32_t reset_generation,
 
   OutputType* blink_output = std::move(output_or_error).value();
 
-  TRACE_EVENT_BEGIN1(kCategory, GetTraceNames()->output.c_str(), "timestamp",
-                     blink_output->timestamp());
-
-  output_cb_->InvokeAndReportException(nullptr, blink_output);
-
-  TRACE_EVENT_END0(kCategory, GetTraceNames()->output.c_str());
+  {
+    TRACE_EVENT(kCategory,
+                perfetto::StaticString(GetTraceNames()->output.c_str()),
+                "timestamp", blink_output->timestamp());
+    output_cb_->InvokeAndReportException(nullptr, blink_output);
+  }
 
   MarkCodecActive();
 }
@@ -930,8 +931,9 @@ void DecoderTemplate<Traits>::Request::StartTracing() {
   DCHECK(!is_tracing);
   is_tracing = true;
 #endif
-  TRACE_EVENT_BEGIN(kCategory, perfetto::DynamicString(TraceNameFromType()),
-                    perfetto::Track::FromPointer(this));
+  TRACE_EVENT_BEGIN(kCategory, perfetto::StaticString(TraceNameFromType()),
+                    perfetto::NamedTrack::FromPointer(
+                        perfetto::StaticString(Traits::GetName()), this));
 }
 
 template <typename Traits>
@@ -940,8 +942,10 @@ void DecoderTemplate<Traits>::Request::EndTracing(bool shutting_down) {
   DCHECK(is_tracing);
   is_tracing = false;
 #endif
-  TRACE_EVENT_END(kCategory, perfetto::Track::FromPointer(this), "completed",
-                  !shutting_down);
+  TRACE_EVENT_END(kCategory,
+                  perfetto::NamedTrack::FromPointer(
+                      perfetto::StaticString(Traits::GetName()), this),
+                  "completed", !shutting_down);
 }
 
 template <typename Traits>

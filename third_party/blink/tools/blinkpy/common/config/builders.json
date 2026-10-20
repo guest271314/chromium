@@ -12,11 +12,6 @@
             "webdriver_wpt_tests": {}
         }
     },
-    "Mac12 Tests (dbg)": {
-        "main": "chromium.mac",
-        "port_name": "mac-mac12",
-        "specifiers": ["Mac12", "Debug"]
-    },
     "mac14-arm64-rel-tests": {
         "main": "chromium.mac",
         "port_name": "mac-mac14-arm64",
@@ -61,9 +56,6 @@
             "high_dpi_headless_shell_wpt_tests": {
                 "flag_specific": "highdpi"
             },
-            "vulkan_swiftshader_blink_web_tests": {
-                "flag_specific": "skia-vulkan-swiftshader"
-            },
             "not_site_per_process_blink_web_tests": {
                 "flag_specific": "disable-site-isolation-trials"
             },
@@ -74,30 +66,6 @@
                 "flag_specific": "disable-site-isolation-trials"
             },
             "webdriver_wpt_tests": {}
-        },
-        "is_try_builder": true
-    },
-    "mac12.0-blink-rel": {
-        "main": "tryserver.blink",
-        "port_name": "mac-mac12",
-        "specifiers": ["Mac12", "Release"],
-        "steps": {
-            "blink_web_tests": {},
-            "blink_wpt_tests": {},
-            "chrome_wpt_tests": {},
-            "headless_shell_wpt_tests": {}
-        },
-        "is_try_builder": true
-    },
-    "mac12.0.arm64-blink-rel": {
-        "main": "tryserver.blink",
-        "port_name": "mac-mac12-arm64",
-        "specifiers": ["Mac12-arm64", "Release"],
-        "steps": {
-            "blink_web_tests": {},
-            "blink_wpt_tests": {},
-            "chrome_wpt_tests": {},
-            "headless_shell_wpt_tests": {}
         },
         "is_try_builder": true
     },
@@ -173,6 +141,30 @@
         },
         "is_try_builder": true
     },
+    "mac26-arm64-blink-rel": {
+        "main": "tryserver.blink",
+        "port_name": "mac-mac26-arm64",
+        "specifiers": ["Mac26-arm64", "Release"],
+        "steps": {
+            "blink_web_tests": {},
+            "blink_wpt_tests": {},
+            "chrome_wpt_tests": {},
+            "headless_shell_wpt_tests": {}
+        },
+        "is_try_builder": true
+    },
+    "mac26-x64-blink-rel": {
+        "main": "tryserver.blink",
+        "port_name": "mac-mac26",
+        "specifiers": ["Mac26", "Release"],
+        "steps": {
+            "blink_web_tests": {},
+            "blink_wpt_tests": {},
+            "chrome_wpt_tests": {},
+            "headless_shell_wpt_tests": {}
+        },
+        "is_try_builder": true
+    },
     "win10.20h2-blink-rel": {
         "main": "tryserver.blink",
         "port_name": "win-win10.20h2",
@@ -229,9 +221,6 @@
             },
             "high_dpi_headless_shell_wpt_tests": {
                 "flag_specific": "highdpi"
-            },
-            "vulkan_swiftshader_blink_web_tests": {
-                "flag_specific": "skia-vulkan-swiftshader"
             },
             "not_site_per_process_blink_web_tests": {
                 "flag_specific": "disable-site-isolation-trials"

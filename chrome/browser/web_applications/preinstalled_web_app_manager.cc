@@ -41,7 +41,6 @@
 #include "chrome/browser/apps/user_type_filter.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/web_applications/callback_utils.h"
-#include "chrome/browser/web_applications/extension_status_utils.h"
 #include "chrome/browser/web_applications/extensions_manager.h"
 #include "chrome/browser/web_applications/externally_managed_app_manager.h"
 #include "chrome/browser/web_applications/file_utils_wrapper.h"
@@ -69,13 +68,13 @@
 #include "components/webapps/browser/install_result_code.h"
 #include "components/webapps/common/constants.h"
 #include "content/public/browser/browser_thread.h"
-#include "extensions/common/constants.h"
 #include "ui/events/devices/device_data_manager.h"
 #include "ui/events/devices/input_device_event_observer.h"
 #include "ui/events/devices/touchscreen_device.h"
 #include "url/gurl.h"
 
 #if BUILDFLAG(IS_CHROMEOS)
+#include "ash/constants/ash_extension_constants.h"
 // TODO(http://b/333583704): Revert CL which added this include after migration.
 #include "ash/constants/ash_switches.h"
 #include "ash/constants/web_app_id_constants.h"
@@ -228,11 +227,12 @@ SynchronizeDecision GetSynchronizeDecision(
     const ExternalInstallOptions& options,
     Profile* profile,
     WebAppRegistrar* registrar,
+    ExtensionsManager& extensions_manager,
     bool preinstalled_apps_enabled_in_prefs,
     bool is_new_user,
     const std::string& user_type,
     size_t& corrupt_user_uninstall_prefs_count) {
-  DCHECK(registrar);
+  CHECK(registrar, base::NotFatalUntil::M162);
 
   // This function encodes the exceptions to the standard preinstalled web app
   // configs; situations in which the preinstall should be removed, added or be
@@ -254,7 +254,7 @@ SynchronizeDecision GetSynchronizeDecision(
   }
 
   // Remove if not applicable to current user type.
-  DCHECK_GT(options.user_type_allowlist.size(), 0u);
+  CHECK_GT(options.user_type_allowlist.size(), 0u, base::NotFatalUntil::M162);
   if (!std::ranges::contains(options.user_type_allowlist, user_type)) {
     return {.type = SynchronizeDecision::kUninstall,
             .reason = DisabledReason::kUninstallUserTypeNotAllowed,
@@ -275,7 +275,7 @@ SynchronizeDecision GetSynchronizeDecision(
   // Remove if any apps to replace are blocked or force installed by admin
   // policy.
   for (const webapps::AppId& app_id : options.uninstall_and_replace) {
-    if (extensions::IsExtensionBlockedByPolicy(profile, app_id)) {
+    if (extensions_manager.IsExtensionBlockedByPolicy(app_id)) {
       return {.type = SynchronizeDecision::kUninstall,
               .reason = DisabledReason::kUninstallReplacingAppBlockedByPolicy,
               .log = base::StrCat({options.install_url.spec(),
@@ -283,7 +283,7 @@ SynchronizeDecision GetSynchronizeDecision(
                                    "replacement Extension."})};
     }
     std::u16string reason;
-    if (extensions::IsExtensionForceInstalled(profile, app_id, &reason)) {
+    if (extensions_manager.IsExtensionForceInstalled(app_id, &reason)) {
       return {
           .type = SynchronizeDecision::kUninstall,
           .reason = DisabledReason::kUninstallReplacingAppForceInstalled,
@@ -298,13 +298,13 @@ SynchronizeDecision GetSynchronizeDecision(
   // Remove if it's a default app and the apps to replace are not installed and
   // default extension apps are not performing new installation.
   if (options.gate_on_feature && !options.uninstall_and_replace.empty() &&
-      !extensions::DidPreinstalledAppsPerformNewInstallation(profile)) {
+      !extensions_manager.DidPreinstalledAppsPerformNewInstallation()) {
     for (const webapps::AppId& app_id : options.uninstall_and_replace) {
       // First time migration and the app to replace is uninstalled as it passed
       // the last code block. Save the information that the app was
       // uninstalled by user.
       if (!WasMigrationRun(profile, *options.gate_on_feature)) {
-        if (extensions::IsPreinstalledAppId(app_id)) {
+        if (extensions_manager.IsPreinstalledExtensionAppId(app_id)) {
           MarkPreinstalledAppAsUninstalled(profile, app_id);
           return {.type = SynchronizeDecision::kUninstall,
                   .reason = DisabledReason::
@@ -352,7 +352,7 @@ SynchronizeDecision GetSynchronizeDecision(
   // Ensure install if any apps to replace are installed as installation
   // includes uninstall_and_replace-ing the specified apps.
   for (const webapps::AppId& app_id : options.uninstall_and_replace) {
-    if (extensions::IsExtensionInstalled(profile, app_id)) {
+    if (extensions_manager.IsExtensionInstalled(app_id)) {
       return {
           .type = SynchronizeDecision::kInstall,
           .reason = DisabledReason::kInstallReplacingAppStillInstalled,
@@ -422,7 +422,7 @@ SynchronizeDecision GetSynchronizeDecision(
 
   // Ignore if any apps to replace were previously uninstalled.
   for (const webapps::AppId& app_id : options.uninstall_and_replace) {
-    if (extensions::IsExternalExtensionUninstalled(profile, app_id)) {
+    if (extensions_manager.IsExternalExtensionUninstalled(app_id)) {
       return {.type = SynchronizeDecision::kIgnore,
               .reason = DisabledReason::kIgnoreReplacingAppUninstalledByUser,
               .log = base::StrCat(
@@ -515,15 +515,17 @@ bool ShouldForceReinstall(const ExternalInstallOptions& options,
 void MaybeForceInstallForRemigration(
     std::vector<ExternalInstallOptions>* options_list,
     Profile* profile,
-    const WebAppRegistrar& registrar) {
+    const WebAppRegistrar& registrar,
+    ExtensionsManager& extensions_manager) {
   bool always_migrate = base::FeatureList::IsEnabled(
       features::kPreinstalledWebAppAlwaysMigrateForTesting);
 
   // Record Calculator remigration metrics.
   bool calculator_web_app_installed = registrar.AppMatches(
       ash::kCalculatorAppId, WebAppFilter::InstalledByDefaultManagement());
-  bool calculator_chrome_app_installed = extensions::IsExtensionInstalled(
-      profile, extension_misc::kCalculatorAppId);
+  bool calculator_chrome_app_installed =
+      extensions_manager.IsExtensionInstalled(
+          extension_misc::kCalculatorExtensionId);
   base::UmaHistogramBoolean(
       "WebApp.Preinstalled.CalculatorForceMigration.WebAppInstalled",
       calculator_web_app_installed);
@@ -548,8 +550,8 @@ void MaybeForceInstallForRemigration(
     // feature flags.
     for (const std::string& app_id : options.uninstall_and_replace) {
       bool migration_needed = false;
-      if (extensions::IsExtensionInstalled(profile, app_id)) {
-        if (app_id == extension_misc::kCalculatorAppId) {
+      if (extensions_manager.IsExtensionInstalled(app_id)) {
+        if (app_id == extension_misc::kCalculatorExtensionId) {
           calculator_migration_needed = true;
           migration_needed = true;
         }
@@ -627,7 +629,7 @@ void PreinstalledWebAppManager::DeviceDataInitializedEvent::Post(
     base::SequencedTaskRunner::GetCurrentDefault()->PostTask(FROM_HERE,
                                                              std::move(task));
   } else {
-    DCHECK(!device_data_observation_.IsObserving());
+    CHECK(!device_data_observation_.IsObserving(), base::NotFatalUntil::M162);
     device_data_observation_.Observe(ui::DeviceDataManager::GetInstance());
     initialized_task_ = std::move(task);
   }
@@ -672,14 +674,13 @@ const char* PreinstalledWebAppManager::
 
 void PreinstalledWebAppManager::RegisterProfilePrefs(
     user_prefs::PrefRegistrySyncable* registry) {
+  // LINT.IfChange(WebAppPrefs)
   registry->RegisterStringPref(prefs::kWebAppsLastPreinstallSynchronizeVersion,
                                "");
   registry->RegisterListPref(webapps::kWebAppsMigratedPreinstalledApps);
   registry->RegisterListPref(prefs::kWebAppsDidMigrateDefaultChromeApps);
   registry->RegisterListPref(prefs::kWebAppsUninstalledDefaultChromeApps);
-  // NOTE: If you add new prefs here that should be cleared during database
-  // corruption recovery, make sure to update
-  // `RemoveWebAppJob::RemoveForCorruptDatabase`.
+  // LINT.ThenChange(chrome/browser/web_applications/web_app_utils.cc:WebAppPrefs)
 }
 
 // static
@@ -748,7 +749,7 @@ void PreinstalledWebAppManager::SetProvider(base::PassKey<WebAppProvider>,
 }
 
 void PreinstalledWebAppManager::Start(base::OnceClosure on_done) {
-  DCHECK(provider_);
+  CHECK(provider_, base::NotFatalUntil::M162);
   if (g_skip_startup_for_testing_ || skip_startup_for_testing_) {  // IN-TEST
     std::move(on_done).Run();                                      // IN-TEST
     return;                                                        // IN-TEST
@@ -928,7 +929,8 @@ void PreinstalledWebAppManager::PostProcessConfigs(
 
   // Set common install options.
   for (ExternalInstallOptions& options : parsed_configs.options_list) {
-    DCHECK_EQ(options.install_source, ExternalInstallSource::kExternalDefault);
+    CHECK_EQ(options.install_source, ExternalInstallSource::kExternalDefault,
+             base::NotFatalUntil::M162);
 
     options.require_manifest = true;
 
@@ -941,7 +943,7 @@ void PreinstalledWebAppManager::PostProcessConfigs(
     if (!g_bypass_offline_manifest_requirement_for_testing_) {
       // Non-Chrome OS platforms are not permitted to fetch the web app install
       // URLs during start up.
-      DCHECK(options.app_info_factory);
+      CHECK(options.app_info_factory, base::NotFatalUntil::M162);
       options.only_use_app_info_factory = true;
     }
 
@@ -962,8 +964,10 @@ void PreinstalledWebAppManager::PostProcessConfigs(
 
   // TODO(crbug.com/40747215): Move this constant into some shared constants.h
   // file.
+  // This is named "apps" for historical reasons.
   bool preinstalled_apps_enabled_in_prefs =
-      profile_->GetPrefs()->GetString(prefs::kPreinstalledApps) == "install";
+      profile_->GetPrefs()->GetString(prefs::kPreinstalledExtensions) ==
+      "install";
   bool is_new_user = IsNewUser();
   std::string user_type = apps::DetermineUserType(profile_);
   size_t disabled_count = 0;
@@ -972,8 +976,8 @@ void PreinstalledWebAppManager::PostProcessConfigs(
       parsed_configs.options_list, [&](const ExternalInstallOptions& options) {
         SynchronizeDecision install_decision = GetSynchronizeDecision(
             options, profile_, &provider_->registrar_unsafe(),
-            preinstalled_apps_enabled_in_prefs, is_new_user, user_type,
-            corrupt_user_uninstall_prefs_count);
+            provider_->extensions_manager(), preinstalled_apps_enabled_in_prefs,
+            is_new_user, user_type, corrupt_user_uninstall_prefs_count);
         base::UmaHistogramEnumeration(kHistogramMigrationDisabledReason,
                                       install_decision.reason);
 
@@ -1026,7 +1030,8 @@ void PreinstalledWebAppManager::PostProcessConfigs(
 
 #if BUILDFLAG(IS_CHROMEOS)
   MaybeForceInstallForRemigration(&parsed_configs.options_list, profile_.get(),
-                                  provider_->registrar_unsafe());
+                                  provider_->registrar_unsafe(),
+                                  provider_->extensions_manager());
 #endif
 
   base::UmaHistogramCounts100(kHistogramEnabledCount,
@@ -1043,7 +1048,7 @@ void PreinstalledWebAppManager::PostProcessConfigs(
 void PreinstalledWebAppManager::Synchronize(
     ExternallyManagedAppManager::SynchronizeCallback callback,
     std::vector<ExternalInstallOptions> desired_apps_install_options) {
-  DCHECK(provider_);
+  CHECK(provider_, base::NotFatalUntil::M162);
 
   std::set<InstallUrl> desired_preferred_apps_for_supported_links;
   std::map<InstallUrl, std::vector<webapps::AppId>> desired_uninstalls;
@@ -1079,8 +1084,8 @@ void PreinstalledWebAppManager::OnExternalWebAppsSynchronized(
       prefs::kWebAppsLastPreinstallSynchronizeVersion,
       version_info::GetMajorVersionNumber());
 
-  DCHECK(
-      apps::AppServiceProxyFactory::IsAppServiceAvailableForProfile(profile_));
+  CHECK(apps::AppServiceProxyFactory::IsAppServiceAvailableForProfile(profile_),
+        base::NotFatalUntil::M162);
   auto* proxy = apps::AppServiceProxyFactory::GetForProfile(profile_);
 
   size_t uninstall_and_replace_count = 0;
@@ -1098,7 +1103,7 @@ void PreinstalledWebAppManager::OnExternalWebAppsSynchronized(
       continue;
     }
 
-    DCHECK(result.app_id.has_value());
+    CHECK(result.app_id.has_value(), base::NotFatalUntil::M162);
 
     // Do not set as the preferred app for supported links if the app is
     // already installed as the user may have already updated their preference.
@@ -1136,7 +1141,8 @@ void PreinstalledWebAppManager::OnExternalWebAppsSynchronized(
 
         ++app_to_replace_still_installed_count;
 
-        if (extensions::IsExtensionDefaultInstalled(profile_, replace_id)) {
+        if (provider_->extensions_manager().IsExtensionDefaultInstalled(
+                replace_id)) {
           ++app_to_replace_still_default_installed_count;
         }
 

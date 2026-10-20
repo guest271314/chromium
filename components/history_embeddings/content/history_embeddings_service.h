@@ -11,9 +11,11 @@
 #include <vector>
 
 #include "base/containers/flat_map.h"
+#include "base/containers/flat_set.h"
 #include "base/files/file_path.h"
 #include "base/functional/callback.h"
 #include "base/functional/callback_helpers.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/scoped_observation.h"
 #include "base/threading/sequence_bound.h"
@@ -109,6 +111,7 @@ class HistoryEmbeddingsService
                       std::optional<base::Time> time_range_start,
                       size_t count,
                       bool skip_answering,
+                      std::vector<history::URLID> url_id_filter,
                       SearchResultCallback callback) override;
 
   // Weak `this` provider method.
@@ -170,8 +173,9 @@ class HistoryEmbeddingsService
 
     // Associate the given metadata with this Storage instance. The storage is
     // not considered initialized until this metadata is supplied.
-    void SetEmbedderMetadata(passage_embeddings::EmbedderMetadata metadata,
-                             os_crypt_async::Encryptor encryptor);
+    void SetEmbedderMetadata(
+        passage_embeddings::EmbedderMetadata metadata,
+        scoped_refptr<os_crypt_async::Encryptor> encryptor);
 
     // Called on the worker sequence to persist passages and embeddings.
     void ProcessAndStorePassages(UrlData url_data);
@@ -218,7 +222,7 @@ class HistoryEmbeddingsService
   void EmbedderMetadataUpdated(
       passage_embeddings::EmbedderMetadata metadata) override;
 
-  void OnOsCryptAsyncReady(os_crypt_async::Encryptor encryptor);
+  void OnOsCryptAsyncReady(scoped_refptr<os_crypt_async::Encryptor> encryptor);
 
   // This can be overridden to prepare a log entry that will then be filled
   // with data and sent on destruction. Default implementation returns null.
@@ -238,7 +242,7 @@ class HistoryEmbeddingsService
       UrlData url_passages,
       std::vector<std::string> passages,
       std::vector<passage_embeddings::Embedding> embeddings,
-      passage_embeddings::Embedder::TaskId task_id,
+      uint64_t job_id,
       passage_embeddings::ComputeEmbeddingsStatus status);
 
   // Invoked after the embedding for the original search query has been
@@ -248,7 +252,7 @@ class HistoryEmbeddingsService
       SearchResult result,
       std::vector<std::string> query_passages,
       std::vector<passage_embeddings::Embedding> query_embedding,
-      passage_embeddings::Embedder::TaskId task_id,
+      uint64_t job_id,
       passage_embeddings::ComputeEmbeddingsStatus status);
 
   // Finishes a search result by combining found data with additional data from
@@ -361,12 +365,17 @@ class HistoryEmbeddingsService
   // A thread-safe invalidation mechanism to halt searches for stale queries:
   // Each query is run with the current `query_id_` and a weak pointer to the
   // atomic value itself. When it changes, any queries other than the latest
-  // can be halted. Note this is not task cancellation, it breaks the inner
+  // can be halted. Note this is not job cancellation, it breaks the inner
   // search loop while running so the atomic is needed for thread safety.
   std::atomic<size_t> query_id_ = 0u;
 
-  // Used to cancel the in-flight embedding task for the previous stale query.
-  std::optional<passage_embeddings::Embedder::TaskId> query_embedding_task_id_;
+  // A list of in-flight jobs for rebuilding absent embeddings.
+  base::flat_set<passage_embeddings::Embedder::Job,
+                 passage_embeddings::Embedder::JobIdComparator>
+      rebuild_jobs_;
+
+  // Used to cancel the in-flight embedding job for the previous stale query.
+  std::optional<passage_embeddings::Embedder::Job> query_embedding_job_;
 
   base::ScopedObservation<
       page_content_annotations::PageEmbeddingsService,

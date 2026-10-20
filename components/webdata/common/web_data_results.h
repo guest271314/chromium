@@ -9,12 +9,13 @@
 
 #include <utility>
 
-#include "build/blink_buildflags.h"
 #include "build/build_config.h"
 #include "components/webdata/common/webdata_export.h"
 
 class WDTypedResult;
 
+// TODO(crbug.com/507327886): Remove AUTOFILL_VALUE_RESULT once
+// kAutofillLabelSensitiveAutocomplete is launched.
 //
 // Result types for WebDataService.
 //
@@ -28,7 +29,9 @@ typedef enum {
   WEB_APP_IMAGES,                    // WDResult<WDAppImagesResult>
   TOKEN_RESULT,                      // WDResult<TokenResult>
   AUTOFILL_VALUE_RESULT,             // WDResult<std::vector<AutofillEntry>>
-  AUTOFILL_CLEANUP_RESULT,           // WDResult<size_t>
+  AUTOCOMPLETE_SEARCH_RESULT,        // WDResult<std::vector<
+                               //   AutocompleteSearchResultLabelSensitive>>
+  AUTOFILL_CLEANUP_RESULT,           // WDResult<bool>
   AUTOFILL_CHANGES,                  // WDResult<std::vector<AutofillChange>>
   AUTOFILL_PROFILES_RESULT,          // WDResult<std::vector<AutofillProfile>>
   AUTOFILL_ENTITY_INSTANCE_RESULT,   // WDResult<std::vector<EntityInstance>>
@@ -53,7 +56,6 @@ typedef enum {
   PAYMENT_INSTRUMENT_CREATION_OPTION_RESULT,  // WDResult<std::vector<
                                               //     sync_pb::PaymentInstrumentCreationOption>>
   WRAPPED_BINDING_KEYS_RESULT,  // WDResult<absl::flat_hash_set<std::vector<uint8_t>>>
-#if BUILDFLAG(USE_BLINK)  //
   // The browser bound key id is retrieved by the payments component
   // during secure payment confirmation requests and payment credential
   // creation.
@@ -66,8 +68,6 @@ typedef enum {
   PAYMENT_METHOD_MANIFEST,     // WDResult<std::vector<std::string>>
   SECURE_PAYMENT_CONFIRMATION,  // WDResult<std::vector<std::unique_ptr<
                                 //     SecurePaymentConfirmationInstrument>>>
-#endif                          //
-  PLUS_ADDRESS_RESULT,          // WDResult<std::vector<PlusProfile>>
 } WDResultType;
 
 //

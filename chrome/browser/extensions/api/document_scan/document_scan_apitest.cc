@@ -4,12 +4,14 @@
 
 #include <string_view>
 
+#include "ash/constants/ash_pref_names.h"
 #include "base/auto_reset.h"
 #include "base/check_deref.h"
 #include "base/containers/map_util.h"
 #include "base/files/file_util.h"
 #include "base/notreached.h"
 #include "base/path_service.h"
+#include "base/threading/thread_restrictions.h"
 #include "chrome/browser/ash/scanning/fake_lorgnette_scanner_manager.h"
 #include "chrome/browser/ash/scanning/lorgnette_scanner_manager_factory.h"
 #include "chrome/browser/extensions/api/document_scan/document_scan_api_handler.h"
@@ -18,9 +20,8 @@
 #include "chrome/browser/extensions/api/document_scan/start_scan_runner.h"
 #include "chrome/browser/extensions/extension_apitest.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/common/chrome_paths.h"
-#include "chrome/common/pref_names.h"
 #include "components/prefs/scoped_user_pref_update.h"
 #include "content/public/test/browser_test.h"
 #include "extensions/browser/extension_registry_observer.h"
@@ -87,8 +88,8 @@ class AutoTruster : public extensions::ExtensionRegistryObserver {
     if (extension->permissions_data()->HasAPIPermission("documentScan")) {
       PrefService* prefs =
           Profile::FromBrowserContext(browser_context)->GetPrefs();
-      ScopedListPrefUpdate update(prefs,
-                                  prefs::kDocumentScanAPITrustedExtensions);
+      ScopedListPrefUpdate update(
+          prefs, ash::prefs::kDocumentScanAPITrustedExtensions);
       update->Append(extension->id());
     }
   }

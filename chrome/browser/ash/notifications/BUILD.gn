@@ -2,8 +2,6 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-import("//build/config/chromeos/ui_mode.gni")
-
 assert(is_chromeos)
 
 static_library("notifications") {
@@ -37,12 +35,11 @@ static_library("notifications") {
     "update_required_notification.h",
   ]
 
-  public_deps = [ "//chrome/browser:browser_public_dependencies" ]
-
   deps = [
     "//ash",
     "//ash/constants",
     "//ash/public/cpp",
+    "//ash/strings",
     "//ash/webui/settings/public/constants:mojom",
     "//base",
     "//chrome/app/vector_icons",
@@ -50,6 +47,7 @@ static_library("notifications") {
     "//chrome/browser/ash/policy/handlers",
     "//chrome/browser/notifications",
     "//chrome/browser/profiles:profile",
+    "//chrome/browser/ui:screen_capture_notification_ui",
     "//chrome/browser/ui/dialogs:browser_dialogs",
     "//chrome/common",
     "//chromeos/ash/components/browser_context_helper",
@@ -115,9 +113,10 @@ source_set("unit_tests") {
     "//chrome/browser/ash/policy/handlers:test_support",
     "//chrome/browser/ash/settings:test_support",
     "//chrome/browser/prefs",
-    "//chrome/browser/ui",
     "//chrome/test:test_support",
     "//chrome/test:test_support_unit",
+    "//chrome/test/base:browser_with_test_window_test",
+    "//chrome/test/base:testing_browser_process",
     "//chromeos/ash/components/dbus/debug_daemon",
     "//chromeos/ash/components/dbus/gnubby",
     "//chromeos/ash/components/dbus/shill",

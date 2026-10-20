@@ -11,8 +11,8 @@
 #include "chrome/browser/download/download_core_service.h"
 #include "chrome/browser/download/download_core_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/toolbar/app_menu_model.h"
 #include "chrome/common/webui_url_constants.h"
 #include "chrome/test/base/ui_test_utils.h"
@@ -258,8 +258,8 @@ class DownloadsPageInteractiveUitestWithDangerType
   void SetUpOnMainThread() override {
     DownloadsPageInteractiveUitest::SetUpOnMainThread();
     auto test_delegate =
-        std::make_unique<TestDownloadManagerDelegate>(browser()->profile());
-    DownloadCoreServiceFactory::GetForBrowserContext(browser()->profile())
+        std::make_unique<TestDownloadManagerDelegate>(browser()->GetProfile());
+    DownloadCoreServiceFactory::GetForBrowserContext(browser()->GetProfile())
         ->SetDownloadManagerDelegateForTesting(std::move(test_delegate));
   }
 

@@ -54,8 +54,8 @@
 #if BUILDFLAG(IS_CHROMEOS)
 #include "ash/wm/window_pin_util.h"
 #include "chrome/browser/ash/boca/on_task/on_task_locked_controller.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_window.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #endif
 
 #if BUILDFLAG(IS_ANDROID)
@@ -967,7 +967,7 @@ IN_PROC_BROWSER_TEST_P(ExtensionContextMenuLockedFullscreenTest,
   ash::boca::OnTaskLockedController::From(browser())->set_locked_for_on_task(
       IsLockedForOnTask());
   if (IsLockedFullscreen()) {
-    ash::PinWindow(browser()->window()->GetNativeWindow(), /*trusted=*/true);
+    ash::PinWindow(browser()->GetWindow()->GetNativeWindow(), /*trusted=*/true);
   }
 
   // Load test extension and wait for js test code to create context menu with

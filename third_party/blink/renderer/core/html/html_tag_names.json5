@@ -93,6 +93,12 @@
       interfaceHeaderDir: "third_party/blink/renderer/core/html/forms",
     },
     {
+      name: "camera",
+      interfaceName: "HTMLCameraElement",
+      runtimeEnabled: "CameraAndMicrophoneElements",
+      noTypeHelpers: true,
+    },
+    {
       name: "canvas",
       interfaceHeaderDir: "third_party/blink/renderer/core/html/canvas",
     },
@@ -344,19 +350,26 @@
     {
       name: "menubar",
       interfaceName: "HTMLMenuBarElement",
-      interfaceHeaderDir: "third_party/blink/renderer/core/html",
       runtimeEnabled: "MenuElements",
     },
     {
       name: "menuitem",
       interfaceName: "HTMLMenuItemElement",
-      interfaceHeaderDir: "third_party/blink/renderer/core/html",
+      runtimeEnabled: "MenuElements",
+    },
+    {
+      name: "menuitemcheckbox",
+      interfaceName: "HTMLMenuItemCheckboxElement",
+      runtimeEnabled: "MenuElements",
+    },
+    {
+      name: "menuitemradio",
+      interfaceName: "HTMLMenuItemRadioElement",
       runtimeEnabled: "MenuElements",
     },
     {
       name: "menulist",
       interfaceName: "HTMLMenuListElement",
-      interfaceHeaderDir: "third_party/blink/renderer/core/html",
       runtimeEnabled: "MenuElements",
     },
     {
@@ -366,6 +379,12 @@
     {
       name: "meter",
       interfaceName: "HTMLMeterElement",
+    },
+    {
+      name: "microphone",
+      interfaceName: "HTMLMicrophoneElement",
+      runtimeEnabled: "CameraAndMicrophoneElements",
+      noTypeHelpers: true,
     },
     {
       name: "nav",
@@ -415,6 +434,12 @@
       interfaceName: "HTMLParagraphElement",
     },
     "param",
+    {
+      name: "persistentwidget",
+      interfaceName: "HTMLPersistentWidgetElement",
+      interfaceHeaderDir: "third_party/blink/renderer/core/html/persistent_widgets",
+      runtimeEnabled: "PersistentWidgetAPI",
+    },
     {
       name: "picture",
       interfaceName: "HTMLPictureElement",
@@ -506,6 +531,11 @@
     {
       name: "sub",
       interfaceName: "HTMLElement",
+    },
+    {
+      name: "submenu",
+      interfaceName: "HTMLSubMenuElement",
+      runtimeEnabled: "MenuElements",
     },
     {
       name: "summary",

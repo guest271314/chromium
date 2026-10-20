@@ -15,6 +15,7 @@
 #include "base/unguessable_token.h"
 #include "chrome/browser/web_applications/web_app_install_manager.h"
 #include "chrome/browser/web_applications/web_app_install_manager_observer.h"
+#include "chrome/browser/web_applications/web_app_launch_params_holder.h"
 #include "chrome/browser/web_applications/web_app_registrar_observer.h"
 #include "components/tabs/public/tab_interface.h"
 #include "components/webapps/common/web_app_id.h"
@@ -28,6 +29,7 @@ class WebContents;
 
 namespace webapps {
 class LaunchQueue;
+class LaunchParams;
 }
 
 namespace web_app {
@@ -157,11 +159,34 @@ class WebAppTabHelper : public content::WebContentsUserData<WebAppTabHelper>,
   // window instead of in a browser tab.
   bool is_in_app_window() const { return window_app_id_.has_value(); }
 
+  base::WeakPtr<WebAppLaunchParamsHolder> pending_launch_params_holder() const {
+    return pending_launch_params_holder_;
+  }
+
+  // This is needed so that the web app launch navigation handle user data can
+  // be used to set the launch params, as there is no easy way to access the
+  // navigation handle from the web contents, apart from observing when a
+  // navigation started and finished.
+  void SetPendingLaunchParamsHolder(
+      base::WeakPtr<WebAppLaunchParamsHolder> holder) {
+    pending_launch_params_holder_ = std::move(holder);
+  }
+  std::optional<webapps::AppId> pending_launch_app_id() const;
+
   webapps::LaunchQueue& EnsureLaunchQueue();
+
+  // Schedules origin-association revalidation for `app_id`. Also used for
+  // launches that only activate an existing tab, without inserting it,
+  // navigating, or delivering launch params.
+  void ScheduleOriginAssociationRevalidation(const webapps::AppId& app_id);
+
+  void EnqueueLaunchParams(webapps::LaunchParams launch_params);
 
   // content::WebContentsObserver:
 
   void ReadyToCommitNavigation(
+      content::NavigationHandle* navigation_handle) override;
+  void DidFinishNavigation(
       content::NavigationHandle* navigation_handle) override;
   void PrimaryPageChanged(content::Page& page) override;
   void DidFinishLoad(content::RenderFrameHost* render_frame_host,
@@ -173,14 +198,20 @@ class WebAppTabHelper : public content::WebContentsUserData<WebAppTabHelper>,
   // launch queue messages have been sent to the renderer.
   void FlushLaunchQueueForTesting() const;
 
-  // Returns if the current web contents can be used for the 'focus-existing'
-  // behavior of navigation capturing, where the tab is focused and a
+  // Returns if the current web contents can be reused in place for the
+  // 'focus-existing' launch handler behavior, where the tab is focused and a
   // 'LaunchParams' is given to a javascript 'launch consumer' on the page. This
-  // returns if the current page can feasibly run javascript to actually set
-  // this launch consumer, as without that, any captured links would simply do
-  // nothing.
-  // Specifically, this turns `true` if the current page's mime-type is html or
-  // xhtml.
+  // is the single eligibility rule for in-place reuse, consulted by both
+  // navigation capturing and direct app launches (`WebAppLaunchProcess`).
+  //
+  // Returns `true` only if both:
+  //  - The committed origin is not opaque. A document that committed an opaque
+  //    origin (e.g. one served with `Content-Security-Policy: sandbox`, or an
+  //    error page) is cross-origin to the app even when its URL is in scope,
+  //    and must not receive the app's launch params.
+  //  - The current page's mime-type is html or xhtml, so it can feasibly run
+  //    javascript to set a launch consumer. Without one, a launch would simply
+  //    do nothing.
   bool CanBeUsedForFocusExisting() const;
 
  private:
@@ -244,6 +275,7 @@ class WebAppTabHelper : public content::WebContentsUserData<WebAppTabHelper>,
 
   std::optional<webapps::AppId> app_id_;
   std::optional<webapps::AppId> window_app_id_;
+  base::WeakPtr<WebAppLaunchParamsHolder> pending_launch_params_holder_;
 
   // True when this tab is the pinned home tab of a tabbed web app.
   bool is_pinned_home_tab_ = false;

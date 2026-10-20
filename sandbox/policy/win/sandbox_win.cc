@@ -17,7 +17,7 @@
 #include <utility>
 #include <vector>
 
-#include "base/byte_count.h"
+#include "base/byte_size.h"
 #include "base/command_line.h"
 #include "base/feature_list.h"
 #include "base/files/file_path.h"
@@ -63,7 +63,6 @@
 #include "sandbox/win/src/app_container.h"
 #include "sandbox/win/src/process_mitigations.h"
 #include "sandbox/win/src/sandbox.h"
-#include "third_party/perfetto/include/perfetto/tracing/track.h"
 
 namespace sandbox {
 namespace policy {
@@ -343,6 +342,8 @@ std::string_view GetAppContainerNameFromType(Sandbox sandbox_type) {
       return "cr.sb.prnc";
     case Sandbox::kProxyResolver:
       return "cr.sb.pxy";
+    case Sandbox::kWebNNModelCompilation:
+      return "cr.sb.wnn";
     default:
       return {};
   }
@@ -386,7 +387,8 @@ ResultCode SetupAppContainerProfile(AppContainer* container,
       !(sandbox_type == Sandbox::kPrintCompositor &&
         base::FeatureList::IsEnabled(
             sandbox::policy::features::kPrintCompositorLPAC)) &&
-      sandbox_type != Sandbox::kProxyResolver) {
+      sandbox_type != Sandbox::kProxyResolver &&
+      sandbox_type != Sandbox::kWebNNModelCompilation) {
     return SBOX_ERROR_UNSUPPORTED;
   }
 
@@ -453,6 +455,15 @@ ResultCode SetupAppContainerProfile(AppContainer* container,
     container->SetEnableLowPrivilegeAppContainer(true);
   }
 
+  if (sandbox_type == Sandbox::kWebNNModelCompilation) {
+    // Needed at impersonation time for access checks against Chrome's
+    // install directory (DLLs alongside chrome.exe, including the
+    // bundled ONNX Runtime and execution-provider framework packages
+    // which carry both the regular and LPAC chromeInstallFiles ACEs).
+    container->AddImpersonationCapability(kChromeInstallFiles);
+    container->SetEnableLowPrivilegeAppContainer(true);
+  }
+
   return SBOX_ALL_OK;
 }
 
@@ -495,12 +506,17 @@ ResultCode GenerateConfigForSandboxedProcess(const base::CommandLine& cmd_line,
     if (!cmd_line.HasSwitch(switches::kAllowThirdPartyModules) &&
         sandbox_type != Sandbox::kScreenAI &&
         sandbox_type != Sandbox::kSpeechRecognition &&
-        sandbox_type != Sandbox::kMediaFoundationCdm) {
+        sandbox_type != Sandbox::kMediaFoundationCdm &&
+        sandbox_type != Sandbox::kPlatformRuntime) {
       mitigations |= MITIGATION_FORCE_MS_SIGNED_BINS;
     }
 
     if (sandbox_type == Sandbox::kNetwork || sandbox_type == Sandbox::kAudio ||
-        sandbox_type == Sandbox::kIconReader) {
+        sandbox_type == Sandbox::kIconReader ||
+        sandbox_type == Sandbox::kWebNNModelCompilation ||
+        (sandbox_type == Sandbox::kSpeechRecognition &&
+         base::FeatureList::IsEnabled(
+             features::kSpeechRecognitionSandboxHardening))) {
       mitigations |= MITIGATION_DYNAMIC_CODE_DISABLE;
     }
 
@@ -822,6 +838,10 @@ bool SandboxWin::IsAppContainerEnabledForSandbox(
     return true;
   }
 
+  if (sandbox_type == Sandbox::kWebNNModelCompilation) {
+    return true;
+  }
+
   return false;
 }
 
@@ -838,17 +858,7 @@ class BrokerServicesDelegateImpl : public BrokerServicesDelegate {
         std::move(task), std::move(reply));
   }
 
-  void BeforeTargetProcessCreateOnCreationThread(
-      const void* trace_id) override {
-    TRACE_EVENT_BEGIN("startup", "TargetProcess::Create",
-                      perfetto::Track::FromPointer(trace_id));
-  }
-
-  void AfterTargetProcessCreateOnCreationThread(const void* trace_id,
-                                                DWORD process_id) override {
-    TRACE_EVENT_END("startup", perfetto::Track::FromPointer(trace_id), "pid",
-                    process_id);
-  }
+  void BeforeTargetProcessCreateOnCreationThread() override {}
 
   void OnCreateThreadActionCreateFailure(DWORD last_error) override {
     UMA_HISTOGRAM_SPARSE(
@@ -1075,6 +1085,8 @@ std::string SandboxWin::GetSandboxTypeInEnglish(
       return "Audio";
     case Sandbox::kScreenAI:
       return "Screen AI";
+    case Sandbox::kPlatformRuntime:
+      return "Platform Runtime";
     case Sandbox::kSpeechRecognition:
       return "Speech Recognition";
     case Sandbox::kPdfConversion:
@@ -1109,10 +1121,10 @@ std::optional<size_t> SandboxWin::GetJobMemoryLimit(Sandbox sandbox_type) {
   constexpr uint64_t GB = 1024 * 1024 * 1024;
 
   // Returns a memory limit scaled to the available physical memory, up to
-  // 64 GB. Used by GPU and ODML process sandboxes.
+  // 64 GB. Used by ODML process sandboxes.
   auto get_scaled_physical_memory_based_limit = []() -> size_t {
-    const base::ByteCount physical_memory =
-        base::SysInfo::AmountOfPhysicalMemory();
+    const base::ByteSize physical_memory =
+        base::SysInfo::AmountOfTotalPhysicalMemory();
     if (physical_memory > base::GiB(64)) {
       return 64 * GB;
     } else if (physical_memory > base::GiB(32)) {
@@ -1125,23 +1137,15 @@ std::optional<size_t> SandboxWin::GetJobMemoryLimit(Sandbox sandbox_type) {
 
   switch (sandbox_type) {
     case Sandbox::kGpu:
-      // Allow up to 1 TB for the GPU process when the feature
-      // `kWinSboxHighGPUJobMemoryLimits` is enabled.
-      if (base::FeatureList::IsEnabled(
-              features::kWinSboxHighGPUJobMemoryLimits)) {
-        return 1024 * GB;
-      }
-      // Otherwise, scale based on physical memory, up to 64 GB.
-      return get_scaled_physical_memory_based_limit();
+      // Allow up to 1 TB for the GPU process.
+      return 1024 * GB;
     case Sandbox::kOnDeviceModelExecution:
       // Scale based on available physical memory, up to 64 GB.
       return get_scaled_physical_memory_based_limit();
     case Sandbox::kWebNNModelCompilation:
-      // TODO(crbug.com/502616233): Consider adding a dedicated feature flag to
-      // allow higher memory limits (e.g. 1 TB) for the WebNN compilation
-      // process, similar to kWinSboxHighGPUJobMemoryLimits for the GPU process.
-      // Scale based on available physical memory, up to 64 GB.
-      return get_scaled_physical_memory_based_limit();
+      // Allow up to 1 TB for the WebNN Compiler process, matching the renderer
+      // process limit.
+      return 1024 * GB;
     case Sandbox::kRenderer:
       // Allow up to 1 TB for the renderer process.
       return 1024 * GB;

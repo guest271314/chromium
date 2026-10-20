@@ -7,9 +7,11 @@
 
 #include <memory>
 
+#include "base/gtest_prod_util.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/raw_ref.h"
 #include "base/timer/timer.h"
+#include "chrome/browser/ui/tabs/tab_types.h"
 #include "chrome/browser/ui/views/frame/browser_root_view.h"
 #include "chrome/browser/ui/views/tabs/shared/drop_arrow.h"
 #include "chrome/browser/ui/views/tabs/tab.h"
@@ -166,11 +168,19 @@ class TabContainerImpl : public TabContainer,
     return z_ordered_children_cache_;
   }
 
+  const views::BoundsAnimator& GetBoundsAnimatorForTesting() const {
+    return bounds_animator_;
+  }
+
   // Used to simulate PaintChildren in unittests which is the only time in which
   // the production containers should check/update the zorder.
   void UpdateZOrderCacheForTesting();
 
  private:
+  FRIEND_TEST_ALL_PREFIXES(TabContainerTest, GetChildIndexForSlotView);
+  FRIEND_TEST_ALL_PREFIXES(TabContainerTest,
+                           GetChildIndexForSlotViewWithGroups);
+
   class RemoveTabDelegate;
   views::ViewModelT<Tab>* GetTabsViewModel();
 
@@ -206,6 +216,13 @@ class TabContainerImpl : public TabContainer,
 
   void StartRemoveTabAnimation(Tab* tab, int former_model_index);
 
+  // Returns the group ID if the closing tab was preceded by a TabGroupHeader,
+  // or std::nullopt if it was preceded by another tab or is at the start of
+  // the strip without a group.
+  std::optional<tab_groups::TabGroupId> GetGroupHeaderPrecedingClosingTab(
+      Tab* tab,
+      int former_model_index) const;
+
   // Computes the bounds that `tab` should animate towards as it closes.
   gfx::Rect GetTargetBoundsForClosingTab(Tab* tab,
                                          int former_model_index) const;
@@ -226,6 +243,18 @@ class TabContainerImpl : public TabContainer,
   // Updates `override_available_width_for_tabs_`, if necessary, to account for
   // the removal of the tab at `model_index`.
   void UpdateClosingModeOnRemovedTab(int model_index, bool was_active);
+
+  // Returns whether `tab` is visible, accounting for tab group focusing and
+  // collapsed groups.
+  bool IsTabVisible(const Tab* tab) const;
+
+  // Returns the number of visible tabs in `tabs_view_model_`, accounting for
+  // tab group focusing and collapsed groups.
+  int GetVisibleTabCount() const;
+
+  // Returns the model index of the trailingmost visible tab in
+  // `tabs_view_model_`, or -1 if no tabs are visible.
+  int GetLastVisibleTabModelIndex() const;
 
   // Perform an animated resize-relayout of the TabContainer immediately.
   void ResizeLayoutTabs();
@@ -248,6 +277,11 @@ class TabContainerImpl : public TabContainer,
   // Moves `slot_view` within children() to match `layout_helper_`'s slot
   // ordering.
   void OrderTabSlotView(TabSlotView* slot_view);
+
+  // Returns the index in children() where `slot_view` belongs according to
+  // `layout_helper_`'s slot ordering. `slot_view` must already be known to
+  // `layout_helper_`, but doesn't have to be a child yet.
+  size_t GetChildIndexForSlotView(const TabSlotView* slot_view) const;
 
   // Returns true if the specified point in TabStrip coords is within the
   // hit-test region of the specified Tab.
@@ -282,9 +316,12 @@ class TabContainerImpl : public TabContainer,
   // If `tab_data_index` is negative, the arrow will disappear.
   void SetDropArrow(const std::optional<BrowserRootView::DropIndex>& index);
 
-  // Updates the indexes and count for AX data on all tabs. Used by some screen
-  // readers (e.g. ChromeVox).
+  // Marks the indexes and count for AX data on all tabs as stale; they are
+  // refreshed by the next layout. Used by some screen readers (e.g. ChromeVox).
   void UpdateAccessibleTabIndices();
+
+  // Refreshes the AX indexes and count of all tabs if they are stale.
+  void UpdateAccessibleTabIndicesIfNeeded();
 
   bool IsValidModelIndex(int model_index) const;
 
@@ -353,6 +390,10 @@ class TabContainerImpl : public TabContainer,
 
   std::vector<ZOrderableTabContainerElement> z_ordered_children_cache_;
   bool z_order_cache_dirty_ = true;
+
+  // Whether the AX indexes and count of the tabs need to be refreshed by the
+  // next layout.
+  bool accessible_tab_indices_dirty_ = false;
 };
 
 #endif  // CHROME_BROWSER_UI_VIEWS_TABS_TAB_CONTAINER_IMPL_H_

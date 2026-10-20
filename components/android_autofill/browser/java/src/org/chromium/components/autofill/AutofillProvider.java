@@ -32,7 +32,7 @@ import org.chromium.base.ContextUtils;
 import org.chromium.base.ResettersForTesting;
 import org.chromium.base.StrictModeContext;
 import org.chromium.base.metrics.ScopedSysTraceEvent;
-import org.chromium.base.version_info.VersionConstants;
+import org.chromium.base.version_info.VersionInfo;
 import org.chromium.build.annotations.NullUnmarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.components.autofill.AutofillPopup.AutofillDropdownItem;
@@ -206,7 +206,7 @@ public class AutofillProvider {
         if (bundle != null) {
             bundle.putCharSequence("VIRTUAL_STRUCTURE_PROVIDER_NAME", mProviderName);
             bundle.putCharSequence(
-                    "VIRTUAL_STRUCTURE_PROVIDER_VERSION", VersionConstants.PRODUCT_VERSION);
+                    "VIRTUAL_STRUCTURE_PROVIDER_VERSION", VersionInfo.getProductVersion());
 
             if (mRequest != null && mRequest.getAutofillHintsService() != null) {
                 bundle.putBinder(
@@ -395,10 +395,14 @@ public class AutofillProvider {
         // Check index inside short value?
         if (mRequest == null) return;
 
-        short sIndex = (short) index;
+        short shortIndex = (short) index;
         FocusField focusField = mRequest.getFocusField();
-        if (focusField == null || sIndex != focusField.fieldIndex) {
-            onFocusChangedImpl(true, index, x, y, width, height, /* causedByValueChange= */ true);
+        if (focusField == null || shortIndex != focusField.fieldIndex) {
+            if (!AndroidAutofillFeatures.ANDROID_AUTOFILL_FIELDS_UPDATED_ON_SELECT.isEnabled()
+                    || focusField == null) {
+                onFocusChangedImpl(
+                        true, index, x, y, width, height, /* causedByValueChange= */ true);
+            }
         } else {
             // Currently there is no api to notify both value and position
             // change, before the API is available, we still need to call
@@ -413,7 +417,8 @@ public class AutofillProvider {
             }
         }
         notifyVirtualValueChanged(index, /* forceNotify= */ false);
-        mAutofillUMA.onUserChangeFieldValue(mRequest.getField(sIndex).hasPreviouslyAutofilled());
+        mAutofillUMA.onUserChangeFieldValue(
+                mRequest.getField(shortIndex).hasPreviouslyAutofilled());
     }
 
     /**
@@ -448,8 +453,8 @@ public class AutofillProvider {
     public void onTextFieldDidScroll(int index, float x, float y, float width, float height) {
         if (mRequest == null) return;
 
-        short sIndex = (short) index;
-        FormFieldData fieldData = mRequest.getField(sIndex);
+        short shortIndex = (short) index;
+        FormFieldData fieldData = mRequest.getField(shortIndex);
         if (fieldData != null) fieldData.updateBounds(new RectF(x, y, x + width, y + height));
     }
 
@@ -662,12 +667,23 @@ public class AutofillProvider {
     }
 
     /**
-     * Display the simplest popup for the datalist. This is same as WebView's datalist popup in
+     * Displays the simplest popup for the datalist. This is same as WebView's datalist popup in
      * Android pre-o. No suggestion from the autofill service will be presented, No advance features
-     * of AutofillPopup are used.
+     * of AutofillPopup are used. Does nothing if {@code bounds} lie entirely outside the container
+     * view's visible area.
      */
     private void showDatalistPopup(
             String[] datalistValues, String[] datalistLabels, RectF bounds, boolean isRtl) {
+        // Suppress the popup if the field is entirely outside the visible bounds of the container
+        // view; renderer-supplied bounds could otherwise place the dropdown over browser or
+        // embedder UI (crbug.com/562236428). We clamp the anchor bounds themselves rather than
+        // FocusField.absBound.
+        @Nullable Rect clampedBounds = clampToVisibleBounds(transformToWindowBounds(bounds));
+        if (AndroidAutofillFeatures.ANDROID_AUTOFILL_SUPPRESS_OFFSCREEN_DATALIST.isEnabled()
+                && (clampedBounds == null || clampedBounds.isEmpty())) {
+            hideDatalistPopup();
+            return;
+        }
         mDatalistSuggestions = new AutofillDropdownItem[datalistValues.length];
         for (int i = 0; i < mDatalistSuggestions.length; i++) {
             mDatalistSuggestions[i] =
@@ -694,8 +710,8 @@ public class AutofillProvider {
                                     }
 
                                     @Override
-                                    public void suggestionSelected(int listIndex) {
-                                        onSuggestionSelected(
+                                    public void suggestionAccepted(int listIndex) {
+                                        onSuggestionAccepted(
                                                 mDatalistSuggestions[listIndex].getLabel());
                                     }
 
@@ -727,7 +743,7 @@ public class AutofillProvider {
         mAnchorView = null;
     }
 
-    private void onSuggestionSelected(String value) {
+    private void onSuggestionAccepted(String value) {
         if (mNativeAutofillProvider != 0) {
             acceptDataListSuggestion(mNativeAutofillProvider, value);
         }
@@ -800,6 +816,23 @@ public class AutofillProvider {
         return mDatalistPopup;
     }
 
+    void setDatalistPopupForTesting(AutofillPopup datalistPopup) {
+        mDatalistPopup = datalistPopup;
+    }
+
+    private int getToolbarOffset() {
+        return mWebContents != null
+                ? RenderCoordinates.fromWebContents(mWebContents).getContentOffsetYPixInt()
+                : 0;
+    }
+
+    private int[] getWebContentScreenLocation() {
+        int[] location = new int[2];
+        mContainerView.getLocationOnScreen(location);
+        location[1] += getToolbarOffset();
+        return location;
+    }
+
     /**
      * Calculates the visible bounds of the container view in screen coordinates.
      *
@@ -815,7 +848,14 @@ public class AutofillProvider {
             mContainerView.getLocationOnScreen(screenLocation);
             int offsetX = screenLocation[0] - windowLocation[0];
             int offsetY = screenLocation[1] - windowLocation[1];
+            // Translate the rect from window coordinates to screen coordinates.
             rect.offset(offsetX, offsetY);
+            // In Chrome, the omnibox toolbar sits on top of `mContainerView`, obscuring the top
+            // content. We must add the toolbar offset to `rect.top` to exclude this obscured area
+            // from the visible bounds. We cannot use `getWebContentScreenLocation()` to translate
+            // the whole rect because that would incorrectly offset rect.bottom (which is not
+            // obscured by the top toolbar).
+            rect.top += getToolbarOffset();
         }
         return rect;
     }
@@ -844,26 +884,27 @@ public class AutofillProvider {
         return clampedBounds.intersect(visibleBounds) ? clampedBounds : null;
     }
 
-    private Rect transformToWindowBounds(RectF rect) {
-        // Refer to crbug.com/1085294 for the reason of offset.
-        // The current version of Mockito didn't support mock static method, adding extra method so
-        // the transform can be tested.
-        return transformToWindowBoundsWithOffsetY(
-                rect, RenderCoordinates.fromWebContents(mWebContents).getContentOffsetYPixInt());
-    }
-
+    /**
+     * Transforms the given bounds from web viewport coordinates (in DP) to absolute screen
+     * coordinates (in physical pixels).
+     *
+     * <p>This method accounts for the device's DIP scale and offsets the Y coordinate to account
+     * for the space occupied by the browser controls (e.g., the top omnibox toolbar in Chrome).
+     *
+     * @param rect the bounds in web viewport DP coordinates to transform.
+     * @return the transformed bounds in absolute screen physical pixels.
+     */
     @VisibleForTesting
-    public Rect transformToWindowBoundsWithOffsetY(RectF rect, int offsetY) {
+    Rect transformToWindowBounds(RectF rect) {
         // Convert bounds to device pixel.
+        // Refer to crbug.com/1085294 for the reason for the Y offset.
         WindowAndroid windowAndroid = mWebContents.getTopLevelNativeWindow();
         DisplayAndroid displayAndroid = windowAndroid.getDisplay();
         float dipScale = displayAndroid.getDipScale();
         RectF bounds = new RectF(rect);
         Matrix matrix = new Matrix();
         matrix.setScale(dipScale, dipScale);
-        int[] location = new int[2];
-        mContainerView.getLocationOnScreen(location);
-        location[1] += offsetY;
+        int[] location = getWebContentScreenLocation();
         matrix.postTranslate(location[0], location[1]);
         matrix.mapRect(bounds);
         return new Rect(
@@ -932,7 +973,8 @@ public class AutofillProvider {
     }
 
     @NativeMethods
-    interface Natives {
+    @VisibleForTesting
+    public interface Natives {
         void init(AutofillProvider caller, WebContents webContents);
 
         void detachFromJavaAutofillProvider(long nativeAndroidAutofillProviderBridgeImpl);

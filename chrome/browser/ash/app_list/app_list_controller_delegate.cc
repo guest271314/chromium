@@ -10,12 +10,8 @@
 #include "build/build_config.h"
 #include "chrome/browser/apps/app_service/app_service_proxy.h"
 #include "chrome/browser/apps/app_service/app_service_proxy_factory.h"
-#include "chrome/browser/extensions/extension_util.h"
-#include "chrome/browser/extensions/install_tracker_factory.h"
 #include "chrome/browser/extensions/launch_util.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/chrome_pages.h"
-#include "chrome/common/extensions/extension_constants.h"
 #include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
 #include "chromeos/ash/experiences/settings_ui/settings_app_manager.h"
 #include "components/services/app_service/public/cpp/app_types.h"
@@ -31,6 +27,8 @@
 #include "extensions/common/manifest_handlers/options_page_info.h"
 #include "net/base/url_util.h"
 #include "rlz/buildflags/buildflags.h"
+#include "ui/base/page_transition_types.h"
+#include "ui/base/window_open_disposition.h"
 #include "ui/gfx/geometry/rect.h"
 
 #if BUILDFLAG(ENABLE_RLZ)
@@ -60,7 +58,7 @@ void AppListControllerDelegate::DoShowAppInfoFlow(Profile* profile,
   auto app_type = apps::AppServiceProxyFactory::GetForProfile(profile)
                       ->AppRegistryCache()
                       .GetAppType(app_id);
-  DCHECK_NE(app_type, apps::AppType::kUnknown);
+  CHECK_NE(app_type, apps::AppType::kUnknown, base::NotFatalUntil::M160);
 
   std::string sub_page;
   std::optional<ash::SettingsAppManager::EntryPoint> entry_point;
@@ -138,6 +136,6 @@ void AppListControllerDelegate::LaunchAppWithUrl(
     const GURL& url,
     apps::LaunchSource launch_source) {
   auto* proxy = apps::AppServiceProxyFactory::GetForProfile(profile);
-  DCHECK(proxy);
+  CHECK(proxy, base::NotFatalUntil::M160);
   proxy->LaunchAppWithUrl(app_id, event_flags, url, launch_source);
 }

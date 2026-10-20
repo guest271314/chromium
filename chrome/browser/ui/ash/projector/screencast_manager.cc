@@ -25,9 +25,9 @@
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/ui/ash/projector/projector_drivefs_provider.h"
 #include "chrome/browser/ui/ash/projector/projector_utils.h"
-#include "chrome/services/media_gallery_util/public/cpp/local_media_data_source_factory.h"
-#include "chrome/services/media_gallery_util/public/cpp/safe_media_metadata_parser.h"
-#include "chrome/services/media_gallery_util/public/mojom/media_parser.mojom.h"
+#include "components/media_gallery_util/local_media_data_source_factory.h"
+#include "components/media_gallery_util/public/mojom/media_parser.mojom.h"
+#include "components/media_gallery_util/safe_media_metadata_parser.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
 
@@ -45,7 +45,8 @@ void OnMediaMetadataParsed(
     bool parse_success,
     chrome::mojom::MediaMetadataPtr metadata,
     std::unique_ptr<std::vector<metadata::AttachedImage>> attached_images) {
-  DCHECK(content::BrowserThread::CurrentlyOn(content::BrowserThread::UI));
+  CHECK(content::BrowserThread::CurrentlyOn(content::BrowserThread::UI),
+        base::NotFatalUntil::M162);
   if (!parse_success || !metadata || !metadata->duration) {
     // TODO(b/242748137): Add test to cover this error message.
     std::move(callback).Run(
@@ -80,7 +81,8 @@ void OnMediaMetadataParsed(
 void GetVideoMetadata(const base::FilePath& video_path,
                       projector::mojom::VideoInfoPtr video,
                       ProjectorAppClient::OnGetVideoCallback callback) {
-  DCHECK(!content::BrowserThread::CurrentlyOn(content::BrowserThread::UI));
+  CHECK(!content::BrowserThread::CurrentlyOn(content::BrowserThread::UI),
+        base::NotFatalUntil::M162);
   std::optional<int64_t> size_in_byte = base::GetFileSize(video_path);
   if (!size_in_byte.has_value()) {
     content::GetUIThreadTaskRunner({})->PostTask(
@@ -119,6 +121,7 @@ ScreencastManager::ScreencastManager()
 ScreencastManager::~ScreencastManager() = default;
 
 void ScreencastManager::GetVideo(
+    const AccountId& account_id,
     const std::string& video_file_id,
     const std::optional<std::string>& resource_key,
     ProjectorAppClient::OnGetVideoCallback callback) const {
@@ -126,12 +129,12 @@ void ScreencastManager::GetVideo(
   // supports it.
 
   drive::DriveIntegrationService* integration_service =
-      ProjectorDriveFsProvider::GetActiveDriveIntegrationService();
+      ProjectorDriveFsProvider::GetDriveIntegrationService(account_id);
   integration_service->LocateFilesByItemIds(
       {video_file_id},
       base::BindOnce(&ScreencastManager::OnVideoFilePathLocated,
-                     weak_ptr_factory_.GetMutableWeakPtr(), video_file_id,
-                     std::move(callback)));
+                     weak_ptr_factory_.GetMutableWeakPtr(), account_id,
+                     video_file_id, std::move(callback)));
 }
 
 void ScreencastManager::ResetScopeSuppressDriveNotifications() {
@@ -139,6 +142,7 @@ void ScreencastManager::ResetScopeSuppressDriveNotifications() {
 }
 
 void ScreencastManager::OnVideoFilePathLocated(
+    const AccountId& account_id,
     const std::string& video_id,
     ProjectorAppClient::OnGetVideoCallback callback,
     std::optional<std::vector<drivefs::mojom::FilePathOrErrorPtr>> paths) {
@@ -168,7 +172,7 @@ void ScreencastManager::OnVideoFilePathLocated(
   }
 
   const base::FilePath& mounted_path =
-      ProjectorDriveFsProvider::GetDriveFsMountPointPath();
+      ProjectorDriveFsProvider::GetDriveFsMountPointPath(account_id);
   const base::FilePath& video_path = mounted_path.Append(relative_drivefs_path);
 
   // Suppresses the notification before calling GetVideoMetadata, which might

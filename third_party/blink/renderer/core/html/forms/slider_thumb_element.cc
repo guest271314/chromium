@@ -104,27 +104,28 @@ void SliderThumbElement::SetPositionFromPoint(const PhysicalOffset& point) {
     return;
 
   PhysicalOffset point_in_track = track_box->AbsoluteToLocalPoint(point);
-  auto writing_direction = thumb_box->StyleRef().GetWritingDirection();
+  auto writing_direction = thumb_box->Style().GetWritingDirection();
   bool is_flipped = writing_direction.IsFlippedInlines();
-  LayoutUnit track_size;
-  LayoutUnit position;
-  LayoutUnit current_position;
   const auto* input_box = To<LayoutBox>(input_object);
   const PhysicalOffset thumb_offset =
       thumb_box->LocalToAncestorPoint(PhysicalOffset(), input_box) -
       track_box->LocalToAncestorPoint(PhysicalOffset(), input_box);
-  const PhysicalSize size = thumb_box->StitchedSize();
-  const PhysicalBoxStrut margins = thumb_box->MarginOutsets();
+  const PhysicalSize thumb_size = thumb_box->StitchedSize();
+  const PhysicalBoxStrut thumb_margins = thumb_box->MarginOutsets();
+  const PhysicalSize track_box_size = track_box->PhysicalContentBoxRect().size;
 
+  LayoutUnit track_size;
+  LayoutUnit position;
+  LayoutUnit current_position;
   if (!writing_direction.IsHorizontal()) {
-    track_size = track_box->ContentHeight() - size.height;
-    position = point_in_track.top - size.height / 2;
-    position -= is_flipped ? margins.bottom : margins.top;
+    track_size = track_box_size.height - thumb_size.height;
+    position = point_in_track.top - thumb_size.height / 2;
+    position -= is_flipped ? thumb_margins.bottom : thumb_margins.top;
     current_position = thumb_offset.top;
   } else {
-    track_size = track_box->ContentWidth() - size.width;
-    position = point_in_track.left - size.width / 2;
-    position -= is_flipped ? margins.right : margins.left;
+    track_size = track_box_size.width - thumb_size.width;
+    position = point_in_track.left - thumb_size.width / 2;
+    position -= is_flipped ? thumb_margins.right : thumb_margins.left;
     current_position = thumb_offset.left;
   }
   position = std::min(position, track_size).ClampNegativeToZero();
@@ -168,7 +169,7 @@ void SliderThumbElement::StartDragging() {
   }
 }
 
-void SliderThumbElement::StopDragging() {
+void SliderThumbElement::StopDragging(EventDispatch event_dispatch) {
   if (!in_drag_mode_)
     return;
 
@@ -181,8 +182,9 @@ void SliderThumbElement::StopDragging() {
     GetLayoutObject()->SetNeedsLayoutAndFullPaintInvalidation(
         layout_invalidation_reason::kSliderValueChanged);
   }
-  if (HostInput())
+  if (HostInput() && event_dispatch == kEventDispatchAllowed) {
     HostInput()->DispatchFormControlChangeEvent();
+  }
 }
 
 void SliderThumbElement::DefaultEventHandler(Event& event) {
@@ -272,7 +274,7 @@ const AtomicString& SliderThumbElement::ShadowPseudoId() const {
   if (!input || !input->GetLayoutObject())
     return shadow_element_names::kPseudoSliderThumb;
 
-  const ComputedStyle& slider_style = input->GetLayoutObject()->StyleRef();
+  const ComputedStyle& slider_style = input->GetLayoutObject()->Style();
   switch (slider_style.EffectiveAppearance()) {
     case AppearanceValue::kMediaSlider:
     case AppearanceValue::kMediaSliderThumb:
@@ -394,12 +396,11 @@ SliderContainerElement::Direction SliderContainerElement::GetDirection(
 }
 
 bool SliderContainerElement::CanSlide() {
-  if (!HostInput() || !HostInput()->GetLayoutObject() ||
-      !HostInput()->GetLayoutObject()->Style()) {
+  if (!HostInput() || !HostInput()->GetLayoutObject()) {
     return false;
   }
-  const ComputedStyle* slider_style = HostInput()->GetLayoutObject()->Style();
-  const TransformOperations& transforms = slider_style->Transform();
+  const ComputedStyle& slider_style = HostInput()->GetLayoutObject()->Style();
+  const TransformOperations& transforms = slider_style.Transform();
   int transform_size = transforms.size();
   if (transform_size > 0) {
     for (int i = 0; i < transform_size; ++i) {
@@ -426,7 +427,7 @@ const AtomicString& SliderContainerElement::ShadowPseudoId() const {
     return shadow_element_names::kPseudoSliderContainer;
 
   const ComputedStyle& slider_style =
-      OwnerShadowHost()->GetLayoutObject()->StyleRef();
+      OwnerShadowHost()->GetLayoutObject()->Style();
   switch (slider_style.EffectiveAppearance()) {
     case AppearanceValue::kMediaSlider:
     case AppearanceValue::kMediaSliderThumb:

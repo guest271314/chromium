@@ -8,6 +8,7 @@
 #include "base/files/file_util.h"
 #include "base/run_loop.h"
 #include "base/strings/stringprintf.h"
+#include "base/threading/thread_restrictions.h"
 #include "base/version.h"
 #include "build/build_config.h"
 #include "chrome/browser/devtools/devtools_window.h"
@@ -16,7 +17,7 @@
 #include "chrome/browser/extensions/extension_browsertest.h"
 #include "chrome/browser/extensions/extension_service.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/common/extensions/api/tabs.h"
 #include "chrome/test/base/in_process_browser_test.h"
@@ -31,10 +32,12 @@
 #include "extensions/browser/process_manager.h"
 #include "extensions/common/manifest_handlers/background_info.h"
 #include "extensions/common/permissions/permissions_data.h"
+#include "extensions/common/switches.h"
 #include "extensions/test/extension_test_message_listener.h"
 #include "extensions/test/test_extension_dir.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
 #include "testing/gmock/include/gmock/gmock.h"
+#include "ui/base/page_transition_types.h"
 
 #if BUILDFLAG(IS_WIN)
 #include "base/win/windows_version.h"
@@ -100,7 +103,7 @@ IN_PROC_BROWSER_TEST_F(ExtensionLoadingTest,
 
   // The extension takes a couple round-trips to the renderer in order
   // to crash, so open a new tab to wait long enough.
-  ASSERT_FALSE(AddTabAtIndex(browser()->tab_strip_model()->count(),
+  ASSERT_FALSE(AddTabAtIndex(browser()->GetTabStripModel()->count(),
                              GURL("http://www.google.com/"),
                              ui::PAGE_TRANSITION_TYPED));
 
@@ -262,6 +265,8 @@ IN_PROC_BROWSER_TEST_F(ExtensionLoadingTest,
 #endif
 IN_PROC_BROWSER_TEST_F(ExtensionLoadingTest,
                        MAYBE_RuntimeValidWhileDevToolsOpen) {
+  base::CommandLine::ForCurrentProcess()->AppendSwitch(
+      extensions::switches::kExtensionsOnExtensionURLs);
   TestExtensionDir devtools_dir;
   TestExtensionDir inspect_dir;
 

@@ -6,12 +6,17 @@
 #define COMPONENTS_PAYMENTS_CONTENT_PAYMENT_REQUEST_DISPLAY_MANAGER_H_
 
 #include <memory>
+#include <optional>
 
 #include "base/functional/callback.h"
 #include "base/memory/weak_ptr.h"
 #include "components/keyed_service/core/keyed_service.h"
-#include "content/public/browser/render_frame_host.h"
 #include "url/gurl.h"
+#include "url/origin.h"
+
+namespace gfx {
+class Size;
+}
 
 namespace payments {
 
@@ -61,8 +66,13 @@ class PaymentRequestDisplayManager : public KeyedService {
     // Attempt to display |url| inside the Payment Request dialog and run
     // |callback| after navigation is completed, passing true/false to indicate
     // success/failure.
-    void DisplayPaymentHandlerWindow(const GURL& url,
-                                     PaymentHandlerOpenWindowCallback callback);
+    void DisplayPaymentHandlerWindow(
+        const GURL& url,
+        const std::optional<gfx::Size>& preferred_web_contents_size,
+        PaymentHandlerOpenWindowCallback callback);
+
+    // Set the expected origin of the payment handler.
+    void SetPaymentHandlerOrigin(std::optional<url::Origin> origin);
 
     // Returns true after Show() was called.
     bool was_shown() const { return was_shown_; }
@@ -77,6 +87,7 @@ class PaymentRequestDisplayManager : public KeyedService {
     base::WeakPtr<PaymentRequestDisplayManager> display_manager_;
     base::WeakPtr<ContentPaymentRequestDelegate> delegate_;
     bool was_shown_ = false;
+    std::optional<url::Origin> payment_handler_origin_;
 
     base::WeakPtrFactory<DisplayHandle> weak_ptr_factory_{this};
   };
@@ -96,8 +107,10 @@ class PaymentRequestDisplayManager : public KeyedService {
   // opening it failed.
   std::unique_ptr<DisplayHandle> TryShow(
       base::WeakPtr<ContentPaymentRequestDelegate> delegate);
-  void ShowPaymentHandlerWindow(const GURL& url,
-                                PaymentHandlerOpenWindowCallback callback);
+  void ShowPaymentHandlerWindow(
+      const GURL& url,
+      const std::optional<gfx::Size>& preferred_web_contents_size,
+      PaymentHandlerOpenWindowCallback callback);
 
   base::WeakPtr<PaymentRequestDisplayManager> GetWeakPtr();
 

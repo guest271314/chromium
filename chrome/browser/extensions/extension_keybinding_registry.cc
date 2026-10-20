@@ -13,10 +13,13 @@
 #include "chrome/browser/extensions/tab_helper.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/tab_list/tab_list_interface.h"
+#include "components/keyed_service/content/browser_context_keyed_service_shutdown_notifier_factory.h"
+#include "components/keyed_service/core/keyed_service_shutdown_notifier.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/media_keys_listener_manager.h"
 #include "content/public/browser/web_contents.h"
 #include "extensions/browser/event_router.h"
+#include "extensions/browser/extension_registry_factory.h"
 #include "extensions/browser/permissions/active_tab_permission_granter.h"
 #include "extensions/buildflags/buildflags.h"
 #include "extensions/common/command.h"
@@ -35,6 +38,28 @@ namespace {
 
 const char kOnCommandEventName[] = "commands.onCommand";
 
+// Monitors for shutdown for both regular and incognito profiles.
+class ExtensionKeybindingRegistryShutdownNotifierFactory
+    : public BrowserContextKeyedServiceShutdownNotifierFactory {
+ public:
+  static ExtensionKeybindingRegistryShutdownNotifierFactory* GetInstance() {
+    static base::NoDestructor<
+        ExtensionKeybindingRegistryShutdownNotifierFactory>
+        instance;
+    return instance.get();
+  }
+
+ private:
+  friend class base::NoDestructor<
+      ExtensionKeybindingRegistryShutdownNotifierFactory>;
+
+  ExtensionKeybindingRegistryShutdownNotifierFactory()
+      : BrowserContextKeyedServiceShutdownNotifierFactory(
+            "ExtensionKeybindingRegistryShutdownNotifierFactory") {
+    DependsOn(extensions::ExtensionRegistryFactory::GetInstance());
+  }
+};
+
 }  // namespace
 
 namespace extensions {
@@ -52,9 +77,28 @@ ExtensionKeybindingRegistry::ExtensionKeybindingRegistry(
   command_service_observation_.Observe(CommandService::Get(browser_context_));
   media_keys_listener_ = ui::MediaKeysListener::Create(
       this, ui::MediaKeysListener::Scope::kFocused);
+
+  shutdown_subscription_ =
+      ExtensionKeybindingRegistryShutdownNotifierFactory::GetInstance()
+          ->Get(browser_context_)
+          ->Subscribe(base::BindRepeating(
+              &ExtensionKeybindingRegistry::Shutdown, base::Unretained(this)));
 }
 
 ExtensionKeybindingRegistry::~ExtensionKeybindingRegistry() = default;
+
+// static
+void ExtensionKeybindingRegistry::EnsureAssociatedFactoryBuilt() {
+  ExtensionKeybindingRegistryShutdownNotifierFactory::GetInstance();
+}
+
+void ExtensionKeybindingRegistry::Shutdown() {
+  extension_registry_observation_.Reset();
+  command_service_observation_.Reset();
+  media_keys_listener_.reset();
+  shutdown_subscription_ = {};
+  browser_context_ = nullptr;
+}
 
 void ExtensionKeybindingRegistry::SetShortcutHandlingSuspended(bool suspended) {
   shortcut_handling_suspended_ = suspended;
@@ -64,6 +108,10 @@ void ExtensionKeybindingRegistry::SetShortcutHandlingSuspended(bool suspended) {
 void ExtensionKeybindingRegistry::AddExtensionKeybindings(
     const Extension* extension,
     const std::string& command_name) {
+  // If in shutdown, do nothing.
+  if (!browser_context_) {
+    return;
+  }
   // This object only handles named commands, not toolbar action execution.
   if (ShouldIgnoreCommand(command_name)) {
     return;
@@ -98,6 +146,9 @@ void ExtensionKeybindingRegistry::AddExtensionKeybindings(
 void ExtensionKeybindingRegistry::RemoveExtensionKeybinding(
     const Extension* extension,
     const std::string& command_name) {
+  if (!browser_context_) {
+    return;
+  }
   bool any_media_keys_removed = false;
   auto it = event_targets_.begin();
   while (it != event_targets_.end()) {
@@ -138,7 +189,7 @@ void ExtensionKeybindingRegistry::RemoveExtensionKeybinding(
             IsMediaKeysListenerManagerEnabled()) {
       content::MediaKeysListenerManager* media_keys_listener_manager =
           content::MediaKeysListenerManager::GetInstance();
-      DCHECK(media_keys_listener_manager);
+      CHECK(media_keys_listener_manager, base::NotFatalUntil::M161);
 
       media_keys_listener_manager->EnableInternalMediaKeyHandling();
     } else {
@@ -175,15 +226,19 @@ bool ExtensionKeybindingRegistry::NotifyEventTargets(
 
 void ExtensionKeybindingRegistry::CommandExecuted(
     const ExtensionId& extension_id,
-    const std::string& command) {
+    const std::string& command,
+    const ui::Accelerator& accelerator) {
+  if (!browser_context_) {
+    return;
+  }
   const Extension* extension = ExtensionRegistry::Get(browser_context_)
                                    ->enabled_extensions()
                                    .GetByID(extension_id);
   if (!extension)
     return;
 
-  base::ListValue args;
-  args.Append(command);
+  auto args = base::MakeRefCounted<EventArgs>();
+  args->data.Append(command);
 
   base::Value tab_value;
   if (tab_list_interface_) {
@@ -197,7 +252,7 @@ void ExtensionKeybindingRegistry::CommandExecuted(
     ActiveTabPermissionGranter* granter =
         web_contents ? ActiveTabPermissionGranter::FromWebContents(web_contents)
                      : nullptr;
-    if (granter) {
+    if (granter && !accelerator.IsMediaKey()) {
       granter->GrantIfRequested(extension);
     }
 
@@ -216,7 +271,7 @@ void ExtensionKeybindingRegistry::CommandExecuted(
     }
   }
 
-  args.Append(std::move(tab_value));
+  args->data.Append(std::move(tab_value));
 
   auto event =
       std::make_unique<Event>(events::COMMANDS_ON_COMMAND, kOnCommandEventName,
@@ -240,6 +295,8 @@ void ExtensionKeybindingRegistry::AddEventTarget(
   // Shortcuts except media keys have only one target in the list. See comment
   // about |event_targets_|.
   if (!accelerator.IsMediaKey()) {
+    // TODO(crbug.com/571680756): CHECK-exclusion: Convert to a CHECK once we
+    // are confident it won't be triggered.
     DCHECK_EQ(1u, event_targets_[accelerator].size());
   } else {
     if (media_keys_listener_)
@@ -251,7 +308,7 @@ void ExtensionKeybindingRegistry::AddEventTarget(
             IsMediaKeysListenerManagerEnabled()) {
       content::MediaKeysListenerManager* media_keys_listener_manager =
           content::MediaKeysListenerManager::GetInstance();
-      DCHECK(media_keys_listener_manager);
+      CHECK(media_keys_listener_manager, base::NotFatalUntil::M161);
 
       media_keys_listener_manager->DisableInternalMediaKeyHandling();
     } else {
@@ -271,7 +328,7 @@ bool ExtensionKeybindingRegistry::GetFirstTarget(
   if (targets == event_targets_.end())
     return false;
 
-  DCHECK(!targets->second.empty());
+  CHECK(!targets->second.empty(), base::NotFatalUntil::M161);
   auto first_target = targets->second.begin();
   *extension_id = first_target->first;
   *command_name = first_target->second;
@@ -285,6 +342,9 @@ bool ExtensionKeybindingRegistry::IsEventTargetsEmpty() const {
 void ExtensionKeybindingRegistry::OnExtensionLoaded(
     content::BrowserContext* browser_context,
     const Extension* extension) {
+  if (!browser_context_) {
+    return;
+  }
   if (ExtensionMatchesFilter(extension))
     AddExtensionKeybindings(extension, std::string());
 }
@@ -293,6 +353,9 @@ void ExtensionKeybindingRegistry::OnExtensionUnloaded(
     content::BrowserContext* browser_context,
     const Extension* extension,
     UnloadedExtensionReason reason) {
+  if (!browser_context_) {
+    return;
+  }
   if (ExtensionMatchesFilter(extension))
     RemoveExtensionKeybinding(extension, std::string());
 }
@@ -300,6 +363,9 @@ void ExtensionKeybindingRegistry::OnExtensionUnloaded(
 void ExtensionKeybindingRegistry::OnExtensionCommandAdded(
     const ExtensionId& extension_id,
     const std::string& command_name) {
+  if (!browser_context_) {
+    return;
+  }
   const Extension* extension = ExtensionRegistry::Get(browser_context_)
                                    ->enabled_extensions()
                                    .GetByID(extension_id);
@@ -321,6 +387,9 @@ void ExtensionKeybindingRegistry::OnExtensionCommandAdded(
 void ExtensionKeybindingRegistry::OnExtensionCommandRemoved(
     const ExtensionId& extension_id,
     const std::string& command_name) {
+  if (!browser_context_) {
+    return;
+  }
   const Extension* extension = ExtensionRegistry::Get(browser_context_)
                                    ->enabled_extensions()
                                    .GetByID(extension_id);
@@ -357,6 +426,9 @@ bool ExtensionKeybindingRegistry::ExtensionMatchesFilter(
 bool ExtensionKeybindingRegistry::ExecuteCommands(
     const ui::Accelerator& accelerator,
     const ExtensionId& extension_id) {
+  if (!browser_context_) {
+    return false;
+  }
   auto targets = event_targets_.find(accelerator);
   if (targets == event_targets_.end() || targets->second.empty())
     return false;
@@ -370,7 +442,7 @@ bool ExtensionKeybindingRegistry::ExecuteCommands(
     }
 
     if (extension_id.empty() || it->first == extension_id) {
-      CommandExecuted(it->first, it->second);
+      CommandExecuted(it->first, it->second, accelerator);
       executed = true;
     }
   }

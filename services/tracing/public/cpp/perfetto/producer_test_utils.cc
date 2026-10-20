@@ -9,6 +9,7 @@
 #include <optional>
 #include <utility>
 
+#include "base/containers/span.h"
 #include "base/debug/leak_annotations.h"
 #include "base/run_loop.h"
 #include "base/trace_event/trace_log.h"
@@ -21,8 +22,7 @@
 namespace tracing {
 
 DataSourceTester::DataSourceTester(
-    tracing::PerfettoTracedProcess::DataSourceBase* data_source)
-{
+    tracing::PerfettoTracedProcess::DataSourceBase* data_source) {
   features_.InitAndDisableFeature(features::kEnablePerfettoSystemTracing);
 }
 

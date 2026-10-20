@@ -8,11 +8,13 @@
 #include <utility>
 
 #include "base/compiler_specific.h"
+#include "base/containers/span.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest-death-test.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/abseil-cpp/absl/numeric/int128.h"
 #include "third_party/blink/renderer/bindings/core/v8/idl_types.h"
+#include "third_party/blink/renderer/bindings/core/v8/native_value_traits_impl_bigint.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_binding_for_testing.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_internals.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_test_sequence_callback.h"
@@ -397,8 +399,10 @@ TEST(NativeValueTraitsImplTest, IDLBigint) {
 template <typename Arr>
 v8::Local<Arr> MakeArray(v8::Isolate* isolate, size_t size) {
   auto arr = Arr::New(isolate, size);
-  v8::MemorySpan<uint8_t> span(static_cast<uint8_t*>(arr->Data()),
-                               arr->ByteLength());
+  // SAFETY: `v8::[Shared]ArrayBuffer::New` ensures that using `arr->Data()`
+  // and `arr->ByteLength()` below is safe.
+  auto span = UNSAFE_BUFFERS(base::span<uint8_t>(
+      static_cast<uint8_t*>(arr->Data()), arr->ByteLength()));
   std::iota(span.begin(), span.end(), 0);
   return arr;
 }
@@ -580,6 +584,42 @@ TEST(NativeValueTraitsImplTest, PassAsSpanMissingOpt) {
                     scope.GetIsolate(), 0, v8::Undefined(scope.GetIsolate()),
                     exception_state),
                 testing::Eq(std::nullopt));
+  }
+}
+
+TEST(NativeValueTraitsImplTest, IDLOptionalObject) {
+  test::TaskEnvironment task_environment;
+  V8TestingScope scope;
+  v8::Isolate* isolate = scope.GetIsolate();
+  {
+    NonThrowableExceptionState exception_state;
+    ScriptObject result =
+        NativeValueTraits<IDLOptional<IDLObject>>::ArgumentValue(
+            isolate, 0, v8::Undefined(isolate), exception_state);
+    EXPECT_TRUE(result.IsEmpty());
+  }
+  {
+    NonThrowableExceptionState exception_state;
+    v8::Local<v8::Object> object = v8::Object::New(isolate);
+    ScriptObject result =
+        NativeValueTraits<IDLOptional<IDLObject>>::ArgumentValue(
+            isolate, 0, object, exception_state);
+    ASSERT_FALSE(result.IsEmpty());
+    EXPECT_EQ(result.V8Object(), object);
+  }
+  {
+    DummyExceptionStateForTesting exception_state;
+    ScriptObject result =
+        NativeValueTraits<IDLOptional<IDLObject>>::ArgumentValue(
+            isolate, 0, v8::Null(isolate), exception_state);
+    EXPECT_TRUE(exception_state.HadException());
+    EXPECT_TRUE(result.IsEmpty());
+  }
+  {
+    DummyExceptionStateForTesting exception_state;
+    NativeValueTraits<IDLOptional<IDLObject>>::ArgumentValue(
+        isolate, 0, v8::Number::New(isolate, 42), exception_state);
+    EXPECT_TRUE(exception_state.HadException());
   }
 }
 

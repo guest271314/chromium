@@ -20,14 +20,17 @@
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/utf_ostream_operators.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
 #include "build/build_config.h"
 #include "components/spellcheck/common/spellcheck_common.h"
+#include "components/spellcheck/common/spellcheck_features.h"
 #include "components/spellcheck/common/spellcheck_result.h"
 #include "components/spellcheck/renderer/empty_local_interface_provider.h"
 #include "components/spellcheck/renderer/hunspell_engine.h"
 #include "components/spellcheck/renderer/spellcheck_language.h"
 #include "components/spellcheck/renderer/spellcheck_provider_test.h"
+#include "mojo/public/cpp/bindings/receiver.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/web/web_text_checking_completion.h"
 #include "third_party/blink/public/web/web_text_checking_result.h"
@@ -49,9 +52,16 @@ base::FilePath GetHunspellDirectory() {
 }  // namespace
 
 // TODO(groby): This needs to be a BrowserTest for OSX.
-class SpellCheckTest : public testing::Test {
+class SpellCheckTest : public testing::TestWithParam<bool> {
  public:
   SpellCheckTest() {
+    if (GetParam()) {
+      feature_list_.InitAndEnableFeature(
+          spellcheck::kLazyInitializeSpellcheckCharAttribute);
+    } else {
+      feature_list_.InitAndDisableFeature(
+          spellcheck::kLazyInitializeSpellcheckCharAttribute);
+    }
     ReinitializeSpellCheck("en-US");
   }
 
@@ -130,6 +140,7 @@ class SpellCheckTest : public testing::Test {
 #endif
 
  private:
+  base::test::ScopedFeatureList feature_list_;
   base::test::SingleThreadTaskEnvironment task_environment_;
   spellcheck::EmptyLocalInterfaceProvider embedder_provider_;
   std::unique_ptr<SpellCheck> spell_check_;
@@ -190,7 +201,7 @@ class MockTextCheckingCompletion : public blink::WebTextCheckingCompletion {
 // A test with a "[ROBUSTNESS]" mark shows it is a robustness test and it uses
 // grammatically incorrect string.
 // TODO(groby): Please feel free to add more tests.
-TEST_F(SpellCheckTest, SpellCheckStrings_EN_US) {
+TEST_P(SpellCheckTest, SpellCheckStrings_EN_US) {
   struct TestCases {
     // A string to be tested.
     const wchar_t* input;
@@ -563,7 +574,7 @@ TEST_F(SpellCheckTest, SpellCheckStrings_EN_US) {
   }
 }
 
-TEST_F(SpellCheckTest, SpellCheckSuggestions_EN_US) {
+TEST_P(SpellCheckTest, SpellCheckSuggestions_EN_US) {
   static const struct {
     // A string to be tested.
     const wchar_t* input;
@@ -614,7 +625,7 @@ TEST_F(SpellCheckTest, SpellCheckSuggestions_EN_US) {
 
 // This test verifies our spellchecker can split a text into words and check
 // the spelling of each word in the text.
-TEST_F(SpellCheckTest, SpellCheckText) {
+TEST_P(SpellCheckTest, SpellCheckText) {
   struct TestCases {
     const char* language;
     const wchar_t* input;
@@ -973,7 +984,7 @@ TEST_F(SpellCheckTest, SpellCheckText) {
 
 // Verify that our SpellCheck::SpellCheckWord() returns false when it checks
 // misspelled words.
-TEST_F(SpellCheckTest, MisspelledWords) {
+TEST_P(SpellCheckTest, MisspelledWords) {
   struct TestCases {
     const char* language;
     const wchar_t* input;
@@ -1032,20 +1043,20 @@ TEST_F(SpellCheckTest, MisspelledWords) {
 #if !BUILDFLAG(IS_APPLE)
 
 // Make sure SpellCheckParagraph does not crash if the input is empty.
-TEST_F(SpellCheckTest, SpellCheckParagraphEmptyParagraph) {
+TEST_P(SpellCheckTest, SpellCheckParagraphEmptyParagraph) {
   std::vector<SpellCheckResult> expected;
   TestSpellCheckParagraph(u"", expected);
 }
 
 // A simple test case having no misspellings.
-TEST_F(SpellCheckTest, SpellCheckParagraphNoMisspellings) {
+TEST_P(SpellCheckTest, SpellCheckParagraphNoMisspellings) {
   const std::u16string text = u"apple";
   std::vector<SpellCheckResult> expected;
   TestSpellCheckParagraph(text, expected);
 }
 
 // A simple test case having one misspelling.
-TEST_F(SpellCheckTest, SpellCheckParagraphSingleMisspellings) {
+TEST_P(SpellCheckTest, SpellCheckParagraphSingleMisspellings) {
   const std::u16string text = u"zz";
   std::vector<SpellCheckResult> expected;
   expected.emplace_back(spellcheck::Decoration::SPELLING, 0, 2);
@@ -1054,7 +1065,7 @@ TEST_F(SpellCheckTest, SpellCheckParagraphSingleMisspellings) {
 }
 
 // A simple test case having multiple misspellings.
-TEST_F(SpellCheckTest, SpellCheckParagraphMultipleMisspellings) {
+TEST_P(SpellCheckTest, SpellCheckParagraphMultipleMisspellings) {
   const std::u16string text = u"zz, zz";
   std::vector<SpellCheckResult> expected;
   expected.emplace_back(spellcheck::Decoration::SPELLING, 0, 2);
@@ -1064,7 +1075,7 @@ TEST_F(SpellCheckTest, SpellCheckParagraphMultipleMisspellings) {
 }
 
 // Make sure a relatively long (correct) sentence can be spellchecked.
-TEST_F(SpellCheckTest, SpellCheckParagraphLongSentence) {
+TEST_P(SpellCheckTest, SpellCheckParagraphLongSentence) {
   std::vector<SpellCheckResult> expected;
   // The text is taken from US constitution preamble.
   const std::u16string text =
@@ -1078,7 +1089,7 @@ TEST_F(SpellCheckTest, SpellCheckParagraphLongSentence) {
 }
 
 // Make sure all misspellings can be found in a relatively long sentence.
-TEST_F(SpellCheckTest, SpellCheckParagraphLongSentenceMultipleMisspellings) {
+TEST_P(SpellCheckTest, SpellCheckParagraphLongSentenceMultipleMisspellings) {
   std::vector<SpellCheckResult> expected;
 
   // All 'the' are converted to 'hte' in US consitition preamble.
@@ -1103,7 +1114,7 @@ TEST_F(SpellCheckTest, SpellCheckParagraphLongSentenceMultipleMisspellings) {
 // is used on Mac instead of SpellCheck::RequestTextChecking.
 
 // Make sure RequestTextChecking does not crash if input is empty.
-TEST_F(SpellCheckTest, RequestSpellCheckWithEmptyString) {
+TEST_P(SpellCheckTest, RequestSpellCheckWithEmptyString) {
   MockTextCheckingResult completion;
 
   spell_check()->RequestTextChecking(
@@ -1117,7 +1128,7 @@ TEST_F(SpellCheckTest, RequestSpellCheckWithEmptyString) {
 }
 
 // A simple test case having no misspellings.
-TEST_F(SpellCheckTest, RequestSpellCheckWithoutMisspelling) {
+TEST_P(SpellCheckTest, RequestSpellCheckWithoutMisspelling) {
   MockTextCheckingResult completion;
 
   const std::u16string text = u"hello";
@@ -1131,7 +1142,7 @@ TEST_F(SpellCheckTest, RequestSpellCheckWithoutMisspelling) {
 }
 
 // A simple test case having one misspelling.
-TEST_F(SpellCheckTest, RequestSpellCheckWithSingleMisspelling) {
+TEST_P(SpellCheckTest, RequestSpellCheckWithSingleMisspelling) {
   MockTextCheckingResult completion;
 
   const std::u16string text = u"apple, zz";
@@ -1148,7 +1159,7 @@ TEST_F(SpellCheckTest, RequestSpellCheckWithSingleMisspelling) {
 }
 
 // A simple test case having a few misspellings.
-TEST_F(SpellCheckTest, RequestSpellCheckWithMisspellings) {
+TEST_P(SpellCheckTest, RequestSpellCheckWithMisspellings) {
   MockTextCheckingResult completion;
 
   const std::u16string text = u"apple, zz, orange, zz";
@@ -1168,7 +1179,7 @@ TEST_F(SpellCheckTest, RequestSpellCheckWithMisspellings) {
 
 // A test case that multiple requests comes at once. Make sure all
 // requests are processed.
-TEST_F(SpellCheckTest, RequestSpellCheckWithMultipleRequests) {
+TEST_P(SpellCheckTest, RequestSpellCheckWithMultipleRequests) {
   std::array<MockTextCheckingResult, 3> completion;
 
   const std::array<std::u16string, 3> text = {u"what, zz", u"apple, zz",
@@ -1191,7 +1202,7 @@ TEST_F(SpellCheckTest, RequestSpellCheckWithMultipleRequests) {
 
 // A test case that spellchecking is requested before initializing.
 // In this case, we postpone to post a request.
-TEST_F(SpellCheckTest, RequestSpellCheckWithoutInitialization) {
+TEST_P(SpellCheckTest, RequestSpellCheckWithoutInitialization) {
   UninitializeSpellCheck();
 
   MockTextCheckingResult completion;
@@ -1208,7 +1219,7 @@ TEST_F(SpellCheckTest, RequestSpellCheckWithoutInitialization) {
 
 // Requests several spellchecking before initializing. Except the last one,
 // posting requests is cancelled and text is rendered as correct one.
-TEST_F(SpellCheckTest, RequestSpellCheckMultipleTimesWithoutInitialization) {
+TEST_P(SpellCheckTest, RequestSpellCheckMultipleTimesWithoutInitialization) {
   UninitializeSpellCheck();
 
   std::array<MockTextCheckingResult, 3> completion;
@@ -1242,7 +1253,7 @@ TEST_F(SpellCheckTest, RequestSpellCheckMultipleTimesWithoutInitialization) {
 #endif
 
 // Verify that should_hide_suggesiton_window attribute is passed along.
-TEST_F(SpellCheckTest, CreateTextCheckingResultPassesHideSuggestionWindowTrue) {
+TEST_P(SpellCheckTest, CreateTextCheckingResultPassesHideSuggestionWindowTrue) {
   std::u16string text = u"zz";
   std::vector<SpellCheckResult> spellcheck_results;
   spellcheck_results.emplace_back(spellcheck::Decoration::SPELLING, 0, 2,
@@ -1258,7 +1269,7 @@ TEST_F(SpellCheckTest, CreateTextCheckingResultPassesHideSuggestionWindowTrue) {
   EXPECT_EQ(textcheck_results[0].should_hide_suggestion_menu, true);
 }
 
-TEST_F(SpellCheckTest,
+TEST_P(SpellCheckTest,
        CreateTextCheckingResultPassesHideSuggestionWindowFalse) {
   std::u16string text = u"zz";
   std::vector<SpellCheckResult> spellcheck_results;
@@ -1277,7 +1288,7 @@ TEST_F(SpellCheckTest,
 
 // Verify that the SpellCheck class keeps the spelling marker added to a
 // misspelled word "zz".
-TEST_F(SpellCheckTest, CreateTextCheckingResultsKeepsMarkers) {
+TEST_P(SpellCheckTest, CreateTextCheckingResultsKeepsMarkers) {
   std::u16string text = u"zz";
   std::vector<SpellCheckResult> spellcheck_results;
   spellcheck_results.emplace_back(spellcheck::Decoration::SPELLING, 0, 2,
@@ -1295,7 +1306,7 @@ TEST_F(SpellCheckTest, CreateTextCheckingResultsKeepsMarkers) {
 
 // Verify that the SpellCheck class replaces the spelling marker added to a
 // contextually-misspelled word "bean" with a grammar marker.
-TEST_F(SpellCheckTest, CreateTextCheckingResultsAddsGrammarMarkers) {
+TEST_P(SpellCheckTest, CreateTextCheckingResultsAddsGrammarMarkers) {
   std::u16string text = u"I have bean to USA.";
   std::vector<SpellCheckResult> spellcheck_results;
   spellcheck_results.emplace_back(spellcheck::Decoration::SPELLING, 7, 4,
@@ -1313,7 +1324,7 @@ TEST_F(SpellCheckTest, CreateTextCheckingResultsAddsGrammarMarkers) {
 
 // Verify that the SpellCheck preserves the original apostrophe type in the
 // checked text, regardless of the type of apostrophe the browser returns.
-TEST_F(SpellCheckTest, CreateTextCheckingResultsKeepsTypographicalApostrophe) {
+TEST_P(SpellCheckTest, CreateTextCheckingResultsKeepsTypographicalApostrophe) {
   std::u16string text = u"Ik've havn’t ni'n’out-s I've I’ve";
   std::vector<SpellCheckResult> spellcheck_results;
 
@@ -1406,7 +1417,7 @@ TEST_F(SpellCheckTest, CreateTextCheckingResultsKeepsTypographicalApostrophe) {
 }
 
 // Checks some words that should be present in all English dictionaries.
-TEST_F(SpellCheckTest, EnglishWords) {
+TEST_P(SpellCheckTest, EnglishWords) {
   struct TestCases {
     const char* input;
     bool should_pass;
@@ -1455,7 +1466,7 @@ TEST_F(SpellCheckTest, EnglishWords) {
 }
 
 // Checks that NOSUGGEST works in English dictionaries.
-TEST_F(SpellCheckTest, NoSuggest) {
+TEST_P(SpellCheckTest, NoSuggest) {
   ReinitializeSpellCheck("xx-XX");
 
   static const struct {
@@ -1496,8 +1507,7 @@ TEST_F(SpellCheckTest, NoSuggest) {
   }
 }
 
-// Check that the correct dictionary files are checked in.
-TEST_F(SpellCheckTest, DictionaryFiles) {
+TEST_P(SpellCheckTest, DictionaryFiles) {
   std::vector<std::string> spellcheck_languages =
       spellcheck::SpellCheckLanguages();
   EXPECT_FALSE(spellcheck_languages.empty());
@@ -1511,7 +1521,7 @@ TEST_F(SpellCheckTest, DictionaryFiles) {
 }
 
 // TODO(groby): Add a test for hunspell itself, when MAXWORDLEN is exceeded.
-TEST_F(SpellCheckTest, SpellingEngine_CheckSpelling) {
+TEST_P(SpellCheckTest, SpellingEngine_CheckSpelling) {
   static const struct {
     const char* word;
     bool expected_result;
@@ -1551,7 +1561,7 @@ TEST_F(SpellCheckTest, SpellingEngine_CheckSpelling) {
 
 // Chrome should not suggest "Othello" for "hellllo" or "identically" for
 // "accidently".
-TEST_F(SpellCheckTest, LogicalSuggestions) {
+TEST_P(SpellCheckTest, LogicalSuggestions) {
   static const struct {
     const char* misspelled;
     const char* suggestion;
@@ -1573,7 +1583,7 @@ TEST_F(SpellCheckTest, LogicalSuggestions) {
 }
 
 // Words with apostrophes should be valid contractions.
-TEST_F(SpellCheckTest, IsValidContraction) {
+TEST_P(SpellCheckTest, IsValidContraction) {
   static constexpr const char* kLanguages[] = {
       "en-AU", "en-CA", "en-GB", "en-US",
   };
@@ -1591,7 +1601,7 @@ TEST_F(SpellCheckTest, IsValidContraction) {
   }
 }
 
-TEST_F(SpellCheckTest, FillSuggestions_OneLanguageNoSuggestions) {
+TEST_P(SpellCheckTest, FillSuggestions_OneLanguageNoSuggestions) {
   std::vector<std::vector<std::u16string>> suggestions_list;
   std::vector<std::u16string> suggestion_results;
 
@@ -1601,7 +1611,7 @@ TEST_F(SpellCheckTest, FillSuggestions_OneLanguageNoSuggestions) {
   EXPECT_TRUE(suggestion_results.empty());
 }
 
-TEST_F(SpellCheckTest, FillSuggestions_OneLanguageFewSuggestions) {
+TEST_P(SpellCheckTest, FillSuggestions_OneLanguageFewSuggestions) {
   std::vector<std::vector<std::u16string>> suggestions_list;
   std::vector<std::u16string> suggestion_results;
 
@@ -1613,7 +1623,7 @@ TEST_F(SpellCheckTest, FillSuggestions_OneLanguageFewSuggestions) {
   EXPECT_EQ(u"foo", suggestion_results[0]);
 }
 
-TEST_F(SpellCheckTest, FillSuggestions_OneLanguageManySuggestions) {
+TEST_P(SpellCheckTest, FillSuggestions_OneLanguageManySuggestions) {
   std::vector<std::vector<std::u16string>> suggestions_list;
   std::vector<std::u16string> suggestion_results;
 
@@ -1629,7 +1639,7 @@ TEST_F(SpellCheckTest, FillSuggestions_OneLanguageManySuggestions) {
               suggestion_results[i]);
 }
 
-TEST_F(SpellCheckTest, FillSuggestions_RemoveDuplicates) {
+TEST_P(SpellCheckTest, FillSuggestions_RemoveDuplicates) {
   std::vector<std::vector<std::u16string>> suggestions_list;
   std::vector<std::u16string> suggestion_results;
 
@@ -1647,7 +1657,7 @@ TEST_F(SpellCheckTest, FillSuggestions_RemoveDuplicates) {
   EXPECT_EQ(u"baz", suggestion_results[2]);
 }
 
-TEST_F(SpellCheckTest, FillSuggestions_TwoLanguages) {
+TEST_P(SpellCheckTest, FillSuggestions_TwoLanguages) {
   std::vector<std::vector<std::u16string>> suggestions_list;
   std::vector<std::u16string> suggestion_results;
 
@@ -1671,7 +1681,7 @@ TEST_F(SpellCheckTest, FillSuggestions_TwoLanguages) {
   EXPECT_EQ(u"0baz", suggestion_results[4]);
 }
 
-TEST_F(SpellCheckTest, FillSuggestions_ThreeLanguages) {
+TEST_P(SpellCheckTest, FillSuggestions_ThreeLanguages) {
   std::vector<std::vector<std::u16string>> suggestions_list;
   std::vector<std::u16string> suggestion_results;
 
@@ -1693,4 +1703,130 @@ TEST_F(SpellCheckTest, FillSuggestions_ThreeLanguages) {
   EXPECT_EQ(u"2foo", suggestion_results[2]);
   EXPECT_EQ(u"0bar", suggestion_results[3]);
   EXPECT_EQ(u"1bar", suggestion_results[4]);
+}
+
+INSTANTIATE_TEST_SUITE_P(All, SpellCheckTest, testing::Bool());
+
+namespace {
+
+class FakeInitializationHostProvider
+    : public service_manager::LocalInterfaceProvider,
+      public spellcheck::mojom::SpellCheckInitializationHost {
+ public:
+  FakeInitializationHostProvider() = default;
+  ~FakeInitializationHostProvider() override = default;
+
+  void GetInterface(const std::string& name,
+                    mojo::ScopedMessagePipeHandle request_handle) override {
+    if (name == spellcheck::mojom::SpellCheckInitializationHost::Name_) {
+      if (receiver_.is_bound()) {
+        receiver_.reset();
+      }
+      receiver_.Bind(mojo::PendingReceiver<
+                     spellcheck::mojom::SpellCheckInitializationHost>(
+          std::move(request_handle)));
+    }
+  }
+
+  void RequestDictionary() override {
+    request_dictionary_called_ = true;
+    ++request_dictionary_count_;
+    if (quit_closure_) {
+      std::move(quit_closure_).Run();
+    }
+  }
+
+  void WaitForRequestDictionary() {
+    if (request_dictionary_called_) {
+      return;
+    }
+    base::RunLoop run_loop;
+    quit_closure_ = run_loop.QuitClosure();
+    run_loop.Run();
+  }
+
+  bool request_dictionary_called() const { return request_dictionary_called_; }
+  int request_dictionary_count() const { return request_dictionary_count_; }
+
+ private:
+  mojo::Receiver<spellcheck::mojom::SpellCheckInitializationHost> receiver_{
+      this};
+  bool request_dictionary_called_ = false;
+  int request_dictionary_count_ = 0;
+  base::OnceClosure quit_closure_;
+};
+
+}  // namespace
+
+TEST(SpellCheckOnDemandTest, InitializeIfNeededRequestsDictionaryWhenEmpty) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(
+      spellcheck::kOnDemandSpellcheckInitialization);
+
+  base::test::TaskEnvironment task_environment;
+  FakeInitializationHostProvider provider;
+  SpellCheck spell_check(&provider);
+
+  EXPECT_FALSE(provider.request_dictionary_called());
+
+  // Calling InitializeIfNeeded when no languages have been set should request
+  // dictionary from the browser when feature is enabled.
+  EXPECT_TRUE(spell_check.InitializeIfNeeded());
+  provider.WaitForRequestDictionary();
+  EXPECT_TRUE(provider.request_dictionary_called());
+  EXPECT_EQ(1, provider.request_dictionary_count());
+}
+
+TEST(SpellCheckOnDemandTest,
+     InitializeIfNeededDoesNotRequestDictionaryWhenFeatureDisabled) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndDisableFeature(
+      spellcheck::kOnDemandSpellcheckInitialization);
+
+  base::test::TaskEnvironment task_environment;
+  FakeInitializationHostProvider provider;
+  SpellCheck spell_check(&provider);
+
+  EXPECT_FALSE(provider.request_dictionary_called());
+
+  // When feature is disabled, calling InitializeIfNeeded should not send IPC.
+  EXPECT_TRUE(spell_check.InitializeIfNeeded());
+  EXPECT_FALSE(provider.request_dictionary_called());
+  EXPECT_EQ(0, provider.request_dictionary_count());
+}
+
+TEST(SpellCheckOnDemandTest,
+     InitializeWithEmptyDictionariesMarksInitializedAndReturnsFalse) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(
+      spellcheck::kOnDemandSpellcheckInitialization);
+
+  base::test::TaskEnvironment task_environment;
+  FakeInitializationHostProvider provider;
+  SpellCheck spell_check(&provider);
+
+  // Calling Initialize with empty dictionaries simulates the browser responding
+  // with no dictionaries (e.g. spellchecking disabled or no languages enabled).
+  spell_check.Initialize(
+      std::vector<spellcheck::mojom::SpellCheckBDictLanguagePtr>(), {}, false);
+
+  // InitializeIfNeeded should return false because initialization is complete.
+  EXPECT_FALSE(spell_check.InitializeIfNeeded());
+  EXPECT_EQ(0, provider.request_dictionary_count());
+}
+
+TEST(SpellCheckOnDemandTest, InitializeIfNeededOnlyRequestsDictionaryOnce) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(
+      spellcheck::kOnDemandSpellcheckInitialization);
+
+  base::test::TaskEnvironment task_environment;
+  FakeInitializationHostProvider provider;
+  SpellCheck spell_check(&provider);
+
+  EXPECT_TRUE(spell_check.InitializeIfNeeded());
+  EXPECT_TRUE(spell_check.InitializeIfNeeded());
+  EXPECT_TRUE(spell_check.InitializeIfNeeded());
+  provider.WaitForRequestDictionary();
+  EXPECT_EQ(1, provider.request_dictionary_count());
 }

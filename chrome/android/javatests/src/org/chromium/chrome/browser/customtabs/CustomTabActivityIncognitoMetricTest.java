@@ -15,6 +15,7 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 
 import org.chromium.base.test.util.CommandLineFlags;
+import org.chromium.base.test.util.DisableIf;
 import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.base.test.util.HistogramWatcher;
 import org.chromium.chrome.browser.browserservices.intents.BrowserServicesIntentDataProvider;
@@ -23,6 +24,7 @@ import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.incognito.IncognitoDataTestUtils;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.net.test.EmbeddedTestServerRule;
+import org.chromium.ui.base.DeviceFormFactor;
 
 import java.util.concurrent.TimeoutException;
 
@@ -59,6 +61,7 @@ public class CustomTabActivityIncognitoMetricTest {
 
     @Test
     @MediumTest
+    @DisableIf.Device(DeviceFormFactor.DESKTOP) // https://crbug.com/568492481
     public void recordsHistogram_1P() {
         try (var ignored =
                 HistogramWatcher.newBuilder()
@@ -68,25 +71,6 @@ public class CustomTabActivityIncognitoMetricTest {
                         .expectBooleanRecord(IS_TRUSTED_UMA_KEY, true)
                         .build()) {
             Intent intent = createMinimalIncognitoCustomTabIntent();
-            mCustomTabActivityTestRule.startCustomTabActivityWithIntent(intent);
-        }
-    }
-
-    @Test
-    @MediumTest
-    public void recordsHistogram_ReaderMode_WithExtra() {
-        try (var ignored =
-                HistogramWatcher.newBuilder()
-                        .expectIntRecord(
-                                UMA_KEY,
-                                BrowserServicesIntentDataProvider.IncognitoCctCallerId.READER_MODE)
-                        .expectBooleanRecord(IS_TRUSTED_UMA_KEY, true)
-                        .build()) {
-            Intent intent = createMinimalIncognitoCustomTabIntent();
-            CustomTabIntentDataProvider.addReaderModeUiExtras(intent);
-            IncognitoCustomTabIntentDataProvider.addIncognitoExtrasForChromeFeatures(
-                    intent, BrowserServicesIntentDataProvider.IncognitoCctCallerId.READER_MODE);
-
             mCustomTabActivityTestRule.startCustomTabActivityWithIntent(intent);
         }
     }

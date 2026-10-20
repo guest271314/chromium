@@ -18,13 +18,13 @@
 #include "base/test/scoped_feature_list.h"
 #include "build/build_config.h"
 #include "content/browser/bad_message.h"
-#include "content/browser/child_process_security_policy_impl.h"
 #include "content/browser/origin_agent_cluster_isolation_state.h"
 #include "content/browser/process_lock.h"
 #include "content/browser/process_reuse_policy.h"
 #include "content/browser/renderer_host/navigation_request.h"
 #include "content/browser/renderer_host/navigator.h"
 #include "content/browser/renderer_host/render_process_host_impl.h"
+#include "content/browser/security/cpsp/child_process_security_policy_impl.h"
 #include "content/browser/site_info.h"
 #include "content/browser/storage_partition_impl.h"
 #include "content/browser/web_contents/web_contents_impl.h"
@@ -1039,10 +1039,11 @@ IN_PROC_BROWSER_TEST_F(OriginKeyedProcessByDefaultTest,
       root_site_instance->GetIsolationContext();
   // Verify that we're not explicitly tracking the origin for
   // `default_isolated_url`.
-  EXPECT_EQ(static_cast<OriginAgentClusterIsolationState*>(nullptr),
-            policy->LookupOriginIsolationStateForTesting(
-                isolation_context.browsing_instance_id(),
-                url::Origin::Create(default_isolated_url)));
+  EXPECT_FALSE(policy
+                   ->LookupOriginAgentClusterStateForTesting(
+                       isolation_context.browsing_instance_id(),
+                       url::Origin::Create(default_isolated_url))
+                   .has_value());
 
   // Now trigger a global walk by attempting to create a non-isolated version of
   // the same origin.
@@ -1054,14 +1055,96 @@ IN_PROC_BROWSER_TEST_F(OriginKeyedProcessByDefaultTest,
   // Now the origin should be explicitly tracked, even though it continues to
   // have the default isolation state as defined for the current
   // BrowsingInstance.
-  OriginAgentClusterIsolationState* isolation_state2 =
-      policy->LookupOriginIsolationStateForTesting(
+  std::optional<OriginAgentClusterIsolationState> isolation_state2 =
+      policy->LookupOriginAgentClusterStateForTesting(
           isolation_context.browsing_instance_id(),
           url::Origin::Create(default_isolated_url));
-  ASSERT_NE(static_cast<OriginAgentClusterIsolationState*>(nullptr),
-            isolation_state2);
+  ASSERT_TRUE(isolation_state2.has_value());
   EXPECT_TRUE(isolation_state2->is_origin_agent_cluster());
   EXPECT_TRUE(isolation_state2->requires_origin_keyed_process());
+}
+
+// Page activations reach OnResponseStarted() before they have a
+// RenderFrameHost. The ad exclusion decision must not crash for them.
+class OriginKeyedProcessByDefaultExcludeAdsActivationTest
+    : public OriginKeyedProcessByDefaultTest {
+ public:
+  OriginKeyedProcessByDefaultExcludeAdsActivationTest()
+      : prerender_helper_(base::BindRepeating(
+            &OriginKeyedProcessByDefaultExcludeAdsActivationTest::
+                GetWebContents,
+            base::Unretained(this))) {
+    feature_list_.InitAndEnableFeature(
+        features::kExcludeAdsFromOriginIsolation);
+  }
+  ~OriginKeyedProcessByDefaultExcludeAdsActivationTest() override = default;
+
+  OriginKeyedProcessByDefaultExcludeAdsActivationTest(
+      const OriginKeyedProcessByDefaultExcludeAdsActivationTest&) = delete;
+  OriginKeyedProcessByDefaultExcludeAdsActivationTest& operator=(
+      const OriginKeyedProcessByDefaultExcludeAdsActivationTest&) = delete;
+
+  void SetUpCommandLine(base::CommandLine* command_line) override {
+    // Must run before the HTTPS server starts.
+    prerender_helper_.RegisterServerRequestMonitor(https_server());
+    OriginKeyedProcessByDefaultTest::SetUpCommandLine(command_line);
+  }
+
+  WebContents* GetWebContents() { return shell()->web_contents(); }
+
+ protected:
+  test::PrerenderTestHelper prerender_helper_;
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
+};
+
+IN_PROC_BROWSER_TEST_F(OriginKeyedProcessByDefaultExcludeAdsActivationTest,
+                       PrerenderActivation) {
+  ASSERT_TRUE(SiteIsolationPolicy::AreOriginKeyedProcessesEnabledByDefault(
+      web_contents()->GetBrowserContext()));
+  ASSERT_TRUE(
+      base::FeatureList::IsEnabled(features::kExcludeAdsFromOriginIsolation));
+
+  GURL initial_url(https_server()->GetURL("foo.com", "/title1.html"));
+  GURL prerender_url(https_server()->GetURL("foo.com", "/title2.html"));
+  ASSERT_TRUE(NavigateToURL(shell(), initial_url));
+
+  PrerenderHostId host_id = prerender_helper_.AddPrerender(prerender_url);
+  ASSERT_FALSE(host_id.is_null());
+  test::PrerenderHostObserver prerender_observer(*web_contents(), host_id);
+
+  prerender_helper_.NavigatePrimaryPage(prerender_url);
+
+  EXPECT_TRUE(prerender_observer.was_activated());
+  EXPECT_EQ(prerender_url, web_contents()->GetLastCommittedURL());
+}
+
+IN_PROC_BROWSER_TEST_F(OriginKeyedProcessByDefaultExcludeAdsActivationTest,
+                       BackForwardCacheRestore) {
+  if (!base::FeatureList::IsEnabled(features::kBackForwardCache)) {
+    GTEST_SKIP() << "This test requires the back-forward cache.";
+  }
+  ASSERT_TRUE(SiteIsolationPolicy::AreOriginKeyedProcessesEnabledByDefault(
+      web_contents()->GetBrowserContext()));
+  ASSERT_TRUE(
+      base::FeatureList::IsEnabled(features::kExcludeAdsFromOriginIsolation));
+
+  GURL url_a(https_server()->GetURL("a.com", "/title1.html"));
+  GURL url_b(https_server()->GetURL("b.com", "/title1.html"));
+  ASSERT_TRUE(NavigateToURL(shell(), url_a));
+  RenderFrameHostWrapper rfh_a(web_contents()->GetPrimaryMainFrame());
+
+  ASSERT_TRUE(NavigateToURL(shell(), url_b));
+  ASSERT_FALSE(rfh_a.IsDestroyed());
+  ASSERT_EQ(RenderFrameHost::LifecycleState::kInBackForwardCache,
+            rfh_a->GetLifecycleState());
+
+  ASSERT_TRUE(HistoryGoBack(web_contents()));
+
+  // The page came from the back-forward cache.
+  EXPECT_EQ(rfh_a.get(), web_contents()->GetPrimaryMainFrame());
+  EXPECT_EQ(url_a, web_contents()->GetLastCommittedURL());
 }
 
 // The test ExplicitOptInRespected tests the speculative RFH created before
@@ -1131,12 +1214,11 @@ IN_PROC_BROWSER_TEST_F(
   auto* policy = ChildProcessSecurityPolicyImpl::GetInstance();
   IsolationContext isolation_context =
       root->current_frame_host()->GetSiteInstance()->GetIsolationContext();
-  OriginAgentClusterIsolationState* isolation_state2 =
-      policy->LookupOriginIsolationStateForTesting(
+  std::optional<OriginAgentClusterIsolationState> isolation_state2 =
+      policy->LookupOriginAgentClusterStateForTesting(
           isolation_context.browsing_instance_id(),
           url::Origin::Create(explicit_isolated_url));
-  ASSERT_NE(static_cast<OriginAgentClusterIsolationState*>(nullptr),
-            isolation_state2);
+  ASSERT_TRUE(isolation_state2.has_value());
   EXPECT_TRUE(isolation_state2->is_origin_agent_cluster());
   EXPECT_TRUE(isolation_state2->requires_origin_keyed_process());
 }
@@ -1185,12 +1267,11 @@ IN_PROC_BROWSER_TEST_F(OriginKeyedProcessByDefaultTest,
   auto* policy = ChildProcessSecurityPolicyImpl::GetInstance();
   IsolationContext isolation_context =
       root->current_frame_host()->GetSiteInstance()->GetIsolationContext();
-  OriginAgentClusterIsolationState* isolation_state2 =
-      policy->LookupOriginIsolationStateForTesting(
+  std::optional<OriginAgentClusterIsolationState> isolation_state2 =
+      policy->LookupOriginAgentClusterStateForTesting(
           isolation_context.browsing_instance_id(),
           url::Origin::Create(default_not_isolated_url));
-  ASSERT_NE(static_cast<OriginAgentClusterIsolationState*>(nullptr),
-            isolation_state2);
+  ASSERT_TRUE(isolation_state2.has_value());
   EXPECT_FALSE(isolation_state2->is_origin_agent_cluster());
   EXPECT_FALSE(isolation_state2->requires_origin_keyed_process());
 }
@@ -1222,10 +1303,11 @@ void TestDefaultIsolationForFrame(
   // Verify that we're not explicitly tracking the origin we isolated by
   // default.
   IsolationContext isolation_context = site_instance->GetIsolationContext();
-  EXPECT_EQ(static_cast<OriginAgentClusterIsolationState*>(nullptr),
-            policy->LookupOriginIsolationStateForTesting(
-                isolation_context.browsing_instance_id(),
-                url::Origin::Create(default_isolated_url)));
+  EXPECT_FALSE(policy
+                   ->LookupOriginAgentClusterStateForTesting(
+                       isolation_context.browsing_instance_id(),
+                       url::Origin::Create(default_isolated_url))
+                   .has_value());
 }
 
 }  // namespace
@@ -3029,7 +3111,8 @@ IN_PROC_BROWSER_TEST_F(OriginIsolationOptInHeaderTest,
   // BrowserContext, so DetermineOriginAgentClusterIsolation will return true.
   // However, during the navigation by the OpenPopup call below that global walk
   // will be triggered before the url's isolation status is set. This walk is
-  // triggered by the call to CheckForIsolationOptIn() in
+  // triggered by the call to
+  // MaybeRegisterExistingOriginAsHavingDefaultIsolation() in
   // NavigationRequest::OnResponseStarted().
   EXPECT_TRUE(policy
                   ->DetermineOriginAgentClusterIsolation(

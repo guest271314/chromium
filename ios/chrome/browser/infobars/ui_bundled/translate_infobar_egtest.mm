@@ -22,9 +22,9 @@
 #import "ios/chrome/browser/intelligence/features/features.h"
 #import "ios/chrome/browser/location_bar/badge/ui/location_bar_badge_constants.h"
 #import "ios/chrome/browser/popup_menu/public/popup_menu_constants.h"
-#import "ios/chrome/browser/reader_mode/model/features.h"
 #import "ios/chrome/browser/reader_mode/ui/constants.h"
 #import "ios/chrome/browser/shared/model/url/chrome_url_constants.h"
+#import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/translate/model/translate_app_interface.h"
 #import "ios/chrome/grit/ios_strings.h"
 #import "ios/chrome/test/earl_grey/chrome_earl_grey.h"
@@ -285,7 +285,6 @@ class TestResponseProvider {
 
 - (AppLaunchConfiguration)appConfigurationForTestCase {
   AppLaunchConfiguration config;
-  config.features_enabled.push_back(kEnableReaderModeTranslationWithInfobar);
   config.additional_args.push_back(std::string("-") +
                                    test_switches::kUseDefaultInfobarDuration);
 
@@ -302,7 +301,6 @@ class TestResponseProvider {
             (testTranslateBadgeWithReaderModeBadgeSupport)] ||
       [self
           isRunningTest:@selector(testTranslateInReaderModeAndNavigatesBack)]) {
-    config.features_enabled.push_back(kEnableReaderModeInUS);
     config.features_enabled.push_back(kProactiveSuggestionsFramework);
     config.features_enabled.push_back(kPageActionMenu);
   }
@@ -1625,11 +1623,15 @@ class TestResponseProvider {
   GREYAssertTrue([self selectTranslateButton],
                  @"Could not tap on Translate banner action button");
 
+  id<GREYMatcher> translateAcceptedAccessibilityIdentifier =
+      grey_allOf(grey_accessibilityID(
+                     kBadgeButtonTranslateAcceptedAccessibilityIdentifier),
+                 grey_sufficientlyVisible(), nil);
+
   // Check that the translate badge is visible and accepted.
   [ChromeEarlGrey
       waitForUIElementToAppearWithMatcher:
-          grey_accessibilityID(
-              kBadgeButtonTranslateAcceptedAccessibilityIdentifier)
+          translateAcceptedAccessibilityIdentifier
                                   timeout:kWaitForUIElement3xTimeout];
 
   // Open Reader Mode.
@@ -1645,8 +1647,7 @@ class TestResponseProvider {
   // Check that the translate badge is visible and accepted.
   [ChromeEarlGrey
       waitForUIElementToAppearWithMatcher:
-          grey_accessibilityID(
-              kBadgeButtonTranslateAcceptedAccessibilityIdentifier)
+          translateAcceptedAccessibilityIdentifier
                                   timeout:kWaitForUIElement3xTimeout];
 
   // Close Reader Mode.
@@ -1660,8 +1661,7 @@ class TestResponseProvider {
   // Check that the translate badge is visible and accepted.
   [ChromeEarlGrey
       waitForUIElementToAppearWithMatcher:
-          grey_accessibilityID(
-              kBadgeButtonTranslateAcceptedAccessibilityIdentifier)
+          translateAcceptedAccessibilityIdentifier
                                   timeout:kWaitForUIElement3xTimeout];
 }
 

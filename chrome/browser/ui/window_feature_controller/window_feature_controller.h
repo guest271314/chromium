@@ -59,6 +59,8 @@ class WindowFeatureController {
   // in |SupportsWindowFeature| for details on this.
   bool CanSupportWindowFeature(WindowFeature feature) const;
 
+  bool IsTrustedSource() const;
+
 #if BUILDFLAG(IS_MAC)
   // Returns if the window will use immersive fullscreen mode.
   bool UsesImmersiveFullscreenMode() const;
@@ -76,9 +78,8 @@ class WindowFeatureController {
                                             bool check_can_support) const;
   bool AppBrowserSupportsWindowFeature(WindowFeature feature,
                                        bool check_can_support) const;
-  bool PictureInPictureBrowserSupportsWindowFeature(
-      WindowFeature feature,
-      bool check_can_support) const;
+  bool FloatingBrowserSupportsWindowFeature(WindowFeature feature,
+                                            bool check_can_support) const;
   bool SupportsWindowFeatureImpl(WindowFeature feature,
                                  bool check_can_support) const;
   bool IsFullscreen() const;

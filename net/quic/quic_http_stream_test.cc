@@ -407,13 +407,13 @@ class QuicHttpStreamTest : public ::testing::TestWithParam<TestParams>,
         base::WrapUnique(static_cast<QuicServerInfo*>(nullptr)),
         QuicSessionAliasKey(
             url::SchemeHostPort(),
-            QuicSessionKey(
-                kDefaultServerHostName, kDefaultServerPort,
-                PRIVACY_MODE_DISABLED, ProxyChain::Direct(),
-                SessionUsage::kDestination, SocketTag(),
-                NetworkAnonymizationKey(), SecureDnsPolicy::kAllow,
-                /*require_dns_https_alpn=*/false,
-                /*disable_cert_verification_network_fetches=*/false)),
+            QuicSessionKey(kDefaultServerHostName, kDefaultServerPort,
+                           PRIVACY_MODE_DISABLED, ProxyChain::Direct(),
+                           SessionUsage::kDestination, SocketTag(),
+                           NetworkAnonymizationKey(), SecureDnsPolicy::kAllow,
+                           /*require_dns_https_alpn=*/false,
+                           /*disable_cert_verification_network_fetches=*/false,
+                           handles::kInvalidNetworkHandle)),
         /*require_confirmation=*/false,
         /*migrate_session_early_v2=*/false,
         /*migrate_session_on_network_change_v2=*/false,
@@ -436,7 +436,8 @@ class QuicHttpStreamTest : public ::testing::TestWithParam<TestParams>,
         /*socket_performance_watcher=*/nullptr, ConnectionEndpointMetadata(),
         /*enable_origin_frame=*/true, /*allow_server_preferred_address=*/true,
         MultiplexedSessionCreationInitiator::kUnknown,
-        NetLogWithSource::Make(NetLogSourceType::NONE));
+        NetLogWithSource::Make(NetLogSourceType::NONE),
+        QuicConnectionReuseDetails());
     session_->Initialize();
 
     // Blackhole QPACK decoder stream instead of constructing mock writes.

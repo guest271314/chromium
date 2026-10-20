@@ -54,8 +54,9 @@ class WrappedSkImageBacking : public ClearTrackingSharedImageBacking {
 
   // SharedImageBacking implementation.
   SharedImageBackingType GetType() const override;
-  void Update(std::unique_ptr<gfx::GpuFence> in_fence) override;
+  void Update(gfx::GpuFenceHandle in_fence) override;
   bool UploadFromMemory(const std::vector<SkPixmap>& pixmaps) override;
+  bool ReadbackToMemory(const std::vector<SkPixmap>& pixmaps) override;
 
  protected:
   std::unique_ptr<SkiaGaneshImageRepresentation> ProduceSkiaGanesh(
@@ -82,6 +83,10 @@ class WrappedSkImageBacking : public ClearTrackingSharedImageBacking {
       const SkSurfaceProps& surface_props,
       scoped_refptr<SharedContextState> context_state);
   std::vector<sk_sp<GrPromiseImageTexture>> GetPromiseTextures();
+
+  // Returns the SharedContextState to use for accessing the backing on the
+  // current thread, or nullptr if there is none.
+  SharedContextState* GetContextStateForCurrentThread() const;
 
   scoped_refptr<SharedContextState> context_state_;
 

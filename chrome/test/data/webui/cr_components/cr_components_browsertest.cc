@@ -7,20 +7,25 @@
 #include "components/contextual_tasks/public/features.h"
 #include "components/lens/lens_features.h"
 #include "content/public/test/browser_test.h"
+#include "content/public/test/file_system_chooser_test_helpers.h"
+#include "ui/shell_dialogs/select_file_dialog.h"
 
 #if !BUILDFLAG(IS_ANDROID)
+#include "base/command_line.h"
 #include "chrome/browser/browser_features.h"
 #include "components/history_clusters/core/features.h"
 #include "components/history_embeddings/core/history_embeddings_features.h"
+#include "ui/compositor/compositor_switches.h"
 #endif
 
 typedef WebUIMochaBrowserTest CrComponentsTest;
 
-#if !BUILDFLAG(IS_ANDROID)
 IN_PROC_BROWSER_TEST_F(CrComponentsTest, ColorChangeListener) {
+  set_test_loader_host(chrome::kChromeUIExtensionsHost);
   RunTest("cr_components/color_change_listener_test.js", "mocha.run()");
 }
 
+#if !BUILDFLAG(IS_ANDROID)
 IN_PROC_BROWSER_TEST_F(CrComponentsTest, CustomizeColorSchemeMode) {
   set_test_loader_host(chrome::kChromeUICustomizeChromeSidePanelHost);
   RunTest("cr_components/customize_color_scheme_mode_test.js", "mocha.run()");
@@ -29,12 +34,6 @@ IN_PROC_BROWSER_TEST_F(CrComponentsTest, CustomizeColorSchemeMode) {
 IN_PROC_BROWSER_TEST_F(CrComponentsTest, HelpBubbleMixin) {
   set_test_loader_host(chrome::kChromeUINewTabPageHost);
   RunTest("cr_components/help_bubble/help_bubble_mixin_test.js", "mocha.run()");
-}
-
-IN_PROC_BROWSER_TEST_F(CrComponentsTest, HelpBubbleMixinLit) {
-  set_test_loader_host(chrome::kChromeUINewTabPageHost);
-  RunTest("cr_components/help_bubble/help_bubble_mixin_lit_test.js",
-          "mocha.run()");
 }
 
 IN_PROC_BROWSER_TEST_F(CrComponentsTest, HelpBubble) {
@@ -103,12 +102,6 @@ IN_PROC_BROWSER_TEST_F(CrComponentsSearchboxTest, RealboxMatchTest) {
   RunTest("cr_components/searchbox/searchbox_match_test.js", "mocha.run()");
 }
 
-IN_PROC_BROWSER_TEST_F(CrComponentsSearchboxTest, RealboxTest) {
-  set_test_loader_host(chrome::kChromeUINewTabPageHost);
-  RunTest("cr_components/searchbox/searchbox_ntp_test.js",
-          "runMochaSuite('SearchboxTest');");
-}
-
 IN_PROC_BROWSER_TEST_F(CrComponentsSearchboxTest, SearchboxInputTest) {
   set_test_loader_host(chrome::kChromeUINewTabPageHost);
   RunTest("cr_components/searchbox/searchbox_input_test.js", "mocha.run()");
@@ -120,20 +113,35 @@ IN_PROC_BROWSER_TEST_F(CrComponentsSearchboxTest, RealboxPlaceholderTest) {
           "runMochaSuite('PlaceholderTextCyclerTest');");
 }
 
-IN_PROC_BROWSER_TEST_F(CrComponentsSearchboxTest, RealboxLensTest) {
-  set_test_loader_host(chrome::kChromeUINewTabPageHost);
-  RunTest("cr_components/searchbox/searchbox_lens_button_test.js",
-          "mocha.run()");
-}
-
 IN_PROC_BROWSER_TEST_F(CrComponentsSearchboxTest, SearchboxDropdownTest) {
   set_test_loader_host(chrome::kChromeUINewTabPageHost);
   RunTest("cr_components/searchbox/searchbox_dropdown_test.js", "mocha.run()");
 }
 
+IN_PROC_BROWSER_TEST_F(CrComponentsSearchboxTest, SearchboxSelectionMixin) {
+  RunTest("cr_components/searchbox/searchbox_selection_mixin_test.js",
+          "mocha.run()");
+}
+
+IN_PROC_BROWSER_TEST_F(CrComponentsSearchboxTest, KeywordModeManagerTest) {
+  set_test_loader_host(chrome::kChromeUINewTabPageHost);
+  RunTest("cr_components/searchbox/keyword_mode_manager_test.js",
+          "mocha.run()");
+}
+
 IN_PROC_BROWSER_TEST_F(CrComponentsSearchboxTest, SearchboxIconTest) {
   set_test_loader_host(chrome::kChromeUINewTabPageHost);
   RunTest("cr_components/searchbox/searchbox_icon_test.js", "mocha.run()");
+}
+
+IN_PROC_BROWSER_TEST_F(CrComponentsSearchboxTest, SearchboxMixinTest) {
+  set_test_loader_host(chrome::kChromeUINewTabPageHost);
+  RunTest("cr_components/searchbox/searchbox_mixin_test.js", "mocha.run()");
+}
+
+IN_PROC_BROWSER_TEST_F(CrComponentsSearchboxTest, SearchboxUtilsTest) {
+  set_test_loader_host(chrome::kChromeUINewTabPageHost);
+  RunTest("cr_components/searchbox/searchbox_utils_test.js", "mocha.run()");
 }
 
 class CrComponentsHistoryClustersTest : public WebUIMochaBrowserTest {
@@ -163,6 +171,10 @@ IN_PROC_BROWSER_TEST_F(CrComponentsHistoryClustersTest, Cluster) {
   RunTest("cr_components/history_clusters/cluster_test.js", "mocha.run()");
 }
 
+IN_PROC_BROWSER_TEST_F(CrComponentsHistoryClustersTest, UrlVisit) {
+  RunTest("cr_components/history_clusters/url_visit_test.js", "mocha.run()");
+}
+
 class CrComponentsMostVisitedTest : public WebUIMochaBrowserTest {
  protected:
   CrComponentsMostVisitedTest() {
@@ -187,6 +199,11 @@ IN_PROC_BROWSER_TEST_F(CrComponentsMostVisitedTest, MAYBE_Layouts) {
 IN_PROC_BROWSER_TEST_F(CrComponentsMostVisitedTest, ReflowLayouts) {
   RunTest("cr_components/most_visited_test.js",
           "runMochaSuite('Reflow Layouts');");
+}
+
+IN_PROC_BROWSER_TEST_F(CrComponentsMostVisitedTest, ContainerWidth) {
+  RunTest("cr_components/most_visited_test.js",
+          "runMochaSuite('ContainerWidth');");
 }
 
 IN_PROC_BROWSER_TEST_F(CrComponentsMostVisitedTest, LoggingAndUpdates) {
@@ -232,6 +249,16 @@ IN_PROC_BROWSER_TEST_F(CrComponentsMostVisitedTest, ExpandableTiles) {
 IN_PROC_BROWSER_TEST_F(CrComponentsMostVisitedTest, ShortcutsAutoRemovalToast) {
   RunTest("cr_components/most_visited_test.js",
           "runMochaSuite('ShortcutsAutoRemovalToast');");
+}
+
+IN_PROC_BROWSER_TEST_F(CrComponentsMostVisitedTest, ShortcutsReorder) {
+  RunTest("cr_components/most_visited_test.js",
+          "runMochaSuite('ShortcutsReorder');");
+}
+
+IN_PROC_BROWSER_TEST_F(CrComponentsMostVisitedTest, NonEditable) {
+  RunTest("cr_components/most_visited_test.js",
+          "runMochaSuite('NonEditable');");
 }
 
 typedef WebUIMochaBrowserTest CrComponentsThemeColorPickerTest;
@@ -300,7 +327,8 @@ IN_PROC_BROWSER_TEST_F(CrComponentsComposeboxTest, ContextualEntrypointButton) {
           "mocha.run()");
 }
 
-IN_PROC_BROWSER_TEST_F(CrComponentsComposeboxTest, ContextualEntrypointAndMenu) {
+IN_PROC_BROWSER_TEST_F(CrComponentsComposeboxTest,
+                       ContextualEntrypointAndMenu) {
   RunTest("cr_components/composebox/contextual_entrypoint_and_menu_test.js",
           "mocha.run()");
 }
@@ -323,20 +351,50 @@ IN_PROC_BROWSER_TEST_F(CrComponentsComposeboxTest,
           "mocha.run()");
 }
 
+typedef WebUIMochaBrowserTest CrComponentsSearchTest;
+IN_PROC_BROWSER_TEST_F(CrComponentsSearchTest, AnimatedGlow) {
+  RunTest("cr_components/search/animated_glow_test.js", "mocha.run()");
+}
+
+IN_PROC_BROWSER_TEST_F(CrComponentsSearchTest, RecordingWave) {
+  RunTest("cr_components/search/recording_wave_test.js", "mocha.run()");
+}
+
 IN_PROC_BROWSER_TEST_F(CrComponentsComposeboxTest, LensSearch) {
   RunTest("cr_components/composebox/composebox_lens_search_test.js",
           "mocha.run()");
 }
 
-IN_PROC_BROWSER_TEST_F(CrComponentsComposeboxTest, RecentTabChip) {
-  RunTest("cr_components/composebox/recent_tab_chip_test.js", "mocha.run()");
+IN_PROC_BROWSER_TEST_F(CrComponentsComposeboxTest, CurrentTabChip) {
+  RunTest("cr_components/composebox/current_tab_chip_test.js", "mocha.run()");
+}
+
+IN_PROC_BROWSER_TEST_F(CrComponentsComposeboxTest, ComposeboxToolChip) {
+  RunTest("cr_components/composebox/composebox_tool_chip_test.js",
+          "mocha.run()");
 }
 #endif
 
-// TODO(crbug.com/508867284): Flaky on Win/Linux/Chrome OS.
-IN_PROC_BROWSER_TEST_F(CrComponentsComposeboxTest,
-                       DISABLED_ComposeboxVoiceSearch) {
+IN_PROC_BROWSER_TEST_F(CrComponentsComposeboxTest, ComposeboxVoiceSearch) {
   RunTest("cr_components/composebox/composebox_voice_search_test.js",
+          "mocha.run()");
+}
+
+IN_PROC_BROWSER_TEST_F(CrComponentsComposeboxTest,
+                       ComposeboxVoiceSearchMetrics) {
+  RunTest("cr_components/composebox/composebox_voice_search_metrics_test.js",
+          "mocha.run()");
+}
+
+IN_PROC_BROWSER_TEST_F(CrComponentsComposeboxTest,
+                       ComposeboxVoiceSearchRecognition) {
+  RunTest(
+      "cr_components/composebox/composebox_voice_search_recognition_test.js",
+      "mocha.run()");
+}
+
+IN_PROC_BROWSER_TEST_F(CrComponentsComposeboxTest, ComposeboxVoiceSearchFlags) {
+  RunTest("cr_components/composebox/composebox_voice_search_flags_test.js",
           "mocha.run()");
 }
 
@@ -345,8 +403,37 @@ IN_PROC_BROWSER_TEST_F(CrComponentsComposeboxTest, ComposeboxDragAndDrop) {
           "mocha.run()");
 }
 
+IN_PROC_BROWSER_TEST_F(CrComponentsComposeboxTest, ComposeboxErrorScrim) {
+  RunTest("cr_components/composebox/error_scrim_test.js", "mocha.run()");
+}
+
 IN_PROC_BROWSER_TEST_F(CrComponentsComposeboxTest, ComposeboxFileCarousel) {
   RunTest("cr_components/composebox/file_carousel_test.js", "mocha.run()");
+}
+
+IN_PROC_BROWSER_TEST_F(CrComponentsComposeboxTest, ComposeboxFileThumbnail) {
+  RunTest("cr_components/composebox/file_thumbnail_test.js", "mocha.run()");
+}
+
+class CrComponentsComposeboxFileInputsTest : public CrComponentsComposeboxTest {
+ public:
+  void SetUpOnMainThread() override {
+    CrComponentsComposeboxTest::SetUpOnMainThread();
+    ui::SelectFileDialog::SetFactory(
+        std::make_unique<content::FakeSelectFileDialogFactory>(
+            std::vector<base::FilePath>{}));
+  }
+
+  void TearDownOnMainThread() override {
+    ui::SelectFileDialog::SetFactory(nullptr);
+    CrComponentsComposeboxTest::TearDownOnMainThread();
+  }
+};
+
+IN_PROC_BROWSER_TEST_F(CrComponentsComposeboxFileInputsTest,
+                       ComposeboxFileInputs) {
+  RunTest("cr_components/composebox/composebox_file_inputs_test.js",
+          "mocha.run()");
 }
 
 IN_PROC_BROWSER_TEST_F(CrComponentsComposeboxTest, ComposeboxInput) {
@@ -358,10 +445,44 @@ IN_PROC_BROWSER_TEST_F(CrComponentsComposeboxTest, ComposeboxInputPlaceholder) {
           "mocha.run()");
 }
 
+IN_PROC_BROWSER_TEST_F(CrComponentsComposeboxTest, ComposeboxAutocomplete) {
+  RunTest("cr_components/composebox/composebox_autocomplete_test.js",
+          "mocha.run()");
+}
+
+IN_PROC_BROWSER_TEST_F(CrComponentsComposeboxTest, ComposeboxDropdown) {
+  RunTest("cr_components/composebox/composebox_dropdown_test.js",
+          "mocha.run()");
+}
+
 IN_PROC_BROWSER_TEST_F(CrComponentsComposeboxTest, ComposeboxMatch) {
   RunTest("cr_components/composebox/composebox_match_test.js", "mocha.run()");
 }
 
-IN_PROC_BROWSER_TEST_F(CrComponentsComposeboxTest, Composebox) {
-  RunTest("cr_components/composebox/composebox_test.js", "mocha.run()");
+IN_PROC_BROWSER_TEST_F(CrComponentsComposeboxTest, ComposeboxMixin) {
+  RunTest("cr_components/composebox/composebox_mixin_test.js", "mocha.run()");
 }
+
+IN_PROC_BROWSER_TEST_F(CrComponentsComposeboxTest, ComposeboxAimButton) {
+  RunTest("cr_components/composebox/composebox_aim_button_test.js",
+          "runMochaSuite('ComposeboxAimButtonTest')");
+}
+
+#if !BUILDFLAG(IS_ANDROID)
+class CrComponentsWithPixelOutputTest : public WebUIMochaBrowserTest {
+ public:
+  CrComponentsWithPixelOutputTest() {
+    set_test_loader_host(chrome::kChromeUISettingsHost);
+  }
+
+ protected:
+  void SetUpCommandLine(base::CommandLine* command_line) override {
+    command_line->AppendSwitch(::switches::kEnablePixelOutputInTests);
+    WebUIMochaBrowserTest::SetUpCommandLine(command_line);
+  }
+};
+
+IN_PROC_BROWSER_TEST_F(CrComponentsWithPixelOutputTest, CrLottie) {
+  RunTest("cr_components/cr_lottie/cr_lottie_test.js", "mocha.run()");
+}
+#endif  // !BUILDFLAG(IS_ANDROID)

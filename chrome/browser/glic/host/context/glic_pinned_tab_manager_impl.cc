@@ -44,8 +44,9 @@ namespace {
 BASE_FEATURE(kGlicAutoUnpinOnTabChangedOrigin,
              base::FEATURE_ENABLED_BY_DEFAULT);
 
-// An arbitrary limit.
-const int32_t kDefaultMaxPinnedTabs = 5;
+// Limit matching the default set by the web client. This is expected to
+// be overridden by the web client when it is created.
+const int32_t kDefaultMaxPinnedTabs = 10;
 
 // A limit to use when the number set by the client is "unlimited". This is an
 // arbitrary large number.
@@ -474,9 +475,9 @@ bool GlicPinnedTabManagerImpl::IsTabPinned(tabs::TabHandle tab_handle) const {
   return !!GetPinnedTabEntry(tab_handle);
 }
 
-std::vector<tabs::TabInterface*> GlicPinnedTabManagerImpl::GetPinnedTabs()
-    const {
-  std::vector<tabs::TabInterface*> pinned_tabs;
+std::vector<raw_ptr<tabs::TabInterface>>
+GlicPinnedTabManagerImpl::GetPinnedTabs() const {
+  std::vector<raw_ptr<tabs::TabInterface>> pinned_tabs;
   for (auto& entry : pinned_tabs_) {
     if (auto* tab = entry.tab_handle.Get()) {
       pinned_tabs.push_back(tab);
@@ -541,7 +542,8 @@ void GlicPinnedTabManagerImpl::SendPinCandidatesUpdate() {
     return;
   }
 
-  std::vector<tabs::TabInterface*> candidates = GetUnsortedPinCandidates();
+  std::vector<raw_ptr<tabs::TabInterface>> candidates =
+      GetUnsortedPinCandidates();
   GlicPinCandidateComparator comparator(pin_candidates_options_->query);
   size_t limit =
       std::min(static_cast<size_t>(pin_candidates_options_->max_candidates),
@@ -555,9 +557,9 @@ void GlicPinnedTabManagerImpl::SendPinCandidatesUpdate() {
   pin_candidates_observer_->OnPinCandidatesChanged(std::move(results));
 }
 
-std::vector<tabs::TabInterface*>
+std::vector<raw_ptr<tabs::TabInterface>>
 GlicPinnedTabManagerImpl::GetUnsortedPinCandidates() {
-  std::vector<tabs::TabInterface*> candidates;
+  std::vector<raw_ptr<tabs::TabInterface>> candidates;
   ForEachCurrentBrowserWindowInterfaceOrderedByActivation(
       [this, &candidates](BrowserWindowInterface* browser_window_interface) {
         if (browser_window_interface->GetProfile() != profile_ ||
@@ -567,7 +569,7 @@ GlicPinnedTabManagerImpl::GetUnsortedPinCandidates() {
         }
         auto all_tabs =
             TabListInterface::From(browser_window_interface)->GetAllTabs();
-        for (auto* tab : all_tabs) {
+        for (tabs::TabInterface* tab : all_tabs) {
           if (IsTabPinned(tab->GetHandle())) {
             continue;
           }

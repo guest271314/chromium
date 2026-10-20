@@ -65,6 +65,7 @@ class DownloadBubbleUIController {
       const OfflineContentProvider::OfflineItemList& items);
   void OnOfflineItemUpdated(const OfflineItem& item);
   void OnOfflineItemRemoved(const ContentId& id);
+  void OnOfflineItemsInitialized();
 
   // Get the entries for the main view of the Download Bubble. The main view
   // contains all the recent downloads (finished within the last 24 hours).
@@ -159,7 +160,7 @@ class DownloadBubbleUIController {
   raw_ptr<DownloadDisplayController, AcrossTasksDanglingUntriaged>
       display_controller_;
 
-  std::optional<base::Time> last_partial_view_shown_time_ = std::nullopt;
+  std::optional<base::Time> last_partial_view_shown_time_;
 
   // Tracks whether the last time we provided models was for a partial view
   // (true) or a main view (false). This is an approximation for whether the

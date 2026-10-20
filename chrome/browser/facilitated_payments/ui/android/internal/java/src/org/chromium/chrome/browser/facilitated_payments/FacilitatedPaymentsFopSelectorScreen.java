@@ -25,7 +25,7 @@ import androidx.recyclerview.widget.RecyclerView;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.chrome.browser.facilitated_payments.FacilitatedPaymentsPaymentMethodsProperties.FopSelectorProperties;
 import org.chromium.chrome.browser.facilitated_payments.FacilitatedPaymentsPaymentMethodsProperties.ItemType;
-import org.chromium.chrome.browser.touch_to_fill.common.ItemDividerBase;
+import org.chromium.components.browser_ui.bottomsheet.ItemDividerBase;
 import org.chromium.ui.modelutil.MVCListAdapter.ModelList;
 import org.chromium.ui.modelutil.PropertyModel;
 import org.chromium.ui.modelutil.SimpleRecyclerViewAdapter;
@@ -84,7 +84,7 @@ public class FacilitatedPaymentsFopSelectorScreen implements FacilitatedPayments
     /**
      * The {@link PropertyModel} for the FOP selector has a single property:
      *
-     * <p>SCREEN_ITEMS: A {@Llink ModelList} to which items of different view types can be added to
+     * <p>SCREEN_ITEMS: A {@link ModelList} to which items of different view types can be added to
      * show them in a list. To show a new view type, register it with the adapter.
      */
     @Override

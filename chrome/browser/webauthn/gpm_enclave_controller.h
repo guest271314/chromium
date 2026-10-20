@@ -28,6 +28,10 @@
 #include "content/public/browser/global_routing_id.h"
 #include "google_apis/gaia/gaia_id.h"
 
+#if BUILDFLAG(IS_MAC)
+#include "chrome/browser/webauthn/icloud_recovery.h"
+#endif  // BUILDFLAG(IS_MAC)
+
 namespace base {
 class TickClock;
 class SequencedTaskRunner;
@@ -58,6 +62,7 @@ class ICloudRecoveryKey;
 enum class EnclaveEnabledStatus;
 enum class EnclaveChangePinEvent;
 class Profile;
+class CmtgKeyFetcher;
 
 // Provides a TrustedVaultConnection for a given RenderFrameHost.
 // This allows tests to override the connection used by GPMEnclaveController.
@@ -131,6 +136,7 @@ class GPMEnclaveController : public AuthenticatorRequestDialogModel::Observer,
                              public GPMEnclaveTransaction::Delegate {
  public:
   static constexpr base::TimeDelta kLoadingTimeout = base::Milliseconds(500);
+  static constexpr base::TimeDelta kFetchDeviceKeysTimeout = base::Seconds(5);
 
   enum class AccountState {
     // There isn't a primary account, or enclave support is disabled.
@@ -160,7 +166,8 @@ class GPMEnclaveController : public AuthenticatorRequestDialogModel::Observer,
       AuthenticatorRequestDialogModel* model,
       const std::string& rp_id,
       device::FidoRequestType request_type,
-      device::UserVerificationRequirement user_verification_requirement);
+      device::UserVerificationRequirement user_verification_requirement,
+      bool cmtg_key_requested);
   GPMEnclaveController(const GPMEnclaveController&) = delete;
   GPMEnclaveController& operator=(const GPMEnclaveController&) = delete;
   GPMEnclaveController(GPMEnclaveController&&) = delete;
@@ -235,6 +242,9 @@ class GPMEnclaveController : public AuthenticatorRequestDialogModel::Observer,
       trusted_vault::DownloadAuthenticationFactorsRegistrationStateResult
           result);
 
+  // Called when CMTG device keys are ready.
+  void OnCmtgKeysReady();
+
   // Called when enough state has been loaded that the initial UI can be shown.
   // If `kEnabled` then the enclave will be a valid mechanism.
   void SetActive(EnclaveEnabledStatus enclave_enabled_status);
@@ -266,11 +276,9 @@ class GPMEnclaveController : public AuthenticatorRequestDialogModel::Observer,
   void EnrollICloudRecoveryKey(
       std::unique_ptr<trusted_vault::ICloudRecoveryKey> key);
 
-  // Called when Chrome has retrieved the iCloud recovery keys present in the
-  // current device.
-  void OnICloudKeysRetrievedForRecovery(
-      std::vector<std::unique_ptr<trusted_vault::ICloudRecoveryKey>>
-          local_icloud_keys);
+  // Called when Chrome has attempted recovery using the iCloud recovery keys
+  // present in the current device.
+  void OnICloudKeychainRecoveryComplete(webauthn::ICloudRecoveryResult result);
 #endif  // BUILDFLAG(IS_MAC)
 
   // Called when the enclave enrollment is complete.
@@ -317,8 +325,8 @@ class GPMEnclaveController : public AuthenticatorRequestDialogModel::Observer,
   int GetFailedPINAttemptCount();
   void SetFailedPINAttemptCount(int count);
 
-  // BrowserIsApp returns true if the current `Browser` is `TYPE_APP`. (I.e. a
-  // PWA.)
+  // BrowserIsApp returns true if the current `BrowserWindowInterface` is
+  // `TYPE_APP`. (I.e. a PWA.)
   bool BrowserIsApp() const;
 
   // Configures the user-visible method of authenticating for security domain
@@ -379,6 +387,10 @@ class GPMEnclaveController : public AuthenticatorRequestDialogModel::Observer,
   // service.
   std::vector<trusted_vault::VaultMember> security_domain_icloud_recovery_keys_;
 
+#if BUILDFLAG(IS_MAC)
+  std::unique_ptr<webauthn::ICloudRecovery> icloud_recovery_;
+#endif  // BUILDFLAG(IS_MAC)
+
   // |recovered_with_icloud_keychain_| is true if this controller performed a
   // successful recovery from iCloud keychain. This is reset on OnKeysStored().
   bool recovered_with_icloud_keychain_ = false;
@@ -407,7 +419,7 @@ class GPMEnclaveController : public AuthenticatorRequestDialogModel::Observer,
 
   // If changing a GPM PIN, this holds a ReAuthentication Proof Token (RAPT), if
   // the user is authenticating the request via doing a GAIA reauth.
-  std::optional<std::string> rapt_ = std::nullopt;
+  std::optional<std::string> rapt_;
 
   // A timeout to prevent waiting for the enclave to load forever. If triggered
   // while still loading, the user is sent to the mechanism selection screen.
@@ -427,6 +439,9 @@ class GPMEnclaveController : public AuthenticatorRequestDialogModel::Observer,
 
   // The gaia id of the user at the time the account state was downloaded.
   GaiaId user_gaia_id_;
+
+  // Handles fetching CMTG device keys.
+  std::unique_ptr<CmtgKeyFetcher> cmtg_key_fetcher_;
 
   base::WeakPtrFactory<GPMEnclaveController> weak_ptr_factory_{this};
 };

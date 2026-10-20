@@ -6,11 +6,14 @@
 
 #include <array>
 
+#include "ash/constants/ash_pref_names.h"
+#include "ash/constants/chrome_pref_names.h"
 #include "ash/constants/chrome_url_constants.h"
 #include "ash/constants/chrome_webui_url_constants.h"
 #include "ash/constants/url_constants.h"
 #include "ash/constants/webui_url_constants.h"
 #include "ash/strings/grit/ash_strings.h"
+#include "base/check_deref.h"
 #include "base/command_line.h"
 #include "base/containers/span.h"
 #include "base/feature_list.h"
@@ -22,18 +25,16 @@
 #include "base/system/sys_info.h"
 #include "chrome/browser/ash/arc/arc_util.h"
 #include "chrome/browser/ash/policy/core/browser_policy_connector_ash.h"
-#include "chrome/browser/browser_process.h"
-#include "chrome/browser/browser_process_platform_part.h"
 #include "chrome/browser/enterprise/browser_management/management_service_factory.h"
 #include "chrome/browser/obsolete_system/obsolete_system.h"
-#include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/ui/webui/ash/settings/search/search_tag_registry.h"
 #include "chrome/browser/ui/webui/management/management_ui.h"
 #include "chrome/browser/ui/webui/settings/about_handler.h"
 #include "chrome/browser/ui/webui/version/version_ui.h"
-#include "chrome/common/pref_names.h"
 #include "chrome/grit/branded_strings.h"
 #include "chrome/grit/generated_resources.h"
+#include "chromeos/ash/components/browser_context_helper/annotated_account_id.h"
+#include "chromeos/ash/components/signin/identity_manager_provider.h"
 #include "chromeos/dbus/constants/dbus_switches.h"
 #include "components/policy/core/common/management/management_service.h"
 #include "components/prefs/pref_service.h"
@@ -41,6 +42,7 @@
 #include "components/signin/public/identity_manager/tribool.h"
 #include "components/strings/grit/components_branded_strings.h"
 #include "components/strings/grit/components_strings.h"
+#include "components/user_manager/user_manager.h"
 #include "components/webui/version/version_ui_constants.h"
 #include "content/public/browser/web_ui_data_source.h"
 #include "ui/base/l10n/l10n_util.h"
@@ -187,21 +189,21 @@ std::string GetSafetyInfoLink() {
   return std::string();
 }
 
-std::string GetDeviceManager() {
-  policy::BrowserPolicyConnectorAsh* connector =
-      g_browser_process->platform_part()->browser_policy_connector_ash();
-  DCHECK(connector);
-  return connector->GetEnterpriseDomainManager();
-}
-
 }  // namespace
 
-AboutSection::AboutSection(Profile* profile,
-                           SearchTagRegistry* search_tag_registry,
-                           PrefService* pref_service)
+AboutSection::AboutSection(
+    PrefService* local_state,
+    policy::BrowserPolicyConnectorAsh* browser_policy_connector_ash,
+    Profile* profile,
+    SearchTagRegistry* search_tag_registry,
+    PrefService* pref_service)
     : OsSettingsSection(profile, search_tag_registry),
+      browser_policy_connector_ash_(CHECK_DEREF(browser_policy_connector_ash)),
       pref_service_(pref_service),
-      crostini_subsection_(profile, search_tag_registry, pref_service) {
+      crostini_subsection_(local_state,
+                           profile,
+                           search_tag_registry,
+                           pref_service) {
   SearchTagRegistry::ScopedTagUpdater updater = registry()->StartUpdate();
   updater.AddSearchTags(GetAboutSearchConcepts());
 
@@ -214,12 +216,12 @@ AboutSection::AboutSection(Profile* profile,
 
   pref_change_registrar_.Init(pref_service_);
   pref_change_registrar_.Add(
-      prefs::kUserFeedbackAllowed,
+      ash::chrome_prefs::kUserFeedbackAllowed,
       base::BindRepeating(&AboutSection::UpdateReportIssueSearchTags,
                           base::Unretained(this)));
   UpdateReportIssueSearchTags();
 
-  pref_change_registrar_.Add(prefs::kConsumerAutoUpdateToggle,
+  pref_change_registrar_.Add(ash::prefs::kConsumerAutoUpdateToggle,
                              base::DoNothingAs<void()>());
 #endif  // BUILDFLAG(GOOGLE_CHROME_BRANDING)
 }
@@ -371,7 +373,9 @@ void AboutSection::AddLoadTimeData(content::WebUIDataSource* html_source) {
   html_source->AddString("managementPage",
                          ManagementUI::GetManagementPageSubtitle(profile()));
 
-  html_source->AddString("deviceManager", GetDeviceManager());
+  html_source->AddString(
+      "deviceManager",
+      browser_policy_connector_ash_->GetEnterpriseDomainManager());
 
   if (user_manager::UserManager::IsInitialized()) {
     bool is_enterprise_managed =
@@ -386,8 +390,10 @@ void AboutSection::AddLoadTimeData(content::WebUIDataSource* html_source) {
 
     html_source->AddBoolean("isConsumerAutoUpdateTogglingAllowed",
                             is_current_owner);
+    const AccountId* account_id =
+        AnnotatedAccountId::Get(profile()->GetOriginalProfile());
     html_source->AddBoolean("showAutoUpdateToggle",
-                            ShouldShowAUToggle(user_manager->GetActiveUser()));
+                            account_id && ShouldShowAUToggle(*account_id));
   }
 
   html_source->AddString("aboutBrowserVersion",
@@ -526,17 +532,12 @@ void AboutSection::RegisterHierarchy(HierarchyGenerator* generator) const {
   crostini_subsection_.RegisterHierarchy(generator);
 }
 
-bool AboutSection::ShouldShowAUToggle(user_manager::User* active_user) {
-  if (!active_user) {
-    return false;
-  }
-
-  AccountId account_id = active_user->GetAccountId();
+bool AboutSection::ShouldShowAUToggle(const AccountId& account_id) {
   if (account_id.GetAccountType() != AccountType::GOOGLE) {
     return false;
   }
 
-  auto* identity_manager = IdentityManagerFactory::GetForProfile(profile());
+  auto* identity_manager = IdentityManagerProvider::Get().Find(account_id);
   if (!identity_manager) {
     return false;
   }
@@ -545,7 +546,7 @@ bool AboutSection::ShouldShowAUToggle(user_manager::User* active_user) {
       identity_manager->FindExtendedAccountInfoByGaiaId(account_id.GetGaiaId());
   // If the user falls under New Deal..
   // Show toggle based on user's capabilities.
-  return account_info.capabilities.can_toggle_auto_updates() ==
+  return account_info.GetAccountCapabilities().can_toggle_auto_updates() ==
          signin::Tribool::kTrue;
 }
 
@@ -553,7 +554,7 @@ bool AboutSection::ShouldShowAUToggle(user_manager::User* active_user) {
 void AboutSection::UpdateReportIssueSearchTags() {
   SearchTagRegistry::ScopedTagUpdater updater = registry()->StartUpdate();
 
-  if (pref_service_->GetBoolean(prefs::kUserFeedbackAllowed)) {
+  if (pref_service_->GetBoolean(ash::chrome_prefs::kUserFeedbackAllowed)) {
     updater.AddSearchTags(GetAboutReportIssueSearchConcepts());
   } else {
     updater.RemoveSearchTags(GetAboutReportIssueSearchConcepts());

@@ -206,7 +206,6 @@ robolectric_library("junit") {
     "//third_party/android_deps:espresso_java",
     "//third_party/androidx:androidx_annotation_annotation_java",
     "//third_party/androidx:androidx_preference_preference_java",
-    "//third_party/androidx:androidx_test_runner_java",
     "//third_party/google-truth:google_truth_java",
     "//third_party/jni_zero:jni_zero_java",
     "//third_party/junit",
@@ -243,6 +242,8 @@ android_library("javatests") {
     "//chrome/browser/preferences:java",
     "//chrome/browser/profiles/android:java",
     "//chrome/browser/safe_browsing/android:java",
+    "//chrome/browser/settings:java",
+    "//chrome/browser/settings:settings_in_tab_java",
     "//chrome/browser/settings:test_support_java",
     "//chrome/browser/tab:java",
     "//chrome/browser/tabmodel:java",
@@ -290,7 +291,6 @@ source_set("android") {
   deps = [
     ":jni_headers",
     "//chrome/browser/profiles:profile",
-    "//chrome/browser/ui",
     "//chrome/common:constants",
     "//components/content_settings/core/common",
     "//components/page_info",
@@ -301,18 +301,12 @@ source_set("android") {
 
 source_set("unit_tests") {
   testonly = true
-  sources = [
-    "notification_permission_review_bridge_unittest.cc",
-    "unused_site_permissions_bridge_unittest.cc",
-  ]
+  sources = [ "unused_site_permissions_bridge_unittest.cc" ]
 
   deps = [
     ":android",
     "//base/test:test_support",
     "//chrome/browser/content_settings:content_settings_factory",
-    "//chrome/browser/engagement",
-    "//chrome/browser/permissions",
-    "//chrome/browser/ui",
     "//chrome/browser/ui/safety_hub",
     "//chrome/browser/ui/safety_hub:test_support",
     "//chrome/test:test_support",

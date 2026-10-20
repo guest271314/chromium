@@ -6,6 +6,7 @@
 #include "services/network/public/cpp/cors/cors.h"
 
 #include <algorithm>
+#include <limits>
 #include <set>
 #include <string_view>
 #include <vector>
@@ -257,6 +258,21 @@ bool IsCorsSafelistedContentType(const std::string& media_type) {
       /*is_ad_auction_trusted_signals_request=*/false);
 }
 
+bool IsCorsSafelistedResponseHeaderName(std::string_view name) {
+  // https://fetch.spec.whatwg.org/#cors-safelisted-response-header-name
+  static constexpr auto kSafelistedResponseHeaderNames =
+      base::MakeFixedFlatSet<std::string_view>({
+          "cache-control",
+          "content-language",
+          "content-length",
+          "content-type",
+          "expires",
+          "last-modified",
+          "pragma",
+      });
+  return kSafelistedResponseHeaderNames.contains(base::ToLowerASCII(name));
+}
+
 bool IsCorsSafelistedHeader(const std::string& name,
                             const std::string& value,
                             bool is_ad_auction_trusted_signals_request) {
@@ -281,12 +297,7 @@ bool IsCorsSafelistedHeader(const std::string& name,
       // https://fetch.spec.whatwg.org/#simple-range-header-value
       "range",
 
-      // [Block 2 - Intervention]
-      // Treat 'Intervention' as a CORS-safelisted header, since it is added by
-      // Chrome when an intervention is (or may be) applied.
-      "intervention",
-
-      // [Block 3 - Client Hints]
+      // [Block 2 - Client Hints]
       // Headers in this section are included in the order listed by:
       // services/network/public/mojom/web_client_hints_types.mojom
       // These four were deprecated and replaced by variants with a `sec-ch-`
@@ -358,10 +369,18 @@ bool IsCorsSafelistedHeader(const std::string& name,
   });
 
   // Check if the name of the header to send is safe.
-  if (!safe_names.contains(lower_name))
+  if (!safe_names.contains(lower_name)) {
+    // Emergency kill-switch: if the feature is disabled, allow 'intervention'
+    // without value validation as legacy behavior.
+    if (lower_name == "intervention" &&
+        !base::FeatureList::IsEnabled(
+            features::kDisallowInterventionInCorsSafelistedHeaders)) {
+      return true;
+    }
     return false;
+  }
 
-  // Verify the values of all non-secure headers (except `intervention`).
+  // Verify the values of all non-secure headers.
   const std::string lower_value = base::ToLowerASCII(value);
   if (lower_name == "accept") {
     return !std::ranges::any_of(value, IsCorsUnsafeRequestHeaderByte);
@@ -376,22 +395,24 @@ bool IsCorsSafelistedHeader(const std::string& name,
     return IsCorsSafelistedLowerCaseContentType(
         lower_value, is_ad_auction_trusted_signals_request);
   } else if (lower_name == "range") {
-    // A 'simple' range value is of the following form: 'bytes=\d+-(\d+)?'.
-    // We can use the regular range header parser with the following caveats:
-    // - No space characters or trailing commas
-    // - Only one range is provided
-    // - No suffix (bytes=-x) ranges
-
-    if (std::ranges::any_of(lower_value, [](char c) {
-          return net::HttpUtil::IsLWS(c) || c == ',';
-        })) {
+    // A 'simple' range value is defined in the Fetch specification:
+    // https://fetch.spec.whatwg.org/#simple-range-header-value
+    // It must have an exact case-sensitive "bytes=" prefix. We also impose
+    // extra restrictions:
+    //  - No whitespace (e.g. space or trailing comma).
+    //  - No suffix ranges (e.g. bytes=-500).
+    std::optional<net::HttpByteRange> range =
+        net::HttpUtil::ParseFetchSingleRange(value,
+                                             /*allow_whitespace=*/false);
+    if (!range || range->IsSuffixByteRange() || !range->IsValid()) {
       return false;
     }
-    std::vector<net::HttpByteRange> ranges;
-    if (!net::HttpUtil::ParseRangeHeader(lower_value, &ranges))
+    // `ParseFetchSingleRange()` will saturate values too high to represent as
+    // `int64_t` to `std::numeric_limits<int64_t>::max()`.
+    if (range->first_byte_position() == std::numeric_limits<int64_t>::max() ||
+        range->last_byte_position() == std::numeric_limits<int64_t>::max()) {
       return false;
-    if (ranges.size() != 1 || ranges[0].IsSuffixByteRange())
-      return false;
+    }
     return true;
   } else if (lower_name == "device-memory" || lower_name == "dpr" ||
              lower_name == "downlink") {
@@ -463,7 +484,7 @@ std::vector<std::string> PrivilegedNoCorsHeaderNames() {
   return {"range"};
 }
 
-bool IsForbiddenMethod(const std::string& method) {
+bool IsForbiddenMethod(std::string_view method) {
   const std::string upper_method = base::ToUpperASCII(method);
   return upper_method == net::HttpRequestHeaders::kConnectMethod ||
          upper_method == net::HttpRequestHeaders::kTraceMethod ||

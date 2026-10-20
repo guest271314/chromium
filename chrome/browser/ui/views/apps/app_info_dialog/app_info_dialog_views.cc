@@ -7,13 +7,9 @@
 #include <memory>
 #include <utility>
 
-#include "base/command_line.h"
-#include "base/feature_list.h"
-#include "base/functional/bind.h"
-#include "base/strings/utf_string_conversions.h"
 #include "build/build_config.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/scoped_tabbed_browser_displayer.h"
 #include "chrome/browser/ui/views/apps/app_info_dialog/app_info_dialog_container.h"
 #include "chrome/browser/ui/views/apps/app_info_dialog/app_info_footer_panel.h"
@@ -23,23 +19,15 @@
 #include "chrome/browser/ui/views/chrome_layout_provider.h"
 #include "chrome/browser/web_applications/web_app_provider.h"
 #include "chrome/common/buildflags.h"
-#include "chrome/common/chrome_switches.h"
-#include "components/app_constants/constants.h"
 #include "content/public/browser/web_contents.h"
 #include "extensions/browser/extension_registry.h"
 #include "extensions/common/extension.h"
-#include "extensions/common/manifest.h"
-#include "extensions/common/manifest_handlers/app_display_info.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
-#include "ui/base/mojom/ui_base_types.mojom-shared.h"
 #include "ui/gfx/geometry/insets.h"
-#include "ui/gfx/geometry/rect.h"
-#include "ui/gfx/geometry/size.h"
 #include "ui/views/border.h"
 #include "ui/views/controls/scroll_view.h"
 #include "ui/views/layout/box_layout.h"
 #include "ui/views/widget/widget.h"
-#include "ui/views/window/dialog_delegate.h"
 
 #if BUILDFLAG(IS_CHROMEOS)
 #include "chrome/browser/ash/app_list/arc/arc_app_list_prefs.h"
@@ -47,6 +35,7 @@
 #include "chrome/browser/ash/arc/arc_util.h"
 #include "chrome/browser/ui/views/apps/app_info_dialog/arc_app_info_links_panel.h"
 #include "chromeos/ash/experiences/arc/app/arc_app_constants.h"
+#include "components/app_constants/constants.h"
 #endif
 
 base::WeakPtr<AppInfoDialog>& AppInfoDialog::GetLastDialogForTesting() {
@@ -99,6 +88,10 @@ AppInfoDialog::AppInfoDialog(Profile* profile, const extensions::Extension* app)
 
   dialog_header_ =
       AddChildView(std::make_unique<AppInfoHeaderPanel>(profile, app));
+  constexpr int kHorizontalSeparatorHeight = 1;
+  dialog_header_->SetBorder(views::CreateSolidSidedBorder(
+      gfx::Insets::TLBR(0, 0, kHorizontalSeparatorHeight, 0),
+      ui::kColorSeparator));
 
   dialog_body_ = AddChildView(std::move(dialog_body));
   layout->SetFlexForView(dialog_body_, 1);
@@ -106,6 +99,9 @@ AppInfoDialog::AppInfoDialog(Profile* profile, const extensions::Extension* app)
   auto dialog_footer = AppInfoFooterPanel::CreateFooterPanel(profile, app);
   if (dialog_footer) {
     dialog_footer_ = AddChildView(std::move(dialog_footer));
+    dialog_footer_->SetBorder(views::CreateSolidSidedBorder(
+        gfx::Insets::TLBR(kHorizontalSeparatorHeight, 0, 0, 0),
+        ui::kColorSeparator));
   }
 
   // Close the dialog if the app is uninstalled, unloaded, or if the profile is
@@ -124,7 +120,7 @@ void AppInfoDialog::Close() {
 }
 
 void AppInfoDialog::StartObservingExtensionRegistry() {
-  DCHECK(!extension_registry_);
+  CHECK(!extension_registry_, base::NotFatalUntil::M162);
 
   extension_registry_ = extensions::ExtensionRegistry::Get(profile_);
   extension_registry_->AddObserver(this);
@@ -135,19 +131,6 @@ void AppInfoDialog::StopObservingExtensionRegistry() {
     extension_registry_->RemoveObserver(this);
   }
   extension_registry_ = nullptr;
-}
-
-void AppInfoDialog::OnThemeChanged() {
-  views::View::OnThemeChanged();
-
-  constexpr int kHorizontalSeparatorHeight = 1;
-  const SkColor color = GetColorProvider()->GetColor(ui::kColorSeparator);
-  dialog_header_->SetBorder(views::CreateSolidSidedBorder(
-      gfx::Insets::TLBR(0, 0, kHorizontalSeparatorHeight, 0), color));
-  if (dialog_footer_) {
-    dialog_footer_->SetBorder(views::CreateSolidSidedBorder(
-        gfx::Insets::TLBR(kHorizontalSeparatorHeight, 0, 0, 0), color));
-  }
 }
 
 void AppInfoDialog::OnExtensionUnloaded(
@@ -173,7 +156,7 @@ void AppInfoDialog::OnExtensionUninstalled(
 }
 
 void AppInfoDialog::OnShutdown(extensions::ExtensionRegistry* registry) {
-  DCHECK_EQ(extension_registry_, registry);
+  CHECK_EQ(extension_registry_, registry, base::NotFatalUntil::M162);
   StopObservingExtensionRegistry();
   Close();
 }

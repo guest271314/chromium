@@ -14,13 +14,16 @@ import androidx.annotation.WorkerThread;
 import org.chromium.base.Log;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.TraceEvent;
-import org.chromium.base.metrics.RecordHistogram;
+import org.chromium.build.BuildConfig;
 import org.chromium.build.annotations.DoNotInline;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
+import java.util.Collections;
+import java.util.HashSet;
+import java.util.Set;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.ExecutionException;
@@ -43,8 +46,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 public abstract class AsyncTask<Result extends @Nullable Object> {
     private static final String TAG = "AsyncTask";
 
-    private static final String GET_STATUS_UMA_HISTOGRAM =
-            "Android.Jank.AsyncTaskGetOnUiThreadStatus";
+    private static final @Nullable Set<AsyncTask<?>> sActiveTasks =
+            BuildConfig.IS_FOR_TEST ? Collections.synchronizedSet(new HashSet<>()) : null;
 
     /**
      * An {@link Executor} that can be used to execute tasks in parallel. We use the lowest task
@@ -95,9 +98,7 @@ public abstract class AsyncTask<Result extends @Nullable Object> {
 
     /**
      * Indicates the current status of the task. Each status will be set only once during the
-     * lifetime of a task. AsyncTaskStatus corresponding to this is defined in
-     * tools/metrics/histograms/enums.xml. Entries should not be renumbered and numeric values
-     * should never be reused.
+     * lifetime of a task.
      */
     @IntDef({Status.PENDING, Status.RUNNING, Status.FINISHED})
     @Retention(RetentionPolicy.SOURCE)
@@ -110,9 +111,6 @@ public abstract class AsyncTask<Result extends @Nullable Object> {
 
         /** Indicates that {@link AsyncTask#onPostExecute} has finished. */
         int FINISHED = 2;
-
-        /** Just used for reporting this status to UMA. */
-        int NUM_ENTRIES = 3;
     }
 
     @SuppressWarnings("NoAndroidAsyncTaskCheck")
@@ -158,6 +156,9 @@ public abstract class AsyncTask<Result extends @Nullable Object> {
         // We check if this task is of a type which does not require post-execution.
         if (this instanceof BackgroundOnlyAsyncTask) {
             mStatus = Status.FINISHED;
+            if (sActiveTasks != null) {
+                sActiveTasks.remove(this);
+            }
         } else if (mIterationIdForTesting == PostTask.sTestIterationForTesting) {
             ThreadUtils.postOnUiThread(
                     () -> {
@@ -172,20 +173,6 @@ public abstract class AsyncTask<Result extends @Nullable Object> {
      * @return The current status.
      */
     public final @Status int getStatus() {
-        return mStatus;
-    }
-
-    /**
-     * Returns the current status of this task, with adjustments made to make UMA more useful.
-     * Namely, we are going to return "PENDING" until the asynctask actually starts running. Right
-     * now, as soon as you try to schedule the AsyncTask, it gets set to "RUNNING" which doesn't
-     * make sense. However, we aren't fixing this globally as this is the well-defined API
-     * AsyncTasks have, so we are just fixing this for our UMA reporting.
-     *
-     * @return The current status.
-     */
-    public final @Status int getUmaStatus() {
-        if (mStatus == Status.RUNNING && !mTaskInvoked.get()) return Status.PENDING;
         return mStatus;
     }
 
@@ -307,25 +294,19 @@ public abstract class AsyncTask<Result extends @Nullable Object> {
     }
 
     /**
-     * Waits if necessary for the computation to complete, and then
-     * retrieves its result.
+     * Waits if necessary for the computation to complete, and then retrieves its result.
      *
      * @return The computed result.
-     *
      * @throws CancellationException If the computation was cancelled.
      * @throws ExecutionException If the computation threw an exception.
-     * @throws InterruptedException If the current thread was interrupted
-     *         while waiting.
+     * @throws InterruptedException If the current thread was interrupted while waiting.
      */
     @DoNotInline
     // The string passed is safe since it is class and method name.
     @SuppressWarnings("NoDynamicStringsInTraceEventCheck")
     public final Result get() throws InterruptedException, ExecutionException {
         Result r;
-        int status = getUmaStatus();
-        if (status != Status.FINISHED && ThreadUtils.runningOnUiThread()) {
-            RecordHistogram.recordEnumeratedHistogram(
-                    GET_STATUS_UMA_HISTOGRAM, status, Status.NUM_ENTRIES);
+        if (mStatus != Status.FINISHED && ThreadUtils.runningOnUiThread()) {
             StackTraceElement[] stackTrace = new Exception().getStackTrace();
             String caller = "";
             if (stackTrace.length > 1) {
@@ -346,9 +327,7 @@ public abstract class AsyncTask<Result extends @Nullable Object> {
      *
      * @param timeout Time to wait before cancelling the operation.
      * @param unit The time unit for the timeout.
-     *
      * @return The computed result.
-     *
      * @throws CancellationException If the computation was cancelled.
      * @throws ExecutionException If the computation threw an exception.
      * @throws InterruptedException If the current thread was interrupted while waiting.
@@ -360,10 +339,7 @@ public abstract class AsyncTask<Result extends @Nullable Object> {
     public final Result get(long timeout, TimeUnit unit)
             throws InterruptedException, ExecutionException, TimeoutException {
         Result r;
-        int status = getUmaStatus();
-        if (status != Status.FINISHED && ThreadUtils.runningOnUiThread()) {
-            RecordHistogram.recordEnumeratedHistogram(
-                    GET_STATUS_UMA_HISTOGRAM, status, Status.NUM_ENTRIES);
+        if (mStatus != Status.FINISHED && ThreadUtils.runningOnUiThread()) {
             StackTraceElement[] stackTrace = new Exception().getStackTrace();
             String caller = "";
             if (stackTrace.length > 1) {
@@ -394,6 +370,9 @@ public abstract class AsyncTask<Result extends @Nullable Object> {
         }
 
         mStatus = Status.RUNNING;
+        if (sActiveTasks != null) {
+            sActiveTasks.add(this);
+        }
 
         onPreExecute();
     }
@@ -512,6 +491,9 @@ public abstract class AsyncTask<Result extends @Nullable Object> {
             onPostExecute(result);
         }
         mStatus = Status.FINISHED;
+        if (sActiveTasks != null) {
+            sActiveTasks.remove(this);
+        }
     }
 
     class NamedFutureTask extends FutureTask<Result> {
@@ -556,5 +538,17 @@ public abstract class AsyncTask<Result extends @Nullable Object> {
                 postResultIfNotInvoked(null);
             }
         }
+    }
+
+    public static void cancelAllTasksForTesting() {
+        if (sActiveTasks == null) return;
+        AsyncTask<?>[] tasks;
+        synchronized (sActiveTasks) {
+            tasks = sActiveTasks.toArray(new AsyncTask<?>[0]);
+        }
+        for (AsyncTask<?> task : tasks) {
+            task.cancel(true);
+        }
+        sActiveTasks.clear();
     }
 }

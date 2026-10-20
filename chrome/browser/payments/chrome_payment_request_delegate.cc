@@ -22,7 +22,6 @@
 #include "chrome/browser/payments/payment_request_display_manager_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
@@ -36,19 +35,19 @@
 #include "components/payments/content/payment_request_dialog.h"
 #include "components/payments/content/secure_payment_confirmation_controller.h"
 #include "components/payments/content/ssl_validity_checker.h"
-#include "components/payments/content/web_payments_web_data_service.h"
 #include "components/payments/core/payment_prefs.h"
+#include "components/payments/core/web_payments_web_data_service.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "components/webauthn/content/browser/internal_authenticator_impl.h"
 #include "components/webdata_services/web_data_service_wrapper_factory.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_process_host.h"
 #include "content/public/browser/web_contents.h"
-#include "services/metrics/public/cpp/ukm_recorder.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "services/network/public/mojom/permissions_policy/permissions_policy_feature.mojom-shared.h"
 #include "third_party/libaddressinput/chromium/chrome_metadata_source.h"
-#include "third_party/libaddressinput/chromium/chrome_storage_impl.h"
+#include "third_party/libaddressinput/src/cpp/include/libaddressinput/source.h"
+#include "third_party/libaddressinput/src/cpp/include/libaddressinput/storage.h"
 
 #if BUILDFLAG(IS_MAC)
 #include "chrome/common/chrome_version.h"
@@ -96,12 +95,12 @@ ChromePaymentRequestDelegate::~ChromePaymentRequestDelegate() = default;
 
 void ChromePaymentRequestDelegate::ShowDialog(
     base::WeakPtr<PaymentRequest> request) {
-  DCHECK_EQ(nullptr, shown_dialog_.get());
-  DCHECK_EQ(nullptr, spc_dialog_.get());
+  CHECK_EQ(nullptr, shown_dialog_.get(), base::NotFatalUntil::M162);
+  CHECK_EQ(nullptr, spc_dialog_.get(), base::NotFatalUntil::M162);
 
   switch (dialog_type_) {
     case DialogType::PAYMENT_REQUEST:
-      shown_dialog_ = PaymentRequestDialogView::Create(request, nullptr);
+      shown_dialog_ = PaymentRequestDialogView::Create(request);
       break;
     case DialogType::SECURE_PAYMENT_CONFIRMATION:
       spc_dialog_ =
@@ -139,6 +138,12 @@ void ChromePaymentRequestDelegate::ShowProcessingSpinner() {
     shown_dialog_->ShowProcessingSpinner();
 }
 
+void ChromePaymentRequestDelegate::ShowLoadingView() {
+  if (shown_dialog_) {
+    shown_dialog_->ShowLoadingView();
+  }
+}
+
 autofill::PersonalDataManager*
 ChromePaymentRequestDelegate::GetPersonalDataManager() {
   return autofill::PersonalDataManagerFactory::GetForBrowserContext(
@@ -166,37 +171,6 @@ const GURL& ChromePaymentRequestDelegate::GetLastCommittedURL() const {
 autofill::AddressNormalizer*
 ChromePaymentRequestDelegate::GetAddressNormalizer() {
   return autofill::AddressNormalizerFactory::GetInstance();
-}
-
-autofill::RegionDataLoader*
-ChromePaymentRequestDelegate::GetRegionDataLoader() {
-  return new autofill::RegionDataLoaderImpl(GetAddressInputSource().release(),
-                                            GetAddressInputStorage().release(),
-                                            GetApplicationLocale());
-}
-
-ukm::UkmRecorder* ChromePaymentRequestDelegate::GetUkmRecorder() {
-  return ukm::UkmRecorder::Get();
-}
-
-std::string ChromePaymentRequestDelegate::GetAuthenticatedEmail() const {
-  auto* rfh = content::RenderFrameHost::FromID(frame_routing_id_);
-  if (!rfh) {
-    return std::string();
-  }
-
-  // Check if the profile is signed in. Guest profiles or incognito windows may
-  // not have an IdentityManager, and are considered not signed in.
-  Profile* profile = Profile::FromBrowserContext(rfh->GetBrowserContext());
-  signin::IdentityManager* identity_manager =
-      IdentityManagerFactory::GetForProfile(profile);
-  if (!identity_manager) {
-    return std::string();
-  }
-  // If there's no primary account, `GetPrimaryAccountInfo()` will return an
-  // empty result.
-  return identity_manager->GetPrimaryAccountInfo(signin::ConsentLevel::kSignin)
-      .email;
 }
 
 PrefService* ChromePaymentRequestDelegate::GetPrefService() {
@@ -235,7 +209,7 @@ ChromePaymentRequestDelegate::CreateInternalAuthenticator() const {
   // called at some point.
   if (!FrameSupportsPayments(rfh))
     return nullptr;
-  DCHECK(rfh->IsRenderFrameLive());
+  CHECK(rfh->IsRenderFrameLive(), base::NotFatalUntil::M162);
   return std::make_unique<content::InternalAuthenticatorImpl>(rfh);
 }
 
@@ -254,9 +228,11 @@ ChromePaymentRequestDelegate::GetDisplayManager() {
 
 void ChromePaymentRequestDelegate::EmbedPaymentHandlerWindow(
     const GURL& url,
+    const std::optional<gfx::Size>& preferred_web_contents_size,
     PaymentHandlerOpenWindowCallback callback) {
   if (shown_dialog_) {
-    shown_dialog_->ShowPaymentHandlerScreen(url, std::move(callback));
+    shown_dialog_->ShowPaymentHandlerScreen(url, preferred_web_contents_size,
+                                            std::move(callback));
   } else {
     std::move(callback).Run(/*success=*/false,
                             /*render_process_id=*/0,
@@ -286,11 +262,6 @@ PaymentRequestDialog* ChromePaymentRequestDelegate::GetDialogForTesting() {
   return shown_dialog_.get();
 }
 
-std::optional<base::UnguessableToken>
-ChromePaymentRequestDelegate::GetChromeOSTWAInstanceId() const {
-  return std::nullopt;
-}
-
 std::string
 ChromePaymentRequestDelegate::GetSecurePaymentConfirmationKeychainAccessGroup()
     const {
@@ -304,6 +275,13 @@ ChromePaymentRequestDelegate::GetSecurePaymentConfirmationKeychainAccessGroup()
 const base::WeakPtr<PaymentUIObserver>
 ChromePaymentRequestDelegate::GetPaymentUIObserver() const {
   return nullptr;
+}
+
+autofill::RegionDataLoader*
+ChromePaymentRequestDelegate::GetRegionDataLoader() {
+  return new autofill::RegionDataLoaderImpl(GetAddressInputSource().release(),
+                                            GetAddressInputStorage().release(),
+                                            GetApplicationLocale());
 }
 
 content::BrowserContext* ChromePaymentRequestDelegate::GetBrowserContextOrNull()

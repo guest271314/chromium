@@ -40,7 +40,7 @@
 #include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile.h"
 #include "components/image_fetcher/core/mock_image_decoder.h"
-#include "components/optimization_guide/core/model_execution/feature_keys.h"
+#include "components/optimization_guide/core/feature_registry/feature_keys.h"
 #include "components/optimization_guide/core/model_quality/model_quality_log_entry.h"
 #include "components/optimization_guide/core/model_quality/test_model_quality_logs_uploader_service.h"
 #include "components/optimization_guide/core/optimization_guide_features.h"
@@ -52,7 +52,6 @@
 #include "components/signin/public/identity_manager/identity_test_utils.h"
 #include "components/sync_preferences/testing_pref_service_syncable.h"
 #include "content/public/test/browser_task_environment.h"
-#include "services/data_decoder/public/cpp/test_support/in_process_data_decoder.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "services/network/public/cpp/weak_wrapper_shared_url_loader_factory.h"
 #include "services/network/test/test_url_loader_factory.h"
@@ -315,7 +314,6 @@ class WallpaperSearchHandlerTest : public testing::Test {
   base::HistogramTester histogram_tester_;
   MockWallpaperSearchBackgroundManager
       mock_wallpaper_search_background_manager_;
-  data_decoder::test::InProcessDataDecoder in_process_data_decoder_;
   raw_ptr<MockHatsService> mock_hats_service_;
   raw_ptr<signin::IdentityManager> identity_manager_;
   testing::NiceMock<MockWallpaperSearchStringMap>

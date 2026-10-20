@@ -16,11 +16,13 @@
 #include "chrome/browser/ui/browser_window/public/profile_browser_collection.h"
 #include "chrome/browser/ui/navigator/browser_navigator_params.h"
 #include "chrome/browser/ui/navigator/browser_navigator_params_utils.h"
+#include "chrome/browser/ui/tabs/tab_enums.h"
 #include "chrome/common/webui_url_constants.h"
 #include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/web_contents.h"
 #include "ui/base/base_window.h"
+#include "ui/base/page_transition_types.h"
 #include "ui/base/window_open_disposition.h"
 
 namespace {
@@ -118,7 +120,7 @@ void TrySwitchToMatchingTab(NavigateParams* params) {
 
   auto [bwi, index] =
       GetIndexAndBrowserOfMatchingTab(params->initiating_profile, *params);
-  DCHECK(bwi && index >= 0);
+  CHECK(bwi && index >= 0, base::NotFatalUntil::M162);
   auto* tab_list = TabListInterface::From(bwi);
   tabs::TabInterface* tab = tab_list->GetTab(index);
 
@@ -151,13 +153,13 @@ void TrySwitchToMatchingTab(NavigateParams* params) {
 // Returns true if all fields in `NavigateParams` can be adjusted to a valid and
 // consistent state so that the navigation can start. Otherwise, return false.
 bool AdjustNavigateParams(NavigateParams* params) {
-  DCHECK(!params->navigated_or_inserted_contents);
-  DCHECK(!params->switch_to_singleton_tab);
+  CHECK(!params->navigated_or_inserted_contents, base::NotFatalUntil::M162);
+  CHECK(!params->switch_to_singleton_tab, base::NotFatalUntil::M162);
 
   if (params->browser) {
     params->initiating_profile = params->browser->GetProfile();
   }
-  DCHECK(params->initiating_profile);
+  CHECK(params->initiating_profile, base::NotFatalUntil::M162);
 
   if (params->initiating_profile->ShutdownStarted()) {
     // Don't navigate when the profile is shutting down.
@@ -439,7 +441,9 @@ tabs::TabInterface* GetOrCreateTabForDisposition(NavigateParams* params) {
       // A new tab is already created when the new window is created on Android.
       // Just get the active tab.
       tabs::TabInterface* active_tab = tab_model->GetActiveTab();
-      CHECK(active_tab);
+      if (!active_tab) {
+        return nullptr;
+      }
       params->source_contents = active_tab->GetContents();
       return active_tab;
     }
@@ -469,7 +473,8 @@ base::WeakPtr<content::NavigationHandle> GetTabAndPerformNavigation(
   }
 
   if (is_contents_inserted) {
-    DCHECK_EQ(params->navigated_or_inserted_contents, tab->GetContents());
+    CHECK_EQ(params->navigated_or_inserted_contents, tab->GetContents(),
+             base::NotFatalUntil::M162);
   }
 
   params->navigated_or_inserted_contents = tab->GetContents();
@@ -527,19 +532,12 @@ base::WeakPtr<content::NavigationHandle> Navigate(NavigateParams* params) {
     return nullptr;
   }
 
-  // Only handles dispositions that do not create new windows.
+  // Only handles dispositions that do not require window operations.
   if (params->disposition != WindowOpenDisposition::CURRENT_TAB &&
       params->disposition != WindowOpenDisposition::IGNORE_ACTION &&
       params->disposition != WindowOpenDisposition::NEW_BACKGROUND_TAB &&
-      params->disposition != WindowOpenDisposition::NEW_FOREGROUND_TAB &&
-      params->disposition != WindowOpenDisposition::SWITCH_TO_TAB) {
+      params->disposition != WindowOpenDisposition::NEW_FOREGROUND_TAB) {
     return nullptr;
-  }
-
-  // This call may activate a different window, but no new window will be
-  // created.
-  if (params->disposition == WindowOpenDisposition::SWITCH_TO_TAB) {
-    TrySwitchToMatchingTab(params);
   }
 
   return GetTabAndPerformNavigation(params);

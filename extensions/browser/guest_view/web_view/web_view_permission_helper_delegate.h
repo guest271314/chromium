@@ -59,6 +59,14 @@ class WebViewPermissionHelperDelegate {
       bool last_unlocked_by_target,
       base::OnceCallback<void(bool)> callback) {}
 
+  // Requests Media Permission from the embedder (for Page Embedded Permission
+  // Control).
+  virtual void RequestMediaPermission(ContentSettingsType type,
+                                      const GURL& requesting_frame_origin,
+                                      bool user_gesture,
+                                      base::OnceCallback<void(bool)> callback) {
+  }
+
   // Requests Geolocation Permission from the embedder.
   virtual void RequestGeolocationPermission(
       const GURL& requesting_frame_url,
@@ -110,7 +118,8 @@ class WebViewPermissionHelperDelegate {
   // Allows the delegate to override the results of permission requests; useful
   // when custom handling is needed for specific webviews.
   virtual std::optional<content::PermissionResult> OverridePermissionResult(
-      ContentSettingsType type);
+      ContentSettingsType type,
+      const url::Origin& requesting_origin);
 
   WebViewPermissionHelper* web_view_permission_helper() const {
     return web_view_permission_helper_;

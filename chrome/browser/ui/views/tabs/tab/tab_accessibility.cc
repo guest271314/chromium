@@ -4,7 +4,6 @@
 
 #include "chrome/browser/ui/views/tabs/tab/tab_accessibility.h"
 
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/location_bar/location_bar.h"
 #include "chrome/browser/ui/performance_controls/tab_resource_usage_tab_helper.h"
@@ -12,14 +11,18 @@
 #include "chrome/browser/ui/tabs/saved_tab_groups/collaboration_messaging_tab_data.h"
 #include "chrome/browser/ui/tabs/tab_data.h"
 #include "chrome/browser/ui/tabs/tab_group_model.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
+#include "chrome/browser/ui/views/frame/tab_strip_region_view.h"
 #include "chrome/browser/ui/views/permissions/chip/chip_controller.h"
+#include "chrome/browser/ui/views/tabs/hovercard/tab_hover_card_controller.h"
+#include "chrome/browser/ui/window_metadata/window_metadata_controller.h"
 #include "chrome/grit/generated_resources.h"
 #include "components/strings/grit/components_strings.h"
+#include "components/tab_groups/tab_group_id.h"
 #include "components/tabs/public/split_tab_data.h"
 #include "components/tabs/public/tab_group.h"
 #include "components/tabs/public/tab_interface.h"
-#include "content/public/browser/web_contents.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/text/bytes_formatting.h"
 
@@ -36,8 +39,15 @@ int GetAccessibleTabLabelFormatStringForSplit(split_tabs::SplitTabLayout layout,
         default:
           NOTREACHED();
       }
-    default:
-      NOTREACHED();
+    case split_tabs::SplitTabLayout::kStacked:
+      switch (tab_index_in_split) {
+        case 0:
+          return IDS_TAB_AX_LABEL_SPLIT_TAB_TOP_VIEW_FORMAT;
+        case 1:
+          return IDS_TAB_AX_LABEL_SPLIT_TAB_BOTTOM_VIEW_FORMAT;
+        default:
+          NOTREACHED();
+      }
   }
 }
 }  // namespace
@@ -79,15 +89,16 @@ std::u16string GetAccessibleTabLabel(const TabInterface* tab, bool is_for_tab) {
   }
 
   BrowserView* browser_view = BrowserView::GetBrowserViewForBrowser(bwi);
-  Browser* browser = browser_view->browser();
-  TabStripModel* tab_strip_model = browser->tab_strip_model();
+  const TabStripModel* tab_strip_model = bwi->GetTabStripModel();
 
   const TabData& tab_data =
       browser_view->tab_strip_view()->GetTabData(tab->GetHandle());
 
-  std::u16string title = is_for_tab
-                             ? browser->GetTitleForTab(tab->GetHandle())
-                             : browser->GetWindowTitleForTab(tab->GetHandle());
+  auto* controller = WindowMetadataController::From(bwi);
+
+  std::u16string title =
+      is_for_tab ? controller->GetTitleForTab(tab->GetHandle())
+                 : controller->GetWindowTitleForTab(tab->GetHandle());
 
   if (const std::optional<split_tabs::SplitTabId> split = tab->GetSplit()) {
     if (!tab_strip_model->ContainsSplit(split.value())) {
@@ -106,7 +117,7 @@ std::u16string GetAccessibleTabLabel(const TabInterface* tab, bool is_for_tab) {
         std::find(tabs_in_split.begin(), tabs_in_split.end(), tab));
     title = l10n_util::GetStringFUTF16(
         GetAccessibleTabLabelFormatStringForSplit(
-            split_tabs::SplitTabLayout::kSideBySide, tab_index_in_split),
+            split_data->visual_data()->split_layout(), tab_index_in_split),
         title);
   }
 
@@ -179,7 +190,18 @@ std::u16string GetAccessibleTabLabel(const TabInterface* tab, bool is_for_tab) {
         tab_data.tab_resource_usage->memory_usage();
     const bool is_high_memory_usage =
         tab_data.tab_resource_usage->is_high_memory_usage();
-    if (is_high_memory_usage || is_for_tab) {
+
+    TabHoverCardController* const hover_card_controller =
+        browser_view->tab_strip_view()
+            ? browser_view->tab_strip_view()->GetHoverCardController()
+            : nullptr;
+
+    const bool hover_card_memory_usage_enabled =
+        hover_card_controller &&
+        hover_card_controller->hover_card_memory_usage_enabled();
+
+    if (is_high_memory_usage ||
+        (is_for_tab && hover_card_memory_usage_enabled)) {
       const int message_id = is_high_memory_usage ? IDS_TAB_AX_HIGH_MEMORY_USAGE
                                                   : IDS_TAB_AX_MEMORY_USAGE;
       title = l10n_util::GetStringFUTF16(message_id, title,
@@ -192,15 +214,13 @@ std::u16string GetAccessibleTabLabel(const TabInterface* tab, bool is_for_tab) {
     switch (tab_data.collaboration_messaging->collaboration_event()) {
       case collaboration::messaging::CollaborationEvent::TAB_ADDED:
         title = l10n_util::GetStringFUTF16(
-                    IDS_DATA_SHARING_RECENT_ACTIVITY_MEMBER_ADDED_THIS_TAB,
-                    given_name) +
-                u", " + title;
+            IDS_TAB_AX_DATA_SHARING_RECENT_ACTIVITY_MEMBER_ADDED_THIS_TAB,
+            given_name, title);
         break;
       case collaboration::messaging::CollaborationEvent::TAB_UPDATED:
         title = l10n_util::GetStringFUTF16(
-                    IDS_DATA_SHARING_RECENT_ACTIVITY_MEMBER_CHANGED_THIS_TAB,
-                    given_name) +
-                u", " + title;
+            IDS_TAB_AX_DATA_SHARING_RECENT_ACTIVITY_MEMBER_CHANGED_THIS_TAB,
+            given_name, title);
         break;
       default:
         NOTREACHED();

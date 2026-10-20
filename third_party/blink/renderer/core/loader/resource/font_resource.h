@@ -30,6 +30,7 @@
 #include "base/task/single_thread_task_runner.h"
 #include "base/types/expected.h"
 #include "third_party/blink/renderer/core/core_export.h"
+#include "third_party/blink/renderer/platform/fonts/web_font_decoder.h"
 #include "third_party/blink/renderer/platform/heap/collection_support/heap_hash_set.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
 #include "third_party/blink/renderer/platform/loader/fetch/resource.h"
@@ -46,6 +47,7 @@ class FetchParameters;
 class ResourceFetcher;
 class FontCustomPlatformData;
 class FontResourceClient;
+class IftPatcher;
 
 // An observer that will be notified when original data is cleared
 // from the resource. Inspector may collect this data and store it for
@@ -59,13 +61,6 @@ class CORE_EXPORT FontResourceClearDataObserver : public GarbageCollectedMixin {
 
 class CORE_EXPORT FontResource final : public Resource {
  public:
-  struct DecodedResult {
-    DecodedResult(sk_sp<SkTypeface> sk_typeface, size_t decoded_size)
-        : sk_typeface(sk_typeface), decoded_size(decoded_size) {}
-    sk_sp<SkTypeface> sk_typeface;
-    size_t decoded_size;
-  };
-
   static FontResource* Fetch(FetchParameters&,
                              ResourceFetcher*,
                              FontResourceClient*);
@@ -83,6 +78,7 @@ class CORE_EXPORT FontResource final : public Resource {
   String OtsParsingMessage() const { return ots_parsing_message_; }
 
   const FontCustomPlatformData* GetCustomFontData();
+  std::unique_ptr<IftPatcher> TakeIftPatcher();
 
   // Returns true if the loading priority of the remote font resource can be
   // lowered. The loading priority of the font can be lowered only if the
@@ -119,7 +115,7 @@ class CORE_EXPORT FontResource final : public Resource {
   void NotifyClientsLongLimitExceeded();
 
   void OnBackgroundDecodeFinished(
-      base::expected<DecodedResult, String> result_or_error);
+      base::expected<DecodedWebFont, String> result_or_error);
 
   // This is used in UMA histograms, should not change order.
   enum class LoadLimitState {
@@ -131,6 +127,7 @@ class CORE_EXPORT FontResource final : public Resource {
   };
 
   Member<FontCustomPlatformData> font_data_;
+  std::unique_ptr<IftPatcher> ift_patcher_;
   String ots_parsing_message_;
   LoadLimitState load_limit_state_;
   bool cors_failed_;
@@ -139,8 +136,7 @@ class CORE_EXPORT FontResource final : public Resource {
   mutable HeapHashSet<WeakMember<FontResourceClearDataObserver>>
       clear_data_observers_;
 
-  std::optional<base::expected<DecodedResult, String>>
-      background_decode_result_or_error_;
+  base::expected<DecodedWebFont, String> background_decode_result_;
 
   friend class MemoryCache;
   FRIEND_TEST_ALL_PREFIXES(CacheAwareFontResourceTest, CacheAwareFontLoading);

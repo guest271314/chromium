@@ -201,7 +201,7 @@ ShortcutMatch& ShortcutsProvider::ShortcutMatch::operator=(
     const ShortcutMatch& other) = default;
 
 ShortcutsProvider::ShortcutsProvider(AutocompleteProviderClient* client)
-    : AutocompleteProvider(AutocompleteProvider::TYPE_SHORTCUTS),
+    : AutocompleteProvider(AutocompleteProvider::Type::kShortcuts),
       client_(client),
       backend_(client_->GetShortcutsBackend()) {
   if (backend_) {
@@ -312,7 +312,7 @@ void ShortcutsProvider::DoAutocomplete(const AutocompleteInput& input,
     }
 
     if (shortcut_match.shortcut->match_core.type ==
-        AutocompleteMatch::Type::HISTORY_CLUSTER) {
+        omnibox::AutocompleteMatchType::kHistoryCluster) {
       history_cluster_shortcut_matches.push_back(shortcut_match);
     } else {
       shortcut_matches.push_back(shortcut_match);
@@ -522,7 +522,7 @@ AutocompleteMatch ShortcutsProvider::ShortcutMatchToACMatch(
         match.keyword != default_search_provider->keyword() ||
         // or keyword mode was invoked explicitly and the keyword in the input
         // is also of the default search provider.
-        (input.prefer_keyword() && keyword_matches);
+        (input.in_keyword_mode() && keyword_matches);
     match.search_terms_args =
         std::make_unique<TemplateURLRef::SearchTermsArgs>(match.contents);
     match.search_terms_args->page_classification =
@@ -537,7 +537,7 @@ AutocompleteMatch ShortcutsProvider::ShortcutMatchToACMatch(
   // If the input is in keyword mode, don't inline a match without or with a
   // different keyword. Otherwise, if the input is not in keyword mode, don't
   // inline a match with a keyword that is not from the default search provider.
-  if (input.prefer_keyword()
+  if (input.in_keyword_mode()
           ? is_search_type && keyword_matches && match_has_explicit_keyword
           : !match_has_explicit_keyword &&
                 (match.keyword.empty() || match_from_dsp)) {
@@ -554,7 +554,7 @@ AutocompleteMatch ShortcutsProvider::ShortcutMatchToACMatch(
             match.inline_autocompletion.empty();
       }
 #if !BUILDFLAG(IS_IOS)
-    } else if (match.type != AutocompleteMatch::Type::HISTORY_CLUSTER) {
+    } else if (match.type != omnibox::AutocompleteMatchType::kHistoryCluster) {
       // Don't default history cluster suggestions.
 #else
     } else {
@@ -563,7 +563,7 @@ AutocompleteMatch ShortcutsProvider::ShortcutMatchToACMatch(
       // URL from `additional_text` and don't try to inline the metadata (e.g.
       // 'Google Docs' or '1/1/2023').
       bool autocompleted =
-          match.type == AutocompleteMatch::Type::DOCUMENT_SUGGESTION
+          match.type == omnibox::AutocompleteMatchType::kDocumentSuggestion
               ? match.TryRichAutocompletion(
                     input, u"", ShortcutsBackend::GetSwappedContents(match),
                     shortcut.text)

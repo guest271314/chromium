@@ -11,7 +11,6 @@
 <translation id="1253734725326687145">Sasaran sentuhan dialihkan kepada bahagian atas sebelah kanan. Ketik di sini.</translation>
 <translation id="1266864766717917324">Tidak dapat berkongsi <ph name="CONTENT_TYPE" /></translation>
 <translation id="1269641567813814718">Win</translation>
-<translation id="1291104554099683393">Cuba kongsikan teks dalam bahagian yang lebih kecil.</translation>
 <translation id="1293699935367580298">Esc</translation>
 <translation id="1368832886055348810">Kiri ke Kanan</translation>
 <translation id="1383876407941801731">Carian</translation>
@@ -38,13 +37,11 @@
 <translation id="1901303067676059328">Pilih &amp;semua</translation>
 <translation id="19085484004813472">Ini ciri baharu</translation>
 <translation id="2006524834898217237">Pastikan peranti ini disambungkan ke Internet.</translation>
-<translation id="208586643495776849">Sila cuba lagi</translation>
 <translation id="2111134541987263231">Hidupkan <ph name="BEGIN_BOLD" />Benarkan dalam mod Inkognito<ph name="END_BOLD" /></translation>
 <translation id="2141853158323869627">{DAYS,plural, =1{1h}other{#h}}</translation>
 <translation id="2148716181193084225">Hari ini</translation>
 <translation id="2168039046890040389">Halaman Ke Atas</translation>
 <translation id="2190355936436201913">(kosong)</translation>
-<translation id="2192232475740621500">Gunakan ketumpatan rendah</translation>
 <translation id="2267918077332197517">Sekat semua pemberitahuan daripada tapak ini</translation>
 <translation id="2283117145434822734">F6</translation>
 <translation id="2289052229480071835">Ketik sasaran sentuhan pada skrin anda.</translation>
@@ -56,7 +53,6 @@
 <translation id="2388990488038464401">Panggil nombor ini daripada telefon anda?</translation>
 <translation id="2435457462613246316">Paparkan kata laluan</translation>
 <translation id="24452542372838207">Kembangkan pemberitahuan</translation>
-<translation id="2445449901874883781">Gunakan ketumpatan tinggi</translation>
 <translation id="2448407890032181691">Sasaran sentuhan dialihkan kepada bahagian bawah sebelah kanan. Ketik di sini.</translation>
 <translation id="2482878487686419369">Pemberitahuan</translation>
 <translation id="2497284189126895209">Semua Fail</translation>
@@ -87,7 +83,6 @@
 <translation id="3306688585798492231">Paparan terbina dalam</translation>
 <translation id="335581015389089642">Pertuturan</translation>
 <translation id="3372635229069101468">Klik <ph name="BEGIN_BOLD" />Butiran<ph name="END_BOLD" /></translation>
-<translation id="3389286852084373014">Teks terlalu besar</translation>
 <translation id="3406306243914553062">Kandungan HTML</translation>
 <translation id="3600566671520689681">{DAYS,plural, =1{1 hari lagi}other{# hari lagi}}</translation>
 <translation id="3600969208114796418">Fail <ph name="SAVEAS_EXTENSION_TYPE" /></translation>
@@ -130,7 +125,6 @@
 <translation id="5046499563572181734">Ketik di sini</translation>
 <translation id="5076340679995252485">&amp;Tampal</translation>
 <translation id="520299402983819650"><ph name="QUANTITY" /> PB</translation>
-<translation id="5278860589123563674">Gagal dihantar</translation>
 <translation id="5283101102242354279">Hidupkan sambungan dalam mod Inkognito:</translation>
 <translation id="528468243742722775">End</translation>
 <translation id="5329858601952122676">&amp;Padam</translation>
@@ -190,7 +184,6 @@
 <translation id="6965382102122355670">OK</translation>
 <translation id="6974053822202609517">Kanan ke Kiri</translation>
 <translation id="7052633198403197513">F1</translation>
-<translation id="7170202025028120564">Tetapan paparan aplikasi anda akan berkuat kuasa apabila aplikasi ini dimulakan semula selepas ini.</translation>
 <translation id="7222373446505536781">F11</translation>
 <translation id="7238427729722629793">{MINUTES,plural, =1{1 minit lagi}other{# minit lagi}}</translation>
 <translation id="7252604552361840748">Cari sambungan di atas</translation>

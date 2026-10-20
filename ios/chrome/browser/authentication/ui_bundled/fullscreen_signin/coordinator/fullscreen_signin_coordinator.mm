@@ -6,6 +6,8 @@
 
 #import <UIKit/UIKit.h>
 
+#import <utility>
+
 #import "base/notreached.h"
 #import "components/signin/public/base/consent_level.h"
 #import "components/signin/public/identity_manager/identity_manager.h"
@@ -54,8 +56,7 @@
   DCHECK_EQ(browser->type(), Browser::Type::kRegular);
   self = [super initWithBaseViewController:viewController browser:browser];
   if (self) {
-    CHECK_EQ(browser->type(), Browser::Type::kRegular,
-             base::NotFatalUntil::M145);
+    CHECK_EQ(browser->type(), Browser::Type::kRegular);
     CHECK(changeProfileContinuationProvider);
     _screenProvider = screenProvider;
     _changeProfileContinuationProvider = changeProfileContinuationProvider;
@@ -66,7 +67,7 @@
 }
 
 - (void)dealloc {
-  CHECK(!_changeProfileContinuationProvider, base::NotFatalUntil::M146);
+  CHECK(!_changeProfileContinuationProvider);
 }
 
 #pragma mark - ChromeCoordinator
@@ -75,8 +76,8 @@
   [super start];
   signin::IdentityManager* identityManager =
       IdentityManagerFactory::GetForProfile(self.profile);
-  CHECK(!identityManager->HasPrimaryAccount(signin::ConsentLevel::kSignin),
-        base::NotFatalUntil::M142);
+  CHECK(self.canSwitchAccount ||
+        !identityManager->HasPrimaryAccount(signin::ConsentLevel::kSignin));
   _signinInProgress = [self.sceneState createSigninInProgress];
   self.navigationController =
       [[UINavigationController alloc] initWithNavigationBarClass:nil
@@ -87,9 +88,10 @@
   [self presentScreen:[self.screenProvider nextScreenType]];
 
   // Note: If the user was already signed in, then the `presentScreen` call
-  // above may have already synchronously completed all the screens, and then
-  // `self.navigationController` would already be nil again. That is invalid;
-  // the caller must have checked for this case before.
+  // above may have already synchronously completed all the screens if account
+  // switching is not possible, and then `self.navigationController` would
+  // already be nil again. That is invalid; the caller must have checked for
+  // this case before.
   CHECK(self.navigationController);
 
   [self.navigationController setNavigationBarHidden:YES animated:NO];
@@ -125,14 +127,8 @@
 // presenting the screens.
 - (void)finishPresentingScreens {
   __weak __typeof(self) weakSelf = self;
-  AuthenticationService* authService =
-      AuthenticationServiceFactory::GetForProfile(self.profile);
-  id<SystemIdentity> identity = authService->GetPrimaryIdentity();
   void (^completion)(void) = ^{
-    SigninCoordinatorResult result =
-        identity ? SigninCoordinatorResultSuccess
-                 : SigninCoordinatorResultCanceledByUser;
-    [weakSelf finishWithResult:result identity:identity];
+    [weakSelf finishWithPrimaryIdentity];
   };
   [self.navigationController dismissViewControllerAnimated:YES
                                                 completion:completion];
@@ -153,16 +149,22 @@
 // Creates a screen coordinator according to `type`.
 - (ChromeCoordinator*)createChildCoordinatorWithScreenType:(ScreenType)type {
   switch (type) {
-    case kSignIn:
-      return [[FullscreenSigninScreenCoordinator alloc]
-           initWithBaseNavigationController:self.navigationController
-                                    browser:self.browser
-                                   delegate:self
-                               contextStyle:_contextStyle
-                                accessPoint:_accessPoint
-                                promoAction:signin_metrics::PromoAction::
-                                                PROMO_ACTION_NO_SIGNIN_PROMO
-          changeProfileContinuationProvider:_changeProfileContinuationProvider];
+    case kSignIn: {
+      FullscreenSigninScreenCoordinator* coordinator =
+          [[FullscreenSigninScreenCoordinator alloc]
+               initWithBaseNavigationController:self.navigationController
+                                        browser:self.browser
+                                       delegate:self
+                                   contextStyle:_contextStyle
+                                    accessPoint:_accessPoint
+                                    promoAction:signin_metrics::PromoAction::
+                                                    PROMO_ACTION_NO_SIGNIN_PROMO
+              changeProfileContinuationProvider:
+                  _changeProfileContinuationProvider];
+      coordinator.identity = self.identity;
+      coordinator.canSwitchAccount = self.canSwitchAccount;
+      return coordinator;
+    }
     case kHistorySync:
     case kDefaultBrowserPromo:
     case kChoice:
@@ -178,20 +180,40 @@
   return nil;
 }
 
-- (void)finishWithResult:(SigninCoordinatorResult)result
-                identity:(id<SystemIdentity>)identity {
+- (void)finishWithPrimaryIdentity {
+  id<SystemIdentity> identity =
+      AuthenticationServiceFactory::GetForProfile(self.profile)
+          ->GetPrimaryIdentity();
+  SigninCoordinatorResultOrIdentity result =
+      identity ? SigninCoordinatorResultOrIdentity(identity)
+               : base::unexpected(SigninCoordinatorResultCanceledByUser);
+  [self finishWithResult:std::move(result)];
+}
+
+- (void)finishWithResult:(SigninCoordinatorResultOrIdentity)result {
   [self stopChildCoordinator];
   self.navigationController = nil;
   self.screenProvider = nil;
-  [self.delegate fullscreenSigninCoordinatorWantsToBeStopped:self
-                                                      result:result];
+  if ([self.delegate
+          respondsToSelector:@selector(
+                                 fullscreenSigninCoordinatorDone:result:)]) {
+    [self.delegate fullscreenSigninCoordinatorDone:self
+                                            result:std::move(result)];
+  } else {
+    SigninCoordinatorResult legacyResult =
+        result.has_value() ? SigninCoordinatorResultSuccess : result.error();
+    [self.delegate fullscreenSigninCoordinatorWantsToBeStopped:self
+                                                        result:legacyResult];
+  }
 }
 
 #pragma mark - FirstRunScreenDelegate
 
 // This is called before finishing the presentation of a screen.
 // Stops the child coordinator and prepares the next screen to present.
-- (void)screenWillFinishPresenting {
+- (void)firstRunScreenCoordinatorWantsToBeStopped:
+    (ChromeCoordinator*)coordinator {
+  CHECK_EQ(coordinator, self.childCoordinator, base::NotFatalUntil::M155);
   [self stopChildCoordinator];
   [self presentScreen:[self.screenProvider nextScreenType]];
 }

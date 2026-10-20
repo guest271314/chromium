@@ -137,6 +137,7 @@ SegmentationPlatformServiceFactory::SegmentationPlatformServiceFactory()
   DependsOn(DeviceInfoSyncServiceFactory::GetInstance());
   DependsOn(SyncServiceFactory::GetInstance());
   DependsOn(SessionSyncServiceFactory::GetInstance());
+  DependsOn(commerce::ShoppingServiceFactory::GetInstance());
 }
 
 SegmentationPlatformServiceFactory::~SegmentationPlatformServiceFactory() =
@@ -162,7 +163,7 @@ SegmentationPlatformServiceFactory::BuildServiceInstanceForBrowserContext(
           profile);
   optimization_guide::OptimizationGuideModelProvider* optimization_guide =
       global_state_holder
-          ? &global_state_holder->GetGlobalState().prediction_manager()
+          ? &global_state_holder->GetGlobalState().model_provider()
           : nullptr;
   sync_sessions::SessionSyncService* session_sync_service =
       SessionSyncServiceFactory::GetForProfile(profile);
@@ -213,7 +214,7 @@ SegmentationPlatformServiceFactory::BuildServiceInstanceForBrowserContext(
         if (!context_ptr) {
           return nullptr;
         }
-        return commerce::ShoppingServiceFactory::GetForBrowserContextIfExists(
+        return commerce::ShoppingServiceFactory::GetForBrowserContext(
             context_ptr);
       },
       context->GetWeakPtr());

@@ -41,14 +41,14 @@
 namespace blink {
 
 void CharacterData::MakeParkable() {
-  if (is_parkable_) {
+  if (IsParkableCharacterData()) {
     return;
   }
 
   auto released = data_.ReleaseImpl();
   data_.~String();
   new (&parkable_data_) ParkableString(std::move(released));
-  is_parkable_ = true;
+  SetParkableCharacterData(true);
 }
 
 void CharacterData::setData(const String& data) {
@@ -57,7 +57,6 @@ void CharacterData::setData(const String& data) {
   SetDataAndUpdate(data, TextDiffRange::Replace(0, old_length, data.length()),
                    kUpdateFromNonParser);
   GetDocument().DidRemoveText(*this, 0, old_length);
-  SoftNavigationHeuristics::ModifiedNode(this);
 }
 
 String CharacterData::substringData(unsigned offset,
@@ -208,6 +207,7 @@ void CharacterData::SetDataAndUpdate(const String& new_data,
       processing_instruction_node->DidChangeData();
 
     GetDocument().NotifyUpdateCharacterData(this, diff);
+    SoftNavigationHeuristics::ModifiedNode(this);
   }
 
   GetDocument().IncDOMTreeVersion();

@@ -47,7 +47,10 @@ import org.chromium.base.supplier.OneshotSupplierImpl;
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.RobolectricUtil;
 import org.chromium.base.test.util.Feature;
+import org.chromium.base.test.util.Features.DisableFeatures;
+import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.base.test.util.HistogramWatcher;
+import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.profiles.ProfileProvider;
 import org.chromium.chrome.browser.tab.MockTab;
@@ -62,9 +65,12 @@ import org.chromium.chrome.browser.tabmodel.NextTabPolicy.NextTabPolicySupplier;
 import org.chromium.chrome.browser.tabmodel.SupportedProfileType;
 import org.chromium.chrome.browser.tabmodel.TabClosureParams;
 import org.chromium.chrome.browser.tabmodel.TabCreatorManager;
+import org.chromium.chrome.browser.tabmodel.TabList;
 import org.chromium.chrome.browser.tabmodel.TabModel;
 import org.chromium.chrome.browser.tabmodel.TabModelSelector;
+import org.chromium.chrome.browser.tabmodel.TabModelType;
 import org.chromium.chrome.browser.tabmodel.TabReparentingParams;
+import org.chromium.chrome.test.util.browser.tabmodel.MockTabModel;
 import org.chromium.chrome.test.util.browser.tabmodel.MockTabModelSelector;
 import org.chromium.components.tab_group_sync.TabGroupSyncService;
 import org.chromium.ui.modaldialog.ModalDialogManager;
@@ -81,10 +87,8 @@ import java.util.Set;
  * {@link Activity}s getting destroyed, etc.
  */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 public class TabWindowManagerImplUnitTest {
     private static final Token GROUP_ID = new Token(12, 34);
-    private static final int TAB_ID = 2;
 
     @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
 
@@ -102,7 +106,10 @@ public class TabWindowManagerImplUnitTest {
     @Mock private Destroyable mDestroyable;
     @Mock private TabModelSelector mTabModelSelector;
     @Mock private TabModel mTabModel;
+    @Mock private TabModel mIncognitoTabModel;
     @Mock private TabGroupSyncService mTabGroupSyncService;
+    @Mock private Tab mClosingTab;
+    @Mock private TabList mComprehensiveModel;
 
     private OneshotSupplierImpl<ProfileProvider> mProfileProviderSupplier;
     private AsyncTabParamsManager mAsyncTabParamsManager;
@@ -142,7 +149,8 @@ public class TabWindowManagerImplUnitTest {
                                         mIncognitoProfile,
                                         /* tabCount= */ 0,
                                         /* incognitoTabCount= */ 0,
-                                        /* delegate= */ null),
+                                        /* delegate= */ null,
+                                        TabModelType.HEADLESS),
                                 () -> {});
                     }
                 };
@@ -645,7 +653,9 @@ public class TabWindowManagerImplUnitTest {
                 /* taskId= */ 123, /* selector= */ customSelector);
 
         Tab tab = customSelector.addMockTab();
+        ((MockTab) tab).setIsCustomTab(true);
         Tab incognitoTab = customSelector.addMockIncognitoTab();
+        ((MockTab) incognitoTab).setIsCustomTab(true);
 
         // Test getTabById.
         assertEquals(tab, mSubject.getTabById(tab.getId()));
@@ -667,10 +677,45 @@ public class TabWindowManagerImplUnitTest {
         assertEquals(tab, info.tab);
         assertEquals(customSelector, info.tabModelSelector);
         assertEquals(INVALID_WINDOW_ID, info.windowId);
+        assertEquals(TabWindowInfo.TabWindowType.CUSTOM, info.type);
 
         mSubject.unregisterCustomTabsTabModelSelector(customSelector);
         assertNull(mSubject.getTabById(tab.getId()));
         assertEquals(0, mSubject.getIncognitoTabCount());
+    }
+
+    /** Tests that getTabById() and other lookups function properly for archived tabs. */
+    @Test
+    public void testArchivedTabsLookups() {
+        MockTabModelSelector archivedSelector =
+                new MockTabModelSelector(
+                        /* profile= */ mProfile,
+                        /* incognitoProfile= */ mIncognitoProfile,
+                        /* tabCount= */ 0,
+                        /* incognitoTabCount= */ 0,
+                        /* delegate= */ null,
+                        TabModelType.ARCHIVED);
+        mSubject.setArchivedTabModelSelector(archivedSelector);
+
+        Tab tab = archivedSelector.addMockTab();
+
+        // Test getTabById.
+        assertEquals(tab, mSubject.getTabById(tab.getId()));
+
+        // Test getTabModelForTab.
+        assertEquals(
+                archivedSelector.getModel(/* incognito= */ false), mSubject.getTabModelForTab(tab));
+
+        // Test getTabWindowInfoById.
+        TabWindowInfo info = mSubject.getTabWindowInfoById(tab.getId());
+        assertNotNull(info);
+        assertEquals(tab, info.tab);
+        assertEquals(archivedSelector, info.tabModelSelector);
+        assertEquals(INVALID_WINDOW_ID, info.windowId);
+        assertEquals(TabWindowInfo.TabWindowType.ARCHIVED, info.type);
+
+        mSubject.setArchivedTabModelSelector(null);
+        assertNull(mSubject.getTabById(tab.getId()));
     }
 
     /** Tests that getTabModelForTab(...) functions properly. */
@@ -966,8 +1011,8 @@ public class TabWindowManagerImplUnitTest {
                 HistogramWatcher.newSingleRecordWatcher(
                         "Tabs.TabStateCleanupAbortedByArchive", false);
         doReturn(tab1).when(mArchivedTabModelSelector).getTabById(tab1.getId());
-        selector0.tryCloseTab(
-                TabClosureParams.closeTab(tab1).allowUndo(false).build(), /* allowDialog= */ false);
+        selector0.closeTab(
+                TabClosureParams.closeTab(tab1).allowUndo(/* allowUndo= */ false).build());
         assertFalse(mSubject.canTabStateBeDeleted(tab1.getId()));
         histogramWatcher.assertExpected();
 
@@ -1031,8 +1076,8 @@ public class TabWindowManagerImplUnitTest {
                 HistogramWatcher.newSingleRecordWatcher(
                         "Tabs.TabThumbnailCleanupAbortedByArchive", false);
         doReturn(tab1).when(mArchivedTabModelSelector).getTabById(tab1.getId());
-        selector0.tryCloseTab(
-                TabClosureParams.closeTab(tab1).allowUndo(false).build(), /* allowDialog= */ false);
+        selector0.closeTab(
+                TabClosureParams.closeTab(tab1).allowUndo(/* allowUndo= */ false).build());
         assertFalse(mSubject.canTabThumbnailBeDeleted(tab1.getId()));
         histogramWatcher.assertExpected();
 
@@ -1141,8 +1186,7 @@ public class TabWindowManagerImplUnitTest {
                 .thenReturn(new Pair<>(mTabModelSelector, mDestroyable));
         when(mTabModelSelector.isTabStateInitialized()).thenReturn(true);
         when(mTabModelSelector.getModel(anyBoolean())).thenReturn(mTabModel);
-        when(mTabModel.getGroupLastShownTabId(GROUP_ID)).thenReturn(TAB_ID);
-        when(mTabModel.tabGroupExists(GROUP_ID)).thenReturn(true);
+        when(mTabModel.containsTabGroup(GROUP_ID)).thenReturn(true);
         when(mTabGroupSyncService.getAllGroupIds()).thenReturn(new String[] {});
         TabWindowManager tabWindowManager = createTabWindowManager(mTabModelSelectorFactory);
 
@@ -1183,16 +1227,74 @@ public class TabWindowManagerImplUnitTest {
         when(mTabModelSelectorFactory.buildHeadlessSelector(anyInt(), any()))
                 .thenReturn(new Pair<>(mTabModelSelector, mDestroyable));
         when(mTabModelSelector.isTabStateInitialized()).thenReturn(true);
-        when(mTabModelSelector.getModel(anyBoolean())).thenReturn(mTabModel);
-        when(mTabModel.tabGroupExists(GROUP_ID)).thenReturn(true);
+        when(mTabModelSelector.getModels()).thenReturn(List.of(mTabModel));
+        when(mTabModel.containsTabGroup(GROUP_ID)).thenReturn(true);
         TabWindowManager tabWindowManager = createTabWindowManager(mTabModelSelectorFactory);
         tabWindowManager.requestSelectorWithoutActivity(1, mProfile);
         assertEquals(1, tabWindowManager.findWindowIdForTabGroup(GROUP_ID));
     }
 
     @Test
+    @EnableFeatures(ChromeFeatureList.CROSS_WINDOW_TAB_GROUP_OPERATIONS)
+    public void testFindWindowIdForTabGroup_incognito_flagEnabled() {
+        when(mIncognitoTabModel.isIncognito()).thenReturn(true);
+        when(mTabModelSelectorFactory.buildHeadlessSelector(anyInt(), any()))
+                .thenReturn(new Pair<>(mTabModelSelector, mDestroyable));
+        when(mTabModelSelector.isTabStateInitialized()).thenReturn(true);
+        when(mTabModelSelector.getModels()).thenReturn(List.of(mTabModel, mIncognitoTabModel));
+        when(mTabModel.containsTabGroup(GROUP_ID)).thenReturn(false);
+        when(mIncognitoTabModel.containsTabGroup(GROUP_ID)).thenReturn(true);
+
+        TabWindowManager tabWindowManager = createTabWindowManager(mTabModelSelectorFactory);
+        tabWindowManager.requestSelectorWithoutActivity(1, mProfile);
+        assertEquals(1, tabWindowManager.findWindowIdForTabGroup(GROUP_ID));
+    }
+
+    @Test
+    @DisableFeatures(ChromeFeatureList.CROSS_WINDOW_TAB_GROUP_OPERATIONS)
+    public void testFindWindowIdForTabGroup_incognito_flagDisabled() {
+        when(mIncognitoTabModel.isIncognito()).thenReturn(true);
+        when(mTabModelSelectorFactory.buildHeadlessSelector(anyInt(), any()))
+                .thenReturn(new Pair<>(mTabModelSelector, mDestroyable));
+        when(mTabModelSelector.isTabStateInitialized()).thenReturn(true);
+        when(mTabModelSelector.getModels()).thenReturn(List.of(mTabModel, mIncognitoTabModel));
+        when(mTabModel.containsTabGroup(GROUP_ID)).thenReturn(false);
+        when(mIncognitoTabModel.containsTabGroup(GROUP_ID)).thenReturn(true);
+
+        TabWindowManager tabWindowManager = createTabWindowManager(mTabModelSelectorFactory);
+        tabWindowManager.requestSelectorWithoutActivity(1, mProfile);
+        assertEquals(INVALID_WINDOW_ID, tabWindowManager.findWindowIdForTabGroup(GROUP_ID));
+    }
+
+    @Test
     public void testFindWindowIdForTabGroup_notFound() {
         assertEquals(INVALID_WINDOW_ID, mSubject.findWindowIdForTabGroup(GROUP_ID));
+    }
+
+    @Test
+    public void testFindWindowIdForTabGroup_closingInComprehensiveModel() {
+        when(mTabModelSelectorFactory.buildHeadlessSelector(anyInt(), any()))
+                .thenReturn(new Pair<>(mTabModelSelector, mDestroyable));
+        when(mTabModelSelector.isTabStateInitialized()).thenReturn(true);
+        when(mTabModelSelector.getModels()).thenReturn(List.of(mTabModel));
+        when(mTabModel.containsTabGroup(GROUP_ID)).thenReturn(false);
+
+        when(mClosingTab.getTabGroupId()).thenReturn(GROUP_ID);
+        when(mComprehensiveModel.iterator()).thenAnswer(inv -> List.of(mClosingTab).iterator());
+        when(mTabModel.getComprehensiveModel()).thenReturn(mComprehensiveModel);
+
+        TabWindowManager tabWindowManager = createTabWindowManager(mTabModelSelectorFactory);
+        tabWindowManager.requestSelectorWithoutActivity(1, mProfile);
+
+        assertEquals(
+                INVALID_WINDOW_ID,
+                tabWindowManager.findWindowIdForTabGroup(
+                        GROUP_ID, /* includeClosingGroups= */ false));
+        assertEquals(INVALID_WINDOW_ID, tabWindowManager.findWindowIdForTabGroup(GROUP_ID));
+        assertEquals(
+                1,
+                tabWindowManager.findWindowIdForTabGroup(
+                        GROUP_ID, /* includeClosingGroups= */ true));
     }
 
     @Test
@@ -1236,12 +1338,25 @@ public class TabWindowManagerImplUnitTest {
         assertEquals(tab1, info.tab);
         assertEquals(selector0, info.tabModelSelector);
         assertEquals(window0, info.windowId);
+        assertEquals(TabWindowInfo.TabWindowType.TABBED, info.type);
 
         info = mSubject.getTabWindowInfoById(tab2.getId());
         assertNotNull(info);
         assertEquals(tab2, info.tab);
         assertEquals(selector1, info.tabModelSelector);
         assertEquals(window1, info.windowId);
+        assertEquals(TabWindowInfo.TabWindowType.TABBED, info.type);
+
+        // Test headless tabs.
+        TabModelSelector headlessSelector = mSubject.requestSelectorWithoutActivity(2, mProfile);
+        MockTabModel headlessModel = (MockTabModel) headlessSelector.getModel(false);
+        Tab headlessTab = headlessModel.addTab(99);
+        info = mSubject.getTabWindowInfoById(headlessTab.getId());
+        assertNotNull(info);
+        assertEquals(headlessTab, info.tab);
+        assertEquals(headlessSelector, info.tabModelSelector);
+        assertEquals(2, info.windowId);
+        assertEquals(TabWindowInfo.TabWindowType.HEADLESS, info.type);
 
         info = mSubject.getTabWindowInfoById(tab2.getId() + 1);
         assertNull(info);

@@ -44,7 +44,6 @@ import org.chromium.chrome.browser.ui.signin.SigninAndHistorySyncActivityLaunche
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetContent;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetObserver;
-import org.chromium.components.browser_ui.bottomsheet.EmptyBottomSheetObserver;
 import org.chromium.components.browser_ui.device_lock.DeviceLockActivityLauncher;
 import org.chromium.components.browser_ui.share.ShareParams;
 import org.chromium.components.favicon.LargeIconBridge;
@@ -56,6 +55,7 @@ import org.chromium.ui.base.WindowAndroid;
 import org.chromium.ui.base.WindowAndroid.ActivityStateObserver;
 import org.chromium.ui.modaldialog.ModalDialogManager;
 import org.chromium.ui.modelutil.PropertyModel;
+import org.chromium.ui.util.CommonOnLayoutChangeListeners;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -66,10 +66,7 @@ import java.util.function.Supplier;
 // TODO(crbug.com/40106499): Should be package-protected once modularization is complete.
 @NullMarked
 public class ShareSheetCoordinator
-        implements ActivityStateObserver,
-                ChromeOptionShareCallback,
-                ConfigurationChangedObserver,
-                View.OnLayoutChangeListener {
+        implements ActivityStateObserver, ChromeOptionShareCallback, ConfigurationChangedObserver {
     private final BottomSheetController mBottomSheetController;
     private final Supplier<@Nullable Tab> mTabProvider;
     private final ShareSheetPropertyModelBuilder mPropertyModelBuilder;
@@ -94,7 +91,7 @@ public class ShareSheetCoordinator
     private @Nullable LinkToTextCoordinator mLinkToTextCoordinator;
     private @Nullable ShareSheetLinkToggleCoordinator mShareSheetLinkToggleCoordinator;
     private final ShareSheetUsageRankingHelper mShareSheetUsageRankingHelper;
-    private @LinkGeneration int mLinkGenerationStatusForMetrics = LinkGeneration.MAX;
+    private @LinkGeneration int mLinkGenerationStatusForMetrics = LinkGeneration.COUNT;
     private LinkToggleMetricsDetails mLinkToggleMetricsDetails =
             new LinkToggleMetricsDetails(LinkToggleState.COUNT, DetailedContentType.NOT_SPECIFIED);
     private final DeviceLockActivityLauncher mDeviceLockActivityLauncher;
@@ -102,6 +99,9 @@ public class ShareSheetCoordinator
     private final ActivityResultTracker mActivityResultTracker;
     private final MonotonicObservableSupplier<ModalDialogManager> mModalDialogManagerSupplier;
     private final SnackbarManager mSnackbarManager;
+
+    private final View.OnLayoutChangeListener mLayoutChangeListener =
+            CommonOnLayoutChangeListeners.createWidthChangedListener(this::updateBottomSheetViews);
 
     /**
      * Constructs a new ShareSheetCoordinator.
@@ -144,21 +144,20 @@ public class ShareSheetCoordinator
         mModalDialogManagerSupplier = modalDialogManagerSupplier;
         mSnackbarManager = snackbarManager;
         mBottomSheetObserver =
-                new EmptyBottomSheetObserver() {
+                new BottomSheetObserver() {
                     @Override
                     public void onSheetContentChanged(@Nullable BottomSheetContent bottomSheet) {
-                        super.onSheetContentChanged(bottomSheet);
                         if (mBottomSheet == null) {
                             return;
                         }
                         if (bottomSheet == mBottomSheet) {
                             mBottomSheet
                                     .getContentView()
-                                    .addOnLayoutChangeListener(ShareSheetCoordinator.this);
+                                    .addOnLayoutChangeListener(mLayoutChangeListener);
                         } else {
                             mBottomSheet
                                     .getContentView()
-                                    .removeOnLayoutChangeListener(ShareSheetCoordinator.this);
+                                    .removeOnLayoutChangeListener(mLayoutChangeListener);
                         }
                     }
                 };
@@ -231,9 +230,7 @@ public class ShareSheetCoordinator
             }
         }
 
-        mBottomSheet =
-                new ShareSheetBottomSheetContent(
-                        mActivity, mProfile, mIconBridge, this, params, mFeatureEngagementTracker);
+        mBottomSheet = new ShareSheetBottomSheetContent(mActivity, mIconBridge, this, params);
 
         mShareStartTime = shareStartTime;
         mLinkGenerationStatusForMetrics = mBottomSheet.getLinkGenerationState();
@@ -524,21 +521,8 @@ public class ShareSheetCoordinator
         mBottomSheetController.requestShowContent(mBottomSheet, /* animate= */ false);
     }
 
-    // View.OnLayoutChangeListener
-    @Override
-    public void onLayoutChange(
-            View v,
-            int left,
-            int top,
-            int right,
-            int bottom,
-            int oldLeft,
-            int oldTop,
-            int oldRight,
-            int oldBottom) {
-        if ((oldRight - oldLeft) == (right - left)) {
-            return;
-        }
+    private void updateBottomSheetViews() {
+        if (mBottomSheet == null) return;
         mBottomSheet.getFirstPartyView().invalidate();
         ViewUtils.requestLayout(
                 mBottomSheet.getFirstPartyView(),

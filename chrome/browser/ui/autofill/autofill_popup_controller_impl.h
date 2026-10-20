@@ -16,6 +16,7 @@
 #include "chrome/browser/ui/autofill/autofill_popup_controller.h"
 #include "chrome/browser/ui/autofill/autofill_popup_hide_helper.h"
 #include "chrome/browser/ui/autofill/autofill_popup_view.h"
+#include "chrome/browser/ui/autofill/key_press_handler_registration.h"
 #include "chrome/browser/ui/autofill/next_idle_barrier.h"
 #include "chrome/browser/ui/autofill/popup_controller_common.h"
 #include "components/autofill/core/browser/suggestions/suggestion.h"
@@ -24,7 +25,6 @@
 #include "components/autofill/core/browser/ui/popup_open_enums.h"
 #include "components/autofill/core/browser/ui/tabbed_pane_enums.h"
 #include "components/autofill/core/common/aliases.h"
-#include "content/public/browser/render_widget_host.h"
 
 namespace content {
 class WebContents;
@@ -43,31 +43,10 @@ namespace autofill {
 class AutofillSuggestionDelegate;
 class AutofillPopupView;
 
-// Sub-popups and their parent popups are connected by providing children
-// with links to their parents. This interface defines the API exposed by
-// these links.
-class ExpandablePopupParentControllerImpl {
- private:
-  friend class AutofillPopupControllerImpl;
-
-  // Creates a view for a sub-popup. On rare occasions opening the sub-popup
-  // may fail (e.g. when there is no room to open the sub-popup or the popup
-  // is in the middle of destroying and  has no widget already),
-  // `nullptr` is returned in these cases.
-  virtual base::WeakPtr<AutofillPopupView> CreateSubPopupView(
-      base::WeakPtr<AutofillPopupController> sub_controller) = 0;
-
-  // Returns the number of popups above this one. For example, if `this` is the
-  // second popup, `GetPopupLevel()` returns 1, if `this` is the root popup,
-  // it returns 0.
-  virtual int GetPopupLevel() const = 0;
-};
-
 // This class is a controller for an AutofillPopupView. It implements
 // AutofillPopupController to allow calls from AutofillPopupView. The
 // other, public functions are available to its instantiator.
-class AutofillPopupControllerImpl : public AutofillPopupController,
-                                    public ExpandablePopupParentControllerImpl {
+class AutofillPopupControllerImpl : public AutofillPopupController {
  public:
   AutofillPopupControllerImpl(const AutofillPopupControllerImpl&) = delete;
   AutofillPopupControllerImpl& operator=(const AutofillPopupControllerImpl&) =
@@ -75,12 +54,10 @@ class AutofillPopupControllerImpl : public AutofillPopupController,
 
   // AutofillSuggestionController:
   void OnSuggestionsChanged() override;
-  void AcceptSuggestion(
-      int index,
-      AutofillMetrics::SuggestionAcceptedMethod accept_method) override;
-  bool RemoveSuggestion(
-      int list_index,
-      AutofillMetrics::SingleEntryRemovalMethod removal_method) override;
+  void AcceptSuggestion(int index,
+                        AutofillMetrics::SuggestionAcceptedMethod accept_method,
+                        bool was_obscured) override;
+  bool RemoveSuggestion(int list_index) override;
   int GetLineCount() const override;
   const std::vector<Suggestion>& GetSuggestions() const override;
   const Suggestion& GetSuggestionAt(int row) const override;
@@ -92,10 +69,19 @@ class AutofillPopupControllerImpl : public AutofillPopupController,
             std::vector<Suggestion> suggestions,
             AutofillSuggestionTriggerSource trigger_source,
             AutoselectFirstSuggestion autoselect_first_suggestion,
-            AutofillSuggestionsIgnoreFocusLoss ignore_focus_loss) override;
+            AutofillSuggestionsIgnoreFocusLoss ignore_focus_loss,
+            std::u16string search_bar_initial_value) override;
   std::optional<UiSessionId> GetUiSessionId() const override;
   void SetKeepPopupOpenForTesting(bool keep_popup_open_for_testing) override;
   void UpdateDataListValues(base::span<const SelectOption> options) override;
+  const LocalFrameToken& GetAnchorFrameToken() const override;
+  bool MayRecycle(
+      base::WeakPtr<AutofillSuggestionDelegate> delegate,
+      content::WebContents* web_contents,
+      const LocalFrameToken& anchor_frame_token,
+      AutofillSuggestionTriggerSource trigger_source) const override;
+  void Recycle(PopupControllerCommon controller_common,
+               int32_t form_control_ax_id) override;
   bool IsViewVisibilityAcceptingThresholdEnabled() const override;
   bool IsSearching() const override;
 
@@ -108,15 +94,14 @@ class AutofillPopupControllerImpl : public AutofillPopupController,
       AutoselectFirstSuggestion autoselect_first_suggestion) override;
   void HideSubPopup() override;
   bool ShouldIgnoreMouseObservedOutsideItemBoundsCheck() const override;
-  void PerformButtonActionForSuggestion(
-      int index,
-      const SuggestionButtonAction& button_action) override;
   const std::vector<std::optional<SuggestionFilterMatch>>&
   GetSuggestionFilterMatches() const override;
   void SetFilter(std::optional<SuggestionFilter> filter,
                  FilterSource source) override;
   bool HasFilteredOutSuggestions() const override;
-  bool ShouldShowNoSuggestionsMessage() const override;
+  bool ShouldShowNoSuggestionsMessage(
+      const std::optional<AutofillPopupView::SearchBarConfig>&
+          search_bar_config) const override;
   bool HandleKeyPressEvent(const input::NativeWebKeyboardEvent& event) override;
   void OnPopupPainted() override;
   void OnTabSelected(int tab_index,
@@ -128,8 +113,7 @@ class AutofillPopupControllerImpl : public AutofillPopupController,
       base::WeakPtr<AutofillSuggestionDelegate> delegate,
       content::WebContents* web_contents,
       PopupControllerCommon controller_common,
-      int32_t form_control_ax_id,
-      std::optional<base::WeakPtr<ExpandablePopupParentControllerImpl>> parent =
+      std::optional<base::WeakPtr<AutofillPopupControllerImpl>> parent =
           std::nullopt);
   ~AutofillPopupControllerImpl() override;
 
@@ -139,8 +123,10 @@ class AutofillPopupControllerImpl : public AutofillPopupController,
   PopupAnchorType anchor_type() const override;
   base::i18n::TextDirection GetElementTextDirection() const override;
 
-  // Returns true if the popup still has non-options entries to show the user.
-  bool HasSuggestions() const;
+  // Returns true if the popup only contains trivial suggestions (e.g.,
+  // separators). This is always `false` for AtMemory because the search bar
+  // itself counts as non-trivial.
+  bool HasEmptySuggestionContent() const;
 
   // Set the Autofill entry values. Exposed to allow tests to set these values
   // without showing the popup.
@@ -167,24 +153,40 @@ class AutofillPopupControllerImpl : public AutofillPopupController,
 
   // Clear the internal state of the controller. This is needed to ensure that
   // when the popup is reused it doesn't leak values between uses.
+  // If the popup tabbed state changed since the last `Show()`, then `view_` is
+  // cleared to trigger popup regeneration.
   void ClearState();
 
-  // ExpandablePopupParentControllerImpl:
+  // Creates a view for a sub-popup. On rare occasions opening the sub-popup
+  // may fail (e.g. when there is no room to open the sub-popup or the popup
+  // is in the middle of destroying and  has no widget already),
+  // `nullptr` is returned in these cases.
   base::WeakPtr<AutofillPopupView> CreateSubPopupView(
-      base::WeakPtr<AutofillPopupController> controller) override;
-  int GetPopupLevel() const override;
+      base::WeakPtr<AutofillPopupController> controller);
+
+  // Returns the number of popups above this one. For example, if `this` is the
+  // second popup, `GetPopupLevel()` returns 1, if `this` is the root popup,
+  // it returns 0.
+  int GetPopupLevel() const;
 
   // Returns `true` if this popup has no parent, and `false` for sub-popups.
   bool IsRootPopup() const;
+
+  // Returns metadata about this popup container. Concretely:
+  // - If `this` is a root popup, its `multi_index` is empty.
+  // - If `this` is a sub-popup, its `multi_index` contains the indices of the
+  //   suggestions on which this popup and its ancestors are anchored.
+  AutofillSuggestionDelegate::SuggestionUiMetadata GetPopupMetadata() const;
+
+  // Returns metadata about the suggestion at `row_index` within this popup.
+  AutofillSuggestionDelegate::SuggestionMetadata GetSuggestionMetadata(
+      size_t row_index,
+      bool was_obscured) const;
 
   // Notifies the view that the suggestions provided by the controller changed.
   // If `prefer_prev_arrow_side` is `true`, the view takes prev arrow side as
   // the first preferred when recalculating the popup position.
   void OnSuggestionsChanged(bool prefer_prev_arrow_side);
-
-  // Returns the search bar configuration for the given `trigger_source`.
-  std::optional<AutofillPopupView::SearchBarConfig> GetSearchBarConfig(
-      AutofillSuggestionTriggerSource trigger_source) const;
 
   void UpdateFilteredSuggestions();
 
@@ -195,21 +197,9 @@ class AutofillPopupControllerImpl : public AutofillPopupController,
   base::WeakPtr<AutofillPopupView> view_;
   base::WeakPtr<AutofillSuggestionDelegate> delegate_;
 
-  // A helper class for capturing key press events associated with a
-  // `content::RenderFrameHost`.
-  class KeyPressObserver {
-   public:
-    explicit KeyPressObserver(AutofillPopupControllerImpl* observer);
-    ~KeyPressObserver();
-
-    void Observe(content::RenderFrameHost* rfh);
-    void Reset();
-
-   private:
-    const raw_ref<AutofillPopupControllerImpl> observer_;
-    content::GlobalRenderFrameHostId rfh_;
-    content::RenderWidgetHost::KeyPressEventCallback handler_;
-  } key_press_observer_{this};
+  // Keeps `HandleKeyPressEvent()` registered with the frame the popup is
+  // anchored to.
+  KeyPressHandlerRegistration key_press_registration_;
 
   // Whether a sufficient amount of time has passed since showing or updating
   // suggestions. It is used to safeguard against accepting suggestions too
@@ -248,7 +238,7 @@ class AutofillPopupControllerImpl : public AutofillPopupController,
 
   // Parent's popup controller. The root popup doesn't have a parent, but in
   // sub-popups it must be present.
-  const std::optional<base::WeakPtr<ExpandablePopupParentControllerImpl>>
+  const std::optional<base::WeakPtr<AutofillPopupControllerImpl>>
       parent_controller_;
 
   // The open sub-popup controller if any, `nullptr` otherwise.
@@ -268,12 +258,13 @@ class AutofillPopupControllerImpl : public AutofillPopupController,
   std::vector<std::optional<SuggestionFilterMatch>> suggestion_filter_matches_;
 
   // The `FillingProduct` that matches the suggestions shown in the popup.
-  // The first `IsStandaloneSuggestionType()` is used to define what the
-  // `FillingProduct` is.
   FillingProduct suggestions_filling_product_ = FillingProduct::kNone;
 
   // Whether any suggestion has been selected.
   bool any_suggestion_selected_ = false;
+
+  // Tracks whether the active popup view in `view_` is tabbed.
+  bool is_tabbed_popup_ = false;
 
   // AutofillPopupControllerImpl deletes itself. To simplify memory management,
   // we delete the object asynchronously.

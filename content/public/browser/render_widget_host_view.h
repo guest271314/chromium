@@ -144,20 +144,12 @@ class CONTENT_EXPORT RenderWidgetHostView {
   virtual void Focus() = 0;
   // Returns true if the View currently has the focus.
   virtual bool HasFocus() = 0;
-
-  // Shows/hides the view.  These must always be called together in pairs.
-  // It is not legal to call Hide() multiple times in a row.
-  virtual void Show() = 0;
-  virtual void Hide() = 0;
+  // Overrides the return value of HasFocus() for testing. Passing
+  // `std::nullopt` clears the override.
+  virtual void SetHasFocusForTesting(std::optional<bool> has_focus) {}
 
   // Whether the view is showing.
   virtual bool IsShowing() = 0;
-
-  // Indicates if the view is currently occluded (e.g, not visible because it's
-  // covered up by other windows), and as a result the view's renderer may be
-  // suspended. Calling Show()/Hide() overrides the state set by these methods.
-  virtual void WasUnOccluded() = 0;
-  virtual void WasOccluded() = 0;
 
   // Retrieve the bounds of the View, in screen coordinates.
   virtual gfx::Rect GetViewBounds() = 0;
@@ -263,9 +255,16 @@ class CONTENT_EXPORT RenderWidgetHostView {
       base::TimeDelta timeout,
       base::OnceCallback<void(const CopyFromSurfaceResult&)> callback) = 0;
 
-  // Ensures that all surfaces are synchronized for the next call to
-  // CopyFromSurface. This is used by web tests.
-  virtual void EnsureSurfaceSynchronizedForWebTest() = 0;
+  // Similar to `CopyFromSurface()`, but marks the copy request as secure.
+  // A capture is considered secure if the captured content is not easily
+  // accessible to JavaScript or users, and cannot be trivially shared or
+  // streamed out of the device. Used for capture prevention, e.g. for protected
+  // content or by enterprise policy.
+  virtual void CopyFromSurfaceSecure(
+      const gfx::Rect& src_rect,
+      const gfx::Size& output_size,
+      base::TimeDelta timeout,
+      base::OnceCallback<void(const CopyFromSurfaceResult&)> callback) = 0;
 
   // Creates a video capturer, which will allow the caller to receive a stream
   // of media::VideoFrames captured from this view. The capturer is configured
@@ -350,7 +349,13 @@ class CONTENT_EXPORT RenderWidgetHostView {
   virtual void SetForceSpecifiedDeadline(
       std::optional<uint32_t> deadline_in_frames) {}
 
+  // Set whether macOS "AutoFill" is allowed for this view.
+  virtual void SetSupportsAutoFill(bool supports) {}
+
   virtual std::optional<uint32_t> GetForceSpecifiedDeadlineForTesting();
+
+  // Sets whether the view should evict its saved compositor frame when hidden.
+  virtual void SetEvictOnHide(bool evict_on_hide) = 0;
 };
 
 }  // namespace content

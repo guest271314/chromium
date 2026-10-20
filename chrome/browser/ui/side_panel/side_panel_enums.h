@@ -43,10 +43,14 @@ enum class SidePanelOpenTrigger {
   kReadAnythingKeyboardShortcut = 26,
 #if BUILDFLAG(IS_ANDROID)
   kWindowResized = 27,
-  kMaxValue = kWindowResized,
-#else
-  kMaxValue = kReadAnythingKeyboardShortcut,
 #endif
+  kGlicOpened = 28,
+  kContextualTasks = 29,
+  kReadAnythingListenToThisPageContextMenu = 30,
+  kReadAnythingUnknown = 31,
+  kUnknown = 32,
+  kPdfTranslation = 33,
+  kMaxValue = kPdfTranslation,
 };
 // LINT.ThenChange(//tools/metrics/histograms/enums.xml:SidePanelOpenTrigger)
 
@@ -80,10 +84,14 @@ enum class SidePanelEntryHideReason {
 #endif
 };
 
-
+// Specifies which UI component the panel height is aligned with (e.g. primary
+// web contents or toolbar).
+//
+// As of Sep 1, 2026, Android has its own UX rules and doesn't respect this enum
+// (see https://crbug.com/515153523#comment2).
 enum class SidePanelType {
   kMinValue,
-  // Panel aligned with the web contents.
+  // Panel aligned with the primary web contents.
   kContent = kMinValue,
   // Panel aligned with the toolbar.
   kToolbar,

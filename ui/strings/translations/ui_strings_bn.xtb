@@ -11,7 +11,6 @@
 <translation id="1253734725326687145">টাচ টার্গেট একদম উপরে ডানদিকে নিয়ে যাওয়া হয়েছে। এখানে ট্যাপ করুন।</translation>
 <translation id="1266864766717917324"><ph name="CONTENT_TYPE" /> শেয়ার করা যায়নি</translation>
 <translation id="1269641567813814718">Win</translation>
-<translation id="1291104554099683393">টেক্সটটি ছোট ছোট ভাগে ভাগ করে পাঠানোর চেষ্টা করুন।</translation>
 <translation id="1293699935367580298">Esc</translation>
 <translation id="1368832886055348810">বাঁ থেকে ডান</translation>
 <translation id="1383876407941801731">খুঁজুন</translation>
@@ -38,13 +37,11 @@
 <translation id="1901303067676059328">&amp;সকল বেছে নিন</translation>
 <translation id="19085484004813472">এটি একটি নতুন ফিচার</translation>
 <translation id="2006524834898217237">এই ডিভাইস ইন্টারনেটে কানেক্ট করা আছে কিনা দেখে নিন।</translation>
-<translation id="208586643495776849">আবার চেষ্টা করুন</translation>
 <translation id="2111134541987263231"><ph name="BEGIN_BOLD" />ছদ্মবেশী মোডে অনুমতি দিন<ph name="END_BOLD" /> বিকল্প চালু করুন</translation>
 <translation id="2141853158323869627">{DAYS,plural, =1{১ দিন}one{# দিন}other{# দিন}}</translation>
 <translation id="2148716181193084225">আজ</translation>
 <translation id="2168039046890040389">পৃষ্ঠা নিচে</translation>
 <translation id="2190355936436201913">(খালি)</translation>
-<translation id="2192232475740621500">কম রেজোলিউশন ব্যবহার করুন</translation>
 <translation id="2267918077332197517">এই সাইটের সমস্ত বিজ্ঞপ্তি ব্লক করুন</translation>
 <translation id="2283117145434822734">F6</translation>
 <translation id="2289052229480071835">আপনার স্ক্রীনে স্পর্শ লক্ষ্যগুলি আলতা চাপুন।</translation>
@@ -56,7 +53,6 @@
 <translation id="2388990488038464401">আপনার ফোন থেকে এই নম্বরে কল করতে চান?</translation>
 <translation id="2435457462613246316">পাসওয়ার্ড দেখান</translation>
 <translation id="24452542372838207">বিজ্ঞপ্তি প্রসারিত করুন</translation>
-<translation id="2445449901874883781">উচ্চ রেজোলিউশন ব্যবহার করুন</translation>
 <translation id="2448407890032181691">টাচ টার্গেট একদম নিচে ডানদিকে নিয়ে যাওয়া হয়েছে। এখানে ট্যাপ করুন।</translation>
 <translation id="2482878487686419369">বিজ্ঞপ্তিগুলি</translation>
 <translation id="2497284189126895209">সব ফাইল</translation>
@@ -87,7 +83,6 @@
 <translation id="3306688585798492231">আগে থেকেই তৈরি করা আভ্যন্তরীণ ডিসপ্লে</translation>
 <translation id="335581015389089642">স্পিচ</translation>
 <translation id="3372635229069101468"><ph name="BEGIN_BOLD" />বিবরণ<ph name="END_BOLD" /> বিকল্পে ক্লিক করুন</translation>
-<translation id="3389286852084373014">টেক্সটটি অনেক বড়</translation>
 <translation id="3406306243914553062">HTML কন্টেন্ট</translation>
 <translation id="3600566671520689681">{DAYS,plural, =1{১ দিন বাকি}one{# দিন বাকি}other{# দিন বাকি}}</translation>
 <translation id="3600969208114796418"><ph name="SAVEAS_EXTENSION_TYPE" /> ফাইল</translation>
@@ -130,7 +125,6 @@
 <translation id="5046499563572181734">এখানে আলতো চাপুন</translation>
 <translation id="5076340679995252485">&amp;পেস্ট করুন</translation>
 <translation id="520299402983819650"><ph name="QUANTITY" /> PB</translation>
-<translation id="5278860589123563674">পাঠানো যায়নি</translation>
 <translation id="5283101102242354279">ছদ্মবেশী মোডে এক্সটেনশনটি চালু করুন:</translation>
 <translation id="528468243742722775">শেষ</translation>
 <translation id="5329858601952122676">&amp;মুছুন</translation>
@@ -190,7 +184,6 @@
 <translation id="6965382102122355670">ঠিক আছে</translation>
 <translation id="6974053822202609517">ডান থেকে বামে</translation>
 <translation id="7052633198403197513">F1</translation>
-<translation id="7170202025028120564">আপনার অ্যাপ্লিকেশনের ডিসপ্লে সেটিংস তখনই কার্যকর হবে পরে যখন এটি রিস্টার্ট করা হবে।</translation>
 <translation id="7222373446505536781">F11</translation>
 <translation id="7238427729722629793">{MINUTES,plural, =1{১ মিনিট বাকি}one{# মিনিট বাকি}other{# মিনিট বাকি}}</translation>
 <translation id="7252604552361840748">উপরের এক্সটেনশনটি খুঁজুন</translation>

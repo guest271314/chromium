@@ -21,8 +21,8 @@ import org.chromium.chrome.browser.ntp_customization.theme.NtpCustomizationPromo
 import org.chromium.chrome.browser.offlinepages.OfflinePageBridge;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.tab.CurrentTabObserver;
-import org.chromium.chrome.browser.tab.EmptyTabObserver;
 import org.chromium.chrome.browser.tab.Tab;
+import org.chromium.chrome.browser.tab.TabObserver;
 import org.chromium.chrome.browser.translate.TranslateBridge;
 import org.chromium.chrome.browser.translate.TranslateUtils;
 import org.chromium.chrome.browser.ui.appmenu.AppMenuCoordinator;
@@ -82,7 +82,7 @@ public class ToolbarButtonInProductHelpController {
         mPageLoadObserver =
                 new CurrentTabObserver(
                         tabSupplier,
-                        new EmptyTabObserver() {
+                        new TabObserver() {
                             @Override
                             public void onPageLoadFinished(Tab tab, GURL url) {
                                 // Part of scroll jank investigation http://crbug.com/40830793. Will
@@ -163,20 +163,6 @@ public class ToolbarButtonInProductHelpController {
                                 () ->
                                         turnOnHighlightForMenuItem(
                                                 R.id.enable_price_tracking_menu_id))
-                        .setOnDismissCallback(this::turnOffHighlightForMenuItem)
-                        .build());
-    }
-
-    /** Attempts to show an IPH text bubble for download continuing. */
-    public void showDownloadContinuingIph() {
-        mUserEducationHelper.requestShowIph(
-                new IphCommandBuilder(
-                                mActivity.getResources(),
-                                FeatureConstants.DOWNLOAD_INFOBAR_DOWNLOAD_CONTINUING_FEATURE,
-                                R.string.iph_download_infobar_download_continuing_text,
-                                R.string.iph_download_infobar_download_continuing_text)
-                        .setAnchorView(mMenuButtonAnchorView)
-                        .setOnShowCallback(() -> turnOnHighlightForMenuItem(R.id.downloads_menu_id))
                         .setOnDismissCallback(this::turnOffHighlightForMenuItem)
                         .build());
     }

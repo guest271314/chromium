@@ -24,6 +24,7 @@
 
 #include "third_party/blink/renderer/core/html/forms/html_field_set_element.h"
 
+#include "base/auto_reset.h"
 #include "third_party/blink/renderer/core/dom/element_traversal.h"
 #include "third_party/blink/renderer/core/dom/events/event_dispatch_forbidden_scope.h"
 #include "third_party/blink/renderer/core/dom/layout_tree_builder_traversal.h"
@@ -31,10 +32,10 @@
 #include "third_party/blink/renderer/core/html/custom/element_internals.h"
 #include "third_party/blink/renderer/core/html/forms/html_legend_element.h"
 #include "third_party/blink/renderer/core/html/html_collection.h"
-#include "third_party/blink/renderer/core/html/html_menu_item_element.h"
 #include "third_party/blink/renderer/core/html_names.h"
 #include "third_party/blink/renderer/core/layout/forms/layout_fieldset.h"
 #include "third_party/blink/renderer/core/layout/layout_block.h"
+#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/blink/renderer/platform/wtf/std_lib_extras.h"
 
 namespace blink {
@@ -64,34 +65,6 @@ bool WillReattachChildLayoutObject(const Element& parent) {
 }
 
 }  // namespace
-
-void HTMLFieldSetElement::ParseAttribute(
-    const AttributeModificationParams& params) {
-  const QualifiedName& name = params.name;
-  const AtomicString& old_value = params.old_value;
-  const AtomicString& new_value = params.new_value;
-
-  if (name == html_names::kCheckableAttr) {
-    // Uncheck all child menu items, if any exist, when `checkable` content
-    // attribute is removed.
-    if (new_value.empty()) {
-      UpdateMenuItemCheckableExclusivity(/*checked_menu_item=*/nullptr);
-    } else if (EqualIgnoringAsciiCase(new_value, keywords::kSingle) &&
-               !old_value.empty()) {
-      HTMLMenuItemElement* first_checked_menu_item = nullptr;
-      for (HTMLMenuItemElement& menu_item :
-           Traversal<HTMLMenuItemElement>::DescendantsOf(*this)) {
-        if (menu_item.checked()) {
-          first_checked_menu_item = &menu_item;
-          break;
-        }
-      }
-      UpdateMenuItemCheckableExclusivity(first_checked_menu_item);
-    }
-  } else {
-    HTMLFormControlElement::ParseAttribute(params);
-  }
-}
 
 HTMLFieldSetElement::HTMLFieldSetElement(Document& document)
     : HTMLFormControlElement(html_names::kFieldsetTag, document) {
@@ -124,18 +97,21 @@ bool HTMLFieldSetElement::IsSubmittableElement() {
 // Returns a disabled focused element if it's in descendants of |base|.
 Element*
 HTMLFieldSetElement::InvalidateDescendantDisabledStateAndFindFocusedOne(
-    Element& base) {
+    Element& base,
+    DisabledChangedReason reason) {
   Element* focused_element = AdjustedFocusedElementInTreeScope();
   bool should_blur = false;
   {
     EventDispatchForbiddenScope event_forbidden;
     for (HTMLElement& element : Traversal<HTMLElement>::DescendantsOf(base)) {
-      if (auto* control = DynamicTo<HTMLFormControlElement>(element))
-        control->AncestorDisabledStateWasChanged();
-      else if (element.IsFormAssociatedCustomElement())
-        element.EnsureElementInternals().AncestorDisabledStateWasChanged();
-      else
+      if (auto* control = DynamicTo<HTMLFormControlElement>(element)) {
+        control->AncestorDisabledStateWasChanged(reason);
+      } else if (element.IsFormAssociatedCustomElement()) {
+        element.EnsureElementInternals().AncestorDisabledStateWasChanged(
+            reason);
+      } else {
         continue;
+      }
       if (focused_element == &element && element.IsDisabledFormControl())
         should_blur = true;
     }
@@ -143,11 +119,12 @@ HTMLFieldSetElement::InvalidateDescendantDisabledStateAndFindFocusedOne(
   return should_blur ? focused_element : nullptr;
 }
 
-void HTMLFieldSetElement::DisabledAttributeChanged() {
+void HTMLFieldSetElement::DisabledAttributeChanged(
+    DisabledChangedReason reason) {
   bool was_disabled = IsSelfDisabledIgnoringAncestors();
   // This element must be updated before the style of nodes in its subtree gets
   // recalculated.
-  HTMLFormControlElement::DisabledAttributeChanged();
+  HTMLFormControlElement::DisabledAttributeChanged(reason);
   if (was_disabled != IsSelfDisabledIgnoringAncestors()) {
     Document& document = GetDocument();
     if (was_disabled) {
@@ -157,16 +134,33 @@ void HTMLFieldSetElement::DisabledAttributeChanged() {
     }
   }
   if (Element* focused_element =
-          InvalidateDescendantDisabledStateAndFindFocusedOne(*this))
+          InvalidateDescendantDisabledStateAndFindFocusedOne(*this, reason)) {
     focused_element->blur();
+  }
 }
 
-void HTMLFieldSetElement::AncestorDisabledStateWasChanged() {
+void HTMLFieldSetElement::AncestorDisabledStateWasChanged(
+    DisabledChangedReason reason) {
   ancestor_disabled_state_ = AncestorDisabledState::kUnknown;
   // Do not re-enter HTMLFieldSetElement::DisabledAttributeChanged(), so that
   // we only invalidate this element's own disabled state and do not traverse
   // the descendants.
-  HTMLFormControlElement::DisabledAttributeChanged();
+  HTMLFormControlElement::DisabledAttributeChanged(reason);
+}
+
+Node::InsertionNotificationRequest HTMLFieldSetElement::InsertedInto(
+    ContainerNode& insertion_point) {
+  if (insertion_point.isConnected()) {
+    GetDocument().IncrementConnectedFieldsetCount();
+  }
+  return HTMLFormControlElement::InsertedInto(insertion_point);
+}
+
+void HTMLFieldSetElement::RemovedFrom(ContainerNode& insertion_point) {
+  if (insertion_point.isConnected()) {
+    GetDocument().DecrementConnectedFieldsetCount();
+  }
+  HTMLFormControlElement::RemovedFrom(insertion_point);
 }
 
 void HTMLFieldSetElement::DidMoveToNewDocument(Document& old_document) {
@@ -184,9 +178,10 @@ void HTMLFieldSetElement::ChildrenChanged(const ChildrenChange& change) {
     EventDispatchForbiddenScope event_forbidden;
     for (HTMLLegendElement& legend :
          Traversal<HTMLLegendElement>::ChildrenOf(*this)) {
-      if (Element* element =
-              InvalidateDescendantDisabledStateAndFindFocusedOne(legend))
+      if (Element* element = InvalidateDescendantDisabledStateAndFindFocusedOne(
+              legend, DisabledChangedReason::kFieldsetChildrenChanged)) {
         focused_element = element;
+      }
     }
   }
   if (!GetDocument().StatePreservingAtomicMoveInProgress() && focused_element) {
@@ -233,21 +228,6 @@ bool HTMLFieldSetElement::IsDisabledFormControl() const {
   // only supposed to affect its descendants:
   // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#concept-fe-disabled
   return false;
-}
-
-void HTMLFieldSetElement::UpdateMenuItemCheckableExclusivity(
-    HTMLMenuItemElement* checked_menu_item) {
-  // If `checked_menu_item` is null, then uncheck *all* child menuitems.
-  DCHECK(!checked_menu_item || checked_menu_item->checked());
-  DCHECK(!EqualIgnoringAsciiCase(FastGetAttribute(html_names::kCheckableAttr),
-                                 keywords::kMultiple));
-
-  for (HTMLMenuItemElement& menu_item :
-       Traversal<HTMLMenuItemElement>::DescendantsOf(*this)) {
-    if (&menu_item != checked_menu_item) {
-      menu_item.setChecked(false);
-    }
-  }
 }
 
 // <fieldset> should never be considered disabled, but should still match the

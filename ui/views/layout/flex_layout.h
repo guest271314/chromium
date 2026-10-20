@@ -5,15 +5,16 @@
 #ifndef UI_VIEWS_LAYOUT_FLEX_LAYOUT_H_
 #define UI_VIEWS_LAYOUT_FLEX_LAYOUT_H_
 
-#include <list>
-#include <map>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <set>
 #include <utility>
 #include <vector>
 
+#include "base/containers/flat_map.h"
 #include "base/memory/raw_ptr.h"
+#include "third_party/abseil-cpp/absl/container/inlined_vector.h"
 #include "ui/base/class_property.h"
 #include "ui/gfx/geometry/insets.h"
 #include "ui/views/layout/flex_layout_types.h"
@@ -70,6 +71,9 @@ class View;
 // properties or the preferred size or visibility of any of its children has
 // changed.
 class VIEWS_EXPORT FlexLayout : public LayoutManagerBase {
+ public:
+  METADATA_HEADER(FlexLayout, LayoutManagerBase)
+
  public:
   FlexLayout();
 
@@ -136,6 +140,23 @@ class VIEWS_EXPORT FlexLayout : public LayoutManagerBase {
     return GetDefault(key);
   }
 
+  // Calculates the main-axis budget available to `target_view`, if it were
+  // assigned the layout priority `target_flex_order`. `target_view` which must
+  // be a visible child of `host_view()`. Intended to be called from a
+  // multi-order FlexSpecification DrainPredicate with the `size_bounds` passed
+  // into that callback.
+  //
+  // This determines how much remaining available space `target_view` would have
+  // by simulating a basic layout pass. It subtracts out the preferred or
+  // minimum size of each peer child View, based on their order relative to
+  // `target_flex_order`. May return a value above the preferred size of
+  // `target_view`, or zero if there's no space remaining. Will never return a
+  // value less than 0.
+  int CalculateMainAxisSpaceAvailableToView(
+      const View* target_view,
+      int target_flex_order,
+      const SizeBounds& size_bounds) const;
+
  protected:
   // LayoutManagerBase:
   ProposedLayout CalculateProposedLayout(
@@ -158,12 +179,16 @@ class VIEWS_EXPORT FlexLayout : public LayoutManagerBase {
     const raw_ptr<FlexLayout> layout_;
   };
 
-  using ChildIndices = std::list<size_t>;
+  using ChildIndices = absl::InlinedVector<size_t, 8>;
 
   // Maps a flex order (lower = allocated first, and therefore higher priority)
   // to the indices of child views within that order that can flex.
   // See FlexSpecification::order().
-  using FlexOrderToViewIndexMap = std::map<int, ChildIndices>;
+  using FlexOrderToViewIndexMap =
+      base::flat_map<int,
+                     ChildIndices,
+                     std::less<>,
+                     absl::InlinedVector<std::pair<int, ChildIndices>, 2>>;
 
   // Alignment used when the main-axis alignment is not specified.
   static constexpr LayoutAlignment kDefaultMainAxisAlignment =

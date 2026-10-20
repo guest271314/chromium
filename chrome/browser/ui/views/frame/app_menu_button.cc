@@ -6,16 +6,26 @@
 
 #include <utility>
 
+#include "base/feature_list.h"
 #include "base/observer_list.h"
 #include "base/types/pass_key.h"
+#include "chrome/browser/ui/actions/command_action_updater.h"
+#include "chrome/browser/ui/browser_actions.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
 #include "chrome/browser/ui/browser_window.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/layout_constants.h"
 #include "chrome/browser/ui/toolbar/app_menu_model.h"
+#include "chrome/browser/ui/ui_features.h"
+#include "chrome/browser/ui/views/app_menu/action_app_menu.h"
 #include "chrome/browser/ui/views/chrome_typography.h"
 #include "chrome/browser/ui/views/frame/app_menu_button_observer.h"
+#include "chrome/browser/ui/views/interaction/browser_elements_views.h"
 #include "chrome/browser/ui/views/toolbar/app_menu.h"
 #include "chrome/browser/ui/views/toolbar/toolbar_ink_drop_util.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
+#include "ui/views/accessible_pane_view.h"
+#include "ui/views/bubble/bubble_anchor.h"
 #include "ui/views/controls/button/menu_button_controller.h"
 #include "ui/views/view_class_properties.h"
 
@@ -39,7 +49,17 @@ AppMenuButton::AppMenuButton(PressedCallback callback)
 AppMenuButton::~AppMenuButton() = default;
 
 views::BubbleAnchor AppMenuButton::GetAnchor() {
-  return views::BubbleAnchor(this);
+  if (IsDrawn()) {
+    return views::BubbleAnchor(this);
+  }
+  // The app menu button is always present but might be non-visible or offscreen
+  // in certain cases (e.g. content-fullscreen). In this case, use the fallback
+  // anchor instead.
+  auto* const elements = BrowserElementsViews::From(this);
+  CHECK(elements);
+  auto* const element = elements->GetElement(kFallbackPopupAnchorElementId);
+  CHECK(element);
+  return views::BubbleAnchor(element);
 }
 
 bool AppMenuButton::IsDrawn() const {
@@ -47,6 +67,9 @@ bool AppMenuButton::IsDrawn() const {
 }
 
 bool AppMenuButton::IsMenuShowing() const {
+  if (base::FeatureList::IsEnabled(features::kAppMenuGlowUp)) {
+    return action_menu_ && action_menu_->IsShowing();
+  }
   return menu_ && menu_->IsShowing();
 }
 
@@ -55,14 +78,47 @@ views::DialogDelegate* AppMenuButton::GetDialogDelegate() {
 }
 
 void AppMenuButton::CloseMenu() {
-  if (menu_) {
-    menu_->CloseMenu();
+  if (base::FeatureList::IsEnabled(features::kAppMenuGlowUp)) {
+    if (action_menu_) {
+      action_menu_->CloseMenu();
+    }
+    action_menu_.reset();
+  } else {
+    if (menu_) {
+      menu_->CloseMenu();
+    }
+    menu_.reset();
   }
-  menu_.reset();
 }
 
 void AppMenuButton::ShowMenu() {
   menu_button_controller_->Activate(nullptr);
+}
+
+views::MenuItemView* AppMenuButton::GetRootMenuItemViewForTesting() {
+  if (action_menu_) {
+    return action_menu_->root_menu_item_for_testing();  // IN-TEST
+  }
+  return menu_ ? menu_->root_menu_item() : nullptr;
+}
+
+ActionAppMenu* AppMenuButton::GetActionAppMenuForTesting() {
+  return action_menu_.get();
+}
+
+void AppMenuButton::ExecuteCommandForTesting(int command_id,
+                                             int mouse_event_flags) {
+  if (action_menu_) {
+    int id = command_id;
+    if (std::optional<actions::ActionId> action_id =
+            chrome::CommandActionUpdater::GetActionId(command_id)) {
+      id = action_id.value();
+    }
+    action_menu_->ExecuteCommand(id, mouse_event_flags);
+    return;
+  }
+  CHECK(menu_);
+  menu_->ExecuteCommand(command_id, mouse_event_flags);
 }
 
 void AppMenuButton::AddObserver(AppMenuButtonObserver* observer) {
@@ -78,7 +134,7 @@ void AppMenuButton::OnMenuClosed() {
 }
 
 void AppMenuButton::RunMenu(std::unique_ptr<AppMenuModel> menu_model,
-                            Browser* browser,
+                            BrowserWindowInterface* browser,
                             int run_flags) {
   // |menu_| must be reset before |menu_model_| is destroyed, as per the comment
   // in the class declaration.
@@ -96,8 +152,60 @@ void AppMenuButton::RunMenu(std::unique_ptr<AppMenuModel> menu_model,
   observer_list_.Notify(&AppMenuButtonObserver::AppMenuShown);
 }
 
+void AppMenuButton::RunActionMenu(
+    BrowserWindowInterface* browser_window_interface,
+    int run_flags) {
+  action_menu_.reset();
+
+  action_menu_ = std::make_unique<ActionAppMenu>(
+      browser_window_interface,
+      base::BindRepeating(&AppMenuButton::OnMenuClosed,
+                          weak_ptr_factory_.GetWeakPtr()));
+  action_menu_->RunMenu(menu_button_controller_, run_flags);
+
+  observer_list_.Notify(&AppMenuButtonObserver::AppMenuShown);
+}
+
 void AppMenuButton::SetMenuTimerForTesting(base::ElapsedTimer timer) {
-  menu_->SetTimerForTesting(std::move(timer));  // IN-TEST
+  if (action_menu_) {
+    action_menu_->SetTimerForTesting(std::move(timer));  // IN-TEST
+  } else if (menu_) {
+    menu_->SetTimerForTesting(std::move(timer));  // IN-TEST
+  }
+}
+
+bool AppMenuButton::HasFocus() const {
+  return views::View::HasFocus();
+}
+
+void AppMenuButton::Focus(views::AccessiblePaneView* pane) {
+  pane->SetPaneFocus(this);
+}
+
+void AppMenuButton::SetTypeAndSeverity(
+    AppMenuIconController::TypeAndSeverity type_and_severity) {
+  // Empty default implementation. BrowserAppMenuButton overrides this to
+  // handle update severity badges, while WebAppMenuButton does not need
+  // this functionality.
+}
+
+void AppMenuButton::SetIsMaximizedOrFullscreen(bool maximized_or_fullscreen) {
+  // When maximized or fullscreen, extend the trailing app menu button to the
+  // window edge per Fitts' law. Because the parent container's interior margin
+  // may have had its trailing edge zeroed out (e.g. for WebUI toolbar), use
+  // `default_insets` to reliably acquire the physical trailing inset (`left`
+  // when mirrored/RTL versus `right` in LTR).
+  int margin = 0;
+  if (maximized_or_fullscreen) {
+    const gfx::Insets default_insets =
+        ::GetLayoutInsets(LayoutInset::TOOLBAR_INTERIOR_MARGIN);
+    margin = GetMirrored() ? default_insets.left() : default_insets.right();
+  }
+  ToolbarButton::SetTrailingMargin(margin);
+}
+
+views::View* AppMenuButton::GetFocusablePaneView() {
+  return this;
 }
 
 BEGIN_METADATA(AppMenuButton)

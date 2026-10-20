@@ -12,8 +12,8 @@
 #include "components/blocked_content/pref_names.h"
 #include "components/pref_registry/pref_registry_syncable.h"
 #include "components/prefs/pref_service.h"
+#include "components/safe_browsing/core/browser/db/sb_protocol_manager_util.h"
 #include "components/safe_browsing/core/browser/db/util.h"
-#include "components/safe_browsing/core/browser/db/v4_protocol_manager_util.h"
 #include "components/subresource_filter/content/browser/safe_browsing_page_activation_throttle.h"
 #include "components/user_prefs/user_prefs.h"
 #include "content/public/browser/back_forward_cache.h"
@@ -177,10 +177,11 @@ void SafeBrowsingTriggeredPopupBlocker::OnSafeBrowsingChecksComplete(
   std::optional<safe_browsing::SubresourceFilterLevel> match_level;
   if (result.threat_type ==
       safe_browsing::SBThreatType::SB_THREAT_TYPE_SUBRESOURCE_FILTER) {
-    auto abusive = result.threat_metadata.subresource_filter_match.find(
+    auto abusive = result.subresource_filter_match.find(
         safe_browsing::SubresourceFilterType::ABUSIVE);
-    if (abusive != result.threat_metadata.subresource_filter_match.end())
+    if (abusive != result.subresource_filter_match.end()) {
       match_level = abusive->second;
+    }
   }
 
   if (match_level.has_value()) {

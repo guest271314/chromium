@@ -21,12 +21,21 @@
 #include "media/audio/audio_logging.h"
 #include "media/base/media_switches.h"
 #include "media/mojo/mojom/audio_processing.mojom.h"
+#include "third_party/perfetto/include/perfetto/tracing/track.h"
 
 namespace content {
 
 using DisconnectReason =
     media::mojom::AudioInputStreamObserver::DisconnectReason;
 using InputStreamErrorCode = media::mojom::InputStreamErrorCode;
+
+namespace {
+
+perfetto::NamedTrack GetTracingTrack(const AudioInputStreamBroker* broker) {
+  return perfetto::NamedTrack::FromPointer("AudioInputStreamBroker", broker);
+}
+
+}  // namespace
 
 AudioInputStreamBroker::AudioInputStreamBroker(
     int render_process_id,
@@ -49,11 +58,10 @@ AudioInputStreamBroker::AudioInputStreamBroker(
       deleter_(std::move(deleter)),
       processing_config_(std::move(processing_config)),
       renderer_factory_client_(std::move(renderer_factory_client)) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
-  DCHECK(renderer_factory_client_);
-  DCHECK(deleter_);
-  TRACE_EVENT_BEGIN("audio", "AudioInputStreamBroker",
-                    perfetto::Track::FromPointer(this));
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M160);
+  CHECK(renderer_factory_client_, base::NotFatalUntil::M160);
+  CHECK(deleter_, base::NotFatalUntil::M160);
+  TRACE_EVENT_BEGIN("audio", "AudioInputStreamBroker", GetTracingTrack(this));
 
   // Unretained is safe because |this| owns |renderer_factory_client_|.
   renderer_factory_client_.set_disconnect_handler(base::BindOnce(
@@ -69,7 +77,7 @@ AudioInputStreamBroker::AudioInputStreamBroker(
 }
 
 AudioInputStreamBroker::~AudioInputStreamBroker() {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M160);
 
   NotifyFrameHostOfAudioStreamStopped(render_process_id(), render_frame_id(),
                                       /*is_capturing=*/true);
@@ -78,22 +86,21 @@ AudioInputStreamBroker::~AudioInputStreamBroker() {
 
   if (awaiting_created_) {
     // End "CreateStream" trace event.
-    TRACE_EVENT_END("audio", perfetto::Track::FromPointer(this), "success",
+    TRACE_EVENT_END("audio", GetTracingTrack(this), "success",
                     "failed or cancelled");
   }
   // End "AudioInputStreamBroker" trace event.
-  TRACE_EVENT_END("audio", perfetto::Track::FromPointer(this),
-                  "disconnect reason",
+  TRACE_EVENT_END("audio", GetTracingTrack(this), "disconnect reason",
                   static_cast<uint32_t>(disconnect_reason_));
 }
 
 void AudioInputStreamBroker::CreateStream(
     media::mojom::AudioStreamFactory* factory) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
-  DCHECK(!observer_receiver_.is_bound());
-  DCHECK(!pending_client_receiver_);
-  TRACE_EVENT_BEGIN("audio", "CreateStream", perfetto::Track::FromPointer(this),
-                    "device id", device_id_);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M160);
+  CHECK(!observer_receiver_.is_bound(), base::NotFatalUntil::M160);
+  CHECK(!pending_client_receiver_, base::NotFatalUntil::M160);
+  TRACE_EVENT_BEGIN("audio", "CreateStream", GetTracingTrack(this), "device id",
+                    device_id_);
   awaiting_created_ = true;
 
   mojo::PendingRemote<media::mojom::AudioInputStreamClient> client;
@@ -126,7 +133,7 @@ void AudioInputStreamBroker::CreateStream(
 }
 
 void AudioInputStreamBroker::DidStartRecording() {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M160);
   // TODO(crbug.com/40091014) update tab recording indicator.
 }
 
@@ -135,11 +142,10 @@ void AudioInputStreamBroker::StreamCreated(
     media::mojom::ReadWriteAudioDataPipePtr data_pipe,
     bool initially_muted,
     const std::optional<base::UnguessableToken>& stream_id) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M160);
   awaiting_created_ = false;
   // End "CreateStream" trace event.
-  TRACE_EVENT_END("audio", perfetto::Track::FromPointer(this), "success",
-                  !!data_pipe);
+  TRACE_EVENT_END("audio", GetTracingTrack(this), "success", !!data_pipe);
 
   if (!data_pipe) {
     disconnect_reason_ = DisconnectReason::kStreamCreationFailed;
@@ -147,8 +153,8 @@ void AudioInputStreamBroker::StreamCreated(
     return;
   }
 
-  DCHECK(stream_id.has_value());
-  DCHECK(renderer_factory_client_);
+  CHECK(stream_id.has_value(), base::NotFatalUntil::M160);
+  CHECK(renderer_factory_client_, base::NotFatalUntil::M160);
   renderer_factory_client_->StreamCreated(
       std::move(stream), std::move(pending_client_receiver_),
       std::move(data_pipe), initially_muted, stream_id);
@@ -160,6 +166,8 @@ InputStreamErrorCode MapDisconnectReasonToErrorCode(DisconnectReason reason) {
       return InputStreamErrorCode::kSystemPermissions;
     case DisconnectReason::kDeviceInUse:
       return InputStreamErrorCode::kDeviceInUse;
+    case DisconnectReason::kDeviceRemoved:
+      return InputStreamErrorCode::kDeviceRemoved;
     case DisconnectReason::kDefault:
     case DisconnectReason::kPlatformError:
     case DisconnectReason::kTerminatedByClient:
@@ -173,7 +181,7 @@ InputStreamErrorCode MapDisconnectReasonToErrorCode(DisconnectReason reason) {
 void AudioInputStreamBroker::ObserverBindingLost(
     uint32_t reason,
     const std::string& description) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M160);
 
   DisconnectReason disconnection_reason = static_cast<DisconnectReason>(reason);
   if (!media::mojom::IsKnownEnumValue(disconnection_reason)) {
@@ -191,13 +199,13 @@ void AudioInputStreamBroker::ObserverBindingLost(
 }
 
 void AudioInputStreamBroker::ClientBindingLost() {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M160);
   disconnect_reason_ = DisconnectReason::kTerminatedByClient;
   Cleanup();
 }
 
 void AudioInputStreamBroker::Cleanup() {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M160);
 
   std::move(deleter_).Run(this);
 }

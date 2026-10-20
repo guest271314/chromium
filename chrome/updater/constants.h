@@ -136,6 +136,11 @@ inline constexpr char kUninstallSelfSwitch[] = "uninstall-self";
 // Uninstalls the updater if no apps are managed by it.
 inline constexpr char kUninstallIfUnusedSwitch[] = "uninstall-if-unused";
 
+// Specifies that the uninstaller should skip running the async uninstall script
+// (uninstall.cmd). This is used during recovery to avoid racing with the
+// subsequent install.
+inline constexpr char kSkipUninstallScriptSwitch[] = "skip-uninstall-script";
+
 // Kicks off the update service. This switch is typically used for by a
 // scheduled to invoke the updater periodically.
 inline constexpr char kWakeSwitch[] = "wake";
@@ -216,6 +221,9 @@ inline constexpr char kEnterpriseSwitch[] =
 
 // Specifies that no UI should be shown.
 inline constexpr char kSilentSwitch[] = "silent";  // backward-compatibility.
+
+// Valid values for the kSilentSwitch.
+inline constexpr char kSilentSwitchValueAllowUAC[] = "allow-uac";
 
 // The "alwayslaunchcmd" switch specifies that launch commands are to be run
 // unconditionally, even for silent modes.
@@ -568,6 +576,9 @@ inline constexpr int kErrorNoApps = kUpdaterErrorBase + 83;
 
 // A path references the parent directory.
 inline constexpr int kErrorPathReferencesParent = kUpdaterErrorBase + 84;
+
+// The net-worker subprocess failed to drop root privileges.
+inline constexpr int kErrorFailedToDropPrivileges = kUpdaterErrorBase + 85;
 
 // Policy Management constants.
 // The maximum value allowed for policy AutoUpdateCheckPeriodMinutes.

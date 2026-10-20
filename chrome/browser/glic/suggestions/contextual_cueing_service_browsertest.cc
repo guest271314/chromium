@@ -17,11 +17,10 @@
 #include "chrome/browser/glic/test_support/glic_test_environment.h"
 #include "chrome/browser/optimization_guide/browser_test_util.h"
 #include "chrome/browser/optimization_guide/mock_optimization_guide_keyed_service.h"
-#include "chrome/browser/optimization_guide/optimization_guide_keyed_service_factory.h"
 #include "chrome/browser/preloading/scoped_prewarm_feature_list.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/search_engines/template_url_service_factory.h"
-#include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/common/buildflags.h"
 #include "chrome/common/chrome_features.h"
@@ -61,7 +60,7 @@ class ContextualCueingServiceBrowserTestZSSFlag
             {kGlicZeroStateSuggestions,
              {{"ZSSAllowContextualSuggestionsForSearchResultsPages", "false"}}},
         },
-        {{kZeroStateSuggestionsUsePrivateAi}});
+        {});
     // Initialize `scoped_prewarm_feature_list_` after the
     // `scoped_feature_list_` that will be removed in the parent class's
     // destructor, so that these instances are destroyed in the reversed order.
@@ -71,7 +70,7 @@ class ContextualCueingServiceBrowserTestZSSFlag
   }
 
   void SetUpOnMainThread() override {
-    browser()->profile()->GetPrefs()->SetBoolean(
+    browser()->GetProfile()->GetPrefs()->SetBoolean(
         glic::prefs::kGlicTabContextEnabled, true);
   }
 
@@ -119,7 +118,7 @@ class ZeroStateSuggestionsFetcher : public content::WebContentsObserver {
 IN_PROC_BROWSER_TEST_F(ContextualCueingServiceBrowserTestZSSFlag,
                        ServiceSpawnsWithZSSFlag) {
   EXPECT_NE(nullptr, ContextualCueingServiceFactory::GetForProfile(
-                         browser()->profile()));
+                         browser()->GetProfile()));
 }
 
 IN_PROC_BROWSER_TEST_F(ContextualCueingServiceBrowserTestZSSFlag,
@@ -127,7 +126,7 @@ IN_PROC_BROWSER_TEST_F(ContextualCueingServiceBrowserTestZSSFlag,
   base::HistogramTester histogram_tester;
 
   auto* service =
-      ContextualCueingServiceFactory::GetForProfile(browser()->profile());
+      ContextualCueingServiceFactory::GetForProfile(browser()->GetProfile());
 
   ASSERT_TRUE(embedded_test_server()->Start());
   ASSERT_TRUE(ui_test_utils::NavigateToURL(
@@ -154,7 +153,7 @@ IN_PROC_BROWSER_TEST_F(ContextualCueingServiceBrowserTestZSSFlag,
   base::HistogramTester histogram_tester;
 
   auto* service =
-      ContextualCueingServiceFactory::GetForProfile(browser()->profile());
+      ContextualCueingServiceFactory::GetForProfile(browser()->GetProfile());
 
   ASSERT_TRUE(embedded_test_server()->Start());
   ASSERT_TRUE(ui_test_utils::NavigateToURL(
@@ -188,7 +187,7 @@ IN_PROC_BROWSER_TEST_F(ContextualCueingServiceBrowserTestZSSFlag,
 
     base::test::TestFuture<std::vector<std::string>> future;
     auto* service =
-        ContextualCueingServiceFactory::GetForProfile(browser()->profile());
+        ContextualCueingServiceFactory::GetForProfile(browser()->GetProfile());
     ASSERT_TRUE(ui_test_utils::NavigateToURL(
         browser(),
         embedded_test_server()->GetURL("/optimization_guide/zss_page.html")));
@@ -290,7 +289,7 @@ IN_PROC_BROWSER_TEST_F(ContextualCueingServiceBrowserTestZSSFlag,
   base::HistogramTester histogram_tester;
 
   auto* service =
-      ContextualCueingServiceFactory::GetForProfile(browser()->profile());
+      ContextualCueingServiceFactory::GetForProfile(browser()->GetProfile());
 
   ASSERT_TRUE(embedded_test_server()->Start());
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(),
@@ -318,9 +317,9 @@ IN_PROC_BROWSER_TEST_F(ContextualCueingServiceBrowserTestZSSFlag,
   base::HistogramTester histogram_tester;
 
   auto* service =
-      ContextualCueingServiceFactory::GetForProfile(browser()->profile());
+      ContextualCueingServiceFactory::GetForProfile(browser()->GetProfile());
   auto* template_url_service =
-      TemplateURLServiceFactory::GetForProfile(browser()->profile());
+      TemplateURLServiceFactory::GetForProfile(browser()->GetProfile());
 
   ASSERT_TRUE(embedded_test_server()->Start());
   ASSERT_TRUE(ui_test_utils::NavigateToURL(
@@ -352,11 +351,11 @@ class ContextualCueingServiceBrowserTestAllowZSSForSrp
         {{kGlicZeroStateSuggestions,
           {{"ZSSAllowContextualSuggestionsForSearchResultsPages", "true"}}},
          {features::kGlic, {}}},
-        {{kZeroStateSuggestionsUsePrivateAi}});
+        {});
   }
 
   void SetUpOnMainThread() override {
-    browser()->profile()->GetPrefs()->SetBoolean(
+    browser()->GetProfile()->GetPrefs()->SetBoolean(
         glic::prefs::kGlicTabContextEnabled, true);
   }
 
@@ -373,9 +372,9 @@ IN_PROC_BROWSER_TEST_F(ContextualCueingServiceBrowserTestAllowZSSForSrp,
   base::HistogramTester histogram_tester;
 
   auto* service =
-      ContextualCueingServiceFactory::GetForProfile(browser()->profile());
+      ContextualCueingServiceFactory::GetForProfile(browser()->GetProfile());
   auto* template_url_service =
-      TemplateURLServiceFactory::GetForProfile(browser()->profile());
+      TemplateURLServiceFactory::GetForProfile(browser()->GetProfile());
 
   ASSERT_TRUE(embedded_test_server()->Start());
   ASSERT_TRUE(ui_test_utils::NavigateToURL(
@@ -413,7 +412,7 @@ class ContextualCueingServiceBrowserTestCCFlag
 IN_PROC_BROWSER_TEST_F(ContextualCueingServiceBrowserTestCCFlag,
                        ServiceSpawnsWithCCFlag) {
   EXPECT_NE(nullptr, ContextualCueingServiceFactory::GetForProfile(
-                         browser()->profile()));
+                         browser()->GetProfile()));
 }
 
 class ContextualCueingServiceBrowserTestDisabledFeatures
@@ -432,7 +431,7 @@ class ContextualCueingServiceBrowserTestDisabledFeatures
 IN_PROC_BROWSER_TEST_F(ContextualCueingServiceBrowserTestDisabledFeatures,
                        NullServiceWithDisabledFeatures) {
   EXPECT_EQ(nullptr, ContextualCueingServiceFactory::GetForProfile(
-                         browser()->profile()));
+                         browser()->GetProfile()));
 }
 
 }  // namespace glic

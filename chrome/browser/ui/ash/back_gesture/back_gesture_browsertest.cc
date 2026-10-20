@@ -5,8 +5,8 @@
 #include "ash/public/cpp/test/shell_test_api.h"
 #include "ash/wm/tablet_mode/tablet_mode_controller_test_api.h"
 #include "base/path_service.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_window.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
@@ -122,8 +122,8 @@ IN_PROC_BROWSER_TEST_F(BackGestureBrowserTest, TouchActions) {
       embedded_test_server()->GetURL("/page_touch_action_none.html"));
   ASSERT_EQ(browser()->tab_strip_model()->count(), 1);
 
-  aura::Window* browser_window = browser()->window()->GetNativeWindow();
-  const gfx::Rect bounds = browser()->window()->GetBounds();
+  aura::Window* browser_window = browser()->GetWindow()->GetNativeWindow();
+  const gfx::Rect bounds = browser()->GetWindow()->GetBounds();
   const gfx::Point start_point = bounds.left_center();
   const gfx::Point end_point =
       gfx::Point(start_point.x() + 200, start_point.y());
@@ -184,8 +184,8 @@ IN_PROC_BROWSER_TEST_F(BackGestureBrowserTest, PreventDefault) {
       embedded_test_server()->GetURL("/page_prevent_default.html"));
   ASSERT_EQ(browser()->tab_strip_model()->count(), 1);
 
-  aura::Window* browser_window = browser()->window()->GetNativeWindow();
-  const gfx::Rect bounds = browser()->window()->GetBounds();
+  aura::Window* browser_window = browser()->GetWindow()->GetNativeWindow();
+  const gfx::Rect bounds = browser()->GetWindow()->GetBounds();
   BackGestureEventRecorder recorder;
   browser_window->AddPreTargetHandler(&recorder);
 

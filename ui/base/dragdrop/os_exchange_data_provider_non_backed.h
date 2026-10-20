@@ -5,12 +5,16 @@
 #ifndef UI_BASE_DRAGDROP_OS_EXCHANGE_DATA_PROVIDER_NON_BACKED_H_
 #define UI_BASE_DRAGDROP_OS_EXCHANGE_DATA_PROVIDER_NON_BACKED_H_
 
+#include <stdint.h>
+
 #include <map>
 #include <memory>
 #include <optional>
 #include <string_view>
+#include <vector>
 
 #include "base/component_export.h"
+#include "base/containers/span.h"
 #include "base/pickle.h"
 #include "ui/base/clipboard/file_info.h"
 #include "ui/base/dragdrop/os_exchange_data_provider.h"
@@ -47,6 +51,8 @@ class COMPONENT_EXPORT(UI_BASE) OSExchangeDataProviderNonBacked
   std::optional<url::Origin> GetRendererTaintedOrigin() const override;
   void MarkAsFromPrivileged() override;
   bool IsFromPrivileged() const override;
+  void SetChromeDragId(const base::UnguessableToken& drag_id) override;
+  std::optional<base::UnguessableToken> GetChromeDragId() const override;
   void SetString(std::u16string_view data) override;
   void SetURLs(base::span<const ClipboardUrlInfo> url_infos) override;
   void SetFilename(const base::FilePath& path) override;
@@ -64,7 +70,7 @@ class COMPONENT_EXPORT(UI_BASE) OSExchangeDataProviderNonBacked
   bool HasFile() const override;
   bool HasCustomFormat(const ClipboardFormatType& format) const override;
   void SetFileContents(const base::FilePath& filename,
-                       const std::string& file_contents) override;
+                       base::span<const uint8_t> file_contents) override;
   std::optional<FileContentsInfo> GetFileContents() const override;
   bool HasFileContents() const override;
 
@@ -120,7 +126,7 @@ class COMPONENT_EXPORT(UI_BASE) OSExchangeDataProviderNonBacked
 
   // For file contents.
   base::FilePath file_contents_filename_;
-  std::string file_contents_;
+  std::vector<uint8_t> file_contents_;
 
   // For HTML format
   std::u16string html_;
@@ -131,6 +137,9 @@ class COMPONENT_EXPORT(UI_BASE) OSExchangeDataProviderNonBacked
 
   // For marking data originating by privileged WebContents.
   bool is_from_privileged_ = false;
+
+  // Opaque Chrome drag identifier.
+  std::optional<base::UnguessableToken> chrome_drag_id_;
 
   // Data source.
   std::unique_ptr<DataTransferEndpoint> source_;

@@ -27,31 +27,28 @@ CSSProperty::Flags InheritedFlag(const PropertyRegistration* registration) {
 
 }  // namespace
 
-CustomProperty::CustomProperty(AtomicString name, const Document& document)
+CustomProperty::CustomProperty(const AtomicString* name,
+                               const Document& document)
     : CustomProperty(
-          PropertyRegistration::From(document.GetExecutionContext(), name)) {
-  // Initializing `name_` on the body prevents `name` to be used after the
-  // std::move call.
-  name_ = std::move(name);
+          name,
+          PropertyRegistration::From(document.GetExecutionContext(), *name)) {
   DCHECK_EQ(IsShorthand(), CSSProperty::IsShorthand(GetCSSPropertyName()));
   DCHECK_EQ(IsRepeated(), CSSProperty::IsRepeated(GetCSSPropertyName()));
 }
 
-CustomProperty::CustomProperty(const AtomicString& name,
+CustomProperty::CustomProperty(const AtomicString* name,
                                const PropertyRegistry* registry)
-    : CustomProperty(name, registry ? registry->Registration(name) : nullptr) {}
+    : CustomProperty(name, registry ? registry->Registration(*name) : nullptr) {
+}
 
-CustomProperty::CustomProperty(const AtomicString& name,
+CustomProperty::CustomProperty(const AtomicString* name,
                                const PropertyRegistration* registration)
     : Variable(InheritedFlag(registration)),
-      name_(name),
+      name_(*name),
       registration_(registration) {
   DCHECK_EQ(IsShorthand(), CSSProperty::IsShorthand(GetCSSPropertyName()));
   DCHECK_EQ(IsRepeated(), CSSProperty::IsRepeated(GetCSSPropertyName()));
 }
-
-CustomProperty::CustomProperty(const PropertyRegistration* registration)
-    : Variable(InheritedFlag(registration)), registration_(registration) {}
 
 const AtomicString& CustomProperty::GetPropertyNameAtomicString() const {
   return name_;
@@ -76,15 +73,6 @@ void CustomProperty::ApplyInitial(StyleResolverState& state) const {
 
   if (!registration_) {
     builder.SetVariableData(name_, nullptr, is_inherited_property);
-    return;
-  }
-
-  // TODO(crbug.com/831568): The ComputedStyle of elements outside the flat
-  // tree is not guaranteed to be up-to-date. This means that the
-  // StyleInitialData may also be missing. We just disable initial values in
-  // this case, since we shouldn't really be returning a style for those
-  // elements anyway.
-  if (state.StyleBuilder().IsEnsuredOutsideFlatTree()) {
     return;
   }
 
@@ -189,8 +177,7 @@ void CustomProperty::ApplyValue(StyleResolverState& state,
     DCHECK(declaration);
     CSSVariableData& data = *declaration->VariableDataValue();
     CSSParserLocalContext local_context(GetCSSPropertyName(),
-                                        CSSPropertyID::kInvalid,
-                                        /*custom_function_name=*/g_null_atom);
+                                        CSSPropertyID::kInvalid);
     registered_value = Parse(data.OriginalText(), *context, local_context);
   }
 

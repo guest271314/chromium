@@ -7,13 +7,14 @@ package org.chromium.chrome.browser.toolbar.optional_button;
 import android.content.res.Resources;
 import android.graphics.drawable.Drawable;
 import android.view.View;
+import android.view.View.OnClickListener;
 import android.view.View.OnLongClickListener;
 
 import androidx.annotation.AttrRes;
-import androidx.annotation.Nullable;
 import androidx.annotation.StringRes;
 
 import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.toolbar.adaptive.AdaptiveToolbarButtonVariant;
 import org.chromium.chrome.browser.toolbar.adaptive.AdaptiveToolbarFeatures;
 import org.chromium.chrome.browser.user_education.IphCommandBuilder;
@@ -32,6 +33,11 @@ public interface ButtonData {
 
     /** Returns {@code true} when the {@link ButtonDataProvider} wants to show a button. */
     boolean canShow();
+
+    /** Returns {@code true} if this button data represents the Identity Disk. */
+    default boolean isIdentityDisc() {
+        return getButtonSpec() != null && getButtonSpec().isIdentityDisc();
+    }
 
     /** Returns {@code true} if the button is supposed to be enabled and clickable. */
     boolean isEnabled();
@@ -55,7 +61,7 @@ public interface ButtonData {
         private final @Nullable Drawable mDrawable;
         private final @Nullable Drawable mCollapsedDrawable;
         // TODO(crbug.com/40753109): make mOnClickListener
-        private final @Nullable View.OnClickListener mOnClickListener;
+        private final @Nullable OnClickListener mOnClickListener;
         private final @Nullable OnLongClickListener mOnLongClickListener;
         private final String mContentDescription;
         private final boolean mSupportsTinting;
@@ -66,15 +72,18 @@ public interface ButtonData {
         private final @StringRes int mTooltipTextResId;
         private final boolean mHasErrorBadge;
         private final boolean mIsChecked;
+        private final boolean mIsSelected;
         private final boolean mShouldSuppressCpa;
         private final int mActionChipCollapseDelayMs;
         private final @AttrRes int mActionChipBackgroundColorResId;
         private final @AttrRes int mActionChipTextColorResId;
+        private final boolean mIsIdentityDisc;
+        private final boolean mHasAiTierRing;
 
         private ButtonSpec(
                 @Nullable Drawable drawable,
                 @Nullable Drawable collapsedDrawable,
-                @Nullable View.OnClickListener onClickListener,
+                @Nullable OnClickListener onClickListener,
                 @Nullable OnLongClickListener onLongClickListener,
                 String contentDescription,
                 boolean supportsTinting,
@@ -84,10 +93,13 @@ public interface ButtonData {
                 int tooltipTextResId,
                 boolean hasErrorBadge,
                 boolean isChecked,
+                boolean isSelected,
                 boolean shouldSuppressCpa,
                 int actionChipCollapseDelayMs,
                 @AttrRes int actionChipBackgroundColorResId,
-                @AttrRes int actionChipTextColorResId) {
+                @AttrRes int actionChipTextColorResId,
+                boolean isIdentityDisc,
+                boolean hasAiTierRing) {
             mDrawable = drawable;
             mCollapsedDrawable = collapsedDrawable;
             mOnClickListener = onClickListener;
@@ -101,17 +113,20 @@ public interface ButtonData {
             mTooltipTextResId = tooltipTextResId;
             mHasErrorBadge = hasErrorBadge;
             mIsChecked = isChecked;
+            mIsSelected = isSelected;
             mShouldSuppressCpa = shouldSuppressCpa;
             mActionChipCollapseDelayMs = actionChipCollapseDelayMs;
             mActionChipBackgroundColorResId = actionChipBackgroundColorResId;
             mActionChipTextColorResId = actionChipTextColorResId;
+            mIsIdentityDisc = isIdentityDisc;
+            mHasAiTierRing = hasAiTierRing;
         }
 
         /** Builder for {@link ButtonSpec}. */
         public static class Builder {
             private @Nullable Drawable mDrawable;
             private @Nullable Drawable mCollapsedDrawable;
-            private @Nullable View.OnClickListener mOnClickListener;
+            private @Nullable OnClickListener mOnClickListener;
             private @Nullable OnLongClickListener mOnLongClickListener;
             private String mContentDescription;
             private boolean mSupportsTinting;
@@ -122,10 +137,13 @@ public interface ButtonData {
             private @StringRes int mTooltipTextResId = INVALID_TOOLTIP_TEXT_ID;
             private boolean mHasErrorBadge;
             private boolean mIsChecked;
+            private boolean mIsSelected;
             private boolean mShouldSuppressCpa;
             private int mActionChipCollapseDelayMs = DEFAULT_ACTION_CHIP_DELAY_MS;
             private @AttrRes int mActionChipBackgroundColorResId = Resources.ID_NULL;
             private @AttrRes int mActionChipTextColorResId = Resources.ID_NULL;
+            private boolean mIsIdentityDisc;
+            private boolean mHasAiTierRing;
 
             /**
              * Creates a new {@link Builder} with the required properties.
@@ -141,6 +159,8 @@ public interface ButtonData {
                 mDrawable = drawable;
                 mContentDescription = contentDescription;
                 mSupportsTinting = supportsTinting;
+                mIsIdentityDisc = false;
+                mHasAiTierRing = false;
             }
 
             /**
@@ -161,10 +181,13 @@ public interface ButtonData {
                 mTooltipTextResId = buttonSpec.mTooltipTextResId;
                 mHasErrorBadge = buttonSpec.mHasErrorBadge;
                 mIsChecked = buttonSpec.mIsChecked;
+                mIsSelected = buttonSpec.mIsSelected;
                 mShouldSuppressCpa = buttonSpec.mShouldSuppressCpa;
                 mActionChipCollapseDelayMs = buttonSpec.mActionChipCollapseDelayMs;
                 mActionChipBackgroundColorResId = buttonSpec.mActionChipBackgroundColorResId;
                 mActionChipTextColorResId = buttonSpec.mActionChipTextColorResId;
+                mIsIdentityDisc = buttonSpec.mIsIdentityDisc;
+                mHasAiTierRing = buttonSpec.mHasAiTierRing;
             }
 
             public Builder setDrawable(@Nullable Drawable drawable) {
@@ -177,7 +200,7 @@ public interface ButtonData {
                 return this;
             }
 
-            public Builder setOnClickListener(@Nullable View.OnClickListener onClickListener) {
+            public Builder setOnClickListener(@Nullable OnClickListener onClickListener) {
                 mOnClickListener = onClickListener;
                 return this;
             }
@@ -228,6 +251,11 @@ public interface ButtonData {
                 return this;
             }
 
+            public Builder setIsSelected(boolean isSelected) {
+                mIsSelected = isSelected;
+                return this;
+            }
+
             public Builder setShouldSuppressCpa(boolean shouldSuppressCpa) {
                 mShouldSuppressCpa = shouldSuppressCpa;
                 return this;
@@ -249,6 +277,12 @@ public interface ButtonData {
                 return this;
             }
 
+            public Builder setIdentityDiscConfig(boolean isIdentityDisc, boolean hasAiTierRing) {
+                mIsIdentityDisc = isIdentityDisc;
+                mHasAiTierRing = hasAiTierRing;
+                return this;
+            }
+
             public ButtonSpec build() {
                 return new ButtonSpec(
                         mDrawable,
@@ -263,10 +297,13 @@ public interface ButtonData {
                         mTooltipTextResId,
                         mHasErrorBadge,
                         mIsChecked,
+                        mIsSelected,
                         mShouldSuppressCpa,
                         mActionChipCollapseDelayMs,
                         mActionChipBackgroundColorResId,
-                        mActionChipTextColorResId);
+                        mActionChipTextColorResId,
+                        mIsIdentityDisc,
+                        mHasAiTierRing);
             }
         }
 
@@ -285,8 +322,8 @@ public interface ButtonData {
             return mCollapsedDrawable;
         }
 
-        /** Returns the {@link View.OnClickListener} used on the button. */
-        public @Nullable View.OnClickListener getOnClickListener() {
+        /** Returns the {@link OnClickListener} used on the button. */
+        public @Nullable OnClickListener getOnClickListener() {
             return mOnClickListener;
         }
 
@@ -329,6 +366,16 @@ public interface ButtonData {
             return mIsDynamicAction;
         }
 
+        /** Returns {@code true} if this button spec represents the Identity Disk. */
+        public boolean isIdentityDisc() {
+            return mIsIdentityDisc;
+        }
+
+        /** Returns {@code true} if the button should display the AI Tier ring. */
+        public boolean hasAiTierRing() {
+            return mHasAiTierRing;
+        }
+
         /**
          * Get hover state tooltip text for optional toolbar buttons(e.g. share, voice search, new
          * tab and profile).
@@ -352,6 +399,11 @@ public interface ButtonData {
          */
         public boolean isChecked() {
             return mIsChecked;
+        }
+
+        /** Returns true if the button should be in a "selected" state. */
+        public boolean isSelected() {
+            return mIsSelected;
         }
 
         /** Returns {@code true} if the button should suppress Contextual Page Actions. */
@@ -401,10 +453,13 @@ public interface ButtonData {
                     && mTooltipTextResId == that.mTooltipTextResId
                     && mHasErrorBadge == that.mHasErrorBadge
                     && mIsChecked == that.mIsChecked
+                    && mIsSelected == that.mIsSelected
                     && mShouldSuppressCpa == that.mShouldSuppressCpa
                     && mActionChipCollapseDelayMs == that.mActionChipCollapseDelayMs
                     && mActionChipBackgroundColorResId == that.mActionChipBackgroundColorResId
                     && mActionChipTextColorResId == that.mActionChipTextColorResId
+                    && mIsIdentityDisc == that.mIsIdentityDisc
+                    && mHasAiTierRing == that.mHasAiTierRing
                     && Objects.equals(mDrawable, that.mDrawable)
                     && Objects.equals(mOnClickListener, that.mOnClickListener)
                     && Objects.equals(mOnLongClickListener, that.mOnLongClickListener)
@@ -427,10 +482,13 @@ public interface ButtonData {
                     mTooltipTextResId,
                     mHasErrorBadge,
                     mIsChecked,
+                    mIsSelected,
                     mShouldSuppressCpa,
                     mActionChipCollapseDelayMs,
                     mActionChipBackgroundColorResId,
-                    mActionChipTextColorResId);
+                    mActionChipTextColorResId,
+                    mIsIdentityDisc,
+                    mHasAiTierRing);
         }
     }
 }

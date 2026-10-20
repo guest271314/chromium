@@ -7,6 +7,7 @@
 #include "base/feature_list.h"
 #include "build/branding_buildflags.h"
 #include "build/build_config.h"
+#include "extensions/buildflags/buildflags.h"
 
 namespace features {
 
@@ -86,20 +87,6 @@ BASE_FEATURE(kFlexOrgManagementDisclosure,
 #else
              base::FEATURE_ENABLED_BY_DEFAULT);
 #endif  // BUILDFLAG(IS_CHROMEOS)
-
-// Enables the Incoming Call Notifications scenario. When created by an
-// installed origin, an incoming call notification should have increased
-// priority, colored buttons, a ringtone, and a default "close" button.
-// Otherwise, if the origin is not installed, it should behave like the default
-// notifications, but with the added "Close" button. See
-// https://github.com/MicrosoftEdge/MSEdgeExplainers/blob/main/Notifications/notifications_actions_customization.md
-BASE_FEATURE(kIncomingCallNotifications,
-#if BUILDFLAG(IS_WIN)
-             base::FEATURE_ENABLED_BY_DEFAULT);
-#else
-             base::FEATURE_DISABLED_BY_DEFAULT);
-#endif  // BUILDFLAG(IS_WIN)
-
 #if BUILDFLAG(ENABLE_EXTENSIONS)
 BASE_FEATURE(kInitialExternalExtensions, base::FEATURE_ENABLED_BY_DEFAULT);
 #endif  // BUILDFLAG(ENABLE_EXTENSIONS)
@@ -138,9 +125,6 @@ BASE_FEATURE(kRegisterOsUpdateHandlerWin, base::FEATURE_ENABLED_BY_DEFAULT);
 BASE_FEATURE(kInstallPlatformExperienceHelperWin,
              base::FEATURE_ENABLED_BY_DEFAULT);
 #endif  // BUILDFLAG(IS_WIN) && BUILDFLAG(GOOGLE_CHROME_BRANDING)
-
-// Enables app-menu item for reporting an unsafe site to Google.
-BASE_FEATURE(kReportUnsafeSite, base::FEATURE_DISABLED_BY_DEFAULT);
 
 // When this feature is enabled, the network service will restart unsandboxed if
 // a previous attempt to launch it sandboxed failed.
@@ -199,6 +183,32 @@ BASE_FEATURE(kWebUsbDeviceDetection, base::FEATURE_ENABLED_BY_DEFAULT);
 // Build 14393) onwards.
 BASE_FEATURE(kBrowserDynamicCodeDisabled, base::FEATURE_DISABLED_BY_DEFAULT);
 
+// Eagerly resolves all delay-loaded imports for user32.dll, uxtheme.dll,
+// gdi32.dll, imm32.dll and dwmapi.dll (loading those that aren't loaded yet)
+// during browser process startup, at a point selected by
+// `kEagerlyResolveCoreDllsImportsTiming`. This avoids UI-thread jank from
+// contending on the apphelp.dll critical section (SE_GetProcAddressForCaller)
+// during lazy delay-load resolution.
+BASE_FEATURE(kEagerlyResolveCoreDllsImports, base::FEATURE_DISABLED_BY_DEFAULT);
+
+constexpr base::FeatureParam<EagerlyResolveCoreDllsImportsTiming>::Option
+    kEagerlyResolveCoreDllsImportsTimingOptions[] = {
+        {EagerlyResolveCoreDllsImportsTiming::kPreCreateThreads,
+         "pre-create-threads"},
+        {EagerlyResolveCoreDllsImportsTiming::kBeforeThreadPoolStart,
+         "before-thread-pool-start"},
+};
+BASE_FEATURE_ENUM_PARAM(
+    /*T=*/EagerlyResolveCoreDllsImportsTiming,
+    /*feature_object_name=*/kEagerlyResolveCoreDllsImportsTiming,
+    /*feature=*/&kEagerlyResolveCoreDllsImports,
+    /*default_value=*/EagerlyResolveCoreDllsImportsTiming::kPreCreateThreads,
+    /*options=*/&kEagerlyResolveCoreDllsImportsTimingOptions);
+
+// When enabled, the browser will run with isolation enabled on the next
+// restart.
+BASE_FEATURE(kIsolatedProcess, base::FEATURE_DISABLED_BY_DEFAULT);
+
 // The Chrome DLL can be pre-read with ::PrefetchVirtualMemory() from the
 // browser or a child process. Pre-reading is supposed to bring the whole DLL in
 // physical memory more efficiently than a series of hard faults. However,
@@ -212,10 +222,6 @@ BASE_FEATURE(kBrowserDynamicCodeDisabled, base::FEATURE_DISABLED_BY_DEFAULT);
 
 // When enabled, child processes never pre-read the Chrome DLL.
 BASE_FEATURE(kNoPreReadMainDll, base::FEATURE_DISABLED_BY_DEFAULT);
-
-// When enabled, child processes don't pre-read the Chrome DLL if we believe the
-// Chrome DLL is on an SSD (i.e. pre-read only on spinning disk).
-BASE_FEATURE(kNoPreReadMainDllIfSsd, base::FEATURE_ENABLED_BY_DEFAULT);
 
 // When enabled, the browser process suppresses pre-read in child processes
 // shortly after browser startup, where "shortly after" is dictated by the
@@ -232,11 +238,6 @@ const base::FeatureParam<base::TimeDelta>
     kNoPreReadMainDllStartup_StartupDuration{&kNoPreReadMainDllStartup,
                                              "no-preread-dll-startup-time",
                                              base::Minutes(2)};
-
-// When enabled, the browser process will re-launch itself when launched with
-// an elevated linked token. The re-launched browser will use the token from
-// the Windows Shell (explorer.exe), which is typically non-elevated.
-BASE_FEATURE(kAutoDeElevate, base::FEATURE_ENABLED_BY_DEFAULT);
 #endif  // BUILDFLAG(IS_WIN)
 
 // This flag enables the removal of IWAs surface captures from Chrome Tabs

@@ -8,6 +8,7 @@
 #include "third_party/blink/renderer/core/css/css_selector.h"
 #include "third_party/blink/renderer/core/css/selector_checker.h"
 #include "third_party/blink/renderer/core/html/html_document.h"
+#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 
 namespace blink {
 
@@ -54,7 +55,7 @@ bool EasySelectorChecker::IsEasy(const CSSSelector* selector) {
         }
         break;
       case CSSSelector::kPseudoClass: {
-        // We support exactly :not(tag) and nothing else.
+        // We support exactly :not(tag) and :not(.class), and nothing else.
         if (selector->GetPseudoType() != CSSSelector::kPseudoNot) {
           return false;
         }
@@ -64,7 +65,8 @@ bool EasySelectorChecker::IsEasy(const CSSSelector* selector) {
         }
         const CSSSelector* sub_selector = sublist->First();
         if (!sub_selector->IsLastInComplexSelector() ||
-            sub_selector->Match() != CSSSelector::kTag) {
+            (sub_selector->Match() != CSSSelector::kTag &&
+             sub_selector->Match() != CSSSelector::kClass)) {
           return false;
         }
         break;
@@ -198,6 +200,21 @@ bool EasySelectorChecker::MatchesTagName(const QualifiedName& tag_q_name,
   }
 }
 
+bool EasySelectorChecker::MatchesClassName(const AtomicString& class_name,
+                                           const Element* element) {
+  if (!element->CouldHaveClass(class_name)) {
+#if DCHECK_IS_ON()
+    DCHECK(!element->HasClass() ||
+           !element->ClassNames().Contains(class_name))
+        << element << " should have matched class " << class_name
+        << ", Bloom bits on element are "
+        << element->AttributeOrClassBloomFilter();
+#endif
+    return false;
+  }
+  return element->HasClass() && element->ClassNames().Contains(class_name);
+}
+
 bool EasySelectorChecker::MatchOne(const CSSSelector* selector,
                                    const Element* element,
                                    const Element* pseudo_element,
@@ -207,11 +224,14 @@ bool EasySelectorChecker::MatchOne(const CSSSelector* selector,
     case CSSSelector::kTag: {
       return MatchesTagName(selector->TagQName(), element);
     }
-    case CSSSelector::kPseudoClass: {  // not(tag).
+    case CSSSelector::kPseudoClass: {
       DCHECK_EQ(selector->GetPseudoType(), CSSSelector::kPseudoNot);
       const CSSSelector* sub_selector = selector->SelectorList()->First();
-      DCHECK_EQ(sub_selector->Match(), CSSSelector::kTag);
-      return !MatchesTagName(sub_selector->TagQName(), element);
+      if (sub_selector->Match() == CSSSelector::kTag) {
+        return !MatchesTagName(sub_selector->TagQName(), element);
+      }
+      DCHECK_EQ(sub_selector->Match(), CSSSelector::kClass);
+      return !MatchesClassName(sub_selector->Value(), element);
     }
     case CSSSelector::kUniversalTag: {
       const QualifiedName& tag_q_name = selector->TagQName();
@@ -219,18 +239,7 @@ bool EasySelectorChecker::MatchOne(const CSSSelector* selector,
              tag_q_name.NamespaceURI() == g_star_atom;
     }
     case CSSSelector::kClass:
-      if (!element->CouldHaveClass(selector->Value())) {
-#if DCHECK_IS_ON()
-        DCHECK(!element->HasClass() ||
-               !element->ClassNames().Contains(selector->Value()))
-            << element << " should have matched class " << selector->Value()
-            << ", Bloom bits on element are "
-            << element->AttributeOrClassBloomFilter();
-#endif
-        return false;
-      }
-      return element->HasClass() &&
-             element->ClassNames().Contains(selector->Value());
+      return MatchesClassName(selector->Value(), element);
     case CSSSelector::kId:
       return element->HasID() &&
              element->IdForStyleResolution() == selector->Value();
@@ -241,6 +250,9 @@ bool EasySelectorChecker::MatchOne(const CSSSelector* selector,
           selector->AttributeMatch() ==
               CSSSelector::AttributeMatchType::kCaseInsensitive ||
           (selector->LegacyCaseInsensitiveMatch() &&
+           (!RuntimeEnabledFeatures::
+                CSSAttributeValueCaseSensitiveNonHTMLEnabled() ||
+            element->IsHTMLElement()) &&
            IsA<HTMLDocument>(element->GetDocument()));
       return AttributeMatches(*element, selector->Attribute(),
                               selector->Value(), case_insensitive);

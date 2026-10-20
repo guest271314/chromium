@@ -28,16 +28,15 @@
 #include "components/omnibox/browser/autocomplete_input.h"
 #include "components/omnibox/browser/autocomplete_match_type.h"
 #include "components/omnibox/browser/buildflags.h"
-#include "components/omnibox/browser/suggestion_answer.h"
 #include "components/saved_tab_groups/public/types.h"
 #include "components/search_engines/template_url.h"
+#include "components/search_engines/template_url_starter_pack_data.h"
 #include "components/url_formatter/url_formatter.h"
 #include "third_party/metrics_proto/omnibox_event.pb.h"
 #include "third_party/metrics_proto/omnibox_scoring_signals.pb.h"
-#include "third_party/omnibox_proto/answer_type.pb.h"
+#include "third_party/omnibox_proto/chrome_searchbox_stats.pb.h"
 #include "third_party/omnibox_proto/groups.pb.h"
 #include "third_party/omnibox_proto/navigational_intent.pb.h"
-#include "third_party/omnibox_proto/rich_answer_template.pb.h"
 #include "third_party/omnibox_proto/suggest_template_info.pb.h"
 #include "third_party/omnibox_proto/types.pb.h"
 #include "third_party/perfetto/include/perfetto/tracing/traced_value_forward.h"
@@ -110,6 +109,10 @@ struct SessionData {
   // List of GWS event ID hashes accumulated during the course of the session.
   std::vector<int64_t> gws_event_id_hashes;
 
+  // List of experiment stats accumulated during the course of the session.
+  std::vector<omnibox::metrics::ChromeSearchboxStats::ExperimentStatsV2>
+      experiment_stats_v2s;
+
   // Whether at least one zero-prefix Search/URL suggestion was
   // shown in the session. This is used in order to ensure that the relevant
   // client-side metrics logging code emits the proper values.
@@ -175,6 +178,14 @@ enum class AutocompleteMatchDedupeType {
   // Search matches created as a duplicate of an existing match which
   // additionally send location data when selected.
   kInlineLocationSignaling,
+};
+
+// GENERATED_JAVA_ENUM_PACKAGE: org.chromium.components.omnibox
+// GENERATED_JAVA_CLASS_NAME_OVERRIDE: OmniboxSuggestionKind
+enum class OmniboxSuggestionKind {
+  kSearch = 0,
+  kNavigation = 1,
+  kConversation = 2,
 };
 
 // AutocompleteMatch ----------------------------------------------------------
@@ -251,10 +262,12 @@ struct AutocompleteMatch {
   typedef std::map<std::string, std::string> AdditionalInfo;
 
   // The type of this match.
-  typedef AutocompleteMatchType::Type Type;
+  using Type = omnibox::AutocompleteMatchType;
 
-  // Document subtype, for AutocompleteMatchType::DOCUMENT.
+  // Document subtype, for omnibox::AutocompleteMatchType::kDocumentSuggestion.
   // Update kDocumentTypeStrings when updating DocumentType.
+  // GENERATED_JAVA_ENUM_PACKAGE: org.chromium.components.omnibox
+  // GENERATED_JAVA_CLASS_NAME_OVERRIDE: DocumentType
   enum class DocumentType {
     NONE = 0,
     DRIVE_DOCS,
@@ -325,7 +338,8 @@ struct AutocompleteMatch {
   // Returns a corresponding Java object, creating it if necessary.
   // NOTE: Android specific methods are defined in autocomplete_match_android.cc
   base::android::ScopedJavaLocalRef<jobject> GetOrCreateJavaObject(
-      JNIEnv* env) const;
+      JNIEnv* env,
+      const TemplateURLService* template_url_service) const;
 
   // Update the bond with- or drop the Java AutocompleteMatch instance.
   // This should be called whenever the native AutocompleteMatch object is
@@ -352,16 +366,11 @@ struct AutocompleteMatch {
   void UpdateClipboardContent(JNIEnv* env);
   // Update the Java object with new destination URL.
   void UpdateJavaNavigationDetails();
-  // Update the Java object with new Answer-in-Suggest.
-  void UpdateJavaAnswer();
   // Update the Java object description.
   void UpdateJavaDescription();
 #endif
 
 #if (!BUILDFLAG(IS_ANDROID) || BUILDFLAG(ENABLE_VR)) && !BUILDFLAG(IS_IOS)
-  // Converts omnibox::AnswerType to an answer vector icon.
-  static const gfx::VectorIcon& AnswerTypeToAnswerIcon(
-      omnibox::AnswerType type);
 
   // Gets the vector icon identifier for the icon to be shown for this match. If
   // `is_bookmark` is true, returns a bookmark icon rather than what the type
@@ -534,14 +543,16 @@ struct AutocompleteMatch {
                                                       bool preserve_subdomain);
   // Logs the search engine used to navigate to a search page or auto complete
   // suggestion. For direct URL navigations, nothing is logged.
-  static void LogSearchEngineUsed(const AutocompleteMatch& match,
-                                  TemplateURLService* template_url_service);
+  static void LogSearchEngineUsed(
+      const AutocompleteMatch& match,
+      const TemplateURLService* template_url_service);
 
   // Computes the stripped destination URL (via GURLToStrippedGURL()) and
   // stores the result in |stripped_destination_url|.  |input| is used for the
   // same purpose as in GURLToStrippedGURL().
-  void ComputeStrippedDestinationURL(const AutocompleteInput& input,
-                                     TemplateURLService* template_url_service);
+  void ComputeStrippedDestinationURL(
+      const AutocompleteInput& input,
+      const TemplateURLService* template_url_service);
 
   // Returns whether `destination_url` looks like a doc URL. If so, will also
   // set `stripped_destination_url` to avoid repeating the computation later.
@@ -574,6 +585,9 @@ struct AutocompleteMatch {
 
   // Checks if this match is a AI mode suggestion.
   bool IsSearchAimSuggestion() const;
+
+  // Returns the kind for accessibility announcements.
+  OmniboxSuggestionKind GetOmniboxSuggestionKind() const;
 
   // Checks if this match has a Lens search action.
   bool HasLensSearchAction() const;
@@ -612,7 +626,7 @@ struct AutocompleteMatch {
   // wants to display. Set for both hint and non-hint keyword modes.
   // `is_history_embeddings_enabled` will affect the placeholder text for the
   // @history keyword.
-  void GetKeywordUiState(TemplateURLService* template_url_service,
+  void GetKeywordUiState(const TemplateURLService* template_url_service,
                          bool is_history_embeddings_enabled,
                          KeywordState* keyword_state,
                          std::u16string* keyword_out,
@@ -622,7 +636,7 @@ struct AutocompleteMatch {
   // with the default search engine (and the user didn't explicitly invoke its
   // keyword), this returns false even though `keyword` won't be empty.
   bool IsExplicitlyInvokedKeyword(
-      TemplateURLService* template_url_service) const;
+      const TemplateURLService* template_url_service) const;
 
   // Returns the placeholder text to display for the given starter pack keyword
   // TemplateURL, returned for both hint and non-hint keyword modes.
@@ -636,6 +650,13 @@ struct AutocompleteMatch {
   // if the match has no keyword OR if the keyword no longer corresponds to a
   // valid `TemplateURL`. See comments on `keyword` below.
   TemplateURL* GetTemplateURL(TemplateURLService* template_url_service) const;
+  const TemplateURL* GetTemplateURL(
+      const TemplateURLService* template_url_service) const;
+
+  // Returns the `StarterPackId` associated with this match's `keyword`, or
+  // `StarterPackId::kNone` if not a starter pack match.
+  template_url_starter_pack_data::StarterPackId StarterPackId(
+      const TemplateURLService* template_url_service) const;
 
   // Gets the URL for the match image (whether it be an answer or entity). If
   // there isn't an image URL, returns an empty GURL (test with is_empty()).
@@ -652,8 +673,8 @@ struct AutocompleteMatch {
 
   // Returns the value recorded for |property| in the |additional_info|
   // dictionary. Returns the empty string if no such value exists. This is for
-  // debugging in chrome://omnibox only. It should only be called by
-  // `OmniboxPageHandler` and tests. For match info that's used for
+  // debugging in chrome://omnibox-internals only. It should only be called by
+  // `OmniboxInternalsPageHandler` and tests. For match info that's used for
   // non-debugging, use class fields. Unfortunately, There are existing
   // non-debug callsites; those should be cleaned up, not added to.
   std::string GetAdditionalInfoForDebugging(const std::string& property) const;
@@ -903,20 +924,8 @@ struct AutocompleteMatch {
   // the match.
   GURL icon_url;
 
-  // Optional entity id for entity suggestions. Empty string means no entity ID.
-  // This is not meant for display, but internal use only. The actual UI display
-  // is controlled by the `type` and `image_url`.
-  std::string entity_id;
-
-  // Optional website URI for entity suggestions. Empty string means no website
-  // URI.
-  std::string website_uri;
-
   // Used for document suggestions to show the mime-corresponding icons.
   DocumentType document_type = DocumentType::NONE;
-
-  // The id of the starter pack engine, if this is a starter pack match.
-  int starter_pack_id = 0;
 
   // Used for enterprise search aggregator suggestions for grouping.
   EnterpriseSearchAggregatorType enterprise_search_aggregator_type =
@@ -960,12 +969,8 @@ struct AutocompleteMatch {
   // before displaying.
   bool swap_contents_and_description = false;
 
-  std::optional<omnibox::RichAnswerTemplate> answer_template;
-
   std::optional<omnibox::SuggestTemplateInfo> suggest_template;
 
-  // AnswerType for answer verticals, including rich answers.
-  omnibox::AnswerType answer_type{omnibox::ANSWER_TYPE_UNSPECIFIED};
 
   // The transition type to use when the user opens this match.  By default,
   // this is TYPED.  Providers whose matches do not look like URLs should set
@@ -973,7 +978,7 @@ struct AutocompleteMatch {
   ui::PageTransition transition = ui::PAGE_TRANSITION_TYPED;
 
   // Type of this match.
-  Type type = AutocompleteMatchType::SEARCH_WHAT_YOU_TYPED;
+  Type type = omnibox::AutocompleteMatchType::kSearchWhatYouTyped;
 
   // The type of this suggestion as reported from and back to the suggest server
   // via the server response and the ChromeSearchboxStats (reported in the match
@@ -1005,6 +1010,11 @@ struct AutocompleteMatch {
   // True if we saw a tab that matched this suggestion.
   // Unset if it has not been computed yet.
   std::optional<bool> has_tab_match;
+
+#if BUILDFLAG(IS_ANDROID)
+  // The Android tab ID of the matching tab, if `has_tab_match` is true.
+  int android_tab_id = 0;
+#endif
 
   // Set to a `TemplateURL`'s keyword; e.g. 'youtube.com' or '@bookmarks'. Set
   // by the `AutocompleteController`, not individual providers. This determines
@@ -1064,7 +1074,8 @@ struct AutocompleteMatch {
   std::unique_ptr<TemplateURLRef::PostContent> post_content;
 
   // Information dictionary into which each provider can optionally record a
-  // property and associated value and which is presented in chrome://omnibox.
+  // property and associated value and which is presented in
+  // chrome://omnibox-internals.
   AdditionalInfo additional_info;
 
   // A vector of matches culled during de-duplication process, sorted from

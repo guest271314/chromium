@@ -7,17 +7,18 @@
 #include "ash/constants/webui_url_constants.h"
 #include "ash/webui/common/trusted_types_util.h"
 #include "base/functional/callback_helpers.h"
-#include "chrome/browser/ash/profiles/profile_helper.h"
 #include "chrome/browser/ash/smb_client/smb_service.h"
 #include "chrome/browser/ash/smb_client/smb_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/webui/ash/smb_shares/smb_handler.h"
 #include "chrome/browser/ui/webui/ash/smb_shares/smb_shares_localized_strings_provider.h"
+#include "chrome/browser/ui/webui/theme_source.h"
 #include "chrome/grit/generated_resources.h"
 #include "chrome/grit/smb_shares_resources.h"
 #include "chromeos/constants/chromeos_features.h"
 #include "components/strings/grit/components_strings.h"
 #include "components/user_manager/user_manager.h"
+#include "content/public/browser/url_data_source.h"
 #include "content/public/browser/web_ui.h"
 #include "content/public/browser/web_ui_data_source.h"
 #include "ui/webui/webui_util.h"
@@ -65,13 +66,13 @@ void SmbShareDialog::GetDialogSize(gfx::Size* size) const {
 
 SmbShareDialogUI::SmbShareDialogUI(content::WebUI* web_ui)
     : ui::WebDialogUI(web_ui) {
+  Profile* const profile = Profile::FromWebUI(web_ui);
   content::WebUIDataSource* source = content::WebUIDataSource::CreateAndAdd(
-      Profile::FromWebUI(web_ui), ash::kChromeUISmbShareHost);
+      profile, ash::kChromeUISmbShareHost);
   ash::EnableTrustedTypesCSP(source);
 
   AddSmbSharesStrings(source);
 
-  Profile* const profile = Profile::FromWebUI(web_ui);
   const smb_client::SmbService* const smb_service =
       smb_client::SmbServiceFactory::Get(profile);
   bool is_kerberos_enabled =
@@ -93,8 +94,10 @@ SmbShareDialogUI::SmbShareDialogUI(content::WebUI* web_ui)
   source->AddResourcePath("smb_share_dialog.html.js",
                           IDR_SMB_SHARES_SMB_SHARE_DIALOG_HTML_JS);
 
-  web_ui->AddMessageHandler(std::make_unique<SmbHandler>(
-      Profile::FromWebUI(web_ui), base::DoNothing()));
+  web_ui->AddMessageHandler(
+      std::make_unique<SmbHandler>(profile, base::DoNothing()));
+
+  content::URLDataSource::Add(profile, std::make_unique<ThemeSource>(profile));
 }
 
 SmbShareDialogUI::~SmbShareDialogUI() = default;

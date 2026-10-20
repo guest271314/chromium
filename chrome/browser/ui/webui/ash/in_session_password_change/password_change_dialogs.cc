@@ -10,7 +10,6 @@
 #include "base/functional/bind.h"
 #include "base/json/json_writer.h"
 #include "chrome/browser/ui/webui/ash/in_session_password_change/confirm_password_change_handler.h"
-#include "chrome/grit/generated_resources.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/web_ui_data_source.h"
 #include "ui/base/mojom/ui_base_types.mojom-shared.h"
@@ -73,7 +72,7 @@ ui::mojom::ModalType BasePasswordDialog::GetDialogModalType() const {
 
 // static
 void PasswordChangeDialog::Show() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
   if (g_dialog) {
     g_dialog->Focus();
     return;
@@ -84,7 +83,7 @@ void PasswordChangeDialog::Show() {
 
 // static
 void PasswordChangeDialog::Dismiss() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
   if (g_dialog) {
     g_dialog->Close();
   }
@@ -95,7 +94,7 @@ PasswordChangeDialog::PasswordChangeDialog()
                          kPasswordChangeSize) {}
 
 PasswordChangeDialog::~PasswordChangeDialog() {
-  DCHECK_EQ(this, g_dialog);
+  CHECK_EQ(this, g_dialog, base::NotFatalUntil::M162);
   g_dialog = nullptr;
 }
 
@@ -103,7 +102,7 @@ PasswordChangeDialog::~PasswordChangeDialog() {
 void ConfirmPasswordChangeDialog::Show(const std::string& scraped_old_password,
                                        const std::string& scraped_new_password,
                                        bool show_spinner_initially) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
   if (g_confirm_dialog) {
     g_confirm_dialog->Focus();
     return;
@@ -115,7 +114,7 @@ void ConfirmPasswordChangeDialog::Show(const std::string& scraped_old_password,
 
 // static
 void ConfirmPasswordChangeDialog::Dismiss() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
   if (g_confirm_dialog) {
     g_confirm_dialog->Close();
   }
@@ -133,7 +132,7 @@ ConfirmPasswordChangeDialog::ConfirmPasswordChangeDialog(
       show_spinner_initially_(show_spinner_initially) {}
 
 ConfirmPasswordChangeDialog::~ConfirmPasswordChangeDialog() {
-  DCHECK_EQ(this, g_confirm_dialog);
+  CHECK_EQ(this, g_confirm_dialog, base::NotFatalUntil::M162);
   g_confirm_dialog = nullptr;
 }
 
@@ -167,7 +166,7 @@ void ConfirmPasswordChangeDialog::GetWebUIMessageHandlers(
 
 // static
 void UrgentPasswordExpiryNotificationDialog::Show() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
   if (g_notification_dialog) {
     g_notification_dialog->Focus();
     return;
@@ -178,7 +177,7 @@ void UrgentPasswordExpiryNotificationDialog::Show() {
 
 // static
 void UrgentPasswordExpiryNotificationDialog::Dismiss() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
   if (g_notification_dialog) {
     g_notification_dialog->Close();
   }
@@ -191,7 +190,7 @@ UrgentPasswordExpiryNotificationDialog::UrgentPasswordExpiryNotificationDialog()
 
 UrgentPasswordExpiryNotificationDialog::
     ~UrgentPasswordExpiryNotificationDialog() {
-  DCHECK_EQ(this, g_notification_dialog);
+  CHECK_EQ(this, g_notification_dialog, base::NotFatalUntil::M162);
   g_notification_dialog = nullptr;
 }
 

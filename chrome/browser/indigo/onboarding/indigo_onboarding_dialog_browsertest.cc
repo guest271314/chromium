@@ -8,15 +8,19 @@
 #include "base/strings/escape.h"
 #include "base/test/bind.h"
 #include "base/test/scoped_feature_list.h"
-#include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/browser_element_identifiers.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/tabs/public/tab_dialog_manager.h"
 #include "chrome/browser/ui/tabs/public/tab_features.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/common/chrome_features.h"
 #include "chrome/test/interaction/interactive_browser_test.h"
 #include "components/tabs/public/tab_interface.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_entry.h"
 #include "content/public/common/content_switches.h"
 #include "content/public/test/browser_test.h"
+#include "content/public/test/browser_test_utils.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/base/interaction/element_identifier.h"
@@ -40,7 +44,9 @@ MATCHER_P2(SizeIsInRange, min_size, max_size, "") {
 class IndigoOnboardingDialogBrowserTest : public InteractiveBrowserTest {
  public:
   IndigoOnboardingDialogBrowserTest() {
-    feature_list_.InitAndEnableFeature(features::kIndigo);
+    feature_list_.InitAndEnableFeatureWithParameters(
+        features::kIndigo,
+        {{features::kIndigoSkipEnterpriseCheck.name, "true"}});
   }
 
   void SetUpCommandLine(base::CommandLine* command_line) override {
@@ -84,7 +90,9 @@ IN_PROC_BROWSER_TEST_F(IndigoOnboardingDialogBrowserTest, ShowAndClose) {
       CheckView(
           IndigoOnboardingDialog::kWebViewId,
           [](views::WebView* web_view) { return web_view->GetPreferredSize(); },
-          SizeIsInRange(gfx::Size(480, 100), gfx::Size(480, 960))),
+          SizeIsInRange(gfx::Size(448, 100), gfx::Size(448, 960))),
+      CheckView(IndigoOnboardingDialog::kWebViewId,
+                [](views::WebView* web_view) { return web_view->HasFocus(); }),
       Do([&]() { dialog_->Close(); }),
       WaitForHide(IndigoOnboardingDialog::kWebViewId),
       Check([&]() { return WasDialogClosed(); }));
@@ -254,6 +262,22 @@ IN_PROC_BROWSER_TEST_F(IndigoOnboardingDialogBrowserTest, CrossRfhNavigation) {
       WaitForHide(IndigoOnboardingDialog::kWebViewId),
       Check([&]() { return WasDialogClosed(); }),
       Check([&]() { return last_result_.acknowledge_chrome_disclaimer; }));
+}
+
+IN_PROC_BROWSER_TEST_F(IndigoOnboardingDialogBrowserTest, CloseOnTabReload) {
+  tabs::TabInterface* tab = browser()->GetActiveTabInterface();
+  ASSERT_TRUE(tab);
+
+  const GURL example_url("https://www.example.com/");
+  RunTestSequence(Do([&]() { OpenDialog(*tab, example_url); }),
+                  WaitForShow(IndigoOnboardingDialog::kWebViewId),
+                  Do(base::BindLambdaForTesting([&]() {
+                    content::WaitForLoadStop(
+                        browser()->GetTabStripModel()->GetActiveWebContents());
+                  })),
+                  PressButton(kReloadButtonElementId),
+                  WaitForHide(IndigoOnboardingDialog::kWebViewId),
+                  Check([&]() { return WasDialogClosed(); }));
 }
 
 }  // namespace

@@ -28,6 +28,7 @@
 #import "ios/web/public/web_client.h"
 #import "net/base/apple/url_conversions.h"
 #import "url/gurl.h"
+#import "url/url_constants_ios.h"
 
 namespace {
 
@@ -46,6 +47,16 @@ bool IsValidAppUrl(const GURL& app_url) {
     return false;
   }
   return true;
+}
+
+// Returns true if `url` has a scheme that shows a prompt to initiate a phone or
+// video call.
+bool UrlHasCallWithPromptScheme(const GURL& url) {
+  return url.SchemeIs(url::kTelScheme) || url.SchemeIs(url::kTelPromptScheme) ||
+         url.SchemeIs(url::kFaceTimeScheme) ||
+         url.SchemeIs(url::kFaceTimePromptScheme) ||
+         url.SchemeIs(url::kFaceTimeAudioScheme) ||
+         url.SchemeIs(url::kFaceTimeAudioPromptScheme);
 }
 
 // Returns True if `app_url` has a Chrome bundle URL scheme.
@@ -134,7 +145,7 @@ void AppLauncherTabHelper::RequestToLaunchApp(const GURL& url,
   }
 
   if (!(is_user_initiated ||
-        (url.SchemeIs(url::kTelScheme) && user_tapped_recently))) {
+        (UrlHasCallWithPromptScheme(url) && user_tapped_recently))) {
     ShowAppLaunchAlert(AppLauncherAlertCause::kNoUserInteraction, url);
     return;
   }
@@ -167,6 +178,7 @@ void AppLauncherTabHelper::RequestToLaunchApp(const GURL& url,
     case ExternalAppLaunchPolicyAllow: {
       if (delegate_) {
         is_app_launch_request_pending_ = true;
+        is_call_prompt_launch_pending_ = UrlHasCallWithPromptScheme(url);
         delegate_->LaunchAppForTabHelper(
             this, url,
             base::BindOnce(&AppLauncherTabHelper::OnAppLaunchCompleted,
@@ -205,6 +217,7 @@ void AppLauncherTabHelper::OnShowAppLaunchAlertDone(const GURL& url,
   }
 
   is_app_launch_request_pending_ = true;
+  is_call_prompt_launch_pending_ = UrlHasCallWithPromptScheme(url);
   delegate_->LaunchAppForTabHelper(
       this, url,
       base::BindOnce(&AppLauncherTabHelper::OnAppLaunchTried,
@@ -244,6 +257,7 @@ void AppLauncherTabHelper::AppNoLongerInactive() {
 
 void AppLauncherTabHelper::LaunchAppRequestCompleted() {
   is_app_launch_request_pending_ = false;
+  is_call_prompt_launch_pending_ = false;
   is_prompt_active_ = false;
 
   // Some of the callback may destruct `this`, so post the execution to remove
@@ -290,6 +304,19 @@ void AppLauncherTabHelper::ShouldAllowRequest(
   }
 }
 
+void AppLauncherTabHelper::ShouldAllowResponse(
+    NSURLResponse* response,
+    web::WebStatePolicyDecider::ResponseInfo response_info,
+    web::WebStatePolicyDecider::PolicyDecisionCallback callback) {
+  if (is_app_launch_request_pending_ || is_prompt_active_) {
+    callbacks_waiting_for_app_launch_completion_.push_back(
+        base::BindOnce(std::move(callback),
+                       web::WebStatePolicyDecider::PolicyDecision::Allow()));
+    return;
+  }
+  std::move(callback).Run(web::WebStatePolicyDecider::PolicyDecision::Allow());
+}
+
 AppLauncherTabHelper::PolicyDecisionAndOptionalAppLaunchRequest
 AppLauncherTabHelper::GetPolicyDecisionAndOptionalAppLaunchRequest(
     NSURLRequest* request,
@@ -321,8 +348,9 @@ AppLauncherTabHelper::GetPolicyDecisionAndOptionalAppLaunchRequest(
             kNoAppLaunchRequest};
   }
 
-  // Disallow navigations to tel: URLs from cross-origin frames.
-  if (request_url.SchemeIs(url::kTelScheme) &&
+  // Disallow navigations to call or messaging URLs (tel:, telprompt:,
+  // facetime:, facetime-audio:, sms:) from cross-origin frames.
+  if (UrlHasCallWithPromptScheme(request_url) &&
       request_info.target_frame_is_cross_origin) {
     return {PolicyDecision::Cancel(), kNoAppLaunchRequest};
   }

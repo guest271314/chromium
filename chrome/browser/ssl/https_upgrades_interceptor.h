@@ -68,7 +68,6 @@ class HttpsUpgradesInterceptor : public content::URLLoaderRequestInterceptor,
       const network::ResourceRequest& request,
       network::mojom::URLResponseHeadPtr* response_head,
       mojo::ScopedDataPipeConsumerHandle* response_body,
-      mojo::PendingRemote<network::mojom::URLLoader>* loader,
       mojo::PendingReceiver<network::mojom::URLLoaderClient>* client_receiver,
       blink::ThrottlingURLLoader* url_loader) override;
 
@@ -86,14 +85,13 @@ class HttpsUpgradesInterceptor : public content::URLLoaderRequestInterceptor,
       GURL url,
       bool is_outermost_main_frame,
       std::string method,
+      int transition_type,
       content::URLLoaderRequestInterceptor::LoaderCallback callback,
       bool is_hsts_active_for_host);
 
   // network::mojom::URLLoader:
   void FollowRedirect(
-      const std::vector<std::string>& removed_headers,
-      const net::HttpRequestHeaders& modified_headers,
-      const net::HttpRequestHeaders& modified_cors_exempt_headers,
+      network::HttpRequestHeadersUpdateParams headers_update_params,
       const std::optional<GURL>& new_url) override {}
   void SetPriority(net::RequestPriority priority,
                    int intra_priority_value) override {}

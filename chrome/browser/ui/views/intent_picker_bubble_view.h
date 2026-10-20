@@ -13,17 +13,22 @@
 #include "base/auto_reset.h"
 #include "base/gtest_prod_util.h"
 #include "base/memory/raw_ptr.h"
-#include "chrome/browser/apps/link_capturing/intent_picker_info.h"
 #include "chrome/browser/ui/views/location_bar/location_bar_bubble_delegate_view.h"
+#include "components/apps/link_capturing/intent_picker_info.h"
 #include "ui/base/accelerators/accelerator.h"
 #include "ui/base/interaction/element_identifier.h"
 #include "ui/views/animation/ink_drop_state.h"
+#include "ui/views/bubble/bubble_anchor.h"
 #include "ui/views/controls/scroll_view.h"
 #include "url/origin.h"
 
 namespace content {
 class WebContents;
 }  // namespace content
+
+namespace ui {
+class Event;
+}  // namespace ui
 
 namespace views {
 class Checkbox;
@@ -67,7 +72,7 @@ class IntentPickerBubbleView : public LocationBarBubbleDelegateView {
     kRememberCheckbox,
   };
 
-  IntentPickerBubbleView(views::View* anchor_view,
+  IntentPickerBubbleView(views::BubbleAnchor bubble_anchor,
                          BubbleType bubble_type,
                          std::vector<AppInfo> app_info,
                          IntentPickerResponse intent_picker_cb,
@@ -82,7 +87,7 @@ class IntentPickerBubbleView : public LocationBarBubbleDelegateView {
   ~IntentPickerBubbleView() override;
 
   static views::Widget* ShowBubble(
-      views::View* anchor_view,
+      views::BubbleAnchor bubble_anchor,
       std::optional<ui::ElementIdentifier> highlighted_element,
       BubbleType bubble_type,
       content::WebContents* web_contents,
@@ -135,12 +140,15 @@ class IntentPickerBubbleView : public LocationBarBubbleDelegateView {
 
   // views::BubbleDialogDelegateView overrides:
   void OnWidgetDestroying(views::Widget* widget) override;
+  bool ShouldAllowKeyEventsDuringInputProtection() const override;
 
   // Called when the app at |index| is selected in the app list. If
   // |accepted| is true, the dialog should be immediately accepted with that app
   // selected. If |index| is nullopt, no app is selected, and the Accept button
   // will be disabled
-  void OnAppSelected(std::optional<size_t> index, bool accepted);
+  void OnAppSelected(std::optional<size_t> index,
+                     bool accepted,
+                     const ui::Event* event);
 
   void Initialize();
 

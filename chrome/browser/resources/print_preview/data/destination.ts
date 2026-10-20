@@ -5,6 +5,7 @@
 import '/strings.m.js';
 
 import {assert} from 'chrome://resources/js/assert.js';
+import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
 import {stripDiacritics} from 'chrome://resources/js/search_highlight_utils.js';
 
 import type {Cdd, ColorCapability, ColorOption, CopiesCapability, DpiOption, DuplexType, MediaSizeOption} from './cdd.js';
@@ -247,12 +248,16 @@ export class Destination {
   /** @return Path to the SVG for the destination's icon. */
   get icon(): string {
     if (this.id_ === GooglePromotedDestinationId.SAVE_AS_PDF) {
-      return 'cr:insert-drive-file';
+      return 'cr:draft-filled';
     }
     if (this.isEnterprisePrinter) {
-      return 'print-preview:business';
+      return loadTimeData.getBoolean('webuiRoundedIconsEnabled') ?
+          'print-preview:domain' :
+          'print-preview:business-old';
     }
-    return 'print-preview:print';
+    return loadTimeData.getBoolean('webuiRoundedIconsEnabled') ?
+        'print-preview:print-filled' :
+        'print-preview:print-old';
   }
 
   /**

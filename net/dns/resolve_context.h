@@ -7,6 +7,7 @@
 
 #include <memory>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "base/memory/raw_ptr.h"
@@ -19,11 +20,13 @@
 #include "base/time/default_tick_clock.h"
 #include "base/time/time.h"
 #include "base/timer/timer.h"
+#include "net/base/ech_mode.h"
 #include "net/base/net_export.h"
 #include "net/base/network_handle.h"
 #include "net/dns/dns_attempt.h"
 #include "net/dns/dns_config.h"
 #include "net/dns/dns_http_attempt.h"
+#include "net/dns/dns_transaction.h"
 #include "net/dns/public/secure_dns_mode.h"
 
 namespace net {
@@ -50,24 +53,6 @@ enum class DohServerAutoupgradeStatus {
 
   kMaxValue = kFailureWithNoPriorSuccesses
 };
-
-// Status of a canary domain check being used to check for whether a
-// particular behavior is allowed.
-enum class CanaryDomainCheckStatus {
-  // The canary domain check is disabled by feature flag or empty host.
-  kInactive,
-  // The canary domain check has not yet started.
-  kNotStarted,
-  // The canary domain check has started but not yet completed.
-  kStarted,
-  // The canary domain check has completed and was positive.
-  // A positive result indicates that the behavior is allowed.
-  kPositive,
-  // The canary domain check has completed and was negative.
-  // A positive result indicates that the behavior is not allowed.
-  kNegative,
-};
-
 // Per-URLRequestContext data used by HostResolver. Expected to be owned by the
 // ContextHostResolver, and all usage/references are expected to be cleaned up
 // or cancelled before the URLRequestContext goes out of service.
@@ -141,26 +126,26 @@ class NET_EXPORT_PRIVATE ResolveContext : public base::CheckedObserver {
 
   // Record failure to get a response from the server (e.g. SERVFAIL, connection
   // failures, or that the server failed to respond before the fallback period
-  // elapsed. If |is_doh_server| and the number of failures has surpassed a
-  // threshold, sets the DoH probe state to unavailable. Noop if |session| is
-  // not the current session. Should only be called with with server failure
-  // |rv|s, not e.g. OK, ERR_NAME_NOT_RESOLVED (which at the transaction level
-  // is expected to be nxdomain), or ERR_IO_PENDING.
+  // elapsed. If `attempt_mode == AttemptMode::kHttp` and the number of failures
+  // has surpassed a threshold, sets the DoH probe state to unavailable. Noop if
+  // |session| is not the current session. Should only be called with with
+  // server failure |rv|s, not e.g. OK, ERR_NAME_NOT_RESOLVED (which at the
+  // transaction level is expected to be nxdomain), or ERR_IO_PENDING.
   void RecordServerFailure(size_t server_index,
-                           bool is_doh_server,
+                           DnsTransactionFactory::AttemptMode attempt_mode,
                            int rv,
                            const DnsSession* session);
 
   // Record that server responded successfully. Noop if |session| is not the
   // current session.
   void RecordServerSuccess(size_t server_index,
-                           bool is_doh_server,
+                           DnsTransactionFactory::AttemptMode attempt_mode,
                            const DnsSession* session);
 
   // Record how long it took to receive a response from the server. Noop if
   // |session| is not the current session.
   void RecordRtt(size_t server_index,
-                 bool is_doh_server,
+                 DnsTransactionFactory::AttemptMode attempt_mode,
                  base::TimeDelta rtt,
                  int rv,
                  const DnsSession* session);
@@ -188,20 +173,33 @@ class NET_EXPORT_PRIVATE ResolveContext : public base::CheckedObserver {
   base::TimeDelta NextDohFallbackPeriod(size_t doh_server_index,
                                         const DnsSession* session);
 
-  // Return a timeout for an insecure transaction (from Transaction::Start()).
+  // Return the period the next platform query should run before fallback to
+  // next attempt. `attempt` counts from 0 and is used for exponential backoff.
+  base::TimeDelta NextPlatformFallbackPeriod(size_t platform_server_index,
+                                             int attempt,
+                                             const DnsSession* session);
+
+  // Return a timeout for an insecure transaction (from DnsTransaction::Start()).
   // Expected that the transaction will skip waiting for this timeout if it is
   // using fast timeouts, and also expected that transactions will always wait
   // for all attempts to run for at least their fallback period before dying
   // with timeout.
   base::TimeDelta ClassicTransactionTimeout(const DnsSession* session);
 
-  // Return a timeout for a secure transaction (from Transaction::Start()).
+  // Return a timeout for a secure transaction (from DnsTransaction::Start()).
   // Expected that the transaction will skip waiting for this timeout if it is
   // using fast timeouts, and also expected that transactions will always wait
   // for all attempts to run for at least their fallback period before dying
   // with timeout.
   base::TimeDelta SecureTransactionTimeout(SecureDnsMode secure_dns_mode,
                                            const DnsSession* session);
+
+  // Return a timeout for a platform transaction (from DnsTransaction::Start()).
+  // Expected that the transaction will skip waiting for this timeout if it is
+  // using fast timeouts, and also expected that transactions will always wait
+  // for all attempts to run for at least their fallback period before dying
+  // with timeout.
+  base::TimeDelta PlatformTransactionTimeout(const DnsSession* session);
 
   void RegisterDohStatusObserver(DohStatusObserver* observer);
   void UnregisterDohStatusObserver(const DohStatusObserver* observer);
@@ -215,6 +213,11 @@ class NET_EXPORT_PRIVATE ResolveContext : public base::CheckedObserver {
     DCHECK(url_request_context);
     url_request_context_ = url_request_context;
   }
+
+  // Returns the EchMode configured for `host` in the URLRequestContext's
+  // SSLConfigService, or EchMode::kOpportunistic if no SSLConfigService is
+  // configured.
+  EchMode GetEchMode(std::string_view host) const;
 
   HostCache* host_cache() { return host_cache_.get(); }
   HostResolverCache* host_resolver_cache() {
@@ -238,6 +241,14 @@ class NET_EXPORT_PRIVATE ResolveContext : public base::CheckedObserver {
     return doh_autoupgrade_success_metric_timer_.IsRunning();
   }
 
+  int platform_last_failure_count_for_testing() const {
+    return platform_server_stats_.last_failure_count;
+  }
+
+  bool platform_current_connection_success_for_testing() const {
+    return platform_server_stats_.current_connection_success;
+  }
+
   // Network to perform the DNS lookups for. When equal to
   // handles::kInvalidNetworkHandle the decision of which one to target is left
   // to the resolver. Virtual for testing.
@@ -251,25 +262,13 @@ class NET_EXPORT_PRIVATE ResolveContext : public base::CheckedObserver {
     return weak_ptr_factory_.GetWeakPtr();
   }
 
-  // Sets the status of a canary domain check for allowing DoH fallback.
-  void set_doh_fallback_canary_domain_check_status(
-      CanaryDomainCheckStatus status) {
-    doh_fallback_canary_domain_check_status_ = status;
-  }
-
-  // Gets the status of a canary domain check for allowing DoH fallback.
-  // A positive status indicates that Secure DNS DoH fallback is allowed.
-  CanaryDomainCheckStatus doh_fallback_canary_domain_check_status() const {
-    return doh_fallback_canary_domain_check_status_;
+  base::WeakPtr<const ResolveContext> GetWeakPtr() const {
+    return weak_ptr_factory_.GetWeakPtr();
   }
 
   // Returns true if the current DoH configuration was added from the fallback
   // DoH nameservers as part of the fallback-to-default-provider functionality.
   bool IsDohConfigFromFallbackDohNameservers() const;
-
-  // Returns true if a canary domain probe should be performed for the purpose
-  // of determining whether to allow DoH fallback.
-  bool IsDohFallbackProbeEnabled() const;
 
  private:
   friend DohDnsServerIterator;
@@ -279,6 +278,7 @@ class NET_EXPORT_PRIVATE ResolveContext : public base::CheckedObserver {
     explicit ServerStats(std::unique_ptr<base::SampleVector> rtt_histogram);
 
     ServerStats(ServerStats&&);
+    ServerStats& operator=(ServerStats&&);
 
     ~ServerStats();
 
@@ -311,7 +311,8 @@ class NET_EXPORT_PRIVATE ResolveContext : public base::CheckedObserver {
 
   // Returns the ServerStats for the designated server. Returns nullptr if no
   // ServerStats found.
-  ServerStats* GetServerStats(size_t server_index, bool is_doh_server);
+  ServerStats* GetServerStats(size_t server_index,
+                              DnsTransactionFactory::AttemptMode attempt_mode);
 
   // Return the fallback period for the next query.
   base::TimeDelta NextFallbackPeriodHelper(const ServerStats* server_stats,
@@ -323,17 +324,19 @@ class NET_EXPORT_PRIVATE ResolveContext : public base::CheckedObserver {
 
   // Record the time to perform a query.
   void RecordRttForUma(size_t server_index,
-                       bool is_doh_server,
+                       DnsTransactionFactory::AttemptMode attempt_mode,
                        base::TimeDelta rtt,
                        int rv,
                        base::TimeDelta base_fallback_period,
                        const DnsSession* session);
-  std::string GetQueryTypeForUma(size_t server_index,
-                                 bool is_doh_server,
-                                 const DnsSession* session);
-  std::string GetDohProviderIdForUma(size_t server_index,
-                                     bool is_doh_server,
-                                     const DnsSession* session);
+  std::string GetQueryTypeForUma(
+      size_t server_index,
+      DnsTransactionFactory::AttemptMode attempt_mode,
+      const DnsSession* session);
+  std::string GetDohProviderIdForUma(
+      size_t server_index,
+      DnsTransactionFactory::AttemptMode attempt_mode,
+      const DnsSession* session);
 
   void NotifyDohStatusObserversOfSessionChanged();
   void NotifyDohStatusObserversOfUnavailable(bool network_change);
@@ -376,14 +379,12 @@ class NET_EXPORT_PRIVATE ResolveContext : public base::CheckedObserver {
   std::vector<ServerStats> classic_server_stats_;
   // Track runtime statistics of each DoH server.
   std::vector<ServerStats> doh_server_stats_;
+  // Track runtime statistics of platform resolver.
+  ServerStats platform_server_stats_;
 
   base::OneShotTimer doh_autoupgrade_success_metric_timer_;
 
-  // Status of a canary domain check to allow DoH fallback for Secure DNS.
-  CanaryDomainCheckStatus doh_fallback_canary_domain_check_status_ =
-      CanaryDomainCheckStatus::kInactive;
-
-  base::WeakPtrFactory<ResolveContext> weak_ptr_factory_{this};
+  mutable base::WeakPtrFactory<ResolveContext> weak_ptr_factory_{this};
 };
 
 }  // namespace net

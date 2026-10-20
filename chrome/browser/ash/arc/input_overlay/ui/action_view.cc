@@ -20,7 +20,6 @@
 #include "chrome/browser/ash/arc/input_overlay/ui/reposition_controller.h"
 #include "chrome/browser/ash/arc/input_overlay/ui/touch_point.h"
 #include "chrome/browser/ash/arc/input_overlay/util.h"
-#include "chrome/grit/generated_resources.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/views/accessibility/view_accessibility.h"
@@ -76,7 +75,7 @@ void ActionView::SetDisplayMode(DisplayMode mode, ActionLabel* editing_label) {
 
 void ActionView::SetPositionFromCenterPosition(
     const gfx::PointF& center_position) {
-  DCHECK(touch_point_center_);
+  CHECK(touch_point_center_, base::NotFatalUntil::M160);
   const int left =
       std::max(0, (int)(center_position.x() - touch_point_center_->x()));
   const int top =
@@ -133,7 +132,7 @@ bool ActionView::ApplyKeyReleased(const ui::KeyEvent& event) {
 }
 
 void ActionView::ShowButtonOptionsMenu() {
-  DCHECK(display_overlay_controller_);
+  CHECK(display_overlay_controller_, base::NotFatalUntil::M160);
   display_overlay_controller_->AddButtonOptionsMenuWidget(action_);
 }
 
@@ -189,7 +188,7 @@ void ActionView::AddTouchPoint(ActionType action_type) {
     return;
   }
 
-  DCHECK(touch_point_center_);
+  CHECK(touch_point_center_, base::NotFatalUntil::M160);
   touch_point_ = TouchPoint::Show(this, action_type, *touch_point_center_);
 }
 

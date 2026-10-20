@@ -17,6 +17,7 @@
 #include "ui/views/bubble/bubble_anchor.h"
 
 class BrowserWindowInterface;
+class Profile;
 
 namespace views {
 class DialogDelegate;
@@ -27,6 +28,9 @@ class DialogDelegate;
 class AvatarToolbarButtonInterface {
  public:
   virtual ~AvatarToolbarButtonInterface() = default;
+
+  // Returns whether the avatar button should be shown for the given profile.
+  static bool CanShowForProfile(Profile* profile);
 
   class Observer : public base::CheckedObserver {
    public:
@@ -45,7 +49,7 @@ class AvatarToolbarButtonInterface {
   virtual views::DialogDelegate* GetDialogDelegate() = 0;
 
   // Returns the anchor to use for avatar button bubbles.
-  views::BubbleAnchor GetBubbleAnchor(BrowserWindowInterface& browser);
+  static views::BubbleAnchor GetBubbleAnchor(BrowserWindowInterface& browser);
 
   virtual void ButtonPressed(bool is_source_accelerator) = 0;
 
@@ -66,6 +70,10 @@ class AvatarToolbarButtonInterface {
   // Returns whether the button currently has an explicit state set.
   virtual bool HasExplicitButtonState() const = 0;
 
+  // Returns whether the control is ready for an avatar IPH request. WebUI
+  // controls must be attached to a widget before accepting these requests.
+  virtual bool IsReadyForIPH() const = 0;
+
   // Methods to register or remove observers.
   virtual void AddObserver(Observer* observer) = 0;
   virtual void RemoveObserver(Observer* observer) = 0;
@@ -80,19 +88,6 @@ class AvatarToolbarButtonInterface {
   virtual void SetAnnounceCallbackForTesting(
       base::OnceCallback<void(std::u16string)> callback) = 0;
 
-  // Attempts showing the In-Product-Help for profile Switching.
-  virtual void MaybeShowProfileSwitchIPH() = 0;
-
-#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
-  // Attempts showing the In-Product-Help when a supervised user signs-in in a
-  // profile.
-  virtual void MaybeShowSupervisedUserSignInIPH() = 0;
-
-  // Attempts showing the In-Product-Help listing benefits for signed-in users
-  // after the sync-to-signin migration.
-  virtual void MaybeShowSignInBenefitsIPH() = 0;
-#endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
-
   // Clears the active state (makes it inactive).
   virtual void ClearActiveStateForTesting() = 0;
 
@@ -101,15 +96,7 @@ class AvatarToolbarButtonInterface {
   // necessary to bypass resetting the profile - e.g. when attempting to reach
   // the limit counts.
   virtual void ForceShowingPromoForTesting() = 0;
-
-  // Returns whether the delay timer was running or not.
-  // Stops the timer if it is running.
-  virtual bool GetStateAndFireSignedOutTriggerDelayTimerForTesting() = 0;
 #endif  // BUILDFLAG(ENABLE_DICE_SUPPORT)
-
-  // Can be used in tests to reduce or remove the delay before showing the IPH.
-  [[nodiscard]] static base::AutoReset<base::TimeDelta>
-  SetScopedIPHMinDelayAfterCreationForTesting(base::TimeDelta delay);
 
   [[nodiscard]] static base::AutoReset<std::optional<base::TimeDelta>>
   CreateScopedInfiniteDelayOverrideForTesting(AvatarDelayType delay_type);

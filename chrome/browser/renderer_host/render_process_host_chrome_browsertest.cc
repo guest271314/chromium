@@ -17,12 +17,13 @@
 #include "chrome/browser/extensions/extension_browsertest.h"
 #include "chrome/browser/preloading/scoped_prewarm_feature_list.h"
 #include "chrome/browser/search/search.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_commands.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/singleton_tabs.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/common/chrome_switches.h"
 #include "chrome/common/url_constants.h"
+#include "chrome/common/webui_url_constants.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "components/performance_manager/public/features.h"
@@ -41,6 +42,7 @@
 #include "media/base/media_switches.h"
 #include "net/base/filename_util.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
+#include "ui/base/window_open_disposition.h"
 
 #if BUILDFLAG(IS_MAC)
 #include "content/public/browser/browser_child_process_host.h"
@@ -172,7 +174,7 @@ class ChromeRenderProcessHostTest : public extensions::ExtensionBrowserTest {
             browser()->tab_strip_model()->GetActiveWebContents()));
 
     // Change the first tab to be the omnibox page (WebUI).
-    GURL omnibox(chrome::kChromeUIOmniboxURL);
+    GURL omnibox(chrome::kChromeUIOmniboxInternalsURL);
     ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), omnibox));
 
     // The host objects from the page before the WebUI navigation stick around
@@ -282,13 +284,8 @@ class ChromeRenderProcessHostTestWithCommandLine
   }
 };
 
-// TODO(crbug.com/497106715): Flaky on Mac.
-#if BUILDFLAG(IS_MAC)
-#define MAYBE_ProcessPerTab DISABLED_ProcessPerTab
-#else
-#define MAYBE_ProcessPerTab ProcessPerTab
-#endif
-IN_PROC_BROWSER_TEST_F(ChromeRenderProcessHostTest, MAYBE_ProcessPerTab) {
+// TODO(crbug.com/497106715): Fix and re-enable test
+IN_PROC_BROWSER_TEST_F(ChromeRenderProcessHostTest, DISABLED_ProcessPerTab) {
   // Set max renderers to 1 to force running out of processes.
   content::RenderProcessHost::SetMaxRendererProcessCount(1);
 
@@ -304,7 +301,7 @@ IN_PROC_BROWSER_TEST_F(ChromeRenderProcessHostTest, MAYBE_ProcessPerTab) {
           browser()->tab_strip_model()->GetActiveWebContents()));
 
   // Change the first tab to be a WebUI page.
-  GURL omnibox(chrome::kChromeUIOmniboxURL);
+  GURL omnibox(chrome::kChromeUIOmniboxInternalsURL);
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), omnibox));
 
   // The host objects from the page before the WebUI navigation stick around
@@ -366,7 +363,13 @@ IN_PROC_BROWSER_TEST_F(ChromeRenderProcessHostTest, MAYBE_ProcessPerTab) {
 class ChromeRenderProcessHostBackgroundingTest
     : public ChromeRenderProcessHostTest {
  public:
-  ChromeRenderProcessHostBackgroundingTest() = default;
+  ChromeRenderProcessHostBackgroundingTest() {
+    feature_list_.InitWithFeatures(
+        /*enabled_features=*/{},
+        /*disabled_features=*/{
+            performance_manager::features::kPMLoadingPageVoter,
+            performance_manager::features::kPMLoadingPageVoterV2});
+  }
 
   ChromeRenderProcessHostBackgroundingTest(
       const ChromeRenderProcessHostBackgroundingTest&) = delete;
@@ -410,6 +413,8 @@ class ChromeRenderProcessHostBackgroundingTest
       EXPECT_EQ(expected_is_backgrounded, IsProcessBackgrounded(p));
     }
   }
+
+  base::test::ScopedFeatureList feature_list_;
 };
 
 #define EXPECT_PROCESS_IS_BACKGROUNDED(process_or_tab)                       \
@@ -433,7 +438,7 @@ class ChromeRenderProcessHostBackgroundingTest
 IN_PROC_BROWSER_TEST_F(ChromeRenderProcessHostBackgroundingTest,
                        MAYBE_MultipleTabs) {
   // Change the first tab to be the omnibox page (TYPE_WEBUI).
-  GURL omnibox(chrome::kChromeUIOmniboxURL);
+  GURL omnibox(chrome::kChromeUIOmniboxInternalsURL);
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), omnibox));
 
   // Create a new tab. It should be foreground.
@@ -623,7 +628,7 @@ class WindowDestroyer : public content::WebContentsObserver {
 // Disabled due to flakiness, see  http://crbug.com/41250793.
 IN_PROC_BROWSER_TEST_F(ChromeRenderProcessHostTest,
                        DISABLED_CloseAllTabsDuringProcessDied) {
-  GURL url(chrome::kChromeUIOmniboxURL);
+  GURL url(chrome::kChromeUIOmniboxInternalsURL);
 
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), url));
   WebContents* wc1 = browser()->tab_strip_model()->GetWebContentsAt(0);
@@ -662,17 +667,8 @@ class ChromeRenderProcessHostBackgroundingTestWithAudio
     : public ChromeRenderProcessHostTest {
  public:
   ChromeRenderProcessHostBackgroundingTestWithAudio() {
-    feature_list_.InitWithFeatures(
-        /*enabled_features=*/
-        {
-          // Tests require that each tab has a different process.
-          features::kDisableProcessReuse,
-#if BUILDFLAG(IS_MAC)
-          // Tests require that backgrounding processes is possible.
-          features::kMacAllowBackgroundingRenderProcesses,
-#endif
-        },
-        /*disabled_features=*/{});
+    // Tests require that each tab has a different process.
+    feature_list_.InitAndEnableFeature(features::kDisableProcessReuse);
   }
 
   ChromeRenderProcessHostBackgroundingTestWithAudio(

@@ -31,6 +31,7 @@
 #include "chrome/browser/profiles/profile_avatar_icon_util.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/profiles/profile_metrics.h"
+#include "chrome/browser/signin/account_preview_data_service_factory.h"
 #include "chrome/browser/signin/chrome_signin_client_factory.h"
 #include "chrome/browser/signin/chrome_signin_pref_names.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
@@ -52,7 +53,6 @@
 #include "chrome/common/pref_names.h"
 #include "chrome/common/url_constants.h"
 #include "chrome/common/webui_url_constants.h"
-#include "chrome/grit/generated_resources.h"
 #include "components/prefs/pref_change_registrar.h"
 #include "components/prefs/pref_service.h"
 #include "components/signin/core/browser/signin_error_controller.h"
@@ -227,7 +227,7 @@ std::string_view GetSyncErrorAction(SyncStatusActionType action_type) {
 // accounts list.
 base::DictValue GetAccountValue(signin::IdentityManager* identity_manager,
                                 const AccountInfo& account) {
-  DCHECK(!account.IsEmpty());
+  CHECK(!account.IsEmpty(), base::NotFatalUntil::M162);
   auto dict =
       base::DictValue()
           .Set("email", account.GetEmail())
@@ -377,11 +377,12 @@ void PeopleHandler::RegisterMessages() {
       "SyncSetupStartSignIn",
       base::BindRepeating(&PeopleHandler::HandleStartSignin,
                           base::Unretained(this)));
+#endif
+
   web_ui()->RegisterMessageCallback(
       "SyncShowSyncPassphraseDialog",
       base::BindRepeating(&PeopleHandler::HandleShowSyncPassphraseDialog,
                           base::Unretained(this)));
-#endif
 
   web_ui()->RegisterMessageCallback(
       "ShowAccountSettingsUI",
@@ -435,6 +436,10 @@ void PeopleHandler::RegisterMessages() {
   web_ui()->RegisterMessageCallback(
       "RecordSigninPendingOffered",
       base::BindRepeating(&PeopleHandler::HandleRecordSigninPendingOffered,
+                          base::Unretained(this)));
+  web_ui()->RegisterMessageCallback(
+      "RecordSigninOffered",
+      base::BindRepeating(&PeopleHandler::HandleRecordSigninOffered,
                           base::Unretained(this)));
 #endif
 }
@@ -501,7 +506,8 @@ void PeopleHandler::DisplayGaiaLoginInNewTabOrWindow(
     // Note: this sets the consent level to `signin::ConsentLevel::kSignin`.
     identity_manager->GetPrimaryAccountMutator()->RevokeSyncConsent(
         signin_metrics::ProfileSignout::kRevokeSyncFromSettings);
-    DCHECK(identity_manager->HasPrimaryAccount(signin::ConsentLevel::kSignin));
+    CHECK(identity_manager->HasPrimaryAccount(signin::ConsentLevel::kSignin),
+          base::NotFatalUntil::M162);
   }
 
   // If the identity manager already has a primary account, this is a
@@ -511,7 +517,7 @@ void PeopleHandler::DisplayGaiaLoginInNewTabOrWindow(
       signin_util::IsSigninPending(identity_manager)) {
     SigninErrorController* error_controller =
         SigninErrorControllerFactory::GetForProfile(profile_);
-    DCHECK(error_controller->HasError());
+    CHECK(error_controller->HasError(), base::NotFatalUntil::M162);
     signin_ui_util::ShowReauthForPrimaryAccountWithAuthError(profile_,
                                                              access_point);
     return;
@@ -666,7 +672,8 @@ base::ListValue PeopleHandler::GetStoredAccountsList() {
     // If dice is enabled, show all the accounts.
     for (const auto& account : signin_ui_util::GetOrderedAccountsForDisplay(
              identity_manager,
-             /*restrict_to_accounts_eligible_for_sync=*/true)) {
+             AccountPreviewDataServiceFactory::GetForProfile(profile_),
+             /*restrict_to_accounts_eligible_for_signin=*/true)) {
       accounts.Append(GetAccountValue(identity_manager, account));
     }
     return accounts;
@@ -690,8 +697,9 @@ base::ListValue PeopleHandler::GetStoredAccountsList() {
 // TODO(crbug.com/457426419): Rename this method once syncing is removed.
 void PeopleHandler::HandleStartSyncingWithEmail(const base::ListValue& args) {
 #if BUILDFLAG(ENABLE_DICE_SUPPORT)
-  DCHECK(AccountConsistencyModeManager::IsDiceEnabledForProfile(profile_) ||
-         AccountConsistencyModeManager::IsMirrorEnabledForProfile(profile_));
+  CHECK(AccountConsistencyModeManager::IsDiceEnabledForProfile(profile_) ||
+            AccountConsistencyModeManager::IsMirrorEnabledForProfile(profile_),
+        base::NotFatalUntil::M162);
   const base::Value& email = args[0];
   const base::Value& is_default_promo_account = args[1];
 
@@ -701,7 +709,8 @@ void PeopleHandler::HandleStartSyncingWithEmail(const base::ListValue& args) {
       IdentityManagerFactory::GetForProfile(profile_)
           ->FindExtendedAccountInfoByEmailAddress(email.GetString());
   signin_ui_util::EnableSyncFromMultiAccountPromo(
-      profile_, maybe_account, signin_metrics::AccessPoint::kSettings,
+      profile_, maybe_account.GetCoreAccountInfo(),
+      signin_metrics::AccessPoint::kSettings,
       is_default_promo_account.GetBool());
 #else
   NOTIMPLEMENTED();
@@ -781,7 +790,8 @@ void PeopleHandler::HandleShowSyncSetupUI(const base::ListValue& args) {
 
 #if BUILDFLAG(IS_CHROMEOS)
   // Mark Sync as requested by the user, in case it was reset via dashboard.
-  if (service) {
+  if (service && (service->HasSyncConsent() ||
+                  !syncer::IsReplaceSyncPromosWithSignInPromosEnabled())) {
     service->GetUserSettings()->ClearSyncFeatureDisabledViaDashboard();
   }
 #endif  // BUILDFLAG(IS_CHROMEOS)
@@ -827,8 +837,9 @@ void PeopleHandler::HandleStartSignin(const base::ListValue& args) {
   // Should only be called if the user is not already signed in, has a auth
   // error, or a unrecoverable sync error requiring re-auth.
   syncer::SyncService* service = GetSyncService();
-  DCHECK(IsProfileAuthNeededOrHasErrors() ||
-         (service && service->HasUnrecoverableError()));
+  CHECK(IsProfileAuthNeededOrHasErrors() ||
+            (service && service->HasUnrecoverableError()),
+        base::NotFatalUntil::M162);
   DisplayGaiaLogin(access_point);
 }
 #endif  // BUILDFLAG(IS_CHROMEOS)
@@ -870,7 +881,7 @@ void PeopleHandler::HandleSignout(const base::ListValue& args) {
   if (!browser) {
     return;
   }
-  browser->GetFeatures().signin_view_controller()->SignoutOrReauthWithPrompt(
+  SigninViewController::From(browser)->SignoutOrReauthWithPrompt(
       signin_metrics::AccessPoint::kSettingsSignoutConfirmationPrompt,
       signin_metrics::ProfileSignout::kUserClickedSignoutSettings,
       signin_metrics::SourceForRefreshTokenOperation::kSettings_Signout);
@@ -895,7 +906,7 @@ void PeopleHandler::HandleTurnOffSync(bool delete_profile,
     if (browser) {
       // Clearing the primary account isn't sufficient to signout SAML accounts,
       // see http://crbug.com/40710922.
-      browser->GetFeatures().signin_view_controller()->ShowGaiaLogoutTab(
+      SigninViewController::From(browser)->ShowGaiaLogoutTab(
           signin_metrics::SourceForRefreshTokenOperation::kSettings_Signout);
     }
 
@@ -919,9 +930,11 @@ void PeopleHandler::HandleTurnOffSync(bool delete_profile,
 
 #if BUILDFLAG(ENABLE_DICE_SUPPORT)
 void PeopleHandler::HandlePauseSync(const base::ListValue& args) {
-  DCHECK(AccountConsistencyModeManager::IsDiceEnabledForProfile(profile_));
+  CHECK(AccountConsistencyModeManager::IsDiceEnabledForProfile(profile_),
+        base::NotFatalUntil::M162);
   auto* identity_manager = IdentityManagerFactory::GetForProfile(profile_);
-  DCHECK(identity_manager->HasPrimaryAccount(signin::ConsentLevel::kSync));
+  CHECK(identity_manager->HasPrimaryAccount(signin::ConsentLevel::kSync),
+        base::NotFatalUntil::M162);
 
   identity_manager->GetAccountsMutator()
       ->InvalidateRefreshTokenForPrimaryAccount(
@@ -955,7 +968,6 @@ void PeopleHandler::HandleSyncShowBookmarkLimitExceededHelp(
       syncer::SyncService::BookmarksLimitExceededHelpClickedSource::kSettings);
 }
 
-#if !BUILDFLAG(IS_CHROMEOS)
 void PeopleHandler::HandleShowSyncPassphraseDialog(
     const base::ListValue& args) {
   BrowserWindowInterface* browser =
@@ -965,10 +977,8 @@ void PeopleHandler::HandleShowSyncPassphraseDialog(
     return;
   }
 
-  ShowSyncPassphraseDialogAndDecryptData(
-      *browser->GetBrowserForMigrationOnly());
+  ShowSyncPassphraseDialogAndDecryptData(*browser);
 }
-#endif
 
 void PeopleHandler::HandleShowAccountSettingsUI(const base::ListValue& args) {
   CHECK(syncer::IsReplaceSyncPromosWithSignInPromosEnabled());
@@ -1082,7 +1092,7 @@ void PeopleHandler::CloseSyncSetup() {
 }
 
 void PeopleHandler::InitializeSyncBlocker() {
-  DCHECK(web_ui());
+  CHECK(web_ui(), base::NotFatalUntil::M162);
   WebContents* web_contents = web_ui()->GetWebContents();
   if (!web_contents) {
     return;
@@ -1164,11 +1174,13 @@ void PeopleHandler::OnSyncShutdown(syncer::SyncService* sync_service) {
 
 void PeopleHandler::BeforeUnloadDialogCancelled() {
   // The before unload dialog is only shown during the first sync setup.
-  DCHECK(IdentityManagerFactory::GetForProfile(profile_)->HasPrimaryAccount(
-      signin::ConsentLevel::kSync));
+  CHECK(IdentityManagerFactory::GetForProfile(profile_)->HasPrimaryAccount(
+            signin::ConsentLevel::kSync),
+        base::NotFatalUntil::M162);
   syncer::SyncService* service = GetSyncService();
-  DCHECK(service && service->IsSetupInProgress() &&
-         !service->GetUserSettings()->IsInitialSyncFeatureSetupComplete());
+  CHECK(service && service->IsSetupInProgress() &&
+            !service->GetUserSettings()->IsInitialSyncFeatureSetupComplete(),
+        base::NotFatalUntil::M162);
 
   base::RecordAction(
       base::UserMetricsAction("Signin_Signin_CancelAbortAdvancedSyncSettings"));
@@ -1185,7 +1197,7 @@ base::DictValue PeopleHandler::GetSyncStatusDictionary() const {
   sync_status.Set("supervisedUser", profile_->IsChild());
 
   auto* identity_manager = IdentityManagerFactory::GetForProfile(profile_);
-  DCHECK(identity_manager);
+  CHECK(identity_manager, base::NotFatalUntil::M162);
 
   if (identity_manager->HasPrimaryAccount(signin::ConsentLevel::kSignin)) {
     CoreAccountInfo primary_account_info =
@@ -1433,15 +1445,16 @@ base::DictValue PeopleHandler::GetChromeSigninUserChoiceInfo() {
       IdentityManagerFactory::GetForProfile(profile_);
   // Gets the Chrome signed in account or the first signed in account in the
   // cooke jar, refresh token should be available too.
-  AccountInfo account =
-      signin_ui_util::GetSingleAccountForPromos(identity_manager);
+  AccountInfo account = signin_ui_util::GetSingleAccountForPromos(
+      identity_manager,
+      AccountPreviewDataServiceFactory::GetForProfile(profile_));
 
   bool should_show_settings = !account.IsEmpty();
 
   ChromeSigninUserChoice choice =
       should_show_settings
           ? SigninPrefs(*profile_->GetPrefs())
-                .GetChromeSigninInterceptionUserChoice(account.gaia)
+                .GetChromeSigninInterceptionUserChoice(account.GetGaiaId())
           : ChromeSigninUserChoice::kNoChoice;
 
   // Set for metrics purposes.
@@ -1451,7 +1464,7 @@ base::DictValue PeopleHandler::GetChromeSigninUserChoiceInfo() {
   chrome_signin_user_choice_info.Set("shouldShowSettings",
                                      should_show_settings);
   chrome_signin_user_choice_info.Set("choice", static_cast<int>(choice));
-  chrome_signin_user_choice_info.Set("signedInEmail", account.email);
+  chrome_signin_user_choice_info.Set("signedInEmail", account.GetEmail());
 
   return chrome_signin_user_choice_info;
 }
@@ -1480,22 +1493,31 @@ void PeopleHandler::HandleSetChromeSigninUserChoice(
   AccountInfo account =
       IdentityManagerFactory::GetForProfile(profile_)
           ->FindExtendedAccountInfoByEmailAddress(signed_in_email);
+  // The page is refreshed when the signed-in accounts change, but this request
+  // is asynchronous: it can race with the account being removed, and
+  // `signed_in_email` comes from the renderer. Ignore unknown accounts rather
+  // than using an empty `GaiaId`.
+  if (account.IsEmpty()) {
+    return;
+  }
+
   SigninPrefs signin_prefs(*profile_->GetPrefs());
   // Early return to avoid recording histogram settings modifications. Also
   // guarantees that the `user_choice` is from a user modification through the
   // UI since the `SigninPrefs` is not aware of it yet.
   if (user_choice ==
-      signin_prefs.GetChromeSigninInterceptionUserChoice(account.gaia)) {
+      signin_prefs.GetChromeSigninInterceptionUserChoice(account.GetGaiaId())) {
     return;
   }
 
-  signin_prefs.SetChromeSigninInterceptionUserChoice(account.gaia, user_choice);
+  signin_prefs.SetChromeSigninInterceptionUserChoice(account.GetGaiaId(),
+                                                     user_choice);
   // If the user explicitly set the `kDoNotSignin` choice from the settings,
   // suppress any bubble interaction time that could lead to re-prompts.
   if (user_choice == ChromeSigninUserChoice::kDoNotSignin) {
     signin_prefs.ClearChromeSigninInterceptionLastBubbleDeclineTime(
-        account.gaia);
-    signin_prefs.ClearChromeSigninBubbleRepromptCount(account.gaia);
+        account.GetGaiaId());
+    signin_prefs.ClearChromeSigninBubbleRepromptCount(account.GetGaiaId());
   }
 
   // Set for metrics purposes.
@@ -1511,7 +1533,7 @@ void PeopleHandler::UpdateChromeSigninUserChoiceInfo() {
 }
 
 void PeopleHandler::HandleSetChromeSigninUserChoiceForTesting(
-    const std::string& email,
+    std::string_view email,
     ChromeSigninUserChoice choice) {
   base::ListValue args;
   args.Append(static_cast<int>(choice));
@@ -1523,6 +1545,24 @@ void PeopleHandler::HandleRecordSigninPendingOffered(
     const base::ListValue& /*args*/) {
   signin_metrics::LogSigninPendingOffered(
       signin_metrics::AccessPoint::kSettings);
+}
+
+void PeopleHandler::HandleRecordSigninOffered(const base::ListValue& args) {
+  CHECK_EQ(1U, args.size());
+  auto access_point =
+      GetAccessPoint(static_cast<ChromeSigninAccessPoint>(args[0].GetInt()));
+
+  auto* identity_manager = IdentityManagerFactory::GetForProfile(profile_);
+  signin_metrics::PromoAction promo_action =
+      signin_ui_util::GetSingleAccountForPromos(
+          identity_manager,
+          AccountPreviewDataServiceFactory::GetForProfile(profile_))
+              .IsEmpty()
+          ? signin_metrics::PromoAction::
+                PROMO_ACTION_NEW_ACCOUNT_NO_EXISTING_ACCOUNT
+          : signin_metrics::PromoAction::PROMO_ACTION_WITH_DEFAULT;
+
+  signin_metrics::LogSignInOffered(access_point, promo_action);
 }
 #endif
 

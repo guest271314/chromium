@@ -39,9 +39,11 @@
 #include "third_party/blink/renderer/core/execution_context/execution_context_lifecycle_observer.h"
 #include "third_party/blink/renderer/core/html/canvas/canvas_rendering_context.h"
 #include "third_party/blink/renderer/core/html/canvas/canvas_rendering_context_host.h"
+#include "third_party/blink/renderer/core/html/canvas/html_canvas_accessibility_manager.h"
 #include "third_party/blink/renderer/core/html/html_element.h"
 #include "third_party/blink/renderer/core/imagebitmap/image_bitmap_source.h"
 #include "third_party/blink/renderer/core/page/page_visibility_observer.h"
+#include "third_party/blink/renderer/platform/graphics/canvas_resource_dispatcher.h"
 #include "third_party/blink/renderer/platform/graphics/graphics_types_3d.h"
 #include "third_party/blink/renderer/platform/graphics/offscreen_canvas_placeholder.h"
 #include "third_party/blink/renderer/platform/graphics/static_bitmap_image.h"
@@ -63,10 +65,13 @@ namespace blink {
 class CanvasContextCreationAttributesCore;
 class CanvasDrawListener;
 class CanvasHighDynamicRangeOptions;
+class CanvasPaintEventInit;
 class CanvasRenderingContextFactory;
 class DOMMatrix;
 class Element;
+class UpdateElementGeometryOptions;
 class ElementImage;
+class ElementImageDefaultSize;
 class GraphicsContext;
 class HTMLCanvasElement;
 class ImageBitmapOptions;
@@ -117,10 +122,11 @@ class CORE_EXPORT HTMLCanvasElement final
   void setWidth(unsigned, ExceptionState&);
   void setHeight(unsigned, ExceptionState&);
 
-  void setLayoutSubtree(bool);
-  bool layoutSubtree() const;
+  bool IsContentDrawable() const { return is_content_drawable_; }
   DEFINE_ATTRIBUTE_EVENT_LISTENER(paint, kPaint)
+  DEFINE_ATTRIBUTE_EVENT_LISTENER(elementgeometryupdate, kElementgeometryupdate)
   void requestPaint();
+  void DispatchPaintEvent(CanvasPaintEventInit* init);
 
   void SetSize(gfx::Size new_size);
 
@@ -189,14 +195,18 @@ class CORE_EXPORT HTMLCanvasElement final
 
   cc::TextureLayer* GetOrCreateCcLayerForCanvas2DIfNeeded();
   cc::TextureLayer* GetCanvas2DCcLayerForTesting() { return cc_layer_.get(); }
+  HTMLCanvasAccessibilityManager* GetAccessibilityManagerForTesting() {
+    return accessibility_manager_.Get();
+  }
+
   void ClearCanvas2DLayerTexture() override;
 
   void SetNeedsPushProperties();
 
   void DiscardResources() override;
 
-  std::optional<CanvasChildPaintRecord> GetCanvasChildPaintRecord(
-      DOMNodeId child_id) const override;
+  std::optional<CanvasDrawablePaintRecord> GetCanvasDrawablePaintRecord(
+      DOMNodeId drawable_id) const override;
 
   TextDirection GetTextDirection(const ComputedStyle*) override;
   const LayoutLocale* GetLocale() const override;
@@ -210,6 +220,7 @@ class CORE_EXPORT HTMLCanvasElement final
   InsertionNotificationRequest InsertedInto(ContainerNode&) override;
 
   bool IsDirty() { return !dirty_rect_.IsEmpty(); }
+  bool IsDispatchingPaintEvent() const { return is_dispatching_paint_event_; }
 
   // Pushes dirty rects onto the backing cc::TextureLayer for a composited
   // canvas. Returns `true` if any invalidations were actually applied,
@@ -221,8 +232,6 @@ class CORE_EXPORT HTMLCanvasElement final
 
   CanvasResourceDispatcher* GetOrCreateResourceDispatcher() override;
   void DiscardResourceDispatcher() override { frame_dispatcher_ = nullptr; }
-
-  bool PushFrame(scoped_refptr<CanvasResource>&& image) override;
 
   // ExecutionContextLifecycleObserver and PageVisibilityObserver implementation
   void ContextDestroyed() override;
@@ -246,15 +255,23 @@ class CORE_EXPORT HTMLCanvasElement final
 
   bool IsPageVisible() const override;
 
-  // CanvasResourceProvider::Delegate implementation
+  // CanvasRenderingContextHost implementation
   void NotifyGpuContextLost() override;
   bool IsPrinting() const override;
-
-  // CanvasRenderingContextHost implementation
   bool ShouldAccelerate2dContext() const override;
   bool LowLatencyEnabled() const override;
   UkmParameters GetUkmParameters() override;
   void SetNeedsCompositingUpdate() override;
+  void UpdateDrawnElementGeometry(Element&,
+                                  const gfx::Transform*,
+                                  const FloatClipRect*,
+                                  bool update_hit_test_order) override;
+  void UpdateDrawnElementGeometry(ElementImage&,
+                                  const gfx::Transform*,
+                                  const FloatClipRect*,
+                                  bool update_hit_test_order) override;
+  void ClearDrawnElementGeometry(Element&) override;
+  void ClearDrawnElementGeometry(ElementImage&) override;
 
   // ImageBitmapSource implementation
   ScriptPromise<ImageBitmap> CreateImageBitmap(
@@ -266,6 +283,21 @@ class CORE_EXPORT HTMLCanvasElement final
   // OffscreenCanvasPlaceholder implementation.
   void SetOffscreenCanvasResource(
       scoped_refptr<ExportedCanvasResource>&&) override;
+
+  // Accessibility support related functions.
+  void OnAxObjectIgnoredStateChanged(bool is_ignored);
+  bool GetNeedsAccessibilitySupportHeuristic();
+  void EnsureAccessibilityManager();
+  void RecordRenderedText(const String& text,
+                          const gfx::RectF& bounds,
+                          float font_height) override;
+  void ClearRenderedText(const gfx::RectF& rect) override;
+  void ClearRenderedText() override;
+  bool ShouldCaptureRenderedText() override;
+  String CanvasAnnotation() const;
+  bool HasRequestedOCR() const;
+  void ClearHasRequestedOCR();
+
   void Trace(Visitor*) const override;
 
   static void RegisterRenderingContextFactory(
@@ -344,12 +376,11 @@ class CORE_EXPORT HTMLCanvasElement final
 
   void ResetLayer();
 
-  // If `element` is drawn into the canvas's coordinate system with
-  // `draw_transform`, this returns the transform that can be applied to
-  // `element` to make its CSS position match the drawn position.
-  DOMMatrix* getElementTransform(const V8UnionElementOrElementImage* element,
-                                 DOMMatrix* draw_transform,
-                                 ExceptionState&);
+  ElementImageDefaultSize* getElementImageDefaultSize(
+      const V8UnionElementOrElementImage* element,
+      ExceptionState&) const;
+
+  DOMMatrix* getElementTransform(Element* element, ExceptionState&) const;
 
   bool VerifyDrawElementImageEligibility(Element* element,
                                          const String& func_name,
@@ -361,6 +392,18 @@ class CORE_EXPORT HTMLCanvasElement final
       ExceptionState& exception_state) const;
 
   ElementImage* captureElementImage(Element* element, ExceptionState&);
+  void updateElementGeometry(const V8UnionElementOrElementImage*,
+                             const UpdateElementGeometryOptions*,
+                             ExceptionState&);
+  void clearElementGeometry(const V8UnionElementOrElementImage*);
+
+  // Descendants of this canvas that have been drawn via `drawElementImage()` or
+  // added explicitly via a call to `canvas.updateElementGeometry(element)`, in
+  // the order they were added. If an element is added twice, the second
+  // invocation determines its ordering (i.e., it is moved to the back).
+  const HeapLinkedHashSet<WeakMember<Element>>& HitTestableDescendants() const {
+    return hit_testable_descendants_;
+  }
 
  protected:
   void DidMoveToNewDocument(Document& old_document) override;
@@ -408,13 +451,11 @@ class CORE_EXPORT HTMLCanvasElement final
   static std::pair<blink::Image*, float> BrokenCanvas(
       float device_scale_factor);
 
-  bool ChildrenChangedAllChildrenRemovedNeedsList() const final;
   void ChildrenChanged(const ChildrenChange&) override;
-  void ChildElementRemoved(Element&);
 
-  const CanvasChildPaintState* GetCanvasChildPaintState(
-      DOMNodeId child_id) const;
-  const CanvasChildPaintState* GetCanvasChildPaintState(
+  const CanvasDrawablePaintState* GetCanvasDrawablePaintState(
+      DOMNodeId drawable_id) const;
+  const CanvasDrawablePaintState* GetCanvasDrawablePaintState(
       const V8UnionElementOrElementImage* element) const;
 
   FRIEND_TEST_ALL_PREFIXES(HTMLCanvasElementTest, BrokenCanvasHighRes);
@@ -427,6 +468,7 @@ class CORE_EXPORT HTMLCanvasElement final
 
   bool disposing_ = false;
   bool canvas_is_clear_ = true;
+  bool is_dispatching_paint_event_ = false;
 
   bool within_set_size_ = false;
   gfx::Rect dirty_rect_;
@@ -441,6 +483,20 @@ class CORE_EXPORT HTMLCanvasElement final
   bool origin_clean_;
   bool needs_unbuffered_input_ = false;
   bool style_is_visible_ = false;
+  bool is_content_drawable_ = false;
+
+  Member<HTMLCanvasAccessibilityManager> accessibility_manager_;
+  // Stores the latest ignored state received from the accessibility tree via
+  // OnAxObjectIgnoredStateChanged(). Because ignored canvases do not allocate
+  // an HTMLCanvasAccessibilityManager, this state is retained on the element
+  // to:
+  // 1. Prevent EnsureAccessibilityManager() from speculatively allocating a
+  //    manager when text is drawn on a canvas known to be ignored by AX.
+  // 2. Supply the true AX ignored state to
+  //    GetNeedsAccessibilitySupportHeuristic() when accessibility_manager_ is
+  //    null, preventing it from falling back to the non-AX visibility
+  //    heuristic approximation.
+  std::optional<bool> last_ax_ignored_state_;
 
   // Used for OffscreenCanvas that controls this HTML canvas element
   // and for low latency mode.
@@ -461,6 +517,8 @@ class CORE_EXPORT HTMLCanvasElement final
   cc::PaintFlags::FilterQuality filter_quality_ =
       cc::PaintFlags::FilterQuality::kLow;
   cc::PaintFlags::DynamicRangeLimitMixture dynamic_range_limit_;
+
+  HeapLinkedHashSet<WeakMember<Element>> hit_testable_descendants_;
 };
 
 }  // namespace blink

@@ -9,7 +9,6 @@
 #include "base/check_deref.h"
 #include "base/check_op.h"
 #include "base/memory/raw_ref.h"
-#include "chrome/browser/ash/login/users/chrome_user_manager_util.h"
 #include "chrome/browser/ash/profiles/profile_helper.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chromeos/ash/components/login/auth/auth_performer.h"
@@ -45,7 +44,8 @@ bool HasPolicyValue(const PrefService& pref_service,
 // kAny) by reading the policy value.
 bool IsPinDisabledByPolicySinglePurpose(const PrefService& pref_service,
                                         CryptohomePinEngine::Purpose purpose) {
-  DCHECK_NE(purpose, CryptohomePinEngine::Purpose::kAny);
+  CHECK_NE(purpose, CryptohomePinEngine::Purpose::kAny,
+           base::NotFatalUntil::M160);
   const bool enabled =
       HasPolicyValue(pref_service, purpose, kFactorsOptionAll) ||
       HasPolicyValue(pref_service, purpose, kFactorsOptionPin) ||

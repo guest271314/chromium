@@ -13,10 +13,14 @@
 #import "ios/chrome/browser/composebox/public/composebox_attachment_option.h"
 #import "ios/chrome/browser/composebox/public/composebox_model_option.h"
 
-@class ComposeboxStrings;
+@class ComposeboxMenuSharedTab;
+@class ComposeboxUIConfig;
 
 // State object containing all UI input state for the composebox.
 @interface ComposeboxUIInputState : NSObject
+
+/// The shared tabs that are attached.
+@property(nonatomic, copy) NSArray<ComposeboxMenuSharedTab*>* sharedTabs;
 
 /// The favicon of the current tab, if available.
 @property(nonatomic, strong) UIImage* currentTabFavicon;
@@ -43,8 +47,8 @@
 @property(nonatomic, assign) std::unordered_set<ComposeboxModelOption>
     disabledModels;
 
-/// The localized composebox strings.
-@property(nonatomic, strong) ComposeboxStrings* strings;
+/// The composebox UI config (strings, headers, and icons).
+@property(nonatomic, strong) ComposeboxUIConfig* uiConfig;
 
 /// The remaining capacity for attachments.
 @property(nonatomic, assign) NSUInteger remainingAttachmentCapacity;

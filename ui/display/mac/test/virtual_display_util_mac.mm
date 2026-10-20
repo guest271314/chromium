@@ -2,22 +2,19 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/351564777): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "ui/display/mac/test/virtual_display_util_mac.h"
 
 #include <CoreGraphics/CoreGraphics.h>
 #import <Foundation/Foundation.h>
 
+#include <array>
 #include <map>
 #include <memory>
 
 #include "base/apple/scoped_cftyperef.h"
 #include "base/check.h"
 #include "base/check_op.h"
+#include "base/compiler_specific.h"
 #include "base/logging.h"
 #include "base/strings/sys_string_conversions.h"
 #include "ui/display/display.h"
@@ -173,10 +170,10 @@ bool IsRunningHeadless() {
   // virtual.
   constexpr CGDirectDisplayID kVirtualDisplayID = 0x76697274;
 
-  CGDirectDisplayID online_displays[kMaxDisplaysToQuery];
+  std::array<CGDirectDisplayID, kMaxDisplaysToQuery> online_displays;
   UInt32 online_display_count = 0;
   CGError return_code = CGGetOnlineDisplayList(
-      kMaxDisplaysToQuery, online_displays, &online_display_count);
+      kMaxDisplaysToQuery, online_displays.data(), &online_display_count);
   if (return_code != kCGErrorSuccess) {
     LOG(ERROR) << __func__
                << " - CGGetOnlineDisplayList() failed: " << return_code << ".";

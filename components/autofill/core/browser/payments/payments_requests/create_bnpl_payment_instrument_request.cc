@@ -45,18 +45,16 @@ std::string CreateBnplPaymentInstrumentRequest::GetRequestContent() {
   base::DictValue request_dict;
   base::DictValue context;
   context.Set("language_code", request_details_.app_locale);
-  context.Set("billable_service",
-              payments::kUploadPaymentMethodBillableServiceNumber);
+  context.Set("billable_service", kUploadPaymentMethodBillableServiceNumber);
   if (request_details_.billing_customer_number != 0) {
     context.Set("customer_context",
                 BuildCustomerContextDictionary(
                     request_details_.billing_customer_number));
   }
   request_dict.Set("context", std::move(context));
-
-  base::DictValue chrome_user_context;
-  chrome_user_context.Set("full_sync_enabled", full_sync_enabled_);
-  request_dict.Set("chrome_user_context", std::move(chrome_user_context));
+  request_dict.Set("chrome_user_context",
+                   BuildChromeUserContext(/*client_behavior_signals=*/{},
+                                          full_sync_enabled_));
 
   base::DictValue buy_now_pay_later_info;
   buy_now_pay_later_info.Set("issuer_id", request_details_.issuer_id);

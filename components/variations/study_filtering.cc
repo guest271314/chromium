@@ -36,6 +36,39 @@ bool ContainsStringIgnoreCaseASCII(const Collection& collection,
   });
 }
 
+// Checks whether a study is applicable for |client_groups| per filter with
+// include/exclude groups.
+template <typename FilterGroupType,
+          typename ClientGroupType,
+          typename RepeatedFieldType>
+bool CheckStudyGroup(const RepeatedFieldType& include_groups,
+                     const RepeatedFieldType& exclude_groups,
+                     const base::flat_set<ClientGroupType>& client_groups) {
+  if (!include_groups.empty()) {
+    if (std::ranges::none_of(include_groups,
+                             [&client_groups](const FilterGroupType& group) {
+                               return client_groups.contains(group);
+                             })) {
+      // An include group filter was specified, and the client is not a member
+      // of any of the groups.
+      return false;
+    }
+  }
+
+  if (!exclude_groups.empty()) {
+    if (std::ranges::any_of(exclude_groups,
+                            [&client_groups](const FilterGroupType& group) {
+                              return client_groups.contains(group);
+                            })) {
+      // An exclude group filter was specified, and the client is a member of
+      // at least one of the groups.
+      return false;
+    }
+  }
+
+  return true;
+}
+
 }  // namespace
 
 namespace internal {
@@ -260,38 +293,16 @@ bool CheckStudyEnterprise(const Study::Filter& filter,
 
 bool CheckStudyGoogleGroup(const Study::Filter& filter,
                            const ClientFilterableState& client_state) {
-  if (filter.google_group_size() == 0 &&
-      filter.exclude_google_group_size() == 0) {
-    // This study doesn't have any google group configuration, so break early.
-    return true;
-  }
+  return CheckStudyGroup<int64_t>(filter.google_group(),
+                                  filter.exclude_google_group(),
+                                  client_state.GoogleGroups());
+}
 
-  // Fetch the groups this client is a member of.
-  base::flat_set<uint64_t> client_groups = client_state.GoogleGroups();
-
-  if (filter.google_group_size() > 0) {
-    if (std::ranges::none_of(filter.google_group(),
-                             [&client_groups](int64_t group) {
-                               return client_groups.contains(group);
-                             })) {
-      // A google_group filter was specified, and the client is not a member of
-      // any of the groups.
-      return false;
-    }
-  }
-
-  if (filter.exclude_google_group_size() > 0) {
-    if (std::ranges::any_of(filter.exclude_google_group(),
-                            [&client_groups](int64_t group) {
-                              return client_groups.contains(group);
-                            })) {
-      // An exclude_google_group filter was specified, and the client is a
-      // member of at least one of the groups.
-      return false;
-    }
-  }
-
-  return true;
+bool CheckStudyEnterpriseGroup(const Study::Filter& filter,
+                               const ClientFilterableState& client_state) {
+  return CheckStudyGroup<std::string>(filter.enterprise_group(),
+                                      filter.exclude_enterprise_group(),
+                                      client_state.EnterpriseGroups());
 }
 
 const std::string& GetClientCountryForStudy(
@@ -344,6 +355,18 @@ bool ShouldAddStudy(const ProcessedStudy& processed_study,
              "of a layer using the default (high) entropy source.";
       return false;
     }
+  }
+
+  // Check policy restrictions regardless of if the study has a filter or not.
+  // (E.g. if policies dictate that no studies should apply, then fitlerless
+  // studies should not apply).
+  // Note: a filterless study will default to having a policy_restriction of
+  // NONE.
+  if (!CheckStudyPolicyRestriction(study.filter(),
+                                    client_state.policy_restriction)) {
+    DVLOG(1) << "Filtered out study " << study.name()
+              << " due to policy restriction.";
+    return false;
   }
 
   if (study.has_filter()) {
@@ -411,13 +434,6 @@ bool ShouldAddStudy(const ProcessedStudy& processed_study,
       return false;
     }
 
-    if (!CheckStudyPolicyRestriction(study.filter(),
-                                     client_state.policy_restriction)) {
-      DVLOG(1) << "Filtered out study " << study.name()
-               << " due to policy restriction.";
-      return false;
-    }
-
     if (!CheckStudyOSVersion(study.filter(), client_state.os_version)) {
       DVLOG(1) << "Filtered out study " << study.name()
                << " due to os_version.";
@@ -443,6 +459,12 @@ bool ShouldAddStudy(const ProcessedStudy& processed_study,
                << " due to Google groups membership checks.";
       return false;
     }
+
+    if (!CheckStudyEnterpriseGroup(study.filter(), client_state)) {
+      DVLOG(1) << "Filtered out study " << study.name()
+               << " due to enterprise groups membership checks.";
+      return false;
+    }
   }
 
   DVLOG(1) << "Kept study " << study.name() << ".";
@@ -454,10 +476,12 @@ bool ShouldAddStudy(const ProcessedStudy& processed_study,
 std::vector<ProcessedStudy> FilterAndValidateStudies(
     const VariationsSeed& seed,
     const ClientFilterableState& client_state,
-    const VariationsLayers& layers) {
+    const VariationsLayers& layers,
+    std::optional<base::FunctionRef<bool(const Study&)>> study_filter) {
   DCHECK(client_state.version.IsValid());
 
   std::vector<ProcessedStudy> filtered_studies;
+  filtered_studies.reserve(seed.study_size());
 
   // Don't create two studies with the same name.
   // These `string_view`s contain pointers which point to memory owned by
@@ -465,6 +489,10 @@ std::vector<ProcessedStudy> FilterAndValidateStudies(
   std::set<std::string_view, std::less<>> created_studies;
 
   for (const Study& study : seed.study()) {
+    if (study_filter && !(*study_filter)(study)) {
+      continue;
+    }
+
     ProcessedStudy processed_study;
     if (!processed_study.Init(&study)) {
       continue;
@@ -484,6 +512,19 @@ std::vector<ProcessedStudy> FilterAndValidateStudies(
 
     filtered_studies.push_back(processed_study);
   }
+
+  // Reorder the studies so that kRuntimeMonitoringStudyName is processed
+  // first. (Note: stable_partition preserves the relative order of elements, so
+  // the order is still deterministic for a given seed).
+  // kRuntimeMonitoringStudyName is processed first because it is used to
+  // monitor the health of newly deployed seeds. This ensures that crash reports
+  // will properly report the newest group in case the application of a
+  // subsequent study is crashy.
+  std::ranges::stable_partition(
+      filtered_studies, [](const ProcessedStudy& study) {
+        return study.study()->name() == kRuntimeMonitoringStudyName;
+      });
+
   return filtered_studies;
 }
 

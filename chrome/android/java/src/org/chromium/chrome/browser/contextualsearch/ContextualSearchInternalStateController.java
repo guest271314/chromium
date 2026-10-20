@@ -295,16 +295,17 @@ class ContextualSearchInternalStateController {
     }
 
     /**
-     * Establishes the given state by calling code that starts work on that state or simply
-     * displays the appropriate UX for that state.
+     * Establishes the given state by calling code that starts work on that state or simply displays
+     * the appropriate UX for that state.
+     *
      * @param state The new {@link InternalState} to establish.
-     * @param reason The reason we're starting this state, or {@code null} if not significant
-     *        or known.  Only needed when we enter the IDLE state.
+     * @param reason The reason we're starting this state, or {@code null} if not significant or
+     *     known. Only needed when we enter the IDLE state.
      */
     private void transitionTo(
             final @InternalState int state, final @Nullable @StateChangeReason Integer reason) {
         if (state == mState && !mPolicy.shouldRetryCurrentState(state)) return;
-        Log.v(TAG, "State transition " + String.valueOf(mState) + " => " + String.valueOf(state));
+        Log.v(TAG, "State transition %d => %d", mState, state);
 
         // This should be the only part of the code that changes the state (other than #enter)!
         mPreviousState = mState;
@@ -366,7 +367,7 @@ class ContextualSearchInternalStateController {
                 mStateHandler.completeSearch();
                 break;
             default:
-                Log.w(TAG, "Warning: unexpected startWorkingOn " + String.valueOf(state));
+                Log.w(TAG, "Warning: unexpected startWorkingOn %d", state);
                 break;
         }
     }
@@ -384,7 +385,7 @@ class ContextualSearchInternalStateController {
         assert mDidStartWork;
 
         if (mState == InternalState.IDLE || mState == InternalState.UNDEFINED) {
-            Log.w(TAG, "Warning, the " + String.valueOf(state) + " state was aborted.");
+            Log.w(TAG, "Warning, the %d state was aborted.", state);
             return;
         }
 
@@ -463,7 +464,7 @@ class ContextualSearchInternalStateController {
                 // Resting state
                 break;
             default:
-                Log.e(TAG, "The state " + String.valueOf(state) + " is not transitional!");
+                Log.e(TAG, "The state %d is not transitional!", state);
                 assert false;
         }
     }

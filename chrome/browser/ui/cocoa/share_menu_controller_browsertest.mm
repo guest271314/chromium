@@ -7,10 +7,8 @@
 #import "base/path_service.h"
 #include "base/strings/sys_string_conversions.h"
 #include "base/test/metrics/histogram_tester.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_window.h"
 #import "chrome/browser/ui/cocoa/test/cocoa_test_helper.h"
-#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/common/chrome_paths.h"
 #include "chrome/grit/generated_resources.h"
 #include "chrome/test/base/in_process_browser_test.h"
@@ -18,6 +16,7 @@
 #include "net/base/apple/url_conversions.h"
 #include "testing/gtest_mac.h"
 #include "ui/base/l10n/l10n_util_mac.h"
+#include "ui/base/page_transition_types.h"
 #include "ui/events/test/cocoa_test_event_utils.h"
 
 // Mock sharing service for sensing shared items.
@@ -87,8 +86,13 @@ class ShareMenuControllerTest : public InProcessBrowserTest {
 // TODO(crbug.com/439676515): Renable this test once the flakiness is addressed.
 IN_PROC_BROWSER_TEST_F(ShareMenuControllerTest, DISABLED_PopulatesMenu) {
   NSMenu* menu = [[NSMenu alloc] initWithTitle:@"Share"];
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+  // See the comment in -[ShareMenuController menuNeedsUpdate:] for more info on
+  // this usage of deprecated API.
   NSArray* sharing_services_for_url = [NSSharingService
       sharingServicesForItems:@[ [NSURL URLWithString:@"http://example.com"] ]];
+#pragma clang diagnostic pop
   EXPECT_GT(sharing_services_for_url.count, 0U);
 
   [controller_ menuNeedsUpdate:menu];
@@ -162,8 +166,10 @@ IN_PROC_BROWSER_TEST_F(ShareMenuControllerTest, SharingDelegate) {
                // methods is nonnull and circular references could get hairy.
                MockSharingService* mockService = MakeMockSharingService();
 
-               NSWindow* browser_window =
-                   browser()->window()->GetNativeWindow().GetNativeNSWindow();
+               NSWindow* browser_window = browser()
+                                              ->GetWindow()
+                                              ->GetNativeWindow()
+                                              .GetNativeNSWindow();
                EXPECT_NSNE([controller_ sharingService:mockService
                                sourceFrameOnScreenForShareItem:url],
                            NSZeroRect);

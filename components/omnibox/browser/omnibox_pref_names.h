@@ -29,6 +29,11 @@ inline constexpr char kAimHintTotalImpressions[] =
 // omnibox and NTP AIM entrypoints. Controlled by an admin policy.
 inline constexpr char kAIModeSettings[] = "omnibox.ai_mode_settings";
 
+// An integer pref stores whether 3rd party AIM features are enabled.
+// Controlled by an admin policy.
+inline constexpr char kThirdPartyAiChatSettings[] =
+    "omnibox.third_party_ai_chat_settings";
+
 // LINT.IfChange(TipsPrefNames)
 // Boolean for whether bottom omnibox was ever used.
 inline constexpr char kBottomOmniboxEverUsed[] =
@@ -41,10 +46,6 @@ inline constexpr char kDismissedEnterpriseSearchAggregatorIphPrefName[] =
 inline constexpr char kDismissedFeaturedEnterpriseSiteSearchIphPrefName[] =
     "omnibox.dismissed_featured_enterprise_search_iph";
 inline constexpr char kDismissedGeminiIph[] = "omnibox.dismissed_gemini_iph";
-inline constexpr char kDismissedHistoryEmbeddingsScopePromo[] =
-    "omnibox.dismissed_history_embeddings_scope_promo";
-inline constexpr char kDismissedHistoryEmbeddingsSettingsPromo[] =
-    "omnibox.dismissed_history_embeddings_settings_promo";
 inline constexpr char kDismissedHistoryScopePromo[] =
     "omnibox.dismissed_history_scope_promo";
 
@@ -87,10 +88,6 @@ inline constexpr char kShownCountEnterpriseSearchAggregatorIph[] =
 inline constexpr char kShownCountFeaturedEnterpriseSiteSearchIph[] =
     "omnibox.shown_count_featured_enterprise_search_iph";
 inline constexpr char kShownCountGeminiIph[] = "omnibox.shown_count_gemini_iph";
-inline constexpr char kShownCountHistoryEmbeddingsScopePromo[] =
-    "omnibox.shown_count_history_embeddings_scope_promo";
-inline constexpr char kShownCountHistoryEmbeddingsSettingsPromo[] =
-    "omnibox.shown_count_history_embeddings_settings_promo";
 inline constexpr char kShownCountHistoryScopePromo[] =
     "omnibox.shown_count_history_scope_promo";
 

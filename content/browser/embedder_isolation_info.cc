@@ -13,7 +13,7 @@ namespace content {
 
 // static
 EmbedderIsolationInfo EmbedderIsolationInfo::CreateNone() {
-  return EmbedderIsolationInfo();
+  return EmbedderIsolationInfo(Mode::kNone, /*instance_id=*/0);
 }
 
 // static
@@ -28,6 +28,13 @@ EmbedderIsolationInfo EmbedderIsolationInfo::CreateForUniqueInstance(
   return EmbedderIsolationInfo(Mode::kUniqueInstance, instance_id);
 }
 
+// static
+EmbedderIsolationInfo EmbedderIsolationInfo::CreateForPrivileged(
+    int64_t feature_id) {
+  CHECK_GE(feature_id, 0);
+  return EmbedderIsolationInfo(Mode::kPrivileged, feature_id);
+}
+
 EmbedderIsolationInfo::EmbedderIsolationInfo() = default;
 EmbedderIsolationInfo::EmbedderIsolationInfo(const EmbedderIsolationInfo&) =
     default;
@@ -38,11 +45,6 @@ EmbedderIsolationInfo::~EmbedderIsolationInfo() = default;
 EmbedderIsolationInfo::EmbedderIsolationInfo(Mode mode, int64_t instance_id)
     : mode_(mode), instance_id_(instance_id) {}
 
-int64_t EmbedderIsolationInfo::instance_id() const {
-  CHECK_EQ(mode_, Mode::kUniqueInstance);
-  return instance_id_;
-}
-
 std::string EmbedderIsolationInfo::ToDebugString() const {
   switch (mode_) {
     case Mode::kNone:
@@ -51,6 +53,9 @@ std::string EmbedderIsolationInfo::ToDebugString() const {
       return "pdf";
     case Mode::kUniqueInstance:
       return base::StringPrintf("unique_instance(id=%" PRId64 ")",
+                                instance_id_);
+    case Mode::kPrivileged:
+      return base::StringPrintf("privileged(feature_id=%" PRId64 ")",
                                 instance_id_);
   }
 }

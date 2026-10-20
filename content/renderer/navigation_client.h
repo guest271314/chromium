@@ -50,6 +50,7 @@ class NavigationClient : mojom::NavigationClient {
           fetch_later_loader_factory,
       const blink::DocumentToken& document_token,
       const base::UnguessableToken& devtools_navigation_token,
+      const blink::InitiatorStateToken& initiator_state_token,
       const base::Uuid& base_auction_nonce,
       blink::mojom::PolicyContainerPtr policy_container,
       mojo::PendingRemote<blink::mojom::CodeCacheHost> code_cache_host,
@@ -69,6 +70,7 @@ class NavigationClient : mojom::NavigationClient {
       std::unique_ptr<blink::PendingURLLoaderFactoryBundle> subresource_loaders,
       const blink::DocumentToken& document_token,
       const base::UnguessableToken& devtools_navigation_token,
+      const blink::InitiatorStateToken& initiator_state_token,
       blink::mojom::PolicyContainerPtr policy_container,
       mojom::AlternativeErrorPageOverrideInfoPtr alternative_error_page_info,
       CommitFailedNavigationCallback callback) override;
@@ -100,6 +102,14 @@ class NavigationClient : mojom::NavigationClient {
   bool HasBeginNavigationParams() const { return !!begin_params_; }
 
   void DidIgnoreDuplicateNavigation();
+
+  void SetCookieModificationCount(uint64_t cookie_modification_count) {
+    cookie_modification_count_ = cookie_modification_count;
+  }
+
+  uint64_t cookie_modification_count() const {
+    return cookie_modification_count_;
+  }
 
   const blink::mojom::BeginNavigationParams& begin_params() const {
     return *begin_params_;
@@ -142,6 +152,11 @@ class NavigationClient : mojom::NavigationClient {
 
   // See NavigationState::was_initiated_in_this_frame for details.
   bool was_initiated_in_this_frame_ = false;
+
+  // Captures a snapshot of the initiating document's cookie modification count
+  // when this navigation starts. Used during duplicate navigation checks to
+  // determine if cookies have changed since this navigation began.
+  uint64_t cookie_modification_count_ = 0;
 
   // If the navigation is initiated by this renderer, this will be set to the
   // params sent on the

@@ -23,6 +23,7 @@ import org.jni_zero.NativeMethods;
 import org.chromium.android_webview.safe_browsing.AwSafeBrowsingConversionHelper;
 import org.chromium.android_webview.safe_browsing.AwSafeBrowsingResponse;
 import org.chromium.base.Callback;
+import org.chromium.base.ContextUtils;
 import org.chromium.base.Log;
 import org.chromium.base.TraceEvent;
 import org.chromium.base.task.PostTask;
@@ -42,41 +43,40 @@ import java.util.Map;
 import javax.security.auth.x500.X500Principal;
 
 /**
- * This class handles the JNI communication logic for the the AwContentsClient class.
- * Both the Java and the native peers of AwContentsClientBridge are owned by the
- * corresponding AwContents instances. This class and its native peer are connected
- * via weak references. The native AwContentsClientBridge sets up and clear these weak
- * references.
+ * This class handles the JNI communication logic for the the AwContentsClient class. Both the Java
+ * and the native peers of AwContentsClientBridge are owned by the corresponding AwContents
+ * instances. This class and its native peer are connected via weak references. The native
+ * AwContentsClientBridge sets up and clear these weak references.
  */
 @JNINamespace("android_webview")
 public class AwContentsClientBridge {
     private static final String TAG = "AwContentsCB";
 
     private AwContentsClient mClient;
-    private Context mContext;
+    private final AwContents mAwContents;
     // The native peer of this object.
     private long mNativeContentsClientBridge;
 
     private final ClientCertLookupTable mLookupTable;
 
     // Used for mocking this class in tests.
-    protected AwContentsClientBridge(ClientCertLookupTable table) {
+    protected AwContentsClientBridge(AwContents awContents, ClientCertLookupTable table) {
+        mAwContents = awContents;
         mLookupTable = table;
     }
 
     public AwContentsClientBridge(
-            Context context, AwContentsClient client, ClientCertLookupTable table) {
+            AwContents awContents, AwContentsClient client, ClientCertLookupTable table) {
         assert client != null;
-        mContext = context;
+        mAwContents = awContents;
         mClient = client;
         mLookupTable = table;
     }
 
     /**
-     * Callback to communicate clientcertificaterequest back to the AwContentsClientBridge.
-     * The public methods should be called on UI thread.
-     * A request can not be proceeded, ignored  or canceled more than once. Doing this
-     * is a programming error and causes an exception.
+     * Callback to communicate clientcertificaterequest back to the AwContentsClientBridge. The
+     * public methods should be called on UI thread. A request can not be proceeded, ignored or
+     * canceled more than once. Doing this is a programming error and causes an exception.
      */
     public class ClientCertificateRequestCallback {
 
@@ -458,12 +458,14 @@ public class AwContentsClientBridge {
                 requestHeaders.put(requestHeaderNames[i], requestHeaderValues[i]);
             }
         }
+        Context context = mAwContents.getProvidedContext();
         return mClient.shouldIgnoreNavigation(
-                mContext, url, isOutermostMainFrame, hasUserGesture, requestHeaders, isRedirect);
+                context, url, isOutermostMainFrame, hasUserGesture, requestHeaders, isRedirect);
     }
 
     @CalledByNative
     private boolean sendBrowseIntent(@JniType("std::u16string") String url) {
+        Context context = mAwContents.getProvidedContext();
         try {
             Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
             intent.addCategory(Intent.CATEGORY_BROWSABLE);
@@ -482,7 +484,7 @@ public class AwContentsClientBridge {
                                 bestActivity.activityInfo.packageName,
                                 bestActivity.activityInfo.name));
             }
-            mContext.startActivity(intent);
+            context.startActivity(intent);
             return true;
         } catch (ActivityNotFoundException e) {
             Log.w(TAG, "Could not find an application to handle : %s", url);
@@ -493,8 +495,9 @@ public class AwContentsClientBridge {
     }
 
     private ResolveInfo getBestActivityForIntent(Intent intent) {
+        Context context = ContextUtils.getApplicationContext();
         List<ResolveInfo> resolveInfos =
-                mContext.getPackageManager()
+                context.getPackageManager()
                         .queryIntentActivities(intent, PackageManager.GET_RESOLVED_FILTER);
 
         ResolveInfo bestActivity = null;

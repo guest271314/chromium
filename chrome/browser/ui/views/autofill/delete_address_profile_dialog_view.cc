@@ -4,14 +4,11 @@
 
 #include "chrome/browser/ui/autofill/delete_address_profile_dialog_view.h"
 
-#include "base/functional/callback.h"
-#include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "chrome/browser/ui/autofill/delete_address_profile_dialog_controller.h"
 #include "chrome/browser/ui/dialogs/browser_dialogs.h"
 #include "content/public/browser/web_contents.h"
 #include "ui/base/models/dialog_model.h"
-#include "ui/views/widget/widget.h"
 #include "ui/views/window/dialog_client_view.h"
 
 namespace autofill {
@@ -20,7 +17,7 @@ namespace autofill {
 void ShowDeleteAddressProfileDialogView(
     content::WebContents* web_contents,
     base::WeakPtr<DeleteAddressProfileDialogController> controller) {
-  DCHECK(controller);
+  CHECK(controller, base::NotFatalUntil::M162);
 
   auto dialog_model =
       ui::DialogModel::Builder(std::make_unique<ui::DialogModelDelegate>())

@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "ash/constants/ash_features.h"
+#include "ash/constants/ash_pref_names.h"
 #include "ash/keyboard/ui/keyboard_ui_controller.h"
 #include "ash/keyboard/ui/resources/keyboard_resource_util.h"
 #include "ash/public/cpp/keyboard/keyboard_switches.h"
@@ -21,7 +22,6 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/ui/ash/keyboard/chrome_keyboard_web_contents.h"
-#include "chrome/common/pref_names.h"
 #include "components/prefs/pref_change_registrar.h"
 #include "components/prefs/pref_service.h"
 #include "components/session_manager/core/session_manager.h"
@@ -82,7 +82,7 @@ ChromeKeyboardControllerClient::ChromeKeyboardControllerClient() {
 
 void ChromeKeyboardControllerClient::Init(
     ash::KeyboardController* keyboard_controller) {
-  DCHECK(!keyboard_controller_);
+  CHECK(!keyboard_controller_, base::NotFatalUntil::M162);
   keyboard_controller_ = keyboard_controller;
 
   // Add this as a KeyboardController observer.
@@ -303,8 +303,7 @@ void ChromeKeyboardControllerClient::OnKeyboardEnabledChanged(bool enabled) {
 
   auto event = std::make_unique<extensions::Event>(
       extensions::events::VIRTUAL_KEYBOARD_PRIVATE_ON_KEYBOARD_CLOSED,
-      virtual_keyboard_private::OnKeyboardClosed::kEventName, base::ListValue(),
-      profile);
+      virtual_keyboard_private::OnKeyboardClosed::kEventName, nullptr, profile);
   router->BroadcastEvent(std::move(event));
 }
 
@@ -354,13 +353,13 @@ void ChromeKeyboardControllerClient::OnKeyboardVisibleBoundsChanged(
 
   // Convert screen bounds to the frame of reference of the keyboard window.
   gfx::Rect bounds = BoundsFromScreen(screen_bounds);
-  base::ListValue event_args;
+  auto event_args = base::MakeRefCounted<extensions::EventArgs>();
   base::DictValue new_bounds;
   new_bounds.Set("left", bounds.x());
   new_bounds.Set("top", bounds.y());
   new_bounds.Set("width", bounds.width());
   new_bounds.Set("height", bounds.height());
-  event_args.Append(std::move(new_bounds));
+  event_args->data.Append(std::move(new_bounds));
 
   auto event = std::make_unique<extensions::Event>(
       extensions::events::VIRTUAL_KEYBOARD_PRIVATE_ON_BOUNDS_CHANGED,
@@ -420,12 +419,12 @@ void ChromeKeyboardControllerClient::OnSessionStateChanged() {
   pref_change_registrar_ = std::make_unique<PrefChangeRegistrar>();
   pref_change_registrar_->Init(profile->GetPrefs());
   pref_change_registrar_->Add(
-      prefs::kTouchVirtualKeyboardEnabled,
+      ash::prefs::kTouchVirtualKeyboardEnabled,
       base::BindRepeating(
           &ChromeKeyboardControllerClient::SetTouchKeyboardEnabledFromPrefs,
           base::Unretained(this)));
   pref_change_registrar_->Add(
-      prefs::kVirtualKeyboardSmartVisibilityEnabled,
+      ash::prefs::kVirtualKeyboardSmartVisibilityEnabled,
       base::BindRepeating(
           &ChromeKeyboardControllerClient::SetSmartVisibilityFromPrefs,
           base::Unretained(this)));
@@ -437,9 +436,9 @@ void ChromeKeyboardControllerClient::OnSessionStateChanged() {
 void ChromeKeyboardControllerClient::SetTouchKeyboardEnabledFromPrefs() {
   using keyboard::KeyboardEnableFlag;
   const PrefService* service = pref_change_registrar_->prefs();
-  if (service->HasPrefPath(prefs::kTouchVirtualKeyboardEnabled)) {
+  if (service->HasPrefPath(ash::prefs::kTouchVirtualKeyboardEnabled)) {
     // Since these flags are mutually exclusive, setting one clears the other.
-    SetEnableFlag(service->GetBoolean(prefs::kTouchVirtualKeyboardEnabled)
+    SetEnableFlag(service->GetBoolean(ash::prefs::kTouchVirtualKeyboardEnabled)
                       ? KeyboardEnableFlag::kPolicyEnabled
                       : KeyboardEnableFlag::kPolicyDisabled);
   } else {
@@ -450,9 +449,10 @@ void ChromeKeyboardControllerClient::SetTouchKeyboardEnabledFromPrefs() {
 
 void ChromeKeyboardControllerClient::SetSmartVisibilityFromPrefs() {
   const PrefService* service = pref_change_registrar_->prefs();
-  if (service->HasPrefPath(prefs::kVirtualKeyboardSmartVisibilityEnabled)) {
-    keyboard_controller_->SetSmartVisibilityEnabled(
-        service->GetBoolean(prefs::kVirtualKeyboardSmartVisibilityEnabled));
+  if (service->HasPrefPath(
+          ash::prefs::kVirtualKeyboardSmartVisibilityEnabled)) {
+    keyboard_controller_->SetSmartVisibilityEnabled(service->GetBoolean(
+        ash::prefs::kVirtualKeyboardSmartVisibilityEnabled));
   }
 }
 
@@ -470,7 +470,7 @@ Profile* ChromeKeyboardControllerClient::GetProfile() {
 gfx::Rect ChromeKeyboardControllerClient::BoundsFromScreen(
     const gfx::Rect& screen_bounds) {
   aura::Window* keyboard_window = GetKeyboardWindow();
-  DCHECK(keyboard_window);
+  CHECK(keyboard_window, base::NotFatalUntil::M162);
   gfx::Rect bounds(screen_bounds);
   ::wm::ConvertRectFromScreen(keyboard_window, &bounds);
   return bounds;

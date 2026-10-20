@@ -11,7 +11,6 @@
 #include "build/build_config.h"
 #include "chrome/browser/ui/views/chrome_layout_provider.h"
 #include "chrome/browser/ui/views/extensions/media_gallery_checkbox_view.h"
-#include "chrome/grit/generated_resources.h"
 #include "chrome/grit/locale_settings.h"
 #include "components/constrained_window/constrained_window_views.h"
 #include "components/web_modal/web_contents_modal_dialog_manager.h"
@@ -123,7 +122,7 @@ void MediaGalleriesDialogViews::AcceptDialogForTesting() {
   web_modal::WebContentsModalDialogManager* manager =
       web_modal::WebContentsModalDialogManager::FromWebContents(
           controller_->WebContents());
-  DCHECK(manager);
+  CHECK(manager, base::NotFatalUntil::M162);
   web_modal::WebContentsModalDialogManager::TestApi(manager).CloseAllDialogs();
 }
 

@@ -4,9 +4,9 @@
 
 import {html} from '//resources/lit/v3_0/lit.rollup.js';
 
-import type {SelectionOverlayElementElement} from './glic_selection_overlay.js';
+import type {GlicSelectionOverlayElement} from './glic_selection_overlay.js';
 
-export function getHtml(this: SelectionOverlayElementElement) {
+export function getHtml(this: GlicSelectionOverlayElement) {
   // clang-format off
   return html`<!--_html_template_start_-->
     <div id="selectionOverlay" @pointerenter="${this.onPointerenter}"
@@ -32,6 +32,10 @@ export function getHtml(this: SelectionOverlayElementElement) {
             .selectionOverlayRect="${this.selectionOverlayRect}"
             .regionSelectedGlowEnabled="${this.enableRegionSelectedGlow}"
             .activeRegionId="${this.activeRegionId}"
+            .hideHandles="${this.hideHandles}"
+            .hideCloseButton="${
+                this.enableSelectionOverlayPrompt &&
+                !this.enableSelectionOverlayPromptBox}"
             @activate-region="${this.onActivateRegion}"
             background-gradient-hidden>
         </post-selection-renderer>
@@ -53,6 +57,58 @@ export function getHtml(this: SelectionOverlayElementElement) {
           this.isPointerInside, this.currentGesture?.state)}">
       <div id="cursorImg"></div>
     </div>
+
+    ${this.enableSelectionOverlayPrompt ||
+      this.enableSelectionOverlayPromptBox ? html`
+      <div id="floatingPromptContainer"
+          ?hidden="${!this.showFloatingPrompt}"
+          style="${this.floatingPromptStyle}">
+        ${this.enableSelectionOverlayPromptBox ? html`
+          <div class="searchbox-pill">
+            <div class="sparkle-icon">
+              <img src="/spark.svg" width="20" height="20">
+            </div>
+            <input id="promptInput"
+                type="text"
+                placeholder="$i18n{askGemini}"
+                aria-label="$i18n{askGemini}"
+                @keydown="${this.onInputKeydown}"
+                @pointerdown="${this.onPromptPointerdown}"
+                autocomplete="off">
+          </div>
+        ` : ''}
+
+        <div class="action-chips-row"
+            @pointerdown="${this.onPromptPointerdown}">
+          ${this.suggestedActions.map((action, index) => html`
+            <cr-button class="action-chip"
+                data-index="${index}"
+                @click="${this.onSuggestedActionClick}">
+              ${this.getActionIconClass(action.icon) ? html`
+                <div slot="prefix-icon"
+                    class="chip-icon ${this.getActionIconClass(action.icon)}">
+                </div>
+              ` : ''}
+              <span class="chip-label">${action.title}</span>
+            </cr-button>
+          `)}
+          ${!this.enableSelectionOverlayPromptBox ? html`
+            <cr-button id="closeRegionButton"
+                class="close-region-button"
+                title="$i18n{close}"
+                aria-label="$i18n{close}"
+                @click="${this.onCloseRegionClick}">
+              <div class="close-region-icon"></div>
+            </cr-button>
+          ` : ''}
+        </div>
+
+        <glic-inline-fulfillment-host id="inlineFulfillmentHost"
+            @close-click="${this.onInlineFulfillmentCloseClick}"
+            @pointerdown="${this.onPromptPointerdown}">
+        </glic-inline-fulfillment-host>
+      </div>
+    ` : ''}
     <!--_html_template_end_-->`;
   // clang-format on
 }

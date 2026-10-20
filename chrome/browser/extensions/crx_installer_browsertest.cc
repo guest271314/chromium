@@ -20,6 +20,7 @@
 #include "base/memory/ptr_util.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/ref_counted.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/one_shot_event.h"
 #include "base/run_loop.h"
 #include "base/strings/utf_string_conversions.h"
@@ -32,6 +33,7 @@
 #include "chrome/browser/ash/profiles/profile_helper.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/download/download_crx_util.h"
+#include "chrome/browser/extensions/extension_browser_test_util.h"
 #include "chrome/browser/extensions/extension_browsertest.h"
 #include "chrome/browser/extensions/extension_install_prompt.h"
 #include "chrome/browser/extensions/extension_install_prompt_show_params.h"
@@ -44,8 +46,8 @@
 #include "chrome/browser/profiles/profile_destroyer.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/profiles/profile_test_util.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_window.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/test/base/testing_profile.h"
 #include "chrome/test/base/ui_test_utils.h"
@@ -90,6 +92,7 @@
 #include "extensions/test/test_extension_dir.h"
 #include "third_party/skia/include/core/SkBitmap.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/base/window_open_disposition.h"
 
 #if BUILDFLAG(IS_CHROMEOS)
 #include "ash/constants/ash_switches.h"
@@ -147,7 +150,10 @@ class MockPromptProxy {
 class MockInstallPrompt : public ExtensionInstallPrompt {
  public:
   MockInstallPrompt(content::WebContents* web_contents, MockPromptProxy* proxy)
-      : ExtensionInstallPrompt(web_contents), proxy_(proxy) {}
+      : ExtensionInstallPrompt(web_contents,
+                               std::make_unique<InstallPromptData>(
+                                   InstallPromptData::UNSET_PROMPT_TYPE)),
+        proxy_(proxy) {}
 
   MockInstallPrompt(const MockInstallPrompt&) = delete;
   MockInstallPrompt& operator=(const MockInstallPrompt&) = delete;
@@ -181,14 +187,14 @@ std::unique_ptr<ExtensionInstallPrompt> MockPromptProxy::CreatePrompt() {
 }
 
 std::unique_ptr<MockPromptProxy> CreateMockPromptProxyForBrowserWithConfirmMode(
-    Browser* browser,
+    BrowserWindowInterface* browser,
     ScopedTestDialogAutoConfirm::AutoConfirm confirm_mode) {
   return std::make_unique<MockPromptProxy>(
-      browser->tab_strip_model()->GetActiveWebContents(), confirm_mode);
+      browser->GetTabStripModel()->GetActiveWebContents(), confirm_mode);
 }
 
 std::unique_ptr<MockPromptProxy> CreateMockPromptProxyForBrowser(
-    Browser* browser) {
+    BrowserWindowInterface* browser) {
   return CreateMockPromptProxyForBrowserWithConfirmMode(
       browser, ScopedTestDialogAutoConfirm::ACCEPT);
 }
@@ -589,6 +595,68 @@ IN_PROC_BROWSER_TEST_F(ExtensionCrxInstallerTest, AllowOffStore) {
   }
 }
 
+// Tests that self-hosted hosted app installation requires a matching download
+// host.
+IN_PROC_BROWSER_TEST_F(ExtensionCrxInstallerTest,
+                       HostedAppExtentRequiresDownloadHost) {
+  base::ScopedAllowBlockingForTesting allow_io;
+
+  TestExtensionDir app_dir;
+  app_dir.WriteManifest(
+      R"({
+           "name": "Hosted app",
+           "version": "1",
+           "manifest_version": 2,
+           "app": {
+             "urls": ["http://app.example.com/"],
+             "launch": {"web_url": "http://app.example.com/"}
+           }
+         })");
+  base::FilePath crx_path = app_dir.Pack();
+  ASSERT_FALSE(crx_path.empty());
+
+  auto run_installer =
+      [&](const GURL& download_url) -> std::optional<CrxInstallError> {
+    std::unique_ptr<MockPromptProxy> mock_prompt =
+        CreateMockPromptProxyForBrowser(browser());
+    scoped_refptr<CrxInstaller> installer(
+        CrxInstaller::Create(profile(), mock_prompt->CreatePrompt()));
+    installer->set_off_store_install_allow_reason(
+        CrxInstaller::OffStoreInstallAllowedInTest);
+    installer->set_original_mime_type(Extension::kMimeType);
+    installer->set_apps_require_extension_mime_type(true);
+    installer->set_download_url(download_url);
+
+    base::test::TestFuture<std::optional<CrxInstallError>>
+        installer_done_future;
+    installer->AddInstallerCallback(
+        installer_done_future
+            .GetCallback<const std::optional<CrxInstallError>&>());
+    installer->InstallCrx(crx_path);
+    return installer_done_future.Take();
+  };
+
+  // The download host does not cover the app's web extent, so the install
+  // must be rejected.
+  std::optional<CrxInstallError> result =
+      run_installer(GURL("http://other.example.com/app.crx"));
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(CrxInstallErrorDetail::INCORRECT_INSTALL_HOST, result->detail());
+
+  // No download URL is available (for example, the file was dropped from
+  // disk); there is no host to compare against, so the install must be
+  // rejected.
+  result = run_installer(GURL());
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(CrxInstallErrorDetail::INCORRECT_INSTALL_HOST, result->detail());
+
+  // The app's web extent is limited to the host (or a subdomain of the host)
+  // it was downloaded from, so the install is allowed.
+  EXPECT_EQ(std::nullopt,
+            run_installer(GURL("http://app.example.com/app.crx")));
+  EXPECT_EQ(std::nullopt, run_installer(GURL("http://example.com/app.crx")));
+}
+
 IN_PROC_BROWSER_TEST_F(ExtensionCrxInstallerTest, HiDpiThemeTest) {
   base::FilePath crx_path = test_data_dir_.AppendASCII("theme_hidpi_crx");
   crx_path = crx_path.AppendASCII("theme_hidpi.crx");
@@ -668,8 +736,8 @@ IN_PROC_BROWSER_TEST_F(ExtensionCrxInstallerTest,
 
 #if BUILDFLAG(FULL_SAFE_BROWSING)
 IN_PROC_BROWSER_TEST_F(ExtensionCrxInstallerTest, Blocklist) {
-  scoped_refptr<FakeSafeBrowsingDatabaseManager> blocklist_db(
-      new FakeSafeBrowsingDatabaseManager(true));
+  auto blocklist_db =
+      base::MakeRefCounted<FakeSafeBrowsingDatabaseManager>(true);
   ScopedDatabaseManagerForTest scoped_blocklist_db(blocklist_db);
 
   const extensions::ExtensionId extension_id =
@@ -820,6 +888,55 @@ IN_PROC_BROWSER_TEST_F(ExtensionCrxInstallerTest,
       test_data_dir_.AppendASCII("crx_installer/v1.crx"));
 
   EXPECT_TRUE(mock_prompt->did_succeed());
+}
+
+IN_PROC_BROWSER_TEST_F(ExtensionCrxInstallerTest,
+                       NonStrictManifestCheck_MismatchingExtensionType) {
+  base::ScopedAllowBlockingForTesting allow_io;
+  std::unique_ptr<MockPromptProxy> mock_prompt =
+      CreateMockPromptProxyForBrowser(browser());
+
+  // Create and pack an extension that doesn't have any install time warnings,
+  // so it will pass the privilege increase check.
+  TestExtensionDir test_dir;
+  test_dir.WriteManifest(
+      R"({
+         "name": "Test extension",
+         "version": "1.0",
+         "manifest_version": 3
+       })");
+  base::FilePath crx_path = test_dir.Pack();
+  // The TestExtensionDir writes the pem file to "ext.pem" by default. We use it
+  // to derive the extension ID for the packed extension.
+  base::FilePath pem_path = crx_path.DirName().AppendASCII("ext.pem");
+  {
+    base::ScopedAllowBlockingForTesting allow_file_io_in_scope;
+    ASSERT_TRUE(base::PathExists(pem_path));
+  }
+  const ExtensionId id =
+      browser_test_util::GetExtensionIdFromPrivateKeyFile(pem_path);
+
+  // Create an approval for a theme with the same ID and version.
+  ExtensionBuilder theme_builder("Theme");
+  theme_builder.SetVersion("1.0").SetManifestKey("theme", base::DictValue());
+
+  std::unique_ptr<InstallApproval> approval =
+      InstallApproval::CreateWithNoInstallPrompt(
+          profile(), id, theme_builder.BuildManifest().TakeDict(), false);
+
+  // Install the extension CRX using theme approval.
+  // This should fail because the types (Extension vs Theme) don't match,
+  // even though there is no privilege increase.
+  RunCrxInstaller(
+      approval.get(), mock_prompt->CreatePrompt(),
+      base::BindOnce([](const std::optional<CrxInstallError>& error) {
+        ASSERT_NE(std::nullopt, error);
+        EXPECT_EQ(CrxInstallErrorType::OTHER, error->type());
+        EXPECT_EQ(CrxInstallErrorDetail::MANIFEST_INVALID, error->detail());
+      }),
+      crx_path);
+
+  EXPECT_FALSE(mock_prompt->did_succeed());
 }
 
 IN_PROC_BROWSER_TEST_F(ExtensionCrxInstallerTest,
@@ -1421,7 +1538,7 @@ class ExtensionCrxInstallerTestWithWithholdingUI
  public:
   ExtensionCrxInstallerTestWithWithholdingUI() {
     feature_list_.InitAndEnableFeature(
-        extensions_features::kAllowWithholdingExtensionPermissionsOnInstall);
+        extensions_features::kExtensionInstallSiteAccessOptions);
   }
 
  private:

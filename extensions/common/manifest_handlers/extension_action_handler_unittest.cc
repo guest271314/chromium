@@ -328,6 +328,24 @@ TEST_P(ExtensionActionManifestTest, Invalid) {
   constexpr char kInvalidIcon[] = R"({ "default_icon": [] })";
   LoadAndExpectError(GetManifestData(kInvalidIcon, manifest_version),
                      manifest_errors::kInvalidActionDefaultIcon);
+
+  // Same-origin blob: and filesystem: URLs should be rejected as default_popup
+  // values.
+  scoped_refptr<const Extension> valid_extension =
+      LoadAndExpectSuccess(GetManifestData("{}", manifest_version));
+  ASSERT_TRUE(valid_extension);
+  const std::string kInvalidPopupUrlBlob =
+      base::StringPrintf(R"({ "default_popup": "blob:%spopup.html" })",
+                         valid_extension->url().spec().c_str());
+  LoadAndExpectError(
+      GetManifestData(kInvalidPopupUrlBlob.c_str(), manifest_version),
+      manifest_errors::kInvalidActionDefaultPopup);
+  const std::string kInvalidPopupUrlFilesystem = base::StringPrintf(
+      R"({ "default_popup": "filesystem:%stemporary/popup.html" })",
+      valid_extension->url().spec().c_str());
+  LoadAndExpectError(
+      GetManifestData(kInvalidPopupUrlFilesystem.c_str(), manifest_version),
+      manifest_errors::kInvalidActionDefaultPopup);
 }
 
 // Tests success when default_popup is valid.
@@ -341,9 +359,6 @@ TEST_P(ExtensionActionManifestTest, ValidDefaultPopup) {
   ASSERT_TRUE(test_extension) << error;
 
   std::vector<InstallWarning> warnings;
-  if (GetParam() == ActionInfo::Type::kBrowser) {
-    warnings.emplace_back("Unrecognized manifest key 'browser_action'.");
-  }
   if (manifest_version == 2) {
     warnings.emplace_back(manifest_errors::kManifestV2IsDeprecatedWarning);
   }
@@ -367,9 +382,6 @@ TEST_P(ExtensionActionManifestTest, EmptyDefaultPopup) {
   ASSERT_TRUE(test_extension) << error;
 
   std::vector<InstallWarning> warnings;
-  if (GetParam() == ActionInfo::Type::kBrowser) {
-    warnings.emplace_back("Unrecognized manifest key 'browser_action'.");
-  }
   if (manifest_version == 2) {
     warnings.emplace_back(manifest_errors::kManifestV2IsDeprecatedWarning);
   }
@@ -407,9 +419,6 @@ TEST_P(ExtensionActionManifestTest, NonexistentDefaultPopup) {
   ASSERT_TRUE(test_extension) << error;
 
   std::vector<InstallWarning> warnings;
-  if (GetParam() == ActionInfo::Type::kBrowser) {
-    warnings.emplace_back("Unrecognized manifest key 'browser_action'.");
-  }
   if (manifest_version == 2) {
     warnings.emplace_back(manifest_errors::kManifestV2IsDeprecatedWarning);
   }

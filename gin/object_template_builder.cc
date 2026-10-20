@@ -119,7 +119,8 @@ namespace {
 
 void Constructor(const v8::FunctionCallbackInfo<v8::Value>& info) {
   v8::Isolate* isolate = info.GetIsolate();
-  isolate->ThrowException(v8::Exception::Error(info.Data().As<v8::String>()));
+  isolate->ThrowException(
+      v8::Exception::Error(info.DataV2().As<v8::Value>().As<v8::String>()));
 }
 
 }  // namespace
@@ -141,14 +142,7 @@ ObjectTemplateBuilder::ObjectTemplateBuilder(v8::Isolate* isolate,
                                   " cannot be created using the constructor."})
                   : "Objects of this type cannot be created using the "
                     "constructor"))),
-      template_(constructor_template_->InstanceTemplate()) {
-  template_->SetInternalFieldCount(kNumberOfInternalFields);
-}
-
-ObjectTemplateBuilder::ObjectTemplateBuilder(
-    const ObjectTemplateBuilder& other) = default;
-
-ObjectTemplateBuilder::~ObjectTemplateBuilder() = default;
+      template_(constructor_template_->InstanceTemplate()) {}
 
 ObjectTemplateBuilder& ObjectTemplateBuilder::SetImpl(
     const std::string_view& name,

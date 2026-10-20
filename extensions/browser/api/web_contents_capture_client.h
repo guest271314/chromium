@@ -8,7 +8,9 @@
 #include <optional>
 #include <string>
 
+#include "base/types/expected.h"
 #include "extensions/browser/extension_function.h"
+#include "extensions/browser/screenshot_access.h"
 #include "extensions/common/api/extension_types.h"
 
 class SkBitmap;
@@ -29,14 +31,9 @@ class WebContentsCaptureClient {
   WebContentsCaptureClient& operator=(const WebContentsCaptureClient&) = delete;
 
  protected:
-  virtual ~WebContentsCaptureClient() {}
+  virtual ~WebContentsCaptureClient() = default;
 
-  enum class ScreenshotAccess {
-    kEnabled,
-    kDisabledByPreferences,
-    kDisabledByDlp,
-  };
-  virtual ScreenshotAccess GetScreenshotAccess(
+  virtual base::expected<void, ScreenshotAccessError> GetScreenshotAccess(
       content::WebContents* web_contents) const = 0;
   virtual bool ClientAllowsTransparency() = 0;
 

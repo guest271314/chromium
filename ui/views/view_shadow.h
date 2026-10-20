@@ -10,19 +10,16 @@
 #include "base/memory/raw_ptr.h"
 #include "base/scoped_observation.h"
 #include "ui/compositor/layer_owner.h"
+#include "ui/decoration/decoration.h"
+#include "ui/gfx/geometry/rounded_corners_f.h"
 #include "ui/views/view_observer.h"
 #include "ui/views/views_export.h"
-
-namespace ui {
-class Shadow;
-}
 
 namespace views {
 
 // Manages the shadow for a view. This forces |view| to paint to layer if it's
 // not.
-class VIEWS_EXPORT ViewShadow : public ViewObserver,
-                                public ui::LayerOwner::Observer {
+class VIEWS_EXPORT ViewShadow : public ViewObserver {
  public:
   ViewShadow(View* view, int elevation);
 
@@ -33,12 +30,10 @@ class VIEWS_EXPORT ViewShadow : public ViewObserver,
 
   // Update the corner radius of the view along with the shadow.
   void SetRoundedCornerRadius(int corner_radius);
+  void SetRoundedCorners(const gfx::RoundedCornersF& radii);
 
-  // ui::LayerOwner::Observer:
-  void OnLayerRecreated(ui::Layer* old_layer) override;
-
-  ui::Shadow* shadow() { return shadow_.get(); }
-  const ui::Shadow* shadow() const { return shadow_.get(); }
+  ui::Decoration* decoration() { return decoration_.get(); }
+  const ui::Decoration* decoration() const { return decoration_.get(); }
 
  private:
   // ViewObserver:
@@ -46,11 +41,9 @@ class VIEWS_EXPORT ViewShadow : public ViewObserver,
   void OnViewIsDeleting(View* view) override;
 
   raw_ptr<View> view_;
-  std::unique_ptr<ui::Shadow> shadow_;
+  std::unique_ptr<ui::Decoration> decoration_;
 
   base::ScopedObservation<View, ViewObserver> view_observation_{this};
-  base::ScopedObservation<ui::Shadow, ui::LayerOwner::Observer>
-      shadow_observation_{this};
 };
 
 }  // namespace views

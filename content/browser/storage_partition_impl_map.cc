@@ -10,6 +10,7 @@
 #include "base/barrier_closure.h"
 #include "base/command_line.h"
 #include "base/containers/map_util.h"
+#include "base/containers/span.h"
 #include "base/files/file_enumerator.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
@@ -17,6 +18,7 @@
 #include "base/functional/callback.h"
 #include "base/functional/callback_helpers.h"
 #include "base/location.h"
+#include "base/metrics/histogram_macros.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
 #include "base/task/single_thread_task_runner.h"
@@ -234,7 +236,7 @@ void NormalizeActivePaths(const base::FilePath& storage_root,
     std::vector<base::FilePath::StringType> components =
         relative_path.GetComponents();
 
-    DCHECK(!relative_path.empty());
+    CHECK(!relative_path.empty(), base::NotFatalUntil::M160);
     normalized_active_paths.insert(storage_root.Append(components.front()));
   }
 
@@ -324,6 +326,7 @@ StoragePartitionImplMap::~StoragePartitionImplMap() {
 StoragePartitionImpl* StoragePartitionImplMap::Get(
     const StoragePartitionConfig& partition_config,
     bool can_create) {
+  SCOPED_UMA_HISTOGRAM_TIMER("Storage.StoragePartitionMap.Get.Duration");
   // Find the previously created partition if it's available.
   if (auto* partition = base::FindPtrOrNull(partitions_, partition_config)) {
     return partition;

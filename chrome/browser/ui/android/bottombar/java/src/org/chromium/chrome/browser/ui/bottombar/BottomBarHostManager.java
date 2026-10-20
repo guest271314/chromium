@@ -12,6 +12,7 @@ import androidx.annotation.IntDef;
 import org.chromium.base.Callback;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
+import org.chromium.chrome.browser.profiles.Profile;
 
 import java.lang.annotation.ElementType;
 import java.lang.annotation.Retention;
@@ -70,7 +71,19 @@ public class BottomBarHostManager {
             viewGroup.removeView(view);
         }
 
-        attachCallback.onResult(view);
         mBottomBar.setParent(host);
+        attachCallback.onResult(view);
+    }
+
+    /** Returns whether the BottomBar promo dialog is shown. */
+    public boolean maybeShowPromoDialog(Profile profile) {
+        return mBottomBar != null && mBottomBar.maybeShowPromoDialog(profile);
+    }
+
+    /** Notifies the bottom bar that the startup promo flow has finished. */
+    public void onStartupPromoFlowFinished(boolean promoShown) {
+        if (mBottomBar != null) {
+            mBottomBar.onStartupPromoFlowFinished(promoShown);
+        }
     }
 }

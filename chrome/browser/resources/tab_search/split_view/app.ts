@@ -6,8 +6,11 @@ import '/strings.m.js';
 import '../tab_search_item.js';
 import '../selectable_lazy_list.js';
 import 'chrome://resources/cr_elements/cr_icon_button/cr_icon_button.js';
+import 'chrome://resources/cr_elements/cr_tooltip/cr_tooltip.js';
 
 import {ColorChangeUpdater} from 'chrome://resources/cr_components/color_change_listener/colors_css_updater.js';
+import type {CrTooltipElement} from 'chrome://resources/cr_elements/cr_tooltip/cr_tooltip.js';
+import {assert} from 'chrome://resources/js/assert.js';
 import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
 import {CrLitElement} from 'chrome://resources/lit/v3_0/lit.rollup.js';
 
@@ -25,7 +28,7 @@ import {getHtml} from './app.html.js';
 export interface SplitNewTabPageAppElement {
   $: {
     header: HTMLElement,
-    splitTabsList: SelectableLazyListElement,
+    splitTabsList: SelectableLazyListElement<TabData>,
   };
 }
 
@@ -46,15 +49,23 @@ export class SplitNewTabPageAppElement extends CrLitElement {
     return {
       allEligibleTabs_: {type: Array},
       minViewportHeight_: {type: Number},
+      webuiRoundedIconsEnabled_: {type: Boolean},
     };
   }
 
   protected accessor allEligibleTabs_: TabData[] = [];
   protected accessor minViewportHeight_: number = 0;
   protected title_: string = '';
+  protected accessor webuiRoundedIconsEnabled_: boolean =
+      loadTimeData.getBoolean('webuiRoundedIconsEnabled');
   private apiProxy_: TabSearchApiProxy = TabSearchApiProxyImpl.getInstance();
+  private initialFocusPromise_: Promise<void>|null = null;
   private listenerIds_: number[] = [];
   private visibilityChangedListener_: () => void;
+
+  get initialFocusPromiseForTesting(): Promise<void>|null {
+    return this.initialFocusPromise_;
+  }
 
   constructor() {
     super();
@@ -110,6 +121,20 @@ export class SplitNewTabPageAppElement extends CrLitElement {
     this.apiProxy_.closeWebUiTab();
   }
 
+  protected onCloseButtonFocus_() {
+    const tooltip =
+        this.shadowRoot.querySelector<CrTooltipElement>('cr-tooltip');
+    assert(tooltip);
+    tooltip.show();
+  }
+
+  protected onCloseButtonBlur_() {
+    const tooltip =
+        this.shadowRoot.querySelector<CrTooltipElement>('cr-tooltip');
+    assert(tooltip);
+    tooltip.hide();
+  }
+
   protected onTabClick_(e: Event) {
     const target = e.currentTarget as TabSearchItemElement;
     this.apiProxy_.replaceActiveSplitTab((target.data.tab as Tab).tabId);
@@ -145,9 +170,28 @@ export class SplitNewTabPageAppElement extends CrLitElement {
             .map(tab => this.getTabData_(tab, true, TabItemType.OPEN_TAB)) ||
         [];
     this.sortTabs_();
+    if (!this.initialFocusPromise_) {
+      this.initialFocusPromise_ = this.focusFirstTab_();
+    }
     this.updateComplete.then(() => {
       this.updateViewportHeight_(profileData);
     });
+  }
+
+  private async focusFirstTab_() {
+    await this.updateComplete;
+    await this.$.splitTabsList.updateComplete;
+    if (!this.isConnected || this.allEligibleTabs_.length === 0) {
+      return;
+    }
+    // setSelected(0) ensures the first item is rendered by the underlying
+    // cr-lazy-list before we attempt to query and focus it.
+    await this.$.splitTabsList.setSelected(0);
+    const firstItem =
+        this.shadowRoot.querySelector<HTMLElement>('tab-search-item');
+    if (firstItem) {
+      firstItem.focus();
+    }
   }
 
   private onTabUpdated_(tabUpdateInfo: TabUpdateInfo) {
@@ -221,7 +265,7 @@ export class SplitNewTabPageAppElement extends CrLitElement {
   }
 
   private redirectToNtp_() {
-    window.location.replace(loadTimeData.getString('newTabPageUrl'));
+    this.apiProxy_.redirectToNtp();
   }
 
   private hostWindowChanged_() {

@@ -10,11 +10,13 @@
 
 namespace blink {
 
-XRShapedLayer::XRShapedLayer(const XRLayerInit* init,
+XRShapedLayer::XRShapedLayer(XRSession* session,
+                             const XRLayerInit* init,
                              V8XRLayerLayout::Enum final_layout,
+                             V8XRTextureType::Enum texture_type,
                              XRGraphicsBinding* binding,
                              XRLayerDrawingContext* drawing_context)
-    : XRCompositionLayer(binding, drawing_context),
+    : XRCompositionLayer(session, binding, drawing_context, texture_type),
       xr_space_(init->space()),
       texture_width_(init->viewPixelWidth()),
       texture_height_(init->viewPixelHeight()),

@@ -302,7 +302,7 @@ FilterEffect* FilterEffectBuilder::BuildFilterEffect(
             parent_filter, blur.width(), blur.height(), offset.x(), offset.y(),
             shadow.GetColor().Resolve(current_color_, color_scheme_),
             shadow.Opacity());
-        if (shadow.GetColor().IsCurrentColor()) {
+        if (filter_operation->UsesCurrentColor()) {
           effect->SetOriginTainted();
         }
         break;
@@ -364,6 +364,9 @@ FilterEffect* FilterEffectBuilder::BuildFilterEffect(
       }
       if (previous_effect->OriginTainted())
         effect->SetOriginTainted();
+      if (previous_effect->ContainsBackdrop()) {
+        effect->SetContainsBackdrop();
+      }
       previous_effect = effect;
     }
   }
@@ -371,16 +374,21 @@ FilterEffect* FilterEffectBuilder::BuildFilterEffect(
 }
 
 CompositorFilterOperations FilterEffectBuilder::BuildFilterOperations(
-    const FilterOperations& operations) const {
+    const FilterOperations& operations,
+    bool contains_backdrop) const {
   InterpolationSpace current_interpolation_space = kInterpolationSpaceSRGB;
 
   CompositorFilterOperations filters;
+  if (contains_backdrop) {
+    filters.SetContainsBackdrop();
+  }
   for (FilterOperation* op : operations.Operations()) {
     switch (op->GetType()) {
       case FilterOperation::OperationType::kReference: {
         auto& reference_operation = To<ReferenceFilterOperation>(*op);
         Filter* reference_filter = BuildReferenceFilter(
-            reference_operation, nullptr, nullptr, filters.OriginTainted());
+            reference_operation, nullptr, nullptr, filters.OriginTainted(),
+            filters.ContainsBackdrop());
         if (reference_filter && reference_filter->LastEffect()) {
           // Set the interpolation space for the source of the (sub)filter to
           // match that of the previous primitive (or input).
@@ -478,7 +486,7 @@ CompositorFilterOperations FilterEffectBuilder::BuildFilterOperations(
         filters.AppendDropShadowFilter(
             floored_offset, radius,
             shadow.GetColor().Resolve(current_color_, color_scheme_));
-        if (shadow.GetColor().IsCurrentColor()) {
+        if (op->UsesCurrentColor()) {
           filters.SetOriginTainted();
         }
         break;
@@ -515,14 +523,17 @@ Filter* FilterEffectBuilder::BuildReferenceFilter(
     const ReferenceFilterOperation& reference_operation,
     FilterEffect* previous_effect,
     SVGFilterGraphNodeMap* node_map,
-    bool input_tainted) const {
+    bool input_tainted,
+    bool input_contains_backdrop) const {
   SVGResource* resource = reference_operation.Resource();
   auto* filter_element =
       DynamicTo<SVGFilterElement>(resource ? resource->Target() : nullptr);
   if (!filter_element)
     return nullptr;
-  if (auto* resource_container = resource->ResourceContainerNoCycleCheck())
+  if (auto* resource_container = resource->ResourceContainerNoCycleCheck(
+          SVGResource::Usage::kContent)) {
     resource_container->ClearInvalidationMask();
+  }
 
   std::optional<gfx::SizeF> unzoomed_viewport;
   if (viewport_) {
@@ -551,6 +562,10 @@ Filter* FilterEffectBuilder::BuildReferenceFilter(
 
   if (input_tainted || (previous_effect && previous_effect->OriginTainted())) {
     result->GetSourceGraphic()->SetOriginTainted();
+  }
+  if (input_contains_backdrop ||
+      (previous_effect && previous_effect->ContainsBackdrop())) {
+    result->GetSourceGraphic()->SetContainsBackdrop();
   }
 
   if (!previous_effect)

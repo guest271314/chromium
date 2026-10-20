@@ -5,32 +5,30 @@
 import 'chrome://bookmarks-side-panel.top-chrome/power_bookmarks_list.js';
 import 'chrome://bookmarks-side-panel.top-chrome/power_bookmarks_app.js';
 
-import {SortOrder, ViewType} from 'chrome://bookmarks-side-panel.top-chrome/bookmarks.mojom-webui.js';
+import {ActionSource, SortOrder, ViewType} from 'chrome://bookmarks-side-panel.top-chrome/bookmarks.mojom-webui.js';
 import {BookmarksApiProxyImpl} from 'chrome://bookmarks-side-panel.top-chrome/bookmarks_api_proxy.js';
 import type {PowerBookmarkRowElement} from 'chrome://bookmarks-side-panel.top-chrome/power_bookmark_row.js';
+import {BOOKMARK_ROW_LOAD_EVENT} from 'chrome://bookmarks-side-panel.top-chrome/power_bookmark_row.js';
 import type {PowerBookmarksAddFolderButtonElement} from 'chrome://bookmarks-side-panel.top-chrome/power_bookmarks_add_folder_button.js';
 import type {PowerBookmarksAppElement} from 'chrome://bookmarks-side-panel.top-chrome/power_bookmarks_app.js';
-import type {PowerBookmarksListHeaderElement} from 'chrome://bookmarks-side-panel.top-chrome/power_bookmarks_list_header.js';
-import {PageCallbackRouter} from 'chrome://resources/cr_components/commerce/price_tracking.mojom-webui.js';
+import {browserProxyFactory as priceTrackingBrowserProxyFactory, PriceTrackingHandlerRemote} from 'chrome://resources/cr_components/commerce/price_tracking.mojom-webui.js';
 import type {PageRemote} from 'chrome://resources/cr_components/commerce/price_tracking.mojom-webui.js';
-import {PriceTrackingBrowserProxyImpl} from 'chrome://resources/cr_components/commerce/price_tracking_browser_proxy.js';
 import {PageImageServiceBrowserProxy} from 'chrome://resources/cr_components/page_image_service/browser_proxy.js';
 import {PageImageServiceHandlerRemote} from 'chrome://resources/cr_components/page_image_service/page_image_service.mojom-webui.js';
 import type {CrButtonElement} from 'chrome://resources/cr_elements/cr_button/cr_button.js';
+import type {CrCheckboxElement} from 'chrome://resources/cr_elements/cr_checkbox/cr_checkbox.js';
 import type {CrInputElement} from 'chrome://resources/cr_elements/cr_input/cr_input.js';
 import type {CrUrlListItemElement} from 'chrome://resources/cr_elements/cr_url_list_item/cr_url_list_item.js';
 import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
 import {PluralStringProxyImpl} from 'chrome://resources/js/plural_string_proxy.js';
-import {flush} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
 import {assertArrayEquals, assertEquals, assertFalse, assertNotEquals, assertTrue} from 'chrome://webui-test/chai_assert.js';
 import type {MetricsTracker} from 'chrome://webui-test/metrics_test_support.js';
 import {fakeMetricsPrivate} from 'chrome://webui-test/metrics_test_support.js';
-import {flushTasks, waitAfterNextRender} from 'chrome://webui-test/polymer_test_util.js';
 import {TestMock} from 'chrome://webui-test/test_mock.js';
 import {TestPluralStringProxy} from 'chrome://webui-test/test_plural_string_proxy.js';
 import {eventToPromise, microtasksFinished} from 'chrome://webui-test/test_util.js';
 
-import {createTestBookmarks, getBookmarks, getBookmarksInList, getBookmarkWithId, getPowerBookmarksRowElement, getPowerBookmarksRowItemElement, initializeAppUi} from './power_bookmarks_app_test_util.js';
+import {createTestBookmarks, getBookmarks, getBookmarksInList, getBookmarkWithId, getPowerBookmarksRowElement, getPowerBookmarksRowItemElement} from './power_bookmarks_app_test_util.js';
 import {TestBookmarksApiProxy} from './test_bookmarks_api_proxy.js';
 
 suite('General', () => {
@@ -38,7 +36,7 @@ suite('General', () => {
   let powerBookmarksApp: PowerBookmarksAppElement;
   let bookmarksApi: TestBookmarksApiProxy;
   let pluralStringProxy: TestPluralStringProxy;
-  const priceTrackingProxy = TestMock.fromClass(PriceTrackingBrowserProxyImpl);
+  const priceTrackingHandler = TestMock.fromClass(PriceTrackingHandlerRemote);
   let callbackRouterRemote: PageRemote;
   let imageServiceHandler: TestMock<PageImageServiceHandlerRemote>&
       PageImageServiceHandlerRemote;
@@ -50,7 +48,7 @@ suite('General', () => {
   }
 
   function getAddNewFolderButton() {
-    return powerBookmarksApp.$.bookmarksList.shadowRoot!
+    return powerBookmarksApp.$.bookmarksList.shadowRoot
         .querySelector<PowerBookmarksAddFolderButtonElement>(
             'power-bookmarks-add-folder-button')!;
   }
@@ -65,8 +63,26 @@ suite('General', () => {
     return powerBookmarkRowItemElement.$.crUrlListItem;
   }
 
-  function isHidden(element: HTMLElement): boolean {
-    return element.matches('[hidden], [hidden] *');
+  // Checks if the element is hidden. Unlike `element.matches('[hidden] *')`,
+  // this recursively traverses up the tree and crosses Shadow DOM boundaries
+  // via host elements to detect if any shadow boundary ancestor has the hidden
+  // attribute.
+  function isHidden(element: HTMLElement|null): boolean {
+    if (!element) {
+      return true;
+    }
+    if (element.hasAttribute('hidden')) {
+      return true;
+    }
+    const parent = element.parentElement;
+    if (parent) {
+      return isHidden(parent);
+    }
+    const root = element.getRootNode();
+    if (root instanceof ShadowRoot) {
+      return isHidden(root.host as HTMLElement);
+    }
+    return false;
   }
 
   async function performSearch(query: string) {
@@ -90,7 +106,6 @@ suite('General', () => {
     const bookmark = getBookmarkWithId(powerBookmarksApp, id);
     assertTrue(!!bookmark);
     powerBookmarksApp.$.bookmarksList.clickBookmarkRowForTests(bookmark);
-
     await metricsLogged;
   }
 
@@ -118,20 +133,20 @@ suite('General', () => {
     pluralStringProxy = new TestPluralStringProxy();
     PluralStringProxyImpl.setInstance(pluralStringProxy);
 
-    priceTrackingProxy.reset();
-    const callbackRouter = new PageCallbackRouter();
-    priceTrackingProxy.setResultFor('getCallbackRouter', callbackRouter);
-    priceTrackingProxy.setResultFor(
+    priceTrackingHandler.reset();
+    priceTrackingHandler.setResultFor(
         'getAllPriceTrackedBookmarkProductInfo',
         Promise.resolve({productInfos: []}));
-    priceTrackingProxy.setResultFor(
+    priceTrackingHandler.setResultFor(
         'getAllShoppingBookmarkProductInfo',
         Promise.resolve({productInfos: []}));
-    priceTrackingProxy.setResultFor(
+    priceTrackingHandler.setResultFor(
         'getShoppingCollectionBookmarkFolderId',
         Promise.resolve({collectionId: BigInt(-1)}));
-    callbackRouterRemote = callbackRouter.$.bindNewPipeAndPassRemote();
-    PriceTrackingBrowserProxyImpl.setInstance(priceTrackingProxy);
+    const {instance, remote} =
+        priceTrackingBrowserProxyFactory.createForTest(priceTrackingHandler);
+    priceTrackingBrowserProxyFactory.setInstance(instance);
+    callbackRouterRemote = remote;
 
     imageServiceHandler = TestMock.fromClass(PageImageServiceHandlerRemote);
     PageImageServiceBrowserProxy.setInstance(
@@ -149,12 +164,23 @@ suite('General', () => {
       emptyBodyFolder: 'folder body',
       emptyTitleGuest: 'guest title',
       emptyBodyGuest: 'guest body',
-      isBookmarksMigrationUiChanges: false,
     });
 
-    powerBookmarksApp = await initializeAppUi(bookmarksApi);
-    await eventToPromise(
-        'bookmark-count-recorded', powerBookmarksApp.$.bookmarksList);
+    const app = document.createElement('power-bookmarks-app');
+    const recordedPromise = eventToPromise('bookmark-count-recorded', app);
+
+    const parentElement = document.createElement('div');
+    parentElement.style.height = '500px';
+    parentElement.appendChild(app);
+    document.body.appendChild(parentElement);
+
+    await bookmarksApi.whenCalled('getAllBookmarks');
+
+    powerBookmarksApp = app;
+    await recordedPromise;
+    await microtasksFinished();
+    powerBookmarksApp.$.bookmarksList
+        .flushNavigationElementsDebouncerForTesting();
   });
 
   suite('Part1', function() {
@@ -163,6 +189,96 @@ suite('General', () => {
       assertEquals(
           FOLDERS[1]!.children!.length + 1,
           getBookmarks(powerBookmarksApp).length);
+    });
+
+    test('InactiveListPurgesDomRowsWhenIdle', async () => {
+      const bookmarksList = powerBookmarksApp.$.bookmarksList;
+      const listA = bookmarksList.$.listA;
+      const listB = bookmarksList.$.listB;
+
+      // Add 30 bookmarks to root and 30 bookmarks to folder '5' so both folders
+      // have enough rows to exceed the 500px viewport height (30 * 36px =
+      // 1080px).
+      const NUM_EXTRA_BOOKMARKS = 30;
+      const initialRootCount = listA.items.length;
+      const expectedRootCount = initialRootCount + NUM_EXTRA_BOOKMARKS;
+      const initialFolder5ChildCount = 1;
+      const expectedFolder5Count =
+          initialFolder5ChildCount + NUM_EXTRA_BOOKMARKS;
+
+      for (let i = 0; i < NUM_EXTRA_BOOKMARKS; i++) {
+        bookmarksApi.callbackRouterRemote.onBookmarkNodeAdded({
+          id: `root_extra_${i}`,
+          title: `Root bookmark ${i}`,
+          index: 0,
+          parentId: FOLDERS[1]!.id,
+          url: `http://example.com/${i}`,
+          children: null,
+          dateAdded: null,
+          dateLastUsed: null,
+          unmodifiable: false,
+        });
+      }
+      for (let i = 0; i < NUM_EXTRA_BOOKMARKS; i++) {
+        bookmarksApi.callbackRouterRemote.onBookmarkNodeAdded({
+          id: `folder5_extra_${i}`,
+          title: `Folder 5 bookmark ${i}`,
+          index: 0,
+          parentId: '5',
+          url: `http://example.com/sub/${i}`,
+          children: null,
+          dateAdded: null,
+          dateLastUsed: null,
+          unmodifiable: false,
+        });
+      }
+      await microtasksFinished();
+
+      // On root folder: listA has all items in its model, but virtualizes and
+      // only renders a subset of rows in the DOM (exceeds viewport). listB has
+      // 0 items.
+      assertEquals(expectedRootCount, listA.items.length);
+      assertEquals(0, listB.items.length);
+      const renderedRowsA = listA.querySelectorAll('power-bookmark-row').length;
+      assertTrue(renderedRowsA > 0);
+      assertTrue(renderedRowsA < listA.items.length);
+      assertEquals(0, listB.querySelectorAll('power-bookmark-row').length);
+
+      // Navigate into folder '5' which also has enough items to exceed the
+      // viewport.
+      await openBookmark('5');
+      bookmarksList.$.listWrapperB.dispatchEvent(
+          new AnimationEvent('animationend'));
+      await microtasksFinished();
+
+      // After transition completes: listB is active with rendered rows
+      // (virtualized), and inactive listA has been completely purged to 0 items
+      // and 0 DOM rows.
+      assertEquals(expectedFolder5Count, listB.items.length);
+      assertEquals(0, listA.items.length);
+      const renderedRowsB = listB.querySelectorAll('power-bookmark-row').length;
+      assertTrue(renderedRowsB > 0);
+      assertTrue(renderedRowsB < listB.items.length);
+      assertEquals(0, listA.querySelectorAll('power-bookmark-row').length);
+    });
+
+    test('SearchFilterClearsItemSizeToPreventClipping', async () => {
+      const listA = powerBookmarksApp.$.bookmarksList.$.listA;
+      assertEquals(36, listA.itemSize);
+
+      await performSearch('bookmark');
+      await microtasksFinished();
+
+      // In search mode, itemSize must be undefined so cr-lazy-list measures
+      // actual rendered heights to accommodate filter headings without
+      // clipping.
+      assertEquals(undefined, listA.itemSize);
+
+      // Clearing search restores itemSize to the default for the current view
+      // type.
+      await performSearch('');
+      await microtasksFinished();
+      assertEquals(36, listA.itemSize);
     });
 
     test('RebuildsKeyboardNavigationOnBookmarkNodeAdded', async () => {
@@ -250,7 +366,10 @@ suite('General', () => {
               .getElementsForTesting()
               .map((el: HTMLElement) => el.id));
 
+      const navigationElementsRebuilt = eventToPromise(
+          'rebuild-navigation-elements', powerBookmarksApp.$.bookmarksList);
       await performSearch('child');
+      await navigationElementsRebuilt;
 
       assertArrayEquals(
           [
@@ -277,8 +396,8 @@ suite('General', () => {
               .getElementsForTesting()
               .map((el: HTMLElement) => el.id));
 
-      const navigationElementsRebuilt = eventToPromise(
-          'rebuild-navigation-elements', powerBookmarksApp.$.bookmarksList);
+      const rowLoaded = eventToPromise(
+          BOOKMARK_ROW_LOAD_EVENT, powerBookmarksApp.$.bookmarksList);
       const movedBookmark = FOLDERS[1]!.children![2]!.children![0]!;
       assertTrue(!!movedBookmark);
       bookmarksApi.callbackRouterRemote.onBookmarkNodeMoved(
@@ -288,7 +407,9 @@ suite('General', () => {
           /*parentId=*/ FOLDERS[1]!.id,  // Moving to other bookmarks.
           /*index=*/ 0,
       );
-      await navigationElementsRebuilt;
+      await rowLoaded;
+      powerBookmarksApp.$.bookmarksList
+          .flushNavigationElementsDebouncerForTesting();
 
       assertArrayEquals(
           [
@@ -356,7 +477,7 @@ suite('General', () => {
       const changedBookmark = FOLDERS[1]!.children![0]!;
       bookmarksApi.callbackRouterRemote.onBookmarkNodeChanged(
           changedBookmark.id, 'New title', 'http://new/url');
-      await flushTasks();
+      await microtasksFinished();
 
       const bookmark = getBookmarkWithId(powerBookmarksApp, '3');
       assertTrue(!!bookmark);
@@ -379,14 +500,14 @@ suite('General', () => {
       const changedBookmark = FOLDERS[1]!.children![0]!;
       bookmarksApi.callbackRouterRemote.onBookmarkNodeChanged(
           changedBookmark.id, 'abcdef', 'http://new/url');
-      await flushTasks();
+      await microtasksFinished();
 
       // Bookmark matches search term and should display.
       assertEquals(1, getBookmarks(powerBookmarksApp).length);
 
       bookmarksApi.callbackRouterRemote.onBookmarkNodeChanged(
           changedBookmark.id, 'New title', 'http://new/url');
-      await flushTasks();
+      await microtasksFinished();
 
       // Bookmark no longer matches search term and should not display.
       assertEquals(0, getBookmarks(powerBookmarksApp).length);
@@ -410,13 +531,13 @@ suite('General', () => {
         dateLastUsed: null,
         unmodifiable: false,
       });
-      await flushTasks();
+      await microtasksFinished();
 
       let btn = getAddTabButton();
       assertTrue(btn.disabled);
 
       bookmarksApi.callbackRouterRemote.onBookmarkNodesRemoved(['999']);
-      await flushTasks();
+      await microtasksFinished();
 
       btn = getAddTabButton();
       assertFalse(btn.disabled);
@@ -443,7 +564,7 @@ suite('General', () => {
         dateLastUsed: null,
         unmodifiable: false,
       });
-      await flushTasks();
+      await microtasksFinished();
 
       const bookmarks = getBookmarks(powerBookmarksApp);
       assertEquals(5, bookmarks.length);
@@ -462,7 +583,7 @@ suite('General', () => {
         dateLastUsed: null,
         unmodifiable: false,
       });
-      await flushTasks();
+      await microtasksFinished();
 
       // Create a new bookmark within that folder.
       bookmarksApi.callbackRouterRemote.onBookmarkNodeAdded({
@@ -476,7 +597,7 @@ suite('General', () => {
         dateLastUsed: null,
         unmodifiable: false,
       });
-      await flushTasks();
+      await microtasksFinished();
 
       const bookmarks = getBookmarks(powerBookmarksApp);
       assertEquals(5, bookmarks.length);
@@ -505,7 +626,7 @@ suite('General', () => {
         dateLastUsed: null,
         unmodifiable: false,
       });
-      await flushTasks();
+      await microtasksFinished();
 
       // New bookmark matches search term and is under active folder, gets
       // displayed in primary list
@@ -524,7 +645,7 @@ suite('General', () => {
         dateLastUsed: null,
         unmodifiable: false,
       });
-      await flushTasks();
+      await microtasksFinished();
 
       // New bookmark does not match search term, doesn't get displayed
       assertFalse(!!getBookmarkWithId(powerBookmarksApp, '456'));
@@ -542,7 +663,7 @@ suite('General', () => {
         dateLastUsed: null,
         unmodifiable: false,
       });
-      await flushTasks();
+      await microtasksFinished();
 
       // New bookmark matches search term and is not under active folder, gets
       // displayed in secondary list
@@ -569,22 +690,22 @@ suite('General', () => {
 
       // Add a bookmark for the current URL.
       bookmarksApi.callbackRouterRemote.onBookmarkNodeAdded(newBookmark);
-      await flushTasks();
+      await microtasksFinished();
       assertTrue(addTabButton.disabled);
 
       // Remove the bookmark.
       bookmarksApi.callbackRouterRemote.onBookmarkNodesRemoved(['999']);
-      await flushTasks();
+      await microtasksFinished();
       assertFalse(addTabButton.disabled);
 
       // Undo the removal.
       bookmarksApi.callbackRouterRemote.onBookmarkNodeAdded(newBookmark);
-      await flushTasks();
+      await microtasksFinished();
       assertTrue(addTabButton.disabled);
 
       // Remove the bookmark again.
       bookmarksApi.callbackRouterRemote.onBookmarkNodesRemoved(['999']);
-      await flushTasks();
+      await microtasksFinished();
       assertFalse(addTabButton.disabled);
     });
   });
@@ -599,7 +720,7 @@ suite('General', () => {
           FOLDERS[1]!.id,
           0,
       );
-      await flushTasks();
+      await microtasksFinished();
 
       const bookmarks = getBookmarks(powerBookmarksApp);
       assertEquals(5, bookmarks.length);
@@ -621,7 +742,7 @@ suite('General', () => {
         dateLastUsed: null,
         unmodifiable: false,
       });
-      await flushTasks();
+      await microtasksFinished();
 
       const movedBookmark = FOLDERS[1]!.children![2]!.children![0]!;
       assertTrue(!!movedBookmark);
@@ -631,7 +752,68 @@ suite('General', () => {
           '1000',
           0,
       );
-      await flushTasks();
+      await microtasksFinished();
+    });
+
+    test('ClearsSelectionOnMove', async () => {
+      const editButton =
+          powerBookmarksApp.$.bookmarksList.$.heading.$.editButton;
+      editButton.click();
+      await microtasksFinished();
+
+      await selectBookmark('3');
+      assertTrue(
+          getPowerBookmarksRowItemElement(powerBookmarksApp, '3')!.shadowRoot
+              .querySelector<CrCheckboxElement>('#checkbox')!.checked);
+      assertTrue(powerBookmarksApp.shadowRoot
+                     .querySelector('cr-toolbar-selection-overlay')!
+                     .hasAttribute('show'));
+
+      bookmarksApi.callbackRouterRemote.onBookmarkNodeMoved(
+          FOLDERS[1]!.id,
+          /*oldIndex=*/ 0,
+          FOLDERS[0]!.id,
+          /*newIndex=*/ 0,
+      );
+      await microtasksFinished();
+
+      assertFalse(
+          getPowerBookmarksRowItemElement(powerBookmarksApp, '3')
+              ?.shadowRoot?.querySelector<CrCheckboxElement>('#checkbox')
+              ?.checked ??
+          false);
+      assertTrue(powerBookmarksApp.shadowRoot
+                     .querySelector('cr-toolbar-selection-overlay')!
+                     .hasAttribute('show'));
+    });
+
+    test('ClearsSelectionOnChanged', async () => {
+      const editButton =
+          powerBookmarksApp.$.bookmarksList.$.heading.$.editButton;
+      editButton.click();
+      await microtasksFinished();
+
+      await selectBookmark('3');
+      assertTrue(
+          getPowerBookmarksRowItemElement(powerBookmarksApp, '3')!.shadowRoot
+              .querySelector<CrCheckboxElement>('#checkbox')!.checked);
+      assertTrue(powerBookmarksApp.shadowRoot
+                     .querySelector('cr-toolbar-selection-overlay')!
+                     .hasAttribute('show'));
+
+      bookmarksApi.callbackRouterRemote.onBookmarkNodeChanged(
+          '3',
+          'New Title',
+          'https://www.google.com/',
+      );
+      await microtasksFinished();
+
+      assertFalse(
+          getPowerBookmarksRowItemElement(powerBookmarksApp, '3')!.shadowRoot
+              .querySelector<CrCheckboxElement>('#checkbox')!.checked);
+      assertTrue(powerBookmarksApp.shadowRoot
+                     .querySelector('cr-toolbar-selection-overlay')!
+                     .hasAttribute('show'));
     });
 
     test('MovesBookmarkWithFilter', async () => {
@@ -650,7 +832,7 @@ suite('General', () => {
           /*parentId=*/ FOLDERS[1]!.id,  // Moving to other bookmarks.
           /*index=*/ 0,
       );
-      await flushTasks();
+      await microtasksFinished();
 
       // Moved bookmark is no longer in active folder, should move from primary
       // to secondary list.
@@ -664,7 +846,7 @@ suite('General', () => {
                                                        // folder.
           /*index=*/ 0,
       );
-      await flushTasks();
+      await microtasksFinished();
 
       // Moved bookmark is now in active folder, should move from secondary
       // to primary list.
@@ -676,7 +858,7 @@ suite('General', () => {
       const originalShownBookmarkCount = getBookmarks(powerBookmarksApp).length;
 
       bookmarksApi.callbackRouterRemote.onBookmarkNodesRemoved(['3']);
-      await flushTasks();
+      await microtasksFinished();
 
       const removedBookmark = getBookmarkWithId(powerBookmarksApp, '3');
       assertTrue(!removedBookmark);
@@ -694,19 +876,19 @@ suite('General', () => {
       contextMenu.showAtPosition(
           new MouseEvent('click'), [bookmark], false, false, false, 1);
 
-      await waitAfterNextRender(contextMenu);
+      await microtasksFinished();
       assertTrue(contextMenu.isOpen());
 
       // Delete bookmark '4'.
       bookmarksApi.callbackRouterRemote.onBookmarkNodesRemoved(['4']);
-      await flushTasks();
+      await microtasksFinished();
 
       // Context menu should still be open.
       assertTrue(contextMenu.isOpen());
 
       // Delete bookmark '3'.
       bookmarksApi.callbackRouterRemote.onBookmarkNodesRemoved(['3']);
-      await flushTasks();
+      await microtasksFinished();
 
       // Context menu should be closed.
       assertFalse(contextMenu.isOpen());
@@ -723,11 +905,8 @@ suite('General', () => {
     });
 
     test('SetsExpandedDescription', async () => {
-      const header =
-          powerBookmarksApp.$.bookmarksList.shadowRoot!
-              .querySelector<HTMLElement>('power-bookmarks-list-header')!;
       const viewButton =
-          header.shadowRoot!.querySelector<HTMLElement>('#viewButton')!;
+          powerBookmarksApp.$.bookmarksList.$.heading.$.viewButton;
       viewButton.click();
       await microtasksFinished();
 
@@ -741,11 +920,8 @@ suite('General', () => {
     });
 
     test('SetsExpandedSearchResultDescription', async () => {
-      const header =
-          powerBookmarksApp.$.bookmarksList.shadowRoot!
-              .querySelector<HTMLElement>('power-bookmarks-list-header')!;
       const viewButton =
-          header.shadowRoot!.querySelector<HTMLElement>('#viewButton')!;
+          powerBookmarksApp.$.bookmarksList.$.heading.$.viewButton;
       viewButton.click();
 
       await performSearch('child bookmark');
@@ -764,7 +940,7 @@ suite('General', () => {
       powerBookmarksApp.$.contextMenu.fire(
           'rename-clicked', {id: renamedBookmarkId});
 
-      await flushTasks();
+      await microtasksFinished();
 
       const rowItemElement =
           getPowerBookmarksRowItemElement(powerBookmarksApp, renamedBookmarkId);
@@ -780,7 +956,7 @@ suite('General', () => {
       input.inputElement.dispatchEvent(new Event('change'));
 
       await inputChange;
-      await flushTasks();
+      await microtasksFinished();
 
       // Committing a new input value should rename the bookmark and remove the
       // input.
@@ -798,9 +974,9 @@ suite('General', () => {
       powerBookmarksApp.$.contextMenu.fire(
           'rename-clicked', {id: renamedBookmarkId});
 
-      await flushTasks();
+      await microtasksFinished();
 
-      const rowElement = powerBookmarksApp.$.bookmarksList.shadowRoot!
+      const rowElement = powerBookmarksApp.$.bookmarksList.shadowRoot
                              .querySelector<PowerBookmarkRowElement>(
                                  `#bookmark-${renamedBookmarkId}`);
       assertTrue(!!rowElement);
@@ -817,7 +993,7 @@ suite('General', () => {
       input.inputElement.blur();
       await inputBlurred;
 
-      await flushTasks();
+      await microtasksFinished();
 
       // Blurring the input should remove it.
       input =
@@ -826,14 +1002,11 @@ suite('General', () => {
     });
 
     test('ShowsFolderImages', () => {
-      const header =
-          powerBookmarksApp.$.bookmarksList.shadowRoot!
-              .querySelector<HTMLElement>('power-bookmarks-list-header')!;
       const viewButton =
-          header.shadowRoot!.querySelector<HTMLElement>('#viewButton')!;
+          powerBookmarksApp.$.bookmarksList.$.heading.$.viewButton;
       viewButton.click();
 
-      flush();
+
 
       const bookmarksBarFolderElement =
           getCrUrlListItemElementWithId('SIDE_PANEL_BOOKMARK_BAR_ID');
@@ -846,26 +1019,23 @@ suite('General', () => {
     });
 
     test('DeletesSelectedBookmarks', async () => {
-      const header =
-          powerBookmarksApp.$.bookmarksList.shadowRoot!
-              .querySelector<HTMLElement>('power-bookmarks-list-header')!;
       const editButton =
-          header.shadowRoot!.querySelector<HTMLElement>('#editButton')!;
+          powerBookmarksApp.$.bookmarksList.$.heading.$.editButton;
       editButton.click();
 
-      flush();
+
 
       await selectBookmark('3');
       await selectBookmark('5');
 
-      flush();
+
 
       const deleteButton: HTMLButtonElement =
           powerBookmarksApp.shadowRoot.querySelector('#deleteButton')!;
       assertFalse(deleteButton.disabled);
       deleteButton.click();
 
-      flush();
+
 
       assertEquals(1, bookmarksApi.getCallCount('deleteBookmarks'));
       assertEquals('3', bookmarksApi.getArgs('deleteBookmarks')[0][0]);
@@ -920,27 +1090,24 @@ suite('General', () => {
         ],
       });
 
-      await flushTasks();
+      await microtasksFinished();
 
-      const header =
-          powerBookmarksApp.$.bookmarksList.shadowRoot!
-              .querySelector<HTMLElement>('power-bookmarks-list-header')!;
       const editButton =
-          header.shadowRoot!.querySelector<HTMLElement>('#editButton')!;
+          powerBookmarksApp.$.bookmarksList.$.heading.$.editButton;
       editButton.click();
 
-      flush();
+
 
       await selectBookmark('100');
 
-      flush();
+
 
       const deleteButton: HTMLButtonElement =
           powerBookmarksApp.shadowRoot.querySelector('#deleteButton')!;
       assertFalse(deleteButton.disabled);
       deleteButton.click();
 
-      flush();
+
 
       assertEquals(1, bookmarksApi.getCallCount('deleteBookmarks'));
       assertEquals('100', bookmarksApi.getArgs('deleteBookmarks')[0][0]);
@@ -954,14 +1121,15 @@ suite('General', () => {
 
 
     test('EditBookmarks', async () => {
-      const bookmark = getBookmarkWithId(powerBookmarksApp, '3')!;
+      const bookmarkId = '3';
+      const bookmark = getBookmarkWithId(powerBookmarksApp, bookmarkId)!;
       const contextMenu = powerBookmarksApp.$.contextMenu;
       const editClicked = eventToPromise('edit-clicked', contextMenu);
 
       // Open the context menu.
       contextMenu.showAtPosition(
           new MouseEvent('click'), [bookmark], false, false, false, 1);
-      await waitAfterNextRender(contextMenu);
+      await microtasksFinished();
 
       // Get the edit option in the menu.
       const menuItems =
@@ -975,18 +1143,21 @@ suite('General', () => {
       // Click on edit and wait for the call to propagate.
       editItem.click();
       await editClicked;
-      await flushTasks();
+      await microtasksFinished();
 
-      // The edit dialog is opened.
-      const editDialog = powerBookmarksApp.$.editDialog;
-      assertTrue(editDialog.$.dialog.open);
-      assertEquals(bookmark.title, editDialog.$.nameInput.inputElement.value);
-      assertEquals(bookmark.url, editDialog.$.urlInput.inputElement.value);
+      // The native edit dialog is opened.
+      assertEquals(1, bookmarksApi.getCallCount('contextMenuEdit'));
+      assertEquals(
+          bookmarkId, bookmarksApi.getArgs('contextMenuEdit')[0][0][0]);
+      assertEquals(
+          ActionSource.kBookmark,
+          bookmarksApi.getArgs('contextMenuEdit')[0][1]);
     });
 
     test('MoveBookmarks', async () => {
+      const bookmarkId = '3';
       const bookmarks = [
-        getBookmarkWithId(powerBookmarksApp, '3')!,
+        getBookmarkWithId(powerBookmarksApp, bookmarkId)!,
         getBookmarkWithId(powerBookmarksApp, '5')!,
       ];
       const contextMenu = powerBookmarksApp.$.contextMenu;
@@ -995,7 +1166,7 @@ suite('General', () => {
       // Open the context menu.
       contextMenu.showAtPosition(
           new MouseEvent('click'), bookmarks, false, false, false, 1);
-      await waitAfterNextRender(contextMenu);
+      await microtasksFinished();
 
       // Get the move option in the menu.
       const menuItems =
@@ -1009,11 +1180,15 @@ suite('General', () => {
       // Click on move and wait for the call to propagate.
       moveItem.click();
       await editClicked;
-      await flushTasks();
+      await microtasksFinished();
 
-      // The edit dialog is opened.
-      const editDialog = powerBookmarksApp.$.editDialog;
-      assertTrue(editDialog.$.dialog.open);
+      // The native move dialog is opened.
+      assertEquals(1, bookmarksApi.getCallCount('contextMenuMove'));
+      assertEquals(
+          bookmarkId, bookmarksApi.getArgs('contextMenuMove')[0][0][0]);
+      assertEquals(
+          ActionSource.kBookmark,
+          bookmarksApi.getArgs('contextMenuMove')[0][1]);
     });
 
     test('LogsBookmarkCountMetric', async () => {
@@ -1028,14 +1203,55 @@ suite('General', () => {
           1, metrics.count('PowerBookmarks.SidePanel.BookmarksShown', 1));
     });
 
+    test('NavigatesBackToParentFolder', async () => {
+      const heading = powerBookmarksApp.$.bookmarksList.$.heading;
+      const rootHeader = heading.shadowRoot.querySelector('#root-header');
+      assertTrue(!!rootHeader);
+      const folderHeader = heading.shadowRoot.querySelector('#folder-header');
+      assertTrue(!!folderHeader);
+
+      // Initially at root: root-header is active, folder-header is inactive.
+      assertTrue(rootHeader.classList.contains('active'));
+      assertFalse(folderHeader.classList.contains('active'));
+
+      // Navigate forward to folder '5' (contains 1 child).
+      await openBookmark('5');
+      assertEquals(
+          1, metrics.count('PowerBookmarks.SidePanel.BookmarksShown', 1));
+
+      // In folder 5: folder-header is active, root-header is inactive.
+      assertFalse(rootHeader.classList.contains('active'));
+      assertTrue(folderHeader.classList.contains('active'));
+
+      // The active title span shows 'Folder 5'.
+      const activeTitle =
+          heading.shadowRoot.querySelector('#folder-header .title-span.active');
+      assertTrue(!!activeTitle);
+      assertEquals('Child folder', activeTitle.textContent.trim());
+
+      // Click the back button on the list heading.
+      const backButton =
+          folderHeader.shadowRoot!.querySelector<HTMLElement>('#backButton');
+      assertTrue(!!backButton);
+
+      // Wait for back navigation metrics logging to complete.
+      const metricsLogged = eventToPromise(
+          'bookmark-count-recorded', powerBookmarksApp.$.bookmarksList);
+      backButton.click();
+      await metricsLogged;
+
+      // Navigated back to root: root-header is active again, folder-header
+      // is inactive.
+      assertTrue(rootHeader.classList.contains('active'));
+      assertFalse(folderHeader.classList.contains('active'));
+      assertEquals(
+          2, metrics.count('PowerBookmarks.SidePanel.BookmarksShown', 4));
+    });
+
     test('TogglesSectionVisibilityAndEmptyStates', async () => {
       const search = powerBookmarksApp.$.searchField;
       const labels = powerBookmarksApp.$.labels;
-      const heading =
-          powerBookmarksApp.$.bookmarksList.shadowRoot!.querySelector(
-              'power-bookmarks-list-header')!;
-      const folderEmptyState =
-          powerBookmarksApp.$.bookmarksList.$.folderEmptyState;
+      const heading = powerBookmarksApp.$.bookmarksList.$.heading;
       const bookmarksList = powerBookmarksApp.$.bookmarksList.$.bookmarks;
       const topLevelEmptyState = powerBookmarksApp.$.topLevelEmptyState;
       const footer = powerBookmarksApp.$.footer;
@@ -1048,36 +1264,35 @@ suite('General', () => {
       assertFalse(isHidden(search));
       assertTrue(isHidden(labels));
       assertFalse(isHidden(heading));
-      assertTrue(isHidden(folderEmptyState));
+      assertTrue(
+          isHidden(powerBookmarksApp.$.bookmarksList.$.folderEmptyStateA));
       assertFalse(isHidden(bookmarksList));
       assertTrue(isHidden(topLevelEmptyState));
       assertFalse(isHidden(footer));
 
-      // Opening an empty folder.
+      // Opening an empty folder moves the UI from list A to list B.
       await openBookmark('SIDE_PANEL_BOOKMARK_BAR_ID');
 
       assertFalse(isHidden(search));
       assertTrue(isHidden(labels));
       assertFalse(isHidden(heading));
-      assertFalse(isHidden(folderEmptyState));
-      assertTrue(isHidden(bookmarksList));
+      assertFalse(
+          isHidden(powerBookmarksApp.$.bookmarksList.$.folderEmptyStateB));
+      assertFalse(isHidden(bookmarksList));
       assertTrue(isHidden(topLevelEmptyState));
       assertFalse(isHidden(footer));
 
       // A search with no results.
-      const searchField =
-          powerBookmarksApp.shadowRoot.querySelector('cr-toolbar-search-field');
-      assertTrue(!!searchField);
-      searchField.$.searchInput.value = 'abcdef';
-      searchField.onSearchTermSearch();
-      await flushTasks();
+      await performSearch('abcdef');
       assertEquals(
           loadTimeData.getString('emptyTitleSearch'),
           topLevelEmptyState.heading);
+
       assertFalse(isHidden(search));
       assertTrue(isHidden(labels));
       assertTrue(isHidden(heading));
-      assertTrue(isHidden(folderEmptyState));
+      assertTrue(
+          isHidden(powerBookmarksApp.$.bookmarksList.$.folderEmptyStateB));
       assertTrue(isHidden(bookmarksList));
       assertFalse(isHidden(topLevelEmptyState));
       assertTrue(isHidden(footer));
@@ -1100,8 +1315,47 @@ suite('General', () => {
       };
 
       callbackRouterRemote.priceTrackedForBookmark(newProduct);
-      await flushTasks();
+      await microtasksFinished();
       assertFalse(isHidden(labels));
+    });
+
+    test('PriceTrackingChipRemainsVisibleAfterSearch', async () => {
+      const newProduct = {
+        bookmarkId: BigInt(3),
+        info: {
+          title: 'Product Baz',
+          clusterTitle: 'Product Cluster Baz',
+          domain: 'baz.com',
+          imageUrl: 'https://baz.com/image',
+          productUrl: 'https://baz.com/product',
+          currentPrice: '$56',
+          previousPrice: '$78',
+          clusterId: BigInt(12345),
+          categoryLabels: [],
+          priceSummary: '',
+        },
+      };
+
+      callbackRouterRemote.priceTrackedForBookmark(newProduct);
+      await microtasksFinished();
+
+      const rowItem = getPowerBookmarksRowItemElement(powerBookmarksApp, '3');
+      assertTrue(!!rowItem);
+      await rowItem.updateComplete;
+      const badge = rowItem.shadowRoot.querySelector('sp-list-item-badge');
+      assertTrue(!!badge);
+      assertFalse(isHidden(badge));
+
+      await performSearch('first');
+
+      const searchedRowItem =
+          getPowerBookmarksRowItemElement(powerBookmarksApp, '3');
+      assertTrue(!!searchedRowItem);
+      await searchedRowItem.updateComplete;
+      const searchedBadge =
+          searchedRowItem.shadowRoot.querySelector('sp-list-item-badge');
+      assertTrue(!!searchedBadge);
+      assertFalse(isHidden(searchedBadge));
     });
 
     test('PreventsClickDuringDrag', async () => {
@@ -1113,13 +1367,13 @@ suite('General', () => {
       await microtasksFinished();
 
       getCrUrlListItemElementWithId('5')!.click();
-      await flushTasks();
+      await microtasksFinished();
 
       // Folder should still have 4 bookmarks because the click was ignored.
       assertEquals(4, getBookmarksInList(powerBookmarksApp, 0).length);
     });
 
-    test('ClosesContextMenuOnVisibilityChange', async () => {
+    test('ContextMenuClosesOnFocusout', async () => {
       const bookmarks = getBookmarks(powerBookmarksApp);
       assertTrue(bookmarks.length > 0);
       const bookmark = bookmarks[0]!;
@@ -1127,51 +1381,19 @@ suite('General', () => {
       // Open context menu.
       powerBookmarksApp.$.contextMenu.showAt(
           document.body, [bookmark], false, false, false, 0);
-      await flushTasks();
-      await waitAfterNextRender(powerBookmarksApp.$.contextMenu);
-      assertTrue(powerBookmarksApp.$.contextMenu.isOpen());
-
-      // Mock visibility state and dispatch event.
-      const originalVisibilityState = document.visibilityState;
-      Object.defineProperty(
-          document, 'visibilityState', {value: 'hidden', configurable: true});
-      document.dispatchEvent(new Event('visibilitychange'));
-      await flushTasks();
-
-      // Verify menu is closed.
-      assertFalse(powerBookmarksApp.$.contextMenu.isOpen());
-
-      // Cleanup: restore document state.
-      Object.defineProperty(
-          document, 'visibilityState', {value: originalVisibilityState});
-    });
-
-    test('SortMenuClosesOnFocusout', async () => {
-      const header = powerBookmarksApp.$.bookmarksList.shadowRoot!
-                         .querySelector<PowerBookmarksListHeaderElement>(
-                             'power-bookmarks-list-header');
-      assertTrue(!!header);
-
-      // Open sort menu.
-      const sortButton =
-          header.shadowRoot.querySelector<HTMLElement>('.sort-menu-button');
-      assertTrue(!!sortButton);
-      sortButton.click();
       await microtasksFinished();
-
-      const sortMenu = header.$.sortMenu;
-      assertTrue(sortMenu.open);
+      assertTrue(powerBookmarksApp.$.contextMenu.isOpen());
 
       // Simulate blur by dispatching focusout event with relatedTarget outside
       // the menu.
       const event = new FocusEvent('focusout', {
         relatedTarget: document.body,
       });
-      sortMenu.dispatchEvent(event);
+      powerBookmarksApp.$.contextMenu.$.menu.dispatchEvent(event);
 
       await microtasksFinished();
 
-      assertFalse(sortMenu.open);
+      assertFalse(powerBookmarksApp.$.contextMenu.isOpen());
     });
 
     test('ShowUiOnlyCalledOnce', async () => {
@@ -1184,7 +1406,7 @@ suite('General', () => {
       powerBookmarksApp.remove();
       parent.appendChild(powerBookmarksApp);
 
-      await flushTasks();
+      await microtasksFinished();
 
       // Verify showUi was NOT called a second time.
       assertEquals(1, bookmarksApi.getArgs('showUi').length);

@@ -33,8 +33,26 @@ public class MimeTypeUtils {
     /** The MIME type for pdf. */
     public static final String PDF_MIME_TYPE = "application/pdf";
 
+    /** The MIME type for png. */
+    public static final String IMAGE_PNG_MIME_TYPE = "image/png";
+
+    /** The MIME type for plain text. */
+    public static final String TEXT_PLAIN_MIME_TYPE = "text/plain";
+
+    /** The MIME type for HTML text. */
+    public static final String TEXT_HTML_MIME_TYPE = "text/html";
+
+    /** The MIME type for any text file. */
+    public static final String TEXT_ANY_MIME_TYPE = "text/*";
+
     /** The MIME type prefix for any image. */
     public static final String IMAGE_PREFIX_MIME_TYPE = "image/";
+
+    /** The MIME type for jpeg image. */
+    public static final String IMAGE_JPEG_MIME_TYPE = "image/jpeg";
+
+    /** The MIME type for jpg image. */
+    public static final String IMAGE_JPG_MIME_TYPE = "image/jpg";
 
     /** The MIME type prefix for any text file. */
     public static final String TEXT_PREFIX_MIME_TYPE = "text/";

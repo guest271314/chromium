@@ -324,7 +324,7 @@ class CC_EXPORT LayerTreeHost : public MutatorHostDelegate {
 
   // Requests that the next main frame update performs a full commit
   // synchronization.
-  virtual void SetNeedsCommit();
+  virtual void SetNeedsCommit(bool urgent = false);
 
   // Invoked when a compositing update is first requested and scheduled.
   void OnCommitRequested();
@@ -374,7 +374,7 @@ class CC_EXPORT LayerTreeHost : public MutatorHostDelegate {
                              PaintHoldingReason reason);
 
   // Stop deferring commits immediately.
-  void StopDeferringCommits(PaintHoldingCommitTrigger);
+  void StopDeferringCommits();
 
   // Returns true if commits are currently deferred.
   bool IsDeferringCommits() const;
@@ -383,14 +383,8 @@ class CC_EXPORT LayerTreeHost : public MutatorHostDelegate {
   bool IsRenderingPaused() const;
 
   // Notification that the proxy started or stopped deferring commits.
-  void OnDeferCommitsChanged(bool defer_status,
-                             PaintHoldingReason reason,
-                             std::optional<PaintHoldingCommitTrigger> trigger);
+  void OnDeferCommitsChanged(bool defer_status, PaintHoldingReason reason);
 
-  // Several clients may call this independently. In this case, there is
-  // internal reference counting so that the the state is only exited when the
-  // last client removes its request.
-  void SetShouldThrottleFrameRate(bool flag);
   std::unique_ptr<ScopedRequestHighFramerate> RequestHighFramerate();
 
   // Returns whether there are any outstanding ScopedDeferMainFrameUpdate,
@@ -566,6 +560,11 @@ class CC_EXPORT LayerTreeHost : public MutatorHostDelegate {
   // because each compositor doesn't know its position relative to other
   // compositors. This is specified in device viewport coordinate space.
   void SetVisualDeviceViewportSize(const gfx::Size&);
+  void SetMemoryPolicy(const ManagedMemoryPolicy& policy);
+  const ManagedMemoryPolicy& memory_policy() const {
+    DCHECK(IsMainThread());
+    return memory_policy_;
+  }
 
   void SetMaxSafeAreaInsets(const gfx::InsetsF& max_safe_area_insets);
   gfx::Rect device_viewport_rect() const {
@@ -690,13 +689,6 @@ class CC_EXPORT LayerTreeHost : public MutatorHostDelegate {
   // Requests that we force send RenderFrameMetadata with the next frame.
   void RequestForceSendMetadata() {
     pending_commit_state()->force_send_metadata_request = true;
-  }
-
-  // Requests a cap on CPU performance during idle periods. Forwarded
-  // to ADPF on Android, no-op on other platforms.
-  void RequestEfficientScheduling(bool prefer_efficient_scheduling) {
-    pending_commit_state()->prefer_efficient_scheduling =
-        prefer_efficient_scheduling;
   }
 
   // Returns the state of |force_send_metadata_request_| and resets the
@@ -952,6 +944,15 @@ class CC_EXPORT LayerTreeHost : public MutatorHostDelegate {
   void SetRenderFrameObserver(
       std::unique_ptr<RenderFrameMetadataObserver> observer);
 
+  // Sets or dismisses the dedicated frame sink for unbounded element rendering.
+  void SetUnboundedFrameSink(
+      std::unique_ptr<LayerTreeFrameSink> unbounded_frame_sink,
+      const viz::LocalSurfaceId& local_surface_id);
+  void SetUnboundedFrameSinkId(const viz::FrameSinkId& frame_sink_id,
+                               const viz::LocalSurfaceId& local_surface_id);
+  void DismissUnboundedFrameSink();
+  void SetUnboundedLocalSurfaceId(const viz::LocalSurfaceId& local_surface_id);
+
   std::string LayersAsString() const;
 
   // Captures the on-screen text content, if success, fills the associated
@@ -1109,6 +1110,7 @@ class CC_EXPORT LayerTreeHost : public MutatorHostDelegate {
   std::unique_ptr<LayerTreeFrameSink> current_layer_tree_frame_sink_;
 
   const LayerTreeSettings settings_;
+  ManagedMemoryPolicy memory_policy_;
 
   bool visible_ = false;
   bool should_warm_up_ = false;

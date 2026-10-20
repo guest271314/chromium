@@ -25,6 +25,7 @@ struct FormFieldDataPredictions {
                          const FormFieldDataPredictions&);
 
   std::string host_form_signature;
+  std::string host_form_structural_signature;
   std::string signature;
   std::string heuristic_type;
   std::string pwm_ml_type;
@@ -40,6 +41,7 @@ struct FormFieldDataPredictions {
   size_t rank_in_signature_group = 0;
   size_t rank_in_host_form = 0;
   size_t rank_in_host_form_signature_group = 0;
+  bool did_trigger_javascript_autofill = false;
 };
 
 }  // namespace autofill

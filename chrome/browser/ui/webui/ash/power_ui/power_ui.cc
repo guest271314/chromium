@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "ash/constants/webui_url_constants.h"
+#include "ash/strings/grit/ash_strings.h"
 #include "base/check.h"
 #include "base/compiler_specific.h"
 #include "base/containers/circular_deque.h"
@@ -21,10 +22,9 @@
 #include "base/time/time.h"
 #include "base/values.h"
 #include "chrome/browser/ash/power/power_data_collector.h"
-#include "chrome/browser/profiles/profile.h"
-#include "chrome/grit/generated_resources.h"
 #include "chrome/grit/power_resources.h"
 #include "chrome/grit/power_resources_map.h"
+#include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_ui.h"
 #include "content/public/browser/web_ui_data_source.h"
 #include "content/public/browser/web_ui_message_handler.h"
@@ -201,7 +201,7 @@ PowerUI::PowerUI(content::WebUI* web_ui) : content::WebUIController(web_ui) {
   web_ui->AddMessageHandler(std::make_unique<PowerMessageHandler>());
 
   content::WebUIDataSource* html = content::WebUIDataSource::CreateAndAdd(
-      Profile::FromWebUI(web_ui), ash::kChromeUIPowerHost);
+      web_ui->GetWebContents()->GetBrowserContext(), ash::kChromeUIPowerHost);
 
   static constexpr webui::LocalizedString kStrings[] = {
       {"titleText", IDS_ABOUT_POWER_TITLE},

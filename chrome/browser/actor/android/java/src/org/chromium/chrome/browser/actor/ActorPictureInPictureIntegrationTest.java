@@ -24,6 +24,7 @@ import org.mockito.Mockito;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.DoNotBatch;
+import org.chromium.base.test.util.Restriction;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.tab.Tab;
@@ -31,6 +32,7 @@ import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.chrome.test.ChromeTabbedActivityTestRule;
 import org.chromium.chrome.test.util.ChromeTabUtils;
 import org.chromium.content_public.browser.WebContents;
+import org.chromium.ui.base.DeviceFormFactor;
 import org.chromium.ui.base.WindowAndroid;
 
 import java.util.Collections;
@@ -41,6 +43,7 @@ import java.util.Collections;
  */
 @RunWith(ChromeJUnit4ClassRunner.class)
 @CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
+@Restriction(DeviceFormFactor.PHONE_OR_TABLET)
 @DoNotBatch(reason = "Tests PiP transitions which involve activity level state.")
 public class ActorPictureInPictureIntegrationTest {
     @Rule
@@ -58,6 +61,16 @@ public class ActorPictureInPictureIntegrationTest {
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
                     Profile profile = mActivityTestRule.getProfile(false);
+
+                    // Setup mock actor task so that getCurrentActingTab returns our tab.
+                    ActorTask mockTask = Mockito.mock(ActorTask.class);
+                    Mockito.when(mockTask.getLastActedTabs())
+                            .thenReturn(Collections.singleton(mTab.getId()));
+                    ActorKeyedService actorService = Mockito.mock(ActorKeyedService.class);
+                    Mockito.when(actorService.getCurrentActiveTask()).thenReturn(mockTask);
+                    Mockito.when(actorService.getActiveTasksCount()).thenReturn(1);
+                    ActorKeyedServiceFactory.setForTesting(actorService);
+
                     mController =
                             new ActorPictureInPictureController(
                                     mActivityTestRule.getActivity(),
@@ -97,19 +110,9 @@ public class ActorPictureInPictureIntegrationTest {
         // In a real scenario, this is triggered by onPictureInPictureModeChanged,
         // but we can invoke the internal logic directly for the integration test.
         ThreadUtils.runOnUiThreadBlocking(
-                () -> {
-                    // Setup mock actor task so that getCurrentActingTab returns our tab.
-                    ActorTask mockTask = Mockito.mock(ActorTask.class);
-                    Mockito.when(mockTask.getLastActedTabs())
-                            .thenReturn(Collections.singleton(mTab.getId()));
-                    ActorKeyedService actorService = Mockito.mock(ActorKeyedService.class);
-                    Mockito.when(actorService.getCurrentActiveTask()).thenReturn(mockTask);
-                    Mockito.when(actorService.getActiveTasksCount()).thenReturn(1);
-                    ActorKeyedServiceFactory.setForTesting(actorService);
-
-                    mController.onPictureInPictureEvent(
-                            PictureInPictureDelegate.Event.ENTERED, null);
-                });
+                () ->
+                        mController.onPictureInPictureEvent(
+                                PictureInPictureDelegate.Event.ENTERED, null));
 
         // Verify offscreen rendering is active.
         assertTrue(mTab.getIsOffscreenRenderingSupplier().get());
@@ -122,16 +125,13 @@ public class ActorPictureInPictureIntegrationTest {
 
         // Simulate exiting PiP.
         ThreadUtils.runOnUiThreadBlocking(
-                () -> {
-                    mController.onPictureInPictureEvent(
-                            PictureInPictureDelegate.Event.EXITED, null);
-                });
+                () ->
+                        mController.onPictureInPictureEvent(
+                                PictureInPictureDelegate.Event.EXITED, null));
 
         // Verify restoration.
         assertFalse(mTab.getIsOffscreenRenderingSupplier().get());
         ThreadUtils.runOnUiThreadBlocking(
-                () -> {
-                    assertEquals(originalWindow, webContents.getTopLevelNativeWindow());
-                });
+                () -> assertEquals(originalWindow, webContents.getTopLevelNativeWindow()));
     }
 }

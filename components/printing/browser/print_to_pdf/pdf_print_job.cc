@@ -4,11 +4,13 @@
 
 #include "components/printing/browser/print_to_pdf/pdf_print_job.h"
 
+#include <string>
 #include <variant>
 
 #include "base/functional/bind.h"
 #include "base/logging.h"
 #include "base/memory/read_only_shared_memory_region.h"
+#include "base/strings/string_view_util.h"
 #include "components/printing/browser/print_composite_client.h"
 #include "components/printing/browser/print_to_pdf/pdf_print_utils.h"
 #include "components/printing/common/print.mojom.h"
@@ -20,8 +22,10 @@ namespace print_to_pdf {
 
 PdfPrintJob::PdfPrintJob(content::WebContents* contents,
                          content::RenderFrameHost* rfh,
-                         PrintToPdfCallback callback)
+                         PrintToPdfCallback callback,
+                         base::SelfDeletingPassKey key)
     : content::WebContentsObserver(contents),
+      base::SelfDeleting(key),
       printing_rfh_(rfh),
       print_to_pdf_callback_(std::move(callback)) {}
 
@@ -54,8 +58,8 @@ void PdfPrintJob::StartJob(
 
   print_pages_params->pages = std::get<printing::PageRanges>(pages);
 
-  // Job is self-owned and will delete itself when complete.
-  auto* job = new PdfPrintJob(contents, rfh, std::move(callback));
+  auto* job =
+      base::MakeSelfDeleting<PdfPrintJob>(contents, rfh, std::move(callback));
   remote->PrintWithParams(std::move(print_pages_params),
                           base::BindOnce(&PdfPrintJob::OnDidPrintWithParams,
                                          job->weak_ptr_factory_.GetWeakPtr()));
@@ -95,10 +99,9 @@ void PdfPrintJob::OnDidPrintWithParams(
   // Otherwise assume this is a composite document and invoke compositor.
   printing::PrintCompositeClient::FromWebContents(web_contents())
       ->CompositeDocument(
-          params->document_cookie, printing_rfh_, content,
+          params->document_cookie, *printing_rfh_, content, /*is_pdf=*/false,
           result.value()->accessibility_tree,
           result.value()->generate_document_outline,
-          printing::mojom::PrintCompositor::DocumentType::kPDF,
           base::BindOnce(&PdfPrintJob::OnCompositeDocumentToPdfDone,
                          weak_ptr_factory_.GetWeakPtr()));
 }
@@ -131,8 +134,7 @@ void PdfPrintJob::ReportMemoryRegion(
     return;
   }
 
-  std::string data =
-      std::string(static_cast<const char*>(mapping.memory()), mapping.size());
+  std::string data(base::as_string_view(mapping));
   std::move(print_to_pdf_callback_)
       .Run(PdfPrintResult::kPrintSuccess,
            base::MakeRefCounted<base::RefCountedString>(std::move(data)));

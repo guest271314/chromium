@@ -8,46 +8,26 @@ found in the LICENSE file.
     xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools"
     android:layout_width="match_parent"
-    android:layout_height="match_parent"
+    android:layout_height="wrap_content"
     android:orientation="vertical"
     tools:ignore="UselessParent">
 
-    <LinearLayout
+    <ViewFlipper
+        android:id="@+id/at_memory_view_flipper"
         android:layout_width="match_parent"
-        android:layout_height="48dp"
-        android:orientation="horizontal"
-        android:layout_marginStart="24dp"
-        android:layout_marginEnd="24dp"
-        android:layout_marginTop="20dp"
-        android:layout_marginBottom="18dp"
-        android:background="@drawable/at_memory_search_bar_background">
+        android:layout_height="wrap_content"
+        android:paddingStart="@dimen/at_memory_bottom_sheet_horizontal_margin"
+        android:paddingEnd="@dimen/at_memory_bottom_sheet_horizontal_margin"
+        android:paddingTop="@dimen/at_memory_bottom_sheet_margin_top"
+        android:paddingBottom="@dimen/at_memory_bottom_sheet_margin_bottom"
+        android:measureAllChildren="false">
 
-        <EditText
-            android:id="@+id/search_query_input"
-            android:layout_width="0dp"
-            android:layout_height="match_parent"
-            android:layout_weight="1"
-            android:hint="@string/at_memory_search_hint"
-            android:drawableStart="@drawable/search_spark"
-            android:drawablePadding="16dp"
-            android:paddingStart="16dp"
-            android:paddingEnd="4dp"
-            android:paddingTop="12dp"
-            android:paddingBottom="12dp"
-            android:textAppearance="@style/TextAppearance.TextLarge.Primary"
-            android:importantForAutofill="no"
-            android:inputType="text"
-            android:background="@null" />
+        <include
+            android:id="@+id/at_memory_home_screen"
+            layout="@layout/at_memory_home_screen" />
 
-        <org.chromium.ui.widget.ChromeImageButton
-            android:id="@+id/clear_search_button"
-            android:layout_width="48dp"
-            android:layout_height="48dp"
-            android:layout_gravity="center_vertical"
-            android:background="?attr/selectableItemBackgroundBorderless"
-            android:src="@drawable/btn_delete_24dp"
-            android:scaleType="centerInside"
-            android:visibility="gone"
-            android:contentDescription="@string/accessibility_toolbar_btn_delete_url" />
-    </LinearLayout>
+        <include
+            android:id="@+id/at_memory_flyout_screen"
+            layout="@layout/at_memory_flyout_screen" />
+    </ViewFlipper>
 </LinearLayout>

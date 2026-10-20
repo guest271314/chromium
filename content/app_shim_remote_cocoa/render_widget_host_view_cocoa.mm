@@ -2,14 +2,15 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-
 #import "content/app_shim_remote_cocoa/render_widget_host_view_cocoa.h"
 
 #include <AppKit/AppKit.h>
 #include <Carbon/Carbon.h>  // for <HIToolbox/Events.h>
+#include <unistd.h>
 
 #include <algorithm>
 #include <limits>
+#include <optional>
 #include <tuple>
 #include <utility>
 
@@ -23,6 +24,7 @@
 #include "base/strings/sys_string_conversions.h"
 #include "base/trace_event/trace_event.h"
 #include "components/input/web_input_event_builders_mac.h"
+#include "components/remote_cocoa/app_shim/immersive_mode_controller_cocoa.h"
 #include "components/remote_cocoa/app_shim/ns_view_ids.h"
 #import "content/browser/cocoa/system_hotkey_helper_mac.h"
 #import "content/browser/cocoa/system_hotkey_map.h"
@@ -36,17 +38,18 @@
 #include "skia/ext/skia_utils_mac.h"
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/mojom/input/input_handler.mojom.h"
-#include "third_party/blink/public/platform/web_text_input_type.h"
 #include "ui/accessibility/accessibility_features.h"
 #import "ui/accessibility/platform/browser_accessibility_cocoa.h"
 #import "ui/accessibility/platform/browser_accessibility_mac.h"
 #include "ui/accessibility/platform/browser_accessibility_manager_mac.h"
 #import "ui/base/clipboard/clipboard_util_mac.h"
 #import "ui/base/cocoa/appkit_utils.h"
+#import "ui/base/cocoa/menu_utils.h"
 #import "ui/base/cocoa/nsmenu_additions.h"
 #import "ui/base/cocoa/nsmenuitem_additions.h"
 #include "ui/base/cocoa/remote_accessibility_api.h"
 #import "ui/base/cocoa/touch_bar_util.h"
+#include "ui/base/ime/text_input_flags.h"
 #include "ui/base/ui_base_features.h"
 #include "ui/display/display.h"
 #include "ui/display/screen.h"
@@ -54,6 +57,7 @@
 #include "ui/events/keycodes/dom/dom_code.h"
 #include "ui/events/keycodes/dom/keycode_converter.h"
 #include "ui/events/platform/platform_event_source.h"
+#include "ui/gfx/geometry/clamp_float_geometry.h"
 #include "ui/gfx/mac/coordinate_conversion.h"
 #include "ui/gfx/native_ui_types.h"
 
@@ -121,6 +125,15 @@ class DummyHostHelper : public RenderWidgetHostNSViewHostHelper {
 NSString* const kWebContentTouchBarId = @"web-content";
 
 constexpr int kWrapAroundDistance = 10000;
+
+// Converts a point in AppKit global screen coordinates (origin at the
+// bottom-left of the primary display, as returned by e.g.
+// `NSEvent.mouseLocation`) to a Core Graphics global point (origin at
+// the top-left of the primary display, as expected by
+// `CGWarpMouseCursorPosition`).
+CGPoint CGPointFromNSEventScreenPoint(NSPoint p) {
+  return CGPointMake(p.x, NSMaxY(NSScreen.screens.firstObject.frame) - p.y);
+}
 
 // Whether a keyboard event has been reserved by macOS.
 BOOL EventIsReservedBySystem(NSEvent* event) {
@@ -208,6 +221,7 @@ void ExtractUnderlines(NSAttributedString* string,
 - (void)sendWindowFrameInScreenToHost;
 - (bool)hostIsDisconnected;
 - (void)invalidateTouchBar;
+- (void)synchronizeFirstResponderWithKeyTrackingWindow:(BOOL)isFirstResponder;
 
 // NSCandidateListTouchBarItemDelegate implementation
 - (void)candidateListTouchBarItem:(NSCandidateListTouchBarItem*)anItem
@@ -215,6 +229,15 @@ void ExtractUnderlines(NSAttributedString* string,
 - (void)candidateListTouchBarItem:(NSCandidateListTouchBarItem*)anItem
     changedCandidateListVisibility:(BOOL)isVisible;
 @end
+
+namespace {
+
+gfx::PointF GetSanitizedFlippedPoint(NSPoint point, CGFloat height) {
+  return gfx::PointF(gfx::ClampFloatGeometry(point.x),
+                     gfx::ClampFloatGeometry(height - point.y));
+}
+
+}  // namespace
 
 @implementation RenderWidgetHostViewCocoa {
   // Dummy host and host helper that are always valid (see comments below about
@@ -251,6 +274,8 @@ void ExtractUnderlines(NSAttributedString* string,
   // Is YES if there was a mouse-down as yet unbalanced with a mouse-up.
   BOOL _hasOpenMouseDown;
 
+  BOOL _isChangingFirstResponder;
+
   // The cursor for the page. This is passed up from the renderer.
   NSCursor* __strong _currentCursor;
 
@@ -259,6 +284,9 @@ void ExtractUnderlines(NSAttributedString* string,
 
   // Controlled by setShowingContextMenu.
   BOOL _showingContextMenu;
+
+  // Controlled by setSupportsAutoFill.
+  BOOL _supportsAutoFill;
 
   // Set during -setFrame to avoid spamming host_ with origin and size
   // changes.
@@ -358,6 +386,15 @@ void ExtractUnderlines(NSAttributedString* string,
   bool _mouseLockUnacceleratedMovement;
   gfx::PointF _lastMouseScreenPosition;
 
+  // The cursor's screen position (AppKit coordinates) at the moment we
+  // entered pointer lock. `std::nullopt` when not locked.
+  std::optional<NSPoint> _preLockCursorScreenPosition;
+
+  // When pointer lock re-centers the cursor, the OS generates an artificial
+  // mouse movement. Ignore the initial events until the re-centering delta
+  // has been fully absorbed to avoid exposing this artificial movement.
+  bool _suppressNextLockedMouseMoveForRecenter;
+
   // The parent accessibility element. This is set only in the browser process.
   id __strong _accessibilityParent;
 
@@ -398,6 +435,7 @@ static NSWindow* __weak _deferredResignKeyWindow;
     _host = host;
     _hostHelper = hostHelper;
     _canBeKeyView = YES;
+    _supportsAutoFill = YES;
     _isStylusEnteringProximity = false;
     _keyboardLockActive = false;
     _textInputType = ui::TEXT_INPUT_TYPE_NONE;
@@ -567,23 +605,30 @@ static NSWindow* __weak _deferredResignKeyWindow;
 
 - (void)requestTextSuggestions {
   auto* touchBarItem = _candidateListTouchBarItem;
-  if (!touchBarItem)
+  if (!touchBarItem) {
     return;
+  }
   [touchBarItem
       updateWithInsertionPointVisibility:_textSelectionRange.is_empty()];
-  if (_textInputType == ui::TEXT_INPUT_TYPE_PASSWORD)
+  if (_textInputType == ui::TEXT_INPUT_TYPE_PASSWORD ||
+      _textInputFlags & ui::TEXT_INPUT_FLAG_HAS_BEEN_PASSWORD ||
+      _textInputFlags & ui::TEXT_INPUT_FLAG_HAS_BEEN_CUSTOM_PASSWORD) {
     return;
-  if (!touchBarItem.candidateListVisible)
+  }
+  if (!touchBarItem.candidateListVisible) {
     return;
+  }
   if (!_textSelectionRange.IsValid() ||
-      _availableTextOffset > _textSelectionRange.GetMin())
+      _availableTextOffset > _textSelectionRange.GetMin()) {
     return;
+  }
 
   NSRange selectionRange = _textSelectionRange.ToNSRange();
   NSString* selectionText = base::SysUTF16ToNSString(_availableText);
   selectionRange.location -= _availableTextOffset;
-  if (NSMaxRange(selectionRange) > selectionText.length)
+  if (NSMaxRange(selectionRange) > selectionText.length) {
     return;
+  }
 
   // TODO: Fetch the spell document tag from the renderer (or equivalent).
   _textSuggestionsSequenceNumber = [self.spellChecker
@@ -608,26 +653,33 @@ static NSWindow* __weak _deferredResignKeyWindow;
 }
 
 - (NSTextCheckingType)allowedTextCheckingTypes {
-  if (_textInputType == ui::TEXT_INPUT_TYPE_NONE)
+  if (_textInputType == ui::TEXT_INPUT_TYPE_NONE) {
     return 0;
-  if (_textInputType == ui::TEXT_INPUT_TYPE_PASSWORD)
+  }
+  if (_textInputType == ui::TEXT_INPUT_TYPE_PASSWORD) {
     return 0;
-  if (_textInputFlags & blink::kWebTextInputFlagAutocorrectOff)
+  }
+  if (_textInputFlags & ui::TEXT_INPUT_FLAG_AUTOCORRECT_OFF) {
     return 0;
+  }
   NSTextCheckingType checkingTypes = NSTextCheckingTypeReplacement;
-  if (!(_textInputFlags & blink::kWebTextInputFlagSpellcheckOff))
+  if (!(_textInputFlags & ui::TEXT_INPUT_FLAG_SPELLCHECK_OFF)) {
     checkingTypes |= NSTextCheckingTypeQuote | NSTextCheckingTypeDash;
+  }
   return checkingTypes;
 }
 
 - (NSTextCheckingType)enabledTextCheckingTypes {
   NSTextCheckingType checkingTypes = 0;
-  if (self.automaticQuoteSubstitutionEnabled)
+  if (self.automaticQuoteSubstitutionEnabled) {
     checkingTypes |= NSTextCheckingTypeQuote;
-  if (self.automaticDashSubstitutionEnabled)
+  }
+  if (self.automaticDashSubstitutionEnabled) {
     checkingTypes |= NSTextCheckingTypeDash;
-  if (self.automaticTextReplacementEnabled)
+  }
+  if (self.automaticTextReplacementEnabled) {
     checkingTypes |= NSTextCheckingTypeReplacement;
+  }
   return checkingTypes;
 }
 
@@ -636,10 +688,14 @@ static NSWindow* __weak _deferredResignKeyWindow;
 }
 
 - (bool)canTransformText {
-  if (_textInputType == ui::TEXT_INPUT_TYPE_NONE)
+  if (_textInputType == ui::TEXT_INPUT_TYPE_NONE) {
     return NO;
-  if (_textInputType == ui::TEXT_INPUT_TYPE_PASSWORD)
+  }
+  if (_textInputType == ui::TEXT_INPUT_TYPE_PASSWORD ||
+      _textInputFlags & ui::TEXT_INPUT_FLAG_HAS_BEEN_PASSWORD ||
+      _textInputFlags & ui::TEXT_INPUT_FLAG_HAS_BEEN_CUSTOM_PASSWORD) {
     return NO;
+  }
 
   return YES;
 }
@@ -800,6 +856,18 @@ static NSWindow* __weak _deferredResignKeyWindow;
 }
 
 - (BOOL)acceptsFirstMouse:(NSEvent*)theEvent {
+  // A click that another process posts straight to this process does not
+  // activate the app, unlike one the window server routes here, so treating it
+  // as an activation click would only drop it.
+  CGEventRef cgEvent = theEvent.CGEvent;
+  if (!NSApp.active && cgEvent) {
+    int64_t sourcePid =
+        CGEventGetIntegerValueField(cgEvent, kCGEventSourceUnixProcessID);
+    if (sourcePid != 0 && sourcePid != getpid()) {
+      return YES;
+    }
+  }
+
   // Enable "click-through" if mouse clicks are accepted in inactive windows.
   return
       [self acceptsMouseEventsOption] > AcceptMouseEvents::kWhenInActiveWindow;
@@ -945,6 +1013,10 @@ static NSWindow* __weak _deferredResignKeyWindow;
   _hostHelper->ForwardMouseEvent(webEvent);
 }
 
+- (void)setSupportsAutoFill:(BOOL)supports {
+  _supportsAutoFill = supports;
+}
+
 - (BOOL)shouldIgnoreMouseEvent:(NSEvent*)theEvent {
   NSWindow* window = self.window;
   if (theEvent.type == NSEventTypeMouseMoved) {
@@ -1024,6 +1096,17 @@ static NSWindow* __weak _deferredResignKeyWindow;
     [self.window makeFirstResponder:self];
   }
 
+  // In fullscreen, AppKit skips -makeFirstResponder: on a click when this view
+  // is already the first responder of its window, even if the key tracking
+  // window's first responder is another view. Key events would then keep
+  // going to that other view, so synchronize the key tracking window here.
+  // See crbug.com/563226016.
+  if (theEvent.type == NSEventTypeLeftMouseDown &&
+      [self.window firstResponder] == self &&
+      [[self keyTrackingWindow] firstResponder] != self) {
+    [self synchronizeFirstResponderWithKeyTrackingWindow:YES];
+  }
+
   if (_responderDelegate &&
       [_responderDelegate respondsToSelector:@selector(handleEvent:)]) {
     BOOL handled = [_responderDelegate handleEvent:theEvent];
@@ -1090,16 +1173,43 @@ static NSWindow* __weak _deferredResignKeyWindow;
 
   if ([self shouldIgnoreMouseEvent:theEvent]) {
     // If this is the first such event, send a mouse exit to the host view.
-    if (!_mouseEventWasIgnored && !self.hidden) {
+    // Mouse exited events are also delivered for hidden views, so that hover
+    // state gets cleared when a view under the cursor is hidden (see the
+    // synthesized exit in -[BaseView viewDidHide]).
+    if (!_mouseEventWasIgnored &&
+        (!self.hidden || type == NSEventTypeMouseExited)) {
       WebMouseEvent exitEvent =
           WebMouseEventBuilder::Build(theEvent, self, _pointerType);
       exitEvent.SetType(WebInputEvent::Type::kMouseLeave);
       exitEvent.button = WebMouseEvent::Button::kNoButton;
-      _hostHelper->ForwardMouseEvent(exitEvent);
+      // Route the leave through the input event router so that it also
+      // reaches an OOPIF under the cursor.
+      _hostHelper->RouteOrProcessMouseEvent(exitEvent);
     }
     _mouseEventWasIgnored = YES;
     [self updateCursor:nil];
     return;
+  }
+
+  // After re-centering the cursor for pointer lock, macOS folds the
+  // re-centering distance into the delta of the first real mouse-move. Suppress
+  // locked move/crossing events until that movement is absorbed so the spurious
+  // delta never reaches the DOM. Mirrors Aura's
+  // RenderWidgetHostViewEventHandler::ModifyEventMovementAndCoords.
+  bool suppressRecenterArtifact = false;
+  if (_suppressNextLockedMouseMoveForRecenter) {
+    const bool isMovement = type == NSEventTypeMouseMoved ||
+                            type == NSEventTypeLeftMouseDragged ||
+                            type == NSEventTypeRightMouseDragged ||
+                            type == NSEventTypeOtherMouseDragged;
+    const bool isCrossing =
+        type == NSEventTypeMouseEntered || type == NSEventTypeMouseExited;
+    suppressRecenterArtifact = isMovement || isCrossing;
+    // The re-centering delta is only present on the first real movement; stop
+    // once it's absorbed.
+    if (isMovement) {
+      _suppressNextLockedMouseMoveForRecenter = NO;
+    }
   }
 
   if (_mouseEventWasIgnored) {
@@ -1109,6 +1219,11 @@ static NSWindow* __weak _deferredResignKeyWindow;
         WebMouseEventBuilder::Build(theEvent, self, _pointerType);
     enterEvent.SetType(WebInputEvent::Type::kMouseMove);
     enterEvent.button = WebMouseEvent::Button::kNoButton;
+    if (suppressRecenterArtifact) {
+      enterEvent.SetModifiers(
+          enterEvent.GetModifiers() |
+          blink::WebInputEvent::Modifiers::kRelativeMotionEvent);
+    }
     _hostHelper->RouteOrProcessMouseEvent(enterEvent);
   }
   _mouseEventWasIgnored = NO;
@@ -1174,6 +1289,11 @@ static NSWindow* __weak _deferredResignKeyWindow;
     event.SetPositionInScreen(
         _lastMouseScreenPosition +
         gfx::Vector2dF(event.movement_x, event.movement_y));
+
+    if (suppressRecenterArtifact) {
+      event.SetModifiers(event.GetModifiers() |
+                         blink::WebInputEvent::Modifiers::kRelativeMotionEvent);
+    }
   }
 
   _lastMouseScreenPosition = event.PositionInScreen();
@@ -1205,10 +1325,37 @@ static NSWindow* __weak _deferredResignKeyWindow;
 - (void)setCursorLocked:(BOOL)locked {
   _mouseLocked = locked;
   if (_mouseLocked) {
+    // When the pointer is outside the view we move the cursor to the center
+    // of the browser's window so that the browser will receive the pointer
+    // events.
+    const NSPoint locationInScreen = NSEvent.mouseLocation;
+    _preLockCursorScreenPosition = locationInScreen;
+    const NSPoint locationInView =
+        [self convertPoint:[self.window convertPointFromScreen:locationInScreen]
+                  fromView:nil];
+    if (!NSPointInRect(locationInView, self.bounds)) {
+      const NSPoint centerInWindow = [self
+          convertPoint:NSMakePoint(NSMidX(self.bounds), NSMidY(self.bounds))
+                toView:nil];
+      CGWarpMouseCursorPosition(CGPointFromNSEventScreenPoint(
+          [self.window convertPointToScreen:centerInWindow]));
+
+      // `mouseEvent()` suppresses locked events until the move distance has
+      // been absorbed.
+      _suppressNextLockedMouseMoveForRecenter = YES;
+    }
+
     CGAssociateMouseAndMouseCursorPosition(NO);
     [NSCursor hide];
   } else {
-    // Unlock position of mouse cursor and unhide it.
+    // Unlock position of mouse cursor and unhide it. Restore the pre-lock
+    // cursor position if we had moved it before locking.
+    _suppressNextLockedMouseMoveForRecenter = NO;
+    if (_preLockCursorScreenPosition) {
+      CGWarpMouseCursorPosition(
+          CGPointFromNSEventScreenPoint(*_preLockCursorScreenPosition));
+      _preLockCursorScreenPosition.reset();
+    }
     CGAssociateMouseAndMouseCursorPosition(YES);
     [NSCursor unhide];
   }
@@ -1237,9 +1384,27 @@ static NSWindow* __weak _deferredResignKeyWindow;
   // ). A |performKeyEquivalent:| may also bubble up from a dialog child window
   // to perform browser commands such as switching tabs. We only want to handle
   // key equivalents if we're first responder in the keyWindow.
-  if (![[self window] isKeyWindow] || [[self window] firstResponder] != self) {
+  if (![self isKeyTrackingWindowKey] ||
+      [[self window] firstResponder] != self) {
     TRACE_EVENT_INSTANT("browser", "NotKeyWindow");
     return NO;
+  }
+
+  // If the event is being redispatched, do not consume it again. This prevents
+  // dispatch loops that break accelerator key dispatch in fullscreen mode. Note
+  // that in fullscreen mode, the keys are dispatched to the key window, which
+  // is not the NSToolbarFullScreenWindow, but the BrowserNativeWidgetWindow.
+  // When redispatched, redispatchKeyEvent: resets theEvent.window to _owner
+  // which is also the BrowserNativeWidgetWindow. This implies that
+  // theEvent.window will be a BrowserNativeWidgetWindow which implements
+  // CommandDispatchingWindow.
+  if ([theEvent.window
+          conformsToProtocol:@protocol(CommandDispatchingWindow)]) {
+    NSObject<CommandDispatchingWindow>* window =
+        static_cast<NSObject<CommandDispatchingWindow>*>(theEvent.window);
+    if ([[window commandDispatcher] isEventBeingRedispatched:theEvent]) {
+      return NO;
+    }
   }
 
   // If the event is reserved by the system, do not pass it to web content.
@@ -1661,7 +1826,8 @@ static NSWindow* __weak _deferredResignKeyWindow;
 // three fingers.
 - (void)quickLookWithEvent:(NSEvent*)event {
   NSPoint point = [self convertPoint:[event locationInWindow] fromView:nil];
-  gfx::PointF rootPoint(point.x, NSHeight([self frame]) - point.y);
+  gfx::PointF rootPoint =
+      GetSanitizedFlippedPoint(point, NSHeight([self frame]));
   _host->LookUpDictionaryOverlayAtPoint(rootPoint);
 }
 
@@ -1710,8 +1876,29 @@ static NSWindow* __weak _deferredResignKeyWindow;
   _hostHelper->PinchEvent(gestureEvent, injected);
 }
 
+// Replace -[self window] with -keyTrackingWindow for any cases involving
+// window key status (checking isKeyWindow, observing for
+// NSWindowDidBecomeKeyNotification, etc.)
+- (NSWindow*)keyTrackingWindow {
+  if (remote_cocoa::IsNSToolbarFullScreenWindow(self.window)) {
+    // In fullscreen, NSToolbarFullScreenWindow never becomes the key window.
+    // If this RWHVCocoa is in the Toolbar, uses the browser window's key
+    // status.
+    NSWindow* browser_window =
+        remote_cocoa::OriginalBrowserWindowFromFullScreenWindow(self.window);
+    CHECK(browser_window);
+    return browser_window;
+  }
+  return self.window;
+}
+
+- (BOOL)isKeyTrackingWindowKey {
+  return self.keyTrackingWindow.isKeyWindow;
+}
+
 - (void)viewWillMoveToWindow:(NSWindow*)newWindow {
   NSWindow* oldWindow = [self window];
+  NSWindow* oldKeyTrackingWindow = [self keyTrackingWindow];
 
   NSNotificationCenter* notificationCenter =
       [NSNotificationCenter defaultCenter];
@@ -1731,12 +1918,6 @@ static NSWindow* __weak _deferredResignKeyWindow;
                                   name:NSWindowDidResizeNotification
                                 object:oldWindow];
     [notificationCenter removeObserver:self
-                                  name:NSWindowDidBecomeKeyNotification
-                                object:oldWindow];
-    [notificationCenter removeObserver:self
-                                  name:NSWindowDidResignKeyNotification
-                                object:oldWindow];
-    [notificationCenter removeObserver:self
                                   name:NSWindowWillCloseNotification
                                 object:oldWindow];
     [notificationCenter removeObserver:self
@@ -1746,6 +1927,20 @@ static NSWindow* __weak _deferredResignKeyWindow;
                                   name:NSApplicationDidResignActiveNotification
                                 object:nil];
   }
+  if (oldKeyTrackingWindow) {
+    [notificationCenter removeObserver:self
+                                  name:NSWindowDidBecomeKeyNotification
+                                object:oldKeyTrackingWindow];
+    [notificationCenter removeObserver:self
+                                  name:NSWindowDidResignKeyNotification
+                                object:oldKeyTrackingWindow];
+  }
+
+  NSWindow* newKeyTrackingWindow =
+      remote_cocoa::IsNSToolbarFullScreenWindow(newWindow)
+          ? remote_cocoa::OriginalBrowserWindowFromFullScreenWindow(newWindow)
+          : newWindow;
+
   if (newWindow) {
     [notificationCenter
         addObserver:self
@@ -1766,14 +1961,6 @@ static NSWindow* __weak _deferredResignKeyWindow;
                                name:NSWindowDidResizeNotification
                              object:newWindow];
     [notificationCenter addObserver:self
-                           selector:@selector(windowDidBecomeKey:)
-                               name:NSWindowDidBecomeKeyNotification
-                             object:newWindow];
-    [notificationCenter addObserver:self
-                           selector:@selector(windowDidResignKey:)
-                               name:NSWindowDidResignKeyNotification
-                             object:newWindow];
-    [notificationCenter addObserver:self
                            selector:@selector(windowWillClose:)
                                name:NSWindowWillCloseNotification
                              object:newWindow];
@@ -1785,6 +1972,16 @@ static NSWindow* __weak _deferredResignKeyWindow;
                            selector:@selector(applicationDidResignActive:)
                                name:NSApplicationDidResignActiveNotification
                              object:nil];
+  }
+  if (newKeyTrackingWindow) {
+    [notificationCenter addObserver:self
+                           selector:@selector(windowDidBecomeKey:)
+                               name:NSWindowDidBecomeKeyNotification
+                             object:newKeyTrackingWindow];
+    [notificationCenter addObserver:self
+                           selector:@selector(windowDidResignKey:)
+                               name:NSWindowDidResignKeyNotification
+                             object:newKeyTrackingWindow];
   }
 
   _hostHelper->SetAccessibilityWindow(newWindow);
@@ -1821,6 +2018,11 @@ static NSWindow* __weak _deferredResignKeyWindow;
   // during layout, and we don't explicitly listen for re-layout of parent
   // views.
   [self sendViewBoundsInWindowToHost];
+  // Update screen properties in case the window moved to a different display.
+  // AppKit only dispatches NSWindowDidChangeScreenNotification when crossing
+  // physical NSScreens, which won't fire for virtual displays (e.g. in Headless
+  // Mode).
+  [self updateScreenProperties];
 }
 
 - (void)setFrame:(NSRect)r {
@@ -1866,25 +2068,25 @@ static NSWindow* __weak _deferredResignKeyWindow;
 }
 
 - (void)windowDidBecomeKey:(NSNotification*)notification {
-  DCHECK([self window]);
-  DCHECK_EQ([self window], [notification object]);
+  DCHECK([self keyTrackingWindow]);
+  DCHECK_EQ([self keyTrackingWindow], [notification object]);
   [self performDeferredResignKeyWindow];
   if ([_responderDelegate respondsToSelector:@selector(windowDidBecomeKey)])
     [_responderDelegate windowDidBecomeKey];
-  if ([self window].keyWindow) {
+  if ([self isKeyTrackingWindowKey]) {
     _host->OnWindowIsKeyChanged(true);
   }
 }
 
 - (void)windowDidResignKey:(NSNotification*)notification {
-  DCHECK([self window]);
-  DCHECK_EQ([self window], [notification object]);
+  DCHECK([self keyTrackingWindow]);
+  DCHECK_EQ([self keyTrackingWindow], [notification object]);
 
   // If our app is still active and we're still the key window, ignore this
   // message, since it just means that a menu extra (on the "system status bar")
   // was activated; we'll get another |-windowDidResignKey| if we ever really
   // lose key window status.
-  if ([NSApp isActive] && ([NSApp keyWindow] == [self window])) {
+  if ([NSApp isActive] && ([NSApp keyWindow] == [self keyTrackingWindow])) {
     // Defer processing when the window is still reported as key. This occurs
     // in:
     // 1. Menu extra activation (system status bar items)
@@ -1920,9 +2122,47 @@ static NSWindow* __weak _deferredResignKeyWindow;
   }
 }
 
+// Ensure this window and the key tracking window stay in sync with this view's
+// first responder status. Note that this is handled by AppKit automatically
+// for mouse click in Fullscreen, but it does not handle programmatic
+// -makeFirstResponder.
+- (void)synchronizeFirstResponderWithKeyTrackingWindow:(BOOL)isFirstResponder {
+  // Guard against re-entrancy: calling -[NSWindow makeFirstResponder:] below
+  // synchronously invokes -[self becomeFirstResponder] or -resignFirstResponder
+  // on the new/old responder.
+  if (_isChangingFirstResponder) {
+    return;
+  }
+  base::AutoReset<BOOL> changing(&_isChangingFirstResponder, YES);
+  NSWindow* keyTrackingWindow = [self keyTrackingWindow];
+  if (keyTrackingWindow == [self window]) {
+    return;
+  }
+
+  if (isFirstResponder) {
+    [keyTrackingWindow makeFirstResponder:self];
+    [[self window] makeFirstResponder:self];
+  } else {
+    // Only clear first responder if the window still points to self. If focus
+    // moved to another view (e.g. clicking the web contents in the browser
+    // window), that new view is already (or in the process of being) made first
+    // responder. Calling makeFirstResponder:nil unconditionally would steal
+    // focus from it.
+    if ([keyTrackingWindow firstResponder] == self) {
+      [keyTrackingWindow makeFirstResponder:nil];
+    }
+    if ([[self window] firstResponder] == self) {
+      [[self window] makeFirstResponder:nil];
+    }
+  }
+}
+
 - (BOOL)becomeFirstResponder {
   if ([self hostIsDisconnected])
     return NO;
+
+  [self synchronizeFirstResponderWithKeyTrackingWindow:YES];
+
   if ([_responderDelegate respondsToSelector:@selector(becomeFirstResponder)])
     [_responderDelegate becomeFirstResponder];
 
@@ -1944,6 +2184,8 @@ static NSWindow* __weak _deferredResignKeyWindow;
 }
 
 - (BOOL)resignFirstResponder {
+  [self synchronizeFirstResponderWithKeyTrackingWindow:NO];
+
   if ([_responderDelegate respondsToSelector:@selector(resignFirstResponder)])
     [_responderDelegate resignFirstResponder];
 
@@ -2161,6 +2403,10 @@ static NSWindow* __weak _deferredResignKeyWindow;
   return self.accessibilityChildren;
 }
 
+- (BOOL)isAccessibilityElement {
+  return _hostHelper->GetRootBrowserAccessibilityElement() != nil;
+}
+
 - (id)accessibilityParent {
   if (_accessibilityParent)
     return NSAccessibilityUnignoredAncestor(_accessibilityParent);
@@ -2260,8 +2506,8 @@ extern NSString* NSTextInputReplacementRangeAttributeName;
   // the renderer.
   thePoint = [self.window convertPointFromScreen:thePoint];
   thePoint = [self convertPoint:thePoint fromView:nil];
-  thePoint.y = NSHeight([self frame]) - thePoint.y;
-  gfx::PointF rootPoint(thePoint.x, thePoint.y);
+  gfx::PointF rootPoint =
+      GetSanitizedFlippedPoint(thePoint, NSHeight([self frame]));
 
   uint32_t index = UINT32_MAX;
   _host->SyncGetCharacterIndexAtPoint(rootPoint, &index);
@@ -2274,7 +2520,7 @@ extern NSString* NSTextInputReplacementRangeAttributeName;
 }
 
 - (BOOL)drawsVerticallyForCharacterAtIndex:(NSUInteger)charIndex {
-  return !!(_textInputFlags & blink::kWebTextInputFlagVertical);
+  return !!(_textInputFlags & ui::TEXT_INPUT_FLAG_VERTICAL);
 }
 
 - (NSRect)firstRectForCharacterRange:(NSRange)theRange
@@ -2306,7 +2552,7 @@ extern NSString* NSTextInputReplacementRangeAttributeName;
   rect = [self convertRect:rect toView:nil];
   rect = [[self window] convertRectToScreen:rect];
 
-  if (_textInputFlags & blink::kWebTextInputFlagVertical) {
+  if (_textInputFlags & ui::TEXT_INPUT_FLAG_VERTICAL) {
     // Google Japanese Input doesn't use the result of
     // drawsVerticallyForCharacterAtIndex. So we'd like to ask it to show its
     // horizontal candidate window at the right side of the caret if the text
@@ -2380,19 +2626,35 @@ extern NSString* NSTextInputReplacementRangeAttributeName;
 // Each RenderWidgetHostViewCocoa has its own input context, but we return
 // nil when the caret is in non-editable content or password box to avoid
 // making input methods do their work.
-// We disable input method inside password field as it is normal for Mac OS X
-// password input fields to not allow dead keys or non ASCII input methods.
-// There is also a privacy risk if the composition candidate window shows your
-// password when the user is "composing" inside a password field. See
-// crbug.com/1196101 for more info.
 - (NSTextInputContext*)inputContext {
-  switch (_textInputType) {
-    case ui::TEXT_INPUT_TYPE_NONE:
-    case ui::TEXT_INPUT_TYPE_PASSWORD:
-      return nil;
-    default:
-      return [super inputContext];
+  if (_textInputType == ui::TEXT_INPUT_TYPE_NONE ||
+      _textInputType == ui::TEXT_INPUT_TYPE_PASSWORD) {
+    return nil;
   }
+
+  // Disable input method inside password field as it is normal for macOS
+  // password input fields to not allow dead keys or non ASCII input methods.
+  // There is also a privacy risk if the composition candidate window shows your
+  // password when the user is "composing" inside a password field. See
+  // https://crbug.com/40759416 for more info.
+  //
+  // Do not disable input methods for "custom password" fields
+  // (TEXT_INPUT_FLAG_HAS_BEEN_CUSTOM_PASSWORD) as the heuristic is weak and has
+  // too many false positives; https://crbug.com/567321058.
+  if (_textInputFlags & ui::TEXT_INPUT_FLAG_HAS_BEEN_PASSWORD) {
+    return nil;
+  }
+
+  // If AutoFill support is disabled and a native context menu is being shown,
+  // then return nil in order to ensure that macOS does NOT add any "AutoFill"
+  // items (contact, passwords, etc.) to the menu. This logic mirrors
+  // `ui/views/cocoa/text_input_host.mm`.
+  if (!_supportsAutoFill &&
+      ui::GetActiveCocoaMenuAnchorLocation().has_value()) {
+    return nil;
+  }
+
+  return super.inputContext;
 }
 
 - (BOOL)hasMarkedText {
@@ -2506,7 +2768,8 @@ extern NSString* NSTextInputReplacementRangeAttributeName;
   // automatically cancels an ongoing composition when we send an empty text.
   // So, it is OK to send an empty text to the renderer.)
   if ([self isHandlingKeyDown] && !_isReconversionTriggered) {
-    _setMarkedTextReplacementRange = gfx::Range(replacementRange);
+    _setMarkedTextReplacementRange =
+        gfx::Range::FromPossiblyInvalidNSRange(replacementRange);
   } else {
     _host->ImeSetComposition(
         _markedText, _imeTextSpans,
@@ -2532,7 +2795,7 @@ extern NSString* NSTextInputReplacementRangeAttributeName;
   // handle the command in the key event handler. Otherwise we can just handle
   // it here.
   if ([self isHandlingKeyDown]) {
-    if ((_textInputFlags & blink::kWebTextInputFlagVertical)) {
+    if ((_textInputFlags & ui::TEXT_INPUT_FLAG_VERTICAL)) {
       // Commands assigned to arrow keys are ignored and Blink handles key down
       // events because macOS doesn't work well with some vertical writing
       // modes. See editing_behavior.cc.
@@ -2652,6 +2915,7 @@ extern NSString* NSTextInputReplacementRangeAttributeName;
 }
 
 - (void)viewDidMoveToWindow {
+  [super viewDidMoveToWindow];
   // Update the window's frame, the view's bounds, focus, and the display info,
   // as they have not been updated while unattached to a window.
   [self sendWindowFrameInScreenToHost];
@@ -2661,7 +2925,11 @@ extern NSString* NSTextInputReplacementRangeAttributeName;
     [self updateScreenProperties];
   }
 
-  _host->OnWindowIsKeyChanged([[self window] isKeyWindow]);
+  if ([[self window] firstResponder] == self) {
+    [self synchronizeFirstResponderWithKeyTrackingWindow:YES];
+  }
+
+  _host->OnWindowIsKeyChanged([self isKeyTrackingWindowKey]);
   _host->OnFirstResponderChanged([[self window] firstResponder] == self);
 
   // If we switch windows (or are removed from the view hierarchy), cancel any
@@ -2776,8 +3044,9 @@ extern NSString* NSTextInputReplacementRangeAttributeName;
   NSPoint location = [self.window convertPointFromScreen:NSEvent.mouseLocation];
   location = [self convertPoint:location fromView:nil];
   if (![self mouse:location inRect:[self bounds]] ||
-      ![[self window] isKeyWindow])
+      ![self isKeyTrackingWindowKey]) {
     return NO;
+  }
 
   if (_cursorHidden || _showingContextMenu)
     return NO;

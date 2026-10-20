@@ -7,7 +7,6 @@
 #include <string>
 
 #include "base/memory/weak_ptr.h"
-#include "base/strings/strcat.h"
 #include "base/task/single_thread_task_runner.h"
 #include "chrome/browser/ui/autofill/payments/payments_ui_constants.h"
 #include "chrome/browser/ui/autofill/payments/payments_view_factory.h"
@@ -23,7 +22,6 @@
 #include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/border.h"
 #include "ui/views/bubble/bubble_frame_view.h"
-#include "ui/views/controls/link.h"
 #include "ui/views/controls/styled_label.h"
 #include "ui/views/controls/textfield/textfield.h"
 #include "ui/views/controls/throbber.h"
@@ -129,7 +127,7 @@ bool CardUnmaskOtpInputDialogViews::Accept() {
 }
 
 views::View* CardUnmaskOtpInputDialogViews::GetInitiallyFocusedView() {
-  DCHECK(otp_input_textfield_);
+  CHECK(otp_input_textfield_, base::NotFatalUntil::M162);
   return otp_input_textfield_;
 }
 
@@ -146,7 +144,7 @@ void CardUnmaskOtpInputDialogViews::ContentsChanged(
 }
 
 void CardUnmaskOtpInputDialogViews::InitViews() {
-  DCHECK(children().empty());
+  CHECK(children().empty(), base::NotFatalUntil::M162);
   auto* layout = SetLayoutManager(std::make_unique<views::BoxLayout>(
       views::BoxLayout::Orientation::kVertical, gfx::Insets(),
       ChromeLayoutProvider::Get()->GetDistanceMetric(
@@ -256,7 +254,7 @@ void CardUnmaskOtpInputDialogViews::CreateHiddenProgressView() {
 }
 
 void CardUnmaskOtpInputDialogViews::HideInvalidState() {
-  DCHECK(otp_input_textfield_->GetInvalid());
+  CHECK(otp_input_textfield_->GetInvalid(), base::NotFatalUntil::M162);
   otp_input_textfield_->SetInvalid(false);
   otp_input_textfield_invalid_label_->SetText(std::u16string());
   otp_input_textfield_invalid_label_->SetVisible(false);

@@ -11,11 +11,13 @@ export function getHtml(this: ComposeboxFaviconGroupElement) {
     ${
       this.visibleTabs_.map(
           tab => html`
-      <div class="favicon-item" style="background-image: ${
-              this.getFaviconUrl_(tab.url)}"></div>
+      <div class="favicon-item ${this.isTabLoading_(tab) ? 'loading' : ''}"
+          style="--favicon-image: ${this.getFaviconUrl_(tab)}"></div>
     `)}
-    ${this.remainingCount_ > 0 ? html`
+    ${
+      this.remainingCount_ > 0 ? html`
       <div id="more-items">
         +${this.remainingCount_}
-      </div>` : ''}`;
+      </div>` :
+                                 ''}`;
 }

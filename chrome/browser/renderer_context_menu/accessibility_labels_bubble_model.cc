@@ -8,7 +8,7 @@
 #include "chrome/browser/accessibility/accessibility_labels_service.h"
 #include "chrome/browser/accessibility/accessibility_labels_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/scoped_tabbed_browser_displayer.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/common/url_constants.h"
@@ -19,6 +19,8 @@
 #include "content/public/browser/web_contents.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/mojom/dialog_button.mojom.h"
+#include "ui/base/page_transition_types.h"
+#include "ui/base/window_open_disposition.h"
 
 using content::OpenURLParams;
 using content::Referrer;
@@ -96,15 +98,16 @@ GURL AccessibilityLabelsBubbleModel::GetHelpPageURL() const {
 }
 
 void AccessibilityLabelsBubbleModel::OpenHelpPage() {
-  OpenURLParams params(GetHelpPageURL(), Referrer(),
-                       WindowOpenDisposition::NEW_FOREGROUND_TAB,
-                       ui::PAGE_TRANSITION_LINK, false);
+  OpenURLParams params = OpenURLParams::CreateBrowserInitiated(
+      GetHelpPageURL(), WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      ui::PAGE_TRANSITION_LINK);
   if (web_contents_) {
     web_contents_->OpenURL(params, /*navigation_handle_callback=*/{});
     return;
   }
   // The web contents used to open this dialog have been destroyed.
-  Browser* browser = chrome::ScopedTabbedBrowserDisplayer(profile_).browser();
+  BrowserWindowInterface* browser =
+      chrome::ScopedTabbedBrowserDisplayer(profile_).browser_window_interface();
   browser->OpenURL(params, /*navigation_handle_callback=*/{});
 }
 

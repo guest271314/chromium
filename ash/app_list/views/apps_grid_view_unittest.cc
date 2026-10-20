@@ -64,12 +64,12 @@
 #include "ash/utility/haptics_tracking_test_input_controller.h"
 #include "ash/wm/tablet_mode/tablet_mode_controller_test_api.h"
 #include "base/callback_list.h"
+#include "base/i18n/test/scoped_rtl_for_testing.h"
 #include "base/memory/raw_ptr.h"
 #include "base/run_loop.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/bind.h"
-#include "base/test/icu_test_util.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/metrics/user_action_tester.h"
 #include "base/test/run_until.h"
@@ -321,8 +321,7 @@ class AppsGridViewTest : public AshTestBase, views::WidgetObserver {
 
   // testing::Test overrides:
   void SetUp() override {
-    if (is_rtl_)
-      base::i18n::SetICUDefaultLocale("he");
+    rtl_override_.emplace(is_rtl_);
 
     AshTestBase::SetUp();
 
@@ -393,6 +392,7 @@ class AppsGridViewTest : public AshTestBase, views::WidgetObserver {
     app_list_folder_view_ = nullptr;
     app_list_view_ = nullptr;
     AshTestBase::TearDown();
+    rtl_override_.reset();
   }
 
   // views::WidgetObserver:
@@ -780,8 +780,8 @@ class AppsGridViewTest : public AshTestBase, views::WidgetObserver {
   std::unique_ptr<PageFlipWaiter> page_flip_waiter_;
 
  private:
-  // Restores the locale to default when destructor is called.
-  base::test::ScopedRestoreICUDefaultLocale restore_locale_;
+  // Restores the text direction and the locale when destroyed.
+  std::optional<base::i18n::ScopedRTLForTesting> rtl_override_;
 
   // Used to track haptics events sent during drag.
   std::unique_ptr<HapticsTrackingTestInputController> haptics_tracker_;
@@ -803,6 +803,11 @@ class AppsGridViewDragTestBase : public AppsGridViewTest {
   AppsGridViewDragTestBase() = default;
 
   // AppsGridViewTest:
+  void SetUpInitParams(AshTestHelper::InitParams& init_params) override {
+    AppsGridViewTest::SetUpInitParams(init_params);
+    init_params.add_default_shelf_icon = false;
+  }
+
   void SetUp() override {
     AppsGridViewTest::SetUp();
     ShelfModel::Get()->SetShelfItemFactory(&shelf_item_factory_);
@@ -6263,7 +6268,7 @@ TEST_P(AppsGridViewTabletTest,
 
   // Cache the current context menu view.
   views::MenuItemView* reorder_submenu =
-      context_menu->root_for_testing()->GetSubmenu()->GetMenuItemAt(2);
+      context_menu->root_for_testing()->GetSubmenu()->GetMenuItemAt(3);
   ASSERT_EQ(reorder_submenu->title(), u"Sort by");
 
   // Open the Sort by submenu.
@@ -6292,7 +6297,7 @@ TEST_P(AppsGridViewTabletTest,
   EXPECT_TRUE(context_menu->IsShowingMenu());
 
   reorder_submenu =
-      context_menu->root_for_testing()->GetSubmenu()->GetMenuItemAt(2);
+      context_menu->root_for_testing()->GetSubmenu()->GetMenuItemAt(3);
   ASSERT_EQ(reorder_submenu->title(), u"Sort by");
 
   // Open the Sort by submenu.
@@ -6327,7 +6332,7 @@ TEST_P(AppsGridViewTabletTest, NoSortOptionsWhenSearchPageIsShownInTabletMode) {
 
   // Cache the current context menu view.
   views::MenuItemView* reorder_submenu =
-      context_menu->root_for_testing()->GetSubmenu()->GetMenuItemAt(2);
+      context_menu->root_for_testing()->GetSubmenu()->GetMenuItemAt(3);
   ASSERT_EQ(reorder_submenu->title(), u"Sort by");
 
   // Open the Sort by submenu.
@@ -6360,11 +6365,11 @@ TEST_P(AppsGridViewTabletTest, NoSortOptionsWhenSearchPageIsShownInTabletMode) {
       Shell::GetPrimaryRootWindowController()->menu_model_adapter_for_testing();
   EXPECT_TRUE(context_menu->IsShowingMenu());
 
-  // Verify that the sort option is removed and there are only 2 options in the
+  // Verify that the sort option is removed and there are only 3 options in the
   // menu.
   int context_menu_size =
       context_menu->root_for_testing()->GetSubmenu()->GetMenuItems().size();
-  EXPECT_LT(context_menu_size, 3);
+  EXPECT_LT(context_menu_size, 4);
 }
 
 TEST_P(AppsGridViewClamshellAndTabletTest, ContextMenuOnFolderItemSortAllApps) {

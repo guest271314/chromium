@@ -12,7 +12,14 @@ import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 
 /** Defines the possible shapes of an XR surface entity. */
-@IntDef({XrSurfaceEntityShape.QUAD, XrSurfaceEntityShape.SPHERE, XrSurfaceEntityShape.HEMISPHERE})
+@IntDef({
+    XrSurfaceEntityShape.QUAD,
+    XrSurfaceEntityShape.SPHERE,
+    XrSurfaceEntityShape.HEMISPHERE,
+    XrSurfaceEntityShape.CUSTOM,
+    XrSurfaceEntityShape.SEAMLESS_SPHERE,
+    XrSurfaceEntityShape.ROUNDED_QUAD
+})
 @Retention(RetentionPolicy.SOURCE)
 @NullMarked
 public @interface XrSurfaceEntityShape {
@@ -24,4 +31,33 @@ public @interface XrSurfaceEntityShape {
 
     /** A hemispherical surface. */
     int HEMISPHERE = 2;
+
+    /** A custom mesh surface. */
+    int CUSTOM = 3;
+
+    /**
+     * A custom sphere mesh surface with seamless UV mapping for 360° immersive video.
+     *
+     * <p>Includes inward texture coordinate padding to prevent bilinear filtering seam artifacts
+     * along texture edges.
+     */
+    int SEAMLESS_SPHERE = 4;
+
+    /** A custom rounded quad mesh surface. */
+    int ROUNDED_QUAD = 5;
+
+    /** Helper utilities for {@link XrSurfaceEntityShape}. */
+    final class Utils {
+        private Utils() {}
+
+        /** Returns true if the shape is curved. */
+        public static boolean isCurved(@XrSurfaceEntityShape int shape) {
+            return shape == SPHERE || shape == HEMISPHERE || shape == SEAMLESS_SPHERE;
+        }
+
+        /** Returns true if the shape is planar. */
+        public static boolean isPlanar(@XrSurfaceEntityShape int shape) {
+            return shape == QUAD || shape == ROUNDED_QUAD;
+        }
+    }
 }

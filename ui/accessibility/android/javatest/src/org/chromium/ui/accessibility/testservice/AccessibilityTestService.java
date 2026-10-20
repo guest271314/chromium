@@ -5,10 +5,13 @@
 package org.chromium.ui.accessibility.testservice;
 
 import android.accessibilityservice.AccessibilityService;
+import android.accessibilityservice.AccessibilityServiceInfo;
 import android.content.Intent;
+import android.os.Bundle;
 import android.text.TextUtils;
 import android.view.accessibility.AccessibilityEvent;
 import android.view.accessibility.AccessibilityNodeInfo;
+import android.view.accessibility.AccessibilityWindowInfo;
 
 import androidx.core.view.accessibility.AccessibilityNodeInfoCompat;
 
@@ -21,11 +24,24 @@ import java.util.ListIterator;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.function.IntFunction;
+import java.util.function.Predicate;
+import java.util.function.Supplier;
 
 import javax.annotation.concurrent.GuardedBy;
 
 public class AccessibilityTestService extends AccessibilityService {
     private static final String TAG = "A11yTestService";
+
+    // Extended selection offset types, defined in:
+    // androidx.view.accessibility.AccessibilityNodeInfoCompat
+    private static final int OFFSET_TYPE_TEXT = 0;
+    private static final int OFFSET_TYPE_CHILD = 1;
+
+    private static final String EXTRA_SELECTION_START_OFFSET_TYPE =
+            "androidx.view.accessibility.AccessibilityNodeInfoCompat.SELECTION_START_OFFSET_TYPE";
+    private static final String EXTRA_SELECTION_END_OFFSET_TYPE =
+            "androidx.view.accessibility.AccessibilityNodeInfoCompat.SELECTION_END_OFFSET_TYPE";
 
     private static AccessibilityTestService sInstance;
     private static final Object sLock = new Object();
@@ -44,48 +60,206 @@ public class AccessibilityTestService extends AccessibilityService {
         return sInstance;
     }
 
-    public static boolean tryWaitForEvent(WaitForEventParams params) {
-        CompletableFuture<Boolean> eventFuture = new CompletableFuture<>();
+    public static boolean waitForEvent(EventMatcher eventMatcher, long timeoutMs) {
+        return waitForCondition(
+                () -> {
+                    synchronized (sLock) {
+                        if (searchAndConsumeEventCacheLocked(eventMatcher)) {
+                            Log.i(
+                                    TAG,
+                                    "Found event in cache: " + eventMatcherToString(eventMatcher));
+                            return true;
+                        }
+                        return false;
+                    }
+                },
+                (event) -> {
+                    if (eventMatches(event, eventMatcher)) {
+                        Log.i(TAG, "Found event: " + eventMatcherToString(eventMatcher));
+                        synchronized (sLock) {
+                            // We should clear the entire cache after having matched an event to
+                            // avoid matching against any earlier event later through the test.
+                            clearEventCacheLocked();
+                        }
+                        return true;
+                    }
+                    return false;
+                },
+                timeoutMs,
+                "Timed out waiting for event: " + eventMatcherToString(eventMatcher));
+    }
+
+    public static boolean waitForNode(NodeMatcher nodeMatcher, long timeoutMs) {
+        return waitForCondition(
+                () -> {
+                    if (findNode(nodeMatcher)) {
+                        Log.i(TAG, "Found node instantly: " + nodeMatcherToString(nodeMatcher));
+                        return true;
+                    }
+                    return false;
+                },
+                (event) -> {
+                    if (findNode(nodeMatcher)) {
+                        Log.i(
+                                TAG,
+                                "Found node: "
+                                        + nodeMatcherToString(nodeMatcher)
+                                        + " after event: "
+                                        + event);
+                        return true;
+                    }
+                    return false;
+                },
+                timeoutMs,
+                "Timed out waiting for node: " + nodeMatcherToString(nodeMatcher));
+    }
+
+    private static boolean waitForCondition(
+            Supplier<Boolean> immediateCheck,
+            Predicate<AccessibilityEvent> eventCheck,
+            long timeoutMs,
+            String timeoutLogMessage) {
+        synchronized (sLock) {
+            clearListenerLocked();
+        }
+
+        if (immediateCheck != null && immediateCheck.get()) {
+            return true;
+        }
+
+        CompletableFuture<Boolean> future = new CompletableFuture<>();
         AccessibilityServiceListener listener =
                 new AccessibilityServiceListener() {
                     @Override
                     public void onAccessibilityEvent(AccessibilityEvent event) {
-                        if (eventMatches(event, params)) {
-                            Log.i(TAG, "  Event MATCHED.");
-                            eventFuture.complete(true);
+                        if (eventCheck.test(event)) {
+                            future.complete(true);
                         }
                     }
                 };
 
         synchronized (sLock) {
-            // Clear any previous listener, as waitForEvent claims exclusive rights.
-            clearListenerLocked();
-
-            if (searchAndConsumeEventCacheLocked(params)) {
-                Log.i(TAG, "Found event in cache.");
-                return true;
-            }
-
-            // Not in cache, clear it and prepare to wait for new events.
-            clearEventCacheLocked();
             setListenerLocked(listener);
         }
 
-        // Did not find the event in the cache, so wait on the listener to return.
         try {
-            return eventFuture.get(params.timeoutMs, TimeUnit.MILLISECONDS);
+            return future.get(timeoutMs, TimeUnit.MILLISECONDS);
         } catch (TimeoutException e) {
-            Log.w(TAG, "Timed out waiting for event");
+            Log.w(TAG, timeoutLogMessage);
             return false;
         } catch (Exception e) {
-            Log.e(TAG, "Error waiting for event", e);
+            Log.e(TAG, "Error waiting for condition", e);
             return false;
         } finally {
-            // Ensure the listener is cleared in all cases.
             synchronized (sLock) {
                 clearListenerLocked();
             }
         }
+    }
+
+    public static boolean waitForActiveWindow(long timeoutMs) {
+        return waitForCondition(
+                () -> {
+                    if (getRootInActiveWindow(/* useFallback= */ true) != null) {
+                        Log.i(TAG, "Found active window instantly.");
+                        return true;
+                    }
+                    return false;
+                },
+                (event) -> {
+                    if (getRootInActiveWindow(/* useFallback= */ true) != null) {
+                        Log.i(TAG, "Found active window after event: " + event);
+                        return true;
+                    }
+                    return false;
+                },
+                timeoutMs,
+                "Timed out waiting for active window");
+    }
+
+    private static AccessibilityNodeInfo getRootInActiveWindow(boolean useFallback) {
+        AccessibilityTestService instance = getInstance();
+        if (instance == null) {
+            Log.e(
+                    TAG,
+                    "AccessibilityTestService's instance was null when looking after root node.");
+            return null;
+        }
+        AccessibilityNodeInfo root = instance.getRootInActiveWindow();
+        if (root != null) {
+            return root;
+        }
+
+        List<AccessibilityWindowInfo> windows = instance.getWindows();
+
+        if (useFallback && windows != null) {
+            for (AccessibilityWindowInfo window : windows) {
+                if (window.isActive() || window.isFocused()) {
+                    AccessibilityNodeInfo windowRoot = window.getRoot();
+                    if (windowRoot != null) {
+                        return windowRoot;
+                    }
+                }
+            }
+        }
+        return null;
+    }
+
+    private static boolean findNode(NodeMatcher nodeMatcher) {
+        AccessibilityTestService instance = getInstance();
+        if (instance == null) {
+            Log.e(TAG, "AccessibilityTestService's instance was null when looking after node.");
+            return false;
+        }
+        AccessibilityNodeInfo root = getRootInActiveWindow(/* useFallback= */ true);
+        if (root == null) {
+            Log.w(TAG, "Root node is null when looking for: " + nodeMatcher);
+            return false;
+        }
+        return findNodeRecursive(root, nodeMatcher) != null;
+    }
+
+    private static AccessibilityNodeInfo findNodeRecursive(
+            AccessibilityNodeInfo node, NodeMatcher nodeMatcher) {
+        if (node == null) return null;
+
+        CharSequence nodeClassName = node.getClassName();
+        CharSequence nodeText = node.getText();
+        Log.d(TAG, "  findNodeRecursive: " + nodeClassName + " - " + nodeText);
+
+        if (nodeMatches(node, nodeMatcher)) {
+            return node;
+        }
+
+        for (int i = 0; i < node.getChildCount(); i++) {
+            AccessibilityNodeInfo child = node.getChild(i);
+            AccessibilityNodeInfo result = findNodeRecursive(child, nodeMatcher);
+            if (result != null) {
+                return result;
+            }
+        }
+        return null;
+    }
+
+    private static boolean nodeMatches(AccessibilityNodeInfo node, NodeMatcher nodeMatcher) {
+        CharSequence nodeClassName = node.getClassName();
+        CharSequence nodeText = node.getText();
+
+        boolean classNameMatches =
+                TextUtils.isEmpty(nodeMatcher.className)
+                        || TextUtils.equals(nodeClassName, nodeMatcher.className);
+        boolean textMatches =
+                TextUtils.isEmpty(nodeMatcher.text) || TextUtils.equals(nodeText, nodeMatcher.text);
+        boolean inputFocusedMatches =
+                !nodeMatcher.hasInputFocused || (node.isFocused() == nodeMatcher.inputFocused);
+        boolean accessibilityFocusedMatches =
+                !nodeMatcher.hasAccessibilityFocused
+                        || (node.isAccessibilityFocused() == nodeMatcher.accessibilityFocused);
+
+        return classNameMatches
+                && textMatches
+                && inputFocusedMatches
+                && accessibilityFocusedMatches;
     }
 
     @GuardedBy("sLock")
@@ -102,13 +276,13 @@ public class AccessibilityTestService extends AccessibilityService {
     }
 
     @GuardedBy("sLock")
-    public static boolean searchAndConsumeEventCacheLocked(WaitForEventParams params) {
+    public static boolean searchAndConsumeEventCacheLocked(EventMatcher eventMatcher) {
         ListIterator<AccessibilityEvent> iterator = sEventCache.listIterator();
         int foundIndex = -1;
         while (iterator.hasNext()) {
             int index = iterator.nextIndex();
             AccessibilityEvent event = iterator.next();
-            if (eventMatches(event, params)) {
+            if (eventMatches(event, eventMatcher)) {
                 foundIndex = index;
                 break;
             }
@@ -126,7 +300,8 @@ public class AccessibilityTestService extends AccessibilityService {
         sEventCache.clear();
     }
 
-    public static boolean tryPerformActionOnNode(String className, String text, int action) {
+    public static boolean tryPerformActionOnNode(
+            NodeMatcher matcher, int action, Bundle arguments) {
         synchronized (sLock) {
             AccessibilityTestService instance = sInstance;
             if (instance == null) {
@@ -134,48 +309,26 @@ public class AccessibilityTestService extends AccessibilityService {
                 return false;
             }
 
-            AccessibilityNodeInfo root = instance.getRootInActiveWindow();
+            AccessibilityNodeInfo root = getRootInActiveWindow(/* useFallback= */ true);
             if (root == null) {
                 Log.e(TAG, "Root node is null");
                 return false;
             }
 
-            AccessibilityNodeInfo targetNode = findNodeRecursive(root, className, text);
+            AccessibilityNodeInfo targetNode = findNodeRecursive(root, matcher);
 
             if (targetNode != null) {
                 Log.i(TAG, "Found node: " + targetNode.toString());
-                return targetNode.performAction(action);
+                if (arguments != null) {
+                    return targetNode.performAction(action, arguments);
+                } else {
+                    return targetNode.performAction(action);
+                }
             }
 
             Log.e(TAG, "Node not found");
             return false;
         }
-    }
-
-    private static AccessibilityNodeInfo findNodeRecursive(
-            AccessibilityNodeInfo node, String className, String text) {
-        if (node == null) return null;
-
-        CharSequence nodeClassName = node.getClassName();
-        CharSequence nodeText = node.getText();
-        Log.i(TAG, "  findNodeRecursive: " + nodeClassName + " - " + nodeText);
-
-        boolean classNameMatches =
-                TextUtils.isEmpty(className) || TextUtils.equals(nodeClassName, className);
-        boolean textMatches = TextUtils.isEmpty(text) || TextUtils.equals(nodeText, text);
-
-        if (classNameMatches && textMatches) {
-            return node;
-        }
-
-        for (int i = 0; i < node.getChildCount(); i++) {
-            AccessibilityNodeInfo child = node.getChild(i);
-            AccessibilityNodeInfo result = findNodeRecursive(child, className, text);
-            if (result != null) {
-                return result;
-            }
-        }
-        return null;
     }
 
     public static String dumpWebContentsAccessibilityTree() {
@@ -186,7 +339,7 @@ public class AccessibilityTestService extends AccessibilityService {
                 return "Error: AccessibilityTestService instance is null";
             }
 
-            AccessibilityNodeInfo root = instance.getRootInActiveWindow();
+            AccessibilityNodeInfo root = getRootInActiveWindow(/* useFallback= */ true);
             if (root == null) {
                 Log.e(TAG, "Root node is null");
                 return "Error: Root node is null";
@@ -207,8 +360,9 @@ public class AccessibilityTestService extends AccessibilityService {
             }
 
             // Find the WebView node.
-            AccessibilityNodeInfo webViewNode =
-                    findNodeRecursive(root, "android.webkit.WebView", null);
+            NodeMatcher nodeMatcher = new NodeMatcher();
+            nodeMatcher.className = "android.webkit.WebView";
+            AccessibilityNodeInfo webViewNode = findNodeRecursive(root, nodeMatcher);
             if (webViewNode == null) {
                 Log.e(TAG, "WebView node not found");
                 return "Error: WebView node not found";
@@ -249,12 +403,21 @@ public class AccessibilityTestService extends AccessibilityService {
         AccessibilityNodeInfoCompat ancestor = node;
         while (ancestor != null) {
             AccessibilityNodeInfoCompat.SelectionCompat selection = ancestor.getSelection();
-            if (selection != null) {
+            // SelectionCompat might be generated by the Android platform framework (e.g. for
+            // standard selection inside focused EditText fields). These OS populated selections
+            // lack the offset type information and are not considered extended selections.
+            int startOffsetType =
+                    ancestor.getExtras().getInt(EXTRA_SELECTION_START_OFFSET_TYPE, -1);
+            int endOffsetType = ancestor.getExtras().getInt(EXTRA_SELECTION_END_OFFSET_TYPE, -1);
+            if (selection != null && startOffsetType != -1 && endOffsetType != -1) {
                 AccessibilityNodeInfoCompat.SelectionPositionCompat start = selection.getStart();
                 boolean addedSelectionInfo = false;
                 if (start != null) {
                     if (node.equals(start.getNode())) {
-                        builder.append(" extendedSelectionStart:").append(start.getOffset());
+                        builder.append(" extendedSelectionStart:")
+                                .append(
+                                        getExtendedSelectionString(
+                                                start.getOffset(), startOffsetType));
                         addedSelectionInfo = true;
                     }
                 }
@@ -262,7 +425,8 @@ public class AccessibilityTestService extends AccessibilityService {
                 AccessibilityNodeInfoCompat.SelectionPositionCompat end = selection.getEnd();
                 if (end != null) {
                     if (node.equals(end.getNode())) {
-                        builder.append(" extendedSelectionEnd:").append(end.getOffset());
+                        builder.append(" extendedSelectionEnd:")
+                                .append(getExtendedSelectionString(end.getOffset(), endOffsetType));
                         addedSelectionInfo = true;
                     }
                 }
@@ -293,35 +457,41 @@ public class AccessibilityTestService extends AccessibilityService {
         return builder.toString();
     }
 
-    static boolean eventMatches(AccessibilityEvent event, WaitForEventParams params) {
-        if (event.getEventType() != params.eventType) return false;
+    static boolean eventMatches(AccessibilityEvent event, EventMatcher eventMatcher) {
+        if (event.getEventType() != eventMatcher.eventType) return false;
 
         // contentChangeTypes is a bitmask: when a non-zero value is provided, only match events
         // whose getContentChangeTypes() includes all requested flags. Other flags set by Android
         // are tolerated.
-        if (params.contentChangeTypes != 0
-                && (event.getContentChangeTypes() & params.contentChangeTypes)
-                        != params.contentChangeTypes) {
+        if (eventMatcher.contentChangeTypes != 0
+                && (event.getContentChangeTypes() & eventMatcher.contentChangeTypes)
+                        != eventMatcher.contentChangeTypes) {
             return false;
         }
 
         AccessibilityNodeInfo source = event.getSource();
-        CharSequence sourceClassName = source != null ? source.getClassName() : "";
-        CharSequence sourceText = source != null ? source.getText() : "";
 
-        boolean classNameMatches =
-                TextUtils.isEmpty(params.className)
-                        || TextUtils.equals(sourceClassName, params.className);
-        boolean textMatches =
-                TextUtils.isEmpty(params.text) || TextUtils.equals(sourceText, params.text);
+        if (eventMatcher.sourceMatcher != null) {
+            if (source == null || !nodeMatches(source, eventMatcher.sourceMatcher)) {
+                return false;
+            }
+        }
 
-        return classNameMatches && textMatches;
+        return true;
     }
 
     @Override
     protected void onServiceConnected() {
         super.onServiceConnected();
         Log.d(TAG, "onServiceConnected");
+        AccessibilityServiceInfo info = getServiceInfo();
+        if (info != null) {
+            info.flags |=
+                    AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS
+                            | AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS
+                            | AccessibilityServiceInfo.FLAG_INCLUDE_NOT_IMPORTANT_VIEWS;
+            setServiceInfo(info);
+        }
         synchronized (sLock) {
             sInstance = this;
         }
@@ -342,14 +512,108 @@ public class AccessibilityTestService extends AccessibilityService {
     public void onAccessibilityEvent(AccessibilityEvent event) {
         Log.i(TAG, "onAccessibilityEvent: " + event);
         synchronized (sLock) {
+            sEventCache.add(AccessibilityEvent.obtain(event));
             if (sListener != null) {
                 sListener.onAccessibilityEvent(event);
-            } else {
-                sEventCache.add(AccessibilityEvent.obtain(event));
             }
         }
     }
 
     @Override
     public void onInterrupt() {}
+
+    private static String getExtendedSelectionString(int offset, int offsetType) {
+        return "{" + offset + ", " + (offsetType == OFFSET_TYPE_TEXT ? "text" : "child") + "}";
+    }
+
+    public static String eventMatcherToString(EventMatcher matcher) {
+        if (matcher == null) {
+            return "null";
+        }
+        return "EventMatcher{eventType="
+                + matcher.eventType
+                + ", contentChangeTypes="
+                + contentChangeTypesToString(matcher.contentChangeTypes)
+                + ", sourceMatcher="
+                + nodeMatcherToString(matcher.sourceMatcher)
+                + "}";
+    }
+
+    public static String nodeMatcherToString(NodeMatcher matcher) {
+        if (matcher == null) {
+            return "null";
+        }
+        return "NodeMatcher{className='"
+                + matcher.className
+                + ", text='"
+                + matcher.text
+                + ", hasInputFocused="
+                + matcher.hasInputFocused
+                + ", inputFocused="
+                + matcher.inputFocused
+                + ", hasAccessibilityFocused="
+                + matcher.hasAccessibilityFocused
+                + ", accessibilityFocused="
+                + matcher.accessibilityFocused
+                + "}";
+    }
+
+    private static String contentChangeTypesToString(int types) {
+        return flagsToString(types, AccessibilityTestService::singleContentChangeTypeToString);
+    }
+
+    private static String flagsToString(int flags, IntFunction<String> getFlagName) {
+        if (flags == 0) {
+            return "UNDEFINED";
+        }
+
+        // Parsing out the bits from flags bitmask, querying the corresponding
+        // value using getFlagName function parameter and appending to the
+        // return value.
+        StringBuilder builder = new StringBuilder();
+        int count = 0;
+        while (flags != 0) {
+            final int flag = 1 << Integer.numberOfTrailingZeros(flags);
+            flags &= ~flag;
+            if (count > 0) builder.append(", ");
+            builder.append(getFlagName.apply(flag));
+            count++;
+        }
+        return builder.toString();
+    }
+
+    private static String singleContentChangeTypeToString(int type) {
+        switch (type) {
+            case AccessibilityEvent.CONTENT_CHANGE_TYPE_UNDEFINED:
+                return "UNDEFINED";
+            case AccessibilityEvent.CONTENT_CHANGE_TYPE_SUBTREE:
+                return "SUBTREE";
+            case AccessibilityEvent.CONTENT_CHANGE_TYPE_TEXT:
+                return "TEXT";
+            case AccessibilityEvent.CONTENT_CHANGE_TYPE_CONTENT_DESCRIPTION:
+                return "CONTENT_DESCRIPTION";
+            case AccessibilityEvent.CONTENT_CHANGE_TYPE_STATE_DESCRIPTION:
+                return "STATE_DESCRIPTION";
+            case AccessibilityEvent.CONTENT_CHANGE_TYPE_PANE_TITLE:
+                return "PANE_TITLE";
+            case AccessibilityEvent.CONTENT_CHANGE_TYPE_PANE_APPEARED:
+                return "PANE_APPEARED";
+            case AccessibilityEvent.CONTENT_CHANGE_TYPE_PANE_DISAPPEARED:
+                return "PANE_DISAPPEARED";
+            case AccessibilityEvent.CONTENT_CHANGE_TYPE_DRAG_STARTED:
+                return "DRAG_STARTED";
+            case AccessibilityEvent.CONTENT_CHANGE_TYPE_DRAG_CANCELLED:
+                return "DRAG_CANCELLED";
+            case AccessibilityEvent.CONTENT_CHANGE_TYPE_DRAG_DROPPED:
+                return "DRAG_DROPPED";
+            case AccessibilityEvent.CONTENT_CHANGE_TYPE_CONTENT_INVALID:
+                return "CONTENT_INVALID";
+            case AccessibilityEvent.CONTENT_CHANGE_TYPE_ERROR:
+                return "ERROR";
+            case AccessibilityEvent.CONTENT_CHANGE_TYPE_ENABLED:
+                return "ENABLED";
+            default:
+                return "UNKNOWN: " + Integer.toString(type);
+        }
+    }
 }

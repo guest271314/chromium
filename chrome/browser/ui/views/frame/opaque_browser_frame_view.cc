@@ -10,7 +10,6 @@
 #include "base/trace_event/trace_event.h"
 #include "build/build_config.h"
 #include "build/buildflag.h"
-#include "chrome/browser/themes/theme_properties.h"
 #include "chrome/browser/ui/color/chrome_color_id.h"
 #include "chrome/browser/ui/layout_constants.h"
 #include "chrome/browser/ui/views/frame/browser_native_widget.h"
@@ -18,7 +17,6 @@
 #include "chrome/browser/ui/views/frame/browser_widget.h"
 #include "chrome/browser/ui/views/frame/caption_button_placeholder_container.h"
 #include "chrome/browser/ui/views/frame/opaque_browser_frame_view_layout.h"
-#include "chrome/browser/ui/views/frame/tab_strip_region_view.h"
 #include "chrome/browser/ui/views/frame/top_container_view.h"
 #include "chrome/browser/ui/views/tab_icon_view.h"
 #include "chrome/browser/ui/views/tabs/new_tab_button.h"
@@ -31,7 +29,6 @@
 #include "content/public/browser/web_contents.h"
 #include "third_party/skia/include/core/SkPath.h"
 #include "ui/accessibility/ax_enums.mojom.h"
-#include "ui/accessibility/ax_node_data.h"
 #include "ui/base/hit_test.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
@@ -71,6 +68,8 @@
 using content::WebContents;
 
 namespace {
+
+constexpr int kRoundedCaptionButtonSize = 16;
 
 class CaptionButtonBackgroundImageSource : public gfx::CanvasImageSource {
  public:
@@ -159,7 +158,7 @@ OpaqueBrowserFrameView::~OpaqueBrowserFrameView() = default;
 
 void OpaqueBrowserFrameView::InitViews() {
   web_app::AppBrowserController* controller =
-      GetBrowserView()->browser()->app_controller();
+      web_app::AppBrowserController::From(GetBrowserView()->browser());
 
   if (controller && controller->IsWindowControlsOverlayEnabled()) {
     caption_button_placeholder_container_ =
@@ -180,7 +179,7 @@ void OpaqueBrowserFrameView::InitViews() {
     restore_button_ = CreateFrameCaptionButton(
         views::CAPTION_BUTTON_ICON_MAXIMIZE_RESTORE, HTMAXBUTTON,
         features::IsRoundedIconsEnabled()
-            ? views::kChromeRestoreFilledIcon
+            ? views::kChromeRestoreIcon
             : views::kWindowControlRestoreOldIcon);
     close_button_ = CreateFrameCaptionButton(
         views::CAPTION_BUTTON_ICON_CLOSE, HTMAXBUTTON,
@@ -440,7 +439,7 @@ int OpaqueBrowserFrameView::NonClientHitTest(const gfx::Point& point) {
 
 void OpaqueBrowserFrameView::GetWindowMask(const gfx::Size& size,
                                            SkPath* window_mask) {
-  DCHECK(window_mask);
+  CHECK(window_mask, base::NotFatalUntil::M162);
 
   if (IsFrameCondensed()) {
     return;
@@ -730,7 +729,10 @@ views::Button* OpaqueBrowserFrameView::CreateFrameCaptionButton(
   views::FrameCaptionButton* button = new views::FrameCaptionButton(
       views::Button::PressedCallback(), icon_type, ht_component);
   button->SetImage(button->GetIcon(), views::FrameCaptionButton::Animate::kNo,
-                   icon_image);
+                   icon_image,
+                   features::IsRoundedIconsEnabled()
+                       ? std::make_optional<int>(kRoundedCaptionButtonSize)
+                       : std::nullopt);
   return button;
 }
 

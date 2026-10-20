@@ -10,6 +10,7 @@ import '../settings_shared.css.js';
 import './privacy_guide/privacy_guide_promo.js';
 import './privacy_page.js';
 
+import type {SettingsPrefsElement} from '/shared/settings/prefs/prefs.js';
 import {PrefsMixin} from '/shared/settings/prefs/prefs_mixin.js';
 import type {CrViewManagerElement} from 'chrome://resources/cr_elements/cr_view_manager/cr_view_manager.js';
 import {assert} from 'chrome://resources/js/assert.js';
@@ -39,6 +40,7 @@ import {getTopLevelRoute} from '../route.js';
 
 export interface SettingsPrivacyPageIndexElement {
   $: {
+    prefs: SettingsPrefsElement,
     viewManager: CrViewManagerElement,
   };
 }
@@ -76,11 +78,6 @@ export class SettingsPrivacyPageIndexElement extends
       showPrivacyGuidePromo_: {
         type: Boolean,
         value: false,
-      },
-
-      enableBundledSecuritySettings_: {
-        type: Boolean,
-        value: () => loadTimeData.getBoolean('enableBundledSecuritySettings'),
       },
 
       enableCapturedSurfaceControl_: {
@@ -172,21 +169,6 @@ export class SettingsPrivacyPageIndexElement extends
         value: () =>
             loadTimeData.getBoolean('enableWebBluetoothNewPermissionsBackend'),
       },
-
-      isAdPrivacyAvailable_: {
-        type: Boolean,
-        readOnly: true,
-        value: () => loadTimeData.getBoolean('isAdPrivacyAvailable'),
-      },
-
-      isPrivacySandboxTopicsAndFledgeAvailable_: {
-        type: Boolean,
-        readOnly: true,
-        value: () => {
-          return loadTimeData.getBoolean('isAdPrivacyAvailable') &&
-              !loadTimeData.getBoolean('isPrivacySandboxRestricted');
-        },
-      },
     };
   }
 
@@ -200,7 +182,6 @@ export class SettingsPrivacyPageIndexElement extends
   declare private pageVisibility_: PageVisibility;
   declare private routes_: SettingsRoutes;
   declare private showPrivacyGuidePromo_: boolean;
-  declare private enableBundledSecuritySettings_: boolean;
   declare private enableCapturedSurfaceControl_: boolean;
   declare private enableFederatedIdentityApiContentSetting_: boolean;
   declare private enableExperimentalWebPlatformFeatures_: boolean;
@@ -217,8 +198,6 @@ export class SettingsPrivacyPageIndexElement extends
   declare private enableSecurityKeysSubpage_: boolean;
   declare private enableWebAppInstallation_: boolean;
   declare private enableWebBluetoothNewPermissionsBackend_: boolean;
-  declare private isAdPrivacyAvailable_: boolean;
-  declare private isPrivacySandboxTopicsAndFledgeAvailable_: boolean;
 
   private pendingViewSwitching_: PromiseResolver<void> = new PromiseResolver();
   private privacyGuidePromoWasShown_: boolean;

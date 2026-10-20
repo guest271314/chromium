@@ -23,20 +23,25 @@
 #include "chrome/browser/resource_coordinator/tab_lifecycle_unit_source.h"
 #include "chrome/browser/resource_coordinator/utils.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
+#include "chrome/browser/ui/browser_window.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/performance_controls/performance_controls_metrics.h"
 #include "chrome/browser/ui/performance_controls/performance_intervention_button_controller.h"
+#include "chrome/browser/ui/tabs/tab_enums.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
+#include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/performance_controls/performance_intervention_bubble.h"
 #include "chrome/browser/ui/views/performance_controls/performance_intervention_button.h"
 #include "chrome/browser/ui/views/performance_controls/tab_list_row_view.h"
 #include "chrome/browser/ui/views/performance_controls/tab_list_view.h"
 #include "chrome/browser/ui/views/toolbar/toolbar_view.h"
+#include "chrome/browser/ui/views/toolbar/webui_performance_intervention_control.h"
+#include "chrome/browser/ui/views/toolbar/webui_test_utils.h"
+#include "chrome/browser/ui/views/toolbar/webui_toolbar_web_view.h"
 #include "chrome/grit/branded_strings.h"
-#include "chrome/grit/generated_resources.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/interactive_test_utils.h"
-#include "chrome/test/interaction/interaction_test_util_browser.h"
-#include "chrome/test/interaction/interactive_browser_test.h"
 #include "chrome/test/user_education/interactive_feature_promo_test.h"
 #include "components/feature_engagement/public/feature_constants.h"
 #include "components/performance_manager/public/features.h"
@@ -46,17 +51,20 @@
 #include "content/public/browser/web_contents.h"
 #include "content/public/test/browser_test.h"
 #include "net/dns/mock_host_resolver.h"
-#include "ui/base/interaction/interaction_test_util.h"
 #include "ui/base/interaction/state_observer.h"
 #include "ui/base/ozone_buildflags.h"
+#include "ui/base/page_transition_types.h"
 #include "ui/events/base_event_utils.h"
-#include "ui/events/event_constants.h"
-#include "ui/gfx/animation/animation_test_api.h"
 #include "ui/views/bubble/bubble_dialog_model_host.h"
 #include "ui/views/interaction/interaction_test_util_views.h"
 #include "ui/views/test/button_test_api.h"
 #include "ui/views/test/widget_test.h"
 #include "ui/views/view.h"
+#include "ui/views/widget/any_widget_observer.h"
+
+#if BUILDFLAG(IS_OZONE)
+#include "ui/ozone/public/ozone_platform.h"
+#endif
 
 namespace {
 using ::performance_manager::testing::ScopedSetAllPagesDiscardableForTesting;
@@ -121,6 +129,68 @@ class PerformanceInterventionInteractiveTest
     ASSERT_TRUE(embedded_test_server()->Start());
     unconditionally_discard_pages_ =
         std::make_unique<ScopedSetAllPagesDiscardableForTesting>();
+    SetupWebUIToolbarForTesting(browser());
+  }
+
+  void SetupWebUIToolbarForTesting(BrowserWindowInterface* browser) {
+    WaitForInitialWebUIToolbar(browser);
+  }
+
+  PerformanceInterventionButtonControllerDelegate* GetInterventionButton(
+      BrowserWindowInterface* browser) {
+    if (features::IsWebUIPerformanceInterventionButtonEnabled()) {
+      auto* webview = GetWebUIToolbarWebView(browser);
+      CHECK(webview);
+      return webview->GetPerformanceInterventionControlForTesting();
+    }
+    return BrowserView::GetBrowserViewForBrowser(browser)
+        ->toolbar()
+        ->performance_intervention_button();
+  }
+
+  PerformanceInterventionButtonController* GetInterventionButtonController(
+      BrowserWindowInterface* browser) {
+    if (features::IsWebUIPerformanceInterventionButtonEnabled()) {
+      auto* webview = GetWebUIToolbarWebView(browser);
+      CHECK(webview);
+      return webview->GetPerformanceInterventionControlForTesting()
+          ->controller_for_testing();
+    }
+    return BrowserView::GetBrowserViewForBrowser(browser)
+        ->toolbar()
+        ->performance_intervention_button()
+        ->controller();
+  }
+
+  views::BubbleDialogModelHost* GetInterventionBubbleDialogModelHost(
+      BrowserWindowInterface* browser) {
+    if (features::IsWebUIPerformanceInterventionButtonEnabled()) {
+      auto* webview = GetWebUIToolbarWebView(browser);
+      CHECK(webview);
+      return webview->GetPerformanceInterventionControlForTesting()
+          ->GetBubbleDialogModelHostForTesting();
+    }
+    return BrowserView::GetBrowserViewForBrowser(browser)
+        ->toolbar()
+        ->performance_intervention_button()
+        ->bubble_dialog_model_host();
+  }
+
+  void ClickInterventionButton(BrowserWindowInterface* browser) {
+    if (features::IsWebUIPerformanceInterventionButtonEnabled()) {
+      auto* webview = GetWebUIToolbarWebView(browser);
+      CHECK(webview);
+      webview->GetPerformanceInterventionControlForTesting()->OnClicked();
+    } else {
+      PerformanceInterventionButton* const views_button =
+          BrowserView::GetBrowserViewForBrowser(browser)
+              ->toolbar()
+              ->performance_intervention_button();
+      ui::MouseEvent e(ui::EventType::kMousePressed, gfx::Point(), gfx::Point(),
+                       ui::EventTimeForNow(), 0, 0);
+      views::test::ButtonTestApi test_api(views_button);
+      test_api.NotifyClick(e);
+    }
   }
 
   void TearDownOnMainThread() override {
@@ -155,9 +225,9 @@ class PerformanceInterventionInteractiveTest
 
   std::vector<resource_attribution::PageContext> GetPageContextForTabs(
       const std::vector<int>& tab_indices,
-      Browser* browser) {
+      BrowserWindowInterface* browser) {
     std::vector<resource_attribution::PageContext> page_contexts;
-    TabStripModel* const tab_strip_model = browser->tab_strip_model();
+    TabStripModel* const tab_strip_model = browser->GetTabStripModel();
     for (int index : tab_indices) {
       content::WebContents* const web_contents =
           tab_strip_model->GetWebContentsAt(index);
@@ -171,7 +241,7 @@ class PerformanceInterventionInteractiveTest
   }
 
   void NotifyActionableTabListChange(const std::vector<int>& tab_indices,
-                                     Browser* browser) {
+                                     BrowserWindowInterface* browser) {
     performance_manager::user_tuning::PerformanceDetectionManager::GetInstance()
         ->NotifyActionableTabObserversForTesting(
             PerformanceDetectionManager::ResourceType::kCpu,
@@ -184,14 +254,14 @@ class PerformanceInterventionInteractiveTest
 
   auto CloseTab(int index) {
     return Do(base::BindLambdaForTesting([=, this]() {
-      browser()->tab_strip_model()->CloseWebContentsAt(
+      browser()->GetTabStripModel()->CloseWebContentsAt(
           index, TabCloseTypes::CLOSE_NONE);
     }));
   }
 
   auto CheckTabDiscardStatus(int index, bool discarded) {
     return Check([=, this]() {
-      TabStripModel* const tab_strip_model = browser()->tab_strip_model();
+      TabStripModel* const tab_strip_model = browser()->GetTabStripModel();
       return tab_strip_model->GetWebContentsAt(index)->WasDiscarded() ==
              discarded;
     });
@@ -521,42 +591,44 @@ IN_PROC_BROWSER_TEST_F(PerformanceInterventionInteractiveTest,
       WaitForShow(kToolbarPerformanceInterventionButtonElementId));
 }
 
-#if !(BUILDFLAG(IS_LINUX) && BUILDFLAG(SUPPORTS_OZONE_WAYLAND))
-// TODO(crbug.com/40863331): Linux Wayland doesn't support window activation
 IN_PROC_BROWSER_TEST_F(PerformanceInterventionInteractiveTest,
                        UiShowsOnlyOnActiveWindow) {
+#if BUILDFLAG(IS_OZONE)
+  // TODO(crbug.com/40863331): Linux Wayland doesn't support window activation
+  if (::ui::OzonePlatform::RunningOnWaylandForTest()) {
+    GTEST_SKIP() << "Linux Wayland doesn't support window activation";
+  }
+#endif
   // Create two browser windows with tabs and ensure the second browser window
   // is active
-  Browser* const first_browser = browser();
+  BrowserWindowInterface* const first_browser = browser();
   ASSERT_TRUE(AddTabAtIndexToBrowser(first_browser, 0, GetURL("a.com"),
                                      ui::PageTransition::PAGE_TRANSITION_LINK));
   ASSERT_TRUE(AddTabAtIndexToBrowser(first_browser, 1, GetURL("b.com"),
                                      ui::PageTransition::PAGE_TRANSITION_LINK));
-  Browser* const second_browser = CreateBrowser(first_browser->profile());
+  BrowserWindowInterface* const second_browser =
+      CreateBrowser(first_browser->GetProfile());
+  SetupWebUIToolbarForTesting(second_browser);
   ASSERT_TRUE(AddTabAtIndexToBrowser(second_browser, 0, GetURL("c.com"),
                                      ui::PageTransition::PAGE_TRANSITION_LINK));
-  BrowserWindow* const first_browser_window = first_browser->window();
-  BrowserWindow* const second_browser_window = second_browser->window();
+  BrowserWindow* const first_browser_window =
+      BrowserWindow::FromBrowser(first_browser);
+  BrowserWindow* const second_browser_window =
+      BrowserWindow::FromBrowser(second_browser);
   second_browser_window->Activate();
   ASSERT_TRUE(second_browser_window->IsActive());
   ASSERT_FALSE(first_browser_window->IsActive());
 
-  ToolbarButton* const first_button =
-      BrowserView::GetBrowserViewForBrowser(first_browser)
-          ->toolbar()
-          ->performance_intervention_button();
-  ToolbarButton* const second_button =
-      BrowserView::GetBrowserViewForBrowser(second_browser)
-          ->toolbar()
-          ->performance_intervention_button();
-  ASSERT_FALSE(first_button->GetVisible());
-  ASSERT_FALSE(second_button->GetVisible());
+  auto* const first_button = GetInterventionButton(first_browser);
+  auto* const second_button = GetInterventionButton(second_browser);
+  ASSERT_FALSE(first_button->IsButtonShowing());
+  ASSERT_FALSE(second_button->IsButtonShowing());
 
   // Second browser window should show the performance intervention button since
   // it is the active browser.
   NotifyActionableTabListChange({0, 1}, first_browser);
-  EXPECT_FALSE(first_button->GetVisible());
-  EXPECT_TRUE(second_button->GetVisible());
+  EXPECT_FALSE(first_button->IsButtonShowing());
+  EXPECT_TRUE(second_button->IsButtonShowing());
 
   // Switching the active browser to the first browser and triggering the
   // performance detection manager shouldn't cause the UI to show on the first
@@ -567,8 +639,8 @@ IN_PROC_BROWSER_TEST_F(PerformanceInterventionInteractiveTest,
   ASSERT_FALSE(second_browser_window->IsActive());
   ASSERT_TRUE(first_browser_window->IsActive());
   NotifyActionableTabListChange({0}, first_browser);
-  EXPECT_FALSE(first_button->GetVisible());
-  EXPECT_TRUE(second_button->GetVisible());
+  EXPECT_FALSE(first_button->IsButtonShowing());
+  EXPECT_TRUE(second_button->IsButtonShowing());
 }
 
 // The performance intervention toolbar button should hide when it is notified
@@ -576,37 +648,44 @@ IN_PROC_BROWSER_TEST_F(PerformanceInterventionInteractiveTest,
 // shown on a non-active window.
 IN_PROC_BROWSER_TEST_F(PerformanceInterventionInteractiveTest,
                        NonactiveInterventionButtonHides) {
-  Browser* const first_browser = browser();
+#if BUILDFLAG(IS_OZONE)
+  // TODO(crbug.com/40863331): Linux Wayland doesn't support window activation
+  if (::ui::OzonePlatform::RunningOnWaylandForTest()) {
+    GTEST_SKIP() << "Linux Wayland doesn't support window activation";
+  }
+#endif
+  BrowserWindowInterface* const first_browser = browser();
   ASSERT_TRUE(AddTabAtIndexToBrowser(first_browser, 0, GetURL("a.com"),
                                      ui::PageTransition::PAGE_TRANSITION_LINK));
   ASSERT_TRUE(AddTabAtIndexToBrowser(first_browser, 1, GetURL("b.com"),
                                      ui::PageTransition::PAGE_TRANSITION_LINK));
-  Browser* const second_browser = CreateBrowser(first_browser->profile());
+  BrowserWindowInterface* const second_browser =
+      CreateBrowser(first_browser->GetProfile());
+  SetupWebUIToolbarForTesting(second_browser);
   ASSERT_TRUE(AddTabAtIndexToBrowser(second_browser, 0, GetURL("c.com"),
                                      ui::PageTransition::PAGE_TRANSITION_LINK));
-  BrowserWindow* const first_browser_window = first_browser->window();
-  BrowserWindow* const second_browser_window = second_browser->window();
+  BrowserWindow* const first_browser_window =
+      BrowserWindow::FromBrowser(first_browser);
+  BrowserWindow* const second_browser_window =
+      BrowserWindow::FromBrowser(second_browser);
   second_browser_window->Activate();
   ASSERT_TRUE(second_browser_window->IsActive());
 
   // Show the intervention button on the second browser window.
+  views::NamedWidgetShownWaiter waiter(views::test::AnyWidgetTestPasskey{},
+                                       "PerformanceInterventionBubble");
   NotifyActionableTabListChange({0, 1}, first_browser);
-  PerformanceInterventionButton* const intervention_button =
-      BrowserView::GetBrowserViewForBrowser(second_browser)
-          ->toolbar()
-          ->performance_intervention_button();
-  EXPECT_TRUE(intervention_button->GetVisible());
+  waiter.WaitIfNeededAndGet();
+  auto* const intervention_button = GetInterventionButton(second_browser);
+  EXPECT_TRUE(intervention_button->IsButtonShowing());
   EXPECT_TRUE(intervention_button->IsBubbleShowing());
 
   // Dismiss the dialog.
   views::test::WidgetDestroyedWaiter widget_waiter(
-      intervention_button->bubble_dialog_model_host()->GetWidget());
-  ui::MouseEvent e(ui::EventType::kMousePressed, gfx::Point(), gfx::Point(),
-                   ui::EventTimeForNow(), 0, 0);
-  views::test::ButtonTestApi test_api(intervention_button);
-  test_api.NotifyClick(e);
+      GetInterventionBubbleDialogModelHost(second_browser)->GetWidget());
+  ClickInterventionButton(second_browser);
   widget_waiter.Wait();
-  EXPECT_TRUE(intervention_button->GetVisible());
+  EXPECT_TRUE(intervention_button->IsButtonShowing());
   EXPECT_FALSE(intervention_button->IsBubbleShowing());
 
   // Activate the first browser window.
@@ -615,20 +694,19 @@ IN_PROC_BROWSER_TEST_F(PerformanceInterventionInteractiveTest,
   first_browser_waiter.WaitForActivation();
   ASSERT_FALSE(second_browser_window->IsActive());
   ASSERT_TRUE(first_browser_window->IsActive());
-  EXPECT_TRUE(intervention_button->GetVisible());
+  EXPECT_TRUE(intervention_button->IsButtonShowing());
 
   // Triggering a non-empty actionable tab list should keep the toolbar button
   // visible.
   NotifyActionableTabListChange({0}, first_browser);
-  EXPECT_TRUE(intervention_button->GetVisible());
+  EXPECT_TRUE(intervention_button->IsButtonShowing());
   EXPECT_FALSE(intervention_button->IsBubbleShowing());
 
   // Triggering an empty actionable tab list should immediately hide the
   // intervention button even though the button is in the non-active window.
   NotifyActionableTabListChange({}, first_browser);
-  EXPECT_FALSE(intervention_button->GetVisible());
+  EXPECT_FALSE(intervention_button->IsButtonShowing());
 }
-#endif
 
 // We can only have one non-off record profile open at a time on ChromeOS so
 // users will not encounter this case.
@@ -637,31 +715,29 @@ IN_PROC_BROWSER_TEST_F(PerformanceInterventionInteractiveTest,
                        SuggestTabsOnlyForLastActiveProfile) {
   // Create two browser windows with tabs and ensure the second browser window
   // is active
-  Browser* const first_browser = browser();
+  BrowserWindowInterface* const first_browser = browser();
   ASSERT_TRUE(AddTabAtIndexToBrowser(first_browser, 0, GetURL("a.com"),
                                      ui::PageTransition::PAGE_TRANSITION_LINK));
   ASSERT_TRUE(AddTabAtIndexToBrowser(first_browser, 1, GetURL("b.com"),
                                      ui::PageTransition::PAGE_TRANSITION_LINK));
 
-  Browser* const second_browser = CreateBrowser(CreateTestProfile());
+  BrowserWindowInterface* const second_browser =
+      CreateBrowser(CreateTestProfile());
+  SetupWebUIToolbarForTesting(second_browser);
   ASSERT_TRUE(AddTabAtIndexToBrowser(second_browser, 0, GetURL("c.com"),
                                      ui::PageTransition::PAGE_TRANSITION_LINK));
-  BrowserWindow* const first_browser_window = first_browser->window();
-  BrowserWindow* const second_browser_window = second_browser->window();
+  BrowserWindow* const first_browser_window =
+      BrowserWindow::FromBrowser(first_browser);
+  BrowserWindow* const second_browser_window =
+      BrowserWindow::FromBrowser(second_browser);
   second_browser_window->Activate();
   ASSERT_TRUE(second_browser_window->IsActive());
   ASSERT_FALSE(first_browser_window->IsActive());
 
-  ToolbarButton* const first_button =
-      BrowserView::GetBrowserViewForBrowser(first_browser)
-          ->toolbar()
-          ->performance_intervention_button();
-  ToolbarButton* const second_button =
-      BrowserView::GetBrowserViewForBrowser(second_browser)
-          ->toolbar()
-          ->performance_intervention_button();
-  ASSERT_FALSE(first_button->GetVisible());
-  ASSERT_FALSE(second_button->GetVisible());
+  auto* const first_button = GetInterventionButton(first_browser);
+  auto* const second_button = GetInterventionButton(second_browser);
+  ASSERT_FALSE(first_button->IsButtonShowing());
+  ASSERT_FALSE(second_button->IsButtonShowing());
   base::HistogramTester histogram_tester;
   histogram_tester.ExpectBucketCount(
       kMessageTriggerResultHistogram,
@@ -673,8 +749,8 @@ IN_PROC_BROWSER_TEST_F(PerformanceInterventionInteractiveTest,
   // The toolbar button should not show because the tabs on the first browser is
   // actionable but it is in a different profile from the last active profile
   NotifyActionableTabListChange({0, 1}, first_browser);
-  EXPECT_FALSE(first_button->GetVisible());
-  EXPECT_FALSE(second_button->GetVisible());
+  EXPECT_FALSE(first_button->IsButtonShowing());
+  EXPECT_FALSE(second_button->IsButtonShowing());
   histogram_tester.ExpectBucketCount(
       kMessageTriggerResultHistogram,
       InterventionMessageTriggerResult::kMixedProfile, 1);
@@ -813,10 +889,7 @@ IN_PROC_BROWSER_TEST_F(PerformanceInterventionNotificationImprovementTest,
                         std::move(previous_acceptance));
 
   PerformanceInterventionButtonController* const controller =
-      BrowserView::GetBrowserViewForBrowser(browser())
-          ->toolbar()
-          ->performance_intervention_button()
-          ->controller();
+      GetInterventionButtonController(browser());
   ASSERT_EQ(10, controller->GetAcceptancePercentage());
 
   RunTestSequence(

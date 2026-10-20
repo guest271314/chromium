@@ -11,10 +11,12 @@
 #include <vector>
 
 #include "base/containers/span.h"
+#include "base/feature_list.h"
 #include "base/strings/strcat.h"
 #include "build/build_config.h"
 #include "components/signin/internal/identity_manager/profile_oauth2_token_service.h"
 #include "components/signin/public/base/signin_buildflags.h"
+#include "components/signin/public/base/signin_switches.h"
 #include "google_apis/gaia/gaia_access_token_fetcher.h"
 #include "google_apis/gaia/gaia_constants.h"
 
@@ -67,7 +69,7 @@ bool FakeProfileOAuth2TokenServiceDelegate::RefreshTokenIsAvailableOnDevice(
 
 #if BUILDFLAG(ENABLE_DICE_SUPPORT)
 bool FakeProfileOAuth2TokenServiceDelegate::GenerateBindingKeyRegistrationToken(
-    std::string_view supported_algorithms,
+    base::span<const crypto::sign::SignatureKind> supported_algorithms,
     std::string_view auth_code,
     base::OnceCallback<void(
         std::optional<signin::BindingKeyRegistrationTokenResult>)> callback) {
@@ -107,6 +109,13 @@ FakeProfileOAuth2TokenServiceDelegate::GetWrappedBindingKey(
   auto it = wrapped_binding_keys_.find(account_id);
   return it != wrapped_binding_keys_.end() ? it->second
                                            : std::vector<uint8_t>();
+}
+
+bool FakeProfileOAuth2TokenServiceDelegate::IsRefreshTokenBoundToMtls(
+    const CoreAccountId& account_id) const {
+  auto it = mtls_token_bindings_.find(account_id);
+  return it != mtls_token_bindings_.end() && it->second &&
+         base::FeatureList::IsEnabled(switches::kEnableMtlsTokenBinding);
 }
 
 bool FakeProfileOAuth2TokenServiceDelegate::AllBoundTokensShareSameBindingKey()
@@ -165,9 +174,10 @@ FakeProfileOAuth2TokenServiceDelegate::GetAccountsOnDevice() const {
   // separate from accounts-for-profile.
   std::vector<AccountInfo> accounts;
   for (const auto& account_id : account_ids_) {
-    accounts.emplace_back();
-    accounts.back().account_id = account_id;
-    accounts.back().gaia = GaiaId(account_id.ToString());
+    CoreAccountInfo core_account_info;
+    core_account_info.account_id = account_id;
+    core_account_info.gaia = GaiaId(account_id.ToString());
+    accounts.push_back(AccountInfo::Builder(core_account_info).Build());
   }
   return accounts;
 }
@@ -210,6 +220,9 @@ void FakeProfileOAuth2TokenServiceDelegate::IssueRefreshTokenForUser(
     std::erase(account_ids_, account_id);
     refresh_tokens_.erase(account_id);
     wrapped_binding_keys_.erase(account_id);
+#if BUILDFLAG(ENABLE_DICE_SUPPORT)
+    mtls_token_bindings_.erase(account_id);
+#endif
     ClearAuthError(account_id);
     FireRefreshTokenRevoked(account_id);
   } else {
@@ -219,6 +232,9 @@ void FakeProfileOAuth2TokenServiceDelegate::IssueRefreshTokenForUser(
     }
     refresh_tokens_[account_id] = token;
     wrapped_binding_keys_[account_id] = token_binding_info.wrapped_binding_key;
+#if BUILDFLAG(ENABLE_DICE_SUPPORT)
+    mtls_token_bindings_[account_id] = token_binding_info.mtls_token_binding;
+#endif
     // If the token is a special "invalid" value, then that means the token was
     // rejected by the client and is thus not valid. So set the appropriate
     // error in that case. This logic is essentially duplicated from

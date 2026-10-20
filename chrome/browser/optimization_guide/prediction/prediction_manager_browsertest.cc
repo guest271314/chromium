@@ -26,7 +26,7 @@
 #include "chrome/browser/profiles/profile_key.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/profiles/profile_test_util.h"
-#include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/common/chrome_paths.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
@@ -37,10 +37,9 @@
 #include "components/optimization_guide/core/delivery/prediction_model_override.h"
 #include "components/optimization_guide/core/hints/optimization_guide_store.h"
 #include "components/optimization_guide/core/hints/store_update_data.h"
-#include "components/optimization_guide/core/optimization_guide_constants.h"
 #include "components/optimization_guide/core/optimization_guide_features.h"
+#include "components/optimization_guide/core/optimization_guide_permissions_util.h"
 #include "components/optimization_guide/core/optimization_guide_prefs.h"
-#include "components/optimization_guide/core/optimization_guide_switches.h"
 #include "components/optimization_guide/proto/models.pb.h"
 #include "components/prefs/pref_service.h"
 #include "components/variations/hashing.h"
@@ -97,14 +96,13 @@ void SetUpValidModelInfoReceival(ModelFileObserver* model_file_observer,
                   proto::OPTIMIZATION_TARGET_PAINFUL_PAGE_LOAD);
         EXPECT_TRUE(model_info.has_value());
 
-        EXPECT_EQ(123, model_info->GetVersion());
-        EXPECT_TRUE(model_info->GetModelFilePath().IsAbsolute());
-        EXPECT_TRUE(base::PathExists(model_info->GetModelFilePath()));
+        EXPECT_EQ(123, model_info->version);
+        EXPECT_TRUE(model_info->model_file_path.IsAbsolute());
+        EXPECT_TRUE(base::PathExists(model_info->model_file_path));
 
         EXPECT_EQ(expected_additional_files.size(),
-                  model_info->GetAdditionalFiles().size());
-        for (const base::FilePath& add_file :
-             model_info->GetAdditionalFiles()) {
+                  model_info->additional_files.size());
+        for (const base::FilePath& add_file : model_info->additional_files) {
           EXPECT_TRUE(add_file.IsAbsolute());
           EXPECT_TRUE(base::PathExists(add_file));
           EXPECT_TRUE(
@@ -145,7 +143,7 @@ class PredictionManagerBrowserTestBase : public InProcessBrowserTest {
         net::EmbeddedTestServer::TYPE_HTTPS);
     net::EmbeddedTestServer::ServerCertificateConfig models_server_cert_config;
     models_server_cert_config.dns_names = {
-        GURL(kOptimizationGuideServiceGetModelsDefaultURL).GetHost()};
+        features::GetOptimizationGuideServiceGetModelsURL().GetHost()};
     models_server_cert_config.ip_addresses = {net::IPAddress::IPv4Localhost()};
     models_server_->SetSSLConfig(models_server_cert_config);
     models_server_->ServeFilesFromSourceDirectory(
@@ -183,12 +181,12 @@ class PredictionManagerBrowserTestBase : public InProcessBrowserTest {
   }
 
   void SetUpCommandLine(base::CommandLine* cmd) override {
-    cmd->AppendSwitch(switches::kGoogleApiKeyConfigurationCheckOverride);
+    cmd->AppendSwitch(kGoogleApiKeyConfigurationCheckOverrideSwitch);
     cmd->AppendSwitchASCII(
-        switches::kOptimizationGuideServiceGetModelsURL,
+        features::kOptimizationGuideServiceGetModelsURLSwitch,
         models_server_
             ->GetURL(
-                GURL(kOptimizationGuideServiceGetModelsDefaultURL).GetHost(),
+                features::GetOptimizationGuideServiceGetModelsURL().GetHost(),
                 "/")
             .spec());
     cmd->AppendSwitchASCII("force-variation-ids", "4");
@@ -200,7 +198,7 @@ class PredictionManagerBrowserTestBase : public InProcessBrowserTest {
   }
 
   void RegisterWithKeyedService(ModelFileObserver* model_file_observer) {
-    OptimizationGuideKeyedServiceFactory::GetForProfile(browser()->profile())
+    OptimizationGuideKeyedServiceFactory::GetForProfile(browser()->GetProfile())
         ->AddObserverForOptimizationTargetModel(
             optimization_guide::proto::OPTIMIZATION_TARGET_PAINFUL_PAGE_LOAD,
             std::nullopt,
@@ -212,7 +210,7 @@ class PredictionManagerBrowserTestBase : public InProcessBrowserTest {
   PredictionManager* GetPredictionManager() {
     OptimizationGuideKeyedService* optimization_guide_keyed_service =
         OptimizationGuideKeyedServiceFactory::GetForProfile(
-            browser()->profile());
+            browser()->GetProfile());
     return optimization_guide_keyed_service->GetPredictionManager();
   }
 
@@ -338,10 +336,6 @@ IN_PROC_BROWSER_TEST_F(PredictionManagerBrowserTest,
   // Should not have made fetch request.
   histogram_tester.ExpectTotalCount(
       "OptimizationGuide.PredictionModelFetcher.GetModelsResponse.Status", 0);
-  histogram_tester.ExpectTotalCount(
-      "OptimizationGuide.PredictionModelFetcher.GetModelsResponse.Status."
-      "PainfulPageLoad",
-      0);
 }
 
 IN_PROC_BROWSER_TEST_F(PredictionManagerBrowserTest,
@@ -385,10 +379,6 @@ IN_PROC_BROWSER_TEST_F(PredictionManagerBrowserTest,
   histogram_tester.ExpectBucketCount(
       "OptimizationGuide.PredictionModelFetcher.GetModelsResponse.Status",
       net::HTTP_NOT_FOUND, 1);
-  histogram_tester.ExpectBucketCount(
-      "OptimizationGuide.PredictionModelFetcher.GetModelsResponse.Status."
-      "PainfulPageLoad",
-      net::HTTP_NOT_FOUND, 1);
 
   histogram_tester.ExpectTotalCount(
       "OptimizationGuide.PredictionManager.PredictionModelsStored", 0);
@@ -430,7 +420,7 @@ class PredictionManagerModelDownloadingBrowserTest
 
   void RegisterModelFileObserverWithKeyedService(Profile* profile = nullptr) {
     OptimizationGuideKeyedServiceFactory::GetForProfile(
-        profile ? profile : browser()->profile())
+        profile ? profile : browser()->GetProfile())
         ->AddObserverForOptimizationTargetModel(
             proto::OPTIMIZATION_TARGET_PAINFUL_PAGE_LOAD,
             /*model_metadata=*/std::nullopt,
@@ -491,8 +481,9 @@ IN_PROC_BROWSER_TEST_F(PredictionManagerModelDownloadingBrowserTest,
     base::HistogramTester otr_histogram_tester;
     std::unique_ptr<base::RunLoop> run_loop = std::make_unique<base::RunLoop>();
     SetUpValidModelInfoReceival(model_file_observer(), run_loop.get());
-    Browser* otr_browser = CreateIncognitoBrowser(browser()->profile());
-    RegisterModelFileObserverWithKeyedService(otr_browser->profile());
+    BrowserWindowInterface* otr_browser =
+        CreateIncognitoBrowser(browser()->GetProfile());
+    RegisterModelFileObserverWithKeyedService(otr_browser->GetProfile());
 
     run_loop->Run();
 
@@ -575,10 +566,6 @@ IN_PROC_BROWSER_TEST_F(PredictionManagerModelDownloadingBrowserTest,
   histogram_tester.ExpectUniqueSample(
       "OptimizationGuide.PredictionModelDownloadManager.DownloadStatus",
       PredictionModelDownloadStatus::kSuccess, 1);
-
-  // No error when moving the file so there will be no record.
-  histogram_tester.ExpectTotalCount(
-      "OptimizationGuide.PredictionModelDownloadManager.ReplaceFileError", 0);
   histogram_tester.ExpectUniqueSample(
       "OptimizationGuide.PredictionModelUpdateVersion.PainfulPageLoad",
       kSuccessfulModelVersion, 1);
@@ -632,10 +619,6 @@ IN_PROC_BROWSER_TEST_F(PredictionManagerModelDownloadingBrowserTest,
   histogram_tester.ExpectUniqueSample(
       "OptimizationGuide.PredictionModelDownloadManager.DownloadStatus",
       PredictionModelDownloadStatus::kSuccess, 1);
-
-  // No error when moving the file so there will be no record.
-  histogram_tester.ExpectTotalCount(
-      "OptimizationGuide.PredictionModelDownloadManager.ReplaceFileError", 0);
   histogram_tester.ExpectUniqueSample(
       "OptimizationGuide.PredictionModelUpdateVersion.PainfulPageLoad",
       kSuccessfulModelVersion, 1);
@@ -754,15 +737,12 @@ IN_PROC_BROWSER_TEST_F(PredictionManagerModelDownloadingBrowserTest,
       histogram_tester.get(),
       "OptimizationGuide.PredictionModelFetcher.GetModelsResponse.Status", 1);
   histogram_tester->ExpectUniqueSample(
-      "OptimizationGuide.PredictionModelFetcher.GetModelsResponse.Status."
-      "PainfulPageLoad",
+      "OptimizationGuide.PredictionModelFetcher.GetModelsResponse.Status",
       net::HTTP_OK, 1);
   histogram_tester->ExpectTotalCount(
       "OptimizationGuide.PredictionModelDownloadManager.DownloadStatus", 0);
   histogram_tester->ExpectTotalCount(
       "OptimizationGuide.PredictionModelUpdateVersion.PainfulPageLoad", 0);
-  histogram_tester->ExpectTotalCount(
-      "OptimizationGuide.PredictionModelRemoved.PainfulPageLoad", 0);
   histogram_tester->ExpectTotalCount(
       "OptimizationGuide.PredictionModelStore.ModelRemovalReason."
       "PainfulPageLoad",
@@ -834,8 +814,7 @@ IN_PROC_BROWSER_TEST_F(PredictionManagerModelDownloadingBrowserTest,
   // The model fetch will happen, and the model will be removed from the store,
   // and the observers notified of null model.
   histogram_tester->ExpectUniqueSample(
-      "OptimizationGuide.PredictionModelFetcher.GetModelsResponse.Status."
-      "PainfulPageLoad",
+      "OptimizationGuide.PredictionModelFetcher.GetModelsResponse.Status",
       net::HTTP_OK, 1);
   histogram_tester->ExpectTotalCount(
       "OptimizationGuide.PredictionModelDownloadManager.DownloadStatus", 0);
@@ -870,7 +849,7 @@ class PredictionManagerModelPackageOverrideTest : public InProcessBrowserTest {
     base::PathService::Get(chrome::DIR_TEST_DATA, &src_dir);
 
     cmd_line->AppendSwitchASCII(
-        switches::kModelOverride,
+        kModelOverrideSwitch,
         base::StrCat({
             "OPTIMIZATION_TARGET_PAINFUL_PAGE_LOAD",
             ModelOverrideSeparator(),
@@ -887,7 +866,7 @@ IN_PROC_BROWSER_TEST_F(PredictionManagerModelPackageOverrideTest, TestE2E) {
   SetUpValidModelInfoReceival(&model_file_observer, &run_loop,
                               {FILE_PATH_LITERAL("good_additional_file.txt")});
 
-  OptimizationGuideKeyedServiceFactory::GetForProfile(browser()->profile())
+  OptimizationGuideKeyedServiceFactory::GetForProfile(browser()->GetProfile())
       ->AddObserverForOptimizationTargetModel(
           proto::OPTIMIZATION_TARGET_PAINFUL_PAGE_LOAD,
           /*model_metadata=*/std::nullopt,

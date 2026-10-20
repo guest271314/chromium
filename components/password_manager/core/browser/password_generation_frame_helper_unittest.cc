@@ -22,8 +22,8 @@
 #include "components/autofill/core/browser/metrics/autofill_metrics.h"
 #include "components/autofill/core/browser/metrics/log_event.h"
 #include "components/autofill/core/browser/proto/password_requirements.pb.h"
-#include "components/autofill/core/browser/test_utils/autofill_test_utils.h"
-#include "components/autofill/core/common/autofill_test_utils.h"
+#include "components/autofill/core/browser/test_utils/autofill_test_util.h"
+#include "components/autofill/core/common/autofill_test_util.h"
 #include "components/autofill/core/common/form_data.h"
 #include "components/autofill/core/common/form_data_test_api.h"
 #include "components/autofill/core/common/form_field_data.h"
@@ -94,7 +94,7 @@ class TestPasswordManagerDriver : public StubPasswordManagerDriver {
     return &password_autofill_manager_;
   }
 
-  MOCK_METHOD(GURL&, GetLastCommittedURL, (), (const override));
+  MOCK_METHOD(const GURL&, GetLastCommittedURL, (), (const, override));
 
  private:
   GURL empty_url_;
@@ -141,8 +141,11 @@ class FakePasswordRequirementsSpecFetcher
 
 class MockPasswordManagerClient : public StubPasswordManagerClient {
  public:
-  MOCK_METHOD(bool, IsSavingAndFillingEnabled, (const GURL&), (const override));
-  MOCK_METHOD(bool, IsOffTheRecord, (), (const override));
+  MOCK_METHOD(bool,
+              IsSavingAndFillingEnabled,
+              (const url::Origin&, base::optional_ref<const GURL>),
+              (const, override));
+  MOCK_METHOD(bool, IsOffTheRecord, (), (const, override));
 
   explicit MockPasswordManagerClient(std::unique_ptr<PrefService> prefs)
       : prefs_(std::move(prefs)),
@@ -220,7 +223,7 @@ TEST_F(PasswordGenerationFrameHelperTest, IsGenerationEnabled) {
   // be enabled, unless the sync is with a custom passphrase.
   EXPECT_CALL(*client_->mock_store(), GetError())
       .WillOnce(testing::Return(ActionableError::kNoError));
-  EXPECT_CALL(*client_, IsSavingAndFillingEnabled(_))
+  EXPECT_CALL(*client_, IsSavingAndFillingEnabled(_, _))
       .WillRepeatedly(testing::Return(true));
   EXPECT_CALL(*client_->GetPasswordFeatureManager(), IsGenerationEnabled())
       .WillRepeatedly(testing::Return(true));
@@ -237,7 +240,7 @@ TEST_F(PasswordGenerationFrameHelperTest, IsGenerationEnabled) {
   // if syncing is enabled.
   EXPECT_CALL(*client_->mock_store(), GetError())
       .WillOnce(testing::Return(ActionableError::kNoError));
-  EXPECT_CALL(*client_, IsSavingAndFillingEnabled(_))
+  EXPECT_CALL(*client_, IsSavingAndFillingEnabled(_, _))
       .WillRepeatedly(testing::Return(false));
   EXPECT_CALL(*client_->GetPasswordFeatureManager(), IsGenerationEnabled())
       .WillRepeatedly(testing::Return(true));
@@ -251,7 +254,7 @@ TEST_F(PasswordGenerationFrameHelperTest, ProcessPasswordRequirements) {
       .WillRepeatedly(testing::Return(ActionableError::kNoError));
 
   // Setup so that IsGenerationEnabled() returns true.
-  EXPECT_CALL(*client_, IsSavingAndFillingEnabled(_))
+  EXPECT_CALL(*client_, IsSavingAndFillingEnabled(_, _))
       .WillRepeatedly(testing::Return(true));
   EXPECT_CALL(*client_->GetPasswordFeatureManager(), IsGenerationEnabled())
       .WillRepeatedly(testing::Return(true));
@@ -362,14 +365,14 @@ TEST_F(PasswordGenerationFrameHelperTest, ProcessPasswordRequirements) {
         client_->GetPasswordRequirementsService()->GetSpec(
             origin, FormSignature(form_signature.value() + 1), field_signature);
     EXPECT_EQ(test.expected_spec_for_unknown_signature.max_length(),
-              spec.max_length());
+              spec_for_unknown_signature.max_length());
   }
 }
 
 TEST_F(PasswordGenerationFrameHelperTest, UpdatePasswordSyncStateIncognito) {
   // Disable password manager by going incognito. Even though password
   // syncing is enabled, generation should still be disabled.
-  EXPECT_CALL(*client_, IsSavingAndFillingEnabled(_))
+  EXPECT_CALL(*client_, IsSavingAndFillingEnabled(_, _))
       .WillRepeatedly(testing::Return(false));
   EXPECT_CALL(*client_, IsOffTheRecord()).WillRepeatedly(testing::Return(true));
   PrefService* prefs = client_->GetPrefs();
@@ -384,7 +387,7 @@ TEST_F(PasswordGenerationFrameHelperTest, GenerationDisabledForGoogle) {
   EXPECT_CALL(*client_->mock_store(), GetError())
       .WillRepeatedly(testing::Return(ActionableError::kNoError));
 
-  EXPECT_CALL(*client_, IsSavingAndFillingEnabled(_))
+  EXPECT_CALL(*client_, IsSavingAndFillingEnabled(_, _))
       .WillRepeatedly(testing::Return(true));
   EXPECT_CALL(*client_->GetPasswordFeatureManager(), IsGenerationEnabled())
       .WillRepeatedly(testing::Return(true));
@@ -438,6 +441,37 @@ TEST_F(PasswordGenerationFrameHelperTest, ShortCrowdsourcedPasswordLength) {
       kTestFieldSignature,
       /*max_length=*/0);
   EXPECT_EQ(generated_pwd.size(), autofill::kDefaultPasswordLength);
+}
+
+TEST_F(PasswordGenerationFrameHelperTest, GetPasswordRequirementsSpec) {
+  const GURL kTestOrigin("https://example.com");
+  constexpr FormSignature kTestFormSignature(123);
+  constexpr FieldSignature kTestFieldSignature(456);
+
+  PasswordRequirementsSpec input_spec;
+  constexpr size_t kShortLength = 12u;
+  input_spec.set_max_length(kShortLength);
+  client_->GetPasswordRequirementsService()->AddSpec(
+      kTestOrigin, kTestFormSignature, kTestFieldSignature, input_spec);
+
+  PasswordRequirementsSpec computed_spec =
+      GetGenerationHelper()->GetPasswordRequirementsSpec(
+          kTestOrigin, PasswordGenerationType::kAutomatic, kTestFormSignature,
+          kTestFieldSignature, /*max_length=*/0);
+  EXPECT_EQ(computed_spec.max_length(), kShortLength);
+}
+
+// Verify that the fields with manual generation enabled are forgotten after a
+// navigation.
+TEST_F(PasswordGenerationFrameHelperTest,
+       DidNavigateFrameClearsManualGenerationEnabledFields) {
+  constexpr autofill::FieldRendererId kFieldId(1);
+  GetGenerationHelper()->AddManualGenerationEnabledField(kFieldId);
+  ASSERT_TRUE(GetGenerationHelper()->IsManualGenerationEnabledField(kFieldId));
+
+  GetGenerationHelper()->DidNavigateFrame();
+
+  EXPECT_FALSE(GetGenerationHelper()->IsManualGenerationEnabledField(kFieldId));
 }
 
 }  // namespace password_manager

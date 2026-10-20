@@ -49,10 +49,9 @@ enum ItemIdentifier {
 // Returns the branded version of the Google Services symbol.
 UIImage* GetBrandedGoogleServicesSymbol() {
 #if BUILDFLAG(IOS_USE_BRANDED_ASSETS)
-  return MakeSymbolMonochrome(
-      CustomSymbolWithPointSize(kGoogleIconSymbol, kDefaultSymbolSize));
+  return SymbolWithPointSize(SymbolGoogleIconMonochrome, kDefaultSymbolSize);
 #else
-  return DefaultSymbolWithPointSize(kGearshape2Symbol, kDefaultSymbolSize);
+  return SymbolWithPointSize(SymbolGearshape2, kDefaultSymbolSize);
 #endif
 }
 
@@ -73,10 +72,9 @@ NSString* TitleForItemIdentifier(ItemIdentifier item_identifier) {
 UIImage* IconForItemIdentifier(ItemIdentifier item_identifier) {
   switch (item_identifier) {
     case kPasswordsAndPasskeysIdentifier:
-      return CustomSymbolTemplateWithPointSize(kPasswordSymbol,
-                                               kDefaultSymbolSize);
+      return SymbolTemplateWithPointSize(SymbolPassword, kDefaultSymbolSize);
     case kSearchHistoryIdentifier:
-      return DefaultSymbolWithPointSize(kSearchSymbol, kDefaultSymbolSize);
+      return SymbolWithPointSize(SymbolSearch, kDefaultSymbolSize);
     case kMyActivityIdentifier:
       return GetBrandedGoogleServicesSymbol();
   }
@@ -299,13 +297,13 @@ NSString* AccessibilityIdentifierForItemIdentifier(
       }
       cell.accessoryView = [[UIImageView alloc]
           initWithImage:DefaultAccessorySymbolConfigurationWithRegularWeight(
-                            kExternalLinkSymbol)];
+                            SymbolExternalLink)];
       cell.accessoryView.tintColor = [UIColor colorNamed:kGrey500Color];
       return;
     case kMyActivityIdentifier:
       cell.accessoryView = [[UIImageView alloc]
           initWithImage:DefaultAccessorySymbolConfigurationWithRegularWeight(
-                            kExternalLinkSymbol)];
+                            SymbolExternalLink)];
       cell.accessoryView.tintColor = [UIColor colorNamed:kGrey500Color];
       return;
   }

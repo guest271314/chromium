@@ -6,7 +6,7 @@
 #define THIRD_PARTY_BLINK_RENDERER_CORE_TESTING_FAKE_LOCAL_FRAME_HOST_H_
 
 #include "base/time/time.h"
-#include "mojo/public/cpp/bindings/associated_receiver_set.h"
+#include "mojo/public/cpp/bindings/associated_receiver.h"
 #include "mojo/public/cpp/bindings/pending_associated_receiver.h"
 #include "net/storage_access_api/status.h"
 #include "third_party/blink/public/common/associated_interfaces/associated_interface_provider.h"
@@ -110,12 +110,16 @@ class FakeLocalFrameHost : public mojom::blink::LocalFrameHost {
   void RunBeforeUnloadConfirm(bool is_reload,
                               RunBeforeUnloadConfirmCallback callback) override;
   void UpdateFaviconURL(
-      Vector<blink::mojom::blink::FaviconURLPtr> favicon_urls) override;
+      Vector<blink::mojom::blink::FaviconURLPtr> favicon_urls,
+      blink::mojom::blink::FaviconUpdateReason reason) override;
   void DownloadURL(mojom::blink::DownloadURLParamsPtr params) override;
+  void ShowCaptionSettings() override;
+  void UpdateToVideoAdFrame() override;
   void FocusedElementChanged(bool is_editable_element,
                              bool is_richly_editable_element,
                              const gfx::Rect& bounds_in_frame_widget,
-                             blink::mojom::FocusType focus_type) override;
+                             blink::mojom::FocusType focus_type,
+                             mojom::blink::DOMNodeIdPtr dom_node_id) override;
   void TextSelectionChanged(const String& text,
                             uint32_t offset,
                             const gfx::Range& range) override;
@@ -166,37 +170,16 @@ class FakeLocalFrameHost : public mojom::blink::LocalFrameHost {
                               const String& source_id,
                               const String& untrusted_stack_trace) override;
   void FrameSizeChanged(const gfx::Size& frame_size) override;
+  void FrameBoundsInLocalRootChanged(const gfx::Rect& bounds) override;
   void DidInferColorScheme(
       blink::mojom::PreferredColorScheme preferred_color_scheme) override;
   void DidChangeSrcDoc(const blink::FrameToken& child_frame_token,
                        const String& srcdoc_value) override;
   void ReceivedDelegatedCapability(
       blink::mojom::DelegatedCapability delegated_capability) override;
-  void SendFencedFrameReportingBeacon(
-      const String& event_data,
-      const String& event_type,
-      const Vector<blink::FencedFrame::ReportingDestination>& destinations,
-      bool cross_origin_exposed) override;
-  void SendFencedFrameReportingBeaconToCustomURL(
-      const blink::KURL& destination_url,
-      bool cross_origin_exposed) override;
-  void SetFencedFrameAutomaticBeaconReportEventData(
-      blink::mojom::AutomaticBeaconType event_type,
-      const String& event_data,
-      const Vector<blink::FencedFrame::ReportingDestination>& destinations,
-      bool once,
-      bool cross_origin_exposed) override;
   void SendLegacyTechEvent(
       const String& type,
       mojom::blink::LegacyTechEventCodeLocationPtr code_location) override;
-  void SendPrivateAggregationRequestsForFencedFrameEvent(
-      const String& event_type) override;
-  void CreateFencedFrame(
-      mojo::PendingAssociatedReceiver<mojom::blink::FencedFrameOwnerHost>,
-      mojom::blink::RemoteFrameInterfacesFromRendererPtr
-          remote_frame_interfaces,
-      const RemoteFrameToken& frame_token,
-      const base::UnguessableToken& devtools_frame_token) override;
   void OnViewTransitionOptInChanged(
       mojom::blink::ViewTransitionSameOriginOptIn) override {}
   void StartDragging(const blink::WebDragData& drag_data,
@@ -207,7 +190,8 @@ class FakeLocalFrameHost : public mojom::blink::LocalFrameHost {
                      mojom::blink::DragEventSourceInfoPtr event_info) override;
   void IssueKeepAliveHandle(
       mojo::PendingReceiver<mojom::blink::NavigationStateKeepAliveHandle>
-          receiver) override;
+          receiver,
+      const blink::InitiatorStateToken& initiator_state_token) override;
   void NotifyStorageAccessed(blink::mojom::StorageTypeAccessed storageType,
                              bool blocked) override;
   void RecordWindowProxyUsageMetrics(
@@ -219,8 +203,10 @@ class FakeLocalFrameHost : public mojom::blink::LocalFrameHost {
   void RequestUnboundedSurface(
       mojo::PendingAssociatedReceiver<mojom::blink::UnboundedSurfaceHost> host,
       mojo::PendingAssociatedRemote<mojom::blink::UnboundedSurfaceClient>
-          client) override {}
+          client,
+      const gfx::Rect& bounds) override {}
   void NotifyDocumentInteractive() override;
+  void SuppressXSLTDeprecationBanner() override;
 
  private:
   void BindFrameHostReceiver(mojo::ScopedInterfaceEndpointHandle handle);

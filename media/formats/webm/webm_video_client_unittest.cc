@@ -15,11 +15,11 @@ namespace {
 const gfx::Size kCodedSize(321, 243);
 
 MATCHER(UnexpectedStereoMode, "") {
-  return CONTAINS_STRING(arg, "Unexpected value for StereoMode: 0x");
+  return arg.contains("Unexpected value for StereoMode: 0x");
 }
 
 MATCHER(UnexpectedMultipleValues, "") {
-  return CONTAINS_STRING(arg, "Multiple values for id");
+  return arg.contains("Multiple values for id");
 }
 }
 
@@ -220,8 +220,6 @@ TEST_F(WebMVideoClientTest, VerifyTransformationFromProjection) {
 
         ASSERT_TRUE(
             projection_parser_client->OnFloat(kWebMIdProjectionPoseYaw, yaw));
-        ASSERT_TRUE(
-            projection_parser_client->OnFloat(kWebMIdProjectionPosePitch, 0.0));
         ASSERT_TRUE(
             projection_parser_client->OnFloat(kWebMIdProjectionPoseRoll, roll));
         OnListEnd(kWebMIdProjection);

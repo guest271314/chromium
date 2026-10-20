@@ -12,7 +12,6 @@
 #include "base/location.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/test/scoped_command_line.h"
-#include "build/chromeos_buildflags.h"
 #include "content/public/browser/browser_context.h"
 #include "extensions/browser/blocklist_extension_prefs.h"
 #include "extensions/browser/extension_prefs.h"
@@ -24,18 +23,12 @@
 #include "extensions/common/constants.h"
 #include "extensions/common/extension.h"
 #include "extensions/common/extension_builder.h"
+#include "extensions/common/mojom/api_permission_id.mojom.h"
+#include "extensions/common/permissions/permission_set.h"
+#include "extensions/common/permissions/permissions_data.h"
 #include "extensions/common/switches.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
-
-#if BUILDFLAG(IS_CHROMEOS)
-#include "base/test/scoped_feature_list.h"
-#include "components/account_id/account_id.h"  // nogncheck
-#include "components/prefs/pref_registry_simple.h"
-#include "components/prefs/testing_pref_service.h"
-#include "components/user_manager/fake_user_manager.h"
-#include "components/user_manager/scoped_user_manager.h"
-#endif  // BUILDFLAG(IS_CHROMEOS)
 
 namespace extensions {
 
@@ -130,8 +123,7 @@ class ExtensionRegistrarTest : public ExtensionsTest {
     // Mock defaults.
     ON_CALL(delegate_, CanEnableExtension(extension_.get()))
         .WillByDefault(Return(true));
-    ON_CALL(delegate_, CanDisableExtension(extension_.get()))
-        .WillByDefault(Return(true));
+    ON_CALL(delegate_, CanDisableExtension(_)).WillByDefault(Return(true));
     EXPECT_CALL(delegate_, PostActivateExtension(_)).Times(0);
     EXPECT_CALL(delegate_, PostDeactivateExtension(_)).Times(0);
   }
@@ -612,6 +604,58 @@ TEST_F(ExtensionRegistrarTest, Enabledness) {
 
   // TODO(crbug.com/406544103): Test disabling an extension in a profile here.
   // TODO(crbug.com/406544103): Test enabling an extension in a profile here.
+}
+
+TEST_F(ExtensionRegistrarTest, DisableUninstalledExtension) {
+  // Verify that `extension()` has not been added to `ExtensionRegistry`.
+  ExpectInSet(ExtensionRegistry::NONE);
+
+  // Call `ExtensionRegistrar::DisableExtension()` on the uninstalled
+  // extension ID and verify it returns early safely without crashing or
+  // invoking delegate functions.
+  registrar()->DisableExtension(extension()->id(),
+                                {disable_reason::DISABLE_USER_ACTION});
+  ExpectInSet(ExtensionRegistry::NONE);
+
+  // Verify that we didn't write disable reasons to prefs.
+  EXPECT_TRUE(ExtensionPrefs::Get(browser_context())
+                  ->GetDisableReasons(extension()->id())
+                  .empty());
+}
+
+TEST_F(ExtensionRegistrarTest,
+       GrantPermissionsAndEnableExtension_MismatchedVersion) {
+  AddDisabledExtension();
+
+  // Mock the delegate so that it grants the extension's active permissions in
+  // ExtensionPrefs when invoked.
+  ON_CALL(*delegate(), GrantActivePermissions(_))
+      .WillByDefault([this](const Extension* ext) {
+        ExtensionPrefs::Get(browser_context())
+            ->AddGrantedPermissions(
+                ext->id(), ext->permissions_data()->active_permissions());
+      });
+
+  scoped_refptr<const Extension> extension_different_version =
+      ExtensionBuilder("extension")
+          .SetVersion("2.0")
+          .AddAPIPermission("bookmarks")
+          .SetID(extension()->id())
+          .Build();
+
+  // Assert that GrantActivePermissions is not called.
+  EXPECT_CALL(*delegate(), GrantActivePermissions(_)).Times(0);
+  registrar()->GrantPermissionsAndEnableExtension(*extension_different_version);
+
+  ExpectInSet(ExtensionRegistry::DISABLED);
+
+  // Verify that the extension was not granted the newly added permissions when
+  // GrantPermissionsAndEnableExtension was called with a mismatched version.
+  const Extension* installed = ExtensionRegistry::Get(browser_context())
+                                   ->GetInstalledExtension(extension()->id());
+  ASSERT_TRUE(installed);
+  EXPECT_FALSE(installed->permissions_data()->HasAPIPermission(
+      mojom::APIPermissionID::kBookmark));
 }
 
 }  // namespace extensions

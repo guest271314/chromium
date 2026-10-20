@@ -50,7 +50,8 @@ function showModalDialog(text: string) {
 // scrollDown() if needsScrollDown() was true.
 
 function isScrolledDown(): boolean {
-  return window.innerHeight + window.scrollY >= document.body.offsetHeight;
+  return Math.ceil(window.innerHeight + window.scrollY) >=
+      document.body.offsetHeight;
 }
 
 // Whether autoscroll is currently scrolling.
@@ -252,6 +253,8 @@ function setUpStopRecording() {
 
 interface OnLoadArgument {
   autofillAiServerModelEnabled: boolean;
+  autofillAmbientAutofillSuppressionEnabled: boolean;
+  autofillGmailOtpEnabled: boolean;
   showDomNodeIDsEnabled: boolean;
 }
 
@@ -266,11 +269,18 @@ function setUpAutofillInternals(onLoadArgument: OnLoadArgument) {
   setUpScopeCheckboxes();
   setUpSettingCheckboxes();
   setUpMarker();
+  if (onLoadArgument.autofillAmbientAutofillSuppressionEnabled) {
+    setUpClearAutofillAiEntitySuppressionsButton();
+  }
   setUpDumpAddressesButton();
   setUpSubmittedFormsJSONDataDownload();
   setUpCheckAutofillAiPermissions();
+  setUpCheckAtMemoryPermissions();
   if (onLoadArgument.showDomNodeIDsEnabled) {
     setUpButtonForDomNodeIdCapture();
+  }
+  if (onLoadArgument.autofillGmailOtpEnabled) {
+    setUpClearGmailOtpOptInPrefsButton();
   }
   setUpDownload('autofill');
   if (onLoadArgument.autofillAiServerModelEnabled) {
@@ -310,10 +320,15 @@ function enableResetCacheButton() {
 }
 
 function notifyAboutIncognito(isIncognito: boolean) {
+  const scrollAfterInsert = needsScrollDown();
   document.body.dataset['incognito'] = isIncognito.toString();
+  if (scrollAfterInsert) {
+    scrollDown();
+  }
 }
 
 function notifyAboutVariations(variations: string[]) {
+  const scrollAfterInsert = needsScrollDown();
   const list = document.createElement('div');
   for (const item of variations) {
     list.appendChild(document.createTextNode(item));
@@ -322,6 +337,9 @@ function notifyAboutVariations(variations: string[]) {
   const variationsList =
       getRequiredElement<HTMLTableCellElement>('variations-list');
   variationsList.appendChild(list);
+  if (scrollAfterInsert) {
+    scrollDown();
+  }
 }
 
 // Setup a (fake) button to add visual markers
@@ -377,12 +395,6 @@ function setUpDownload(moduleName: string) {
     window.URL.revokeObjectURL(url);
     a.remove();
   });
-  // <if expr="is_ios">
-  // Hide this until downloading a file works on iOS, see
-  // https://bugs.webkit.org/show_bug.cgi?id=167341
-  // https://bugs.chromium.org/p/chromium/issues/detail?id=1252380
-  downloadFakeButton.style.display = 'none';
-  // </if>
 }
 
 interface SubmittedFormTopLevelData {
@@ -528,12 +540,6 @@ function setUpSubmittedFormsJSONDataDownload() {
     a.click();
     a.remove();
   });
-  // <if expr="is_ios">
-  // Hide this until downloading a file works on iOS, see
-  // https://bugs.webkit.org/show_bug.cgi?id=167341
-  // https://bugs.chromium.org/p/chromium/issues/detail?id=1252380
-  downloadSubmittedFormJSONDataButton.style.display = 'none';
-  // </if>
 }
 
 function setUpCheckAutofillAiPermissions() {
@@ -542,6 +548,103 @@ function setUpCheckAutofillAiPermissions() {
   button.style.display = 'inline';
   button.addEventListener('click', () => {
     chrome.send('checkAutofillAiPermissions');
+  });
+  // </if>
+}
+
+function setUpCheckAtMemoryPermissions() {
+  // <if expr="not is_ios" >
+  function showAtMemoryPermissionsDialog() {
+    const dialog = document.createElement('div');
+    dialog.className = 'modal-dialog';
+    dialog.style.height = 'auto';
+    dialog.style.minHeight = '100px';
+
+    const content = document.createElement('div');
+    content.className = 'modal-dialog-content';
+
+    const closeButton = document.createElement('span');
+    closeButton.className = 'modal-dialog-close-button fake-button';
+    closeButton.innerText = 'Close';
+
+    const select = document.createElement('select');
+    select.style.marginRight = '10px';
+    // LINT.IfChange(AtMemoryAction)
+    const actions = [
+      {value: 'kTriggerSearchUI', text: 'Trigger search UI'},
+      {value: 'kShowAtMemoryInSettings', text: 'Show AtMemory in settings'},
+      {
+        value: 'kAllowCustomizeAtMemoryShortcut',
+        text: 'Allow customize AtMemory shortcut',
+      },
+      {value: 'kShowIph', text: 'Show IPH'},
+      {
+        value: 'kShowAutocompleteAtMemoryButton',
+        text: 'Show autocomplete AtMemory button',
+      },
+      {
+        value: 'kRetrievePaymentsForFilling',
+        text: 'Retrieve payments for filling',
+      },
+      {
+        value: 'kRetrieveContactInfoForFilling',
+        text: 'Retrieve contact info for filling',
+      },
+      {
+        value: 'kRetrieveIdentityDocsForFilling',
+        text: 'Retrieve identity docs for filling',
+      },
+      {
+        value: 'kRetrieveTravelDataForFilling',
+        text: 'Retrieve travel data for filling',
+      },
+      {
+        value: 'kRetrieveShoppingDataForFilling',
+        text: 'Retrieve shopping data for filling',
+      },
+    ];
+    // LINT.ThenChange(/components/autofill/core/browser/at_memory/at_memory_enablement_util.h:AtMemoryAction)
+    for (const action of actions) {
+      const option = document.createElement('option');
+      option.value = action.value;
+      option.innerText = action.text;
+      select.appendChild(option);
+    }
+
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.value = 'https://example.com';
+    input.style.marginRight = '10px';
+    input.style.width = '250px';
+
+    const checkButton = document.createElement('span');
+    checkButton.className = 'fake-button';
+    checkButton.innerText = 'Check';
+    checkButton.addEventListener('click', () => {
+      chrome.send('checkAtMemoryPermissions', [select.value, input.value]);
+    });
+
+    const resultContainer = document.createElement('p');
+    resultContainer.id = 'at-memory-permission-result';
+    resultContainer.className = 'modal-dialog-text';
+
+    content.appendChild(closeButton);
+    content.appendChild(select);
+    content.appendChild(input);
+    content.appendChild(checkButton);
+    content.appendChild(resultContainer);
+    dialog.appendChild(content);
+    window.document.body.append(dialog);
+
+    closeButton.addEventListener('click', () => {
+      window.document.body.removeChild(dialog);
+    });
+  }
+
+  const button = document.getElementById('check-at-memory-permissions')!;
+  button.style.display = 'inline';
+  button.addEventListener('click', () => {
+    showAtMemoryPermissionsDialog();
   });
   // </if>
 }
@@ -610,6 +713,8 @@ function setUpScopeCheckboxes() {
     {id: 'TouchToFill'},
     {id: 'AutofillAi'},
     {id: 'AutofillActor'},
+    {id: 'OneTimeTokens'},
+    {id: 'AtMemory'},
   ];
 
   interface ScopeCheckbox {
@@ -673,6 +778,12 @@ function setUpSettingCheckboxes() {
     const input = createCheckbox(setting);
     settingsPlaceholder.appendChild(input.parentElement!);
   }
+  getRequiredElement<HTMLInputElement>('EnableAutoscroll')
+      .addEventListener('change', (e) => {
+        if ((e.target as HTMLInputElement).checked) {
+          scrollDown();
+        }
+      });
   {
     // Add the timestamp for AutomaticallyStopRecording.
     const span = document.createElement('span');
@@ -703,12 +814,17 @@ function addTabLink(linkText: string, tabId: string) {
 function onTabShown(tabId: string) {
   if (tabId === 'tab-autofill-ai-cache') {
     chrome.send('getAutofillAiCache');
+  } else if (tabId === 'tab-autofill-ai-entities') {
+    getRequiredElement('autofill-ai-entities-content').innerText =
+        'Loading entities';
+    chrome.send('getAutofillAiEntities');
   }
 }
 
 function addAutofillTabs() {
   addTabLink('Autofill logs', 'tab-logs');
   addTabLink('AutofillAI cache', 'tab-autofill-ai-cache');
+  addTabLink('AutofillAI entities', 'tab-autofill-ai-entities');
   getRequiredElement('tab-links').style.display = 'block';
 }
 
@@ -764,6 +880,98 @@ function displayAutofillAiCache(entries: AutofillAiCacheEntry[]) {
   }
 }
 
+interface AutofillAiAttributeEntry {
+  name: string;
+  value: string;
+}
+
+interface AutofillAiEntityEntry {
+  guid: string;
+  nickname: string;
+  entityType: string;
+  recordType: string;
+  attributes: AutofillAiAttributeEntry[];
+}
+
+function displayAutofillAiLoadingStatus(status: string) {
+  const statusDiv = document.getElementById('autofill-ai-loading-status');
+  if (!statusDiv) {
+    return;
+  }
+  statusDiv.innerText = status;
+  statusDiv.style.display = status ? 'block' : 'none';
+}
+
+function displayAutofillAiEntities(entries: AutofillAiEntityEntry[]) {
+  const container = getRequiredElement('autofill-ai-entities-content');
+  if (entries.length === 0) {
+    container.innerText = 'No entities found.';
+    return;
+  }
+
+  container.innerText = '';
+  const reauthButton = document.createElement('span');
+  reauthButton.className = 'fake-button';
+  reauthButton.innerText = 'Reauth to unmask';
+  reauthButton.addEventListener('click', () => {
+    chrome.send('authenticateToRevealMaskedEntities');
+  });
+  container.appendChild(reauthButton);
+  container.appendChild(document.createElement('hr'));
+  const groupedEntities =
+      new Map<string, Map<string, AutofillAiEntityEntry[]>>();
+  for (const entry of entries) {
+    if (!groupedEntities.has(entry.entityType)) {
+      groupedEntities.set(
+          entry.entityType, new Map<string, AutofillAiEntityEntry[]>());
+    }
+    const recordTypeMap = groupedEntities.get(entry.entityType)!;
+    if (!recordTypeMap.has(entry.recordType)) {
+      recordTypeMap.set(entry.recordType, []);
+    }
+    recordTypeMap.get(entry.recordType)!.push(entry);
+  }
+
+  for (const [entityType, recordTypeMap] of groupedEntities) {
+    const typeHeader = document.createElement('h2');
+    typeHeader.innerText = `Entity type: ${entityType}`;
+    container.appendChild(typeHeader);
+
+    for (const [recordType, entityList] of recordTypeMap) {
+      const recordHeader = document.createElement('h3');
+      recordHeader.innerText = `Record type: ${recordType}`;
+      container.appendChild(recordHeader);
+
+      for (const entity of entityList) {
+        const entryTable = document.createElement('table');
+        entryTable.className = 'cache-entry';
+        const entryHeaderRow = document.createElement('tr');
+        const entryHeader = document.createElement('th');
+        entryHeader.colSpan = 2;
+        entryHeader.innerText = `GUID: ${entity.guid}`;
+        if (entity.nickname) {
+          entryHeader.innerText += `, Nickname: ${entity.nickname}`;
+        }
+        entryHeaderRow.appendChild(entryHeader);
+        entryTable.appendChild(entryHeaderRow);
+
+        for (const attribute of entity.attributes) {
+          const row = document.createElement('tr');
+          const nameCell = document.createElement('td');
+          nameCell.innerText = attribute.name;
+          const valueCell = document.createElement('td');
+          valueCell.innerText = attribute.value;
+          row.appendChild(nameCell);
+          row.appendChild(valueCell);
+          entryTable.appendChild(row);
+        }
+        container.appendChild(entryTable);
+        container.appendChild(document.createElement('hr'));
+      }
+    }
+  }
+}
+
 document.addEventListener('DOMContentLoaded', () => {
   addWebUiListener('enable-reset-cache-button', enableResetCacheButton);
   addWebUiListener('notify-about-incognito', notifyAboutIncognito);
@@ -773,8 +981,17 @@ document.addEventListener('DOMContentLoaded', () => {
   addWebUiListener(
       'on-autofill-ai-permission-check-done',
       (message: string) => showModalDialog(message));
+  addWebUiListener('on-at-memory-permission-check-done', (message: string) => {
+    const resultEl = document.getElementById('at-memory-permission-result');
+    if (resultEl) {
+      resultEl.innerText = message;
+    }
+  });
   addWebUiListener('add-structured-log', addStructuredLog);
   addWebUiListener('display-autofill-ai-cache', displayAutofillAiCache);
+  addWebUiListener('display-autofill-ai-entities', displayAutofillAiEntities);
+  addWebUiListener(
+      'display-autofill-ai-loading-status', displayAutofillAiLoadingStatus);
   addWebUiListener('setup-autofill-internals', setUpAutofillInternals);
   addWebUiListener(
       'setup-password-manager-internals', setUpPasswordManagerInternals);
@@ -792,6 +1009,27 @@ document.addEventListener('DOMContentLoaded', () => {
     chrome.send('dumpAddresses');
   });
 });
+
+function setUpClearAutofillAiEntitySuppressionsButton() {
+  // <if expr="not is_ios" >
+  const button =
+      getRequiredElement('clear-autofill-ai-entity-suppressions-fake-button');
+  button.style.display = 'inline';
+  button.addEventListener('click', () => {
+    chrome.send('clearAutofillAiEntitySuppressions');
+  });
+  // </if>
+}
+
+function setUpClearGmailOtpOptInPrefsButton() {
+  // <if expr="not is_ios" >
+  const button = getRequiredElement('clear-gmail-otp-opt-in-prefs-fake-button');
+  button.style.display = 'inline';
+  button.addEventListener('click', () => {
+    chrome.send('clearGmailOtpOptInPrefs');
+  });
+  // </if>
+}
 
 function setUpDumpAddressesButton() {
   getRequiredElement('dump-addresses-fake-button').style.display = 'inline';

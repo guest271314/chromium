@@ -29,22 +29,28 @@ class TestAutofillExternalDelegate : public AutofillExternalDelegate {
 
   ~TestAutofillExternalDelegate() override;
 
+  using AutofillExternalDelegate::DidAcceptSuggestion;
+  using AutofillExternalDelegate::DidSelectSuggestion;
+
   // AutofillExternalDelegate overrides.
-  void OnSuggestionsShown(base::span<const Suggestion> suggestions) override;
+  void OnSuggestionsShown(base::span<const Suggestion> suggestions,
+                          const SuggestionUiMetadata& metadata) override;
   void OnSuggestionsHidden(SuggestionHidingReason reason) override;
   void OnQuery(const FormData& form,
                const FormFieldData& field,
                const gfx::Rect& caret_bounds,
-               AutofillSuggestionTriggerSource trigger_source,
-               bool update_datalist) override;
-  void OnSuggestionsReturned(
-      FieldGlobalId field_id,
-      const std::vector<Suggestion>& suggestions) override;
+               AutofillSuggestionTriggerSource trigger_source) override;
+  void OnSuggestionsReturned(const FormFieldData& trigger_field,
+                             const std::vector<Suggestion>& suggestions,
+                             std::u16string prefilled_query) override;
   bool HasActiveScreenReader() const override;
   void OnAutofillAvailabilityEvent(
       mojom::AutofillSuggestionAvailability suggestion_availability) override;
 
   // Functions unique to TestAutofillExternalDelegate.
+  void DidSelectSuggestion(const Suggestion& suggestion);
+  void DidAcceptSuggestion(const Suggestion& suggestion,
+                           const SuggestionMetadata& metadata = {});
 
   void WaitForPopupHidden();
 
@@ -91,7 +97,8 @@ class TestAutofillExternalDelegate : public AutofillExternalDelegate {
   AutofillSuggestionTriggerSource trigger_source_ =
       AutofillSuggestionTriggerSource::kUnspecified;
 
-  // The field id of the most recent Autofill query.
+  // The form and field id of the most recent Autofill query.
+  FormGlobalId form_id_;
   FieldGlobalId field_id_;
 
   // The results returned by the most recent Autofill query.

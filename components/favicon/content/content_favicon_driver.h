@@ -92,7 +92,8 @@ class ContentFaviconDriver
   // content::WebContentsObserver implementation.
   void DidUpdateFaviconURL(
       content::RenderFrameHost* rfh,
-      const std::vector<blink::mojom::FaviconURLPtr>& candidates) override;
+      const std::vector<blink::mojom::FaviconURLPtr>& candidates,
+      blink::mojom::FaviconUpdateReason reason) override;
   void DidUpdateWebManifestURL(content::RenderFrameHost* rfh,
                                const GURL& manifest_url) override;
   void DidStartNavigation(
@@ -101,6 +102,9 @@ class ContentFaviconDriver
       content::NavigationHandle* navigation_handle) override;
 
   GURL bypass_cache_page_url_;
+
+  // Whether INVALIDATE_TYPE_ICON has been sent for the current page.
+  bool notified_icon_available_ = false;
 
   base::WeakPtrFactory<ContentFaviconDriver> weak_ptr_factory_{this};
 

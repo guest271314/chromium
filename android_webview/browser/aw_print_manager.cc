@@ -10,12 +10,10 @@
 #include "base/check_op.h"
 #include "base/file_descriptor_posix.h"
 #include "base/files/file_util.h"
+#include "base/files/scoped_file.h"
 #include "base/functional/bind.h"
-#include "base/logging.h"
 #include "base/memory/ptr_util.h"
 #include "base/memory/ref_counted_memory.h"
-#include "base/notreached.h"
-#include "base/numerics/safe_conversions.h"
 #include "base/task/task_traits.h"
 #include "base/task/thread_pool.h"
 #include "components/printing/browser/print_manager_utils.h"
@@ -30,14 +28,12 @@ namespace android_webview {
 
 namespace {
 
-uint32_t SaveDataToFd(int fd,
+uint32_t SaveDataToFd(base::ScopedFD fd,
                       uint32_t page_count,
                       scoped_refptr<base::RefCountedSharedMemoryMapping> data) {
-  bool result = fd > base::kInvalidFd &&
-                base::IsValueInRangeForNumericType<int>(data->size());
-  if (result)
-    result = base::WriteFileDescriptor(fd, *data);
-  return result ? page_count : 0;
+  CHECK(fd.is_valid());
+  bool did_write_successfully = base::WriteFileDescriptor(fd.get(), *data);
+  return did_write_successfully ? page_count : 0;
 }
 
 }  // namespace
@@ -61,9 +57,19 @@ void AwPrintManager::BindPrintManagerHost(
   print_manager->BindReceiver(std::move(receiver), rfh);
 }
 
+void AwPrintManager::SetupScriptedPrintAndroid(
+    SetupScriptedPrintAndroidCallback callback) {
+  // WebView does not support the print dialog triggered by window.print().
+  // Run the callback immediately to unblock the renderer, maintaining the
+  // previous behavior where window.print() was essentially a no-op.
+  //
+  // TODO(crbug.com/40342444): Add support for window.print().
+  std::move(callback).Run();
+}
+
 void AwPrintManager::PdfWritingDone(int page_count) {
-  // Invalidate the file descriptor so it doesn't get reused.
-  fd_ = base::kInvalidFd;
+  // `fd_` should have been reset when printing started.
+  CHECK(!fd_.is_valid());
   // Trigger the callback to notify the embedding application that printing is
   // done. A non-positive `page_count` value (<=0) will be presented as an error
   // callback to the application.
@@ -98,12 +104,13 @@ void AwPrintManager::GetDefaultPrintSettings(
 
 void AwPrintManager::UpdateParam(
     std::unique_ptr<printing::PrintSettings> settings,
-    int file_descriptor,
+    base::ScopedFD file_descriptor,
     PrintManager::PdfWritingDoneCallback callback) {
   DCHECK(settings);
   DCHECK(callback);
+  CHECK(file_descriptor.is_valid());
   settings_ = std::move(settings);
-  fd_ = file_descriptor;
+  fd_ = std::move(file_descriptor);
   set_pdf_writing_done_callback(std::move(callback));
   set_cookie(printing::PrintSettings::NewCookie());
 }
@@ -113,10 +120,20 @@ void AwPrintManager::ScriptedPrint(
     ScriptedPrintCallback callback) {
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
 
-  if (scripted_params->is_scripted &&
-      GetCurrentTargetFrame()->IsNestedWithinFencedFrame()) {
-    DLOG(ERROR) << "Unexpected message received. Script Print is not allowed"
-                   " in a fenced frame.";
+  // Prevents spurious requests from the renderer to print. This blocks
+  // window.print(), which is fine since window.print() is not supported, per
+  // comment in SetupScriptedPrintAndroid().
+  //
+  // TODO(crbug.com/40342444): Add support for window.print() and properly
+  // handle this to match applicable checks on other platforms.
+  if (!is_printing()) {
+    std::move(callback).Run(nullptr);
+    return;
+  }
+
+  content::RenderFrameHost& render_frame_host = CurrentTargetFrame();
+  if (!render_frame_host.IsActive()) {
+    // Only active RFHs should try to print.
     std::move(callback).Run(nullptr);
     return;
   }
@@ -138,6 +155,16 @@ void AwPrintManager::ScriptedPrint(
 void AwPrintManager::DidPrintDocument(
     printing::mojom::DidPrintDocumentParamsPtr params,
     DidPrintDocumentCallback callback) {
+  // Extract `fd_` here to prevent it from being used more than once.
+  base::ScopedFD print_fd = std::move(fd_);
+
+  if (!print_fd.is_valid()) {
+    // Can potentially happen if DidPrintDocument() gets called twice.
+    PdfWritingDone(0);
+    std::move(callback).Run(false);
+    return;
+  }
+
   if (params->document_cookie != cookie()) {
     PdfWritingDone(0);
     std::move(callback).Run(false);
@@ -169,7 +196,9 @@ void AwPrintManager::DidPrintDocument(
       {base::MayBlock(), base::TaskPriority::BEST_EFFORT,
        base::TaskShutdownBehavior::SKIP_ON_SHUTDOWN})
       ->PostTaskAndReplyWithResult(
-          FROM_HERE, base::BindOnce(&SaveDataToFd, fd_, number_pages(), data),
+          FROM_HERE,
+          base::BindOnce(&SaveDataToFd, std::move(print_fd), number_pages(),
+                         data),
           base::BindOnce(&AwPrintManager::OnDidPrintDocumentWritingDone,
                          weak_ptr_factory_.GetWeakPtr(), std::move(callback)));
 }

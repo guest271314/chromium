@@ -10,6 +10,7 @@
 
 #include "ash/constants/ash_features.h"
 #include "ash/constants/ash_switches.h"
+#include "ash/constants/chrome_pref_names.h"
 #include "ash/constants/url_constants.h"
 #include "ash/constants/web_app_id_constants.h"
 #include "ash/constants/webui_url_constants.h"
@@ -22,7 +23,6 @@
 #include "ash/webui/settings/public/constants/setting.mojom.h"
 #include "base/check_deref.h"
 #include "base/command_line.h"
-#include "base/i18n/time_formatting.h"
 #include "base/logging.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/raw_ref.h"
@@ -33,6 +33,7 @@
 #include "base/strings/escape.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
+#include "base/strings/stringprintf.h"
 #include "base/trace_event/trace_event.h"
 #include "chrome/browser/apps/app_service/app_service_proxy.h"
 #include "chrome/browser/apps/app_service/app_service_proxy_factory.h"
@@ -42,10 +43,10 @@
 #include "chrome/browser/ash/policy/core/browser_policy_connector_ash.h"
 #include "chrome/browser/ash/policy/core/device_cloud_policy_manager_ash.h"
 #include "chrome/browser/ash/policy/core/user_cloud_policy_manager_ash.h"
-#include "chrome/browser/ash/profiles/profile_helper.h"
 #include "chrome/browser/ash/system/system_clock.h"
 #include "chrome/browser/chromeos/extensions/vpn_provider/vpn_service_factory.h"
 #include "chrome/browser/enterprise/browser_management/management_identity.h"
+#include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/ui/ash/system_web_apps/system_web_app_ui_utils.h"
 #include "chrome/browser/ui/ash/system_web_apps/system_web_app_utils.h"
@@ -61,7 +62,6 @@
 #include "chrome/browser/ui/webui/ash/multidevice_setup/multidevice_setup_dialog.h"
 #include "chrome/browser/ui/webui/ash/set_time/set_time_dialog.h"
 #include "chrome/browser/upgrade_detector/upgrade_detector.h"
-#include "chrome/common/pref_names.h"
 #include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
 #include "chromeos/ash/components/dbus/session_manager/session_manager_client.h"
 #include "chromeos/ash/components/network/network_handler.h"
@@ -269,7 +269,10 @@ class SystemTrayClientImpl::EnterpriseAccountObserver
     user_manager::User* user =
         user_manager::UserManager::Get()->GetActiveUser();
     Profile* profile =
-        user ? ash::ProfileHelper::Get()->GetProfileByUser(user) : nullptr;
+        user ? Profile::FromBrowserContext(
+                   ash::BrowserContextHelper::Get()->GetBrowserContextByUser(
+                       user))
+             : nullptr;
     if (profile == profile_) {
       return;
     }
@@ -316,13 +319,13 @@ SystemTrayClientImpl::SystemTrayClientImpl(
 
   system_tray_->SetClient(this);
 
-  DCHECK(!g_system_tray_client_instance);
+  CHECK(!g_system_tray_client_instance, base::NotFatalUntil::M162);
   g_system_tray_client_instance = this;
   UpgradeDetector::GetInstance()->AddObserver(this);
 }
 
 SystemTrayClientImpl::~SystemTrayClientImpl() {
-  DCHECK_EQ(this, g_system_tray_client_instance);
+  CHECK_EQ(this, g_system_tray_client_instance, base::NotFatalUntil::M162);
   g_system_tray_client_instance = nullptr;
 
   // This can happen when mocking this class in tests.
@@ -476,7 +479,7 @@ void SystemTrayClientImpl::ShowSmartPrivacySettings() {
 void SystemTrayClientImpl::ShowChromeSlow() {
   chrome::ScopedTabbedBrowserDisplayer displayer(
       ProfileManager::GetPrimaryUserProfile());
-  chrome::ShowSlow(displayer.browser());
+  chrome::ShowSlow(displayer.browser_window_interface());
 }
 
 void SystemTrayClientImpl::ShowIMESettings() {
@@ -577,7 +580,8 @@ void SystemTrayClientImpl::ShowEnterpriseInfo() {
   // Otherwise show enterprise management info page.
   chrome::ScopedTabbedBrowserDisplayer displayer(
       ProfileManager::GetActiveUserProfile());
-  chrome::ShowEnterpriseManagementPageInTabbedBrowser(displayer.browser());
+  chrome::ShowEnterpriseManagementPageInTabbedBrowser(
+      displayer.browser_window_interface());
 }
 
 void SystemTrayClientImpl::ShowNetworkConfigure(const std::string& network_id) {
@@ -586,7 +590,7 @@ void SystemTrayClientImpl::ShowNetworkConfigure(const std::string& network_id) {
     return;
   }
 
-  DCHECK(ash::NetworkHandler::IsInitialized());
+  CHECK(ash::NetworkHandler::IsInitialized(), base::NotFatalUntil::M162);
   const ash::NetworkState* network_state = GetNetworkState(network_id);
   if (!network_state) {
     LOG(ERROR) << "Network not found: " << network_id;
@@ -652,8 +656,9 @@ void SystemTrayClientImpl::ShowArcVpnCreate(const std::string& app_id) {
 void SystemTrayClientImpl::ShowSettingsSimUnlock() {
   // TODO(crbug.com/40134918) Add metrics action recorder.
   SessionManager* const session_manager = SessionManager::Get();
-  DCHECK(session_manager->IsSessionStarted());
-  DCHECK(!session_manager->IsInSecondaryLoginScreen());
+  CHECK(session_manager->IsSessionStarted(), base::NotFatalUntil::M162);
+  CHECK(!session_manager->IsInSecondaryLoginScreen(),
+        base::NotFatalUntil::M162);
   std::string page = chromeos::settings::mojom::kCellularNetworksSubpagePath;
   page += "&showSimLockDialog=true";
   ShowSettingsSubPageForActiveUser(page);
@@ -765,9 +770,12 @@ void SystemTrayClientImpl::ShowCalendarEvent(
     official_url = event_url->ReplaceComponents(replacements);
   } else {
     // No event URL provided, so fall back on opening calendar with `date`.
-    official_url = GURL(kOfficialCalendarUrlPrefix +
-                        base::UnlocalizedTimeFormatWithPattern(
-                            date, "'r/week/'y/M/d", icu::TimeZone::getGMT()));
+    base::Time::Exploded exploded;
+    date.UTCExplode(&exploded);
+    official_url =
+        GURL(kOfficialCalendarUrlPrefix +
+             base::StringPrintf("r/week/%d/%d/%d", exploded.year,
+                                exploded.month, exploded.day_of_month));
   }
 
   // Return the URL we actually opened.
@@ -798,6 +806,9 @@ void SystemTrayClientImpl::ShowCalendarEvent(
 // one for each call to `LaunchAppWithUrl`.
 void SystemTrayClientImpl::ShowVideoConference(
     const GURL& video_conference_url) {
+  if (!video_conference_url.SchemeIsHTTPOrHTTPS()) {
+    return;
+  }
   if (auto* profile = ProfileManager::GetActiveUserProfile()) {
     apps::MaybeLaunchPreferredAppForUrl(
         profile, video_conference_url,
@@ -824,14 +835,12 @@ void SystemTrayClientImpl::ShowAudioSettings() {
 }
 
 void SystemTrayClientImpl::ShowGraphicsTabletSettings() {
-  DCHECK(ash::features::IsPeripheralCustomizationEnabled());
   base::RecordAction(base::UserMetricsAction("ShowGraphicsTabletSettingsPage"));
   ShowSettingsSubPageForActiveUser(
       chromeos::settings::mojom::kGraphicsTabletSubpagePath);
 }
 
 void SystemTrayClientImpl::ShowMouseSettings() {
-  DCHECK(ash::features::IsPeripheralCustomizationEnabled());
   base::RecordAction(base::UserMetricsAction("ShowMouseSettingsPage"));
   ShowSettingsSubPageForActiveUser(
       chromeos::settings::mojom::kPerDeviceMouseSubpagePath);
@@ -920,8 +929,8 @@ bool SystemTrayClientImpl::IsUserFeedbackEnabled() {
   }
   PrefService* signin_prefs =
       ProfileManager::GetActiveUserProfile()->GetPrefs();
-  DCHECK(signin_prefs);
-  return signin_prefs->GetBoolean(prefs::kUserFeedbackAllowed);
+  CHECK(signin_prefs, base::NotFatalUntil::M162);
+  return signin_prefs->GetBoolean(ash::chrome_prefs::kUserFeedbackAllowed);
 }
 
 void SystemTrayClientImpl::HandleUpdateAvailable() {

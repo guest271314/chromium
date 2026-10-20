@@ -26,13 +26,6 @@ const double kPercentageOfRamToUse = 0.5;
 
 const base::TimeDelta kInvisibleCacheCleanupDelay = base::Minutes(7);
 
-// SendResult is an expensive operation and the start of a navigation is a busy
-// time. Delaying SendResult reduces chances of contention.
-// The value can be based on human reaction times and LCP latencies and it can
-// be adjusted based on the incidence of the value SentScreenshotRequest in
-// Navigation.GestureTransition.CacheHitOrMissReason.
-const base::TimeDelta kScreenshotSendResultDelay = base::Milliseconds(400);
-
 size_t GetMaxCacheSizeInBytes() {
   constexpr int kLowEndMax = 32 * 1024 * 1024;  // 32MB
   constexpr int kOtherMax = 128 * 1024 * 1024;  // 128MB
@@ -45,13 +38,13 @@ size_t GetMaxCacheSizeInBytes() {
 bool NavigationTransitionConfig::SupportsBackForwardTransitions(
     base::PassKey<ContentBrowserClient>) {
   return base::SysInfo::AmountOfTotalPhysicalMemory() >=
-         base::MiBU(
+         base::MiB(
              base::checked_cast<uint64_t>(g_min_required_physical_ram_mb));
 }
 
 // static
 size_t NavigationTransitionConfig::ComputeCacheSizeInBytes() {
-  // TODO(crbug.com/429140103): Convert the return type to ByteCount.
+  // TODO(crbug.com/429140103): Convert the return type to ByteSize.
 
   // Assume 4 bytes per pixel. This value estimates the max number of bytes of
   // the physical screen's uncompressed bitmap.
@@ -88,11 +81,6 @@ size_t NavigationTransitionConfig::ComputeCacheSizeInBytes() {
 base::TimeDelta
 NavigationTransitionConfig::GetCleanupDelayForInvisibleCaches() {
   return kInvisibleCacheCleanupDelay;
-}
-
-// static
-base::TimeDelta NavigationTransitionConfig::ScreenshotSendResultDelay() {
-  return kScreenshotSendResultDelay;
 }
 
 // static

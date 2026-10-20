@@ -58,12 +58,13 @@ std::string GetBnplPaymentInstrumentForFetchingVcnRequest::GetRequestContent() {
           .Set("context",
                Dict()
                    .Set("billable_service",
-                        payments::kUnmaskPaymentMethodBillableServiceNumber)
+                        kUnmaskPaymentMethodBillableServiceNumber)
                    .Set("customer_context",
                         BuildCustomerContextDictionary(
                             request_details_.billing_customer_number)))
           .Set("chrome_user_context",
-               Dict().Set("full_sync_enabled", full_sync_enabled_))
+               BuildChromeUserContext(/*client_behavior_signals=*/{},
+                                      full_sync_enabled_))
           .Set("instrument_id", request_details_.instrument_id)
           .Set("risk_data_encoded",
                BuildRiskDictionary(request_details_.risk_data))

@@ -40,6 +40,7 @@
 #if BUILDFLAG(ENABLE_DICE_SUPPORT)
 #include "components/signin/public/base/binding_key_registration_token_result.h"
 #include "components/unexportable_keys/unexportable_key_id.h"
+#include "crypto/sign.h"
 #endif  // BUILDFLAG(ENABLE_DICE_SUPPORT)
 
 namespace {
@@ -993,16 +994,16 @@ TEST_F(ProfileOAuth2TokenServiceTest, GenerateBindingKeyRegistrationToken) {
       std::optional<signin::BindingKeyRegistrationTokenResult>>
       future;
   EXPECT_FALSE(oauth2_service_->GenerateBindingKeyRegistrationToken(
-      "ES256", "test_code", future.GetCallback()));
+      {crypto::sign::ECDSA_SHA256}, "test_code", future.GetCallback()));
 
   delegate_ptr_->EnableTokenBindingRegistration();
   EXPECT_TRUE(oauth2_service_->GenerateBindingKeyRegistrationToken(
-      "ES256", "test_code", future.GetCallback()));
+      {crypto::sign::ECDSA_SHA256}, "test_code", future.GetCallback()));
   EXPECT_FALSE(future.IsReady());
 
   delegate_ptr_->IssueTokenBindingRegistrationTokenForAuthCode(
       "test_code", signin::BindingKeyRegistrationTokenResult(
-                       unexportable_keys::UnexportableKeyId(), {1, 2, 3},
+                       unexportable_keys::UnexportableSigningKeyId(), {1, 2, 3},
                        "test_registration_token"));
 
   ASSERT_TRUE(future.IsReady());

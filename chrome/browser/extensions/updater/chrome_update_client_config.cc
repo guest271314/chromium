@@ -51,7 +51,6 @@
 #include "extensions/browser/extension_prefs.h"
 #include "extensions/browser/extension_prefs_observer.h"
 #include "extensions/buildflags/buildflags.h"
-#include "extensions/common/extension_urls.h"
 
 static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
 
@@ -60,8 +59,6 @@ namespace extensions {
 namespace {
 
 using FactoryCallback = ChromeUpdateClientConfig::FactoryCallback;
-
-bool g_disable_cup_signing_for_tests = false;
 
 // static
 static FactoryCallback& GetFactoryCallback() {
@@ -117,7 +114,7 @@ PrefService* GetPrefService(base::WeakPtr<content::BrowserContext> context) {
 ExtensionActivityDataService::ExtensionActivityDataService(
     ExtensionPrefs* extension_prefs)
     : extension_prefs_(extension_prefs) {
-  DCHECK(extension_prefs_);
+  CHECK(extension_prefs_, base::NotFatalUntil::M161);
 
   prefs_observation_.Observe(extension_prefs);
 }
@@ -171,7 +168,7 @@ void ExtensionActivityDataService::GetAndClearActiveBits(
 
 void ExtensionActivityDataService::OnExtensionPrefsWillBeDestroyed(
     ExtensionPrefs* prefs) {
-  DCHECK(prefs_observation_.IsObservingSource(prefs));
+  CHECK(prefs_observation_.IsObservingSource(prefs), base::NotFatalUntil::M161);
   prefs_observation_.Reset();
   extension_prefs_ = nullptr;
 }
@@ -181,7 +178,8 @@ void ExtensionActivityDataService::OnExtensionPrefsWillBeDestroyed(
 // For privacy reasons, requires encryption of the component updater
 // communication with the update backend.
 ChromeUpdateClientConfig::ChromeUpdateClientConfig(
-    content::BrowserContext* context)
+    content::BrowserContext* context,
+    std::optional<GURL> url_override)
     : context_(context->GetWeakPtr()),
       impl_(ExtensionUpdateClientCommandLineConfigPolicy(
                 base::CommandLine::ForCurrentProcess()),
@@ -189,7 +187,8 @@ ChromeUpdateClientConfig::ChromeUpdateClientConfig(
       persisted_data_(update_client::CreatePersistedData(
           base::BindRepeating(&extensions::GetPrefService, context_),
           std::make_unique<ExtensionActivityDataService>(
-              ExtensionPrefs::Get(context)))) {
+              ExtensionPrefs::Get(context)))),
+      url_override_(url_override) {
   base::FilePath path;
   bool result = base::PathService::Get(chrome::DIR_USER_DATA, &path);
   crx_cache_ = base::MakeRefCounted<update_client::CrxCache>(
@@ -222,18 +221,16 @@ base::TimeDelta ChromeUpdateClientConfig::UpdateDelay() const {
 
 std::vector<GURL> ChromeUpdateClientConfig::UpdateUrl() const {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  GURL update_url = extension_urls::GetWebstoreUpdateUrl();
-  if (update_url != extension_urls::GetDefaultWebstoreUpdateUrl()) {
-    return {update_url};
+  if (url_override_.has_value()) {
+    return {*url_override_};
   }
   return impl_.UpdateUrl();
 }
 
 std::vector<GURL> ChromeUpdateClientConfig::PingUrl() const {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  GURL update_url = extension_urls::GetWebstoreUpdateUrl();
-  if (update_url != extension_urls::GetDefaultWebstoreUpdateUrl()) {
-    return {update_url};
+  if (url_override_.has_value()) {
+    return {*url_override_};
   }
   return impl_.PingUrl();
 }
@@ -262,6 +259,11 @@ std::string ChromeUpdateClientConfig::GetLang() const {
 std::string ChromeUpdateClientConfig::GetOSLongName() const {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   return impl_.GetOSLongName();
+}
+
+std::string ChromeUpdateClientConfig::GetDeviceFormFactor() const {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  return impl_.GetDeviceFormFactor();
 }
 
 base::flat_map<std::string, std::string>
@@ -307,7 +309,7 @@ ChromeUpdateClientConfig::GetCrxDownloaderFactory() {
 scoped_refptr<update_client::UnzipperFactory>
 ChromeUpdateClientConfig::GetUnzipperFactory() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
   if (!unzip_factory_) {
     unzip_factory_ = base::MakeRefCounted<update_client::UnzipChromiumFactory>(
         base::BindRepeating(&unzip::LaunchUnzipper));
@@ -318,7 +320,7 @@ ChromeUpdateClientConfig::GetUnzipperFactory() {
 scoped_refptr<update_client::PatcherFactory>
 ChromeUpdateClientConfig::GetPatcherFactory() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
   if (!patch_factory_) {
     patch_factory_ = base::MakeRefCounted<update_client::PatchChromiumFactory>(
         base::BindRepeating(&patch::LaunchFilePatcher));
@@ -337,17 +339,9 @@ bool ChromeUpdateClientConfig::EnabledBackgroundDownloader() const {
   return false;
 }
 
-// static
-base::AutoReset<bool>
-ChromeUpdateClientConfig::ScopedDisableCupSigningForTests() {
-  return base::AutoReset<bool>(&g_disable_cup_signing_for_tests, true);
-}
-
 bool ChromeUpdateClientConfig::EnabledCupSigning() const {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  if (g_disable_cup_signing_for_tests ||
-      (extension_urls::GetWebstoreUpdateUrl() !=
-       extension_urls::GetDefaultWebstoreUpdateUrl())) {
+  if (url_override_.has_value()) {
     return false;
   }
   return impl_.EnabledCupSigning();
@@ -389,17 +383,18 @@ ChromeUpdateClientConfig::GetUpdaterStateProvider() const {
 
 // static
 scoped_refptr<ChromeUpdateClientConfig> ChromeUpdateClientConfig::Create(
-    content::BrowserContext* context) {
+    content::BrowserContext* context,
+    std::optional<GURL> update_url_override) {
   FactoryCallback& factory = GetFactoryCallback();
-  return factory.is_null()
-             ? base::MakeRefCounted<ChromeUpdateClientConfig>(context)
-             : factory.Run(context);
+  return factory.is_null() ? base::MakeRefCounted<ChromeUpdateClientConfig>(
+                                 context, update_url_override)
+                           : factory.Run(context);
 }
 
 // static
 void ChromeUpdateClientConfig::SetChromeUpdateClientConfigFactoryForTesting(
     FactoryCallback factory) {
-  DCHECK(!factory.is_null());
+  CHECK(!factory.is_null(), base::NotFatalUntil::M161);
   GetFactoryCallback() = factory;
 }
 

@@ -10,6 +10,7 @@
 #include "base/memory/ptr_util.h"
 #include "base/memory/raw_ptr.h"
 #include "base/run_loop.h"
+#include "base/test/test_future.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/common/content_client.h"
 #include "content/public/test/browser_task_environment.h"
@@ -49,9 +50,18 @@ class TestWebDialogViewWebDialogDelegate
   ui::mojom::ModalType GetDialogModalType() const override {
     return ui::mojom::ModalType::kWindow;
   }
+  void OnDialogClosed(const std::string& json_retval) override {
+    closed_json_retval_ = json_retval;
+    ui::test::TestWebDialogDelegate::OnDialogClosed(json_retval);
+  }
+
+  const std::optional<std::string>& closed_json_retval() const {
+    return closed_json_retval_;
+  }
 
  private:
   bool close_on_escape_ = true;
+  std::optional<std::string> closed_json_retval_;
 };
 
 // Provides functionality to test a WebDialogView.
@@ -79,9 +89,9 @@ class WebDialogViewUnitTest : public views::test::WidgetTest {
     web_dialog_delegate_ =
         std::make_unique<TestWebDialogViewWebDialogDelegate>();
     web_contents_ = CreateWebContents();
-    web_dialog_view_ = new WebDialogView(
-        web_contents_->GetBrowserContext(), web_dialog_delegate_.get(),
-        std::make_unique<ui::test::TestWebContentsHandler>());
+    web_dialog_view_ =
+        new WebDialogView(browser_context(), web_dialog_delegate_.get(),
+                          std::make_unique<ui::test::TestWebContentsHandler>());
 
     // This prevents the initialization of the dialog from navigating
     // to the URL in the WebUI.  This is needed because the WebUI
@@ -100,11 +110,19 @@ class WebDialogViewUnitTest : public views::test::WidgetTest {
 
   void TearDown() override {
     web_dialog_view_ = nullptr;
-    widget_.ExtractAsDangling()->CloseNow();
+    if (widget_) {
+      widget_.ExtractAsDangling()->CloseNow();
+    }
     views::test::WidgetTest::TearDown();
   }
 
   bool widget_is_closed() { return widget_->IsClosed(); }
+
+  void WaitForWidgetDestroyed() {
+    web_dialog_view_ = nullptr;
+    views::test::WidgetDestroyedWaiter waiter(widget_.ExtractAsDangling());
+    waiter.Wait();
+  }
 
   WebDialogView* web_dialog_view() { return web_dialog_view_; }
 
@@ -231,6 +249,31 @@ TEST_F(WebDialogViewUnitTest, MetadataTest) {
   test::TestViewMetadata(web_dialog_view());
 }
 
+TEST_F(WebDialogViewUnitTest, CanDownload) {
+  content::WebContentsDelegate* delegate = web_dialog_view();
+
+  // Downloads are allowed by default.
+  base::test::TestFuture<bool> allowed_by_default;
+  delegate->CanDownload(GURL(), "GET", allowed_by_default.GetCallback());
+  EXPECT_TRUE(allowed_by_default.Get());
+
+  // Dialogs that show untrusted content can disallow downloads.
+  web_dialog_delegate()->set_can_download(false);
+  base::test::TestFuture<bool> allowed_when_disabled;
+  delegate->CanDownload(GURL(), "GET", allowed_when_disabled.GetCallback());
+  EXPECT_FALSE(allowed_when_disabled.Get());
+
+  // If the delegate is destroyed/missing (e.g. after the dialog is closed),
+  // CanDownload should fall back to true to match the WebContentsDelegate
+  // default.
+  web_dialog_view()->CloseContents(nullptr);
+  content::WebContentsDelegate* null_delegate = web_dialog_view();
+  base::test::TestFuture<bool> allowed_null_delegate;
+  null_delegate->CanDownload(GURL(), "GET",
+                             allowed_null_delegate.GetCallback());
+  EXPECT_TRUE(allowed_null_delegate.Get());
+}
+
 TEST_F(WebDialogViewUnitTest, AllowAccelerators) {
   // By default, allow_accelerators should be true.
   EXPECT_TRUE(web_view()->allow_accelerators());
@@ -242,6 +285,13 @@ TEST_F(WebDialogViewUnitTest, AllowAccelerators) {
       browser_context(), delegate.get(),
       std::make_unique<ui::test::TestWebContentsHandler>());
   EXPECT_FALSE(GetWebViewFor(web_dialog_view.get())->allow_accelerators());
+}
+
+TEST_F(WebDialogViewUnitTest, WebDialogViewClosedFromWebUI) {
+  web_dialog_delegate()->OnDialogCloseFromWebUI("{\"closed\":true}");
+  WaitForWidgetDestroyed();
+
+  EXPECT_EQ("{\"closed\":true}", web_dialog_delegate()->closed_json_retval());
 }
 
 }  // namespace views

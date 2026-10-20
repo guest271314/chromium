@@ -18,6 +18,7 @@ import static org.mockito.Mockito.when;
 
 import android.Manifest;
 import android.app.Activity;
+import android.content.ClipData;
 import android.content.ContentResolver;
 import android.content.Intent;
 import android.content.pm.PackageManager;
@@ -30,8 +31,10 @@ import android.webkit.MimeTypeMap;
 
 import androidx.core.content.ContextCompat;
 
+import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
+import org.junit.rules.TemporaryFolder;
 import org.junit.runner.RunWith;
 import org.mockito.ArgumentMatcher;
 import org.mockito.ArgumentMatchers;
@@ -59,6 +62,7 @@ import org.chromium.ui.permissions.PermissionCallback;
 
 import java.io.File;
 import java.io.IOException;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -68,19 +72,39 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 /** Tests logic in the SelectFileDialog class. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 @DisableFeatures({
     UiAndroidFeatures.DEPRECATED_EXTERNAL_PICKER_FUNCTION,
-    UiAndroidFeatures.SELECT_FILE_OPEN_DOCUMENT
 })
 @EnableFeatures({UiAndroidFeatures.DISABLE_PHOTO_PICKER_FOR_VIDEO_CAPTURE})
 public class SelectFileDialogTest {
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
+    @Rule public TemporaryFolder mTempFolder = new TemporaryFolder();
 
     // A callback that fires when the file selection pipeline shuts down as a result of an action.
     public final CallbackHelper mOnActionCallback = new CallbackHelper();
 
     @Mock FileUtils.Natives mFileUtilsMocks;
+
+    @Before
+    public void setUp() {
+        SelectFileDialog.clearActiveDialogsForTesting();
+        // Emulate realpath(): canonicalize existing paths, return "" for nonexistent ones.
+        FileUtilsJni.setInstanceForTesting(mFileUtilsMocks);
+        Mockito.lenient()
+                .doAnswer(invocation -> realpath(invocation.getArgument(0)))
+                .when(mFileUtilsMocks)
+                .getAbsoluteFilePath(any());
+    }
+
+    private static String realpath(String path) {
+        File file = new File(path);
+        if (!file.exists()) return "";
+        try {
+            return file.getCanonicalPath();
+        } catch (IOException e) {
+            return "";
+        }
+    }
 
     private void runAllAsyncTasks() {
         RobolectricUtil.runAllBackgroundAndUi();
@@ -142,6 +166,9 @@ public class SelectFileDialogTest {
         private void resetFileSelectionAttempts() {
             mFileSelectionAborted = 0;
             mFileSelectionSuccess = 0;
+            // Clear that state here so the next selectFile() is not rejected as a concurrent
+            // request.
+            SelectFileDialog.clearActiveDialogsForTesting();
         }
     }
 
@@ -331,19 +358,70 @@ public class SelectFileDialogTest {
     }
 
     @Test
-    @EnableFeatures({UiAndroidFeatures.SELECT_FILE_OPEN_DOCUMENT})
     public void testFileSystemAccessOpenDocument() throws Exception {
         verifyFileSystemAccessIntent(Intent.ACTION_OPEN_DOCUMENT);
     }
 
     @Test
-    @EnableFeatures({UiAndroidFeatures.SELECT_FILE_OPEN_DOCUMENT})
     public void testFileSystemAccessCreateDocument() throws Exception {
         verifyFileSystemAccessIntent(Intent.ACTION_CREATE_DOCUMENT);
     }
 
+    private void verifyCreateDocumentIntent(
+            String[] fileTypes,
+            String suggestedName,
+            String expectedMimeType,
+            String expectedTitle) {
+        TestSelectFileDialog selectFileDialog = new TestSelectFileDialog(0);
+        WindowAndroid windowAndroid = Mockito.mock(WindowAndroid.class);
+
+        IntentArgumentMatcher intentArgumentMatcher =
+                new IntentArgumentMatcher(Intent.ACTION_CREATE_DOCUMENT);
+        Mockito.doAnswer(
+                        (invocation) -> {
+                            Intent intent = (Intent) invocation.getArguments()[0];
+                            assertEquals(expectedMimeType, intent.getType());
+                            assertEquals(expectedTitle, intent.getExtra(Intent.EXTRA_TITLE));
+                            assertTrue(intent.hasCategory(Intent.CATEGORY_OPENABLE));
+                            return true;
+                        })
+                .when(windowAndroid)
+                .showIntent(
+                        ArgumentMatchers.argThat(intentArgumentMatcher),
+                        (WindowAndroid.IntentCallback) any(),
+                        anyInt());
+
+        selectFileDialog.selectFile(
+                Intent.ACTION_CREATE_DOCUMENT,
+                fileTypes,
+                /* capture= */ false,
+                /* multiple= */ false,
+                /* defaultDirectory= */ null,
+                suggestedName,
+                windowAndroid);
+    }
+
     @Test
-    @EnableFeatures({UiAndroidFeatures.SELECT_FILE_OPEN_DOCUMENT})
+    public void testCreateDocumentInfersMimeTypeFromSuggestedName() throws Exception {
+        ShadowMimeTypeMap shadowMimeTypeMap = Shadows.shadowOf(MimeTypeMap.getSingleton());
+        shadowMimeTypeMap.addExtensionMimeTypeMapping("webp", "image/webp");
+        shadowMimeTypeMap.addExtensionMimeTypeMapping("gz", "application/gzip");
+
+        verifyCreateDocumentIntent(new String[] {}, "images.webp", "image/webp", "images.webp");
+        verifyCreateDocumentIntent(new String[] {}, "my photo.webp", "image/webp", "my photo.webp");
+        verifyCreateDocumentIntent(
+                new String[] {}, "archive.tar.gz", "application/gzip", "archive.tar.gz");
+        verifyCreateDocumentIntent(
+                new String[] {".tar.gz"}, "archive.tar.gz", "application/gzip", "archive.tar.gz");
+        verifyCreateDocumentIntent(
+                new String[] {},
+                "archive.this_is_not_a_real_extension",
+                "application/octet-stream",
+                "archive.this_is_not_a_real_extension");
+        verifyCreateDocumentIntent(new String[] {}, "Makefile", "*/*", "Makefile");
+    }
+
+    @Test
     public void testFileSystemAccessOpenDocumentTree() throws Exception {
         verifyFileSystemAccessIntent(Intent.ACTION_OPEN_DOCUMENT_TREE);
     }
@@ -903,10 +981,12 @@ public class SelectFileDialogTest {
         shadowMimeTypeMap.addExtensionMimeTypeMapping("gif", "image/gif");
         shadowMimeTypeMap.addExtensionMimeTypeMapping("txt", "text/plain");
         shadowMimeTypeMap.addExtensionMimeTypeMapping("mpg", "video/mpeg");
+        shadowMimeTypeMap.addExtensionMimeTypeMapping("gz", "application/gzip");
 
         assertEquals("", SelectFileDialog.ensureMimeType(""));
         assertEquals("image/jpeg", SelectFileDialog.ensureMimeType(".jpg"));
         assertEquals("image/jpeg", SelectFileDialog.ensureMimeType("image/jpeg"));
+        assertEquals("application/gzip", SelectFileDialog.ensureMimeType(".tar.gz"));
         // Unknown extension, expect default response:
         assertEquals(
                 "application/octet-stream",
@@ -945,19 +1025,82 @@ public class SelectFileDialogTest {
     }
 
     @Test
-    public void testMultipleFileSelectorWithFileUris() {
+    public void testMultipleFileSelectorWithFileUris() throws IOException {
         SelectFileDialog selectFileDialog = new SelectFileDialog(0);
+        File file0 = mTempFolder.newFile("IMG_0.jpg");
+        File file1 = mTempFolder.newFile("IMG_1.jpg");
         Uri[] filePathArray =
                 new Uri[] {
-                    Uri.parse("file:///storage/emulated/0/DCIM/Camera/IMG_0.jpg"),
-                    Uri.parse("file:///storage/emulated/0/DCIM/Camera/IMG_1.jpg")
+                    Uri.parse("file://" + file0.getAbsolutePath()),
+                    Uri.parse("file://" + file1.getAbsolutePath())
                 };
         SelectFileDialog.GetDisplayNameTask task =
                 selectFileDialog
                 .new GetDisplayNameTask(ContextUtils.getApplicationContext(), true, filePathArray);
         task.doInBackground();
-        assertEquals("///storage/emulated/0/DCIM/Camera/IMG_0.jpg", task.mFilePaths[0].toString());
-        assertEquals("///storage/emulated/0/DCIM/Camera/IMG_1.jpg", task.mFilePaths[1].toString());
+        assertEquals(file0.getCanonicalPath(), task.mFilePaths[0]);
+        assertEquals(file1.getCanonicalPath(), task.mFilePaths[1]);
+    }
+
+    @Test
+    public void testMultipleFileSelectorWithCaseVariantFileUris() throws IOException {
+        SelectFileDialog selectFileDialog = new SelectFileDialog(0);
+        File file0 = mTempFolder.newFile("IMG_0.jpg");
+        File file1 = mTempFolder.newFile("IMG_1.jpg");
+        Uri[] filePathArray =
+                new Uri[] {
+                    Uri.parse("FILE://" + file0.getAbsolutePath()),
+                    Uri.parse("File://" + file1.getAbsolutePath())
+                };
+        SelectFileDialog.GetDisplayNameTask task =
+                selectFileDialog
+                .new GetDisplayNameTask(ContextUtils.getApplicationContext(), true, filePathArray);
+        task.doInBackground();
+        assertEquals(file0.getCanonicalPath(), task.mFilePaths[0]);
+        assertEquals(file1.getCanonicalPath(), task.mFilePaths[1]);
+    }
+
+    @Test
+    public void testMultipleFileSelectorWithCaseVariantAppDirUris() throws IOException {
+        SelectFileDialog selectFileDialog = new SelectFileDialog(0);
+        File dataDir = ContextCompat.getDataDir(ContextUtils.getApplicationContext());
+        File appFile = new File(dataDir, "app_data.txt");
+        dataDir.mkdirs();
+        assertTrue(appFile.createNewFile());
+        Uri[] filePathArray = new Uri[] {Uri.parse("FILE://" + appFile.getAbsolutePath())};
+        SelectFileDialog.GetDisplayNameTask task =
+                selectFileDialog
+                .new GetDisplayNameTask(ContextUtils.getApplicationContext(), true, filePathArray);
+        assertEquals(null, task.doInBackground());
+    }
+
+    @Test
+    @DisableFeatures({UiAndroidFeatures.CHECK_INTENT_CALLER_PERMISSION})
+    public void testIntentCompletedWithCaseVariantClipDataUri() throws IOException {
+        TestSelectFileDialog selectFileDialog = new TestSelectFileDialog(0);
+        File file = mTempFolder.newFile("IMG_0.jpg");
+        ClipData clipData =
+                ClipData.newUri(
+                        ContextUtils.getApplicationContext().getContentResolver(),
+                        "label",
+                        Uri.parse("FILE://" + file.getAbsolutePath()));
+        Intent intent = new Intent(Intent.ACTION_VIEW);
+        intent.setClipData(clipData);
+        selectFileDialog.onIntentCompleted(Activity.RESULT_OK, intent);
+        runAllAsyncTasks();
+        assertEquals(1, selectFileDialog.mFileSelectionSuccess);
+        assertEquals(0, selectFileDialog.mFileSelectionAborted);
+    }
+
+    @Test
+    @DisableFeatures({UiAndroidFeatures.CHECK_INTENT_CALLER_PERMISSION})
+    public void testIntentCompletedWithCaseVariantDataUri() {
+        TestSelectFileDialog selectFileDialog = new TestSelectFileDialog(0);
+        Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse("CONTENT://com.example.test/xyz"));
+        selectFileDialog.onIntentCompleted(Activity.RESULT_OK, intent);
+        runAllAsyncTasks();
+        assertEquals(1, selectFileDialog.mFileSelectionSuccess);
+        assertEquals(0, selectFileDialog.mFileSelectionAborted);
     }
 
     @Test
@@ -983,14 +1126,6 @@ public class SelectFileDialogTest {
 
     private void testFilePath(
             String path, SelectFileDialog selectFileDialog, boolean expectedPass) {
-        testFilePath(path, selectFileDialog, expectedPass, expectedPass);
-    }
-
-    private void testFilePath(
-            String path,
-            SelectFileDialog selectFileDialog,
-            boolean expectedFileSelectionResult,
-            boolean expectedGetDisplayNameResult) {
         Uri[] uris = new Uri[1];
         uris[0] = Uri.fromFile(new File(path));
 
@@ -1001,15 +1136,12 @@ public class SelectFileDialogTest {
                 selectFileDialog
                 .new GetDisplayNameTask(
                         ContextUtils.getApplicationContext(), /* isMultiple= */ false, uris);
-        assertEquals(expectedFileSelectionResult, task.doInBackground());
-        assertEquals(expectedGetDisplayNameResult, null != task2.doInBackground());
+        assertEquals(expectedPass, task.doInBackground());
+        assertEquals(expectedPass, null != task2.doInBackground());
     }
 
     @Test
     public void testFilePathTasks() throws IOException {
-        FileUtilsJni.setInstanceForTesting(mFileUtilsMocks);
-        doReturn("/tmp/xyz.jpn").when(mFileUtilsMocks).getAbsoluteFilePath(any());
-
         SelectFileDialog selectFileDialog = new SelectFileDialog(0);
 
         // Obtain the data directory for RoboElectric. It should look something like:
@@ -1017,6 +1149,10 @@ public class SelectFileDialogTest {
         // ... where [testName] is the name of this test function and [number] is a unique id.
         String dataDir =
                 ContextCompat.getDataDir(ContextUtils.getApplicationContext()).getCanonicalPath();
+        assertTrue(new File(dataDir, "tmp").mkdirs());
+        assertTrue(new File(dataDir, "tmp/xyz.jpg").createNewFile());
+        assertTrue(new File(dataDir, "xyz.jpg").createNewFile());
+        assertTrue(new File(dataDir, "../xyz.jpg").createNewFile());
 
         // Passing in the data directory itself should fail.
         testFilePath(dataDir, selectFileDialog, /* expectedPass= */ false);
@@ -1027,7 +1163,10 @@ public class SelectFileDialogTest {
         // Another way of specifying the data directory (should fail).
         testFilePath(dataDir + "/tmp/../xyz.jpg", selectFileDialog, /* expectedPass= */ false);
         // The directory outside the data directory should succeed.
-        testFilePath("/data/local/tmp.jpg", selectFileDialog, /* expectedPass= */ true);
+        testFilePath(
+                mTempFolder.newFile("tmp.jpg").getPath(),
+                selectFileDialog,
+                /* expectedPass= */ true);
 
         Path path = new File(dataDir).toPath();
         String parent = path.getParent().toString();
@@ -1044,13 +1183,108 @@ public class SelectFileDialogTest {
                 selectFileDialog,
                 /* expectedPass= */ false);
 
-        // Tests invalid file path should fail file selection.
-        doReturn(new String()).when(mFileUtilsMocks).getAbsoluteFilePath(any());
+        // Invalid or nonexistent file paths should fail.
+        testFilePath("\\/tmp/xyz.jpg", selectFileDialog, /* expectedPass= */ false);
         testFilePath(
-                "\\/tmp/xyz.jpg",
+                mTempFolder.getRoot() + "/nonexistent.jpg",
                 selectFileDialog,
-                /* expectedFileSelectionResult= */ false,
-                /* expectedGetDisplayNameResult= */ true);
+                /* expectedPass= */ false);
+    }
+
+    @Test
+    public void testFilePathTasksRejectProcAndNonRegularFiles() {
+        SelectFileDialog selectFileDialog = new SelectFileDialog(0);
+
+        // Paths resolving into procfs (here /proc/<pid>/maps) are rejected.
+        testFilePath("/proc/self/maps", selectFileDialog, /* expectedPass= */ false);
+        // Directories are not regular files.
+        testFilePath(mTempFolder.getRoot().getPath(), selectFileDialog, /* expectedPass= */ false);
+    }
+
+    @Test
+    public void testFilePathTasksForwardResolvedPath() throws IOException {
+        SelectFileDialog selectFileDialog = new SelectFileDialog(0);
+        File target = mTempFolder.newFile("target.jpg");
+        File link = new File(mTempFolder.getRoot(), "link.jpg");
+        Files.createSymbolicLink(link.toPath(), target.toPath());
+
+        SelectFileDialog.GetDisplayNameTask task =
+                selectFileDialog
+                .new GetDisplayNameTask(
+                        ContextUtils.getApplicationContext(),
+                        /* isMultiple= */ false,
+                        new Uri[] {Uri.fromFile(link)});
+        task.doInBackground();
+        assertEquals(target.getCanonicalPath(), task.mFilePaths[0]);
+    }
+
+    @Test
+    @DisableFeatures({UiAndroidFeatures.CHECK_INTENT_CALLER_PERMISSION})
+    public void testFileSchemeRejectsOpaqueAndRelativeUris() throws IOException {
+        File validFile = mTempFolder.newFile("valid.jpg");
+
+        // Even if realpath() were to resolve a non-hierarchical or relative path to an existing
+        // regular file, opaque file: URIs (such as "file:content://...") and relative paths must
+        // be rejected before reaching FileUtils.getAbsoluteFilePath().
+        Mockito.lenient()
+                .doReturn(validFile.getCanonicalPath())
+                .when(mFileUtilsMocks)
+                .getAbsoluteFilePath(any());
+
+        SelectFileDialog selectFileDialog = new SelectFileDialog(0);
+        Uri[] opaqueAndRelativeUris =
+                new Uri[] {
+                    Uri.parse("file:content://com.android.chrome.FileProvider/images/pic.jpg"),
+                    Uri.parse("FILE:content://com.android.chrome.FileProvider/images/pic.jpg"),
+                    Uri.parse("file:valid.jpg"),
+                    Uri.fromParts("file", "valid.jpg", null),
+                };
+        for (Uri uri : opaqueAndRelativeUris) {
+            SelectFileDialog.GetDisplayNameTask task =
+                    selectFileDialog
+                    .new GetDisplayNameTask(
+                            ContextUtils.getApplicationContext(),
+                            /* isMultiple= */ false,
+                            new Uri[] {uri});
+            assertEquals("Expected null for " + uri, null, task.doInBackground());
+        }
+
+        SelectFileDialog.FilePathSelectedTask relativePathTask =
+                selectFileDialog
+                .new FilePathSelectedTask(ContextUtils.getApplicationContext(), "valid.jpg", null);
+        assertFalse(relativePathTask.doInBackground());
+
+        // End-to-end onIntentCompleted checks with opaque file:content:// URI in ClipData and data.
+        TestSelectFileDialog testDialog = new TestSelectFileDialog(0);
+        Uri opaqueContentUri =
+                Uri.parse("file:content://com.android.chrome.FileProvider/images/pic.jpg");
+        Intent clipIntent = new Intent();
+        clipIntent.setClipData(
+                new ClipData("label", new String[0], new ClipData.Item(opaqueContentUri)));
+        testDialog.onIntentCompleted(Activity.RESULT_OK, clipIntent);
+        runAllAsyncTasks();
+        assertEquals(0, testDialog.mFileSelectionSuccess);
+        assertEquals(1, testDialog.mFileSelectionAborted);
+        testDialog.resetFileSelectionAttempts();
+
+        Intent dataIntent = new Intent(Intent.ACTION_VIEW, opaqueContentUri);
+        testDialog.onIntentCompleted(Activity.RESULT_OK, dataIntent);
+        runAllAsyncTasks();
+        assertEquals(0, testDialog.mFileSelectionSuccess);
+        assertEquals(1, testDialog.mFileSelectionAborted);
+        testDialog.resetFileSelectionAttempts();
+        Mockito.verify(mFileUtilsMocks, Mockito.never()).getAbsoluteFilePath(any());
+
+        // Valid hierarchical file:/// URI still succeeds.
+        SelectFileDialog.GetDisplayNameTask validTask =
+                selectFileDialog
+                .new GetDisplayNameTask(
+                        ContextUtils.getApplicationContext(),
+                        /* isMultiple= */ false,
+                        new Uri[] {Uri.fromFile(validFile)});
+        assertTrue(validTask.doInBackground() != null);
+        Mockito.verify(mFileUtilsMocks).getAbsoluteFilePath(validFile.getPath());
+        assertEquals(validFile.getCanonicalPath(), validTask.mFilePaths[0]);
     }
 
     @Test
@@ -1217,6 +1451,11 @@ public class SelectFileDialogTest {
         assertEquals(
                 SelectFileDialog.convertToSupportedMimeTypes(Arrays.asList("image/gif", ".", "")),
                 Arrays.asList("image/gif"));
+
+        // Compound extension (.tar.gz) resolves to application/gzip.
+        assertEquals(
+                SelectFileDialog.convertToSupportedMimeTypes(Arrays.asList(".tar.gz")),
+                Arrays.asList("application/gzip"));
     }
 
     ContentResolver getMockContentResolver(String mimeType) {
@@ -1559,6 +1798,193 @@ public class SelectFileDialogTest {
                 /* defaultDirectory= */ null,
                 /* suggestedName= */ null,
                 windowAndroid);
+
+        runAllAsyncTasks();
+    }
+
+    @Test
+    public void testExternalPickerMediaMimeTypeDesktopDoesNotUsePhotoPicker() throws Exception {
+        DeviceInfo.setIsDesktopForTesting(true);
+        assertTrue(DeviceInfo.isDesktop());
+
+        TestSelectFileDialog selectFileDialog = new TestSelectFileDialog(0);
+        WindowAndroid windowAndroid = Mockito.mock(WindowAndroid.class);
+
+        // Mock camera intent resolution.
+        IntentArgumentMatcher imageCaptureIntentArgumentMatcher =
+                new IntentArgumentMatcher(MediaStore.ACTION_IMAGE_CAPTURE);
+        when(windowAndroid.canResolveActivity(
+                        ArgumentMatchers.argThat(imageCaptureIntentArgumentMatcher)))
+                .thenReturn(true);
+
+        // Setup WindowAndroid#showIntent to succeed and validate the chooser intent.
+        IntentArgumentMatcher chooserIntentArgumentMatcher =
+                new IntentArgumentMatcher(Intent.ACTION_CHOOSER);
+        Mockito.doAnswer(
+                        (invocation) -> {
+                            Intent chooserIntent = (Intent) invocation.getArguments()[0];
+                            Intent getContentIntent =
+                                    (Intent) chooserIntent.getExtra(Intent.EXTRA_INTENT);
+                            assertEquals("*/*", getContentIntent.getType());
+                            String[] mimeTypes =
+                                    (String[]) getContentIntent.getExtra(Intent.EXTRA_MIME_TYPES);
+                            assertArrayEquals(
+                                    new String[] {"image/*", "type/nonexistent"}, mimeTypes);
+                            // On desktop, EXTRA_INITIAL_INTENTS should be null or empty.
+                            assertFalse(chooserIntent.hasExtra(Intent.EXTRA_INITIAL_INTENTS));
+                            return true;
+                        })
+                .when(windowAndroid)
+                .showIntent(
+                        ArgumentMatchers.argThat(chooserIntentArgumentMatcher),
+                        (WindowAndroid.IntentCallback) any(),
+                        anyInt());
+
+        selectFileDialog.selectFile(
+                Intent.ACTION_GET_CONTENT,
+                new String[] {"image/*"},
+                /* capture= */ false,
+                /* multiple= */ false,
+                /* defaultDirectory= */ null,
+                /* suggestedName= */ null,
+                windowAndroid);
+
+        // On desktop, redundant camera/audio permissions should not be requested.
+        Mockito.verify(windowAndroid, Mockito.never()).requestPermissions(any(), any());
+
+        runAllAsyncTasks();
+    }
+
+    @Test
+    public void testSelectFileBlockedByDelegate() throws Exception {
+        TestSelectFileDialog selectFileDialog = new TestSelectFileDialog(0);
+        WindowAndroid windowAndroid = Mockito.mock(WindowAndroid.class);
+
+        PhotoPickerDelegate delegate = Mockito.mock(PhotoPickerDelegate.class);
+        when(delegate.shouldBlockFilePicker(windowAndroid)).thenReturn(true);
+        SelectFileDialog.setPhotoPickerDelegateForTesting(delegate);
+
+        int callCount = mOnActionCallback.getCallCount();
+        selectFileDialog.selectFile(
+                Intent.ACTION_GET_CONTENT,
+                new String[] {"image/*"},
+                /* capture= */ false,
+                /* multiple= */ false,
+                /* defaultDirectory= */ null,
+                /* suggestedName= */ null,
+                windowAndroid);
+        mOnActionCallback.waitForCallback(callCount, 1);
+        assertEquals(0, selectFileDialog.mFileSelectionSuccess);
+        assertEquals(1, selectFileDialog.mFileSelectionAborted);
+        Mockito.verify(windowAndroid, Mockito.never())
+                .showIntent(any(Intent.class), any(), anyInt());
+    }
+
+    @Test
+    public void testIsSelectingFile() {
+        WindowAndroid window1 = Mockito.mock(WindowAndroid.class);
+        WindowAndroid window2 = Mockito.mock(WindowAndroid.class);
+
+        assertFalse(SelectFileDialog.isSelectingFile(window1));
+        assertFalse(SelectFileDialog.isSelectingFile(window2));
+
+        // Setup WindowAndroid#showIntent to succeed, so that the dialog stays active while it is
+        // waiting for the result of the chooser intent.
+        IntentArgumentMatcher chooserIntentArgumentMatcher =
+                new IntentArgumentMatcher(Intent.ACTION_CHOOSER);
+        doReturn(true)
+                .when(window1)
+                .showIntent(
+                        ArgumentMatchers.argThat(chooserIntentArgumentMatcher),
+                        (WindowAndroid.IntentCallback) any(),
+                        anyInt());
+
+        // Note: This intentionally uses SelectFileDialog (as opposed to TestSelectFileDialog),
+        // because the test subclass stubs out the onFile*Selected functions, which is where the
+        // dialog unregisters itself as active.
+        SelectFileDialog dialog = new SelectFileDialog(0);
+        dialog.selectFile(
+                Intent.ACTION_GET_CONTENT,
+                new String[] {"text/plain"},
+                /* capture= */ false,
+                /* multiple= */ false,
+                /* defaultDirectory= */ null,
+                /* suggestedName= */ null,
+                window1);
+
+        assertTrue(SelectFileDialog.isSelectingFile(window1));
+        assertFalse(SelectFileDialog.isSelectingFile(window2));
+
+        // Simulate the user dismissing the picker without selecting a file.
+        dialog.onIntentCompleted(Activity.RESULT_CANCELED, null);
+        assertFalse(SelectFileDialog.isSelectingFile(window1));
+        assertFalse(SelectFileDialog.isSelectingFile(window2));
+
+        runAllAsyncTasks();
+    }
+
+    @Test
+    public void testSelectFileBlockedWhenAlreadySelectingFile() {
+        WindowAndroid window = Mockito.mock(WindowAndroid.class);
+        IntentArgumentMatcher chooserIntentArgumentMatcher =
+                new IntentArgumentMatcher(Intent.ACTION_CHOOSER);
+        doReturn(true)
+                .when(window)
+                .showIntent(
+                        ArgumentMatchers.argThat(chooserIntentArgumentMatcher),
+                        (WindowAndroid.IntentCallback) any(),
+                        anyInt());
+
+        SelectFileDialog dialog1 = new SelectFileDialog(0);
+        dialog1.selectFile(
+                Intent.ACTION_GET_CONTENT,
+                new String[] {"text/plain"},
+                /* capture= */ false,
+                /* multiple= */ false,
+                /* defaultDirectory= */ null,
+                /* suggestedName= */ null,
+                window);
+
+        assertTrue(SelectFileDialog.isSelectingFile(window));
+
+        // Second attempt to open a file dialog on the same window while dialog1 is active.
+        TestSelectFileDialog dialog2 = new TestSelectFileDialog(0);
+        dialog2.selectFile(
+                Intent.ACTION_GET_CONTENT,
+                new String[] {"text/plain"},
+                /* capture= */ false,
+                /* multiple= */ false,
+                /* defaultDirectory= */ null,
+                /* suggestedName= */ null,
+                window);
+
+        // Second dialog is immediately aborted without showing a second intent.
+        assertEquals(0, dialog2.mFileSelectionSuccess);
+        assertEquals(1, dialog2.mFileSelectionAborted);
+        Mockito.verify(window, Mockito.times(1))
+                .showIntent(any(Intent.class), (WindowAndroid.IntentCallback) any(), anyInt());
+
+        // The rejected request must not release the window: dialog1 is still showing, so further
+        // requests (including the Ctrl+O shortcut, which consults isSelectingFile()) stay blocked.
+        assertTrue(SelectFileDialog.isSelectingFile(window));
+
+        dialog1.onIntentCompleted(Activity.RESULT_CANCELED, null);
+        assertFalse(SelectFileDialog.isSelectingFile(window));
+
+        // Once the window is free again, a new request proceeds normally.
+        TestSelectFileDialog dialog3 = new TestSelectFileDialog(0);
+        dialog3.selectFile(
+                Intent.ACTION_GET_CONTENT,
+                new String[] {"text/plain"},
+                /* capture= */ false,
+                /* multiple= */ false,
+                /* defaultDirectory= */ null,
+                /* suggestedName= */ null,
+                window);
+        assertEquals(0, dialog3.mFileSelectionAborted);
+        assertTrue(SelectFileDialog.isSelectingFile(window));
+        Mockito.verify(window, Mockito.times(2))
+                .showIntent(any(Intent.class), (WindowAndroid.IntentCallback) any(), anyInt());
 
         runAllAsyncTasks();
     }

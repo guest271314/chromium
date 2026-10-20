@@ -14,7 +14,7 @@
 #include <utility>
 #include <vector>
 
-#include "base/compiler_specific.h"
+#include "base/base64.h"
 #include "base/containers/span.h"
 #include "base/test/insecure_random_generator.h"
 #include "components/services/storage/indexed_db/scopes/varint_coding.h"
@@ -932,15 +932,12 @@ TEST(IndexedDBLevelDBCodingTest, EncodeAndCompareIDBKeysWithSentinels) {
     std::string encoded_b = EncodeSortableIDBKey(key_b);
     EXPECT_TRUE(encoded_b.size());
 
-    auto sqlite_compare = [](const std::string& a, const std::string& b) {
-      return UNSAFE_TODO(
-          std::memcmp(a.c_str(), b.c_str(), std::min(a.length(), b.length())));
-    };
-
-    EXPECT_LT(sqlite_compare(encoded_a, encoded_b), 0);
-    EXPECT_GT(sqlite_compare(encoded_b, encoded_a), 0);
-    EXPECT_EQ(sqlite_compare(encoded_a, encoded_a), 0);
-    EXPECT_EQ(sqlite_compare(encoded_b, encoded_b), 0);
+    // SQLite orders BLOBs with memcmp() over the common prefix, then by
+    // length, which is exactly what std::string::compare() does.
+    EXPECT_LT(encoded_a.compare(encoded_b), 0);
+    EXPECT_GT(encoded_b.compare(encoded_a), 0);
+    EXPECT_EQ(encoded_a.compare(encoded_a), 0);
+    EXPECT_EQ(encoded_b.compare(encoded_b), 0);
   }
 
   std::vector<IndexedDBKey> keys_vec;
@@ -1017,17 +1014,12 @@ TEST(IndexedDBLevelDBCodingTest, EncodeSortableDoubles) {
       EXPECT_TRUE(encoded_b.size());
       EXPECT_EQ(encoded_a.size(), encoded_b.size());
 
-      auto sqlite_compare = [](const std::string& a, const std::string& b) {
-        return UNSAFE_TODO(std::memcmp(a.c_str(), b.c_str(),
-                                       std::min(a.length(), b.length())));
-      };
-
       if (value_a < value_b) {
-        EXPECT_LT(sqlite_compare(encoded_a, encoded_b), 0);
+        EXPECT_LT(encoded_a.compare(encoded_b), 0);
       } else if (value_a == value_b) {
-        EXPECT_EQ(sqlite_compare(encoded_a, encoded_b), 0);
+        EXPECT_EQ(encoded_a.compare(encoded_b), 0);
       } else {
-        EXPECT_GT(sqlite_compare(encoded_a, encoded_b), 0);
+        EXPECT_GT(encoded_a.compare(encoded_b), 0);
       }
     }
   }
@@ -1131,6 +1123,24 @@ TEST(IndexedDBLevelDBCodingTest, ComparisonTest) {
       EXPECT_GT(Compare(keys[j], keys[i], false), 0);
     }
   }
+}
+
+TEST(IndexedDBLevelDBCodingTest, CompareWithCorruptIndexDataKey) {
+  std::string index_data_key_with_positive_sequence_number =
+      IndexDataKey::Encode(1, 1, 30, MaxIDBKey(), MaxIDBKey(),
+                           std::numeric_limits<int64_t>::max());
+
+  // `IndexDataKey` must use a positive sequence number.  Simulate disk
+  // corruption with an encoded negative sequence number.
+  std::string index_data_key_with_negative_sequence_number;
+  ASSERT_TRUE(base::Base64Decode(
+      "AwMD/////wD+ioqKioqKirUBAAAAAAAAioqKioqKioqKioqKioqKioqKioqKioqKioo=",
+      &index_data_key_with_negative_sequence_number));
+
+  EXPECT_EQ(Compare(index_data_key_with_positive_sequence_number,
+                    index_data_key_with_negative_sequence_number,
+                    /*only_compare_index_keys=*/false),
+            -1);
 }
 
 TEST(IndexedDBLevelDBCodingTest, IndexDataKeyEncodeDecode) {

@@ -20,6 +20,10 @@ namespace {
 // Returns true if `scope` is a Google OAuth2 API scope that do not require user
 // to be signed in to the browser.
 bool IsUnrestrictedOAuth2Scopes(const std::string& scope) {
+  if (scope == GaiaConstants::kChromeSyncPreviewOAuth2Scope) {
+    return base::FeatureList::IsEnabled(switches::kEnableAccountPreviewData);
+  }
+
 #if !BUILDFLAG(IS_ANDROID)
   // Check kill switch for Device Management Service OAuth scope.
   if (scope == GaiaConstants::kDeviceManagementServiceOAuth) {
@@ -82,6 +86,8 @@ bool IsConsumerAllowlistedForScope(OAuthConsumerId oauth_consumer_id,
                                    const std::string& scope) {
   static constexpr auto kAllowlist =
       base::MakeFixedFlatSet<std::pair<OAuthConsumerId, std::string_view>>({
+          {OAuthConsumerId::kTabContextContainersService,
+           GaiaConstants::kChromeSyncOAuth2Scope},
           {OAuthConsumerId::kSyncDeviceStatisticsMetrics,
            GaiaConstants::kChromeSyncOAuth2Scope},
       });

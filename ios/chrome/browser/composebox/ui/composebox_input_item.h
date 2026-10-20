@@ -8,6 +8,7 @@
 #import <UIKit/UIKit.h>
 
 #import "ios/chrome/browser/composebox/public/composebox_input_item_source.h"
+#import "url/gurl.h"
 
 namespace base {
 class UnguessableToken;
@@ -15,6 +16,7 @@ class UnguessableToken;
 
 // Enum for the loading state of an item.
 enum class ComposeboxInputItemState {
+  kDeferred,
   kLoading,
   kUploading,
   kLoaded,
@@ -27,6 +29,7 @@ enum class ComposeboxInputItemType {
   kComposeboxInputItemTypePDF,
   kComposeboxInputItemTypeRawFile,
   kComposeboxInputItemTypeTab,
+  kComposeboxInputItemTypeDrive,
 };
 
 // Data object for an item in the AIM input.
@@ -56,17 +59,32 @@ enum class ComposeboxInputItemType {
 @property(nonatomic, assign) NSInteger uploadIndex;
 // The current state of the item.
 @property(nonatomic, assign) ComposeboxInputItemState state;
+// Whether the item is ready for the query to be sent (i.e. not deferred,
+// loading, or uploading).
+@property(nonatomic, assign, readonly) BOOL readyForSend;
 // The type of the input item.
 @property(nonatomic, assign) ComposeboxInputItemType type;
 // Optional, uniquely identifying the asset the item is associated with.
 @property(nonatomic, copy, readonly) NSString* assetID;
 // The source of the item.
 @property(nonatomic, assign) ComposeboxInputItemSource source;
-
+// Whether or not an animation was performed for this item. Only applied for tab
+// items when composebox is presented in the assistant sheet.
+@property(nonatomic, assign) BOOL performedAnimation;
+// Whether the item was added automatically.
+@property(nonatomic, assign) BOOL isAutoAdded;
 // The image provider for this item. Only set for image types.
 @property(nonatomic, strong) NSItemProvider* imageProvider;
 // The file URL for this item. Only set for PDF and raw file types.
 @property(nonatomic, strong) NSURL* fileURL;
+// The tab URL for this item. Only set for tab types.
+@property(nonatomic, assign) GURL tabURL;
+// The Drive item identifier. Only set for Drive types.
+@property(nonatomic, copy) NSString* driveIdentifier;
+// The Drive resource key. Only set for Drive types.
+@property(nonatomic, copy) NSString* driveResourceKey;
+// The Drive mime type. Only set for Drive types.
+@property(nonatomic, copy) NSString* driveMimeType;
 
 @end
 

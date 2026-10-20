@@ -4,7 +4,7 @@
 
 #include "chrome/browser/task_manager/providers/browser_process_task.h"
 
-#include "base/byte_count.h"
+#include "base/byte_size.h"
 #include "base/numerics/safe_conversions.h"
 #include "chrome/browser/task_manager/task_manager_observer.h"
 #include "chrome/grit/generated_resources.h"
@@ -47,8 +47,10 @@ Task::Type BrowserProcessTask::GetType() const {
   return Task::BROWSER;
 }
 
-int BrowserProcessTask::GetChildProcessUniqueID() const {
-  return 0;
+content::ChildProcessId BrowserProcessTask::GetChildProcessUniqueID() const {
+  // TODO(crbug.com/379869738): Ideally this should return -1 and GetType()
+  // should mean that this is never called.
+  return content::ChildProcessId(0);
 }
 
 std::optional<base::ByteSize> BrowserProcessTask::GetSqliteMemoryUsed() const {

@@ -45,7 +45,7 @@ by a child template that "extends" this file.
                  {% if force_32_bit is defined and force_32_bit == 'true' %}
                  android:use32bitAbi="true"
                  {% endif %}>
-        {# This part is shared between stand-alone WebView and Monochrome #}
+        {# This part is shared between stand-alone WebView and Trichrome WebView #}
         {% macro common(manifest_package, webview_lib) %}
             <meta-data android:name="com.android.webview.WebViewLibrary"
                        android:value="{{ webview_lib }}" />
@@ -210,16 +210,7 @@ by a child template that "extends" this file.
                      android:visibleToInstantApps="true"
                      android:process=":webview_service"  {# Explicit process required for WebView. #}
                      tools:ignore="ExportedService" />
-            <!-- This service runs inside webview_apk process because it loads native -->
-            <service android:name="org.chromium.android_webview.nonembedded.AwComponentUpdateService"
-                     android:permission="android.permission.BIND_JOB_SERVICE"
-                     android:exported="false"
-                     android:process=":webview_apk"/>  {# Explicit process required for WebView. #}
-            <service android:name="org.chromium.android_webview.services.ComponentsProviderService"
-                     android:exported="true"
-                     android:visibleToInstantApps="true"
-                     android:process=":webview_service"  {# Explicit process required for WebView. #}
-                     tools:ignore="ExportedService" />
+
             <!-- JS Execution Sandbox -->
             <service android:name="org.chromium.android_webview.js_sandbox.service.JsSandboxService0"
                 android:process=":js_sandboxed_process0"
@@ -232,10 +223,7 @@ by a child template that "extends" this file.
             {% endblock %}
         {% endmacro %}
         {{ common(manifest_package|default('com.android.webview'), library|default('libwebviewchromium.so')) }}
-        {% set num_sandboxed_services = 40 %}
-        <meta-data android:name="org.chromium.content.browser.NUM_SANDBOXED_SERVICES"
-                   android:value="{{ num_sandboxed_services }}" />
-        {% for i in range(num_sandboxed_services) %}
+        {% for i in range(2) %}
             <service android:name="org.chromium.content.app.SandboxedProcessService{{ i }}"
                      android:process=":sandboxed_process{{ i }}"
                      android:isolatedProcess="true"
@@ -244,7 +232,6 @@ by a child template that "extends" this file.
                      tools:ignore="ExportedService"
                      android:visibleToInstantApps="true" />
         {% endfor %}
-        {% if javaless_renderers is defined %}
         <service android:name="org.chromium.content.app.NativeOnlySandboxedProcessService0"
                  android:nativeService="true"
                  android:process=":sandboxed_process0"
@@ -258,7 +245,6 @@ by a child template that "extends" this file.
             <property android:name="android.app.PROPERTY_NATIVE_SERVICE_FUNCTION_NAME"
                       android:value="NativeChildProcessService_onCreate" />
         </service>
-        {% endif %}
         <meta-data android:name="org.chromium.content.browser.NUM_PRIVILEGED_SERVICES"
                    android:value="0" />
         {% if trichrome_library is defined %}

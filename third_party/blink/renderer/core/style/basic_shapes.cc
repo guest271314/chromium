@@ -32,6 +32,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <numbers>
 
 #include "third_party/blink/renderer/platform/geometry/length.h"
 #include "third_party/blink/renderer/platform/geometry/length_functions.h"
@@ -84,7 +85,7 @@ float GetRoundedPolygonRadius(const RoundedPolygonEdge& incoming,
   const double interior_angle = std::acos(cos_interior);
 
   if (interior_angle <= std::numeric_limits<double>::epsilon() ||
-      std::abs(interior_angle - kPiDouble) <=
+      std::abs(interior_angle - std::numbers::pi) <=
           std::numeric_limits<double>::epsilon()) {
     return 0.0f;
   }
@@ -128,18 +129,9 @@ float RadiusToCorner(const gfx::PointF& center,
 
 }  // namespace
 
-gfx::PointF PointForCenterCoordinate(const BasicShapeCenterCoordinate& center_x,
-                                     const BasicShapeCenterCoordinate& center_y,
-                                     gfx::SizeF box_size) {
-  float x = FloatValueForLength(center_x.ComputedLength(), box_size.width());
-  float y = FloatValueForLength(center_y.ComputedLength(), box_size.height());
-  return gfx::PointF(x, y);
-}
-
 bool BasicShapeCircle::IsEqualAssumingSameType(const BasicShape& o) const {
   const BasicShapeCircle& other = To<BasicShapeCircle>(o);
-  return center_x_ == other.center_x_ && center_y_ == other.center_y_ &&
-         radius_ == other.radius_;
+  return center_ == other.center_ && radius_ == other.radius_;
 }
 
 float BasicShapeCircle::FloatValueForRadiusInBox(
@@ -173,8 +165,7 @@ float BasicShapeCircle::FloatValueForRadiusInBox(
 Path BasicShapeCircle::GetPath(const gfx::RectF& bounding_box,
                                float /*zoom*/,
                                float path_scale) const {
-  const gfx::PointF center =
-      PointForCenterCoordinate(center_x_, center_y_, bounding_box.size());
+  const gfx::PointF center = PointForLengthPoint(center_, bounding_box.size());
   return GetPathFromCenter(center, bounding_box, path_scale);
 }
 
@@ -191,8 +182,8 @@ Path BasicShapeCircle::GetPathFromCenter(const gfx::PointF& center,
 
 bool BasicShapeEllipse::IsEqualAssumingSameType(const BasicShape& o) const {
   const BasicShapeEllipse& other = To<BasicShapeEllipse>(o);
-  return center_x_ == other.center_x_ && center_y_ == other.center_y_ &&
-         radius_x_ == other.radius_x_ && radius_y_ == other.radius_y_;
+  return center_ == other.center_ && radius_x_ == other.radius_x_ &&
+         radius_y_ == other.radius_y_;
 }
 
 float BasicShapeEllipse::FloatValueForRadiusInBox(
@@ -236,8 +227,7 @@ gfx::SizeF BasicShapeEllipse::ResolveRadii(const gfx::PointF& center,
 Path BasicShapeEllipse::GetPath(const gfx::RectF& bounding_box,
                                 float /*zoom*/,
                                 float path_scale) const {
-  const gfx::PointF center =
-      PointForCenterCoordinate(center_x_, center_y_, bounding_box.size());
+  const gfx::PointF center = PointForLengthPoint(center_, bounding_box.size());
   return GetPathFromCenter(center, bounding_box, path_scale);
 }
 

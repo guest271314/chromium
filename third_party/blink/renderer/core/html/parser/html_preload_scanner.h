@@ -35,6 +35,7 @@
 #include "base/memory/weak_ptr.h"
 #include "base/task/sequenced_task_runner.h"
 #include "services/network/public/cpp/client_hints.h"
+#include "services/network/public/mojom/content_security_policy.mojom-blink.h"
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/renderer/core/core_export.h"
 #include "third_party/blink/renderer/core/css/media_values_cached.h"
@@ -103,6 +104,8 @@ struct CORE_EXPORT CachedDocumentParameters {
   static std::optional<features::LcppPreloadLazyLoadImageType>
       preload_lazy_load_image_type_for_testing;
   HashSet<String> disabled_image_types;
+  Vector<network::mojom::blink::ContentSecurityPolicyPtr>
+      content_security_policy;
 };
 
 class TokenPreloadScanner {
@@ -184,6 +187,11 @@ class TokenPreloadScanner {
   // template elements on the "stack" are DSD.
   size_t template_count_ = 0;
   size_t dsd_count_ = 0;
+  enum class ForeignContentType { kSvg, kMath };
+  // Stack of open <svg>/<math> subtrees, i.e. SVG/MathML foreign content.
+  // Foreign-content-dependent preload behavior (such as the <image>-to-<img>
+  // rewrite, which only applies in the HTML namespace) is gated on it.
+  Vector<ForeignContentType> foreign_content_stack_;
   std::unique_ptr<CachedDocumentParameters> document_parameters_;
   std::unique_ptr<MediaValuesCached::MediaValuesCachedData>
       media_values_cached_data_;

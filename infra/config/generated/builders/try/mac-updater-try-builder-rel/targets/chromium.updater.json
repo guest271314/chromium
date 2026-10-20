@@ -42,6 +42,8 @@
         "test_id_prefix": "ninja://chrome/updater:updater_tests/"
       },
       {
+        "ci_only": true,
+        "experiment_percentage": 100,
         "merge": {
           "script": "//testing/merge_scripts/standard_gtest_merge.py"
         },
@@ -54,7 +56,8 @@
             "os": "Mac-13",
             "pool": "chromium.tests.updater"
           },
-          "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
+          "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com",
+          "shards": 2
         },
         "test": "updater_tests_system",
         "test_id_prefix": "ninja://chrome/updater:updater_tests_system/"

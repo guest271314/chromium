@@ -19,7 +19,6 @@
 #include "device/fido/cable/v2_constants.h"
 #include "device/fido/cable/v2_handshake.h"
 #include "device/fido/cable/v2_test_util.h"
-#include "device/fido/public/cable_discovery_data.h"
 #include "device/fido/public/fido_constants.h"
 #include "services/network/public/mojom/network_context.mojom.h"
 #include "testing/gmock/include/gmock/gmock.h"
@@ -60,52 +59,57 @@ class DigitalCredentialsCrossDeviceRequestDispatcherTest
   }
 
  protected:
+  base::expected<Response, RequestDispatcher::Error> TransactWithCustomDevice(
+      base::OnceCallback<
+          std::unique_ptr<device::cablev2::authenticator::Transaction>()>
+          make_transaction) {
+    auto callback_and_event_stream = device::cablev2::Discovery::EventStream<
+        std::unique_ptr<device::cablev2::Pairing>>::New();
+    auto discovery = std::make_unique<device::cablev2::Discovery>(
+        // This value isn't used since it's a QR-based transaction.
+        device::FidoRequestType::kGetAssertion,
+        base::BindLambdaForTesting([&]() { return network_context_.get(); }),
+        qr_generator_key_, std::move(callback_and_event_stream.second),
+        GetPairingCallback(), GetInvalidatedPairingCallback(),
+        GetEventCallback(),
+        /*must_support_ctap=*/false);
+    const GURL url("https://example.com");
+    base::DictValue request_value;
+    request_value.Set("foo", "bar");
+    RequestInfo request_info{/*request_type=*/GetParam(),
+                             url::Origin::Create(url),
+                             base::Value(std::move(request_value))};
+    base::test::TestFuture<base::expected<Response, RequestDispatcher::Error>>
+        callback;
+#if BUILDFLAG(IS_CHROMEOS)
+    if (!floss::features::IsFlossEnabled()) {
+      mock_adapter_->ExpectDiscoveryWithScanCallback();
+    }
+#else
+    mock_adapter_->ExpectDiscoveryWithScanCallback();
+#endif
+
+    auto request_handler = std::make_unique<RequestDispatcher>(
+        std::move(discovery), std::move(request_info), callback.GetCallback());
+    std::unique_ptr<device::cablev2::authenticator::Transaction> transaction =
+        std::move(make_transaction).Run();
+    return callback.Take();
+  }
+
   base::expected<Response, RequestDispatcher::Error> Transact(
       device::cablev2::PayloadType response_payload_type,
       const std::string& response) {
-    {
-      auto callback_and_event_stream = device::cablev2::Discovery::EventStream<
-          std::unique_ptr<device::cablev2::Pairing>>::New();
-      auto discovery = std::make_unique<device::cablev2::Discovery>(
-          // This value isn't used since it's a QR-based transaction.
-          device::FidoRequestType::kGetAssertion,
-          base::BindLambdaForTesting([&]() { return network_context_.get(); }),
-          qr_generator_key_, std::move(callback_and_event_stream.second),
-          /*extension_contents=*/std::vector<device::CableDiscoveryData>(),
-          GetPairingCallback(), GetInvalidatedPairingCallback(),
-          GetEventCallback(),
-          /*must_support_ctap=*/false);
-      const GURL url("https://example.com");
-      base::DictValue request_value;
-      request_value.Set("foo", "bar");
-      RequestInfo request_info{/*request_type=*/GetParam(),
-                               url::Origin::Create(url),
-                               base::Value(std::move(request_value))};
-      base::test::TestFuture<base::expected<Response, RequestDispatcher::Error>>
-          callback;
-#if BUILDFLAG(IS_CHROMEOS)
-      if (!floss::features::IsFlossEnabled()) {
-        mock_adapter_->ExpectDiscoveryWithScanCallback();
-      }
-#else
-      mock_adapter_->ExpectDiscoveryWithScanCallback();
-#endif
-
-      auto request_handler = std::make_unique<RequestDispatcher>(
-          std::move(discovery), std::move(request_info),
-          callback.GetCallback());
-      std::unique_ptr<device::cablev2::authenticator::Transaction> transaction =
-          device::cablev2::authenticator::
-              TransactDigitalIdentityFromQRCodeForTesting(
-                  device::cablev2::authenticator::NewMockPlatform(
-                      /*ctap2_device=*/nullptr, mock_adapter_,
-                      /*observer=*/nullptr),
-                  base::BindLambdaForTesting(
-                      [&]() { return network_context_.get(); }),
-                  zero_qr_secret_, peer_identity_x962_, response_payload_type,
-                  std::vector<uint8_t>(response.begin(), response.end()));
-      return callback.Take();
-    }
+    return TransactWithCustomDevice(base::BindLambdaForTesting([&]() {
+      return device::cablev2::authenticator::
+          TransactDigitalIdentityFromQRCodeForTesting(
+              device::cablev2::authenticator::NewMockPlatform(
+                  /*ctap2_device=*/nullptr, mock_adapter_,
+                  /*observer=*/nullptr),
+              base::BindLambdaForTesting(
+                  [&]() { return network_context_.get(); }),
+              zero_qr_secret_, peer_identity_x962_, response_payload_type,
+              std::vector<uint8_t>(response.begin(), response.end()));
+    }));
   }
 
   base::RepeatingCallback<void(std::unique_ptr<device::cablev2::Pairing>)>
@@ -182,6 +186,22 @@ TEST_P(DigitalCredentialsCrossDeviceRequestDispatcherTest, InvalidStructure) {
 TEST_P(DigitalCredentialsCrossDeviceRequestDispatcherTest, CTAPResponse) {
   base::expected<Response, RequestDispatcher::Error> result =
       Transact(device::cablev2::PayloadType::kCTAP, "");
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error(),
+            RequestDispatcher::Error(ProtocolError::kTransportError));
+}
+
+TEST_P(DigitalCredentialsCrossDeviceRequestDispatcherTest, HandshakeError) {
+  base::expected<Response, RequestDispatcher::Error> result =
+      TransactWithCustomDevice(base::BindLambdaForTesting([&]() {
+        return device::cablev2::authenticator::NewHandshakeErrorDevice(
+            device::cablev2::authenticator::NewMockPlatform(
+                /*ctap2_device=*/nullptr, mock_adapter_,
+                /*observer=*/nullptr),
+            base::BindLambdaForTesting(
+                [&]() { return network_context_.get(); }),
+            zero_qr_secret_);
+      }));
   ASSERT_FALSE(result.has_value());
   EXPECT_EQ(result.error(),
             RequestDispatcher::Error(ProtocolError::kTransportError));

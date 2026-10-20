@@ -97,6 +97,13 @@ found in the LICENSE file.
             android:visibility="gone" />
 
         <ViewStub
+            android:id="@+id/download_button_stub"
+            android:layout="@layout/download_toolbar_button"
+            android:layout_width="wrap_content"
+            android:layout_height="match_parent"
+            android:visibility="gone"/>
+
+        <ViewStub
             android:id="@+id/signin_button_stub"
             android:layout="@layout/signin_button_view"
             android:layout_width="wrap_content"
@@ -108,8 +115,9 @@ found in the LICENSE file.
             android:inflatedId="@+id/incognito_indicator"
             android:layout="@layout/incognito_indicator"
             android:layout_width="wrap_content"
-            android:layout_height="match_parent"
-            android:visibility="gone" />
+            android:layout_height="?attr/toolbarButtonHeight"
+            android:layout_marginVertical="?attr/toolbarButtonMarginVertical"
+            android:visibility="gone"/>
 
         <ViewStub
             android:id="@+id/extensions_toolbar_container_stub"
@@ -117,6 +125,35 @@ found in the LICENSE file.
             android:layout_width="wrap_content"
             android:layout_height="?attr/toolbarButtonHeight"
             android:layout_marginVertical="?attr/toolbarButtonMarginVertical"/>
+
+        <View
+            android:id="@+id/glic_divider"
+            android:layout_width="@dimen/glic_divider_width"
+            android:layout_height="@dimen/glic_divider_height"
+            android:layout_marginVertical="@dimen/glic_divider_margin"
+            android:layout_marginEnd="4dp"
+            android:background="@drawable/divider_line_bg"
+            android:importantForAccessibility="no"
+            android:visibility="gone" />
+
+        <ViewStub
+            android:id="@+id/glic_action_chip_stub"
+            android:inflatedId="@+id/glic_action_chip"
+            android:layout="@layout/glic_action_chip"
+            style="@style/ToolbarHoverableButton.AdaptiveDensity"
+            android:layout_width="wrap_content"
+            android:layout_height="?attr/toolbarButtonHeight"
+            android:visibility="gone" />
+
+        <org.chromium.chrome.browser.toolbar.top.AiOverlayMicrophoneButtonView
+            android:id="@+id/ai_overlay_microphone_button"
+            style="@style/ToolbarHoverableButton.AdaptiveDensity"
+            android:clickable="true"
+            android:focusable="true"
+            android:src="@drawable/ic_mic_white_24dp"
+            android:visibility="gone"
+            android:contentDescription="@string/accessibility_toolbar_btn_ai_overlay_mic"
+            android:tooltipText="@string/accessibility_toolbar_btn_ai_overlay_mic" />
 
         <org.chromium.chrome.browser.toolbar.top.ToggleTabStackButton
             android:id="@+id/tab_switcher_button"

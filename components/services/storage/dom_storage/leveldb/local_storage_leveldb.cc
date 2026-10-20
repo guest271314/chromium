@@ -7,6 +7,7 @@
 #include <algorithm>
 
 #include "base/check.h"
+#include "base/notreached.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_view_util.h"
 #include "base/types/expected_macros.h"
@@ -154,7 +155,8 @@ DomStorageDatabase::Key GetMapPrefix(const blink::StorageKey& storage_key) {
   return map_prefix;
 }
 
-LocalStorageLevelDB::LocalStorageLevelDB(PassKey) {}
+LocalStorageLevelDB::LocalStorageLevelDB(PassKey, bool write_exp_tag)
+    : write_exp_tag_(write_exp_tag) {}
 
 LocalStorageLevelDB::~LocalStorageLevelDB() = default;
 
@@ -167,7 +169,9 @@ DbStatus LocalStorageLevelDB::Open(
                        StorageType::kLocalStorage, directory, memory_dump_id,
                        kLocalStorageLevelDBVersionKey,
                        /*min_supported_version=*/kLocalStorageLevelDBVersion,
-                       /*max_supported_version=*/kLocalStorageLevelDBVersion));
+                       /*max_supported_version=*/kLocalStorageLevelDBVersion,
+                       /*write_tag_file=*/write_exp_tag_));
+  write_exp_tag_ = false;
   return DbStatus::OK();
 }
 
@@ -284,9 +288,6 @@ StatusOr<DomStorageDatabase::Metadata> LocalStorageLevelDB::ReadAllMetadata() {
 }
 
 DbStatus LocalStorageLevelDB::PutMetadata(Metadata metadata) {
-  // Local storage does not record the next map id in LevelDB.
-  CHECK(!metadata.next_map_id);
-
   std::unique_ptr<DomStorageBatchOperationLevelDB> batch =
       leveldb_->CreateBatchOperation();
 
@@ -341,6 +342,14 @@ DbStatus LocalStorageLevelDB::PurgeOrigins(std::set<url::Origin> origins) {
 
 DbStatus LocalStorageLevelDB::CleanUpStaleData() {
   return leveldb_->RewriteDB();
+}
+
+void LocalStorageLevelDB::Close() {
+  leveldb_.reset();
+}
+
+void LocalStorageLevelDB::DetachFromSequence() {
+  NOTREACHED();
 }
 
 DbStatus LocalStorageLevelDB::PutVersionForTesting(int64_t version) {

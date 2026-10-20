@@ -5,9 +5,11 @@
 #include "ui/ozone/platform/x11/x11_window.h"
 
 #include <algorithm>
+#include <vector>
 
 #include "base/compiler_specific.h"
 #include "base/memory/scoped_refptr.h"
+#include "base/nix/xdg_util.h"
 #include "base/no_destructor.h"
 #include "base/notimplemented.h"
 #include "base/notreached.h"
@@ -264,8 +266,23 @@ X11Window::~X11Window() {
   Close();
 }
 
+base::WeakPtr<X11Window> X11Window::GetWeakPtr() {
+  return weak_ptr_factory_.GetWeakPtr();
+}
+
 void X11Window::Initialize(PlatformWindowInitProperties properties) {
   CreateXWindow(properties);
+
+  std::string startup_id = properties.startup_id;
+  if (startup_id.empty()) {
+    if (auto token = base::nix::TakeXdgActivationToken()) {
+      startup_id = token.value();
+    }
+  }
+  if (!startup_id.empty()) {
+    connection_->SetStringProperty(xwindow_, x11::GetAtom("_NET_STARTUP_ID"),
+                                   x11::GetAtom("UTF8_STRING"), startup_id);
+  }
 
   // It can be a status icon window.  If it fails to initialize, don't provide
   // it with a native window handle, close ourselves and let the client destroy
@@ -504,6 +521,7 @@ void X11Window::Hide() {
 
   connection_->WithdrawWindow(xwindow_);
   window_mapped_in_client_ = false;
+  map_pending_ = false;
 }
 
 void X11Window::Close() {
@@ -540,10 +558,11 @@ void X11Window::SetBoundsInPixels(const gfx::Rect& bounds) {
   gfx::Rect new_bounds_in_pixels(bounds.origin(),
                                  AdjustSizeForDisplay(bounds.size()));
 
+  const gfx::Rect current_bounds = GetBoundsInPixels();
   const bool size_changed =
-      GetBoundsInPixels().size() != new_bounds_in_pixels.size();
+      current_bounds.size() != new_bounds_in_pixels.size();
   const bool origin_changed =
-      GetBoundsInPixels().origin() != new_bounds_in_pixels.origin();
+      current_bounds.origin() != new_bounds_in_pixels.origin();
 
   // Assume that the resize will go through as requested, which should be the
   // case if we're running without a window manager.  If there's a window
@@ -615,6 +634,18 @@ gfx::Rect X11Window::GetBoundsInDIP() const {
   return platform_window_delegate_->ConvertRectToDIP(GetBoundsInPixels());
 }
 
+void X11Window::SetWindowClass(const std::string& wm_class_name,
+                               const std::string& wm_class_class,
+                               const std::string& wayland_app_id) {
+  // ICCCM only allows changing WM_CLASS while the window is withdrawn, but
+  // remapping the window would be disruptive. Many window managers, e.g.
+  // mutter, muffin and i3, pick up changes to mapped windows anyway, and
+  // others keep using the old value, which is no worse than not updating it.
+  SetWindowClassHint(&connection_.get(), xwindow_, wm_class_name,
+                     wm_class_class);
+  connection_->Flush();
+}
+
 void X11Window::SetTitle(const std::u16string& title) {
   if (window_title_ == title) {
     return;
@@ -625,6 +656,10 @@ void X11Window::SetTitle(const std::u16string& title) {
   connection_->SetStringProperty(xwindow_, x11::GetAtom("_NET_WM_NAME"),
                                  x11::GetAtom("UTF8_STRING"), utf8str);
   connection_->SetStringProperty(xwindow_, x11::Atom::WM_NAME,
+                                 x11::GetAtom("UTF8_STRING"), utf8str);
+  connection_->SetStringProperty(xwindow_, x11::Atom::WM_ICON_NAME,
+                                 x11::Atom::STRING, utf8str);
+  connection_->SetStringProperty(xwindow_, x11::GetAtom("_NET_WM_ICON_NAME"),
                                  x11::GetAtom("UTF8_STRING"), utf8str);
 }
 
@@ -803,6 +838,11 @@ void X11Window::Activate() {
     return;
   }
 
+  if (auto token = base::nix::TakeXdgActivationToken()) {
+    connection_->SetStringProperty(xwindow_, x11::GetAtom("_NET_STARTUP_ID"),
+                                   x11::GetAtom("UTF8_STRING"), token.value());
+  }
+
   BeforeActivationStateChanged();
 
   ignore_keyboard_input_ = false;
@@ -890,10 +930,11 @@ void X11Window::SetCursor(scoped_refptr<PlatformCursor> cursor) {
 }
 
 void X11Window::MoveCursorTo(const gfx::Point& location_px) {
+  const gfx::Rect bounds = GetBoundsInPixels();
   connection_->WarpPointer(x11::WarpPointerRequest{
       .dst_window = x_root_window_,
-      .dst_x = static_cast<int16_t>(GetBoundsInPixels().x() + location_px.x()),
-      .dst_y = static_cast<int16_t>(GetBoundsInPixels().y() + location_px.y()),
+      .dst_x = static_cast<int16_t>(bounds.x() + location_px.x()),
+      .dst_y = static_cast<int16_t>(bounds.y() + location_px.y()),
   });
   // The cached cursor location is no longer valid.
   X11EventSource::GetInstance()->ClearLastCursorLocation();
@@ -1108,11 +1149,14 @@ void X11Window::SetOpacity(float opacity) {
 }
 
 bool X11Window::CanSetDecorationInsets() const {
-  // Xfwm handles _GTK_FRAME_EXTENTS a bit unexpected way.  That is a known bug
-  // that will be eventually fixed, but for now we have to disable the function
-  // for Xfce.  The block below should be removed when Xfwm is updated with the
-  // fix and is known to work properly.
-  // See https://crbug.com/1260821.
+  // Xfwm4 releases before 4.17.0 do not handle removal of _GTK_FRAME_EXTENTS
+  // (fixed by xfwm4 commit 488288f6), so maximized windows end up larger than
+  // the screen. See https://crbug.com/40201996 and https://crbug.com/378898637.
+  // Xfwm4 does not publish its version, but releases since 4.17.0 no longer
+  // advertise _NET_SYSTEM_TRAY_OPCODE in _NET_SUPPORTED (xfwm4 commit
+  // c26c9394), while all older releases do, so use that to detect a buggy
+  // Xfwm4. The block below should be removed once Xfwm4 4.16 and older are no
+  // longer supported. See https://crbug.com/40804717.
   {
     static WindowManagerName wm_name = WM_OTHER;
     static bool checked_for_wm = false;
@@ -1120,7 +1164,8 @@ bool X11Window::CanSetDecorationInsets() const {
       wm_name = GuessWindowManager();
       checked_for_wm = true;
     }
-    if (wm_name == WM_XFWM4) {
+    if (wm_name == WM_XFWM4 &&
+        connection_->WmSupportsHint(x11::GetAtom("_NET_SYSTEM_TRAY_OPCODE"))) {
       return false;
     }
   }
@@ -1203,7 +1248,6 @@ void X11Window::NotifyStartupComplete(const std::string& startup_id) {
     event.type = net_startup_info;
   }
 
-  geometry_cache_.reset();
   connection_->DestroyWindow(window);
   connection_->Flush();
 }
@@ -1407,6 +1451,8 @@ void X11Window::DispatchUiEvent(ui::Event* event, const x11::Event& xev) {
   auto* located_events_grabber = window_manager->located_events_grabber();
   if (event->IsLocatedEvent() && located_events_grabber &&
       located_events_grabber != this) {
+    base::WeakPtr<X11Window> weak_grabber =
+        located_events_grabber->GetWeakPtr();
     if (event->IsMouseEvent() ||
         (event->IsTouchEvent() &&
          event->type() == ui::EventType::kTouchPressed)) {
@@ -1416,7 +1462,11 @@ void X11Window::DispatchUiEvent(ui::Event* event, const x11::Event& xev) {
           located_events_grabber->GetBoundsInPixels().origin(),
           GetBoundsInPixels().origin(), event->AsLocatedEvent());
     }
-    return located_events_grabber->DispatchUiEvent(event, xev);
+    if (weak_grabber &&
+        window_manager->located_events_grabber() == weak_grabber.get()) {
+      weak_grabber->DispatchUiEvent(event, xev);
+    }
+    return;
   }
 
   // If after CoalescePendingMotionEvents the type of xev is resolved to
@@ -1674,17 +1724,28 @@ int X11Window::UpdateDrag(const gfx::Point& connection_point) {
       XDragDropClient::GetForWindow(target_current_context->source_window());
   gfx::PointF local_point_in_dip =
       platform_window_delegate_->ConvertScreenPointToLocalDIP(connection_point);
+  base::WeakPtr<X11Window> alive = weak_ptr_factory_.GetWeakPtr();
   if (!notified_enter_) {
     drop_handler->OnDragEnter(local_point_in_dip, suggested_operations,
                               GetKeyModifiers(source_client));
+    if (!alive) {
+      return DragDropTypes::DRAG_NONE;
+    }
 
     // TODO(crbug.com/40073696): Factor DataFetched out of Enter callback.
     drop_handler->OnDragDataAvailable(std::move(data));
+    if (!alive) {
+      return DragDropTypes::DRAG_NONE;
+    }
 
     notified_enter_ = true;
   }
-  allowed_drag_operations_ = drop_handler->OnDragMotion(
+  int allowed_operations = drop_handler->OnDragMotion(
       local_point_in_dip, suggested_operations, GetKeyModifiers(source_client));
+  if (!alive) {
+    return DragDropTypes::DRAG_NONE;
+  }
+  allowed_drag_operations_ = allowed_operations;
   return allowed_drag_operations_;
 }
 
@@ -1708,7 +1769,11 @@ void X11Window::OnBeforeDragLeave() {
   if (!drop_handler) {
     return;
   }
+  base::WeakPtr<X11Window> alive = weak_ptr_factory_.GetWeakPtr();
   drop_handler->OnDragLeave();
+  if (!alive) {
+    return;
+  }
   notified_enter_ = false;
 }
 
@@ -1723,8 +1788,12 @@ DragOperation X11Window::PerformDrop() {
     return DragOperation::kNone;
   }
 
+  base::WeakPtr<X11Window> alive = weak_ptr_factory_.GetWeakPtr();
   drop_handler->OnDragDrop(GetKeyModifiers(
       XDragDropClient::GetForWindow(target_current_context->source_window())));
+  if (!alive) {
+    return DragOperation::kNone;
+  }
   notified_enter_ = false;
   return PreferredDragOperation(allowed_drag_operations_);
 }
@@ -1816,16 +1885,11 @@ void X11Window::CreateXWindow(const PlatformWindowInitProperties& properties) {
                              : connection_->default_screen().white_pixel;
 
   switch (properties.type) {
-    case PlatformWindowType::kMenu:
-      req.override_redirect = x11::Bool32(true);
-      break;
-    case PlatformWindowType::kTooltip:
-      req.override_redirect = x11::Bool32(true);
-      break;
-    case PlatformWindowType::kPopup:
-      req.override_redirect = x11::Bool32(true);
-      break;
+    case PlatformWindowType::kBubble:
     case PlatformWindowType::kDrag:
+    case PlatformWindowType::kMenu:
+    case PlatformWindowType::kPopup:
+    case PlatformWindowType::kTooltip:
       req.override_redirect = x11::Bool32(true);
       break;
     default:
@@ -1915,9 +1979,7 @@ void X11Window::CloseXWindow() {
   UnconfineCursor();
   // Unregister from the global security surface list if necessary.
   if (is_security_surface_) {
-    auto& security_surfaces = GetSecuritySurfaces();
-    security_surfaces.erase(std::ranges::find(security_surfaces, xwindow_),
-                            security_surfaces.end());
+    std::erase(GetSecuritySurfaces(), xwindow_);
   }
 
   geometry_cache_.reset();
@@ -1936,8 +1998,9 @@ void X11Window::Map(bool inactive) {
   x11::SizeHints size_hints = {};
   connection_->GetWmNormalHints(xwindow_, &size_hints);
   size_hints.flags |= x11::SIZE_HINT_P_POSITION;
-  size_hints.x = GetBoundsInPixels().x();
-  size_hints.y = GetBoundsInPixels().y();
+  const gfx::Rect bounds = GetBoundsInPixels();
+  size_hints.x = bounds.x();
+  size_hints.y = bounds.y();
   // Set STATIC_GRAVITY so that the window position is not affected by the
   // frame width when running with window manager.
   size_hints.flags |= x11::SIZE_HINT_P_WIN_GRAVITY;
@@ -1968,6 +2031,7 @@ void X11Window::Map(bool inactive) {
 
   connection_->MapWindow({xwindow_});
   window_mapped_in_client_ = true;
+  OnMapPending();
 
   // TODO(thomasanderson): Find out why this flush is necessary.
   connection_->Flush();
@@ -2311,6 +2375,7 @@ void X11Window::HandleEvent(const x11::Event& xev) {
     OnWindowMapped();
   } else if (xev.As<x11::UnmapNotifyEvent>()) {
     window_mapped_in_server_ = false;
+    map_pending_ = false;
     has_pointer_ = false;
     has_pointer_grab_ = false;
     has_pointer_focus_ = false;
@@ -2372,8 +2437,19 @@ void X11Window::UpdateWMUserTime(Event* event) {
   }
 }
 
+void X11Window::OnMapPending() {
+  map_pending_ = true;
+  // If no pointer events are being delivered, any cached pointer location may
+  // be arbitrarily old.  Drop it so that the first query made while the map is
+  // pending fetches a fresh location; see X11ScreenOzone::GetCursorScreenPoint.
+  if (!X11WindowManager::GetInstance()->IsTrackingPointer()) {
+    X11EventSource::GetInstance()->ClearLastCursorLocation();
+  }
+}
+
 void X11Window::OnWindowMapped() {
   window_mapped_in_server_ = true;
+  map_pending_ = false;
   // Some WMs only respect maximize hints after the window has been mapped.
   // Check whether we need to re-do a maximization.
   if (should_maximize_after_map_) {
@@ -2446,7 +2522,16 @@ void X11Window::UpdateWindowProperties(
     return;
   }
 
+  const bool was_minimized = IsMinimized();
   window_properties_ = new_window_properties;
+
+  // A window manager restoring a minimized window clears _NET_WM_STATE_HIDDEN
+  // and maps it.  Until the resulting MapNotify arrives we are in the same
+  // situation as after Map(): the server has not yet been able to tell us
+  // whether the pointer is inside the window.
+  if (was_minimized && !IsMinimized() && !window_mapped_in_server_) {
+    OnMapPending();
+  }
 
   // Ignore requests by the window manager to enter or exit fullscreen (e.g. as
   // a result of pressing a window manager accelerator key). Chrome does not

@@ -7,6 +7,7 @@
 
 #include <compare>
 #include <cstdint>
+#include <optional>
 #include <string>
 
 #include "content/common/content_export.h"
@@ -26,26 +27,41 @@ namespace content {
 //                      instance id, producing a unique SiteInfo so that no
 //                      two viewers share a process. Currently used for MIME
 //                      handler extension viewers.
+//   - kPrivileged:     a blessed feature (see //chrome's
+//                      PrivilegedWebContents) whose content is granted
+//                      elevated browser capabilities. Grouped by
+//                      `feature_id` (a constant per feature, not a
+//                      per-navigation id) so that instances of the same
+//                      privileged feature can share a process, while never
+//                      sharing a process with ordinary (kNone) content of
+//                      the same site. Forces a dedicated process; JIT is
+//                      left ON (the content is trusted and wants
+//                      performance, unlike kPdf).
 class CONTENT_EXPORT EmbedderIsolationInfo {
  public:
   enum class Mode {
     kNone,
     kPdf,
     kUniqueInstance,
+    kPrivileged,
   };
 
-  // kNone factory (equivalent to default constructor).
   static EmbedderIsolationInfo CreateNone();
 
   // kPdf factory. PDFs are grouped by site, not per-instance.
   static EmbedderIsolationInfo CreateForPdf();
 
   // kUniqueInstance factory. `instance_id` must be non-negative and unique
-  // per navigation; in practice this is NavigationRequest::navigation_id_,
-  // which is monotonic and never negative.
+  // per "instance" the embedder wants to isolate; the caller is responsible
+  // for sourcing it.
   static EmbedderIsolationInfo CreateForUniqueInstance(int64_t instance_id);
 
-  EmbedderIsolationInfo();
+  // kPrivileged factory. `feature_id` identifies the blessed feature and is
+  // constant across all instances of that feature (unlike kUniqueInstance's
+  // per-navigation id), so instances with the same `feature_id` compare
+  // equal and may share a process. Must be non-negative.
+  static EmbedderIsolationInfo CreateForPrivileged(int64_t feature_id);
+
   EmbedderIsolationInfo(const EmbedderIsolationInfo&);
   EmbedderIsolationInfo& operator=(const EmbedderIsolationInfo&);
   ~EmbedderIsolationInfo();
@@ -54,9 +70,21 @@ class CONTENT_EXPORT EmbedderIsolationInfo {
   bool is_none() const { return mode_ == Mode::kNone; }
   bool is_pdf() const { return mode_ == Mode::kPdf; }
   bool is_unique_instance() const { return mode_ == Mode::kUniqueInstance; }
+  bool is_privileged() const { return mode_ == Mode::kPrivileged; }
 
-  // Only valid when mode() == kUniqueInstance. CHECKs otherwise.
-  int64_t instance_id() const;
+  // Returns the instance id when mode() == kUniqueInstance, otherwise
+  // `std::nullopt`.
+  std::optional<int64_t> instance_id() const {
+    return mode_ == Mode::kUniqueInstance ? std::optional<int64_t>(instance_id_)
+                                          : std::nullopt;
+  }
+
+  // Returns the feature id when mode() == kPrivileged, otherwise
+  // `std::nullopt`.
+  std::optional<int64_t> privileged_feature_id() const {
+    return mode_ == Mode::kPrivileged ? std::optional<int64_t>(instance_id_)
+                                      : std::nullopt;
+  }
 
   std::string ToDebugString() const;
 
@@ -66,6 +94,7 @@ class CONTENT_EXPORT EmbedderIsolationInfo {
                                         const EmbedderIsolationInfo&) = default;
 
  private:
+  EmbedderIsolationInfo();
   EmbedderIsolationInfo(Mode mode, int64_t instance_id);
 
   Mode mode_ = Mode::kNone;

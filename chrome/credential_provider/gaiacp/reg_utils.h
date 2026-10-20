@@ -92,6 +92,9 @@ extern const wchar_t kRegDeveloperMode[];
 // associated account changes.
 extern const wchar_t kRegUpdateCredentialsOnChange[];
 
+// Enables modal dialogs for GCPW.
+extern const wchar_t kRegEnableGcpwModalDialog[];
+
 // Registry key that indicates account name for an unassociated Windows account
 // should be in shorter form.
 extern const wchar_t kRegUseShorterAccountName[];
@@ -211,20 +214,12 @@ struct UserTokenHandleInfo {
 HRESULT GetUserTokenHandles(
     std::map<std::wstring, UserTokenHandleInfo>* sid_to_handle_info);
 
-// Gets the SID associated with the given gaia id.  If none exists, returns
-// HRESULT_FROM_WIN32(ERROR_NONE_MAPPED).
-HRESULT GetSidFromId(const std::wstring& id, wchar_t* sid, ULONG length);
-
-// Gets the SID associated with the given email.  If none exists, returns
-// HRESULT_FROM_WIN32(ERROR_NONE_MAPPED).
-HRESULT GetSidFromEmail(const std::wstring& email, wchar_t* sid, ULONG length);
-
-// Gets the SID associated with the given input key. If none exists, returns
-// HRESULT_FROM_WIN32(ERROR_NONE_MAPPED).
-HRESULT GetSidFromKey(const wchar_t* key,
-                      const std::wstring& value,
-                      wchar_t* sid,
-                      ULONG length);
+// Gets the SID associated with the given gaia id and email. If none exists,
+// returns HRESULT_FROM_WIN32(ERROR_NONE_MAPPED).
+HRESULT GetSidFromIdAndEmail(const std::wstring& id,
+                             const std::wstring& email,
+                             wchar_t* sid,
+                             ULONG length);
 
 // Returns the SID corresponding to given domain user from the user properties.
 HRESULT GetSidFromDomainAccountInfo(const std::wstring& domain,
@@ -245,13 +240,13 @@ void GetChildrenAtPath(const wchar_t* path,
 
 // Gets a specific account picture registry key in HKEY_LOCAL_MACHINE
 HRESULT GetAccountPictureRegString(const std::wstring& user_sid,
-                                   int image_size,
+                                   size_t image_size,
                                    wchar_t* value,
                                    ULONG* length);
 
 // Sets a specific account picture registry key in HKEY_LOCAL_MACHINE
 HRESULT SetAccountPictureRegString(const std::wstring& user_sid,
-                                   int image_size,
+                                   size_t image_size,
                                    const std::wstring& value);
 
 // Retrieves an identifier that is stored under

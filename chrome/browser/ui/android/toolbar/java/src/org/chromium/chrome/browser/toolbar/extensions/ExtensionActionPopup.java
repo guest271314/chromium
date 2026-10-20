@@ -14,13 +14,14 @@ import android.view.View;
 import android.view.WindowManager;
 import android.widget.PopupWindow.OnDismissListener;
 
+import org.chromium.base.Callback;
 import org.chromium.base.lifetime.Destroyable;
 import org.chromium.base.version_info.VersionInfo;
 import org.chromium.build.NullUtil;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
+import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tabmodel.TabModelSelector;
-import org.chromium.chrome.browser.tabmodel.TabModelSelectorObserver;
 import org.chromium.chrome.browser.ui.extensions.ExtensionActionPopupContents;
 import org.chromium.components.embedder_support.contextmenu.ContextMenuPopulatorFactory;
 import org.chromium.components.embedder_support.view.ContentView;
@@ -35,6 +36,7 @@ import org.chromium.ui.base.ActivityWindowAndroid;
 import org.chromium.ui.base.ViewAndroidDelegate;
 import org.chromium.ui.base.ViewUtils;
 import org.chromium.ui.base.WindowAndroid;
+import org.chromium.ui.base.WindowAndroid.KeyboardShortcutsDelegate;
 import org.chromium.ui.modaldialog.ModalDialogManager;
 import org.chromium.ui.widget.AnchoredPopupWindow;
 import org.chromium.ui.widget.ViewRectProvider;
@@ -75,7 +77,7 @@ class ExtensionActionPopup implements Destroyable {
     private final ContentView mContentView;
 
     private final TabModelSelector mTabModelSelector;
-    private final TabModelSelectorObserver mTabObserver;
+    private final Callback<@Nullable Tab> mCurrentTabObserver;
 
     /**
      * Constructs an ExtensionActionPopup.
@@ -100,7 +102,8 @@ class ExtensionActionPopup implements Destroyable {
             ExtensionActionPopupContents contents,
             @Nullable ContextMenuPopulatorFactory contextMenuPopulatorFactory,
             @Nullable SelectionDropdownMenuDelegate selectionDropdownMenuDelegate,
-            TabModelSelector tabModelSelector) {
+            TabModelSelector tabModelSelector,
+            boolean inspectWithDevTools) {
         mActivity = activity;
         mActionId = actionId;
         mContents = contents;
@@ -139,22 +142,6 @@ class ExtensionActionPopup implements Destroyable {
             contextMenuPopulatorFactory.setItemDelegate(itemDelegate);
         }
 
-        mTabModelSelector = tabModelSelector;
-        mTabObserver =
-                new TabModelSelectorObserver() {
-                    @Override
-                    public void onChange() {
-                        if (mPopupWindow.isShowing()) {
-                            // Due to inherent differences between platforms on focus handling, we
-                            // explicitly observe tab changes and dismiss, unlike on Desktop where
-                            // the popup is automatically dismissed as it loses focus due to the tab
-                            // change.
-                            mPopupWindow.dismiss();
-                        }
-                    }
-                };
-        mTabModelSelector.addObserver(mTabObserver);
-
         mThinWebView.attachWebContents(
                 webContents,
                 mContentView,
@@ -163,27 +150,44 @@ class ExtensionActionPopup implements Destroyable {
                         .setSelectionDropdownMenuDelegate(selectionDropdownMenuDelegate)
                         .build());
 
-        mPopupWindow =
-                new AnchoredPopupWindow(
-                        activity,
-                        activity.getWindow().getDecorView(),
-                        new ColorDrawable(Color.WHITE),
-                        mThinWebView.getView(),
-                        new ViewRectProvider(anchorView));
-
-        mPopupWindow.setHorizontalOverlapAnchor(true);
-        mPopupWindow.setOutsideTouchable(true);
-        mPopupWindow.setAllowNonTouchableSize(true);
-
         Resources resources = mActivity.getResources();
-        mPopupWindow.setElevation(
-                resources.getDimensionPixelSize(R.dimen.extension_action_popup_elevation));
+        mPopupWindow =
+                new AnchoredPopupWindow.Builder(
+                                activity,
+                                activity.getWindow().getDecorView(),
+                                new ColorDrawable(Color.WHITE),
+                                () -> mThinWebView.getView(),
+                                new ViewRectProvider(anchorView))
+                        .setHorizontalOverlapAnchor(true)
+                        // The popup should close on focus loss only if it's not being inspected.
+                        // Otherwise, opening the devtools window would automatically close the
+                        // popup.
+                        .setOutsideTouchable(!inspectWithDevTools)
+                        .setDismissOnScreenSizeChange(!inspectWithDevTools)
+                        .setAllowNonTouchableSize(true)
+                        .setElevation(
+                                resources.getDimensionPixelSize(
+                                        R.dimen.extension_action_popup_elevation))
+                        // Set the content size to the minimum initially.
+                        .setDesiredContentSize(
+                                resources.getDimensionPixelSize(
+                                        R.dimen.extension_action_popup_min_width),
+                                resources.getDimensionPixelSize(
+                                        R.dimen.extension_action_popup_min_height))
+                        .setFocusable(!inspectWithDevTools)
+                        .build();
 
-        // Set the content size to the minimum initially.
-        mPopupWindow.setDesiredContentSize(
-                resources.getDimensionPixelSize(R.dimen.extension_action_popup_min_width),
-                resources.getDimensionPixelSize(R.dimen.extension_action_popup_min_height));
-        mPopupWindow.setFocusable(true);
+        mTabModelSelector = tabModelSelector;
+        mCurrentTabObserver =
+                tab -> {
+                    if (mPopupWindow.isShowing()) {
+                        // Due to inherent differences between platforms on focus handling, we
+                        // explicitly observe tab changes and dismiss, matching Desktop's
+                        // OnTabStripModelChanged behavior.
+                        mPopupWindow.dismiss();
+                    }
+                };
+        mTabModelSelector.getCurrentTabSupplier().addSyncObserver(mCurrentTabObserver);
 
         contents.setDelegate(new ContentsDelegate());
     }
@@ -191,7 +195,7 @@ class ExtensionActionPopup implements Destroyable {
     /** Cleans up resources used by this popup. */
     @Override
     public void destroy() {
-        mTabModelSelector.removeObserver(mTabObserver);
+        mTabModelSelector.getCurrentTabSupplier().removeObserver(mCurrentTabObserver);
         mPopupWindow.dismiss();
         mThinWebView.destroy();
         mPopupWindowAndroid.destroy();
@@ -226,15 +230,26 @@ class ExtensionActionPopup implements Destroyable {
                         .setCanPlayMoveAnimation(false);
             }
 
-            mPopupWindow.setDesiredContentSize(
-                    ViewUtils.dpToPx(mActivity, width), ViewUtils.dpToPx(mActivity, height));
+            int targetWidthPx = ViewUtils.dpToPx(mActivity, width);
+            int targetHeightPx = ViewUtils.dpToPx(mActivity, height);
+
+            View decorView = mActivity.getWindow().getDecorView();
+            int maxAvailableWidthPx = decorView.getWidth();
+            int maxAvailableHeightPx = decorView.getHeight();
+
+            if (maxAvailableWidthPx > 0) {
+                targetWidthPx = Math.min(targetWidthPx, maxAvailableWidthPx);
+            }
+            if (maxAvailableHeightPx > 0) {
+                targetHeightPx = Math.min(targetHeightPx, maxAvailableHeightPx);
+            }
+
+            mPopupWindow.setDesiredContentSize(targetWidthPx, targetHeightPx);
         }
 
         @Override
-        public boolean handleKeyboardEvent(WebContents webContents, KeyEvent event) {
-            // We send unhandled keyboard events to the main {@link Activity} so that unconsumed
-            // keybindings pass through to the application window.
-            return mActivity.dispatchKeyEvent(event);
+        public boolean handleKeyboardEvent(@Nullable KeyEvent event) {
+            return ExtensionActionPopup.handleKeyboardEvent(mActivity, event);
         }
 
         @Override
@@ -247,5 +262,26 @@ class ExtensionActionPopup implements Destroyable {
         public void onClose() {
             mPopupWindow.dismiss();
         }
+    }
+
+    static boolean handleKeyboardEvent(@Nullable Activity activity, @Nullable KeyEvent event) {
+        if (activity == null || event == null) return false;
+
+        if (activity instanceof KeyboardShortcutsDelegate) {
+            KeyboardShortcutsDelegate delegate = (KeyboardShortcutsDelegate) activity;
+            if (delegate.handleKeyboardEvent(event)) {
+                return true;
+            }
+        }
+
+        // If the delegate didn't consume the event (e.g., if the Universal Keyboard
+        // Handling feature flag is disabled), we need to prevent the dispatchKeyEvent
+        // infinite loop. We prevent space and backspace events from being dispatched
+        // to the Activity.
+        if (event.getAction() == KeyEvent.ACTION_DOWN) {
+            return activity.onKeyDown(event.getKeyCode(), event);
+        }
+
+        return false;
     }
 }

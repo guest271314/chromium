@@ -16,6 +16,7 @@
 #include "ios/chrome/browser/shared/model/profile/test/test_profile_ios.h"
 
 class AccountProfileMapper;
+class GaiaId;
 
 // ProfileManagerIOS implementation for tests.
 //
@@ -56,6 +57,16 @@ class TestProfileManagerIOS : public ProfileManagerIOS {
   // share the same name. Returns a pointer to the new object.
   TestProfileIOS* AddProfileWithBuilder(TestProfileIOS::Builder builder);
 
+  // Builds and adds a `TestProfileIOS` for the managed profile associated with
+  // `gaia_id` using `builder` (overwriting any name set on `builder`). The
+  // personal profile must already have been added, and the managed identity
+  // must already be registered in `SystemIdentityManager` so that
+  // `AccountProfileMapper` has reserved a profile name for `gaia_id`. Returns a
+  // pointer to the new object.
+  TestProfileIOS* AddManagedProfileForGaiaIDWithBuilder(
+      const GaiaId& gaia_id,
+      TestProfileIOS::Builder builder);
+
  private:
   // Returns a ScopedProfileKeepAliveIOS for `profile`.
   ScopedProfileKeepAliveIOS CreateScopedProfileKeepAlive(ProfileIOS* profile);
@@ -77,7 +88,12 @@ class TestProfileManagerIOS : public ProfileManagerIOS {
   ProfileMap profiles_map_;
 
   // The list of registered observers.
-  base::ObserverList<ProfileManagerObserverIOS, true> observers_;
+  // TODO(crbug.com/484371187): Investigate if reentrancy can be removed.
+  base::ObserverList<
+      ProfileManagerObserverIOS,
+      true,
+      base::ObserverListReentrancyPolicy::kAllowReentrancyUntriaged>
+      observers_;
 };
 
 #endif  // IOS_CHROME_BROWSER_SHARED_MODEL_PROFILE_TEST_TEST_PROFILE_MANAGER_IOS_H_

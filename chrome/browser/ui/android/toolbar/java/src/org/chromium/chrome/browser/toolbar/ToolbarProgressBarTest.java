@@ -7,6 +7,7 @@ package org.chromium.chrome.browser.toolbar;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
+import static org.junit.Assume.assumeFalse;
 import static org.mockito.Mockito.atLeast;
 import static org.mockito.Mockito.clearInvocations;
 import static org.mockito.Mockito.times;
@@ -25,7 +26,6 @@ import android.widget.FrameLayout;
 
 import androidx.annotation.ColorInt;
 import androidx.test.core.app.ActivityScenario;
-import androidx.test.filters.SmallTest;
 
 import org.junit.After;
 import org.junit.Before;
@@ -41,6 +41,7 @@ import org.chromium.base.MathUtils;
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.util.Feature;
 import org.chromium.base.test.util.Features;
+import org.chromium.build.BuildConfig;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.components.browser_ui.styles.SemanticColorUtils;
 import org.chromium.components.browser_ui.widget.ClipDrawableProgressBar.ProgressBarObserver;
@@ -148,7 +149,6 @@ public class ToolbarProgressBarTest {
     @Test
     @Features.DisableFeatures(ChromeFeatureList.ANDROID_ANIMATED_PROGRESS_BAR_IN_BROWSER)
     @Feature({"Android-Progress-Bar"})
-    @SmallTest
     public void testProgressBarCompletion_indeterminateAnimation() throws TimeoutException {
         Animator progressAnimator = mProgressBar.getIndeterminateAnimatorForTesting();
 
@@ -194,7 +194,6 @@ public class ToolbarProgressBarTest {
     /** Test that the progress bar completely traverses the screen without animation. */
     @Test
     @Feature({"Android-Progress-Bar"})
-    @SmallTest
     public void testProgressBarCompletion_noAnimation() throws TimeoutException {
         mProgressBar.start();
         mProgressBar.setProgress(0.5f);
@@ -243,7 +242,6 @@ public class ToolbarProgressBarTest {
     @Test
     @Features.DisableFeatures(ChromeFeatureList.ANDROID_ANIMATED_PROGRESS_BAR_IN_BROWSER)
     @Feature({"Android-Progress-Bar"})
-    @SmallTest
     public void testProgressBarCompletion_indeterminateAnimation_noDelay() throws TimeoutException {
         Animator progressAnimator = mProgressBar.getIndeterminateAnimatorForTesting();
 
@@ -281,7 +279,6 @@ public class ToolbarProgressBarTest {
     @Test
     @Features.DisableFeatures(ChromeFeatureList.ANDROID_ANIMATED_PROGRESS_BAR_IN_BROWSER)
     @Feature({"Android-Progress-Bar"})
-    @SmallTest
     public void testProgressBarReset_indeterminateAnimation() throws TimeoutException {
         Animator progressAnimator = mProgressBar.getIndeterminateAnimatorForTesting();
 
@@ -315,9 +312,13 @@ public class ToolbarProgressBarTest {
     }
 
     @Test
+    // TODO(https://crbug.com/556322774): when cleaning up APB, keep the bug fix to pass this test.
+    @Features.EnableFeatures(ChromeFeatureList.ANDROID_ANIMATED_PROGRESS_BAR_IN_BROWSER)
     @Feature({"Android-Progress-Bar"})
-    @SmallTest
     public void testProgressBarHideWithBrowserControls() {
+        // TODO(crbug.com/525121768): Failing on Desktop Android.
+        assumeFalse(BuildConfig.IS_DESKTOP_ANDROID);
+
         mProgressBar.setAlpha(1.0f);
         mProgressBar.onAndroidControlsVisibilityChanged(View.INVISIBLE);
 
@@ -335,7 +336,6 @@ public class ToolbarProgressBarTest {
 
     @Test
     @Feature({"Android-Progress-Bar"})
-    @SmallTest
     public void testProgressBarHideWithBrowserControls_duringIndeterminateAnimation() {
         mProgressBar.start();
         mProgressBar.startIndeterminateAnimationForTesting();
@@ -372,7 +372,6 @@ public class ToolbarProgressBarTest {
                 SemanticColorUtils.getProgressBarForeground(mActivity),
                 mProgressBar.getForegroundColor());
     }
-
 
     @Test
     @Feature({"Android-Progress-Bar"})

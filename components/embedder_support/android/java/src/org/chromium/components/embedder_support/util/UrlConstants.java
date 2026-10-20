@@ -21,7 +21,6 @@ public class UrlConstants {
     public static final String CHROME_EXTENSION_SCHEME = "chrome-extension";
     public static final String CHROME_NATIVE_SCHEME = "chrome-native";
     public static final String CONTENT_SCHEME = "content";
-    public static final String CUSTOM_TAB_SCHEME = "customtab";
     public static final String DATA_SCHEME = "data";
     public static final String DEVTOOLS_SCHEME = "devtools";
     public static final String DISTILLER_SCHEME = "chrome-distiller";
@@ -56,6 +55,7 @@ public class UrlConstants {
 
     public static final String NTP_HOST = "newtab";
     public static final String NEW_TAB_PAGE_HOST = "new-tab-page";
+    public static final String NEW_TAB_PAGE_THIRD_PARTY_HOST = "new-tab-page-third-party";
     public static final String NTP_ABOUT_URL = "about:newtab";
 
     // Don't use this URL. The constant is added for legacy reasons.
@@ -76,6 +76,7 @@ public class UrlConstants {
 
     public static final String HISTORY_HOST = "history";
     public static final String SETTINGS_HOST = "settings";
+    public static final String SETTINGS_URL = "chrome-native://settings/";
 
     public static final String LAUNCHPAD_HOST = "apps";
     public static final String LAUNCHPAD_URL = "chrome://apps/";
@@ -138,6 +139,11 @@ public class UrlConstants {
 
     public static final String MANAGEMENT_HOST = "management";
     public static final String MANAGEMENT_URL = "chrome://management/";
+
+    public static final String BRICKS_HOST = "bricks";
+    public static final String BRICKS_URL = "chrome://bricks/";
+    public static final String BRICKS_JAVA_HOST = "bricks-java";
+    public static final String BRICKS_JAVA_URL = "chrome://bricks-java/";
 
     /* Host and url used for PDF native pages. */
     public static final String PDF_HOST = "pdf";

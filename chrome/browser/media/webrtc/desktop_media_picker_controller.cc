@@ -20,7 +20,6 @@
 #include "chrome/browser/media/webrtc/media_capture_devices_dispatcher.h"
 #include "chrome/browser/media/webrtc/native_desktop_media_list.h"
 #include "chrome/browser/media/webrtc/tab_desktop_media_list.h"
-#include "chrome/grit/branded_strings.h"
 #include "content/public/browser/desktop_capture.h"
 #include "content/public/browser/desktop_streams_registry.h"
 #include "content/public/browser/render_frame_host.h"
@@ -34,6 +33,10 @@
 
 using ::content::DesktopMediaID;
 
+namespace {
+std::optional<bool> g_is_system_audio_capture_supported_for_testing;
+}  // namespace
+
 DesktopMediaPickerController::DesktopMediaPickerController(
     DesktopMediaPickerFactory* picker_factory)
     : picker_factory_(picker_factory
@@ -45,11 +48,14 @@ DesktopMediaPickerController::~DesktopMediaPickerController() = default;
 void DesktopMediaPickerController::Show(
     const Params& params,
     const std::vector<DesktopMediaList::Type>& sources,
-    DoneCallback done_callback) {
-  DCHECK(!std::ranges::contains(sources, DesktopMediaList::Type::kNone));
-  DCHECK(!done_callback_);
+    DoneCallback done_callback,
+    base::OnceClosure on_show_picker) {
+  CHECK(!std::ranges::contains(sources, DesktopMediaList::Type::kNone),
+        base::NotFatalUntil::M161);
+  CHECK(!done_callback_, base::NotFatalUntil::M161);
 
   done_callback_ = std::move(done_callback);
+  on_show_picker_ = std::move(on_show_picker);
   params_ = params;
 
   Observe(params.web_contents);
@@ -70,7 +76,7 @@ void DesktopMediaPickerController::Show(
   if (params.select_only_screen && sources.size() == 1 &&
       sources[0] == DesktopMediaList::Type::kScreen) {
     // Try to bypass the picker dialog if possible.
-    DCHECK(source_lists_.size() == 1);
+    CHECK(source_lists_.size() == 1, base::NotFatalUntil::M161);
     auto* source_list = source_lists_[0].get();
     source_list->Update(
         base::BindOnce(&DesktopMediaPickerController::OnInitialMediaListFound,
@@ -86,8 +92,17 @@ void DesktopMediaPickerController::WebContentsDestroyed() {
 }
 
 // static
+void DesktopMediaPickerController::SetSystemAudioCaptureSupportedForTesting(
+    std::optional<bool> is_supported) {
+  g_is_system_audio_capture_supported_for_testing = is_supported;
+}
+
+// static
 bool DesktopMediaPickerController::IsSystemAudioCaptureSupported(
     Params::RequestSource request_source) {
+  if (g_is_system_audio_capture_supported_for_testing.has_value()) {
+    return *g_is_system_audio_capture_supported_for_testing;
+  }
   if (!media::IsSystemLoopbackCaptureSupported()) {
     return false;
   }
@@ -96,9 +111,7 @@ bool DesktopMediaPickerController::IsSystemAudioCaptureSupported(
     return (media::IsMacSckSystemLoopbackCaptureSupported() ||
             base::FeatureList::IsEnabled(media::kMacCatapLoopbackAudioForCast));
   } else {
-    return (media::IsMacCatapSystemLoopbackCaptureSupported() &&
-            base::FeatureList::IsEnabled(
-                media::kMacCatapLoopbackAudioForScreenShare));
+    return media::IsMacCatapSystemLoopbackCaptureSupported();
   }
 #elif BUILDFLAG(IS_LINUX)
   if (request_source == Params::RequestSource::kCast) {
@@ -113,14 +126,15 @@ bool DesktopMediaPickerController::IsSystemAudioCaptureSupported(
 }
 
 void DesktopMediaPickerController::OnInitialMediaListFound() {
-  DCHECK(params_.select_only_screen);
-  DCHECK(source_lists_.size() == 1);
+  CHECK(params_.select_only_screen, base::NotFatalUntil::M161);
+  CHECK(source_lists_.size() == 1, base::NotFatalUntil::M161);
   auto* source_list = source_lists_[0].get();
   if (source_list->GetSourceCount() == 1) {
     // With only one possible source, the picker dialog is being bypassed. Apply
     // the default value of the "audio checkbox" here for desktop screen share.
     DesktopMediaID media_id = source_list->GetSource(0).id;
-    DCHECK_EQ(media_id.type, DesktopMediaID::TYPE_SCREEN);
+    CHECK_EQ(media_id.type, DesktopMediaID::TYPE_SCREEN,
+             base::NotFatalUntil::M161);
     media_id.audio_share =
         params_.request_audio &&
         IsSystemAudioCaptureSupported(params_.request_source);
@@ -137,6 +151,10 @@ void DesktopMediaPickerController::ShowPickerDialog() {
     OnPickerDialogResults(
         "Desktop Capture API is not yet implemented for this platform.", {});
     return;
+  }
+
+  if (on_show_picker_) {
+    std::move(on_show_picker_).Run();
   }
 
   picker_->Show(

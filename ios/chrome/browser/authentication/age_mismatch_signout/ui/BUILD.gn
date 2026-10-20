@@ -9,6 +9,7 @@ source_set("ui") {
     "age_mismatch_signout_view_controller.mm",
   ]
   deps = [
+    ":constants",
     ":prompt_mode",
     "//base",
     "//components/signin/public/base",
@@ -28,6 +29,13 @@ source_set("ui") {
   ]
 }
 
+source_set("constants") {
+  sources = [
+    "age_mismatch_signout_ui_constants.h",
+    "age_mismatch_signout_ui_constants.mm",
+  ]
+}
+
 source_set("prompt_mode") {
   sources = [ "age_mismatch_prompt_mode.h" ]
 }
@@ -42,6 +50,7 @@ source_set("unit_tests") {
     "//ios/chrome/app/strings",
     "//ios/chrome/browser/shared/ui/elements",
     "//ios/chrome/common/ui/button_stack",
+    "//ios/chrome/test/app:test_support",
     "//testing/gtest",
     "//ui/base",
   ]

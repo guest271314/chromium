@@ -15,6 +15,7 @@
 
 #include "base/containers/id_map.h"
 #include "base/memory/raw_ptr.h"
+#include "base/memory/ref_counted.h"
 #include "base/synchronization/lock.h"
 #include "base/synchronization/waitable_event.h"
 #include "base/task/sequenced_task_runner.h"
@@ -60,8 +61,9 @@ namespace content {
 
 class CONTENT_EXPORT RendererBlinkPlatformImpl : public BlinkPlatformImpl {
  public:
-  explicit RendererBlinkPlatformImpl(
-      blink::scheduler::WebThreadScheduler* main_thread_scheduler);
+  RendererBlinkPlatformImpl(
+      blink::scheduler::WebThreadScheduler* main_thread_scheduler,
+      scoped_refptr<base::SingleThreadTaskRunner> io_thread_task_runner);
 
   RendererBlinkPlatformImpl(const RendererBlinkPlatformImpl&) = delete;
   RendererBlinkPlatformImpl& operator=(const RendererBlinkPlatformImpl&) =
@@ -116,6 +118,8 @@ class CONTENT_EXPORT RendererBlinkPlatformImpl : public BlinkPlatformImpl {
   CreateWebSocketHandshakeThrottleProvider() override;
   bool ShouldUseCodeCacheWithHashing(
       const blink::WebURL& request_url) const override;
+  bool ShouldUsePerBrowsingInstanceWindowAgent(
+      const blink::WebSecurityOrigin& origin) override;
   bool IsolateStartsInBackground() override;
   blink::WebString DefaultLocale() override;
   void SetSuddenTerminationAllowed(bool allowed) override;
@@ -131,6 +135,8 @@ class CONTENT_EXPORT RendererBlinkPlatformImpl : public BlinkPlatformImpl {
   bool IsLcdTextEnabled() override;
   bool IsElasticOverscrollEnabledOnRoot() override;
   bool IsElasticOverscrollSupported() override;
+  bool IsElasticOverscrollEnabledForSubscroll() override;
+
   bool IsScrollAnimatorEnabled() override;
   double AudioHardwareSampleRate() override;
   size_t AudioHardwareBufferSize() override;
@@ -158,6 +164,7 @@ class CONTENT_EXPORT RendererBlinkPlatformImpl : public BlinkPlatformImpl {
   bool IsGpuRemoteDisconnected() override;
   scoped_refptr<gpu::GpuChannelHost> EstablishGpuChannelSync() override;
   void EstablishGpuChannel(EstablishGpuChannelCallback callback) override;
+  void FlushGpuChannelIfEstablished() override;
   bool RTCSmoothnessAlgorithmEnabled() override;
   std::optional<double> GetWebRtcMaxCaptureFrameRate() override;
   scoped_refptr<media::AudioRendererSink> NewAudioRendererSink(
@@ -212,8 +219,6 @@ class CONTENT_EXPORT RendererBlinkPlatformImpl : public BlinkPlatformImpl {
   void DidStartWorkerThread() override;
   void WillStopWorkerThread() override;
   void WorkerContextCreated(const v8::Local<v8::Context>& worker) override;
-  bool AllowScriptExtensionForServiceWorker(
-      const blink::WebSecurityOrigin& script_origin) override;
   blink::ProtocolHandlerSecurityLevel GetProtocolHandlerSecurityLevel(
       const blink::WebSecurityOrigin& origin) override;
   bool OriginCanAccessServiceWorkers(const GURL& url) override;

@@ -34,12 +34,11 @@ class VIZ_SERVICE_EXPORT ExternalBeginFrameSourceMojoMac
   // Viz thread.
   void IssueExternalVSync(const CADisplayLinkParams& params) override;
   void SetSupportedDisplayLinkId(int64_t display_id,
-                                 bool is_supported) override;
+                                 bool is_browser_vsync_supported) override;
 
   // For headless only. This should not be called.
   void IssueExternalBeginFrame(
       const BeginFrameArgs& args,
-      bool force,
       IssueExternalBeginFrameCallback callback) override;
 
   // This function forwards NeedsBeginFrame on/off from DisplayLinkMac in the
@@ -50,6 +49,8 @@ class VIZ_SERVICE_EXPORT ExternalBeginFrameSourceMojoMac
   mojo::Receiver<mojom::ExternalBeginFrameController> receiver_;
 
   mojo::Remote<mojom::ExternalBeginFrameControllerClient> remote_client_;
+
+  bool cb_to_vsync_provider_set_ = false;
 
   // Callback to FrameSinkManagerImpl::UpdateVSyncDisplays(), used to notify
   // all root frame sinks on the specified display to refresh their vsync

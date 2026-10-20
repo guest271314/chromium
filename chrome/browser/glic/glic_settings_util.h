@@ -20,7 +20,11 @@ void OpenGlicOsToggleSetting(Profile* profile);
 
 void OpenGlicKeyboardShortcutSetting(Profile* profile);
 
+void OpenGlicLocationSetting(Profile* profile);
+
 void OpenPasswordManagerSettingsPage(Profile* profile);
+
+void OpenContactInfoSettingsPage(Profile* profile);
 
 // Returns a GURL derived from `url_string` that has platform-specific
 // parameters appended to the "p" query parameter if it exists.

@@ -199,29 +199,31 @@ inline const LayoutResult* LayoutWithAlgorithm(
 
 inline MinMaxSizesResult ComputeMinMaxSizesWithAlgorithm(
     const LayoutAlgorithmParams& params,
-    const MinMaxSizesFloatInput& float_input) {
+    const MinMaxSizesInput& input) {
   MinMaxSizesResult result;
-  DetermineAlgorithmAndRun(params, [&result, &float_input]<typename Algorithm>(
-                                       Algorithm* algorithm) {
-    result = algorithm->ComputeMinMaxSizes(float_input);
-  });
+  DetermineAlgorithmAndRun(
+      params, [&result, &input]<typename Algorithm>(Algorithm* algorithm) {
+        result = algorithm->ComputeMinMaxSizes(input);
+      });
   return result;
 }
 
 bool CanUseCachedIntrinsicInlineSizes(const ConstraintSpace& constraint_space,
-                                      const MinMaxSizesFloatInput& float_input,
+                                      const MinMaxSizesInput& input,
                                       const BlockNode& node) {
   // Obviously can't use the cache if our intrinsic logical widths are dirty.
   if (node.GetLayoutBox()->IntrinsicLogicalWidthsDirty())
     return false;
 
-  // We don't store the float inline sizes for comparison, always skip the
-  // cache in this case.
-  if (float_input.float_left_inline_size || float_input.float_right_inline_size)
+  // We don't store the float inline sizes or constrained inline size for
+  // comparison, always skip the cache in this case.
+  const auto& style = node.Style();
+  if (input.float_left_inline_size || input.float_right_inline_size ||
+      style.IsInShrinkToFitSubtree()) {
     return false;
+  }
 
   // Check if we have any percentage padding.
-  const auto& style = node.Style();
   if (style.MayHavePadding() &&
       (style.PaddingTop().HasPercent() || style.PaddingRight().HasPercent() ||
        style.PaddingBottom().HasPercent() ||
@@ -248,6 +250,17 @@ bool CanUseCachedIntrinsicInlineSizes(const ConstraintSpace& constraint_space,
     if (!style.AspectRatio().IsAuto() &&
         (style.LogicalMinHeight().HasPercentOrStretch() ||
          style.LogicalMaxHeight().HasPercentOrStretch())) {
+      return false;
+    }
+  }
+
+  // A column wrapping flexbox will use the its min-block-size/max-block-size
+  // to wrap its flex-lines. The value of this "line-break-size" isn't part of
+  // the cache key (it could be if needed) so miss the cache for this case.
+  if (node.IsFlexibleBox() && style.ResolvedIsColumnFlexDirection() &&
+      !style.ResolvedIsFlexNowrap()) {
+    if (style.LogicalMinHeight().HasPercentOrStretch() ||
+        style.LogicalMaxHeight().HasPercentOrStretch()) {
       return false;
     }
   }
@@ -393,9 +406,9 @@ void AttachScrollMarkers(LayoutObject& parent,
 
 const LayoutResult* BlockNode::Layout(
     const ConstraintSpace& constraint_space,
-    const BlockBreakToken* break_token,
-    const EarlyBreak* early_break,
-    const ColumnSpannerPath* column_spanner_path) const {
+    const FragmentationLayoutInput& fragmentation) const {
+  const BlockBreakToken* break_token = fragmentation.break_token;
+
   // The exclusion space internally is a pointer to a shared vector, and
   // equality of exclusion spaces is performed using pointer comparison on this
   // internal shared vector.
@@ -420,8 +433,7 @@ const LayoutResult* BlockNode::Layout(
     box_->GetFrameView()->IncBlockLayoutCount();
 
   const LayoutResult* layout_result = box_->CachedLayoutResult(
-      constraint_space, break_token, early_break, column_spanner_path,
-      &fragment_geometry, &cache_status);
+      constraint_space, fragmentation, &fragment_geometry, &cache_status);
 
   if ((cache_status == LayoutCacheStatus::kHit ||
        cache_status == LayoutCacheStatus::kNeedsSimplifiedLayout) &&
@@ -497,17 +509,14 @@ const LayoutResult* BlockNode::Layout(
       // elements in the subtree, so that we need full layout instead of
       // simplified layout, for instance.
       layout_result = box_->CachedLayoutResult(
-          constraint_space, break_token, early_break, column_spanner_path,
-          &fragment_geometry, &cache_status);
+          constraint_space, fragmentation, &fragment_geometry, &cache_status);
     }
   }
 
   PrepareForLayout();
 
   LayoutAlgorithmParams params(*this, *fragment_geometry, constraint_space);
-  params.break_token = break_token;
-  params.early_break = early_break;
-  params.column_spanner_path = column_spanner_path;
+  params.fragmentation = fragmentation;
 
   auto* block_flow = DynamicTo<LayoutBlockFlow>(box_.Get());
 
@@ -674,7 +683,7 @@ const LayoutResult* BlockNode::SimplifiedLayout(
   // Perform layout on ourselves using the previous constraint space.
   const ConstraintSpace& space =
       previous_result->GetConstraintSpaceForCaching();
-  const LayoutResult* result = Layout(space, /* break_token */ nullptr);
+  const LayoutResult* result = Layout(space);
 
   if (result->Status() != LayoutResult::kSuccess) {
     // TODO(crbug.com/1297864): The optimistic BFC block-offsets aren't being
@@ -728,7 +737,7 @@ const LayoutResult* BlockNode::LayoutRepeatableRoot(
   if (is_first) {
     // We're generating the first fragment for repeated content. Perform regular
     // layout.
-    result = Layout(constraint_space, break_token);
+    result = Layout(constraint_space, FragmentationLayoutInput(break_token));
     DCHECK(!result->GetPhysicalFragment().GetBreakToken());
   } else {
     // We're repeating. Create a shallow clone of the first result. Once we're
@@ -929,7 +938,7 @@ MinMaxSizesResult BlockNode::ComputeMinMaxSizes(
     WritingMode container_writing_mode,
     const SizeType type,
     const ConstraintSpace& constraint_space,
-    const MinMaxSizesFloatInput float_input) const {
+    const MinMaxSizesInput& input) const {
   // TODO(layoutng) Can UpdateMarkerTextIfNeeded call be moved
   // somewhere else? List items need up-to-date markers before layout.
   if (IsListItem())
@@ -948,13 +957,16 @@ MinMaxSizesResult BlockNode::ComputeMinMaxSizes(
     return *cached_fragment_geometry;
   };
 
+  const bool is_orthogonal_flow_root =
+      !IsParallelWritingMode(container_writing_mode, Style().GetWritingMode());
+
   const bool is_in_perform_layout = box_->GetFrameView()->IsInPerformLayout();
   // In some scenarios, Grid, Grid-lanes and Flex will run layout on their items
   // during MinMaxSizes computation. Instead of running (and possible caching
   // incorrect results), when we're not performing layout, just use border +
   // padding.
   if (!is_in_perform_layout &&
-      (IsGrid() || IsGridLanes() ||
+      (is_orthogonal_flow_root || IsGrid() || IsGridLanes() ||
        (IsFlexibleBox() && Style().ResolvedIsColumnFlexDirection()))) {
     const FragmentGeometry& fragment_geometry = IntrinsicFragmentGeometry();
     const BoxStrut border_padding =
@@ -965,17 +977,11 @@ MinMaxSizesResult BlockNode::ComputeMinMaxSizes(
     return MinMaxSizesResult(sizes, /* depends_on_block_constraints */ false);
   }
 
-  bool is_orthogonal_flow_root =
-      !IsParallelWritingMode(container_writing_mode, Style().GetWritingMode());
-
   // If we're orthogonal, run layout to compute the sizes.
   if (is_orthogonal_flow_root) {
     // If we have an aspect ratio, we may be able to avoid laying out the
     // child as an optimization, if performance testing shows this to be
     // important.
-
-    MinMaxSizes sizes;
-    CHECK(is_in_perform_layout);
 
     // If we're computing MinMax after layout, we need to disable side effects
     // so that |Layout| does not update the |LayoutObject| tree and other global
@@ -986,15 +992,17 @@ MinMaxSizesResult BlockNode::ComputeMinMaxSizes(
 
     const LayoutResult* layout_result = Layout(constraint_space);
     DCHECK_EQ(layout_result->Status(), LayoutResult::kSuccess);
-    sizes = LogicalFragment({container_writing_mode, TextDirection::kLtr},
-                            layout_result->GetPhysicalFragment())
-                .InlineSize();
+    const LayoutUnit inline_size =
+        LogicalFragment({container_writing_mode, TextDirection::kLtr},
+                        layout_result->GetPhysicalFragment())
+            .InlineSize();
     const bool depends_on_block_constraints =
         Style().LogicalWidth().HasAuto() ||
         Style().LogicalWidth().HasPercentOrStretch() ||
         Style().LogicalMinWidth().HasPercentOrStretch() ||
         Style().LogicalMaxWidth().HasPercentOrStretch();
-    return MinMaxSizesResult(sizes, depends_on_block_constraints);
+    return MinMaxSizesResult({inline_size, inline_size},
+                             depends_on_block_constraints);
   }
 
   // Returns if we are (directly) dependent on any block constraints.
@@ -1031,36 +1039,61 @@ MinMaxSizesResult BlockNode::ComputeMinMaxSizes(
     }
   }
 
-  bool can_use_cached_intrinsic_inline_sizes =
-      CanUseCachedIntrinsicInlineSizes(constraint_space, float_input, *this);
-
-  // Ensure the cache is invalid if we know we can't use our cached sizes.
-  if (!can_use_cached_intrinsic_inline_sizes) {
-    box_->SetIntrinsicLogicalWidthsDirty(kMarkOnlyThis);
-  }
-
   std::optional<MinMaxSizesResult> result;
 
-  // Use our cached sizes if we don't have a descendant which depends on our
-  // block constraints.
-  if (can_use_cached_intrinsic_inline_sizes &&
-      !box_->IntrinsicLogicalWidthsDependsOnBlockConstraints()) {
-    result = box_->CachedIndefiniteIntrinsicLogicalWidths();
+  MinMaxSizesInput updated_input = input;
+  if (Style().IsInShrinkToFitSubtree()) {
+    const FragmentGeometry& fragment_geometry = IntrinsicFragmentGeometry();
+    const BoxStrut border_padding =
+        fragment_geometry.border + fragment_geometry.padding;
+    const BoxStrut margins = ComputeMarginsForSelf(constraint_space, Style());
+    const MinMaxSizes min_max = ComputeMinMaxInlineSizes(
+        constraint_space, *this, border_padding,
+        /* auto_min_length */ nullptr, [](SizeType) -> MinMaxSizesResult {
+          return {{kIndefiniteSize, kIndefiniteSize},
+                  /* depends_on_block_constraints */ false};
+        });
+    const LayoutUnit available_inline_size =
+        constraint_space.AvailableSize().inline_size == kIndefiniteSize
+            ? input.constrained_inline_size
+            : constraint_space.AvailableSize().inline_size;
+    updated_input.constrained_inline_size =
+        (min_max.ClampSizeToMinAndMax(available_inline_size) -
+         (border_padding + fragment_geometry.scrollbar).InlineSum() -
+         margins.InlineSum())
+            .ClampNegativeToZero();
   }
 
-  // We might still be able to use the cached values for a specific initial
-  // block-size.
-  if (!result && can_use_cached_intrinsic_inline_sizes &&
-      !UseParentPercentageResolutionBlockSizeForChildren()) {
-    result = box_->CachedIntrinsicLogicalWidths(
-        IntrinsicFragmentGeometry().border_box_size.block_size);
+  if (CanUseCachedIntrinsicInlineSizes(constraint_space, updated_input,
+                                       *this)) {
+    if (!box_->IntrinsicLogicalWidthsDependsOnBlockConstraints()) {
+      // If we don't have a descendant which depends on our block constraints,
+      // we can use the cached sizes directly. This means we can avoid
+      // calculating the (expensive) initial block-size for this case.
+      result = box_->CachedIndefiniteIntrinsicLogicalWidths();
+    } else {
+      const LayoutUnit initial_block_size =
+          IntrinsicFragmentGeometry().border_box_size.block_size;
+      const bool will_use_parent_percent_size =
+          initial_block_size == kIndefiniteSize &&
+          UseParentPercentageResolutionBlockSizeForChildren();
+      // We still might be able to find a cache value for a specific block-size.
+      // Skip this if we have an indefinite initial block-size, and we'll use a
+      // parent percent size (we don't store this as part of the cache key).
+      if (!will_use_parent_percent_size) {
+        result = box_->CachedIntrinsicLogicalWidths(initial_block_size);
+      }
+    }
+  } else {
+    // Ensure we invalidate the cache if we can't use our cached sizes.
+    box_->SetIntrinsicLogicalWidthsDirty(kMarkOnlyThis);
   }
 
   if (!result) {
     const FragmentGeometry& fragment_geometry = IntrinsicFragmentGeometry();
     result = ComputeMinMaxSizesWithAlgorithm(
         LayoutAlgorithmParams(*this, fragment_geometry, constraint_space),
-        float_input);
+        updated_input);
 
     const BoxStrut border_padding =
         fragment_geometry.border + fragment_geometry.padding;
@@ -1105,7 +1138,7 @@ MinMaxSizesResult BlockNode::ComputeMinMaxSizes(
   return *result;
 }
 
-LayoutInputNode BlockNode::NextSibling() const {
+BlockNode BlockNode::NextBlockSibling() const {
   LayoutObject* next_sibling = box_->NextSibling();
 
   // We may have some LayoutInline(s) still within the tree (due to treating
@@ -1458,7 +1491,7 @@ const LayoutResult* BlockNode::LayoutAtomicInline(
 
   builder.SetIsPaintedAtomically(true);
   builder.SetUseFirstLineStyle(use_first_line_style);
-  builder.SetIsHiddenForPaint(parent_constraint_space.IsHiddenForPaint());
+  builder.SetIsHiddenDueToLayout(parent_constraint_space.IsHiddenDueToLayout());
 
   builder.SetBaselineAlgorithmType(baseline_algorithm_type);
 
@@ -1540,8 +1573,7 @@ void BlockNode::UpdateShapeOutsideInfoIfNeeded(
   // computing the shape area. There may be an issue with the new fragmentation
   // model and computing the correct sizes of shapes.
   ShapeOutsideInfo* shape_outside = box_->GetShapeOutsideInfo();
-  WritingMode writing_mode =
-      box_->ContainingBlock()->StyleRef().GetWritingMode();
+  WritingMode writing_mode = box_->ContainingBlock()->Style().GetWritingMode();
   BoxStrut margins = ComputePhysicalMargins(constraint_space, Style())
                          .ConvertToLogical({writing_mode, TextDirection::kLtr});
   shape_outside->SetReferenceBoxLogicalSize(

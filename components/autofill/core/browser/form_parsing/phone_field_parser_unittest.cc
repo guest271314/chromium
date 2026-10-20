@@ -7,6 +7,7 @@
 #include <stddef.h>
 
 #include <memory>
+#include <optional>
 #include <vector>
 
 #include "base/containers/to_vector.h"
@@ -17,7 +18,8 @@
 #include "components/autofill/core/browser/autofill_field.h"
 #include "components/autofill/core/browser/field_types.h"
 #include "components/autofill/core/browser/form_parsing/autofill_scanner.h"
-#include "components/autofill/core/browser/form_parsing/parsing_test_utils.h"
+#include "components/autofill/core/browser/form_parsing/form_field_parser_test_api.h"
+#include "components/autofill/core/browser/form_parsing/parsing_test_util.h"
 #include "components/autofill/core/browser/form_parsing/regex_patterns.h"
 #include "components/autofill/core/common/autofill_features.h"
 #include "components/autofill/core/common/form_field_data.h"
@@ -96,7 +98,7 @@ void PhoneFieldParserTest::CheckField(const FieldGlobalId id,
                                       FieldType expected_type) const {
   auto it = field_candidates_map_.find(id);
   ASSERT_TRUE(it != field_candidates_map_.end());
-  EXPECT_EQ(expected_type, it->second.BestHeuristicType());
+  EXPECT_EQ(expected_type, it->second.BestHeuristicCandidate().type);
 }
 
 FieldGlobalId PhoneFieldParserTest::AppendField(
@@ -136,7 +138,7 @@ void PhoneFieldParserTest::RunParsingTest(
   ASSERT_EQ(expect_success, field_.get() != nullptr);
 
   if (expect_success) {
-    field_->AddClassificationsForTesting(field_candidates_map_);
+    test_api(*field_).AddClassifications(field_candidates_map_);
     for (size_t i = 0; i < fields.size(); ++i) {
       CheckField(global_ids[i], fields[i].expected_type);
     }
@@ -183,8 +185,6 @@ TEST_F(PhoneFieldParserTest, ParseTwoLinePhone_CityCode) {
 }
 
 TEST_F(PhoneFieldParserTest, ParseTwoLinePhone_CountryCode) {
-  base::test::ScopedFeatureList scoped_feature_list{
-      features::kAutofillImprovePhoneFieldParser};
   for (FormControlType field_type : kFieldTypes) {
     RunParsingTest(
         {{field_type, u"Country Code", u"country code",
@@ -282,8 +282,6 @@ TEST_F(PhoneFieldParserTest, CountryCodeWithOptions) {
 // Tests if the country code field is correctly classified by the heuristic when
 // the phone code is a select element and consists of valid options.
 TEST_F(PhoneFieldParserTest, IsPhoneCountryCodeField) {
-  base::test::ScopedFeatureList scoped_feature_list{
-      features::kAutofillNewAugmentedPhoneCountryCodeRegex};
   std::vector<std::vector<const char*>> augmented_field_options_list = {
       // Options with the country name followed by the country code in brackets.
       {"India(+91) ", "Germany(+49)", "United States(+1)", "Egypt(+20)",

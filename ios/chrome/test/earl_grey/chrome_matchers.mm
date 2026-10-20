@@ -97,10 +97,10 @@ id<GREYMatcher> ImageViewWithImageNamed(NSString* imageName) {
   return [ChromeMatchersAppInterface imageViewWithImageNamed:imageName];
 }
 
-id<GREYMatcher> ImageViewWithCustomSymbolNameAndPointSize(NSString* symbolName,
-                                                          CGFloat pointSize) {
-  return [ChromeMatchersAppInterface imageViewWithCustomSymbolNamed:symbolName
-                                                          pointSize:pointSize];
+id<GREYMatcher> ImageViewWithSymbolAndPointSize(Symbol symbol,
+                                                CGFloat pointSize) {
+  return [ChromeMatchersAppInterface imageViewWithSymbol:symbol
+                                               pointSize:pointSize];
 }
 
 id<GREYMatcher> ImageViewWithImage(UIImage* image) {
@@ -295,8 +295,17 @@ id<GREYMatcher> TabShareButton() {
   return [ChromeMatchersAppInterface tabShareButton];
 }
 
+id<GREYMatcher> OverflowMenuShareButton() {
+  return [ChromeMatchersAppInterface overflowMenuShareButton];
+}
+
 id<GREYMatcher> ShowTabsButton() {
   return [ChromeMatchersAppInterface showTabsButton];
+}
+
+id<GREYMatcher> ShowTabsButtonWithCount(NSString* count) {
+  return grey_allOf(grey_descendant(grey_accessibilityLabel(count)),
+                    ShowTabsButton(), nil);
 }
 
 id<GREYMatcher> BlueDotOnShowTabsButton() {
@@ -355,6 +364,10 @@ id<GREYMatcher> NavigationBarCloseButton() {
 
 id<GREYMatcher> NavigationBarDoneButton() {
   return [ChromeMatchersAppInterface navigationBarDoneButton];
+}
+
+id<GREYMatcher> NavigationBarEditButton() {
+  return [ChromeMatchersAppInterface navigationBarEditButton];
 }
 
 id<GREYMatcher> BookmarksNavigationBarDoneButton() {
@@ -539,22 +552,12 @@ id<GREYMatcher> VoiceSearchButton() {
   return [ChromeMatchersAppInterface voiceSearchButton];
 }
 
-id<GREYMatcher> VoiceSearchInputAccessoryButton() {
-  return [ChromeMatchersAppInterface voiceSearchInputAccessoryButton];
-}
-
 id<GREYMatcher> SettingsCollectionView() {
   return [ChromeMatchersAppInterface settingsCollectionView];
 }
 
 id<GREYMatcher> BrowsingDataButtonMatcher() {
   return [ChromeMatchersAppInterface browsingDataButtonMatcher];
-}
-
-// TODO(crbug.com/487269108): Delete the BrowsingDataConfirmButtonMatcher()
-// once the feature flag `kPasswordRemovalFromDeleteBrowsingData` is enabled.
-id<GREYMatcher> BrowsingDataConfirmButtonMatcher() {
-  return [ChromeMatchersAppInterface browsingDataConfirmButtonMatcher];
 }
 
 id<GREYMatcher> BrowsingDataDoneButtonMatcher() {
@@ -575,10 +578,6 @@ id<GREYMatcher> ClearCookiesButton() {
 
 id<GREYMatcher> ClearCacheButton() {
   return [ChromeMatchersAppInterface clearCacheButton];
-}
-
-id<GREYMatcher> ClearSavedPasswordsButton() {
-  return [ChromeMatchersAppInterface clearSavedPasswordsButton];
 }
 
 id<GREYMatcher> ClearAutofillButton() {
@@ -782,14 +781,6 @@ id<GREYMatcher> TabGroupActivityLabelOnGridCellAtIndex(unsigned int index) {
 
 id<GREYMatcher> TabGridDoneButton() {
   return [ChromeMatchersAppInterface tabGridDoneButton];
-}
-
-id<GREYMatcher> TabGridOverflowMenuButton() {
-  return [ChromeMatchersAppInterface tabGridOverflowMenuButton];
-}
-
-id<GREYMatcher> TabGridUndoCloseAllButton() {
-  return [ChromeMatchersAppInterface tabGridUndoCloseAllButton];
 }
 
 id<GREYMatcher> TabGridSelectShowHistoryCell() {
@@ -1041,18 +1032,18 @@ id<GREYMatcher> IncognitoInterstitialCancelButton() {
   return [ChromeMatchersAppInterface incognitoInterstitialCancelButton];
 }
 
-#pragma mark - Tab Grid Edit Mode
+#pragma mark - Tab Grid Overflow Menu
 
-id<GREYMatcher> TabGridEditButton() {
-  return [ChromeMatchersAppInterface tabGridEditButton];
+id<GREYMatcher> TabGridOverflowMenuButton() {
+  return [ChromeMatchersAppInterface tabGridOverflowMenuButton];
 }
 
-id<GREYMatcher> TabGridEditMenuCloseAllButton() {
-  return [ChromeMatchersAppInterface tabGridEditMenuCloseAllButton];
+id<GREYMatcher> TabGridOverflowMenuCloseAllButton() {
+  return [ChromeMatchersAppInterface tabGridOverflowMenuCloseAllButton];
 }
 
-id<GREYMatcher> TabGridSelectTabsMenuButton() {
-  return [ChromeMatchersAppInterface tabGridSelectTabsMenuButton];
+id<GREYMatcher> TabGridOverflowMenuSelectTabsButton() {
+  return [ChromeMatchersAppInterface tabGridOverflowMenuSelectTabsButton];
 }
 
 id<GREYMatcher> TabGridEditAddToButton() {

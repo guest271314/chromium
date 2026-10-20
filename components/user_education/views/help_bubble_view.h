@@ -74,7 +74,7 @@ class HelpBubbleView : public views::BubbleDialogDelegateView {
   static constexpr int kMinWidthDip = 200;
 
   // Maximum width of the bubble. Longer strings will cause wrapping.
-  static constexpr int kMaxWidthDip = 340;
+  static constexpr int kMaxWidthDip = 350;
 
   HelpBubbleView(const HelpBubbleView&) = delete;
   HelpBubbleView& operator=(const HelpBubbleView&) = delete;
@@ -99,7 +99,6 @@ class HelpBubbleView : public views::BubbleDialogDelegateView {
   // BubbleDialogDelegateView:
   std::u16string GetAccessibleWindowTitle() const override;
   void OnWidgetActivationChanged(views::Widget* widget, bool active) override;
-  void OnThemeChanged() override;
   gfx::Size CalculatePreferredSize(
       const views::SizeBounds& available_size) const override;
   gfx::Rect GetAnchorRect() const override;

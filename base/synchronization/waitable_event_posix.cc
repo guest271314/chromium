@@ -9,10 +9,11 @@
 #include <algorithm>
 #include <limits>
 #include <optional>
+#include <ranges>
 #include <vector>
 
 #include "base/check_op.h"
-#include "base/containers/adapters.h"
+#include "base/containers/span.h"
 #include "base/memory/stack_allocated.h"
 #include "base/synchronization/condition_variable.h"
 #include "base/synchronization/lock.h"
@@ -83,6 +84,10 @@ bool WaitableEvent::IsSignaled() const {
     kernel_->signaled_ = false;
   }
   return result;
+}
+
+bool WaitableEvent::IsDefinitelySignaled() const {
+  return IsSignaled();
 }
 
 // -----------------------------------------------------------------------------
@@ -335,7 +340,7 @@ size_t WaitableEvent::EnqueueMany(base::span<WaiterAndIndex> waitables,
 
   // Unlock in reverse order and possibly clear the chosen winner's signal
   // before returning its index.
-  for (auto& w : base::Reversed(waitables)) {
+  for (auto& w : std::views::reverse(waitables)) {
     auto& kernel = w.first->kernel_;
     if (w.second == winner) {
       if (!kernel->manual_reset_) {

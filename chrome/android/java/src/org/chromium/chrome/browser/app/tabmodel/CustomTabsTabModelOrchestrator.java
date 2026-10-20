@@ -19,6 +19,7 @@ import org.chromium.chrome.browser.crypto.CipherFactory;
 import org.chromium.chrome.browser.flags.ActivityType;
 import org.chromium.chrome.browser.flags.CustomTabProfileType;
 import org.chromium.chrome.browser.profiles.ProfileProvider;
+import org.chromium.chrome.browser.tab.TabDestroyStatus;
 import org.chromium.chrome.browser.tab_ui.TabContentManager;
 import org.chromium.chrome.browser.tabmodel.AccumulatingTabCreator;
 import org.chromium.chrome.browser.tabmodel.AsyncTabParamsManager;
@@ -29,9 +30,9 @@ import org.chromium.chrome.browser.tabmodel.SupportedProfileType;
 import org.chromium.chrome.browser.tabmodel.TabCreatorManager;
 import org.chromium.chrome.browser.tabmodel.TabModelSelectorImpl;
 import org.chromium.chrome.browser.tabmodel.TabModelType;
+import org.chromium.chrome.browser.tabmodel.TabOrchestratorType;
 import org.chromium.chrome.browser.tabmodel.TabPersistencePolicy;
 import org.chromium.chrome.browser.tabmodel.TabPersistentStore;
-import org.chromium.chrome.browser.tabmodel.TabPersistentStoreImpl;
 import org.chromium.chrome.browser.tabwindow.TabWindowManager;
 
 /**
@@ -42,8 +43,7 @@ import org.chromium.chrome.browser.tabwindow.TabWindowManager;
 public class CustomTabsTabModelOrchestrator extends TabModelOrchestrator {
     public CustomTabsTabModelOrchestrator() {}
 
-    private static final String CUSTOM_WINDOW_PREFIX =
-            TabPersistentStoreImpl.CLIENT_TAG_CUSTOM + "_";
+    private static final String CUSTOM_WINDOW_PREFIX = "Custom_";
 
     private final AccumulatingTabCreator mRegularShadowTabCreator = new AccumulatingTabCreator();
     private final AccumulatingTabCreator mIncognitoShadowTabCreator = new AccumulatingTabCreator();
@@ -91,7 +91,7 @@ public class CustomTabsTabModelOrchestrator extends TabModelOrchestrator {
         mTabPersistencePolicy = persistencePolicy;
         mTabPersistentStore =
                 buildAuthoritativeStore(
-                        TabPersistentStoreImpl.CLIENT_TAG_CUSTOM,
+                        TabOrchestratorType.CUSTOM,
                         /* migrationManager= */ null,
                         mTabPersistencePolicy,
                         mTabModelSelector,
@@ -107,11 +107,11 @@ public class CustomTabsTabModelOrchestrator extends TabModelOrchestrator {
     }
 
     @Override
-    public void destroy() {
+    public @TabDestroyStatus int destroy() {
         assert mTabModelSelector != null;
         TabWindowManagerSingleton.getInstance()
                 .unregisterCustomTabsTabModelSelector(mTabModelSelector);
-        super.destroy();
+        return super.destroy();
     }
 
     @Override
@@ -131,8 +131,9 @@ public class CustomTabsTabModelOrchestrator extends TabModelOrchestrator {
                             mTabPersistentStore,
                             getCustomTabsWindowTag(mActivity.getTaskId()),
                             mCipherFactory,
-                            TabPersistentStoreImpl.CLIENT_TAG_CUSTOM,
-                            /* isNonOtrOnly= */ false);
+                            TabOrchestratorType.CUSTOM,
+                            /* isNonOtrOnly= */ false,
+                            /* isFromRecreating= */ false);
             if (mShadowTabPersistentStore != null) {
                 mShadowTabPersistentStore.onNativeLibraryReady();
             }

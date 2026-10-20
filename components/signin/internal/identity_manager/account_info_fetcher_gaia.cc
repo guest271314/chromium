@@ -12,7 +12,7 @@
 #include "components/signin/internal/identity_manager/profile_oauth2_token_service.h"
 #include "google_apis/gaia/gaia_constants.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
-#include "third_party/perfetto/include/perfetto/tracing/track.h"
+#include "third_party/perfetto/include/perfetto/tracing/track_event_args.h"
 
 AccountInfoFetcherGaia::AccountInfoFetcherGaia(
     ProfileOAuth2TokenService& token_service,
@@ -24,16 +24,14 @@ AccountInfoFetcherGaia::AccountInfoFetcherGaia(
       url_loader_factory_(std::move(url_loader_factory)),
       account_id_(account_id),
       callback_(std::move(callback)) {
-  TRACE_EVENT_BEGIN("AccountFetcherService", "AccountIdFetcher",
-                    perfetto::Track::FromPointer(this), "account_id",
-                    account_id.ToString());
-
-  Start();
+  TRACE_EVENT_INSTANT("AccountFetcherService", "AccountIdFetcher",
+                      perfetto::Flow::FromPointer(this), "account_id",
+                      account_id.ToString());
 }
 
 AccountInfoFetcherGaia::~AccountInfoFetcherGaia() {
-  TRACE_EVENT_END("AccountFetcherService",
-                  /* AccountIdFetcher */ perfetto::Track::FromPointer(this));
+  TRACE_EVENT_INSTANT("AccountFetcherService", "~AccountInfoFetcherGaia",
+                      perfetto::TerminatingFlow::FromPointer(this));
 }
 
 void AccountInfoFetcherGaia::Start() {
@@ -48,7 +46,7 @@ void AccountInfoFetcherGaia::OnGetTokenSuccess(
     const OAuth2AccessTokenManager::Request* request,
     const OAuth2AccessTokenConsumer::TokenResponse& token_response) {
   TRACE_EVENT_INSTANT("AccountFetcherService", "OnGetTokenSuccess",
-                      perfetto::Track::FromPointer(this));
+                      perfetto::Flow::FromPointer(this));
   DCHECK_EQ(request, login_token_request_.get());
 
   gaia_oauth_client_ =
@@ -62,7 +60,7 @@ void AccountInfoFetcherGaia::OnGetTokenFailure(
     const OAuth2AccessTokenManager::Request* request,
     const GoogleServiceAuthError& error) {
   TRACE_EVENT_INSTANT("AccountFetcherService", "OnGetTokenFailure",
-                      perfetto::Track::FromPointer(this),
+                      perfetto::Flow::FromPointer(this),
                       "google_service_auth_error", error.ToString());
   LOG(ERROR) << "OnGetTokenFailure: " << error.ToString();
   DCHECK_EQ(request, login_token_request_.get());
@@ -72,21 +70,21 @@ void AccountInfoFetcherGaia::OnGetTokenFailure(
 void AccountInfoFetcherGaia::OnGetUserInfoResponse(
     const base::DictValue& user_info) {
   TRACE_EVENT_INSTANT("AccountFetcherService", "OnGetUserInfoResponse",
-                      perfetto::Track::FromPointer(this), "account_id",
+                      perfetto::Flow::FromPointer(this), "account_id",
                       account_id_.ToString());
   std::move(callback_).Run(signin::AccountInfoFromUserInfo(user_info));
 }
 
 void AccountInfoFetcherGaia::OnOAuthError() {
   TRACE_EVENT_INSTANT("AccountFetcherService", "OnOAuthError",
-                      perfetto::Track::FromPointer(this));
+                      perfetto::Flow::FromPointer(this));
   LOG(ERROR) << "OnOAuthError";
   std::move(callback_).Run(std::nullopt);
 }
 
 void AccountInfoFetcherGaia::OnNetworkError(int response_code) {
   TRACE_EVENT_INSTANT("AccountFetcherService", "OnNetworkError",
-                      perfetto::Track::FromPointer(this), "response_code",
+                      perfetto::Flow::FromPointer(this), "response_code",
                       response_code);
   LOG(ERROR) << "OnNetworkError " << response_code;
   std::move(callback_).Run(std::nullopt);

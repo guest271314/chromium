@@ -17,7 +17,7 @@ import org.chromium.ui.widget.ButtonCompat;
 
 import java.util.List;
 
-/** Handles toolbar functionality for the {@ContactsPickerDialog}. */
+/** Handles toolbar functionality for the {@link ContactsPickerDialog}. */
 @NullMarked
 public class ContactsPickerToolbar extends SelectableListToolbar<ContactDetails> {
     /** A delegate that handles dialog actions. */
@@ -37,7 +37,7 @@ public class ContactsPickerToolbar extends SelectableListToolbar<ContactDetails>
         super(context, attrs);
     }
 
-    /** Set the {@ContactToolbarDelegate} for this toolbar. */
+    /** Set the {@link ContactToolbarDelegate} for this toolbar. */
     public void setDelegate(ContactsToolbarDelegate delegate) {
         mDelegate = delegate;
     }
@@ -63,6 +63,12 @@ public class ContactsPickerToolbar extends SelectableListToolbar<ContactDetails>
             assumeNonNull(mDelegate);
             mDelegate.onNavigationBackCallback();
         }
+    }
+
+    @Override
+    protected void onNavigationBack() {
+        assumeNonNull(mDelegate);
+        mDelegate.onNavigationBackCallback();
     }
 
     @Override
@@ -101,7 +107,9 @@ public class ContactsPickerToolbar extends SelectableListToolbar<ContactDetails>
             done.setTextAppearance(R.style.TextAppearance_TextMedium_Disabled);
         }
 
-        if (isSystemPickerEnabled || !contactsSelected) {
+        if (isSystemPickerEnabled) {
+            setNavigationButton(NavigationButton.CLOSE);
+        } else if (!contactsSelected) {
             showBackArrow();
         } else {
             setNavigationButton(NavigationButton.SELECTION_BACK);

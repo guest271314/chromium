@@ -4,7 +4,6 @@
 
 package org.chromium.chrome.browser.tabmodel;
 
-import static androidx.test.espresso.action.ViewActions.click;
 import static androidx.test.espresso.matcher.ViewMatchers.withText;
 
 import static com.google.common.truth.Truth.assertWithMessage;
@@ -15,14 +14,13 @@ import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
-import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 
+import static org.chromium.base.test.transit.ViewFinder.waitForView;
 import static org.chromium.chrome.browser.tabmodel.TabModelOrderControllerImpl.willOpenInForeground;
 import static org.chromium.chrome.test.util.ChromeTabUtils.getIndexOnUiThread;
 import static org.chromium.chrome.test.util.ChromeTabUtils.getTabCountOnUiThread;
-import static org.chromium.ui.test.util.ViewUtils.onViewWaiting;
 
 import androidx.test.filters.SmallTest;
 import androidx.test.platform.app.InstrumentationRegistry;
@@ -59,6 +57,7 @@ import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabCreationState;
 import org.chromium.chrome.browser.tab.TabLaunchType;
 import org.chromium.chrome.browser.tab.TabSelectionType;
+import org.chromium.chrome.browser.url_constants.UrlConstantResolverFactory;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.chrome.test.transit.AutoResetCtaTransitTestRule;
 import org.chromium.chrome.test.transit.ChromeTransitTestRules;
@@ -66,10 +65,6 @@ import org.chromium.chrome.test.transit.Journeys;
 import org.chromium.chrome.test.transit.ntp.RegularNewTabPageStation;
 import org.chromium.chrome.test.transit.page.WebPageStation;
 import org.chromium.chrome.test.util.ChromeTabUtils;
-import org.chromium.components.browser_ui.site_settings.WebsitePreferenceBridge;
-import org.chromium.components.browser_ui.widget.ActionConfirmationResult;
-import org.chromium.components.content_settings.ContentSetting;
-import org.chromium.components.content_settings.ContentSettingsType;
 import org.chromium.content_public.common.ResourceRequestBody;
 import org.chromium.ui.base.DeviceFormFactor;
 import org.chromium.ui.mojom.WindowOpenDisposition;
@@ -101,8 +96,6 @@ public class TabModelImplTest {
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
 
     @Mock private TabModelObserver mTabModelObserver;
-
-    @Mock private TabModelActionListener mTabModelActionListener;
 
     private String mTestUrl;
     private WebPageStation mPage;
@@ -173,6 +166,8 @@ public class TabModelImplTest {
     @SmallTest
     // TODO(crbug.com/457847264): Change to @Restriction(DeviceFormFactor.PHONE) after launch
     @DisableFeatures(ChromeFeatureList.ANDROID_OPEN_INCOGNITO_AS_WINDOW)
+    // TODO(crbug.com/572884732): Re-enable.
+    @DisableIf.Device(DeviceFormFactor.PHONE_OR_TABLET)
     public void validIndexAfterRestored_FromPreviousActivity_WithIncognitoTabs() {
         mPage = Journeys.createIncognitoTabsWithWebPages(mPage, List.of(mTestUrl));
 
@@ -297,6 +292,23 @@ public class TabModelImplTest {
                                     TabLaunchType.FROM_TAB_LIST_INTERFACE_BACKGROUND,
                                     tab.isIncognitoBranded(),
                                     mTabModelJni.isIncognitoBranded()));
+                });
+    }
+
+    @Test
+    @SmallTest
+    public void testOpenTabProgrammatically_EmptyUrl() {
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    assertEquals(1, mTabModelJni.getCount());
+
+                    Tab tab = mTabModelJni.openTabProgrammatically(GURL.emptyGURL(), 0, true);
+                    assertNotNull(tab);
+                    GURL expectedUrl =
+                            UrlConstantResolverFactory.getForProfile(mTabModelJni.getProfile())
+                                    .getNtpGurl();
+                    assertEquals(expectedUrl, tab.getUrl());
+                    assertEquals(2, mTabModelJni.getCount());
                 });
     }
 
@@ -833,7 +845,6 @@ public class TabModelImplTest {
 
     @Test
     @SmallTest
-    @DisabledTest(message = "crbug.com/447152102")
     public void testAddTab_CurrentTabPinned() {
         createTabs(4);
 
@@ -1266,24 +1277,20 @@ public class TabModelImplTest {
                     tabModel.pinTab(tab2.getId(), /* showUngroupDialog= */ false);
 
                     verify(mTabModelObserver).didMoveTab(tab2, 0, 2);
-                    verify(mTabModelObserver).willChangePinState(tab2);
                     verify(mTabModelObserver).didChangePinState(tab2);
 
                     tabModel.pinTab(tab1.getId(), /* showUngroupDialog= */ false);
 
                     verify(mTabModelObserver).didMoveTab(tab1, 1, 2);
-                    verify(mTabModelObserver).willChangePinState(tab1);
                     verify(mTabModelObserver).didChangePinState(tab1);
 
                     tabModel.unpinTab(tab2.getId());
 
                     verify(mTabModelObserver).didMoveTab(tab2, 1, 0);
-                    verify(mTabModelObserver, times(2)).willChangePinState(tab2);
                     verify(mTabModelObserver, times(2)).didChangePinState(tab2);
 
                     tabModel.unpinTab(tab1.getId());
 
-                    verify(mTabModelObserver, times(2)).willChangePinState(tab1);
                     verify(mTabModelObserver, times(2)).didChangePinState(tab1);
 
                     // Cleanup.
@@ -1362,216 +1369,13 @@ public class TabModelImplTest {
                 });
     }
 
+    // Basic integration test verifying regular and incognito TabModel JNI bridging.
+    // Additional coverage is in TabModelJniBridgeTest (tab_model_jni_bridge_browsertest.cc).
     @Test
     @SmallTest
-    public void testSetMuteSetting() {
-        WebPageStation page = mPage.loadWebPageProgrammatically(mTestUrl);
-
-        ThreadUtils.runOnUiThreadBlocking(
-                () -> {
-                    assertEquals(1, mTabModelJni.getCount());
-                    List<Tab> tabsToMute = mTabModelJni.getAllTabs();
-                    Tab tab = tabsToMute.get(0);
-                    assertFalse(
-                            "Tab should not be muted initially.",
-                            tab.getWebContents().isAudioMuted());
-
-                    mTabModelJni.setMuteSetting(tabsToMute, /* mute= */ true);
-                    assertTrue(
-                            "Tab should be muted after setting.",
-                            tab.getWebContents().isAudioMuted());
-
-                    mTabModelJni.setMuteSetting(tabsToMute, /* mute= */ false);
-                    assertFalse(
-                            "Tab should be unmuted after setting.",
-                            tab.getWebContents().isAudioMuted());
-                });
-
-        page.loadWebPageProgrammatically("chrome://version");
-        ThreadUtils.runOnUiThreadBlocking(
-                () -> {
-                    List<Tab> tabsToMute = mTabModelJni.getAllTabs();
-                    Tab tab = tabsToMute.get(0);
-                    assertFalse(
-                            "WebContents should not be muted initially",
-                            tab.getWebContents().isAudioMuted());
-
-                    mTabModelJni.setMuteSetting(tabsToMute, /* mute= */ true);
-                    assertTrue("WebContents should be muted", tab.getWebContents().isAudioMuted());
-
-                    mTabModelJni.setMuteSetting(tabsToMute, /* mute= */ false);
-                    assertFalse(
-                            "WebContents shouldn't be muted", tab.getWebContents().isAudioMuted());
-                });
-    }
-
-    @Test
-    @SmallTest
-    public void testSetMuteSetting_MultipleTabs() {
-        // First tab is Chrome Scheme to test mute persistence.
-        WebPageStation page = mPage.loadWebPageProgrammatically("chrome://version");
-        page.openNewTabFast().loadWebPageProgrammatically(mTestUrl);
-
-        ThreadUtils.runOnUiThreadBlocking(
-                () -> {
-                    assertEquals(2, mTabModelJni.getCount());
-                    List<Tab> tabsToMute = mTabModelJni.getAllTabs();
-
-                    Tab tab1 = tabsToMute.get(0);
-                    Tab tab2 = tabsToMute.get(1);
-
-                    assertFalse(
-                            "Tab 1 should not be muted initially.",
-                            tab1.getWebContents().isAudioMuted());
-                    assertFalse(
-                            "Tab 2 should not be muted initially.",
-                            tab2.getWebContents().isAudioMuted());
-
-                    mTabModelJni.setMuteSetting(tabsToMute, /* mute= */ true);
-
-                    // Tab 1 should remain muted because of TabMutedReason.
-                    // SoundContentSettingObserver originally would reset the mute setting for
-                    // Chrome Schemes if there was no TabMutedReason.
-                    assertTrue("Tab 1 should be muted.", tab1.getWebContents().isAudioMuted());
-                    assertTrue("Tab 2 should be muted.", tab2.getWebContents().isAudioMuted());
-
-                    mTabModelJni.setMuteSetting(tabsToMute, /* mute= */ false);
-
-                    assertFalse("Tab 1 should be unmuted.", tab1.getWebContents().isAudioMuted());
-                    assertFalse("Tab 2 should be unmuted.", tab2.getWebContents().isAudioMuted());
-                });
-    }
-
-    @Test
-    @SmallTest
-    public void testSetMuteSetting_SameSite() {
-        WebPageStation page = mPage.loadWebPageProgrammatically(mTestUrl);
-        String secondUrl =
-                mActivityTestRule.getTestServer().getURL("/chrome/test/data/android/simple.html");
-        page.openNewTabFast().loadWebPageProgrammatically(secondUrl);
-
-        ThreadUtils.runOnUiThreadBlocking(
-                () -> {
-                    Tab tab1 = mTabModelJni.getTabAt(0);
-                    Tab tab2 = mTabModelJni.getTabAt(1);
-
-                    assertFalse(
-                            "Tab 1 should not be muted initially.",
-                            tab1.getWebContents().isAudioMuted());
-                    assertFalse(
-                            "Tab 2 should not be muted initially.",
-                            tab2.getWebContents().isAudioMuted());
-
-                    List<Tab> tabsToMute = List.of(tab1);
-                    mTabModelJni.setMuteSetting(tabsToMute, /* mute= */ true);
-
-                    assertTrue(
-                            "Tab 1 should be muted after setting.",
-                            tab1.getWebContents().isAudioMuted());
-                    assertTrue(
-                            "Tab 2 should also be muted as it's the same site.",
-                            tab2.getWebContents().isAudioMuted());
-
-                    mTabModelJni.setMuteSetting(tabsToMute, /* mute= */ false);
-
-                    assertFalse(
-                            "Tab 1 should be unmuted after setting.",
-                            tab1.getWebContents().isAudioMuted());
-                    assertFalse(
-                            "Tab 2 should also be unmuted as it's the same site.",
-                            tab2.getWebContents().isAudioMuted());
-                });
-    }
-
-    @Test
-    @SmallTest
-    public void testSetMuteSetting_WithWildcardPattern() {
-        final String host = "example.com";
-        final String subdomainUrl =
-                mActivityTestRule.getTestServer().getURLWithHostName("sub." + host, "/test.html");
-        final String anotherSubdomainUrl =
-                mActivityTestRule
-                        .getTestServer()
-                        .getURLWithHostName("another." + host, "/test.html");
-        final String wildcardPattern = "[*.]" + host;
-        final Tab tab = mPage.getTab();
-
-        // Set a wildcard rule to BLOCK sound for all subdomains.
-        ThreadUtils.runOnUiThreadBlocking(
-                () ->
-                        WebsitePreferenceBridge.setContentSettingCustomScope(
-                                mTabModelJni.getProfile(),
-                                ContentSettingsType.SOUND,
-                                wildcardPattern,
-                                WebsitePreferenceBridge.SITE_WILDCARD,
-                                ContentSetting.BLOCK));
-
-        mPage.loadWebPageProgrammatically(subdomainUrl);
-
-        ThreadUtils.runOnUiThreadBlocking(
-                () -> {
-                    assertTrue(
-                            "Tab should be muted by wildcard rule",
-                            tab.getWebContents().isAudioMuted());
-
-                    mTabModelJni.setMuteSetting(List.of(tab), /* mute= */ false);
-                    assertFalse(
-                            "Tab should be unmuted by the new, specific exception.",
-                            tab.getWebContents().isAudioMuted());
-
-                    @ContentSetting
-                    int setting =
-                            WebsitePreferenceBridge.getContentSetting(
-                                    mTabModelJni.getProfile(),
-                                    ContentSettingsType.SOUND,
-                                    new GURL(subdomainUrl),
-                                    new GURL(subdomainUrl));
-
-                    assertEquals(
-                            "Site should block sound by the new, specific exception.",
-                            ContentSetting.ALLOW,
-                            setting);
-
-                    setting =
-                            WebsitePreferenceBridge.getContentSetting(
-                                    mTabModelJni.getProfile(),
-                                    ContentSettingsType.SOUND,
-                                    new GURL(anotherSubdomainUrl),
-                                    new GURL(anotherSubdomainUrl));
-                    assertEquals(
-                            "Another subdomain should still have sound blocked by the wildcard.",
-                            ContentSetting.BLOCK,
-                            setting);
-
-                    // Cleanup
-                    WebsitePreferenceBridge.setContentSettingCustomScope(
-                            mTabModelJni.getProfile(),
-                            ContentSettingsType.SOUND,
-                            wildcardPattern,
-                            WebsitePreferenceBridge.SITE_WILDCARD,
-                            ContentSetting.DEFAULT);
-
-                    setting =
-                            WebsitePreferenceBridge.getContentSetting(
-                                    mTabModelJni.getProfile(),
-                                    ContentSettingsType.SOUND,
-                                    new GURL(anotherSubdomainUrl),
-                                    new GURL(anotherSubdomainUrl));
-                    assertEquals(
-                            "Another subdomain should allow sound again after wildcard rule is"
-                                    + " removed.",
-                            ContentSetting.ALLOW,
-                            setting);
-                });
-    }
-
-    @Test
-    @SmallTest
-    @DisableIf.Device(
-            DeviceFormFactor.DESKTOP) // TODO(crbug.com/479863847): Test failing on Desktop bot
     // TODO(crbug.com/457847264): Change to @Restriction(DeviceFormFactor.PHONE) after launch
     @DisableFeatures(ChromeFeatureList.ANDROID_OPEN_INCOGNITO_AS_WINDOW)
-    public void testSetMuteSetting_Incognito() {
+    public void testSetMuteSetting() {
         WebPageStation page = mPage.loadWebPageProgrammatically(mTestUrl);
         Journeys.createIncognitoTabsWithWebPages(page, List.of(mTestUrl));
         TabModel incognitoTabModel =
@@ -1987,7 +1791,7 @@ public class TabModelImplTest {
 
     @Test
     @SmallTest
-    public void testPinTabInGroup_ActionListener_Accept() {
+    public void testPinTabInGroup_Accept() {
         TabModel tabModel = mPage.getTabModel();
         createTabGroup(1, tabModel); // Group with 1 tab.
         // 0:Tab0 | Group0: 1:Tab1
@@ -1998,17 +1802,12 @@ public class TabModelImplTest {
                 () -> {
                     assertNotNull(tab1.getTabGroupId());
 
-                    mTabModelJni.pinTab(
-                            tab1.getId(), /* showUngroupDialog= */ true, mTabModelActionListener);
+                    mTabModelJni.pinTab(tab1.getId(), /* showUngroupDialog= */ true);
                 });
-        onViewWaiting(withText(R.string.delete_tab_group_action)).perform(click());
+        waitForView(withText(R.string.delete_tab_group_action)).click();
 
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
-                    verify(mTabModelActionListener)
-                            .onConfirmationDialogResult(
-                                    eq(TabModelActionListener.DialogType.SYNC),
-                                    eq(ActionConfirmationResult.CONFIRMATION_POSITIVE));
                     assertTrue(tab1.getIsPinned());
                     assertNull(tab1.getTabGroupId());
 
@@ -2023,7 +1822,7 @@ public class TabModelImplTest {
     @Test
     @SmallTest
     @Restriction(DeviceFormFactor.PHONE_OR_TABLET) // crbug.com/503008051
-    public void testPinTabInGroup_ActionListener_Reject() {
+    public void testPinTabInGroup_Reject() {
         TabModel tabModel = mPage.getTabModel();
         createTabGroup(1, tabModel); // Group with 1 tab.
         // 0:Tab0 | Group0: 1:Tab1
@@ -2034,17 +1833,12 @@ public class TabModelImplTest {
                 () -> {
                     assertNotNull(tab1.getTabGroupId());
 
-                    mTabModelJni.pinTab(
-                            tab1.getId(), /* showUngroupDialog= */ true, mTabModelActionListener);
+                    mTabModelJni.pinTab(tab1.getId(), /* showUngroupDialog= */ true);
                 });
-        onViewWaiting(withText(R.string.cancel)).perform(click());
+        waitForView(withText(R.string.cancel)).click();
 
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
-                    verify(mTabModelActionListener)
-                            .onConfirmationDialogResult(
-                                    eq(TabModelActionListener.DialogType.SYNC),
-                                    eq(ActionConfirmationResult.CONFIRMATION_NEGATIVE));
                     assertEquals(1, mTabModelJni.indexOf(tab1));
                     assertFalse(tab1.getIsPinned());
                     assertNotNull(tab1.getTabGroupId());

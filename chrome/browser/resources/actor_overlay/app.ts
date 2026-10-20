@@ -11,9 +11,9 @@ import {CrLitElement} from 'chrome://resources/lit/v3_0/lit.rollup.js';
 import type {Point} from 'chrome://resources/mojo/ui/gfx/geometry/mojom/geometry.mojom-webui.js';
 
 import type {Theme} from './actor_overlay.mojom-webui.js';
+import {browserProxyFactory} from './actor_overlay.mojom-webui.js';
 import {getCss} from './app.css.js';
 import {getHtml} from './app.html.js';
-import {ActorOverlayBrowserProxy} from './browser_proxy.js';
 
 export interface ActorOverlayAppElement {
   $: {magicCursor: HTMLDivElement};
@@ -35,10 +35,12 @@ export class ActorOverlayAppElement extends CrLitElement {
   static override get properties() {
     return {
       borderGlowVisible_: {type: Boolean},
+      cursorChipText_: {type: String},
     };
   }
 
   protected accessor borderGlowVisible_: boolean = false;
+  protected accessor cursorChipText_: string = '';
 
   private eventTracker_: EventTracker = new EventTracker();
   private listenerIds_: number[] = [];
@@ -50,6 +52,8 @@ export class ActorOverlayAppElement extends CrLitElement {
   private loadingTimerId_: number|null = null;
   // Timer for window resize events.
   private resizeTimerId_: number|null = null;
+  // AbortController for cleaning up an in-progress click animation listener.
+  private clickAnimationAbortController_: AbortController|null = null;
 
   // Position State for Magic Cursor (Logical Pixels)
   private currentX_: number = 0;
@@ -71,7 +75,7 @@ export class ActorOverlayAppElement extends CrLitElement {
 
   override connectedCallback() {
     super.connectedCallback();
-    const proxy = ActorOverlayBrowserProxy.getInstance();
+    const proxy = browserProxyFactory.getInstance();
     this.eventTracker_.add(this, 'pointerenter', () => {
       proxy.handler.onHoverStatusChanged(true);
     });
@@ -84,20 +88,22 @@ export class ActorOverlayAppElement extends CrLitElement {
     this.listenerIds_ = [
       // Background scrim
       proxy.callbackRouter.setScrimBackground.addListener(
-          this.setScrimBackground.bind(this)),
+          this.onSetScrimBackground_.bind(this)),
       // Border Glow
       proxy.callbackRouter.setBorderGlowVisibility.addListener(
-          this.setBorderGlowVisibility.bind(this)),
+          this.onSetBorderGlowVisibility_.bind(this)),
       // Magic Cursor
       proxy.callbackRouter.moveCursorTo.addListener(
-          this.moveCursorTo.bind(this)),
+          this.onMoveCursorTo_.bind(this)),
       proxy.callbackRouter.triggerClickAnimation.addListener(
-          this.triggerClickAnimation.bind(this)),
+          this.onTriggerClickAnimation_.bind(this)),
+      proxy.callbackRouter.setCursorChip.addListener(
+          this.onSetCursorChip_.bind(this)),
       // Theme
-      proxy.callbackRouter.setTheme.addListener(this.setTheme.bind(this)),
+      proxy.callbackRouter.setTheme.addListener(this.onSetTheme_.bind(this)),
     ];
     proxy.handler.getCurrentBorderGlowVisibility().then(
-        ({isVisible}) => this.setBorderGlowVisibility(isVisible));
+        ({isVisible}) => this.onSetBorderGlowVisibility_(isVisible));
   }
 
   override disconnectedCallback() {
@@ -105,7 +111,7 @@ export class ActorOverlayAppElement extends CrLitElement {
     this.eventTracker_.removeAll();
     this.removeEventListener('wheel', this.onWheelEvent_);
 
-    const proxy = ActorOverlayBrowserProxy.getInstance();
+    const proxy = browserProxyFactory.getInstance();
     this.listenerIds_.forEach(id => proxy.callbackRouter.removeListener(id));
     this.listenerIds_ = [];
     if (this.loadingTimerId_) {
@@ -116,6 +122,7 @@ export class ActorOverlayAppElement extends CrLitElement {
       clearTimeout(this.resizeTimerId_);
       this.resizeTimerId_ = null;
     }
+    this.cancelClickAnimation_();
   }
 
   // Prevents user scroll gestures (mouse wheel, touchpad) from moving the
@@ -139,16 +146,20 @@ export class ActorOverlayAppElement extends CrLitElement {
     }, 250);
   }
 
-  private setScrimBackground(isVisible: boolean) {
+  private onSetScrimBackground_(isVisible: boolean) {
     isVisible ? this.classList.add('background-visible') :
                 this.classList.remove('background-visible');
   }
 
-  private setBorderGlowVisibility(isVisible: boolean) {
+  private onSetBorderGlowVisibility_(isVisible: boolean) {
     this.borderGlowVisible_ = isVisible;
   }
 
-  private setTheme(theme: Theme) {
+  private onSetCursorChip_(text: string) {
+    this.cursorChipText_ = text;
+  }
+
+  private onSetTheme_(theme: Theme) {
     this.style.setProperty(
         '--actor-border-color', skColorToRgba(theme.borderColor));
     this.style.setProperty(
@@ -164,7 +175,21 @@ export class ActorOverlayAppElement extends CrLitElement {
         `drop-shadow(0px 3px 5px ${skColorToRgba(theme.magicCursorColor)})`);
   }
 
-  private async triggerClickAnimation(): Promise<void> {
+  private cancelClickAnimation_() {
+    if (this.clickAnimationAbortController_) {
+      this.clickAnimationAbortController_.abort();
+      this.clickAnimationAbortController_ = null;
+    }
+    const cursor = this.$.magicCursor;
+    if (cursor && cursor.classList.contains('clicking')) {
+      cursor.classList.remove('clicking');
+      // Force reflow so subsequent transform changes or re-adding 'clicking'
+      // take effect cleanly from the un-animated state.
+      void cursor.offsetWidth;
+    }
+  }
+
+  private async onTriggerClickAnimation_(): Promise<void> {
     const cursor = this.$.magicCursor;
     if (!cursor || !this.shouldShowCursor_ || !this.isCursorInitialized_) {
       return Promise.resolve();
@@ -175,24 +200,23 @@ export class ActorOverlayAppElement extends CrLitElement {
       this.loadingTimerId_ = null;
     }
 
+    this.cancelClickAnimation_();
+
     cursor.classList.remove('loading');
     cursor.style.setProperty('--cursor-x', `${Math.round(this.currentX_)}px`);
     cursor.style.setProperty('--cursor-y', `${Math.round(this.currentY_)}px`);
 
-    return new Promise((resolve) => {
-      const onAnimationEnd = () => {
-        cursor.classList.remove('clicking');
-        this.startLoadingTimer_();
-        resolve();
-      };
-      // TODO(crbug.com/454339982): If the animationed event is never triggered,
-      // we should resolve the callback with a false signal.
-      cursor.addEventListener('animationend', onAnimationEnd, {once: true});
-      cursor.classList.add('clicking');
-    });
+    this.clickAnimationAbortController_ = new AbortController();
+    cursor.addEventListener('animationend', () => {
+      this.clickAnimationAbortController_ = null;
+      cursor.classList.remove('clicking');
+      this.startLoadingTimer_();
+    }, {once: true, signal: this.clickAnimationAbortController_.signal});
+    cursor.classList.add('clicking');
+    return Promise.resolve();
   }
 
-  private moveCursorTo(point: Point): Promise<void> {
+  private onMoveCursorTo_(point: Point): Promise<void> {
     if (!this.$.magicCursor || !this.shouldShowCursor_) {
       return Promise.resolve();
     }
@@ -240,6 +264,8 @@ export class ActorOverlayAppElement extends CrLitElement {
       this.currentY_ = targetY;
       return Promise.resolve();
     }
+
+    this.cancelClickAnimation_();
 
     // If reduced motion is enabled, skip the movement animation and update
     // coordinates of cursor instantly to the target position.
@@ -302,6 +328,10 @@ export class ActorOverlayAppElement extends CrLitElement {
   setCursorTransform(drawX: number, drawY: number) {
     this.$.magicCursor.style.transform =
         `translate(${Math.round(drawX)}px, ${Math.round(drawY)}px)`;
+  }
+
+  getClickAnimationAbortSignal(): AbortSignal|null {
+    return this.clickAnimationAbortController_?.signal ?? null;
   }
 }
 

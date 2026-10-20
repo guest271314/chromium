@@ -10,12 +10,31 @@
 #include "base/functional/bind.h"
 #include "base/logging.h"
 #include "base/memory_coordinator/memory_coordinator_features.h"
+#include "base/memory_coordinator/traits.h"
 #include "base/memory_coordinator/utils.h"
 #include "base/task/sequenced_task_runner.h"
 #include "chromecast/browser/renderer_prelauncher.h"
 #include "content/public/browser/site_instance.h"
 
 namespace chromecast {
+
+namespace {
+
+constexpr base::MemoryConsumerTraits kLRURendererCacheTraits(
+    // Pools pre-launched renderer processes (tens of MBs each).
+    base::MemoryConsumerTraits::EstimatedMemoryUsage::kMedium,
+    // Process termination lets the OS to reclaim memory pages directly.
+    base::MemoryConsumerTraits::ReleaseMemoryDataAccess::kNone,
+    // Eviction results in a cold start, but no user state is lost.
+    base::MemoryConsumerTraits::InformationRetention::kLossless,
+    // Cleans up host objects synchronously on the browser main thread.
+    base::MemoryConsumerTraits::ExecutionType::kSynchronous,
+    // Cached memory resides out-of-process.
+    base::MemoryConsumerTraits::InProcess::kNo,
+    // Launching a replacement renderer processes is expensive.
+    base::MemoryConsumerTraits::RecreateMemoryCost::kExpensive);
+
+}  // namespace
 
 LRURendererCache::LRURendererCache(content::BrowserContext* browser_context,
                                    size_t max_renderers)
@@ -25,10 +44,9 @@ LRURendererCache::LRURendererCache(content::BrowserContext* browser_context,
       current_max_renderers_(max_renderers),
       memory_consumer_registration_(
           "LRURendererCache",
-          std::nullopt,  // TODO(b/489671163): Fix traits.
+          kLRURendererCacheTraits,
           this,
-          base::MemoryConsumerRegistration::CheckUnregister::kDisabled,
-          base::MemoryConsumerRegistration::CheckRegistryExists::kDisabled),
+          base::MemoryConsumerRegistration::CheckUnregister::kDisabled),
       weak_factory_(this) {
   DCHECK(browser_context_);
   // Ensure any already assigned memory limit is honored.
@@ -122,8 +140,7 @@ void LRURendererCache::OnUpdateMemoryLimit() {
     // preventing growth without triggering immediate eviction.
     // The target size is calculated by scaling the baseline maximum
     // |max_renderers_basis_| by the memory allocation ratio.
-    size_t target_size =
-        base::ScaleByMemoryLimit(max_renderers_basis_, memory_limit());
+    size_t target_size = memory_limit().Scale(max_renderers_basis_);
     current_max_renderers_ =
         std::max(in_use_count_ + cache_.size(), target_size);
   }
@@ -131,10 +148,9 @@ void LRURendererCache::OnUpdateMemoryLimit() {
 
 void LRURendererCache::OnReleaseMemory() {
   if (base::FeatureList::IsEnabled(base::kStatefulMemoryPressure)) {
-    current_max_renderers_ =
-        base::ScaleByMemoryLimit(max_renderers_basis_, memory_limit());
+    current_max_renderers_ = memory_limit().Scale(max_renderers_basis_);
     EvictCache();
-  } else if (memory_limit_ratio() <= base::kCriticalMemoryPressureThreshold) {
+  } else if (memory_limit() <= base::kCriticalMemoryPressureThreshold) {
     DLOG(INFO) << "Dropping prelauncher cache due to memory coordinator "
                   "notification.";
     cache_.clear();

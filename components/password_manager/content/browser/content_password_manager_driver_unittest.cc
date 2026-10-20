@@ -12,6 +12,7 @@
 #include "base/memory/raw_ptr.h"
 #include "base/run_loop.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/test/gmock_callback_support.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
 #include "components/autofill/content/common/mojom/autofill_agent.mojom.h"
@@ -54,7 +55,7 @@ namespace {
 
 class MockLogManager : public autofill::StubLogManager {
  public:
-  MOCK_METHOD(bool, IsLoggingActive, (), (const override));
+  MOCK_METHOD(bool, IsLoggingActive, (), (const, override));
 };
 
 class MockPasswordManagerClient : public StubPasswordManagerClient {
@@ -66,7 +67,7 @@ class MockPasswordManagerClient : public StubPasswordManagerClient {
   ~MockPasswordManagerClient() override = default;
 
   MOCK_METHOD(autofill::LogManager*, GetCurrentLogManager, (), (override));
-  MOCK_METHOD(PasswordManager*, GetPasswordManager, (), (const override));
+  MOCK_METHOD(PasswordManager*, GetPasswordManager, (), (const, override));
 #if BUILDFLAG(SAFE_BROWSING_DB_LOCAL)
   MOCK_METHOD(void,
               CheckSafeBrowsingReputation,
@@ -212,19 +213,20 @@ PasswordFormFillData GetTestPasswordFormFillData() {
   StoredCredential preferred_match;
   preferred_match.url = GURL("https://foo.com/");
   preferred_match.username_value = u"test@gmail.com";
-  preferred_match.password_value = u"test";
+  preferred_match.password_value = password_manager::PasswordString(u"test");
   preferred_match.signon_realm = "https://foo.com/";
   preferred_match.scheme = PasswordForm::Scheme::kHtml;
-  preferred_match.match_type = PasswordForm::MatchType::kExact;
+  preferred_match.match_type = affiliations::MatchType::kExact;
 
   std::vector<StoredCredential> matches;
   StoredCredential non_preferred_match;
   non_preferred_match.url = GURL("https://foo.com/");
   non_preferred_match.username_value = u"test1@gmail.com";
-  non_preferred_match.password_value = u"test1";
+  non_preferred_match.password_value =
+      password_manager::PasswordString(u"test1");
   non_preferred_match.signon_realm = "https://foo.com/";
   non_preferred_match.scheme = PasswordForm::Scheme::kHtml;
-  non_preferred_match.match_type = PasswordForm::MatchType::kPSL;
+  non_preferred_match.match_type = affiliations::MatchType::kPSL;
   matches.push_back(std::move(non_preferred_match));
 
   url::Origin page_origin = url::Origin::Create(GURL("https://foo.com/"));
@@ -268,11 +270,13 @@ class ContentPasswordManagerDriverTest
 
   bool WasLoggingActivationMessageSent(bool* activation_flag) {
     base::RunLoop().RunUntilIdle();
-    if (!fake_agent_.called_set_logging_state())
+    if (!fake_agent_.called_set_logging_state()) {
       return false;
+    }
 
-    if (activation_flag)
+    if (activation_flag) {
       *activation_flag = fake_agent_.logging_state_active();
+    }
     fake_agent_.reset_data();
     return true;
   }
@@ -438,58 +442,6 @@ TEST_F(ContentPasswordManagerDriverURLTest, PasswordFormCleared) {
   driver()->PasswordFormCleared(form);
 }
 
-class ContentPasswordManagerDriverFencedFramesTest
-    : public ContentPasswordManagerDriverTest {
- public:
-  ContentPasswordManagerDriverFencedFramesTest() {
-    scoped_feature_list_.InitAndEnableFeatureWithParameters(
-        blink::features::kFencedFrames, {{"implementation_type", "mparch"}});
-  }
-  ~ContentPasswordManagerDriverFencedFramesTest() override = default;
-
- private:
-  base::test::ScopedFeatureList scoped_feature_list_;
-};
-
-TEST_F(ContentPasswordManagerDriverFencedFramesTest,
-       SetFrameAndFormMetaDataOfForm) {
-  NavigateAndCommit(GURL("https://test.org"));
-
-  std::unique_ptr<ContentPasswordManagerDriver> driver(
-      new ContentPasswordManagerDriver(main_rfh(), &password_manager_client_));
-
-  content::RenderFrameHost* fenced_frame_root =
-      content::RenderFrameHostTester::For(main_rfh())->AppendFencedFrame();
-
-  // Navigate a fenced frame.
-  GURL fenced_frame_url = GURL("https://hostname/path?query#hash");
-  std::unique_ptr<content::NavigationSimulator> navigation_simulator =
-      content::NavigationSimulator::CreateRendererInitiated(fenced_frame_url,
-                                                            fenced_frame_root);
-  navigation_simulator->Commit();
-  fenced_frame_root = navigation_simulator->GetFinalRenderFrameHost();
-
-  autofill::FormData initial_form;
-  autofill::FormData form_in_fenced_frame =
-      GetFormWithFrameAndFormMetaData(fenced_frame_root, initial_form);
-
-  // Verify all form data that are filled from a fenced frame's render frame
-  // host, not from the primary main frame.
-  EXPECT_EQ(
-      form_in_fenced_frame.host_frame(),
-      autofill::LocalFrameToken(fenced_frame_root->GetFrameToken().value()));
-  EXPECT_EQ(form_in_fenced_frame.url(), GURL("https://hostname/path"));
-  EXPECT_EQ(form_in_fenced_frame.full_url(),
-            GURL("https://hostname/path?query#hash"));
-
-  EXPECT_EQ(form_in_fenced_frame.main_frame_origin(),
-            fenced_frame_root->GetLastCommittedOrigin());
-  EXPECT_NE(form_in_fenced_frame.main_frame_origin(),
-            web_contents()->GetPrimaryMainFrame()->GetLastCommittedOrigin());
-  EXPECT_EQ(form_in_fenced_frame.main_frame_origin(),
-            url::Origin::CreateFromNormalizedTuple("https", "hostname", 443));
-}
-
 TEST_F(ContentPasswordManagerDriverTest,
        PasswordAutofillDisabledOnCredentiallessIframe) {
   NavigateAndCommit(GURL("https://test.org"));
@@ -559,6 +511,16 @@ TEST_F(ContentPasswordManagerDriverTest, HasCrossOriginAncestor) {
 
   ContentPasswordManagerDriver mid_driver(mid_rfh, &password_manager_client_);
   EXPECT_TRUE(mid_driver.HasCrossOriginAncestor());
+}
+
+TEST_F(ContentPasswordManagerDriverTest, FillIntoFocusedField) {
+  base::RunLoop run_loop;
+  ContentPasswordManagerDriver driver(main_rfh(), &password_manager_client_);
+  EXPECT_CALL(fake_agent_,
+              FillIntoFocusedField(true, std::u16string(u"secret")))
+      .WillOnce(base::test::RunClosure(run_loop.QuitClosure()));
+  driver.FillIntoFocusedField(/*is_password=*/true, u"secret");
+  run_loop.Run();
 }
 
 }  // namespace password_manager

@@ -4,6 +4,7 @@
 
 package org.chromium.android_webview.test;
 
+import android.annotation.SuppressLint;
 import android.graphics.Bitmap;
 import android.util.Pair;
 
@@ -24,6 +25,7 @@ import org.chromium.android_webview.AwSettings;
 import org.chromium.android_webview.AwWebResourceRequest;
 import org.chromium.android_webview.test.util.CommonResources;
 import org.chromium.base.test.util.Feature;
+import org.chromium.base.test.util.HistogramWatcher;
 import org.chromium.components.embedder_support.util.WebResourceResponseInfo;
 import org.chromium.content_public.browser.WebContents;
 import org.chromium.content_public.browser.test.util.HistoryUtils;
@@ -38,6 +40,7 @@ import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.nio.charset.Charset;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
 
 /**
  * Tests for the {@link android.webkit.WebView#loadDataWithBaseURL(String, String, String, String,
@@ -89,7 +92,6 @@ public class LoadDataWithBaseUrlTest extends AwParameterizedTest {
     private static final String SCRIPT_LOADED = "Loaded";
     private static final String SCRIPT_NOT_LOADED = "Not loaded";
     private static final String SCRIPT_JS = "script_was_loaded = true;";
-    private static final String SIMPLE_HTML = "<html><body></body></html>";
 
     private String getScriptFileTestPageHtml(final String scriptUrl) {
         return "<html>"
@@ -534,6 +536,109 @@ public class LoadDataWithBaseUrlTest extends AwParameterizedTest {
         }
     }
 
+    @Test
+    @SmallTest
+    @Feature({"AndroidWebView"})
+    public void testLoadDataWithBaseUrlRecordsFileAccessDestinationHistogram() throws Throwable {
+        AwSettings contentSettings = mActivityTestRule.getAwSettingsOnUiThread(mAwContents);
+        contentSettings.setImagesEnabled(true);
+        contentSettings.setJavaScriptEnabled(true);
+
+        String histogramName = "Android.WebView.LoadDataWithBaseUrl.FileAccessDestination";
+        // RequestDestination.IMAGE is 8 (defined in services/network/public/mojom/fetch_api.mojom)
+        int destinationImage = 8;
+        String nonDataBaseUrl = "http://example.com";
+        String dataBaseUrl = "data:text/html,";
+
+        // Loading with a non-data base URL that loads two local images should record
+        // the IMAGE destination exactly once for the page load.
+        var watcher = HistogramWatcher.newSingleRecordWatcher(histogramName, destinationImage);
+        String imageLoaded = "LOADED";
+        String htmlWithTwoImages =
+                "<html><body>"
+                        + "<img src=\"file:///android_asset/asset_icon.png\" "
+                        + "onload=\"document.title=\'"
+                        + imageLoaded
+                        + "\';\" />"
+                        + "<img src=\"file:///android_res/raw/resource_icon.png\" />"
+                        + "</body></html>";
+        loadDataWithBaseUrlSync(htmlWithTwoImages, "text/html", false, nonDataBaseUrl, null);
+        AwActivityTestRule.pollInstrumentationThread(
+                () -> imageLoaded.equals(mActivityTestRule.getTitleOnUiThread(mAwContents)));
+        watcher.assertExpected();
+
+        // Loading with a data: base URL should not record the histogram because its origin
+        // is opaque/data: and local access is blocked.
+        var noRecordsWatcher = HistogramWatcher.newBuilder().expectNoRecords(histogramName).build();
+        loadDataWithBaseUrlSync(htmlWithTwoImages, "text/html", false, dataBaseUrl, null);
+        noRecordsWatcher.assertExpected();
+    }
+
+    @Test
+    @SmallTest
+    @Feature({"AndroidWebView"})
+    public void testLoadDataWithBaseUrlRecordsContentAccessDestinationHistogram() throws Throwable {
+        AwSettings contentSettings = mActivityTestRule.getAwSettingsOnUiThread(mAwContents);
+        contentSettings.setImagesEnabled(true);
+        contentSettings.setJavaScriptEnabled(true);
+
+        String histogramName = "Android.WebView.LoadDataWithBaseUrl.ContentAccessDestination";
+        int destinationImage = 8;
+        String nonDataBaseUrl = "http://example.com";
+        String contentImageUrl = TestContentProvider.createContentUrl("image");
+
+        var watcher = HistogramWatcher.newSingleRecordWatcher(histogramName, destinationImage);
+        String imageLoaded = "LOADED";
+        String htmlWithTwoContentImages =
+                "<html><body>"
+                        + "<img src=\""
+                        + contentImageUrl
+                        + "\" "
+                        + "onload=\"document.title=\'"
+                        + imageLoaded
+                        + "\';\" />"
+                        + "<img src=\""
+                        + contentImageUrl
+                        + "\" />"
+                        + "</body></html>";
+        loadDataWithBaseUrlSync(
+                htmlWithTwoContentImages, "text/html", false, nonDataBaseUrl, null);
+        AwActivityTestRule.pollInstrumentationThread(
+                () -> imageLoaded.equals(mActivityTestRule.getTitleOnUiThread(mAwContents)));
+        watcher.assertExpected();
+    }
+
+    @Test
+    @SmallTest
+    @Feature({"AndroidWebView"})
+    public void testLoadDataWithBaseUrlTopLevelNavigationRecordsDocumentDestination()
+            throws Throwable {
+        AwSettings contentSettings = mActivityTestRule.getAwSettingsOnUiThread(mAwContents);
+        contentSettings.setJavaScriptEnabled(true);
+
+        String contentHistogramName = "Android.WebView.LoadDataWithBaseUrl.ContentAccessDestination";
+        // RequestDestination.DOCUMENT is 3 (defined in services/network/public/mojom/fetch_api.mojom)
+        int destinationDocument = 3;
+        String nonDataBaseUrl = "http://example.com";
+        String targetContentUrl = TestContentProvider.createContentUrl("target");
+
+        var watcher =
+                HistogramWatcher.newSingleRecordWatcher(contentHistogramName, destinationDocument);
+
+        TestCallbackHelperContainer.OnPageFinishedHelper onPageFinishedHelper =
+                mContentsClient.getOnPageFinishedHelper();
+        int currentCallCount = onPageFinishedHelper.getCallCount();
+
+        String htmlWithScript =
+                "<html><body><script>location.href = '"
+                        + targetContentUrl
+                        + "';</script></body></html>";
+        loadDataWithBaseUrlSync(htmlWithScript, "text/html", false, nonDataBaseUrl, null);
+        onPageFinishedHelper.waitForCallback(currentCallCount, 1);
+
+        watcher.assertExpected();
+    }
+
     /** Disallowed from running on Svelte devices due to OOM errors: crbug.com/598013 */
     @Test
     @SmallTest
@@ -558,6 +663,60 @@ public class LoadDataWithBaseUrlTest extends AwParameterizedTest {
                         mAwContents, mContentsClient, "window.gotToEndOfBody"));
     }
 
+    @SuppressLint("SetJavaScriptEnabled")
+    @Test
+    @SmallTest
+    @Feature({"AndroidWebView"})
+    public void testOnPageFinishedBaseUrlSpoof() throws Throwable {
+        CountDownLatch stallLatch = new CountDownLatch(1);
+        try (TestWebServer webServer = TestWebServer.start();
+                TestWebServer stallServer = TestWebServer.startAdditional()) {
+            try {
+                stallServer.setResponseWithRunnableAction(
+                        "/stall",
+                        "<html><body>stalled</body></html>",
+                        java.util.Collections.emptyList(),
+                        () -> {
+                            try {
+                                stallLatch.await();
+                            } catch (InterruptedException e) {
+                            }
+                        });
+                String maliciousUrl =
+                        webServer.setResponse(
+                                "/evil.html",
+                                "<html><body>malicious</body></html>",
+                                java.util.Collections.emptyList());
+
+                final String trustedBaseUrl = "https://trusted.example/";
+                final String pageHtml =
+                        "<html><body>"
+                                + "<img src='"
+                                + stallServer.getBaseUrl()
+                                + "stall'>"
+                                + "<script>setTimeout(() => { location.href = '"
+                                + maliciousUrl
+                                + "'; }, 100);</script>"
+                                + "</body></html>";
+
+                mActivityTestRule.getAwSettingsOnUiThread(mAwContents).setJavaScriptEnabled(true);
+
+                TestCallbackHelperContainer.OnPageFinishedHelper onPageFinishedHelper =
+                        mContentsClient.getOnPageFinishedHelper();
+                int callCount = onPageFinishedHelper.getCallCount();
+
+                mActivityTestRule.loadDataWithBaseUrlAsync(
+                        mAwContents, pageHtml, "text/html", false, trustedBaseUrl, null);
+
+                onPageFinishedHelper.waitForCallback(callCount, 2);
+                Assert.assertEquals(maliciousUrl, onPageFinishedHelper.getUrl());
+            } finally {
+                stallLatch.countDown();
+            }
+        }
+    }
+
+    @SuppressLint("SetJavaScriptEnabled")
     @Test
     @SmallTest
     @Feature({"AndroidWebView"})
@@ -567,29 +726,47 @@ public class LoadDataWithBaseUrlTest extends AwParameterizedTest {
         // inside NavigationController.
         final String pageHtml = "<html><body>Hello, world!</body></html>";
         final String baseUrl = "http://example.com/";
+        mActivityTestRule.getAwSettingsOnUiThread(mAwContents).setJavaScriptEnabled(true);
         final TestCallbackHelperContainer.OnPageFinishedHelper onPageFinishedHelper =
                 mContentsClient.getOnPageFinishedHelper();
         final int callCount = onPageFinishedHelper.getCallCount();
-        mActivityTestRule.loadDataWithBaseUrlAsync(
-                mAwContents, pageHtml, "text/html", false, baseUrl, null);
-        mActivityTestRule.loadUrlAsync(mAwContents, "javascript:42+42");
+
+        InstrumentationRegistry.getInstrumentation()
+                .runOnMainSync(
+                        () -> {
+                            mAwContents.loadDataWithBaseURL(
+                                    baseUrl, pageHtml, "text/html", "utf-8", null);
+                            // The UI thread does not yield, so the commit IPC cannot be processed.
+                            // This guarantees the javascript URL hits the pending entry.
+                            mAwContents.loadUrl("javascript:42+42");
+                        });
+
         onPageFinishedHelper.waitForCallback(callCount);
         Assert.assertEquals(baseUrl, onPageFinishedHelper.getUrl());
     }
 
+    @SuppressLint("SetJavaScriptEnabled")
     @Test
     @SmallTest
     @Feature({"AndroidWebView"})
     public void testOnPageFinishedWithInvalidBaseUrlWhenInterrupted() throws Throwable {
         final String pageHtml = CommonResources.ABOUT_HTML;
         final String invalidBaseUrl = "http://";
+        mActivityTestRule.getAwSettingsOnUiThread(mAwContents).setJavaScriptEnabled(true);
         final TestCallbackHelperContainer.OnPageFinishedHelper onPageFinishedHelper =
                 mContentsClient.getOnPageFinishedHelper();
         final int callCount = onPageFinishedHelper.getCallCount();
-        mActivityTestRule.getAwSettingsOnUiThread(mAwContents).setJavaScriptEnabled(true);
-        mActivityTestRule.loadDataWithBaseUrlAsync(
-                mAwContents, pageHtml, "text/html", false, invalidBaseUrl, null);
-        mActivityTestRule.loadUrlAsync(mAwContents, "javascript:42+42");
+
+        InstrumentationRegistry.getInstrumentation()
+                .runOnMainSync(
+                        () -> {
+                            mAwContents.loadDataWithBaseURL(
+                                    invalidBaseUrl, pageHtml, "text/html", "utf-8", null);
+                            // The UI thread does not yield, so the commit IPC cannot be processed.
+                            // This guarantees the javascript URL hits the pending entry.
+                            mAwContents.loadUrl("javascript:42+42");
+                        });
+
         onPageFinishedHelper.waitForCallback(callCount);
         // Verify that the load succeeds. The actual base url is undefined.
         Assert.assertEquals(

@@ -9,26 +9,47 @@
 #include "components/viz/common/surfaces/tracked_element_rects.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/blink/public/mojom/webpreferences/web_preferences.mojom-blink.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_keyboard_event_init.h"
+#include "third_party/blink/renderer/bindings/core/v8/v8_wheel_event_init.h"
+#include "third_party/blink/renderer/core/css/css_property_names.h"
+#include "third_party/blink/renderer/core/css_value_keywords.h"
 #include "third_party/blink/renderer/core/dom/document.h"
+#include "third_party/blink/renderer/core/dom/element_traversal.h"
+#include "third_party/blink/renderer/core/dom/events/native_event_listener.h"
 #include "third_party/blink/renderer/core/dom/shadow_root.h"
+#include "third_party/blink/renderer/core/event_type_names.h"
 #include "third_party/blink/renderer/core/events/keyboard_event.h"
+#include "third_party/blink/renderer/core/events/wheel_event.h"
 #include "third_party/blink/renderer/core/fileapi/file_list.h"
+#include "third_party/blink/renderer/core/frame/event_handler_registry.h"
 #include "third_party/blink/renderer/core/frame/local_frame.h"
 #include "third_party/blink/renderer/core/frame/local_frame_view.h"
+#include "third_party/blink/renderer/core/frame/settings.h"
 #include "third_party/blink/renderer/core/frame/visual_viewport.h"
 #include "third_party/blink/renderer/core/html/forms/date_time_chooser.h"
+#include "third_party/blink/renderer/core/html/forms/date_time_chooser_client.h"
 #include "third_party/blink/renderer/core/html/forms/file_input_type.h"
 #include "third_party/blink/renderer/core/html/forms/html_form_element.h"
 #include "third_party/blink/renderer/core/html/forms/html_option_element.h"
+#include "third_party/blink/renderer/core/html/forms/listed_element.h"
+#include "third_party/blink/renderer/core/html/forms/spin_button_element.h"
 #include "third_party/blink/renderer/core/html/html_body_element.h"
+#include "third_party/blink/renderer/core/html/html_div_element.h"
 #include "third_party/blink/renderer/core/html/html_html_element.h"
+#include "third_party/blink/renderer/core/html/shadow/shadow_element_names.h"
+#include "third_party/blink/renderer/core/html_names.h"
 #include "third_party/blink/renderer/core/input_type_names.h"
 #include "third_party/blink/renderer/core/layout/layout_object.h"
 #include "third_party/blink/renderer/core/loader/empty_clients.h"
+#include "third_party/blink/renderer/core/page/focus_controller.h"
+#include "third_party/blink/renderer/core/page/page.h"
+#include "third_party/blink/renderer/core/script/classic_script.h"
+#include "third_party/blink/renderer/core/style/computed_style.h"
 #include "third_party/blink/renderer/core/testing/null_execution_context.h"
 #include "third_party/blink/renderer/core/testing/page_test_base.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
+#include "third_party/blink/renderer/platform/heap/member.h"
 #include "third_party/blink/renderer/platform/testing/runtime_enabled_features_test_helpers.h"
 
 using ::testing::Truly;
@@ -45,13 +66,99 @@ class PasswordResetChromeClient : public EmptyChromeClient {
               (override));
 };
 
+class RecordingDateTimeChooser final : public DateTimeChooser {
+ public:
+  explicit RecordingDateTimeChooser(DateTimeChooserClient* client)
+      : client_(client) {}
+
+  void EndChooser() override {
+    if (!visible_) {
+      return;
+    }
+    ++end_count_;
+    visible_ = false;
+    if (focus_on_end_) {
+      focus_on_end_->Focus();
+    }
+    client_->DidEndChooser();
+  }
+  AXObject* RootAXObject(Element*) override { return nullptr; }
+  bool IsPickerVisible() const override { return visible_; }
+  void Trace(Visitor* visitor) const override {
+    visitor->Trace(client_);
+    visitor->Trace(focus_on_end_);
+    DateTimeChooser::Trace(visitor);
+  }
+
+  void SetFocusOnEnd(Element& element) { focus_on_end_ = &element; }
+  int end_count() const { return end_count_; }
+
+ private:
+  Member<DateTimeChooserClient> client_;
+  Member<Element> focus_on_end_;
+  int end_count_ = 0;
+  bool visible_ = true;
+};
+
 class HTMLInputElementTestChromeClient : public EmptyChromeClient {
  public:
+  void EnableRecordingDateTimeChooser() { record_date_time_chooser_ = true; }
+  RecordingDateTimeChooser* chooser() const { return chooser_.Get(); }
+
+  DateTimeChooser* OpenDateTimeChooser(
+      LocalFrame* frame,
+      DateTimeChooserClient* client,
+      const DateTimeChooserParameters& parameters) override {
+    if (!record_date_time_chooser_) {
+      return EmptyChromeClient::OpenDateTimeChooser(frame, client, parameters);
+    }
+    chooser_ = MakeGarbageCollected<RecordingDateTimeChooser>(client);
+    return chooser_.Get();
+  }
   gfx::Rect LocalRootToScreenDIPs(const gfx::Rect& local_root_rect,
                                   const LocalFrameView* view) const override {
     return view->GetPage()->GetVisualViewport().RootFrameToViewport(
         local_root_rect);
   }
+  void Trace(Visitor* visitor) const override {
+    visitor->Trace(chooser_);
+    ChromeClient::Trace(visitor);
+  }
+
+ private:
+  Member<RecordingDateTimeChooser> chooser_;
+  bool record_date_time_chooser_ = false;
+};
+
+class BlurEventCounter final : public NativeEventListener {
+ public:
+  void Invoke(ExecutionContext*, Event*) override { ++count_; }
+  int count() const { return count_; }
+
+ private:
+  int count_ = 0;
+};
+
+class FocusOnBlurListener final : public NativeEventListener {
+ public:
+  explicit FocusOnBlurListener(HTMLInputElement& target) : target_(&target) {}
+
+  void Invoke(ExecutionContext*, Event*) override {
+    // A second blur must not turn a refocus handler into an infinite loop.
+    if (did_focus_) {
+      return;
+    }
+    did_focus_ = true;
+    target_->Focus();
+  }
+  void Trace(Visitor* visitor) const override {
+    visitor->Trace(target_);
+    NativeEventListener::Trace(visitor);
+  }
+
+ private:
+  Member<HTMLInputElement> target_;
+  bool did_focus_ = false;
 };
 
 }  // namespace
@@ -68,6 +175,11 @@ class HTMLInputElementTest : public PageTestBase {
     Element* element = GetDocument().getElementById(AtomicString("test"));
     DCHECK(element);
     return To<HTMLInputElement>(*element);
+  }
+
+  HTMLInputElementTestChromeClient& TestChromeClient() {
+    return static_cast<HTMLInputElementTestChromeClient&>(
+        GetPage().GetChromeClient());
   }
 };
 
@@ -152,6 +264,39 @@ TEST_F(HTMLInputElementTest, FilteredDataListOptionsDynamicContain) {
   EXPECT_EQ("Hozelock Auto Reel 40m - 2595", options[3]->value().Utf8());
 }
 
+TEST_F(HTMLInputElementTest, FilteredDataListOptionsCaseFoldingSharpS) {
+  // Datalist option has Eszett ("ß"), and we want to match it with "ß" input.
+  // The bug was that typing "ß" (8-bit) matched the option, but copy-pasting
+  // "ß" (16-bit) did not (see crbug.com/493179860 for more details).
+
+  // Case A (Simulating Typing): Input is "ß" (8-bit), Option is "ß" (8-bit).
+  // They both fold to "ß" (pre-fix) or both to "ss" (post-fix), so they match.
+  GetDocument().documentElement()->SetInnerHTMLWithoutTrustedTypes(R"HTML(
+    <input id=test value="&#xDF;" list=dl_sharps>
+    <datalist id=dl_sharps>
+      <option>&#xDF;</option>
+    </datalist>
+  )HTML");
+  auto options = TestElement().FilteredDataListOptions();
+  EXPECT_EQ(1u, options.size());
+  EXPECT_EQ(0xDF, options[0]->value()[0]);
+
+  // Case B (Simulating Pasting): Input is "ß" (forced 16-bit), Option is "ß"
+  // (8-bit). Previously, 16-bit input folded to "ss" but 8-bit option folded to
+  // "ß", resulting in no match. With the fix, both fold to "ss" and match.
+  GetDocument().documentElement()->SetInnerHTMLWithoutTrustedTypes(R"HTML(
+    <input id=test list=dl_sharps2>
+    <datalist id=dl_sharps2>
+      <option>&#xDF;</option>
+    </datalist>
+  )HTML");
+  const UChar sharps_16bit[] = {0xDF, 0};
+  TestElement().SetValue(String(sharps_16bit));
+  options = TestElement().FilteredDataListOptions();
+  EXPECT_EQ(1u, options.size());
+  EXPECT_EQ(0xDF, options[0]->value()[0]);
+}
+
 TEST_F(HTMLInputElementTest, create) {
   auto* input = MakeGarbageCollected<HTMLInputElement>(
       GetDocument(), CreateElementFlags::ByCreateElement());
@@ -232,8 +377,10 @@ TEST_F(HTMLInputElementTest, RadioKeyDownDCHECKFailure) {
   radio2.setAttribute(html_names::kStyleAttr, AtomicString("position:fixed"));
   KeyboardEventInit* init = KeyboardEventInit::Create();
   init->setKey(keywords::kArrowRight);
-  radio1.DefaultEventHandler(
-      *MakeGarbageCollected<KeyboardEvent>(event_type_names::kKeydown, init));
+  auto* event =
+      MakeGarbageCollected<KeyboardEvent>(event_type_names::kKeydown, init);
+  event->SetTrusted(true);
+  radio1.DispatchEvent(*event);
   EXPECT_EQ(GetDocument().ActiveElement(), &radio2);
 }
 
@@ -250,6 +397,388 @@ TEST_F(HTMLInputElementTest, DateTimeChooserSizeParamRespectsScale) {
   EXPECT_TRUE(success);
   EXPECT_EQ(InputType::Type::kDate, params.type);
   EXPECT_EQ(gfx::Rect(16, 16, 400, 100), params.anchor_rect_in_screen);
+}
+
+TEST_F(HTMLInputElementTest, TemporalInputBlurReleasesHostFocus) {
+  ScopedTemporalInputHostBlurForTest temporal_input_host_blur(true);
+  ScopedInputMultipleFieldsUIForTest multiple_fields(true);
+  ScopedInputMultipleFieldsUIWithPointerChecksForTest pointer_checks(true);
+  GetPage().GetFocusController().SetActive(true);
+  GetPage().GetFocusController().SetFocused(true);
+  GetFrame().GetSettings()->SetAvailablePointerTypes(
+      static_cast<int>(mojom::blink::PointerType::kPointerCoarseType));
+
+  for (const char* type : {"date", "datetime-local", "time", "month", "week"}) {
+    SCOPED_TRACE(type);
+    SetBodyContent("<input id=test>");
+    HTMLInputElement& input = TestElement();
+    input.setAttribute(html_names::kTypeAttr, AtomicString(type));
+    UpdateAllLifecyclePhasesForTest();
+
+    auto* blur_events = MakeGarbageCollected<BlurEventCounter>();
+    input.addEventListener(event_type_names::kBlur, blur_events);
+    ASSERT_FALSE(
+        GetDocument().body()->FastHasAttribute(html_names::kTabindexAttr));
+    input.Focus();
+    ASSERT_EQ(&input, GetDocument().FocusedElement());
+
+    input.blur();
+    EXPECT_NE(&input, GetDocument().FocusedElement());
+    EXPECT_EQ(1, blur_events->count());
+    EXPECT_FALSE(
+        GetDocument().body()->FastHasAttribute(html_names::kTabindexAttr));
+  }
+}
+
+TEST_F(HTMLInputElementTest, TemporalInputBlurPreservesHandlerFocus) {
+  ScopedTemporalInputHostBlurForTest temporal_input_host_blur(true);
+  ScopedInputMultipleFieldsUIForTest multiple_fields(true);
+  ScopedInputMultipleFieldsUIWithPointerChecksForTest pointer_checks(true);
+  GetPage().GetFocusController().SetActive(true);
+  GetPage().GetFocusController().SetFocused(true);
+  GetFrame().GetSettings()->SetAvailablePointerTypes(
+      static_cast<int>(mojom::blink::PointerType::kPointerCoarseType));
+  SetBodyContent("<input id=test type=date><input id=other>");
+
+  HTMLInputElement& input = TestElement();
+  auto& other = To<HTMLInputElement>(
+      *GetDocument().getElementById(AtomicString("other")));
+  auto* refocus = MakeGarbageCollected<FocusOnBlurListener>(other);
+  input.addEventListener(event_type_names::kBlur, refocus);
+  GetDocument().body()->setAttribute(html_names::kTabindexAttr,
+                                     AtomicString("7"));
+
+  input.Focus();
+  ASSERT_EQ(&input, GetDocument().FocusedElement());
+  input.blur();
+  EXPECT_EQ(&other, GetDocument().FocusedElement());
+  EXPECT_EQ(AtomicString("7"),
+            GetDocument().body()->FastGetAttribute(html_names::kTabindexAttr));
+}
+
+class HTMLInputElementTemporalBlurTest
+    : public HTMLInputElementTest,
+      public ::testing::WithParamInterface<bool> {};
+
+INSTANTIATE_TEST_SUITE_P(All,
+                         HTMLInputElementTemporalBlurTest,
+                         ::testing::Bool());
+
+TEST_P(HTMLInputElementTemporalBlurTest,
+       TemporalInputBlurReleasesFinePointerSubfield) {
+  ScopedTemporalInputHostBlurForTest temporal_input_host_blur(GetParam());
+  ScopedInputMultipleFieldsUIForTest multiple_fields(true);
+  ScopedInputMultipleFieldsUIWithPointerChecksForTest pointer_checks(true);
+  GetPage().GetFocusController().SetActive(true);
+  GetPage().GetFocusController().SetFocused(true);
+  GetFrame().GetSettings()->SetAvailablePointerTypes(
+      static_cast<int>(mojom::blink::PointerType::kPointerFineType));
+  SetBodyContent("<input id=test type=date>");
+
+  HTMLInputElement& input = TestElement();
+  ShadowRoot* shadow = input.UserAgentShadowRoot();
+  ASSERT_TRUE(shadow);
+  Element* edit = shadow->getElementById(shadow_element_names::kIdDateTimeEdit);
+  ASSERT_TRUE(edit);
+  Element* wrapper = ElementTraversal::FirstChild(*edit);
+  ASSERT_TRUE(wrapper);
+  Element* subfield = ElementTraversal::FirstChild(*wrapper);
+  ASSERT_TRUE(subfield);
+  auto* blur_events = MakeGarbageCollected<BlurEventCounter>();
+  subfield->addEventListener(event_type_names::kBlur, blur_events);
+  subfield->Focus();
+  ASSERT_EQ(subfield, GetDocument().FocusedElement());
+
+  input.blur();
+  EXPECT_NE(subfield, GetDocument().FocusedElement());
+  EXPECT_EQ(1, blur_events->count());
+}
+
+TEST_P(HTMLInputElementTemporalBlurTest,
+       TemporalInputBlurPreservesFinePointerRefocus) {
+  ScopedTemporalInputHostBlurForTest temporal_input_host_blur(GetParam());
+  ScopedInputMultipleFieldsUIForTest multiple_fields(true);
+  ScopedInputMultipleFieldsUIWithPointerChecksForTest pointer_checks(true);
+  GetPage().GetFocusController().SetActive(true);
+  GetPage().GetFocusController().SetFocused(true);
+  GetFrame().GetSettings()->SetAvailablePointerTypes(
+      static_cast<int>(mojom::blink::PointerType::kPointerFineType));
+  SetBodyContent("<input id=test type=date>");
+
+  HTMLInputElement& input = TestElement();
+  ShadowRoot* shadow = input.UserAgentShadowRoot();
+  ASSERT_TRUE(shadow);
+  Element* edit = shadow->getElementById(shadow_element_names::kIdDateTimeEdit);
+  ASSERT_TRUE(edit);
+  Element* wrapper = ElementTraversal::FirstChild(*edit);
+  ASSERT_TRUE(wrapper);
+  Element* subfield = ElementTraversal::FirstChild(*wrapper);
+  ASSERT_TRUE(subfield);
+
+  // A page can handle the composed focusout from a shadow field by focusing
+  // the temporal input again. That page-chosen focus must survive blur().
+  auto* refocus = MakeGarbageCollected<FocusOnBlurListener>(input);
+  input.addEventListener(event_type_names::kFocusout, refocus);
+  subfield->Focus();
+  ASSERT_EQ(subfield, GetDocument().FocusedElement());
+
+  input.blur();
+  EXPECT_EQ(&input, GetDocument().ActiveElement());
+  EXPECT_NE(nullptr, GetDocument().FocusedElement());
+}
+
+TEST_F(HTMLInputElementTest, TemporalInputBlurReleasesChooserOnlyFocus) {
+  ScopedTemporalInputHostBlurForTest temporal_input_host_blur(true);
+  ScopedInputMultipleFieldsUIWithPointerChecksForTest pointer_checks(false);
+  ScopedInputMultipleFieldsUIForTest multiple_fields(false);
+  GetPage().GetFocusController().SetActive(true);
+  GetPage().GetFocusController().SetFocused(true);
+  SetBodyContent("<input id=test type=date>");
+
+  HTMLInputElement& input = TestElement();
+  auto* blur_events = MakeGarbageCollected<BlurEventCounter>();
+  input.addEventListener(event_type_names::kBlur, blur_events);
+  input.Focus();
+  ASSERT_EQ(&input, GetDocument().FocusedElement());
+
+  input.blur();
+  EXPECT_NE(&input, GetDocument().FocusedElement());
+  EXPECT_EQ(1, blur_events->count());
+}
+
+TEST_F(HTMLInputElementTest, TemporalInputBlurClosesOpenMultipleFieldsPicker) {
+  ScopedTemporalInputHostBlurForTest temporal_input_host_blur(true);
+  ScopedInputMultipleFieldsUIForTest multiple_fields(true);
+  ScopedInputMultipleFieldsUIWithPointerChecksForTest pointer_checks(true);
+  GetPage().GetFocusController().SetActive(true);
+  GetPage().GetFocusController().SetFocused(true);
+  GetFrame().GetSettings()->SetAvailablePointerTypes(
+      static_cast<int>(mojom::blink::PointerType::kPointerCoarseType));
+  SetBodyContent("<input id=test type=date>");
+  UpdateAllLifecyclePhasesForTest();
+
+  HTMLInputElement& input = TestElement();
+  auto* blur_events = MakeGarbageCollected<BlurEventCounter>();
+  input.addEventListener(event_type_names::kBlur, blur_events);
+  input.Focus();
+  ASSERT_EQ(&input, GetDocument().FocusedElement());
+
+  TestChromeClient().EnableRecordingDateTimeChooser();
+  LocalFrame::NotifyUserActivation(
+      &GetFrame(), mojom::blink::UserActivationNotificationType::kInteraction);
+  input.showPicker(ASSERT_NO_EXCEPTION);
+  RecordingDateTimeChooser* chooser = TestChromeClient().chooser();
+  ASSERT_TRUE(chooser);
+  ASSERT_TRUE(input.IsPickerVisible());
+
+  input.blur();
+  EXPECT_EQ(1, chooser->end_count());
+  EXPECT_FALSE(input.IsPickerVisible());
+  EXPECT_NE(&input, GetDocument().FocusedElement());
+  EXPECT_EQ(1, blur_events->count());
+  EXPECT_FALSE(
+      GetDocument().body()->FastHasAttribute(html_names::kTabindexAttr));
+}
+
+TEST_P(HTMLInputElementTemporalBlurTest,
+       TemporalInputBlurPreservesChooserCloseFocus) {
+  ScopedTemporalInputHostBlurForTest temporal_input_host_blur(GetParam());
+  ScopedInputMultipleFieldsUIForTest multiple_fields(true);
+  ScopedInputMultipleFieldsUIWithPointerChecksForTest pointer_checks(true);
+  GetPage().GetFocusController().SetActive(true);
+  GetPage().GetFocusController().SetFocused(true);
+  GetFrame().GetSettings()->SetAvailablePointerTypes(
+      static_cast<int>(mojom::blink::PointerType::kPointerCoarseType));
+  SetBodyContent("<input id=test type=date><input id=other>");
+  UpdateAllLifecyclePhasesForTest();
+
+  HTMLInputElement& input = TestElement();
+  auto& other = To<HTMLInputElement>(
+      *GetDocument().getElementById(AtomicString("other")));
+  auto* blur_events = MakeGarbageCollected<BlurEventCounter>();
+  input.addEventListener(event_type_names::kBlur, blur_events);
+  GetDocument().body()->setAttribute(html_names::kTabindexAttr,
+                                     AtomicString("7"));
+  input.Focus();
+  ASSERT_EQ(&input, GetDocument().FocusedElement());
+
+  TestChromeClient().EnableRecordingDateTimeChooser();
+  LocalFrame::NotifyUserActivation(
+      &GetFrame(), mojom::blink::UserActivationNotificationType::kInteraction);
+  input.showPicker(ASSERT_NO_EXCEPTION);
+  RecordingDateTimeChooser* chooser = TestChromeClient().chooser();
+  ASSERT_TRUE(chooser);
+  ASSERT_TRUE(input.IsPickerVisible());
+  chooser->SetFocusOnEnd(other);
+
+  input.blur();
+  EXPECT_EQ(1, chooser->end_count());
+  EXPECT_FALSE(input.IsPickerVisible());
+  EXPECT_EQ(&other, GetDocument().FocusedElement());
+  EXPECT_EQ(1, blur_events->count());
+  EXPECT_EQ(AtomicString("7"),
+            GetDocument().body()->FastGetAttribute(html_names::kTabindexAttr));
+}
+
+TEST_P(HTMLInputElementTemporalBlurTest,
+       TemporalInputBlurPreservesChooserCloseShadowFocus) {
+  ScopedTemporalInputHostBlurForTest temporal_input_host_blur(GetParam());
+  ScopedInputMultipleFieldsUIForTest multiple_fields(true);
+  ScopedInputMultipleFieldsUIWithPointerChecksForTest pointer_checks(true);
+  GetPage().GetFocusController().SetActive(true);
+  GetPage().GetFocusController().SetFocused(true);
+  GetFrame().GetSettings()->SetAvailablePointerTypes(
+      static_cast<int>(mojom::blink::PointerType::kPointerCoarseType));
+  SetBodyContent("<input id=test type=date>");
+  UpdateAllLifecyclePhasesForTest();
+
+  HTMLInputElement& input = TestElement();
+  ShadowRoot* shadow = input.UserAgentShadowRoot();
+  ASSERT_TRUE(shadow);
+  Element* edit = shadow->getElementById(shadow_element_names::kIdDateTimeEdit);
+  ASSERT_TRUE(edit);
+  Element* wrapper = ElementTraversal::FirstChild(*edit);
+  ASSERT_TRUE(wrapper);
+  Element* subfield = ElementTraversal::FirstChild(*wrapper);
+  ASSERT_TRUE(subfield);
+  input.Focus();
+  ASSERT_EQ(&input, GetDocument().FocusedElement());
+
+  // A fine pointer can become available while the coarse-pointer host is
+  // focused. The chooser's close callback can then focus a shadow subfield.
+  GetFrame().GetSettings()->SetAvailablePointerTypes(
+      static_cast<int>(mojom::blink::PointerType::kPointerFineType));
+  ASSERT_TRUE(subfield->IsFocusable());
+  TestChromeClient().EnableRecordingDateTimeChooser();
+  LocalFrame::NotifyUserActivation(
+      &GetFrame(), mojom::blink::UserActivationNotificationType::kInteraction);
+  input.showPicker(ASSERT_NO_EXCEPTION);
+  RecordingDateTimeChooser* chooser = TestChromeClient().chooser();
+  ASSERT_TRUE(chooser);
+  ASSERT_TRUE(input.IsPickerVisible());
+  chooser->SetFocusOnEnd(*subfield);
+
+  input.blur();
+  EXPECT_EQ(1, chooser->end_count());
+  EXPECT_FALSE(input.IsPickerVisible());
+  EXPECT_EQ(subfield, GetDocument().FocusedElement());
+  EXPECT_EQ(&input, GetDocument().ActiveElement());
+}
+
+TEST_F(HTMLInputElementTest, TemporalInputBlurClosesOpenChooserOnlyPicker) {
+  ScopedTemporalInputHostBlurForTest temporal_input_host_blur(true);
+  ScopedInputMultipleFieldsUIWithPointerChecksForTest pointer_checks(false);
+  ScopedInputMultipleFieldsUIForTest multiple_fields(false);
+  GetPage().GetFocusController().SetActive(true);
+  GetPage().GetFocusController().SetFocused(true);
+  SetBodyContent("<input id=test type=date>");
+  UpdateAllLifecyclePhasesForTest();
+
+  HTMLInputElement& input = TestElement();
+  auto* blur_events = MakeGarbageCollected<BlurEventCounter>();
+  input.addEventListener(event_type_names::kBlur, blur_events);
+  input.Focus();
+  ASSERT_EQ(&input, GetDocument().FocusedElement());
+
+  TestChromeClient().EnableRecordingDateTimeChooser();
+  LocalFrame::NotifyUserActivation(
+      &GetFrame(), mojom::blink::UserActivationNotificationType::kInteraction);
+  input.showPicker(ASSERT_NO_EXCEPTION);
+  RecordingDateTimeChooser* chooser = TestChromeClient().chooser();
+  ASSERT_TRUE(chooser);
+  ASSERT_TRUE(input.IsPickerVisible());
+
+  input.blur();
+  EXPECT_EQ(1, chooser->end_count());
+  EXPECT_FALSE(input.IsPickerVisible());
+  EXPECT_NE(&input, GetDocument().FocusedElement());
+  EXPECT_EQ(1, blur_events->count());
+  EXPECT_FALSE(
+      GetDocument().body()->FastHasAttribute(html_names::kTabindexAttr));
+}
+
+TEST_F(HTMLInputElementTest,
+       TemporalInputBlurDisabledPreservesMultipleFieldsHostFocus) {
+  ScopedTemporalInputHostBlurForTest temporal_input_host_blur(false);
+  ScopedInputMultipleFieldsUIForTest multiple_fields(true);
+  ScopedInputMultipleFieldsUIWithPointerChecksForTest pointer_checks(true);
+  GetPage().GetFocusController().SetActive(true);
+  GetPage().GetFocusController().SetFocused(true);
+  GetFrame().GetSettings()->SetAvailablePointerTypes(
+      static_cast<int>(mojom::blink::PointerType::kPointerCoarseType));
+
+  for (bool open_picker : {false, true}) {
+    SCOPED_TRACE(open_picker);
+    SetBodyContent("<input id=test type=date>");
+    UpdateAllLifecyclePhasesForTest();
+
+    HTMLInputElement& input = TestElement();
+    auto* blur_events = MakeGarbageCollected<BlurEventCounter>();
+    input.addEventListener(event_type_names::kBlur, blur_events);
+    input.Focus();
+    ASSERT_EQ(&input, GetDocument().FocusedElement());
+
+    RecordingDateTimeChooser* chooser = nullptr;
+    if (open_picker) {
+      TestChromeClient().EnableRecordingDateTimeChooser();
+      LocalFrame::NotifyUserActivation(
+          &GetFrame(),
+          mojom::blink::UserActivationNotificationType::kInteraction);
+      input.showPicker(ASSERT_NO_EXCEPTION);
+      chooser = TestChromeClient().chooser();
+      ASSERT_TRUE(chooser);
+      ASSERT_TRUE(input.IsPickerVisible());
+    }
+
+    input.blur();
+    EXPECT_EQ(&input, GetDocument().FocusedElement());
+    EXPECT_EQ(0, blur_events->count());
+    EXPECT_FALSE(input.IsPickerVisible());
+    if (chooser) {
+      EXPECT_EQ(1, chooser->end_count());
+    }
+  }
+}
+
+TEST_F(HTMLInputElementTest,
+       TemporalInputBlurDisabledPreservesChooserOnlyHostFocus) {
+  ScopedTemporalInputHostBlurForTest temporal_input_host_blur(false);
+  ScopedInputMultipleFieldsUIWithPointerChecksForTest pointer_checks(false);
+  ScopedInputMultipleFieldsUIForTest multiple_fields(false);
+  GetPage().GetFocusController().SetActive(true);
+  GetPage().GetFocusController().SetFocused(true);
+
+  for (bool open_picker : {false, true}) {
+    SCOPED_TRACE(open_picker);
+    SetBodyContent("<input id=test type=date>");
+    UpdateAllLifecyclePhasesForTest();
+
+    HTMLInputElement& input = TestElement();
+    auto* blur_events = MakeGarbageCollected<BlurEventCounter>();
+    input.addEventListener(event_type_names::kBlur, blur_events);
+    input.Focus();
+    ASSERT_EQ(&input, GetDocument().FocusedElement());
+
+    RecordingDateTimeChooser* chooser = nullptr;
+    if (open_picker) {
+      TestChromeClient().EnableRecordingDateTimeChooser();
+      LocalFrame::NotifyUserActivation(
+          &GetFrame(),
+          mojom::blink::UserActivationNotificationType::kInteraction);
+      input.showPicker(ASSERT_NO_EXCEPTION);
+      chooser = TestChromeClient().chooser();
+      ASSERT_TRUE(chooser);
+      ASSERT_TRUE(input.IsPickerVisible());
+    }
+
+    input.blur();
+    EXPECT_EQ(&input, GetDocument().FocusedElement());
+    EXPECT_EQ(0, blur_events->count());
+    EXPECT_FALSE(input.IsPickerVisible());
+    if (chooser) {
+      EXPECT_EQ(1, chooser->end_count());
+    }
+  }
 }
 
 TEST_F(HTMLInputElementTest, StepDownOverflow) {
@@ -580,6 +1109,354 @@ TEST_F(HTMLInputElementTest,
   input.setType(input_type_names::kText);
   GetDocument().UpdateStyleAndLayoutTree();
   EXPECT_TRUE(input.GetTrackedElementSubRect(tracking_feature));
+}
+
+TEST_F(HTMLInputElementTest, SpinButtonWheelBlocks) {
+  GetDocument().body()->SetInnerHTMLWithoutTrustedTypes(
+      "<input id=test type=number min=0 max=2 value=1>");
+  GetDocument().UpdateStyleAndLayoutTree();
+
+  auto& input = TestElement();
+  input.Focus();
+  auto* shadow_root = input.UserAgentShadowRoot();
+  ASSERT_TRUE(shadow_root);
+  auto* spin_button = DynamicTo<SpinButtonElement>(
+      shadow_root->getElementById(shadow_element_names::kIdSpinButton));
+  ASSERT_TRUE(spin_button);
+
+  EventHandlerRegistry& registry =
+      GetDocument().GetFrame()->GetEventHandlerRegistry();
+  const auto* targets =
+      registry.EventHandlerTargets(EventHandlerRegistry::kWheelEventBlocking);
+  EXPECT_TRUE(targets->Contains(&input));
+
+  // Wheel event to step up (value goes from 1 to 2).
+  WheelEventInit* init = WheelEventInit::Create();
+  init->setWheelDeltaY(120);
+  WheelEvent* event = WheelEvent::Create(event_type_names::kWheel, init);
+  spin_button->ForwardEvent(*event);
+  EXPECT_TRUE(event->DefaultHandled());
+  EXPECT_EQ("2", input.Value());
+
+  // Wheel event to step up again (value cannot change, already at max 2).
+  WheelEvent* event2 = WheelEvent::Create(event_type_names::kWheel, init);
+  spin_button->ForwardEvent(*event2);
+  EXPECT_TRUE(event2->DefaultHandled());
+  EXPECT_EQ("2", input.Value());
+
+  // Changing input type to 'text' should unregister it from
+  // kWheelEventBlocking.
+  input.setType(input_type_names::kText);
+  GetDocument().UpdateStyleAndLayoutTree();
+  EXPECT_FALSE(targets->Contains(&input));
+
+  // Changing input type back to 'number' should re-register it (since it is
+  // still focused).
+  input.setType(input_type_names::kNumber);
+  GetDocument().UpdateStyleAndLayoutTree();
+  EXPECT_TRUE(targets->Contains(&input));
+
+  // Blurring the input should unregister it.
+  input.blur();
+  EXPECT_FALSE(targets->Contains(&input));
+
+  // Focusing the input should re-register it.
+  input.Focus();
+  EXPECT_TRUE(targets->Contains(&input));
+
+  // Making the input read-only should unregister it.
+  input.SetBooleanAttribute(html_names::kReadonlyAttr, true);
+  EXPECT_FALSE(targets->Contains(&input));
+
+  // Making the input read-write should re-register it.
+  input.SetBooleanAttribute(html_names::kReadonlyAttr, false);
+  EXPECT_TRUE(targets->Contains(&input));
+
+  // Removing the input from the DOM (triggering DetachLayoutTree) should
+  // unregister it.
+  input.remove();
+  EXPECT_FALSE(targets->Contains(&input));
+}
+
+TEST_F(HTMLInputElementTest, SuggestedValueFontFamilyIsGeneric) {
+  GetDocument().body()->SetInnerHTMLWithoutTrustedTypes("<input id=test>");
+  HTMLInputElement& input = TestElement();
+  UpdateAllLifecyclePhasesForTest();
+
+  input.SetSuggestedValue("preview");
+  UpdateAllLifecyclePhasesForTest();
+
+  HTMLElement* placeholder = input.PlaceholderElement();
+  ASSERT_TRUE(placeholder);
+  const ComputedStyle* style = placeholder->GetComputedStyle();
+  ASSERT_TRUE(style);
+  EXPECT_TRUE(style->GetFontDescription().Family().FamilyIsGeneric());
+}
+
+TEST_F(HTMLInputElementTest, SetCheckedForBindingClearsSuggestedValue) {
+  GetDocument().body()->SetInnerHTMLWithoutTrustedTypes("<input id=test>");
+  HTMLInputElement& input = TestElement();
+  input.SetSuggestedValue("preview");
+  input.SetAutofillState(WebAutofillState::kPreviewed);
+  EXPECT_EQ("preview", input.SuggestedValue());
+  EXPECT_EQ(WebAutofillState::kPreviewed, input.GetAutofillState());
+
+  input.setCheckedForBinding(false);
+  EXPECT_TRUE(input.SuggestedValue().empty());
+  EXPECT_EQ(WebAutofillState::kNotFilled, input.GetAutofillState());
+}
+
+// Removing a disabled <fieldset> notifies its descendants in tree order.
+// Removing the checked radio button re-validates the remaining (still
+// connected, still fieldset-descendant) radio button of the group while the
+// fieldset is already being removed; that must not lose track of the
+// fieldset ancestor.
+TEST_F(HTMLInputElementTest, RadioGroupInRemovedDisabledFieldset) {
+  GetDocument().documentElement()->SetInnerHTMLWithoutTrustedTypes(R"HTML(
+    <fieldset disabled id=fs>
+      <input type=radio name=g id=r1 checked>
+      <span><input type=radio name=g id=test required></span>
+    </fieldset>
+  )HTML");
+  HTMLInputElement& r2 = TestElement();
+  EXPECT_TRUE(r2.IsDisabledFormControl());
+  EXPECT_FALSE(r2.willValidate());
+  // Evaluate (and cache) r2's validity, as e.g. accessibility does, so that
+  // removing the checked r1 from the group re-validates r2 while the fieldset
+  // is being removed.
+  EXPECT_TRUE(static_cast<ListedElement&>(r2).IsValidElement());
+
+  Element* fieldset = GetDocument().getElementById(AtomicString("fs"));
+  fieldset->remove();
+
+  // Still inside the (now detached) disabled fieldset.
+  EXPECT_TRUE(r2.IsDisabledFormControl());
+  EXPECT_FALSE(r2.willValidate());
+  EXPECT_TRUE(r2.matches(AtomicString(":disabled")));
+}
+
+using HTMLInputElementLazyShadowTreeTest = HTMLInputElementTest;
+
+// Inputs inserted and removed again before the next style/layout update are
+// unscheduled again; processing the pending list must only create shadow
+// trees for inputs that are still scheduled.
+TEST_F(HTMLInputElementLazyShadowTreeTest, InsertAndRemoveBeforeUpdate) {
+  Document& document = GetDocument();
+  Element* body = document.body();
+  HeapVector<Member<HTMLInputElement>> inputs;
+  // Large enough that a linear search per removal would be noticeable.
+  constexpr int kCount = 20000;
+  for (int i = 0; i < kCount; ++i) {
+    auto* input = MakeGarbageCollected<HTMLInputElement>(document);
+    inputs.push_back(input);
+    body->AppendChild(input);
+    EXPECT_TRUE(input->IsShadowTreeCreationScheduled());
+  }
+  EXPECT_EQ(document.ScheduledShadowTreeCreationCountForTesting(),
+            static_cast<wtf_size_t>(kCount));
+  // Remove in insertion (FIFO) order, the worst case for a search from the
+  // back of the list.
+  for (int i = 0; i < kCount; ++i) {
+    inputs[i]->remove();
+    EXPECT_FALSE(inputs[i]->IsShadowTreeCreationScheduled());
+  }
+  EXPECT_EQ(document.ScheduledShadowTreeCreationCountForTesting(), 0u);
+
+  // Re-insert two of them (one twice) and one new input; only those get a
+  // shadow tree.
+  body->AppendChild(inputs[0]);
+  body->AppendChild(inputs[1]);
+  inputs[1]->remove();
+  body->AppendChild(inputs[1]);
+  auto* fresh = MakeGarbageCollected<HTMLInputElement>(document);
+  body->AppendChild(fresh);
+  EXPECT_TRUE(inputs[0]->IsShadowTreeCreationScheduled());
+  EXPECT_TRUE(inputs[1]->IsShadowTreeCreationScheduled());
+  EXPECT_FALSE(inputs[2]->IsShadowTreeCreationScheduled());
+  EXPECT_EQ(document.ScheduledShadowTreeCreationCountForTesting(), 3u);
+  document.UpdateStyleAndLayoutTree();
+  EXPECT_EQ(document.ScheduledShadowTreeCreationCountForTesting(), 0u);
+  EXPECT_TRUE(inputs[0]->UserAgentShadowRoot());
+  EXPECT_TRUE(inputs[1]->UserAgentShadowRoot());
+  EXPECT_TRUE(fresh->UserAgentShadowRoot());
+  EXPECT_FALSE(inputs[2]->UserAgentShadowRoot());
+  EXPECT_FALSE(inputs[0]->IsShadowTreeCreationScheduled());
+  EXPECT_FALSE(inputs[1]->IsShadowTreeCreationScheduled());
+}
+
+// A document that is not active (no frame; e.g. created by DOMParser) never
+// updates style, so inputs inserted into it do not queue lazy shadow tree
+// creation there. Moving them into an active document schedules them; moving
+// a scheduled input out of the active document unschedules it.
+TEST_F(HTMLInputElementLazyShadowTreeTest, InactiveDocument) {
+  Document& doc_a = GetDocument();
+  ScopedNullExecutionContext execution_context;
+  Document* doc_b =
+      Document::CreateForTest(execution_context.GetExecutionContext());
+  ASSERT_FALSE(doc_b->IsActive());
+  doc_b->AppendChild(doc_b->CreateRawElement(html_names::kHTMLTag));
+  doc_b->documentElement()->AppendChild(
+      doc_b->CreateRawElement(html_names::kBodyTag));
+  ASSERT_TRUE(doc_b->body());
+
+  HeapVector<Member<HTMLInputElement>> inputs;
+  for (int i = 0; i < 40; ++i) {
+    auto* input = MakeGarbageCollected<HTMLInputElement>(*doc_b);
+    inputs.push_back(input);
+    doc_b->body()->AppendChild(input);
+    EXPECT_FALSE(input->IsShadowTreeCreationScheduled());
+    EXPECT_FALSE(input->UserAgentShadowRoot());
+  }
+  EXPECT_EQ(doc_b->ScheduledShadowTreeCreationCountForTesting(), 0u);
+
+  // Tree-order move into the active document.
+  for (HTMLInputElement* input : inputs) {
+    doc_a.body()->AppendChild(input);
+    EXPECT_EQ(&input->GetDocument(), &doc_a);
+    EXPECT_TRUE(input->IsShadowTreeCreationScheduled());
+  }
+  EXPECT_EQ(doc_a.ScheduledShadowTreeCreationCountForTesting(), 40u);
+  doc_a.UpdateStyleAndLayoutTree();
+  for (HTMLInputElement* input : inputs) {
+    EXPECT_FALSE(input->IsShadowTreeCreationScheduled());
+    EXPECT_TRUE(input->UserAgentShadowRoot());
+  }
+  EXPECT_EQ(doc_a.ScheduledShadowTreeCreationCountForTesting(), 0u);
+
+  // A fresh input scheduled in doc_a and moved to doc_b is unscheduled and
+  // gets its shadow tree on demand only.
+  auto* input = MakeGarbageCollected<HTMLInputElement>(doc_a);
+  doc_a.body()->AppendChild(input);
+  EXPECT_TRUE(input->IsShadowTreeCreationScheduled());
+  doc_b->body()->AppendChild(input);
+  EXPECT_EQ(&input->GetDocument(), doc_b);
+  EXPECT_FALSE(input->IsShadowTreeCreationScheduled());
+  EXPECT_EQ(doc_a.ScheduledShadowTreeCreationCountForTesting(), 0u);
+  doc_a.UpdateStyleAndLayoutTree();
+  EXPECT_FALSE(input->UserAgentShadowRoot());
+  EXPECT_TRUE(input->EnsureShadowSubtree());
+}
+
+// Each input remembers only the low bits of its position in the document's
+// pending list. With more inputs pending than those bits can distinguish,
+// several list slots share the same stored bits, and unscheduling has to find
+// the right one; scheduling, unscheduling (in any order) and the flush must
+// keep working across that boundary.
+TEST_F(HTMLInputElementLazyShadowTreeTest, MorePendingThanIndexBits) {
+  Document& document = GetDocument();
+  // The inputs only need to occupy slots in the pending list; keep them out
+  // of the rendered tree so that the test does not also pay for style and
+  // layout of 64k text fields.
+  auto* container = MakeGarbageCollected<HTMLDivElement>(document);
+  container->SetInlineStyleProperty(CSSPropertyID::kDisplay, CSSValueID::kNone);
+  document.body()->AppendChild(container);
+
+  const wtf_size_t range = HTMLInputElement::kShadowTreeCreationIndexHintRange;
+  const wtf_size_t count = range + 8;
+  HeapVector<Member<HTMLInputElement>> inputs;
+  inputs.reserve(count);
+  for (wtf_size_t i = 0; i < count; ++i) {
+    auto* input = MakeGarbageCollected<HTMLInputElement>(document);
+    inputs.push_back(input);
+    container->AppendChild(input);
+  }
+  EXPECT_EQ(document.ScheduledShadowTreeCreationCountForTesting(), count);
+  for (wtf_size_t i :
+       {wtf_size_t{0}, wtf_size_t{1}, range - 1, range, range + 1, count - 1}) {
+    SCOPED_TRACE(i);
+    EXPECT_TRUE(inputs[i]->IsShadowTreeCreationScheduled());
+    EXPECT_FALSE(inputs[i]->UserAgentShadowRoot());
+  }
+  // Slots i and i + range store the same bits.
+  EXPECT_EQ(inputs[1]->ScheduledShadowTreeCreationIndexHint(),
+            inputs[range + 1]->ScheduledShadowTreeCreationIndexHint());
+
+  // Remove the later of two aliasing inputs: the probe has to skip slot 1.
+  // The last input is swapped into the freed slot and now aliases slot 1.
+  inputs[range + 1]->remove();
+  EXPECT_FALSE(inputs[range + 1]->IsShadowTreeCreationScheduled());
+  EXPECT_TRUE(inputs[1]->IsShadowTreeCreationScheduled());
+  EXPECT_EQ(inputs[count - 1]->ScheduledShadowTreeCreationIndexHint(),
+            inputs[1]->ScheduledShadowTreeCreationIndexHint());
+  EXPECT_EQ(document.ScheduledShadowTreeCreationCountForTesting(), count - 1);
+
+  // Remove the earlier of two aliasing inputs: found at the first probe. The
+  // (new) last input is swapped into slot 0 and now aliases slot `range`.
+  inputs[0]->remove();
+  EXPECT_FALSE(inputs[0]->IsShadowTreeCreationScheduled());
+  EXPECT_TRUE(inputs[range]->IsShadowTreeCreationScheduled());
+  EXPECT_TRUE(inputs[count - 2]->IsShadowTreeCreationScheduled());
+  EXPECT_EQ(inputs[count - 2]->ScheduledShadowTreeCreationIndexHint(),
+            inputs[range]->ScheduledShadowTreeCreationIndexHint());
+  EXPECT_EQ(document.ScheduledShadowTreeCreationCountForTesting(), count - 2);
+
+  // The swapped-in inputs and the ones they alias can all still be removed.
+  inputs[range]->remove();
+  inputs[count - 2]->remove();
+  inputs[count - 1]->remove();
+  inputs[1]->remove();
+  for (wtf_size_t i : {wtf_size_t{1}, range, count - 2, count - 1}) {
+    SCOPED_TRACE(i);
+    EXPECT_FALSE(inputs[i]->IsShadowTreeCreationScheduled());
+  }
+  EXPECT_EQ(document.ScheduledShadowTreeCreationCountForTesting(), count - 6);
+
+  // Re-inserting schedules again, at the end of the list.
+  container->AppendChild(inputs[0]);
+  EXPECT_TRUE(inputs[0]->IsShadowTreeCreationScheduled());
+  EXPECT_EQ(document.ScheduledShadowTreeCreationCountForTesting(), count - 5);
+
+  // The flush handles a list longer than the index range, and leaves every
+  // element unscheduled.
+  document.UpdateStyleAndLayoutTree();
+  EXPECT_EQ(document.ScheduledShadowTreeCreationCountForTesting(), 0u);
+  for (wtf_size_t i :
+       {wtf_size_t{0}, wtf_size_t{2}, range - 1, range + 2, range + 3}) {
+    SCOPED_TRACE(i);
+    EXPECT_FALSE(inputs[i]->IsShadowTreeCreationScheduled());
+    EXPECT_TRUE(inputs[i]->UserAgentShadowRoot());
+  }
+  // Removed before the flush: never got a shadow tree.
+  for (wtf_size_t i : {wtf_size_t{1}, range, range + 1, count - 2, count - 1}) {
+    SCOPED_TRACE(i);
+    EXPECT_FALSE(inputs[i]->UserAgentShadowRoot());
+  }
+}
+
+TEST_F(HTMLInputElementTest, PasswordRevealEmptyInsertion) {
+  ScopedPasswordRevealForTest scoped_password_reveal(true);
+  GetDocument().body()->SetInnerHTMLWithoutTrustedTypes(
+      "<input id=test type=password style='width: 300px'>");
+  UpdateAllLifecyclePhasesForTest();
+  HTMLInputElement& input = TestElement();
+  input.Focus();
+
+  Element* button = input.UserAgentShadowRoot()->getElementById(
+      shadow_element_names::kIdPasswordRevealButton);
+  ASSERT_TRUE(button);
+  EXPECT_EQ(button->EnsureComputedStyle()->Display(), EDisplay::kNone);
+
+  // Inserting empty text should not reveal the button.
+  GetDocument().execCommand("insertText", false, "", ASSERT_NO_EXCEPTION);
+  UpdateAllLifecyclePhasesForTest();
+  EXPECT_EQ(button->EnsureComputedStyle()->Display(), EDisplay::kNone);
+
+  // Pressing Alt-F8 should not reveal the password or button because no text
+  // was inserted.
+  KeyboardEventInit* init = KeyboardEventInit::Create();
+  init->setKey("F8");
+  init->setAltKey(true);
+  auto* event =
+      MakeGarbageCollected<KeyboardEvent>(event_type_names::kKeydown, init);
+  input.DispatchEvent(*event);
+  UpdateAllLifecyclePhasesForTest();
+  EXPECT_FALSE(input.ShouldRevealPassword());
+  EXPECT_EQ(button->EnsureComputedStyle()->Display(), EDisplay::kNone);
+
+  // Inserting non-empty text should reveal the button.
+  GetDocument().execCommand("insertText", false, "a", ASSERT_NO_EXCEPTION);
+  UpdateAllLifecyclePhasesForTest();
+  EXPECT_EQ(button->EnsureComputedStyle()->Display(), EDisplay::kBlock);
 }
 
 }  // namespace blink

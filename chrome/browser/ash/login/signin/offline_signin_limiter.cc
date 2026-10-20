@@ -318,9 +318,11 @@ void OfflineSigninLimiter::ForceOnlineLogin() {
   user_manager::UserManager::Get()->SaveForceOnlineSignin(user.GetAccountId(),
                                                           true);
   if (user.using_saml()) {
-    RecordReauthReason(user.GetAccountId(), ReauthReason::kSamlReauthPolicy);
+    RecordReauthReason(local_state_.get(), user.GetAccountId(),
+                       ReauthReason::kSamlReauthPolicy);
   } else {
-    RecordReauthReason(user.GetAccountId(), ReauthReason::kGaiaReauthPolicy);
+    RecordReauthReason(local_state_.get(), user.GetAccountId(),
+                       ReauthReason::kGaiaReauthPolicy);
   }
   offline_signin_limit_timer_->Stop();
 }
@@ -336,9 +338,12 @@ void OfflineSigninLimiter::ForceOnlineLockScreenReauth() {
 
   LockScreenReauthManager* lock_screen_reauth_manager =
       LockScreenReauthManagerFactory::GetForProfile(profile_);
-  DCHECK(lock_screen_reauth_manager);
-  lock_screen_reauth_manager->MaybeForceReauthOnLockScreen(reauth_reason);
-  RecordReauthReason(user.GetAccountId(), reauth_reason);
+  // LockScreenReauthManager is null for non primary users.
+  // See crbug.com/331200953.
+  if (lock_screen_reauth_manager) {
+    lock_screen_reauth_manager->MaybeForceReauthOnLockScreen(reauth_reason);
+    RecordReauthReason(local_state_.get(), user.GetAccountId(), reauth_reason);
+  }
   offline_lock_screen_signin_limit_timer_->Stop();
 }
 

@@ -6,50 +6,71 @@
 
 #include <algorithm>
 #include <atomic>
-#include <functional>
+#include <cstddef>
+#include <cstdint>
+#include <memory>
+#include <optional>
+#include <string>
 #include <utility>
 #include <variant>
+#include <vector>
 
-#include "base/feature_list.h"
+#include "base/check.h"
+#include "base/check_op.h"
+#include "base/containers/span.h"
+#include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/location.h"
 #include "base/logging.h"
 #include "base/memory/ptr_util.h"
 #include "base/memory/raw_ptr.h"
+#include "base/memory/scoped_refptr.h"
+#include "base/memory/weak_ptr.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/metrics/histogram_macros.h"
+#include "base/numerics/safe_conversions.h"
+#include "base/sequence_checker.h"
+#include "base/synchronization/waitable_event.h"
 #include "base/task/bind_post_task.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/threading/thread_restrictions.h"
 #include "base/time/time.h"
 #include "base/trace_event/trace_event.h"
 #include "build/build_config.h"
+#include "media/base/decoder.h"
+#include "media/base/decoder_status.h"
+#include "media/base/encryption_scheme.h"
 #include "media/base/media_log.h"
-#include "media/base/media_switches.h"
 #include "media/base/media_util.h"
 #include "media/base/overlay_info.h"
 #include "media/base/platform_features.h"
-#include "media/base/supported_types.h"
+#include "media/base/video_codecs.h"
+#include "media/base/video_color_space.h"
 #include "media/base/video_decoder.h"
-#include "media/base/video_types.h"
+#include "media/base/video_transformation.h"
 #include "media/video/gpu_video_accelerator_factories.h"
 #include "media/webrtc/webrtc_features.h"
 #include "third_party/blink/public/platform/platform.h"
+#include "third_party/blink/renderer/platform/peerconnection/resolution_monitor.h"
 #include "third_party/blink/renderer/platform/peerconnection/rtc_video_decoder_fallback_recorder.h"
 #include "third_party/blink/renderer/platform/scheduler/public/post_cross_thread_task.h"
 #include "third_party/blink/renderer/platform/webrtc/webrtc_video_frame_adapter.h"
 #include "third_party/blink/renderer/platform/webrtc/webrtc_video_utils.h"
-#include "third_party/blink/renderer/platform/wtf/cross_thread_copier_base.h"
-#include "third_party/blink/renderer/platform/wtf/cross_thread_copier_std.h"
 #include "third_party/blink/renderer/platform/wtf/cross_thread_functional.h"
 #include "third_party/blink/renderer/platform/wtf/deque.h"
+#include "third_party/blink/renderer/platform/wtf/functional.h"
+#include "third_party/webrtc/api/scoped_refptr.h"
+#include "third_party/webrtc/api/video/encoded_image.h"
+#include "third_party/webrtc/api/video/video_codec_type.h"
 #include "third_party/webrtc/api/video/video_frame.h"
-#include "third_party/webrtc/api/video_codecs/vp9_profile.h"
-#include "third_party/webrtc/modules/video_coding/codecs/h264/include/h264.h"
+#include "third_party/webrtc/api/video/video_rotation.h"
+#include "third_party/webrtc/api/video_codecs/sdp_video_format.h"
+#include "third_party/webrtc/api/video_codecs/video_codec.h"
+#include "third_party/webrtc/api/video_codecs/video_decoder.h"
 #include "third_party/webrtc/modules/video_coding/include/video_error_codes.h"
-#include "third_party/webrtc/rtc_base/ref_count.h"
 #include "third_party/webrtc/rtc_base/ref_counted_object.h"
 #include "ui/gfx/color_space.h"
+#include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/geometry/size.h"
 
 namespace blink {
@@ -61,6 +82,8 @@ constexpr gfx::Size kDefaultSize(640, 480);
 
 // Maximum number of buffers that we will queue in |pending_buffers_|.
 constexpr int32_t kMaxPendingBuffers = 8;
+
+std::optional<base::TimeDelta> g_init_timeout_for_testing;
 
 // Maximum number of timestamps that will be maintained in |decode_timestamps_|.
 // Really only needs to be a bit larger than the maximum reorder distance (which
@@ -177,11 +200,13 @@ std::optional<RTCVideoDecoderFallbackReason> NeedSoftwareFallback(
       buffer.side_data() && !buffer.side_data()->spatial_layers.empty();
   if (codec == media::VideoCodec::kVP9 && is_spatial_layer_buffer &&
       !media::IsVp9kSVCHWDecodingEnabled()) {
+    LOG(ERROR) << "No VP9 spatial layers support";
     return RTCVideoDecoderFallbackReason::kSpatialLayers;
   }
 
   if (codec == media::VideoCodec::kAV1 && is_spatial_layer_buffer) {
     // No hardware decoder supports AV1 SVC stream.
+    LOG(ERROR) << "No AV1 spatial layers support";
     return RTCVideoDecoderFallbackReason::kSpatialLayers;
   }
   return std::nullopt;
@@ -228,12 +253,12 @@ class RTCVideoDecoderAdapter::Impl {
   bool IsDecoderConfigSupported(const media::VideoDecoderConfig& config) const;
 
  private:
-  std::optional<RTCVideoDecoderFallbackReason> NeedSoftwareFallback(
-      media::VideoCodec codec,
-      const media::DecoderBuffer& buffer) const;
   void DecodePendingBuffers();
   void OnDecodeDone(media::DecoderStatus status);
   void OnOutput(scoped_refptr<media::VideoFrame> frame);
+  void OnInitializeDone(CrossThreadOnceFunction<void(bool)> init_cb,
+                        media::VideoDecoderType* decoder_type,
+                        media::DecoderStatus status);
 
   const raw_ptr<media::GpuVideoAcceleratorFactories> gpu_factories_;
   const scoped_refptr<WebRtcVideoFrameAdapter::SharedResources>
@@ -291,20 +316,26 @@ void RTCVideoDecoderAdapter::Impl::Initialize(
   media::VideoDecoder::OutputCB output_cb =
       ConvertToBaseRepeatingCallback(CrossThreadBindRepeating(
           &RTCVideoDecoderAdapter::Impl::OnOutput, weak_decoder_this_));
+  // Safe to use CrossThreadUnretained(decoder_type) because `decoder_type`
+  // points to the `RTCVideoDecoderAdapter::decoder_type_` member variable,
+  // which is guaranteed to outlive `Impl` since the adapter's destructor
+  // blocks synchronously on the media thread while destroying `Impl` in
+  // `Release()`.
   video_decoder_->Initialize(
-      config, /*low_delay=*/true,
-      /*cdm_context=*/nullptr,
-      base::BindOnce(
-          [](base::OnceCallback<void(bool)> cb,
-             media::VideoDecoderType* decoder_type,
-             media::VideoDecoder* video_decoder, media::DecoderStatus status) {
-            *decoder_type = video_decoder->GetDecoderType();
-            std::move(cb).Run(status.is_ok());
-          },
-          ConvertToBaseOnceCallback(std::move(init_cb)),
-          CrossThreadUnretained(decoder_type),
-          CrossThreadUnretained(video_decoder_.get())),
+      config, /*low_delay=*/true, /*cdm_context=*/nullptr,
+      ConvertToBaseOnceCallback(CrossThreadBindOnce(
+          &RTCVideoDecoderAdapter::Impl::OnInitializeDone, weak_decoder_this_,
+          std::move(init_cb), CrossThreadUnretained(decoder_type))),
       output_cb, base::DoNothing());
+}
+
+void RTCVideoDecoderAdapter::Impl::OnInitializeDone(
+    CrossThreadOnceFunction<void(bool)> init_cb,
+    media::VideoDecoderType* decoder_type,
+    media::DecoderStatus status) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(media_sequence_checker_);
+  *decoder_type = video_decoder_->GetDecoderType();
+  std::move(init_cb).Run(status.is_ok());
 }
 
 void RTCVideoDecoderAdapter::Impl::Decode(
@@ -372,11 +403,11 @@ RTCVideoDecoderAdapter::Impl::EnqueueBuffer(
       pending_buffers_.size() >= kMaxPendingBuffers) {
     // We are severely behind. Drop pending buffers and request a keyframe to
     // catch up as quickly as possible.
-    DVLOG(2) << "Pending buffers overflow";
     pending_buffers_.clear();
     // Actually we just discarded a frame. We must wait for the key frame and
     // drop any other non-key frame.
     if (++consecutive_error_count_ > kMaxConsecutiveErrors) {
+      LOG(ERROR) << "Pending buffers overflow happens too many times";
       decode_timestamps_.clear();
       return RTCVideoDecoderFallbackReason::kConsecutivePendingBufferOverflow;
     }
@@ -628,8 +659,8 @@ bool RTCVideoDecoderAdapter::InitializeSync(
                               weak_impl_, config, std::move(init_cb),
                               start_time,
                               CrossThreadUnretained(&decoder_type_)))) {
-    // TODO(crbug.com/1076817) Remove if a root cause is found.
-    if (!async_init_waiter_->TimedWait(base::Seconds(10))) {
+    if (!async_init_waiter_->TimedWait(
+            g_init_timeout_for_testing.value_or(base::Seconds(10)))) {
       RecordInitializationLatency(base::TimeTicks::Now() - start_time);
       return false;
     }
@@ -721,6 +752,7 @@ RTCVideoDecoderAdapter::DecodeInternal(const webrtc::EncodedImage& input_image,
     config_.set_color_space_info(media::VideoColorSpace::FromGfxColorSpace(
         blink::WebRtcToGfxColorSpace(*input_image.ColorSpace())));
     if (!ReinitializeSync(config_)) {
+      LOG(ERROR) << "ReinitializeSync failed";
       RecordRTCVideoDecoderFallbackReason(
           config_.codec(),
           RTCVideoDecoderFallbackReason::kReinitializationFailed);
@@ -739,6 +771,7 @@ RTCVideoDecoderAdapter::DecodeInternal(const webrtc::EncodedImage& input_image,
   }
   if (auto fallback_reason =
           NeedSoftwareFallback(config_.codec(), *buffer, decoder_type_)) {
+    LOG(ERROR) << "Fallback to software due to spatial layers";
     RecordRTCVideoDecoderFallbackReason(config_.codec(), *fallback_reason);
     return std::nullopt;
   }
@@ -771,7 +804,7 @@ bool RTCVideoDecoderAdapter::CheckResolutionAndNumInstances(
   std::optional<gfx::Size> resolution =
       resolution_monitor_->GetResolution(buffer);
   if (!resolution) {
-    DVLOG(1) << "Stream parse error";
+    LOG(ERROR) << "Failed parsing stream to get resolution";
     RecordRTCVideoDecoderFallbackReason(
         config_.codec(),
         RTCVideoDecoderFallbackReason::kParseErrorOnResolutionCheck);
@@ -781,7 +814,7 @@ bool RTCVideoDecoderAdapter::CheckResolutionAndNumInstances(
   if (config_.coded_size() != *resolution) {
     config_.set_coded_size(*resolution);
     if (!impl_->IsDecoderConfigSupported(config_)) {
-      DVLOG(1) << "Unsupported resolution";
+      LOG(ERROR) << "Unsupported resolution: " << resolution->ToString();
       RecordRTCVideoDecoderFallbackReason(
           config_.codec(),
           RTCVideoDecoderFallbackReason::kUnsupportedResolution);
@@ -806,7 +839,7 @@ bool RTCVideoDecoderAdapter::CheckResolutionAndNumInstances(
     g_num_decoders_ -= 1;
     CHECK_GE(g_num_decoders_, 0);
     have_started_decoding_ = false;
-    DVLOG(1) << "Too many decoder instances";
+    LOG(ERROR) << "Too many decoder instances";
     RecordRTCVideoDecoderFallbackReason(
         config_.codec(),
         RTCVideoDecoderFallbackReason::kTooManyInstancesAndSmallResolution);
@@ -837,6 +870,7 @@ int32_t RTCVideoDecoderAdapter::RegisterDecodeCompleteCallback(
   }
 
   if (status_ == Status::kError) {
+    LOG(ERROR) << "Previous error on RegisterDecodeCompleteCallback";
     RecordRTCVideoDecoderFallbackReason(
         config_.codec(),
         RTCVideoDecoderFallbackReason::kPreviousErrorOnRegisterCallback);
@@ -944,6 +978,11 @@ void RTCVideoDecoderAdapter::IncrementCurrentDecoderCountForTesting() {
 
 void RTCVideoDecoderAdapter::DecrementCurrentDecoderCountForTesting() {
   g_num_decoders_--;
+}
+
+void RTCVideoDecoderAdapter::SetInitializeSyncTimeoutForTesting(
+    std::optional<base::TimeDelta> timeout) {
+  g_init_timeout_for_testing = timeout;
 }
 
 }  // namespace blink

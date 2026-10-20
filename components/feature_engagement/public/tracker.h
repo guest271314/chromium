@@ -111,17 +111,6 @@ class TrackerEventExporter {
 // appropriate to show it or not.
 class Tracker : public KeyedService, public base::SupportsUserData {
  public:
-  // Describes the state of whether in-product helps has already been displayed
-  // enough times or not within the bounds of the configuration for a
-  // base::Feature. NOT_READY is returned if the Tracker has not been
-  // initialized yet before the call to GetTriggerState(...).
-  // GENERATED_JAVA_ENUM_PACKAGE: org.chromium.components.feature_engagement
-  enum class TriggerState : int {
-    HAS_BEEN_DISPLAYED = 0,
-    HAS_NOT_BEEN_DISPLAYED = 1,
-    NOT_READY = 2
-  };
-
   // Represents the action taken by the user on the snooze UI.
   // These enums are persisted as histogram entries, so this enum should be
   // treated as append-only and kept in sync with InProductHelpSnoozeAction in
@@ -202,7 +191,18 @@ class Tracker : public KeyedService, public base::SupportsUserData {
   // but not limited to - trigger and used event data.
   //
   // This method is used by specific internals and test code.
-  virtual void ClearEventData(const base::Feature& feature) = 0;
+  template <typename T>
+    requires std::same_as<T, UserEducationInternalsPageHandlerImpl>
+  void ClearEventData(const base::Feature& feature, base::PassKey<T>) {
+    ClearEventData(feature);
+  }
+
+  // Retrieves the configuration.
+  template <typename T>
+    requires std::same_as<T, UserEducationInternalsPageHandlerImpl>
+  const Configuration* GetConfiguration(base::PassKey<T>) const {
+    return GetConfiguration();
+  }
 
   // Retrieves information about each event condition and event count associated
   // with a feature. The count will reflect the time window in EventConfig.
@@ -284,6 +284,10 @@ class Tracker : public KeyedService, public base::SupportsUserData {
   // after this would yield the same result. The state might change
   // in-between the calls because time has passed, other events might have been
   // triggered, and other state might have changed.
+  //
+  // NOTE: For a tracking_only experiment, this will return the same result as
+  // for a non-tracking experiment so that the comparison of groups can be
+  // properly handled when ShouldTriggerHelpUI(...) is invoked.
   virtual bool WouldTriggerHelpUI(const base::Feature& feature) const = 0;
 
   // This function can be called to query if a particular |feature| has ever
@@ -298,17 +302,6 @@ class Tracker : public KeyedService, public base::SupportsUserData {
   virtual bool HasEverTriggered(const base::Feature& feature,
                                 bool from_window) const = 0;
 
-  // This function can be called to query if a particular |feature| meets its
-  // particular precondition for triggering within the bounds of the current
-  // feature configuration.
-  // Calling this method requires the Tracker to already have been initialized.
-  // See IsInitialized() and AddOnInitializedCallback(...) for how to ensure
-  // the call to this is delayed.
-  // This function can typically be used to ensure that expensive operations
-  // for tracking other state related to in-product help do not happen if
-  // in-product help has already been displayed for the given |feature|.
-  virtual TriggerState GetTriggerState(const base::Feature& feature) const = 0;
-
   // Must be called after display of feature enlightenment finishes for a
   // particular |feature|.
   virtual void Dismissed(const base::Feature& feature) = 0;
@@ -318,6 +311,16 @@ class Tracker : public KeyedService, public base::SupportsUserData {
   virtual void DismissedWithSnooze(
       const base::Feature& feature,
       std::optional<SnoozeAction> snooze_action) = 0;
+
+#if !BUILDFLAG(IS_ANDROID)
+
+  // Erases all event data associated with a particular `feature`, including -
+  // but not limited to - trigger and used event data.
+  //
+  // This method is used by specific internals and test code.
+  virtual void ClearEventData(const base::Feature& feature) = 0;
+
+#endif  // !BUILDFLAG(IS_ANDROID)
 
   // Acquiring a display lock means that no in-product help can be displayed
   // while it is held. To release the lock, delete the handle.
@@ -380,7 +383,9 @@ class Tracker : public KeyedService, public base::SupportsUserData {
 #endif
 
   // Returns the configuration associated with the tracker for testing purposes.
-  virtual const Configuration* GetConfigurationForTesting() const = 0;
+  const Configuration* GetConfigurationForTesting() const {
+    return GetConfiguration();
+  }
 
   // Set a testing clock for the tracker. It's recommended to use a
   // SimpleTestClock, so we can advance the clock in test.
@@ -407,6 +412,8 @@ class Tracker : public KeyedService, public base::SupportsUserData {
   }
 
  protected:
+  virtual const Configuration* GetConfiguration() const = 0;
+
   Tracker() = default;
 };
 

@@ -14,6 +14,7 @@
 #import "ios/chrome/browser/fullscreen/ui_bundled/animated_scoped_fullscreen_disabler.h"
 #import "ios/chrome/browser/fullscreen/ui_bundled/fullscreen_ui_updater.h"
 #import "ios/chrome/browser/fullscreen/ui_bundled/scoped_fullscreen_disabler.h"
+#import "ios/chrome/browser/intelligence/bwg/model/gemini_browser_agent.h"
 #import "ios/chrome/browser/intelligence/bwg/model/gemini_service_factory.h"
 #import "ios/chrome/browser/intelligence/bwg/utils/gemini_constants.h"
 #import "ios/chrome/browser/location_bar/badge/coordinator/location_bar_badge_coordinator_delegate.h"
@@ -24,12 +25,13 @@
 #import "ios/chrome/browser/shared/model/prefs/pref_names.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
 #import "ios/chrome/browser/shared/model/web_state_list/web_state_list.h"
-#import "ios/chrome/browser/shared/public/commands/bwg_commands.h"
 #import "ios/chrome/browser/shared/public/commands/command_dispatcher.h"
 #import "ios/chrome/browser/shared/public/commands/contextual_panel_entrypoint_commands.h"
 #import "ios/chrome/browser/shared/public/commands/contextual_panel_entrypoint_iph_commands.h"
 #import "ios/chrome/browser/shared/public/commands/contextual_sheet_commands.h"
+#import "ios/chrome/browser/shared/public/commands/custom_leading_view_type.h"
 #import "ios/chrome/browser/shared/public/commands/fullscreen_commands.h"
+#import "ios/chrome/browser/shared/public/commands/gemini_commands.h"
 #import "ios/chrome/browser/shared/public/commands/location_bar_badge_commands.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/shared/ui/util/omnibox_util.h"
@@ -77,7 +79,8 @@
       initWithWebStateList:self.browser->GetWebStateList()
                    tracker:tracker
                prefService:_prefService
-             geminiService:GeminiServiceFactory::GetForProfile(self.profile)];
+             geminiService:GeminiServiceFactory::GetForProfile(self.profile)
+        geminiBrowserAgent:GeminiBrowserAgent::FromBrowser(self.browser)];
   _mediator.consumer = _viewController;
   _mediator.delegate = self;
   _viewController.mutator = _mediator;
@@ -86,9 +89,6 @@
   } else {
     [self attachContextualPanelEntrypoint];
   }
-  id<BWGCommands> BWGCommandHandler =
-      HandlerForProtocol(_dispatcher, BWGCommands);
-  _mediator.BWGCommandHandler = BWGCommandHandler;
   if (!IsChromeNextIaEnabled()) {
     [_dispatcher startDispatchingToTarget:_mediator
                               forProtocol:@protocol(LocationBarBadgeCommands)];
@@ -169,6 +169,16 @@
   return [self.viewController helpAnchorUsingBottomOmnibox:isBottomOmnibox];
 }
 
+- (void)locationBarBadgeMediator:(LocationBarBadgeMediator*)mediator
+    startGeminiEntryFlowWithStartupState:(GeminiStartupState*)startupState {
+  id<GeminiCommands> geminiHandler =
+      HandlerForProtocol(_dispatcher, GeminiCommands);
+  [geminiHandler startGeminiEntryFlowWithStartupState:startupState
+                                   baseViewController:self.baseViewController
+                             showSnackbarOnCompletion:YES
+                                           completion:nil];
+}
+
 #pragma mark - ContextualPanelEntrypointCommands
 
 - (void)notifyContextualPanelEntrypointIPHDismissed {
@@ -192,18 +202,23 @@
 #pragma mark - LocationBarBadgeCommands
 
 - (void)updateBadgeConfig:(LocationBarBadgeConfiguration*)config {
-  CHECK(IsChromeNextIaEnabled());
   [_mediator updateBadgeConfig:config];
 }
 
 - (void)updateColorForIPH {
-  CHECK(IsChromeNextIaEnabled());
   [_mediator updateColorForIPH];
 }
 
 - (void)markDisplayedBadgeAsUnread:(BOOL)read {
-  CHECK(IsChromeNextIaEnabled());
   [_mediator markDisplayedBadgeAsUnread:read];
+}
+
+- (void)setBadgeCustomLeadingViewType:(CustomLeadingViewType)type {
+  // No-op.
+}
+
+- (void)hideBadgeForType:(LocationBarBadgeType)type {
+  [_mediator hideBadgeForType:type];
 }
 
 #pragma mark - Private

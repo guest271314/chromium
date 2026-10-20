@@ -6,6 +6,7 @@
 
 #include <string_view>
 
+#include "ash/constants/ash_extension_constants.h"
 #include "ash/constants/ash_pref_names.h"
 #include "ash/shell.h"
 #include "base/base_paths.h"
@@ -18,11 +19,9 @@
 #include "chrome/browser/ash/accessibility/accessibility_test_utils.h"
 #include "chrome/browser/ash/accessibility/automation_test_utils.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/speech/speech_recognition_constants.h"
-#include "chrome/browser/ui/browser.h"
-#include "chrome/common/extensions/extension_constants.h"
 #include "chrome/test/base/interactive_test_utils.h"
 #include "chrome/test/base/ui_test_utils.h"
+#include "chromeos/ash/experiences/extensions/browser/speech/speech_recognition_constants.h"
 #include "components/prefs/pref_service.h"
 #include "content/public/test/fake_speech_recognition_manager.h"
 #include "extensions/browser/browsertest_util.h"

@@ -94,7 +94,7 @@ TEST_F(SupervisedUserMetricsServiceTest, NewDayAfterSupervisedUserDetected) {
   task_environment_.FastForwardBy(base::Days(1) + base::Hours(1));
   EXPECT_EQ(0, GetDayIdPref());
 
-  EnableParentalControls(*supervised_user_test_environment_->pref_service());
+  supervised_user_test_environment_->EnableSupervisedAccount();
   EXPECT_EQ(SupervisedUserMetricsService::GetDayIdForTesting(base::Time::Now()),
             GetDayIdPref());
 }
@@ -131,7 +131,7 @@ TEST_F(SupervisedUserMetricsServiceTest,
   histogram_tester_.ExpectUniqueSample(
       kManagedSiteListHistogramName,
       /*sample=*/
-      FamilyLinkUrlFilter::ManagedSiteList::kEmpty,
+      SupervisedUserMetricsService::ManagedSiteList::kEmpty,
       /*expected_bucket_count=*/1);
   histogram_tester_.ExpectUniqueSample(kApprovedSitesCountHistogramName,
                                        /*sample=*/0,
@@ -156,79 +156,6 @@ TEST_F(SupervisedUserMetricsServiceTest,
   histogram_tester_.ExpectTotalCount(kBlockedSitesCountHistogramName,
                                      /*expected_count=*/0);
 }
-
-using FieldTrialName = std::string;
-// Test suite to check correct association with synthetic field trials
-class SupervisedUserMetricsServiceFieldTrialTest
-    : public testing::TestWithParam<FieldTrialName> {
- protected:
-  ~SupervisedUserMetricsServiceFieldTrialTest() override {
-    test_environment_->Shutdown();
-  }
-
-  void ToggleContentFilter(bool enabled) {
-    CHECK(test_environment_)
-        << "Create test environment first with CreateTestEnvironment().";
-
-    if (GetFieldTrialName() == "AndroidDeviceSearchContentFilters") {
-      test_environment_->device_parental_controls()
-          .SetSearchContentFiltersEnabledForTesting(enabled);
-      return;
-    } else if (GetFieldTrialName() == "AndroidDeviceBrowserContentFilters") {
-      test_environment_->device_parental_controls()
-          .SetBrowserContentFiltersEnabledForTesting(enabled);
-      return;
-    }
-
-    NOTREACHED() << "Unsupported field trial name: " << GetFieldTrialName();
-  }
-
-  void CreateTestEnvironment(std::unique_ptr<SynteticFieldTrialDelegateMock>
-                                 synthetic_field_trial_delegate) {
-    test_environment_ = std::make_unique<SupervisedUserTestEnvironment>(
-        std::move(synthetic_field_trial_delegate));
-  }
-
-  static FieldTrialName GetFieldTrialName() { return GetParam(); }
-
- private:
-  base::test::TaskEnvironment task_environment;
-  std::unique_ptr<SupervisedUserTestEnvironment> test_environment_;
-};
-
-TEST_P(SupervisedUserMetricsServiceFieldTrialTest,
-       SyntheticFieldTrialRegistered) {
-  // Register calls before environment's created, because the metrics service
-  // calls field trial registration on creation.
-  auto mock = std::make_unique<SynteticFieldTrialDelegateMock>();
-  // Current filter it disabled on mock registration (when the environment is
-  // created), and then once for each toggle.
-  EXPECT_CALL(*mock, RegisterSyntheticFieldTrial(Eq(GetParam()), "Disabled"))
-      .Times(2);
-  // Tested filter is registered as enabled when it's toggled on.
-  EXPECT_CALL(*mock, RegisterSyntheticFieldTrial(Eq(GetParam()), "Enabled"))
-      .Times(1);
-
-  // Other filter is interacted similarly: subscribe, enable, disable.
-  EXPECT_CALL(*mock, RegisterSyntheticFieldTrial(Ne(GetParam()), _)).Times(3);
-  CreateTestEnvironment(std::move(mock));
-
-  // This cycles all possible combinations of states for each filter:
-  // off -> on -> off.
-  // There should be a all-disabled initial registration when the metrics
-  // service is created.
-  ToggleContentFilter(/*enabled=*/true);
-  ToggleContentFilter(/*enabled=*/false);
-}
-
-INSTANTIATE_TEST_SUITE_P(
-    ,
-    SupervisedUserMetricsServiceFieldTrialTest,
-    testing::Values("AndroidDeviceSearchContentFilters",
-                    "AndroidDeviceBrowserContentFilters"),
-    [](const testing::TestParamInfo<FieldTrialName>& info) {
-      return info.param;
-    });
 
 #endif  // BUILDFLAG(IS_ANDROID)
 

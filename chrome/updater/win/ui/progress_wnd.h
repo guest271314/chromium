@@ -7,6 +7,8 @@
 
 #include <windows.h>
 
+#include <stddef.h>
+
 #include <array>
 #include <memory>
 #include <optional>
@@ -47,6 +49,15 @@ class ProgressWndEvents : public CompleteWndEvents {
   virtual void DoCancel() = 0;
 };
 
+// Application messages posted to the progress windows. Keep them together so
+// that new messages don't collide.
+//
+// Carries the app logo bitmaps to the progress window. See `LoadLogo`.
+inline constexpr UINT WM_SET_APP_LOGO = WM_APP + 10;
+// Posted by `WebView2ProgressWnd` to itself when the WebView2 creation could
+// not be started. `WPARAM` carries the failure `HRESULT`.
+inline constexpr UINT WM_WEBVIEW2_CREATE_FAILED = WM_APP + 11;
+
 // Implements the UI progress window.
 class ProgressWnd : public CompleteWnd, public AppInstallProgress {
  public:
@@ -58,10 +69,10 @@ class ProgressWnd : public CompleteWnd, public AppInstallProgress {
   void SetEventSink(ProgressWndEvents* ev);
 
   CR_BEGIN_MSG_MAP_EX(ProgressWnd)
+    CR_MESSAGE_HANDLER_EX(WM_SET_APP_LOGO, OnSetAppLogo)
     CR_MESSAGE_HANDLER_EX(WM_INITDIALOG, OnInitDialog)
+    CR_MESSAGE_HANDLER_EX(WM_SIZE, OnSize)
     CR_MESSAGE_HANDLER_EX(WM_ERASEBKGND, OnEraseBkgnd)
-    CR_MESSAGE_HANDLER_EX(WM_SYSCOLORCHANGE, OnSysColorChange)
-    CR_MESSAGE_HANDLER_EX(WM_SETTINGCHANGE, OnSettingChange)
     CR_MSG_WM_CTLCOLORSTATIC(OnCtlColorStatic)
     CR_COMMAND_HANDLER_EX(IDC_BUTTON1, BN_CLICKED, OnClickedButton)
     CR_COMMAND_HANDLER_EX(IDC_BUTTON2, BN_CLICKED, OnClickedButton)
@@ -79,8 +90,27 @@ class ProgressWnd : public CompleteWnd, public AppInstallProgress {
   FRIEND_TEST_ALL_PREFIXES(ProgressWndTest, OnWaitingToDownload);
   FRIEND_TEST_ALL_PREFIXES(ProgressWndTest, OnWaitingRetryDownload);
   FRIEND_TEST_ALL_PREFIXES(ProgressWndTest, OnPause);
+  FRIEND_TEST_ALL_PREFIXES(ProgressWndTest, OnDownloading);
   FRIEND_TEST_ALL_PREFIXES(ProgressWndTest, OnComplete);
   FRIEND_TEST_ALL_PREFIXES(ProgressWndTest, LaunchCmdLine);
+  FRIEND_TEST_ALL_PREFIXES(ProgressWndTest, FlatButtonSubclass);
+  FRIEND_TEST_ALL_PREFIXES(ProgressWndTest, SetAppLogoDynamicSizing);
+  FRIEND_TEST_ALL_PREFIXES(ProgressWndTest, SetAppLogoThemeSwitching);
+  FRIEND_TEST_ALL_PREFIXES(ProgressWndTest, ErrorIllustrationThemeSwitching);
+  FRIEND_TEST_ALL_PREFIXES(ProgressWndTest, ApplyDpiScalingIconMetrics);
+  FRIEND_TEST_ALL_PREFIXES(ProgressWndTest, WindowIconsPersistAcrossCompletion);
+  FRIEND_TEST_ALL_PREFIXES(ProgressWndTest, SetAppLogoHybridTheme);
+  FRIEND_TEST_ALL_PREFIXES(ProgressWndTest, SetAppLogoIdenticalBitmapHandles);
+  FRIEND_TEST_ALL_PREFIXES(
+      ProgressWndTest,
+      ResetWindowIconCachePreventsGdiHandleRecyclingStaleCacheHit);
+  FRIEND_TEST_ALL_PREFIXES(
+      ProgressWndTest,
+      GetCurrentAppLogoBitmapDarkModeSingleLightBitmapFallback);
+  FRIEND_TEST_ALL_PREFIXES(ProgressWndTest,
+                           SettingChangeWithoutTransitionDoesNotRefresh);
+  FRIEND_TEST_ALL_PREFIXES(ProgressWndTest,
+                           ThemeChangedRefreshesWithoutTransition);
 
   enum class States {
     STATE_INIT = 0,
@@ -127,14 +157,29 @@ class ProgressWnd : public CompleteWnd, public AppInstallProgress {
   void OnPause() override;
   void OnComplete(const ObserverCompletionInfo& observer_info) override;
 
+  LRESULT OnSetAppLogo(UINT msg, WPARAM wparam, LPARAM lparam);
   LRESULT OnInitDialog(UINT msg, WPARAM wparam, LPARAM lparam);
+  LRESULT OnSize(UINT msg, WPARAM wparam, LPARAM lparam);
   void OnClickedButton(UINT notify_code, int id, HWND wnd_ctl);
   LRESULT OnEraseBkgnd(UINT msg, WPARAM wparam, LPARAM lparam);
-  LRESULT OnSysColorChange(UINT msg, WPARAM wparam, LPARAM lparam);
-  LRESULT OnSettingChange(UINT msg, WPARAM wparam, LPARAM lparam);
   HBRUSH OnCtlColorStatic(HDC dc, HWND ctl_hwnd);
 
   void SetControlText(int id, const std::wstring& text);
+  // Sets the application logos for light and dark modes. `dark_bitmap` is
+  // optional because applications or update servers may only provide a single
+  // standard (unthemed) logo. When `dark_bitmap` is null or omitted,
+  // `light_bitmap` is used for both themes. `light_bitmap` and `dark_bitmap`
+  // must not refer to the same non-null handle.
+  void SetAppLogo(base::win::ScopedGDIObject<HBITMAP> light_bitmap,
+                  base::win::ScopedGDIObject<HBITMAP> dark_bitmap = {});
+  void UpdateAppLogo(UINT target_dpi = 0);
+  HBITMAP GetCurrentAppLogoBitmap() const;
+  HBITMAP SelectLogoForTheme(bool is_dark) const;
+  void UpdateErrorIllustration() override;
+  // Returns the cached error illustration bitmap for the specified theme,
+  // loading it from resources on first request.
+  HBITMAP GetErrorIllustrationBitmap(bool is_dark_mode);
+  void OnThemeStateChanged() override;
 
   // Returns true if this window is closed.
   bool MaybeCloseWindow() override;
@@ -143,6 +188,9 @@ class ProgressWnd : public CompleteWnd, public AppInstallProgress {
   HRESULT SetMarqueeMode(bool is_marquee);
 
   void HandleCancelRequest();
+  void UpdateWindowRgn();
+  void ApplyDpiScaling(UINT dpi) override;
+  int GetScaledCornerRadius() const;
 
   void DeterminePostInstallUrls(const ObserverCompletionInfo& info);
 
@@ -153,6 +201,7 @@ class ProgressWnd : public CompleteWnd, public AppInstallProgress {
   raw_ptr<ProgressWndEvents> events_sink_ = nullptr;
   std::vector<GURL> post_install_urls_;
   bool is_canceled_ = false;
+  std::optional<bool> is_marquee_;
 
   struct ControlState {
    private:
@@ -166,14 +215,52 @@ class ProgressWnd : public CompleteWnd, public AppInstallProgress {
 
   static const ControlState ctls_[];
 
-  // The speed by which the progress bar moves in marquee mode.
-  static constexpr int kMarqueeModeUpdatesMs = 75;
+  // Background image cache for both light and dark themes.
+  base::win::ScopedGDIObject<HBITMAP> light_bg_bmp_;
+  base::win::ScopedGDIObject<HBITMAP> dark_bg_bmp_;
 
-  // Cached brush used to fill the background of text static controls in
-  // dark mode (see `OnCtlColorStatic`). Created lazily on first use and
-  // reset whenever the system theme changes so the next paint picks up
-  // the new colors.
-  base::win::ScopedGDIObject<HBRUSH> dark_static_brush_;
+  // Error illustration image cache for both light and dark themes.
+  base::win::ScopedGDIObject<HBITMAP> light_error_illustration_bmp_;
+  base::win::ScopedGDIObject<HBITMAP> dark_error_illustration_bmp_;
+
+  // Number of `OnThemeStateChanged()` calls, so a test can tell a suppressed
+  // refresh from one that ran and changed nothing visible.
+  int theme_refresh_count_for_testing_ = 0;
+
+  // Cached original app logo bitmaps for light and dark themes received via
+  // WM_SET_APP_LOGO.
+  base::win::ScopedGDIObject<HBITMAP> light_app_logo_bmp_;
+  base::win::ScopedGDIObject<HBITMAP> dark_app_logo_bmp_;
+
+  // Scaled app logo bitmap dynamically sized for the window's current DPI.
+  base::win::ScopedGDIObject<HBITMAP> scaled_app_logo_bmp_;
+
+  // The design-time bottom Y-coordinate of `IDC_APP_BITMAP` normalized to
+  // standard 96-DPI space. The bottom edge is locked to preserve the design
+  // margin above the dialog buttons, allowing taller square logos (e.g. 48x48)
+  // to expand upward into the empty area below the progress bar.
+  int initial_app_logo_base_bottom_y_ = -1;
+
+  // Returns the bounding rectangle of `control` in parent client coordinates,
+  // normalized for right-to-left (RTL) mirrored layouts.
+  RECT GetControlClientRect(HWND control) const;
+
+  HBITMAP GetBackgroundBitmap(bool is_dark_mode);
+
+  // The speed by which the progress bar moves in marquee mode.
+  static constexpr int kMarqueeModeUpdatesMs = 15;
+
+  // Subclassed buttons representing the standard dialog actions.
+  // btn1_ (Primary): Used for "Restart Now" actions on reboot/restart screens.
+  // btn2_ (Secondary): Used for "Restart Later" actions on reboot/restart
+  // screens. close_btn_ (Primary): Used for "Close" or "Cancel" actions.
+  // get_help_btn_ (Secondary): Used for the "Get Help" link action.
+  FlatButton btn1_;
+  FlatButton btn2_;
+  FlatButton close_btn_;
+  FlatButton get_help_btn_;
+
+  FRIEND_TEST_ALL_PREFIXES(ProgressWndTest, SetAppLogoDynamicSizing);
 
   CR_MSG_MAP_CLASS_DECLARATIONS(ProgressWnd)
 };

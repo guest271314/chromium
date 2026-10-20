@@ -101,6 +101,9 @@ class WidgetBaseClient {
   virtual void UpdateCompositorScrollState(
       const cc::CompositorCommitData& commit_data) {}
 
+  virtual void UpdateAnimatedImageState(
+      const cc::CompositorCommitData& commit_data) {}
+
   // Notifies that the layer tree host has completed a call to
   // RequestMainFrameUpdate in response to a BeginMainFrame.
   virtual void DidBeginMainFrame() {}
@@ -129,6 +132,7 @@ class WidgetBaseClient {
   virtual bool SupportsBufferedTouchEvents() = 0;
 
   virtual void DidHandleKeyEvent() {}
+  virtual void DidHandleGestureEvent(const WebGestureEvent& event) {}
   virtual void WillHandleGestureEvent(const WebGestureEvent& event,
                                       bool* suppress) = 0;
   virtual void WillHandleMouseEvent(const WebMouseEvent& event) = 0;

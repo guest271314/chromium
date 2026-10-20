@@ -47,11 +47,42 @@ public class GlicEnabling {
         return GlicEnablingJni.get().isEnabledForProfile(profile);
     }
 
+    /** Returns true if the given profile has Glic enabled and the user has consented. */
+    public static boolean isEnabledAndConsentForProfile(@Nullable Profile profile) {
+        if (profile == null) return false;
+        if (sIsEnabledForTesting != null) return sIsEnabledForTesting;
+        return GlicEnablingJni.get().isEnabledAndConsentForProfile(profile);
+    }
+
+    /** Returns true if the user was previously determined to be ineligible for Glic. */
+    public static boolean wasPreviouslyNotAllowed(@Nullable Profile profile) {
+        if (profile == null) return false;
+        if (sIsEnabledForTesting != null) return sIsEnabledForTesting;
+        return GlicEnablingJni.get().wasPreviouslyNotAllowed(profile);
+    }
+
     /** Returns true if the Glic settings page should be shown for the given profile. */
     public static boolean shouldShowSettingsPage(@Nullable Profile profile) {
         if (profile == null) return false;
         if (sIsEnabledForTesting != null) return sIsEnabledForTesting;
         return GlicEnablingJni.get().shouldShowSettingsPage(profile);
+    }
+
+    /** Returns true if the web actuation / auto browse toggle should be shown for the profile. */
+    public static boolean shouldShowWebActuationToggle(@Nullable Profile profile) {
+        if (profile == null) return false;
+        if (sIsEnabledForTesting != null) return sIsEnabledForTesting;
+        return GlicEnablingJni.get().shouldShowWebActuationToggle(profile);
+    }
+
+    /**
+     * Returns true if the experimental triggering ("Let Gemini Spark browse on this device") toggle
+     * should be shown for the profile.
+     */
+    public static boolean shouldShowExperimentalTriggeringToggle(@Nullable Profile profile) {
+        if (profile == null) return false;
+        if (sIsEnabledForTesting != null) return sIsEnabledForTesting;
+        return GlicEnablingJni.get().shouldShowExperimentalTriggeringToggle(profile);
     }
 
     /** Returns true if Glic is ready to be used for the given profile. */
@@ -99,13 +130,32 @@ public class GlicEnabling {
     /** Returns true if Glic is disabled by policy for the given profile. */
     public static boolean isDisabledByPolicy(@Nullable Profile profile) {
         if (profile == null) return false;
+        if (sIsEnabledForTesting != null) return false;
         return GlicEnablingJni.get().isDisabledByPolicy(profile);
     }
 
     /** Returns true if the profile is managed by enterprise. */
     public static boolean isProfileManaged(@Nullable Profile profile) {
         if (profile == null) return false;
+        if (sIsEnabledForTesting != null) return false;
         return GlicEnablingJni.get().isProfileManaged(profile);
+    }
+
+    /** Returns true if Glic settings are enforced by enterprise policy. */
+    public static boolean isPolicyEnforced(@Nullable Profile profile) {
+        if (profile == null) return false;
+        if (sIsEnabledForTesting != null) return false;
+        return GlicEnablingJni.get().isPolicyEnforced(profile);
+    }
+
+    /**
+     * Returns true if explicit experimental opt-in is required for the given profile.
+     *
+     * <p>Note: Caller must ensure {@link #isEnabledForProfile(Profile)} returns true before calling
+     * this method.
+     */
+    public static boolean experimentalOptInIsNeeded(Profile profile) {
+        return GlicEnablingJni.get().experimentalOptInIsNeeded(profile);
     }
 
     @NativeMethods
@@ -116,13 +166,25 @@ public class GlicEnabling {
 
         boolean isEnabledForProfile(@JniType("Profile*") Profile profile);
 
+        boolean isEnabledAndConsentForProfile(@JniType("Profile*") Profile profile);
+
+        boolean wasPreviouslyNotAllowed(@JniType("Profile*") Profile profile);
+
         boolean shouldShowSettingsPage(@JniType("Profile*") Profile profile);
+
+        boolean shouldShowWebActuationToggle(@JniType("Profile*") Profile profile);
+
+        boolean shouldShowExperimentalTriggeringToggle(@JniType("Profile*") Profile profile);
 
         boolean isReadyForProfile(@JniType("Profile*") Profile profile);
 
         boolean isDisabledByPolicy(@JniType("Profile*") Profile profile);
 
         boolean isProfileManaged(@JniType("Profile*") Profile profile);
+
+        boolean isPolicyEnforced(@JniType("Profile*") Profile profile);
+
+        boolean experimentalOptInIsNeeded(@JniType("Profile*") Profile profile);
 
         void setBypassEnablementChecksForTesting(boolean bypass);
     }

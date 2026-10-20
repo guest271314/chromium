@@ -6,13 +6,18 @@
 
 #include <vector>
 
+#include "base/test/metrics/histogram_tester.h"
 #include "base/test/mock_callback.h"
 #include "base/time/time.h"
+#include "chrome/browser/glic/glic_pref_names.h"
 #include "chrome/browser/media/webrtc/media_capture_devices_dispatcher.h"
 #include "chrome/browser/media/webrtc/media_stream_capture_indicator.h"
 #include "chrome/test/base/chrome_render_view_host_test_harness.h"
+#include "components/content_settings/core/browser/host_content_settings_map.h"
 #include "components/optimization_guide/content/browser/media_transcript_provider.h"
 #include "components/optimization_guide/content/browser/mock_media_transcript_provider.h"
+#include "components/prefs/pref_service.h"
+#include "components/ukm/test_ukm_recorder.h"
 #include "content/public/browser/document_picture_in_picture_window_controller.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/test/mock_media_session.h"
@@ -234,9 +239,9 @@ TEST_F(GlicMediaContextTest, PeerConnectionStopsTranscription) {
 
 TEST_F(GlicMediaContextTest, PeerConnectionAddedAndRemovedResetsExclusion) {
   context()->OnPeerConnectionAdded();
-  EXPECT_TRUE(context()->is_excluded_from_transcript_for_testing());
+  EXPECT_TRUE(context()->IsExcludedFromTranscript());
   context()->OnPeerConnectionRemoved();
-  EXPECT_FALSE(context()->is_excluded_from_transcript_for_testing());
+  EXPECT_FALSE(context()->IsExcludedFromTranscript());
 }
 
 TEST_F(GlicMediaContextTest, ExclusionRemainsIfUserMediaIsActive) {
@@ -245,11 +250,11 @@ TEST_F(GlicMediaContextTest, ExclusionRemainsIfUserMediaIsActive) {
 
   // Add and remove a peer connection.
   context()->OnPeerConnectionAdded();
-  EXPECT_TRUE(context()->is_excluded_from_transcript_for_testing());
+  EXPECT_TRUE(context()->IsExcludedFromTranscript());
   context()->OnPeerConnectionRemoved();
 
   // Exclusion should remain active because of user media.
-  EXPECT_TRUE(context()->is_excluded_from_transcript_for_testing());
+  EXPECT_TRUE(context()->IsExcludedFromTranscript());
 
   stream.reset();
 }
@@ -257,13 +262,13 @@ TEST_F(GlicMediaContextTest, ExclusionRemainsIfUserMediaIsActive) {
 TEST_F(GlicMediaContextTest, ExclusionRemainsIfPeerConnectionsAreActive) {
   context()->OnPeerConnectionAdded();
   context()->OnPeerConnectionAdded();
-  EXPECT_TRUE(context()->is_excluded_from_transcript_for_testing());
+  EXPECT_TRUE(context()->IsExcludedFromTranscript());
 
   context()->OnPeerConnectionRemoved();
-  EXPECT_TRUE(context()->is_excluded_from_transcript_for_testing());
+  EXPECT_TRUE(context()->IsExcludedFromTranscript());
 
   context()->OnPeerConnectionRemoved();
-  EXPECT_FALSE(context()->is_excluded_from_transcript_for_testing());
+  EXPECT_FALSE(context()->IsExcludedFromTranscript());
 }
 
 TEST_F(GlicMediaContextTest, OnResult_FinalResultWithTiming_EmptyContext) {
@@ -689,6 +694,75 @@ TEST_F(GlicMediaContextTest, OnResult_NotifiesTranscriptProvider) {
 
   // The first final result should trigger the notification.
   EXPECT_TRUE(context()->OnResult(CreateSpeechRecognitionResult("test", true)));
+}
+
+TEST_F(GlicMediaContextTest, PrefBlocksTranscription) {
+  Profile* prof = profile();
+  prof->GetPrefs()->SetBoolean(glic::prefs::kGlicMediaUnderstandingEnabled,
+                               false);
+
+  // Send a transcription and verify that it is ignored.
+  EXPECT_TRUE(context()->OnResult(
+      media::SpeechRecognitionResult("ABC", /*is_final=*/true)));
+  EXPECT_EQ(GetTranscriptText(context()), "");
+}
+
+TEST_F(GlicMediaContextTest, ClearAllTranscriptsClearsTranscripts) {
+  // Populate the context with transcripts.
+  context()->OnResult(CreateSpeechRecognitionResult("Transcript one", true));
+  EXPECT_EQ(GetTranscriptText(context()), "Transcript one");
+
+  // Clear them.
+  context()->ClearAllTranscripts();
+
+  // Verify that it is now empty.
+  EXPECT_EQ(GetTranscriptText(context()), "");
+  EXPECT_FALSE(context()->HasTranscriptChunks());
+}
+
+TEST_F(GlicMediaContextTest, RecordsUkmOnDestruction) {
+  ukm::TestAutoSetUkmRecorder ukm_recorder;
+
+  auto test_context = std::make_unique<TestGlicMediaContext>(rfh());
+  test_context->SetMediaSession(&mock_media_session());
+  test_context->OnResult(CreateSpeechRecognitionResult("test", true));
+  EXPECT_TRUE(test_context->HasTranscriptChunks());
+  test_context.reset();
+
+  auto entries = ukm_recorder.GetEntriesByName("Glic.MediaContext");
+  ASSERT_EQ(entries.size(), 1u);
+  ukm_recorder.ExpectEntryMetric(entries[0], "HasTranscript", 1);
+
+  test_context = std::make_unique<TestGlicMediaContext>(rfh());
+  test_context.reset();
+
+  entries = ukm_recorder.GetEntriesByName("Glic.MediaContext");
+  ASSERT_EQ(entries.size(), 2u);
+  ukm_recorder.ExpectEntryMetric(entries[1], "HasTranscript", 0);
+}
+
+TEST_F(GlicMediaContextTest, SharedContextLengthMetric) {
+  base::HistogramTester histogram_tester;
+
+  // Initially, no metric should be recorded.
+  context()->GetTranscriptChunks();
+  histogram_tester.ExpectTotalCount("Glic.Media.SharedContextLength", 0);
+
+  // Add a final result.
+  const std::string test_cap = "Hello World";
+  context()->OnResult(
+      media::SpeechRecognitionResult(test_cap, /*is_final=*/true));
+
+  // Request the transcript.
+  context()->GetTranscriptChunks();
+
+  // Metric should be recorded once with the correct length.
+  histogram_tester.ExpectUniqueSample("Glic.Media.SharedContextLength",
+                                      test_cap.length(), 1);
+
+  // Request again, should record again.
+  context()->GetTranscriptChunks();
+  histogram_tester.ExpectTotalCount("Glic.Media.SharedContextLength", 2);
 }
 
 }  // namespace glic

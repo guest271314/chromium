@@ -9,13 +9,15 @@ import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.robolectric.Shadows.shadowOf;
 
 import android.content.Context;
 import android.graphics.Bitmap;
 import android.graphics.drawable.BitmapDrawable;
+import android.graphics.drawable.Drawable;
+import android.graphics.drawable.LayerDrawable;
+import android.view.Gravity;
 
 import org.junit.Before;
 import org.junit.Rule;
@@ -25,6 +27,7 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
+import org.mockito.quality.Strictness;
 import org.robolectric.annotation.Config;
 import org.robolectric.shadows.ShadowLog;
 
@@ -43,7 +46,6 @@ import org.chromium.chrome.browser.omnibox.R;
 import org.chromium.chrome.browser.omnibox.UrlBarEditingTextStateProvider;
 import org.chromium.chrome.browser.omnibox.styles.OmniboxDrawableState;
 import org.chromium.chrome.browser.omnibox.styles.OmniboxImageSupplier;
-import org.chromium.chrome.browser.omnibox.styles.OmniboxResourceProvider;
 import org.chromium.chrome.browser.omnibox.suggestions.AutocompleteUIContext;
 import org.chromium.chrome.browser.omnibox.suggestions.SuggestionHost;
 import org.chromium.chrome.browser.omnibox.suggestions.action.OmniboxActionInSuggest;
@@ -51,12 +53,12 @@ import org.chromium.chrome.browser.omnibox.suggestions.base.BaseSuggestionViewPr
 import org.chromium.chrome.browser.omnibox.suggestions.basic.BasicSuggestionProcessor.BookmarkState;
 import org.chromium.chrome.browser.share.ShareDelegate;
 import org.chromium.chrome.browser.tab.Tab;
-import org.chromium.components.metrics.OmniboxEventProtos.OmniboxEventProto.PageClassification;
+import org.chromium.components.metrics.OmniboxEventProtosIntDef.PageClassification;
 import org.chromium.components.omnibox.AutocompleteInput;
 import org.chromium.components.omnibox.AutocompleteMatch;
 import org.chromium.components.omnibox.AutocompleteMatchBuilder;
+import org.chromium.components.omnibox.OmniboxCapabilities;
 import org.chromium.components.omnibox.OmniboxFeatureList;
-import org.chromium.components.omnibox.OmniboxFeatures;
 import org.chromium.components.omnibox.OmniboxSuggestionType;
 import org.chromium.components.omnibox.SuggestTemplateInfoProto.SuggestTemplateInfo;
 import org.chromium.components.omnibox.action.ActionPresentationMode;
@@ -74,9 +76,7 @@ import java.util.function.Supplier;
 
 /** Tests for {@link BaseSuggestionViewProcessor}. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(
-        manifest = Config.NONE,
-        shadows = {ShadowLog.class})
+@Config(shadows = {ShadowLog.class})
 public class BaseSuggestionProcessorUnitTest {
     private static class TestBaseSuggestionProcessor extends BaseSuggestionViewProcessor {
         @SuppressWarnings("HidingField")
@@ -89,7 +89,7 @@ public class BaseSuggestionProcessorUnitTest {
 
         @Override
         public PropertyModel createModel() {
-            return new PropertyModel(BaseSuggestionViewProperties.ALL_KEYS);
+            return createPropertyModel(BaseSuggestionViewProperties.ALL_KEYS);
         }
 
         @Override
@@ -115,16 +115,17 @@ public class BaseSuggestionProcessorUnitTest {
 
     private static final GURL TEST_URL = JUnitTestGURLs.URL_1;
 
-    public @Rule MockitoRule mMockitoRule = MockitoJUnit.rule();
+    @Rule
+    public final MockitoRule mMockitoRule = MockitoJUnit.rule().strictness(Strictness.STRICT_STUBS);
 
-    private @Mock SuggestionHost mSuggestionHost;
-    private @Mock OmniboxImageSupplier mImageSupplier;
-    private @Mock UrlBarEditingTextStateProvider mTextProvider;
-    private @Mock Supplier<Tab> mTabSupplier;
-    private @Mock Supplier<ShareDelegate> mShareDelegateSupplier;
-    private @Mock BookmarkState mBookmarkState;
-    private @Mock OmniboxActionDelegate mActionDelegate;
-    private @Mock Bitmap mBitmap;
+    @Mock private SuggestionHost mSuggestionHost;
+    @Mock private OmniboxImageSupplier mImageSupplier;
+    @Mock private UrlBarEditingTextStateProvider mTextProvider;
+    @Mock private Supplier<Tab> mTabSupplier;
+    @Mock private Supplier<ShareDelegate> mShareDelegateSupplier;
+    @Mock private BookmarkState mBookmarkState;
+    @Mock private OmniboxActionDelegate mActionDelegate;
+    @Mock private Bitmap mBitmap;
 
     private Context mContext;
     private AutocompleteUIContext mUiContext;
@@ -151,8 +152,7 @@ public class BaseSuggestionProcessorUnitTest {
                         mActionDelegate);
         mProcessor = new TestBaseSuggestionProcessor(mUiContext);
         mInput = new AutocompleteInput();
-        mInput.setPageClassification(
-                PageClassification.INSTANT_NTP_WITH_OMNIBOX_AS_STARTING_FOCUS_VALUE);
+        mInput.setPageClassification(PageClassification.INSTANT_NTP_WITH_OMNIBOX_AS_STARTING_FOCUS);
     }
 
     /** Create Suggestion for test. */
@@ -206,7 +206,7 @@ public class BaseSuggestionProcessorUnitTest {
 
     @Test
     public void suggestionFavicons_showFaviconWhenAvailable() {
-        final ArgumentCaptor<Callback<Bitmap>> callback = MockitoHelper.callbackCaptor();
+        final ArgumentCaptor<Callback<Drawable>> callback = MockitoHelper.callbackCaptor();
         createSuggestion(
                 OmniboxSuggestionType.URL_WHAT_YOU_TYPED,
                 /* isSearch= */ false,
@@ -216,7 +216,7 @@ public class BaseSuggestionProcessorUnitTest {
         assertNotNull(icon1);
 
         verify(mImageSupplier).fetchFavicon(eq(TEST_URL), callback.capture());
-        callback.getValue().onResult(mBitmap);
+        callback.getValue().onResult(new BitmapDrawable(mContext.getResources(), mBitmap));
         OmniboxDrawableState icon2 = mModel.get(BaseSuggestionViewProperties.ICON);
         assertNotNull(icon2);
 
@@ -226,7 +226,7 @@ public class BaseSuggestionProcessorUnitTest {
 
     @Test
     public void suggestionFavicons_doNotReplaceFallbackIconWhenNoFaviconIsAvailable() {
-        final ArgumentCaptor<Callback<Bitmap>> callback = MockitoHelper.callbackCaptor();
+        final ArgumentCaptor<Callback<Drawable>> callback = MockitoHelper.callbackCaptor();
         createSuggestion(
                 OmniboxSuggestionType.URL_WHAT_YOU_TYPED,
                 /* isSearch= */ false,
@@ -252,7 +252,7 @@ public class BaseSuggestionProcessorUnitTest {
                 /* hasTabMatch= */ false,
                 TEST_URL);
 
-        Runnable touchDownListener = mModel.get(BaseSuggestionViewProperties.ON_TOUCH_DOWN_EVENT);
+        var touchDownListener = mModel.get(BaseSuggestionViewProperties.ON_TOUCH_DOWN_EVENT);
         assertNull(touchDownListener);
     }
 
@@ -265,7 +265,7 @@ public class BaseSuggestionProcessorUnitTest {
                 /* hasTabMatch= */ false,
                 TEST_URL);
 
-        Runnable touchDownListener = mModel.get(BaseSuggestionViewProperties.ON_TOUCH_DOWN_EVENT);
+        var touchDownListener = mModel.get(BaseSuggestionViewProperties.ON_TOUCH_DOWN_EVENT);
         assertNotNull(touchDownListener);
 
         var histogramWatcher =
@@ -274,10 +274,11 @@ public class BaseSuggestionProcessorUnitTest {
                                 OmniboxMetrics.HISTOGRAM_SEARCH_PREFETCH_TOUCH_DOWN_PROCESS_TIME)
                         .build();
 
-        touchDownListener.run();
+        touchDownListener.onResult(1000L);
 
         histogramWatcher.assertExpected();
-        verify(mSuggestionHost, times(1)).onSuggestionTouchDown(mSuggestion, /* position= */ 0);
+        verify(mSuggestionHost)
+                .onSuggestionTouchDown(mSuggestion, /* position= */ 0, /* eventTime= */ 1000L);
     }
 
     @Test
@@ -290,7 +291,7 @@ public class BaseSuggestionProcessorUnitTest {
                 /* hasTabMatch= */ false,
                 TEST_URL);
 
-        Runnable touchDownListener = mModel.get(BaseSuggestionViewProperties.ON_TOUCH_DOWN_EVENT);
+        var touchDownListener = mModel.get(BaseSuggestionViewProperties.ON_TOUCH_DOWN_EVENT);
         assertNull(touchDownListener);
     }
 
@@ -321,14 +322,6 @@ public class BaseSuggestionProcessorUnitTest {
         assertEquals(1, monitor.getActionCount("MobileOmniboxRefineSuggestion.Search"));
         assertEquals(1, monitor.getActions().size());
         monitor.tearDown();
-
-        mControlsPositionSupplier.set(ControlsPosition.BOTTOM);
-        mProcessor.setRemoveOrRefineAction(mModel, mInput, mSuggestion, 0);
-        actions = mModel.get(BaseSuggestionViewProperties.ACTION_BUTTONS);
-        action = actions.get(0);
-        assertEquals(
-                R.drawable.btn_suggestion_refine_down,
-                shadowOf(action.icon.drawable).getCreatedFromResId());
     }
 
     @Test
@@ -360,10 +353,8 @@ public class BaseSuggestionProcessorUnitTest {
 
     @Test
     @Config(qualifiers = "w400dp")
-    @EnableFeatures({OmniboxFeatureList.OMNIBOX_IMPROVEMENT_FOR_LFF})
-    public void setRemoveOrRefineAction_noRmoveActionOnPhone() {
+    public void setRemoveOrRefineAction_noRemoveActionOnPhone() {
         DeviceInput.setSupportsPrecisionPointerForTesting(true);
-        OmniboxFeatures.sOmniboxImprovementForLFFRemoveSuggestionViaButton.setForTesting(true);
 
         var action = setUpDeleteScenarioForRemoveActionTesting();
 
@@ -376,11 +367,8 @@ public class BaseSuggestionProcessorUnitTest {
 
     @Test
     @Config(qualifiers = "sw600dp")
-    @EnableFeatures({OmniboxFeatureList.OMNIBOX_IMPROVEMENT_FOR_LFF})
     public void setRemoveOrRefineAction_noRemoveActionOnTabletWithoutPeripherals() {
-        DeviceInput.setSupportsAlphabeticKeyboardForTesting(false);
         DeviceInput.setSupportsPrecisionPointerForTesting(false);
-        OmniboxFeatures.sOmniboxImprovementForLFFRemoveSuggestionViaButton.setForTesting(true);
 
         var action = setUpDeleteScenarioForRemoveActionTesting();
 
@@ -393,10 +381,8 @@ public class BaseSuggestionProcessorUnitTest {
 
     @Test
     @Config(qualifiers = "sw600dp")
-    @EnableFeatures({OmniboxFeatureList.OMNIBOX_IMPROVEMENT_FOR_LFF})
     public void setRemoveOrRefineAction_removeActionOnTabletWithPrecisionPointer() {
         DeviceInput.setSupportsPrecisionPointerForTesting(true);
-        OmniboxFeatures.sOmniboxImprovementForLFFRemoveSuggestionViaButton.setForTesting(true);
 
         var action = setUpDeleteScenarioForRemoveActionTesting();
 
@@ -405,13 +391,59 @@ public class BaseSuggestionProcessorUnitTest {
                         R.string.accessibility_omnibox_remove_suggestion,
                         mSuggestion.getFillIntoEdit());
         assertEquals(expectedDescription, action.accessibilityDescription);
-        assertEquals(R.drawable.btn_close, shadowOf(action.icon.drawable).getCreatedFromResId());
+        var layerDrawable = (LayerDrawable) action.icon.drawable;
+        assertEquals(
+                R.drawable.btn_close, shadowOf(layerDrawable.getDrawable(0)).getCreatedFromResId());
+        assertEquals(Gravity.CENTER, layerDrawable.getLayerGravity(0));
 
         var monitor = new UserActionTester();
         action.callback.run();
         assertEquals(1, monitor.getActionCount("MobileOmniboxRemoveSuggestion.Button"));
         assertEquals(1, monitor.getActions().size());
         monitor.tearDown();
+    }
+
+    @Test
+    public void setRemoveOrRefineAction_removeActionOnDesktopPlatform() {
+        OmniboxCapabilities.setIsDesktopPlatformForTesting(true);
+
+        Action action = setUpDeleteScenarioForRemoveActionTesting();
+
+        String expectedDescription =
+                mContext.getString(
+                        R.string.accessibility_omnibox_remove_suggestion,
+                        mSuggestion.getFillIntoEdit());
+        assertEquals(expectedDescription, action.accessibilityDescription);
+        var layerDrawable = (LayerDrawable) action.icon.drawable;
+        assertEquals(
+                R.drawable.btn_close, shadowOf(layerDrawable.getDrawable(0)).getCreatedFromResId());
+        assertEquals(Gravity.CENTER, layerDrawable.getLayerGravity(0));
+
+        UserActionTester monitor = new UserActionTester();
+        action.callback.run();
+        assertEquals(1, monitor.getActionCount("MobileOmniboxRemoveSuggestion.Button"));
+        assertEquals(1, monitor.getActions().size());
+        monitor.tearDown();
+    }
+
+    @Test
+    public void setRemoveOrRefineAction_suppressedForHubOrTabSearch() {
+        mInput.setPageClassification(PageClassification.ANDROID_TAB_SEARCH_OVERLAY);
+        createSuggestion(
+                OmniboxSuggestionType.HISTORY_URL,
+                /* isSearch= */ false,
+                /* hasTabMatch= */ false,
+                TEST_URL);
+        mProcessor.setRemoveOrRefineAction(mModel, mInput, mSuggestion, 0);
+
+        var actions = mModel.get(BaseSuggestionViewProperties.ACTION_BUTTONS);
+        assertNull(actions);
+
+        mInput.setPageClassification(PageClassification.ANDROID_HUB);
+        mProcessor.setRemoveOrRefineAction(mModel, mInput, mSuggestion, 0);
+
+        actions = mModel.get(BaseSuggestionViewProperties.ACTION_BUTTONS);
+        assertNull(actions);
     }
 
     @Test
@@ -424,7 +456,7 @@ public class BaseSuggestionProcessorUnitTest {
         assertEquals(false, mModel.get(BaseSuggestionViewProperties.USE_LARGE_DECORATION));
         assertEquals(
                 mModel.get(BaseSuggestionViewProperties.ACTION_CHIP_LEAD_IN_SPACING),
-                OmniboxResourceProvider.getSuggestionDecorationIconSizeWidth(mContext));
+                mUiContext.resourceProvider.getSuggestionDecorationIconSizeWidth());
 
         mModel.set(BaseSuggestionViewProperties.USE_LARGE_DECORATION, true);
         mModel.set(BaseSuggestionViewProperties.ACTION_CHIP_LEAD_IN_SPACING, 43);
@@ -433,7 +465,7 @@ public class BaseSuggestionProcessorUnitTest {
         assertEquals(false, mModel.get(BaseSuggestionViewProperties.USE_LARGE_DECORATION));
         assertEquals(
                 mModel.get(BaseSuggestionViewProperties.ACTION_CHIP_LEAD_IN_SPACING),
-                OmniboxResourceProvider.getSuggestionDecorationIconSizeWidth(mContext));
+                mUiContext.resourceProvider.getSuggestionDecorationIconSizeWidth());
     }
 
     @Test
@@ -517,7 +549,7 @@ public class BaseSuggestionProcessorUnitTest {
     public void addActionButtonIfAvailable_HubPageClassificationSkipsButton() {
         // When the ANDROID_HUB PageClassification is seen, the action button is intentionally
         // skipped.
-        mInput.setPageClassification(PageClassification.ANDROID_HUB_VALUE);
+        mInput.setPageClassification(PageClassification.ANDROID_HUB);
 
         createSuggestionWithActions(
                 OmniboxSuggestionType.SEARCH_WHAT_YOU_TYPED,
@@ -535,6 +567,76 @@ public class BaseSuggestionProcessorUnitTest {
 
         var actions = mModel.get(BaseSuggestionViewProperties.ACTION_BUTTONS);
         assertEquals(null, actions);
+    }
+
+    @Test
+    public void addActionButtonIfAvailable_TabSearchOverlayPageClassificationSkipsButton() {
+        // When the ANDROID_TAB_SEARCH_OVERLAY PageClassification is seen, the action button is
+        // intentionally skipped.
+        mInput.setPageClassification(PageClassification.ANDROID_TAB_SEARCH_OVERLAY);
+
+        createSuggestionWithActions(
+                OmniboxSuggestionType.SEARCH_WHAT_YOU_TYPED,
+                /* isSearch= */ true,
+                TEST_URL,
+                List.of(
+                        new OmniboxActionInSuggest(
+                                0,
+                                "hint",
+                                "accessibility",
+                                SuggestTemplateInfo.TemplateAction.ActionType.REVIEWS_VALUE,
+                                "https://google.com",
+                                /* tabId= */ 0,
+                                ActionPresentationMode.BUTTON)));
+
+        var actions = mModel.get(BaseSuggestionViewProperties.ACTION_BUTTONS);
+        assertEquals(null, actions);
+    }
+
+    @Test
+    public void allowOmniboxActions_HubPageClassificationSkipsChips() {
+        // When the ANDROID_HUB PageClassification is seen, action chips are skipped.
+        mInput.setPageClassification(PageClassification.ANDROID_HUB);
+
+        createSuggestionWithActions(
+                OmniboxSuggestionType.SEARCH_WHAT_YOU_TYPED,
+                /* isSearch= */ true,
+                TEST_URL,
+                List.of(
+                        new OmniboxActionInSuggest(
+                                0,
+                                "hint",
+                                "accessibility",
+                                SuggestTemplateInfo.TemplateAction.ActionType.REVIEWS_VALUE,
+                                "https://google.com",
+                                /* tabId= */ 0,
+                                ActionPresentationMode.CHIP)));
+
+        var chips = mModel.get(ActionChipsProperties.ACTION_CHIPS);
+        assertEquals(null, chips);
+    }
+
+    @Test
+    public void allowOmniboxActions_TabSearchOverlayPageClassificationSkipsChips() {
+        // When the ANDROID_TAB_SEARCH_OVERLAY PageClassification is seen, action chips are skipped.
+        mInput.setPageClassification(PageClassification.ANDROID_TAB_SEARCH_OVERLAY);
+
+        createSuggestionWithActions(
+                OmniboxSuggestionType.SEARCH_WHAT_YOU_TYPED,
+                /* isSearch= */ true,
+                TEST_URL,
+                List.of(
+                        new OmniboxActionInSuggest(
+                                0,
+                                "hint",
+                                "accessibility",
+                                SuggestTemplateInfo.TemplateAction.ActionType.REVIEWS_VALUE,
+                                "https://google.com",
+                                /* tabId= */ 0,
+                                ActionPresentationMode.CHIP)));
+
+        var chips = mModel.get(ActionChipsProperties.ACTION_CHIPS);
+        assertEquals(null, chips);
     }
 
     @Test

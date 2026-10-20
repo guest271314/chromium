@@ -22,8 +22,8 @@
 #include "chrome/browser/download/download_prefs.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/ash/capture_mode/chrome_capture_mode_delegate.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_window.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chromeos/ash/components/dbus/cros_disks/cros_disks_client.h"
 #include "content/public/test/browser_test.h"
@@ -173,7 +173,7 @@ class RecordingServiceBrowserTest : public InProcessBrowserTest {
   }
 
   aura::Window* GetBrowserWindow() const {
-    return browser()->window()->GetNativeWindow();
+    return browser()->GetWindow()->GetNativeWindow();
   }
 
   ui::test::EventGenerator* GetEventGenerator() {
@@ -361,7 +361,7 @@ IN_PROC_BROWSER_TEST_F(RecordingServiceBrowserTest,
 IN_PROC_BROWSER_TEST_F(RecordingServiceBrowserTest,
                        MAYBE_InvalidDownloadsPath) {
   auto* download_prefs =
-      DownloadPrefs::FromBrowserContext(browser()->profile());
+      DownloadPrefs::FromBrowserContext(browser()->GetProfile());
   const base::FilePath removable_path =
       ash::CrosDisksClient::GetRemovableDiskMountPoint();
   const base::FilePath invalid_path =
@@ -388,7 +388,7 @@ IN_PROC_BROWSER_TEST_F(GifRecordingBrowserTest, SuccessfulEncodeDecode) {
   base::AddFeatureIdTagToTestResult(
       "screenplay-9c11ed80-9e97-482c-9562-450bd891732b");
 
-  aura::Window* browser_window = browser()->window()->GetNativeWindow();
+  aura::Window* browser_window = browser()->GetWindow()->GetNativeWindow();
   ash::CaptureModeTestApi test_api;
   test_api.SetRecordingType(ash::RecordingType::kGif);
   test_api.SetUserSelectedRegion(browser_window->GetRootWindow()->bounds());

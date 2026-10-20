@@ -27,6 +27,7 @@
 #include "net/base/host_port_pair.h"
 #include "net/base/net_errors.h"
 #include "net/base/network_anonymization_key.h"
+#include "net/base/network_handle.h"
 #include "net/base/proxy_chain.h"
 #include "net/base/proxy_string_util.h"
 #include "net/base/session_usage.h"
@@ -1682,7 +1683,8 @@ TEST_P(HttpProxyConnectJobTest, SpdySessionKeyDisableSecureDns) {
                          PRIVACY_MODE_DISABLED, ProxyChain::Direct(),
                          SessionUsage::kProxy, SocketTag(),
                          NetworkAnonymizationKey(), SecureDnsPolicy::kDisable,
-                         /*disable_cert_verification_network_fetches=*/true),
+                         /*disable_cert_verification_network_fetches=*/true,
+                         handles::kInvalidNetworkHandle),
           /* enable_ip_based_pooling_for_h2 = */ false,
           /* is_websocket = */ false, NetLogWithSource()));
   EXPECT_FALSE(
@@ -1691,7 +1693,8 @@ TEST_P(HttpProxyConnectJobTest, SpdySessionKeyDisableSecureDns) {
                          PRIVACY_MODE_DISABLED, ProxyChain::Direct(),
                          SessionUsage::kProxy, SocketTag(),
                          NetworkAnonymizationKey(), SecureDnsPolicy::kAllow,
-                         /*disable_cert_verification_network_fetches=*/true),
+                         /*disable_cert_verification_network_fetches=*/true,
+                         handles::kInvalidNetworkHandle),
           /* enable_ip_based_pooling_for_h2 = */ false,
           /* is_websocket = */ false, NetLogWithSource()));
 }
@@ -1768,7 +1771,8 @@ TEST_P(HttpProxyConnectJobTest, SpdyInadequateTransportSecurity) {
                          PRIVACY_MODE_DISABLED, ProxyChain::Direct(),
                          SessionUsage::kProxy, SocketTag(),
                          NetworkAnonymizationKey(), SecureDnsPolicy::kDisable,
-                         /*disable_cert_verification_network_fetches=*/true),
+                         /*disable_cert_verification_network_fetches=*/true,
+                         handles::kInvalidNetworkHandle),
           /*enable_ip_based_pooling_for_h2=*/false,
           /*is_websocket=*/false, NetLogWithSource()));
 }
@@ -1817,7 +1821,8 @@ TEST_P(HttpProxyConnectJobTest, SpdyValidAlps) {
                          PRIVACY_MODE_DISABLED, ProxyChain::Direct(),
                          SessionUsage::kProxy, SocketTag(),
                          NetworkAnonymizationKey(), SecureDnsPolicy::kDisable,
-                         /*disable_cert_verification_network_fetches=*/true),
+                         /*disable_cert_verification_network_fetches=*/true,
+                         handles::kInvalidNetworkHandle),
           /*enable_ip_based_pooling_for_h2=*/false,
           /*is_websocket=*/false, NetLogWithSource()));
 }
@@ -1854,7 +1859,8 @@ TEST_P(HttpProxyConnectJobTest, SpdyInvalidAlpsCheckEnabled) {
                          PRIVACY_MODE_DISABLED, ProxyChain::Direct(),
                          SessionUsage::kProxy, SocketTag(),
                          NetworkAnonymizationKey(), SecureDnsPolicy::kDisable,
-                         /*disable_cert_verification_network_fetches=*/true),
+                         /*disable_cert_verification_network_fetches=*/true,
+                         handles::kInvalidNetworkHandle),
           /*enable_ip_based_pooling_for_h2=*/false,
           /*is_websocket=*/false, NetLogWithSource()));
 }
@@ -1899,7 +1905,8 @@ TEST_P(HttpProxyConnectJobTest, SpdyInvalidAlpsCheckDisabled) {
                          PRIVACY_MODE_DISABLED, ProxyChain::Direct(),
                          SessionUsage::kProxy, SocketTag(),
                          NetworkAnonymizationKey(), SecureDnsPolicy::kDisable,
-                         /*disable_cert_verification_network_fetches=*/true),
+                         /*disable_cert_verification_network_fetches=*/true,
+                         handles::kInvalidNetworkHandle),
           /*enable_ip_based_pooling_for_h2=*/false,
           /*is_websocket=*/false, NetLogWithSource()));
 }
@@ -2722,13 +2729,14 @@ TEST_P(HttpProxyConnectJobTest, ProxyPoolTimeoutWithExperimentDefaultParams) {
 // A Mock QuicSessionPool which can intercept calls to RequestSession.
 class MockQuicSessionPool : public QuicSessionPool {
  public:
-  explicit MockQuicSessionPool(HttpServerProperties* http_server_properties,
-                               CertVerifier* cert_verifier,
-                               TransportSecurityState* transport_security_state,
-                               QuicContext* context)
+  MockQuicSessionPool(SSLConfigService* ssl_config_service,
+                      HttpServerProperties* http_server_properties,
+                      CertVerifier* cert_verifier,
+                      TransportSecurityState* transport_security_state,
+                      QuicContext* context)
       : QuicSessionPool(/*net_log=*/nullptr,
                         /*host_resolver=*/nullptr,
-                        /*ssl_config_service=*/nullptr,
+                        ssl_config_service,
                         /*client_socket_factory=*/nullptr,
                         http_server_properties,
                         cert_verifier,
@@ -2737,6 +2745,7 @@ class MockQuicSessionPool : public QuicSessionPool {
                         /*sct_auditing_delegate=*/nullptr,
                         /*socket_performance_watcher_factory=*/nullptr,
                         /*quic_crypto_client_stream_factory=*/nullptr,
+                        /*network_quality_estimator=*/nullptr,
                         context) {}
 
   MockQuicSessionPool(const MockQuicSessionPool&) = delete;
@@ -2769,7 +2778,8 @@ class HttpProxyConnectQuicJobTest : public HttpProxyConnectJobTestBase,
                                     public testing::Test {
  public:
   HttpProxyConnectQuicJobTest()
-      : mock_quic_session_pool_(session_->http_server_properties(),
+      : mock_quic_session_pool_(session_->ssl_config_service(),
+                                session_->http_server_properties(),
                                 session_->cert_verifier(),
                                 session_->context().transport_security_state,
                                 session_->context().quic_context) {

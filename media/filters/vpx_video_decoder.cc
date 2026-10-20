@@ -75,6 +75,15 @@ static std::unique_ptr<vpx_codec_ctx> InitializeVpxContext(
   return nullptr;
 }
 
+// libvpx may decode a corrupted VP8 delta frame with error and still return
+// VPX_CODEC_OK; the corruption is only reported via VP8D_GET_FRAME_CORRUPTED.
+static bool IsVp8FrameCorrupted(vpx_codec_ctx* context) {
+  int corrupted = 0;
+  return vpx_codec_control(context, VP8D_GET_FRAME_CORRUPTED, &corrupted) !=
+             VPX_CODEC_OK ||
+         corrupted != 0;
+}
+
 static int32_t GetVP9FrameBuffer(void* user_priv,
                                  size_t min_size,
                                  vpx_codec_frame_buffer* fb) {
@@ -317,6 +326,12 @@ bool VpxVideoDecoder::VpxDecode(const DecoderBuffer* buffer,
                   << vpx_codec_err_to_string(status);
       return false;
     }
+    if (config_.codec() == VideoCodec::kVP8 &&
+        IsVp8FrameCorrupted(vpx_codec_.get())) {
+      error_status_ = DecoderStatus::Codes::kMalformedBitstream;
+      DLOG(ERROR) << "Corrupted VP8 frame.";
+      return false;
+    }
   }
 
   // Gets pointer to decoded data.
@@ -442,6 +457,12 @@ VpxVideoDecoder::AlphaDecodeStatus VpxVideoDecoder::DecodeAlphaPlane(
                   << vpx_codec_error(vpx_codec_alpha_.get());
       return kAlphaPlaneError;
     }
+    if (config_.codec() == VideoCodec::kVP8 &&
+        IsVp8FrameCorrupted(vpx_codec_alpha_.get())) {
+      error_status_ = DecoderStatus::Codes::kMalformedBitstream;
+      DLOG(ERROR) << "Corrupted VP8 frame (alpha).";
+      return kAlphaPlaneError;
+    }
   }
 
   vpx_codec_iter_t iter_alpha = nullptr;
@@ -528,11 +549,14 @@ bool VpxVideoDecoder::CopyVpxImageToVideoFrame(
       return false;
   }
 
-  // The mixed |w|/|d_h| in |coded_size| is intentional. Setting the correct
-  // coded width is necessary to allow coalesced memory access, which may avoid
-  // frame copies. Setting the correct coded height however does not have any
-  // benefit, and only risk copying too much data.
-  const gfx::Size coded_size(vpx_image->w, vpx_image->d_h);
+  // The mixed |full_width|/|d_h| in |coded_size| is intentional. Setting the
+  // correct buffer width is necessary to allow coalesced memory access, which
+  // may avoid frame copies. Setting the correct coded height however does not
+  // have any benefit, and only risks copying too much data.
+  const unsigned int full_width = (vpx_image->fmt & VPX_IMG_FMT_HIGHBITDEPTH)
+                                      ? vpx_image->stride[VPX_PLANE_Y] / 2
+                                      : vpx_image->stride[VPX_PLANE_Y];
+  const gfx::Size coded_size(full_width, vpx_image->d_h);
   const gfx::Size visible_size(vpx_image->d_w, vpx_image->d_h);
   // Compute natural size by scaling visible size by *pixel* aspect ratio. Note
   // that we could instead use vpx_image r_w and r_h, but doing so would allow

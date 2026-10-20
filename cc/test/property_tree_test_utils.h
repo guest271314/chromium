@@ -173,10 +173,9 @@ void SetWillChangeTransform(LayerType* layer, bool will_change_transform) {
   transform_node->SetTransformChanged(DamageReason::kUntracked);
   TransformTree& transform_tree =
       GetPropertyTrees(layer)->transform_tree_mutable();
-  auto* parent_node = transform_tree.parent(transform_node);
-  CHECK(parent_node);
+  auto& parent_node = transform_tree.parent(*transform_node);
   transform_tree.UpdateNodeOrAncestorsWillChangeTransform(transform_node,
-                                                          *parent_node);
+                                                          parent_node);
   transform_tree.set_needs_update(true);
 }
 
@@ -204,7 +203,7 @@ template <typename LayerType>
 void SetOpacity(LayerType* layer, float opacity) {
   auto* effect_node = GetEffectNode(layer);
   effect_node->opacity = opacity;
-  effect_node->effect_changed = true;
+  effect_node->SetEffectChanged(DamageReason::kUntracked);
   GetPropertyTrees(layer)->effect_tree_mutable().set_needs_update(true);
 }
 
@@ -213,7 +212,7 @@ template <typename LayerType>
 void SetFilter(LayerType* layer, const FilterOperations& filters) {
   auto* effect_node = GetEffectNode(layer);
   effect_node->filters = filters;
-  effect_node->effect_changed = true;
+  effect_node->SetEffectChanged(DamageReason::kUntracked);
   GetPropertyTrees(layer)->effect_tree_mutable().set_needs_update(true);
 }
 
@@ -222,7 +221,7 @@ template <typename LayerType>
 void SetRenderSurfaceReason(LayerType* layer, RenderSurfaceReason reason) {
   auto* effect_node = GetEffectNode(layer);
   effect_node->render_surface_reason = reason;
-  effect_node->effect_changed = true;
+  effect_node->SetEffectChanged(DamageReason::kUntracked);
   GetPropertyTrees(layer)->effect_tree_mutable().set_needs_update(true);
 }
 
@@ -231,7 +230,7 @@ template <typename LayerType>
 void SetBackdropFilter(LayerType* layer, const FilterOperations& filters) {
   auto* effect_node = GetEffectNode(layer);
   effect_node->backdrop_filters = filters;
-  effect_node->effect_changed = true;
+  effect_node->SetEffectChanged(DamageReason::kUntracked);
   GetPropertyTrees(layer)->effect_tree_mutable().set_needs_update(true);
 }
 

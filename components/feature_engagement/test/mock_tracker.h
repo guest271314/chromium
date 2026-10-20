@@ -42,8 +42,6 @@ class MockTracker : public Tracker {
   MOCK_CONST_METHOD1(WouldTriggerHelpUI, bool(const base::Feature& feature));
   MOCK_CONST_METHOD2(HasEverTriggered,
                      bool(const base::Feature& feature, bool from_window));
-  MOCK_CONST_METHOD1(GetTriggerState,
-                     Tracker::TriggerState(const base::Feature& feature));
   MOCK_CONST_METHOD0(IsInitialized, bool());
   MOCK_METHOD1(Dismissed, void(const base::Feature& feature));
   MOCK_METHOD2(DismissedWithSnooze,
@@ -62,7 +60,7 @@ class MockTracker : public Tracker {
                void(const base::Feature& feature,
                     const ConfigurationProvider* provider));
 #endif
-  MOCK_CONST_METHOD0(GetConfigurationForTesting, const Configuration*());
+  MOCK_CONST_METHOD0(GetConfiguration, const Configuration*());
   MOCK_METHOD2(SetClockForTesting,
                void(const base::Clock& clock, base::Time initial_now));
   MOCK_CONST_METHOD0(IsInFeatureTestMode, bool());

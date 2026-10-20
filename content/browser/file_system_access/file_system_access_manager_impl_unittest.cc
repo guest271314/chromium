@@ -23,6 +23,7 @@
 #include "base/test/gmock_callback_support.h"
 #include "base/test/gmock_expected_support.h"
 #include "base/test/task_environment.h"
+#include "base/test/test_file_util.h"
 #include "base/test/test_future.h"
 #include "base/unguessable_token.h"
 #include "components/services/storage/public/cpp/buckets/bucket_id.h"
@@ -30,6 +31,7 @@
 #include "components/services/storage/public/cpp/buckets/constants.h"
 #include "content/browser/blob_storage/chrome_blob_storage_context.h"
 #include "content/browser/file_system_access/features.h"
+#include "content/browser/file_system_access/file_system_access.pb.h"
 #include "content/browser/file_system_access/file_system_access_data_transfer_token_impl.h"
 #include "content/browser/file_system_access/file_system_access_directory_handle_impl.h"
 #include "content/browser/file_system_access/file_system_access_file_handle_impl.h"
@@ -37,6 +39,9 @@
 #include "content/browser/file_system_access/fixed_file_system_access_permission_grant.h"
 #include "content/browser/file_system_access/mock_file_system_access_permission_context.h"
 #include "content/public/browser/content_browser_client.h"
+#include "content/public/browser/file_select_listener.h"
+#include "content/public/browser/visibility.h"
+#include "content/public/browser/web_contents_delegate.h"
 #include "content/public/test/browser_task_environment.h"
 #include "content/public/test/test_browser_context.h"
 #include "content/public/test/test_utils.h"
@@ -49,8 +54,10 @@
 #include "mojo/public/cpp/system/data_pipe_drainer.h"
 #include "mojo/public/cpp/test_support/test_utils.h"
 #include "mojo/public/mojom/base/file_info.mojom.h"
+#include "net/base/schemeful_site.h"
 #include "storage/browser/blob/blob_storage_context.h"
 #include "storage/browser/file_system/external_mount_points.h"
+#include "storage/browser/file_system/file_system_backend.h"
 #include "storage/browser/quota/quota_manager_proxy.h"
 #include "storage/browser/test/async_file_test_helper.h"
 #include "storage/browser/test/mock_quota_manager.h"
@@ -68,6 +75,23 @@
 #include "third_party/blink/public/mojom/file_system_access/file_system_access_manager.mojom-shared.h"
 #include "ui/shell_dialogs/select_file_dialog.h"
 #include "url/gurl.h"
+#include "url/origin.h"
+
+#if BUILDFLAG(IS_ANDROID)
+#include "third_party/blink/public/mojom/choosers/file_chooser.mojom.h"
+#endif
+
+#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
+#include <fcntl.h>
+#include <sys/prctl.h>
+#include <sys/stat.h>
+
+#include "base/files/scoped_file.h"
+#include "base/posix/eintr_wrapper.h"
+#include "base/threading/thread.h"
+#include "sandbox/linux/services/syscall_wrappers.h"      // nogncheck
+#include "sandbox/linux/system_headers/linux_landlock.h"  // nogncheck
+#endif
 
 namespace content {
 
@@ -155,6 +179,34 @@ class DenyingFilePickerContentBrowserClient : public ContentBrowserClient {
   bool was_checked_ = false;
 };
 
+#if BUILDFLAG(IS_ANDROID)
+// A WebContentsDelegate that simulates WebView by overriding
+// `UseFileChooserForFileSystemAccess()` and handling `RunFileChooser()`.
+class TestWebViewWebContentsDelegate : public WebContentsDelegate {
+ public:
+  bool UseFileChooserForFileSystemAccess() const override { return true; }
+
+  void RunFileChooser(RenderFrameHost* render_frame_host,
+                      scoped_refptr<FileSelectListener> listener,
+                      const blink::mojom::FileChooserParams& params) override {
+    run_file_chooser_called_ = true;
+    listener->FileSelected(std::move(files_), base::FilePath(), params.mode);
+  }
+
+  void SetFileToSelect(base::FilePath file) {
+    files_.push_back(blink::mojom::FileChooserFileInfo::NewNativeFile(
+        blink::mojom::NativeFileInfo::New(file, std::u16string(),
+                                          std::vector<std::u16string>())));
+  }
+
+  bool run_file_chooser_called() const { return run_file_chooser_called_; }
+
+ private:
+  bool run_file_chooser_called_ = false;
+  std::vector<blink::mojom::FileChooserFileInfoPtr> files_;
+};
+#endif
+
 }  // namespace
 
 using base::test::RunOnceCallback;
@@ -202,11 +254,16 @@ class FileSystemAccessManagerImplTest : public testing::Test {
     web_contents_ = web_contents_factory_.CreateWebContents(&browser_context_);
     static_cast<TestWebContents*>(web_contents_)->NavigateAndCommit(kTestURL);
 
-    manager_->BindReceiver(kBindingContext,
+    frame_id_ = web_contents_->GetPrimaryMainFrame()->GetGlobalId();
+    binding_context_ = {kTestStorageKey, kTestURL, frame_id_};
+
+    manager_->BindReceiver(binding_context_,
                            manager_remote_.BindNewPipeAndPassReceiver());
 
     EXPECT_CALL(permission_context_, IsFileTypeDangerous_)
         .WillRepeatedly(testing::Return(false));
+    EXPECT_CALL(permission_context_, CanShowFilePicker(testing::_))
+        .WillRepeatedly(testing::Return(base::ok()));
   }
 
   void TearDown() override {
@@ -235,20 +292,108 @@ class FileSystemAccessManagerImplTest : public testing::Test {
     EXPECT_CALL(permission_context_,
                 GetReadPermissionGrant(
                     kTestStorageKey.origin(), path_info, HandleType::kDirectory,
-                    FileSystemAccessPermissionContext::UserAction::kOpen))
+                    FileSystemAccessPermissionContext::AccessTrigger::kOpen))
         .WillOnce(testing::Return(grant));
     EXPECT_CALL(permission_context_,
                 GetWritePermissionGrant(
                     kTestStorageKey.origin(), path_info, HandleType::kDirectory,
-                    FileSystemAccessPermissionContext::UserAction::kOpen))
+                    FileSystemAccessPermissionContext::AccessTrigger::kOpen))
         .WillOnce(testing::Return(grant));
 
     blink::mojom::FileSystemAccessEntryPtr entry =
         manager_->CreateDirectoryEntryFromPath(
-            kBindingContext, path_info,
-            FileSystemAccessPermissionContext::UserAction::kOpen);
+            binding_context_, path_info,
+            FileSystemAccessPermissionContext::AccessTrigger::kOpen);
     return mojo::Remote<blink::mojom::FileSystemAccessDirectoryHandle>(
         std::move(entry->entry_handle->get_directory()));
+  }
+
+  testing::Expectation ExpectConfirmSensitiveEntryAccess(
+      const PathInfo& path_info,
+      FileSystemAccessPermissionContext::SensitiveEntryResult result,
+      FileSystemAccessPermissionContext::AccessTrigger access_trigger =
+          FileSystemAccessPermissionContext::AccessTrigger::kOpen,
+      testing::ExpectationSet after_expectations = {},
+      FileSystemAccessPermissionContext::HandleType handle_type =
+          FileSystemAccessPermissionContext::HandleType::kFile) {
+    return EXPECT_CALL(permission_context_,
+                       ConfirmSensitiveEntryAccess_(
+                           kTestStorageKey.origin(), path_info, handle_type,
+                           access_trigger,
+                           web_contents_->GetPrimaryMainFrame()->GetGlobalId(),
+                           testing::_))
+        .After(after_expectations)
+        .WillOnce(RunOnceCallback<5>(result));
+  }
+
+  void ExpectGetReadPermissionGrant(
+      const PathInfo& path_info,
+      FileSystemAccessPermissionContext::AccessTrigger access_trigger =
+          FileSystemAccessPermissionContext::AccessTrigger::kOpen,
+      FileSystemAccessPermissionContext::HandleType handle_type =
+          FileSystemAccessPermissionContext::HandleType::kFile) {
+    EXPECT_CALL(permission_context_,
+                GetReadPermissionGrant(kTestStorageKey.origin(), path_info,
+                                       handle_type, access_trigger))
+        .WillOnce(testing::Return(allow_grant_));
+  }
+
+  void ExpectGetWritePermissionGrant(
+      const PathInfo& path_info,
+      FileSystemAccessPermissionContext::AccessTrigger access_trigger =
+          FileSystemAccessPermissionContext::AccessTrigger::kOpen,
+      FileSystemAccessPermissionContext::HandleType handle_type =
+          FileSystemAccessPermissionContext::HandleType::kFile,
+      scoped_refptr<FixedFileSystemAccessPermissionGrant> grant = nullptr) {
+    EXPECT_CALL(permission_context_,
+                GetWritePermissionGrant(kTestStorageKey.origin(), path_info,
+                                        handle_type, access_trigger))
+        .WillOnce(testing::Return(grant ? grant : allow_grant_));
+  }
+
+  void ExpectShowFilePicker(
+      bool read_permission = true,
+      bool write_permission = false,
+      std::optional<PathInfo> last_picked_directory_to_set = std::nullopt) {
+    if (read_permission) {
+      EXPECT_CALL(permission_context_,
+                  CanObtainReadPermission(kTestStorageKey.origin()))
+          .WillOnce(testing::Return(true));
+    }
+    if (write_permission) {
+      EXPECT_CALL(permission_context_,
+                  CanObtainWritePermission(kTestStorageKey.origin()))
+          .WillOnce(testing::Return(true));
+    }
+    EXPECT_CALL(permission_context_,
+                GetWellKnownDirectoryPath(
+                    blink::mojom::WellKnownDirectory::kDirDocuments,
+                    kTestStorageKey.origin()))
+        .WillOnce(testing::Return(base::FilePath()));
+    EXPECT_CALL(permission_context_,
+                GetLastPickedDirectory(kTestStorageKey.origin(), std::string()))
+        .WillOnce(testing::Return(PathInfo()));
+    EXPECT_CALL(permission_context_, GetPickerTitle(testing::_))
+        .WillOnce(testing::Return(std::u16string()));
+    if (last_picked_directory_to_set) {
+      EXPECT_CALL(
+          permission_context_,
+          SetLastPickedDirectory(kTestStorageKey.origin(), std::string(),
+                                 *last_picked_directory_to_set));
+    }
+  }
+
+  void ExpectCheckPathsAgainstEnterprisePolicy(bool allowed = true) {
+    EXPECT_CALL(permission_context_, CheckPathsAgainstEnterprisePolicy(
+                                         testing::_, testing::_, testing::_))
+        .WillOnce(
+            [allowed](std::vector<PathInfo> entries,
+                      content::GlobalRenderFrameHostId frame_id,
+                      MockFileSystemAccessPermissionContext::
+                          EntriesAllowedByEnterprisePolicyCallback callback) {
+              std::move(callback).Run(allowed ? std::move(entries)
+                                              : std::vector<PathInfo>());
+            });
   }
 
   FileSystemAccessTransferTokenImpl* SerializeAndDeserializeToken(
@@ -269,6 +414,29 @@ class FileSystemAccessManagerImplTest : public testing::Test {
     return resolve_future.Get();
   }
 
+  std::string SerializePathForTesting(const base::FilePath& path) {
+    auto path_bytes = base::as_byte_span(path.value());
+    return std::string(path_bytes.begin(), path_bytes.end());
+  }
+
+  FileSystemAccessTransferTokenImpl* DeserializeAndResolveToken(
+      const FileSystemAccessHandleData& data) {
+    std::string serialized_string;
+    EXPECT_TRUE(data.SerializeToString(&serialized_string));
+    std::vector<uint8_t> serialized(serialized_string.begin(),
+                                    serialized_string.end());
+    EXPECT_FALSE(serialized.empty());
+
+    mojo::PendingRemote<blink::mojom::FileSystemAccessTransferToken>
+        token_remote;
+    manager_->DeserializeHandle(kTestStorageKey, serialized,
+                                token_remote.InitWithNewPipeAndPassReceiver());
+    base::test::TestFuture<FileSystemAccessTransferTokenImpl*> resolve_future;
+    manager_->ResolveTransferToken(std::move(token_remote),
+                                   resolve_future.GetCallback());
+    return resolve_future.Get();
+  }
+
   void GetEntryFromDataTransferTokenFileTest(
       const PathInfo& file_path_info,
       const std::string& expected_file_contents) {
@@ -276,7 +444,7 @@ class FileSystemAccessManagerImplTest : public testing::Test {
     mojo::PendingRemote<blink::mojom::FileSystemAccessDataTransferToken>
         token_remote;
     manager_->CreateFileSystemAccessDataTransferToken(
-        file_path_info, kBindingContext.process_id(),
+        file_path_info, binding_context_.process_id(),
         token_remote.InitWithNewPipeAndPassReceiver());
 
     // Expect permission requests when the token is sent to be redeemed.
@@ -284,14 +452,14 @@ class FileSystemAccessManagerImplTest : public testing::Test {
         permission_context_,
         GetReadPermissionGrant(
             kTestStorageKey.origin(), file_path_info, HandleType::kFile,
-            FileSystemAccessPermissionContext::UserAction::kDragAndDrop))
+            FileSystemAccessPermissionContext::AccessTrigger::kDragAndDrop))
         .WillOnce(testing::Return(allow_grant_));
 
     EXPECT_CALL(
         permission_context_,
         GetWritePermissionGrant(
             kTestStorageKey.origin(), file_path_info, HandleType::kFile,
-            FileSystemAccessPermissionContext::UserAction::kDragAndDrop))
+            FileSystemAccessPermissionContext::AccessTrigger::kDragAndDrop))
         .WillOnce(testing::Return(allow_grant_));
 
     // Attempt to resolve `token_remote` and store the resulting
@@ -312,6 +480,21 @@ class FileSystemAccessManagerImplTest : public testing::Test {
 
     // Check to see if the resulting FileSystemAccessFileHandle can read the
     // contents of the file at `file_path`.
+    if (base::FeatureList::IsEnabled(
+            features::kFileSystemAccessDirectoryIterationBlocklistCheck)) {
+      const storage::FileSystemURL file_url =
+          manager_->CreateFileSystemURLFromPath(file_path_info);
+      EXPECT_CALL(permission_context_,
+                  ConfirmSensitiveEntryAccess_(
+                      kTestStorageKey.origin(),
+                      PathInfo(file_url.path(), file_path_info.display_name),
+                      HandleType::kFile,
+                      FileSystemAccessPermissionContext::AccessTrigger::
+                          kProgrammaticRead,
+                      frame_id_, testing::_))
+          .WillOnce(RunOnceCallback<5>(FileSystemAccessPermissionContext::
+                                           SensitiveEntryResult::kAllowed));
+    }
     EXPECT_EQ(ReadStringFromFileRemote(std::move(file_handle)),
               expected_file_contents);
   }
@@ -322,15 +505,16 @@ class FileSystemAccessManagerImplTest : public testing::Test {
     mojo::PendingRemote<blink::mojom::FileSystemAccessDataTransferToken>
         token_remote;
     manager_->CreateFileSystemAccessDataTransferToken(
-        dir_path_info, kBindingContext.process_id(),
+        dir_path_info, binding_context_.process_id(),
         token_remote.InitWithNewPipeAndPassReceiver());
 
-    EXPECT_CALL(permission_context_,
-                ConfirmSensitiveEntryAccess_(
-                    kTestStorageKey.origin(), dir_path_info,
-                    FileSystemAccessPermissionContext::HandleType::kDirectory,
-                    FileSystemAccessPermissionContext::UserAction::kDragAndDrop,
-                    kFrameId, testing::_))
+    EXPECT_CALL(
+        permission_context_,
+        ConfirmSensitiveEntryAccess_(
+            kTestStorageKey.origin(), dir_path_info,
+            FileSystemAccessPermissionContext::HandleType::kDirectory,
+            FileSystemAccessPermissionContext::AccessTrigger::kDragAndDrop,
+            frame_id_, testing::_))
         .WillOnce(RunOnceCallback<5>(
             FileSystemAccessPermissionContext::SensitiveEntryResult::kAllowed));
 
@@ -339,14 +523,14 @@ class FileSystemAccessManagerImplTest : public testing::Test {
         permission_context_,
         GetReadPermissionGrant(
             kTestStorageKey.origin(), dir_path_info, HandleType::kDirectory,
-            FileSystemAccessPermissionContext::UserAction::kDragAndDrop))
+            FileSystemAccessPermissionContext::AccessTrigger::kDragAndDrop))
         .WillOnce(testing::Return(allow_grant_));
 
     EXPECT_CALL(
         permission_context_,
         GetWritePermissionGrant(
             kTestStorageKey.origin(), dir_path_info, HandleType::kDirectory,
-            FileSystemAccessPermissionContext::UserAction::kDragAndDrop))
+            FileSystemAccessPermissionContext::AccessTrigger::kDragAndDrop))
         .WillOnce(testing::Return(allow_grant_));
 
     // Attempt to resolve `token_remote` and store the resulting
@@ -432,12 +616,11 @@ class FileSystemAccessManagerImplTest : public testing::Test {
  protected:
   const GURL kTestURL = GURL("https://example.com/test");
   const blink::StorageKey kTestStorageKey =
-      blink::StorageKey::CreateFromStringForTesting("https://example.com/test");
-  const int kProcessId = 1;
-  const int kFrameRoutingId = 2;
-  const GlobalRenderFrameHostId kFrameId{kProcessId, kFrameRoutingId};
-  const FileSystemAccessManagerImpl::BindingContext kBindingContext = {
-      kTestStorageKey, kTestURL, kFrameId};
+      blink::StorageKey::CreateFromStringForTesting(kTestURL.spec());
+  GlobalRenderFrameHostId frame_id_;
+  // An initial value is required but this is overwritten by `SetUp`.
+  FileSystemAccessManagerImpl::BindingContext binding_context_ = {
+      kTestStorageKey, kTestURL, GlobalRenderFrameHostId()};
 
   scoped_refptr<storage::MockSpecialStoragePolicy> special_storage_policy_;
 
@@ -622,18 +805,18 @@ TEST_F(FileSystemAccessManagerImplTest, CreateFileEntryFromPath_Permissions) {
   EXPECT_CALL(permission_context_,
               GetReadPermissionGrant(
                   kTestStorageKey.origin(), kTestPathInfo, HandleType::kFile,
-                  FileSystemAccessPermissionContext::UserAction::kOpen))
+                  FileSystemAccessPermissionContext::AccessTrigger::kOpen))
       .WillOnce(testing::Return(allow_grant_));
   EXPECT_CALL(permission_context_,
               GetWritePermissionGrant(
                   kTestStorageKey.origin(), kTestPathInfo, HandleType::kFile,
-                  FileSystemAccessPermissionContext::UserAction::kOpen))
+                  FileSystemAccessPermissionContext::AccessTrigger::kOpen))
       .WillOnce(testing::Return(ask_grant_));
 
   blink::mojom::FileSystemAccessEntryPtr entry =
       manager_->CreateFileEntryFromPath(
-          kBindingContext, kTestPathInfo,
-          FileSystemAccessPermissionContext::UserAction::kOpen);
+          binding_context_, kTestPathInfo,
+          FileSystemAccessPermissionContext::AccessTrigger::kOpen);
   mojo::Remote<blink::mojom::FileSystemAccessFileHandle> handle(
       std::move(entry->entry_handle->get_file()));
 
@@ -654,18 +837,18 @@ TEST_F(FileSystemAccessManagerImplTest,
   EXPECT_CALL(permission_context_,
               GetReadPermissionGrant(
                   kTestStorageKey.origin(), kTestPathInfo, HandleType::kFile,
-                  FileSystemAccessPermissionContext::UserAction::kSave))
+                  FileSystemAccessPermissionContext::AccessTrigger::kSave))
       .WillOnce(testing::Return(allow_grant_));
   EXPECT_CALL(permission_context_,
               GetWritePermissionGrant(
                   kTestStorageKey.origin(), kTestPathInfo, HandleType::kFile,
-                  FileSystemAccessPermissionContext::UserAction::kSave))
+                  FileSystemAccessPermissionContext::AccessTrigger::kSave))
       .WillOnce(testing::Return(allow_grant_));
 
   blink::mojom::FileSystemAccessEntryPtr entry =
       manager_->CreateFileEntryFromPath(
-          kBindingContext, kTestPathInfo,
-          FileSystemAccessPermissionContext::UserAction::kSave);
+          binding_context_, kTestPathInfo,
+          FileSystemAccessPermissionContext::AccessTrigger::kSave);
   mojo::Remote<blink::mojom::FileSystemAccessFileHandle> handle(
       std::move(entry->entry_handle->get_file()));
 
@@ -687,19 +870,19 @@ TEST_F(FileSystemAccessManagerImplTest,
       permission_context_,
       GetReadPermissionGrant(
           kTestStorageKey.origin(), kTestPathInfo, HandleType::kDirectory,
-          FileSystemAccessPermissionContext::UserAction::kOpen))
+          FileSystemAccessPermissionContext::AccessTrigger::kOpen))
       .WillOnce(testing::Return(allow_grant_));
   EXPECT_CALL(
       permission_context_,
       GetWritePermissionGrant(
           kTestStorageKey.origin(), kTestPathInfo, HandleType::kDirectory,
-          FileSystemAccessPermissionContext::UserAction::kOpen))
+          FileSystemAccessPermissionContext::AccessTrigger::kOpen))
       .WillOnce(testing::Return(ask_grant_));
 
   blink::mojom::FileSystemAccessEntryPtr entry =
       manager_->CreateDirectoryEntryFromPath(
-          kBindingContext, kTestPathInfo,
-          FileSystemAccessPermissionContext::UserAction::kOpen);
+          binding_context_, kTestPathInfo,
+          FileSystemAccessPermissionContext::AccessTrigger::kOpen);
   mojo::Remote<blink::mojom::FileSystemAccessDirectoryHandle> handle(
       std::move(entry->entry_handle->get_directory()));
   EXPECT_EQ(
@@ -710,6 +893,131 @@ TEST_F(FileSystemAccessManagerImplTest,
             GetPermissionStatusSync(
                 blink::mojom::FileSystemAccessPermissionMode::kReadWrite,
                 handle.get()));
+}
+
+TEST_F(FileSystemAccessManagerImplTest,
+       CreateFileEntryFromPath_Permissions_ProgrammaticWrite) {
+  const PathInfo kTestPathInfo(dir_.GetPath().AppendASCII("foo"));
+
+  EXPECT_CALL(
+      permission_context_,
+      GetReadPermissionGrant(
+          kTestStorageKey.origin(), kTestPathInfo, HandleType::kFile,
+          FileSystemAccessPermissionContext::AccessTrigger::kProgrammaticWrite))
+      .WillOnce(testing::Return(allow_grant_));
+  EXPECT_CALL(
+      permission_context_,
+      GetWritePermissionGrant(
+          kTestStorageKey.origin(), kTestPathInfo, HandleType::kFile,
+          FileSystemAccessPermissionContext::AccessTrigger::kProgrammaticWrite))
+      .WillOnce(testing::Return(ask_grant_));
+
+  blink::mojom::FileSystemAccessEntryPtr entry =
+      manager_->CreateFileEntryFromPath(
+          binding_context_, kTestPathInfo,
+          FileSystemAccessPermissionContext::AccessTrigger::kProgrammaticWrite);
+  mojo::Remote<blink::mojom::FileSystemAccessFileHandle> handle(
+      std::move(entry->entry_handle->get_file()));
+
+  EXPECT_EQ(
+      PermissionStatus::GRANTED,
+      GetPermissionStatusSync(
+          blink::mojom::FileSystemAccessPermissionMode::kRead, handle.get()));
+  EXPECT_EQ(PermissionStatus::ASK,
+            GetPermissionStatusSync(
+                blink::mojom::FileSystemAccessPermissionMode::kReadWrite,
+                handle.get()));
+}
+
+TEST_F(FileSystemAccessManagerImplTest,
+       CreateDirectoryEntryFromPath_Permissions_ProgrammaticWrite) {
+  const content::PathInfo kTestPathInfo(dir_.GetPath().AppendASCII("foo"));
+
+  EXPECT_CALL(
+      permission_context_,
+      GetReadPermissionGrant(
+          kTestStorageKey.origin(), kTestPathInfo, HandleType::kDirectory,
+          FileSystemAccessPermissionContext::AccessTrigger::kProgrammaticWrite))
+      .WillOnce(testing::Return(allow_grant_));
+  EXPECT_CALL(
+      permission_context_,
+      GetWritePermissionGrant(
+          kTestStorageKey.origin(), kTestPathInfo, HandleType::kDirectory,
+          FileSystemAccessPermissionContext::AccessTrigger::kProgrammaticWrite))
+      .WillOnce(testing::Return(ask_grant_));
+
+  blink::mojom::FileSystemAccessEntryPtr entry =
+      manager_->CreateDirectoryEntryFromPath(
+          binding_context_, kTestPathInfo,
+          FileSystemAccessPermissionContext::AccessTrigger::kProgrammaticWrite);
+  mojo::Remote<blink::mojom::FileSystemAccessDirectoryHandle> handle(
+      std::move(entry->entry_handle->get_directory()));
+  EXPECT_EQ(
+      PermissionStatus::GRANTED,
+      GetPermissionStatusSync(
+          blink::mojom::FileSystemAccessPermissionMode::kRead, handle.get()));
+  EXPECT_EQ(PermissionStatus::ASK,
+            GetPermissionStatusSync(
+                blink::mojom::FileSystemAccessPermissionMode::kReadWrite,
+                handle.get()));
+}
+
+TEST_F(FileSystemAccessManagerImplTest,
+       CreateFileEntryFromPath_NoPermissionContext) {
+  auto manager = base::MakeRefCounted<FileSystemAccessManagerImpl>(
+      file_system_context_, chrome_blob_context_,
+      /*permission_context=*/nullptr,
+      /*off_the_record=*/false);
+  const PathInfo kTestPathInfo(dir_.GetPath().AppendASCII("foo"));
+
+  // For AccessTrigger::kOpen, read permission is GRANTED without a permission
+  // context, but write permission is DENIED.
+  blink::mojom::FileSystemAccessEntryPtr open_entry =
+      manager->CreateFileEntryFromPath(
+          binding_context_, kTestPathInfo,
+          FileSystemAccessPermissionContext::AccessTrigger::kOpen);
+  mojo::Remote<blink::mojom::FileSystemAccessFileHandle> open_handle(
+      std::move(open_entry->entry_handle->get_file()));
+  EXPECT_EQ(PermissionStatus::GRANTED,
+            GetPermissionStatusSync(
+                blink::mojom::FileSystemAccessPermissionMode::kRead,
+                open_handle.get()));
+  EXPECT_EQ(PermissionStatus::DENIED,
+            GetPermissionStatusSync(
+                blink::mojom::FileSystemAccessPermissionMode::kReadWrite,
+                open_handle.get()));
+
+  // For AccessTrigger::kProgrammaticRead and kProgrammaticWrite, both read and
+  // write permissions match the write grant (DENIED).
+  blink::mojom::FileSystemAccessEntryPtr read_only_entry =
+      manager->CreateFileEntryFromPath(
+          binding_context_, kTestPathInfo,
+          FileSystemAccessPermissionContext::AccessTrigger::kProgrammaticRead);
+  mojo::Remote<blink::mojom::FileSystemAccessFileHandle> read_only_handle(
+      std::move(read_only_entry->entry_handle->get_file()));
+  EXPECT_EQ(PermissionStatus::DENIED,
+            GetPermissionStatusSync(
+                blink::mojom::FileSystemAccessPermissionMode::kRead,
+                read_only_handle.get()));
+  EXPECT_EQ(PermissionStatus::DENIED,
+            GetPermissionStatusSync(
+                blink::mojom::FileSystemAccessPermissionMode::kReadWrite,
+                read_only_handle.get()));
+
+  blink::mojom::FileSystemAccessEntryPtr read_write_entry =
+      manager->CreateFileEntryFromPath(
+          binding_context_, kTestPathInfo,
+          FileSystemAccessPermissionContext::AccessTrigger::kProgrammaticWrite);
+  mojo::Remote<blink::mojom::FileSystemAccessFileHandle> read_write_handle(
+      std::move(read_write_entry->entry_handle->get_file()));
+  EXPECT_EQ(PermissionStatus::DENIED,
+            GetPermissionStatusSync(
+                blink::mojom::FileSystemAccessPermissionMode::kRead,
+                read_write_handle.get()));
+  EXPECT_EQ(PermissionStatus::DENIED,
+            GetPermissionStatusSync(
+                blink::mojom::FileSystemAccessPermissionMode::kReadWrite,
+                read_write_handle.get()));
 }
 
 TEST_F(FileSystemAccessManagerImplTest,
@@ -730,15 +1038,15 @@ TEST_F(FileSystemAccessManagerImplTest,
             storage::AsyncFileTestHelper::CreateFile(file_system_context_.get(),
                                                      test_swap_url));
 
-  auto lock = TakeLockSync(kBindingContext, test_file_url,
+  auto lock = TakeLockSync(binding_context_, test_file_url,
                            manager_->GetWFSSiloedLockType());
   ASSERT_TRUE(lock);
-  auto swap_lock = TakeLockSync(kBindingContext, test_swap_url,
+  auto swap_lock = TakeLockSync(binding_context_, test_swap_url,
                                 manager_->GetExclusiveLockType());
   ASSERT_TRUE(swap_lock);
 
   mojo::Remote<blink::mojom::FileSystemAccessFileWriter> writer_remote(
-      manager_->CreateFileWriter(kBindingContext, test_file_url, test_swap_url,
+      manager_->CreateFileWriter(binding_context_, test_file_url, test_swap_url,
                                  std::move(lock), std::move(swap_lock),
                                  FileSystemAccessManagerImpl::SharedHandleState(
                                      allow_grant_, allow_grant_),
@@ -771,15 +1079,15 @@ TEST_F(FileSystemAccessManagerImplTest, FileWriterCloseDoesNotAbortOnDestruct) {
             storage::AsyncFileTestHelper::CreateFileWithData(
                 file_system_context_.get(), test_swap_url, "foo"));
 
-  auto lock = TakeLockSync(kBindingContext, test_file_url,
+  auto lock = TakeLockSync(binding_context_, test_file_url,
                            manager_->GetWFSSiloedLockType());
   ASSERT_TRUE(lock);
-  auto swap_lock = TakeLockSync(kBindingContext, test_swap_url,
+  auto swap_lock = TakeLockSync(binding_context_, test_swap_url,
                                 manager_->GetExclusiveLockType());
   ASSERT_TRUE(swap_lock);
 
   mojo::Remote<blink::mojom::FileSystemAccessFileWriter> writer_remote(
-      manager_->CreateFileWriter(kBindingContext, test_file_url, test_swap_url,
+      manager_->CreateFileWriter(binding_context_, test_file_url, test_swap_url,
                                  std::move(lock), std::move(swap_lock),
                                  FileSystemAccessManagerImpl::SharedHandleState(
                                      allow_grant_, allow_grant_),
@@ -792,7 +1100,7 @@ TEST_F(FileSystemAccessManagerImplTest, FileWriterCloseDoesNotAbortOnDestruct) {
   writer_remote->Close(base::DoNothing());
 
   EXPECT_CALL(permission_context_,
-              PerformAfterWriteChecks_(testing::_, kFrameId, testing::_))
+              PerformAfterWriteChecks_(testing::_, frame_id_, testing::_))
       .WillOnce(base::test::RunOnceCallback<2>(
           FileSystemAccessPermissionContext::AfterWriteCheckResult::kAllow));
 
@@ -823,15 +1131,15 @@ TEST_F(FileSystemAccessManagerImplTest,
             storage::AsyncFileTestHelper::CreateFileWithData(
                 file_system_context_.get(), test_swap_url, "foo"));
 
-  auto lock = TakeLockSync(kBindingContext, test_file_url,
+  auto lock = TakeLockSync(binding_context_, test_file_url,
                            manager_->GetWFSSiloedLockType());
   ASSERT_TRUE(lock);
-  auto swap_lock = TakeLockSync(kBindingContext, test_swap_url,
+  auto swap_lock = TakeLockSync(binding_context_, test_swap_url,
                                 manager_->GetExclusiveLockType());
   ASSERT_TRUE(swap_lock);
 
   mojo::Remote<blink::mojom::FileSystemAccessFileWriter> writer_remote(
-      manager_->CreateFileWriter(kBindingContext, test_file_url, test_swap_url,
+      manager_->CreateFileWriter(binding_context_, test_file_url, test_swap_url,
                                  std::move(lock), std::move(swap_lock),
                                  FileSystemAccessManagerImpl::SharedHandleState(
                                      allow_grant_, allow_grant_),
@@ -864,15 +1172,15 @@ TEST_F(FileSystemAccessManagerImplTest,
             storage::AsyncFileTestHelper::CreateFileWithData(
                 file_system_context_.get(), test_swap_url, "foo"));
 
-  auto lock = TakeLockSync(kBindingContext, test_file_url,
+  auto lock = TakeLockSync(binding_context_, test_file_url,
                            manager_->GetWFSSiloedLockType());
   ASSERT_TRUE(lock);
-  auto swap_lock = TakeLockSync(kBindingContext, test_swap_url,
+  auto swap_lock = TakeLockSync(binding_context_, test_swap_url,
                                 manager_->GetExclusiveLockType());
   ASSERT_TRUE(swap_lock);
 
   mojo::Remote<blink::mojom::FileSystemAccessFileWriter> writer_remote(
-      manager_->CreateFileWriter(kBindingContext, test_file_url, test_swap_url,
+      manager_->CreateFileWriter(binding_context_, test_file_url, test_swap_url,
                                  std::move(lock), std::move(swap_lock),
                                  FileSystemAccessManagerImpl::SharedHandleState(
                                      allow_grant_, allow_grant_),
@@ -884,7 +1192,7 @@ TEST_F(FileSystemAccessManagerImplTest,
       storage::AsyncFileTestHelper::kDontCheckSize));
 
   EXPECT_CALL(permission_context_,
-              PerformAfterWriteChecks_(testing::_, kFrameId, testing::_))
+              PerformAfterWriteChecks_(testing::_, frame_id_, testing::_))
       .WillOnce(base::test::RunOnceCallback<2>(
           FileSystemAccessPermissionContext::AfterWriteCheckResult::kAllow));
 
@@ -902,6 +1210,163 @@ TEST_F(FileSystemAccessManagerImplTest,
       file_system_context_.get(), test_file_url, 3));
 }
 
+// The same origin embedded in a different top-level site gets a different
+// StorageKey, and therefore a different OPFS partition. Redeeming an OPFS
+// transfer token must require a matching StorageKey, not just a matching
+// origin.
+TEST_F(FileSystemAccessManagerImplTest,
+       TransferToken_SandboxedDifferentTopLevelSite) {
+  const url::Origin origin = kTestStorageKey.origin();
+  const blink::StorageKey storage_key_a = blink::StorageKey::Create(
+      origin,
+      net::SchemefulSite(url::Origin::Create(GURL("https://top-a.test"))),
+      blink::mojom::AncestorChainBit::kCrossSite);
+  const blink::StorageKey storage_key_b = blink::StorageKey::Create(
+      origin,
+      net::SchemefulSite(url::Origin::Create(GURL("https://top-b.test"))),
+      blink::mojom::AncestorChainBit::kCrossSite);
+  ASSERT_EQ(storage_key_a.origin(), storage_key_b.origin());
+  ASSERT_NE(storage_key_a, storage_key_b);
+
+  mojo::Remote<blink::mojom::FileSystemAccessManager> manager_a;
+  mojo::Remote<blink::mojom::FileSystemAccessManager> manager_b;
+  manager_->BindReceiver({storage_key_a, kTestURL, frame_id_},
+                         manager_a.BindNewPipeAndPassReceiver());
+  manager_->BindReceiver({storage_key_b, kTestURL, frame_id_},
+                         manager_b.BindNewPipeAndPassReceiver());
+
+  base::test::TestFuture<
+      blink::mojom::FileSystemAccessErrorPtr,
+      mojo::PendingRemote<blink::mojom::FileSystemAccessDirectoryHandle>>
+      root_future;
+  manager_a->GetSandboxedFileSystem(root_future.GetCallback());
+  ASSERT_EQ(root_future.Get<0>()->status,
+            blink::mojom::FileSystemAccessStatus::kOk);
+  mojo::Remote<blink::mojom::FileSystemAccessDirectoryHandle> root(
+      std::move(std::get<1>(root_future.Take())));
+  ASSERT_TRUE(root);
+
+  base::test::TestFuture<
+      blink::mojom::FileSystemAccessErrorPtr,
+      mojo::PendingRemote<blink::mojom::FileSystemAccessFileHandle>>
+      file_future;
+  root->GetFile("file", /*create=*/true, file_future.GetCallback());
+  ASSERT_EQ(file_future.Get<0>()->status,
+            blink::mojom::FileSystemAccessStatus::kOk);
+  mojo::Remote<blink::mojom::FileSystemAccessFileHandle> file(
+      std::move(std::get<1>(file_future.Take())));
+  ASSERT_TRUE(file);
+
+  base::test::TestFuture<
+      blink::mojom::FileSystemAccessErrorPtr,
+      mojo::PendingRemote<blink::mojom::FileSystemAccessDirectoryHandle>>
+      directory_future;
+  root->GetDirectory("directory", /*create=*/true,
+                     directory_future.GetCallback());
+  ASSERT_EQ(directory_future.Get<0>()->status,
+            blink::mojom::FileSystemAccessStatus::kOk);
+  mojo::Remote<blink::mojom::FileSystemAccessDirectoryHandle> directory(
+      std::move(std::get<1>(directory_future.Take())));
+  ASSERT_TRUE(directory);
+
+  auto redeem_file = [&](mojo::Remote<blink::mojom::FileSystemAccessManager>&
+                             receiving_manager,
+                         bool expected_connected) {
+    mojo::PendingRemote<blink::mojom::FileSystemAccessTransferToken> token;
+    file->Transfer(token.InitWithNewPipeAndPassReceiver());
+    mojo::Remote<blink::mojom::FileSystemAccessFileHandle> redeemed;
+    receiving_manager->GetFileHandleFromToken(
+        std::move(token), redeemed.BindNewPipeAndPassReceiver());
+    redeemed.FlushForTesting();
+    EXPECT_EQ(expected_connected, redeemed.is_connected());
+  };
+  auto redeem_directory =
+      [&](mojo::Remote<blink::mojom::FileSystemAccessManager>&
+              receiving_manager,
+          bool expected_connected) {
+        mojo::PendingRemote<blink::mojom::FileSystemAccessTransferToken> token;
+        directory->Transfer(token.InitWithNewPipeAndPassReceiver());
+        mojo::Remote<blink::mojom::FileSystemAccessDirectoryHandle> redeemed;
+        receiving_manager->GetDirectoryHandleFromToken(
+            std::move(token), redeemed.BindNewPipeAndPassReceiver());
+        redeemed.FlushForTesting();
+        EXPECT_EQ(expected_connected, redeemed.is_connected());
+      };
+
+  // Both handles can be redeemed in their own partition.
+  redeem_file(manager_a, true);
+  redeem_directory(manager_a, true);
+
+  // The same origin must not grant access to another OPFS partition.
+  redeem_file(manager_b, false);
+  redeem_directory(manager_b, false);
+
+  mojo::Remote<blink::mojom::FileSystemAccessManager> other_origin_manager;
+  manager_->BindReceiver(
+      {blink::StorageKey::CreateFromStringForTesting("https://other.example"),
+       GURL("https://other.example"), frame_id_},
+      other_origin_manager.BindNewPipeAndPassReceiver());
+  redeem_file(other_origin_manager, false);
+  redeem_directory(other_origin_manager, false);
+}
+
+// Native file system handles may still be redeemed by the same origin
+// embedded in a different top-level site. Their permission grants are keyed
+// by origin, not StorageKey.
+TEST_F(FileSystemAccessManagerImplTest,
+       TransferToken_NativeDifferentTopLevelSite) {
+  const url::Origin origin = kTestStorageKey.origin();
+  const blink::StorageKey storage_key_a = blink::StorageKey::Create(
+      origin,
+      net::SchemefulSite(url::Origin::Create(GURL("https://top-a.test"))),
+      blink::mojom::AncestorChainBit::kCrossSite);
+  const blink::StorageKey storage_key_b = blink::StorageKey::Create(
+      origin,
+      net::SchemefulSite(url::Origin::Create(GURL("https://top-b.test"))),
+      blink::mojom::AncestorChainBit::kCrossSite);
+  ASSERT_EQ(storage_key_a.origin(), storage_key_b.origin());
+  ASSERT_NE(storage_key_a, storage_key_b);
+
+  const FileSystemAccessManagerImpl::BindingContext source_context = {
+      storage_key_a, kTestURL, frame_id_};
+  mojo::Remote<blink::mojom::FileSystemAccessManager> manager_b;
+  manager_->BindReceiver({storage_key_b, kTestURL, frame_id_},
+                         manager_b.BindNewPipeAndPassReceiver());
+
+  auto file_url = file_system_context_->CreateCrackedFileSystemURL(
+      blink::StorageKey(), storage::kFileSystemTypeLocal,
+      dir_.GetPath().AppendASCII("native_file"));
+  FileSystemAccessFileHandleImpl file(manager_.get(), source_context, file_url,
+                                      "native_file",
+                                      {allow_grant_, allow_grant_});
+  mojo::PendingRemote<blink::mojom::FileSystemAccessTransferToken> file_token;
+  manager_->CreateTransferToken(file,
+                                file_token.InitWithNewPipeAndPassReceiver());
+  mojo::Remote<blink::mojom::FileSystemAccessFileHandle> redeemed_file;
+  manager_b->GetFileHandleFromToken(std::move(file_token),
+                                    redeemed_file.BindNewPipeAndPassReceiver());
+  redeemed_file.FlushForTesting();
+  EXPECT_TRUE(redeemed_file.is_connected());
+
+  auto directory_url = file_system_context_->CreateCrackedFileSystemURL(
+      blink::StorageKey(), storage::kFileSystemTypeLocal,
+      dir_.GetPath().AppendASCII("native_directory"));
+  FileSystemAccessDirectoryHandleImpl directory(manager_.get(), source_context,
+                                                directory_url,
+                                                {allow_grant_, allow_grant_});
+  mojo::PendingRemote<blink::mojom::FileSystemAccessTransferToken>
+      directory_token;
+  manager_->CreateTransferToken(
+      directory, directory_token.InitWithNewPipeAndPassReceiver());
+  mojo::Remote<blink::mojom::FileSystemAccessDirectoryHandle>
+      redeemed_directory;
+  manager_b->GetDirectoryHandleFromToken(
+      std::move(directory_token),
+      redeemed_directory.BindNewPipeAndPassReceiver());
+  redeemed_directory.FlushForTesting();
+  EXPECT_TRUE(redeemed_directory.is_connected());
+}
+
 TEST_F(FileSystemAccessManagerImplTest,
        SerializeHandle_SandboxedFile_DefaultBucket) {
   ASSERT_OK_AND_ASSIGN(auto default_bucket,
@@ -910,7 +1375,7 @@ TEST_F(FileSystemAccessManagerImplTest,
       kTestStorageKey, storage::kFileSystemTypeTemporary,
       base::FilePath::FromUTF8Unsafe("test/foo/bar"));
   test_file_url.SetBucket(default_bucket);
-  FileSystemAccessFileHandleImpl file(manager_.get(), kBindingContext,
+  FileSystemAccessFileHandleImpl file(manager_.get(), binding_context_,
                                       test_file_url, "bar",
                                       {ask_grant_, ask_grant_});
   mojo::PendingRemote<blink::mojom::FileSystemAccessTransferToken> token_remote;
@@ -939,7 +1404,7 @@ TEST_F(FileSystemAccessManagerImplTest,
       base::FilePath::FromUTF8Unsafe("test/foo/bar"));
   ASSERT_OK_AND_ASSIGN(auto bucket, CreateBucketForTesting());
   test_file_url.SetBucket(std::move(bucket));
-  FileSystemAccessFileHandleImpl file(manager_.get(), kBindingContext,
+  FileSystemAccessFileHandleImpl file(manager_.get(), binding_context_,
                                       test_file_url, "bar",
                                       {ask_grant_, ask_grant_});
   mojo::PendingRemote<blink::mojom::FileSystemAccessTransferToken> token_remote;
@@ -969,8 +1434,9 @@ TEST_F(FileSystemAccessManagerImplTest,
       kTestStorageKey, storage::kFileSystemTypeTemporary,
       base::FilePath::FromUTF8Unsafe("hello/world/"));
   test_file_url.SetBucket(default_bucket);
-  FileSystemAccessDirectoryHandleImpl directory(
-      manager_.get(), kBindingContext, test_file_url, {ask_grant_, ask_grant_});
+  FileSystemAccessDirectoryHandleImpl directory(manager_.get(),
+                                                binding_context_, test_file_url,
+                                                {ask_grant_, ask_grant_});
   mojo::PendingRemote<blink::mojom::FileSystemAccessTransferToken> token_remote;
   manager_->CreateTransferToken(directory,
                                 token_remote.InitWithNewPipeAndPassReceiver());
@@ -990,6 +1456,59 @@ TEST_F(FileSystemAccessManagerImplTest,
   EXPECT_EQ(PermissionStatus::GRANTED, token->GetWriteGrant()->GetStatus());
 }
 
+// Verifies that `DeserializeHandle()` rejects sandboxed file handles associated
+// with a storage bucket owned by a different `blink::StorageKey`.
+//
+// The test serializes a handle pointing to a custom bucket under an alternate
+// storage key, then attempts to deserialize it using the test caller's storage
+// key. The deserialization must drop the transfer token and fail to resolve.
+TEST_F(FileSystemAccessManagerImplTest,
+       DeserializeHandle_SandboxedFile_OtherStorageKeyBucket) {
+  // Create a non-default bucket owned by a different storage key.
+  const blink::StorageKey kOtherStorageKey =
+      blink::StorageKey::CreateFromStringForTesting("https://other.example/");
+  base::test::TestFuture<storage::QuotaErrorOr<storage::BucketInfo>>
+      bucket_future;
+  quota_manager_proxy_->CreateBucketForTesting(
+      kOtherStorageKey, "custom_bucket",
+      base::SequencedTaskRunner::GetCurrentDefault(),
+      bucket_future.GetCallback());
+  ASSERT_OK_AND_ASSIGN(auto other_bucket, bucket_future.Take());
+
+  // Serialize a sandboxed file handle that points at the other key's bucket.
+  // The handle must be constructed with a matching binding context to satisfy
+  // token origin validation during serialization.
+  auto test_file_url = file_system_context_->CreateCrackedFileSystemURL(
+      kOtherStorageKey, storage::kFileSystemTypeTemporary,
+      base::FilePath::FromUTF8Unsafe("test/foo/bar"));
+  test_file_url.SetBucket(other_bucket.ToBucketLocator());
+  const FileSystemAccessManagerImpl::BindingContext other_binding_context = {
+      kOtherStorageKey, GURL("https://other.example/"),
+      GlobalRenderFrameHostId()};
+  FileSystemAccessFileHandleImpl file(manager_.get(), other_binding_context,
+                                      test_file_url, "bar",
+                                      {ask_grant_, ask_grant_});
+  mojo::PendingRemote<blink::mojom::FileSystemAccessTransferToken> token_remote;
+  manager_->CreateTransferToken(file,
+                                token_remote.InitWithNewPipeAndPassReceiver());
+
+  base::test::TestFuture<std::vector<uint8_t>> serialize_future;
+  manager_->SerializeHandle(
+      std::move(token_remote),
+      serialize_future.GetCallback<const std::vector<uint8_t>&>());
+  std::vector<uint8_t> serialized = serialize_future.Take();
+  EXPECT_FALSE(serialized.empty());
+
+  // Deserializing under `kTestStorageKey`, which does not own the bucket, must
+  // drop the transfer token and fail to resolve.
+  manager_->DeserializeHandle(kTestStorageKey, serialized,
+                              token_remote.InitWithNewPipeAndPassReceiver());
+  base::test::TestFuture<FileSystemAccessTransferTokenImpl*> resolve_future;
+  manager_->ResolveTransferToken(std::move(token_remote),
+                                 resolve_future.GetCallback());
+  EXPECT_FALSE(resolve_future.Get());
+}
+
 TEST_F(FileSystemAccessManagerImplTest,
        SerializeHandle_SandboxedDirectory_CustomBucket) {
   auto test_file_url = file_system_context_->CreateCrackedFileSystemURL(
@@ -997,8 +1516,9 @@ TEST_F(FileSystemAccessManagerImplTest,
       base::FilePath::FromUTF8Unsafe("hello/world/"));
   ASSERT_OK_AND_ASSIGN(auto bucket, CreateBucketForTesting());
   test_file_url.SetBucket(std::move(bucket));
-  FileSystemAccessDirectoryHandleImpl directory(
-      manager_.get(), kBindingContext, test_file_url, {ask_grant_, ask_grant_});
+  FileSystemAccessDirectoryHandleImpl directory(manager_.get(),
+                                                binding_context_, test_file_url,
+                                                {ask_grant_, ask_grant_});
   mojo::PendingRemote<blink::mojom::FileSystemAccessTransferToken> token_remote;
   manager_->CreateTransferToken(directory,
                                 token_remote.InitWithNewPipeAndPassReceiver());
@@ -1029,18 +1549,18 @@ TEST_F(FileSystemAccessManagerImplTest, SerializeHandle_Native_SingleFile) {
   EXPECT_CALL(permission_context_,
               GetReadPermissionGrant(
                   kTestStorageKey.origin(), kTestPathInfo, HandleType::kFile,
-                  FileSystemAccessPermissionContext::UserAction::kOpen))
+                  FileSystemAccessPermissionContext::AccessTrigger::kOpen))
       .WillOnce(testing::Return(grant));
   EXPECT_CALL(permission_context_,
               GetWritePermissionGrant(
                   kTestStorageKey.origin(), kTestPathInfo, HandleType::kFile,
-                  FileSystemAccessPermissionContext::UserAction::kOpen))
+                  FileSystemAccessPermissionContext::AccessTrigger::kOpen))
       .WillOnce(testing::Return(grant));
 
   blink::mojom::FileSystemAccessEntryPtr entry =
       manager_->CreateFileEntryFromPath(
-          kBindingContext, kTestPathInfo,
-          FileSystemAccessPermissionContext::UserAction::kOpen);
+          binding_context_, kTestPathInfo,
+          FileSystemAccessPermissionContext::AccessTrigger::kOpen);
   mojo::Remote<blink::mojom::FileSystemAccessFileHandle> handle(
       std::move(entry->entry_handle->get_file()));
 
@@ -1052,13 +1572,13 @@ TEST_F(FileSystemAccessManagerImplTest, SerializeHandle_Native_SingleFile) {
       permission_context_,
       GetReadPermissionGrant(
           kTestStorageKey.origin(), kTestPathInfo, HandleType::kFile,
-          FileSystemAccessPermissionContext::UserAction::kLoadFromStorage))
+          FileSystemAccessPermissionContext::AccessTrigger::kLoadFromStorage))
       .WillOnce(testing::Return(ask_grant_));
   EXPECT_CALL(
       permission_context_,
       GetWritePermissionGrant(
           kTestStorageKey.origin(), kTestPathInfo, HandleType::kFile,
-          FileSystemAccessPermissionContext::UserAction::kLoadFromStorage))
+          FileSystemAccessPermissionContext::AccessTrigger::kLoadFromStorage))
       .WillOnce(testing::Return(ask_grant2_));
 
   FileSystemAccessTransferTokenImpl* token =
@@ -1088,13 +1608,13 @@ TEST_F(FileSystemAccessManagerImplTest,
       permission_context_,
       GetReadPermissionGrant(
           kTestStorageKey.origin(), kTestPathInfo, HandleType::kDirectory,
-          FileSystemAccessPermissionContext::UserAction::kLoadFromStorage))
+          FileSystemAccessPermissionContext::AccessTrigger::kLoadFromStorage))
       .WillOnce(testing::Return(ask_grant_));
   EXPECT_CALL(
       permission_context_,
       GetWritePermissionGrant(
           kTestStorageKey.origin(), kTestPathInfo, HandleType::kDirectory,
-          FileSystemAccessPermissionContext::UserAction::kLoadFromStorage))
+          FileSystemAccessPermissionContext::AccessTrigger::kLoadFromStorage))
       .WillOnce(testing::Return(ask_grant2_));
 
   FileSystemAccessTransferTokenImpl* token =
@@ -1110,23 +1630,41 @@ TEST_F(FileSystemAccessManagerImplTest,
   EXPECT_EQ(ask_grant2_, token->GetWriteGrant());
 }
 
-TEST_F(FileSystemAccessManagerImplTest,
+class FileSystemAccessManagerImplSerializeHandleInsideDirectoryTest
+    : public FileSystemAccessManagerImplTest,
+      public testing::WithParamInterface<bool> {
+ public:
+  FileSystemAccessManagerImplSerializeHandleInsideDirectoryTest() {
+    scoped_feature_list_.InitWithFeatureState(
+        features::kFileSystemAccessWriteBlocklistCheck,
+        IsWriteBlocklistCheckEnabled());
+  }
+
+  bool IsWriteBlocklistCheckEnabled() const { return GetParam(); }
+
+ protected:
+  base::test::ScopedFeatureList scoped_feature_list_;
+};
+
+TEST_P(FileSystemAccessManagerImplSerializeHandleInsideDirectoryTest,
        SerializeHandle_Native_FileInsideDirectory) {
   const PathInfo kDirectoryPathInfo(dir_.GetPath().AppendASCII("foo"));
   const std::string kTestName = "test file name";
   base::CreateDirectory(kDirectoryPathInfo.path);
-  if (base::FeatureList::IsEnabled(
-          features::kFileSystemAccessDirectoryIterationBlocklistCheck)) {
-    EXPECT_CALL(permission_context_,
-                ConfirmSensitiveEntryAccess_(
-                    kTestStorageKey.origin(),
-                    PathInfo(kDirectoryPathInfo.path.AppendASCII(kTestName)),
-                    FileSystemAccessPermissionContext::HandleType::kFile,
-                    FileSystemAccessPermissionContext::UserAction::kNone,
-                    kFrameId, testing::_))
-        .WillOnce(RunOnceCallback<5>(
-            FileSystemAccessPermissionContext::SensitiveEntryResult::kAllowed));
-  }
+
+  EXPECT_CALL(
+      permission_context_,
+      ConfirmSensitiveEntryAccess_(
+          kTestStorageKey.origin(),
+          PathInfo(kDirectoryPathInfo.path.AppendASCII(kTestName)),
+          FileSystemAccessPermissionContext::HandleType::kFile,
+          IsWriteBlocklistCheckEnabled() ? FileSystemAccessPermissionContext::
+                                               AccessTrigger::kProgrammaticWrite
+                                         : FileSystemAccessPermissionContext::
+                                               AccessTrigger::kProgrammaticRead,
+          frame_id_, testing::_))
+      .WillOnce(RunOnceCallback<5>(
+          FileSystemAccessPermissionContext::SensitiveEntryResult::kAllowed));
 
   mojo::Remote<blink::mojom::FileSystemAccessDirectoryHandle> directory_handle =
       GetHandleForDirectory(kDirectoryPathInfo);
@@ -1152,13 +1690,13 @@ TEST_F(FileSystemAccessManagerImplTest,
       permission_context_,
       GetReadPermissionGrant(
           kTestStorageKey.origin(), kDirectoryPathInfo, HandleType::kDirectory,
-          FileSystemAccessPermissionContext::UserAction::kLoadFromStorage))
+          FileSystemAccessPermissionContext::AccessTrigger::kLoadFromStorage))
       .WillOnce(testing::Return(ask_grant_));
   EXPECT_CALL(
       permission_context_,
       GetWritePermissionGrant(
           kTestStorageKey.origin(), kDirectoryPathInfo, HandleType::kDirectory,
-          FileSystemAccessPermissionContext::UserAction::kLoadFromStorage))
+          FileSystemAccessPermissionContext::AccessTrigger::kLoadFromStorage))
       .WillOnce(testing::Return(ask_grant2_));
 
   FileSystemAccessTransferTokenImpl* token =
@@ -1176,11 +1714,24 @@ TEST_F(FileSystemAccessManagerImplTest,
   EXPECT_EQ(ask_grant2_, token->GetWriteGrant());
 }
 
-TEST_F(FileSystemAccessManagerImplTest,
+TEST_P(FileSystemAccessManagerImplSerializeHandleInsideDirectoryTest,
        SerializeHandle_Native_DirectoryInsideDirectory) {
   const PathInfo kDirectoryPathInfo(dir_.GetPath().AppendASCII("foo"));
   const std::string kTestName = "test dir name";
   base::CreateDirectory(kDirectoryPathInfo.path);
+
+  if (IsWriteBlocklistCheckEnabled()) {
+    EXPECT_CALL(permission_context_,
+                ConfirmSensitiveEntryAccess_(
+                    kTestStorageKey.origin(),
+                    PathInfo(kDirectoryPathInfo.path.AppendASCII(kTestName)),
+                    FileSystemAccessPermissionContext::HandleType::kDirectory,
+                    FileSystemAccessPermissionContext::AccessTrigger::
+                        kProgrammaticWrite,
+                    frame_id_, testing::_))
+        .WillOnce(RunOnceCallback<5>(
+            FileSystemAccessPermissionContext::SensitiveEntryResult::kAllowed));
+  }
 
   mojo::Remote<blink::mojom::FileSystemAccessDirectoryHandle> directory_handle =
       GetHandleForDirectory(kDirectoryPathInfo);
@@ -1207,13 +1758,13 @@ TEST_F(FileSystemAccessManagerImplTest,
       permission_context_,
       GetReadPermissionGrant(
           kTestStorageKey.origin(), kDirectoryPathInfo, HandleType::kDirectory,
-          FileSystemAccessPermissionContext::UserAction::kLoadFromStorage))
+          FileSystemAccessPermissionContext::AccessTrigger::kLoadFromStorage))
       .WillOnce(testing::Return(ask_grant_));
   EXPECT_CALL(
       permission_context_,
       GetWritePermissionGrant(
           kTestStorageKey.origin(), kDirectoryPathInfo, HandleType::kDirectory,
-          FileSystemAccessPermissionContext::UserAction::kLoadFromStorage))
+          FileSystemAccessPermissionContext::AccessTrigger::kLoadFromStorage))
       .WillOnce(testing::Return(ask_grant2_));
 
   FileSystemAccessTransferTokenImpl* token =
@@ -1229,6 +1780,15 @@ TEST_F(FileSystemAccessManagerImplTest,
   EXPECT_EQ(ask_grant2_, token->GetWriteGrant());
 }
 
+INSTANTIATE_TEST_SUITE_P(
+    All,
+    FileSystemAccessManagerImplSerializeHandleInsideDirectoryTest,
+    testing::Bool(),
+    [](const testing::TestParamInfo<bool>& info) {
+      return info.param ? "WriteBlocklistCheckEnabled"
+                        : "WriteBlocklistCheckDisabled";
+    });
+
 TEST_F(FileSystemAccessManagerImplTest, SerializeHandle_ExternalFile) {
   const PathInfo kTestPathInfo(
       PathType::kExternal,
@@ -1242,18 +1802,18 @@ TEST_F(FileSystemAccessManagerImplTest, SerializeHandle_ExternalFile) {
   EXPECT_CALL(permission_context_,
               GetReadPermissionGrant(
                   kTestStorageKey.origin(), kTestPathInfo, HandleType::kFile,
-                  FileSystemAccessPermissionContext::UserAction::kOpen))
+                  FileSystemAccessPermissionContext::AccessTrigger::kOpen))
       .WillOnce(testing::Return(grant));
   EXPECT_CALL(permission_context_,
               GetWritePermissionGrant(
                   kTestStorageKey.origin(), kTestPathInfo, HandleType::kFile,
-                  FileSystemAccessPermissionContext::UserAction::kOpen))
+                  FileSystemAccessPermissionContext::AccessTrigger::kOpen))
       .WillOnce(testing::Return(grant));
 
   blink::mojom::FileSystemAccessEntryPtr entry =
       manager_->CreateFileEntryFromPath(
-          kBindingContext, kTestPathInfo,
-          FileSystemAccessPermissionContext::UserAction::kOpen);
+          binding_context_, kTestPathInfo,
+          FileSystemAccessPermissionContext::AccessTrigger::kOpen);
   mojo::Remote<blink::mojom::FileSystemAccessFileHandle> handle(
       std::move(entry->entry_handle->get_file()));
 
@@ -1265,13 +1825,13 @@ TEST_F(FileSystemAccessManagerImplTest, SerializeHandle_ExternalFile) {
       permission_context_,
       GetReadPermissionGrant(
           kTestStorageKey.origin(), kTestPathInfo, HandleType::kFile,
-          FileSystemAccessPermissionContext::UserAction::kLoadFromStorage))
+          FileSystemAccessPermissionContext::AccessTrigger::kLoadFromStorage))
       .WillOnce(testing::Return(ask_grant_));
   EXPECT_CALL(
       permission_context_,
       GetWritePermissionGrant(
           kTestStorageKey.origin(), kTestPathInfo, HandleType::kFile,
-          FileSystemAccessPermissionContext::UserAction::kLoadFromStorage))
+          FileSystemAccessPermissionContext::AccessTrigger::kLoadFromStorage))
       .WillOnce(testing::Return(ask_grant2_));
 
   FileSystemAccessTransferTokenImpl* token =
@@ -1285,6 +1845,183 @@ TEST_F(FileSystemAccessManagerImplTest, SerializeHandle_ExternalFile) {
   EXPECT_EQ(ask_grant_, token->GetReadGrant());
   EXPECT_EQ(ask_grant2_, token->GetWriteGrant());
 }
+
+TEST_F(FileSystemAccessManagerImplTest,
+       DeserializeHandle_Native_InvalidRelativePath) {
+  const base::FilePath root_path = dir_.GetPath().AppendASCII("foo");
+  const base::FilePath invalid_relative_paths[] = {
+      base::FilePath(FILE_PATH_LITERAL("..")),
+      base::FilePath(FILE_PATH_LITERAL("../bar")),
+      base::FilePath(FILE_PATH_LITERAL("../other_dir")),
+      base::FilePath(FILE_PATH_LITERAL("sub/../../bar")),
+      base::FilePath(FILE_PATH_LITERAL(".")),
+      base::FilePath(FILE_PATH_LITERAL("./bar")),
+      dir_.GetPath().AppendASCII("bar"),
+#if BUILDFLAG(IS_WIN)
+      base::FilePath(FILE_PATH_LITERAL("C:bar")),
+      base::FilePath(FILE_PATH_LITERAL("\\bar")),
+#endif
+  };
+
+  EXPECT_CALL(permission_context_, GetReadPermissionGrant).Times(0);
+  EXPECT_CALL(permission_context_, GetWritePermissionGrant).Times(0);
+
+  for (auto handle_type : {FileSystemAccessHandleData::kFile,
+                           FileSystemAccessHandleData::kDirectory}) {
+    for (const auto& relative_path : invalid_relative_paths) {
+      FileSystemAccessHandleData data;
+      data.set_handle_type(handle_type);
+      data.mutable_local()->set_root_path(SerializePathForTesting(root_path));
+      data.mutable_local()->set_relative_path(
+          SerializePathForTesting(relative_path));
+      EXPECT_FALSE(DeserializeAndResolveToken(data)) << relative_path;
+    }
+  }
+}
+
+TEST_F(FileSystemAccessManagerImplTest,
+       DeserializeHandle_Native_InvalidRootPath) {
+  const base::FilePath invalid_root_paths[] = {
+      base::FilePath(),
+      dir_.GetPath().AppendASCII("foo").Append(FILE_PATH_LITERAL("../bar")),
+      base::FilePath(FILE_PATH_LITERAL("relative/root")),
+  };
+
+  EXPECT_CALL(permission_context_, GetReadPermissionGrant).Times(0);
+  EXPECT_CALL(permission_context_, GetWritePermissionGrant).Times(0);
+
+  for (const auto& root_path : invalid_root_paths) {
+    FileSystemAccessHandleData data;
+    data.set_handle_type(FileSystemAccessHandleData::kDirectory);
+    data.mutable_local()->set_root_path(SerializePathForTesting(root_path));
+    data.mutable_local()->set_relative_path(
+        SerializePathForTesting(base::FilePath()));
+    EXPECT_FALSE(DeserializeAndResolveToken(data)) << root_path;
+  }
+}
+
+TEST_F(FileSystemAccessManagerImplTest,
+       DeserializeHandle_External_InvalidPaths) {
+  EXPECT_CALL(permission_context_, GetReadPermissionGrant).Times(0);
+  EXPECT_CALL(permission_context_, GetWritePermissionGrant).Times(0);
+
+  {
+    FileSystemAccessHandleData data;
+    data.set_handle_type(FileSystemAccessHandleData::kFile);
+    data.mutable_external()->set_root_path(SerializePathForTesting(
+        base::FilePath::FromUTF8Unsafe(kTestMountPoint).AppendASCII("foo")));
+    data.mutable_external()->set_relative_path(
+        SerializePathForTesting(base::FilePath(FILE_PATH_LITERAL("../bar"))));
+    EXPECT_FALSE(DeserializeAndResolveToken(data));
+  }
+
+  {
+    FileSystemAccessHandleData data;
+    data.set_handle_type(FileSystemAccessHandleData::kFile);
+    data.mutable_external()->set_root_path(
+        SerializePathForTesting(base::FilePath::FromUTF8Unsafe(kTestMountPoint)
+                                    .Append(FILE_PATH_LITERAL("../foo"))));
+    data.mutable_external()->set_relative_path(
+        SerializePathForTesting(base::FilePath()));
+    EXPECT_FALSE(DeserializeAndResolveToken(data));
+  }
+
+  // Unregistered external mounts produce an invalid `root` URL. Without the
+  // `root.is_valid()` check, `CreateCrackedFileSystemURL` on
+  // `kFileSystemTypeUnknown` returns a URL with `is_valid() == true`.
+  {
+    FileSystemAccessHandleData data;
+    data.set_handle_type(FileSystemAccessHandleData::kFile);
+    data.mutable_external()->set_root_path(SerializePathForTesting(
+        base::FilePath::FromUTF8Unsafe("unregistered_mount")
+            .AppendASCII("foo")));
+    data.mutable_external()->set_relative_path(
+        SerializePathForTesting(base::FilePath()));
+    EXPECT_FALSE(DeserializeAndResolveToken(data));
+  }
+
+#if BUILDFLAG(IS_WIN)
+  // A bare drive letter passes `IsValidRootPath` for `kExternal`, but
+  // `FilePath::BaseName()` strips the drive letter and returns an empty string.
+  {
+    FileSystemAccessHandleData data;
+    data.set_handle_type(FileSystemAccessHandleData::kDirectory);
+    data.mutable_external()->set_root_path(
+        SerializePathForTesting(base::FilePath(FILE_PATH_LITERAL("C:"))));
+    data.mutable_external()->set_relative_path(
+        SerializePathForTesting(base::FilePath()));
+    EXPECT_FALSE(DeserializeAndResolveToken(data));
+  }
+#endif
+}
+
+TEST_F(FileSystemAccessManagerImplTest,
+       DeserializeHandle_Sandboxed_InvalidData) {
+  // `CreateCrackedFileSystemURL` for `kFileSystemTypeTemporary` does not reject
+  // `..` or `.` segments, so `DeserializeHandle` must reject them directly.
+  const base::FilePath invalid_virtual_paths[] = {
+      base::FilePath(FILE_PATH_LITERAL("../bar")),
+      base::FilePath(FILE_PATH_LITERAL(".")),
+      base::FilePath(FILE_PATH_LITERAL("./bar")),
+      base::FilePath(FILE_PATH_LITERAL("a/./b")),
+  };
+  for (const auto& virtual_path : invalid_virtual_paths) {
+    FileSystemAccessHandleData data;
+    data.set_handle_type(FileSystemAccessHandleData::kFile);
+    data.mutable_sandboxed()->set_virtual_path(
+        SerializePathForTesting(virtual_path));
+    EXPECT_FALSE(DeserializeAndResolveToken(data)) << virtual_path;
+  }
+
+  {
+    FileSystemAccessHandleData data;
+    data.set_handle_type(FileSystemAccessHandleData::kFile);
+    EXPECT_FALSE(DeserializeAndResolveToken(data));
+  }
+}
+
+#if BUILDFLAG(IS_ANDROID)
+TEST_F(FileSystemAccessManagerImplTest,
+       SerializeHandle_AndroidContentUri_FileInsideDirectory) {
+  const base::FilePath kRootTreeUri("content://authority/tree/foo");
+  const base::FilePath kChildDocUri(
+      "content://authority/tree/foo/document/doc%3Abar");
+  const PathInfo kRootPathInfo(kRootTreeUri, "foo_dir");
+
+  auto grant = base::MakeRefCounted<FixedFileSystemAccessPermissionGrant>(
+      FixedFileSystemAccessPermissionGrant::PermissionStatus::GRANTED,
+      kRootPathInfo);
+  storage::FileSystemURL child_url =
+      file_system_context_->CreateCrackedFileSystemURL(
+          blink::StorageKey(), storage::kFileSystemTypeLocal, kChildDocUri);
+  FileSystemAccessFileHandleImpl file(manager_.get(), binding_context_,
+                                      child_url, "bar", {grant, grant});
+  mojo::PendingRemote<blink::mojom::FileSystemAccessTransferToken> token_remote;
+  manager_->CreateTransferToken(file,
+                                token_remote.InitWithNewPipeAndPassReceiver());
+
+  EXPECT_CALL(
+      permission_context_,
+      GetReadPermissionGrant(
+          kTestStorageKey.origin(), kRootPathInfo, HandleType::kDirectory,
+          FileSystemAccessPermissionContext::AccessTrigger::kLoadFromStorage))
+      .WillOnce(testing::Return(ask_grant_));
+  EXPECT_CALL(
+      permission_context_,
+      GetWritePermissionGrant(
+          kTestStorageKey.origin(), kRootPathInfo, HandleType::kDirectory,
+          FileSystemAccessPermissionContext::AccessTrigger::kLoadFromStorage))
+      .WillOnce(testing::Return(ask_grant2_));
+
+  FileSystemAccessTransferTokenImpl* token =
+      SerializeAndDeserializeToken(std::move(token_remote));
+  ASSERT_TRUE(token);
+  EXPECT_EQ(kChildDocUri, token->url().path());
+  EXPECT_EQ(HandleType::kFile, token->type());
+  EXPECT_EQ(ask_grant_, token->GetReadGrant());
+  EXPECT_EQ(ask_grant2_, token->GetWriteGrant());
+}
+#endif
 
 // FileSystemAccessManager should successfully resolve a
 // FileSystemAccessDataTransferToken representing a file in the user's file
@@ -1374,7 +2111,7 @@ TEST_F(FileSystemAccessManagerImplTest,
       token_remote;
   manager_->CreateFileSystemAccessDataTransferToken(
       PathInfo(file_path),
-      /*renderer_id=*/kBindingContext.process_id() - 1,
+      /*renderer_id=*/binding_context_.process_id() - 1,
       token_remote.InitWithNewPipeAndPassReceiver());
 
   // Try to redeem the FileSystemAccessDataTransferToken for a
@@ -1401,7 +2138,7 @@ TEST_F(FileSystemAccessManagerImplTest,
       token_remote;
   manager_->CreateFileSystemAccessDataTransferToken(
       PathInfo(kDirPath),
-      /*renderer_id=*/kBindingContext.process_id() - 1,
+      /*renderer_id=*/binding_context_.process_id() - 1,
       token_remote.InitWithNewPipeAndPassReceiver());
 
   // Try to redeem the FileSystemAccessDataTransferToken for a
@@ -1422,7 +2159,7 @@ TEST_F(FileSystemAccessManagerImplTest,
   mojo::PendingRemote<blink::mojom::FileSystemAccessDataTransferToken>
       token_remote;
   manager_->CreateFileSystemAccessDataTransferToken(
-      file_info, kBindingContext.process_id(),
+      file_info, binding_context_.process_id(),
       token_remote.InitWithNewPipeAndPassReceiver());
 
   EXPECT_CALL(permission_context_,
@@ -1431,16 +2168,18 @@ TEST_F(FileSystemAccessManagerImplTest,
       .Times(0);
 
   // Expect permission requests when the token is sent to be redeemed.
-  EXPECT_CALL(permission_context_,
-              GetReadPermissionGrant(
-                  kTestStorageKey.origin(), file_info, HandleType::kFile,
-                  FileSystemAccessPermissionContext::UserAction::kDragAndDrop))
+  EXPECT_CALL(
+      permission_context_,
+      GetReadPermissionGrant(
+          kTestStorageKey.origin(), file_info, HandleType::kFile,
+          FileSystemAccessPermissionContext::AccessTrigger::kDragAndDrop))
       .WillOnce(testing::Return(allow_grant_));
 
-  EXPECT_CALL(permission_context_,
-              GetWritePermissionGrant(
-                  kTestStorageKey.origin(), file_info, HandleType::kFile,
-                  FileSystemAccessPermissionContext::UserAction::kDragAndDrop))
+  EXPECT_CALL(
+      permission_context_,
+      GetWritePermissionGrant(
+          kTestStorageKey.origin(), file_info, HandleType::kFile,
+          FileSystemAccessPermissionContext::AccessTrigger::kDragAndDrop))
       .WillOnce(testing::Return(allow_grant_));
 
   // Attempt to resolve `token_remote` and store the resulting
@@ -1453,6 +2192,7 @@ TEST_F(FileSystemAccessManagerImplTest,
   DCHECK_EQ(get_entry_future.Get<0>()->status,
             blink::mojom::FileSystemAccessStatus::kOk);
   auto file_system_access_entry = std::get<1>(get_entry_future.Take());
+  testing::Mock::VerifyAndClearExpectations(&permission_context_);
 
   EXPECT_FALSE(file_system_access_entry.is_null());
   ASSERT_TRUE(file_system_access_entry->entry_handle->is_file());
@@ -1460,7 +2200,19 @@ TEST_F(FileSystemAccessManagerImplTest,
       std::move(file_system_access_entry->entry_handle->get_file()));
 
   // Check to see if the resulting FileSystemAccessFileHandle can read the
-  // contents of the file at `file_path`.
+  // contents of the file at `file_path`. Reading via `AsBlob()` performs a
+  // programmatic read sensitive entry access check.
+  if (base::FeatureList::IsEnabled(
+          features::kFileSystemAccessDirectoryIterationBlocklistCheck)) {
+    EXPECT_CALL(
+        permission_context_,
+        ConfirmSensitiveEntryAccess_(
+            kTestStorageKey.origin(), file_info, HandleType::kFile,
+            FileSystemAccessPermissionContext::AccessTrigger::kProgrammaticRead,
+            frame_id_, testing::_))
+        .WillOnce(RunOnceCallback<5>(
+            FileSystemAccessPermissionContext::SensitiveEntryResult::kAllowed));
+  }
   EXPECT_EQ(ReadStringFromFileRemote(std::move(file_handle)), file_contents);
 }
 
@@ -1472,15 +2224,16 @@ TEST_F(FileSystemAccessManagerImplTest,
   mojo::PendingRemote<blink::mojom::FileSystemAccessDataTransferToken>
       token_remote;
   manager_->CreateFileSystemAccessDataTransferToken(
-      kDirPathInfo, kBindingContext.process_id(),
+      kDirPathInfo, binding_context_.process_id(),
       token_remote.InitWithNewPipeAndPassReceiver());
 
-  EXPECT_CALL(permission_context_,
-              ConfirmSensitiveEntryAccess_(
-                  kTestStorageKey.origin(), kDirPathInfo,
-                  FileSystemAccessPermissionContext::HandleType::kDirectory,
-                  FileSystemAccessPermissionContext::UserAction::kDragAndDrop,
-                  kFrameId, testing::_))
+  EXPECT_CALL(
+      permission_context_,
+      ConfirmSensitiveEntryAccess_(
+          kTestStorageKey.origin(), kDirPathInfo,
+          FileSystemAccessPermissionContext::HandleType::kDirectory,
+          FileSystemAccessPermissionContext::AccessTrigger::kDragAndDrop,
+          frame_id_, testing::_))
       .WillOnce(RunOnceCallback<5>(
           FileSystemAccessPermissionContext::SensitiveEntryResult::kAbort));
 
@@ -1510,7 +2263,7 @@ TEST_F(FileSystemAccessManagerImplTest,
       token_remote;
   auto drag_drop_token_impl =
       std::make_unique<FileSystemAccessDataTransferTokenImpl>(
-          manager_.get(), PathInfo(kDirPath), kBindingContext.process_id(),
+          manager_.get(), PathInfo(kDirPath), binding_context_.process_id(),
           token_remote.InitWithNewPipeAndPassReceiver());
 
   // Try to redeem the FileSystemAccessDataTransferToken for a
@@ -1540,54 +2293,16 @@ TEST_F(FileSystemAccessManagerImplTest, ChooseEntries_OpenFile) {
   manager_->BindReceiver(binding_context,
                          manager_remote.BindNewPipeAndPassReceiver());
 
-  EXPECT_CALL(permission_context_,
-              CanObtainReadPermission(kTestStorageKey.origin()))
-      .WillOnce(testing::Return(true));
+  ExpectShowFilePicker(
+      /*read_permission=*/true, /*write_permission=*/false,
+      PathInfo(test_file_info.path.DirName()));
 
-  EXPECT_CALL(
-      permission_context_,
-      GetWellKnownDirectoryPath(blink::mojom::WellKnownDirectory::kDirDocuments,
-                                kTestStorageKey.origin()))
-      .WillOnce(testing::Return(base::FilePath()));
-  EXPECT_CALL(permission_context_,
-              GetLastPickedDirectory(kTestStorageKey.origin(), std::string()))
-      .WillOnce(testing::Return(PathInfo()));
-  EXPECT_CALL(permission_context_, GetPickerTitle(testing::_))
-      .WillOnce(testing::Return(std::u16string()));
-  EXPECT_CALL(permission_context_,
-              SetLastPickedDirectory(kTestStorageKey.origin(), std::string(),
-                                     PathInfo(test_file_info.path.DirName())));
-
-  EXPECT_CALL(
-      permission_context_,
-      ConfirmSensitiveEntryAccess_(
-          kTestStorageKey.origin(), test_file_info,
-          FileSystemAccessPermissionContext::HandleType::kFile,
-          FileSystemAccessPermissionContext::UserAction::kOpen,
-          web_contents_->GetPrimaryMainFrame()->GetGlobalId(), testing::_))
-      .WillOnce(RunOnceCallback<5>(
-          FileSystemAccessPermissionContext::SensitiveEntryResult::kAllowed));
-
-  EXPECT_CALL(permission_context_,
-              GetReadPermissionGrant(
-                  kTestStorageKey.origin(), test_file_info,
-                  FileSystemAccessPermissionContext::HandleType::kFile,
-                  FileSystemAccessPermissionContext::UserAction::kOpen))
-      .WillOnce(testing::Return(allow_grant_));
-  EXPECT_CALL(permission_context_,
-              GetWritePermissionGrant(
-                  kTestStorageKey.origin(), test_file_info,
-                  FileSystemAccessPermissionContext::HandleType::kFile,
-                  FileSystemAccessPermissionContext::UserAction::kOpen))
-      .WillOnce(testing::Return(allow_grant_));
-  EXPECT_CALL(permission_context_, CheckPathsAgainstEnterprisePolicy(
-                                       testing::_, testing::_, testing::_))
-      .WillOnce([](std::vector<PathInfo> entries,
-                   content::GlobalRenderFrameHostId frame_id,
-                   MockFileSystemAccessPermissionContext::
-                       EntriesAllowedByEnterprisePolicyCallback callback) {
-        std::move(callback).Run(std::move(entries));
-      });
+  ExpectConfirmSensitiveEntryAccess(
+      test_file_info,
+      FileSystemAccessPermissionContext::SensitiveEntryResult::kAllowed);
+  ExpectGetReadPermissionGrant(test_file_info);
+  ExpectGetWritePermissionGrant(test_file_info);
+  ExpectCheckPathsAgainstEnterprisePolicy();
 
   auto open_file_picker_options = blink::mojom::OpenFilePickerOptions::New(
       blink::mojom::AcceptsTypesInfo::New(
@@ -1607,6 +2322,433 @@ TEST_F(FileSystemAccessManagerImplTest, ChooseEntries_OpenFile) {
                                 future.GetCallback());
   ASSERT_TRUE(future.Wait());
 }
+
+TEST_F(FileSystemAccessManagerImplTest, ChooseEntries_WithoutUserActivation) {
+  mojo::Remote<blink::mojom::FileSystemAccessManager> manager_remote;
+  FileSystemAccessManagerImpl::BindingContext binding_context = {
+      kTestStorageKey, kTestURL,
+      web_contents_->GetPrimaryMainFrame()->GetGlobalId()};
+  manager_->BindReceiver(binding_context,
+                         manager_remote.BindNewPipeAndPassReceiver());
+
+  EXPECT_CALL(permission_context_,
+              CanObtainReadPermission(kTestStorageKey.origin()))
+      .WillOnce(testing::Return(true));
+
+  auto open_file_picker_options = blink::mojom::OpenFilePickerOptions::New(
+      blink::mojom::AcceptsTypesInfo::New(
+          std::vector<blink::mojom::ChooseFileSystemEntryAcceptsOptionPtr>(),
+          /*include_accepts_all=*/true),
+      /*can_select_multiple_files=*/false);
+  auto picker_options = blink::mojom::FilePickerOptions::New(
+      blink::mojom::TypeSpecificFilePickerOptionsUnion::
+          NewOpenFilePickerOptions(std::move(open_file_picker_options)),
+      /*starting_directory_id=*/std::string(),
+      blink::mojom::FilePickerStartInOptionsUnionPtr());
+
+  base::test::TestFuture<blink::mojom::FileSystemAccessErrorPtr,
+                         std::vector<blink::mojom::FileSystemAccessEntryPtr>>
+      future;
+  manager_remote->ChooseEntries(std::move(picker_options),
+                                future.GetCallback());
+  EXPECT_TRUE(future.Wait());
+  EXPECT_EQ(future.Get<0>()->status,
+            blink::mojom::FileSystemAccessStatus::kPermissionDenied);
+  EXPECT_EQ(future.Get<0>()->message, "User activation required.");
+  EXPECT_TRUE(future.Get<1>().empty());
+}
+
+// Test opening multiple files where all selected files are safe (i.e., they
+// pass the sensitive entry check with `kAllowed`). Verifies that the recursive
+// check successfully iterates through all entries and returns handles for all
+// files.
+TEST_F(FileSystemAccessManagerImplTest,
+       ChooseEntries_OpenMultipleFiles_AllAllowed) {
+  base::FilePath test_file1 = dir_.GetPath().AppendASCII("foo1");
+  ASSERT_TRUE(base::CreateTemporaryFile(&test_file1));
+  PathInfo test_file_info1(test_file1);
+
+  base::FilePath test_file2 = dir_.GetPath().AppendASCII("foo2");
+  ASSERT_TRUE(base::CreateTemporaryFile(&test_file2));
+  PathInfo test_file_info2(test_file2);
+
+  manager_->SetFilePickerResultsForTesting({test_file_info1, test_file_info2});
+
+  static_cast<TestRenderFrameHost*>(web_contents_->GetPrimaryMainFrame())
+      ->SimulateUserActivation();
+
+  mojo::Remote<blink::mojom::FileSystemAccessManager> manager_remote;
+  FileSystemAccessManagerImpl::BindingContext binding_context = {
+      kTestStorageKey, kTestURL,
+      web_contents_->GetPrimaryMainFrame()->GetGlobalId()};
+  manager_->BindReceiver(binding_context,
+                         manager_remote.BindNewPipeAndPassReceiver());
+
+  ExpectShowFilePicker(
+      /*read_permission=*/true, /*write_permission=*/false,
+      PathInfo(test_file_info1.path.DirName()));
+
+  // ConfirmSensitiveEntryAccess should be called for BOTH files.
+  testing::Expectation e1 = ExpectConfirmSensitiveEntryAccess(
+      test_file_info1,
+      FileSystemAccessPermissionContext::SensitiveEntryResult::kAllowed);
+  ExpectConfirmSensitiveEntryAccess(
+      test_file_info2,
+      FileSystemAccessPermissionContext::SensitiveEntryResult::kAllowed,
+      FileSystemAccessPermissionContext::AccessTrigger::kOpen, e1);
+
+  ExpectGetReadPermissionGrant(test_file_info1);
+  ExpectGetWritePermissionGrant(test_file_info1);
+
+  ExpectGetReadPermissionGrant(test_file_info2);
+  ExpectGetWritePermissionGrant(test_file_info2);
+
+  ExpectCheckPathsAgainstEnterprisePolicy();
+
+  auto open_file_picker_options = blink::mojom::OpenFilePickerOptions::New(
+      blink::mojom::AcceptsTypesInfo::New(
+          std::vector<blink::mojom::ChooseFileSystemEntryAcceptsOptionPtr>(),
+          /*include_accepts_all=*/true),
+      /*can_select_multiple_files=*/true);
+  auto picker_options = blink::mojom::FilePickerOptions::New(
+      blink::mojom::TypeSpecificFilePickerOptionsUnion::
+          NewOpenFilePickerOptions(std::move(open_file_picker_options)),
+      /*starting_directory_id=*/std::string(),
+      blink::mojom::FilePickerStartInOptionsUnionPtr());
+
+  base::test::TestFuture<blink::mojom::FileSystemAccessErrorPtr,
+                         std::vector<blink::mojom::FileSystemAccessEntryPtr>>
+      future;
+  manager_remote->ChooseEntries(std::move(picker_options),
+                                future.GetCallback());
+  ASSERT_TRUE(future.Wait());
+  EXPECT_EQ(future.Get<0>()->status, blink::mojom::FileSystemAccessStatus::kOk);
+  EXPECT_EQ(future.Get<1>().size(), 2u);
+}
+
+// Test opening multiple files where a file at a later index is determined to be
+// sensitive (returns `kAbort`). Verifies that the recursion is halted as soon
+// as a sensitive entry is encountered, and the picker is aborted.
+TEST_F(FileSystemAccessManagerImplTest,
+       ChooseEntries_OpenMultipleFiles_OneSensitiveBlocked) {
+  base::FilePath test_file1 = dir_.GetPath().AppendASCII("foo1");
+  ASSERT_TRUE(base::CreateTemporaryFile(&test_file1));
+  PathInfo test_file_info1(test_file1);
+
+  base::FilePath test_file2 = dir_.GetPath().AppendASCII("foo2");
+  ASSERT_TRUE(base::CreateTemporaryFile(&test_file2));
+  PathInfo test_file_info2(test_file2);
+
+  manager_->SetFilePickerResultsForTesting({test_file_info1, test_file_info2});
+
+  static_cast<TestRenderFrameHost*>(web_contents_->GetPrimaryMainFrame())
+      ->SimulateUserActivation();
+
+  mojo::Remote<blink::mojom::FileSystemAccessManager> manager_remote;
+  FileSystemAccessManagerImpl::BindingContext binding_context = {
+      kTestStorageKey, kTestURL,
+      web_contents_->GetPrimaryMainFrame()->GetGlobalId()};
+  manager_->BindReceiver(binding_context,
+                         manager_remote.BindNewPipeAndPassReceiver());
+
+  ExpectShowFilePicker();
+
+  // ConfirmSensitiveEntryAccess is called for BOTH. The first is allowed, the
+  // second is aborted.
+  testing::Expectation e1 = ExpectConfirmSensitiveEntryAccess(
+      test_file_info1,
+      FileSystemAccessPermissionContext::SensitiveEntryResult::kAllowed);
+  ExpectConfirmSensitiveEntryAccess(
+      test_file_info2,
+      FileSystemAccessPermissionContext::SensitiveEntryResult::kAbort,
+      FileSystemAccessPermissionContext::AccessTrigger::kOpen, e1);
+
+  auto open_file_picker_options = blink::mojom::OpenFilePickerOptions::New(
+      blink::mojom::AcceptsTypesInfo::New(
+          std::vector<blink::mojom::ChooseFileSystemEntryAcceptsOptionPtr>(),
+          /*include_accepts_all=*/true),
+      /*can_select_multiple_files=*/true);
+  auto picker_options = blink::mojom::FilePickerOptions::New(
+      blink::mojom::TypeSpecificFilePickerOptionsUnion::
+          NewOpenFilePickerOptions(std::move(open_file_picker_options)),
+      /*starting_directory_id=*/std::string(),
+      blink::mojom::FilePickerStartInOptionsUnionPtr());
+
+  base::test::TestFuture<blink::mojom::FileSystemAccessErrorPtr,
+                         std::vector<blink::mojom::FileSystemAccessEntryPtr>>
+      future;
+  manager_remote->ChooseEntries(std::move(picker_options),
+                                future.GetCallback());
+  ASSERT_TRUE(future.Wait());
+  EXPECT_EQ(future.Get<0>()->status,
+            blink::mojom::FileSystemAccessStatus::kOperationAborted);
+  EXPECT_TRUE(future.Get<1>().empty());
+}
+
+// Test opening multiple files where the very first file is determined to be
+// sensitive (returns `kAbort`). Verifies that the recursion halts immediately
+// on the first entry, and no subsequent files are checked.
+TEST_F(FileSystemAccessManagerImplTest,
+       ChooseEntries_OpenMultipleFiles_FirstSensitiveBlocked) {
+  base::FilePath test_file1 = dir_.GetPath().AppendASCII("foo1");
+  ASSERT_TRUE(base::CreateTemporaryFile(&test_file1));
+  PathInfo test_file_info1(test_file1);
+
+  base::FilePath test_file2 = dir_.GetPath().AppendASCII("foo2");
+  ASSERT_TRUE(base::CreateTemporaryFile(&test_file2));
+  PathInfo test_file_info2(test_file2);
+
+  manager_->SetFilePickerResultsForTesting({test_file_info1, test_file_info2});
+
+  static_cast<TestRenderFrameHost*>(web_contents_->GetPrimaryMainFrame())
+      ->SimulateUserActivation();
+
+  mojo::Remote<blink::mojom::FileSystemAccessManager> manager_remote;
+  FileSystemAccessManagerImpl::BindingContext binding_context = {
+      kTestStorageKey, kTestURL,
+      web_contents_->GetPrimaryMainFrame()->GetGlobalId()};
+  manager_->BindReceiver(binding_context,
+                         manager_remote.BindNewPipeAndPassReceiver());
+
+  ExpectShowFilePicker();
+
+  // ConfirmSensitiveEntryAccess is called for the first file and is aborted.
+  // The second file should NOT be checked.
+  ExpectConfirmSensitiveEntryAccess(
+      test_file_info1,
+      FileSystemAccessPermissionContext::SensitiveEntryResult::kAbort);
+
+  EXPECT_CALL(permission_context_,
+              ConfirmSensitiveEntryAccess_(kTestStorageKey.origin(),
+                                           test_file_info2, testing::_,
+                                           testing::_, testing::_, testing::_))
+      .Times(0);
+
+  auto open_file_picker_options = blink::mojom::OpenFilePickerOptions::New(
+      blink::mojom::AcceptsTypesInfo::New(
+          std::vector<blink::mojom::ChooseFileSystemEntryAcceptsOptionPtr>(),
+          /*include_accepts_all=*/true),
+      /*can_select_multiple_files=*/true);
+  auto picker_options = blink::mojom::FilePickerOptions::New(
+      blink::mojom::TypeSpecificFilePickerOptionsUnion::
+          NewOpenFilePickerOptions(std::move(open_file_picker_options)),
+      /*starting_directory_id=*/std::string(),
+      blink::mojom::FilePickerStartInOptionsUnionPtr());
+
+  base::test::TestFuture<blink::mojom::FileSystemAccessErrorPtr,
+                         std::vector<blink::mojom::FileSystemAccessEntryPtr>>
+      future;
+  manager_remote->ChooseEntries(std::move(picker_options),
+                                future.GetCallback());
+  ASSERT_TRUE(future.Wait());
+  EXPECT_EQ(future.Get<0>()->status,
+            blink::mojom::FileSystemAccessStatus::kOperationAborted);
+  EXPECT_TRUE(future.Get<1>().empty());
+}
+
+// Covers the re-entrancy and lifetime safety of `RenderFrameHost` and
+// `WebContents` in `ShowFilePickerOnUIThread`. Specifically, it covers the
+// scenario where the frame is detached/destroyed during the
+// `CanShowFilePicker` permission check.
+//
+// Without the fix, this scenario triggers a crash when the code attempts to
+// access the destroyed `WebContents` to drop fullscreen
+// `web_contents->ForSecurityDropFullscreen(...)`.
+//
+// Note: If destruction occurred during the fullscreen exit loop instead, the
+// crash would occur in `FileSystemChooser::CreateAndShow()` when dereferencing
+// the dangling RenderFrameHost.
+TEST_F(FileSystemAccessManagerImplTest,
+       ChooseEntries_CanShowFilePickerDestroysFrameUAF) {
+  static_cast<TestRenderFrameHost*>(web_contents_->GetPrimaryMainFrame())
+      ->SimulateUserActivation();
+
+  mojo::Remote<blink::mojom::FileSystemAccessManager> manager_remote;
+  FileSystemAccessManagerImpl::BindingContext binding_context = {
+      kTestStorageKey, kTestURL,
+      web_contents_->GetPrimaryMainFrame()->GetGlobalId()};
+  manager_->BindReceiver(binding_context,
+                         manager_remote.BindNewPipeAndPassReceiver());
+
+  ExpectShowFilePicker();
+
+  // Mock CanShowFilePicker to synchronously destroy the WebContents, which
+  // destroys the RFH. This simulates the frame being detached/destroyed
+  // during the yielding permission check.
+  EXPECT_CALL(permission_context_, CanShowFilePicker(testing::_))
+      .WillOnce([&](content::RenderFrameHost* rfh) {
+        auto* temp_wc = web_contents_.get();
+        web_contents_ = nullptr;
+        web_contents_factory_.DestroyWebContents(temp_wc);
+        return base::ok();
+      });
+
+  auto open_file_picker_options = blink::mojom::OpenFilePickerOptions::New(
+      blink::mojom::AcceptsTypesInfo::New(
+          std::vector<blink::mojom::ChooseFileSystemEntryAcceptsOptionPtr>(),
+          /*include_accepts_all=*/true),
+      /*can_select_multiple_files=*/false);
+  auto picker_options = blink::mojom::FilePickerOptions::New(
+      blink::mojom::TypeSpecificFilePickerOptionsUnion::
+          NewOpenFilePickerOptions(std::move(open_file_picker_options)),
+      /*starting_directory_id=*/std::string(),
+      blink::mojom::FilePickerStartInOptionsUnionPtr());
+
+  base::test::TestFuture<blink::mojom::FileSystemAccessErrorPtr,
+                         std::vector<blink::mojom::FileSystemAccessEntryPtr>>
+      future;
+  manager_remote->ChooseEntries(std::move(picker_options),
+                                future.GetCallback());
+  ASSERT_TRUE(future.Wait());
+
+  // The call should be aborted gracefully since the frame was destroyed.
+  // Without the fix, this would have crashed during the picker call.
+  EXPECT_EQ(blink::mojom::FileSystemAccessStatus::kOperationAborted,
+            future.Get<0>()->status);
+}
+
+// Chooser should not be shown when WebContents is hidden.
+TEST_F(FileSystemAccessManagerImplTest, ChooseEntries_HiddenWebContents) {
+  static_cast<TestRenderFrameHost*>(web_contents_->GetPrimaryMainFrame())
+      ->SimulateUserActivation();
+
+  // Must set VISIBLE first before HIDDEN will work.
+  web_contents_->UpdateWebContentsVisibility(Visibility::VISIBLE);
+  web_contents_->UpdateWebContentsVisibility(Visibility::HIDDEN);
+
+  mojo::Remote<blink::mojom::FileSystemAccessManager> manager_remote;
+  FileSystemAccessManagerImpl::BindingContext binding_context = {
+      kTestStorageKey, kTestURL,
+      web_contents_->GetPrimaryMainFrame()->GetGlobalId()};
+  manager_->BindReceiver(binding_context,
+                         manager_remote.BindNewPipeAndPassReceiver());
+
+  ExpectShowFilePicker();
+
+  auto open_file_picker_options = blink::mojom::OpenFilePickerOptions::New(
+      blink::mojom::AcceptsTypesInfo::New(
+          std::vector<blink::mojom::ChooseFileSystemEntryAcceptsOptionPtr>(),
+          /*include_accepts_all=*/true),
+      /*can_select_multiple_files=*/false);
+  auto picker_options = blink::mojom::FilePickerOptions::New(
+      blink::mojom::TypeSpecificFilePickerOptionsUnion::
+          NewOpenFilePickerOptions(std::move(open_file_picker_options)),
+      /*starting_directory_id=*/std::string(),
+      blink::mojom::FilePickerStartInOptionsUnionPtr());
+
+  base::test::TestFuture<blink::mojom::FileSystemAccessErrorPtr,
+                         std::vector<blink::mojom::FileSystemAccessEntryPtr>>
+      future;
+  manager_remote->ChooseEntries(std::move(picker_options),
+                                future.GetCallback());
+  ASSERT_TRUE(future.Wait());
+
+  EXPECT_EQ(blink::mojom::FileSystemAccessStatus::kOperationAborted,
+            future.Get<0>()->status);
+  EXPECT_TRUE(future.Get<1>().empty());
+}
+
+#if BUILDFLAG(IS_ANDROID)
+// WebView has a WebContentsDelegate and calls back to the hosting app which
+// implements WebContentsClient.
+TEST_F(FileSystemAccessManagerImplTest, WebView_ChooseEntries_OpenFile) {
+  base::FilePath test_file = dir_.GetPath().AppendASCII("foo");
+  ASSERT_TRUE(base::CreateTemporaryFile(&test_file));
+  PathInfo test_file_info(test_file);
+
+  TestWebViewWebContentsDelegate delegate;
+  delegate.SetFileToSelect(test_file);
+  web_contents_->SetDelegate(&delegate);
+
+  static_cast<TestRenderFrameHost*>(web_contents_->GetPrimaryMainFrame())
+      ->SimulateUserActivation();
+
+  mojo::Remote<blink::mojom::FileSystemAccessManager> manager_remote;
+  FileSystemAccessManagerImpl::BindingContext binding_context = {
+      kTestStorageKey, kTestURL,
+      web_contents_->GetPrimaryMainFrame()->GetGlobalId()};
+  manager_->BindReceiver(binding_context,
+                         manager_remote.BindNewPipeAndPassReceiver());
+
+  ExpectShowFilePicker(
+      /*read_permission=*/true, /*write_permission=*/false,
+      PathInfo(test_file_info.path.DirName()));
+  ExpectConfirmSensitiveEntryAccess(
+      test_file_info,
+      FileSystemAccessPermissionContext::SensitiveEntryResult::kAllowed);
+  ExpectGetReadPermissionGrant(test_file_info);
+  ExpectGetWritePermissionGrant(test_file_info);
+  ExpectCheckPathsAgainstEnterprisePolicy();
+
+  auto open_file_picker_options = blink::mojom::OpenFilePickerOptions::New(
+      blink::mojom::AcceptsTypesInfo::New(
+          std::vector<blink::mojom::ChooseFileSystemEntryAcceptsOptionPtr>(),
+          /*include_accepts_all=*/true),
+      /*can_select_multiple_files=*/false);
+  auto picker_options = blink::mojom::FilePickerOptions::New(
+      blink::mojom::TypeSpecificFilePickerOptionsUnion::
+          NewOpenFilePickerOptions(std::move(open_file_picker_options)),
+      /*starting_directory_id=*/std::string(),
+      blink::mojom::FilePickerStartInOptionsUnionPtr());
+
+  base::test::TestFuture<blink::mojom::FileSystemAccessErrorPtr,
+                         std::vector<blink::mojom::FileSystemAccessEntryPtr>>
+      future;
+  manager_remote->ChooseEntries(std::move(picker_options),
+                                future.GetCallback());
+  ASSERT_TRUE(future.Wait());
+
+  EXPECT_TRUE(delegate.run_file_chooser_called());
+  EXPECT_EQ(future.Get<0>()->status, blink::mojom::FileSystemAccessStatus::kOk);
+  EXPECT_EQ(future.Get<1>().size(), 1u);
+}
+
+// WebView WebContentsDelegate should not be called when WebContents is hidden.
+TEST_F(FileSystemAccessManagerImplTest,
+       WebView_ChooseEntries_HiddenWebContents) {
+  TestWebViewWebContentsDelegate delegate;
+  web_contents_->SetDelegate(&delegate);
+
+  static_cast<TestRenderFrameHost*>(web_contents_->GetPrimaryMainFrame())
+      ->SimulateUserActivation();
+
+  // Must set VISIBLE first before HIDDEN will work.
+  web_contents_->UpdateWebContentsVisibility(Visibility::VISIBLE);
+  web_contents_->UpdateWebContentsVisibility(Visibility::HIDDEN);
+
+  mojo::Remote<blink::mojom::FileSystemAccessManager> manager_remote;
+  FileSystemAccessManagerImpl::BindingContext binding_context = {
+      kTestStorageKey, kTestURL,
+      web_contents_->GetPrimaryMainFrame()->GetGlobalId()};
+  manager_->BindReceiver(binding_context,
+                         manager_remote.BindNewPipeAndPassReceiver());
+
+  ExpectShowFilePicker();
+
+  auto open_file_picker_options = blink::mojom::OpenFilePickerOptions::New(
+      blink::mojom::AcceptsTypesInfo::New(
+          std::vector<blink::mojom::ChooseFileSystemEntryAcceptsOptionPtr>(),
+          /*include_accepts_all=*/true),
+      /*can_select_multiple_files=*/false);
+  auto picker_options = blink::mojom::FilePickerOptions::New(
+      blink::mojom::TypeSpecificFilePickerOptionsUnion::
+          NewOpenFilePickerOptions(std::move(open_file_picker_options)),
+      /*starting_directory_id=*/std::string(),
+      blink::mojom::FilePickerStartInOptionsUnionPtr());
+
+  base::test::TestFuture<blink::mojom::FileSystemAccessErrorPtr,
+                         std::vector<blink::mojom::FileSystemAccessEntryPtr>>
+      future;
+  manager_remote->ChooseEntries(std::move(picker_options),
+                                future.GetCallback());
+  ASSERT_TRUE(future.Wait());
+
+  EXPECT_FALSE(delegate.run_file_chooser_called());
+  EXPECT_EQ(blink::mojom::FileSystemAccessStatus::kOperationAborted,
+            future.Get<0>()->status);
+  EXPECT_TRUE(future.Get<1>().empty());
+}
+#endif
 
 TEST_F(FileSystemAccessManagerImplTest,
        ChooseEntries_CrossOriginDenialDoesNotConsumeActivation) {
@@ -1654,6 +2796,77 @@ TEST_F(FileSystemAccessManagerImplTest,
   EXPECT_TRUE(rfh->HasTransientUserActivation());
 }
 
+// A `start_in` directory token that belongs to a different origin than the
+// calling context must be rejected instead of being used as the picker's
+// default directory.
+TEST_F(FileSystemAccessManagerImplTest,
+       ChooseEntries_CrossOriginStartInTokenRejected) {
+  base::FilePath other_origin_dir = dir_.GetPath().AppendASCII("other");
+  ASSERT_TRUE(base::CreateDirectory(other_origin_dir));
+  base::FilePath file_in_dir = other_origin_dir.AppendASCII("file");
+  ASSERT_TRUE(base::WriteFile(file_in_dir, "data"));
+  PathInfo other_origin_dir_info(other_origin_dir);
+
+  // Create a directory handle owned by another origin and register a
+  // transfer token for it.
+  const GURL kOtherURL("https://other.example/test");
+  const blink::StorageKey kOtherStorageKey =
+      blink::StorageKey::CreateFromStringForTesting(kOtherURL.spec());
+  ASSERT_NE(kTestStorageKey.origin(), kOtherStorageKey.origin());
+  FileSystemAccessManagerImpl::BindingContext other_binding_context = {
+      kOtherStorageKey, kOtherURL,
+      web_contents_->GetPrimaryMainFrame()->GetGlobalId()};
+  auto grant = base::MakeRefCounted<FixedFileSystemAccessPermissionGrant>(
+      FixedFileSystemAccessPermissionGrant::PermissionStatus::GRANTED,
+      other_origin_dir_info);
+  FileSystemAccessDirectoryHandleImpl directory_handle(
+      manager_.get(), other_binding_context,
+      manager_->CreateFileSystemURLFromPath(other_origin_dir_info),
+      FileSystemAccessManagerImpl::SharedHandleState(grant, grant));
+  mojo::PendingRemote<blink::mojom::FileSystemAccessTransferToken> token_remote;
+  manager_->CreateTransferToken(directory_handle,
+                                token_remote.InitWithNewPipeAndPassReceiver());
+
+  manager_->SetFilePickerResultForTesting(PathInfo(file_in_dir));
+
+  static_cast<TestRenderFrameHost*>(web_contents_->GetPrimaryMainFrame())
+      ->SimulateUserActivation();
+
+  mojo::Remote<blink::mojom::FileSystemAccessManager> manager_remote;
+  FileSystemAccessManagerImpl::BindingContext binding_context = {
+      kTestStorageKey, kTestURL,
+      web_contents_->GetPrimaryMainFrame()->GetGlobalId()};
+  manager_->BindReceiver(binding_context,
+                         manager_remote.BindNewPipeAndPassReceiver());
+
+  EXPECT_CALL(permission_context_,
+              CanObtainReadPermission(kTestStorageKey.origin()))
+      .WillOnce(testing::Return(true));
+
+  auto open_file_picker_options = blink::mojom::OpenFilePickerOptions::New(
+      blink::mojom::AcceptsTypesInfo::New(
+          std::vector<blink::mojom::ChooseFileSystemEntryAcceptsOptionPtr>(),
+          /*include_accepts_all=*/true),
+      /*can_select_multiple_files=*/false);
+  auto picker_options = blink::mojom::FilePickerOptions::New(
+      blink::mojom::TypeSpecificFilePickerOptionsUnion::
+          NewOpenFilePickerOptions(std::move(open_file_picker_options)),
+      /*starting_directory_id=*/std::string(),
+      blink::mojom::FilePickerStartInOptionsUnion::NewDirectoryToken(
+          std::move(token_remote)));
+
+  base::test::TestFuture<blink::mojom::FileSystemAccessErrorPtr,
+                         std::vector<blink::mojom::FileSystemAccessEntryPtr>>
+      future;
+  manager_remote->ChooseEntries(std::move(picker_options),
+                                future.GetCallback());
+  ASSERT_TRUE(future.Wait());
+
+  EXPECT_EQ(blink::mojom::FileSystemAccessStatus::kInvalidArgument,
+            future.Get<0>()->status);
+  EXPECT_TRUE(future.Get<1>().empty());
+}
+
 TEST_F(FileSystemAccessManagerImplTest,
        ChooseEntries_OpenFile_EnterpriseBlock) {
   base::FilePath test_file = dir_.GetPath().AppendASCII("foo");
@@ -1672,41 +2885,11 @@ TEST_F(FileSystemAccessManagerImplTest,
   manager_->BindReceiver(binding_context,
                          manager_remote.BindNewPipeAndPassReceiver());
 
-  EXPECT_CALL(permission_context_,
-              CanObtainReadPermission(kTestStorageKey.origin()))
-      .WillOnce(testing::Return(true));
-
-  EXPECT_CALL(
-      permission_context_,
-      GetWellKnownDirectoryPath(blink::mojom::WellKnownDirectory::kDirDocuments,
-                                kTestStorageKey.origin()))
-      .WillOnce(testing::Return(base::FilePath()));
-  EXPECT_CALL(permission_context_,
-              GetLastPickedDirectory(kTestStorageKey.origin(), std::string()))
-      .WillOnce(testing::Return(PathInfo()));
-  EXPECT_CALL(permission_context_, GetPickerTitle(testing::_))
-      .WillOnce(testing::Return(std::u16string()));
-
-  EXPECT_CALL(
-      permission_context_,
-      ConfirmSensitiveEntryAccess_(
-          kTestStorageKey.origin(), test_file_info,
-          FileSystemAccessPermissionContext::HandleType::kFile,
-          FileSystemAccessPermissionContext::UserAction::kOpen,
-          web_contents_->GetPrimaryMainFrame()->GetGlobalId(), testing::_))
-      .WillOnce(RunOnceCallback<5>(
-          FileSystemAccessPermissionContext::SensitiveEntryResult::kAllowed));
-
-  // This is where the tests mocks the enterprise check as blocking the file.
-  // The callback is invoked with an empty path.
-  EXPECT_CALL(permission_context_, CheckPathsAgainstEnterprisePolicy(
-                                       testing::_, testing::_, testing::_))
-      .WillOnce([](std::vector<PathInfo> entries,
-                   content::GlobalRenderFrameHostId frame_id,
-                   MockFileSystemAccessPermissionContext::
-                       EntriesAllowedByEnterprisePolicyCallback callback) {
-        std::move(callback).Run(std::vector<PathInfo>());
-      });
+  ExpectShowFilePicker();
+  ExpectConfirmSensitiveEntryAccess(
+      test_file_info,
+      FileSystemAccessPermissionContext::SensitiveEntryResult::kAllowed);
+  ExpectCheckPathsAgainstEnterprisePolicy(/*allowed=*/false);
 
   auto open_file_picker_options = blink::mojom::OpenFilePickerOptions::New(
       blink::mojom::AcceptsTypesInfo::New(
@@ -1744,49 +2927,17 @@ TEST_F(FileSystemAccessManagerImplTest, ChooseEntries_SaveFile) {
   manager_->BindReceiver(binding_context,
                          manager_remote.BindNewPipeAndPassReceiver());
 
-  EXPECT_CALL(permission_context_,
-              CanObtainReadPermission(kTestStorageKey.origin()))
-      .WillOnce(testing::Return(true));
-  EXPECT_CALL(permission_context_,
-              CanObtainWritePermission(kTestStorageKey.origin()))
-      .WillOnce(testing::Return(true));
-
-  EXPECT_CALL(
-      permission_context_,
-      GetWellKnownDirectoryPath(blink::mojom::WellKnownDirectory::kDirDocuments,
-                                kTestStorageKey.origin()))
-      .WillOnce(testing::Return(base::FilePath()));
-  EXPECT_CALL(permission_context_,
-              GetLastPickedDirectory(kTestStorageKey.origin(), std::string()))
-      .WillOnce(testing::Return(PathInfo()));
-  EXPECT_CALL(permission_context_, GetPickerTitle(testing::_))
-      .WillOnce(testing::Return(std::u16string()));
-  EXPECT_CALL(permission_context_,
-              SetLastPickedDirectory(kTestStorageKey.origin(), std::string(),
-                                     PathInfo(test_file_info.path.DirName())));
-
-  EXPECT_CALL(
-      permission_context_,
-      ConfirmSensitiveEntryAccess_(
-          kTestStorageKey.origin(), test_file_info,
-          FileSystemAccessPermissionContext::HandleType::kFile,
-          FileSystemAccessPermissionContext::UserAction::kSave,
-          web_contents_->GetPrimaryMainFrame()->GetGlobalId(), testing::_))
-      .WillOnce(RunOnceCallback<5>(
-          FileSystemAccessPermissionContext::SensitiveEntryResult::kAllowed));
-
-  EXPECT_CALL(permission_context_,
-              GetReadPermissionGrant(
-                  kTestStorageKey.origin(), test_file_info,
-                  FileSystemAccessPermissionContext::HandleType::kFile,
-                  FileSystemAccessPermissionContext::UserAction::kSave))
-      .WillOnce(testing::Return(allow_grant_));
-  EXPECT_CALL(permission_context_,
-              GetWritePermissionGrant(
-                  kTestStorageKey.origin(), test_file_info,
-                  FileSystemAccessPermissionContext::HandleType::kFile,
-                  FileSystemAccessPermissionContext::UserAction::kSave))
-      .WillOnce(testing::Return(allow_grant_));
+  ExpectShowFilePicker(
+      /*read_permission=*/true, /*write_permission=*/true,
+      PathInfo(test_file_info.path.DirName()));
+  ExpectConfirmSensitiveEntryAccess(
+      test_file_info,
+      FileSystemAccessPermissionContext::SensitiveEntryResult::kAllowed,
+      FileSystemAccessPermissionContext::AccessTrigger::kSave);
+  ExpectGetReadPermissionGrant(
+      test_file_info, FileSystemAccessPermissionContext::AccessTrigger::kSave);
+  ExpectGetWritePermissionGrant(
+      test_file_info, FileSystemAccessPermissionContext::AccessTrigger::kSave);
 
   EXPECT_CALL(permission_context_,
               OnFileCreatedFromShowSaveFilePicker(
@@ -1818,6 +2969,182 @@ TEST_F(FileSystemAccessManagerImplTest, ChooseEntries_SaveFile) {
   ASSERT_TRUE(future.Wait());
 }
 
+namespace {
+
+class FileSystemAccessManagerImplSaveFileTest
+    : public FileSystemAccessManagerImplTest,
+      public testing::WithParamInterface<PathType> {
+ protected:
+  void ExpectSaveFileError(const base::FilePath& relative_path,
+                           base::File::Error expected_error) {
+    const base::FilePath root =
+        GetParam() == PathType::kLocal
+            ? dir_.GetPath()
+            : base::FilePath::FromASCII(kTestMountPoint);
+    const PathInfo path_info(GetParam(), root.Append(relative_path));
+    manager_->SetFilePickerResultForTesting(path_info);
+    static_cast<TestRenderFrameHost*>(web_contents_->GetPrimaryMainFrame())
+        ->SimulateUserActivation();
+
+    ExpectShowFilePicker(
+        /*read_permission=*/true, /*write_permission=*/true,
+        PathInfo(path_info.type, path_info.path.DirName()));
+    ExpectConfirmSensitiveEntryAccess(
+        path_info,
+        FileSystemAccessPermissionContext::SensitiveEntryResult::kAllowed,
+        FileSystemAccessPermissionContext::AccessTrigger::kSave);
+    EXPECT_CALL(permission_context_,
+                OnFileCreatedFromShowSaveFilePicker(testing::_, testing::_))
+        .Times(0);
+
+    auto save_file_picker_options = blink::mojom::SaveFilePickerOptions::New(
+        blink::mojom::AcceptsTypesInfo::New(
+            std::vector<blink::mojom::ChooseFileSystemEntryAcceptsOptionPtr>(),
+            /*include_accepts_all=*/true),
+        /*suggested_name=*/std::string());
+    auto picker_options = blink::mojom::FilePickerOptions::New(
+        blink::mojom::TypeSpecificFilePickerOptionsUnion::
+            NewSaveFilePickerOptions(std::move(save_file_picker_options)),
+        /*starting_directory_id=*/std::string(),
+        blink::mojom::FilePickerStartInOptionsUnionPtr());
+
+    base::test::TestFuture<blink::mojom::FileSystemAccessErrorPtr,
+                           std::vector<blink::mojom::FileSystemAccessEntryPtr>>
+        future;
+    manager_remote_->ChooseEntries(std::move(picker_options),
+                                   future.GetCallback());
+    ASSERT_TRUE(future.Wait());
+    auto [error, entries] = future.Take();
+    EXPECT_EQ(blink::mojom::FileSystemAccessStatus::kFileError, error->status);
+    EXPECT_EQ(expected_error, error->file_error);
+    EXPECT_TRUE(entries.empty());
+  }
+};
+
+TEST_P(FileSystemAccessManagerImplSaveFileTest, ReadOnlyFile) {
+  const base::FilePath relative_path(FILE_PATH_LITERAL("readonly"));
+  const base::FilePath test_file = dir_.GetPath().Append(relative_path);
+  const std::string file_contents = "existing contents";
+  ASSERT_TRUE(base::WriteFile(test_file, file_contents));
+
+  // On Windows, MakeFileUnwritable() also prevents reading, so restore the
+  // permissions before checking the file's contents.
+  {
+    base::FilePermissionRestorer permission_restorer(test_file);
+    ASSERT_TRUE(base::MakeFileUnwritable(test_file));
+    base::File file(test_file, base::File::FLAG_OPEN | base::File::FLAG_WRITE);
+    if (file.IsValid()) {
+      GTEST_SKIP() << "File permissions do not prevent writing.";
+    }
+    ASSERT_EQ(base::File::FILE_ERROR_ACCESS_DENIED, file.error_details());
+
+    ExpectSaveFileError(relative_path, base::File::FILE_ERROR_ACCESS_DENIED);
+  }
+
+  std::string actual_contents;
+  ASSERT_TRUE(base::ReadFileToString(test_file, &actual_contents));
+  EXPECT_EQ(file_contents, actual_contents);
+}
+
+TEST_P(FileSystemAccessManagerImplSaveFileTest, MissingParentDirectory) {
+  const base::FilePath relative_path =
+      base::FilePath(FILE_PATH_LITERAL("missing")).AppendASCII("file");
+
+  ExpectSaveFileError(relative_path, base::File::FILE_ERROR_NOT_FOUND);
+
+  EXPECT_FALSE(base::PathExists(dir_.GetPath().Append(relative_path)));
+}
+
+#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
+TEST_P(FileSystemAccessManagerImplSaveFileTest, TruncateFailure) {
+  if (sandbox::landlock_create_ruleset(nullptr, 0,
+                                       LANDLOCK_CREATE_RULESET_VERSION) < 3) {
+    GTEST_SKIP() << "Landlock does not support restricting truncation.";
+  }
+
+  const base::FilePath relative_path(FILE_PATH_LITERAL("truncate-failure"));
+  const base::FilePath test_file = dir_.GetPath().Append(relative_path);
+  const std::string file_contents = "existing contents";
+  ASSERT_TRUE(base::WriteFile(test_file, file_contents));
+
+  // Landlock restrictions cannot be removed, so apply them only to a dedicated
+  // file thread that will be stopped when this test finishes.
+  base::Thread file_thread("SaveFileTruncateFailure");
+  ASSERT_TRUE(file_thread.Start());
+  base::test::TestFuture<bool> restricted;
+  file_thread.task_runner()->PostTaskAndReplyWithResult(
+      FROM_HERE, base::BindLambdaForTesting([test_file] {
+        const landlock_ruleset_attr ruleset = {.handled_access_fs =
+                                                   LANDLOCK_ACCESS_FS_TRUNCATE};
+        base::ScopedFD ruleset_fd(
+            sandbox::landlock_create_ruleset(&ruleset, sizeof(ruleset), 0));
+        if (!ruleset_fd.is_valid() ||
+            prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0 ||
+            sandbox::landlock_restrict_self(ruleset_fd.get(), 0) != 0) {
+          return false;
+        }
+
+        // Opening and checking the regular file must still succeed, so the
+        // picker will reach SetLength() rather than an earlier failure.
+        base::ScopedFD descriptor(HANDLE_EINTR(open(
+            test_file.value().c_str(),
+            O_CREAT | O_WRONLY | O_NONBLOCK | O_CLOEXEC | O_NOFOLLOW, 0666)));
+        struct stat file_info;
+        return descriptor.is_valid() &&
+               HANDLE_EINTR(fstat(descriptor.get(), &file_info)) == 0 &&
+               S_ISREG(file_info.st_mode);
+      }),
+      restricted.GetCallback());
+  ASSERT_TRUE(restricted.Get());
+
+  // Release the manager and its context while their file thread is still alive,
+  // including when an assertion below exits the test early.
+  base::ScopedClosureRunner release_context(base::BindLambdaForTesting([&] {
+    manager_remote_.reset();
+    manager_.reset();
+    // Wait for the manager's sequence-bound operation runner to be deleted on
+    // the IO sequence before releasing its context.
+    base::RunLoop manager_cleanup;
+    base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
+        FROM_HERE, manager_cleanup.QuitClosure());
+    manager_cleanup.Run();
+    file_system_context_.reset();
+    file_thread.FlushForTesting();
+  }));
+  manager_remote_.reset();
+  manager_.reset();
+  file_system_context_ =
+      storage::CreateFileSystemContextWithAdditionalProvidersForTesting(
+          base::SingleThreadTaskRunner::GetCurrentDefault(),
+          file_thread.task_runner(), quota_manager_proxy_, {}, dir_.GetPath());
+  manager_ = base::MakeRefCounted<FileSystemAccessManagerImpl>(
+      file_system_context_, chrome_blob_context_, &permission_context_,
+      /*off_the_record=*/false);
+  manager_->BindReceiver(binding_context_,
+                         manager_remote_.BindNewPipeAndPassReceiver());
+
+  // NativeFileUtil currently reports a generic error for SetLength() failures;
+  // the POSIX local path preserves the access-denied error from Landlock.
+  ExpectSaveFileError(relative_path, GetParam() == PathType::kLocal
+                                         ? base::File::FILE_ERROR_ACCESS_DENIED
+                                         : base::File::FILE_ERROR_FAILED);
+
+  std::string actual_contents;
+  ASSERT_TRUE(base::ReadFileToString(test_file, &actual_contents));
+  EXPECT_EQ(file_contents, actual_contents);
+}
+#endif
+
+INSTANTIATE_TEST_SUITE_P(All,
+                         FileSystemAccessManagerImplSaveFileTest,
+                         testing::Values(PathType::kLocal, PathType::kExternal),
+                         [](const testing::TestParamInfo<PathType>& info) {
+                           return info.param == PathType::kLocal ? "Local"
+                                                                 : "External";
+                         });
+
+}  // namespace
+
 TEST_F(FileSystemAccessManagerImplTest, ChooseEntries_OpenDirectory) {
   PathInfo test_dir_info(dir_.GetPath());
 
@@ -1833,54 +3160,20 @@ TEST_F(FileSystemAccessManagerImplTest, ChooseEntries_OpenDirectory) {
   manager_->BindReceiver(binding_context,
                          manager_remote.BindNewPipeAndPassReceiver());
 
-  EXPECT_CALL(permission_context_,
-              CanObtainReadPermission(kTestStorageKey.origin()))
-      .WillOnce(testing::Return(true));
-
-  EXPECT_CALL(
-      permission_context_,
-      GetWellKnownDirectoryPath(blink::mojom::WellKnownDirectory::kDirDocuments,
-                                kTestStorageKey.origin()))
-      .WillOnce(testing::Return(base::FilePath()));
-  EXPECT_CALL(permission_context_,
-              GetLastPickedDirectory(kTestStorageKey.origin(), std::string()))
-      .WillOnce(testing::Return(PathInfo()));
-  EXPECT_CALL(permission_context_, GetPickerTitle(testing::_))
-      .WillOnce(testing::Return(std::u16string()));
-  EXPECT_CALL(permission_context_,
-              SetLastPickedDirectory(kTestStorageKey.origin(), std::string(),
-                                     test_dir_info));
-
-  EXPECT_CALL(
-      permission_context_,
-      ConfirmSensitiveEntryAccess_(
-          kTestStorageKey.origin(), test_dir_info,
-          FileSystemAccessPermissionContext::HandleType::kDirectory,
-          FileSystemAccessPermissionContext::UserAction::kOpen,
-          web_contents_->GetPrimaryMainFrame()->GetGlobalId(), testing::_))
-      .WillOnce(RunOnceCallback<5>(
-          FileSystemAccessPermissionContext::SensitiveEntryResult::kAllowed));
-
-  EXPECT_CALL(permission_context_,
-              GetReadPermissionGrant(
-                  kTestStorageKey.origin(), test_dir_info,
-                  FileSystemAccessPermissionContext::HandleType::kDirectory,
-                  FileSystemAccessPermissionContext::UserAction::kOpen))
-      .WillOnce(testing::Return(allow_grant_));
-  EXPECT_CALL(permission_context_,
-              GetWritePermissionGrant(
-                  kTestStorageKey.origin(), test_dir_info,
-                  FileSystemAccessPermissionContext::HandleType::kDirectory,
-                  FileSystemAccessPermissionContext::UserAction::kOpen))
-      .WillOnce(testing::Return(allow_grant_));
-  EXPECT_CALL(permission_context_, CheckPathsAgainstEnterprisePolicy(
-                                       testing::_, testing::_, testing::_))
-      .WillOnce([](std::vector<PathInfo> entries,
-                   content::GlobalRenderFrameHostId frame_id,
-                   MockFileSystemAccessPermissionContext::
-                       EntriesAllowedByEnterprisePolicyCallback callback) {
-        std::move(callback).Run(std::move(entries));
-      });
+  ExpectShowFilePicker(
+      /*read_permission=*/true, /*write_permission=*/false, test_dir_info);
+  ExpectConfirmSensitiveEntryAccess(
+      test_dir_info,
+      FileSystemAccessPermissionContext::SensitiveEntryResult::kAllowed,
+      FileSystemAccessPermissionContext::AccessTrigger::kOpen, {},
+      FileSystemAccessPermissionContext::HandleType::kDirectory);
+  ExpectGetReadPermissionGrant(
+      test_dir_info, FileSystemAccessPermissionContext::AccessTrigger::kOpen,
+      FileSystemAccessPermissionContext::HandleType::kDirectory);
+  ExpectGetWritePermissionGrant(
+      test_dir_info, FileSystemAccessPermissionContext::AccessTrigger::kOpen,
+      FileSystemAccessPermissionContext::HandleType::kDirectory);
+  ExpectCheckPathsAgainstEnterprisePolicy();
 
   auto picker_options = blink::mojom::FilePickerOptions::New(
       blink::mojom::TypeSpecificFilePickerOptionsUnion::
@@ -1912,57 +3205,20 @@ TEST_F(FileSystemAccessManagerImplTest, ChooseEntries_OpenDirectory_ReadWrite) {
   manager_->BindReceiver(binding_context,
                          manager_remote.BindNewPipeAndPassReceiver());
 
-  EXPECT_CALL(permission_context_,
-              CanObtainReadPermission(kTestStorageKey.origin()))
-      .WillOnce(testing::Return(true));
-  EXPECT_CALL(permission_context_,
-              CanObtainWritePermission(kTestStorageKey.origin()))
-      .WillOnce(testing::Return(true));
-
-  EXPECT_CALL(
-      permission_context_,
-      GetWellKnownDirectoryPath(blink::mojom::WellKnownDirectory::kDirDocuments,
-                                kTestStorageKey.origin()))
-      .WillOnce(testing::Return(base::FilePath()));
-  EXPECT_CALL(permission_context_,
-              GetLastPickedDirectory(kTestStorageKey.origin(), std::string()))
-      .WillOnce(testing::Return(PathInfo()));
-  EXPECT_CALL(permission_context_, GetPickerTitle(testing::_))
-      .WillOnce(testing::Return(std::u16string()));
-  EXPECT_CALL(permission_context_,
-              SetLastPickedDirectory(kTestStorageKey.origin(), std::string(),
-                                     test_dir_info));
-
-  EXPECT_CALL(
-      permission_context_,
-      ConfirmSensitiveEntryAccess_(
-          kTestStorageKey.origin(), test_dir_info,
-          FileSystemAccessPermissionContext::HandleType::kDirectory,
-          FileSystemAccessPermissionContext::UserAction::kOpen,
-          web_contents_->GetPrimaryMainFrame()->GetGlobalId(), testing::_))
-      .WillOnce(RunOnceCallback<5>(
-          FileSystemAccessPermissionContext::SensitiveEntryResult::kAllowed));
-
-  EXPECT_CALL(permission_context_,
-              GetReadPermissionGrant(
-                  kTestStorageKey.origin(), test_dir_info,
-                  FileSystemAccessPermissionContext::HandleType::kDirectory,
-                  FileSystemAccessPermissionContext::UserAction::kOpen))
-      .WillOnce(testing::Return(allow_grant_));
-  EXPECT_CALL(permission_context_,
-              GetWritePermissionGrant(
-                  kTestStorageKey.origin(), test_dir_info,
-                  FileSystemAccessPermissionContext::HandleType::kDirectory,
-                  FileSystemAccessPermissionContext::UserAction::kOpen))
-      .WillOnce(testing::Return(allow_grant_));
-  EXPECT_CALL(permission_context_, CheckPathsAgainstEnterprisePolicy(
-                                       testing::_, testing::_, testing::_))
-      .WillOnce([](std::vector<PathInfo> entries,
-                   content::GlobalRenderFrameHostId frame_id,
-                   MockFileSystemAccessPermissionContext::
-                       EntriesAllowedByEnterprisePolicyCallback callback) {
-        std::move(callback).Run(std::move(entries));
-      });
+  ExpectShowFilePicker(
+      /*read_permission=*/true, /*write_permission=*/true, test_dir_info);
+  ExpectConfirmSensitiveEntryAccess(
+      test_dir_info,
+      FileSystemAccessPermissionContext::SensitiveEntryResult::kAllowed,
+      FileSystemAccessPermissionContext::AccessTrigger::kOpen, {},
+      FileSystemAccessPermissionContext::HandleType::kDirectory);
+  ExpectGetReadPermissionGrant(
+      test_dir_info, FileSystemAccessPermissionContext::AccessTrigger::kOpen,
+      FileSystemAccessPermissionContext::HandleType::kDirectory);
+  ExpectGetWritePermissionGrant(
+      test_dir_info, FileSystemAccessPermissionContext::AccessTrigger::kOpen,
+      FileSystemAccessPermissionContext::HandleType::kDirectory);
+  ExpectCheckPathsAgainstEnterprisePolicy();
 
   auto picker_options = blink::mojom::FilePickerOptions::New(
       blink::mojom::TypeSpecificFilePickerOptionsUnion::
@@ -1995,57 +3251,20 @@ TEST_F(FileSystemAccessManagerImplTest,
   manager_->BindReceiver(binding_context,
                          manager_remote.BindNewPipeAndPassReceiver());
 
-  EXPECT_CALL(permission_context_,
-              CanObtainReadPermission(kTestStorageKey.origin()))
-      .WillOnce(testing::Return(true));
-  EXPECT_CALL(permission_context_,
-              CanObtainWritePermission(kTestStorageKey.origin()))
-      .WillOnce(testing::Return(true));
-
-  EXPECT_CALL(
-      permission_context_,
-      GetWellKnownDirectoryPath(blink::mojom::WellKnownDirectory::kDirDocuments,
-                                kTestStorageKey.origin()))
-      .WillOnce(testing::Return(base::FilePath()));
-  EXPECT_CALL(permission_context_,
-              GetLastPickedDirectory(kTestStorageKey.origin(), std::string()))
-      .WillOnce(testing::Return(PathInfo()));
-  EXPECT_CALL(permission_context_, GetPickerTitle(testing::_))
-      .WillOnce(testing::Return(std::u16string()));
-  EXPECT_CALL(permission_context_,
-              SetLastPickedDirectory(kTestStorageKey.origin(), std::string(),
-                                     test_dir_info));
-
-  EXPECT_CALL(
-      permission_context_,
-      ConfirmSensitiveEntryAccess_(
-          kTestStorageKey.origin(), test_dir_info,
-          FileSystemAccessPermissionContext::HandleType::kDirectory,
-          FileSystemAccessPermissionContext::UserAction::kOpen,
-          web_contents_->GetPrimaryMainFrame()->GetGlobalId(), testing::_))
-      .WillOnce(RunOnceCallback<5>(
-          FileSystemAccessPermissionContext::SensitiveEntryResult::kAllowed));
-
-  EXPECT_CALL(permission_context_,
-              GetReadPermissionGrant(
-                  kTestStorageKey.origin(), test_dir_info,
-                  FileSystemAccessPermissionContext::HandleType::kDirectory,
-                  FileSystemAccessPermissionContext::UserAction::kOpen))
-      .WillOnce(testing::Return(allow_grant_));
-  EXPECT_CALL(permission_context_,
-              GetWritePermissionGrant(
-                  kTestStorageKey.origin(), test_dir_info,
-                  FileSystemAccessPermissionContext::HandleType::kDirectory,
-                  FileSystemAccessPermissionContext::UserAction::kOpen))
-      .WillOnce(testing::Return(deny_grant_));
-  EXPECT_CALL(permission_context_, CheckPathsAgainstEnterprisePolicy(
-                                       testing::_, testing::_, testing::_))
-      .WillOnce([](std::vector<PathInfo> entries,
-                   content::GlobalRenderFrameHostId frame_id,
-                   MockFileSystemAccessPermissionContext::
-                       EntriesAllowedByEnterprisePolicyCallback callback) {
-        std::move(callback).Run(std::move(entries));
-      });
+  ExpectShowFilePicker(
+      /*read_permission=*/true, /*write_permission=*/true, test_dir_info);
+  ExpectConfirmSensitiveEntryAccess(
+      test_dir_info,
+      FileSystemAccessPermissionContext::SensitiveEntryResult::kAllowed,
+      FileSystemAccessPermissionContext::AccessTrigger::kOpen, {},
+      FileSystemAccessPermissionContext::HandleType::kDirectory);
+  ExpectGetReadPermissionGrant(
+      test_dir_info, FileSystemAccessPermissionContext::AccessTrigger::kOpen,
+      FileSystemAccessPermissionContext::HandleType::kDirectory);
+  ExpectGetWritePermissionGrant(
+      test_dir_info, FileSystemAccessPermissionContext::AccessTrigger::kOpen,
+      FileSystemAccessPermissionContext::HandleType::kDirectory, deny_grant_);
+  ExpectCheckPathsAgainstEnterprisePolicy();
 
   auto picker_options = blink::mojom::FilePickerOptions::New(
       blink::mojom::TypeSpecificFilePickerOptionsUnion::
@@ -2094,41 +3313,13 @@ TEST_F(FileSystemAccessManagerImplTest,
   manager_->BindReceiver(binding_context,
                          manager_remote.BindNewPipeAndPassReceiver());
 
-  EXPECT_CALL(permission_context_,
-              CanObtainReadPermission(kTestStorageKey.origin()))
-      .WillOnce(testing::Return(true));
-
-  EXPECT_CALL(
-      permission_context_,
-      GetWellKnownDirectoryPath(blink::mojom::WellKnownDirectory::kDirDocuments,
-                                kTestStorageKey.origin()))
-      .WillOnce(testing::Return(base::FilePath()));
-  EXPECT_CALL(permission_context_,
-              GetLastPickedDirectory(kTestStorageKey.origin(), std::string()))
-      .WillOnce(testing::Return(PathInfo()));
-  EXPECT_CALL(permission_context_, GetPickerTitle(testing::_))
-      .WillOnce(testing::Return(std::u16string()));
-
-  EXPECT_CALL(
-      permission_context_,
-      ConfirmSensitiveEntryAccess_(
-          kTestStorageKey.origin(), test_dir_info,
-          FileSystemAccessPermissionContext::HandleType::kDirectory,
-          FileSystemAccessPermissionContext::UserAction::kOpen,
-          web_contents_->GetPrimaryMainFrame()->GetGlobalId(), testing::_))
-      .WillOnce(RunOnceCallback<5>(
-          FileSystemAccessPermissionContext::SensitiveEntryResult::kAllowed));
-
-  // This is where the tests mocks the enterprise check as blocking the file.
-  // The callback is invoked with an empty path.
-  EXPECT_CALL(permission_context_, CheckPathsAgainstEnterprisePolicy(
-                                       testing::_, testing::_, testing::_))
-      .WillOnce([](std::vector<PathInfo> entries,
-                   content::GlobalRenderFrameHostId frame_id,
-                   MockFileSystemAccessPermissionContext::
-                       EntriesAllowedByEnterprisePolicyCallback callback) {
-        std::move(callback).Run(std::vector<PathInfo>());
-      });
+  ExpectShowFilePicker();
+  ExpectConfirmSensitiveEntryAccess(
+      test_dir_info,
+      FileSystemAccessPermissionContext::SensitiveEntryResult::kAllowed,
+      FileSystemAccessPermissionContext::AccessTrigger::kOpen, {},
+      FileSystemAccessPermissionContext::HandleType::kDirectory);
+  ExpectCheckPathsAgainstEnterprisePolicy(/*allowed=*/false);
 
   auto picker_options = blink::mojom::FilePickerOptions::New(
       blink::mojom::TypeSpecificFilePickerOptionsUnion::
@@ -2188,8 +3379,8 @@ TEST_F(FileSystemAccessManagerImplTest, GetUniqueId) {
       kTestStorageKey, storage::kFileSystemTypeTemporary, kTestPathInfo.path);
   test_url.SetBucket(default_bucket);
 
-  FileSystemAccessFileHandleImpl file(manager_.get(), kBindingContext, test_url,
-                                      kTestPathInfo.display_name,
+  FileSystemAccessFileHandleImpl file(manager_.get(), binding_context_,
+                                      test_url, kTestPathInfo.display_name,
                                       {ask_grant_, ask_grant_});
   auto file_id = manager_->GetUniqueId(file);
   // Ensure a valid ID is provided.
@@ -2197,7 +3388,7 @@ TEST_F(FileSystemAccessManagerImplTest, GetUniqueId) {
 
   // Create a dir handle to the same path. The ID should be different than the
   // ID for the file.
-  FileSystemAccessDirectoryHandleImpl dir(manager_.get(), kBindingContext,
+  FileSystemAccessDirectoryHandleImpl dir(manager_.get(), binding_context_,
                                           test_url, {ask_grant_, ask_grant_});
   auto dir_id = manager_->GetUniqueId(dir);
   EXPECT_TRUE(dir_id.is_valid());
@@ -2209,7 +3400,7 @@ TEST_F(FileSystemAccessManagerImplTest, GetUniqueId) {
       kTestStorageKey, storage::kFileSystemTypeTemporary,
       kTestPathInfo.path.AppendASCII("bar"));
   other_url.SetBucket(default_bucket);
-  FileSystemAccessFileHandleImpl other_file(manager_.get(), kBindingContext,
+  FileSystemAccessFileHandleImpl other_file(manager_.get(), binding_context_,
                                             other_url, "bar",
                                             {ask_grant_, ask_grant_});
   auto other_id = manager_->GetUniqueId(other_file);
@@ -2252,38 +3443,206 @@ TEST_F(FileSystemAccessManagerImplTest, IsSafePathComponent) {
   };
 
   for (const char* component : kSafePathComponents) {
-    EXPECT_TRUE(manager_->IsSafePathComponent(
-        storage::kFileSystemTypeTemporary, kTestStorageKey.origin(), component))
+    EXPECT_TRUE(manager_->IsSafePathComponent(storage::kFileSystemTypeTemporary,
+                                              component))
         << component;
-    EXPECT_TRUE(manager_->IsSafePathComponent(
-        storage::kFileSystemTypeLocal, kTestStorageKey.origin(), component))
+    EXPECT_TRUE(
+        manager_->IsSafePathComponent(storage::kFileSystemTypeLocal, component))
         << component;
-    EXPECT_TRUE(manager_->IsSafePathComponent(
-        storage::kFileSystemTypeExternal, kTestStorageKey.origin(), component))
+    EXPECT_TRUE(manager_->IsSafePathComponent(storage::kFileSystemTypeExternal,
+                                              component))
         << component;
   }
   for (const char* component : kAlwaysUnsafePathComponents) {
     EXPECT_FALSE(manager_->IsSafePathComponent(
-        storage::kFileSystemTypeTemporary, kTestStorageKey.origin(), component))
+        storage::kFileSystemTypeTemporary, component))
         << component;
-    EXPECT_FALSE(manager_->IsSafePathComponent(
-        storage::kFileSystemTypeLocal, kTestStorageKey.origin(), component))
+    EXPECT_FALSE(
+        manager_->IsSafePathComponent(storage::kFileSystemTypeLocal, component))
         << component;
-    EXPECT_FALSE(manager_->IsSafePathComponent(
-        storage::kFileSystemTypeExternal, kTestStorageKey.origin(), component))
+    EXPECT_FALSE(manager_->IsSafePathComponent(storage::kFileSystemTypeExternal,
+                                               component))
         << component;
   }
   for (const char* component : kUnsafeLocalPathComponents) {
-    EXPECT_TRUE(manager_->IsSafePathComponent(
-        storage::kFileSystemTypeTemporary, kTestStorageKey.origin(), component))
+    EXPECT_TRUE(manager_->IsSafePathComponent(storage::kFileSystemTypeTemporary,
+                                              component))
         << component;
-    EXPECT_FALSE(manager_->IsSafePathComponent(
-        storage::kFileSystemTypeLocal, kTestStorageKey.origin(), component))
+    EXPECT_FALSE(
+        manager_->IsSafePathComponent(storage::kFileSystemTypeLocal, component))
         << component;
-    EXPECT_FALSE(manager_->IsSafePathComponent(
-        storage::kFileSystemTypeExternal, kTestStorageKey.origin(), component))
+    EXPECT_FALSE(manager_->IsSafePathComponent(storage::kFileSystemTypeExternal,
+                                               component))
         << component;
   }
+}
+
+// Verifies that redeeming a first-party `FileSystemAccessTransferToken` with
+// `PermissionStatus::GRANTED` inside a third-party `BindingContext` (such as
+// via `postMessage` or `StorageAccessHandle.indexedDB`) downgrades
+// non-sandboxed file and directory handles to `PermissionStatus::DENIED`, while
+// preserving `PermissionStatus::GRANTED` for sandboxed (OPFS) handles.
+// TODO(crbug.com/567958637): Disabled due to failures on multiple platforms.
+TEST_F(
+    FileSystemAccessManagerImplTest,
+    DISABLED_GetHandleFromToken_ThirdPartyContextBlocksNonSandboxedReadAndWrite) {
+  const blink::StorageKey kThirdPartyStorageKey = blink::StorageKey::Create(
+      kTestStorageKey.origin(), net::SchemefulSite(GURL("https://other.com")),
+      blink::mojom::AncestorChainBit::kCrossSite);
+  const FileSystemAccessManagerImpl::BindingContext third_party_context = {
+      kThirdPartyStorageKey, kTestURL, frame_id_};
+  mojo::Remote<blink::mojom::FileSystemAccessManager> third_party_manager;
+  manager_->BindReceiver(third_party_context,
+                         third_party_manager.BindNewPipeAndPassReceiver());
+
+  // 1. Non-sandboxed file token minted in 1P context with GRANTED permissions.
+  auto local_file_url = file_system_context_->CreateCrackedFileSystemURL(
+      kTestStorageKey, storage::kFileSystemTypeLocal,
+      dir_.GetPath().AppendASCII("local_file.txt"));
+  FileSystemAccessFileHandleImpl first_party_file(
+      manager_.get(), binding_context_, local_file_url, "local_file.txt",
+      {allow_grant_, allow_grant_});
+  mojo::PendingRemote<blink::mojom::FileSystemAccessTransferToken>
+      file_token_remote;
+  manager_->CreateTransferToken(
+      first_party_file, file_token_remote.InitWithNewPipeAndPassReceiver());
+
+  mojo::Remote<blink::mojom::FileSystemAccessFileHandle> third_party_file;
+  third_party_manager->GetFileHandleFromToken(
+      std::move(file_token_remote),
+      third_party_file.BindNewPipeAndPassReceiver());
+  EXPECT_EQ(PermissionStatus::DENIED,
+            GetPermissionStatusSync(
+                blink::mojom::FileSystemAccessPermissionMode::kRead,
+                third_party_file.get()));
+  EXPECT_EQ(PermissionStatus::DENIED,
+            GetPermissionStatusSync(
+                blink::mojom::FileSystemAccessPermissionMode::kReadWrite,
+                third_party_file.get()));
+
+  // 2. Non-sandboxed directory token minted in 1P context with GRANTED
+  // permissions.
+  auto local_dir_url = file_system_context_->CreateCrackedFileSystemURL(
+      kTestStorageKey, storage::kFileSystemTypeLocal,
+      dir_.GetPath().AppendASCII("local_dir"));
+  FileSystemAccessDirectoryHandleImpl first_party_dir(
+      manager_.get(), binding_context_, local_dir_url,
+      {allow_grant_, allow_grant_});
+  mojo::PendingRemote<blink::mojom::FileSystemAccessTransferToken>
+      dir_token_remote;
+  manager_->CreateTransferToken(
+      first_party_dir, dir_token_remote.InitWithNewPipeAndPassReceiver());
+
+  mojo::Remote<blink::mojom::FileSystemAccessDirectoryHandle> third_party_dir;
+  third_party_manager->GetDirectoryHandleFromToken(
+      std::move(dir_token_remote),
+      third_party_dir.BindNewPipeAndPassReceiver());
+  EXPECT_EQ(PermissionStatus::DENIED,
+            GetPermissionStatusSync(
+                blink::mojom::FileSystemAccessPermissionMode::kRead,
+                third_party_dir.get()));
+  EXPECT_EQ(PermissionStatus::DENIED,
+            GetPermissionStatusSync(
+                blink::mojom::FileSystemAccessPermissionMode::kReadWrite,
+                third_party_dir.get()));
+
+  // 3. Sandboxed (OPFS) file token redeemed in 3P context retains GRANTED.
+  ASSERT_OK_AND_ASSIGN(auto default_bucket,
+                       CreateSandboxFileSystemAndGetDefaultBucket());
+  auto sandboxed_url = file_system_context_->CreateCrackedFileSystemURL(
+      kTestStorageKey, storage::kFileSystemTypeTemporary,
+      base::FilePath::FromUTF8Unsafe("opfs_file.txt"));
+  sandboxed_url.SetBucket(default_bucket);
+  FileSystemAccessFileHandleImpl sandboxed_file(
+      manager_.get(), binding_context_, sandboxed_url, "opfs_file.txt",
+      {allow_grant_, allow_grant_});
+  mojo::PendingRemote<blink::mojom::FileSystemAccessTransferToken>
+      sandboxed_token_remote;
+  manager_->CreateTransferToken(
+      sandboxed_file, sandboxed_token_remote.InitWithNewPipeAndPassReceiver());
+
+  mojo::Remote<blink::mojom::FileSystemAccessFileHandle>
+      third_party_sandboxed_file;
+  third_party_manager->GetFileHandleFromToken(
+      std::move(sandboxed_token_remote),
+      third_party_sandboxed_file.BindNewPipeAndPassReceiver());
+  EXPECT_EQ(PermissionStatus::GRANTED,
+            GetPermissionStatusSync(
+                blink::mojom::FileSystemAccessPermissionMode::kRead,
+                third_party_sandboxed_file.get()));
+  EXPECT_EQ(PermissionStatus::GRANTED,
+            GetPermissionStatusSync(
+                blink::mojom::FileSystemAccessPermissionMode::kReadWrite,
+                third_party_sandboxed_file.get()));
+}
+
+// Verifies that a native file handle deserialized with a first-party storage
+// key, as `BucketContext` does for unpartitioned IndexedDB reached through
+// `document.requestStorageAccess({indexedDB: true})`, is not readable once
+// redeemed in a third-party `BindingContext`, even if the origin holds
+// `PermissionStatus::GRANTED`.
+TEST_F(FileSystemAccessManagerImplTest,
+       DeserializeHandle_FirstPartyKey_RedeemedInThirdPartyContext_Denied) {
+  const PathInfo kTestPathInfo(dir_.GetPath().AppendASCII("foo"));
+  auto grant = base::MakeRefCounted<FixedFileSystemAccessPermissionGrant>(
+      FixedFileSystemAccessPermissionGrant::PermissionStatus::GRANTED,
+      kTestPathInfo);
+
+  // The first-party origin holds GRANTED for both the initial open and the
+  // later load from storage.
+  EXPECT_CALL(permission_context_,
+              GetReadPermissionGrant(kTestStorageKey.origin(), kTestPathInfo,
+                                     HandleType::kFile, testing::_))
+      .WillRepeatedly(testing::Return(grant));
+  EXPECT_CALL(permission_context_,
+              GetWritePermissionGrant(kTestStorageKey.origin(), kTestPathInfo,
+                                      HandleType::kFile, testing::_))
+      .WillRepeatedly(testing::Return(grant));
+
+  blink::mojom::FileSystemAccessEntryPtr entry =
+      manager_->CreateFileEntryFromPath(
+          binding_context_, kTestPathInfo,
+          FileSystemAccessPermissionContext::AccessTrigger::kOpen);
+  mojo::Remote<blink::mojom::FileSystemAccessFileHandle> handle(
+      std::move(entry->entry_handle->get_file()));
+  mojo::PendingRemote<blink::mojom::FileSystemAccessTransferToken> token_remote;
+  handle->Transfer(token_remote.InitWithNewPipeAndPassReceiver());
+
+  // Serialize, then deserialize with the first-party storage key.
+  base::test::TestFuture<std::vector<uint8_t>> serialize_future;
+  manager_->SerializeHandle(
+      std::move(token_remote),
+      serialize_future.GetCallback<const std::vector<uint8_t>&>());
+  std::vector<uint8_t> serialized = serialize_future.Take();
+  ASSERT_FALSE(serialized.empty());
+  mojo::PendingRemote<blink::mojom::FileSystemAccessTransferToken>
+      deserialized_token;
+  manager_->DeserializeHandle(
+      kTestStorageKey, serialized,
+      deserialized_token.InitWithNewPipeAndPassReceiver());
+
+  // Redeem the token in a third-party context.
+  const blink::StorageKey kThirdPartyStorageKey = blink::StorageKey::Create(
+      kTestStorageKey.origin(), net::SchemefulSite(GURL("https://other.com")),
+      blink::mojom::AncestorChainBit::kCrossSite);
+  const FileSystemAccessManagerImpl::BindingContext third_party_context = {
+      kThirdPartyStorageKey, kTestURL, frame_id_};
+  mojo::Remote<blink::mojom::FileSystemAccessManager> third_party_manager;
+  manager_->BindReceiver(third_party_context,
+                         third_party_manager.BindNewPipeAndPassReceiver());
+  mojo::Remote<blink::mojom::FileSystemAccessFileHandle> third_party_file;
+  third_party_manager->GetFileHandleFromToken(
+      std::move(deserialized_token),
+      third_party_file.BindNewPipeAndPassReceiver());
+
+  EXPECT_EQ(PermissionStatus::DENIED,
+            GetPermissionStatusSync(
+                blink::mojom::FileSystemAccessPermissionMode::kRead,
+                third_party_file.get()));
+  EXPECT_EQ(PermissionStatus::DENIED,
+            GetPermissionStatusSync(
+                blink::mojom::FileSystemAccessPermissionMode::kReadWrite,
+                third_party_file.get()));
 }
 
 }  // namespace content

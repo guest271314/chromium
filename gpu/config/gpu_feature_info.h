@@ -15,6 +15,7 @@
 #include "components/viz/common/resources/shared_image_format.h"
 #include "gpu/config/gpu_config_export.h"
 #include "gpu/config/gpu_feature_type.h"
+#include "gpu/config/gpu_preferences.h"
 
 namespace gl {
 class GLContext;
@@ -38,6 +39,9 @@ struct GPU_CONFIG_EXPORT GpuFeatureInfo {
   GpuFeatureInfo(GpuFeatureInfo&&);
   ~GpuFeatureInfo();
 
+  GpuFeatureInfo& operator=(const GpuFeatureInfo&);
+  GpuFeatureInfo& operator=(GpuFeatureInfo&&);
+
   // Set the GL workarounds and disabled GL extensions to the context.
   void ApplyToGLContext(gl::GLContext* context) const;
 
@@ -46,8 +50,7 @@ struct GPU_CONFIG_EXPORT GpuFeatureInfo {
   // Return true if GpuFeatureInfo is computed.
   bool IsInitialized() const;
 
-  GpuFeatureInfo& operator=(const GpuFeatureInfo&);
-  GpuFeatureInfo& operator=(GpuFeatureInfo&&);
+  bool IsFeatureEnabled(GpuFeatureType feature);
 
   // An array of GpuFeatureStatus values, one per GpuFeatureType.
   // By default, all features are disabled.

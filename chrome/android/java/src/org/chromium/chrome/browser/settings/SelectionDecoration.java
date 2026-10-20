@@ -13,7 +13,6 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.widget.TextView;
 
-import androidx.annotation.NonNull;
 import androidx.preference.Preference;
 import androidx.preference.PreferenceCategory;
 import androidx.preference.PreferenceGroupAdapter;
@@ -53,8 +52,8 @@ class SelectionDecoration extends RecyclerView.ItemDecoration {
     /** Card background of unselected items. */
     private @Nullable Drawable mUnselectedBackground;
 
-    /** Corner radius of the card background. */
-    private final float mRadiusPx;
+    /** Corner radii of the card background. */
+    private final float[] mCornerRadii;
 
     /** Color of the card background. */
     private int mSelectedBackgroundColor;
@@ -78,7 +77,7 @@ class SelectionDecoration extends RecyclerView.ItemDecoration {
             int verticalMarginPx, int leftMarginPx, float radiusPx, int selectedBackgroundColor) {
         mVerticalMarginPx = verticalMarginPx;
         mLeftMarginPx = leftMarginPx;
-        mRadiusPx = radiusPx;
+        mCornerRadii = ContainmentViewStyler.cornerRadii(radiusPx, radiusPx, radiusPx, radiusPx);
         mSelectedBackgroundColor = selectedBackgroundColor;
     }
 
@@ -131,21 +130,21 @@ class SelectionDecoration extends RecyclerView.ItemDecoration {
     }
 
     @Override
-    public void onDraw(@NonNull Canvas c, RecyclerView parent, @NonNull RecyclerView.State state) {
+    public void onDraw(Canvas c, RecyclerView parent, RecyclerView.State state) {
         int currentColor =
                 SemanticColorUtils.getSettingsMainMenuSelectedBackgroundColor(parent.getContext());
         if (currentColor != mSelectedBackgroundColor || mSelectedBackground == null) {
             mSelectedBackgroundColor = currentColor;
             mSelectedBackground =
                     ContainmentViewStyler.createInteractiveRoundedDrawable(
-                            parent.getContext(), mRadiusPx, mRadiusPx, currentColor);
+                            parent.getContext(), mCornerRadii, currentColor);
             mIsDirty = true;
         }
 
         if (mUnselectedBackground == null) {
             mUnselectedBackground =
                     ContainmentViewStyler.createInteractiveRoundedDrawable(
-                            parent.getContext(), mRadiusPx, mRadiusPx, Color.TRANSPARENT);
+                            parent.getContext(), mCornerRadii, Color.TRANSPARENT);
             mIsDirty = true;
         }
 
@@ -182,14 +181,16 @@ class SelectionDecoration extends RecyclerView.ItemDecoration {
                 }
             }
 
-            if (mKey != null && preference instanceof PreferenceCategory) {
+            if (preference instanceof PreferenceCategory) {
+                // Style a category header (e.g. "Basics").
+                view.setBackground(null);
                 TextView headerTitleView = findTextView(view);
                 if (headerTitleView != null) {
                     headerTitleView.setTextAppearance(
                             R.style.TextAppearance_PreferenceCategoryStandard);
                 }
-            }
-            if (selected) {
+            } else if (selected) {
+                // Style a selected category (e.g. "Google services").
                 highlightFound = true;
                 if (mSelectedBackground != null && mSelectedBackground.getConstantState() != null) {
                     view.setBackground(
@@ -202,6 +203,7 @@ class SelectionDecoration extends RecyclerView.ItemDecoration {
                             R.style.TextAppearance_SettingsSelectedMainMenuItemTitle);
                 }
             } else {
+                // Style an unselected category.
                 if (mUnselectedBackground != null
                         && mUnselectedBackground.getConstantState() != null) {
                     view.setBackground(

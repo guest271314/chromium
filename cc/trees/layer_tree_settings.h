@@ -75,7 +75,6 @@ class CC_EXPORT LayerTreeSettings {
   base::TimeDelta scrollbar_fade_duration;
   base::TimeDelta scrollbar_thinning_duration;
   float idle_thickness_scale = 0.4f;
-  bool scrollbar_flash_after_any_scroll_update = false;
   bool scrollbar_flash_once_after_scroll_update = false;
   bool scrollbar_flash_once_visible_on_viewport = false;
   bool scrollbar_flash_when_mouse_enter = false;
@@ -126,7 +125,7 @@ class CC_EXPORT LayerTreeSettings {
       ImageDecodeCacheUtils::GetWorkingSetBytesForImageDecode(
           /*for_renderer=*/false);
   int max_preraster_distance_in_screen_pixels = 1000;
-  bool use_rgba_4444 = false;
+  bool prefer_rgba_4444 = false;
 
   // If set to true, the compositor may selectively defer image decodes to the
   // Image Decode Service and raster tiles without images until the decode is
@@ -239,6 +238,13 @@ class CC_EXPORT LayerTreeSettings {
 
   // Whether to use variable refresh rates when generating begin frames.
   bool enable_variable_refresh_rate = false;
+
+  // Whether the unbounded element API is enabled.
+  bool enable_unbounded_element = false;
+
+  // Whether to collect the compositor-side scroll metadata reported by the
+  // Performance Scroll Timing API.
+  bool enable_scroll_performance_timing = false;
 };
 
 }  // namespace cc

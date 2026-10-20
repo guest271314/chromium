@@ -19,6 +19,8 @@
 #include "third_party/blink/public/mojom/frame/intrinsic_sizing_info.mojom-forward.h"
 #include "third_party/blink/public/mojom/frame/lifecycle.mojom.h"
 #include "third_party/blink/public/mojom/frame/viewport_intersection_state.mojom.h"
+#include "ui/accessibility/ax_node_id_forward.h"
+#include "ui/accessibility/ax_tree_id.h"
 #include "ui/base/cursor/cursor.h"
 #include "ui/compositor/compositor.h"
 #include "ui/display/screen_infos.h"
@@ -36,9 +38,11 @@ namespace content {
 class FrameTree;
 class RenderFrameHost;
 class RenderFrameHostImpl;
+class RenderWidgetHostImpl;
 class RenderViewHostDelegateView;
 class RenderWidgetHostViewChildFrame;
 class TextInputManager;
+class WebContentsDelegate;
 class WebContentsImpl;
 class WebContentsView;
 
@@ -52,6 +56,12 @@ class CONTENT_EXPORT SurfaceEmbedConnectorImpl
 
   WebContentsView* GetParentWebContentsView() const;
   RenderViewHostDelegateView* GetParentRenderViewHostDelegateView() const;
+
+  // Returns the first WebContentsDelegate found in the embedding chain.
+  // If this connector has a parent WebContents, it delegates the query
+  // to the parent; otherwise it returns nullptr (since the child's delegate
+  // was already checked and must have been null to reach here).
+  WebContentsDelegate* GetFirstWebContentsDelegate() const;
 
   // Returns the InputEventRouter appropriate for the child web contents to
   // register with. Note that this is the parent web contents's
@@ -67,9 +77,20 @@ class CONTENT_EXPORT SurfaceEmbedConnectorImpl
   SurfaceEmbedConnector::Delegate* GetDelegate() override;
   void OnSynchronizeVisualProperties(
       const blink::FrameVisualProperties& visual_properties) override;
+  void UpdateRenderThrottlingStatus(bool is_throttled,
+                                    bool subtree_throttled,
+                                    bool display_locked) override;
   const viz::FrameSinkId& GetFrameSinkId() const override;
   double GetCssZoomFactorForTesting() override;
   const gfx::Size& GetLocalFrameSizeInPixelsForTesting() override;
+  bool IsThrottledForTesting() override;
+  bool IsSubtreeThrottledForTesting() override;
+  bool IsDisplayLockedForTesting() override;
+  PinchGestureMode GetPinchGestureModeForTesting() const override;
+  void SetPinchGestureMode(PinchGestureMode mode) override;
+  void SetParentAccessibilityInfo(ui::AXNodeID ax_node_id,
+                                  const ui::AXTreeID& ax_tree_id) override;
+  ui::AXTreeID GetParentAXTreeID() const override;
 
   // FrameConnector:
   void SetKeepSurfaceAlive(bool keep_alive) override;
@@ -78,6 +99,7 @@ class CONTENT_EXPORT SurfaceEmbedConnectorImpl
                bool allow_paint_holding) override;
   RenderWidgetHostViewBase* GetParentRenderWidgetHostView() override;
   RenderWidgetHostViewBase* GetRootRenderWidgetHostView() override;
+  input::RenderWidgetHostViewInput* GetPinchZoomTarget() override;
   void RenderProcessGone() override;
   void FirstSurfaceActivation(const viz::SurfaceInfo& surface_info) override;
   void SendIntrinsicSizingInfoToParent(
@@ -98,7 +120,6 @@ class CONTENT_EXPORT SurfaceEmbedConnectorImpl
   const viz::LocalSurfaceId& GetLocalSurfaceId() override;
   const blink::mojom::ViewportIntersectionState& GetIntersectionState()
       override;
-  uint32_t GetCaptureSequenceNumber() override;
   const gfx::Rect& GetRectInParentViewInDip() override;
   const gfx::Size& GetLocalFrameSizeInDip() override;
   const gfx::Size& GetLocalFrameSizeInPixels() override;
@@ -126,11 +147,19 @@ class CONTENT_EXPORT SurfaceEmbedConnectorImpl
   input::RenderWidgetHostViewInput* GetParentViewInput() override;
   input::RenderWidgetHostViewInput* GetRootViewInput() override;
 
-  void OnRenderFrameCreated();
+  void UpdateAccessibilityTree();
 
   // Updates the `view_` member to track the current RenderWidgetHostView
   // associated with the child WebContents.
   void UpdateViewForCurrentRenderFrameHost();
+
+  // Called by WebContentsImpl after the connector is set. Notifies the parent
+  // WebContents and updates the view.
+  void OnAttachedToParent();
+
+  // Called by WebContentsImpl before the connector is cleared. Notifies the
+  // parent WebContents.
+  void OnDetachedFromParent();
 
   // Returns nullptr if the focus is outside of this connector's child
   // WebContents.
@@ -138,8 +167,24 @@ class CONTENT_EXPORT SurfaceEmbedConnectorImpl
   void SetFocusedFrameTree(FrameTree* frame_tree_to_focus);
   void ClearFocusOnInnerWebContents();
 
+  // Returns true if any WebContents in the parent chain has a pointer lock
+  // widget.
+  bool HasPointerLockWidgetInParentChain() const;
+
+  // Sets the pointer lock widget for all WebContents in the parent chain.
+  void SetPointerLockWidgetInParentChain(RenderWidgetHostImpl* widget);
+
+  // Returns true if the parent WebContents (or any ancestor) has a pointer lock
+  // for the given `render_widget_host`.
+  bool HasPointerLock(RenderWidgetHostImpl* render_widget_host) const;
+
+  // Returns the pointer lock widget from the parent WebContents (or any
+  // ancestor) if it exists and is locked.
+  RenderWidgetHostImpl* GetPointerLockWidget() const;
+
  private:
   class WCObserver;
+  class ParentWCObserver;
 
   friend class SurfaceEmbedConnector;
   friend class SurfaceEmbedConnectorImplBrowserTest;
@@ -150,7 +195,8 @@ class CONTENT_EXPORT SurfaceEmbedConnectorImpl
   SurfaceEmbedConnectorImpl(WebContents* child_web_contents,
                             WebContents* parent_web_contents,
                             RenderFrameHost* embedder_rfh,
-                            SurfaceEmbedConnector::Delegate* delegate);
+                            SurfaceEmbedConnector::Delegate* delegate,
+                            PinchGestureMode pinch_gesture_mode);
 
   static WebContentsImpl* GetParentWebContents(WebContentsImpl* web_contents);
   static WebContentsImpl* GetRootWebContents(WebContentsImpl* web_contents);
@@ -166,17 +212,37 @@ class CONTENT_EXPORT SurfaceEmbedConnectorImpl
 
   RenderFrameHostImpl* current_child_frame_host() const;
 
-  // Observes the child web contents to send notifications to the connector.
+  void ParentVisibilityChanged(Visibility visibility);
+  void UpdateChildVisibility();
+
+  // Observes the child WebContents to send notifications to the connector.
   std::unique_ptr<WCObserver> wc_observer_;
+  // Observes the parent WebContents to propagate visibility changes.
+  std::unique_ptr<ParentWCObserver> parent_wc_observer_;
 
   raw_ptr<SurfaceEmbedConnector::Delegate> delegate_ = nullptr;
 
   raw_ptr<WebContentsImpl> child_web_contents_;  // Owns this object.
+  // WeakPtr to the parent WebContents. Automatically clears to nullptr when the
+  // observed parent is destroyed, safely notifying all consumers.
   base::WeakPtr<WebContents> parent_web_contents_;
+  // The RenderFrameHost in the parent that hosts the embed element.
+  base::WeakPtr<RenderFrameHostImpl> embedder_rfh_;
   raw_ptr<RenderWidgetHostViewChildFrame> view_ = nullptr;
+  PinchGestureMode pinch_gesture_mode_;
 
   // The last received FrameSinkId from the guest WebContents's view.
   viz::FrameSinkId frame_sink_id_;
+
+  ui::AXNodeID container_accessibility_node_id_ = ui::kInvalidAXNodeID;
+  ui::AXTreeID container_accessibility_tree_id_;
+
+  // The AXTreeID of the parent (embedder) accessibility tree that the child's
+  // tree is currently stitched into, or ui::AXTreeIDUnknown() when not
+  // stitched. Established by UpdateAccessibilityTree() and read back by
+  // RenderFrameHostImpl (via RenderFrameHostDelegate::GetSurfaceEmbedConnector)
+  // to answer the embedded child main frame's AX-parent queries.
+  ui::AXTreeID embed_parent_ax_tree_id_;
 
   // The last received LocalSurfaceId from the SurfaceEmbed.
   viz::LocalSurfaceId local_surface_id_;
@@ -185,8 +251,6 @@ class CONTENT_EXPORT SurfaceEmbedConnectorImpl
   // process which is set through CSS or scrolling.
   blink::mojom::FrameVisibility visibility_ =
       blink::mojom::FrameVisibility::kRenderedInViewport;
-
-  uint32_t capture_sequence_number_ = 0u;
 
   display::ScreenInfos screen_infos_;
   blink::mojom::ViewportIntersectionState intersection_state_;

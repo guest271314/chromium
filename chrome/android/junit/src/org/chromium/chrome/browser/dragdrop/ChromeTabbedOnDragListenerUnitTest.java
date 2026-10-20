@@ -123,6 +123,20 @@ public class ChromeTabbedOnDragListenerUnitTest {
         doTestOnDragActionDragStarted(/* isGroupDrag= */ false, /* isMultiTabDrag= */ true);
     }
 
+    @Test
+    public void testOnDrag_ActionDragStarted_NullSelectedTab() {
+        when(mTabModelSelector.getCurrentTab()).thenReturn(null);
+        assertTrue(
+                "Drag started should return true even when selected tab is null.",
+                mChromeTabbedOnDragListener.onDrag(
+                        mCompositorViewHolder,
+                        mockDragEvent(
+                                DragEvent.ACTION_DRAG_STARTED,
+                                /* result= */ false,
+                                /* isGroupDrag= */ false,
+                                /* isMultiTabDrag= */ false)));
+    }
+
     private void doTestOnDragActionDragStarted(boolean isGroupDrag, boolean isMultiTabDrag) {
         // Drag started should return false, since drag source is not chrome tab or group.
         assertFalse(
@@ -215,7 +229,7 @@ public class ChromeTabbedOnDragListenerUnitTest {
                                 isMultiTabDrag)));
 
         // Drop should return false, since it is trying to drop into tab switcher.
-        when(mLayoutStateProvider.isLayoutVisible(LayoutType.TAB_SWITCHER)).thenReturn(true);
+        when(mLayoutStateProvider.isLayoutVisible(LayoutType.HUB)).thenReturn(true);
         assertFalse(
                 "Action drop should return false",
                 mChromeTabbedOnDragListener.onDrag(
@@ -276,7 +290,7 @@ public class ChromeTabbedOnDragListenerUnitTest {
 
         // Drop should return false, since the destination instance is the same as the source
         // instance.
-        when(mLayoutStateProvider.isLayoutVisible(LayoutType.TAB_SWITCHER)).thenReturn(false);
+        when(mLayoutStateProvider.isLayoutVisible(LayoutType.HUB)).thenReturn(false);
         assertFalse(
                 "Action drop should return false",
                 mChromeTabbedOnDragListener.onDrag(
@@ -291,6 +305,77 @@ public class ChromeTabbedOnDragListenerUnitTest {
         assertFalse(
                 "Should not notify that Chrome handled drop when false returned.",
                 DragDropGlobalState.didChromeHandleDrop());
+
+        // Verify histograms.
+        histogramExpectation.assertExpected();
+    }
+
+    @Test
+    public void testOnDrag_ActionDrop_GlobalStateCleared() {
+        doTestOnDragActionDropWithClearedGlobalState(
+                /* isGroupDrag= */ false, /* isMultiTabDrag= */ false);
+    }
+
+    @Test
+    public void testOnDrag_ActionDrop_GlobalStateCleared_TabGroup() {
+        doTestOnDragActionDropWithClearedGlobalState(
+                /* isGroupDrag= */ true, /* isMultiTabDrag= */ false);
+    }
+
+    @Test
+    public void testOnDrag_ActionDrop_GlobalStateCleared_MultiTab() {
+        doTestOnDragActionDropWithClearedGlobalState(
+                /* isGroupDrag= */ false, /* isMultiTabDrag= */ true);
+    }
+
+    private void doTestOnDragActionDropWithClearedGlobalState(
+            boolean isGroupDrag, boolean isMultiTabDrag) {
+        String resultHistogram =
+                String.format(
+                        "Android.DragDrop.%s.FromStrip.Result",
+                        getTabSelectionType(isGroupDrag, isMultiTabDrag));
+        HistogramWatcher histogramExpectation =
+                HistogramWatcher.newBuilder()
+                        .expectIntRecord(resultHistogram, DragDropResult.ERROR_CONTENT_NOT_FOUND)
+                        .expectNoRecords("Android.DragDrop.Tab.Type")
+                        .expectNoRecords("Android.DragDrop.TabGroup.Type")
+                        .expectNoRecords("Android.DragDrop.MultiTab.Type")
+                        .build();
+        setGlobalStateData(isGroupDrag, isMultiTabDrag);
+
+        // Call drag start while the global state is still live.
+        assertTrue(
+                "Drag started should return true.",
+                mChromeTabbedOnDragListener.onDrag(
+                        mCompositorViewHolder,
+                        mockDragEvent(
+                                DragEvent.ACTION_DRAG_STARTED,
+                                /* result= */ false,
+                                isGroupDrag,
+                                isMultiTabDrag)));
+
+        // The source window tears down mid-drag and clears the process-wide state. This window
+        // then receives a late drop, and must reject it rather than crash.
+        DragDropGlobalState.clearForTesting();
+        when(mLayoutStateProvider.isLayoutVisible(LayoutType.HUB)).thenReturn(false);
+
+        assertFalse(
+                "Action drop should return false when the global state has been cleared.",
+                mChromeTabbedOnDragListener.onDrag(
+                        mCompositorViewHolder,
+                        mockDragEvent(
+                                DragEvent.ACTION_DROP,
+                                /* result= */ false,
+                                isGroupDrag,
+                                isMultiTabDrag)));
+
+        mChromeTabbedOnDragListener.onDrag(
+                mCompositorViewHolder,
+                mockDragEvent(
+                        DragEvent.ACTION_DRAG_ENDED,
+                        /* result= */ false,
+                        isGroupDrag,
+                        isMultiTabDrag));
 
         // Verify histograms.
         histogramExpectation.assertExpected();
@@ -377,7 +462,7 @@ public class ChromeTabbedOnDragListenerUnitTest {
         // Drop should return true, since the destination instance is not the same as the source
         // instance.
         when(mMultiInstanceManager.getCurrentInstanceId()).thenReturn(2);
-        when(mLayoutStateProvider.isLayoutVisible(LayoutType.TAB_SWITCHER)).thenReturn(false);
+        when(mLayoutStateProvider.isLayoutVisible(LayoutType.HUB)).thenReturn(false);
         assertTrue(
                 "Action drop should return true",
                 mChromeTabbedOnDragListener.onDrag(
@@ -510,7 +595,7 @@ public class ChromeTabbedOnDragListenerUnitTest {
 
         // Drop should return false.
         when(mMultiInstanceManager.getCurrentInstanceId()).thenReturn(2);
-        when(mLayoutStateProvider.isLayoutVisible(LayoutType.TAB_SWITCHER)).thenReturn(false);
+        when(mLayoutStateProvider.isLayoutVisible(LayoutType.HUB)).thenReturn(false);
 
         // Verify action drop is failed.
         assertFalse(

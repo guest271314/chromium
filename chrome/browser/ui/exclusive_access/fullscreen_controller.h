@@ -20,6 +20,12 @@
 #include "ui/display/types/display_constants.h"
 #include "url/origin.h"
 
+class BookmarkBarController;
+
+namespace chrome {
+class BrowserCommandController;
+}
+
 #if !BUILDFLAG(IS_ANDROID)
 class PopunderPreventer;
 #endif  // !BUILDFLAG(IS_ANDROID)
@@ -58,7 +64,10 @@ class RenderFrameHost;
 // This class implements fullscreen behaviour.
 class FullscreenController : public ExclusiveAccessControllerBase {
  public:
-  explicit FullscreenController(ExclusiveAccessManager* manager);
+  FullscreenController(
+      ExclusiveAccessManager* manager,
+      chrome::BrowserCommandController* browser_command_controller,
+      BookmarkBarController* bookmark_bar_controller);
 
   FullscreenController(const FullscreenController&) = delete;
   FullscreenController& operator=(const FullscreenController&) = delete;
@@ -108,6 +117,10 @@ class FullscreenController : public ExclusiveAccessControllerBase {
   content::FullscreenState GetFullscreenState(
       const content::WebContents* web_contents) const;
 
+  // Returns the origin of the frame currently in tab-initiated fullscreen.
+  // Returns an opaque origin if not in tab-initiated fullscreen.
+  const url::Origin& requesting_origin() const { return requesting_origin_; }
+
   // Returns true if |web_contents| is in fullscreen mode as a screen-captured
   // tab. See 'FullscreenWithinTab Note'.
   bool IsFullscreenWithinTab(const content::WebContents* web_contents) const;
@@ -137,7 +150,7 @@ class FullscreenController : public ExclusiveAccessControllerBase {
   void ExitFullscreenModeForTab(content::WebContents* web_contents);
 
   base::WeakPtr<FullscreenController> GetWeakPtr() {
-    return ptr_factory_.GetWeakPtr();
+    return weak_ptr_factory_.GetWeakPtr();
   }
 
 #if !BUILDFLAG(IS_ANDROID)
@@ -149,7 +162,6 @@ class FullscreenController : public ExclusiveAccessControllerBase {
   // Platform Fullscreen ///////////////////////////////////////////////////////
 
   // Override from ExclusiveAccessControllerBase.
-  void OnTabDeactivated(content::WebContents* web_contents) override;
   void OnTabDetachedFromView(content::WebContents* web_contents) override;
   void OnTabClosing(content::WebContents* web_contents) override;
   bool HandleUserPressedEscape() override;
@@ -162,10 +174,12 @@ class FullscreenController : public ExclusiveAccessControllerBase {
   void ExitExclusiveAccessIfNecessary() override;
   // Callbacks /////////////////////////////////////////////////////////////////
 
-  // Called by Browser::WindowFullscreenStateChanged. This is called
-  // as fullscreen mode is toggled, and after the transition animation
-  // completes.
+  // Invoked at the end of a fullscreen transition.
   void WindowFullscreenStateChanged();
+
+  // Only used on Mac. Called when the top ui style has been changed since this
+  // may trigger bookmark bar state change.
+  void FullscreenTopUIStateChanged();
 
   // Runs the given closure unless a fullscreen transition is currently in
   // progress. If a transition is in progress, the execution of the closure is
@@ -254,10 +268,6 @@ class FullscreenController : public ExclusiveAccessControllerBase {
   // is completed.
   base::OnceClosure fullscreen_transition_complete_callback_;
 
-  // Set in OnTabDeactivated(). Used to see if we're in the middle of
-  // deactivation of a tab.
-  raw_ptr<content::WebContents> deactivated_contents_ = nullptr;
-
   // Used in testing to set the state to tab fullscreen.
   bool is_tab_fullscreen_for_testing_ = false;
 
@@ -283,7 +293,15 @@ class FullscreenController : public ExclusiveAccessControllerBase {
   // This is used for accessing HistoryService.
   base::CancelableTaskTracker task_tracker_;
 
-  base::WeakPtrFactory<FullscreenController> ptr_factory_{this};
+  // True while NotifyTabExclusiveAccessLost() is on the stack. Checked in
+  // ~FullscreenController() to ensure `this` is never destroyed reentrantly
+  // during tab fullscreen exit notifications.
+  bool in_notify_tab_exclusive_access_lost_ = false;
+
+  const raw_ptr<chrome::BrowserCommandController> browser_command_controller_;
+  const raw_ptr<BookmarkBarController> bookmark_bar_controller_;
+
+  base::WeakPtrFactory<FullscreenController> weak_ptr_factory_{this};
 };
 
 #endif  // CHROME_BROWSER_UI_EXCLUSIVE_ACCESS_FULLSCREEN_CONTROLLER_H_

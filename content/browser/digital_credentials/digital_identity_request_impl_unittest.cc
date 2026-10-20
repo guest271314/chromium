@@ -88,7 +88,6 @@ base::Value ParseJsonAndCheck(const std::string& json) {
   return parsed.has_value() ? std::move(*parsed) : base::Value();
 }
 
-
 base::Value GenerateOnlyAgeOpenid4VpRequestWithDCQL() {
   constexpr char kJson[] = R"({
   "response_type": "vp_token",
@@ -217,6 +216,311 @@ base::Value GenerateGetPhoneNumberOpenid4VpRequest() {
   }
 })";
 
+  return ParseJsonAndCheck(kJson);
+}
+
+base::Value GenerateGetPhoneNumberTestSingleSimOpenid4VpRequest() {
+  constexpr char kJson[] = R"({
+  "response_type": "vp_token",
+  "response_mode": "dc_api",
+  "client_id": "web-origin:https://www.digital-credentials.dev",
+  "nonce": "y9f67H0Kb2QF7nSbYh-XxBKkvGTCHk5MQo9OLBkKWD0",
+  "dcql_query": {
+    "credentials": [
+      {
+        "format": "dc-authorization+sd-jwt",
+        "id": "aggregator1",
+        "meta": {
+          "vct_values": [
+            "number-verification/device-phone-number/test-ts43-single-sim"
+          ]
+        }
+      }
+    ]
+  }
+})";
+
+  return ParseJsonAndCheck(kJson);
+}
+
+base::Value GenerateGetPhoneNumberTestMultiSimOpenid4VpRequest() {
+  constexpr char kJson[] = R"({
+  "response_type": "vp_token",
+  "response_mode": "dc_api",
+  "client_id": "web-origin:https://www.digital-credentials.dev",
+  "nonce": "y9f67H0Kb2QF7nSbYh-XxBKkvGTCHk5MQo9OLBkKWD0",
+  "dcql_query": {
+    "credentials": [
+      {
+        "format": "dc-authorization+sd-jwt",
+        "id": "aggregator1",
+        "meta": {
+          "vct_values": [
+            "number-verification/device-phone-number/test-ts43-multi-sim"
+          ]
+        }
+      }
+    ]
+  }
+})";
+
+  return ParseJsonAndCheck(kJson);
+}
+
+base::Value GenerateVerifyPhoneNumberWithDisallowedCarriersOpenid4VpRequest() {
+  constexpr char kJson[] = R"({
+  "response_type": "vp_token",
+  "response_mode": "dc_api",
+  "client_id": "web-origin:https://www.digital-credentials.dev",
+  "nonce": "y9f67H0Kb2QF7nSbYh-XxBKkvGTCHk5MQo9OLBkKWD0",
+  "dcql_query": {
+    "credentials": [
+      {
+        "claims": [
+          {
+            "path": [
+              "subscription_hint"
+            ],
+            "values": [
+              1
+            ]
+          },
+          {
+            "path": [
+              "carrier_hint"
+            ],
+            "values": [
+              "310250"
+            ]
+          },
+          {
+            "path": [
+              "android_carrier_hint"
+            ],
+            "values": [
+              7
+            ]
+          },
+          {
+            "path": [
+              "disallowed_carriers"
+            ],
+            "values": [
+              "310260"
+            ]
+          }
+        ],
+        "format": "dc-authorization+sd-jwt",
+        "id": "aggregator1",
+        "meta": {
+          "vct_values": [
+            "number-verification/verify/ts43"
+          ]
+        }
+      }
+    ]
+  }
+})";
+
+  return ParseJsonAndCheck(kJson);
+}
+
+base::Value GenerateSdJwtWithSubscriptionHint() {
+  constexpr char kJson[] = R"({
+    "dcql_query": {
+      "credentials": [
+        {
+          "id": "cred1",
+          "format": "dc+sd-jwt",
+          "meta": {
+            "vct_values": [
+              "eu.europa.ec.eudiw.pid.1"
+            ]
+          },
+          "claims": [
+            {
+              "path": [
+                "subscription_hint"
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  })";
+  return ParseJsonAndCheck(kJson);
+}
+
+base::Value GeneratePhoneNumberBundledWithMdlAge() {
+  constexpr char kJson[] = R"({
+    "dcql_query": {
+      "credentials": [
+        {
+          "id": "pnv_token",
+          "format": "dc-authorization+sd-jwt",
+          "meta": {
+            "vct_values": [
+              "number-verification/verify/ts43"
+            ]
+          },
+          "claims": [
+            {
+              "path": [
+                "disallowed_carriers"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "mdl_token",
+          "format": "mso_mdoc",
+          "meta": {
+            "doctype_value": "org.iso.18013.5.1.mDL"
+          },
+          "claims": [
+            {
+              "path": [
+                "org.iso.18013.5.1",
+                "age_over_21"
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  })";
+  return ParseJsonAndCheck(kJson);
+}
+
+base::Value GeneratePhoneNumberBundledWithMdlSensitive() {
+  constexpr char kJson[] = R"({
+    "dcql_query": {
+      "credentials": [
+        {
+          "id": "pnv_token",
+          "format": "dc-authorization+sd-jwt",
+          "meta": {
+            "vct_values": [
+              "number-verification/verify/ts43"
+            ]
+          },
+          "claims": [
+            {
+              "path": [
+                "disallowed_carriers"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "mdl_token",
+          "format": "mso_mdoc",
+          "meta": {
+            "doctype_value": "org.iso.18013.5.1.mDL"
+          },
+          "claims": [
+            {
+              "path": [
+                "org.iso.18013.5.1",
+                "given_name"
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  })";
+  return ParseJsonAndCheck(kJson);
+}
+
+base::Value GenerateMdlWithSpoofedPhoneVct() {
+  constexpr char kJson[] = R"({
+    "dcql_query": {
+      "credentials": [
+        {
+          "id": "mdl_token",
+          "format": "mso_mdoc",
+          "meta": {
+            "doctype_value": "org.iso.18013.5.1.mDL",
+            "vct_values": [
+              "number-verification/verify/ts43"
+            ]
+          },
+          "claims": [
+            {
+              "path": [
+                "org.iso.18013.5.1",
+                "given_name"
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  })";
+  return ParseJsonAndCheck(kJson);
+}
+
+base::Value GeneratePhoneNumberWithMalformedVct() {
+  constexpr char kJson[] = R"({
+    "dcql_query": {
+      "credentials": [
+        {
+          "id": "pnv_token",
+          "format": "dc-authorization+sd-jwt",
+          "meta": {
+            "vct_values": [
+              "number-verification/verify/ts43",
+              12345
+            ]
+          },
+          "claims": [
+            {
+              "path": [
+                "disallowed_carriers"
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  })";
+  return ParseJsonAndCheck(kJson);
+}
+
+base::Value GeneratePhoneNumberWithDoctype() {
+  constexpr char kJson[] = R"({
+    "dcql_query": {
+      "credentials": [
+        {
+          "id": "pnv_token",
+          "format": "dc-authorization+sd-jwt",
+          "meta": {
+            "doctype_value": "org.iso.18013.5.1.mDL",
+            "vct_values": [
+              "number-verification/verify/ts43"
+            ]
+          },
+          "claims": [
+            {
+              "path": [
+                "disallowed_carriers"
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  })";
+  return ParseJsonAndCheck(kJson);
+}
+
+base::Value GenerateEmptyCredentialsOpenid4VpRequest() {
+  constexpr char kJson[] = R"({
+    "dcql_query": {
+      "credentials": []
+    }
+  })";
   return ParseJsonAndCheck(kJson);
 }
 
@@ -491,6 +795,28 @@ base::Value GenerateSdJwtSensitiveBundledWithDpc() {
   return ParseJsonAndCheck(kJson);
 }
 
+base::Value GenerateOpenid4VpRequestWithEmptyClaims() {
+  constexpr char kJson[] = R"({
+  "response_type": "vp_token",
+  "response_mode": "dc_api",
+  "client_id": "web-origin:https://www.digital-credentials.dev",
+  "nonce": "d_xvsQ_PF1oPVZbjAfWu_xgwh3dJf_W5zgWB3U2xWw8",
+  "dcql_query": {
+    "credentials": [
+      {
+        "id": "cred1",
+        "format": "mso_mdoc",
+        "meta": {
+          "doctype_value": "org.iso.18013.5.1.mDL"
+        },
+        "claims": []
+      }
+    ]
+  }
+})";
+  return ParseJsonAndCheck(kJson);
+}
+
 // Does depth-first traversal of nested dicts rooted at `root`. Returns first
 // matching base::Value with key `find_key`.
 base::Value* FindValueWithKey(base::Value& root, const std::string& find_key) {
@@ -546,6 +872,7 @@ class DigitalIdentityRequestImplInterstitialTest
  public:
   void SetUp() override {
     RenderViewHostTestHarness::SetUp();
+    NavigateAndCommit(GURL("https://example.com"));
     scoped_feature_list_.InitAndEnableFeatureWithParameters(
         features::kWebIdentityDigitalCredentials, {{"dialog", ""}});
   }
@@ -649,7 +976,7 @@ TEST_F(DigitalIdentityRequestImplInterstitialTest,
   paths->GetList().resize(0);
 
   EXPECT_EQ(ComputeInterstitialType(kOpenid4vpProtocol, std::move(request)),
-            std::nullopt);
+            InterstitialType::kLowRisk);
 }
 
 TEST_F(DigitalIdentityRequestImplInterstitialTest,
@@ -695,8 +1022,6 @@ TEST_F(DigitalIdentityRequestImplInterstitialTest,
             InterstitialType::kLowRisk);
 }
 
-
-
 TEST_F(DigitalIdentityRequestImplInterstitialTest,
        Openid4VpProtocolDCQL_ComputeInterstitialType_MalformedRequest) {
   // Malformed request that's missing the claim_name entry.
@@ -739,6 +1064,24 @@ TEST_F(DigitalIdentityRequestImplInterstitialTest,
        Openid4VpProtocolDCQL_ComputeInterstitialType_GetPhoneNumber) {
   EXPECT_EQ(ComputeInterstitialType(kOpenid4vpProtocol,
                                     GenerateGetPhoneNumberOpenid4VpRequest()),
+            std::nullopt);
+}
+
+TEST_F(
+    DigitalIdentityRequestImplInterstitialTest,
+    Openid4VpProtocolDCQL_ComputeInterstitialType_GetPhoneNumberTestSingleSim) {
+  EXPECT_EQ(ComputeInterstitialType(
+                kOpenid4vpProtocol,
+                GenerateGetPhoneNumberTestSingleSimOpenid4VpRequest()),
+            std::nullopt);
+}
+
+TEST_F(
+    DigitalIdentityRequestImplInterstitialTest,
+    Openid4VpProtocolDCQL_ComputeInterstitialType_GetPhoneNumberTestMultiSim) {
+  EXPECT_EQ(ComputeInterstitialType(
+                kOpenid4vpProtocol,
+                GenerateGetPhoneNumberTestMultiSimOpenid4VpRequest()),
             std::nullopt);
 }
 
@@ -799,6 +1142,13 @@ TEST_F(DigitalIdentityRequestImplInterstitialTest,
 }
 
 TEST_F(DigitalIdentityRequestImplInterstitialTest,
+       Openid4VpProtocolDCQL_ComputeInterstitialType_EmptyClaims) {
+  EXPECT_EQ(ComputeInterstitialType(kOpenid4vpProtocol,
+                                    GenerateOpenid4VpRequestWithEmptyClaims()),
+            InterstitialType::kLowRisk);
+}
+
+TEST_F(DigitalIdentityRequestImplInterstitialTest,
        Openid4VpProtocolDCQL_ComputeInterstitialType_SdJwtAgeAndSensitive) {
   EXPECT_EQ(ComputeInterstitialType(kOpenid4vpProtocol,
                                     GenerateSdJwtAgeAndSensitive()),
@@ -820,11 +1170,116 @@ TEST_F(
             InterstitialType::kLowRisk);
 }
 
+// Verifies that a Phone Number Verification (PNV) OpenID4VP request containing
+// the `disallowed_carriers` claim bypasses the safety interstitial. PNV claims
+// act as operational hints/parameters rather than user PII requests.
+TEST_F(
+    DigitalIdentityRequestImplInterstitialTest,
+    Openid4VpProtocolDCQL_ComputeInterstitialType_VerifyPhoneNumberWithDisallowedCarriers) {
+  EXPECT_EQ(
+      ComputeInterstitialType(
+          kOpenid4vpProtocol,
+          GenerateVerifyPhoneNumberWithDisallowedCarriersOpenid4VpRequest()),
+      std::nullopt);
+}
+
+// Verifies that PNV requests bypass the safety interstitial regardless of what
+// custom/arbitrary claim names are requested, because the PNV provider does not
+// return arbitrary user PII.
+TEST_F(
+    DigitalIdentityRequestImplInterstitialTest,
+    Openid4VpProtocolDCQL_ComputeInterstitialType_VerifyPhoneNumberWithArbitraryClaims) {
+  base::Value request =
+      GenerateVerifyPhoneNumberWithDisallowedCarriersOpenid4VpRequest();
+  ASSERT_TRUE(SetDCQLPathItem(request, "arbitrary_custom_claim"));
+  EXPECT_EQ(ComputeInterstitialType(kOpenid4vpProtocol, std::move(request)),
+            std::nullopt);
+}
+
+// Verifies that carrier hint claims (like `subscription_hint`) do NOT bypass
+// the safety interstitial when requested on generic non-PNV SD-JWT credentials,
+// ensuring strict claim filtering is maintained for other credential types.
+TEST_F(
+    DigitalIdentityRequestImplInterstitialTest,
+    Openid4VpProtocolDCQL_ComputeInterstitialType_SdJwtSubscriptionHint_RequiresInterstitial) {
+  EXPECT_EQ(ComputeInterstitialType(kOpenid4vpProtocol,
+                                    GenerateSdJwtWithSubscriptionHint()),
+            InterstitialType::kLowRisk);
+}
+
+// Verifies that a multi-credential DCQL query bundling a PNV credential with a
+// valid mDL age credential bypasses the interstitial (both sub-credentials are
+// permitted).
+TEST_F(
+    DigitalIdentityRequestImplInterstitialTest,
+    Openid4VpProtocolDCQL_ComputeInterstitialType_PhoneNumberBundledWithMdlAge) {
+  EXPECT_EQ(ComputeInterstitialType(kOpenid4vpProtocol,
+                                    GeneratePhoneNumberBundledWithMdlAge()),
+            std::nullopt);
+}
+
+// Verifies that bundling a PNV credential with an mDL credential requesting
+// unapproved/sensitive attributes (e.g. `given_name`) correctly triggers the
+// safety interstitial.
+TEST_F(
+    DigitalIdentityRequestImplInterstitialTest,
+    Openid4VpProtocolDCQL_ComputeInterstitialType_PhoneNumberBundledWithMdlSensitive) {
+  EXPECT_EQ(
+      ComputeInterstitialType(kOpenid4vpProtocol,
+                              GeneratePhoneNumberBundledWithMdlSensitive()),
+      InterstitialType::kLowRisk);
+}
+
+// Verifies anti-spoofing protection: an mDL (`mso_mdoc`) credential that
+// attempts to spoof a PNV bypass by adding PNV `vct_values` to `meta` is
+// rejected from PNV bypass and triggers the interstitial when sensitive claims
+// are present.
+TEST_F(
+    DigitalIdentityRequestImplInterstitialTest,
+    Openid4VpProtocolDCQL_ComputeInterstitialType_MdlWithSpoofedPhoneVct_RequiresInterstitial) {
+  EXPECT_EQ(ComputeInterstitialType(kOpenid4vpProtocol,
+                                    GenerateMdlWithSpoofedPhoneVct()),
+            InterstitialType::kLowRisk);
+}
+
+// Verifies that malformed VCT values (e.g. non-string entries in `vct_values`)
+// fail gracefully and enforce the safety interstitial.
+TEST_F(
+    DigitalIdentityRequestImplInterstitialTest,
+    Openid4VpProtocolDCQL_ComputeInterstitialType_PhoneNumberWithMalformedVct_RequiresInterstitial) {
+  EXPECT_EQ(ComputeInterstitialType(kOpenid4vpProtocol,
+                                    GeneratePhoneNumberWithMalformedVct()),
+            InterstitialType::kLowRisk);
+}
+
+// Verifies anti-spoofing / cross-format type confusion: an SD-JWT PNV
+// credential carrying an mDL `doctype_value` is rejected from PNV bypass to
+// prevent evading mDL claim validation.
+TEST_F(
+    DigitalIdentityRequestImplInterstitialTest,
+    Openid4VpProtocolDCQL_ComputeInterstitialType_PhoneNumberWithDoctype_RequiresInterstitial) {
+  EXPECT_EQ(ComputeInterstitialType(kOpenid4vpProtocol,
+                                    GeneratePhoneNumberWithDoctype()),
+            InterstitialType::kLowRisk);
+}
+
+// Verifies fail-closed behavior: a DCQL query with an empty `credentials: []`
+// list requests zero identifiable credentials and must trigger the safety
+// interstitial.
+TEST_F(
+    DigitalIdentityRequestImplInterstitialTest,
+    Openid4VpProtocolDCQL_ComputeInterstitialType_EmptyCredentialsList_RequiresInterstitial) {
+  EXPECT_EQ(ComputeInterstitialType(kOpenid4vpProtocol,
+                                    GenerateEmptyCredentialsOpenid4VpRequest()),
+            InterstitialType::kLowRisk);
+}
+
 class DigitalIdentityRequestImplWithCreationEnabledTest
     : public RenderViewHostTestHarness {
  public:
   void SetUp() override {
     RenderViewHostTestHarness::SetUp();
+    NavigateAndCommit(GURL("https://example.com"));
     digital_identity_request_impl_ = DigitalIdentityRequestImpl::CreateInstance(
         *web_contents()->GetPrimaryMainFrame(),
         request_remote_.BindNewPipeAndPassReceiver());
@@ -958,6 +1413,10 @@ class DigitalIdentityRequestImplTest : public RenderViewHostTestHarness {
   void SetUp() override {
     RenderViewHostTestHarness::SetUp();
 
+    // Navigate to a secure, non-opaque origin by default to avoid triggering
+    // the opaque origin block in happy-path tests.
+    NavigateAndCommit(GURL("https://example.com"));
+
     auto mock_digital_identity_provider =
         std::make_unique<MockDigitalIdentityProvider>();
     mock_digital_identity_provider_ = mock_digital_identity_provider.get();
@@ -985,6 +1444,10 @@ class DigitalIdentityRequestImplTest : public RenderViewHostTestHarness {
     return digital_identity_request_impl_.get();
   }
 
+  mojo::Remote<blink::mojom::DigitalIdentityRequest>& request_remote() {
+    return request_remote_;
+  }
+
   MockDigitalIdentityProvider* mock_digital_identity_provider() {
     return mock_digital_identity_provider_;
   }
@@ -1006,7 +1469,6 @@ class DigitalIdentityRequestImplTest : public RenderViewHostTestHarness {
 
  private:
   base::test::ScopedFeatureList scoped_feature_list_;
-  // base::test::ScopedCommandLine command_line_;
 
   raw_ptr<MockDigitalIdentityProvider> mock_digital_identity_provider_;
   ContentBrowserClientWithMockDigitalIdentityProvider content_browser_client_;
@@ -1257,6 +1719,7 @@ class DigitalIdentityRequestImplProviderResetTest
  public:
   void SetUp() override {
     RenderViewHostTestHarness::SetUp();
+    NavigateAndCommit(GURL("https://example.com"));
     // Skip the interstitial so provider_->Get() is reached synchronously.
     scoped_feature_list_.InitAndEnableFeatureWithParameters(
         features::kWebIdentityDigitalCredentials, {{"dialog", "no_dialog"}});
@@ -1467,6 +1930,7 @@ class DigitalIdentityRequestImplVirtualWalletTest
  public:
   void SetUp() override {
     RenderViewHostTestHarness::SetUp();
+    NavigateAndCommit(GURL("https://example.com"));
     scoped_feature_list_.InitWithFeatures(
         {features::kWebIdentityDigitalCredentials,
          features::kWebIdentityDigitalCredentialsCreation},
@@ -1526,7 +1990,7 @@ TEST_F(DigitalIdentityRequestImplVirtualWalletTest, GetRespond) {
       base::DictValue().Set("token", "virtual-wallet-data"));
 
   VirtualWallet* wallet = GetOrCreateVirtualWallet();
-  wallet->set_behavior(VirtualWallet::Behavior::kRespond);
+  wallet->set_action(VirtualWallet::Action::kRespond);
   wallet->SetCredential(
       DigitalCredential(kProtocolInWallet, kResponseData.Clone()));
 
@@ -1541,7 +2005,7 @@ TEST_F(DigitalIdentityRequestImplVirtualWalletTest, GetRespond) {
 
 TEST_F(DigitalIdentityRequestImplVirtualWalletTest, GetDecline) {
   VirtualWallet* wallet = GetOrCreateVirtualWallet();
-  wallet->set_behavior(VirtualWallet::Behavior::kDecline);
+  wallet->set_action(VirtualWallet::Action::kDecline);
 
   base::RunLoop run_loop;
   base::MockCallback<GetCallback> mock_callback;
@@ -1555,7 +2019,7 @@ TEST_F(DigitalIdentityRequestImplVirtualWalletTest, GetDecline) {
 
 TEST_F(DigitalIdentityRequestImplVirtualWalletTest, GetWaitIsAbortable) {
   VirtualWallet* wallet = GetOrCreateVirtualWallet();
-  wallet->set_behavior(VirtualWallet::Behavior::kWait);
+  wallet->set_action(VirtualWallet::Action::kWait);
 
   base::RunLoop run_loop;
   base::MockCallback<GetCallback> mock_callback;
@@ -1573,7 +2037,7 @@ TEST_F(DigitalIdentityRequestImplVirtualWalletTest, CreateRespond) {
       base::DictValue().Set("token", "virtual-wallet-data"));
 
   VirtualWallet* wallet = GetOrCreateVirtualWallet();
-  wallet->set_behavior(VirtualWallet::Behavior::kRespond);
+  wallet->set_action(VirtualWallet::Action::kRespond);
   wallet->SetCredential(
       DigitalCredential(kProtocolInWallet, kResponseData.Clone()));
 
@@ -1589,7 +2053,7 @@ TEST_F(DigitalIdentityRequestImplVirtualWalletTest, CreateRespond) {
 
 TEST_F(DigitalIdentityRequestImplVirtualWalletTest, CreateDecline) {
   VirtualWallet* wallet = GetOrCreateVirtualWallet();
-  wallet->set_behavior(VirtualWallet::Behavior::kDecline);
+  wallet->set_action(VirtualWallet::Action::kDecline);
 
   base::RunLoop run_loop;
   base::MockCallback<DigitalIdentityRequestImpl::CreateCallback> mock_callback;
@@ -1604,7 +2068,7 @@ TEST_F(DigitalIdentityRequestImplVirtualWalletTest, CreateDecline) {
 
 TEST_F(DigitalIdentityRequestImplVirtualWalletTest, CreateWaitIsAbortable) {
   VirtualWallet* wallet = GetOrCreateVirtualWallet();
-  wallet->set_behavior(VirtualWallet::Behavior::kWait);
+  wallet->set_action(VirtualWallet::Action::kWait);
 
   base::RunLoop run_loop;
   base::MockCallback<DigitalIdentityRequestImpl::CreateCallback> mock_callback;
@@ -1731,6 +2195,24 @@ TEST_F(DigitalIdentityRequestImplTest,
 
   histogram_tester.ExpectTotalCount(
       "Blink.DigitalIdentityRequest.OpenId4VpResponseMode", 0);
+}
+
+TEST_F(DigitalIdentityRequestImplTest, OpaqueOriginBlocked) {
+  NavigateAndCommit(GURL("data:text/html,abc"));
+  ASSERT_TRUE(main_rfh()->GetLastCommittedOrigin().opaque());
+  RecreateService();
+
+  DigitalCredentialGetRequestPtr digital_credential_request =
+      DigitalCredentialGetRequest::New();
+  digital_credential_request->protocol = "protocol";
+  digital_credential_request->data = base::Value(base::Value::Type::DICT);
+  std::vector<DigitalCredentialGetRequestPtr> requests;
+  requests.push_back(std::move(digital_credential_request));
+
+  mojo::test::BadMessageObserver bad_message_observer;
+  request_remote()->Get(std::move(requests), base::DoNothing());
+  EXPECT_EQ("DigitalIdentityRequest is not allowed in opaque origins.",
+            bad_message_observer.WaitForBadMessage());
 }
 
 }  // namespace content

@@ -2,7 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-
 #include "components/os_crypt/async/browser/dpapi_key_provider.h"
 
 #include <windows.h>
@@ -141,10 +140,6 @@ void DPAPIKeyProvider::GetKey(KeyCallback callback) {
   std::move(callback).Run(kKeyTag, base::unexpected(status));
 }
 bool DPAPIKeyProvider::UseForEncryption() {
-  return true;
-}
-
-bool DPAPIKeyProvider::IsCompatibleWithOsCryptSync() {
   return true;
 }
 

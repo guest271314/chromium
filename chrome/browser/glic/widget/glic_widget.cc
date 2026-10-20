@@ -17,7 +17,6 @@
 #include "chrome/browser/ui/browser_window/public/browser_window_interface_iterator.h"
 #include "chrome/browser/ui/views/chrome_widget_sublevel.h"
 #include "chrome/browser/ui/views/glic/glic_button_interface.h"
-#include "chrome/browser/ui/views/interaction/browser_elements_views.h"
 #include "chrome/common/chrome_features.h"
 #include "ui/base/base_window.h"
 #include "ui/base/hit_test.h"
@@ -44,8 +43,6 @@
 #endif
 
 #if BUILDFLAG(IS_WIN)
-#include "chrome/installer/util/install_util.h"
-#include "chrome/installer/util/shell_util.h"
 #include "ui/aura/window.h"
 #include "ui/aura/window_tree_host.h"
 #include "ui/base/win/hwnd_metrics.h"
@@ -101,7 +98,7 @@ class GlicClientView : public views::ClientView {
       const gfx::RoundedCornersF& window_radii) override {
     // For ChromeOS, we have to manually round the contents of `ClientView`.
     glic_view()->SetBackgroundRoundedCorners(window_radii);
-    glic_view()->holder()->SetCornerRadii(window_radii);
+    glic_view()->holder()->SetNativeViewCornerRadii(window_radii);
   }
 #endif
 
@@ -131,7 +128,8 @@ class GlicFrameView : public views::NativeFrameView {
 #elif BUILDFLAG(IS_LINUX)
     int resize_border = OpaqueBrowserFrameViewLayout::kFrameBorderThickness;
 #endif
-    const bool can_resize = GetWidget()->widget_delegate()->CanResize();
+    const bool can_resize = GetWidget()->widget_delegate() &&
+                            GetWidget()->widget_delegate()->CanResize();
 
     // Same value as used in `BrowserFrameViewWin::NonClientHitTest()` and `
     // OpaqueBrowserFrameView::NonClientHitTest`.
@@ -183,7 +181,16 @@ class GlicWidgetDelegate : public views::WidgetDelegate {
 
     // GlicWidget should claim mouse events that fall within the draggable
     // region.
-    return !glic_view()->IsPointWithinDraggableRegion(location);
+    if (glic_view()->IsPointWithinDraggableRegion(location)) {
+      return false;
+    }
+
+    // Only descend into child windows for events that fall within the client
+    // area. Non-client areas, such as window borders or captions, should be
+    // handled by the parent widget to ensure proper window management (e.g.,
+    // resizing or moving).
+    const int hit_test = GetWidget()->GetNonClientComponent(location);
+    return hit_test == HTCLIENT;
   }
 #endif  // defined(USE_AURA)
 
@@ -197,12 +204,12 @@ class GlicWidgetDelegate : public views::WidgetDelegate {
 
  private:
   // Additional hit test handling to support draggable regions.
-  std::optional<int> NonClientHitTest(const gfx::Point& point) const {
+  int NonClientHitTest(const gfx::Point& point) const {
     if (glic_view()->IsPointWithinDraggableRegion(point)) {
       return HTCAPTION;
     }
 
-    return std::nullopt;
+    return HTNOWHERE;
   }
 
   GlicView* glic_view() const {
@@ -274,6 +281,9 @@ GlicWidget::GlicWidget(ThemeService* theme_service, InitParams params)
   minimum_widget_size_ = GetInitialSize();
   OnSizeConstraintsChanged();
   theme_service_observation_.Observe(theme_service);
+  // Trigger theme propagation so child views are updated with the profile
+  // theme instead of the OS theme.
+  OnThemeChanged();
 }
 
 GlicWidget::~GlicWidget() = default;
@@ -418,11 +428,7 @@ std::unique_ptr<GlicWidget> GlicWidget::Create(views::WidgetDelegate* delegate,
   }
 #endif  // BUILDFLAG(IS_OZONE)
 #if BUILDFLAG(IS_WIN)
-  // If floaty won't be always on top, it should appear in the taskbar and
-  // alt tab list.
-  if (!base::FeatureList::IsEnabled(features::kGlicZOrderChanges)) {
-    params.dont_show_in_taskbar = true;
-  }
+  params.dont_show_in_taskbar = true;
 #endif  // BUILDFLAG(IS_WIN)
 #if BUILDFLAG(IS_MAC)
   params.animation_enabled = true;
@@ -456,10 +462,6 @@ std::unique_ptr<GlicWidget> GlicWidget::Create(views::WidgetDelegate* delegate,
   HWND hwnd = widget->GetNativeWindow()->GetHost()->GetAcceleratedWidget();
   if (hwnd != nullptr) {
     ui::win::PreventWindowFromPinning(hwnd);
-    if (base::FeatureList::IsEnabled(features::kGlicZOrderChanges)) {
-      ui::win::SetAppIdForWindow(
-          ShellUtil::GetBrowserModelId(InstallUtil::IsPerUserInstall()), hwnd);
-    }
   }
 #endif  // BUILDFLAG(IS_WIN)
   return widget;
@@ -488,14 +490,14 @@ gfx::Size GlicWidget::GetMinimumSize() const {
 }
 
 gfx::Rect GlicWidget::VisibleToWidgetBounds(gfx::Rect visible_bounds) {
-  if (widget_delegate()->CanResize()) {
+  if (widget_delegate() && widget_delegate()->CanResize()) {
     visible_bounds.Outset(GetTargetOutsets(visible_bounds));
   }
   return visible_bounds;
 }
 
 gfx::Rect GlicWidget::WidgetToVisibleBounds(gfx::Rect widget_bounds) {
-  if (widget_delegate()->CanResize()) {
+  if (widget_delegate() && widget_delegate()->CanResize()) {
     widget_bounds.Inset(-GetTargetOutsets(widget_bounds).ToInsets());
   }
   return widget_bounds;

@@ -8,25 +8,66 @@
 #include <utility>
 
 #include "base/functional/bind.h"
-#include "base/logging.h"
-#include "chrome/browser/profiles/profile.h"
+#include "base/memory/ptr_util.h"
+#include "base/task/single_thread_task_runner.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/omnibox/omnibox_next_features.h"
 #include "chrome/browser/ui/views/drive_picker_host/drive_picker_host_view.h"
 #include "chrome/browser/ui/views/drive_picker_host/drive_picker_result_handler.mojom.h"
-#include "chrome/browser/ui/views/frame/browser_view.h"
+#include "components/constrained_window/constrained_window_views.h"
+#include "components/web_modal/web_contents_modal_dialog_host.h"
 #include "content/public/browser/web_contents.h"
-#include "content/public/browser/web_contents_observer.h"
 #include "mojo/public/cpp/bindings/remote.h"
 #include "third_party/skia/include/core/SkColor.h"
-#include "ui/base/ui_base_types.h"
-#include "ui/gfx/geometry/rect.h"
-#include "ui/views/view_class_properties.h"
-#include "ui/views/view_utils.h"
+#include "ui/base/mojom/ui_base_types.mojom-shared.h"
+#include "ui/gfx/geometry/insets.h"
+#include "ui/gfx/geometry/rounded_corners_f.h"
+#include "ui/views/bubble/bubble_border.h"
+#include "ui/views/bubble/bubble_frame_view.h"
+#include "ui/views/widget/native_widget.h"
 #include "ui/views/widget/widget.h"
+#include "ui/views/widget/widget_delegate.h"
+#include "ui/views/window/dialog_delegate.h"
+#include "ui/views/window/frame_view.h"
+
+// `DrivePickerDialogDelegate` configures a window-modal dialog containing the
+// `WebContents` view. It suppresses standard Chrome dialog decorations (title,
+// buttons, margins) since the `WebContents` renders its own internal controls,
+// and enforces client widget ownership for asynchronous lifetime management.
+class DrivePickerDialogDelegate : public views::DialogDelegate {
+ public:
+  explicit DrivePickerDialogDelegate(
+      std::unique_ptr<views::View> contents_view) {
+    SetModalType(ui::mojom::ModalType::kWindow);
+    SetButtons(static_cast<int>(ui::mojom::DialogButton::kNone));
+    SetShowCloseButton(false);
+    SetShowTitle(false);
+    set_margins(gfx::Insets());
+    SetContentsView(std::move(contents_view));
+    SetOwnershipOfNewWidget(views::Widget::InitParams::CLIENT_OWNS_WIDGET);
+  }
+
+  std::unique_ptr<views::FrameView> CreateFrameView(
+      views::Widget* widget) override {
+    auto frame =
+        std::make_unique<views::BubbleFrameView>(gfx::Insets(), gfx::Insets());
+    auto border = std::make_unique<views::BubbleBorder>(
+        views::BubbleBorder::FLOAT, views::BubbleBorder::NO_SHADOW);
+    border->set_rounded_corners(gfx::RoundedCornersF(0));
+    frame->SetBubbleBorder(std::move(border));
+    frame->SetBackgroundColor(SK_ColorTRANSPARENT);
+    return frame;
+  }
+};
 
 DrivePickerHostController::DrivePickerHostController(
-    BrowserWindowInterface* browser_window_interface)
-    : browser_window_interface_(browser_window_interface) {}
+    Profile* profile,
+    BrowserWindowInterface* browser_window_interface,
+    views::Widget* anchor_widget)
+    : profile_(profile),
+      browser_window_interface_(browser_window_interface),
+      anchor_widget_(anchor_widget),
+      is_standalone_popup_(anchor_widget != nullptr) {}
 
 DrivePickerHostController::~DrivePickerHostController() {
   ResetControllerState();
@@ -42,63 +83,85 @@ void DrivePickerHostController::ShowDrivePickerHost(
     return;
   }
 
-  // To resolve Z-order regressions where popup widgets like the Omnibox
-  // dropdown appear on top of the modal overlay, we host the view inside a
-  // custom floating views::Widget instead of as a child view of BrowserView.
-  //
-  // We explicitly set its Z-order to floating, and coordinate bounds are
-  // manually synchronized to perfectly overlay the parent window's display.
-  BrowserView* browser_view =
-      BrowserView::GetBrowserViewForBrowser(browser_window_interface_);
-  if (!browser_view) {
+  // We host the view inside a standard browser-modal dialog widget using the
+  // `constrained_window` framework to prevent interaction with the parent
+  // window (such as the omnibox or tabs) while the picker is active.
+  web_modal::WebContentsModalDialogHost* dialog_host = nullptr;
+  if (browser_window_interface_) {
+    dialog_host =
+        browser_window_interface_->GetWebContentsModalDialogHostForWindow();
+  }
+
+  // Under standard Chrome conditions, a valid active modal dialog host must be
+  // resolved to anchor the dialog modal. However, under the Loomnibox
+  // feature flag (omnibox::kOmniboxEverywhere), if no active browser window
+  // exists (e.g. Chrome running in background), we bypass this restriction to
+  // show the Drive picker as a parentless, top-level standalone widget.
+  if (!dialog_host &&
+      !base::FeatureList::IsEnabled(omnibox::kOmniboxEverywhere)) {
     SendErrorToRequest(
         std::move(request),
         drive_picker_host::mojom::DrivePickerError::kWindowNotFound);
     return;
   }
 
+  bool use_loomnibox_anchoring =
+      is_standalone_popup_ &&
+      base::FeatureList::IsEnabled(omnibox::kOmniboxEverywhere) &&
+      anchor_widget_;
+
   auto view = std::make_unique<DrivePickerHostView>(
-      browser_window_interface_->GetProfile(), browser_window_interface_);
+      profile_, browser_window_interface_, request->type());
   DrivePickerHostView* view_ptr = view.get();
+  picker_view_ = view.get();
 
-  // Using CLIENT_OWNS_WIDGET, the widget's lifecycle and close state are owned
-  // and managed safely by the controller via std::unique_ptr.
-  picker_widget_ = std::make_unique<views::Widget>();
-  views::Widget::InitParams params(
-      views::Widget::InitParams::CLIENT_OWNS_WIDGET,
-      views::Widget::InitParams::TYPE_WINDOW_FRAMELESS);
-  params.parent = browser_view->GetWidget()->GetNativeView();
-  params.opacity = views::Widget::InitParams::WindowOpacity::kTranslucent;
-  params.name = "DrivePickerHostWidget";
-  picker_widget_->Init(std::move(params));
-  picker_widget_->SetContentsView(std::move(view));
+  auto delegate = std::make_unique<DrivePickerDialogDelegate>(std::move(view));
+  delegate->RegisterWindowClosingCallback(
+      base::BindOnce(&DrivePickerHostController::ResetControllerState,
+                     weak_ptr_factory_.GetWeakPtr()));
 
-  // Set floating window Z-order to keep the hosted picker view on top of other
-  // browser elements.
-  picker_widget_->SetZOrderLevel(ui::ZOrderLevel::kFloatingWindow);
-  picker_widget_->Show();
+  picker_delegate_ = std::move(delegate);
 
-  // Observe the browser window's widget for resize events to keep the picker
-  // overlay perfectly synchronized with the browser's local bounds.
-  views::Widget* host_widget = browser_view->GetWidget();
-  if (host_widget) {
-    browser_window_observation_.Observe(host_widget);
+  views::Widget* widget = nullptr;
+  gfx::NativeView parent_view = gfx::NativeView();
+  views::Widget* parent_widget = nullptr;
+  if (use_loomnibox_anchoring) {
+    parent_view = anchor_widget_->GetNativeView();
+    parent_widget = anchor_widget_;
+  } else if (dialog_host) {
+    parent_view = dialog_host->GetHostView();
+    parent_widget = views::Widget::GetWidgetForNativeView(parent_view);
   }
 
-  UpdatePickerViewBounds();
+  widget = views::DialogDelegate::CreateDialogWidget(
+      picker_delegate_.get(), gfx::NativeWindow(), parent_view);
+  widget->SetNativeWindowProperty(
+      views::kWidgetIdentifierKey,
+      const_cast<void*>(
+          constrained_window::kConstrainedWindowWidgetIdentifier));
+
+  picker_widget_ = base::WrapUnique(widget);
+
+  if (parent_widget) {
+    browser_widget_observation_.Observe(parent_widget);
+  }
+
+  picker_widget_->Show();
+  picker_widget_->CenterWindow(picker_view_->GetPreferredSize());
+  picker_widget_observation_.Observe(picker_widget_.get());
 
   // Explicitly request focus on the newly shown picker view to immediately
   // capture keyboard focus and prevent browser shortcuts from leaking.
   view_ptr->RequestFocus();
 
-  // Ensure the hosted WebContents is transparent. This allows the WebUI to
+  // Ensure the hosted `WebContents` is transparent. This allows the `WebUI` to
   // render its own semi-transparent scrim or floating dialog while the
   // browser window remains partially visible underneath.
   if (view_ptr->GetWebContents()) {
     view_ptr->GetWebContents()->SetPageBaseBackgroundColor(SK_ColorTRANSPARENT);
   }
 
-  // The controller observes the WebUI's WebContents to be notified when the
+  // The controller observes the `WebUI`'s `WebContents` to be notified when the
   // document load completes, allowing it to trigger the picker logic at the
   // right time.
   Observe(view_ptr->GetWebContents());
@@ -123,36 +186,45 @@ void DrivePickerHostController::SendErrorToRequest(
 }
 
 void DrivePickerHostController::ResetControllerState() {
+  picker_widget_observation_.Reset();
+  browser_widget_observation_.Reset();
+  anchor_widget_ = nullptr;
+  browser_window_interface_ = nullptr;
+  Observe(nullptr);
+  if (picker_view_) {
+    picker_view_->RemoveAllChildViews();
+    picker_view_ = nullptr;
+  }
   if (picker_widget_) {
     picker_widget_->Close();
-    picker_widget_.reset();
+    base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
+        FROM_HERE, base::BindOnce(
+                       [](std::unique_ptr<views::Widget> widget,
+                          std::unique_ptr<views::DialogDelegate> delegate) {
+                         widget.reset();
+                         delegate.reset();
+                       },
+                       std::move(picker_widget_), std::move(picker_delegate_)));
+  } else {
+    picker_delegate_.reset();
   }
   is_picker_document_loaded_ = false;
   pending_request_.reset();
-  browser_window_observation_.Reset();
-  Observe(nullptr);
+  if (on_close_callback_) {
+    std::move(on_close_callback_).Run();
+  }
+}
+
+void DrivePickerHostController::OnWidgetDestroying(views::Widget* widget) {
+  ResetControllerState();
 }
 
 void DrivePickerHostController::OnWidgetBoundsChanged(
     views::Widget* widget,
     const gfx::Rect& new_bounds) {
-  UpdatePickerViewBounds();
-}
-
-void DrivePickerHostController::OnWidgetDestroyed(views::Widget* widget) {
-  browser_window_observation_.Reset();
-  ResetControllerState();
-}
-
-void DrivePickerHostController::UpdatePickerViewBounds() {
-  if (!picker_widget_) {
-    return;
-  }
-
-  BrowserView* browser_view =
-      BrowserView::GetBrowserViewForBrowser(browser_window_interface_);
-  if (browser_view) {
-    picker_widget_->SetBounds(browser_view->GetBoundsInScreen());
+  if (widget != picker_widget_.get() && picker_widget_) {
+    picker_widget_->CenterWindow(
+        picker_widget_->GetContentsView()->GetPreferredSize({}));
   }
 }
 
@@ -162,8 +234,7 @@ void DrivePickerHostController::DocumentOnLoadCompletedInPrimaryMainFrame() {
   // We use `pending_request_` to check if there was a request to
   // trigger the picker UI before the document finished loading. This controller
   // only manages a single active picker session at a time.
-  if (pending_request_ && picker_widget_) {
-    views::AsViewClass<DrivePickerHostView>(picker_widget_->GetContentsView())
-        ->TriggerDrivePickerHostUi(std::move(pending_request_));
+  if (pending_request_ && picker_view_) {
+    picker_view_->TriggerDrivePickerHostUi(std::move(pending_request_));
   }
 }

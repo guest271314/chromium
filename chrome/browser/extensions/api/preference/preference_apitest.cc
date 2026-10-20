@@ -79,6 +79,19 @@ class ExtensionPreferenceApiTest : public extensions::ExtensionApiTest {
     EXPECT_TRUE(prefs->GetBoolean(autofill::prefs::kAutofillEnabledDeprecated));
     EXPECT_TRUE(prefs->GetBoolean(autofill::prefs::kAutofillCreditCardEnabled));
     EXPECT_TRUE(prefs->GetBoolean(autofill::prefs::kAutofillProfileEnabled));
+    const auto& blocked_types_pref =
+        prefs->GetList(autofill::prefs::kAutofillTypesBlocked);
+    ASSERT_EQ(2u, blocked_types_pref.size());
+    EXPECT_EQ("https://example.com",
+              *blocked_types_pref[0].GetDict().FindString("url_pattern"));
+    EXPECT_EQ("travel", blocked_types_pref[1]
+                            .GetDict()
+                            .FindList("blocked_types")
+                            ->front()
+                            .GetString());
+    EXPECT_EQ("all",
+              (*blocked_types_pref[1].GetDict().FindList("blocked_types"))[1]
+                  .GetString());
     EXPECT_EQ(GetCookieControlsMode(prefs), CookieControlsMode::kOff);
     EXPECT_TRUE(prefs->GetBoolean(prefs::kEnableHyperlinkAuditing));
     EXPECT_TRUE(prefs->GetBoolean(prefs::kEnableReferrers));
@@ -98,9 +111,6 @@ class ExtensionPreferenceApiTest : public extensions::ExtensionApiTest {
     VerifyPrefValueAndControlledState(
         prefs::kPrivacySandboxM1AdMeasurementEnabled, base::Value(false),
         /* expected_controlled */ true);
-    VerifyPrefValueAndControlledState(
-        prefs::kPrivacySandboxRelatedWebsiteSetsEnabled, base::Value(false),
-        /* expected_controlled */ true);
   }
 
   void CheckPreferencesCleared() {
@@ -116,6 +126,7 @@ class ExtensionPreferenceApiTest : public extensions::ExtensionApiTest {
     EXPECT_FALSE(
         prefs->GetBoolean(autofill::prefs::kAutofillCreditCardEnabled));
     EXPECT_FALSE(prefs->GetBoolean(autofill::prefs::kAutofillProfileEnabled));
+    EXPECT_TRUE(prefs->GetList(autofill::prefs::kAutofillTypesBlocked).empty());
     EXPECT_EQ(GetCookieControlsMode(prefs),
               CookieControlsMode::kBlockThirdParty);
     EXPECT_FALSE(prefs->GetBoolean(prefs::kEnableHyperlinkAuditing));
@@ -135,9 +146,6 @@ class ExtensionPreferenceApiTest : public extensions::ExtensionApiTest {
                                       /* expected_controlled */ false);
     VerifyPrefValueAndControlledState(
         prefs::kPrivacySandboxM1AdMeasurementEnabled, base::Value(true),
-        /* expected_controlled */ false);
-    VerifyPrefValueAndControlledState(
-        prefs::kPrivacySandboxRelatedWebsiteSetsEnabled, base::Value(true),
         /* expected_controlled */ false);
   }
 
@@ -217,7 +225,6 @@ IN_PROC_BROWSER_TEST_F(ExtensionPreferenceApiTest, Standard) {
   prefs->SetBoolean(prefs::kPrivacySandboxM1TopicsEnabled, true);
   prefs->SetBoolean(prefs::kPrivacySandboxM1FledgeEnabled, true);
   prefs->SetBoolean(prefs::kPrivacySandboxM1AdMeasurementEnabled, true);
-  prefs->SetBoolean(prefs::kPrivacySandboxRelatedWebsiteSetsEnabled, true);
 
   // The 'protectedContentEnabled' pref is only available as browser pref
   // associated with browser profile on ChromeOS and Windows, so pass a JSON

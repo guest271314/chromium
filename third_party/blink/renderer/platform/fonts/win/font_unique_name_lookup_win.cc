@@ -32,7 +32,7 @@ FontUniqueNameLookupWin::~FontUniqueNameLookupWin() = default;
 
 sk_sp<SkTypeface> FontUniqueNameLookupWin::MatchUniqueName(
     const String& font_unique_name) {
-  if (RuntimeEnabledFeatures::FontDataServiceEnabled()) {
+  if (RuntimeEnabledFeatures::FontDataServiceForCSSLocalFontsEnabled()) {
     return MatchUniqueNameViaFontDataService(font_unique_name);
   }
   return MatchUniqueNameSingleLookup(font_unique_name);
@@ -70,13 +70,31 @@ sk_sp<SkTypeface> FontUniqueNameLookupWin::InstantiateFromFileAndTtcIndex(
 }
 
 bool FontUniqueNameLookupWin::IsFontUniqueNameLookupReadyForSyncLookup() {
-  if (RuntimeEnabledFeatures::FontDataServiceEnabled()) {
+  if (RuntimeEnabledFeatures::FontDataServiceForCSSLocalFontsEnabled()) {
     EnsureFontDataServiceConnected();
   } else {
     EnsureServiceConnected();
   }
 
   return true;
+}
+
+FontUniqueNameLookup::FontServiceConnectionState
+FontUniqueNameLookupWin::GetFontServiceConnectionStateForCrash() const {
+  if (RuntimeEnabledFeatures::FontDataServiceForCSSLocalFontsEnabled()) {
+    if (!font_data_service_) {
+      return FontServiceConnectionState::kNotBound;
+    }
+    return font_data_service_.is_connected()
+               ? FontServiceConnectionState::kConnected
+               : FontServiceConnectionState::kDisconnected;
+  }
+
+  if (!service_) {
+    return FontServiceConnectionState::kNotBound;
+  }
+  return service_.is_connected() ? FontServiceConnectionState::kConnected
+                                 : FontServiceConnectionState::kDisconnected;
 }
 
 void FontUniqueNameLookupWin::EnsureServiceConnected() {
@@ -128,7 +146,7 @@ sk_sp<SkTypeface> FontUniqueNameLookupWin::InstantiateFromMatchResult(
     if (mapped_file->Initialize(std::move(
             match_result->typeface_data->get_font_file()->file_handle))) {
       data = SkData::MakeWithProc(
-          mapped_file->data(), mapped_file->length(),
+          mapped_file->bytes().data(), mapped_file->bytes().size(),
           [](const void*, void* ctx) {
             delete static_cast<base::MemoryMappedFile*>(ctx);
           },
@@ -144,7 +162,7 @@ sk_sp<SkTypeface> FontUniqueNameLookupWin::InstantiateFromMatchResult(
         match_result->typeface_data->get_region().Map());
     if (mapping->IsValid()) {
       data = SkData::MakeWithProc(
-          mapping->memory(), mapping->size(),
+          mapping->data(), mapping->size(),
           [](const void*, void* ctx) {
             delete static_cast<base::ReadOnlySharedMemoryMapping*>(ctx);
           },
@@ -165,7 +183,7 @@ sk_sp<SkTypeface> FontUniqueNameLookupWin::InstantiateFromMatchResult(
 }
 
 void FontUniqueNameLookupWin::Init() {
-  if (RuntimeEnabledFeatures::FontDataServiceEnabled()) {
+  if (RuntimeEnabledFeatures::FontDataServiceForCSSLocalFontsEnabled()) {
     EnsureFontDataServiceConnected();
     return;
   }

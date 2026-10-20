@@ -97,6 +97,10 @@ class CC_EXPORT ScrollJankV4DecisionQueue {
   void OnScrollStarted();
   void OnScrollEnded();
 
+  // Guaranteed to return a reference to the result consumer with which the
+  // decision queue was constructed.
+  ResultConsumer& result_consumer() const { return *result_consumer_; }
+
  private:
   bool AcceptFrameIfValidAndChronological(
       const ScrollJankV4Frame::Stage::ScrollUpdates& updates,
@@ -104,11 +108,11 @@ class CC_EXPORT ScrollJankV4DecisionQueue {
       const ScrollJankV4Frame::BeginFrameArgsForScrollJank& args);
 
   void FlushDeferredSyntheticFrames(
-      bool future_real_frame_is_fast_scroll_or_sufficiently_fast_fling);
+      const ScrollJankV4Frame::Stage::ScrollUpdates::Real* future_real_updates);
 
   ScrollJankV4Decider decider_;
 
-  std::unique_ptr<ResultConsumer> result_consumer_;
+  const std::unique_ptr<ResultConsumer> result_consumer_;
 
   // Begin frame and presentation timestamps of the most recent valid frame
   // provided to `ProcessFrameWithScrollUpdates()`. The timestamps increase

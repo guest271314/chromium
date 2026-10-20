@@ -42,9 +42,6 @@
 
 namespace blink {
 
-// Legacy grid expands out auto-repeaters, so it has a lower cap than GridNG.
-// Note that this actually allows a [-999, 999] range.
-constexpr int kLegacyGridMaxTracks = 1000;
 constexpr int kGridMaxTracks = 10000000;
 
 // A span of grid tracks in a single direction (either rows or columns).
@@ -98,7 +95,7 @@ struct GridSpan {
            line <= static_cast<wtf_size_t>(end_line_);
   }
 
-  unsigned GetHash() const {
+  uint32_t GetHash() const {
     // In general, a negative `end_line_` will reduce collisions of indefinite
     // spans since it represents the range `[-end_line_, 0]`, which can never
     // occur in definite spans that ensure `start_line_ < end_line_`.

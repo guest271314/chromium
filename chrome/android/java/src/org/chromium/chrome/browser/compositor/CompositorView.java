@@ -124,8 +124,10 @@ public class CompositorView extends FrameLayout
     private boolean mHasActiveTouchInterceptors;
 
     private int mPreviousWidth;
+    private int mPreviousHeight;
     private int mResizeSeqNo;
     private boolean mIsDrawPaused;
+    private boolean mWaitingForSwapAfterUnpause;
 
     // On P and above, toggling the screen off gets us in a state where the Surface is destroyed but
     // it is never recreated when it is turned on again. This is the only workaround that seems to
@@ -169,8 +171,9 @@ public class CompositorView extends FrameLayout
     /**
      * Creates a {@link CompositorView}. This can be called only after the native library is
      * properly loaded.
-     * @param c        The Context to create this {@link CompositorView} in.
-     * @param host     The renderer host owning this view.
+     *
+     * @param c The Context to create this {@link CompositorView} in.
+     * @param host The renderer host owning this view.
      */
     public CompositorView(Context c, LayoutRenderHost host) {
         super(c);
@@ -256,11 +259,23 @@ public class CompositorView extends FrameLayout
 
             // If the measured width is the same as the allowed width (i.e. the orientation has
             // not changed) and multi-window mode is off, use the largest measured height seen thus
-            // far.  This will prevent surface resizes as a result of showing the keyboard.
-            if (!topChanged
-                    && !isMultiWindow
-                    && getMeasuredWidth() == MeasureSpec.getSize(widthMeasureSpec)
-                    && getMeasuredHeight() > MeasureSpec.getSize(heightMeasureSpec)) {
+            // far. This prevents surface resizes as a result of showing the keyboard, so it only
+            // applies while the keyboard is showing: a smaller spec with the keyboard hidden is a
+            // real layout change (e.g. the bottom insets being re-applied once the omnibox stops
+            // consuming them, see crbug.com/542078043) and must be honoured, otherwise the surface
+            // stays oversized and draws under the system navigation bar.
+            boolean retainHeight =
+                    !topChanged
+                            && !isMultiWindow
+                            && getMeasuredWidth() == MeasureSpec.getSize(widthMeasureSpec)
+                            && getMeasuredHeight() > MeasureSpec.getSize(heightMeasureSpec);
+            if (retainHeight
+                    && ChromeFeatureList.sCompositorViewShrinkWhenKeyboardHidden.isEnabled()) {
+                retainHeight =
+                        mWindowAndroid != null
+                                && mWindowAndroid.getKeyboardDelegate().isKeyboardShowing(this);
+            }
+            if (retainHeight) {
                 heightMeasureSpec =
                         MeasureSpec.makeMeasureSpec(getMeasuredHeight(), MeasureSpec.EXACTLY);
             }
@@ -596,18 +611,24 @@ public class CompositorView extends FrameLayout
         int oldWidth = mPreviousWidth;
         mPreviousWidth = width;
 
+        int oldHeight = mPreviousHeight;
+        mPreviousHeight = height;
+
         mResizeSeqNo++;
         final int seqNo = mResizeSeqNo;
 
         boolean isWidthShrink = oldWidth > 0 && width < oldWidth;
+        boolean isHeightShrink = oldHeight > 0 && height < oldHeight;
         boolean isFluidResize = isFluidResizeEnabledAndLff();
 
         boolean shouldPause =
-                isWidthShrink
+                (isWidthShrink || isHeightShrink)
                         && isFluidResize
                         && android.os.Build.VERSION.SDK_INT
                                 >= android.os.Build.VERSION_CODES.TIRAMISU
-                        && getRootSurfaceControl() != null;
+                        && getRootSurfaceControl() != null
+                        && !mWaitingForSwapAfterUnpause
+                        && mHaveSwappedFramesSinceSurfaceCreated;
 
         if (shouldPause) {
             mIsDrawPaused = true;
@@ -659,19 +680,29 @@ public class CompositorView extends FrameLayout
     }
 
     private void unpauseDraw() {
-        mIsDrawPaused = false;
-        if (mNativeCompositorView != 0) {
-            CompositorViewJni.get().setDrawPaused(mNativeCompositorView, false);
-            CompositorViewJni.get().setNeedsComposite(mNativeCompositorView);
+        if (mIsDrawPaused) {
+            mIsDrawPaused = false;
+            mWaitingForSwapAfterUnpause = true;
+            updateNeedsDidSwapBuffersCallback();
+            if (mNativeCompositorView != 0) {
+                CompositorViewJni.get().setDrawPaused(mNativeCompositorView, false);
+                CompositorViewJni.get().setNeedsComposite(mNativeCompositorView);
+            }
         }
     }
 
     private void resetFluidResizeState() {
         if (mIsDrawPaused) {
-            unpauseDraw();
+            mIsDrawPaused = false;
+            if (mNativeCompositorView != 0) {
+                CompositorViewJni.get().setDrawPaused(mNativeCompositorView, false);
+            }
         }
+        mWaitingForSwapAfterUnpause = false;
         mPreviousWidth = 0;
+        mPreviousHeight = 0;
         mResizeSeqNo++; // Invalidate pending callbacks
+        updateNeedsDidSwapBuffersCallback();
     }
 
     @Override
@@ -784,9 +815,9 @@ public class CompositorView extends FrameLayout
     }
 
     /**
-     * Called by LayoutRenderHost to inform whether it needs `didSwapBuffers` calls.
-     * Note the implementation is asynchronous so it may miss already pending calls when enabled
-     * and can have a few trailing calls when disabled.
+     * Called by LayoutRenderHost to inform whether it needs `didSwapBuffers` calls. Note the
+     * implementation is asynchronous so it may miss already pending calls when enabled and can have
+     * a few trailing calls when disabled.
      */
     public void setRenderHostNeedsDidSwapBuffersCallback(boolean enable) {
         if (mRenderHostNeedsDidSwapBuffersCallback == enable) return;
@@ -802,7 +833,8 @@ public class CompositorView extends FrameLayout
             needsSwapCallback =
                     mRenderHostNeedsDidSwapBuffersCallback
                             || mFramesUntilHideBackground > 0
-                            || mDrawingFinishedCallback != null;
+                            || mDrawingFinishedCallback != null
+                            || mWaitingForSwapAfterUnpause;
         }
         CompositorViewJni.get()
                 .setDidSwapBuffersCallbackEnabled(mNativeCompositorView, needsSwapCallback);
@@ -859,6 +891,7 @@ public class CompositorView extends FrameLayout
             runDrawFinishedCallbackMaybeNotOnUiThread();
         }
         mHaveSwappedFramesSinceSurfaceCreated = true;
+        mWaitingForSwapAfterUnpause = false;
 
         mRenderHost.didSwapBuffers(swappedCurrentSize, mFramesUntilHideBackground);
 

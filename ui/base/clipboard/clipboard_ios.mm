@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "ui/base/clipboard/clipboard_ios.h"
 
 #import <UIKit/UIKit.h>
@@ -92,14 +87,23 @@ void ClipboardIOS::GetAllAvailableFormats(
   DCHECK(CalledOnValidThread());
   DCHECK_EQ(buffer, ClipboardBuffer::kCopyPaste);
 
-  NSArray* types = GetPasteboard().pasteboardTypes;
+  NSArray<NSDictionary<NSString*, id>*>* items = GetPasteboard().items;
   base::flat_set<ClipboardFormatType> formats;
-  for (NSString* type in types) {
-    std::string type_utf8 = base::SysNSStringToUTF8(type);
-    if (base::IsStringASCII(type_utf8)) {
-      formats.insert(ClipboardFormatType::Deserialize(type_utf8));
+  for (NSDictionary<NSString*, id>* item in items) {
+    for (NSString* type in item) {
+      std::string type_utf8 = base::SysNSStringToUTF8(type);
+      if (base::IsStringASCII(type_utf8)) {
+        formats.insert(ClipboardFormatType::Deserialize(type_utf8));
+      }
     }
   }
+
+  if (formats.contains(ClipboardFormatType::PngType()) ||
+      formats.contains(ClipboardFormatType::BitmapType())) {
+    formats.insert(ClipboardFormatType::PngType());
+    formats.insert(ClipboardFormatType::BitmapType());
+  }
+
   std::move(callback).Run(std::move(formats));
 }
 

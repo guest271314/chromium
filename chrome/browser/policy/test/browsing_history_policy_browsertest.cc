@@ -9,6 +9,7 @@
 #include "chrome/browser/history/history_service_factory.h"
 #include "chrome/browser/policy/policy_test_utils.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/test/base/chrome_test_path_utils.h"
 #include "chrome/test/base/chrome_test_utils.h"
 #include "components/browsing_data/core/pref_names.h"
 #include "components/history/core/browser/history_service.h"
@@ -30,7 +31,6 @@
 #if BUILDFLAG(IS_ANDROID)
 #include "chrome/test/base/android/android_browser_test.h"
 #else
-#include "chrome/browser/ui/browser.h"
 #include "chrome/test/base/ui_test_utils.h"
 #endif
 
@@ -53,7 +53,7 @@ IN_PROC_BROWSER_TEST_F(PolicyTest, SavingBrowserHistoryDisabled) {
       base::FilePath(FILE_PATH_LITERAL("empty.html")));
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), url));
   // Verify that the navigation wasn't saved in the history.
-  ui_test_utils::HistoryEnumerator enumerator1(browser()->profile());
+  ui_test_utils::HistoryEnumerator enumerator1(browser()->GetProfile());
   EXPECT_EQ(0u, enumerator1.urls().size());
 
   // Now flip the policy and try again.
@@ -63,7 +63,7 @@ IN_PROC_BROWSER_TEST_F(PolicyTest, SavingBrowserHistoryDisabled) {
   UpdateProviderPolicy(policies);
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), url));
   // Verify that the navigation was saved in the history.
-  ui_test_utils::HistoryEnumerator enumerator2(browser()->profile());
+  ui_test_utils::HistoryEnumerator enumerator2(browser()->GetProfile());
   ASSERT_EQ(1u, enumerator2.urls().size());
   EXPECT_EQ(url, enumerator2.urls()[0]);
 }

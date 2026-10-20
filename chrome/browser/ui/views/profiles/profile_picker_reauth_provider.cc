@@ -5,7 +5,6 @@
 #include "chrome/browser/ui/views/profiles/profile_picker_reauth_provider.h"
 
 #include "base/functional/bind.h"
-#include "base/functional/callback_helpers.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/time/time.h"
@@ -18,7 +17,6 @@
 #include "chrome/browser/signin/signin_promo.h"
 #include "chrome/browser/ui/views/profiles/profile_management_types.h"
 #include "chrome/browser/ui/views/profiles/profile_picker_sign_in_provider.h"
-#include "chrome/browser/ui/views/profiles/profile_picker_view.h"
 #include "chrome/browser/ui/views/profiles/profile_picker_web_contents_host.h"
 #include "chrome/browser/ui/webui/signin/signin_ui_error.h"
 #include "chrome/common/webui_url_constants.h"
@@ -161,10 +159,11 @@ void ProfilePickerReauthProvider::ShowReauth() {
        .continue_url = GaiaUrls::GetInstance()->blank_page_url()});
   host_->ShowScreen(
       contents_.get(), reauth_url,
-      base::BindOnce(&ProfilePickerWebContentsHost::SetNativeToolbarVisible,
-                     // Unretained is enough as the callback is called by the
-                     // host itself.
-                     base::Unretained(host_), /*visible=*/true)
+      base::BindOnce(
+          &ProfilePickerWebContentsHost::SetNativeToolbarSigninButtonsVisible,
+          // Unretained is enough as the callback is called by the
+          // host itself.
+          base::Unretained(host_), /*visible=*/true)
           .Then(
               base::BindOnce(std::move(step_switch_callback_.value()), true)));
   // Listen to the changes of the web contents to know if we got to the
@@ -216,7 +215,7 @@ void ProfilePickerReauthProvider::DidFinishNavigation(
   if (navigation_handle->GetURL().ReplaceComponents(replacements) ==
       GaiaUrls::GetInstance()->blank_page_url()) {
     content::WebContentsObserver::Observe(nullptr);
-    host_->SetNativeToolbarVisible(false);
+    host_->SetNativeToolbarSigninButtonsVisible(false);
 
     // If no sign in event was received but we reached the continue URL, then
     // the user used an already signed in account to reauth. The reauth did not
@@ -287,8 +286,9 @@ void ProfilePickerReauthProvider::Finish(bool success,
         ->SetDelegate(nullptr);
   }
   content::WebContentsObserver::Observe(nullptr);
-  // Hide the toolbar in case it was visible after showing the reauth page.
-  host_->SetNativeToolbarVisible(false);
+  // Hide the toolbar sign-in button(s) in case they were visible after showing
+  // the reauth page.
+  host_->SetNativeToolbarSigninButtonsVisible(false);
 
   ForceSigninUIError error = ComputeReauthUIError(result, email_to_reauth_);
   std::move(on_reauth_completed_).Run(success, error);

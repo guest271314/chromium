@@ -53,16 +53,19 @@ void SetReferrer(
   network::mojom::ReferrerPolicy referrer_policy_to_use =
       request.GetReferrerPolicy();
 
-  if (referrer_to_use == Referrer::ClientReferrerString()) {
-    referrer_to_use = fetch_client_settings_object.GetOutgoingReferrer();
-  }
-
   if (referrer_policy_to_use == network::mojom::ReferrerPolicy::kDefault) {
     referrer_policy_to_use = fetch_client_settings_object.GetReferrerPolicy();
   }
 
-  Referrer generated_referrer = SecurityPolicy::GenerateReferrer(
-      referrer_policy_to_use, request.Url(), referrer_to_use);
+  Referrer generated_referrer;
+  if (referrer_to_use == Referrer::ClientReferrerString()) {
+    generated_referrer = SecurityPolicy::GenerateReferrer(
+        referrer_policy_to_use, request.Url(),
+        fetch_client_settings_object.GetOutgoingReferrerUrl());
+  } else {
+    generated_referrer = SecurityPolicy::GenerateReferrer(
+        referrer_policy_to_use, request.Url(), referrer_to_use);
+  }
 
   request.SetReferrerString(generated_referrer.referrer);
   request.SetReferrerPolicy(generated_referrer.referrer_policy);
@@ -172,12 +175,6 @@ void UpgradeResourceRequestForLoader(
       params.GetRenderBlockingBehavior());
 
   if (resource_type == ResourceType::kLinkPrefetch) {
-    // Add the "Purpose: prefetch" header to requests for prefetch.
-    // Depreciating Purpose prefetch header, see crbug.com/420724819.
-    if (!base::FeatureList::IsEnabled(
-            blink::features::kRemovePurposeHeaderForPrefetch)) {
-      resource_request.SetPurposeHeader(kSecPurposePrefetchHeaderValue);
-    }
     if (base::FeatureList::IsEnabled(
             blink::features::kSecPurposePrefetchHeaderRelPrefetch)) {
       // Add the "Sec-Purpose: prefetch" header to requests for prefetch.
@@ -188,14 +185,9 @@ void UpgradeResourceRequestForLoader(
     // Add the "Sec-Purpose: prefetch;prerender" header to requests issued from
     // prerendered pages. Add "Purpose: prefetch" as well for compatibility
     // concerns (See https://github.com/WICG/nav-speculation/issues/133).
-    // Depreciating Purpose prefetch header, see crbug.com/420724819.
     resource_request.SetHttpHeaderField(
         http_names::kSecPurpose,
         AtomicString(kSecPurposePrefetchPrerenderHeaderValue));
-    if (!base::FeatureList::IsEnabled(
-            blink::features::kRemovePurposeHeaderForPrefetch)) {
-      resource_request.SetPurposeHeader(kSecPurposePrefetchHeaderValue);
-    }
   }
 
   context.AddAdditionalRequestHeaders(resource_request);
@@ -203,9 +195,11 @@ void UpgradeResourceRequestForLoader(
   resource_request_context.RecordTrace();
 
   if (std::optional<AdProvenance> ad_provenance =
-          context.CalculateIfAdSubresource(
-              resource_request, /*alias_url=*/std::nullopt, resource_type,
-              options.initiator_info, /*scan_stack_for_ads=*/false)) {
+          context
+              .CalculateResourceAnnotations(
+                  resource_request, /*alias_url=*/std::nullopt, resource_type,
+                  options.initiator_info, /*scan_javascript_stack=*/false)
+              .ad_provenance) {
     resource_request.SetIsAdResource(std::move(*ad_provenance));
   }
 
@@ -311,9 +305,11 @@ PrepareResourceRequestForCacheAccess(
                          resource_request.GetRedirectInfo());
 
   if (std::optional<AdProvenance> ad_provenance =
-          context.CalculateIfAdSubresource(
-              resource_request, /*alias_url=*/std::nullopt, resource_type,
-              options.initiator_info, /*scan_stack_for_ads=*/true)) {
+          context
+              .CalculateResourceAnnotations(
+                  resource_request, /*alias_url=*/std::nullopt, resource_type,
+                  options.initiator_info, /*scan_javascript_stack=*/true)
+              .ad_provenance) {
     resource_request.SetIsAdResource(std::move(*ad_provenance));
   }
   if (blocked_reason) {

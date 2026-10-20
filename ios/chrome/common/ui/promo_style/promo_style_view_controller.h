@@ -7,8 +7,6 @@
 
 #import <UIKit/UIKit.h>
 
-#import "base/memory/scoped_refptr.h"
-#import "base/task/sequenced_task_runner.h"
 #import "ios/chrome/common/ui/button_stack/button_stack_view_controller.h"
 #import "ios/chrome/common/ui/promo_style/promo_style_view_controller_delegate.h"
 
@@ -74,11 +72,6 @@ enum class ActionButtonsVisibility {
 @interface PromoStyleViewController
     : ButtonStackViewController <UITextViewDelegate>
 
-- (instancetype)initWithTaskRunner:
-    (scoped_refptr<base::SequencedTaskRunner>)taskRunner;
-
-- (instancetype)init;
-
 - (instancetype)initWithNibName:(NSString*)nibNameOrNil
                          bundle:(NSBundle*)nibBundleOrNil NS_UNAVAILABLE;
 
@@ -105,6 +98,14 @@ enum class ActionButtonsVisibility {
 
 // When set to YES, the banner is hidden. Defaults to NO.
 @property(nonatomic, assign) BOOL shouldHideBanner;
+
+// When set to YES, the banner image is hidden. Defaults to NO.
+// Use this when the banner image is not needed, but the banner container is
+// still needed.
+@property(nonatomic, assign) BOOL shouldHideBannerImage;
+
+// The view containing the banner. Use this to add custom views to the banner.
+@property(nonatomic, strong) UIImageView* bannerImageView;
 
 // When set to YES, use `PromoStyleBackgroundView` as background. Only available
 // with hidden banner. This value has to be set before the view is loaded.

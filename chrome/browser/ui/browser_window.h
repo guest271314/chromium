@@ -12,17 +12,11 @@
 
 #include "base/functional/callback_forward.h"
 #include "build/build_config.h"
-#include "chrome/browser/apps/link_capturing/intent_picker_info.h"
-#include "chrome/browser/lifetime/browser_close_manager.h"
-#include "chrome/browser/signin/chrome_signin_helper.h"
-#include "chrome/browser/ui/bookmarks/bookmark_bar.h"
-#include "chrome/browser/ui/browser.h"
-#include "chrome/browser/ui/exclusive_access/exclusive_access_bubble_type.h"
+#include "chrome/browser/ui/browser_window_deleter.h"
+#include "chrome/browser/ui/download_close_type.h"
 #include "chrome/browser/ui/hats/hats_service.h"
-#include "chrome/browser/ui/page_action/page_action_icon_type.h"
-#include "chrome/browser/ui/translate/partial_translate_bubble_model.h"
-#include "chrome/browser/ui/webui/tab_search/tab_search.mojom.h"
 #include "chrome/common/buildflags.h"
+#include "components/apps/link_capturing/intent_picker_info.h"
 #include "components/content_settings/core/common/content_settings_types.h"
 #include "components/translate/core/browser/translate_step.h"
 #include "components/translate/core/common/translate_errors.h"
@@ -30,6 +24,7 @@
 #include "ui/base/interaction/element_identifier.h"
 #include "ui/base/mojom/window_show_state.mojom-forward.h"
 #include "ui/base/window_open_disposition.h"
+#include "ui/gfx/geometry/point_f.h"
 #include "ui/gfx/native_ui_types.h"
 #include "url/origin.h"
 
@@ -37,13 +32,14 @@
 #error This file should only be included on desktop.
 #endif
 
-class Browser;
 class BrowserView;
+class BrowserWindowInterface;
 class DownloadBubbleUIController;
 class ExclusiveAccessContext;
 class FindBar;
 class GURL;
 class LocationBar;
+class PinnedToolbarActions;
 class StatusBubble;
 
 namespace autofill {
@@ -51,10 +47,17 @@ class AutofillBubbleHandler;
 }  // namespace autofill
 
 namespace content {
+class EyeDropper;
+class EyeDropperListener;
+class RenderFrameHost;
 class WebContents;
-struct NativeWebKeyboardEvent;
+struct DropData;
 enum class KeyboardEventProcessingResult;
 }  // namespace content
+
+namespace input {
+struct NativeWebKeyboardEvent;
+}  // namespace input
 
 namespace gfx {
 class Size;
@@ -65,6 +68,7 @@ enum class AccessPoint;
 }
 
 namespace ui {
+class AcceleratorProvider;
 class ColorProvider;
 class NativeTheme;
 class ThemeProvider;
@@ -120,7 +124,6 @@ class BrowserWindow : public ui::BaseWindow {
   // invoking this method.
   // virtual void Close() = 0;
 
-  // Browser::OnWindowDidShow should be called after showing the window.
   // virtual void Show() = 0;
 
   //////////////////////////////////////////////////////////////////////////////
@@ -130,6 +133,18 @@ class BrowserWindow : public ui::BaseWindow {
   // window exists this returns null.
   static BrowserWindow* FindBrowserWindowWithWebContents(
       content::WebContents* web_contents);
+
+  // Returns the BrowserWindow associated with `browser`, or nullptr if one has
+  // not been created yet (e.g. during Browser construction) or `browser` has
+  // no associated NativeWindow.
+  //
+  // Prefer this over `Browser::window()` (which is being removed; see
+  // https://crbug.com/496674143). When you need the concrete subclass, call
+  // `BrowserView::GetBrowserViewForBrowser()` or
+  // `WebUIBrowserWindow::FromBrowser()` directly instead.
+  static BrowserWindow* FromBrowser(BrowserWindowInterface* browser);
+  static const BrowserWindow* FromBrowser(
+      const BrowserWindowInterface* browser);
 
   // Returns true if the browser window is on the current workspace (a.k.a.
   // virtual desktop) or if we can't tell. False otherwise.
@@ -213,18 +228,6 @@ class BrowserWindow : public ui::BaseWindow {
   // if the window is visible.
   virtual void UpdateLoadingAnimations(bool is_visible) = 0;
 
-  // Sets the starred state for the current tab.
-  virtual void SetStarredState(bool is_starred) = 0;
-
-  // Checks if the browser popup is a tab modal popup.
-  virtual bool IsTabModalPopupDeprecated() const = 0;
-
-  // Sets whether the browser popup is a tab modal popup. Tab modal popups, used
-  // by autofill features, intentionally disable save card prompts because they
-  // are not intended for saving new card details.
-  virtual void SetIsTabModalPopupDeprecated(
-      bool is_tab_modal_popup_deprecated) = 0;
-
   // Called when the active tab changes.  Subclasses which implement
   // TabStripModelObserver should implement this instead of ActiveTabChanged();
   // the Browser will call this method while processing that one.
@@ -251,19 +254,22 @@ class BrowserWindow : public ui::BaseWindow {
   // `WebContents`.
   virtual void SetContentsSize(const gfx::Size& size) = 0;
 
-  // Updates the visual state of the specified page action icon if present on
-  // the window.
-  virtual void UpdatePageActionIcon(PageActionIconType type) = 0;
-
   // Returns the AutofillBubbleHandler responsible for handling all
   // Autofill-related bubbles.
   virtual autofill::AutofillBubbleHandler* GetAutofillBubbleHandler() = 0;
 
-  // Executes the action for the specified page action icon.
-  virtual void ExecutePageActionIconForTesting(PageActionIconType type) = 0;
-
   // Returns the location bar.
   virtual LocationBar* GetLocationBar() const = 0;
+
+  // Returns the AcceleratorProvider for this window, or null if the window
+  // does not provide accelerators (notably TestBrowserWindow).
+  virtual ui::AcceleratorProvider* GetAcceleratorProvider() = 0;
+
+  // Returns the PinnedToolbarActions for this window, or null if the window
+  // has no pinned toolbar actions, which is the case for non-normal browser
+  // windows (e.g. web apps and popups), windows with a custom tab toolbar, and
+  // window types that have no toolbar at all.
+  virtual PinnedToolbarActions* GetPinnedToolbarActions() = 0;
 
   // Tries to focus the location bar.  Clears the window focus (to avoid
   // inconsistent state) if this fails.
@@ -368,11 +374,6 @@ class BrowserWindow : public ui::BaseWindow {
       translate::TranslateErrors error_type,
       bool is_user_gesture) = 0;
 
-  // Shows the Partial Translate bubble.
-  virtual void StartPartialTranslate(const std::string& source_language,
-                                     const std::string& target_language,
-                                     const std::u16string& text_selection) = 0;
-
   // Returns the DownloadBubbleUIController. Returns null if Download Bubble
   // UI is not enabled, or if the download toolbar button does not exist.
   virtual DownloadBubbleUIController* GetDownloadBubbleUIController() = 0;
@@ -382,7 +383,7 @@ class BrowserWindow : public ui::BaseWindow {
   // This method should call |callback| with the user's response.
   virtual void ConfirmBrowserCloseWithPendingDownloads(
       int download_count,
-      Browser::DownloadCloseType dialog_type,
+      DownloadCloseType dialog_type,
       base::OnceCallback<void(bool)> callback) = 0;
 
   // Shows the app menu (for accessibility).
@@ -423,25 +424,11 @@ class BrowserWindow : public ui::BaseWindow {
 
   // Construct a BrowserWindow implementation for the specified |browser|.
   static std::unique_ptr<BrowserWindow, BrowserWindowDeleter>
-  CreateBrowserWindow(Browser* browser,
+  CreateBrowserWindow(BrowserWindowInterface* browser,
                       bool user_gesture,
                       bool in_tab_dragging);
 
   virtual void ShowAvatarBubbleFromAvatarButton(bool is_source_accelerator) = 0;
-
-  // Attempts showing the In-Product-Help for profile Switching. This is called
-  // after creating a new profile or opening an existing profile. If the profile
-  // customization bubble is shown, the IPH should be shown after.
-  virtual void MaybeShowProfileSwitchIPH() = 0;
-
-  // Attempts showing the In-Product-Help for supervised user profiles.
-  // This should be invoked for new signed-in supervised profiles created
-  // by FRE, the profile picker, profile menu or chrome menu.
-  // If the profile customization bubble is shown, the IPH should be shown
-  // after.
-  // TODO(351333491): To specify if this will be invoked on signing-in/turning
-  // on sync for an existing profile.
-  virtual void MaybeShowSupervisedUserProfileSignInIPH() = 0;
 
   // Shows User Happiness Tracking Survey's dialog after the survey associated
   // with |site_id| has been successfully loaded. Failure to load the survey

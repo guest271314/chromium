@@ -18,9 +18,10 @@
 #include "components/private_ai/common/private_ai_logger.h"
 #include "components/private_ai/phosphor/data_types.h"
 #include "components/private_ai/testing/fake_connection.h"
+#include "components/private_ai/testing/fake_private_ai_network_driver.h"
 #include "components/private_ai/testing/fake_token_manager.h"
 #include "net/base/proxy_string_util.h"
-#include "services/network/public/mojom/network_context.mojom.h"
+#include "services/network/public/cpp/network_context_getter.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -38,6 +39,7 @@ class ConnectionProxyTest : public testing::Test {
   void CreateConnectionProxy() {
     connection_proxy_ = std::make_unique<ConnectionProxy>(
         GURL("https://proxy.example.com"), &logger_, &token_manager_,
+        &network_driver_,
         base::BindOnce(&ConnectionProxyTest::CreateInnerConnection,
                        base::Unretained(this)),
         base::BindOnce(&ConnectionProxyTest::OnDisconnect,
@@ -45,7 +47,9 @@ class ConnectionProxyTest : public testing::Test {
   }
 
   std::unique_ptr<Connection> CreateInnerConnection(
-      network::mojom::NetworkContext* context) {
+      network::NetworkContextGetter context_getter,
+      std::optional<bool> has_chrome_proxy) {
+    has_chrome_proxy_ = has_chrome_proxy;
     auto connection = std::make_unique<FakeConnection>(base::DoNothing());
     inner_connection_ = connection.get();
     if (on_inner_connection_created_) {
@@ -64,11 +68,13 @@ class ConnectionProxyTest : public testing::Test {
 
   PrivateAiLogger logger_;
   FakeTokenManager token_manager_;
+  FakePrivateAiNetworkDriver network_driver_;
   std::unique_ptr<ConnectionProxy> connection_proxy_;
   raw_ptr<FakeConnection> inner_connection_ = nullptr;
   base::OnceClosure on_inner_connection_created_;
 
   bool on_disconnect_called_ = false;
+  std::optional<bool> has_chrome_proxy_;
 };
 
 TEST_F(ConnectionProxyTest, Success) {
@@ -96,6 +102,7 @@ TEST_F(ConnectionProxyTest, Success) {
   ASSERT_TRUE(inner_connection_);
   ASSERT_EQ(inner_connection_->pending_requests().size(), 1u);
   EXPECT_EQ(inner_connection_->pending_requests()[0].request.request_id(), 1);
+  EXPECT_FALSE(*has_chrome_proxy_);
 
   // Respond to request.
   proto::PrivateAiResponse response;
@@ -166,7 +173,7 @@ TEST_F(ConnectionProxyTest, ProxyRuleFormat) {
 
 TEST_F(ConnectionProxyTest, FailsWithEmptyProxyUrl) {
   EXPECT_CHECK_DEATH((void)std::make_unique<ConnectionProxy>(
-      GURL(), &logger_, &token_manager_,
+      GURL(), &logger_, &token_manager_, &network_driver_,
       base::BindOnce(&ConnectionProxyTest::CreateInnerConnection,
                      base::Unretained(this)),
       base::BindOnce(&ConnectionProxyTest::OnDisconnect,
@@ -182,14 +189,15 @@ TEST_F(ConnectionProxyTest, ProxyTokenFailure) {
                           future.GetCallback());
 
   // Fail token fetch.
-  token_manager_.RespondToGetAuthTokenForProxy(std::nullopt);
+  token_manager_.RespondToGetAuthTokenForProxy(
+      base::unexpected(phosphor::TokenManager::Error::kTokenFetchFailed));
 
   EXPECT_FALSE(inner_connection_);
   EXPECT_TRUE(on_disconnect_called_);
 
   auto result = future.Get();
   EXPECT_FALSE(result.has_value());
-  EXPECT_EQ(result.error(), StatusCode::kError);
+  EXPECT_EQ(result.error(), StatusCode::kProxyTokenFetchFailed);
 
   // A subsequent request should also fail.
   base::test::TestFuture<base::expected<proto::PrivateAiResponse, StatusCode>>
@@ -198,7 +206,27 @@ TEST_F(ConnectionProxyTest, ProxyTokenFailure) {
                           future2.GetCallback());
   auto result2 = future2.Get();
   EXPECT_FALSE(result2.has_value());
-  EXPECT_EQ(result2.error(), StatusCode::kError);
+  EXPECT_EQ(result2.error(), StatusCode::kConnectionClosedByClient);
+}
+
+TEST_F(ConnectionProxyTest, ProxyTokenFailureNotSignedIn) {
+  CreateConnectionProxy();
+
+  base::test::TestFuture<base::expected<proto::PrivateAiResponse, StatusCode>>
+      future;
+  connection_proxy_->Send(proto::PrivateAiRequest(), base::Seconds(10),
+                          future.GetCallback());
+
+  // Fail token fetch while not signed in.
+  token_manager_.RespondToGetAuthTokenForProxy(
+      base::unexpected(phosphor::TokenManager::Error::kAccountNotAvailable));
+
+  EXPECT_FALSE(inner_connection_);
+  EXPECT_TRUE(on_disconnect_called_);
+
+  auto result = future.Get();
+  EXPECT_FALSE(result.has_value());
+  EXPECT_EQ(result.error(), StatusCode::kAccountNotAvailable);
 }
 
 TEST_F(ConnectionProxyTest, ProxyConfigTokenFailure) {
@@ -243,6 +271,21 @@ TEST_F(ConnectionProxyTest, ProxyConfigExtensionFailure) {
   auto result = future.Get();
   EXPECT_FALSE(result.has_value());
   EXPECT_EQ(result.error(), StatusCode::kProxyConfigFailed);
+}
+
+TEST_F(ConnectionProxyTest, WithProxyConfigured) {
+  network_driver_.set_is_proxy_configured(true);
+  CreateConnectionProxy();
+
+  base::test::TestFuture<void> inner_connection_created_future;
+  on_inner_connection_created_ = inner_connection_created_future.GetCallback();
+  token_manager_.RespondToGetAuthTokenForProxy(phosphor::BlindSignedAuthToken{
+      .token = FakeTokenManager::kFakeProxyToken,
+      .encoded_extensions = "cHJveHlfZXh0ZW5zaW9ucw=="});
+  EXPECT_TRUE(inner_connection_created_future.Wait());
+
+  ASSERT_TRUE(inner_connection_);
+  EXPECT_TRUE(*has_chrome_proxy_);
 }
 
 }  // namespace

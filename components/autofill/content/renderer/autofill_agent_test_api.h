@@ -8,7 +8,9 @@
 #include "base/memory/raw_ref.h"
 #include "base/types/optional_ref.h"
 #include "components/autofill/content/renderer/autofill_agent.h"
+#include "components/autofill/content/renderer/javascript_autofill_tracker.h"
 #include "components/autofill/content/renderer/password_autofill_agent.h"
+#include "third_party/blink/public/mojom/scroll/scroll_enums.mojom-shared.h"
 
 namespace autofill {
 
@@ -18,8 +20,8 @@ class AutofillAgentTestApi {
 
   bool is_dom_content_loaded() const { return agent_->is_dom_content_loaded_; }
 
-  FormTracker& form_tracker() { return *agent_->form_tracker_; }
-  void set_form_tracker(std::unique_ptr<FormTracker> form_tracker) {
+  FormSubmissionTracker& form_tracker() { return *agent_->form_tracker_; }
+  void set_form_tracker(std::unique_ptr<FormSubmissionTracker> form_tracker) {
     agent_->form_tracker_ = std::move(form_tracker);
   }
 
@@ -46,22 +48,68 @@ class AutofillAgentTestApi {
     agent_->ContentEditableDidChange(element);
   }
 
+  bool is_popup_possibly_visible() const {
+    return agent_->is_popup_possibly_visible_;
+  }
+
   void TextFieldValueChanged(const blink::WebFormControlElement& element) {
     agent_->TextFieldValueChanged(element);
   }
 
+  void SelectFieldOptionsChanged(const blink::WebFormControlElement& element) {
+    agent_->SelectFieldOptionsChanged(element);
+  }
+
+  void DidChangeScrollOffset(blink::mojom::ScrollType scroll_type =
+                                 blink::mojom::ScrollType::kProgrammatic) {
+    agent_->DidChangeScrollOffset(scroll_type);
+  }
+
+  bool ShouldThrottleAskForValuesToFill(
+      FieldRendererId field,
+      AutofillSuggestionTriggerSource trigger_source) {
+    return agent_->ShouldThrottleAskForValuesToFill(field, trigger_source);
+  }
+
+  void set_focus_requires_scroll(bool focus_requires_scroll) {
+    const_cast<AutofillAgent::Config&>(agent_->config_).focus_requires_scroll =
+        AutofillAgent::FocusRequiresScroll(focus_requires_scroll);
+  }
+
+  void set_uses_keyboard_accessory_for_suggestions(
+      bool uses_keyboard_accessory_for_suggestions) {
+    const_cast<AutofillAgent::Config&>(agent_->config_)
+        .uses_keyboard_accessory_for_suggestions =
+        AutofillAgent::UsesKeyboardAccessoryForSuggestions(
+            uses_keyboard_accessory_for_suggestions);
+  }
+
   const FormCache& form_cache() { return agent_->form_cache_; }
 
-  PasswordAutofillAgent& password_autofill_agent() {
-    return *agent_->password_autofill_agent_;
+  PasswordAutofillAgent* password_autofill_agent() {
+    return agent_->password_autofill_agent_.get();
   }
 
   const base::OneShotTimer& process_forms_after_dynamic_change_timer() {
     return agent_->process_forms_after_dynamic_change_timer_;
   }
 
-  AutofillAgent::EmailVerificationObserver& email_verification_observer() {
-    return agent_->email_verification_observer_;
+  EmailVerificationHandler& email_verification_handler() {
+    return agent_->email_verification_handler_;
+  }
+
+  JavaScriptAutofillTracker& javascript_autofill_tracker() {
+    return agent_->javascript_autofill_tracker_;
+  }
+
+  base::WeakPtr<AutofillAgent> GetWeakPtr() {
+    return agent_->weak_ptr_factory_.GetWeakPtr();
+  }
+
+  void FlushAutofillDriverForTesting() {
+    if (agent_->autofill_driver_) {
+      agent_->autofill_driver_.FlushForTesting();
+    }
   }
 
  private:

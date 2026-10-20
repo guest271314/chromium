@@ -97,13 +97,23 @@ void CATransactionCoordinator::PreCommitHandler() {
     // `WaitForSingleTaskToRun()` in case there are already queued tasks.
     // There should not be any waiting for additional tasks so the waiting is
     // kept to essentially zero.
-    if (base::FeatureList::IsEnabled(
+    constexpr base::TimeDelta kSmallestWait = base::Nanoseconds(1);
+    const bool can_skip_window_resize_helper =
+        base::FeatureList::IsEnabled(
             features::kOnlyUseWindowResizeHelperOnResize) &&
-        !any_observed_window_in_live_resize) {
-      time_left = base::Nanoseconds(1);
+        !any_observed_window_in_live_resize;
+    if (can_skip_window_resize_helper) {
+      time_left = kSmallestWait;
     }
 
-    ui::WindowResizeHelperMac::Get()->WaitForSingleTaskToRun(time_left);
+    const bool task_ran =
+        ui::WindowResizeHelperMac::Get()->WaitForSingleTaskToRun(time_left);
+
+    // Pumping was attempted to get rid of pending work and none was executed.
+    // The loop can now be exited.
+    if (can_skip_window_resize_helper && !task_ran) {
+      break;
+    }
   }
 }
 
@@ -131,38 +141,14 @@ void CATransactionCoordinator::PostCommitHandler() {
 }
 
 CATransactionCoordinator::CATransactionCoordinator() {
-  if (base::FeatureList::IsEnabled(features::kCATransactionV2)) {
-    base::CurrentThread::Get()->AddTaskObserver(this);
-  }
 }
 
 CATransactionCoordinator::~CATransactionCoordinator() {
-  if (base::FeatureList::IsEnabled(features::kCATransactionV2)) {
-    base::CurrentThread::Get()->RemoveTaskObserver(this);
-  }
 }
 
 void CATransactionCoordinator::Synchronize() {
   if (disabled_for_testing_)
     return;
-
-  if (base::FeatureList::IsEnabled(features::kCATransactionV2)) {
-    // If we are in a nested run loop (e.g, during zoom), the we do not want
-    // keep a CATransaction open across the animation, because it will cause
-    // the animation to not be seen.
-    if (NSRunLoop.currentRunLoop.currentMode &&
-        ![NSRunLoop.currentRunLoop.currentMode
-            isEqualToString:NSDefaultRunLoopMode]) {
-      ca_action_disabler_.reset();
-      return;
-    }
-
-    if (!ca_action_disabler_) {
-      ca_action_disabler_ = std::make_unique<ScopedCAActionDisabler>();
-    }
-    return;
-  }
-
   SynchronizeImpl();
 }
 

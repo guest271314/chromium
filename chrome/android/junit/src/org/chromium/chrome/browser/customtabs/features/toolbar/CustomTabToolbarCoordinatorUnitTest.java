@@ -67,6 +67,7 @@ public class CustomTabToolbarCoordinatorUnitTest {
     private static final Rect WINDOW_RECT = new Rect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
     private static final Rect WIDEST_UNOCCLUDED_RECT =
             new Rect(LEFT_INSET, 0, SCREEN_WIDTH - RIGHT_INSET, SYS_APP_HEADER_HEIGHT);
+    private static final int CUSTOM_BUTTON_ID = 100;
 
     @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
 
@@ -84,19 +85,18 @@ public class CustomTabToolbarCoordinatorUnitTest {
     @Mock private Tab mTab;
     @Mock private CustomButtonParams mCustomButtonParams;
     @Mock private PendingIntent mPendingIntent;
-    @Mock private Activity mActivity;
     @Mock private ToolbarManager mToolbarManager;
     @Mock private DesktopWindowStateManager mDesktopWindowStateManager;
     @Mock private CustomTabToolbarButtonsCoordinator mToolbarButtonsCoordinator;
 
     private CustomTabBrowserControlsVisibilityDelegate mVisibilityDelegate;
-    private Activity mActivityForResources;
+    private Activity mActivity;
     private CustomTabActivityTabController mTabController;
     private CustomTabToolbarCoordinator mCoordinator;
 
     @Before
     public void setup() {
-        mActivityForResources = Robolectric.setupActivity(Activity.class);
+        mActivity = Robolectric.setupActivity(Activity.class);
         mTabController = env.createTabController();
 
         BrowserStateBrowserControlsVisibilityDelegate browserControlsVisibilityDelegate =
@@ -115,6 +115,7 @@ public class CustomTabToolbarCoordinatorUnitTest {
         when(mTabProvider.getTab()).thenReturn(mTab);
         when(mTab.getOriginalUrl()).thenReturn(GURL.emptyGURL());
         when(mTab.getTitle()).thenReturn("");
+        when(mCustomButtonParams.getId()).thenReturn(CUSTOM_BUTTON_ID);
         when(mCustomButtonParams.getDescription()).thenReturn("");
         when(mCustomButtonParams.getPendingIntent()).thenReturn(mPendingIntent);
     }
@@ -140,6 +141,9 @@ public class CustomTabToolbarCoordinatorUnitTest {
             verify(mShareDelegate, never()).share(any(Tab.class), eq(false), anyInt());
             verify(mPendingIntent)
                     .send(any(), eq(0), any(Intent.class), any(), isNull(), isNull(), any());
+            verify(env.intentDataProvider)
+                    .maybeAddAdditionalContentExtrasToOutboundIntent(
+                            eq(mTabProvider), any(Intent.class), eq(CUSTOM_BUTTON_ID));
         } catch (PendingIntent.CanceledException e) {
             throw new AssertionError();
         }
@@ -149,8 +153,7 @@ public class CustomTabToolbarCoordinatorUnitTest {
     public void testCreateShareButtonWithCustomActions() {
         int testColor = 0x99aabbcc;
         mCoordinator.onCustomButtonClick(
-                mActivity,
-                CustomButtonParamsImpl.createShareButton(mActivityForResources, testColor));
+                mActivity, CustomButtonParamsImpl.createShareButton(mActivity, testColor));
         verify(mShareDelegate)
                 .share(any(), eq(false), eq(ShareDelegate.ShareOrigin.CUSTOM_TAB_SHARE_BUTTON));
     }

@@ -26,6 +26,8 @@
 
 #include <optional>
 
+#include "base/types/strong_alias.h"
+#include "third_party/blink/public/common/tokens/tokens.h"
 #include "third_party/blink/renderer/bindings/core/v8/active_script_wrappable.h"
 #include "third_party/blink/renderer/core/core_export.h"
 #include "third_party/blink/renderer/core/dom/create_element_flags.h"
@@ -34,6 +36,7 @@
 #include "third_party/blink/renderer/core/html/forms/form_associated.h"
 #include "third_party/blink/renderer/core/html/html_element.h"
 #include "third_party/blink/renderer/core/html/html_image_loader.h"
+#include "third_party/blink/renderer/core/html/parser/html_srcset_parser.h"
 #include "third_party/blink/renderer/core/resize_observer/resize_observer.h"
 #include "third_party/blink/renderer/platform/graphics/image_orientation.h"
 #include "ui/gfx/geometry/size.h"
@@ -42,6 +45,7 @@ namespace blink {
 
 class ExceptionState;
 class HTMLFormElement;
+class HTMLMapElement;
 class ImageCandidate;
 
 class CORE_EXPORT HTMLImageElement
@@ -83,8 +87,21 @@ class CORE_EXPORT HTMLImageElement
   bool IsBeingRendered() const;
   bool AllowAutoSizes() const;
 
+  // https://html.spec.whatwg.org/#last-auto-sizes-size
+  std::optional<TargetBoxSize> LastAutoSizesSize() const {
+    return last_auto_sizes_size_;
+  }
+  // Updated during sizes attribute parsing, which runs on const paths
+  // (e.g. GetResourceWidth()); this is a cache of layout state.
+  void UpdateLastAutoSizes(const TargetBoxSize& size) const {
+    last_auto_sizes_size_ = size;
+  }
+  // The box size that sizes=auto resolves to for this (rendered) image.
+  TargetBoxSize AutoSizesSize() const;
+
   const String& currentSrc() const;
 
+  HTMLMapElement* GetImageMap() const;
   bool IsServerMap() const;
 
   String AltText() const final;
@@ -145,12 +162,13 @@ class CORE_EXPORT HTMLImageElement
       const RespectImageOrientationEnum) const override;
 
   // public so that HTMLPictureElement can call this as well.
-  void SelectSourceURL(ImageLoader::UpdateFromElementBehavior);
+  void SelectSourceURL(ImageLoader::UpdateFromElementBehavior behavior =
+                           ImageLoader::kUpdateNormal);
 
   void SetIsFallbackImage() { is_fallback_image_ = true; }
 
   std::optional<float> GetResourceWidth() const;
-  float SourceSize(Element&);
+  TargetBoxSize SourceSize(Element&);
 
   void ForceReload() const;
 
@@ -197,11 +215,18 @@ class CORE_EXPORT HTMLImageElement
 
   // Returns true if the image has an active image replacement.
   bool HasImageReplacement() const;
+  // Returns the FrameToken of the replacement subframe if this element has
+  // an active image replacement, or std::nullopt otherwise.
+  std::optional<FrameToken> ReplacementFrameToken() const;
   // Resets corresponding ImageReplacement (if any), and goes back to displaying
   // the primary content (if StartImageReplacement() was previously called).
   // Uses the element's current document if |document| is not specified.
   void ResetImageReplacement(Document* document = nullptr);
   void StartImageReplacement();
+
+  bool replacedByUserAgent() const;
+  DEFINE_ATTRIBUTE_EVENT_LISTENER(uareplacestart, kUareplacestart)
+  DEFINE_ATTRIBUTE_EVENT_LISTENER(uareplaceend, kUareplaceend)
 
  protected:
   // Controls how an image element appears in the layout. See:
@@ -261,9 +286,10 @@ class CORE_EXPORT HTMLImageElement
   Image* ImageContents() override;
 
   void ResetFormOwner();
+  bool IsUrlInCandidateSet(const AtomicString& url) const;
   ImageCandidate FindBestFitImageFromPictureParent();
   void SetBestFitURLAndDPRFromImageCandidate(const ImageCandidate&);
-  PhysicalSize DensityCorrectedIntrinsicDimensions() const;
+  gfx::Size DensityCorrectedIntrinsicDimensions() const;
   HTMLImageLoader& GetImageLoader() const override { return *image_loader_; }
   void NotifyViewportChanged();
   void CreateMediaQueryListIfDoesNotExist();
@@ -291,6 +317,8 @@ class CORE_EXPORT HTMLImageElement
   bool is_lcp_element_ : 1;
   bool is_auto_sized_ : 1;
   bool is_predicted_lcp_element_ : 1;
+  bool is_lazy_load_issue_reported_ : 1;
+  mutable std::optional<TargetBoxSize> last_auto_sizes_size_;
 
   HashSet<String> creator_scripts_;
 };

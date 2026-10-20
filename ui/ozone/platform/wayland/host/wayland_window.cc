@@ -13,7 +13,6 @@
 #include <utility>
 
 #include "base/auto_reset.h"
-#include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/logging.h"
 #include "base/memory/scoped_refptr.h"
@@ -28,7 +27,6 @@
 #include "ui/base/cursor/platform_cursor.h"
 #include "ui/base/dragdrop/mojom/drag_drop_types.mojom.h"
 #include "ui/base/dragdrop/os_exchange_data.h"
-#include "ui/base/ui_base_features.h"
 #include "ui/display/screen.h"
 #include "ui/events/event.h"
 #include "ui/events/event_target_iterator.h"
@@ -45,7 +43,6 @@
 #include "ui/ozone/common/bitmap_cursor.h"
 #include "ui/ozone/common/features.h"
 #include "ui/ozone/platform/wayland/common/wayland_overlay_config.h"
-#include "ui/ozone/platform/wayland/host/begin_frame_source_wayland.h"
 #include "ui/ozone/platform/wayland/host/dump_util.h"
 #include "ui/ozone/platform/wayland/host/wayland_async_cursor.h"
 #include "ui/ozone/platform/wayland/host/wayland_bubble.h"
@@ -100,12 +97,6 @@ WaylandWindow::WaylandWindow(PlatformWindowDelegate* delegate,
       ui_task_runner_(base::SingleThreadTaskRunner::GetCurrentDefault()) {
   // Set a class property key, which allows |this| to be used for drag action.
   SetWmDragHandler(this, this);
-
-  if (base::FeatureList::IsEnabled(
-          features::kWaylandExternalBeginFrameSource)) {
-    begin_frame_source_ =
-        std::make_unique<BeginFrameSourceWayland>(this, frame_manager_.get());
-  }
 }
 
 WaylandWindow::~WaylandWindow() {
@@ -136,8 +127,24 @@ WaylandWindow::~WaylandWindow() {
     parent_window_->set_child_popup(nullptr);
   }
 
-  if (child_popup_) {
-    child_popup_->set_parent_window(nullptr);
+  // `child_popup_` only tracks the most recently shown popup. Other windows
+  // (e.g. hidden popups or popups that were replaced as `child_popup_`) may
+  // still refer to this window as their parent.
+  for (const auto& window :
+       connection_->window_manager()->GetAllWindowsAsWeakPtr()) {
+    if (!window || window->parent_window() != this) {
+      continue;
+    }
+    // Popups parented to a bubble use the bubble's toplevel as their xdg
+    // parent, so they may still be mapped at this point. Clearing
+    // `parent_window_` would disconnect them from their xdg parent, so hide
+    // them first.
+    if (window->AsWaylandPopup()) {
+      window->Hide();
+    }
+    if (window) {
+      window->set_parent_window(nullptr);
+    }
   }
 
   for (auto bubble : child_bubbles_) {
@@ -170,11 +177,23 @@ void WaylandWindow::UpdateWindowScale(bool update_bounds) {
   const auto window_scale = connection_->UsePerSurfaceScaling()
                                 ? GetPreferredScaleFactor()
                                 : GetScaleFactorFromEnteredOutputs();
+  auto weak_this = AsWeakPtr();
   SetWindowScale(window_scale.value_or(1.0f));
+  if (!weak_this) {
+    return;
+  }
 
-  // Propagate update to the popups.
-  if (child_popup_) {
-    child_popup_->UpdateWindowScale(update_bounds);
+  // Propagate update to the popups. `child_popup_` only tracks the most
+  // recently shown popup, so update all visible popups parented to this window.
+  for (const auto& window :
+       connection_->window_manager()->GetAllWindowsAsWeakPtr()) {
+    if (!weak_this) {
+      return;
+    }
+    if (window && window->AsWaylandPopup() && window->IsVisible() &&
+        window->parent_window() == this) {
+      window->UpdateWindowScale(update_bounds);
+    }
   }
 
   // Propagate update to the bubble windows.
@@ -205,11 +224,17 @@ void WaylandWindow::RemoveBubble(WaylandBubble* window) {
   if (active_bubble_ == window) {
     active_bubble_ = nullptr;
     if (IsActive()) {
+      auto weak_this = AsWeakPtr();
       delegate()->OnActivationChanged(true);
+      if (!weak_this) {
+        return;
+      }
     }
   }
-  child_bubbles_.erase(
-      std::find(child_bubbles_.begin(), child_bubbles_.end(), window));
+  auto it = std::find(child_bubbles_.begin(), child_bubbles_.end(), window);
+  if (it != child_bubbles_.end()) {
+    child_bubbles_.erase(it);
+  }
 }
 
 void WaylandWindow::ActivateBubble(WaylandBubble* window) {
@@ -219,15 +244,35 @@ void WaylandWindow::ActivateBubble(WaylandBubble* window) {
   if (active_bubble_ == window) {
     return;
   }
+
+  base::WeakPtr<WaylandWindow> weak_window =
+      window ? window->AsWeakPtr() : nullptr;
+
   if (active_bubble_) {
+    auto weak_this = AsWeakPtr();
     active_bubble_->delegate()->OnActivationChanged(false);
+    if (!weak_this) {
+      return;
+    }
   }
+
+  if (window && !weak_window) {
+    return;
+  }
+
   active_bubble_ = window;
 
   if (active_bubble_) {
+    auto weak_this = AsWeakPtr();
     delegate()->OnActivationChanged(false);
-    active_bubble_->delegate()->OnActivationChanged(true);
+    if (!weak_this) {
+      return;
+    }
+    if (active_bubble_) {
+      active_bubble_->delegate()->OnActivationChanged(true);
+    }
   } else {
+    auto weak_this = AsWeakPtr();
     delegate()->OnActivationChanged(IsActive());
   }
 }
@@ -918,16 +963,23 @@ void WaylandWindow::OnDragSessionClose(DragOperation operation) {
     // is about to shut down. Do nothing and return.
     return;
   }
+  // Running `drag_finished_callback_` and dispatching the synthetic pointer
+  // release below may spin a nested run loop in which `this` gets destroyed,
+  // so move the quit closure onto the stack to ensure the drag loop is still
+  // quit in that case.
+  base::OnceClosure quit_closure = std::move(drag_loop_quit_closure_);
+  auto alive = AsWeakPtr();
   std::move(drag_finished_callback_).Run(operation);
   // Skip releasing any pointer buttons for the case of a window drag driven by
   // the data drag controller.
   // TODO: crbug.com/40238145 - Refactor this per discussion at
   // crrev.com/c/5570335/comment/0b8811fc_818028c9/.
-  if (!connection()->data_drag_controller()->IsWindowDragSessionRunning()) {
+  if (alive &&
+      !connection()->data_drag_controller()->IsWindowDragSessionRunning()) {
     connection()->event_source()->ReleasePressedPointerButtons(
         this, EventTimeForNow());
   }
-  std::move(drag_loop_quit_closure_).Run();
+  std::move(quit_closure).Run();
 }
 
 bool WaylandWindow::Initialize(PlatformWindowInitProperties properties) {
@@ -1047,6 +1099,22 @@ WaylandWindow* WaylandWindow::GetXdgParentWindow() {
     xdg_parent_window = xdg_parent_window->parent_window();
   }
   return xdg_parent_window;
+}
+
+void WaylandWindow::HideChildPopups() {
+  auto weak_this = AsWeakPtr();
+  for (const auto& window :
+       connection_->window_manager()->GetAllWindowsAsWeakPtr()) {
+    if (!weak_this) {
+      return;
+    }
+    if (!window || window.get() == this || !window->AsWaylandPopup() ||
+        !window->IsVisible() || window->GetXdgParentWindow() != this) {
+      continue;
+    }
+    // Hiding the popup recursively hides its own child popups first.
+    window->Hide();
+  }
 }
 
 bool WaylandWindow::IsOpaqueWindow() const {
@@ -1240,7 +1308,7 @@ bool WaylandWindow::CommitOverlays(
             root_surface()->use_blending(), gfx::Rect(),
             root_surface()->opacity(), gfx::OverlayPriorityHint::kNone,
             gfx::RRectF(), gfx::ColorSpace::CreateSRGB(), std::nullopt),
-        nullptr, root_surface()->buffer_id(), buffer_scale);
+        gfx::GpuFenceHandle(), root_surface()->buffer_id(), buffer_scale);
   }
 
   frame_manager_->RecordFrame(std::make_unique<WaylandFrame>(
@@ -1323,7 +1391,13 @@ void WaylandWindow::ProcessPendingConfigureState(uint32_t serial) {
     }
   }
 
+  // RequestStateFromServer transitively calls delegate()->OnStateUpdate(),
+  // which may synchronously delete |this|.
+  auto weak_this = AsWeakPtr();
   RequestStateFromServer(state, serial);
+  if (!weak_this) {
+    return;
+  }
 
   // Reset values.
   pending_configure_state_ = PendingConfigureState();

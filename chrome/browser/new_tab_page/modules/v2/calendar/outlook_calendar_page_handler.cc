@@ -10,10 +10,12 @@
 
 #include "base/files/file_path.h"
 #include "base/i18n/time_formatting.h"
+#include "base/json/json_reader.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/strings/escape.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/values.h"
 #include "chrome/browser/new_tab_page/microsoft_auth/microsoft_auth_service_factory.h"
 #include "chrome/browser/new_tab_page/modules/microsoft_modules_helper.h"
 #include "chrome/browser/new_tab_page/modules/v2/calendar/calendar_data.mojom.h"
@@ -187,8 +189,6 @@ void OutlookCalendarPageHandler::RegisterProfilePrefs(
     PrefRegistrySimple* registry) {
   registry->RegisterTimePref(prefs::kNtpOutlookCalendarRetryAfterTime,
                              base::Time());
-  registry->RegisterTimePref(prefs::kNtpOutlookCalendarLastDismissedTime,
-                             base::Time());
   registry->RegisterTimePref(
       prefs::kNtpOutlookCalendarLastAttachmentRequestTime, base::Time());
   registry->RegisterBooleanPref(
@@ -208,15 +208,6 @@ OutlookCalendarPageHandler::OutlookCalendarPageHandler(
 OutlookCalendarPageHandler::~OutlookCalendarPageHandler() = default;
 
 void OutlookCalendarPageHandler::GetEvents(GetEventsCallback callback) {
-  // Do not get events if the module was dismissed.
-  base::Time last_dismissed_time =
-      pref_service_->GetTime(prefs::kNtpOutlookCalendarLastDismissedTime);
-  if (last_dismissed_time != base::Time() &&
-      base::Time::Now() - last_dismissed_time < base::Hours(12)) {
-    std::move(callback).Run(
-        std::vector<ntp::calendar::mojom::CalendarEventPtr>());
-    return;
-  }
   const std::string fake_data_param = base::GetFieldTrialParamValueByFeature(
       ntp_features::kNtpOutlookCalendarModule,
       ntp_features::kNtpOutlookCalendarModuleDataParam);
@@ -228,16 +219,6 @@ void OutlookCalendarPageHandler::GetEvents(GetEventsCallback callback) {
   } else {
     MakeRequest(std::move(callback));
   }
-}
-
-void OutlookCalendarPageHandler::DismissModule() {
-  pref_service_->SetTime(prefs::kNtpOutlookCalendarLastDismissedTime,
-                         base::Time::Now());
-}
-
-void OutlookCalendarPageHandler::RestoreModule() {
-  pref_service_->SetTime(prefs::kNtpOutlookCalendarLastDismissedTime,
-                         base::Time());
 }
 
 void OutlookCalendarPageHandler::MakeRequest(GetEventsCallback callback) {
@@ -300,10 +281,9 @@ void OutlookCalendarPageHandler::OnJsonReceived(
   url_loader_.reset();
 
   if (net_error == net::OK && response_body) {
-    data_decoder::DataDecoder::ParseJsonIsolated(
-        *response_body,
-        base::BindOnce(&OutlookCalendarPageHandler::OnJsonParsed,
-                       weak_factory_.GetWeakPtr(), std::move(callback)));
+    ProcessResponse(
+        std::move(callback),
+        base::JSONReader::ReadDict(*response_body, base::JSON_PARSE_RFC));
   } else {
     RecordCalendarRequestResult(request_result);
     std::move(callback).Run(
@@ -311,16 +291,16 @@ void OutlookCalendarPageHandler::OnJsonReceived(
   }
 }
 
-void OutlookCalendarPageHandler::OnJsonParsed(
+void OutlookCalendarPageHandler::ProcessResponse(
     GetEventsCallback callback,
-    data_decoder::DataDecoder::ValueOrError result) {
-  if (!result.has_value()) {
+    std::optional<base::DictValue> response_dict) {
+  if (!response_dict) {
     RecordCalendarRequestResult(OutlookCalendarRequestResult::kJsonParseError);
     std::move(callback).Run(
         std::vector<ntp::calendar::mojom::CalendarEventPtr>());
     return;
   }
-  auto* events = result->GetDict().FindList("value");
+  auto* events = response_dict->FindList("value");
   if (!events) {
     RecordCalendarRequestResult(OutlookCalendarRequestResult::kContentError);
     std::move(callback).Run(

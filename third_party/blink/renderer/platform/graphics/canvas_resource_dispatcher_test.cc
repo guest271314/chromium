@@ -6,6 +6,8 @@
 
 #include <memory>
 
+#include "base/test/scoped_feature_list.h"
+#include "cc/base/features.h"
 #include "components/viz/common/quads/texture_draw_quad.h"
 #include "mojo/public/cpp/bindings/receiver.h"
 #include "services/viz/public/mojom/hit_test/hit_test_region_list.mojom-blink.h"
@@ -13,12 +15,16 @@
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/mojom/frame_sinks/embedded_frame_sink.mojom-blink.h"
 #include "third_party/blink/public/platform/scheduler/test/renderer_scheduler_test_support.h"
+#include "third_party/blink/renderer/platform/graphics/begin_frame_provider.h"
+#include "third_party/blink/renderer/platform/graphics/begin_frame_provider_params.h"
+#include "third_party/blink/renderer/platform/graphics/canvas_non_2d_resource_provider.h"
 #include "third_party/blink/renderer/platform/graphics/canvas_resource.h"
-#include "third_party/blink/renderer/platform/graphics/canvas_resource_provider.h"
+#include "third_party/blink/renderer/platform/graphics/exported_canvas_resource.h"
 #include "third_party/blink/renderer/platform/graphics/skia/skia_utils.h"
 #include "third_party/blink/renderer/platform/graphics/test/mock_compositor_frame_sink.h"
 #include "third_party/blink/renderer/platform/graphics/test/mock_embedded_frame_sink_provider.h"
 #include "third_party/blink/renderer/platform/graphics/test/test_webgraphics_shared_image_interface_provider.h"
+#include "third_party/blink/renderer/platform/testing/mock_context_lifecycle_notifier.h"
 #include "third_party/blink/renderer/platform/testing/task_environment.h"
 #include "third_party/blink/renderer/platform/testing/testing_platform_support.h"
 #include "third_party/blink/renderer/platform/wtf/functional.h"
@@ -43,36 +49,17 @@ constexpr size_t kHeight = 10;
 
 struct TestParams {
   bool context_alpha;
-  CanvasResourceDispatcher::AnimationState animation_state;
+  OffscreenCanvasPlaceholder::AnimationState animation_state;
 };
 
-class MockCanvasResourceDispatcherClient
-    : public CanvasResourceDispatcherClient {
+class MockCanvasResourceDispatcherClient final
+    : public GarbageCollected<MockCanvasResourceDispatcherClient>,
+      public CanvasResourceDispatcherClient {
  public:
   MOCK_METHOD(bool, BeginFrame, (), (override));
-};
-
-class MockCanvasResourceDispatcher : public CanvasResourceDispatcher {
- public:
-  explicit MockCanvasResourceDispatcher(
-      scoped_refptr<base::SingleThreadTaskRunner>
-          agent_group_scheduler_compositor_task_runner)
-      : CanvasResourceDispatcher(
-            &client_,
-            /*task_runner=*/scheduler::GetSingleThreadTaskRunnerForTesting(),
-            agent_group_scheduler_compositor_task_runner,
-            kClientId,
-            kSinkId,
-            /*placeholder_canvas_id=*/0,
-            /*canvas_size=*/{kWidth, kHeight}) {}
-
-  MOCK_METHOD1(PostImageToPlaceholder,
-               void(scoped_refptr<ExportedCanvasResource>&&));
-
-  MockCanvasResourceDispatcherClient& MockClient() { return client_; }
-
- private:
-  MockCanvasResourceDispatcherClient client_;
+  void Trace(Visitor* visitor) const override {
+    CanvasResourceDispatcherClient::Trace(visitor);
+  }
 };
 
 }  // namespace
@@ -81,25 +68,13 @@ class CanvasResourceDispatcherTest
     : public testing::Test,
       public ::testing::WithParamInterface<TestParams> {
  public:
-  scoped_refptr<CanvasResource> DispatchOneFrame() {
+  void DispatchOneFrame() {
     scoped_refptr<CanvasResource> canvas_resource =
         resource_provider_->ProduceCanvasResource();
-    auto canvas_resource_extra = canvas_resource;
-    dispatcher_->DispatchFrame(std::move(canvas_resource), gfx::Rect(),
+    auto exported_resource = base::MakeRefCounted<ExportedCanvasResource>(
+        std::move(canvas_resource));
+    dispatcher_->DispatchFrame(std::move(exported_resource), gfx::Rect(),
                                /*is_opaque=*/false);
-    return canvas_resource_extra;
-  }
-
-  unsigned GetNumPendingPlaceholderResources() {
-    return dispatcher_->num_pending_placeholder_resources_;
-  }
-
-  ExportedCanvasResource* GetLatestUnpostedImage() {
-    return dispatcher_->latest_unposted_resource_.get();
-  }
-
-  viz::ResourceId PeekNextResourceId() {
-    return dispatcher_->id_generator_.PeekNextValueForTesting();
   }
 
   const gfx::Size& GetSize() const { return dispatcher_->size_; }
@@ -112,134 +87,38 @@ class CanvasResourceDispatcherTest
  protected:
   CanvasResourceDispatcherTest() = default;
 
-  void CreateCanvasResourceDispatcher(
-      scoped_refptr<base::SingleThreadTaskRunner>
-          agent_group_scheduler_compositor_task_runner =
-              scheduler::GetSingleThreadTaskRunnerForTesting()) {
+  void CreateDispatcher() {
     test_web_shared_image_interface_provider_ =
         TestWebGraphicsSharedImageInterfaceProvider::Create();
 
-    dispatcher_ = std::make_unique<MockCanvasResourceDispatcher>(
-        agent_group_scheduler_compositor_task_runner);
+    client_ = MakeGarbageCollected<MockCanvasResourceDispatcherClient>();
+    dispatcher_ = std::make_unique<CanvasResourceDispatcher>(
+        client_.Get(),
+        /*task_runner=*/scheduler::GetSingleThreadTaskRunnerForTesting(),
+        kClientId, kSinkId,
+        /*canvas_size=*/gfx::Size(kWidth, kHeight));
     resource_provider_ =
-        CanvasNon2DResourceProviderSharedImage::CreateForSoftwareCompositor(
+        CanvasNon2DResourceProvider::CreateForSoftwareCompositor(
             gfx::Size(kWidth, kHeight), GetN32FormatForCanvas(),
             kPremul_SkAlphaType, gfx::ColorSpace::CreateSRGB(),
+            gfx::HDRMetadata(),
             test_web_shared_image_interface_provider_.get());
   }
 
-  MockCanvasResourceDispatcher* Dispatcher() { return dispatcher_.get(); }
+  CanvasResourceDispatcher* dispatcher() { return dispatcher_.get(); }
+  MockCanvasResourceDispatcherClient& MockClient() { return *client_; }
 
-  void ResetDispatcher() { dispatcher_.reset(); }
   test::TaskEnvironment& TaskEnvironment() { return task_environment_; }
 
  private:
-  scoped_refptr<StaticBitmapImage> PrepareStaticBitmapImage();
   test::TaskEnvironment task_environment_{
       base::test::TaskEnvironment::TimeSource::MOCK_TIME};
-  std::unique_ptr<MockCanvasResourceDispatcher> dispatcher_;
-  std::unique_ptr<CanvasNon2DResourceProviderSharedImage> resource_provider_;
+  Persistent<MockCanvasResourceDispatcherClient> client_;
+  std::unique_ptr<CanvasResourceDispatcher> dispatcher_;
+  std::unique_ptr<CanvasNon2DResourceProvider> resource_provider_;
   std::unique_ptr<WebGraphicsSharedImageInterfaceProvider>
       test_web_shared_image_interface_provider_;
 };
-
-TEST_F(CanvasResourceDispatcherTest, PlaceholderRunsNormally) {
-  CreateCanvasResourceDispatcher();
-  // Post first frame
-  EXPECT_CALL(*(Dispatcher()), PostImageToPlaceholder(_));
-  auto frame1 = DispatchOneFrame();
-  EXPECT_EQ(1u, GetNumPendingPlaceholderResources());
-  Mock::VerifyAndClearExpectations(Dispatcher());
-
-  // Post second frame
-  EXPECT_CALL(*(Dispatcher()), PostImageToPlaceholder(_));
-  auto frame2 = DispatchOneFrame();
-  EXPECT_EQ(2u, GetNumPendingPlaceholderResources());
-  Mock::VerifyAndClearExpectations(Dispatcher());
-
-  // Post third frame
-  EXPECT_CALL(*(Dispatcher()), PostImageToPlaceholder(_));
-  auto frame3 = DispatchOneFrame();
-  EXPECT_EQ(3u, GetNumPendingPlaceholderResources());
-  EXPECT_EQ(nullptr, GetLatestUnpostedImage());
-  Mock::VerifyAndClearExpectations(Dispatcher());
-
-  // Receive first frame
-  Dispatcher()->OnMainThreadReceivedImage();
-  EXPECT_EQ(2u, GetNumPendingPlaceholderResources());
-
-  // Receive second frame
-  Dispatcher()->OnMainThreadReceivedImage();
-  EXPECT_EQ(1u, GetNumPendingPlaceholderResources());
-
-  // Receive third frame
-  Dispatcher()->OnMainThreadReceivedImage();
-  EXPECT_EQ(0u, GetNumPendingPlaceholderResources());
-}
-
-TEST_F(CanvasResourceDispatcherTest,
-       AgentGroupSchedulerCompositorTaskRunnerIsNull) {
-  CreateCanvasResourceDispatcher(nullptr);
-
-  // When agent_group_scheduler_compositor_task_runner is null,
-  // PostImageToPlaceholder should not be called.
-  EXPECT_CALL(*(Dispatcher()), PostImageToPlaceholder(_)).Times(0);
-  auto frame1 = DispatchOneFrame();
-  EXPECT_EQ(0u, GetNumPendingPlaceholderResources());
-}
-
-TEST_F(CanvasResourceDispatcherTest, PlaceholderBeingBlocked) {
-  CreateCanvasResourceDispatcher();
-  /* When main thread is blocked, attempting to post one more than the max
-   * number of pending frames will result in the latest attempt being saved as
-   * an unposted resource. */
-  EXPECT_CALL(*(Dispatcher()), PostImageToPlaceholder(_))
-      .Times(CanvasResourceDispatcher::kMaxPendingPlaceholderResources);
-
-  // Attempt to post kMaxPendingPlaceholderResources+1 times
-  auto frame1 = DispatchOneFrame();
-  auto frame2 = DispatchOneFrame();
-  std::vector<scoped_refptr<CanvasResource>> other_frames;
-  for (unsigned i = 0;
-       i < CanvasResourceDispatcher::kMaxPendingPlaceholderResources - 1; i++) {
-    other_frames.push_back(DispatchOneFrame());
-  }
-  EXPECT_EQ(CanvasResourceDispatcher::kMaxPendingPlaceholderResources,
-            GetNumPendingPlaceholderResources());
-  EXPECT_TRUE(GetLatestUnpostedImage());
-
-  // Attempt to post again. The latest unposted image will be replaced.
-  other_frames.push_back(DispatchOneFrame());
-  EXPECT_EQ(CanvasResourceDispatcher::kMaxPendingPlaceholderResources,
-            GetNumPendingPlaceholderResources());
-  EXPECT_TRUE(GetLatestUnpostedImage());
-
-  Mock::VerifyAndClearExpectations(Dispatcher());
-
-  /* The main thread becoming unblocked will trigger CanvasResourceDispatcher
-   * to post the last saved image. */
-  EXPECT_CALL(*(Dispatcher()), PostImageToPlaceholder(_));
-  Dispatcher()->OnMainThreadReceivedImage();
-
-  // The main thread received 1 frame and the dispatcher thread posted 1 frame,
-  // so the number of pending placeholder resources should have remained the
-  // same.
-  EXPECT_EQ(CanvasResourceDispatcher::kMaxPendingPlaceholderResources,
-            GetNumPendingPlaceholderResources());
-  // Not generating new resource Id
-  EXPECT_FALSE(GetLatestUnpostedImage());
-  Mock::VerifyAndClearExpectations(Dispatcher());
-
-  EXPECT_CALL(*(Dispatcher()), PostImageToPlaceholder(_)).Times(0);
-  Dispatcher()->OnMainThreadReceivedImage();
-  EXPECT_EQ(CanvasResourceDispatcher::kMaxPendingPlaceholderResources - 1,
-            GetNumPendingPlaceholderResources());
-  Mock::VerifyAndClearExpectations(Dispatcher());
-
-  // The dispatcher requires all of its CanvasResources to be live when it is
-  // destroyed, so reset it before `other_frames` goes out of scope.
-  ResetDispatcher();
-}
 
 TEST_F(CanvasResourceDispatcherTest, UsesRealOnBeginFrameWhenActive) {
   ScopedTestingPlatformSupport<TestingPlatformSupport> platform;
@@ -251,24 +130,24 @@ TEST_F(CanvasResourceDispatcherTest, UsesRealOnBeginFrameWhenActive) {
       mock_embedded_frame_sink_provider.CreateScopedOverrideMojoInterface(
           &embedded_frame_sink_provider_receiver);
 
-  CreateCanvasResourceDispatcher();
-  Dispatcher()->SetAnimationState(
-      CanvasResourceDispatcher::AnimationState::kActive);
+  CreateDispatcher();
+  dispatcher()->SetAnimationState(
+      OffscreenCanvasPlaceholder::AnimationState::kActive);
   platform->RunUntilIdle();
   EXPECT_CALL(mock_embedded_frame_sink_provider.mock_compositor_frame_sink(),
               SetNeedsBeginFrame(true))
       .Times(AtLeast(1));
-  Dispatcher()->SetNeedsBeginFrame(true);
+  dispatcher()->SetNeedsBeginFrame(true);
   platform->RunUntilIdle();
   // Advance time, and verify that there isn't a synthetic OBF generated for the
   // client by the dispatcher.
-  EXPECT_CALL(Dispatcher()->MockClient(), BeginFrame()).Times(0);
+  EXPECT_CALL(MockClient(), BeginFrame()).Times(0);
   TaskEnvironment().FastForwardBy(base::Seconds(0.25));
   platform->RunUntilIdle();
 
   // Verify that the client's BeginFrame is called in response to a real OBF.
-  EXPECT_CALL(Dispatcher()->MockClient(), BeginFrame()).Times(1);
-  Dispatcher()->OnBeginFrame(/*begin_frame_args=*/{}, /*timing details*/ {},
+  EXPECT_CALL(MockClient(), BeginFrame()).Times(1);
+  dispatcher()->OnBeginFrame(/*begin_frame_args=*/{}, /*timing details*/ {},
                              /*resources=*/{});
 }
 
@@ -283,18 +162,18 @@ TEST_F(CanvasResourceDispatcherTest,
       mock_embedded_frame_sink_provider.CreateScopedOverrideMojoInterface(
           &embedded_frame_sink_provider_receiver);
 
-  CreateCanvasResourceDispatcher();
-  Dispatcher()->SetAnimationState(
-      CanvasResourceDispatcher::AnimationState::kActiveWithSyntheticTiming);
+  CreateDispatcher();
+  dispatcher()->SetAnimationState(
+      OffscreenCanvasPlaceholder::AnimationState::kActiveWithSyntheticTiming);
   platform->RunUntilIdle();
   EXPECT_CALL(mock_embedded_frame_sink_provider.mock_compositor_frame_sink(),
               SetNeedsBeginFrame(false))
       .Times(AtLeast(1));
-  Dispatcher()->SetNeedsBeginFrame(true);
+  dispatcher()->SetNeedsBeginFrame(true);
   platform->RunUntilIdle();
   // Advance time and make sure that we still get a CompositorFrame, even though
   // we don't send any OBF.
-  EXPECT_CALL(Dispatcher()->MockClient(), BeginFrame()).Times(AtLeast(1));
+  EXPECT_CALL(MockClient(), BeginFrame()).Times(AtLeast(1));
   TaskEnvironment().FastForwardBy(base::Seconds(0.25));
   platform->RunUntilIdle();
 }
@@ -309,9 +188,9 @@ TEST_F(CanvasResourceDispatcherTest, UsesNoOnBeginFrameWhenSuspended) {
       mock_embedded_frame_sink_provider.CreateScopedOverrideMojoInterface(
           &embedded_frame_sink_provider_receiver);
 
-  CreateCanvasResourceDispatcher();
-  Dispatcher()->SetAnimationState(
-      CanvasResourceDispatcher::AnimationState::kSuspended);
+  CreateDispatcher();
+  dispatcher()->SetAnimationState(
+      OffscreenCanvasPlaceholder::AnimationState::kSuspended);
   platform->RunUntilIdle();
   // Since OBF is off by default zero or more calls to turn it off is okay.  For
   // clarity, explicitly require no calls that would enable OBF.
@@ -321,11 +200,11 @@ TEST_F(CanvasResourceDispatcherTest, UsesNoOnBeginFrameWhenSuspended) {
   EXPECT_CALL(mock_embedded_frame_sink_provider.mock_compositor_frame_sink(),
               SetNeedsBeginFrame(true))
       .Times(0);
-  Dispatcher()->SetNeedsBeginFrame(true);
+  dispatcher()->SetNeedsBeginFrame(true);
   platform->RunUntilIdle();
   // Advance time, and verify that there isn't a synthetic OBF generated for the
   // client by the dispatcher.
-  EXPECT_CALL(Dispatcher()->MockClient(), BeginFrame()).Times(0);
+  EXPECT_CALL(MockClient(), BeginFrame()).Times(0);
   TaskEnvironment().FastForwardBy(base::Seconds(0.25));
   platform->RunUntilIdle();
 }
@@ -345,14 +224,14 @@ TEST_P(CanvasResourceDispatcherTest, DispatchFrame) {
       mock_embedded_frame_sink_provider.CreateScopedOverrideMojoInterface(
           &embedded_frame_sink_provider_receiver);
 
-  CreateCanvasResourceDispatcher();
-  Dispatcher()->SetAnimationState(GetParam().animation_state);
+  CreateDispatcher();
+  dispatcher()->SetAnimationState(GetParam().animation_state);
   // Throttling should be allowed if the animation is suspended.  If it's active
   // or if it's using a synthetic OBF, then the intention is that viz should not
   // throttle since the canvas might be driving some on-screen work indirectly.
   const bool expected_throttle =
       GetParam().animation_state ==
-      CanvasResourceDispatcher::AnimationState::kSuspended;
+      OffscreenCanvasPlaceholder::AnimationState::kSuspended;
 
   // CanvasResourceDispatcher ctor will cause a CreateCompositorFrameSink() to
   // be issued.
@@ -377,7 +256,6 @@ TEST_P(CanvasResourceDispatcherTest, DispatchFrame) {
   ASSERT_LE(kDamageWidth, kWidth);
   ASSERT_LE(kDamageHeight, kHeight);
 
-  EXPECT_CALL(*(Dispatcher()), PostImageToPlaceholder(_));
   EXPECT_CALL(mock_embedded_frame_sink_provider.mock_compositor_frame_sink(),
               SubmitCompositorFrame_(_))
       .WillOnce(
@@ -416,23 +294,204 @@ TEST_P(CanvasResourceDispatcherTest, DispatchFrame) {
           }));
 
   const gfx::Rect damage_rect(kDamageWidth, kDamageHeight);
-  Dispatcher()->DispatchFrame(canvas_resource, damage_rect,
+  auto exported_resource =
+      base::MakeRefCounted<ExportedCanvasResource>(std::move(canvas_resource));
+  dispatcher()->DispatchFrame(std::move(exported_resource), damage_rect,
                               !context_alpha /* is_opaque */);
   platform->RunUntilIdle();
-  Dispatcher()->OnMainThreadReceivedImage();
 }
 
 const TestParams kTestCases[] = {
     {false /* context_alpha */,
-     CanvasResourceDispatcher::AnimationState::kActive},
-    {true, CanvasResourceDispatcher::AnimationState::kActive},
+     OffscreenCanvasPlaceholder::AnimationState::kActive},
+    {true, OffscreenCanvasPlaceholder::AnimationState::kActive},
     // These test the requested throttling state.  Alpha doesn't matter.
     {false,
-     CanvasResourceDispatcher::AnimationState::kActiveWithSyntheticTiming},
-    {false, CanvasResourceDispatcher::AnimationState::kSuspended},
+     OffscreenCanvasPlaceholder::AnimationState::kActiveWithSyntheticTiming},
+    {false, OffscreenCanvasPlaceholder::AnimationState::kSuspended},
 };
 
 INSTANTIATE_TEST_SUITE_P(All,
                          CanvasResourceDispatcherTest,
                          ValuesIn(kTestCases));
+
+namespace {
+
+class MockBeginFrameProviderClient final
+    : public GarbageCollected<MockBeginFrameProviderClient>,
+      public BeginFrameProviderClient {
+ public:
+  MOCK_METHOD(void, BeginFrame, (const viz::BeginFrameArgs&), (override));
+  scoped_refptr<base::SingleThreadTaskRunner> GetCompositorTaskRunner()
+      override {
+    return scheduler::GetSingleThreadTaskRunnerForTesting();
+  }
+  void Trace(Visitor* visitor) const override {
+    BeginFrameProviderClient::Trace(visitor);
+  }
+};
+
+viz::BeginFrameArgs CreateBeginFrameArgs(uint64_t sequence_number,
+                                         base::TimeTicks frame_time,
+                                         base::TimeDelta interval) {
+  return viz::BeginFrameArgs::Create(
+      BEGINFRAME_FROM_HERE, /*source_id=*/1, sequence_number, frame_time,
+      frame_time + interval, interval, viz::BeginFrameArgs::NORMAL);
+}
+
+}  // namespace
+
+TEST_F(CanvasResourceDispatcherTest, ThrottlesOnBeginFrameTo60HzWhenEnabled) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitWithFeatures(
+      {features::kThrottleMainFrameTo60Hz,
+       features::kThrottleOffscreenCanvasTo60Hz},
+      {});
+  ScopedTestingPlatformSupport<TestingPlatformSupport> platform;
+
+  MockEmbeddedFrameSinkProvider mock_embedded_frame_sink_provider;
+  mojo::Receiver<mojom::blink::EmbeddedFrameSinkProvider>
+      embedded_frame_sink_provider_receiver(&mock_embedded_frame_sink_provider);
+  auto scoped_override =
+      mock_embedded_frame_sink_provider.CreateScopedOverrideMojoInterface(
+          &embedded_frame_sink_provider_receiver);
+
+  CreateDispatcher();
+  dispatcher()->SetAnimationState(
+      OffscreenCanvasPlaceholder::AnimationState::kActive);
+  embedded_frame_sink_provider_receiver.FlushForTesting();
+
+  EXPECT_CALL(MockClient(), BeginFrame())
+      .Times(5)
+      .WillRepeatedly(testing::Return(true));
+  EXPECT_CALL(mock_embedded_frame_sink_provider.mock_compositor_frame_sink(),
+              DidNotProduceFrame(_))
+      .Times(5);
+
+  const base::TimeDelta interval_120hz = base::Hertz(120);
+  for (uint64_t i = 1; i <= 10; ++i) {
+    dispatcher()->OnBeginFrame(
+        CreateBeginFrameArgs(i, TaskEnvironment().NowTicks(), interval_120hz),
+        /*timing_details=*/{}, /*resources=*/{});
+    TaskEnvironment().FastForwardBy(interval_120hz);
+  }
+  Mock::VerifyAndClearExpectations(&MockClient());
+  Mock::VerifyAndClearExpectations(
+      &mock_embedded_frame_sink_provider.mock_compositor_frame_sink());
+
+  // Frame 10 was throttled (early return). Verify that current_begin_frame_ack_
+  // was invalidated so a subsequent out-of-band frame submission uses a manual
+  // ack rather than reusing the already-acked throttled frame ID.
+  EXPECT_CALL(mock_embedded_frame_sink_provider.mock_compositor_frame_sink(),
+              SubmitCompositorFrame_(_))
+      .WillOnce(::testing::WithArg<0>([](const viz::CompositorFrame* frame) {
+        EXPECT_EQ(frame->metadata.begin_frame_ack.frame_id.source_id,
+                  viz::BeginFrameArgs::kManualSourceId);
+      }));
+  DispatchOneFrame();
+  embedded_frame_sink_provider_receiver.FlushForTesting();
+  dispatcher()->DidReceiveCompositorFrameAck(/*resources=*/{});
+  Mock::VerifyAndClearExpectations(
+      &mock_embedded_frame_sink_provider.mock_compositor_frame_sink());
+
+  // If Client()->BeginFrame() returns false (no frame submitted),
+  // last_begin_frame_time_ should not advance, so the very next frame should
+  // not be throttled.
+  EXPECT_CALL(MockClient(), BeginFrame())
+      .WillOnce(testing::Return(false))
+      .WillOnce(testing::Return(true));
+  EXPECT_CALL(mock_embedded_frame_sink_provider.mock_compositor_frame_sink(),
+              DidNotProduceFrame(_))
+      .Times(1);
+  dispatcher()->OnBeginFrame(
+      CreateBeginFrameArgs(11, TaskEnvironment().NowTicks(), interval_120hz),
+      /*timing_details=*/{}, /*resources=*/{});
+  TaskEnvironment().FastForwardBy(interval_120hz);
+  dispatcher()->OnBeginFrame(
+      CreateBeginFrameArgs(12, TaskEnvironment().NowTicks(), interval_120hz),
+      /*timing_details=*/{}, /*resources=*/{});
+  TaskEnvironment().FastForwardBy(interval_120hz);
+  Mock::VerifyAndClearExpectations(&MockClient());
+  Mock::VerifyAndClearExpectations(
+      &mock_embedded_frame_sink_provider.mock_compositor_frame_sink());
+
+  // 60Hz and 90Hz intervals should not be throttled.
+  const base::TimeDelta interval_90hz = base::Hertz(90);
+  EXPECT_CALL(MockClient(), BeginFrame())
+      .Times(4)
+      .WillRepeatedly(testing::Return(true));
+  for (uint64_t i = 13; i <= 16; ++i) {
+    dispatcher()->OnBeginFrame(
+        CreateBeginFrameArgs(i, TaskEnvironment().NowTicks(), interval_90hz),
+        /*timing_details=*/{}, /*resources=*/{});
+    TaskEnvironment().FastForwardBy(interval_90hz);
+  }
+  Mock::VerifyAndClearExpectations(&MockClient());
+
+  // Disabling kThrottleOffscreenCanvasTo60Hz should stop throttling 120Hz
+  // frames even when kThrottleMainFrameTo60Hz is enabled.
+  scoped_feature_list.Reset();
+  scoped_feature_list.InitWithFeatures(
+      {features::kThrottleMainFrameTo60Hz},
+      {features::kThrottleOffscreenCanvasTo60Hz});
+  EXPECT_CALL(MockClient(), BeginFrame())
+      .Times(4)
+      .WillRepeatedly(testing::Return(true));
+  for (uint64_t i = 17; i <= 20; ++i) {
+    dispatcher()->OnBeginFrame(
+        CreateBeginFrameArgs(i, TaskEnvironment().NowTicks(), interval_120hz),
+        /*timing_details=*/{}, /*resources=*/{});
+    TaskEnvironment().FastForwardBy(interval_120hz);
+  }
+}
+
+TEST_F(CanvasResourceDispatcherTest,
+       BeginFrameProviderThrottlesTo60HzWhenEnabled) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitWithFeatures(
+      {features::kThrottleMainFrameTo60Hz,
+       features::kThrottleOffscreenCanvasTo60Hz},
+      {});
+  ScopedTestingPlatformSupport<TestingPlatformSupport> platform;
+
+  MockEmbeddedFrameSinkProvider mock_embedded_frame_sink_provider;
+  mock_embedded_frame_sink_provider
+      .set_num_expected_set_needs_begin_frame_on_sink_construction(1);
+  mojo::Receiver<mojom::blink::EmbeddedFrameSinkProvider>
+      embedded_frame_sink_provider_receiver(&mock_embedded_frame_sink_provider);
+  auto scoped_override =
+      mock_embedded_frame_sink_provider.CreateScopedOverrideMojoInterface(
+          &embedded_frame_sink_provider_receiver);
+
+  auto* context = MakeGarbageCollected<MockContextLifecycleNotifier>();
+  auto* client = MakeGarbageCollected<MockBeginFrameProviderClient>();
+  BeginFrameProviderParams params;
+  params.parent_frame_sink_id = viz::FrameSinkId(kClientId, kSinkId);
+  params.frame_sink_id = viz::FrameSinkId(kClientId, kSinkId + 1);
+  auto* provider =
+      MakeGarbageCollected<BeginFrameProvider>(params, client, context);
+
+  provider->RequestBeginFrame();
+  embedded_frame_sink_provider_receiver.FlushForTesting();
+
+  EXPECT_CALL(*client, BeginFrame(_))
+      .Times(5)
+      .WillRepeatedly([provider](const viz::BeginFrameArgs& args) {
+        provider->FinishBeginFrame(args);
+        provider->RequestBeginFrame();
+      });
+  // 5 throttled frames + 5 FinishBeginFrame calls = 10 DidNotProduceFrame acks.
+  EXPECT_CALL(mock_embedded_frame_sink_provider.mock_compositor_frame_sink(),
+              DidNotProduceFrame(_))
+      .Times(10);
+
+  const base::TimeDelta interval_120hz = base::Hertz(120);
+  for (uint64_t i = 1; i <= 10; ++i) {
+    provider->OnBeginFrame(
+        CreateBeginFrameArgs(i, TaskEnvironment().NowTicks(), interval_120hz),
+        /*timing_details=*/{}, /*resources=*/{});
+    TaskEnvironment().FastForwardBy(interval_120hz);
+  }
+}
+
 }  // namespace blink

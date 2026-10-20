@@ -5,8 +5,8 @@
 #include "ui/views/view_shadow.h"
 
 #include "ui/compositor/layer.h"
-#include "ui/compositor_extra/shadow.h"
-#include "ui/gfx/shadow_util.h"
+#include "ui/decoration/shadow.h"
+#include "ui/gfx/geometry/rounded_corners_f.h"
 #include "ui/views/test/views_test_base.h"
 #include "ui/views/view.h"
 
@@ -29,7 +29,7 @@ TEST_F(ViewShadowTest, UseShadow) {
 
   ASSERT_EQ(4u, root.layer()->children().size());
   EXPECT_EQ(v1->layer(), root.layer()->children()[0]);
-  EXPECT_EQ(shadow->shadow()->layer(), root.layer()->children()[1]);
+  EXPECT_EQ(shadow->decoration()->layer(), root.layer()->children()[1]);
   EXPECT_EQ(v2->layer(), root.layer()->children()[2]);
   EXPECT_EQ(v3->layer(), root.layer()->children()[3]);
 
@@ -46,10 +46,11 @@ TEST_F(ViewShadowTest, ShadowBoundsFollowView) {
 
   ViewShadow shadow(&view, 1);
 
-  EXPECT_EQ(gfx::Rect(10, 20, 30, 40), shadow.shadow()->content_bounds());
+  EXPECT_EQ(gfx::Rect(10, 20, 30, 40), shadow.decoration()->content_bounds());
 
   view.SetBoundsRect(gfx::Rect(100, 110, 120, 130));
-  EXPECT_EQ(gfx::Rect(100, 110, 120, 130), shadow.shadow()->content_bounds());
+  EXPECT_EQ(gfx::Rect(100, 110, 120, 130),
+            shadow.decoration()->content_bounds());
 }
 
 TEST_F(ViewShadowTest, ShadowBoundsFollowIndirectViewBoundsChange) {
@@ -63,10 +64,10 @@ TEST_F(ViewShadowTest, ShadowBoundsFollowIndirectViewBoundsChange) {
   view->SetBoundsRect(gfx::Rect(5, 10, 20, 30));
 
   ViewShadow shadow(view, 1);
-  EXPECT_EQ(gfx::Rect(15, 30, 20, 30), shadow.shadow()->content_bounds());
+  EXPECT_EQ(gfx::Rect(15, 30, 20, 30), shadow.decoration()->content_bounds());
 
   parent->SetBoundsRect(gfx::Rect(5, 15, 60, 70));
-  EXPECT_EQ(gfx::Rect(10, 25, 20, 30), shadow.shadow()->content_bounds());
+  EXPECT_EQ(gfx::Rect(10, 25, 20, 30), shadow.decoration()->content_bounds());
 }
 
 TEST_F(ViewShadowTest, ViewDestruction) {
@@ -88,7 +89,7 @@ TEST_F(ViewShadowTest, ShadowKeepsLayerType) {
   view.SetBoundsRect(gfx::Rect(10, 20, 30, 40));
   ViewShadow shadow(&view, 1);
   EXPECT_TRUE(view.layer());
-  EXPECT_EQ(ui::LAYER_SOLID_COLOR, view.layer()->type());
+  EXPECT_TRUE(view.layer()->AsSolidColor());
 }
 
 // Tests the shadow layer will not shift when the view's layer is reparented to
@@ -104,14 +105,23 @@ TEST_F(ViewShadowTest, NoShiftWhenReparentViewLayer) {
   ViewShadow shadow(view, 1);
 
   // Cache current shadow position.
-  const gfx::Point pos = shadow.shadow()->layer()->bounds().origin();
+  const gfx::Point pos = shadow.decoration()->layer()->bounds().origin();
 
   // Reparent the view's layer to another layer.
   View root2;
   root2.SetPaintToLayer();
   root2.AddChildViewRaw(view);
   // Check if the shadow layer shifted.
-  EXPECT_EQ(pos, shadow.shadow()->layer()->bounds().origin());
+  EXPECT_EQ(pos, shadow.decoration()->layer()->bounds().origin());
+}
+
+TEST_F(ViewShadowTest, SetRoundedCorners) {
+  View view;
+  ViewShadow shadow(&view, 1);
+
+  const gfx::RoundedCornersF radii(10, 20, 30, 40);
+  shadow.SetRoundedCorners(radii);
+  EXPECT_EQ(radii, shadow.decoration()->rounded_corners());
 }
 
 }  // namespace views

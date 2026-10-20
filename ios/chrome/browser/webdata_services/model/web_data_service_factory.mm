@@ -12,7 +12,6 @@
 #import "components/application_locale_storage/application_locale_storage.h"
 #import "components/autofill/core/browser/webdata/autofill_webdata_service.h"
 #import "components/keyed_service/core/service_access_type.h"
-#import "components/plus_addresses/core/browser/webdata/plus_address_webdata_service.h"
 #import "components/search_engines/keyword_web_data_service.h"
 #import "components/signin/public/webdata/token_web_data.h"
 #import "components/webdata_services/web_data_service_wrapper.h"
@@ -29,7 +28,11 @@ std::unique_ptr<KeyedService> BuildWebDataService(ProfileIOS* profile) {
   const base::FilePath& state_path = profile->GetStatePath();
   // On iOS (and Android), the account storage is persisted on disk.
   return std::make_unique<WebDataServiceWrapper>(
-      state_path, GetApplicationContext()->GetApplicationLocaleStorage()->Get(),
+      state_path,
+      std::string(GetApplicationContext()
+                      ->GetApplicationLocaleStorage()
+                      ->GetTag()
+                      .tag_string()),
       web::GetUIThreadTaskRunner({}), base::DoNothing(),
       GetApplicationContext()->GetOSCryptAsync());
 }
@@ -81,15 +84,6 @@ WebDataServiceFactory::GetKeywordWebDataForProfile(
     ServiceAccessType access_type) {
   WebDataServiceWrapper* wrapper = GetForProfile(profile, access_type);
   return wrapper ? wrapper->GetKeywordWebData() : nullptr;
-}
-
-// static
-scoped_refptr<plus_addresses::PlusAddressWebDataService>
-WebDataServiceFactory::GetPlusAddressWebDataForProfile(
-    ProfileIOS* profile,
-    ServiceAccessType access_type) {
-  WebDataServiceWrapper* wrapper = GetForProfile(profile, access_type);
-  return wrapper ? wrapper->GetPlusAddressWebData() : nullptr;
 }
 
 // static

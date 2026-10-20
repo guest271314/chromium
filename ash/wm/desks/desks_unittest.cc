@@ -42,7 +42,6 @@
 #include "ash/shelf/shelf_widget.h"
 #include "ash/shell.h"
 #include "ash/strings/grit/ash_strings.h"
-#include "ash/style/ash_color_provider.h"
 #include "ash/style/close_button.h"
 #include "ash/style/color_util.h"
 #include "ash/test/ash_test_base.h"
@@ -97,9 +96,11 @@
 #include "ash/wm/workspace/workspace_layout_manager.h"
 #include "ash/wm/workspace_controller.h"
 #include "base/i18n/rtl.h"
+#include "base/i18n/test/scoped_rtl_for_testing.h"
 #include "base/memory/raw_ptr.h"
 #include "base/run_loop.h"
 #include "base/scoped_observation.h"
+#include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
@@ -136,7 +137,7 @@
 #include "ui/compositor/layer.h"
 #include "ui/compositor/layer_animator.h"
 #include "ui/compositor/test/layer_animation_stopped_waiter.h"
-#include "ui/compositor_extra/shadow.h"
+#include "ui/decoration/decoration.h"
 #include "ui/display/display.h"
 #include "ui/display/display_switches.h"
 #include "ui/display/screen.h"
@@ -1710,10 +1711,11 @@ TEST_P(DesksTest, DragWindowToDesk) {
   wm::ActivateWindow(win1.get());
   EXPECT_EQ(win1.get(), window_util::GetActiveWindow());
 
-  ui::Shadow* shadow = ::wm::ShadowController::GetShadowForWindow(win1.get());
-  ASSERT_TRUE(shadow);
-  ASSERT_TRUE(shadow->layer());
-  EXPECT_TRUE(shadow->layer()->GetTargetVisibility());
+  ui::Decoration* shadow_decoration =
+      ::wm::ShadowController::GetShadowDecorationForWindow(win1.get());
+  ASSERT_TRUE(shadow_decoration);
+  ASSERT_TRUE(shadow_decoration->layer());
+  EXPECT_TRUE(shadow_decoration->layer()->GetTargetVisibility());
 
   auto* overview_controller = OverviewController::Get();
   EnterOverview();
@@ -1722,7 +1724,7 @@ TEST_P(DesksTest, DragWindowToDesk) {
   EXPECT_EQ(2u, overview_grid->GetNumWindows());
 
   // While in overview mode, the window's shadow is hidden.
-  EXPECT_FALSE(shadow->layer()->GetTargetVisibility());
+  EXPECT_FALSE(shadow_decoration->layer()->GetTargetVisibility());
 
   auto* overview_session = overview_controller->overview_session();
   auto* overview_item = overview_session->GetOverviewItemForWindow(win1.get());
@@ -1781,7 +1783,7 @@ TEST_P(DesksTest, DragWindowToDesk) {
 
   // After the window is dropped onto another desk, its shadow should be
   // restored properly.
-  EXPECT_TRUE(shadow->layer()->GetTargetVisibility());
+  EXPECT_TRUE(shadow_decoration->layer()->GetTargetVisibility());
 }
 
 // Tests that theme change during drag to close does not trigger any crashes.
@@ -4101,8 +4103,9 @@ class DesksPerDeskZOrderTest : public AshTestBase {
           [&](Desk* desk, aura::Window* root,
               const std::vector<int>& expected_windows,
               const std::string& debug_info) {
-            SCOPED_TRACE("Verify " + base::UTF16ToUTF8(desk->name()) + " " +
-                         root->GetName() + " " + debug_info);
+            SCOPED_TRACE(
+                base::StrCat({"Verify ", base::UTF16ToUTF8(desk->name()), " ",
+                              root->GetName(), " ", debug_info}));
             ToggleOverview();
 
             // Retrieves the mirrored layers `mirrored_layers` of application
@@ -8937,6 +8940,11 @@ class DeskBarTest : public AshTestBase,
   DeskBarTest& operator=(const DeskBarTest&) = delete;
   ~DeskBarTest() override = default;
 
+  void SetUpInitParams(AshTestHelper::InitParams& init_params) override {
+    AshTestBase::SetUpInitParams(init_params);
+    init_params.add_default_shelf_icon = false;
+  }
+
   void SetUp() override {
     std::tie(use_touch_gestures_, use_16_desks_, bar_type_) = GetParam();
 
@@ -10578,6 +10586,11 @@ class DeskButtonTest
   ~DeskButtonTest() override = default;
 
   // AshTestBase:
+  void SetUpInitParams(AshTestHelper::InitParams& init_params) override {
+    AshTestBase::SetUpInitParams(init_params);
+    init_params.add_default_shelf_icon = false;
+  }
+
   void SetUp() override {
     AshTestBase::SetUp();
     shelf_test_api_ = std::make_unique<ShelfViewTestAPI>(
@@ -11394,10 +11407,6 @@ TEST_P(DesksAcceleratorsTest, DeskSwitchScreenshotMetricsRecording) {
 
 TEST_P(DesksTest, DeskCreationBlockedDuringKioskSession) {
   // Enter Kiosk session.
-  TestingPrefServiceSimple local_state;
-  user_manager::UserManager::RegisterPrefs(local_state.registry());
-  user_manager::ScopedUserManager user_manager(
-      std::make_unique<user_manager::FakeUserManager>(&local_state));
   chromeos::SetUpFakeChromeAppKioskSession();
 
   DesksController* desks_controller = DesksController::Get();

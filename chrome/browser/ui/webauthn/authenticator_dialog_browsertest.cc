@@ -21,6 +21,8 @@
 #include "base/scoped_observation.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/test/bind.h"
+#include "base/test/metrics/histogram_tester.h"
+#include "base/test/scoped_feature_list.h"
 #include "base/test/test_future.h"
 #include "base/time/time.h"
 #include "base/timer/timer.h"
@@ -28,8 +30,8 @@
 #include "chrome/browser/lifetime/application_lifetime.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/signin/signin_browser_test_base.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_window.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/passwords/manage_passwords_ui_controller.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/test/test_browser_dialog.h"
@@ -43,6 +45,7 @@
 #include "chrome/test/base/ui_test_utils.h"
 #include "components/signin/public/base/consent_level.h"
 #include "components/signin/public/identity_manager/identity_test_utils.h"
+#include "components/trusted_vault/trusted_vault_histograms.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_contents_observer.h"
@@ -53,7 +56,7 @@
 #include "device/fido/discoverable_credential_metadata.h"
 #include "device/fido/fido_request_handler_base.h"
 #include "device/fido/pin.h"
-#include "device/fido/public/cable_discovery_data.h"
+#include "device/fido/public/features.h"
 #include "device/fido/public/fido_constants.h"
 #include "device/fido/public/fido_transport_protocol.h"
 #include "device/fido/public/fido_types.h"
@@ -162,7 +165,7 @@ class AuthenticatorDialogTest : public DialogBrowserTest {
   void SetUpOnMainThread() override {
     DialogBrowserTest::SetUpOnMainThread();
     signin::MakePrimaryAccountAvailable(
-        IdentityManagerFactory::GetForProfile(browser()->profile()),
+        IdentityManagerFactory::GetForProfile(browser()->GetProfile()),
         "user@example.com", signin::ConsentLevel::kSignin);
   }
 
@@ -248,8 +251,7 @@ class AuthenticatorDialogTest : public DialogBrowserTest {
       controller_->SetCurrentStepForTesting(
           AuthenticatorRequestDialogModel::Step::kOffTheRecordInterstitial);
     } else if (name == "cable_v2_pair") {
-      controller_->set_cable_transport_info(
-          /*extension_is_v2=*/std::nullopt, "fido://qrcode");
+      controller_->set_cable_transport_info("fido://qrcode");
       controller_->SetCurrentStepForTesting(
           AuthenticatorRequestDialogModel::Step::kCableV2QRCode);
     } else if (name == "cable_v2_connecting") {
@@ -424,11 +426,7 @@ class AuthenticatorDialogTest : public DialogBrowserTest {
       controller_->SelectAccount(
           std::move(responses),
           base::BindOnce([](device::AuthenticatorGetAssertionResponse) {}));
-    } else if (name == "server_link_title_UNLOCK_YOUR_PHONE") {
-      controller_->set_cable_transport_info(
-          /*extension_is_v2=*/true, "fido://qrcode");
-      controller_->SetCurrentStepForTesting(
-          AuthenticatorRequestDialogModel::Step::kCableActivate);
+
     } else if (name == "create_passkey") {
       controller_->SetCurrentStepForTesting(
           AuthenticatorRequestDialogModel::Step::kChromeProfileCreatePasskey);
@@ -633,11 +631,6 @@ IN_PROC_BROWSER_TEST_F(AuthenticatorDialogTest,
   ShowAndVerifyUi();
 }
 
-IN_PROC_BROWSER_TEST_F(AuthenticatorDialogTest,
-                       InvokeUi_server_link_title_UNLOCK_YOUR_PHONE) {
-  ShowAndVerifyUi();
-}
-
 #if BUILDFLAG(IS_MAC)
 IN_PROC_BROWSER_TEST_F(AuthenticatorDialogTest, InvokeUi_ble_permission_mac) {
   ShowAndVerifyUi();
@@ -658,7 +651,7 @@ class GPMPasskeysAuthenticatorDialogTest : public DialogBrowserTest {
  public:
   void SetUpOnMainThread() override {
     signin::MakePrimaryAccountAvailable(
-        IdentityManagerFactory::GetForProfile(browser()->profile()),
+        IdentityManagerFactory::GetForProfile(browser()->GetProfile()),
         "user@example.com", signin::ConsentLevel::kSignin);
   }
 
@@ -724,8 +717,7 @@ class GPMPasskeysAuthenticatorDialogTest : public DialogBrowserTest {
                                               "Elisa Beckett"),
         "Another Example Passkey Provider");
     model_->user_entity = local_cred1.user;
-    controller_->set_cable_transport_info(
-        /*extension_is_v2=*/std::nullopt, "fido://qrcode");
+    controller_->set_cable_transport_info("fido://qrcode");
 
     if (name == "no_passkeys_discovered") {
       transport_availability.recognized_credentials = {};
@@ -1101,17 +1093,18 @@ class AuthenticatorWindowTest : public SigninBrowserTestBase {
 // EnclaveManager.
 class QuitBrowserWhenKeysStored : public EnclaveManager::Observer {
  public:
-  explicit QuitBrowserWhenKeysStored(Browser* browser) : browser_(browser) {
+  explicit QuitBrowserWhenKeysStored(BrowserWindowInterface* browser)
+      : browser_(browser) {
     EnclaveManager* const enclave_manager =
         EnclaveManagerFactory::GetAsEnclaveManagerForProfile(
-            browser_->profile());
+            browser_->GetProfile());
     enclave_manager->AddObserver(this);
     store_keys_lock_ = enclave_manager->GetStoreKeysLock();
   }
 
   // EnclaveManager::Observer
   void OnKeysStored(const GaiaId& gaia_id) override {
-    EnclaveManagerFactory::GetAsEnclaveManagerForProfile(browser_->profile())
+    EnclaveManagerFactory::GetAsEnclaveManagerForProfile(browser_->GetProfile())
         ->RemoveObserver(this);
     browser_ = nullptr;
 
@@ -1120,7 +1113,7 @@ class QuitBrowserWhenKeysStored : public EnclaveManager::Observer {
   }
 
  private:
-  raw_ptr<Browser> browser_;
+  raw_ptr<BrowserWindowInterface> browser_;
   std::unique_ptr<EnclaveManager::StoreKeysLock> store_keys_lock_;
 };
 
@@ -1293,6 +1286,7 @@ IN_PROC_BROWSER_TEST_F(AuthenticatorWindowTest, UINavigatesAway) {
 // Make sure the correct authuser index is set when invoking MagicArch for
 // account recovery.
 IN_PROC_BROWSER_TEST_F(AuthenticatorWindowTest, MultiAccountRecovery) {
+  base::HistogramTester histogram_tester;
   set_magic_arch_response(kRecoverySuccess);
   std::vector<AccountInfo> accounts = SetAccountsCookiesAndTokens(
       {"another@example.com", "primary@example.com"});
@@ -1307,6 +1301,40 @@ IN_PROC_BROWSER_TEST_F(AuthenticatorWindowTest, MultiAccountRecovery) {
       AuthenticatorRequestDialogModel::Step::kGPMRecoverSecurityDomain);
   navigation_observer.Wait();
   EXPECT_EQ(last_authuser_parameter_, "1");
+
+  histogram_tester.ExpectUniqueSample(
+      "TrustedVault.RecoveryFlowTriggeredEndpoint",
+      trusted_vault::TrustedVaultRecoveryFlowEndpoint::kDesktop, 1);
+}
+
+class AuthenticatorWindowTestWithEmbeddedRecoveryUrl
+    : public AuthenticatorWindowTest {
+ private:
+  base::test::ScopedFeatureList scoped_feature_list_{
+      device::kWebAuthnGpmPasskeyEmbeddedRecoveryUrl};
+};
+
+IN_PROC_BROWSER_TEST_F(AuthenticatorWindowTestWithEmbeddedRecoveryUrl,
+                       RecoverSecurityDomain_Embedded) {
+  base::HistogramTester histogram_tester;
+  set_magic_arch_response(kRecoverySuccess);
+  std::vector<AccountInfo> accounts = SetAccountsCookiesAndTokens(
+      {"another@example.com", "primary@example.com"});
+  identity_test_env()->SetPrimaryAccount("primary@example.com",
+                                         signin::ConsentLevel::kSignin);
+
+  GURL expected_url =
+      GaiaUrls::GetInstance()->SigninChromePasskeyUnlockDesktopEmbeddedUrl(1);
+  content::TestNavigationObserver navigation_observer(expected_url);
+  navigation_observer.StartWatchingNewWebContents();
+  model_->SetStep(
+      AuthenticatorRequestDialogModel::Step::kGPMRecoverSecurityDomain);
+  navigation_observer.Wait();
+
+  EXPECT_EQ(last_authuser_parameter_, "1");
+  histogram_tester.ExpectUniqueSample(
+      "TrustedVault.RecoveryFlowTriggeredEndpoint",
+      trusted_vault::TrustedVaultRecoveryFlowEndpoint::kDesktopEmbedded, 1);
 }
 
 // Regression test for crbug.com/505059790.
@@ -1347,7 +1375,7 @@ class PasskeyUpgradeConfirmationBubbleTest : public DialogBrowserTest {
     DialogBrowserTest::SetUpOnMainThread();
     host_resolver()->AddRule("*", "127.0.0.1");
     signin::MakePrimaryAccountAvailable(
-        IdentityManagerFactory::GetForProfile(browser()->profile()),
+        IdentityManagerFactory::GetForProfile(browser()->GetProfile()),
         "user@gmail.com", signin::ConsentLevel::kSync);
   }
 

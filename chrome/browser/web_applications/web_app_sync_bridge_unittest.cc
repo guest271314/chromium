@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "base/barrier_closure.h"
+#include "base/containers/span.h"
 #include "base/functional/bind.h"
 #include "base/notreached.h"
 #include "base/run_loop.h"
@@ -18,7 +19,7 @@
 #include "base/test/bind.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/test_future.h"
-#include "chrome/browser/web_applications/jobs/finalize_install_job.h"
+#include "chrome/browser/web_applications/jobs/finalize_install_or_update_job.h"
 #include "chrome/browser/web_applications/mojom/user_display_mode.mojom.h"
 #include "chrome/browser/web_applications/os_integration/os_integration_manager.h"
 #include "chrome/browser/web_applications/proto/web_app_install_state.pb.h"
@@ -39,7 +40,6 @@
 #include "chrome/browser/web_applications/web_app_database.h"
 #include "chrome/browser/web_applications/web_app_filter.h"
 #include "chrome/browser/web_applications/web_app_helpers.h"
-#include "chrome/browser/web_applications/web_app_install_finalizer.h"
 #include "chrome/browser/web_applications/web_app_management_type.h"
 #include "chrome/browser/web_applications/web_app_proto_utils.h"
 #include "chrome/browser/web_applications/web_app_registry_update.h"
@@ -665,8 +665,6 @@ TEST_F(WebAppSyncBridgeTest,
   // might be removed in the future.
   SetPlatformSpecificUserDisplayMode(
       sync_pb::WebAppSpecifics_UserDisplayMode_BROWSER, &sync_app_to_update);
-  WebAppSpecifics sync_app_to_delete =
-      GetSpecificsFromInstalledApp(app_id_to_delete);
 
   // Set up initial sync management source state.
   syncer::EntityChangeList sync_data_list;
@@ -1047,7 +1045,7 @@ TEST_F(WebAppSyncBridgeTest,
   WebAppTestRegistryObserverAdapter observer{&registrar()};
 
   observer.SetWebAppWillBeUpdatedFromSyncDelegate(base::BindLambdaForTesting(
-      [&](const std::vector<const WebApp*>& apps_to_update) {
+      [&](base::span<const WebApp* const> apps_to_update) {
         std::vector<webapps::AppId> app_ids;
         for (const WebApp* source : apps_to_update) {
           app_ids.push_back(source->app_id());
@@ -1405,7 +1403,7 @@ class WebAppSyncBridgeTest_UserDisplayModeSplit
       // UDM mitigations mess with the installed local state, disable them so
       // the state matches the intention of the test.
       : disable_user_display_mode_sync_mitigations_for_testing_(
-            &FinalizeInstallJob::
+            &FinalizeInstallOrUpdateJob::
                 DisableUserDisplayModeSyncMitigationsForTesting(),
             true)
 #endif  // BUILDFLAG(IS_CHROMEOS)

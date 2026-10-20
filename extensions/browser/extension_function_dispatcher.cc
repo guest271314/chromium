@@ -52,7 +52,6 @@
 #include "extensions/browser/service_worker/worker_id.h"
 #include "extensions/common/constants.h"
 #include "extensions/common/extension_api.h"
-#include "extensions/common/extension_features.h"
 #include "extensions/common/extension_set.h"
 #include "extensions/common/extension_urls.h"
 #include "extensions/common/mojom/context_type.mojom.h"
@@ -281,6 +280,20 @@ void ExtensionFunctionDispatcher::DispatchWithCallbackInternal(
 
   const GURL* render_frame_host_url = nullptr;
   if (render_frame_host) {
+    // Error pages commit with the target URL and in their parents' process, but
+    // aren't actually on the page indicated by the committed URL.
+    // Bail out in this case. Error pages don't use extension APIs.
+    // If we had perfect timing and no race conditions, this could be a sign of
+    // a bad message; however, it's possible a page commits to an error page
+    // after a legitimate message is sent.
+    if (render_frame_host->IsErrorDocument()) {
+      constexpr char kCannotUseExtensionAPIsInErrorPages[] =
+          "Cannot call extension APIs from error pages.";
+      ResponseCallbackOnError(std::move(callback),
+                              ExtensionFunction::ResponseType::kFailed,
+                              kCannotUseExtensionAPIsInErrorPages);
+      return;
+    }
     render_frame_host_url = &render_frame_host->GetLastCommittedURL();
     DCHECK_EQ(render_process_id,
               render_frame_host->GetProcess()->GetDeprecatedID());
@@ -330,16 +343,8 @@ void ExtensionFunctionDispatcher::DispatchWithCallbackInternal(
 
   const bool is_worker_request = IsRequestFromServiceWorker(*params);
 
-  base::ListValue arguments;
-  if (base::FeatureList::IsEnabled(
-          extensions_features::kAvoidCloneArgsOnExtensionFunctionDispatch)) {
-    arguments = std::move(params->arguments);
-  } else {
-    arguments = params->arguments.Clone();
-  }
-
   scoped_refptr<ExtensionFunction> function = CreateExtensionFunction(
-      *params, std::move(arguments), extension, render_process_id,
+      *params, std::move(params->arguments), extension, render_process_id,
       is_worker_request, render_frame_host_url, params->context_type,
       ExtensionAPI::GetSharedInstance(), std::move(callback),
       render_frame_host);
@@ -375,22 +380,11 @@ void ExtensionFunctionDispatcher::DispatchWithCallbackInternal(
   // Fetch the ProcessManager before |this| is possibly invalidated.
   ProcessManager* process_manager = ProcessManager::Get(browser_context_);
 
-  // TODO(crbug.com/424432184): When the
-  // `kAvoidCloneArgsOnExtensionFunctionDispatch` feature is cleaned up, this
-  // lambda can be removed and references to it can be replaced with
-  // `function->GetOriginalArgs()`.
-  auto original_args = [&]() -> const base::ListValue& {
-    if (base::FeatureList::IsEnabled(
-            extensions_features::kAvoidCloneArgsOnExtensionFunctionDispatch)) {
-      return function->GetOriginalArgs();
-    }
-    return params->arguments;
-  };
-
   ExtensionSystem* extension_system = ExtensionSystem::Get(browser_context_);
   QuotaService* quota = extension_system->quota_service();
-  std::string violation_error = quota->Assess(
-      extension->id(), function.get(), original_args(), base::TimeTicks::Now());
+  std::string violation_error =
+      quota->Assess(extension->id(), function.get(),
+                    function->GetOriginalArgs(), base::TimeTicks::Now());
 
   function->set_request_uuid(base::Uuid::GenerateRandomV4());
 
@@ -417,8 +411,8 @@ void ExtensionFunctionDispatcher::DispatchWithCallbackInternal(
   if (violation_error.empty()) {
     // See crbug.com/39178.
     ExtensionsBrowserClient::Get()->PermitExternalProtocolHandler();
-    NotifyApiFunctionCalled(extension->id(), params->name, original_args(),
-                            browser_context_);
+    NotifyApiFunctionCalled(extension->id(), params->name,
+                            function->GetOriginalArgs(), browser_context_);
 
     // Since sandboxed frames listed in the manifest don't get access to the
     // extension APIs, this will only be true in an extension frame in an iframe

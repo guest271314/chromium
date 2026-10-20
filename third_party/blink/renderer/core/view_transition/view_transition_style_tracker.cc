@@ -12,6 +12,7 @@
 #include "base/debug/dump_without_crashing.h"
 #include "cc/base/features.h"
 #include "components/viz/common/view_transition_element_resource_id.h"
+#include "third_party/blink/public/common/dom/dom_node_id.h"
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/resources/grit/blink_resources.h"
 #include "third_party/blink/renderer/bindings/core/v8/frozen_array.h"
@@ -347,7 +348,7 @@ float DevicePixelRatioFromDocument(Document& document) {
       document.documentElement()->GetLayoutObject()) {
     return document.documentElement()
         ->GetLayoutObject()
-        ->StyleRef()
+        ->Style()
         .EffectiveZoom();
   }
 
@@ -427,9 +428,11 @@ class ViewTransitionStyleTracker::ImageWrapperPseudoElement
 
 ViewTransitionStyleTracker::ViewTransitionStyleTracker(
     Document& document,
-    const blink::ViewTransitionToken& transition_token)
+    const blink::ViewTransitionToken& transition_token,
+    bool generates_pseudo_element_tree)
     : document_(document),
       transition_token_(transition_token),
+      generates_pseudo_element_tree_(generates_pseudo_element_tree),
       device_pixel_ratio_(DevicePixelRatioFromDocument(document)) {}
 
 ViewTransitionStyleTracker::ViewTransitionStyleTracker(
@@ -545,12 +548,13 @@ ViewTransitionStyleTracker::ViewTransitionStyleTracker(
     InvalidateHitTestingCache();
     InvalidateStyleAndCompositing();
     view_transition_names_.clear();
+    scope_tag_ = g_null_atom;
   }
 }
 
 void ViewTransitionStyleTracker::AddConsoleError(
     String message,
-    Vector<DOMNodeId> related_nodes) {
+    Vector<DOMNodeIdType> related_nodes) {
   auto* console_message = MakeGarbageCollected<ConsoleMessage>(
       mojom::blink::ConsoleMessageSource::kRendering,
       mojom::blink::ConsoleMessageLevel::kError, std::move(message));
@@ -727,7 +731,7 @@ void ViewTransitionStyleTracker::AddTransitionElementsFromCSSRecursive(
   // which by default will also represent the paint order of the pseudo-elements
   // (unless changed by something like z-index on the pseudo-elements).
   auto& root_object = root->GetLayoutObject();
-  auto& root_style = root_object.StyleRef();
+  auto& root_style = root_object.Style();
 
   const auto& view_transition_name = root_style.ViewTransitionName();
   AtomicString current_name;
@@ -853,7 +857,7 @@ bool ViewTransitionStyleTracker::FlattenAndVerifyElements(
       message.Append(kDuplicateTagBaseError);
       message.Append(name);
 
-      Vector<DOMNodeId> nodes;
+      Vector<DOMNodeIdType> nodes;
       // Find all the elements with this name.
       for (auto& name_finder : flat_list) {
         if (name_finder->name == name) {
@@ -874,7 +878,7 @@ bool ViewTransitionStyleTracker::FlattenAndVerifyElements(
       message.Append(kTagCollisionBaseError);
       message.Append(name);
       AddConsoleError(message.ReleaseString(),
-                      Vector<DOMNodeId>(element->GetDomNodeId()));
+                      Vector<DOMNodeIdType>(element->GetDomNodeId()));
       return false;
     }
 
@@ -963,11 +967,12 @@ bool ViewTransitionStyleTracker::HasContainmentBoundary(
 AtomicString ViewTransitionStyleTracker::ComputeContainingGroupName(
     const AtomicString& name,
     const StyleViewTransitionGroup& group) const {
-  if (!group_state_map_.Contains(name)) {
+  const auto it = group_state_map_.find(name);
+  if (it == group_state_map_.end()) {
     return g_null_atom;
   }
 
-  const auto& parent_state = group_state_map_.at(name);
+  const auto& parent_state = it->value;
   if (group.IsNormal() || group.IsContain()) {
     return parent_state.contain;
   }
@@ -1073,7 +1078,8 @@ bool ViewTransitionStyleTracker::Capture(bool snap_browser_controls) {
 
   view_transition_names_ = std::move(transition_names);
 
-  // We need a style invalidation to generate the pseudo-element tree.
+  // We need a style invalidation to generate the pseudo-element tree (if any)
+  // and to update the participants' style and paint properties.
   InvalidateStyleAndCompositing();
 
   set_element_sequence_id_ = 0;
@@ -1124,19 +1130,25 @@ void ViewTransitionStyleTracker::SetCaptureRectsFromCompositor(
     // This rect no longer matters.
     element_data->cached_captured_rect_in_layout_space.reset();
 
-    if (auto* pseudo_element = OriginatingElement()->GetStyledPseudoElement(
-            PseudoId::kPseudoIdViewTransitionOld, entry.key)) {
-      static_cast<ViewTransitionContentElement*>(pseudo_element)
-          ->SetIntrinsicSize(rect_from_compositor,
-                             element_data->GetReferenceRect(
-                                 /*use_cached_data=*/true, device_pixel_ratio_),
-                             /*propagates_max_extents_rect=*/false);
+    auto* originating_element = OriginatingElement();
+    if (!originating_element) {
+      continue;
     }
+    auto* pseudo_element = originating_element->GetStyledPseudoElement(
+        PseudoId::kPseudoIdViewTransitionOld, entry.key);
+    if (!pseudo_element) {
+      continue;
+    }
+    static_cast<ViewTransitionContentElement*>(pseudo_element)
+        ->SetIntrinsicSize(rect_from_compositor,
+                           element_data->GetReferenceRect(
+                               /*use_cached_data=*/true, device_pixel_ratio_),
+                           /*propagates_max_extents_rect=*/false);
   }
 }
 
 void ViewTransitionStyleTracker::CaptureResolved() {
-  DCHECK_EQ(state_, State::kCapturing);
+  CHECK_EQ(state_, State::kOldSnapshotFrozen);
 
   state_ = State::kCaptured;
   // TODO(crbug.com/1347473): We should also suppress hit testing at this point,
@@ -1160,8 +1172,10 @@ void ViewTransitionStyleTracker::CaptureResolved() {
 
 VectorOf<Element> ViewTransitionStyleTracker::GetTransitioningElements() const {
   // In stable states, we don't have transitioning elements.
-  if (state_ == State::kIdle || state_ == State::kCaptured)
+  if (state_ == State::kIdle || state_ == State::kCaptured ||
+      state_ == State::kFinished) {
     return {};
+  }
 
   VectorOf<Element> result;
   for (auto& entry : element_data_map_) {
@@ -1176,10 +1190,11 @@ VectorOf<Element> ViewTransitionStyleTracker::GetTransitioningElements() const {
 const Vector<AtomicString>
 ViewTransitionStyleTracker::GetViewTransitionClassList(
     const AtomicString& name) const {
-  if (!element_data_map_.Contains(name)) {
+  const auto it = element_data_map_.find(name);
+  if (it == element_data_map_.end()) {
     return Vector<AtomicString>();
   }
-  return element_data_map_.at(name)->class_list;
+  return it->value->class_list;
 }
 
 const AtomicString& ViewTransitionStyleTracker::GetContainingGroupName(
@@ -1190,10 +1205,11 @@ const AtomicString& ViewTransitionStyleTracker::GetContainingGroupName(
 
   // GetContainingGroup can be called on an invalid name, e.g. when searching
   // for the parent of a non-existent name.
-  if (!element_data_map_.Contains(name)) {
+  const auto it = element_data_map_.find(name);
+  if (it == element_data_map_.end()) {
     return g_null_atom;
   }
-  return element_data_map_.at(name)->containing_group_name;
+  return it->value->containing_group_name;
 }
 
 bool ViewTransitionStyleTracker::Start() {
@@ -1328,7 +1344,8 @@ void ViewTransitionStyleTracker::Abort() {
 }
 
 void ViewTransitionStyleTracker::PauseRendering() {
-  DCHECK_EQ(state_, State::kCapturing);
+  CHECK_EQ(state_, State::kCapturing);
+  state_ = State::kOldSnapshotFrozen;
 
   if (scope_snapshot_layer_) {
     auto bounds = scope_snapshot_layer_->bounds();
@@ -1358,6 +1375,7 @@ void ViewTransitionStyleTracker::EndTransition() {
   pending_transition_element_names_.clear();
   set_element_sequence_id_ = 0;
   view_transition_names_.clear();
+  scope_tag_ = g_null_atom;
   is_root_transitioning_ = false;
 }
 
@@ -1472,15 +1490,26 @@ PseudoElement* ViewTransitionStyleTracker::CreatePseudoElement(
 bool ViewTransitionStyleTracker::RunPostPrePaintSteps() {
   DCHECK_GE(document_->Lifecycle().GetState(),
             DocumentLifecycle::kPrePaintClean);
+  CHECK_NE(state_, State::kFinished);
+
   // Abort if the originating element is not there.
   Element* scope = OriginatingElement();
   if (!scope) {
     return false;
   }
 
-  if (!DynamicTo<LayoutBox>(scope->GetLayoutObject())) {
-    // If we have any view transition elements, while not having a layout box
-    // for the scoped element, we should abort. Target elements are only set
+  const LayoutObject* layout_object = scope->GetLayoutObject();
+  bool is_element_scoped = element_ && element_ != document_->documentElement();
+  bool has_valid_layout =
+      is_element_scoped
+          ? (layout_object && layout_object->ShouldApplyLayoutContainment())
+          : IsA<LayoutBox>(layout_object);
+  if (!has_valid_layout) {
+    if (is_element_scoped) {
+      return false;
+    }
+    // If we have any view transition elements, while not having a valid layout
+    // for the document element, we should abort. Target elements are only set
     // on the current phase of the animation, so it means that the scope's
     // layout object changed in this phase.
     for (auto& entry : element_data_map_) {
@@ -1660,7 +1689,7 @@ bool ViewTransitionStyleTracker::RunPostPrePaintStepsForElement(
                               FlatMapBuilder<CSSPropertyID, String>& builder) {
     if (const CSSValue* css_value =
             CSSProperty::Get(id).CSSValueFromComputedStyle(
-                layout_object->StyleRef(),
+                layout_object->Style(),
                 /*layout_object=*/nullptr,
                 /*allow_visited_style=*/false, CSSValuePhase::kResolvedValue)) {
       builder.Insert(id, css_value->CssText());
@@ -1683,7 +1712,7 @@ bool ViewTransitionStyleTracker::RunPostPrePaintStepsForElement(
   auto group_children_css_properties =
       std::move(group_children_css_property_builder).Finish();
 
-  const auto& style = layout_object->StyleRef();
+  const auto& style = layout_object->Style();
   gfx::Vector2dF border_offset(
       AdjustForAbsoluteZoom::AdjustFloat(style.BorderLeftWidth(), style),
       AdjustForAbsoluteZoom::AdjustFloat(style.BorderTopWidth(), style));
@@ -1699,6 +1728,10 @@ bool ViewTransitionStyleTracker::RunPostPrePaintStepsForElement(
       border_offset == element_data->border_offset) {
     return true;
   }
+
+  const bool captured_rect_changed =
+      captured_rect_in_layout_space !=
+      element_data->captured_rect_in_layout_space;
 
   element_data->container_properties = container_properties;
 
@@ -1734,7 +1767,10 @@ bool ViewTransitionStyleTracker::RunPostPrePaintStepsForElement(
     element_data->CacheStateForOldSnapshot();
   }
 
-  needs_style_invalidation = true;
+  // Without the pseudo-element tree, the invalidation is only needed to update
+  // the capture clip, which is a paint property of the participant.
+  needs_style_invalidation |=
+      generates_pseudo_element_tree_ || captured_rect_changed;
   return true;
 }
 
@@ -1802,7 +1838,7 @@ void ViewTransitionStyleTracker::ComputeLiveElementGeometry(
     border_box_size_in_css_space.Scale(1.f / device_pixel_ratio_);
   }
 
-  float effective_zoom = layout_object.StyleRef().EffectiveZoom();
+  float effective_zoom = layout_object.Style().EffectiveZoom();
 
   // If the object's effective zoom differs from device_pixel_ratio, adjust
   // the border box size by that difference to get the css space size.
@@ -1864,10 +1900,9 @@ gfx::Transform ViewTransitionStyleTracker::ComputeTransformForParticipant(
   }
 
   if (!scope_box->IsLayoutView()) {
-    DCHECK(RuntimeEnabledFeatures::ScopedViewTransitionsEnabled());
-
     // Adjust for the scope element's borders and scrollbars.
-    transform.Translate(-scope_box->ClientLeft(), -scope_box->ClientTop());
+    transform.Translate(
+        -gfx::Vector2dF(scope_box->PhysicalPaddingBoxRect().offset));
   }
 
   return transform;
@@ -1988,6 +2023,7 @@ bool ViewTransitionStyleTracker::HasInternalPseudoElements() const {
   switch (state_) {
     case State::kIdle:
     case State::kCapturing:
+    case State::kOldSnapshotFrozen:
     case State::kCaptured:
       return true;
     case State::kStarted:
@@ -2071,8 +2107,8 @@ gfx::Rect ViewTransitionStyleTracker::GetSnapshotRootInFixedViewport() const {
   gfx::Rect snapshot_viewport_rect =
       document_->GetSettings()->GetViewportEnabled()
           ? gfx::Rect(frame_view.Size().width(), frame_view.Size().height())
-          : gfx::Rect(layout_view.ClientWidth().ToInt(),
-                      layout_view.ClientHeight().ToInt());
+          : gfx::Rect(layout_view.PhysicalPaddingBoxRect().Width().ToInt(),
+                      layout_view.PhysicalPaddingBoxRect().Height().ToInt());
   snapshot_viewport_rect.Outset(GetFixedToSnapshotViewportOutsets(*document_));
 
   return snapshot_viewport_rect;
@@ -2232,6 +2268,9 @@ void ViewTransitionStyleTracker::InvalidateStyleAndCompositing() {
     return;
   }
 
+  // This is needed even if the pseudo-element tree isn't generated, since it
+  // ensures that the lifecycle reruns to apply the paint property updates
+  // below (e.g. if the root is the only participant).
   originating_element->SetNeedsStyleRecalc(
       kLocalStyleChange, StyleChangeReasonForTracing::Create(
                              style_change_reason::kViewTransition));
@@ -2475,7 +2514,7 @@ gfx::RectF ViewTransitionStyleTracker::ElementData::GetReferenceRect(
 
 bool ViewTransitionStyleTracker::ElementData::
     ShouldPropagateVisualOverflowRectAsMaxExtentsRect() const {
-  return target_element && !target_element->IsDocumentElement();
+  return !target_element || !target_element->IsDocumentElement();
 }
 
 void ViewTransitionStyleTracker::ElementData::CacheStateForOldSnapshot() {
@@ -2539,6 +2578,8 @@ const char* ViewTransitionStyleTracker::StateToString(State state) {
       return "Idle";
     case State::kCapturing:
       return "Capturing";
+    case State::kOldSnapshotFrozen:
+      return "OldSnapshotFrozen";
     case State::kCaptured:
       return "Captured";
     case State::kStarted:
@@ -2646,9 +2687,6 @@ gfx::Transform ViewTransitionStyleTracker::ContainerProperties::
 }
 
 bool ViewTransitionStyleTracker::NeedsSnapshotForCapture() const {
-  if (!RuntimeEnabledFeatures::ScopedViewTransitionsEnabled()) {
-    return !document_->GetFrame()->IsLocalRoot();
-  }
   auto* element = OriginatingElement();
   if (!element) {
     return false;

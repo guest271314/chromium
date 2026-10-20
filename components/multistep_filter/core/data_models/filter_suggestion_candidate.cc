@@ -18,21 +18,27 @@ namespace multistep_filter {
 
 FilterSuggestionCandidateAttribute::FilterSuggestionCandidateAttribute(
     std::string key,
-    std::u16string label)
-    : key(std::move(key)), label(std::move(label)) {}
+    std::u16string label,
+    std::u16string value)
+    : key(std::move(key)), label(std::move(label)), value(std::move(value)) {}
 
 std::string FilterSuggestionCandidateAttribute::ToString() const {
   return base::StrCat({"FilterSuggestionCandidateAttribute(key=", key,
-                       ", label=", base::UTF16ToUTF8(label), ")"});
+                       ", label=", base::UTF16ToUTF8(label),
+                       ", value=", base::UTF16ToUTF8(value), ")"});
 }
 
 FilterSuggestionCandidate::FilterSuggestionCandidate(
     base::Uuid filter_annotation_id,
     GURL navigation_url,
-    std::vector<FilterSuggestionCandidateAttribute> attributes)
+    std::vector<FilterSuggestionCandidateAttribute> attributes,
+    std::u16string short_text,
+    std::u16string detailed_text)
     : filter_annotation_id(std::move(filter_annotation_id)),
       navigation_url(std::move(navigation_url)),
-      attributes(std::move(attributes)) {}
+      attributes(std::move(attributes)),
+      short_text(std::move(short_text)),
+      detailed_text(std::move(detailed_text)) {}
 
 FilterSuggestionCandidate::FilterSuggestionCandidate(
     const FilterSuggestionCandidate&) = default;
@@ -50,11 +56,21 @@ std::string FilterSuggestionCandidate::ToString() const {
   for (const FilterSuggestionCandidateAttribute& attr : attributes) {
     attribute_strings.push_back(attr.ToString());
   }
+  std::string short_text_suffix =
+      !short_text.empty()
+          ? base::StrCat({", short_text=", base::UTF16ToUTF8(short_text)})
+          : "";
+  std::string detailed_text_suffix =
+      !detailed_text.empty()
+          ? base::StrCat({", detailed_text=", base::UTF16ToUTF8(detailed_text)})
+          : "";
+
   return base::StrCat({"FilterSuggestionCandidate(filter_annotation_id=",
                        filter_annotation_id.AsLowercaseString(),
                        ", navigation_url=", navigation_url.spec(),
                        ", attributes=[",
-                       base::JoinString(attribute_strings, ", "), "])"});
+                       base::JoinString(attribute_strings, ", "), "]",
+                       short_text_suffix, detailed_text_suffix, ")"});
 }
 
 bool operator==(const FilterSuggestionCandidate&,

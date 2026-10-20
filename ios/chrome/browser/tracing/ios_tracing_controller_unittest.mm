@@ -21,6 +21,7 @@
 #import "base/trace_event/trace_log.h"
 #import "base/tracing/perfetto_platform.h"
 #import "components/tracing/common/tracing_switches.h"
+#import "ios/chrome/browser/tracing/test_utils.h"
 #import "services/tracing/public/cpp/background_tracing/trace_report_database.h"
 #import "services/tracing/public/cpp/background_tracing/tracing_scenario.h"
 #import "services/tracing/public/cpp/perfetto/perfetto_data_source_names.h"
@@ -53,23 +54,22 @@ class IOSTracingControllerTest : public PlatformTest {
  protected:
   void SetUp() override {
     PlatformTest::SetUp();
-    IOSTracingController::MaybeCreateInstanceForTesting();
-    IOSTracingController::GetInstance().InitializeForTesting();
+    tracing_controller_ = std::make_unique<IOSTracingControllerForTesting>();
   }
 
   void TearDown() override {
-    IOSTracingController::GetInstance().ResetForTesting();
+    tracing_controller_.reset();
     PlatformTest::TearDown();
   }
 
   bool IsRecordingAllowed(IOSTracingController& instance,
-                          bool privacy_filter_enabled,
                           base::TimeTicks scenario_start_time) {
-    return instance.IsRecordingAllowed(privacy_filter_enabled,
+    return instance.IsRecordingAllowed(/*is_local_scenario=*/false,
                                        scenario_start_time);
   }
 
   base::test::TaskEnvironment task_environment_;
+  std::unique_ptr<IOSTracingControllerForTesting> tracing_controller_;
 };
 
 // Tests that the manager successfully creates the standard developer
@@ -78,9 +78,15 @@ TEST_F(IOSTracingControllerTest, CreatesValidDeveloperConfig) {
   perfetto::TraceConfig config =
       IOSTracingController::GetInstance().CreateDeveloperTraceConfig();
 
-  // Validate the buffer size is set to the 50MB default.
+  // Validate the buffer size is set to the 50MB default and RING_BUFFER is
+  // used.
   ASSERT_GT(config.buffers_size(), 0);
   EXPECT_EQ(config.buffers()[0].size_kb(), 1024u * 50u);
+  EXPECT_EQ(config.flush_period_ms(), 30000u);
+  for (const auto& buffer : config.buffers()) {
+    EXPECT_EQ(buffer.fill_policy(),
+              perfetto::TraceConfig::BufferConfig::RING_BUFFER);
+  }
 
   // Validate that the data sources are enabled.
   bool found_track_event = false;
@@ -127,13 +133,10 @@ TEST_F(IOSTracingControllerTest, StartupTraceRecording) {
   scoped_command_line.GetProcessCommandLine()->AppendSwitchASCII(
       switches::kTraceStartupFormat, "proto");
 
-  // Reset the config to pick up the new command line switches.
-  tracing::TraceStartupConfig::ResetForTesting();
-
-  // Reset and re-initialize to restart startup tracing.
-  IOSTracingController::GetInstance().ResetForTesting();
-  base::ThreadPoolInstance::Get()->FlushForTesting();
-  IOSTracingController::GetInstance().InitializeForTesting();
+  // Reset and recreate the controller with the new command line switches.
+  tracing_controller_.reset();
+  tracing_controller_ = std::make_unique<IOSTracingControllerForTesting>(
+      *scoped_command_line.GetProcessCommandLine());
 
   // Wait for the background tracer to start blocking and actually begin
   // tracing.
@@ -340,26 +343,87 @@ TEST_F(IOSTracingControllerTest, IsRecordingAllowedOTRProtection) {
 
   base::TimeTicks now = base::TimeTicks::Now();
 
-  // 1. Without privacy filter enabled, recording is always allowed.
-  EXPECT_TRUE(
-      IsRecordingAllowed(instance, /*privacy_filter_enabled=*/false, now));
+  // 1. If no incognito session was ever launched, recording is allowed.
+  EXPECT_TRUE(IsRecordingAllowed(instance, now));
 
-  // 2. With privacy filter enabled:
-  // - If no incognito session was ever launched, recording is allowed.
-  EXPECT_TRUE(
-      IsRecordingAllowed(instance, /*privacy_filter_enabled=*/true, now));
-
-  // - If an incognito session was launched AFTER the tracing session started
-  // (session <= incognito),
-  //   recording is blocked.
+  // 2. If an incognito session was launched AFTER the tracing session started
+  // (session <= incognito), recording is blocked.
   instance.SetLatestIncognitoLaunchedForTesting(now + base::Seconds(5));
-  EXPECT_FALSE(
-      IsRecordingAllowed(instance, /*privacy_filter_enabled=*/true, now));
+  EXPECT_FALSE(IsRecordingAllowed(instance, now));
 
-  // - If an incognito session was launched BEFORE the tracing session started
-  // (session > incognito),
-  //   recording is allowed again.
+  // 3. If an incognito session was launched BEFORE the tracing session started
+  // (session > incognito), recording is allowed again.
   instance.SetLatestIncognitoLaunchedForTesting(now - base::Seconds(5));
-  EXPECT_TRUE(
-      IsRecordingAllowed(instance, /*privacy_filter_enabled=*/true, now));
+  EXPECT_TRUE(IsRecordingAllowed(instance, now));
+}
+
+// Tests that StopStartupTracingForTesting returns the path specified by the
+// kTraceStartupFile switch when an absolute path is present.
+TEST_F(IOSTracingControllerTest, StopStartupTracingWithCustomFileSwitch) {
+  base::test::ScopedCommandLine scoped_command_line;
+  base::FilePath custom_path =
+      base::FilePath(FILE_PATH_LITERAL("/tmp/custom_startup_trace.pftrace"));
+  scoped_command_line.GetProcessCommandLine()->AppendSwitchPath(
+      switches::kTraceStartupFile, custom_path);
+
+  // Reset and recreate the controller with the new command line switches.
+  tracing_controller_.reset();
+  tracing_controller_ = std::make_unique<IOSTracingControllerForTesting>(
+      *scoped_command_line.GetProcessCommandLine());
+
+  base::FilePath returned_path =
+      IOSTracingController::GetInstance().StopStartupTracingForTesting();
+  EXPECT_EQ(returned_path, custom_path);
+}
+
+// Tests that StopStartupTracingForTesting rebases a relative path specified by
+// the kTraceStartupFile switch to the user documents directory.
+TEST_F(IOSTracingControllerTest, StopStartupTracingWithRelativeFileSwitch) {
+  base::test::ScopedCommandLine scoped_command_line;
+  base::FilePath relative_path =
+      base::FilePath(FILE_PATH_LITERAL("relative_startup_trace.pftrace"));
+  scoped_command_line.GetProcessCommandLine()->AppendSwitchPath(
+      switches::kTraceStartupFile, relative_path);
+
+  // Reset and recreate the controller with the new command line switches.
+  tracing_controller_.reset();
+  tracing_controller_ = std::make_unique<IOSTracingControllerForTesting>(
+      *scoped_command_line.GetProcessCommandLine());
+
+  base::FilePath expected_path = base::apple::GetUserDocumentPath().AppendASCII(
+      relative_path.AsUTF8Unsafe());
+  base::FilePath returned_path =
+      IOSTracingController::GetInstance().StopStartupTracingForTesting();
+  EXPECT_EQ(returned_path, expected_path);
+}
+
+// Tests that StopStartupTracingForTesting returns the default document path
+// when the kTraceStartupFile switch is not provided.
+TEST_F(IOSTracingControllerTest, StopStartupTracingWithDefaultFile) {
+  base::FilePath expected_path =
+      base::apple::GetUserDocumentPath().AppendASCII("chrome.pftrace");
+
+  base::FilePath returned_path =
+      IOSTracingController::GetInstance().StopStartupTracingForTesting();
+  EXPECT_EQ(returned_path, expected_path);
+}
+
+// Tests that StopStartupTracingForTesting falls back to the default document
+// path when the kTraceStartupFile switch is present but set to an empty path.
+TEST_F(IOSTracingControllerTest, StopStartupTracingWithEmptyFileSwitch) {
+  base::test::ScopedCommandLine scoped_command_line;
+  scoped_command_line.GetProcessCommandLine()->AppendSwitchASCII(
+      switches::kTraceStartupFile, "");
+
+  // Reset and recreate the controller with the new command line switches.
+  tracing_controller_.reset();
+  tracing_controller_ = std::make_unique<IOSTracingControllerForTesting>(
+      *scoped_command_line.GetProcessCommandLine());
+
+  base::FilePath expected_path =
+      base::apple::GetUserDocumentPath().AppendASCII("chrome.pftrace");
+
+  base::FilePath returned_path =
+      IOSTracingController::GetInstance().StopStartupTracingForTesting();
+  EXPECT_EQ(returned_path, expected_path);
 }

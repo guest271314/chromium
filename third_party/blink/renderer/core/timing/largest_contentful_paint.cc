@@ -5,8 +5,9 @@
 #include "third_party/blink/renderer/core/timing/largest_contentful_paint.h"
 
 #include "third_party/blink/renderer/bindings/core/v8/v8_object_builder.h"
-#include "third_party/blink/renderer/core/dom/document.h"
+#include "third_party/blink/renderer/core/dom/element.h"
 #include "third_party/blink/renderer/core/performance_entry_names.h"
+#include "third_party/blink/renderer/core/timing/performance.h"
 #include "third_party/blink/renderer/platform/wtf/text/atomic_string.h"
 
 namespace blink {
@@ -19,8 +20,12 @@ LargestContentfulPaint::LargestContentfulPaint(double start_time,
                                                const String& url,
                                                Element* element,
                                                DOMWindow* source,
-                                               uint32_t navigation_id)
-    : PerformanceEntry(/*duration=*/0.0, g_empty_atom, start_time, source, navigation_id),
+                                               uint64_t navigation_id)
+    : PerformanceEntry(/*duration=*/0.0,
+                       g_empty_atom,
+                       start_time,
+                       source,
+                       navigation_id),
       size_(size),
       render_time_(render_time),
       load_time_(load_time),
@@ -39,15 +44,8 @@ PerformanceEntryType LargestContentfulPaint::EntryTypeEnum() const {
 }
 
 Element* LargestContentfulPaint::element() const {
-  if (!element_ || !element_->isConnected() || element_->IsInShadowTree())
-    return nullptr;
-
-  // Do not expose |element_| when the document is not 'fully active'.
-  const Document& document = element_->GetDocument();
-  if (!document.IsActive() || !document.GetFrame())
-    return nullptr;
-
-  return element_.Get();
+  return Performance::CanExposeNode(element_, source()) ? element_.Get()
+                                                        : nullptr;
 }
 
 void LargestContentfulPaint::BuildJSONValue(V8ObjectBuilder& builder) const {

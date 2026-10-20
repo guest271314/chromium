@@ -17,14 +17,16 @@
 #include "base/values.h"
 #include "cc/base/switches.h"
 #include "chrome/browser/page_load_metrics/integration_tests/metric_integration_test.h"
-#include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/common/chrome_switches.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "components/page_load_metrics/browser/features.h"
+#include "components/page_load_metrics/browser/observers/soft_navigation_page_load_metrics_observer.h"
 #include "components/page_load_metrics/browser/page_load_metrics_test_waiter.h"
 #include "components/page_load_metrics/browser/page_load_metrics_util.h"
 #include "components/page_load_metrics/browser/page_load_type.h"
 #include "components/ukm/gmock_matchers.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/render_view_host.h"
 #include "content/public/browser/render_widget_host_view.h"
 #include "content/public/common/content_switches.h"
@@ -36,7 +38,6 @@
 #include "services/metrics/public/cpp/ukm_builders.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/common/performance/largest_contentful_paint_type.h"
 #include "third_party/blink/public/common/switches.h"
 #include "third_party/blink/public/mojom/navigation/navigation_type_for_navigation_api.mojom-shared.h"
@@ -73,11 +74,6 @@ std::map<int64_t, double> GetSoftNavigationMetrics(
   std::map<int64_t, double> source_id_to_metric_name;
   for (const UkmEntry* entry :
        ukm_recorder.GetEntriesByName(SoftNavigation::kEntryName)) {
-    const UkmSource* source =
-        ukm_recorder.GetSourceForSourceId(entry->source_id);
-    if (MetricIntegrationTest::IsWebUISource(source)) {
-      continue;
-    }
     if (std::optional<int64_t> v = GetMetricFromUkmEntry(entry, metric_name)) {
       source_id_to_metric_name[entry->source_id] = v.value();
     }
@@ -204,6 +200,7 @@ std::string JsSnippetGetPerformanceEntries() {
             softNavigation: {
               navigationId: record.navigationId,
               startTime: record.startTime,
+              duration: record.duration,
               interactionId: record.interactionId,
             },
           };
@@ -219,7 +216,7 @@ std::string JsSnippetGetPerformanceEntries() {
           const obj = byInteractionId.get(record.interactionId);
           if (obj) {
             obj.interactionContentfulPaint = {
-              renderTime: record.renderTime,
+              renderTime: record.largestContentfulPaint?.renderTime,
             }
           }
         }
@@ -283,8 +280,7 @@ int64_t ExtractMaxInteractionDurationFromTrace(
   return max_duration;
 }
 
-class SoftNavigationTest : public MetricIntegrationTest,
-                           public testing::WithParamInterface<bool> {
+class SoftNavigationTest : public MetricIntegrationTest {
  public:
   SoftNavigationTest()
       : prerender_helper_(base::BindRepeating(&SoftNavigationTest::web_contents,
@@ -294,11 +290,6 @@ class SoftNavigationTest : public MetricIntegrationTest,
     prerender_helper_.RegisterServerRequestMonitor(embedded_test_server());
     MetricIntegrationTest::SetUp();
   }
-
-  // When this test parameter returns true, we enable
-  // blink::features::{kNavigationId, kSoftNavigationHeuristics}.
-  // See SoftNavigationTest::SetUpCommandLine.
-  bool IsBlinkApiForSoftNavigationsEnabled() { return GetParam(); }
 
   void SetUpCommandLine(base::CommandLine* command_line) override {
     command_line->AppendSwitch(switches::kEnableGpuBenchmarking);
@@ -310,18 +301,6 @@ class SoftNavigationTest : public MetricIntegrationTest,
         content::GetDefaultEnabledBackForwardCacheFeaturesForTesting(
             {{features::kBackForwardCacheEmitZeroSamplesForKeyMetrics, {{}}}});
 
-    if (IsBlinkApiForSoftNavigationsEnabled()) {
-      // These features enable the JavaScript API which exposes soft navigations
-      // to the web; that is, 'soft-navigation', 'interaction-contentful-paint'
-      // entries available PerformanceObserver and the navigationId field on the
-      // Performance Entry elements. Testing with these features enabled allows
-      // us to compare the values with the UKM collection; disabling them allows
-      // us to ensure the UKM collection happens regardless of the web API.
-      features.push_back(base::test::FeatureRefAndParams(
-          blink::features::kNavigationId, {{}}));
-      features.push_back(base::test::FeatureRefAndParams(
-          blink::features::kSoftNavigationHeuristics, {{}}));
-    }
     feature_list_.InitWithFeaturesAndParameters(
         features,
         content::GetDefaultDisabledBackForwardCacheFeaturesForTesting());
@@ -335,16 +314,25 @@ class SoftNavigationTest : public MetricIntegrationTest,
         ukm_recorder(), SoftNavigation::kStartTimeName);
     EXPECT_EQ(source_id_to_start_time.size(), expected_soft_nav_count);
 
+    std::vector<double> soft_nav_start_times;
+    for (const auto& [source_id, start_time] : source_id_to_start_time) {
+      soft_nav_start_times.push_back(start_time);
+    }
+
+    // Soft navigation FCP.
+    auto source_id_to_fcp = GetSoftNavigationMetrics(
+        ukm_recorder(), SoftNavigation::kPaintTiming_FirstContentfulPaintName);
+    EXPECT_EQ(source_id_to_fcp.size(), expected_soft_nav_count);
+    std::vector<double> soft_nav_fcp;
+    for (const auto& [source_id, fcp] : source_id_to_fcp) {
+      soft_nav_fcp.push_back(fcp);
+    }
+
     // Soft navigation LCP.
     auto source_id_to_lcp = GetSoftNavigationMetrics(
         ukm_recorder(),
         SoftNavigation::kPaintTiming_LargestContentfulPaintName);
     EXPECT_EQ(source_id_to_lcp.size(), expected_soft_nav_count);
-
-    std::vector<double> soft_nav_start_times;
-    for (const auto& [source_id, start_time] : source_id_to_start_time) {
-      soft_nav_start_times.push_back(start_time);
-    }
 
     // Verify that the soft navigation start times are sorted and unique.
     EXPECT_EQ(soft_nav_start_times.size(), expected_soft_nav_count);
@@ -367,22 +355,22 @@ class SoftNavigationTest : public MetricIntegrationTest,
       soft_nav_lcp.push_back(lcp);
     }
 
-    // If the SoftNavigationHeuristics flag is enabled, we verify exact values
-    // in UKM against the web exposed values.
-    if (IsBlinkApiForSoftNavigationsEnabled()) {
-      EXPECT_EQ(performance_entries.size(), expected_soft_nav_count);
-      ASSERT_EQ(performance_entries.size(), soft_nav_lcp.size());
-      ASSERT_EQ(performance_entries.size(), soft_nav_start_times.size());
-      for (uint32_t i = 0; i < performance_entries.size(); ++i) {
-        SCOPED_TRACE(base::StringPrintf("performance_entries[%d]", i));
-        const base::DictValue& timing = performance_entries[i].GetDict();
-        double expected_lcp = soft_nav_lcp[i] + soft_nav_start_times[i];
-        EXPECT_NEAR(*timing.FindDoubleByDottedPath(
-                        "interactionContentfulPaint.renderTime"),
-                    expected_lcp, 6);
-        EXPECT_NEAR(*timing.FindDoubleByDottedPath("softNavigation.startTime"),
-                    soft_nav_start_times[i], 6);
-      }
+    // Verify exact values with performance entries.
+    EXPECT_EQ(performance_entries.size(), expected_soft_nav_count);
+    ASSERT_EQ(performance_entries.size(), soft_nav_lcp.size());
+    ASSERT_EQ(performance_entries.size(), soft_nav_start_times.size());
+    ASSERT_EQ(performance_entries.size(), soft_nav_fcp.size());
+    for (uint32_t i = 0; i < performance_entries.size(); ++i) {
+      SCOPED_TRACE(base::StringPrintf("performance_entries[%d]", i));
+      const base::DictValue& timing = performance_entries[i].GetDict();
+      double expected_lcp = soft_nav_lcp[i] + soft_nav_start_times[i];
+      EXPECT_NEAR(*timing.FindDoubleByDottedPath(
+                      "interactionContentfulPaint.renderTime"),
+                  expected_lcp, 6);
+      EXPECT_NEAR(*timing.FindDoubleByDottedPath("softNavigation.startTime"),
+                  soft_nav_start_times[i], 6);
+      EXPECT_NEAR(*timing.FindDoubleByDottedPath("softNavigation.duration"),
+                  soft_nav_fcp[i], 6);
     }
 
     // Also check the hard navigation LCP, and the LCP before the first soft
@@ -435,7 +423,7 @@ class SoftNavigationTest : public MetricIntegrationTest,
 };
 
 // This test focuses on measuring the image LCP of a soft navigation in UKM.
-IN_PROC_BROWSER_TEST_P(SoftNavigationTest, ImageLargestContentfulPaint) {
+IN_PROC_BROWSER_TEST_F(SoftNavigationTest, ImageLargestContentfulPaint) {
   // Start the test, load soft_navigation.html and wait for
   // load, fcp, and lcp to be observed.
   Start();
@@ -458,11 +446,8 @@ IN_PROC_BROWSER_TEST_P(SoftNavigationTest, ImageLargestContentfulPaint) {
   TriggerSoftNavigationAndWait(web_contents(), &waiter, 2,
                                /*element_id=*/"next-page");
 
-  base::ListValue performance_entries;
-  if (IsBlinkApiForSoftNavigationsEnabled()) {
-    performance_entries = GetPerformanceEntries();
-    ASSERT_EQ(performance_entries.size(), 2ul);
-  }
+  base::ListValue performance_entries = GetPerformanceEntries();
+  ASSERT_EQ(performance_entries.size(), 2ul);
 
   // Navigate to about:blank (untracked) to ensure all UKM are recorded.
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), GURL("about:blank")));
@@ -540,10 +525,14 @@ IN_PROC_BROWSER_TEST_P(SoftNavigationTest, ImageLargestContentfulPaint) {
   EXPECT_EQ(source_id_to_lcp_request_priority.cbegin()->second, 4u);
 
   EXPECT_EQ(std::next(source_id_to_lcp_request_priority.cbegin())->second, 4u);
+
+  histogram_tester().ExpectUniqueSample(
+      "PageLoad.SoftNavigation.SoftNavigationPageLoadMetricsObserverState",
+      SoftNavigationPageLoadMetricsObserverState::kStarted, 2);
 }
 
 // This test focuses on measuring the text LCP of a soft navigation in UKM.
-IN_PROC_BROWSER_TEST_P(SoftNavigationTest, TextLargestContentfulPaint) {
+IN_PROC_BROWSER_TEST_F(SoftNavigationTest, TextLargestContentfulPaint) {
   // Start the test, load soft_navigation.html and wait for
   // load, fcp, and lcp to be observed.
   Start();
@@ -566,11 +555,8 @@ IN_PROC_BROWSER_TEST_P(SoftNavigationTest, TextLargestContentfulPaint) {
   TriggerSoftNavigationAndWait(web_contents(), &waiter, 2,
                                /*element_id=*/"next-page");
 
-  base::ListValue performance_entries;
-  if (IsBlinkApiForSoftNavigationsEnabled()) {
-    performance_entries = GetPerformanceEntries();
-    ASSERT_EQ(performance_entries.size(), 2ul);
-  }
+  base::ListValue performance_entries = GetPerformanceEntries();
+  ASSERT_EQ(performance_entries.size(), 2ul);
 
   // Navigate to about:blank (untracked) to ensure all UKM are recorded.
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), GURL("about:blank")));
@@ -607,11 +593,48 @@ IN_PROC_BROWSER_TEST_P(SoftNavigationTest, TextLargestContentfulPaint) {
   EXPECT_TRUE(lcp_type_2 == flag_set || lcp_type_2 == flag_set_with_mouseover);
 }
 
+// This test verifies that soft navigation LCP is still reported even if the
+// tab was previously backgrounded and foregrounded before the soft navigation.
+IN_PROC_BROWSER_TEST_F(SoftNavigationTest,
+                       SoftLcpRecordedAfterPreviousBackground) {
+  Start();
+  PageLoadMetricsTestWaiter waiter(web_contents());
+  waiter.AddPageExpectation(PageLoadMetricsTestWaiter::TimingField::kLoadEvent);
+  waiter.AddPageExpectation(
+      PageLoadMetricsTestWaiter::TimingField::kFirstContentfulPaint);
+  waiter.AddPageExpectation(
+      PageLoadMetricsTestWaiter::TimingField::kLargestContentfulPaint);
+  Load("/soft_navigation.html#text");
+  waiter.Wait();
+
+  // Background and then foreground the page before performing soft navigations.
+  web_contents()->WasHidden();
+  web_contents()->WasShown();
+
+  // 1st soft navigation: click on the next page button and wait for soft
+  // navigation count and text lcp.
+  TriggerSoftNavigationAndWait(web_contents(), &waiter, 1,
+                               /*element_id=*/"next-page");
+
+  // 2nd soft navigation: click on the next page button and wait for soft
+  // navigation count and text lcp.
+  TriggerSoftNavigationAndWait(web_contents(), &waiter, 2,
+                               /*element_id=*/"next-page");
+
+  // Navigate to about:blank to ensure all UKMs are recorded.
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), GURL("about:blank")));
+
+  // Verify LCP is recorded for both soft navigations.
+  auto source_id_to_lcp = GetSoftNavigationMetrics(
+      ukm_recorder(), SoftNavigation::kPaintTiming_LargestContentfulPaintName);
+  EXPECT_EQ(source_id_to_lcp.size(), 2u);
+}
+
 // This test verifies that we support soft navs triggered by the browser's
 // back button, including recording to UKM. While other soft navs have
 // underlying same-document navigations that originate in the renderer,
 // the back-button starts a same-document navigation in the browser.
-IN_PROC_BROWSER_TEST_P(SoftNavigationTest, BackButton) {
+IN_PROC_BROWSER_TEST_F(SoftNavigationTest, BackButton) {
   // Load soft_navigation.html and wait for lcp.
   Start();
   PageLoadMetricsTestWaiter waiter(web_contents());
@@ -664,11 +687,8 @@ IN_PROC_BROWSER_TEST_P(SoftNavigationTest, BackButton) {
   ASSERT_TRUE(content::HistoryGoToOffset(web_contents(), -1));
   waiter.Wait();
 
-  base::ListValue performance_entries;
-  if (IsBlinkApiForSoftNavigationsEnabled()) {
-    performance_entries = GetPerformanceEntries();
-    EXPECT_EQ(performance_entries.size(), 4ul);
-  }
+  base::ListValue performance_entries = GetPerformanceEntries();
+  EXPECT_EQ(performance_entries.size(), 4ul);
 
   // Navigate to about:blank (untracked) to ensure all UKM are recorded.
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), GURL("about:blank")));
@@ -734,9 +754,12 @@ IN_PROC_BROWSER_TEST_P(SoftNavigationTest, BackButton) {
                                    static_cast<int>(PageLoadType::kPageLoad),
                                    static_cast<int>(PageLoadType::kPageLoad),
                                    static_cast<int>(PageLoadType::kPageLoad)));
+  histogram_tester().ExpectUniqueSample(
+      "PageLoad.SoftNavigation.SoftNavigationPageLoadMetricsObserverState",
+      SoftNavigationPageLoadMetricsObserverState::kStarted, 4);
 }
 
-IN_PROC_BROWSER_TEST_P(SoftNavigationTest, NoSoftNavigation) {
+IN_PROC_BROWSER_TEST_F(SoftNavigationTest, NoSoftNavigation) {
   PageLoadMetricsTestWaiter waiter(web_contents());
 
   waiter.AddMinimumLargestContentfulPaintImageExpectation(1);
@@ -752,17 +775,7 @@ IN_PROC_BROWSER_TEST_P(SoftNavigationTest, NoSoftNavigation) {
   ExpectUkmEventNotRecorded(SoftNavigation::kEntryName);
 }
 
-INSTANTIATE_TEST_SUITE_P(All,
-                         SoftNavigationTest,
-                         ::testing::Values(false, true));
-
-#if BUILDFLAG(IS_LINUX)
-// TODO(crbug.com/515171473): Flaky on Linux.
-#define MAYBE_INP_ClickWithPresentation DISABLED_INP_ClickWithPresentation
-#else
-#define MAYBE_INP_ClickWithPresentation INP_ClickWithPresentation
-#endif
-IN_PROC_BROWSER_TEST_P(SoftNavigationTest, MAYBE_INP_ClickWithPresentation) {
+IN_PROC_BROWSER_TEST_F(SoftNavigationTest, INP_ClickWithPresentation) {
   // Start tracing to record tracing data.
   StartTracing({"devtools.timeline"});
   Start();
@@ -849,17 +862,19 @@ IN_PROC_BROWSER_TEST_P(SoftNavigationTest, MAYBE_INP_ClickWithPresentation) {
       page_load_entry, PageLoad::kInteractiveTiming_NumInteractionsName);
   ASSERT_THAT(inp_num_interactions_value, testing::Eq(5));
 
+  std::optional<int64_t> num_interactions_before_softnavs;
   // Before soft navigation metrics: num interactions is 2, and INP exists.
-  EXPECT_THAT(
-      page_load_entry,
-      HasMetricWithValue(
-          PageLoad::kInteractiveTimingBeforeSoftNavigation_NumInteractionsName,
-          2));
-  EXPECT_THAT(
-      page_load_entry,
-      HasMetric(
-          PageLoad::
-              kInteractiveTimingBeforeSoftNavigation_UserInteractionLatency_HighPercentile2_MaxEventDurationName));
+  {
+    num_interactions_before_softnavs = GetMetricFromUkmEntry(
+        page_load_entry,
+        PageLoad::kInteractiveTimingBeforeSoftNavigation_NumInteractionsName);
+    EXPECT_THAT(num_interactions_before_softnavs, testing::Eq(2));
+    EXPECT_THAT(
+        page_load_entry,
+        HasMetric(
+            PageLoad::
+                kInteractiveTimingBeforeSoftNavigation_UserInteractionLatency_HighPercentile2_MaxEventDurationName));
+  }
 
   // There are two soft navigations.
   const auto& soft_nav_entries = ukm_recorder().GetMergedEntriesByName(
@@ -871,13 +886,17 @@ IN_PROC_BROWSER_TEST_P(SoftNavigationTest, MAYBE_INP_ClickWithPresentation) {
   ASSERT_TRUE(soft_nav2);
 
   // Soft Nav 1: number of interactions 2, offset is 1, or 2, there is INP.
+  std::optional<int64_t> num_interactions_softnav1;
   {
-    std::optional<int64_t> num_interactions = GetMetricFromUkmEntry(
+    num_interactions_softnav1 = GetMetricFromUkmEntry(
         soft_nav1, SoftNavigation::kInteractiveTiming_NumInteractionsName);
-    EXPECT_THAT(num_interactions, testing::Eq(2));
+    // TODO(crbug.com/515874398): This should be exactly 2, but due to a race,
+    // interactions can arrive late and can thus be counted towards the next
+    // softnav.
+    EXPECT_THAT(num_interactions_softnav1, testing::AnyOf(1, 2, 3));
     std::optional<int64_t> offset = GetMetricFromUkmEntry(
         soft_nav1, SoftNavigation::kInteractiveTiming_INPOffsetName);
-    EXPECT_THAT(offset, testing::AnyOf(1, 2));
+    EXPECT_THAT(offset, testing::AnyOf(1, 2, 3));  // Allow 3 due to race.
     EXPECT_THAT(
         soft_nav1,
         HasMetric(
@@ -886,23 +905,39 @@ IN_PROC_BROWSER_TEST_P(SoftNavigationTest, MAYBE_INP_ClickWithPresentation) {
   }
 
   // Soft Nav 2: number of interactions 1, offset is 1, there is INP.
+  std::optional<int64_t> num_interactions_softnav2;
   {
-    std::optional<int64_t> num_interactions = GetMetricFromUkmEntry(
+    num_interactions_softnav2 = GetMetricFromUkmEntry(
         soft_nav2, SoftNavigation::kInteractiveTiming_NumInteractionsName);
-    EXPECT_THAT(num_interactions, testing::Eq(1));
+    // TODO(crbug.com/515874398): This should be exactly 1, but due to a race,
+    // interactions can arrive late and can thus be counted towards the next
+    // softnav.
+    EXPECT_THAT(num_interactions_softnav2, testing::AnyOf(1, 2));
     std::optional<int64_t> offset = GetMetricFromUkmEntry(
         soft_nav2, SoftNavigation::kInteractiveTiming_INPOffsetName);
-    EXPECT_THAT(offset, testing::Eq(1));
+    // TODO(crbug.com/515874398): Should be 1, but allow offset=2 due to race.
+    EXPECT_THAT(offset, testing::AnyOf(1, 2));
     EXPECT_THAT(
         soft_nav2,
         HasMetric(
             SoftNavigation::
                 kInteractiveTiming_UserInteractionLatency_HighPercentile2_MaxEventDurationName));
   }
+  ASSERT_TRUE(num_interactions_before_softnavs.has_value());
+  ASSERT_TRUE(num_interactions_softnav1.has_value());
+  ASSERT_TRUE(num_interactions_softnav2.has_value());
+  // The sum of interactions across the pre-soft-nav snapshot and the individual
+  // soft navigation intervals can vary slightly (4, 5, or 6) because the
+  // interaction that triggers a soft navigation can be attributed across the
+  // transition boundary depending on whether it completed before or after the
+  // soft navigation was committed.
+  EXPECT_THAT(*num_interactions_before_softnavs + *num_interactions_softnav1 +
+                  *num_interactions_softnav2,
+              testing::AnyOf(4, 5, 6));
 }
 
 // This test focuses on measuring the layout shift of soft navigations in UKM.
-IN_PROC_BROWSER_TEST_P(SoftNavigationTest, LayoutShift) {
+IN_PROC_BROWSER_TEST_F(SoftNavigationTest, LayoutShift) {
   // Start the test, load soft_navigation.html and wait for
   // load, fcp, and lcp to be observed.
   Start();
@@ -947,14 +982,11 @@ IN_PROC_BROWSER_TEST_P(SoftNavigationTest, LayoutShift) {
   TriggerLayoutShiftAndWait(web_contents(), &waiter, /*width=*/400,
                             /*height=*/400);
 
-  base::ListValue performance_entries;
-  base::ListValue layout_shift_performance_entries;
-  if (IsBlinkApiForSoftNavigationsEnabled()) {
-    performance_entries = GetPerformanceEntries();
-    ASSERT_EQ(performance_entries.size(), 3ul);
-    layout_shift_performance_entries = GetLayoutShiftPerformanceEntries();
-    ASSERT_EQ(layout_shift_performance_entries.size(), 4ul);
-  }
+  base::ListValue performance_entries = GetPerformanceEntries();
+  ASSERT_EQ(performance_entries.size(), 3ul);
+  base::ListValue layout_shift_performance_entries =
+      GetLayoutShiftPerformanceEntries();
+  ASSERT_EQ(layout_shift_performance_entries.size(), 4ul);
 
   // Navigate to about:blank (untracked) to ensure all UKM are recorded.
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), GURL("about:blank")));
@@ -1009,62 +1041,60 @@ IN_PROC_BROWSER_TEST_P(SoftNavigationTest, LayoutShift) {
           kLayoutInstability_MaxCumulativeShiftScore_SessionWindow_Gap1000ms_Max5000msName);
   EXPECT_THAT(soft_nav3_cls, testing::Gt(0));
 
-  if (IsBlinkApiForSoftNavigationsEnabled()) {
-    // First basic verification of the PerformanceObserver-based layout shift
-    // performance entries, then comparison with the UKM recordings.
-    for (size_t ii = 0; ii < layout_shift_performance_entries.size(); ++ii) {
-      SCOPED_TRACE(base::StringPrintf("layout shift entry %d", ii));
-      const auto& dict = layout_shift_performance_entries[ii].GetDict();
-      ASSERT_THAT(dict.FindInt("navigationId"), testing::Gt(0));
-      ASSERT_THAT(dict.FindDouble("value"), testing::Gt(0));
-      EXPECT_THAT(dict.FindBool("hadRecentInput"), testing::Optional(false));
-    }
-
-    // The first layout shift's navigationId is smaller than first soft nav's.
-    EXPECT_THAT(
-        layout_shift_performance_entries[0].GetDict().FindInt("navigationId"),
-        testing::Lt(performance_entries[0].GetDict().FindIntByDottedPath(
-            "softNavigation.navigationId")));
-
-    // Layout shift before the first soft navigation.
-    std::optional<double> layout_shift0_value =
-        layout_shift_performance_entries[0].GetDict().FindDouble("value");
-    EXPECT_EQ(LayoutShiftUkmValue(*layout_shift0_value), cls_before_soft_nav);
-
-    // Verify layout shifts recorded during the first soft navigation.
-    EXPECT_THAT(
-        layout_shift_performance_entries[1].GetDict().FindInt("navigationId"),
-        testing::Eq(performance_entries[0].GetDict().FindIntByDottedPath(
-            "softNavigation.navigationId")));
-    EXPECT_THAT(
-        layout_shift_performance_entries[2].GetDict().FindInt("navigationId"),
-        testing::Eq(performance_entries[0].GetDict().FindIntByDottedPath(
-            "softNavigation.navigationId")));
-
-    std::optional<double> layout_shift1_value =
-        layout_shift_performance_entries[1].GetDict().FindDouble("value");
-    std::optional<double> layout_shift2_value =
-        layout_shift_performance_entries[2].GetDict().FindDouble("value");
-    EXPECT_TRUE(layout_shift1_value.has_value());
-    EXPECT_EQ(LayoutShiftUkmValue(*layout_shift1_value + *layout_shift2_value),
-              *soft_nav1_cls);
-
-    // Verify layout shifts recorded during the third soft navigation.
-    EXPECT_THAT(
-        layout_shift_performance_entries[3].GetDict().FindInt("navigationId"),
-        testing::Eq(performance_entries[2].GetDict().FindIntByDottedPath(
-            "softNavigation.navigationId")));
-
-    std::optional<double> layout_shift3_value =
-        layout_shift_performance_entries[3].GetDict().FindDouble("value");
-    EXPECT_EQ(LayoutShiftUkmValue(*layout_shift3_value), *soft_nav3_cls);
+  // First basic verification of the PerformanceObserver-based layout shift
+  // performance entries, then comparison with the UKM recordings.
+  for (size_t ii = 0; ii < layout_shift_performance_entries.size(); ++ii) {
+    SCOPED_TRACE(base::StringPrintf("layout shift entry %d", ii));
+    const auto& dict = layout_shift_performance_entries[ii].GetDict();
+    ASSERT_THAT(dict.FindInt("navigationId"), testing::Gt(0));
+    ASSERT_THAT(dict.FindDouble("value"), testing::Gt(0));
+    EXPECT_THAT(dict.FindBool("hadRecentInput"), testing::Optional(false));
   }
+
+  // The first layout shift's navigationId is smaller than first soft nav's.
+  EXPECT_THAT(
+      layout_shift_performance_entries[0].GetDict().FindInt("navigationId"),
+      testing::Lt(performance_entries[0].GetDict().FindIntByDottedPath(
+          "softNavigation.navigationId")));
+
+  // Layout shift before the first soft navigation.
+  std::optional<double> layout_shift0_value =
+      layout_shift_performance_entries[0].GetDict().FindDouble("value");
+  EXPECT_EQ(LayoutShiftUkmValue(*layout_shift0_value), cls_before_soft_nav);
+
+  // Verify layout shifts recorded during the first soft navigation.
+  EXPECT_THAT(
+      layout_shift_performance_entries[1].GetDict().FindInt("navigationId"),
+      testing::Eq(performance_entries[0].GetDict().FindIntByDottedPath(
+          "softNavigation.navigationId")));
+  EXPECT_THAT(
+      layout_shift_performance_entries[2].GetDict().FindInt("navigationId"),
+      testing::Eq(performance_entries[0].GetDict().FindIntByDottedPath(
+          "softNavigation.navigationId")));
+
+  std::optional<double> layout_shift1_value =
+      layout_shift_performance_entries[1].GetDict().FindDouble("value");
+  std::optional<double> layout_shift2_value =
+      layout_shift_performance_entries[2].GetDict().FindDouble("value");
+  EXPECT_TRUE(layout_shift1_value.has_value());
+  EXPECT_EQ(LayoutShiftUkmValue(*layout_shift1_value + *layout_shift2_value),
+            *soft_nav1_cls);
+
+  // Verify layout shifts recorded during the third soft navigation.
+  EXPECT_THAT(
+      layout_shift_performance_entries[3].GetDict().FindInt("navigationId"),
+      testing::Eq(performance_entries[2].GetDict().FindIntByDottedPath(
+          "softNavigation.navigationId")));
+
+  std::optional<double> layout_shift3_value =
+      layout_shift_performance_entries[3].GetDict().FindDouble("value");
+  EXPECT_EQ(LayoutShiftUkmValue(*layout_shift3_value), *soft_nav3_cls);
 }
 
 //
 // Tests soft navigation metrics after prerender activations.
 //
-IN_PROC_BROWSER_TEST_P(SoftNavigationTest, Prerender) {
+IN_PROC_BROWSER_TEST_F(SoftNavigationTest, Prerender) {
   // Start the test, navigate to an initial page.
   Start();
 
@@ -1091,6 +1121,17 @@ IN_PROC_BROWSER_TEST_P(SoftNavigationTest, Prerender) {
   prerender_helper_.NavigatePrimaryPage(prerender_url);
 
   waiter.Wait();
+  SimulateUserInteractionAndWait(web_contents(), &waiter, 1,
+                                 /*element_id=*/"content");
+  // Trigger a layout shift, before any soft navigation.
+  // Since we just simulated a user interaction, we must wait at
+  // least 500ms for the layout shift to be counted in the CLS computation.
+  base::PlatformThread::Sleep(base::Milliseconds(500));
+  TriggerLayoutShiftAndWait(web_contents(), &waiter, /*width=*/500,
+                            /*height=*/300);
+
+  SimulateUserInteractionAndWait(web_contents(), &waiter, 2,
+                                 /*element_id=*/"content");
 
   // 1st soft navigation: click on the next page button and wait for soft
   // navigation count and image lcp.
@@ -1109,16 +1150,13 @@ IN_PROC_BROWSER_TEST_P(SoftNavigationTest, Prerender) {
   TriggerSoftNavigationAndWait(web_contents(), &waiter, 2,
                                /*element_id=*/"next-page");
 
-  base::ListValue performance_entries;
-  base::ListValue layout_shift_performance_entries;
-  if (IsBlinkApiForSoftNavigationsEnabled()) {
-    // Before navigating to about:blank, collect the soft navigation data and
-    // the layout shifts from the JavaScript PerformanceObserver API.
-    performance_entries = GetPerformanceEntries();
-    ASSERT_EQ(performance_entries.size(), 2ul);
-    layout_shift_performance_entries = GetLayoutShiftPerformanceEntries();
-    ASSERT_EQ(layout_shift_performance_entries.size(), 1ul);
-  }
+  // Before navigating to about:blank, collect the soft navigation data and
+  // the layout shifts from the JavaScript PerformanceObserver API.
+  base::ListValue performance_entries = GetPerformanceEntries();
+  ASSERT_EQ(performance_entries.size(), 2ul);
+  base::ListValue layout_shift_performance_entries =
+      GetLayoutShiftPerformanceEntries();
+  ASSERT_EQ(layout_shift_performance_entries.size(), 2ul);
 
   // Navigate to about:blank (untracked) to ensure all UKM are recorded.
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), GURL("about:blank")));
@@ -1151,6 +1189,49 @@ IN_PROC_BROWSER_TEST_P(SoftNavigationTest, Prerender) {
               Not(HasMetric(PrerenderPageLoad::kWasPrerenderedName)));
   EXPECT_THAT(initiator_page,
               Not(HasMetric(PrerenderPageLoad::kSoftNavigationCountName)));
+  //
+  // Examine the *beforesoftnavigation* metrics for the prerendered page.
+  //
+  std::optional<int64_t> cls_before_soft_navigation;
+  {
+    // For this very simple page, hard nav LCP and LCP before soft navs are the
+    // same.
+    std::optional<int64_t> prerender_lcp = GetMetricFromUkmEntry(
+        prerendered_page,
+        PrerenderPageLoad::kTiming_ActivationToLargestContentfulPaintName);
+    ASSERT_TRUE(prerender_lcp.has_value());
+    EXPECT_THAT(
+        prerendered_page,
+        HasMetricWithValue(
+            PrerenderPageLoad::
+                kTimingBeforeSoftNavigation_ActivationToLargestContentfulPaintName,
+            *prerender_lcp));
+
+    // Before soft navigation metrics: num interactions is 3 (2 user
+    // interactions, plus the soft nav initiating interaction), and INP exists.
+    // TODO(crbug.com/515874398): Due to a race, the soft nav initiating
+    // interaction currently may be counted toward the first soft nav. So we
+    // also allow 2.
+    std::optional<int64_t> num_interactions_before_softnavs =
+        GetMetricFromUkmEntry(
+            prerendered_page,
+            PrerenderPageLoad::
+                kInteractiveTimingBeforeSoftNavigation_NumInteractionsName);
+    EXPECT_THAT(num_interactions_before_softnavs, testing::AnyOf(2, 3));
+    EXPECT_THAT(
+        prerendered_page,
+        HasMetric(
+            PrerenderPageLoad::
+                kInteractiveTimingBeforeSoftNavigation_UserInteractionLatency_HighPercentile2_MaxEventDurationName));
+
+    // We expect to see a CLS before layout shift, and if possible we'll
+    // compare it with the performance entries later.
+    cls_before_soft_navigation = GetMetricFromUkmEntry(
+        prerendered_page,
+        PrerenderPageLoad::
+            kLayoutInstabilityBeforeSoftNavigation_MaxCumulativeShiftScore_MainFrame_SessionWindow_Gap1000ms_Max5000msName);
+    EXPECT_TRUE(cls_before_soft_navigation.has_value());
+  }
 
   //
   // Examine the two soft navigation events from the prerendered page.
@@ -1216,63 +1297,77 @@ IN_PROC_BROWSER_TEST_P(SoftNavigationTest, Prerender) {
               kLayoutInstability_MaxCumulativeShiftScore_SessionWindow_Gap1000ms_Max5000msName,
           0));
 
-  if (IsBlinkApiForSoftNavigationsEnabled()) {
-    // performance_entries is populated from the JavaScript PerformanceObserver
-    // at the end of the (hard) navigation. Compare softNavigation.startTime
-    // (in ms) with the UKM-based start times.
-    ASSERT_EQ(2, performance_entries.size());
-    EXPECT_NEAR(*performance_entries[0].GetDict().FindDoubleByDottedPath(
-                    "softNavigation.startTime"),
-                *soft_nav1_start_time, /*abs_error=*/3.0);
-    EXPECT_NEAR(*performance_entries[1].GetDict().FindDoubleByDottedPath(
-                    "softNavigation.startTime"),
-                *soft_nav2_start_time, /*abs_error=*/3.0);
+  // performance_entries is populated from the JavaScript PerformanceObserver
+  // at the end of the (hard) navigation. Compare softNavigation.startTime
+  // (in ms) with the UKM-based start times.
+  ASSERT_EQ(2, performance_entries.size());
+  EXPECT_NEAR(*performance_entries[0].GetDict().FindDoubleByDottedPath(
+                  "softNavigation.startTime"),
+              *soft_nav1_start_time, /*abs_error=*/3.0);
+  EXPECT_NEAR(*performance_entries[1].GetDict().FindDoubleByDottedPath(
+                  "softNavigation.startTime"),
+              *soft_nav2_start_time, /*abs_error=*/3.0);
 
-    // Compare the PerformanceObserver-based InteractionContentfulPaint (ICP)
-    // renderTime with the UKM-based soft LCP. Since the UKM-based metric
-    // is relative to the soft navigation start time, we add the two.
-    EXPECT_NEAR(*performance_entries[0].GetDict().FindDoubleByDottedPath(
-                    "interactionContentfulPaint.renderTime"),
-                *soft_nav1_start_time + *soft_nav1_lcp, /*abs_error=*/6.0);
-    EXPECT_NEAR(*performance_entries[1].GetDict().FindDoubleByDottedPath(
-                    "interactionContentfulPaint.renderTime"),
-                *soft_nav2_start_time + *soft_nav2_lcp, /*abs_error=*/6.0);
+  // Compare the PerformanceObserver-based InteractionContentfulPaint (ICP)
+  // renderTime with the UKM-based soft LCP. Since the UKM-based metric
+  // is relative to the soft navigation start time, we add the two.
+  EXPECT_NEAR(*performance_entries[0].GetDict().FindDoubleByDottedPath(
+                  "interactionContentfulPaint.renderTime"),
+              *soft_nav1_start_time + *soft_nav1_lcp, /*abs_error=*/6.0);
+  EXPECT_NEAR(*performance_entries[1].GetDict().FindDoubleByDottedPath(
+                  "interactionContentfulPaint.renderTime"),
+              *soft_nav2_start_time + *soft_nav2_lcp, /*abs_error=*/6.0);
 
-    // Compare the PerformanceObserver-based CLS with the UKM-based CLS.
-    // There was one layout shift during the first soft navigation - this
-    // means the navigationId of the layout shift match with the navigationId
-    // of the soft navigation.
-    ASSERT_EQ(1u, layout_shift_performance_entries.size());
-    std::optional<int> layout_shift_navigation_id =
-        layout_shift_performance_entries[0].GetDict().FindInt("navigationId");
-    ASSERT_THAT(layout_shift_navigation_id, testing::Gt(0));
-    EXPECT_THAT(
-        layout_shift_navigation_id,
-        testing::Eq(performance_entries[0].GetDict().FindIntByDottedPath(
-            "softNavigation.navigationId")));
+  // There were two layout shifts: One before and one during the first soft
+  // navigation.
+  ASSERT_EQ(2u, layout_shift_performance_entries.size());
 
-    // Check that the UKM value and the PerformanceObserver based values for CLS
-    // agree.
+  // Compare the first one with the UKM recorded value - before soft
+  // navigation.
+  {
     std::optional<double> layout_shift_value =
         layout_shift_performance_entries[0].GetDict().FindDouble("value");
-    EXPECT_TRUE(layout_shift_value.has_value());
-    EXPECT_EQ(LayoutShiftUkmValue(*layout_shift_value), *soft_nav1_cls);
-
-    // Check other PerformanceObserver based CLS performance entry fields.
-    std::optional<double> layout_shift_start_time =
-        layout_shift_performance_entries[0].GetDict().FindDouble("startTime");
-    EXPECT_TRUE(layout_shift_start_time.has_value());
-    std::optional<bool> layout_shift_had_recent_input =
-        layout_shift_performance_entries[0].GetDict().FindBool(
-            "hadRecentInput");
-    EXPECT_THAT(layout_shift_had_recent_input, testing::Optional(false));
+    ASSERT_TRUE(layout_shift_value.has_value());
+    ASSERT_TRUE(cls_before_soft_navigation.has_value());
+    EXPECT_EQ(LayoutShiftUkmValue(*layout_shift_value),
+              *cls_before_soft_navigation);
   }
+
+  // Compare the second PerformanceObserver-based CLS with the UKM-based CLS;
+  // this layout shift was recorded during the first soft navigation - this
+  // means the navigationId of the layout shift match with the navigationId
+  // of the soft navigation.
+  std::optional<int> layout_shift_navigation_id =
+      layout_shift_performance_entries[1].GetDict().FindInt("navigationId");
+  ASSERT_THAT(layout_shift_navigation_id, testing::Gt(0));
+  EXPECT_THAT(layout_shift_navigation_id,
+              testing::Eq(performance_entries[0].GetDict().FindIntByDottedPath(
+                  "softNavigation.navigationId")));
+
+  // Check that the UKM value and the PerformanceObserver based values for CLS
+  // agree.
+  std::optional<double> layout_shift_value =
+      layout_shift_performance_entries[1].GetDict().FindDouble("value");
+  EXPECT_TRUE(layout_shift_value.has_value());
+  EXPECT_EQ(LayoutShiftUkmValue(*layout_shift_value), *soft_nav1_cls);
+
+  // Check other PerformanceObserver based CLS performance entry fields.
+  std::optional<double> layout_shift_start_time =
+      layout_shift_performance_entries[1].GetDict().FindDouble("startTime");
+  EXPECT_TRUE(layout_shift_start_time.has_value());
+  std::optional<bool> layout_shift_had_recent_input =
+      layout_shift_performance_entries[1].GetDict().FindBool("hadRecentInput");
+  EXPECT_THAT(layout_shift_had_recent_input, testing::Optional(false));
+
+  histogram_tester().ExpectUniqueSample(
+      "PageLoad.SoftNavigation.SoftNavigationPageLoadMetricsObserverState",
+      SoftNavigationPageLoadMetricsObserverState::kPrerenderActivated, 2);
 }
 
 //
 // Tests soft navigation metrics after back-forward-cache restores.
 //
-IN_PROC_BROWSER_TEST_P(SoftNavigationTest, BackForwardCache) {
+IN_PROC_BROWSER_TEST_F(SoftNavigationTest, BackForwardCache) {
   Start();
   GURL url_a(
       embedded_test_server()->GetURL("a.com", "/soft_navigation.html#image"));
@@ -1307,6 +1402,9 @@ IN_PROC_BROWSER_TEST_P(SoftNavigationTest, BackForwardCache) {
               content::RenderFrameHost::LifecycleState::kInBackForwardCache);
 
     waiter.Wait();
+    TriggerLayoutShiftAndWait(web_contents(), &waiter, /*width=*/400,
+                              /*height=*/400);
+
     // 1st soft navigation: click on the next page button and wait for soft
     // navigation count and image lcp.
     // The expected URL is url_a_after_softnav1 (with ?id=1).
@@ -1352,6 +1450,12 @@ IN_PROC_BROWSER_TEST_P(SoftNavigationTest, BackForwardCache) {
               content::RenderFrameHost::LifecycleState::kInBackForwardCache);
 
     waiter.Wait();
+
+    // A user interaction, so that we can test the inp metric before the soft
+    // navigation.
+    SimulateUserInteractionAndWait(web_contents(), &waiter, 1,
+                                   /*element_id=*/"content");
+
     // 1st soft navigation for this bfcache restore: click on the next page
     // button and wait for soft navigation count and image lcp.
     // The expected URL is url_a_after_softnav3 (with ?id=3).
@@ -1370,12 +1474,10 @@ IN_PROC_BROWSER_TEST_P(SoftNavigationTest, BackForwardCache) {
     TriggerLayoutShiftAndWait(web_contents(), &waiter, /*width=*/300,
                               /*height=*/300);
 
-    if (IsBlinkApiForSoftNavigationsEnabled()) {
-      performance_entries = GetPerformanceEntries();
-      ASSERT_EQ(performance_entries.size(), 3ul);
-      layout_shift_performance_entries = GetLayoutShiftPerformanceEntries();
-      EXPECT_EQ(layout_shift_performance_entries.size(), 3ul);
-    }
+    performance_entries = GetPerformanceEntries();
+    ASSERT_EQ(performance_entries.size(), 3ul);
+    layout_shift_performance_entries = GetLayoutShiftPerformanceEntries();
+    EXPECT_EQ(layout_shift_performance_entries.size(), 4ul);
 
     EXPECT_TRUE(ui_test_utils::NavigateToURL(browser(), GURL("about:blank")));
   }
@@ -1498,6 +1600,20 @@ IN_PROC_BROWSER_TEST_P(SoftNavigationTest, BackForwardCache) {
       SoftNavigation::kPaintTiming_LargestContentfulPaintName);
   ASSERT_THAT(soft_nav3_lcp, testing::Gt(0));
 
+  // For the first bfcache restore, we recorded a non-zero CLS before the first
+  // soft navigation.
+  auto* kClsBeforeSoftNav = HistoryNavigation::
+      kBeforeSoftNavigation_MaxCumulativeShiftScore_MainFrame_SessionWindow_Gap1000ms_Max5000msName;
+
+  std::optional<int64_t> bfcache_restore1_cls_before_soft_nav =
+      GetMetricFromUkmEntry(bfcache_restores[url_a].get(), kClsBeforeSoftNav);
+  ASSERT_THAT(bfcache_restore1_cls_before_soft_nav, testing::Gt(0));
+
+  std::optional<int64_t> bfcache_restore2_cls_before_soft_nav =
+      GetMetricFromUkmEntry(bfcache_restores[url_a_after_softnav2].get(),
+                            kClsBeforeSoftNav);
+  ASSERT_THAT(bfcache_restore2_cls_before_soft_nav, testing::Eq(0));
+
   // All three soft navs have soft CLS.
   std::optional<int64_t> soft_nav1_cls = GetMetricFromUkmEntry(
       soft_navigation_entries[0],
@@ -1520,82 +1636,134 @@ IN_PROC_BROWSER_TEST_P(SoftNavigationTest, BackForwardCache) {
   ASSERT_THAT(soft_nav3_cls, testing::Gt(0));
   EXPECT_GT(*soft_nav3_cls, 0);
 
-  if (IsBlinkApiForSoftNavigationsEnabled()) {
-    // performance_entries is populated from the JavaScript PerformanceObserver
-    // at the end of the (hard) navigation. Compare softNavigation.startTime
-    // (in ms) with the UKM-based start times.
-    ASSERT_EQ(3, performance_entries.size());
-    EXPECT_NEAR(*performance_entries[0].GetDict().FindDoubleByDottedPath(
-                    "softNavigation.startTime"),
-                *soft_nav1_start_time, /*abs_error=*/3.0);
-    EXPECT_NEAR(*performance_entries[1].GetDict().FindDoubleByDottedPath(
-                    "softNavigation.startTime"),
-                *soft_nav2_start_time, /*abs_error=*/3.0);
-    EXPECT_NEAR(*performance_entries[2].GetDict().FindDoubleByDottedPath(
-                    "softNavigation.startTime"),
-                *soft_nav3_start_time, /*abs_error=*/3.0);
+  {
+    // This is a relatively shallow test of the INP metric,
+    // especially before the first soft navigation. Unfortunately,
+    // due to a race, sometimes the interaction triggering
+    // a soft navigation is counted towards the INP for that soft
+    // navigation. See crbug.com/515874398.
+    auto* kNumInteractionsBeforeSoftNav = HistoryNavigation::
+        kBeforeSoftNavigation_NumInteractionsAfterBackForwardCacheRestoreName;
+    std::optional<int64_t> num_interactions_before_soft_nav =
+        GetMetricFromUkmEntry(bfcache_restores[url_a_after_softnav2].get(),
+                              kNumInteractionsBeforeSoftNav);
+    std::optional<int64_t> num_interactions_soft_nav = GetMetricFromUkmEntry(
+        soft_navigation_entries[2],
+        SoftNavigation::kInteractiveTiming_NumInteractionsName);
+    std::optional<int64_t> num_interactions = GetMetricFromUkmEntry(
+        bfcache_restores[url_a_after_softnav2].get(),
+        HistoryNavigation::kNumInteractionsAfterBackForwardCacheRestoreName);
+    // This should be exactly 2 - see crbug.com/515874398; it's extra-odd that
+    // we sometimes see 3 here (and for |num_interactions| just below), but for
+    // now, we allow it and will revisit with crbug.com/524751547 improving the
+    // INP slicing.
+    EXPECT_THAT(num_interactions_before_soft_nav, testing::AnyOf(1, 2, 3));
+    // This should be exactly 1 - see crbug.com/515874398.
+    EXPECT_THAT(num_interactions_soft_nav.value_or(0), testing::AnyOf(0, 1));
+    // This should be exactly 2 - see crbug.com/515874398.
+    EXPECT_THAT(num_interactions, testing::AnyOf(2, 3));
+    // This should match. See crbug.com/524751547, crbug.com/515874398.
+    // EXPECT_THAT(num_interactions_before_soft_nav.value_or(0) +
+    //                num_interactions_soft_nav.value_or(0),
+    //            testing::Eq(num_interactions));
+    auto* kInpBeforeSoftNav = HistoryNavigation::
+        kBeforeSoftNavigation_UserInteractionLatencyAfterBackForwardCacheRestore_HighPercentile2_MaxEventDurationMsName;
+    std::optional<int64_t> inp_before_soft_nav = GetMetricFromUkmEntry(
+        bfcache_restores[url_a_after_softnav2].get(), kInpBeforeSoftNav);
+    ASSERT_THAT(inp_before_soft_nav, testing::Gt(0));
+  }
 
-    // Compare the PerformanceObserver-based InteractionContentfulPaint (ICP)
-    // renderTime with the UKM-based soft LCP. Since the UKM-based metric
-    // is relative to the soft navigation start time, we add the two.
-    EXPECT_NEAR(*performance_entries[0].GetDict().FindDoubleByDottedPath(
-                    "interactionContentfulPaint.renderTime"),
-                *soft_nav1_start_time + *soft_nav1_lcp, /*abs_error=*/6.0);
-    EXPECT_NEAR(*performance_entries[1].GetDict().FindDoubleByDottedPath(
-                    "interactionContentfulPaint.renderTime"),
-                *soft_nav2_start_time + *soft_nav2_lcp, /*abs_error=*/6.0);
-    EXPECT_NEAR(*performance_entries[2].GetDict().FindDoubleByDottedPath(
-                    "interactionContentfulPaint.renderTime"),
-                *soft_nav3_start_time + *soft_nav3_lcp, /*abs_error=*/6.0);
+  // performance_entries is populated from the JavaScript PerformanceObserver
+  // at the end of the (hard) navigation. Compare softNavigation.startTime
+  // (in ms) with the UKM-based start times.
+  ASSERT_EQ(3, performance_entries.size());
+  EXPECT_NEAR(*performance_entries[0].GetDict().FindDoubleByDottedPath(
+                  "softNavigation.startTime"),
+              *soft_nav1_start_time, /*abs_error=*/3.0);
+  EXPECT_NEAR(*performance_entries[1].GetDict().FindDoubleByDottedPath(
+                  "softNavigation.startTime"),
+              *soft_nav2_start_time, /*abs_error=*/3.0);
+  EXPECT_NEAR(*performance_entries[2].GetDict().FindDoubleByDottedPath(
+                  "softNavigation.startTime"),
+              *soft_nav3_start_time, /*abs_error=*/3.0);
 
-    // Compare the PerformanceObserver-based CLS with the UKM-based CLS.
-    // There was one layout shift during the first soft navigation and two
-    // during the third soft navigation.
-    ASSERT_EQ(3u, layout_shift_performance_entries.size());
-    for (size_t ii = 0; ii < layout_shift_performance_entries.size(); ++ii) {
-      SCOPED_TRACE(base::StringPrintf("soft navigation entry %d", ii));
-      const auto& dict = layout_shift_performance_entries[ii].GetDict();
-      ASSERT_THAT(dict.FindInt("navigationId"), testing::Gt(0));
-      ASSERT_THAT(dict.FindDouble("value"), testing::Gt(0));
-      EXPECT_THAT(dict.FindBool("hadRecentInput"), testing::Optional(false));
-    }
+  // Compare the PerformanceObserver-based InteractionContentfulPaint (ICP)
+  // renderTime with the UKM-based soft LCP. Since the UKM-based metric
+  // is relative to the soft navigation start time, we add the two.
+  EXPECT_NEAR(*performance_entries[0].GetDict().FindDoubleByDottedPath(
+                  "interactionContentfulPaint.renderTime"),
+              *soft_nav1_start_time + *soft_nav1_lcp, /*abs_error=*/6.0);
+  EXPECT_NEAR(*performance_entries[1].GetDict().FindDoubleByDottedPath(
+                  "interactionContentfulPaint.renderTime"),
+              *soft_nav2_start_time + *soft_nav2_lcp, /*abs_error=*/6.0);
+  EXPECT_NEAR(*performance_entries[2].GetDict().FindDoubleByDottedPath(
+                  "interactionContentfulPaint.renderTime"),
+              *soft_nav3_start_time + *soft_nav3_lcp, /*abs_error=*/6.0);
+
+  // Compare the PerformanceObserver-based CLS with the UKM-based CLS.
+  // There was one layout shift during the first soft navigation and two
+  // during the third soft navigation.
+  ASSERT_EQ(4u, layout_shift_performance_entries.size());
+  for (size_t ii = 0; ii < layout_shift_performance_entries.size(); ++ii) {
+    SCOPED_TRACE(base::StringPrintf("soft navigation entry %d", ii));
+    const auto& dict = layout_shift_performance_entries[ii].GetDict();
+    ASSERT_THAT(dict.FindInt("navigationId"), testing::Gt(0));
+    ASSERT_THAT(dict.FindDouble("value"), testing::Gt(0));
+    EXPECT_THAT(dict.FindBool("hadRecentInput"), testing::Optional(false));
+  }
+  {
+    // Check the layout shift before the first soft navigation.
+    std::optional<double> layout_shift1_value =
+        layout_shift_performance_entries[0].GetDict().FindDouble("value");
+    EXPECT_THAT(layout_shift1_value, testing::Gt(0));
+    EXPECT_EQ(LayoutShiftUkmValue(*layout_shift1_value),
+              *bfcache_restore1_cls_before_soft_nav);
+  }
+
+  // Check the layout shift recorded during the first soft navigation.
+  // - The navigation ID should match the first soft navigation.
+  // - The CLS value should match the first soft navigation.
+  {
     EXPECT_THAT(
-        layout_shift_performance_entries[0].GetDict().FindInt("navigationId"),
+        layout_shift_performance_entries[1].GetDict().FindInt("navigationId"),
         testing::Eq(performance_entries[0].GetDict().FindIntByDottedPath(
             "softNavigation.navigationId")));
-
-    // Check that the UKM value and the PerformanceObserver based values for CLS
-    // agree.
     std::optional<double> layout_shift_value =
-        layout_shift_performance_entries[0].GetDict().FindDouble("value");
-    EXPECT_EQ(LayoutShiftUkmValue(*layout_shift_value), *soft_nav1_cls);
-
-    // Verify layout shifts recorded during the third soft navigation.
-    std::optional<int> layout_shift2_navigation_id =
-        layout_shift_performance_entries[1].GetDict().FindInt("navigationId");
-    EXPECT_THAT(
-        layout_shift2_navigation_id,
-        testing::Eq(performance_entries[2].GetDict().FindIntByDottedPath(
-            "softNavigation.navigationId")));
-    std::optional<int> layout_shift3_navigation_id =
-        layout_shift_performance_entries[2].GetDict().FindInt("navigationId");
-    EXPECT_THAT(
-        layout_shift3_navigation_id,
-        testing::Eq(performance_entries[2].GetDict().FindIntByDottedPath(
-            "softNavigation.navigationId")));
-
-    std::optional<double> layout_shift2_value =
         layout_shift_performance_entries[1].GetDict().FindDouble("value");
+    EXPECT_EQ(LayoutShiftUkmValue(*layout_shift_value), *soft_nav1_cls);
+  }
+
+  // Verify layout shifts recorded during the third soft navigation.
+  {
+    std::optional<int> soft_nav3_navigation_id =
+        performance_entries[2].GetDict().FindIntByDottedPath(
+            "softNavigation.navigationId");
+    EXPECT_THAT(soft_nav3_navigation_id, testing::Gt(0));
+    EXPECT_THAT(
+        layout_shift_performance_entries[2].GetDict().FindInt("navigationId"),
+        testing::Eq(soft_nav3_navigation_id));
+    EXPECT_THAT(
+        layout_shift_performance_entries[3].GetDict().FindInt("navigationId"),
+        testing::Eq(soft_nav3_navigation_id));
+
     std::optional<double> layout_shift3_value =
         layout_shift_performance_entries[2].GetDict().FindDouble("value");
+    std::optional<double> layout_shift4_value =
+        layout_shift_performance_entries[3].GetDict().FindDouble("value");
 
-    // While UKM records the summed up / aggregated CLS for the soft navigation
-    // as a single value, the PerformanceObserver reports on individual layout
-    // shifts. We add the CLS values of the two layout shifts that were recorded
-    // during the third soft navigation and compare the result to the UKM CLS.
-    EXPECT_EQ(LayoutShiftUkmValue(*layout_shift2_value + *layout_shift3_value),
+    // While UKM records the summed up / aggregated CLS for the soft
+    // navigation as a single value, the PerformanceObserver reports on
+    // individual layout shifts. We add the CLS values of the two layout
+    // shifts that were recorded during the third soft navigation and compare
+    // the result to the UKM CLS.
+    EXPECT_EQ(LayoutShiftUkmValue(*layout_shift3_value + *layout_shift4_value),
               *soft_nav3_cls);
   }
+
+  histogram_tester().ExpectUniqueSample(
+      "PageLoad.SoftNavigation.SoftNavigationPageLoadMetricsObserverState",
+      SoftNavigationPageLoadMetricsObserverState::kRestoredFromBackForwardCache,
+      3);
 }
 }  // namespace
 }  // namespace page_load_metrics

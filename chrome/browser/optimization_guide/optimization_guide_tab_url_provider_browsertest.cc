@@ -6,11 +6,12 @@
 
 #include "base/time/time.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "content/public/test/browser_test.h"
 #include "testing/gmock/include/gmock/gmock.h"
+#include "ui/base/window_open_disposition.h"
 
 using testing::ElementsAre;
 
@@ -33,7 +34,7 @@ IN_PROC_BROWSER_TEST_F(OptimizationGuideTabUrlProviderBrowserTest,
   // Instead, we open an Incognito browser to keep the BrowserProcess and the
   // original Profile alive, and then safely close the main browser window.
   CreateIncognitoBrowser();
-  Profile* original_profile = browser()->profile();
+  Profile* original_profile = browser()->GetProfile();
 
   // Close the only window associated with original_profile.
   CloseBrowserSynchronously(browser());
@@ -50,7 +51,7 @@ IN_PROC_BROWSER_TEST_F(OptimizationGuideTabUrlProviderBrowserTest,
 IN_PROC_BROWSER_TEST_F(OptimizationGuideTabUrlProviderBrowserTest,
                        GetUrlsFiltersOutIncognitoTabs) {
   // Create an Incognito browser.
-  Browser* otr_browser = CreateIncognitoBrowser();
+  BrowserWindowInterface* otr_browser = CreateIncognitoBrowser();
 
   ASSERT_TRUE(ui_test_utils::NavigateToURL(otr_browser,
                                            GURL("https://otrshouldskip.com")));
@@ -66,7 +67,7 @@ IN_PROC_BROWSER_TEST_F(OptimizationGuideTabUrlProviderBrowserTest,
       WindowOpenDisposition::NEW_FOREGROUND_TAB,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
 
-  OptimizationGuideTabUrlProvider provider(browser()->profile());
+  OptimizationGuideTabUrlProvider provider(browser()->GetProfile());
   std::vector<GURL> urls = provider.GetUrlsOfActiveTabs(base::Days(90));
 
   // The behavior of OptimizationGuideTabUrlProvider is to sort by last active

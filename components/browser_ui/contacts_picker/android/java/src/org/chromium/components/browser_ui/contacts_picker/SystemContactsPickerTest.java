@@ -5,12 +5,17 @@
 package org.chromium.components.browser_ui.contacts_picker;
 
 import android.app.Activity;
+import android.content.DialogInterface;
 import android.content.Intent;
+import android.os.Build;
+import android.provider.ContactsPickerSessionContract;
 
+import androidx.annotation.RequiresApi;
 import androidx.test.filters.LargeTest;
 
 import org.junit.Assert;
 import org.junit.Before;
+import org.junit.BeforeClass;
 import org.junit.ClassRule;
 import org.junit.Rule;
 import org.junit.Test;
@@ -21,15 +26,19 @@ import org.mockito.Mockito;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 
-import org.chromium.base.AconfigFlaggedApiDelegate;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.BaseActivityTestRule;
 import org.chromium.base.test.BaseJUnit4ClassRunner;
 import org.chromium.base.test.util.Batch;
-import org.chromium.base.test.util.Features.EnableFeatures;
+import org.chromium.base.test.util.MinAndroidSdkLevel;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.content_public.browser.ContactsFetcher;
+import org.chromium.content_public.browser.ContactsPicker;
+import org.chromium.content_public.browser.ContactsPickerDelegate;
 import org.chromium.content_public.browser.ContactsPickerListener;
+import org.chromium.content_public.browser.Visibility;
+import org.chromium.content_public.browser.WebContents;
+import org.chromium.content_public.browser.WebContentsObserver;
 import org.chromium.ui.base.WindowAndroid;
 import org.chromium.ui.test.util.BlankUiTestActivity;
 
@@ -39,20 +48,26 @@ import java.util.ArrayList;
 /** Tests for the System Contacts Picker integration. */
 @RunWith(BaseJUnit4ClassRunner.class)
 @Batch(Batch.UNIT_TESTS)
-@EnableFeatures(ContactsPickerFeatureList.ANDROID_SYSTEM_CONTACTS_PICKER)
+@MinAndroidSdkLevel(Build.VERSION_CODES.CINNAMON_BUN)
+@RequiresApi(Build.VERSION_CODES.CINNAMON_BUN)
 public class SystemContactsPickerTest {
     @ClassRule
     public static BaseActivityTestRule<BlankUiTestActivity> activityTestRule =
             new BaseActivityTestRule<>(BlankUiTestActivity.class);
 
+    @BeforeClass
+    public static void setupSuite() {
+        activityTestRule.launchActivity(null);
+    }
+
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
 
     @Mock private WindowAndroid mWindowAndroid;
     @Mock private ContactsPickerListener mListener;
-    @Mock private ContactsPickerFeatureMap mMockFeatureMap;
 
     private PickerCategoryView mCategoryView;
     private Activity mActivity;
+    private ContactsPickerDialog mMockDialog;
 
     private static class TestPickerAdapter extends PickerAdapter {
         @Override
@@ -67,17 +82,8 @@ public class SystemContactsPickerTest {
 
     @Before
     public void setUp() {
-        FakeAconfigFlaggedApiDelegate fakeDelegate = new FakeAconfigFlaggedApiDelegate();
-        fakeDelegate.setSystemContactsPickerEnabled(true);
-        AconfigFlaggedApiDelegate.setInstanceForTesting(fakeDelegate);
+        ContactsPickerFeatureMap.setSystemContactsPickerEnabledForTesting(true);
 
-        // Mock the feature map to avoid native calls.
-        ContactsPickerFeatureMap.setInstanceForTesting(mMockFeatureMap);
-        Mockito.doReturn(true)
-                .when(mMockFeatureMap)
-                .isEnabledInNative(ContactsPickerFeatureList.ANDROID_SYSTEM_CONTACTS_PICKER);
-
-        activityTestRule.launchActivity(null);
         mActivity = activityTestRule.getActivity();
 
         Mockito.doReturn(new WeakReference<>(mActivity)).when(mWindowAndroid).getActivity();
@@ -103,8 +109,8 @@ public class SystemContactsPickerTest {
 
                     // initialize() is what sets up the TopView and other UI components.
                     // We use a mock Dialog to satisfy the requirement.
-                    ContactsPickerDialog mockDialog = Mockito.mock(ContactsPickerDialog.class);
-                    mCategoryView.initialize(mockDialog, mListener);
+                    mMockDialog = Mockito.mock(ContactsPickerDialog.class);
+                    mCategoryView.initialize(mMockDialog, mListener);
 
                     mActivity.setContentView(mCategoryView);
                 });
@@ -124,7 +130,65 @@ public class SystemContactsPickerTest {
 
                     Intent intent = intentCaptor.getValue();
                     Assert.assertEquals(
-                            FakeAconfigFlaggedApiDelegate.ACTION_PICK_CONTACTS, intent.getAction());
+                            ContactsPickerSessionContract.ACTION_PICK_CONTACTS, intent.getAction());
+                });
+    }
+
+    @Test
+    @LargeTest
+    public void testDismissClearsPicker() {
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    ContactsPickerDelegate mockDelegate =
+                            Mockito.mock(ContactsPickerDelegate.class);
+                    ContactsPicker.setContactsPickerDelegate(mockDelegate);
+
+                    Mockito.when(
+                                    mockDelegate.showContactsPicker(
+                                            Mockito.any(),
+                                            Mockito.any(),
+                                            Mockito.anyBoolean(),
+                                            Mockito.anyBoolean(),
+                                            Mockito.anyBoolean(),
+                                            Mockito.anyBoolean(),
+                                            Mockito.anyBoolean(),
+                                            Mockito.anyBoolean(),
+                                            Mockito.anyString(),
+                                            Mockito.any()))
+                            .thenReturn(mMockDialog);
+
+                    WebContents mockWebContents =
+                            Mockito.mock(
+                                    WebContents.class,
+                                    Mockito.withSettings()
+                                            .extraInterfaces(WebContentsObserver.Observable.class));
+                    Mockito.when(mockWebContents.getVisibility()).thenReturn(Visibility.VISIBLE);
+
+                    Assert.assertFalse(ContactsPicker.hasPickerForTesting());
+
+                    boolean result =
+                            ContactsPicker.showContactsPicker(
+                                    mockWebContents,
+                                    mListener,
+                                    false,
+                                    true,
+                                    true,
+                                    true,
+                                    true,
+                                    true,
+                                    "example.com",
+                                    null);
+                    Assert.assertTrue(result);
+                    Assert.assertTrue(ContactsPicker.hasPickerForTesting());
+
+                    ArgumentCaptor<DialogInterface.OnDismissListener> dismissListenerCaptor =
+                            ArgumentCaptor.forClass(DialogInterface.OnDismissListener.class);
+                    Mockito.verify(mMockDialog)
+                            .setOnDismissListener(dismissListenerCaptor.capture());
+
+                    dismissListenerCaptor.getValue().onDismiss(mMockDialog);
+
+                    Assert.assertFalse(ContactsPicker.hasPickerForTesting());
                 });
     }
 }

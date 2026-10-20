@@ -2,12 +2,18 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
+import("//build/config/rust.gni")
+
 source_set("private_verification_tokens_public_key") {
   sources = [
     "private_verification_tokens_public_key.cc",
     "private_verification_tokens_public_key.h",
   ]
-  public_deps = [ "//base" ]
+  deps = [ "//crypto" ]
+  public_deps = [
+    "//base",
+    "//url",
+  ]
 }
 
 source_set("private_verification_tokens_public_key_unittest") {
@@ -17,6 +23,7 @@ source_set("private_verification_tokens_public_key_unittest") {
     ":private_verification_tokens_public_key",
     "//testing/gmock",
     "//testing/gtest",
+    "//url",
   ]
 }
 
@@ -25,7 +32,10 @@ source_set("private_verification_tokens_token") {
     "private_verification_tokens_token.cc",
     "private_verification_tokens_token.h",
   ]
-  public_deps = [ "//base" ]
+  public_deps = [
+    "//base",
+    "//url",
+  ]
 }
 
 source_set("private_verification_tokens_token_unittest") {
@@ -35,6 +45,7 @@ source_set("private_verification_tokens_token_unittest") {
     ":private_verification_tokens_token",
     "//base",
     "//testing/gtest",
+    "//url",
   ]
 }
 
@@ -59,6 +70,7 @@ source_set("private_verification_tokens_fetcher_unittest") {
   sources = [ "private_verification_tokens_fetcher_unittest.cc" ]
   deps = [
     ":private_verification_tokens_fetcher",
+    ":private_verification_tokens_parameters",
     "//base",
     "//base/test:test_support",
     "//services/network:test_support",
@@ -73,10 +85,7 @@ source_set("private_verification_tokens_database") {
     "private_verification_tokens_database.cc",
     "private_verification_tokens_database.h",
   ]
-  public_deps = [
-    ":private_verification_tokens_public_key",
-    ":private_verification_tokens_token",
-  ]
+  public_deps = [ ":private_verification_tokens_token" ]
   deps = [
     "//base",
     "//sql",
@@ -94,6 +103,7 @@ source_set("private_verification_tokens_database_unittest") {
     "//sql:test_support",
     "//testing/gmock",
     "//testing/gtest",
+    "//url",
   ]
 }
 
@@ -104,7 +114,6 @@ source_set("private_verification_tokens_store") {
   ]
   public_deps = [
     ":private_verification_tokens_database",
-    ":private_verification_tokens_public_key",
     ":private_verification_tokens_token",
   ]
   deps = [ "//base" ]
@@ -114,7 +123,6 @@ source_set("private_verification_tokens_store_unittest") {
   testonly = true
   sources = [ "private_verification_tokens_store_unittest.cc" ]
   deps = [
-    ":private_verification_tokens_public_key",
     ":private_verification_tokens_store",
     ":private_verification_tokens_token",
     "//base",
@@ -123,6 +131,7 @@ source_set("private_verification_tokens_store_unittest") {
     "//sql:test_support",
     "//testing/gmock",
     "//testing/gtest",
+    "//url",
   ]
 }
 
@@ -142,14 +151,22 @@ source_set("private_verification_tokens_parameters_unittest") {
   ]
 }
 
+source_set("private_verification_tokens_metrics") {
+  sources = [ "private_verification_tokens_metrics.h" ]
+}
+
 source_set("private_verification_tokens_issuer_config") {
   sources = [
     "private_verification_tokens_issuer_config.cc",
     "private_verification_tokens_issuer_config.h",
     "private_verification_tokens_issuer_config_internal.h",
   ]
-  public_deps = [ "//base" ]
+  public_deps = [
+    "//base",
+    "//url",
+  ]
   deps = [
+    ":private_verification_tokens_metrics",
     ":private_verification_tokens_parameters",
     ":private_verification_tokens_public_key",
     "//net",
@@ -161,9 +178,54 @@ source_set("private_verification_tokens_issuer_config_unittest") {
   sources = [ "private_verification_tokens_issuer_config_unittest.cc" ]
   deps = [
     ":private_verification_tokens_issuer_config",
+    ":private_verification_tokens_metrics",
     ":private_verification_tokens_parameters",
+    ":test_support",
     "//base",
+    "//base/test:test_support",
     "//testing/gmock",
     "//testing/gtest",
+    "//url",
   ]
+}
+
+source_set("test_support") {
+  testonly = true
+  sources = [ "private_verification_tokens_test_util.h" ]
+  public_deps = [
+    "//base",
+    "//components/private_verification_tokens/common/athm_ffi:athm_ffi_bindings",
+  ]
+}
+
+# ATHM (Anonymous Tokens with Hidden Metadata): Crubit bindings over
+# //third_party/anonymous_tokens:athm and the C++ that calls it.
+if (enable_rust) {
+  source_set("privacy_pass_athm_batch_request") {
+    sources = [
+      "privacy_pass_athm_batch_request.cc",
+      "privacy_pass_athm_batch_request.h",
+    ]
+    public_deps = [
+      ":private_verification_tokens_issuer_config",
+      "//base",
+      "//components/private_verification_tokens/common/athm_ffi:athm_ffi_bindings",
+    ]
+  }
+
+  source_set("privacy_pass_athm_batch_request_unittest") {
+    testonly = true
+    sources = [ "privacy_pass_athm_batch_request_unittest.cc" ]
+    deps = [
+      ":privacy_pass_athm_batch_request",
+      ":private_verification_tokens_issuer_config",
+      ":private_verification_tokens_parameters",
+      ":private_verification_tokens_public_key",
+      "//base",
+      "//components/private_verification_tokens/common/athm_ffi:athm_ffi_bindings",
+      "//testing/gmock",
+      "//testing/gtest",
+      "//url",
+    ]
+  }
 }

@@ -15,6 +15,7 @@ import static org.chromium.chrome.browser.url_constants.UrlOverrideUtils.isHisto
 import static org.chromium.chrome.browser.url_constants.UrlOverrideUtils.isIncognitoBookmarksPageOverrideEnabled;
 import static org.chromium.chrome.browser.url_constants.UrlOverrideUtils.isIncognitoNtpOverrideEnabled;
 import static org.chromium.chrome.browser.url_constants.UrlOverrideUtils.isNtpOverrideEnabled;
+import static org.chromium.chrome.browser.url_constants.UrlOverrideUtils.isWebUiNtpOverrideEnabled;
 
 import androidx.annotation.VisibleForTesting;
 
@@ -24,8 +25,11 @@ import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.profiles.Profile;
 
 /**
- * This factory creates and keeps a single ExtensionsUrlOverrideRegistryManager for incognito
- * profiles and non-incognito profiles respectively.
+ * Factory class that creates, configures, and caches {@link UrlConstantResolver} instances for
+ * standard (non-incognito) and incognito profiles.
+ *
+ * <p>This factory initializes each resolver with profile-specific overrides (such as bookmarks,
+ * NTP, and history overrides).
  */
 @NullMarked
 public class UrlConstantResolverFactory {
@@ -68,7 +72,15 @@ public class UrlConstantResolverFactory {
         UrlConstantResolver resolver = new UrlConstantResolver();
         resolver.registerOverride(
                 getOriginalNativeNtpUrl(),
-                () -> isNtpOverrideEnabled() ? getOriginalNtpUrl() : null);
+                () -> {
+                    // Returns 'chrome://newtab' even when WebUI NTP is enabled in order to respect
+                    // extensions/NTP location overrides and delegate to C++ URL rewrite handler.
+                    if (isNtpOverrideEnabled() || isWebUiNtpOverrideEnabled()) {
+                        return getOriginalNtpUrl();
+                    } else {
+                        return null;
+                    }
+                });
         resolver.registerOverride(
                 getOriginalNativeBookmarksUrl(),
                 () -> isBookmarksPageOverrideEnabled() ? getOriginalBookmarksUrl() : null);

@@ -5,11 +5,12 @@
 #ifndef IOS_CHROME_BROWSER_SEND_TAB_TO_SELF_MODEL_SEND_TAB_TO_SELF_UTIL_H_
 #define IOS_CHROME_BROWSER_SEND_TAB_TO_SELF_MODEL_SEND_TAB_TO_SELF_UTIL_H_
 
-#include "base/supports_user_data.h"
 #include "components/send_tab_to_self/page_context.h"
 #include "url/origin.h"
 
 @class OpenNewTabCommand;
+
+class ProfileIOS;
 
 namespace web {
 class WebState;
@@ -19,8 +20,16 @@ namespace send_tab_to_self {
 
 class SendTabToSelfEntry;
 
+// Returns whether the omnibox Send Tab to Self entry point is eligible to be
+// shown for `web_state`.
+bool IsOmniboxEntryPointEligible(web::WebState* web_state, ProfileIOS* profile);
+
 // Creates an OpenNewTabCommand for the given `entry`.
 OpenNewTabCommand* CreateOpenNewTabCommand(const SendTabToSelfEntry* entry);
+
+// Creates an OpenNewTabCommand to open the given `entry` in the background.
+OpenNewTabCommand* CreateOpenNewBackgroundTabCommand(
+    const SendTabToSelfEntry* entry);
 
 // Creates a PageContext for the given `web_state` by extracting form data
 // from all frames.

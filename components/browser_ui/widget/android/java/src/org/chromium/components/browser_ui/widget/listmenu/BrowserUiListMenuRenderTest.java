@@ -89,9 +89,9 @@ public class BrowserUiListMenuRenderTest {
     private View mView;
 
     private void setup(ModelList data, boolean nightMode, boolean incognito) {
-        Activity activity = mActivityTestRule.launchActivity(null);
         NightModeTestUtils.setUpNightModeForBlankUiTestActivity(nightMode);
         mRenderTestRule.setNightModeEnabled(nightMode);
+        Activity activity = mActivityTestRule.launchActivity(null);
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
                     ListMenu.Delegate delegate = (item, view) -> {};

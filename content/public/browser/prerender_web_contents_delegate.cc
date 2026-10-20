@@ -30,8 +30,9 @@ WebContents* PrerenderWebContentsDelegate::AddNewContents(
 }
 
 void PrerenderWebContentsDelegate::ActivateContents(WebContents* contents) {
-  // WebContents should not be activated with this delegate.
-  NOTREACHED();
+  // A prerendered WebContents cannot be activated with this delegate. This is
+  // a no-op rather than a `NOTREACHED()` because it is reachable via DevTools
+  // (e.g. `Target.activateTarget`).
 }
 
 void PrerenderWebContentsDelegate::LoadingStateChanged(
@@ -68,8 +69,7 @@ bool PrerenderWebContentsDelegate::TakeFocus(WebContents* source,
 
 void PrerenderWebContentsDelegate::WebContentsCreated(
     WebContents* source_contents,
-    int opener_render_process_id,
-    int opener_render_frame_id,
+    const GlobalRenderFrameHostId& opener_id,
     const std::string& frame_name,
     const GURL& target_url,
     WebContents* new_contents) {
@@ -112,9 +112,10 @@ void PrerenderWebContentsDelegate::OnDidBlockNavigation(
     const GURL& blocked_url,
     const GURL& initiator_url,
     const url::Origin& initiator_origin,
+    scoped_refptr<InitiatorNavigationState> initiator_navigation_state,
     blink::mojom::NavigationBlockedReason reason) {
-  // DCHECK against LifecycleState in RenderFrameHostImpl::DidBlockNavigation()
-  // ensures this is never called during prerendering.
+  // RenderFrameHostImpl::DidBlockNavigation() ignores notifications from
+  // non-active documents, so this is never called during prerendering.
   NOTREACHED();
 }
 

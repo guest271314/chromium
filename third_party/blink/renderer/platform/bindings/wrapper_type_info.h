@@ -36,6 +36,7 @@
 #include "base/check_op.h"
 #include "base/memory/raw_ptr_exclusion.h"
 #include "gin/public/wrapper_info.h"
+#include "third_party/blink/renderer/platform/bindings/cpp_heap_external_tag.h"
 #include "third_party/blink/renderer/platform/bindings/v8_interface_bridge_base.h"
 #include "third_party/blink/renderer/platform/heap/visitor.h"
 #include "third_party/blink/renderer/platform/platform_export.h"
@@ -50,21 +51,21 @@ class ScriptWrappable;
 
 // LINT.IfChange(ScriptWrappableStartTag)
 constexpr std::underlying_type_t<v8::CppHeapPointerTag>
-    kScriptWrappableStartTag = 256;
+    kScriptWrappableStartTag =
+        static_cast<std::underlying_type_t<v8::CppHeapPointerTag>>(
+            gin::kBlinkWrappableTagRange.first);
+static_assert(kScriptWrappableStartTag == 256);
 // LINT.ThenChange(third_party/blink/renderer/bindings/scripts/web_idl/idl_compiler.py:ScriptWrappableStartTag)
 
 // The upper bound of all `ScriptWrappable` tags that we currently generate. If
 // you add a new `ScriptWrappable` in the codebase and hit a `static_assert`
 // that this is too small, increase this value.
-// LINT.IfChange(LastGeneratedScriptWrappableTag)
 static constexpr std::underlying_type_t<v8::CppHeapPointerTag>
     kLastGeneratedScriptWrappableTag = 2000;
-// LINT.ThenChange(gin/public/wrappable_pointer_tags.h)
 
-enum class ScriptWrappableArrayTag : std::underlying_type_t<
-    v8::CppHeapPointerTag> {
+enum class CppHeapPointerTag : std::underlying_type_t<v8::CppHeapPointerTag> {
   kFirst = kLastGeneratedScriptWrappableTag,
-  kDOMArrayBufferTag,
+  kDOMArrayBufferTag = kFirst,
   // Start of DOMArrayBufferView subclasses
   kDOMArrayBufferViewTag,
   kDOMDataViewTag,
@@ -89,7 +90,7 @@ enum class ScriptWrappableArrayTag : std::underlying_type_t<
   kV8ObservableArrayCSSStyleSheetTag,
   kV8ObservableArraySpeechRecognitionPhraseTag,
   // End of ObservableArrayExoticObject subclasses
-  kLastTag,
+  kLastScriptWrappableTag = kV8ObservableArraySpeechRecognitionPhraseTag,
 };
 
 // `kLastScriptWrappableTag` is an upper bound on the number of ScriptWrappable
@@ -97,31 +98,16 @@ enum class ScriptWrappableArrayTag : std::underlying_type_t<
 // accordingly. Ideally this upper bound would be generated automatically, but
 // that may be difficult.
 static constexpr v8::CppHeapPointerTag kLastScriptWrappableTag =
-    static_cast<v8::CppHeapPointerTag>(ScriptWrappableArrayTag::kLastTag);
-
-static_assert(static_cast<uint16_t>(kLastScriptWrappableTag) <
-                  static_cast<uint16_t>(gin::kFirstPointerTag),
-              "The tag range of ScriptWrappable and gin::Wrappable should be "
-              "disjoint. If they overlap, then the gin:Wrappable range should "
-              "be moved backwards");
+    static_cast<v8::CppHeapPointerTag>(
+        CppHeapPointerTag::kLastScriptWrappableTag);
 
 constexpr v8::CppHeapPointerTagRange kScriptWrappableTagRange(
     static_cast<v8::CppHeapPointerTag>(kScriptWrappableStartTag),
     kLastScriptWrappableTag);
 
-constexpr v8::CppHeapPointerTagRange kScriptWrappableOrGinWrappableTagRange(
-    static_cast<v8::CppHeapPointerTag>(kScriptWrappableStartTag),
-    static_cast<v8::CppHeapPointerTag>(gin::kLastPointerTag));
-
-enum class CppHeapExternalTag : std::underlying_type_t<v8::CppHeapPointerTag> {
-  kFirst = 1,
-  kTaskAttributionTaskStateTag = kFirst,
-
-  kLastTag = kTaskAttributionTaskStateTag
-};
-
-static_assert(static_cast<std::underlying_type_t<v8::CppHeapPointerTag>>(
-                  CppHeapExternalTag::kLastTag) < kScriptWrappableStartTag);
+static_assert(
+    gin::kBlinkWrappableTagRange.Contains(kScriptWrappableTagRange),
+    "ScriptWrappable tag range must be within kBlinkWrappableTagRange");
 
 // This struct provides a way to store a bunch of information that is helpful
 // when unwrapping v8 objects. Each v8 bindings class has exactly one static
@@ -155,16 +141,6 @@ struct PLATFORM_EXPORT WrapperTypeInfo final
 
   bool Equals(const WrapperTypeInfo* that) const { return this == that; }
 
-  bool IsSubclass(const WrapperTypeInfo* that) const {
-    for (const WrapperTypeInfo* current = this; current;
-         current = current->parent_class) {
-      if (current == that)
-        return true;
-    }
-
-    return false;
-  }
-
   bool SupportsDroppingWrapper() const {
     return wrapper_class_id != kNoInternalFieldClassId;
   }
@@ -192,15 +168,6 @@ struct PLATFORM_EXPORT WrapperTypeInfo final
     install_context_dependent_props_func(
         context, world, instance_object, prototype_object, interface_object,
         interface_template, bindings::V8InterfaceBridgeBase::FeatureSelector());
-  }
-
-  static bool HasLegacyInternalFieldsSet(v8::Local<v8::Object> object) {
-    for (int i = 0, n = object->InternalFieldCount(); i < n; ++i) {
-      if (object->GetAlignedPointerFromInternalField(i, gin::kDeprecatedData)) {
-        return true;
-      }
-    }
-    return false;
   }
 
   bindings::V8InterfaceBridgeBase::InstallInterfaceTemplateFuncType
@@ -246,7 +213,7 @@ inline ScriptWrappable* ToAnyScriptWrappable(
 inline v8::Object::Wrappable* ToAnyWrappable(v8::Isolate* isolate,
                                              v8::Local<v8::Object> wrapper) {
   return v8::Object::Unwrap<v8::Object::Wrappable>(
-      isolate, wrapper, kScriptWrappableOrGinWrappableTagRange);
+      isolate, wrapper, v8::kObjectWrappableTagRange);
 }
 
 inline ScriptWrappable* ToAnyScriptWrappable(v8::Isolate* isolate,

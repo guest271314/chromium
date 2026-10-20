@@ -15,12 +15,14 @@
 #include "components/viz/common/resources/shared_image_format.h"
 #include "gpu/command_buffer/service/shared_image/shared_image_representation.h"
 #include "gpu/command_buffer/service/texture_manager.h"
+#include "gpu/config/gpu_driver_bug_workarounds.h"
 #include "media/base/video_frame.h"
 #include "media/gpu/command_buffer_helper.h"
 #include "media/gpu/media_gpu_export.h"
-#include "media/gpu/windows/d3d11_status.h"
 #include "media/gpu/windows/d3d_com_defs.h"
+#include "media/gpu/windows/d3d_status.h"
 #include "ui/gfx/color_space.h"
+#include "ui/gfx/win/d3d_shared_fence.h"
 #include "ui/gl/gl_bindings.h"
 #include "ui/gl/gl_context.h"
 #include "ui/gl/gl_surface_egl.h"
@@ -28,7 +30,7 @@
 
 namespace media {
 
-class D3D11PictureBuffer;
+class D3DPictureBuffer;
 
 using CommandBufferHelperPtr = scoped_refptr<CommandBufferHelper>;
 using GetCommandBufferHelperCB =
@@ -41,18 +43,18 @@ using GetCommandBufferHelperCB =
 class MEDIA_GPU_EXPORT Texture2DWrapper {
  public:
   using PictureBufferGPUResourceInitDoneCB =
-      base::OnceCallback<void(scoped_refptr<media::D3D11PictureBuffer>)>;
+      base::OnceCallback<void(scoped_refptr<media::D3DPictureBuffer>)>;
 
   Texture2DWrapper();
   virtual ~Texture2DWrapper();
 
   // Initialize the wrapper.
-  virtual D3D11Status Init(
+  virtual D3DStatus Init(
       scoped_refptr<base::SingleThreadTaskRunner> gpu_task_runner,
       GetCommandBufferHelperCB get_helper_cb,
       ComD3D11Texture2D texture,
       size_t array_size,
-      scoped_refptr<media::D3D11PictureBuffer> picture_buffer,
+      scoped_refptr<media::D3DPictureBuffer> picture_buffer,
       PictureBufferGPUResourceInitDoneCB
           picture_buffer_gpu_resource_init_done_cb) = 0;
 
@@ -63,12 +65,14 @@ class MEDIA_GPU_EXPORT Texture2DWrapper {
   // other means.
   // - Before calling ProcessTexture.
   // And need reset the scoped access object to end access.
-  virtual D3D11Status BeginSharedImageAccess() = 0;
+  virtual D3DStatus BeginSharedImageAccess() = 0;
 
   // Import |texture|, |array_slice| and return the shared image that can be
-  // used to refer to it.
-  virtual D3D11Status ProcessTexture(
-      scoped_refptr<gpu::ClientSharedImage>& shared_image_dest_out) = 0;
+  // used to refer to it. |decode_fence|, when non-null, signals completion of
+  // writes to |texture|.
+  virtual D3DStatus ProcessTexture(
+      scoped_refptr<gpu::ClientSharedImage>& shared_image_dest_out,
+      scoped_refptr<gfx::D3DSharedFence> decode_fence) = 0;
 
   virtual const gfx::Size& GetSize() const = 0;
 };
@@ -80,12 +84,12 @@ class MEDIA_GPU_EXPORT Texture2DWrapper {
 class MEDIA_GPU_EXPORT DefaultTexture2DWrapper : public Texture2DWrapper {
  public:
   // Error callback for GpuResource to notify us of errors.
-  using OnErrorCB = base::OnceCallback<void(D3D11Status)>;
+  using OnErrorCB = base::OnceCallback<void(D3DStatus)>;
 
   // Callback for setting shared image representation and resume picture buffer
   // after gpu resource initialization.
   using GPUResourceInitCB =
-      base::OnceCallback<void(scoped_refptr<media::D3D11PictureBuffer>,
+      base::OnceCallback<void(scoped_refptr<media::D3DPictureBuffer>,
                               std::unique_ptr<gpu::VideoImageRepresentation>,
                               scoped_refptr<gpu::ClientSharedImage>)>;
 
@@ -94,26 +98,28 @@ class MEDIA_GPU_EXPORT DefaultTexture2DWrapper : public Texture2DWrapper {
   DefaultTexture2DWrapper(const gfx::Size& size,
                           const gfx::ColorSpace& output_color_space,
                           viz::SharedImageFormat output_si_format,
-                          ComD3D11Device device);
+                          ComD3D11Device device,
+                          gpu::GpuDriverBugWorkarounds workarounds);
   ~DefaultTexture2DWrapper() override;
 
-  D3D11Status Init(scoped_refptr<base::SingleThreadTaskRunner> gpu_task_runner,
-                   GetCommandBufferHelperCB get_helper_cb,
-                   ComD3D11Texture2D in_texture,
-                   size_t array_slice,
-                   scoped_refptr<media::D3D11PictureBuffer> picture_buffer,
-                   Texture2DWrapper::PictureBufferGPUResourceInitDoneCB
-                       picture_buffer_gpu_resource_init_done_cb) override;
+  D3DStatus Init(scoped_refptr<base::SingleThreadTaskRunner> gpu_task_runner,
+                 GetCommandBufferHelperCB get_helper_cb,
+                 ComD3D11Texture2D in_texture,
+                 size_t array_slice,
+                 scoped_refptr<media::D3DPictureBuffer> picture_buffer,
+                 Texture2DWrapper::PictureBufferGPUResourceInitDoneCB
+                     picture_buffer_gpu_resource_init_done_cb) override;
 
-  D3D11Status BeginSharedImageAccess() override;
+  D3DStatus BeginSharedImageAccess() override;
 
-  D3D11Status ProcessTexture(
-      scoped_refptr<gpu::ClientSharedImage>& shared_image_dest) override;
+  D3DStatus ProcessTexture(
+      scoped_refptr<gpu::ClientSharedImage>& shared_image_dest,
+      scoped_refptr<gfx::D3DSharedFence> decode_fence) override;
 
   const gfx::Size& GetSize() const override;
 
   void OnGPUResourceInitDone(
-      scoped_refptr<media::D3D11PictureBuffer> picture_buffer,
+      scoped_refptr<media::D3DPictureBuffer> picture_buffer,
       std::unique_ptr<gpu::VideoImageRepresentation> shared_image_rep,
       scoped_refptr<gpu::ClientSharedImage> client_shared_image);
 
@@ -134,8 +140,9 @@ class MEDIA_GPU_EXPORT DefaultTexture2DWrapper : public Texture2DWrapper {
                  ComD3D11Device video_device,
                  ComD3D11Texture2D texture,
                  size_t array_slice,
-                 scoped_refptr<media::D3D11PictureBuffer> picture_buffer,
-                 GPUResourceInitCB gpu_resource_init_cb);
+                 scoped_refptr<media::D3DPictureBuffer> picture_buffer,
+                 GPUResourceInitCB gpu_resource_init_cb,
+                 const gpu::GpuDriverBugWorkarounds& workarounds);
     GpuResources(const GpuResources&) = delete;
     GpuResources& operator=(const GpuResources&) = delete;
     ~GpuResources();
@@ -147,10 +154,10 @@ class MEDIA_GPU_EXPORT DefaultTexture2DWrapper : public Texture2DWrapper {
   };
 
   // Receive an error from |gpu_resources_| and store it in |received_error_|.
-  void OnError(D3D11Status status);
+  void OnError(D3DStatus status);
 
   // The first error status that we've received from |gpu_resources_|, if any.
-  std::optional<D3D11Status> received_error_;
+  std::optional<D3DStatus> received_error_;
 
   const gfx::Size size_;
   const gfx::ColorSpace output_color_space_;
@@ -163,6 +170,7 @@ class MEDIA_GPU_EXPORT DefaultTexture2DWrapper : public Texture2DWrapper {
       shared_image_access_;
 
   ComD3D11Device video_device_;
+  const gpu::GpuDriverBugWorkarounds workarounds_;
 
   Texture2DWrapper::PictureBufferGPUResourceInitDoneCB
       picture_buffer_gpu_resource_init_done_cb_;

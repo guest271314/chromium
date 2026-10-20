@@ -37,6 +37,7 @@ import {castExists} from '../assert_extras.js';
 import {setGlobalScrollTarget} from '../common/global_scroll_target_mixin.js';
 import {RouteObserverMixin} from '../common/route_observer_mixin.js';
 import type {UserActionSettingPrefChangeEvent} from '../common/types.js';
+import {LockStateMixin} from '../lock_state_mixin.js';
 import {recordClick, recordNavigation, recordPageBlur, recordPageFocus, recordSettingChange, recordSettingChangeForUnmappedPref} from '../metrics_recorder.js';
 import {convertPrefToSettingMetric} from '../metrics_utils.js';
 import type {OsPageAvailability} from '../os_page_availability.js';
@@ -44,8 +45,6 @@ import {createPageAvailability} from '../os_page_availability.js';
 import type {Route} from '../router.js';
 import {Router} from '../router.js';
 
-import type {OsSettingsHatsBrowserProxy} from './os_settings_hats_browser_proxy.js';
-import {OsSettingsHatsBrowserProxyImpl} from './os_settings_hats_browser_proxy.js';
 import {getTemplate} from './os_settings_ui.html.js';
 import type {SettingsToolbarElement} from './toolbar.js';
 
@@ -81,11 +80,24 @@ export interface OsSettingsUiElement {
 }
 
 const OsSettingsUiElementBase =
-    // RouteObserverMixin calls currentRouteChanged() in
-    // connectedCallback(), so ensure other mixins/behaviors run their
-    // connectedCallback() first.
-    RouteObserverMixin(
-        FindShortcutMixin(CrContainerShadowMixin(PolymerElement)));
+    // Mixins are applied from innermost to outermost. Methods from outer mixins
+    // override inner ones if they have the same name.
+
+    // RouteObserverMixin provides route observation capability (e.g.,
+    // currentRouteChanged). LockStateMixin provides methods for managing lock
+    // screen state.
+
+    // Elements extending this base can override currentRouteChanged() (from
+    // RouteObserverMixin) and call methods provided by LockStateMixin
+    // (e.g., this.initializeLockState()) within the override to react to
+    // route changes. There is no direct internal call from LockStateMixin to
+    // RouteObserverMixin.
+
+    // Lifecycle note: connectedCallback methods are called in the order of
+    // application: PolymerElement -> ... -> RouteObserverMixin ->
+    // LockStateMixin.
+    LockStateMixin(RouteObserverMixin(
+        FindShortcutMixin(CrContainerShadowMixin(PolymerElement))));
 
 export class OsSettingsUiElement extends OsSettingsUiElementBase {
   static get is() {
@@ -147,17 +159,15 @@ export class OsSettingsUiElement extends OsSettingsUiElementBase {
     };
   }
 
-  prefs: Object;
-  isNarrow: boolean;
-  private toolbarSpinnerActive_: boolean;
-  private pageAvailability_: OsPageAvailability;
-  private showToolbar_: boolean;
-  private showNavMenu_: boolean;
-  private narrowThreshold_: number;
+  declare prefs: Object;
+  declare isNarrow: boolean;
+  declare private toolbarSpinnerActive_: boolean;
+  declare private pageAvailability_: OsPageAvailability;
+  declare private showToolbar_: boolean;
+  declare private showNavMenu_: boolean;
+  declare private narrowThreshold_: number;
   private activeRoute_: Route|null;
   private scrollEndDebouncer_: Debouncer|null;
-  private osSettingsHatsBrowserProxy_: OsSettingsHatsBrowserProxy;
-  private boundTriggerSettingsHats_: () => void;
 
   constructor() {
     super();
@@ -171,11 +181,6 @@ export class OsSettingsUiElement extends OsSettingsUiElementBase {
     this.scrollEndDebouncer_ = null;
 
     Router.getInstance().initializeRouteFromUrl();
-
-    this.osSettingsHatsBrowserProxy_ =
-        OsSettingsHatsBrowserProxyImpl.getInstance();
-
-    this.boundTriggerSettingsHats_ = this.triggerSettingsHats_.bind(this);
   }
 
   override ready(): void {
@@ -221,13 +226,6 @@ export class OsSettingsUiElement extends OsSettingsUiElementBase {
 
     this.addEventListener('user-action-setting-change', this.recordChangedSetting_.bind(this));
 
-    this.addEventListener(
-        'search-changed',
-        () => {
-          this.osSettingsHatsBrowserProxy_.settingsUsedSearch();
-        },
-        /*AddEventListenerOptions=*/ {once: true});
-
     this.listenForDrawerOpening_();
 
     // By default, the shadow should show when the container is scrolled down.
@@ -236,6 +234,8 @@ export class OsSettingsUiElement extends OsSettingsUiElementBase {
 
   override connectedCallback(): void {
     super.connectedCallback();
+
+    this.initializeLockState();
 
     document.documentElement.classList.remove('loading');
 
@@ -284,8 +284,6 @@ export class OsSettingsUiElement extends OsSettingsUiElementBase {
     window.addEventListener('focus', recordPageFocus);
     window.addEventListener('blur', recordPageBlur);
 
-    window.addEventListener('blur', this.boundTriggerSettingsHats_);
-
     // Clicks need to be captured because unlike focus/blur to the settings
     // window, a click's propagation can be stopped by child elements.
     window.addEventListener('click', recordClick, /*capture=*/ true);
@@ -296,7 +294,6 @@ export class OsSettingsUiElement extends OsSettingsUiElementBase {
 
     window.removeEventListener('focus', recordPageFocus);
     window.removeEventListener('blur', recordPageBlur);
-    window.removeEventListener('blur', this.boundTriggerSettingsHats_);
     window.removeEventListener('click', recordClick);
     Router.getInstance().resetRouteForTesting();
   }
@@ -481,10 +478,6 @@ export class OsSettingsUiElement extends OsSettingsUiElementBase {
     const METRIC_NAME = 'ChromeOS.Settings.TimeUntilInteractive';
     const timeMs = Math.round(window.performance.now());
     chrome.metricsPrivate.recordTime(METRIC_NAME, timeMs);
-  }
-
-  private triggerSettingsHats_(): void {
-    this.osSettingsHatsBrowserProxy_.sendSettingsHats();
   }
 }
 

@@ -18,12 +18,15 @@ BASE_FEATURE(kAimCoBrowseEligibilityCheckEnabled,
 BASE_FEATURE(kAimFuseboxEligibilityCheckEnabled,
              base::FEATURE_ENABLED_BY_DEFAULT);
 
-BASE_FEATURE(kAimUrlNavigationFetchEnabled, base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kAimUrlNavigationFetchEnabled, base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kAimServerEligibilitySendCoBrowseUserAgentSuffixEnabled,
              base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kAimServerEligibilitySendFullVersionListEnabled,
+             base::FEATURE_ENABLED_BY_DEFAULT);
+
+BASE_FEATURE(kAimServerEligibilitySendSearchCapabilitiesHeaderEnabled,
              base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kAimServerEligibilityCustomRetryPolicyEnabled,
@@ -49,6 +52,8 @@ const base::FeatureParam<bool> kRequestOnPrimaryAccountChanges{
 
 BASE_FEATURE(kAimUsePecApi, base::FEATURE_ENABLED_BY_DEFAULT);
 
+BASE_FEATURE(kAimUseSearchboxConfigIconIds, base::FEATURE_ENABLED_BY_DEFAULT);
+
 BASE_FEATURE(kAimServerEligibilityIncludeClientLocale,
              base::FEATURE_ENABLED_BY_DEFAULT);
 
@@ -70,11 +75,14 @@ const base::FeatureParam<AimServerEligibilityIncludeClientLocaleMode>
 BASE_FEATURE(kAimServerEligibilityIncludeClientCountry,
              base::FEATURE_ENABLED_BY_DEFAULT);
 
-BASE_FEATURE(kAimEligibilityServiceIdentityImprovements,
+BASE_FEATURE(kAimEligibilityForceUsCountryCode,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
+BASE_FEATURE(kAimEligibilityServiceIdentityImprovements,
+             base::FEATURE_ENABLED_BY_DEFAULT);
+
 const base::FeatureParam<bool> kAimIdentityOauthEnabled{
-    &kAimEligibilityServiceIdentityImprovements, "oauth_enabled", true};
+    &kAimEligibilityServiceIdentityImprovements, "oauth_enabled", false};
 const base::FeatureParam<bool> kAimIdentityRefreshOnCookieChanges{
     &kAimEligibilityServiceIdentityImprovements, "refresh_on_cookie_changes",
     true};

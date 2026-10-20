@@ -9,20 +9,16 @@
 
 #include "base/functional/callback_forward.h"
 #include "base/types/expected.h"
+#include "third_party/blink/public/mojom/content_extraction/script_tools.mojom-blink-forward.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
 
 namespace blink {
 
-enum class ScriptToolErrorCode {
-  kInvalidToolName,
-  kInvalidInputArguments,
-  kMissingRequiredSubmitButton,
-  kToolInvocationFailed,
-  kToolCancelled,
-};
+using ScriptToolErrorCode = mojom::blink::ScriptToolErrorCode;
 
 struct ScriptToolError {
   ScriptToolErrorCode code;
+  // Only used for DevTools and `WebDocument::ExecuteScriptTool()`.
   String message;
 
   explicit ScriptToolError(ScriptToolErrorCode code, String message = String())
@@ -36,43 +32,14 @@ struct ScriptToolError {
   }
 };
 
-// TODO(https://crbug.com/506393880): Move this to the `model_context.cc`
-// anonymous namespace, when `model_context_testing.cc` stops relying on it.
-inline String GetToolErrorMessage(const ScriptToolError& error) {
-  if (!error.message.empty()) {
-    return error.message;
-  }
-  String conversion;
-  switch (error.code) {
-    case ScriptToolErrorCode::kInvalidToolName:
-      conversion = "Tool was not executed due to invalid name";
-      break;
-    case ScriptToolErrorCode::kInvalidInputArguments:
-      conversion = "Tool was not executed due to invalid input arguments";
-      break;
-    case ScriptToolErrorCode::kMissingRequiredSubmitButton:
-      conversion =
-          "Tool was not executed due to missing required submit button";
-      break;
-    case ScriptToolErrorCode::kToolInvocationFailed:
-      conversion =
-          "Tool was executed but the invocation failed. For example, the "
-          "script function threw an error";
-      break;
-    case ScriptToolErrorCode::kToolCancelled:
-      conversion = "Tool was cancelled";
-      break;
-    default:
-      conversion = "Unknown failure";
-  }
-  return conversion;
-}
 
 struct ScriptToolDeclaration {
   String description;
   String input_schema;
   std::optional<bool> read_only;
   std::optional<bool> untrusted_content;
+  std::optional<bool> consequential;
+  std::optional<bool> debugging;
 };
 
 using ScriptToolExecutedCallback =

@@ -75,13 +75,15 @@ class ProjectorClientImpl : public ash::ProjectorClient,
   void OnFileSystemMounted() override;
   void OnFileSystemBeingUnmounted() override;
   void OnFileSystemMountFailed() override;
+  void OnDriveIntegrationServiceDestroyed() override;
 
   // session_manager::SessionManagerObserver:
   void OnUserSessionStarted(bool is_primary_user) override;
 
   // Maybe observe the Drive integration service of active profile when
   // ActiveUserChanged and OnUserProfileLoaded.
-  void MaybeSwitchDriveIntegrationServiceObservation();
+  void MaybeSwitchDriveIntegrationServiceObservation(
+      const AccountId& account_id);
 
  private:
   void SpeechRecognitionEnded(bool forced);
@@ -104,7 +106,15 @@ class ProjectorClientImpl : public ash::ProjectorClient,
                           session_manager::SessionManagerObserver>
       session_observation_{this};
 
+  base::ScopedObservation<drive::DriveIntegrationService,
+                          drive::DriveIntegrationService::Observer>
+      drive_observation_{this};
+
   PrefChangeRegistrar pref_change_registrar_;
+
+  // The account whose DriveFS is currently observed; empty before the first
+  // observation starts.
+  AccountId account_id_;
 
   ProjectorDriveFsProvider drive_helper_;
 

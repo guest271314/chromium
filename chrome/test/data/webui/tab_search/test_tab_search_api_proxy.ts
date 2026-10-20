@@ -16,6 +16,7 @@ export class TestTabSearchApiProxy extends TestBrowserProxy implements
   constructor() {
     super([
       'closeTab',
+      'closeTabs',
       'closeWebUiTab',
       'getProfileData',
       'getIsSplit',
@@ -24,6 +25,7 @@ export class TestTabSearchApiProxy extends TestBrowserProxy implements
       'switchToTab',
       'saveRecentlyClosedExpandedPref',
       'maybeShowUi',
+      'redirectToNtp',
     ]);
 
     this.callbackRouter = new PageCallbackRouter();
@@ -34,6 +36,10 @@ export class TestTabSearchApiProxy extends TestBrowserProxy implements
 
   closeTab(tabId: number) {
     this.methodCalled('closeTab', [tabId]);
+  }
+
+  closeTabs(tabIds: number[]) {
+    this.methodCalled('closeTabs', [tabIds]);
   }
 
   closeWebUiTab() {
@@ -50,10 +56,8 @@ export class TestTabSearchApiProxy extends TestBrowserProxy implements
     return Promise.resolve({isSplit: this.isSplit_});
   }
 
-  openRecentlyClosedEntry(
-      id: number, withSearch: boolean, isTab: boolean, index: number) {
-    this.methodCalled(
-        'openRecentlyClosedEntry', [id, withSearch, isTab, index]);
+  openRecentlyClosedEntry(id: number, withSearch: boolean, isTab: boolean) {
+    this.methodCalled('openRecentlyClosedEntry', [id, withSearch, isTab]);
   }
 
   replaceActiveSplitTab(replacementTabId: number) {
@@ -70,6 +74,10 @@ export class TestTabSearchApiProxy extends TestBrowserProxy implements
 
   maybeShowUi() {
     this.methodCalled('maybeShowUi');
+  }
+
+  redirectToNtp() {
+    this.methodCalled('redirectToNtp');
   }
 
   getCallbackRouter() {

@@ -35,11 +35,10 @@ ClientSharedImageInterface::ClientSharedImageInterface(
 }
 
 ClientSharedImageInterface::~ClientSharedImageInterface() {
-  gpu::SyncToken sync_token;
   for (const auto& [mailbox, ref_count] : mailboxes_) {
     CHECK_GT(ref_count, 0);
     for (int i = 0; i < ref_count; i++) {
-      proxy_->DestroySharedImage(sync_token, mailbox);
+      proxy_->DestroySharedImage(std::vector<SyncToken>{}, mailbox);
     }
   }
 }
@@ -240,10 +239,11 @@ void ClientSharedImageInterface::CopyToGpuMemoryBuffer(
 
 #if BUILDFLAG(IS_WIN)
 void ClientSharedImageInterface::CopyToGpuMemoryBufferAsync(
-    const SyncToken& sync_token,
+    std::vector<SyncToken> sync_tokens,
     const Mailbox& mailbox,
     base::OnceCallback<void(bool)> callback) {
-  proxy_->CopyToGpuMemoryBufferAsync(sync_token, mailbox, std::move(callback));
+  proxy_->CopyToGpuMemoryBufferAsync(std::move(sync_tokens), mailbox,
+                                     std::move(callback));
 }
 
 void ClientSharedImageInterface::UpdateSharedImage(
@@ -271,8 +271,9 @@ void ClientSharedImageInterface::CopyNativeGmbToSharedMemoryAsync(
 }
 #endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_ANDROID)
 
-void ClientSharedImageInterface::DestroySharedImage(const SyncToken& sync_token,
-                                                    const Mailbox& mailbox) {
+void ClientSharedImageInterface::DestroySharedImage(
+    std::vector<SyncToken> sync_tokens,
+    const Mailbox& mailbox) {
   DCHECK(!mailbox.IsZero());
 
   {
@@ -285,15 +286,7 @@ void ClientSharedImageInterface::DestroySharedImage(const SyncToken& sync_token,
       mailboxes_.erase(it);
     }
   }
-  proxy_->DestroySharedImage(sync_token, mailbox);
-}
-
-void ClientSharedImageInterface::DestroySharedImage(
-    const SyncToken& sync_token,
-    scoped_refptr<ClientSharedImage> client_shared_image) {
-  CHECK(client_shared_image->HasOneRef());
-  CHECK(client_shared_image->HasHolder());
-  client_shared_image->UpdateDestructionSyncToken(sync_token);
+  proxy_->DestroySharedImage(std::move(sync_tokens), mailbox);
 }
 
 scoped_refptr<ClientSharedImage> ClientSharedImageInterface::ImportSharedImage(
@@ -366,6 +359,12 @@ void ClientSharedImageInterface::CreateSharedImagePool(
 void ClientSharedImageInterface::DestroySharedImagePool(
     const SharedImagePoolId& pool_id) {
   proxy_->DestroySharedImagePool(pool_id);
+}
+
+void ClientSharedImageInterface::SignalSyncToken(
+    std::vector<SyncToken> sync_tokens,
+    base::OnceClosure callback) {
+  proxy_->SignalSyncToken(std::move(sync_tokens), std::move(callback));
 }
 
 }  // namespace gpu

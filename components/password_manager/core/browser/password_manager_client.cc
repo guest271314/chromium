@@ -4,6 +4,7 @@
 
 #include "components/password_manager/core/browser/password_manager_client.h"
 
+#include <string_view>
 #include <utility>
 
 #include "base/memory/raw_ptr.h"
@@ -21,11 +22,24 @@
 
 namespace password_manager {
 
-bool PasswordManagerClient::IsSavingAndFillingEnabled(const GURL& url) const {
+bool PasswordManagerClient::IsSavingAndFillingEnabled(
+    const url::Origin& origin) const {
+  return IsSavingAndFillingEnabled(origin, std::nullopt);
+}
+
+bool PasswordManagerClient::IsSavingAndFillingEnabled(
+    const url::Origin& origin,
+    base::optional_ref<const GURL> url) const {
   return true;
 }
 
-bool PasswordManagerClient::IsFillingEnabled(const GURL& url) const {
+bool PasswordManagerClient::IsFillingEnabled(const url::Origin& origin) const {
+  return IsFillingEnabled(origin, std::nullopt);
+}
+
+bool PasswordManagerClient::IsFillingEnabled(
+    const url::Origin& origin,
+    base::optional_ref<const GURL> url) const {
   return true;
 }
 
@@ -50,8 +64,18 @@ void PasswordManagerClient::ShowKeyboardReplacingSurface(
 #endif
 
 bool PasswordManagerClient::IsReauthBeforeFillingRequired(
+    device_reauth::DeviceAuthAvailabilityChecker*) {
+  return false;
+}
+
+bool PasswordManagerClient::IsReauthBeforeFillingRequiredLegacy(
     device_reauth::DeviceAuthenticator*) {
   return false;
+}
+
+std::unique_ptr<device_reauth::DeviceAuthAvailabilityChecker>
+PasswordManagerClient::GetDeviceAuthAvailabilityChecker() {
+  return nullptr;
 }
 
 std::unique_ptr<device_reauth::DeviceAuthenticator>
@@ -182,8 +206,8 @@ PasswordManagerClient::GetWebAuthnCredentialsDelegateForDriver(
   return nullptr;
 }
 
-void PasswordManagerClient::TriggerUserPerceptionOfPasswordManagerSurvey(
-    const std::string& filling_assistance) {}
+void PasswordManagerClient::TriggerPersonalizationAndTrustSurvey(
+    std::string_view filling_assistance) {}
 
 #if BUILDFLAG(IS_ANDROID)
 webauthn::WebAuthnCredManDelegate*
@@ -192,7 +216,8 @@ PasswordManagerClient::GetWebAuthnCredManDelegateForDriver(
   return nullptr;
 }
 
-void PasswordManagerClient::MarkSharedCredentialsAsNotified(const GURL& url) {}
+void PasswordManagerClient::MarkSharedCredentialsAsNotified(
+    const url::Origin& origin) {}
 
 #endif  // BUILDFLAG(IS_ANDROID)
 
@@ -214,6 +239,16 @@ PasswordManagerClient::GetUndoPasswordChangeController() {
 
 bool PasswordManagerClient::IsActorTaskActive() {
   return false;
+}
+
+void PasswordManagerClient::OnPasswordFilled(PasswordManagerDriver* driver) {}
+
+bool PasswordManagerClient::IsChromeSigninPage() const {
+  return false;
+}
+
+ActionableError PasswordManagerClient::GetActionableError() const {
+  return ActionableError::kNoError;
 }
 
 }  // namespace password_manager

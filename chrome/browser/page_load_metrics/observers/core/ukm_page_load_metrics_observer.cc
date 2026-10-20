@@ -28,7 +28,6 @@
 #include "chrome/browser/preloading/prefetch/no_state_prefetch/no_state_prefetch_manager_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/search_engines/template_url_service_factory.h"
-#include "chrome/browser/ui/waap/waap_utils.h"
 #include "chrome/common/pref_names.h"
 #include "components/content_settings/core/browser/cookie_settings.h"
 #include "components/content_settings/core/common/features.h"
@@ -47,6 +46,7 @@
 #include "components/page_load_metrics/browser/protocol_util.h"
 #include "components/page_load_metrics/common/page_visit_final_status.h"
 #include "components/prefs/pref_service.h"
+#include "components/search_engines/template_url.h"
 #include "components/search_engines/template_url_service.h"
 #include "components/site_engagement/content/site_engagement_service.h"
 #include "content/public/browser/navigation_controller.h"
@@ -68,6 +68,7 @@
 #include "third_party/blink/public/common/performance/largest_contentful_paint_type.h"
 #include "third_party/metrics_proto/system_profile.pb.h"
 #include "third_party/perfetto/include/perfetto/tracing/track.h"
+#include "ui/base/page_transition_types.h"
 #include "ui/events/blink/blink_features.h"
 
 #if BUILDFLAG(ENABLE_OFFLINE_PAGES)
@@ -219,16 +220,6 @@ const char* UkmPageLoadMetricsObserver::GetObserverName() const {
   return kName.data();
 }
 
-page_load_metrics::PageLoadMetricsObserver::ObservePolicy
-UkmPageLoadMetricsObserver::ShouldObserveScheme(const GURL& url) const {
-#if !BUILDFLAG(IS_ANDROID)
-  if (waap::IsForInitialWebUI(url)) {
-    return CONTINUE_OBSERVING;
-  }
-#endif
-  return page_load_metrics::PageLoadMetricsObserver::ShouldObserveScheme(url);
-}
-
 UkmPageLoadMetricsObserver::ObservePolicy UkmPageLoadMetricsObserver::OnStart(
     content::NavigationHandle* navigation_handle,
     const GURL& currently_committed_url,
@@ -363,14 +354,8 @@ UkmPageLoadMetricsObserver::ObservePolicy UkmPageLoadMetricsObserver::OnCommit(
         response_headers->HasHeaderValue("cache-control", "no-store");
   }
 
-  navigation_trigger_type_ =
-      page_load_metrics::NavigationHandleUserData::InitiatorLocation::kOther;
-  auto* navigation_userdata =
-      page_load_metrics::NavigationHandleUserData::GetForNavigationHandle(
-          *navigation_handle);
-  if (navigation_userdata) {
-    navigation_trigger_type_ = navigation_userdata->navigation_type();
-  }
+  navigation_initiator_id_ =
+      page_load_metrics::GetNavigationInitiator(*navigation_handle).id();
 
   // The PageTransition for the navigation may be updated on commit.
   page_transition_ = navigation_handle->GetPageTransition();
@@ -387,6 +372,7 @@ UkmPageLoadMetricsObserver::ObservePolicy UkmPageLoadMetricsObserver::OnCommit(
                                             no_state_prefetch_manager);
   }
   RecordGeneratedNavigationUKM(source_id, navigation_handle->GetURL());
+  RecordTypedAndDefaultUKM(source_id, navigation_handle->GetURL());
   navigation_is_cross_process_ = !navigation_handle->IsSameProcess();
   navigation_entry_offset_ = navigation_handle->GetNavigationEntryOffset();
   main_document_sequence_number_ = web_contents->GetController()
@@ -540,8 +526,9 @@ void UkmPageLoadMetricsObserver::OnResourceDataUseObserved(
       continue;
     if (blink::IsSupportedJavascriptMimeType(resource->mime_type)) {
       js_decoded_bytes_ += resource->decoded_body_length;
-      if (resource->decoded_body_length > js_max_decoded_bytes_)
+      if (resource->decoded_body_length > js_max_decoded_bytes_) {
         js_max_decoded_bytes_ = resource->decoded_body_length;
+      }
     }
     if (resource->cache_type !=
         page_load_metrics::mojom::CacheType::kNotCached) {
@@ -679,8 +666,7 @@ void UkmPageLoadMetricsObserver::
   ukm::builders::PageLoad builder(GetDelegate().GetPageUkmSourceId());
   const page_load_metrics::InteractionToNextPaintCalculator&
       interaction_to_next_paint_calculator_before_soft_nav =
-          GetDelegate()
-              .GetSoftNavigationIntervalInteractionToNextPaintCalculator();
+          GetDelegate().GetInteractionToNextPaintCalculator();
   std::optional<
       page_load_metrics::InteractionToNextPaintCalculator::InteractionData>
       inp_data = interaction_to_next_paint_calculator_before_soft_nav
@@ -714,8 +700,7 @@ void UkmPageLoadMetricsObserver::
 
   ukm::builders::PageLoad builder(GetDelegate().GetPageUkmSourceId());
 
-  const std::optional<float> cwv_cls_value =
-      GetCoreWebVitalsSoftNavigationIntervalCLS();
+  const std::optional<float> cwv_cls_value = GetCoreWebVitalsCLS();
 
   if (cwv_cls_value.has_value()) {
     builder
@@ -732,22 +717,18 @@ void UkmPageLoadMetricsObserver::
   builder.Record(ukm::UkmRecorder::Get());
 }
 
-void UkmPageLoadMetricsObserver::OnSoftNavigation() {
+void UkmPageLoadMetricsObserver::OnSoftNavigationFirstContentfulPaint(
+    const page_load_metrics::mojom::SoftNavigationMetrics&
+        soft_navigation_metrics) {
   CHECK_GE(soft_navigation_count_, 0);
   soft_navigation_count_++;
-  // When the 1st soft navigation comes in, we record the CWVs before then;
+  // When the 1st soft navigation presents FCP, we record the CWVs before then;
   // these may (eventually) be used for blending.
   if (soft_navigation_count_ == 1) {
     RecordLargestContentfulPaintBeforeSoftNavigation();
     RecordResponsivenessMetricsBeforeSoftNavigationForMainFrame();
     RecordLayoutShiftBeforeSoftNavigationForMainFrame();
   }
-}
-
-const page_load_metrics::ContentfulPaintTimingInfo&
-UkmPageLoadMetricsObserver::GetSoftNavigationLargestContentfulPaint() const {
-  return GetDelegate()
-      .GetSoftNavigationLargestContentfulPaint();
 }
 
 const page_load_metrics::ContentfulPaintTimingInfo&
@@ -1308,16 +1289,6 @@ std::optional<float> UkmPageLoadMetricsObserver::GetCoreWebVitalsCLS() {
   return std::nullopt;
 }
 
-std::optional<float>
-UkmPageLoadMetricsObserver::GetCoreWebVitalsSoftNavigationIntervalCLS() {
-  const page_load_metrics::NormalizedCLSData& normalized_cls_data =
-      GetDelegate().GetSoftNavigationIntervalNormalizedCLSData();
-  if (!normalized_cls_data.data_tainted) {
-    return normalized_cls_data.session_windows_gap1000ms_max5000ms_max_cls;
-  }
-  return std::nullopt;
-}
-
 void UkmPageLoadMetricsObserver::ReportLayoutStability() {
   // Don't report CLS if we were never in the foreground.
   if (last_time_shown_.is_null())
@@ -1539,8 +1510,7 @@ void UkmPageLoadMetricsObserver::RecordPageEndMetrics(
   // page_transition_ fits in a uint32_t, so we can safely cast to int64_t.
   builder.SetNavigation_PageTransition(static_cast<int64_t>(page_transition_));
 
-  builder.SetNavigation_InitiatorLocation(
-      static_cast<int64_t>(navigation_trigger_type_));
+  builder.SetNavigation_InitiatorLocation(navigation_initiator_id_);
 
   // GetDelegate().GetPageEndReason() fits in a uint32_t, so we can safely cast
   // to int64_t.
@@ -1804,6 +1774,47 @@ void UkmPageLoadMetricsObserver::RecordGeneratedNavigationUKM(
   builder.SetFirstURLIsHomePage(start_url_is_home_page_);
   builder.SetFirstURLIsDefaultSearchEngine(start_url_is_default_search_);
   builder.Record(ukm::UkmRecorder::Get());
+}
+
+void UkmPageLoadMetricsObserver::RecordTypedAndDefaultUKM(
+    ukm::SourceId source_id,
+    const GURL& committed_url) {
+  // Check if navigation was initiated via the address bar and explicitly typed.
+  if ((page_transition_ & ui::PAGE_TRANSITION_FROM_ADDRESS_BAR) == 0 ||
+      !ui::PageTransitionCoreTypeIs(page_transition_,
+                                    ui::PAGE_TRANSITION_TYPED)) {
+    return;
+  }
+
+  if (!browser_context_) {
+    return;
+  }
+
+  auto* template_service = TemplateURLServiceFactory::GetForProfile(
+      Profile::FromBrowserContext(browser_context_));
+  if (!template_service) {
+    return;
+  }
+
+  // Verify the typed URL belongs to some search engine.
+  if (!template_service->GetTemplateURLForHost(
+          std::string(committed_url.host()))) {
+    return;
+  }
+
+  const TemplateURL* default_engine =
+      template_service->GetDefaultSearchProvider();
+  if (!default_engine) {
+    return;
+  }
+
+  bool is_same_as_default =
+      default_engine->GenerateSearchURL(template_service->search_terms_data())
+          .host() == committed_url.host();
+
+  ukm::builders::Navigation_TypedAndDefault(source_id)
+      .SetIsSameAsDefault(static_cast<int>(is_same_as_default))
+      .Record(ukm::UkmRecorder::Get());
 }
 
 void UkmPageLoadMetricsObserver::EmitUserTimingEvent(base::TimeDelta duration,

@@ -26,9 +26,11 @@
 #include "chrome/browser/notifications/notification_display_service.h"
 #include "chrome/browser/notifications/notification_display_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/ui/ash/projector/projector_utils.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/web_applications/test/profile_test_helper.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chromeos/ash/components/drivefs/fake_drivefs.h"
@@ -104,7 +106,7 @@ class ScreencastManagerTestWithDriveFs : public ScreencastManagerTest {
   // Otherwise, returns the absolute file path.
   base::FilePath GetTestFile(const std::string& title, bool relative) {
     auto* drive_service = drive::DriveIntegrationServiceFactory::FindForProfile(
-        browser()->profile());
+        browser()->GetProfile());
     base::FilePath mount_path = drive_service->GetMountPointPath();
     base::FilePath file_path = mount_path.Append(title);
     if (!relative) {
@@ -120,7 +122,8 @@ class ScreencastManagerTestWithDriveFs : public ScreencastManagerTest {
                               const std::string& title,
                               bool shared_with_me) {
     base::ScopedAllowBlockingForTesting allow_blocking;
-    drivefs::FakeDriveFs* fake = GetFakeDriveFsForProfile(browser()->profile());
+    drivefs::FakeDriveFs* fake =
+        GetFakeDriveFsForProfile(browser()->GetProfile());
 
     const base::FilePath& absolute_path =
         GetTestFile(title, /*relative=*/false);
@@ -164,14 +167,14 @@ class ScreencastManagerTestWithDriveFs : public ScreencastManagerTest {
     }
 
     auto& drivefs_delegate =
-        GetFakeDriveFsForProfile(browser()->profile())->delegate();
+        GetFakeDriveFsForProfile(browser()->GetProfile())->delegate();
     drivefs_delegate->OnSyncingStatusUpdate(syncing_status.Clone());
     drivefs_delegate.FlushForTesting();
   }
 
   void VerifyNotificationSize(size_t size) {
     base::RunLoop run_loop;
-    NotificationDisplayServiceFactory::GetForProfile(browser()->profile())
+    NotificationDisplayServiceFactory::GetForProfile(browser()->GetProfile())
         ->GetDisplayed(base::BindLambdaForTesting(
             [&run_loop, &size](std::set<std::string> displayed_notifications,
                                bool supports_synchronization) {
@@ -195,7 +198,9 @@ class ScreencastManagerTestWithDriveFs : public ScreencastManagerTest {
     fake_drivefs_helpers_[profile] =
         std::make_unique<drive::FakeDriveFsHelper>(profile, mount_path);
     auto* integration_service = new drive::DriveIntegrationService(
-        g_browser_process->local_state(), profile, std::string(), mount_path,
+        g_browser_process->local_state(), profile,
+        IdentityManagerFactory::GetForProfile(profile), std::string(),
+        mount_path,
         fake_drivefs_helpers_[profile]->CreateFakeDriveFsListenerFactory());
     return integration_service;
   }

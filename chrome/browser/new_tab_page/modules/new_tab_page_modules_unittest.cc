@@ -31,6 +31,7 @@
 #include "components/sync/test/test_sync_service.h"
 #include "components/sync_preferences/testing_pref_service_syncable.h"
 #include "content/public/test/browser_task_environment.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "services/network/public/cpp/weak_wrapper_shared_url_loader_factory.h"
 #include "services/network/test/test_url_loader_factory.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -134,7 +135,7 @@ TEST_F(NewTabPageModulesTest, MakeModuleIdDetails_OnlyPopulatesEnabledModules) {
   identity_test_env().SetCookieAccounts(
       {{kSampleUserEmail, signin::GetTestGaiaIdForEmail(kSampleUserEmail)}});
   const std::vector<base::test::FeatureRef>& some_module_features = {
-      ntp_features::kNtpFeedModule,
+      ntp_features::kNtpTabGroupsModule,
       ntp_features::kNtpMostRelevantTabResumptionModule};
   for (auto& feature : some_module_features) {
     base::test::ScopedFeatureList features;

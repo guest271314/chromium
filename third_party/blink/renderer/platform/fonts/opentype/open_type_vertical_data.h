@@ -25,6 +25,7 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_PLATFORM_FONTS_OPENTYPE_OPEN_TYPE_VERTICAL_DATA_H_
 #define THIRD_PARTY_BLINK_RENDERER_PLATFORM_FONTS_OPENTYPE_OPEN_TYPE_VERTICAL_DATA_H_
 
+#include "base/containers/span.h"
 #include "third_party/blink/renderer/platform/fonts/glyph.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
 #include "third_party/blink/renderer/platform/platform_export.h"
@@ -54,9 +55,8 @@ class PLATFORM_EXPORT OpenTypeVerticalData
   float AdvanceHeight(Glyph) const;
 
   void GetVerticalTranslationsForGlyphs(const SkFont&,
-                                        const Glyph*,
-                                        size_t,
-                                        float* out_xy_array) const;
+                                        base::span<const Glyph> glyphs,
+                                        base::span<float> out_xy_array) const;
 
  private:
   void LoadMetrics(sk_sp<SkTypeface>);
@@ -66,12 +66,12 @@ class PLATFORM_EXPORT OpenTypeVerticalData
   Vector<uint16_t> advance_widths_;
   Vector<uint16_t> advance_heights_;
   Vector<int16_t> top_side_bearings_;
-  int16_t default_vert_origin_y_;
+  int16_t default_vert_origin_y_ = 0;
   HashMap<Glyph, int16_t> vert_origin_y_;
 
-  float size_per_unit_;
-  float ascent_fallback_;
-  int height_fallback_;
+  float size_per_unit_ = 0;
+  float ascent_fallback_ = 0;
+  int height_fallback_ = 0;
 };
 
 }  // namespace blink

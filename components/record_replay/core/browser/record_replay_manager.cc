@@ -11,6 +11,8 @@
 #include "base/containers/extend.h"
 #include "base/containers/to_vector.h"
 #include "base/functional/callback.h"
+#include "base/i18n/icubridge/date_time_formatter.h"
+#include "base/i18n/icubridge/icu_bridge.h"
 #include "base/i18n/time_formatting.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/task/sequenced_task_runner.h"
@@ -24,8 +26,8 @@
 #include "components/record_replay/core/browser/record_replay_driver_factory.h"
 #include "components/record_replay/core/browser/recorder.h"
 #include "components/record_replay/core/browser/recording.pb.h"
-#include "components/record_replay/core/browser/recording_data_manager.h"
 #include "components/record_replay/core/browser/replayer.h"
+#include "components/record_replay/core/browser/task_store.h"
 #include "components/record_replay/core/common/aliases.h"
 #include "components/record_replay/core/common/element_id.h"
 #include "third_party/abseil-cpp/absl/functional/overload.h"
@@ -52,13 +54,17 @@ RecordReplayManager::State RecordReplayManager::state() const {
 }
 
 void RecordReplayManager::StartRecording() {
+  using base::i18n::IcuBridge;
+  using base::i18n::datetime_options::YMD;
+
   ReportToUser("Starting recording");
   base::Time now = base::Time::Now();
   GURL url = client_->GetPrimaryMainFrameUrl();
   recorder_.emplace(url, now);
-  recorder_->SetName(std::string(url.host()) + " - " +
-                     base::UTF16ToUTF8(base::LocalizedTimeFormatWithPattern(
-                         now, "yyyy-MM-dd")));
+  recorder_->SetName(
+      std::string(url.host()) + " - " +
+      base::UTF16ToUTF8(IcuBridge::GetInstance().date_time_formatter().Format(
+          now, YMD::Short())));
 
   // TODO(crbug.com/485828286): Capture a screenshot of the `WebContents` and
   // encode it as a JPEG before passing it to the recorder.
@@ -123,6 +129,8 @@ void RecordReplayManager::OnFillOrPreviewForm(
     autofill::FieldGlobalId trigger_field_id,
     autofill::mojom::ActionPersistence action_persistence,
     const base::flat_set<autofill::FieldGlobalId>& filled_field_ids,
+    const base::flat_map<autofill::FieldGlobalId,
+                         autofill::DenseSet<autofill::FieldFillingSkipReason>>&,
     const autofill::FillingPayload& filling_payload) {
   if (action_persistence != autofill::mojom::ActionPersistence ::kFill) {
     return;
@@ -193,8 +201,8 @@ void RecordReplayManager::GetMatchingRecording(
     return;
   }
 
-  RecordingDataManager* rdm = client_->GetRecordingDataManager();
-  if (!rdm) {
+  TaskStore* store = client_->GetTaskStore();
+  if (!store) {
     base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
         FROM_HERE, base::BindOnce(std::move(cb), std::nullopt));
     return;
@@ -227,9 +235,9 @@ void RecordReplayManager::GetMatchingRecording(
                            std::move(cb), std::move(recording)));
       };
 
-  rdm->GetRecordingsByUrl(client_->GetPrimaryMainFrameUrl().spec(),
-                          base::BindOnce(invoke_with_matching_recording,
-                                         GetWeakPtr(), std::move(cb)));
+  store->GetRecordingsByUrl(client_->GetPrimaryMainFrameUrl().spec(),
+                            base::BindOnce(invoke_with_matching_recording,
+                                           GetWeakPtr(), std::move(cb)));
 }
 
 void RecordReplayManager::GetMatchingRecordings(
@@ -240,8 +248,8 @@ void RecordReplayManager::GetMatchingRecordings(
     return;
   }
 
-  RecordingDataManager* rdm = client_->GetRecordingDataManager();
-  if (!rdm) {
+  TaskStore* store = client_->GetTaskStore();
+  if (!store) {
     base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
         FROM_HERE, base::BindOnce(std::move(cb), std::vector<Recording>()));
     return;
@@ -251,8 +259,8 @@ void RecordReplayManager::GetMatchingRecordings(
   // on whether their first action's element selector matches exactly one
   // element on the page (as done in `GetMatchingRecording`), but for the UI
   // we'll just return all recordings matching the URL.
-  rdm->GetRecordingsByUrl(client_->GetPrimaryMainFrameUrl().spec(),
-                          std::move(cb));
+  store->GetRecordingsByUrl(client_->GetPrimaryMainFrameUrl().spec(),
+                            std::move(cb));
 }
 
 void RecordReplayManager::StartReplaySpecific(Recording recording) {

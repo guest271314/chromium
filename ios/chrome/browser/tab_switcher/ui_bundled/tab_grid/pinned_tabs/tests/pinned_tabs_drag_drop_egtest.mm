@@ -7,6 +7,8 @@
 #import "base/ios/device_util.h"
 #import "base/strings/sys_string_conversions.h"
 #import "base/test/ios/wait_util.h"
+#import "ios/chrome/browser/app_bar/ui/app_bar_constants.h"
+#import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/shared/ui/symbols/symbols.h"
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/grid/grid_constants.h"
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/pinned_tabs/pinned_tabs_constants.h"
@@ -59,8 +61,8 @@ id<GREYMatcher> PinnedView() {
 XCUIElement* GetElementMatchingIdentifier(XCUIApplication* app,
                                           NSString* identifier,
                                           XCUIElementType type) {
-  XCUIElementQuery* query = [[app.windows.firstMatch
-      descendantsMatchingType:type] matchingIdentifier:identifier];
+  XCUIElementQuery* query = [[app.windows[@"0"] descendantsMatchingType:type]
+      matchingIdentifier:identifier];
   return [query elementBoundByIndex:0];
 }
 
@@ -74,8 +76,8 @@ XCUIElement* GetElementMatchingLabel(XCUIApplication* app,
         return [item.label isEqualToString:label];
       }];
 
-  XCUIElementQuery* query = [[app.windows.firstMatch
-      descendantsMatchingType:type] matchingPredicate:predicate];
+  XCUIElementQuery* query = [[app.windows[@"0"] descendantsMatchingType:type]
+      matchingPredicate:predicate];
   return [query elementBoundByIndex:0];
 }
 
@@ -85,19 +87,23 @@ void DragDropCellInPinnedView(NSString* cell_identifier) {
   XCUIElement* src_element =
       GetElementMatchingIdentifier(app, cell_identifier, XCUIElementTypeCell);
   XCUICoordinate* start_point =
-      [src_element coordinateWithNormalizedOffset:CGVectorMake(0.1, 0.1)];
+      [src_element coordinateWithNormalizedOffset:CGVectorMake(0.5, 0.5)];
 
-  XCUIElement* dst_element = GetElementMatchingLabel(
-      app, l10n_util::GetNSString(IDS_IOS_TAB_GRID_CREATE_NEW_TAB),
-      XCUIElementTypeAny);
+  XCUICoordinate* end_point = nil;
+  if ([ChromeEarlGrey isChromeNextEnabled] && ![ChromeEarlGrey isIPadIdiom]) {
+    XCUIElement* dst_element = GetElementMatchingIdentifier(
+        app, kAppBarNewTabButtonIdentifier, XCUIElementTypeButton);
+    end_point =
+        [dst_element coordinateWithNormalizedOffset:CGVectorMake(0.5, -0.7)];
+  } else {
+    NSString* label = l10n_util::GetNSString(IDS_IOS_TAB_GRID_CREATE_NEW_TAB);
+    XCUIElement* dst_element =
+        GetElementMatchingLabel(app, label, XCUIElementTypeAny);
+    end_point =
+        [dst_element coordinateWithNormalizedOffset:CGVectorMake(-1.5, -0.5)];
+  }
 
-  // Supposed position of the pinned view.
-  // The pinned view is hidden when there is no pinned tabs. We can't determine
-  // its position precisely.
-  XCUICoordinate* end_point =
-      [dst_element coordinateWithNormalizedOffset:CGVectorMake(-1.5, -0.5)];
-
-  [start_point pressForDuration:1.5
+  [start_point pressForDuration:0.5
            thenDragToCoordinate:end_point
                    withVelocity:XCUIGestureVelocityDefault
             thenHoldForDuration:1.0];
@@ -172,6 +178,15 @@ void AssertPinnedCellMovedToRegularGrid(unsigned int pinned_index,
 
 @implementation PinnedTabsDragDropTestCase
 
+- (AppLaunchConfiguration)appConfigurationForTestCase {
+  AppLaunchConfiguration config = [super appConfigurationForTestCase];
+  // TODO(crbug.com/514608938): Fix test for Chrome Next.
+  if ([self isRunningTest:@selector(testDragRegularTabInPinnedView)]) {
+    config.features_enabled.push_back(kChromeNextIa);
+  }
+  return config;
+}
+
 // Checks that the Pinned Tabs feature is disabled on iPad.
 - (void)testDragRegularTabOniPad {
   if (![ChromeEarlGrey isIPadIdiom]) {
@@ -210,12 +225,50 @@ void AssertPinnedCellMovedToRegularGrid(unsigned int pinned_index,
       assertWithMatcher:grey_notVisible()];
 }
 
+// Checks that dragging a tab does not move it to pinned tabs on iPhone Duo.
+- (void)testDragRegularTabOnDuo {
+  if (![ChromeEarlGrey isDuoSimulator]) {
+    EARL_GREY_TEST_SKIPPED(@"Test only runs on iPhone Duo simulator.");
+  }
+
+  [ChromeEarlGreyUI openTabGrid];
+
+  // The pinned view should not be visible.
+  [[EarlGrey selectElementWithMatcher:PinnedView()]
+      assertWithMatcher:grey_notVisible()];
+
+  [[EarlGrey selectElementWithMatcher:RegularCellAtIndex(0)]
+      assertWithMatcher:grey_notNil()];
+
+  // Try to drag the first cell in the pinned view.
+  DragDropCellInPinnedView(IdentifierForRegularCellAtIndex(0));
+
+  // Check that the cell has not been moved in the pinned view.
+  ConditionBlock condition = ^{
+    NSError* error1 = nil;
+    NSError* error2 = nil;
+
+    [[EarlGrey selectElementWithMatcher:RegularCellAtIndex(0)]
+        assertWithMatcher:grey_notNil()
+                    error:&error1];
+    [[EarlGrey selectElementWithMatcher:PinnedCellAtIndex(0)]
+        assertWithMatcher:grey_nil()
+                    error:&error2];
+
+    return !error1 && !error2;
+  };
+  GREYAssert(WaitUntilConditionOrTimeout(kWaitForUIElementTimeout, condition),
+             @"The Pinned Tabs feature is not disabled on iPhone Duo.");
+  [[EarlGrey selectElementWithMatcher:PinnedView()]
+      assertWithMatcher:grey_notVisible()];
+}
+
 // Checks that dragging a regular tab and dropping it in the pinned view moves
 // it in the pinned view.
 - (void)testDragRegularTabInPinnedView {
-  if ([ChromeEarlGrey isIPadIdiom]) {
-    EARL_GREY_TEST_SKIPPED(@"Skipped for iPad. The Pinned Tabs feature is only "
-                           @"supported on iPhone.");
+  if (![ChromeEarlGrey isPinnedTabsEnabled]) {
+    EARL_GREY_TEST_SKIPPED(
+        @"The Pinned Tabs feature is not enabled on this device.");
   }
 
   [ChromeEarlGreyUI openTabGrid];
@@ -256,9 +309,9 @@ void AssertPinnedCellMovedToRegularGrid(unsigned int pinned_index,
 // Checks that dragging a pinned tab and dropping it in the regular grid moves
 // it in the regular grid.
 - (void)testDragPinnedTabInRegularGrid {
-  if ([ChromeEarlGrey isIPadIdiom]) {
-    EARL_GREY_TEST_SKIPPED(@"Skipped for iPad. The Pinned Tabs feature is only "
-                           @"supported on iPhone.");
+  if (![ChromeEarlGrey isPinnedTabsEnabled]) {
+    EARL_GREY_TEST_SKIPPED(
+        @"The Pinned Tabs feature is not enabled on this device.");
   }
   // TODO(crbug.com/40923015): Failing on iOS17, and iOS15.5 for
   // ios-simulator-noncq.

@@ -7,6 +7,7 @@
 #include <string>
 
 #include "base/containers/span.h"
+#include "base/files/scoped_temp_dir.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
 #include "base/json/json_reader.h"
@@ -14,10 +15,10 @@
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/stringprintf.h"
 #include "base/values.h"
+#include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
 #include "chromeos/ash/components/dbus/shill/shill_device_client.h"
 #include "chromeos/ash/components/dbus/shill/shill_profile_client.h"
 #include "chromeos/ash/components/dbus/shill/shill_service_client.h"
-#include "chromeos/ash/components/login/login_state/login_state.h"
 #include "chromeos/ash/components/network/managed_network_configuration_handler.h"
 #include "chromeos/ash/components/network/network_configuration_handler.h"
 #include "chromeos/ash/components/network/network_handler.h"
@@ -25,14 +26,18 @@
 #include "chromeos/ash/components/network/network_state.h"
 #include "chromeos/ash/components/network/network_state_handler.h"
 #include "components/account_id/account_id.h"
+#include "components/account_id/account_id_literal.h"
 #include "components/onc/onc_constants.h"
 #include "components/prefs/testing_pref_service.h"
-#include "components/user_manager/fake_user_manager.h"
-#include "components/user_manager/scoped_user_manager.h"
+#include "components/session_manager/test/user_session_test_environment.h"
+#include "components/user_manager/test_helper.h"
 #include "components/user_manager/user.h"
 #include "components/user_manager/user_manager.h"
+#include "content/public/browser/browser_context.h"
 #include "extensions/browser/api/networking_private/networking_private_api.h"
 #include "extensions/browser/api_unittest.h"
+#include "extensions/browser/extensions_browser_client.h"
+#include "extensions/browser/test_extensions_browser_client.h"
 #include "extensions/common/mojom/context_type.mojom.h"
 #include "google_apis/gaia/gaia_id.h"
 #include "third_party/cros_system_api/dbus/shill/dbus-constants.h"
@@ -41,7 +46,6 @@ namespace extensions {
 
 namespace {
 
-const char kUserHash[] = "test_user_hash";
 const char kUserProfilePath[] = "/network_profile/user/shill";
 
 const char kWifiDevicePath[] = "/device/stub_wifi_device";
@@ -65,6 +69,14 @@ const char kCellularServicePath[] = "/service/cellular";
 const char kCellularGuid[] = "cellular_guid";
 const char kCellularName[] = "cellular";
 
+constexpr auto kTestAccountId =
+    AccountId::Literal::FromUserEmailGaiaId("test@test",
+                                            GaiaId::Literal("fakegaia"));
+
+std::string GetTestUserHash() {
+  return user_manager::TestHelper::GetFakeUsernameHash(kTestAccountId);
+}
+
 }  // namespace
 
 class NetworkingPrivateApiTest : public ApiUnitTest {
@@ -76,24 +88,22 @@ class NetworkingPrivateApiTest : public ApiUnitTest {
   NetworkingPrivateApiTest& operator=(const NetworkingPrivateApiTest&) = delete;
 
   void SetUp() override {
+    ASSERT_TRUE(temp_dir_.CreateUniqueTempDir());
+    base::FilePath path = temp_dir_.GetPath().Append(
+        ash::BrowserContextHelper::GetUserBrowserContextDirName(
+            GetTestUserHash()));
+    SetBrowserContextPath(path);
+
     ApiUnitTest::SetUp();
 
-    // TODO(b/278643115) Remove LoginState dependency.
-    ash::LoginState::Initialize();
+    ash::test::UserSessionTestEnvironment::RegisterLocalStatePrefs(
+        local_state_.registry());
+    user_session_test_environment_ =
+        std::make_unique<ash::test::UserSessionTestEnvironment>(&local_state_);
 
-    user_manager::UserManager::RegisterPrefs(local_state_.registry());
-    fake_user_manager_.Reset(
-        std::make_unique<user_manager::FakeUserManager>(&local_state_));
+    ASSERT_TRUE(user_session_test_environment_->AddRegularUser(kTestAccountId));
+    user_session_test_environment_->LogIn(kTestAccountId);
 
-    const AccountId account_id =
-        AccountId::FromUserEmailGaiaId("test@test", GaiaId("fakegaia"));
-    fake_user_manager_->AddGaiaUser(account_id,
-                                    user_manager::UserType::kRegular);
-    fake_user_manager_->UserLoggedIn(account_id, kUserHash);
-
-    ash::LoginState::Get()->SetLoggedInState(
-        ash::LoginState::LOGGED_IN_ACTIVE,
-        ash::LoginState::LOGGED_IN_USER_KIOSK);
     base::RunLoop().RunUntilIdle();
 
     device_test()->ClearDevices();
@@ -106,15 +116,13 @@ class NetworkingPrivateApiTest : public ApiUnitTest {
   }
 
   void TearDown() override {
-    fake_user_manager_.Reset();
-
-    ash::LoginState::Shutdown();
+    user_session_test_environment_.reset();
 
     ApiUnitTest::TearDown();
   }
 
   void SetUpNetworks() {
-    profile_test()->AddProfile(kUserProfilePath, kUserHash);
+    profile_test()->AddProfile(kUserProfilePath, GetTestUserHash());
     profile_test()->AddProfile(ash::ShillProfileClient::GetSharedProfilePath(),
                                "");
 
@@ -170,7 +178,7 @@ class NetworkingPrivateApiTest : public ApiUnitTest {
                              .Set("HexSSID", base::HexEncode(user_policy_ssid))
                              .Set("Security", "WPA-PSK")));
 
-    config_handler->SetPolicy(::onc::ONC_SOURCE_USER_POLICY, kUserHash,
+    config_handler->SetPolicy(::onc::ONC_SOURCE_USER_POLICY, GetTestUserHash(),
                               user_policy_onc,
                               /*global_network_config=*/base::DictValue());
 
@@ -367,9 +375,10 @@ class NetworkingPrivateApiTest : public ApiUnitTest {
   }
 
  private:
+  base::ScopedTempDir temp_dir_;
   TestingPrefServiceSimple local_state_;
-  user_manager::TypedScopedUserManager<user_manager::FakeUserManager>
-      fake_user_manager_;
+  std::unique_ptr<ash::test::UserSessionTestEnvironment>
+      user_session_test_environment_;
   ash::NetworkHandlerTestHelper network_handler_test_helper_;
 };
 
@@ -487,6 +496,47 @@ TEST_F(NetworkingPrivateApiTest, SetNetworkRestrictedProperties) {
       GetUserSettingStringData(kPrivateWifiGuid, "ProxySettings.Type"));
   EXPECT_FALSE(
       GetUserSettingStringData(kPrivateWifiGuid, "StaticIPConfig.Type"));
+
+  // Verify that restricted callers cannot modify IPAddressConfigType or
+  // NameServersConfigType. These prevent unauthorized static IP/DNS clearing.
+  EXPECT_EQ(
+      "Error.PropertiesNotAllowed: [NameServersConfigType]",
+      RunFunctionAndReturnError(
+          base::MakeRefCounted<NetworkingPrivateSetPropertiesFunction>(),
+          base::StringPrintf(R"(["%s", {"NameServersConfigType": "DHCP"}])",
+                             kPrivateWifiGuid)));
+
+  EXPECT_EQ("Error.PropertiesNotAllowed: [IPAddressConfigType]",
+            RunFunctionAndReturnError(
+                base::MakeRefCounted<NetworkingPrivateSetPropertiesFunction>(),
+                base::StringPrintf(R"(["%s", {"IPAddressConfigType": "DHCP"}])",
+                                   kPrivateWifiGuid)));
+}
+
+TEST_F(NetworkingPrivateApiTest, GetNetworkRestrictedProperties) {
+  std::optional<base::Value> result = RunFunctionAndReturnValue(
+      base::MakeRefCounted<NetworkingPrivateGetPropertiesFunction>(),
+      base::StringPrintf(R"(["%s"])", kPrivateWifiGuid));
+
+  ASSERT_TRUE(result);
+  ASSERT_TRUE(result->is_dict());
+  EXPECT_FALSE(result->GetDict().Find("IPAddressConfigType"));
+  EXPECT_FALSE(result->GetDict().Find("NameServersConfigType"));
+}
+
+TEST_F(NetworkingPrivateApiTest, GetNetworkRestrictedPropertiesFromWebUI) {
+  scoped_refptr<NetworkingPrivateGetPropertiesFunction> get_properties =
+      base::MakeRefCounted<NetworkingPrivateGetPropertiesFunction>();
+  get_properties->set_source_context_type(mojom::ContextType::kWebUi);
+  get_properties->set_source_url(GURL("chrome://os-settings/networkDetail"));
+
+  std::optional<base::Value> result = RunFunctionAndReturnValue(
+      get_properties, base::StringPrintf(R"(["%s"])", kPrivateWifiGuid));
+
+  ASSERT_TRUE(result);
+  ASSERT_TRUE(result->is_dict());
+  EXPECT_TRUE(result->GetDict().Find("IPAddressConfigType"));
+  EXPECT_TRUE(result->GetDict().Find("NameServersConfigType"));
 }
 
 TEST_F(NetworkingPrivateApiTest, SetNetworkRestrictedPropertiesFromWebUI) {
@@ -511,7 +561,9 @@ TEST_F(NetworkingPrivateApiTest, SetNetworkRestrictedPropertiesFromWebUI) {
              "IPAddress": "123.123.123.1",
              "NameServers": ["8.8.8.8"],
              "Type": "IPv4"
-           }
+           },
+           "IPAddressConfigType": "DHCP",
+           "NameServersConfigType": "DHCP"
          })";
   RunFunction(
       set_properties,
@@ -522,6 +574,10 @@ TEST_F(NetworkingPrivateApiTest, SetNetworkRestrictedPropertiesFromWebUI) {
   EXPECT_TRUE(GetUserSettingStringData(kPrivateWifiGuid, "ProxySettings.Type"));
   EXPECT_TRUE(
       GetUserSettingStringData(kPrivateWifiGuid, "StaticIPConfig.Type"));
+  EXPECT_TRUE(
+      GetUserSettingStringData(kPrivateWifiGuid, "IPAddressConfigType"));
+  EXPECT_TRUE(
+      GetUserSettingStringData(kPrivateWifiGuid, "NameServersConfigType"));
 }
 
 TEST_F(NetworkingPrivateApiTest, CreateSharedNetwork) {
@@ -1108,10 +1164,8 @@ TEST_F(NetworkingPrivateApiTest, GetCellularProperties) {
                    .Set("Scanning", false))
           .Set("ConnectionState", "Connected")
           .Set("GUID", "cellular_guid")
-          .Set("IPAddressConfigType", "DHCP")
           .Set("Metered", true)
           .Set("Name", "cellular")
-          .Set("NameServersConfigType", "DHCP")
           .Set("Source", "User")
           .Set("TrafficCounterResetTime", 0.0)
           .Set("Type", "Cellular");
@@ -1175,6 +1229,43 @@ TEST_F(NetworkingPrivateApiTest, GetCellularPropertiesFromWebUi) {
           .Set("Type", "Cellular");
 
   EXPECT_EQ(base::Value(std::move(expected_result)), *result);
+}
+
+// Verifies that getNetworks() correctly filters sensitive properties (like
+// Cellular.ICCID) for callers without networkingPrivate access, matching the
+// behavior of getState().
+TEST_F(NetworkingPrivateApiTest, GetNetworksFiltersCellularIccid) {
+  SetUpCellular();
+
+  std::optional<base::Value> list_result = RunFunctionAndReturnValue(
+      new NetworkingPrivateGetNetworksFunction(),
+      R"([{"networkType": "Cellular", "visible": true}])");
+  ASSERT_TRUE(list_result);
+  ASSERT_TRUE(list_result->is_list());
+
+  const base::DictValue* cellular_entry = nullptr;
+  for (const base::Value& v : list_result->GetList()) {
+    const base::DictValue& d = v.GetDict();
+    const std::string* guid = d.FindString("GUID");
+    if (guid && *guid == kCellularGuid) {
+      cellular_entry = &d;
+      break;
+    }
+  }
+  ASSERT_TRUE(cellular_entry) << "Cellular network not found in results.";
+
+  // Ensure sensitive properties are stripped from getNetworks() results.
+  EXPECT_FALSE(cellular_entry->FindStringByDottedPath("Cellular.ICCID"));
+
+  // Verify getState() also correctly filters the property as a control check.
+  std::optional<base::Value> state_result =
+      RunFunctionAndReturnValue(new NetworkingPrivateGetStateFunction(),
+                                base::StringPrintf(R"(["%s"])", kCellularGuid));
+  ASSERT_TRUE(state_result);
+  ASSERT_TRUE(state_result->is_dict());
+
+  EXPECT_FALSE(
+      state_result->GetDict().FindStringByDottedPath("Cellular.ICCID"));
 }
 
 TEST_F(NetworkingPrivateApiTest, ForgetSharedNetwork) {

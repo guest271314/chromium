@@ -25,7 +25,6 @@ import org.chromium.base.test.util.CallbackHelper;
 import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.CriteriaHelper;
 import org.chromium.base.test.util.DisableIf;
-import org.chromium.base.test.util.DisableLeakChecks;
 import org.chromium.base.test.util.DisabledTest;
 import org.chromium.base.test.util.Feature;
 import org.chromium.base.test.util.RequiresRestart;
@@ -39,9 +38,8 @@ import org.chromium.chrome.browser.tabmodel.TabClosureParams;
 import org.chromium.chrome.browser.tabmodel.TabModel;
 import org.chromium.chrome.browser.tabmodel.TabModelUtils;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
+import org.chromium.chrome.test.transit.AutoResetCtaTransitTestRule;
 import org.chromium.chrome.test.transit.ChromeTransitTestRules;
-import org.chromium.chrome.test.transit.FreshCtaTransitTestRule;
-import org.chromium.chrome.test.transit.page.WebPageStation;
 import org.chromium.chrome.test.util.ChromeTabUtils;
 import org.chromium.components.embedder_support.util.UrlConstants;
 import org.chromium.content_public.browser.LoadUrlParams;
@@ -61,19 +59,13 @@ import java.util.concurrent.TimeoutException;
 @RunWith(ChromeJUnit4ClassRunner.class)
 @Batch(Batch.PER_CLASS)
 @CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
-@DisableLeakChecks({
-    "crbug.com/512492115 (AutoFetchNotifier)",
-    "crbug.com/512491549 (AutoFetchNotifier)",
-    "crbug.com/512492440 (OfflinePageBridge)",
-    "crbug.com/512492544 (OfflinePageBridge)"
-})
 public class OfflinePageAutoFetchTest {
     private static final String TAG = "AutoFetchTest";
     private static final long WAIT_TIMEOUT_MS = 20000;
 
     @Rule
-    public FreshCtaTransitTestRule mActivityTestRule =
-            ChromeTransitTestRules.freshChromeTabbedActivityRule();
+    public AutoResetCtaTransitTestRule mActivityTestRule =
+            ChromeTransitTestRules.fastAutoResetCtaActivityRule();
 
     @Rule
     public TestWatcher mTestWatcher =
@@ -92,6 +84,7 @@ public class OfflinePageAutoFetchTest {
 
     private Profile mProfile;
     private OfflinePageBridge mOfflinePageBridge;
+    private OfflinePageBridge.OfflinePageModelObserver mOfflinePageObserver;
     private final CallbackHelper mPageAddedHelper = new CallbackHelper();
     private OfflinePageItem mAddedPage;
     private WebServer mWebServer;
@@ -100,7 +93,6 @@ public class OfflinePageAutoFetchTest {
     private Intent mLastInProgressDeleteIntent;
     private Intent mLastCompleteClickIntent;
     private Intent mLastCompleteDeleteIntent;
-    private WebPageStation mStartingPage;
 
     private class NotifierHooks implements AutoFetchNotifier.TestHooks {
         @Override
@@ -168,9 +160,9 @@ public class OfflinePageAutoFetchTest {
 
     @Before
     public void setUp() throws Exception {
-        mStartingPage = mActivityTestRule.startOnBlankPage();
+        mActivityTestRule.startOnBlankPage();
 
-        AutoFetchNotifier.mTestHooks = new NotifierHooks();
+        AutoFetchNotifier.setTestHooksForTesting(new NotifierHooks());
 
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
@@ -181,15 +173,15 @@ public class OfflinePageAutoFetchTest {
                         NetworkChangeNotifier.init();
                     }
 
-                    OfflinePageBridge.getForProfile(mProfile)
-                            .addObserver(
-                                    new OfflinePageBridge.OfflinePageModelObserver() {
-                                        @Override
-                                        public void offlinePageAdded(OfflinePageItem addedPage) {
-                                            mAddedPage = addedPage;
-                                            mPageAddedHelper.notifyCalled();
-                                        }
-                                    });
+                    mOfflinePageObserver =
+                            new OfflinePageBridge.OfflinePageModelObserver() {
+                                @Override
+                                public void offlinePageAdded(OfflinePageItem addedPage) {
+                                    mAddedPage = addedPage;
+                                    mPageAddedHelper.notifyCalled();
+                                }
+                            };
+                    OfflinePageBridge.getForProfile(mProfile).addObserver(mOfflinePageObserver);
                 });
         forceConnectivityState(false);
     }
@@ -199,6 +191,16 @@ public class OfflinePageAutoFetchTest {
         OfflineTestUtil.clearIntercepts();
         if (mWebServer != null) {
             mWebServer.shutdown();
+        }
+        if (mOfflinePageObserver != null) {
+            ThreadUtils.runOnUiThreadBlocking(
+                    () -> {
+                        // The OfflinePageBridge is a profile-scoped singleton that outlives the
+                        // test instance, so the observer must be removed to avoid retaining the
+                        // test class (and the destroyed Activity it holds).
+                        OfflinePageBridge.getForProfile(mProfile)
+                                .removeObserver(mOfflinePageObserver);
+                    });
         }
     }
 
@@ -523,16 +525,17 @@ public class OfflinePageAutoFetchTest {
         }
         Log.d(TAG, "Logging additional context");
         int tabCount = tabModel.getCount();
-        Log.d(TAG, "Tab Count: " + tabCount);
+        Log.d(TAG, "Tab Count: %d", tabCount);
         for (int i = 0; i < tabCount; ++i) {
             String title = ChromeTabUtils.getTitleOnUiThread(tabModel.getTabAt(i));
             String current = tabModel.index() == i ? "*current" : "";
-            Log.d(TAG, "Tab " + String.valueOf(i) + " '" + title + "' " + current);
+            Log.d(TAG, "Tab %d '%s' %s", i, title, current);
         }
         try {
             Log.d(
                     TAG,
-                    "Request Coordinator state:" + OfflineTestUtil.dumpRequestCoordinatorState());
+                    "Request Coordinator state: %s",
+                    OfflineTestUtil.dumpRequestCoordinatorState());
         } catch (TimeoutException e) {
         }
     }

@@ -190,11 +190,6 @@ BASE_EXPORT bool QueryDeviceConvertibility();
 // or why not a device was deemed to be a tablet.
 BASE_EXPORT bool IsDeviceUsedAsATablet(std::string* reason);
 
-// Returns the base address of the module with the given name, or std::nullopt
-// if it is not loaded.
-BASE_EXPORT std::optional<HMODULE> GetModuleAddress(
-    std::wstring_view module_name);
-
 // Executes `callback` that takes as arguments, a bit that indicates whether
 // a keyboard is detected along with a reason string ptr that will be set to to
 // the detection method that was used to detect the keyboard.
@@ -214,8 +209,15 @@ BASE_EXPORT bool IsEnrolledToDomain();
 
 // Returns true if either the device is joined to Azure Active Directory (AD) or
 // one or more Azure AD work accounts have been added on the device. This call
-// trigger some I/O when loading netapi32.dll to determine the management state.
+// triggers some I/O when loading netapi32.dll to determine the management
+// state.
 BASE_EXPORT bool IsJoinedToAzureAD();
+
+// Returns true only if the device is joined to Azure Active Directory (AD).
+// Unlike IsJoinedToAzureAD(), this does not return true if there are only Azure
+// AD work accounts added. This call triggers some I/O when loading
+// netapi32.dll to determine the management state.
+BASE_EXPORT bool IsDeviceJoinedToAzureAD();
 
 // Returns true if the machine is being managed by an MDM system.
 BASE_EXPORT bool IsDeviceRegisteredWithManagement();
@@ -428,7 +430,14 @@ class BASE_EXPORT ScopedDeviceRegisteredWithManagementForTesting {
 // object. The original state is restored upon destruction.
 class BASE_EXPORT ScopedAzureADJoinStateForTesting {
  public:
-  explicit ScopedAzureADJoinStateForTesting(bool state);
+  enum class AzureADJoinType {
+    kUnknown,
+    kDevice,
+    kWorkplace,
+  };
+
+  explicit ScopedAzureADJoinStateForTesting(
+      std::optional<AzureADJoinType> state);
   ScopedAzureADJoinStateForTesting(const ScopedAzureADJoinStateForTesting&) =
       delete;
   ScopedAzureADJoinStateForTesting& operator=(
@@ -436,13 +445,13 @@ class BASE_EXPORT ScopedAzureADJoinStateForTesting {
   ~ScopedAzureADJoinStateForTesting();
 
  private:
-  const bool initial_state_;
+  const std::optional<AzureADJoinType> initial_state_;
 };
 
 // Allows changing the return values of convertibility functions for the
 // lifetime of the object. The original state is restored upon destruction.
-class BASE_EXPORT
-    [[maybe_unused, nodiscard]] ScopedDeviceConvertibilityStateForTesting {
+class BASE_EXPORT [[maybe_unused, nodiscard]]
+ScopedDeviceConvertibilityStateForTesting {
  public:
   using QueryFunction = bool (*)();
   ScopedDeviceConvertibilityStateForTesting(

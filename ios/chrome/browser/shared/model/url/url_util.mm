@@ -16,6 +16,7 @@
 #import "ios/chrome/browser/shared/model/url/chrome_url_constants.h"
 #import "ios/components/webui/web_ui_url_constants.h"
 #import "ios/net/url_scheme_util.h"
+#import "ios/web/public/web_state.h"
 #import "url/gurl.h"
 #import "url/url_constants.h"
 
@@ -50,6 +51,21 @@ bool IsUrlNtp(const GURL& url) {
     return url == kChromeUIAboutNewTabURL;
   }
   return false;
+}
+
+bool IsUrlShareable(web::WebState* web_state) {
+  if (!web_state) {
+    return false;
+  }
+  const GURL& url = web_state->GetLastCommittedURL();
+
+  // Enable sharing when the URL is valid and is not an NTP or `chrome://` URL,
+  // except when:
+  // 1. The URL represents a Chrome download path (`chrome://downloads`).
+  // 2. The URL is a reference to an external file (`chrome://external-file`).
+  return url.is_valid() && !IsUrlNtp(url) &&
+         (UrlIsDownloadedFile(url) || UrlIsExternalFileReference(url) ||
+          !UrlHasChromeScheme(url));
 }
 
 bool IsHandledProtocol(const std::string& scheme) {
@@ -124,7 +140,10 @@ NSSet<NSString*>* GetItmsSchemes() {
                        // There's no evidence that itms-bookss is actually
                        // supported, but over-inclusion costs less than
                        // under-inclusion.
-                       @"itms-books", @"itms-bookss", nil];
+                       @"itms-books", @"itms-bookss", @"itms-services",
+                       @"itms-beta", @"itms-betas", @"itms-watch",
+                       @"itms-watchs", @"itms-podcasts", @"itms-podcastss",
+                       nil];
   });
   return schemes;
 }

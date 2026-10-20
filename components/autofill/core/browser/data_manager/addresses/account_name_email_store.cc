@@ -13,7 +13,6 @@
 #include "base/check.h"
 #include "base/functional/bind.h"
 #include "base/hash/hash.h"
-#include "base/no_destructor.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
@@ -52,11 +51,9 @@ bool AutofillProfileMatchesAccountInfo(const AutofillProfile& profile,
 }
 
 void RemoveNickname(std::string& name) {
-  static base::NoDestructor<std::unique_ptr<const RE2>> nickname_pattern(
-      std::make_unique<const RE2>(
-          features::kAutofillNameAndEmailProfileNicknameRegex.Get()));
-  RE2::GlobalReplace(&name, **nickname_pattern, "");
-
+  static constexpr re2::LazyRE2 nickname_pattern = {
+      R"(\s+\([^)]*\)|\s+\"[^\"]*\")"};
+  RE2::GlobalReplace(&name, *nickname_pattern, "");
   name = base::UTF16ToUTF8(base::TrimWhitespace(base::UTF8ToUTF16(name),
                                                 base::TrimPositions::TRIM_ALL));
 }
@@ -91,7 +88,7 @@ void AccountNameEmailStore::OnExtendedAccountInfoUpdated(
       identity_manager_observer_.GetSource()->GetPrimaryAccountInfo(
           signin::ConsentLevel::kSignin);
   if (!primary_info.has_value() ||
-      (!primary_info->IsEmpty() && info.gaia != primary_info->gaia)) {
+      (!primary_info->IsEmpty() && info.GetGaiaId() != primary_info->gaia)) {
     return;
   }
   MaybeUpdateOrCreateAccountNameEmail();
@@ -200,7 +197,7 @@ void AccountNameEmailStore::ApplyChange(const AutofillProfileChange& change) {
       // REMOVE indicates a hard removal, thus the pref needs to be set.
       pref_service_->SetInteger(
           prefs::kAutofillNameAndEmailProfileNotSelectedCounter,
-          features::kAutofillNameAndEmailProfileNotSelectedThreshold.Get() + 1);
+          kNotSelectedThreshold + 1);
       return;
     case AutofillProfileChange::UPDATE:
       // Although the kAccountNameEmail profile is read-only from the user POV,
@@ -260,7 +257,7 @@ void AccountNameEmailStore::UpdateOrCreateAccountNameEmail(
   const bool was_hard_removed =
       pref_service_->GetInteger(
           prefs::kAutofillNameAndEmailProfileNotSelectedCounter) >
-      features::kAutofillNameAndEmailProfileNotSelectedThreshold.Get();
+      kNotSelectedThreshold;
 
   if (!hashes_different && was_hard_removed) {
     // User signed out and then signed in, but previously a hard remove had
@@ -354,7 +351,7 @@ AccountNameEmailStore::GetBlockAccountNameEmailUpdateReason() {
 void AccountNameEmailStore::OnCounterPrefUpdated() {
   if (pref_service_->GetInteger(
           prefs::kAutofillNameAndEmailProfileNotSelectedCounter) <=
-      features::kAutofillNameAndEmailProfileNotSelectedThreshold.Get()) {
+      kNotSelectedThreshold) {
     return;
   }
 

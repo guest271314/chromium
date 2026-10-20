@@ -32,6 +32,8 @@ class FileSystemChooserTest : public RenderViewHostImplTestHarness {
   void SetUp() override {
     RenderViewHostImplTestHarness::SetUp();
     web_contents_ = CreateTestWebContents(GetBrowserContext());
+    web_contents_->GetPrimaryMainFrame()->GetView()->SetBounds(
+        gfx::Rect(0, 0, 800, 600));
   }
 
   void TearDown() override {
@@ -354,6 +356,35 @@ TEST_F(FileSystemChooserTest, DefaultPath) {
   SyncShowDialog({}, /*include_accepts_all=*/true, base::FilePath(),
                  base::FilePath(FILE_PATH_LITERAL("suggested.txt")));
   EXPECT_EQ(dialog_params_.default_path, suggested_name);
+}
+
+TEST_F(FileSystemChooserTest,
+       OverlongExtensionDoesNotRevealShellIntegratedExtension) {
+  ui::SelectFileDialog::SetFactory(
+      std::make_unique<CancellingSelectFileDialogFactory>(&dialog_params_));
+
+  SyncShowDialog({},
+                 /*include_accepts_all=*/true, base::FilePath(),
+                 base::FilePath(FILE_PATH_LITERAL(
+                     "dangerous_extension.lnk.len10plus1234567")));
+
+  EXPECT_EQ(dialog_params_.default_path,
+            base::FilePath(FILE_PATH_LITERAL("dangerous_extension.download")));
+}
+
+TEST_F(FileSystemChooserTest,
+       MultipleOverlongExtensionsDoNotRevealShellIntegratedExtension) {
+  ui::SelectFileDialog::SetFactory(
+      std::make_unique<CancellingSelectFileDialogFactory>(&dialog_params_));
+
+  SyncShowDialog({},
+                 /*include_accepts_all=*/true, base::FilePath(),
+                 base::FilePath(FILE_PATH_LITERAL(
+                     "dangerous_extension.lnk.len10plus1234567."
+                     "len10plus7654321")));
+
+  EXPECT_EQ(dialog_params_.default_path,
+            base::FilePath(FILE_PATH_LITERAL("dangerous_extension.download")));
 }
 
 }  // namespace content

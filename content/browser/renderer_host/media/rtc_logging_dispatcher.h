@@ -8,11 +8,11 @@
 #include <memory>
 
 #include "base/memory/weak_ptr.h"
+#include "base/uuid.h"
 #include "content/common/content_export.h"
 #include "content/public/browser/document_service.h"
 #include "content/public/browser/render_frame_host.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
-#include "mojo/public/cpp/bindings/receiver.h"
 #include "third_party/blink/public/mojom/webrtc/rtc_logging.mojom.h"
 
 namespace content {
@@ -31,6 +31,7 @@ class CONTENT_EXPORT RTCLoggingDispatcherImpl
 
   // blink::mojom::RTCLoggingDispatcher
   void StartDiagnosticLogging(
+      const base::Uuid& session_id,
       bool upload,
       const base::flat_map<std::string, std::string>& metadata,
       StartDiagnosticLoggingCallback callback) override;

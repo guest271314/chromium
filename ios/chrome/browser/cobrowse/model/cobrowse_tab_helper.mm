@@ -5,9 +5,10 @@
 #import "ios/chrome/browser/cobrowse/model/cobrowse_tab_helper.h"
 
 #import "base/functional/bind.h"
+#import "base/strings/sys_string_conversions.h"
 #import "base/task/sequenced_task_runner.h"
-#import "components/search_engines/template_url.h"
 #import "components/search_engines/template_url_service.h"
+#import "components/search_engines/util.h"
 #import "ios/chrome/browser/cobrowse/model/cobrowse_context.h"
 #import "ios/chrome/browser/shared/model/url/url_util.h"
 #import "ios/chrome/browser/shared/public/commands/scene_commands.h"
@@ -41,7 +42,8 @@ void CobrowseTabHelper::WasShown(web::WebState* web_state) {
     return;
   }
 
-  if (ShouldHideAssistantForURL(web_state->GetLastCommittedURL())) {
+  GURL url = web_state->GetVisibleURL();
+  if (ShouldHideAssistant(web_state, url)) {
     [scene_handler_ hideAssistant];
     return;
   }
@@ -56,6 +58,20 @@ void CobrowseTabHelper::WasShown(web::WebState* web_state) {
   }
 }
 
+void CobrowseTabHelper::WasHidden(web::WebState* web_state) {
+  if (!scene_handler_) {
+    return;
+  }
+
+  if (delegate_ && !delegate_->IsWebStateActive(web_state)) {
+    // If the web state is no longer active, do not hide the global
+    // assistant.
+    return;
+  }
+
+  [scene_handler_ hideAssistant];
+}
+
 void CobrowseTabHelper::DidStartNavigation(
     web::WebState* web_state,
     web::NavigationContext* navigation_context) {
@@ -63,16 +79,47 @@ void CobrowseTabHelper::DidStartNavigation(
     return;
   }
 
-  if (ShouldHideAssistantForURL(navigation_context->GetUrl())) {
+  // Do not trigger the assistant when the web state is not currently visible.
+  // This could happen e.g. for navigations indirectly caused by the APC
+  // extraction process in the tab picker.
+  if (!web_state->IsVisible()) {
+    return;
+  }
+
+  // Do not trigger the assistant on reloads.
+  if (ui::PageTransitionCoreTypeIs(navigation_context->GetPageTransition(),
+                                   ui::PAGE_TRANSITION_RELOAD)) {
+    return;
+  }
+
+  const GURL& url = navigation_context->GetUrl();
+
+  // Do not hide or trigger the assistant for temporary about:blank or invalid
+  // URL navigations while loading.
+  if (!url.is_valid() || url.IsAboutBlank()) {
+    return;
+  }
+
+  // If the session is active and we navigate to an AIM URL, update the context
+  // before `ShouldHideAssistant` hides the UI and returns early. This ensures
+  // follow-up AIM queries (which happen in the same tab) correctly sync their
+  // URL context. Note: We cannot use `ConfigureAssistantContextForWebState`
+  // here because it extracts the URL from the tab's opener, which would fail
+  // to capture the new URL of a same-tab navigation.
+  if (delegate_->IsSessionActive() &&
+      (IsAimURL(url) || IsAimZeroStateURL(url))) {
+    delegate_->SetCobrowseContext([[CobrowseContext alloc] initWithURL:url]);
+  }
+
+  if (ShouldHideAssistant(web_state, url)) {
     [scene_handler_ hideAssistant];
-    delegate_->SetSessionActive(false);
     return;
   }
 
   if (delegate_->CanShowAssistantForWebState(web_state)) {
-    delegate_->SetSessionActive(true);
     delegate_->ConfigureAssistantContextForWebState(web_state);
-    [scene_handler_ showAssistant];
+    [scene_handler_ showAssistantInMinimizedState:YES];
+    delegate_->SetSessionActive(true);
   }
 }
 
@@ -82,24 +129,36 @@ void CobrowseTabHelper::WebStateDestroyed(web::WebState* web_state) {
 
 #pragma mark - Private helpers
 
-bool CobrowseTabHelper::ShouldHideAssistantForURL(const GURL& url) {
+void CobrowseTabHelper::ShowAssistant() {
+  web::WebState* web_state = observation_.GetSource();
+  if (!web_state) {
+    return;
+  }
+
+  if (!web_state->IsVisible()) {
+    return;
+  }
+
+  if (ShouldHideAssistant(web_state, web_state->GetVisibleURL())) {
+    return;
+  }
+
+  [scene_handler_ showAssistant];
+}
+
+bool CobrowseTabHelper::ShouldHideAssistant(web::WebState* web_state,
+                                            const GURL& url) {
+  if (delegate_ && delegate_->ShouldHideAssistantForWebState(web_state)) {
+    return true;
+  }
+
+  if (IsAimURL(url) || IsAimZeroStateURL(url)) {
+    return true;
+  }
+
   if (IsUrlNtp(url)) {
     return true;
   }
 
-  // Do not show the cobrowse AIM assistant sheet if navigating to a search URL.
-  const TemplateURL* default_search_provider =
-      template_url_service_ ? template_url_service_->GetDefaultSearchProvider()
-                            : nullptr;
-  if (default_search_provider &&
-      default_search_provider->IsSearchURL(
-          url, template_url_service_->search_terms_data())) {
-    return true;
-  }
-
   return false;
-}
-
-void CobrowseTabHelper::ShowAssistant() {
-  [scene_handler_ showAssistant];
 }

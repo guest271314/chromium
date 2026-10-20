@@ -33,26 +33,6 @@ constexpr base::wcstring_view kOnnxRuntimeLibraryName = L"onnxruntime.dll";
 PlatformFunctions* PlatformFunctions::g_instance_ = nullptr;
 
 // static
-bool PlatformFunctions::InitializeFromCommandLine() {
-  CHECK(!g_instance_);
-
-  if (!base::CommandLine::ForCurrentProcess()->HasSwitch(
-          switches::kWebNNOrtLibraryPathForTesting)) {
-    return false;
-  }
-
-  base::FilePath base_path =
-      base::CommandLine::ForCurrentProcess()->GetSwitchValuePath(
-          switches::kWebNNOrtLibraryPathForTesting);
-  if (base_path.empty()) {
-    LOG(ERROR) << "[WebNN] The specified ONNX Runtime library path is empty.";
-    return false;
-  }
-
-  return InitializeFromPath(base_path.Append(kOnnxRuntimeLibraryName));
-}
-
-// static
 bool PlatformFunctions::InitializeWinML() {
   CHECK(!g_instance_);
 
@@ -74,8 +54,11 @@ bool PlatformFunctions::EnsureInitialized() {
   // The static local with a lambda initializer guarantees thread-safe
   // one-time initialization per the C++ standard ([stmt.dcl]).
   static bool initialized = []() {
-    if (InitializeFromCommandLine()) {
-      return true;
+    base::FilePath base_path =
+        base::CommandLine::ForCurrentProcess()->GetSwitchValuePath(
+            switches::kWebNNOrtLibraryPathForTesting);
+    if (!base_path.empty()) {
+      return InitializeFromPath(base_path.Append(kOnnxRuntimeLibraryName));
     }
     return InitializeWinML();
   }();
@@ -120,19 +103,35 @@ bool PlatformFunctions::InitializeFromPath(
     LOG(ERROR) << "[WebNN] Failed to get OrtModelEditorApi.";
     return false;
   }
+  const OrtInteropApi* ort_interop_api = ort_api->GetInteropApi();
+  if (!ort_interop_api) {
+    LOG(ERROR) << "[WebNN] Failed to get OrtInteropApi.";
+    return false;
+  }
+
+  const OrtCompileApi* ort_compile_api = ort_api->GetCompileApi();
+  if (!ort_compile_api) {
+    LOG(ERROR) << "[WebNN] Failed to get OrtCompileApi.";
+    return false;
+  }
 
   g_instance_ = new PlatformFunctions(std::move(ort_library), ort_api,
-                                      ort_model_editor_api);
+                                      ort_model_editor_api, ort_compile_api,
+                                      ort_interop_api);
   return true;
 }
 
 PlatformFunctions::PlatformFunctions(
     base::ScopedNativeLibrary ort_library,
     const OrtApi* ort_api,
-    const OrtModelEditorApi* ort_model_editor_api)
+    const OrtModelEditorApi* ort_model_editor_api,
+    const OrtCompileApi* ort_compile_api,
+    const OrtInteropApi* ort_interop_api)
     : ort_library_(std::move(ort_library)),
       ort_api_(ort_api),
-      ort_model_editor_api_(ort_model_editor_api) {}
+      ort_model_editor_api_(ort_model_editor_api),
+      ort_compile_api_(ort_compile_api),
+      ort_interop_api_(ort_interop_api) {}
 
 PlatformFunctions::~PlatformFunctions() = default;
 

@@ -42,17 +42,32 @@ namespace cors {
 // its result, and owning a CORS-preflight cache.
 class COMPONENT_EXPORT(NETWORK_SERVICE) PreflightController final {
  public:
+  class PreflightLoader;
+
+  // A handle representing an in-flight preflight check.
+  // When destroyed before the preflight check completes, the underlying
+  // PreflightLoader is immediately cancelled and destroyed.
+  class COMPONENT_EXPORT(NETWORK_SERVICE) PreflightCheckHandle {
+   public:
+    PreflightCheckHandle(const PreflightCheckHandle&) = delete;
+    PreflightCheckHandle& operator=(const PreflightCheckHandle&) = delete;
+    ~PreflightCheckHandle();
+
+   private:
+    friend class PreflightController;
+    friend class PreflightLoader;
+
+    explicit PreflightCheckHandle(base::WeakPtr<PreflightLoader> loader);
+
+    base::WeakPtr<PreflightLoader> loader_;
+  };
+
   // Called with the result of `PerformPreflightCheck()`.
   //
   // `net_error` is the overall result of the operation.
   //
   // `cors_error_status` contains additional details about CORS-specific errors.
-  // Invariant: `cors_error_status` is nullopt if `net_error` is neither
-  // `net::ERR_FAILED` nor `net::OK`.
-  // If `net_error` is `net::OK`, then `cors_error_status` may be non-nullopt to
-  // indicate a warning-only error arose due to Private Network Access.
-  // TODO(crbug.com/40204695): Once PNA preflights are always enforced,
-  // stop populating `cors_error_status` when `net_error` is `net::OK`.
+  // Invariant: `cors_error_status` is nullopt if `net_error` is `net::OK`
   //
   // `has_autorization_covered_by_wildcard` is true iff the request carries an
   // "authorization" header and that header is covered by the wildcard in the
@@ -100,7 +115,10 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) PreflightController final {
   // Determines if a CORS-preflight request is needed, and checks the cache, or
   // makes a preflight request if it is needed. A result will be notified
   // synchronously or asynchronously.
-  void PerformPreflightCheck(
+  // Returns a handle that cancels the in-flight preflight request if
+  // destroyed before completion, or nullptr if the check completed
+  // synchronously (e.g. satisfied from cache).
+  [[nodiscard]] std::unique_ptr<PreflightCheckHandle> PerformPreflightCheck(
       CompletionCallback callback,
       int32_t request_id,
       const ResourceRequest& resource_request,
@@ -110,7 +128,6 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) PreflightController final {
       const net::NetworkTrafficAnnotationTag& traffic_annotation,
       mojom::URLLoaderFactory* loader_factory,
       const net::IsolationInfo& isolation_info,
-      mojom::ClientSecurityStatePtr client_security_state,
       base::WeakPtr<mojo::Remote<mojom::DevToolsObserver>> devtools_observer,
       const net::NetLogWithSource& net_log,
       bool acam_preflight_spec_conformant,
@@ -124,10 +141,9 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) PreflightController final {
   void ClearCorsPreflightCache(mojom::ClearDataFilterPtr url_filter);
 
   PreflightCache& GetPreflightCacheForTesting() { return cache_; }
+  size_t GetLoaderCountForTesting() const { return loaders_.size(); }
 
  private:
-  class PreflightLoader;
-
   void RemoveLoader(PreflightLoader* loader);
   void AppendToCache(const url::Origin& origin,
                      const GURL& url,

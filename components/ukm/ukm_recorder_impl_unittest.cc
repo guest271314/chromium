@@ -9,6 +9,7 @@
 #include "base/functional/bind.h"
 #include "base/metrics/metrics_hashes.h"
 #include "base/test/task_environment.h"
+#include "components/metrics/metrics_reporting_choice_service.h"
 #include "components/ukm/scheme_constants.h"
 #include "components/ukm/test_ukm_recorder.h"
 #include "components/ukm/ukm_recorder_observer.h"
@@ -25,6 +26,17 @@
 
 namespace ukm {
 namespace {
+
+class TestUkmRecorderImpl : public UkmRecorderImpl {
+ public:
+  TestUkmRecorderImpl() = default;
+  ~TestUkmRecorderImpl() override = default;
+
+  bool ShouldUseMetricsConsentRestructure() const override {
+    return metrics::MetricsReportingChoiceService::
+        ShouldUseMetricsConsentRestructure();
+  }
+};
 
 using TestEvent1 = builders::PageLoad;
 
@@ -105,11 +117,24 @@ class TestUkmObserver : public UkmRecorderObserver {
     if (stop_waiting_)
       std::move(stop_waiting_).Run();
 
-    EXPECT_EQ(expected_state_, consent_state);
+    EXPECT_EQ(expected_consent_state_, consent_state);
+  }
+
+  void OnUkmAllowedStateChanged(bool consent_state) override {
+    if (stop_waiting_) {
+      std::move(stop_waiting_).Run();
+    }
+
+    EXPECT_EQ(expected_bool_state_, consent_state);
   }
 
   void WaitOnUkmAllowedStateChanged(ukm::UkmConsentState expected_state) {
-    expected_state_ = expected_state;
+    expected_consent_state_ = expected_state;
+    WaitCallback();
+  }
+
+  void WaitOnUkmAllowedStateChanged(bool expected_state) {
+    expected_bool_state_ = expected_state;
     WaitCallback();
   }
 
@@ -136,13 +161,14 @@ class TestUkmObserver : public UkmRecorderObserver {
   mojom::UkmEntryPtr ukm_entry_;
   SourceId source_id_;
   std::vector<GURL> urls_;
-  ukm::UkmConsentState expected_state_;
+  ukm::UkmConsentState expected_consent_state_;
+  bool expected_bool_state_ = false;
 };
 
 }  // namespace
 
 TEST(UkmRecorderImplTest, IsSampledIn) {
-  UkmRecorderImpl impl;
+  TestUkmRecorderImpl impl;
 
   for (int i = 0; i < 100; ++i) {
     // These are constant regardless of the seed, source, and event.
@@ -418,11 +444,19 @@ TEST(UkmRecorderImplTest, ObserverNotifiedOnUkmAllowedStateChanged) {
   ukm::TestAutoSetUkmRecorder test_ukm_recorder;
   TestUkmObserver test_observer(&test_ukm_recorder);
 
+  // Test UkmConsentState overload.
   test_ukm_recorder.OnUkmAllowedStateChanged(ukm::UkmConsentState());
   test_observer.WaitOnUkmAllowedStateChanged(ukm::UkmConsentState());
 
   test_ukm_recorder.OnUkmAllowedStateChanged(ukm::UkmConsentState::All());
   test_observer.WaitOnUkmAllowedStateChanged(ukm::UkmConsentState::All());
+
+  // Test bool overload.
+  test_ukm_recorder.OnUkmAllowedStateChanged(false);
+  test_observer.WaitOnUkmAllowedStateChanged(false);
+
+  test_ukm_recorder.OnUkmAllowedStateChanged(true);
+  test_observer.WaitOnUkmAllowedStateChanged(true);
 }
 
 // Tests that adding and removing observers work as expected.
@@ -471,7 +505,7 @@ TEST(UkmRecorderImplTest, AddRemoveObserver) {
 }
 
 TEST(UkmRecorderImplTest, VerifyShouldDropEntry) {
-  UkmRecorderImpl impl;
+  TestUkmRecorderImpl impl;
 
   // Enable Recording, if recording was disabled everything
   // would be dropped.
@@ -509,7 +543,7 @@ TEST(UkmRecorderImplTest, VerifyShouldDropEntry) {
 }
 
 TEST(UkmRecorderImplTest, WebDXFeaturesConsent) {
-  UkmRecorderImpl impl;
+  TestUkmRecorderImpl impl;
 
   // Enable recording and set no sampling (1-in-1).
   impl.EnableRecording();
@@ -570,7 +604,7 @@ TEST(UkmRecorderImplTest, WebDXFeaturesConsent) {
 }
 
 TEST(UkmRecorderImplTest, WebDXFeaturesSampling) {
-  UkmRecorderImpl impl;
+  TestUkmRecorderImpl impl;
 
   // Enable recording, consent to MSBB, and set 1-in-2 sampling.
   impl.EnableRecording();
@@ -625,7 +659,7 @@ TEST(UkmRecorderImplTest, WebDXFeaturesSampling) {
 
 TEST(UkmRecorderImplTest, GetDocumentToNavigationUrlsMap) {
   base::test::TaskEnvironment task_environment;
-  UkmRecorderImpl impl;
+  TestUkmRecorderImpl impl;
   impl.EnableRecording();
   impl.UpdateRecording({MSBB});
   impl.SetSamplingForTesting(1);  // Sample everything in.
@@ -684,7 +718,7 @@ TEST(UkmRecorderImplTest, GetDocumentToNavigationUrlsMap) {
 TEST(UkmRecorderImplTest,
      GetDocumentToNavigationUrlsMap_MissingSubframeSource) {
   base::test::TaskEnvironment task_environment;
-  UkmRecorderImpl impl;
+  TestUkmRecorderImpl impl;
   impl.EnableRecording();
   impl.UpdateRecording({MSBB});
   impl.SetSamplingForTesting(1);  // Sample everything in.
@@ -743,7 +777,7 @@ TEST(UkmRecorderImplTest,
 
 TEST(UkmRecorderImplTest, GetDocumentToNavigationUrlsMap_Redirect) {
   base::test::TaskEnvironment task_environment;
-  UkmRecorderImpl impl;
+  TestUkmRecorderImpl impl;
   impl.EnableRecording();
   impl.UpdateRecording({MSBB});
   impl.SetSamplingForTesting(1);  // Sample everything in.
@@ -806,8 +840,49 @@ TEST(UkmRecorderImplTest, GetDocumentToNavigationUrlsMap_Redirect) {
   EXPECT_TRUE(found_subframe_source);
 }
 
+TEST(UkmRecorderImplTest, DocumentCreatedNotSerialized) {
+  base::test::TaskEnvironment task_environment;
+  TestUkmRecorderImpl impl;
+  impl.EnableRecording();
+  impl.UpdateRecording({MSBB});
+  impl.SetSamplingForTesting(1);  // Sample everything in.
+
+  SourceId subframe_id = ConvertToSourceId(1, SourceIdType::NAVIGATION_ID);
+  SourceId main_frame_navigation_id =
+      ConvertToSourceId(2, SourceIdType::NAVIGATION_ID);
+  GURL main_frame_url("https://example.com");
+
+  // Record the URL for the main frame's navigation ID.
+  impl.UpdateSourceURL(main_frame_navigation_id, main_frame_url);
+
+  // Record a subframe DocumentCreated event.
+  {
+    auto entry = mojom::UkmEntry::New();
+    entry->source_id = subframe_id;
+    entry->event_hash = builders::DocumentCreated::kEntryNameHash;
+    entry->metrics[builders::DocumentCreated::kNavigationSourceIdNameHash] =
+        main_frame_navigation_id;
+    impl.AddEntry(std::move(entry));
+  }
+
+  // Record a PageLoad entry for the subframe.
+  {
+    auto entry = mojom::UkmEntry::New();
+    entry->source_id = subframe_id;
+    entry->event_hash = builders::PageLoad::kEntryNameHash;
+    impl.AddEntry(std::move(entry));
+  }
+
+  // Verify that only PageLoad is in the report, and DocumentCreated is skipped.
+  Report report;
+  impl.StoreRecordingsInReport(&report);
+
+  EXPECT_EQ(1, report.entries_size());
+  EXPECT_EQ(builders::PageLoad::kEntryNameHash, report.entries(0).event_hash());
+}
+
 TEST(UkmRecorderImplTest, StoreDownsamplingParametersInReport) {
-  struct TestUkmRecorder : public UkmRecorderImpl {
+  struct TestUkmRecorder : public TestUkmRecorderImpl {
     TestUkmRecorder() {
       // Stub event names to pass HasUnknownMetrics check.
       decode_map_ = {

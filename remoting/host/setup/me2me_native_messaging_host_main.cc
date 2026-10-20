@@ -14,6 +14,7 @@
 #include "base/files/file.h"
 #include "base/i18n/icu_util.h"
 #include "base/memory/scoped_refptr.h"
+#include "base/memory_coordinator/dummy_memory_consumer_registry.h"
 #include "base/message_loop/message_pump_type.h"
 #include "base/run_loop.h"
 #include "base/strings/string_number_conversions.h"
@@ -69,6 +70,9 @@ using remoting::protocol::PairingRegistry;
 namespace remoting {
 
 int Me2MeNativeMessagingHostMain(int argc, char** argv) {
+  base::ScopedMemoryConsumerRegistry<base::DummyMemoryConsumerRegistry>
+      memory_consumer_registry;
+
   // This object instance is required by Chrome code (such as
   // SingleThreadTaskExecutor).
   base::AtExitManager exit_manager;
@@ -118,7 +122,8 @@ int Me2MeNativeMessagingHostMain(int argc, char** argv) {
   io_thread.StartWithOptions(
       base::Thread::Options(base::MessagePumpType::IO, 0));
 
-  base::SingleThreadTaskExecutor main_task_executor(base::MessagePumpType::UI);
+  base::SingleThreadTaskExecutor main_task_executor(base::MessagePumpType::UI,
+                                                    /*is_main_thread=*/true);
   base::RunLoop run_loop;
 
   scoped_refptr<DaemonController> daemon_controller =

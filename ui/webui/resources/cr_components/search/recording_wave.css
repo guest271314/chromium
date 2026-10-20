@@ -10,15 +10,14 @@
 :host {
   --bar-max-height: 40px;
   --color-recording-wave: #c9d2ff;
-  --recording-wave-top-padding: 10px;
 
-  align-items: flex-start;
+  align-items: center;
 
   /* 100% is relative to height of 'cr-composebox' (or 'cr-searchbox')
    * since 'animated_glow' (the immediate parent) is absolutely positioned.
    * Height of 'cr-composebox' is determined by 'div' with id 'composebox'.
    */
-  block-size: calc(100% - var(--recording-wave-top-padding));
+  block-size: calc(100% - var(--recording-wave-top-padding, 0));
   display: flex;
   inline-size: 100%;
   justify-content: flex-start;
@@ -27,9 +26,15 @@
                               black 20%,
                               black 90%,
                               transparent 100%);
-  overflow: visible;
-  padding-block-start: 10px;
+  /* Do not let tic tacs rapidly change width of this component, as its parent
+   * will resize and affect others in its context. Cut the edge tic tacs
+   * off with this.
+   */
+  overflow-x: clip;
+  overflow-y: visible;
+  padding-block-start: var(--recording-wave-top-padding, 0);
   position: relative;
+  scrollbar-width: none;
 }
 
 .wave-wrapper {
@@ -60,7 +65,8 @@
 }
 
 .bar-pill {
-  background-color: var(--color-recording-wave);
+  background-color: var(--javascript-bar-color,
+      var(--color-recording-wave));
   border-radius: calc(var(--bar-width) / 2);
   flex-shrink: 0;
   inline-size: var(--bar-width, 12px);
@@ -98,8 +104,15 @@
   position: absolute;
 }
 
-@media (prefers-color-scheme: dark) {
-  :host {
-    --color-recording-wave: #37466d;
+@media (forced-colors: active) {
+  .bar-pill {
+    background-color: CanvasText;
+  }
+
+  /* Let the original container remain transparent,
+   * and color ::before instead.
+   */
+  .bar-pill.is-unspawned::before {
+    background-color: CanvasText;
   }
 }

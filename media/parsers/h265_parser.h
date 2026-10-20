@@ -23,7 +23,7 @@
 #include "media/parsers/h264_bit_reader.h"
 #include "media/parsers/h264_parser.h"
 #include "media/parsers/h265_nalu_parser.h"
-#include "third_party/skia/include/private/SkHdrMetadata.h"
+#include "media/parsers/h26x_parser.h"
 
 namespace media {
 
@@ -39,6 +39,10 @@ enum {
 
 struct MEDIA_EXPORT H265ProfileTierLevel {
   H265ProfileTierLevel();
+  H265ProfileTierLevel(const H265ProfileTierLevel&);
+  H265ProfileTierLevel& operator=(const H265ProfileTierLevel&);
+  H265ProfileTierLevel(H265ProfileTierLevel&&) noexcept;
+  H265ProfileTierLevel& operator=(H265ProfileTierLevel&&) noexcept;
   bool operator==(const H265ProfileTierLevel&) const = default;
 
   enum H265ProfileIdc {
@@ -63,7 +67,16 @@ struct MEDIA_EXPORT H265ProfileTierLevel {
   bool general_interlaced_source_flag = false;
   bool general_non_packed_constraint_flag = false;
   bool general_frame_only_constraint_flag = false;
+  bool general_max_12bit_constraint_flag = false;
+  bool general_max_10bit_constraint_flag = false;
+  bool general_max_8bit_constraint_flag = false;
+  bool general_max_422chroma_constraint_flag = false;
+  bool general_max_420chroma_constraint_flag = false;
+  bool general_max_monochrome_constraint_flag = false;
+  bool general_intra_constraint_flag = false;
   bool general_one_picture_only_constraint_flag = false;
+  bool general_lower_bit_rate_constraint_flag = false;
+  bool general_max_14bit_constraint_flag = false;
 
   // From Table A.8 - General tier and level limits.
   int GetMaxLumaPs() const;
@@ -132,7 +145,10 @@ struct MEDIA_EXPORT H265StRefPicSet {
 
 struct MEDIA_EXPORT H265VUIParameters {
   H265VUIParameters();
+  H265VUIParameters(const H265VUIParameters&);
+  H265VUIParameters& operator=(const H265VUIParameters&);
   H265VUIParameters(H265VUIParameters&&) noexcept;
+  H265VUIParameters& operator=(H265VUIParameters&&) noexcept;
   bool operator==(const H265VUIParameters&) const = default;
 
   // Syntax elements.
@@ -180,7 +196,10 @@ struct MEDIA_EXPORT H265VPS {
 
 struct MEDIA_EXPORT H265SPS {
   H265SPS();
+  H265SPS(const H265SPS&);
+  H265SPS& operator=(const H265SPS&);
   H265SPS(H265SPS&&) noexcept;
+  H265SPS& operator=(H265SPS&&) noexcept;
   bool operator==(const H265SPS&) const = default;
 
   // Syntax elements.
@@ -465,33 +484,11 @@ struct MEDIA_EXPORT H265SEIAlphaChannelInfo {
   bool alpha_channel_clip_type_flag = false;
 };
 
-struct MEDIA_EXPORT H265SEIContentLightLevelInfo {
-  uint16_t max_content_light_level;
-  uint16_t max_picture_average_light_level;
-
-  skhdr::ContentLightLevelInformation ToSkHdr() const;
-};
-
-struct MEDIA_EXPORT H265SEIMasteringDisplayInfo {
-  enum {
-    kNumDisplayPrimaries = 3,
-    kDisplayPrimaryComponents = 2,
-  };
-
-  std::array<std::array<uint16_t, kDisplayPrimaryComponents>,
-             kNumDisplayPrimaries>
-      display_primaries;
-  std::array<uint16_t, 2> white_points;
-  uint32_t max_luminance;
-  uint32_t min_luminance;
-
-  skhdr::MasteringDisplayColorVolume ToSkHdr() const;
-};
-
 using H265SEIMessage = std::variant<std::monostate,
                                     H265SEIAlphaChannelInfo,
-                                    H265SEIContentLightLevelInfo,
-                                    H265SEIMasteringDisplayInfo>;
+                                    H26xSEIContentLightLevelInfo,
+                                    H26xSEIMasteringDisplayInfo,
+                                    H26xSEIUserDataRegisteredT35>;
 
 struct MEDIA_EXPORT H265SEI {
   H265SEI();

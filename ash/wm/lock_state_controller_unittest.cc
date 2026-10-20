@@ -52,6 +52,7 @@
 #include "ui/aura/window.h"
 #include "ui/aura/window_occlusion_tracker.h"
 #include "ui/aura/window_tree_host.h"
+#include "ui/compositor/layer_with_external_texture.h"
 #include "ui/compositor/test/begin_main_frame_waiter.h"
 #include "ui/display/manager/display_configurator.h"
 #include "ui/display/manager/test/fake_display_snapshot.h"
@@ -141,6 +142,8 @@ class LockStateControllerTest : public PowerButtonTestBase {
     local_state_ = Shell::Get()->local_state();
   }
   void TearDown() override {
+    local_state_ = nullptr;
+    lock_state_test_api_->set_shutdown_controller(nullptr);
     test_shutdown_controller_.reset();
     shutdown_controller_resetter_.reset();
     test_animator_ = nullptr;
@@ -1042,7 +1045,8 @@ class TestLayerCopyAnimator final : public LayerCopyAnimator {
   ~TestLayerCopyAnimator() override = default;
 
   // LayerCopyAnimator:
-  void OnLayerCopied(std::unique_ptr<ui::Layer> new_layer) override {
+  void OnLayerCopied(
+      std::unique_ptr<ui::LayerWithExternalTexture> new_layer) override {
     // Move the callback first because the object may be deleted.
     auto callback = std::move(callback_);
     LayerCopyAnimator::OnLayerCopied(std::move(new_layer));

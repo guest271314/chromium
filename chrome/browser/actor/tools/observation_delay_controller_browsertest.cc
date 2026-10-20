@@ -11,6 +11,7 @@
 #include "base/test/test_future.h"
 #include "base/test/with_feature_override.h"
 #include "base/time/time.h"
+#include "build/buildflag.h"
 #include "chrome/browser/actor/tools/observation_delay_test_util.h"
 #include "chrome/browser/ui/autofill/chrome_autofill_client.h"
 #include "chrome/common/chrome_features.h"
@@ -29,9 +30,11 @@
 #include "content/public/browser/web_contents.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
+#include "pdf/buildflags.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/abseil-cpp/absl/strings/str_format.h"
+#include "ui/base/window_open_disposition.h"
 #include "url/gurl.h"
 
 namespace actor {
@@ -51,12 +54,14 @@ using State = ::actor::ObservationDelayController::State;
 class ObservationDelayControllerTest : public ObservationDelayTest {
  public:
   ObservationDelayControllerTest() {
-    scoped_feature_list_.InitAndEnableFeatureWithParameters(
-        features::kGlicActor,
-        {// Effectively disable the timeout to prevent flakes.
-         {features::kGlicActorPageStabilityTimeout.name, "30000ms"},
-         // Use small LCP delay.
-         {features::kActorObservationDelayLcp.name, "100ms"}});
+    scoped_feature_list_.InitWithFeaturesAndParameters(
+        {{kActorPageStability,
+          {// Effectively disable the timeout to prevent flakes.
+           {kActorPageStabilityTimeout.name, "30000ms"}}},
+         {kActorObservationDelay,
+          {// Use small LCP delay.
+           {kActorObservationDelayLcp.name, "100ms"}}}},
+        {});
   }
   ~ObservationDelayControllerTest() override = default;
 
@@ -269,18 +274,49 @@ IN_PROC_BROWSER_TEST_F(ObservationDelayControllerTest,
   EXPECT_TRUE(DoesReachSteadyState(controller, State::kWaitForPageStability));
 }
 
+IN_PROC_BROWSER_TEST_F(ObservationDelayControllerTest, PdfFlow) {
+  const GURL pdf_url = embedded_test_server()->GetURL("/pdf/test.pdf");
+  ASSERT_TRUE(content::NavigateToURL(web_contents(), pdf_url));
+
+  TestObservationDelayController controller(*main_frame(), actor::TaskId(),
+                                            journal(), PageStabilityConfig());
+
+  TestFuture<ObservationDelayController::Result> result;
+  controller.Wait(*active_tab(), result.GetCallback());
+
+#if BUILDFLAG(ENABLE_PDF)
+  // PDF should transition through WaitForPdfLoadCompletion if enabled.
+  ASSERT_TRUE(controller.WaitForState(State::kWaitForPdfLoadCompletion));
+#endif
+
+  ASSERT_TRUE(controller.WaitForState(State::kWaitForVisualStateUpdate));
+  ASSERT_TRUE(controller.WaitForState(State::kMaybeDelayForLcp));
+
+  // On non-PDF platforms, we expect to enter kDelayForLcp.
+#if !BUILDFLAG(ENABLE_PDF)
+  ASSERT_TRUE(controller.WaitForState(State::kDelayForLcp));
+#endif
+
+  ASSERT_TRUE(controller.WaitForState(State::kDone));
+
+  ASSERT_TRUE(result.Wait());
+  ASSERT_EQ(result.Get(), ObservationDelayController::Result::kOk);
+}
+
 class ObservationDelayControllerLcpTest : public ObservationDelayTest {
  public:
   static constexpr int kLcpDelayInMs = 3000;
   ObservationDelayControllerLcpTest() {
     std::string lcp_delay = absl::StrFormat("%dms", kLcpDelayInMs);
-    scoped_feature_list_.InitAndEnableFeatureWithParameters(
-        features::kGlicActor,
-        {// Effectively disable the timeout to prevent flakes.
-         {features::kGlicActorPageStabilityTimeout.name, "30000ms"},
-         // Do not use min wait
-         {features::kGlicActorPageStabilityMinWait.name, "0ms"},
-         {features::kActorObservationDelayLcp.name, lcp_delay}});
+    scoped_feature_list_.InitWithFeaturesAndParameters(
+        {{kActorPageStability,
+          {// Effectively disable the timeout to prevent flakes.
+           {kActorPageStabilityTimeout.name, "30000ms"},
+           // Do not use min wait
+           {kActorPageStabilityMinWait.name, "0ms"}}},
+         {kActorObservationDelay,
+          {{kActorObservationDelayLcp.name, lcp_delay}}}},
+        {});
   }
   ~ObservationDelayControllerLcpTest() override = default;
 
@@ -368,7 +404,7 @@ IN_PROC_BROWSER_TEST_P(ObservationDelayControllerExcludeAdRequestsTest,
   ASSERT_TRUE(iframe_rfh);
 
   // Mark the iframe as an ad frame.
-  iframe_rfh->UpdateIsAdFrame(/*is_ad_frame=*/true);
+  iframe_rfh->UpdateToAdFrame();
 
   const GURL iframe_url = embedded_test_server()->GetURL("/actor/simple.html");
   TestNavigationManager iframe_manager(web_contents(), iframe_url);
@@ -450,17 +486,18 @@ class ObservationDelayControllerAutofillTest
     std::string lcp_delay = absl::StrFormat("%dms", lcp_delay_in_ms);
     feature_list_.InitWithFeaturesAndParameters(
         {{autofill::features::kAutofillDelayApcForPredictions, {}},
-         {features::kGlicActor,
+         {kActorPageStability,
           {// Effectively disable stability timeout to prevent flakes.
-           {features::kGlicActorPageStabilityTimeout.name, "30000ms"},
+           {kActorPageStabilityTimeout.name, "30000ms"},
            // Do not use min wait for stability so that it happens immediately.
-           {features::kGlicActorPageStabilityMinWait.name, "0ms"},
-           // wait for LCP quickly so that it happens immediately.
-           {features::kActorObservationDelayLcp.name, lcp_delay},
-           {features::kActorObservationDelayAutofillPredictionsTimeout.name,
+           {kActorPageStabilityMinWait.name, "0ms"}}},
+         {kActorObservationDelay,
+          {// wait for LCP quickly so that it happens immediately.
+           {kActorObservationDelayLcp.name, lcp_delay},
+           {kActorObservationDelayAutofillPredictionsTimeout.name,
             autofill_parsing_timeout},
            // Timeout the overall process after 15 seconds.
-           {features::kActorObservationDelayTimeout.name, "15000ms"}}}},
+           {kActorObservationDelayTimeout.name, "15000ms"}}}},
         {});
   }
 

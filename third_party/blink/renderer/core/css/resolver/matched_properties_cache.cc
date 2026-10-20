@@ -32,21 +32,30 @@
 
 #include <algorithm>
 #include <array>
+#include <ranges>
 #include <utility>
 
-#include "base/types/zip.h"
+#include "base/metrics/histogram_functions.h"
+#include "base/rand_util.h"
 #include "third_party/blink/renderer/core/css/css_property_value_set.h"
 #include "third_party/blink/renderer/core/css/properties/css_property_ref.h"
 #include "third_party/blink/renderer/core/css/resolver/style_resolver_state.h"
 #include "third_party/blink/renderer/core/dom/shadow_root.h"
 #include "third_party/blink/renderer/core/style/computed_style.h"
 #include "third_party/blink/renderer/platform/heap/visitor.h"
-#include "third_party/blink/renderer/platform/wtf/text/string_hasher.h"
+#include "third_party/blink/renderer/platform/wtf/hash_functions_memory.h"
 
 namespace blink {
 
-static unsigned ComputeMatchedPropertiesHash(const MatchResult& result,
-                                             unsigned additional_hash) {
+namespace {
+
+// Subsampling rate for recording MPC collision metrics (1%).
+constexpr double kCollisionSamplingRate = 0.01;
+
+}  // namespace
+
+static uint32_t ComputeMatchedPropertiesHash(const MatchResult& result,
+                                             uint32_t additional_hash) {
   DCHECK(result.IsCacheable());
   const MatchedPropertiesHashVector& hashes = result.GetMatchedPropertiesHash();
   DCHECK(!std::any_of(hashes.begin(), hashes.end(),
@@ -55,16 +64,8 @@ static unsigned ComputeMatchedPropertiesHash(const MatchResult& result,
                                HashTraits<unsigned>::DeletedValue();
                       }))
       << "This should have been checked in AddMatchedProperties()";
-  unsigned hash = StringHasher::HashMemory(base::as_byte_span(hashes));
-  hash = HashInts(hash, additional_hash);
-
-  // See CSSPropertyValueSet::ComputeHash() for asserts that this is safe.
-  if (hash == HashTraits<unsigned>::EmptyValue() ||
-      hash == HashTraits<unsigned>::DeletedValue()) {
-    hash ^= 0x80000000;
-  }
-
-  return hash;
+  uint32_t hash = HashMemory32(base::as_byte_span(hashes));
+  return EnsureValidHash(HashInts(hash, additional_hash));
 }
 
 CachedMatchedProperties::CachedMatchedProperties(
@@ -174,9 +175,17 @@ const CachedMatchedProperties::Entry* MatchedPropertiesCache::Find(
         continue;
       }
     } else {
-      if (!style_resolver_state.ParentStyle()
+      if (style_resolver_state.ParentStyle() != entry.parent_computed_style &&
+          !style_resolver_state.ParentStyle()
                ->InheritedEqualIncludingInheritedVariables(
                    *entry.parent_computed_style)) {
+        if (base::ShouldRecordSubsampledMetric(kCollisionSamplingRate)) {
+          base::UmaHistogramSparse(
+              "Blink.Style.MatchedPropertiesCache.InheritedCollisionReason",
+              static_cast<int>(style_resolver_state.ParentStyle()
+                                   ->FirstDifferingInheritedProperty(
+                                       *entry.parent_computed_style)));
+        }
         continue;
       }
       if (entry.HasRunStyleAdjuster() &&
@@ -197,6 +206,13 @@ const CachedMatchedProperties::Entry* MatchedPropertiesCache::Find(
           style_resolver_state.ParentStyle() != entry.parent_computed_style &&
           !style_resolver_state.ParentStyle()->NonInheritedEqual(
               *entry.parent_computed_style)) {
+        if (base::ShouldRecordSubsampledMetric(kCollisionSamplingRate)) {
+          base::UmaHistogramSparse(
+              "Blink.Style.MatchedPropertiesCache.NonInheritedCollisionReason",
+              static_cast<int>(style_resolver_state.ParentStyle()
+                                   ->FirstDifferingNonInheritedProperty(
+                                       *entry.parent_computed_style)));
+        }
         continue;
       }
     }
@@ -211,14 +227,12 @@ const CachedMatchedProperties::Entry* MatchedPropertiesCache::Find(
       // UserModify() is the initial value.
       continue;
     }
-    if ((entry.parent_computed_style->IsEnsuredInDisplayNone() ||
-         entry.computed_style->IsEnsuredOutsideFlatTree()) &&
-        !style_resolver_state.ParentStyle()->IsEnsuredInDisplayNone() &&
-        !style_resolver_state.IsOutsideFlatTree()) {
-      // If we cached a ComputedStyle in a display:none subtree, or outside the
-      // flat tree,  we would not have triggered fetches for external resources
-      // and have StylePendingImages in the ComputedStyle. Instead of having to
-      // inspect the cached ComputedStyle for such resources, don't use a cached
+    if (entry.parent_computed_style->IsEnsuredInDisplayNone() &&
+        !style_resolver_state.ParentStyle()->IsEnsuredInDisplayNone()) {
+      // If we cached a ComputedStyle in a display:none subtree, we would not
+      // have triggered fetches for external resources and have
+      // StylePendingImages in the ComputedStyle. Instead of having to inspect
+      // the cached ComputedStyle for such resources, don't use a cached
       // ComputedStyle when it was cached in display:none but is now rendered.
       continue;
     }
@@ -248,7 +262,7 @@ bool CachedMatchedProperties::CorrespondsTo(
   }
 
   for (const auto [lookup_it, cached_it] :
-       base::zip(lookup_properties, matched_properties)) {
+       std::views::zip(lookup_properties, matched_properties)) {
     CSSPropertyValueSet* cached_properties = cached_it.properties.Get();
     DCHECK(!lookup_it.properties->ModifiedSinceHashing())
         << "This should have been checked in AddMatchedProperties()";
@@ -280,7 +294,7 @@ void CachedMatchedProperties::RefreshKey(
     const MatchedPropertiesVector& lookup_properties) {
   DCHECK(CorrespondsTo(lookup_properties));
   for (auto [lookup_it, cached_it] :
-       base::zip(lookup_properties, matched_properties)) {
+       std::views::zip(lookup_properties, matched_properties)) {
     cached_it.properties = lookup_it.properties;
     cached_it.mixin_parameter_bindings = lookup_it.mixin_parameter_bindings;
   }
@@ -306,6 +320,14 @@ void MatchedPropertiesCache::Add(
                                      clock_++);
   }
   ++cache_entries_;
+
+  // Record the size of the bucket in which the item landed, subsampled to 1% of
+  // writes.
+  if (base::ShouldRecordSubsampledMetric(0.01)) {
+    base::UmaHistogramCounts10000(
+        "Blink.Style.MatchedPropertiesCache.BucketSize",
+        static_cast<int>(cache_item->entries.size()));
+  }
 }
 
 void MatchedPropertiesCache::Clear() {
@@ -351,10 +373,12 @@ bool MatchedPropertiesCache::IsStyleCacheable(
     // element's position in the DOM.
     return false;
   }
-  // Functional media queries cause the style to depend directly on
-  // the current MediaValues, without going through RuleSet invalidation.
-  // These values are not captured by the MatchResult.
-  if (builder.AffectedByFunctionalMedia()) {
+  // Functional media queries cause the style to depend directly on the current
+  // MediaValues, without going through RuleSet invalidation. These values are
+  // not captured by the MatchResult. Similarly, evaluation of if() functions
+  // may be affected by navigation queries.
+  if (builder.AffectedByFunctionalMedia() ||
+      builder.AffectedByFunctionalNavigation()) {
     return false;
   }
   if (builder.HasElementDependentRandomFunctions()) {

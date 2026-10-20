@@ -53,7 +53,10 @@ std::unique_ptr<KeyedService> BuildPageContentAnnotationsService(
 
   return std::make_unique<
       page_content_annotations::PageContentAnnotationsService>(
-      GetApplicationContext()->GetApplicationLocaleStorage()->Get(),
+      std::string(GetApplicationContext()
+                      ->GetApplicationLocaleStorage()
+                      ->GetTag()
+                      .tag_string()),
       GetCurrentCountryCode(GetApplicationContext()->GetVariationsService()),
       optimization_guide_keyed_service, history_service,
       ios::TemplateURLServiceFactory::GetForProfile(profile),
@@ -67,34 +70,17 @@ std::unique_ptr<KeyedService> BuildPageContentAnnotationsService(
 
 }  // namespace
 
-// static
-page_content_annotations::PageContentAnnotationsService*
-PageContentAnnotationsServiceFactory::GetForProfile(ProfileIOS* profile) {
-  return GetInstance()
-      ->GetServiceForProfileAs<
-          page_content_annotations::PageContentAnnotationsService>(
-          profile, /*create=*/true);
-}
-
-// static
-PageContentAnnotationsServiceFactory*
-PageContentAnnotationsServiceFactory::GetInstance() {
-  static base::NoDestructor<PageContentAnnotationsServiceFactory> instance;
-  return instance.get();
-}
-
-PageContentAnnotationsServiceFactory::PageContentAnnotationsServiceFactory()
-    : ProfileKeyedServiceFactoryIOS("PageContentAnnotationsService",
-                                    ServiceCreation::kCreateWithProfile,
-                                    TestingCreation::kNoServiceForTests) {
+PageContentAnnotationsServiceFactory::PageContentAnnotationsServiceFactory(
+    PassKey key)
+    : TypedProfileKeyedServiceFactoryIOS(std::move(key),
+                                         "PageContentAnnotationsService",
+                                         ServiceCreation::kCreateWithProfile,
+                                         TestingCreation::kNoServiceForTests) {
   DependsOn(OptimizationGuideServiceFactory::GetInstance());
   DependsOn(ios::HistoryServiceFactory::GetInstance());
   DependsOn(ios::TemplateURLServiceFactory::GetInstance());
   DependsOn(ios::ZeroSuggestCacheServiceFactory::GetInstance());
 }
-
-PageContentAnnotationsServiceFactory::~PageContentAnnotationsServiceFactory() =
-    default;
 
 // static
 PageContentAnnotationsServiceFactory::TestingFactory

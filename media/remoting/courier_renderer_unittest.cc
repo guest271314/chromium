@@ -26,6 +26,7 @@
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/openscreen/src/cast/streaming/public/rpc_messenger.h"
+#include "ui/gfx/geometry/size.h"
 
 using openscreen::cast::RpcMessenger;
 using testing::_;
@@ -393,6 +394,7 @@ class CourierRendererTest : public testing::Test {
 
   void ValidateCurrentTime(base::TimeDelta current,
                            base::TimeDelta current_max) const {
+    base::AutoLock auto_lock(renderer_->time_lock_);
     ASSERT_EQ(renderer_->current_media_time_, current);
     ASSERT_EQ(renderer_->current_max_time_, current_max);
   }

@@ -5,14 +5,10 @@
 #include "chrome/browser/ui/views/autofill/payments/filled_card_information_bubble_views.h"
 
 #include "base/functional/bind.h"
-#include "base/functional/callback.h"
 #include "base/strings/strcat.h"
 #include "chrome/browser/ui/views/autofill/payments/payments_view_util.h"
 #include "chrome/browser/ui/views/chrome_layout_provider.h"
-#include "components/autofill/core/browser/data_model/payments/credit_card.h"
 #include "components/autofill/core/browser/ui/payments/bubble_show_options.h"
-#include "components/strings/grit/components_strings.h"
-#include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/mojom/dialog_button.mojom.h"
 #include "ui/color/color_provider.h"
@@ -61,7 +57,7 @@ FilledCardInformationBubbleViews::FilledCardInformationBubbleViews(
     FilledCardInformationBubbleController* controller)
     : AutofillLocationBarBubble(anchor_view, web_contents),
       controller_(controller) {
-  DCHECK(controller_);
+  CHECK(controller_, base::NotFatalUntil::M162);
   SetShowIcon(true);
   SetShowCloseButton(true);
   SetButtons(static_cast<int>(ui::mojom::DialogButton::kNone));
@@ -162,10 +158,12 @@ void FilledCardInformationBubbleViews::OnWidgetDestroying(
   if (!widget->IsClosed()) {
     return;
   }
-  DCHECK_NE(widget->closed_reason(),
-            views::Widget::ClosedReason::kAcceptButtonClicked);
-  DCHECK_NE(widget->closed_reason(),
-            views::Widget::ClosedReason::kCancelButtonClicked);
+  CHECK_NE(widget->closed_reason(),
+           views::Widget::ClosedReason::kAcceptButtonClicked,
+           base::NotFatalUntil::M162);
+  CHECK_NE(widget->closed_reason(),
+           views::Widget::ClosedReason::kCancelButtonClicked,
+           base::NotFatalUntil::M162);
 }
 
 std::unique_ptr<views::MdTextButton>

@@ -14,9 +14,9 @@
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/scoped_observation.h"
+#include "chrome/browser/ui/immersive/immersive_mode_controller.h"
 #include "chrome/browser/ui/lens/lens_overlay_blur_layer_delegate.h"
 #include "chrome/browser/ui/side_panel/side_panel_entry.h"
-#include "chrome/browser/ui/views/frame/immersive_mode_controller.h"
 #include "components/prefs/pref_change_registrar.h"
 #include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/render_process_host_observer.h"
@@ -126,9 +126,6 @@ class OverlayBaseController : public content::WebContentsDelegate,
   // this overlay controller.
   tabs::TabInterface* GetTabInterface();
 
-  // Called when the associated tab enters the foreground.
-  void TabForegrounded(tabs::TabInterface* tab);
-
   // Called when the associated tab will enter the background.
   void TabWillEnterBackground(tabs::TabInterface* tab);
 
@@ -162,6 +159,7 @@ class OverlayBaseController : public content::WebContentsDelegate,
   void RenderProcessExited(
       content::RenderProcessHost* host,
       const content::ChildProcessTerminationInfo& info) override;
+  void RenderProcessHostDestroyed(content::RenderProcessHost* host) override;
 
   // Called when the UI needs to create the view to show in the overlay.
   raw_ptr<views::View> CreateViewForOverlay();
@@ -180,12 +178,6 @@ class OverlayBaseController : public content::WebContentsDelegate,
   // Sets the opacity of the overlay web view. No-op if the web view does not
   // exist.
   void SetOverlayWebViewOpacity(float opacity);
-
-  // Detaches the overlay views and takes ownership to preserve state.
-  void PreserveOverlayViews();
-
-  // Returns the host view that the overlay should be attached to. Can be null.
-  views::View* GetHostView() const;
 
  protected:
   // Whether the side panel is showing.
@@ -287,6 +279,9 @@ class OverlayBaseController : public content::WebContentsDelegate,
   // not exist.
   virtual void ShowPreselectionBubble();
 
+  // Called when the associated tab enters the foreground.
+  virtual void TabForegrounded(tabs::TabInterface* tab);
+
   // This is callwed when the webUI acknowledges the intent to reshow the
   // overlay. Since it already is showing an old screenshot the opacity is set
   // to 0 of the layer when the screenshot is first available to the webUI.
@@ -341,8 +336,10 @@ class OverlayBaseController : public content::WebContentsDelegate,
   void ShowOverlay();
 
   // Hides the overlay view and restores input to the tab contents web view.
-  // This does not change any overlay state.
-  void HideOverlay();
+  // This does not change any overlay state. `entering_background` is true when
+  // the overlay is only being hidden because its tab is entering the
+  // background, in which case it is re-shown when the tab is foregrounded.
+  virtual void HideOverlay(bool entering_background);
 
   // Hides the overlay, but also sets the state to kHidden.
   void HideOverlayAndSetHiddenState();
@@ -362,6 +359,15 @@ class OverlayBaseController : public content::WebContentsDelegate,
 
   // Close the preselection bubble.
   void ClosePreselectionBubbleImpl();
+
+  // Returns the web view hosting the overlay WebUI if it exists.
+  views::WebView* GetOverlayWebView() const;
+
+  // Returns the host view that the overlay should be attached to. Can be null.
+  views::View* GetHostView() const;
+
+  // Detaches the overlay views and takes ownership to preserve state.
+  void PreserveOverlayViews();
 
   // content::WebContentsObserver:
   void PrimaryMainFrameRenderProcessGone(
@@ -408,6 +414,11 @@ class OverlayBaseController : public content::WebContentsDelegate,
   base::ScopedObservation<ImmersiveModeController,
                           ImmersiveModeController::Observer>
       immersive_mode_observer_{this};
+
+  // Observer to get notifications when the overlay's renderer process exits.
+  base::ScopedObservation<content::RenderProcessHost,
+                          content::RenderProcessHostObserver>
+      render_process_host_observation_{this};
 
   // Layer delegate that handles blurring the background behind the WebUI.
   std::unique_ptr<lens::LensOverlayBlurLayerDelegate>

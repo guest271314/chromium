@@ -10,58 +10,73 @@
 
 #include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
-#include "base/memory/weak_ptr.h"
-#include "ui/views/widget/widget.h"
+#include "build/build_config.h"
+#include "chrome/browser/glic/experimental_opt_in/glic_experimental_opt_in_ui_host.h"
 
 class Profile;
+class GURL;
+
+namespace base {
+class TickClock;
+}
 
 namespace content {
 class WebContents;
 }
 
+#if !BUILDFLAG(IS_ANDROID)
 namespace views {
 class Widget;
 }
+#endif
 
 namespace glic {
 
+#if !BUILDFLAG(IS_ANDROID)
 class GlicExperimentalOptInDialogView;
+#endif
 
 // Controller for the experimental triggering opt-in flow.
-class GlicExperimentalOptInController {
+class GlicExperimentalOptInController
+    : public GlicExperimentalOptInUIHost::Delegate {
  public:
   explicit GlicExperimentalOptInController(Profile* profile);
   GlicExperimentalOptInController(const GlicExperimentalOptInController&) =
       delete;
   GlicExperimentalOptInController& operator=(
       const GlicExperimentalOptInController&) = delete;
-  ~GlicExperimentalOptInController();
+  ~GlicExperimentalOptInController() override;
 
-  // Shows the opt-in dialog. Returns the widget, or null if the dialog could
-  // not be shown. `callback` is fired on dialog close, with true if the opt in
-  // was accepted, and false otherwise. If the dialog could not be shown,
-  // callback is fired immediately with true if the dialog was not needed
+  // Shows the opt-in UI. `callback` is fired on UI close, with true if the opt
+  // in was accepted, and false otherwise. If the UI could not be shown,
+  // callback is fired immediately with true if the UI was not needed
   // because the user is already opted in, and false otherwise.
-  // If a dialog is already showing, the existing dialog is returned, and
-  // `callback` will fire on closing of the existing dialog.
-  views::Widget* ShowDialog(content::WebContents* web_contents,
-                            base::OnceCallback<void(bool)> callback);
+  // If the UI is already showing, `callback` will fire on closing of the
+  // existing UI.
+  void ShowDialog(content::WebContents* web_contents,
+                  base::OnceCallback<void(bool)> callback);
   void CloseDialog(bool accepted);
+  void OpenLinkInNewTab(const GURL& url);
 
-  GlicExperimentalOptInDialogView* GetDialogViewForTesting() {
-    return dialog_view_.get();
-  }
+  // Gets, or creates, a web contents suitable for showing the experimental
+  // opt-in UI over. Callers can then use the returned web contents with
+  // ShowDialog().
+  content::WebContents* GetOrCreateSuitableWebContents();
+
+#if !BUILDFLAG(IS_ANDROID)
+  views::Widget* GetDialogWidgetForTesting();
+  GlicExperimentalOptInDialogView* GetDialogViewForTesting();
+#endif
+
+  void SetTickClockForTesting(const base::TickClock* clock);
+
+  // GlicExperimentalOptInUIHost::Delegate:
+  void OnUIClosed(bool accepted) override;
 
  private:
-  void CloseWidget(views::Widget::ClosedReason reason);
-
   raw_ptr<Profile> profile_;
-  std::unique_ptr<GlicExperimentalOptInDialogView> dialog_view_;
-  std::unique_ptr<views::Widget> dialog_widget_;
-
+  std::unique_ptr<GlicExperimentalOptInUIHost> host_;
   std::vector<base::OnceCallback<void(bool)>> callbacks_;
-
-  base::WeakPtrFactory<GlicExperimentalOptInController> weak_ptr_factory_{this};
 };
 
 }  // namespace glic

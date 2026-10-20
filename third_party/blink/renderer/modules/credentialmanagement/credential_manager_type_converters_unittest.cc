@@ -13,7 +13,7 @@
 #include "third_party/blink/public/common/webid/login_status_account.h"
 #include "third_party/blink/public/common/webid/login_status_options.h"
 #include "third_party/blink/public/mojom/webauthn/authenticator.mojom-blink.h"
-#include "third_party/blink/public/mojom/webid/federated_auth_request.mojom-blink.h"
+#include "third_party/blink/public/mojom/webid/federated_request.mojom-blink.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_union_arraybuffer_arraybufferview.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_authentication_extensions_client_inputs.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_authentication_extensions_client_outputs.h"
@@ -25,8 +25,6 @@
 #include "third_party/blink/renderer/bindings/modules/v8/v8_authentication_extensions_prf_inputs.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_authentication_extensions_prf_outputs.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_authentication_extensions_prf_values.h"
-#include "third_party/blink/renderer/bindings/modules/v8/v8_authentication_extensions_supplemental_pub_keys_inputs.h"
-#include "third_party/blink/renderer/bindings/modules/v8/v8_authentication_extensions_supplemental_pub_keys_outputs.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_identity_credential_request_options_context.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_identity_provider_account.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_identity_provider_request_options.h"
@@ -69,6 +67,24 @@ static Vector<uint8_t> VectorOf(base::span<const uint8_t> data) {
   return Vector<uint8_t>(data);
 }
 
+struct HintTestCase {
+  Vector<blink::String> hints;
+  Vector<blink::mojom::blink::Hint> expected;
+};
+
+static Vector<HintTestCase> GetHintTestCases() {
+  using blink::mojom::blink::Hint;
+  return {
+      {{}, {}},
+      {{"", "unknown", "HYBRID", "Security-Key"}, {}},
+      {{"client-device", "security-key", "hybrid"},
+       {Hint::CLIENT_DEVICE, Hint::SECURITY_KEY, Hint::HYBRID}},
+      {{"unknown", "hybrid", "hybrid", "security-key", "client-device",
+        "security-key", "unknown", "client-device", "hybrid"},
+       {Hint::HYBRID, Hint::SECURITY_KEY, Hint::CLIENT_DEVICE}},
+  };
+}
+
 TEST(CredentialManagerTypeConvertersTest, RpContextTest) {
   blink::test::TaskEnvironment task_environment;
   EXPECT_EQ(RpContext::kSignIn,
@@ -79,6 +95,46 @@ TEST(CredentialManagerTypeConvertersTest, RpContextTest) {
             ConvertTo<RpContext>(V8Context(V8Context::Enum::kUse)));
   EXPECT_EQ(RpContext::kContinue,
             ConvertTo<RpContext>(V8Context(V8Context::Enum::kContinue)));
+}
+
+TEST(CredentialManagerTypeConvertersTest,
+     PublicKeyCredentialRequestOptionsHints) {
+  for (const auto& test_case : GetHintTestCases()) {
+    SCOPED_TRACE(testing::PrintToString(test_case.hints));
+    auto* options = blink::PublicKeyCredentialRequestOptions::Create();
+    options->setChallenge(ArrayBufferOrView(kSample));
+    options->setHints(test_case.hints);
+
+    auto converted =
+        ConvertTo<blink::mojom::blink::PublicKeyCredentialRequestOptionsPtr>(
+            *options);
+    ASSERT_TRUE(converted);
+    EXPECT_THAT(converted->hints,
+                testing::ElementsAreArray(test_case.expected));
+  }
+}
+
+TEST(CredentialManagerTypeConvertersTest,
+     PublicKeyCredentialCreationOptionsHints) {
+  for (const auto& test_case : GetHintTestCases()) {
+    SCOPED_TRACE(testing::PrintToString(test_case.hints));
+    auto* options = blink::PublicKeyCredentialCreationOptions::Create();
+    auto* rp = blink::PublicKeyCredentialRpEntity::Create();
+    rp->setName("rp-name.test");
+    options->setRp(rp);
+    auto* user = blink::PublicKeyCredentialUserEntity::Create();
+    user->setId(ArrayBufferOrView(kSample));
+    options->setUser(user);
+    options->setChallenge(ArrayBufferOrView(kSample));
+    options->setHints(test_case.hints);
+
+    auto converted =
+        ConvertTo<blink::mojom::blink::PublicKeyCredentialCreationOptionsPtr>(
+            *options);
+    ASSERT_TRUE(converted);
+    EXPECT_THAT(converted->hints,
+                testing::ElementsAreArray(test_case.expected));
+  }
 }
 
 TEST(CredentialManagerTypeConvertersTest,
@@ -207,25 +263,6 @@ TEST(CredentialManagerTypeConvertersTest,
   EXPECT_TRUE(blink_type->hasGetCredBlob());
   EXPECT_THAT(blink_type->getCredBlob(),
               DOMArrayBufferEqualTo(Vector<uint8_t>{1, 2, 3}));
-}
-
-TEST(CredentialManagerTypeConvertersTest,
-     AuthenticationExtensionsClientOutputs_supplementalPubKeys) {
-  auto mojo_type =
-      blink::mojom::blink::AuthenticationExtensionsClientOutputs::New();
-  mojo_type->supplemental_pub_keys =
-      blink::mojom::blink::SupplementalPubKeysResponse::New(
-          /*signatures=*/Vector<Vector<uint8_t>>{{1, 2, 3}, {4, 5, 6}});
-
-  auto* blink_type =
-      ConvertTo<blink::AuthenticationExtensionsClientOutputs*>(mojo_type);
-
-  EXPECT_TRUE(blink_type->hasSupplementalPubKeys());
-  ASSERT_EQ(blink_type->supplementalPubKeys()->signatures().size(), 2u);
-  EXPECT_THAT(blink_type->supplementalPubKeys()->signatures()[0],
-              DOMArrayBufferEqualTo(Vector<uint8_t>{1, 2, 3}));
-  EXPECT_THAT(blink_type->supplementalPubKeys()->signatures()[1],
-              DOMArrayBufferEqualTo(Vector<uint8_t>{4, 5, 6}));
 }
 
 TEST(CredentialManagerTypeConvertersTest,
@@ -419,31 +456,32 @@ TEST(CredentialManagerTypeConvertersTest,
 }
 
 TEST(CredentialManagerTypeConvertersTest,
-     AuthenticationExtensionsClientInputsTest_supplementalPubKeys) {
+     AuthenticationExtensionsClientInputsTest_remoteClientDataJSON) {
   blink::AuthenticationExtensionsClientInputs* blink_type =
       blink::AuthenticationExtensionsClientInputs::Create();
-  blink::AuthenticationExtensionsSupplementalPubKeysInputs*
-      supplemental_pub_keys =
-          blink::AuthenticationExtensionsSupplementalPubKeysInputs::Create();
-
-  const char attestation_format[] = "format";
-  supplemental_pub_keys->setAttestation("indirect");
-  supplemental_pub_keys->setAttestationFormats(
-      Vector({blink::String::FromUtf8(attestation_format)}));
-  supplemental_pub_keys->setScopes(
-      Vector<blink::String>({"device", "provider"}));
-  blink_type->setSupplementalPubKeys(supplemental_pub_keys);
+  const char kTestJson[] =
+      R"({"type":"webauthn.get","challenge":"dGVzdA","origin":"https://example.com","crossOrigin":false})";
+  blink_type->setRemoteClientDataJSON(kTestJson);
 
   blink::mojom::blink::AuthenticationExtensionsClientInputsPtr mojo_type =
       ConvertTo<blink::mojom::blink::AuthenticationExtensionsClientInputsPtr>(
           *blink_type);
 
-  auto expected = blink::mojom::blink::SupplementalPubKeysRequest::New(
-      /*device_scope_requested=*/true,
-      /*provider_scope_requested=*/true,
-      blink::mojom::blink::AttestationConveyancePreference::INDIRECT,
-      Vector<blink::String>({blink::String::FromUtf8(attestation_format)}));
-  ASSERT_EQ(*(mojo_type->supplemental_pub_keys), *expected);
+  ASSERT_EQ(mojo_type->remote_client_data_json, kTestJson);
+}
+
+// When `remoteClientDataJSON` is not set, the Mojo field must be null.
+TEST(CredentialManagerTypeConvertersTest,
+     AuthenticationExtensionsClientInputsTest_remoteClientDataJSONUnset) {
+  blink::AuthenticationExtensionsClientInputs* blink_type =
+      blink::AuthenticationExtensionsClientInputs::Create();
+  // Note: `setRemoteClientDataJSON` not called.
+
+  blink::mojom::blink::AuthenticationExtensionsClientInputsPtr mojo_type =
+      ConvertTo<blink::mojom::blink::AuthenticationExtensionsClientInputsPtr>(
+          *blink_type);
+
+  EXPECT_TRUE(mojo_type->remote_client_data_json.IsNull());
 }
 
 static ::testing::Matcher<const mojo::InlinedStructPtr<

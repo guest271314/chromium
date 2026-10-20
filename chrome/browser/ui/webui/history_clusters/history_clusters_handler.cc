@@ -19,13 +19,15 @@
 #include "base/time/time.h"
 #include "chrome/app/chrome_command_ids.h"
 #include "chrome/browser/history/history_service_factory.h"
+#include "chrome/browser/history/history_utils.h"
+#include "chrome/browser/history/web_history_service_factory.h"
 #include "chrome/browser/history_clusters/history_clusters_metrics_logger.h"
 #include "chrome/browser/history_clusters/history_clusters_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/search_engines/template_url_service_factory.h"
+#include "chrome/browser/sync/device_info_sync_service_factory.h"
 #include "chrome/browser/sync/sync_service_factory.h"
 #include "chrome/browser/ui/browser_actions.h"
-#include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/profiles/profile_view_utils.h"
@@ -48,6 +50,8 @@
 #include "components/search_engines/template_url.h"
 #include "components/search_engines/template_url_service.h"
 #include "components/strings/grit/components_strings.h"
+#include "components/sync_device_info/device_info_sync_service.h"
+#include "components/sync_device_info/device_info_tracker.h"
 #include "components/tabs/public/tab_group.h"
 #include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/render_frame_host.h"
@@ -56,6 +60,7 @@
 #include "ui/base/clipboard/scoped_clipboard_writer.h"
 #include "ui/base/l10n/time_format.h"
 #include "ui/base/mojom/window_open_disposition.mojom.h"
+#include "ui/base/page_transition_types.h"
 #include "ui/base/window_open_disposition.h"
 #include "ui/base/window_open_disposition_utils.h"
 #include "ui/menus/simple_menu_model.h"
@@ -73,11 +78,13 @@ void InvokeAction(actions::ActionId id, actions::ActionItem* scope) {
 // Returns the current browser window, regardless of whether this instance is
 // tab-scoped or window-scoped.
 BrowserWindowInterface* GetBrowserWindowInterface(
-    std::variant<BrowserWindowInterface*, tabs::TabInterface*> interface) {
-  if (std::holds_alternative<BrowserWindowInterface*>(interface)) {
-    return std::get<BrowserWindowInterface*>(interface);
+    std::variant<raw_ptr<BrowserWindowInterface>, raw_ptr<tabs::TabInterface>>
+        interface) {
+  if (std::holds_alternative<raw_ptr<BrowserWindowInterface>>(interface)) {
+    return std::get<raw_ptr<BrowserWindowInterface>>(interface);
   }
-  return std::get<tabs::TabInterface*>(interface)->GetBrowserWindowInterface();
+  return std::get<raw_ptr<tabs::TabInterface>>(interface)
+      ->GetBrowserWindowInterface();
 }
 
 class HistoryClustersSidePanelContextMenu
@@ -85,7 +92,8 @@ class HistoryClustersSidePanelContextMenu
       public ui::SimpleMenuModel::Delegate {
  public:
   HistoryClustersSidePanelContextMenu(
-      std::variant<BrowserWindowInterface*, tabs::TabInterface*> interface,
+      std::variant<raw_ptr<BrowserWindowInterface>, raw_ptr<tabs::TabInterface>>
+          interface,
       GURL url)
       : ui::SimpleMenuModel(this), interface_(interface), url_(std::move(url)) {
     AddItemWithStringId(IDC_CONTENT_CONTEXT_OPENLINKNEWTAB,
@@ -100,7 +108,8 @@ class HistoryClustersSidePanelContextMenu
                         IDS_HISTORY_CLUSTERS_COPY_LINK);
   }
   HistoryClustersSidePanelContextMenu(
-      std::variant<BrowserWindowInterface*, tabs::TabInterface*> interface,
+      std::variant<raw_ptr<BrowserWindowInterface>, raw_ptr<tabs::TabInterface>>
+          interface,
       std::string query)
       : ui::SimpleMenuModel(this), interface_(interface), query_(query) {
     AddItemWithStringId(IDC_CUT, IDS_HISTORY_CLUSTERS_CUT);
@@ -120,9 +129,13 @@ class HistoryClustersSidePanelContextMenu
   void ExecuteCommand(int command_id, int event_flags) override {
     switch (command_id) {
       case IDC_CONTENT_CONTEXT_OPENLINKNEWTAB: {
-        content::OpenURLParams params(url_, content::Referrer(),
-                                      WindowOpenDisposition::NEW_BACKGROUND_TAB,
-                                      ui::PAGE_TRANSITION_AUTO_BOOKMARK, false);
+        if (!CanAddURLToHistory(url_)) {
+          return;
+        }
+        content::OpenURLParams params =
+            content::OpenURLParams::CreateBrowserInitiated(
+                url_, WindowOpenDisposition::NEW_BACKGROUND_TAB,
+                ui::PAGE_TRANSITION_AUTO_BOOKMARK);
         GetBrowserWindowInterface(interface_)
             ->OpenURL(params,
                       /*navigation_handle_callback=*/{});
@@ -130,9 +143,13 @@ class HistoryClustersSidePanelContextMenu
       }
 
       case IDC_CONTENT_CONTEXT_OPENLINKNEWWINDOW: {
-        content::OpenURLParams params(url_, content::Referrer(),
-                                      WindowOpenDisposition::NEW_WINDOW,
-                                      ui::PAGE_TRANSITION_AUTO_BOOKMARK, false);
+        if (!CanAddURLToHistory(url_)) {
+          return;
+        }
+        content::OpenURLParams params =
+            content::OpenURLParams::CreateBrowserInitiated(
+                url_, WindowOpenDisposition::NEW_WINDOW,
+                ui::PAGE_TRANSITION_AUTO_BOOKMARK);
         GetBrowserWindowInterface(interface_)
             ->OpenURL(params,
                       /*navigation_handle_callback=*/{});
@@ -140,9 +157,13 @@ class HistoryClustersSidePanelContextMenu
       }
 
       case IDC_CONTENT_CONTEXT_OPENLINKOFFTHERECORD: {
-        content::OpenURLParams params(url_, content::Referrer(),
-                                      WindowOpenDisposition::OFF_THE_RECORD,
-                                      ui::PAGE_TRANSITION_AUTO_BOOKMARK, false);
+        if (!CanAddURLToHistory(url_)) {
+          return;
+        }
+        content::OpenURLParams params =
+            content::OpenURLParams::CreateBrowserInitiated(
+                url_, WindowOpenDisposition::OFF_THE_RECORD,
+                ui::PAGE_TRANSITION_AUTO_BOOKMARK);
         GetBrowserWindowInterface(interface_)
             ->OpenURL(params,
                       /*navigation_handle_callback=*/{});
@@ -154,19 +175,18 @@ class HistoryClustersSidePanelContextMenu
         break;
       }
       case IDC_CUT:
-        InvokeAction(actions::kActionCut, GetBrowserWindowInterface(interface_)
-                                              ->GetActions()
-                                              ->root_action_item());
+        InvokeAction(actions::kActionCut,
+                     BrowserActions::From(GetBrowserWindowInterface(interface_))
+                         ->root_action_item());
         break;
       case IDC_COPY:
-        InvokeAction(actions::kActionCopy, GetBrowserWindowInterface(interface_)
-                                               ->GetActions()
-                                               ->root_action_item());
+        InvokeAction(actions::kActionCopy,
+                     BrowserActions::From(GetBrowserWindowInterface(interface_))
+                         ->root_action_item());
         break;
       case IDC_PASTE:
         InvokeAction(actions::kActionPaste,
-                     GetBrowserWindowInterface(interface_)
-                         ->GetActions()
+                     BrowserActions::From(GetBrowserWindowInterface(interface_))
                          ->root_action_item());
         break;
       default:
@@ -177,7 +197,8 @@ class HistoryClustersSidePanelContextMenu
  private:
   // Exactly one of `browser_window_interface_` and `tab_interface_` will be
   // non-nullptr.
-  std::variant<BrowserWindowInterface*, tabs::TabInterface*> interface_;
+  std::variant<raw_ptr<BrowserWindowInterface>, raw_ptr<tabs::TabInterface>>
+      interface_;
   std::string query_;
   GURL url_;
 };
@@ -210,24 +231,28 @@ mojom::QueryResultPtr QueryClustersResultToMojom(
 
 HistoryClustersHandler::HistoryClustersHandler(
     mojo::PendingReceiver<mojom::PageHandler> pending_page_handler,
+    mojo::PendingRemote<mojom::Page> pending_page,
     Profile* profile,
     content::WebContents* web_contents,
     BrowserWindowInterface* browser_window_interface)
     : profile_(profile),
       web_contents_(web_contents),
       interface_(browser_window_interface),
+      page_(std::move(pending_page)),
       page_handler_(this, std::move(pending_page_handler)) {
   CommonInit();
 }
 
 HistoryClustersHandler::HistoryClustersHandler(
     mojo::PendingReceiver<mojom::PageHandler> pending_page_handler,
+    mojo::PendingRemote<mojom::Page> pending_page,
     Profile* profile,
     content::WebContents* web_contents,
     tabs::TabInterface* tab_interface)
     : profile_(profile),
       web_contents_(web_contents),
       interface_(tab_interface),
+      page_(std::move(pending_page)),
       page_handler_(this, std::move(pending_page_handler)) {
   CommonInit();
 }
@@ -243,10 +268,16 @@ void HistoryClustersHandler::CommonInit() {
 
   history_service_ = HistoryServiceFactory::GetForProfile(
       profile_, ServiceAccessType::EXPLICIT_ACCESS);
+  history::WebHistoryService* web_history_service =
+      WebHistoryServiceFactory::GetForProfile(profile_);
   syncer::SyncService* sync_service =
       SyncServiceFactory::GetForProfile(profile_);
+  auto* device_info_service =
+      DeviceInfoSyncServiceFactory::GetForProfile(profile_);
   browsing_history_service_ = std::make_unique<history::BrowsingHistoryService>(
-      this, history_service_, sync_service);
+      this, history_service_, web_history_service, sync_service,
+      device_info_service ? device_info_service->GetDeviceInfoTracker()
+                          : nullptr);
 }
 
 HistoryClustersHandler::~HistoryClustersHandler() = default;
@@ -269,6 +300,10 @@ void HistoryClustersHandler::SetQuery(const std::string& query) {
 void HistoryClustersHandler::OpenHistoryUrl(
     const GURL& url,
     ui::mojom::ClickModifiersPtr click_modifiers) {
+  if (!CanAddURLToHistory(url)) {
+    return;
+  }
+
   // In the Side Panel, the default is the current tab. From History WebUI, the
   // default is a new foreground tab.
   WindowOpenDisposition default_disposition =
@@ -280,17 +315,12 @@ void HistoryClustersHandler::OpenHistoryUrl(
       click_modifiers->middle_button, click_modifiers->alt_key,
       click_modifiers->ctrl_key, click_modifiers->meta_key,
       click_modifiers->shift_key, default_disposition);
-  content::OpenURLParams params(url, content::Referrer(), open_location,
-                                ui::PAGE_TRANSITION_AUTO_BOOKMARK,
-                                /*is_renderer_initiated=*/false);
+  content::OpenURLParams params =
+      content::OpenURLParams::CreateBrowserInitiated(
+          url, open_location, ui::PAGE_TRANSITION_AUTO_BOOKMARK);
   GetBrowserWindowInterface(interface_)
       ->OpenURL(params,
                 /*navigation_handle_callback=*/{});
-}
-
-void HistoryClustersHandler::SetPage(
-    mojo::PendingRemote<mojom::Page> pending_page) {
-  page_.Bind(std::move(pending_page));
 }
 
 void HistoryClustersHandler::ShowSidePanelUI() {
@@ -438,6 +468,10 @@ void HistoryClustersHandler::RemoveVisitByUrlAndTime(
 void HistoryClustersHandler::OpenVisitUrlsInTabGroup(
     std::vector<mojom::URLVisitPtr> visits,
     const std::optional<std::string>& tab_group_name) {
+  std::erase_if(visits, [](const auto& visit_ptr) {
+    return !visit_ptr || !CanAddURLToHistory(visit_ptr->normalized_url);
+  });
+
   // Hard cap the number of opened visits in a tab group to 32. It's a
   // relatively high cap chosen fairly arbitrarily, because the user took an
   // affirmative action to open this many tabs. And hidden visits aren't opened.
@@ -446,17 +480,16 @@ void HistoryClustersHandler::OpenVisitUrlsInTabGroup(
     visits.resize(kMaxVisitsToOpenInTabGroup);
   }
 
-  auto* model =
-      GetBrowserWindowInterface(interface_)->GetFeatures().tab_strip_model();
+  auto* model = GetBrowserWindowInterface(interface_)->GetTabStripModel();
   std::vector<int> tab_indices;
   tab_indices.reserve(visits.size());
   for (const auto& visit_ptr : visits) {
     auto* opened_web_contents =
         GetBrowserWindowInterface(interface_)
-            ->OpenURL(content::OpenURLParams(
-                          visit_ptr->normalized_url, content::Referrer(),
+            ->OpenURL(content::OpenURLParams::CreateBrowserInitiated(
+                          visit_ptr->normalized_url,
                           WindowOpenDisposition::NEW_BACKGROUND_TAB,
-                          ui::PAGE_TRANSITION_AUTO_BOOKMARK, false),
+                          ui::PAGE_TRANSITION_AUTO_BOOKMARK),
                       /*navigation_handle_callback=*/{});
 
     // Only add those tabs to a new group that actually opened in this browser.
@@ -591,6 +624,9 @@ void HistoryClustersHandler::ShowContextMenuForSearchbox(
 
 void HistoryClustersHandler::ShowContextMenuForURL(const GURL& url,
                                                    const gfx::Point& point) {
+  if (!CanAddURLToHistory(url)) {
+    return;
+  }
   if (history_clusters_side_panel_embedder_) {
     history_clusters_side_panel_embedder_->ShowContextMenu(
         point,

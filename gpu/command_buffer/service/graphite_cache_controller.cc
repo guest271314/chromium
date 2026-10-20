@@ -17,6 +17,7 @@
 
 #if BUILDFLAG(SKIA_USE_DAWN)
 #include "gpu/command_buffer/service/dawn_context_provider.h"
+#include "gpu/command_buffer/service/dawn_platform.h"
 #endif
 
 namespace gpu::raster {
@@ -133,10 +134,23 @@ void GraphiteCacheController::CleanUpAllResourcesImpl() {
 
 #if BUILDFLAG(SKIA_USE_DAWN)
   if (can_handle_context_resources_) {
-    if (dawn::native::ReduceMemoryUsage(
-            dawn_context_provider_->GetDevice().Get())) {
-      // There is scheduled work on the GPU that must complete before finishing
-      // cleanup. Schedule cleanup to run again after a delay.
+    if (dawn_context_provider_) {
+      if (auto* platform = dawn_context_provider_->GetDawnPlatform()) {
+        // Report progress to the GPU watchdog thread to prevent timeout crashes
+        // during potentially long memory-reduction operations.
+        platform->ReportProgress();
+      }
+    }
+    // Schedule cleanup to run again after a delay if either:
+    // - ReduceMemoryUsage() couldn't finish cleaning up yet, because it depends
+    //   on GPU work that must complete first, so it needs to be called again.
+    // - Graphite has unfinished GPU work, which holds on to the resources it
+    //   uses. Keep rescheduling until the work completes and those resources
+    //   can be released.
+    const bool has_pending_deletions = dawn::native::ReduceMemoryUsage(
+        dawn_context_provider_->GetDevice().Get());
+    if (has_pending_deletions ||
+        GetGraphiteSharedContext()->hasUnfinishedGpuWork()) {
       ScheduleCleanUpAllResources(GetIdleId());
     }
     dawn::native::PerformIdleTasks(dawn_context_provider_->GetDevice());

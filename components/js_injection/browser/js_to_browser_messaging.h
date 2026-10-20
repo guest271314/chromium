@@ -12,7 +12,7 @@
 #include "base/memory/raw_ptr.h"
 #include "components/js_injection/common/interfaces.mojom.h"
 #include "components/origin_matcher/origin_matcher.h"
-#include "mojo/public/cpp/bindings/associated_receiver_set.h"
+#include "mojo/public/cpp/bindings/associated_receiver.h"
 #include "mojo/public/cpp/bindings/pending_associated_receiver.h"
 #include "mojo/public/cpp/bindings/pending_associated_remote.h"
 #include "mojo/public/cpp/bindings/shared_associated_remote.h"
@@ -72,11 +72,9 @@ class JsToBrowserMessaging : public mojom::JsToBrowserMessaging {
   std::unique_ptr<WebMessageHost> host_;
   mojo::SharedAssociatedRemote<mojom::BrowserToJsMessagingFactory>
       browser_to_js_factory_;
-#if DCHECK_IS_ON()
   std::string top_level_origin_string_;
   std::string origin_string_;
   bool is_main_frame_;
-#endif
 };
 
 }  // namespace js_injection

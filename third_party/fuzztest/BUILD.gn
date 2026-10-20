@@ -11,7 +11,6 @@
 #   targets using an out-of-process runner.
 # - fuzztest, a way of building new fuzzing targets using simpler macros.
 
-import("//build/config/android/config.gni")
 import("//build/config/sanitizers/sanitizers.gni")
 import("//build_overrides/build.gni")
 
@@ -29,7 +28,7 @@ config("fuzztest_internal_config") {
   cflags = [
     "-Wno-unused-result",  #crbug.com/500385597
     "-Wno-unused-private-field",
-    "-Wno-unreachable-code-return",
+    "-Wno-unreachable-code-aggressive",
     "-Wno-unused-but-set-variable",
     "-Wno-shadow",
     "-Wno-unused-const-variable",

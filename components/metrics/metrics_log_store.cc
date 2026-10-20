@@ -158,7 +158,7 @@ std::optional<uint64_t> MetricsLogStore::staged_log_user_id() const {
   return get_staged_log_queue()->staged_log_user_id();
 }
 
-const LogMetadata MetricsLogStore::staged_log_metadata() const {
+const LogMetadata& MetricsLogStore::staged_log_metadata() const {
   return get_staged_log_queue()->staged_log_metadata();
 }
 
@@ -211,7 +211,7 @@ void MetricsLogStore::StageNextLog() {
     ongoing_log_queue_.StageNextLog();
 }
 
-void MetricsLogStore::DiscardStagedLog(std::string_view reason) {
+void MetricsLogStore::DiscardStagedLogImpl(std::string_view reason) {
   DCHECK(has_staged_log());
   if (initial_log_queue_.has_staged_log())
     initial_log_queue_.DiscardStagedLog(reason);

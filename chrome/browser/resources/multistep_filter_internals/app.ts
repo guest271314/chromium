@@ -12,8 +12,8 @@ import type {Time} from '//resources/mojo/mojo/public/mojom/base/time.mojom-webu
 
 import {getCss} from './app.css.js';
 import {getHtml} from './app.html.js';
-import {BrowserProxyImpl} from './browser_proxy.js';
-import type {LogEntry as LogEntryMojo} from './multistep_filter_internals.mojom-webui.js';
+import {browserProxyFactory} from './multistep_filter_internals.mojom-webui.js';
+import type {DebugInfo, LogEntry as LogEntryMojo} from './multistep_filter_internals.mojom-webui.js';
 
 
 const MAX_LOG_ENTRIES = 1000;
@@ -23,7 +23,7 @@ export interface LogEntry {
   formattedTime: string;
   navigationId: bigint;
   eventType: string;
-  sourceEtldPlus1: string;
+  host: string;
   details: string;
   searchKey: string;
 }
@@ -50,17 +50,19 @@ export class MultistepFilterInternalsAppElement extends CrLitElement {
     return {
       allLogs: {type: Array},
       filterText: {type: String},
+      debugInfo: {type: Object},
     };
   }
 
   accessor allLogs: LogEntry[] = [];
   accessor filterText: string = '';
+  accessor debugInfo: DebugInfo|null = null;
   private seenTimestamps_ = new Set<string>();
   private listenerIds_: number[] = [];
 
   override connectedCallback() {
     super.connectedCallback();
-    const proxy = BrowserProxyImpl.getInstance();
+    const proxy = browserProxyFactory.getInstance();
     this.listenerIds_.push(proxy.callbackRouter.onLogEntryAdded.addListener(
         (mojoLog: LogEntryMojo) => {
           this.handleNewLog(this.convertMojoLog(mojoLog));
@@ -69,7 +71,7 @@ export class MultistepFilterInternalsAppElement extends CrLitElement {
 
   override disconnectedCallback() {
     super.disconnectedCallback();
-    const proxy = BrowserProxyImpl.getInstance();
+    const proxy = browserProxyFactory.getInstance();
     this.listenerIds_.forEach(id => proxy.callbackRouter.removeListener(id));
     this.listenerIds_ = [];
   }
@@ -79,15 +81,27 @@ export class MultistepFilterInternalsAppElement extends CrLitElement {
   }
 
   private async initializeMojo() {
-    const proxy = BrowserProxyImpl.getInstance();
+    const proxy = browserProxyFactory.getInstance();
 
-    const response = await proxy.handler.getBufferedLogs();
-    const bufferedLogs = (response.logs || []).map((mojoLog: LogEntryMojo) => {
-      return this.convertMojoLog(mojoLog);
-    });
+    const [logsResponse, debugInfoResponse] = await Promise.all([
+      proxy.handler.getBufferedLogs(),
+      proxy.handler.getDebugInfo(),
+    ]);
+
+    this.debugInfo = debugInfoResponse.info;
+
+    const bufferedLogs =
+        (logsResponse.logs || []).map((mojoLog: LogEntryMojo) => {
+          return this.convertMojoLog(mojoLog);
+        });
 
     // Combine and deduplicate based on composite key (timestamp + eventType)
     const combined = bufferedLogs.concat(this.allLogs);
+    // Sort combined logs by timestamp descending (newest first)
+    combined.sort((a, b) => {
+      const diff = b.timestamp.internalValue - a.timestamp.internalValue;
+      return diff > 0n ? 1 : (diff < 0n ? -1 : 0);
+    });
     const unique: LogEntry[] = [];
     const seen = new Set<string>();
     for (const log of combined) {
@@ -97,7 +111,7 @@ export class MultistepFilterInternalsAppElement extends CrLitElement {
         unique.push(log);
       }
     }
-    this.allLogs = unique.slice(-MAX_LOG_ENTRIES);
+    this.allLogs = unique.slice(0, MAX_LOG_ENTRIES);
 
     // Re-populate seenTimestamps_ with values left after slice to keep sync!
     this.seenTimestamps_.clear();
@@ -113,9 +127,9 @@ export class MultistepFilterInternalsAppElement extends CrLitElement {
       return;
     }
     this.seenTimestamps_.add(key);
-    const updatedLogs = [...this.allLogs, log];
+    const updatedLogs = [log, ...this.allLogs];
     if (updatedLogs.length > MAX_LOG_ENTRIES) {
-      const evicted = updatedLogs.shift()!;
+      const evicted = updatedLogs.pop()!;
       this.seenTimestamps_.delete(
           `${evicted.timestamp.internalValue}_${evicted.eventType}`);
     }
@@ -129,17 +143,16 @@ export class MultistepFilterInternalsAppElement extends CrLitElement {
 
     return {
       timestamp: mojoLog.timestamp,
-      sourceEtldPlus1: mojoLog.sourceEtldPlus1 || '',
+      host: mojoLog.host || '',
       navigationId: mojoLog.navigationId,
       formattedTime,
       eventType,
       details,
       // Include more fields in search index
-      searchKey:
-          `${formattedTime} ${eventType} ${mojoLog.sourceEtldPlus1 || ''} ${
-              mojoLog.navigationId ? mojoLog.navigationId.toString() :
-                                     ''} ${details}`
-              .toLowerCase(),
+      searchKey: `${formattedTime} ${eventType} ${mojoLog.host || ''} ${
+                     mojoLog.navigationId ? mojoLog.navigationId.toString() :
+                                            ''} ${details}`
+                     .toLowerCase(),
     };
   }
 

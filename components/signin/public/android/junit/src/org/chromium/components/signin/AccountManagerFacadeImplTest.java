@@ -33,6 +33,7 @@ import android.os.UserManager;
 import androidx.test.rule.GrantPermissionRule;
 
 import org.junit.Assert;
+import org.junit.Assume;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
@@ -53,6 +54,7 @@ import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.RobolectricUtil;
 import org.chromium.base.test.util.Features;
 import org.chromium.base.test.util.HistogramWatcher;
+import org.chromium.components.extensions.ExtensionsBuildflags;
 import org.chromium.components.externalauth.ExternalAuthUtils;
 import org.chromium.components.signin.AccountManagerDelegate.CapabilityResponse;
 import org.chromium.components.signin.AccountManagerFacade.ChildAccountStatusListener;
@@ -105,7 +107,7 @@ public class AccountManagerFacadeImplTest {
 
     @Mock private AccountsChangeObserver mObserverMock;
 
-    private final Context mContext = RuntimeEnvironment.application;
+    private final Context mContext = RuntimeEnvironment.getApplication();
     private ShadowUserManager mShadowUserManager;
     private ShadowAccountManager mShadowAccountManager;
 
@@ -116,6 +118,11 @@ public class AccountManagerFacadeImplTest {
 
     @Before
     public void setUp() {
+        if (SigninFeatureMap.sMigrateAccountManagerDelegate.isEnabled()) {
+            Assume.assumeFalse(
+                    "MigrateAccountManagerDelegate is not supported when extensions are enabled.",
+                    ExtensionsBuildflags.ENABLE_EXTENSIONS_CORE);
+        }
         lenient().when(mExternalAuthUtilsMock.canUseGooglePlayServices()).thenReturn(true);
         ExternalAuthUtils.setInstanceForTesting(mExternalAuthUtilsMock);
 
@@ -224,10 +231,10 @@ public class AccountManagerFacadeImplTest {
                         .expectBooleanRecord("Signin.GetAccountsBackoffSuccess", false)
                         .build();
 
-        mDelegate.callOnCoreAccountInfoChanged();
+        mDelegate.callOnAccountsChanged();
         RobolectricUtil.runAllBackgroundAndUi();
         // Called once on AccountManagerFacade creation and a second time when
-        // onCoreAccountInfoChanged is called.
+        // onAccountsChanged is called.
         verify(mDelegate, times(2)).getAccountsSynchronous();
 
         // The delegate call fails indefinitely but is only retried MAXIMUM_RETRIES times (plus the
@@ -247,13 +254,13 @@ public class AccountManagerFacadeImplTest {
     public void testAccountFetchingFailsThenSucceeds() throws Exception {
         // Initially, account fetching fails.
         doThrow(AccountManagerDelegateException.class).when(mDelegate).getAccountsSynchronous();
-        mDelegate.callOnCoreAccountInfoChanged();
+        mDelegate.callOnAccountsChanged();
         RobolectricUtil.runAllBackgroundAndUiIncludingDelayed();
         assertFalse(mFacade.didAccountFetchSucceed());
         assertEquals(mFacade.getAccounts().getResult(), List.of());
 
         // Accounts are updated again.
-        mDelegate.callOnCoreAccountInfoChanged();
+        mDelegate.callOnAccountsChanged();
         RobolectricUtil.runAllBackgroundAndUi();
         // Account fetch is still marked as non-successful.
         assertFalse(mFacade.didAccountFetchSucceed());
@@ -372,7 +379,7 @@ public class AccountManagerFacadeImplTest {
 
     @Test
     public void testGetCoreAccountInfosWithAccountPatternsChange() throws Exception {
-        mDelegate.callOnCoreAccountInfoChanged();
+        mDelegate.callOnAccountsChanged();
         assertEquals(List.of(), mFacade.getAccounts().getResult());
 
         CoreAccountInfo accountInfo1 = addTestAccount("test1@gmail.com");
@@ -482,14 +489,7 @@ public class AccountManagerFacadeImplTest {
         RobolectricUtil.runAllBackgroundAndUi();
         AccountCapabilities capabilities = promise.getResult();
 
-        Assert.assertEquals(
-                Tribool.TRUE,
-                capabilities.isSubjectToChromePrivacySandboxRestrictedMeasurementNotice());
         Assert.assertEquals(Tribool.TRUE, capabilities.isSubjectToParentalControls());
-        Assert.assertEquals(Tribool.TRUE, capabilities.canRunChromePrivacySandboxTrials());
-        Assert.assertEquals(
-                Tribool.TRUE,
-                capabilities.isSubjectToChromePrivacySandboxRestrictedMeasurementNotice());
     }
 
     @Test
@@ -506,14 +506,7 @@ public class AccountManagerFacadeImplTest {
         RobolectricUtil.runAllBackgroundAndUi();
         AccountCapabilities capabilities = promise.getResult();
 
-        Assert.assertEquals(
-                Tribool.FALSE,
-                capabilities.isSubjectToChromePrivacySandboxRestrictedMeasurementNotice());
         Assert.assertEquals(Tribool.FALSE, capabilities.isSubjectToParentalControls());
-        Assert.assertEquals(Tribool.FALSE, capabilities.canRunChromePrivacySandboxTrials());
-        Assert.assertEquals(
-                Tribool.FALSE,
-                capabilities.isSubjectToChromePrivacySandboxRestrictedMeasurementNotice());
     }
 
     @Test
@@ -530,14 +523,7 @@ public class AccountManagerFacadeImplTest {
         RobolectricUtil.runAllBackgroundAndUi();
         AccountCapabilities capabilities = promise.getResult();
 
-        Assert.assertEquals(
-                Tribool.UNKNOWN,
-                capabilities.isSubjectToChromePrivacySandboxRestrictedMeasurementNotice());
         Assert.assertEquals(Tribool.UNKNOWN, capabilities.isSubjectToParentalControls());
-        Assert.assertEquals(Tribool.UNKNOWN, capabilities.canRunChromePrivacySandboxTrials());
-        Assert.assertEquals(
-                Tribool.UNKNOWN,
-                capabilities.isSubjectToChromePrivacySandboxRestrictedMeasurementNotice());
     }
 
     @Test
@@ -600,7 +586,6 @@ public class AccountManagerFacadeImplTest {
         Assert.assertEquals(Tribool.TRUE, capabilities.isSubjectToParentalControls());
         Assert.assertEquals(
                 Tribool.FALSE, capabilities.canShowHistorySyncOptInsWithoutMinorModeRestrictions());
-        Assert.assertEquals(Tribool.UNKNOWN, capabilities.canRunChromePrivacySandboxTrials());
     }
 
     @Test
@@ -713,10 +698,10 @@ public class AccountManagerFacadeImplTest {
                         .expectBooleanRecord("Signin.GetAccountsBackoffSuccess", false)
                         .build();
 
-        mDelegate.callOnCoreAccountInfoChanged();
+        mDelegate.callOnAccountsChanged();
         RobolectricUtil.runAllBackgroundAndUi();
         // Called once on AccountManagerFacade creation and a second time when
-        // onCoreAccountInfoChanged is called.
+        // onAccountsChanged is called.
         verify(mDelegate, times(2)).getPlatformAccountsSynchronous();
 
         // The delegate call fails indefinitely but is only retried MAXIMUM_RETRIES times (plus the
@@ -739,12 +724,12 @@ public class AccountManagerFacadeImplTest {
         doThrow(AccountManagerDelegateException.class)
                 .when(mDelegate)
                 .getPlatformAccountsSynchronous();
-        mDelegate.callOnCoreAccountInfoChanged();
+        mDelegate.callOnAccountsChanged();
         RobolectricUtil.runAllBackgroundAndUiIncludingDelayed();
         assertFalse(mFacade.didAccountFetchSucceed());
 
         // Accounts are updated again.
-        mDelegate.callOnCoreAccountInfoChanged();
+        mDelegate.callOnAccountsChanged();
         RobolectricUtil.runAllBackgroundAndUi();
         // Account fetch is still marked as non-successful.
         assertFalse(mFacade.didAccountFetchSucceed());
@@ -827,7 +812,7 @@ public class AccountManagerFacadeImplTest {
     public void
             testGetCoreAccountInfosWithAccountPatternsChange_migrateAccountManagerDelegateEnabled()
                     throws Exception {
-        mDelegate.callOnCoreAccountInfoChanged();
+        mDelegate.callOnAccountsChanged();
         assertEquals(List.of(), mFacade.getAccounts().getResult());
 
         CoreAccountInfo accountInfo1 = addTestAccount("test1@gmail.com");
@@ -883,32 +868,30 @@ public class AccountManagerFacadeImplTest {
     @Test
     @Features.EnableFeatures(SigninFeatures.MIGRATE_ACCOUNT_MANAGER_DELEGATE)
     public void testUpdateCredentialsWaitForRefreshToken_migrateAccountManagerDelegateEnabled() {
-        FakeAccountManagerDelegate delegate = new FakeAccountManagerDelegate();
-        delegate.addAccount(TestAccounts.ACCOUNT1);
+        mDelegate.addAccount(TestAccounts.ACCOUNT1);
         RobolectricUtil.runAllBackgroundAndUi();
 
         mFacade.addObserver(mObserverMock);
-        mFacade.updateCredentials(TestAccounts.ACCOUNT1, null, mMockCallback);
+        mFacade.updateCredentials(TestAccounts.ACCOUNT1.getId(), null, mMockCallback);
         RobolectricUtil.runAllBackgroundAndUi();
 
         InOrder inOrder = inOrder(mObserverMock, mMockCallback);
-        inOrder.verify(mObserverMock).onCoreAccountInfosChanged();
+        inOrder.verify(mObserverMock).onAccountsChanged();
         inOrder.verify(mMockCallback).onResult(any());
     }
 
     @Test
     @Features.DisableFeatures(SigninFeatures.MIGRATE_ACCOUNT_MANAGER_DELEGATE)
     public void testUpdateCredentialsWaitForRefreshToken() {
-        FakeAccountManagerDelegate delegate = new FakeAccountManagerDelegate();
-        delegate.addAccount(TestAccounts.ACCOUNT1);
+        mDelegate.addAccount(TestAccounts.ACCOUNT1);
         RobolectricUtil.runAllBackgroundAndUi();
 
         mFacade.addObserver(mObserverMock);
-        mFacade.updateCredentials(TestAccounts.ACCOUNT1, null, mMockCallback);
+        mFacade.updateCredentials(TestAccounts.ACCOUNT1.getId(), null, mMockCallback);
         RobolectricUtil.runAllBackgroundAndUi();
 
         InOrder inOrder = inOrder(mObserverMock, mMockCallback);
-        inOrder.verify(mObserverMock).onCoreAccountInfosChanged();
+        inOrder.verify(mObserverMock).onAccountsChanged();
         inOrder.verify(mMockCallback).onResult(any());
     }
 

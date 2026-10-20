@@ -12,11 +12,12 @@
 #include "base/dcheck_is_on.h"
 #include "base/memory/weak_ptr.h"
 #include "base/sequence_checker.h"
+#include "base/types/pass_key.h"
 #include "base/types/strong_alias.h"
 #include "content/browser/preloading/prefetch/pre_prefetch_container.h"
 #include "content/browser/preloading/prefetch/prefetch_container.h"
+#include "content/browser/preloading/prefetch/prefetch_container_observer.h"
 #include "content/browser/preloading/prefetch/prefetch_key.h"
-#include "content/browser/preloading/prefetch/prefetch_match_resolver.h"
 #include "content/browser/preloading/prefetch/prefetch_streaming_url_loader_common_types.h"
 #include "content/common/content_export.h"
 #include "content/public/browser/frame_tree_node_id.h"
@@ -147,7 +148,9 @@ class CONTENT_EXPORT PrefetchService : public PrefetchContainerObserver {
 
   // An interface to notify `PrefetchService` that the given `PrefetchContainer`
   // is no longer needed from outside of the service.
-  void MayReleasePrefetch(base::WeakPtr<PrefetchContainer> prefetch_container);
+  void MayReleasePrefetch(
+      base::WeakPtr<PrefetchContainer> prefetch_container,
+      std::optional<PrefetchStatus> prefetch_status_on_destruction);
 
   // Called by PrefetchDocumentManager when it finishes processing the latest
   // update of speculation candidates.
@@ -164,13 +167,6 @@ class CONTENT_EXPORT PrefetchService : public PrefetchContainerObserver {
   static void SetServiceWorkerContextForTesting(ServiceWorkerContext* context);
   static void SetHostNonUniqueFilterForTesting(
       bool (*filter)(std::string_view));
-
-  // Sets the URLLoaderFactory to be used as
-  // `GetURLLoaderFactoryForCurrentPrefetch()` during testing. Note that this
-  // does not take ownership of |url_loader_factory|, and caller must keep
-  // ownership over the course of the test.
-  static void SetURLLoaderFactoryForTesting(
-      network::SharedURLLoaderFactory* url_loader_factory);
 
   // Sets the NetworkContext to use just for the proxy lookup. Note that this
   // does not take ownership of |network_context|, and the caller must keep
@@ -207,29 +203,12 @@ class CONTENT_EXPORT PrefetchService : public PrefetchContainerObserver {
   // referring origin matches the storage_key_filter.
   void EvictPrefetchesForBrowsingDataRemoval(
       const StoragePartition::StorageKeyMatcherFunction& storage_key_filter,
-      PrefetchStatus status);
+      PrefetchStatus prefetch_status_on_destruction);
 
-  // Returns candidate `PrefetchContainer`s and servable states for matching
-  // process. Corresponds to 3.4. of
-  // https://wicg.github.io/nav-speculation/prefetch.html#wait-for-a-matching-prefetch-record
-  //
-  // Note that `PrefetchContainer::GetMatchResolverAction().ToServableState()`
-  // depends on `base::TimeTicks::now()` and can expire (can change from
-  // `kServable` to `kNotServable`) in the minute between two calls. Deciding
-  // something with multiple
-  // ``PrefetchContainer::GetMatchResolverAction().ToServableState()` calls can
-  // lead inconsistent state. To avoid that, we record
-  // `PrefetchServableState` in the `flat_map` at the beginning of
-  // matching process and refer to it.
-  std::pair<std::vector<PrefetchContainer*>,
-            base::flat_map<PrefetchKey, PrefetchServableState>>
-  CollectMatchCandidates(const PrefetchKey& key,
-                         bool is_nav_prerender,
-                         base::WeakPtr<PrefetchServingPageMetricsContainer>
-                             serving_page_metrics_container,
-                         const PrefetchKey* key_ahead_of_prerender,
-                         PrefetchPotentialCandidateCollectResult*
-                             collect_result_ahead_of_prerender);
+  const std::map<PrefetchKey, std::unique_ptr<PrefetchContainer>>&
+  owned_prefetches(base::PassKey<PrefetchMatchResolver>) const {
+    return owned_prefetches_;
+  }
   PrefetchContainer* FindPrefetchAheadOfPrerenderForMetrics(
       const PreloadPipelineInfo& pipeline_info);
 
@@ -244,8 +223,6 @@ class CONTENT_EXPORT PrefetchService : public PrefetchContainerObserver {
   bool StartSinglePrefetch(base::PassKey<PrefetchScheduler>,
                            PrefetchContainer& prefetch_container);
 
-  bool StartSinglePrefetchForTesting(PrefetchContainer& prefetch_container);
-
   const PrefetchScheduler& GetPrefetchSchedulerForMetrics() {
     return *scheduler_;
   }
@@ -255,23 +232,46 @@ class CONTENT_EXPORT PrefetchService : public PrefetchContainerObserver {
   CreateIsolatedNetworkContextForTesting(
       bool is_proxy_required_when_cross_origin);
 
+  // Cancels unrelated prefetches.
+  //
+  // See `CancelUnrelatedPrefetchURLLoaderThrottle`.
+  void CancelUnrelatedPrefetchForNavigation(
+      const std::optional<blink::DocumentToken>&
+          navigation_initiator_document_token);
+
+  const PrefetchContainer* GetPrefetchContainerForTesting(
+      const PrefetchKey& key) const;
+
   base::WeakPtr<PrefetchService> GetWeakPtr();
 
  private:
   struct CheckEligibilityParams;
 
-  void InjectedEligibilityCheckCompletedForTesting(
+  // A marker enum to ensure that `CheckEligibilityParams::Finish()` is called
+  // with `[[nodiscard]]` for each eligibility check process.
+  enum class CheckEligibilityResult {
+    kFinishCalled,
+    kEligibilityNotYetGot,
+  };
+
+  [[nodiscard]] CheckEligibilityResult
+  InjectedEligibilityCheckCompletedForTesting(
       CheckEligibilityParams params,
       PreloadingEligibility eligibility);
+
+  [[nodiscard]] CheckEligibilityResult CheckInitialEligibilityOfPrefetch(
+      CheckEligibilityParams params);
 
   // Checks whether the given |prefetch_container| is eligible for prefetch.
   // Once the eligibility is determined then |OnGotEligibility()| will be
   // called.
-  void CheckEligibilityOfPrefetch(CheckEligibilityParams params);
+  [[nodiscard]] CheckEligibilityResult CheckEligibilityOfPrefetch(
+      CheckEligibilityParams params);
 
-  void CheckHasServiceWorker(CheckEligibilityParams params);
+  [[nodiscard]] CheckEligibilityResult CheckHasServiceWorker(
+      CheckEligibilityParams params);
 
-  void OnGotServiceWorkerResult(
+  [[nodiscard]] CheckEligibilityResult OnGotServiceWorkerResult(
       CheckEligibilityParams params,
       base::Time check_has_service_worker_start_time,
       ServiceWorkerCapability service_worker_capability);
@@ -279,7 +279,7 @@ class CONTENT_EXPORT PrefetchService : public PrefetchContainerObserver {
   // Called after getting the existing cookies associated with
   // |prefetch_container|. If there are any cookies, then the prefetch is not
   // eligible.
-  void OnGotCookiesForEligibilityCheck(
+  [[nodiscard]] CheckEligibilityResult OnGotCookiesForEligibilityCheck(
       CheckEligibilityParams params,
       const net::CookieAccessResultList& cookie_list,
       const net::CookieAccessResultList& excluded_cookies);
@@ -287,12 +287,15 @@ class CONTENT_EXPORT PrefetchService : public PrefetchContainerObserver {
   // Starts the check for whether or not there is a proxy configured for the URL
   // of |prefetch_container|. If there is an existing proxy, then the prefetch
   // is not eligible.
-  void StartProxyLookupCheck(CheckEligibilityParams params);
+  [[nodiscard]] CheckEligibilityResult StartProxyLookupCheck(
+      CheckEligibilityParams params);
 
   // Called after looking up the proxy configuration for the URL of
   // |prefetch_container|. If there is an existing proxy, then the prefetch is
   // not eligible.
-  void OnGotProxyLookupResult(CheckEligibilityParams params, bool has_proxy);
+  [[nodiscard]] CheckEligibilityResult OnGotProxyLookupResult(
+      CheckEligibilityParams params,
+      bool has_proxy);
 
   // Called when the eligibility is determined for each fetch of prefetch, i.e.
   // initial fetch and redirects.
@@ -341,8 +344,6 @@ class CONTENT_EXPORT PrefetchService : public PrefetchContainerObserver {
   // or equal to zero, the prefetch is kept indefinitely.
   void OnPrefetchTimeout(base::WeakPtr<PrefetchContainer> prefetch);
 
-  bool StartSinglePrefetch(PrefetchContainer& prefetch_container);
-
   // Creates a new URL loader and starts a network request for
   // |prefetch_container|. |MakePrefetchRequest| must have been previously
   // called.
@@ -371,11 +372,15 @@ class CONTENT_EXPORT PrefetchService : public PrefetchContainerObserver {
   void OnDeterminedHead(const PrefetchContainer& prefetch_container) override;
   void OnPrefetchCompletedOrFailed(
       const PrefetchContainer& prefetch_container) override;
+  void OnPrefetchStale(const PrefetchContainer& prefetch_container) override;
 
+  // When `prefetch_status_on_destruction` has a value, it's set as the final
+  // `PrefetchStatus` of `prefetch_container` for metrics.
   // If `should_progress` is true, calls `PrefetchScheduler::ProgressAsync()`
   // (implicitly).
   void ResetPrefetchContainer(
       base::WeakPtr<PrefetchContainer> prefetch_container,
+      std::optional<PrefetchStatus> prefetch_status_on_destruction,
       bool should_progress = true);
 
   // Methods for scheduling
@@ -383,9 +388,11 @@ class CONTENT_EXPORT PrefetchService : public PrefetchContainerObserver {
   void ScheduleAndProgressAsync(
       base::WeakPtr<PrefetchContainer> prefetch_container);
   void ResetPrefetchContainerAndProgressAsync(
-      base::WeakPtr<PrefetchContainer> prefetch_container);
+      base::WeakPtr<PrefetchContainer> prefetch_container,
+      std::optional<PrefetchStatus> prefetch_status_on_destruction);
   void ResetPrefetchContainersAndProgressAsync(
-      std::vector<base::WeakPtr<PrefetchContainer>> prefetch_containers);
+      std::vector<base::WeakPtr<PrefetchContainer>> prefetch_containers,
+      std::optional<PrefetchStatus> prefetch_status_on_destruction);
   // CAUTION: This doesn't call `ResetPrefetchContainer()` to preserve current
   // behavior.
   void RemoveFromSchedulerAndProgressAsync(

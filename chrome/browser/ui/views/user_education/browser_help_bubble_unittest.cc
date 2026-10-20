@@ -17,12 +17,15 @@
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/base/interaction/element_identifier.h"
+#include "ui/webui/resources/js/tracked_element/tracked_element.mojom-forward.h"
 #include "ui/webui/resources/js/tracked_element/tracked_element.mojom.h"
+#include "ui/webui/tracked_element/tracked_element_handler.h"
 #include "ui/webui/tracked_element/tracked_element_web_ui.h"
 
 namespace {
 
 DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kTestElementId);
+constexpr std::string_view kTestElementSecondaryId = "3";
 
 class MockHelpBubbleClient : public help_bubble::mojom::HelpBubbleClient {
  public:
@@ -32,32 +35,24 @@ class MockHelpBubbleClient : public help_bubble::mojom::HelpBubbleClient {
               (override));
   MOCK_METHOD(void,
               ToggleFocusForAccessibility,
-              (const std::string& native_identifier),
+              (tracked_element::mojom::TrackedElementIdentifierPtr),
               (override));
   MOCK_METHOD(void,
               HideHelpBubble,
-              (const std::string& native_identifier),
+              (tracked_element::mojom::TrackedElementIdentifierPtr),
               (override));
   MOCK_METHOD(void,
               ExternalHelpBubbleUpdated,
-              (const std::string& native_identifier, bool shown),
+              (tracked_element::mojom::TrackedElementIdentifierPtr, bool shown),
               (override));
 };
 
 class TestHelpBubbleHandler : public user_education::HelpBubbleHandlerBase {
  public:
-  TestHelpBubbleHandler(GetWebContentsCallback get_web_contents_callback,
-                        ui::ElementContext context)
-      : HelpBubbleHandlerBase(
-            std::make_unique<ClientProvider>(),
-            get_web_contents_callback,
-            std::vector<ui::ElementIdentifier>{kTestElementId},
-            context) {}
-
-  void BindTrackedElementHandlerForTesting() {
-    BindTrackedElementHandler(
-        mojo::PendingReceiver<tracked_element::mojom::TrackedElementHandler>());
-  }
+  explicit TestHelpBubbleHandler(
+      base::WeakPtr<ui::TrackedElementHandler> tracked_element_handler)
+      : HelpBubbleHandlerBase(std::make_unique<ClientProvider>(),
+                              tracked_element_handler) {}
 
  private:
   class ClientProvider : public HelpBubbleHandlerBase::ClientProvider {
@@ -116,15 +111,17 @@ class BrowserHelpBubbleUnitTest : public ChromeRenderViewHostTestHarness {
     ChromeRenderViewHostTestHarness::SetUp();
     web_contents_ =
         content::WebContentsTester::CreateTestWebContents(profile(), nullptr);
+    ui::ElementContext context =
+        ui::ElementContext::CreateFakeContextForTesting(this);
+    tracked_element_handler_ = std::make_unique<ui::TrackedElementHandler>(
+        web_contents_.get(), context, std::vector<ui::ElementIdentifier>());
+    tracked_element_handler_->BindInterface(
+        mojo::PendingReceiver<tracked_element::mojom::TrackedElementHandler>());
     handler_ = std::make_unique<TestHelpBubbleHandler>(
-        base::BindRepeating(
-            [](content::WebContents* contents) { return contents; },
-            web_contents_.get()),
-        ui::ElementContext::CreateFakeContextForTesting(this));
-    handler_->BindTrackedElementHandlerForTesting();
+        tracked_element_handler_->GetWeakPtr());
     anchor_ = std::make_unique<ui::TrackedElementWebUI>(
-        handler_->GetTrackedElementHandlerForTesting(), kTestElementId,
-        ui::ElementContext::CreateFakeContextForTesting(this));
+        tracked_element_handler_.get(), kTestElementId, kTestElementSecondaryId,
+        context);
   }
 
   void TearDown() override {
@@ -136,6 +133,7 @@ class BrowserHelpBubbleUnitTest : public ChromeRenderViewHostTestHarness {
 
  protected:
   std::unique_ptr<content::WebContents> web_contents_;
+  std::unique_ptr<ui::TrackedElementHandler> tracked_element_handler_;
   std::unique_ptr<TestHelpBubbleHandler> handler_;
   std::unique_ptr<ui::TrackedElementWebUI> anchor_;
   testing::NiceMock<MockHelpBubbleDelegate> delegate_;

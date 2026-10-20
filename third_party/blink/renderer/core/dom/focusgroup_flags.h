@@ -29,13 +29,16 @@ enum class FocusgroupBehavior : uint8_t {
   kListbox,
   kMenu,
   kMenubar,
-  // Grid behavior gated on FocusgroupGrid runtime feature.
+
+  // Behaviors gated on the FocusgroupV2 runtime feature:
+  kFeed,
   kGrid,
+
   // Explicit opt-out (standalone, cannot be combined with any modifiers).
   kOptOut,
 };
 
-enum FocusgroupFlags : uint8_t {
+enum FocusgroupFlags : uint16_t {
   kNone = 0,  // No focusgroup behavior (default / sentinel).
 
   // Primary navigation axis:
@@ -54,6 +57,13 @@ enum FocusgroupFlags : uint8_t {
 
   // Memory behavior override disables history-based focus restoration:
   kNoMemory = 1 << 6,
+
+  // Modifier gated on the FocusgroupV2 runtime feature:
+  // Include controls associated with the active item in sequential navigation.
+  kItemControls = 1 << 7,
+
+  // Use explicit focusgrouprow enrollment instead of native table structure.
+  kManual = 1 << 8,
 };
 
 inline constexpr FocusgroupFlags operator&(FocusgroupFlags a,
@@ -113,6 +123,9 @@ CORE_EXPORT ax::mojom::blink::Role FocusgroupMinimumAriaRole(
 // attribute). Returns kUnknown if no mapping should be implied.
 CORE_EXPORT ax::mojom::blink::Role FocusgroupItemMinimumAriaRole(
     const FocusgroupData& data);
+
+// Returns true if |token| is a recognized focusgroup attribute token.
+CORE_EXPORT bool IsValidFocusgroupToken(const AtomicString& token);
 }  // namespace focusgroup
 
 using FocusgroupFlags = focusgroup::FocusgroupFlags;

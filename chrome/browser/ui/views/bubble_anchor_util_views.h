@@ -11,7 +11,10 @@
 #include "ui/views/bubble/bubble_border.h"
 #include "ui/views/bubble/bubble_dialog_delegate_view.h"
 
-class Browser;
+namespace content {
+class WebContents;
+}
+
 class BrowserWindowInterface;
 
 namespace bubble_anchor_util {
@@ -35,11 +38,12 @@ AnchorConfiguration GetPageInfoAnchorConfiguration(
 
 // Returns the anchor configuration for the permission bubble.
 AnchorConfiguration GetPermissionPromptBubbleAnchorConfiguration(
-    Browser* browser);
+    content::WebContents* web_contents);
 
 // Returns the anchor configuration for bubbles that are aligned to the app menu
 // button.
-AnchorConfiguration GetAppMenuAnchorConfiguration(Browser* browser);
+AnchorConfiguration GetAppMenuAnchorConfiguration(
+    BrowserWindowInterface* browser);
 
 // Returns true if the given anchor can be used as a highlight.
 bool IsHighlightable(views::BubbleAnchor anchor);

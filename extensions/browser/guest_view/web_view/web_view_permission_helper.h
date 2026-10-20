@@ -7,6 +7,7 @@
 
 #include <map>
 #include <memory>
+#include <set>
 
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
@@ -18,10 +19,7 @@
 #include "content/public/browser/web_contents.h"
 #include "extensions/browser/guest_view/web_view/web_view_permission_types.h"
 #include "third_party/blink/public/common/mediastream/media_stream_request.h"
-
-namespace url {
-class Origin;
-}  // namespace url
+#include "url/origin.h"
 
 namespace extensions {
 
@@ -93,6 +91,13 @@ class WebViewPermissionHelper {
                                     bool last_unlocked_by_target,
                                     base::OnceCallback<void(bool)> callback);
 
+  // Requests Media Permission from the embedder (for Page Embedded Permission
+  // Control).
+  void RequestMediaPermission(ContentSettingsType type,
+                              const GURL& requesting_frame_origin,
+                              bool user_gesture,
+                              base::OnceCallback<void(bool)> callback);
+
   // Requests Geolocation Permission from the embedder.
   void RequestGeolocationPermission(const GURL& requesting_frame,
                                     bool user_gesture,
@@ -118,8 +123,21 @@ class WebViewPermissionHelper {
       const GURL& requesting_frame_url,
       base::OnceCallback<void(bool)> callback);
 
+  bool HasClipboardPermission(WebViewPermissionType type,
+                              const url::Origin& requesting_origin) const;
+  void GrantClipboardPermission(WebViewPermissionType type,
+                                const url::Origin& requesting_origin);
+
+  bool HasMediaPermission(ContentSettingsType type,
+                          const url::Origin& requesting_origin) const;
+  void GrantMediaPermission(ContentSettingsType type,
+                            const url::Origin& requesting_origin);
+  void RevokeMediaPermission(ContentSettingsType type,
+                             const url::Origin& requesting_origin);
+
   std::optional<content::PermissionResult> OverridePermissionResult(
-      ContentSettingsType type);
+      ContentSettingsType type,
+      const url::Origin& requesting_origin);
 
   enum PermissionResponseAction { DENY, ALLOW, DEFAULT };
 
@@ -156,6 +174,11 @@ class WebViewPermissionHelper {
 
   std::unique_ptr<WebViewPermissionHelperDelegate>
       web_view_permission_helper_delegate_;
+
+  std::set<url::Origin> granted_clipboard_read_write_origins_;
+  std::set<url::Origin> granted_clipboard_sanitized_write_origins_;
+  std::set<std::pair<url::Origin, ContentSettingsType>>
+      granted_media_permissions_;
 
   const raw_ptr<WebViewGuest> web_view_guest_;
 

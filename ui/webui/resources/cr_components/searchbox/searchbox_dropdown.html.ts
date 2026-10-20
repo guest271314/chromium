@@ -24,12 +24,20 @@ ${this.sideTypes_().map(sideType => html`
       ` : ''}
       <div class="matches ${this.renderTypeClassForGroup_(groupId)}">
       ${this.matchesForGroup_(groupId).map(match => html`
-        <cr-searchbox-match tabindex="0" role="option"
+        <cr-searchbox-match
+            id="match-${this.matchIndex_(match)}"
+            .selection="${this.selection}"
+            .virtualFocusEnabled="${this.virtualFocusEnabled}"
+            tabindex="${this.virtualFocusEnabled ? -1 : 0}"
+            role="option"
             aria-describedby="${this.getAriaDescribedByForGroup_(groupId)}"
             .match="${match}" match-index="${this.matchIndex_(match)}"
+            .resultSequenceId="${this.result!.sequenceId}"
             side-type="${sideType}"
+            ?show-contextual-description="${match.showContextualDescription}"
             ?selected="${this.isSelected_(match)}"
-            ?show-thumbnail="${this.showThumbnail}">
+            ?show-thumbnail="${this.showThumbnail}"
+            ?duplicate-description="${this.hasDuplicateDescription_(match)}">
         </cr-searchbox-match>
       `)}
       </div>

@@ -36,6 +36,7 @@
 #include "ui/ozone/platform/wayland/host/wayland_buffer_manager_host.h"
 #include "ui/ozone/platform/wayland/host/wayland_connection.h"
 #include "ui/ozone/platform/wayland/host/wayland_cursor_position.h"
+#include "ui/ozone/platform/wayland/host/wayland_idle_notify.h"
 #include "ui/ozone/platform/wayland/host/wayland_output.h"
 #include "ui/ozone/platform/wayland/host/wayland_output_manager.h"
 #include "ui/ozone/platform/wayland/host/wayland_window.h"
@@ -241,6 +242,18 @@ void WaylandScreen::AddOrUpdateDisplay(const WaylandOutput::Metrics& metrics) {
   }
   color_spaces.SetOutputFormats(image_format_no_alpha_.value(),
                                 image_format_alpha_.value());
+  if (color_spaces.SupportsHDR() && image_format_hdr_) {
+    color_spaces.SetOutputColorSpaceAndFormat(
+        gfx::ContentColorUsage::kHDR, /*needs_alpha=*/false,
+        color_spaces.GetOutputColorSpace(gfx::ContentColorUsage::kHDR,
+                                         /*needs_alpha=*/false),
+        image_format_hdr_.value());
+    color_spaces.SetOutputColorSpaceAndFormat(
+        gfx::ContentColorUsage::kHDR, /*needs_alpha=*/true,
+        color_spaces.GetOutputColorSpace(gfx::ContentColorUsage::kHDR,
+                                         /*needs_alpha=*/true),
+        image_format_hdr_.value());
+  }
   changed_display.SetColorSpaces(std::move(color_spaces));
 
   // There are 2 cases where |changed_display| must be set as primary:
@@ -292,6 +305,11 @@ WaylandOutput* WaylandScreen::GetWaylandOutputForDisplayId(int64_t display_id) {
 
   auto* output_manager = connection_->wayland_output_manager();
   return output_manager->GetOutput(GetOutputIdForDisplayId(display_id));
+}
+
+viz::SharedImageFormat WaylandScreen::GetHDRImageFormat() const {
+  CHECK(image_format_hdr_);
+  return image_format_hdr_.value();
 }
 
 WaylandOutput::Id WaylandScreen::GetOutputIdMatching(const gfx::Rect& bounds) {
@@ -463,6 +481,13 @@ bool WaylandScreen::IsScreenSaverActive() const {
 }
 
 base::TimeDelta WaylandScreen::CalculateIdleTime() const {
+  // Try the ext_idle_notifier Wayland protocol.
+  if (const auto* wayland_idle = connection_->ext_idle_notifier()) {
+    const auto idle_time = wayland_idle->GetIdleTime();
+    if (idle_time)
+      return *idle_time;
+  }
+
   // Try the org_kde_kwin_idle Wayland protocol extension (KWin).
   if (const auto* kde_idle = connection_->org_kde_kwin_idle()) {
     const auto idle_time = kde_idle->GetIdleTime();

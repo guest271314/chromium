@@ -118,12 +118,17 @@ class SafeBrowsingNavigationObserver : public base::SupportsUserData::Data,
                                        public content::WebContentsObserver,
                                        public content_settings::Observer {
  public:
+  // Creates a SafeBrowsingNavigationObserver for `web_contents` if
+  // `observer_manager` is non-null and either Safe Browsing is enabled and
+  // ready, or `is_referrer_chain_needed_for_enterprise` is true (i.e. an
+  // enterprise feature relying on referrer chains is enabled by policy).
   static void MaybeCreateForWebContents(
       content::WebContents* web_contents,
       HostContentSettingsMap* host_content_settings_map,
       SafeBrowsingNavigationObserverManager* observer_manager,
       PrefService* prefs,
-      bool has_safe_browsing_service);
+      bool has_safe_browsing_service,
+      bool is_referrer_chain_needed_for_enterprise);
 
   static SafeBrowsingNavigationObserver* FromWebContents(
       content::WebContents* web_contents);
@@ -142,6 +147,11 @@ class SafeBrowsingNavigationObserver : public base::SupportsUserData::Data,
 
   void SetObserverManagerForTesting(
       SafeBrowsingNavigationObserverManager* observer_manager);
+
+  // Records a host-to-IP mapping. This is forwarded to the
+  // SafeBrowsingNavigationObserverManager, which maintains a cache of these
+  // mappings for later Safe Browsing use in lookups and reports.
+  void RecordHostToIpMapping(const std::string& host, const std::string& ip);
 
  private:
   FRIEND_TEST_ALL_PREFIXES(SBNavigationObserverTest, TestContentSettingChange);

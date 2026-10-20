@@ -14,6 +14,7 @@
 #include "base/check_deref.h"
 #include "base/command_line.h"
 #include "base/compiler_specific.h"
+#include "base/files/scoped_temp_dir.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/memory/ptr_util.h"
@@ -23,6 +24,7 @@
 #include "base/task/sequenced_task_runner.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/test/scoped_command_line.h"
+#include "base/test/scoped_path_override.h"
 #include "base/time/time.h"
 #include "chrome/browser/ash/login/session/user_session_manager.h"
 #include "chrome/browser/ash/ownership/owner_settings_service_ash.h"
@@ -42,6 +44,7 @@
 #include "chrome/browser/global_features.h"
 #include "chrome/browser/policy/messaging_layer/public/report_client_test_util.h"
 #include "chrome/browser/prefs/browser_prefs.h"
+#include "chrome/common/chrome_paths.h"
 #include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile.h"
 #include "chromeos/ash/components/attestation/fake_certificate.h"
@@ -79,6 +82,7 @@
 #include "content/public/test/test_utils.h"
 #include "google_apis/gaia/gaia_oauth_client.h"
 #include "google_apis/gaia/gaia_urls.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "services/network/public/cpp/weak_wrapper_shared_url_loader_factory.h"
 #include "services/network/public/mojom/url_response_head.mojom.h"
 #include "services/network/test/test_url_loader_factory.h"
@@ -227,7 +231,7 @@ class DeviceCloudPolicyManagerAshTest
         base::SingleThreadTaskRunner::GetCurrentDefault(), &state_keys_broker_);
 
     manager_->Init(&schema_registry_);
-    manager_->SetSigninProfileSchemaRegistry(&schema_registry_);
+    manager_->AddAuthScreenSchemaRegistry(&schema_registry_);
 
     // SharedURLLoaderFactory and LocalState singletons have to be set since
     // they are accessed by EnrollmentHandler and StartupUtils.
@@ -245,7 +249,10 @@ class DeviceCloudPolicyManagerAshTest
         TestingBrowserProcess::GetGlobal()->shared_url_loader_factory(),
         TestingBrowserProcess::GetGlobal()
             ->platform_part()
-            ->browser_policy_connector_ash());
+            ->browser_policy_connector_ash(),
+        TestingBrowserProcess::GetGlobal()
+            ->platform_part()
+            ->component_manager_ash());
 
     // SystemSaltGetter is used in DeviceOAuth2TokenService.
     ash::SystemSaltGetter::Initialize();
@@ -328,15 +335,16 @@ class DeviceCloudPolicyManagerAshTest
   }
 
   void InitDeviceCloudPolicyInitializer() {
-    manager_->Initialize(TestingBrowserProcess::GetGlobal()->local_state());
+    manager_->Initialize(
+        TestingBrowserProcess::GetGlobal()->local_state(),
+        TestingBrowserProcess::GetGlobal()->shared_url_loader_factory());
     EnrollmentRequisitionManager::Initialize(
         CHECK_DEREF(TestingBrowserProcess::GetGlobal()->local_state()));
     initializer_ = std::make_unique<DeviceCloudPolicyInitializer>(
+        test_url_loader_factory_.GetSafeWeakWrapper(),
         &device_management_service_, install_attributes_.get(),
         &state_keys_broker_, store_, manager_.get(),
         &fake_statistics_provider_);
-    initializer_->SetSystemURLLoaderFactoryForTesting(
-        test_url_loader_factory_.GetSafeWeakWrapper());
     initializer_->Init();
     base::RunLoop().RunUntilIdle();
     Mock::VerifyAndClearExpectations(external_data_manager_);
@@ -429,7 +437,9 @@ TEST_F(DeviceCloudPolicyManagerAshTest, FreshDevice) {
   FlushDeviceSettings();
   EXPECT_TRUE(manager_->IsInitializationComplete(POLICY_DOMAIN_CHROME));
 
-  manager_->Initialize(TestingBrowserProcess::GetGlobal()->local_state());
+  manager_->Initialize(
+      TestingBrowserProcess::GetGlobal()->local_state(),
+      TestingBrowserProcess::GetGlobal()->shared_url_loader_factory());
 
   PolicyBundle bundle;
   EXPECT_TRUE(manager_->policies().Equals(bundle));
@@ -674,7 +684,7 @@ TEST_F(DeviceCloudPolicyManagerAshObserverTest, GetSchemaRegistry) {
 
   EXPECT_FALSE(manager_->HasSchemaRegistry());
 
-  manager_->SetSigninProfileSchemaRegistry(&schema_registry_);
+  manager_->AddAuthScreenSchemaRegistry(&schema_registry_);
 
   EXPECT_TRUE(manager_->HasSchemaRegistry());
 }
@@ -707,6 +717,13 @@ class DeviceCloudPolicyManagerAshEnrollmentTest
 
   void SetUp() override {
     DeviceCloudPolicyManagerAshTest::SetUp();
+
+    CHECK(temp_dir_.CreateUniqueTempDir());
+    token_path_override_ = std::make_unique<base::ScopedPathOverride>(
+        chrome::FILE_CHROME_OS_DEVICE_REFRESH_TOKEN,
+        temp_dir_.GetPath().Append("device_refresh_token"),
+        /*is_absolute=*/true,
+        /*create=*/false);
 
     // Set up test data.
     device_policy_->SetDefaultNewSigningKey();
@@ -795,16 +812,15 @@ class DeviceCloudPolicyManagerAshEnrollmentTest
         test_url_loader_factory_.GetSafeWeakWrapper(),
         CloudPolicyClient::DeviceDMTokenCallback());
 
-    const auto& local_state =
+    auto& local_state =
         CHECK_DEREF(TestingBrowserProcess::GetGlobal()->local_state());
     enrollment_handler_ = std::make_unique<EnrollmentHandler>(
-        store_, install_attributes_.get(), &state_keys_broker_,
-        &mock_attestation_flow_, std::move(client),
-        base::SingleThreadTaskRunner::GetCurrentDefault(), enrollment_config,
-        std::move(auth), install_attributes_->GetDeviceId(),
+        &local_state, test_url_loader_factory_.GetSafeWeakWrapper(), store_,
+        install_attributes_.get(), &state_keys_broker_, &mock_attestation_flow_,
+        std::move(client), base::SingleThreadTaskRunner::GetCurrentDefault(),
+        enrollment_config, std::move(auth), install_attributes_->GetDeviceId(),
         EnrollmentRequisitionManager::GetDeviceRequisition(local_state),
         EnrollmentRequisitionManager::GetSubOrganization(local_state),
-
         base::BindOnce(&DeviceCloudPolicyManagerAshEnrollmentTest::Done,
                        base::Unretained(this)));
     enrollment_handler_->SetSigningServiceProviderForTesting(
@@ -1005,6 +1021,9 @@ class DeviceCloudPolicyManagerAshEnrollmentTest
 
   std::unique_ptr<EnrollmentHandler> enrollment_handler_;
 
+  base::ScopedTempDir temp_dir_;
+  std::unique_ptr<base::ScopedPathOverride> token_path_override_;
+
   // Set to true if the robot auth fetch is expected to fail.
   bool expect_robot_auth_fetch_failure_;
 
@@ -1122,31 +1141,9 @@ TEST_P(DeviceCloudPolicyManagerAshEnrollmentTest, DisableMachineCertReq) {
   ExpectSuccessfulEnrollment();
 }
 
-// A subclass that runs with a blank system salt.
-class DeviceCloudPolicyManagerAshEnrollmentBlankSystemSaltTest
-    : public DeviceCloudPolicyManagerAshEnrollmentTest {
- protected:
-  DeviceCloudPolicyManagerAshEnrollmentBlankSystemSaltTest() {
-    set_empty_system_salt_ = true;
-  }
-};
-
-TEST_P(DeviceCloudPolicyManagerAshEnrollmentBlankSystemSaltTest,
-       RobotRefreshSaveFailed) {
-  // Without the system salt, the robot token can't be stored.
-  expect_robot_auth_fetch_failure_ = true;
-  RunTest();
-  ExpectFailedEnrollment(EnrollmentStatus::Code::kRobotRefreshStoreFailed);
-}
-
 INSTANTIATE_TEST_SUITE_P(Cert,
                          DeviceCloudPolicyManagerAshEnrollmentTest,
                          ::testing::Values(false, true));
-
-INSTANTIATE_TEST_SUITE_P(
-    Cert,
-    DeviceCloudPolicyManagerAshEnrollmentBlankSystemSaltTest,
-    ::testing::Values(false, true));
 
 }  // namespace
 }  // namespace policy

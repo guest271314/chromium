@@ -46,7 +46,6 @@ class Window;
 }  // namespace aura
 
 namespace chromeos {
-class ImmersiveContext;
 class SnapController;
 }  // namespace chromeos
 
@@ -113,7 +112,6 @@ class AnnotatorController;
 class AppListControllerImpl;
 class AppListFeatureUsageMetrics;
 class AshAcceleratorConfiguration;
-class AshColorProvider;
 class AshDBusServices;
 class AshFocusRules;
 class AshTouchTransformController;
@@ -200,6 +198,7 @@ class MessageCenterAshImpl;
 class MessageCenterController;
 class MouseCursorEventFilter;
 class MouseKeysController;
+class MouseShakeToLocateController;
 class MruWindowTracker;
 class MultiDeviceNotificationPresenter;
 class MultiDisplayMetricsController;
@@ -217,7 +216,6 @@ class PeripheralBatteryNotifier;
 class PersistentWindowController;
 class PipController;
 class PolicyRecommendationRestorer;
-class PostLoginGlanceablesMetricsRecorder;
 class PowerButtonController;
 class PowerEventObserver;
 class PowerPrefs;
@@ -280,7 +278,6 @@ class WindowCycleController;
 class WindowRestoreController;
 class WindowTilingController;
 class WindowTreeHostManager;
-class WmModeController;
 class ArcInputMethodBoundsTracker;
 
 enum class LoginStatus;
@@ -600,10 +597,6 @@ class ASH_EXPORT Shell : public SessionObserver,
   GlanceablesController* glanceables_controller() {
     return glanceables_controller_.get();
   }
-  PostLoginGlanceablesMetricsRecorder*
-  post_login_glanceables_metrics_reporter() {
-    return post_login_glanceables_metrics_reporter_.get();
-  }
   ColorEnhancementController* color_enhancement_controller() {
     return color_enhancement_controller_.get();
   }
@@ -672,6 +665,9 @@ class ASH_EXPORT Shell : public SessionObserver,
   }
   MouseKeysController* mouse_keys_controller() {
     return mouse_keys_controller_.get();
+  }
+  MouseShakeToLocateController* mouse_shake_to_locate_controller() {
+    return mouse_shake_to_locate_controller_.get();
   }
   MruWindowTracker* mru_window_tracker() { return mru_window_tracker_.get(); }
   MultiDeviceNotificationPresenter* multidevice_notification_presenter() {
@@ -847,7 +843,6 @@ class ASH_EXPORT Shell : public SessionObserver,
   ToplevelWindowEventHandler* toplevel_window_event_handler() {
     return toplevel_window_event_handler_.get();
   }
-  AshColorProvider* ash_color_provider() { return ash_color_provider_.get(); }
 
   PrefService* local_state() { return local_state_; }
 
@@ -1104,8 +1099,6 @@ class ASH_EXPORT Shell : public SessionObserver,
   std::unique_ptr<GeolocationController> geolocation_controller_;
   std::unique_ptr<BootingAnimationController> booting_animation_controller_;
   std::unique_ptr<GlanceablesController> glanceables_controller_;
-  std::unique_ptr<PostLoginGlanceablesMetricsRecorder>
-      post_login_glanceables_metrics_reporter_;
   std::unique_ptr<HoldingSpaceController> holding_space_controller_;
   std::unique_ptr<PowerPrefs> power_prefs_;
   std::unique_ptr<SnapGroupController> snap_group_controller_;
@@ -1113,7 +1106,6 @@ class ASH_EXPORT Shell : public SessionObserver,
   std::unique_ptr<HumanPresenceOrientationController>
       human_presence_orientation_controller_;
   std::unique_ptr<ImeControllerImpl> ime_controller_;
-  std::unique_ptr<chromeos::ImmersiveContext> immersive_context_;
   std::unique_ptr<WebAuthNDialogControllerImpl> webauthn_dialog_controller_;
   std::unique_ptr<KeyboardBacklightColorController>
       keyboard_backlight_color_controller_;
@@ -1158,7 +1150,6 @@ class ASH_EXPORT Shell : public SessionObserver,
       sunfish_scanner_feature_watcher_;
   std::unique_ptr<FeatureDiscoveryDurationReporterImpl>
       feature_discover_reporter_;
-  std::unique_ptr<AshColorProvider> ash_color_provider_;
   std::unique_ptr<NightLightControllerImpl> night_light_controller_;
   std::unique_ptr<InformedRestoreController> informed_restore_controller_;
   std::unique_ptr<PipController> pip_controller_;
@@ -1211,6 +1202,8 @@ class ASH_EXPORT Shell : public SessionObserver,
       fullscreen_magnifier_controller_;
   std::unique_ptr<AutoclickController> autoclick_controller_;
   std::unique_ptr<MouseKeysController> mouse_keys_controller_;
+  std::unique_ptr<MouseShakeToLocateController>
+      mouse_shake_to_locate_controller_;
   std::unique_ptr<::wm::FocusController> focus_controller_;
 
   std::unique_ptr<MouseCursorEventFilter> mouse_cursor_filter_;
@@ -1292,8 +1285,6 @@ class ASH_EXPORT Shell : public SessionObserver,
   std::unique_ptr<DockedMagnifierController> docked_magnifier_controller_;
 
   std::unique_ptr<chromeos::SnapController> snap_controller_;
-
-  std::unique_ptr<WmModeController> wm_mode_controller_;
 
   // |native_cursor_manager_| is owned by |cursor_manager_|, but we keep a
   // pointer to vend to test code.

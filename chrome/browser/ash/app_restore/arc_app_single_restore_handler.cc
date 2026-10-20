@@ -15,7 +15,6 @@
 #include "components/app_restore/app_restore_data.h"
 #include "components/app_restore/app_restore_utils.h"
 #include "components/app_restore/full_restore_utils.h"
-#include "components/services/app_service/public/cpp/features.h"
 #include "ui/display/screen.h"
 #include "ui/events/event_constants.h"
 #include "ui/gfx/geometry/insets.h"
@@ -76,11 +75,11 @@ void ArcAppSingleRestoreHandler::LaunchGhostWindowWithApp(
     return;
   }
 
-  DCHECK(profile);
+  CHECK(profile, base::NotFatalUntil::M160);
   profile_ = profile;
 
   // For each single restore handler, the LaunchApp should be only called once.
-  DCHECK(!app_id_.has_value());
+  CHECK(!app_id_.has_value(), base::NotFatalUntil::M160);
   app_id_ = app_id;
   intent_ = std::move(intent);
   event_flags_ = event_flags;
@@ -91,7 +90,7 @@ void ArcAppSingleRestoreHandler::LaunchGhostWindowWithApp(
         AppRestoreArcTaskHandlerFactory::GetForProfile(profile)
             ->window_handler();
   }
-  DCHECK(ghost_window_handler_);
+  CHECK(ghost_window_handler_, base::NotFatalUntil::M160);
 
   // Fill restore data by launch parameter to reuse full restore related
   // functions.
@@ -198,9 +197,9 @@ void ArcAppSingleRestoreHandler::SendAppLaunchRequestToARC() {
   if (!app_id_.has_value())
     return;
 
-  DCHECK(profile_);
+  CHECK(profile_, base::NotFatalUntil::M160);
   auto* proxy = apps::AppServiceProxyFactory::GetForProfile(profile_);
-  DCHECK(proxy);
+  CHECK(proxy, base::NotFatalUntil::M160);
 
   // TODO(sstan): Add new launch source.
   if (intent_) {

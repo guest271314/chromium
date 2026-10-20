@@ -15,6 +15,7 @@ class DiscoverFeedVisibilityBrowserAgent;
 @protocol HomeCustomizationMainConsumer;
 @protocol HomeCustomizationNavigationDelegate;
 class PrefService;
+class TipsManagerIOS;
 
 namespace commerce {
 class ShoppingService;
@@ -29,9 +30,13 @@ class ShoppingService;
         (DiscoverFeedVisibilityBrowserAgent*)discoverFeedVisibilityBrowserAgent
                        shoppingService:
                            (commerce::ShoppingService*)shoppingService
+                           tipsManager:(TipsManagerIOS*)tipsManager
     NS_DESIGNATED_INITIALIZER;
 
 - (instancetype)init NS_UNAVAILABLE;
+
+// Disconnects the mediator and clears its dependencies.
+- (void)disconnect;
 
 // A consumer representing the main page's view controller.
 @property(nonatomic, weak) id<HomeCustomizationMainConsumer> mainPageConsumer;

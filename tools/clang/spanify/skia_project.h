@@ -48,13 +48,19 @@ class SkiaProject : public Project {
     return "AS_WRITABLE_BYTE_SPAN_NOT_AVAILABLE";
   }
   std::string_view GetSafeConversionsIncludePath() const override {
-    return "NOT_AVAILABLE base/numerics/safe_conversions.h";
+    return "include/private/SkTo.h";
+  }
+  CheckedCastReplacement GetCheckedCastReplacement(
+      clang::SourceRange range) const override {
+    return CheckedCastReplacement{
+        .opener = {.range = range.getBegin(), .text = "SkTo<size_t>("},
+        .closer = {.range = range.getEnd(), .text = ")"}};
   }
   std::string_view GetRawSpanIncludePath() const override {
     return "PATH_TO_RAW_SPAN_H_NOT_AVAILABLE";
   }
   std::string_view GetAutoSpanificationHelperIncludePath() const override {
-    return "NOT_AVAILABLE base/containers/auto_spanification_helper.h";
+    return "include/core/SkSpan.h";
   }
   const std::vector<FuncMapping>& GetFuncMappingTable() const override {
     static const std::vector<FuncMapping> kFuncMappingTable = {};
@@ -68,14 +74,10 @@ class SkiaProject : public Project {
         source_manager, raw_ptr_plugin::getRepresentativeLocation(Node),
         raw_ptr_plugin::FilenameLocationType::kSpellingLoc);
 
-    // Running in-place inside Chromium: absolute path contains
-    // "third_party/skia". We only want to spanify Skia sources, excluding its
-    // own internal third_party.
-    llvm::StringRef file(filename);
-    return (file.contains("third_party/") &&
-            !file.contains("third_party/skia/")) ||
-           file.contains("third_party/skia/third_party/");
+    return IsExcludedFromSubmodule(filename, "third_party/skia/",
+                                   "tools/clang/spanify/tests/skia/");
   }
+  bool SupportsStaticExtent() const override { return false; }
 };
 
 #endif  // TOOLS_CLANG_SPANIFY_SKIA_PROJECT_H_

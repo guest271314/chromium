@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "gpu/command_buffer/service/shared_image/iosurface_image_backing.h"
 
 #include <EGL/egl.h>
@@ -19,9 +14,9 @@
 #include "base/apple/scoped_cftyperef.h"
 #include "base/apple/scoped_nsobject.h"
 #include "base/bits.h"
+#include "base/compiler_specific.h"
 #include "base/functional/callback_helpers.h"
 #include "base/memory/scoped_policy.h"
-#include "base/metrics/histogram_macros.h"
 #include "base/notimplemented.h"
 #include "base/trace_event/memory_dump_manager.h"
 #include "components/viz/common/resources/shared_image_format_utils.h"
@@ -37,7 +32,6 @@
 #include "gpu/command_buffer/service/shared_image/shared_image_gl_utils.h"
 #include "gpu/command_buffer/service/shared_image/skia_graphite_dawn_image_representation.h"
 #include "gpu/command_buffer/service/skia_utils.h"
-#include "gpu/config/gpu_finch_features.h"
 #include "third_party/angle/include/EGL/eglext_angle.h"
 #include "third_party/skia/include/core/SkColorSpace.h"
 #include "third_party/skia/include/gpu/ganesh/GrContextThreadSafeProxy.h"
@@ -49,6 +43,7 @@
 #include "ui/gl/egl_surface_io_surface.h"
 #include "ui/gl/gl_context.h"
 #include "ui/gl/gl_display.h"
+#include "ui/gl/gl_display_manager.h"
 #include "ui/gl/gl_fence_egl.h"
 #include "ui/gl/gl_gl_api_implementation.h"
 #include "ui/gl/gl_implementation.h"
@@ -83,28 +78,6 @@ struct ScopedIOSurfaceLock {
   const IOSurfaceLockOptions options_;
 };
 
-// Returns planar format for given multiplanar `format`.
-viz::SharedImageFormat GetFormatForPlane(viz::SharedImageFormat format,
-                                         int plane) {
-  DCHECK(format.is_multi_plane());
-  DCHECK(format.IsValidPlaneIndex(plane));
-
-  // IOSurfaceBacking does not support external sampler use cases.
-  int num_channels = format.NumChannelsInPlane(plane);
-  DCHECK_LE(num_channels, 2);
-  switch (format.channel_format()) {
-    case viz::SharedImageFormat::ChannelFormat::k8:
-      return num_channels == 2 ? viz::SinglePlaneFormat::kRG_88
-                               : viz::SinglePlaneFormat::kR_8;
-    case viz::SharedImageFormat::ChannelFormat::k10:
-    case viz::SharedImageFormat::ChannelFormat::k16:
-    case viz::SharedImageFormat::ChannelFormat::k16F:
-      return num_channels == 2 ? viz::SinglePlaneFormat::kRG_1616
-                               : viz::SinglePlaneFormat::kR_16;
-  }
-  NOTREACHED();
-}
-
 wgpu::Texture CreateWGPUTexture(wgpu::SharedTextureMemory shared_texture_memory,
                                 SharedImageUsageSet shared_image_usage,
                                 const gfx::Size& io_surface_size,
@@ -138,21 +111,9 @@ wgpu::Texture CreateWGPUTexture(wgpu::SharedTextureMemory shared_texture_memory,
 }
 
 id<MTLDevice> QueryMetalDeviceFromANGLE(EGLDisplay display) {
-  id<MTLDevice> metal_device = nil;
-  if (gl::GetANGLEImplementation() == gl::ANGLEImplementation::kMetal) {
-    EGLAttrib angle_device_attrib = 0;
-    if (eglQueryDisplayAttribEXT(display, EGL_DEVICE_EXT,
-                                 &angle_device_attrib)) {
-      EGLDeviceEXT angle_device =
-          reinterpret_cast<EGLDeviceEXT>(angle_device_attrib);
-      EGLAttrib metal_device_attrib = 0;
-      if (eglQueryDeviceAttribEXT(angle_device, EGL_METAL_DEVICE_ANGLE,
-                                  &metal_device_attrib)) {
-        metal_device = (__bridge id)(void*)metal_device_attrib;
-      }
-    }
-  }
-  return metal_device;
+  auto* display_egl =
+      gl::GLDisplayManagerEGL::GetInstance()->GetDisplay(display);
+  return display_egl ? display_egl->GetMetalDevice() : nil;
 }
 
 }  // namespace
@@ -173,6 +134,9 @@ IOSurfaceImageBacking::DawnBufferCopyRepresentation::
 
 wgpu::Buffer IOSurfaceImageBacking::DawnBufferCopyRepresentation::BeginAccess(
     wgpu::BufferUsage usage) {
+  CHECK(this->usage().HasAll(SHARED_IMAGE_USAGE_WEBGPU_READ |
+                             SHARED_IMAGE_USAGE_WEBGPU_WRITE));
+
   auto scoped_access = dawn_image_representation_->BeginScopedAccess(
       wgpu::TextureUsage::CopySrc, wgpu::TextureUsage::None,
       /*allow_uncleared=*/AllowUnclearedAccess::kYes);
@@ -219,7 +183,8 @@ wgpu::Buffer IOSurfaceImageBacking::DawnBufferCopyRepresentation::BeginAccess(
   // 3. Create the final packed destination buffer
   wgpu::BufferDescriptor final_buffer_desc;
   final_buffer_desc.size = packed_bytes_per_row * size().height();
-  final_buffer_desc.usage = usage | wgpu::BufferUsage::CopySrc;
+  final_buffer_desc.usage =
+      usage | wgpu::BufferUsage::CopySrc | wgpu::BufferUsage::CopyDst;
   buffer_ = device_.CreateBuffer(&final_buffer_desc);
 
   // 4. Copy from the staging buffer to the final packed buffer, row by row.
@@ -290,6 +255,10 @@ void IOSurfaceImageBacking::DawnBufferCopyRepresentation::EndAccess() {
 
   wgpu::CommandBuffer command_buffer = encoder.Finish();
   device_.GetQueue().Submit(1, &command_buffer);
+
+  // We no longer need the buffer (which was created in BeginAccess).
+  buffer_.Destroy();
+  buffer_ = {};
 }
 
 WebNNIOSurfaceTensorRepresentation::WebNNIOSurfaceTensorRepresentation(
@@ -908,8 +877,8 @@ void IOSurfaceImageBacking::DawnRepresentation::EndAccess() {
   // IOSurface must wait upon before attempting to use that IOSurface on another
   // command queue. Store these events in the underlying IOSurfaceImageBacking.
   for (size_t i = 0; i < end_access_state.fenceCount; i++) {
-    auto fence = end_access_state.fences[i];
-    auto signaled_value = end_access_state.signaledValues[i];
+    auto fence = UNSAFE_TODO(end_access_state.fences[i]);
+    auto signaled_value = UNSAFE_TODO(end_access_state.signaledValues[i]);
 
     wgpu::SharedFenceExportInfo fence_export_info;
     wgpu::SharedFenceMTLSharedEventExportInfo fence_mtl_export_info;
@@ -998,8 +967,6 @@ IOSurfaceImageBacking::IOSurfaceImageBacking(
       framebuffer_attachment_angle_(framebuffer_attachment_angle),
       weak_factory_(this) {
   CHECK(io_surface_);
-  CHECK(!is_thread_safe ||
-        base::FeatureList::IsEnabled(features::kIOSurfaceMultiThreading));
 
   // Set the color space for the underlying IOSurface when it's used as overlay.
   gfx::IOSurfaceSetColorSpace(io_surface_.get(), si_info.color_space);
@@ -1301,8 +1268,6 @@ void IOSurfaceImageBacking::WaitForCommandsToBeScheduled(
     id<MTLDevice> waiting_device) {
   AssertLockAcquired();
   TRACE_EVENT0("gpu", "IOSurfaceImageBacking::WaitForCommandsToBeScheduled");
-  base::TimeDelta dawn_wait_time;
-  base::TimeDelta angle_wait_time;
 
   base::flat_map<wgpu::Device, wgpu::Future, WGPUDeviceCompare> futures_to_keep;
   for (const auto& [device, future] : wgpu_commands_scheduled_futures_) {
@@ -1314,13 +1279,11 @@ void IOSurfaceImageBacking::WaitForCommandsToBeScheduled(
 
     TRACE_EVENT0("gpu",
                  "IOSurfaceImageBacking::WaitForCommandsToBeScheduled::Dawn");
-    base::TimeTicks start_time = base::TimeTicks::Now();
     wgpu::WaitStatus status =
         device.GetAdapter().GetInstance().WaitAny(future, UINT64_MAX);
     if (status != wgpu::WaitStatus::Success) {
       LOG(ERROR) << "WaitAny on commandsScheduledFuture failed with " << status;
     }
-    dawn_wait_time += base::TimeTicks::Now() - start_time;
   }
   wgpu_commands_scheduled_futures_ = std::move(futures_to_keep);
 
@@ -1333,39 +1296,9 @@ void IOSurfaceImageBacking::WaitForCommandsToBeScheduled(
 
     TRACE_EVENT0("gpu",
                  "IOSurfaceImageBacking::WaitForCommandsToBeScheduled::ANGLE");
-    base::TimeTicks start_time = base::TimeTicks::Now();
     fence->ClientWait();
-    angle_wait_time += base::TimeTicks::Now() - start_time;
   }
   egl_commands_scheduled_fences_ = std::move(fences_to_keep);
-
-  // Record the time it takes to schedule the commands on Dawn and ANGLE.
-  // Here we use the same kWaitTimeMax from Compositing.Display.DrawToSwapUs.
-  static constexpr base::TimeDelta kWaitTimeMin = base::Microseconds(5);
-  static constexpr base::TimeDelta kWaitTimeMax = base::Milliseconds(50);
-  static constexpr uint32_t kCommandsScheduledBuckets = 50;
-
-  const base::TimeDelta total_wait_time = dawn_wait_time + angle_wait_time;
-
-  if (total_wait_time.is_positive() &&
-      base::ShouldRecordSubsampledMetric(0.01)) {
-    if (dawn_wait_time.is_positive()) {
-      UMA_HISTOGRAM_CUSTOM_MICROSECONDS_TIMES(
-          "GPU.IOSurface.WaitForCommandsToBeScheduledTimeUs.Dawn",
-          dawn_wait_time, kWaitTimeMin, kWaitTimeMax,
-          kCommandsScheduledBuckets);
-    }
-    if (angle_wait_time.is_positive()) {
-      UMA_HISTOGRAM_CUSTOM_MICROSECONDS_TIMES(
-          "GPU.IOSurface.WaitForCommandsToBeScheduledTimeUs.ANGLE",
-          angle_wait_time, kWaitTimeMin, kWaitTimeMax,
-          kCommandsScheduledBuckets);
-    }
-
-    UMA_HISTOGRAM_CUSTOM_MICROSECONDS_TIMES(
-        "GPU.IOSurface.WaitForCommandsToBeScheduledTimeUs", total_wait_time,
-        kWaitTimeMin, kWaitTimeMax, kCommandsScheduledBuckets);
-  }
 }
 
 IOSurfaceRef IOSurfaceImageBacking::GetIOSurface() {
@@ -1565,7 +1498,7 @@ bool IOSurfaceImageBacking::IsPurgeable() const {
   return purgeable_;
 }
 
-void IOSurfaceImageBacking::Update(std::unique_ptr<gfx::GpuFence> in_fence) {
+void IOSurfaceImageBacking::Update(gfx::GpuFenceHandle in_fence) {
   AutoLock auto_lock(this);
 #if BUILDFLAG(IS_IOS)
   {
@@ -1736,27 +1669,20 @@ bool IOSurfaceImageBacking::IOSurfaceBackingEGLStateBeginAccess(
     std::vector<std::unique_ptr<gl::ScopedEGLSurfaceIOSurface>> egl_surfaces;
     for (int plane_index = 0; plane_index < format().NumberOfPlanes();
          plane_index++) {
-      viz::SharedImageFormat plane_format;
-      if (format().is_single_plane()) {
-        plane_format = format();
-        // See comments in IOSurfaceImageBackingFactory::CreateSharedImage about
-        // RGBA versus BGRA when using Skia Ganesh GL backend or ANGLE.
-        if (io_surface_format_ == 'BGRA') {
-          if (plane_format == viz::SinglePlaneFormat::kRGBA_8888) {
-            plane_format = viz::SinglePlaneFormat::kBGRA_8888;
-          } else if (plane_format == viz::SinglePlaneFormat::kRGBX_8888) {
-            plane_format = viz::SinglePlaneFormat::kBGRX_8888;
-          }
+      viz::SharedImageFormat buffer_format = format();
+      // See comments in IOSurfaceImageBackingFactory::CreateSharedImage about
+      // RGBA versus BGRA when using Skia Ganesh GL backend or ANGLE.
+      if (io_surface_format_ == 'BGRA') {
+        if (buffer_format == viz::SinglePlaneFormat::kRGBA_8888) {
+          buffer_format = viz::SinglePlaneFormat::kBGRA_8888;
+        } else if (buffer_format == viz::SinglePlaneFormat::kRGBX_8888) {
+          buffer_format = viz::SinglePlaneFormat::kBGRX_8888;
         }
-      } else {
-        // For multiplanar formats (without external sampler) get planar buffer
-        // format.
-        plane_format = GetFormatForPlane(format(), plane_index);
       }
 
       auto egl_surface = gl::ScopedEGLSurfaceIOSurface::Create(
           egl_state->egl_display_, egl_state->GetGLTarget(), io_surface_.get(),
-          plane_index, plane_format);
+          plane_index, buffer_format);
       if (!egl_surface) {
         LOG(ERROR) << "Failed to create ScopedEGLSurfaceIOSurface.";
         EndAccess(readonly);
@@ -1934,9 +1860,9 @@ bool IOSurfaceImageBacking::InitializePixels(
   }
 
   for (size_t y = 0; y < height; ++y) {
-    memcpy(dst_data, src_data, src_stride);
-    dst_data += dst_stride;
-    src_data += src_stride;
+    UNSAFE_TODO(memcpy(dst_data, src_data, src_stride));
+    UNSAFE_TODO(dst_data += dst_stride);
+    UNSAFE_TODO(src_data += src_stride);
   }
 
   return true;

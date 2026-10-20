@@ -17,6 +17,7 @@
 #include "components/variations/synthetic_trials.h"
 
 class BrowserProcessImpl;
+class BrowserWindowInterface;
 class CampaignsManagerClientImpl;
 class ChromeMetricsServiceClient;
 class ChromePasswordManagerClient;
@@ -37,9 +38,9 @@ namespace browser_sync {
 class ChromeSyncClient;
 }
 
-namespace supervised_user {
-class MetricsServiceAccessorDelegateImpl;
-}
+namespace subscription_eligibility {
+class SubscriptionEligibilityMetricsProvider;
+}  // namespace subscription_eligibility
 
 class ChromeDomainReliabilityDelegate;
 namespace domain_reliability {
@@ -53,17 +54,18 @@ class GlicPrivateInvokeFunction;
 }  // namespace extensions
 
 namespace first_run {
-class FirstRunMasterPrefsVariationsSeedTest;
+class FirstRunInitialPrefsVariationsSeedTest;
 }
 
 namespace glic {
+class GlicMetricsProvider;
 class GlicSyntheticTrialManager;
 }  // namespace glic
 
 namespace metrics {
 class ChromeOSPerUserMetricsBrowserTestBase;
 class UkmConsentParamBrowserTest;
-class CrOSPreConsentMetricsManagerTest;
+class CrOSPreChoiceMetricsManagerTest;
 }  // namespace metrics
 
 namespace optimization_guide {
@@ -152,11 +154,10 @@ class ChromeMetricsServiceAccessor : public metrics::MetricsServiceAccessor {
   friend class extensions::ChromeGuestViewManagerDelegate;
   friend class extensions::ChromeMetricsPrivateDelegate;
   friend class extensions::GlicPrivateInvokeFunction;
-  friend void metrics::ChangeMetricsReportingStateWithReplyImpl(
+  friend void metrics::ChangeMetricsReportingStateWithReply(
       bool,
       metrics::OnMetricsReportingCallbackType,
-      metrics::ChangeMetricsReportingStateCalledFrom,
-      std::optional<metrics::MetricsReportingLevel>);
+      metrics::ChangeMetricsReportingStateCalledFrom);
   friend void metrics::ApplyMetricsReportingPolicy();
   friend class ash::settings::PerSessionSettingsUserActionTracker;
   friend class settings::MetricsReportingHandler;
@@ -172,10 +173,11 @@ class ChromeMetricsServiceAccessor : public metrics::MetricsServiceAccessor {
   friend class ChromePasswordManagerClient;
   friend class NavigationMetricsRecorder;
   friend class ChromeBrowserMainExtraPartsGpu;
-  friend class Browser;
+  friend class BrowserWindowInterface;
   friend class BrowserProcessImpl;
   friend class GlobalFeatures;
-  friend class supervised_user::MetricsServiceAccessorDelegateImpl;
+  friend class subscription_eligibility::SubscriptionEligibilityMetricsProvider;
+  friend class glic::GlicMetricsProvider;
   friend class glic::GlicSyntheticTrialManager;
   friend class OptimizationGuideKeyedService;
   friend class optimization_guide::ChromeOnDeviceModelServiceController;
@@ -199,7 +201,7 @@ class ChromeMetricsServiceAccessor : public metrics::MetricsServiceAccessor {
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
   // Testing related friends.
-  friend class first_run::FirstRunMasterPrefsVariationsSeedTest;
+  friend class first_run::FirstRunInitialPrefsVariationsSeedTest;
   friend class ForceFieldTrialsBrowserTest;
   friend class MetricsReportingStateTest;
   friend class metrics::UkmConsentParamBrowserTest;
@@ -207,7 +209,7 @@ class ChromeMetricsServiceAccessor : public metrics::MetricsServiceAccessor {
   friend class metrics::ChromeOSPerUserMetricsBrowserTestBase;
   friend class SampledOutClientIdSavedBrowserTest;
   friend class MetricsInternalsUIBrowserTestWithLog;
-  friend class metrics::CrOSPreConsentMetricsManagerTest;
+  friend class metrics::CrOSPreChoiceMetricsManagerTest;
   FRIEND_TEST_ALL_PREFIXES(ChromeMetricsServiceAccessorTest,
                            MetricsReportingEnabled);
   FRIEND_TEST_ALL_PREFIXES(

@@ -5,13 +5,12 @@
 #include "components/remote_cocoa/app_shim/features.h"
 
 namespace remote_cocoa::features {
-// Unwanted space switching can occur on macOS 13 and greater when immersive
-// fullscreen is enabled (http://crbug.com/1454606). This feature
-// enables/disables mitigation for the unwanted space switches. The mitigation
-// makes use of undocumented methods in AppKit, which is the main reason its
-// enablement is controlled by this feature flag.
-// TODO(http://crbug.com/1454606): Remove this flag once the space switching
-// issue is fixed in AppKit.
+// Unwanted space switching can occur on macOS when immersive fullscreen is
+// enabled (https://crbug.com/40272387). This feature enables/disables
+// mitigation for the unwanted space switches. The mitigation makes use of
+// undocumented methods in AppKit, which is the main reason its enablement is
+// controlled by this feature flag. TODO(https://crbug.com/40272387): Remove
+// this flag once the space switching issue is fixed in AppKit.
 BASE_FEATURE(kImmersiveFullscreenSpaceSwitchMitigation,
              base::FEATURE_ENABLED_BY_DEFAULT);
 
@@ -20,4 +19,18 @@ BASE_FEATURE(kImmersiveFullscreenSpaceSwitchMitigation,
 BASE_FEATURE(kImmersiveFullscreenOverlayWindowDebug,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
+BASE_FEATURE(kSuppressAppKitFrameAdjustmentsDuringMoveLoop,
+             base::FEATURE_ENABLED_BY_DEFAULT);
+
+// When enabled, file dialogs opened from companion or auxiliary windows
+// (windows with NSWindowCollectionBehaviorFullScreenAuxiliary) are presented
+// as sheets attached to the parent window. This allows the file chooser to
+// display reliably when floating over native macOS fullscreen spaces.
+BASE_FEATURE(kMacFullScreenAuxiliaryFileDialog,
+             base::FEATURE_ENABLED_BY_DEFAULT);
+
+// Kill switch for clearing the first responder before hiding a WebContents in
+// the NSToolbarFullScreenWindow. See https://crbug.com/573809833.
+BASE_FEATURE(kClearFirstResponderInToolbarFullScreenWindow,
+             base::FEATURE_ENABLED_BY_DEFAULT);
 }  // namespace remote_cocoa::features

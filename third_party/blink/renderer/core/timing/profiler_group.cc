@@ -8,6 +8,9 @@
 
 #include "base/time/time.h"
 #include "build/build_config.h"
+#include "third_party/blink/public/common/permissions_policy/document_policy_features.h"
+#include "third_party/blink/public/common/permissions_policy/policy_value.h"
+#include "third_party/blink/public/mojom/permissions_policy/policy_value.mojom-blink.h"
 #include "third_party/blink/public/platform/task_type.h"
 #include "third_party/blink/renderer/bindings/core/v8/profiler_trace_builder.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_promise_resolver.h"
@@ -22,8 +25,8 @@
 #include "third_party/blink/renderer/platform/bindings/exception_state.h"
 #include "third_party/blink/renderer/platform/bindings/script_state.h"
 #include "third_party/blink/renderer/platform/scheduler/public/thread_scheduler.h"
-#include "third_party/blink/renderer/platform/weborigin/security_origin.h"
 #include "third_party/blink/renderer/platform/wtf/functional.h"
+#include "third_party/blink/renderer/platform/wtf/text/format.h"
 #include "third_party/blink/renderer/platform/wtf/vector.h"
 #include "v8/include/v8-profiler.h"
 #include "v8/include/v8.h"
@@ -68,6 +71,29 @@ class ProfilerGroup::ProfilingContextObserver
   Member<ProfilerGroup> profiler_group_;
 };
 
+JSProfilingMode ProfilerGroup::GetProfilingMode(
+    ExecutionContext* execution_context,
+    ReportOptions report_options) {
+  DCHECK(execution_context);
+  // Check the new js-profiling-mode enum policy first.
+  PolicyValue mode_value = execution_context->GetDocumentPolicyValue(
+      mojom::blink::DocumentPolicyFeature::kJSProfilingMode);
+  if (std::optional<int32_t> v = mode_value.GetIfEnum()) {
+    if (*v >= 1 && *v <= static_cast<int32_t>(JSProfilingMode::kMax)) {
+      // "eager" or "lazy" explicitly set in the header — honour it.
+      return static_cast<JSProfilingMode>(*v);
+    }
+    // *v == 0: default "not set", meaning the header was absent. Fall through
+    // to the legacy kJSProfiling boolean policy.
+  }
+  // Fall back to the legacy js-profiling boolean policy.
+  if (execution_context->IsFeatureEnabled(
+          mojom::blink::DocumentPolicyFeature::kJSProfiling, report_options)) {
+    return JSProfilingMode::kEager;
+  }
+  return JSProfilingMode::kNone;
+}
+
 bool ProfilerGroup::CanProfile(ExecutionContext* execution_context,
                                ExceptionState* exception_state,
                                ReportOptions report_options) {
@@ -83,27 +109,27 @@ bool ProfilerGroup::CanProfile(ExecutionContext* execution_context,
     return false;
   }
 
-  if (!execution_context->IsFeatureEnabled(
-          mojom::blink::DocumentPolicyFeature::kJSProfiling, report_options)) {
-    if (exception_state) {
-      exception_state->ThrowDOMException(
-          DOMExceptionCode::kNotAllowedError,
-          "JS profiling is disabled by Document Policy.");
-    }
-    return false;
+  if (GetProfilingMode(execution_context, report_options) !=
+      JSProfilingMode::kNone) {
+    return true;
   }
 
-  return true;
+  if (exception_state) {
+    exception_state->ThrowDOMException(
+        DOMExceptionCode::kNotAllowedError,
+        "JS profiling is disabled by Document Policy.");
+  }
+  return false;
 }
 
 void ProfilerGroup::InitializeIfEnabled(ExecutionContext* execution_context) {
-  if (ProfilerGroup::CanProfile(execution_context)) {
-    ProfilerGroup* profiler_group =
-        ProfilerGroup::From(execution_context->GetIsolate());
-    if (profiler_group) {
-      profiler_group->OnProfilingContextAdded(execution_context);
-    }
+  if (!CanProfile(execution_context)) {
+    return;
   }
+  JSProfilingMode mode = GetProfilingMode(execution_context);
+  CHECK_NE(mode, JSProfilingMode::kNone);
+  auto* profiler_group = ProfilerGroup::From(execution_context->GetIsolate());
+  profiler_group->OnProfilingContextAdded(execution_context, mode);
 }
 
 ProfilerGroup* ProfilerGroup::From(v8::Isolate* isolate) {
@@ -135,7 +161,9 @@ void DiscardedSamplesDelegate::Notify() {
   }
 }
 
-void ProfilerGroup::OnProfilingContextAdded(ExecutionContext* context) {
+void ProfilerGroup::OnProfilingContextAdded(ExecutionContext* context,
+                                            JSProfilingMode mode) {
+  CHECK_NE(mode, JSProfilingMode::kNone);
   // Retain an observer for the context's lifetime. During which, keep the V8
   // profiler alive.
   auto* observer =
@@ -143,7 +171,14 @@ void ProfilerGroup::OnProfilingContextAdded(ExecutionContext* context) {
   context_observers_.insert(observer);
 
   if (!cpu_profiler_) {
-    InitV8Profiler();
+    if (mode == JSProfilingMode::kEager) {
+      InitV8Profiler(v8::kEagerLogging);
+    } else if (mode == JSProfilingMode::kLazy) {
+      // Initialize with kLazyLogging: the V8 profiler is created now but
+      // defers JIT event logging until StartProfiling() is called, avoiding
+      // the page-load overhead of eager JIT enumeration.
+      InitV8Profiler(v8::kLazyLogging);
+    }
     DCHECK(cpu_profiler_);
   }
 }
@@ -204,12 +239,6 @@ Profiler* ProfilerGroup::CreateProfiler(ScriptState* script_state,
       return nullptr;
     }
     case v8::CpuProfilingStatus::kStarted: {
-      // Limit non-crossorigin script frames to the origin that started the
-      // profiler.
-      auto* execution_context = ExecutionContext::From(script_state);
-      scoped_refptr<const SecurityOrigin> source_origin(
-          execution_context->GetSecurityOrigin());
-
       // The V8 CPU profiler ticks in multiples of the base sampling interval.
       // This effectively means that we gather samples at the multiple of the
       // base sampling interval that's greater than or equal to the requested
@@ -225,7 +254,7 @@ Profiler* ProfilerGroup::CreateProfiler(ScriptState* script_state,
 
       auto* profiler = MakeGarbageCollected<Profiler>(
           this, script_state, profiler_id, effective_sample_interval_ms,
-          source_origin, time_origin);
+          time_origin);
       profilers_.insert(profiler);
       num_active_profilers_++;
       return profiler;
@@ -250,8 +279,9 @@ void ProfilerGroup::WillBeDestroyed() {
 
   StopDetachedProfilers();
 
-  if (cpu_profiler_)
+  if (cpu_profiler_) {
     TeardownV8Profiler();
+  }
 }
 
 void ProfilerGroup::Trace(Visitor* visitor) const {
@@ -268,12 +298,12 @@ void ProfilerGroup::OnProfilingContextDestroyed(
   }
 }
 
-void ProfilerGroup::InitV8Profiler() {
+void ProfilerGroup::InitV8Profiler(v8::CpuProfilingLoggingMode logging_mode) {
   DCHECK(!cpu_profiler_);
   DCHECK_EQ(num_active_profilers_, 0);
 
   cpu_profiler_ =
-      v8::CpuProfiler::New(isolate_, v8::kStandardNaming, v8::kEagerLogging);
+      v8::CpuProfiler::New(isolate_, v8::kStandardNaming, logging_mode);
 #if BUILDFLAG(IS_WIN)
   // Avoid busy-waiting on Windows, clamping us to the system clock interrupt
   // interval in the worst case.
@@ -301,12 +331,13 @@ void ProfilerGroup::StopProfiler(
   v8::Local<v8::String> profiler_id =
       V8String(isolate_, profiler->ProfilerId());
   auto* profile = cpu_profiler_->StopProfiling(profiler_id);
-  auto* trace = ProfilerTraceBuilder::FromProfile(
-      script_state, profile, profiler->SourceOrigin(), profiler->TimeOrigin());
+  auto* trace = ProfilerTraceBuilder::FromProfile(script_state, profile,
+                                                  profiler->TimeOrigin());
   resolver->Resolve(trace);
 
-  if (profile)
+  if (profile) {
     profile->Delete();
+  }
 
   profilers_.erase(profiler);
   --num_active_profilers_;
@@ -364,8 +395,9 @@ void ProfilerGroup::StopDetachedProfilers() {
 }
 
 void ProfilerGroup::CancelProfilerImpl(String profiler_id) {
-  if (!cpu_profiler_)
+  if (!cpu_profiler_) {
     return;
+  }
 
   v8::HandleScope scope(isolate_);
   v8::Local<v8::String> v8_profiler_id = V8String(isolate_, profiler_id);
@@ -376,7 +408,7 @@ void ProfilerGroup::CancelProfilerImpl(String profiler_id) {
 }
 
 String ProfilerGroup::NextProfilerId() {
-  auto id = String::Format("blink::Profiler[%d]", next_profiler_id_);
+  auto id = Format("blink::Profiler[{}]", next_profiler_id_);
   ++next_profiler_id_;
   return id;
 }

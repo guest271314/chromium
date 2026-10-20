@@ -248,6 +248,7 @@ class CC_PAINT_EXPORT PaintOpWriter {
   void Write(uint8_t data) { WriteSimple(data); }
   void Write(uint16_t data) { WriteSimple(data); }
   void Write(uint32_t data) { WriteSimple(data); }
+  void Write(uint64_t data);
   void Write(int32_t data) { WriteSimple(data); }
   void Write(const SkPoint& point) { WriteSimple(point); }
   void Write(const SkRect& rect) { WriteSimple(rect); }
@@ -456,9 +457,14 @@ class CC_PAINT_EXPORT PaintOpWriter {
              const gfx::SizeF& post_scale);
   void Write(const SkRegion& region);
   void WriteImage(const DecodedDrawImage& decoded_draw_image,
+                  const gfx::HDRMetadata& hdr_metadata,
                   bool reinterpret_as_srgb);
-  void WriteImage(uint32_t transfer_cache_entry_id, bool needs_mips);
-  void WriteImage(const gpu::Mailbox& mailbox, bool reinterpret_as_srgb);
+  void WriteImage(uint32_t transfer_cache_entry_id,
+                  bool needs_mips,
+                  const gfx::HDRMetadata& hdr_metadata);
+  void WriteImage(const gpu::Mailbox& mailbox,
+                  const gfx::HDRMetadata& hdr_metadata,
+                  bool reinterpret_as_srgb);
   void DidWrite(size_t bytes_written) {
     // All data are aligned with kDefaultAlignment at least.
     size_t aligned_bytes =

@@ -6,9 +6,9 @@
 #define CHROME_BROWSER_GLIC_HOST_GLIC_UI_H_
 
 #include "base/memory/raw_ptr.h"
-#include "chrome/browser/glic/fre/glic_fre.mojom.h"
-#include "chrome/browser/glic/host/glic.mojom.h"
+#include "chrome/browser/glic/host/glic.mojom-forward.h"
 #include "chrome/browser/glic/host/glic_internals.mojom.h"
+#include "chrome/browser/glic/host/glic_webui.mojom.h"
 #include "content/public/browser/web_ui_controller.h"
 #include "content/public/browser/webui_config.h"
 #include "content/public/common/url_constants.h"
@@ -26,7 +26,6 @@ namespace glic {
 class GlicPreloadHandler;
 class GlicPageHandler;
 class GlicInternalsPageHandler;
-class GlicFrePageHandler;
 class GlicUI;
 class Host;
 
@@ -46,7 +45,6 @@ class GlicUI : public ui::MojoWebUIController,
 #endif
                public glic::mojom::PageHandlerFactory,
                public glic::mojom::InternalsPageHandlerFactory,
-               public glic::mojom::FrePageHandlerFactory,
                public glic::mojom::GlicPreloadHandlerFactory {
  public:
   explicit GlicUI(content::WebUI* web_ui);
@@ -66,8 +64,6 @@ class GlicUI : public ui::MojoWebUIController,
   void BindInterface(
       mojo::PendingReceiver<glic::mojom::InternalsPageHandlerFactory> receiver);
 
-  void BindInterface(
-      mojo::PendingReceiver<glic::mojom::FrePageHandlerFactory> receiver);
 
   void BindInterface(
       mojo::PendingReceiver<glic::mojom::GlicPreloadHandlerFactory> receiver);
@@ -80,6 +76,10 @@ class GlicUI : public ui::MojoWebUIController,
 
   // Associates the WebUI with a given Host. This must be called exactly once.
   void AttachToHost(Host* host);
+
+  // Returns the host. This is null before the host is attached.
+  Host* host() const { return host_; }
+
 
  private:
 #if !BUILDFLAG(ENABLE_EXTENSIONS_CORE)
@@ -101,19 +101,13 @@ class GlicUI : public ui::MojoWebUIController,
       mojo::PendingReceiver<glic::mojom::GlicPreloadHandler> receiver,
       mojo::PendingRemote<glic::mojom::PreloadPage> page) override;
 
-  void CreatePageHandler(
-      mojo::PendingReceiver<glic::mojom::FrePageHandler> fre_receiver) override;
-
   std::unique_ptr<GlicPreloadHandler> preload_handler_;
   std::unique_ptr<GlicPageHandler> page_handler_;
   std::unique_ptr<GlicInternalsPageHandler> internals_page_handler_;
-  std::unique_ptr<GlicFrePageHandler> fre_page_handler_;
 
   mojo::Receiver<glic::mojom::PageHandlerFactory> page_factory_receiver_{this};
   mojo::Receiver<glic::mojom::InternalsPageHandlerFactory>
       internals_page_factory_receiver_{this};
-  mojo::Receiver<glic::mojom::FrePageHandlerFactory> fre_page_factory_receiver_{
-      this};
   mojo::Receiver<glic::mojom::GlicPreloadHandlerFactory>
       preload_factory_receiver_{this};
 

@@ -14,6 +14,8 @@ import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.preferences.Pref;
 import org.chromium.chrome.browser.profiles.Profile;
+import org.chromium.chrome.browser.signin.services.IdentityServicesProvider;
+import org.chromium.chrome.browser.signin.services.SigninManager;
 import org.chromium.chrome.browser.signin.services.SigninPreferencesManager;
 import org.chromium.components.signin.AccountManagerFacade;
 import org.chromium.components.signin.AccountManagerFacadeProvider;
@@ -71,7 +73,7 @@ public final class FullscreenSigninPromoLauncher {
     }
 
     /**
-     * Launches the {@link SigninAndHistorySyncActivity} when forcing the display.
+     * Launches the {@link SigninAndHistorySyncActivity} when forcing the display with a flag.
      *
      * @param context The {@link Context} to launch the {@link SigninAndHistorySyncActivity}.
      * @param profile The active user profile.
@@ -83,19 +85,36 @@ public final class FullscreenSigninPromoLauncher {
             Context context,
             Profile profile,
             SigninAndHistorySyncActivityLauncher signinAndHistorySyncActivityLauncher) {
-        boolean shouldDisplayForForcedSigninPolicy =
-                ForcedSigninController.shouldDisplayForcedSignin(profile);
-        if (!SigninFeatureMap.isEnabled(SigninFeatures.FORCE_STARTUP_SIGNIN_PROMO)
-                && !shouldDisplayForForcedSigninPolicy) {
+        if (!SigninFeatureMap.isEnabled(SigninFeatures.FORCE_STARTUP_SIGNIN_PROMO)) {
             return false;
         }
         return createAndLaunchActivity(
                 context,
                 profile,
                 signinAndHistorySyncActivityLauncher,
-                shouldDisplayForForcedSigninPolicy
-                        ? SigninAccessPoint.FORCED_SIGNIN
-                        : SigninAccessPoint.FULLSCREEN_SIGNIN_PROMO);
+                SigninAccessPoint.FULLSCREEN_SIGNIN_PROMO);
+    }
+
+    /**
+     * Launches the {@link SigninAndHistorySyncActivity} for the forced sign-in flow. Callers are
+     * responsible for checking whether the forced sign-in flow should be displayed, see {@link
+     * ForcedSigninController#showFullscreenSigninPromptIfRequired()}.
+     *
+     * @param context The {@link Context} to launch the {@link SigninAndHistorySyncActivity}.
+     * @param profile The active user profile.
+     * @param signinAndHistorySyncActivityLauncher launcher used to launch the {@link
+     *     SigninAndHistorySyncActivity}.
+     * @return Whether the signin promo is shown.
+     */
+    public static boolean launchForcedSigninFlow(
+            Context context,
+            Profile profile,
+            SigninAndHistorySyncActivityLauncher signinAndHistorySyncActivityLauncher) {
+        return createAndLaunchActivity(
+                context,
+                profile,
+                signinAndHistorySyncActivityLauncher,
+                SigninAccessPoint.FORCED_SIGNIN);
     }
 
     private static boolean createAndLaunchActivity(
@@ -104,7 +123,7 @@ public final class FullscreenSigninPromoLauncher {
             SigninAndHistorySyncActivityLauncher signinAndHistorySyncActivityLauncher,
             @SigninAccessPoint int accessPoint) {
         FullscreenSigninAndHistorySyncConfig config =
-                new FullscreenSigninAndHistorySyncConfig.Builder(
+                FullscreenSigninAndHistorySyncConfig.builder(
                                 context.getString(R.string.signin_fre_title),
                                 context.getString(R.string.signin_fre_subtitle),
                                 context.getString(R.string.signin_fre_stay_signed_out_button),
@@ -124,6 +143,12 @@ public final class FullscreenSigninPromoLauncher {
     private static boolean shouldLaunchPromo(
             Profile profile, SigninPreferencesManager prefManager, final int currentMajorVersion) {
         if (DeviceInfo.isAutomotive()) {
+            return false;
+        }
+
+        SigninManager signinManager = IdentityServicesProvider.get().getSigninManager(profile);
+        if (signinManager == null
+                || !signinManager.isSigninSupported(/* requireUpdatedPlayServices= */ true)) {
             return false;
         }
 

@@ -52,6 +52,11 @@ FakeVideoCaptureStack::~FakeVideoCaptureStack() = default;
 void FakeVideoCaptureStack::Reset() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
+  // `started_` and `error_occurred_` are latched by the receiver and must be
+  // cleared too, otherwise a second capture session on the same stack starts
+  // out looking like it has already produced a frame.
+  started_ = false;
+  error_occurred_ = false;
   frames_.clear();
   last_frame_timestamp_ = base::TimeDelta::Min();
 }
@@ -183,14 +188,15 @@ class FakeVideoCaptureStackReceiver final : public media::VideoFrameReceiver {
          "FakeVideoCaptureStack"},
         gpu::kNullSurfaceHandle, gfx::BufferUsage::SCANOUT_VEA_CPU_READ,
         gmb_handle.Clone());
+    auto creation_sync_token = shared_image->creation_sync_token();
+    sii_->VerifySyncToken(creation_sync_token);
     auto video_frame = media::VideoFrame::WrapMappableSharedImage(
-        std::move(shared_image), sii_->GenVerifiedSyncToken(),
-        base::NullCallback(), frame.frame_info->visible_rect,
-        frame.frame_info->coded_size, frame.frame_info->timestamp);
+        std::move(shared_image), creation_sync_token, base::NullCallback(),
+        frame.frame_info->visible_rect, frame.frame_info->coded_size,
+        frame.frame_info->timestamp);
     CHECK(video_frame);
 
     video_frame->set_metadata(frame.frame_info->metadata);
-    video_frame->set_color_space(frame.frame_info->color_space);
 
     auto mapped_frame = media::ConvertToMemoryMappedFrame(video_frame);
     CHECK(mapped_frame);
@@ -328,7 +334,7 @@ class FakeVideoCaptureStackReceiver final : public media::VideoFrameReceiver {
 std::unique_ptr<media::VideoFrameReceiver>
 FakeVideoCaptureStack::CreateFrameReceiver() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  DCHECK(!receiver_);
+  CHECK(!receiver_, base::NotFatalUntil::M160);
 
   auto result = std::make_unique<FakeVideoCaptureStackReceiver>(
       weak_ptr_factory_.GetWeakPtr());

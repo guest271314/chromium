@@ -28,6 +28,8 @@ class StaticBitmapImageTransformTest : public ::testing::Test {
     InitializeSharedGpuContext(test_context_provider_.get());
   }
 
+  void TearDown() override { SharedGpuContext::Reset(); }
+
   scoped_refptr<AcceleratedStaticBitmapImage> CreateAccelerated(
       gfx::Size size,
       viz::SharedImageFormat format,
@@ -41,7 +43,7 @@ class StaticBitmapImageTransformTest : public ::testing::Test {
         gpu::kNullSurfaceHandle);
     return AcceleratedStaticBitmapImage::CreateFromCanvasSharedImage(
         std::move(client_si), test_sii_->GenUnverifiedSyncToken(), alpha_type,
-        SharedGpuContext::ContextProviderWrapper(),
+        gfx::HDRMetadata(), SharedGpuContext::ContextProviderWrapper(),
         base::PlatformThread::CurrentRef(),
         base::MakeRefCounted<base::NullTaskRunner>(), base::DoNothing());
   }

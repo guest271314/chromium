@@ -8,6 +8,7 @@
 #include <memory>
 #include <optional>
 
+#include "base/memory/raw_ref.h"
 #include "components/webapps/common/web_app_id.h"
 
 class Profile;
@@ -39,9 +40,16 @@ class NavigationCapturingSettings {
   // In the meantime, on ChromeOS for <experiment class>, this is selectively
   // enabled for certain cases to support that project, until we can ship the
   // above change.
+  // `opener_url` is the last committed URL of the frame that opened the
+  // auxiliary context.
   virtual bool ShouldAuxiliaryContextsKeepSameContainer(
       const std::optional<webapps::AppId>& source_browser_app_id,
+      const GURL& opener_url,
       const GURL& url);
+
+ protected:
+  explicit NavigationCapturingSettings(Profile&);
+  raw_ref<Profile> profile_;
 };
 
 }  // namespace web_app

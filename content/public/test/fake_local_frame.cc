@@ -43,6 +43,9 @@ void FakeLocalFrame::SendInterventionReport(
     const std::string& message,
     const std::optional<blink::FrameToken>& child_frame_token) {}
 
+void FakeLocalFrame::UpdateChildFrameToVideoAd(
+    const blink::FrameToken& child_frame_token) {}
+
 void FakeLocalFrame::SetFrameOwnerProperties(
     blink::mojom::FrameOwnerPropertiesPtr properties) {}
 
@@ -114,9 +117,6 @@ void FakeLocalFrame::ReportContentSecurityPolicyViolation(
 
 void FakeLocalFrame::DidUpdateFramePolicy(
     const blink::FramePolicy& frame_policy) {}
-
-void FakeLocalFrame::OnFrameVisibilityChanged(
-    blink::mojom::FrameVisibility visibility) {}
 
 void FakeLocalFrame::PostMessageEvent(
     const std::optional<blink::RemoteFrameToken>& source_frame_token,
@@ -260,7 +260,7 @@ void FakeLocalFrame::GetScrollPosition(GetScrollPositionCallback callback) {
 }
 
 void FakeLocalFrame::InvokeScriptToolForInspector(
-    const base::UnguessableToken& invocation_id,
+    const blink::ToolInvocationToken& invocation_id,
     const std::string& tool_name,
     const std::string& input_arguments,
     InvokeScriptToolForInspectorCallback callback) {
@@ -268,7 +268,7 @@ void FakeLocalFrame::InvokeScriptToolForInspector(
 }
 
 void FakeLocalFrame::NotifyInspectorOfCrossDocumentScriptToolResult(
-    const base::UnguessableToken& invocation_id) {}
+    const blink::ToolInvocationToken& invocation_id) {}
 
 #if BUILDFLAG(IS_ANDROID)
 void FakeLocalFrame::PerformFullContentSpellCheck() {}

@@ -6,6 +6,7 @@
 
 #include <objbase.h>
 
+#include <memory>
 #include <optional>
 #include <string>
 #include <utility>
@@ -17,21 +18,22 @@
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/files/scoped_temp_dir.h"
+#include "base/json/json_file_value_serializer.h"
 #include "base/logging.h"
 #include "base/path_service.h"
 #include "base/process/launch.h"
 #include "base/process/process.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/values.h"
 #include "base/version.h"
 #include "base/win/registry.h"
 #include "base/win/scoped_process_information.h"
 #include "chrome/elevation_service/elevator.h"
-#include "chrome/install_static/install_modes.h"
 #include "chrome/install_static/install_util.h"
+#include "chrome/installer/util/google_update_constants.h"
 #include "chrome/installer/util/util_constants.h"
 #include "chrome/windows_services/service_program/scoped_client_impersonation.h"
 #include "components/crx_file/crx_verifier.h"
-#include "components/update_client/utils.h"
 #include "third_party/zlib/google/zip.h"
 
 namespace elevation_service {
@@ -282,7 +284,7 @@ void ScheduleDirectoryForDeletion(const base::FilePath& dir_name) {
 }
 
 // Returns the ChromeRecovery directory under Google\Chrome. For machine
-// installs, this directory is under %ProgramFiles%, which is writeable only by
+// installs, this directory is under %ProgramFiles%, which is writable only by
 // adminstrators. We use this secure directory to validate and unpack the CRX to
 // prevent tampering.
 HRESULT GetChromeRecoveryDirectory(base::FilePath* dir) {
@@ -323,12 +325,11 @@ HRESULT RunChromeRecoveryCRX(const base::FilePath& crx_path,
   // Read version autonomously from secured HKLM machine registries based on
   // AppID. We use the installed app GUID instead of the potentially spoofable
   // |browser_appid| passed over RPC.
-  base::win::RegKey key(
-      HKEY_LOCAL_MACHINE,
-      install_static::GetClientsKeyPath(install_static::GetAppGuid()).c_str(),
-      KEY_QUERY_VALUE);
+  base::win::RegKey key(HKEY_LOCAL_MACHINE,
+                        install_static::GetClientsKeyPath().c_str(),
+                        KEY_QUERY_VALUE | KEY_WOW64_32KEY);
   std::wstring registry_version;
-  if (key.ReadValue(FILE_PATH_LITERAL("version"), &registry_version) !=
+  if (key.ReadValue(google_update::kRegVersionField, &registry_version) !=
       ERROR_SUCCESS) {
     // Fall back on RPC caller version if registry read fails. Registry keys
     // may be missing or corrupted on severely broken environments that recovery
@@ -402,7 +403,21 @@ HRESULT RunCRX(const base::FilePath& crx_path,
   if (FAILED(hr))
     return hr;
 
-  const auto manifest = update_client::ReadManifest(unpacked_crx_dir.GetPath());
+  const auto manifest = [&]() -> std::optional<base::DictValue> {
+    base::FilePath manifest_path =
+        unpacked_crx_dir.GetPath().Append(FILE_PATH_LITERAL("manifest.json"));
+    if (!base::PathExists(manifest_path)) {
+      return std::nullopt;
+    }
+    JSONFileValueDeserializer deserializer(manifest_path);
+    std::string error;
+    std::unique_ptr<base::Value> root =
+        deserializer.Deserialize(nullptr, &error);
+    if (!root || !root->is_dict()) {
+      return std::nullopt;
+    }
+    return std::move(root->GetDict());
+  }();
   if (!manifest) {
     return E_FAIL;
   }

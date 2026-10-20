@@ -2,7 +2,6 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-import("//build/config/chromeos/ui_mode.gni")
 import(
     "//chrome/browser/resources/chromeos/accessibility/tools/run_jsbundler.gni")
 import("//chrome/common/features.gni")
@@ -77,6 +76,7 @@ ts_modules = [
   "cursors/recovery_strategy.ts",
   "event_generator.ts",
   "event_handler.ts",
+  "extension_util.ts",
   "features.ts",
   "flags.ts",
   "mv2/instance_checker.ts",
@@ -191,6 +191,7 @@ js2gtest("accessibility_tests") {
     "cursors/cursors_test.js",
     "cursors/recovery_strategy_test.js",
     "event_generator_test.js",
+    "extension_util_test.js",
     "keep_alive_test.js",
     "local_storage_test.js",
     "paragraph_utils_overflow_test.js",
@@ -229,6 +230,7 @@ js2gtest("accessibility_tests") {
     "//chrome/browser/ash/accessibility",
     "//chrome/browser/ash/system_web_apps",
     "//chrome/common",
+    "//chrome/test/base:cros_extension_js_browser_test",
   ]
 
   defines = [ "HAS_OUT_OF_PROC_TEST_RUNNER" ]

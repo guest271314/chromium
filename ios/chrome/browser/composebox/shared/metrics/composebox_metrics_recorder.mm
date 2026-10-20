@@ -6,10 +6,13 @@
 
 #import <set>
 
+#import "base/check.h"
 #import "base/metrics/histogram_functions.h"
 #import "base/metrics/user_metrics.h"
 #import "base/notreached.h"
 #import "components/contextual_search/contextual_search_metrics_recorder.h"
+#import "components/ntp_tiles/features.h"
+#import "components/omnibox/browser/searchbox_utils.h"
 #import "ios/chrome/browser/composebox/public/composebox_entrypoint.h"
 
 namespace {
@@ -83,6 +86,8 @@ ContextualSearchAttachmentButtonTypeFromFuseboxButtonType(
       return contextual_search::ContextualSearchAttachmentButtonType::kGallery;
     case FuseboxAttachmentButtonType::kFiles:
       return contextual_search::ContextualSearchAttachmentButtonType::kFiles;
+    case FuseboxAttachmentButtonType::kDriveFiles:
+      return contextual_search::ContextualSearchAttachmentButtonType::kDrive;
     case FuseboxAttachmentButtonType::kClipboard:
       return contextual_search::ContextualSearchAttachmentButtonType::
           kClipboard;
@@ -138,6 +143,10 @@ omnibox::ModelMode ModelModeFromComposeboxModelOption(
       return omnibox::ModelMode::MODEL_MODE_GEMINI_PRO;
     case ComposeboxModelOption::kThinkingNoGenUI:
       return omnibox::ModelMode::MODEL_MODE_GEMINI_PRO_NO_GEN_UI;
+    case ComposeboxModelOption::kFlash:
+      return omnibox::ModelMode::MODEL_MODE_GEMINI_FLASH_LATEST;
+    case ComposeboxModelOption::kProLatest:
+      return omnibox::ModelMode::MODEL_MODE_GEMINI_PRO_LATEST;
   }
 }
 
@@ -146,6 +155,16 @@ std::string GetStringForEntrypoint(ComposeboxEntrypoint entrypoint) {
   switch (entrypoint) {
     case ComposeboxEntrypoint::kNTPAIMButton:
       return ".NTPAIMButton";
+    case ComposeboxEntrypoint::kNTPAttachImageButton: {
+      ntp_tiles::AimButtonRefactorArm arm =
+          ntp_tiles::GetAimButtonRefactorArm();
+      CHECK(arm == ntp_tiles::AimButtonRefactorArm::kAttachImageQuickAction ||
+            arm ==
+                ntp_tiles::AimButtonRefactorArm::kImageGenerationQuickAction);
+      return ".NTPAttachImageButton";
+    }
+    case ComposeboxEntrypoint::kNTPImageGenerationButton:
+      return ".NTPImageGenerationButton";
     case ComposeboxEntrypoint::kNTPFakebox:
       return ".NTPFakebox";
     case ComposeboxEntrypoint::kNTPPlusButton:
@@ -154,6 +173,22 @@ std::string GetStringForEntrypoint(ComposeboxEntrypoint entrypoint) {
       return ".Cobrowse";
     case ComposeboxEntrypoint::kOther:
       return ".Other";
+  }
+}
+
+std::string GetStringForPickerAttachmentType(
+    MobileFuseboxPickerAttachmentType type) {
+  switch (type) {
+    case MobileFuseboxPickerAttachmentType::kDrive:
+      return "Drive";
+    case MobileFuseboxPickerAttachmentType::kGallery:
+      return "Gallery";
+    case MobileFuseboxPickerAttachmentType::kCamera:
+      return "Camera";
+    case MobileFuseboxPickerAttachmentType::kFile:
+      return "File";
+    case MobileFuseboxPickerAttachmentType::kTabs:
+      return "Tabs";
   }
 }
 
@@ -274,19 +309,30 @@ std::string GetStringForEntrypoint(ComposeboxEntrypoint entrypoint) {
   }
 }
 
+- (void)recordDriveFilesAttached:(NSUInteger)count {
+  base::UmaHistogramCounts100("Omnibox.MobileFusebox.NumDriveFilesAttached",
+                              count);
+  if (_contextualSearchMetricsRecorder) {
+    _contextualSearchMetricsRecorder->RecordFilePickedCount(
+        contextual_search::ContextualSearchAttachmentButtonType::kDrive, count);
+  }
+}
+
 - (void)recordComposeboxFocusResultedInNavigation:(BOOL)navigation
                                   withAttachments:(BOOL)hasAttachments
                                       requestType:
                                           (AutocompleteRequestType)requestType {
-  FocusResultedInNavigationType type;
+  searchbox::FocusResultedInNavigationType type;
   if (navigation) {
     type = hasAttachments
-               ? FocusResultedInNavigationType::kNavigationWithAttachments
-               : FocusResultedInNavigationType::kNavigationNoAttachments;
+               ? searchbox::FocusResultedInNavigationType::kNavigationWithAttachments
+               : searchbox::FocusResultedInNavigationType::kNavigationNoAttachments;
   } else {
     type = hasAttachments
-               ? FocusResultedInNavigationType::kNoNavigationWithAttachments
-               : FocusResultedInNavigationType::kNoNavigationNoAttachments;
+               ? searchbox::FocusResultedInNavigationType::
+                     kNoNavigationWithAttachments
+               : searchbox::FocusResultedInNavigationType::
+                     kNoNavigationNoAttachments;
   }
   base::UmaHistogramEnumeration("Omnibox.FocusResultedInNavigation", type);
 
@@ -381,6 +427,19 @@ std::string GetStringForEntrypoint(ComposeboxEntrypoint entrypoint) {
   if (_contextualSearchMetricsRecorder) {
     _contextualSearchMetricsRecorder->RecordModelSelected(
         ModelModeFromComposeboxModelOption(model));
+  }
+}
+
+- (void)recordPickerOutcome:(MobileFuseboxPickerOutcome)outcome
+          forAttachmentType:(MobileFuseboxPickerAttachmentType)attachmentType {
+  // Record unsliced total.
+  base::UmaHistogramEnumeration("Omnibox.MobileFusebox.PickerOutcome", outcome);
+
+  // Record sliced by attachment type.
+  std::string attachment_str = GetStringForPickerAttachmentType(attachmentType);
+  if (!attachment_str.empty()) {
+    base::UmaHistogramEnumeration(
+        "Omnibox.MobileFusebox.PickerOutcome." + attachment_str, outcome);
   }
 }
 

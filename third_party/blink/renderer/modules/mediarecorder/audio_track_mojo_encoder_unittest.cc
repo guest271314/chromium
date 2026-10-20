@@ -111,13 +111,13 @@ class TestInterfaceFactory final : public media::mojom::InterfaceFactory {
       override {
     NOTREACHED();
   }
-#if BUILDFLAG(ALLOW_OOP_VIDEO_DECODER)
+#if BUILDFLAG(ENABLE_OOP_VIDEO_DECODER)
   void CreateVideoDecoderWithTracker(
       mojo::PendingReceiver<media::mojom::VideoDecoder> receiver,
       mojo::PendingRemote<media::mojom::VideoDecoderTracker> tracker) override {
     NOTREACHED();
   }
-#endif  // BUILDFLAG(ALLOW_OOP_VIDEO_DECODER)
+#endif  // BUILDFLAG(ENABLE_OOP_VIDEO_DECODER)
   void CreateAudioDecoder(
       mojo::PendingReceiver<media::mojom::AudioDecoder> receiver) override {
     NOTREACHED();
@@ -292,7 +292,7 @@ TEST_F(AudioTrackMojoEncoderTest, TimeInPauseIsRespected) {
   audio_encoder().FinishInitialization();
   auto params = media::TestAudioParameters::Normal();
   media::AudioTimestampHelper helper(params.sample_rate());
-  size_t input_frames = params.frames_per_buffer() / params.channels();
+  int input_frames = params.frames_per_buffer() / params.channels();
   helper.SetBaseTimestamp(base::Seconds(1));
   auto timestamp_frame_0 = base::TimeTicks() + helper.GetTimestamp();
   audio_track_encoder().EncodeAudio(GenerateInput(), timestamp_frame_0);

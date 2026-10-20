@@ -171,7 +171,7 @@ base::TimeDelta GetPromoControllerPollingInterval() {
   return kDefaultPollingInterval;
 }
 
-BASE_FEATURE(kEnableNtpBrowserPromos, base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kEnableNtpBrowserPromos, base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE_ENUM_PARAM(NtpBrowserPromoType,
                         kNtpBrowserPromoType,
@@ -239,6 +239,9 @@ std::ostream& operator<<(std::ostream& os, NtpBrowserPromoType promo_type) {
   os << kNtpBrowserPromoType.GetName(promo_type);
   return os;
 }
+
+BASE_FEATURE(kLazilySetCustomActionCaption, base::FEATURE_ENABLED_BY_DEFAULT);
+BASE_FEATURE(kRaiseMacHelpBubbleAboveMenus, base::FEATURE_ENABLED_BY_DEFAULT);
 
 namespace testing {
 

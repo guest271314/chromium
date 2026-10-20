@@ -11,7 +11,9 @@
 #include "base/memory/raw_ref.h"
 #include "chrome/browser/ui/page_action/page_action_controller.h"
 #include "components/tabs/public/tab_interface.h"
+#include "content/public/browser/web_contents_observer.h"
 #include "ui/base/unowned_user_data/scoped_unowned_user_data.h"
+#include "ui/views/view_tracker.h"
 
 class Profile;
 class ScopedCallToActionLock;
@@ -24,7 +26,8 @@ class ScopedCallToActionLock;
 // manages its visibility via the PageActionController, and handles user
 // interactions. An instance of this class is created and owned by
 // `tabs::TabFeatures` and is associated with a specific tab.
-class LensOverlayHomeworkPageActionController {
+class LensOverlayHomeworkPageActionController
+    : public content::WebContentsObserver {
  public:
   DECLARE_USER_DATA(LensOverlayHomeworkPageActionController);
 
@@ -32,7 +35,7 @@ class LensOverlayHomeworkPageActionController {
       tabs::TabInterface& tab_interface,
       Profile& profile,
       page_actions::PageActionController& page_action_controller);
-  ~LensOverlayHomeworkPageActionController();
+  ~LensOverlayHomeworkPageActionController() override;
 
   LensOverlayHomeworkPageActionController(
       const LensOverlayHomeworkPageActionController&) = delete;
@@ -51,8 +54,15 @@ class LensOverlayHomeworkPageActionController {
   void HandlePageActionEvent(bool is_from_keyboard);
 
  private:
+  // content::WebContentsObserver:
+  void DidFinishNavigation(
+      content::NavigationHandle* navigation_handle) override;
+
   void OnTabWillDetach(tabs::TabInterface* tab,
                        tabs::TabInterface::DetachReason reason);
+  void OnTabWillDiscardContents(tabs::TabInterface* tab,
+                                content::WebContents* discarded,
+                                content::WebContents* replacement);
 
   // Determines whether the page action icon should be shown.
   bool ShouldShow();
@@ -72,8 +82,11 @@ class LensOverlayHomeworkPageActionController {
   ui::ScopedUnownedUserData<LensOverlayHomeworkPageActionController>
       scoped_unowned_user_data_;
 
+  base::CallbackListSubscription tab_will_discard_contents_subscription_;
   base::CallbackListSubscription tab_will_detach_subscription_;
 
+  // TODO(https://crbug.com/549071859): Remove this once CallToAction is
+  // deprecated.
   std::unique_ptr<ScopedCallToActionLock> scoped_call_to_action_lock_;
 };
 

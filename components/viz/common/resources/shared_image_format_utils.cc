@@ -43,8 +43,6 @@ SharedImageFormatUMA GetSharedImageFormatUMA(SharedImageFormat format) {
       return SharedImageFormatUMA::kRGBA_4444;
     } else if (format == SinglePlaneFormat::kBGRA_8888) {
       return SharedImageFormatUMA::kBGRA_8888;
-    } else if (format == SinglePlaneFormat::kALPHA_8) {
-      return SharedImageFormatUMA::kALPHA_8;
     } else if (format == SinglePlaneFormat::kBGR_565) {
       return SharedImageFormatUMA::kBGR_565;
     } else if (format == SinglePlaneFormat::kETC1) {
@@ -53,8 +51,6 @@ SharedImageFormatUMA GetSharedImageFormatUMA(SharedImageFormat format) {
       return SharedImageFormatUMA::kR_8;
     } else if (format == SinglePlaneFormat::kRG_88) {
       return SharedImageFormatUMA::kRG_88;
-    } else if (format == SinglePlaneFormat::kLUMINANCE_F16) {
-      return SharedImageFormatUMA::kLUMINANCE_F16;
     } else if (format == SinglePlaneFormat::kRGBA_F16) {
       return SharedImageFormatUMA::kRGBA_F16;
     } else if (format == SinglePlaneFormat::kR_16) {
@@ -144,8 +140,6 @@ SkColorType ToClosestSkColorType(SharedImageFormat format) {
     return kRGBA_8888_SkColorType;
   } else if (format == SinglePlaneFormat::kBGRA_8888) {
     return kBGRA_8888_SkColorType;
-  } else if (format == SinglePlaneFormat::kALPHA_8) {
-    return kAlpha_8_SkColorType;
   } else if (format == SinglePlaneFormat::kBGR_565) {
     return kRGB_565_SkColorType;
   } else if (format == SinglePlaneFormat::kRGBX_8888 ||
@@ -165,8 +159,7 @@ SkColorType ToClosestSkColorType(SharedImageFormat format) {
     return kR16_unorm_SkColorType;
   } else if (format == SinglePlaneFormat::kRG_1616) {
     return kR16G16_unorm_SkColorType;
-  } else if (format == SinglePlaneFormat::kLUMINANCE_F16 ||
-             format == SinglePlaneFormat::kR_F16) {
+  } else if (format == SinglePlaneFormat::kR_F16) {
     return kA16_float_SkColorType;
   } else if (format == SinglePlaneFormat::kRG_88) {
     return kR8G8_unorm_SkColorType;
@@ -212,8 +205,6 @@ SharedImageFormat SkColorTypeToSinglePlaneSharedImageFormat(
       return SinglePlaneFormat::kRGBA_8888;
     case kRGBA_F16_SkColorType:
       return SinglePlaneFormat::kRGBA_F16;
-    case kAlpha_8_SkColorType:
-      return SinglePlaneFormat::kALPHA_8;
     case kRGB_565_SkColorType:
       return SinglePlaneFormat::kBGR_565;
     case kRGB_888x_SkColorType:
@@ -252,13 +243,9 @@ SharedImageFormat SkColorTypeToSinglePlaneSharedImageFormat(
 
 bool CanCreateNativeBufferForFormat(SharedImageFormat format) {
   return (format == SinglePlaneFormat::kBGRA_8888 ||
-          format == SinglePlaneFormat::kR_8 ||
-          format == SinglePlaneFormat::kRG_88 ||
 #if BUILDFLAG(IS_APPLE)
           format == SinglePlaneFormat::kBGRX_8888 ||
           format == SinglePlaneFormat::kRGBX_8888 ||
-          format == SinglePlaneFormat::kR_16 ||
-          format == SinglePlaneFormat::kRG_1616 ||
 #endif
           format == SinglePlaneFormat::kRGBA_4444 ||
           format == SinglePlaneFormat::kRGBA_8888 ||
@@ -376,56 +363,5 @@ bool IsOddSizeMultiPlanarBuffersAllowed() {
 base::span<const SharedImageFormat> GetMappableSharedImageFormatForTesting() {
   return kMappableSharedImageFormats;
 }
-
-#if BUILDFLAG(IS_MAC)
-
-bool MatchesSharedImageFormatWithIOSurfacePixelFormat(
-    const SharedImageFormat& format,
-    OSType io_surface_format,
-    bool override_rgba_to_brga) {
-  switch (io_surface_format) {
-    case kCVPixelFormatType_OneComponent8:
-      return format == SinglePlaneFormat::kR_8;
-    case kCVPixelFormatType_TwoComponent8:
-      return format == SinglePlaneFormat::kRG_88;
-    case kCVPixelFormatType_OneComponent16:
-      return format == SinglePlaneFormat::kR_16;
-    case kCVPixelFormatType_TwoComponent16:
-      return format == SinglePlaneFormat::kRG_1616;
-    case kCVPixelFormatType_ARGB2101010LEPacked:
-      return format == SinglePlaneFormat::kBGRA_1010102;
-    case kCVPixelFormatType_32BGRA:
-      return format == SinglePlaneFormat::kBGRA_8888 ||
-             format == SinglePlaneFormat::kBGRX_8888 ||
-             (override_rgba_to_brga &&
-              (format == SinglePlaneFormat::kRGBA_8888 ||
-               format == SinglePlaneFormat::kRGBX_8888));
-    case kCVPixelFormatType_32RGBA:
-      return format == SinglePlaneFormat::kRGBA_8888 ||
-             format == SinglePlaneFormat::kRGBX_8888;
-    case kCVPixelFormatType_64RGBAHalf:
-      return format == SinglePlaneFormat::kRGBA_F16;
-
-    case kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange:
-      return format == MultiPlaneFormat::kNV12;
-    case kCVPixelFormatType_422YpCbCr8BiPlanarVideoRange:
-      return format == MultiPlaneFormat::kNV16;
-    case kCVPixelFormatType_444YpCbCr8BiPlanarVideoRange:
-      return format == MultiPlaneFormat::kNV24;
-    case kCVPixelFormatType_420YpCbCr8VideoRange_8A_TriPlanar:
-      return format == MultiPlaneFormat::kNV12A;
-    case kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange:
-      return format == MultiPlaneFormat::kP010;
-    case kCVPixelFormatType_422YpCbCr10BiPlanarVideoRange:
-      return format == MultiPlaneFormat::kP210;
-    case kCVPixelFormatType_444YpCbCr10BiPlanarVideoRange:
-      return format == MultiPlaneFormat::kP410;
-    case kCVPixelFormatType_420YpCbCr8Planar:
-      return format == MultiPlaneFormat::kI420;
-  }
-  return false;
-}
-
-#endif  // BUILDFLAG(IS_MAC)
 
 }  // namespace viz

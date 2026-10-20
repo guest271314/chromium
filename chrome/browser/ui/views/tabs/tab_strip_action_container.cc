@@ -7,36 +7,35 @@
 #include <memory>
 
 #include "base/feature_list.h"
-#include "base/metrics/histogram_functions.h"
-#include "base/strings/utf_string_conversions.h"
+#include "base/notimplemented.h"
 #include "base/task/single_thread_task_runner.h"
-#include "base/types/pass_key.h"
-#include "chrome/app/vector_icons/vector_icons.h"
 #include "chrome/browser/actor/ui/actor_ui_metrics.h"
-#include "chrome/browser/actor/ui/task_list_bubble/actor_task_list_bubble_controller.h"
+#include "chrome/browser/glic/browser_ui/activity_list_bubble/glic_activity_list_bubble.h"
+#include "chrome/browser/glic/browser_ui/activity_list_bubble/glic_activity_list_bubble_controller.h"
 #include "chrome/browser/glic/browser_ui/glic_actor_nudge_controller.h"
-#include "chrome/browser/glic/browser_ui/glic_actor_task_icon_manager.h"
-#include "chrome/browser/glic/browser_ui/glic_actor_task_icon_manager_factory.h"
-#include "chrome/browser/glic/browser_ui/glic_button_controller.h"
+#include "chrome/browser/glic/browser_ui/glic_nudge_controller.h"
+#include "chrome/browser/glic/browser_ui/glic_split_button_controller.h"
 #include "chrome/browser/glic/glic_profile_manager.h"
 #include "chrome/browser/glic/host/glic.mojom.h"
 #include "chrome/browser/glic/host/host.h"
 #include "chrome/browser/glic/public/features.h"
 #include "chrome/browser/glic/public/glic_enabling.h"
 #include "chrome/browser/glic/public/glic_instance.h"
+#include "chrome/browser/glic/public/glic_invoke_options.h"
 #include "chrome/browser/glic/public/glic_keyed_service.h"
 #include "chrome/browser/glic/public/glic_keyed_service_factory.h"
-#include "chrome/browser/glic/resources/grit/glic_browser_resources.h"
+#include "chrome/browser/glic/public/service/glic_instance_coordinator.h"
+#include "chrome/browser/glic/public/service/legacy_glic_activity_manager.h"
+#include "chrome/browser/tab_list/tab_list_interface.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/color/chrome_color_id.h"
-#include "chrome/browser/ui/layout_constants.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/tabs/tab_style.h"
-#include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/user_education/browser_user_education_interface.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
+#include "chrome/browser/ui/views/frame/frame_separator.h"
 #include "chrome/browser/ui/views/glic/glic_actor_task_icon.h"
 #include "chrome/browser/ui/views/tabs/glic/glic_and_actor_buttons_container.h"
 #include "chrome/browser/ui/views/tabs/glic/tab_strip_glic_actor_task_icon.h"
@@ -44,15 +43,11 @@
 #include "chrome/browser/ui/views/tabs/tab_strip_nudge_button.h"
 #include "chrome/common/chrome_features.h"
 #include "chrome/grit/branded_strings.h"
-#include "chrome/grit/generated_resources.h"
 #include "components/feature_engagement/public/feature_constants.h"
 #include "components/tabs/public/tab_interface.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
-#include "ui/base/models/image_model.h"
-#include "ui/base/resource/resource_bundle.h"
 #include "ui/gfx/animation/tween.h"
-#include "ui/gfx/image/image_skia.h"
 #include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/background.h"
 #include "ui/views/controls/button/button.h"
@@ -65,7 +60,6 @@
 #if !BUILDFLAG(IS_ANDROID)
 #include "base/feature_list.h"
 #include "base/time/time.h"
-#include "base/types/expected.h"
 #endif  // !BUILDFLAG(IS_ANDROID)
 
 namespace {
@@ -231,11 +225,9 @@ void TabStripActionContainer::TabStripNudgeAnimationSession::Show() {
 }
 
 TabStripActionContainer::TabStripActionContainer(
-    BrowserWindowInterface* browser_window_interface,
-    glic::GlicNudgeController* glic_nudge_controller)
+    BrowserWindowInterface* browser_window_interface)
     : AnimationDelegateViews(this),
       locked_expansion_view_(this),
-      glic_nudge_controller_(glic_nudge_controller),
       browser_window_interface_(browser_window_interface) {
   SetProperty(views::kElementIdentifierKey, kTabStripActionContainerElementId);
 
@@ -244,13 +236,10 @@ TabStripActionContainer::TabStripActionContainer(
                                                     gfx::Insets()),
       this);
 
-  // `glic_nudge_controller_` will be null if feature is not enabled.
-  if (glic_nudge_controller_) {
-    glic_nudge_controller_->SetTabStripDelegate(this);
-  }
-
   if (glic::GlicEnabling::IsProfileEligible(
-          browser_window_interface_->GetProfile())) {
+          browser_window_interface_->GetProfile()) &&
+      !base::FeatureList::IsEnabled(
+          features::kGlicHorizontalTabToolbarButton)) {
     if (base::FeatureList::IsEnabled(features::kGlicActorUi) &&
         features::kGlicActorUiTaskIcon.Get()) {
       glic_actor_button_container_ =
@@ -261,14 +250,16 @@ TabStripActionContainer::TabStripActionContainer(
       glic_actor_button_container_->SetVisible(false);
     }
     glic_button_ = AddChildView(CreateGlicButton());
+  }
 
+  if (glic::GlicEnabling::IsProfileEligible(
+          browser_window_interface_->GetProfile())) {
 #if !BUILDFLAG(IS_MAC)
-    std::unique_ptr<views::Separator> separator =
-        std::make_unique<views::Separator>();
+    auto* const separator = AddChildView(std::make_unique<FrameSeparator>());
     separator->SetBorderRadius(TabStyle::Get()->GetSeparatorCornerRadius());
     separator->SetPreferredSize(TabStyle::Get()->GetSeparatorSize());
-
     separator->SetColorId(kColorTabDividerFrameActive);
+    separator->SetInactiveColorId(kColorTabDividerFrameInactive);
 
     gfx::Insets margin;
     margin.set_left_right(kLargeSpaceBetweenSeparatorLeft,
@@ -276,37 +267,39 @@ TabStripActionContainer::TabStripActionContainer(
 
     separator->SetProperty(views::kMarginsKey, margin);
 
-    subscriptions_.push_back(browser_window_interface_->RegisterDidBecomeActive(
-        base::BindRepeating(&TabStripActionContainer::DidBecomeActive,
-                            base::Unretained(this))));
-    subscriptions_.push_back(
-        browser_window_interface_->RegisterDidBecomeInactive(
-            base::BindRepeating(&TabStripActionContainer::DidBecomeInactive,
-                                base::Unretained(this))));
-    separator_ = AddChildView(std::move(separator));
+    separator_ = separator;
+    UpdateSeparatorVisibility();
 #endif  // !BUILDFLAG(IS_MAC)
   }
+
   SetLayoutManager(std::make_unique<views::FlexLayout>())
       ->SetOrientation(views::LayoutOrientation::kHorizontal)
       .SetMainAxisAlignment(views::LayoutAlignment::kStart)
       .SetCrossAxisAlignment(views::LayoutAlignment::kCenter)
       .SetCollapseMargins(false);
+
+  if (auto* glic_split_button_controller =
+          glic::GlicSplitButtonController::From(browser_window_interface)) {
+    glic_split_button_controller_ = glic_split_button_controller->GetWeakPtr();
+    glic_split_button_controller_->SetHorizontalTabsDelegate(this);
+  }
 }
 
 TabStripActionContainer::~TabStripActionContainer() {
   if (scoped_tab_strip_modal_ui_) {
     scoped_tab_strip_modal_ui_.reset();
   }
-  if (glic_nudge_controller_) {
-    glic_nudge_controller_->SetTabStripDelegate(nullptr);
+  if (glic_split_button_controller_) {
+    glic_split_button_controller_->SetHorizontalTabsDelegate(nullptr);
   }
 }
 
 void TabStripActionContainer::AddedToWidget() {
   views::View::AddedToWidget();
-  if (auto* controller =
-          glic::GlicActorNudgeController::From(browser_window_interface_)) {
-    controller->UpdateCurrentActorNudgeState();
+  if (glic_split_button_controller_ &&
+      glic_split_button_controller_->actor_nudge_controller()) {
+    glic_split_button_controller_->actor_nudge_controller()
+        ->UpdateCurrentActorNudgeState();
   }
 }
 
@@ -319,7 +312,10 @@ void TabStripActionContainer::OnTriggerGlicNudgeUI(glic::NudgeParams params) {
     return;
   }
 
-  CHECK(glic_button_);
+  if (!glic_button_) {
+    return;
+  }
+
   if (!params.label.empty()) {
     glic_button_->SetNudgeLabel(std::move(params.label));
     if (!glic_button_->GetIsShowingNudge()) {
@@ -329,26 +325,20 @@ void TabStripActionContainer::OnTriggerGlicNudgeUI(glic::NudgeParams params) {
 }
 
 void TabStripActionContainer::OnHideGlicNudgeUI() {
-  CHECK(glic_button_);
-  HideTabStripNudge(glic_button_);
+  if (glic_button_) {
+    HideTabStripNudge(glic_button_);
+  }
 }
 
 bool TabStripActionContainer::GetIsShowingGlicNudge() {
   return glic_button_ && glic_button_->GetIsShowingNudge();
 }
 
-void TabStripActionContainer::SetButtonController(
-    glic::GlicButtonController* controller) {
-  button_controller_ = controller;
-}
-
 void TabStripActionContainer::SetGlicShowState(bool show) {
   if (glic_button_) {
     UpdateGlicButtonVisibility(show);
   }
-  if (separator_) {
-    separator_->SetVisible(show);
-  }
+  UpdateSeparatorVisibility();
 }
 
 void TabStripActionContainer::SetGlicPanelIsOpen(bool open) {
@@ -357,18 +347,14 @@ void TabStripActionContainer::SetGlicPanelIsOpen(bool open) {
   }
 
   glic_button_->SetGlicPanelIsOpen(open);
-
-  if (base::FeatureList::IsEnabled(features::kGlicButtonPressedState) &&
-      features::kGlicButtonContainerBackground.Get()) {
-    glic_actor_button_container_->SetBackgroundColor(
-        glic_button_->GetBackgroundColor());
-    glic_actor_button_container_->SetHighlighted(open);
-  }
 }
 
 void TabStripActionContainer::ShowGlicActorTaskIcon() {
-  CHECK(glic_actor_button_container_);
-  CHECK(glic_button_);
+  if (!glic_button_ || !glic_actor_task_icon_ ||
+      !glic_actor_button_container_) {
+    return;
+  }
+
   // If the nudge is showing (ex: previous state was CheckTasks), hide the
   // nudge.
   if (glic_actor_task_icon_->GetIsShowingNudge()) {
@@ -406,9 +392,9 @@ void TabStripActionContainer::ShowGlicActorTaskIcon() {
 }
 
 void TabStripActionContainer::HideGlicActorTaskIcon() {
-  CHECK(glic_actor_button_container_);
-  CHECK(glic_button_);
-  CHECK(glic_actor_task_icon_);
+  if (!glic_actor_task_icon_) {
+    return;
+  }
 
   // If it's already hidden, do nothing.
   if (!glic_actor_task_icon_->GetVisible()) {
@@ -437,47 +423,81 @@ bool TabStripActionContainer::GetIsShowingGlicActorTaskIconNudge() {
   return glic_actor_task_icon_ && glic_actor_task_icon_->GetIsShowingNudge();
 }
 
-bool TabStripActionContainer::IsGlicAdded() {
-  return glic_button_ && glic_actor_task_icon_;
-}
-
 views::FlexLayoutView* TabStripActionContainer::glic_actor_button_container() {
   return glic_actor_button_container_;
 }
 
 void TabStripActionContainer::SetGlicActorNudgeLabel(
     const std::u16string& nudge_label) {
-  glic_actor_task_icon()->ShowNudgeLabel(nudge_label);
+  if (!glic_actor_task_icon_) {
+    return;
+  }
+  glic_actor_task_icon_->ShowNudgeLabel(nudge_label);
 }
 
 void TabStripActionContainer::TriggerGlicActorNudge(
-    const std::u16string& nudge_text) {
-  CHECK(glic_actor_task_icon_);
+    const std::u16string& nudge_label) {
+  if (!glic_button_ || !glic_actor_task_icon_) {
+    return;
+  }
+
   if (GetIsShowingGlicNudge()) {
     // If the glic button is showing, start the hide animation in parallel to
     // the show actor nudge animation.
     HideTabStripNudge(glic_button_);
     OnGlicButtonAnimationEnded();
   }
-  ShowGlicActorNudge(nudge_text);
+  ShowGlicActorNudge(nudge_label);
 }
 
 void TabStripActionContainer::SetGlicActorNudgePressedState(bool pressed) {
-  glic_actor_task_icon()->SetPressedState(pressed);
+  if (!glic_actor_task_icon_) {
+    return;
+  }
+  glic_actor_task_icon_->SetPressedState(pressed);
 }
 
 void TabStripActionContainer::ShowActorTaskListBubble() {
-  ActorTaskListBubbleController::From(browser_window_interface_)
-      ->ShowBubble(glic_actor_task_icon());
+  if (!glic_actor_task_icon_) {
+    return;
+  }
+  if (!actor_task_list_bubble_) {
+    Profile* profile = browser_window_interface_->GetProfile();
+    auto* manager = glic::LegacyGlicActivityManager::Get(profile);
+    auto* controller =
+        ActorTaskListBubbleController::From(browser_window_interface_);
+    if (manager && controller) {
+      actor_task_list_bubble_ = std::make_unique<ActorTaskListBubble>(
+          profile, browser_window_interface_,
+          manager->actor_task_list_bubble_rows(),
+          base::BindRepeating(&ActorTaskListBubbleController::OnTaskRowClicked,
+                              base::Unretained(controller)));
+    }
+  }
+  if (actor_task_list_bubble_) {
+    actor_task_list_bubble_->Show(glic_actor_task_icon_);
+  }
+}
+
+void TabStripActionContainer::CloseActorTaskListBubble() {
+  if (actor_task_list_bubble_) {
+    actor_task_list_bubble_->Close();
+  }
+}
+
+bool TabStripActionContainer::IsActorTaskListBubbleShowing() {
+  return actor_task_list_bubble_ && actor_task_list_bubble_->IsShowing();
 }
 
 void TabStripActionContainer::ShowGlicActorNudge(
-    const std::u16string& nudge_text) {
-  CHECK(glic_actor_task_icon_);
+    const std::u16string& nudge_label) {
+  if (!glic_button_ || !glic_actor_task_icon_) {
+    return;
+  }
   // Start animation for minimizing the glic button.
   glic_button_->Collapse();
   ShowGlicActorTaskIcon();
-  glic_actor_task_icon_->ShowNudgeLabel(nudge_text);
+  glic_actor_task_icon_->ShowNudgeLabel(nudge_label);
   ShowTabStripNudge(glic_actor_task_icon_);
 }
 
@@ -488,15 +508,6 @@ void TabStripActionContainer::UpdateButtonBorders(
   if (glic_button_) {
     UpdateGlicActorButtonContainerBorders();
   }
-}
-
-void TabStripActionContainer::DidBecomeActive(BrowserWindowInterface* browser) {
-  separator_->SetColorId(kColorTabDividerFrameActive);
-}
-
-void TabStripActionContainer::DidBecomeInactive(
-    BrowserWindowInterface* browser) {
-  separator_->SetColorId(kColorTabDividerFrameInactive);
 }
 
 void TabStripActionContainer::ShowTabStripNudge(TabStripNudgeButton* button) {
@@ -565,39 +576,8 @@ TabStripActionContainer::CreateGlicButton() {
 }
 
 void TabStripActionContainer::OnGlicButtonClicked() {
-  // Indicate that the glic button was pressed so that we can either close the
-  // IPH promo (if present) or note that it has already been used to prevent
-  // unnecessarily displaying the promo.
-  BrowserUserEducationInterface::From(browser_window_interface_)
-      ->NotifyFeaturePromoFeatureUsed(
-          feature_engagement::kIPHGlicPromoFeature,
-          FeaturePromoFeatureUsedAction::kClosePromoIfPresent);
-
-  std::optional<std::string> prompt_suggestion;
-  if (glic_nudge_controller_) {
-    prompt_suggestion = glic_nudge_controller_->GetPromptSuggestion();
-    glic_nudge_controller_->ClearPromptSuggestion();
-  }
-
-  glic::mojom::InvocationSource source;
-  if (button_controller_) {
-    source = button_controller_->GetInvocationSource(
-        glic_button_->GetIsShowingNudge(), /*is_toolbar=*/false);
-  } else {
-    source = glic_button_->GetIsShowingNudge()
-                 ? glic::mojom::InvocationSource::kNudge
-                 : glic::mojom::InvocationSource::kTopChromeButton;
-  }
-
-  glic::GlicKeyedServiceFactory::GetGlicKeyedService(
-      browser_window_interface_->GetProfile())
-      ->ToggleUI(browser_window_interface_,
-                 /*prevent_close=*/false, source, prompt_suggestion);
-
-  if (glic_button_->GetIsShowingNudge()) {
-    glic_nudge_controller_->OnNudgeActivity(
-        glic::GlicNudgeActivity::kNudgeClicked);
-  }
+  glic::GlicSplitButtonController::From(browser_window_interface_)
+      ->OnGlicButtonClicked();
 
   ExecuteHideTabStripNudge(glic_button_);
   // Reset state manually since there wont be a mouse up event as the animation
@@ -606,8 +586,11 @@ void TabStripActionContainer::OnGlicButtonClicked() {
 }
 
 void TabStripActionContainer::OnGlicButtonDismissed() {
-  glic_nudge_controller_->OnNudgeActivity(
-      glic::GlicNudgeActivity::kNudgeDismissed);
+  CHECK(glic_split_button_controller_);
+  glic::GlicNudgeController* nudge_controller =
+      glic_split_button_controller_->nudge_controller();
+  CHECK(nudge_controller);
+  nudge_controller->OnNudgeActivity(glic::GlicNudgeActivity::kNudgeDismissed);
 
   // Force hide the button when pressed, bypassing locked expansion mode.
   ExecuteHideTabStripNudge(glic_button_);
@@ -653,9 +636,10 @@ TabStripActionContainer::CreateGlicActorTaskIcon() {
 
 void TabStripActionContainer::OnGlicActorTaskIconClicked() {
   Profile* const profile = browser_window_interface_->GetProfile();
-  auto* icon_manager =
-      glic::GlicActorTaskIconManagerFactory::GetForProfile(profile);
-  CHECK(icon_manager);
+  auto* activity_manager = glic::LegacyGlicActivityManager::Get(profile);
+  if (!activity_manager) {
+    return;
+  }
 
   // Only show the bubble if the button is not currently pressed. Clicking on
   // the pressed button should dismiss the nudge.
@@ -665,7 +649,8 @@ void TabStripActionContainer::OnGlicActorTaskIconClicked() {
     controller->ShowBubble(glic_actor_task_icon_);
   }
 
-  auto current_task_nudge_state = icon_manager->GetCurrentActorTaskNudgeState();
+  auto current_task_nudge_state =
+      activity_manager->GetCurrentActorTaskNudgeState();
   actor::ui::LogGlobalTaskIndicatorClick(current_task_nudge_state);
 }
 
@@ -905,6 +890,10 @@ bool TabStripActionContainer::ButtonOwnsAnimation(
 }
 
 void TabStripActionContainer::FinalizeHideGlicActorTaskIcon() {
+  if (!glic_button_ || !glic_actor_task_icon_ ||
+      !glic_actor_button_container_) {
+    return;
+  }
   // 1. Reset Nudge State
   if (glic_actor_task_icon_->GetIsShowingNudge()) {
     if (animation_session_ &&
@@ -925,6 +914,7 @@ void TabStripActionContainer::FinalizeHideGlicActorTaskIcon() {
 #if !BUILDFLAG(IS_MAC)
   // Re-add the separator so it's ordered after the GlicButton.
   separator_ = AddChildView(std::move(separator_));
+  UpdateSeparatorVisibility();
 #endif  // !BUILDFLAG(IS_MAC)
 }
 
@@ -956,6 +946,15 @@ void TabStripActionContainer::UpdateGlicButtonVisibility(bool should_show) {
     // glic_button_.
     glic_actor_button_container_->SetVisible(is_glic_visible);
   }
+}
+
+void TabStripActionContainer::UpdateSeparatorVisibility() {
+  if (!separator_) {
+    return;
+  }
+
+  const bool has_visible_button = glic_button_ && glic_button_->GetVisible();
+  separator_->SetVisible(has_visible_button);
 }
 
 BEGIN_METADATA(TabStripActionContainer)

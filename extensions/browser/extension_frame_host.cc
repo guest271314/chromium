@@ -23,6 +23,7 @@
 #include "extensions/browser/process_manager.h"
 #include "extensions/buildflags/buildflags.h"
 #include "extensions/common/api/messaging/port_context.h"
+#include "extensions/common/api/messaging/signing_certificate.h"
 #include "extensions/common/extension_id.h"
 #include "extensions/common/mojom/message_port.mojom.h"
 #include "extensions/common/trace_util.h"
@@ -48,6 +49,16 @@ std::string GetFrameScopedIpcActivityData(
   return base::StrCat({Activity::kIPC, ":",
                        base::NumberToString(frame_id.child_id.GetUnsafeValue()),
                        ":", base::NumberToString(frame_id.frame_routing_id)});
+}
+
+const Extension* GetExtension(ProcessManager* process_manager,
+                              content::RenderFrameHost& frame) {
+  ExtensionHost* extension_host =
+      process_manager->GetBackgroundHostForRenderFrameHost(&frame);
+  if (!extension_host) {
+    return nullptr;
+  }
+  return extension_host->extension();
 }
 
 }  // namespace
@@ -91,11 +102,10 @@ void ExtensionFrameHost::GetAppInstallState(
 
 void ExtensionFrameHost::Request(mojom::RequestParamsPtr params,
                                  RequestCallback callback) {
-  content::RenderFrameHost* render_frame_host =
-      receivers_.GetCurrentTargetFrame();
+  content::RenderFrameHost& render_frame_host = receivers_.CurrentTargetFrame();
   ExtensionWebContentsObserver::GetForWebContents(web_contents_)
       ->dispatcher()
-      ->Dispatch(std::move(params), *render_frame_host, std::move(callback));
+      ->Dispatch(std::move(params), render_frame_host, std::move(callback));
 }
 
 void ExtensionFrameHost::ResponseAck(const base::Uuid& request_uuid) {
@@ -119,20 +129,19 @@ void ExtensionFrameHost::ContentScriptsExecuting(
     const GURL& frame_url) {}
 
 void ExtensionFrameHost::IncrementLazyKeepaliveCount() {
-  content::RenderFrameHost* render_frame_host =
-      receivers_.GetCurrentTargetFrame();
+  content::RenderFrameHost& render_frame_host = receivers_.CurrentTargetFrame();
   auto* process_manager =
-      ProcessManager::Get(render_frame_host->GetBrowserContext());
+      ProcessManager::Get(render_frame_host.GetBrowserContext());
   const Extension* extension = GetExtension(process_manager, render_frame_host);
   if (!extension) {
     bad_message::ReceivedBadMessage(
-        render_frame_host->GetProcess(),
+        render_frame_host.GetProcess(),
         bad_message::EFH_NO_BACKGROUND_HOST_FOR_FRAME);
     return;
   }
 
   const content::GlobalRenderFrameHostId frame_id =
-      render_frame_host->GetGlobalId();
+      render_frame_host.GetGlobalId();
   auto it = frame_ipc_keepalives_.find(frame_id);
   if (it == frame_ipc_keepalives_.end()) {
     // First keepalive increment for this frame: register tracking data and
@@ -153,20 +162,19 @@ void ExtensionFrameHost::IncrementLazyKeepaliveCount() {
 }
 
 void ExtensionFrameHost::DecrementLazyKeepaliveCount() {
-  content::RenderFrameHost* render_frame_host =
-      receivers_.GetCurrentTargetFrame();
+  content::RenderFrameHost& render_frame_host = receivers_.CurrentTargetFrame();
   auto* process_manager =
-      ProcessManager::Get(render_frame_host->GetBrowserContext());
+      ProcessManager::Get(render_frame_host.GetBrowserContext());
   const Extension* extension = GetExtension(process_manager, render_frame_host);
   if (!extension) {
     bad_message::ReceivedBadMessage(
-        render_frame_host->GetProcess(),
+        render_frame_host.GetProcess(),
         bad_message::EFH_NO_BACKGROUND_HOST_FOR_FRAME);
     return;
   }
 
   const content::GlobalRenderFrameHostId frame_id =
-      render_frame_host->GetGlobalId();
+      render_frame_host.GetGlobalId();
   auto it = frame_ipc_keepalives_.find(frame_id);
   // Silently ignore unbalanced decrements. The renderer-side bindings layer
   // is not robust enough to guarantee perfectly balanced increment/decrement
@@ -187,16 +195,6 @@ void ExtensionFrameHost::DecrementLazyKeepaliveCount() {
   }
 }
 
-const Extension* ExtensionFrameHost::GetExtension(
-    ProcessManager* process_manager,
-    content::RenderFrameHost* frame) {
-  ExtensionHost* extension_host =
-      process_manager->GetBackgroundHostForRenderFrameHost(frame);
-  if (!extension_host) {
-    return nullptr;
-  }
-  return extension_host->extension();
-}
 
 void ExtensionFrameHost::ReleaseIpcKeepaliveData(
     const FrameIpcKeepaliveData& data) {
@@ -247,32 +245,41 @@ void ExtensionFrameHost::OpenChannelToExtension(
     mojo::PendingAssociatedRemote<extensions::mojom::MessagePort> port,
     mojo::PendingAssociatedReceiver<extensions::mojom::MessagePortHost>
         port_host) {
-  content::RenderFrameHost* render_frame_host =
-      receivers_.GetCurrentTargetFrame();
-  auto* process = render_frame_host->GetProcess();
+  content::RenderFrameHost& render_frame_host = receivers_.CurrentTargetFrame();
+  auto* process = render_frame_host.GetProcess();
   TRACE_EVENT("extensions", "ExtensionFrameHost::OpenChannelToExtension",
               ChromeTrackEvent::kRenderProcessHost, *process);
 
   MessageServiceApi::GetMessageService()->OpenChannelToExtension(
-      render_frame_host->GetBrowserContext(), render_frame_host, port_id, *info,
+      render_frame_host.GetBrowserContext(), &render_frame_host, port_id, *info,
       channel_type, channel_name, std::move(port), std::move(port_host));
 }
 
 void ExtensionFrameHost::OpenChannelToNativeApp(
     const std::string& native_app_name,
+#if BUILDFLAG(IS_ANDROID)
+    const MojomSigningCertificates& android_certificates,
+#endif
     const PortId& port_id,
     mojo::PendingAssociatedRemote<extensions::mojom::MessagePort> port,
     mojo::PendingAssociatedReceiver<extensions::mojom::MessagePortHost>
         port_host) {
-  content::RenderFrameHost* render_frame_host =
-      receivers_.GetCurrentTargetFrame();
-  auto* process = render_frame_host->GetProcess();
+  content::RenderFrameHost& render_frame_host = receivers_.CurrentTargetFrame();
+  auto* process = render_frame_host.GetProcess();
   TRACE_EVENT("extensions", "ExtensionFrameHost::OnOpenChannelToNativeApp",
               ChromeTrackEvent::kRenderProcessHost, *process);
 
+#if BUILDFLAG(IS_ANDROID)
+  SigningCertificates parsed_certificates =
+      ParseCertificatesFromMojom(android_certificates);
+#else
+  SigningCertificates parsed_certificates = {};
+#endif
+
   MessageServiceApi::GetMessageService()->OpenChannelToNativeApp(
-      render_frame_host->GetBrowserContext(), render_frame_host, port_id,
-      native_app_name, std::move(port), std::move(port_host));
+      render_frame_host.GetBrowserContext(), &render_frame_host, port_id,
+      native_app_name, std::move(parsed_certificates), std::move(port),
+      std::move(port_host));
 }
 
 void ExtensionFrameHost::OpenChannelToTab(
@@ -285,14 +292,13 @@ void ExtensionFrameHost::OpenChannelToTab(
     mojo::PendingAssociatedRemote<extensions::mojom::MessagePort> port,
     mojo::PendingAssociatedReceiver<extensions::mojom::MessagePortHost>
         port_host) {
-  content::RenderFrameHost* render_frame_host =
-      receivers_.GetCurrentTargetFrame();
-  auto* process = render_frame_host->GetProcess();
+  content::RenderFrameHost& render_frame_host = receivers_.CurrentTargetFrame();
+  auto* process = render_frame_host.GetProcess();
   TRACE_EVENT("extensions", "ExtensionFrameHost::OpenChannelToTab",
               ChromeTrackEvent::kRenderProcessHost, *process);
 
   MessageServiceApi::GetMessageService()->OpenChannelToTab(
-      render_frame_host->GetBrowserContext(), render_frame_host, port_id,
+      render_frame_host.GetBrowserContext(), &render_frame_host, port_id,
       tab_id, frame_id, document_id ? *document_id : std::string(),
       channel_type, channel_name, std::move(port), std::move(port_host));
 }

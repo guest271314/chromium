@@ -12,12 +12,15 @@
 #include "ui/display/mac/ca_display_link_mac.h"
 #include "ui/display/mac/cv_display_link_mac.h"
 #include "ui/display/mac/external_display_link_mac.h"
+#include "ui/display/mac/screen_utils_mac.h"
 #include "ui/display/types/display_constants.h"
 
 namespace ui {
 
-// For testing only. Create CADisplayLink in the GPU process.
-BASE_FEATURE(kCADisplayLinkInGpu, base::FEATURE_DISABLED_BY_DEFAULT);
+bool SkipPostTaskForCallbacks() {
+  return base::FeatureList::IsEnabled(
+      display::features::kSkipPostTaskForCallbacks);
+}
 
 ////////////////////////////////////////////////////////////////////////////////
 // DisplayLinkMac
@@ -30,6 +33,15 @@ bool DisplayLinkMac::SupportsDisplayLinkMacInBrowser() {
 
   return base::FeatureList::IsEnabled(
       display::features::kCADisplayLinkInBrowser);
+}
+
+// Static
+bool DisplayLinkMac::SupportsCADisplayLinkInGPU() {
+  if (!@available(macos 14.0, *)) {
+    return false;
+  }
+
+  return base::FeatureList::IsEnabled(display::features::kCADisplayLinkInGpu);
 }
 
 // static
@@ -47,27 +59,13 @@ scoped_refptr<DisplayLinkMac> DisplayLinkMac::GetForDisplay(
       static_cast<CGDirectDisplayID>(vsync_display_id);
 
   // CADisplayLink is available only for MacOS 14.0+.
-  if (@available(macos 14.0, *)) {
-    // Testing only.
-    if (base::FeatureList::IsEnabled(kCADisplayLinkInGpu)) {
-      return CADisplayLinkMac::GetForDisplay(display_id,
-                                             /*in_gpu_process=*/true);
-    }
+  if (SupportsCADisplayLinkInGPU()) {
+    return CADisplayLinkMac::GetForDisplay(display_id,
+                                           /*in_gpu_process=*/true);
   }
 
   scoped_refptr<DisplayLinkMac> display_link;
   if (SupportsDisplayLinkMacInBrowser()) {
-    if (CADisplayLinkMac::IsValidInGpuProcess(display_id)) {
-      // Start with CADisplayLinkMac in the GPU process.
-      display_link = CADisplayLinkMac::GetForDisplay(display_id,
-                                                     /*in_gpu_process=*/true);
-      if (display_link) {
-        return display_link;
-      }
-      // Fallback to ExternalDisplayLinkMac (CADisplayLinkMac in the Browser
-      // process) if failed.
-    }
-
     display_link = ExternalDisplayLinkMac::GetForDisplay(display_id);
     if (display_link) {
       return display_link;
@@ -83,14 +81,23 @@ void DisplayLinkMac::RecordDisplayLinkCreation(bool success) {
                         success);
 }
 
+// static
+base::TimeDelta DisplayLinkMac::GetScreenDefaultRefreshInterval(
+    int64_t vsync_display_id) {
+  if (!base::IsValueInRangeForNumericType<CGDirectDisplayID>(
+          vsync_display_id)) {
+    return base::Hertz(60);
+  }
+
+  CGDirectDisplayID display_id =
+      static_cast<CGDirectDisplayID>(vsync_display_id);
+  return display::GetCGRefreshInterval(display_id);
+}
+
 std::unique_ptr<PresentationCallbackMac>
 DisplayLinkMac::RegisterPresentationCallback(
     PresentationCallbackMac::Callback callback) {
   NOTREACHED();
-}
-
-bool DisplayLinkMac::NotifyEventAndCheckValidity() {
-  return true;
 }
 
 ////////////////////////////////////////////////////////////////////////////////

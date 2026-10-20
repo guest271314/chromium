@@ -22,6 +22,92 @@ BASE_DECLARE_FEATURE(kContextManagementInComposebox);
 // button.
 BASE_DECLARE_FEATURE(kTabFaviconChipsToCoins);
 
+// Gates context menu and favicon coins for omnibox.
+BASE_DECLARE_FEATURE(kContextManagementInOmnibox);
+
+// If enabled, the impressions of the context menu animation will be capped.
+BASE_DECLARE_FEATURE(kContextMenuAnimationLimiting);
+
+// If enabled, skills are enabled in the composebox/searchbox for Contextual Tasks.
+BASE_DECLARE_FEATURE(kComposeboxSkillsContextualTasks);
+
+// If enabled, skills are enabled in the composebox/searchbox for NTP.
+BASE_DECLARE_FEATURE(kComposeboxSkillsNtp);
+
+// If enabled, skills are enabled in the composebox/searchbox for Omnibox Everywhere.
+BASE_DECLARE_FEATURE(kComposeboxSkillsOmniboxEverywhere);
+
+// If enabled, skills are enabled in the composebox/searchbox for Omnibox Popup.
+BASE_DECLARE_FEATURE(kComposeboxSkillsOmniboxPopup);
+
+// If enabled, richer suggestions (e.g. image grids) for tools such as Create
+// Image will be shown in the Realbox Composebox.
+BASE_DECLARE_FEATURE(kComposeboxRichImageSuggestionsRealbox);
+
+// If enabled, richer suggestions (e.g. image grids) for tools such as Create
+// Image will be shown in the Omnibox Composebox.
+BASE_DECLARE_FEATURE(kComposeboxRichImageSuggestionsOmnibox);
+
+// If enabled, persists the AIM button in the Realbox Composebox.
+BASE_DECLARE_FEATURE(kComposeboxPersistentAimButtonRealbox);
+// If enabled, persists the AIM button in the Omnibox Composebox.
+BASE_DECLARE_FEATURE(kComposeboxPersistentAimButtonOmnibox);
+// If enabled, shows an X icon on the persistent AIM button. Only effective if
+// the persistent AIM button is also enabled for the surface.
+BASE_DECLARE_FEATURE(kComposeboxPersistentAimButtonWithX);
+
+// If enabled, clicking outside the Realbox Composebox closes the suggestions
+// dropdown and restores page interaction while keeping the Composebox open.
+BASE_DECLARE_FEATURE(kComposeboxRealboxOutsideClick);
+
+// If enabled, suggest requests for multifile inputs will include the cinpts CGI param.
+BASE_DECLARE_FEATURE(kSuggestRequestSendsMultifileCgiParam);
+
+// If enabled, unselects the active suggestion match when Tab navigation moves
+// focus out of the composebox dropdown.
+BASE_DECLARE_FEATURE(kComposeboxUnselectMatchOnTabExit);
+
+// If enabled, personalizes the composebox placeholder hint text with the user's
+// given name when browser and AIM identities match.
+BASE_DECLARE_FEATURE(kComposeboxPersonalizedHintText);
+
+// Parameter determining the daily limit for the context menu animation.
+extern const base::FeatureParam<int> kContextMenuAnimationDailyLimit;
+
+// Parameter determining the lifetime limit for the context menu animation.
+extern const base::FeatureParam<int> kContextMenuAnimationLifetimeLimit;
+
+// If enabled, the composebox context menu will stay open on selection for
+// realbox.
+extern const base::FeatureParam<bool> kKeepMenuOpenOnTabSelectForRealbox;
+
+// If enabled, previously-submitted tabs can be deselected in the composebox
+// context menu.
+extern const base::FeatureParam<bool>
+    kContextManagementInComposeboxEnableTabDeselection;
+
+// Helper to check if tab deselection is enabled, which requires the parent
+// feature kContextManagementInComposebox to be enabled and the param to be
+// true.
+bool IsTabDeselectionInComposeboxEnabled();
+
+// If enabled, tooltips will be shown in the composebox context menu.
+extern const base::FeatureParam<bool> kContextManagementInComposeboxTooltips;
+
+// Helper to check if context menu tooltips are enabled in the composebox.
+bool IsContextMenuTooltipsInComposeboxEnabled();
+
+// If enabled, the current/recent tab is shown as a standalone menu item at the
+// top of the composebox context menu, above the "Add tabs" flyout entry on
+// Realbox, Omnibox, and SiC Side Panel.
+extern const base::FeatureParam<bool>
+    kContextManagementInComposeboxSingleTabMenuItem;
+
+// Helper to check if the single tab menu item is enabled, which requires the
+// parent feature kContextManagementInComposebox to be enabled and the param to
+// be true.
+bool IsSingleTabMenuItemInComposeboxEnabled();
+
 }  // namespace omnibox
 
 #endif  // COMPONENTS_OMNIBOX_COMMON_COMPOSEBOX_FEATURES_H_

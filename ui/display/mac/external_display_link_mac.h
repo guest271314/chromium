@@ -11,16 +11,15 @@
 
 #include "base/memory/scoped_refptr.h"
 #include "base/time/time.h"
-#include "third_party/abseil-cpp/absl/container/flat_hash_set.h"
 #include "ui/display/mac/display_link_mac.h"
 #include "ui/display/mac/vsync_provider_mac.h"
 
 namespace ui {
 
 // Unlike CADisplayLinkMac and CVDisplayLinkMac, ExternalDisplayLinkMac itself
-// does not register a CADisplaylink directly from CoreAnimation. Instead,
-// ExternalDisplayLinkMac creates an DisplayLinkMac object and gets its VSync
-// from VSyncProviderMac.
+// does not register a CADisplayLink directly from CoreAnimation. Instead,
+// ExternalDisplayLinkMac creates a DisplayLinkMac object and receives VSync
+// ticks from VSyncProviderMac.
 class ExternalDisplayLinkMac : public DisplayLinkMac {
  public:
   // Return a new ExternalDisplayLinkMac for each call.
@@ -40,6 +39,8 @@ class ExternalDisplayLinkMac : public DisplayLinkMac {
 
   // Retrieves the current (“now”) time of a given display link.
   base::TimeTicks GetCurrentTime() const override;
+
+  void OnSuspend() override;
 
  private:
   explicit ExternalDisplayLinkMac(CGDirectDisplayID display_id);

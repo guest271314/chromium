@@ -25,14 +25,14 @@ namespace {
 
 constexpr base::MemoryConsumerTraits kTraitsWithReleaseGC(
     base::MemoryConsumerTraits::EstimatedMemoryUsage::kSmall,
-    base::MemoryConsumerTraits::ReleaseMemoryCost::kRequiresTraversal,
+    base::MemoryConsumerTraits::ReleaseMemoryDataAccess::kReads,
     base::MemoryConsumerTraits::InformationRetention::kLossy,
     base::MemoryConsumerTraits::ExecutionType::kSynchronous,
     base::MemoryConsumerTraits::ReleaseGCReferences::kYes);
 
 constexpr base::MemoryConsumerTraits kTraitsWithoutReleaseGC(
     base::MemoryConsumerTraits::EstimatedMemoryUsage::kSmall,
-    base::MemoryConsumerTraits::ReleaseMemoryCost::kRequiresTraversal,
+    base::MemoryConsumerTraits::ReleaseMemoryDataAccess::kReads,
     base::MemoryConsumerTraits::InformationRetention::kLossy,
     base::MemoryConsumerTraits::ExecutionType::kSynchronous,
     base::MemoryConsumerTraits::ReleaseGCReferences::kNo);
@@ -55,7 +55,7 @@ class LastResortGCPolicyTest : public Test {
 
 TEST_F(LastResortGCPolicyTest, Enabled_NoTrait) {
   ChildMemoryCoordinator coordinator;
-  LastResortGCPolicy policy{coordinator};
+  LastResortGCPolicy policy{coordinator.policy_manager()};
 
   // Create the consumer with the `ReleaseGCReferences::kNo` trait.
   base::RegisteredMockMemoryConsumer consumer("Consumer",
@@ -70,7 +70,7 @@ TEST_F(LastResortGCPolicyTest, Enabled_NoTrait) {
 
 TEST_F(LastResortGCPolicyTest, Enabled_NoTimer) {
   ChildMemoryCoordinator coordinator;
-  LastResortGCPolicy policy{coordinator};
+  LastResortGCPolicy policy{coordinator.policy_manager()};
 
   // Create the consumer with the `ReleaseGCReferences::kYes` trait.
   base::RegisteredMockMemoryConsumer consumer("Consumer", kTraitsWithReleaseGC);
@@ -81,11 +81,11 @@ TEST_F(LastResortGCPolicyTest, Enabled_NoTimer) {
   // requested, and finally the memory limit is restored immediately because
   // there is no delay.
   EXPECT_CALL(consumer, OnUpdateMemoryLimit()).WillOnce([&]() {
-    EXPECT_EQ(consumer.memory_limit(), 0);
+    EXPECT_EQ(consumer.memory_limit(), base::MemoryLimit::FromPercent(0));
   });
   EXPECT_CALL(consumer, OnReleaseMemory());
   EXPECT_CALL(consumer, OnUpdateMemoryLimit()).WillOnce([&]() {
-    EXPECT_EQ(consumer.memory_limit(), 100);
+    EXPECT_EQ(consumer.memory_limit(), base::MemoryLimit::Default());
   });
 
   policy.OnV8HeapLastResortGC();
@@ -100,7 +100,7 @@ TEST_F(LastResortGCPolicyTest, Enabled_Timer) {
         base::NumberToString(kTestRestoreLimitSeconds)}});
 
   ChildMemoryCoordinator coordinator;
-  LastResortGCPolicy policy{coordinator};
+  LastResortGCPolicy policy{coordinator.policy_manager()};
 
   // Create the consumer with the `ReleaseGCReferences::kYes` trait.
   base::RegisteredMockMemoryConsumer consumer("Consumer", kTraitsWithReleaseGC);
@@ -111,7 +111,7 @@ TEST_F(LastResortGCPolicyTest, Enabled_Timer) {
   // requested. After the correct delay, the memory limit is restored
   // immediately because there is no delay.
   EXPECT_CALL(consumer, OnUpdateMemoryLimit()).WillOnce([&]() {
-    EXPECT_EQ(consumer.memory_limit(), 0);
+    EXPECT_EQ(consumer.memory_limit(), base::MemoryLimit::FromPercent(0));
   });
   EXPECT_CALL(consumer, OnReleaseMemory());
 
@@ -123,7 +123,7 @@ TEST_F(LastResortGCPolicyTest, Enabled_Timer) {
   Mock::VerifyAndClearExpectations(&consumer);
 
   EXPECT_CALL(consumer, OnUpdateMemoryLimit()).WillOnce([&]() {
-    EXPECT_EQ(consumer.memory_limit(), 100);
+    EXPECT_EQ(consumer.memory_limit(), base::MemoryLimit::Default());
   });
   FastForwardBy(base::Seconds(1));
 }
@@ -137,7 +137,7 @@ TEST_F(LastResortGCPolicyTest, Persistence) {
         base::NumberToString(kTestRestoreLimitSeconds)}});
 
   ChildMemoryCoordinator coordinator;
-  LastResortGCPolicy policy{coordinator};
+  LastResortGCPolicy policy{coordinator.policy_manager()};
 
   policy.OnV8HeapLastResortGC();
 
@@ -150,7 +150,7 @@ TEST_F(LastResortGCPolicyTest, Persistence) {
 
   base::MemoryConsumerRegistration registration(
       "Consumer", kTraitsWithReleaseGC, &consumer);
-  EXPECT_EQ(consumer.memory_limit(), 0);
+  EXPECT_EQ(consumer.memory_limit(), base::MemoryLimit::FromPercent(0));
 }
 
 }  // namespace content

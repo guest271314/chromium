@@ -10,7 +10,6 @@ import androidx.test.filters.SmallTest;
 import org.junit.After;
 import org.junit.Assert;
 import org.junit.Before;
-import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
@@ -20,10 +19,10 @@ import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.Feature;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.profiles.ProfileManager;
-import org.chromium.chrome.test.ChromeBrowserTestRule;
 import org.chromium.chrome.test.util.BookmarkTestUtil;
 import org.chromium.components.bookmarks.BookmarkId;
 import org.chromium.components.bookmarks.BookmarkItem;
+import org.chromium.content_public.browser.test.NativeLibraryTestUtils;
 import org.chromium.url.GURL;
 
 import java.util.ArrayList;
@@ -44,8 +43,6 @@ public class BookmarkModelTest {
     public static final GURL C_COM = new GURL("http://c.com");
     public static final GURL AA_COM = new GURL("http://aa.com");
 
-    @Rule public final ChromeBrowserTestRule mChromeBrowserTestRule = new ChromeBrowserTestRule();
-
     private static final int TIMEOUT_MS = 5000;
     private BookmarkModel mBookmarkModel;
     private BookmarkId mMobileNode;
@@ -54,6 +51,7 @@ public class BookmarkModelTest {
 
     @Before
     public void setUp() {
+        NativeLibraryTestUtils.loadNativeLibraryAndInitBrowserProcess();
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
                     Profile profile = ProfileManager.getLastUsedRegularProfile();
@@ -206,6 +204,37 @@ public class BookmarkModelTest {
         Assert.assertNotNull(mBookmarkModel.getBookmarkById(bookmarkA));
         Assert.assertNotNull(mBookmarkModel.getBookmarkById(bookmarkB));
         Assert.assertNotNull(mBookmarkModel.getBookmarkById(bookmarkC));
+    }
+
+    @Test
+    @SmallTest
+    @UiThreadTest
+    @Feature({"Bookmark"})
+    public void testDeleteBookmarks_withOriginator() {
+        BookmarkId bookmarkA = addBookmark(mDesktopNode, 0, "a", A_COM);
+        BookmarkId bookmarkB = addBookmark(mOtherNode, 0, "b", B_COM);
+
+        AtomicReference<String[]> originatorTitles = new AtomicReference<>();
+        AtomicReference<String[]> observer1Titles = new AtomicReference<>();
+
+        BookmarkModel.BookmarkDeleteObserver originator =
+                (titles, isUndoable) -> originatorTitles.set(titles);
+        BookmarkModel.BookmarkDeleteObserver observer1 =
+                (titles, isUndoable) -> observer1Titles.set(titles);
+
+        mBookmarkModel.addDeleteObserver(observer1);
+
+        // Deleting with originator should only notify originator, not observer1.
+        mBookmarkModel.deleteBookmarks(originator, bookmarkA);
+        Assert.assertNotNull(originatorTitles.get());
+        Assert.assertNull(observer1Titles.get());
+
+        // Deleting without originator should notify registered observers.
+        mBookmarkModel.deleteBookmarks(
+                /* originator= */ (BookmarkModel.BookmarkDeleteObserver) null, bookmarkB);
+        Assert.assertNotNull(observer1Titles.get());
+
+        mBookmarkModel.removeDeleteObserver(observer1);
     }
 
     @Test

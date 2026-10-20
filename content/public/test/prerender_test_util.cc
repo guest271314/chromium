@@ -352,6 +352,11 @@ PrerenderHostCreationWaiter::PrerenderHostCreationWaiter() {
       }));
 }
 
+PrerenderHostCreationWaiter::~PrerenderHostCreationWaiter() {
+  PrerenderHost::SetHostCreationCallbackForTesting(
+      base::OnceCallback<void(PrerenderHostId)>());
+}
+
 PrerenderHostId PrerenderHostCreationWaiter::Wait() {
   EXPECT_TRUE(created_host_id_.is_null());
   run_loop_.Run();
@@ -714,8 +719,8 @@ PrerenderTestHelper::NavigatePrimaryPageAsync(WebContents& web_contents,
                          JsReplace("location = $1", url));
   } else {
     web_contents.OpenURL(
-        OpenURLParams(url, Referrer(), WindowOpenDisposition::CURRENT_TAB,
-                      transition, is_renderer_initiated),
+        OpenURLParams::CreateBrowserInitiated(
+            url, WindowOpenDisposition::CURRENT_TAB, transition),
         /*navigation_handle_callback=*/{});
   }
   return observer;
@@ -779,10 +784,10 @@ void PrerenderTestHelper::SetHoldback(std::string_view preloading_type,
       CollectAllRenderFrameHosts(prerendered_render_frame_host);
   for (auto* frame : frames) {
     auto* rfhi = static_cast<RenderFrameHostImpl*>(frame);
-    // All the subframes should be in LifecycleStateImpl::kPrerendering state
-    // before activation.
+    // All the subframes should be in
+    // RenderFrameHostLifecycleStateImpl::kPrerendering state before activation.
     if (rfhi->lifecycle_state() !=
-        RenderFrameHostImpl::LifecycleStateImpl::kPrerendering) {
+        RenderFrameHostLifecycleStateImpl::kPrerendering) {
       return ::testing::AssertionFailure() << "subframe in incorrect state";
     }
   }

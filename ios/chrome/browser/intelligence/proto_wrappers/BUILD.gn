@@ -16,6 +16,7 @@ compile_ts("common_ts") {
 
 compile_ts("dom_node_ids_ts") {
   sources = [ "resources/dom_node_ids.ts" ]
+  deps = [ "//components/autofill/ios/form_util:unique_node_id_ts" ]
 }
 
 optimize_ts("dom_node_ids_test_ts") {
@@ -38,6 +39,7 @@ compile_ts("annotated_page_content_extraction_ts") {
     ":dom_node_ids_ts",
     ":page_content_types_ts",
     "//components/autofill/ios/form_util:fill_js_constants",
+    "//components/autofill/ios/form_util:unique_node_id_ts",
     "//ios/web/public/js_messaging:gcrweb",
   ]
 }
@@ -91,7 +93,7 @@ source_set("page_context_extractor_feature") {
     "//base",
     "//components/autofill/ios/form_util:frame_registration_feature",
     "//ios/chrome/browser/intelligence/features",
-    "//ios/public/provider/chrome/browser/bwg:bwg_api",
+    "//ios/public/provider/chrome/browser/bwg:gemini_api",
     "//ios/web/public/js_messaging",
   ]
 }
@@ -121,8 +123,6 @@ source_set("proto_wrappers") {
     "page_context_wrapper.mm",
     "page_context_wrapper_config.h",
     "page_context_wrapper_config.mm",
-    "tab_organization_request_wrapper.h",
-    "tab_organization_request_wrapper.mm",
   ]
 
   deps = [
@@ -141,13 +141,17 @@ source_set("proto_wrappers") {
     "//components/optimization_guide/core:features",
     "//components/optimization_guide/core:page_content",
     "//components/optimization_guide/proto:optimization_guide_proto",
+    "//components/security_state/core",
+    "//components/security_state/ios",
     "//ios/chrome/browser/intelligence/features",
     "//ios/chrome/browser/shared/model/web_state_list",
     "//ios/chrome/browser/snapshots/model",
-    "//ios/public/provider/chrome/browser/bwg:bwg_api",
+    "//ios/public/provider/chrome/browser/bwg:gemini_api",
     "//ios/web/find_in_page",
     "//ios/web/public",
     "//ios/web/public/js_messaging",
+    "//net",
+    "//ui/gfx/geometry",
     "//url",
   ]
 }
@@ -164,7 +168,6 @@ source_set("ios_smart_tab_grouping_proto_wrapper") {
     "//components/optimization_guide/proto:optimization_guide_proto_gen",
     "//ios/chrome/browser/intelligence/features",
     "//ios/chrome/browser/intelligence/persist_tab_context/model",
-    "//ios/chrome/browser/shared/model/browser",
     "//ios/chrome/browser/shared/model/web_state_list",
     "//ios/web/public",
   ]
@@ -187,10 +190,11 @@ source_set("utils") {
     "page_context_utils.mm",
   ]
   deps = [
+    "//base",
     "//components/autofill/core/common",
     "//components/autofill/ios/browser:util",
+    "//ios/chrome/browser/intelligence/features",
     "//ios/web/public",
-    "//ios/web/util",
     "//url",
   ]
 }
@@ -246,6 +250,8 @@ source_set("unit_tests") {
     "//components/autofill/ios/form_util:test_support",
     "//components/optimization_guide/proto:optimization_guide_proto",
     "//components/prefs:test_support",
+    "//components/safe_browsing/ios/browser:allow_list",
+    "//components/security_state/core",
     "//ios/chrome/browser/intelligence/features",
     "//ios/chrome/browser/intelligence/persist_tab_context/model",
     "//ios/chrome/browser/shared/model/browser/test:test_support",
@@ -254,8 +260,6 @@ source_set("unit_tests") {
     "//ios/chrome/browser/shared/model/web_state_list",
     "//ios/chrome/browser/snapshots/model",
     "//ios/chrome/browser/snapshots/model:model_swift",
-    "//ios/chrome/browser/snapshots/model:snapshot_source",
-    "//ios/chrome/browser/snapshots/model:test_utils",
     "//ios/chrome/test:test_support",
     "//ios/testing:embedded_test_server_support",
     "//ios/web/common:features",
@@ -265,8 +269,12 @@ source_set("unit_tests") {
     "//ios/web/public/test",
     "//ios/web/public/test:javascript_test",
     "//ios/web/public/test/fakes",
+    "//ios/web/public/ui",
     "//net:test_support",
     "//testing/gtest",
+    "//third_party/ocmock",
+    "//ui/base:test_support",
+    "//ui/gfx/geometry",
     "//url",
   ]
 }
@@ -288,6 +296,7 @@ source_set("eg_app_support+eg2") {
   deps = [
     "//base",
     "//base/test:test_support",
+    "//ios/chrome/browser/intelligence/features",
     "//ios/chrome/browser/intelligence/proto_wrappers",
     "//ios/chrome/test/app:test_support",
     "//ios/web/public",
@@ -314,7 +323,6 @@ source_set("eg2_tests") {
   deps = [
     ":eg_test_support+eg2",
     "//components/optimization_guide/proto:optimization_guide_proto",
-    "//ios/chrome/browser/intelligence/features",
     "//ios/chrome/test/earl_grey:eg_test_support+eg2",
     "//ios/testing/earl_grey:eg_test_support+eg2",
     "//net:test_support",

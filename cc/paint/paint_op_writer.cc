@@ -11,6 +11,7 @@
 #include "base/bits.h"
 #include "base/compiler_specific.h"
 #include "base/containers/heap_array.h"
+#include "base/containers/span.h"
 #include "base/notreached.h"
 #include "cc/paint/color_filter.h"
 #include "cc/paint/draw_image.h"
@@ -288,8 +289,16 @@ void PaintOpWriter::WriteSizeAt(base::span<uint8_t> memory, size_t size) {
       static_cast<uint32_t>(static_cast<uint64_t>(size) >> 32);
 }
 
+void PaintOpWriter::Write(uint64_t data) {
+  // uint64_t is serialized as two uint32_ts to meet the 4-byte minimum
+  // alignment requirement of PaintOpWriter (https://crbug.com/1429994 and
+  // https://crbug.com/1440013).
+  Write(static_cast<uint32_t>(data));
+  Write(static_cast<uint32_t>(data >> 32));
+}
+
 void PaintOpWriter::Write(const SkPath& path, UsePaintCache use_paint_cache) {
-  auto id = path.getGenerationID();
+  PaintCacheId id = path.getGenerationID();
   Write(id);
 
   DCHECK(use_paint_cache == UsePaintCache::kEnabled ||
@@ -422,7 +431,8 @@ void PaintOpWriter::Write(const DrawImage& draw_image,
 
   *scale_adjustment = decoded_draw_image.scale_adjustment();
 
-  WriteImage(decoded_draw_image, paint_image.GetReinterpretAsSRGB());
+  WriteImage(decoded_draw_image, paint_image.GetHDRMetadata(),
+             paint_image.GetReinterpretAsSRGB());
 }
 
 void PaintOpWriter::Write(scoped_refptr<SkottieWrapper> skottie) {
@@ -441,7 +451,7 @@ void PaintOpWriter::Write(scoped_refptr<SkottieWrapper> skottie) {
   size_t bytes_written = 0u;
   if (!locked) {
     bytes_written = options_.transfer_cache->CreateEntry(
-        ClientSkottieTransferCacheEntry(skottie), remaining_.data());
+        ClientSkottieTransferCacheEntry(skottie), remaining_);
     options_.transfer_cache->AssertLocked(TransferCacheEntryType::kSkottie, id);
   }
 
@@ -451,20 +461,23 @@ void PaintOpWriter::Write(scoped_refptr<SkottieWrapper> skottie) {
 }
 
 void PaintOpWriter::WriteImage(const DecodedDrawImage& decoded_draw_image,
+                               const gfx::HDRMetadata& hdr_metadata,
                                bool reinterpret_as_srgb) {
   if (!decoded_draw_image.mailbox().IsZero()) {
-    WriteImage(decoded_draw_image.mailbox(), reinterpret_as_srgb);
+    WriteImage(decoded_draw_image.mailbox(), hdr_metadata, reinterpret_as_srgb);
     return;
   }
 
   std::optional<uint32_t> id = decoded_draw_image.transfer_cache_entry_id();
   // In the case of a decode failure, id may not be set. Send an invalid ID.
   WriteImage(id.value_or(kInvalidImageTransferCacheEntryId),
-             decoded_draw_image.transfer_cache_entry_needs_mips());
+             decoded_draw_image.transfer_cache_entry_needs_mips(),
+             hdr_metadata);
 }
 
 void PaintOpWriter::WriteImage(uint32_t transfer_cache_entry_id,
-                               bool needs_mips) {
+                               bool needs_mips,
+                               const gfx::HDRMetadata& hdr_metadata) {
   if (transfer_cache_entry_id == kInvalidImageTransferCacheEntryId) {
     Write(static_cast<uint8_t>(PaintOp::SerializedImageType::kNoImage));
     return;
@@ -472,15 +485,18 @@ void PaintOpWriter::WriteImage(uint32_t transfer_cache_entry_id,
 
   Write(
       static_cast<uint8_t>(PaintOp::SerializedImageType::kTransferCacheEntry));
+  Write(hdr_metadata);
   Write(transfer_cache_entry_id);
   Write(needs_mips);
 }
 
 void PaintOpWriter::WriteImage(const gpu::Mailbox& mailbox,
+                               const gfx::HDRMetadata& hdr_metadata,
                                bool reinterpret_as_srgb) {
   DCHECK(!mailbox.IsZero());
 
   Write(static_cast<uint8_t>(PaintOp::SerializedImageType::kMailbox));
+  Write(hdr_metadata);
 
   EnsureBytes(sizeof(mailbox.name));
   if (!valid_) {
@@ -554,10 +570,8 @@ void PaintOpWriter::Write(const gfx::HDRMetadata& hdr_metadata) {
 }
 
 void PaintOpWriter::Write(const SkString& sk_string) {
-  size_t num_bytes = sk_string.size();
-  WriteSize(num_bytes);
-  WriteData(UNSAFE_TODO(base::span<const uint8_t>(
-      reinterpret_cast<const uint8_t*>(sk_string.data()), num_bytes)));
+  WriteSize(sk_string.size());
+  WriteData(base::as_byte_span(sk_string));
 }
 
 void PaintOpWriter::Write(
@@ -766,9 +780,11 @@ void PaintOpWriter::Write(const PaintShader* shader,
     DCHECK_EQ(scale_adjustment.height(), 1.f);
   } else {
     if (!mailbox.IsZero()) {
-      WriteImage(mailbox, shader->image_.GetReinterpretAsSRGB());
+      WriteImage(mailbox, shader->image_.GetHDRMetadata(),
+                 shader->image_.GetReinterpretAsSRGB());
     } else {
-      WriteImage(paint_image_transfer_cache_id, paint_image_needs_mips);
+      WriteImage(paint_image_transfer_cache_id, paint_image_needs_mips,
+                 shader->image_.GetHDRMetadata());
     }
   }
 

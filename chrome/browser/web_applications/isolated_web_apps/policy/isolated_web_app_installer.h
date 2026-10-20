@@ -14,10 +14,10 @@
 #include "base/values.h"
 #include "chrome/browser/web_applications/isolated_web_apps/install/isolated_web_app_install_source.h"
 #include "chrome/browser/web_applications/isolated_web_apps/isolated_web_app_url_info.h"
-#include "chrome/browser/web_applications/isolated_web_apps/policy/isolated_web_app_external_install_options.h"
 #include "chrome/browser/web_applications/isolated_web_apps/update_manifest/update_manifest_fetcher.h"
 #include "chrome/browser/web_applications/web_app_command_scheduler.h"
 #include "components/webapps/isolated_web_apps/download/bundle_downloader.h"
+#include "components/webapps/isolated_web_apps/types/isolated_web_app_external_install_options.h"
 #include "components/webapps/isolated_web_apps/types/iwa_version.h"
 
 #if BUILDFLAG(IS_CHROMEOS)
@@ -26,13 +26,14 @@
 #include "chrome/browser/web_applications/isolated_web_apps/policy/isolated_web_app_cache_client.h"
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
+class Profile;
+
 namespace network {
 class SharedURLLoaderFactory;
 }  // namespace network
 
 namespace web_app {
 
-class UpdateManifest;
 class WebAppProvider;
 
 enum class IwaInstallerResultType {
@@ -43,7 +44,6 @@ enum class IwaInstallerResultType {
   kErrorWebBundleUrlCantBeDetermined,
   kErrorCantDownloadWebBundle,
   kErrorCantInstallFromWebBundle,
-  kErrorManagedGuestSessionInstallDisabled,
   kErrorAppNotInAllowlist
 };
 
@@ -75,13 +75,11 @@ class IwaInstaller {
     kKiosk = 1,   // Kiosk app defined via DeviceLocalAccount policy.
   };
 
-  IwaInstaller(
-      IsolatedWebAppExternalInstallOptions install_options,
-      InstallSourceType install_source_type,
-      scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
-      base::ListValue& log,
-      WebAppProvider* provider,
-      ResultCallback callback);
+  IwaInstaller(IsolatedWebAppExternalInstallOptions install_options,
+               InstallSourceType install_source_type,
+               Profile* profile,
+               base::ListValue& log,
+               ResultCallback callback);
   ~IwaInstaller();
 
   // Starts installing the IWA in session (user, MGS or kiosk).
@@ -114,19 +112,22 @@ class IwaInstaller {
 
   // Downloading of the update manifest of the current app.
   void DownloadUpdateManifest(
-      base::OnceCallback<void(GURL, IwaVersion)> next_step_callback);
+      base::OnceCallback<void(GURL, IwaVersion, network::mojom::IPAddressSpace)>
+          next_step_callback);
 
   // Callback when the update manifest has been downloaded and parsed.
   void OnUpdateManifestParsed(
-      base::OnceCallback<void(GURL, IwaVersion)> next_step_callback,
-      base::expected<UpdateManifest, UpdateManifestFetcher::Error>
-          fetch_result);
+      base::OnceCallback<void(GURL, IwaVersion, network::mojom::IPAddressSpace)>
+          next_step_callback,
+      base::expected<UpdateManifestWithAddressSpace,
+                     UpdateManifestFetcher::Error> fetch_result);
 
   // Downloading of the Signed Web Bundle.
   void DownloadWebBundle(
       base::OnceCallback<void(IwaVersion)> next_step_callback,
       GURL web_bundle_url,
-      IwaVersion expected_version);
+      IwaVersion expected_version,
+      network::mojom::IPAddressSpace update_manifest_address_space);
   void OnWebBundleDownloaded(base::OnceClosure next_step_callback,
                              int32_t net_error);
 
@@ -141,10 +142,9 @@ class IwaInstaller {
 
   IsolatedWebAppExternalInstallOptions install_options_;
   InstallSourceType install_source_type_;
-  scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory_;
 
+  const raw_ptr<Profile> profile_;
   raw_ref<base::ListValue> log_;
-  const raw_ptr<web_app::WebAppProvider> provider_;
   ResultCallback callback_;
 
   ScopedTempWebBundleFile bundle_;

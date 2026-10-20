@@ -144,10 +144,10 @@
 - (TableViewSwitchItem*)tipsNotificationsItem {
   if (!_tipsNotificationsItem) {
 #if BUILDFLAG(IOS_USE_BRANDED_ASSETS)
-    UIImage* image = MakeSymbolMulticolor(
-        CustomSettingsRootSymbol(kMulticolorChromeballSymbol));
+    UIImage* image =
+        MakeSymbolMulticolor(SettingsRootSymbol(SymbolMulticolorChromeball));
 #else
-    UIImage* image = CustomSettingsRootSymbol(kChromeProductSymbol);
+    UIImage* image = SettingsRootSymbol(SymbolChromeProduct);
 #endif  // BUILDFLAG(IOS_USE_BRANDED_ASSETS)
     _tipsNotificationsItem = [self
              switchItemWithType:NotificationsItemIdentifier::ItemIdentifierTips
@@ -264,6 +264,7 @@
   detailItem.iconImage = symbol;
   detailItem.iconTintColor = tint;
   detailItem.iconBackgroundColor = backgroundColor;
+  detailItem.selectionStyle = UITableViewCellSelectionStyleNone;
 
   return detailItem;
 }
@@ -299,6 +300,7 @@
   detailItem.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
   detailItem.accessibilityTraits |= UIAccessibilityTraitButton;
   detailItem.accessibilityIdentifier = accessibilityIdentifier;
+  detailItem.selectionStyle = UITableViewCellSelectionStyleNone;
 
   return detailItem;
 }

@@ -22,6 +22,7 @@
 #include "components/password_manager/core/browser/import/import_results.h"
 #include "components/password_manager/core/browser/password_store/password_form_converters.h"
 #include "components/password_manager/core/browser/password_store/test_password_store.h"
+#include "components/password_manager/core/browser/password_string.h"
 #include "components/password_manager/core/browser/ui/credential_ui_entry.h"
 #include "components/password_manager/core/browser/ui/saved_passwords_presenter.h"
 #include "components/password_manager/core/common/password_manager_constants.h"
@@ -51,7 +52,7 @@ const char kTestFileName[] = "test_only.csv";
 
 class PasswordImporterTest : public testing::Test {
  public:
-  PasswordImporterTest() : receiver_{&service_}, importer_(&presenter_) {
+  PasswordImporterTest() : receiver_{&service_}, importer_(presenter_) {
     CHECK(temp_directory_.CreateUniqueTempDir());
     mojo::PendingRemote<mojom::CSVPasswordParser> pending_remote{
         receiver_.BindNewPipeAndPassRemote()};
@@ -72,16 +73,14 @@ class PasswordImporterTest : public testing::Test {
   ~PasswordImporterTest() override {
     account_store_->ShutdownOnUIThread();
     profile_store_->ShutdownOnUIThread();
-    task_environment_.RunUntilIdle();
   }
 
  protected:
   ImportResults StartImportAndWaitForCompletion(
       const base::FilePath& input_file,
-      PasswordForm::Store to_store =
-          password_manager::PasswordForm::Store::kProfileStore) {
+      PasswordForm::Store to_store = PasswordForm::Store::kProfileStore) {
     file_path_ = input_file;
-    TestFuture<const password_manager::ImportResults&> future;
+    TestFuture<const ImportResults&> future;
     importer_.Import(input_file, to_store, future.GetCallback());
     AssertInProgressState();
     return future.Get();
@@ -89,9 +88,8 @@ class PasswordImporterTest : public testing::Test {
 
   ImportResults StartImportAndWaitForCompletion(
       const char* csv_input,
-      PasswordForm::Store to_store =
-          password_manager::PasswordForm::Store::kProfileStore) {
-    TestFuture<const password_manager::ImportResults&> future;
+      PasswordForm::Store to_store = PasswordForm::Store::kProfileStore) {
+    TestFuture<const ImportResults&> future;
     importer_.Import(csv_input, to_store, future.GetCallback());
     AssertInProgressState();
     return future.Get();
@@ -99,9 +97,8 @@ class PasswordImporterTest : public testing::Test {
 
   ImportResults StartImportAndWaitForCompletion(
       const std::vector<CSVPassword>& passwords,
-      PasswordForm::Store to_store =
-          password_manager::PasswordForm::Store::kProfileStore) {
-    TestFuture<const password_manager::ImportResults&> future;
+      PasswordForm::Store to_store = PasswordForm::Store::kProfileStore) {
+    TestFuture<const ImportResults&> future;
     importer_.Import(passwords, to_store, future.GetCallback());
     AssertInProgressState();
     return future.Get();
@@ -125,7 +122,7 @@ class PasswordImporterTest : public testing::Test {
 
   ImportResults ContinueImportAndWaitForCompletion(
       const std::vector<int>& selected_ids) {
-    TestFuture<const password_manager::ImportResults&> future;
+    TestFuture<const ImportResults&> future;
     importer_.ContinueImport(selected_ids, future.GetCallback());
     return future.Get();
   }
@@ -146,18 +143,17 @@ class PasswordImporterTest : public testing::Test {
   // Adding via the store interface directly, since adding to both stores using
   // the presenter is not possible (a check for collision prevents that).
   void AddToProfileAndAccountStores(PasswordForm form) {
-    form.in_store = password_manager::PasswordForm::Store::kProfileStore;
+    form.in_store = PasswordForm::Store::kProfileStore;
     AddLogin(form);
 
-    form.in_store = password_manager::PasswordForm::Store::kAccountStore;
+    form.in_store = PasswordForm::Store::kAccountStore;
     AddLogin(form);
   }
 
   bool AddPasswordForm(const PasswordForm& form) {
     async_task_completed_ = false;
     bool result = presenter_.AddCredential(
-        CredentialUIEntry(form),
-        password_manager::PasswordForm::Type::kManuallyAdded,
+        CredentialUIEntry(form), PasswordForm::Type::kManuallyAdded,
         base::BindOnce(&PasswordImporterTest::OnAsyncTaskCompleted,
                        base::Unretained(this)));
     WaitUntilAsyncTaskIsCompleted();
@@ -172,7 +168,7 @@ class PasswordImporterTest : public testing::Test {
   void AddLogin(const PasswordForm& form) {
     async_task_completed_ = false;
     profile_store_->AddLogin(
-        password_manager::FromPasswordForm(form),
+        FromPasswordForm(form),
         base::BindOnce(&PasswordImporterTest::OnAsyncTaskCompleted,
                        base::Unretained(this)));
     WaitUntilAsyncTaskIsCompleted();
@@ -195,7 +191,7 @@ class PasswordImporterTest : public testing::Test {
   affiliations::FakeAffiliationService affiliation_service_;
   SavedPasswordsPresenter presenter_{&affiliation_service_, profile_store_,
                                      account_store_};
-  password_manager::PasswordImporter importer_;
+  PasswordImporter importer_;
   testing::StrictMock<base::MockCallback<DeleteFileCallback>> mock_delete_file_;
   // Directory for creating files by this test.
   base::ScopedTempDir temp_directory_;
@@ -211,8 +207,7 @@ TEST_F(PasswordImporterTest, CSVImportBaseFields) {
 
   base::FilePath input_path = temp_file_path();
   ASSERT_TRUE(base::WriteFile(input_path, kTestCSVInput));
-  password_manager::ImportResults results =
-      StartImportAndWaitForCompletion(input_path);
+  ImportResults results = StartImportAndWaitForCompletion(input_path);
   AssertFinishedState();
 
   histogram_tester.ExpectUniqueSample(
@@ -220,6 +215,8 @@ TEST_F(PasswordImporterTest, CSVImportBaseFields) {
 
   EXPECT_EQ(ImportResults::Status::SUCCESS, results.status);
   EXPECT_EQ(1u, results.number_imported);
+  ASSERT_TRUE(
+      base::test::RunUntil([&]() { return stored_passwords().size() == 1u; }));
   ASSERT_EQ(1u, stored_passwords().size());
   EXPECT_EQ(GURL(kTestOriginURL), stored_passwords()[0].GetURL());
   EXPECT_EQ(kTestSignonRealm, stored_passwords()[0].GetFirstSignonRealm());
@@ -250,14 +247,15 @@ TEST_F(PasswordImporterTest, CSVImportWithNote) {
 
   base::FilePath input_path = temp_file_path();
   ASSERT_TRUE(base::WriteFile(input_path, kTestCSVInput));
-  password_manager::ImportResults results =
-      StartImportAndWaitForCompletion(input_path);
+  ImportResults results = StartImportAndWaitForCompletion(input_path);
   AssertFinishedState();
 
   histogram_tester.ExpectUniqueSample(
       "PasswordManager.Import.PerFile.Notes.TotalCount", 1, 1);
 
   EXPECT_EQ(1u, results.number_imported);
+  ASSERT_TRUE(
+      base::test::RunUntil([&]() { return stored_passwords().size() == 1u; }));
   ASSERT_EQ(1u, stored_passwords().size());
   EXPECT_EQ(kTestNote, stored_passwords()[0].note);
 }
@@ -270,14 +268,15 @@ TEST_F(PasswordImporterTest, CSVImportWithNoteFromString) {
 
   base::HistogramTester histogram_tester;
 
-  password_manager::ImportResults results =
-      StartImportAndWaitForCompletion(kTestCSVInput);
+  ImportResults results = StartImportAndWaitForCompletion(kTestCSVInput);
   AssertFinishedState();
 
   histogram_tester.ExpectUniqueSample(
       "PasswordManager.Import.PerFile.Notes.TotalCount", 1, 1);
 
   EXPECT_EQ(1u, results.number_imported);
+  ASSERT_TRUE(
+      base::test::RunUntil([&]() { return stored_passwords().size() == 1u; }));
   ASSERT_EQ(1u, stored_passwords().size());
   EXPECT_EQ(kTestNote, stored_passwords()[0].note);
 }
@@ -292,17 +291,16 @@ TEST_F(PasswordImporterTest, CSVImportLongNote) {
 
   base::FilePath input_path = temp_file_path();
   ASSERT_TRUE(base::WriteFile(input_path, kTestCSVInput));
-  password_manager::ImportResults results =
-      StartImportAndWaitForCompletion(input_path);
+  ImportResults results = StartImportAndWaitForCompletion(input_path);
   AssertNotStartedState();
 
   histogram_tester.ExpectUniqueSample("PasswordManager.ImportEntryStatus",
                                       ImportEntry::Status::LONG_NOTE, 1);
 
   ASSERT_EQ(0u, stored_passwords().size());
-  EXPECT_EQ(password_manager::ImportResults::Status::SUCCESS, results.status);
+  EXPECT_EQ(ImportResults::Status::SUCCESS, results.status);
   ASSERT_EQ(1u, results.displayed_entries.size());
-  EXPECT_EQ(password_manager::ImportEntry::Status::LONG_NOTE,
+  EXPECT_EQ(ImportEntry::Status::LONG_NOTE,
             results.displayed_entries[0].status);
 }
 
@@ -323,8 +321,7 @@ TEST_F(PasswordImporterTest, CSVImportAndroidCredential) {
 
   base::FilePath input_path = temp_file_path();
   ASSERT_TRUE(base::WriteFile(input_path, kTestCSVInput));
-  password_manager::ImportResults results =
-      StartImportAndWaitForCompletion(input_path);
+  ImportResults results = StartImportAndWaitForCompletion(input_path);
   AssertFinishedState();
 
   histogram_tester.ExpectUniqueSample(
@@ -332,6 +329,8 @@ TEST_F(PasswordImporterTest, CSVImportAndroidCredential) {
 
   EXPECT_EQ(ImportResults::Status::SUCCESS, results.status);
   EXPECT_EQ(1u, results.number_imported);
+  ASSERT_TRUE(
+      base::test::RunUntil([&]() { return stored_passwords().size() == 1u; }));
   ASSERT_EQ(1u, stored_passwords().size());
   EXPECT_EQ(GURL(kTestAndroidSignonRealm), stored_passwords()[0].GetURL());
   EXPECT_EQ(kTestAndroidSignonRealm,
@@ -349,14 +348,11 @@ TEST_F(PasswordImporterTest, CSVImportBadHeaderReturnsBadFormat) {
 
   base::FilePath input_path = temp_file_path();
   ASSERT_TRUE(base::WriteFile(input_path, kTestCSVInput));
-  password_manager::ImportResults results =
-      StartImportAndWaitForCompletion(input_path);
+  ImportResults results = StartImportAndWaitForCompletion(input_path);
   AssertNotStartedState();
 
   histogram_tester.ExpectTotalCount(
       "PasswordManager.ImportedPasswordsPerUserInCSV", 0);
-  histogram_tester.ExpectUniqueSample("PasswordManager.ImportFileSize2", 120,
-                                      1);
 
   EXPECT_EQ(ImportResults::Status::BAD_FORMAT, results.status);
   EXPECT_EQ(0u, results.number_imported);
@@ -378,10 +374,10 @@ TEST_F(PasswordImporterTest,
   form_profile_store.url = GURL("https://test.com");
   form_profile_store.signon_realm = form_profile_store.url.spec();
   form_profile_store.username_value = u"username_exists_in_profile_store";
-  form_profile_store.password_value = u"password_already_stored";
+  form_profile_store.password_value =
+      PasswordString(u"password_already_stored");
   form_profile_store.SetNoteWithEmptyUniqueDisplayName(local_note);
-  form_profile_store.in_store =
-      password_manager::PasswordForm::Store::kProfileStore;
+  form_profile_store.in_store = PasswordForm::Store::kProfileStore;
 
   ASSERT_TRUE(AddPasswordForm(form_profile_store));
 
@@ -389,8 +385,7 @@ TEST_F(PasswordImporterTest,
 
   base::FilePath input_path = temp_file_path();
   ASSERT_TRUE(base::WriteFile(input_path, kTestCSVInput));
-  password_manager::ImportResults results =
-      StartImportAndWaitForCompletion(input_path);
+  ImportResults results = StartImportAndWaitForCompletion(input_path);
   AssertNotStartedState();
 
   histogram_tester.ExpectUniqueSample(
@@ -398,7 +393,7 @@ TEST_F(PasswordImporterTest,
       ImportEntry::Status::LONG_CONCATENATED_NOTE, 1);
 
   ASSERT_EQ(1u, results.displayed_entries.size());
-  EXPECT_EQ(password_manager::ImportEntry::Status::LONG_CONCATENATED_NOTE,
+  EXPECT_EQ(ImportEntry::Status::LONG_CONCATENATED_NOTE,
             results.displayed_entries[0].status);
 
   EXPECT_EQ(0u, results.number_imported);
@@ -419,10 +414,10 @@ TEST_F(PasswordImporterTest, ExactMatchWithConflictingNotesValidConcatenation) {
   form_profile_store.url = GURL("https://test.com");
   form_profile_store.signon_realm = form_profile_store.url.spec();
   form_profile_store.username_value = u"username_exists_in_profile_store";
-  form_profile_store.password_value = u"password_already_stored";
+  form_profile_store.password_value =
+      PasswordString(u"password_already_stored");
   form_profile_store.SetNoteWithEmptyUniqueDisplayName(local_note);
-  form_profile_store.in_store =
-      password_manager::PasswordForm::Store::kProfileStore;
+  form_profile_store.in_store = PasswordForm::Store::kProfileStore;
 
   ASSERT_TRUE(AddPasswordForm(form_profile_store));
 
@@ -430,8 +425,7 @@ TEST_F(PasswordImporterTest, ExactMatchWithConflictingNotesValidConcatenation) {
 
   base::FilePath input_path = temp_file_path();
   ASSERT_TRUE(base::WriteFile(input_path, kTestCSVInput));
-  password_manager::ImportResults results =
-      StartImportAndWaitForCompletion(input_path);
+  ImportResults results = StartImportAndWaitForCompletion(input_path);
   AssertFinishedState();
 
   histogram_tester.ExpectUniqueSample(
@@ -439,6 +433,10 @@ TEST_F(PasswordImporterTest, ExactMatchWithConflictingNotesValidConcatenation) {
 
   ASSERT_EQ(0u, results.displayed_entries.size());
   EXPECT_EQ(1u, results.number_imported);
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return !stored_passwords().empty() &&
+           stored_passwords()[0].note == u"local note\nimported note";
+  }));
   ASSERT_EQ(1u, stored_passwords().size());
   EXPECT_EQ(u"local note\nimported note", stored_passwords()[0].note);
 }
@@ -456,10 +454,10 @@ TEST_F(PasswordImporterTest, ExactMatchImportedNoteIsSubstingOfLocalNote) {
   form_profile_store.url = GURL("https://test.com");
   form_profile_store.signon_realm = form_profile_store.url.spec();
   form_profile_store.username_value = u"username_exists_in_profile_store";
-  form_profile_store.password_value = u"password_already_stored";
+  form_profile_store.password_value =
+      PasswordString(u"password_already_stored");
   form_profile_store.SetNoteWithEmptyUniqueDisplayName(local_note);
-  form_profile_store.in_store =
-      password_manager::PasswordForm::Store::kProfileStore;
+  form_profile_store.in_store = PasswordForm::Store::kProfileStore;
 
   ASSERT_TRUE(AddPasswordForm(form_profile_store));
 
@@ -467,8 +465,7 @@ TEST_F(PasswordImporterTest, ExactMatchImportedNoteIsSubstingOfLocalNote) {
 
   base::FilePath input_path = temp_file_path();
   ASSERT_TRUE(base::WriteFile(input_path, kTestCSVInput));
-  password_manager::ImportResults results =
-      StartImportAndWaitForCompletion(input_path);
+  ImportResults results = StartImportAndWaitForCompletion(input_path);
   AssertFinishedState();
 
   histogram_tester.ExpectUniqueSample(
@@ -491,10 +488,10 @@ TEST_F(PasswordImporterTest, CSVImportExactMatchProfileStore) {
   form_profile_store.url = GURL("https://test.com");
   form_profile_store.signon_realm = form_profile_store.url.spec();
   form_profile_store.username_value = u"username_exists_in_profile_store";
-  form_profile_store.password_value = u"password_already_stored";
+  form_profile_store.password_value =
+      PasswordString(u"password_already_stored");
   form_profile_store.SetNoteWithEmptyUniqueDisplayName(kTestNote);
-  form_profile_store.in_store =
-      password_manager::PasswordForm::Store::kProfileStore;
+  form_profile_store.in_store = PasswordForm::Store::kProfileStore;
 
   ASSERT_TRUE(AddPasswordForm(form_profile_store));
 
@@ -502,8 +499,7 @@ TEST_F(PasswordImporterTest, CSVImportExactMatchProfileStore) {
 
   base::FilePath input_path = temp_file_path();
   ASSERT_TRUE(base::WriteFile(input_path, kTestCSVInput));
-  password_manager::ImportResults results =
-      StartImportAndWaitForCompletion(input_path);
+  ImportResults results = StartImportAndWaitForCompletion(input_path);
   AssertFinishedState();
 
   histogram_tester.ExpectUniqueSample(
@@ -535,9 +531,9 @@ TEST_F(PasswordImporterTest, CSVImportExactMatchAccountStore) {
   form_account_store.url = GURL("https://test.com");
   form_account_store.signon_realm = form_account_store.url.spec();
   form_account_store.username_value = u"username_exists_in_account_store";
-  form_account_store.password_value = u"password_already_stored";
-  form_account_store.in_store =
-      password_manager::PasswordForm::Store::kAccountStore;
+  form_account_store.password_value =
+      PasswordString(u"password_already_stored");
+  form_account_store.in_store = PasswordForm::Store::kAccountStore;
 
   ASSERT_TRUE(AddPasswordForm(form_account_store));
 
@@ -545,7 +541,7 @@ TEST_F(PasswordImporterTest, CSVImportExactMatchAccountStore) {
 
   base::FilePath input_path = temp_file_path();
   ASSERT_TRUE(base::WriteFile(input_path, kTestCSVInput));
-  password_manager::ImportResults results = StartImportAndWaitForCompletion(
+  ImportResults results = StartImportAndWaitForCompletion(
       input_path, PasswordForm::Store::kAccountStore);
   AssertFinishedState();
 
@@ -579,7 +575,8 @@ TEST_F(PasswordImporterTest, CSVImportExactMatchProfileAndAccountStore) {
       form_account_profile_store.url.spec();
   form_account_profile_store.username_value =
       u"username_exists_in_profile_and_account_store";
-  form_account_profile_store.password_value = u"password_already_stored";
+  form_account_profile_store.password_value =
+      PasswordString(u"password_already_stored");
 
   AddToProfileAndAccountStores(std::move(form_account_profile_store));
 
@@ -587,7 +584,7 @@ TEST_F(PasswordImporterTest, CSVImportExactMatchProfileAndAccountStore) {
 
   base::FilePath input_path = temp_file_path();
   ASSERT_TRUE(base::WriteFile(input_path, kTestCSVInput));
-  password_manager::ImportResults results = StartImportAndWaitForCompletion(
+  ImportResults results = StartImportAndWaitForCompletion(
       input_path, PasswordForm::Store::kAccountStore);
   AssertFinishedState();
 
@@ -600,6 +597,8 @@ TEST_F(PasswordImporterTest, CSVImportExactMatchProfileAndAccountStore) {
 
   EXPECT_EQ(ImportResults::Status::SUCCESS, results.status);
   EXPECT_EQ(2u, results.number_imported);
+  ASSERT_TRUE(
+      base::test::RunUntil([&]() { return stored_passwords().size() == 2u; }));
   ASSERT_EQ(2u, stored_passwords().size());
   EXPECT_EQ(GURL("https://test.com"), stored_passwords()[0].GetURL());
   EXPECT_EQ(u"username_exists_in_profile_and_account_store",
@@ -620,9 +619,9 @@ TEST_F(PasswordImporterTest, ImportReportsConflicts) {
   form_profile_store.url = GURL("https://test.com");
   form_profile_store.signon_realm = form_profile_store.url.spec();
   form_profile_store.username_value = u"username_exists_in_profile_store";
-  form_profile_store.password_value = u"password_does_not_match";
-  form_profile_store.in_store =
-      password_manager::PasswordForm::Store::kProfileStore;
+  form_profile_store.password_value =
+      PasswordString(u"password_does_not_match");
+  form_profile_store.in_store = PasswordForm::Store::kProfileStore;
 
   ASSERT_TRUE(AddPasswordForm(form_profile_store));
 
@@ -630,20 +629,18 @@ TEST_F(PasswordImporterTest, ImportReportsConflicts) {
 
   base::FilePath input_path = temp_file_path();
   ASSERT_TRUE(base::WriteFile(input_path, kTestCSVInput));
-  password_manager::ImportResults conflicts_results =
-      StartImportAndWaitForCompletion(
-          input_path, password_manager::PasswordForm::Store::kProfileStore);
+  ImportResults conflicts_results = StartImportAndWaitForCompletion(
+      input_path, PasswordForm::Store::kProfileStore);
   AssertConflictsState();
 
-  EXPECT_EQ(password_manager::ImportResults::Status::CONFLICTS,
-            conflicts_results.status);
+  EXPECT_EQ(ImportResults::Status::CONFLICTS, conflicts_results.status);
   ASSERT_EQ(1u, conflicts_results.displayed_entries.size());
   EXPECT_EQ("test.com", conflicts_results.displayed_entries[0].url);
   EXPECT_EQ("username_exists_in_profile_store",
             conflicts_results.displayed_entries[0].username);
   EXPECT_EQ("new_password", conflicts_results.displayed_entries[0].password);
   EXPECT_EQ(0, conflicts_results.displayed_entries[0].id);
-  EXPECT_EQ(password_manager::ImportEntry::Status::VALID,
+  EXPECT_EQ(ImportEntry::Status::VALID,
             conflicts_results.displayed_entries[0].status);
 
   // Non-conflicting password has not been imported yet.
@@ -660,9 +657,9 @@ TEST_F(PasswordImporterTest, ContinueImportCanReplaceConflictingPassword) {
   form_profile_store.url = GURL("https://test.com");
   form_profile_store.signon_realm = form_profile_store.url.spec();
   form_profile_store.username_value = u"username_exists_in_profile_store";
-  form_profile_store.password_value = u"password_does_not_match";
-  form_profile_store.in_store =
-      password_manager::PasswordForm::Store::kProfileStore;
+  form_profile_store.password_value =
+      PasswordString(u"password_does_not_match");
+  form_profile_store.in_store = PasswordForm::Store::kProfileStore;
 
   ASSERT_TRUE(AddPasswordForm(form_profile_store));
 
@@ -670,11 +667,11 @@ TEST_F(PasswordImporterTest, ContinueImportCanReplaceConflictingPassword) {
 
   base::FilePath input_path = temp_file_path();
   ASSERT_TRUE(base::WriteFile(input_path, kTestCSVInput));
-  StartImportAndWaitForCompletion(
-      input_path, password_manager::PasswordForm::Store::kProfileStore);
+  StartImportAndWaitForCompletion(input_path,
+                                  PasswordForm::Store::kProfileStore);
   AssertConflictsState();
 
-  password_manager::ImportResults results =
+  ImportResults results =
       ContinueImportAndWaitForCompletion(/*selected_ids=*/{0});
   ASSERT_NO_FATAL_FAILURE(TriggerDeleteFile());
 
@@ -686,10 +683,12 @@ TEST_F(PasswordImporterTest, ContinueImportCanReplaceConflictingPassword) {
   histogram_tester.ExpectUniqueSample(
       "PasswordManager.Import.PerFile.ConflictsResolved", 1, 1);
 
-  EXPECT_EQ(password_manager::ImportResults::Status::SUCCESS, results.status);
+  EXPECT_EQ(ImportResults::Status::SUCCESS, results.status);
   ASSERT_EQ(0u, results.displayed_entries.size());
 
   EXPECT_EQ(2u, results.number_imported);
+  ASSERT_TRUE(
+      base::test::RunUntil([&]() { return stored_passwords().size() == 2u; }));
   ASSERT_EQ(2u, stored_passwords().size());
   EXPECT_EQ(GURL("https://test.com"), stored_passwords()[0].GetURL());
   EXPECT_EQ(u"username_exists_in_profile_store",
@@ -712,9 +711,9 @@ TEST_F(PasswordImporterTest,
   form_profile_store.url = GURL("https://test.com");
   form_profile_store.signon_realm = form_profile_store.url.spec();
   form_profile_store.username_value = u"username_exists_in_profile_store";
-  form_profile_store.password_value = u"password_does_not_match";
-  form_profile_store.in_store =
-      password_manager::PasswordForm::Store::kProfileStore;
+  form_profile_store.password_value =
+      PasswordString(u"password_does_not_match");
+  form_profile_store.in_store = PasswordForm::Store::kProfileStore;
 
   ASSERT_TRUE(AddPasswordForm(form_profile_store));
 
@@ -722,8 +721,8 @@ TEST_F(PasswordImporterTest,
 
   base::FilePath input_path = temp_file_path();
   ASSERT_TRUE(base::WriteFile(input_path, kTestCSVInput));
-  password_manager::ImportResults results = StartImportAndWaitForCompletion(
-      input_path, password_manager::PasswordForm::Store::kAccountStore);
+  ImportResults results = StartImportAndWaitForCompletion(
+      input_path, PasswordForm::Store::kAccountStore);
 
   histogram_tester.ExpectTotalCount("PasswordManager.ImportEntryStatus", 0);
   histogram_tester.ExpectUniqueSample(
@@ -733,8 +732,10 @@ TEST_F(PasswordImporterTest,
 
   EXPECT_EQ(0u, results.displayed_entries.size());
 
-  EXPECT_EQ(password_manager::ImportResults::Status::SUCCESS, results.status);
+  EXPECT_EQ(ImportResults::Status::SUCCESS, results.status);
   EXPECT_EQ(2u, results.number_imported);
+  ASSERT_TRUE(
+      base::test::RunUntil([&]() { return stored_passwords().size() == 3u; }));
   ASSERT_EQ(3u, stored_passwords().size());
 }
 
@@ -749,8 +750,7 @@ TEST_F(PasswordImporterTest, CSVImportEmptyPasswordReported) {
 
   base::FilePath input_path = temp_file_path();
   ASSERT_TRUE(base::WriteFile(input_path, kTestCSVInput));
-  password_manager::ImportResults results =
-      StartImportAndWaitForCompletion(input_path);
+  ImportResults results = StartImportAndWaitForCompletion(input_path);
   AssertNotStartedState();
 
   histogram_tester.ExpectUniqueSample("PasswordManager.ImportEntryStatus",
@@ -762,11 +762,11 @@ TEST_F(PasswordImporterTest, CSVImportEmptyPasswordReported) {
   histogram_tester.ExpectUniqueSample(
       "PasswordManager.Import.PerFile.AllLoginFieldsEmtpy", 1, 1);
 
-  EXPECT_EQ(password_manager::ImportResults::Status::SUCCESS, results.status);
+  EXPECT_EQ(ImportResults::Status::SUCCESS, results.status);
   EXPECT_EQ(0u, results.number_imported);
   EXPECT_EQ(0u, stored_passwords().size());
   ASSERT_EQ(3u, results.displayed_entries.size());
-  EXPECT_EQ(password_manager::ImportEntry::Status::MISSING_PASSWORD,
+  EXPECT_EQ(ImportEntry::Status::MISSING_PASSWORD,
             results.displayed_entries[0].status);
   EXPECT_EQ(kTestOriginURL, results.displayed_entries[0].url);
   ASSERT_EQ("test@gmail.com", results.displayed_entries[0].username);
@@ -781,8 +781,7 @@ TEST_F(PasswordImporterTest, CSVImportEmptyURLReported) {
 
   base::FilePath input_path = temp_file_path();
   ASSERT_TRUE(base::WriteFile(input_path, kTestCSVInput));
-  password_manager::ImportResults results =
-      StartImportAndWaitForCompletion(input_path);
+  ImportResults results = StartImportAndWaitForCompletion(input_path);
   AssertNotStartedState();
 
   histogram_tester.ExpectUniqueSample("PasswordManager.ImportEntryStatus",
@@ -794,9 +793,9 @@ TEST_F(PasswordImporterTest, CSVImportEmptyURLReported) {
 
   ASSERT_EQ(0u, stored_passwords().size());
 
-  EXPECT_EQ(password_manager::ImportResults::Status::SUCCESS, results.status);
+  EXPECT_EQ(ImportResults::Status::SUCCESS, results.status);
   ASSERT_EQ(1u, results.displayed_entries.size());
-  EXPECT_EQ(password_manager::ImportEntry::Status::MISSING_URL,
+  EXPECT_EQ(ImportEntry::Status::MISSING_URL,
             results.displayed_entries[0].status);
   EXPECT_EQ("test@gmail.com", results.displayed_entries[0].username);
 }
@@ -811,8 +810,7 @@ TEST_F(PasswordImporterTest, CSVImportLongURLReported) {
 
   base::FilePath input_path = temp_file_path();
   ASSERT_TRUE(base::WriteFile(input_path, kTestCSVInput));
-  password_manager::ImportResults results =
-      StartImportAndWaitForCompletion(input_path);
+  ImportResults results = StartImportAndWaitForCompletion(input_path);
   AssertNotStartedState();
 
   histogram_tester.ExpectUniqueSample("PasswordManager.ImportEntryStatus",
@@ -822,10 +820,9 @@ TEST_F(PasswordImporterTest, CSVImportLongURLReported) {
 
   ASSERT_EQ(0u, stored_passwords().size());
 
-  EXPECT_EQ(password_manager::ImportResults::Status::SUCCESS, results.status);
+  EXPECT_EQ(ImportResults::Status::SUCCESS, results.status);
   ASSERT_EQ(1u, results.displayed_entries.size());
-  EXPECT_EQ(password_manager::ImportEntry::Status::LONG_URL,
-            results.displayed_entries[0].status);
+  EXPECT_EQ(ImportEntry::Status::LONG_URL, results.displayed_entries[0].status);
   EXPECT_EQ("test@gmail.com", results.displayed_entries[0].username);
   std::string expected_url = long_url + "/";
   EXPECT_EQ(expected_url, results.displayed_entries[0].url);
@@ -842,8 +839,7 @@ TEST_F(PasswordImporterTest, CSVImportLongPassword) {
 
   base::FilePath input_path = temp_file_path();
   ASSERT_TRUE(base::WriteFile(input_path, kTestCSVInput));
-  password_manager::ImportResults results =
-      StartImportAndWaitForCompletion(input_path);
+  ImportResults results = StartImportAndWaitForCompletion(input_path);
   AssertNotStartedState();
 
   histogram_tester.ExpectUniqueSample("PasswordManager.ImportEntryStatus",
@@ -853,9 +849,9 @@ TEST_F(PasswordImporterTest, CSVImportLongPassword) {
 
   ASSERT_EQ(0u, stored_passwords().size());
 
-  EXPECT_EQ(password_manager::ImportResults::Status::SUCCESS, results.status);
+  EXPECT_EQ(ImportResults::Status::SUCCESS, results.status);
   ASSERT_EQ(1u, results.displayed_entries.size());
-  EXPECT_EQ(password_manager::ImportEntry::Status::LONG_PASSWORD,
+  EXPECT_EQ(ImportEntry::Status::LONG_PASSWORD,
             results.displayed_entries[0].status);
   EXPECT_EQ("test@gmail.com", results.displayed_entries[0].username);
   EXPECT_EQ("https://test.com/", results.displayed_entries[0].url);
@@ -872,8 +868,7 @@ TEST_F(PasswordImporterTest, CSVImportLongUsername) {
 
   base::FilePath input_path = temp_file_path();
   ASSERT_TRUE(base::WriteFile(input_path, kTestCSVInput));
-  password_manager::ImportResults results =
-      StartImportAndWaitForCompletion(input_path);
+  ImportResults results = StartImportAndWaitForCompletion(input_path);
   AssertNotStartedState();
 
   histogram_tester.ExpectUniqueSample("PasswordManager.ImportEntryStatus",
@@ -883,9 +878,9 @@ TEST_F(PasswordImporterTest, CSVImportLongUsername) {
 
   ASSERT_EQ(0u, stored_passwords().size());
 
-  EXPECT_EQ(password_manager::ImportResults::Status::SUCCESS, results.status);
+  EXPECT_EQ(ImportResults::Status::SUCCESS, results.status);
   ASSERT_EQ(1u, results.displayed_entries.size());
-  EXPECT_EQ(password_manager::ImportEntry::Status::LONG_USERNAME,
+  EXPECT_EQ(ImportEntry::Status::LONG_USERNAME,
             results.displayed_entries[0].status);
   EXPECT_EQ(long_username, results.displayed_entries[0].username);
   EXPECT_EQ("https://test.com/", results.displayed_entries[0].url);
@@ -900,8 +895,7 @@ TEST_F(PasswordImporterTest, CSVImportInvalidURLReported) {
 
   base::FilePath input_path = temp_file_path();
   ASSERT_TRUE(base::WriteFile(input_path, kTestCSVInput));
-  password_manager::ImportResults results =
-      StartImportAndWaitForCompletion(input_path);
+  ImportResults results = StartImportAndWaitForCompletion(input_path);
   AssertNotStartedState();
 
   histogram_tester.ExpectUniqueSample("PasswordManager.ImportEntryStatus",
@@ -911,9 +905,9 @@ TEST_F(PasswordImporterTest, CSVImportInvalidURLReported) {
 
   ASSERT_EQ(0u, stored_passwords().size());
 
-  EXPECT_EQ(password_manager::ImportResults::Status::SUCCESS, results.status);
+  EXPECT_EQ(ImportResults::Status::SUCCESS, results.status);
   ASSERT_EQ(1u, results.displayed_entries.size());
-  EXPECT_EQ(password_manager::ImportEntry::Status::INVALID_URL,
+  EXPECT_EQ(ImportEntry::Status::INVALID_URL,
             results.displayed_entries[0].status);
   EXPECT_EQ("test@gmail.com", results.displayed_entries[0].username);
 
@@ -929,16 +923,17 @@ TEST_F(PasswordImporterTest, CSVImportNonASCIIURL) {
 
   base::FilePath input_path = temp_file_path();
   ASSERT_TRUE(base::WriteFile(input_path, kTestCSVInput));
-  password_manager::ImportResults results =
-      StartImportAndWaitForCompletion(input_path);
+  ImportResults results = StartImportAndWaitForCompletion(input_path);
   AssertFinishedState();
 
   histogram_tester.ExpectUniqueSample(
       "PasswordManager.ImportedPasswordsPerUserInCSV", 1, 1);
 
+  ASSERT_TRUE(
+      base::test::RunUntil([&]() { return stored_passwords().size() == 1u; }));
   ASSERT_EQ(1u, stored_passwords().size());
 
-  EXPECT_EQ(password_manager::ImportResults::Status::SUCCESS, results.status);
+  EXPECT_EQ(ImportResults::Status::SUCCESS, results.status);
   ASSERT_EQ(0u, results.displayed_entries.size());
   EXPECT_EQ(GURL("https://.إلياس.com"), stored_passwords()[0].GetURL());
 }
@@ -955,8 +950,7 @@ TEST_F(PasswordImporterTest, SingleFailedSingleSucceeds) {
 
   base::FilePath input_path = temp_file_path();
   ASSERT_TRUE(base::WriteFile(input_path, kTestCSVInput));
-  password_manager::ImportResults results =
-      StartImportAndWaitForCompletion(input_path);
+  ImportResults results = StartImportAndWaitForCompletion(input_path);
   AssertNotStartedState();
 
   histogram_tester.ExpectUniqueSample("PasswordManager.ImportEntryStatus",
@@ -964,12 +958,14 @@ TEST_F(PasswordImporterTest, SingleFailedSingleSucceeds) {
   histogram_tester.ExpectUniqueSample(
       "PasswordManager.ImportedPasswordsPerUserInCSV", 1, 1);
 
+  ASSERT_TRUE(
+      base::test::RunUntil([&]() { return stored_passwords().size() == 1u; }));
   ASSERT_EQ(1u, stored_passwords().size());
 
-  EXPECT_EQ(password_manager::ImportResults::Status::SUCCESS, results.status);
+  EXPECT_EQ(ImportResults::Status::SUCCESS, results.status);
   EXPECT_EQ(1u, results.number_imported);
   ASSERT_EQ(1u, results.displayed_entries.size());
-  EXPECT_EQ(password_manager::ImportEntry::Status::MISSING_URL,
+  EXPECT_EQ(ImportEntry::Status::MISSING_URL,
             results.displayed_entries[0].status);
   EXPECT_EQ("test1   ", results.displayed_entries[0].username);
 }
@@ -986,27 +982,25 @@ TEST_F(PasswordImporterTest, PartialImportSucceeds) {
 
   base::FilePath input_path = temp_file_path();
   ASSERT_TRUE(base::WriteFile(input_path, kTestCSVInput));
-  password_manager::ImportResults results =
-      StartImportAndWaitForCompletion(input_path);
+  ImportResults results = StartImportAndWaitForCompletion(input_path);
   AssertNotStartedState();
 
   histogram_tester.ExpectUniqueSample("PasswordManager.ImportEntryStatus",
                                       ImportEntry::Status::MISSING_URL, 1);
-  histogram_tester.ExpectUniqueSample("PasswordManager.ImportFileSize2",
-                                      /*sample=*/104,
-                                      /*expected_bucket_count=*/1);
   histogram_tester.ExpectUniqueSample(
       "PasswordManager.ImportedPasswordsPerUserInCSV", 1, 1);
 
+  ASSERT_TRUE(
+      base::test::RunUntil([&]() { return stored_passwords().size() == 1u; }));
   ASSERT_EQ(1u, stored_passwords().size());
   EXPECT_EQ(GURL(kTestOriginURL), stored_passwords()[0].GetURL());
   EXPECT_EQ(kTestSignonRealm, stored_passwords()[0].GetFirstSignonRealm());
   EXPECT_EQ(kTestUsername, stored_passwords()[0].username);
   EXPECT_EQ(kTestPassword, stored_passwords()[0].password);
 
-  EXPECT_EQ(password_manager::ImportResults::Status::SUCCESS, results.status);
+  EXPECT_EQ(ImportResults::Status::SUCCESS, results.status);
   ASSERT_EQ(1u, results.displayed_entries.size());
-  EXPECT_EQ(password_manager::ImportEntry::Status::MISSING_URL,
+  EXPECT_EQ(ImportEntry::Status::MISSING_URL,
             results.displayed_entries[0].status);
   EXPECT_EQ("test@gmail.com", results.displayed_entries[0].username);
 }
@@ -1020,15 +1014,11 @@ TEST_F(PasswordImporterTest, CSVImportLargeFileShouldFail) {
   ASSERT_TRUE(base::CreateTemporaryFile(&temp_file_path));
   ASSERT_TRUE(base::WriteFile(temp_file_path, std::move(content)));
 
-  password_manager::ImportResults results =
-      StartImportAndWaitForCompletion(temp_file_path);
+  ImportResults results = StartImportAndWaitForCompletion(temp_file_path);
   AssertNotStartedState();
 
   EXPECT_THAT(stored_passwords(), IsEmpty());
 
-  histogram_tester.ExpectUniqueSample("PasswordManager.ImportFileSize2",
-                                      /*sample=*/1024100,
-                                      /*expected_bucket_count=*/1);
   histogram_tester.ExpectTotalCount(
       "PasswordManager.ImportedPasswordsPerUserInCSV", 0);
 
@@ -1042,15 +1032,11 @@ TEST_F(PasswordImporterTest, CSVImportLargeStringShouldFail) {
   // content has more than kMaxFileSizeBytes (1000KB) of bytes.
   std::string content(1000 * 1024 + 100, '*');
 
-  password_manager::ImportResults results =
-      StartImportAndWaitForCompletion(content.c_str());
+  ImportResults results = StartImportAndWaitForCompletion(content.c_str());
   AssertNotStartedState();
 
   EXPECT_THAT(stored_passwords(), IsEmpty());
 
-  histogram_tester.ExpectUniqueSample("PasswordManager.ImportFileSize2",
-                                      /*sample=*/1024100,
-                                      /*expected_bucket_count=*/1);
   histogram_tester.ExpectTotalCount(
       "PasswordManager.ImportedPasswordsPerUserInCSV", 0);
 
@@ -1071,8 +1057,7 @@ TEST_F(PasswordImporterTest, CSVImportHitMaxPasswordsLimit) {
   ASSERT_TRUE(base::CreateTemporaryFile(&temp_file_path));
   ASSERT_TRUE(base::WriteFile(temp_file_path, std::move(content)));
 
-  password_manager::ImportResults results =
-      StartImportAndWaitForCompletion(temp_file_path);
+  ImportResults results = StartImportAndWaitForCompletion(temp_file_path);
   AssertNotStartedState();
 
   EXPECT_THAT(stored_passwords(), IsEmpty());
@@ -1089,11 +1074,9 @@ TEST_F(PasswordImporterTest, CSVImportNonExistingFile) {
   base::FilePath input_path =
       src_dir.Append(kTestsDirectory).AppendASCII("non_existing_path");
 
-  password_manager::ImportResults results =
-      StartImportAndWaitForCompletion(input_path);
+  ImportResults results = StartImportAndWaitForCompletion(input_path);
   AssertNotStartedState();
 
-  histogram_tester.ExpectTotalCount("PasswordManager.ImportFileSize2", 0);
   histogram_tester.ExpectTotalCount(
       "PasswordManager.ImportedPasswordsPerUserInCSV", 0);
   EXPECT_THAT(results.displayed_entries, IsEmpty());
@@ -1104,11 +1087,10 @@ TEST_F(PasswordImporterTest, CSVImportNonExistingFile) {
 TEST_F(PasswordImporterTest, ImportIOErrorDueToUnreadableFile) {
   base::HistogramTester histogram_tester;
   base::FilePath non_existent_input_file(FILE_PATH_LITERAL("nonexistent.csv"));
-  password_manager::ImportResults results =
+  ImportResults results =
       StartImportAndWaitForCompletion(non_existent_input_file);
   AssertNotStartedState();
 
-  histogram_tester.ExpectTotalCount("PasswordManager.ImportFileSize2", 0);
   histogram_tester.ExpectTotalCount(
       "PasswordManager.ImportedPasswordsPerUserInCSV", 0);
   EXPECT_THAT(results.displayed_entries, IsEmpty());
@@ -1124,8 +1106,7 @@ TEST_F(PasswordImporterTest, VectorImport) {
 
   base::HistogramTester histogram_tester;
 
-  password_manager::ImportResults results =
-      StartImportAndWaitForCompletion(passwords);
+  ImportResults results = StartImportAndWaitForCompletion(passwords);
   AssertFinishedState();
 
   histogram_tester.ExpectUniqueSample(
@@ -1133,6 +1114,8 @@ TEST_F(PasswordImporterTest, VectorImport) {
 
   EXPECT_EQ(results.status, ImportResults::Status::SUCCESS);
   EXPECT_EQ(results.number_imported, 1u);
+  ASSERT_TRUE(
+      base::test::RunUntil([&]() { return stored_passwords().size() == 1u; }));
   ASSERT_THAT(stored_passwords(), SizeIs(1));
   CredentialUIEntry stored_password = stored_passwords()[0];
   EXPECT_EQ(stored_password.GetURL(), GURL(kTestOriginURL));
@@ -1150,8 +1133,7 @@ TEST_F(PasswordImporterTest, VectorImportWithInvalidURL) {
 
   base::HistogramTester histogram_tester;
 
-  password_manager::ImportResults results =
-      StartImportAndWaitForCompletion(passwords);
+  ImportResults results = StartImportAndWaitForCompletion(passwords);
   AssertNotStartedState();
 
   histogram_tester.ExpectUniqueSample("PasswordManager.ImportEntryStatus",
@@ -1162,7 +1144,7 @@ TEST_F(PasswordImporterTest, VectorImportWithInvalidURL) {
   EXPECT_THAT(stored_passwords(), IsEmpty());
   ASSERT_THAT(results.displayed_entries, SizeIs(1));
   EXPECT_EQ(results.displayed_entries[0].status,
-            password_manager::ImportEntry::Status::INVALID_URL);
+            ImportEntry::Status::INVALID_URL);
 }
 
 TEST_F(PasswordImporterTest, VectorImportWithConflict) {
@@ -1171,8 +1153,8 @@ TEST_F(PasswordImporterTest, VectorImportWithConflict) {
   existing_form.url = GURL(kTestOriginURL);
   existing_form.signon_realm = kTestSignonRealm;
   existing_form.username_value = kTestUsername;
-  existing_form.password_value = u"different_password";
-  existing_form.in_store = password_manager::PasswordForm::Store::kProfileStore;
+  existing_form.password_value = PasswordString(u"different_password");
+  existing_form.in_store = PasswordForm::Store::kProfileStore;
   ASSERT_TRUE(AddPasswordForm(existing_form));
 
   std::vector<CSVPassword> passwords = {
@@ -1180,23 +1162,25 @@ TEST_F(PasswordImporterTest, VectorImportWithConflict) {
                   base::UTF16ToUTF8(kTestPassword),
                   base::UTF16ToUTF8(kTestNote), CSVPassword::Status::kOK)};
 
-  password_manager::ImportResults conflicts_results =
-      StartImportAndWaitForCompletion(passwords);
+  ImportResults conflicts_results = StartImportAndWaitForCompletion(passwords);
   AssertConflictsState();
 
-  EXPECT_EQ(conflicts_results.status,
-            password_manager::ImportResults::Status::CONFLICTS);
+  EXPECT_EQ(conflicts_results.status, ImportResults::Status::CONFLICTS);
   ASSERT_THAT(conflicts_results.displayed_entries, SizeIs(1));
   EXPECT_EQ(conflicts_results.displayed_entries[0].status,
-            password_manager::ImportEntry::Status::VALID);
+            ImportEntry::Status::VALID);
 
   // Continue import, replacing the conflict.
-  password_manager::ImportResults results =
+  ImportResults results =
       ContinueImportAndWaitForCompletion(/*selected_ids=*/{0});
   AssertFinishedState();
 
   EXPECT_EQ(results.status, ImportResults::Status::SUCCESS);
   EXPECT_EQ(results.number_imported, 1u);
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return !stored_passwords().empty() &&
+           stored_passwords()[0].password == kTestPassword;
+  }));
   ASSERT_THAT(stored_passwords(), SizeIs(1));
   EXPECT_EQ(stored_passwords()[0].password, kTestPassword);
 }
@@ -1207,8 +1191,8 @@ TEST_F(PasswordImporterTest, VectorImportWithDuplicate) {
   existing_form.url = GURL(kTestOriginURL);
   existing_form.signon_realm = kTestSignonRealm;
   existing_form.username_value = kTestUsername;
-  existing_form.password_value = kTestPassword;
-  existing_form.in_store = password_manager::PasswordForm::Store::kProfileStore;
+  existing_form.password_value = PasswordString(kTestPassword);
+  existing_form.in_store = PasswordForm::Store::kProfileStore;
   ASSERT_TRUE(AddPasswordForm(existing_form));
 
   std::vector<CSVPassword> passwords = {
@@ -1218,8 +1202,7 @@ TEST_F(PasswordImporterTest, VectorImportWithDuplicate) {
 
   base::HistogramTester histogram_tester;
 
-  password_manager::ImportResults results =
-      StartImportAndWaitForCompletion(passwords);
+  ImportResults results = StartImportAndWaitForCompletion(passwords);
   AssertFinishedState();
 
   histogram_tester.ExpectUniqueSample(

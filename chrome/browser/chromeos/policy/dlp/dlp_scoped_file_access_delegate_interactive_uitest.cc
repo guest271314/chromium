@@ -13,7 +13,7 @@
 
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
-#include "chrome/browser/ui/browser.h"
+#include "base/threading/thread_restrictions.h"
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
@@ -90,7 +90,7 @@ class DlpScopedFileAccessDelegateInteractiveUITest
 
     ASSERT_TRUE(ui_test_utils::BringBrowserWindowToFront(browser()));
     ASSERT_TRUE(ui_test_utils::ShowAndFocusNativeWindow(
-        browser()->window()->GetNativeWindow()));
+        browser()->GetWindow()->GetNativeWindow()));
   }
 
   void TearDownOnMainThread() override {

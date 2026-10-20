@@ -13,7 +13,7 @@ import {RoutineResultListElement} from 'chrome://diagnostics/routine_result_list
 import {RoutineType, StandardRoutineResult} from 'chrome://diagnostics/system_routine_controller.mojom-webui.js';
 import {strictQuery} from 'chrome://resources/ash/common/typescript_utils/strict_query.js';
 import {assert} from 'chrome://resources/js/assert.js';
-import {assertDeepEquals, assertEquals, assertFalse, assertNotEquals, assertTrue} from 'chrome://webui-test/chromeos/chai_assert.js';
+import {assertDeepEquals, assertEquals, assertFalse, assertNotEquals, assertTrue} from 'chrome://webui-test/chai_assert.js';
 import {flushTasks} from 'chrome://webui-test/polymer_test_util.js';
 import {isVisible} from 'chrome://webui-test/test_util.js';
 
@@ -79,24 +79,6 @@ suite('routineResultListTestSuite', function() {
     assertTrue(isVisible(strictQuery(
         '#resultListContainer', routineResultListElement.shadowRoot,
         HTMLDivElement)));
-  });
-
-  test('HideElement', async () => {
-    await initializeRoutineResultList([]);
-    assert(routineResultListElement);
-    assertFalse(routineResultListElement.hidden);
-    assertFalse(strictQuery(
-                    '#resultListContainer', routineResultListElement.shadowRoot,
-                    HTMLElement)
-                    .hidden);
-    routineResultListElement.hidden = true;
-    flushTasks();
-    assertTrue(routineResultListElement.hidden);
-    assert(routineResultListElement);
-    assertTrue(strictQuery(
-                   '#resultListContainer', routineResultListElement.shadowRoot,
-                   HTMLElement)
-                   .hidden);
   });
 
   test('EmptyByDefault', async () => {

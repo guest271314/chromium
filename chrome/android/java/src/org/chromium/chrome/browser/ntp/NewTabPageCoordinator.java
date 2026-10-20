@@ -20,12 +20,18 @@ import android.view.ViewStub;
 
 import androidx.annotation.VisibleForTesting;
 
+import org.chromium.base.ApplicationStatus;
 import org.chromium.base.Callback;
 import org.chromium.base.CallbackController;
+import org.chromium.base.DeviceInfo;
 import org.chromium.base.Log;
 import org.chromium.base.TimeUtils;
 import org.chromium.base.TraceEvent;
+import org.chromium.base.TriState;
+import org.chromium.base.TriStateUtils;
 import org.chromium.base.supplier.MonotonicObservableSupplier;
+import org.chromium.base.supplier.NonNullObservableSupplier;
+import org.chromium.base.supplier.NullableObservableSupplier;
 import org.chromium.base.supplier.ObservableSuppliers;
 import org.chromium.base.supplier.OneshotSupplier;
 import org.chromium.base.supplier.SettableNullableObservableSupplier;
@@ -34,10 +40,12 @@ import org.chromium.build.annotations.Initializer;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.R;
+import org.chromium.chrome.browser.back_press.BackPressManager;
 import org.chromium.chrome.browser.composeplate.ComposeplateCoordinator;
 import org.chromium.chrome.browser.composeplate.ComposeplateMetricsUtils;
 import org.chromium.chrome.browser.composeplate.ComposeplateUtils;
 import org.chromium.chrome.browser.device_lock.DeviceLockActivityLauncherImpl;
+import org.chromium.chrome.browser.feed.FeedStreamViewResizerUtils;
 import org.chromium.chrome.browser.feed.FeedSurfaceScrollDelegate;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.incognito.IncognitoUtils;
@@ -53,19 +61,22 @@ import org.chromium.chrome.browser.magic_stack.ModuleDelegateHost;
 import org.chromium.chrome.browser.magic_stack.ModuleRegistry;
 import org.chromium.chrome.browser.multiwindow.MultiWindowUtils;
 import org.chromium.chrome.browser.ntp.NewTabPage.OnSearchBoxScrollListener;
+import org.chromium.chrome.browser.ntp.NewTabPageUtils.ActionChips;
 import org.chromium.chrome.browser.ntp.search.NtpSearchBox;
 import org.chromium.chrome.browser.ntp.search.NtpSearchBoxFactory;
+import org.chromium.chrome.browser.ntp.search.SearchBoxCoordinator;
 import org.chromium.chrome.browser.ntp_customization.NtpCustomizationConfigManager;
 import org.chromium.chrome.browser.ntp_customization.NtpCustomizationCoordinator;
 import org.chromium.chrome.browser.ntp_customization.NtpCustomizationCoordinatorFactory;
 import org.chromium.chrome.browser.ntp_customization.NtpCustomizationUtils;
 import org.chromium.chrome.browser.ntp_customization.theme.NtpCustomizationPromoManager;
-import org.chromium.chrome.browser.omnibox.SearchEngineUtils;
-import org.chromium.chrome.browser.omnibox.SearchEngineUtils.SearchBoxHintTextObserver;
-import org.chromium.chrome.browser.omnibox.SearchEngineUtils.SearchEngineIconObserver;
+import org.chromium.chrome.browser.omnibox.SearchEngineService;
+import org.chromium.chrome.browser.omnibox.SearchEngineService.SearchEngineIconObserver;
+import org.chromium.chrome.browser.omnibox.SearchEngineService.SearchEngineNameObserver;
+import org.chromium.chrome.browser.omnibox.fusebox.ComposeboxQueryControllerBridge;
+import org.chromium.chrome.browser.omnibox.status.StatusProperties.StatusIconResource;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.setup_list.SetupListManager;
-import org.chromium.chrome.browser.setup_list.SetupListModuleUtils;
 import org.chromium.chrome.browser.signin.SigninAndHistorySyncActivityLauncherImpl;
 import org.chromium.chrome.browser.suggestions.tile.MostVisitedTilesCoordinator;
 import org.chromium.chrome.browser.suggestions.tile.TileGroup;
@@ -80,6 +91,12 @@ import org.chromium.chrome.browser.tasks.HomeSurfaceTracker;
 import org.chromium.chrome.browser.tasks.ReturnToChromeUtil;
 import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager;
 import org.chromium.chrome.browser.ui.native_page.TouchEnabledDelegate;
+import org.chromium.chrome.browser.ui.side_ui.SideUiCoordinator.AnchorSide;
+import org.chromium.chrome.browser.ui.side_ui.SideUiCoordinator.SideUiSpecs;
+import org.chromium.chrome.browser.ui.side_ui.SideUiCoordinator.UiUpdateRequest;
+import org.chromium.chrome.browser.ui.side_ui.SideUiCoordinator.UiUpdateRequest.UpdateReason;
+import org.chromium.chrome.browser.ui.side_ui.SideUiObserver;
+import org.chromium.chrome.browser.ui.side_ui.SideUiStateProvider;
 import org.chromium.chrome.browser.ui.signin.signin_promo.NtpSigninPromoCoordinator;
 import org.chromium.chrome.browser.url_constants.UrlConstantResolver;
 import org.chromium.chrome.browser.url_constants.UrlConstantResolverFactory;
@@ -88,14 +105,19 @@ import org.chromium.chrome.browser.util.BrowserUiUtils.ModuleTypeOnStartAndNtp;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
 import org.chromium.components.browser_ui.widget.displaystyle.DisplayStyleObserver;
 import org.chromium.components.browser_ui.widget.displaystyle.UiConfig;
+import org.chromium.components.contextual_search.InputState;
 import org.chromium.components.embedder_support.util.UrlUtilities;
 import org.chromium.components.omnibox.AutocompleteRequestType;
+import org.chromium.components.omnibox.OmniboxCapabilities;
 import org.chromium.components.omnibox.OmniboxFeatures;
-import org.chromium.components.signin.SigninFeatureMap;
-import org.chromium.components.signin.SigninFeatures;
+import org.chromium.components.omnibox.OmniboxFocusReason;
+import org.chromium.components.omnibox.ToolModeProtoIntDef.ToolMode;
+import org.chromium.components.search_engines.AiModeButtonUiConfig;
+import org.chromium.components.search_engines.TemplateUrlService;
 import org.chromium.content_public.browser.LoadUrlParams;
 import org.chromium.ui.base.ActivityResultTracker;
 import org.chromium.ui.base.MimeTypeUtils;
+import org.chromium.ui.base.ViewUtils;
 import org.chromium.ui.base.WindowAndroid;
 import org.chromium.ui.modaldialog.ModalDialogManager;
 import org.chromium.ui.modelutil.PropertyModel;
@@ -118,7 +140,6 @@ public class NewTabPageCoordinator implements ModuleDelegateHost {
     private final NewTabPageManager mManager;
     private final Activity mActivity;
     private final NewTabPageLayout mNewTabPageLayout;
-    private final NewTabPageLayout.Delegate mLayoutDelegate;
     private final PropertyModel mModel;
     private final Tab mTab;
     private final TabModelSelector mTabModelSelector;
@@ -132,12 +153,32 @@ public class NewTabPageCoordinator implements ModuleDelegateHost {
     private final BottomSheetController mBottomSheetController;
     private final ModalDialogManager mModalDialogManager;
     private final SnackbarManager mSnackbarManager;
-    private final Boolean mIsTablet;
+    private final boolean mIsLff;
     private final Supplier<Integer> mTabStripHeightSupplier;
-    private final SearchEngineUtils mSearchEngineUtils;
+    private final SideUiObserver mSideUiObserver;
+    private final SearchEngineService mSearchEngineService;
+    private final BackPressManager mBackPressManager;
+    private final SearchProviderInfoDelegate mSearchProviderInfoDelegate;
+    private final boolean mIsIncognitoModeEnabled;
+
+    /**
+     * The predefined baseline vertical scroll distance before the fake search box reaches the top
+     * toolbar at which the transition animation into the omnibox begins.
+     *
+     * <p>Loaded from resources and excludes top insets. Increased by {@link #mTopInset} when
+     * Edge-to-Edge on top is active.
+     *
+     * <p>Note: For runtime scroll calculations, please reference {@link
+     * #mCurrentNtpFakeSearchBoxTransitionStartOffset}.
+     */
     private final int mNtpSearchBoxTransitionStartOffset;
+
     private final int mNtpSearchBoxTopMarginWithoutLogo;
     private final boolean mEnableLogs;
+    private final int mSearchBoxMaxWidth;
+    private final boolean mIsAim3pEntrypointEnabled;
+    private final boolean mIsAiModeButtonRedirectEnabled;
+    private final boolean mIsBesideMvtModuleEnabled;
 
     private @Nullable LogoCoordinator mLogoCoordinator;
     private @Nullable NtpSearchBox mNtpSearchBox;
@@ -147,17 +188,23 @@ public class NewTabPageCoordinator implements ModuleDelegateHost {
     private @Nullable DisplayStyleObserver mDisplayStyleObserver;
     private CallbackController mCallbackController = new CallbackController();
     private @Nullable SearchEngineIconObserver mSearchEngineIconObserver;
-    private @Nullable SearchBoxHintTextObserver mSearchBoxHintTextObserver;
-
+    private @Nullable SearchEngineNameObserver mSearchEngineNameObserver;
+    private @Nullable NullableObservableSupplier<AiModeButtonUiConfig>
+            mAiModeButtonUiConfigSupplier;
+    private @Nullable Callback<@Nullable AiModeButtonUiConfig>
+            mAiModeButtonUiConfigSupplierObserver;
+    private @Nullable NonNullObservableSupplier<StatusIconResource> mAiModeButtonIconSupplier;
+    private @Nullable Callback<StatusIconResource> mAiModeButtonIconSupplierObserver;
     private @Nullable HomeModulesCoordinator mHomeModulesCoordinator;
     private @Nullable ViewGroup mHomeModulesContainer;
     private SetupListManager.@Nullable Observer mSetupListObserver;
     private @Nullable Point mContextMenuStartPosition;
     private @Nullable NtpCustomizationCoordinator mNtpCustomizationCoordinator;
+    private @Nullable SideUiStateProvider mSideUiStateProvider;
 
     /**
      * Whether the tiles shown in the layout have finished loading. With {@link #mHasShownView},
-     * it's one of the 2 flags used to track initialisation progress.
+     * it's one of the 2 flags used to track initialization progress.
      */
     private boolean mTilesLoaded;
 
@@ -166,10 +213,6 @@ public class NewTabPageCoordinator implements ModuleDelegateHost {
      * flags used to track initialization progress.
      */
     private boolean mHasShownView;
-
-    private boolean mSearchProviderHasLogo = true;
-    private boolean mSearchProviderIsGoogle;
-    private boolean mShowingNonStandardGoogleLogo;
 
     private boolean mInitialized;
 
@@ -192,24 +235,34 @@ public class NewTabPageCoordinator implements ModuleDelegateHost {
     private @Nullable FeedSurfaceScrollDelegate mScrollDelegate;
     private @Nullable Callback<Logo> mOnLogoAvailableCallback;
 
-    // mCanShowComposeplateButton is null before checking whether to initialize composeplate view in
-    // NewTabPageCoordinator#initialize().
-    private @Nullable Boolean mCanShowComposeplateButton;
+    // mCanShowComposeplateButton is TriState.NOT_SET before checking whether to initialize
+    // composeplate view in NewTabPageCoordinator#initialize().
+    private @TriState int mCanShowComposeplateButton;
     private boolean mIsComposeplatePolicyEnabled;
     private boolean mIsComposeplateViewInitialized;
-    private @Nullable Supplier<GURL> mComposeplateUrlSupplier;
     private @Nullable ComposeplateCoordinator mComposeplateCoordinator;
+    // Whether the image generation tool is allowed for mProfile. Lazily computed by
+    // #isImageGenToolAllowed(); TriState.NOT_SET until then.
+    private @TriState int mIsImageGenToolAllowed;
     // Previous visibility states for metrics.
-    private @Nullable Boolean mPreviousVoiceSearchButtonVisible;
-    private @Nullable Boolean mPreviousLensButtonVisible;
+    private @TriState int mPreviousVoiceSearchButtonVisible;
+    private @TriState int mPreviousLensButtonVisible;
+
+    /**
+     * The current runtime vertical scroll distance before the fake search box reaches the top
+     * toolbar at which the transition animation into the omnibox begins.
+     *
+     * <p>Includes {@link #mTopInset} when Edge-to-Edge on top is active; otherwise equals {@link
+     * #getNtpSearchBoxTransitionStartOffset(boolean)}.
+     */
     private int mCurrentNtpFakeSearchBoxTransitionStartOffset;
+
     private int mTopInset;
     private @Nullable OnLayoutChangeListener mOnLayoutChangeListener;
-    // TODO(crbug.com/451602301): remove @Nullable and all null checks once
-    // ENABLE_SEAMLESS_SIGNIN is removed after the experiment.
     private @Nullable NtpSigninPromoCoordinator mSigninPromoCoordinator;
 
-    private @Nullable Boolean mIsWhiteBackgroundOnSearchBoxApplied;
+    private @TriState int mIsWhiteBackgroundOnSearchBoxApplied;
+    private @TriState int mIsWhiteBackgroundOnComposeplateApplied;
 
     /**
      * Constructor of the NewTabPageCoordinator.
@@ -218,6 +271,7 @@ public class NewTabPageCoordinator implements ModuleDelegateHost {
      *     the page.
      * @param activity The activity that currently owns the new tab page
      * @param newTabPageLayout The new tab page layout.
+     * @param tab The {@link Tab} that contains this new tab page.
      * @param tabModelSelector {@link TabModelSelector} object.
      * @param moduleRegistrySupplier Supplier for the {@link ModuleRegistry}.
      * @param profile The {@link Profile} associated with the NTP. *
@@ -226,9 +280,12 @@ public class NewTabPageCoordinator implements ModuleDelegateHost {
      * @param bottomSheetController Used to interact with the bottom sheet.
      * @param modalDialogManager The instance of {@link ModalDialogManager}
      * @param snackbarManager Manages snackbars shown in the app.
-     * @param isTablet {@code true} if the NTP surface is in tablet mode.
+     * @param isLff {@code true} if the NTP surface is on a large form factor (LFF) device.
      * @param tabStripHeightSupplier Supplier of the tab strip height.
-     * @param homeSurfaceTracker Used to decide whether we are the home surface.
+     * @param sideUiStateProviderSupplier Supplier for the {@link SideUiStateProvider}.
+     * @param homeSurfaceTracker Tracker recording whether this NTP acts as the home surface.
+     * @param backPressManager Manages back press dispatching.
+     * @param templateUrlService The {@link TemplateUrlService} of the current profile.
      */
     public NewTabPageCoordinator(
             NewTabPageManager manager,
@@ -243,9 +300,13 @@ public class NewTabPageCoordinator implements ModuleDelegateHost {
             BottomSheetController bottomSheetController,
             ModalDialogManager modalDialogManager,
             SnackbarManager snackbarManager,
-            boolean isTablet,
+            boolean isLff,
             Supplier<Integer> tabStripHeightSupplier,
-            @Nullable HomeSurfaceTracker homeSurfaceTracker) {
+            OneshotSupplier<SideUiStateProvider> sideUiStateProviderSupplier,
+            @Nullable HomeSurfaceTracker homeSurfaceTracker,
+            BackPressManager backPressManager,
+            TemplateUrlService templateUrlService) {
+        mBackPressManager = backPressManager;
         mManager = manager;
         mActivity = activity;
         mNewTabPageLayout = newTabPageLayout;
@@ -259,22 +320,29 @@ public class NewTabPageCoordinator implements ModuleDelegateHost {
         mBottomSheetController = bottomSheetController;
         mModalDialogManager = modalDialogManager;
         mSnackbarManager = snackbarManager;
-        mIsTablet = isTablet;
+        mIsLff = isLff;
         mTabStripHeightSupplier = tabStripHeightSupplier;
-        mSearchEngineUtils = SearchEngineUtils.getForProfile(mProfile);
+        mSearchEngineService = SearchEngineService.getForProfile(mProfile);
+        mSearchProviderInfoDelegate = new SearchProviderInfoDelegate(templateUrlService);
+
+        mIsAim3pEntrypointEnabled = OmniboxFeatures.isAim3pEntrypointEnabled();
+        mIsAiModeButtonRedirectEnabled = NewTabPageUtils.isAiModeButtonRedirectEnabled();
+        mIsIncognitoModeEnabled = IncognitoUtils.isIncognitoModeEnabled(mProfile);
+        mIsBesideMvtModuleEnabled = NewTabPageUtils.isBesideMvtModuleEnabled();
 
         Resources resources = mActivity.getResources();
         mNtpSearchBoxTopMarginWithoutLogo =
                 resources.getDimensionPixelSize(R.dimen.ntp_search_box_top_margin_if_no_logo);
         mNtpSearchBoxTransitionStartOffset =
                 resources.getDimensionPixelSize(R.dimen.ntp_search_box_transition_start_offset);
+        mSearchBoxMaxWidth = resources.getDimensionPixelSize(R.dimen.ntp_search_box_max_width);
 
         mEnableLogs = ChromeFeatureList.sNewTabPageCustomizationV2EnableLogs.getValue();
 
         mModel = new PropertyModel(NewTabPageLayoutProperties.ALL_KEYS);
         PropertyModelChangeProcessor.create(
                 mModel, mNewTabPageLayout, NewTabPageLayoutViewBinder::bind);
-        mLayoutDelegate =
+        NewTabPageLayout.Delegate layoutDelegate =
                 new NewTabPageLayout.Delegate() {
                     @Override
                     public void onMeasure(int width) {
@@ -291,8 +359,36 @@ public class NewTabPageCoordinator implements ModuleDelegateHost {
                         NewTabPageCoordinator.this.updateActionButtonVisibility();
                     }
                 };
-        mModel.set(NewTabPageLayoutProperties.DELEGATE, mLayoutDelegate);
+        mModel.set(NewTabPageLayoutProperties.DELEGATE, layoutDelegate);
         sCount++;
+
+        // TODO(crbug.com/517393491): Refactor to a reusable component to apply to other UiConfigs.
+        mSideUiObserver =
+                new SideUiObserver() {
+                    @Override
+                    public void onSideUiSpecsChangeStarted(
+                            SideUiSpecs sideUiSpecs, UiUpdateRequest request) {
+                        // During a live resize drag, the NTP view is only translated and keeps its
+                        // width (see CompositorViewHolder), so keep the inset until the resize is
+                        // committed. Updating it would relayout the NTP on every drag frame.
+                        if (request.mUpdateReason == UpdateReason.RESIZE_LIVE) return;
+                        updateUiConfigInsetForSideUi(sideUiSpecs);
+                    }
+
+                    @Override
+                    public void onSideUiSpecsChangeCompleted(
+                            SideUiSpecs sideUiSpecs, UiUpdateRequest request) {}
+                };
+        sideUiStateProviderSupplier.onAvailable(
+                mCallbackController.makeCancelable(
+                        provider -> {
+                            mSideUiStateProvider = provider;
+                            provider.addObserver(mSideUiObserver);
+                            updateUiConfigInsetForSideUi(provider.getCurrentSideUiSpecs());
+                        }));
+
+        NtpCustomizationPromoManager.maybeShowHomepageCustomizationSnackbarOnRecreate(
+                mActivity, mSnackbarManager, ApplicationStatus.getTaskId(mActivity));
     }
 
     /**
@@ -305,7 +401,8 @@ public class NewTabPageCoordinator implements ModuleDelegateHost {
      * @param scrollDelegate The delegate used to obtain information about scroll state.
      * @param touchEnabledDelegate The {@link TouchEnabledDelegate} for handling whether touch
      *     events are allowed.
-     * @param uiConfig UiConfig that provides display information about this view.
+     * @param uiConfig UiConfig that will provide the preferred display style for NTP based on the
+     *     available space.
      * @param lifecycleDispatcher Activity lifecycle dispatcher.
      */
     @Initializer
@@ -316,17 +413,18 @@ public class NewTabPageCoordinator implements ModuleDelegateHost {
             FeedSurfaceScrollDelegate scrollDelegate,
             TouchEnabledDelegate touchEnabledDelegate,
             UiConfig uiConfig,
-            ActivityLifecycleDispatcher lifecycleDispatcher,
-            Supplier<GURL> composeplateUrlSupplier) {
+            ActivityLifecycleDispatcher lifecycleDispatcher) {
         TraceEvent.begin(TAG + ".initialize()");
         mScrollDelegate = scrollDelegate;
         mUiConfig = uiConfig;
-        mComposeplateUrlSupplier = composeplateUrlSupplier;
+        mUiConfig.setHorizontalInset(getSideUiWidthDp());
 
         mContextMenuStartPosition =
                 ReturnToChromeUtil.calculateContextMenuStartPosition(mActivity.getResources());
 
-        if (mIsTablet) {
+        if (mIsLff
+                || NewTabPageUtils.getPaddingStyleForAurora()
+                        != NewTabPageUtils.PaddingStyle.DEFAULT) {
             mDisplayStyleObserver = this::onDisplayStyleChanged;
             mUiConfig.addObserver(mDisplayStyleObserver);
         } else {
@@ -344,12 +442,13 @@ public class NewTabPageCoordinator implements ModuleDelegateHost {
                 NtpSearchBoxFactory.createSearchBox(
                         mActivity,
                         searchBoxStub,
-                        mIsTablet,
+                        mIsLff,
                         lifecycleDispatcher,
                         mProfile.isOffTheRecord(),
                         mWindowAndroid,
                         mManager,
-                        mProfile);
+                        mProfile,
+                        mBackPressManager);
         mModel.set(NewTabPageLayoutProperties.SEARCH_BOX_VIEW, mNtpSearchBox.getView());
 
         updateSearchBoxTwoSideMargin();
@@ -360,13 +459,25 @@ public class NewTabPageCoordinator implements ModuleDelegateHost {
 
         mSearchEngineIconObserver =
                 (newIcon) -> assumeNonNull(mNtpSearchBox).setSearchEngineIcon(newIcon);
-        mSearchEngineUtils.addIconObserver(mSearchEngineIconObserver);
+        mSearchEngineService.addIconObserver(mSearchEngineIconObserver);
         setSearchBoxTextAppearance();
 
         initializeSearchBoxTextView();
 
+        if (mIsAim3pEntrypointEnabled) {
+            mAiModeButtonUiConfigSupplier = mSearchEngineService.getAiModeButtonUiConfigSupplier();
+            mAiModeButtonUiConfigSupplierObserver = this::onAiModeButtonUiConfigChanged;
+            mAiModeButtonUiConfigSupplier.addObserver(
+                    mAiModeButtonUiConfigSupplierObserver,
+                    MonotonicObservableSupplier.NotifyBehavior.NOTIFY_ON_ADD);
+            mAiModeButtonIconSupplier = mSearchEngineService.getAiModeButtonIconSupplier();
+            mAiModeButtonIconSupplierObserver = this::onAiModeButtonIconChanged;
+            mAiModeButtonIconSupplier.addObserver(
+                    mAiModeButtonIconSupplierObserver,
+                    MonotonicObservableSupplier.NotifyBehavior.NOTIFY_ON_ADD);
+        }
         initializeComposeplateFlags(mProfile);
-        if (assumeNonNull(mCanShowComposeplateButton)) {
+        if (mCanShowComposeplateButton == TriState.TRUE) {
             initializeComposeplate();
         }
 
@@ -374,21 +485,20 @@ public class NewTabPageCoordinator implements ModuleDelegateHost {
 
         // This should be called after both mNtpSearchBox and mComposeplateCoordinator are
         // initialized.
-        onCustomizedBackgroundChanged(
-                NtpCustomizationUtils.shouldApplyWhiteBackgroundOnSearchBox());
+        onCustomizedBackgroundChanged();
 
         // This should called after flags of composeplate view are initialized.
         setSearchBoxHeightBoundsVerticalInset();
 
         updateActionButtonVisibility();
         initializeLayoutChangeListener();
-        if (SigninFeatureMap.isEnabled(SigninFeatures.ENABLE_SEAMLESS_SIGNIN)) {
+        if (!OmniboxCapabilities.isDesktopPlatform()) {
             initializeSigninPromoCoordinator();
         }
 
         // Initialize Searchbox observers
-        mSearchBoxHintTextObserver = this::onSearchBoxHintTextChanged;
-        mSearchEngineUtils.addSearchBoxHintTextObserver(mSearchBoxHintTextObserver);
+        mSearchEngineNameObserver = this::onSearchBoxHintTextChanged;
+        mSearchEngineService.addSearchEngineNameObserver(mSearchEngineNameObserver);
 
         mInitialized = true;
 
@@ -400,7 +510,7 @@ public class NewTabPageCoordinator implements ModuleDelegateHost {
         Resources resources = mActivity.getResources();
         int searchBoxHeight =
                 NtpCustomizationUtils.getSearchBoxHeight(
-                        resources, assumeNonNull(mCanShowComposeplateButton));
+                        resources, mCanShowComposeplateButton == TriState.TRUE);
         if (mNtpSearchBox != null) {
             mNtpSearchBox.setHeight(searchBoxHeight);
         }
@@ -438,23 +548,20 @@ public class NewTabPageCoordinator implements ModuleDelegateHost {
 
         // @TODO(crbug.com/41492572): Add test case for search box OnDragListener.
         mNtpSearchBox.setSearchBoxDragListener(
-                new View.OnDragListener() {
-                    @Override
-                    public boolean onDrag(View view, DragEvent dragEvent) {
-                        // Disable search box EditText when browser content is dropped, its
-                        // re-enabled in {@link ChromeTabbedOnDragListener}, since a disabled view
-                        // will stop receiving further drag events. Given the child-first drag event
-                        // dispatch, disabling the TextView at ACTION_DRAG_STARTED is necessary to
-                        // prevent it from registering as a drop target and consuming the
-                        // ACTION_DROP event, thereby ensuring {@link ChromeTabbedOnDragListener}
-                        // receives it.
-                        if (MimeTypeUtils.clipDescriptionHasBrowserContent(
-                                        dragEvent.getClipDescription())
-                                && dragEvent.getAction() == DragEvent.ACTION_DRAG_STARTED) {
-                            enableSearchBoxEditText(false);
-                        }
-                        return false;
+                (View _, DragEvent dragEvent) -> {
+                    // Disable search box EditText when browser content is dropped, its
+                    // re-enabled in {@link ChromeTabbedOnDragListener}, since a disabled view
+                    // will stop receiving further drag events. Given the child-first drag event
+                    // dispatch, disabling the TextView at ACTION_DRAG_STARTED is necessary to
+                    // prevent it from registering as a drop target and consuming the
+                    // ACTION_DROP event, thereby ensuring {@link ChromeTabbedOnDragListener}
+                    // receives it.
+                    if (MimeTypeUtils.clipDescriptionHasBrowserContent(
+                                    dragEvent.getClipDescription())
+                            && dragEvent.getAction() == DragEvent.ACTION_DRAG_STARTED) {
+                        enableSearchBoxEditText(false);
                     }
+                    return false;
                 });
 
         mNtpSearchBox.setSearchBoxTextWatcher(
@@ -463,7 +570,10 @@ public class NewTabPageCoordinator implements ModuleDelegateHost {
                     public void afterTextChanged(Editable s) {
                         if (s.length() == 0 || mNtpSearchBox == null) return;
                         mManager.focusSearchBox(
-                                false, AutocompleteRequestType.SEARCH, false, s.toString());
+                                /* beginVoiceSearch= */ false,
+                                AutocompleteRequestType.SEARCH,
+                                OmniboxFocusReason.FAKE_BOX_LONG_PRESS,
+                                s.toString());
                         mNtpSearchBox.setSearchText("");
                     }
                 });
@@ -472,19 +582,15 @@ public class NewTabPageCoordinator implements ModuleDelegateHost {
 
     public void onSearchBoxHintTextChanged() {
         if (mNtpSearchBox != null) {
-            mNtpSearchBox.setSearchBoxHintText(
-                    mSearchEngineUtils.getOmniboxHintText(
-                            AutocompleteRequestType.SEARCH, /* fuseboxSessionState= */ null));
+            mNtpSearchBox.setSearchBoxHintText(mSearchEngineService.getNtpHintText(mActivity));
         }
     }
 
-    private void setSearchBoxTextAppearance() {
+    @VisibleForTesting
+    void setSearchBoxTextAppearance() {
         if (mNtpSearchBox == null) return;
 
-        boolean shouldApplyWhiteBackground =
-                NtpCustomizationUtils.shouldApplyWhiteBackgroundOnSearchBox();
-
-        if (shouldApplyWhiteBackground) {
+        if (shouldApplyWhiteBackgroundOnSearchBox()) {
             mNtpSearchBox.setSearchBoxTextAppearance(
                     R.style.TextAppearance_FakeSearchBoxTextMediumDark);
         } else {
@@ -493,57 +599,155 @@ public class NewTabPageCoordinator implements ModuleDelegateHost {
         }
     }
 
-    private void initializeComposeplateFlags(Profile profile) {
-        mCanShowComposeplateButton = ComposeplateUtils.canShowComposeplateButtonOnNtp(profile);
-        mIsComposeplatePolicyEnabled =
-                mCanShowComposeplateButton && ComposeplateUtils.isEnabledByPolicy(profile);
+    @VisibleForTesting
+    boolean shouldApplyWhiteBackgroundOnSearchBox() {
+        return NtpCustomizationUtils.shouldApplyWhiteBackgroundOnSearchBox()
+                || OmniboxCapabilities.isDesktopPlatform();
     }
 
-    private void initializeComposeplate() {
+    private void initializeComposeplateFlags(Profile profile) {
+        mCanShowComposeplateButton = TriStateUtils.from(canShowAiModeButtonOnNtp());
+        mIsComposeplatePolicyEnabled =
+                mCanShowComposeplateButton == TriState.TRUE
+                        && ComposeplateUtils.isEnabledByPolicy(profile);
+    }
+
+    /** Returns whether the AI Mode button can be shown on NTPs. */
+    private boolean canShowAiModeButtonOnNtp() {
+        // Returning false here disables the entire composeplate row, hiding both the AI Mode
+        // and Incognito buttons.
+        if (NewTabPageUtils.isComposeplateRemovedInAuroraV2()) return false;
+
+        // In the default layout (when not placed beside the MVT), the AI Mode button
+        // shares a row with the Incognito button. Consequently, it is hidden when
+        // Incognito mode is disabled. However, in the layout where the AI Mode section is
+        // positioned beside the MVT, the AI Mode button must remain visible even if Incognito mode
+        // is disabled.
+        if (!mIsBesideMvtModuleEnabled && !mIsIncognitoModeEnabled) {
+            return false;
+        }
+
+        if (!mIsAim3pEntrypointEnabled) {
+            return mSearchProviderInfoDelegate.getSearchProviderIsGoogle()
+                    && ComposeplateUtils.canShowComposeplateButtonOnNtp(mProfile);
+        }
+
+        return ComposeplateUtils.canShowComposeplateButtonOnNtp(
+                mSearchProviderInfoDelegate.hasAiModeEntryPoint());
+    }
+
+    @VisibleForTesting
+    void initializeComposeplate() {
         if (mIsComposeplateViewInitialized) return;
 
         mIsComposeplateViewInitialized = true;
 
-        boolean shouldApplyWhiteBackgroundOnSearchBox =
-                NtpCustomizationUtils.shouldApplyWhiteBackgroundOnSearchBox();
-
-        ViewStub composeplateViewStub = mNewTabPageLayout.findViewById(R.id.composeplate_view_stub);
-        ViewGroup composeplateView = (ViewGroup) composeplateViewStub.inflate();
-        mComposeplateCoordinator = new ComposeplateCoordinator(composeplateView, mProfile);
+        ViewGroup composeplateView;
+        if (mIsBesideMvtModuleEnabled) {
+            composeplateView = mNewTabPageLayout.findViewById(R.id.composeplate_view);
+            alignAiModeCardPaddingWithMvt(composeplateView);
+        } else {
+            ViewStub composeplateViewStub =
+                    mNewTabPageLayout.findViewById(R.id.composeplate_view_stub);
+            composeplateView = (ViewGroup) composeplateViewStub.inflate();
+        }
+        mComposeplateCoordinator = new ComposeplateCoordinator(composeplateView, mIsLff);
         mComposeplateCoordinator.setIncognitoClickListener(this::onIncognitoButtonClicked);
         // Don't log click metrics in this listener, since the mComposeplateCoordinator will
         // log.
         mComposeplateCoordinator.setComposeplateButtonClickListener(
                 this::onComposeplateButtonClicked);
-
-        if (shouldApplyWhiteBackgroundOnSearchBox) {
-            // It is safe to call mComposeplateCoordinator.applyWhiteBackground() again since it is
-            // no-op if the white background has been applied.
-            mComposeplateCoordinator.applyWhiteBackground(/* apply= */ true);
+        @ActionChips int chipType = getOptionalButtonChipType();
+        if (chipType == NewTabPageUtils.ActionChips.CREATE_IMAGE) {
+            mComposeplateCoordinator.setOptionalButtonClickListener(
+                    this::onCreateButtonClicked, chipType);
+            mComposeplateCoordinator.setOptionalButtonIcon(R.drawable.image_create_24dp);
+            mComposeplateCoordinator.setOptionalButtonText(
+                    mActivity.getString(R.string.ntp_action_chip_create_image));
+        } else if (chipType == NewTabPageUtils.ActionChips.GALLERY) {
+            mComposeplateCoordinator.setOptionalButtonClickListener(
+                    this::onGalleryButtonClicked, chipType);
         }
+
+        updateComposeplateBackground();
+
+        // A new NTP receives the AiModeButtonUiConfig and its icon during #initialize(), before the
+        // composeplate exists, so apply them now rather than leaving the layout's defaults.
+        maybeUpdateAiModeButton();
+        if (mAiModeButtonIconSupplier != null) {
+            onAiModeButtonIconChanged(mAiModeButtonIconSupplier.get());
+        }
+
+        updateComposeplateOptionalButtonVisibility();
+    }
+
+    /**
+     * Aligns the vertical paddings of the beside-MVT AI Mode card with those of the MVT container,
+     * so that the AI Mode icon and title line up with the MVT tiles' icons and titles.
+     *
+     * @param composeplateView The inflated beside-MVT AI Mode card.
+     */
+    private void alignAiModeCardPaddingWithMvt(View composeplateView) {
+        // TODO(crbug.com/534357676): Once NTP Aurora V1 is launched, move the logic in this
+        // method to XML.
+        View mvTilesContainer = mNewTabPageLayout.findViewById(R.id.mv_tiles_container);
+        View aiModeButton = composeplateView.findViewById(R.id.composeplate_button);
+        if (mvTilesContainer == null || aiModeButton == null) return;
+
+        // The AI Mode card's XML top padding mirrors the top margin of each MVT tile's icon, so
+        // add the MVT container's top padding on top of it.
+        aiModeButton.setPaddingRelative(
+                aiModeButton.getPaddingStart(),
+                aiModeButton.getPaddingTop() + mvTilesContainer.getPaddingTop(),
+                aiModeButton.getPaddingEnd(),
+                mvTilesContainer.getPaddingBottom());
     }
 
     private void onComposeplateButtonClicked(View view) {
-        if (OmniboxFeatures.isMultimodalInputEnabled(mActivity)
-                && OmniboxFeatures.sRedirectComposeplateButton.getValue()
-                && !mIsTablet
+        // Devices that don't support the fusebox (e.g. automotive) can't host the AI Mode omnibox,
+        // so they always navigate to the AI Mode SRP instead.
+        if (OmniboxCapabilities.isFuseboxSupportedDeviceType()
+                && ((mIsAiModeButtonRedirectEnabled
+                                && mSearchProviderInfoDelegate.getSearchProviderIsGoogle())
+                        || (OmniboxFeatures.isMultimodalInputEnabled(mActivity)
+                                && OmniboxFeatures.sRedirectComposeplateButton.getValue()
+                                && !mIsLff))
                 && mIsComposeplatePolicyEnabled) {
-            mManager.focusSearchBox(false, AutocompleteRequestType.AI_MODE, false, null);
+            mManager.focusSearchBox(
+                    /* beginVoiceSearch= */ false,
+                    AutocompleteRequestType.AI_MODE,
+                    OmniboxFocusReason.NTP_AI_MODE,
+                    /* pastedText= */ null);
             return;
         }
 
-        GURL composeplateUrl = assumeNonNull(mComposeplateUrlSupplier).get();
+        GURL composeplateUrl = mSearchProviderInfoDelegate.getComposeplateUrl();
         if (composeplateUrl == null) return;
 
-        mManager.getNativePageHost()
-                .loadUrl(new LoadUrlParams(composeplateUrl), /* incognito= */ false);
+        mManager.loadUrl(new LoadUrlParams(composeplateUrl), /* incognito= */ false);
+    }
+
+    private void onCreateButtonClicked(View view) {
+        mManager.focusSearchBox(
+                /* beginVoiceSearch= */ false,
+                AutocompleteRequestType.IMAGE_GENERATION,
+                OmniboxFocusReason.NTP_AI_MODE,
+                /* pastedText= */ null);
+    }
+
+    private void onGalleryButtonClicked(View view) {
+        mManager.focusSearchBox(
+                /* beginVoiceSearch= */ false,
+                AutocompleteRequestType.AI_MODE,
+                OmniboxFocusReason.NTP_GALLERY_CHIP_CLICKED,
+                /* pastedText= */ null);
     }
 
     private void onIncognitoButtonClicked(View view) {
-        if (!IncognitoUtils.isIncognitoModeEnabled(mProfile)) return;
+        if (!mIsIncognitoModeEnabled) return;
 
         UrlConstantResolver resolver = UrlConstantResolverFactory.getForProfile(mProfile);
-        mManager.getNativePageHost().loadUrl(new LoadUrlParams(resolver.getNtpUrl()), true);
+        mManager.loadUrl(new LoadUrlParams(resolver.getNtpUrl()), /* incognito= */ true);
     }
 
     @VisibleForTesting
@@ -586,7 +790,7 @@ public class NewTabPageCoordinator implements ModuleDelegateHost {
         Callback<LoadUrlParams> logoClickedCallback =
                 mCallbackController.makeCancelable(
                         (urlParams) -> {
-                            mManager.getNativePageHost().loadUrl(urlParams, /* incognito= */ false);
+                            mManager.loadUrl(urlParams, /* incognito= */ false);
                             BrowserUiUtils.recordModuleClickHistogram(
                                     ModuleTypeOnStartAndNtp.DOODLE);
                         });
@@ -594,7 +798,10 @@ public class NewTabPageCoordinator implements ModuleDelegateHost {
                 mCallbackController.makeCancelable(
                         (logo) -> {
                             mSnapshotTileGridChanged = true;
-                            mShowingNonStandardGoogleLogo = logo != null && mSearchProviderIsGoogle;
+                            mSearchProviderInfoDelegate.setShowingNonStandardGoogleLogo(
+                                    logo != null
+                                            && mSearchProviderInfoDelegate
+                                                    .getSearchProviderIsGoogle());
                             NtpCustomizationConfigManager.getInstance()
                                     .setDefaultSearchEngineLogoBitmap(
                                             logo == null ? null : logo.image);
@@ -624,6 +831,7 @@ public class NewTabPageCoordinator implements ModuleDelegateHost {
                         mActivity,
                         activityLifecycleDispatcher,
                         mvTilesContainerLayout,
+                        assertNonNull(mUiConfig),
                         () -> mSnapshotTileGridChanged = true,
                         () -> {
                             if (mUrlFocusChangePercent == 1f) mTileCountChanged = true;
@@ -648,8 +856,7 @@ public class NewTabPageCoordinator implements ModuleDelegateHost {
                         mModalDialogManager,
                         mSnackbarManager,
                         DeviceLockActivityLauncherImpl.get(),
-                        signinPromoViewContainerStub,
-                        SetupListModuleUtils::isSetupListActive);
+                        signinPromoViewContainerStub);
     }
 
     /** Updates the search box when the parent view's scroll position is changed. */
@@ -731,17 +938,12 @@ public class NewTabPageCoordinator implements ModuleDelegateHost {
      * @param isGoogle Whether the search provider is Google.
      */
     void setSearchProviderInfo(boolean hasLogo, boolean isGoogle) {
-        if (hasLogo == mSearchProviderHasLogo
-                && isGoogle == mSearchProviderIsGoogle
-                && mInitialized) {
+        boolean isSearchProviderIsGoogleChanged =
+                mSearchProviderInfoDelegate.getSearchProviderIsGoogle() != isGoogle;
+        // Always calls mSearchProviderInfoDelegate.setSearchProviderInfo() as the first one to
+        // prevent it is being skipped.
+        if (!mSearchProviderInfoDelegate.setSearchProviderInfo(hasLogo, isGoogle) && mInitialized) {
             return;
-        }
-        boolean isSearchProviderIsGoogleChanged = mSearchProviderIsGoogle != isGoogle;
-        mSearchProviderHasLogo = hasLogo;
-        mSearchProviderIsGoogle = isGoogle;
-
-        if (!mSearchProviderIsGoogle) {
-            mShowingNonStandardGoogleLogo = false;
         }
 
         setSearchProviderTopMargin();
@@ -753,29 +955,14 @@ public class NewTabPageCoordinator implements ModuleDelegateHost {
         // visibility of Logo is handled by LogoCoordinator.
         setSearchBoxTextAppearance();
 
-        // Skips if the flag hasn't been initialized since the initialization of the following
-        // components will be called again in #initialize().
-        if (mCanShowComposeplateButton != null) {
-            // When mSearchProviderIsGoogle is changed, mCanShowComposeplateButton might be changed
-            // too, recalculate its value.
-            if (isSearchProviderIsGoogleChanged) {
-                boolean previousCanShowComposeplateButton = mCanShowComposeplateButton;
-                initializeComposeplateFlags(mProfile);
-                if (!previousCanShowComposeplateButton
-                        && mCanShowComposeplateButton
-                        && mComposeplateCoordinator == null) {
-                    // If the composeplate view is enabled while mComposeplateCoordinator hasn't
-                    // been initialized yet, initialize it now.
-                    initializeComposeplate();
-                }
+        if (!mIsAim3pEntrypointEnabled) {
+            updateComposeplate(isSearchProviderIsGoogleChanged);
+        }
 
-                if (previousCanShowComposeplateButton != mCanShowComposeplateButton) {
-                    // When the flag value is changed, the height of search box might be changed.
-                    setSearchBoxHeightBoundsVerticalInset();
-                    // Updates the composeplate view's visibility.
-                    updateActionButtonVisibility();
-                }
-            }
+        if (isSearchProviderIsGoogleChanged) {
+            // The optional button is only shown for Google, so update it even if the
+            // composeplate's visibility doesn't change.
+            updateComposeplateOptionalButtonVisibility();
         }
 
         onUrlFocusAnimationChanged();
@@ -783,11 +970,112 @@ public class NewTabPageCoordinator implements ModuleDelegateHost {
         mSnapshotTileGridChanged = true;
     }
 
+    /**
+     * @param isSearchProviderIsGoogleChanged: Whether the default search engine is Google is
+     *     changed.
+     */
+    private void updateComposeplate(boolean isSearchProviderIsGoogleChanged) {
+        // Skips if the flag hasn't been initialized since the initialization of the following
+        // components will be called again in #initialize().
+        if (mCanShowComposeplateButton == TriState.NOT_SET || !isSearchProviderIsGoogleChanged) {
+            return;
+        }
+
+        // When search engine is changed, the visibility of the composeplate button and
+        // mCanShowComposeplateButton might be changed too, recalculate its value.
+        int previousCanShowComposeplateButton = mCanShowComposeplateButton;
+        initializeComposeplateFlags(mProfile);
+        if (previousCanShowComposeplateButton != TriState.TRUE
+                && mCanShowComposeplateButton == TriState.TRUE
+                && mComposeplateCoordinator == null) {
+            // If the composeplate view is enabled while mComposeplateCoordinator hasn't
+            // been initialized yet, initialize it now.
+            initializeComposeplate();
+        }
+
+        maybeUpdateAiModeButton();
+
+        if (previousCanShowComposeplateButton != mCanShowComposeplateButton) {
+            // When the AI mode button's visibility is changed, the height of search box might be
+            // changed.
+            setSearchBoxHeightBoundsVerticalInset();
+            // Updates the composeplate view's visibility.
+            updateActionButtonVisibility();
+        }
+    }
+
+    /** Called when the default search engine's AiModeButtonUiConfig is changed. */
+    private void onAiModeButtonUiConfigChanged(
+            @Nullable AiModeButtonUiConfig aiModeButtonUiConfig) {
+        // The config must be cached before any early return below, since
+        // #initializeComposeplateFlags() relies on it.
+        if (!mSearchProviderInfoDelegate.setAiModeButtonUiConfig(aiModeButtonUiConfig)) return;
+
+        // Skips if the flag hasn't been initialized since the initialization of the following
+        // components will be called again in #initialize().
+        if (mCanShowComposeplateButton == TriState.NOT_SET) return;
+
+        // When search engine is changed, the visibility of the composeplate button and
+        // mCanShowComposeplateButton might be changed too, recalculate its value.
+        int previousCanShowComposeplateButton = mCanShowComposeplateButton;
+        initializeComposeplateFlags(mProfile);
+        if (previousCanShowComposeplateButton != TriState.TRUE
+                && mCanShowComposeplateButton == TriState.TRUE
+                && mComposeplateCoordinator == null) {
+            // If the composeplate view is enabled while mComposeplateCoordinator hasn't
+            // been initialized yet, initialize it now.
+            initializeComposeplate();
+        }
+
+        maybeUpdateAiModeButton();
+
+        if (previousCanShowComposeplateButton != mCanShowComposeplateButton) {
+            // When the AI mode button's visibility is changed, the height of search box might be
+            // changed.
+            setSearchBoxHeightBoundsVerticalInset();
+            // Updates the composeplate view's visibility.
+            updateActionButtonVisibility();
+        }
+    }
+
+    /**
+     * Updates the icon and text for AI Mode button, if the third party AI Mode entry point is
+     * enabled, the button can be shown and the default search engine offers an AI Mode entry point.
+     */
+    private void maybeUpdateAiModeButton() {
+        if (!mIsAim3pEntrypointEnabled
+                || mComposeplateCoordinator == null
+                || mCanShowComposeplateButton != TriState.TRUE
+                || !mSearchProviderInfoDelegate.hasAiModeEntryPoint()) {
+            return;
+        }
+
+        mComposeplateCoordinator.updateAiModeButtonUiConfig(
+                assumeNonNull(mSearchProviderInfoDelegate.getAiModeButtonUiConfig()));
+    }
+
+    /** Called when the default search engine's AI Mode button icon is changed. */
+    private void onAiModeButtonIconChanged(@Nullable StatusIconResource newIcon) {
+        // The icon is applied even while the AI Mode button is hidden. The supplier doesn't notify
+        // observers of an unchanged value, so an update dropped here wouldn't be sent again when
+        // the button is shown later, leaving a stale icon.
+        if (!mIsAim3pEntrypointEnabled || mComposeplateCoordinator == null || newIcon == null) {
+            return;
+        }
+
+        // Only resource icons (e.g. the loupe) are monochrome and match the other composeplate
+        // icons when tinted. A fetched favicon is a full color bitmap, which tinting would render
+        // as a solid silhouette.
+        mComposeplateCoordinator.updateAiModeButtonIcon(
+                newIcon.getDrawable(mActivity), /* shouldTint= */ newIcon.getIconRes() != 0);
+    }
+
     /** Updates the margins for the most visited tiles layout based on what is shown above it. */
-    private void updateTilesLayoutMargins() {
+    @VisibleForTesting
+    void updateTilesLayoutMargins() {
         if (mMostVisitedTilesCoordinator == null) return;
 
-        mMostVisitedTilesCoordinator.updateTilesLayoutMargins(shouldShowLogo(), mIsTablet);
+        mMostVisitedTilesCoordinator.updateTilesLayoutMargins(shouldShowLogo(), mIsLff);
     }
 
     /**
@@ -797,6 +1085,13 @@ public class NewTabPageCoordinator implements ModuleDelegateHost {
      */
     void setUrlFocusAnimationsDisabled(boolean disable) {
         if (disable == mDisableUrlFocusChangeAnimations) return;
+        if (disable) {
+            // Force reset layout translation Y to prevent elements from staying stuck off-screen.
+            mModel.set(NewTabPageLayoutProperties.TRANSITION_Y, 0f);
+            // Force restore fake search box and logo alphas to fully visible (1.f).
+            setSearchBoxAlpha(1.f);
+            setSearchProviderLogoAlpha(1.f);
+        }
         mDisableUrlFocusChangeAnimations = disable;
         if (!disable) onUrlFocusAnimationChanged();
     }
@@ -837,7 +1132,7 @@ public class NewTabPageCoordinator implements ModuleDelegateHost {
          * form-factor since this translation does not WAI. (see crbug.com/40910640)
          */
         if (mDisableUrlFocusChangeAnimations
-                || mIsTablet
+                || mIsLff
                 || mNtpSearchBox == null
                 || mScrollDelegate == null) {
             return;
@@ -863,6 +1158,8 @@ public class NewTabPageCoordinator implements ModuleDelegateHost {
      * @param alpha opacity (alpha) value to use.
      */
     public void setSearchBoxAlpha(float alpha) {
+        if (mDisableUrlFocusChangeAnimations) return;
+
         if (mNtpSearchBox != null) {
             mNtpSearchBox.setAlpha(alpha);
         }
@@ -874,6 +1171,8 @@ public class NewTabPageCoordinator implements ModuleDelegateHost {
      * @param alpha opacity (alpha) value to use.
      */
     public void setSearchProviderLogoAlpha(float alpha) {
+        if (mDisableUrlFocusChangeAnimations) return;
+
         if (mLogoCoordinator != null) mLogoCoordinator.setAlpha(alpha);
     }
 
@@ -896,22 +1195,56 @@ public class NewTabPageCoordinator implements ModuleDelegateHost {
         }
     }
 
-    /** Returns the fake search box's transition start offset on NTP. */
+    /**
+     * Calculates and returns the baseline static fake search box transition start offset (excluding
+     * top insets).
+     *
+     * <p>On Large Form Factor (LFF) devices where the default search engine does not provide a
+     * logo, this returns {@code 0} to prevent the fake search box alpha from becoming transparent.
+     * Otherwise, it returns the static {@link #mNtpSearchBoxTransitionStartOffset} dimension from
+     * resources.
+     *
+     * <p>Note: This baseline value excludes top insets. When Edge-to-Edge at top is enabled,
+     * callers should reference {@link #getCurrentNtpFakeSearchBoxTransitionStartOffset()} instead.
+     *
+     * @param showFakeSearchBoxWithoutLogo Whether the fake search box is displayed without a logo.
+     * @return The baseline transition start offset in pixels, excluding top insets.
+     */
     private int getNtpSearchBoxTransitionStartOffset(boolean showFakeSearchBoxWithoutLogo) {
-        if (mIsTablet && showFakeSearchBoxWithoutLogo) {
-            // On tablets, it is possible to show fake search box if DSE doesn't have logo if DSE
-            // mobile parity v2 is enabled. The mNTPFakeSearchBoxTransitionStartOffset is used to
-            // calculate scrolling percentage in getToolbarTransitionPercentage(). Reset to 0 when
-            // no doodle is shown for 3p DSE to prevent the alpha of fake search box being set to 0
-            // (transparent) by ToolbarTablet#updateNtp().
+        if (mIsLff && showFakeSearchBoxWithoutLogo) {
+            // On large form factor (LFF) devices, it is possible to show fake search box if DSE
+            // doesn't have logo if DSE mobile parity v2 is enabled. The
+            // mNTPFakeSearchBoxTransitionStartOffset is used to calculate scrolling percentage in
+            // getToolbarTransitionPercentage(). Reset to 0 when no doodle is shown for 3p DSE to
+            // prevent the alpha of fake search box being set to 0 (transparent) by
+            // ToolbarTablet#updateNtp().
             return 0;
         } else {
             return mNtpSearchBoxTransitionStartOffset;
         }
     }
 
-    private void setSearchProviderTopMargin() {
-        boolean showFakeSearchBoxWithoutLogo = !mSearchProviderHasLogo;
+    /**
+     * Returns the current runtime transition start offset of the fake search box, which represents
+     * the vertical scroll distance before the fake search box reaches the toolbar where the visual
+     * morphing animation into the top omnibox begins.
+     *
+     * <p>When Edge-to-Edge at top is enabled (e.g. with a customized NTP background), this offset
+     * includes {@link #mTopInset} to compensate for the top padding added to {@link
+     * NewTabPageLayout}, ensuring that both the visual transition and the snap scroll region align
+     * at the same scroll position.
+     *
+     * @return The current transition start offset in pixels, including top insets when Edge-to-Edge
+     *     at top is active.
+     */
+    public int getCurrentNtpFakeSearchBoxTransitionStartOffset() {
+        return mCurrentNtpFakeSearchBoxTransitionStartOffset;
+    }
+
+    @VisibleForTesting
+    void setSearchProviderTopMargin() {
+        boolean showFakeSearchBoxWithoutLogo =
+                !mSearchProviderInfoDelegate.getSearchProviderHasLogo();
         mCurrentNtpFakeSearchBoxTransitionStartOffset =
                 getNtpSearchBoxTransitionStartOffset(showFakeSearchBoxWithoutLogo);
 
@@ -920,12 +1253,17 @@ public class NewTabPageCoordinator implements ModuleDelegateHost {
             mNtpSearchBox.setTopMargin(topMargin);
         }
 
+        setLogoTopMargin();
+    }
+
+    void setLogoTopMargin() {
         if (mLogoCoordinator != null) {
             mLogoCoordinator.setTopMargin(getLogoTopMargin());
         }
     }
 
-    private void setLogoViewBottomMargin() {
+    @VisibleForTesting
+    void setLogoViewBottomMargin() {
         if (mLogoCoordinator == null) return;
 
         int logoViewBottomMarginPx =
@@ -936,11 +1274,12 @@ public class NewTabPageCoordinator implements ModuleDelegateHost {
     private int getLogoTopMargin() {
         Resources resources = mActivity.getResources();
 
-        if (mShowingNonStandardGoogleLogo && mSearchProviderHasLogo) {
+        if (mSearchProviderInfoDelegate.getShowingNonStandardGoogleLogo()
+                && mSearchProviderInfoDelegate.getSearchProviderHasLogo()) {
             return LogoUtils.getTopMarginForDoodle(resources);
         }
 
-        return resources.getDimensionPixelSize(R.dimen.ntp_logo_margin_top);
+        return LogoUtils.getTopMarginForLogo(resources);
     }
 
     /**
@@ -955,10 +1294,6 @@ public class NewTabPageCoordinator implements ModuleDelegateHost {
 
     // NewTabPageLayout.Delegate implementations.
     public void onMeasure(int width) {
-        if (mIsTablet && mMostVisitedTilesCoordinator != null) {
-            mMostVisitedTilesCoordinator.calculateTabletMvtWidth(width);
-        }
-
         unifyElementWidths(width);
     }
 
@@ -967,7 +1302,7 @@ public class NewTabPageCoordinator implements ModuleDelegateHost {
             mHasShownView = true;
             onInitializationProgressChanged();
             if (NtpCustomizationPromoManager.canTriggerCustomizationBottomSheet(
-                    mWindowAndroid, mIsTablet, sCount)) {
+                    mWindowAndroid, mIsLff, sCount)) {
                 triggerCustomizationBottomSheet();
             }
             TraceEvent.instant("NewTabPageSearchAvailable");
@@ -984,23 +1319,82 @@ public class NewTabPageCoordinator implements ModuleDelegateHost {
         // Skips now if the composeplate flag hasn't been initialized. This prevents logging the
         // impression metrics incorrectly due to the status of whether to show the composeplate
         // button hasn't been initialized.
-        if (mCanShowComposeplateButton == null) return;
+        if (mCanShowComposeplateButton == TriState.NOT_SET) return;
 
         mNtpSearchBox.setVoiceSearchButtonVisibility(shouldShowVoiceSearchButton);
         mNtpSearchBox.setLensButtonVisibility(shouldShowLensButton);
-        boolean shouldShowComposeplateButton = false;
         // As long as mComposeplateCoordinator has been initialized, we should update its
         // visibility.
         if (mComposeplateCoordinator != null) {
-            shouldShowComposeplateButton =
-                    mCanShowComposeplateButton
-                            && mSearchProviderIsGoogle
-                            && IncognitoUtils.isIncognitoModeEnabled(mProfile);
             mComposeplateCoordinator.setVisibility(
-                    shouldShowComposeplateButton, mManager.isCurrentPage());
+                    mCanShowComposeplateButton == TriState.TRUE, mManager.isCurrentPage());
         }
         updatePreviousButtonVisibilityAndRecordMetrics(
-                shouldShowVoiceSearchButton, shouldShowLensButton, shouldShowComposeplateButton);
+                shouldShowVoiceSearchButton, shouldShowLensButton);
+    }
+
+    /**
+     * Updates the visibility of the composeplate's optional button. It is visible only when the
+     * default search engine is Google and the action chip type is either create image or gallery.
+     * The composeplate's own visibility doesn't need to be checked, since hiding the composeplate
+     * also hides the optional button.
+     */
+    private void updateComposeplateOptionalButtonVisibility() {
+        if (mComposeplateCoordinator == null) return;
+
+        @ActionChips int chipType = getOptionalButtonChipType();
+        boolean isOptionalButtonVisible =
+                mSearchProviderInfoDelegate.getSearchProviderIsGoogle()
+                        && (chipType == NewTabPageUtils.ActionChips.CREATE_IMAGE
+                                || chipType == NewTabPageUtils.ActionChips.GALLERY);
+        mComposeplateCoordinator.setOptionalButtonVisibility(isOptionalButtonVisible);
+    }
+
+    /**
+     * Returns the {@link NewTabPageUtils.ActionChips} type to show on the composeplate's optional
+     * button. The create image and gallery chips fall back to the default chip on devices that
+     * don't support the fusebox, since both rely on it. The create image chip falls back to the
+     * gallery chip when image generation isn't an allowed tool for the current profile.
+     */
+    private @ActionChips int getOptionalButtonChipType() {
+        @ActionChips int chipType = NewTabPageUtils.getMerchandisingChipsType();
+        if ((chipType == ActionChips.CREATE_IMAGE || chipType == ActionChips.GALLERY)
+                && !OmniboxCapabilities.isFuseboxSupportedDeviceType()) {
+            return ActionChips.DEFAULT;
+        }
+        if (chipType == ActionChips.CREATE_IMAGE && !isImageGenToolAllowed()) {
+            return ActionChips.GALLERY;
+        }
+        return chipType;
+    }
+
+    /**
+     * Returns whether the image generation tool is allowed for the current profile. On first call,
+     * this starts a short-lived Composebox session to read the allowed tools from its initial
+     * {@link InputState}, then immediately closes it. The result is cached for the lifetime of this
+     * coordinator.
+     */
+    private boolean isImageGenToolAllowed() {
+        if (mIsImageGenToolAllowed == TriState.NOT_SET) {
+            mIsImageGenToolAllowed = TriStateUtils.from(computeIsImageGenToolAllowed());
+        }
+        return mIsImageGenToolAllowed == TriState.TRUE;
+    }
+
+    private boolean computeIsImageGenToolAllowed() {
+        ComposeboxQueryControllerBridge bridge =
+                ComposeboxQueryControllerBridge.create(mProfile, /* webContents= */ null);
+        // No session can be created if, e.g., AIM is ineligible or disabled by policy; no tools
+        // are available in that case.
+        if (bridge == null) return false;
+        try {
+            // The initial input state is delivered synchronously while the session is created.
+            InputState inputState = bridge.getInputStateSupplier().get();
+            return inputState != null
+                    && inputState.allowedTools.contains(ToolMode.TOOL_MODE_IMAGE_GEN);
+        } finally {
+            bridge.destroy();
+        }
     }
 
     /**
@@ -1009,31 +1403,25 @@ public class NewTabPageCoordinator implements ModuleDelegateHost {
      *
      * @param isVoiceSearchButtonVisible The new visibility state of the voice search button.
      * @param isLensButtonVisible The new visibility state of the lens button.
-     * @param isComposeplateButtonVisible The new visibility state of the composeplate button.
      */
     private void updatePreviousButtonVisibilityAndRecordMetrics(
-            boolean isVoiceSearchButtonVisible,
-            boolean isLensButtonVisible,
-            boolean isComposeplateButtonVisible) {
+            boolean isVoiceSearchButtonVisible, boolean isLensButtonVisible) {
+        int voiceSearchVisibleState = TriStateUtils.from(isVoiceSearchButtonVisible);
+        int lensVisibleState = TriStateUtils.from(isLensButtonVisible);
         if (!mManager.isCurrentPage()
-                || (mPreviousVoiceSearchButtonVisible != null
-                        && isVoiceSearchButtonVisible == mPreviousVoiceSearchButtonVisible
-                        && mPreviousLensButtonVisible != null
-                        && isLensButtonVisible == mPreviousLensButtonVisible)) {
+                || (mPreviousVoiceSearchButtonVisible == voiceSearchVisibleState
+                        && mPreviousLensButtonVisible == lensVisibleState)) {
             return;
         }
 
-        if (mPreviousLensButtonVisible == null
-                || isLensButtonVisible != mPreviousLensButtonVisible) {
+        if (mPreviousLensButtonVisible != lensVisibleState) {
             LensMetrics.recordShown(LensEntryPoint.NEW_TAB_PAGE, isLensButtonVisible);
         }
 
         ComposeplateMetricsUtils.recordFakeSearchBoxImpression2();
-        ComposeplateMetricsUtils.recordFakeSearchBoxComposeplateButtonImpression2(
-                isComposeplateButtonVisible);
 
-        mPreviousVoiceSearchButtonVisible = isVoiceSearchButtonVisible;
-        mPreviousLensButtonVisible = isLensButtonVisible;
+        mPreviousVoiceSearchButtonVisible = voiceSearchVisibleState;
+        mPreviousLensButtonVisible = lensVisibleState;
     }
 
     /**
@@ -1055,7 +1443,7 @@ public class NewTabPageCoordinator implements ModuleDelegateHost {
     }
 
     private boolean shouldShowLogo() {
-        return mSearchProviderHasLogo;
+        return mSearchProviderInfoDelegate.getSearchProviderHasLogo();
     }
 
     private boolean hasLoadCompleted() {
@@ -1118,8 +1506,7 @@ public class NewTabPageCoordinator implements ModuleDelegateHost {
             SetupListManager.getInstance().maybePrimeCompletionStatus(profile.getOriginalProfile());
         }
 
-        if (!NtpCustomizationUtils.isNtpSimplificationEnabledOnDesktop()
-                && mHomeModulesCoordinator == null) {
+        if (!DeviceInfo.isDesktop() && mHomeModulesCoordinator == null) {
             initializeHomeModulesImpl();
         }
         if (mHomeModulesCoordinator != null) {
@@ -1192,10 +1579,11 @@ public class NewTabPageCoordinator implements ModuleDelegateHost {
                                 mTab::getProfile,
                                 NtpCustomizationCoordinator.BottomSheetType.THEME_TIP,
                                 mWindowAndroid,
-                                mModuleRegistrySupplier.get());
+                                mModuleRegistrySupplier.get(),
+                                mSnackbarManager);
         mNtpCustomizationCoordinator.showBottomSheet();
         NtpCustomizationUtils.setThemeTipBottomSheetShownTimestampToSharedPreference(
-                TimeUtils.uptimeMillis());
+                TimeUtils.currentTimeMillis());
     }
 
     // ModuleDelegateHost implementation
@@ -1207,7 +1595,7 @@ public class NewTabPageCoordinator implements ModuleDelegateHost {
 
     @Override
     public @Nullable UiConfig getUiConfig() {
-        return mIsTablet ? mUiConfig : null;
+        return mIsLff ? mUiConfig : null;
     }
 
     @Override
@@ -1234,18 +1622,19 @@ public class NewTabPageCoordinator implements ModuleDelegateHost {
                         mTab::getProfile,
                         NtpCustomizationCoordinator.BottomSheetType.NTP_CARDS,
                         mWindowAndroid,
-                        mModuleRegistrySupplier.get())
+                        mModuleRegistrySupplier.get(),
+                        mSnackbarManager)
                 .showBottomSheet();
     }
 
     @Override
     public int getStartMargin() {
-        boolean isInNarrowWindowOnTablet =
-                mIsTablet
-                        && NtpCustomizationUtils.isInNarrowWindowOnTablet(
-                                mIsTablet, assumeNonNull(mUiConfig));
+        boolean isInNarrowWindowOnLff =
+                mIsLff
+                        && NtpCustomizationUtils.isInNarrowWindowOnLff(
+                                mIsLff, assumeNonNull(mUiConfig));
         int marginResourceId =
-                isInNarrowWindowOnTablet
+                isInNarrowWindowOnLff
                         ? R.dimen.ntp_search_box_lateral_margin_narrow_window_tablet
                         : R.dimen.mvt_container_lateral_margin;
         return mActivity.getResources().getDimensionPixelSize(marginResourceId);
@@ -1272,14 +1661,27 @@ public class NewTabPageCoordinator implements ModuleDelegateHost {
 
         mMostRecentTabSupplier.set(null);
 
-        if (mSearchBoxHintTextObserver != null) {
-            mSearchEngineUtils.removeSearchBoxHintTextObserver(mSearchBoxHintTextObserver);
-            mSearchBoxHintTextObserver = null;
+        if (mSearchEngineNameObserver != null) {
+            mSearchEngineService.removeSearchEngineNameObserver(mSearchEngineNameObserver);
+            mSearchEngineNameObserver = null;
         }
 
         if (mSearchEngineIconObserver != null) {
-            mSearchEngineUtils.removeIconObserver(mSearchEngineIconObserver);
+            mSearchEngineService.removeIconObserver(mSearchEngineIconObserver);
             mSearchEngineIconObserver = null;
+        }
+
+        if (mAiModeButtonUiConfigSupplier != null
+                && mAiModeButtonUiConfigSupplierObserver != null) {
+            mAiModeButtonUiConfigSupplier.removeObserver(mAiModeButtonUiConfigSupplierObserver);
+            mAiModeButtonUiConfigSupplier = null;
+            mAiModeButtonUiConfigSupplierObserver = null;
+        }
+
+        if (mAiModeButtonIconSupplier != null && mAiModeButtonIconSupplierObserver != null) {
+            mAiModeButtonIconSupplier.removeObserver(mAiModeButtonIconSupplierObserver);
+            mAiModeButtonIconSupplier = null;
+            mAiModeButtonIconSupplierObserver = null;
         }
 
         if (mSigninPromoCoordinator != null) {
@@ -1337,10 +1739,14 @@ public class NewTabPageCoordinator implements ModuleDelegateHost {
         }
         mUiConfig = null;
 
+        if (mSideUiStateProvider != null) {
+            mSideUiStateProvider.removeObserver(mSideUiObserver);
+            mSideUiStateProvider = null;
+        }
+
         mModel.set(NewTabPageLayoutProperties.DELEGATE, null);
 
         mSearchBoxScrollListener = null;
-        mComposeplateUrlSupplier = null;
         mScrollDelegate = null;
 
         if (mCallbackController != null) {
@@ -1349,19 +1755,67 @@ public class NewTabPageCoordinator implements ModuleDelegateHost {
         }
     }
 
-    /** Makes the Search Box and Logo as wide as Most Visited. */
-    private void unifyElementWidths(int width) {
-        int searchBoxWidth = width - mSearchBoxTwoSideMargin;
-        if (mNtpSearchBox != null) {
-            mNtpSearchBox.setLayoutWidth(searchBoxWidth);
+    /**
+     * Records UMA for the NTP being shown. This includes a fresh page load or being brought to the
+     * foreground.
+     */
+    void recordNtpShown() {
+        if (mComposeplateCoordinator != null) {
+            mComposeplateCoordinator.recordButtonsImpression();
         }
+    }
 
+    /**
+     * Calculates the lateral margin to apply to the MVT container to match the Feed card bounds.
+     *
+     * <p>NewTabPageLayout (inside the Discover Feed scroll container) may be assigned negative
+     * lateral margins so that other container Views can keep their margin / padding settings.
+     *
+     * <p>Meanwhile, Feeds exists outside of NewTabPageLayout. So for a View inside NewTabPageLayout
+     * to align with Feeds, we'd need to compensate for the negative margin by subtracing it. This
+     * approach should work for all phone orientations, wide screens, and tablet configurations.
+     *
+     * @return The lateral margin, in pixels.
+     */
+    @VisibleForTesting
+    int getLateralMarginToMatchFeeds() {
+        // Value is non-negative, since the compensation margin is non-positive.
+        return -FeedStreamViewResizerUtils.getFeedNtpCompensationMargin(
+                mActivity.getResources(), assertNonNull(mUiConfig));
+    }
+
+    /** Unifies the layout widths of the New Tab Page elements. */
+    private void unifyElementWidths(int width) {
+        // Search Provider Logo spans the full available width to properly support wide doodles.
         if (mLogoCoordinator != null) {
             mLogoCoordinator.setLayoutWidth(width);
         }
 
-        if (mComposeplateCoordinator != null) {
-            mComposeplateCoordinator.setLayoutWidth(searchBoxWidth);
+        int searchBoxWidth = Math.min(width - mSearchBoxTwoSideMargin, mSearchBoxMaxWidth);
+
+        // Search Box always receives a capped layout width to maintain central focus.
+        if (mNtpSearchBox != null) {
+            mNtpSearchBox.setLayoutWidth(searchBoxWidth);
+        }
+
+        int mvtWidth = mIsLff ? (width - getLateralMarginToMatchFeeds() * 2) : searchBoxWidth;
+        if (mIsBesideMvtModuleEnabled) {
+            mModel.set(
+                    NewTabPageLayoutProperties.COMPOSEPLATE_AND_MVT_CONTAINER_WIDTH_PX, mvtWidth);
+        } else {
+            // Composeplate is capped to align perfectly with the Search Box.
+            if (mComposeplateCoordinator != null) {
+                mComposeplateCoordinator.setLayoutWidth(searchBoxWidth);
+            }
+
+            // Most Visited Tiles: Match Feeds width on Tablet, and Search Box on Phone.
+            if (mMostVisitedTilesCoordinator != null) {
+                mMostVisitedTilesCoordinator.updateMvtWidth(width, mvtWidth);
+            }
+        }
+
+        if (mSigninPromoCoordinator != null) {
+            mSigninPromoCoordinator.setLateralMargins(getStartMargin());
         }
 
         mContextMenuStartPosition = null;
@@ -1381,14 +1835,58 @@ public class NewTabPageCoordinator implements ModuleDelegateHost {
         return mSnapshotSingleTabCardChanged;
     }
 
+    public int getSearchBoxTwoSideMarginForTesting() {
+        return mSearchBoxTwoSideMargin;
+    }
+
     private void onDisplayStyleChanged(UiConfig.DisplayStyle newDisplayStyle) {
-        if (!mIsTablet) return;
+        if (!mIsLff) {
+            // Logo and Doodle have different top margin on landscape and portrait modes on phones,
+            // update when the screen rotates.
+            setLogoTopMargin();
+            setComposeplateButtonSpacing();
+            return;
+        }
 
         updateDoodleOnTablet();
-        if (mMostVisitedTilesCoordinator != null) {
-            mMostVisitedTilesCoordinator.updateMvtOnTablet();
-        }
         updateSearchBoxTwoSideMargin();
+        // Request a layout pass to trigger onMeasure(), which acts as the single source of
+        // truth to calculate and uniformly apply the bounded widths to all NTP elements.
+        ViewUtils.requestLayout(mNewTabPageLayout, "NewTabPageCoordinator.onDisplayStyleChanged");
+    }
+
+    /**
+     * Updates the spacing of the composeplate buttons, which differs between landscape and portrait
+     * modes on phones.
+     */
+    private void setComposeplateButtonSpacing() {
+        if (mComposeplateCoordinator == null) return;
+
+        mComposeplateCoordinator.onDisplayStyleChanged();
+    }
+
+    private int getSideUiWidthDp() {
+        if (mSideUiStateProvider == null) return 0;
+        return getSideUiWidthDp(mSideUiStateProvider.getCurrentSideUiSpecs());
+    }
+
+    private int getSideUiWidthDp(SideUiSpecs sideUiSpecs) {
+        int sideUiWidthPx =
+                sideUiSpecs.getReservedWidth(AnchorSide.LEFT)
+                        + sideUiSpecs.getReservedWidth(AnchorSide.RIGHT);
+        float density = mActivity.getResources().getDisplayMetrics().density;
+        return Math.round(sideUiWidthPx / density);
+    }
+
+    /**
+     * Updates the {@link UiConfig}'s horizontal inset to account for the given {@link SideUiSpecs}.
+     *
+     * @param sideUiSpecs The {@link SideUiSpecs} to apply.
+     */
+    private void updateUiConfigInsetForSideUi(SideUiSpecs sideUiSpecs) {
+        if (mUiConfig != null) {
+            mUiConfig.setHorizontalInset(getSideUiWidthDp(sideUiSpecs));
+        }
     }
 
     /**
@@ -1396,15 +1894,16 @@ public class NewTabPageCoordinator implements ModuleDelegateHost {
      * ensuring the change occurs post-logo initialization.
      */
     private void updateDoodleOnTablet() {
-        if (!mIsTablet || mLogoCoordinator == null) return;
+        if (!mIsLff || mLogoCoordinator == null) return;
 
-        mLogoCoordinator.updateDoodleOnTablet(mShowingNonStandardGoogleLogo);
+        mLogoCoordinator.updateDoodleOnTablet(
+                mSearchProviderInfoDelegate.getShowingNonStandardGoogleLogo());
     }
 
     private void updateSearchBoxTwoSideMargin() {
         mSearchBoxTwoSideMargin =
                 NtpCustomizationUtils.getSearchBoxTwoSideMargin(
-                        mActivity.getResources(), assertNonNull(mUiConfig), mIsTablet);
+                        mActivity.getResources(), assertNonNull(mUiConfig), mIsLff);
     }
 
     /**
@@ -1424,7 +1923,9 @@ public class NewTabPageCoordinator implements ModuleDelegateHost {
 
         mTopInset = supportsEdgeToEdgeOnTop ? systemTopInset : 0;
         mCurrentNtpFakeSearchBoxTransitionStartOffset =
-                getNtpSearchBoxTransitionStartOffset(!mSearchProviderHasLogo) + mTopInset;
+                getNtpSearchBoxTransitionStartOffset(
+                                !mSearchProviderInfoDelegate.getSearchProviderHasLogo())
+                        + mTopInset;
 
         int toolbarHeightNoShadow =
                 mActivity.getResources().getDimensionPixelSize(R.dimen.toolbar_height_no_shadow);
@@ -1437,44 +1938,50 @@ public class NewTabPageCoordinator implements ModuleDelegateHost {
         }
     }
 
-    /**
-     * Called when a customized background image is selected or deselected.
-     *
-     * @param applyWhiteBackgroundOnSearchBox Whether to apply a white background color to the fake
-     *     search box.
-     */
-    void onCustomizedBackgroundChanged(boolean applyWhiteBackgroundOnSearchBox) {
-        // If shouldn't apply a white background and the background hasn't been updated before,
-        // returns now.
-        if (mIsWhiteBackgroundOnSearchBoxApplied == null && !applyWhiteBackgroundOnSearchBox) {
-            return;
-        }
-
-        // If composeplate view flags haven't been initialized yet, returns now.
-        if (mCanShowComposeplateButton == null) {
-            return;
-        }
-
-        // If the background has been updated before and it should remain the same, returns now.
-        if (mIsWhiteBackgroundOnSearchBoxApplied != null
-                && mIsWhiteBackgroundOnSearchBoxApplied == applyWhiteBackgroundOnSearchBox) {
-            return;
-        }
-
-        // If the fake search box hasn't been initialized, returns now. It is fine to skip here
+    /** Called when a customized background image is selected or deselected. */
+    void onCustomizedBackgroundChanged() {
+        // If composeplate view flags haven't been initialized yet or the fake search box hasn't
+        // been initialized, returns now.
+        // It is fine to skip applyWhiteBackground() on the search box
         // because applyWhiteBackground() will be called immediately after the mNtpSearchBox
         // is initialized.
-        if (mNtpSearchBox == null) return;
-
-        mIsWhiteBackgroundOnSearchBoxApplied = applyWhiteBackgroundOnSearchBox;
-
-        if (mNtpSearchBox != null) {
-            mNtpSearchBox.applyWhiteBackground(applyWhiteBackgroundOnSearchBox);
+        if (mCanShowComposeplateButton == TriState.NOT_SET || mNtpSearchBox == null) {
+            return;
         }
 
-        if (mComposeplateCoordinator != null) {
-            mComposeplateCoordinator.applyWhiteBackground(applyWhiteBackgroundOnSearchBox);
+        updateSearchBoxBackground();
+        updateComposeplateBackground();
+    }
+
+    private void updateSearchBoxBackground() {
+        boolean desiredState = shouldApplyWhiteBackgroundOnSearchBox();
+        if (shouldUpdateBackground(desiredState, mIsWhiteBackgroundOnSearchBoxApplied)) {
+            mIsWhiteBackgroundOnSearchBoxApplied = TriStateUtils.from(desiredState);
+            assertNonNull(mNtpSearchBox);
+            mNtpSearchBox.applyWhiteBackground(desiredState);
         }
+    }
+
+    private void updateComposeplateBackground() {
+        if (mComposeplateCoordinator == null || mIsBesideMvtModuleEnabled) return;
+
+        boolean desiredState = NtpCustomizationUtils.shouldApplyWhiteBackgroundOnComposeplate();
+        if (shouldUpdateBackground(desiredState, mIsWhiteBackgroundOnComposeplateApplied)) {
+            mIsWhiteBackgroundOnComposeplateApplied = TriStateUtils.from(desiredState);
+            mComposeplateCoordinator.applyWhiteBackground(desiredState);
+        }
+    }
+
+    private boolean shouldUpdateBackground(boolean desiredState, @TriState int currentState) {
+        // On initial creation, update the background if a customized image is selected or if
+        // NTP Aurora is enabled to configure the dynamic background and shadow on startup.
+        if (currentState == TriState.NOT_SET) {
+            // When NTP Aurora is launched, remove `|| NewTabPageUtils.isNtpAuroraEnabled()` here
+            // and change the default background in the layout XML directly.
+            return desiredState || NewTabPageUtils.isNtpAuroraEnabled();
+        }
+        // If the background has been updated before and it should remain the same, returns false.
+        return TriStateUtils.from(desiredState) != currentState;
     }
 
     /** Returns the top inset of the NTP. */
@@ -1505,5 +2012,47 @@ public class NewTabPageCoordinator implements ModuleDelegateHost {
 
     public static void setCountForTesting(int count) {
         sCount = count;
+    }
+
+    void setSearchBoxCoordinatorForTesting(SearchBoxCoordinator searchBoxCoordinator) {
+        mNtpSearchBox = searchBoxCoordinator;
+    }
+
+    void setLogoCoordinatorForTesting(LogoCoordinator logoCoordinator) {
+        mLogoCoordinator = logoCoordinator;
+    }
+
+    void setMostVisitedTilesCoordinatorForTesting(
+            MostVisitedTilesCoordinator mostVisitedTilesCoordinator) {
+        mMostVisitedTilesCoordinator = mostVisitedTilesCoordinator;
+    }
+
+    void setComposeplateCoordinatorForTesting(ComposeplateCoordinator composeplateCoordinator) {
+        mComposeplateCoordinator = composeplateCoordinator;
+    }
+
+    void setIsComposeplateEnabledForTesting(@TriState int enabled) {
+        mCanShowComposeplateButton = enabled;
+    }
+
+    @TriState
+    int getIsComposeplateEnabledForTesting() {
+        return mCanShowComposeplateButton;
+    }
+
+    @Nullable ComposeplateCoordinator getComposeplateCoordinatorForTesting() {
+        return mComposeplateCoordinator;
+    }
+
+    void setIsWhiteBackgroundOnSearchBoxApplied(@TriState int applied) {
+        mIsWhiteBackgroundOnSearchBoxApplied = applied;
+    }
+
+    void setIsWhiteBackgroundOnComposeplateApplied(@TriState int applied) {
+        mIsWhiteBackgroundOnComposeplateApplied = applied;
+    }
+
+    SearchProviderInfoDelegate getSearchProviderInfoDelegateForTesting() {
+        return mSearchProviderInfoDelegate;
     }
 }

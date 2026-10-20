@@ -33,6 +33,7 @@
 #include <memory>
 #include <optional>
 
+#include "base/memory/raw_ptr.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/time/time.h"
 #include "base/unguessable_token.h"
@@ -48,7 +49,6 @@
 #include "third_party/blink/public/common/permissions_policy/document_policy.h"
 #include "third_party/blink/public/common/scheduler/task_attribution_id.h"
 #include "third_party/blink/public/common/subresource_load_metrics.h"
-#include "third_party/blink/public/mojom/fenced_frame/fenced_frame.mojom-blink.h"
 #include "third_party/blink/public/mojom/frame/triggering_event_info.mojom-blink-forward.h"
 #include "third_party/blink/public/mojom/loader/content_security_notifier.mojom-blink.h"
 #include "third_party/blink/public/mojom/loader/mhtml_load_result.mojom-blink-forward.h"
@@ -115,7 +115,6 @@ class Element;
 class Frame;
 class FrameLoader;
 class HistoryItem;
-class LocalDOMWindow;
 class LocalFrame;
 class LocalFrameClient;
 class MHTMLArchive;
@@ -254,7 +253,8 @@ class CORE_EXPORT DocumentLoader : public GarbageCollected<DocumentLoader>,
       PerformanceTimelineEntryIdInfo interaction_id =
           PerformanceTimelineEntryIdInfo::kNone,
       bool is_browser_initiated = false,
-      bool is_synchronously_committed = true);
+      bool is_synchronously_committed = true,
+      const SecurityOrigin* initiator_origin = nullptr);
 
   // |is_synchronously_committed| is described in comment for
   // CommitSameDocumentNavigation.
@@ -295,6 +295,8 @@ class CORE_EXPORT DocumentLoader : public GarbageCollected<DocumentLoader>,
 
   void StartLoading();
   void StopLoading();
+
+  void InheritXsltUseCountersFrom(DocumentLoader* other);
 
   // CommitNavigation() does the work of creating a Document and
   // DocumentParser, as well as creating a new LocalDOMWindow if needed. It also
@@ -386,6 +388,10 @@ class CORE_EXPORT DocumentLoader : public GarbageCollected<DocumentLoader>,
     return last_navigation_had_trusted_initiator_;
   }
 
+  bool TextFragmentTokenHadTrustedInitiator() const {
+    return text_fragment_token_had_trusted_initiator_;
+  }
+
   // Called when the URL needs to be updated due to a document.open() call.
   void DidOpenDocumentInputStream(const KURL& url);
 
@@ -444,6 +450,19 @@ class CORE_EXPORT DocumentLoader : public GarbageCollected<DocumentLoader>,
 
   HashMap<KURL, EarlyHintsPreloadEntry> GetEarlyHintsPreloadedResources();
 
+  // An origin preconnected to via an Early Hints response, for the
+  // SpeculationMeasurement API. `early_hint` is true if the preconnect came
+  // from a 103 Early Hints response, false if from a `Link: rel=preconnect`
+  // header on the final navigation response. The crossorigin attribute is
+  // converted to a CrossOriginAttributeValue when recorded on the fetcher.
+  struct Preconnect {
+    KURL url;
+    network::mojom::CrossOriginAttribute cross_origin =
+        network::mojom::CrossOriginAttribute::kUnspecified;
+    bool early_hint = false;
+  };
+  const Vector<Preconnect>& GetPreconnects() const { return preconnects_; }
+
   const std::optional<Vector<KURL>>& AdAuctionComponents() const {
     return ad_auction_components_;
   }
@@ -501,6 +520,16 @@ class CORE_EXPORT DocumentLoader : public GarbageCollected<DocumentLoader>,
   const mojom::RendererContentSettingsPtr& GetContentSettings();
 
   void ReportTotalTakenTimeToUpdateSubresourceLoadMetrics();
+
+  mojom::blink::ScriptInjectionPolicy GetScriptInjectionPolicy() const {
+    return script_injection_policy_;
+  }
+  void SetScriptInjectionPolicyForTesting(
+      mojom::blink::ScriptInjectionPolicy script_injection_policy) {
+    script_injection_policy_ = script_injection_policy;
+  }
+
+  bool IsInCommitDataForTesting() const { return in_commit_data_; }
 
  protected:
   // Based on its MIME type, if the main document's response corresponds to an
@@ -682,6 +711,7 @@ class CORE_EXPORT DocumentLoader : public GarbageCollected<DocumentLoader>,
   const std::optional<blink::mojom::FetchCacheMode> force_fetch_cache_mode_;
   const FramePolicy frame_policy_;
   std::optional<uint64_t> visited_link_salt_;
+  InitiatorStateToken initiator_state_token_;
 
   Member<LocalFrame> frame_;
 
@@ -764,6 +794,16 @@ class CORE_EXPORT DocumentLoader : public GarbageCollected<DocumentLoader>,
   // current document or was browser-initiated.
   bool last_navigation_had_trusted_initiator_ = false;
 
+  // Secure-context-root bit (see
+  // `ContentBrowserClient::IsSecureContextRoot()`), applied to the
+  // window's SecurityContext.
+  bool is_secure_context_root_ = false;
+
+  // Policy controlling script injection tracking and protections for this
+  // document.
+  mojom::blink::ScriptInjectionPolicy script_injection_policy_ =
+      mojom::blink::ScriptInjectionPolicy::kNone;
+
   // Whether this load request comes with a sticky user activation. For
   // prerendered pages, this is initially false but could be updated on
   // prerender page activation.
@@ -780,6 +820,10 @@ class CORE_EXPORT DocumentLoader : public GarbageCollected<DocumentLoader>,
   // to invoke. This token may be instead consumed to pass this permission
   // through a redirect.
   bool has_text_fragment_token_ = false;
+
+  // If true, the navigation that produced the text fragment token was initiated
+  // from the same-origin as the document or was browser-initiated.
+  bool text_fragment_token_had_trusted_initiator_ = false;
 
   // If set, the document should attempt to scroll this text fragment into view
   // upon load, without highlighting it.
@@ -810,7 +854,8 @@ class CORE_EXPORT DocumentLoader : public GarbageCollected<DocumentLoader>,
   // report feature usage to UMA histograms per page load.
   UseCounterImpl use_counter_;
 
-  const base::TickClock* clock_;
+  raw_ptr<const base::TickClock, UnprotectedInRelease | DanglingUntriaged>
+      clock_;
 
   const Vector<mojom::blink::OriginTrialFeature>
       initiator_origin_trial_features_;
@@ -844,6 +889,7 @@ class CORE_EXPORT DocumentLoader : public GarbageCollected<DocumentLoader>,
       pending_code_cache_host_for_background_;
 
   HashMap<KURL, EarlyHintsPreloadEntry> early_hints_preloaded_resources_;
+  Vector<Preconnect> preconnects_;
 
   // If this is a navigation to fenced frame from an interest group auction,
   // contains URNs to the ad components returned by the winning bid. Null,

@@ -64,7 +64,7 @@ process_template() {
 
   # Process includes first
   local TMPLINCL
-  TMPINCL="$(process_template_includes "$TMPLIN")"
+  TMPLINCL="$(process_template_includes "$TMPLIN")"
 
   # Substitute templated variables from the environment.
   # 'tac' reverses the sort order to handle the situation where one variable
@@ -181,13 +181,6 @@ stage_install_common() {
   # builds these files.  The build config should be obtained from gn rather than
   # guessed based on the presence of files.
 
-  # Privacy Sandbox Attestation
-  if [ -f "${OUTPUTDIR}/PrivacySandboxAttestationsPreloaded/manifest.json" ]; then
-    install -m 755 -d "${STAGEDIR}/${INSTALLDIR}/PrivacySandboxAttestationsPreloaded/"
-    install -m 644 "${OUTPUTDIR}/PrivacySandboxAttestationsPreloaded/manifest.json" "${STAGEDIR}/${INSTALLDIR}/PrivacySandboxAttestationsPreloaded/"
-    install -m 644 "${OUTPUTDIR}/PrivacySandboxAttestationsPreloaded/privacy-sandbox-attestations.dat" "${STAGEDIR}/${INSTALLDIR}/PrivacySandboxAttestationsPreloaded/"
-  fi
-
   # MEI Preload
   if [ -f "${OUTPUTDIR}/MEIPreload/manifest.json" ]; then
     install -m 755 -d "${STAGEDIR}/${INSTALLDIR}/MEIPreload/"
@@ -230,7 +223,8 @@ stage_install_common() {
     install -m 644 "${OUTPUTDIR}/vk_swiftshader_icd.json" "${STAGEDIR}/${INSTALLDIR}/"
   fi
 
-  # Optimization Guide Internal
+  # TODO(crbug.com/525478189): Determine if Optimization Guide Internal is still
+  # required and remove if obsolete.
   if [ -f "${OUTPUTDIR}/liboptimization_guide_internal.so" ]; then
     file="liboptimization_guide_internal.so"
     strippedfile="${OUTPUTDIR}/${file}.stripped"

@@ -33,7 +33,8 @@ source_set("impl") {
     "//chrome/browser/bookmarks",
     "//chrome/browser/content_settings:content_settings_factory",
     "//chrome/browser/engagement",
-    "//chrome/browser/ui",
+    "//chrome/browser/ui:storage_pressure_bubble",
+    "//chrome/common:chrome_features",
     "//chrome/common:non_code_constants",
     "//components/content_settings/core/browser",
     "//components/content_settings/core/browser:cookie_settings",
@@ -51,11 +52,11 @@ source_set("unit_tests") {
     ":storage",
     "//base",
     "//base/test:test_support",
-    "//chrome/browser",
     "//chrome/browser/bookmarks",
     "//chrome/browser/content_settings:content_settings_factory",
     "//chrome/browser/engagement",
     "//chrome/test:test_support",
+    "//chrome/test/base:chrome_render_view_host_test_harness",
     "//components/bookmarks/test",
     "//components/content_settings/core/browser",
     "//components/content_settings/core/browser:cookie_settings",
@@ -69,7 +70,10 @@ if (!is_android) {
   source_set("browser_tests") {
     testonly = true
 
-    sources = [ "persistent_storage_browsertest.cc" ]
+    sources = [
+      "dom_storage_migration_browsertest.cc",
+      "persistent_storage_browsertest.cc",
+    ]
 
     defines = [ "HAS_OUT_OF_PROC_TEST_RUNNER" ]
 
@@ -81,8 +85,9 @@ if (!is_android) {
       "//chrome/browser",
       "//chrome/browser/bookmarks",
       "//chrome/browser/content_settings:content_settings_factory",
+      "//chrome/browser/prefs:util",
       "//chrome/browser/profiles:profile",
-      "//chrome/browser/ui",
+      "//chrome/browser/ui:browser_commands",
       "//chrome/browser/ui/tabs:tab_strip",
       "//chrome/common:non_code_constants",
       "//chrome/test:test_support",
@@ -93,61 +98,11 @@ if (!is_android) {
       "//components/content_settings/core/browser:cookie_settings",
       "//content/public/browser",
       "//content/public/common",
+      "//content/test:browsertest_support",
       "//content/test:test_support",
       "//net",
       "//net:test_support",
       "//testing/gtest",
-    ]
-  }
-}
-
-source_set("platform_browser_tests") {
-  testonly = true
-
-  sources = [ "shared_storage_browsertest.cc" ]
-
-  defines = [ "HAS_OUT_OF_PROC_TEST_RUNNER" ]
-
-  deps = [
-    ":storage",
-    "//base",
-    "//base/test:test_config",
-    "//base/test:test_support",
-    "//chrome/browser",
-    "//chrome/browser:chrome_content_browser_client",
-    "//chrome/browser/content_settings:content_settings_factory",
-    "//chrome/browser/profiles:profile",
-    "//chrome/browser/ui",
-    "//chrome/common:non_code_constants",
-    "//chrome/test:test_support",
-    "//components/content_settings/core/browser",
-    "//components/content_settings/core/browser:cookie_settings",
-    "//components/content_settings/core/common",
-    "//components/metrics:content",
-    "//components/prefs",
-    "//components/privacy_sandbox:features",
-    "//components/privacy_sandbox:privacy_sandbox_prefs",
-    "//components/privacy_sandbox:test_support",
-    "//components/privacy_sandbox/privacy_sandbox_attestations",
-    "//components/privacy_sandbox/privacy_sandbox_attestations:test_support",
-    "//components/services/storage",
-    "//content/public/browser",
-    "//content/public/common",
-    "//content/test:test_support",
-    "//extensions/buildflags",
-    "//net",
-    "//net:test_support",
-    "//services/network/public/cpp:flags_and_switches",
-    "//testing/gmock",
-    "//testing/gtest",
-    "//third_party/blink/public/common:headers",
-    "//url",
-  ]
-
-  if (enable_extensions_core) {
-    deps += [
-      "//extensions:test_support",
-      "//extensions/browser",
     ]
   }
 }

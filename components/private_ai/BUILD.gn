@@ -11,6 +11,7 @@ proto_library("proto") {
   sources = [
     "proto/google_rpc_code.proto",
     "proto/private_ai.proto",
+    "proto/private_tls_service.proto",
   ]
 
   deps = [ "//components/optimization_guide/proto:optimization_guide_proto" ]
@@ -21,6 +22,7 @@ proto_extras("proto_extras") {
   sources = [
     "proto/google_rpc_code.proto",
     "proto/private_ai.proto",
+    "proto/private_tls_service.proto",
   ]
 
   deps = [ ":proto" ]
@@ -38,8 +40,6 @@ source_set("features") {
 }
 
 source_set("private_ai") {
-  assert(!is_android,
-         "The target //components/private_ai is not supported on Android.")
   sources = [
     "client.cc",
     "client.h",
@@ -64,6 +64,10 @@ source_set("private_ai") {
     "connection_unused_timeout.cc",
     "connection_unused_timeout.h",
     "private_ai_common.h",
+    "private_ai_network_driver.h",
+    "private_ai_oak_session_driver.h",
+    "private_ai_service.cc",
+    "private_ai_service.h",
     "secure_channel.h",
     "secure_channel_impl.cc",
     "secure_channel_impl.h",
@@ -71,32 +75,42 @@ source_set("private_ai") {
     "secure_session_async_impl.cc",
     "secure_session_async_impl.h",
     "status_code.h",
+    "tls_certificate_downloader.cc",
+    "tls_certificate_downloader.h",
+    "tls_certificate_repository.cc",
+    "tls_certificate_repository.h",
+    "tls_websocket_client.cc",
+    "tls_websocket_client.h",
     "transport.h",
     "websocket_client.cc",
     "websocket_client.h",
   ]
-  public_deps = [ ":features" ]
+  public_deps = [
+    ":features",
+    "//components/private_ai/mojom",
+    "//components/streaming_client",
+    "//services/network/public/cpp",
+  ]
   deps = [
     ":proto",
-    ":proto_extras",
     "//base",
+    "//components/keyed_service/core",
     "//components/private_ai/attestation",
     "//components/private_ai/common",
     "//components/private_ai/crypto",
-    "//components/private_ai/mojom",
     "//components/private_ai/oak_session_service",
     "//components/private_ai/phosphor",
     "//components/private_ai/proto_utils",
-    "//content/public/browser",
+    "//components/signin/public/identity_manager",
+    "//components/version_info",
     "//crypto",
+    "//google_apis",
     "//mojo/public/cpp/system",
     "//net",
     "//services/cert_verifier/public/mojom",
-    "//services/network/public/cpp",
     "//services/network/public/mojom",
     "//third_party/boringssl",
     "//third_party/oak:oak_proto",
-    "//third_party/oak:oak_proto_extras",
     "//url",
   ]
 }
@@ -106,11 +120,19 @@ source_set("testing") {
   sources = [
     "testing/fake_connection.cc",
     "testing/fake_connection.h",
+    "testing/fake_private_ai_network_driver.cc",
+    "testing/fake_private_ai_network_driver.h",
+    "testing/fake_private_ai_oak_session_driver.cc",
+    "testing/fake_private_ai_oak_session_driver.h",
     "testing/fake_secure_channel.cc",
     "testing/fake_secure_channel.h",
     "testing/fake_token_manager.cc",
     "testing/fake_token_manager.h",
     "testing/mock_private_ai_client.h",
+    "testing/test_blind_sign_auth_factory.cc",
+    "testing/test_blind_sign_auth_factory.h",
+    "testing/test_private_ai_service.cc",
+    "testing/test_private_ai_service.h",
   ]
   deps = [ "//components/private_ai/common" ]
   public_deps = [
@@ -119,6 +141,10 @@ source_set("testing") {
     "//base",
     "//base/test:test_support",
     "//components/private_ai/phosphor",
+    "//components/private_ai/phosphor:test_support",
+    "//services/cert_verifier/public/mojom",
+    "//services/network/public/cpp",
+    "//services/network/public/mojom",
     "//testing/gmock",
   ]
 }
@@ -135,8 +161,12 @@ source_set("unit_tests") {
     "connection_timeout_unittest.cc",
     "connection_token_attestation_unittest.cc",
     "connection_unused_timeout_unittest.cc",
+    "private_ai_service_unittest.cc",
     "secure_channel_impl_unittest.cc",
     "secure_session_async_impl_unittest.cc",
+    "tls_certificate_downloader_unittest.cc",
+    "tls_certificate_repository_unittest.cc",
+    "tls_websocket_client_unittest.cc",
     "websocket_client_unittest.cc",
   ]
   deps = [
@@ -150,12 +180,22 @@ source_set("unit_tests") {
     "//components/private_ai/common",
     "//components/private_ai/common:unit_tests",
     "//components/private_ai/crypto:unit_tests",
+    "//components/signin/public/identity_manager:test_support",
+  ]
+  if (!use_blink) {
+    deps += [ "//components/private_ai/ios:unit_tests" ]
+  } else {
+    deps += [ "//components/private_ai/content:unit_tests" ]
+  }
+  deps += [
     "//components/private_ai/mojom",
     "//components/private_ai/phosphor",
+    "//components/private_ai/phosphor:test_support",
     "//components/private_ai/phosphor:unit_tests",
     "//components/private_ai/proto_utils:unit_tests",
-    "//content/test:test_support",
     "//mojo/public/cpp/system",
+    "//net",
+    "//net/traffic_annotation:test_support",
     "//services/network:test_support",
     "//services/network/public/mojom",
     "//testing/gmock",

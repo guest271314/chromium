@@ -21,7 +21,6 @@
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/ui/dialogs/browser_dialogs.h"
 #include "chrome/grit/browser_resources.h"
-#include "chrome/grit/generated_resources.h"
 #include "chromeos/version/version_loader.h"
 #include "components/language/core/browser/pref_names.h"
 #include "components/language/core/common/locale_util.h"
@@ -128,10 +127,12 @@ bool HatsDialog::HandleClientTriggeredAction(
     return false;
   }
 
-  // Page asks to be closed after completing the survey.
+  // Response was submitted and the survey was complete.
   if (action == kClientActionComplete) {
     LogHistogram(histogram_name, kSurveyCompleteEnumeration);
-    return true;
+    // Do not close the dialog to show the thank you message.
+    // Subsequent `kClientActionClose` will close the dialog afterwards.
+    return false;
   }
 
   // A question was answered
@@ -163,7 +164,7 @@ HatsDialog::HatsDialog(const std::string& trigger_id,
                        const std::string& histogram_name,
                        const std::string& site_context)
     : trigger_id_(trigger_id), histogram_name_(histogram_name) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
 
   set_allow_default_context_menu(false);
   set_can_close(true);

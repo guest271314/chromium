@@ -15,10 +15,10 @@
 #include "chrome/browser/preloading/chrome_preloading.h"
 #include "chrome/browser/preloading/prerender/prerender_manager.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/layout_constants.h"
 #include "chrome/browser/ui/tabs/public/tab_features.h"
-#include "chrome/browser/ui/ui_features.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/bookmarks/bookmark_bar_view.h"
 #include "chrome/browser/ui/views/bookmarks/bookmark_button_util.h"
 #include "chrome/browser/ui/views/event_utils.h"
@@ -26,13 +26,16 @@
 #include "chrome/common/pref_names.h"
 #include "chrome/grit/generated_resources.h"
 #include "components/prefs/pref_service.h"
+#include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/preloading_data.h"
 #include "content/public/browser/web_contents.h"
+#include "services/network/public/cpp/constants.h"
 #include "ui/base/l10n/l10n_util.h"
-#include "ui/base/ui_base_features.h"
+#include "ui/base/page_transition_types.h"
 #include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/widget/tooltip_manager.h"
+#include "ui/views/widget/widget.h"
 
 // These values are persisted to logs. Entries should not be renumbered and
 // numeric values should never be reused.
@@ -58,7 +61,7 @@ const base::FeatureParam<int> kPrefetchStartDelayOnMouseHoverByMilliseconds{
 BookmarkButtonBase::BookmarkButtonBase(PressedCallback callback,
                                        std::u16string_view title)
     : LabelButton(std::move(callback), title) {
-  ConfigureInkDropForToolbar(this);
+  ConfigureInkDrop(this);
 
   SetImageLabelSpacing(
       GetLayoutConstant(LayoutConstant::kBookmarkBarButtonImageLabelPadding));
@@ -107,7 +110,7 @@ END_METADATA
 BookmarkButton::BookmarkButton(PressedCallback callback,
                                const GURL& url,
                                std::u16string_view title,
-                               const raw_ptr<Browser> browser)
+                               const raw_ptr<BrowserWindowInterface> browser)
     : BookmarkButtonBase(base::BindRepeating(&BookmarkButton::OnButtonPressed,
                                              base::Unretained(this)),
                          title),
@@ -120,9 +123,9 @@ BookmarkButton::~BookmarkButton() = default;
 void BookmarkButton::OnButtonPressed(const ui::Event& event) {
   if (base::FeatureList::IsEnabled(features::kBookmarkTriggerForPrefetch) &&
       browser_) {
-    browser_->profile()->GetPrefs()->SetInt64(
+    browser_->GetProfile()->GetPrefs()->SetInt64(
         prefs::kBookmarkBarNavigationCount,
-        browser_->profile()->GetPrefs()->GetInt64(
+        browser_->GetProfile()->GetPrefs()->GetInt64(
             prefs::kBookmarkBarNavigationCount) +
             1);
   }
@@ -199,9 +202,9 @@ void BookmarkButton::OnMouseEntered(const ui::MouseEvent& event) {
 
   if (base::FeatureList::IsEnabled(features::kBookmarkTriggerForPrefetch) &&
       browser_) {
-    browser_->profile()->GetPrefs()->SetInt64(
+    browser_->GetProfile()->GetPrefs()->SetInt64(
         prefs::kBookmarkBarHoverCount,
-        browser_->profile()->GetPrefs()->GetInt64(
+        browser_->GetProfile()->GetPrefs()->GetInt64(
             prefs::kBookmarkBarHoverCount) +
             1);
   }
@@ -227,7 +230,7 @@ void BookmarkButton::OnMouseEntered(const ui::MouseEvent& event) {
   // Now we should register the callback function that will be used to
   // compute the preloading recall.
   if (auto* web_contents =
-          browser_->tab_strip_model()->GetActiveWebContents()) {
+          browser_->GetTabStripModel()->GetActiveWebContents()) {
     content::PreloadingData* preloading_data =
         content::PreloadingData::GetOrCreateForWebContents(web_contents);
     preloading_data->SetIsNavigationInDomainCallback(
@@ -307,12 +310,13 @@ void BookmarkButton::StartPreconnecting(GURL url) {
     return;
   }
 
-  auto* loading_predictor =
-      predictors::LoadingPredictorFactory::GetForProfile(browser_->profile());
+  auto* loading_predictor = predictors::LoadingPredictorFactory::GetForProfile(
+      browser_->GetProfile());
   if (loading_predictor) {
     loading_predictor->PrepareForPageLoad(
         /*initiator_origin=*/std::nullopt, url,
-        predictors::HintOrigin::BOOKMARK_BAR, true);
+        predictors::HintOrigin::BOOKMARK_BAR,
+        network::GetNoOpNetworkRestrictionsId(), true);
   }
 }
 
@@ -355,7 +359,7 @@ void BookmarkButton::UpdateMaxTooltipWidth() {
 
 BookmarkBarPreloadPipelineManager*
 BookmarkButton::GetBookmarkBarPreloadPipelineManager() {
-  tabs::TabInterface* active_tab = browser_->tab_strip_model()->GetActiveTab();
+  tabs::TabInterface* active_tab = browser_->GetTabStripModel()->GetActiveTab();
   // TODO(crbug.com/413259638): active_tab is only expected to be null if the
   // tab_strip is being initialized or destroyed, but putting a CHECK had caused
   // crbug.com/448228076.

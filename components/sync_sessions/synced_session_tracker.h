@@ -45,6 +45,7 @@ class SyncedSessionTracker {
     PRESENTABLE  // Have one window with at least one tab with syncable content.
   };
 
+  // `sessions_client` must not be null and must outlive this object.
   explicit SyncedSessionTracker(SyncSessionsClient* sessions_client);
 
   SyncedSessionTracker(const SyncedSessionTracker&) = delete;
@@ -69,13 +70,6 @@ class SyncedSessionTracker {
   // Returns the tab node ids (see GetTab) for all the tabs* associated with the
   // session having tag |session_tag|.
   std::set<int> LookupTabNodeIds(const std::string& session_tag) const;
-
-  // Returns the tab node ids for all screenshots associated with the session
-  // having tag |session_tag|. This is *usually* a subset of what
-  // LookupTabNodeIds() would return, but in some cases (orphaned screenshots)
-  // it may contain additional entries.
-  std::set<int> LookupScreenshotTabNodeIds(
-      const std::string& session_tag) const;
 
   // Returns the session windows associated with the session given
   // by |session_tag|. Returns an empty vector if there are no windows for
@@ -122,6 +116,12 @@ class SyncedSessionTracker {
   // Deletes those windows and tabs associated with |session_tag| that are no
   // longer owned. See ResetSessionTracking(...)..
   void CleanupSession(const std::string& session_tag);
+
+  // Attempts to update the session name for the given session tag using
+  // the preferred device name from DeviceInfo. If DeviceInfo is not available,
+  // the session name remains unchanged. `session_tag` must represent an
+  // existing session.
+  void TryUpdateSessionNameFromDeviceInfo(const std::string& session_tag);
 
   // Adds the window with id |window_id| to the session specified by
   // |session_tag|. If none existed for that session, creates one. Similarly, if
@@ -221,16 +221,6 @@ class SyncedSessionTracker {
   // have no effect.
   void ReassociateLocalTab(int tab_node_id, SessionID new_tab_id);
 
-  // **** Methods for querying/manipulating screenshots ****.
-
-  // Sets whether the given tab node has a screenshot.
-  void SetTabNodeHasScreenshot(const std::string& session_tag,
-                               int tab_node_id,
-                               bool has_screenshot);
-
-  // Returns whether the given tab node has a screenshot.
-  bool TabNodeHasScreenshot(const std::string& session_tag,
-                            int tab_node_id) const;
 
   // **** Methods for querying/manipulating overall state ****.
 
@@ -287,11 +277,6 @@ class SyncedSessionTracker {
     // Mappings between tab node IDs and tab IDs. For the local session, it also
     // knows about available sync nodes associated with this session.
     TabNodePool tab_node_pool;
-
-    // The set of tab node IDs for which a screenshot exists in the store. This
-    // is *typically* a subset of the associated tabs in the TabNodePool, but
-    // it's not guaranteed (e.g. in case of orphaned screenshots).
-    std::set<int> tab_node_ids_with_screenshots;
   };
 
   // LookupTrackedSession() returns null if the session tag is unknown.
@@ -343,8 +328,6 @@ void SerializeTrackerToSpecifics(
 void SerializePartialTrackerToSpecifics(
     const SyncedSessionTracker& tracker,
     const std::map<std::string, std::set<int>>& session_tag_to_tab_node_ids,
-    const std::map<std::string, std::set<int>>&
-        session_tag_to_screenshot_node_ids,
     const base::RepeatingCallback<void(const std::string& session_name,
                                        sync_pb::SessionSpecifics* specifics)>&
         output_cb);

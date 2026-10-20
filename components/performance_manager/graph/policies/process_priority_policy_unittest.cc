@@ -17,6 +17,7 @@
 #include "content/public/browser/render_process_host.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/process_type.h"
+#include "content/public/test/mock_render_process_host.h"
 #include "content/public/test/navigation_simulator.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -39,7 +40,7 @@ class ProcessPriorityPolicyTest : public PerformanceManagerTestHarness,
  public:
   ProcessPriorityPolicyTest() {
     base::FieldTrialParams params = {
-        {features::kNonSpareRendererHighInitialPriority.name,
+        {features::kRendererHighInitialPriority.name,
          GetParam() ? "true" : "false"}};
     scoped_feature_list_.InitAndEnableFeatureWithParameters(
         features::kPMProcessPriorityPolicy, params);
@@ -111,11 +112,11 @@ TEST_P(ProcessPriorityPolicyTest, GraphReflectedToRenderProcessHost) {
   DCHECK(rph);
 
   const base::Process::Priority kInitialPriority =
-      features::kNonSpareRendererHighInitialPriority.Get()
+      features::kRendererHighInitialPriority.Get()
           ? base::Process::Priority::kUserBlocking
           : base::Process::Priority::kBestEffort;
   const base::Process::Priority kOtherPriority =
-      features::kNonSpareRendererHighInitialPriority.Get()
+      features::kRendererHighInitialPriority.Get()
           ? base::Process::Priority::kBestEffort
           : base::Process::Priority::kUserBlocking;
 
@@ -131,6 +132,14 @@ TEST_P(ProcessPriorityPolicyTest, GraphReflectedToRenderProcessHost) {
   // Toggle the priority and expect it to change.
   EXPECT_CALL(*this, OnSetPriority(rph, kOtherPriority));
   PostProcessNodePriority(rph, kOtherPriority);
+  RunUntilOnSetPriority();
+
+  // Simulate a renderer crash and toggle the priority while the process is
+  // dead. The updated priority should still be reflected on the
+  // RenderProcessHost so that it has the right priority on relaunch.
+  process()->SimulateCrash();
+  EXPECT_CALL(*this, OnSetPriority(rph, kInitialPriority));
+  PostProcessNodePriority(rph, kInitialPriority);
   RunUntilOnSetPriority();
 
   testing::Mock::VerifyAndClearExpectations(this);

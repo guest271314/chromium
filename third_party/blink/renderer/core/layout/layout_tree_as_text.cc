@@ -62,6 +62,7 @@
 #include "third_party/blink/renderer/platform/geometry/layout_unit.h"
 #include "third_party/blink/renderer/platform/wtf/math_extras.h"
 #include "third_party/blink/renderer/platform/wtf/text/character_names.h"
+#include "third_party/blink/renderer/platform/wtf/text/format.h"
 #include "third_party/blink/renderer/platform/wtf/vector.h"
 
 namespace blink {
@@ -132,7 +133,7 @@ String QuoteAndEscapeNonPrintables(const String& s) {
       if (c >= 0x20 && c < 0x7F) {
         result.Append(c);
       } else {
-        result.AppendFormat("\\x{%X}", c);
+        FormatTo(result, "\\x{{{:X}}}", c);
       }
     }
   }
@@ -176,10 +177,11 @@ void WriteLayoutObject(StringBuilder& ts,
   ts << o.DecoratedName();
 
   if (behavior & kLayoutAsTextShowAddresses)
-    ts << String::Format(" %p", &o);
+    FormatTo(ts, " {}", &o);
 
-  if (o.Style() && o.StyleRef().ZIndex())
-    ts << " zI: " << o.StyleRef().ZIndex();
+  if (o.Style().ZIndex()) {
+    ts << " zI: " << o.Style().ZIndex();
+  }
 
   if (o.GetNode()) {
     String tag_name = GetTagName(o.GetNode());
@@ -218,10 +220,11 @@ void WriteLayoutObject(StringBuilder& ts,
           text_stroke_color != color && text_stroke_color.Rgb())
         ts << " [textStrokeColor=" << text_stroke_color << "]";
 
-      if (o.Parent()->StyleRef().TextStrokeWidth() !=
-              o.StyleRef().TextStrokeWidth() &&
-          o.StyleRef().TextStrokeWidth() > 0)
-        ts << " [textStrokeWidth=" << o.StyleRef().TextStrokeWidth() << "]";
+      if (o.Parent()->Style().TextStrokeWidth() !=
+              o.Style().TextStrokeWidth() &&
+          o.Style().TextStrokeWidth() > 0) {
+        ts << " [textStrokeWidth=" << o.Style().TextStrokeWidth() << "]";
+      }
     }
 
     if (!o.IsBoxModelObject())
@@ -235,7 +238,7 @@ void WriteLayoutObject(StringBuilder& ts,
         ts << " none";
       } else {
         ts << " (" << border.top << "px ";
-        PrintBorderStyle(ts, o.StyleRef().BorderTopStyle());
+        PrintBorderStyle(ts, o.Style().BorderTopStyle());
         ts << o.ResolveColor(GetCSSPropertyBorderTopColor()) << ")";
       }
 
@@ -243,7 +246,7 @@ void WriteLayoutObject(StringBuilder& ts,
         ts << " none";
       } else {
         ts << " (" << border.right << "px ";
-        PrintBorderStyle(ts, o.StyleRef().BorderRightStyle());
+        PrintBorderStyle(ts, o.Style().BorderRightStyle());
         ts << o.ResolveColor(GetCSSPropertyBorderRightColor()) << ")";
       }
 
@@ -251,7 +254,7 @@ void WriteLayoutObject(StringBuilder& ts,
         ts << " none";
       } else {
         ts << " (" << border.bottom << "px ";
-        PrintBorderStyle(ts, o.StyleRef().BorderBottomStyle());
+        PrintBorderStyle(ts, o.Style().BorderBottomStyle());
         ts << o.ResolveColor(GetCSSPropertyBorderBottomColor()) << ")";
       }
 
@@ -259,7 +262,7 @@ void WriteLayoutObject(StringBuilder& ts,
         ts << " none";
       } else {
         ts << " (" << border.left << "px ";
-        PrintBorderStyle(ts, o.StyleRef().BorderLeftStyle());
+        PrintBorderStyle(ts, o.Style().BorderLeftStyle());
         ts << o.ResolveColor(GetCSSPropertyBorderLeftColor()) << ")";
       }
 
@@ -470,14 +473,14 @@ static void Write(StringBuilder& ts,
 
   WriteIndent(ts, indent);
 
-  if (layer.GetLayoutObject().StyleRef().Visibility() == EVisibility::kHidden) {
+  if (layer.GetLayoutObject().Style().Visibility() == EVisibility::kHidden) {
     ts << "hidden ";
   }
 
   ts << "layer ";
 
   if (behavior & kLayoutAsTextShowAddresses)
-    ts << String::Format("%p ", &layer);
+    FormatTo(ts, "{} ", &layer);
 
   ts << "at " << adjusted_layer_offset;
 
@@ -492,13 +495,13 @@ static void Write(StringBuilder& ts,
       ts << " scrollX " << scroll_position.x();
     if (scroll_position.y())
       ts << " scrollY " << scroll_position.y();
-    if (layer.GetLayoutBox() && layer.GetLayoutBox()->ClientWidth() !=
-                                    layer.GetLayoutBox()->ScrollWidth()) {
-      ts << " scrollWidth " << layer.GetLayoutBox()->ScrollWidth();
-    }
-    if (layer.GetLayoutBox() && layer.GetLayoutBox()->ClientHeight() !=
-                                    layer.GetLayoutBox()->ScrollHeight()) {
-      ts << " scrollHeight " << layer.GetLayoutBox()->ScrollHeight();
+    if (const auto* box = layer.GetLayoutBox()) {
+      if (box->HasScrollableOverflowX()) {
+        ts << " scrollWidth " << box->ScrollWidth();
+      }
+      if (box->HasScrollableOverflowY()) {
+        ts << " scrollHeight " << box->ScrollHeight();
+      }
     }
   }
 
@@ -507,9 +510,9 @@ static void Write(StringBuilder& ts,
   else if (paint_phase == kLayerPaintPhaseForeground)
     ts << " layerType: foreground only";
 
-  if (layer.GetLayoutObject().StyleRef().HasBlendMode()) {
+  if (layer.GetLayoutObject().Style().HasBlendMode()) {
     ts << " blendMode: "
-       << BlendModeToString(layer.GetLayoutObject().StyleRef().GetBlendMode());
+       << BlendModeToString(layer.GetLayoutObject().Style().GetBlendMode());
   }
 
   if (behavior & kLayoutAsTextShowPaintProperties) {
@@ -650,7 +653,7 @@ static void WriteSelection(StringBuilder& ts, const LayoutObject* o) {
     return;
 
   const VisibleSelection& selection =
-      frame->Selection().ComputeVisibleSelectionInDOMTree();
+      frame->Selection().ComputeVisibleSelectionInDomTree();
   if (selection.IsCaret()) {
     ts << "caret: position " << selection.Start().ComputeEditingOffset()
        << " of " << NodePosition(selection.Start().AnchorNode());
@@ -696,7 +699,7 @@ String ExternalRepresentation(LocalFrame* frame,
   PrintContext* print_context = MakeGarbageCollected<PrintContext>(frame);
   bool is_text_printing_mode = !!(behavior & kLayoutAsTextPrintingMode);
   if (is_text_printing_mode) {
-    gfx::SizeF page_size(layout_box->ClientWidth(), layout_box->ClientHeight());
+    const gfx::SizeF page_size(layout_box->PhysicalPaddingBoxRect().size);
     print_context->BeginPrintMode(WebPrintParams(page_size));
 
     // The lifecycle needs to be run again after changing printing mode,

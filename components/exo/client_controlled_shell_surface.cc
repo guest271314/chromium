@@ -208,7 +208,7 @@ class ClientControlledWindowStateDelegate : public ash::WindowStateDelegate {
     return true;
   }
 
-  void ToggleLockedFullscreen(ash::WindowState*) override {
+  void ToggleTrustedPinned(ash::WindowState*) override {
     // No special handling for locked ARC windows.
     return;
   }
@@ -227,7 +227,7 @@ class ClientControlledWindowStateDelegate : public ash::WindowStateDelegate {
 };
 
 bool IsPinned(const ash::WindowState* window_state) {
-  return window_state->IsPinned() || window_state->IsLockedFullscreen();
+  return window_state->IsPinned();
 }
 
 class CaptionButtonModel : public chromeos::CaptionButtonModel {
@@ -399,8 +399,12 @@ ClientControlledShellSurface::ClientControlledShellSurface(
 ClientControlledShellSurface::~ClientControlledShellSurface() {
   // Reset the window delegate here so that we won't try to do any dragging
   // operation on a to-be-destroyed window. |widget_| can be nullptr in tests.
-  if (GetWidget())
-    GetWindowState()->SetDelegate(nullptr);
+  if (GetWidget()) {
+    auto* window_state = GetWindowState();
+    if (window_state && window_state->HasDelegate()) {
+      window_state->SetDelegate(nullptr);
+    }
+  }
   if (client_controlled_state_)
     client_controlled_state_->ResetDelegate();
   CloseWideFrame(views::Widget::ClosedReason::kUnspecified);
@@ -485,10 +489,9 @@ void ClientControlledShellSurface::SetPinned(chromeos::WindowPinType type) {
     // Set other window state mode will automatically cancelled pin mode.
     // TODO: Add NOTREACH() here after ARC side integration fully landed.
   } else {
-    bool trusted = type == chromeos::WindowPinType::kLockedFullscreen;
-    pending_window_state_ = trusted
-                                ? chromeos::WindowStateType::kLockedFullscreen
-                                : chromeos::WindowStateType::kPinned;
+    bool trusted = type == chromeos::WindowPinType::kTrustedPinned;
+    pending_window_state_ = trusted ? chromeos::WindowStateType::kTrustedPinned
+                                    : chromeos::WindowStateType::kPinned;
   }
 }
 
@@ -901,6 +904,12 @@ void ClientControlledShellSurface::OnWindowAddedToRootWindow(
 
 void ClientControlledShellSurface::WindowClosing() {
   CloseWideFrame(views::Widget::ClosedReason::kUnspecified);
+  if (GetWidget()) {
+    auto* window_state = GetWindowState();
+    if (window_state && window_state->HasDelegate()) {
+      window_state->SetDelegate(nullptr);
+    }
+  }
   ShellSurfaceBase::WindowClosing();
 }
 
@@ -926,6 +935,8 @@ std::unique_ptr<views::FrameView> ClientControlledShellSurface::CreateFrameView(
   auto frame_view = CreateFrameViewInternal(widget);
   immersive_fullscreen_controller_ =
       std::make_unique<chromeos::ImmersiveFullscreenController>();
+  immersive_fullscreen_controller_->SetImmersiveModeChangedCallback(
+      base::BindRepeating(&ash::window_util::UpdateUiForImmersiveFullscreen));
   static_cast<ash::FrameViewAsh*>(frame_view.get())
       ->InitImmersiveFullscreenControllerForView(
           immersive_fullscreen_controller_.get());
@@ -1264,7 +1275,7 @@ bool ClientControlledShellSurface::OnPreWidgetCommit() {
 
   if (IsPinned(window_state) &&
       (pending_window_state_ == chromeos::WindowStateType::kPinned ||
-       pending_window_state_ == chromeos::WindowStateType::kLockedFullscreen)) {
+       pending_window_state_ == chromeos::WindowStateType::kTrustedPinned)) {
     VLOG(1) << "Pinned was requested while pinned";
     return true;
   }

@@ -15,8 +15,12 @@
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/location.h"
+#include "base/memory_coordinator/memory_coordinator_features.h"
+#include "base/memory_coordinator/traits.h"
+#include "base/memory_coordinator/utils.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/run_loop.h"
+#include "base/strings/string_number_conversions.h"
 #include "base/strings/stringprintf.h"
 #include "base/system/sys_info.h"
 #include "base/task/bind_post_task.h"
@@ -86,6 +90,17 @@ const int kMaxGpuIdleTimeMs = 40;
 // draw.
 const int kMaxKeepAliveTimeMs = 200;
 #endif
+
+constexpr base::MemoryConsumerTraits kGpuChannelManagerTraits(
+    // Can free hundreds of MB via Skia, Dawn, and persistent cache purges.
+    base::MemoryConsumerTraits::EstimatedMemoryUsage::kLarge,
+    // Purging iterates caches, reading the entries being freed.
+    base::MemoryConsumerTraits::ReleaseMemoryDataAccess::kReads,
+    // Freed resources are caches or scratch buffers that can be recreated.
+    base::MemoryConsumerTraits::InformationRetention::kLossless,
+    // Asynchronous since AsyncMemoryConsumerRegistration is used.
+    base::MemoryConsumerTraits::ExecutionType::kAsynchronous);
+
 #if BUILDFLAG(IS_WIN)
 void TrimD3DResources(const scoped_refptr<SharedContextState>& context_state) {
   // Graphics drivers periodically allocate internal memory buffers in
@@ -208,7 +223,8 @@ void GpuChannelManager::GpuPeakMemoryMonitor::StartGpuMemoryTracking(
   sequence_trackers_.emplace(
       sequence_num,
       SequenceTracker(current_memory_, current_memory_per_source_));
-  TRACE_EVENT_BEGIN("gpu", "PeakMemoryTracking", perfetto::Track(sequence_num),
+  TRACE_EVENT_BEGIN("gpu", "PeakMemoryTracking",
+                    perfetto::NamedTrack("PeakMemoryTracking", sequence_num),
                     "start", current_memory_, "start_sources",
                     StartTrackingTracedValue());
 }
@@ -219,8 +235,9 @@ void GpuChannelManager::GpuPeakMemoryMonitor::StopGpuMemoryTracking(
   base::AutoLock auto_lock(peak_mem_lock_);
   auto sequence = sequence_trackers_.find(sequence_num);
   if (sequence != sequence_trackers_.end()) {
-    TRACE_EVENT_END("gpu", perfetto::Track(sequence_num), "peak",
-                    sequence->second.total_memory_, "end_sources",
+    TRACE_EVENT_END("gpu",
+                    perfetto::NamedTrack("PeakMemoryTracking", sequence_num),
+                    "peak", sequence->second.total_memory_, "end_sources",
                     StopTrackingTracedValue(sequence->second));
     sequence_trackers_.erase(sequence);
   }
@@ -316,11 +333,10 @@ void GpuChannelManager::GpuPeakMemoryMonitor::OnMemoryAllocatedChange(
     for (auto& seq : sequence_trackers_) {
       if (current_memory_ > seq.second.total_memory_) {
         seq.second.total_memory_ = current_memory_;
-        for (auto& sequence : sequence_trackers_) {
-          TRACE_EVENT_INSTANT("gpu", "PeakMemoryTracking",
-                              perfetto::Track(sequence.first), "peak",
-                              current_memory_);
-        }
+        TRACE_EVENT_INSTANT(
+            "gpu", "PeakMemoryTracking",
+            perfetto::NamedTrack("PeakMemoryTracking", seq.first), "peak",
+            current_memory_);
         for (auto& memory_per_source : current_memory_per_source_) {
           seq.second.peak_memory_per_source_[memory_per_source.first] =
               memory_per_source.second;
@@ -342,7 +358,7 @@ GpuChannelManager::GpuChannelManager(
     const GpuFeatureInfo& gpu_feature_info,
     GpuProcessShmCount* use_shader_cache_shm_count,
     scoped_refptr<gl::GLSurface> default_offscreen_surface,
-    viz::VulkanContextProvider* vulkan_context_provider,
+    VulkanContextProvider* vulkan_context_provider,
     DawnContextProvider* dawn_context_provider,
     webgpu::DawnCachingInterfaceFactory* dawn_caching_interface_factory,
     const SharedContextState::GrContextOptionsProvider*
@@ -363,10 +379,11 @@ GpuChannelManager::GpuChannelManager(
       default_offscreen_surface_(std::move(default_offscreen_surface)),
       gpu_feature_info_(gpu_feature_info),
       use_shader_cache_shm_count_(use_shader_cache_shm_count),
-      memory_pressure_listener_registration_(
-          FROM_HERE,
-          base::MemoryPressureListenerTag::kGpuChannelManager,
-          this),
+      memory_consumer_registration_(
+          "GpuChannelManager",
+          kGpuChannelManagerTraits,
+          this,
+          base::AsyncMemoryConsumerRegistration::CheckUnregister::kDisabled),
       dawn_caching_interface_factory_(dawn_caching_interface_factory),
       vulkan_context_provider_(vulkan_context_provider),
       dawn_context_provider_(dawn_context_provider),
@@ -414,8 +431,12 @@ GpuChannelManager::~GpuChannelManager() {
 
   // Try to make the context current so that GPU resources can be destroyed
   // correctly.
-  if (shared_context_state_)
+  if (shared_context_state_) {
     shared_context_state_->MakeCurrent(nullptr);
+    // Clear the thread-local pointer before the context is destroyed.
+    SharedContextState::ClearForCurrentThread();
+    shared_context_state_ = nullptr;
+  }
 }
 
 gles2::Outputter* GpuChannelManager::outputter() {
@@ -430,6 +451,14 @@ gles2::Outputter* GpuChannelManager::outputter() {
 
 gles2::ProgramCache* GpuChannelManager::program_cache() {
   DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
+
+  // When the workaround is active, never create the program cache. Creating a
+  // PassthroughProgramCache registers process-wide EGL blob cache callbacks on
+  // the display, which would be forwarded to the native driver even if no
+  // context group is attached to the cache.
+  if (gpu_driver_bug_workarounds_.disable_program_cache) {
+    return nullptr;
+  }
 
   if (!program_cache_.get()) {
     const GpuDriverBugWorkarounds& workarounds = gpu_driver_bug_workarounds_;
@@ -484,9 +513,7 @@ GpuChannel* GpuChannelManager::EstablishChannel(
     const base::UnguessableToken& channel_token,
     int client_id,
     uint64_t client_tracing_id,
-    bool is_gpu_host,
-    bool enable_extra_handles_validation,
-    const gfx::GpuExtraInfo& gpu_extra_info,
+    viz::mojom::GpuClientType client_type,
     const gpu::GPUInfo& gpu_info,
     const gpu::GpuFeatureInfo& gpu_feature_info) {
   DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
@@ -505,9 +532,8 @@ GpuChannel* GpuChannelManager::EstablishChannel(
 
   std::unique_ptr<GpuChannel> gpu_channel = GpuChannel::Create(
       this, channel_token, scheduler_, sync_point_manager_, share_group_,
-      task_runner_, io_task_runner_, client_id, client_tracing_id, is_gpu_host,
-      enable_extra_handles_validation, gpu_extra_info, gpu_info,
-      gpu_feature_info);
+      task_runner_, io_task_runner_, client_id, client_tracing_id, client_type,
+      gpu_info, gpu_feature_info);
 
   if (!gpu_channel)
     return nullptr;
@@ -584,6 +610,15 @@ void GpuChannelManager::PopulateCache(const gpu::GpuDiskCacheHandle& handle,
                                       const std::string& data) {
   DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
 
+  // Record how much of the shader disk cache has been loaded so far, to help
+  // diagnose crashes and hangs while it is being loaded.
+  const uint64_t old_loaded_kb = loaded_shader_cache_size_.InKiB();
+  loaded_shader_cache_size_ += base::ByteSize(key.size() + data.size());
+  const uint64_t loaded_kb = loaded_shader_cache_size_.InKiB();
+  if (loaded_kb != old_loaded_kb) {
+    crash_keys::shader_cache_loaded_kb.Set(base::NumberToString(loaded_kb));
+  }
+
   switch (gpu::GetHandleType(handle)) {
     case gpu::GpuDiskCacheType::kGlShaders: {
       auto gl_shader_handle = std::get<gpu::GpuDiskCacheGlShaderHandle>(handle);
@@ -608,8 +643,8 @@ void GpuChannelManager::PopulateCache(const gpu::GpuDiskCacheHandle& handle,
       if (!dawn_caching_interface) {
         return;
       }
-      dawn_caching_interface->StoreData(key.data(), key.size(), data.data(),
-                                        data.size());
+      dawn_caching_interface->StoreData(
+          key, base::as_bytes(base::span<const char>(data)));
 #endif
       break;
     }
@@ -628,6 +663,8 @@ void GpuChannelManager::LoseAllContexts() {
                                         weak_factory_.GetWeakPtr()));
   if (shared_context_state_) {
     shared_context_state_->MarkContextLost();
+    // Clear the thread-local pointer when the context is lost.
+    SharedContextState::ClearForCurrentThread();
     shared_context_state_.reset();
   }
 }
@@ -776,6 +813,8 @@ void GpuChannelManager::OnBackgroundCleanup() {
 
   if (shared_context_state_) {
     shared_context_state_->MarkContextLost();
+    // Clear the thread-local pointer when the context is lost.
+    SharedContextState::ClearForCurrentThread();
     shared_context_state_.reset();
   }
 
@@ -787,7 +826,7 @@ void GpuChannelManager::OnApplicationBackgrounded() {
   DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
 
   if (shared_context_state_) {
-    shared_context_state_->PurgeMemory(base::MEMORY_PRESSURE_LEVEL_CRITICAL);
+    shared_context_state_->PurgeMemory(base::kCriticalMemoryPressureThreshold);
   }
 
   // Release all skia caching when the application is backgrounded.
@@ -811,11 +850,9 @@ void GpuChannelManager::PerformImmediateCleanup() {
   }
 
 #if BUILDFLAG(ENABLE_VULKAN)
-  if (shared_context_state_->GrContextIsVulkan()) {
-    // TODO(lizeb): Also perform this on GL devices.
-    if (auto* context = shared_context_state_->gr_context()) {
-      context->flushAndSubmit(GrSyncCpu::kYes);
-    }
+  if (shared_context_state_->GrContextIsVulkan() ||
+      shared_context_state_->IsGraphiteVulkan()) {
+    shared_context_state_->FlushAndSubmit(/*sync_to_cpu=*/true);
 
     DCHECK(vulkan_context_provider_);
     auto* fence_helper =
@@ -830,32 +867,45 @@ void GpuChannelManager::PerformImmediateCleanup() {
 #endif
 }
 
-void GpuChannelManager::OnMemoryPressure(
-    base::MemoryPressureLevel memory_pressure_level) {
-  DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
-
-  if (memory_pressure_level == base::MEMORY_PRESSURE_LEVEL_NONE) {
-    return;
-  }
-
-  // SharedContextState requires a current context for cleanup.
-  if (shared_context_state_ &&
-      shared_context_state_->MakeCurrent(nullptr, true /* needs_gl */)) {
-    shared_context_state_->PurgeMemory(memory_pressure_level);
+void GpuChannelManager::OnUpdateMemoryLimit() {
+  if (shared_context_state_) {
+    shared_context_state_->OnUpdateMemoryLimit(memory_limit());
   }
 
 #if BUILDFLAG(USE_DAWN) || BUILDFLAG(SKIA_USE_DAWN)
   if (dawn_caching_interface_factory()) {
-    dawn_caching_interface_factory()->PurgeMemory(memory_pressure_level);
+    dawn_caching_interface_factory()->OnUpdateMemoryLimit(memory_limit());
   }
 #endif  // BUILDFLAG(USE_DAWN) || BUILDFLAG(SKIA_USE_DAWN)
 
   if (persistent_caches_) {
-    persistent_caches_->PurgeMemory(memory_pressure_level);
+    persistent_caches_->OnUpdateMemoryLimit(memory_limit());
+  }
+}
+
+void GpuChannelManager::OnReleaseMemory() {
+  DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
+
+  // SharedContextState requires a current context for cleanup.
+  if (shared_context_state_ &&
+      shared_context_state_->MakeCurrent(nullptr, true /* needs_gl */)) {
+    shared_context_state_->PurgeMemory(memory_limit());
+  }
+
+#if BUILDFLAG(USE_DAWN) || BUILDFLAG(SKIA_USE_DAWN)
+  if (dawn_caching_interface_factory()) {
+    dawn_caching_interface_factory()->OnReleaseMemory(memory_limit());
+  }
+#endif  // BUILDFLAG(USE_DAWN) || BUILDFLAG(SKIA_USE_DAWN)
+
+  if (persistent_caches_) {
+    persistent_caches_->OnReleaseMemory(memory_limit());
   }
 
 #if BUILDFLAG(IS_WIN)
-  TrimD3DResources(shared_context_state_);
+  if (memory_limit() <= base::kModerateMemoryPressureThreshold) {
+    TrimD3DResources(shared_context_state_);
+  }
 #endif  // BUILDFLAG(IS_WIN)
 }
 
@@ -868,11 +918,9 @@ scoped_refptr<SharedContextState> GpuChannelManager::GetSharedContextState(
     return shared_context_state_;
   }
 
-  // Temporarily check the ANGLE metal experiment early in GPU process
-  // initialization. This will help us determine why users sometimes do not
-  // check the feature on subsequent runs of Chrome. crbug.com/1423439
-  [[maybe_unused]] bool default_angle_metal =
-      base::FeatureList::IsEnabled(features::kDefaultANGLEMetal);
+  // Cleanup the previous context if any.
+  SharedContextState::ClearForCurrentThread();
+  shared_context_state_.reset();
 
   scoped_refptr<gl::GLSurface> surface = default_offscreen_surface();
   bool use_virtualized_gl_contexts = false;
@@ -993,6 +1041,12 @@ scoped_refptr<SharedContextState> GpuChannelManager::GetSharedContextState(
   }
 
   shared_context_state_ = std::move(shared_context_state);
+  // Register as the active SharedContextState on the GPU main thread so
+  // downstream operations (e.g. CompoundImageBacking fallback copy strategies)
+  // can access the active context for this thread. Overwriting a live
+  // registration would leave a dangling thread-local pointer.
+  CHECK(!SharedContextState::GetForCurrentThread());
+  SharedContextState::SetForCurrentThread(shared_context_state_.get());
 
   *result = ContextResult::kSuccess;
   return shared_context_state_;

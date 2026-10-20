@@ -2,20 +2,27 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
+
 import type {ProfileData, SwitchToTabInfo} from './tab_search.mojom-webui.js';
 import {PageCallbackRouter, PageHandlerFactory, PageHandlerRemote} from './tab_search.mojom-webui.js';
 
+// LINT.IfChange(TabSearchRecentlyClosedItemOpenAction)
 /**
- * These values are persisted to logs and should not be renumbered or re-used.
- * See tools/metrics/histograms/enums.xml.
+ * These values are persisted to logs and should not be renumbered or reused.
+ * See tools/metrics/histograms/metadata/tab/enums.xml.
  */
 export enum RecentlyClosedItemOpenAction {
   WITHOUT_SEARCH = 0,
   WITH_SEARCH = 1,
+  COUNT = WITH_SEARCH + 1,
 }
+// LINT.ThenChange(//tools/metrics/histograms/metadata/tab/enums.xml:TabSearchRecentlyClosedItemOpenAction)
 
 export interface TabSearchApiProxy {
   closeTab(tabId: number): void;
+
+  closeTabs(tabIds: number[]): void;
 
   closeWebUiTab(): void;
 
@@ -23,8 +30,8 @@ export interface TabSearchApiProxy {
 
   getIsSplit(): Promise<{isSplit: boolean}>;
 
-  openRecentlyClosedEntry(
-      id: number, withSearch: boolean, isTab: boolean, index: number): void;
+  openRecentlyClosedEntry(id: number, withSearch: boolean, isTab: boolean):
+      void;
 
   switchToTab(info: SwitchToTabInfo): void;
 
@@ -35,6 +42,8 @@ export interface TabSearchApiProxy {
   saveRecentlyClosedExpandedPref(expanded: boolean): void;
 
   maybeShowUi(): void;
+
+  redirectToNtp(): void;
 }
 
 export class TabSearchApiProxyImpl implements TabSearchApiProxy {
@@ -52,6 +61,10 @@ export class TabSearchApiProxyImpl implements TabSearchApiProxy {
     this.handler.closeTab(tabId);
   }
 
+  closeTabs(tabIds: number[]) {
+    this.handler.closeTabs(tabIds);
+  }
+
   closeWebUiTab() {
     this.handler.closeWebUiTab();
   }
@@ -64,19 +77,13 @@ export class TabSearchApiProxyImpl implements TabSearchApiProxy {
     return this.handler.getIsSplit();
   }
 
-  openRecentlyClosedEntry(
-      id: number, withSearch: boolean, isTab: boolean, index: number) {
+  openRecentlyClosedEntry(id: number, withSearch: boolean, isTab: boolean) {
     chrome.metricsPrivate.recordEnumerationValue(
         isTab ? 'Tabs.TabSearch.WebUI.RecentlyClosedTabOpenAction' :
                 'Tabs.TabSearch.WebUI.RecentlyClosedGroupOpenAction',
         withSearch ? RecentlyClosedItemOpenAction.WITH_SEARCH :
                      RecentlyClosedItemOpenAction.WITHOUT_SEARCH,
-        Object.keys(RecentlyClosedItemOpenAction).length);
-    chrome.metricsPrivate.recordSmallCount(
-        withSearch ?
-            'Tabs.TabSearch.WebUI.IndexOfOpenRecentlyClosedEntryInFilteredList' :
-            'Tabs.TabSearch.WebUI.IndexOfOpenRecentlyClosedEntryInUnfilteredList',
-        index);
+        RecentlyClosedItemOpenAction.COUNT);
     this.handler.openRecentlyClosedEntry(id);
   }
 
@@ -98,6 +105,10 @@ export class TabSearchApiProxyImpl implements TabSearchApiProxy {
 
   maybeShowUi() {
     this.handler.maybeShowUI();
+  }
+
+  redirectToNtp() {
+    window.location.replace(loadTimeData.getString('newTabPageUrl'));
   }
 
   static getInstance(): TabSearchApiProxy {

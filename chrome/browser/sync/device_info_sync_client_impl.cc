@@ -5,6 +5,7 @@
 #include "chrome/browser/sync/device_info_sync_client_impl.h"
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 
@@ -14,9 +15,12 @@
 #include "chrome/browser/glic/public/glic_enabling.h"
 #include "chrome/browser/glic/public/glic_keyed_service.h"
 #include "chrome/browser/metrics/chrome_metrics_service_accessor.h"
+#include "chrome/browser/personal_context/personal_context_eligibility_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/signin/chrome_device_id_helper.h"
 #include "chrome/browser/sync/sync_invalidations_service_factory.h"
+#include "components/personal_context/core/personal_context_features.h"
+#include "components/personal_context/core/personal_context_key_manager.h"
 #include "components/sharing_message/sharing_sync_preference.h"
 #include "components/sync/invalidations/sync_invalidations_service.h"
 #include "components/sync/service/sync_prefs.h"
@@ -46,11 +50,6 @@ std::string DeviceInfoSyncClientImpl::GetSigninScopedDeviceId() const {
 #endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
 
   return GetSigninScopedDeviceIdForProfile(profile_);
-}
-
-// syncer::DeviceInfoSyncClient:
-bool DeviceInfoSyncClientImpl::GetSendTabToSelfReceivingEnabled() const {
-  return true;
 }
 
 // syncer::DeviceInfoSyncClient:
@@ -117,6 +116,35 @@ DeviceInfoSyncClientImpl::GetGlicExperimentalTriggeringState() const {
     return syncer::DeviceInfo::GlicExperimentalTriggeringState::kUnavailable;
   }
   return service->enabling().GetExperimentalTriggeringState();
+}
+
+std::optional<int>
+DeviceInfoSyncClientImpl::GetGlicExperimentalTriggeringVersion() const {
+  auto* service = glic::GlicKeyedService::Get(profile_);
+  if (!service) {
+    return std::nullopt;
+  }
+  return service->enabling().GetExperimentalTriggeringVersion();
+}
+
+base::flat_set<std::string>
+DeviceInfoSyncClientImpl::GetGlicExperimentalTriggeringCapabilities() const {
+  auto* service = glic::GlicKeyedService::Get(profile_);
+  if (!service) {
+    return {};
+  }
+  return service->enabling().GetExperimentalTriggeringCapabilities();
+}
+
+syncer::DeviceInfo::PersonalContextInfo::StatusOrInfo
+DeviceInfoSyncClientImpl::GetLocalPersonalContextInfo() const {
+  const personal_context::PersonalContextEligibilityService*
+      eligibility_service =
+          PersonalContextEligibilityServiceFactory::GetForProfile(profile_);
+  CHECK(eligibility_service);
+
+  return personal_context::PersonalContextKeyManager::
+      GetLocalPersonalContextInfo(profile_->GetPrefs(), eligibility_service);
 }
 
 }  // namespace browser_sync

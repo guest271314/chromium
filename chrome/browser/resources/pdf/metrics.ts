@@ -115,11 +115,6 @@ export enum UserAction {
   SAVE_FIRST = 13,
   SAVE = 14,
 
-  // Recorded when the user triggers a save of the document and the document
-  // has been modified by annotations.
-  SAVE_WITH_ANNOTATION_FIRST = 15,
-  SAVE_WITH_ANNOTATION = 16,
-
   PRINT_FIRST = 17,
   PRINT = 18,
 
@@ -288,7 +283,37 @@ export enum UserAction {
   EXIT_INK2_TEXT_ANNOTATION_MODE_FIRST = 103,
   EXIT_INK2_TEXT_ANNOTATION_MODE = 104,
 
-  NUMBER_OF_ACTIONS = 105,
+  // Recorded when the user adds a new, non-empty text annotation.
+  ADD_INK2_TEXT_ANNOTATION_FIRST = 105,
+  ADD_INK2_TEXT_ANNOTATION = 106,
+
+  // Recorded when the user starts adding a text annotation, but did not add any
+  // text.
+  ADD_INK2_TEXT_ANNOTATION_ABORTED_FIRST = 107,
+  ADD_INK2_TEXT_ANNOTATION_ABORTED = 108,
+
+  // Recorded when the user edits a text annotation.
+  EDIT_INK2_TEXT_ANNOTATION_FIRST = 109,
+  EDIT_INK2_TEXT_ANNOTATION = 110,
+
+  // Recorded when the user starts editing a text annotation, but did not change
+  // any text.
+  EDIT_INK2_TEXT_ANNOTATION_ABORTED_FIRST = 111,
+  EDIT_INK2_TEXT_ANNOTATION_ABORTED = 112,
+
+  // Recorded when the user deletes a text annotation.
+  DELETE_INK2_TEXT_ANNOTATION_FIRST = 113,
+  DELETE_INK2_TEXT_ANNOTATION = 114,
+
+  // Recorded when the user enters Ink2 signature mode.
+  ENTER_INK2_SIGNATURE_MODE_FIRST = 115,
+  ENTER_INK2_SIGNATURE_MODE = 116,
+
+  // Recorded when the user exits Ink2 signature mode.
+  EXIT_INK2_SIGNATURE_MODE_FIRST = 117,
+  EXIT_INK2_SIGNATURE_MODE = 118,
+
+  NUMBER_OF_ACTIONS = 119,
 }
 
 function createFirstMap(): Map<UserAction, UserAction> {

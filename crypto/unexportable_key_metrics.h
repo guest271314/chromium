@@ -8,10 +8,12 @@
 #include <string>
 
 #include "crypto/crypto_export.h"
+#include "crypto/sign.h"
 #include "crypto/unexportable_key.h"
 
 namespace crypto {
 
+// LINT.IfChange(TPMOperation)
 enum class TPMOperation {
   // An operation to sign data with a TPM key.
   kMessageSigning,
@@ -29,17 +31,33 @@ enum class TPMOperation {
   kSelectAlgorithm,
   // An operation to delete a TPM-protected key.
   kKeyDeletion,
+  // An operation to certify a key with an attestation key.
+  kKeyCertification,
+  // An operation to create a new TPM-protected attestation key.
+  kNewAttestationKeyCreation,
+  // An operation to create an attestation key from a wrapped key.
+  kWrappedAttestationKeyCreation,
+  // An operation to export a wrapped attestation key.
+  kWrappedAttestationKeyExport,
+  // An operation to hash data using the TPM.
+  kMessageHashing,
+  // An operation to sign data with a restricted signing key (such as a TPM 2.0
+  // Attestation Identity Key) using restricted credentials.
+  kRestrictedMessageSigning,
+  // An operation to verify the signature of a restricted signing key.
+  kRestrictedMessageVerify,
 };
+// LINT.ThenChange(//tools/metrics/histograms/metadata/crypto/histograms.xml:TpmOperation)
 
 // Converts the given `operation` to a string representation.
 CRYPTO_EXPORT std::string OperationToString(TPMOperation operation);
 
 // Converts the given `algorithm` to a string representation.
-CRYPTO_EXPORT std::string AlgorithmToString(
-    SignatureVerifier::SignatureAlgorithm algorithm);
+CRYPTO_EXPORT std::string AlgorithmToString(sign::SignatureKind algorithm);
 
 // Records UMA metrics of TPM availability, latency and successful usage.
-// Does the work on a new background task.
+// Runs slow, blocking TPM operations on the calling sequence, which must allow
+// blocking.
 CRYPTO_EXPORT void MaybeMeasureTpmOperations(
     UnexportableKeyProvider::Config config);
 

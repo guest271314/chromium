@@ -46,6 +46,7 @@ import org.chromium.components.browser_ui.widget.gesture.BackPressHandler;
 import org.chromium.components.browser_ui.widget.selectable_list.SelectionDelegate.SelectionObserver;
 import org.chromium.ui.base.ViewUtils;
 import org.chromium.ui.edge_to_edge.EdgeToEdgePadAdjuster;
+import org.chromium.ui.util.CommonOnLayoutChangeListeners;
 import org.chromium.ui.widget.LoadingView;
 
 import java.util.HashSet;
@@ -77,6 +78,7 @@ public class SelectableListLayout<E> extends FrameLayout
     private View mEmptyViewWrapper;
     private ImageView mEmptyImageView;
     private LoadingView mLoadingView;
+    private View mListContent;
     private RecyclerView mRecyclerView;
     private @Nullable ItemAnimator mItemAnimator;
     SelectableListToolbar<E> mToolbar;
@@ -148,6 +150,7 @@ public class SelectableListLayout<E> extends FrameLayout
         mEmptyViewWrapper = findViewById(R.id.empty_view_wrapper);
         mLoadingView = findViewById(R.id.loading_view);
         mLoadingView.showLoadingUi();
+        mListContent = findViewById(R.id.list_content);
 
         mToolbarStub = findViewById(R.id.action_bar_stub);
 
@@ -163,9 +166,16 @@ public class SelectableListLayout<E> extends FrameLayout
     }
 
     @Override
-    protected void onSizeChanged(int w, int h, int oldw, int oldh) {
-        super.onSizeChanged(w, h, oldw, oldh);
-        if (mUiConfig != null) mUiConfig.updateDisplayStyle();
+    protected void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
+        int oldWidth = getMeasuredWidth();
+        super.onMeasure(widthMeasureSpec, heightMeasureSpec);
+        if (mUiConfig == null || getMeasuredWidth() == oldWidth) return;
+
+        // Wide display padding must be applied before the children's final measure: a
+        // requestLayout() issued during layout is dropped, and the children keep measurements
+        // taken with stale padding (crbug.com/535920575).
+        mUiConfig.updateDisplayStyle();
+        super.onMeasure(widthMeasureSpec, heightMeasureSpec);
     }
 
     /**
@@ -435,6 +445,11 @@ public class SelectableListLayout<E> extends FrameLayout
         mIgnoredTypesForEmptyState.add(type);
     }
 
+    /** Shows the loading UI. */
+    public void showLoadingUi() {
+        mLoadingView.showLoadingUi();
+    }
+
     /** Hides the loading UI. */
     public void hideLoadingUi() {
         mLoadingView.hideLoadingUi();
@@ -468,7 +483,9 @@ public class SelectableListLayout<E> extends FrameLayout
 
     @Override
     public void onDisplayStyleChanged(DisplayStyle newDisplayStyle) {
-        int padding = getPaddingForDisplayStyle(newDisplayStyle, mRecyclerView, getResources());
+        // Not the RecyclerView itself: it is GONE while the list is empty, so its measured width
+        // can be stale.
+        int padding = getPaddingForDisplayStyle(newDisplayStyle, mListContent, getResources());
         mRecyclerView.setPaddingRelative(
                 padding, mRecyclerView.getPaddingTop(), padding, mRecyclerView.getPaddingBottom());
     }
@@ -648,26 +665,37 @@ public class SelectableListLayout<E> extends FrameLayout
         addView(searchBoxContainer, searchBoxParams);
 
         searchBoxContainer.addOnLayoutChangeListener(
-                (v, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom) -> {
-                    int height = bottom - top;
-                    int oldHeight = oldBottom - oldTop;
-                    if (height != oldHeight) {
-                        FrameLayout.LayoutParams containerParams =
-                                (FrameLayout.LayoutParams) searchBoxContainer.getLayoutParams();
-                        int totalHeight = height + containerParams.bottomMargin;
-                        View listContent = findViewById(R.id.list_content);
-                        FrameLayout.LayoutParams listParams =
-                                (FrameLayout.LayoutParams) listContent.getLayoutParams();
-                        listParams.topMargin = toolbarHeight + totalHeight;
-                        listContent.setLayoutParams(listParams);
+                CommonOnLayoutChangeListeners.createHeightChangedListener(
+                        (v, left, top, right, bottom) -> {
+                            int height = bottom - top;
+                            FrameLayout.LayoutParams containerParams =
+                                    (FrameLayout.LayoutParams) searchBoxContainer.getLayoutParams();
+                            int totalHeight = height + containerParams.bottomMargin;
+                            View listContent = findViewById(R.id.list_content);
+                            FrameLayout.LayoutParams listParams =
+                                    (FrameLayout.LayoutParams) listContent.getLayoutParams();
+                            listParams.topMargin = toolbarHeight + totalHeight;
+                            listContent.setLayoutParams(listParams);
 
-                        if (mToolbarShadow != null) {
-                            FrameLayout.LayoutParams shadowParams =
-                                    (FrameLayout.LayoutParams) mToolbarShadow.getLayoutParams();
-                            shadowParams.topMargin = toolbarHeight + totalHeight;
-                            mToolbarShadow.setLayoutParams(shadowParams);
-                        }
-                    }
-                });
+                            if (mToolbarShadow != null) {
+                                FrameLayout.LayoutParams shadowParams =
+                                        (FrameLayout.LayoutParams) mToolbarShadow.getLayoutParams();
+                                shadowParams.topMargin = toolbarHeight + totalHeight;
+                                mToolbarShadow.setLayoutParams(shadowParams);
+                            }
+                        }));
+    }
+
+    /**
+     * Announce the given text for accessibility using the live region.
+     *
+     * @param text The text to announce.
+     */
+    public void announceAccessibilityText(CharSequence text) {
+        setAccessibilityLiveRegion(ACCESSIBILITY_LIVE_REGION_POLITE);
+        setContentDescription(text);
+        sendAccessibilityEvent(
+                android.view.accessibility.AccessibilityEvent.TYPE_VIEW_ACCESSIBILITY_FOCUSED);
+        setAccessibilityLiveRegion(ACCESSIBILITY_LIVE_REGION_NONE);
     }
 }

@@ -10,6 +10,7 @@ import static org.chromium.chrome.browser.touch_to_fill.payments.TouchToFillPaym
 import static org.chromium.chrome.browser.touch_to_fill.payments.TouchToFillPaymentMethodProperties.ScreenId.ERROR_SCREEN;
 import static org.chromium.chrome.browser.touch_to_fill.payments.TouchToFillPaymentMethodProperties.ScreenId.HOME_SCREEN;
 import static org.chromium.chrome.browser.touch_to_fill.payments.TouchToFillPaymentMethodProperties.ScreenId.PROGRESS_SCREEN;
+import static org.chromium.chrome.browser.touch_to_fill.payments.TouchToFillPaymentMethodProperties.ScreenId.TABBED_HOME_SCREEN;
 
 import android.content.Context;
 import android.view.LayoutInflater;
@@ -18,21 +19,26 @@ import android.view.accessibility.AccessibilityEvent;
 import android.widget.RelativeLayout;
 import android.widget.ViewFlipper;
 
+import androidx.annotation.ColorInt;
 import androidx.annotation.IdRes;
-import androidx.annotation.NonNull;
 import androidx.annotation.Px;
 import androidx.annotation.StringRes;
 
+import com.google.android.material.tabs.TabLayout;
+
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
-import org.chromium.chrome.browser.touch_to_fill.common.ItemDividerBase;
-import org.chromium.chrome.browser.touch_to_fill.common.TouchToFillViewBase;
+import org.chromium.chrome.browser.touch_to_fill.R;
 import org.chromium.chrome.browser.touch_to_fill.payments.TouchToFillPaymentMethodProperties.ItemType;
 import org.chromium.chrome.browser.touch_to_fill.payments.TouchToFillPaymentMethodProperties.ScreenId;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetContent;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
+import org.chromium.components.browser_ui.bottomsheet.BottomSheetListViewBase;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetObserver;
-import org.chromium.components.browser_ui.bottomsheet.EmptyBottomSheetObserver;
+import org.chromium.components.browser_ui.bottomsheet.BottomSheetType;
+import org.chromium.components.browser_ui.bottomsheet.ItemDividerBase;
+import org.chromium.components.browser_ui.bottomsheet.UserCriticalFeature;
+import org.chromium.components.browser_ui.styles.SemanticColorUtils;
 
 import java.util.Set;
 
@@ -42,15 +48,18 @@ import java.util.Set;
  * inherit but holds Android Views.
  */
 @NullMarked
-class TouchToFillPaymentMethodView extends TouchToFillViewBase {
+class TouchToFillPaymentMethodView extends BottomSheetListViewBase {
+    private static final BottomSheetType BOTTOM_SHEET_TYPE =
+            new BottomSheetType.Builder()
+                    .setUserCritical(UserCriticalFeature.TOUCH_TO_FILL_PAYMENT_METHOD)
+                    .build();
 
-    private @StringRes int mSheetContentDescriptionId;
     private @StringRes int mSheetFullHeightDescriptionId;
     private @StringRes int mSheetHalfHeightDescriptionId;
     private @StringRes int mSheetClosedDescriptionId;
     private @ScreenId int mCurrentScreenId;
     private final BottomSheetObserver mBottomSheetFullStateObserver =
-            new EmptyBottomSheetObserver() {
+            new BottomSheetObserver() {
                 @Override
                 public void onSheetStateChanged(
                         @BottomSheetController.SheetState int newState,
@@ -66,6 +75,11 @@ class TouchToFillPaymentMethodView extends TouchToFillViewBase {
     private static class HorizontalDividerItemDecoration extends ItemDividerBase {
         HorizontalDividerItemDecoration(Context context) {
             super(context);
+        }
+
+        @Override
+        protected @ColorInt int getBackgroundTintColor() {
+            return SemanticColorUtils.getColorSurfaceContainer(mContext);
         }
 
         @Override
@@ -120,6 +134,11 @@ class TouchToFillPaymentMethodView extends TouchToFillViewBase {
         super.destroy();
     }
 
+    @Override
+    public BottomSheetType getSheetType() {
+        return BOTTOM_SHEET_TYPE;
+    }
+
     void setCurrentScreen(@ScreenId int screenId) {
         mCurrentScreenId = screenId;
         ViewFlipper viewFlipper =
@@ -143,14 +162,39 @@ class TouchToFillPaymentMethodView extends TouchToFillViewBase {
     void setBackPressHandler(Runnable backPressHandler) {
         getContentView()
                 .findViewById(R.id.all_loyalty_cards_back_image_button)
-                .setOnClickListener((unused) -> backPressHandler.run());
+                .setOnClickListener(_ -> backPressHandler.run());
     }
 
-    public void setSheetContentDescriptionId(@StringRes int sheetContentDescriptionId) {
-        mSheetContentDescriptionId = sheetContentDescriptionId;
+    void setTabSelectionHandler(org.chromium.base.Callback<Integer> tabSelectionHandler) {
+        TabLayout tabLayout = getContentView().findViewById(R.id.tab_layout);
+        if (tabLayout == null) return;
+
+        tabLayout.addOnTabSelectedListener(
+                new TabLayout.OnTabSelectedListener() {
+                    @Override
+                    public void onTabSelected(TabLayout.Tab tab) {
+                        tabSelectionHandler.onResult(tab.getPosition());
+                    }
+
+                    @Override
+                    public void onTabUnselected(TabLayout.Tab tab) {}
+
+                    @Override
+                    public void onTabReselected(TabLayout.Tab tab) {}
+                });
     }
 
-    public void setSheetHalfHeigthDescriptionId(@StringRes int sheetHalfHeightDescriptionId) {
+    void setSelectedTab(int tabIndex) {
+        TabLayout tabLayout = getContentView().findViewById(R.id.tab_layout);
+        if (tabLayout != null && tabLayout.getSelectedTabPosition() != tabIndex) {
+            TabLayout.Tab tab = tabLayout.getTabAt(tabIndex);
+            if (tab != null) {
+                tab.select();
+            }
+        }
+    }
+
+    public void setSheetHalfHeightDescriptionId(@StringRes int sheetHalfHeightDescriptionId) {
         mSheetHalfHeightDescriptionId = sheetHalfHeightDescriptionId;
     }
 
@@ -165,11 +209,6 @@ class TouchToFillPaymentMethodView extends TouchToFillViewBase {
     @Override
     public int getVerticalScrollOffset() {
         return getSheetItemListView().computeVerticalScrollOffset();
-    }
-
-    @Override
-    public @NonNull String getSheetContentDescription(Context context) {
-        return getContentView().getContext().getString(mSheetContentDescriptionId);
     }
 
     @Override
@@ -201,6 +240,9 @@ class TouchToFillPaymentMethodView extends TouchToFillViewBase {
             // Only the all loyalty cards screen has a static header;
             return getContentView().findViewById(R.id.all_loyalty_cards_toolbar);
         }
+        if (viewFlipper.getDisplayedChild() == getDisplayedChildForScreenId(TABBED_HOME_SCREEN)) {
+            return getContentView().findViewById(R.id.tabbed_header_container);
+        }
         return null;
     }
 
@@ -211,7 +253,7 @@ class TouchToFillPaymentMethodView extends TouchToFillViewBase {
 
     @Override
     protected @Px int getSideMarginPx() {
-        return getContentView().getResources().getDimensionPixelSize(R.dimen.ttf_sheet_padding);
+        return getContentView().getResources().getDimensionPixelSize(R.dimen.ttf_sheet_margin);
     }
 
     @Override
@@ -246,6 +288,8 @@ class TouchToFillPaymentMethodView extends TouchToFillViewBase {
                 return 4;
             case BNPL_ISSUER_TOS_SCREEN:
                 return 5;
+            case TABBED_HOME_SCREEN:
+                return 6;
         }
         assert false : "Undefined ScreenId: " + screenId;
         return 0;
@@ -265,6 +309,8 @@ class TouchToFillPaymentMethodView extends TouchToFillViewBase {
                 return R.id.touch_to_fill_error_screen;
             case BNPL_ISSUER_TOS_SCREEN:
                 return R.id.touch_to_fill_bnpl_issuer_tos_screen;
+            case TABBED_HOME_SCREEN:
+                return R.id.touch_to_fill_payment_method_tabbed_recycler_view;
         }
         assert false : "Undefined ScreenId: " + screenId;
         return 0;
@@ -279,6 +325,7 @@ class TouchToFillPaymentMethodView extends TouchToFillViewBase {
             case HOME_SCREEN:
             case ALL_LOYALTY_CARDS_SCREEN:
             case BNPL_ISSUER_SELECTION_SCREEN:
+            case TABBED_HOME_SCREEN:
                 return false;
         }
         assert false : "Undefined ScreenId: " + screenId;

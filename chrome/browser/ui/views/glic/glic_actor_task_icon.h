@@ -11,6 +11,7 @@
 
 #include "base/callback_list.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/views/glic/glic_base_shim.h"
 #include "chrome/browser/ui/views/glic/glic_button_interface.h"
 #include "chrome/browser/ui/views/tabs/tab_strip_nudge_button.h"
@@ -18,11 +19,11 @@
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/color/color_id.h"
 #include "ui/color/color_variant.h"
+#include "ui/compositor/layer.h"
 #include "ui/views/controls/button/label_button.h"
 #include "ui/views/controls/button/menu_button_controller.h"
+#include "ui/views/layout/box_layout.h"
 #include "ui/views/view_class_properties.h"
-
-class BrowserWindowInterface;
 
 namespace glic {
 
@@ -56,6 +57,12 @@ class GlicActorTaskIcon : public GlicBaseShim<T> {
     this->label()->SetProperty(views::kMarginsKey, gfx::Insets().set_left_right(
                                                        kActorNudgeLabelMargin,
                                                        kActorNudgeLabelMargin));
+    // Disable subpixel rendering to prevent crash on transparent layer
+    this->label()->SetSubpixelRenderingEnabled(false);
+    this->label()->SetPaintToLayer();
+    if (this->label()->layer()) {
+      this->label()->layer()->SetFillsBoundsOpaquely(false);
+    }
 
     this->SetFocusBehavior(views::View::FocusBehavior::ALWAYS);
 

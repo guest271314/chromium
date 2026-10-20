@@ -178,6 +178,14 @@
          self.collectionView.contentSize.height;
 }
 
+- (void)viewDidAppear:(BOOL)animated {
+  [super viewDidAppear:animated];
+  if (self.shouldScrollToBottomOnPresentation) {
+    self.shouldScrollToBottomOnPresentation = NO;
+    [self scrollToBottomAnimated:YES];
+  }
+}
+
 #pragma mark - Private
 
 // Registers the different cells used by the collection view.
@@ -195,8 +203,7 @@
              cell.mutator = weakSelf.mutator;
            }];
 
-  if (IsNTPBackgroundCustomizationEnabled() &&
-      !self.customizationDisabledByPolicy) {
+  if (!self.customizationDisabledByPolicy) {
     _backgroundCellRegistration = [UICollectionViewCellRegistration
         registrationWithCellClass:[HomeCustomizationBackgroundCell class]
              configurationHandler:^(HomeCustomizationBackgroundCell* cell,
@@ -219,8 +226,7 @@
              }];
   }
 
-  if (IsNTPBackgroundCustomizationEnabled() &&
-      self.customizationDisabledByPolicy) {
+  if (self.customizationDisabledByPolicy) {
     _enterprisePolicyCellRegistration = [UICollectionViewCellRegistration
         registrationWithCellClass:[HomeCustomizationEnterprisePolicyCell class]
              configurationHandler:^(HomeCustomizationEnterprisePolicyCell* cell,
@@ -237,8 +243,7 @@
   NSDiffableDataSourceSnapshot<CustomizationSection*, NSString*>* snapshot =
       [[NSDiffableDataSourceSnapshot alloc] init];
 
-  if (IsNTPBackgroundCustomizationEnabled() &&
-      !self.customizationDisabledByPolicy) {
+  if (!self.customizationDisabledByPolicy) {
     // Create background customization section and add items to it.
     [snapshot
         appendSectionsWithIdentifiers:@[ kCustomizationSectionBackground ]];
@@ -253,8 +258,7 @@
       appendItemsWithIdentifiers:[self identifiersForToggleMap:self.toggleMap]
        intoSectionWithIdentifier:kCustomizationSectionMainToggles];
 
-  if (IsNTPBackgroundCustomizationEnabled() &&
-      self.customizationDisabledByPolicy) {
+  if (self.customizationDisabledByPolicy) {
     // Create an enterprise section with a message to users.
     [snapshot
         appendSectionsWithIdentifiers:@[ kCustomizationSectionEnterprise ]];
@@ -263,6 +267,23 @@
   }
 
   return snapshot;
+}
+
+// Scrolls the collection view to the bottom so the toggle cells are visible.
+- (void)scrollToBottomAnimated:(BOOL)animated {
+  NSInteger lastSection = [_collectionView numberOfSections] - 1;
+  if (lastSection < 0) {
+    return;
+  }
+  NSInteger lastItem = [_collectionView numberOfItemsInSection:lastSection] - 1;
+  if (lastItem < 0) {
+    return;
+  }
+  NSIndexPath* lastIndexPath = [NSIndexPath indexPathForItem:lastItem
+                                                   inSection:lastSection];
+  [_collectionView scrollToItemAtIndexPath:lastIndexPath
+                          atScrollPosition:UICollectionViewScrollPositionBottom
+                                  animated:animated];
 }
 
 #pragma mark - HomeCustomizationViewControllerProtocol
@@ -288,7 +309,6 @@
     return [_collectionConfigurator
         verticalListSectionForLayoutEnvironment:layoutEnvironment];
   } else if (sectionIndex == backgroundCustomizationIdentifier) {
-    CHECK(IsNTPBackgroundCustomizationEnabled());
     CGSize windowSize = self.view.window.bounds.size;
     return [_collectionConfigurator
         backgroundCellSectionForLayoutEnvironment:layoutEnvironment
@@ -349,9 +369,11 @@
 
   id<BackgroundCustomizationConfiguration> configuration =
       _backgroundCollectionConfiguration.configurations[itemIdentifier];
-  // Don't allow deletion for the default entry.
+  // Don't allow deletion for the default or ephemeral entry.
   if (configuration.backgroundStyle ==
-      HomeCustomizationBackgroundStyle::kDefault) {
+          HomeCustomizationBackgroundStyle::kDefault ||
+      configuration.backgroundStyle ==
+          HomeCustomizationBackgroundStyle::kEphemeral) {
     return [UIContextMenuConfiguration configurationWithIdentifier:nil
                                                    previewProvider:nil
                                                     actionProvider:nil];
@@ -376,8 +398,8 @@
       actionWithTitle:
           l10n_util::GetNSString(
               IDS_IOS_HOME_CUSTOMIZATION_CONTEXT_MENU_DELETE_RECENT_BACKGROUND_TITLE)
-                image:DefaultSymbolWithPointSize(
-                          kTrashSymbol,
+                image:SymbolWithPointSize(
+                          SymbolTrash,
                           [[UIFont
                               preferredFontForTextStyle:UIFontTextStyleBody]
                               pointSize])
@@ -491,7 +513,10 @@
   }
 
   if (backgroundConfiguration.backgroundStyle ==
-      HomeCustomizationBackgroundStyle::kPreset) {
+          HomeCustomizationBackgroundStyle::kPreset ||
+      (backgroundConfiguration.backgroundStyle ==
+           HomeCustomizationBackgroundStyle::kEphemeral &&
+       !backgroundConfiguration.thumbnailURL.is_empty())) {
     [self fetchPresetImageForCell:backgroundCell
                     configuration:backgroundConfiguration
                    itemIdentifier:itemIdentifier];
@@ -618,7 +643,9 @@
     [identifiers addObject:key];
 
     if (configuration.backgroundStyle ==
-        HomeCustomizationBackgroundStyle::kDefault) {
+            HomeCustomizationBackgroundStyle::kDefault ||
+        configuration.backgroundStyle ==
+            HomeCustomizationBackgroundStyle::kEphemeral) {
       indexAfterDefault = identifiers.count;
     }
   }
@@ -780,7 +807,7 @@
                              visibleRect.size.width, visibleRect.size.height);
   }
 
-  CGFloat screenScale = [UIScreen mainScreen].scale;
+  CGFloat screenScale = self.traitCollection.displayScale;
   // Calculate the maximum pixel dimension needed for the cell's display.
   CGFloat thumbnailDimension =
       MAX(backgroundCell.bounds.size.width, backgroundCell.bounds.size.height) *

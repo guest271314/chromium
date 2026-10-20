@@ -13,8 +13,7 @@
 #include "base/functional/callback.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
-#include "mojo/public/cpp/bindings/remote.h"
-#include "services/network/public/mojom/url_loader_factory.mojom.h"
+#include "content/public/browser/weak_document_ptr.h"
 #include "services/network/public/mojom/url_response_head.mojom-forward.h"
 #include "url/gurl.h"
 #include "url/origin.h"
@@ -80,7 +79,7 @@ class PaymentManifestDownloader {
       std::unique_ptr<ErrorLogger> log,
       base::WeakPtr<CSPChecker> csp_checker,
       scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
-      mojo::Remote<network::mojom::URLLoaderFactory> url_loader_factory_rfh);
+      content::WeakDocumentPtr initiator_document);
 
   PaymentManifestDownloader(const PaymentManifestDownloader&) = delete;
   PaymentManifestDownloader& operator=(const PaymentManifestDownloader&) =
@@ -199,24 +198,14 @@ class PaymentManifestDownloader {
                                 bool did_follow_redirect,
                                 Download::Type download_type,
                                 int allowed_number_of_redirects,
-                                bool use_url_loader_factory_rfh,
                                 PaymentManifestDownloadCallback callback);
 
-  void OnCSPCheck(std::unique_ptr<Download> download,
-                  bool use_url_loader_factory_rfh,
-                  bool csp_allowed);
+  void OnCSPCheck(std::unique_ptr<Download> download, bool csp_allowed);
 
   std::unique_ptr<ErrorLogger> log_;
   base::WeakPtr<CSPChecker> csp_checker_;
-  // URL loader factory for the browser process. Used for downloading the
-  // manifest from a redirect. This is needed because after a redirect, the
-  // initiator origin may change and the URL loader factory associated with the
-  // RenderFrameHost will not be able to make the request due to the difference
-  // in origins (between the initiator of the request and the renderer).
+  content::WeakDocumentPtr initiator_document_;
   scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory_;
-  // URL loader factory associated with the RenderFrameHost. Used for initial
-  // cross-origin manifest downloads.
-  mojo::Remote<network::mojom::URLLoaderFactory> url_loader_factory_rfh_;
 
   // Downloads are identified by network::SimpleURLLoader pointers, because
   // that's the only unique piece of information that OnURLLoaderComplete()

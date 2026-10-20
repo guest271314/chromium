@@ -8,11 +8,14 @@ import static org.chromium.build.NullUtil.assumeNonNull;
 
 import android.content.ContentResolver;
 import android.content.Context;
+import android.content.pm.PackageManager;
+import android.content.pm.ProviderInfo;
 import android.content.res.AssetFileDescriptor;
 import android.database.Cursor;
 import android.net.Uri;
 import android.os.Build;
 import android.os.ParcelFileDescriptor;
+import android.os.Process;
 import android.provider.DocumentsContract;
 import android.provider.MediaStore;
 import android.provider.OpenableColumns;
@@ -565,7 +568,7 @@ public abstract class ContentUriUtils {
         Uri treeUri = DocumentsContract.buildTreeDocumentUri(authority, tree);
         Uri queryUri = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, parentDocumentId);
         // Use a selection to match displayName, but don't trust that it actually works.
-        String selection = String.format("%s = ?", DocumentsContract.Document.COLUMN_DISPLAY_NAME);
+        final String selection = DocumentsContract.Document.COLUMN_DISPLAY_NAME + " = ?";
         String[] selectionArgs = {displayName};
         try (Cursor c =
                 assumeNonNull(resolver.query(queryUri, columns, selection, selectionArgs, null))) {
@@ -654,6 +657,7 @@ public abstract class ContentUriUtils {
      */
     public static boolean isOpenableFile(@Nullable Uri uri) {
         if (uri == null) return false;
+        if (!ContentResolver.SCHEME_CONTENT.equals(uri.getScheme())) return true;
         ContentResolver cr = ContextUtils.getApplicationContext().getContentResolver();
         try (Cursor cursor =
                 cr.query(
@@ -709,6 +713,49 @@ public abstract class ContentUriUtils {
         } catch (IOException e) {
             return null;
         }
+    }
+
+    public static boolean isUriFromThisApp(Uri uri) {
+        return isUriFromThisApp(uri, ContextUtils.getApplicationContext());
+    }
+
+    @CalledByNative
+    public static boolean isUriFromThisApp(@JniType("std::string") String uriString) {
+        if (TextUtils.isEmpty(uriString)) return false;
+        try {
+            return isUriFromThisApp(Uri.parse(uriString));
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    /**
+     * Returns whether the content URI is served by a ContentProvider with the same Android UID as
+     * the current process.
+     *
+     * @param uri The URI to check.
+     * @param context The context used to resolve the provider info.
+     * @return Whether the URI's provider has the same Android UID as the current process.
+     */
+    public static boolean isUriFromThisApp(Uri uri, Context context) {
+        String authority = uri.getAuthority();
+        // OpaqueUri returns a null authority even when its string form includes one, so the URI
+        // needs to be reparsed to be sure that the authority does not exist.
+        if (TextUtils.isEmpty(authority)) {
+            authority = Uri.parse(uri.toString()).getAuthority();
+            if (TextUtils.isEmpty(authority)) return false;
+        }
+
+        // Preserve existing behavior for user-qualified authorities: discard the user prefix and
+        // resolve the bare authority for the context's user. This does not identify the provider in
+        // the user named by the URI.
+        authority = authority.substring(authority.lastIndexOf('@') + 1);
+
+        PackageManager pm = context.getPackageManager();
+        ProviderInfo info = pm.resolveContentProvider(authority, 0);
+        return info != null
+                && info.applicationInfo != null
+                && info.applicationInfo.uid == Process.myUid();
     }
 
     @NativeMethods

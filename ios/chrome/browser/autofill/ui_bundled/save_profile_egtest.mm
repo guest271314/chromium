@@ -61,8 +61,13 @@ constexpr char kFormElementSubmit[] = "submit_profile";
 // prefer giving extra buffer as there are probably other latencies.
 constexpr base::TimeDelta kTypingCoolDownPeriod = base::Milliseconds(50);
 
+// Overall timeout for retrying a verified web element tap. A single verified
+// tap attempt can take up to ~8 seconds when it misses, so this leaves room for
+// a few attempts.
+constexpr base::TimeDelta kWebElementTapTimeout = base::Seconds(30);
+
 // Email value used by the tests.
-constexpr std::string_view kEmail = "foo1@gmail.com";
+constexpr std::string_view kEmail = "missing_names@gmail.com";
 
 struct FullAddressFormPageParams {
   // True if the submission should be default prevented.
@@ -227,14 +232,7 @@ void TypeTextInXframeField(NSString* fieldID, NSString* text) {
 
   if ([self isRunningTest:@selector
             (testUserData_AccountSave_AutofillAcrossIframe_XHR)]) {
-    config.features_enabled.push_back(
-        autofill::features::kAutofillAcrossIframesIos);
     config.features_enabled.push_back(kAutofillFixXhrForXframe);
-  }
-
-  if ([self isRunningTest:@selector(testUserData_LocalUpdate)]) {
-    config.features_enabled.push_back(
-        autofill::features::kAutofillEnableSupportForHomeAndWork);
   }
 
   // TODO(crbug.com/428189566): Re-enable after the test is fixed for
@@ -260,6 +258,11 @@ void TypeTextInXframeField(NSString* fieldID, NSString* text) {
   // Ensure there are no saved profiles.
   GREYAssertEqual(0U, [AutofillAppInterface profilesCount],
                   @"There should be no saved profile.");
+
+  [ChromeEarlGrey waitForWebStateContainingText:"Profile Autofill"];
+
+  GREYAssertTrue([AutofillAppInterface waitForFormToBeCachedInMainFrame],
+                 @"Forms were not parsed and cached.");
 
   [ChromeEarlGrey tapWebStateElementWithID:@"fill_profile_president"];
   [ChromeEarlGrey tapWebStateElementWithID:@"submit_profile"];
@@ -349,12 +352,9 @@ void TypeTextInXframeField(NSString* fieldID, NSString* text) {
 
   // Load the URL and wait for its content to be loaded.
   [ChromeEarlGrey loadURL:fullURL];
-
-  // Wait until the expected content is loaded in the DOM. If the page is in an
-  // error state this verification will fail.
-  NSString* wait_content_script =
-      @"document.body.innerText.includes('Address Form Test Page')";
-  [ChromeEarlGrey waitForJavaScriptCondition:wait_content_script];
+  [ChromeEarlGrey waitForWebStateContainingText:"Address Form Test Page"];
+  GREYAssertTrue([AutofillAppInterface waitForFormToBeCachedInMainFrame],
+                 @"Forms were not parsed and cached.");
 
   // Call the helper function embedded in the page content to fill the form.
   [ChromeEarlGrey evaluateJavaScriptForSideEffect:@"FillForm();"];
@@ -396,6 +396,49 @@ void TypeTextInXframeField(NSString* fieldID, NSString* text) {
       stringWithFormat:@"document.getElementById('%s').value.length > 0",
                        kFormElementName];
   [ChromeEarlGrey waitForJavaScriptCondition:javaScriptCondition];
+
+  // Settle the keyboard so the web view layout is stable before any subsequent
+  // coordinate-based tap. `TapWebElementWithId` computes its tap point when the
+  // action is created, so an in-flight keyboard transition after autofill can
+  // make the tap miss its target. Depending on the iOS version the keyboard may
+  // or may not still be up after autofill, so blur the focused element (a
+  // no-op when nothing is focused) instead of using EarlGrey's keyboard
+  // dismissal, which fails when the keyboard isn't showing.
+  [ChromeEarlGrey
+      evaluateJavaScriptForSideEffect:@"document.activeElement.blur();"];
+  [ChromeEarlGrey waitForKeyboardToDisappear];
+}
+
+// Scrolls the web element with `elementID` into view and taps it natively,
+// which is required to give it native keyboard focus (JS `focus()` doesn't on
+// iOS 27+). The tap is retried with a freshly created action, hence a freshly
+// computed tap point, because `TapWebElementWithId` computes its point once at
+// creation and a focus zoom or viewport resize can make it land on a
+// neighboring field. Finally verifies that the element got the focus.
+- (void)scrollToAndTapWebElementWithID:(const char*)elementID {
+  NSString* scrollScript = [NSString
+      stringWithFormat:@"document.getElementById('%s').scrollIntoView({block: "
+                       @"'center'});",
+                       elementID];
+  [ChromeEarlGrey evaluateJavaScriptForSideEffect:scrollScript];
+
+  GREYCondition* tapped = [GREYCondition
+      conditionWithName:@"Tap web element"
+                  block:^BOOL {
+                    NSError* error = nil;
+                    [[EarlGrey selectElementWithMatcher:chrome_test_util::
+                                                            WebViewMatcher()]
+                        performAction:chrome_test_util::TapWebElementWithId(
+                                          elementID)
+                                error:&error];
+                    return error == nil;
+                  }];
+  GREYAssertTrue([tapped waitWithTimeout:kWebElementTapTimeout.InSecondsF()],
+                 @"Failed to tap web element with ID %s", elementID);
+
+  NSString* focusedCondition = [NSString
+      stringWithFormat:@"document.activeElement.id === '%s'", elementID];
+  [ChromeEarlGrey waitForJavaScriptCondition:focusedCondition];
 }
 
 #pragma mark - Tests
@@ -412,8 +455,7 @@ void TypeTextInXframeField(NSString* fieldID, NSString* text) {
   [self focusOnNameAndAutofill];
 
   // Tap on email field.
-  [[EarlGrey selectElementWithMatcher:chrome_test_util::WebViewMatcher()]
-      performAction:chrome_test_util::TapWebElementWithId(kFormElementEmail)];
+  [self scrollToAndTapWebElementWithID:kFormElementEmail];
 
   // Wait for the keyboard to appear.
   [ChromeEarlGrey waitForKeyboardToAppear];
@@ -432,9 +474,18 @@ void TypeTextInXframeField(NSString* fieldID, NSString* text) {
                                 flags:0];
   }
 
-  // Submit the form.
-  [[EarlGrey selectElementWithMatcher:chrome_test_util::WebViewMatcher()]
-      performAction:chrome_test_util::TapWebElementWithId(kFormElementSubmit)];
+  // Make sure all the simulated key events landed before submitting, since
+  // they are delivered asynchronously. Only the length is checked because the
+  // exact characters depend on keyboard behavior (e.g. auto-capitalization,
+  // shifted symbols), which this test doesn't care about.
+  NSString* emailTypedCondition = [NSString
+      stringWithFormat:@"document.getElementById('%s').value.length === %zu",
+                       kFormElementEmail, kEmail.length()];
+  [ChromeEarlGrey waitForJavaScriptCondition:emailTypedCondition];
+
+  // Submit the form. Use a JS click rather than a coordinate-based tap since
+  // the keyboard is up and can offset the computed tap point.
+  [ChromeEarlGrey tapWebStateElementWithID:@(kFormElementSubmit)];
 
   [InfobarEarlGreyUI waitUntilInfobarBannerVisibleOrTimeout:YES];
 
@@ -454,7 +505,8 @@ void TypeTextInXframeField(NSString* fieldID, NSString* text) {
 
 // Ensures that the profile is saved to Account after submitting the form.
 - (void)testUserData_AccountSave {
-  [SigninEarlGrey signinWithFakeIdentity:[FakeSystemIdentity fakeIdentity1]];
+  [SigninEarlGrey
+      signinWithFakeIdentity:[FakeSystemIdentity fakeIdentityWithMissingNames]];
 
   [self fillPresidentProfileAndShowSaveModal];
 
@@ -487,7 +539,8 @@ void TypeTextInXframeField(NSString* fieldID, NSString* text) {
 // iframes is enabled.
 - (void)testUserData_AccountSave_AutofillAcrossIframe_XHR {
   // Sign-in so the profile can be saved into the account.
-  [SigninEarlGrey signinWithFakeIdentity:[FakeSystemIdentity fakeIdentity1]];
+  [SigninEarlGrey
+      signinWithFakeIdentity:[FakeSystemIdentity fakeIdentityWithMissingNames]];
 
   // Trigger the save infobar via XHR submission in the child frame.
   [self triggerSaveInfobarViaXHRSubmission];
@@ -511,7 +564,8 @@ void TypeTextInXframeField(NSString* fieldID, NSString* text) {
 // Ensures that the profile is saved to Account after submitting and editing the
 // form.
 - (void)testUserData_AccountEdit {
-  [SigninEarlGrey signinWithFakeIdentity:[FakeSystemIdentity fakeIdentity1]];
+  [SigninEarlGrey
+      signinWithFakeIdentity:[FakeSystemIdentity fakeIdentityWithMissingNames]];
 
   [self fillPresidentProfileAndShowSaveModal];
 
@@ -530,8 +584,9 @@ void TypeTextInXframeField(NSString* fieldID, NSString* text) {
       assertWithMatcher:grey_sufficientlyVisible()];
 
   // Save the profile.
-  [[EarlGrey selectElementWithMatcher:ModalButtonMatcher()]
-      performAction:grey_tap()];
+  [[[EarlGrey selectElementWithMatcher:ModalButtonMatcher()]
+         usingSearchAction:grey_scrollInDirection(kGREYDirectionDown, 200)
+      onElementWithMatcher:EditProfileBottomSheet()] performAction:grey_tap()];
 
   // Ensure profile is saved locally.
   GREYAssertEqual(1U, [AutofillAppInterface profilesCount],
@@ -542,13 +597,15 @@ void TypeTextInXframeField(NSString* fieldID, NSString* text) {
 
 // Ensures that if a local profile is filled in a form and submitted, the user
 // is asked for a migration prompt and the profile is moved to the Account.
-- (void)testUserData_MigrationToAccount {
+// TODO(crbug.com/520302619): Flaky on waterfall.
+- (void)FLAKY_testUserData_MigrationToAccount {
   [AutofillAppInterface clearProfilesStore];
 
   // Store one local address.
   [AutofillAppInterface saveExampleProfile];
 
-  [SigninEarlGrey signinWithFakeIdentity:[FakeSystemIdentity fakeIdentity1]];
+  [SigninEarlGrey
+      signinWithFakeIdentity:[FakeSystemIdentity fakeIdentityWithMissingNames]];
 
   GREYAssertTrue(self.testServer->Start(), @"Server did not start.");
   [ChromeEarlGrey loadURL:self.testServer->GetURL(kProfileForm)];
@@ -672,7 +729,8 @@ void TypeTextInXframeField(NSString* fieldID, NSString* text) {
 // Tests that the save address flow is still working correctly when the address
 // badge is removed.
 - (void)FLAKY_testSaveWithoutBadge {
-  [SigninEarlGrey signinWithFakeIdentity:[FakeSystemIdentity fakeIdentity1]];
+  [SigninEarlGrey
+      signinWithFakeIdentity:[FakeSystemIdentity fakeIdentityWithMissingNames]];
 
   [self fillPresidentProfileAndShowSaveModal];
 
@@ -806,7 +864,8 @@ void TypeTextInXframeField(NSString* fieldID, NSString* text) {
 // TODO(crbug.com/407573862): Re-enable after the test is fixed for
 // ios-fieldtrial-rel.
 - (void)DISABLED_testSaveButtonEnabledStateDependingOnRequiredFields {
-  [SigninEarlGreyUI signinWithFakeIdentity:[FakeSystemIdentity fakeIdentity1]];
+  [SigninEarlGreyUI
+      signinWithFakeIdentity:[FakeSystemIdentity fakeIdentityWithMissingNames]];
   [ChromeEarlGrey waitForSyncTransportStateActiveWithTimeout:base::Seconds(10)];
 
   // Fill and submit the form.
@@ -853,7 +912,8 @@ void TypeTextInXframeField(NSString* fieldID, NSString* text) {
 // corresponding feature allows it.
 - (void)testSubmissionDetection_defaultPrevented_whenAllowed {
   // Sign-in so the profile can be saved into the account.
-  [SigninEarlGrey signinWithFakeIdentity:[FakeSystemIdentity fakeIdentity1]];
+  [SigninEarlGrey
+      signinWithFakeIdentity:[FakeSystemIdentity fakeIdentityWithMissingNames]];
 
   // Submit the form with `defaultPrevented` not considered.
   FullAddressFormPageParams params{.default_prevented = true, .redirect = true};

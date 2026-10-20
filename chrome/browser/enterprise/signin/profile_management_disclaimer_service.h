@@ -20,6 +20,7 @@
 #include "chrome/browser/enterprise/signin/managed_profile_creation_controller.h"
 #include "chrome/browser/enterprise/signin/managed_profile_creator.h"
 #include "chrome/browser/ui/browser_window/public/browser_collection_observer.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/webui/signin/signin_utils.h"
 #include "chrome/browser/ui/webui/signin/turn_sync_on_helper_policy_fetch_tracker.h"
 #include "components/keyed_service/core/keyed_service.h"
@@ -34,6 +35,11 @@ class ProfileBrowserCollection;
 namespace signin {
 class IdentityManager;
 }
+
+namespace policy {
+class UserCloudSigninRestrictionPolicyFetcher;
+struct UserManagementStatus;
+}  // namespace policy
 
 // Service responsible to show enterprise management disclaimers at startup on
 // the focused browser to profiles where the signed in account is a managed
@@ -81,7 +87,23 @@ class ProfileManagementDisclaimerService
   }
 
   base::ScopedClosureRunner DisableManagementDisclaimerUntilReset();
-  [[nodiscard]] base::ScopedClosureRunner AutoAcceptManagementDisclaimerUntilReset();
+  [[nodiscard]] base::ScopedClosureRunner
+  AutoAcceptManagementDisclaimerUntilReset();
+
+  // Returns whether the device signals disclaimer is required for this profile.
+  bool IsDeviceSignalsDisclaimerRequired(
+      BrowserWindowInterface* browser = nullptr) const;
+
+  // Marks the consent as granted in the profile preferences.
+  void OnDeviceSignalsCollectionConsentGranted();
+
+  void OpenPrivacyPolicyArticlePopUp(bool is_modal_dialog);
+
+  // The device signals disclaimer is gated behind --no-first-run, however for
+  // accurate browser tests it can be bypassed using this function.
+  inline void SetBypassNoFirstRunForTesting(bool new_value) {
+    bypass_no_first_run_ = new_value;
+  }
 
  private:
   struct ResetableState {
@@ -96,11 +118,14 @@ class ProfileManagementDisclaimerService
 
     std::unique_ptr<ManagedProfileCreationController>
         profile_creation_controller;
+    std::unique_ptr<policy::UserCloudSigninRestrictionPolicyFetcher>
+        user_cloud_signin_restriction_policy_fetcher;
 
     base::WeakPtr<Profile> profile_to_continue_in;
     CoreAccountId account_id;
     bool profile_creation_required_by_policy = false;
     bool cancelable = true;
+    bool is_fetching_management_status = false;
 
     // The access point always has a value if the account_id is set.
     std::optional<signin_metrics::AccessPoint> access_point;
@@ -110,6 +135,8 @@ class ProfileManagementDisclaimerService
     // profile that was chosen, it may be null if the user denied management.
     // The second parameter is whether management is required by policy.
     base::OnceCallbackList<void(Profile*, bool)> callbacks;
+
+    base::WeakPtrFactory<ResetableState> weak_ptr_factory{this};
   };
 
   signin::IdentityManager* GetIdentityManager();
@@ -144,8 +171,52 @@ class ProfileManagementDisclaimerService
 
   void MaybeResetAcceptManagementDisclaimer(bool auto_accept_management);
 
-  void OnRegisteredForPolicy(bool is_from_cached_registration_result,
+  // Updates the last policy registration failure time preference for rate
+  // limiting / backoff between failed registration attempts, or clears it if
+  // the account is managed.
+  void UpdatePolicyRegistrationFailureTime(
+      const GaiaId& gaia_id,
+      bool is_managed_account,
+      bool update_failure_time_on_unmanaged);
+
+  // Returns true if the account is eligible to show the management disclaimer.
+  bool IsEligibleForManagementDisclaimer(bool is_managed_account);
+
+  // Handles auto-accepting account management if configured. Returns true if
+  // management was auto-accepted, false otherwise.
+  bool MaybeAutoAcceptManagement();
+
+  void OnRegisteredForPolicy(const CoreAccountId& account_id,
+                             bool is_from_cached_registration_result,
                              bool is_managed_account);
+
+  // Called when the profile separation policies are fetched.
+  void OnProfileSeparationPoliciesFetched(
+      policy::ProfileSeparationPolicies profile_separation_policies);
+
+  // Called when the user cloud management status and profile separation
+  // policies are fetched from the Device Management server. `state_weak_ptr`
+  // and `account_id` are bound into the callback to guarantee concurrency
+  // safety and avoid stale callbacks if `Reset()` or an account switch occurs
+  // while the network fetch is in flight.
+  void OnManagementStatusFetched(
+      base::WeakPtr<ResetableState> state_weak_ptr,
+      const CoreAccountId& account_id,
+      std::optional<policy::UserManagementStatus> status,
+      policy::ProfileSeparationPolicies profile_separation_policies);
+
+  // Opens the device signals disclaimer dialog if the following conditions
+  // apply for the current profile:
+  // - The user has accepted profile management notice.
+  // - The user has NOT granted permanent device signals collection permission
+  //    (device_signals::prefs::kDeviceSignalsPermanentConsentReceived)
+  // BrowserWindowInterface weak pointers for all open dialogs are kept in
+  // `opened_device_signals_disclaimers_`.
+  void MaybeShowDeviceSignalsDisclaimerDialog(BrowserWindowInterface* browser);
+
+  void HandleDeviceSignalsDisclaimerChoice(
+      base::WeakPtr<BrowserWindowInterface> source_browser,
+      signin::DeviceSignalsDisclaimerResult result);
 
   // signin::IdentityManager::Observer:
   void OnPrimaryAccountChanged(
@@ -167,6 +238,11 @@ class ProfileManagementDisclaimerService
   bool auto_accept_management_ = false;
   bool enable_management_disclaimer_ = true;
   SigninPrefs signin_prefs_;
+
+  std::vector<base::WeakPtr<BrowserWindowInterface>>
+      opened_device_signals_disclaimers_;
+  base::WeakPtr<BrowserWindowInterface> privacy_article_browser_;
+  bool bypass_no_first_run_ = false;
 
   std::map<CoreAccountId, std::unique_ptr<TurnSyncOnHelperPolicyFetchTracker>>
       policy_fetch_tracker_by_account_id_;

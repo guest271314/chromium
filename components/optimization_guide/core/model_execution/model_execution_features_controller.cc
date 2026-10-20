@@ -11,14 +11,13 @@
 #include "base/metrics/histogram_functions.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_split.h"
+#include "components/optimization_guide/core/feature_registry/feature_keys.h"
 #include "components/optimization_guide/core/feature_registry/mqls_feature_registry.h"
 #include "components/optimization_guide/core/feature_registry/settings_ui_registry.h"
-#include "components/optimization_guide/core/model_execution/feature_keys.h"
 #include "components/optimization_guide/core/model_execution/model_execution_features.h"
 #include "components/optimization_guide/core/model_execution/model_execution_prefs.h"
 #include "components/optimization_guide/core/optimization_guide_features.h"
 #include "components/optimization_guide/core/optimization_guide_prefs.h"
-#include "components/optimization_guide/core/optimization_guide_switches.h"
 #include "components/optimization_guide/core/optimization_guide_util.h"
 #include "components/policy/core/common/management/management_service.h"
 #include "components/prefs/pref_service.h"
@@ -38,8 +37,8 @@ bool CanUseModelExecutionFeaturesFromAccountInfo(
     // Disable the capability check and allow all model execution features.
     return true;
   }
-  return account_info.capabilities.can_use_model_execution_features() !=
-         signin::Tribool::kFalse;
+  return account_info.GetAccountCapabilities()
+             .can_use_model_execution_features() != signin::Tribool::kFalse;
 }
 
 bool CanUseModelExecutionFeatures(signin::IdentityManager* identity_manager) {
@@ -137,7 +136,7 @@ bool ModelExecutionFeaturesController::
       dogfood_status_ == DogfoodStatus::DOGFOOD || !is_official_build_;
   bool has_logging_force_enabled =
       base::CommandLine::ForCurrentProcess()->HasSwitch(
-          switches::kEnableModelQualityDogfoodLogging);
+          kEnableModelQualityDogfoodLoggingSwitch);
   if (is_eligible_for_override && has_logging_force_enabled) {
     return true;
   }
@@ -430,14 +429,14 @@ void ModelExecutionFeaturesController::InitializePrefListener() {
         optimization_guide::prefs::GetSettingEnabledPrefName(feature),
         base::BindRepeating(
             &ModelExecutionFeaturesController::OnFeatureSettingPrefChanged,
-            base::Unretained(this), feature));
+            weak_ptr_factory_.GetWeakPtr(), feature));
     const SettingsUiMetadata* metadata = registry.GetFeature(feature);
     CHECK(metadata);
     pref_change_registrar_.Add(
         metadata->enterprise_policy().name(),
         base::BindRepeating(&ModelExecutionFeaturesController::
                                 OnFeatureEnterprisePolicyPrefChanged,
-                            base::Unretained(this), feature));
+                            weak_ptr_factory_.GetWeakPtr(), feature));
   }
 }
 

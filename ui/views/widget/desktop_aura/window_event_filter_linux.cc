@@ -17,11 +17,13 @@
 #include "ui/display/display.h"
 #include "ui/display/screen.h"
 #include "ui/events/event.h"
+#include "ui/events/event_target.h"
 #include "ui/events/event_utils.h"
 #include "ui/gfx/geometry/vector2d.h"
 #include "ui/linux/linux_ui.h"
 #include "ui/ozone/public/ozone_platform.h"
 #include "ui/platform_window/wm/wm_move_resize_handler.h"
+#include "ui/views/widget/desktop_aura/desktop_drag_drop_client_ozone.h"
 #include "ui/views/widget/desktop_aura/desktop_window_tree_host_platform.h"
 #include "ui/views/widget/native_widget_aura.h"
 #include "ui/views/widget/widget.h"
@@ -32,12 +34,10 @@ WindowEventFilterLinux::WindowEventFilterLinux(
     DesktopWindowTreeHostPlatform* desktop_window_tree_host,
     ui::WmMoveResizeHandler* handler)
     : desktop_window_tree_host_(desktop_window_tree_host), handler_(handler) {
-  desktop_window_tree_host_->window()->AddPreTargetHandler(this);
+  window_observation_.Observe(desktop_window_tree_host_->window());
 }
 
-WindowEventFilterLinux::~WindowEventFilterLinux() {
-  desktop_window_tree_host_->window()->RemovePreTargetHandler(this);
-}
+WindowEventFilterLinux::~WindowEventFilterLinux() = default;
 
 void WindowEventFilterLinux::HandleLocatedEventWithHitTest(
     int hit_test,
@@ -51,13 +51,13 @@ void WindowEventFilterLinux::HandleLocatedEventWithHitTest(
     gfx::Vector2d delta =
         event->AsMouseEvent()->location() - begin_drag_location_.value();
     if (abs(delta.x()) >= threshold || abs(delta.y()) >= threshold) {
-      begin_drag_location_.reset();
+      ResetCaptionHold();
       MaybeDispatchHostWindowDragMovement(HTCAPTION, event);
     }
     return;
   }
 
-  begin_drag_location_.reset();
+  ResetCaptionHold();
 
   if (event->type() != ui::EventType::kMousePressed) {
     return;
@@ -132,6 +132,10 @@ void WindowEventFilterLinux::OnClickedCaption(ui::MouseEvent* event,
     }
   } else if (event->changed_button_flags() & ui::EF_LEFT_MOUSE_BUTTON) {
     begin_drag_location_ = event->location();
+    // Prevent a renderer-initiated data drag from latching onto the held
+    // button while the window-drag threshold has not yet been reached.
+    caption_hold_drag_suppression_ =
+        DesktopDragDropClientOzone::ScopedSuppressForWindowMove();
     return;
   } else {
     return;
@@ -192,6 +196,11 @@ void WindowEventFilterLinux::OnClickedCaption(ui::MouseEvent* event,
   }
 }
 
+void WindowEventFilterLinux::ResetCaptionHold() {
+  begin_drag_location_.reset();
+  caption_hold_drag_suppression_.RunAndReset();
+}
+
 void WindowEventFilterLinux::MaybeToggleMaximizedState(aura::Window* window) {
   if (!(window->GetProperty(aura::client::kResizeBehaviorKey) &
         aura::client::kResizeBehaviorCanMaximize)) {
@@ -240,6 +249,11 @@ void WindowEventFilterLinux::MaybeDispatchHostWindowDragMovement(
   // breaking gestures including tapping, double tapping, show press and
   // long press.
   if (event->IsMouseEvent()) {
+    // The window manager now owns the pointer and may consume the terminating
+    // button release (e.g. X11 _NET_WM_MOVERESIZE), which would otherwise
+    // leave aura::Env reporting the button as held indefinitely. Wayland
+    // already synthesizes a release, in which case this is a no-op.
+    aura::Env::GetInstance()->set_mouse_button_flags(0);
     event->StopPropagation();
   }
 }

@@ -24,6 +24,22 @@ BASE_DECLARE_FEATURE(kTranslateElementExperimentFeatures);
 extern const base::FeatureParam<std::string>
     kTranslateElementExperimentFeaturesParam;
 
+// Feature flag for enabling regional endpoints for webpage translation.
+BASE_DECLARE_FEATURE(kTranslateElementRegionalization);
+
+// Enables direct usage of oneplatform private translate API.
+// If disabled (default), the Contextual Search infrastructure is used to
+// perform partial translation.
+// If enabled, the OnePlatform Translate API is called directly.
+BASE_DECLARE_FEATURE(kPartialTranslateUseOnePlatformApi);
+
+// Controls whether translation triggering for pages (including the translate
+// page popup and auto-translate) is enabled. Manual translation is unaffected.
+// Disabled by default when --enable-benchmarking is present unless explicitly
+// overridden via --enable-features=TranslateTrigger.
+BASE_DECLARE_FEATURE(kTranslateTrigger);
+bool IsTranslateTriggerEnabled();
+
 }  // namespace translate
 
 #endif  // COMPONENTS_TRANSLATE_CORE_COMMON_TRANSLATE_FEATURES_H_

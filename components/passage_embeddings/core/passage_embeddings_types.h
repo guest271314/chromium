@@ -10,7 +10,9 @@
 #include <string>
 #include <vector>
 
+#include "base/check_op.h"
 #include "base/functional/callback.h"
+#include "base/memory/weak_ptr.h"
 #include "base/observer_list_types.h"
 
 namespace passage_embeddings {
@@ -159,10 +161,29 @@ class Embedding {
   std::vector<float> data_;
 };
 
-// Computes embeddings for passages. Allows for cancellation of tasks.
+// Computes embeddings for passages. Allows for cancellation of jobs.
 class Embedder {
  public:
-  using TaskId = uint64_t;
+  // Move-only RAII handle for an embeddings generation job. Cancellation is
+  // triggered on destruction if the job has not already completed.
+  class Job {
+   public:
+    Job(base::WeakPtr<Embedder> embedder, uint64_t job_id);
+    Job(const Job&) = delete;
+    Job& operator=(const Job&) = delete;
+    Job(Job&&);
+    Job& operator=(Job&&);
+    ~Job();
+
+    // Updates the priority of this job.
+    void Reprioritize(PassagePriority priority);
+
+    uint64_t id() const { return id_; }
+
+   private:
+    base::WeakPtr<Embedder> embedder_;
+    uint64_t id_ = 0;
+  };
 
   virtual ~Embedder() = default;
 
@@ -182,25 +203,35 @@ class Embedder {
   using ComputePassagesEmbeddingsCallback =
       base::OnceCallback<void(std::vector<std::string> passages,
                               std::vector<Embedding> embeddings,
-                              TaskId task_id,
+                              uint64_t job_id,
                               ComputeEmbeddingsStatus status)>;
-  virtual TaskId ComputePassagesEmbeddings(
+  [[nodiscard]] virtual Job ComputePassagesEmbeddings(
       PassagePriority priority,
       std::vector<std::string> passages,
       ComputePassagesEmbeddingsCallback callback) = 0;
 
-  // Updates all pending tasks to have the specified priority.
-  virtual void ReprioritizeTasks(PassagePriority priority,
-                                 const std::set<TaskId>& tasks) = 0;
+  virtual base::WeakPtr<Embedder> GetWeakPtr() = 0;
+
+  // Updates all pending jobs to have the specified priority.
+  virtual void ReprioritizeJobs(PassagePriority priority,
+                                const std::set<uint64_t>& job_ids) = 0;
+
+  // Comparator for Embedder::Job by id, supporting heterogeneous lookup.
+  struct JobIdComparator {
+    using is_transparent = void;
+    bool operator()(const Job& a, const Job& b) const;
+    bool operator()(const Job& a, uint64_t b) const;
+    bool operator()(uint64_t a, const Job& b) const;
+  };
+
+ protected:
+  Embedder();
 
   // Cancels computation of embeddings iff none of the passages given to
   // `ComputePassagesEmbeddings()` has been submitted for embedding yet.
-  // If successful, the callback for the canceled task will be invoked with
+  // If successful, the callback for the canceled job will be invoked with
   // `ComputeEmbeddingsStatus::kCanceled` status.
-  virtual bool TryCancel(TaskId task_id) = 0;
-
- protected:
-  Embedder() = default;
+  virtual bool TryCancel(uint64_t job_id) = 0;
 };
 
 }  // namespace passage_embeddings

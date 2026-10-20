@@ -13,17 +13,25 @@
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/functional/bind.h"
+#include "base/json/json_writer.h"
 #include "base/path_service.h"
 #include "base/run_loop.h"
 #include "base/strings/stringprintf.h"
+#include "base/test/metrics/histogram_tester.h"
+#include "base/test/scoped_feature_list.h"
 #include "base/test/scoped_path_override.h"
+#include "base/time/time.h"
 #include "build/branding_buildflags.h"
 #include "build/build_config.h"
 #include "build/chromeos_buildflags.h"
+#include "chrome/browser/enterprise/browser_management/management_service_factory.h"
+#include "chrome/browser/extensions/extension_management.h"
 #include "chrome/browser/extensions/extension_service.h"
 #include "chrome/browser/extensions/extension_service_test_base.h"
+#include "chrome/browser/extensions/extension_util.h"
 #include "chrome/browser/extensions/external_provider_manager.h"
 #include "chrome/browser/extensions/external_testing_loader.h"
+#include "chrome/browser/extensions/low_trust_policy_install_block_manager.h"
 #include "chrome/browser/extensions/updater/extension_updater.h"
 #include "chrome/browser/web_applications/preinstalled_app_install_features.h"
 #include "chrome/common/chrome_constants.h"
@@ -34,29 +42,44 @@
 #include "chrome/common/pref_names.h"
 #include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile.h"
+#include "components/policy/core/common/management/scoped_management_service_override_for_testing.h"
 #include "content/public/test/test_utils.h"
-#include "crypto/hash.h"
+#include "extensions/browser/extension_prefs.h"
 #include "extensions/browser/extension_registrar.h"
 #include "extensions/browser/extension_registry.h"
+#include "extensions/browser/install_flag.h"
+#include "extensions/browser/install_verifier.h"
+#include "extensions/browser/pending_extension_manager.h"
+#include "extensions/browser/permissions/permissions_updater.h"
 #include "extensions/browser/pref_names.h"
 #include "extensions/browser/test_extension_registry_observer.h"
 #include "extensions/browser/updater/extension_cache_fake.h"
 #include "extensions/browser/updater/extension_downloader_test_helper.h"
+#include "extensions/common/constants.h"
+#include "extensions/common/extension_builder.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
 #include "net/test/embedded_test_server/http_request.h"
 #include "net/test/embedded_test_server/http_response.h"
-
 #if BUILDFLAG(IS_CHROMEOS)
 #include "chrome/browser/ash/customization/customization_document.h"
 #include "chrome/browser/ash/login/users/fake_chrome_user_manager.h"
+#include "chrome/browser/global_features.h"
 #include "chromeos/ash/components/system/fake_statistics_provider.h"
 #include "chromeos/ash/components/system/statistics_provider.h"
 #include "components/user_manager/scoped_user_manager.h"
+#include "services/network/public/cpp/weak_wrapper_shared_url_loader_factory.h"
+#include "services/network/test/test_url_loader_factory.h"
+#else
+#include "chrome/browser/extensions/preinstalled_extensions.h"
 #endif
 
 #if BUILDFLAG(IS_WIN)
 #include "base/test/test_reg_util_win.h"
 #include "base/win/registry.h"
+#endif
+
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
+#include "chrome/browser/extensions/policy_dse_ntp_override_metrics_reporter.h"
 #endif
 
 namespace extensions {
@@ -90,7 +113,7 @@ const char kExternalExtensionId[] = "ghpipljflpbfljcfjlhfbfcpoklobpji";
 
 #if BUILDFLAG(IS_WIN)
 const char kExternalExtensionCrxPath[] =
-    "external\\ghpipljflpbfljcfjlhfbfcpoklobpji.crx";
+    "external_extension\\ghpipljflpbfljcfjlhfbfcpoklobpji.crx";
 const wchar_t kExternalExtensionRegistryKey[] =
     L"Software\\Google\\Chrome\\Extensions\\ghpipljflpbfljcfjlhfbfcpoklobpji";
 #endif
@@ -112,30 +135,36 @@ class ExternalProviderImplTest : public ExtensionServiceTestBase {
     return ExtensionUpdater::Get(profile());
   }
 
-  void InitService() {
+  void InitService(bool autoupdate_enabled) {
 #if BUILDFLAG(IS_CHROMEOS)
     user_manager::ScopedUserManager scoped_user_manager(
         std::make_unique<ash::FakeChromeUserManager>());
 #endif
-    InitializeExtensionServiceWithUpdaterAndPrefs();
+    InitializeExtensionServiceWithUpdaterAndPrefs(autoupdate_enabled);
 
     extension_updater()->SetExtensionCacheForTesting(
         test_extension_cache_.get());
 
-    // Don't install pre-installed apps. Some of the pre-installed apps are
-    // downloaded from the webstore, ignoring the url we pass to
-    // kAppsGalleryUpdateURL, which would cause the external updates to never
-    // finish install.
-    profile()->GetPrefs()->SetString(prefs::kPreinstalledApps, "");
+    // For tests using autoupdate, skip preinstalled extension install, which
+    // can cause updates to never finish install. Otherwise preinstall the
+    // extensions, which allows testing of the preinstalled extension provider.
+    profile()->GetPrefs()->SetString(prefs::kPreinstalledExtensions,
+                                     autoupdate_enabled ? "" : "install");
   }
 
   void InitServiceWithExternalProviders(
-      const std::optional<bool> block_external = std::nullopt) {
-    InitService();
+      const std::optional<bool> block_external = std::nullopt,
+      bool autoupdate_enabled = true) {
+    InitService(autoupdate_enabled);
 
     if (block_external.has_value())
       SetExternalExtensionsBlockedByPolicy(block_external.value());
 
+    AddExternalProviders();
+  }
+
+  // Creates and adds the external app/extension providers.
+  void AddExternalProviders() {
     // This switch is set when creating a TestingProfile, but needs to be
     // removed for some ExternalProviders to be created.
     base::CommandLine::ForCurrentProcess()->RemoveSwitch(
@@ -180,18 +209,26 @@ class ExternalProviderImplTest : public ExtensionServiceTestBase {
                                       block_external);
   }
 
-  void InitializeExtensionServiceWithUpdaterAndPrefs() {
+  void InitializeExtensionServiceWithUpdaterAndPrefs(bool autoupdate_enabled) {
     ExtensionServiceInitParams params;
     // Create prefs file to make the profile not new.
     params.prefs_content = "{}";
-    params.autoupdate_enabled = true;
+    params.autoupdate_enabled = autoupdate_enabled;
     InitializeExtensionService(std::move(params));
-    extension_updater()->Start();
+    if (autoupdate_enabled) {
+      extension_updater()->Start();
+    }
     content::RunAllTasksUntilIdle();
   }
 
   // ExtensionServiceTestBase overrides:
   void SetUp() override {
+    // Prevent ExtensionService from creating an initial set of external
+    // providers, which has side effects (setting prefs). We create providers in
+    // AddExternalProviders() above. Adding this switch is similar to browser
+    // test behavior (see chrome/test/base/test_launcher_utils.cc).
+    base::CommandLine::ForCurrentProcess()->AppendSwitch(
+        switches::kDisableDefaultApps);
     ExtensionServiceTestBase::SetUp();
     test_server_ = std::make_unique<net::test_server::EmbeddedTestServer>();
 
@@ -203,9 +240,21 @@ class ExternalProviderImplTest : public ExtensionServiceTestBase {
 
     extension_test_util::SetGalleryUpdateURL(
         test_server_->GetURL(kInAppPaymentsApp.update_path));
+#if BUILDFLAG(IS_CHROMEOS)
+    services_customization_document_ =
+        std::make_unique<ash::ServicesCustomizationDocument>(
+            TestingBrowserProcess::GetGlobal()->local_state(),
+            TestingBrowserProcess::GetGlobal()
+                ->GetFeatures()
+                ->application_locale_storage(),
+            test_url_loader_factory_.GetSafeWeakWrapper());
+#endif
   }
 
   void TearDown() override {
+#if BUILDFLAG(IS_CHROMEOS)
+    services_customization_document_.reset();
+#endif
     // Avoid dangling pointers.
     extension_updater()->SetExtensionCacheForTesting(nullptr);
     test_extension_cache_.reset();
@@ -225,12 +274,6 @@ class ExternalProviderImplTest : public ExtensionServiceTestBase {
   std::unique_ptr<net::test_server::EmbeddedTestServer> test_server_;
 
  private:
-  base::FilePath GetCrxPath(const std::string& test_path) {
-    base::FilePath test_data_dir;
-    CHECK(base::PathService::Get(chrome::DIR_TEST_DATA, &test_data_dir));
-    return test_data_dir.AppendASCII(test_path);
-  }
-
   std::unique_ptr<net::test_server::HttpResponse> HandleRequest(
       const net::test_server::HttpRequest& request) {
     GURL url = test_server_->GetURL(request.relative_url);
@@ -238,34 +281,20 @@ class ExternalProviderImplTest : public ExtensionServiceTestBase {
       if (url.GetPath() == test_extension.update_path) {
         auto response = std::make_unique<net::test_server::BasicHttpResponse>();
         response->set_code(net::HTTP_OK);
-        if (url.GetPath() == kInAppPaymentsApp.update_path) {
-          // SetUp() configured kInAppPaymentsApp.update_path as the gallery
-          // URL. A V4 response is needed in this case.
-          std::string contents;
-          base::ReadFileToString(GetCrxPath(test_extension.crx_path),
-                                 &contents);
-          response->set_content(CreateUpdateManifestV4(
-              {UpdateManifestItem(test_extension.app_id)
-                   .version(test_extension.version)
-                   .hash_sha256(base::HexEncode(crypto::hash::Sha256(contents)))
-                   .size(base::GetFileSize(GetCrxPath(test_extension.crx_path))
-                             .value_or(0))
-                   .codebase(
-                       test_server_->GetURL(test_extension.app_path).spec())}));
-          response->set_content_type("application/json");
-        } else {
-          response->set_content(CreateUpdateManifest(
-              {UpdateManifestItem(test_extension.app_id)
-                   .version(test_extension.version)
-                   .codebase(
-                       test_server_->GetURL(test_extension.app_path).spec())}));
-          response->set_content_type("text/xml");
-        }
+        response->set_content(CreateUpdateManifest(
+            {UpdateManifestItem(test_extension.app_id)
+                 .version(test_extension.version)
+                 .codebase(
+                     test_server_->GetURL(test_extension.app_path).spec())}));
+        response->set_content_type("text/xml");
         return std::move(response);
       }
       if (url.GetPath() == test_extension.app_path) {
+        base::FilePath test_data_dir;
+        base::PathService::Get(chrome::DIR_TEST_DATA, &test_data_dir);
         std::string contents;
-        base::ReadFileToString(GetCrxPath(test_extension.crx_path), &contents);
+        base::ReadFileToString(
+            test_data_dir.AppendASCII(test_extension.crx_path), &contents);
         auto response = std::make_unique<net::test_server::BasicHttpResponse>();
         response->set_code(net::HTTP_OK);
         response->set_content(contents);
@@ -283,6 +312,9 @@ class ExternalProviderImplTest : public ExtensionServiceTestBase {
   // chromeos::ServicesCustomizationExternalLoader is hooked up as an
   // ExternalLoader and depends on a functioning StatisticsProvider.
   ash::system::ScopedFakeStatisticsProvider fake_statistics_provider_;
+  network::TestURLLoaderFactory test_url_loader_factory_;
+  std::unique_ptr<ash::ServicesCustomizationDocument>
+      services_customization_document_;
 #endif
 
 #if BUILDFLAG(IS_WIN)
@@ -307,6 +339,41 @@ TEST_F(ExternalProviderImplTest, InAppPayments) {
 }
 #endif  // !BUILDFLAG(IS_ANDROID)
 
+#if !BUILDFLAG(IS_CHROMEOS)
+TEST_F(ExternalProviderImplTest, DocsOfflineExtensionIsDefaultInstalled) {
+  // No need to test the actual auto update, that's tested above and below.
+  // Also, we don't have a dummy test CRX for Docs Offline like we do for
+  // In-App Payments above. Attempting to test with the real Docs Offline CRX
+  // causes test crashes in service worker setup and isn't really appropriate
+  // for a unit test anyway. We just want to ensure the update is scheduled.
+  InitServiceWithExternalProviders(std::nullopt, /*autoupdate_enabled=*/false);
+
+  AwaitCheckForExternalUpdates();
+
+  // Verify the loader successfully registered the pending extension.
+  auto* manager = PendingExtensionManager::Get(profile());
+  ASSERT_TRUE(manager);
+  EXPECT_TRUE(manager->IsIdPending(extension_misc::kDocsOfflineExtensionId));
+}
+
+TEST_F(ExternalProviderImplTest, DocsOfflineExtensionIsNotReinstalled) {
+  InitService(/*autoupdate_enabled=*/false);
+
+  // Simulate external extensions being installed on a previous Chrome run.
+  profile()->GetPrefs()->SetInteger(
+      prefs::kPreinstalledExtensionsInstallState,
+      static_cast<int>(preinstalled_extensions::InstallState::
+                           kAlreadyInstalledPreinstalledExtensions));
+  AddExternalProviders();
+
+  AwaitCheckForExternalUpdates();
+
+  // The extension should not be pending.
+  auto* manager = PendingExtensionManager::Get(profile());
+  EXPECT_FALSE(manager->IsIdPending(extension_misc::kDocsOfflineExtensionId));
+}
+#endif  // !BUILDFLAG(IS_CHROMEOS)
+
 TEST_F(ExternalProviderImplTest, BlockedExternalUserProviders) {
   OverrideExternalExtensionsPath();
   InitServiceWithExternalProviders(true);
@@ -329,9 +396,9 @@ TEST_F(ExternalProviderImplTest, NotBlockedExternalUserProviders) {
 #endif  // BUILDFLAG(GOOGLE_CHROME_BRANDING)
 
 // Desktop Android does not support web apps.
-#if BUILDFLAG(ENABLE_EXTENSIONS)
+#if BUILDFLAG(ENABLE_PLATFORM_APPS)
 TEST_F(ExternalProviderImplTest, WebAppMigrationFlag) {
-  InitService();
+  InitService(/*autoupdate_enabled=*/true);
 
   const std::string json = base::StringPrintf(
       R"(
@@ -374,6 +441,227 @@ TEST_F(ExternalProviderImplTest, WebAppMigrationFlag) {
     EXPECT_TRUE(registry()->GetInstalledExtension(kGoodApp.app_id));
   }
 }
-#endif  // BUILDFLAG(ENABLE_EXTENSIONS)
+#endif  // BUILDFLAG(ENABLE_PLATFORM_APPS)
+
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
+TEST_F(ExternalProviderImplTest, LowTrustBlockedScannerBypass) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(kBlockPolicyDseNtpOverridesInLowTrust);
+
+  // Initialize service with external providers.
+  InitService(/*autoupdate_enabled=*/false);
+
+  // Define a GPO force-install JSON (using update URL).
+  const std::string json = base::StringPrintf(
+      R"(
+        {
+          "%s": {
+            "external_update_url": "https://clients2.google.com/service/update2/crx"
+          }
+        }
+      )",
+      kGoodApp.app_id);
+
+  // 1. Simulate an unmanaged (low trust) environment.
+  policy::ScopedManagementServiceOverrideForTesting platform_management(
+      policy::ManagementServiceFactory::GetForPlatform(),
+      policy::EnterpriseManagementAuthority::NONE);
+  policy::ScopedManagementServiceOverrideForTesting profile_management(
+      policy::ManagementServiceFactory::GetForProfile(profile()),
+      policy::EnterpriseManagementAuthority::NONE);
+
+  // Create the provider with policy locations and register it with the manager.
+  auto provider = std::make_unique<ExternalProviderImpl>(
+      external_provider_manager(),
+      base::MakeRefCounted<ExternalTestingLoader>(
+          json, base::FilePath(FILE_PATH_LITERAL("//absolute/path"))),
+      profile(), mojom::ManifestLocation::kInvalidLocation,
+      mojom::ManifestLocation::kExternalPolicyDownload, Extension::NO_FLAGS);
+  ExternalProviderImpl* raw_provider = provider.get();
+  external_provider_manager()->AddProviderForTesting(std::move(provider));
+
+  // Run the initial scan.
+  raw_provider->VisitRegisteredExtension();
+
+  // First time: Since the extension is NOT yet in the blocked preference cache,
+  // it should be added to the pending manager.
+  auto* manager = PendingExtensionManager::Get(profile());
+  EXPECT_TRUE(manager->IsIdPending(kGoodApp.app_id));
+
+  // Clear it for the next scan.
+  manager->Remove(kGoodApp.app_id);
+
+  // 2. Mark the extension as blocked by low trust in preferences.
+  ExtensionManagementFactory::GetForBrowserContext(profile())
+      ->low_trust_block_manager()
+      ->MarkBlocked(
+          kGoodApp.app_id,
+          BlockedExtensionInfo{
+              .override_type = util::DseNtpOverrideType::kDse,
+              .update_url = "https://clients2.google.com/service/update2/crx",
+              .timestamp = base::Time::Now()});
+  EXPECT_TRUE(ExtensionManagementFactory::GetForBrowserContext(profile())
+                  ->low_trust_block_manager()
+                  ->IsBlocked(kGoodApp.app_id));
+
+  // Run the scan again.
+  {
+    base::HistogramTester histograms;
+    raw_provider->VisitRegisteredExtension();
+    histograms.ExpectUniqueSample("Extensions.LowTrustPolicyBlock.Action",
+                                  LowTrustPolicyBlockAction::kSkippedDownload,
+                                  1);
+  }
+
+  // Second time: Since the extension is in the blocked cache and the
+  // environment is low-trust, it is skipped and not added to the pending
+  // manager.
+  EXPECT_FALSE(manager->IsIdPending(kGoodApp.app_id));
+
+  // 3. Simulate transition to a managed (trusted) environment.
+  policy::ScopedManagementServiceOverrideForTesting trusted_profile_management(
+      policy::ManagementServiceFactory::GetForProfile(profile()),
+      policy::EnterpriseManagementAuthority::CLOUD);
+
+  // Run the scan again.
+  raw_provider->VisitRegisteredExtension();
+
+  // Third time: Since the environment is now trusted, it should not be
+  // skipped, and it should be added to the pending manager. The ID remains
+  // preserved in the blocked cache.
+  EXPECT_TRUE(manager->IsIdPending(kGoodApp.app_id));
+  EXPECT_TRUE(ExtensionManagementFactory::GetForBrowserContext(profile())
+                  ->low_trust_block_manager()
+                  ->IsBlocked(kGoodApp.app_id));
+}
+
+// Tests that when a user-installed extension overriding NTP settings is already
+// present, a subsequent policy update attempting to install the same extension
+// in a low-trust environment does not override its location to policy-managed.
+TEST_F(ExternalProviderImplTest, LowTrustPolicyTakeoverPrevention) {
+  // `InstallVerifier` enforces webstore signatures for non-unpacked extensions
+  // in Google Chrome branded Win/Mac builds, which would leave this
+  // locally-built extension disabled with DISABLE_NOT_VERIFIED. Bypass it so
+  // the test exercises only the low-trust policy logic.
+  ScopedInstallVerifierBypassForTest ignore_verification;
+
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(kBlockPolicyDseNtpOverridesInLowTrust);
+
+  InitService(/*autoupdate_enabled=*/false);
+
+  base::FilePath extension_dir =
+      temp_dir().GetPath().AppendASCII("user_extension");
+  ASSERT_TRUE(base::CreateDirectory(extension_dir));
+  ASSERT_TRUE(base::WriteFile(extension_dir.AppendASCII("custom_newtab.html"),
+                              "<html></html>"));
+
+  constexpr char kPublicKey[] =
+      "MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQDasz2sLsAlmcF0v7/FGwzWVP/T+"
+      "CLhvWpojKckVp8RH0bN/x3HvQ8FUweTymsaLbqxMHn8LbMOYt9uvLg7MuUcs0puzo"
+      "7vPEwW7FPwLdIke2Fth+uXgkBFUFvtrOoAyIXmiRRFoIi9qfNVQOvIz0nv0c7UEKo"
+      "HT3UnT0ekxSl7lwIDAQAB";
+
+  ExtensionBuilder builder("User NTP Override");
+  builder.SetLocation(mojom::ManifestLocation::kInternal)
+      .SetID("lbgjohhgghbkcgejgklgcmfijhbheflf")
+      .SetManifestKey("key", kPublicKey)
+      .AddJSON(R"(
+           "chrome_url_overrides": {
+             "newtab": "custom_newtab.html"
+           }
+         )")
+      .SetPath(extension_dir);
+
+  base::Value manifest_value = builder.BuildManifest();
+  std::string manifest_json;
+  ASSERT_TRUE(base::JSONWriter::Write(manifest_value, &manifest_json));
+  ASSERT_TRUE(base::WriteFile(extension_dir.AppendASCII("manifest.json"),
+                              manifest_json));
+
+  auto user_extension = builder.Build();
+
+  // Grant the extension's active permissions to simulate user consent during
+  // installation, preventing DISABLE_PERMISSIONS_INCREASE on install.
+  PermissionsUpdater perms_updater(profile());
+  perms_updater.InitializePermissions(user_extension.get());
+  perms_updater.GrantActivePermissions(user_extension.get());
+
+  registrar()->OnExtensionInstalled(user_extension.get(),
+                                    syncer::StringOrdinal(),
+                                    kInstallFlagInstallImmediately);
+
+  // Verify it is active and has kInternal location.
+  ASSERT_TRUE(registry()->enabled_extensions().Contains(user_extension->id()));
+  EXPECT_EQ(
+      mojom::ManifestLocation::kInternal,
+      registry()->GetInstalledExtension(user_extension->id())->location());
+
+  // 2. Simulate an unmanaged (low trust) environment.
+  policy::ScopedManagementServiceOverrideForTesting platform_management(
+      policy::ManagementServiceFactory::GetForPlatform(),
+      policy::EnterpriseManagementAuthority::NONE);
+  auto* management_service =
+      policy::ManagementServiceFactory::GetForProfile(profile());
+  policy::ScopedManagementServiceOverrideForTesting profile_management(
+      management_service, policy::EnterpriseManagementAuthority::NONE);
+
+  // Define GPO policy that attempts to force-install the same extension.
+  const std::string json = base::StringPrintf(
+      R"(
+        {
+          "%s": {
+            "external_update_url": "https://clients2.google.com/service/update2/crx"
+          }
+        }
+      )",
+      user_extension->id().c_str());
+
+  auto provider = std::make_unique<ExternalProviderImpl>(
+      external_provider_manager(),
+      base::MakeRefCounted<ExternalTestingLoader>(
+          json, base::FilePath(FILE_PATH_LITERAL("//absolute/path"))),
+      profile(), mojom::ManifestLocation::kInvalidLocation,
+      mojom::ManifestLocation::kExternalPolicyDownload, Extension::NO_FLAGS);
+  ExternalProviderImpl* raw_provider = provider.get();
+
+  external_provider_manager()->AddProviderForTesting(std::move(provider));
+
+  // Run the provider update loop. This will synchronously trigger the scan.
+  {
+    base::HistogramTester histograms;
+    raw_provider->VisitRegisteredExtension();
+    histograms.ExpectUniqueSample(
+        "Extensions.LowTrustPolicyBlock.Action",
+        LowTrustPolicyBlockAction::kBlockedPolicyTakeoverOfUserInstall, 1);
+  }
+
+  // Verify that in a low-trust environment, policy installation does not
+  // override the existing user-installed extension location.
+  ASSERT_TRUE(registry()->enabled_extensions().Contains(user_extension->id()));
+  EXPECT_EQ(
+      mojom::ManifestLocation::kInternal,
+      registry()->GetInstalledExtension(user_extension->id())->location());
+  ExtensionManagement* extension_management =
+      ExtensionManagementFactory::GetForBrowserContext(profile());
+  EXPECT_TRUE(extension_management->low_trust_block_manager()->IsBlocked(
+      user_extension->id()));
+  EXPECT_EQ(ManagedInstallationMode::kAllowed,
+            extension_management->GetInstallationMode(user_extension.get()));
+
+  // 3. Simulate transition to a managed (trusted) environment.
+  policy::ScopedManagementServiceOverrideForTesting trusted_profile_management(
+      management_service, policy::EnterpriseManagementAuthority::CLOUD);
+
+  raw_provider->VisitRegisteredExtension();
+
+  // Verify that in a trusted environment, policy installation is permitted to
+  // manage the extension, updating its location to kExternalPolicyDownload.
+  ASSERT_TRUE(registry()->enabled_extensions().Contains(user_extension->id()));
+  EXPECT_EQ(
+      mojom::ManifestLocation::kExternalPolicyDownload,
+      registry()->GetInstalledExtension(user_extension->id())->location());
+}
+#endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
 
 }  // namespace extensions

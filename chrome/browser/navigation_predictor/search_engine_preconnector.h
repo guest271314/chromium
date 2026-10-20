@@ -15,13 +15,23 @@
 #include "components/keyed_service/core/keyed_service.h"
 #include "content/public/browser/preconnect_manager.h"
 #include "mojo/public/cpp/bindings/receiver.h"
+#include "net/base/reconnect_notifier.h"
+#include "net/net_buildflags.h"
 #include "services/network/public/mojom/connection_change_observer_client.mojom.h"
 #include "url/origin.h"
+
+#if BUILDFLAG(ENABLE_DEVICE_BOUND_SESSIONS)
+#include "chrome/browser/net/device_bound_session_prewarmer.h"
+#endif
 
 namespace content {
 class BrowserContext;
 class WebContents;
 }  // namespace content
+
+#if BUILDFLAG(ENABLE_DEVICE_BOUND_SESSIONS)
+class DeviceBoundSessionPrewarmer;
+#endif
 
 namespace features {
 BASE_DECLARE_FEATURE(kPreconnectFromKeyedService);
@@ -118,6 +128,9 @@ class SearchEnginePreconnector
   bool IsPreconnectEnabled() override;
 
   // network::mojom::ConnectionChangeObserverClient
+  void OnConnectionEstablished(
+      const net::ConnectionChangeNotifier::EstablishedConnectionInfo& info)
+      override;
   void OnSessionClosed(bool was_ever_used_to_create_streams) override;
   void OnNetworkEvent(net::NetworkChangeEvent event) override;
   void OnConnectionFailed() override;
@@ -147,6 +160,26 @@ class SearchEnginePreconnector
   void SetIsShortSessionForTesting(bool is_short_session) {
     is_short_session_for_testing_ = is_short_session;
   }
+
+  void ResetStateForTesting() {
+    StopPreconnecting();
+    ResetReceiver();
+    preconnect_manager_.reset();
+    consecutive_connection_failure_ = 0;
+    last_preconnect_attempt_time_.reset();
+  }
+
+#if BUILDFLAG(ENABLE_DEVICE_BOUND_SESSIONS)
+  bool HasDeviceBoundSessionPrewarmerForTesting() const {
+    return !!device_bound_session_prewarmer_;
+  }
+
+  GURL GetDeviceBoundSessionPrewarmerUrlForTesting() const {
+    return device_bound_session_prewarmer_
+               ? device_bound_session_prewarmer_->prewarm_url()
+               : GURL();
+  }
+#endif
 
  private:
   FRIEND_TEST_ALL_PREFIXES(
@@ -182,7 +215,20 @@ class SearchEnginePreconnector
 
   // Preconnects to the default search engine synchronously. Preconnects in
   // uncredentialed mode.
-  void PreconnectDSE();
+  void PreconnectDSE(bool is_startup);
+
+#if BUILDFLAG(ENABLE_DEVICE_BOUND_SESSIONS)
+  // Creates and starts `device_bound_session_prewarmer_` for `prewarm_url` if
+  // the DSE prewarmer feature is enabled and `prewarm_url` is a valid HTTPS
+  // URL. An existing prewarmer for the same URL is kept as is. Returns true if
+  // a prewarmer for `prewarm_url` exists after the call.
+  bool MaybeCreateDeviceBoundSessionPrewarmer(const GURL& prewarm_url,
+                                              bool is_startup);
+
+  // Creates the prewarmer for the current DSE if the prewarmer mode is sticky
+  // and, depending on the mode, the user settings allow it.
+  void MaybeCreateStickyDeviceBoundSessionPrewarmer(bool is_startup);
+#endif
 
   // Runs `PreconnectDSE` after the `delay`.
   void StartPreconnectWithDelay(base::TimeDelta delay,
@@ -240,7 +286,11 @@ class SearchEnginePreconnector
   base::ClampedNumeric<int32_t> consecutive_connection_failure_ = 0;
 
   // Used for testing. Override the short session value.
-  std::optional<bool> is_short_session_for_testing_ = std::nullopt;
+  std::optional<bool> is_short_session_for_testing_;
+
+#if BUILDFLAG(ENABLE_DEVICE_BOUND_SESSIONS)
+  std::unique_ptr<DeviceBoundSessionPrewarmer> device_bound_session_prewarmer_;
+#endif
 
   base::WeakPtrFactory<SearchEnginePreconnector> weak_factory_{this};
 };

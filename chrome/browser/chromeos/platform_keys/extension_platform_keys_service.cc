@@ -21,15 +21,13 @@
 #include "base/values.h"
 #include "chrome/browser/ash/platform_keys/keystore_service.h"
 #include "chrome/browser/ash/platform_keys/keystore_service_factory.h"
-#include "chrome/browser/ash/profiles/profile_helper.h"
 #include "chrome/browser/chromeos/platform_keys/extension_key_permissions_service.h"
 #include "chrome/browser/chromeos/platform_keys/extension_key_permissions_service_factory.h"
-#include "chrome/browser/profiles/profile.h"
+#include "chromeos/ash/components/browser_context_helper/browser_context_types.h"
 #include "chromeos/ash/components/platform_keys/keystore_service_util.h"
 #include "chromeos/ash/components/platform_keys/keystore_types.h"
 #include "chromeos/ash/components/platform_keys/platform_keys.h"
 #include "chromeos/constants/chromeos_features.h"
-#include "content/public/browser/browser_context.h"
 #include "content/public/browser/browser_thread.h"
 #include "extensions/browser/extension_registry.h"
 #include "extensions/common/extension.h"
@@ -416,7 +414,8 @@ class ExtensionPlatformKeysService::SignTask : public Task {
         callback_(std::move(callback)),
         service_(service) {
     signing_scheme_ = GetKeystoreSigningScheme(key_type, hash_algorithm);
-    DCHECK(signing_scheme_ != KeystoreSigningScheme::kUnknown);
+    CHECK(signing_scheme_ != KeystoreSigningScheme::kUnknown,
+          base::NotFatalUntil::M161);
   }
 
   SignTask(const SignTask&) = delete;
@@ -1000,7 +999,7 @@ ExtensionPlatformKeysService::ExtensionPlatformKeysService(
     content::BrowserContext* browser_context)
     : browser_context_(browser_context),
       keystore_service_(GetKeystoreService(browser_context_)) {
-  DCHECK(browser_context);
+  CHECK(browser_context, base::NotFatalUntil::M161);
 }
 
 ExtensionPlatformKeysService::~ExtensionPlatformKeysService() = default;
@@ -1017,7 +1016,7 @@ void ExtensionPlatformKeysService::GenerateRSAKey(
     bool sw_backed,
     std::string extension_id,
     GenerateKeyCallback callback) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M161);
 
   if (!keystore_service_) [[unlikely]] {
     std::move(callback).Run(/*public_key_spki_der=*/std::vector<uint8_t>(),
@@ -1044,7 +1043,7 @@ void ExtensionPlatformKeysService::GenerateECKey(
     std::string named_curve,
     std::string extension_id,
     GenerateKeyCallback callback) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M161);
 
   if (!keystore_service_) [[unlikely]] {
     std::move(callback).Run(/*public_key_spki_der=*/std::vector<uint8_t>(),
@@ -1058,8 +1057,7 @@ void ExtensionPlatformKeysService::GenerateECKey(
 }
 
 bool ExtensionPlatformKeysService::IsUsingSigninProfile() {
-  return ash::ProfileHelper::IsSigninProfile(
-      Profile::FromBrowserContext(browser_context_));
+  return ash::IsSigninBrowserContext(browser_context_);
 }
 
 void ExtensionPlatformKeysService::SignDigest(
@@ -1070,7 +1068,7 @@ void ExtensionPlatformKeysService::SignDigest(
     platform_keys::HashAlgorithm hash_algorithm,
     std::string extension_id,
     SignCallback callback) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M161);
 
   if (!keystore_service_) [[unlikely]] {
     std::move(callback).Run(/*signature=*/std::vector<uint8_t>(),
@@ -1089,7 +1087,7 @@ void ExtensionPlatformKeysService::SignRSAPKCS1Raw(
     std::vector<uint8_t> public_key_spki_der,
     std::string extension_id,
     SignCallback callback) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M161);
 
   if (!keystore_service_) [[unlikely]] {
     std::move(callback).Run(/*signature=*/std::vector<uint8_t>(),
@@ -1111,7 +1109,7 @@ void ExtensionPlatformKeysService::SelectClientCertificates(
     std::string extension_id,
     SelectCertificatesCallback callback,
     content::WebContents* web_contents) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M161);
 
   if (!keystore_service_) [[unlikely]] {
     std::move(callback).Run(/*matches=*/nullptr,
@@ -1130,7 +1128,7 @@ void ExtensionPlatformKeysService::SetKeyTag(
     std::vector<uint8_t> public_key_spki_der,
     std::string extension_id,
     SetKeyTagCallback callback) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M161);
 
   if (!keystore_service_) [[unlikely]] {
     std::move(callback).Run(chromeos::KeystoreError::kMojoUnavailable);
@@ -1151,8 +1149,8 @@ void ExtensionPlatformKeysService::StartOrQueueTask(
 }
 
 void ExtensionPlatformKeysService::TaskFinished(Task* task) {
-  DCHECK(!tasks_.empty());
-  DCHECK(task == tasks_.front().get());
+  CHECK(!tasks_.empty(), base::NotFatalUntil::M161);
+  CHECK(task == tasks_.front().get(), base::NotFatalUntil::M161);
   // Remove all finished tasks from the queue (should be at most one).
   while (!tasks_.empty() && tasks_.front()->IsDone()) {
     tasks_.pop();

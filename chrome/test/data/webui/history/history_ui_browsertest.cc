@@ -3,10 +3,13 @@
 // found in the LICENSE file.
 
 #include "base/strings/stringprintf.h"
+#include "base/test/scoped_feature_list.h"
+#include "build/android_buildflags.h"
 #include "chrome/common/webui_url_constants.h"
 #include "chrome/test/base/web_ui_mocha_browser_test.h"
 #include "components/history_clusters/core/features.h"
 #include "components/history_embeddings/core/history_embeddings_features.h"
+#include "components/signin/public/base/signin_buildflags.h"
 #include "components/sync/base/features.h"
 #include "content/public/test/browser_test.h"
 
@@ -14,11 +17,23 @@
 #include "chromeos/constants/chromeos_features.h"
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
+#if BUILDFLAG(IS_DESKTOP_ANDROID)
+#include "chrome/browser/flags/android/chrome_feature_list.h"
+#endif  // BUILDFLAG(IS_DESKTOP_ANDROID)
+
 class HistoryUIBrowserTest : public WebUIMochaBrowserTest {
  protected:
   HistoryUIBrowserTest() {
     set_test_loader_host(chrome::kChromeUIHistoryHost);
   }
+
+ private:
+#if BUILDFLAG(IS_DESKTOP_ANDROID)
+  // On Desktop Android the History WebUI is still behind a flag, so the
+  // tests have to turn it on themselves.
+  base::test::ScopedFeatureList scoped_feature_list_{
+      chrome::android::kAndroidDesktopWebUiHistory};
+#endif  // BUILDFLAG(IS_DESKTOP_ANDROID)
 };
 
 using HistoryTest = HistoryUIBrowserTest;
@@ -44,7 +59,13 @@ IN_PROC_BROWSER_TEST_F(HistoryTest, OverflowMenu) {
 }
 
 IN_PROC_BROWSER_TEST_F(HistoryTest, Routing) {
+#if BUILDFLAG(IS_ANDROID)
+  // History Clusters and Embeddings are disabled on Android.
+  RunTest("history/history_routing_test.js",
+          "runMochaSuite('routing-test-with-history-clusters-disabled')");
+#else
   RunTest("history/history_routing_test.js", "mocha.run()");
+#endif
 }
 
 IN_PROC_BROWSER_TEST_F(HistoryTest, RoutingWithQueryParam) {
@@ -52,7 +73,13 @@ IN_PROC_BROWSER_TEST_F(HistoryTest, RoutingWithQueryParam) {
 }
 
 IN_PROC_BROWSER_TEST_F(HistoryTest, SyncedTabs) {
+#if BUILDFLAG(IS_ANDROID)
+  // <history-sync-optin> tests Desktop DICE web-only sign-in promo flows.
+  RunTest("history/history_synced_tabs_test.js",
+          "runMochaSuite('<history-synced-device-manager>')");
+#else
   RunTest("history/history_synced_tabs_test.js", "mocha.run()");
+#endif
 }
 
 IN_PROC_BROWSER_TEST_F(HistoryTest, Toolbar) {
@@ -66,6 +93,12 @@ IN_PROC_BROWSER_TEST_F(HistoryTest, SearchedLabel) {
 IN_PROC_BROWSER_TEST_F(HistoryTest, HistoryEmbeddingsPromo) {
   RunTest("history/history_embeddings_promo_test.js", "mocha.run()");
 }
+
+#if BUILDFLAG(ENABLE_DICE_SUPPORT)
+IN_PROC_BROWSER_TEST_F(HistoryTest, HistoryCrossDeviceSigninPromo) {
+  RunTest("history/history_cross_device_signin_promo_test.js", "mocha.run()");
+}
+#endif
 
 IN_PROC_BROWSER_TEST_F(HistoryTest, HistorySideBarFooter) {
   RunTest("history/history_side_bar_footer_test.js", "mocha.run()");
@@ -204,8 +237,45 @@ IN_PROC_BROWSER_TEST_F(HistoryListTest, ResizingLoadsMore) {
   RunTestCase("ResizingLoadsMore");
 }
 
+IN_PROC_BROWSER_TEST_F(HistoryListTest,
+                       LoadsMoreResultsWithoutScrollingWhenListIsShort) {
+  RunTestCase("LoadsMoreResultsWithoutScrollingWhenListIsShort");
+}
+
+IN_PROC_BROWSER_TEST_F(
+    HistoryListTest,
+    DoesNotLoadMoreResultsWithoutScrollingWhenListOverflows) {
+  RunTestCase("DoesNotLoadMoreResultsWithoutScrollingWhenListOverflows");
+}
+
 IN_PROC_BROWSER_TEST_F(HistoryListTest, SharedMenuClosesOnFocusout) {
   RunTestCase("SharedMenuClosesOnFocusout");
+}
+
+IN_PROC_BROWSER_TEST_F(HistoryListTest, GoToGeminiChatViaMenuButton) {
+  RunTestCase("GoToGeminiChatViaMenuButton");
+}
+
+IN_PROC_BROWSER_TEST_F(HistoryListTest,
+                       GoToGeminiChatShowsErrorToastOnFailure) {
+  RunTestCase("GoToGeminiChatShowsErrorToastOnFailure");
+}
+
+IN_PROC_BROWSER_TEST_F(HistoryListTest,
+                       GoToGeminiChatHiddenWhenChatLinkoutsDisabled) {
+  RunTestCase("GoToGeminiChatHiddenWhenChatLinkoutsDisabled");
+}
+
+IN_PROC_BROWSER_TEST_F(
+    HistoryListTest,
+    GoToGeminiChatShownForNonActorVisitsWithCriticalActions) {
+  RunTestCase("GoToGeminiChatShownForNonActorVisitsWithCriticalActions");
+}
+
+IN_PROC_BROWSER_TEST_F(
+    HistoryListTest,
+    ReviewGeminiActivityShownForNonActorVisitsWithCriticalActions) {
+  RunTestCase("ReviewGeminiActivityShownForNonActorVisitsWithCriticalActions");
 }
 
 class HistoryWithHistoryEmbeddingsTest : public WebUIMochaBrowserTest {
@@ -213,6 +283,9 @@ class HistoryWithHistoryEmbeddingsTest : public WebUIMochaBrowserTest {
   HistoryWithHistoryEmbeddingsTest() {
     scoped_feature_list_.InitWithFeatures(
         /*enabled_features=*/{history_embeddings::kHistoryEmbeddings,
+#if BUILDFLAG(IS_DESKTOP_ANDROID)
+                              chrome::android::kAndroidDesktopWebUiHistory,
+#endif  // BUILDFLAG(IS_DESKTOP_ANDROID)
 #if BUILDFLAG(IS_CHROMEOS)
                               chromeos::features::
                                   kFeatureManagementHistoryEmbedding
@@ -230,18 +303,13 @@ IN_PROC_BROWSER_TEST_F(HistoryWithHistoryEmbeddingsTest, HistoryAppTest) {
   RunTest("history/history_app_test.js", "runMochaSuite('HistoryAppTest')");
 }
 
-// HistoryAppUnoPhase2FollowUpTest is only available outside CrOS.
-#if !BUILDFLAG(IS_CHROMEOS)
-// TODO(crbug.com/458161947): Re-enable flaky test
-#if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
-#define MAYBE_HistoryAppUnoPhase2FollowUpTest \
-  DISABLED_HistoryAppUnoPhase2FollowUpTest
-#else
-#define MAYBE_HistoryAppUnoPhase2FollowUpTest HistoryAppUnoPhase2FollowUpTest
-#endif  // BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
+// HistoryAppUnoPhase2FollowUpTest is only available outside CrOS and Android.
+// Android does not participate in the Desktop Uno identity and sync promo flows
+// (kUnoPhase2FollowUp is desktop-only DICE), matching CrOS.
+#if !BUILDFLAG(IS_CHROMEOS) && !BUILDFLAG(IS_ANDROID)
 IN_PROC_BROWSER_TEST_F(HistoryWithHistoryEmbeddingsTest,
-                       MAYBE_HistoryAppUnoPhase2FollowUpTest) {
+                       HistoryAppUnoPhase2FollowUpTest) {
   RunTest("history/history_app_test.js",
           "runMochaSuite('HistoryAppUnoPhase2FollowUpTest')");
 }
-#endif  // !BUILDFLAG(IS_CHROMEOS)
+#endif  // !BUILDFLAG(IS_CHROMEOS) && !BUILDFLAG(IS_ANDROID)

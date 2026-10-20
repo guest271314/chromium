@@ -18,7 +18,6 @@
 #include "build/build_config.h"
 #include "chrome/browser/first_run/first_run.h"
 #include "chrome/browser/prefs/session_startup_pref.h"
-#include "chrome/browser/privacy_sandbox/notice/desktop_entrypoint_handlers_helper.h"
 #include "chrome/browser/profile_resetter/triggered_profile_resetter.h"
 #include "chrome/browser/profile_resetter/triggered_profile_resetter_factory.h"
 #include "chrome/browser/profiles/profile.h"
@@ -27,7 +26,6 @@
 #include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/signin/signin_util.h"
 #include "chrome/browser/sync/sync_service_factory.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface_iterator.h"
 #include "chrome/browser/ui/chrome_pages.h"
@@ -160,10 +158,12 @@ StartupTabs StartupTabProviderImpl::GetCommandLineTabs(
 
     // `ParseTabFromCommandLineArg()` shouldn't return
     // CommandLineTabsPresent::kUnknown when a profile is provided.
-    DCHECK_NE(parsed_arg.tab_parsed, CommandLineTabsPresent::kUnknown);
+    CHECK_NE(parsed_arg.tab_parsed, CommandLineTabsPresent::kUnknown,
+             base::NotFatalUntil::M162);
 
     if (parsed_arg.tab_parsed == CommandLineTabsPresent::kYes) {
-      result.emplace_back(std::move(parsed_arg.tab_url));
+      result.emplace_back(std::move(parsed_arg.tab_url),
+                          parsed_arg.is_untrusted_launch);
     }
   }
 
@@ -318,28 +318,34 @@ StartupTabProviderImpl::ParseTabFromCommandLineArg(
     if (url.is_valid()) {
       return {CommandLineTabsPresent::kYes, std::move(url)};
     }
-  } else if (!startup::StripGoogleChromeScheme(arg) || !arg.empty()) {
+  } else {
     // Otherwise, fall through to treating it as a URL; stripping off the
     // direct-launch scheme (e.g. "google-chrome://") if present.
     // This will create a file URL or a regular URL.
-    const base::FilePath arg_path(arg);
-    GURL url(arg_path.MaybeAsASCII());
+    const bool was_stripped = startup::StripGoogleChromeScheme(arg);
+    if (!was_stripped || !arg.empty()) {
+      const base::FilePath arg_path(arg);
+      GURL url(arg_path.MaybeAsASCII());
 
-    // This call can (in rare circumstances) block the UI thread.
-    // FixupRelativeFile may access to current working directory, which is a
-    // blocking API. http://crbug.com/40466600
-    // http://crbug.com/40364501: Only use URLFixerUpper if we don't have a
-    // valid URL, otherwise we will look in the current directory for a file
-    // named 'about' if the browser was started with a about:foo argument.
-    // http://crbug.com/40389934: Always use URLFixerUpper on file:// URLs,
-    // otherwise we wouldn't correctly handle '#' in a file name.
-    if (!url.is_valid() || url.SchemeIsFile()) {
-      base::ScopedAllowBlocking allow_blocking;
-      url = url_formatter::FixupRelativeFile(cur_dir, arg_path);
-    }
+      // This call can (in rare circumstances) block the UI thread.
+      // FixupRelativeFile may access to current working directory, which is a
+      // blocking API. http://crbug.com/40466600
+      // http://crbug.com/40364501: Only use URLFixerUpper if we don't have a
+      // valid URL, otherwise we will look in the current directory for a file
+      // named 'about' if the browser was started with a about:foo argument.
+      // http://crbug.com/40389934: Always use URLFixerUpper on file:// URLs,
+      // otherwise we wouldn't correctly handle '#' in a file name.
+      if (!url.is_valid() || url.SchemeIsFile()) {
+        base::ScopedAllowBlocking allow_blocking;
+        url = url_formatter::FixupRelativeFile(cur_dir, arg_path);
+      }
 
-    if (startup::ValidateLaunchUrl(url)) {
-      return {CommandLineTabsPresent::kYes, std::move(url)};
+      const bool is_valid = was_stripped
+                                ? startup::ValidateLaunchUrlWebSafe(url)
+                                : startup::ValidateLaunchUrlWebUnsafe(url);
+      if (is_valid) {
+        return {CommandLineTabsPresent::kYes, std::move(url), was_stripped};
+      }
     }
   }
   return {CommandLineTabsPresent::kNo, GURL()};

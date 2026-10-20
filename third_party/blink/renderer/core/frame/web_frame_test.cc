@@ -37,12 +37,18 @@
 #include <memory>
 #include <optional>
 #include <tuple>
+#include <vector>
 
 #include "base/compiler_specific.h"
 #include "base/containers/to_vector.h"
 #include "base/functional/callback_helpers.h"
+#include "base/memory/raw_ptr.h"
+#include "base/memory/raw_ref.h"
+#include "base/memory/unsafe_shared_memory_region.h"
+#include "base/strings/strcat.h"
 #include "base/strings/stringprintf.h"
 #include "base/test/bind.h"
+#include "base/test/scoped_feature_list.h"
 #include "base/unguessable_token.h"
 #include "build/build_config.h"
 #include "cc/base/features.h"
@@ -55,9 +61,8 @@
 #include "cc/trees/scroll_node.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
 #include "mojo/public/cpp/bindings/receiver.h"
-#include "mojo/public/cpp/bindings/self_owned_receiver.h"
-#include "mojo/public/cpp/system/data_pipe_drainer.h"
 #include "mojo/public/cpp/system/data_pipe_utils.h"
+#include "services/network/public/cpp/features.h"
 #include "services/network/public/cpp/permissions_policy/permissions_policy_declaration.h"
 #include "skia/public/mojom/skcolor.mojom-blink.h"
 #include "testing/gmock/include/gmock/gmock.h"
@@ -75,6 +80,7 @@
 #include "third_party/blink/public/common/widget/device_emulation_params.h"
 #include "third_party/blink/public/mojom/blob/blob.mojom-blink.h"
 #include "third_party/blink/public/mojom/blob/data_element.mojom-blink.h"
+#include "third_party/blink/public/mojom/dom/dom_node_id.mojom-blink.h"
 #include "third_party/blink/public/mojom/fetch/fetch_api_request.mojom-blink.h"
 #include "third_party/blink/public/mojom/frame/find_in_page.mojom-blink.h"
 #include "third_party/blink/public/mojom/frame/frame.mojom-blink.h"
@@ -82,6 +88,7 @@
 #include "third_party/blink/public/mojom/frame/viewport_intersection_state.mojom-blink.h"
 #include "third_party/blink/public/mojom/page/draggable_region.mojom-blink.h"
 #include "third_party/blink/public/mojom/page_state/page_state.mojom-blink.h"
+#include "third_party/blink/public/mojom/scroll/scroll_enums.mojom-shared.h"
 #include "third_party/blink/public/mojom/scroll/scrollbar_mode.mojom-blink.h"
 #include "third_party/blink/public/mojom/webpreferences/web_preferences.mojom-blink.h"
 #include "third_party/blink/public/mojom/window_features/window_features.mojom-blink.h"
@@ -158,6 +165,7 @@
 #include "third_party/blink/renderer/core/frame/local_frame.h"
 #include "third_party/blink/renderer/core/frame/local_frame_view.h"
 #include "third_party/blink/renderer/core/frame/remote_frame.h"
+#include "third_party/blink/renderer/core/frame/remote_frame_view.h"
 #include "third_party/blink/renderer/core/frame/settings.h"
 #include "third_party/blink/renderer/core/frame/viewport_data.h"
 #include "third_party/blink/renderer/core/frame/visual_viewport.h"
@@ -203,7 +211,6 @@
 #include "third_party/blink/renderer/core/testing/sim/sim_test.h"
 #include "third_party/blink/renderer/core/testing/wait_for_event.h"
 #include "third_party/blink/renderer/platform/bindings/dom_wrapper_world.h"
-#include "third_party/blink/renderer/platform/blob/testing/fake_blob.h"
 #include "third_party/blink/renderer/platform/exported/wrapped_resource_request.h"
 #include "third_party/blink/renderer/platform/keyboard_codes.h"
 #include "third_party/blink/renderer/platform/loader/fetch/fetch_context.h"
@@ -231,6 +238,7 @@
 #include "third_party/blink/renderer/platform/wtf/forward.h"
 #include "third_party/blink/renderer/platform/wtf/hash_map.h"
 #include "third_party/blink/renderer/platform/wtf/hash_set.h"
+#include "third_party/blink/renderer/platform/wtf/text/format.h"
 #include "third_party/skia/include/core/SkTextBlob.h"
 #include "ui/base/ime/mojom/text_input_state.mojom-blink.h"
 #include "ui/base/mojom/menu_source_type.mojom-blink.h"
@@ -253,8 +261,9 @@ namespace blink {
 namespace {
 
 const ScrollPaintPropertyNode* GetScrollNode(const LayoutObject& scroller) {
-  if (auto* properties = scroller.FirstFragment().PaintProperties())
+  if (auto* properties = scroller.FirstFragment().PaintProperties()) {
     return properties->Scroll();
+  }
   return nullptr;
 }
 
@@ -294,14 +303,16 @@ void ExecuteScriptsInMainWorld(
     mojom::blink::UserActivationOption user_gesture =
         mojom::blink::UserActivationOption::kDoNotActivate) {
   Vector<WebScriptSource> sources;
-  for (auto script : scripts)
+  for (auto script : scripts) {
     sources.push_back(WebScriptSource(script));
+  }
   frame->RequestExecuteScript(
       DOMWrapperWorld::kMainWorldId, sources, user_gesture,
       mojom::blink::EvaluationTiming::kSynchronous,
       mojom::blink::LoadEventBlockingOption::kDoNotBlock, std::move(callback),
       BackForwardCacheAware::kAllow,
-      mojom::blink::WantResultOption::kWantResult, wait_for_promise);
+      mojom::blink::WantResultOption::kWantResult, wait_for_promise,
+      /*script_injector_id=*/WebString());
 }
 
 // Same as above, but for a single script.
@@ -487,10 +498,13 @@ class WebFrameTest : public PageTestBase {
       node_count += std::ranges::count_if(
           markers_in_node, [start_offset, end_offset, &node, &start_container,
                             &end_container](const DocumentMarker* marker) {
-            if (node == start_container && marker->EndOffset() <= start_offset)
+            if (node == start_container &&
+                marker->EndOffset() <= start_offset) {
               return false;
-            if (node == end_container && marker->StartOffset() >= end_offset)
+            }
+            if (node == end_container && marker->StartOffset() >= end_offset) {
               return false;
+            }
             return true;
           });
     }
@@ -590,8 +604,9 @@ class ScriptExecutionCallbackHelper final {
       ADD_FAILURE() << "Expected a single result, but found nullopt";
       return String();
     }
-    if (const std::string* str = result_->GetIfString())
+    if (const std::string* str = result_->GetIfString()) {
       return String(*str);
+    }
 
     ADD_FAILURE() << "Type mismatch (not string)";
     return String();
@@ -1019,6 +1034,23 @@ TEST_F(WebFrameTest, IframeScriptRemovesSelf) {
   EXPECT_FALSE(callback_helper.HasAnyResults());
 }
 
+TEST_F(WebFrameTest, FrameOwnerElement) {
+  RegisterMockedHttpURLLoad("single_iframe.html");
+  RegisterMockedHttpURLLoad("visible_iframe.html");
+
+  frame_test_helpers::WebViewHelper web_view_helper;
+  web_view_helper.InitializeAndLoad(base_url_ + "single_iframe.html");
+
+  WebFrame* main_frame = web_view_helper.LocalMainFrame();
+  WebFrame* child_frame = main_frame->FirstChild();
+  ASSERT_TRUE(child_frame);
+
+  // Child frames expose the element that embeds them. The top frame has no
+  // owner element.
+  EXPECT_TRUE(child_frame->FrameOwnerElement().HasHTMLTagName("iframe"));
+  EXPECT_TRUE(main_frame->FrameOwnerElement().IsNull());
+}
+
 namespace {
 
 class CapabilityDelegationMessageListener final : public NativeEventListener {
@@ -1029,8 +1061,9 @@ class CapabilityDelegationMessageListener final : public NativeEventListener {
   }
 
   bool DelegateCapability() {
-    if (delegated_capability_ == mojom::blink::DelegatedCapability::kNone)
+    if (delegated_capability_ == mojom::blink::DelegatedCapability::kNone) {
       return false;
+    }
     delegated_capability_ = mojom::blink::DelegatedCapability::kNone;
     return true;
   }
@@ -1123,13 +1156,13 @@ TEST_F(WebFrameTest, CapabilityDelegationMessageEventTest) {
   }
 
   {
+    // The delegation info is passed through a postMessage that is sent with
+    // both user activation and the delegation option for known `fullscreen`
+    // capability.
     String post_message_w_fullscreen_request(
         "window.frames[0].postMessage("
         "'1', {targetOrigin: '/', delegate: 'fullscreen'});");
 
-    // The delegation info is passed through a postMessage that is sent with
-    // both user activation and the delegation option for another known
-    // capability.
     ScriptExecutionCallbackHelper callback_helper;
     ExecuteScriptInMainWorld(web_view_helper.GetWebView()->MainFrameImpl(),
                              post_message_w_fullscreen_request,
@@ -1142,13 +1175,41 @@ TEST_F(WebFrameTest, CapabilityDelegationMessageEventTest) {
   }
 
   {
+    // The delegation info is not passed through a frame-to-frame postMessage
+    // that is sent with user activation and the delegation option for the
+    // `popup` capability, because `popup` delegation is only supported from
+    // Service Workers (`Client.postMessage`) and throws `NotSupportedError` on
+    // `Window.postMessage`.
+    String post_message_w_popup_request(R"JS(
+        var result = 'success';
+        try {
+          window.frames[0].postMessage('1', {targetOrigin: '/', delegate: 'popup'});
+        } catch (e) {
+          result = e.name;
+        }
+        result;
+    )JS");
+
+    ScriptExecutionCallbackHelper callback_helper;
+    ExecuteScriptInMainWorld(web_view_helper.GetWebView()->MainFrameImpl(),
+                             post_message_w_popup_request,
+                             callback_helper.Callback(),
+                             blink::mojom::PromiseResultOption::kAwait,
+                             blink::mojom::UserActivationOption::kActivate);
+    RunPendingTasks();
+    EXPECT_TRUE(callback_helper.DidComplete());
+    EXPECT_EQ(callback_helper.SingleStringValue(), "NotSupportedError");
+    EXPECT_FALSE(message_event_listener->DelegateCapability());
+  }
+
+  {
+    // The delegation info is passed through a postMessage that is sent with
+    // both user activation and the delegation option for known
+    // `display-capture` capability.
     String post_message_w_display_capture_request(
         "window.frames[0].postMessage("
         "'1', {targetOrigin: '/', delegate: 'display-capture'});");
 
-    // The delegation info is passed through a postMessage that is sent with
-    // both user activation and the delegation option for another known
-    // capability.
     ScriptExecutionCallbackHelper callback_helper;
     ExecuteScriptInMainWorld(web_view_helper.GetWebView()->MainFrameImpl(),
                              post_message_w_display_capture_request,
@@ -1161,12 +1222,12 @@ TEST_F(WebFrameTest, CapabilityDelegationMessageEventTest) {
   }
 
   {
+    // The delegation info is not passed through a postMessage that is sent with
+    // user activation and the delegation option for an unknown capability.
     String post_message_w_unknown_request(
         "window.frames[0].postMessage("
         "'1', {targetOrigin: '/', delegate: 'foo'});");
 
-    // The delegation info is not passed through a postMessage that is sent with
-    // user activation and the delegation option for an unknown capability.
     ScriptExecutionCallbackHelper callback_helper;
     ExecuteScriptInMainWorld(web_view_helper.GetWebView()->MainFrameImpl(),
                              post_message_w_unknown_request,
@@ -1319,7 +1380,7 @@ TEST_F(WebFrameTest, DidClearWindowObjectIsNotRecursive) {
 class CSSCallbackWebFrameClient
     : public frame_test_helpers::TestWebFrameClient {
  public:
-  CSSCallbackWebFrameClient() : update_count_(0) {}
+  CSSCallbackWebFrameClient() = default;
   ~CSSCallbackWebFrameClient() override = default;
 
   // frame_test_helpers::TestWebFrameClient:
@@ -1329,15 +1390,16 @@ class CSSCallbackWebFrameClient
 
   HashSet<String>& MatchedSelectors() {
     auto it = matched_selectors_.find(Frame());
-    if (it != matched_selectors_.end())
+    if (it != matched_selectors_.end()) {
       return it->value;
+    }
 
     auto add_result = matched_selectors_.insert(Frame(), HashSet<String>());
     return add_result.stored_value->value;
   }
 
   HashMap<WebLocalFrame*, HashSet<String>> matched_selectors_;
-  int update_count_;
+  int update_count_ = 0;
 };
 
 void CSSCallbackWebFrameClient::DidMatchCSS(
@@ -1346,14 +1408,14 @@ void CSSCallbackWebFrameClient::DidMatchCSS(
   ++update_count_;
 
   HashSet<String>& frame_selectors = MatchedSelectors();
-  for (size_t i = 0; i < newly_matching_selectors.size(); ++i) {
-    String selector = newly_matching_selectors[i];
+  for (const auto& newly_matching_selector : newly_matching_selectors) {
+    String selector = newly_matching_selector;
     EXPECT_TRUE(frame_selectors.find(selector) == frame_selectors.end())
         << selector;
     frame_selectors.insert(selector);
   }
-  for (size_t i = 0; i < stopped_matching_selectors.size(); ++i) {
-    String selector = stopped_matching_selectors[i];
+  for (const auto& stopped_matching_selector : stopped_matching_selectors) {
+    String selector = stopped_matching_selector;
     EXPECT_TRUE(frame_selectors.find(selector) != frame_selectors.end())
         << selector;
     frame_selectors.erase(selector);
@@ -1380,8 +1442,9 @@ class WebFrameCSSCallbackTest : public testing::Test {
 
   const HashSet<String>& MatchedSelectors() {
     auto it = client_.matched_selectors_.find(frame_);
-    if (it != client_.matched_selectors_.end())
+    if (it != client_.matched_selectors_.end()) {
       return it->value;
+    }
 
     auto add_result =
         client_.matched_selectors_.insert(frame_, HashSet<String>());
@@ -1402,7 +1465,7 @@ class WebFrameCSSCallbackTest : public testing::Test {
   test::TaskEnvironment task_environment_;
   CSSCallbackWebFrameClient client_;
   frame_test_helpers::WebViewHelper helper_;
-  WebLocalFrame* frame_;
+  raw_ptr<WebLocalFrame, UnprotectedInRelease | DanglingUntriaged> frame_;
 };
 
 TEST_F(WebFrameCSSCallbackTest, AuthorStyleSheet) {
@@ -1425,7 +1488,7 @@ TEST_F(WebFrameCSSCallbackTest, AuthorStyleSheet) {
   EXPECT_THAT(MatchedSelectors(), ElementsAre("div.initial_on"));
 
   // Check that adding a watched selector calls back for already-present nodes.
-  selectors.push_back(WebString("div.initial_off"));
+  selectors.emplace_back("div.initial_off");
   Doc().WatchCSSSelectors(selectors);
   frame_->View()->MainFrameWidget()->UpdateAllLifecyclePhases(
       DocumentUpdateReason::kTest);
@@ -1667,6 +1730,118 @@ TEST_F(WebFrameTest, PostMessageEvent) {
   EXPECT_EQ(std::string::npos, content.find("Message 2."));
 }
 
+#if BUILDFLAG(IS_ANDROID)
+namespace {
+
+// Reports what actually arrived, rather than just that something did, so that
+// a null payload or a message downgraded to "messageerror" is distinguishable
+// from a real SharedArrayBuffer. Object.prototype.toString is used instead of
+// `instanceof SharedArrayBuffer` because the SharedArrayBuffer constructor is
+// only exposed to script in cross-origin isolated documents.
+constexpr char kSharedArrayBufferTestPage[] = R"HTML(
+    <body>
+    <script>
+    function report(text) {
+      document.body.appendChild(document.createTextNode(text));
+    }
+    onmessage = e => report('message: ' +
+                            Object.prototype.toString.call(e.data) + ' ' +
+                            (e.data && e.data.byteLength) + '.');
+    onmessageerror = () => report('messageerror.');
+    </script>
+    </body>
+)HTML";
+
+}  // namespace
+
+TEST_F(WebFrameTest, PostEmbedderMessageEvent) {
+  RegisterMockedHttpURLLoad("postmessage_test.html");
+
+  frame_test_helpers::WebViewHelper web_view_helper;
+  web_view_helper.InitializeAndLoad(base_url_ + "postmessage_test.html");
+
+  WebLocalFrame* frame = web_view_helper.LocalMainFrame();
+
+  // Send a message with the correct origin.
+  frame->PostEmbedderMessageEvent(WebSecurityOrigin::Create(ToKURL(base_url_)),
+                                  /*ports=*/{},
+                                  base::UnsafeSharedMemoryRegion::Create(100));
+
+  // Send another message with an incorrect origin.
+  frame->PostEmbedderMessageEvent(
+      WebSecurityOrigin::Create(ToKURL(chrome_url_)), /*ports=*/{},
+      base::UnsafeSharedMemoryRegion::Create(100));
+
+  // Verify that only the first addition is in the body of the page.
+  std::string content = TestWebFrameContentDumper::DumpWebViewAsText(
+                            web_view_helper.GetWebView(), 1024)
+                            .Utf8();
+  EXPECT_NE(std::string::npos, content.find("Message 1."));
+  EXPECT_EQ(std::string::npos, content.find("Message 2."));
+}
+
+// A null target origin is a wildcard: the message is delivered whatever the
+// document's origin is.
+TEST_F(WebFrameTest, PostEmbedderMessageEventWildcardOrigin) {
+  RegisterMockedHttpURLLoad("postmessage_test.html");
+
+  frame_test_helpers::WebViewHelper web_view_helper;
+  web_view_helper.InitializeAndLoad(base_url_ + "postmessage_test.html");
+
+  web_view_helper.LocalMainFrame()->PostEmbedderMessageEvent(
+      WebSecurityOrigin(), /*ports=*/{},
+      base::UnsafeSharedMemoryRegion::Create(100));
+
+  std::string content = TestWebFrameContentDumper::DumpWebViewAsText(
+                            web_view_helper.GetWebView(), 1024)
+                            .Utf8();
+  EXPECT_NE(std::string::npos, content.find("Message 1."));
+}
+
+// The region handed to the public API is mapped into this renderer, serialized
+// here, and delivered as the message's data, so script sees a real
+// SharedArrayBuffer of the right size.
+TEST_F(WebFrameTest, PostEmbedderMessageEventDeliversSharedArrayBuffer) {
+  frame_test_helpers::WebViewHelper web_view_helper;
+  web_view_helper.Initialize();
+  frame_test_helpers::LoadHTMLString(web_view_helper.LocalMainFrame(),
+                                     kSharedArrayBufferTestPage,
+                                     ToKURL(base_url_));
+
+  web_view_helper.LocalMainFrame()->PostEmbedderMessageEvent(
+      WebSecurityOrigin::Create(ToKURL(base_url_)), /*ports=*/{},
+      base::UnsafeSharedMemoryRegion::Create(100));
+
+  std::string content = TestWebFrameContentDumper::DumpWebViewAsText(
+                            web_view_helper.GetWebView(), 1024)
+                            .Utf8();
+  EXPECT_NE(std::string::npos,
+            content.find("message: [object SharedArrayBuffer] 100."))
+      << content;
+}
+
+// The target origin check has to hold for SharedArrayBuffers too: a mismatch
+// must drop the message rather than hand the buffer to a document the embedder
+// did not address.
+TEST_F(WebFrameTest, PostEmbedderMessageEventSharedArrayBufferWrongOrigin) {
+  frame_test_helpers::WebViewHelper web_view_helper;
+  web_view_helper.Initialize();
+  frame_test_helpers::LoadHTMLString(web_view_helper.LocalMainFrame(),
+                                     kSharedArrayBufferTestPage,
+                                     ToKURL(base_url_));
+
+  web_view_helper.LocalMainFrame()->PostEmbedderMessageEvent(
+      WebSecurityOrigin::Create(ToKURL(chrome_url_)), /*ports=*/{},
+      base::UnsafeSharedMemoryRegion::Create(100));
+
+  std::string content = TestWebFrameContentDumper::DumpWebViewAsText(
+                            web_view_helper.GetWebView(), 1024)
+                            .Utf8();
+  EXPECT_EQ(std::string::npos, content.find("SharedArrayBuffer")) << content;
+  EXPECT_EQ(std::string::npos, content.find("message")) << content;
+}
+#endif
+
 namespace {
 
 scoped_refptr<SerializedScriptValue> SerializeString(
@@ -1826,7 +2001,7 @@ TEST_F(WebFrameTest, FixedLayoutInitializeAtMinimumScale) {
 
   int default_fixed_layout_width = 980;
   float minimum_page_scale_factor =
-      viewport_width / (float)default_fixed_layout_width;
+      viewport_width / static_cast<float>(default_fixed_layout_width);
   EXPECT_EQ(minimum_page_scale_factor,
             web_view_helper.GetWebView()->PageScaleFactor());
   EXPECT_EQ(minimum_page_scale_factor,
@@ -1866,7 +2041,8 @@ TEST_F(WebFrameTest, WideDocumentInitializeAtMinimumScale) {
   web_view_helper.Resize(gfx::Size(viewport_width, viewport_height));
 
   int wide_document_width = 1500;
-  float minimum_page_scale_factor = viewport_width / (float)wide_document_width;
+  float minimum_page_scale_factor =
+      viewport_width / static_cast<float>(wide_document_width);
   EXPECT_EQ(minimum_page_scale_factor,
             web_view_helper.GetWebView()->PageScaleFactor());
   EXPECT_EQ(minimum_page_scale_factor,
@@ -2040,6 +2216,368 @@ TEST_F(WebFrameTest, WideViewportSetsTo980WithoutViewportTag) {
                 ->LayoutViewport()
                 ->ContentsSize()
                 .height());
+}
+
+class WebFrameViewportEmulationTest : public WebFrameTest {
+ protected:
+  using ViewportStyle = mojom::blink::ViewportStyle;
+
+  static constexpr int kMobileWideViewportWidth = 980;
+
+  WebFrameViewportEmulationTest() {
+    RegisterMockedHttpURLLoad("no_viewport_tag.html");
+  }
+
+  WebViewImpl* InitializeAndroidWideViewport(const gfx::Size& initial_size) {
+    return InitializeAndroidWideViewport(initial_size, web_view_helper_);
+  }
+
+  WebViewImpl* InitializeAndroidWideViewport(
+      const gfx::Size& initial_size,
+      frame_test_helpers::WebViewHelper& web_view_helper) {
+    WebViewImpl* web_view = web_view_helper.InitializeAndLoad(
+        base_url_ + "no_viewport_tag.html", nullptr, nullptr, ConfigureAndroid);
+    web_view->GetSettings()->SetWideViewportQuirkEnabled(true);
+    web_view->GetSettings()->SetUseWideViewport(true);
+    web_view->SetDefaultPageScaleLimits(0.25f, 5.0f);
+    web_view_helper.Resize(initial_size);
+    return web_view;
+  }
+
+  static gfx::Size LayoutViewportSize(WebViewImpl* web_view) {
+    return web_view->MainFrameImpl()->GetFrameView()->Size();
+  }
+
+  static void ExpectViewportProfile(WebViewImpl* web_view,
+                                    ViewportStyle expected_style,
+                                    float expected_min_scale,
+                                    float expected_max_scale) {
+    EXPECT_EQ(expected_style,
+              web_view->GetPage()->GetSettings().GetViewportStyle());
+    EXPECT_FLOAT_EQ(expected_min_scale,
+                    web_view->DefaultMinimumPageScaleFactor());
+    EXPECT_FLOAT_EQ(expected_max_scale,
+                    web_view->DefaultMaximumPageScaleFactor());
+  }
+
+  frame_test_helpers::WebViewHelper web_view_helper_;
+};
+
+TEST_F(WebFrameViewportEmulationTest,
+       DefaultPageScaleLimitsDoNotChangeViewportStyle) {
+  WebViewImpl* web_view =
+      web_view_helper_.InitializeAndLoad(base_url_ + "no_viewport_tag.html");
+
+  // Keep device metrics disabled and bypass DevToolsEmulator so the Page's
+  // effective style deliberately differs from its cached embedder style.
+  ASSERT_EQ(ViewportStyle::kDefault,
+            web_view->GetPage()->GetSettings().GetViewportStyle());
+  web_view->GetPage()->GetSettings().SetViewportStyle(ViewportStyle::kMobile);
+  ASSERT_EQ(ViewportStyle::kMobile,
+            web_view->GetPage()->GetSettings().GetViewportStyle());
+
+  web_view->SetDefaultPageScaleLimits(0.5f, 4.0f);
+
+  ExpectViewportProfile(web_view, ViewportStyle::kMobile, 0.5f, 4.0f);
+}
+
+TEST_F(WebFrameViewportEmulationTest,
+       ViewportStyleDoesNotChangeDefaultPageScaleLimits) {
+  WebViewImpl* web_view =
+      web_view_helper_.InitializeAndLoad(base_url_ + "no_viewport_tag.html");
+
+  // Keep device metrics disabled and bypass DevToolsEmulator so the Page's
+  // effective limits deliberately differ from its cached embedder limits.
+  ASSERT_EQ(ViewportStyle::kDefault,
+            web_view->GetPage()->GetSettings().GetViewportStyle());
+  ASSERT_TRUE(web_view->DefaultMinimumPageScaleFactor() != 0.5f ||
+              web_view->DefaultMaximumPageScaleFactor() != 4.0f);
+  web_view->GetPage()->SetDefaultPageScaleLimits(0.5f, 4.0f);
+  ASSERT_FLOAT_EQ(0.5f, web_view->DefaultMinimumPageScaleFactor());
+  ASSERT_FLOAT_EQ(4.0f, web_view->DefaultMaximumPageScaleFactor());
+
+  web_view->GetSettings()->SetViewportStyle(ViewportStyle::kTelevision);
+
+  ExpectViewportProfile(web_view, ViewportStyle::kTelevision, 0.5f, 4.0f);
+}
+
+TEST_F(WebFrameViewportEmulationTest,
+       DesktopDeviceMetricsUseDefaultViewportStyleOnAndroid) {
+  const gfx::Size original_size(360, 640);
+  WebViewImpl* web_view = InitializeAndroidWideViewport(original_size);
+
+  UpdateAllLifecyclePhases(web_view);
+  ExpectViewportProfile(web_view, ViewportStyle::kMobile, 0.25f, 5.0f);
+  EXPECT_EQ(kMobileWideViewportWidth, LayoutViewportSize(web_view).width());
+
+  DeviceEmulationParams params;
+  params.screen_type = mojom::EmulatedScreenType::kDesktop;
+  params.view_size = gfx::Size(250, 300);
+  web_view->EnableDeviceEmulation(params);
+  UpdateAllLifecyclePhases(web_view);
+  ExpectViewportProfile(web_view, ViewportStyle::kDefault, 1.0f, 5.0f);
+  EXPECT_EQ(params.view_size, LayoutViewportSize(web_view));
+
+  // Replaying identical parameters takes the fast path and must leave the
+  // effective desktop profile intact.
+  web_view->EnableDeviceEmulation(params);
+  UpdateAllLifecyclePhases(web_view);
+  ExpectViewportProfile(web_view, ViewportStyle::kDefault, 1.0f, 5.0f);
+  EXPECT_EQ(params.view_size, LayoutViewportSize(web_view));
+
+  params.view_size = gfx::Size(320, 480);
+  web_view->EnableDeviceEmulation(params);
+  UpdateAllLifecyclePhases(web_view);
+  ExpectViewportProfile(web_view, ViewportStyle::kDefault, 1.0f, 5.0f);
+  EXPECT_EQ(params.view_size, LayoutViewportSize(web_view));
+
+  params.view_size = gfx::Size(0, 480);
+  web_view->EnableDeviceEmulation(params);
+  UpdateAllLifecyclePhases(web_view);
+  ExpectViewportProfile(web_view, ViewportStyle::kDefault, 1.0f, 5.0f);
+  EXPECT_EQ(gfx::Size(original_size.width(), 480),
+            LayoutViewportSize(web_view));
+
+  params.view_size = gfx::Size(320, 0);
+  web_view->EnableDeviceEmulation(params);
+  UpdateAllLifecyclePhases(web_view);
+  ExpectViewportProfile(web_view, ViewportStyle::kDefault, 1.0f, 5.0f);
+  EXPECT_EQ(gfx::Size(320, original_size.height()),
+            LayoutViewportSize(web_view));
+
+  // Embedder updates are saved while the DevTools desktop profile is active.
+  web_view->SetDefaultPageScaleLimits(0.5f, 4.0f);
+  ExpectViewportProfile(web_view, ViewportStyle::kDefault, 1.0f, 4.0f);
+
+  // Changing the saved embedder style removes and reapplies the correction
+  // immediately. kDefault looks identical at the Settings layer, so the
+  // effective minimum scale distinguishes the native desktop profile from the
+  // Android desktop-viewport correction.
+  web_view->GetSettings()->SetViewportStyle(
+      mojom::blink::ViewportStyle::kDefault);
+  ExpectViewportProfile(web_view, ViewportStyle::kDefault, 0.5f, 4.0f);
+
+  web_view->GetSettings()->SetViewportStyle(
+      mojom::blink::ViewportStyle::kMobile);
+  ExpectViewportProfile(web_view, ViewportStyle::kDefault, 1.0f, 4.0f);
+
+  web_view->DisableDeviceEmulation();
+  UpdateAllLifecyclePhases(web_view);
+  ExpectViewportProfile(web_view, ViewportStyle::kMobile, 0.5f, 4.0f);
+  EXPECT_EQ(2 * original_size.width(), LayoutViewportSize(web_view).width());
+}
+
+TEST_F(WebFrameViewportEmulationTest,
+       DesktopDeviceMetricsSizeTransitionsRestoreAndroidViewportStyle) {
+  const gfx::Size original_size(360, 640);
+  WebViewImpl* web_view = InitializeAndroidWideViewport(original_size);
+
+  DeviceEmulationParams params;
+  params.screen_type = mojom::EmulatedScreenType::kDesktop;
+  params.view_size = gfx::Size(250, 300);
+  web_view->EnableDeviceEmulation(params);
+  UpdateAllLifecyclePhases(web_view);
+  ExpectViewportProfile(web_view, ViewportStyle::kDefault, 1.0f, 5.0f);
+  EXPECT_EQ(params.view_size, LayoutViewportSize(web_view));
+
+  // A DPR-only update has no layout viewport dimensions, so it must restore
+  // the native Android viewport profile instead of retaining stale desktop
+  // settings from the preceding explicit-size override.
+  params.view_size = gfx::Size();
+  params.device_scale_factor = 2.0f;
+  web_view->EnableDeviceEmulation(params);
+  UpdateAllLifecyclePhases(web_view);
+  ExpectViewportProfile(web_view, ViewportStyle::kMobile, 0.25f, 5.0f);
+  EXPECT_EQ(kMobileWideViewportWidth, LayoutViewportSize(web_view).width());
+
+  params.view_size = gfx::Size(320, 480);
+  web_view->EnableDeviceEmulation(params);
+  UpdateAllLifecyclePhases(web_view);
+  ExpectViewportProfile(web_view, ViewportStyle::kDefault, 1.0f, 5.0f);
+  EXPECT_EQ(params.view_size, LayoutViewportSize(web_view));
+
+  web_view->DisableDeviceEmulation();
+  UpdateAllLifecyclePhases(web_view);
+  ExpectViewportProfile(web_view, ViewportStyle::kMobile, 0.25f, 5.0f);
+  EXPECT_EQ(kMobileWideViewportWidth, LayoutViewportSize(web_view).width());
+}
+
+TEST_F(WebFrameViewportEmulationTest,
+       EmbedderViewportStyleUpdatesDoNotForceLifecycle) {
+  WebViewImpl* web_view = InitializeAndroidWideViewport(gfx::Size(360, 640));
+
+  DeviceEmulationParams params;
+  params.screen_type = mojom::EmulatedScreenType::kDesktop;
+  params.view_size = gfx::Size(250, 300);
+  web_view->EnableDeviceEmulation(params);
+  UpdateAllLifecyclePhases(web_view);
+  ExpectViewportProfile(web_view, ViewportStyle::kDefault, 1.0f, 5.0f);
+
+  LocalFrameView* frame_view = web_view->MainFrameImpl()->GetFrameView();
+  ASSERT_FALSE(frame_view->NeedsLayout());
+
+  // A scalar WebSettings update can run while a larger preferences update is
+  // in progress. It must update the effective profile without synchronously
+  // flushing unrelated pending layout work.
+  frame_view->SetNeedsLayout();
+  ASSERT_TRUE(frame_view->NeedsLayout());
+  web_view->GetSettings()->SetViewportStyle(ViewportStyle::kDefault);
+  EXPECT_TRUE(frame_view->NeedsLayout());
+  ExpectViewportProfile(web_view, ViewportStyle::kDefault, 0.25f, 5.0f);
+  UpdateAllLifecyclePhases(web_view);
+
+  // Reapplying the Android embedder style under explicit desktop metrics
+  // restores the desktop-viewport correction with the same non-flushing
+  // setter behavior.
+  frame_view->SetNeedsLayout();
+  ASSERT_TRUE(frame_view->NeedsLayout());
+  web_view->GetSettings()->SetViewportStyle(ViewportStyle::kMobile);
+  EXPECT_TRUE(frame_view->NeedsLayout());
+  ExpectViewportProfile(web_view, ViewportStyle::kDefault, 1.0f, 5.0f);
+  UpdateAllLifecyclePhases(web_view);
+}
+
+TEST_F(WebFrameViewportEmulationTest,
+       DeviceMetricsScaleOnlyPreservesAndroidViewportStyle) {
+  WebViewImpl* web_view = InitializeAndroidWideViewport(gfx::Size(360, 640));
+
+  DeviceEmulationParams params;
+  params.screen_type = mojom::EmulatedScreenType::kDesktop;
+  params.scale = 2.0f;
+  web_view->EnableDeviceEmulation(params);
+  UpdateAllLifecyclePhases(web_view);
+  EXPECT_EQ(gfx::Size(180, 320), web_view->MainFrameViewWidget()->Size());
+  ExpectViewportProfile(web_view, ViewportStyle::kMobile, 0.25f, 5.0f);
+  // Scale-only emulation still scales the widget and layout viewport; it must
+  // not additionally replace the embedder's mobile viewport profile.
+  EXPECT_EQ(kMobileWideViewportWidth / 2, LayoutViewportSize(web_view).width());
+
+  web_view->DisableDeviceEmulation();
+}
+
+TEST_F(WebFrameViewportEmulationTest,
+       DeviceMetricsTransitionBetweenDesktopAndMobileProfiles) {
+  WebViewImpl* web_view = InitializeAndroidWideViewport(gfx::Size(360, 640));
+
+  DeviceEmulationParams params;
+  params.screen_type = mojom::EmulatedScreenType::kDesktop;
+  params.view_size = gfx::Size(250, 300);
+  web_view->EnableDeviceEmulation(params);
+  UpdateAllLifecyclePhases(web_view);
+  ExpectViewportProfile(web_view, ViewportStyle::kDefault, 1.0f, 5.0f);
+  EXPECT_EQ(params.view_size, LayoutViewportSize(web_view));
+
+  params.screen_type = mojom::EmulatedScreenType::kMobile;
+  web_view->EnableDeviceEmulation(params);
+  UpdateAllLifecyclePhases(web_view);
+  ExpectViewportProfile(web_view, ViewportStyle::kMobile, 0.25f, 5.0f);
+  EXPECT_EQ(kMobileWideViewportWidth, LayoutViewportSize(web_view).width());
+
+  // Updates from the embedder are cached while the complete mobile profile
+  // remains effective.
+  web_view->SetDefaultPageScaleLimits(0.5f, 4.0f);
+  web_view->GetSettings()->SetViewportStyle(
+      mojom::blink::ViewportStyle::kDefault);
+  ExpectViewportProfile(web_view, ViewportStyle::kMobile, 0.25f, 5.0f);
+
+  params.screen_type = mojom::EmulatedScreenType::kDesktop;
+  web_view->EnableDeviceEmulation(params);
+  UpdateAllLifecyclePhases(web_view);
+  ExpectViewportProfile(web_view, ViewportStyle::kDefault, 0.5f, 4.0f);
+
+  // Re-enabling the saved Android mobile style while explicit desktop
+  // dimensions remain active reapplies the desktop viewport correction.
+  web_view->GetSettings()->SetViewportStyle(
+      mojom::blink::ViewportStyle::kMobile);
+  UpdateAllLifecyclePhases(web_view);
+  ExpectViewportProfile(web_view, ViewportStyle::kDefault, 1.0f, 4.0f);
+  EXPECT_EQ(params.view_size, LayoutViewportSize(web_view));
+
+  web_view->DisableDeviceEmulation();
+  UpdateAllLifecyclePhases(web_view);
+  ExpectViewportProfile(web_view, ViewportStyle::kMobile, 0.5f, 4.0f);
+
+  // Clearing directly from mobile mode must release its shared overrides
+  // before restoring the latest embedder profile.
+  params.screen_type = mojom::EmulatedScreenType::kMobile;
+  web_view->EnableDeviceEmulation(params);
+  UpdateAllLifecyclePhases(web_view);
+  ExpectViewportProfile(web_view, ViewportStyle::kMobile, 0.25f, 5.0f);
+
+  web_view->DisableDeviceEmulation();
+  UpdateAllLifecyclePhases(web_view);
+  ExpectViewportProfile(web_view, ViewportStyle::kMobile, 0.5f, 4.0f);
+}
+
+TEST_F(WebFrameViewportEmulationTest,
+       MobileDeviceMetricsShareGlobalOverridesAcrossWebViews) {
+  ScopedMobileLayoutThemeForTest mobile_layout_theme(false);
+  ScopedOrientationEventForTest orientation_event(false);
+  EXPECT_FALSE(RuntimeEnabledFeatures::MobileLayoutThemeEnabled());
+  EXPECT_FALSE(RuntimeEnabledFeatures::OrientationEventEnabled());
+
+  WebViewImpl* first_web_view =
+      InitializeAndroidWideViewport(gfx::Size(360, 640));
+  frame_test_helpers::WebViewHelper second_web_view_helper;
+  WebViewImpl* second_web_view = InitializeAndroidWideViewport(
+      gfx::Size(360, 640), second_web_view_helper);
+
+  DeviceEmulationParams params;
+  params.screen_type = mojom::EmulatedScreenType::kMobile;
+  params.view_size = gfx::Size(250, 300);
+  first_web_view->EnableDeviceEmulation(params);
+  second_web_view->EnableDeviceEmulation(params);
+  EXPECT_TRUE(RuntimeEnabledFeatures::MobileLayoutThemeEnabled());
+  EXPECT_TRUE(RuntimeEnabledFeatures::OrientationEventEnabled());
+
+  // Releasing the first WebView's mobile profile must not restore the shared
+  // process settings while the second WebView still owns them.
+  params.screen_type = mojom::EmulatedScreenType::kDesktop;
+  first_web_view->EnableDeviceEmulation(params);
+  ExpectViewportProfile(first_web_view, ViewportStyle::kDefault, 1.0f, 5.0f);
+  ExpectViewportProfile(second_web_view, ViewportStyle::kMobile, 0.25f, 5.0f);
+  EXPECT_TRUE(RuntimeEnabledFeatures::MobileLayoutThemeEnabled());
+  EXPECT_TRUE(RuntimeEnabledFeatures::OrientationEventEnabled());
+
+  params.screen_type = mojom::EmulatedScreenType::kMobile;
+  first_web_view->EnableDeviceEmulation(params);
+  first_web_view->DisableDeviceEmulation();
+  ExpectViewportProfile(first_web_view, ViewportStyle::kMobile, 0.25f, 5.0f);
+  ExpectViewportProfile(second_web_view, ViewportStyle::kMobile, 0.25f, 5.0f);
+  EXPECT_TRUE(RuntimeEnabledFeatures::MobileLayoutThemeEnabled());
+  EXPECT_TRUE(RuntimeEnabledFeatures::OrientationEventEnabled());
+
+  second_web_view->DisableDeviceEmulation();
+  ExpectViewportProfile(second_web_view, ViewportStyle::kMobile, 0.25f, 5.0f);
+  EXPECT_FALSE(RuntimeEnabledFeatures::MobileLayoutThemeEnabled());
+  EXPECT_FALSE(RuntimeEnabledFeatures::OrientationEventEnabled());
+}
+
+TEST_F(WebFrameViewportEmulationTest,
+       DesktopDeviceMetricsKeepDefaultViewportStyle) {
+  WebViewImpl* web_view =
+      web_view_helper_.InitializeAndLoad(base_url_ + "no_viewport_tag.html");
+  web_view->SetDefaultPageScaleLimits(1.0f, 4.0f);
+  web_view_helper_.Resize(gfx::Size(360, 640));
+
+  ExpectViewportProfile(web_view, ViewportStyle::kDefault, 1.0f, 4.0f);
+
+  DeviceEmulationParams params;
+  params.screen_type = mojom::EmulatedScreenType::kDesktop;
+  params.view_size = gfx::Size(250, 300);
+  web_view->EnableDeviceEmulation(params);
+  UpdateAllLifecyclePhases(web_view);
+  ExpectViewportProfile(web_view, ViewportStyle::kDefault, 1.0f, 4.0f);
+  EXPECT_EQ(params.view_size, LayoutViewportSize(web_view));
+
+  params.view_size = gfx::Size();
+  params.device_scale_factor = 2.0f;
+  web_view->EnableDeviceEmulation(params);
+  UpdateAllLifecyclePhases(web_view);
+  ExpectViewportProfile(web_view, ViewportStyle::kDefault, 1.0f, 4.0f);
+
+  web_view->DisableDeviceEmulation();
+  ExpectViewportProfile(web_view, ViewportStyle::kDefault, 1.0f, 4.0f);
 }
 
 TEST_F(WebFrameTest, WideViewportSetsTo980WithXhtmlMp) {
@@ -2218,8 +2756,9 @@ TEST_F(WebFrameTest, SmallPermanentInitialPageScaleFactorIsClobbered) {
        "viewport-auto-initial-scale.html",
        "viewport-target-densitydpi-device-and-fixed-width.html"});
   const std::array<float, 2> page_scale_factors = {0.5f, 1.0f};
-  for (size_t i = 0; i < std::size(pages); ++i)
-    RegisterMockedHttpURLLoad(pages[i]);
+  for (auto* page : pages) {
+    RegisterMockedHttpURLLoad(page);
+  }
 
   int viewport_width = 400;
   int viewport_height = 300;
@@ -2778,7 +3317,7 @@ TEST_F(WebFrameTest, initialScaleWrittenToHistoryItem) {
 
   int default_fixed_layout_width = 980;
   float minimum_page_scale_factor =
-      viewport_width / (float)default_fixed_layout_width;
+      viewport_width / static_cast<float>(default_fixed_layout_width);
   EXPECT_EQ(minimum_page_scale_factor,
             To<LocalFrame>(web_view_helper.GetWebView()->GetPage()->MainFrame())
                 ->Loader()
@@ -2805,12 +3344,14 @@ TEST_F(WebFrameTest, pageScaleFactorDoesntShrinkFrameView) {
   int viewport_height_minus_scrollbar = viewport_height;
 
   if (view->LayoutViewport()->VerticalScrollbar() &&
-      !view->LayoutViewport()->VerticalScrollbar()->IsOverlayScrollbar())
+      !view->LayoutViewport()->VerticalScrollbar()->IsOverlayScrollbar()) {
     viewport_width_minus_scrollbar -= 15;
+  }
 
   if (view->LayoutViewport()->HorizontalScrollbar() &&
-      !view->LayoutViewport()->HorizontalScrollbar()->IsOverlayScrollbar())
+      !view->LayoutViewport()->HorizontalScrollbar()->IsOverlayScrollbar()) {
     viewport_height_minus_scrollbar -= 15;
+  }
 
   web_view_helper.GetWebView()->SetPageScaleFactor(2);
 
@@ -2864,8 +3405,7 @@ TEST_F(WebFrameTest, targetDensityDpiHigh) {
   int viewport_width = 640;
   int viewport_height = 480;
 
-  for (size_t i = 0; i < std::size(device_scale_factors); ++i) {
-    float device_scale_factor = device_scale_factors[i];
+  for (float device_scale_factor : device_scale_factors) {
     float device_dpi = device_scale_factor * 160.0f;
 
     frame_test_helpers::WebViewHelper web_view_helper;
@@ -2913,7 +3453,7 @@ TEST_F(WebFrameTest, targetDensityDpiDevice) {
   int viewport_width = 640;
   int viewport_height = 480;
 
-  for (size_t i = 0; i < std::size(device_scale_factors); ++i) {
+  for (float device_scale_factor : device_scale_factors) {
     frame_test_helpers::WebViewHelper web_view_helper;
     web_view_helper.InitializeAndLoad(
         base_url_ + "viewport-target-densitydpi-device.html", nullptr, nullptr,
@@ -2921,21 +3461,21 @@ TEST_F(WebFrameTest, targetDensityDpiDevice) {
     web_view_helper.Resize(gfx::Size(viewport_width, viewport_height));
     web_view_helper.GetWebView()
         ->MainFrameWidget()
-        ->SetDeviceScaleFactorForTesting(device_scale_factors[i]);
+        ->SetDeviceScaleFactorForTesting(device_scale_factor);
     web_view_helper.GetWebView()->GetSettings()->SetWideViewportQuirkEnabled(
         true);
     web_view_helper.GetWebView()
         ->GetSettings()
         ->SetSupportDeprecatedTargetDensityDPI(true);
 
-    EXPECT_NEAR(viewport_width * device_scale_factors[i],
+    EXPECT_NEAR(viewport_width * device_scale_factor,
                 web_view_helper.GetWebView()
                     ->MainFrameImpl()
                     ->GetFrameView()
                     ->GetLayoutSize()
                     .width(),
                 1.0f);
-    EXPECT_NEAR(viewport_height * device_scale_factors[i],
+    EXPECT_NEAR(viewport_height * device_scale_factor,
                 web_view_helper.GetWebView()
                     ->MainFrameImpl()
                     ->GetFrameView()
@@ -2946,7 +3486,7 @@ TEST_F(WebFrameTest, targetDensityDpiDevice) {
     auto* frame =
         To<LocalFrame>(web_view_helper.GetWebView()->GetPage()->MainFrame());
     DCHECK(frame);
-    EXPECT_EQ(device_scale_factors[i], frame->DevicePixelRatio());
+    EXPECT_EQ(device_scale_factor, frame->DevicePixelRatio());
   }
 }
 
@@ -2959,14 +3499,14 @@ TEST_F(WebFrameTest, targetDensityDpiDeviceAndFixedWidth) {
   int viewport_width = 640;
   int viewport_height = 480;
 
-  for (size_t i = 0; i < std::size(device_scale_factors); ++i) {
+  for (float device_scale_factor : device_scale_factors) {
     frame_test_helpers::WebViewHelper web_view_helper;
     web_view_helper.InitializeAndLoad(
         base_url_ + "viewport-target-densitydpi-device-and-fixed-width.html",
         nullptr, nullptr, ConfigureAndroid);
     web_view_helper.GetWebView()
         ->MainFrameWidget()
-        ->SetDeviceScaleFactorForTesting(device_scale_factors[i]);
+        ->SetDeviceScaleFactorForTesting(device_scale_factor);
     web_view_helper.GetWebView()->GetSettings()->SetWideViewportQuirkEnabled(
         true);
     web_view_helper.GetWebView()
@@ -3585,7 +4125,7 @@ TEST_F(WebFrameTest, DivAutoZoomWideDivTest) {
       ConfigureAndroid);
   web_view_helper.Resize(gfx::Size(viewport_width, viewport_height));
   web_view_helper.GetWebView()->SetZoomFactorForDeviceScaleFactor(
-      kDeviceScaleFactor);
+      kDeviceScaleFactor, 1.0f);
   web_view_helper.GetWebView()->SetPageScaleFactor(1.0f);
   UpdateAllLifecyclePhases(web_view_helper.GetWebView());
 
@@ -3624,7 +4164,7 @@ TEST_F(WebFrameTest, DivAutoZoomVeryTallTest) {
                                     nullptr, ConfigureAndroid);
   web_view_helper.Resize(gfx::Size(viewport_width, viewport_height));
   web_view_helper.GetWebView()->SetZoomFactorForDeviceScaleFactor(
-      kDeviceScaleFactor);
+      kDeviceScaleFactor, 1.0f);
   web_view_helper.GetWebView()->SetPageScaleFactor(1.0f);
   UpdateAllLifecyclePhases(web_view_helper.GetWebView());
 
@@ -4417,7 +4957,7 @@ TEST_F(WebFrameTest, DivScrollIntoEditableTestWithDeviceScaleFactor) {
       nullptr, ConfigureAndroid);
   web_view_helper.Resize(gfx::Size(viewport_width, viewport_height));
   web_view_helper.GetWebView()->SetZoomFactorForDeviceScaleFactor(
-      kDeviceScaleFactor);
+      kDeviceScaleFactor, 1.0f);
   web_view_helper.GetWebView()->SetDefaultPageScaleLimits(0.25f, 4);
 
   web_view_helper.GetWebView()->EnableFakePageScaleAnimationForTesting(true);
@@ -4587,7 +5127,7 @@ TEST_F(WebFrameTest, ClearFocusedNodeTest) {
 
 class ChangedSelectionCounter : public frame_test_helpers::TestWebFrameClient {
  public:
-  ChangedSelectionCounter() : call_count_(0) {}
+  ChangedSelectionCounter() = default;
   void DidChangeSelection(bool isSelectionEmpty,
                           blink::SyncCondition force_sync) override {
     ++call_count_;
@@ -4596,7 +5136,7 @@ class ChangedSelectionCounter : public frame_test_helpers::TestWebFrameClient {
   void Reset() { call_count_ = 0; }
 
  private:
-  int call_count_;
+  int call_count_ = 0;
 };
 
 TEST_F(WebFrameTest, TabKeyCursorMoveTriggersOneSelectionChange) {
@@ -4675,7 +5215,7 @@ class ContextLifetimeTestWebFrameClient
              world_id == other->world_id;
     }
 
-    WebLocalFrame* frame;
+    raw_ptr<WebLocalFrame, UnprotectedInRelease | DanglingUntriaged> frame;
     v8::Persistent<v8::Context> context;
     int32_t world_id;
   };
@@ -4688,8 +5228,8 @@ class ContextLifetimeTestWebFrameClient
   ~ContextLifetimeTestWebFrameClient() override = default;
 
   void Reset() {
-    create_notifications_.clear();
-    release_notifications_.clear();
+    create_notifications_->clear();
+    release_notifications_->clear();
   }
 
   // WebLocalFrameClient:
@@ -4703,28 +5243,32 @@ class ContextLifetimeTestWebFrameClient
       WebPolicyContainerBindParams policy_container_bind_params,
       ukm::SourceId document_ukm_source_id,
       FinishChildFrameCreationFn finish_creation) override {
-    return CreateLocalChild(*Frame(), scope,
-                            std::make_unique<ContextLifetimeTestWebFrameClient>(
-                                create_notifications_, release_notifications_),
-                            std::move(policy_container_bind_params),
-                            finish_creation);
+    return CreateLocalChild(
+        *Frame(), scope,
+        std::make_unique<ContextLifetimeTestWebFrameClient>(
+            *create_notifications_, *release_notifications_),
+        std::move(policy_container_bind_params), finish_creation);
   }
 
   void DidCreateScriptContext(v8::Local<v8::Context> context,
                               int32_t world_id) override {
-    create_notifications_.push_back(
+    create_notifications_->push_back(
         std::make_unique<Notification>(Frame(), context, world_id));
   }
 
   void WillReleaseScriptContext(v8::Local<v8::Context> context,
                                 int32_t world_id) override {
-    release_notifications_.push_back(
+    release_notifications_->push_back(
         std::make_unique<Notification>(Frame(), context, world_id));
   }
 
  private:
-  Vector<std::unique_ptr<Notification>>& create_notifications_;
-  Vector<std::unique_ptr<Notification>>& release_notifications_;
+  const raw_ref<Vector<std::unique_ptr<Notification>>,
+                UnprotectedInRelease | DanglingUntriaged>
+      create_notifications_;
+  const raw_ref<Vector<std::unique_ptr<Notification>>,
+                UnprotectedInRelease | DanglingUntriaged>
+      release_notifications_;
 };
 
 TEST_F(WebFrameTest, ContextNotificationsLoadUnload) {
@@ -4875,9 +5419,10 @@ TEST_F(WebFrameTest, ContextNotificationsIsolatedWorlds) {
   // And one of them should be exactly the same as the create notification for
   // the isolated context.
   int match_count = 0;
-  for (wtf_size_t i = 0; i < release_notifications.size(); ++i) {
-    if (release_notifications[i]->Equals(create_notifications[0].get()))
+  for (const auto& release_notification : release_notifications) {
+    if (release_notification->Equals(create_notifications[0].get())) {
       ++match_count;
+    }
   }
   EXPECT_EQ(1, match_count);
 }
@@ -5062,8 +5607,7 @@ TEST_F(WebFrameTest, ExecuteScriptDuringDidCreateScriptContext) {
 
 class TestFindInPageClient : public mojom::blink::FindInPageClient {
  public:
-  TestFindInPageClient()
-      : find_results_are_ready_(false), count_(-1), active_index_(-1) {}
+  TestFindInPageClient() = default;
 
   ~TestFindInPageClient() override = default;
 
@@ -5094,9 +5638,9 @@ class TestFindInPageClient : public mojom::blink::FindInPageClient {
   int ActiveIndex() const { return active_index_; }
 
  private:
-  bool find_results_are_ready_;
-  int count_;
-  int active_index_;
+  bool find_results_are_ready_ = false;
+  int count_ = -1;
+  int active_index_ = -1;
   mojo::Receiver<mojom::blink::FindInPageClient> receiver_{this};
 };
 
@@ -5156,9 +5700,8 @@ TEST_F(WebFrameTest, FindInPageMatchRects) {
     Range* result = main_frame->GetTextFinder()->ActiveMatch();
     ASSERT_TRUE(result);
     result->setEnd(result->endContainer(), result->endOffset() + 3);
-    EXPECT_EQ(
-        result->GetText(),
-        UNSAFE_TODO(String::Format("%s %02d", kFindString, result_index + 2)));
+    EXPECT_EQ(result->GetText(),
+              Format("{} {:02d}", kFindString, result_index + 2));
 
     // Verify that the expected match rect also matches the currently active
     // match.  Compare the enclosing rects to prevent precision issues caused by
@@ -6153,13 +6696,13 @@ TEST_F(WebFrameTest, MoveRangeSelectionExtentScollsInputField) {
 
   EXPECT_EQ(0, frame->GetFrame()
                    ->Selection()
-                   .ComputeVisibleSelectionInDOMTree()
+                   .ComputeVisibleSelectionInDomTree()
                    .RootEditableElement()
                    ->scrollLeft());
   frame->MoveRangeSelectionExtent(gfx::Point(end_rect.x() + 500, end_rect.y()));
   EXPECT_GE(frame->GetFrame()
                 ->Selection()
-                .ComputeVisibleSelectionInDOMTree()
+                .ComputeVisibleSelectionInDomTree()
                 .RootEditableElement()
                 ->scrollLeft(),
             1);
@@ -6300,7 +6843,7 @@ TEST_F(WebFrameTest, DISABLED_PositionForPointTest) {
   WebLocalFrameImpl* main_frame = web_view_helper.LocalMainFrame();
   LayoutObject* layout_object = main_frame->GetFrame()
                                     ->Selection()
-                                    .ComputeVisibleSelectionInDOMTree()
+                                    .ComputeVisibleSelectionInDomTree()
                                     .RootEditableElement()
                                     ->GetLayoutObject();
   EXPECT_EQ(0, ComputeOffset(layout_object, -1, -1));
@@ -6312,7 +6855,7 @@ TEST_F(WebFrameTest, DISABLED_PositionForPointTest) {
   main_frame = web_view_helper.LocalMainFrame();
   layout_object = main_frame->GetFrame()
                       ->Selection()
-                      .ComputeVisibleSelectionInDOMTree()
+                      .ComputeVisibleSelectionInDomTree()
                       .RootEditableElement()
                       ->GetLayoutObject();
   EXPECT_EQ(0, ComputeOffset(layout_object, -1, -1));
@@ -6389,7 +6932,8 @@ TEST_F(WebFrameTest, MAYBE_MoveCaretStaysHorizontallyAlignedWhenMoved) {
   frame_test_helpers::WebViewHelper web_view_helper;
   InitializeTextSelectionWebView(base_url_ + "move_caret.html",
                                  &web_view_helper);
-  frame = (WebLocalFrameImpl*)web_view_helper.GetWebView()->MainFrame();
+  frame = static_cast<WebLocalFrameImpl*>(
+      web_view_helper.GetWebView()->MainFrame());
 
   gfx::Rect initial_start_rect;
   gfx::Rect initial_end_rect;
@@ -6745,7 +7289,7 @@ TEST_F(CompositedSelectionBoundsTest, InputScrolled) {
 class CompositedSelectionBoundsTestWithImage
     : public CompositedSelectionBoundsTest {
  public:
-  CompositedSelectionBoundsTestWithImage() : CompositedSelectionBoundsTest() {
+  CompositedSelectionBoundsTestWithImage() {
     RegisterMockedHttpURLLoad("notifications/120x120.png");
   }
 };
@@ -6815,7 +7359,7 @@ TEST_F(WebFrameTest, MoveCaretSelectionTowardsWindowPointWithNoSelection) {
 
 class TextCheckClient : public WebTextCheckClient {
  public:
-  TextCheckClient() : number_of_times_checked_(0) {}
+  TextCheckClient() = default;
   ~TextCheckClient() override = default;
 
   // WebTextCheckClient:
@@ -6836,7 +7380,7 @@ class TextCheckClient : public WebTextCheckClient {
   int NumberOfTimesChecked() const { return number_of_times_checked_; }
 
  private:
-  int number_of_times_checked_;
+  int number_of_times_checked_ = 0;
 };
 
 TEST_F(WebFrameTest, ReplaceMisspelledRange) {
@@ -6872,7 +7416,7 @@ TEST_F(WebFrameTest, ReplaceMisspelledRange) {
                      WebLocalFrame::kSelectionSetFocus);
   EphemeralRange selection_range = frame->GetFrame()
                                        ->Selection()
-                                       .ComputeVisibleSelectionInDOMTree()
+                                       .ComputeVisibleSelectionInDomTree()
                                        .ToNormalizedEphemeralRange();
 
   EXPECT_EQ(1, textcheck.NumberOfTimesChecked());
@@ -6921,7 +7465,7 @@ TEST_F(WebFrameTest, RemoveSpellingMarkers) {
                      WebLocalFrame::kSelectionSetFocus);
   EphemeralRange selection_range = frame->GetFrame()
                                        ->Selection()
-                                       .ComputeVisibleSelectionInDOMTree()
+                                       .ComputeVisibleSelectionInDomTree()
                                        .ToNormalizedEphemeralRange();
 
   EXPECT_EQ(0, NumMarkersInRange(document, selection_range,
@@ -6985,8 +7529,9 @@ class StubbornTextCheckClient : public WebTextCheckClient {
   void Kick(int misspelling_start_offset,
             int misspelling_length,
             WebTextDecorationType type) {
-    if (!completion_)
+    if (!completion_) {
       return;
+    }
     std::vector<WebTextCheckingResult> results;
     if (misspelling_start_offset >= 0 && misspelling_length > 0) {
       results.emplace_back(type, misspelling_start_offset, misspelling_length);
@@ -7140,6 +7685,14 @@ class FakeMainLocalFrameHost : public mojom::blink::LocalMainFrameHost {
                      SetWindowRectCallback callback) override {
     std::move(callback).Run();
   }
+  void MoveWindowTo(const ::gfx::Point& origin,
+                    MoveWindowToCallback callback) override {
+    std::move(callback).Run();
+  }
+  void ResizeWindowTo(const ::gfx::Size& size,
+                      ResizeWindowToCallback callback) override {
+    std::move(callback).Run();
+  }
 #if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
   void Minimize() override {}
   void Maximize() override {}
@@ -7153,7 +7706,8 @@ class FakeMainLocalFrameHost : public mojom::blink::LocalMainFrameHost {
                                 bool color_adjust) override {}
   void DraggableRegionsChanged(
       Vector<mojom::blink::DraggableRegionPtr> regions) override {}
-  void OnFirstContentfulPaint(base::TimeDelta duration) override {}
+  void OnFirstContentfulPaint(base::TimeTicks presentation_time) override {}
+  void OnLargestContentfulPaint(base::TimeTicks presentation_time) override {}
 
  private:
   void BindFrameHostReceiver(mojo::ScopedInterfaceEndpointHandle handle) {
@@ -7358,17 +7912,19 @@ class TestScrolledFrameClient : public frame_test_helpers::TestWebFrameClient {
   bool WasFrameScrolled() const { return did_scroll_frame_; }
 
   // WebLocalFrameClient:
-  void DidChangeScrollOffset() override {
-    if (Frame()->Parent())
+  void DidChangeScrollOffset(blink::mojom::ScrollType) override {
+    if (Frame()->Parent()) {
       return;
+    }
     EXPECT_FALSE(did_scroll_frame_);
     LocalFrameView* view = To<WebLocalFrameImpl>(Frame())->GetFrameView();
     // LocalFrameView can be scrolled in
     // LocalFrameView::SetFixedVisibleContentRect which is called from
     // LocalFrame::CreateView (before the frame is associated with the the
     // view).
-    if (view)
+    if (view) {
       did_scroll_frame_ = true;
+    }
   }
 
  private:
@@ -7492,12 +8048,13 @@ TEST_F(WebFrameTest, SiteForCookiesForRedirect) {
 class TestNewWindowWebFrameClient
     : public frame_test_helpers::TestWebFrameClient {
  public:
-  TestNewWindowWebFrameClient() : begin_navigation_call_count_(0) {}
+  TestNewWindowWebFrameClient() = default;
   ~TestNewWindowWebFrameClient() override = default;
 
   // frame_test_helpers::TestWebFrameClient:
   void BeginNavigation(std::unique_ptr<WebNavigationInfo> info) override {
     begin_navigation_call_count_++;
+    last_navigation_policy_ = info->navigation_policy;
     if (ignore_navigations_) {
       return;
     }
@@ -7510,22 +8067,37 @@ class TestNewWindowWebFrameClient
       const WebString&,
       const gfx::Rect&,
       WebNavigationPolicy,
-      network::mojom::blink::WebSandboxFlags,
+      network::mojom::blink::WebSandboxFlags sandbox_flags,
       const SessionStorageNamespaceId&,
       bool& consumed_user_gesture,
-      const std::optional<Impression>&,
       const std::optional<WebPictureInPictureWindowOptions>&,
       const WebURL&) override {
-    EXPECT_TRUE(false);
+    EXPECT_TRUE(expect_create_new_window_);
+    did_call_create_new_window_ = true;
+    new_window_sandbox_flags_ = sandbox_flags;
     return nullptr;
   }
 
   int BeginNavigationCallCount() const { return begin_navigation_call_count_; }
+  WebNavigationPolicy LastNavigationPolicy() const {
+    return last_navigation_policy_;
+  }
+  bool DidCallCreateNewWindow() const { return did_call_create_new_window_; }
+  network::mojom::blink::WebSandboxFlags NewWindowSandboxFlags() const {
+    return new_window_sandbox_flags_;
+  }
+
   void IgnoreNavigations() { ignore_navigations_ = true; }
+  void ExpectCreateNewWindow() { expect_create_new_window_ = true; }
 
  private:
   bool ignore_navigations_ = false;
-  int begin_navigation_call_count_;
+  bool expect_create_new_window_ = false;
+  bool did_call_create_new_window_ = false;
+  int begin_navigation_call_count_ = 0;
+  WebNavigationPolicy last_navigation_policy_ = kWebNavigationPolicyCurrentTab;
+  network::mojom::blink::WebSandboxFlags new_window_sandbox_flags_ =
+      network::mojom::blink::WebSandboxFlags::kNone;
 };
 
 TEST_F(WebFrameTest, ModifiedClickNewWindow) {
@@ -7569,8 +8141,7 @@ TEST_F(WebFrameTest, ModifiedClickNewWindow) {
 class TestBeginNavigationCacheModeClient
     : public frame_test_helpers::TestWebFrameClient {
  public:
-  TestBeginNavigationCacheModeClient()
-      : cache_mode_(mojom::FetchCacheMode::kDefault) {}
+  TestBeginNavigationCacheModeClient() = default;
   ~TestBeginNavigationCacheModeClient() override = default;
 
   mojom::FetchCacheMode GetCacheMode() const { return cache_mode_; }
@@ -7581,7 +8152,7 @@ class TestBeginNavigationCacheModeClient
   }
 
  private:
-  mojom::FetchCacheMode cache_mode_;
+  mojom::FetchCacheMode cache_mode_ = mojom::FetchCacheMode::kDefault;
 };
 
 TEST_F(WebFrameTest, BackToReload) {
@@ -7636,9 +8207,7 @@ TEST_F(WebFrameTest, ReloadPost) {
 class TestCachePolicyWebFrameClient
     : public frame_test_helpers::TestWebFrameClient {
  public:
-  TestCachePolicyWebFrameClient()
-      : cache_mode_(mojom::FetchCacheMode::kDefault),
-        begin_navigation_call_count_(0) {}
+  TestCachePolicyWebFrameClient() = default;
   ~TestCachePolicyWebFrameClient() override = default;
 
   mojom::FetchCacheMode GetCacheMode() const { return cache_mode_; }
@@ -7673,9 +8242,9 @@ class TestCachePolicyWebFrameClient
   }
 
  private:
-  mojom::FetchCacheMode cache_mode_;
+  mojom::FetchCacheMode cache_mode_ = mojom::FetchCacheMode::kDefault;
   Vector<std::unique_ptr<TestCachePolicyWebFrameClient>> child_clients_;
-  int begin_navigation_call_count_;
+  int begin_navigation_call_count_ = 0;
 };
 
 TEST_F(WebFrameTest, ReloadIframe) {
@@ -7720,7 +8289,7 @@ TEST_F(WebFrameTest, ReloadIframe) {
 class TestSameDocumentWithImageWebFrameClient
     : public frame_test_helpers::TestWebFrameClient {
  public:
-  TestSameDocumentWithImageWebFrameClient() : num_of_image_requests_(0) {}
+  TestSameDocumentWithImageWebFrameClient() = default;
   ~TestSameDocumentWithImageWebFrameClient() override = default;
 
   // frame_test_helpers::TestWebFrameClient:
@@ -7735,7 +8304,7 @@ class TestSameDocumentWithImageWebFrameClient
   int NumOfImageRequests() const { return num_of_image_requests_; }
 
  private:
-  int num_of_image_requests_;
+  int num_of_image_requests_ = 0;
 };
 
 TEST_F(WebFrameTest, NavigateToSameNoConditionalRequestForSubresource) {
@@ -7871,8 +8440,7 @@ TEST_F(WebFrameTest, WebNodeImageContentsWithOrientation) {
 class TestStartStopCallbackWebFrameClient
     : public frame_test_helpers::TestWebFrameClient {
  public:
-  TestStartStopCallbackWebFrameClient()
-      : start_loading_count_(0), stop_loading_count_(0) {}
+  TestStartStopCallbackWebFrameClient() = default;
   ~TestStartStopCallbackWebFrameClient() override = default;
 
   // frame_test_helpers::TestWebFrameClient:
@@ -7889,8 +8457,8 @@ class TestStartStopCallbackWebFrameClient
   int StopLoadingCount() const { return stop_loading_count_; }
 
  private:
-  int start_loading_count_;
-  int stop_loading_count_;
+  int start_loading_count_ = 0;
+  int stop_loading_count_ = 0;
 };
 
 TEST_F(WebFrameTest, PushStateStartsAndStops) {
@@ -7940,8 +8508,7 @@ TEST_F(WebFrameTest,
 class TestDidNavigateCommitTypeWebFrameClient
     : public frame_test_helpers::TestWebFrameClient {
  public:
-  TestDidNavigateCommitTypeWebFrameClient()
-      : last_commit_type_(kWebHistoryInertCommit) {}
+  TestDidNavigateCommitTypeWebFrameClient() = default;
   ~TestDidNavigateCommitTypeWebFrameClient() override = default;
 
   // frame_test_helpers::TestWebFrameClient:
@@ -7960,7 +8527,7 @@ class TestDidNavigateCommitTypeWebFrameClient
   WebHistoryCommitType LastCommitType() const { return last_commit_type_; }
 
  private:
-  WebHistoryCommitType last_commit_type_;
+  WebHistoryCommitType last_commit_type_ = kWebHistoryInertCommit;
 };
 
 TEST_F(WebFrameTest, SameDocumentHistoryNavigationCommitType) {
@@ -7982,7 +8549,7 @@ TEST_F(WebFrameTest, SameDocumentHistoryNavigationCommitType) {
       mojom::blink::TriggeringEventInfo::kNotFromEvent,
       /*is_browser_initiated=*/true,
       /*has_ua_visual_transition,=*/false,
-      /*soft_navigation_heuristics_task_id=*/std::nullopt,
+      /*task_state_id=*/std::nullopt,
       /*should_skip_screenshot=*/false);
   EXPECT_EQ(kWebBackForwardCommit, client.LastCommitType());
 }
@@ -8006,7 +8573,7 @@ TEST_F(WebFrameTest, SameDocumentHistoryNavigationPropagatesSequenceNumber) {
       mojom::blink::TriggeringEventInfo::kNotFromEvent,
       /*is_browser_initiated=*/true,
       /*has_ua_visual_transition,=*/false,
-      /*soft_navigation_heuristics_task_id=*/std::nullopt,
+      /*task_state_id=*/std::nullopt,
       /*should_skip_screenshot=*/false);
 
   EXPECT_EQ(item->ItemSequenceNumber(),
@@ -8103,7 +8670,7 @@ TEST_F(WebFrameTest, CurrentHistoryItem) {
 
 class FailCreateChildFrame : public frame_test_helpers::TestWebFrameClient {
  public:
-  FailCreateChildFrame() : call_count_(0) {}
+  FailCreateChildFrame() = default;
   ~FailCreateChildFrame() override = default;
 
   // frame_test_helpers::TestWebFrameClient:
@@ -8124,7 +8691,7 @@ class FailCreateChildFrame : public frame_test_helpers::TestWebFrameClient {
   int CallCount() const { return call_count_; }
 
  private:
-  int call_count_;
+  int call_count_ = 0;
 };
 
 // Test that we don't crash if WebLocalFrameClient::createChildFrame() fails.
@@ -8171,15 +8738,20 @@ TEST_F(WebFrameTest, fixedPositionInFixedViewport) {
 }
 
 TEST_F(WebFrameTest, FrameViewMoveWithSetFrameRect) {
+  if (RuntimeEnabledFeatures::AvoidEmbeddedContentViewLocationEnabled()) {
+    // We will never call SetFrameRect() with a non-zero origin, so this test
+    // is not applicable.
+    GTEST_SKIP();
+  }
   frame_test_helpers::WebViewHelper web_view_helper;
   web_view_helper.InitializeAndLoad("about:blank");
   web_view_helper.Resize(gfx::Size(200, 200));
   UpdateAllLifecyclePhases(web_view_helper.GetWebView());
 
   LocalFrameView* frame_view = web_view_helper.LocalMainFrame()->GetFrameView();
-  EXPECT_EQ(gfx::Rect(0, 0, 200, 200), frame_view->FrameRect());
+  EXPECT_EQ(gfx::Rect(0, 0, 200, 200), frame_view->DeprecatedFrameRect());
   frame_view->SetFrameRect(gfx::Rect(100, 100, 200, 200));
-  EXPECT_EQ(gfx::Rect(100, 100, 200, 200), frame_view->FrameRect());
+  EXPECT_EQ(gfx::Rect(100, 100, 200, 200), frame_view->DeprecatedFrameRect());
 }
 
 TEST_F(WebFrameTest, FrameViewScrollAccountsForBrowserControls) {
@@ -9133,12 +9705,14 @@ class WebFrameSwapTestClient : public frame_test_helpers::TestWebFrameClient {
     void DidChangeFrameOwnerProperties(
         const blink::FrameToken& child_frame_token,
         mojom::blink::FrameOwnerPropertiesPtr properties) override {
-      if (parent_)
+      if (parent_) {
         parent_->DidChangeFrameOwnerProperties(std::move(properties));
+      }
     }
 
     bool did_propagate_display_none_ = false;
-    WebFrameSwapTestClient* parent_ = nullptr;
+    raw_ptr<WebFrameSwapTestClient, UnprotectedInRelease | DanglingUntriaged>
+        parent_ = nullptr;
   };
 
   std::unique_ptr<TestLocalFrameHostForFrameOwnerPropertiesChanges>
@@ -9379,8 +9953,9 @@ class SwapMainFrameWhenTitleChangesWebFrameClient
 
   // frame_test_helpers::TestWebFrameClient:
   void DidReceiveTitle(const WebString& title) override {
-    if (title.IsEmpty())
+    if (title.IsEmpty()) {
       return;
+    }
 
     if (!Frame()->Parent()) {
       frame_test_helpers::SwapRemoteFrame(Frame(),
@@ -10487,7 +11062,7 @@ class WebFrameOverscrollTest
     : public WebFrameTest,
       public testing::WithParamInterface<WebGestureDevice> {
  public:
-  WebFrameOverscrollTest() {}
+  WebFrameOverscrollTest() = default;
 
  protected:
   WebGestureEvent GenerateEvent(WebInputEvent::Type type,
@@ -11203,7 +11778,7 @@ TEST_F(WebFrameTest, CopyTextInImageDocument) {
   Node* text = document->createTextNode("copy me");
   document->body()->appendChild(text);
   document->GetFrame()->Selection().SetSelection(
-      SelectionInDOMTree::Builder().SelectAllChildren(*text).Build(),
+      SelectionInDomTree::Builder().SelectAllChildren(*text).Build(),
       SetSelectionOptions());
 
   // Setup a mock clipboard host.
@@ -11287,6 +11862,341 @@ TEST_F(WebFrameTest, ImeSelectionCommitDoesNotChangeClipboard) {
   widget->SetHandlingInputEvent(false);
 }
 
+namespace {
+
+// Loads `html` and focuses its element with id "target".
+WebLocalFrameImpl* LoadAndFocusTarget(
+    frame_test_helpers::WebViewHelper& web_view_helper,
+    const std::string& html) {
+  web_view_helper.Initialize();
+  // Without a default font size, text gets a font size of 0, and the bounds of
+  // all its characters can be empty.
+  web_view_helper.GetWebView()->GetSettings()->SetDefaultFontSize(16);
+  web_view_helper.Resize(gfx::Size(640, 480));
+  WebLocalFrameImpl* web_frame = web_view_helper.LocalMainFrame();
+  frame_test_helpers::LoadHTMLString(web_frame, html, ToKURL("about:blank"));
+  web_frame->GetFrame()
+      ->GetDocument()
+      ->getElementById(AtomicString("target"))
+      ->Focus();
+  return web_frame;
+}
+
+// Checks that the fast computation of the bounds of the `length` characters of
+// the current composition matches the legacy per-character computation.
+void ExpectCurrentCompositionCharacterBoundsMatchLegacy(
+    WebInputMethodController& controller,
+    int length) {
+  std::vector<gfx::Rect> fast_bounds;
+  {
+    ScopedFastCompositionCharacterBoundsForTest scoped_feature(true);
+    ASSERT_TRUE(controller.GetCompositionCharacterBounds(fast_bounds));
+  }
+  std::vector<gfx::Rect> legacy_bounds;
+  {
+    ScopedFastCompositionCharacterBoundsForTest scoped_feature(false);
+    ASSERT_TRUE(controller.GetCompositionCharacterBounds(legacy_bounds));
+  }
+  ASSERT_EQ(static_cast<size_t>(length), legacy_bounds.size());
+  // Make sure the comparison can't pass just because neither computation
+  // produced any real bounds.
+  EXPECT_TRUE(std::ranges::any_of(legacy_bounds, [](const gfx::Rect& rect) {
+    return !rect.IsEmpty();
+  })) << ::testing::PrintToString(legacy_bounds);
+  EXPECT_EQ(legacy_bounds, fast_bounds);
+}
+
+// Loads `html`, focuses its element with id "target", sets a composition over
+// the plain text offsets [start, end) of the focused editable, and checks that
+// the fast computation of the composition character bounds matches the legacy
+// per-character computation.
+void ExpectCompositionCharacterBoundsMatchLegacy(const std::string& html,
+                                                 int start,
+                                                 int end) {
+  frame_test_helpers::WebViewHelper web_view_helper;
+  WebLocalFrameImpl* web_frame = LoadAndFocusTarget(web_view_helper, html);
+  web_frame->GetFrame()
+      ->GetInputMethodController()
+      .SetCompositionFromExistingText(Vector<ImeTextSpan>(), start, end);
+  WebInputMethodController* controller = web_frame->GetInputMethodController();
+  const WebRange range = controller->CompositionRange();
+  ASSERT_EQ(start, range.StartOffset());
+  ASSERT_EQ(end, range.EndOffset());
+  ExpectCurrentCompositionCharacterBoundsMatchLegacy(*controller, end - start);
+}
+
+}  // namespace
+
+TEST_F(WebFrameTest, CompositionCharacterBoundsMatchLegacyComputation) {
+  ExpectCompositionCharacterBoundsMatchLegacy(
+      "<div id='target' contenteditable>first line<br>"
+      "second <b>bold</b> line<br>third line</div>",
+      8, 30);
+}
+
+// TextIterator only emits the separator that follows a block once it has
+// emitted text before it, so a composition that starts at the end of a block
+// has to be iterated in the context of the whole editable for its characters
+// to line up with their plain text offsets.
+TEST_F(WebFrameTest, CompositionCharacterBoundsStartingAtEndOfBlock) {
+  {
+    SCOPED_TRACE("paragraph");
+    // "first\n\nsecond"; the composition is "\n\nse".
+    ExpectCompositionCharacterBoundsMatchLegacy(
+        "<div id='target' contenteditable><p>first</p><p>second</p></div>", 5,
+        9);
+  }
+  {
+    SCOPED_TRACE("table cell");
+    // "ab\tcd"; the composition is "\tc".
+    ExpectCompositionCharacterBoundsMatchLegacy(
+        "<div id='target' contenteditable><table><tr><td>ab</td><td>cd</td>"
+        "</tr></table></div>",
+        2, 4);
+  }
+  {
+    SCOPED_TRACE("div");
+    // "first\nsecond"; the composition is "\nsec".
+    ExpectCompositionCharacterBoundsMatchLegacy(
+        "<div id='target' contenteditable><div>first</div><div>second</div>"
+        "</div>",
+        5, 9);
+  }
+}
+
+TEST_F(WebFrameTest, CompositionCharacterBoundsWithReplacedElement) {
+  ExpectCompositionCharacterBoundsMatchLegacy(
+      "<div id='target' contenteditable>ab"
+      "<img style='width: 10px; height: 10px'>cd</div>",
+      1, 4);
+}
+
+TEST_F(WebFrameTest, CompositionCharacterBoundsInTextArea) {
+  ExpectCompositionCharacterBoundsMatchLegacy(
+      "<textarea id='target'>line one\nline two\nline three</textarea>", 5, 20);
+}
+
+TEST_F(WebFrameTest, CompositionCharacterBoundsInInput) {
+  // "hello   world"; the composition is "lo   wo".
+  ExpectCompositionCharacterBoundsMatchLegacy(
+      "<input id='target' value='hello   world'>", 3, 10);
+}
+
+// Collapsed whitespace isn't part of the plain text, so the plain text offsets
+// of the characters after it differ from their offsets in the DOM.
+TEST_F(WebFrameTest, CompositionCharacterBoundsWithCollapsibleWhitespace) {
+  {
+    SCOPED_TRACE("spaces");
+    // "a b c"; the composition is " b ".
+    ExpectCompositionCharacterBoundsMatchLegacy(
+        "<div id='target' contenteditable>a   b    c</div>", 1, 4);
+  }
+  {
+    SCOPED_TRACE("spans");
+    // "abcd ef gh"; the composition is "bcd ef g".
+    ExpectCompositionCharacterBoundsMatchLegacy(
+        "<div id='target' contenteditable><span>ab</span><span>cd</span>   "
+        "<span> ef </span>  <span>gh</span></div>",
+        1, 9);
+  }
+  {
+    SCOPED_TRACE("indented blocks");
+    // "first line\nsecond line"; the composition is "line\nsec".
+    ExpectCompositionCharacterBoundsMatchLegacy(
+        "<div id='target' contenteditable>\n"
+        "  <div>  first   line  </div>\n"
+        "  <div>second <span> line </span> </div>\n"
+        "</div>",
+        6, 14);
+  }
+}
+
+TEST_F(WebFrameTest, CompositionCharacterBoundsAtStartAndEndOfEditable) {
+  {
+    SCOPED_TRACE("whole editable");
+    // "first line"; the composition is all of it.
+    ExpectCompositionCharacterBoundsMatchLegacy(
+        "<div id='target' contenteditable>first line</div>", 0, 10);
+  }
+  {
+    SCOPED_TRACE("starting with a line break");
+    // "\nab\ncd\n"; the composition is "\nab".
+    ExpectCompositionCharacterBoundsMatchLegacy(
+        "<div id='target' contenteditable><br>ab<br>cd<br></div>", 0, 3);
+  }
+  {
+    SCOPED_TRACE("ending with a line break");
+    // "\nab\ncd\n"; the composition is "cd\n".
+    ExpectCompositionCharacterBoundsMatchLegacy(
+        "<div id='target' contenteditable><br>ab<br>cd<br></div>", 4, 7);
+  }
+  {
+    SCOPED_TRACE("end of a textarea");
+    // "line one\nline two"; the composition is "line two".
+    ExpectCompositionCharacterBoundsMatchLegacy(
+        "<textarea id='target'>line one\nline two</textarea>", 9, 17);
+  }
+}
+
+// Plain text offsets count UTF-16 code units, so a surrogate pair takes up two
+// offsets.
+TEST_F(WebFrameTest, CompositionCharacterBoundsWithSurrogatePairs) {
+  // U+20B9F, which is a surrogate pair in UTF-16.
+  constexpr char kPair[] = "\xF0\xA0\xAE\x9F";
+  {
+    SCOPED_TRACE("contenteditable");
+    // "a\U00020B9Fb\U00020B9F\U00020B9Fc\U00020B9Fd"; the composition is
+    // "b\U00020B9F\U00020B9Fc".
+    ExpectCompositionCharacterBoundsMatchLegacy(
+        base::StrCat({"<div id='target' contenteditable>a", kPair, "b", kPair,
+                      kPair, "c", kPair, "d</div>"}),
+        3, 9);
+  }
+  {
+    SCOPED_TRACE("textarea");
+    // "\U00020B9Fa\U00020B9F\nb\U00020B9F"; the composition is
+    // "a\U00020B9F\nb".
+    ExpectCompositionCharacterBoundsMatchLegacy(
+        base::StrCat({"<textarea id='target'>", kPair, "a", kPair, "\nb", kPair,
+                      "</textarea>"}),
+        2, 7);
+  }
+}
+
+TEST_F(WebFrameTest, CompositionCharacterBoundsWithCombiningMarks) {
+  // U+0301 COMBINING ACUTE ACCENT and U+0308 COMBINING DIAERESIS.
+  constexpr char kAcute[] = "\xCC\x81";
+  constexpr char kDiaeresis[] = "\xCC\x88";
+  // "ae\u0301i\u0308o"; the composition is "e\u0301i\u0308".
+  ExpectCompositionCharacterBoundsMatchLegacy(
+      base::StrCat({"<div id='target' contenteditable>ae", kAcute, "i",
+                    kDiaeresis, "o</div>"}),
+      1, 5);
+}
+
+// An IME that replaces selected text types its composition over the selection.
+// Unlike SetCompositionFromExistingText(), that changes the DOM: here, it
+// merges the lines around the replaced line break.
+TEST_F(WebFrameTest, CompositionCharacterBoundsReplacingSelection) {
+  // Selects the plain text offsets [start, end) of the focused editable in
+  // `html` and types a composition over them, as an IME does. Then moves the
+  // editable, as a page's input event handler might, so that the bounds are
+  // computed starting with stale layout.
+  auto expect_bounds_match_legacy = [](const std::string& html, int start,
+                                       int end) {
+    frame_test_helpers::WebViewHelper web_view_helper;
+    WebLocalFrameImpl* web_frame = LoadAndFocusTarget(web_view_helper, html);
+    WebInputMethodController* controller =
+        web_frame->GetInputMethodController();
+    const WebString composition = WebString::FromUtf8("xyz");
+    const int length = static_cast<int>(composition.length());
+    ASSERT_TRUE(controller->SetComposition(
+        composition, {}, WebRange(start, end - start), length, length));
+    const WebRange range = controller->CompositionRange();
+    ASSERT_EQ(start, range.StartOffset());
+    ASSERT_EQ(start + length, range.EndOffset());
+
+    Document* document = web_frame->GetFrame()->GetDocument();
+    document->body()->setAttribute(html_names::kStyleAttr,
+                                   AtomicString("padding-top: 20px"));
+    ASSERT_TRUE(document->NeedsLayoutTreeUpdate());
+    ExpectCurrentCompositionCharacterBoundsMatchLegacy(*controller, length);
+  };
+  {
+    SCOPED_TRACE("contenteditable");
+    // "first line\nsecond bold line\nthird line"; " line\n" is replaced.
+    expect_bounds_match_legacy(
+        "<div id='target' contenteditable>first line<br>"
+        "second <b>bold</b> line<br>third line</div>",
+        5, 11);
+  }
+  {
+    SCOPED_TRACE("textarea");
+    // "line one\nline two\nline three"; "e one\n" is replaced.
+    expect_bounds_match_legacy(
+        "<textarea id='target'>line one\nline two\nline three</textarea>", 3,
+        9);
+  }
+}
+
+TEST_F(WebFrameTest, SetSelectionForAccessibilityHandlingInputEvent) {
+  RegisterMockedHttpURLLoad("foo.html");
+  SelectionMockWebFrameClient web_frame_client;
+
+  frame_test_helpers::WebViewHelper web_view_helper;
+  WebLocalFrameImpl* web_frame =
+      web_view_helper
+          .InitializeAndLoad(base_url_ + "foo.html", &web_frame_client)
+          ->MainFrameImpl();
+  WebViewImpl* web_view = web_view_helper.GetWebView();
+  WebFrameWidget* widget = web_view->MainFrameImpl()->FrameWidgetImpl();
+
+  bool was_handling_input_event = false;
+  EXPECT_CALL(web_frame_client, DidChangeSelection(_, _))
+      .WillRepeatedly([widget, &was_handling_input_event] {
+        was_handling_input_event = widget->HandlingInputEvent();
+      });
+
+  Document* document = web_frame->GetFrame()->GetDocument();
+  document->write("<div id='sample' contenteditable>hello world</div>");
+  Element* sample = document->getElementById(AtomicString("sample"));
+  sample->Focus();
+
+  EXPECT_FALSE(widget->HandlingInputEvent());
+
+  SelectionInDomTree selection =
+      SelectionInDomTree::Builder()
+          .Collapse(Position(sample->firstChild(), 0))
+          .Extend(Position(sample->firstChild(), 5))
+          .Build();
+  web_frame->GetFrame()->Selection().SetSelectionForAccessibility(
+      selection, SetSelectionOptions());
+
+  EXPECT_TRUE(was_handling_input_event);
+  EXPECT_FALSE(widget->HandlingInputEvent());
+}
+
+TEST_F(WebFrameTest, SetSelectionForAccessibilityHandlingInputEventDisabled) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndDisableFeature(
+      features::kSetSelectionForAccessibilityHandlingInputEvent);
+
+  RegisterMockedHttpURLLoad("foo.html");
+  SelectionMockWebFrameClient web_frame_client;
+
+  frame_test_helpers::WebViewHelper web_view_helper;
+  WebLocalFrameImpl* web_frame =
+      web_view_helper
+          .InitializeAndLoad(base_url_ + "foo.html", &web_frame_client)
+          ->MainFrameImpl();
+  WebViewImpl* web_view = web_view_helper.GetWebView();
+  WebFrameWidget* widget = web_view->MainFrameImpl()->FrameWidgetImpl();
+
+  bool was_handling_input_event = false;
+  EXPECT_CALL(web_frame_client, DidChangeSelection(_, _))
+      .WillRepeatedly([widget, &was_handling_input_event] {
+        was_handling_input_event = widget->HandlingInputEvent();
+      });
+
+  Document* document = web_frame->GetFrame()->GetDocument();
+  document->write("<div id='sample' contenteditable>hello world</div>");
+  Element* sample = document->getElementById(AtomicString("sample"));
+  sample->Focus();
+
+  EXPECT_FALSE(widget->HandlingInputEvent());
+
+  SelectionInDomTree selection =
+      SelectionInDomTree::Builder()
+          .Collapse(Position(sample->firstChild(), 0))
+          .Extend(Position(sample->firstChild(), 5))
+          .Build();
+  web_frame->GetFrame()->Selection().SetSelectionForAccessibility(
+      selection, SetSelectionOptions());
+
+  EXPECT_FALSE(was_handling_input_event);
+  EXPECT_FALSE(widget->HandlingInputEvent());
+}
+
 class TestRemoteFrameHostForVisibility : public FakeRemoteFrameHost {
  public:
   TestRemoteFrameHostForVisibility() = default;
@@ -11341,7 +12251,7 @@ class WebRemoteFrameVisibilityChangeTest : public WebFrameTest {
  private:
   TestRemoteFrameHostForVisibility remote_frame_host_;
   frame_test_helpers::WebViewHelper web_view_helper_;
-  WebLocalFrame* frame_;
+  raw_ptr<WebLocalFrame, UnprotectedInRelease | DanglingUntriaged> frame_;
   Persistent<WebRemoteFrameImpl> web_remote_frame_;
 };
 
@@ -11444,7 +12354,7 @@ class WebLocalFrameVisibilityChangeTest
   TestLocalFrameHostForVisibility child_host_;
   frame_test_helpers::TestWebFrameClient child_client_;
   frame_test_helpers::WebViewHelper web_view_helper_;
-  WebLocalFrame* frame_;
+  raw_ptr<WebLocalFrame, UnprotectedInRelease | DanglingUntriaged> frame_;
 };
 
 TEST_F(WebLocalFrameVisibilityChangeTest, FrameVisibilityChange) {
@@ -11563,100 +12473,22 @@ TEST(WebFrameGlobalReuseTest, ReuseForMainFrameIfEnabled) {
                              .ToLocalChecked()));
 }
 
-// This class intercepts the registration of Blob instances.
-//
-// Given that the content of the Blob is known (data URL)
-// it gets the data from the DataElement's BytesProvider, and creates
-// FakeBlob's accordingly.
-class BlobRegistryForSaveImageFromDataURL : public mojom::blink::BlobRegistry {
- public:
-  void Register(mojo::PendingReceiver<mojom::blink::Blob> blob,
-                const String& uuid,
-                const String& content_type,
-                const String& content_disposition,
-                Vector<mojom::blink::DataElementPtr> elements,
-                RegisterCallback callback) override {
-    DCHECK_EQ(elements.size(), 1u);
-    DCHECK(elements[0]->is_bytes());
-
-    auto& element0 = elements[0];
-    const auto& bytes = element0->get_bytes();
-    auto length = bytes->length;
-    String body(
-        base::span(*bytes->embedded_data).first(static_cast<uint32_t>(length)));
-    mojo::MakeSelfOwnedReceiver(std::make_unique<FakeBlob>(uuid, body),
-                                std::move(blob));
-    std::move(callback).Run();
-  }
-
-  void RegisterFromStream(
-      const String& content_type,
-      const String& content_disposition,
-      uint64_t expected_length,
-      mojo::ScopedDataPipeConsumerHandle,
-      mojo::PendingAssociatedRemote<mojom::blink::ProgressClient>,
-      RegisterFromStreamCallback) override {
-    NOTREACHED();
-  }
-};
-
-// blink::mojom::LocalFrameHost instance that intecepts DownloadURL() mojo
-// calls and reads the blob data URL sent by the renderer accordingly.
+// blink::mojom::LocalFrameHost instance that intercepts DownloadURL() calls.
 class TestLocalFrameHostForSaveImageFromDataURL : public FakeLocalFrameHost {
  public:
-  TestLocalFrameHostForSaveImageFromDataURL()
-      : blob_registry_receiver_(
-            &blob_registry_,
-            blob_registry_remote_.BindNewPipeAndPassReceiver()) {
-    BlobDataHandle::SetBlobRegistryForTesting(blob_registry_remote_.get());
-  }
-  ~TestLocalFrameHostForSaveImageFromDataURL() override {
-    BlobDataHandle::SetBlobRegistryForTesting(nullptr);
-  }
+  TestLocalFrameHostForSaveImageFromDataURL() = default;
+  ~TestLocalFrameHostForSaveImageFromDataURL() override = default;
 
   // FakeLocalFrameHost:
   void DownloadURL(mojom::blink::DownloadURLParamsPtr params) override {
-    mojo::Remote<mojom::blink::Blob> blob(std::move(params->data_url_blob));
-    mojo::ScopedDataPipeProducerHandle producer_handle;
-    mojo::ScopedDataPipeConsumerHandle consumer_handle;
-    auto result =
-        mojo::CreateDataPipe(nullptr, producer_handle, consumer_handle);
-    DCHECK(result == MOJO_RESULT_OK);
-
-    blob->ReadAll(std::move(producer_handle), mojo::NullRemote());
-
-    DataPipeDrainerClient client(&data_url_);
-    auto data_pipe_drainer = std::make_unique<mojo::DataPipeDrainer>(
-        &client, std::move(consumer_handle));
-    client.Run();
+    ASSERT_TRUE(params->data_url_buffer);
+    data_url_ = String(base::span(*params->data_url_buffer));
   }
 
   const String& Result() const { return data_url_; }
   void Reset() { data_url_ = String(); }
 
  private:
-  // Helper class to copy a blob to a string.
-  class DataPipeDrainerClient : public mojo::DataPipeDrainer::Client {
-   public:
-    explicit DataPipeDrainerClient(String* output)
-        : run_loop_(base::RunLoop::Type::kNestableTasksAllowed),
-          output_(output) {}
-    void Run() { run_loop_.Run(); }
-
-    void OnDataAvailable(base::span<const uint8_t> data) override {
-      *output_ = String(data);
-    }
-    void OnDataComplete() override { run_loop_.Quit(); }
-
-   private:
-    base::RunLoop run_loop_;
-    String* output_;
-  };
-
-  BlobRegistryForSaveImageFromDataURL blob_registry_;
-  mojo::Remote<mojom::blink::BlobRegistry> blob_registry_remote_;
-  mojo::Receiver<mojom::blink::BlobRegistry> blob_registry_receiver_;
-
   // Data URL retrieved from the blob.
   String data_url_;
 };
@@ -11684,9 +12516,6 @@ TEST_F(WebFrameTest, SaveImageAt) {
 
   frame_host.Reset();
   local_frame->SaveImageAt(gfx::Point(1, 1));
-  // Note that in this test does not use RunPendingTasks() since
-  // TestLocalFrameHostForSaveImageFromDataURL trigger its own loops, so nesting
-  // must be allowed.
   base::RunLoop(base::RunLoop::Type::kNestableTasksAllowed).RunUntilIdle();
 
   EXPECT_EQ(
@@ -11840,6 +12669,30 @@ TEST_F(WebFrameTest, DiscardFrame) {
                     ->innerText());
 }
 
+TEST_F(WebFrameTest, DiscardFrameRunsUnloadEvents) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndDisableFeature(
+      network::features::kDeprecateUnload);
+  DisableRendererSchedulerThrottling();
+  RegisterMockedHttpURLLoad("foo.html");
+
+  frame_test_helpers::WebViewHelper helper;
+  helper.InitializeAndLoad(base_url_ + "foo.html");
+
+  helper.LocalMainFrame()->ExecuteScript(
+      WebScriptSource("window.name = '';"
+                      "window.addEventListener('pagehide', () => { window.name "
+                      "+= 'pagehide,'; });"
+                      "window.addEventListener('unload', () => { window.name "
+                      "+= 'unload'; });"));
+
+  helper.LocalMainFrame()->GetFrame()->Discard();
+  RunPendingTasks();
+
+  EXPECT_EQ("pagehide,unload",
+            helper.LocalMainFrame()->GetFrame()->Tree().GetName());
+}
+
 // Tests to ensure that DocumentResourceCoordinators are not instantiated for
 // discarded documents, which are installed following a frame discard operation.
 TEST_F(WebFrameTest, ResourceCoordinatorNotCreatedForDiscardedDocument) {
@@ -11884,11 +12737,11 @@ class TestResourcePriorityWebFrameClient
   class ExpectedRequest {
    public:
     ExpectedRequest(const KURL& url, WebURLRequest::Priority priority)
-        : url(url), priority(priority), seen(false) {}
+        : url(url), priority(priority) {}
 
     KURL url;
     WebURLRequest::Priority priority;
-    bool seen;
+    bool seen = false;
   };
 
   TestResourcePriorityWebFrameClient() = default;
@@ -11908,8 +12761,9 @@ class TestResourcePriorityWebFrameClient
   }
 
   void VerifyAllRequests() {
-    for (const auto& request : expected_requests_)
+    for (const auto& request : expected_requests_) {
       EXPECT_TRUE(request.value->seen);
+    }
   }
 
  private:
@@ -12246,8 +13100,7 @@ TEST_F(WebFrameSimTest, HitTestWithIgnoreClippingAtNegativeOffset) {
   HitTestResult result(request, location);
   frame_view->GetLayoutView()->HitTest(location, result);
 
-  EXPECT_EQ(GetDocument().getElementById(AtomicString("top")),
-            result.InnerNode());
+  EXPECT_EQ(GetElementById("top"), result.InnerNode());
 }
 
 TEST_F(WebFrameSimTest, TickmarksDocumentRelative) {
@@ -12335,8 +13188,8 @@ TEST_F(WebFrameSimTest, FindInPageSelectNextMatch) {
   auto* local_frame = To<LocalFrame>(WebView().GetPage()->MainFrame());
   auto* frame_view = local_frame->View();
 
-  Element* box1 = GetDocument().getElementById(AtomicString("box1"));
-  Element* box2 = GetDocument().getElementById(AtomicString("box2"));
+  Element* box1 = GetElementById("box1");
+  Element* box2 = GetElementById("box2");
 
   gfx::Rect box1_rect = box1->GetLayoutObject()->AbsoluteBoundingBoxRect();
   gfx::Rect box2_rect = box2->GetLayoutObject()->AbsoluteBoundingBoxRect();
@@ -12399,7 +13252,7 @@ TEST_F(WebFrameSimTest, TallBlockRectFindTest) {
   auto* local_frame = To<LocalFrame>(WebView().GetPage()->MainFrame());
   auto* frame_view = local_frame->View();
 
-  Element* target = GetDocument().getElementById(AtomicString("textnode"));
+  Element* target = GetElementById("textnode");
   gfx::Rect span_rect = target->GetLayoutObject()->AbsoluteBoundingBoxRect();
   WebView().ZoomToFindInPageRect(span_rect);
 
@@ -12553,7 +13406,7 @@ TEST_F(WebFrameSimTest, TestFocusPreventScrollNotScrollElementIntoView) {
   Compositor().BeginFrame();
 
   ScrollableArea* area = GetDocument().View()->LayoutViewport();
-  Element* input = GetDocument().getElementById(AtomicString("target"));
+  Element* input = GetElementById("target");
   gfx::Rect input_rect(0, 1000, 100, 20);
 
   // Focus the element with `preventScroll: true` to ensure it does not scroll
@@ -12750,7 +13603,7 @@ TEST_F(WebFrameSimTest, TestScrollFocusedEditableInRootScroller) {
   TopDocumentRootScrollerController& rs_controller =
       GetDocument().GetPage()->GlobalRootScrollerController();
 
-  Element* scroller = GetDocument().getElementById(AtomicString("scroller"));
+  Element* scroller = GetElementById("scroller");
   ASSERT_EQ(scroller, rs_controller.GlobalRootScroller());
 
   auto* frame = To<LocalFrame>(WebView().GetPage()->MainFrame());
@@ -12866,7 +13719,7 @@ TEST_F(WebFrameSimTest, ScrollFocusedIntoViewClipped) {
       ->FrameWidget()
       ->ScrollFocusedEditableElementIntoView();
 
-  Element* input = GetDocument().getElementById(AtomicString("target"));
+  Element* input = GetElementById("target");
   gfx::Rect input_rect(input->GetBoundingClientRect()->top(),
                        input->GetBoundingClientRect()->left(),
                        input->GetBoundingClientRect()->width(),
@@ -12889,7 +13742,7 @@ TEST_F(WebFrameSimTest, ScrollFocusedIntoViewClipped) {
 
   // Additional gut-check that we actually scrolled the non-user-scrollable
   // clip element to make sure the input is in view.
-  Element* clip = GetDocument().getElementById(AtomicString("clip"));
+  Element* clip = GetElementById("clip");
   EXPECT_GT(clip->scrollTop(), 0);
 }
 
@@ -12926,8 +13779,7 @@ TEST_F(WebFrameSimTest, ScrollFocusedSelectionIntoView) {
   Compositor().BeginFrame();
   WebView().AdvanceFocus(false);
 
-  auto* input = To<HTMLInputElement>(
-      GetDocument().getElementById(AtomicString("target")));
+  auto* input = To<HTMLInputElement>(GetElementById("target"));
   input->select();
 
   // Simulate the keyboard being shown and resizing the widget. Cause a scroll
@@ -13083,7 +13935,7 @@ TEST_F(WebFrameSimTest, ScrollFocusedEditableIntoViewNoLayoutObject) {
 
   Compositor().BeginFrame();
 
-  Element* input = GetDocument().getElementById(AtomicString("target"));
+  Element* input = GetElementById("target");
   input->Focus();
 
   ScrollableArea* area = GetDocument().View()->LayoutViewport();
@@ -13113,7 +13965,7 @@ TEST_F(WebFrameSimTest, ScrollFocusedEditableIntoViewNoLayoutObject) {
 
 TEST_F(WebFrameSimTest, ScrollEditContextIntoView) {
   WebView().MainFrameViewWidget()->Resize(gfx::Size(500, 600));
-  WebView().SetZoomFactorForDeviceScaleFactor(2.0f);
+  WebView().SetZoomFactorForDeviceScaleFactor(2.0f, 1.0f);
 
   SimRequest r("https://example.com/test.html", "text/html");
   LoadURL("https://example.com/test.html");
@@ -14057,8 +14909,9 @@ TEST_F(WebFrameTest, RemoteViewportAndMainframeIntersections) {
 
   // The viewport intersection should be applied by the layout geometry mapping
   // code when these flags are used.
-  int viewport_intersection_flags =
-      kTraverseDocumentBoundaries | kApplyRemoteMainFrameTransform;
+  MapCoordinatesFlags viewport_intersection_flags = {
+      MapCoordinatesMode::kTraverseDocumentBoundaries,
+      MapCoordinatesMode::kApplyRemoteMainFrameTransform};
 
   // Expectation is: (target location) + (viewport offset) = (20, 10) + (7, -11)
   PhysicalOffset offset = target->GetLayoutObject()->LocalToAbsolutePoint(
@@ -14078,13 +14931,15 @@ TEST_F(WebFrameTest, RemoteViewportAndMainframeIntersections) {
   local_frame->GetFrame()
       ->GetDocument()
       ->GetLayoutView()
-      ->MapToVisualRectInAncestorSpace(nullptr, mainframe_rect,
-                                       kDontApplyMainFrameOverflowClip);
+      ->MapToVisualRectInAncestorSpace(
+          nullptr, mainframe_rect,
+          {VisualRectFlag::kDontApplyMainFrameOverflowClip});
   EXPECT_EQ(PhysicalRect(7, -11, 25, 35), mainframe_rect);
 
-  constexpr auto kGeometryMapperFlags = static_cast<VisualRectFlags>(
-      kUseGeometryMapper | kVisualRectApplyRemoteViewportTransform |
-      kIgnoreFilters);
+  constexpr VisualRectFlags kGeometryMapperFlags = {
+      VisualRectFlag::kUseGeometryMapper,
+      VisualRectFlag::kApplyRemoteViewportTransform,
+      VisualRectFlag::kIgnoreFilters};
 
   // Translate (0,0) by (7, -11) => (7, -11)
   // Clip against parent viewport (0, 0, 200, 140):
@@ -14107,12 +14962,18 @@ class TestUpdateFaviconURLLocalFrameHost : public FakeLocalFrameHost {
 
   // FakeLocalFrameHost:
   void UpdateFaviconURL(
-      Vector<blink::mojom::blink::FaviconURLPtr> favicon_urls) override {
-    did_notify_ = true;
+      Vector<blink::mojom::blink::FaviconURLPtr> favicon_urls,
+      blink::mojom::blink::FaviconUpdateReason reason) override {
+    last_reason_ = reason;
   }
 
-  bool did_notify_ = false;
+  std::optional<blink::mojom::blink::FaviconUpdateReason> last_reason_;
 };
+
+constexpr char kPageWithFaviconHTML[] =
+    "<html><head>"
+    "<link rel='icon' href='http://www.google.com/favicon.ico'>"
+    "</head></html>";
 
 // Ensure the render view sends favicon url update events correctly.
 TEST_F(WebFrameTest, FaviconURLUpdateEvent) {
@@ -14128,16 +14989,13 @@ TEST_F(WebFrameTest, FaviconURLUpdateEvent) {
 
   // An event should be sent when a favicon url exists.
   frame->GetDocument()->documentElement()->SetInnerHTMLWithoutTrustedTypes(
-      "<html>"
-      "<head>"
-      "<link rel='icon' href='http://www.google.com/favicon.ico'>"
-      "</head>"
-      "</html>");
+      kPageWithFaviconHTML);
   RunPendingTasks();
 
-  EXPECT_TRUE(frame_host.did_notify_);
+  EXPECT_EQ(frame_host.last_reason_,
+            blink::mojom::blink::FaviconUpdateReason::kLinkElementChange);
 
-  frame_host.did_notify_ = false;
+  frame_host.last_reason_.reset();
 
   // An event should not be sent if no favicon url exists. This is an assumption
   // made by some of Chrome's favicon handling.
@@ -14148,7 +15006,51 @@ TEST_F(WebFrameTest, FaviconURLUpdateEvent) {
       "</html>");
   RunPendingTasks();
 
-  EXPECT_FALSE(frame_host.did_notify_);
+  EXPECT_FALSE(frame_host.last_reason_.has_value());
+  web_view_helper.Reset();
+}
+
+// Ensure media feature changes send kMediaQueryChange as the reason.
+TEST_F(WebFrameTest, FaviconURLUpdateReasonMediaQueryChange) {
+  TestUpdateFaviconURLLocalFrameHost frame_host;
+  frame_test_helpers::TestWebFrameClient web_frame_client;
+  frame_host.Init(web_frame_client.GetRemoteNavigationAssociatedInterfaces());
+  frame_test_helpers::WebViewHelper web_view_helper;
+  web_view_helper.Initialize(&web_frame_client);
+  RunPendingTasks();
+
+  LocalFrame* frame = web_view_helper.GetWebView()->MainFrameImpl()->GetFrame();
+
+  frame->GetDocument()->documentElement()->SetInnerHTMLWithoutTrustedTypes(
+      kPageWithFaviconHTML);
+  RunPendingTasks();
+  frame_host.last_reason_.reset();
+
+  frame->GetDocument()->GetMediaQueryMatcher();
+  frame->GetDocument()->EvaluateMediaQueryList();
+  RunPendingTasks();
+
+  EXPECT_EQ(frame_host.last_reason_,
+            blink::mojom::blink::FaviconUpdateReason::kMediaQueryChange);
+  web_view_helper.Reset();
+}
+
+// Ensure loading a page with a favicon sends kPageLoad as the reason.
+TEST_F(WebFrameTest, FaviconURLUpdateReasonPageLoad) {
+  TestUpdateFaviconURLLocalFrameHost frame_host;
+  frame_test_helpers::TestWebFrameClient web_frame_client;
+  frame_host.Init(web_frame_client.GetRemoteNavigationAssociatedInterfaces());
+
+  frame_test_helpers::WebViewHelper web_view_helper;
+  web_view_helper.Initialize(&web_frame_client);
+
+  frame_test_helpers::LoadHTMLString(
+      web_view_helper.GetWebView()->MainFrameImpl(), kPageWithFaviconHTML,
+      url_test_helpers::ToKURL("http://example.com/"));
+  RunPendingTasks();
+
+  EXPECT_EQ(frame_host.last_reason_,
+            blink::mojom::blink::FaviconUpdateReason::kPageLoad);
   web_view_helper.Reset();
 }
 
@@ -14161,7 +15063,8 @@ class TestFocusedElementChangedLocalFrameHost : public FakeLocalFrameHost {
   void FocusedElementChanged(bool is_editable_element,
                              bool is_richly_editable_element,
                              const gfx::Rect& bounds_in_frame_widget,
-                             blink::mojom::FocusType focus_type) override {
+                             blink::mojom::FocusType focus_type,
+                             mojom::blink::DOMNodeIdPtr dom_node_id) override {
     did_notify_ = true;
   }
 
@@ -14268,7 +15171,7 @@ TEST_F(WebFrameTest, DownloadReferrerPolicy) {
             policy_container_host.BindNewEndpointAndPassDedicatedRemote(),
             mojom::blink::PolicyContainerPolicies::New()));
     EXPECT_CALL(policy_container_host,
-                SetReferrerPolicy(network::mojom::ReferrerPolicy::kNever));
+                SetReferrerPolicy(network::mojom::ReferrerPolicy::kNever, _));
     frame_test_helpers::LoadHTMLString(
         frame, GetHTMLStringForReferrerPolicy("no-referrer", std::string()),
         test_url);
@@ -14286,7 +15189,7 @@ TEST_F(WebFrameTest, DownloadReferrerPolicy) {
             policy_container_host.BindNewEndpointAndPassDedicatedRemote(),
             mojom::blink::PolicyContainerPolicies::New()));
     EXPECT_CALL(policy_container_host,
-                SetReferrerPolicy(network::mojom::ReferrerPolicy::kOrigin));
+                SetReferrerPolicy(network::mojom::ReferrerPolicy::kOrigin, _));
     frame_test_helpers::LoadHTMLString(
         frame, GetHTMLStringForReferrerPolicy("origin", std::string()),
         test_url);
@@ -14303,7 +15206,7 @@ TEST_F(WebFrameTest, DownloadReferrerPolicy) {
         std::make_unique<PolicyContainer>(
             policy_container_host.BindNewEndpointAndPassDedicatedRemote(),
             mojom::blink::PolicyContainerPolicies::New()));
-    EXPECT_CALL(policy_container_host, SetReferrerPolicy(_)).Times(0);
+    EXPECT_CALL(policy_container_host, SetReferrerPolicy(_, _)).Times(0);
     frame_test_helpers::LoadHTMLString(
         frame, GetHTMLStringForReferrerPolicy(std::string(), std::string()),
         test_url);
@@ -14321,7 +15224,7 @@ TEST_F(WebFrameTest, DownloadReferrerPolicy) {
         std::make_unique<PolicyContainer>(
             policy_container_host.BindNewEndpointAndPassDedicatedRemote(),
             mojom::blink::PolicyContainerPolicies::New()));
-    EXPECT_CALL(policy_container_host, SetReferrerPolicy(_)).Times(0);
+    EXPECT_CALL(policy_container_host, SetReferrerPolicy(_, _)).Times(0);
     frame_test_helpers::LoadHTMLString(
         frame, GetHTMLStringForReferrerPolicy(std::string(), "origin"),
         test_url);
@@ -14338,7 +15241,7 @@ TEST_F(WebFrameTest, DownloadReferrerPolicy) {
         std::make_unique<PolicyContainer>(
             policy_container_host.BindNewEndpointAndPassDedicatedRemote(),
             mojom::blink::PolicyContainerPolicies::New()));
-    EXPECT_CALL(policy_container_host, SetReferrerPolicy(_)).Times(0);
+    EXPECT_CALL(policy_container_host, SetReferrerPolicy(_, _)).Times(0);
     frame_test_helpers::LoadHTMLString(
         frame, GetHTMLStringForReferrerPolicy(std::string(), "same-origin"),
         test_url);
@@ -14355,7 +15258,7 @@ TEST_F(WebFrameTest, DownloadReferrerPolicy) {
         std::make_unique<PolicyContainer>(
             policy_container_host.BindNewEndpointAndPassDedicatedRemote(),
             mojom::blink::PolicyContainerPolicies::New()));
-    EXPECT_CALL(policy_container_host, SetReferrerPolicy(_)).Times(0);
+    EXPECT_CALL(policy_container_host, SetReferrerPolicy(_, _)).Times(0);
     frame_test_helpers::LoadHTMLString(
         frame, GetHTMLStringForReferrerPolicy(std::string(), "no-referrer"),
         test_url);
@@ -14366,6 +15269,44 @@ TEST_F(WebFrameTest, DownloadReferrerPolicy) {
   }
 
   web_view_helper.Reset();
+}
+
+TEST_F(WebFrameTest, RemoteFrameCompositingRectUpdatesWithFrameRect) {
+  frame_test_helpers::WebViewHelper web_view_helper;
+  web_view_helper.Initialize();
+
+  WebViewImpl* web_view = web_view_helper.GetWebView();
+  web_view->Resize(gfx::Size(800, 800));
+  InitializeWithHTML(*web_view->MainFrameImpl()->GetFrame(), R"HTML(
+      <!DOCTYPE html>
+      <style>
+        iframe {
+          width: 120px;
+          height: 120px;
+          border: none;
+        }
+      </style>
+      <iframe></iframe>
+  )HTML");
+
+  WebRemoteFrameImpl* remote_frame = frame_test_helpers::CreateRemote();
+  frame_test_helpers::SwapRemoteFrame(
+      web_view_helper.LocalMainFrame()->FirstChild(), remote_frame);
+  remote_frame->SetReplicatedOrigin(
+      WebSecurityOrigin(SecurityOrigin::CreateUniqueOpaque()), false);
+
+  web_view->MainFrameImpl()
+      ->GetFrame()
+      ->View()
+      ->UpdateAllLifecyclePhasesForTest();
+  RunPendingTasks();
+
+  RemoteFrameView* remote_frame_view = remote_frame->GetFrame()->View();
+  ASSERT_EQ(remote_frame_view->GetCompositingRect(), gfx::Rect(0, 0, 120, 120));
+
+  remote_frame_view->Resize(520, 320);
+
+  EXPECT_EQ(remote_frame_view->GetCompositingRect(), gfx::Rect(0, 0, 520, 320));
 }
 
 TEST_F(WebFrameTest, RemoteFrameCompositingScaleFactor) {
@@ -14701,7 +15642,8 @@ class IframeBeginNavivationCountTestWebFrameClient
   TestNewWindowWebFrameClient* iframe_client() const { return client_; }
 
  private:
-  TestNewWindowWebFrameClient* client_ = nullptr;
+  raw_ptr<TestNewWindowWebFrameClient, UnprotectedInRelease | DanglingUntriaged>
+      client_ = nullptr;
 };
 
 TEST_F(WebFrameTest, SandboxedIframePopupCtrlClick) {
@@ -14712,6 +15654,7 @@ TEST_F(WebFrameTest, SandboxedIframePopupCtrlClick) {
       base_url_ + "sandboxed-srcdoc-ctrl-click.html", &web_frame_client);
 
   ASSERT_EQ(web_frame_client.iframe_client()->BeginNavigationCallCount(), 1);
+  web_frame_client.iframe_client()->IgnoreNavigations();
 
   LocalFrame* child = To<LocalFrame>(
       web_view_helper.GetWebView()->GetPage()->MainFrame()->FirstChild());
@@ -14720,9 +15663,45 @@ TEST_F(WebFrameTest, SandboxedIframePopupCtrlClick) {
   To<HTMLElement>(element)->click();
 
   // Clicking the button will attempt a synthetic Ctrl+Click from an iframe
-  // sandboxed without `allow-popups`. This should be blocked before reaching
-  // BeginNavigation().
+  // sandboxed without `allow-popups`. This should reach begin navigation, but
+  // not reach CreateNewWindow() (TestNewWindowWebFrameClient will fail the test
+  // if CreateNewWindow() is reached).
+  EXPECT_EQ(web_frame_client.iframe_client()->BeginNavigationCallCount(), 2);
+  EXPECT_EQ(web_frame_client.iframe_client()->LastNavigationPolicy(),
+            kWebNavigationPolicyCurrentTab);
+}
+
+TEST_F(WebFrameTest,
+       SandboxedIframePropagatesToAuxiliaryBrowsingContextsCtrlClick) {
+  RegisterMockedHttpURLLoad("sandboxed-allow-popups-srcdoc-ctrl-click.html");
+  IframeBeginNavivationCountTestWebFrameClient web_frame_client;
+  frame_test_helpers::WebViewHelper web_view_helper;
+  web_view_helper.InitializeAndLoad(
+      base_url_ + "sandboxed-allow-popups-srcdoc-ctrl-click.html",
+      &web_frame_client);
+
+  ASSERT_EQ(web_frame_client.iframe_client()->BeginNavigationCallCount(), 1);
+  web_frame_client.iframe_client()->IgnoreNavigations();
+  web_frame_client.iframe_client()->ExpectCreateNewWindow();
+
+  LocalFrame* child = To<LocalFrame>(
+      web_view_helper.GetWebView()->GetPage()->MainFrame()->FirstChild());
+  ASSERT_TRUE(child->GetSecurityContext()->IsSandboxed(
+      network::mojom::blink::WebSandboxFlags::
+          kPropagatesToAuxiliaryBrowsingContexts));
+
+  Element* element =
+      child->GetDocument()->body()->getElementById(AtomicString("btn"));
+  To<HTMLElement>(element)->click();
+
+  // Clicking the button will attempt a synthetic Ctrl+Click from an iframe
+  // sandboxed without sandbox escaping. This should go through the
+  // CreateNewWindow() path instead of the BeginNavigation() path, and should
+  // include the child's sandbox flags.
   EXPECT_EQ(web_frame_client.iframe_client()->BeginNavigationCallCount(), 1);
+  EXPECT_TRUE(web_frame_client.iframe_client()->DidCallCreateNewWindow());
+  EXPECT_EQ(web_frame_client.iframe_client()->NewWindowSandboxFlags(),
+            child->GetSecurityContext()->GetSandboxFlags());
 }
 
 // Tests that a FrameLoadRequest for a GET request made from an opaque origin
@@ -14744,6 +15723,15 @@ TEST_F(WebFrameTest, FrameLoadRequestOriginGETOpaque) {
   EXPECT_TRUE(frame_load_request.GetResourceRequest()
                   .HttpHeaderField(http_names::kOrigin)
                   .IsNull());
+}
+
+TEST_F(WebFrameTest, FindFrameByNameCurrent) {
+  frame_test_helpers::WebViewHelper web_view_helper;
+  web_view_helper.Initialize();
+  WebLocalFrame* frame = web_view_helper.LocalMainFrame();
+
+  EXPECT_EQ(frame->FindFrameByName(WebString("_self")), frame);
+  EXPECT_EQ(frame->FindFrameByName(WebString("_current")), nullptr);
 }
 
 }  // namespace blink

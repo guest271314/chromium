@@ -28,6 +28,7 @@ final class BrowserWindowCreatorBridge {
     @VisibleForTesting
     static long createBrowserWindow(AndroidBrowserWindowCreateParams createParams) {
         if (!canCreateBrowserWindow(createParams)) {
+            createParams.destroyWebContents();
             return 0L;
         }
 
@@ -43,6 +44,7 @@ final class BrowserWindowCreatorBridge {
     static void createBrowserWindowAsync(
             AndroidBrowserWindowCreateParams createParams, JniOnceCallback<Long> callback) {
         if (!canCreateBrowserWindow(createParams)) {
+            createParams.destroyWebContents();
             callback.onResult(0L);
             return;
         }
@@ -66,9 +68,17 @@ final class BrowserWindowCreatorBridge {
         }
 
         @WindowShowState.EnumType int initialShowState = createParams.getInitialShowState();
-        if (initialShowState == WindowShowState.FULLSCREEN) {
-            Log.e(TAG, String.format(Locale.US, "Unsupported show state: %d", initialShowState));
-            return false;
+        switch (initialShowState) {
+            case WindowShowState.DEFAULT:
+            case WindowShowState.NORMAL:
+            case WindowShowState.MINIMIZED:
+            case WindowShowState.MAXIMIZED:
+                break;
+            default:
+                Log.e(
+                        TAG,
+                        String.format(Locale.US, "Unsupported show state: %d", initialShowState));
+                return false;
         }
 
         var profile = createParams.getProfile();

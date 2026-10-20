@@ -19,9 +19,24 @@ extern const char kAllowLegacyExtensionManifests[];
 // Adds the given extension ID to all the permission allowlists.
 extern const char kAllowlistedExtensionID[];
 
+// Test-only. Allows built-in (kComponent) extensions to load scripts from
+// chrome://webui-test, which only exists in browser tests. This does not change
+// any other browser behavior. ExtensionMochaBrowserTest appends it.
+//
+// This switch is specific to extensions. WebUI pages do not need it: their CSP
+// always allows chrome://webui-test, and that host is only registered in
+// tests. Component extensions are gated anyway, as defense in depth, because
+// they are the most privileged extensions. This is not a precedent for gating
+// chrome://webui-test in WebUI.
+extern const char kAllowWebUITestInComponentExtensions[];
+
 // Whether to disable app content verification when testing changes locally on
 // Chromebox for Meetings hardware.
 extern const char kDisableAppContentVerification[];
+
+// Disables crashing on JavaScript errors in component extensions. Used for
+// development.
+extern const char kDisableCrashOnComponentExtensionJsError[];
 
 // Disable checking for user opt-in for extensions that want to inject script
 // into file URLs (ie, always allow it). This is used during automated testing.
@@ -80,6 +95,10 @@ extern const char kLoadGuestModeTestExtension[];
 // Allows the use of the `testing` reason in offscreen documents.
 extern const char kOffscreenDocumentTesting[];
 
+// Forces component extensions' service workers to be re-registered on every
+// load, instead of reusing the registration persisted in the profile.
+extern const char kRefreshComponentExtensionServiceWorkers[];
+
 // Set the parameters for ExtensionURLLoaderThrottleBrowserTest.
 extern const char kSetExtensionThrottleTestParams[];
 
@@ -101,6 +120,10 @@ extern const char kAllowFutureManifestVersion[];
 // copied from the browser to the renderer in ChromeContentBrowserClient to
 // actually use it in browser tests.
 extern const char kExtensionTestApiOnWebPages[];
+
+// Forces the `chrome.test` API to use standardized behavior matching the
+// `browser.test` proposal.
+extern const char kExtensionTestApiStandardizedBehavior[];
 
 // The feature parameter name that controls the variant of IPH shown when the
 // user has no extensions installed.

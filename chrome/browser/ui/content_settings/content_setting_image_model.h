@@ -10,18 +10,21 @@
 #include <string>
 #include <vector>
 
+#include "base/containers/span.h"
 #include "base/memory/raw_ptr.h"
 #include "build/build_config.h"
 #include "chrome/browser/ui/content_settings/content_setting_bubble_model.h"
 #include "chrome/browser/ui/content_settings/content_setting_bubble_model_delegate.h"
 #include "components/browser_apis/ui_controllers/toolbar/toolbar_ui_api_data_model.mojom-shared.h"
 #include "components/content_settings/core/common/content_settings_types.h"
+#include "third_party/skia/include/core/SkColor.h"
 #include "ui/base/interaction/element_identifier.h"
 #include "ui/gfx/image/image.h"
 
 namespace content {
+class Page;
 class WebContents;
-}
+}  // namespace content
 
 namespace gfx {
 struct VectorIcon;
@@ -65,6 +68,19 @@ class ContentSettingImageModel {
   // Generates a vector of all image models to be used within one window.
   static std::vector<std::unique_ptr<ContentSettingImageModel>>
   GenerateContentSettingImageModels();
+
+  // Returns all element identifiers for all content setting image models.
+  static base::span<const ui::ElementIdentifier> GetAllElementIdentifiers();
+
+  // Returns whether `image_type` is drawn as a left-hand-side activity
+  // indicator by the permission dashboard, rather than as a right-hand-side
+  // content setting image. This is the single source of truth for that mapping;
+  // every location bar implementation must route through it so that exactly one
+  // of the two containers draws the indicator.
+  //
+  // Callers must additionally apply any window-specific conditions. For
+  // instance, web app windows never show the permission dashboard.
+  static bool IsLeftHandSideIndicatorEnabled(ImageType image_type);
 
   // Returns the corresponding index into the above vector for the given
   // ContentSettingsType. For testing.
@@ -149,7 +165,7 @@ class ContentSettingImageModel {
   // Internal implementation by subclasses of bubble model creation.
   virtual std::unique_ptr<ContentSettingBubbleModel> CreateBubbleModelImpl(
       ContentSettingBubbleModel::Delegate* delegate,
-      content::WebContents* web_contents) = 0;
+      content::Page& page) = 0;
 
   void set_accessibility_string_id(int id) { accessibility_string_id_ = id; }
 
@@ -202,7 +218,7 @@ class ContentSettingSimpleImageModel : public ContentSettingImageModel {
   // ContentSettingImageModel implementation.
   std::unique_ptr<ContentSettingBubbleModel> CreateBubbleModelImpl(
       ContentSettingBubbleModel::Delegate* delegate,
-      content::WebContents* web_contents) override;
+      content::Page& page) override;
 
   ContentSettingsType content_type() { return content_type_; }
 
@@ -223,7 +239,7 @@ class ContentSettingFramebustBlockImageModel : public ContentSettingImageModel {
 
   std::unique_ptr<ContentSettingBubbleModel> CreateBubbleModelImpl(
       ContentSettingBubbleModel::Delegate* delegate,
-      content::WebContents* web_contents) override;
+      content::Page& page) override;
 };
 
 #endif  // CHROME_BROWSER_UI_CONTENT_SETTINGS_CONTENT_SETTING_IMAGE_MODEL_H_

@@ -382,22 +382,7 @@ bool GpuControlList::More::Contains(const GPUInfo& gpu_info) const {
     }
   }
 #endif
-  switch (hardware_overlay) {
-    case kDontCare:
-      break;
-    case kSupported:
-#if BUILDFLAG(IS_WIN)
-      if (!gpu_info.overlay_info.supports_overlays)
-        return false;
-#endif  // BUILDFLAG(IS_WIN)
-      break;
-    case kUnsupported:
-#if BUILDFLAG(IS_WIN)
-      if (gpu_info.overlay_info.supports_overlays)
-        return false;
-#endif  // BUILDFLAG(IS_WIN)
-      break;
-  }
+
   if ((subpixel_font_rendering == kUnsupported &&
        gpu_info.subpixel_font_rendering) ||
       (subpixel_font_rendering == kSupported &&
@@ -441,32 +426,6 @@ bool GpuControlList::IntelConditions::Contains(
   }
   return false;
 }
-
-GpuControlList::Conditions::Conditions(
-    OsType os_type,
-    Version os_version,
-    uint32_t vendor_id,
-    base::span<const Device> devices,
-    MultiGpuCategory multi_gpu_category,
-    MultiGpuStyle multi_gpu_style,
-    const DriverInfo* driver_info,
-    const GLStrings* gl_strings,
-    const MachineModelInfo* machine_model_info,
-    const IntelConditions* intel_conditions,
-    const More* more)
-    : os_type(os_type),
-      os_version(os_version),
-      vendor_id(vendor_id),
-      devices(devices),
-      multi_gpu_category(multi_gpu_category),
-      multi_gpu_style(multi_gpu_style),
-      driver_info(driver_info),
-      gl_strings(gl_strings),
-      machine_model_info(machine_model_info),
-      intel_conditions(intel_conditions),
-      more(more) {}
-
-GpuControlList::Conditions::Conditions(const Conditions& other) = default;
 
 bool GpuControlList::Conditions::Contains(OsType target_os_type,
                                           std::string_view target_os_version,

@@ -38,5 +38,13 @@ const char kDisablePolicyKeyVerification[] = "disable-policy-key-verification";
 
 // Specifies the base URL to contact the secure connect Api.
 const char kSecureConnectApiUrl[] = "secure-connect-api-url";
+
+#if BUILDFLAG(IS_ANDROID)
+const char kForceDeviceOwnership[] = "force-device-ownership";
+#endif
+
+#if !BUILDFLAG(GOOGLE_CHROME_BRANDING)
+const char kUseFakeDmserver[] = "use-fake-dmserver";
+#endif
 }  // namespace switches
 }  // namespace policy

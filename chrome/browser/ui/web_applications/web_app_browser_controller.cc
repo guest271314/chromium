@@ -22,15 +22,13 @@
 #include "build/build_config.h"
 #include "chrome/browser/apps/app_service/app_service_proxy.h"
 #include "chrome/browser/apps/app_service/app_service_proxy_factory.h"
-#include "chrome/browser/ash/browser_delegate/browser_controller.h"
 #include "chrome/browser/profiles/keep_alive/profile_keep_alive_types.h"
 #include "chrome/browser/profiles/keep_alive/scoped_profile_keep_alive.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
-#include "chrome/browser/ui/tabs/tab_menu_model_factory.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/unload_controller.h"
 #include "chrome/browser/ui/web_applications/web_app_dialogs.h"
 #include "chrome/browser/ui/web_applications/web_app_launch_utils.h"
@@ -53,6 +51,7 @@
 #include "chrome/browser/web_applications/web_app_sync_bridge.h"
 #include "chrome/browser/web_applications/web_app_tab_helper.h"
 #include "chrome/browser/web_applications/web_app_ui_manager.h"
+#include "chrome/common/chrome_features.h"
 #include "chrome/grit/generated_resources.h"
 #include "components/keep_alive_registry/keep_alive_types.h"
 #include "components/keep_alive_registry/scoped_keep_alive.h"
@@ -64,6 +63,7 @@
 #include "content/public/browser/site_isolation_policy.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/content_features.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/common/safe_url_pattern.h"
 #include "ui/base/l10n/l10n_util.h"
@@ -78,10 +78,12 @@
 #include "ash/constants/ash_features.h"
 #include "chrome/browser/ash/apps/apk_web_app_service.h"
 #include "chrome/browser/ash/system_web_apps/color_helpers.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/web_applications/chromeos_web_app_experiments.h"
-#include "chrome/common/chrome_features.h"
+#include "chromeos/ash/components/browser_delegate/browser_controller.h"
 #include "chromeos/ash/experiences/system_web_apps/types/system_web_app_delegate.h"
-#include "chromeos/constants/chromeos_features.h"
+#include "components/tabs/public/tab_context_menu_command.h"
+#include "ui/menus/simple_menu_model.h"
 #endif
 
 namespace web_app {
@@ -90,29 +92,6 @@ namespace {
 
 #if BUILDFLAG(IS_CHROMEOS)
 constexpr char kRelationship[] = "delegate_permission/common.handle_all_urls";
-
-// SystemWebAppDelegate provides menu.
-class SystemAppTabMenuModelFactory : public TabMenuModelFactory {
- public:
-  explicit SystemAppTabMenuModelFactory(
-      const ash::SystemWebAppDelegate* system_app)
-      : system_app_(system_app) {}
-  SystemAppTabMenuModelFactory(const SystemAppTabMenuModelFactory&) = delete;
-  SystemAppTabMenuModelFactory& operator=(const SystemAppTabMenuModelFactory&) =
-      delete;
-  ~SystemAppTabMenuModelFactory() override = default;
-
-  std::unique_ptr<ui::SimpleMenuModel> Create(
-      ui::SimpleMenuModel::Delegate* delegate,
-      TabMenuModelDelegate* tab_menu_model_delegate,
-      TabStripModel*,
-      int) override {
-    return system_app_->GetTabMenuModel(delegate);
-  }
-
- private:
-  const raw_ptr<const ash::SystemWebAppDelegate> system_app_;
-};
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
 base::OnceClosure& IconLoadCallbackForTesting() {
@@ -129,7 +108,7 @@ base::OnceClosure& ManifestUpdateAppliedCallbackForTesting() {
 
 WebAppBrowserController::WebAppBrowserController(
     WebAppProvider& provider,
-    Browser* browser,
+    BrowserWindowInterface* browser,
     webapps::AppId app_id,
 #if BUILDFLAG(IS_CHROMEOS)
     const ash::SystemWebAppDelegate* system_app,
@@ -185,21 +164,28 @@ bool WebAppBrowserController::HasMinimalUiButtons() const {
   return effective_display_mode_ == DisplayMode::kMinimalUi;
 }
 
-std::unique_ptr<TabMenuModelFactory>
-WebAppBrowserController::GetTabMenuModelFactory() const {
 #if BUILDFLAG(IS_CHROMEOS)
-  if (system_app() && system_app()->HasCustomTabMenuModel()) {
-    return std::make_unique<SystemAppTabMenuModelFactory>(system_app());
+std::optional<base::flat_set<tabs::TabContextMenuCommand>>
+WebAppBrowserController::GetAllowedTabMenuCommands() const {
+  if (system_app()) {
+    return system_app()->GetAllowedTabMenuCommands();
   }
-#endif  // BUILDFLAG(IS_CHROMEOS)
-  return nullptr;
+  return std::nullopt;
 }
+#endif  // BUILDFLAG(IS_CHROMEOS)
 
 bool WebAppBrowserController::AppUsesWindowControlsOverlay() const {
   return effective_display_mode_ == DisplayMode::kWindowControlsOverlay;
 }
 
 bool WebAppBrowserController::IsWindowControlsOverlayEnabled() const {
+  if (AppUsesWindowControlsOverlay() &&
+      base::FeatureList::IsEnabled(
+          features::kDesktopPWAsWindowControlsOverlayWithNoToggle)) {
+    return true;
+  }
+
+  // Default behavior: require both manifest support and user enablement.
   return AppUsesWindowControlsOverlay() && per_window_wco_enabled_;
 }
 
@@ -290,9 +276,6 @@ bool WebAppBrowserController::HasPendingUpdate() const {
 }
 
 bool WebAppBrowserController::HasPendingMigration() const {
-  if (!base::FeatureList::IsEnabled(blink::features::kWebAppMigrationApi)) {
-    return false;
-  }
   if (!registrar().AppMatches(app_id(),
                               WebAppFilter::IsAppValidMigrationSource())) {
     return false;
@@ -332,7 +315,6 @@ void WebAppBrowserController::CreateMetadataAndTriggerAppUpdateDialog(
 void WebAppBrowserController::CreateMetadataAndTriggerAppMigrationDialog(
     bool is_forced_migration_on_startup,
     base::TimeTicks start_time) const {
-  CHECK(base::FeatureList::IsEnabled(blink::features::kWebAppMigrationApi));
   auto pending_migration_info =
       registrar().GetAppById(app_id())->pending_migration_info();
   CHECK(pending_migration_info);
@@ -454,8 +436,8 @@ void WebAppBrowserController::OnRelationshipCheckComplete(
       break;
   }
   is_verified_ = should_show_cct;
-  browser()->window()->UpdateCustomTabBarVisibility(should_show_cct,
-                                                    false /* animate */);
+  BrowserWindow::FromBrowser(browser())->UpdateCustomTabBarVisibility(
+      should_show_cct, false /* animate */);
 }
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
@@ -474,9 +456,9 @@ void WebAppBrowserController::OnWebAppUninstalled(
 void WebAppBrowserController::OnWebAppManifestUpdated(
     const webapps::AppId& updated_app_id) {
   if (updated_app_id == app_id()) {
-    UpdateThemePack();
+    UpdateThemeSupplier();
     app_icon_.reset();
-    browser()->window()->UpdateTitleBar();
+    BrowserWindow::FromBrowser(browser())->UpdateTitleBar();
 
     if (ManifestUpdateAppliedCallbackForTesting()) {
       std::move(ManifestUpdateAppliedCallbackForTesting()).Run();
@@ -512,7 +494,7 @@ ui::ImageModel WebAppBrowserController::GetWindowAppIcon() const {
 
 #if BUILDFLAG(IS_CHROMEOS)
   if (apps::AppServiceProxyFactory::IsAppServiceAvailableForProfile(
-          browser()->profile())) {
+          browser()->GetProfile())) {
     LoadAppIcon(true /* allow_placeholder_icon */);
     return *app_icon_;
   }
@@ -548,7 +530,8 @@ ui::ImageModel WebAppBrowserController::GetWindowIcon() const {
 std::optional<SkColor> WebAppBrowserController::GetThemeColor() const {
 #if BUILDFLAG(IS_CHROMEOS)
   // System App popups (settings pages) always use default theme.
-  if (system_app() && browser()->is_type_app_popup()) {
+  if (system_app() &&
+      browser()->GetType() == BrowserWindowInterface::Type::TYPE_APP_POPUP) {
     return std::nullopt;
   }
 #endif  // BUILDFLAG(IS_CHROMEOS)
@@ -560,8 +543,7 @@ std::optional<SkColor> WebAppBrowserController::GetThemeColor() const {
   }
 
 #if BUILDFLAG(IS_CHROMEOS)
-  if (chromeos::features::IsUploadOfficeToCloudEnabled() &&
-      ChromeOsWebAppExperiments::IgnoreManifestColor(app_id())) {
+  if (ChromeOsWebAppExperiments::IgnoreManifestColor(app_id())) {
     return std::nullopt;
   }
 
@@ -589,8 +571,7 @@ std::optional<SkColor> WebAppBrowserController::GetBackgroundColor() const {
   std::optional<SkColor> manifest_color = GetResolvedManifestBackgroundColor();
 
 #if BUILDFLAG(IS_CHROMEOS)
-  if (chromeos::features::IsUploadOfficeToCloudEnabled() &&
-      ChromeOsWebAppExperiments::IgnoreManifestColor(app_id())) {
+  if (ChromeOsWebAppExperiments::IgnoreManifestColor(app_id())) {
     manifest_color = std::nullopt;
   }
 #endif  // BUILDFLAG(IS_CHROMEOS)
@@ -672,6 +653,12 @@ bool WebAppBrowserController::IsUrlInAppScope(const GURL& url) const {
   return scope->IsInScope(url, {.allow_http_to_https_upgrade = true});
 }
 
+bool WebAppBrowserController::IsOriginAllowedForAboutBlankPopup(
+    const url::Origin& origin) const {
+  return AppBrowserController::IsOriginAllowedForAboutBlankPopup(origin) ||
+         (!origin.opaque() && IsUrlInAppScope(origin.GetURL()));
+}
+
 WebAppBrowserController* WebAppBrowserController::AsWebAppBrowserController() {
   return this;
 }
@@ -713,6 +700,20 @@ std::u16string WebAppBrowserController::GetTitle() const {
     return app_name;
   }
 
+#if BUILDFLAG(IS_CHROMEOS)
+  // Do not omit the page title for System Web Apps (such as Terminal, Files, or
+  // Settings), as ChromeOS window management and Tast tests rely on the active
+  // page/tab title being present in the window title.
+  if (system_app()) {
+    return base::StrCat({app_name, u" - ", raw_title});
+  }
+#endif  // BUILDFLAG(IS_CHROMEOS)
+
+  if (!has_tab_strip() &&
+      provider_->ui_manager().GetNumWindowsForApp(app_id()) == 1) {
+    return app_name;
+  }
+
   return base::StrCat({app_name, u" - ", raw_title});
 }
 
@@ -749,7 +750,7 @@ bool WebAppBrowserController::IsPreinstalledOnly() const {
 void WebAppBrowserController::Uninstall(
     webapps::WebappUninstallSource webapp_uninstall_source) {
   provider_->ui_manager().PresentUserUninstallDialog(
-      app_id(), webapp_uninstall_source, browser()->window(),
+      app_id(), webapp_uninstall_source, BrowserWindow::FromBrowser(browser()),
       base::DoNothing());
 }
 
@@ -803,7 +804,7 @@ const WebAppInstallManager& WebAppBrowserController::install_manager() const {
 
 void WebAppBrowserController::LoadAppIcon(bool allow_placeholder_icon) const {
   apps::AppServiceProxy* proxy =
-      apps::AppServiceProxyFactory::GetForProfile(browser()->profile());
+      apps::AppServiceProxyFactory::GetForProfile(browser()->GetProfile());
   proxy->LoadIcon(app_id(), apps::IconType::kStandard, kWebAppIconSmall,
                   allow_placeholder_icon,
                   base::BindOnce(&WebAppBrowserController::OnLoadIcon,
@@ -849,15 +850,15 @@ void WebAppBrowserController::OnReadIcon(IconPurpose purpose, SkBitmap bitmap) {
 }
 
 void WebAppBrowserController::PerformDigitalAssetLinkVerification(
-    Browser* browser) {
+    BrowserWindowInterface* browser) {
 #if BUILDFLAG(IS_CHROMEOS)
   asset_link_handler_ = std::make_unique<
       content_relationship_verification::DigitalAssetLinksHandler>(
-      browser->profile()->GetURLLoaderFactory());
+      browser->GetProfile()->GetURLLoaderFactory());
   is_verified_ = std::nullopt;
 
   ash::ApkWebAppService* apk_web_app_service =
-      ash::ApkWebAppService::Get(browser->profile());
+      ash::ApkWebAppService::Get(browser->GetProfile());
   if (!apk_web_app_service || !apk_web_app_service->IsWebOnlyTwa(app_id())) {
     return;
   }
@@ -904,16 +905,17 @@ void WebAppBrowserController::OnMetadataObtainedTriggerMigrationDialog(
 
 void WebAppBrowserController::OnUpdateDialogResult(
     WebAppIdentityUpdateResult result) const {
-  CHECK(!browser()->profile()->IsOffTheRecord());
+  CHECK(!browser()->GetProfile()->IsOffTheRecord());
   base::UmaHistogramEnumeration("WebApp.PredictableUpdateDialog.Result",
                                 result);
-  auto* web_app_provider = WebAppProvider::GetForWebApps(browser()->profile());
+  auto* web_app_provider =
+      WebAppProvider::GetForWebApps(browser()->GetProfile());
   CHECK(web_app_provider);
 
   switch (result) {
     case WebAppIdentityUpdateResult::kAccept: {
       auto profile_keep_alive = ScopedProfileKeepAlive::TryAcquire(
-          browser()->profile(), ProfileKeepAliveOrigin::kWebAppUpdate);
+          browser()->GetProfile(), ProfileKeepAliveOrigin::kWebAppUpdate);
       if (!profile_keep_alive) {
         // Profile is scheduled for destruction, abort.
         return;
@@ -933,7 +935,7 @@ void WebAppBrowserController::OnUpdateDialogResult(
     case WebAppIdentityUpdateResult::kUninstallApp:
       web_app_provider->ui_manager().PresentUserUninstallDialog(
           app_id(), webapps::WebappUninstallSource::kAppMenu,
-          browser()->window(), base::DoNothing());
+          BrowserWindow::FromBrowser(browser()), base::DoNothing());
       return;
     case WebAppIdentityUpdateResult::kCloseApp:
       // kCloseApp is only used for migration dialogs.
@@ -949,7 +951,7 @@ void WebAppBrowserController::OnMigrationDialogResult(
     base::TimeTicks start_time,
     const WebAppIdentityUpdate& identity_update,
     WebAppIdentityUpdateResult result) const {
-  CHECK(!browser()->profile()->IsOffTheRecord());
+  CHECK(!browser()->GetProfile()->IsOffTheRecord());
 
   if (identity_update.is_forced_migration) {
     base::UmaHistogramEnumeration(
@@ -959,13 +961,14 @@ void WebAppBrowserController::OnMigrationDialogResult(
         "WebApp.UpdateDialog.MigrateSuggested.UserAction", result);
   }
 
-  auto* web_app_provider = WebAppProvider::GetForWebApps(browser()->profile());
+  auto* web_app_provider =
+      WebAppProvider::GetForWebApps(browser()->GetProfile());
   CHECK(web_app_provider);
 
   switch (result) {
     case WebAppIdentityUpdateResult::kAccept: {
       auto profile_keep_alive = ScopedProfileKeepAlive::TryAcquire(
-          browser()->profile(), ProfileKeepAliveOrigin::kWebAppUpdate);
+          browser()->GetProfile(), ProfileKeepAliveOrigin::kWebAppUpdate);
       if (!profile_keep_alive) {
         // Profile is scheduled for destruction, abort.
         return;
@@ -1010,7 +1013,7 @@ void WebAppBrowserController::OnMigrationDialogResult(
               : base::DoNothing();
       web_app_provider->ui_manager().PresentUserUninstallDialog(
           app_id(), webapps::WebappUninstallSource::kAppMenu,
-          browser()->window(), std::move(complete_callback));
+          BrowserWindow::FromBrowser(browser()), std::move(complete_callback));
       return;
     }
     case WebAppIdentityUpdateResult::kCloseApp:

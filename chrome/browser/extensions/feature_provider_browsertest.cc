@@ -10,9 +10,13 @@
 #include "chrome/common/extensions/extension_test_util.h"
 #include "chrome/test/base/platform_browser_test.h"
 #include "content/public/test/browser_test.h"
+#include "extensions/buildflags/buildflags.h"
 #include "extensions/common/extensions_client.h"
 #include "extensions/common/features/complex_feature.h"
+#include "extensions/common/features/feature_test_util.h"
 #include "extensions/test/test_extensions_client.h"
+
+static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
 
 namespace extensions {
 namespace {
@@ -33,7 +37,7 @@ IN_PROC_BROWSER_TEST_F(FeatureProviderBrowserTest,
   const FeatureProvider* api_provider = FeatureProvider::GetAPIFeatures();
   const FeatureMap& feature_map = api_provider->GetAllFeatures();
   for (const auto& it : feature_map) {
-    const std::string& feature_name = it.first;
+    const std::string_view feature_name = it.first;
     bool is_delegated_feature =
         std::ranges::contains(expected_delegated_features, feature_name);
     const Feature* feature = it.second.get();
@@ -42,7 +46,8 @@ IN_PROC_BROWSER_TEST_F(FeatureProviderBrowserTest,
               feature->RequiresDelegatedAvailabilityCheck())
         << feature_name;
     EXPECT_EQ(is_delegated_feature,
-              feature->HasDelegatedAvailabilityCheckHandlerForTesting())
+              FeatureTestPeer::GetDelegatedAvailabilityCheckHandler(*feature) !=
+                  nullptr)
         << feature_name;
   }
 }

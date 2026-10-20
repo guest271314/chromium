@@ -25,6 +25,8 @@ extern const char kIgnoreCertificateErrorsSPKIList[];
 COMPONENT_EXPORT(NETWORK_CPP_FLAGS_AND_SWITCHES)
 extern const char kNetLogCaptureMode[];
 COMPONENT_EXPORT(NETWORK_CPP_FLAGS_AND_SWITCHES)
+extern const char kNetLogFileFormat[];
+COMPONENT_EXPORT(NETWORK_CPP_FLAGS_AND_SWITCHES)
 extern const char kLogNetLogDuration[];
 COMPONENT_EXPORT(NETWORK_CPP_FLAGS_AND_SWITCHES)
 extern const char kNetLogMaxSizeMb[];
@@ -36,10 +38,6 @@ COMPONENT_EXPORT(NETWORK_CPP_FLAGS_AND_SWITCHES)
 extern const char kUnsafelyTreatInsecureOriginAsSecure[];
 COMPONENT_EXPORT(NETWORK_CPP_FLAGS_AND_SWITCHES)
 extern const char kAdditionalTrustTokenKeyCommitments[];
-COMPONENT_EXPORT(NETWORK_CPP_FLAGS_AND_SWITCHES)
-extern const char kUseFirstPartySet[];
-COMPONENT_EXPORT(NETWORK_CPP_FLAGS_AND_SWITCHES)
-extern const char kUseRelatedWebsiteSet[];
 COMPONENT_EXPORT(NETWORK_CPP_FLAGS_AND_SWITCHES)
 extern const char kIpAddressSpaceOverrides[];
 COMPONENT_EXPORT(NETWORK_CPP_FLAGS_AND_SWITCHES)

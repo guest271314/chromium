@@ -46,6 +46,7 @@ enum class ViewportFit;
 }  // namespace blink
 
 namespace gfx {
+class Rect;
 class Size;
 }  // namespace gfx
 
@@ -80,6 +81,7 @@ class RenderViewHost;
 class RenderWidgetHost;
 class Page;
 struct CookieAccessDetails;
+struct DropData;
 struct EntryChangedDetails;
 struct FocusedNodeDetails;
 struct GlobalRequestID;
@@ -183,6 +185,12 @@ class CONTENT_EXPORT WebContentsObserver : public base::CheckedObserver {
   // DidFinishNavigation for some other reason, in which case listening only to
   // DidFinishNavigation is recommended).
   virtual void PrimaryPageChanged(Page& page) {}
+
+  // This method is invoked when the primary page of a WebContents is about to
+  // be deactivated. This happens when the primary page is being replaced by
+  // another page (due to a commit of a navigation). Note that this will not be
+  // called if the WebContents is being destroyed.
+  virtual void PrimaryPageWillBeDeactivated(Page& page) {}
 
   // This method is invoked when a frame is destroyed. A subframe is destroyed
   // when its parent detaches it or navigates to a different document. A main
@@ -417,6 +425,25 @@ class CONTENT_EXPORT WebContentsObserver : public base::CheckedObserver {
   // (nothing loaded) to 1.0 (page fully loaded).
   virtual void LoadProgressChanged(double progress) {}
 
+  // Called for every find-in-page request issued earlier via
+  // WebContents::Find().
+  // `request_id` matches the id passed to `Find()`; check it to find the reply
+  // for a specific request.
+  // `final_update` is true when this is the last reply for `request_id`
+  // No more than one call with `final_update` true is made for every request
+  // issued through `Find()`, even if the search text was not found or there was
+  // no frame available to search. See also a note in documentation for Find()
+  // about concurrent calls.
+  //
+  // TODO(crbug.com/492228028): Fix this to guarantee that this is called once
+  // with `final_update` set to true, even when the find session is dropped
+  // because another client started a new one.
+  virtual void DidReceiveFindReply(int request_id,
+                                   int number_of_matches,
+                                   const gfx::Rect& selection_rect,
+                                   int active_match_ordinal,
+                                   bool final_update) {}
+
   // This method is invoked once the window.document element of the primary main
   // frame's current document (i.e., |render_frame_host|) is ready. This happens
   // when the document's main HTML resource has finished parsing. Here
@@ -502,9 +529,15 @@ class CONTENT_EXPORT WebContentsObserver : public base::CheckedObserver {
   // This method is invoked when a resource associate with the frame
   // |render_frame_host| has been loaded, successfully or not. |request_id| will
   // only be populated for main frame resources.
+  // |original_url| is the unsanitized original URL of the resource request
+  // tracked by the browser process. |resource_load_info| comes directly from
+  // the renderer process. When `kSanitizeOriginalUrlDuringNavigation` is
+  // enabled, |resource_load_info.original_url| may be sanitized to be just the
+  // origin, while |original_url| is always the full URL.
   virtual void ResourceLoadComplete(
       RenderFrameHost* render_frame_host,
       const GlobalRequestID& request_id,
+      const GURL& original_url,
       const blink::mojom::ResourceLoadInfo& resource_load_info) {}
 
   // Called when document reads or sets a cookie (either via document.cookie or
@@ -753,9 +786,12 @@ class CONTENT_EXPORT WebContentsObserver : public base::CheckedObserver {
   // it is recommended to call WebContents::GetFaviconURLs() to get the current
   // list as this callback will not be executed unless there is an update.
   // `render_frame_host` is the main RenderFrameHost for the primary page.
+  // `reason` is the reason for the favicon list update, which can be used to
+  // filter irrelevant updates.
   virtual void DidUpdateFaviconURL(
       RenderFrameHost* render_frame_host,
-      const std::vector<blink::mojom::FaviconURLPtr>& candidates) {}
+      const std::vector<blink::mojom::FaviconURLPtr>& candidates,
+      blink::mojom::FaviconUpdateReason reason) {}
 
   // Called when an audio change occurs to this WebContents. If |audible| is
   // true then one or more frames or child contents are emitting audio; if
@@ -940,6 +976,11 @@ class CONTENT_EXPORT WebContentsObserver : public base::CheckedObserver {
   virtual void OnTextSelectionChanged(RenderFrameHost* render_frame_host,
                                       std::u16string_view selected_text) {}
 
+  // Called when a drag started from `source_rfh` within this WebContents.
+  // `drop_data` has already been security-filtered and assigned its `drag_id`.
+  virtual void DidStartDrag(RenderFrameHost* source_rfh,
+                            const DropData& drop_data) {}
+
   // Notification that the |render_widget_host| for this WebContents has gained
   // focus.
   virtual void OnWebContentsFocused(RenderWidgetHost* render_widget_host) {}
@@ -1011,7 +1052,18 @@ class CONTENT_EXPORT WebContentsObserver : public base::CheckedObserver {
   virtual void VibrationRequested() {}
 
   // Called when a first contentful paint happened in the primary main frame.
-  virtual void OnFirstContentfulPaintInPrimaryMainFrame() {}
+  // `presentation_time` is the renderer-side presentation timestamp of the
+  // paint.
+  virtual void OnFirstContentfulPaintInPrimaryMainFrame(
+      base::TimeTicks presentation_time) {}
+
+  // Called when the largest contentful paint candidate changed in the primary
+  // main frame. May be called multiple times as larger elements paint; the
+  // last call (before user input freezes the metric) reflects the page's
+  // largest contentful paint. `presentation_time` is the renderer-side
+  // presentation timestamp of the current candidate.
+  virtual void OnLargestContentfulPaintInPrimaryMainFrame(
+      base::TimeTicks presentation_time) {}
 
   // Invoked when a fetch keepalive request is created in this WebContents.
   //

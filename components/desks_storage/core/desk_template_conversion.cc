@@ -30,6 +30,7 @@
 #include "components/tab_groups/tab_group_visual_data.h"
 #include "ui/base/mojom/window_show_state.mojom.h"
 #include "ui/gfx/geometry/rect.h"
+#include "url/gurl.h"
 
 namespace {
 
@@ -181,6 +182,17 @@ constexpr auto kValidTabGroupColors = base::MakeFixedFlatSet<std::string_view>(
 
 // Version number.
 constexpr int kVersionNum = 1;
+
+constexpr char kChromeUINewTabURL[] = "chrome://newtab/";
+bool IsURLValidForDeskTemplate(const GURL& url) {
+  if (url.is_empty()) {
+    return true;
+  }
+  if (!url.is_valid()) {
+    return false;
+  }
+  return url.SchemeIsHTTPOrHTTPS() || url == GURL(kChromeUINewTabURL);
+}
 
 // Conversion to desk methods.
 bool GetString(const base::DictValue& dict, const char* key, std::string* out) {
@@ -1146,8 +1158,16 @@ WindowOpenDisposition ToBaseWindowOpenDisposition(
 void FillUrlList(const BrowserAppWindow& browser_app_window,
                  std::vector<GURL>* out_gurls) {
   for (auto tab : browser_app_window.tabs()) {
-    if (tab.has_url())
-      out_gurls->emplace_back(tab.url());
+    if (tab.has_url()) {
+      GURL url(tab.url());
+      if (!IsURLValidForDeskTemplate(url)) {
+        // Replace invalid URL with empty page.
+        // We are keeping the tab here to avoid changing active tab indexes as
+        // well as avoiding potentially removing all tabs from a window.
+        url = GURL();
+      }
+      out_gurls->emplace_back(url);
+    }
   }
 }
 
@@ -1264,7 +1284,10 @@ std::unique_ptr<app_restore::AppLaunchInfo> ConvertToAppLaunchInfo(
   }
 
   if (app.has_override_url()) {
-    app_launch_info->override_url = GURL(app.override_url());
+    GURL override_url(app.override_url());
+    if (IsURLValidForDeskTemplate(override_url)) {
+      app_launch_info->override_url = override_url;
+    }
   }
 
   // This is a short-term fix as `event_flag` is required to launch ArcApp.
@@ -1416,7 +1439,7 @@ WindowState FromChromeOsWindowState(chromeos::WindowStateType state) {
     case chromeos::WindowStateType::kNormal:
     case chromeos::WindowStateType::kInactive:
     case chromeos::WindowStateType::kPinned:
-    case chromeos::WindowStateType::kLockedFullscreen:
+    case chromeos::WindowStateType::kTrustedPinned:
     case chromeos::WindowStateType::kPip:
       // TODO(crbug.com/1331825): Float state support for desk template.
       return WindowState::WorkspaceDeskSpecifics_WindowState_NORMAL;
@@ -1509,13 +1532,8 @@ void FillBrowserAppTabGroupInfos(
 void FillBrowserAppTabs(const std::vector<GURL>& gurls,
                         BrowserAppWindow* out_browser_app_window) {
   for (const auto& gurl : gurls) {
-    const std::string& url = gurl.spec();
-    if (url.empty()) {
-      // Skip invalid URLs.
-      continue;
-    }
     BrowserAppTab* browser_app_tab = out_browser_app_window->add_tabs();
-    browser_app_tab->set_url(url);
+    browser_app_tab->set_url(gurl.spec());
   }
 }
 
@@ -1959,9 +1977,12 @@ std::vector<coral::mojom::EntityPtr> GetCoralTabAppEntitiesFromProto(
   std::vector<coral::mojom::EntityPtr> tab_app_entities;
   for (const auto& tab_proto :
        entry_proto.coral_tab_app_entities().tab_entities()) {
-    tab_app_entities.emplace_back(
-        coral::mojom::Entity::NewTab(coral::mojom::Tab::New(
-            tab_proto.tab_title(), GURL(tab_proto.tab_url()))));
+    GURL url(tab_proto.tab_url());
+    if (!IsURLValidForDeskTemplate(url)) {
+      url = GURL();
+    }
+    tab_app_entities.emplace_back(coral::mojom::Entity::NewTab(
+        coral::mojom::Tab::New(tab_proto.tab_title(), url)));
   }
 
   for (const auto& app_proto :

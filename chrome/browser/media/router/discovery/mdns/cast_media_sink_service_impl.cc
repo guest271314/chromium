@@ -86,7 +86,7 @@ MediaRouterChannelError RecordError(cast_channel::ChannelError channel_error,
 
   switch (channel_error) {
     // TODO(crbug.com/41345758): Add in errors for transient socket and timeout
-    // errors, but only after X number of occurences.
+    // errors, but only after X number of occurrences.
     case cast_channel::ChannelError::UNKNOWN:
       error_code = MediaRouterChannelError::UNKNOWN;
       break;
@@ -187,7 +187,7 @@ constexpr int CastMediaSinkServiceImpl::kMaxDialSinkFailureCount;
 // static
 MediaSink::Id CastMediaSinkServiceImpl::GetCastSinkIdFromDial(
     MediaSink::IdView dial_sink_id) {
-  DCHECK_EQ("dial:", dial_sink_id.substr(0, 5));
+  CHECK(dial_sink_id.starts_with("dial:"), base::NotFatalUntil::M161);
   // Replace the "dial:" prefix with "cast:".
   return base::StrCat({"cast:", dial_sink_id.substr(5)});
 }
@@ -195,7 +195,7 @@ MediaSink::Id CastMediaSinkServiceImpl::GetCastSinkIdFromDial(
 // static
 MediaSink::Id CastMediaSinkServiceImpl::GetDialSinkIdFromCast(
     const MediaSink::IdView cast_sink_id) {
-  DCHECK_EQ("cast:", cast_sink_id.substr(0, 5));
+  CHECK(cast_sink_id.starts_with("cast:"), base::NotFatalUntil::M161);
   // Replace the "cast:" prefix with "dial:".
   return base::StrCat({"dial:", cast_sink_id.substr(5)});
 }
@@ -214,8 +214,8 @@ CastMediaSinkServiceImpl::CastMediaSinkServiceImpl(
       task_runner_(cast_socket_service_->task_runner()),
       clock_(base::DefaultClock::GetInstance()) {
   DETACH_FROM_SEQUENCE(sequence_checker_);
-  DCHECK(cast_socket_service_);
-  DCHECK(network_monitor_);
+  CHECK(cast_socket_service_, base::NotFatalUntil::M161);
+  CHECK(network_monitor_, base::NotFatalUntil::M161);
 
   backoff_policy_ = {
       // Number of initial errors (in sequence) to ignore before going into
@@ -478,14 +478,16 @@ void CastMediaSinkServiceImpl::OpenChannel(
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   const net::IPEndPoint& ip_endpoint = cast_sink.cast_data().ip_endpoint;
-  if (!allow_all_ips_ && ip_endpoint.address().IsPubliclyRoutable()) {
+  if (!allow_all_ips_ && (ip_endpoint.address().IsPubliclyRoutable() ||
+                          ip_endpoint.address().IsLoopback())) {
     LoggerList::GetInstance()->Log(
         LoggerImpl::Severity::kWarning, mojom::LogCategory::kDiscovery,
         kLoggerComponent,
         base::StrCat({"Did not open a channel to the IP endpoint: ",
-                      ip_endpoint.ToString(),
-                      " because it is publicly "
-                      "routable."}),
+                      ip_endpoint.ToString(), " because it is ",
+                      ip_endpoint.address().IsPubliclyRoutable()
+                          ? "publicly routable."
+                          : "a loopback address."}),
         cast_sink.sink().id(), "", "");
     if (callback) {
       std::move(callback).Run(false);
@@ -544,7 +546,8 @@ void CastMediaSinkServiceImpl::OpenChannel(
 
   cast_socket_service_->OpenSocket(
       base::BindRepeating([] {
-        DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+        CHECK_CURRENTLY_ON(content::BrowserThread::UI,
+                           base::NotFatalUntil::M161);
         return g_browser_process->system_network_context_manager()
             ->GetContext();
       }),
@@ -563,7 +566,7 @@ void CastMediaSinkServiceImpl::OnChannelOpened(
     cast_channel::CastSocketOpenParams open_params,
     cast_channel::CastSocket* socket) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  DCHECK(socket);
+  CHECK(socket, base::NotFatalUntil::M161);
 
   pending_for_open_ip_endpoints_.erase(cast_sink.cast_data().ip_endpoint);
   bool succeeded = socket->error_state() == cast_channel::ChannelError::NONE;
@@ -625,7 +628,7 @@ void CastMediaSinkServiceImpl::OnChannelOpenSucceeded(
     SinkSource sink_source,
     ChannelOpenedCallback callback) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  DCHECK(socket);
+  CHECK(socket, base::NotFatalUntil::M161);
   CastAnalytics::RecordCastChannelConnectResult(
       MediaRouterChannelConnectResults::SUCCESS);
   CastSinkExtraData& extra_data = cast_sink.cast_data();

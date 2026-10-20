@@ -8,6 +8,7 @@
 #include <utility>
 
 #include "base/functional/callback.h"
+#include "base/memory_coordinator/traits.h"
 #include "base/memory_coordinator/utils.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/strings/string_number_conversions.h"
@@ -55,9 +56,12 @@ void JavaBooleanCallbackAdapter(base::OnceCallback<void(bool)> callback,
 int TabIdFromDirectoryKey(const DirectoryKey& key) {
   int out;
   bool success = base::StringToInt(key.AsciiDirname(), &out);
-  DCHECK(success);
+  CHECK(success, base::NotFatalUntil::M161);
   return out;
 }
+
+constexpr base::MemoryConsumerTraits kPaintPreviewTabServiceTraits(
+    base::MemoryConsumerTraits::ConsumerType::kPassive);
 
 }  // namespace
 
@@ -91,10 +95,9 @@ PaintPreviewTabService::PaintPreviewTabService(
       cache_ready_(false),
       memory_consumer_registration_(
           /*consumer_name=*/"PaintPreviewTabService",
-          /*traits=*/std::nullopt,  // TODO(crbug.com/489671163): Fill traits.
+          kPaintPreviewTabServiceTraits,
           this,
-          base::MemoryConsumerRegistration::CheckUnregister::kDisabled,
-          base::MemoryConsumerRegistration::CheckRegistryExists::kDisabled) {
+          base::MemoryConsumerRegistration::CheckUnregister::kDisabled) {
   GetFileMixin()->GetTaskRunner()->PostTaskAndReplyWithResult(
       FROM_HERE,
       base::BindOnce(&FileManager::ListUsedKeys,
@@ -137,7 +140,7 @@ void PaintPreviewTabService::CaptureTab(int tab_id,
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   // If the system is under memory pressure don't try to capture.
-  if (memory_limit() <= base::kModerateMemoryPressureThreshold) {
+  if (memory_limit() <= base::MemoryLimit::ModeratePressureThreshold()) {
     return;
   }
 

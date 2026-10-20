@@ -8,11 +8,13 @@
 #include <variant>
 
 #include "base/check.h"
+#include "base/memory/raw_ptr.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/task/single_thread_task_runner.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/glic/browser_ui/glic_nudge_controller.h"
 #include "chrome/browser/glic/glic_pref_names.h"
+#include "chrome/browser/glic/host/context/glic_sharing_utils.h"
 #include "chrome/browser/glic/suggestions/contextual_cueing_enums.h"
 #include "chrome/browser/glic/suggestions/contextual_cueing_features.h"
 #include "chrome/browser/glic/suggestions/contextual_cueing_page_data.h"
@@ -23,18 +25,18 @@
 #include "chrome/browser/predictors/loading_predictor.h"
 #include "chrome/common/buildflags.h"
 #include "chrome/common/chrome_features.h"
-#include "components/optimization_guide/core/optimization_guide_switches.h"
+#include "components/optimization_guide/core/model_execution/remote_model_execution_common.h"
 #include "components/optimization_guide/core/optimization_guide_util.h"
 #include "components/optimization_guide/proto/hints.pb.h"
 #include "components/prefs/pref_service.h"
 #include "components/search_engines/template_url.h"
 #include "components/search_engines/template_url_service.h"
-#include "components/signin/public/identity_manager/identity_manager.h"
 #include "content/public/browser/web_contents.h"
 #include "net/base/network_anonymization_key.h"
 #include "services/metrics/public/cpp/metrics_utils.h"
 #include "services/metrics/public/cpp/ukm_builders.h"
 #include "services/metrics/public/cpp/ukm_recorder.h"
+#include "services/network/public/cpp/constants.h"
 #include "url/gurl.h"
 
 namespace glic {
@@ -140,7 +142,6 @@ ContextualCueingService::ContextualCueingService(
         page_content_extraction_service,
     OptimizationGuideKeyedService* optimization_guide_keyed_service,
     predictors::LoadingPredictor* loading_predictor,
-    signin::IdentityManager* identity_manager,
     PrefService* pref_service,
     TemplateURLService* template_url_service)
     : recent_nudge_tracker_(kNudgeCapCount.Get(), kNudgeCapTime.Get()),
@@ -150,8 +151,7 @@ ContextualCueingService::ContextualCueingService(
       loading_predictor_(loading_predictor),
       pref_service_(pref_service),
       template_url_service_(template_url_service),
-      identity_manager_(identity_manager),
-      mes_url_(optimization_guide::switches::GetModelExecutionServiceURL()) {
+      mes_url_(optimization_guide::GetModelExecutionServiceBaseURL()) {
   if (optimization_guide_keyed_service_ && IsZeroStateSuggestionsEnabled()) {
     optimization_guide_keyed_service_->RegisterOptimizationTypes(
         {optimization_guide::proto::GLIC_ZERO_STATE_SUGGESTIONS});
@@ -246,7 +246,11 @@ bool ContextualCueingService::IsNudgeBlockedByBackoffRule() const {
 }
 
 bool ContextualCueingService::IsPageTypeEligibleForContextualSuggestions(
-    GURL url) const {
+    const GURL& url) const {
+  if (IsContextHubTopicUrl(url)) {
+    return true;
+  }
+
   // Non-HTTP/HTTPS pages are not eligible.
   if (!url.SchemeIsHTTPOrHTTPS()) {
     return false;
@@ -263,7 +267,7 @@ bool ContextualCueingService::IsPageTypeEligibleForContextualSuggestions(
 }
 
 void ContextualCueingService::OnNudgeActivity(
-    content::WebContents* web_contents,
+    base::WeakPtr<content::WebContents> web_contents,
     base::TimeTicks document_available_time,
     bool is_dynamic,
     glic::GlicNudgeActivity activity) {
@@ -271,13 +275,13 @@ void ContextualCueingService::OnNudgeActivity(
 
   std::optional<base::TimeTicks> nudge_time =
       recent_nudge_tracker_.GetMostRecentNudgeTime();
-  const GURL& url = web_contents->GetLastCommittedURL();
   NudgeInteraction interaction;
   bool log_ukm = false;
   switch (activity) {
     case glic::GlicNudgeActivity::kNudgeShown:
       interaction = NudgeInteraction::kShown;
-      CueingNudgeShown(url);
+      CueingNudgeShown(web_contents ? web_contents->GetLastCommittedURL()
+                                    : GURL());
       break;
     case glic::GlicNudgeActivity::kNudgeClicked:
       CueingNudgeClicked();
@@ -321,7 +325,7 @@ void ContextualCueingService::OnNudgeActivity(
   LogNudgeInteractionHistogram(interaction, is_dynamic);
   // As this function is called multiple times per nudge only some of the
   // activities result in a UKM call.
-  if (log_ukm) {
+  if (log_ukm && web_contents) {
     CHECK(nudge_time);
     LogNudgeInteractionUKM(
         web_contents->GetPrimaryMainFrame()->GetPageUkmSourceId(), interaction,
@@ -334,6 +338,10 @@ void ContextualCueingService::PrepareToFetchContextualGlicZeroStateSuggestions(
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   if (!IsZeroStateSuggestionsEnabled()) {
+    return;
+  }
+
+  if (!optimization_guide_keyed_service_) {
     return;
   }
 
@@ -354,13 +362,14 @@ void ContextualCueingService::PrepareToFetchContextualGlicZeroStateSuggestions(
         net::NetworkAnonymizationKey::CreateSameSite(
             net::SchemefulSite(mes_url_));
     loading_predictor_->PreconnectURLIfAllowed(
-        mes_url_, /*allow_credentials=*/true, anonymization_key);
+        mes_url_, /*allow_credentials=*/true, anonymization_key,
+        network::GetNoOpNetworkRestrictionsId());
   }
 }
 
 std::unique_ptr<ZeroStateSuggestionsRequest>
 ContextualCueingService::MakeZeroStateSuggestionsRequest(
-    const std::vector<content::WebContents*>& web_contents_list,
+    const std::vector<raw_ptr<content::WebContents>>& web_contents_list,
     bool is_fre,
     std::optional<std::vector<std::string>> supported_tools,
     const content::WebContents* focused_tab) {
@@ -381,8 +390,8 @@ ContextualCueingService::MakeZeroStateSuggestionsRequest(
   }
 
   return std::make_unique<ZeroStateSuggestionsRequest>(
-      optimization_guide_keyed_service_, identity_manager_, request_proto,
-      web_contents_list, focused_tab);
+      optimization_guide_keyed_service_, request_proto, web_contents_list,
+      focused_tab);
 }
 
 void ContextualCueingService::
@@ -394,6 +403,11 @@ void ContextualCueingService::
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   if (!IsZeroStateSuggestionsEnabled()) {
+    std::move(callback).Run({});
+    return;
+  }
+
+  if (!optimization_guide_keyed_service_) {
     std::move(callback).Run({});
     return;
   }
@@ -429,7 +443,7 @@ void ContextualCueingService::
                                               std::move(callback)));
 }
 
-std::optional<std::vector<content::WebContents*>>
+std::optional<std::vector<raw_ptr<content::WebContents>>>
 ContextualCueingService::GetOutstandingPinnedTabsContents() {
   if (!pinned_tabs_zero_state_suggestions_request_) {
     return std::nullopt;
@@ -439,7 +453,7 @@ ContextualCueingService::GetOutstandingPinnedTabsContents() {
 
 bool ContextualCueingService::
     GetContextualGlicZeroStateSuggestionsForPinnedTabs(
-        std::vector<content::WebContents*> pinned_web_contents,
+        std::vector<raw_ptr<content::WebContents>> pinned_web_contents,
         bool is_fre,
         std::optional<std::vector<std::string>> supported_tools,
         const content::WebContents* focused_tab,
@@ -450,8 +464,13 @@ bool ContextualCueingService::
     return false;
   }
 
+  if (!optimization_guide_keyed_service_) {
+    std::move(callback).Run({});
+    return false;
+  }
+
   // Remove all ineligible pages from list.
-  std::erase_if(pinned_web_contents, [&](const auto* web_contents) {
+  std::erase_if(pinned_web_contents, [&](content::WebContents* web_contents) {
     return !IsPageTypeEligibleForContextualSuggestions(
         web_contents->GetLastCommittedURL());
   });

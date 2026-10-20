@@ -51,15 +51,6 @@ gpu::CommandBufferStub* GetCommandBufferStub(
   if (!stub)
     return nullptr;
 
-#if !BUILDFLAG(IS_ANDROID)
-  // Only allow stubs that have a ContextGroup, that is, the GLES2 ones. Later
-  // code assumes the ContextGroup is valid. ContextGroup is used only by the
-  // legacy VDA implementation, which is not supported on Android.
-  if (!stub->decoder_context()->GetContextGroup()) {
-    return nullptr;
-  }
-#endif
-
   return stub;
 }
 
@@ -209,13 +200,13 @@ GpuMojoMediaClient::GetSupportedVideoDecoderConfigs() {
   return supported_config_cache_.value_or(SupportedVideoDecoderConfigs{});
 }
 
-#if BUILDFLAG(ALLOW_OOP_VIDEO_DECODER)
+#if BUILDFLAG(ENABLE_OOP_VIDEO_DECODER)
 void GpuMojoMediaClient::NotifyDecoderSupportKnown(
     mojo::PendingRemote<mojom::VideoDecoder> oop_video_decoder,
     base::OnceCallback<void(mojo::PendingRemote<mojom::VideoDecoder>)> cb) {
   NotifyPlatformDecoderSupport(std::move(oop_video_decoder), std::move(cb));
 }
-#endif  // BUILDFLAG(ALLOW_OOP_VIDEO_DECODER)
+#endif  // BUILDFLAG(ENABLE_OOP_VIDEO_DECODER)
 
 std::unique_ptr<VideoDecoder> GpuMojoMediaClient::CreateVideoDecoder(
     scoped_refptr<base::SequencedTaskRunner> task_runner,

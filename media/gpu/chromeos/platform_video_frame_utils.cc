@@ -219,11 +219,11 @@ class GbmDeviceWrapper {
       return;
     }
 
-    // For V4L2 testing with VISL, dumb driver is used with vkms for minigbm
-    // backend. In this case, the primary node needs to be used instead of the
-    // render node.
+    // For V4L2/VAAPI testing with VISL or libfake (virtual drivers), the dumb
+    // driver is used with vkms for minigbm backend. In this case, the primary
+    // node needs to be used instead of the render node.
     // TODO(b/316993034): Remove this when having a render node for vkms.
-#if BUILDFLAG(USE_V4L2_CODEC)
+#if BUILDFLAG(USE_V4L2_CODEC) || BUILDFLAG(USE_VAAPI)
     const base::CommandLine* cmd_line = base::CommandLine::ForCurrentProcess();
     CHECK(cmd_line);
 
@@ -279,9 +279,6 @@ class GbmDeviceWrapper {
   base::Lock lock_;
   std::unique_ptr<ui::GbmDevice> gbm_device_ GUARDED_BY(lock_);
 };
-
-BASE_FEATURE(kPlatformVideoFrameUseCorrectColorSpace,
-             base::FEATURE_ENABLED_BY_DEFAULT);
 
 std::optional<gfx::NativePixmapHandle> AllocateNativePixmapHandle(
     VideoPixelFormat pixel_format,
@@ -375,6 +372,7 @@ void UniqueTrackingTokenHelper::SetUniqueTrackingToken(
 
 scoped_refptr<VideoFrame> CreateMappableSharedImageVideoFrame(
     VideoPixelFormat pixel_format,
+    const gfx::ColorSpace& color_space,
     const gfx::Size& coded_size,
     const gfx::Rect& visible_rect,
     const gfx::Size& natural_size,
@@ -389,7 +387,7 @@ scoped_refptr<VideoFrame> CreateMappableSharedImageVideoFrame(
   }
 
   return CreateVideoFrameFromGpuMemoryBufferHandle(
-      std::move(gmb_handle), pixel_format, gfx::ColorSpace(), coded_size,
+      std::move(gmb_handle), pixel_format, color_space, coded_size,
       visible_rect, natural_size, timestamp, buffer_usage, sii);
 }
 
@@ -404,40 +402,27 @@ scoped_refptr<VideoFrame> CreateVideoFrameFromGpuMemoryBufferHandle(
     gfx::BufferUsage buffer_usage,
     gpu::SharedImageInterface* sii) {
   CHECK(sii);
-  const bool supports_zero_copy_webgpu_import =
-      gmb_handle.native_pixmap_handle().supports_zero_copy_webgpu_import;
 
   auto si_format = VideoPixelFormatToSharedImageFormat(pixel_format);
   DCHECK(si_format);
 
   const auto si_usage = gpu::SHARED_IMAGE_USAGE_CPU_WRITE_ONLY |
                         gpu::SHARED_IMAGE_USAGE_DISPLAY_READ;
-  gfx::ColorSpace color_space_to_use = color_space;
-  if (!color_space.IsValid() &&
-      base::FeatureList::IsEnabled(kPlatformVideoFrameUseCorrectColorSpace)) {
-    color_space_to_use = si_format->is_multi_plane()
-                             ? gfx::ColorSpace::CreateREC709()
-                             : gfx::ColorSpace::CreateSRGB();
-  }
   auto shared_image = sii->CreateSharedImage(
-      {*si_format, coded_size, color_space_to_use,
-       gpu::SharedImageUsageSet(si_usage), "PlatformVideoFrameUtils"},
+      {*si_format, coded_size, color_space, gpu::SharedImageUsageSet(si_usage),
+       "PlatformVideoFrameUtils"},
       gpu::kNullSurfaceHandle, buffer_usage, std::move(gmb_handle));
+  auto creation_sync_token = shared_image->creation_sync_token();
+  sii->VerifySyncToken(creation_sync_token);
 
   auto video_frame = media::VideoFrame::WrapMappableSharedImage(
-      std::move(shared_image), sii->GenVerifiedSyncToken(),
-      base::NullCallback(), visible_rect, natural_size, timestamp);
+      std::move(shared_image), creation_sync_token, base::NullCallback(),
+      visible_rect, natural_size, timestamp);
 
   if (!video_frame) {
     return nullptr;
   }
 
-  video_frame->set_color_space(color_space_to_use);
-
-  // We only support importing non-DISJOINT multi-planar GbmBuffer right now.
-  // TODO(crbug.com/40201271): Add DISJOINT support.
-  video_frame->metadata().is_webgpu_compatible =
-      supports_zero_copy_webgpu_import;
   video_frame->metadata().tracking_token = base::UnguessableToken::Create();
 
   return video_frame;

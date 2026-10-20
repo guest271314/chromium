@@ -27,6 +27,8 @@
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/web_contents.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/base/page_transition_types.h"
+#include "ui/base/window_open_disposition.h"
 
 #if BUILDFLAG(IS_CHROMEOS)
 #include "chrome/browser/memory/oom_memory_details.h"
@@ -38,10 +40,10 @@ namespace {
 void RecordEvent(bool feedback, ui_metrics::SadTabEvent event) {
   if (feedback) {
     UMA_HISTOGRAM_ENUMERATION(ui_metrics::kSadTabFeedbackHistogramKey, event,
-                              ui_metrics::SadTabEvent::MAX_SAD_TAB_EVENT);
+                              ui_metrics::SadTabEvent::COUNT);
   } else {
     UMA_HISTOGRAM_ENUMERATION(ui_metrics::kSadTabReloadHistogramKey, event,
-                              ui_metrics::SadTabEvent::MAX_SAD_TAB_EVENT);
+                              ui_metrics::SadTabEvent::COUNT);
   }
 }
 
@@ -49,19 +51,15 @@ constexpr char kCategoryTagCrash[] = "Crash";
 
 // Return true if this function has been called in the last 10 seconds.
 bool IsRepeatedlyCrashing() {
-  const int kMaxSecondsSinceLastCrash = 10;
+  static constexpr base::TimeDelta kMaxTimeSinceLastCrash = base::Seconds(10);
 
-  static int64_t last_called_ts = 0;
-  base::TimeTicks last_called(base::TimeTicks::UnixEpoch());
+  static base::TimeTicks last_called;
 
-  if (last_called_ts) {
-    last_called = base::TimeTicks::FromInternalValue(last_called_ts);
-  }
+  const base::TimeTicks now = base::TimeTicks::Now();
+  const bool crashed_recently =
+      !last_called.is_null() && (now - last_called) < kMaxTimeSinceLastCrash;
 
-  bool crashed_recently = (base::TimeTicks().Now() - last_called).InSeconds() <
-                          kMaxSecondsSinceLastCrash;
-
-  last_called_ts = base::TimeTicks().Now().ToInternalValue();
+  last_called = now;
   return crashed_recently;
 }
 
@@ -197,14 +195,14 @@ int SadTab::GetCrashedErrorCode() {
 }
 
 void SadTab::RecordFirstPaint() {
-  DCHECK(!recorded_paint_);
+  CHECK(!recorded_paint_, base::NotFatalUntil::M162);
   recorded_paint_ = true;
 
   RecordEvent(show_feedback_button_, ui_metrics::SadTabEvent::DISPLAYED);
 }
 
 void SadTab::PerformAction(SadTab::Action action) {
-  DCHECK(recorded_paint_);
+  CHECK(recorded_paint_, base::NotFatalUntil::M162);
   switch (action) {
     case Action::kButton:
       RecordEvent(show_feedback_button_,
@@ -227,9 +225,10 @@ void SadTab::PerformAction(SadTab::Action action) {
     case Action::kHelpLink:
       RecordEvent(show_feedback_button_,
                   ui_metrics::SadTabEvent::HELP_LINK_CLICKED);
-      content::OpenURLParams params(GURL(GetHelpLinkURL()), content::Referrer(),
-                                    WindowOpenDisposition::CURRENT_TAB,
-                                    ui::PAGE_TRANSITION_LINK, false);
+      content::OpenURLParams params =
+          content::OpenURLParams::CreateBrowserInitiated(
+              GURL(GetHelpLinkURL()), WindowOpenDisposition::CURRENT_TAB,
+              ui::PAGE_TRANSITION_LINK);
       web_contents_->OpenURL(params, /*navigation_handle_callback=*/{});
       break;
   }

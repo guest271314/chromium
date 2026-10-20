@@ -38,6 +38,7 @@
 #include "third_party/blink/renderer/core/dom/element.h"
 #include "third_party/blink/renderer/core/dom/element_traversal.h"
 #include "third_party/blink/renderer/core/dom/events/event_path.h"
+#include "third_party/blink/renderer/core/dom/focusable.h"
 #include "third_party/blink/renderer/core/dom/id_target_observer_registry.h"
 #include "third_party/blink/renderer/core/dom/scroll_marker_group_pseudo_element.h"
 #include "third_party/blink/renderer/core/dom/scroll_marker_pseudo_element.h"
@@ -64,7 +65,9 @@
 #include "third_party/blink/renderer/core/probe/core_probes.h"
 #include "third_party/blink/renderer/core/svg/svg_text_content_element.h"
 #include "third_party/blink/renderer/core/svg/svg_tree_scope_resources.h"
+#include "third_party/blink/renderer/platform/bindings/dom_wrapper_world.h"
 #include "third_party/blink/renderer/platform/bindings/script_forbidden_scope.h"
+#include "third_party/blink/renderer/platform/bindings/script_state.h"
 #include "third_party/blink/renderer/platform/instrumentation/use_counter.h"
 #include "third_party/blink/renderer/platform/wtf/vector.h"
 #include "ui/gfx/geometry/point_conversions.h"
@@ -85,15 +88,6 @@ TreeScope::TreeScope(Document& document)
 }
 
 TreeScope::~TreeScope() = default;
-
-bool TreeScope::IsInclusiveAncestorTreeScopeOf(const TreeScope& scope) const {
-  for (const TreeScope* current = &scope; current;
-       current = current->ParentTreeScope()) {
-    if (current == this)
-      return true;
-  }
-  return false;
-}
 
 void TreeScope::SetParentTreeScope(TreeScope& new_parent_scope) {
   // A document node cannot be re-parented.
@@ -299,15 +293,26 @@ Element* TreeScope::ElementForHitTest(Node* node, HitTestPointType type) const {
   return element;
 }
 
-CustomElementRegistry* TreeScope::customElementRegistry() const {
+CustomElementRegistry* TreeScope::customElementRegistry(
+    ScriptState* script_state) const {
   if (custom_element_registry_) {
-    CHECK(RuntimeEnabledFeatures::ScopedCustomElementRegistryEnabled());
     DCHECK(!waiting_for_registry_);
+    // A null script_state indicates an internal call that bypasses the check.
+    if (script_state &&
+        script_state->World().GetWorldId() !=
+            custom_element_registry_->GetWorldId()) {
+      return nullptr;
+    }
     return custom_element_registry_;
   }
 
-  if (RuntimeEnabledFeatures::ScopedCustomElementRegistryEnabled() &&
-      waiting_for_registry_) {
+  if (waiting_for_registry_) {
+    return nullptr;
+  }
+
+  // The global registry must only be accessible from the main world.
+  // A null script_state indicates an internal call that bypasses the check.
+  if (script_state && !script_state->World().IsMainWorld()) {
     return nullptr;
   }
 
@@ -322,20 +327,35 @@ CustomElementRegistry* TreeScope::customElementRegistry() const {
 // tree scope is using a global registry and it can be reset during cross
 // document node adoption. Otherwise, setting registry on a tree scope with
 // existing registry will fail.
-bool TreeScope::SetCustomElementRegistry(CustomElementRegistry* registry) {
-  if (!RuntimeEnabledFeatures::ScopedCustomElementRegistryEnabled() ||
-      (custom_element_registry_ &&
-       !custom_element_registry_->IsGlobalRegistry())) {
+bool TreeScope::SetCustomElementRegistry(
+    CustomElementRegistryAssignment assignment) {
+  if (custom_element_registry_ &&
+      !custom_element_registry_->IsGlobalRegistry()) {
     return false;
   }
 
-  if (registry) {
-    custom_element_registry_ = registry;
-    waiting_for_registry_ = false;
-    registry->AssociatedWith(GetDocument());
+  if (assignment.IsInherit()) {
+    DCHECK(!custom_element_registry_ && !waiting_for_registry_);
     return true;
-  } else if (!custom_element_registry_ ||
-             custom_element_registry_->IsGlobalRegistry()) {
+  }
+
+  if (assignment.IsExplicit()) {
+    // An explicit registry is only overwritten with another explicit registry
+    // during cross-document adoption, where the global registry from the
+    // previous document is replaced with the current document's registry.
+    DCHECK(!custom_element_registry_ ||
+           (custom_element_registry_->IsGlobalRegistry() &&
+            assignment.Registry()->IsGlobalRegistry()));
+    custom_element_registry_ = assignment.Registry();
+    waiting_for_registry_ = false;
+    custom_element_registry_->AssociatedWith(GetDocument());
+    return true;
+  }
+
+  // Wait for a scoped registry.
+  DCHECK(assignment.IsWait());
+  if (!custom_element_registry_ ||
+      custom_element_registry_->IsGlobalRegistry()) {
     custom_element_registry_ = nullptr;
     waiting_for_registry_ = true;
     return true;
@@ -494,6 +514,26 @@ void TreeScope::ClearAdoptedStyleSheets() {
   }
 }
 
+void TreeScope::ReplaceAdoptedStyleSheet(CSSStyleSheet& old_sheet,
+                                         CSSStyleSheet& new_sheet) {
+  CHECK(new_sheet.IsConstructed());
+  CHECK_EQ(old_sheet.ConstructorDocument(), new_sheet.ConstructorDocument());
+  CHECK_EQ(new_sheet.ConstructorDocument(), GetDocument());
+
+  if (!HasAdoptedStyleSheets()) {
+    return;
+  }
+
+  for (auto& sheet : *adopted_style_sheets_) {
+    if (sheet == &old_sheet) {
+      StyleSheetWasRemoved(&old_sheet);
+      sheet = &new_sheet;
+      StyleSheetWasAdded(&new_sheet);
+      return;
+    }
+  }
+}
+
 void TreeScope::AppendAdoptedStyleSheets(
     HeapVector<Member<CSSStyleSheet>>&& adopted_style_sheets) {
   EnsureAdoptedStyleSheets();
@@ -513,7 +553,7 @@ void TreeScope::SetAdoptedStyleSheetsForTesting(
   AppendAdoptedStyleSheets(std::move(adopted_style_sheets));
 }
 
-DOMSelection* TreeScope::GetSelection() const {
+DomSelection* TreeScope::GetSelection() const {
   if (!RootNode().GetDocument().GetFrame())
     return nullptr;
 
@@ -523,7 +563,7 @@ DOMSelection* TreeScope::GetSelection() const {
   // FIXME: The correct selection in Shadow DOM requires that Position can have
   // a ShadowRoot as a container.  See
   // https://bugs.webkit.org/show_bug.cgi?id=82697
-  selection_ = MakeGarbageCollected<DOMSelection>(this);
+  selection_ = MakeGarbageCollected<DomSelection>(this);
   return selection_.Get();
 }
 
@@ -732,6 +772,26 @@ Element* TreeScope::activeElement() const {
     return element;
   }
   return document_ == this ? document_->body() : nullptr;
+}
+
+Focusable* TreeScope::activeFocusable() const {
+  Document& document = RootNode().GetDocument();
+  Element* focused_element = document.FocusedElement();
+  if (!focused_element && document.GetPage()) {
+    focused_element =
+        document.GetPage()->GetFocusController().FocusedFrameOwnerElement(
+            *document.GetFrame());
+  }
+  // Just like `shadowRoot.activeElement`, if the focused element is not inside
+  // `this` TreeScope (or a descendant shadow tree of `this`), return nullptr
+  // (for example, when querying `shadowRoot.activeFocusable` while focus is in
+  // the outer document, in an unrelated shadow tree, or on a slotted light-DOM
+  // element).
+  if (!focused_element ||
+      !IsInclusiveAncestorOf(focused_element->GetTreeScope())) {
+    return nullptr;
+  }
+  return Focusable::CreateFromElement(*focused_element, *this);
 }
 
 HeapVector<Member<Animation>> TreeScope::getAnimations() {

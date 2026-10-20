@@ -24,6 +24,7 @@
 #include "base/task/single_thread_task_runner.h"
 #include "base/test/task_environment.h"
 #include "base/values.h"
+#include "build/build_config.h"
 #include "content/browser/devtools/devtools_agent_host_impl.h"
 #include "content/browser/devtools/devtools_manager.h"
 #include "content/public/browser/browser_task_traits.h"
@@ -41,6 +42,7 @@
 #include "net/base/ip_address.h"
 #include "net/base/ip_endpoint.h"
 #include "net/base/net_errors.h"
+#include "net/base/network_handle.h"
 #include "net/socket/server_socket.h"
 #include "net/socket/tcp_server_socket.h"
 #include "net/traffic_annotation/network_traffic_annotation_test_helper.h"
@@ -155,6 +157,8 @@ class MockDevToolsManagerDelegate : public DevToolsManagerDelegate {
     last_instance = this;
     EXPECT_CALL(*this, SetActiveWebSocketConnections(testing::_))
         .Times(testing::AtLeast(0));
+    ON_CALL(*this, AllowInspectingTarget(testing::_))
+        .WillByDefault(testing::Return(true));
   }
   MOCK_METHOD(scoped_refptr<DevToolsAgentHost>,
               CreateNewTarget,
@@ -171,6 +175,10 @@ class MockDevToolsManagerDelegate : public DevToolsManagerDelegate {
   MOCK_METHOD(void,
               SetActiveWebSocketConnections,
               (size_t count),
+              (override));
+  MOCK_METHOD(bool,
+              AllowInspectingTarget,
+              (DevToolsAgentHost*),
               (override));
 };
 
@@ -303,14 +311,16 @@ TEST_F(DevToolsHttpHandlerTest, MutatingActionsiRequireSafeVerb) {
   GURL url(base::StringPrintf("http://127.0.0.1:%d/json/new", port));
   auto request_context = net::CreateTestURLRequestContextBuilder()->Build();
   auto request = request_context->CreateRequest(
-      url, net::DEFAULT_PRIORITY, &delegate, TRAFFIC_ANNOTATION_FOR_TESTS);
+      url, net::DEFAULT_PRIORITY, &delegate, TRAFFIC_ANNOTATION_FOR_TESTS,
+      net::handles::kInvalidNetworkHandle);
   request->Start();
   delegate.RunUntilComplete();
   EXPECT_GE(delegate.request_status(), 0);
   EXPECT_EQ(405, request->response_info().headers->response_code());
 
   request = request_context->CreateRequest(
-      url, net::DEFAULT_PRIORITY, &delegate, TRAFFIC_ANNOTATION_FOR_TESTS);
+      url, net::DEFAULT_PRIORITY, &delegate, TRAFFIC_ANNOTATION_FOR_TESTS,
+      net::handles::kInvalidNetworkHandle);
   request->set_method("POST");
   request->Start();
   delegate.RunUntilComplete();
@@ -324,7 +334,8 @@ TEST_F(DevToolsHttpHandlerTest, MutatingActionsiRequireSafeVerb) {
       .WillOnce(Return(base::MakeRefCounted<MockDevToolsAgentHost>()));
 
   request = request_context->CreateRequest(
-      url, net::DEFAULT_PRIORITY, &delegate, TRAFFIC_ANNOTATION_FOR_TESTS);
+      url, net::DEFAULT_PRIORITY, &delegate, TRAFFIC_ANNOTATION_FOR_TESTS,
+      net::handles::kInvalidNetworkHandle);
   request->set_method("PUT");
   request->Start();
   delegate.RunUntilComplete();
@@ -355,7 +366,8 @@ TEST_F(DevToolsHttpHandlerTest, TestJsonNew) {
   GURL url(base::StringPrintf("http://127.0.0.1:%d/json/new", port));
   auto request_context = net::CreateTestURLRequestContextBuilder()->Build();
   auto request = request_context->CreateRequest(
-      url, net::DEFAULT_PRIORITY, &delegate, TRAFFIC_ANNOTATION_FOR_TESTS);
+      url, net::DEFAULT_PRIORITY, &delegate, TRAFFIC_ANNOTATION_FOR_TESTS,
+      net::handles::kInvalidNetworkHandle);
   request->set_method("PUT");
   request->Start();
   delegate.RunUntilComplete();
@@ -369,7 +381,8 @@ TEST_F(DevToolsHttpHandlerTest, TestJsonNew) {
       "http://127.0.0.1:%d/json/new?%s", port,
       base::EscapeQueryParamValue("http://example.com", true).c_str()));
   request = request_context->CreateRequest(
-      url, net::DEFAULT_PRIORITY, &delegate, TRAFFIC_ANNOTATION_FOR_TESTS);
+      url, net::DEFAULT_PRIORITY, &delegate, TRAFFIC_ANNOTATION_FOR_TESTS,
+      net::handles::kInvalidNetworkHandle);
   request->set_method("PUT");
   request->Start();
   delegate.RunUntilComplete();
@@ -383,7 +396,8 @@ TEST_F(DevToolsHttpHandlerTest, TestJsonNew) {
       "http://127.0.0.1:%d/json/new?%s&for_tab", port,
       base::EscapeQueryParamValue("http://example.com", true).c_str()));
   request = request_context->CreateRequest(
-      url, net::DEFAULT_PRIORITY, &delegate, TRAFFIC_ANNOTATION_FOR_TESTS);
+      url, net::DEFAULT_PRIORITY, &delegate, TRAFFIC_ANNOTATION_FOR_TESTS,
+      net::handles::kInvalidNetworkHandle);
   request->set_method("PUT");
   request->Start();
   delegate.RunUntilComplete();
@@ -411,7 +425,8 @@ TEST_F(DevToolsHttpHandlerTest, TestJsonList) {
   GURL url(base::StringPrintf("http://127.0.0.1:%d/json", port));
   auto request_context = net::CreateTestURLRequestContextBuilder()->Build();
   auto request = request_context->CreateRequest(
-      url, net::DEFAULT_PRIORITY, &delegate, TRAFFIC_ANNOTATION_FOR_TESTS);
+      url, net::DEFAULT_PRIORITY, &delegate, TRAFFIC_ANNOTATION_FOR_TESTS,
+      net::handles::kInvalidNetworkHandle);
   request->set_method("PUT");
   request->Start();
   delegate.RunUntilComplete();
@@ -423,7 +438,8 @@ TEST_F(DevToolsHttpHandlerTest, TestJsonList) {
           base::MakeRefCounted<MockDevToolsAgentHostWithType>("tab")}));
   url = GURL(base::StringPrintf("http://127.0.0.1:%d/json/list", port));
   request = request_context->CreateRequest(
-      url, net::DEFAULT_PRIORITY, &delegate, TRAFFIC_ANNOTATION_FOR_TESTS);
+      url, net::DEFAULT_PRIORITY, &delegate, TRAFFIC_ANNOTATION_FOR_TESTS,
+      net::handles::kInvalidNetworkHandle);
   request->set_method("PUT");
   request->Start();
   delegate.RunUntilComplete();
@@ -438,7 +454,8 @@ TEST_F(DevToolsHttpHandlerTest, TestJsonList) {
           base::MakeRefCounted<MockDevToolsAgentHostWithType>("tab")}));
   url = GURL(base::StringPrintf("http://127.0.0.1:%d/json/list?for_tab", port));
   request = request_context->CreateRequest(
-      url, net::DEFAULT_PRIORITY, &delegate, TRAFFIC_ANNOTATION_FOR_TESTS);
+      url, net::DEFAULT_PRIORITY, &delegate, TRAFFIC_ANNOTATION_FOR_TESTS,
+      net::handles::kInvalidNetworkHandle);
   request->set_method("PUT");
   request->Start();
   delegate.RunUntilComplete();
@@ -482,7 +499,7 @@ class DevToolsHttpHandlerWithServerTest : public DevToolsHttpHandlerTest {
     net::TestDelegate delegate;
     auto request = request_context_->CreateRequest(
         GURL(url), net::DEFAULT_PRIORITY, &delegate,
-        TRAFFIC_ANNOTATION_FOR_TESTS);
+        TRAFFIC_ANNOTATION_FOR_TESTS, net::handles::kInvalidNetworkHandle);
     for (auto const& [key, value] : headers) {
       request->SetExtraRequestHeaderByName(key, value, true);
     }
@@ -500,6 +517,37 @@ class DevToolsHttpHandlerWithServerTest : public DevToolsHttpHandlerTest {
   base::RunLoop run_loop_2_;
 };
 
+TEST_F(DevToolsHttpHandlerWithServerTest, JsonVersionIncludesFilePathStyle) {
+  int port = StartServer();
+
+  GURL url(base::StringPrintf("http://127.0.0.1:%d/json/version", port));
+  net::TestDelegate delegate;
+  auto request = request_context_->CreateRequest(
+      url, net::DEFAULT_PRIORITY, &delegate, TRAFFIC_ANNOTATION_FOR_TESTS,
+      net::handles::kInvalidNetworkHandle);
+  request->Start();
+  delegate.RunUntilComplete();
+  EXPECT_GE(delegate.request_status(), 0);
+  std::string response_body = delegate.data_received();
+
+  StopServer();
+
+  std::optional<base::Value> response = base::JSONReader::Read(
+      response_body, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
+  ASSERT_TRUE(response.has_value());
+  const base::DictValue* dict = response->GetIfDict();
+  ASSERT_NE(dict, nullptr);
+  const std::string* file_path_style = dict->FindString("File-Path-Style");
+  ASSERT_NE(file_path_style, nullptr);
+#if BUILDFLAG(IS_WIN)
+  EXPECT_EQ("windows", *file_path_style);
+#elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
+  EXPECT_EQ("posix", *file_path_style);
+#else
+#error Unsupported native file path style
+#endif
+}
+
 class DevToolsWebSocketHandlerTest : public DevToolsHttpHandlerWithServerTest {
  public:
   DevToolsWebSocketHandlerTest() = default;
@@ -508,7 +556,8 @@ class DevToolsWebSocketHandlerTest : public DevToolsHttpHandlerWithServerTest {
     GURL url(base::StringPrintf("http://127.0.0.1:%d/json/version", port));
     net::TestDelegate delegate;
     auto request = request_context_->CreateRequest(
-        url, net::DEFAULT_PRIORITY, &delegate, TRAFFIC_ANNOTATION_FOR_TESTS);
+        url, net::DEFAULT_PRIORITY, &delegate, TRAFFIC_ANNOTATION_FOR_TESTS,
+        net::handles::kInvalidNetworkHandle);
     request->Start();
     delegate.RunUntilComplete();
     EXPECT_GE(delegate.request_status(), 0);
@@ -536,6 +585,14 @@ TEST_F(DevToolsWebSocketHandlerTest,
                                                });
   // This error is expected because it's not a well-formed WS request.
   // It means that the request is accepted by the server though.
+  EXPECT_EQ(request->GetResponseCode(), 500);
+
+  // Accepts an upgrade request with an Origin matching the server's origin.
+  request = RunRequestUntilCompletion(
+      debugging_url,
+      {{"connection", "upgrade"},
+       {"upgrade", "websocket"},
+       {"origin", base::StringPrintf("http://127.0.0.1:%d", port)}});
   EXPECT_EQ(request->GetResponseCode(), 500);
 
   // Denies an upgrade request with an Origin header.
@@ -599,6 +656,17 @@ TEST_F(DevToolsWebSocketHandlerTest, TestAllowsCLIOverrideAllowsOrigins) {
                                            });
   // This error is expected because it's not a well-formed WS request.
   // It means that the request is accepted by the server though.
+  EXPECT_EQ(request->GetResponseCode(), 500);
+
+  // Same origin as the server is still allowed even when --remote-allow-origins
+  // specifies a different origin.
+  request = RunRequestUntilCompletion(
+      debugging_url,
+      {
+          {"connection", "upgrade"},
+          {"upgrade", "websocket"},
+          {"origin", base::StringPrintf("http://127.0.0.1:%d", port)},
+      });
   EXPECT_EQ(request->GetResponseCode(), 500);
 
   request = RunRequestUntilCompletion(debugging_url,
@@ -711,5 +779,42 @@ TEST_F(DevToolsHttpHandlerWithApprovalTest,
 
   StopServer();
 }
+
+
+TEST_F(DevToolsHttpHandlerWithServerTest, JsonActivateCloseRespectsAllowlist) {
+  scoped_refptr<DevToolsAgentHost> host = DevToolsAgentHost::CreateForDiscovery();
+  int port = StartServer();
+
+  EXPECT_CALL(*MockDevToolsManagerDelegate::last_instance, AllowInspectingTarget(testing::_))
+      .WillRepeatedly(testing::Return(false));
+
+  auto request = RunRequestUntilCompletion(
+      base::StringPrintf("http://127.0.0.1:%d/json/activate/%s", port, host->GetId().c_str()));
+  EXPECT_EQ(403, request->response_info().headers->response_code());
+
+  request = RunRequestUntilCompletion(
+      base::StringPrintf("http://127.0.0.1:%d/json/close/%s", port, host->GetId().c_str()));
+  EXPECT_EQ(403, request->response_info().headers->response_code());
+
+  StopServer();
+}
+
+TEST_F(DevToolsHttpHandlerWithServerTest, WebSocketRespectsAllowlist) {
+  scoped_refptr<DevToolsAgentHost> host = DevToolsAgentHost::CreateForDiscovery();
+  int port = StartServer();
+
+  EXPECT_CALL(*MockDevToolsManagerDelegate::last_instance, AllowInspectingTarget(testing::_))
+      .WillRepeatedly(testing::Return(false));
+
+  auto request = RunRequestUntilCompletion(
+      base::StringPrintf("http://127.0.0.1:%d/devtools/page/%s", port, host->GetId().c_str()),
+      {{"connection", "upgrade"}, {"upgrade", "websocket"}});
+
+  // Expect HTTP 403 Forbidden because AllowInspectingTarget returned false
+  EXPECT_EQ(403, request->response_info().headers->response_code());
+
+  StopServer();
+}
+
 
 }  // namespace content

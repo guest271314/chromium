@@ -36,6 +36,7 @@
 #include "ash/wm/window_state.h"
 #include "base/check.h"
 #include "base/containers/fixed_flat_set.h"
+#include "base/containers/span.h"
 #include "base/feature_list.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/metrics/histogram_macros.h"
@@ -277,7 +278,6 @@ bool CanHandleLockButton(const ui::Accelerator& accelerator) {
   if (accelerator.key_code() == ui::VKEY_F13 &&
       Shell::Get()->keyboard_capability()->HasFunctionKey(
           accelerator.source_device_id())) {
-    CHECK(features::IsModifierSplitEnabled());
     return false;
   }
   return true;
@@ -297,7 +297,6 @@ bool CanHandleToggleCapsLock(
     // Check if from modifier split keyboard. if not, show notification.
     if (Shell::Get()->keyboard_capability()->HasFunctionKey(
             accelerator.source_device_id())) {
-      CHECK(features::IsModifierSplitEnabled());
       notification_controller->ShowCapsLockRewritingNudge();
       return false;
     }
@@ -477,9 +476,13 @@ AcceleratorControllerImpl::AcceleratorControllerImpl(
   aura::Env::GetInstance()->AddPreTargetHandler(
       top_row_key_usage_recorder_.get(),
       ui::EventTarget::Priority::kAccessibility);
+
+  ui::GlobalAcceleratorListenerChromeOS::SetDelegate(this);
 }
 
 AcceleratorControllerImpl::~AcceleratorControllerImpl() {
+  ui::GlobalAcceleratorListenerChromeOS::SetDelegate(nullptr);
+
   // |AcceleratorControllerImpl| is owned by the shell which always is
   // deconstructed before |InputMethodManager| and |AcceleratorPref|.
   if (::features::IsImprovedKeyboardShortcutsEnabled()) {
@@ -717,11 +720,9 @@ void AcceleratorControllerImpl::Init() {
     }
   }
 
-  if (features::IsModifierSplitEnabled()) {
-    notification_controller_ =
-        std::make_unique<InputDeviceSettingsNotificationController>(
-            message_center::MessageCenter::Get());
-  }
+  notification_controller_ =
+      std::make_unique<InputDeviceSettingsNotificationController>(
+          message_center::MessageCenter::Get());
 }
 
 void AcceleratorControllerImpl::RegisterAccelerators(
@@ -770,13 +771,13 @@ bool AcceleratorControllerImpl::CanPerformAction(
   // accelerator.
   switch (action) {
     case AcceleratorAction::kAccessibilityAction:
-      return ::features::IsAccessibilityAcceleratorEnabled();
+      return true;
     case AcceleratorAction::kCycleBackwardMru:
     case AcceleratorAction::kCycleForwardMru:
       return accelerators::CanCycleMru();
     case AcceleratorAction::kCycleSameAppWindowsBackward:
     case AcceleratorAction::kCycleSameAppWindowsForward:
-      return accelerators::CanCycleSameAppWindows();
+      return false;
     case AcceleratorAction::kDesksActivateDeskLeft:
     case AcceleratorAction::kDesksActivateDeskRight:
     case AcceleratorAction::kDesksMoveActiveItemLeft:
@@ -874,7 +875,7 @@ bool AcceleratorControllerImpl::CanPerformAction(
     case AcceleratorAction::kToggleCalendar:
       return true;
     case AcceleratorAction::kToggleCameraAllowed:
-      return features::IsToggleCameraShortcutEnabled();
+      return true;
     case AcceleratorAction::kToggleCapsLock:
       return CanHandleToggleCapsLock(accelerator, *capslock_state_machine_,
                                      notification_controller_.get());
@@ -899,7 +900,7 @@ bool AcceleratorControllerImpl::CanPerformAction(
     case AcceleratorAction::kToggleMirrorMode:
       return true;
     case AcceleratorAction::kToggleMouseKeys:
-      return ::features::IsAccessibilityMouseKeysEnabled();
+      return true;
     case AcceleratorAction::kToggleOverview:
       return accelerators::CanToggleOverview();
     case AcceleratorAction::kToggleSnapGroup:
@@ -940,8 +941,6 @@ bool AcceleratorControllerImpl::CanPerformAction(
       return CanHandleLockButton(accelerator);
     case AcceleratorAction::kResizePipWindow:
       return accelerators::CanResizePipWindow();
-    case AcceleratorAction::kToggleGeminiApp:
-      return accelerators::CanToggleGeminiApp();
 
     // The following are always enabled.
     case AcceleratorAction::kBrightnessDown:
@@ -990,6 +989,7 @@ bool AcceleratorControllerImpl::CanPerformAction(
     case AcceleratorAction::kShowTaskManager:
     case AcceleratorAction::kSuspend:
     case AcceleratorAction::kToggleFullscreen:
+    case AcceleratorAction::kToggleGeminiApp:
     case AcceleratorAction::kToggleHighContrast:
     case AcceleratorAction::kToggleMaximized:
     case AcceleratorAction::kToggleSpokenFeedback:
@@ -1037,9 +1037,7 @@ void AcceleratorControllerImpl::PerformAction(
   // function above.
   switch (action) {
     case AcceleratorAction::kAccessibilityAction:
-      if (::features::IsAccessibilityAcceleratorEnabled()) {
-        accelerators::AccessibilityAction();
-      }
+      accelerators::AccessibilityAction();
       break;
     case AcceleratorAction::kBrightnessDown: {
       base::RecordAction(UserMetricsAction("Accel_BrightnessDown_F6"));
@@ -1053,17 +1051,14 @@ void AcceleratorControllerImpl::PerformAction(
     }
     case AcceleratorAction::kCycleBackwardMru:
       RecordCycleBackwardMru(accelerator);
-      accelerators::CycleBackwardMru(/*same_app_only=*/false);
+      accelerators::CycleBackwardMru();
       break;
     case AcceleratorAction::kCycleForwardMru:
       RecordCycleForwardMru(accelerator);
-      accelerators::CycleForwardMru(/*same_app_only=*/false);
+      accelerators::CycleForwardMru();
       break;
     case AcceleratorAction::kCycleSameAppWindowsBackward:
-      accelerators::CycleBackwardMru(/*same_app_only=*/true);
-      break;
     case AcceleratorAction::kCycleSameAppWindowsForward:
-      accelerators::CycleForwardMru(/*same_app_only=*/true);
       break;
     case AcceleratorAction::kDesksActivateDeskLeft:
       // UMA metrics are recorded in the function.
@@ -1503,9 +1498,7 @@ void AcceleratorControllerImpl::PerformAction(
       accelerators::ToggleMirrorMode();
       break;
     case AcceleratorAction::kToggleMouseKeys:
-      if (::features::IsAccessibilityMouseKeysEnabled()) {
-        accelerators::ToggleMouseKeys();
-      }
+      accelerators::ToggleMouseKeys();
       break;
     case AcceleratorAction::kToggleMultitaskMenu:
       accelerators::ToggleMultitaskMenu();

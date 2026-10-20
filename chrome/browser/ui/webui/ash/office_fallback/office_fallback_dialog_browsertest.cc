@@ -6,6 +6,7 @@
 
 #include <utility>
 
+#include "ash/constants/ash_extension_constants.h"
 #include "ash/constants/webui_url_constants.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/bind.h"
@@ -13,12 +14,10 @@
 #include "chrome/browser/ash/file_manager/file_manager_test_util.h"
 #include "chrome/browser/ash/file_manager/office_file_tasks.h"
 #include "chrome/browser/ash/file_system_provider/service.h"
-#include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/webui/ash/office_fallback/office_fallback_ui.h"
-#include "chrome/common/extensions/extension_constants.h"
 #include "chrome/grit/generated_resources.h"
 #include "chrome/test/base/in_process_browser_test.h"
-#include "chromeos/constants/chromeos_features.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "content/public/test/test_navigation_observer.h"
@@ -79,13 +78,7 @@ content::WebContents* LaunchOfficeFallbackDialogAndGetWebContentsForDialog(
 
 class OfficeFallbackDialogBrowserTest : public InProcessBrowserTest {
  public:
-  OfficeFallbackDialogBrowserTest() {
-    feature_list_.InitWithFeatures(
-        {chromeos::features::kUploadOfficeToCloud,
-         chromeos::features::kMicrosoftOneDriveIntegrationForEnterprise},
-        {});
-  }
-
+  OfficeFallbackDialogBrowserTest() = default;
   OfficeFallbackDialogBrowserTest(const OfficeFallbackDialogBrowserTest&) =
       delete;
   OfficeFallbackDialogBrowserTest& operator=(
@@ -100,18 +93,15 @@ class OfficeFallbackDialogBrowserTest : public InProcessBrowserTest {
         ash::file_system_provider::FakeExtensionProvider::Create(
             extension_misc::kODFSExtensionId);
     auto* service =
-        ash::file_system_provider::Service::Get(browser()->profile());
+        ash::file_system_provider::Service::Get(browser()->GetProfile());
     service->RegisterProvider(std::move(fake_provider));
 
-    files_ = file_manager::test::CopyTestFilesIntoMyFiles(browser()->profile(),
-                                                          {"text.docx"});
+    files_ = file_manager::test::CopyTestFilesIntoMyFiles(
+        browser()->GetProfile(), {"text.docx"});
   }
 
  protected:
   std::vector<storage::FileSystemURL> files_;
-
- private:
-  base::test::ScopedFeatureList feature_list_;
 };
 
 // Test which launches an `OfficeFallbackDialog` which in turn creates an

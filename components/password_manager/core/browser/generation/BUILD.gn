@@ -15,8 +15,8 @@ source_set("core") {
   deps = [
     "//base",
     "//components/password_manager/core/browser/features:password_features",
+    "//components/password_manager/core/common:constants",
   ]
-  configs += [ "//build/config/compiler:wexit_time_destructors" ]
 }
 
 source_set("generation") {
@@ -33,7 +33,6 @@ source_set("generation") {
     "//services/network/public/cpp",
     "//url",
   ]
-  configs += [ "//build/config/compiler:wexit_time_destructors" ]
 }
 
 source_set("unit_tests") {
@@ -56,6 +55,8 @@ if (use_fuzzing_engine_with_lpm) {
     sources = [ "password_generator_proto_fuzzer.cc" ]
     deps = [
       ":generation",
+      "//components/autofill/core/browser/proto",
+      "//components/autofill/core/browser/proto:proto_fuzzable",
       "//third_party/libprotobuf-mutator",
     ]
 

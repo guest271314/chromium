@@ -5,12 +5,14 @@
 #import "ios/chrome/browser/toolbar/coordinator/main_toolbar_coordinator.h"
 
 #import "base/apple/foundation_util.h"
-#import "base/memory/raw_ptr.h"
+#import "base/metrics/user_metrics.h"
+#import "base/metrics/user_metrics_action.h"
 #import "components/omnibox/browser/omnibox_pref_names.h"
 #import "components/omnibox/common/omnibox_features.h"
 #import "components/prefs/pref_service.h"
 #import "ios/chrome/app/profile/profile_state.h"
 #import "ios/chrome/browser/banner_promo/model/default_browser_banner_promo_app_agent.h"
+#import "ios/chrome/browser/bubble/model/tab_based_iph_browser_agent.h"
 #import "ios/chrome/browser/fullscreen/model/fullscreen_browser_agent.h"
 #import "ios/chrome/browser/fullscreen/model/fullscreen_browser_agent_observer_bridge.h"
 #import "ios/chrome/browser/fullscreen/ui_bundled/fullscreen_controller.h"
@@ -22,32 +24,38 @@
 #import "ios/chrome/browser/location_bar/ui_bundled/location_bar_coordinator.h"
 #import "ios/chrome/browser/menu/ui_bundled/browser_action_factory.h"
 #import "ios/chrome/browser/ntp/model/new_tab_page_util.h"
-#import "ios/chrome/browser/omnibox/model/omnibox_position/omnibox_position_browser_agent.h"
-#import "ios/chrome/browser/omnibox/ui/omnibox_drs_view_controller.h"
 #import "ios/chrome/browser/orchestrator/ui_bundled/omnibox_focus_orchestrator.h"
 #import "ios/chrome/browser/overlays/model/public/overlay_presentation_context.h"
 #import "ios/chrome/browser/prerender/model/prerender_browser_agent.h"
 #import "ios/chrome/browser/shared/coordinator/layout_guide/layout_guide_util.h"
 #import "ios/chrome/browser/shared/coordinator/scene/scene_state.h"
+#import "ios/chrome/browser/shared/coordinator/scene/state/browser_layout_state.h"
+#import "ios/chrome/browser/shared/coordinator/scene/state/scene_layout_state.h"
 #import "ios/chrome/browser/shared/model/application_context/application_context.h"
 #import "ios/chrome/browser/shared/model/browser/browser.h"
+#import "ios/chrome/browser/shared/model/browser/browser_provider.h"
+#import "ios/chrome/browser/shared/model/browser/browser_provider_interface.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
+#import "ios/chrome/browser/shared/model/url/url_util.h"
 #import "ios/chrome/browser/shared/model/web_state_list/web_state_list.h"
 #import "ios/chrome/browser/shared/public/commands/activity_service_commands.h"
 #import "ios/chrome/browser/shared/public/commands/browser_coordinator_commands.h"
-#import "ios/chrome/browser/shared/public/commands/bwg_commands.h"
 #import "ios/chrome/browser/shared/public/commands/command_dispatcher.h"
 #import "ios/chrome/browser/shared/public/commands/contextual_panel_entrypoint_commands.h"
+#import "ios/chrome/browser/shared/public/commands/custom_leading_view_type.h"
 #import "ios/chrome/browser/shared/public/commands/find_in_page_commands.h"
 #import "ios/chrome/browser/shared/public/commands/fullscreen_commands.h"
+#import "ios/chrome/browser/shared/public/commands/gemini_commands.h"
 #import "ios/chrome/browser/shared/public/commands/guided_tour_commands.h"
 #import "ios/chrome/browser/shared/public/commands/help_commands.h"
 #import "ios/chrome/browser/shared/public/commands/location_bar_badge_commands.h"
+#import "ios/chrome/browser/shared/public/commands/new_tab_page_commands.h"
 #import "ios/chrome/browser/shared/public/commands/page_action_menu_entry_point_commands.h"
 #import "ios/chrome/browser/shared/public/commands/popup_menu_commands.h"
 #import "ios/chrome/browser/shared/public/commands/reader_mode_chip_commands.h"
 #import "ios/chrome/browser/shared/public/commands/scene_commands.h"
 #import "ios/chrome/browser/shared/public/commands/settings_commands.h"
+#import "ios/chrome/browser/shared/public/commands/snackbar_commands.h"
 #import "ios/chrome/browser/shared/public/commands/text_zoom_commands.h"
 #import "ios/chrome/browser/shared/public/commands/toolbar_commands.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
@@ -77,24 +85,108 @@
 #import "ios/chrome/browser/web/model/web_navigation_browser_agent.h"
 #import "ios/chrome/common/ui/util/constraints_ui_util.h"
 #import "ios/chrome/common/ui/util/ui_util.h"
+#import "ios/chrome/grit/ios_strings.h"
 #import "ios/components/webui/web_ui_url_constants.h"
 #import "ios/web/public/web_state.h"
+#import "ui/base/l10n/l10n_util.h"
+
+namespace layout_state {
+class MainToolbarCoordinatorPassKeyFactory {
+ public:
+  static base::PassKey<MainToolbarCoordinatorPassKeyFactory> CreateKey() {
+    return base::PassKey<MainToolbarCoordinatorPassKeyFactory>();
+  }
+};
+}  // namespace layout_state
 
 namespace {
 // Extra vertical spacing when the banner promo is active on split mode.
 constexpr CGFloat kBannerPromoVerticalSpacing = 8;
+
+// Helper function to extract a slice from `cgImage` at `pixelRect`
+// and stretch it to fill `drawRect` in the current graphics context.
+void StretchImageEdge(CGImageRef cgImage,
+                      CGRect pixelRect,
+                      CGRect drawRect,
+                      CGFloat scale) {
+  CGImageRef slice = CGImageCreateWithImageInRect(cgImage, pixelRect);
+  if (slice) {
+    // Orientation is generally Up for view snapshots; scale ensures correct
+    // point sizing.
+    UIImage* edgeImage = [UIImage imageWithCGImage:slice
+                                             scale:scale
+                                       orientation:UIImageOrientationUp];
+    [edgeImage drawInRect:drawRect];
+    CGImageRelease(slice);
+  }
+}
+
+// Returns a new image created by stretching the left and right edges of the
+// provided `snapshot` to fill `targetWidth`. The original `snapshot` is drawn
+// at the given `xOffset`.
+UIImage* PadImageWithEdgeStretching(UIImage* snapshot,
+                                    CGFloat xOffset,
+                                    CGFloat targetWidth) {
+  CGFloat height = snapshot.size.height;
+  if (height <= 0 || targetWidth <= snapshot.size.width) {
+    return snapshot;
+  }
+
+  UIGraphicsImageRendererFormat* format =
+      [UIGraphicsImageRendererFormat defaultFormat];
+  format.scale = snapshot.scale;
+  format.opaque = NO;
+
+  UIGraphicsImageRenderer* renderer = [[UIGraphicsImageRenderer alloc]
+      initWithSize:CGSizeMake(targetWidth, height)
+            format:format];
+
+  return [renderer imageWithActions:^(
+                       UIGraphicsImageRendererContext* UIContext) {
+    [snapshot drawAtPoint:CGPointMake(xOffset, 0)];
+
+    CGImageRef cgImage = snapshot.CGImage;
+    if (!cgImage || CGImageGetWidth(cgImage) == 0) {
+      return;
+    }
+    size_t pixelWidth = CGImageGetWidth(cgImage);
+    size_t pixelHeight = CGImageGetHeight(cgImage);
+
+    // Stretch left edge.
+    if (xOffset > 0) {
+      CGRect leftPixelRect = CGRectMake(0, 0, 1, pixelHeight);
+      CGRect leftDrawRect = CGRectMake(0, 0, xOffset, height);
+      StretchImageEdge(cgImage, leftPixelRect, leftDrawRect, snapshot.scale);
+    }
+
+    // Stretch right edge.
+    CGFloat rightEdge = xOffset + snapshot.size.width;
+    if (rightEdge < targetWidth) {
+      CGRect rightPixelRect = CGRectMake(pixelWidth - 1, 0, 1, pixelHeight);
+      CGRect rightDrawRect =
+          CGRectMake(rightEdge, 0, targetWidth - rightEdge, height);
+      StretchImageEdge(cgImage, rightPixelRect, rightDrawRect, snapshot.scale);
+    }
+  }];
+}
+
+// Helper function to return the domain passkey used to mutate the layout state.
+inline LayoutStateToolbarPassKey PassKey() {
+  return layout_state::MainToolbarCoordinatorPassKeyFactory::CreateKey();
+}
 }  // namespace
 
-@interface MainToolbarCoordinator () <ContextualPanelEntrypointCommands,
+@interface MainToolbarCoordinator () <BrowserLayoutStateObserver,
+                                      ContextualPanelEntrypointCommands,
+                                      FullscreenBrowserAgentObserving,
                                       GuidedTourCommands,
                                       LocationBarBadgeCommands,
-                                      MainToolbarMediatorDelegate,
                                       PageActionMenuEntryPointCommands,
                                       PrimaryToolbarViewControllerDelegate,
                                       ReaderModeChipCommands,
+                                      LegacyToolbarMediatorDelegate,
                                       ToolbarCommands,
-                                      ToolbarMediatorDelegate,
-                                      FullscreenBrowserAgentObserving>
+                                      ToolbarMediatorDelegate>
 
 /// Whether this coordinator has been started.
 @property(nonatomic, assign) BOOL started;
@@ -113,15 +205,14 @@ constexpr CGFloat kBannerPromoVerticalSpacing = 8;
 @property(nonatomic, strong) OmniboxFocusOrchestrator* orchestrator;
 /// Whether the omnibox is currently focused.
 @property(nonatomic, assign) BOOL locationBarFocused;
-/// Dynamic response system view controller is an omnibox presenter. Only
-/// defined  when kOmniboxDRSPrototype is set.
-@property(nonatomic, strong) OmniboxDRSViewController* drsViewController;
 
 @end
 
 @implementation MainToolbarCoordinator {
   // The mediator for this coordinator.
   MainToolbarMediator* _mainToolbarMediator;
+  // The layout state for the browser.
+  __weak BrowserLayoutState* _browserLayoutState;
   /// Type of toolbar containing the omnibox. Unlike
   /// `_steadyStateOmniboxPosition`, this tracks the omnibox position at all
   /// time.
@@ -145,6 +236,8 @@ constexpr CGFloat kBannerPromoVerticalSpacing = 8;
   std::unique_ptr<FullscreenUIUpdater> _topToolbarFullscreenUIUpdater;
   /// Top location bar coordinator.
   LocationBarCoordinator* _topLocationBarCoordinator;
+  /// Top text-only location bar coordinator.
+  LocationBarCoordinator* _topTextOnlyLocationBarCoordinator;
   /// Coordinator for the tab group indicator.
   TabGroupIndicatorCoordinator* _tabGroupIndicatorCoordinator;
   /// Bottom toolbar mediator.
@@ -156,6 +249,8 @@ constexpr CGFloat kBannerPromoVerticalSpacing = 8;
   std::unique_ptr<FullscreenUIUpdater> _bottomToolbarFullscreenUIUpdater;
   /// Bottom location bar coordinator.
   LocationBarCoordinator* _bottomLocationBarCoordinator;
+  /// Bottom text-only location bar coordinator.
+  LocationBarCoordinator* _bottomTextOnlyLocationBarCoordinator;
 }
 
 - (instancetype)initWithBrowser:(Browser*)browser {
@@ -187,6 +282,8 @@ constexpr CGFloat kBannerPromoVerticalSpacing = 8;
   _omniboxPosition = ToolbarType::kPrimary;
 
   Browser* browser = self.browser;
+  _browserLayoutState = browser->GetBrowserLayoutState();
+  [_browserLayoutState addObserver:self];
   [browser->GetCommandDispatcher()
       startDispatchingToTarget:self
                    forProtocol:@protocol(FakeboxFocuser)];
@@ -197,40 +294,37 @@ constexpr CGFloat kBannerPromoVerticalSpacing = 8;
                      forProtocol:@protocol(GuidedTourCommands)];
   }
 
-  if (base::FeatureList::IsEnabled(kOmniboxDRSPrototype)) {
-    self.drsViewController = [[OmniboxDRSViewController alloc] init];
-    self.drsViewController.proxiedPresenterDelegate =
-        self.popupPresenterDelegate;
-    self.popupPresenterDelegate = self.drsViewController;
-  }
-
   self.legacyToolbarMediator = [[LegacyToolbarMediator alloc]
       initWithWebStateList:browser->GetWebStateList()
                isIncognito:browser->GetProfile()->IsOffTheRecord()];
   self.legacyToolbarMediator.delegate = self;
 
   _mainToolbarMediator = [[MainToolbarMediator alloc]
-      initWithPrefService:GetApplicationContext()->GetLocalState()];
-  _mainToolbarMediator.delegate = self;
+      initWithPrefService:GetApplicationContext()->GetLocalState()
+       browserLayoutState:_browserLayoutState];
   [browser->GetCommandDispatcher()
       startDispatchingToTarget:self
                    forProtocol:@protocol(ReaderModeChipCommands)];
-  BOOL isOmniboxInBottomPosition =
-      [_mainToolbarMediator isOmniboxInBottomPosition];
-
-  OmniboxPositionBrowserAgent::FromBrowser(self.browser)
-      ->SetIsCurrentLayoutBottomOmnibox(isOmniboxInBottomPosition);
+  BOOL isToolbarAtBottom = [self isToolbarPositionBottom];
 
   if (IsChromeNextIaEnabled()) {
     _topLocationBarCoordinator =
-        [self createLocationBarCoordinatorActive:!isOmniboxInBottomPosition
-                                     topPosition:YES];
+        [self createLocationBarCoordinatorActive:!isToolbarAtBottom
+                                     topPosition:YES
+                                        textOnly:NO];
+    if (IsGlassToolbarEnabled()) {
+      _topTextOnlyLocationBarCoordinator =
+          [self createLocationBarCoordinatorActive:!isToolbarAtBottom
+                                       topPosition:YES
+                                          textOnly:YES];
+    }
     _topToolbarMediator = [self createToolbarMediatorTopPosition:YES];
-    _topToolbarViewController = [self
-        createToolbarViewControllerForMediator:_topToolbarMediator
-                                   locationBar:_topLocationBarCoordinator
-                                                   .locationBarViewController
-                                   topPosition:YES];
+    _topToolbarViewController =
+        [self createToolbarViewControllerForMediator:_topToolbarMediator
+                                         locationBar:_topLocationBarCoordinator
+                                 textOnlyLocationBar:
+                                     _topTextOnlyLocationBarCoordinator
+                                         topPosition:YES];
     _tabGroupIndicatorCoordinator = [[TabGroupIndicatorCoordinator alloc]
         initWithBaseViewController:self.baseViewController
                            browser:browser];
@@ -252,14 +346,25 @@ constexpr CGFloat kBannerPromoVerticalSpacing = 8;
               self, FullscreenBrowserAgent::FromBrowser(browser));
     }
 
-    _bottomLocationBarCoordinator =
-        [self createLocationBarCoordinatorActive:isOmniboxInBottomPosition
-                                     topPosition:NO];
+    if (!IsLocationBarPerformanceImprovementsEnabled() ||
+        IsBottomOmniboxAvailable()) {
+      _bottomLocationBarCoordinator =
+          [self createLocationBarCoordinatorActive:isToolbarAtBottom
+                                       topPosition:NO
+                                          textOnly:NO];
+      if (IsGlassToolbarEnabled()) {
+        _bottomTextOnlyLocationBarCoordinator =
+            [self createLocationBarCoordinatorActive:isToolbarAtBottom
+                                         topPosition:NO
+                                            textOnly:YES];
+      }
+    }
     _bottomToolbarMediator = [self createToolbarMediatorTopPosition:NO];
     _bottomToolbarViewController = [self
         createToolbarViewControllerForMediator:_bottomToolbarMediator
                                    locationBar:_bottomLocationBarCoordinator
-                                                   .locationBarViewController
+                           textOnlyLocationBar:
+                               _bottomTextOnlyLocationBarCoordinator
                                    topPosition:NO];
     if (!IsFullscreenRefactoringEnabled()) {
       _bottomToolbarFullscreenUIUpdater = std::make_unique<FullscreenUIUpdater>(
@@ -287,6 +392,7 @@ constexpr CGFloat kBannerPromoVerticalSpacing = 8;
           startDispatchingToTarget:self
                        forProtocol:@protocol(PageActionMenuEntryPointCommands)];
     }
+    [self updateLayoutForToolbarPosition:_browserLayoutState.toolbarPosition];
     self.started = YES;
     return;
   }
@@ -319,6 +425,11 @@ constexpr CGFloat kBannerPromoVerticalSpacing = 8;
                                          .locationBarViewController];
   }
 
+  // Force the initial layout setup to ensure the view hierarchy is constructed
+  // and the location bar view is loaded before setting up the command
+  // dispatchers.
+  [self updateLayoutForToolbarPosition:_browserLayoutState.toolbarPosition];
+
   if (IsPageActionMenuEnabled()) {
     [self.locationBarCoordinator setPageActionMenuEntryPointDispatcher];
   }
@@ -338,6 +449,8 @@ constexpr CGFloat kBannerPromoVerticalSpacing = 8;
     _topToolbarMediator = nil;
     [_topLocationBarCoordinator stop];
     _topLocationBarCoordinator = nil;
+    [_topTextOnlyLocationBarCoordinator stop];
+    _topTextOnlyLocationBarCoordinator = nil;
     _topToolbarViewController = nil;
     _fullscreenObserver = nullptr;
     _topToolbarFullscreenUIUpdater = nullptr;
@@ -348,6 +461,8 @@ constexpr CGFloat kBannerPromoVerticalSpacing = 8;
     _bottomToolbarMediator = nil;
     [_bottomLocationBarCoordinator stop];
     _bottomLocationBarCoordinator = nil;
+    [_bottomTextOnlyLocationBarCoordinator stop];
+    _bottomTextOnlyLocationBarCoordinator = nil;
     _bottomToolbarViewController = nil;
     _bottomToolbarFullscreenUIUpdater = nullptr;
   }
@@ -372,6 +487,11 @@ constexpr CGFloat kBannerPromoVerticalSpacing = 8;
   self.legacyToolbarMediator.delegate = nil;
   self.legacyToolbarMediator = nil;
 
+  [_mainToolbarMediator disconnect];
+  _mainToolbarMediator = nil;
+
+  [_browserLayoutState removeObserver:self];
+  _browserLayoutState = nil;
   [self.browser->GetCommandDispatcher() stopDispatchingToTarget:self];
   self.started = NO;
 }
@@ -448,6 +568,13 @@ constexpr CGFloat kBannerPromoVerticalSpacing = 8;
   }
 }
 
+- (void)updateToolbarPositionForActiveBrowser {
+  if (IsChromeNextIaEnabled()) {
+    return;
+  }
+  [self.legacyToolbarMediator setInitialOmniboxPosition];
+}
+
 - (BOOL)isLoadingPrerenderer {
   if (!_started) {
     return NO;
@@ -488,21 +615,11 @@ constexpr CGFloat kBannerPromoVerticalSpacing = 8;
       (_steadyStateOmniboxPosition == ToolbarType::kPrimary);
 
   BOOL toolbarExpanded = focused && !CanShowTabStrip(self.traitEnvironment);
-  if (base::FeatureList::IsEnabled(kOmniboxDRSPrototype) && focused) {
-    [self.baseViewController presentViewController:self.drsViewController
-                                          animated:YES
-                                        completion:nil];
-
-    return;
-
-  } else {
-    [self.orchestrator
-        transitionToStateOmniboxFocused:focused
-                        toolbarExpanded:toolbarExpanded
-                                trigger:[self omniboxFocusTrigger]
-                               animated:animateTransition
-                             completion:completion];
-  }
+  [self.orchestrator transitionToStateOmniboxFocused:focused
+                                     toolbarExpanded:toolbarExpanded
+                                             trigger:[self omniboxFocusTrigger]
+                                            animated:animateTransition
+                                          completion:completion];
 
   [self.primaryToolbarCoordinator.viewController setLocationBarFocused:focused];
   [self.secondaryToolbarCoordinator.viewController
@@ -528,17 +645,23 @@ constexpr CGFloat kBannerPromoVerticalSpacing = 8;
 
 - (CGFloat)collapsedPrimaryToolbarHeight {
   if (IsChromeNextIaEnabled()) {
-    if (self.primaryToolbarViewController.view.hidden) {
+    if ([self isToolbarHidden:_topToolbarViewController.view]) {
       // TODO(crbug.com/40279063): Find out why primary toolbar height cannot be
       // zero. This is a temporary fix for the pdf bug.
       return IsFullscreenRefactoringEnabled() ? 0.0 : 1.0;
     }
-    if ([self isOmniboxInBottomPosition]) {
+    if ([self isToolbarPositionBottom]) {
       // TODO(crbug.com/40279063): Find out why primary toolbar height cannot be
       // zero. This is a temporary fix for the pdf bug.
       return IsFullscreenRefactoringEnabled() ? 0 : 1;
     }
-    if (ShouldHaveFullHeightTopToolbar(self.traitEnvironment)) {
+    if (CanShowTabStrip(self.traitEnvironment)) {
+      return kTopToolbarIPadHeightFullscreen;
+    }
+    if (IsGlassToolbarEnabled()) {
+      return kGlassCollapsedHeight + 2 * kGlassFullscreenMargin;
+    }
+    if (!IsSplitToolbarMode(self.traitEnvironment)) {
       return kToolbarHeightFullscreen;
     }
     return kTopToolbarIPhonePortraitHeightFullscreen;
@@ -555,12 +678,12 @@ constexpr CGFloat kBannerPromoVerticalSpacing = 8;
 
 - (CGFloat)expandedPrimaryToolbarHeight {
   if (IsChromeNextIaEnabled()) {
-    if (self.primaryToolbarViewController.view.hidden) {
+    if ([self isToolbarHidden:_topToolbarViewController.view]) {
       // TODO(crbug.com/40279063): Find out why primary toolbar height cannot be
       // zero. This is a temporary fix for the pdf bug.
       return IsFullscreenRefactoringEnabled() ? 0.0 : 1.0;
     }
-    BOOL isOmniboxInBottomPosition = [self isOmniboxInBottomPosition];
+    BOOL isOmniboxInBottomPosition = [self isToolbarPositionBottom];
     CGFloat height = 0;
     if (_tabGroupIndicatorCoordinator.viewVisible) {
       height += kTabGroupIndicatorHeight;
@@ -584,6 +707,9 @@ constexpr CGFloat kBannerPromoVerticalSpacing = 8;
         return height > 0 ? height : 1;
       }
     }
+    if (IsGlassToolbarEnabled()) {
+      return height + kGlassExpandedHeight + 2 * kGlassToolbarMargin;
+    }
     if (ShouldHaveFullHeightTopToolbar(self.traitEnvironment)) {
       return height + kToolbarHeight;
     }
@@ -602,10 +728,18 @@ constexpr CGFloat kBannerPromoVerticalSpacing = 8;
 
 - (CGFloat)collapsedSecondaryToolbarHeight {
   if (IsChromeNextIaEnabled()) {
-    if (self.secondaryToolbarViewController.view.hidden) {
+    if ([self isToolbarHidden:_bottomToolbarViewController.view]) {
       return 0.0;
     }
-    if ([self isOmniboxInBottomPosition]) {
+    if ([self isToolbarPositionBottom]) {
+      if (self.browser->GetSceneState().layoutState.appBarPosition ==
+          AppBarPosition::kBottom) {
+        return ToolbarCollapsedHeight(
+            self.traitEnvironment.traitCollection.preferredContentSizeCategory);
+      }
+      if (IsGlassToolbarEnabled()) {
+        return kGlassCollapsedHeight + 2 * kGlassFullscreenMargin;
+      }
       return kToolbarHeightFullscreen;
     }
     return 0.0;
@@ -619,10 +753,13 @@ constexpr CGFloat kBannerPromoVerticalSpacing = 8;
 
 - (CGFloat)expandedSecondaryToolbarHeight {
   if (IsChromeNextIaEnabled()) {
-    if (self.secondaryToolbarViewController.view.hidden) {
+    if ([self isToolbarHidden:_bottomToolbarViewController.view]) {
       return 0.0;
     }
-    if ([self isOmniboxInBottomPosition]) {
+    if ([self isToolbarPositionBottom]) {
+      if (IsGlassToolbarEnabled()) {
+        return kGlassExpandedHeight + 2 * kGlassToolbarMargin;
+      }
       return kToolbarHeight;
     }
     return 0.0;
@@ -687,9 +824,6 @@ constexpr CGFloat kBannerPromoVerticalSpacing = 8;
   return self.locationBarCoordinator.omniboxScribbleForwardingTarget;
 }
 
-- (void)didNavigateToNTPOnActiveWebState {
-  [self.legacyToolbarMediator didNavigateToNTPOnActiveWebState];
-}
 
 #pragma mark - OmniboxStateProvider
 
@@ -724,6 +858,8 @@ constexpr CGFloat kBannerPromoVerticalSpacing = 8;
   if (IsChromeNextIaEnabled()) {
     [_topToolbarViewController setOverflowMenuBlueDot:hasBlueDot];
     [_bottomToolbarViewController setOverflowMenuBlueDot:hasBlueDot];
+    [HandlerForProtocol(self.browser->GetCommandDispatcher(),
+                        NewTabPageCommands) setNTPBlueDotVisible:hasBlueDot];
   }
   for (id<ToolbarCoordinatee> coordinator in self.coordinators) {
     [coordinator.popupMenuUIUpdater setOverflowMenuBlueDot:hasBlueDot];
@@ -812,6 +948,19 @@ constexpr CGFloat kBannerPromoVerticalSpacing = 8;
     UIImage* toolbarSnapshot = CaptureViewWithOption(
         toolbarView, toolbarView.window.screen.scale, kClientSideRendering);
 
+    // If the toolbar doesn't span the full width of the window (e.g. because of
+    // the App Bar in landscape), pad the snapshot so it matches the full screen
+    // width.
+    CGFloat windowWidth = toolbarView.window.bounds.size.width;
+    CGFloat toolbarHeight = toolbarView.bounds.size.height;
+    if (toolbarSnapshot && toolbarView.bounds.size.width < windowWidth &&
+        toolbarHeight > 0) {
+      CGRect imageRect = [toolbarView convertRect:toolbarView.bounds
+                                           toView:toolbarView.window];
+      toolbarSnapshot = PadImageWithEdgeStretching(
+          toolbarSnapshot, imageRect.origin.x, windowWidth);
+    }
+
     [mediator updateConsumerWithWebState:self.browser->GetWebStateList()
                                              ->GetActiveWebState()
                                 animated:NO];
@@ -830,7 +979,8 @@ constexpr CGFloat kBannerPromoVerticalSpacing = 8;
     return nil;
   }
   UIImage* toolbarSnapshot = CaptureViewWithOption(
-      toolbarView, [[UIScreen mainScreen] scale], kClientSideRendering);
+      toolbarView, toolbarView.traitCollection.displayScale,
+      kClientSideRendering);
 
   [adaptiveToolbarCoordinator resetToolbarAfterSideSwipeSnapshot];
 
@@ -899,7 +1049,7 @@ constexpr CGFloat kBannerPromoVerticalSpacing = 8;
 
 - (UIView*)entrypointViewVisualCopy {
   if (IsChromeNextIaEnabled()) {
-    if ([self isOmniboxInBottomPosition] || [self isNTP]) {
+    if ([self isToolbarPositionBottom] || [self isNTP]) {
       return nil;
     }
 
@@ -963,10 +1113,21 @@ constexpr CGFloat kBannerPromoVerticalSpacing = 8;
   [_bottomLocationBarCoordinator updateColorForIPH];
 }
 
+- (void)hideBadgeForType:(LocationBarBadgeType)type {
+  [_topLocationBarCoordinator hideBadgeForType:type];
+  [_bottomLocationBarCoordinator hideBadgeForType:type];
+}
+
 - (void)markDisplayedBadgeAsUnread:(BOOL)read {
   CHECK(IsChromeNextIaEnabled());
   [_topLocationBarCoordinator markDisplayedBadgeAsUnread:read];
   [_bottomLocationBarCoordinator markDisplayedBadgeAsUnread:read];
+}
+
+- (void)setBadgeCustomLeadingViewType:(CustomLeadingViewType)type {
+  CHECK(IsChromeNextIaEnabled());
+  [_topLocationBarCoordinator setBadgeCustomLeadingViewType:type];
+  [_bottomLocationBarCoordinator setBadgeCustomLeadingViewType:type];
 }
 
 #pragma mark - ReaderModeChipCommands
@@ -1016,6 +1177,17 @@ constexpr CGFloat kBannerPromoVerticalSpacing = 8;
 
 #pragma mark - ToolbarCommands
 
+- (void)triggerToolbarSlideInAnimation {
+  if (IsChromeNextIaEnabled()) {
+    [_topToolbarViewController triggerToolbarSlideInAnimation];
+    [_bottomToolbarViewController triggerToolbarSlideInAnimation];
+    return;
+  }
+  for (id<ToolbarCommands> coordinator in self.coordinators) {
+    [coordinator triggerToolbarSlideInAnimation];
+  }
+}
+
 - (void)indicateLensOverlayVisible:(BOOL)lensOverlayVisible {
   if (IsChromeNextIaEnabled()) {
     [_topLocationBarCoordinator setLensOverlayVisible:lensOverlayVisible];
@@ -1032,7 +1204,7 @@ constexpr CGFloat kBannerPromoVerticalSpacing = 8;
 
 - (void)focusLocationBarForVoiceOver {
   if (IsChromeNextIaEnabled()) {
-    if (_topToolbarViewController.visible) {
+    if (_topToolbarViewController.hasOmnibox) {
       [_topLocationBarCoordinator focusOmniboxForVoiceOver];
     } else {
       [_bottomLocationBarCoordinator focusOmniboxForVoiceOver];
@@ -1044,56 +1216,20 @@ constexpr CGFloat kBannerPromoVerticalSpacing = 8;
   }
 }
 
-#pragma mark - MainToolbarMediatorDelegate
+#pragma mark - LegacyToolbarMediatorDelegate
 
-- (void)mainToolbarMediatorDidChangeOmniboxPosition:
-    (MainToolbarMediator*)mediator {
-  if (!IsChromeNextIaEnabled()) {
+- (void)transitionOmniboxToToolbarType:(ToolbarType)toolbarType {
+  if (IsChromeNextIaEnabled()) {
     return;
   }
 
-  if (mediator.isOmniboxInBottomPosition) {
-    [_topLocationBarCoordinator setLocationBarActive:NO];
-    [_bottomLocationBarCoordinator setLocationBarActive:YES];
-    OmniboxPositionBrowserAgent::FromBrowser(self.browser)
-        ->SetIsCurrentLayoutBottomOmnibox(YES);
-  } else {
-    [_topLocationBarCoordinator setLocationBarActive:YES];
-    [_bottomLocationBarCoordinator setLocationBarActive:NO];
-    OmniboxPositionBrowserAgent::FromBrowser(self.browser)
-        ->SetIsCurrentLayoutBottomOmnibox(NO);
-  }
-}
-
-#pragma mark - ToolbarMediatorDelegate
-
-- (void)transitionOmniboxToToolbarType:(ToolbarType)toolbarType {
-  _omniboxPosition = toolbarType;
-
-  if (!IsChromeNextIaEnabled()) {
-    [self updateOrchestratorAnimatee];
-  }
-
-  OmniboxPositionBrowserAgent* positionBrowserAgent =
-      OmniboxPositionBrowserAgent::FromBrowser(self.browser);
-  switch (toolbarType) {
-    case ToolbarType::kPrimary: {
-      [self.primaryToolbarCoordinator
-          setLocationBarViewController:self.locationBarCoordinator
-                                           .locationBarViewController];
-      [self.secondaryToolbarCoordinator setLocationBarViewController:nil];
-      positionBrowserAgent->SetIsCurrentLayoutBottomOmnibox(false);
-      break;
-    }
-    case ToolbarType::kSecondary:
-      [self.secondaryToolbarCoordinator
-          setLocationBarViewController:self.locationBarCoordinator
-                                           .locationBarViewController];
-      [self.primaryToolbarCoordinator setLocationBarViewController:nil];
-      positionBrowserAgent->SetIsCurrentLayoutBottomOmnibox(true);
-      break;
-  }
-  [self.toolbarHeightDelegate toolbarsHeightChanged];
+  ToolbarPosition position = (toolbarType == ToolbarType::kSecondary)
+                                 ? ToolbarPosition::kBottom
+                                 : ToolbarPosition::kTop;
+  // When Chrome Next is disabled, the active toolbar position changes
+  // dynamically during focus/NTP transitions (managed by
+  // LegacyToolbarMediator). Update the BrowserLayoutState to keep it in sync.
+  [self updateLayoutStateToolbarPosition:position];
 }
 
 - (void)transitionSteadyStateOmniboxToToolbarType:(ToolbarType)toolbarType {
@@ -1102,9 +1238,37 @@ constexpr CGFloat kBannerPromoVerticalSpacing = 8;
 
 - (CGFloat)keyboardAttachedBottomOmniboxHeight {
   if (IsChromeNextIaEnabled()) {
-    return kKeyboardAttachedOmniboxBottomPadding;
+    if (self.browser->GetSceneState().layoutState.appBarPosition ==
+        AppBarPosition::kBottom) {
+      return kKeyboardAttachedOmniboxBottomPadding;
+    } else {
+      return kKeyboardAttachedOmniboxBottomPaddingLandscape;
+    }
   }
   return 0;
+}
+
+#pragma mark - ToolbarMediatorDelegate
+
+- (void)toolbarMediatorDidTapAssistantInIncognito:(ToolbarMediator*)mediator {
+  base::RecordAction(
+      base::UserMetricsAction("MobileToolbarAssistantIncognitoTapped"));
+  id<SnackbarCommands> snackbarHandler = HandlerForProtocol(
+      self.browser->GetCommandDispatcher(), SnackbarCommands);
+  id<SceneCommands> sceneHandler =
+      HandlerForProtocol(self.browser->GetCommandDispatcher(), SceneCommands);
+  [snackbarHandler
+      showSnackbarWithMessage:
+          l10n_util::GetNSString(IDS_IOS_APP_BAR_GEMINI_NOT_AVAILABLE_INCOGNITO)
+                   buttonText:l10n_util::GetNSString(
+                                  IDS_IOS_APP_BAR_SWITCH_MODES)
+                messageAction:^{
+                  base::RecordAction(base::UserMetricsAction(
+                      "MobileToolbarAssistantIncognitoSwitchModesTapped"));
+                  [sceneHandler
+                      displayTabGridInMode:TabGridOpeningMode::kRegular];
+                }
+             completionAction:nil];
 }
 
 #pragma mark - FullscreenBrowserAgentObserving
@@ -1123,15 +1287,34 @@ constexpr CGFloat kBannerPromoVerticalSpacing = 8;
   CGFloat topMax = [self expandedPrimaryToolbarHeight];
   CGFloat topInset = topMin + (topMax - topMin) * agent->top_progress();
   agent->AddObscuredInset(UIRectEdgeTop, topInset);
-  [_topToolbarViewController updateForFullscreenProgress:agent->top_progress()];
+  if (!agent->is_animating()) {
+    [_topToolbarViewController
+        updateForFullscreenProgress:agent->top_progress()];
+  }
 
   CGFloat bottomMin = [self collapsedSecondaryToolbarHeight];
   CGFloat bottomMax = [self expandedSecondaryToolbarHeight];
   CGFloat bottomInset =
       bottomMin + (bottomMax - bottomMin) * agent->bottom_progress();
   agent->AddObscuredInset(UIRectEdgeBottom, bottomInset);
+  if (!agent->is_animating()) {
+    [_bottomToolbarViewController
+        updateForFullscreenProgress:agent->bottom_progress()];
+  }
+}
+
+- (void)fullscreenDidUpdateInterpolatedProgress:(FullscreenBrowserAgent*)agent {
+  [_topToolbarViewController
+      updateForFullscreenProgress:agent->interpolated_progress()];
   [_bottomToolbarViewController
-      updateForFullscreenProgress:agent->bottom_progress()];
+      updateForFullscreenProgress:agent->interpolated_progress()];
+}
+
+#pragma mark - BrowserLayoutStateObserver
+
+- (void)browserLayoutState:(BrowserLayoutState*)layoutState
+    willChangeToolbarPosition:(ToolbarPosition)toolbarPosition {
+  [self updateLayoutForToolbarPosition:toolbarPosition];
 }
 
 #pragma mark - Private
@@ -1232,7 +1415,9 @@ constexpr CGFloat kBannerPromoVerticalSpacing = 8;
 // Creates a new toolbar view controller, for the associated `mediator`.
 - (ToolbarViewController*)
     createToolbarViewControllerForMediator:(ToolbarMediator*)mediator
-                               locationBar:(UIViewController*)locationBar
+                               locationBar:(LocationBarCoordinator*)locationBar
+                       textOnlyLocationBar:
+                           (LocationBarCoordinator*)textOnlyLocationBar
                                topPosition:(BOOL)topPosition {
   CHECK(IsChromeNextIaEnabled());
 
@@ -1244,8 +1429,15 @@ constexpr CGFloat kBannerPromoVerticalSpacing = 8;
   ToolbarViewController* toolbarViewController =
       [[ToolbarViewController alloc] initInIncognito:incognito
                                          topPosition:topPosition];
-  toolbarViewController.buttonFactory =
+  toolbarViewController.layoutGuideCenter =
+      LayoutGuideCenterForBrowser(browser);
+  ToolbarButtonFactory* toolbarButtonFactory =
       [[ToolbarButtonFactory alloc] initWithIncognito:incognito];
+  if (!incognito) {
+    toolbarButtonFactory.geminiHandler =
+        HandlerForProtocol(browser->GetCommandDispatcher(), GeminiCommands);
+  }
+  toolbarViewController.buttonFactory = toolbarButtonFactory;
   toolbarViewController.mutator = mediator;
   toolbarViewController.browserCoordinatorHandler =
       HandlerForProtocol(dispatcher, BrowserCoordinatorCommands);
@@ -1256,9 +1448,15 @@ constexpr CGFloat kBannerPromoVerticalSpacing = 8;
   toolbarViewController.sceneHandler =
       HandlerForProtocol(dispatcher, SceneCommands);
   toolbarViewController.toolbarHeightDelegate = self.toolbarHeightDelegate;
-  toolbarViewController.layoutGuideCenter =
-      LayoutGuideCenterForBrowser(browser);
-  toolbarViewController.locationBarViewController = locationBar;
+  [toolbarViewController
+      setLocationBarViewController:locationBar.locationBarViewController
+          andSteadyViewLayoutGuide:locationBar.steadyViewLayoutGuide];
+  [toolbarViewController
+      setTextOnlyLocationBarViewController:textOnlyLocationBar
+                                               .locationBarViewController];
+  // The toolbar measures the text-only location bar to size the collapsed
+  // glass pill, so it must be told when that content changes.
+  textOnlyLocationBar.contentSizeDelegate = toolbarViewController;
   toolbarViewController.bannerPromoDelegate = mediator;
 
   if (incognito) {
@@ -1272,13 +1470,19 @@ constexpr CGFloat kBannerPromoVerticalSpacing = 8;
 
 // Creates a new location bar coordinator.
 - (LocationBarCoordinator*)createLocationBarCoordinatorActive:(BOOL)active
-                                                  topPosition:
-                                                      (BOOL)topPosition {
+                                                  topPosition:(BOOL)topPosition
+                                                     textOnly:(BOOL)textOnly {
   LocationBarCoordinator* coordinator =
-      [[LocationBarCoordinator alloc] initWithBrowser:self.browser];
+      [[LocationBarCoordinator alloc] initWithBrowser:self.browser
+                                             textOnly:textOnly];
+  if (IsLocationBarPerformanceImprovementsEnabled()) {
+    [coordinator setLocationBarActive:active];
+  }
   [coordinator start];
   [coordinator setTopPosition:topPosition];
-  [coordinator setLocationBarActive:active];
+  if (!IsLocationBarPerformanceImprovementsEnabled()) {
+    [coordinator setLocationBarActive:active];
+  }
 
   return coordinator;
 }
@@ -1299,26 +1503,31 @@ constexpr CGFloat kBannerPromoVerticalSpacing = 8;
         agentFromApp:browser->GetSceneState().profileState.appState];
   }
 
-  ProfileIOS* profile = self.profile;
+  ProfileIOS* regularProfile = self.profile->GetOriginalProfile();
   AuthenticationService* authService =
-      AuthenticationServiceFactory::GetForProfile(profile);
-  GeminiService* geminiService = GeminiServiceFactory::GetForProfile(profile);
+      AuthenticationServiceFactory::GetForProfile(regularProfile);
+  GeminiService* geminiService =
+      GeminiServiceFactory::GetForProfile(regularProfile);
   GeminiBrowserAgent* geminiBrowserAgent =
       GeminiBrowserAgent::FromBrowser(browser);
 
   ToolbarMediator* toolbarMediator = [[ToolbarMediator alloc]
-              initWithWebStateList:browser->GetWebStateList()
+                 initWithIncognito:isIncognito
+                      webStateList:browser->GetWebStateList()
                      actionFactory:actionFactory
-                       prefService:profile->GetPrefs()
+                           profile:regularProfile
+                       prefService:regularProfile->GetPrefs()
               fullscreenController:FullscreenController::FromBrowser(browser)
+            fullscreenBrowserAgent:FullscreenBrowserAgent::FromBrowser(browser)
                        topPosition:topPosition
       defaultBrowserBannerAppAgent:agent
              authenticationService:authService
                      geminiService:geminiService
                 geminiBrowserAgent:geminiBrowserAgent];
-  toolbarMediator.incognito = isIncognito;
   toolbarMediator.navigationBrowserAgent =
       WebNavigationBrowserAgent::FromBrowser(browser);
+  toolbarMediator.tabBasedIPHAgent =
+      TabBasedIPHBrowserAgent::FromBrowser(browser);
   if (IsFullscreenRefactoringEnabled()) {
     toolbarMediator.fullscreenCommands =
         HandlerForProtocol(browser->GetCommandDispatcher(), FullscreenCommands);
@@ -1326,19 +1535,20 @@ constexpr CGFloat kBannerPromoVerticalSpacing = 8;
   toolbarMediator.settingsHandler =
       HandlerForProtocol(browser->GetCommandDispatcher(), SettingsCommands);
   toolbarMediator.geminiHandler =
-      HandlerForProtocol(browser->GetCommandDispatcher(), BWGCommands);
+      HandlerForProtocol(browser->GetCommandDispatcher(), GeminiCommands);
   toolbarMediator.baseViewController = self.baseViewController;
   toolbarMediator.sceneHandler =
       HandlerForProtocol(browser->GetCommandDispatcher(), SceneCommands);
+  toolbarMediator.delegate = self;
+  toolbarMediator.browserLayoutState = _browserLayoutState;
 
   return toolbarMediator;
 }
 
-// Returns true if the omnibox is in the bottom position.
-- (BOOL)isOmniboxInBottomPosition {
-  CHECK(IsChromeNextIaEnabled());
-  return IsBottomOmniboxAvailable() &&
-         [_mainToolbarMediator isOmniboxInBottomPosition];
+// Returns whether the toolbar position is currently at the bottom of the
+// screen.
+- (BOOL)isToolbarPositionBottom {
+  return _browserLayoutState.toolbarPosition == ToolbarPosition::kBottom;
 }
 
 // Returns whether `point` in window coordinates is inside the frame of
@@ -1352,6 +1562,76 @@ constexpr CGFloat kBannerPromoVerticalSpacing = 8;
   CGPoint pointInToolbarCoordinates = [viewController.view convertPoint:point
                                                                fromView:nil];
   return CGRectContainsPoint(toolbarBounds, pointInToolbarCoordinates);
+}
+
+// Updates the BrowserLayoutState's toolbarPosition property.
+- (void)updateLayoutStateToolbarPosition:(ToolbarPosition)position {
+  CHECK(!IsChromeNextIaEnabled());
+  [_browserLayoutState setToolbarPosition:position passKey:PassKey()];
+}
+
+// Updates the visual layout and child coordinators to match the given position.
+- (void)updateLayoutForToolbarPosition:(ToolbarPosition)toolbarPosition {
+  BOOL isToolbarAtBottom = toolbarPosition == ToolbarPosition::kBottom;
+  _omniboxPosition =
+      isToolbarAtBottom ? ToolbarType::kSecondary : ToolbarType::kPrimary;
+
+  if (!IsChromeNextIaEnabled()) {
+    [self updateOrchestratorAnimatee];
+  }
+
+  if (IsChromeNextIaEnabled()) {
+    [_topLocationBarCoordinator setLocationBarActive:!isToolbarAtBottom];
+    [_topTextOnlyLocationBarCoordinator
+        setLocationBarActive:!isToolbarAtBottom];
+    [_bottomLocationBarCoordinator setLocationBarActive:isToolbarAtBottom];
+    [_bottomTextOnlyLocationBarCoordinator
+        setLocationBarActive:isToolbarAtBottom];
+  } else {
+    if (isToolbarAtBottom) {
+      [self.secondaryToolbarCoordinator
+          setLocationBarViewController:self.locationBarCoordinator
+                                           .locationBarViewController];
+      [self.primaryToolbarCoordinator setLocationBarViewController:nil];
+    } else {
+      [self.primaryToolbarCoordinator
+          setLocationBarViewController:self.locationBarCoordinator
+                                           .locationBarViewController];
+      [self.secondaryToolbarCoordinator setLocationBarViewController:nil];
+    }
+  }
+
+  [self.toolbarHeightDelegate toolbarsHeightChanged];
+}
+
+// Helper for public methods returning the toolbar height. Returns whether the
+// toolbar is hidden. The toolbar is only hidden on the NTP when idle. During
+// transitions or navigations, the toolbar view may still have `isHidden == YES`
+// before the layout pass finishes, but the full toolbar height is returned
+// immediately so the webpage lays out with correct content insets.
+- (BOOL)isToolbarHidden:(UIView*)toolbarView {
+  CHECK(IsChromeNextIaEnabled());
+  if (!toolbarView) {
+    return YES;
+  }
+
+  if (!toolbarView.isHidden) {
+    return NO;
+  }
+
+  web::WebState* webState =
+      self.browser->GetWebStateList()->GetActiveWebState();
+  if (!webState) {
+    // No web state to have a toolbar for.
+    return YES;
+  }
+
+  // The toolbar is only legitimately hidden on the NTP when not loading.
+  if (IsVisibleURLNewTabPage(webState) && !webState->IsLoading()) {
+    return YES;
+  }
+
+  return NO;
 }
 
 @end

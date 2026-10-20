@@ -4,10 +4,14 @@
 
 #include "content/browser/webid/delegation/dns_request.h"
 
+#include <optional>
+
+#include "base/command_line.h"
 #include "base/functional/callback.h"
 #include "base/strings/escape.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_split.h"
+#include "base/values.h"
 #include "content/browser/webid/delegation/email_verifier_network_request_manager.h"
 #include "content/public/browser/content_browser_client.h"
 #include "content/public/common/content_client.h"
@@ -20,7 +24,7 @@ namespace content::webid {
 namespace {
 void OnDnsResponseParsed(DnsRequest::DnsRequestCallback callback,
                          FetchStatus fetch_status,
-                         data_decoder::DataDecoder::ValueOrError result) {
+                         std::optional<base::DictValue> result) {
   std::vector<std::string> records;
 
   bool parse_succeeded = fetch_status.parse_status == ParseStatus::kSuccess;
@@ -29,21 +33,14 @@ void OnDnsResponseParsed(DnsRequest::DnsRequestCallback callback,
     return;
   }
 
-  const base::DictValue* response = result->GetIfDict();
-  if (!response) {
-    fetch_status.parse_status = ParseStatus::kInvalidResponseError;
-    std::move(callback).Run(std::nullopt);
-    return;
-  }
-
-  if (response->FindInt("Status").value_or(-1) !=
+  if (result->FindInt("Status").value_or(-1) !=
       net::dns_protocol::kRcodeNOERROR) {
     fetch_status.parse_status = ParseStatus::kInvalidResponseError;
     std::move(callback).Run(std::nullopt);
     return;
   }
 
-  const base::ListValue* answers = response->FindList("Answer");
+  const base::ListValue* answers = result->FindList("Answer");
   if (!answers) {
     fetch_status.parse_status = ParseStatus::kInvalidResponseError;
     std::move(callback).Run(std::nullopt);
@@ -83,8 +80,15 @@ void DnsRequest::SendRequest(const std::string& hostname,
     return;
   }
 
-  const std::string& prefix =
-      GetContentClient()->browser()->GetDnsTxtResolverUrlPrefix();
+  static constexpr char kDnsTxtResolverUrlPrefixSwitch[] =
+      "dns-txt-resolver-url-prefix";
+  std::string prefix;
+  const base::CommandLine* cmd = base::CommandLine::ForCurrentProcess();
+  if (cmd->HasSwitch(kDnsTxtResolverUrlPrefixSwitch)) {
+    prefix = cmd->GetSwitchValueASCII(kDnsTxtResolverUrlPrefixSwitch);
+  } else {
+    prefix = GetContentClient()->browser()->GetDnsTxtResolverUrlPrefix();
+  }
   if (prefix.empty()) {
     std::move(callback).Run(std::nullopt);
     return;

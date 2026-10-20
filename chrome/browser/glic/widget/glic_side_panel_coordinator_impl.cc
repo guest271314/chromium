@@ -14,8 +14,6 @@
 #include "chrome/browser/glic/widget/glic_view.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/actions/chrome_action_id.h"
-#include "chrome/browser/ui/browser.h"
-#include "chrome/browser/ui/browser_actions.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/side_panel/side_panel_entry.h"
@@ -23,9 +21,7 @@
 #include "chrome/browser/ui/side_panel/side_panel_enums.h"
 #include "chrome/browser/ui/side_panel/side_panel_registry.h"
 #include "chrome/browser/ui/tabs/public/tab_features.h"
-#include "chrome/browser/ui/views/side_panel/side_panel.h"
 #include "chrome/browser/ui/views/side_panel/side_panel_coordinator.h"
-#include "chrome/browser/ui/views/side_panel/side_panel_web_ui_view.h"
 #include "chrome/common/chrome_features.h"
 #include "components/tabs/public/tab_interface.h"
 #include "ui/actions/actions.h"
@@ -45,9 +41,7 @@ GlicSidePanelCoordinatorImpl::GlicSidePanelCoordinatorImpl(
       glic_service->enabling().RegisterAllowedChanged(base::BindRepeating(
           &GlicSidePanelCoordinatorImpl::OnGlicEnabledChanged,
           base::Unretained(this)));
-  if (glic::GlicEnabling::ShouldShowGlicButton(tab_->GetProfile())) {
-    CreateAndRegisterEntry();
-  }
+  OnGlicEnabledChanged();
 }
 
 GlicSidePanelCoordinatorImpl::~GlicSidePanelCoordinatorImpl() {
@@ -96,7 +90,7 @@ void GlicSidePanelCoordinatorImpl::Show(const ShowOptions& options) {
   SidePanelUIBase::UniqueKey unique_key{
       .tab_handle = tab_->GetHandle(),
       .key = SidePanelEntry::Key(SidePanelEntry::Id::kGlic)};
-  window_side_panel_coordinator->Show(unique_key, std::nullopt,
+  window_side_panel_coordinator->Show(unique_key, options.open_trigger,
                                       options.suppress_animations);
 }
 

@@ -4,11 +4,14 @@
 
 package org.chromium.chrome.browser.ntp_customization.theme;
 
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.clearInvocations;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.spy;
@@ -19,8 +22,10 @@ import static org.chromium.chrome.browser.ntp_customization.NtpCustomizationCoor
 import static org.chromium.chrome.browser.ntp_customization.NtpCustomizationUtils.NtpBackgroundType.IMAGE_FROM_DISK;
 
 import android.content.Context;
+import android.content.res.Resources;
 import android.graphics.Bitmap;
 import android.view.ContextThemeWrapper;
+import android.view.View;
 
 import androidx.test.core.app.ApplicationProvider;
 
@@ -36,6 +41,10 @@ import org.mockito.junit.MockitoRule;
 
 import org.chromium.base.Callback;
 import org.chromium.base.test.BaseRobolectricTestRunner;
+import org.chromium.base.test.util.Features.DisableFeatures;
+import org.chromium.base.test.util.Features.EnableFeatures;
+import org.chromium.build.annotations.Nullable;
+import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.ntp_customization.BottomSheetDelegate;
 import org.chromium.chrome.browser.ntp_customization.NtpCustomizationConfigManager;
 import org.chromium.chrome.browser.ntp_customization.NtpCustomizationCoordinator.BottomSheetType;
@@ -50,8 +59,11 @@ import org.chromium.chrome.browser.ntp_customization.theme.theme_collections.Ntp
 import org.chromium.chrome.browser.ntp_customization.theme.theme_collections.NtpThemeCollectionBridgeJni;
 import org.chromium.chrome.browser.ntp_customization.theme.theme_collections.NtpThemeCollectionManager;
 import org.chromium.chrome.browser.ntp_customization.theme.theme_collections.NtpThemeCollectionsCoordinator;
+import org.chromium.chrome.browser.ntp_customization.theme_sync.data.NtpBackgroundDataBase;
+import org.chromium.chrome.browser.ntp_customization.theme_sync.data.NtpBackgroundDataUploadImage;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.components.image_fetcher.ImageFetcher;
+import org.chromium.ui.base.DeviceFormFactor;
 import org.chromium.url.GURL;
 
 import java.util.ArrayList;
@@ -67,11 +79,12 @@ public class NtpThemeCoordinatorUnitTest {
     @Mock private Runnable mDismissBottomSheet;
     @Mock private NtpThemeCollectionBridge.Natives mNtpThemeCollectionBridgeJniMock;
     @Mock private NtpCustomizationConfigManager mNtpCustomizationConfigManager;
-    @Mock private NtpThemeBottomSheetView mNtpThemeBottomSheetView;
     @Mock private Runnable mResetCustomizedThemeRunnable;
     @Mock private NtpThemeCollectionsCoordinator mNtpThemeCollectionsCoordinator;
     @Mock private ImageFetcher mImageFetcher;
     @Captor private ArgumentCaptor<Callback<Bitmap>> mBitmapCallbackCaptor;
+
+    private static final String FILE_ID_HASH = "test_file_id_hash";
 
     private Context mContext;
     private NtpThemeCoordinator mCoordinator;
@@ -95,7 +108,6 @@ public class NtpThemeCoordinatorUnitTest {
 
         mMediator = spy(mCoordinator.getMediatorForTesting());
         mCoordinator.setMediatorForTesting(mMediator);
-        mCoordinator.setNtpThemeBottomSheetViewForTesting(mNtpThemeBottomSheetView);
         mCoordinator.setNtpThemeCollectionsCoordinatorForTesting(mNtpThemeCollectionsCoordinator);
         mCoordinator.addThemeBottomSheetObserverForTesting(mMockObserver);
     }
@@ -112,26 +124,43 @@ public class NtpThemeCoordinatorUnitTest {
 
     @Test
     public void testDestroy() {
+        ArgumentCaptor<View> viewCaptor = ArgumentCaptor.forClass(View.class);
+        verify(mBottomSheetDelegate).registerBottomSheetLayout(eq(THEME), viewCaptor.capture());
+        NtpThemeBottomSheetView bottomSheetView = (NtpThemeBottomSheetView) viewCaptor.getValue();
+        View imageFromDiskSection = bottomSheetView.getItemBySectionType(IMAGE_FROM_DISK);
+        assertTrue(imageFromDiskSection.hasOnClickListeners());
+
         mCoordinator.destroy();
 
-        verify(mNtpThemeBottomSheetView).destroy();
+        // Destroying the bottom sheet view clears the section click listeners.
+        assertFalse(imageFromDiskSection.hasOnClickListeners());
     }
 
     @Test
     public void testOnPreviewClosed() {
-        boolean isImageSelected = false;
-        mCoordinator.onPreviewClosed(isImageSelected);
+        verifyOnPreviewClosed(/* isImageSelected= */ false, /* isDifferentTheme= */ false);
+        verifyOnPreviewClosed(/* isImageSelected= */ false, /* isDifferentTheme= */ true);
+        verifyOnPreviewClosed(/* isImageSelected= */ true, /* isDifferentTheme= */ false);
+        verifyOnPreviewClosed(/* isImageSelected= */ true, /* isDifferentTheme= */ true);
+    }
 
-        verify(mBottomSheetDelegate, never()).onNewColorSelected(anyBoolean());
-        verify(mDismissBottomSheet, never()).run();
-        verify(mMediator, never()).updateTrailingIconVisibilityForSectionType(eq(IMAGE_FROM_DISK));
+    private void verifyOnPreviewClosed(boolean isImageSelected, boolean isDifferentTheme) {
+        clearInvocations(mBottomSheetDelegate);
+        clearInvocations(mDismissBottomSheet);
+        clearInvocations(mMediator);
 
-        isImageSelected = true;
-        mCoordinator.onPreviewClosed(isImageSelected);
+        mCoordinator.onPreviewClosed(isImageSelected, isDifferentTheme);
 
-        verify(mBottomSheetDelegate).onNewColorSelected(eq(true));
-        verify(mDismissBottomSheet).run();
-        verify(mMediator).updateTrailingIconVisibilityForSectionType(eq(IMAGE_FROM_DISK));
+        if (isImageSelected) {
+            verify(mBottomSheetDelegate).onNewColorSelected(eq(isDifferentTheme));
+            verify(mDismissBottomSheet).run();
+            verify(mMediator).updateTrailingIconVisibilityForSectionType(eq(IMAGE_FROM_DISK));
+        } else {
+            verify(mBottomSheetDelegate, never()).onNewColorSelected(anyBoolean());
+            verify(mDismissBottomSheet, never()).run();
+            verify(mMediator, never())
+                    .updateTrailingIconVisibilityForSectionType(eq(IMAGE_FROM_DISK));
+        }
     }
 
     @Test
@@ -187,7 +216,6 @@ public class NtpThemeCoordinatorUnitTest {
         verify(mNtpThemeCollectionsCoordinator)
                 .initializeBottomSheetContent(eq(BottomSheetType.THEME_COLLECTIONS));
         verify(mBottomSheetDelegate).onNewColorSelected(eq(true));
-        verify(mBottomSheetDelegate).onNewThemeCollectionImageSelected(eq(bitmap));
         verify(mMediator)
                 .updateTrailingIconVisibilityForSectionType(NtpBackgroundType.THEME_COLLECTION);
 
@@ -227,12 +255,47 @@ public class NtpThemeCoordinatorUnitTest {
                 mock(NtpChromeColorsCoordinator.class);
         mCoordinator.setNtpChromeColorsCoordinatorForTesting(mockChromeColorsCoordinator);
         mCoordinator.addThemeBottomSheetObserverForTesting(mockChromeColorsCoordinator);
-
         mCoordinator.onChromeColorSelected();
 
+        verify(mMediator).onChromeColorSelected();
         // Verifies that notifyBottomSheetBackgroundTypeChanged() is called and triggers
         // onBackgroundTypeChanged() for all registered observers
         verify(mMockObserver).onBackgroundTypeChanged();
         verify(mockChromeColorsCoordinator).onBackgroundTypeChanged();
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.NEW_TAB_PAGE_CUSTOMIZATION_THEME_SYNC)
+    public void testOnImageSelectedForPreview_SyncEnabled() {
+        testOnImageSelectedForPreviewImpl(FILE_ID_HASH);
+    }
+
+    @Test
+    @DisableFeatures(ChromeFeatureList.NEW_TAB_PAGE_CUSTOMIZATION_THEME_SYNC)
+    public void testOnImageSelectedForPreview_SyncDisabled() {
+        testOnImageSelectedForPreviewImpl(/* expectedFileIdHash= */ null);
+    }
+
+    private void testOnImageSelectedForPreviewImpl(@Nullable String expectedFileIdHash) {
+        Context spyContext = spy(mContext);
+        Resources spyResources = spy(mContext.getResources());
+        when(spyContext.getResources()).thenReturn(spyResources);
+        when(spyResources.getInteger(org.chromium.ui.R.integer.min_screen_width_bucket))
+                .thenReturn(DeviceFormFactor.SCREEN_BUCKET_TABLET);
+
+        NtpThemeCoordinator coordinator =
+                new NtpThemeCoordinator(
+                        spyContext, mBottomSheetDelegate, mProfile, mDismissBottomSheet);
+
+        Bitmap bitmap = Bitmap.createBitmap(10, 10, Bitmap.Config.ARGB_8888);
+        coordinator.onImageSelectedForPreview(bitmap, FILE_ID_HASH);
+
+        ArgumentCaptor<NtpBackgroundDataBase> captor =
+                ArgumentCaptor.forClass(NtpBackgroundDataBase.class);
+        verify(mNtpCustomizationConfigManager)
+                .onBackgroundDataChanged(eq(spyContext), captor.capture());
+        assertTrue(captor.getValue() instanceof NtpBackgroundDataUploadImage);
+        NtpBackgroundDataUploadImage uploadImage = (NtpBackgroundDataUploadImage) captor.getValue();
+        assertEquals(expectedFileIdHash, uploadImage.getFileIdHash());
     }
 }

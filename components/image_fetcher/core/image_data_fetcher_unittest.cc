@@ -7,6 +7,7 @@
 #include <memory>
 
 #include "base/base64.h"
+#include "base/byte_size.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
 #include "base/memory/ref_counted.h"
@@ -16,6 +17,7 @@
 #include "base/test/task_environment.h"
 #include "components/image_fetcher/core/request_metadata.h"
 #include "net/base/data_url.h"
+#include "net/base/net_errors.h"
 #include "net/http/http_response_headers.h"
 #include "net/http/http_status_code.h"
 #include "net/http/http_util.h"
@@ -107,7 +109,7 @@ TEST_F(ImageDataFetcherTest, FetchImageData) {
       net::HttpUtil::AssembleRawHeaders(raw_header));
   head->mime_type = "image/png";
   network::URLLoaderCompletionStatus status;
-  status.decoded_body_length = content.size();
+  status.decoded_body_length = base::ByteSize(content.size());
   test_url_loader_factory_.AddResponse(GURL(kImageURL), std::move(head),
                                        content, status);
   base::RunLoop().RunUntilIdle();
@@ -130,6 +132,18 @@ TEST_F(ImageDataFetcherTest, FetchImageDataWithDataUrl) {
 
   image_data_fetcher_.FetchImageData(
       GURL(data_url),
+      base::BindOnce(&ImageDataFetcherTest::OnImageDataFetched,
+                     base::Unretained(this)),
+      ImageFetcherParams(TRAFFIC_ANNOTATION_FOR_TESTS, kTestUmaClientName));
+}
+
+TEST_F(ImageDataFetcherTest, FetchImageDataWithInvalidDataUrl) {
+  RequestMetadata expected_metadata;
+  expected_metadata.net_error = net::ERR_INVALID_URL;
+  EXPECT_CALL(*this, OnImageDataFetched(std::string(), expected_metadata));
+
+  image_data_fetcher_.FetchImageData(
+      GURL("data:;base64,aGVs_-_-"),
       base::BindOnce(&ImageDataFetcherTest::OnImageDataFetched,
                      base::Unretained(this)),
       ImageFetcherParams(TRAFFIC_ANNOTATION_FOR_TESTS, kTestUmaClientName));
@@ -164,7 +178,7 @@ TEST_F(ImageDataFetcherTest, FetchImageDataTrafficAnnotationOnly) {
       net::HttpUtil::AssembleRawHeaders(raw_header));
   head->mime_type = "image/png";
   network::URLLoaderCompletionStatus status;
-  status.decoded_body_length = content.size();
+  status.decoded_body_length = base::ByteSize(content.size());
   test_url_loader_factory_.AddResponse(GURL(kImageURL), std::move(head),
                                        content, status);
   base::RunLoop().RunUntilIdle();
@@ -200,7 +214,7 @@ TEST_F(ImageDataFetcherTest, FetchImageDataWithCookies) {
       net::HttpUtil::AssembleRawHeaders(raw_header));
   head->mime_type = "image/png";
   network::URLLoaderCompletionStatus status;
-  status.decoded_body_length = content.size();
+  status.decoded_body_length = base::ByteSize(content.size());
   test_url_loader_factory_.AddResponse(GURL(kImageURL), std::move(head),
                                        content, status);
   base::RunLoop().RunUntilIdle();
@@ -232,7 +246,7 @@ TEST_F(ImageDataFetcherTest, FetchImageData_NotFound) {
       net::HttpUtil::AssembleRawHeaders(raw_header));
   head->mime_type = "image/png";
   network::URLLoaderCompletionStatus status;
-  status.decoded_body_length = content.size();
+  status.decoded_body_length = base::ByteSize(content.size());
   test_url_loader_factory_.AddResponse(GURL(kImageURL), std::move(head),
                                        content, status);
   base::RunLoop().RunUntilIdle();
@@ -266,7 +280,7 @@ TEST_F(ImageDataFetcherTest, FetchImageData_WithContentLocation) {
       net::HttpUtil::AssembleRawHeaders(raw_header));
   head->mime_type = "image/png";
   network::URLLoaderCompletionStatus status;
-  status.decoded_body_length = content.size();
+  status.decoded_body_length = base::ByteSize(content.size());
   test_url_loader_factory_.AddResponse(GURL(kImageURL), std::move(head),
                                        content, status);
   base::RunLoop().RunUntilIdle();
@@ -281,6 +295,7 @@ TEST_F(ImageDataFetcherTest, FetchImageData_FailedRequest) {
 
   RequestMetadata expected_metadata;
   expected_metadata.http_response_code = RequestMetadata::RESPONSE_CODE_INVALID;
+  expected_metadata.net_error = net::ERR_INVALID_URL;
   EXPECT_CALL(
       *this, OnImageDataFetchedFailedRequest(std::string(), expected_metadata));
 
@@ -334,6 +349,7 @@ TEST_F(ImageDataFetcherTest, FetchImageData_CancelFetchIfImageExceedsMaxSize) {
   // code that would be impossible for a completed fetch.
   RequestMetadata expected_metadata;
   expected_metadata.http_response_code = RequestMetadata::RESPONSE_CODE_INVALID;
+  expected_metadata.net_error = net::ERR_INSUFFICIENT_RESOURCES;
   EXPECT_CALL(*this, OnImageDataFetched(std::string(), expected_metadata));
 
   EXPECT_TRUE(test_url_loader_factory_.IsPending(kImageURL));

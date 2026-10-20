@@ -93,6 +93,10 @@ class COMPONENT_EXPORT(UI_BASE) OSExchangeData {
   void MarkAsFromPrivileged();
   bool IsFromPrivileged() const;
 
+  // Attaches and retrieves an opaque identifier for a drag initiated by Chrome.
+  void SetChromeDragId(const base::UnguessableToken& drag_id);
+  std::optional<base::UnguessableToken> GetChromeDragId() const;
+
   // These functions add data to the OSExchangeData object of various Chrome
   // types. The OSExchangeData object takes care of translating the data into
   // a format suitable for exchange with the OS.
@@ -145,7 +149,7 @@ class COMPONENT_EXPORT(UI_BASE) OSExchangeData {
   // Adds the bytes of a file (CFSTR_FILECONTENTS and CFSTR_FILEDESCRIPTOR on
   // Windows).
   void SetFileContents(const base::FilePath& filename,
-                       const std::string& file_contents);
+                       base::span<const uint8_t> file_contents);
   using FileContentsInfo = OSExchangeDataProvider::FileContentsInfo;
   std::optional<FileContentsInfo> GetFileContents() const;
 

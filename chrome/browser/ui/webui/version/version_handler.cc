@@ -16,7 +16,6 @@
 #include "base/task/thread_pool.h"
 #include "base/threading/scoped_blocking_call.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/grit/generated_resources.h"
 #include "components/strings/grit/components_strings.h"
 #include "components/variations/active_field_trials.h"
 #include "components/variations/net/variations_command_line.h"
@@ -137,7 +136,7 @@ void VersionHandler::HandleRequestPathInfo(const base::ListValue& args) {
 void VersionHandler::OnGotFilePaths(std::string callback_id,
                                     std::u16string* executable_path_data,
                                     std::u16string* profile_path_data) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
   base::DictValue response;
   response.Set(version_ui::kKeyExecPath, *executable_path_data);
   response.Set(version_ui::kKeyProfilePath, *profile_path_data);

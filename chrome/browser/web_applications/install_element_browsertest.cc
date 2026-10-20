@@ -4,17 +4,22 @@
 
 #include <string_view>
 
+#include "base/auto_reset.h"
 #include "base/command_line.h"
 #include "base/metrics/histogram_functions.h"
+#include "base/strings/string_number_conversions.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/metrics/histogram_tester.h"
+#include "base/test/run_until.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/test_future.h"
+#include "base/test/with_feature_override.h"
 #include "chrome/browser/content_settings/host_content_settings_map_factory.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
-#include "chrome/browser/ui/views/web_apps/web_app_dialog_test_support.h"
+#include "chrome/browser/ui/views/web_apps/web_app_install_flow_dialog_delegate.h"
+#include "chrome/browser/ui/views/web_apps/web_app_install_progress_view.h"
 #include "chrome/browser/ui/web_applications/app_browser_controller.h"
 #include "chrome/browser/ui/web_applications/test/web_app_browsertest_util.h"
 #include "chrome/browser/ui/web_applications/web_app_browser_controller.h"
@@ -22,29 +27,44 @@
 #include "chrome/browser/ui/web_applications/web_app_dialog_utils.h"
 #include "chrome/browser/ui/web_applications/web_app_dialogs.h"
 #include "chrome/browser/web_applications/test/web_app_install_test_utils.h"
+#include "chrome/browser/web_applications/web_app.h"
+#include "chrome/browser/web_applications/web_app_command_manager.h"
 #include "chrome/browser/web_applications/web_app_helpers.h"
 #include "chrome/browser/web_applications/web_app_provider.h"
 #include "chrome/browser/web_applications/web_install_service_impl.h"
 #include "chrome/common/chrome_features.h"
+#include "chrome/common/chrome_paths.h"
 #include "chrome/test/base/ui_test_utils.h"
+#include "components/content_settings/core/browser/cookie_settings.h"
+#include "components/content_settings/core/browser/host_content_settings_map.h"
+#include "components/content_settings/core/common/pref_names.h"
 #include "components/permissions/permission_request_manager.h"
+#include "components/permissions/test/permission_request_observer.h"
+#include "components/prefs/pref_service.h"
 #include "components/ukm/test_ukm_recorder.h"
 #include "components/webapps/browser/install_result_code.h"
+#include "components/webapps/browser/installable/ml_installability_promoter.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "content/public/test/url_loader_interceptor.h"
+#include "net/test/embedded_test_server/controllable_http_response.h"
+#include "net/test/embedded_test_server/embedded_test_server.h"
+#include "net/test/embedded_test_server/http_request.h"
 #include "services/metrics/public/cpp/ukm_builders.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/common/features_generated.h"
 #include "third_party/blink/public/mojom/use_counter/metrics/webdx_feature.mojom.h"
+#include "ui/views/controls/progress_bar.h"
+#include "ui/views/interaction/element_tracker_views.h"
 #include "ui/views/test/dialog_test.h"
 #include "ui/views/test/widget_test.h"
 #include "ui/views/widget/any_widget_observer.h"
+#include "ui/views/window/dialog_delegate.h"
+#include "url/origin.h"
 
 namespace {
 constexpr char kInstallElementId[] = "install-app";
-constexpr char kInstallDialogName[] = "WebAppSimpleInstallDialog";
 constexpr char kInstallResultUma[] = "WebApp.WebInstallElement.Result";
 constexpr char kInstallTypeUma[] = "WebApp.WebInstallElement.InstallType";
 constexpr char kVariantedInstallTypeUma[] =
@@ -54,26 +74,27 @@ constexpr char kVariantedInstallResultUma[] =
 constexpr char kInstallElementPageStartUrl[] =
     "/web_apps/install_element/index.html";
 constexpr char kInstallElementPageId[] = "/some_id";
+constexpr char kInstallElementManifestUrl[] =
+    "/web_apps/install_element/manifest.json";
+constexpr char kCrossOriginManifestPath[] =
+    "/controlled_cross_origin_manifest.webmanifest";
+constexpr char kCrossOriginManifestCookie[] =
+    "manifest_cookie=1; SameSite=None; Secure";
 constexpr char kCustomIdPageInstallUrl[] =
     "/web_apps/custom_id/install_url.html";
-constexpr char kCustomIdPageId[] = "/some_id";
-constexpr char kNoCustomIdPageInstallUrl[] =
-    "/web_apps/install_url/install_url.html";
-// Since this page has no custom id, it defaults to start_url.
-constexpr char kNoCustomIdPageId[] = "/web_apps/install_url/index.html";
 constexpr char kElementRequestingPageUkm[] = "ElementResultByRequestingPage";
 constexpr char kElementInstalledAppUkm[] = "ElementResultByInstalledApp";
 }  // namespace
 
 namespace web_app {
 
-class InstallElementBrowserTest : public WebAppBrowserTestBase {
+class InstallElementBrowserTestBase : public WebAppBrowserTestBase {
  public:
-  InstallElementBrowserTest() {
+  InstallElementBrowserTestBase() {
     scoped_feature_list_.InitWithFeatures(
         {blink::features::kInstallElement,
          blink::features::kBypassPepcSecurityForTesting},
-        {features::kWebAppInstallDialog});
+        {});
   }
 
   void SetUpOnMainThread() override {
@@ -108,6 +129,13 @@ class InstallElementBrowserTest : public WebAppBrowserTestBase {
     return content::ExecJs(web_contents(), script);
   }
 
+  bool SetButtonManifest(const GURL& manifest_url) {
+    const std::string script =
+        "document.getElementById('" + std::string(kInstallElementId) +
+        "').setAttribute('manifest', '" + manifest_url.spec() + "');";
+    return content::ExecJs(web_contents(), script);
+  }
+
   // Simulates a click on an element with the given |id|.
   bool ClickElementWithId(const std::string& id,
                           content::WebContents* contents = nullptr) {
@@ -115,12 +143,16 @@ class InstallElementBrowserTest : public WebAppBrowserTestBase {
     return content::ExecJs(contents ? contents : web_contents(), script);
   }
 
-  void WaitForPromptActionEvent(const std::string& id) {
-    ExpectConsoleMessage(id + "-promptaction");
+  void WaitForSuccessEvent(const std::string& id) {
+    ExpectConsoleMessage(id + "-installresult-success");
   }
 
-  void WaitForDismissEvent(const std::string& id) {
-    ExpectConsoleMessage(id + "-promptdismiss");
+  void WaitForAbortedEvent(const std::string& id) {
+    ExpectConsoleMessage(id + "-installresult-aborted");
+  }
+
+  void WaitForInvalidDataEvent(const std::string& id) {
+    ExpectConsoleMessage(id + "-installresult-invalid-data");
   }
 
   // The web app test pages log quite a few additional console messages during
@@ -150,9 +182,51 @@ class InstallElementBrowserTest : public WebAppBrowserTestBase {
   std::unique_ptr<content::WebContentsConsoleObserver> console_observer_;
 };
 
+class InstallElementBrowserTest : public InstallElementBrowserTestBase,
+                                  public base::test::WithFeatureOverride {
+ public:
+  InstallElementBrowserTest()
+      : base::test::WithFeatureOverride(features::kWebAppInstallDialog) {}
+
+  void AcceptInstallDialog(views::Widget* widget) {
+    ASSERT_NE(widget, nullptr);
+    auto* dialog_delegate = widget->widget_delegate()->AsDialogDelegate();
+    ASSERT_NE(dialog_delegate, nullptr);
+
+    views::test::WidgetDestroyedWaiter destroyed(widget);
+    if (!IsParamFeatureEnabled()) {
+      dialog_delegate->AcceptDialog();
+    } else {
+      dialog_delegate->AcceptDialog();
+      if (ui::ElementTracker::GetElementTracker()->GetElementInAnyContext(
+              WebAppInstallFlowDialogDelegate::kOptionsViewId)) {
+        dialog_delegate->AcceptDialog();
+      }
+      views::View* progress_view =
+          views::ElementTrackerViews::GetInstance()->GetFirstMatchingView(
+              WebAppInstallProgressView::kProgressBarId,
+              views::ElementTrackerViews::GetContextForWidget(widget));
+      if (progress_view) {
+        views::ProgressBar* progress_bar =
+            views::AsViewClass<views::ProgressBar>(progress_view);
+        if (progress_bar) {
+          ASSERT_TRUE(base::test::RunUntil([progress_bar]() -> bool {
+            return (progress_bar->GetValue() >= 0.9);
+          }));
+        }
+      }
+      WebAppProvider::GetForWebApps(browser()->GetProfile())
+          ->command_manager()
+          .AwaitAllCommandsCompleteForTesting();
+      dialog_delegate->AcceptDialog();
+    }
+    destroyed.Wait();
+  }
+};
+
 // Test installing current document (no attributes).
 // <install></install>
-IN_PROC_BROWSER_TEST_F(InstallElementBrowserTest, Install) {
+IN_PROC_BROWSER_TEST_P(InstallElementBrowserTest, Install) {
   // Setup histogram tester before navigation so it captures the WebDX feature
   // counter recorded when the <install> element is parsed on page load.
   base::HistogramTester histograms;
@@ -163,15 +237,17 @@ IN_PROC_BROWSER_TEST_F(InstallElementBrowserTest, Install) {
       embedded_https_test_server().GetURL(kInstallElementPageStartUrl)));
 
   // Setup test listeners and dialog auto-accepts.
-  web_app::test::ScopedAutoAcceptWebAppDialogs auto_accept_pwa;
+  base::AutoReset<web_app::InstallDialogTestResponse> auto_accept_pwa =
+      web_app::SetPwaInstallationAutoRespondForTesting(
+          web_app::InstallDialogTestResponse::kAcceptAndLaunch);
 
   // Click the install element and wait for the app to open.
   ui_test_utils::BrowserCreatedObserver browser_created_observer;
   ASSERT_TRUE(ClickElementWithId(kInstallElementId));
-  Browser* web_app_browser = browser_created_observer.Wait();
+  BrowserWindowInterface* web_app_browser = browser_created_observer.Wait();
 
-  // Verify promptaction event was fired.
-  WaitForPromptActionEvent(kInstallElementId);
+  // Verify installresult event was fired with "success".
+  WaitForSuccessEvent(kInstallElementId);
 
   // Verify the app launched.
   ASSERT_TRUE(AppBrowserController::IsWebApp(web_app_browser));
@@ -186,9 +262,8 @@ IN_PROC_BROWSER_TEST_F(InstallElementBrowserTest, Install) {
   EXPECT_TRUE(provider().registrar_unsafe().AppMatches(
       app_id, WebAppFilter::LaunchableFromInstallApi()));
   // Check use counter.
-  histograms.ExpectBucketCount(
-      "Blink.UseCounter.WebDXFeatures",
-      blink::mojom::WebDXFeature::kDRAFT_InstallElement, 1);
+  histograms.ExpectBucketCount("Blink.UseCounter.WebDXFeatures",
+                               blink::mojom::WebDXFeature::kInstall, 1);
 
   histograms.ExpectBucketCount(kInstallResultUma,
                                web_app::WebInstallServiceResult::kSuccess, 1);
@@ -202,224 +277,39 @@ IN_PROC_BROWSER_TEST_F(InstallElementBrowserTest, Install) {
                                1);
 }
 
-// Test installing from a background document (installurl only).
-// <install installurl="..."></install>
-IN_PROC_BROWSER_TEST_F(InstallElementBrowserTest, InstallWithUrl) {
-  // Setup histogram tester before navigation so it captures the WebDX feature
-  // counter recorded when the <install> element is parsed on page load.
+IN_PROC_BROWSER_TEST_P(InstallElementBrowserTest,
+                       InstallurlAlone_ReturnsInvalidData) {
   base::HistogramTester histograms;
 
-  // Navigate to a page with <install> elements.
   ASSERT_TRUE(ui_test_utils::NavigateToURL(
       browser(),
       embedded_https_test_server().GetURL(kInstallElementPageStartUrl)));
 
-  // Setup test listeners and dialog auto-accepts.
-  web_app::test::ScopedAutoAcceptWebAppDialogs auto_accept_pwa;
-  ukm::TestAutoSetUkmRecorder ukm_recorder;
-
-  // Dynamically set the installurl attribute.
-  // Since we're installing by URL only, the manifest must contain an id.
-  const GURL install_url =
+  const GURL remote_url =
       embedded_https_test_server().GetURL(kCustomIdPageInstallUrl);
-  ASSERT_TRUE(SetButtonInstallUrl(install_url));
+  ASSERT_TRUE(SetButtonInstallUrl(remote_url));
 
-  // Click the install element and wait for the app to open.
-  ui_test_utils::BrowserCreatedObserver browser_created_observer;
   ASSERT_TRUE(ClickElementWithId(kInstallElementId));
-  Browser* web_app_browser = browser_created_observer.Wait();
+  WaitForInvalidDataEvent(kInstallElementId);
 
-  // Verify promptaction event was fired.
-  WaitForPromptActionEvent(kInstallElementId);
-
-  // Verify the app launched.
-  ASSERT_TRUE(AppBrowserController::IsWebApp(web_app_browser));
-  const WebAppBrowserController* app_controller =
-      WebAppBrowserController::From(web_app_browser);
-  EXPECT_EQ(app_controller->GetTitle(), u"Simple web app with a custom id");
-
-  // Verify the app is installed.
-  webapps::AppId app_id = GenerateAppIdFromManifestId(webapps::ManifestId(
-      embedded_https_test_server().GetURL(kInstallElementPageId)));
-  EXPECT_TRUE(provider().registrar_unsafe().AppMatches(
-      app_id, WebAppFilter::LaunchableFromInstallApi()));
-  // Check use counter.
-  histograms.ExpectBucketCount(
-      "Blink.UseCounter.WebDXFeatures",
-      blink::mojom::WebDXFeature::kDRAFT_InstallElement, 1);
-
-  histograms.ExpectBucketCount(kInstallResultUma,
-                               web_app::WebInstallServiceResult::kSuccess, 1);
-  histograms.ExpectBucketCount(
-      kInstallTypeUma, web_app::WebInstallServiceType::kBackgroundDocument, 1);
-  // Check the varianted UMAs.
-  histograms.ExpectBucketCount(kVariantedInstallResultUma,
-                               web_app::WebInstallServiceResult::kSuccess, 1);
-  histograms.ExpectBucketCount(
-      kVariantedInstallTypeUma,
-      web_app::WebInstallServiceType::kBackgroundDocument, 1);
-
-  // Verify UKM entries for element-triggered install.
-  auto ukm_entries = ukm_recorder.GetEntriesByName(
-      ukm::builders::WebApp_WebInstall::kEntryName);
-  ASSERT_EQ(2u, ukm_entries.size());
-  ukm_recorder.ExpectEntryMetric(
-      ukm_entries[0], kElementRequestingPageUkm,
-      static_cast<int>(web_app::WebInstallServiceResult::kSuccess));
-  // First entry should be of source type, NAVIGATION_ID.
-  EXPECT_EQ(ukm::GetSourceIdType(ukm_entries[0]->source_id),
-            ukm::SourceIdType::NAVIGATION_ID);
-  ukm_recorder.ExpectEntryMetric(
-      ukm_entries[1], kElementInstalledAppUkm,
-      static_cast<int>(web_app::WebInstallServiceResult::kSuccess));
-  // Second entry should be of source type, APP_ID.
-  EXPECT_EQ(ukm::GetSourceIdType(ukm_entries[1]->source_id),
-            ukm::SourceIdType::APP_ID);
-}
-
-// Test installing from a background document (both installurl and manifestid).
-// <install installurl="..." manifestid="..."></install>
-IN_PROC_BROWSER_TEST_F(InstallElementBrowserTest, InstallWithUrlAndId) {
-  // Setup histogram tester before navigation so it captures the WebDX feature
-  // counter recorded when the <install> element is parsed on page load.
-  base::HistogramTester histograms;
-
-  // Navigate to a page with <install> elements.
-  ASSERT_TRUE(ui_test_utils::NavigateToURL(
-      browser(),
-      embedded_https_test_server().GetURL(kInstallElementPageStartUrl)));
-
-  // Setup test listeners and dialog auto-accepts.
-  web_app::test::ScopedAutoAcceptWebAppDialogs auto_accept_pwa;
-  ukm::TestAutoSetUkmRecorder ukm_recorder;
-
-  // Dynamically set the installurl and manifestid attributes.
-  const GURL install_url =
-      embedded_https_test_server().GetURL(kNoCustomIdPageInstallUrl);
-  ASSERT_TRUE(SetButtonInstallUrl(install_url));
-  const GURL manifest_id =
-      embedded_https_test_server().GetURL(kNoCustomIdPageId);
-  ASSERT_TRUE(SetButtonManifestId(manifest_id));
-
-  // Click the install element and wait for the app to open.
-  ui_test_utils::BrowserCreatedObserver browser_created_observer;
-  ASSERT_TRUE(ClickElementWithId(kInstallElementId));
-  Browser* web_app_browser = browser_created_observer.Wait();
-
-  // Verify promptaction event was fired.
-  WaitForPromptActionEvent(kInstallElementId);
-
-  // Verify the app launched.
-  ASSERT_TRUE(AppBrowserController::IsWebApp(web_app_browser));
-  const WebAppBrowserController* app_controller =
-      WebAppBrowserController::From(web_app_browser);
-  EXPECT_EQ(app_controller->GetTitle(), u"Simple web app");
-
-  // Verify the app is installed.
-  webapps::AppId app_id = GenerateAppIdFromManifestId(webapps::ManifestId(manifest_id));
-  EXPECT_TRUE(provider().registrar_unsafe().AppMatches(
-      app_id, WebAppFilter::LaunchableFromInstallApi()));
-  // Check use counter.
-  histograms.ExpectBucketCount(
-      "Blink.UseCounter.WebDXFeatures",
-      blink::mojom::WebDXFeature::kDRAFT_InstallElement, 1);
-
-  histograms.ExpectBucketCount(kInstallResultUma,
-                               web_app::WebInstallServiceResult::kSuccess, 1);
-  histograms.ExpectBucketCount(
-      kInstallTypeUma, web_app::WebInstallServiceType::kBackgroundDocument, 1);
-  // Check the varianted UMAs.
-  histograms.ExpectBucketCount(kVariantedInstallResultUma,
-                               web_app::WebInstallServiceResult::kSuccess, 1);
-  histograms.ExpectBucketCount(
-      kVariantedInstallTypeUma,
-      web_app::WebInstallServiceType::kBackgroundDocument, 1);
-
-  // Verify UKM entries for element-triggered install.
-  auto ukm_entries = ukm_recorder.GetEntriesByName(
-      ukm::builders::WebApp_WebInstall::kEntryName);
-  ASSERT_EQ(2u, ukm_entries.size());
-  ukm_recorder.ExpectEntryMetric(
-      ukm_entries[0], kElementRequestingPageUkm,
-      static_cast<int>(web_app::WebInstallServiceResult::kSuccess));
-  // First entry should be of source type, NAVIGATION_ID.
-  EXPECT_EQ(ukm::GetSourceIdType(ukm_entries[0]->source_id),
-            ukm::SourceIdType::NAVIGATION_ID);
-  ukm_recorder.ExpectEntryMetric(
-      ukm_entries[1], kElementInstalledAppUkm,
-      static_cast<int>(web_app::WebInstallServiceResult::kSuccess));
-  // Second entry should be of source type, APP_ID.
-  EXPECT_EQ(ukm::GetSourceIdType(ukm_entries[1]->source_id),
-            ukm::SourceIdType::APP_ID);
-}
-
-IN_PROC_BROWSER_TEST_F(InstallElementBrowserTest, InstallWithUrl_UserDenies) {
-  // Navigate to a page with <install> elements.
-  ASSERT_TRUE(ui_test_utils::NavigateToURL(
-      browser(),
-      embedded_https_test_server().GetURL(kInstallElementPageStartUrl)));
-
-  // Simulate the user declining the install prompt.
-  web_app::test::ScopedAutoDeclineInstallDialogs auto_decline;
-  base::HistogramTester histograms;
-  ukm::TestAutoSetUkmRecorder ukm_recorder;
-
-  // Dynamically set the installurl attribute.
-  // Since we're installing by URL only, the manifest must contain an id.
-  const GURL install_url =
-      embedded_https_test_server().GetURL(kCustomIdPageInstallUrl);
-  ASSERT_TRUE(SetButtonInstallUrl(install_url));
-
-  // Click the install element.
-  ASSERT_TRUE(ClickElementWithId(kInstallElementId));
-
-  // Verify promptdismiss event was fired.
-  WaitForDismissEvent(kInstallElementId);
-
-  // Verify the app is not installed.
-  webapps::AppId app_id = GenerateAppIdFromManifestId(webapps::ManifestId(
-      embedded_https_test_server().GetURL(kCustomIdPageId)));
-  EXPECT_FALSE(provider().registrar_unsafe().AppMatches(
-      app_id, WebAppFilter::LaunchableFromInstallApi()));
-  histograms.ExpectBucketCount(
-      kInstallResultUma, web_app::WebInstallServiceResult::kCanceledByUser, 1);
-  histograms.ExpectBucketCount(
-      kInstallTypeUma, web_app::WebInstallServiceType::kBackgroundDocument, 1);
-  // Check the varianted UMAs.
-  histograms.ExpectBucketCount(
-      kVariantedInstallResultUma,
-      web_app::WebInstallServiceResult::kCanceledByUser, 1);
-  histograms.ExpectBucketCount(
-      kVariantedInstallTypeUma,
-      web_app::WebInstallServiceType::kBackgroundDocument, 1);
-
-  // Verify UKM entries for element-triggered install cancellation.
-  auto ukm_entries = ukm_recorder.GetEntriesByName(
-      ukm::builders::WebApp_WebInstall::kEntryName);
-  ASSERT_EQ(2u, ukm_entries.size());
-  ukm_recorder.ExpectEntryMetric(
-      ukm_entries[0], kElementRequestingPageUkm,
-      static_cast<int>(web_app::WebInstallServiceResult::kCanceledByUser));
-  // First entry should be of source type, NAVIGATION_ID.
-  EXPECT_EQ(ukm::GetSourceIdType(ukm_entries[0]->source_id),
-            ukm::SourceIdType::NAVIGATION_ID);
-  ukm_recorder.ExpectEntryMetric(
-      ukm_entries[1], kElementInstalledAppUkm,
-      static_cast<int>(web_app::WebInstallServiceResult::kCanceledByUser));
-  // Second entry should be of source type, APP_ID.
-  EXPECT_EQ(ukm::GetSourceIdType(ukm_entries[1]->source_id),
-            ukm::SourceIdType::APP_ID);
+  EXPECT_TRUE(provider().registrar_unsafe().GetAppIds().empty());
+  histograms.ExpectTotalCount(kInstallResultUma, 0);
+  histograms.ExpectTotalCount(kInstallTypeUma, 0);
+  histograms.ExpectTotalCount(kVariantedInstallResultUma, 0);
+  histograms.ExpectTotalCount(kVariantedInstallTypeUma, 0);
 }
 
 // Test that current document install succeeds even when permission is denied,
 // since current document installs bypass permission.
-IN_PROC_BROWSER_TEST_F(InstallElementBrowserTest, Install_DenyPermission) {
+IN_PROC_BROWSER_TEST_P(InstallElementBrowserTest, Install_DenyPermission) {
   // Navigate to a page with <install> elements.
   const GURL current_document_url =
       embedded_https_test_server().GetURL(kInstallElementPageStartUrl);
   EXPECT_TRUE(ui_test_utils::NavigateToURL(browser(), current_document_url));
 
-  web_app::test::ScopedAutoAcceptWebAppDialogs auto_accept_pwa;
+  base::AutoReset<web_app::InstallDialogTestResponse> auto_accept_pwa =
+      web_app::SetPwaInstallationAutoRespondForTesting(
+          web_app::InstallDialogTestResponse::kAcceptAndLaunch);
   base::HistogramTester histograms;
 
   // Block the web install permission for the current document origin.
@@ -428,10 +318,10 @@ IN_PROC_BROWSER_TEST_F(InstallElementBrowserTest, Install_DenyPermission) {
   // Click the install element and wait for the app to open.
   ui_test_utils::BrowserCreatedObserver browser_created_observer;
   ASSERT_TRUE(ClickElementWithId(kInstallElementId));
-  Browser* web_app_browser = browser_created_observer.Wait();
+  BrowserWindowInterface* web_app_browser = browser_created_observer.Wait();
 
-  // Verify promptaction event was fired.
-  WaitForPromptActionEvent(kInstallElementId);
+  // Verify installresult event was fired with "success".
+  WaitForSuccessEvent(kInstallElementId);
 
   // Verify the app launched.
   ASSERT_TRUE(AppBrowserController::IsWebApp(web_app_browser));
@@ -457,125 +347,447 @@ IN_PROC_BROWSER_TEST_F(InstallElementBrowserTest, Install_DenyPermission) {
                                1);
 }
 
-// Test that when permission is denied for background document install, install
-// still occurs. <install> elements bypass permission.
-IN_PROC_BROWSER_TEST_F(InstallElementBrowserTest,
-                       InstallWithUrl_IgnoresDeniedPermission) {
-  // Navigate to a page with <install> elements.
+///////////////////////////////////////////////////////////////////////////////
+// Manifest attribute install path (<install manifest="...">)
+///////////////////////////////////////////////////////////////////////////////
+
+// Happy-path install via the manifest attribute: the app installs, launches,
+// and full success UMA/UKM are recorded.
+IN_PROC_BROWSER_TEST_P(InstallElementBrowserTest, InstallWithManifest) {
+  // Set up the histogram tester before navigation so it captures the WebDX
+  // feature counter recorded when the <install> element is parsed.
+  base::HistogramTester histograms;
+
   ASSERT_TRUE(ui_test_utils::NavigateToURL(
       browser(),
       embedded_https_test_server().GetURL(kInstallElementPageStartUrl)));
 
-  // Setup test listeners and dialog auto-accepts.
-  web_app::test::ScopedAutoAcceptWebAppDialogs auto_accept_pwa;
-
-  // Dynamically set the installurl attribute to a background document URL.
-  const GURL install_url =
-      embedded_https_test_server().GetURL(kCustomIdPageInstallUrl);
-  ASSERT_TRUE(SetButtonInstallUrl(install_url));
-  base::HistogramTester histograms;
+  base::AutoReset<web_app::InstallDialogTestResponse> auto_accept_pwa =
+      web_app::SetPwaInstallationAutoRespondForTesting(
+          web_app::InstallDialogTestResponse::kAcceptAndLaunch);
   ukm::TestAutoSetUkmRecorder ukm_recorder;
 
-  // Block the web install permission for this origin.
-  BlockWebInstallPermission(install_url);
+  const GURL manifest_url =
+      embedded_https_test_server().GetURL(kInstallElementManifestUrl);
+  ASSERT_TRUE(SetButtonManifest(manifest_url));
 
-  // Click the install element and wait for the app to open.
   ui_test_utils::BrowserCreatedObserver browser_created_observer;
   ASSERT_TRUE(ClickElementWithId(kInstallElementId));
-  Browser* web_app_browser = browser_created_observer.Wait();
+  BrowserWindowInterface* web_app_browser = browser_created_observer.Wait();
 
-  // Verify promptaction event was fired.
-  WaitForPromptActionEvent(kInstallElementId);
+  WaitForSuccessEvent(kInstallElementId);
 
-  // Verify the app launched.
+  // The app launched with the title declared in the manifest.
   ASSERT_TRUE(AppBrowserController::IsWebApp(web_app_browser));
   const WebAppBrowserController* app_controller =
       WebAppBrowserController::From(web_app_browser);
-  EXPECT_EQ(app_controller->GetTitle(), u"Simple web app with a custom id");
+  EXPECT_EQ(app_controller->GetTitle(),
+            u"Web app install element test app with id");
 
-  // Verify the app is installed.
+  // The app is registrar-installed under the manifest's declared id.
   webapps::AppId app_id = GenerateAppIdFromManifestId(webapps::ManifestId(
-      embedded_https_test_server().GetURL(kCustomIdPageId)));
+      embedded_https_test_server().GetURL(kInstallElementPageId)));
   EXPECT_TRUE(provider().registrar_unsafe().AppMatches(
       app_id, WebAppFilter::LaunchableFromInstallApi()));
 
-  // The element does not check or use the permission.
-  histograms.ExpectBucketCount(
-      kInstallResultUma, web_app::WebInstallServiceResult::kPermissionDenied,
-      0);
+  histograms.ExpectBucketCount("Blink.UseCounter.WebDXFeatures",
+                               blink::mojom::WebDXFeature::kInstall, 1);
+  histograms.ExpectBucketCount(kInstallResultUma,
+                               web_app::WebInstallServiceResult::kSuccess, 1);
   histograms.ExpectBucketCount(
       kInstallTypeUma, web_app::WebInstallServiceType::kBackgroundDocument, 1);
-  // Check the varianted UMAs.
-  histograms.ExpectBucketCount(
-      kVariantedInstallResultUma,
-      web_app::WebInstallServiceResult::kPermissionDenied, 0);
+  histograms.ExpectBucketCount(kVariantedInstallResultUma,
+                               web_app::WebInstallServiceResult::kSuccess, 1);
   histograms.ExpectBucketCount(
       kVariantedInstallTypeUma,
       web_app::WebInstallServiceType::kBackgroundDocument, 1);
 
-  // Verify UKM entries for element-triggered install.
+  // Both UKMs record kSuccess: the requesting page (NAVIGATION_ID) and the
+  // installed app (APP_ID).
   auto ukm_entries = ukm_recorder.GetEntriesByName(
       ukm::builders::WebApp_WebInstall::kEntryName);
   ASSERT_EQ(2u, ukm_entries.size());
   ukm_recorder.ExpectEntryMetric(
       ukm_entries[0], kElementRequestingPageUkm,
       static_cast<int>(web_app::WebInstallServiceResult::kSuccess));
-  // First entry should be of source type, NAVIGATION_ID.
   EXPECT_EQ(ukm::GetSourceIdType(ukm_entries[0]->source_id),
             ukm::SourceIdType::NAVIGATION_ID);
   ukm_recorder.ExpectEntryMetric(
       ukm_entries[1], kElementInstalledAppUkm,
       static_cast<int>(web_app::WebInstallServiceResult::kSuccess));
-  // Second entry should be of source type, APP_ID.
   EXPECT_EQ(ukm::GetSourceIdType(ukm_entries[1]->source_id),
             ukm::SourceIdType::APP_ID);
 }
 
-IN_PROC_BROWSER_TEST_F(InstallElementBrowserTest,
-                       InstallWithUrl_AlreadyInstalled) {
+// Install via a manifest that declares its own id, validated against the
+// manifestid attribute.
+IN_PROC_BROWSER_TEST_P(InstallElementBrowserTest, InstallWithManifestAndId) {
+  base::HistogramTester histograms;
+
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(
+      browser(),
+      embedded_https_test_server().GetURL(kInstallElementPageStartUrl)));
+
+  base::AutoReset<web_app::InstallDialogTestResponse> auto_accept_pwa =
+      web_app::SetPwaInstallationAutoRespondForTesting(
+          web_app::InstallDialogTestResponse::kAcceptAndLaunch);
+  ukm::TestAutoSetUkmRecorder ukm_recorder;
+
+  const GURL manifest_url =
+      embedded_https_test_server().GetURL(kInstallElementManifestUrl);
+  ASSERT_TRUE(SetButtonManifest(manifest_url));
+  // The manifestid attribute matches the manifest's declared id ("some_id").
+  const GURL manifest_id =
+      embedded_https_test_server().GetURL(kInstallElementPageId);
+  ASSERT_TRUE(SetButtonManifestId(manifest_id));
+
+  ui_test_utils::BrowserCreatedObserver browser_created_observer;
+  ASSERT_TRUE(ClickElementWithId(kInstallElementId));
+  BrowserWindowInterface* web_app_browser = browser_created_observer.Wait();
+
+  WaitForSuccessEvent(kInstallElementId);
+
+  ASSERT_TRUE(AppBrowserController::IsWebApp(web_app_browser));
+  const WebAppBrowserController* app_controller =
+      WebAppBrowserController::From(web_app_browser);
+  EXPECT_EQ(app_controller->GetTitle(),
+            u"Web app install element test app with id");
+
+  webapps::AppId app_id =
+      GenerateAppIdFromManifestId(webapps::ManifestId(manifest_id));
+  EXPECT_TRUE(provider().registrar_unsafe().AppMatches(
+      app_id, WebAppFilter::LaunchableFromInstallApi()));
+
+  histograms.ExpectBucketCount(kInstallResultUma,
+                               web_app::WebInstallServiceResult::kSuccess, 1);
+  histograms.ExpectBucketCount(
+      kInstallTypeUma, web_app::WebInstallServiceType::kBackgroundDocument, 1);
+  histograms.ExpectBucketCount(kVariantedInstallResultUma,
+                               web_app::WebInstallServiceResult::kSuccess, 1);
+  histograms.ExpectBucketCount(
+      kVariantedInstallTypeUma,
+      web_app::WebInstallServiceType::kBackgroundDocument, 1);
+
+  auto ukm_entries = ukm_recorder.GetEntriesByName(
+      ukm::builders::WebApp_WebInstall::kEntryName);
+  ASSERT_EQ(2u, ukm_entries.size());
+  ukm_recorder.ExpectEntryMetric(
+      ukm_entries[0], kElementRequestingPageUkm,
+      static_cast<int>(web_app::WebInstallServiceResult::kSuccess));
+  EXPECT_EQ(ukm::GetSourceIdType(ukm_entries[0]->source_id),
+            ukm::SourceIdType::NAVIGATION_ID);
+  ukm_recorder.ExpectEntryMetric(
+      ukm_entries[1], kElementInstalledAppUkm,
+      static_cast<int>(web_app::WebInstallServiceResult::kSuccess));
+  EXPECT_EQ(ukm::GetSourceIdType(ukm_entries[1]->source_id),
+            ukm::SourceIdType::APP_ID);
+}
+
+IN_PROC_BROWSER_TEST_P(InstallElementBrowserTest, InstallWithRelativeManifest) {
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(
+      browser(),
+      embedded_https_test_server().GetURL(kInstallElementPageStartUrl)));
+
+  base::AutoReset<web_app::InstallDialogTestResponse> auto_accept_pwa =
+      web_app::SetPwaInstallationAutoRespondForTesting(
+          web_app::InstallDialogTestResponse::kAcceptAndLaunch);
+
+  ASSERT_TRUE(content::ExecJs(
+      web_contents(),
+      content::JsReplace(
+          "document.getElementById($1).setAttribute('manifest', $2);",
+          kInstallElementId, "manifest.json")));
+
+  ui_test_utils::BrowserCreatedObserver browser_created_observer;
+  ASSERT_TRUE(ClickElementWithId(kInstallElementId));
+  BrowserWindowInterface* web_app_browser = browser_created_observer.Wait();
+
+  WaitForSuccessEvent(kInstallElementId);
+  ASSERT_TRUE(AppBrowserController::IsWebApp(web_app_browser));
+
+  const GURL manifest_id =
+      embedded_https_test_server().GetURL(kInstallElementPageId);
+  const webapps::AppId app_id =
+      GenerateAppIdFromManifestId(webapps::ManifestId(manifest_id));
+  EXPECT_TRUE(provider().registrar_unsafe().AppMatches(
+      app_id, WebAppFilter::LaunchableFromInstallApi()));
+}
+
+IN_PROC_BROWSER_TEST_P(InstallElementBrowserTest,
+                       InstallWithManifestAndRelativeId) {
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(
+      browser(),
+      embedded_https_test_server().GetURL(kInstallElementPageStartUrl)));
+
+  base::AutoReset<web_app::InstallDialogTestResponse> auto_accept_pwa =
+      web_app::SetPwaInstallationAutoRespondForTesting(
+          web_app::InstallDialogTestResponse::kAcceptAndLaunch);
+
+  const GURL manifest_url =
+      embedded_https_test_server().GetURL(kInstallElementManifestUrl);
+  ASSERT_TRUE(SetButtonManifest(manifest_url));
+  ASSERT_TRUE(content::ExecJs(
+      web_contents(),
+      content::JsReplace(
+          "const base = document.createElement('base');"
+          "base.href = '/';"
+          "document.head.appendChild(base);"
+          "document.getElementById($1).setAttribute('manifestid', 'some_id');",
+          kInstallElementId)));
+
+  ui_test_utils::BrowserCreatedObserver browser_created_observer;
+  ASSERT_TRUE(ClickElementWithId(kInstallElementId));
+  BrowserWindowInterface* web_app_browser = browser_created_observer.Wait();
+
+  WaitForSuccessEvent(kInstallElementId);
+  ASSERT_TRUE(AppBrowserController::IsWebApp(web_app_browser));
+
+  const GURL manifest_id =
+      embedded_https_test_server().GetURL(kInstallElementPageId);
+  const webapps::AppId app_id =
+      GenerateAppIdFromManifestId(webapps::ManifestId(manifest_id));
+  EXPECT_TRUE(provider().registrar_unsafe().AppMatches(
+      app_id, WebAppFilter::LaunchableFromInstallApi()));
+}
+
+class InstallElementCrossOriginManifestBrowserTest
+    : public InstallElementBrowserTestBase {
+ public:
+  void SetUpOnMainThread() override {
+    manifest_response_ =
+        std::make_unique<net::test_server::ControllableHttpResponse>(
+            &embedded_https_test_server(), kCrossOriginManifestPath);
+    InstallElementBrowserTestBase::SetUpOnMainThread();
+  }
+
+ protected:
+  net::test_server::ControllableHttpResponse& manifest_response() {
+    return *manifest_response_;
+  }
+
+ private:
+  std::unique_ptr<net::test_server::ControllableHttpResponse>
+      manifest_response_;
+};
+
+IN_PROC_BROWSER_TEST_F(InstallElementCrossOriginManifestBrowserTest,
+                       InstallWithManifest) {
+  // Navigate to a.test and configure the element with a manifest on b.test so
+  // the manifest fetch is both cross-origin and cross-site.
+  const GURL initiating_url = embedded_https_test_server().GetURL(
+      "a.test", kInstallElementPageStartUrl);
+  const GURL manifest_url =
+      embedded_https_test_server().GetURL("b.test", kCrossOriginManifestPath);
+  const GURL manifest_id =
+      manifest_url.Resolve("/cross-origin-install-element-app");
+
+  // Allow third-party cookies and seed b.test with an eligible cookie so the
+  // request assertion below detects a credentialed manifest fetch.
+  profile()->GetPrefs()->SetInteger(
+      prefs::kCookieControlsMode,
+      static_cast<int>(content_settings::CookieControlsMode::kOff));
+  ASSERT_TRUE(
+      content::SetCookie(profile(), manifest_url, kCrossOriginManifestCookie));
+
+  ASSERT_FALSE(url::Origin::Create(initiating_url)
+                   .IsSameOriginWith(url::Origin::Create(manifest_url)));
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), initiating_url));
+  ASSERT_TRUE(SetButtonManifest(manifest_url));
+  base::AutoReset<web_app::InstallDialogTestResponse> auto_accept_pwa =
+      web_app::SetPwaInstallationAutoRespondForTesting(
+          web_app::InstallDialogTestResponse::kAcceptNoLaunch);
+
+  // Click the element to start the install.
+  content::WebContentsConsoleObserver success_observer(web_contents());
+  success_observer.SetPattern(std::string(kInstallElementId) +
+                              "-installresult-success");
+  ASSERT_TRUE(ClickElementWithId(kInstallElementId));
+
+  // Verify the browser-owned GET reached b.test without Origin, Referer, or
+  // Cookie headers.
+  manifest_response().WaitForRequest();
+  const net::test_server::HttpRequest& request =
+      *manifest_response().http_request();
+  EXPECT_EQ(request.method, net::test_server::METHOD_GET);
+  const auto host = request.headers.find("Host");
+  ASSERT_NE(host, request.headers.end());
+  EXPECT_EQ(host->second, "b.test:" + base::NumberToString(
+                                          embedded_https_test_server().port()));
+  EXPECT_FALSE(request.headers.contains("Origin"));
+  EXPECT_FALSE(request.headers.contains("Referer"));
+  EXPECT_FALSE(request.headers.contains("Cookie"));
+
+  // Send no Access-Control-Allow-Origin header. Arbitrary manifest servers do
+  // not need to opt in to this browser-owned fetch.
+  manifest_response().Send(net::HTTP_OK, "application/manifest+json",
+                           R"json({
+        "name": "Cross-origin install element app",
+        "id": "/cross-origin-install-element-app",
+        "start_url": "/web_apps/install_element/index.html",
+        "scope": "/",
+        "display": "standalone",
+        "icons": [{
+          "src": "/web_apps/install_element/launcher-icon-3x.png",
+          "sizes": "144x144",
+          "type": "image/png"
+        }]
+      })json");
+  manifest_response().Done();
+
+  // Wait for the element to report that installation succeeded.
+  ASSERT_TRUE(success_observer.Wait());
+
+  // Verify the installed app uses the manifest's identity and start URL.
+  const webapps::AppId app_id =
+      GenerateAppIdFromManifestId(webapps::ManifestId(manifest_id));
+  ASSERT_TRUE(provider().registrar_unsafe().AppMatches(
+      app_id, WebAppFilter::LaunchableFromInstallApi()));
+  EXPECT_EQ(provider().registrar_unsafe().GetAppStartUrl(app_id),
+            manifest_url.Resolve("/web_apps/install_element/index.html"));
+
+  // Verify the install is attributed to the initiating page on a.test.
+  const WebApp* app = provider().registrar_unsafe().GetAppById(app_id);
+  ASSERT_TRUE(app);
+  ASSERT_EQ(app->installed_by().size(), 1u);
+  EXPECT_EQ(app->installed_by().front().requesting_url(), initiating_url);
+}
+
+// The user declines the install dialog, so no app is installed.
+IN_PROC_BROWSER_TEST_P(InstallElementBrowserTest,
+                       InstallWithManifest_UserDenies) {
+  base::HistogramTester histograms;
+
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(
+      browser(),
+      embedded_https_test_server().GetURL(kInstallElementPageStartUrl)));
+
+  base::AutoReset<web_app::InstallDialogTestResponse> auto_decline =
+      web_app::SetPwaInstallationAutoRespondForTesting(
+          web_app::InstallDialogTestResponse::kDeny);
+  ukm::TestAutoSetUkmRecorder ukm_recorder;
+
+  const GURL manifest_url =
+      embedded_https_test_server().GetURL(kInstallElementManifestUrl);
+  ASSERT_TRUE(SetButtonManifest(manifest_url));
+
+  ASSERT_TRUE(ClickElementWithId(kInstallElementId));
+
+  WaitForAbortedEvent(kInstallElementId);
+  EXPECT_TRUE(provider().registrar_unsafe().GetAppIds().empty());
+
+  histograms.ExpectBucketCount(
+      kInstallResultUma, web_app::WebInstallServiceResult::kCanceledByUser, 1);
+  histograms.ExpectBucketCount(
+      kInstallTypeUma, web_app::WebInstallServiceType::kBackgroundDocument, 1);
+  histograms.ExpectBucketCount(
+      kVariantedInstallResultUma,
+      web_app::WebInstallServiceResult::kCanceledByUser, 1);
+  histograms.ExpectBucketCount(
+      kVariantedInstallTypeUma,
+      web_app::WebInstallServiceType::kBackgroundDocument, 1);
+
+  auto ukm_entries = ukm_recorder.GetEntriesByName(
+      ukm::builders::WebApp_WebInstall::kEntryName);
+  ASSERT_EQ(2u, ukm_entries.size());
+  ukm_recorder.ExpectEntryMetric(
+      ukm_entries[0], kElementRequestingPageUkm,
+      static_cast<int>(web_app::WebInstallServiceResult::kCanceledByUser));
+  EXPECT_EQ(ukm::GetSourceIdType(ukm_entries[0]->source_id),
+            ukm::SourceIdType::NAVIGATION_ID);
+  ukm_recorder.ExpectEntryMetric(
+      ukm_entries[1], kElementInstalledAppUkm,
+      static_cast<int>(web_app::WebInstallServiceResult::kCanceledByUser));
+  EXPECT_EQ(ukm::GetSourceIdType(ukm_entries[1]->source_id),
+            ukm::SourceIdType::APP_ID);
+}
+
+// The <install> element provides consent through its own trusted gesture, so a
+// blocked Web Install content setting does not prevent the install.
+IN_PROC_BROWSER_TEST_P(InstallElementBrowserTest,
+                       InstallWithManifest_IgnoresDeniedPermission) {
+  base::HistogramTester histograms;
+
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(
+      browser(),
+      embedded_https_test_server().GetURL(kInstallElementPageStartUrl)));
+
+  base::AutoReset<web_app::InstallDialogTestResponse> auto_accept_pwa =
+      web_app::SetPwaInstallationAutoRespondForTesting(
+          web_app::InstallDialogTestResponse::kAcceptAndLaunch);
+
+  const GURL manifest_url =
+      embedded_https_test_server().GetURL(kInstallElementManifestUrl);
+  ASSERT_TRUE(SetButtonManifest(manifest_url));
+
+  // Block the Web Install content setting for this origin; the element path
+  // skips the content-setting prompt, so the install still proceeds.
+  BlockWebInstallPermission(manifest_url);
+
+  ui_test_utils::BrowserCreatedObserver browser_created_observer;
+  ASSERT_TRUE(ClickElementWithId(kInstallElementId));
+  browser_created_observer.Wait();
+
+  WaitForSuccessEvent(kInstallElementId);
+
+  webapps::AppId app_id = GenerateAppIdFromManifestId(webapps::ManifestId(
+      embedded_https_test_server().GetURL(kInstallElementPageId)));
+  EXPECT_TRUE(provider().registrar_unsafe().AppMatches(
+      app_id, WebAppFilter::LaunchableFromInstallApi()));
+  histograms.ExpectBucketCount(kInstallResultUma,
+                               web_app::WebInstallServiceResult::kSuccess, 1);
+}
+
+// Clicking the element for an already-installed app launches it through a
+// launch dialog instead of reinstalling, recording kSuccessAlreadyInstalled.
+IN_PROC_BROWSER_TEST_P(InstallElementBrowserTest,
+                       InstallWithManifest_AlreadyInstalled) {
   // There should be no apps installed initially.
   EXPECT_EQ(provider().registrar_unsafe().GetAppIds().size(), 0u);
 
   base::HistogramTester histograms;
 
-  // Install a background document and close the app window.
+  // Pre-install the app as a background document and close its window so the
+  // manifest element click hits the already-installed launch path instead of a
+  // fresh install. The custom-id install URL and the element manifest declare
+  // the same app id ("/some_id").
   const GURL background_doc_install_url =
       embedded_https_test_server().GetURL(kCustomIdPageInstallUrl);
   webapps::AppId installed_app_id = web_app::InstallWebAppInNewTabAndClose(
       browser(), background_doc_install_url);
 
-  // Generate the app id from the manifest id and verify it matches the app just
-  // installed.
-  const GURL manifest_id = embedded_https_test_server().GetURL(kCustomIdPageId);
-  webapps::AppId generated_app_id = GenerateAppIdFromManifestId(webapps::ManifestId(manifest_id));
-  EXPECT_EQ(installed_app_id, generated_app_id);
-
-  // Verify that the app was installed.
+  // Verify the pre-installed app id matches the manifest's computed app id.
+  const GURL manifest_id =
+      embedded_https_test_server().GetURL(kInstallElementPageId);
+  EXPECT_EQ(installed_app_id,
+            GenerateAppIdFromManifestId(webapps::ManifestId(manifest_id)));
   EXPECT_TRUE(provider().registrar_unsafe().AppMatches(
-      generated_app_id, WebAppFilter::LaunchableFromInstallApi()));
+      installed_app_id, WebAppFilter::LaunchableFromInstallApi()));
 
-  // Now navigate to a page with <install> elements.
+  // Navigate to a page with <install> elements and point the element at the
+  // manifest for the already-installed app.
   ASSERT_TRUE(ui_test_utils::NavigateToURL(
       browser(),
       embedded_https_test_server().GetURL(kInstallElementPageStartUrl)));
+  const GURL manifest_url =
+      embedded_https_test_server().GetURL(kInstallElementManifestUrl);
+  ASSERT_TRUE(SetButtonManifest(manifest_url));
+  base::AutoReset<web_app::InstallDialogTestResponse> auto_accept =
+      web_app::SetPwaInstallationAutoRespondForTesting(
+          web_app::InstallDialogTestResponse::kAcceptAndLaunch);
 
-  // Dynamically set the installurl attribute to the background document just
-  // installed.
-  ASSERT_TRUE(SetButtonInstallUrl(background_doc_install_url));
-  base::AutoReset<bool> auto_accept =
-      SetAutoAcceptWebInstallLaunchDialogForTesting();
-
-  // Click the install element.
+  // Click the install element. The already-installed path shows a launch dialog
+  // and launches the app instead of reinstalling.
   ui_test_utils::BrowserCreatedObserver browser_created_observer;
   ASSERT_TRUE(ClickElementWithId(kInstallElementId));
   browser_created_observer.Wait();
 
-  // Verify promptaction event was fired.
-  WaitForPromptActionEvent(kInstallElementId);
+  // Verify installresult event was fired with "success".
+  WaitForSuccessEvent(kInstallElementId);
+  test::CompletePageLoadForAllWebContents();
 
-  // Verify the app is still installed.
+  // The app is still installed and was launched via the Web Install API.
   EXPECT_TRUE(provider().registrar_unsafe().AppMatches(
-      generated_app_id, WebAppFilter::LaunchableFromInstallApi()));
+      installed_app_id, WebAppFilter::LaunchableFromInstallApi()));
 
   histograms.ExpectBucketCount("WebApp.LaunchSource",
                                apps::LaunchSource::kFromWebInstallApi, 1);
@@ -593,164 +805,213 @@ IN_PROC_BROWSER_TEST_F(InstallElementBrowserTest,
       web_app::WebInstallServiceType::kBackgroundDocument, 1);
 }
 
-// Tests the case where an app is already installed on initial page load, then
-// uninstalled, and the element is clicked without reloading the page. We expect
-// this to behave like a fresh install.
-IN_PROC_BROWSER_TEST_F(InstallElementBrowserTest,
-                       InstallWithUrl_AlreadyInstalledThenUninstalled) {
-  // Step 1: Preinstall a background document.
-  const GURL background_doc_install_url =
-      embedded_https_test_server().GetURL(kCustomIdPageInstallUrl);
-  const GURL manifest_id = embedded_https_test_server().GetURL(kCustomIdPageId);
-
-  webapps::AppId app_id = web_app::InstallWebAppInNewTabAndClose(
-      browser(), background_doc_install_url);
-  EXPECT_EQ(app_id, GenerateAppIdFromManifestId(webapps::ManifestId(manifest_id)));
-
-  // Verify that the app was installed.
-  EXPECT_TRUE(provider().registrar_unsafe().AppMatches(
-      app_id, WebAppFilter::LaunchableFromInstallApi()));
-
-  // Step 2: Navigate to a page with <install> elements.
+// An app installed then uninstalled without reloading the page reinstalls
+// fresh on the next click: the app is gone, so the install dialog shows and a
+// normal install (kSuccess) runs rather than a launch.
+IN_PROC_BROWSER_TEST_P(InstallElementBrowserTest,
+                       InstallWithManifest_AlreadyInstalledThenUninstalled) {
   ASSERT_TRUE(ui_test_utils::NavigateToURL(
       browser(),
       embedded_https_test_server().GetURL(kInstallElementPageStartUrl)));
 
-  // Dynamically set the installurl attribute to the installed app.
-  ASSERT_TRUE(SetButtonInstallUrl(background_doc_install_url));
+  // Accept the install dialog without launching: this test exercises the
+  // install/reinstall result, not launch behavior, so no app window is opened.
+  base::AutoReset<web_app::InstallDialogTestResponse> auto_accept_pwa =
+      web_app::SetPwaInstallationAutoRespondForTesting(
+          web_app::InstallDialogTestResponse::kAcceptNoLaunch);
 
-  // Step 3: Uninstall the app and verify it's no longer installed.
+  const GURL manifest_url =
+      embedded_https_test_server().GetURL(kInstallElementManifestUrl);
+  ASSERT_TRUE(SetButtonManifest(manifest_url));
+
+  webapps::AppId app_id = GenerateAppIdFromManifestId(webapps::ManifestId(
+      embedded_https_test_server().GetURL(kInstallElementPageId)));
+
+  // Install the app once.
+  ASSERT_TRUE(ClickElementWithId(kInstallElementId));
+  WaitForSuccessEvent(kInstallElementId);
+  // Wait for the previous install to finish tearing down before reinstalling.
+  // The success event fires before the install dialog widget (which owns the
+  // ML install tracker) is destroyed, so reinstalling now would be rejected
+  // with kInstallInProgress.
+  auto* promoter =
+      webapps::MLInstallabilityPromoter::FromWebContents(web_contents());
+  ASSERT_TRUE(base::test::RunUntil(
+      [promoter]() { return !promoter->HasCurrentInstall(); }));
+  ASSERT_TRUE(provider().registrar_unsafe().AppMatches(
+      app_id, WebAppFilter::LaunchableFromInstallApi()));
+
+  // Uninstall without reloading the page; the app must be cleanly removed.
   test::UninstallWebApp(profile(), app_id);
+  provider().command_manager().AwaitAllCommandsCompleteForTesting();
   EXPECT_FALSE(provider().registrar_unsafe().AppMatches(
       app_id, WebAppFilter::LaunchableFromInstallApi()));
 
-  // Step 4: Without refreshing the page, click the install element button.
-  // The button text still says "Launch" but the app is uninstalled, so we
-  // expect the install dialog (not the launch dialog) to show.
-
-  // Set up to wait for the install dialog.
-  views::NamedWidgetShownWaiter widget_waiter(
-      views::test::AnyWidgetTestPasskey{}, kInstallDialogName);
-
-  // Click the install element asynchronously so we can wait for the dialog.
-  content::ExecuteScriptAsync(
-      web_contents(), "document.getElementById('" +
-                          std::string(kInstallElementId) + "').click();");
-
-  // Step 5: Verify that the install dialog shows.
-  views::Widget* widget = widget_waiter.WaitIfNeededAndGet();
-  ASSERT_NE(widget, nullptr);
-
-  // Step 6: Accept the dialog.
-  views::test::AcceptDialog(widget);
-
-  // Verify promptaction event was fired and the app installed.
-  WaitForPromptActionEvent(kInstallElementId);
+  // Click again without refreshing the page. The app is gone, so the install
+  // flow runs fresh and reinstalls it. Scope the histograms to this reinstall.
+  base::HistogramTester histograms;
+  ASSERT_TRUE(ClickElementWithId(kInstallElementId));
+  WaitForSuccessEvent(kInstallElementId);
   EXPECT_TRUE(provider().registrar_unsafe().AppMatches(
       app_id, WebAppFilter::LaunchableFromInstallApi()));
+  histograms.ExpectBucketCount(kInstallResultUma,
+                               web_app::WebInstallServiceResult::kSuccess, 1);
+  histograms.ExpectBucketCount(
+      kInstallTypeUma, web_app::WebInstallServiceType::kBackgroundDocument, 1);
+  histograms.ExpectBucketCount(kVariantedInstallResultUma,
+                               web_app::WebInstallServiceResult::kSuccess, 1);
+  histograms.ExpectBucketCount(
+      kVariantedInstallTypeUma,
+      web_app::WebInstallServiceType::kBackgroundDocument, 1);
+}
+
+// The manifest path must not surface a permission prompt: the element's trusted
+// user gesture provides consent (triggered_from_element skip branch in
+// WebInstallServiceImpl::OnManifestParsed).
+IN_PROC_BROWSER_TEST_P(InstallElementBrowserTest,
+                       ManifestInstallDoesNotPromptForPermission) {
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(
+      browser(),
+      embedded_https_test_server().GetURL(kInstallElementPageStartUrl)));
+
+  base::AutoReset<web_app::InstallDialogTestResponse> auto_accept_pwa =
+      web_app::SetPwaInstallationAutoRespondForTesting(
+          web_app::InstallDialogTestResponse::kAcceptAndLaunch);
+
+  permissions::PermissionRequestObserver observer(web_contents());
+  const GURL manifest_url =
+      embedded_https_test_server().GetURL(kInstallElementManifestUrl);
+  ASSERT_TRUE(SetButtonManifest(manifest_url));
+  ASSERT_TRUE(ClickElementWithId(kInstallElementId));
+
+  WaitForSuccessEvent(kInstallElementId);
+
+  // Element consent replaces the permission prompt; none should be shown.
+  EXPECT_FALSE(observer.request_shown());
 }
 
 ///////////////////////////////////////////////////////////////////////////////
 // Bad input error cases - bad manifests, invalid URLs, etc
 ///////////////////////////////////////////////////////////////////////////////
 
-IN_PROC_BROWSER_TEST_F(InstallElementBrowserTest, InvalidInstallUrl) {
-  // Navigate to a page with <install> elements.
+// Unresolvable manifest URL: fetch fails, parsed manifest is null -> kDataError
+// -> invalid-data.
+IN_PROC_BROWSER_TEST_P(InstallElementBrowserTest, InvalidManifestUrl) {
   ASSERT_TRUE(ui_test_utils::NavigateToURL(
       browser(),
       embedded_https_test_server().GetURL(kInstallElementPageStartUrl)));
 
-  // Dynamically set an invalid installurl attribute.
-  const GURL invalid_url = GURL("https://invalid.url");
-  ASSERT_TRUE(SetButtonInstallUrl(invalid_url));
-
-  // Click the install element.
+  ASSERT_TRUE(SetButtonManifest(GURL("https://invalid.url")));
   ASSERT_TRUE(ClickElementWithId(kInstallElementId));
-
-  // No installation should have occurred due to the invalid URL.
-  // We cannot generate a valid app_id from an invalid URL, so we just verify
-  // that the dismiss event was fired as expected.
-  // TODO(crbug.com/462493894): Decide how to surface kDataError. For now,
-  // promptdismiss is used for all error cases.
-  WaitForDismissEvent(kInstallElementId);
+  WaitForInvalidDataEvent(kInstallElementId);
 }
 
-///////////////////////////////////////////////////////////////////////////////
-// Regression tests for interactions between <install> element and JS API.
-///////////////////////////////////////////////////////////////////////////////
+// Manifest URL resolves to a non-manifest resource (HTML): parsing fails ->
+// kDataError -> invalid-data.
+IN_PROC_BROWSER_TEST_P(InstallElementBrowserTest, ManifestParseFailure) {
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(
+      browser(),
+      embedded_https_test_server().GetURL(kInstallElementPageStartUrl)));
 
-// Test fixture that enables both the <install> element and the
-// navigator.install() JS API, so we can test interactions between them on the
-// same document (same WebInstallServiceImpl instance).
+  const GURL not_a_manifest =
+      embedded_https_test_server().GetURL(kInstallElementPageStartUrl);
+  ASSERT_TRUE(SetButtonManifest(not_a_manifest));
+  ASSERT_TRUE(ClickElementWithId(kInstallElementId));
+  WaitForInvalidDataEvent(kInstallElementId);
+}
+
+// manifestid set without a manifest attribute is rejected in Blink
+// (HTMLInstallElement::OnActivated) -> invalid-data.
+IN_PROC_BROWSER_TEST_P(InstallElementBrowserTest, ManifestIdOnly) {
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(
+      browser(),
+      embedded_https_test_server().GetURL(kInstallElementPageStartUrl)));
+
+  const GURL manifest_id =
+      embedded_https_test_server().GetURL(kInstallElementPageId);
+  ASSERT_TRUE(SetButtonManifestId(manifest_id));
+  ASSERT_TRUE(ClickElementWithId(kInstallElementId));
+  WaitForInvalidDataEvent(kInstallElementId);
+}
+
+// A manifest whose declared id does not match the manifestid attribute is
+// rejected with kManifestIdMismatch -> kDataError -> invalid-data.
+IN_PROC_BROWSER_TEST_P(InstallElementBrowserTest, ManifestIdMismatch) {
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(
+      browser(),
+      embedded_https_test_server().GetURL(kInstallElementPageStartUrl)));
+
+  const GURL manifest_url =
+      embedded_https_test_server().GetURL(kInstallElementManifestUrl);
+  ASSERT_TRUE(SetButtonManifest(manifest_url));
+
+  // manifestid that cannot equal the manifest's declared id ("some_id"),
+  // forcing the mismatch rejection.
+  const GURL mismatched_manifest_id =
+      embedded_https_test_server().GetURL("/completely_different_id");
+  ASSERT_TRUE(SetButtonManifestId(mismatched_manifest_id));
+
+  ASSERT_TRUE(ClickElementWithId(kInstallElementId));
+
+  WaitForInvalidDataEvent(kInstallElementId);
+  EXPECT_TRUE(provider().registrar_unsafe().GetAppIds().empty());
+}
+
 class InstallElementAndApiInteractionBrowserTest
-    : public InstallElementBrowserTest {
+    : public InstallElementBrowserTestBase,
+      public base::test::WithFeatureOverride {
  public:
-  InstallElementAndApiInteractionBrowserTest() {
-    additional_features_.InitWithFeatures(
-        {blink::features::kWebAppInstallation}, {});
+  InstallElementAndApiInteractionBrowserTest()
+      : base::test::WithFeatureOverride(features::kWebAppInstallDialog) {
+    additional_features_.InitAndEnableFeature(
+        blink::features::kWebAppInstallation);
   }
 
  private:
   base::test::ScopedFeatureList additional_features_;
 };
 
-// Regression test for crbug.com/487568011: triggered_from_element was set by
-// InstallFromElement() but never reset, causing subsequent Install() calls via
-// navigator.install() on the same document to bypass the permissions-policy and
-// permission prompt checks.
-IN_PROC_BROWSER_TEST_F(InstallElementAndApiInteractionBrowserTest,
+// Regression test for crbug.com/487568011: an element install must not cause a
+// later navigator install on the same document to bypass permission checks.
+IN_PROC_BROWSER_TEST_P(InstallElementAndApiInteractionBrowserTest,
                        InstallApiRespectsPermissionsAfterElementInstall) {
-  // Navigate to a page with <install> elements.
-  ASSERT_TRUE(ui_test_utils::NavigateToURL(
-      browser(),
-      embedded_https_test_server().GetURL(kInstallElementPageStartUrl)));
+  const GURL requesting_page =
+      embedded_https_test_server().GetURL(kInstallElementPageStartUrl);
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), requesting_page));
 
-  web_app::test::ScopedAutoAcceptWebAppDialogs auto_accept;
+  base::AutoReset<web_app::InstallDialogTestResponse> auto_accept =
+      web_app::SetPwaInstallationAutoRespondForTesting(
+          web_app::InstallDialogTestResponse::kAcceptNoLaunch);
 
-  // Set the <install> element's installurl to a another test page.
-  const GURL element_install_url =
-      embedded_https_test_server().GetURL(kCustomIdPageInstallUrl);
-  ASSERT_TRUE(SetButtonInstallUrl(element_install_url));
+  const GURL element_manifest_url =
+      embedded_https_test_server().GetURL(kInstallElementManifestUrl);
+  ASSERT_TRUE(SetButtonManifest(element_manifest_url));
+  ASSERT_TRUE(ClickElementWithId(kInstallElementId));
+  WaitForSuccessEvent(kInstallElementId);
 
-  // Step 1: Click the <install> element. This calls InstallFromElement() on the
-  // browser-side WebInstallServiceImpl instance for this document, which passes
-  // triggered_from_element = true.
-  {
-    ui_test_utils::BrowserCreatedObserver browser_created_observer;
-    ASSERT_TRUE(ClickElementWithId(kInstallElementId));
-    Browser* web_app_browser = browser_created_observer.Wait();
-    WaitForPromptActionEvent(kInstallElementId);
-    ASSERT_TRUE(AppBrowserController::IsWebApp(web_app_browser));
-  }
+  auto* promoter =
+      webapps::MLInstallabilityPromoter::FromWebContents(web_contents());
+  ASSERT_TRUE(base::test::RunUntil(
+      [promoter]() { return !promoter->HasCurrentInstall(); }));
 
-  // Step 2: From the SAME page (same WebInstallServiceImpl instance), call
-  // navigator.install(url, manifest_id) via JS. This uses the Install() Mojo
-  // method, NOT InstallFromElement(). The permission check should NOT be
-  // bypassed by the sticky triggered_from_element_ flag from step 1.
-  const GURL api_install_url =
-      embedded_https_test_server().GetURL(kNoCustomIdPageInstallUrl);
+  const GURL api_manifest_url = embedded_https_test_server().GetURL(
+      "/web_apps/nesting/manifest_with_id.json");
   const GURL api_manifest_id =
-      embedded_https_test_server().GetURL(kNoCustomIdPageId);
+      embedded_https_test_server().GetURL("/web_apps/nesting/parent-app-id");
+  BlockWebInstallPermission(requesting_page);
 
-  // Block the WEB_APP_INSTALLATION permission so that if the logic to prompt
-  // for permission is correctly reached, it will be denied. With the sticky
-  // state bug, the permission check would've been skipped entirely and the
-  // install would've succeeded.
-  BlockWebInstallPermission(api_install_url);
-
-  auto result = content::EvalJs(
-      web_contents(), "navigator.install('" + api_install_url.spec() + "', '" +
-                          api_manifest_id.spec() +
-                          "')"
-                          ".then(result => 'success')"
-                          ".catch(error => error.name)");
-
-  // The Install API call should fail because the WEB_APP_INSTALLATION
-  // permission was blocked. With the sticky state bug,
-  // triggered_from_element_ would still be true from step 1, causing
-  // Install() to skip all permission checks and auto-grant, resulting in
-  // 'success' instead.
+  content::EvalJsResult result = content::EvalJs(
+      web_contents(),
+      content::JsReplace("navigator.install({manifest: $1, manifestId: $2})"
+                         ".then(() => 'success')"
+                         ".catch(error => error.name)",
+                         api_manifest_url.spec(), api_manifest_id.spec()));
   EXPECT_EQ("AbortError", result.ExtractString());
+
+  const webapps::AppId api_app_id =
+      GenerateAppIdFromManifestId(webapps::ManifestId(api_manifest_id));
+  EXPECT_FALSE(provider().registrar_unsafe().AppMatches(
+      api_app_id, WebAppFilter::LaunchableFromInstallApi()));
 }
 
 namespace {
@@ -776,7 +1037,7 @@ enum class BaseFeatureStatus {
 
 // Test suite for <install> element availability via Origin Trial.
 class InstallElementOriginTrialBrowserTest
-    : public InstallElementBrowserTest,
+    : public InstallElementBrowserTestBase,
       public testing::WithParamInterface<BaseFeatureStatus> {
  protected:
   InstallElementOriginTrialBrowserTest() {
@@ -807,7 +1068,7 @@ class InstallElementOriginTrialBrowserTest
   ~InstallElementOriginTrialBrowserTest() override = default;
 
   void SetUpCommandLine(base::CommandLine* command_line) override {
-    InstallElementBrowserTest::SetUpCommandLine(command_line);
+    InstallElementBrowserTestBase::SetUpCommandLine(command_line);
     // Add the public key following:
     // https://chromium.googlesource.com/chromium/src/+/HEAD/docs/origin_trials_integration.md#manual-testing.
     command_line->AppendSwitchASCII(
@@ -816,7 +1077,7 @@ class InstallElementOriginTrialBrowserTest
   }
 
   void SetUpOnMainThread() override {
-    InstallElementBrowserTest::SetUpOnMainThread();
+    InstallElementBrowserTestBase::SetUpOnMainThread();
     url_loader_interceptor_.emplace(base::BindRepeating(
         &InstallElementOriginTrialBrowserTest::InterceptRequest,
         base::Unretained(this)));
@@ -906,5 +1167,10 @@ IN_PROC_BROWSER_TEST_P(InstallElementOriginTrialBrowserTest,
       break;
   }
 }
+
+INSTANTIATE_FEATURE_OVERRIDE_TEST_SUITE(InstallElementBrowserTest);
+
+INSTANTIATE_FEATURE_OVERRIDE_TEST_SUITE(
+    InstallElementAndApiInteractionBrowserTest);
 
 }  // namespace web_app

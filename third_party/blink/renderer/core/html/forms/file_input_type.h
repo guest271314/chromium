@@ -63,6 +63,8 @@ class CORE_EXPORT FileInputType final : public InputType,
   bool CanSetStringValue() const;
   bool ValueMissing(const String&) const;
 
+  bool SupportsBaseAppearance(Element::BaseAppearanceValue) const override;
+
  private:
   InputTypeView* CreateView() override;
   FormControlState SaveFormControlState() const override;
@@ -88,7 +90,7 @@ class CORE_EXPORT FileInputType final : public InputType,
   String DroppedFileSystemId() override;
   void CreateShadowSubtree() override;
   HTMLInputElement* UploadButton() const override;
-  void DisabledAttributeChanged() override;
+  void DisabledAttributeChanged(DisabledChangedReason) override;
   void MultipleAttributeChanged() override;
   String DefaultToolTip(const InputTypeView&) const override;
   void CopyNonAttributeProperties(const HTMLInputElement&) override;
@@ -102,6 +104,7 @@ class CORE_EXPORT FileInputType final : public InputType,
   // FileChooserClient implementation.
   void FilesChosen(FileChooserFileInfoList files,
                    const base::FilePath& base_dir) override;
+  void FileChooserCanceled() override;
   LocalFrame* FrameOrNull() const override;
 
   // PopupOpeningObserver implementation.
@@ -112,6 +115,11 @@ class CORE_EXPORT FileInputType final : public InputType,
 
   Member<FileList> file_list_;
   String dropped_file_system_id_;
+  // True if we should force a 'change' event to be dispatched even if the
+  // file list has not changed. This is set when the user explicitly chooses
+  // files via a file chooser, to ensure that choosing the same file again
+  // still fires a 'change' event rather than a 'cancel' event.
+  bool force_change_event_ = false;
 };
 
 template <>

@@ -41,8 +41,9 @@ SecuritySettingsBundleToastHelper::GetForProfile(Profile* profile) {
 }
 
 void SecuritySettingsBundleToastHelper::TriggerIfNeeded() {
-  if (profile_->GetPrefs()->GetInteger(
-          prefs::kSecuritySettingsBundleMigrationToastState) !=
+  int toast_state = profile_->GetPrefs()->GetInteger(
+      prefs::kSecuritySettingsBundleMigrationToastState);
+  if (toast_state !=
       static_cast<int>(SecuritySettingsBundleToastState::kPending)) {
     return;
   }
@@ -98,7 +99,7 @@ ToastController* SecuritySettingsBundleToastHelper::GetToastController() {
   if (!browser) {
     return nullptr;
   }
-  return browser->GetFeatures().toast_controller();
+  return ToastController::From(browser);
 }
 
 }  // namespace safe_browsing

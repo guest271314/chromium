@@ -2,8 +2,6 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-import("//build/config/chromeos/ui_mode.gni")
-
 assert(is_chromeos)
 
 static_library("ui") {
@@ -19,8 +17,6 @@ static_library("ui") {
     "progress_bar_dialog_view.cc",
     "progress_bar_dialog_view.h",
   ]
-
-  public_deps = [ "//chrome/browser:browser_public_dependencies" ]
 
   deps = [
     "//ash",
@@ -51,7 +47,7 @@ source_set("unit_tests") {
     "//base/test:test_support",
     "//chrome/browser/ash/arc/nearby_share/ui",
     "//chrome/browser/nearby_sharing/common",
-    "//chrome/browser/ui",
+    "//chrome/browser/ui/views:layout_provider",
     "//chromeos/ash/experiences/arc:arc_test_support",
     "//components/strings:components_strings_grit",
     "//testing/gtest",

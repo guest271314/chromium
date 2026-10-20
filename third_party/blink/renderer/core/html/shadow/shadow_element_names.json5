@@ -38,10 +38,6 @@
       Symbol: "kIdSpinButton",
     },
     {
-      name: "clear",
-      Symbol: "kIdClearButton",
-    },
-    {
       name: "editing-view-port",
       Symbol: "kIdEditingViewPort",
     },
@@ -86,8 +82,12 @@
       Symbol: "kSelectOptions",
     },
     {
-      name: "select-popover-options",
-      Symbol: "kSelectPopoverOptions",
+      name: "select-input",
+      Symbol: "kSelectInput",
+    },
+    {
+      name: "select-listbox",
+      Symbol: "kSelectListbox",
     },
 
     //

@@ -40,8 +40,8 @@ EphemeralRange AdjacentWordIfExists(const Position& pos) {
 
 EphemeralRange CurrentWordIfTypingInPartialWord(const Element& editable) {
   const LocalFrame& frame = *editable.GetDocument().GetFrame();
-  const SelectionInDOMTree& selection =
-      frame.Selection().GetSelectionInDOMTree();
+  const SelectionInDomTree& selection =
+      frame.Selection().GetSelectionInDomTree();
   if (!selection.IsCaret())
     return EphemeralRange();
   if (RootEditableElementOf(selection.Anchor()) != &editable) {
@@ -110,8 +110,7 @@ void HotModeSpellCheckRequester::CheckSpellingAt(const Position& position) {
     return;
   processed_root_editables_.push_back(root_editable);
 
-  if (!root_editable->IsSpellCheckingEnabled() &&
-      !SpellChecker::IsSpellCheckingEnabledAt(position)) {
+  if (!SpellChecker::IsSpellCheckingEnabledAt(position)) {
     return;
   }
 

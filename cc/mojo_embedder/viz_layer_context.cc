@@ -90,10 +90,18 @@ void AddTransformNodeUpdate(
   wire->post_translation = new_node.post_translation;
   wire->to_parent = new_node.to_parent;
   if (new_node.sticky_position_constraint_id >= 0) {
+    // TODO(zork): Remove these after 2026-07-01
+    DUMP_WILL_BE_CHECK_LT(
+        static_cast<size_t>(new_node.sticky_position_constraint_id),
+        tree.sticky_position_data().size());
     wire->sticky_position_constraint_id =
         base::checked_cast<uint32_t>(new_node.sticky_position_constraint_id);
   }
   if (new_node.anchor_position_scroll_data_id >= 0) {
+    // TODO(zork): Remove these after 2026-07-01
+    DUMP_WILL_BE_CHECK_LT(
+        static_cast<size_t>(new_node.anchor_position_scroll_data_id),
+        tree.anchor_position_scroll_data().size());
     wire->anchor_position_scroll_data_id =
         base::checked_cast<uint32_t>(new_node.anchor_position_scroll_data_id);
   }
@@ -211,7 +219,7 @@ void ComputePropertyTreeNodeUpdate(
       old_node->has_masking_child == new_node.has_masking_child &&
       // Since |effect_changed| is transient, we only need to check for it's
       // current state instead of comparing to old one.
-      !new_node.effect_changed &&
+      !new_node.effect_changed() &&
       old_node->subtree_has_copy_request == new_node.subtree_has_copy_request &&
       old_node->is_fast_rounded_corner == new_node.is_fast_rounded_corner &&
       old_node->node_or_ancestor_has_fast_rounded_corner ==
@@ -253,7 +261,7 @@ void ComputePropertyTreeNodeUpdate(
   wire->surface_contents_scale = new_node.surface_contents_scale;
   wire->subtree_capture_id = new_node.subtree_capture_id;
   wire->subtree_size = new_node.subtree_size;
-  wire->blend_mode = base::checked_cast<uint32_t>(new_node.blend_mode);
+  wire->blend_mode = new_node.blend_mode;
   wire->target_id = new_node.target_id;
   wire->view_transition_target_id = new_node.view_transition_target_id;
   wire->closest_ancestor_with_cached_render_surface_id =
@@ -284,7 +292,7 @@ void ComputePropertyTreeNodeUpdate(
       new_node.has_potential_backdrop_filter_animation;
   wire->has_potential_opacity_animation =
       new_node.has_potential_opacity_animation;
-  wire->effect_changed = new_node.effect_changed;
+  wire->effect_changed = new_node.effect_changed();
   wire->subtree_has_copy_request = new_node.subtree_has_copy_request;
   wire->is_fast_rounded_corner = new_node.is_fast_rounded_corner;
   wire->may_have_backdrop_effect = new_node.may_have_backdrop_effect;
@@ -1089,8 +1097,10 @@ void SerializeLayer(LayerImpl& layer,
             picture_layer.IsDirectlyCompositedImage();
         tile_display_extra->nearest_neighbor =
             picture_layer.GetNearestNeighbor();
-        tile_display_extra->content_color_usage =
-            picture_layer.GetContentColorUsage();
+        tile_display_extra->has_animated_image_update_rect =
+            picture_layer.has_animated_image_update_rect();
+        tile_display_extra->has_non_animated_image_update_rect =
+            picture_layer.has_non_animated_image_update_rect();
         tile_display_extra->recorded_bounds =
             picture_layer.GetRasterSource()->recorded_bounds();
         tile_display_extra->proposed_tiling_scales_for_deletion =
@@ -1346,11 +1356,9 @@ viz::mojom::AnimationKeyframeModelPtr SerializeAnimationKeyframeModel(
                                                                      *wire);
       break;
     case gfx::AnimationCurve::SIZE:
-      SerializeAnimationCurve<gfx::KeyframedSizeAnimationCurve>(model, *wire);
-      break;
     case gfx::AnimationCurve::RECT:
-      SerializeAnimationCurve<gfx::KeyframedRectAnimationCurve>(model, *wire);
-      break;
+      // SIZE and RECT are not supported by the compositor.
+      return nullptr;
     case gfx::AnimationCurve::FILTER:
     case gfx::AnimationCurve::SCROLL_OFFSET:
       // TODO(rockot): Support these curve types too.
@@ -1441,6 +1449,8 @@ VizLayerContext::VizLayerContext(viz::mojom::CompositorFrameSink& frame_sink,
       host_impl.settings().enable_fluent_scrollbar;
   settings->enable_fluent_overlay_scrollbar =
       host_impl.settings().enable_fluent_overlay_scrollbar;
+  settings->enable_unbounded_element =
+      host_impl.settings().enable_unbounded_element;
   frame_sink.BindLayerContext(std::move(context), std::move(settings));
 }
 
@@ -1452,7 +1462,11 @@ void VizLayerContext::SetVisible(bool visible) {
 
 void VizLayerContext::SetTargetLocalSurfaceId(
     const viz::LocalSurfaceId& target_local_surface_id) {
-  service_->SetTargetLocalSurfaceId(target_local_surface_id);
+  // An invalid LocalSurfaceId cannot be serialized over Mojo.
+  // See https://crbug.com/521326793.
+  if (target_local_surface_id.is_valid()) {
+    service_->SetTargetLocalSurfaceId(target_local_surface_id);
+  }
 }
 
 base::TimeTicks VizLayerContext::UpdateDisplayTreeFrom(
@@ -1463,7 +1477,8 @@ base::TimeTicks VizLayerContext::UpdateDisplayTreeFrom(
     bool frame_has_damage,
     bool is_flush,
     std::vector<ui::LatencyInfo> latency_info,
-    viz::TrackedElementRects tracked_element_rects) {
+    viz::TrackedElementRects tracked_element_rects,
+    std::optional<viz::FrameIntervalInputs> frame_interval_inputs) {
   TRACE_EVENT0("viz", "VizLayerContext::UpdateDisplayTreeFrom");
 
   auto& property_trees = *tree.property_trees();
@@ -1497,6 +1512,7 @@ base::TimeTicks VizLayerContext::UpdateDisplayTreeFrom(
 
   update->latency_info = std::move(latency_info);
   update->tracked_element_rects = std::move(tracked_element_rects);
+  update->frame_interval_inputs = std::move(frame_interval_inputs);
   update->device_viewport = tree.GetDeviceViewport();
   update->device_scale_factor = tree.device_scale_factor();
   DUMP_WILL_BE_CHECK_GT(update->device_scale_factor, 0.f);
@@ -1556,8 +1572,6 @@ base::TimeTicks VizLayerContext::UpdateDisplayTreeFrom(
       host_impl_->may_throttle_if_undrawn_frames();
   update->is_viewport_mobile_optimized =
       host_impl_->viewport_mobile_optimized();
-  update->browser_controls_shrink_blink_size =
-      tree.browser_controls_shrink_blink_size();
   update->is_animating_hud_contents = tree.IsAnimatingHUDContents();
   update->max_safe_area_inset_bottom = tree.max_safe_area_inset_bottom();
   update->browser_controls_params = tree.browser_controls_params();
@@ -1883,6 +1897,21 @@ void VizLayerContext::OnMojoConnectionError(uint32_t custom_reason,
 
   DLOG(ERROR) << description;
   host_impl_->DidLoseLayerTreeFrameSink();
+}
+
+void VizLayerContext::SetUnboundedFrameSinkId(
+    const viz::FrameSinkId& frame_sink_id,
+    const viz::LocalSurfaceId& local_surface_id) {
+  service_->SetUnboundedFrameSinkId(frame_sink_id, local_surface_id);
+}
+
+void VizLayerContext::SetUnboundedLocalSurfaceId(
+    const viz::LocalSurfaceId& local_surface_id) {
+  service_->SetUnboundedLocalSurfaceId(local_surface_id);
+}
+
+void VizLayerContext::DismissUnboundedFrameSink() {
+  service_->DismissUnboundedFrameSink();
 }
 
 }  // namespace cc::mojo_embedder

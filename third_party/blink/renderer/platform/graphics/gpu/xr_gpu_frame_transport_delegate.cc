@@ -22,34 +22,6 @@ void XrGpuFrameTransportDelegate::WaitOnFence(gfx::GpuFence* fence) {
   // path does.
 }
 
-gpu::SyncToken XrGpuFrameTransportDelegate::GenerateSyncToken() {
-  gpu::SyncToken sync_token;
-
-  if (!context_provider_) {
-    return sync_token;
-  }
-
-  auto dawn_control_client = context_provider_->GetDawnControlClient();
-  if (!dawn_control_client) {
-    return sync_token;
-  }
-
-  auto context_provider_weak_ptr =
-      dawn_control_client->GetContextProviderWeakPtr();
-  if (!context_provider_weak_ptr) {
-    return sync_token;
-  }
-
-  WebGraphicsContext3DProvider& context_provider =
-      context_provider_weak_ptr->ContextProvider();
-
-  gpu::webgpu::WebGPUInterface* webgpu = context_provider.WebGPUInterface();
-  TRACE_EVENT0("gpu", "GenSyncTokenCHROMIUM");
-  webgpu->GenSyncTokenCHROMIUM(sync_token.GetData());
-
-  return sync_token;
-}
-
 void XrGpuFrameTransportDelegate::VerifySyncToken(gpu::SyncToken& sync_token) {
   if (!context_provider_) {
     return;
@@ -76,7 +48,7 @@ void XrGpuFrameTransportDelegate::VerifySyncToken(gpu::SyncToken& sync_token) {
   webgpu->VerifySyncTokensCHROMIUM(&sync_token_data, 1);
 }
 
-std::pair<gfx::GpuMemoryBufferHandle, gpu::SyncToken>
+std::pair<scoped_refptr<gpu::ClientSharedImage>, gpu::SyncToken>
 XrGpuFrameTransportDelegate::CopyImage(SharedImageHolder* image,
                                        bool last_transfer_succeeded) {
   // CopyImage is only used with SUBMIT_AS_TEXTURE_HANDLE, which we don't

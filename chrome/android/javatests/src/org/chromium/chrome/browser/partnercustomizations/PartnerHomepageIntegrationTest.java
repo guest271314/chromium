@@ -25,14 +25,14 @@ import org.chromium.base.test.util.CallbackHelper;
 import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.Feature;
 import org.chromium.base.test.util.Features.DisableFeatures;
+import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.ChromeTabbedActivity;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.homepage.HomepageManager;
 import org.chromium.chrome.browser.homepage.settings.HomepageSettings;
-import org.chromium.chrome.browser.settings.SettingsActivity;
-import org.chromium.chrome.browser.settings.SettingsActivityTestRule;
+import org.chromium.chrome.browser.settings.SettingsTestRule;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tabmodel.TabClosingSource;
 import org.chromium.chrome.browser.tabmodel.TabClosureParams;
@@ -42,6 +42,7 @@ import org.chromium.chrome.browser.tabmodel.TabModelSelector;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.chrome.test.ChromeTabbedActivityTestRule;
 import org.chromium.chrome.test.partnercustomizations.TestPartnerBrowserCustomizationsProvider;
+import org.chromium.chrome.test.util.BottomBarTestUtils;
 import org.chromium.chrome.test.util.ChromeTabUtils;
 import org.chromium.components.browser_ui.settings.ChromeSwitchPreference;
 import org.chromium.content_public.browser.test.util.TouchCommon;
@@ -55,6 +56,9 @@ import java.util.concurrent.TimeoutException;
 @CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
 @Batch(Batch.PER_CLASS)
 @DisableFeatures(ChromeFeatureList.DISABLE_PARTNER_HOMEPAGE_ANDROID)
+@EnableFeatures(
+        ChromeFeatureList.HOME_BUTTON_REMOVAL
+                + ":set_default_to_false_on_homepage_on_desktop/false")
 public class PartnerHomepageIntegrationTest {
     private final ChromeTabbedActivityTestRule mActivityTestRule =
             new ChromeTabbedActivityTestRule();
@@ -64,8 +68,8 @@ public class PartnerHomepageIntegrationTest {
                     new BasePartnerBrowserCustomizationIntegrationTestRule();
 
     @Rule
-    public SettingsActivityTestRule<HomepageSettings> mHomepageSettingsTestRule =
-            new SettingsActivityTestRule<>(HomepageSettings.class);
+    public SettingsTestRule<HomepageSettings> mHomepageSettingsTestRule =
+            new SettingsTestRule<>(HomepageSettings.class);
 
     @Rule
     public final RuleChain mRuleChain =
@@ -114,7 +118,9 @@ public class PartnerHomepageIntegrationTest {
                     @Override
                     public void run() {
                         View homeButton =
-                                mActivityTestRule.getActivity().findViewById(R.id.home_button);
+                                BottomBarTestUtils.findViewById(
+                                        mActivityTestRule.getActivity(), R.id.home_button);
+                        Assert.assertNotNull("Homepage button should not be null", homeButton);
                         Assert.assertEquals(
                                 "Homepage button is not shown",
                                 View.VISIBLE,
@@ -144,13 +150,13 @@ public class PartnerHomepageIntegrationTest {
         Assert.assertFalse(homepageManager.isHomepageEnabled());
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
+                    View homeButton =
+                            BottomBarTestUtils.findViewById(
+                                    mActivityTestRule.getActivity(), R.id.home_button);
                     Assert.assertEquals(
                             "Homepage button is shown",
                             View.GONE,
-                            mActivityTestRule
-                                    .getActivity()
-                                    .findViewById(R.id.home_button)
-                                    .getVisibility());
+                            homeButton != null ? homeButton.getVisibility() : View.GONE);
                 });
 
         // Enable homepage.
@@ -160,13 +166,12 @@ public class PartnerHomepageIntegrationTest {
         Assert.assertTrue(homepageManager.isHomepageEnabled());
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
+                    View homeButton =
+                            BottomBarTestUtils.findViewById(
+                                    mActivityTestRule.getActivity(), R.id.home_button);
+                    Assert.assertNotNull("Homepage button should not be null", homeButton);
                     Assert.assertEquals(
-                            "Homepage button is shown",
-                            View.VISIBLE,
-                            mActivityTestRule
-                                    .getActivity()
-                                    .findViewById(R.id.home_button)
-                                    .getVisibility());
+                            "Homepage button is shown", View.VISIBLE, homeButton.getVisibility());
                 });
     }
 
@@ -177,7 +182,8 @@ public class PartnerHomepageIntegrationTest {
     public void testLastTabClosed() {
         ChromeTabUtils.closeCurrentTab(
                 InstrumentationRegistry.getInstrumentation(),
-                (ChromeTabbedActivity) mActivityTestRule.getActivity());
+                (ChromeTabbedActivity) mActivityTestRule.getActivity(),
+                TabClosingSource.GRID_TAB_SWITCHER);
         Assert.assertTrue(
                 "Activity was not closed.",
                 mActivityTestRule.getActivity().isFinishing()
@@ -202,7 +208,10 @@ public class PartnerHomepageIntegrationTest {
                                 }
                             });
                     TabClosureParams params =
-                            TabClosureParams.closeAllTabs().uponExit(false).build();
+                            TabClosureParams.closeAllTabs()
+                                    .uponExit(false)
+                                    .tabClosingSource(TabClosingSource.GRID_TAB_SWITCHER)
+                                    .build();
                     TabModelSelector selector =
                             mActivityTestRule.getActivity().getTabModelSelector();
                     selector.getModel(false)
@@ -248,8 +257,7 @@ public class PartnerHomepageIntegrationTest {
      */
     private void toggleHomepageSwitchPreference(boolean expected) {
         // Launch preference activity with Homepage settings fragment.
-        SettingsActivity homepagePreferenceActivity =
-                mHomepageSettingsTestRule.startSettingsActivity();
+        mHomepageSettingsTestRule.startSettingsActivity();
         HomepageSettings fragment = mHomepageSettingsTestRule.getFragment();
         ChromeSwitchPreference preference =
                 (ChromeSwitchPreference)

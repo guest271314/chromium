@@ -17,7 +17,6 @@
 #include "chrome/browser/ui/views/chrome_layout_provider.h"
 #include "chrome/browser/ui/views/chrome_typography.h"
 #include "chrome/browser/ui/views/screen_sharing_util.h"
-#include "chrome/grit/generated_resources.h"
 #include "components/infobars/content/content_infobar_manager.h"
 #include "extensions/common/constants.h"
 #include "media/capture/capture_switches.h"
@@ -249,10 +248,12 @@ std::unique_ptr<views::View> TabSharingInfoBar::CreateStatusMessageView(
       capturer_name,
       TabSharingStatusMessageView::EndpointInfo::TargetType::kCapturingTab,
       capturer_id);
+  const bool is_shared_tab_blocked =
+      GetDelegate() ? GetDelegate()->IsSharedTabBlocked() : false;
   if (GetOriginFromId(capturer_id).scheme() != extensions::kExtensionScheme) {
-    return TabSharingStatusMessageView::Create(capturer_id, shared_tab_info,
-                                               capturer_info, capturer_name,
-                                               role, capture_type, uma_logger_);
+    return TabSharingStatusMessageView::Create(
+        capturer_id, shared_tab_info, capturer_info, capturer_name, role,
+        capture_type, uma_logger_, is_shared_tab_blocked);
   } else {
     return CreateStatusMessageLabel(shared_tab_info, capturer_info,
                                     capturer_name, role, capture_type);
@@ -265,15 +266,22 @@ std::unique_ptr<views::Label> TabSharingInfoBar::CreateStatusMessageLabel(
     const std::u16string& capturer_name,
     TabSharingInfoBarDelegate::TabRole role,
     TabSharingInfoBarDelegate::TabShareType capture_type) const {
+  const bool is_shared_tab_blocked =
+      GetDelegate() ? GetDelegate()->IsSharedTabBlocked() : false;
   std::unique_ptr<views::Label> label =
       CreateLabel(TabSharingStatusMessageView::GetMessageText(
-          shared_tab_info, capturer_info, capturer_name, role, capture_type));
+          shared_tab_info, capturer_info, capturer_name, role, capture_type,
+          is_shared_tab_blocked));
   label->SetElideBehavior(gfx::ELIDE_TAIL);
   return label;
 }
 
 TabSharingInfoBarDelegate* TabSharingInfoBar::GetDelegate() {
   return static_cast<TabSharingInfoBarDelegate*>(delegate());
+}
+
+const TabSharingInfoBarDelegate* TabSharingInfoBar::GetDelegate() const {
+  return static_cast<const TabSharingInfoBarDelegate*>(delegate());
 }
 
 int TabSharingInfoBar::GetContentMinimumWidth() const {

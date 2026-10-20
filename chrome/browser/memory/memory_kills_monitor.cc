@@ -35,7 +35,7 @@ void MemoryKillsMonitor::Initialize() {
   VLOG(2) << "MemoryKillsMonitor::Initializing on "
           << base::PlatformThread::CurrentId();
 
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
 
   auto* login_state = ash::LoginState::Get();
   if (login_state)
@@ -47,7 +47,7 @@ void MemoryKillsMonitor::Initialize() {
 // static
 void MemoryKillsMonitor::LogLowMemoryKill(const std::string& type,
                                           int estimated_freed_kb) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
 
   GetMemoryKillsMonitorInstance().LogLowMemoryKillImpl(type,
                                                        estimated_freed_kb);
@@ -69,14 +69,14 @@ void MemoryKillsMonitor::StartMonitoring() {
   VLOG(2) << "Starting monitor from thread "
           << base::PlatformThread::CurrentId();
 
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
 
   if (monitoring_started_.IsSet()) {
     LOG(WARNING) << "Monitoring has been started";
     return;
   }
 
-  // Insert a zero kill record at the begining of each login session for easy
+  // Insert a zero kill record at the beginning of each login session for easy
   // comparison to those with non-zero kill sessions.
   base::UmaHistogramCustomCounts("Memory.LowMemoryKiller.Count", 0, 1, 1000,
                                  1001);
@@ -92,7 +92,7 @@ void MemoryKillsMonitor::StartMonitoring() {
 
 void MemoryKillsMonitor::LogLowMemoryKillImpl(const std::string& type,
                                               int estimated_freed_kb) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
 
   if (!monitoring_started_.IsSet()) {
     LOG(WARNING) << "LogLowMemoryKill before monitoring started, "

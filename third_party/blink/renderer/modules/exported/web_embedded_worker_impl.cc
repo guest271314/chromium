@@ -34,6 +34,8 @@
 #include <utility>
 
 #include "base/task/single_thread_task_runner.h"
+#include "build/build_config.h"
+#include "build/buildflag.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "services/network/public/mojom/referrer_policy.mojom-blink.h"
@@ -216,17 +218,20 @@ void WebEmbeddedWorkerImpl::StartWorkerThread(
       ToVector(worker_start_data->outside_fetch_client_settings_object
                    .policy_container_policies.content_security_policies,
                FromWebContentSecurityPolicy),
-      /*response_content_security_policies=*/
-      Vector<network::mojom::blink::ContentSecurityPolicyPtr>(),
-      network::mojom::ReferrerPolicy::kDefault,
-      DocumentPolicy::DocumentPolicyBundle{}, starter_origin.get(),
+      network::mojom::ReferrerPolicy::kDefault, starter_origin.get(),
       starter_secure_context, starter_https_state,
       /*worker_clients=*/nullptr, std::move(content_settings_proxy),
       /*inherited_trial_features=*/nullptr,
       worker_start_data->devtools_worker_token, std::move(worker_settings),
+  /*v8_cache_options=*/
+#if BUILDFLAG(IS_FUCHSIA) && defined(__OPTIMIZE_SIZE__)
+      // Use kDefault to avoid aggressive code caching on size-optimized
+      // builds to save storage space.
+      mojom::blink::V8CacheOptions::kDefault,
+#else
       // Generate the full code cache in the first execution of the script.
-      /*v8_cache_options=*/
       mojom::blink::V8CacheOptions::kFullCodeWithoutHeatCheck,
+#endif
       /*module_responses_map=*/nullptr, std::move(browser_interface_broker),
       /*code_cache_host_interface=*/mojo::NullRemote(),
       /*blob_url_store=*/mojo::NullRemote(), BeginFrameProviderParams(),
@@ -344,6 +349,10 @@ WebEmbeddedWorkerImpl::CreateFetchClientSettingsObjectData(
 void WebEmbeddedWorkerImpl::WaitForShutdownForTesting() {
   DCHECK(worker_thread_);
   worker_thread_->WaitForShutdownForTesting();
+}
+
+WorkerThread* WebEmbeddedWorkerImpl::GetWorkerThreadForTesting() const {
+  return worker_thread_.get();
 }
 
 }  // namespace blink

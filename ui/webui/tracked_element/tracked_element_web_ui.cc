@@ -4,9 +4,15 @@
 
 #include "ui/webui/tracked_element/tracked_element_web_ui.h"
 
+#include <sstream>
+#include <string_view>
 #include <utility>
 
 #include "base/check.h"
+#include "base/functional/bind.h"
+#include "base/logging.h"
+#include "base/task/sequenced_task_runner.h"
+#include "base/types/pass_key.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_ui.h"
 #include "ui/base/interaction/element_events.h"
@@ -30,9 +36,7 @@ TrackedElementVisibilityLock::TrackedElementVisibilityLock(
 }
 
 TrackedElementVisibilityLock::~TrackedElementVisibilityLock() {
-  if (element_) {
-    element_->RemoveVisibilityLock();
-  }
+  Release();
 }
 
 TrackedElementVisibilityLock::TrackedElementVisibilityLock(
@@ -44,13 +48,32 @@ TrackedElementVisibilityLock::TrackedElementVisibilityLock(
 TrackedElementVisibilityLock& TrackedElementVisibilityLock::operator=(
     TrackedElementVisibilityLock&& other) noexcept {
   if (this != &other) {
-    if (element_) {
-      element_->RemoveVisibilityLock();
-    }
+    Release();
     element_ = std::move(other.element_);
     other.element_.reset();
   }
   return *this;
+}
+
+void TrackedElementVisibilityLock::Release() {
+  if (element_) {
+    // Release the visibility lock via PostTask, since loss of visibility can
+    // lead to destruction of HelpBubble instances -- we might have just dropped
+    // a visibility lock in one of the closing callbacks of a HelpBubble, and
+    // are still in the process of iterating over the remaining closing
+    // callbacks.
+    //
+    // This can happen (for instance) if a window is closed when an IPH
+    // tutorial is active. See crbug.com/543464750 for details.
+    if (base::SequencedTaskRunner::HasCurrentDefault()) {
+      base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+          FROM_HERE,
+          base::BindOnce(&TrackedElementWebUI::RemoveVisibilityLock, element_));
+    } else {
+      element_->RemoveVisibilityLock();
+    }
+    element_.reset();
+  }
 }
 
 TrackedElementWebUI::HighlightHandle::HighlightHandle(
@@ -65,9 +88,13 @@ TrackedElementWebUI::HighlightHandle::~HighlightHandle() {
 
 TrackedElementWebUI::TrackedElementWebUI(TrackedElementHandler* handler,
                                          ui::ElementIdentifier identifier,
+                                         std::string_view secondary_identifier,
                                          ui::ElementContext context)
-    : TrackedElement(identifier, context), handler_(handler) {
-  DCHECK(handler);
+    : TrackedElement(identifier, context),
+      handler_(handler),
+      secondary_identifier_(secondary_identifier) {
+  CHECK(handler);
+  CHECK(!secondary_identifier.empty());
 }
 
 TrackedElementWebUI::~TrackedElementWebUI() {
@@ -76,24 +103,34 @@ TrackedElementWebUI::~TrackedElementWebUI() {
 }
 
 gfx::Rect TrackedElementWebUI::GetScreenBounds() const {
-  gfx::Rect result;
+  gfx::Rect result = GetBoundsInWebContents();
   content::WebContents* const contents = handler_->web_contents();
   if (contents) {
-    // Use the last known bounds, but if the bounds are empty, make them 1x1 so
-    // there's something to anchor to.
-    result = gfx::ToRoundedRect(last_known_bounds_);
-    if (result.width() < 1) {
-      result.set_width(1);
-    }
-    if (result.height() < 1) {
-      result.set_height(1);
-    }
     // To get the screen coordinates, have to offset by the coordinates of the
     // viewport.
     result.Offset(contents->GetContainerBounds().OffsetFromOrigin());
   }
   return result;
 }
+
+gfx::Rect TrackedElementWebUI::GetBoundsInWebContents() const {
+  // Use the last known bounds, but if the bounds are empty, make them 1x1 so
+  // there's something to anchor to.
+  gfx::Rect result = gfx::ToRoundedRect(last_known_bounds_);
+  if (result.width() < 1) {
+    result.set_width(1);
+  }
+  if (result.height() < 1) {
+    result.set_height(1);
+  }
+  return result;
+}
+
+#if !BUILDFLAG(IS_ANDROID)
+views::WebView* TrackedElementWebUI::GetWebView() const {
+  return handler_ ? handler_->GetWebView() : nullptr;
+}
+#endif
 
 gfx::NativeView TrackedElementWebUI::GetNativeView() const {
   auto* const contents = handler_->web_contents();
@@ -106,6 +143,21 @@ gfx::NativeView TrackedElementWebUI::GetNativeView() const {
 #endif
 }
 
+std::string TrackedElementWebUI::GetSecondaryIdentifier() const {
+  return secondary_identifier_;
+}
+
+std::string TrackedElementWebUI::ToString() const {
+  std::ostringstream oss;
+  oss << TrackedElement::ToString() << " in page ";
+  if (const auto* contents = handler_->web_contents()) {
+    oss << contents->GetLastCommittedURL();
+  } else {
+    oss << "[none]";
+  }
+  return oss.str();
+}
+
 scoped_refptr<TrackedElementWebUI::HighlightHandle>
 TrackedElementWebUI::GetOrMakeHighlightHandle() {
   DCHECK(can_highlight_);
@@ -116,14 +168,16 @@ TrackedElementWebUI::GetOrMakeHighlightHandle() {
   auto result = base::WrapRefCounted<HighlightHandle>(
       new HighlightHandle(weak_ptr_factory_.GetWeakPtr()));
   highlight_handle_ = result.get();
-  handler_->SetHighlightState(identifier().GetName(), true);
+  handler_->SetHighlightState(*this, true,
+                              base::PassKey<TrackedElementWebUI>());
   return result;
 }
 
 void TrackedElementWebUI::ReleaseHighlightHandle() {
   DCHECK(highlight_handle_);
   highlight_handle_ = nullptr;
-  handler_->SetHighlightState(identifier().GetName(), false);
+  handler_->SetHighlightState(*this, false,
+                              base::PassKey<TrackedElementWebUI>());
 }
 
 std::unique_ptr<TrackedElementVisibilityLock>

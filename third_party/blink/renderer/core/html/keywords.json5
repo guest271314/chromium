@@ -98,8 +98,6 @@
     "toggle-muted",
     // command for menu elements
     "toggle-menu",
-    "hide-menu",
-    "show-menu",
     // command for scroll
     {name: "page-up", Symbol: "kPage_Up"},
     {name: "page-down", Symbol: "kPage_Down"},
@@ -111,6 +109,13 @@
     "page-inline-end",
     // command for overscroll
     "toggle-overscroll",
+    "show-overscroll",
+    "hide-overscroll",
+
+    // colorspace attribute on <input type=color>
+    // https://html.spec.whatwg.org/multipage/input.html#dom-input-colorspace
+    "limited-srgb",
+    "display-p3",
 
     // loading attribute
     // https://github.com/scott-little/lazyload#ways-the-loading-attribute-can-be-used
@@ -120,7 +125,6 @@
 
     // overscrollcontainer attribute
     "auto",
-    "overlay",
 
     // overscrollarea attribute
     "auto",
@@ -138,11 +142,6 @@
     "toggle",
     "show",
     "hide",
-
-    // Experimental fieldset attribute for the menu elements proposal.
-    // https://open-ui.org/components/menu.explainer/.
-    "single",
-    "multiple",
 
     // hidden=until-found attribute
     // https://html.spec.whatwg.org/#the-hidden-attribute
@@ -182,6 +181,10 @@
     "open",
     "closed",
 
+    // shadowrootslotassignment attribute
+    // https://github.com/whatwg/html/pull/12267
+    "named",
+
     // visibilityState
     // https://w3c.github.io/page-visibility/#visibilitystate-enum
     "hidden",
@@ -190,7 +193,6 @@
     // Blocking attributes
     // https://html.spec.whatwg.org/C/#blocking-attribute
     "render",
-    "full-frame-rate",
 
     // dropEffect IDL attribute
     // https://html.spec.whatwg.org/C/#dom-datatransfer-dropeffect
@@ -203,6 +205,7 @@
     // Various Aria attribute values
     // https://www.w3.org/TR/wai-aria-1.1/#valuetype_true-false
     "false",
+    "presentation",
     "true",
 
     // ol[type] https://html.spec.whatwg.org/C/#attr-ol-type and
@@ -286,5 +289,10 @@
     // https://github.com/explainers-by-googlers/inline-script-cache-hint
     "never",
     "default",
+
+    // Values of content attribute for <canvas> element.
+    // https://github.com/WICG/html-in-canvas
+    "drawable",
+    "fallback",
   ],
 }

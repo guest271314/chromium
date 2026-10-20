@@ -10,6 +10,7 @@
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/scoped_observation.h"
+#include "components/enterprise/browser/reporting/browser_launch/browser_launch_event_controller.h"
 #include "components/enterprise/browser/reporting/report_scheduler.h"
 #include "components/enterprise/browser/reporting/saas_usage/saas_usage_report_scheduler.h"
 #include "components/keyed_service/core/keyed_service.h"
@@ -30,6 +31,9 @@ class CloudProfileReportingService : public KeyedService,
   ~CloudProfileReportingService() override;
 
   ReportScheduler* report_scheduler() { return report_scheduler_.get(); }
+  SaasUsageReportScheduler* saas_usage_report_scheduler() {
+    return saas_usage_report_scheduler_.get();
+  }
 
   void CreateReportScheduler();
 
@@ -46,6 +50,7 @@ class CloudProfileReportingService : public KeyedService,
   std::unique_ptr<policy::CloudPolicyClient> cloud_policy_client_;
   std::unique_ptr<ReportScheduler> report_scheduler_;
   std::unique_ptr<SaasUsageReportScheduler> saas_usage_report_scheduler_;
+  std::unique_ptr<BrowserLaunchEventController> browser_launch_controller_;
   raw_ptr<Profile> profile_;
 
   base::ScopedObservation<policy::CloudPolicyCore,

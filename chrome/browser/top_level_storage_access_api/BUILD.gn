@@ -9,17 +9,44 @@ source_set("permissions") {
   ]
 
   public_deps = [
-    "//chrome/browser:browser_public_dependencies",
     "//chrome/browser/profiles:profile",
     "//components/permissions",
   ]
 
   deps = [
+    "//chrome/browser:bad_message",
     "//chrome/browser/content_settings:content_settings_factory",
     "//chrome/browser/first_party_sets",
     "//chrome/common",
     "//components/content_settings/core/browser",
     "//content/public/browser",
     "//services/network/public/mojom",
+  ]
+}
+
+source_set("unit_tests") {
+  testonly = true
+
+  sources = [ "top_level_storage_access_permission_context_unittest.cc" ]
+
+  deps = [
+    ":permissions",
+    "//base",
+    "//chrome/browser/content_settings",
+    "//chrome/browser/content_settings:content_settings_factory",
+    "//chrome/browser/first_party_sets",
+    "//chrome/test:test_support",
+    "//chrome/test/base:chrome_render_view_host_test_harness",
+    "//components/content_settings/core/browser",
+    "//components/content_settings/core/common",
+    "//components/permissions",
+    "//components/permissions:test_support",
+    "//components/prefs",
+    "//components/privacy_sandbox:privacy_sandbox_prefs",
+    "//content/public/browser",
+    "//content/public/common",
+    "//content/test:test_support",
+    "//net",
+    "//testing/gtest",
   ]
 }

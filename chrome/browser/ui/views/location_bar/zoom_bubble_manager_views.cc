@@ -7,11 +7,11 @@
 #include "build/build_config.h"
 #include "chrome/browser/ui/actions/chrome_action_id.h"
 #include "chrome/browser/ui/browser_window.h"
+#include "chrome/browser/ui/immersive/immersive_mode_controller.h"
 #include "chrome/browser/ui/page_action/page_action_icon_type.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
-#include "chrome/browser/ui/views/frame/immersive_mode_controller.h"
 #include "chrome/browser/ui/views/frame/toolbar_button_provider.h"
-#include "chrome/browser/ui/views/page_action/page_action_view.h"
+#include "chrome/browser/ui/views/page_action/page_action_view_interface.h"
 #include "ui/views/widget/widget.h"
 
 #if BUILDFLAG(IS_MAC)
@@ -39,8 +39,9 @@ views::BubbleAnchor ZoomBubbleManagerViews::GetZoomBubbleAnchor() {
       (browser_view_->IsToolbarVisible() &&
        (!immersive_mode_controller->IsEnabled() ||
         immersive_mode_controller->IsRevealed()))) {
-    return browser_view_->toolbar_button_provider()->GetBubbleAnchor(
-        kActionZoomNormal);
+    ToolbarButtonProvider* provider = browser_view_->toolbar_button_provider();
+    return provider ? provider->GetBubbleAnchor(kActionShowZoomBubble)
+                    : views::BubbleAnchor();
   }
   return views::BubbleAnchor();
 }
@@ -49,12 +50,13 @@ gfx::NativeView ZoomBubbleManagerViews::GetNativeView() {
   return browser_view_->GetWidget()->GetNativeView();
 }
 
-void ZoomBubbleManagerViews::UpdateLegacyPageActionIcon() {
-  browser_view_->browser()->window()->UpdatePageActionIcon(
-      PageActionIconType::kZoom);
-}
-
 std::u16string ZoomBubbleManagerViews::GetZoomActionAccessibleName() {
   ToolbarButtonProvider* provider = browser_view_->toolbar_button_provider();
-  return provider->GetPageActionView(kActionZoomNormal)->GetAccessibleName();
+  if (provider) {
+    if (auto* page_action =
+            provider->GetPageActionViewInterface(kActionShowZoomBubble)) {
+      return page_action->GetAccessibleName();
+    }
+  }
+  return std::u16string();
 }

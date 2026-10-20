@@ -14,7 +14,7 @@
 #include "third_party/blink/renderer/platform/wtf/text/atomic_string.h"
 #include "third_party/blink/renderer/platform/wtf/vector.h"
 #include "third_party/blink/renderer/platform/wtf/wtf_size_t.h"
-#include "third_party/rust/jxl/v0_4/wrapper/lib.rs.h"
+#include "third_party/rust/jxl/v0_7/wrapper/lib.rs.h"
 #include "third_party/skia/include/core/SkImageInfo.h"
 
 namespace blink {
@@ -81,7 +81,9 @@ class PLATFORM_EXPORT JXLImageDecoder final : public ImageDecoder {
 
   // Sets the pixel format that the decoder uses. Should only be called when
   // basic info is available.
-  void SetPixelFormat(jxl_rs::JxlRsDecoder* decoder);
+  bool SetPixelFormat(jxl_rs::JxlRsDecoder* decoder);
+  bool HasBlackChannel() const;
+  void ApplyColorTransform(ImageFrame& frame);
 
   // Process basic info after it has been parsed by either the scanner or
   // decoder. Sets size, bit depth, color profile, etc. Returns false on
@@ -92,6 +94,12 @@ class PLATFORM_EXPORT JXLImageDecoder final : public ImageDecoder {
   // Adjusts decoder state to decode a specific frame.
   // Must be called when decoder_state_ >= kHaveBasicInfo and scanner_ is valid.
   void SeekToFrame(wtf_size_t index);
+
+  // Whether the frame at `index`, which is ahead of the decoder, can be
+  // reached by decoding forward from the decoder's current position with less
+  // work than a seek would do. True only when the decoder is positioned
+  // between frames and already holds everything `index` depends on.
+  bool CanDecodeForwardTo(wtf_size_t index) const;
 
   // Lightweight frame scanner -- discovers frame count, durations, and seek
   // offsets without decoding any pixels.
@@ -107,12 +115,17 @@ class PLATFORM_EXPORT JXLImageDecoder final : public ImageDecoder {
 
   // Cached metadata.
   std::optional<jxl_rs::JxlRsBasicInfo> basic_info_;
+  sk_sp<skia::ColorProfile> cmyk_color_profile_;
 
   // Per-frame info populated by the scanner. frame_infos_ stores the Rust
   // struct directly (seek offsets, keyframe flag, etc.); frame_timings_ stores
   // Blink-specific cumulative timestamps.
   Vector<jxl_rs::JxlRsVisibleFrameInfo> frame_infos_;
   Vector<FrameTiming> frame_timings_;
+
+  // Cumulative wall time spent inside the jxl-rs decoder for the frame
+  // currently being decoded. Used to log decode throughput (MP/s).
+  base::TimeDelta current_frame_decode_time_;
 
   // Used to call UpdateBppHistogram<"Jxl">() at most once.
   CrossThreadOnceFunction<void(gfx::Size, size_t)>

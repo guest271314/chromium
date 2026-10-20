@@ -6,9 +6,9 @@
 #define CONTENT_BROWSER_MEMORY_COORDINATOR_CHILD_MEMORY_CONSUMER_REGISTRY_HOST_H_
 
 #include <memory>
-#include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "base/functional/callback.h"
 #include "base/memory/raw_ref.h"
@@ -65,18 +65,22 @@ class CONTENT_EXPORT ChildMemoryConsumerRegistryHost
   // mojom::ChildMemoryConsumerRegistryHost:
   void BindCoordinator(mojo::PendingRemote<mojom::ChildMemoryCoordinator>
                            coordinator_remote) override;
-  void Register(uint32_t consumer_id,
-                const std::string& consumer_name,
-                std::optional<base::MemoryConsumerTraits> traits) override;
+
+  void Register(
+      std::vector<mojom::MemoryConsumerRegistrationPtr> registrations) override;
   void Unregister(uint32_t consumer_id) override;
 
   // MemoryConsumerGroupHost:
   void UpdateConsumers(std::vector<MemoryConsumerUpdate> updates) override;
+  void SetOverrideLimit(uint32_t consumer_id,
+                        base::MemoryLimit memory_limit) override;
+  void ClearOverrideLimit(uint32_t consumer_id,
+                          base::MemoryLimit policy_limit) override;
 
 #if BUILDFLAG(ENABLE_MEMORY_COORDINATOR_INTERNALS)
   // mojom::MemoryCoordinatorDiagnosticsHost:
   void OnMemoryLimitChanged(uint32_t consumer_id,
-                            int32_t memory_limit) override;
+                            base::MemoryLimit memory_limit) override;
 
   // Enables/disables additional diagnostics reported by the child process.
   void EnableDiagnosticsReporting();
@@ -85,6 +89,13 @@ class CONTENT_EXPORT ChildMemoryConsumerRegistryHost
 
  private:
   class RenderProcessExitedObserver;
+
+  // Validates and registers a single consumer. Returns false (after reporting a
+  // bad message) if the registration is invalid; callers should stop processing
+  // the current message in that case.
+  bool RegisterImpl(uint32_t consumer_id,
+                    const std::string& consumer_name,
+                    base::MemoryConsumerTraits traits);
 
   void RunDisconnectHandler();
 
@@ -105,6 +116,13 @@ class CONTENT_EXPORT ChildMemoryConsumerRegistryHost
   mojo::Receiver<mojom::MemoryCoordinatorDiagnosticsHost>
       diagnostics_host_receiver_{this};
 #endif
+
+  // Tracks whether this host has been registered with the controller.
+  // Registration is delayed until BindCoordinator is called to ensure the
+  // Mojo remote is bound before the manager propagates any initial overrides.
+  // We must track this to avoid calling RemoveMemoryConsumerGroupHost in the
+  // destructor if registration never happened.
+  bool registered_with_controller_ = false;
 
   // Handles a disconnection with the child process.
   base::OnceClosure disconnect_handler_;

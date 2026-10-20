@@ -77,8 +77,9 @@ class VideoFrameSharedImageCache;
 namespace blink {
 
 class AcceleratedStaticBitmapImage;
-class CanvasNon2DResourceProviderSharedImage;
-class CanvasSnapshotProvider;
+class CanvasNon2DResourceProvider;
+struct CanvasSnapshotInfo;
+class CanvasToneMapping;
 class EXTDisjointTimerQuery;
 class EXTDisjointTimerQueryWebGL2;
 class V8UnionElementOrElementImage;
@@ -101,6 +102,7 @@ class WebGLCompressedTextureETC1;
 class WebGLCompressedTexturePVRTC;
 class WebGLCompressedTextureS3TC;
 class WebGLCompressedTextureS3TCsRGB;
+class WebGLCopyElementImageConfig;
 class WebGLDebugShaders;
 class WebGLDrawBuffers;
 class WebGLExtension;
@@ -170,6 +172,8 @@ class MODULES_EXPORT WebGLRenderingContextBase
   void setDrawingBufferColorSpace(ScriptState*,
                                   const V8PredefinedColorSpace& color_space,
                                   ExceptionState&);
+  CanvasToneMapping* drawingBufferToneMapping(
+      const CanvasToneMapping* tone_mapping = nullptr);
 
   V8PredefinedColorSpace unpackColorSpace(ScriptState*) const;
   void setUnpackColorSpace(ScriptState*,
@@ -424,49 +428,13 @@ class MODULES_EXPORT WebGLRenderingContextBase
                   ImageBitmap*,
                   ExceptionState&);
 
-  void texElementImage2D(GLenum target,
-                         GLint level,
-                         GLint internalformat,
-                         GLenum format,
-                         GLenum type,
-                         const V8UnionElementOrElementImage* element,
-                         ExceptionState& exception_state);
-
-  void texElementImage2D(GLenum target,
-                         GLint level,
-                         GLint internalformat,
-                         GLsizei width,
-                         GLsizei height,
-                         GLenum format,
-                         GLenum type,
-                         const V8UnionElementOrElementImage* element,
-                         ExceptionState& exception_state);
-
-  void texElementImage2D(GLenum target,
-                         GLint level,
-                         GLint internalformat,
-                         GLfloat sx,
-                         GLfloat sy,
-                         GLfloat swidth,
-                         GLfloat sheight,
-                         GLenum format,
-                         GLenum type,
-                         const V8UnionElementOrElementImage* element,
-                         ExceptionState& exception_state);
-
-  void texElementImage2D(GLenum target,
-                         GLint level,
-                         GLint internalformat,
-                         GLfloat sx,
-                         GLfloat sy,
-                         GLfloat swidth,
-                         GLfloat sheight,
-                         GLsizei width,
-                         GLsizei height,
-                         GLenum format,
-                         GLenum type,
-                         const V8UnionElementOrElementImage* element,
-                         ExceptionState& exception_state);
+  void texElementSubImage2D(GLenum target,
+                            GLint level,
+                            GLint xoffset,
+                            GLint yoffset,
+                            const V8UnionElementOrElementImage* element,
+                            const WebGLCopyElementImageConfig* config,
+                            ExceptionState& exception_state);
 
   void texParameterf(GLenum target, GLenum pname, GLfloat param);
   void texParameteri(GLenum target, GLenum pname, GLint param);
@@ -632,7 +600,7 @@ class MODULES_EXPORT WebGLRenderingContextBase
 
   Extensions3DUtil* ExtensionsUtil();
 
-  void Reshape(int width, int height) override;
+  void Reshape(gfx::Size old_size, gfx::Size new_size) override;
 
   void MarkLayerComposited() override;
 
@@ -667,9 +635,7 @@ class MODULES_EXPORT WebGLRenderingContextBase
     void Trace(Visitor*) const;
   };
 
-  SkAlphaType GetAlphaType() const override;
-  viz::SharedImageFormat GetSharedImageFormat() const override;
-  gfx::ColorSpace GetColorSpace() const override;
+  bool IsOpaque() const override;
   scoped_refptr<StaticBitmapImage> GetImage() override;
   void SetHdrMetadata(const gfx::HDRMetadata& hdr_metadata) override;
 
@@ -695,7 +661,7 @@ class MODULES_EXPORT WebGLRenderingContextBase
   // JavaScript cannot allocate bigger ArrayBuffers anyways. Only with
   // WebAssembly it is possible to allocate bigger ArrayBuffers.
   static constexpr size_t kMaximumSupportedArrayBufferSize =
-      ::partition_alloc::internal::MaxDirectMapped();
+      ::partition_alloc::MaxAllocationSize();
 
  protected:
   // Implementation helpers.
@@ -744,7 +710,7 @@ class MODULES_EXPORT WebGLRenderingContextBase
       const Platform::WebGLContextInfo&);
   void SetupFlags();
   bool CopyRenderingResultsFromDrawingBufferAccelerated(
-      CanvasNon2DResourceProviderSharedImage*,
+      CanvasNon2DResourceProvider*,
       SourceDrawingBuffer);
 
   // CanvasRenderingContext implementation.
@@ -772,13 +738,15 @@ class MODULES_EXPORT WebGLRenderingContextBase
 
   cc::Layer* CcLayer() const override;
   void Stop() override;
-  bool PushFrame() override;
+  scoped_refptr<CanvasResource> GetResourceForPushFrame(
+      bool& should_call_push_frame) override;
 
   // DrawingBuffer::Client implementation.
   bool DrawingBufferClientIsBoundForDraw() override;
   void DrawingBufferClientInterruptPixelLocalStorage() override;
   void DrawingBufferClientRestorePixelLocalStorage() override;
   void DrawingBufferClientRestoreScissorTest() override;
+  void DrawingBufferClientRestoreRasterizerDiscard() override;
   void DrawingBufferClientRestoreMaskAndClearValues() override;
   void DrawingBufferClientRestorePixelPackParameters() override;
   void DrawingBufferClientRestoreTexture2DBinding() override;
@@ -817,6 +785,12 @@ class MODULES_EXPORT WebGLRenderingContextBase
       has_been_drawn_to_ = true;
       RecordUKMCanvasDrawnToRenderingAPI();
       RecordANGLEImplementation();
+    }
+  }
+
+  void MaybeEndPixelLocalStorageImplicit() const {
+    if (has_activated_pixel_local_storage_) {
+      ContextGL()->EndPixelLocalStorageImplicitANGLE();
     }
   }
 
@@ -922,7 +896,8 @@ class MODULES_EXPORT WebGLRenderingContextBase
       device::mojom::blink::XrCompatibleResult xr_compatible_result);
   void CompleteXrCompatiblePromiseIfPending(DOMExceptionCode exception_code);
   bool xr_compatible_;
-  Member<ScriptPromiseResolver<IDLUndefined>> make_xr_compatible_resolver_;
+  HeapVector<Member<ScriptPromiseResolver<IDLUndefined>>>
+      make_xr_compatible_resolvers_;
 
   HeapVector<TextureUnitState> texture_units_;
   wtf_size_t active_texture_unit_;
@@ -931,25 +906,19 @@ class MODULES_EXPORT WebGLRenderingContextBase
 
   // Fixed-size cache of reusable snapshot providers for image and video
   // texImage2D calls.
-  class LRUCanvasSnapshotProviderCache {
+  class LRUCanvasNon2DResourceProviderCache {
    public:
-    enum class CacheType { kImage, kVideo };
-    LRUCanvasSnapshotProviderCache(wtf_size_t capacity, CacheType type);
+    LRUCanvasNon2DResourceProviderCache(wtf_size_t capacity);
     // The pointer returned is owned by the image buffer map.
-    CanvasSnapshotProvider* GetCanvasSnapshotProvider(
-        const CanvasSnapshotProvider::Info& info,
-        bool& tried_to_create_provider);
+    CanvasNon2DResourceProvider* GetCanvasNon2DResourceProvider(
+        const CanvasSnapshotInfo& info);
 
    private:
     void BubbleToFront(wtf_size_t idx);
     const wtf_size_t capacity_;
-    const CacheType type_;
-    Vector<std::unique_ptr<CanvasSnapshotProvider>> snapshot_providers_;
+    Vector<std::unique_ptr<CanvasNon2DResourceProvider>> providers_;
   };
-  LRUCanvasSnapshotProviderCache generated_image_cache_{
-      4, LRUCanvasSnapshotProviderCache::CacheType::kImage};
-  LRUCanvasSnapshotProviderCache generated_video_cache_{
-      4, LRUCanvasSnapshotProviderCache::CacheType::kVideo};
+  LRUCanvasNon2DResourceProviderCache generated_video_cache_{4};
 
   GLint max_texture_size_;
   GLint max_cube_map_texture_size_;
@@ -1980,6 +1949,10 @@ class MODULES_EXPORT WebGLRenderingContextBase
 
   void RecordANGLEImplementation();
 
+  viz::SharedImageFormat GetSharedImageFormat() const;
+  gfx::ColorSpace GetColorSpace() const;
+  SkAlphaType GetAlphaType() const;
+
  private:
   WebGLRenderingContextBase(CanvasRenderingContextHost*,
                             scoped_refptr<base::SingleThreadTaskRunner>,
@@ -1996,7 +1969,7 @@ class MODULES_EXPORT WebGLRenderingContextBase
   scoped_refptr<ExternalCanvasResource> ExportLowLatencyCanvasResource(
       SourceDrawingBuffer source_buffer);
 
-  CanvasNon2DResourceProviderSharedImage* GetSharedImageResourceProvider();
+  CanvasNon2DResourceProvider* GetSharedImageResourceProvider();
 
   // Attempts to copy the most recent rendering results from the drawing buffer
   // into a CanvasResource. Returns the resource if the copy succeeded;
@@ -2031,23 +2004,23 @@ class MODULES_EXPORT WebGLRenderingContextBase
 
   void Dispose() override;
 
-  void TexElementImage2DInternal(GLenum target,
-                                 GLint level,
-                                 GLint internalformat,
-                                 std::optional<GLfloat> sx,
-                                 std::optional<GLfloat> sy,
-                                 std::optional<GLfloat> swidth,
-                                 std::optional<GLfloat> sheight,
-                                 std::optional<GLsizei> width,
-                                 std::optional<GLsizei> height,
-                                 GLenum format,
-                                 GLenum type,
-                                 const V8UnionElementOrElementImage* element,
-                                 ExceptionState& exception_state);
+  void TexElementSubImage2DInternal(GLenum target,
+                                    std::optional<GLenum> internalformat,
+                                    GLint level,
+                                    GLint xoffset,
+                                    GLint yoffset,
+                                    std::optional<GLfloat> sx,
+                                    std::optional<GLfloat> sy,
+                                    std::optional<GLfloat> swidth,
+                                    std::optional<GLfloat> sheight,
+                                    std::optional<GLsizei> width,
+                                    std::optional<GLsizei> height,
+                                    const V8UnionElementOrElementImage* element,
+                                    ExceptionState& exception_state);
 
   // Used to provide accelerated snapshots and CanvasResources holding the
   // current content.
-  std::unique_ptr<CanvasNon2DResourceProviderSharedImage> resource_provider_;
+  std::unique_ptr<CanvasNon2DResourceProvider> resource_provider_;
 
   // If PaintRenderingResultsToSnapshot() is unable to create
   // `resource_provider_`, it will attempt to create an unaccelerated snapshot
@@ -2088,6 +2061,7 @@ class MODULES_EXPORT WebGLRenderingContextBase
 
   PredefinedColorSpace drawing_buffer_color_space_ =
       PredefinedColorSpace::kSRGB;
+  gfx::HDRMetadata drawing_buffer_tone_mapping_hdr_metadata_;
   PredefinedColorSpace unpack_color_space_ = PredefinedColorSpace::kSRGB;
 };
 
@@ -2096,6 +2070,30 @@ struct DowncastTraits<WebGLRenderingContextBase> {
   static bool AllowFrom(const CanvasRenderingContext& context) {
     return context.IsWebGL();
   }
+};
+
+class ScopedUnpackParametersResetRestore {
+  STACK_ALLOCATED();
+
+ public:
+  explicit ScopedUnpackParametersResetRestore(
+      WebGLRenderingContextBase* context,
+      bool enabled = true)
+      : context_(context), enabled_(enabled) {
+    if (enabled) {
+      context_->ResetUnpackParameters();
+    }
+  }
+
+  ~ScopedUnpackParametersResetRestore() {
+    if (enabled_) {
+      context_->RestoreUnpackParameters();
+    }
+  }
+
+ private:
+  WebGLRenderingContextBase* context_;
+  bool enabled_;
 };
 
 }  // namespace blink

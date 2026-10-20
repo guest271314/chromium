@@ -16,6 +16,7 @@
 #include "components/browser_apis/tab_strip/types/position.h"
 #include "components/split_tabs/split_tab_id.h"
 #include "components/split_tabs/split_tab_visual_data.h"
+#include "components/tab_groups/tab_group_id.h"
 #include "components/tabs/public/split_tab_collection.h"
 #include "components/tabs/public/tab_group.h"
 #include "components/tabs/public/tab_group_tab_collection.h"
@@ -112,8 +113,7 @@ TEST_F(TabStripModelAdapterImplTest, GetPathForCollection) {
   ASSERT_GE(path.components().size(), 4u);
   EXPECT_EQ(path.components()[0], NodeId::FromWindowId("1"));
   EXPECT_EQ(path.components()[1],
-            NodeId::FromTabCollectionHandle(
-                model_->GetRootForTesting()->GetHandle()));
+            NodeId::FromTabCollectionHandle(model_->Root()->GetHandle()));
   EXPECT_EQ(path.components().back(),
             NodeId::FromTabCollectionHandle(group_handle));
 }

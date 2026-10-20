@@ -24,7 +24,6 @@
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
 #include "mojo/public/cpp/bindings/receiver.h"
-#include "mojo/public/cpp/bindings/remote.h"
 
 class Profile;
 
@@ -66,7 +65,6 @@ class UpdaterPageHandler final : public updater_ui::mojom::PageHandler {
   UpdaterPageHandler(
       Profile* profile,
       mojo::PendingReceiver<updater_ui::mojom::PageHandler> receiver,
-      mojo::PendingRemote<updater_ui::mojom::Page> page,
       scoped_refptr<Delegate> delegate = Delegate::CreateDefault());
 
   UpdaterPageHandler(const UpdaterPageHandler&) = delete;
@@ -89,7 +87,6 @@ class UpdaterPageHandler final : public updater_ui::mojom::PageHandler {
   SEQUENCE_CHECKER(sequence_checker_);
   const raw_ptr<Profile> profile_;
   mojo::Receiver<updater_ui::mojom::PageHandler> receiver_;
-  mojo::Remote<updater_ui::mojom::Page> page_;
   scoped_refptr<Delegate> delegate_;
 };
 

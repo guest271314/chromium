@@ -355,16 +355,18 @@ TEST_F(WorkerSchedulerImplTest, PausableTasks) {
   // ensures that the pausable & throttable tasks don't run when paused.
   // Throttable
   PostTestTask(&run_order, "T1", TaskType::kJavascriptTimerDelayedLowNesting);
-  // Pausable
+  // Pausable (non-VT)
   PostTestTask(&run_order, "T2", TaskType::kNetworking);
+  // Pausable
+  PostTestTask(&run_order, "T3", TaskType::kWebLocks);
   // Unpausable
-  PostTestTask(&run_order, "T3", TaskType::kInternalTest);
+  PostTestTask(&run_order, "T4", TaskType::kInternalTest);
   RunUntilIdle();
-  EXPECT_THAT(run_order, testing::ElementsAre("T3"));
+  EXPECT_THAT(run_order, testing::ElementsAre("T4"));
   pause_handle.reset();
   RunUntilIdle();
 
-  EXPECT_THAT(run_order, testing::ElementsAre("T3", "T1", "T2"));
+  EXPECT_THAT(run_order, testing::ElementsAre("T4", "T1", "T2", "T3"));
 }
 
 TEST_F(WorkerSchedulerImplTest, NestedPauseHandlesTasks) {
@@ -655,6 +657,7 @@ TEST_F(NonMainThreadWebSchedulingTaskQueueTest, TaskQueuesArePausable) {
             .priority = WebSchedulingPriority::kUserVisiblePriority})},
       {.descriptor = "PostMessage", .type_info = TaskType::kPostedMessage},
       {.descriptor = "WebLock", .type_info = TaskType::kWebLocks},
+      {.descriptor = "InternalTest", .type_info = TaskType::kInternalTest},
       {.descriptor = "Timer",
        .type_info = TaskType::kJavascriptTimerImmediate}};
   web_scheduling_test_helper_->PostTestTasks(&run_order, test_spec);
@@ -662,9 +665,9 @@ TEST_F(NonMainThreadWebSchedulingTaskQueueTest, TaskQueuesArePausable) {
   std::unique_ptr<WorkerScheduler::PauseHandle> pause_handle(
       worker_scheduler_->Pause());
 
-  // Only the queue associated with `TaskType::kWebLocks` is unpauseble.
+  // Only the queue associated with `TaskType::kInternalTest` is unpausable.
   RunUntilIdle();
-  EXPECT_THAT(run_order, testing::ElementsAre("WebLock"));
+  EXPECT_THAT(run_order, testing::ElementsAre("InternalTest"));
 }
 
 TEST_F(NonMainThreadWebSchedulingTaskQueueTest, TaskQueueDisposal) {
@@ -692,7 +695,38 @@ TEST_F(NonMainThreadWebSchedulingTaskQueueTest, TaskQueueDisposal) {
   worker_scheduler_.reset();
 }
 
-TEST_F(WorkerSchedulerImplTest, WebSchedulerTaskQueueDestruction) {
+TEST_F(NonMainThreadWebSchedulingTaskQueueTest,
+       WebSchedulingTaskQueuesAreInitializedBasedOnPauseState) {
+  int counter = 0;
+
+  std::unique_ptr<WebSchedulingTaskQueue> queue =
+      worker_scheduler_->CreateWebSchedulingTaskQueue(
+          WebSchedulingQueueType::kTaskQueue,
+          WebSchedulingPriority::kUserVisiblePriority);
+  {
+    std::unique_ptr<WorkerScheduler::PauseHandle> pause_handle(
+        worker_scheduler_->Pause());
+
+    queue->GetTaskRunner()->PostTask(
+        FROM_HERE,
+        base::BindOnce(&IncrementCounter, base::Unretained(&counter)));
+    RunUntilIdle();
+    EXPECT_EQ(counter, 0);
+  }
+
+  RunUntilIdle();
+  EXPECT_EQ(counter, 1);
+
+  queue = worker_scheduler_->CreateWebSchedulingTaskQueue(
+      WebSchedulingQueueType::kTaskQueue,
+      WebSchedulingPriority::kUserVisiblePriority);
+  queue->GetTaskRunner()->PostTask(
+      FROM_HERE, base::BindOnce(&IncrementCounter, base::Unretained(&counter)));
+  RunUntilIdle();
+  EXPECT_EQ(counter, 2);
+}
+
+TEST_F(WorkerSchedulerImplTest, WebSchedulingTaskQueueDestruction) {
   // This just makes sure that destroying queues before and after disposal
   // doesn't trigger any CHECKs or other issues.
   std::unique_ptr<WebSchedulingTaskQueue> queue1 =

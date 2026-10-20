@@ -49,7 +49,6 @@
 #include "chrome/services/sharing/public/proto/wire_format.pb.h"
 #include "chromeos/ash/components/nearby/common/connections_manager/nearby_connections_manager.h"
 #include "chromeos/ash/components/nearby/common/connections_manager/nearby_file_handler.h"
-#include "chromeos/ash/components/nearby/presence/nearby_presence_service.h"
 #include "chromeos/ash/services/nearby/public/cpp/nearby_process_manager.h"
 #include "chromeos/ash/services/nearby/public/mojom/nearby_decoder_types.mojom.h"
 #include "chromeos/ash/services/nearby/public/mojom/nearby_share_settings.mojom.h"
@@ -202,8 +201,6 @@ class NearbySharingServiceImpl
                        const Medium medium) override;
   void OnBandwidthUpgrade(const std::string& endpoint_id,
                           const Medium medium) override;
-  void OnBandwidthUpgradeV3(nearby::presence::PresenceDevice remote_device,
-                            const Medium medium) override;
 
   // ash::SessionObserver:
   void OnLockStateChanged(bool locked) override;
@@ -572,8 +569,6 @@ class NearbySharingServiceImpl
   bool is_connecting_ = false;
   // The time scanning began.
   base::Time scanning_start_timestamp_;
-  // True when we are advertising with a device name visible to everyone.
-  bool in_high_visibility_ = false;
   // The time attachments are sent after a share target is selected. This is
   // used to time the process from selecting a share target to writing the
   // introduction frame (last frame before receiver gets notified).

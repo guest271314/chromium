@@ -20,7 +20,6 @@
 #include "mojo/public/cpp/bindings/receiver_set.h"
 #include "mojo/public/cpp/bindings/remote_set.h"
 #include "services/on_device_model/public/mojom/on_device_model.mojom.h"
-#include "third_party/abseil-cpp/absl/container/flat_hash_set.h"
 
 namespace optimization_guide {
 
@@ -116,10 +115,18 @@ class ModelBrokerImpl final : public mojom::ModelBroker {
   void RequestAssetsFor(const std::string& use_case) override;
 
   void AddModelDownloadProgressObserver(
+      const std::string& use_case,
       mojo::PendingRemote<on_device_model::mojom::DownloadObserver> observer)
       override;
 
-  // Finishes Subscribe after initialization is finished.
+  // Finishes `AddModelDownloadProgressObserver` after initialization is
+  // finished.
+  void AddModelDownloadProgressObserverInternal(
+      const std::string& use_case,
+      mojo::PendingRemote<on_device_model::mojom::DownloadObserver> observer,
+      mojo::ReportBadMessageCallback bad_message_callback,
+      const on_device_model::Capabilities& capabilities);
+  // Finishes `Subscribe` after initialization is finished.
   void SubscribeInternal(mojom::ModelSubscriptionOptionsPtr options,
                          mojo::PendingRemote<mojom::ModelSubscriber> subscriber,
                          mojo::ReportBadMessageCallback bad_message_callback,

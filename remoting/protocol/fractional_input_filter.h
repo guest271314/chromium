@@ -25,20 +25,17 @@ namespace remoting::protocol {
 // The client may send fractional coordinates without a `screen_id` property. In
 // this case, the fallback geometry will be used for the scaling calculation.
 //
-// For MouseEvents with fractional coordinates, if the calculation fails, the
-// event is discarded (as it is likely a broken or outdated event which should
-// not be injected). Reasons for failure include:
+// For MouseEvents with fractional coordinates, if the calculation fails, or if
+// relative deltas (delta_x or delta_y) are also present, the event is
+// discarded (as it is likely a broken or outdated event which should not be
+// injected). Reasons for calculation failure include:
 // * A fractional-coordinate field (x or y) is not present.
 // * The screen_id is present but is not found in the latest video-layout.
-// * The screen_id is not present, and no fallback geometry has been set.
+// * The screen_id is not present.
 //
 // For TouchEvents, these can have any number of TouchEventPoints. If any
 // touch-point has a fractional-coordinate but the calculation fails,
 // the whole TouchEvent is discarded.
-//
-// This filter may appear before or after MouseInputFilter in the input
-// pipeline, since their actions are mutually-exclusive - MouseInputFilter
-// passes through any event with fractional coordinates.
 //
 // Because this filter may modify the event's x,y values, it may change their
 // meaning (from client-provided to host-calculated). Therefore, any other

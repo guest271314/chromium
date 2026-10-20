@@ -112,6 +112,10 @@ void OAuth2MintAccessTokenFetcherAdapter::Start(
       client_id, std::vector<std::string_view>(scopes.begin(), scopes.end()),
       client_version_, client_channel_, device_id_, bound_oauth_token,
       use_mtls_endpoints_for_fetching_tokens_);
+  params.check_bound_token_upgrade_eligibility =
+      !token_upgrade_callback_.is_null();
+  base::UmaHistogramBoolean("Signin.TokenBinding.UpgradeEligibility",
+                            params.check_bound_token_upgrade_eligibility);
   if (mint_token_flow_factory_for_testing_) {
     CHECK_IS_TEST();
     mint_token_flow_ =
@@ -138,6 +142,12 @@ void OAuth2MintAccessTokenFetcherAdapter::SetTokenDecryptor(
     TokenDecryptor decryptor) {
   CHECK(!decryptor.is_null());
   token_decryptor_ = std::move(decryptor);
+}
+
+void OAuth2MintAccessTokenFetcherAdapter::EnableTokenUpgradeEligibility(
+    TokenUpgradeCallback token_upgrade_callback) {
+  CHECK(!token_upgrade_callback.is_null());
+  token_upgrade_callback_ = std::move(token_upgrade_callback);
 }
 
 void OAuth2MintAccessTokenFetcherAdapter::
@@ -188,10 +198,43 @@ void OAuth2MintAccessTokenFetcherAdapter::OnMintTokenSuccess(
       .WithExpirationTime(expiration_time);
   RecordFetchAuthError(GoogleServiceAuthError::AuthErrorNone(),
                        is_refresh_token_bound_, binding_key_assertion_);
+  base::UmaHistogramBoolean("Signin.TokenBinding.UpgradeRequested",
+                            !result.bound_token_upgrade_challenge.empty());
+  if (!result.bound_token_upgrade_challenge.empty() &&
+      token_upgrade_callback_) {
+    std::move(token_upgrade_callback_)
+        .Run(result.bound_token_upgrade_challenge,
+             result.bound_token_upgrade_supported_algorithms);
+  }
   FireOnGetTokenSuccess(response_builder.build());
 }
 void OAuth2MintAccessTokenFetcherAdapter::OnMintTokenFailure(
     const GoogleServiceAuthError& error) {
+  // Gaia only issues a token binding challenge in response to
+  // `kTokenBindingAssertionSentinel` if the refresh token is still valid.
+  // Therefore, if a request carrying a real assertion (or the signature
+  // failure placeholder) is rejected with `CREDENTIALS_REJECTED_BY_SERVER`,
+  // the rejection is attributed to token binding rather than to an invalid
+  // refresh token. This may misclassify the rare case where the refresh token
+  // gets revoked between the challenge and the assertion requests.
+  //
+  // Requests carrying the sentinel itself are not reclassified, because the
+  // server rejects them before any binding check takes place.
+  using Reason = GoogleServiceAuthError::InvalidGaiaCredentialsReason;
+  if (is_refresh_token_bound_ &&
+      binding_key_assertion_ != GaiaConstants::kTokenBindingAssertionSentinel &&
+      error.state() == GoogleServiceAuthError::INVALID_GAIA_CREDENTIALS &&
+      error.GetInvalidGaiaCredentialsReason() ==
+          Reason::CREDENTIALS_REJECTED_BY_SERVER) {
+    CHECK(!binding_key_assertion_.empty());
+    RecordMetricsAndFireError(
+        GoogleServiceAuthError::FromInvalidGaiaCredentialsReason(
+            binding_key_assertion_ ==
+                    GaiaConstants::kTokenBindingAssertionFailedPlaceholder
+                ? Reason::TOKEN_BINDING_ASSERTION_GENERATION_FAILED
+                : Reason::TOKEN_BINDING_ASSERTION_REJECTED_BY_SERVER));
+    return;
+  }
   RecordMetricsAndFireError(error);
 }
 void OAuth2MintAccessTokenFetcherAdapter::OnRemoteConsentSuccess(

@@ -11,21 +11,29 @@ import androidx.annotation.VisibleForTesting;
 
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
+import org.chromium.chrome.browser.preferences.Pref;
 import org.chromium.chrome.browser.profiles.Profile;
+import org.chromium.chrome.browser.search_engines.AimEligibilityServiceFactory;
 import org.chromium.chrome.browser.search_engines.R;
 import org.chromium.chrome.browser.search_engines.TemplateUrlServiceFactory;
 import org.chromium.chrome.browser.search_engines.settings.SearchEngineIconUtils;
 import org.chromium.chrome.browser.ui.favicon.FaviconUtils;
 import org.chromium.components.favicon.LargeIconBridge;
+import org.chromium.components.omnibox.OmniboxFeatures;
+import org.chromium.components.search_engines.SearchEngineSettingsDataProvider;
+import org.chromium.components.search_engines.StarterPackId;
 import org.chromium.components.search_engines.TemplateUrl;
 import org.chromium.components.search_engines.TemplateUrlService;
+import org.chromium.components.user_prefs.UserPrefs;
 import org.chromium.ui.listmenu.ListMenuDelegate;
 import org.chromium.ui.modelutil.MVCListAdapter.ListItem;
 import org.chromium.ui.modelutil.MVCListAdapter.ModelList;
 import org.chromium.ui.modelutil.PropertyModel;
 import org.chromium.url.GURL;
 
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -37,10 +45,12 @@ public abstract class BaseSiteSearchMediator
         implements TemplateUrlService.TemplateUrlServiceObserver {
     protected final Context mContext;
     protected final ModelList mModelList;
+    protected final Profile mProfile;
     protected final TemplateUrlService mTemplateUrlService;
     protected final LargeIconBridge mLargeIconBridge;
     protected final int mFaviconSize;
     protected final Map<GURL, Bitmap> mIconCache = new HashMap<>();
+    protected final SearchEngineSettingsDataProvider mSettingsDataProvider;
 
     /**
      * Constructs the base mediator and initializes core dependencies.
@@ -48,11 +58,19 @@ public abstract class BaseSiteSearchMediator
      * @param context The current context.
      * @param modelList The modelList representing the UI list to be populated.
      * @param profile The current user profile.
+     * @param settingsDataProvider The provider supplying the search engine lists. Owned by the
+     *     settings fragment and shared by all of its sections, so this mediator must not close it.
      */
-    public BaseSiteSearchMediator(Context context, ModelList modelList, Profile profile) {
+    public BaseSiteSearchMediator(
+            Context context,
+            ModelList modelList,
+            Profile profile,
+            SearchEngineSettingsDataProvider settingsDataProvider) {
         mContext = context;
         mModelList = modelList;
+        mProfile = profile;
         mTemplateUrlService = TemplateUrlServiceFactory.getForProfile(profile);
+        mSettingsDataProvider = settingsDataProvider;
         mLargeIconBridge = new LargeIconBridge(profile);
         mFaviconSize = context.getResources().getDimensionPixelSize(R.dimen.default_favicon_size);
     }
@@ -75,6 +93,7 @@ public abstract class BaseSiteSearchMediator
     public void destroy() {
         mTemplateUrlService.removeObserver(this);
         mLargeIconBridge.destroy();
+        // mSettingsDataProvider is owned and closed by the settings fragment.
     }
 
     @Override
@@ -138,7 +157,13 @@ public abstract class BaseSiteSearchMediator
             LargeIconBridge largeIconBridge,
             Map<GURL, Bitmap> iconCache) {
         SearchEngineIconUtils.updateIcon(
-                context, model, propertyKey, templateUrl, pageUrl, largeIconBridge, iconCache);
+                context,
+                model,
+                propertyKey,
+                templateUrl.getBuiltInSearchEngineIcon(),
+                pageUrl,
+                largeIconBridge,
+                iconCache);
     }
 
     /**
@@ -189,4 +214,33 @@ public abstract class BaseSiteSearchMediator
      * @return A ListMenuDelegate to handle menu interactions, or null if no menu is needed.
      */
     protected abstract @Nullable ListMenuDelegate createMenuDelegate(TemplateUrl url);
+
+    /**
+     * Filters the list of search engines to exclude disabled starter pack engines.
+     *
+     * <p>TODO(crbug.com/512766345): Remove duplication with native
+     * SearchEngineSettingsDataProvider::GetDisabledStarterPackIdsForAndroid.
+     *
+     * @param urls The original list of TemplateUrls.
+     * @return The filtered list of TemplateUrls.
+     */
+    protected List<TemplateUrl> filterTemplateUrls(List<TemplateUrl> urls) {
+        boolean aimEnabled = AimEligibilityServiceFactory.isAimStarterPackEnabled(mProfile);
+        boolean geminiEnabled =
+                OmniboxFeatures.sStarterPackExpansion.isEnabled()
+                        && UserPrefs.get(mProfile).getInteger(Pref.GEMINI_SETTINGS) == 0;
+
+        List<TemplateUrl> filtered = new ArrayList<>();
+        for (TemplateUrl url : urls) {
+            int starterPackId = url.getStarterPackId();
+            if (starterPackId == StarterPackId.AI_MODE && !aimEnabled) {
+                continue;
+            }
+            if (starterPackId == StarterPackId.GEMINI && !geminiEnabled) {
+                continue;
+            }
+            filtered.add(url);
+        }
+        return filtered;
+    }
 }

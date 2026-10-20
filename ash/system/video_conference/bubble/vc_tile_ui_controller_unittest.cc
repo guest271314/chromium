@@ -75,11 +75,9 @@ class VcTileUiControllerTest : public AshTestBase {
 
   // AshTestBase:
   void SetUp() override {
-    scoped_feature_list_
-        .InitWithFeatures(/*enabled_features=*/
-                          {features::kFeatureManagementVideoConference,
-                           features::kVcDlcUi},
-                          /*disabled_features=*/{});
+    scoped_feature_list_.InitWithFeatures(
+        /*enabled_features=*/{features::kFeatureManagementVideoConference},
+        /*disabled_features=*/{});
     DlcserviceClient::InitializeFake();
 
     // Tests need to use a fake controller for the video conference tray, which
@@ -146,12 +144,12 @@ class VcTileUiControllerTest : public AshTestBase {
   // Returns the expected tooltip text given the toggle state.
   std::u16string GetToggleButtonExpectedTooltipText(bool toggle_on) {
     return l10n_util::GetStringFUTF16(
-        VIDEO_CONFERENCE_TOGGLE_BUTTON_TOOLTIP,
+        IDS_VIDEO_CONFERENCE_TOGGLE_BUTTON_TOOLTIP,
         l10n_util::GetStringUTF16(
             IDS_ASH_STATUS_TRAY_AUDIO_INPUT_NOISE_CANCELLATION),
         l10n_util::GetStringUTF16(
-            toggle_on ? VIDEO_CONFERENCE_TOGGLE_BUTTON_STATE_ON
-                      : VIDEO_CONFERENCE_TOGGLE_BUTTON_STATE_OFF));
+            toggle_on ? IDS_VIDEO_CONFERENCE_TOGGLE_BUTTON_STATE_ON
+                      : IDS_VIDEO_CONFERENCE_TOGGLE_BUTTON_STATE_OFF));
   }
 
   void TrackToggleUMA(bool target_toggle_state) {

@@ -56,10 +56,7 @@ class CORE_EXPORT ResponsivenessMetrics
   // Lifecycle and Testing
   void FlushAllEvents();
   void StopUkmSamplingForTesting() { sampling_ = false; }
-  uint32_t GetInteractionCount() const;
-
-  void SetCurrentInteractionEventQueuedTimestamp(base::TimeTicks queued_time);
-  base::TimeTicks CurrentInteractionEventQueuedTimestamp() const;
+  uint64_t GetInteractionCount() const;
 
   // The `navigate` event dispatches during a pre-commit phase of navigations
   // and can defer actual commit until a promise resolves.
@@ -105,11 +102,13 @@ class CORE_EXPORT ResponsivenessMetrics
                                 const PerformanceEventTiming& entry);
 
   void RecordUserInteractionHistograms(UserInteractionType interaction_type,
-                                       const PerformanceEventTiming& entry);
+                                       const PerformanceEventTiming& entry,
+                                       uint64_t event_id);
 
   void RecordUserInteractionTracing(LocalDOMWindow* window,
                                     UserInteractionType interaction_type,
-                                    const PerformanceEventTiming& entry);
+                                    const PerformanceEventTiming& entry,
+                                    uint64_t event_id);
 
   // This is used to store the set of unique histogram timings in a single
   // animation frame.  The first event for each interaction id should always
@@ -146,8 +145,8 @@ class CORE_EXPORT ResponsivenessMetrics
           IntWithZeroKeyHashTraits<KeydownKeyType>>
       keycode_to_interactionid_;
 
-  // During composition or for simulated clicks, we sometimes just match to most
-  // recent keydown.
+  // During non-composition or for simulated clicks, we sometimes just match to
+  // most recent keydown.
   //
   // TODO(crbug.com/490481909): This is also used to assign the interaction id
   // for (non-composition) keypress events. Those should be able to use
@@ -187,8 +186,6 @@ class CORE_EXPORT ResponsivenessMetrics
           PerformanceTimelineEntryIdInfo,
           IntWithZeroKeyHashTraits<PointerDownKeyType>>
       pointerid_to_interactionid_;
-
-  base::TimeTicks current_interaction_event_queued_timestamp_;
 
   PerformanceTimelineEntryIdGenerator interaction_id_generator_;
 

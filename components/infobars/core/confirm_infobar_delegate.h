@@ -7,8 +7,8 @@
 
 #include <optional>
 #include <string>
-#include <vector>
 
+#include "base/containers/span.h"
 #include "base/observer_list.h"
 #include "build/build_config.h"
 #include "components/infobars/core/infobar_delegate.h"
@@ -44,6 +44,11 @@ struct MessageSubstitution {
   std::optional<std::u16string> accessible_name;
 };
 
+// Note: Desktop InfoBars may not need to subclass ConfirmInfoBarDelegate.
+// Instead, consider using infobars::InfoBarSpec and
+// infobars::BrowserInfoBarManager. If BrowserInfoBarManager is missing a
+// feature required for your use case, please contact the infobar owners.
+//
 // An interface derived from InfoBarDelegate implemented by objects wishing to
 // control a ConfirmInfoBar.
 class ConfirmInfoBarDelegate : public infobars::InfoBarDelegate {
@@ -52,6 +57,7 @@ class ConfirmInfoBarDelegate : public infobars::InfoBarDelegate {
     BUTTON_NONE = 0,
     BUTTON_OK = 1 << 0,
     BUTTON_CANCEL = 1 << 1,
+    BUTTON_EXTRA = 1 << 2,
   };
 
   ConfirmInfoBarDelegate(const ConfirmInfoBarDelegate&) = delete;
@@ -84,7 +90,7 @@ class ConfirmInfoBarDelegate : public infobars::InfoBarDelegate {
 
   // Returns the list of substitutions to be used with the template
   // returned by GetMessageTextTemplate().
-  virtual std::vector<MessageSubstitution> GetMessageSubstitutions() const;
+  virtual base::span<const MessageSubstitution> GetMessageSubstitutions() const;
 
   // Returns the elide behavior for the message string.
   // Not supported on Android.
@@ -114,6 +120,9 @@ class ConfirmInfoBarDelegate : public infobars::InfoBarDelegate {
   virtual std::optional<ui::ButtonStyle> GetButtonStyle(
       InfoBarButton button) const;
 
+  // Returns whether the button's icon should use the button's text color.
+  virtual bool ShouldUseTextColorForButtonIcon(InfoBarButton button) const;
+
   // Returns true if this specific infobar instance should use the
   // custom layout to show the link text before the button.
   virtual bool ShouldShowLinkBeforeButton() const;
@@ -126,6 +135,11 @@ class ConfirmInfoBarDelegate : public infobars::InfoBarDelegate {
   // Returns whether or not a tint should be applied to the icon background.
   // Defaults to true.
   virtual bool UseIconBackgroundTint() const;
+
+  // Returns whether or not the icon image colors should be ignored when the
+  // background tint is applied. Defaults to true (which forces template
+  // rendering mode).
+  virtual bool IgnoreIconColorWithTint() const;
 #endif
 
   // Called when the OK button is pressed. If this function returns true, the
@@ -137,6 +151,9 @@ class ConfirmInfoBarDelegate : public infobars::InfoBarDelegate {
   // the infobar is then immediately closed. Subclasses MUST NOT return true if
   // in handling this call something triggers the infobar to begin closing.
   virtual bool Cancel();
+
+  // Called when the Extra button is pressed. Returns true to close the infobar.
+  virtual bool ExtraButtonPressed();
 
   // Called when an inline link created via the substitution system is clicked.
   // The |disposition| specifies how the resulting document should be loaded

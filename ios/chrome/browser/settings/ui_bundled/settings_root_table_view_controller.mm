@@ -14,7 +14,6 @@
 #import "ios/chrome/browser/settings/ui_bundled/settings_table_view_controller_constants.h"
 #import "ios/chrome/browser/shared/public/commands/open_new_tab_command.h"
 #import "ios/chrome/browser/shared/public/commands/scene_commands.h"
-#import "ios/chrome/browser/shared/ui/table_view/legacy_chrome_table_view_styler.h"
 #import "ios/chrome/browser/shared/ui/table_view/table_view_utils.h"
 #import "ios/chrome/browser/shared/ui/util/uikit_ui_util.h"
 #import "ios/chrome/common/ui/colors/semantic_color_names.h"
@@ -162,10 +161,11 @@ const CGFloat kActivityIndicatorDimensionIPhone = 56;
 - (UIBarButtonItem*)deleteButton {
   if (!_deleteButton) {
     _deleteButton = [[UIBarButtonItem alloc]
-        initWithTitle:l10n_util::GetNSString(IDS_IOS_SETTINGS_TOOLBAR_DELETE)
-                style:UIBarButtonItemStylePlain
-               target:self
-               action:@selector(deleteButtonCallback)];
+        initWithBarButtonSystemItem:UIBarButtonSystemItemTrash
+                             target:self
+                             action:@selector(deleteButtonCallback)];
+    _deleteButton.accessibilityLabel =
+        l10n_util::GetNSString(IDS_IOS_SETTINGS_TOOLBAR_DELETE);
     _deleteButton.accessibilityIdentifier = kSettingsToolbarDeleteButtonId;
     _deleteButton.tintColor = [UIColor colorNamed:kRedColor];
   }

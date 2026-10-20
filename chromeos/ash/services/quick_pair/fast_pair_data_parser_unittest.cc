@@ -34,26 +34,37 @@ constexpr int kAccountKeyFilterNoNotificationHeader = 0b01100010;
 constexpr int kSaltHeader = 0b00010001;
 constexpr int kSaltHeader2Bytes = 0b00100001;
 constexpr int kSaltHeader3Bytes = 0b00110001;
-const std::vector<uint8_t> kSaltBytes = {0x01};
-const std::vector<uint8_t> kLargeSaltBytes = {0xC7, 0xC8};
-const std::vector<uint8_t> kDeviceAddressBytes = {17, 18, 19, 20, 21, 22};
 constexpr int kBatteryHeader = 0b00110011;
 constexpr int kBatterHeaderNoNotification = 0b00110100;
 
-const std::string kModelId = "112233";
-const std::string kAccountKeyFilter = "112233445566";
-const std::string kSalt = "01";
-const std::string kLargeSalt = "C7C8";
-const std::string kInvalidSalt = "C7C8C9";
-const std::string kBattery = "01048F";
-const std::string kDeviceAddress = "11:12:13:14:15:16";
+constexpr char kModelId[] = "112233";
+constexpr char kAccountKeyFilter[] = "112233445566";
+constexpr char kSalt[] = "01";
+constexpr char kLargeSalt[] = "C7C8";
+constexpr char kInvalidSalt[] = "C7C8C9";
+constexpr char kBattery[] = "01048F";
+constexpr char kDeviceAddress[] = "11:12:13:14:15:16";
 
-std::vector<uint8_t> aes_key_bytes = {0xA0, 0xBA, 0xF0, 0xBB, 0x95, 0x1F,
-                                      0xF7, 0xB6, 0xCF, 0x5E, 0x3F, 0x45,
-                                      0x61, 0xC3, 0x32, 0x1D};
+std::vector<uint8_t> GetSaltBytes() {
+  return {0x01};
+}
+
+std::vector<uint8_t> GetLargeSaltBytes() {
+  return {0xC7, 0xC8};
+}
+
+std::vector<uint8_t> GetDeviceAddressBytes() {
+  return {17, 18, 19, 20, 21, 22};
+}
+
+std::vector<uint8_t> GetAesKeyBytes() {
+  return {0xA0, 0xBA, 0xF0, 0xBB, 0x95, 0x1F, 0xF7, 0xB6,
+          0xCF, 0x5E, 0x3F, 0x45, 0x61, 0xC3, 0x32, 0x1D};
+}
 
 std::vector<uint8_t> EncryptBytes(const std::vector<uint8_t>& bytes) {
   AES_KEY aes_key;
+  const std::vector<uint8_t> aes_key_bytes = GetAesKeyBytes();
   AES_set_encrypt_key(aes_key_bytes.data(), aes_key_bytes.size() * 8, &aes_key);
   uint8_t encrypted_bytes[16];
   AES_encrypt(bytes.data(), encrypted_bytes, &aes_key);
@@ -110,7 +121,7 @@ TEST_F(FastPairDataParserTest, DecryptResponseUnsuccessfully) {
         run_loop.Quit();
       });
 
-  data_parser_->ParseDecryptedResponse(aes_key_bytes, encrypted_bytes,
+  data_parser_->ParseDecryptedResponse(GetAesKeyBytes(), encrypted_bytes,
                                        std::move(callback));
   run_loop.Run();
 }
@@ -145,7 +156,7 @@ TEST_F(FastPairDataParserTest, DecryptResponseSuccessfully) {
         run_loop.Quit();
       });
 
-  data_parser_->ParseDecryptedResponse(aes_key_bytes, encrypted_bytes,
+  data_parser_->ParseDecryptedResponse(GetAesKeyBytes(), encrypted_bytes,
                                        std::move(callback));
   run_loop.Run();
 }
@@ -199,7 +210,7 @@ TEST_F(FastPairDataParserTest, DecryptExtendedResponseSuccessfully) {
         run_loop.Quit();
       });
 
-  data_parser_->ParseDecryptedResponse(aes_key_bytes, encrypted_bytes,
+  data_parser_->ParseDecryptedResponse(GetAesKeyBytes(), encrypted_bytes,
                                        std::move(callback));
   run_loop.Run();
 }
@@ -230,7 +241,7 @@ TEST_F(FastPairDataParserTest, DecryptPasskeyUnsuccessfully) {
         run_loop.Quit();
       });
 
-  data_parser_->ParseDecryptedPasskey(aes_key_bytes, encrypted_bytes,
+  data_parser_->ParseDecryptedPasskey(GetAesKeyBytes(), encrypted_bytes,
                                       std::move(callback));
   run_loop.Run();
 }
@@ -266,7 +277,7 @@ TEST_F(FastPairDataParserTest, DecryptSeekerPasskeySuccessfully) {
         run_loop.Quit();
       });
 
-  data_parser_->ParseDecryptedPasskey(aes_key_bytes, encrypted_bytes,
+  data_parser_->ParseDecryptedPasskey(GetAesKeyBytes(), encrypted_bytes,
                                       std::move(callback));
   run_loop.Run();
 }
@@ -302,7 +313,7 @@ TEST_F(FastPairDataParserTest, DecryptProviderPasskeySuccessfully) {
         run_loop.Quit();
       });
 
-  data_parser_->ParseDecryptedPasskey(aes_key_bytes, encrypted_bytes,
+  data_parser_->ParseDecryptedPasskey(GetAesKeyBytes(), encrypted_bytes,
                                       std::move(callback));
   run_loop.Run();
 }
@@ -360,7 +371,7 @@ TEST_F(FastPairDataParserTest,
         EXPECT_TRUE(advertisement.has_value());
         EXPECT_EQ(kAccountKeyFilter,
                   base::HexEncode(advertisement->account_key_filter));
-        EXPECT_EQ(kSaltBytes, advertisement->salt);
+        EXPECT_EQ(GetSaltBytes(), advertisement->salt);
         EXPECT_TRUE(advertisement->show_ui);
         EXPECT_FALSE(advertisement->battery_notification.has_value());
         run_loop.Quit();
@@ -391,7 +402,7 @@ TEST_F(FastPairDataParserTest,
         EXPECT_TRUE(advertisement.has_value());
         EXPECT_EQ(kAccountKeyFilter,
                   base::HexEncode(advertisement->account_key_filter));
-        EXPECT_EQ(kSaltBytes, advertisement->salt);
+        EXPECT_EQ(GetSaltBytes(), advertisement->salt);
         EXPECT_FALSE(advertisement->show_ui);
         EXPECT_FALSE(advertisement->battery_notification.has_value());
         run_loop.Quit();
@@ -488,7 +499,7 @@ TEST_F(FastPairDataParserTest, ParseNotDiscoverableAdvertisement_SaltTwoBytes) {
         EXPECT_TRUE(advertisement.has_value());
         EXPECT_EQ(kAccountKeyFilter,
                   base::HexEncode(advertisement->account_key_filter));
-        EXPECT_EQ(kLargeSaltBytes, advertisement->salt);
+        EXPECT_EQ(GetLargeSaltBytes(), advertisement->salt);
         run_loop.Quit();
       });
 
@@ -541,7 +552,7 @@ TEST_F(FastPairDataParserTest, ParseNotDiscoverableAdvertisement_Battery) {
         EXPECT_TRUE(advertisement.has_value());
         EXPECT_EQ(kAccountKeyFilter,
                   base::HexEncode(advertisement->account_key_filter));
-        EXPECT_EQ(kSaltBytes, advertisement->salt);
+        EXPECT_EQ(GetSaltBytes(), advertisement->salt);
         EXPECT_TRUE(advertisement->show_ui);
         EXPECT_TRUE(advertisement->battery_notification.has_value());
         EXPECT_TRUE(advertisement->battery_notification->show_ui);
@@ -582,7 +593,7 @@ TEST_F(FastPairDataParserTest, ParseNotDiscoverableAdvertisement_MissingSalt) {
         EXPECT_TRUE(advertisement.has_value());
         EXPECT_EQ(kAccountKeyFilter,
                   base::HexEncode(advertisement->account_key_filter));
-        EXPECT_EQ(kDeviceAddressBytes, advertisement->salt);
+        EXPECT_EQ(GetDeviceAddressBytes(), advertisement->salt);
         EXPECT_TRUE(advertisement->show_ui);
         EXPECT_TRUE(advertisement->battery_notification.has_value());
         EXPECT_TRUE(advertisement->battery_notification->show_ui);
@@ -626,7 +637,7 @@ TEST_F(FastPairDataParserTest, ParseNotDiscoverableAdvertisement_BatteryNoUi) {
         EXPECT_TRUE(advertisement.has_value());
         EXPECT_EQ(kAccountKeyFilter,
                   base::HexEncode(advertisement->account_key_filter));
-        EXPECT_EQ(kSaltBytes, advertisement->salt);
+        EXPECT_EQ(GetSaltBytes(), advertisement->salt);
         EXPECT_TRUE(advertisement->show_ui);
         EXPECT_TRUE(advertisement->battery_notification.has_value());
         EXPECT_FALSE(advertisement->battery_notification->show_ui);

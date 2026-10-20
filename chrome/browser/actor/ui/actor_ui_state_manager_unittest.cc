@@ -8,8 +8,10 @@
 #include "chrome/browser/actor/actor_keyed_service.h"
 #include "chrome/browser/actor/actor_keyed_service_factory.h"
 #include "chrome/browser/actor/actor_keyed_service_fake.h"
+#include "chrome/browser/actor/actor_surface_registry.h"
 #include "chrome/browser/actor/ui/actor_ui_state_manager_interface.h"
 #include "chrome/browser/actor/ui/test_support/mock_actor_ui_tab_controller.h"
+#include "chrome/browser/glic/public/features.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/test/mock_browser_window_interface.h"
@@ -51,10 +53,8 @@ class ActorUiStateManagerTest : public testing::Test {
   void SetUp() override {
     scoped_feature_list_.InitWithFeaturesAndParameters(
         /*enabled_features=*/{{features::kGlicActorUi, {}},
-                              {features::kGlicActor,
-                               {{features::kGlicActorPolicyControlExemption
-                                     .name,
-                                 "true"}}}},
+                              {features::kGlicActor, {}},
+                              {features::kGlicActorPolicyControlExemption, {}}},
         /*disabled_features=*/{});
     profile_ = TestingProfile::Builder()
                    .AddTestingFactory(
@@ -71,6 +71,9 @@ class ActorUiStateManagerTest : public testing::Test {
     ON_CALL(mock_browser_window_interface_, GetTabStripModel())
         .WillByDefault(Return(tab_strip_model_.get()));
 
+    ON_CALL(mock_tab_, GetProfile).WillByDefault(testing::Return(profile()));
+    ActorKeyedService::Get(profile())->GetSurfaceRegistry().OnTabCreated(
+        mock_tab_);
     MockActorUiTabController::SetupDefaultBrowserWindow(
         mock_tab(), mock_browser_window_interface_, user_data_host_);
     mock_actor_ui_tab_controller_.emplace(mock_tab());
@@ -104,8 +107,8 @@ class ActorUiStateManagerTest : public testing::Test {
             });
   }
 
-  ActorUiStateManagerInterface* actor_ui_state_manager() {
-    return actor_keyed_service_fake_->GetActorUiStateManager();
+  ActorUiStateManager* actor_ui_state_manager() {
+    return ActorUiStateManager::Get(profile());
   }
 
   ActorKeyedServiceFake* actor_keyed_service() {
@@ -144,12 +147,25 @@ class ActorUiStateManagerTest : public testing::Test {
     actor_ui_state_manager()->OnUiEvent(reflecting_task_event);
   }
 
-  void StopActorTask(TaskId task_id) {
+  void AddTabToTask(TaskId task_id) {
+    base::RunLoop loop;
+    actor_keyed_service()->GetTask(task_id)->AddTab(
+        mock_tab().GetHandle(),
+        /*stop_task_on_detach=*/true,
+        base::BindLambdaForTesting([&](ActionResultPtr result) {
+          EXPECT_TRUE(IsOk(*result));
+          loop.Quit();
+        }));
+    loop.Run();
+  }
+
+  void StopActorTask(
+      TaskId task_id,
+      ActorTask::TaskDuration duration = ActorTask::TaskDuration::kDefault) {
     actor_keyed_service()->StopTask(task_id,
                                     ActorTask::StoppedReason::kTaskComplete);
     StopTask stop_task_event(task_id, ActorTask::State::kFinished, "Test Task",
-                             mock_tab_.GetHandle(),
-                             ActorTask::TaskDuration::kDefault);
+                             mock_tab_.GetHandle(), duration);
     actor_ui_state_manager()->OnUiEvent(stop_task_event);
   }
 
@@ -228,15 +244,7 @@ TEST_P(ActorUiStateManagerActorTaskUiTabScopedTest,
        OnActorTaskState_UpdateTabScopedUi) {
   TaskId task_id = actor_keyed_service()->CreateTaskForTesting();
 
-  base::RunLoop loop;
-  actor_keyed_service()->GetTask(task_id)->AddTab(
-      mock_tab().GetHandle(),
-      /*stop_task_on_detach=*/true,
-      base::BindLambdaForTesting([&](ActionResultPtr result) {
-        EXPECT_TRUE(IsOk(*result));
-        loop.Quit();
-      }));
-  loop.Run();
+  AddTabToTask(task_id);
 
   auto [task_state, expected_ui_tab_state] = GetParam();
   ExpectUiTabStateChange(expected_ui_tab_state);
@@ -374,15 +382,7 @@ TEST_F(ActorUiStateManagerUiEventUiTabScopedTest,
 TEST_F(ActorUiStateManagerUiEventUiTabScopedTest,
        OnMouseMove_Transient_UpdatesUiCorrectly) {
   TaskId task_id = actor_keyed_service()->CreateTransientTaskForTesting();
-  base::RunLoop loop;
-  actor_keyed_service()->GetTask(task_id)->AddTab(
-      mock_tab().GetHandle(),
-      /*stop_task_on_detach=*/true,
-      base::BindLambdaForTesting([&](ActionResultPtr result) {
-        EXPECT_TRUE(IsOk(*result));
-        loop.Quit();
-      }));
-  loop.Run();
+  AddTabToTask(task_id);
 
   UiTabState expected_ui_tab_state{
       .actor_overlay = {.is_active = false,
@@ -401,15 +401,7 @@ TEST_F(ActorUiStateManagerUiEventUiTabScopedTest,
 TEST_F(ActorUiStateManagerUiEventUiTabScopedTest,
        OnMouseClick_Transient_UpdatesUiCorrectly) {
   TaskId task_id = actor_keyed_service()->CreateTransientTaskForTesting();
-  base::RunLoop loop;
-  actor_keyed_service()->GetTask(task_id)->AddTab(
-      mock_tab().GetHandle(),
-      /*stop_task_on_detach=*/true,
-      base::BindLambdaForTesting([&](ActionResultPtr result) {
-        EXPECT_TRUE(IsOk(*result));
-        loop.Quit();
-      }));
-  loop.Run();
+  AddTabToTask(task_id);
 
   UiTabState expected_ui_tab_state{
       .actor_overlay = {.is_active = false,
@@ -456,15 +448,7 @@ TEST_F(ActorUiStateManagerUiEventUiTabScopedTest,
 TEST_F(ActorUiStateManagerUiEventUiTabScopedTest, GetsActiveTaskInfo) {
   TaskId task_id = actor_keyed_service()->CreateTaskForTesting();
 
-  base::RunLoop loop;
-  actor_keyed_service()->GetTask(task_id)->AddTab(
-      mock_tab().GetHandle(),
-      /*stop_task_on_detach=*/true,
-      base::BindLambdaForTesting([&](ActionResultPtr result) {
-        EXPECT_TRUE(IsOk(*result));
-        loop.Quit();
-      }));
-  loop.Run();
+  AddTabToTask(task_id);
 
   StartTask start_task_event(task_id);
   actor_ui_state_manager()->OnUiEvent(start_task_event);
@@ -474,6 +458,152 @@ TEST_F(ActorUiStateManagerUiEventUiTabScopedTest, GetsActiveTaskInfo) {
   EXPECT_EQ(actor_ui_state_manager()->GetActorTaskTitle(task_id), "Test Task");
   EXPECT_EQ(actor_ui_state_manager()->GetLastActedOnTab(task_id), &mock_tab());
   EXPECT_EQ(actor_ui_state_manager()->GetInactiveTaskCount(), 0u);
+}
+
+TEST_F(ActorUiStateManagerUiEventUiTabScopedTest, TransientTaskDelayShowsUi) {
+  TaskId task_id = actor_keyed_service()->CreateTransientTaskForTesting();
+
+  AddTabToTask(task_id);
+
+  UiTabState expected_transient_state{
+      .actor_overlay = {.is_active = false, .border_glow_visible = false},
+      .handoff_button = {.is_active = false, .controller = kActor},
+      .tab_indicator = TabIndicatorStatus::kDynamic,
+      .border_glow_visible = false,
+  };
+  ExpectUiTabStateChange(expected_transient_state);
+  actor_ui_state_manager()->OnUiEvent(
+      TaskStateChanged(task_id, ActorTask::State::kActing));
+
+  task_environment().FastForwardBy(base::Seconds(1));
+
+  UiTabState expected_default_state{
+      .actor_overlay = {.is_active = true, .border_glow_visible = true},
+      .handoff_button = {.is_active = true, .controller = kActor},
+      .tab_indicator = TabIndicatorStatus::kDynamic,
+      .border_glow_visible = true,
+  };
+  ExpectUiTabStateChange(expected_default_state);
+  task_environment().FastForwardBy(base::Seconds(1));
+
+  StopActorTask(task_id, ActorTask::TaskDuration::kTransient);
+}
+
+TEST_F(ActorUiStateManagerUiEventUiTabScopedTest,
+       TransientTaskTimerOverrideOnPause) {
+  TaskId task_id = actor_keyed_service()->CreateTransientTaskForTesting();
+
+  AddTabToTask(task_id);
+
+  UiTabState expected_transient_state{
+      .actor_overlay = {.is_active = false, .border_glow_visible = false},
+      .handoff_button = {.is_active = false, .controller = kActor},
+      .tab_indicator = TabIndicatorStatus::kDynamic,
+      .border_glow_visible = false,
+  };
+  ExpectUiTabStateChange(expected_transient_state);
+  actor_ui_state_manager()->OnUiEvent(
+      TaskStateChanged(task_id, ActorTask::State::kActing));
+
+  UiTabState expected_paused_state{
+      .actor_overlay = {.is_active = false, .border_glow_visible = false},
+      .handoff_button = {.is_active = false, .controller = kClient},
+      .tab_indicator = TabIndicatorStatus::kNone,
+      .border_glow_visible = false,
+  };
+  ExpectUiTabStateChange(expected_paused_state);
+  PauseActorTask(task_id, /*from_actor=*/true);
+
+  UiTabState expected_default_state{
+      .actor_overlay = {.is_active = true, .border_glow_visible = true},
+      .handoff_button = {.is_active = true, .controller = kActor},
+      .tab_indicator = TabIndicatorStatus::kDynamic,
+      .border_glow_visible = true,
+  };
+  ExpectUiTabStateChange(expected_default_state);
+  ResumeActorTask(task_id);
+}
+
+TEST_F(ActorUiStateManagerUiEventUiTabScopedTest,
+       TransientTaskTransitionDoesNotRestartTimer) {
+  TaskId task_id = actor_keyed_service()->CreateTransientTaskForTesting();
+
+  AddTabToTask(task_id);
+
+  UiTabState expected_transient_state{
+      .actor_overlay = {.is_active = false, .border_glow_visible = false},
+      .handoff_button = {.is_active = false, .controller = kActor},
+      .tab_indicator = TabIndicatorStatus::kDynamic,
+      .border_glow_visible = false,
+  };
+  ExpectUiTabStateChange(expected_transient_state);
+  actor_ui_state_manager()->OnUiEvent(
+      TaskStateChanged(task_id, ActorTask::State::kActing));
+
+  task_environment().FastForwardBy(base::Seconds(1));
+
+  ExpectUiTabStateChange(expected_transient_state);
+  actor_ui_state_manager()->OnUiEvent(
+      TaskStateChanged(task_id, ActorTask::State::kReflecting));
+
+  UiTabState expected_default_state{
+      .actor_overlay = {.is_active = true, .border_glow_visible = true},
+      .handoff_button = {.is_active = true, .controller = kActor},
+      .tab_indicator = TabIndicatorStatus::kDynamic,
+      .border_glow_visible = true,
+  };
+  ExpectUiTabStateChange(expected_default_state);
+  task_environment().FastForwardBy(base::Seconds(1));
+}
+
+TEST_F(ActorUiStateManagerUiEventUiTabScopedTest,
+       TransientTaskStoppedBeforeTimerExpires) {
+  TaskId task_id = actor_keyed_service()->CreateTransientTaskForTesting();
+
+  AddTabToTask(task_id);
+
+  UiTabState expected_transient_state{
+      .actor_overlay = {.is_active = false, .border_glow_visible = false},
+      .handoff_button = {.is_active = false, .controller = kActor},
+      .tab_indicator = TabIndicatorStatus::kDynamic,
+      .border_glow_visible = false,
+  };
+  ExpectUiTabStateChange(expected_transient_state);
+  actor_ui_state_manager()->OnUiEvent(
+      TaskStateChanged(task_id, ActorTask::State::kActing));
+
+  // Stop the task before the 2-second timer expires.
+  StopActorTask(task_id, ActorTask::TaskDuration::kTransient);
+
+  // Fast forward time. Since the task is stopped, no further UI changes
+  // (like showing the default UI) should be triggered.
+  EXPECT_CALL(*mock_actor_ui_tab_controller(), OnUiTabStateChange(_, _))
+      .Times(0);
+  task_environment().FastForwardBy(base::Seconds(2));
+}
+
+TEST_F(ActorUiStateManagerUiEventUiTabScopedTest,
+       SetAndClearTabPendingActuation) {
+  UiTabState expected_pending_state{
+      .actor_overlay = {.is_active = false, .border_glow_visible = false},
+      .handoff_button = {.is_active = false, .controller = kClient},
+      .tab_indicator = TabIndicatorStatus::kDynamic,
+      .border_glow_visible = false,
+  };
+  ExpectUiTabStateChange(expected_pending_state);
+  actor_ui_state_manager()->SetTabPendingActuation(mock_tab().GetHandle());
+
+  UiTabState expected_completed_state{
+      .actor_overlay = {.is_active = false, .border_glow_visible = false},
+      .handoff_button = {.is_active = false, .controller = kClient},
+      .tab_indicator = TabIndicatorStatus::kNone,
+      .border_glow_visible = false,
+  };
+  ExpectUiTabStateChange(expected_completed_state);
+  EXPECT_TRUE(actor_ui_state_manager()->ClearTabPendingActuation(
+      mock_tab().GetHandle()));
+  EXPECT_FALSE(actor_ui_state_manager()->ClearTabPendingActuation(
+      mock_tab().GetHandle()));
 }
 
 }  // namespace

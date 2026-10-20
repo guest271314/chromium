@@ -12,8 +12,7 @@
 #include "chrome/browser/ui/actions/chrome_action_id.h"
 #include "chrome/browser/ui/browser_actions.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
-#include "chrome/browser/ui/tab_search_feature.h"
-#include "chrome/browser/ui/tabs/features.h"
+#include "chrome/browser/ui/toolbar/pinned_toolbar/pinned_toolbar_actions_model.h"
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/webui/side_panel/customize_chrome/customize_toolbar/customize_toolbar.mojom.h"
@@ -24,6 +23,7 @@
 #include "chrome/grit/branded_strings.h"
 #include "chrome/grit/generated_resources.h"
 #include "components/contextual_tasks/public/features.h"
+#include "components/feature_engagement/public/feature_constants.h"
 #include "components/prefs/pref_service.h"
 #include "components/strings/grit/components_strings.h"
 #include "components/vector_icons/vector_icons.h"
@@ -95,9 +95,8 @@ MojoActionForChromeAction(actions::ActionId action_id) {
       return side_panel::customize_chrome::mojom::ActionId::kSplitTab;
     case kActionSidePanelShowContextualTasks:
       return side_panel::customize_chrome::mojom::ActionId::kContextualTasks;
-    case kActionSidePanelShowTabsFromOtherDevices:
-      return side_panel::customize_chrome::mojom::ActionId::
-          kShowTabsFromOtherDevices;
+    case kActionTtcToolbar:
+      return side_panel::customize_chrome::mojom::ActionId::kTtc;
     default:
       return std::nullopt;
   }
@@ -114,9 +113,6 @@ std::optional<actions::ActionId> ChromeActionForMojoAction(
       return kActionSidePanelShowReadAnything;
     case side_panel::customize_chrome::mojom::ActionId::kShowReadingList:
       return kActionSidePanelShowReadingList;
-    case side_panel::customize_chrome::mojom::ActionId::
-        kShowTabsFromOtherDevices:
-      return kActionSidePanelShowTabsFromOtherDevices;
     case side_panel::customize_chrome::mojom::ActionId::kShowLensOverlay:
       return kActionSidePanelShowLensOverlayResults;
     case side_panel::customize_chrome::mojom::ActionId::kShowSearchCompanion:
@@ -161,6 +157,8 @@ std::optional<actions::ActionId> ChromeActionForMojoAction(
       return kActionSplitTab;
     case side_panel::customize_chrome::mojom::ActionId::kContextualTasks:
       return kActionSidePanelShowContextualTasks;
+    case side_panel::customize_chrome::mojom::ActionId::kTtc:
+      return kActionTtcToolbar;
     default:
       return std::nullopt;
   }
@@ -191,12 +189,6 @@ CustomizeToolbarHandler::CustomizeToolbarHandler(
       base::BindRepeating(&CustomizeToolbarHandler::OnActionPinnedChanged,
                           base::Unretained(this), kActionForward,
                           prefs::kShowForwardButton));
-  pref_change_registrar_.Add(
-      prefs::kPinContextualTaskButton,
-      base::BindRepeating(&CustomizeToolbarHandler::OnActionPinnedChanged,
-                          base::Unretained(this),
-                          kActionSidePanelShowContextualTasks,
-                          prefs::kPinContextualTaskButton));
   pref_change_registrar_.Add(
       prefs::kPinSplitTabButton,
       base::BindRepeating(&CustomizeToolbarHandler::OnActionPinnedChanged,
@@ -268,36 +260,12 @@ void CustomizeToolbarHandler::ListActions(ListActionsCallback callback) {
 
   actions.push_back(std::move(split_tab_action));
 
-  if (base::FeatureList::IsEnabled(contextual_tasks::kContextualTasks) &&
-      (contextual_tasks::kShowEntryPoint.Get() ==
-       contextual_tasks::EntryPointOption::kToolbarPermanent)) {
-    PrefService* const pref_service = bwi->GetProfile()->GetPrefs();
-    const gfx::VectorIcon& contextual_tasks_icon =
-        pref_service->GetBoolean(prefs::kSidePanelHorizontalAlignment)
-            ? kDockToRightSparkCustomIcon
-            : kDockToLeftSparkCustomIcon;
-    auto contextual_task_action =
-        side_panel::customize_chrome::mojom::Action::New(
-            MojoActionForChromeAction(kActionSidePanelShowContextualTasks)
-                .value(),
-            base::UTF16ToUTF8(l10n_util::GetStringUTF16(
-                IDS_CONTEXTUAL_TASKS_CONTEXTUAL_TASKS_TITLE)),
-            prefs()->GetBoolean(prefs::kPinContextualTaskButton), false,
-            side_panel::customize_chrome::mojom::CategoryId::kNavigation,
-            GURL(webui::EncodePNGAndMakeDataURI(
-                ui::ImageModel::FromVectorIcon(contextual_tasks_icon,
-                                               icon_color_id)
-                    .Rasterize(&provider),
-                scale_factor)));
-    actions.push_back(std::move(contextual_task_action));
-  }
-
   const auto add_action =
       [&actions, this, &provider, scale_factor, bwi](
           actions::ActionId id,
           side_panel::customize_chrome::mojom::CategoryId category) {
         actions::ActionItem* const scope_action =
-            bwi->GetActions()->root_action_item();
+            BrowserActions::From(bwi)->root_action_item();
         actions::ActionItem* const action_item =
             actions::ActionManager::Get().FindAction(id, scope_action);
         if (!action_item || !action_item->GetVisible()) {
@@ -360,8 +328,6 @@ void CustomizeToolbarHandler::ListActions(ListActionsCallback callback) {
              side_panel::customize_chrome::mojom::CategoryId::kYourChrome);
   add_action(kActionSidePanelShowReadingList,
              side_panel::customize_chrome::mojom::CategoryId::kYourChrome);
-  add_action(kActionSidePanelShowTabsFromOtherDevices,
-             side_panel::customize_chrome::mojom::CategoryId::kYourChrome);
   add_action(kActionSidePanelShowHistoryCluster,
              side_panel::customize_chrome::mojom::CategoryId::kYourChrome);
   add_action(kActionShowDownloads,
@@ -369,12 +335,14 @@ void CustomizeToolbarHandler::ListActions(ListActionsCallback callback) {
   add_action(kActionClearBrowsingData,
              side_panel::customize_chrome::mojom::CategoryId::kYourChrome);
 
-  if (!base::FeatureList::IsEnabled(tabs::kHorizontalTabStripComboButton) &&
-      features::HasTabSearchToolbarButton()) {
-    add_action(kActionTabSearch,
+  add_action(kActionPrint,
+             side_panel::customize_chrome::mojom::CategoryId::kTools);
+  if (base::FeatureList::IsEnabled(
+          contextual_tasks::kEnableContextualTasksPinButtonInToolbar)) {
+    add_action(kActionSidePanelShowContextualTasks,
                side_panel::customize_chrome::mojom::CategoryId::kTools);
   }
-  add_action(kActionPrint,
+  add_action(kActionTtcToolbar,
              side_panel::customize_chrome::mojom::CategoryId::kTools);
   add_action(kActionSidePanelShowLensOverlayResults,
              side_panel::customize_chrome::mojom::CategoryId::kTools);
@@ -436,9 +404,6 @@ void CustomizeToolbarHandler::PinAction(
       break;
     case kActionForward:
       prefs()->SetBoolean(prefs::kShowForwardButton, pin);
-      break;
-    case kActionSidePanelShowContextualTasks:
-      prefs()->SetBoolean(prefs::kPinContextualTaskButton, pin);
       break;
     case kActionSplitTab:
       prefs()->SetBoolean(prefs::kPinSplitTabButton, pin);

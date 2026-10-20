@@ -12,15 +12,20 @@
 #include "base/metrics/histogram_functions.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/strings/string_util.h"
+#include "chrome/browser/glic/glic_pref_names.h"
 #include "chrome/browser/media/webrtc/media_capture_devices_dispatcher.h"
 #include "chrome/browser/media/webrtc/media_stream_capture_indicator.h"
+#include "chrome/browser/profiles/profile.h"
 #include "components/optimization_guide/content/browser/media_transcript_provider.h"
+#include "components/prefs/pref_service.h"
 #include "content/public/browser/document_picture_in_picture_window_controller.h"
 #include "content/public/browser/media_session.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/web_contents.h"
 #include "media/mojo/mojom/speech_recognition_result.h"
 #include "services/media_session/public/cpp/media_metadata.h"
+#include "services/metrics/public/cpp/ukm_builders.h"
+#include "services/metrics/public/cpp/ukm_recorder.h"
 
 namespace glic {
 
@@ -39,6 +44,17 @@ GlicMediaContext::~GlicMediaContext() {
       UMA_HISTOGRAM_COUNTS_10M("Glic.Media.TotalContextLength",
                                transcript->max_transcript_size_);
     }
+  }
+
+  const bool is_prerendering = render_frame_host().IsInLifecycleState(
+      content::RenderFrameHost::LifecycleState::kPrerendering);
+
+  // UKM recording is not allowed during prerendering. GetPageUkmSourceId()
+  // will CHECK-fail if called while the frame is still prerendering.
+  if (!is_prerendering) {
+    ukm::builders::Glic_MediaContext(render_frame_host().GetPageUkmSourceId())
+        .SetHasTranscript(has_recorded_any_final_chunk_)
+        .Record(ukm::UkmRecorder::Get());
   }
 }
 
@@ -134,6 +150,7 @@ void GlicMediaContext::HandleNonFinalResult(Transcript* transcript,
 
 void GlicMediaContext::HandleFinalResult(Transcript* transcript,
                                          TranscriptChunk new_chunk) {
+  has_recorded_any_final_chunk_ = true;
   if (transcript->nonfinal_chunk_it_ != transcript->transcript_chunks_.end()) {
     // A non-final chunk exists and we will remove it so that the new final
     // chunk can be added in media time order.
@@ -247,6 +264,10 @@ GlicMediaContext::GetTranscriptChunks() const {
   if (!transcript || transcript->next_sequence_number_ == 0) {
     return {};
   }
+
+  UMA_HISTOGRAM_COUNTS_10M("Glic.Media.SharedContextLength",
+                           transcript->max_transcript_size_);
+
   return transcript->transcript_chunks_;
 }
 
@@ -255,6 +276,11 @@ bool GlicMediaContext::HasTranscriptChunks() const {
   // We don't have transcripts if we don't have any final chunk.
   return transcript && transcript->next_sequence_number_ > 0 &&
          !transcript->transcript_chunks_.empty();
+}
+
+void GlicMediaContext::ClearAllTranscripts() {
+  transcripts_by_title_.clear();
+  has_recorded_any_final_chunk_ = false;
 }
 
 void GlicMediaContext::OnPeerConnectionAdded() {
@@ -276,6 +302,13 @@ bool GlicMediaContext::IsExcludedFromTranscript() const {
   content::WebContents* web_contents =
       content::WebContents::FromRenderFrameHost(&render_frame_host());
   if (!web_contents) {
+    return true;
+  }
+
+  Profile* profile =
+      Profile::FromBrowserContext(web_contents->GetBrowserContext());
+  if (!profile->GetPrefs()->GetBoolean(
+          glic::prefs::kGlicMediaUnderstandingEnabled)) {
     return true;
   }
 

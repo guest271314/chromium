@@ -4,18 +4,21 @@
 
 import 'chrome://settings/lazy_load.js';
 
-import {flush} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
 import {NetworkPredictionOptions} from 'chrome://settings/lazy_load.js';
-import type {SettingsDropdownMenuElement, SettingsPrefsElement, SpeedPageElement} from 'chrome://settings/settings.js';
-import {CrSettingsPrefs, loadTimeData, PerformanceBrowserProxyImpl} from 'chrome://settings/settings.js';
+import type {SettingsDropdownMenuElement, SpeedPageElement} from 'chrome://settings/settings.js';
+import {loadTimeData, PerformanceBrowserProxyImpl, PluralStringProxyImpl, PrefsBrowserProxy, PrefService} from 'chrome://settings/settings.js';
 import {assertEquals, assertFalse, assertNull, assertStringContains, assertTrue} from 'chrome://webui-test/chai_assert.js';
-import {FakeSettingsPrivate} from 'chrome://webui-test/fake_settings_private.js';
-import {flushTasks} from 'chrome://webui-test/polymer_test_util.js';
+import {TestPluralStringProxy} from 'chrome://webui-test/test_plural_string_proxy.js';
 import {eventToPromise, microtasksFinished} from 'chrome://webui-test/test_util.js';
 
 import {TestPerformanceBrowserProxy} from './test_performance_browser_proxy.js';
+import {TestPrefsBrowserProxy} from './test_prefs_browser_proxy.js';
 
 suite('SpeedPage', function() {
+  let speedPage: SpeedPageElement;
+  let prefsBrowserProxy: TestPrefsBrowserProxy;
+  let prefService: PrefService;
+
   function getFakePrefs() {
     const fakePrefs = [
       {
@@ -26,62 +29,61 @@ suite('SpeedPage', function() {
         // for more details.
         value: NetworkPredictionOptions.WIFI_ONLY_DEPRECATED,
       },
+      {
+        key: 'cpu_performance_tier_override',
+        type: chrome.settingsPrivate.PrefType.NUMBER,
+        value: -1,
+      },
     ];
     return fakePrefs;
   }
 
-  let speedPage: SpeedPageElement;
-  let settingsPrefs: SettingsPrefsElement;
-
-  suiteSetup(function() {
-    CrSettingsPrefs.deferInitialization = true;
-  });
-
   setup(async () => {
-    settingsPrefs = document.createElement('settings-prefs');
-    const settingsPrivate = new FakeSettingsPrivate(getFakePrefs());
-    settingsPrefs.initialize(settingsPrivate);
+    prefsBrowserProxy = new TestPrefsBrowserProxy(getFakePrefs());
+    PrefsBrowserProxy.setInstance(prefsBrowserProxy);
+
+    PrefService.resetInstanceForTesting();
+    prefService = PrefService.getInstance();
+    await prefService.whenInitialized();
 
     document.body.innerHTML = window.trustedTypes!.emptyHTML;
 
-    // Wait until settings are initialized to start tests.
-    await CrSettingsPrefs.initialized;
-
     speedPage = document.createElement('settings-speed-page');
-    speedPage.prefs = settingsPrefs.prefs!;
     document.body.appendChild(speedPage);
+    // Wait for the initial pref value to propagate to the radio group and
+    // buttons before tests interact with them.
     await microtasksFinished();
   });
 
   test('PreloadPagesDefault', function() {
     assertEquals(
         NetworkPredictionOptions.STANDARD,
-        speedPage.getPref('net.network_prediction_options').value);
+        prefService.getPref('net.network_prediction_options').value);
     assertTrue(speedPage.$.preloadingToggle.checked);
   });
 
-  test('PreloadPagesDisabled', function() {
+  test('PreloadPagesDisabled', async function() {
     speedPage.$.preloadingToggle.click();
-    flush();
+    await microtasksFinished();
 
     assertEquals(
         NetworkPredictionOptions.DISABLED,
-        speedPage.getPref('net.network_prediction_options').value);
+        prefService.getPref('net.network_prediction_options').value);
     assertFalse(speedPage.$.preloadingToggle.checked);
   });
 
-  test('PreloadPagesStandard', function() {
+  test('PreloadPagesStandard', async function() {
     // STANDARD is the default value, so this changes the pref to ensure that
     // clicking preloadingToggle actually updates the underlying pref.
-    speedPage.setPrefValue(
+    await prefService.setPrefValue(
         'net.network_prediction_options', NetworkPredictionOptions.DISABLED);
 
     speedPage.$.preloadingToggle.click();
-    flush();
+    await microtasksFinished();
 
     assertEquals(
         NetworkPredictionOptions.STANDARD,
-        speedPage.getPref('net.network_prediction_options').value);
+        prefService.getPref('net.network_prediction_options').value);
     assertTrue(speedPage.$.preloadingStandard.checked);
     assertTrue(speedPage.$.preloadingStandard.expanded);
   });
@@ -89,15 +91,16 @@ suite('SpeedPage', function() {
   test('PreloadPagesStandardFromExtended', async () => {
     // STANDARD is the default value, so this changes the pref to ensure that
     // clicking preloadingToggle actually updates the underlying pref.
-    speedPage.setPrefValue(
+    await prefService.setPrefValue(
         'net.network_prediction_options', NetworkPredictionOptions.EXTENDED);
 
     speedPage.$.preloadingStandard.click();
     await eventToPromise('change', speedPage.$.preloadingRadioGroup);
+    await microtasksFinished();
 
     assertEquals(
         NetworkPredictionOptions.STANDARD,
-        speedPage.getPref('net.network_prediction_options').value);
+        prefService.getPref('net.network_prediction_options').value);
     assertTrue(speedPage.$.preloadingStandard.checked);
     assertTrue(speedPage.$.preloadingStandard.expanded);
   });
@@ -105,10 +108,11 @@ suite('SpeedPage', function() {
   test('PreloadPagesExtended', async () => {
     speedPage.$.preloadingExtended.click();
     await eventToPromise('change', speedPage.$.preloadingRadioGroup);
+    await microtasksFinished();
 
     assertEquals(
         NetworkPredictionOptions.EXTENDED,
-        speedPage.getPref('net.network_prediction_options').value);
+        prefService.getPref('net.network_prediction_options').value);
     assertTrue(speedPage.$.preloadingExtended.checked);
     assertTrue(speedPage.$.preloadingExtended.expanded);
   });
@@ -148,12 +152,19 @@ suite('SpeedPage', function() {
 suite('CpuPerformanceOverride', function() {
   let speedPage: SpeedPageElement;
   let performanceBrowserProxy: TestPerformanceBrowserProxy;
+  let prefsBrowserProxy: TestPrefsBrowserProxy;
+  let prefService: PrefService;
+  let pluralStringProxy: TestPluralStringProxy;
 
   setup(async function() {
     document.body.innerHTML = window.trustedTypes!.emptyHTML;
     loadTimeData.overrideValues({
       cpuPerformanceEnabled: true,
     });
+
+    pluralStringProxy = new TestPluralStringProxy();
+    pluralStringProxy.text = '8 cores';
+    PluralStringProxyImpl.setInstance(pluralStringProxy);
 
     performanceBrowserProxy = new TestPerformanceBrowserProxy();
     performanceBrowserProxy.setCpuPerformanceInfo({
@@ -163,27 +174,33 @@ suite('CpuPerformanceOverride', function() {
     });
     PerformanceBrowserProxyImpl.setInstance(performanceBrowserProxy);
 
-    speedPage = document.createElement('settings-speed-page');
-    speedPage.prefs = {
-      net: {
-        network_prediction_options: {
-          type: chrome.settingsPrivate.PrefType.NUMBER,
-          value: NetworkPredictionOptions.STANDARD,
-        },
-      },
-      cpu_performance_tier_override: {
+    const fakePrefs = [
+      {
+        key: 'net.network_prediction_options',
         type: chrome.settingsPrivate.PrefType.NUMBER,
-        value: -1,  // no override
+        value: NetworkPredictionOptions.STANDARD,
       },
-    };
+      {
+        key: 'cpu_performance_tier_override',
+        type: chrome.settingsPrivate.PrefType.NUMBER,
+        value: -1,
+      },
+    ];
+    prefsBrowserProxy = new TestPrefsBrowserProxy(fakePrefs);
+    PrefsBrowserProxy.setInstance(prefsBrowserProxy);
+
+    PrefService.resetInstanceForTesting();
+    prefService = PrefService.getInstance();
+    await prefService.whenInitialized();
+
+    speedPage = document.createElement('settings-speed-page');
     document.body.appendChild(speedPage);
     await performanceBrowserProxy.whenCalled('getCpuPerformanceInfo');
-    await flushTasks();
+    await microtasksFinished();
   });
 
   test('HardwareInfoPresent', function() {
-    const secondary =
-        speedPage.shadowRoot!.querySelector('#cpuPerformanceInfo');
+    const secondary = speedPage.shadowRoot.querySelector('#cpuPerformanceInfo');
 
     assertTrue(!!secondary);
     const text = secondary.textContent || '';
@@ -192,9 +209,9 @@ suite('CpuPerformanceOverride', function() {
     assertStringContains(text, 'Tier 2: MID');
   });
 
-  test('DropdownSelectionUpdatesPref', function() {
+  test('DropdownSelectionUpdatesPref', async function() {
     const dropdown =
-        speedPage.shadowRoot!.querySelector<SettingsDropdownMenuElement>(
+        speedPage.shadowRoot.querySelector<SettingsDropdownMenuElement>(
             '#cpuPerformanceOverrideDropdown');
     assertTrue(!!dropdown);
 
@@ -204,51 +221,40 @@ suite('CpuPerformanceOverride', function() {
     assertEquals('-1', dropdown.$.dropdownMenu.value);
     assertEquals(
         -1,  // no override
-        speedPage.getPref('cpu_performance_tier_override').value);
+        prefService.getPref('cpu_performance_tier_override').value);
 
     // Select 'High' (value 3).
     dropdown.$.dropdownMenu.value = '3';
     dropdown.$.dropdownMenu.dispatchEvent(new CustomEvent('change'));
+    await microtasksFinished();
 
     // Verify that the pref changed.
     assertEquals(
         3,  // 'High'
-        speedPage.getPref('cpu_performance_tier_override').value);
+        prefService.getPref('cpu_performance_tier_override').value);
   });
 
   test('DropdownDisabledWhenPolicyActive', async function() {
-    speedPage.prefs = {
-      net: {
-        network_prediction_options: {
-          type: chrome.settingsPrivate.PrefType.NUMBER,
-          value: NetworkPredictionOptions.STANDARD,
-        },
-      },
-      cpu_performance_tier_override: {
-        key: 'cpu_performance_tier_override',
-        type: chrome.settingsPrivate.PrefType.NUMBER,
-        value: 4,  // Ultra
-        controlledBy: chrome.settingsPrivate.ControlledBy.USER_POLICY,
-        enforcement: chrome.settingsPrivate.Enforcement.ENFORCED,
-      },
-    };
-    flush();
+    prefsBrowserProxy.fakeApi.sendPrefChanges([{
+      key: 'cpu_performance_tier_override',
+      value: 4,
+      controlledBy: chrome.settingsPrivate.ControlledBy.USER_POLICY,
+      enforcement: chrome.settingsPrivate.Enforcement.ENFORCED,
+    }]);
 
     const dropdown =
-        speedPage.shadowRoot!.querySelector<SettingsDropdownMenuElement>(
+        speedPage.shadowRoot.querySelector<SettingsDropdownMenuElement>(
             '#cpuPerformanceOverrideDropdown');
     assertTrue(!!dropdown);
 
-    await flushTasks();
     await microtasksFinished();
 
     // Verify that the dropdown is disabled and shows the policy indicator.
-    assertTrue(dropdown.shadowRoot!.querySelector('select')!.disabled);
-    assertTrue(
-        !!dropdown.shadowRoot!.querySelector('cr-policy-pref-indicator'));
+    assertTrue(dropdown.shadowRoot.querySelector('select')!.disabled);
+    assertTrue(!!dropdown.shadowRoot.querySelector('cr-policy-pref-indicator'));
 
     // Verify the component respects the enforced preference value.
-    assertEquals(4, speedPage.getPref('cpu_performance_tier_override').value);
+    assertEquals(4, prefService.getPref('cpu_performance_tier_override').value);
 
     // Verify the UI displays the enforced value.
     assertEquals('4', dropdown.$.dropdownMenu.value);
@@ -258,6 +264,8 @@ suite('CpuPerformanceOverride', function() {
 suite('CpuPerformanceOverrideFeatureDisabled', function() {
   let speedPage: SpeedPageElement;
   let performanceBrowserProxy: TestPerformanceBrowserProxy;
+  let prefsBrowserProxy: TestPrefsBrowserProxy;
+  let prefService: PrefService;
 
   setup(async function() {
     document.body.innerHTML = window.trustedTypes!.emptyHTML;
@@ -268,23 +276,28 @@ suite('CpuPerformanceOverrideFeatureDisabled', function() {
     performanceBrowserProxy = new TestPerformanceBrowserProxy();
     PerformanceBrowserProxyImpl.setInstance(performanceBrowserProxy);
 
-    speedPage = document.createElement('settings-speed-page');
-    speedPage.prefs = {
-      net: {
-        network_prediction_options: {
-          type: chrome.settingsPrivate.PrefType.NUMBER,
-          value: NetworkPredictionOptions.STANDARD,
-        },
+    const fakePrefs = [
+      {
+        key: 'net.network_prediction_options',
+        type: chrome.settingsPrivate.PrefType.NUMBER,
+        value: NetworkPredictionOptions.STANDARD,
       },
-    };
+    ];
+    prefsBrowserProxy = new TestPrefsBrowserProxy(fakePrefs);
+    PrefsBrowserProxy.setInstance(prefsBrowserProxy);
+
+    PrefService.resetInstanceForTesting();
+    prefService = PrefService.getInstance();
+    await prefService.whenInitialized();
+
+    speedPage = document.createElement('settings-speed-page');
     document.body.appendChild(speedPage);
-    await flushTasks();
   });
 
   test('FeatureDisabled', function() {
     // Verify that the setting is missing.
     const section =
-        speedPage.shadowRoot!.querySelector('#cpuPerformanceOverrideDropdown');
+        speedPage.shadowRoot.querySelector('#cpuPerformanceOverrideDropdown');
     assertNull(section);
   });
 });

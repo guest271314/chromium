@@ -12,10 +12,10 @@
 #import "base/strings/sys_string_conversions.h"
 #import "components/lens/lens_url_utils.h"
 #import "ios/chrome/browser/context_menu/ui_bundled/context_menu_configuration_provider.h"
-#import "ios/chrome/browser/lens_overlay/coordinator/lens_overlay_availability.h"
 #import "ios/chrome/browser/lens_overlay/coordinator/lens_overlay_tab_change_audience.h"
 #import "ios/chrome/browser/lens_overlay/coordinator/lens_result_page_mediator_delegate.h"
 #import "ios/chrome/browser/lens_overlay/model/lens_overlay_url_utils.h"
+#import "ios/chrome/browser/lens_overlay/public/lens_overlay_availability.h"
 #import "ios/chrome/browser/lens_overlay/ui/lens_overlay_error_handler.h"
 #import "ios/chrome/browser/lens_overlay/ui/lens_result_page_consumer.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
@@ -124,6 +124,15 @@ BOOL IsMaximizeBottomSheetURL(const GURL& URL) {
   return base::EqualsCaseInsensitiveASCII(host, "resultpanel-header-hide");
 }
 
+// Detect if the AIM overlay is displayed based on the fragment.
+BOOL IsAIMOverlayShownUrl(const GURL& URL) {
+  if (!(lens::IsGoogleHostURL(URL) && URLHasLensRequestQueryParam(URL))) {
+    return NO;
+  }
+
+  return URL.ref().find("aimos=1") != std::string::npos;
+}
+
 // Maps `value` of the closed interval [`in_min`, `in_max`] to
 // [`out_min`, `out_max`].
 float IntervalMap(float value,
@@ -188,6 +197,8 @@ inline constexpr char kDarkModeParameterDarkValue[] = "1";
   float _lastCommitedProgress;
   /// Most recent loaded HTTP headers.
   NSDictionary<NSString*, NSString*>* _latestHttpHeaders;
+  /// Whether the AIM overlay is currently displayed.
+  BOOL _isAIMOverlayShown;
 }
 
 - (instancetype)
@@ -336,6 +347,10 @@ inline constexpr char kDarkModeParameterDarkValue[] = "1";
       return;
     }
 
+    if (!URL.SchemeIsHTTPOrHTTPS()) {
+      return;
+    }
+
     [self.delegate lensResultPageOpenURLInNewTabRequested:URL];
     [self.delegate
          lensResultPageMediator:self
@@ -351,8 +366,7 @@ inline constexpr char kDarkModeParameterDarkValue[] = "1";
     [self.delegate
          lensResultPageMediator:self
         didOpenNewTabFromSource:lens::LensOverlayNewTabSource::kExploreBarTab];
-  } else if (base::FeatureList::IsEnabled(kLensSearchHeadersCheckEnabled) &&
-             requestInfo.target_frame_is_main && lens::IsGoogleHostURL(URL) &&
+  } else if (requestInfo.target_frame_is_main && lens::IsGoogleHostURL(URL) &&
              [self shouldAddHeaders:request]) {
     // Only attach headers for navigation clicks targeting main frame.
     [self loadResultsURL:URL httpHeaders:_latestHttpHeaders];
@@ -410,9 +424,20 @@ inline constexpr char kDarkModeParameterDarkValue[] = "1";
 - (void)webState:(web::WebState*)webState
     didStartNavigation:(web::NavigationContext*)navigationContext {
   BOOL isSameDocument = navigationContext->IsSameDocument();
-  // Disregard same document navigation from initiating progress loading.
   if (!isSameDocument) {
+    // Reset progress for new page.
     _lastCommitedProgress = 0;
+  }
+
+  // Check for overlay status.
+  GURL URL = navigationContext->GetUrl();
+  if (IsAIMOverlayShownUrl(URL)) {
+    _isAIMOverlayShown = YES;
+    [self.bottomSheetCommands requestMaximizeBottomSheet];
+    [self.bottomSheetCommands hideSearchBar];
+  } else if (_isAIMOverlayShown) {
+    _isAIMOverlayShown = NO;
+    [self.bottomSheetCommands showSearchBar];
   }
 }
 
@@ -502,6 +527,11 @@ inline constexpr char kDarkModeParameterDarkValue[] = "1";
       return nullptr;
     }
   }
+
+  if (!URL.SchemeIsHTTPOrHTTPS()) {
+    return nullptr;
+  }
+
   // Open the URL in a new tab.
   [self.delegate lensResultPageOpenURLInNewTabRequested:URL];
   [self.delegate
@@ -546,6 +576,22 @@ inline constexpr char kDarkModeParameterDarkValue[] = "1";
                                  (void (^)(SecIdentityRef))handler {
   _browserWebStateDelegate->OnAuthRequired(webState, protectionSpace,
                                            base::BindOnce(handler));
+}
+
+- (void)webState:(web::WebState*)webState
+    didRequestProxyAuthForProtectionSpace:(NSURLProtectionSpace*)protectionSpace
+                       proposedCredential:(NSURLCredential*)proposedCredential
+                          failureResponse:(NSURLResponse*)failureResponse
+                        completionHandler:(void (^)(NSString* username,
+                                                    NSString* password,
+                                                    NSError* error))handler
+    API_AVAILABLE(ios(18.1)) {
+  if (!handler) {
+    return;
+  }
+  _browserWebStateDelegate->OnProxyAuthChallenge(
+      webState, protectionSpace, proposedCredential, failureResponse,
+      base::BindOnce(handler));
 }
 
 // This API can be used to show custom input views in the web view.

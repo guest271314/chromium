@@ -9,11 +9,14 @@
 
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/task_environment.h"
+#include "base/types/expected.h"
+#include "components/affiliations/core/browser/match_type.h"
 #include "components/password_manager/core/browser/password_form.h"
 #include "components/password_manager/core/browser/password_manager_test_utils.h"
 #include "components/password_manager/core/browser/password_store/mock_password_store_interface.h"
 #include "components/password_manager/core/browser/password_store/mock_smart_bubble_stats_store.h"
 #include "components/password_manager/core/browser/password_store/password_form_converters.h"
+#include "components/password_manager/core/browser/password_string.h"
 #include "services/network/test/test_network_context.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -41,8 +44,8 @@ PasswordForm CreateTestForm() {
   form.signon_realm = form.url.DeprecatedGetOriginAsURL().spec();
   form.action = GURL("https://example.org/action.html");
   form.username_value = u"user";
-  form.password_value = u"password";
-  form.match_type = PasswordForm::MatchType::kExact;
+  form.password_value = PasswordString(u"password");
+  form.match_type = affiliations::MatchType::kExact;
   return form;
 }
 
@@ -53,8 +56,8 @@ PasswordForm CreateTestPSLForm() {
   form.signon_realm = form.url.DeprecatedGetOriginAsURL().spec();
   form.action = GURL(kTestSubdomainHttpURL);
   form.username_value = u"user2";
-  form.password_value = u"password2";
-  form.match_type = PasswordForm::MatchType::kPSL;
+  form.password_value = PasswordString(u"password2");
+  form.match_type = affiliations::MatchType::kPSL;
   return form;
 }
 
@@ -62,11 +65,11 @@ PasswordForm CreateTestPSLForm() {
 PasswordForm CreateAndroidCredential() {
   PasswordForm form;
   form.username_value = u"user3";
-  form.password_value = u"password3";
+  form.password_value = PasswordString(u"password3");
   form.signon_realm = "android://hash@com.example.android/";
   form.url = GURL(form.signon_realm);
   form.action = GURL();
-  form.match_type = PasswordForm::MatchType::kPSL;
+  form.match_type = affiliations::MatchType::kPSL;
   return form;
 }
 
@@ -79,7 +82,7 @@ PasswordForm CreateLocalFederatedCredential() {
   form.action = GURL("http://localhost/");
   form.federation_origin =
       url::SchemeHostPort(GURL("https://federation.example.com"));
-  form.match_type = PasswordForm::MatchType::kExact;
+  form.match_type = affiliations::MatchType::kExact;
   return form;
 }
 
@@ -128,6 +131,7 @@ class HttpPasswordStoreMigratorTest : public testing::Test {
   void TestEmptyStore(bool is_hsts);
   void TestFullStore(bool is_hsts);
   void TestMigratorDeletionByConsumer(bool is_hsts);
+  void TestMigratorReceivesBackendError(bool is_hsts);
 
  private:
   base::test::TaskEnvironment task_environment_;
@@ -159,7 +163,9 @@ void HttpPasswordStoreMigratorTest::TestEmptyStore(bool is_hsts) {
                                      &consumer());
 
   EXPECT_CALL(consumer(), ProcessMigratedForms(IsEmpty()));
-  migrator.OnGetPasswordStoreResultsOrErrorFrom(nullptr, LoginsResultOrError());
+  migrator.OnGetPasswordStoreResultsOrErrorFrom(
+      nullptr, base::expected<std::vector<StoredCredential>,
+                              PasswordStoreBackendError>());
 }
 
 void HttpPasswordStoreMigratorTest::TestFullStore(bool is_hsts) {
@@ -235,8 +241,36 @@ void HttpPasswordStoreMigratorTest::TestMigratorDeletionByConsumer(
   EXPECT_CALL(consumer(), ProcessMigratedForms(_))
       .WillOnce([&migrator](Unused) { migrator.reset(); });
 
-  migrator->OnGetPasswordStoreResultsOrErrorFrom(nullptr,
-                                                 LoginsResultOrError());
+  migrator->OnGetPasswordStoreResultsOrErrorFrom(
+      nullptr, base::expected<std::vector<StoredCredential>,
+                              PasswordStoreBackendError>());
+}
+
+void HttpPasswordStoreMigratorTest::TestMigratorReceivesBackendError(
+    bool is_hsts) {
+  PasswordFormDigest form_digest(CreateTestForm());
+  form_digest.url = form_digest.url.DeprecatedGetOriginAsURL();
+  EXPECT_CALL(store(), GetLogins(form_digest, _));
+  EXPECT_CALL(mock_network_context(), IsHSTSActiveForHost(kTestHost, _, _))
+      .Times(1)
+      .WillOnce(testing::WithArg<2>(
+          [is_hsts](auto cb) { std::move(cb).Run(is_hsts); }));
+
+  EXPECT_CALL(store(), GetSmartBubbleStatsStore)
+      .WillRepeatedly(Return(&smart_bubble_stats_store()));
+
+  EXPECT_CALL(smart_bubble_stats_store(),
+              RemoveSiteStats(GURL(kTestHttpURL).DeprecatedGetOriginAsURL()))
+      .Times(is_hsts);
+
+  HttpPasswordStoreMigrator migrator(url::Origin::Create(GURL(kTestHttpsURL)),
+                                     &store(), &mock_network_context(),
+                                     &consumer());
+
+  EXPECT_CALL(consumer(), ProcessMigratedForms(IsEmpty()));
+  migrator.OnGetPasswordStoreResultsOrErrorFrom(
+      nullptr, base::unexpected(PasswordStoreBackendError(
+                   PasswordStoreBackendErrorType::kAuthErrorResolvable)));
 }
 
 TEST_F(HttpPasswordStoreMigratorTest, EmptyStoreWithHSTS) {
@@ -261,6 +295,14 @@ TEST_F(HttpPasswordStoreMigratorTest, MigratorDeletionByConsumerWithHSTS) {
 
 TEST_F(HttpPasswordStoreMigratorTest, MigratorDeletionByConsumerWithoutHSTS) {
   TestMigratorDeletionByConsumer(false);
+}
+
+TEST_F(HttpPasswordStoreMigratorTest, MigratorReceivesBackendErrorWithHSTS) {
+  TestMigratorReceivesBackendError(true);
+}
+
+TEST_F(HttpPasswordStoreMigratorTest, MigratorReceivesBackendErrorWithoutHSTS) {
+  TestMigratorReceivesBackendError(false);
 }
 
 TEST(HttpPasswordStoreMigrator, MigrateHttpFormToHttpsTestSignonRealm) {
@@ -294,6 +336,25 @@ TEST(HttpPasswordStoreMigrator, MigrateHttpFormToHttpsTestSignonRealm) {
                   .signon_realm,
               "https://example.org/realm");
   }
+}
+
+TEST(HttpPasswordStoreMigrator, MigrateHttpFormToHttpsTestSkipZeroClick) {
+  PasswordForm http_form;
+  http_form.url = GURL("http://example.org/");
+  http_form.signon_realm = "http://example.org/";
+  http_form.scheme = PasswordForm::Scheme::kHtml;
+
+  // For non-shared passwords, skip_zero_click should be reset to false.
+  http_form.skip_zero_click = true;
+  http_form.type = PasswordForm::Type::kGenerated;
+  EXPECT_FALSE(HttpPasswordStoreMigrator::MigrateHttpFormToHttps(http_form)
+                   .skip_zero_click);
+
+  // For shared passwords, skip_zero_click should be preserved.
+  http_form.skip_zero_click = true;
+  http_form.type = PasswordForm::Type::kReceivedViaSharing;
+  EXPECT_TRUE(HttpPasswordStoreMigrator::MigrateHttpFormToHttps(http_form)
+                  .skip_zero_click);
 }
 
 }  // namespace password_manager

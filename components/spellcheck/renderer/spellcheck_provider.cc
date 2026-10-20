@@ -12,6 +12,7 @@
 #include "base/containers/to_vector.h"
 #include "base/functional/bind.h"
 #include "base/memory/raw_ptr.h"
+#include "base/metrics/histogram_macros.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
@@ -95,15 +96,7 @@ SpellCheckProvider::DictionaryUpdateObserverImpl::
 
 void SpellCheckProvider::DictionaryUpdateObserverImpl::OnDictionaryUpdated(
     const std::vector<WebString>& words_added) {
-  // Clear only cache. Current pending requests should continue as they are.
-  owner_->last_request_.clear();
-  owner_->last_results_.clear();
-
-  // owner_->render_frame() is nullptr in unit tests.
-  if (auto* render_frame = owner_->render_frame()) {
-    DCHECK(render_frame->GetWebFrame());
-    render_frame->GetWebFrame()->RemoveSpellingMarkersUnderWords(words_added);
-  }
+  owner_->OnDictionaryUpdated(words_added);
 }
 
 SpellCheckProvider::SpellCheckProvider(content::RenderFrame* render_frame,
@@ -118,6 +111,19 @@ SpellCheckProvider::SpellCheckProvider(content::RenderFrame* render_frame,
 }
 
 SpellCheckProvider::~SpellCheckProvider() {
+}
+
+void SpellCheckProvider::OnDictionaryUpdated(
+    const std::vector<WebString>& words_added) {
+  // Clear only cache. Current pending requests should continue as they are.
+  last_request_.clear();
+  last_results_.clear();
+
+  // render_frame() is nullptr in unit tests.
+  if (auto* frame = render_frame()) {
+    DCHECK(frame->GetWebFrame());
+    frame->GetWebFrame()->RemoveSpellingMarkersUnderWords(words_added);
+  }
 }
 
 void SpellCheckProvider::ResetDictionaryUpdateObserverForTesting() {
@@ -252,17 +258,36 @@ void SpellCheckProvider::OnRespondInitializeDictionaries(
 #endif  // BUILDFLAG(IS_WIN)
 #endif  // BUILDFLAG(USE_BROWSER_SPELLCHECKER)
 
+void SpellCheckProvider::DidCreateNewDocument() {
+  // SpellCheckCustomDictionary is document-scoped: a fresh document starts
+  // with no custom words. Record the outgoing document's word count for
+  // documents that actually used the API, so the per-document cap can be
+  // revisited with real-world data.
+  if (!document_custom_words_.empty()) {
+    UMA_HISTOGRAM_COUNTS_100000(
+        "Spellcheck.DocumentCustomDictionary.WordCount",
+        static_cast<int>(document_custom_words_.size()));
+  }
+  document_custom_words_.clear();
+}
+
 void SpellCheckProvider::FocusedElementChanged(
-    const blink::WebElement& unused) {
+    const blink::WebElement& element) {
+  if (base::FeatureList::IsEnabled(
+          spellcheck::kOnDemandSpellcheckInitialization) &&
+      !element.IsNull() && element.IsEditable() && spellcheck_) {
+    spellcheck_->InitializeIfNeeded();
+  }
+
 #if BUILDFLAG(IS_ANDROID)
   if (!spell_check_host_.is_bound())
     return;
 
   WebLocalFrame* frame = render_frame()->GetWebFrame();
-  WebElement element = frame->GetDocument().IsNull()
-                           ? WebElement()
-                           : frame->GetDocument().FocusedElement();
-  bool enabled = !element.IsNull() && element.IsEditable();
+  WebElement focused_element = frame->GetDocument().IsNull()
+                                   ? WebElement()
+                                   : frame->GetDocument().FocusedElement();
+  bool enabled = !focused_element.IsNull() && focused_element.IsEditable();
   if (!enabled)
     GetSpellCheckHost().DisconnectSessionBridge();
 #endif  // BUILDFLAG(IS_ANDROID)
@@ -302,6 +327,10 @@ void SpellCheckProvider::CheckSpelling(
     spellcheck::PerLanguageSuggestions per_language_suggestions;
     spellcheck_->SpellCheckWord(word, GetSpellCheckHost(), &offset, &length,
                                 &per_language_suggestions);
+    ApplyDocumentCustomWords(word, offset, length);
+    if (length == 0) {
+      per_language_suggestions.clear();
+    }
 
 #if BUILDFLAG(IS_WIN) && BUILDFLAG(USE_BROWSER_SPELLCHECKER)
     spellcheck_renderer_metrics::RecordHunspellSuggestionDuration(
@@ -316,6 +345,7 @@ void SpellCheckProvider::CheckSpelling(
   } else {
     spellcheck_->SpellCheckWord(word, GetSpellCheckHost(), &offset, &length,
                                 /* optional suggestions vector */ nullptr);
+    ApplyDocumentCustomWords(word, offset, length);
     spellcheck_renderer_metrics::RecordCheckedTextLengthNoSuggestions(
         base::saturated_cast<int>(word.size()));
 
@@ -338,10 +368,57 @@ void SpellCheckProvider::RequestCheckingOfText(
       base::saturated_cast<int>(text.length()));
 }
 
+void SpellCheckProvider::ApplyDocumentCustomWords(const std::u16string& word,
+                                                  size_t& offset,
+                                                  size_t& length) const {
+  // An optimization to avoid a substring allocation and set lookup
+  // on this per-word path; behavior is unchanged if it is removed.
+  if (length == 0 || document_custom_words_.empty()) {
+    return;
+  }
+  if (document_custom_words_.contains(word.substr(offset, length))) {
+    offset = 0;
+    length = 0;
+  }
+}
+
+std::vector<WebString> SpellCheckProvider::GetSpellCheckCustomDictionaryWords()
+    const {
+  // |document_custom_words_| is ordered, so the result is already sorted.
+  return base::ToVector(document_custom_words_, &WebString::FromUtf16);
+}
+
 void SpellCheckProvider::SpellCheckCustomDictionaryChanged(
     const std::vector<std::string>& words_added,
     const std::vector<std::string>& words_removed) {
-  spellcheck_->SpellCheckCustomDictionaryChanged(words_added, words_removed);
+  // Enforce the per-document word-count cap and per-word length limit at the
+  // API entry point. document_custom_words_ is the live set, so the cap bounds
+  // the resident set rather than lifetime churn.
+  for (const std::string& word : words_removed) {
+    document_custom_words_.erase(base::UTF8ToUTF16(word));
+  }
+
+  std::vector<std::string> effective_added;
+  effective_added.reserve(words_added.size());
+  for (const std::string& word : words_added) {
+    if (word.size() > spellcheck::kMaxDocumentCustomDictionaryWordBytes) {
+      continue;
+    }
+    if (document_custom_words_.size() >=
+        spellcheck::kMaxDocumentCustomDictionaryWords) {
+      // Once the cap is reached every later word would be rejected.
+      break;
+    }
+    // Below the cap: insert once and forward only words that were actually new.
+    if (document_custom_words_.insert(base::UTF8ToUTF16(word)).second) {
+      effective_added.push_back(word);
+    }
+  }
+
+  // The word set belongs to this frame's document, so update only this frame.
+  // Notifying through |spellcheck_| would reach every frame in the renderer
+  // process.
+  OnDictionaryUpdated(base::ToVector(effective_added, &WebString::FromUtf8));
 }
 
 #if BUILDFLAG(USE_RENDERER_SPELLCHECKER)
@@ -368,7 +445,8 @@ void SpellCheckProvider::OnRespondSpellingService(
   std::vector<blink::WebTextCheckingResult> textcheck_results;
   spellcheck_->CreateTextCheckingResults(
       SpellCheck::USE_HUNSPELL_FOR_GRAMMAR, GetSpellCheckHost(),
-      /*line_offset=*/0, line, results, &textcheck_results);
+      /*line_offset=*/0, line, results, &textcheck_results,
+      document_custom_words_.empty() ? nullptr : &document_custom_words_);
   completion->DidFinishCheckingText(textcheck_results);
 
   // Cache the request and the converted results.
@@ -417,9 +495,10 @@ void SpellCheckProvider::OnRespondTextCheck(
   }
 #endif  // BUILDFLAG(IS_WIN) && BUILDFLAG(USE_BROWSER_SPELLCHECKER)
 
-  spellcheck_->CreateTextCheckingResults(result_filter, GetSpellCheckHost(),
-                                         /*line_offset=*/0, line, results,
-                                         &textcheck_results);
+  spellcheck_->CreateTextCheckingResults(
+      result_filter, GetSpellCheckHost(),
+      /*line_offset=*/0, line, results, &textcheck_results,
+      document_custom_words_.empty() ? nullptr : &document_custom_words_);
 
 #if BUILDFLAG(IS_WIN) && BUILDFLAG(USE_BROWSER_SPELLCHECKER)
   if (request_info != hybrid_requests_info_.end()) {
@@ -481,5 +560,12 @@ bool SpellCheckProvider::SatisfyRequestFromCache(
 }
 
 void SpellCheckProvider::OnDestruct() {
+  // Capture the final word count for documents that used the API but were
+  // torn down without a follow-on navigation (e.g., the frame was removed).
+  if (!document_custom_words_.empty()) {
+    UMA_HISTOGRAM_COUNTS_100000(
+        "Spellcheck.DocumentCustomDictionary.WordCount",
+        static_cast<int>(document_custom_words_.size()));
+  }
   delete this;
 }

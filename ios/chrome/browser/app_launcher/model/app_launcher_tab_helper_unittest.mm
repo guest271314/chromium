@@ -13,7 +13,9 @@
 #import "base/location.h"
 #import "base/memory/raw_ptr.h"
 #import "base/memory/scoped_refptr.h"
+#import "base/strings/sys_string_conversions.h"
 #import "base/test/scoped_feature_list.h"
+#import "base/test/test_future.h"
 #import "base/time/default_clock.h"
 #import "components/policy/core/browser/url_list/policy_blocklist_service.h"
 #import "components/policy/policy_constants.h"
@@ -29,6 +31,7 @@
 #import "ios/chrome/browser/shared/model/profile/test/test_profile_ios.h"
 #import "ios/chrome/browser/shared/model/url/url_util.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
+#import "ios/testing/scoped_block_swizzler.h"
 #import "ios/web/common/features.h"
 #import "ios/web/public/test/fakes/fake_navigation_manager.h"
 #import "ios/web/public/test/fakes/fake_web_state.h"
@@ -160,6 +163,13 @@ class AppLauncherTabHelperTest : public PlatformTest {
  protected:
   void SetUp() override {
     PlatformTest::SetUp();
+    // Ensure RequestToLaunchApp() treats the application as active on device
+    // bots.
+    application_state_swizzler_ = std::make_unique<ScopedBlockSwizzler>(
+        [UIApplication class], @selector(applicationState), ^{
+          return UIApplicationStateActive;
+        });
+
     TestProfileIOS::Builder builder;
     builder.AddTestingFactory(
         ReadingListModelFactory::GetInstance(),
@@ -181,6 +191,11 @@ class AppLauncherTabHelperTest : public PlatformTest {
     tab_helper_ = AppLauncherTabHelper::FromWebState(&web_state_);
     tab_helper_->SetDelegate(&delegate_);
     tab_helper_->SetBrowserPresentationProvider(browser_presentation_provider_);
+  }
+
+  void TearDown() override {
+    application_state_swizzler_.reset();
+    PlatformTest::TearDown();
   }
 
   [[nodiscard]] bool TestShouldAllowRequest(
@@ -262,6 +277,7 @@ class AppLauncherTabHelperTest : public PlatformTest {
   }
 
   web::WebTaskEnvironment task_environment;
+  std::unique_ptr<ScopedBlockSwizzler> application_state_swizzler_;
   std::unique_ptr<TestProfileIOS> profile_;
   web::FakeWebState web_state_;
   bool incognito_ = false;
@@ -489,6 +505,90 @@ TEST_F(AppLauncherTabHelperTest,
   EXPECT_EQ(0U, delegate_.GetAppLaunchCount());
   EXPECT_TRUE(callback_called);
   EXPECT_TRUE(policy_decision.ShouldAllowNavigation());
+}
+
+// Test that IsCallPromptLaunchPending() returns true only while a call-prompt
+// URL launch (e.g. facetime-audio:) is pending completion.
+TEST_F(AppLauncherTabHelperTest, IsCallPromptLaunchPending) {
+  delegate_.SetShouldCompleteAppLaunchImmediately(false);
+  EXPECT_FALSE(tab_helper_->IsCallPromptLaunchPending());
+
+  // Non-call app schemes do not set IsCallPromptLaunchPending().
+  EXPECT_FALSE(TestShouldAllowRequest(@"valid://1234",
+                                      /*target_frame_is_main=*/true,
+                                      /*target_frame_is_cross_origin=*/false,
+                                      /*target_window_is_cross_origin=*/false,
+                                      /*is_user_initiated=*/true,
+                                      /*user_tapped_recently=*/true));
+  EXPECT_FALSE(tab_helper_->IsCallPromptLaunchPending());
+  delegate_.CompleteAppLaunch();
+  delegate_.CompleteBackToApp();
+
+  // Call schemes (such as facetime-audio:) set IsCallPromptLaunchPending()
+  // until the scene becomes active again.
+  EXPECT_FALSE(TestShouldAllowRequest(@"facetime-audio://+12345551212",
+                                      /*target_frame_is_main=*/true,
+                                      /*target_frame_is_cross_origin=*/false,
+                                      /*target_window_is_cross_origin=*/false,
+                                      /*is_user_initiated=*/true,
+                                      /*user_tapped_recently=*/true));
+  EXPECT_TRUE(tab_helper_->IsCallPromptLaunchPending());
+
+  delegate_.CompleteAppLaunch();
+  EXPECT_TRUE(tab_helper_->IsCallPromptLaunchPending());
+
+  delegate_.CompleteBackToApp();
+  EXPECT_FALSE(tab_helper_->IsCallPromptLaunchPending());
+}
+
+// Test that ShouldAllowResponse() allows navigation response immediately when
+// no app launch is pending.
+TEST_F(AppLauncherTabHelperTest, ShouldAllowResponseWhenNoAppLaunchPending) {
+  NSURL* url = [NSURL URLWithString:@"https://example.com"];
+  NSURLResponse* response = [[NSURLResponse alloc] initWithURL:url
+                                                      MIMEType:@"text/html"
+                                         expectedContentLength:0
+                                              textEncodingName:nil];
+  base::test::TestFuture<web::WebStatePolicyDecider::PolicyDecision> future;
+  tab_helper_->ShouldAllowResponse(
+      response,
+      web::WebStatePolicyDecider::ResponseInfo(/*for_main_frame=*/true),
+      future.GetCallback());
+  EXPECT_TRUE(future.IsReady());
+  EXPECT_TRUE(future.Get().ShouldAllowNavigation());
+}
+
+// Test that ShouldAllowResponse() waits for any pending app launch and scene
+// activation before allowing a navigation response to commit.
+TEST_F(AppLauncherTabHelperTest, ShouldAllowResponseWhileAppLaunchPending) {
+  delegate_.SetShouldCompleteAppLaunchImmediately(false);
+
+  EXPECT_FALSE(TestShouldAllowRequest(@"valid://1234",
+                                      /*target_frame_is_main=*/true,
+                                      /*target_frame_is_cross_origin=*/false,
+                                      /*target_window_is_cross_origin=*/false,
+                                      /*is_user_initiated=*/true,
+                                      /*user_tapped_recently=*/true));
+  ASSERT_TRUE(delegate_.IsAppLaunchCompletionPending());
+
+  NSURL* url = [NSURL URLWithString:@"https://example.com"];
+  NSURLResponse* response = [[NSURLResponse alloc] initWithURL:url
+                                                      MIMEType:@"text/html"
+                                         expectedContentLength:0
+                                              textEncodingName:nil];
+  base::test::TestFuture<web::WebStatePolicyDecider::PolicyDecision> future;
+  tab_helper_->ShouldAllowResponse(
+      response,
+      web::WebStatePolicyDecider::ResponseInfo(/*for_main_frame=*/true),
+      future.GetCallback());
+  EXPECT_FALSE(future.IsReady());
+
+  delegate_.CompleteAppLaunch();
+  EXPECT_FALSE(future.IsReady());
+
+  delegate_.CompleteBackToApp();
+  ASSERT_TRUE(future.Wait());
+  EXPECT_TRUE(future.Get().ShouldAllowNavigation());
 }
 
 // Tests that a valid URL does not launch app when launch policy is to block.
@@ -874,6 +974,59 @@ TEST_F(AppLauncherTabHelperTest, MAYBE_TelUrls) {
                                       /*is_user_initiated=*/false,
                                       /*user_tapped_recently=*/true));
   EXPECT_EQ(2U, delegate_.GetAppLaunchCount());
+}
+
+// Tests that tel:, facetime:, facetime-prompt:, facetime-audio:,
+// facetime-audio-prompt: and telprompt: URLs are blocked when the target frame
+// is cross-origin with respect to the source origin, and allowed when
+// same-origin.
+// TODO(crbug.com/40166678): The test fails on device.
+#if TARGET_OS_SIMULATOR
+#define MAYBE_CallWithPromptUrls CallWithPromptUrls
+#else
+#define MAYBE_CallWithPromptUrls DISABLED_CallWithPromptUrls
+#endif
+TEST_F(AppLauncherTabHelperTest, MAYBE_CallWithPromptUrls) {
+  NSArray<NSString*>* url_strings = @[
+    @"tel:+12345551212",
+    @"facetime://+12345551212",
+    @"facetime-prompt://+12345551212",
+    @"facetime-audio://+12345551212",
+    @"telprompt:+12345551212",
+    @"facetime-audio-prompt://+12345551212",
+  ];
+  for (NSString* url_string in url_strings) {
+    EXPECT_FALSE(TestShouldAllowRequest(url_string,
+                                        /*target_frame_is_main=*/true,
+                                        /*target_frame_is_cross_origin=*/true,
+                                        /*target_window_is_cross_origin=*/false,
+                                        /*is_user_initiated=*/true,
+                                        /*user_tapped_recently=*/true));
+    EXPECT_EQ(0U, delegate_.GetAppLaunchCount())
+        << base::SysNSStringToUTF8(url_string);
+
+    EXPECT_FALSE(TestShouldAllowRequest(url_string,
+                                        /*target_frame_is_main=*/false,
+                                        /*target_frame_is_cross_origin=*/true,
+                                        /*target_window_is_cross_origin=*/false,
+                                        /*is_user_initiated=*/true,
+                                        /*user_tapped_recently=*/true));
+    EXPECT_EQ(0U, delegate_.GetAppLaunchCount())
+        << base::SysNSStringToUTF8(url_string);
+  }
+
+  size_t expected_launch_count = 0U;
+  for (NSString* url_string in url_strings) {
+    EXPECT_FALSE(TestShouldAllowRequest(url_string,
+                                        /*target_frame_is_main=*/true,
+                                        /*target_frame_is_cross_origin=*/false,
+                                        /*target_window_is_cross_origin=*/false,
+                                        /*is_user_initiated=*/true,
+                                        /*user_tapped_recently=*/true));
+    ++expected_launch_count;
+    EXPECT_EQ(expected_launch_count, delegate_.GetAppLaunchCount())
+        << base::SysNSStringToUTF8(url_string);
+  }
 }
 
 // Tests that URLs with Chrome Bundle schemes are blocked on main frames and

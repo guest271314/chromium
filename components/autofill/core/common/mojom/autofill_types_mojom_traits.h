@@ -193,6 +193,11 @@ struct StructTraits<autofill::mojom::FormFieldDataDataView,
     return r.placeholder();
   }
 
+  static const std::u16string& placeholder_attribute(
+      const autofill::FormFieldData& r) {
+    return r.placeholder_attribute();
+  }
+
   static const std::u16string& css_classes(const autofill::FormFieldData& r) {
     return r.css_classes();
   }
@@ -236,11 +241,6 @@ struct StructTraits<autofill::mojom::FormFieldDataDataView,
   static bool is_autofilled_according_to_renderer(
       const autofill::FormFieldData& r) {
     return r.is_autofilled_according_to_renderer();
-  }
-
-  static autofill::FormFieldData::CheckStatus check_status(
-      const autofill::FormFieldData& r) {
-    return r.check_status();
   }
 
   static bool is_focusable(const autofill::FormFieldData& r) {
@@ -429,6 +429,11 @@ struct StructTraits<autofill::mojom::FormFieldDataPredictionsDataView,
     return r.host_form_signature;
   }
 
+  static const std::string& host_form_structural_signature(
+      const autofill::FormFieldDataPredictions& r) {
+    return r.host_form_structural_signature;
+  }
+
   static const std::string& signature(
       const autofill::FormFieldDataPredictions& r) {
     return r.signature;
@@ -495,6 +500,11 @@ struct StructTraits<autofill::mojom::FormFieldDataPredictionsDataView,
   static size_t rank_in_host_form_signature_group(
       const autofill::FormFieldDataPredictions& r) {
     return r.rank_in_host_form_signature_group;
+  }
+
+  static bool did_trigger_javascript_autofill(
+      const autofill::FormFieldDataPredictions& r) {
+    return r.did_trigger_javascript_autofill;
   }
 
   static bool Read(autofill::mojom::FormFieldDataPredictionsDataView data,
@@ -596,7 +606,7 @@ struct StructTraits<autofill::mojom::PasswordFormFillDataDataView,
     return r.wait_for_username;
   }
 
-  static std::vector<autofill::FieldRendererId> suggestion_banned_fields(
+  static const std::vector<autofill::FieldRendererId>& suggestion_banned_fields(
       const autofill::PasswordFormFillData& r) {
     return r.suggestion_banned_fields;
   }

@@ -47,9 +47,12 @@ import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.share.ShareDelegate;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab_ui.TabContentManager;
+import org.chromium.chrome.browser.tab_ui.TabListMode;
 import org.chromium.chrome.browser.tabmodel.TabCreatorManager;
 import org.chromium.chrome.browser.tabmodel.TabModelSelector;
 import org.chromium.chrome.browser.tasks.tab_management.TabGridDialogMediator.DialogController;
+import org.chromium.chrome.browser.tasks.tab_management.TabListMediator.TabListLayoutType;
+import org.chromium.chrome.browser.tasks.tab_management.labels.TabBubbler;
 import org.chromium.chrome.browser.theme.ThemeColorProvider;
 import org.chromium.chrome.browser.toolbar.bottom.BottomControlsCoordinator;
 import org.chromium.chrome.browser.undo_tab_close_snackbar.UndoBarThrottle;
@@ -177,7 +180,6 @@ public class TabGroupUiCoordinator implements TabGroupUiMediator.ResetHandler, T
                         mTabContentManager,
                         null,
                         null,
-                        null,
                         mScrimManager,
                         mModalDialogManager,
                         /* desktopWindowStateManager= */ null,
@@ -207,16 +209,16 @@ public class TabGroupUiCoordinator implements TabGroupUiMediator.ResetHandler, T
         try (TraceEvent e = TraceEvent.scoped("TabGroupUiCoordinator.initializeWithNative")) {
             mTabStripCoordinator =
                     new TabListCoordinator(
-                            TabListCoordinator.TabListMode.STRIP,
+                            TabListMode.BOTTOM_STRIP,
                             mActivity,
                             mBrowserControlsStateProvider,
                             mModalDialogManager,
                             currentTabModelSupplier,
                             /* thumbnailProvider= */ null,
-                            /* actionOnRelatedTabs= */ false,
+                            TabListLayoutType.FLAT,
                             mDataSharingTabManager,
-                            /* gridCardOnClickListenerProvider= */ null,
-                            /* dialogHandler= */ null,
+                            /* tabListItemOnClickListenerProvider= */ null,
+                            /* ungroupBarStatusHandler= */ null,
                             TabProperties.TabActionState.UNSET,
                             /* selectionDelegateProvider= */ null,
                             /* priceWelcomeMessageControllerSupplier= */ null,
@@ -232,9 +234,8 @@ public class TabGroupUiCoordinator implements TabGroupUiMediator.ResetHandler, T
                             /* allowDragAndDrop= */ false,
                             /* tabSwitcherDragHandler= */ null,
                             /* undoBarExplicitTrigger= */ null,
-                            null,
-                            0,
-                            /* isSingleContextMode= */ false);
+                            /* snackbarManager= */ null,
+                            TabListEditorCoordinator.UNLIMITED_SELECTION);
             mTabStripCoordinator.initWithNative(
                     assumeNonNull(mTabModelSelector.getModel(false).getProfile()));
 

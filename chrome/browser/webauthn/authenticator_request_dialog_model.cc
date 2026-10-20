@@ -218,7 +218,7 @@ std::string AuthenticatorRequestDialogModel::GetGpmAccountEmail() {
   if (!account_info) {
     return "";
   }
-  return account_info->email;
+  return std::string(account_info->GetEmail());
 }
 
 Profile* AuthenticatorRequestDialogModel::GetProfile() {
@@ -278,7 +278,6 @@ std::ostream& operator<<(std::ostream& os,
       {Step::kBlePowerOnManual, "kBlePowerOnManual"},
       {Step::kBlePermissionMac, "kBlePermissionMac"},
       {Step::kOffTheRecordInterstitial, "kOffTheRecordInterstitial"},
-      {Step::kCableActivate, "kCableActivate"},
       {Step::kCableV2QRCode, "kCableV2QRCode"},
       {Step::kCableV2Connecting, "kCableV2Connecting"},
       {Step::kCableV2Connected, "kCableV2Connected"},

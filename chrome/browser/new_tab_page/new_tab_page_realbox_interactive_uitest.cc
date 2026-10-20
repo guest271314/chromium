@@ -6,6 +6,8 @@
 
 #include "base/check_deref.h"
 #include "base/containers/extend.h"
+#include "base/i18n/rtl.h"
+#include "base/i18n/test/scoped_rtl_for_testing.h"
 #include "base/path_service.h"
 #include "base/run_loop.h"
 #include "base/strings/string_number_conversions.h"
@@ -17,6 +19,7 @@
 #include "chrome/browser/autocomplete/aim_eligibility_service_factory.h"
 #include "chrome/browser/contextual_search/contextual_search_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/ui/tabs/public/tab_features.h"
 #include "chrome/browser/ui/webui/searchbox/contextual_searchbox_test_utils.h"
 #include "chrome/browser/ui/webui/searchbox/searchbox_interactive_test_mixin.h"
 #include "chrome/browser/ui/webui/searchbox/searchbox_test_utils.h"
@@ -31,6 +34,7 @@
 #include "components/contextual_tasks/public/features.h"
 #include "components/omnibox/browser/aim_eligibility_service_features.h"
 #include "components/omnibox/browser/mock_aim_eligibility_service.h"
+#include "components/omnibox/common/composebox_features.h"
 #include "components/omnibox/common/omnibox_features.h"
 #include "components/prefs/pref_service.h"
 #include "components/search/ntp_features.h"
@@ -43,6 +47,7 @@
 #include "third_party/omnibox_proto/searchbox_config.pb.h"
 #include "third_party/omnibox_proto/tool_mode.pb.h"
 #include "third_party/omnibox_proto/types.pb.h"
+#include "ui/base/unowned_user_data/user_data_factory.h"
 #include "ui/events/keycodes/keyboard_codes.h"
 #include "ui/native_theme/mock_os_settings_provider.h"
 #include "ui/shell_dialogs/select_file_dialog.h"
@@ -108,7 +113,9 @@ const DeepQuery kLensSearchButton = {"ntp-app", "ntp-searchbox",
                                      "#lensSearchButton"};
 const DeepQuery kComposeButton = {"ntp-app", "ntp-searchbox", "#composeButton",
                                   "#composeButton"};
-const DeepQuery kComposeboxVoiceSearchButton = {"ntp-app", "cr-composebox",
+const DeepQuery kComposeButtonHost = {"ntp-app", "ntp-searchbox",
+                                      "#composeButton"};
+const DeepQuery kComposeboxVoiceSearchButton = {"ntp-app", "#composebox",
                                                 "#voiceSearchButton"};
 const DeepQuery kContextualEntrypoint = {"ntp-app", "ntp-searchbox", "#context",
                                          "#entrypointButton", "#entrypoint"};
@@ -117,9 +124,9 @@ const DeepQuery kSearchboxContextMenuDialog = {
 const DeepQuery kComposeboxContextMenuDialog = {
     "ntp-app", "#composebox", "#contextEntrypoint",
     "#menu",   "#menu",       "#dialog"};
-const DeepQuery kComposeboxInput = {"ntp-app", "cr-composebox",
+const DeepQuery kComposeboxInput = {"ntp-app", "#composebox",
                                     "cr-composebox-input", "#input"};
-const DeepQuery kComposeboxVoiceSearch = {"ntp-app", "cr-composebox",
+const DeepQuery kComposeboxVoiceSearch = {"ntp-app", "#composebox",
                                           "#voiceSearch"};
 const DeepQuery kComposeboxSubmitButton = {
     "ntp-app", "#composebox", "cr-composebox-submit", "#submitContainer"};
@@ -151,7 +158,7 @@ const DeepQuery kFileUploadItem = {"ntp-app", "ntp-searchbox", "#context",
 const DeepQuery kComposeboxFileThumbnail = {"ntp-app", "#composebox",
                                             "cr-composebox-file-carousel",
                                             "cr-composebox-file-thumbnail"};
-const DeepQuery kToolChipButton = {"ntp-app", "cr-composebox", "#context",
+const DeepQuery kToolChipButton = {"ntp-app", "#composebox", "#context",
                                    "cr-composebox-tool-chip",
                                    "#toolEnabledButton"};
 const DeepQuery kScrim = {"ntp-app", "#scrim"};
@@ -272,9 +279,16 @@ class NtpRealboxUiTestBase
   }
 
   auto WaitForDialogStateChange(const DeepQuery& where, bool expected_open) {
-    return WaitForJsConditionAt(
-        kNtpElementId, where,
-        expected_open ? "(el) => el && el.open" : "(el) => el && !el.open");
+    DEFINE_LOCAL_CUSTOM_ELEMENT_EVENT_TYPE(kDialogStateChangeEvent);
+    WebContentsInteractionTestUtil::StateChange state_change;
+    state_change.event = kDialogStateChangeEvent;
+    state_change.where = where;
+    state_change.type =
+        expected_open
+            ? WebContentsInteractionTestUtil::StateChange::Type::kExists
+            : WebContentsInteractionTestUtil::StateChange::Type::kDoesNotExist;
+
+    return WaitForStateChange(kNtpElementId, state_change);
   }
 
   auto WaitForElementVisibilityChange(const DeepQuery& where,
@@ -418,8 +432,12 @@ INSTANTIATE_TEST_SUITE_P(
       return info.param.ToString();
     });
 
-// TODO(crbug.com/454761015): Re-enable after fixing.
-IN_PROC_BROWSER_TEST_P(NtpRealboxUiScreenshotTest, DISABLED_Screenshots) {
+#if BUILDFLAG(IS_WIN)
+#define MAYBE_Screenshots DISABLED_Screenshots
+#else
+#define MAYBE_Screenshots Screenshots
+#endif
+IN_PROC_BROWSER_TEST_P(NtpRealboxUiScreenshotTest, MAYBE_Screenshots) {
   // Force a consistent window size to exercise realbox layout within New Tab
   // Page bounds.
   auto screen_size = gfx::Size(1000, 1200);
@@ -428,12 +446,10 @@ IN_PROC_BROWSER_TEST_P(NtpRealboxUiScreenshotTest, DISABLED_Screenshots) {
 
   os_settings_provider().SetPreferredColorScheme(GetParam().color_scheme);
 
-  if (GetParam().rtl) {
-    base::i18n::SetRTLForTesting(true);
-  }
+  base::i18n::ScopedRTLForTesting scoped_rtl(GetParam().rtl);
 
   // Disable compose button animation to prevent screenshot variations.
-  browser()->profile()->GetPrefs()->SetInteger(
+  browser()->GetProfile()->GetPrefs()->SetInteger(
       prefs::kNtpComposeButtonShownCountPrefName,
       ntp_composebox::FeatureConfig::Get()
           .config.entry_point()
@@ -603,8 +619,9 @@ INSTANTIATE_TEST_SUITE_P(
         },
     }));
 
+// TODO(crbug.com/524803939): Re-enable this test.
 IN_PROC_BROWSER_TEST_P(NtpRealboxUploadInteractiveTest,
-                       ContextualEntrypointUploadTriggersComposebox) {
+                       DISABLED_ContextualEntrypointUploadTriggersComposebox) {
   base::FilePath test_data_dir;
   base::PathService::Get(chrome::DIR_TEST_DATA, &test_data_dir);
   base::FilePath file_path = test_data_dir.AppendASCII(GetParam().file_name);
@@ -774,6 +791,120 @@ IN_PROC_BROWSER_TEST_P(NtpRealboxToolInteractiveTest,
       WaitForStateChange(kNtpElementId, tool_chip_ready));
 }
 
+class NtpRealboxTabFlyoverInteractiveTest : public NtpRealboxUiTestBase {
+ public:
+  NtpRealboxTabFlyoverInteractiveTest() {
+    std::vector<base::test::FeatureRefAndParams> enabled_features =
+        GetEnabledFeatures();
+    enabled_features.emplace_back(omnibox::kContextManagementInComposebox,
+                                  base::FieldTrialParams());
+    feature_list_.InitWithFeaturesAndParameters(enabled_features,
+                                                GetDisabledFeatures());
+    tab_context_override_ =
+        tabs::TabFeatures::GetUserDataFactoryForTesting()
+            .AddOverrideForTesting<
+                lens::TabContextualizationController>(base::BindRepeating(
+                [](tabs::TabInterface& tab)
+                    -> std::unique_ptr<lens::TabContextualizationController> {
+                  auto controller =
+                      std::make_unique<MockTabContextualizationController>(
+                          &tab);
+                  EXPECT_CALL(*controller, GetInitialPageContextEligibility())
+                      .WillRepeatedly(testing::Return(true));
+                  EXPECT_CALL(*controller, GetPageContext(testing::_))
+                      .WillRepeatedly([](lens::TabContextualizationController::
+                                             GetPageContextCallback callback) {
+                        auto context =
+                            std::make_unique<lens::ContextualInputData>();
+                        std::move(callback).Run(std::move(context));
+                      });
+                  return controller;
+                }));
+  }
+
+ protected:
+  base::test::ScopedFeatureList feature_list_;
+  std::optional<ui::UserDataFactory::ScopedOverride> tab_context_override_;
+};
+
+// Tests the user journey of opening the NTP realbox contextual menu, hovering
+// over the "Add tabs" item to open the tab flyout menu, and selecting a tab
+// to attach/add it to the composebox.
+IN_PROC_BROWSER_TEST_F(NtpRealboxTabFlyoverInteractiveTest,
+                       WebUiTabFlyoverAddTab) {
+  DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kFirstTab);
+
+  const DeepQuery kWebUIContextMenuEntrypoint = {
+      "ntp-app", "#composebox", "#contextEntrypoint", "#entrypointButton",
+      "#entrypoint"};
+  const DeepQuery kShareTabsTrigger = {"ntp-app", "#composebox",
+                                       "#contextEntrypoint", "#menu",
+                                       "#shareTabsTrigger"};
+  const DeepQuery kFirstTabFlyoutItem = {
+      "ntp-app",
+      "#composebox",
+      "#contextEntrypoint",
+      "#menu",
+      ".share-tabs-flyout",
+      ".suggestion-container:first-of-type button"};
+
+  const DeepQuery kComposeboxFaviconGroup = {
+      "ntp-app", "#composebox", "#contextEntrypoint", "#entrypointButton",
+      "composebox-favicon-group"};
+
+  browser()->GetWindow()->SetBounds(gfx::Rect(0, 0, 1280, 1024));
+
+  RunTestSequence(
+      Do([this]() {
+        browser()->GetProfile()->GetPrefs()->SetInteger(
+            contextual_search::kSearchContentSharingSettings,
+            static_cast<int>(contextual_search::
+                                 SearchContentSharingSettingsValue::kEnabled));
+      }),
+      // Open a background tab first, then open NTP.
+      AddInstrumentedTab(kFirstTab, GURL("https://www.example.com")),
+      AddInstrumentedTab(kNtpElementId, chrome::ChromeUINewTabURLAsGURL()),
+      // Open NTP composebox by clicking compose button.
+      WaitForElementToRender(kNtpElementId, kRealbox),
+      WaitForElementToRender(kNtpElementId, kComposeButton),
+      ExecuteJsAt(kNtpElementId, kComposeButton, "el => el.click()"),
+      WaitForDialogStateChange(kComposeboxDialog, /*expected_open=*/true),
+      // Wait for inputState to be loaded and populated.
+      WaitForJsResultAt(kNtpElementId, {"ntp-app", "#composebox"},
+                        "el => el.inputState !== null && "
+                        "el.inputState.allowedTools.length > 0",
+                        true),
+      // Force showMenuOnClick to true on composebox.
+      ExecuteJsAt(kNtpElementId, {"ntp-app", "#composebox"},
+                  "el => { el.showMenuOnClick = true; }"),
+      // Open contextual menu.
+      WaitForElementToRender(kNtpElementId, kWebUIContextMenuEntrypoint),
+      ExecuteJsAt(kNtpElementId, kWebUIContextMenuEntrypoint,
+                  "el => el.click()"),
+      // Wait for the WebUI menu trigger to render and click/hover it.
+      WaitForElementToRender(kNtpElementId, kShareTabsTrigger),
+      ExecuteJsAt(kNtpElementId, kShareTabsTrigger,
+                  "el => el.dispatchEvent(new MouseEvent('mouseover', "
+                  "{bubbles: true}))"),
+      MoveMouseTo(kNtpElementId, kShareTabsTrigger),
+      // Set pointerOverFlyout_ to true via JS to prevent the flyout from
+      // closing due to async mouse move events in tests.
+      ExecuteJsAt(kNtpElementId,
+                  {"ntp-app", "#composebox", "#contextEntrypoint", "#menu"},
+                  "el => { el.pointerOverFlyout_ = true; }"),
+      // Wait for the first tab item in the flyout menu and click it.
+      WaitForElementToRender(kNtpElementId, kFirstTabFlyoutItem),
+      ExecuteJsAt(kNtpElementId, kFirstTabFlyoutItem, "el => el.click()"),
+      // Verify tab is attached in NTP composebox.
+      WaitForElementToRender(kNtpElementId, kComposeboxFaviconGroup),
+      CheckJsResultAt(kNtpElementId, {"ntp-app", "#composebox"},
+                      "el => el.attachedContext.size", 1),
+      CheckJsResultAt(kNtpElementId, {"ntp-app", "#composebox"},
+                      "el => el.errorMessage", ""),
+      CheckJsResultAt(kNtpElementId, {"ntp-app", "#composebox"},
+                      "el => el.showFileCarousel", false));
+}
+
 struct ComposeboxSearchParam {
   bool is_voice = false;
   bool submit_via_keyboard = false;
@@ -784,9 +915,19 @@ class NtpComposeboxSearchFulfillmentTest
       public testing::WithParamInterface<ComposeboxSearchParam> {
  public:
   NtpComposeboxSearchFulfillmentTest() {
+    content::SpeechRecognitionManager::SetManagerForTesting(
+        &fake_speech_recognition_manager_);
     feature_list_.InitWithFeaturesAndParameters(GetEnabledFeatures(),
                                                 GetDisabledFeatures());
   }
+
+  void SetUpCommandLine(base::CommandLine* command_line) override {
+    NtpRealboxUiTestBase::SetUpCommandLine(command_line);
+    command_line->AppendSwitch("use-fake-ui-for-media-stream");
+  }
+
+ protected:
+  content::FakeSpeechRecognitionManager fake_speech_recognition_manager_;
 
  private:
   base::test::ScopedFeatureList feature_list_;
@@ -808,6 +949,11 @@ IN_PROC_BROWSER_TEST_P(NtpComposeboxSearchFulfillmentTest,
                        SearchNavigatesOnSubmit) {
   const ComposeboxSearchParam& param = GetParam();
   const std::string query = "test";
+
+  if (param.is_voice) {
+    fake_speech_recognition_manager_.set_should_send_fake_response(false);
+    fake_speech_recognition_manager_.SetFakeResult(query, /*is_final=*/true);
+  }
 
   DEFINE_LOCAL_CUSTOM_ELEMENT_EVENT_TYPE(kVoiceSearchVisibleEvent);
   WebContentsInteractionTestUtil::StateChange voice_search_visible;
@@ -832,6 +978,10 @@ IN_PROC_BROWSER_TEST_P(NtpComposeboxSearchFulfillmentTest,
       param.is_voice
           ? Steps(ClickElement(kNtpElementId, kComposeboxVoiceSearchButton),
                   WaitForStateChange(kNtpElementId, voice_search_visible),
+                  Do([&]() {
+                    fake_speech_recognition_manager_.SendFakeResponse(
+                        /*end_recognition=*/true, base::DoNothing());
+                  }),
                   TriggerAimVoiceSearch(kNtpElementId, kComposeboxVoiceSearch,
                                         query))
           : Steps(FocusAndInputText(kNtpElementId, kComposeboxInput),
@@ -976,6 +1126,7 @@ class NtpRealboxDefaultExperienceInteractiveTest : public NtpRealboxUiTestBase {
       disabled_features.push_back(*feature_ref_and_params.feature);
     }
     disabled_features.push_back(ntp_features::kNtpNextFeatures);
+    disabled_features.push_back(omnibox::kVoiceSearchCoherenceSearchbox);
 
     feature_list_.InitWithFeaturesAndParameters(
         {{omnibox::kOmniboxAppendInvocationSource, {}}}, disabled_features);
@@ -1214,7 +1365,79 @@ IN_PROC_BROWSER_TEST_F(NtpRealboxDefaultExperienceInteractiveTest,
                            "(el) => el.value === 'a'"));
 }
 
-IN_PROC_BROWSER_TEST_F(NtpRealboxDefaultExperienceInteractiveTest,
+// Pins kRealboxVirtualFocusNavigation on, independent of whether
+// fieldtrial_testing_config.json is applied.
+class NtpRealboxDefaultExperienceVirtualFocusInteractiveTest
+    : public NtpRealboxDefaultExperienceInteractiveTest {
+ public:
+  NtpRealboxDefaultExperienceVirtualFocusInteractiveTest() {
+    virtual_focus_feature_list_.InitAndEnableFeature(
+        ntp_features::kRealboxVirtualFocusNavigation);
+  }
+
+ private:
+  base::test::ScopedFeatureList virtual_focus_feature_list_;
+};
+
+IN_PROC_BROWSER_TEST_F(NtpRealboxDefaultExperienceVirtualFocusInteractiveTest,
+                       RemoveSuggestionViaKeyboard) {
+  RunTestSequence(
+      AddInstrumentedTab(kNtpElementId, chrome::ChromeUINewTabURLAsGURL()),
+      WaitForElementToRender(kNtpElementId, kRealboxInput),
+      // Seed history result to populate the dropdown
+      SeedSearchboxResult("a"), SeedSearchboxResult("b"),
+      // Click on Realbox to show the dropdown
+      ClickElement(kNtpElementId, kRealboxInput),
+      WaitForElementVisibilityChange(kSearchboxDropdown,
+                                     /*expected_visible=*/true),
+      // Pressing Tab moves virtual focus to the AIM button.
+      SendKeyPress(kNtpElementId, ui::VKEY_TAB),
+      WaitForJsConditionAt(
+          kNtpElementId, kComposeButtonHost,
+          "(el) => el && el.hasAttribute('has-virtual-focus')"),
+      // Pressing Tab again selects the inline autocomplete match.
+      SendKeyPress(kNtpElementId, ui::VKEY_TAB),
+      WaitForJsConditionAt(kNtpElementId, kRealboxInput,
+                           "(el) => el.value === 'b'"),
+      // Pressing Tab again selects the match remove button.
+      SendKeyPress(kNtpElementId, ui::VKEY_TAB),
+      WaitForJsConditionAt(kNtpElementId, kRealboxMatchRemoveButton,
+                           "(el) => el && el.classList.contains('selected')"),
+      // Trigger the remove button via ENTER
+      SendKeyPress(kNtpElementId, ui::VKEY_RETURN),
+      // After removing the match, the next match is selected.
+      WaitForJsConditionAt(kNtpElementId, kRealboxInput,
+                           "(el) => el.value === 'a'"),
+      // Pressing Tab selects the next match's remove button.
+      SendKeyPress(kNtpElementId, ui::VKEY_TAB),
+      WaitForJsConditionAt(kNtpElementId, kRealboxMatchRemoveButton,
+                           "(el) => el && el.classList.contains('selected')"),
+      // Trigger the remove button via ENTER
+      SendKeyPress(kNtpElementId, ui::VKEY_RETURN),
+      // After all history matches are removed, verify none remain.
+      WaitForJsConditionAt(kNtpElementId, kSearchboxDropdown,
+                           "(el) => el && ![...el.shadowRoot.querySelectorAll("
+                           "'cr-searchbox-match')].some(m => "
+                           "m.match.supportsDeletion)"));
+}
+
+// Pins kRealboxVirtualFocusNavigation off to cover the legacy native-focus
+// behavior.
+// TODO(crbug.com/483160026): Remove once kRealboxVirtualFocusNavigation
+// launches.
+class NtpRealboxDefaultExperienceLegacyFocusInteractiveTest
+    : public NtpRealboxDefaultExperienceInteractiveTest {
+ public:
+  NtpRealboxDefaultExperienceLegacyFocusInteractiveTest() {
+    virtual_focus_feature_list_.InitAndDisableFeature(
+        ntp_features::kRealboxVirtualFocusNavigation);
+  }
+
+ private:
+  base::test::ScopedFeatureList virtual_focus_feature_list_;
+};
+
+IN_PROC_BROWSER_TEST_F(NtpRealboxDefaultExperienceLegacyFocusInteractiveTest,
                        RemoveSuggestionViaKeyboard) {
   RunTestSequence(
       AddInstrumentedTab(kNtpElementId, chrome::ChromeUINewTabURLAsGURL()),

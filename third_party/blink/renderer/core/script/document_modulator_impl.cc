@@ -18,7 +18,7 @@ Vector<AtomicString> FindUrlPrefixes(AtomicString specifier) {
   Vector<AtomicString> result;
   result.ReserveInitialCapacity(specifier.length() / 4 + 4);
   constexpr char slash = '/';
-  size_t position = specifier.find(slash);
+  wtf_size_t position = specifier.find(slash);
   while (position != kNotFound) {
     ++position;
     result.emplace_back(specifier.GetString().substr(0, position));
@@ -78,11 +78,14 @@ void DocumentModulatorImpl::AddModuleToResolvedModuleSet(
     toplevel_resolved_module_set_.insert(specifier_prefix);
   }
 
-  if (!referring_script_url) {
+  if (!referring_script_url || referring_script_url->empty()) {
     return;
   }
   Vector<AtomicString> referring_script_prefixes =
       FindUrlPrefixes(referring_script_url.value());
+  // A scope key may match the referring script URL exactly (with no trailing
+  // '/'), so include the full URL in addition to its '/'-terminated prefixes.
+  referring_script_prefixes.push_back(referring_script_url.value());
   for (const auto& referring_script_prefix : referring_script_prefixes) {
     const auto& current_set_it =
         scoped_resolved_module_map_.find(referring_script_prefix);

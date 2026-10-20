@@ -12,13 +12,13 @@
 #include "base/time/time.h"
 #include "base/types/expected.h"
 #include "components/private_ai/phosphor/token_manager.h"
+#include "components/private_ai/private_ai_network_driver.h"
+#include "components/private_ai/private_ai_oak_session_driver.h"
 #include "components/private_ai/proto/private_ai.pb.h"
 #include "components/private_ai/status_code.h"
+#include "components/version_info/channel.h"
+#include "services/network/public/cpp/network_context_getter.h"
 #include "url/gurl.h"
-
-namespace network::mojom {
-class NetworkContext;
-}  // namespace network::mojom
 
 namespace private_ai {
 
@@ -50,17 +50,26 @@ class Client {
   // `api_key`: The API key for the PrivateAI service.
   // `proxy_url_string`: Optional URL for the proxy server.
   // `use_token_attestation`: Whether to use token attestation.
-  // `network_context`: The network context to use for connections.
+  // `network_context_getter`: Callback to get the network context to use for
+  // connections.
   // `token_manager`: Required if `use_token_attestation` is true.
   // `logger`: The logger for the client.
+  // `oak_session_driver`: Interface for platform-specific capabilities related
+  // to Oak sessions.
+  // `network_driver`: Interface for platform-specific capabilities related to
+  // networking.
+  // `channel`: The browser release channel.
   static std::unique_ptr<Client> Create(
       const std::string& url,
       const std::string& api_key,
       const std::string& proxy_url_string,
       bool use_token_attestation,
-      network::mojom::NetworkContext* network_context,
+      network::NetworkContextGetter network_context_getter,
       phosphor::TokenManager* token_manager,
-      PrivateAiLogger* logger);
+      PrivateAiLogger* logger,
+      PrivateAiOakSessionDriver* oak_session_driver,
+      PrivateAiNetworkDriver* network_driver,
+      version_info::Channel channel);
 
   virtual ~Client() = default;
 
@@ -73,7 +82,7 @@ class Client {
   // Establishes a secure connection without sending a request. Calling this
   // function is optional as a connection will be established automatically
   // when needed/first request is sent.
-  virtual void EstablishConnection() = 0;
+  virtual void EstablishConnection(proto::FeatureName feature_name) = 0;
 
   // Sends a request with a single text content.
   virtual void SendTextRequest(proto::FeatureName feature_name,

@@ -26,6 +26,11 @@ extern const char kDisableSearchEngineChoiceScreen[];
 COMPONENT_EXPORT(SEARCH_ENGINES_SWITCHES)
 extern const char kForceSearchEngineChoiceScreen[];
 
+// Quickens the site search expiration time for testing purposes. When this flag
+// is set, the site search expiration time is 20 seconds instead of 2 days.
+COMPONENT_EXPORT(SEARCH_ENGINES_SWITCHES)
+extern const char kQuickenSiteSearchExpiryForTesting[];
+
 // When enabled, prefs-based search provider overrides are ignored and
 // prepopulated engines will always be the regional built-in ones. If a user
 // previously had an overridden search engine as DSE, this flag will cause that
@@ -34,11 +39,25 @@ extern const char kForceSearchEngineChoiceScreen[];
 COMPONENT_EXPORT(SEARCH_ENGINES_SWITCHES)
 BASE_DECLARE_FEATURE(kIgnoreSearchProviderOverrides);
 
+// Returns whether the feature to invalidate search engine choice on device
+// restore is enabled. Always returns true on iOS, and evaluates the feature
+// flag on other platforms.
+COMPONENT_EXPORT(SEARCH_ENGINES_SWITCHES)
+bool IsInvalidateSearchEngineChoiceOnDeviceRestoreDetectionEnabled();
+
+// Returns whether the choice invalidation on restore should be retroactive.
+// Always returns true on iOS, and evaluates the feature parameter on other
+// platforms.
+COMPONENT_EXPORT(SEARCH_ENGINES_SWITCHES)
+bool IsInvalidateChoiceOnRestoreRetroactive();
+
+#if !BUILDFLAG(IS_IOS)
 COMPONENT_EXPORT(SEARCH_ENGINES_SWITCHES)
 BASE_DECLARE_FEATURE(kInvalidateSearchEngineChoiceOnDeviceRestoreDetection);
 
 COMPONENT_EXPORT(SEARCH_ENGINES_SWITCHES)
 extern const base::FeatureParam<bool> kInvalidateChoiceOnRestoreIsRetroactive;
+#endif  // !BUILDFLAG(IS_IOS)
 
 // The string that's passed to
 // `switches::kSearchEngineChoiceTriggerRepromptParams` so that we don't
@@ -100,11 +119,24 @@ BASE_DECLARE_FEATURE(kClankDefaultSearchApi);
 COMPONENT_EXPORT(SEARCH_ENGINES_SWITCHES)
 BASE_DECLARE_FEATURE(kKwdbRefreshDebugging);
 
+#if BUILDFLAG(IS_ANDROID)
+// Whether the renewal of an already-imported search engine choice should result
+// in re-applying the choice, instead of skipping it as a no-op.
+COMPONENT_EXPORT(SEARCH_ENGINES_SWITCHES)
+BASE_DECLARE_FEATURE(kApplyDeviceChoiceRenewal);
+#endif  // BUILDFLAG(IS_ANDROID)
+
 #if !BUILDFLAG(IS_ANDROID)
 // Restructuring of the search settings pages.
 COMPONENT_EXPORT(SEARCH_ENGINES_SWITCHES)
 BASE_DECLARE_FEATURE(kSearchSettingsUpdate);
 #endif  // !BUILDFLAG(IS_ANDROID)
+
+#if BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_IOS)
+// Refactoring of search engine sorting and filtering in the settings page.
+COMPONENT_EXPORT(SEARCH_ENGINES_SWITCHES)
+BASE_DECLARE_FEATURE(kSearchSettingsUpdateV2);
+#endif  // BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_IOS)
 
 #if BUILDFLAG(IS_WIN)
 // When enabled, will reject encrypted keyword table hashes that are weakly

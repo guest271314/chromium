@@ -23,6 +23,7 @@
 #include "gin/object_template_builder.h"
 #include "gin/public/wrappable_pointer_tags.h"
 #include "skia/ext/benchmarking_canvas.h"
+#include "skia/ext/font_utils.h"
 #include "skia/ext/legacy_display_globals.h"
 #include "third_party/blink/public/platform/scheduler/web_agent_group_scheduler.h"
 #include "third_party/blink/public/web/web_array_buffer.h"
@@ -30,9 +31,12 @@
 #include "third_party/blink/public/web/web_local_frame.h"
 #include "third_party/skia/include/core/SkBitmap.h"
 #include "third_party/skia/include/core/SkCanvas.h"
+#include "third_party/skia/include/core/SkFontMgr.h"
 #include "third_party/skia/include/core/SkGraphics.h"
 #include "third_party/skia/include/core/SkPicture.h"
+#include "third_party/skia/include/core/SkSerialProcs.h"
 #include "third_party/skia/include/core/SkStream.h"
+#include "third_party/skia/include/core/SkTypeface.h"
 #include "third_party/skia/include/private/chromium/SkPMColor.h"
 #include "ui/gfx/codec/jpeg_codec.h"
 #include "ui/gfx/codec/png_codec.h"
@@ -67,8 +71,12 @@ std::unique_ptr<Picture> CreatePictureFromEncodedString(
     const std::string& encoded) {
   std::string decoded;
   base::Base64Decode(encoded, &decoded);
+  SkDeserialProcs procs{
+      .fTypefaceStreamProc = [](SkStream& stream, void*) -> sk_sp<SkTypeface> {
+        return SkTypeface::MakeDeserialize(&stream, skia::DefaultFontMgr());
+      }};
   sk_sp<SkPicture> skpicture =
-      SkPicture::MakeFromData(decoded.data(), decoded.size());
+      SkPicture::MakeFromData(decoded.data(), decoded.size(), &procs);
   if (!skpicture)
     return nullptr;
 
@@ -157,10 +165,10 @@ SkiaBenchmarking::~SkiaBenchmarking() = default;
 gin::ObjectTemplateBuilder SkiaBenchmarking::GetObjectTemplateBuilder(
     v8::Isolate* isolate) {
   return gin::Wrappable<SkiaBenchmarking>::GetObjectTemplateBuilder(isolate)
-      .SetMethod("rasterize", &SkiaBenchmarking::Rasterize)
-      .SetMethod("getOps", &SkiaBenchmarking::GetOps)
-      .SetMethod("getOpTimings", &SkiaBenchmarking::GetOpTimings)
-      .SetMethod("getInfo", &SkiaBenchmarking::GetInfo);
+      .SetMethod<&SkiaBenchmarking::Rasterize>("rasterize")
+      .SetMethod<&SkiaBenchmarking::GetOps>("getOps")
+      .SetMethod<&SkiaBenchmarking::GetOpTimings>("getOpTimings")
+      .SetMethod<&SkiaBenchmarking::GetInfo>("getInfo");
 }
 
 void SkiaBenchmarking::Rasterize(gin::Arguments* args) {
@@ -217,17 +225,18 @@ void SkiaBenchmarking::Rasterize(gin::Arguments* args) {
   PicturePlaybackController controller(benchmarking_canvas, playback_count);
   picture->picture->playback(&benchmarking_canvas, &controller);
 
-  blink::WebArrayBuffer buffer =
-      blink::WebArrayBuffer::Create(bitmap.computeByteSize(), 1);
+  const size_t bitmap_size_in_bytes = bitmap.computeByteSize();
+  auto buffer = blink::WebArrayBuffer::Create(bitmap_size_in_bytes, 1);
   uint32_t* packed_pixels = reinterpret_cast<uint32_t*>(bitmap.getPixels());
-  uint8_t* buffer_pixels = reinterpret_cast<uint8_t*>(buffer.Data());
+  base::span<uint8_t> buffer_pixels = buffer.ByteSpan();
   // Swizzle from native Skia format to RGBA as we copy out.
-  for (size_t i = 0; i < bitmap.computeByteSize(); i += 4) {
+  for (size_t i = 0; i < bitmap_size_in_bytes; i += 4) {
     uint32_t c = UNSAFE_TODO(packed_pixels[i >> 2]);
-    UNSAFE_TODO(buffer_pixels[i]) = SkPMColorGetR(c);
-    UNSAFE_TODO(buffer_pixels[i + 1]) = SkPMColorGetG(c);
-    UNSAFE_TODO(buffer_pixels[i + 2]) = SkPMColorGetB(c);
-    UNSAFE_TODO(buffer_pixels[i + 3]) = SkPMColorGetA(c);
+    auto rgba = buffer_pixels.take_first<4>();
+    rgba[0] = SkPMColorGetR(c);
+    rgba[1] = SkPMColorGetG(c);
+    rgba[2] = SkPMColorGetB(c);
+    rgba[3] = SkPMColorGetA(c);
   }
 
   args->Return(gin::DataObjectBuilder(isolate)

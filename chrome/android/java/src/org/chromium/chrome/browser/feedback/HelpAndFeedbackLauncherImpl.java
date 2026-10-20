@@ -26,6 +26,7 @@ import org.chromium.base.metrics.RecordUserAction;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.R;
+import org.chromium.chrome.browser.crash.ChromePureJavaExceptionReporter;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.profiles.ProfileKeyedMap;
 import org.chromium.components.embedder_support.util.UrlUtilities;
@@ -80,11 +81,15 @@ public class HelpAndFeedbackLauncherImpl implements HelpAndFeedbackLauncher {
     @Override
     public void show(final Activity activity, final String helpContext, @Nullable String url) {
         RecordUserAction.record("MobileHelpAndFeedback");
+        ScreenshotTask screenshotTask =
+                FeedbackPolicyManager.getInstance().isUserFeedbackAllowed()
+                        ? new ScreenshotTask(activity)
+                        : null;
         new ChromeFeedbackCollector(
                 activity,
                 /* categoryTag= */ null,
                 /* description= */ null,
-                new ScreenshotTask(activity),
+                screenshotTask,
                 new ChromeFeedbackCollector.InitParams(mProfile, url, helpContext),
                 collector -> mDelegate.show(activity, helpContext, collector),
                 mProfile);
@@ -93,8 +98,12 @@ public class HelpAndFeedbackLauncherImpl implements HelpAndFeedbackLauncher {
     /**
      * Starts an activity prompting the user to enter feedback.
      *
+     * <p>Note: Please check the isUserFeedbackAllowed policy (via {@link
+     * FeedbackPolicyManager#isUserFeedbackAllowed()}) when adding a UI entry to send feedback. See
+     * crbug.com/467060116 for more details.
+     *
      * @param activity The activity to use for starting the feedback activity and to take a
-     *                 screenshot of.
+     *     screenshot of.
      * @param url the current URL. May be null.
      * @param categoryTag The category that this feedback report falls under.
      * @param screenshotMode The kind of screenshot to include with the feedback.
@@ -107,6 +116,10 @@ public class HelpAndFeedbackLauncherImpl implements HelpAndFeedbackLauncher {
             @Nullable final String categoryTag,
             @ScreenshotMode int screenshotMode,
             @Nullable final String feedbackContext) {
+        if (!FeedbackPolicyManager.getInstance().isUserFeedbackAllowed()) {
+            reportDisabledFeedbackRequest();
+            return;
+        }
         long startTime = SystemClock.elapsedRealtime();
         new ChromeFeedbackCollector(
                 activity,
@@ -126,8 +139,12 @@ public class HelpAndFeedbackLauncherImpl implements HelpAndFeedbackLauncher {
     /**
      * Starts an activity prompting the user to enter feedback.
      *
+     * <p>Note: Please check the isUserFeedbackAllowed policy (via {@link
+     * FeedbackPolicyManager#isUserFeedbackAllowed()}) when adding a UI entry to send feedback. See
+     * crbug.com/467060116 for more details.
+     *
      * @param activity The activity to use for starting the feedback activity and to take a
-     *                 screenshot of.
+     *     screenshot of.
      * @param url the current URL. May be null.
      * @param categoryTag The category that this feedback report falls under.
      */
@@ -140,8 +157,12 @@ public class HelpAndFeedbackLauncherImpl implements HelpAndFeedbackLauncher {
     /**
      * Starts an activity prompting the user to enter feedback for the interest feed.
      *
+     * <p>Note: Please check the isUserFeedbackAllowed policy (via {@link
+     * FeedbackPolicyManager#isUserFeedbackAllowed()}) when adding a UI entry to send feedback. See
+     * crbug.com/467060116 for more details.
+     *
      * @param activity The activity to use for starting the feedback activity and to take a
-     *                 screenshot of.
+     *     screenshot of.
      * @param categoryTag The category that this feedback report falls under.
      * @param feedContext Feed specific parameters (url, title, etc) to include with feedback.
      */
@@ -151,6 +172,10 @@ public class HelpAndFeedbackLauncherImpl implements HelpAndFeedbackLauncher {
             @Nullable String url,
             @Nullable final String categoryTag,
             @Nullable final Map<String, String> feedContext) {
+        if (!FeedbackPolicyManager.getInstance().isUserFeedbackAllowed()) {
+            reportDisabledFeedbackRequest();
+            return;
+        }
         new FeedFeedbackCollector(
                 activity,
                 categoryTag,
@@ -191,6 +216,20 @@ public class HelpAndFeedbackLauncherImpl implements HelpAndFeedbackLauncher {
         return context.getString(R.string.help_context_webpage);
     }
 
+    /**
+     * Helper to show help and feedback for a given URL and record a user action.
+     *
+     * @param activity The activity to use for starting the help activity.
+     * @param url The current URL.
+     * @param recordAction The user action to record.
+     */
+    @Override
+    public void showHelpAndFeedbackForUrl(Activity activity, String url, String recordAction) {
+        String helpContextId = getHelpContextIdFromUrl(activity, url, mProfile.isOffTheRecord());
+        show(activity, helpContextId, url);
+        RecordUserAction.record(recordAction);
+    }
+
     protected static void launchFallbackSupportUri(Context context) {
         Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(FALLBACK_SUPPORT_URL));
         // Let Chrome know that this intent is from Chrome, so that it does not close the app when
@@ -199,5 +238,13 @@ public class HelpAndFeedbackLauncherImpl implements HelpAndFeedbackLauncher {
         intent.putExtra(Browser.EXTRA_CREATE_NEW_TAB, true);
         intent.setPackage(context.getPackageName());
         context.startActivity(intent);
+    }
+
+    private void reportDisabledFeedbackRequest() {
+        Throwable throwable =
+                new Throwable(
+                        "Feedback requested when disallowed by policy. This is not a crash. See"
+                                + " https://crbug.com/467060116 for details.");
+        ChromePureJavaExceptionReporter.reportJavaException(throwable);
     }
 }

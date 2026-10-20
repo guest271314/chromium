@@ -18,17 +18,17 @@
 #include "base/task/task_traits.h"
 #include "base/task/thread_pool.h"
 #include "chrome/browser/ash/arc/fileapi/arc_documents_provider_util.h"
+#include "chrome/browser/ash/file_manager/fileapi_util.h"
 #include "chrome/browser/ash/fileapi/file_access_permissions.h"
 #include "chrome/browser/ash/fileapi/file_system_backend.h"
 #include "chrome/browser/ash/fileapi/file_system_backend_delegate.h"
 #include "chrome/browser/ash/fileapi/observable_file_system_operation_impl.h"
-#include "chrome/browser/ash/profiles/profile_helper.h"
 #include "chrome/browser/media_galleries/fileapi/media_file_system_backend.h"
+#include "chrome/browser/profiles/profile.h"
+#include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
 #include "chromeos/ash/components/dbus/cros_disks/cros_disks_client.h"
-#include "chromeos/ash/components/file_manager/app_id.h"
 #include "components/file_access/scoped_file_access_delegate.h"
 #include "components/user_manager/user.h"
-#include "extensions/common/extension.h"
 #include "storage/browser/file_system/async_file_util.h"
 #include "storage/browser/file_system/external_mount_points.h"
 #include "storage/browser/file_system/file_stream_reader.h"
@@ -50,7 +50,8 @@ namespace {
 // Returns the `AccountId` associated with the specified `profile`.
 AccountId GetAccountId(Profile* profile) {
   user_manager::User* user =
-      profile ? ProfileHelper::Get()->GetUserByProfile(profile) : nullptr;
+      profile ? BrowserContextHelper::Get()->GetUserByBrowserContext(profile)
+              : nullptr;
   return user ? user->GetAccountId() : AccountId();
 }
 
@@ -181,7 +182,7 @@ void FileSystemBackend::ResolveURL(const storage::FileSystemURL& url,
   // point plus the inner mount point.
   if (id == "archive" || id == "removable") {
     std::vector<std::string> components = url.virtual_path().GetComponents();
-    DCHECK_EQ(id, components.at(0));
+    CHECK_EQ(id, components.at(0), base::NotFatalUntil::M160);
     if (components.size() < 2) {
       // Unable to access /archive and /removable directories directly. The
       // inner mount name must be specified.
@@ -264,11 +265,11 @@ bool FileSystemBackend::IsAccessAllowed(
     return true;
   }
 
-  // ImageLoader extension has read-only access via FileSystemUrlLoaderFactory.
-  if (origin.GetURL() == extensions::Extension::GetBaseURLFromExtensionId(
-                             ::file_manager::kImageLoaderExtensionId) &&
-      IsReadOperation(backend_function, operation_type)) {
-    return true;
+  // ImageLoader extension must use read-only operations.
+  if (origin.GetURL() == ::file_manager::util::GetImageLoaderBaseURL()) {
+    if (!IsReadOperation(backend_function, operation_type)) {
+      return false;
+    }
   }
 
   return file_access_permissions_->HasAccessPermission(origin,
@@ -295,17 +296,6 @@ void FileSystemBackend::GrantFileAccessToOrigin(
 
 void FileSystemBackend::RevokeAccessForOrigin(const url::Origin& origin) {
   file_access_permissions_->RevokePermissions(origin);
-}
-
-std::vector<base::FilePath> FileSystemBackend::GetRootDirectories() const {
-  std::vector<storage::MountPoints::MountPointInfo> mount_points;
-  mount_points_->AddMountPointInfosTo(&mount_points);
-  system_mount_points_->AddMountPointInfosTo(&mount_points);
-
-  std::vector<base::FilePath> root_dirs;
-  for (size_t i = 0; i < mount_points.size(); ++i)
-    root_dirs.push_back(mount_points[i].path);
-  return root_dirs;
 }
 
 storage::AsyncFileUtil* FileSystemBackend::GetAsyncFileUtil(
@@ -351,7 +341,7 @@ storage::CopyOrMoveFileValidatorFactory*
 FileSystemBackend::GetCopyOrMoveFileValidatorFactory(
     storage::FileSystemType type,
     base::File::Error* error_code) {
-  DCHECK(error_code);
+  CHECK(error_code, base::NotFatalUntil::M160);
   *error_code = base::File::FILE_OK;
   return nullptr;
 }
@@ -362,7 +352,7 @@ FileSystemBackend::CreateFileSystemOperation(
     const storage::FileSystemURL& url,
     storage::FileSystemContext* context,
     base::File::Error* error_code) const {
-  DCHECK(url.is_valid());
+  CHECK(url.is_valid(), base::NotFatalUntil::M160);
 
   if (!IsAccessAllowed(BackendFunction::kCreateFileSystemOperation, type,
                        url)) {
@@ -389,9 +379,10 @@ FileSystemBackend::CreateFileSystemOperation(
                          .get()));
   }
 
-  DCHECK(url.type() == storage::kFileSystemTypeProvided ||
-         url.type() == storage::kFileSystemTypeArcContent ||
-         url.type() == storage::kFileSystemTypeArcDocumentsProvider);
+  CHECK(url.type() == storage::kFileSystemTypeProvided ||
+            url.type() == storage::kFileSystemTypeArcContent ||
+            url.type() == storage::kFileSystemTypeArcDocumentsProvider,
+        base::NotFatalUntil::M160);
   return std::make_unique<ObservableFileSystemOperationImpl>(
       account_id_, type, url, context,
       std::make_unique<storage::FileSystemOperationContext>(context));
@@ -435,7 +426,7 @@ FileSystemBackend::CreateFileStreamReader(
     storage::FileSystemContext* context,
     file_access::ScopedFileAccessDelegate::RequestFilesAccessIOCallback
         file_access) const {
-  DCHECK(url.is_valid());
+  CHECK(url.is_valid(), base::NotFatalUntil::M160);
 
   if (!IsAccessAllowed(BackendFunction::kCreateFileStreamReader,
                        storage::OperationType::kNone, url)) {
@@ -481,7 +472,7 @@ FileSystemBackend::CreateFileStreamWriter(
     const storage::FileSystemURL& url,
     int64_t offset,
     storage::FileSystemContext* context) const {
-  DCHECK(url.is_valid());
+  CHECK(url.is_valid(), base::NotFatalUntil::M160);
 
   if (!IsAccessAllowed(BackendFunction::kCreateFileStreamWriter,
                        storage::OperationType::kNone, url)) {

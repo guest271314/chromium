@@ -21,7 +21,7 @@
     height: 50px;
     background: blue;
   }
-  #menu::backdrop {
+  #menu::overscroll-backdrop {
     position: absolute;
     inset: 0;
     display: block;
@@ -38,6 +38,7 @@
   <div id="menu" overscrollarea></div>
   <div id="content"></div>
 </div>
+<button style="display: none" command="toggle-overscroll" commandfor="menu"></button>
 
 <script>
 function runTest() {

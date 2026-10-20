@@ -9,9 +9,10 @@
 #include <utility>
 
 #include "base/gtest_prod_util.h"
-#include "base/memory/memory_pressure_listener.h"
 #include "base/memory/post_delayed_memory_reduction_task.h"
 #include "base/memory/scoped_refptr.h"
+#include "base/memory_coordinator/async_memory_consumer_registration.h"
+#include "base/memory_coordinator/memory_consumer.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/time/time.h"
 #include "base/trace_event/memory_dump_provider.h"
@@ -56,9 +57,8 @@ class PLATFORM_EXPORT ParkableStringManagerDumpProvider
 // possible to temporarily have an unparked `ParkableString` inaccessible
 // through `unparked_strings_`. This can cause aging of the string to be
 // delayed or a variation on the sizes recorded in 'ComputeStatistics()`.
-class PLATFORM_EXPORT ParkableStringManager
-    : public RAILModeObserver,
-      public base::MemoryPressureListener {
+class PLATFORM_EXPORT ParkableStringManager : public RAILModeObserver,
+                                              public base::MemoryConsumer {
   USING_FAST_MALLOC(ParkableStringManager);
 
  public:
@@ -72,8 +72,9 @@ class PLATFORM_EXPORT ParkableStringManager
   void SetRendererBackgrounded(bool backgrounded);
   void OnRAILModeChanged(RAILMode rail_mode) override;
 
-  // base::MemoryPressureListener:
-  void OnMemoryPressure(base::MemoryPressureLevel) override;
+  // base::MemoryConsumer:
+  void OnUpdateMemoryLimit() override;
+  void OnReleaseMemory() override;
 
   // Number of parked and unparked strings. Public for testing.
   size_t Size() const;
@@ -101,9 +102,9 @@ class PLATFORM_EXPORT ParkableStringManager
   // Compares not the pointers, but the arrays. Uses pointers to save space.
   struct SecureStringDigestHashTraits
       : GenericHashTraits<const SecureStringDigest*> {
-    static unsigned GetHash(const SecureStringDigest* digest) {
+    static uint32_t GetHash(const SecureStringDigest* digest) {
       // The first bytes of the hash are as good as anything else.
-      return *reinterpret_cast<const unsigned*>(digest->data());
+      return *reinterpret_cast<const uint32_t*>(digest->data());
     }
 
     static bool Equal(const SecureStringDigest* const a,
@@ -225,8 +226,8 @@ class PLATFORM_EXPORT ParkableStringManager
   scoped_refptr<base::SingleThreadTaskRunner> task_runner_;
   std::unique_ptr<DiskDataAllocator> allocator_for_testing_;
 
-  std::optional<base::AsyncMemoryPressureListenerRegistration>
-      memory_pressure_listener_registration_;
+  std::optional<base::AsyncMemoryConsumerRegistration>
+      memory_consumer_registration_;
 
   friend class ParkableStringTest;
   FRIEND_TEST_ALL_PREFIXES(ParkableStringTest, SynchronousCompression);

@@ -4,6 +4,7 @@
 
 #include "components/policy/test_support/fake_dmserver.h"
 
+#include <iostream>
 #include <string_view>
 #include <utility>
 #include <vector>
@@ -81,6 +82,8 @@ constexpr int kDefaultMinLogLevel = logging::LOGGING_INFO;
 constexpr bool kDefaultLogToConsole = false;
 constexpr int kDefaultPort = 6112;
 
+constexpr char kHelpSwitch[] = "help";
+constexpr char kHelpSwitchShort[] = "h";
 constexpr char kPolicyBlobPathSwitch[] = "policy-blob-path";
 constexpr char kPolicyPathSwitch[] = "policy-path";
 constexpr char kClientStatePathSwitch[] = "client-state-path";
@@ -112,9 +115,9 @@ const PolicyTypeEntry kPolicyTypeMapping[] = {
 
 const PolicyTypeEntry kExtensionInstallPolicyTypeMapping[] = {
     {policy::dm_protocol::kChromeExtensionInstallUserCloudPolicyType,
-      "user-extension-install"},
+     "user-extension-install"},
     {policy::dm_protocol::kChromeExtensionInstallMachineLevelCloudPolicyType,
-      "machine-extension-install"},
+     "machine-extension-install"},
 };
 
 static remote_commands::WaitRemoteCommandResultResponse
@@ -318,7 +321,8 @@ bool ParseCurrentKeyIndex(const base::DictValue* dict,
   return true;
 }
 
-// Used to print a human-readable type name in warnings in TrySetCloudPolicySettings.
+// Used to print a human-readable type name in warnings in
+// TrySetCloudPolicySettings.
 template <typename T>
 const char* GetExpectedTypeName() {
   if constexpr (std::is_same_v<T, bool>) {
@@ -409,6 +413,35 @@ bool ValidateAndSetPolicyValue(std::string_view policy_name,
                    << "'";
         return false;
     }
+  }
+
+  for (const auto& access : policy::test::kStringListPolicyAccess) {
+    if (policy_name != access.policy_key) {
+      continue;
+    }
+    if (!value.is_list()) {
+      LOG(WARNING) << "Wrong policy type for '" << access.policy_key
+                   << "'. Expected list, got " << value.type();
+      return false;
+    }
+    auto* proto = access.get_proto_mutable(policy_settings);
+    CHECK(proto);
+    proto->mutable_policy_options()->set_mode(em::PolicyOptions::MANDATORY);
+    std::vector<std::string> string_list;
+    for (const auto& entry : value.GetList()) {
+      if (!entry.is_string()) {
+        LOG(WARNING) << "Wrong list entry type for '" << access.policy_key
+                     << "'. Expected string, got " << entry.type();
+        return false;
+      }
+      string_list.push_back(entry.GetString());
+    }
+    auto* proto_string_list = proto->mutable_value();
+    proto_string_list->clear_entries();
+    for (const std::string& s : string_list) {
+      proto_string_list->add_entries(s);
+    }
+    return true;
   }
 
   LOG(WARNING) << "Unknown policy name: '" << policy_name << "', skipping.";
@@ -505,7 +538,27 @@ void InitLogging(const std::optional<std::string>& log_path,
                        /*enable_timestamp=*/true, /*enable_timestamp=*/false);
 }
 
-void ParseFlags(const base::CommandLine& command_line,
+void PrintHelp() {
+  std::cout << R"(Usage: fake_dmserver --policy-path=<path> [options]
+
+Starts a fake version of the Device Management, for testing enterprise features.
+See components/policy/tools/fake_dmserver/README.md for detailed instructions.
+
+Options:
+  --help, -h                   Show this help message.
+  --policy-path=<path>         Path to policy JSON file.
+  --client-state-path=<path>   Path to client state JSON file (default: same dir
+                               as --policy-path).
+  --grpc-unix-socket-uri=<uri> Unix domain socket for gRPC.
+  --log-path=<path>            File path to write logs to.
+  --startup-pipe=<fd>          Pipe to write server URL to.
+  --min-log-level=<level>      Minimum log level (int).
+  --log-to-console             Enable logging to console.
+  --port=<port>                Port to listen on (default: 6112).
+)";
+}
+
+bool ParseFlags(const base::CommandLine& command_line,
                 std::string& policy_blob_path,
                 std::string& client_state_path,
                 std::string& grpc_unix_socket_uri,
@@ -514,6 +567,11 @@ void ParseFlags(const base::CommandLine& command_line,
                 bool& log_to_console,
                 int& min_log_level,
                 int& port) {
+  if (command_line.HasSwitch(kHelpSwitch) ||
+      command_line.HasSwitch(kHelpSwitchShort)) {
+    return false;
+  }
+
   policy_blob_path = kDefaultPolicyBlobFilename;
   client_state_path = kDefaultClientStateFilename;
   log_to_console = kDefaultLogToConsole;
@@ -574,6 +632,8 @@ void ParseFlags(const base::CommandLine& command_line,
     CHECK(base::StringToInt(port_str, &port))
         << "Expected an int value for --port switch, but got: " << port_str;
   }
+
+  return true;
 }
 
 enum class RemoteCommandsWaitType { kAcknowledged, kResultAvailable };

@@ -29,11 +29,16 @@
 
 #if BUILDFLAG(IS_IOS)
 #include "base/gtest_prod_util.h"
+#include "base/memory/scoped_refptr.h"
 #endif
 
 namespace affiliations {
 class SQLTableBuilder;
 }  // namespace affiliations
+
+namespace sql {
+class Transaction;
+}  // namespace sql
 
 namespace syncer {
 class MetadataBatch;
@@ -78,7 +83,7 @@ class LoginDatabase : public EncryptDecryptInterface {
   // should be called.
   virtual bool Init(
       OnUndecryptablePasswordsRemoved on_undecryptable_passwords_removed,
-      os_crypt_async::Encryptor encryptor);
+      scoped_refptr<os_crypt_async::Encryptor> encryptor);
 
   // Reports metrics regarding inaccessible passwords and bubble usages to UMA.
   void ReportMetrics();
@@ -187,9 +192,7 @@ class LoginDatabase : public EncryptDecryptInterface {
   // begin, rollback and commit transactions. They delegate to the transaction
   // support of the underlying database. Only one transaction may exist at a
   // time.
-  bool BeginTransaction();
-  void RollbackTransaction();
-  bool CommitTransaction();
+  std::unique_ptr<sql::Transaction> CreateTransaction();
 
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
   void SetIsUserDataDirPolicySet(bool is_set) {
@@ -221,12 +224,30 @@ class LoginDatabase : public EncryptDecryptInterface {
 
  private:
   // EncryptDecryptInterface implementation.
+  // TODO(crbug.com/513276101): Clean up plain text variant after password notes
+  // are migrated to SecureU16String too.
   [[nodiscard]] EncryptionResult EncryptedString(
       const std::u16string& plain_text,
       std::string* cipher_text) const override;
+  [[nodiscard]] EncryptionResult EncryptedString(
+      const crypto::SecureU16String& plain_text,
+      std::string* cipher_text) const override;
+  // TODO(crbug.com/513276101): Clean up plain text variant after password notes
+  // are migrated to SecureU16String too.
   [[nodiscard]] EncryptionResult DecryptedString(
       const std::string& cipher_text,
       std::u16string* plain_text) const override;
+  [[nodiscard]] EncryptionResult DecryptedString(
+      const std::string& cipher_text,
+      PasswordString* plain_text) const override;
+
+  // Platform-agnostic tail shared by every platform implementation of the
+  // PasswordString overload of DecryptedString(). Runs the byte-oriented
+  // decrypt path, wraps the result into a PasswordString and securely zeroes
+  // intermediate buffers. Returns whether the underlying decryption succeeded.
+  [[nodiscard]] bool DecryptStringToPasswordString(
+      const std::string& cipher_text,
+      PasswordString* decrypted_text) const;
 
   struct PrimaryKeyAndPassword;
   class SyncMetadataStore : public PasswordStoreSync::MetadataStore {
@@ -367,7 +388,7 @@ class LoginDatabase : public EncryptDecryptInterface {
   InsecureCredentialsTable insecure_credentials_table_;
   PasswordNotesTable password_notes_table_;
   SyncMetadataStore password_sync_metadata_store_{this};
-  std::unique_ptr<os_crypt_async::Encryptor> encryptor_;
+  scoped_refptr<os_crypt_async::Encryptor> encryptor_;
 
   std::optional<bool> were_undecryptable_logins_deleted_;
   bool is_user_data_dir_policy_set_ = false;

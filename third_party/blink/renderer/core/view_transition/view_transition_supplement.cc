@@ -4,6 +4,8 @@
 
 #include "third_party/blink/renderer/core/view_transition/view_transition_supplement.h"
 
+#include <algorithm>
+
 #include "cc/trees/layer_tree_host.h"
 #include "cc/view_transition/view_transition_request.h"
 #include "third_party/blink/public/mojom/frame/frame.mojom-blink.h"
@@ -20,7 +22,7 @@
 #include "third_party/blink/renderer/core/page/page.h"
 #include "third_party/blink/renderer/core/page/page_animator.h"
 #include "third_party/blink/renderer/core/paint/paint_layer.h"
-#include "third_party/blink/renderer/core/route_matching/route_map.h"
+#include "third_party/blink/renderer/core/route_matching/navigation_state.h"
 #include "third_party/blink/renderer/core/style/computed_style.h"
 #include "third_party/blink/renderer/core/view_transition/dom_view_transition.h"
 #include "third_party/blink/renderer/core/view_transition/page_swap_event.h"
@@ -28,6 +30,7 @@
 #include "third_party/blink/renderer/core/view_transition/view_transition_utils.h"
 #include "third_party/blink/renderer/platform/bindings/exception_state.h"
 #include "third_party/blink/renderer/platform/graphics/compositing/paint_artifact_compositor.h"
+#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 
 namespace blink {
 
@@ -110,14 +113,19 @@ DOMViewTransition* ViewTransitionSupplement::StartTransition(
   // Disallow script initiated transitions during a navigation initiated
   // transition.
   if (document_transition_ && !document_transition_->IsCreatedViaScriptAPI()) {
-    return ViewTransition::CreateSkipped(&element, callback)
+    return ViewTransition::CreateSkipped(
+               &element, callback,
+               ViewTransition::PromiseResponse::kRejectAbort,
+               ViewTransitionSkipReason::kNavigationTransitionActive, types)
         ->GetScriptDelegate();
   }
 
   ViewTransition* active_transition = GetTransition(element);
   if (active_transition) {
     // Starting a view-transition skips the currently active view-transition.
-    active_transition->SkipTransition();
+    active_transition->SkipTransition(
+        ViewTransition::PromiseResponse::kRejectAbort,
+        ViewTransitionSkipReason::kNewTransitionStarted);
   } else {
     auto it = skipped_with_pending_dom_callback_.find(&element);
     if (it != skipped_with_pending_dom_callback_.end()) {
@@ -132,8 +140,11 @@ DOMViewTransition* ViewTransitionSupplement::StartTransition(
       << "SkipTransition() should finish previously active view transition";
 
   // We need to be connected to a view to have a transition.
-  if (!document.View()) {
-    return ViewTransition::CreateSkipped(&element, callback)
+  if (!element.isConnected() || !document.View()) {
+    return ViewTransition::CreateSkipped(
+               &element, callback,
+               ViewTransition::PromiseResponse::kRejectInvalidState,
+               ViewTransitionSkipReason::kUnsupportedCapture, types)
         ->GetScriptDelegate();
   }
 
@@ -149,7 +160,8 @@ DOMViewTransition* ViewTransitionSupplement::StartTransition(
 
   if (document.hidden()) {
     transition->SkipTransition(
-        ViewTransition::PromiseResponse::kRejectInvalidState);
+        ViewTransition::PromiseResponse::kRejectInvalidState,
+        ViewTransitionSkipReason::kDocumentHidden);
 
     DCHECK(!document_transition_ || !for_document);
     return transition->GetScriptDelegate();
@@ -161,7 +173,8 @@ DOMViewTransition* ViewTransitionSupplement::StartTransition(
 void ViewTransitionSupplement::DidChangeVisibilityState() {
   if (document_->hidden() && document_transition_) {
     document_transition_->SkipTransition(
-        ViewTransition::PromiseResponse::kRejectInvalidState);
+        ViewTransition::PromiseResponse::kRejectInvalidState,
+        ViewTransitionSkipReason::kDocumentHidden);
   }
   SendOptInStatusToHost();
 }
@@ -206,7 +219,9 @@ void ViewTransitionSupplement::StartNavigationPreviewIfNeeded() {
   CHECK(RuntimeEnabledFeatures::TwoPhaseViewTransitionEnabled());
 
   if (document_transition_) {
-    document_transition_->SkipTransition();
+    document_transition_->SkipTransition(
+        ViewTransition::PromiseResponse::kRejectAbort,
+        ViewTransitionSkipReason::kNewTransitionStarted);
   }
 
   CHECK(!document_transition_);
@@ -217,7 +232,9 @@ void ViewTransitionSupplement::StartNavigationPreviewIfNeeded() {
 void ViewTransitionSupplement::AbortNavigationPreview() {
   if (document_transition_ && document_transition_->IsPreview()) {
     CHECK(RuntimeEnabledFeatures::TwoPhaseViewTransitionEnabled());
-    document_transition_->SkipTransition();
+    document_transition_->SkipTransition(
+        ViewTransition::PromiseResponse::kRejectAbort,
+        ViewTransitionSkipReason::kNavigationAborted);
   }
 }
 
@@ -231,10 +248,8 @@ void ViewTransitionSupplement::StartTransition(
         [](Document* document,
            ViewTransition::ViewTransitionStateCallback callback,
            const ViewTransitionState& state) {
-          if (document) {
-            if (RouteMap* route_map = RouteMap::Get(document)) {
-              route_map->OnPreviewFinished();
-            }
+          if (auto* navigation_state = NavigationState::Get(document)) {
+            navigation_state->OnPreviewFinished();
           }
           std::move(callback).Run(state);
         },
@@ -252,7 +267,9 @@ void ViewTransitionSupplement::StartTransition(
     }
     // We should skip a transition if one exists, regardless of how it was
     // created, since navigation transition takes precedence.
-    document_transition_->SkipTransition();
+    document_transition_->SkipTransition(
+        ViewTransition::PromiseResponse::kRejectAbort,
+        ViewTransitionSkipReason::kNewTransitionStarted);
   }
 
   DCHECK(!document_transition_)
@@ -278,7 +295,9 @@ void ViewTransitionSupplement::CreateFromSnapshotForNavigation(
 void ViewTransitionSupplement::AbortTransition(Document& document) {
   auto* supplement = document.GetViewTransitionsIfExists();
   if (supplement && supplement->document_transition_) {
-    supplement->document_transition_->SkipTransition();
+    supplement->document_transition_->SkipTransition(
+        ViewTransition::PromiseResponse::kRejectAbort,
+        ViewTransitionSkipReason::kNavigationAborted);
     DCHECK(!supplement->document_transition_);
   }
 }
@@ -294,6 +313,12 @@ void ViewTransitionSupplement::StartTransition(
 void ViewTransitionSupplement::OnTransitionFinished(
     ViewTransition* transition) {
   CHECK(transition);
+
+  auto it = std::find(captured_transitions_.begin(),
+                      captured_transitions_.end(), transition);
+  if (it != captured_transitions_.end()) {
+    captured_transitions_.erase(it);
+  }
 
   // Clear the ongoing transition. Proceed with cross-document transition if
   // this was a preview.
@@ -319,9 +344,12 @@ void ViewTransitionSupplement::OnTransitionFinished(
                   std::move(*pending_navigation_transition_)));
       pending_navigation_transition_.reset();
     }
-  } else {
-    Element* scope = transition->Scope();
+  } else if (Element* scope = transition->Scope()) {
     element_transitions_.erase(scope);
+  }
+
+  if (!captured_transitions_.empty() && !HasActiveCaptures()) {
+    AdvanceCapturedTransitions();
   }
 
   // Notify the animator if the set of active view transitions is empty.
@@ -330,32 +358,105 @@ void ViewTransitionSupplement::OnTransitionFinished(
       page->Animator().SetHasViewTransition(false);
     }
   }
+
+  if (RuntimeEnabledFeatures::NavigationSourcePseudoClassEnabled()) {
+    // This view transition, which is now finished, may be the one reason why
+    // there's still a "current navigation state". Therefore, attempt finish any
+    // current navigation.
+    NavigationState::AttemptFinishNavigationAndDestroy(document_);
+  }
 }
 
 void ViewTransitionSupplement::OnSkipTransitionWithPendingCallback(
     ViewTransition* transition) {
   CHECK(transition);
-  skipped_with_pending_dom_callback_.insert(transition->Scope(), transition);
+  if (transition->Scope()) {
+    skipped_with_pending_dom_callback_.insert(transition->Scope(), transition);
+  }
 }
 
 void ViewTransitionSupplement::OnSkippedTransitionDOMCallback(
     ViewTransition* transition) {
   CHECK(transition);
-  skipped_with_pending_dom_callback_.erase(transition->Scope());
+  if (transition->Scope()) {
+    skipped_with_pending_dom_callback_.erase(transition->Scope());
+  }
+}
+
+bool ViewTransitionSupplement::HasNonScriptTransitions() const {
+  if (document_transition_ && !document_transition_->IsCreatedViaScriptAPI()) {
+    return true;
+  }
+  for (auto& element_transition : element_transitions_.Values()) {
+    if (!element_transition->IsCreatedViaScriptAPI()) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool ViewTransitionSupplement::IsEarlyCallbackEnabled() const {
+  return !HasNonScriptTransitions();
+}
+
+bool ViewTransitionSupplement::HasActiveCaptures() const {
+  auto is_capturing_and_not_ready = [this](ViewTransition* t) {
+    return t && t->IsCapturing() && !captured_transitions_.Contains(t);
+  };
+  if (is_capturing_and_not_ready(document_transition_)) {
+    return true;
+  }
+  for (const auto& entry : element_transitions_) {
+    if (is_capturing_and_not_ready(entry.value)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+void ViewTransitionSupplement::AdvanceCapturedTransitions() {
+  std::sort(captured_transitions_.begin(), captured_transitions_.end(),
+            CompareTransitions);
+  HeapVector<Member<ViewTransition>> local_copy(captured_transitions_);
+  captured_transitions_.clear();
+  for (auto captured_transition : local_copy) {
+    if (IsEarlyCallbackEnabled()) {
+      captured_transition->OnCaptureCommitted();
+    } else {
+      captured_transition->OnCapturePhaseComplete();
+    }
+  }
+}
+
+void ViewTransitionSupplement::OnDOMCallbackReadyToRun(
+    ViewTransition* transition) {
+  CHECK(transition);
+  if (!transition->IsCapturing()) {
+    return;
+  }
+  captured_transitions_.push_back(transition);
+  if (!HasActiveCaptures()) {
+    AdvanceCapturedTransitions();
+  }
 }
 
 void ViewTransitionSupplement::OnTransitionCaptured(
     ViewTransition* transition) {
   CHECK(transition);
-  captured_transitions_.push_back(transition);
-  if (--in_flight_capture_requests_ == 0) {
-    std::sort(captured_transitions_.begin(), captured_transitions_.end(),
-              CompareTransitions);
-    for (auto captured_transition : captured_transitions_) {
-      captured_transition->OnCapturePhaseComplete();
-    }
-    captured_transitions_.clear();
+  if (!IsEarlyCallbackEnabled()) {
+    OnDOMCallbackReadyToRun(transition);
+  } else {
+    // In early DOM callbacks mode, OnTransitionCaptured is called when
+    // capture rects are received. We just notify the waiting state machine!
+    transition->OnCaptureRectsReceived();
   }
+}
+
+void ViewTransitionSupplement::OnCaptureCommitted(ViewTransition* transition) {
+  CHECK(transition);
+  CHECK(IsEarlyCallbackEnabled());
+
+  OnDOMCallbackReadyToRun(transition);
 }
 
 ViewTransition* ViewTransitionSupplement::GetTransition() {
@@ -383,8 +484,6 @@ void ViewTransitionSupplement::ForEachTransition(
     }
     return;
   }
-
-  DCHECK(RuntimeEnabledFeatures::ScopedViewTransitionsEnabled());
 
   // Local copy of the list, since the function may modify the transition map.
   HeapVector<Member<ViewTransition>> transitions;
@@ -438,13 +537,11 @@ void ViewTransitionSupplement::Trace(Visitor* visitor) const {
   visitor->Trace(element_transitions_);
   visitor->Trace(skipped_with_pending_dom_callback_);
   visitor->Trace(captured_transitions_);
+  ViewTransition::Delegate::Trace(visitor);
 }
 
 void ViewTransitionSupplement::AddPendingRequest(
     std::unique_ptr<ViewTransitionRequest> request) {
-  if (request->type() == ViewTransitionRequest::Type::kSave) {
-    in_flight_capture_requests_++;
-  }
   pending_requests_.push_back(std::move(request));
 
   if (!document_ || !document_->GetPage() || !document_->View()) {
@@ -509,7 +606,9 @@ ViewTransitionSupplement::ResolveCrossDocumentViewTransition() {
 
   if (cross_document_opt_in_ ==
       mojom::blink::ViewTransitionSameOriginOptIn::kDisabled) {
-    document_transition_->SkipTransition();
+    document_transition_->SkipTransition(
+        ViewTransition::PromiseResponse::kRejectInvalidState,
+        ViewTransitionSkipReason::kOptInDisabled);
     CHECK(!ViewTransitionUtils::GetTransition(*document_));
     return nullptr;
   }

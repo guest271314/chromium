@@ -8,7 +8,7 @@
 #include "base/containers/flat_set.h"
 #include "base/feature_list.h"
 #include "base/metrics/field_trial_params.h"
-#include "components/optimization_guide/core/model_execution/feature_keys.h"
+#include "components/optimization_guide/core/feature_registry/feature_keys.h"
 #include "components/optimization_guide/core/optimization_guide_enums.h"
 #include "components/optimization_guide/proto/model_execution.pb.h"
 #include "components/optimization_guide/proto/models.pb.h"
@@ -19,7 +19,6 @@ namespace optimization_guide::features::internal {
 // to the user. Should only be enabled for experimental features that have not
 // graduated yet.
 BASE_DECLARE_FEATURE(kComposeSettingsVisibility);
-BASE_DECLARE_FEATURE(kTabOrganizationSettingsVisibility);
 BASE_DECLARE_FEATURE(kWallpaperSearchSettingsVisibility);
 BASE_DECLARE_FEATURE(kHistorySearchSettingsVisibility);
 BASE_DECLARE_FEATURE(kFindsSettingsVisibility);
@@ -34,7 +33,6 @@ extern const base::FeatureParam<std::string>
 // should not be enabled at the same time as their respective settings
 // visibility features.
 BASE_DECLARE_FEATURE(kComposeGraduated);
-BASE_DECLARE_FEATURE(kTabOrganizationGraduated);
 BASE_DECLARE_FEATURE(kWallpaperSearchGraduated);
 BASE_DECLARE_FEATURE(kFindsGraduated);
 

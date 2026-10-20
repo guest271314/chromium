@@ -38,8 +38,7 @@ class CONTENT_EXPORT PrerenderWebContentsDelegate : public WebContentsDelegate {
   bool ShouldFocusPageAfterCrash(WebContents* source) override;
   bool TakeFocus(WebContents* source, bool reverse) override;
   void WebContentsCreated(WebContents* source_contents,
-                          int opener_render_process_id,
-                          int opener_render_frame_id,
+                          const GlobalRenderFrameHostId& opener_id,
                           const std::string& frame_name,
                           const GURL& target_url,
                           WebContents* new_contents) override;
@@ -57,6 +56,7 @@ class CONTENT_EXPORT PrerenderWebContentsDelegate : public WebContentsDelegate {
       const GURL& blocked_url,
       const GURL& initiator_url,
       const url::Origin& initiator_origin,
+      scoped_refptr<InitiatorNavigationState> initiator_navigation_state,
       blink::mojom::NavigationBlockedReason reason) override;
   bool ShouldAllowRunningInsecureContent(WebContents* web_contents,
                                          bool allowed_per_prefs,

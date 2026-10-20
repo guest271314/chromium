@@ -150,6 +150,18 @@ int AdjustPosition(int current_position,
   return (new_position > max_position) ? max_position : new_position;
 }
 
+bool IsVertical(ScrollView::GradientDirection direction) {
+  return direction == ScrollView::GradientDirection::kVertical ||
+         direction == ScrollView::GradientDirection::kVerticalLeading ||
+         direction == ScrollView::GradientDirection::kVerticalTrailing;
+}
+
+bool IsHorizontal(ScrollView::GradientDirection direction) {
+  return direction == ScrollView::GradientDirection::kHorizontal ||
+         direction == ScrollView::GradientDirection::kHorizontalLeading ||
+         direction == ScrollView::GradientDirection::kHorizontalTrailing;
+}
+
 }  // namespace
 
 // Viewport contains the contents View of the ScrollView.
@@ -229,6 +241,7 @@ class ScrollView::Viewport : public View {
     bool layer_needs_update = layer()->type() != new_layer_type;
     if (layer_needs_update) {
       SetContentsViewportLayer(new_layer_type);
+      scroll_view_->UpdateBackground();
     }
   }
 
@@ -254,8 +267,7 @@ class ScrollView::Viewport : public View {
         !this->children().empty() ? this->children()[0] : nullptr;
 
     auto has_textured_layer{[](const View* contents) {
-      return contents->layer() &&
-             contents->layer()->type() == ui::LAYER_TEXTURED;
+      return contents->layer() && contents->layer()->AsTextured();
     }};
 
     if (!contents || has_textured_layer(contents)) {
@@ -297,7 +309,11 @@ ScrollView::ScrollView(ScrollWithLayers scroll_with_layers)
           PlatformStyle::CreateScrollBar(ScrollBar::Orientation::kHorizontal))),
       vert_sb_(AddChildView(
           PlatformStyle::CreateScrollBar(ScrollBar::Orientation::kVertical))),
-      corner_view_(std::make_unique<ScrollCornerView>()),
+      corner_view_(AddChildView(std::make_unique<ScrollCornerView>())),
+      more_content_left_(AddChildView(std::make_unique<Separator>())),
+      more_content_top_(AddChildView(std::make_unique<Separator>())),
+      more_content_right_(AddChildView(std::make_unique<Separator>())),
+      more_content_bottom_(AddChildView(std::make_unique<Separator>())),
       scroll_with_layers_enabled_(scroll_with_layers ==
                                   ScrollWithLayers::kEnabled) {
   SetNotifyEnterExitOnChild(true);
@@ -378,8 +394,7 @@ ScrollView* ScrollView::GetScrollViewForContents(View* contents) {
   }
 
   auto* scroll_view = static_cast<ScrollView*>(grandparent);
-  DCHECK_EQ(contents, scroll_view->contents());
-  return scroll_view;
+  return contents == scroll_view->contents() ? scroll_view : nullptr;
 }
 
 void ScrollView::SetContentsImpl(std::unique_ptr<View> a_view) {
@@ -464,13 +479,12 @@ gfx::Rect ScrollView::GetOpaqueVisibleRect() const {
   if (visible_rect.IsEmpty()) {
     return visible_rect;
   }
-  // Inset the rect if gradient masks are visible to ensure we only
-  // report the fully opaque region as "visible".
-  if (gradient_direction_ == GradientDirection::kVertical) {
+
+  if (IsVertical(gradient_direction_)) {
     int top_inset = is_leading_gradient_visible_ ? kGradientPixelSize : 0;
     int bottom_inset = is_trailing_gradient_visible_ ? kGradientPixelSize : 0;
     visible_rect.Inset(gfx::Insets::TLBR(top_inset, 0, bottom_inset, 0));
-  } else if (gradient_direction_ == GradientDirection::kHorizontal) {
+  } else if (IsHorizontal(gradient_direction_)) {
     int left_inset = is_leading_gradient_visible_ ? kGradientPixelSize : 0;
     int right_inset = is_trailing_gradient_visible_ ? kGradientPixelSize : 0;
     visible_rect.Inset(gfx::Insets::TLBR(0, left_inset, 0, right_inset));
@@ -560,21 +574,27 @@ View* ScrollView::SetCustomOverflowIndicator(OverflowIndicatorAlignment side,
   }
 
   View* indicator_ptr = indicator.get();
+  indicator->SetVisible(false);
+
   switch (side) {
     case OverflowIndicatorAlignment::kLeft:
-      more_content_left_ = std::move(indicator);
+      RemoveChildViewT(more_content_left_.ExtractAsDangling());
+      more_content_left_ = AddChildView(std::move(indicator));
       more_content_left_thickness_ = thickness;
       break;
     case OverflowIndicatorAlignment::kTop:
-      more_content_top_ = std::move(indicator);
+      RemoveChildViewT(more_content_top_.ExtractAsDangling());
+      more_content_top_ = AddChildView(std::move(indicator));
       more_content_top_thickness_ = thickness;
       break;
     case OverflowIndicatorAlignment::kRight:
-      more_content_right_ = std::move(indicator);
+      RemoveChildViewT(more_content_right_.ExtractAsDangling());
+      more_content_right_ = AddChildView(std::move(indicator));
       more_content_right_thickness_ = thickness;
       break;
     case OverflowIndicatorAlignment::kBottom:
-      more_content_bottom_ = std::move(indicator);
+      RemoveChildViewT(more_content_bottom_.ExtractAsDangling());
+      more_content_bottom_ = AddChildView(std::move(indicator));
       more_content_bottom_thickness_ = thickness;
       break;
     default:
@@ -593,16 +613,13 @@ void ScrollView::SetOverflowGradientMask(GradientDirection direction) {
 }
 
 void ScrollView::UpdateGradientMask() {
-  if (gradient_direction_ == GradientDirection::kNone ||
-      (gradient_direction_ == GradientDirection::kHorizontal &&
-       !horiz_sb_->GetVisible()) ||
-      (gradient_direction_ == GradientDirection::kVertical &&
-       !vert_sb_->GetVisible())) {
-    return;
-  }
+  bool is_horizontal = IsHorizontal(gradient_direction_);
+  bool is_vertical = IsVertical(gradient_direction_);
 
   // Only one direction can be overflowed with a gradient at a time.
-  CHECK(!(horiz_sb_->GetVisible() && vert_sb_->GetVisible()));
+  if (gradient_direction_ != GradientDirection::kNone) {
+    CHECK(!(horiz_sb_->GetVisible() && vert_sb_->GetVisible()));
+  }
 
   if (!layer()) {
     SetPaintToLayer();
@@ -612,12 +629,22 @@ void ScrollView::UpdateGradientMask() {
   bool should_show_leading = false;
   bool should_show_trailing = false;
 
-  if (gradient_direction_ == GradientDirection::kVertical) {
-    should_show_leading = CurrentOffset().y() > vert_sb_->GetMinPosition();
-    should_show_trailing = CurrentOffset().y() < vert_sb_->GetMaxPosition();
-  } else if (gradient_direction_ == GradientDirection::kHorizontal) {
-    should_show_leading = CurrentOffset().x() > horiz_sb_->GetMinPosition();
-    should_show_trailing = CurrentOffset().x() < horiz_sb_->GetMaxPosition();
+  if (is_vertical && contents_ &&
+      (!ScrollsWithLayers() || contents_->layer())) {
+    should_show_leading =
+        (gradient_direction_ != GradientDirection::kVerticalTrailing) &&
+        CurrentOffset().y() > vert_sb_->GetMinPosition();
+    should_show_trailing =
+        (gradient_direction_ != GradientDirection::kVerticalLeading) &&
+        CurrentOffset().y() < vert_sb_->GetMaxPosition();
+  } else if (is_horizontal && contents_ &&
+             (!ScrollsWithLayers() || contents_->layer())) {
+    should_show_leading =
+        (gradient_direction_ != GradientDirection::kHorizontalTrailing) &&
+        CurrentOffset().x() > horiz_sb_->GetMinPosition();
+    should_show_trailing =
+        (gradient_direction_ != GradientDirection::kHorizontalLeading) &&
+        CurrentOffset().x() < horiz_sb_->GetMaxPosition();
   }
 
   // Nothing to do if the state of leading and trailing gradients hasn't
@@ -630,18 +657,24 @@ void ScrollView::UpdateGradientMask() {
   is_leading_gradient_visible_ = should_show_leading;
   is_trailing_gradient_visible_ = should_show_trailing;
 
-  const int total_size = gradient_direction_ == GradientDirection::kHorizontal
-                             ? width()
-                             : height();
+  const int total_size = is_horizontal ? width() : height();
 
   // Skip setting up the gradient mask if there wont be any display of the view.
   if (total_size == 0) {
     return;
   }
 
+  if (gradient_direction_ == GradientDirection::kNone ||
+      (is_horizontal && !horiz_sb_->GetVisible()) ||
+      (is_vertical && !vert_sb_->GetVisible())) {
+    if (layer() && layer()->HasGradientMask()) {
+      layer()->SetGradientMask(gfx::LinearGradient::GetEmpty());
+    }
+    return;
+  }
+
   gfx::LinearGradient gradient_mask;
-  gradient_mask.set_angle(
-      gradient_direction_ == GradientDirection::kVertical ? 270 : 0);
+  gradient_mask.set_angle(is_vertical ? 270 : 0);
   gradient_mask.AddStep(kGradientLeadingFadeStart,
                         should_show_leading ? 0 : 255);
 
@@ -678,11 +711,17 @@ void ScrollView::ClipHeightTo(int min_height, int max_height) {
 }
 
 int ScrollView::GetScrollBarLayoutWidth() const {
-  return vert_sb_->OverlapsContent() ? 0 : vert_sb_->GetThickness();
+  return (vertical_scroll_bar_mode_ != ScrollBarMode::kEnabled ||
+          vert_sb_->OverlapsContent())
+             ? 0
+             : vert_sb_->GetThickness();
 }
 
 int ScrollView::GetScrollBarLayoutHeight() const {
-  return horiz_sb_->OverlapsContent() ? 0 : horiz_sb_->GetThickness();
+  return (horizontal_scroll_bar_mode_ != ScrollBarMode::kEnabled ||
+          horiz_sb_->OverlapsContent())
+             ? 0
+             : horiz_sb_->GetThickness();
 }
 
 ScrollBar* ScrollView::SetHorizontalScrollBar(
@@ -720,11 +759,11 @@ void ScrollView::SetHasFocusIndicator(bool has_focus_indicator) {
 }
 
 bool ScrollView::IsHorizontalContentOverflowing() const {
-  return contents_->width() > contents_viewport_->width();
+  return contents_ && contents_->width() > contents_viewport_->width();
 }
 
 bool ScrollView::IsVerticalContentOverflowing() const {
-  return contents_->height() > contents_viewport_->height();
+  return contents_ && contents_->height() > contents_viewport_->height();
 }
 
 base::CallbackListSubscription ScrollView::AddContentsScrolledCallback(
@@ -1194,6 +1233,7 @@ void ScrollView::UpdateViewportLayerForClipping() {
     EnableViewportLayer();
   } else {
     contents_viewport_->DestroyLayer();
+    UpdateBackground();
   }
 }
 
@@ -1301,20 +1341,11 @@ void ScrollView::ComputeScrollBarsVisibility(const gfx::Size& vp_size,
   }
 }
 
-// Make sure that a single scrollbar is created and visible as needed
 void ScrollView::SetControlVisibility(View* control, bool should_show) {
   if (!control) {
     return;
   }
-  if (should_show) {
-    if (!control->GetVisible()) {
-      AddChildViewRaw(control);
-      control->SetVisible(true);
-    }
-  } else {
-    RemoveChildView(control);
-    control->SetVisible(false);
-  }
+  control->SetVisible(should_show);
 }
 
 void ScrollView::UpdateScrollBarPositions() {
@@ -1361,6 +1392,9 @@ void ScrollView::ScrollToOffset(const gfx::PointF& offset) {
 }
 
 gfx::PointF ScrollView::CurrentOffset() const {
+  if (!contents_) {
+    return gfx::PointF();
+  }
   return ScrollsWithLayers() ? contents_->layer()->CurrentScrollOffset()
                              : gfx::PointF(-contents_->x(), -contents_->y());
 }
@@ -1402,21 +1436,19 @@ void ScrollView::EnableViewportLayer() {
 
 ScrollView::ScopedScrollSynchronizer::ScopedScrollSynchronizer(
     base::PassKey<ScrollView>,
-    ScrollView& scroll_view)
-    : scroll_view_(&scroll_view) {
-  scroll_view.AddObserver(this);
+    ScrollView& scroll_view) {
+  scroll_view_observation_.Observe(&scroll_view);
 }
 
 ScrollView::ScopedScrollSynchronizer::~ScopedScrollSynchronizer() {
-  if (scroll_view_) {
-    scroll_view_->OnScopedScrollSynchronizerDestroyed();
-    scroll_view_->RemoveObserver(this);
+  if (ScrollView* scroll_view = scroll_view_observation_.GetSource()) {
+    scroll_view->OnScopedScrollSynchronizerDestroyed();
   }
 }
 
 void ScrollView::ScopedScrollSynchronizer::OnViewIsDeleting(
     View* observed_view) {
-  scroll_view_ = nullptr;
+  scroll_view_observation_.Reset();
 }
 
 std::unique_ptr<ScrollView::ScopedScrollSynchronizer>
@@ -1440,7 +1472,7 @@ void ScrollView::UpdateMainSideScrollingEnabledState() {
     return;
   }
 
-  const bool enabled = scroll_synchronizer_count_ == 0;
+  const bool enabled = scroll_synchronizer_count_ > 0;
   if (contents_ && contents_->layer()) {
     contents_->layer()->SetMainSideScrollingEnabled(enabled);
   }
@@ -1490,10 +1522,6 @@ void ScrollView::UpdateBorder() {
 }
 
 void ScrollView::UpdateBackground() {
-  if (!GetWidget()) {
-    return;
-  }
-
   const std::optional<ui::ColorVariant> background_color = GetBackgroundColor();
 
   auto create_background = [background_color]() {
@@ -1503,9 +1531,14 @@ void ScrollView::UpdateBackground() {
 
   SetBackground(create_background());
   // In addition to setting the background of |this|, set the background on
-  // the viewport as well. This way if the viewport has a layer
+  // the viewport as well when it has a textured layer so that
   // SetFillsBoundsOpaquely() is honored.
-  contents_viewport_->SetBackground(create_background());
+  if (contents_viewport_->layer() &&
+      contents_viewport_->layer()->type() == ui::LAYER_TEXTURED) {
+    contents_viewport_->SetBackground(create_background());
+  } else {
+    contents_viewport_->SetBackground(nullptr);
+  }
   if (contents_ && ScrollsWithLayers()) {
     contents_->SetBackground(create_background());
     // Contents views may not be aware they need to fill their entire bounds -
@@ -1544,24 +1577,35 @@ void ScrollView::PositionOverflowIndicators() {
 }
 
 void ScrollView::UpdateOverflowIndicatorVisibility(const gfx::PointF& offset) {
-  bool should_draw_vert_top =
-      !draw_border_ && !header_ && IsVerticalScrollEnabled() &&
-      offset.y() > vert_sb_->GetMinPosition() && draw_overflow_indicator_;
+  const bool suppress_leading =
+      gradient_direction_ == GradientDirection::kVerticalTrailing ||
+      gradient_direction_ == GradientDirection::kHorizontalTrailing;
+  const bool suppress_trailing =
+      gradient_direction_ == GradientDirection::kVerticalLeading ||
+      gradient_direction_ == GradientDirection::kHorizontalLeading;
+
+  bool should_draw_vert_top = !draw_border_ && !header_ &&
+                              IsVerticalScrollEnabled() &&
+                              offset.y() > vert_sb_->GetMinPosition() &&
+                              draw_overflow_indicator_ && !suppress_leading;
   SetControlVisibility(more_content_top_.get(), should_draw_vert_top);
 
-  bool should_draw_vert_bottom =
-      !draw_border_ && IsVerticalScrollEnabled() && !horiz_sb_->GetVisible() &&
-      offset.y() < vert_sb_->GetMaxPosition() && draw_overflow_indicator_;
+  bool should_draw_vert_bottom = !draw_border_ && IsVerticalScrollEnabled() &&
+                                 !horiz_sb_->GetVisible() &&
+                                 offset.y() < vert_sb_->GetMaxPosition() &&
+                                 draw_overflow_indicator_ && !suppress_trailing;
   SetControlVisibility(more_content_bottom_.get(), should_draw_vert_bottom);
 
   bool should_draw_horiz_leading =
       !draw_border_ && IsHorizontalScrollEnabled() &&
-      offset.x() > horiz_sb_->GetMinPosition() && draw_overflow_indicator_;
+      offset.x() > horiz_sb_->GetMinPosition() && draw_overflow_indicator_ &&
+      !suppress_leading;
   SetControlVisibility(more_content_left_.get(), should_draw_horiz_leading);
 
   bool should_draw_horiz_trailing =
       !draw_border_ && IsHorizontalScrollEnabled() && !vert_sb_->GetVisible() &&
-      offset.x() < horiz_sb_->GetMaxPosition() && draw_overflow_indicator_;
+      offset.x() < horiz_sb_->GetMaxPosition() && draw_overflow_indicator_ &&
+      !suppress_trailing;
   SetControlVisibility(more_content_right_.get(), should_draw_horiz_trailing);
 
   if (should_draw_vert_top || should_draw_vert_bottom ||
@@ -1588,6 +1632,18 @@ View* ScrollView::GetContentsViewportForTest() const {
   return contents_viewport_;
 }
 
+bool ScrollView::GetUseContentsPreferredSize() const {
+  return use_contents_preferred_size_;
+}
+
+void ScrollView::SetUseContentsPreferredSize(bool use_contents_preferred_size) {
+  if (use_contents_preferred_size == use_contents_preferred_size_) {
+    return;
+  }
+  use_contents_preferred_size_ = use_contents_preferred_size;
+  OnPropertyChanged(&use_contents_preferred_size_, PropertyEffects::kLayout);
+}
+
 BEGIN_METADATA(ScrollView)
 ADD_READONLY_PROPERTY_METADATA(int, MinHeight)
 ADD_READONLY_PROPERTY_METADATA(int, MaxHeight)
@@ -1598,6 +1654,7 @@ ADD_PROPERTY_METADATA(bool, HasFocusIndicator)
 ADD_PROPERTY_METADATA(ScrollView::ScrollBarMode, HorizontalScrollBarMode)
 ADD_PROPERTY_METADATA(ScrollView::ScrollBarMode, VerticalScrollBarMode)
 ADD_PROPERTY_METADATA(bool, TreatAllScrollEventsAsHorizontal)
+ADD_PROPERTY_METADATA(bool, UseContentsPreferredSize)
 END_METADATA
 
 // VariableRowHeightScrollHelper ----------------------------------------------

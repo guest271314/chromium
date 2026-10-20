@@ -20,7 +20,6 @@
 #include "remoting/base/auto_thread_task_runner.h"
 #include "remoting/base/logging.h"
 #include "remoting/host/base/host_exit_codes.h"
-#include "remoting/host/chromoting_host_services_client.h"
 #include "remoting/host/native_messaging/native_messaging_pipe.h"
 #include "remoting/host/native_messaging/pipe_messaging_channel.h"
 #include "remoting/host/usage_stats_consent.h"
@@ -63,8 +62,9 @@ int RemoteWebAuthnMain(int argc, char** argv) {
     return kNoPermissionExitCode;
   }
 
-  if (!ChromotingHostServicesClient::Initialize()) {
-    return kInitializationFailed;
+  if (!IsLaunchedByTrustedExtension(*base::CommandLine::ForCurrentProcess())) {
+    LOG(ERROR) << "Current process is not launched by a trusted extension.";
+    return kNoPermissionExitCode;
   }
 
   mojo::core::Init();

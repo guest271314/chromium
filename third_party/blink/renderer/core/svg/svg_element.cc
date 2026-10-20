@@ -30,6 +30,7 @@
 #include "third_party/blink/renderer/core/css/css_property_value_set.h"
 #include "third_party/blink/renderer/core/css/parser/css_parser_context.h"
 #include "third_party/blink/renderer/core/css/post_style_update_scope.h"
+#include "third_party/blink/renderer/core/css/properties/css_property.h"
 #include "third_party/blink/renderer/core/css/resolver/style_resolver.h"
 #include "third_party/blink/renderer/core/css/style_change_reason.h"
 #include "third_party/blink/renderer/core/css/style_engine.h"
@@ -68,6 +69,7 @@
 #include "third_party/blink/renderer/core/xml_names.h"
 #include "third_party/blink/renderer/platform/heap/disallow_new_wrapper.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
+#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/blink/renderer/platform/wtf/hash_map.h"
 #include "third_party/blink/renderer/platform/wtf/threading.h"
 
@@ -267,7 +269,7 @@ AffineTransform SVGElement::CalculateTransform(
     const gfx::RectF reference_box =
         TransformHelper::ComputeReferenceBox(*layout_object);
     matrix = TransformHelper::ComputeTransform(
-        GetDocument(), layout_object->StyleRef(), reference_box,
+        GetDocument(), layout_object->Style(), reference_box,
         ComputedStyle::kIncludeTransformOrigin);
   }
 
@@ -508,9 +510,8 @@ void SVGElement::ParseAttribute(const AttributeModificationParams& params) {
   const AtomicString& event_name =
       HTMLElement::EventNameForAttributeName(params.name);
   if (!event_name.IsNull()) {
-    SetAttributeEventListener(
-        event_name, JSEventHandlerForContentAttribute::Create(
-                        GetExecutionContext(), params.name, params.new_value));
+    SetElementAttributeEventListenerFromScriptBody(
+        event_name, params.name, params.new_value, params.reason);
     return;
   }
 
@@ -611,26 +612,23 @@ bool SVGElement::HaveLoadedRequiredResources() {
   return true;
 }
 
-static inline void CollectInstancesForSVGElement(
-    SVGElement* element,
-    HeapHashSet<WeakMember<SVGElement>>& instances) {
-  DCHECK(element);
-  if (element->ContainingShadowRoot())
-    return;
-
-  instances = element->InstancesForElement();
-}
-
 void SVGElement::AddedEventListener(
     const AtomicString& event_type,
     RegisteredEventListener& registered_listener) {
   // Add event listener to regular DOM element
   Node::AddedEventListener(event_type, registered_listener);
 
+  if (ContainingShadowRoot()) {
+    return;
+  }
+  if (RuntimeEnabledFeatures::SvgInstanceSyncOptimizationEnabled() &&
+      !MayHaveInstances()) {
+    return;
+  }
+
   // Add event listener to all shadow tree DOM element instances
-  HeapHashSet<WeakMember<SVGElement>> instances;
-  CollectInstancesForSVGElement(this, instances);
-  AddEventListenerOptionsResolved* options = registered_listener.Options();
+  HeapHashSet<WeakMember<SVGElement>> instances = InstancesForElement();
+  AddEventListenerOptionsResolved options = registered_listener.Options();
   EventListener* listener = registered_listener.Callback();
   for (SVGElement* element : instances) {
     bool result =
@@ -644,10 +642,18 @@ void SVGElement::RemovedEventListener(
     const RegisteredEventListener& registered_listener) {
   Node::RemovedEventListener(event_type, registered_listener);
 
+  if (ContainingShadowRoot()) {
+    return;
+  }
+  if (RuntimeEnabledFeatures::SvgInstanceSyncOptimizationEnabled() &&
+      !MayHaveInstances()) {
+    return;
+  }
+
   // Remove event listener from all shadow tree DOM element instances
-  HeapHashSet<WeakMember<SVGElement>> instances;
-  CollectInstancesForSVGElement(this, instances);
-  EventListenerOptions* options = registered_listener.Options();
+  HeapHashSet<WeakMember<SVGElement>> instances = InstancesForElement();
+  RegisteredEventListener::OptionsForMatching options =
+      registered_listener.GetOptionsForMatching();
   const EventListener* listener = registered_listener.Callback();
   for (SVGElement* shadow_tree_element : instances) {
     DCHECK(shadow_tree_element);
@@ -747,6 +753,12 @@ void SVGElement::SvgAttributeChanged(const SvgAttributeChangedParams& params) {
 
 void SVGElement::BaseValueChanged(const SVGAnimatedPropertyBase& property) {
   EnsureUniqueElementData().SetSvgAttributesAreDirty(true);
+  // baseVal bypasses attribute notifications. Presentation-attribute updates
+  // rematch selectors via full recalc when incremental SVG style is disabled.
+  if (RuntimeEnabledFeatures::SvgIncrementalStyleEnabled()) {
+    GetDocument().GetStyleEngine().AttributeChangedForElement(
+        property.AttributeName(), *this);
+  }
   SvgAttributeChanged({property, property.AttributeName(),
                        AttributeModificationReason::kDirectly});
   if (class_name_ && class_name_ == &property) {
@@ -806,11 +818,24 @@ SVGElement::GetPresentationAttributeStyleForDirectUpdate() {
 void SVGElement::UpdatePresentationAttributeStyle(
     const SVGAnimatedPropertyBase& property) {
   DCHECK(property.HasPresentationAttributeMapping());
-  if (auto* mutable_style = GetPresentationAttributeStyleForDirectUpdate()) {
-    const CSSPropertyID property_id = property.CssPropertyId();
+  const bool incremental_style_enabled =
+      RuntimeEnabledFeatures::SvgIncrementalStyleEnabled();
+  const CSSPropertyID property_id = property.CssPropertyId();
+  MutableCSSPropertyValueSet* mutable_style =
+      GetPresentationAttributeStyleForDirectUpdate();
+  bool modified_existing_property = false;
+  if (mutable_style) {
     if (property.IsSpecified()) {
       if (const CSSValue* value = property.CssValue()) {
-        mutable_style->SetProperty(property_id, *value);
+        if (incremental_style_enabled) {
+          const auto set_result = mutable_style->SetLonghandProperty(
+              CSSPropertyValue(CSSPropertyName(property_id), *value));
+          modified_existing_property =
+              set_result == MutableCSSPropertyValueSet::kModifiedExisting ||
+              set_result == MutableCSSPropertyValueSet::kUnchanged;
+        } else {
+          mutable_style->SetProperty(property_id, *value);
+        }
       } else {
         mutable_style->RemoveProperty(property_id);
       }
@@ -821,7 +846,10 @@ void SVGElement::UpdatePresentationAttributeStyle(
     InvalidateSVGPresentationAttributeStyle();
   }
   SetNeedsStyleRecalc(
-      kLocalStyleChange,
+      modified_existing_property &&
+              CSSProperty::Get(property_id).SupportsIncrementalStyle()
+          ? kIndependentStyleChange
+          : kLocalStyleChange,
       StyleChangeReasonForTracing::FromAttribute(property.AttributeName()));
 }
 
@@ -829,8 +857,14 @@ void SVGElement::UpdatePresentationAttributeStyle(
     CSSPropertyID property_id,
     const QualifiedName& attr_name,
     const AtomicString& value) {
-  auto set_result = MutableCSSPropertyValueSet::kModifiedExisting;
-  if (auto* mutable_style = GetPresentationAttributeStyleForDirectUpdate()) {
+  const bool incremental_style_enabled =
+      RuntimeEnabledFeatures::SvgIncrementalStyleEnabled();
+  auto set_result = incremental_style_enabled
+                        ? MutableCSSPropertyValueSet::kChangedPropertySet
+                        : MutableCSSPropertyValueSet::kModifiedExisting;
+  MutableCSSPropertyValueSet* mutable_style =
+      GetPresentationAttributeStyleForDirectUpdate();
+  if (mutable_style) {
     auto* execution_context = GetExecutionContext();
     set_result = mutable_style->ParseAndSetProperty(
         property_id, value, false,
@@ -848,8 +882,13 @@ void SVGElement::UpdatePresentationAttributeStyle(
     InvalidateSVGPresentationAttributeStyle();
   }
   if (set_result >= MutableCSSPropertyValueSet::kModifiedExisting) {
-    SetNeedsStyleRecalc(kLocalStyleChange,
-                        StyleChangeReasonForTracing::FromAttribute(attr_name));
+    SetNeedsStyleRecalc(
+        incremental_style_enabled &&
+                set_result == MutableCSSPropertyValueSet::kModifiedExisting &&
+                CSSProperty::Get(property_id).SupportsIncrementalStyle()
+            ? kIndependentStyleChange
+            : kLocalStyleChange,
+        StyleChangeReasonForTracing::FromAttribute(attr_name));
   }
 }
 
@@ -1170,6 +1209,11 @@ SMILTimeContainer* SVGElement::GetTimeContainer() const {
 void SVGElement::SynchronizeAttributeInShadowInstances(
     const QualifiedName& name,
     const AtomicString& value) {
+  if (RuntimeEnabledFeatures::SvgInstanceSyncOptimizationEnabled() &&
+      !MayHaveInstances()) {
+    return;
+  }
+
   HeapHashSet<WeakMember<SVGElement>> instances = InstancesForElement();
   for (SVGElement* instance : instances) {
     instance->SetAttributeWithoutValidation(name, value);

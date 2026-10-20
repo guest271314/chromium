@@ -113,6 +113,15 @@ ash::KeystoreService* GetKeystoreService(
   return ash::KeystoreServiceFactory::GetForBrowserContext(browser_context);
 }
 
+// Returns whether `app_id` looks like it's probably an Android package name
+// rather than a Chrome extension ID or web app ID.
+bool LooksLikeAndroidPackageName(const std::string& app_id) {
+  // Android package names are required to contain at least one period (see
+  // validateName() in PackageParser.java), while Chrome extension IDs and web
+  // app IDs contain only characters in [a-p].
+  return app_id.contains('.');
+}
+
 }  // namespace
 
 ExtensionKeyPermissionsService::ExtensionKeyPermissionsService(
@@ -125,9 +134,9 @@ ExtensionKeyPermissionsService::ExtensionKeyPermissionsService(
       extensions_state_store_(extensions_state_store),
       profile_policies_(profile_policies),
       keystore_service_(GetKeystoreService(browser_context)) {
-  DCHECK(extensions_state_store_);
-  DCHECK(profile_policies_);
-  DCHECK(keystore_service_);
+  CHECK(extensions_state_store_, base::NotFatalUntil::M161);
+  CHECK(profile_policies_, base::NotFatalUntil::M161);
+  CHECK(keystore_service_, base::NotFatalUntil::M161);
   KeyEntriesFromState(state_store_value);
 }
 
@@ -341,7 +350,7 @@ base::ListValue ExtensionKeyPermissionsService::KeyEntriesToState() {
 
 // static
 std::vector<std::string>
-ExtensionKeyPermissionsService::GetCorporateKeyUsageAllowedAppIds(
+ExtensionKeyPermissionsService::GetCorporateKeyUsageAllowedAndroidAppIds(
     policy::PolicyService* const profile_policies) {
   std::vector<std::string> permissions;
 
@@ -352,7 +361,10 @@ ExtensionKeyPermissionsService::GetCorporateKeyUsageAllowedAppIds(
   }
 
   for (const auto item : *key_permissions_service_map) {
-    const auto& app_id = item.first;
+    const std::string& app_id = item.first;
+    if (!LooksLikeAndroidPackageName(app_id)) {
+      continue;
+    }
     const base::DictValue* key_permissions_service_for_app =
         item.second.GetIfDict();
     if (!key_permissions_service_for_app) {

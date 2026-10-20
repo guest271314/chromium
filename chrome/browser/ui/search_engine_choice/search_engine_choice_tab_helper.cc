@@ -5,11 +5,11 @@
 #include "chrome/browser/ui/search_engine_choice/search_engine_choice_tab_helper.h"
 
 #include "base/check_deref.h"
+#include "chrome/browser/first_run/first_run.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/search_engine_choice/search_engine_choice_dialog_service.h"
 #include "chrome/browser/search_engine_choice/search_engine_choice_dialog_service_factory.h"
 #include "chrome/browser/search_engine_choice/search_engine_choice_service_factory.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "components/regional_capabilities/regional_capabilities_metrics.h"
@@ -30,9 +30,7 @@ SearchEngineChoiceTabHelper::~SearchEngineChoiceTabHelper() = default;
 
 SearchEngineChoiceTabHelper::SearchEngineChoiceTabHelper(
     content::WebContents* web_contents)
-    : WebContentsObserver(web_contents),
-      content::WebContentsUserData<SearchEngineChoiceTabHelper>(*web_contents) {
-}
+    : WebContentsObserver(web_contents) {}
 
 // static
 bool SearchEngineChoiceTabHelper::IsHelperNeeded() {
@@ -99,19 +97,18 @@ void SearchEngineChoiceTabHelper::MaybeShowDialog() {
   }
 
   regional_capabilities::SearchEngineChoiceScreenConditions conditions =
-      search_engine_choice_dialog_service->ComputeDialogConditions(
-          *browser->GetBrowserForMigrationOnly());
+      search_engine_choice_dialog_service->ComputeDialogConditions(*browser);
 
   search_engines::SearchEngineChoiceService* search_engine_choice_service =
       search_engines::SearchEngineChoiceServiceFactory::GetForProfile(
           browser->GetProfile());
   search_engine_choice_service->RecordTriggeringEligibility(conditions);
+  regional_capabilities::RecordDebugTriggeringEligibility(
+      conditions, /*is_first_run=*/first_run::IsChromeFirstRun());
 
   if (!regional_capabilities::IsEligible(conditions)) {
     return;
   }
 
-  SearchEngineChoiceDialog::Show(*browser->GetBrowserForMigrationOnly());
+  SearchEngineChoiceDialog::Show(*browser);
 }
-
-WEB_CONTENTS_USER_DATA_KEY_IMPL(SearchEngineChoiceTabHelper);

@@ -4,10 +4,12 @@
 
 #include "chrome/updater/app/server/win/com_classes_util.h"
 
+#include <stddef.h>
+
 #include <optional>
 #include <string>
+#include <string_view>
 
-#include "base/compiler_specific.h"
 #include "base/files/file_path.h"
 #include "base/logging.h"
 #include "base/strings/utf_string_conversions.h"
@@ -16,6 +18,7 @@
 #include "base/win/windows_types.h"
 #include "chrome/updater/get_updater_scope.h"
 #include "chrome/updater/registration_data.h"
+#include "chrome/updater/util/util.h"
 #include "chrome/updater/util/win_util.h"
 
 namespace updater {
@@ -45,10 +48,12 @@ HRESULT IsCOMCallerAllowed() {
 
 std::optional<std::string> ValidateStringEmptyNotOk(const wchar_t* value,
                                                     size_t max_length) {
+  if (!value) {
+    return std::nullopt;
+  }
+  const std::wstring_view value_view(value);
   std::string value_s;
-  return value &&
-                 base::WideToUTF8(value, UNSAFE_TODO(wcslen(value)),
-                                  &value_s) &&
+  return base::WideToUTF8(value_view.data(), value_view.size(), &value_s) &&
                  !value_s.empty() && (value_s.length() <= max_length)
              ? std::make_optional(value_s)
              : std::nullopt;
@@ -56,16 +61,22 @@ std::optional<std::string> ValidateStringEmptyNotOk(const wchar_t* value,
 
 std::optional<std::string> ValidateStringEmptyOk(const wchar_t* value,
                                                  size_t max_length) {
+  if (!value) {
+    return std::string();
+  }
+  const std::wstring_view value_view(value);
   std::string value_s;
-  return !value ? std::make_optional(value_s)
-         : base::WideToUTF8(value, UNSAFE_TODO(wcslen(value)), &value_s) &&
+  return base::WideToUTF8(value_view.data(), value_view.size(), &value_s) &&
                  (value_s.length() <= max_length)
              ? std::make_optional(value_s)
              : std::nullopt;
 }
 
 std::optional<std::string> ValidateAppId(const wchar_t* app_id) {
-  return ValidateStringEmptyNotOk(app_id, kMaxStringLen);
+  std::optional<std::string> app_id_s =
+      ValidateStringEmptyNotOk(app_id, kMaxStringLen);
+  return app_id_s && IsValidAppId(*app_id_s) ? std::move(app_id_s)
+                                             : std::nullopt;
 }
 
 std::optional<std::string> ValidateCommandId(const wchar_t* command_id) {

@@ -21,6 +21,7 @@ namespace content {
 
 class BrowserContext;
 class IsolationContext;
+class OriginAgentClusterIsolationState;
 class StoragePartitionConfig;
 struct UrlInfo;
 
@@ -214,9 +215,10 @@ class CONTENT_EXPORT SiteInfo : public SecurityPrincipal {
   bool IsSandboxed() const override;
   bool IsGuest() const override;
   bool IsWebUI() const override;
+  bool IsOriginKeyed() const override;
   const StoragePartitionConfig& GetStoragePartitionConfig() const override;
   bool SchemeIs(std::string_view scheme) const override;
-  std::string GetHost() const override;
+  std::string_view GetHost() const override;
   const GURL& GetDeprecatedSiteURL() const override;
 
   // This function returns a new SiteInfo which is equivalent to the original,
@@ -438,9 +440,8 @@ class CONTENT_EXPORT SiteInfo : public SecurityPrincipal {
   static AgentClusterKey GetAgentClusterKeyForNonOpaqueOrigin(
       const IsolationContext& isolation_context,
       const UrlInfo& url_info,
-      const url::Origin origin,
-      AgentClusterKey::OACStatus oac_status,
-      bool requires_origin_keyed_process,
+      const url::Origin& origin,
+      const OriginAgentClusterIsolationState& oac_isolation_state,
       bool is_origin_isolated_sandboxed_data_iframe);
   static AgentClusterKey GetAgentClusterKeyForSchemeOnlyOrigin(
       const UrlInfo& url_info,
@@ -537,7 +538,8 @@ class CONTENT_EXPORT SiteInfo : public SecurityPrincipal {
 
   // Embedder-specified process isolation policy for this SiteInfo. See
   // //content/browser/embedder_isolation_info.h.
-  EmbedderIsolationInfo embedder_isolation_info_;
+  EmbedderIsolationInfo embedder_isolation_info_ =
+      EmbedderIsolationInfo::CreateNone();
 };
 
 CONTENT_EXPORT std::ostream& operator<<(std::ostream& out,

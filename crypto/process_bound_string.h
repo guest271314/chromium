@@ -6,12 +6,14 @@
 #define CRYPTO_PROCESS_BOUND_STRING_H_
 
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "base/check.h"
 #include "base/containers/span.h"
 #include "base/gtest_prod_util.h"
 #include "crypto/crypto_export.h"
+#include "crypto/secure_util.h"
 
 namespace crypto {
 
@@ -28,10 +30,6 @@ CRYPTO_EXPORT bool MaybeEncryptBuffer(base::span<uint8_t> buffer);
 // Maybe decrypt a buffer, in place. Returns true if the buffer was successfully
 // decrypted or false if unsupported by the platform or failed to decrypt.
 CRYPTO_EXPORT bool MaybeDecryptBuffer(base::span<uint8_t> buffer);
-
-// Securely zero a buffer using a platform specific method.
-CRYPTO_EXPORT void SecureZeroBuffer(base::span<uint8_t> buffer);
-
 }  // namespace internal
 
 // SecureAllocator is used by the SecureString variants below to clear the
@@ -48,7 +46,7 @@ struct CRYPTO_EXPORT SecureAllocator {
     if (p) {
       // SAFETY: deallocate() has a fixed prototype from the std library, and
       // passes an unsafe buffer, so convert it to a base::span here.
-      internal::SecureZeroBuffer(UNSAFE_BUFFERS(
+      SecureZeroBuffer(UNSAFE_BUFFERS(
           base::span<uint8_t>(reinterpret_cast<uint8_t*>(p), n * sizeof(T))));
       std::allocator<T>().deallocate(p, n);
     }
@@ -62,11 +60,30 @@ template <typename StringType>
 class CRYPTO_EXPORT ProcessBound {
  public:
   using CharType = typename StringType::value_type;
+  using SecureStringType = std::basic_string<CharType,
+                                             std::char_traits<CharType>,
+                                             SecureAllocator<CharType>>;
+
+  ProcessBound() = default;
 
   ProcessBound(const ProcessBound& other) = default;
-  ProcessBound(ProcessBound&& other) = default;
   ProcessBound& operator=(const ProcessBound& other) = default;
-  ProcessBound& operator=(ProcessBound&& other) = default;
+
+  // Moving the `maybe_encrypted_data_` vector leaves it empty, and the other
+  // values are updated to match an empty vector for safety.
+  ProcessBound(ProcessBound&& other) noexcept
+      : maybe_encrypted_data_(std::move(other.maybe_encrypted_data_)),
+        original_size_(std::exchange(other.original_size_, 0)),
+        encrypted_(std::exchange(other.encrypted_, false)) {}
+
+  ProcessBound& operator=(ProcessBound&& other) noexcept {
+    if (this != &other) {
+      maybe_encrypted_data_ = std::move(other.maybe_encrypted_data_);
+      original_size_ = std::exchange(other.original_size_, 0);
+      encrypted_ = std::exchange(other.encrypted_, false);
+    }
+    return *this;
+  }
 
   // Create a process bound string. Takes a copy of the string passed in.
   explicit ProcessBound(const StringType& value)
@@ -80,25 +97,32 @@ class CRYPTO_EXPORT ProcessBound {
 
   ~ProcessBound() = default;
 
-  // Return the decrypted string.
-  StringType value() const { return StringType(secure_value()); }
+  // Return the decrypted string, which may remain in memory. Prefer
+  // secure_value() where possible.
+  StringType value() const { return DecryptData<StringType>(); }
 
   // Return the decrypted string as a string that attempts to wipe itself after
   // use. Prefer over calling `value()` if caller can support it.
-  std::basic_string<CharType,
-                    std::char_traits<CharType>,
-                    SecureAllocator<CharType>>
-  secure_value() const {
-    if (!encrypted_) {
-      return std::basic_string<CharType, std::char_traits<CharType>,
-                               SecureAllocator<CharType>>(
-          maybe_encrypted_data_.data(), original_size_);
+  SecureStringType secure_value() const {
+    return DecryptData<SecureStringType>();
+  }
+
+  size_t size() const { return original_size_; }
+  bool empty() const { return size() == 0; }
+
+ private:
+  FRIEND_TEST_ALL_PREFIXES(ProcessBoundEncryptionTest, Encryption);
+  FRIEND_TEST_ALL_PREFIXES(ProcessBoundEncryptionTest, EmptyString);
+
+  template <typename DecryptedStringType>
+  DecryptedStringType DecryptData() const {
+    if (!encrypted_ || original_size_ == 0) {
+      return DecryptedStringType(maybe_encrypted_data_.data(), original_size_);
     }
 
     // Copy to decrypt in-place.
-    std::basic_string<CharType, std::char_traits<CharType>,
-                      SecureAllocator<CharType>>
-        decrypted(maybe_encrypted_data_.begin(), maybe_encrypted_data_.end());
+    DecryptedStringType decrypted(maybe_encrypted_data_.begin(),
+                                  maybe_encrypted_data_.end());
     // Attempt to avoid Small String Optimization (SSO) by reserving a larger
     // allocation than the SSO default, forcing a dynamic allocation to occur,
     // before any decrypted data is written to the string. This value was
@@ -112,13 +136,8 @@ class CRYPTO_EXPORT ProcessBound {
     return decrypted;
   }
 
-  size_t size() const { return original_size_; }
-  bool empty() const { return size() == 0; }
-
- private:
-  FRIEND_TEST_ALL_PREFIXES(ProcessBoundEncryptionTest, Encryption);
   std::vector<CharType> maybe_encrypted_data_;
-  size_t original_size_;
+  size_t original_size_ = 0;
   bool encrypted_ = false;
 };
 

@@ -8,7 +8,9 @@ import android.app.Activity;
 
 import androidx.appcompat.content.res.AppCompatResources;
 
+import org.chromium.base.Callback;
 import org.chromium.base.supplier.MonotonicObservableSupplier;
+import org.chromium.base.supplier.NonNullObservableSupplier;
 import org.chromium.base.supplier.NullableObservableSupplier;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
@@ -18,8 +20,8 @@ import org.chromium.chrome.browser.bookmarks.AddToBookmarksToolbarButtonControll
 import org.chromium.chrome.browser.bookmarks.BookmarkModel;
 import org.chromium.chrome.browser.bookmarks.TabBookmarker;
 import org.chromium.chrome.browser.browser_controls.BrowserControlsVisibilityManager;
-import org.chromium.chrome.browser.glic.GlicButtonDelegate;
-import org.chromium.chrome.browser.glic.GlicToolbarButtonController;
+import org.chromium.chrome.browser.glic.toolbar_button.GlicButtonDelegate;
+import org.chromium.chrome.browser.glic.toolbar_button.GlicToolbarButtonController;
 import org.chromium.chrome.browser.lifecycle.ActivityLifecycleDispatcher;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.tab_group_suggestion.toolbar.GroupSuggestionsButtonController;
@@ -59,6 +61,9 @@ public class TabbedAdaptiveToolbarBehavior implements AdaptiveToolbarBehavior {
     private final GlicButtonDelegate mToggleGlicCallback;
     private final Supplier<@Nullable ChromeAndroidTask> mChromeAndroidTaskSupplier;
     private final BrowserControlsVisibilityManager mBrowserControlsVisibilityManager;
+    private final NonNullObservableSupplier<Boolean> mIsVerticalTabsActiveSupplier;
+    private final NonNullObservableSupplier<Boolean> mIsGlicPinnedSupplier;
+    private @Nullable Callback<Boolean> mGlicVerticalTabsObserver;
     private @Nullable GlicToolbarButtonController mGlicButtonController;
 
     /**
@@ -75,6 +80,8 @@ public class TabbedAdaptiveToolbarBehavior implements AdaptiveToolbarBehavior {
      * @param toggleGlicCallback Callback to toggle the Glic UI.
      * @param chromeAndroidTaskSupplier Supplier for the ChromeAndroidTask.
      * @param browserControlsVisibilityManager Manager for browser controls.
+     * @param isVerticalTabsActiveSupplier Supplier for VerticalTabs enabled state.
+     * @param isGlicPinnedSupplier Supplier for Glic pinned state.
      */
     public TabbedAdaptiveToolbarBehavior(
             Activity activity,
@@ -89,7 +96,9 @@ public class TabbedAdaptiveToolbarBehavior implements AdaptiveToolbarBehavior {
             MonotonicObservableSupplier<@StripVisibilityState Integer> tabStripVisibilitySupplier,
             GlicButtonDelegate toggleGlicCallback,
             Supplier<@Nullable ChromeAndroidTask> chromeAndroidTaskSupplier,
-            BrowserControlsVisibilityManager browserControlsVisibilityManager) {
+            BrowserControlsVisibilityManager browserControlsVisibilityManager,
+            NonNullObservableSupplier<Boolean> isVerticalTabsActiveSupplier,
+            NonNullObservableSupplier<Boolean> isGlicPinnedSupplier) {
         mActivity = activity;
         mActivityLifecycleDispatcher = activityLifecycleDispatcher;
         mTabCreatorManagerSupplier = tabCreatorManagerSupplier;
@@ -103,6 +112,8 @@ public class TabbedAdaptiveToolbarBehavior implements AdaptiveToolbarBehavior {
         mToggleGlicCallback = toggleGlicCallback;
         mChromeAndroidTaskSupplier = chromeAndroidTaskSupplier;
         mBrowserControlsVisibilityManager = browserControlsVisibilityManager;
+        mIsVerticalTabsActiveSupplier = isVerticalTabsActiveSupplier;
+        mIsGlicPinnedSupplier = isGlicPinnedSupplier;
     }
 
     @Override
@@ -141,8 +152,7 @@ public class TabbedAdaptiveToolbarBehavior implements AdaptiveToolbarBehavior {
             controller.addButtonVariant(AdaptiveToolbarButtonVariant.TAB_GROUPING, tabGrouping);
         }
 
-        if (!BottomBarConfigUtils.isBottomBarEnabled(mActivity)
-                && AdaptiveToolbarFeatures.isGlicActionEnabled()) {
+        if (!BottomBarConfigUtils.isBottomBarEnabled(mActivity)) {
             mGlicButtonController =
                     new GlicToolbarButtonController(
                             mActivity,
@@ -156,19 +166,31 @@ public class TabbedAdaptiveToolbarBehavior implements AdaptiveToolbarBehavior {
             controller.addButtonVariant(AdaptiveToolbarButtonVariant.GLIC, mGlicButtonController);
         }
 
+        mGlicVerticalTabsObserver = state -> controller.recomputeUiState();
+        mIsVerticalTabsActiveSupplier.addSyncObserver(mGlicVerticalTabsObserver);
+        mIsGlicPinnedSupplier.addSyncObserver(mGlicVerticalTabsObserver);
         mRegisterVoiceSearchRunnable.run();
     }
 
     @Override
     public int resultFilter(List<Integer> segmentationResults) {
+        boolean skipGlic = mIsVerticalTabsActiveSupplier.get() && mIsGlicPinnedSupplier.get();
         TabModelSelector selector = mTabModelSelectorSupplier.get();
         if (selector != null) {
             Profile profile = selector.getCurrentModel().getProfile();
             if (profile != null
                     && mGlicButtonController != null
-                    && mGlicButtonController.shouldForciblyShowGlicButton(profile)) {
+                    && mGlicButtonController.shouldForciblyShowGlicButton(profile)
+                    && !skipGlic) {
                 return AdaptiveToolbarButtonVariant.GLIC;
             }
+        }
+        if (skipGlic) {
+            List<Integer> filteredResults = new ArrayList<>();
+            for (int result : segmentationResults) {
+                if (result != AdaptiveToolbarButtonVariant.GLIC) filteredResults.add(result);
+            }
+            segmentationResults = filteredResults;
         }
 
         List<Integer> filteredResults;
@@ -207,5 +229,13 @@ public class TabbedAdaptiveToolbarBehavior implements AdaptiveToolbarBehavior {
     @Override
     public @AdaptiveToolbarButtonVariant int getSegmentationDefault(Profile profile) {
         return AdaptiveToolbarFeatures.getDefaultButtonVariant(mActivity, profile);
+    }
+
+    @Override
+    public void destroy() {
+        if (mGlicVerticalTabsObserver != null) {
+            mIsVerticalTabsActiveSupplier.removeObserver(mGlicVerticalTabsObserver);
+            mIsGlicPinnedSupplier.removeObserver(mGlicVerticalTabsObserver);
+        }
     }
 }

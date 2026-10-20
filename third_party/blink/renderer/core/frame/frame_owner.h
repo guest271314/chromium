@@ -8,6 +8,7 @@
 #include "third_party/blink/public/common/frame/frame_policy.h"
 #include "third_party/blink/public/mojom/css/preferred_color_scheme.mojom-blink.h"
 #include "third_party/blink/public/mojom/frame/color_scheme.mojom-blink.h"
+#include "third_party/blink/public/mojom/frame/frame_owner_properties.mojom-blink-forward.h"
 #include "third_party/blink/public/mojom/scroll/scrollbar_mode.mojom-blink.h"
 #include "third_party/blink/public/mojom/timing/resource_timing.mojom-blink-forward.h"
 #include "third_party/blink/renderer/core/core_export.h"
@@ -50,6 +51,9 @@ class CORE_EXPORT FrameOwner : public GarbageCollectedMixin {
 
   // Clear the last natural sizing info stored in the frame owner.
   virtual void ClearLastNaturalSizingInfo() = 0;
+  // Clear both the last natural sizing info in this frame owner, and the
+  // current one in the embedded `FrameView`.
+  virtual void ClearAllNaturalSizingInfo() = 0;
 
   // Indicates that a child frame requires its parent frame to track whether the
   // child frame is occluded or has visual effects applied.
@@ -65,6 +69,7 @@ class CORE_EXPORT FrameOwner : public GarbageCollectedMixin {
   virtual bool AllowFullscreen() const = 0;
   virtual bool AllowPaymentRequest() const = 0;
   virtual bool IsDisplayNone() const = 0;
+  virtual mojom::blink::FrameResponsiveSizing GetResponsiveSizing() const = 0;
   virtual mojom::blink::ColorScheme GetColorScheme() const = 0;
   virtual mojom::blink::PreferredColorScheme GetPreferredColorScheme()
       const = 0;
@@ -82,6 +87,7 @@ class CORE_EXPORT FrameOwner : public GarbageCollectedMixin {
   virtual void DidChangeAttributes() {}
 
  private:
+  virtual bool IsSwappingFrames() const { return false; }
   virtual void SetIsSwappingFrames(bool) {}
 };
 
@@ -99,9 +105,18 @@ class FrameSwapScope {
   STACK_ALLOCATED();
 
  public:
-  FrameSwapScope(FrameOwner* frame_owner) : frame_owner_(frame_owner) {
-    if (frame_owner)
+  explicit FrameSwapScope(FrameOwner* frame_owner) {
+    // This scope is inert if frame_owner is already in the middle of a swap.
+    // This can happen during FrameLoader::CommitNavigation if an event listener
+    // removes and reinserts the <iframe> that is already committing, triggering
+    // RenderFrameImpl::SynchronouslyCommitAboutBlankForBug778318.
+    //
+    // Note: We do not use a static counter, since a nested FrameSwapScope with
+    // a different frame_owner should not be inert.
+    if (frame_owner && !frame_owner->IsSwappingFrames()) {
+      frame_owner_ = frame_owner;
       frame_owner->SetIsSwappingFrames(true);
+    }
   }
 
   ~FrameSwapScope() {
@@ -113,7 +128,7 @@ class FrameSwapScope {
   }
 
  private:
-  FrameOwner* frame_owner_;
+  FrameOwner* frame_owner_ = nullptr;
 };
 
 }  // namespace blink

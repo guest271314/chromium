@@ -9,6 +9,9 @@ namespace contextual_cueing {
 BASE_FEATURE(kContextualCueingV2, base::FEATURE_DISABLED_BY_DEFAULT);
 BASE_FEATURE(kContextualCueingV2EnforceAgeRestriction,
              base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kContextualCueingV2MultiSource, base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kContextualCueingV2AllowOverridingUcbScoring,
+             base::FEATURE_ENABLED_BY_DEFAULT);
 
 const base::FeatureParam<double> kEduClassifierThreshold(
     &kContextualCueingV2,
@@ -71,23 +74,82 @@ const base::FeatureParam<int> kVisitedOriginsLimit(
     "ContextualCueingV2VisitedOriginsLimit",
     20);
 
-const base::FeatureParam<base::TimeDelta> kBackoffTime(
+const base::FeatureParam<base::TimeDelta> kDismissBackoffTime(
     &kContextualCueingV2,
-    "ContextualCueingV2BackoffTime",
+    "ContextualCueingV2DismissBackoffTime",
     base::Hours(24));
 
-const base::FeatureParam<double> kBackoffMultiplierBase(
+const base::FeatureParam<double> kDismissBackoffMultiplierBase(
     &kContextualCueingV2,
-    "ContextualCueingV2BackoffMultiplierBase",
+    "ContextualCueingV2DismissBackoffMultiplierBase",
     2.0);
+
+const base::FeatureParam<base::TimeDelta> kClickBackoffTime(
+    &kContextualCueingV2,
+    "ContextualCueingV2ClickBackoffTime",
+    base::Hours(1));
 
 const base::FeatureParam<bool> kUsePrivateAi(&kContextualCueingV2,
                                              "ContextualCueingV2UsePrivateAi",
                                              true);
 
+const base::FeatureParam<base::TimeDelta> kAnnotationTimeout(
+    &kContextualCueingV2MultiSource,
+    "ContextualCueingV2MultiSourceAnnotationTimeout",
+    base::Seconds(300));
+
+// UCB scorer hyperparameters. Defaults are a reasonable starting point;
+// tune via Finch once multi-source experiments are running.
+const base::FeatureParam<double> kUcbExplorationWeight(
+    &kContextualCueingV2MultiSource,
+    "ContextualCueingV2MultiSourceUcbExplorationWeight",
+    1.414);
+const base::FeatureParam<double> kUcbAlpha(
+    &kContextualCueingV2MultiSource,
+    "ContextualCueingV2MultiSourceUcbAlpha",
+    1.0);
+const base::FeatureParam<double> kUcbBeta(
+    &kContextualCueingV2MultiSource,
+    "ContextualCueingV2MultiSourceUcbBeta",
+    0.5);
+const base::FeatureParam<double> kUcbGamma(
+    &kContextualCueingV2MultiSource,
+    "ContextualCueingV2MultiSourceUcbGamma",
+    1.0);
+const base::FeatureParam<int> kUcbMaxExploreImpressions(
+    &kContextualCueingV2MultiSource,
+    "ContextualCueingV2MultiSourceUcbMaxExploreImpressions",
+    50);
+
 const base::FeatureParam<std::string> kHelpCenterArticleLink(
     &kContextualCueingV2,
     "ContextualCueingV2HelpCenterArticleLink",
     "https://support.google.com/chrome?p=");
+
+constexpr base::FeatureParam<TabListVisibility>::Option
+    kTabListVisibilityOptions[] = {
+        {TabListVisibility::kNever, "never"},
+        {TabListVisibility::kAlways, "always"},
+        {TabListVisibility::kOnlyIfMultiple, "only-if-multiple"},
+};
+
+const base::FeatureParam<TabListVisibility> kTabListVisibility(
+    &kContextualCueingV2,
+    "ContextualCueingV2TabListVisibility",
+    TabListVisibility::kOnlyIfMultiple,
+    &kTabListVisibilityOptions);
+
+const base::FeatureParam<bool> kShouldShowCueInSplitView(
+    &kContextualCueingV2,
+    "ContextualCueingV2ShouldShowCueInSplitView",
+    false);
+
+const base::FeatureParam<bool> kEnablePrivateInsightsLogging(
+    &kContextualCueingV2,
+    "ContextualCueingV2EnablePrivateInsightsLogging",
+    false);
+
+BASE_FEATURE(kHappinessTrackingSurveysForContextualCueingDismissed,
+             base::FEATURE_DISABLED_BY_DEFAULT);
 
 }  // namespace contextual_cueing

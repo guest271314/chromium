@@ -25,17 +25,17 @@ BrowsingDataCounterBridge::BrowsingDataCounterBridge(
     int32_t selected_time_period,
     int32_t data_type)
     : jobject_(obj) {
-  DCHECK_GE(data_type, 0);
-  DCHECK_LE(data_type,
-            static_cast<int>(browsing_data::BrowsingDataType::MAX_VALUE));
+  CHECK_GE(data_type, 0, base::NotFatalUntil::M161);
+  CHECK_LE(data_type,
+           static_cast<int>(browsing_data::BrowsingDataType::MAX_VALUE),
+           base::NotFatalUntil::M161);
   TRACE_EVENT1("browsing_data",
                "BrowsingDataCounterBridge::BrowsingDataCounterBridge",
                "data_type", data_type);
 
   std::string pref;
   if (!browsing_data::GetDeletionPreferenceFromDataType(
-          static_cast<browsing_data::BrowsingDataType>(data_type),
-          browsing_data::ClearBrowsingDataTab::ADVANCED, &pref)) {
+          static_cast<browsing_data::BrowsingDataType>(data_type), &pref)) {
     return;
   }
 
@@ -46,7 +46,7 @@ BrowsingDataCounterBridge::BrowsingDataCounterBridge(
     return;
 
   counter_->InitWithoutPeriodPref(
-      profile_->GetPrefs(), browsing_data::ClearBrowsingDataTab::ADVANCED,
+      profile_->GetPrefs(),
       CalculateBeginDeleteTime(
           static_cast<browsing_data::TimePeriod>(selected_time_period)),
       base::BindRepeating(&BrowsingDataCounterBridge::onCounterFinished,

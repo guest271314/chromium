@@ -197,8 +197,12 @@ class AllowlistUrlSet : public content::WebContentsUserData<AllowlistUrlSet> {
 
 WEB_CONTENTS_USER_DATA_KEY_IMPL(AllowlistUrlSet);
 
-// Returns the corresponding ThreatSeverity to a SBThreatType
-// Keep the same as v4_local_database_manager GetThreatSeverity()
+// Returns the corresponding ThreatSeverity to a SBThreatType.
+// v4: Keep the same as sb_local_database_manager GetThreatSeverity().
+// v5: Keep the severity values in sync with GetThreatSeverity() in
+// v5_search_hashes_util.cc.
+// TODO(crbug.com/372395685): deprecate v4 part of this comment.
+// LINT.IfChange(ThreatTypeSeverity)
 ThreatSeverity GetThreatSeverity(safe_browsing::SBThreatType threat_type) {
   using enum SBThreatType;
   switch (threat_type) {
@@ -222,7 +226,8 @@ ThreatSeverity GetThreatSeverity(safe_browsing::SBThreatType threat_type) {
     case SB_THREAT_TYPE_HIGH_CONFIDENCE_ALLOWLIST:
       return 3;
     case SB_THREAT_TYPE_SUSPICIOUS_SITE:
-      return 4;
+    case SB_THREAT_TYPE_WARNABLE_SUSPICIOUS_SITE:
+      return 7;
     case SB_THREAT_TYPE_BILLING:
       return 15;
     case SB_THREAT_TYPE_UNUSED:
@@ -231,11 +236,50 @@ ThreatSeverity GetThreatSeverity(safe_browsing::SBThreatType threat_type) {
     case SB_THREAT_TYPE_EXTENSION:
     case DEPRECATED_SB_THREAT_TYPE_URL_CLIENT_SIDE_MALWARE:
     case DEPRECATED_SB_THREAT_TYPE_URL_PASSWORD_PROTECTION_PHISHING:
-    case SB_THREAT_TYPE_BLOCKED_AD_REDIRECT:
+    case DEPRECATED_SB_THREAT_TYPE_BLOCKED_AD_REDIRECT:
+    case DEPRECATED_SB_THREAT_TYPE_BLOCKED_AD_POPUP:
     case SB_THREAT_TYPE_AD_SAMPLE:
-    case SB_THREAT_TYPE_BLOCKED_AD_POPUP:
     case SB_THREAT_TYPE_APK_DOWNLOAD:
     case SB_THREAT_TYPE_CSD_DOWNLOAD_ALLOWLIST:
+      NOTREACHED();
+  }
+}
+// LINT.ThenChange(//components/safe_browsing/core/browser/db/v5_search_hashes_util.cc:ThreatTypeSeverity)
+
+// Whether the warning triggered by this threat type can be bypassed.
+bool IsWarningBypassable(safe_browsing::SBThreatType threat_type) {
+  using enum SBThreatType;
+  switch (threat_type) {
+    case SB_THREAT_TYPE_MANAGED_POLICY_BLOCK:
+      return false;
+    case SB_THREAT_TYPE_URL_MALWARE:
+    case SB_THREAT_TYPE_URL_BINARY_MALWARE:
+    case SB_THREAT_TYPE_URL_PHISHING:
+    case SB_THREAT_TYPE_MANAGED_POLICY_WARN:
+    case SB_THREAT_TYPE_URL_UNWANTED:
+    case SB_THREAT_TYPE_API_ABUSE:
+    case SB_THREAT_TYPE_URL_CLIENT_SIDE_PHISHING:
+    case SB_THREAT_TYPE_SUBRESOURCE_FILTER:
+    case SB_THREAT_TYPE_SIGNED_IN_SYNC_PASSWORD_REUSE:
+    case SB_THREAT_TYPE_ENTERPRISE_PASSWORD_REUSE:
+    case SB_THREAT_TYPE_SAVED_PASSWORD_REUSE:
+    case SB_THREAT_TYPE_SIGNED_IN_NON_SYNC_PASSWORD_REUSE:
+    case SB_THREAT_TYPE_CSD_ALLOWLIST:
+    case SB_THREAT_TYPE_HIGH_CONFIDENCE_ALLOWLIST:
+    case SB_THREAT_TYPE_SUSPICIOUS_SITE:
+    case SB_THREAT_TYPE_BILLING:
+    case SB_THREAT_TYPE_UNUSED:
+    case SB_THREAT_TYPE_SAFE:
+      return true;
+    case SB_THREAT_TYPE_EXTENSION:
+    case DEPRECATED_SB_THREAT_TYPE_URL_CLIENT_SIDE_MALWARE:
+    case DEPRECATED_SB_THREAT_TYPE_URL_PASSWORD_PROTECTION_PHISHING:
+    case DEPRECATED_SB_THREAT_TYPE_BLOCKED_AD_REDIRECT:
+    case DEPRECATED_SB_THREAT_TYPE_BLOCKED_AD_POPUP:
+    case SB_THREAT_TYPE_AD_SAMPLE:
+    case SB_THREAT_TYPE_APK_DOWNLOAD:
+    case SB_THREAT_TYPE_CSD_DOWNLOAD_ALLOWLIST:
+    case SB_THREAT_TYPE_WARNABLE_SUSPICIOUS_SITE:
       NOTREACHED();
   }
 }
@@ -252,9 +296,15 @@ bool BaseUIManager::IsAllowlisted(
     const GURL& url,
     const security_interstitials::UnsafeResourceLocator& rfh_locator,
     const std::optional<int64_t>& navigation_id,
-    safe_browsing::SBThreatType threat_type) {
+    safe_browsing::SBThreatType threat_type,
+    safe_browsing::ThreatSource threat_source) {
+  // If the warning is not bypassable, it won't be allowlisted.
+  if (!IsWarningBypassable(threat_type)) {
+    return false;
+  }
+
   NavigationEntry* entry = unsafe_resource_util::GetNavigationEntryForLocator(
-      rfh_locator, navigation_id, threat_type);
+      rfh_locator, navigation_id, threat_type, threat_source);
 
   content::WebContents* web_contents =
       unsafe_resource_util::GetWebContentsForLocator(rfh_locator);
@@ -344,7 +394,7 @@ void BaseUIManager::OnBlockingPageDone(
     } else if (web_contents) {
       // |web_contents| doesn't exist if the tab has been closed.
       RemoveAllowlistUrlSet(main_frame_url, resource.navigation_id,
-                            web_contents, true /* from_pending_only */);
+                            web_contents, /*from_pending_only=*/true);
     }
   }
 }
@@ -367,7 +417,7 @@ void BaseUIManager::DisplayBlockingPage(const UnsafeResource& resource) {
   // Check if the user has already ignored a SB warning for the same WebContents
   // and top-level domain.
   if (IsAllowlisted(resource.url, resource.rfh_locator, resource.navigation_id,
-                    resource.threat_type)) {
+                    resource.threat_type, resource.threat_source)) {
     resource.DispatchCallback(FROM_HERE, true /* proceed */,
                               false /* showed_interstitial */,
                               false /* has_post_commit_interstitial_skipped */);
@@ -385,12 +435,9 @@ void BaseUIManager::DisplayBlockingPage(const UnsafeResource& resource) {
       resource.navigation_id.has_value() &&
       report_sent_navigation_ids_.contains(resource.navigation_id.value());
   if (resource.threat_type != SB_THREAT_TYPE_SAFE &&
-      resource.threat_type != SB_THREAT_TYPE_BILLING &&
       resource.threat_type != SB_THREAT_TYPE_MANAGED_POLICY_BLOCK &&
       resource.threat_type != SB_THREAT_TYPE_MANAGED_POLICY_WARN &&
       !already_reported) {
-    // TODO(vakh): crbug/883462: The reports for SB_THREAT_TYPE_BILLING should
-    // be disabled for M70 but enabled for a later release (M71?).
     if (base::FeatureList::IsEnabled(
             safe_browsing::kCreateWarningShownClientSafeBrowsingReports)) {
       CreateAndSendClientSafeBrowsingWarningShownReport(resource);
@@ -441,7 +488,8 @@ void BaseUIManager::DisplayBlockingPage(const UnsafeResource& resource) {
 
   if (load_post_commit_error_page) {
     DCHECK(!IsAllowlisted(resource.url, resource.rfh_locator,
-                          resource.navigation_id, resource.threat_type));
+                          resource.navigation_id, resource.threat_type,
+                          resource.threat_source));
 
     security_interstitials::SecurityInterstitialTabHelper* helper =
         security_interstitials::SecurityInterstitialTabHelper::FromWebContents(
@@ -519,7 +567,8 @@ void BaseUIManager::SendThreatDetails(
 // If HaTS surveys are enabled, then this gets called when the report is ready.
 void BaseUIManager::AttachThreatDetailsAndLaunchSurvey(
     content::BrowserContext* browser_context,
-    std::unique_ptr<ClientSafeBrowsingReportRequest> report) {
+    std::unique_ptr<ClientSafeBrowsingReportRequest> report,
+    bool is_tab_closed) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
   return;
 }
@@ -633,24 +682,65 @@ ThreatSeverity BaseUIManager::GetSeverestThreatForRedirectChain(
 }
 
 void BaseUIManager::RemoveAllowlistUrlSet(
+    base::PassKey<ChromePasswordProtectionService>,
     const GURL& allowlist_url,
     const std::optional<int64_t> navigation_id,
     WebContents* web_contents,
     bool from_pending_only) {
+  RemoveAllowlistUrlSet(allowlist_url, navigation_id, web_contents,
+                        from_pending_only);
+}
+
+void BaseUIManager::RemoveAllowlistUrlSetThreatType(
+    base::PassKey<SuspiciousSiteControllerAndroid,
+                  SuspiciousSiteControllerDesktop>,
+    const GURL& allowlist_url,
+    const std::optional<int64_t> navigation_id,
+    WebContents* web_contents,
+    bool from_pending_only,
+    SBThreatType threat_type) {
+  RemoveAllowlistUrlSetThreatType(allowlist_url, navigation_id, web_contents,
+                                  from_pending_only, threat_type);
+}
+
+void BaseUIManager::RemoveAllowlistUrlSet(
+    const GURL& allowlist_url,
+    const std::optional<int64_t> navigation_id,
+    WebContents* web_contents,
+    bool from_pending_only) {
+  RemoveAllowlistUrlSetInternal(allowlist_url, navigation_id, web_contents,
+                                from_pending_only,
+                                /*threat_type=*/std::nullopt);
+}
+
+void BaseUIManager::RemoveAllowlistUrlSetThreatType(
+    const GURL& allowlist_url,
+    const std::optional<int64_t> navigation_id,
+    WebContents* web_contents,
+    bool from_pending_only,
+    SBThreatType threat_type) {
+  RemoveAllowlistUrlSetInternal(allowlist_url, navigation_id, web_contents,
+                                from_pending_only, threat_type);
+}
+
+void BaseUIManager::RemoveAllowlistUrlSetInternal(
+    const GURL& allowlist_url,
+    const std::optional<int64_t> navigation_id,
+    WebContents* web_contents,
+    bool from_pending_only,
+    std::optional<SBThreatType> threat_type) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
 
   // A WebContents might not exist if the tab has been closed.
-  if (!web_contents)
+  if (!web_contents || allowlist_url.is_empty()) {
     return;
+  }
 
   // Use |web_contents| rather than |resource.web_contents_getter|
   // here. By this point, a "Back" navigation could have already been
   // committed, so the page loading |resource| might be gone and
   // |web_contents_getter| may no longer be valid.
   AllowlistUrlSet* site_list = AllowlistUrlSet::FromWebContents(web_contents);
-
-  if (allowlist_url.is_empty())
-    return;
 
   // Note that this function does not DCHECK that |allowlist_url|
   // appears in the pending allowlist. In the common case, it's expected
@@ -663,12 +753,21 @@ void BaseUIManager::RemoveAllowlistUrlSet(
   // remove the main-frame URL from the pending allowlist, so the
   // main-frame URL will have already been removed when the subsequent
   // blocking pages are dismissed.
-  if (site_list && site_list->ContainsPending(allowlist_url, nullptr)) {
+  // Only remove the entry if |threat_type| is not specified or if the stored
+  // threat type matches |threat_type|. This prevents accidentally removing an
+  // entry belonging to a different threat type (e.g., a severe interstitial).
+  SBThreatType existing_threat_type;
+  if (site_list &&
+      site_list->ContainsPending(allowlist_url, &existing_threat_type) &&
+      (!threat_type.has_value() ||
+       existing_threat_type == threat_type.value())) {
     site_list->RemovePending(allowlist_url, navigation_id);
   }
 
   if (!from_pending_only && site_list &&
-      site_list->Contains(allowlist_url, nullptr)) {
+      site_list->Contains(allowlist_url, &existing_threat_type) &&
+      (!threat_type.has_value() ||
+       existing_threat_type == threat_type.value())) {
     site_list->Remove(allowlist_url);
   }
 

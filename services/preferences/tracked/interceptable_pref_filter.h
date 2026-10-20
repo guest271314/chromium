@@ -5,7 +5,11 @@
 #ifndef SERVICES_PREFERENCES_TRACKED_INTERCEPTABLE_PREF_FILTER_H_
 #define SERVICES_PREFERENCES_TRACKED_INTERCEPTABLE_PREF_FILTER_H_
 
+#include <string>
+
+#include "base/containers/span.h"
 #include "base/functional/callback.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/task/deferred_sequenced_task_runner.h"
 #include "base/values.h"
@@ -47,7 +51,12 @@ class InterceptablePrefFilter : public PrefFilter {
 
   void OnStoreDeletionFromDisk() override;
 
-  virtual void OnEncryptorReceived(os_crypt_async::Encryptor encryptor) = 0;
+  virtual void OnEncryptorReceived(
+      scoped_refptr<os_crypt_async::Encryptor> encryptor) = 0;
+
+  // Sets the preference paths that were migrated from another store during
+  // FilterOnLoad interception (e.g. initial preferences on first run).
+  virtual void SetMigratedPaths(base::span<const std::string> migrated_paths) {}
 
  private:
   // Does any extra filtering required by the implementation of this

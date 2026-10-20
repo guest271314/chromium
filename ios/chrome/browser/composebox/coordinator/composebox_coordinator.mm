@@ -5,9 +5,7 @@
 #import "ios/chrome/browser/composebox/coordinator/composebox_coordinator.h"
 
 #import "base/ios/ios_util.h"
-#import "components/omnibox/browser/omnibox_pref_names.h"
 #import "components/open_from_clipboard/clipboard_recent_content.h"
-#import "components/prefs/pref_service.h"
 #import "ios/chrome/browser/composebox/coordinator/composebox_input_plate_coordinator.h"
 #import "ios/chrome/browser/composebox/coordinator/composebox_mode_holder.h"
 #import "ios/chrome/browser/composebox/coordinator/composebox_navigation_mediator.h"
@@ -17,7 +15,6 @@
 #import "ios/chrome/browser/composebox/public/composebox_focus_params.h"
 #import "ios/chrome/browser/composebox/public/composebox_input_plate_position.h"
 #import "ios/chrome/browser/composebox/public/composebox_theme.h"
-#import "ios/chrome/browser/composebox/public/features.h"
 #import "ios/chrome/browser/composebox/ui/composebox_animation_context.h"
 #import "ios/chrome/browser/composebox/ui/composebox_dismiss_animator.h"
 #import "ios/chrome/browser/composebox/ui/composebox_input_plate_view_controller.h"
@@ -27,8 +24,8 @@
 #import "ios/chrome/browser/composebox/ui/presentation/composebox_ipad_presentation_controller.h"
 #import "ios/chrome/browser/lens/ui_bundled/lens_entrypoint.h"
 #import "ios/chrome/browser/ntp/model/new_tab_page_util.h"
+#import "ios/chrome/browser/omnibox/ui/popup/omnibox_popup_util.h"
 #import "ios/chrome/browser/shared/coordinator/layout_guide/layout_guide_util.h"
-#import "ios/chrome/browser/shared/model/application_context/application_context.h"
 #import "ios/chrome/browser/shared/model/browser/browser.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
 #import "ios/chrome/browser/shared/model/web_state_list/web_state_list.h"
@@ -36,7 +33,6 @@
 #import "ios/chrome/browser/shared/public/commands/command_dispatcher.h"
 #import "ios/chrome/browser/shared/public/commands/lens_commands.h"
 #import "ios/chrome/browser/shared/public/commands/open_lens_input_selection_command.h"
-#import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/shared/public/features/system_flags.h"
 #import "ios/chrome/browser/shared/ui/util/uikit_ui_util.h"
 #import "ios/chrome/browser/url_loading/model/url_loading_browser_agent.h"
@@ -44,12 +40,12 @@
 #import "ios/chrome/common/ui/util/ui_util.h"
 #import "ios/web/public/web_state.h"
 
-@interface ComposeboxCoordinator () <ComposeboxViewControllerDelegate,
-                                     ComposeboxNavigationMediatorDelegate,
-                                     ComposeboxAnimationContext,
+@interface ComposeboxCoordinator () <ComposeboxAnimationContext,
                                      ComposeboxDebuggerCoordinatorDelegate,
-                                     UIViewControllerTransitioningDelegate,
-                                     ComposeboxiPadAnimatorDelegate>
+                                     ComposeboxiPadAnimatorDelegate,
+                                     ComposeboxNavigationMediatorDelegate,
+                                     ComposeboxViewControllerDelegate,
+                                     UIViewControllerTransitioningDelegate>
 
 @end
 
@@ -91,7 +87,10 @@
 - (void)start {
   ComposeboxTheme* theme = [self createTheme];
   _viewController = [[ComposeboxViewController alloc] initWithTheme:theme];
-  _viewController.modalPresentationStyle = UIModalPresentationCustom;
+  _viewController.modalPresentationStyle =
+      [self shouldUseIpadPresentationController]
+          ? UIModalPresentationCustom
+          : UIModalPresentationOverFullScreen;
   _viewController.transitioningDelegate = self;
   if (self.isOffTheRecord) {
     _viewController.view.overrideUserInterfaceStyle = UIUserInterfaceStyleDark;
@@ -159,14 +158,23 @@
     return;
   }
 
+  [_viewController.view endEditing:YES];
   [_viewController.presentingViewController
       dismissViewControllerAnimated:YES
                          completion:dismissComplete];
 }
 
+- (void)hideComposeboxMenu {
+  [_aimComposeboxCoordinator hideComposeboxMenu];
+}
+
 - (void)stop {
-  [_viewController.presentingViewController dismissViewControllerAnimated:NO
-                                                               completion:nil];
+  if (!_viewController.isBeingDismissed) {
+    [_viewController.view endEditing:YES];
+    [_viewController.presentingViewController
+        dismissViewControllerAnimated:NO
+                           completion:nil];
+  }
   [self cleanup];
 }
 
@@ -257,6 +265,15 @@
   [self dismissComposebox];
 }
 
+- (void)composeboxViewControllerDidCloseTab:
+    (ComposeboxViewController*)viewController {
+  id<BrowserCoordinatorCommands> browserCoordinatorHandler = HandlerForProtocol(
+      self.browser->GetCommandDispatcher(), BrowserCoordinatorCommands);
+  [browserCoordinatorHandler hideComposeboxWithCompletion:^{
+    [browserCoordinatorHandler closeCurrentTab];
+  }];
+}
+
 - (void)composeboxHorizontalSizeClassDidChange {
   _viewController.view.hidden = YES;
   __weak __typeof(self) weakSelf = self;
@@ -315,21 +332,8 @@
 }
 
 - (ComposeboxInputPlatePosition)inputPlatePositionPreference {
-  if (IsComposeboxIpadEnabled() &&
-      [UIDevice currentDevice].userInterfaceIdiom == UIUserInterfaceIdiomPad) {
-    // TODO(crbug.com/469368394): Should only return this if regular horizontal
-    // size class.
+  if (ShouldApplyOmniboxPopoutLayout(self.baseViewController)) {
     return ComposeboxInputPlatePosition::kiPad;
-  }
-
-  if (IsComposeboxForceTopEnabled()) {
-    return ComposeboxInputPlatePosition::kTop;
-  }
-
-  if (IsBottomOmniboxAvailable() &&
-      GetApplicationContext()->GetLocalState()->GetBoolean(
-          omnibox::kIsOmniboxInBottomPosition)) {
-    return ComposeboxInputPlatePosition::kBottom;
   }
 
   return ComposeboxInputPlatePosition::kTop;
@@ -337,14 +341,19 @@
 
 // Returns YES if the iPad popover presentation controller should be used.
 - (BOOL)shouldUseIpadPresentationController {
-  return IsComposeboxIpadEnabled() &&
-         UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad &&
-         IsRegularXRegularSizeClass(self.baseViewController.traitCollection);
+  return ShouldApplyOmniboxPopoutLayout(self.baseViewController);
 }
 
 // Represents the coordinator's view controller with no animation.
 - (void)representViewController {
+  ComposeboxTheme* theme = [self createTheme];
   _viewController.view.hidden = NO;
+  _viewController.modalPresentationStyle =
+      [self shouldUseIpadPresentationController]
+          ? UIModalPresentationCustom
+          : UIModalPresentationOverFullScreen;
+  [_viewController updateTheme:theme];
+  [_aimComposeboxCoordinator updateTheme:theme];
   [self.baseViewController presentViewController:_viewController
                                         animated:NO
                                       completion:nil];

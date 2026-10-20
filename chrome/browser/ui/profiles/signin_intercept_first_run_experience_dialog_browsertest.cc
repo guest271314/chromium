@@ -4,6 +4,7 @@
 
 #include "chrome/browser/ui/profiles/signin_intercept_first_run_experience_dialog.h"
 
+#include "base/command_line.h"
 #include "base/containers/enum_set.h"
 #include "base/notreached.h"
 #include "base/run_loop.h"
@@ -12,6 +13,7 @@
 #include "base/test/metrics/user_action_tester.h"
 #include "base/test/run_until.h"
 #include "base/test/with_feature_override.h"
+#include "build/build_config.h"
 #include "chrome/browser/enterprise/util/managed_browser_utils.h"
 #include "chrome/browser/feature_engagement/tracker_factory.h"
 #include "chrome/browser/policy/cloud/user_policy_signin_service.h"
@@ -24,11 +26,11 @@
 #include "chrome/browser/themes/theme_service.h"
 #include "chrome/browser/themes/theme_service_factory.h"
 #include "chrome/browser/themes/theme_syncable_service.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/signin/signin_view_controller.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
-#include "chrome/browser/ui/views/profiles/avatar_toolbar_button.h"
+#include "chrome/browser/ui/toolbar/avatar_toolbar_iph_controller.h"
 #include "chrome/browser/ui/webui/signin/history_sync_optin/history_sync_optin_ui.h"
 #include "chrome/browser/ui/webui/signin/login_ui_service.h"
 #include "chrome/browser/ui/webui/signin/login_ui_service_factory.h"
@@ -38,6 +40,7 @@
 #include "chrome/browser/ui/webui/signin/signin_url_utils.h"
 #include "chrome/browser/ui/webui/signin/turn_sync_on_helper.h"
 #include "chrome/test/user_education/interactive_feature_promo_test.h"
+#include "components/enterprise/browser/enterprise_switches.h"
 #include "components/feature_engagement/public/feature_constants.h"
 #include "components/keyed_service/core/keyed_service.h"
 #include "components/policy/core/browser/browser_policy_connector.h"
@@ -89,14 +92,19 @@ class SigninInterceptFirstRunExperienceDialogBrowserTestBase : public TestBase {
                  InitialSessionState::kOutsideGracePeriod,
                  /*use_main_profile=*/true),
         scoped_iph_delay_(
-            AvatarToolbarButton::SetScopedIPHMinDelayAfterCreationForTesting(
-                base::Seconds(0))) {}
+            AvatarToolbarIphController::
+                SetScopedIPHMinDelayAfterCreationForTesting(base::Seconds(0))) {
+  }
 
   ~SigninInterceptFirstRunExperienceDialogBrowserTestBase() override = default;
 
   void SetUpInProcessBrowserTestFixture() override {
     TestBase::SetUpInProcessBrowserTestFixture();
 
+#if !BUILDFLAG(IS_CHROMEOS)
+    base::CommandLine::ForCurrentProcess()->AppendSwitch(
+        switches::kEnableChromeBrowserCloudManagement);
+#endif
     policy_provider_.SetDefaultReturns(
         /*is_initialization_complete_return=*/true,
         /*is_first_policy_load_complete_return=*/true);
@@ -149,7 +157,7 @@ class SigninInterceptFirstRunExperienceDialogBrowserTestBase : public TestBase {
     account_id_ = identity_test_env()
                       ->MakePrimaryAccountAvailable(
                           GetEmail(), signin::ConsentLevel::kSignin)
-                      .account_id;
+                      .GetAccountId();
     EXPECT_EQ(
         identity_manager()->GetPrimaryAccountId(signin::ConsentLevel::kSignin),
         account_id());
@@ -265,7 +273,7 @@ class SigninInterceptFirstRunExperienceDialogBrowserTestBase : public TestBase {
   }
 
   SigninViewController* controller() {
-    return browser()->GetFeatures().signin_view_controller();
+    return SigninViewController::From(browser());
   }
 
   SigninInterceptFirstRunExperienceDialog* dialog() {
@@ -749,7 +757,7 @@ IN_PROC_BROWSER_TEST_P(
   ExpectPrimaryAccountWithExactConsentLevel(signin::ConsentLevel::kSync);
   // Browser displays a sync settings tab.
   EXPECT_EQ(
-      browser()->tab_strip_model()->GetActiveWebContents()->GetVisibleURL(),
+      browser()->GetTabStripModel()->GetActiveWebContents()->GetVisibleURL(),
       kSyncSettingsUrl);
   // Sync settings abort the fre dialog.
   EXPECT_FALSE(controller()->ShowsModalDialog());

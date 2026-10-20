@@ -20,6 +20,7 @@
 #include "base/types/pass_key.h"
 #include "base/unguessable_token.h"
 #include "content/browser/loader/keep_alive_url_loader_service.h"
+#include "content/common/content_export.h"
 #include "net/cookies/cookie_setting_override.h"
 #include "third_party/blink/public/common/tokens/tokens.h"
 #include "third_party/blink/public/mojom/confidence_level.mojom.h"
@@ -41,7 +42,7 @@ class RenderFrameHostImpl;
 // directly while consumers of RenderFrameHostImpl should store data via
 // GetDocumentUserData(). Please refer to the description at
 // content/public/browser/document_user_data.h for more details.
-class DocumentAssociatedData : public base::SupportsUserData {
+class CONTENT_EXPORT DocumentAssociatedData : public base::SupportsUserData {
  public:
   // Helper for looking up a RenderFrameHostImpl based on the DocumentToken.
   // Restricted to RenderFrameHostImpl, which performs additional security
@@ -74,7 +75,10 @@ class DocumentAssociatedData : public base::SupportsUserData {
   void MarkDomContentLoaded() { dom_content_loaded_ = true; }
 
   // Indicates whether a discard request has been dispatched for the current
-  // document.
+  // document. Note that marking a document as discarded must not clear
+  // DocumentUserData or PageUserData, as the RenderFrameHostImpl and PageImpl
+  // remain the active primary frame/page of the WebContents until a subsequent
+  // navigation commits or the RenderFrameHostImpl is destroyed.
   bool is_discarded() const { return is_discarded_; }
   void MarkDiscarded() { is_discarded_ = true; }
 
@@ -103,6 +107,18 @@ class DocumentAssociatedData : public base::SupportsUserData {
   }
   void set_pending_did_stop_loading_for_prerendering() {
     pending_did_stop_loading_for_prerendering_ = true;
+  }
+
+  // Stores the original URL of the navigation that committed this document.
+  // When `kSanitizeOriginalUrlDuringNavigation` is enabled, the renderer
+  // process only receives an origin-sanitized version of the original URL, but
+  // they then provide that sanitized value to browser-side features (such as
+  // observers) that still expect the full URL. Since `NavigationRequest` is
+  // destroyed upon commit, we preserve the original URL for the document's
+  // lifetime.
+  const GURL& original_url() const { return original_url_; }
+  void set_original_url(const GURL& original_url) {
+    original_url_ = original_url;
   }
 
   // Reporting API:
@@ -145,8 +161,7 @@ class DocumentAssociatedData : public base::SupportsUserData {
   // Sets the network restrictions id. Should only be called when the document
   // is being committed. For more details see
   // NavigationRequest::network_restrictions_id_
-  void SetNetworkRestrictionsId(
-      std::optional<base::UnguessableToken> network_restrictions_id);
+  void SetNetworkRestrictionsId(base::UnguessableToken network_restrictions_id);
 
   // Shares the network restrictions id from another document (e.g. the
   // creator's), incrementing the reference count. The nonce will only be
@@ -156,7 +171,7 @@ class DocumentAssociatedData : public base::SupportsUserData {
       scoped_refptr<base::RefCountedData<base::UnguessableToken>>
           network_restrictions_id);
 
-  std::optional<base::UnguessableToken> NetworkRestrictionsId() const;
+  base::UnguessableToken NetworkRestrictionsId() const;
 
   // Returns the shared ref-counted handle for the network restrictions id.
   // Used internally for sharing the id between documents (e.g. initial empty
@@ -183,7 +198,7 @@ class DocumentAssociatedData : public base::SupportsUserData {
   void set_keep_alive_url_loader_factory_context(
       base::WeakPtr<KeepAliveURLLoaderService::FactoryContext>
           factory_context) {
-    DCHECK(!keep_alive_url_loader_factory_context_);
+    CHECK(!keep_alive_url_loader_factory_context_, base::NotFatalUntil::M152);
     keep_alive_url_loader_factory_context_ = factory_context;
   }
 
@@ -223,6 +238,13 @@ class DocumentAssociatedData : public base::SupportsUserData {
     return crash_report_storage_region_;
   }
 
+  bool renderer_accessible_http_cache_write_enabled() const {
+    return renderer_accessible_http_cache_write_enabled_;
+  }
+  void set_renderer_accessible_http_cache_write_enabled(bool enabled) {
+    renderer_accessible_http_cache_write_enabled_ = enabled;
+  }
+
  private:
   const blink::DocumentToken token_;
   std::unique_ptr<PageImpl> owned_page_;
@@ -230,6 +252,7 @@ class DocumentAssociatedData : public base::SupportsUserData {
   bool is_discarded_ = false;
   std::optional<GURL> pending_did_finish_load_url_for_prerendering_;
   bool pending_did_stop_loading_for_prerendering_ = false;
+  GURL original_url_;
   std::vector<raw_ptr<internal::DocumentServiceBase, VectorExperimental>>
       services_;
   scoped_refptr<NavigationOrDocumentHandle> navigation_or_document_handle_;
@@ -254,6 +277,12 @@ class DocumentAssociatedData : public base::SupportsUserData {
   // `RenderFrameHostImpl::MaybeGenerateCrashReport()`, after the renderer
   // process has crashed.
   base::UnsafeSharedMemoryRegion crash_report_storage_region_;
+
+  // Whether writing to the Renderer-Accessible HTTP Cache is enabled for this
+  // document. This is determined and set upon navigation commit, and preserved
+  // here to re-enable cache writes when subresource loader factories are
+  // recreated (e.g. following a Network Service crash).
+  bool renderer_accessible_http_cache_write_enabled_ = false;
 
   base::WeakPtrFactory<RenderFrameHostImpl> weak_factory_;
 };

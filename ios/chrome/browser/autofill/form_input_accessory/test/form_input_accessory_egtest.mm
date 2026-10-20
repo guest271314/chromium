@@ -7,13 +7,13 @@
 
 #import <tuple>
 
-#import "base/strings/strcat.h"
 #import "base/strings/sys_string_conversions.h"
 #import "base/strings/utf_string_conversions.h"
 #import "base/test/ios/wait_util.h"
 #import "base/time/time.h"
 #import "components/autofill/core/browser/field_types.h"
-#import "components/autofill/core/browser/test_utils/autofill_test_utils.h"
+#import "components/autofill/core/browser/filling/field_filling_util.h"
+#import "components/autofill/core/browser/test_utils/autofill_test_util.h"
 #import "components/autofill/core/common/autofill_debug_features.h"
 #import "components/autofill/core/common/autofill_features.h"
 #import "components/autofill/ios/common/features.h"
@@ -23,11 +23,13 @@
 #import "components/strings/grit/components_strings.h"
 #import "components/sync/base/features.h"
 #import "components/sync/service/sync_prefs.h"
+#import "components/webauthn/ios/features.h"
 #import "ios/chrome/browser/authentication/test/signin_earl_grey.h"
+#import "ios/chrome/browser/autofill/atmemory/public/at_memory_constants.h"
+#import "ios/chrome/browser/autofill/manual_fill/public/manual_fill_constants.h"
+#import "ios/chrome/browser/autofill/manual_fill/test/manual_fill_matchers.h"
 #import "ios/chrome/browser/autofill/model/form_suggestion_constants.h"
 #import "ios/chrome/browser/autofill/ui_bundled/autofill_app_interface.h"
-#import "ios/chrome/browser/autofill/ui_bundled/manual_fill/manual_fill_constants.h"
-#import "ios/chrome/browser/autofill/ui_bundled/manual_fill/manual_fill_matchers.h"
 #import "ios/chrome/browser/device_reauth/test/reauthentication_app_interface.h"
 #import "ios/chrome/browser/metrics/model/metrics_app_interface.h"
 #import "ios/chrome/browser/passwords/bottom_sheet/test/credential_suggestion_bottom_sheet_app_interface.h"
@@ -40,7 +42,7 @@
 #import "ios/chrome/test/earl_grey/chrome_actions.h"
 #import "ios/chrome/test/earl_grey/chrome_earl_grey.h"
 #import "ios/chrome/test/earl_grey/chrome_matchers.h"
-#import "ios/chrome/test/earl_grey/web_http_server_chrome_test_case.h"
+#import "ios/chrome/test/earl_grey/chrome_test_case.h"
 #import "ios/chrome/test/scoped_eg_synchronization_disabler.h"
 #import "ios/testing/earl_grey/earl_grey_test.h"
 #import "ios/testing/earl_grey/matchers.h"
@@ -124,29 +126,32 @@ constexpr std::string_view kVehicleOverrideParam =
     "3343056218385819478_3849212670_177";
 
 NSString* PassportSuggestionAccessibilityLabel() {
-  constexpr std::u16string_view kDots = u"\u2022\u2060\u2006\u2060";
-
-  NSString* last_four =
-      [kPassportNumber substringFromIndex:[kPassportNumber length] - 4];
-  std::u16string last_four_u16 = base::SysNSStringToUTF16(last_four);
-
   std::u16string obfuscated_number =
-      base::StrCat({kDots, kDots, kDots, kDots, kDots, last_four_u16});
-  NSString* obfuscated_number_ns = base::SysUTF16ToNSString(obfuscated_number);
-
-  return [NSString stringWithFormat:@"%@, %@ · %@", obfuscated_number_ns,
+      autofill::GetObfuscatedValue(base::SysNSStringToUTF16(kPassportNumber),
+                                   /*visible_suffix_length=*/4);
+  return [NSString stringWithFormat:@"%@, %@ · %@",
+                                    base::SysUTF16ToNSString(obfuscated_number),
                                     kPassportEntityType, kPassportOwnerName];
 }
 
 // Matcher for the autofill password suggestion chip in the keyboard accessory.
 id<GREYMatcher> KeyboardAccessoryPasswordSuggestion(NSString* realm) {
-  NSString* chip_text = kExampleUsername;
+  id<GREYMatcher> text_matcher;
   if ([ChromeEarlGrey isIPadIdiom]) {
     // On iPad, the suggestion text is an attributed string containing the
-    // signon realm on the 2nd line.
-    chip_text = [NSString stringWithFormat:@"%@\n%@", chip_text, realm];
+    // signon realm or "Password" on the 2nd line, depending on whether passkey
+    // conditional login is enabled.
+    NSString* realm_text =
+        [NSString stringWithFormat:@"%@\n%@", kExampleUsername, realm];
+    NSString* password_subtext = [NSString
+        stringWithFormat:@"%@\n%@", kExampleUsername,
+                         l10n_util::GetNSString(IDS_IOS_PASSWORD_SUBTEXT)];
+    text_matcher =
+        grey_anyOf(grey_text(realm_text), grey_text(password_subtext), nil);
+  } else {
+    text_matcher = grey_text(kExampleUsername);
   }
-  return grey_allOf(grey_text(chip_text),
+  return grey_allOf(text_matcher,
                     grey_ancestor(grey_accessibilityID(
                         kFormInputAccessoryViewAccessibilityID)),
                     nil);
@@ -158,9 +163,15 @@ id<GREYMatcher> KeyboardAccessoryBackupPasswordSuggestion(NSString* realm) {
   NSString* label = l10n_util::GetNSString(
       IDS_IOS_KEYBOARD_ACCESSORY_RECOVERY_PASSWORD_ACCESSIBILITY_LABEL);
 
+  NSString* realm_label =
+      [NSString stringWithFormat:@"%@, %@, %@", kExampleUsername, realm, label];
+  NSString* password_subtext = l10n_util::GetNSString(IDS_IOS_PASSWORD_SUBTEXT);
+  NSString* passkey_label =
+      [NSString stringWithFormat:@"%@, %@, %@", kExampleUsername,
+                                 password_subtext, label];
   id<GREYMatcher> accessibility_label_matcher =
-      grey_accessibilityLabel([NSString
-          stringWithFormat:@"%@, %@, %@", kExampleUsername, realm, label]);
+      grey_anyOf(grey_accessibilityLabel(realm_label),
+                 grey_accessibilityLabel(passkey_label), nil);
   id<GREYMatcher> backup_icon = grey_accessibilityID(
       kRecoveryPasswordSuggestionIconAccessibilityIdentifier);
   return grey_allOf(accessibility_label_matcher,
@@ -227,7 +238,7 @@ void CheckAddressAutofillSuggestionAcceptedIndexMetricsCount(
           expectUniqueSampleWithCount:1
                             forBucket:suggestion_index
                          forHistogram:
-                             @"Autofill.SuggestionAcceptedIndex.Profile"],
+                             @"Autofill.SuggestionAcceptedIndex.Address"],
       @"Unexpected histogram count for accepted address suggestion index.");
 
   GREYAssertNil(
@@ -291,17 +302,11 @@ void SlowlyTypeText(NSString* text) {
 
 }  // namespace
 
-@interface FormInputAccessoryEGTest : WebHttpServerChromeTestCase
+@interface FormInputAccessoryEGTest : ChromeTestCase
 @end
 
 @implementation FormInputAccessoryEGTest
 
-// Returns whether the two-bubble feature should be enabled for the current
-// test. `NO` is returned to verify all tests pass when the two-bubble feature
-// is disabled.
-- (BOOL)shouldEnableTwoBubbleFeature {
-  return NO;
-}
 
 - (void)setUp {
   [super setUp];
@@ -346,8 +351,6 @@ void SlowlyTypeText(NSString* text) {
   config.features_enabled.push_back(
       autofill::features::kAutofillAiWithDataSchema);
   config.features_enabled.push_back(
-      autofill::features::kAutofillAiCreateEntityDataManager);
-  config.features_enabled.push_back(
       autofill::features::debug::kAutofillAiForceOptIn);
 
   config.features_enabled_and_params.push_back(
@@ -367,7 +370,6 @@ void SlowlyTypeText(NSString* text) {
   } else if ([self isRunningTest:@selector(testFillAndUndoVehicleForm)]) {
     [self configureAutofillAiWithConfig:config
                           overrideParam:kVehicleOverrideParam];
-    config.features_disabled.push_back(kAutofillUndoIos);
   } else {
     config.features_disabled.push_back(
         autofill::features::debug::kAutofillServerCommunication);
@@ -376,47 +378,24 @@ void SlowlyTypeText(NSString* text) {
     config.features_enabled.push_back(
         autofill::features::kAutofillAiReauthRequired);
   }
-  if ([self isRunningTest:@selector(testFillXframeCreditCardForm)] ||
-      [self isRunningTest:@selector(testFillXframeCreditCardFormThrottled)] ||
-      [self isRunningTest:@selector
-            (testFillXframeCreditCardForm_WithPaymentSheetFix)]) {
-    config.features_enabled.push_back(
-        autofill::features::kAutofillAcrossIframesIos);
-  }
   if ([self isRunningTest:@selector(testFillXframeCreditCardFormThrottled)]) {
     config.features_enabled.push_back(
         autofill::features::kAutofillAcrossIframesIosThrottling);
   }
-  if ([self isRunningTest:@selector
-            (testFillCreditCardFieldsOnForm_WithUserEditedFix_UserEdited)] ||
-      [self isRunningTest:@selector
-            (testFillCreditCardFieldsOnForm_WithUserEditedFix_NotUserEdited)]) {
-    config.features_enabled.push_back(
-        kAutofillCorrectUserEditedBitInParsedField);
-  }
   if ([self isRunningTest:@selector(testAddressHomeAndWorkIPH)]) {
-    config.features_enabled.push_back(
-        autofill::features::kAutofillEnableSupportForHomeAndWork);
     config.iph_feature_enabled =
         feature_engagement::kIPHAutofillHomeWorkProfileSuggestionFeature.name;
   }
 
   if ([self isRunningTest:@selector(testAccountNameEmailIPH)]) {
-    config.features_enabled.push_back(
-        autofill::features::kAutofillEnableSupportForNameAndEmail);
     config.iph_feature_enabled =
         feature_engagement::kIPHAutofillAccountNameEmailSuggestionFeature.name;
   }
 
-  if ([self isRunningTest:@selector(testReFillAddressFieldsOnForm)]) {
-    config.features_enabled.push_back(
-        autofill::features::kAutofillAcrossIframesIos);
-  }
-
-  if ([self shouldEnableTwoBubbleFeature]) {
-    config.features_enabled.push_back(kIOSKeyboardAccessoryTwoBubble);
-  } else {
-    config.features_disabled.push_back(kIOSKeyboardAccessoryTwoBubble);
+  if ([self isRunningTest:@selector
+            (testPasswordSuggestionsSubtext_ConditionalPasskeyLoginEnabled)]) {
+    config.features_enabled.push_back(kIOSPasskeyShim);
+    config.features_enabled.push_back(kIOSPasskeyConditionalLoginWithShim);
   }
 
   return config;
@@ -619,6 +598,12 @@ id<GREYMatcher> PaymentsBottomSheetUseKeyboardButton() {
   [ChromeEarlGrey waitForWebStateContainingText:"Vehicle"];
 }
 
+// Loads simple contenteditable page on localhost.
+- (void)loadContentEditablePage {
+  [ChromeEarlGrey loadURL:self.testServer->GetURL("/contenteditable.html")];
+  [ChromeEarlGrey waitForWebStateContainingText:"contenteditable"];
+}
+
 #pragma mark - Tests
 
 // Tests that tapping on a password related field opens the keyboard accessory
@@ -759,16 +744,16 @@ id<GREYMatcher> PaymentsBottomSheetUseKeyboardButton() {
   CheckCardAutofillSuggestionAcceptedIndexMetricsCount(/*suggestion_index=*/1);
 }
 
-// Tests that the fix on the is_user_edited_deprecated bit in the parsed form
+// Tests that the field is recognized as modified by the user in the parsed form
 // fields is effective in the case the user has edited the input field for real.
-- (void)testFillCreditCardFieldsOnForm_WithUserEditedFix_UserEdited {
+- (void)testFillCreditCardFieldsOnForm_UserEdited {
   // Fill using another test. The CVC number won't be filled because a local
   // card is used.
   [self testFillCreditCardFieldsOnForm];
 
   // Focus on the cvc field to fill it.
-  [ChromeEarlGrey evaluateJavaScriptForSideEffect:
-                      @"document.getElementById('cvc').focus();"];
+  [[EarlGrey selectElementWithMatcher:chrome_test_util::WebViewMatcher()]
+      performAction:chrome_test_util::TapWebElementWithId("cvc")];
   // Wait some time so the keyboard has time to show up then slowly type the CVC
   // number.
   base::test::ios::SpinRunLoopWithMinDelay(base::Milliseconds(200));
@@ -794,10 +779,9 @@ id<GREYMatcher> PaymentsBottomSheetUseKeyboardButton() {
       @"Autofill.PerfectFilling.CreditCards verification failed");
 }
 
-// Tests that the fix on the is_user_edited_deprecated bit in the parsed form
-// fields is effective in the case the user didn't edit the fields that weren't
-// filled.
-- (void)testFillCreditCardFieldsOnForm_WithUserEditedFix_NotUserEdited {
+// Tests that the field is recognized as unmodified by the user in the parsed
+// form fields in the case the user didn't edit the fields that weren't filled.
+- (void)testFillCreditCardFieldsOnForm_NotUserEdited {
   // Fill using another test. The CVC number won't be filled because a local
   // card is used.
   [self testFillCreditCardFieldsOnForm];
@@ -1332,11 +1316,11 @@ id<GREYMatcher> PaymentsBottomSheetUseKeyboardButton() {
   [[EarlGrey selectElementWithMatcher:chrome_test_util::WebViewMatcher()]
       performAction:chrome_test_util::TapWebElementWithId(kFormVehicleMake)];
 
-  // TODO(crbug.com/511251267): Update the test with kAutofillUndoIos enabled by
-  // default once undo autofill has been fixed.
   // Define the matcher for the undo autofill.
-  id<GREYMatcher> undoChipMatcher =
-      grey_text(l10n_util::GetNSString(IDS_AUTOFILL_UNDO_MENU_ITEM));
+  NSString* undoLabel = l10n_util::GetNSStringF(
+      IDS_IOS_AUTOFILL_ACCNAME_SUGGESTION,
+      l10n_util::GetStringUTF16(IDS_AUTOFILL_UNDO_MENU_ITEM), u"");
+  id<GREYMatcher> undoChipMatcher = grey_accessibilityLabel(undoLabel);
 
   // Wait for the chip to appear.
   [ChromeEarlGrey waitForUIElementToAppearWithMatcher:undoChipMatcher];
@@ -1355,21 +1339,76 @@ id<GREYMatcher> PaymentsBottomSheetUseKeyboardButton() {
   [self verifyFieldWithIdHasBeenFilled:kFormVehicleVIN value:@""];
 }
 
-@end
+// Tests that password suggestions shown on the Keyboard Accessory get their
+// subtext overridden to "Password" when Conditional Passkey Login is enabled.
+- (void)testPasswordSuggestionsSubtext_ConditionalPasskeyLoginEnabled {
+  // Disable the credential bottom sheet.
+  [CredentialSuggestionBottomSheetAppInterface disableBottomSheet];
 
-// Reruns all the tests in this file but with the two-bubble feature enabled by
-// default.
-@interface FormInputAccessoryTwoBubbleTestCase : FormInputAccessoryEGTest
+  [ReauthenticationAppInterface mockReauthenticationModuleExpectedResult:
+                                    ReauthenticationResult::kSuccess];
 
-@end
+  NSString* username = kExampleUsername;
+  NSString* password = kExamplePassword;
+  [PasswordManagerAppInterface
+      storeCredentialWithUsername:username
+                         password:password
+                              URL:net::NSURLWithGURL([self loginPageURL])];
+  [self loadLoginPage];
+  [[EarlGrey selectElementWithMatcher:chrome_test_util::WebViewMatcher()]
+      performAction:chrome_test_util::TapWebElementWithId(kFormPassword)];
 
-@implementation FormInputAccessoryTwoBubbleTestCase
+  // The suggestion chip's accessibility label should mention "user, Password"
+  // instead of "user, localhost" (or signon realm).
+  NSString* passwordSubtext = l10n_util::GetNSString(IDS_IOS_PASSWORD_SUBTEXT);
+  NSString* expectedAccessibilityLabel =
+      [NSString stringWithFormat:@"%@, %@", username, passwordSubtext];
+  id<GREYMatcher> userChip = grey_allOf(
+      grey_accessibilityLabel(expectedAccessibilityLabel),
+      grey_ancestor(
+          grey_accessibilityID(kFormInputAccessoryViewAccessibilityID)),
+      nil);
 
-// Returns whether the two-bubble feature should be enabled for the current
-// test. It returns `YES` to rerun tests defined in
-// `FormInputAccessoryEGTest`.
-- (BOOL)shouldEnableTwoBubbleFeature {
-  return YES;
+  [ChromeEarlGrey waitForUIElementToAppearWithMatcher:userChip];
+
+  [[EarlGrey selectElementWithMatcher:userChip] performAction:grey_tap()];
+
+  [self verifyFieldsHaveBeenFilledWithUsername:username password:password];
+}
+
+// Tests that closing a tab after focusing a form field does not crash
+// during FormInputAccessoryCoordinator teardown when AtMemory was not shown.
+- (void)testAtMemoryUnopenedTeardown {
+  [self loadLoginPage];
+  [[EarlGrey selectElementWithMatcher:chrome_test_util::WebViewMatcher()]
+      performAction:chrome_test_util::TapWebElementWithId(kFormUsername)];
+  [ChromeEarlGrey closeCurrentTab];
+}
+
+// Tests navigation buttons are available for a `contenteditable` element.
+- (void)testDefaultInputViewEnabled {
+  if ([ChromeEarlGrey isIPadIdiom]) {
+    EARL_GREY_TEST_SKIPPED(
+        @"Skipped for iPad since this feature is iPhone only.");
+  }
+  [self loadContentEditablePage];
+
+  [[EarlGrey selectElementWithMatcher:chrome_test_util::WebViewMatcher()]
+      performAction:chrome_test_util::TapWebElementWithId("editor")];
+  id<GREYMatcher> previousButton = grey_allOf(
+      grey_accessibilityLabel(
+          l10n_util::GetNSString(IDS_IOS_AUTOFILL_ACCNAME_PREVIOUS_FIELD)),
+      grey_ancestor(
+          grey_accessibilityID(kFormInputAccessoryViewAccessibilityID)),
+      nil);
+  id<GREYMatcher> nextButton = grey_allOf(
+      grey_accessibilityLabel(
+          l10n_util::GetNSString(IDS_IOS_AUTOFILL_ACCNAME_NEXT_FIELD)),
+      grey_ancestor(
+          grey_accessibilityID(kFormInputAccessoryViewAccessibilityID)),
+      nil);
+  [ChromeEarlGrey waitForUIElementToAppearWithMatcher:previousButton];
+  [ChromeEarlGrey waitForUIElementToAppearWithMatcher:nextButton];
 }
 
 @end

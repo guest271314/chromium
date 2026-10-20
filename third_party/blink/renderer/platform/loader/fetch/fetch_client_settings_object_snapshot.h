@@ -95,6 +95,10 @@ class PLATFORM_EXPORT FetchClientSettingsObjectSnapshot final
       mojom::blink::InsecureRequestPolicy,
       InsecureNavigationsSet);
 
+  static FetchClientSettingsObjectSnapshot& CreateForTesting(
+      const KURL& script_url,
+      scoped_refptr<const SecurityOrigin> origin);
+
   ~FetchClientSettingsObjectSnapshot() override = default;
 
   const KURL& GlobalObjectUrl() const override { return global_object_url_; }
@@ -109,6 +113,9 @@ class PLATFORM_EXPORT FetchClientSettingsObjectSnapshot final
 
   const String GetOutgoingReferrer() const override {
     return outgoing_referrer_;
+  }
+  KURL GetOutgoingReferrerUrl() const override {
+    return KURL(NullUrl(), outgoing_referrer_).UrlStrippedForUseAsReferrer();
   }
   HttpsState GetHttpsState() const override { return https_state_; }
 

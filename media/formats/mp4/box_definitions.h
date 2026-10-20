@@ -15,10 +15,12 @@
 
 #include "base/compiler_specific.h"
 #include "base/time/time.h"
+#include "media/base/audio_codecs.h"
 #include "media/base/decrypt_config.h"
 #include "media/base/media_export.h"
 #include "media/base/media_log.h"
 #include "media/base/video_codecs.h"
+#include "media/base/video_spatial_format.h"
 #include "media/formats/mp4/aac.h"
 #include "media/formats/mp4/ac3.h"
 #include "media/formats/mp4/ac4.h"
@@ -28,6 +30,7 @@
 #include "media/formats/mp4/dtsx.h"
 #include "media/formats/mp4/eac3.h"
 #include "media/formats/mp4/fourccs.h"
+#include "media/formats/mp4/stream_parser_metadata_track.h"
 #include "media/media_buildflags.h"
 
 namespace media {
@@ -275,7 +278,7 @@ struct MEDIA_EXPORT AV1CodecConfigurationRecord : Box {
   // Note: This method is intended to parse data outside the MP4StreamParser
   //       context and therefore the box header is not expected to be present
   //       in |data|
-  bool Parse(const uint8_t* data, int data_size);
+  bool Parse(base::span<const uint8_t> data);
 
   VideoCodecProfile profile = VIDEO_CODEC_PROFILE_UNKNOWN;
 
@@ -342,6 +345,30 @@ struct MEDIA_EXPORT DolbyVisionInfo {
   VideoColorSpace color_space;
 };
 
+struct MEDIA_EXPORT Stereoscopic3DVideo : Box {
+  DECLARE_BOX_METHODS(Stereoscopic3DVideo);
+  VideoStereoMode mode = VideoStereoMode::kMono;
+};
+
+struct MEDIA_EXPORT Equirectangular : Box {
+  DECLARE_BOX_METHODS(Equirectangular);
+
+  uint32_t bounds_top = 0;
+  uint32_t bounds_bottom = 0;
+  uint32_t bounds_left = 0;
+  uint32_t bounds_right = 0;
+};
+
+struct MEDIA_EXPORT Projection : Box {
+  DECLARE_BOX_METHODS(Projection);
+  VideoProjectionType type = VideoProjectionType::kNone;
+};
+
+struct MEDIA_EXPORT SphericalVideo : Box {
+  DECLARE_BOX_METHODS(SphericalVideo);
+  Projection projection;
+};
+
 struct MEDIA_EXPORT VideoSampleEntry : Box {
   DECLARE_BOX_METHODS(VideoSampleEntry);
 
@@ -363,6 +390,8 @@ struct MEDIA_EXPORT VideoSampleEntry : Box {
   std::optional<DolbyVisionInfo> dv_info;
   gfx::HDRMetadata hdr_metadata;
 
+  VideoSpatialFormat video_spatial_format;
+
   bool IsFormatValid() const;
 
   scoped_refptr<BitstreamConverter> frame_bitstream_converter;
@@ -377,11 +406,8 @@ struct MEDIA_EXPORT MetadataIT35SampleEntry : Box {
 
   uint16_t data_reference_index = 0;
 
-  enum class IT35PrefixType {
-    kUnknown,
-    kSmpteSt2094App5,
-  };
-  IT35PrefixType it35_prefix_type = IT35PrefixType::kUnknown;
+  MetadataTrack::IT35PrefixType it35_prefix_type =
+      MetadataTrack::IT35PrefixType::kUnknown;
 };
 
 struct MEDIA_EXPORT ElementaryStreamDescriptor : Box {
@@ -454,7 +480,7 @@ struct MEDIA_EXPORT AC4SpecificBox : Box {
 };
 #endif  // BUILDFLAG(ENABLE_PLATFORM_AC4_AUDIO)
 
-#if BUILDFLAG(ENABLE_PLATFORM_IAMF_AUDIO)
+#if BUILDFLAG(ENABLE_PLATFORM_IAMF_AUDIO) || BUILDFLAG(ENABLE_IAMF_TOOLS)
 struct MEDIA_EXPORT IamfSpecificBox : Box {
   DECLARE_BOX_METHODS(IamfSpecificBox);
   bool ReadOBU(BufferReader* reader);
@@ -463,12 +489,12 @@ struct MEDIA_EXPORT IamfSpecificBox : Box {
                      uint32_t* obu_size);
   bool ReadLeb128Value(BufferReader* reader, uint32_t* value) const;
 
-  uint8_t profile;
+  AudioCodecProfile profile = AudioCodecProfile::kUnknown;
   bool redundant_copy = false;
 
   std::vector<uint8_t> ia_descriptors;
 };
-#endif  // BUILDFLAG(ENABLE_PLATFORM_IAMF_AUDIO)
+#endif  // BUILDFLAG(ENABLE_PLATFORM_IAMF_AUDIO) || ...
 
 struct MEDIA_EXPORT AudioSampleEntry : Box {
   DECLARE_BOX_METHODS(AudioSampleEntry);
@@ -494,9 +520,9 @@ struct MEDIA_EXPORT AudioSampleEntry : Box {
 #if BUILDFLAG(ENABLE_PLATFORM_AC4_AUDIO)
   AC4SpecificBox ac4;
 #endif  // BUILDFLAG(ENABLE_PLATFORM_AC4_AUDIO)
-#if BUILDFLAG(ENABLE_PLATFORM_IAMF_AUDIO)
+#if BUILDFLAG(ENABLE_PLATFORM_IAMF_AUDIO) || BUILDFLAG(ENABLE_IAMF_TOOLS)
   IamfSpecificBox iacb;
-#endif  // BUILDFLAG(ENABLE_PLATFORM_IAMF_AUDIO)
+#endif  // BUILDFLAG(ENABLE_PLATFORM_IAMF_AUDIO) || ...
 };
 
 struct MEDIA_EXPORT SampleDescription : Box {

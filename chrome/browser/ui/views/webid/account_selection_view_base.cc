@@ -22,7 +22,8 @@
 #include "chrome/grit/generated_resources.h"
 #include "components/vector_icons/vector_icons.h"
 #include "content/public/browser/web_contents.h"
-#include "third_party/blink/public/mojom/webid/federated_auth_request.mojom.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
+#include "third_party/blink/public/mojom/webid/federated_request.mojom.h"
 #include "third_party/icu/source/common/unicode/unistr.h"
 #include "third_party/icu/source/common/unicode/utypes.h"
 #include "third_party/icu/source/i18n/unicode/listformatter.h"
@@ -169,7 +170,7 @@ AccountHoverButtonSecondaryView::AccountHoverButtonSecondaryView() {
   std::unique_ptr<views::ImageView> arrow_image_view =
       std::make_unique<views::ImageView>();
   arrow_image_view->SetImage(ui::ImageModel::FromVectorIcon(
-      features::IsRoundedIconsEnabled() ? vector_icons::kArrowRightIcon
+      features::IsRoundedIconsEnabled() ? vector_icons::kArrowRightFlippableIcon
                                         : vector_icons::kSubmenuArrowOldIcon,
       ui::kColorIcon, kArrowIconSize));
   arrow_image_view_ = AddChildView(std::move(arrow_image_view));
@@ -192,7 +193,7 @@ void AccountHoverButtonSecondaryView::SetDisabledOpacity() {
   }
 
   arrow_image_view_->SetImage(ui::ImageModel::FromVectorIcon(
-      features::IsRoundedIconsEnabled() ? vector_icons::kArrowRightIcon
+      features::IsRoundedIconsEnabled() ? vector_icons::kArrowRightFlippableIcon
                                         : vector_icons::kSubmenuArrowOldIcon,
       ui::kColorLabelForegroundDisabled, kArrowIconSize));
 }

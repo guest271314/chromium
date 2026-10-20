@@ -4,23 +4,36 @@
 
 import 'chrome://settings/settings.js';
 
-import {EntityDataManagerProxyImpl, FeatureOptInState, SettingsAiPageFeaturePrefName as PrefName} from 'chrome://settings/lazy_load.js';
-import type {CrLinkRowElement, SettingsAiPageElement, SettingsPrefsElement} from 'chrome://settings/settings.js';
-import {AiPageInteractions, CrSettingsPrefs, loadTimeData, MetricsBrowserProxyImpl, OpenWindowProxyImpl, resetRouterForTesting, Router, routes} from 'chrome://settings/settings.js';
+import {FeatureOptInState, SettingsAiPageFeaturePrefName as PrefName} from 'chrome://settings/lazy_load.js';
+import type {CrLinkRowElement, SettingsAiPageElement} from 'chrome://settings/settings.js';
+import {AiPageInteractions, loadTimeData, MetricsBrowserProxyImpl, OpenWindowProxyImpl, PrefsBrowserProxy, PrefService, resetRouterForTesting, Router, routes} from 'chrome://settings/settings.js';
 import {assertEquals, assertFalse, assertTrue} from 'chrome://webui-test/chai_assert.js';
-import {flushTasks} from 'chrome://webui-test/polymer_test_util.js';
 import {TestOpenWindowProxy} from 'chrome://webui-test/test_open_window_proxy.js';
-import {isChildVisible, isVisible} from 'chrome://webui-test/test_util.js';
+import {isChildVisible, isVisible, microtasksFinished} from 'chrome://webui-test/test_util.js';
 
-import {TestEntityDataManagerProxy} from './test_entity_data_manager_proxy.js';
 import {TestMetricsBrowserProxy} from './test_metrics_browser_proxy.js';
+import {TestPrefsBrowserProxy} from './test_prefs_browser_proxy.js';
+
+function getInitialPrefs(): chrome.settingsPrivate.PrefObject[] {
+  return [
+    {
+      key: PrefName.HISTORY_SEARCH,
+      type: chrome.settingsPrivate.PrefType.NUMBER,
+      value: FeatureOptInState.NOT_INITIALIZED,
+    },
+    {
+      key: 'contextual_search.drive_consent_state',
+      type: chrome.settingsPrivate.PrefType.NUMBER,
+      value: 0,
+    },
+  ];
+}
 
 suite('AiPage', function() {
   let metricsBrowserProxy: TestMetricsBrowserProxy;
   let openWindowProxy: TestOpenWindowProxy;
   let page: SettingsAiPageElement;
-  let settingsPrefs: SettingsPrefsElement;
-  let entityDataManager: TestEntityDataManagerProxy;
+  let prefService: PrefService;
 
   suiteSetup(function() {
     metricsBrowserProxy = new TestMetricsBrowserProxy();
@@ -31,14 +44,16 @@ suite('AiPage', function() {
     loadTimeData.overrideValues({
       showAiPage: true,
       showAiPageAiFeatureSection: true,
+      showGoogleSearchAiModeWorkspaceControl: true,
     });
-    settingsPrefs = document.createElement('settings-prefs');
-    return CrSettingsPrefs.initialized;
   });
 
-  setup(function() {
-    entityDataManager = new TestEntityDataManagerProxy();
-    EntityDataManagerProxyImpl.setInstance(entityDataManager);
+  setup(async function() {
+    const prefsBrowserProxy = new TestPrefsBrowserProxy(getInitialPrefs());
+    PrefsBrowserProxy.setInstance(prefsBrowserProxy);
+    PrefService.resetInstanceForTesting();
+    prefService = PrefService.getInstance();
+    await prefService.whenInitialized();
   });
 
   teardown(function() {
@@ -47,13 +62,11 @@ suite('AiPage', function() {
     openWindowProxy.reset();
   });
 
-  async function createPage() {
+  function createPage() {
     document.body.innerHTML = window.trustedTypes!.emptyHTML;
     page = document.createElement('settings-ai-page');
-    page.prefs = settingsPrefs.prefs!;
     Router.getInstance().navigateTo(routes.AI);
     document.body.appendChild(page);
-    return flushTasks();
   }
 
   async function verifyFeatureVisibilityMetrics(
@@ -81,11 +94,14 @@ suite('AiPage', function() {
       showComposeControl: true,
       showPasswordChangeControl: false,
       showAiSuggestionsControl: false,
+      showSkillsSettingPage: true,
+      showIndigoControl: false,
+      showGoogleSearchAiModeWorkspaceControl: true,
     });
     resetRouterForTesting();
-    await createPage();
+    createPage();
 
-    assertEquals(4, metricsBrowserProxy.getCallCount('recordBooleanHistogram'));
+    assertEquals(6, metricsBrowserProxy.getCallCount('recordBooleanHistogram'));
 
     assertFalse(isChildVisible(page, '#historySearchRowV2'));
     await verifyFeatureVisibilityMetrics(
@@ -103,6 +119,15 @@ suite('AiPage', function() {
     await verifyFeatureVisibilityMetrics(
         'Settings.AiPage.ElementVisibility.AiSuggestions', false);
 
+    assertTrue(isChildVisible(page, '#skillsRow'));
+    assertTrue(isChildVisible(page, '#googleSearchAiModeWorkspaceRow'));
+    await verifyFeatureVisibilityMetrics(
+        'Settings.AiPage.ElementVisibility.GoogleSearchAiModeWorkspace', true);
+
+    assertFalse(isChildVisible(page, '#indigoRow'));
+    await verifyFeatureVisibilityMetrics(
+        'Settings.AiPage.ElementVisibility.Indigo', false);
+
     metricsBrowserProxy.resetResolver('recordBooleanHistogram');
 
     // No new metrics should get recorded on next AI page navigation.
@@ -115,10 +140,13 @@ suite('AiPage', function() {
       showComposeControl: false,
       showPasswordChangeControl: true,
       showAiSuggestionsControl: true,
+      showSkillsSettingPage: false,
+      showIndigoControl: true,
+      showGoogleSearchAiModeWorkspaceControl: false,
     });
     resetRouterForTesting();
-    await createPage();
-    assertEquals(4, metricsBrowserProxy.getCallCount('recordBooleanHistogram'));
+    createPage();
+    assertEquals(6, metricsBrowserProxy.getCallCount('recordBooleanHistogram'));
 
     assertTrue(isChildVisible(page, '#historySearchRowV2'));
     await verifyFeatureVisibilityMetrics(
@@ -136,6 +164,15 @@ suite('AiPage', function() {
     await verifyFeatureVisibilityMetrics(
         'Settings.AiPage.ElementVisibility.AiSuggestions', true);
 
+    assertFalse(isChildVisible(page, '#skillsRow'));
+    assertFalse(isChildVisible(page, '#googleSearchAiModeWorkspaceRow'));
+    await verifyFeatureVisibilityMetrics(
+        'Settings.AiPage.ElementVisibility.GoogleSearchAiModeWorkspace', false);
+
+    assertTrue(isChildVisible(page, '#indigoRow'));
+    await verifyFeatureVisibilityMetrics(
+        'Settings.AiPage.ElementVisibility.Indigo', true);
+
     metricsBrowserProxy.resetResolver('recordBooleanHistogram');
 
     // No new metrics should get recorded on next AI page navigation.
@@ -149,26 +186,31 @@ suite('AiPage', function() {
       showHistorySearchControl: true,
     });
     resetRouterForTesting();
-    await createPage();
+    createPage();
 
     const historySearchRow =
-        page.shadowRoot!.querySelector<CrLinkRowElement>('#historySearchRowV2');
+        page.shadowRoot.querySelector<CrLinkRowElement>('#historySearchRowV2');
 
     assertTrue(!!historySearchRow);
     assertTrue(isVisible(historySearchRow));
 
-    page.setPrefValue(
+    await prefService.setPrefValue(
         PrefName.HISTORY_SEARCH, FeatureOptInState.NOT_INITIALIZED);
+    await microtasksFinished();
     assertEquals(
         loadTimeData.getString('historySearchSublabelOff'),
         historySearchRow.subLabel);
 
-    page.setPrefValue(PrefName.HISTORY_SEARCH, FeatureOptInState.DISABLED);
+    await prefService.setPrefValue(
+        PrefName.HISTORY_SEARCH, FeatureOptInState.DISABLED);
+    await microtasksFinished();
     assertEquals(
         loadTimeData.getString('historySearchSublabelOff'),
         historySearchRow.subLabel);
 
-    page.setPrefValue(PrefName.HISTORY_SEARCH, FeatureOptInState.ENABLED);
+    await prefService.setPrefValue(
+        PrefName.HISTORY_SEARCH, FeatureOptInState.ENABLED);
+    await microtasksFinished();
     assertEquals(
         loadTimeData.getString('historySearchSublabelOn'),
         historySearchRow.subLabel);
@@ -189,10 +231,10 @@ suite('AiPage', function() {
       showComposeControl: true,
     });
     resetRouterForTesting();
-    await createPage();
+    createPage();
 
     const composeRow =
-        page.shadowRoot!.querySelector<HTMLElement>('#composeRowV2');
+        page.shadowRoot.querySelector<HTMLElement>('#composeRowV2');
 
     assertTrue(!!composeRow);
     assertTrue(isVisible(composeRow));
@@ -210,10 +252,10 @@ suite('AiPage', function() {
     loadTimeData.overrideValues({
       showPasswordChangeControl: true,
     });
-    await createPage();
+    createPage();
 
     const passwordChangeRow =
-        page.shadowRoot!.querySelector<HTMLElement>('#passwordChangeRowV2');
+        page.shadowRoot.querySelector<HTMLElement>('#passwordChangeRowV2');
     assertTrue(!!passwordChangeRow);
     assertTrue(isVisible(passwordChangeRow));
 
@@ -226,16 +268,47 @@ suite('AiPage', function() {
     assertEquals(url, loadTimeData.getString('passwordChangeSettingsUrl'));
   });
 
-  test('NoPasswordChangeRowWhenFeatureDisabled', async () => {
+  test('NoPasswordChangeRowWhenFeatureDisabled', () => {
     loadTimeData.overrideValues({
       showPasswordChangeControl: false,
     });
-    await createPage();
+    createPage();
 
     const passwordChangeRow =
-        page.shadowRoot!.querySelector<HTMLElement>('#passwordChangeRowV2');
+        page.shadowRoot.querySelector<HTMLElement>('#passwordChangeRowV2');
     assertTrue(!!passwordChangeRow);
     assertFalse(isVisible(passwordChangeRow));
+  });
+
+  test('IndigoRow', async () => {
+    loadTimeData.overrideValues({
+      showIndigoControl: true,
+      indigoSavedUrl: 'https://example.com/custom_saved',
+    });
+    createPage();
+
+    const indigoRow = page.shadowRoot.querySelector<HTMLElement>('#indigoRow');
+    assertTrue(!!indigoRow);
+    assertTrue(isVisible(indigoRow));
+
+    indigoRow.click();
+    await verifyFeatureInteractionMetrics(
+        AiPageInteractions.INDIGO_CLICK,
+        'Settings.AiPage.IndigoEntryPointClick');
+
+    const url = await openWindowProxy.whenCalled('openUrl');
+    assertEquals(url, 'https://example.com/custom_saved');
+  });
+
+  test('NoIndigoRowWhenFeatureDisabled', () => {
+    loadTimeData.overrideValues({
+      showIndigoControl: false,
+    });
+    createPage();
+
+    const indigoRow = page.shadowRoot.querySelector<HTMLElement>('#indigoRow');
+    assertTrue(!!indigoRow);
+    assertFalse(isVisible(indigoRow));
   });
 
   test('aiSuggestionsRow', async () => {
@@ -244,10 +317,10 @@ suite('AiPage', function() {
       showAiSuggestionsControl: true,
     });
     resetRouterForTesting();
-    await createPage();
+    createPage();
 
     const aiSuggestionsRow =
-        page.shadowRoot!.querySelector<HTMLElement>('#aiSuggestionsRow');
+        page.shadowRoot.querySelector<HTMLElement>('#aiSuggestionsRow');
 
     assertTrue(!!aiSuggestionsRow);
     assertTrue(isVisible(aiSuggestionsRow));
@@ -259,5 +332,102 @@ suite('AiPage', function() {
     const currentRoute = Router.getInstance().getCurrentRoute();
     assertEquals(routes.AI_SUGGESTIONS, currentRoute);
     assertEquals(routes.AI, currentRoute.parent);
+  });
+
+  test('inlineCueMenuRow', async () => {
+    loadTimeData.overrideValues({
+      showAiPage: true,
+      showInlineCueMenuControl: true,
+    });
+    resetRouterForTesting();
+    createPage();
+
+    const inlineCueMenuRow =
+        page.shadowRoot.querySelector<HTMLElement>('#inlineCueMenuRow');
+
+    assertTrue(!!inlineCueMenuRow);
+    assertTrue(isVisible(inlineCueMenuRow));
+    inlineCueMenuRow.click();
+    await verifyFeatureInteractionMetrics(
+        AiPageInteractions.INLINE_CUE_MENU_CLICK,
+        'Settings.AiPage.InlineCueMenuEntryPointClick');
+
+    const currentRoute = Router.getInstance().getCurrentRoute();
+    assertEquals(routes.INLINE_CUE_MENU, currentRoute);
+    assertEquals(routes.AI, currentRoute.parent);
+  });
+
+  test('skillsRow', () => {
+    loadTimeData.overrideValues({
+      showAiPage: true,
+      showSkillsSettingPage: true,
+    });
+    resetRouterForTesting();
+    createPage();
+
+    const skillsRow = page.shadowRoot.querySelector<HTMLElement>('#skillsRow');
+
+    assertTrue(!!skillsRow);
+    assertTrue(isVisible(skillsRow));
+    skillsRow.click();
+
+    const currentRoute = Router.getInstance().getCurrentRoute();
+    assertEquals(routes.SKILLS, currentRoute);
+    assertEquals(routes.AI, currentRoute.parent);
+  });
+
+  test('GoogleSearchAiModeRow', async () => {
+    loadTimeData.overrideValues({
+      showGoogleSearchAiModeWorkspaceControl: true,
+    });
+    createPage();
+
+    const row = page.shadowRoot.querySelector<HTMLElement>(
+        '#googleSearchAiModeWorkspaceRow');
+    assertTrue(!!row);
+    assertTrue(isVisible(row));
+
+    await prefService.setPrefValue('contextual_search.drive_consent_state', 0);
+    row.click();
+    await verifyFeatureInteractionMetrics(
+        AiPageInteractions.GOOGLE_SEARCH_AI_MODE_WORKSPACE_CLICK,
+        'Settings.AiPage.GoogleSearchAiModeWorkspaceEntryPointClick');
+
+    const url = await openWindowProxy.whenCalled('openUrl');
+    assertEquals(loadTimeData.getString('googleSearchAiModeWorkspaceUrl'), url);
+  });
+
+  test('GoogleSearchAiModeRowRestricted', async () => {
+    loadTimeData.overrideValues({
+      showGoogleSearchAiModeWorkspaceControl: true,
+    });
+    createPage();
+
+    const row = page.shadowRoot.querySelector<HTMLElement>(
+        '#googleSearchAiModeWorkspaceRow');
+    assertTrue(!!row);
+    assertTrue(isVisible(row));
+
+    await prefService.setPrefValue('contextual_search.drive_consent_state', 1);
+    row.click();
+    await verifyFeatureInteractionMetrics(
+        AiPageInteractions.GOOGLE_SEARCH_AI_MODE_WORKSPACE_CLICK,
+        'Settings.AiPage.GoogleSearchAiModeWorkspaceEntryPointClick');
+
+    const url = await openWindowProxy.whenCalled('openUrl');
+    assertEquals(
+        loadTimeData.getString('googleSearchAiModeRestrictedUrl'), url);
+  });
+
+  test('NoGoogleSearchAiModeRowWhenFeatureDisabled', () => {
+    loadTimeData.overrideValues({
+      showGoogleSearchAiModeWorkspaceControl: false,
+    });
+    createPage();
+
+    const row = page.shadowRoot.querySelector<HTMLElement>(
+        '#googleSearchAiModeWorkspaceRow');
+    assertTrue(!!row);
+    assertFalse(isVisible(row));
   });
 });

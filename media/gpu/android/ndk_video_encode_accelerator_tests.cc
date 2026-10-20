@@ -24,7 +24,6 @@
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
-#include "components/viz/common/gpu/vulkan_context_provider.h"
 #include "gpu/command_buffer/client/shared_image_interface.h"
 #include "gpu/command_buffer/client/test_shared_image_interface.h"
 #include "gpu/command_buffer/service/feature_info.h"
@@ -33,11 +32,13 @@
 #include "gpu/command_buffer/service/shared_image/shared_image_factory.h"
 #include "gpu/command_buffer/service/shared_image/shared_image_manager.h"
 #include "gpu/command_buffer/service/shared_image/shared_image_representation.h"
+#include "gpu/command_buffer/service/vulkan_context_provider.h"
 #include "gpu/config/gpu_driver_bug_workarounds.h"
 #include "gpu/config/gpu_feature_info.h"
 #include "gpu/config/gpu_preferences.h"
 #include "media/base/bitstream_buffer.h"
 #include "media/base/decoder_buffer.h"
+#include "media/base/media_serializers.h"
 #include "media/base/media_switches.h"
 #include "media/base/media_util.h"
 #include "media/base/test_helpers.h"
@@ -55,6 +56,7 @@
 #include "third_party/libyuv/include/libyuv.h"
 #include "ui/gl/gl_context.h"
 #include "ui/gl/gl_implementation.h"
+#include "ui/gl/gl_surface_egl.h"
 #include "ui/gl/init/gl_factory.h"
 
 #if BUILDFLAG(ENABLE_FFMPEG_VIDEO_DECODERS)
@@ -83,6 +85,11 @@ class MockCommandBufferHelper : public CommandBufferHelper {
               WaitForSyncToken,
               (gpu::SyncToken sync_token, base::OnceClosure done_cb),
               (override));
+  MOCK_METHOD(void,
+              WaitForSyncTokens,
+              (std::vector<gpu::SyncToken> sync_tokens,
+               base::OnceClosure done_cb),
+              (override));
   MOCK_METHOD(gpu::SharedImageManager*, GetSharedImageManager, (), (override));
 
  protected:
@@ -92,7 +99,6 @@ class MockCommandBufferHelper : public CommandBufferHelper {
 struct VideoParams {
   VideoCodecProfile profile;
   VideoPixelFormat pixel_format;
-  bool use_gl_surface = false;
   bool use_shared_image = false;
 };
 
@@ -120,20 +126,9 @@ class NdkVideoEncoderAcceleratorTest
     enabled_features.push_back(kPlatformHEVCEncoderSupport);
 #endif
 
-    if (args.use_gl_surface) {
-      if (__builtin_available(android 35, *)) {
-        SetupSharedImages();
-      } else {
-        GTEST_SKIP() << "Not supported Android version. "
-                     << "Surface input needs Android 15 or newer.";
-      }
-      enabled_features.push_back(kSurfaceInputForAndroidVEA);
-    } else {
-      disabled_features.push_back(kSurfaceInputForAndroidVEA);
-      if (args.use_shared_image) {
-        enabled_features.push_back(media::kAndroidZeroCopyVideoCapture);
-        SetupSharedImages();
-      }
+    if (args.use_shared_image) {
+      enabled_features.push_back(media::kAndroidZeroCopyVideoCapture);
+      SetupSharedImages();
     }
     feature_list_.InitWithFeatures(enabled_features, disabled_features);
 
@@ -154,17 +149,7 @@ class NdkVideoEncoderAcceleratorTest
   void TearDown() override {
     accelerator_.reset();
     RunUntilIdle();
-    auto args = GetParam();
     si_refs.clear();
-    if (args.use_gl_surface) {
-      if (context_state_) {
-        context_state_->MakeCurrent(gl_surface_.get(), true);
-        context_state_.reset();
-        gl_context_.reset();
-        gl_surface_.reset();
-      }
-      gl::init::ShutdownGL(nullptr, false);
-    }
   }
 
   // Implementation for VEA::Client
@@ -236,9 +221,11 @@ class NdkVideoEncoderAcceleratorTest
       scoped_refptr<VideoFrame> software_frame) {
     gfx::Size size = software_frame->visible_rect().size();
     auto mailbox = gpu::Mailbox::Generate();
-    auto color_space = gfx::ColorSpace::CreateSRGB();
+    auto color_space = software_frame->ColorSpace();
     GrSurfaceOrigin surface_origin = kTopLeft_GrSurfaceOrigin;
-    SkAlphaType alpha_type = kPremul_SkAlphaType;
+    SkAlphaType alpha_type = software_frame->format() == PIXEL_FORMAT_NV12
+                                 ? kUnpremul_SkAlphaType
+                                 : kPremul_SkAlphaType;
     auto sync_token = gpu::SyncToken();
     gpu::SharedImageUsageSet usage = gpu::SHARED_IMAGE_USAGE_GLES2_READ |
                                      gpu::SHARED_IMAGE_USAGE_DISPLAY_READ |
@@ -343,7 +330,7 @@ class NdkVideoEncoderAcceleratorTest
 
     } else {
       CHECK_EQ(software_frame->format(), PIXEL_FORMAT_XBGR);
-      viz_format = viz::SinglePlaneFormat::kRGBA_8888;
+      viz_format = viz::SinglePlaneFormat::kRGBX_8888;
 
       AHardwareBuffer_Desc desc = {};
       desc.width = size.width();
@@ -555,16 +542,16 @@ class NdkVideoEncoderAcceleratorTest
 
     backing_factory_ =
         std::make_unique<gpu::AHardwareBufferImageBackingFactory>(
-            context_state_->feature_info(), gpu_preferences,
-            context_state_->vk_context_provider());
+            context_state_->feature_info(), gpu_preferences, context_state_);
 
     auto runner = task_environment_.GetMainThreadTaskRunner();
     auto command_buffer_helper =
         base::MakeRefCounted<MockCommandBufferHelper>(fake_gpu_runner_);
-    ON_CALL(*command_buffer_helper, WaitForSyncToken)
-        .WillByDefault([runner](gpu::SyncToken, base::OnceClosure done_cb) {
-          runner->PostTask(FROM_HERE, std::move(done_cb));
-        });
+    ON_CALL(*command_buffer_helper, WaitForSyncTokens)
+        .WillByDefault(
+            [runner](std::vector<gpu::SyncToken>, base::OnceClosure done_cb) {
+              runner->PostTask(FROM_HERE, std::move(done_cb));
+            });
     ON_CALL(*command_buffer_helper, GetSharedImageManager())
         .WillByDefault(Return(&shared_image_manager_));
     command_buffer_helper_ = command_buffer_helper;
@@ -573,11 +560,10 @@ class NdkVideoEncoderAcceleratorTest
   VideoCodec codec_;
   VideoCodecProfile profile_;
   VideoPixelFormat pixel_format_;
-  bool use_gl_surface_ = false;
 
+  base::test::ScopedFeatureList feature_list_;
   base::test::TaskEnvironment task_environment_{
       base::test::TaskEnvironment::ThreadingMode::MULTIPLE_THREADS};
-  base::test::ScopedFeatureList feature_list_;
   std::unique_ptr<base::RunLoop> loop_ = std::make_unique<base::RunLoop>();
   std::unique_ptr<VideoEncodeAccelerator> accelerator_;
   size_t output_buffer_size_ = 0;
@@ -680,8 +666,7 @@ TEST_P(NdkVideoEncoderAcceleratorTest, InitializeAndDestroy) {
   EXPECT_CALL(*this, OnRequireBuffer()).WillOnce(Return(false));
 
   auto status = accelerator_->Initialize(config, this, NullLog());
-  ASSERT_TRUE(status.is_ok())
-      << EncoderStatusCodeToString(status.code()) << " " << status.message();
+  ASSERT_TRUE(status.is_ok()) << MediaSerializeForTesting(status);
   SetCommandBufferHelper();
 
   Run();
@@ -691,8 +676,8 @@ TEST_P(NdkVideoEncoderAcceleratorTest, InitializeAndDestroy) {
 }
 
 TEST_P(NdkVideoEncoderAcceleratorTest, WorkaroundDisablesZeroCopy) {
-  if (!GetParam().use_shared_image || GetParam().use_gl_surface) {
-    GTEST_SKIP() << "Test only relevant for shared image input without surface";
+  if (!GetParam().use_shared_image) {
+    GTEST_SKIP() << "Test only relevant for shared image input";
   }
 
   std::vector<int32_t> workaround_list;
@@ -717,8 +702,7 @@ TEST_P(NdkVideoEncoderAcceleratorTest, HandleEncodingError) {
   EXPECT_CALL(*this, OnError()).WillOnce(Return(false));
 
   auto status = accelerator_->Initialize(config, this, NullLog());
-  ASSERT_TRUE(status.is_ok())
-      << EncoderStatusCodeToString(status.code()) << " " << status.message();
+  ASSERT_TRUE(status.is_ok()) << MediaSerializeForTesting(status);
   SetCommandBufferHelper();
   Run();
 
@@ -747,8 +731,7 @@ TEST_P(NdkVideoEncoderAcceleratorTest, EncodeSeveralFrames) {
   });
 
   auto status = accelerator_->Initialize(config, this, NullLog());
-  ASSERT_TRUE(status.is_ok())
-      << EncoderStatusCodeToString(status.code()) << " " << status.message();
+  ASSERT_TRUE(status.is_ok()) << MediaSerializeForTesting(status);
   SetCommandBufferHelper();
   Run();
 
@@ -804,8 +787,7 @@ TEST_P(NdkVideoEncoderAcceleratorTest, ResizeOnEncode) {
       });
 
   auto status = accelerator_->Initialize(config, this, NullLog());
-  ASSERT_TRUE(status.is_ok())
-      << EncoderStatusCodeToString(status.code()) << " " << status.message();
+  ASSERT_TRUE(status.is_ok()) << MediaSerializeForTesting(status);
   SetCommandBufferHelper();
   Run();
 
@@ -854,8 +836,7 @@ TEST_P(NdkVideoEncoderAcceleratorTest, EncodeWithTemporalLayers) {
   });
 
   auto status = accelerator_->Initialize(config, this, NullLog());
-  ASSERT_TRUE(status.is_ok())
-      << EncoderStatusCodeToString(status.code()) << " " << status.message();
+  ASSERT_TRUE(status.is_ok()) << MediaSerializeForTesting(status);
   SetCommandBufferHelper();
   Run();
 
@@ -937,8 +918,7 @@ TEST_P(NdkVideoEncoderAcceleratorE2ETest, EncodeAndDecode) {
   });
 
   auto status = accelerator_->Initialize(config, this, NullLog());
-  ASSERT_TRUE(status.is_ok())
-      << EncoderStatusCodeToString(status.code()) << " " << status.message();
+  ASSERT_TRUE(status.is_ok()) << MediaSerializeForTesting(status);
   SetCommandBufferHelper();
   Run();
 
@@ -976,9 +956,6 @@ TEST_P(NdkVideoEncoderAcceleratorE2ETest, EncodeAndDecode) {
 std::string PrintTestParams(const testing::TestParamInfo<VideoParams>& info) {
   auto result = GetProfileName(info.param.profile) + "__" +
                 VideoPixelFormatToString(info.param.pixel_format);
-  if (info.param.use_gl_surface) {
-    result += "__Surface";
-  }
   if (info.param.use_shared_image) {
     result += "__SharedImage";
   }
@@ -1065,33 +1042,18 @@ std::vector<VideoParams> GenerateVariants(
     switch (param.pixel_format) {
       case PIXEL_FORMAT_I420:
         param.use_shared_image = false;
-        param.use_gl_surface = false;
         result.push_back(param);
         break;
       case PIXEL_FORMAT_NV12:
         param.use_shared_image = false;
-        param.use_gl_surface = false;
         result.push_back(param);
 
         param.use_shared_image = true;
-        param.use_gl_surface = false;
-        result.push_back(param);
-
-        param.use_shared_image = true;
-        param.use_gl_surface = true;
-        result.push_back(param);
-
-        param.use_shared_image = false;
-        param.use_gl_surface = true;
         result.push_back(param);
         break;
       case PIXEL_FORMAT_XBGR:
         // RGB always assumes shared image input
         param.use_shared_image = true;
-        param.use_gl_surface = false;
-        result.push_back(param);
-
-        param.use_gl_surface = true;
         result.push_back(param);
         break;
       default:

@@ -12,9 +12,9 @@
 #include "base/test/bind.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/side_panel/side_panel_entry.h"
 #include "chrome/browser/ui/toolbar/app_menu_model.h"
 #include "chrome/browser/ui/toolbar/bookmark_sub_menu_model.h"
@@ -203,9 +203,9 @@ class HelpBubbleFactoryWebUIInteractiveUiTest : public InteractiveBrowserTest {
   }
 
   user_education::HelpBubbleFactoryRegistry* GetHelpBubbleFactory() {
-    auto* const controller =
-        UserEducationServiceFactory::GetForBrowserContext(browser()->profile())
-            ->GetFeaturePromoControllerForTesting();
+    auto* const controller = UserEducationServiceFactory::GetForBrowserContext(
+                                 browser()->GetProfile())
+                                 ->GetFeaturePromoControllerForTesting();
     return static_cast<user_education::FeaturePromoControllerImpl*>(controller)
         ->bubble_factory_registry();
   }

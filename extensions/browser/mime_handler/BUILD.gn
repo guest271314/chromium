@@ -3,7 +3,6 @@
 # found in the LICENSE file.
 
 import("//extensions/buildflags/buildflags.gni")
-import("//pdf/features.gni")
 
 assert(enable_extensions && !is_android)
 
@@ -11,23 +10,30 @@ source_set("mime_handler") {
   sources = [
     "generic_mime_handler_stream_delegate.cc",
     "generic_mime_handler_stream_delegate.h",
+    "mime_handler_fallback_url_loader_request_interceptor.cc",
+    "mime_handler_fallback_url_loader_request_interceptor.h",
     "mime_handler_stream_delegate.cc",
     "mime_handler_stream_delegate.h",
     "mime_handler_stream_manager.cc",
     "mime_handler_stream_manager.h",
+    "mime_handler_ui_util.cc",
+    "mime_handler_ui_util.h",
     "stream_info.cc",
     "stream_info.h",
   ]
   public_deps = [
     "//base",
     "//content/public/browser",
+    "//extensions/browser:browser_sources",
     "//extensions/common:mojom",
     "//mojo/public/cpp/bindings",
   ]
   deps = [
     ":stream_container",
     "//components/crash/core/common:crash_key",
+    "//extensions/common",
     "//extensions/common:common_constants",
+    "//services/network/public/mojom",
   ]
 }
 
@@ -61,15 +67,10 @@ source_set("mime_handler_page") {
     "//content/public/browser",
     "//content/public/common",
     "//content/public/common:buildflags",
-    "//pdf:buildflags",
+    "//extensions:extensions_resources_grd",
     "//skia",
+    "//ui/base",
   ]
-  if (enable_pdf) {
-    deps += [
-      "//components/resources:components_resources_grit",
-      "//ui/base",
-    ]
-  }
 }
 
 source_set("unit_tests") {
@@ -95,6 +96,7 @@ source_set("unit_tests") {
     "//extensions/browser",
     "//extensions/common",
     "//mojo/public/cpp/system",
+    "//services/network:test_support",
     "//services/network/public/mojom:url_loader_base",
     "//testing/gmock",
     "//testing/gtest",

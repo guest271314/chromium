@@ -5,21 +5,22 @@
 #ifndef CHROME_BROWSER_GLIC_ACTOR_GLIC_ACTOR_POLICY_CHECKER_H_
 #define CHROME_BROWSER_GLIC_ACTOR_GLIC_ACTOR_POLICY_CHECKER_H_
 
+#include <string>
+
 #include "base/callback_list.h"
+#include "base/containers/flat_set.h"
 #include "base/functional/callback_forward.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/safe_ref.h"
 #include "base/memory/weak_ptr.h"
 #include "base/scoped_observation.h"
-#include "chrome/browser/actor/enterprise_policy_checker.h"
+#include "chrome/browser/actor/actor_enterprise_policy_checker.h"
 #include "chrome/browser/glic/glic_enums.h"
 #include "chrome/common/buildflags.h"
 #include "components/actor/core/aggregated_journal.h"
-#include "components/policy/core/browser/url_list/url_blocklist_manager.h"
 #include "components/prefs/pref_change_registrar.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "components/subscription_eligibility/subscription_eligibility_service.h"
-#include "third_party/abseil-cpp/absl/container/flat_hash_set.h"
 #include "url/origin.h"
 
 class GURL;
@@ -40,7 +41,7 @@ namespace glic {
 // enabling state and validate content sent to the renderer. This class blends
 // various signals from account, preferences, managed policies, etc. to make a
 // determination.
-class GlicActorPolicyChecker : public actor::EnterprisePolicyChecker,
+class GlicActorPolicyChecker : public actor::ActorEnterprisePolicyChecker,
                                public signin::IdentityManager::Observer,
                                public subscription_eligibility::
                                    SubscriptionEligibilityService::Observer {
@@ -55,11 +56,11 @@ class GlicActorPolicyChecker : public actor::EnterprisePolicyChecker,
   // Returns true if Glic Actor considers the profile to belong to a managed
   // Enterprise account. This check is specific to Glic Actor and should not
   // be used as a generic check for managed Enterprise accounts.
-  static bool IsEnterpriseAccount(Profile& profile,
-                                  actor::AggregatedJournal& journal);
+  static bool IsEnterpriseAccountForActor(Profile& profile,
+                                          actor::AggregatedJournal& journal);
 
   // Returns true if the Chrome browser is managed by an IT administrator.
-  static bool IsBrowserManaged(Profile& profile);
+  static bool IsBrowserManagedForActor(Profile& profile);
 
   // Adds a callback to run whenever the value of CanActOnWeb changes.
   using CanActOnWebChangedCallback =
@@ -75,6 +76,8 @@ class GlicActorPolicyChecker : public actor::EnterprisePolicyChecker,
 
   // `subscription_eligibility::SubscriptionEligibilityService::Observer`:
   void OnAiSubscriptionTierUpdated(int32_t new_subscription_tier) override;
+  void OnSubscriptionBenefitsUpdated(
+      const base::flat_set<std::string>& subscription_benefits) override;
 
   // Allows tests to synchronize on allow/blocklist updates.
   base::CallbackListSubscription AddUrlListsUpdateObserverForTesting(
@@ -85,12 +88,16 @@ class GlicActorPolicyChecker : public actor::EnterprisePolicyChecker,
   bool CanActOnWeb() const;
   CannotActReason CannotActOnWebReason() const;
 
-  // EnterprisePolicyChecker interface
+  // Whether the Glic API can act on Web. This is currently different than
+  // CanActOnWeb() in the following ways:
+  // - Dogfood is only enabled on internal accounts.
+  // - Enterprise accounts will always disable act on web.
+  // - Managed devices can disable act on web, otherwise fallback to tier check.
+  bool GlicApiCanActOnWeb() const;
+  CannotActReason GlicApiCannotActOnWebReason() const;
+
+  // actor::ActorEnterprisePolicyChecker:
   UrlBlockReason Evaluate(const GURL& url) const override;
-  void ValidateContentSentToRenderer(
-      content::RenderFrameHost* frame,
-      const std::string& content,
-      ContentValidationCallback callback) const override;
 
  private:
   void OnPrefOrAccountChanged();
@@ -102,7 +109,9 @@ class GlicActorPolicyChecker : public actor::EnterprisePolicyChecker,
   };
   friend std::ostream& operator<<(std::ostream& os, CanActOutcome value);
 
-  std::pair<CanActOutcome, CannotActReason> ComputeActOnWebCapability();
+  // For glic_api_can_act_on_web_ disable_for_enterprise should be true.
+  std::pair<CanActOutcome, CannotActReason> ComputeActOnWebCapability(
+      bool disable_for_enterprise);
 
   // This class must be transitively owned by a Profile and cannot outlive it.
   raw_ptr<Profile> profile_;
@@ -116,8 +125,9 @@ class GlicActorPolicyChecker : public actor::EnterprisePolicyChecker,
   CanActOutcome can_act_on_web_ = CanActOutcome::kYes;
   CannotActReason cannot_act_on_web_reason_;
 
-  // Stores enterprise allowlist/blocklist policies for specific URLs.
-  policy::URLBlocklistManager url_blocklist_manager_;
+  CanActOutcome glic_api_can_act_on_web_ = CanActOutcome::kYes;
+  CannotActReason glic_api_cannot_act_on_web_reason_;
+
   base::CallbackListSubscription url_blocklist_subscription_;
 
   base::SafeRef<actor::AggregatedJournal> journal_;

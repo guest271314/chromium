@@ -99,15 +99,6 @@ public interface AutocompleteEditTextModelBase {
         void onAutocompleteTextStateChanged(boolean updateDisplay);
 
         /**
-         * This is called roughly the same time as when we call
-         * InputMethodManager#updateSelection().
-         *
-         * @param selStart Selection start.
-         * @param selEnd Selection end.
-         */
-        void onUpdateSelectionForTesting(int selStart, int selEnd);
-
-        /**
          * @return The package name of the current keyboard app.
          */
         String getKeyboardPackageName();
@@ -121,6 +112,15 @@ public interface AutocompleteEditTextModelBase {
          * @param siteSearchLabel The label to display, or null/empty to remove the chip.
          */
         void setSiteSearchChip(@Nullable String siteSearchLabel);
+
+        /**
+         * This is called roughly the same time as when we call
+         * InputMethodManager#updateSelection().
+         *
+         * @param selStart Selection start.
+         * @param selEnd Selection end.
+         */
+        void onUpdateSelectionForTesting(int selStart, int selEnd);
     }
 
     /**
@@ -232,7 +232,6 @@ public interface AutocompleteEditTextModelBase {
     /**
      * @return Whether any autocomplete information is specified on the current text.
      */
-    @VisibleForTesting
     boolean hasAutocomplete();
 
     /**
@@ -245,4 +244,10 @@ public interface AutocompleteEditTextModelBase {
      * @return Whether accessibility event should be ignored.
      */
     boolean shouldIgnoreAccessibilityEvent();
+
+    /**
+     * Returns whether the given key event represents a delete-by-word gesture that should be
+     * intercepted and handled by the model.
+     */
+    boolean isDeleteByWord(KeyEvent event);
 }

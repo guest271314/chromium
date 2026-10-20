@@ -11,7 +11,6 @@
 #include "base/files/file_util.h"
 #include "base/files/scoped_temp_dir.h"
 #include "base/strings/strcat.h"
-#include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/bind.h"
 #include "base/test/task_environment.h"
@@ -28,6 +27,7 @@
 #include "components/prefs/testing_pref_service.h"
 #include "components/update_client/update_client_errors.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/abseil-cpp/absl/strings/str_format.h"
 
 #if BUILDFLAG(IS_WIN)
 #include "chrome/updater/util/win_util.h"
@@ -145,6 +145,13 @@ INSTANTIATE_TEST_SUITE_P(
          base::WideToUTF8(GetLocalizedStringF(
              IDS_GENERIC_DOWNLOAD_ERROR_BASE,
              L"update_client::CrxDownloaderError::BITS_TOO_MANY_JOBS"))},
+        {UpdateService::ErrorCategory::kDownload,
+         std::to_underlying(
+             update_client::CrxDownloaderError::DO_TOO_MANY_DOWNLOADS),
+         {},
+         base::WideToUTF8(GetLocalizedStringF(
+             IDS_GENERIC_DOWNLOAD_ERROR_BASE,
+             L"update_client::CrxDownloaderError::DO_TOO_MANY_DOWNLOADS"))},
         {UpdateService::ErrorCategory::kDownload,
          std::to_underlying(update_client::CrxDownloaderError::GENERIC_ERROR),
          {},
@@ -445,6 +452,12 @@ INSTANTIATE_TEST_SUITE_P(
              IDS_GENERIC_INSTALL_ERROR_BASE,
              L"update_client::InstallError::LAUNCH_PROCESS_FAILED"))},
         {UpdateService::ErrorCategory::kInstall,
+         std::to_underlying(update_client::InstallError::INSTALL_PATH_ERROR),
+         "en",
+         base::WideToUTF8(GetLocalizedStringF(
+             IDS_GENERIC_INSTALL_ERROR_BASE,
+             L"update_client::InstallError::INSTALL_PATH_ERROR"))},
+        {UpdateService::ErrorCategory::kInstall,
          std::to_underlying(update_client::InstallError::CUSTOM_ERROR_BASE),
          "en",
          base::WideToUTF8(GetLocalizedStringF(
@@ -494,7 +507,7 @@ INSTANTIATE_TEST_SUITE_P(
          base::WideToUTF8(base::StrCat(
              {GetLocalizedString(IDS_INVALID_INSTALLER_FILENAME_BASE), L"\n",
               GetLocalizedStringF(IDS_EXTRA_CODE_BASE,
-                                  base::UTF8ToWide(base::StringPrintf(
+                                  base::UTF8ToWide(absl::StrFormat(
                                       "%#x",
                                       kErrorMissingInstallParams)))})),
          kErrorMissingInstallParams},

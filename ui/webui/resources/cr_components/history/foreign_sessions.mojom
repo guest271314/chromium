@@ -12,7 +12,6 @@ struct ForeignSessionTab {
   string remote_icon_url_for_uma;
   int32 session_id;
   double timestamp;
-  string timestamp_display_str;
   string title;
   url.mojom.Url url;
   int32 window_id;
@@ -33,11 +32,16 @@ struct ForeignSession {
   array<ForeignSessionWindow> windows;
 };
 
+// Used by the WebUI page to bootstrap bidirectional communication.
+interface ForeignSessionPageHandlerFactory {
+  // The WebUI calls this method when the page is first initialized.
+  CreateForeignSessionPageHandler(
+      pending_remote<ForeignSessionPage> page,
+      pending_receiver<ForeignSessionPageHandler> handler);
+};
+
 // Browser-side handler for requests from WebUI page.
 interface ForeignSessionPageHandler {
-  // The BrowserProxy singleton calls this when it's first initialized.
-  SetPage(pending_remote<ForeignSessionPage> page);
-
   // Queries for the list of foreign sessions.
   GetForeignSessions() => (array<ForeignSession> sessions);
 

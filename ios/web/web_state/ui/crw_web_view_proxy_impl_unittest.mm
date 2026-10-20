@@ -28,6 +28,11 @@
   return YES;
 }
 
+- (void)setObscuredInsets:(UIEdgeInsets)obscuredInsets
+          initialVelocity:(CGFloat)initialVelocity {
+  _obscuredInsets = obscuredInsets;
+}
+
 - (void)setMinimumViewportInset:(UIEdgeInsets)minInset
            maximumViewportInset:(UIEdgeInsets)maxInset {
 }
@@ -95,6 +100,69 @@ TEST_F(CRWWebViewProxyImplTest, AllowsLinkPreview) {
 
   OCMExpect([mockWebController setAllowsLinkPreview:YES]);
   proxy.allowsLinkPreview = YES;
+  EXPECT_OCMOCK_VERIFY((id)mockWebController);
+}
+
+// Tests that setting obscuredInsets has no effect when ignoreObscuredInsets is
+// YES.
+TEST_F(CRWWebViewProxyImplTest, IgnoreObscuredInsets) {
+  CRWWebViewProxyImpl* proxy = [[CRWWebViewProxyImpl alloc] init];
+  CRWFakeContentView* fakeContentView = [[CRWFakeContentView alloc] init];
+  proxy.contentView = fakeContentView;
+
+  proxy.ignoreObscuredInsets = YES;
+  EXPECT_TRUE(proxy.ignoreObscuredInsets);
+
+  const UIEdgeInsets obscuredInsets = UIEdgeInsetsMake(10, 10, 10, 10);
+  proxy.obscuredInsets = obscuredInsets;
+  EXPECT_TRUE(UIEdgeInsetsEqualToEdgeInsets(UIEdgeInsetsZero,
+                                            fakeContentView.obscuredInsets));
+
+  proxy.ignoreObscuredInsets = NO;
+  EXPECT_FALSE(proxy.ignoreObscuredInsets);
+
+  proxy.obscuredInsets = obscuredInsets;
+  EXPECT_TRUE(UIEdgeInsetsEqualToEdgeInsets(obscuredInsets,
+                                            fakeContentView.obscuredInsets));
+}
+
+// Tests obscuredContentInsets property is delegated to CRWWebController.
+TEST_F(CRWWebViewProxyImplTest, ObscuredContentInsets) {
+  if (@available(iOS 26.0, *)) {
+    CRWWebController* mockWebController =
+        OCMStrictClassMock([CRWWebController class]);
+    CRWWebViewProxyImpl* proxy =
+        [[CRWWebViewProxyImpl alloc] initWithWebController:mockWebController];
+
+    UIEdgeInsets test_insets = UIEdgeInsetsMake(10, 20, 30, 40);
+    OCMStub([mockWebController obscuredContentInsets]).andReturn(test_insets);
+    EXPECT_TRUE(UIEdgeInsetsEqualToEdgeInsets(test_insets,
+                                              proxy.obscuredContentInsets));
+
+    OCMExpect([mockWebController setObscuredContentInsets:test_insets]);
+    proxy.obscuredContentInsets = test_insets;
+    EXPECT_OCMOCK_VERIFY((id)mockWebController);
+  }
+}
+
+// Tests that `shouldSuppressInputViews` is delegated to `CRWWebController`.
+TEST_F(CRWWebViewProxyImplTest, ShouldSuppressInputViews) {
+  CRWWebController* mockWebController =
+      OCMStrictClassMock([CRWWebController class]);
+  CRWWebViewProxyImpl* proxy =
+      [[CRWWebViewProxyImpl alloc] initWithWebController:mockWebController];
+
+  OCMExpect([mockWebController shouldSuppressInputViews]).andReturn(YES);
+  EXPECT_TRUE(proxy.shouldSuppressInputViews);
+
+  OCMExpect([mockWebController setShouldSuppressInputViews:YES]);
+  proxy.shouldSuppressInputViews = YES;
+
+  OCMExpect([mockWebController shouldSuppressInputViews]).andReturn(NO);
+  EXPECT_FALSE(proxy.shouldSuppressInputViews);
+
+  OCMExpect([mockWebController setShouldSuppressInputViews:NO]);
+  proxy.shouldSuppressInputViews = NO;
   EXPECT_OCMOCK_VERIFY((id)mockWebController);
 }
 

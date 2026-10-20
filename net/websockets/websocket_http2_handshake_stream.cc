@@ -51,10 +51,10 @@ WebSocketHttp2HandshakeStream::WebSocketHttp2HandshakeStream(
     std::vector<std::string> requested_extensions,
     WebSocketStreamRequestAPI* request,
     std::set<std::string> dns_aliases)
-    : session_(session),
+    : session_(std::move(session)),
       connect_delegate_(connect_delegate),
-      requested_sub_protocols_(requested_sub_protocols),
-      requested_extensions_(requested_extensions),
+      requested_sub_protocols_(std::move(requested_sub_protocols)),
+      requested_extensions_(std::move(requested_extensions)),
       stream_request_(request),
       dns_aliases_(std::move(dns_aliases)) {
   DCHECK(connect_delegate);
@@ -138,8 +138,8 @@ int WebSocketHttp2HandshakeStream::SendRequest(
 
   callback_ = std::move(callback);
   spdy_stream_request_ = std::make_unique<SpdyStreamRequest>();
-  // The initial request for the WebSocket is a CONNECT, so there is no need to
-  // call ConfirmHandshake().
+  // Handshake confirmation was already performed in InitializeStream(), so pass
+  // `can_send_early = true` to avoid calling ConfirmHandshake() again.
   int rv = spdy_stream_request_->StartRequest(
       SPDY_BIDIRECTIONAL_STREAM, session_, request_info_->url, true, priority_,
       request_info_->socket_tag, net_log_,

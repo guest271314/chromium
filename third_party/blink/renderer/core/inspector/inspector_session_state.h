@@ -9,6 +9,7 @@
 #include <type_traits>
 #include <vector>
 
+#include "base/memory/raw_ptr.h"
 #include "third_party/blink/public/mojom/devtools/devtools_agent.mojom-blink.h"
 #include "third_party/blink/renderer/core/core_export.h"
 #include "third_party/blink/renderer/platform/wtf/hash_map.h"
@@ -90,7 +91,8 @@ class CORE_EXPORT InspectorAgentState {
     // the session state starting with this prefix. SimpleField instances
     // just use prefix_key_ directly, MapField instances append a suffix.
     const blink::String prefix_key_;
-    InspectorSessionState* session_state_;
+    raw_ptr<InspectorSessionState, UnprotectedInRelease | DanglingUntriaged>
+        session_state_;
   };
 
   // A simple field with a default value, providing Get, Set, and Clear
@@ -266,7 +268,6 @@ class CORE_EXPORT InspectorAgentState {
   using String = SimpleField<blink::String>;
   using Bytes = SimpleField<std::vector<uint8_t>>;
   using BooleanMap = MapField<bool>;
-  using IntegerMap = MapField<int32_t>;
   using DoubleMap = MapField<double>;
   using StringMap = MapField<blink::String>;
 

@@ -7,12 +7,13 @@
 
 #import <UIKit/UIKit.h>
 
+#import "components/omnibox/browser/aim_eligibility_service.h"
 #import "ios/chrome/browser/fullscreen/model/fullscreen_browser_agent_observer_bridge.h"
 #import "ios/chrome/browser/fullscreen/ui_bundled/fullscreen_ui_element.h"
 #import "ios/chrome/browser/location_bar/ui_bundled/location_bar_mutator.h"
 
+@class BrowserLayoutState;
 @protocol LocationBarConsumer;
-class OmniboxPositionBrowserAgent;
 class PlaceholderService;
 class TemplateURLService;
 class UrlLoadingBrowserAgent;
@@ -22,10 +23,12 @@ class WebStateList;
 // LocationBarSteadyView. In practice, this is any state not relating to the
 // WebState.
 @interface LocationBarMediator
-    : NSObject <LocationBarMutator, FullscreenBrowserAgentObserving>
+    : NSObject <FullscreenBrowserAgentObserving, LocationBarMutator>
 
 - (instancetype)initWithURLLoadingBrowsingAgent:
                     (UrlLoadingBrowserAgent*)URLLoadingBrowserAgent
+                          aimEligibilityService:
+                              (AimEligibilityService*)aimEligibilityService
                                     isIncognito:(BOOL)isIncognito
     NS_DESIGNATED_INITIALIZER;
 - (instancetype)init NS_UNAVAILABLE;
@@ -45,9 +48,8 @@ class WebStateList;
 // state.
 @property(nonatomic, assign) WebStateList* webStateList;
 
-// The OmniboxPositionBrowserAgent used to query the position of the omnibox.
-@property(nonatomic, assign)
-    OmniboxPositionBrowserAgent* omniboxPositionBrowserAgent;
+// The BrowserLayoutState used to query the position of the omnibox.
+@property(nonatomic, weak) BrowserLayoutState* browserLayoutState;
 
 // Whether the location bar is the active one. Only set when `kChromeNextIa` is
 // enabled.

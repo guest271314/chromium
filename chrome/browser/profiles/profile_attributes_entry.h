@@ -46,8 +46,8 @@ enum class NameForm {
 // TODO(381117479): Currently we support two different OIDC enrollment flows:
 // 1. by sending both Auth and ID token through URL param and
 // 2. by sending encrypted user information in the auth header
-// Method 1 is completed but it will be deprecated once we completely implement,
-// test and rollout method 2.
+// Usage for method 1 has been removed and we will deprecate related support
+// code in a follow up.
 struct ProfileManagementOidcTokens {
   ProfileManagementOidcTokens();
   ProfileManagementOidcTokens(const std::string& auth_token,
@@ -240,6 +240,9 @@ class ProfileAttributesEntry {
   // the signed in account. Signed out profiles are ineligible.
   bool IsGlicEligible() const;
 
+  // Returns the cached AI subscription tier of this profile.
+  int GetAiSubscriptionTier() const;
+
   // |is_using_default| should be set to false for non default profile names.
   void SetLocalProfileName(const std::u16string& name, bool is_default_name);
   void SetEnterpriseProfileLabel(const std::u16string& name);
@@ -285,6 +288,8 @@ class ProfileAttributesEntry {
 
   void SetIsGlicEligible(bool value);
 
+  void SetAiSubscriptionTier(int tier);
+
   // Lock/Unlock the profile, should be called only if force-sign-in is enabled.
   void LockForceSigninProfile(bool is_lock);
 
@@ -302,6 +307,7 @@ class ProfileAttributesEntry {
   static const char kUseGAIAPictureKey[];
   static const char kAccountIdKey[];
   static const char kIsGlicEligible[];
+  static const char kAiSubscriptionKey[];
 
  private:
   friend class ProfileAttributesStorage;

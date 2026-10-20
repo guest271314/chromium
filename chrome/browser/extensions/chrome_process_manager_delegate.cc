@@ -14,7 +14,6 @@
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
-#include "chrome/common/chrome_switches.h"
 #include "components/user_manager/user_manager.h"
 #include "extensions/browser/extensions_browser_client.h"
 #include "extensions/browser/process_manager.h"
@@ -24,20 +23,21 @@
 
 #if BUILDFLAG(IS_CHROMEOS)
 #include "ash/constants/ash_switches.h"
-#include "chrome/browser/ash/profiles/profile_helper.h"
 #include "chrome/browser/extensions/component_extensions_allowlist/allowlist.h"
+#include "chromeos/ash/components/browser_context_helper/browser_context_types.h"
 #endif
 
 namespace extensions {
 
 ChromeProcessManagerDelegate::ChromeProcessManagerDelegate() {
-  DCHECK(g_browser_process);
+  CHECK(g_browser_process, base::NotFatalUntil::M161);
   // The profile manager can be null in unit tests.
   if (ProfileManager* profile_manager = g_browser_process->profile_manager()) {
     profile_manager_observation_.Observe(profile_manager);
     // All profiles must be observed, so make sure none have been created
     // that we missed.
-    DCHECK_EQ(0U, profile_manager->GetLoadedProfiles().size());
+    CHECK_EQ(0U, profile_manager->GetLoadedProfiles().size(),
+             base::NotFatalUntil::M161);
   }
   browser_collection_observation_.Observe(
       GlobalBrowserCollection::GetInstance());
@@ -69,13 +69,15 @@ bool ChromeProcessManagerDelegate::IsExtensionBackgroundPageAllowed(
 #if BUILDFLAG(IS_CHROMEOS)
   Profile* profile = Profile::FromBrowserContext(context);
 
-  const bool is_signin_profile = ash::ProfileHelper::IsSigninProfile(profile) &&
-                                 !profile->IsOffTheRecord();
+  const bool is_auth_screen_profile =
+      (ash::IsSigninBrowserContext(profile) ||
+       ash::IsLockScreenBrowserContext(profile)) &&
+      !profile->IsOffTheRecord();
 
-  if (is_signin_profile) {
+  if (is_auth_screen_profile) {
     // Check for flag.
     if (base::CommandLine::ForCurrentProcess()->HasSwitch(
-            ::switches::kDisableLoginScreenApps)) {
+            ash::switches::kDisableLoginScreenApps)) {
       return false;
     }
 
@@ -106,7 +108,7 @@ bool ChromeProcessManagerDelegate::DeferCreatingStartupBackgroundHosts(
 void ChromeProcessManagerDelegate::OnBrowserCreated(
     BrowserWindowInterface* browser) {
   Profile* profile = browser->GetProfile();
-  DCHECK(profile);
+  CHECK(profile, base::NotFatalUntil::M161);
 
   // Inform the process manager for this profile that the window is ready.
   // We continue to observe the notification in case browser windows open for

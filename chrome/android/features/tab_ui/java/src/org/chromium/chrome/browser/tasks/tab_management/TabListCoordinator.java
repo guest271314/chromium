@@ -6,15 +6,12 @@ package org.chromium.chrome.browser.tasks.tab_management;
 
 import static org.chromium.build.NullUtil.assumeNonNull;
 import static org.chromium.chrome.browser.tasks.tab_management.RecyclerViewScroller.smoothScrollToPosition;
-import static org.chromium.chrome.browser.tasks.tab_management.TabListModel.CardProperties.CARD_TYPE;
-import static org.chromium.chrome.browser.tasks.tab_management.TabListModel.CardProperties.ModelType.TAB;
 import static org.chromium.chrome.browser.tasks.tab_management.TabProperties.TAB_ID;
 
 import android.app.Activity;
 import android.graphics.PointF;
 import android.graphics.Rect;
 import android.util.Size;
-import android.view.InputDevice;
 import android.view.LayoutInflater;
 import android.view.MotionEvent;
 import android.view.View;
@@ -25,7 +22,6 @@ import android.widget.FrameLayout;
 import android.widget.ImageView;
 
 import androidx.annotation.DrawableRes;
-import androidx.annotation.IntDef;
 import androidx.annotation.StringRes;
 import androidx.recyclerview.widget.GridLayoutManager;
 import androidx.recyclerview.widget.LinearLayoutManager;
@@ -54,18 +50,21 @@ import org.chromium.chrome.browser.tab.TabId;
 import org.chromium.chrome.browser.tab.TabUtils;
 import org.chromium.chrome.browser.tab_ui.RecyclerViewPosition;
 import org.chromium.chrome.browser.tab_ui.TabListFaviconProvider;
+import org.chromium.chrome.browser.tab_ui.TabListMode;
 import org.chromium.chrome.browser.tab_ui.ThumbnailProvider;
+import org.chromium.chrome.browser.tabmodel.TabClosingSource;
 import org.chromium.chrome.browser.tabmodel.TabModel;
 import org.chromium.chrome.browser.tasks.tab_management.PriceMessageService.PriceWelcomeMessageProvider;
 import org.chromium.chrome.browser.tasks.tab_management.TabGridItemLongPressOrchestrator.OnLongPressTabItemEventListener;
 import org.chromium.chrome.browser.tasks.tab_management.TabGridItemTouchHelperCallback.OnDropOnArchivalMessageCardEventListener;
-import org.chromium.chrome.browser.tasks.tab_management.TabListMediator.GridCardOnClickListenerProvider;
+import org.chromium.chrome.browser.tasks.tab_management.TabGridItemTouchHelperCallback.UngroupBarStatusHandler;
 import org.chromium.chrome.browser.tasks.tab_management.TabListMediator.SelectionDelegateProvider;
-import org.chromium.chrome.browser.tasks.tab_management.TabListMediator.TabGridDialogHandler;
-import org.chromium.chrome.browser.tasks.tab_management.TabListModel.CardProperties.ModelType;
+import org.chromium.chrome.browser.tasks.tab_management.TabListMediator.TabListItemOnClickListenerProvider;
+import org.chromium.chrome.browser.tasks.tab_management.TabListMediator.TabListLayoutType;
 import org.chromium.chrome.browser.tasks.tab_management.TabProperties.TabActionState;
 import org.chromium.chrome.browser.tasks.tab_management.TabProperties.UiType;
 import org.chromium.chrome.browser.tasks.tab_management.TabSwitcherMessageManager.MessageType;
+import org.chromium.chrome.browser.tasks.tab_management.labels.TabListHighlighter;
 import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager;
 import org.chromium.chrome.browser.undo_tab_close_snackbar.UndoBarExplicitTrigger;
 import org.chromium.chrome.tab_ui.R;
@@ -81,8 +80,6 @@ import org.chromium.ui.modelutil.SimpleRecyclerViewAdapter;
 import org.chromium.ui.recyclerview.widget.ItemTouchHelper2;
 import org.chromium.ui.widget.ViewLookupCachingFrameLayout;
 
-import java.lang.annotation.Retention;
-import java.lang.annotation.RetentionPolicy;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -110,21 +107,6 @@ public class TabListCoordinator implements PriceWelcomeMessageProvider, DestroyO
         void onDragStart();
 
         void onDragEnd();
-    }
-
-    /**
-     * Modes of showing the list of tabs.
-     *
-     * <p>NOTE: STRIP and GRID modes will have height equal to that of the container view.
-     */
-    @IntDef({TabListMode.GRID, TabListMode.STRIP, TabListMode.NUM_ENTRIES})
-    @Retention(RetentionPolicy.SOURCE)
-    public @interface TabListMode {
-        int GRID = 0;
-        int STRIP = 1;
-        // int CAROUSEL_DEPRECATED = 2;
-        // int LIST_DEPRECATED = 3;
-        int NUM_ENTRIES = 4;
     }
 
     static final int GRID_LAYOUT_SPAN_COUNT_COMPACT = 2;
@@ -166,7 +148,7 @@ public class TabListCoordinator implements PriceWelcomeMessageProvider, DestroyO
     private @Nullable TabListEmptyCoordinator mTabListEmptyCoordinator;
     private boolean mIsEmptyViewInitialized;
     private @Nullable Runnable mAwaitingLayoutRunnable;
-    private int mAwaitingTabId = Tab.INVALID_TAB_ID;
+    private @Nullable PropertyModel mAwaitingModel;
     private @TabActionState int mTabActionState;
 
     /**
@@ -179,14 +161,13 @@ public class TabListCoordinator implements PriceWelcomeMessageProvider, DestroyO
      * @param modalDialogManager Used for managing the modal dialogs.
      * @param tabModelSupplier The supplier for the current tab model.
      * @param thumbnailProvider Provider to provide screenshot related details.
-     * @param actionOnRelatedTabs Whether tab-related actions should be operated on all related
-     *     tabs.
+     * @param layoutType The {@link TabListLayoutType} of the tab list.
      * @param dataSharingTabManager The service used to initiate data sharing.
-     * @param gridCardOnClickListenerProvider Provides click listeners for regular tabs and tab
+     * @param tabListItemOnClickListenerProvider Provides click listeners for regular tabs and tab
      *     group cards.
-     * @param dialogHandler A handler to handle requests about updating TabGridDialog.
+     * @param ungroupBarStatusHandler A handler to update the ungroup bar status.
      * @param initialTabActionState The initial {@link TabActionState} to use for the shown tabs.
-     *     Must always be CLOSABLE for TabListMode.STRIP.
+     *     Must always be CLOSABLE for TabListMode.BOTTOM_STRIP.
      * @param selectionDelegateProvider Provider to provide selected Tabs for a selectable tab list.
      *     It's NULL when selection is not possible.
      * @param priceWelcomeMessageControllerSupplier A supplier for a controller to show
@@ -196,7 +177,7 @@ public class TabListCoordinator implements PriceWelcomeMessageProvider, DestroyO
      * @param componentId The {@link TabComponentId} identifying the parent UI container hosting
      *     this tab list.
      * @param onModelTokenChange Callback to invoke whenever a model changes. Only currently
-     *     respected in TabListMode.STRIP mode.
+     *     respected in TabListMode.BOTTOM_STRIP mode.
      * @param emptyViewParent {@link ViewGroup} The root view of the empty state view.
      * @param emptyImageResId Drawable resource for empty state. @StringRes int
      *     emptyHeadingStringResId, @StringRes int emptySubheadingStringResId, @Nullable Runnable
@@ -212,10 +193,10 @@ public class TabListCoordinator implements PriceWelcomeMessageProvider, DestroyO
             ModalDialogManager modalDialogManager,
             NullableObservableSupplier<TabModel> tabModelSupplier,
             @Nullable ThumbnailProvider thumbnailProvider,
-            boolean actionOnRelatedTabs,
+            @TabListLayoutType int layoutType,
             @Nullable DataSharingTabManager dataSharingTabManager,
-            @Nullable GridCardOnClickListenerProvider gridCardOnClickListenerProvider,
-            @Nullable TabGridDialogHandler dialogHandler,
+            @Nullable TabListItemOnClickListenerProvider tabListItemOnClickListenerProvider,
+            @Nullable UngroupBarStatusHandler ungroupBarStatusHandler,
             @TabActionState int initialTabActionState,
             @Nullable SelectionDelegateProvider<TabListEditorItemSelectionId>
                     selectionDelegateProvider,
@@ -234,8 +215,7 @@ public class TabListCoordinator implements PriceWelcomeMessageProvider, DestroyO
             @Nullable TabSwitcherDragHandler tabSwitcherDragHandler,
             @Nullable UndoBarExplicitTrigger undoBarExplicitTrigger,
             @Nullable SnackbarManager snackbarManager,
-            int allowedSelectionCount,
-            boolean isSingleContextMode) {
+            int allowedSelectionCount) {
         mMode = mode;
         mTabActionState = initialTabActionState;
         mActivity = activity;
@@ -250,7 +230,7 @@ public class TabListCoordinator implements PriceWelcomeMessageProvider, DestroyO
                         assumeNonNull(model);
                         if (mMode == TabListMode.GRID) {
                             TabGridViewBinder.onViewRecycled(model, viewHolder.itemView);
-                        } else if (mMode == TabListMode.STRIP) {
+                        } else if (mMode == TabListMode.BOTTOM_STRIP) {
                             TabStripViewBinder.onViewRecycled(model, viewHolder.itemView);
                         }
                         super.onViewRecycled(viewHolder);
@@ -268,7 +248,7 @@ public class TabListCoordinator implements PriceWelcomeMessageProvider, DestroyO
         if (mMode == TabListMode.GRID) {
             mAdapter.registerType(
                     UiType.TAB,
-                    parent -> {
+                    _ -> {
                         ViewGroup group =
                                 (ViewGroup)
                                         LayoutInflater.from(activity)
@@ -284,7 +264,7 @@ public class TabListCoordinator implements PriceWelcomeMessageProvider, DestroyO
             // groups, an alternative view binder and model can be implemented.
             mAdapter.registerType(
                     UiType.TAB_GROUP,
-                    parent -> {
+                    _ -> {
                         ViewGroup group =
                                 (ViewGroup)
                                         LayoutInflater.from(activity)
@@ -302,7 +282,7 @@ public class TabListCoordinator implements PriceWelcomeMessageProvider, DestroyO
                         int holderItemViewType = holder.getItemViewType();
 
                         if (holderItemViewType != UiType.TAB
-                                || holderItemViewType != UiType.TAB_GROUP) {
+                                && holderItemViewType != UiType.TAB_GROUP) {
                             return;
                         }
 
@@ -313,14 +293,13 @@ public class TabListCoordinator implements PriceWelcomeMessageProvider, DestroyO
 
                         thumbnail.setImageDrawable(null);
                     };
-        } else if (mMode == TabListMode.STRIP) {
+        } else if (mMode == TabListMode.BOTTOM_STRIP) {
             mAdapter.registerType(
                     UiType.STRIP,
-                    parent -> {
-                        return (ViewGroup)
-                                LayoutInflater.from(activity)
-                                        .inflate(R.layout.tab_strip_item, parentView, false);
-                    },
+                    _ ->
+                            (ViewGroup)
+                                    LayoutInflater.from(activity)
+                                            .inflate(R.layout.tab_strip_item, parentView, false),
                     TabStripViewBinder::bind);
         } else {
             throw new IllegalArgumentException(
@@ -333,7 +312,7 @@ public class TabListCoordinator implements PriceWelcomeMessageProvider, DestroyO
         mTabListFaviconProvider =
                 new TabListFaviconProvider(
                         mActivity,
-                        mMode == TabListMode.STRIP,
+                        mMode,
                         R.dimen.default_favicon_corner_radius,
                         TabFavicon::getBitmap);
 
@@ -344,19 +323,41 @@ public class TabListCoordinator implements PriceWelcomeMessageProvider, DestroyO
                     }
                 };
 
+        @UiType int tabUiType = mMode == TabListMode.BOTTOM_STRIP ? UiType.STRIP : UiType.TAB;
+        boolean isGridMode = mMode == TabListMode.GRID;
+        @TabClosingSource int tabClosingSource = TabClosingSource.UNKNOWN;
+        if (componentId == TabComponentId.GRID_TAB_SWITCHER
+                || componentId == TabComponentId.TAB_GRID_DIALOG_IN_SWITCHER
+                || componentId == TabComponentId.TAB_LIST_EDITOR) {
+            tabClosingSource = TabClosingSource.GRID_TAB_SWITCHER;
+        } else if (componentId == TabComponentId.TAB_GRID_DIALOG_FROM_STRIP
+                || componentId == TabComponentId.TAB_STRIP) {
+            tabClosingSource = TabClosingSource.BOTTOM_TAB_GROUP_STRIP;
+        }
+        TabListConfig tabListConfig =
+                new TabListConfig.Builder(layoutType)
+                        .setTabUiType(tabUiType)
+                        .setSupportsTabGroups(layoutType != TabListLayoutType.FLAT)
+                        .setSupportsMessageCards(isGridMode)
+                        .setSupportsShrinkCloseAnimation(isGridMode)
+                        .setSupportsTabContextClick(true)
+                        .setRequiresThumbnailUpdateOnDeselect(
+                                layoutType == TabListLayoutType.GROUPED)
+                        .setTabClosingSource(tabClosingSource)
+                        .build();
+
         mMediator =
                 new TabListMediator(
                         activity,
                         mModelList,
-                        mMode,
                         modalDialogManager,
                         tabModelSupplier,
                         thumbnailProvider,
                         mTabListFaviconProvider,
-                        actionOnRelatedTabs,
                         selectionDelegateProvider,
-                        gridCardOnClickListenerProvider,
-                        dialogHandler,
+                        tabListItemOnClickListenerProvider,
+                        tabListConfig,
+                        ungroupBarStatusHandler,
                         priceWelcomeMessageControllerSupplier,
                         componentId,
                         initialTabActionState,
@@ -365,10 +366,9 @@ public class TabListCoordinator implements PriceWelcomeMessageProvider, DestroyO
                         undoBarExplicitTrigger,
                         snackbarManager,
                         allowedSelectionCount,
-                        isSingleContextMode,
                         onDragStateChangedListener);
 
-        try (TraceEvent e = TraceEvent.scoped("TabListCoordinator.setupRecyclerView")) {
+        try (TraceEvent _ = TraceEvent.scoped("TabListCoordinator.setupRecyclerView")) {
             // Ignore attachToParent initially. In some activitys multiple TabListCoordinators are
             // created with the same parentView. Using attachToParent and subsequently trying to
             // locate the View with findViewById could then resolve to the wrong view. Instead use
@@ -386,7 +386,8 @@ public class TabListCoordinator implements PriceWelcomeMessageProvider, DestroyO
 
             // GRID has a fixed size. STRIP has a fixed size only if DATA_SHARING is off.
             boolean hasFixedSize =
-                    mMode != TabListMode.STRIP || !TabUiUtils.isDataSharingFunctionalityEnabled();
+                    mMode != TabListMode.BOTTOM_STRIP
+                            || !TabUiUtils.isDataSharingFunctionalityEnabled();
             mRecyclerView.setAdapter(mAdapter);
             mRecyclerView.setHasFixedSize(hasFixedSize);
             mRecyclerView.setOnDragListener(mTabSwitcherDragHandler);
@@ -410,7 +411,7 @@ public class TabListCoordinator implements PriceWelcomeMessageProvider, DestroyO
                 Rect frame = new Rect();
                 mActivity.getWindow().getDecorView().getWindowVisibleDisplayFrame(frame);
                 updateGridCardLayout(frame.width());
-            } else if (mMode == TabListMode.STRIP) {
+            } else if (mMode == TabListMode.BOTTOM_STRIP) {
                 LinearLayoutManager layoutManager =
                         new LinearLayoutManager(activity, LinearLayoutManager.HORIZONTAL, false) {
                             @Override
@@ -426,9 +427,8 @@ public class TabListCoordinator implements PriceWelcomeMessageProvider, DestroyO
 
         if (mMode == TabListMode.GRID) {
             mListLayoutListener =
-                    (view, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom) ->
-                            updateGridCardLayout(right - left);
-        } else if (mMode == TabListMode.STRIP) {
+                    (_, left, _, right, _, _, _, _, _) -> updateGridCardLayout(right - left);
+        } else if (mMode == TabListMode.BOTTOM_STRIP) {
             assert onModelTokenChange != null;
             mTabStripSnapshotter =
                     new TabStripSnapshotter(onModelTokenChange, mModelList, mRecyclerView);
@@ -474,7 +474,8 @@ public class TabListCoordinator implements PriceWelcomeMessageProvider, DestroyO
                     }
 
                     @Override
-                    public boolean handleExternalDragEnd(float xPx, float yPx) {
+                    public boolean handleExternalDragEnd(
+                            float xPx, float yPx, boolean isOSNewWindowDrop) {
                         if (!mAllowDetachingTabsToCreateNewWindows) return false;
                         for (DragObserver observer : mDragObserverList) {
                             observer.onDragEnd();
@@ -509,7 +510,6 @@ public class TabListCoordinator implements PriceWelcomeMessageProvider, DestroyO
      */
     public void setOnLongPressTabItemEventListener(
             @Nullable OnLongPressTabItemEventListener onLongPressTabItemEventListener) {
-        assert mMediator != null;
         mMediator.setOnLongPressTabItemEventListener(onLongPressTabItemEventListener);
     }
 
@@ -518,7 +518,6 @@ public class TabListCoordinator implements PriceWelcomeMessageProvider, DestroyO
      */
     public void setOnDropOnArchivalMessageCardEventListener(
             @Nullable OnDropOnArchivalMessageCardEventListener listener) {
-        assert mMediator != null;
         mMediator.setOnDropOnArchivalMessageCardEventListener(listener);
     }
 
@@ -532,7 +531,6 @@ public class TabListCoordinator implements PriceWelcomeMessageProvider, DestroyO
 
     /** Sets the current {@link TabActionState} for the TabList. */
     public void setTabActionState(@TabActionState int tabActionState) {
-        assert mMediator != null;
         mTabActionState = tabActionState;
         configureRecyclerViewTouchHelpers();
         mMediator.setTabActionState(tabActionState);
@@ -551,28 +549,16 @@ public class TabListCoordinator implements PriceWelcomeMessageProvider, DestroyO
         mTabListItemSizeChangedObserverList.removeObserver(observer);
     }
 
-    Rect getThumbnailLocationOfCurrentTab() {
-        // TODO(crbug.com/40627995): calculate the location before the real one is ready.
-        Rect rect =
-                mRecyclerView.getRectOfCurrentThumbnail(
-                        mModelList.indexFromTabId(mMediator.selectedTabId()),
-                        mMediator.selectedTabId());
-        if (rect == null) return new Rect();
-        rect.offset(0, 0);
-        return rect;
-    }
-
     /**
      * @param tabId The tab ID to get a rect for.
      * @return a {@link Rect} for the tab's thumbnail (may be an empty rect if the tab is not
      *     found).
      */
     Rect getTabThumbnailRect(int tabId) {
-        int index = getIndexForTabIdWithRelatedTabs(tabId);
+        int index = getIndexFromTabId(tabId);
         if (index == TabModel.INVALID_TAB_INDEX) return new Rect();
 
-        return mRecyclerView.getRectOfTabThumbnail(
-                index, mModelList.get(index).model.get(TabProperties.TAB_ID));
+        return mRecyclerView.getRectOfTabThumbnail(index);
     }
 
     Size getThumbnailSize() {
@@ -587,24 +573,18 @@ public class TabListCoordinator implements PriceWelcomeMessageProvider, DestroyO
         // where the runnable will not be serviced downstream, dropping the runnable altogether is
         // safe.
         if (mAwaitingLayoutRunnable != null) {
-            Log.d(TAG, "Dropping AwaitingLayoutRunnable for " + mAwaitingTabId);
+            Log.d(TAG, "Dropping existing AwaitingLayoutRunnable for new tab %d", tabId);
             mAwaitingLayoutRunnable = null;
-            mAwaitingTabId = Tab.INVALID_TAB_ID;
+            mAwaitingModel = null;
         }
-        int index = getIndexForTabIdWithRelatedTabs(tabId);
+        int index = getIndexFromTabId(tabId);
         if (index == TabModel.INVALID_TAB_INDEX) {
             r.run();
             return;
         }
         mAwaitingLayoutRunnable = r;
-        mAwaitingTabId = mModelList.get(index).model.get(TabProperties.TAB_ID);
+        mAwaitingModel = mModelList.get(index).model;
         mRecyclerView.runOnNextLayout(this::checkAwaitingLayout);
-    }
-
-    Rect getRecyclerViewLocation() {
-        Rect recyclerViewRect = new Rect();
-        mRecyclerView.getGlobalVisibleRect(recyclerViewRect);
-        return recyclerViewRect;
     }
 
     /** Returns the position and offset of the first visible element in the list. */
@@ -622,7 +602,7 @@ public class TabListCoordinator implements PriceWelcomeMessageProvider, DestroyO
     void initWithNative(Profile originalProfile) {
         if (mIsInitialized) return;
 
-        try (TraceEvent e = TraceEvent.scoped("TabListCoordinator.initWithNative")) {
+        try (TraceEvent _ = TraceEvent.scoped("TabListCoordinator.initWithNative")) {
             mIsInitialized = true;
 
             assert !originalProfile.isOffTheRecord() : "Expecting a non-incognito profile.";
@@ -656,23 +636,7 @@ public class TabListCoordinator implements PriceWelcomeMessageProvider, DestroyO
                 // Detects if inputs are coming from a mouse or not. This is used to modify
                 // behaviors of the TabGridItemTouchHelperCallback.
                 mOnBeforeItemTouchHelperItemTouchListener =
-                        new OnItemTouchListener() {
-                            @Override
-                            public boolean onInterceptTouchEvent(
-                                    RecyclerView recyclerView, MotionEvent event) {
-                                callback.setIsMouseInputSource(
-                                        event.getSource() == InputDevice.SOURCE_MOUSE);
-                                return false;
-                            }
-
-                            @Override
-                            public void onTouchEvent(
-                                    RecyclerView recyclerView, MotionEvent event) {}
-
-                            @Override
-                            public void onRequestDisallowInterceptTouchEvent(
-                                    boolean disallowIntercept) {}
-                        };
+                        TabListItemTouchHelperCallback.createBeforeOnItemTouchListener(callback);
 
                 // Creates an instance of the ItemTouchHelper using TabGridItemTouchHelperCallback
                 // and attach a downstream mOnAfterItemTouchHelperItemTouchListener that watches for
@@ -685,45 +649,8 @@ public class TabListCoordinator implements PriceWelcomeMessageProvider, DestroyO
                 // See similar comments in TabGridItemTouchHelperCallback for more details.
                 mItemTouchHelper = new ItemTouchHelper2(callback, longPressHandler);
                 mOnAfterItemTouchHelperItemTouchListener =
-                        new OnItemTouchListener() {
-                            @Override
-                            public boolean onInterceptTouchEvent(
-                                    RecyclerView recyclerView, MotionEvent event) {
-                                // There can be an edge case when adding the block action logic
-                                // where minimal movement not picked up by the mItemTouchHelper
-                                // can result in attempting to block an action that did have a
-                                // DRAG event.
-                                // Actually, blocking the next event in this can result in an
-                                // unexpected event being consumed leading to an unexpected
-                                // sequence of MotionEvents.
-                                // This bad sequence can then result in invalid UI & click state for
-                                // downstream touch handlers. This additional check ensures that for
-                                // a given action, if a block is requested it must be the UP
-                                // motion that ends the input.
-                                if (callback.shouldBlockAction()
-                                        && (event.getActionMasked() == MotionEvent.ACTION_UP
-                                                || event.getActionMasked()
-                                                        == MotionEvent.ACTION_POINTER_UP)) {
-                                    return true;
-                                }
-                                return false;
-                            }
-
-                            @Override
-                            public void onTouchEvent(
-                                    RecyclerView recyclerView, MotionEvent event) {}
-
-                            @Override
-                            public void onRequestDisallowInterceptTouchEvent(
-                                    boolean disallowIntercept) {
-                                // If a child component does not allow this recyclerView and any
-                                // parent components to intercept touch events, shouldBlockAction
-                                // should be called anyways to reset the tracking boolean.
-                                // Otherwise, the original intercept method will do the check.
-                                if (!disallowIntercept) return;
-                                callback.shouldBlockAction();
-                            }
-                        };
+                        TabListItemTouchHelperCallback.createAfterOnItemTouchListener(callback);
+                callback.setRecyclerView(mRecyclerView);
             }
             mRecyclerView.addOnItemTouchListener(mOnBeforeItemTouchHelperItemTouchListener);
             mItemTouchHelper.attachToRecyclerView(mRecyclerView);
@@ -732,7 +659,7 @@ public class TabListCoordinator implements PriceWelcomeMessageProvider, DestroyO
             if (mOnBeforeItemTouchHelperItemTouchListener != null
                     && mItemTouchHelper != null
                     && mOnAfterItemTouchHelperItemTouchListener != null) {
-                mRecyclerView.addOnItemTouchListener(mOnBeforeItemTouchHelperItemTouchListener);
+                mRecyclerView.removeOnItemTouchListener(mOnBeforeItemTouchHelperItemTouchListener);
                 mItemTouchHelper.attachToRecyclerView(null);
                 mRecyclerView.removeOnItemTouchListener(mOnAfterItemTouchHelperItemTouchListener);
             }
@@ -761,7 +688,7 @@ public class TabListCoordinator implements PriceWelcomeMessageProvider, DestroyO
 
         final Size oldDefaultSize = mMediator.getDefaultGridCardSize();
         final Size newDefaultSize = new Size(cardWidthPx, cardHeightPx);
-        if (oldDefaultSize != null && newDefaultSize.equals(oldDefaultSize)) return;
+        if (newDefaultSize.equals(oldDefaultSize)) return;
 
         mMediator.setDefaultGridCardSize(newDefaultSize);
         for (int i = 0; i < mModelList.size(); i++) {
@@ -769,8 +696,7 @@ public class TabListCoordinator implements PriceWelcomeMessageProvider, DestroyO
             // Other GTS items might intentionally have different dimensions. For example, the
             // pre-selected tab group divider and the large price tracking message span the width of
             // the recycler view.
-            if (tabPropertyModel.get(CARD_TYPE) == ModelType.TAB
-                    || tabPropertyModel.get(CARD_TYPE) == ModelType.TAB_GROUP) {
+            if (TabProperties.isTabOrTabGroup(tabPropertyModel)) {
                 tabPropertyModel.set(
                         TabProperties.GRID_CARD_SIZE, new Size(cardWidthPx, cardHeightPx));
             }
@@ -797,11 +723,11 @@ public class TabListCoordinator implements PriceWelcomeMessageProvider, DestroyO
     }
 
     /**
-     * @see TabListMediator#resetWithListOfTabs(List, boolean)
+     * @see TabListMediator#resetWithListOfTabs(List, List, boolean)
      */
-    boolean resetWithListOfTabs(
+    void resetWithListOfTabs(
             @Nullable List<Tab> tabs, @Nullable List<String> tabGroupSyncIds, boolean quickMode) {
-        return mMediator.resetWithListOfTabs(tabs, tabGroupSyncIds, quickMode);
+        mMediator.resetWithListOfTabs(tabs, tabGroupSyncIds, quickMode);
     }
 
     void softCleanup() {
@@ -829,11 +755,6 @@ public class TabListCoordinator implements PriceWelcomeMessageProvider, DestroyO
         }
     }
 
-    void prepareTabSwitcherPaneView() {
-        registerLayoutChangeListener();
-        mRecyclerView.setupCustomItemAnimator();
-    }
-
     private void initializeEmptyStateView() {
         if (mIsEmptyViewInitialized) {
             return;
@@ -847,23 +768,23 @@ public class TabListCoordinator implements PriceWelcomeMessageProvider, DestroyO
         }
     }
 
-    public void prepareTabGridView() {
-        registerLayoutChangeListener();
-        mRecyclerView.setupCustomItemAnimator();
-    }
-
-    public void cleanupTabGridView() {
-        unregisterLayoutChangeListener();
-    }
-
-    public void destroyEmptyView() {
+    void destroyEmptyView() {
         if (mTabListEmptyCoordinator != null) {
             mTabListEmptyCoordinator.destroyEmptyView();
             mIsEmptyViewInitialized = false;
         }
     }
 
-    public void attachEmptyView() {
+    void prepareTabListView() {
+        registerLayoutChangeListener();
+        mRecyclerView.setupCustomItemAnimator();
+    }
+
+    void cleanupTabListView() {
+        unregisterLayoutChangeListener();
+    }
+
+    void attachEmptyView() {
         if (!mIsEmptyViewInitialized) {
             initializeEmptyStateView();
         }
@@ -873,10 +794,16 @@ public class TabListCoordinator implements PriceWelcomeMessageProvider, DestroyO
     }
 
     /** Returns the handler for showing notifications. */
-    public TabListNotificationHandler getTabListNotificationHandler() {
+    TabListNotificationHandler getTabListNotificationHandler() {
         return mMediator;
     }
 
+    /** Prepares the tab list for hiding by detaching observers before the exit animation. */
+    void prepareHiding() {
+        mMediator.prepareHiding();
+    }
+
+    /** Cleans up the tab list after hiding completes. */
     void postHiding() {
         unregisterLayoutChangeListener();
         mMediator.postHiding();
@@ -889,6 +816,7 @@ public class TabListCoordinator implements PriceWelcomeMessageProvider, DestroyO
     @Override
     public void onDestroy() {
         mMediator.destroy();
+        mModelList.clear();
         destroyEmptyView();
         if (mTabListEmptyCoordinator != null) {
             mTabListEmptyCoordinator.removeListObserver();
@@ -914,6 +842,8 @@ public class TabListCoordinator implements PriceWelcomeMessageProvider, DestroyO
             mTabSwitcherDragHandler.destroy();
         }
         mTabListFaviconProvider.destroy();
+        mAwaitingLayoutRunnable = null;
+        mAwaitingModel = null;
     }
 
     /**
@@ -974,11 +904,13 @@ public class TabListCoordinator implements PriceWelcomeMessageProvider, DestroyO
     // PriceWelcomeMessageService.PriceWelcomeMessageProvider implementation.
     @Override
     public int getTabIndexFromTabId(@TabId int tabId) {
-        return mModelList.indexFromTabId(tabId);
+        return mMediator.getIndexFromTabId(tabId);
     }
 
     @Override
     public void showPriceDropTooltip(int index) {
+        if (!mModelList.isValidIndex(index)) return;
+
         mModelList.get(index).model.set(TabProperties.SHOULD_SHOW_PRICE_DROP_TOOLTIP, true);
     }
 
@@ -988,12 +920,12 @@ public class TabListCoordinator implements PriceWelcomeMessageProvider, DestroyO
      *
      * @param tabIds A list of tab IDs to convert.
      */
-    public List<Integer> getCardIndexesFromTabIds(List<@TabId Integer> tabIds) {
+    List<Integer> getCardIndexesFromTabIds(List<@TabId Integer> tabIds) {
         Set<@TabId Integer> tabIdSet = new HashSet<>(tabIds);
         List<Integer> indexes = new ArrayList<>();
         for (int i = 0; i < mModelList.size(); i++) {
             PropertyModel model = mModelList.get(i).model;
-            if (model.get(CARD_TYPE) == TAB && tabIdSet.contains(model.get(TAB_ID))) {
+            if (TabProperties.isTabOrTabGroup(model) && tabIdSet.contains(model.get(TAB_ID))) {
                 indexes.add(i);
             }
         }
@@ -1001,13 +933,9 @@ public class TabListCoordinator implements PriceWelcomeMessageProvider, DestroyO
         return indexes;
     }
 
-    int getIndexOfNthTabCard(int index) {
-        return mModelList.indexOfNthTabCardOrInvalid(index);
-    }
-
-    /** Returns the filter index of a tab from its view index or TabList.INVALID_TAB_INDEX. */
-    int indexOfTabCardsOrInvalid(int index) {
-        return mModelList.indexOfTabCardsOrInvalid(index);
+    /** Returns the tab group ID of the tab group card at the given view index, or null. */
+    @Nullable Token getTabGroupIdForIndex(int index) {
+        return mModelList.getTabGroupIdForIndex(index);
     }
 
     int getTabListModelSize() {
@@ -1028,22 +956,18 @@ public class TabListCoordinator implements PriceWelcomeMessageProvider, DestroyO
 
     private void checkAwaitingLayout() {
         if (mAwaitingLayoutRunnable != null) {
+            int index = mModelList.indexFromModel(mAwaitingModel);
+            if (index == TabModel.INVALID_TAB_INDEX) return;
             SimpleRecyclerViewAdapter.ViewHolder holder =
                     (SimpleRecyclerViewAdapter.ViewHolder)
-                            mRecyclerView.findViewHolderForAdapterPosition(
-                                    mModelList.indexFromTabId(mAwaitingTabId));
+                            mRecyclerView.findViewHolderForAdapterPosition(index);
             if (holder == null) return;
-            assert assumeNonNull(holder.model).get(TabProperties.TAB_ID) == mAwaitingTabId;
+            assert assumeNonNull(holder.model) == mAwaitingModel;
             Runnable r = mAwaitingLayoutRunnable;
-            mAwaitingTabId = Tab.INVALID_TAB_ID;
+            mAwaitingModel = null;
             mAwaitingLayoutRunnable = null;
             r.run();
         }
-    }
-
-    /** Returns the index for the tab with related tabs. */
-    public int getIndexForTabIdWithRelatedTabs(int tabId) {
-        return mMediator.getIndexForTabIdWithRelatedTabs(tabId);
     }
 
     void showQuickDeleteAnimation(Runnable onAnimationEnd, List<Tab> tabs) {
@@ -1119,7 +1043,7 @@ public class TabListCoordinator implements PriceWelcomeMessageProvider, DestroyO
      *     tab.
      * @param onAnimationEnd Executed after the merge animation has finished.
      */
-    public void triggerMergeAnimation(
+    void triggerMergeAnimation(
             int targetIndex, List<Integer> visibleTabIndexes, Runnable onAnimationEnd) {
         Runnable wrappedOnAnimationEnd =
                 () -> {
@@ -1131,7 +1055,7 @@ public class TabListCoordinator implements PriceWelcomeMessageProvider, DestroyO
     }
 
     /** Returns the coordinator that manages the overflow menu for tab group cards in the GTS. */
-    public @Nullable TabListGroupMenuCoordinator getTabListGroupMenuCoordinator() {
+    @Nullable TabListGroupMenuCoordinator getTabListGroupMenuCoordinator() {
         return mMediator.getTabListGroupMenuCoordinator();
     }
 
@@ -1140,17 +1064,19 @@ public class TabListCoordinator implements PriceWelcomeMessageProvider, DestroyO
      *
      * @param cardIndex The card index to scroll to.
      */
-    public void scrollToPosition(int cardIndex) {
+    void scrollToPosition(int cardIndex) {
         mRecyclerView.setSmoothScrolling(true);
         smoothScrollToPosition(
                 mRecyclerView, cardIndex, () -> mRecyclerView.setSmoothScrolling(false));
     }
 
-    /**
-     * Maps a tab ID to an index. For use with {@link #addSpecialListItem(int, int, PropertyModel)}.
-     */
-    /* package */ int getIndexFromTabId(@TabId int tabId) {
-        return mModelList.indexFromTabId(tabId);
+    /** Maps a tab ID to an index in the model list. */
+    // TODO(crbug.com/517544602): Clean up the legacy fallback when removing the feature flag.
+    int getIndexFromTabId(@TabId int tabId) {
+        if (TabUiFeatureUtilities.isAndroidTabUiRefactorEnabled()) {
+            return mMediator.getIndexFromTabId(tabId);
+        }
+        return mMediator.getIndexForTabIdWithRelatedTabs(tabId);
     }
 
     /**
@@ -1182,9 +1108,11 @@ public class TabListCoordinator implements PriceWelcomeMessageProvider, DestroyO
                     if (isGroupTile && groupToken != null) {
                         res =
                                 mTabSwitcherDragHandler.startGroupDragAction(
-                                        view, groupToken, touchPoint);
+                                        view, groupToken, touchPoint, /* dragShadowView= */ null);
                     } else if (!isGroupTile) {
-                        res = mTabSwitcherDragHandler.startTabDragAction(view, tab, touchPoint);
+                        res =
+                                mTabSwitcherDragHandler.startTabDragAction(
+                                        view, tab, touchPoint, /* dragShadowView= */ null);
                     }
                 }
             }
@@ -1192,7 +1120,7 @@ public class TabListCoordinator implements PriceWelcomeMessageProvider, DestroyO
         }
     }
 
-    public TabListHighlighter getTabListHighlighter() {
+    TabListHighlighter getTabListHighlighter() {
         return mTabListHighlighter;
     }
 
@@ -1207,7 +1135,6 @@ public class TabListCoordinator implements PriceWelcomeMessageProvider, DestroyO
      * @param isVisible Whether the spinner should be visible.
      */
     void setThumbnailSpinnerVisibility(Tab tab, boolean isVisible) {
-        assert mMediator != null;
         mMediator.setThumbnailSpinnerVisibility(tab, isVisible);
     }
 }

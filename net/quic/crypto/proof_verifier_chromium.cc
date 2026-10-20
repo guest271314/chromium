@@ -17,7 +17,7 @@
 #include "base/metrics/histogram_macros.h"
 #include "base/strings/stringprintf.h"
 #include "base/time/time.h"
-#include "crypto/signature_verifier.h"
+#include "crypto/sign.h"
 #include "net/base/host_port_pair.h"
 #include "net/base/net_errors.h"
 #include "net/base/network_anonymization_key.h"
@@ -85,7 +85,7 @@ class ProofVerifierChromium::Job {
   quic::QuicAsyncStatus VerifyCertChain(
       const std::string& hostname,
       const uint16_t port,
-      const std::vector<std::string>& certs,
+      const std::vector<std::string_view>& certs,
       const std::string& ocsp_response,
       const std::string& cert_sct,
       std::string* error_details,
@@ -101,7 +101,7 @@ class ProofVerifierChromium::Job {
 
   // Convert |certs| to |cert_|(X509Certificate). Returns true if successful.
   bool GetX509Certificate(
-      const std::vector<string>& certs,
+      const std::vector<std::string_view>& certs,
       std::string* error_details,
       std::unique_ptr<quic::ProofVerifyDetails>* verify_details);
 
@@ -227,8 +227,11 @@ quic::QuicAsyncStatus ProofVerifierChromium::Job::VerifyProof(
   verify_details_ = std::make_unique<ProofVerifyDetailsChromium>();
 
   // Converts |certs| to |cert_|.
-  if (!GetX509Certificate(certs, error_details, verify_details))
+  if (!GetX509Certificate(
+          std::vector<std::string_view>(certs.begin(), certs.end()),
+          error_details, verify_details)) {
     return quic::QUIC_FAILURE;
+  }
 
   // We call VerifySignature first to avoid copying of server_config and
   // signature.
@@ -248,7 +251,7 @@ quic::QuicAsyncStatus ProofVerifierChromium::Job::VerifyProof(
 quic::QuicAsyncStatus ProofVerifierChromium::Job::VerifyCertChain(
     const string& hostname,
     const uint16_t port,
-    const std::vector<string>& certs,
+    const std::vector<std::string_view>& certs,
     const std::string& ocsp_response,
     const std::string& cert_sct,
     std::string* error_details,
@@ -277,7 +280,7 @@ quic::QuicAsyncStatus ProofVerifierChromium::Job::VerifyCertChain(
 }
 
 bool ProofVerifierChromium::Job::GetX509Certificate(
-    const std::vector<string>& certs,
+    const std::vector<std::string_view>& certs,
     std::string* error_details,
     std::unique_ptr<quic::ProofVerifyDetails>* verify_details) {
   if (certs.empty()) {
@@ -289,11 +292,7 @@ bool ProofVerifierChromium::Job::GetX509Certificate(
   }
 
   // Convert certs to X509Certificate.
-  std::vector<std::string_view> cert_pieces(certs.size());
-  for (unsigned i = 0; i < certs.size(); i++) {
-    cert_pieces[i] = std::string_view(certs[i]);
-  }
-  cert_ = X509Certificate::CreateFromDERCertChain(cert_pieces);
+  cert_ = X509Certificate::CreateFromDERCertChain(certs);
   if (!cert_.get()) {
     *error_details = "Failed to create certificate chain";
     DLOG(WARNING) << *error_details;
@@ -457,13 +456,13 @@ bool ProofVerifierChromium::Job::VerifySignature(
   size_t size_bits;
   X509Certificate::PublicKeyType type;
   X509Certificate::GetPublicKeyInfo(cert_->cert_buffer(), &size_bits, &type);
-  crypto::SignatureVerifier::SignatureAlgorithm algorithm;
+  crypto::sign::SignatureKind algorithm;
   switch (type) {
     case X509Certificate::kPublicKeyTypeRSA:
-      algorithm = crypto::SignatureVerifier::RSA_PSS_SHA256;
+      algorithm = crypto::sign::RSA_PSS_SHA256;
       break;
     case X509Certificate::kPublicKeyTypeECDSA:
-      algorithm = crypto::SignatureVerifier::ECDSA_SHA256;
+      algorithm = crypto::sign::ECDSA_SHA256;
       break;
     default:
       LOG(ERROR) << "Unsupported public key type " << type;
@@ -475,22 +474,22 @@ bool ProofVerifierChromium::Job::VerifySignature(
     return false;
   }
 
-  crypto::SignatureVerifier verifier;
-  if (!x509_util::SignatureVerifierInitWithCertificate(
-          &verifier, algorithm, base::as_byte_span(signature),
-          cert_->cert_buffer())) {
-    DLOG(WARNING) << "SignatureVerifierInitWithCertificate failed";
+  std::optional<crypto::sign::Verifier> verifier =
+      x509_util::CreateSignatureVerifierWithCertificate(
+          algorithm, base::as_byte_span(signature), cert_->cert_buffer());
+  if (!verifier) {
+    DLOG(WARNING) << "CreateSignatureVerifierWithCertificate failed";
     return false;
   }
 
-  verifier.VerifyUpdate(base::as_byte_span(quic::kProofSignatureLabel));
+  verifier->Update(base::as_byte_span(quic::kProofSignatureLabel));
   uint32_t len = chlo_hash.length();
-  verifier.VerifyUpdate(base::byte_span_from_ref(len));
-  verifier.VerifyUpdate(base::as_byte_span(chlo_hash));
-  verifier.VerifyUpdate(base::as_byte_span(signed_data));
+  verifier->Update(base::byte_span_from_ref(len));
+  verifier->Update(base::as_byte_span(chlo_hash));
+  verifier->Update(base::as_byte_span(signed_data));
 
-  if (!verifier.VerifyFinal()) {
-    DLOG(WARNING) << "VerifyFinal failed";
+  if (!verifier->Finish()) {
+    DLOG(WARNING) << "verifier->Finish() failed";
     return false;
   }
 
@@ -551,7 +550,7 @@ quic::QuicAsyncStatus ProofVerifierChromium::VerifyProof(
 quic::QuicAsyncStatus ProofVerifierChromium::VerifyCertChain(
     const std::string& hostname,
     const uint16_t port,
-    const std::vector<std::string>& certs,
+    const std::vector<std::string_view>& certs,
     const std::string& ocsp_response,
     const std::string& cert_sct,
     const quic::ProofVerifyContext* verify_context,

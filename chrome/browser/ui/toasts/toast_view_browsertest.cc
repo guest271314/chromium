@@ -19,6 +19,8 @@
 #include "ui/gfx/image/image_unittest_util.h"
 #include "ui/menus/simple_menu_model.h"
 #include "ui/strings/grit/ui_strings.h"
+#include "ui/views/bubble/bubble_dialog_delegate_view.h"
+#include "ui/views/controls/button/md_text_button.h"
 #include "ui/views/window/dialog_client_view.h"
 
 namespace {
@@ -170,9 +172,11 @@ IN_PROC_BROWSER_TEST_F(ToastViewTest, InvokeUi_ShrinkToFitWindow) {
                               views::BubbleBorder::kShadowBlur;
   EXPECT_GT(bubble->GetPreferredSize().width(), bubble->width());
   EXPECT_EQ(bubble->GetBoundsInScreen().x(),
-            anchor_view()->GetBoundsInScreen().x() + expected_margin);
+            anchor_view()->GetWidget()->GetWindowBoundsInScreen().x() +
+                expected_margin);
   EXPECT_EQ(bubble->GetBoundsInScreen().right(),
-            anchor_view()->GetBoundsInScreen().right() - expected_margin);
+            anchor_view()->GetWidget()->GetWindowBoundsInScreen().right() -
+                expected_margin);
   DismissUi();
 }
 

@@ -111,8 +111,13 @@ class PasswordSuggestionGenerator {
   // shown for the current context.
   std::optional<autofill::Suggestion>
   GetWebauthnSignInWithAnotherDeviceSuggestion() const;
+  // Returns a `kWebauthnPasskeyQrCode` suggestion if it should be shown on the
+  // official Chrome Sign-in page guarded by a feature flag.
+  std::optional<autofill::Suggestion> GetWebauthnInlineQrCodeSuggestion() const;
 
  private:
+  bool IsLastCommittedUrlCryptographic() const;
+
   // If there are any fillable suggestions already in the list, append a "Manage
   // passwords" entry (and a preceding separator) to `suggestions`. If Passkeys
   // may assist with the focused field, adds the entry point to the hybrid

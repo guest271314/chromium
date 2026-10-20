@@ -5,6 +5,7 @@
 #include <memory>
 #include <optional>
 
+#include "base/command_line.h"
 #include "base/strings/strcat.h"
 #include "base/strings/stringprintf.h"
 #include "base/task/single_thread_task_runner.h"
@@ -14,7 +15,7 @@
 #include "chrome/browser/media/webrtc/media_stream_device_permission_context.h"
 #include "chrome/browser/permissions/permission_manager_factory.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/permissions/embedded_permission_prompt_content_scrim_view.h"
 #include "chrome/test/base/in_process_browser_test.h"
@@ -26,17 +27,18 @@
 #include "components/permissions/permission_request_manager.h"
 #include "components/permissions/test/mock_permission_request.h"
 #include "components/permissions/test/permission_request_observer.h"
+#include "components/ukm/test_ukm_recorder.h"
 #include "components/zoom/zoom_controller.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "content/public/test/render_frame_host_test_support.h"
 #include "content/public/test/test_devtools_protocol_client.h"
+#include "media/base/media_switches.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
+#include "services/metrics/public/cpp/ukm_builders.h"
 #include "third_party/blink/public/common/features_generated.h"
 #include "third_party/blink/public/mojom/permissions/permission.mojom-shared.h"
-#include "components/ukm/test_ukm_recorder.h"
-#include "services/metrics/public/cpp/ukm_builders.h"
 #include "ui/events/base_event_utils.h"
 #include "ui/views/widget/any_widget_observer.h"
 
@@ -64,6 +66,11 @@ class PermissionElementBrowserTestBase
 
   ~PermissionElementBrowserTestBase() override = default;
 
+  void SetUpCommandLine(base::CommandLine* command_line) override {
+    InProcessBrowserTest::SetUpCommandLine(command_line);
+    command_line->AppendSwitch(switches::kUseFakeDeviceForMediaStream);
+  }
+
   void SetUpOnMainThread() override {
     // Open and reset DevTools. This is needed to be able to observer the
     // devtools issues being raised.
@@ -83,7 +90,7 @@ class PermissionElementBrowserTestBase
   void TearDownOnMainThread() override { DetachProtocolClient(); }
 
   content::WebContents* web_contents() {
-    return browser()->tab_strip_model()->GetWebContentsAt(0);
+    return browser()->GetTabStripModel()->GetWebContentsAt(0);
   }
 
   void WaitForPromptActionEvent(const std::string& id) {
@@ -132,7 +139,6 @@ class PermissionElementBrowserTestBase
         position);
 
     permission_request_manager->Dismiss(/*prompt_options=*/std::monostate());
-    permission_request_manager->FinalizeCurrentRequests();
   }
 
   void WaitForDevtoolsIssue(const std::string& expected_issue_type) {
@@ -182,13 +188,23 @@ class PermissionElementBrowserTest : public PermissionElementBrowserTestBase {
     feature_list_.InitWithFeatures(
         {blink::features::kGeolocationElement,
          blink::features::kUserMediaElement,
+         blink::features::kUserMediaElementLegacy,
          blink::features::kBypassPepcSecurityForTesting},
         {permissions::features::kPermissionElementPromptPositioning});
   }
 };
 
+// TODO(crbug.com/532784506): Re-enable this test on Mac.
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_MAC)
+#define MAYBE_RequestPermissionDispatchResolveEvent \
+  DISABLED_RequestPermissionDispatchResolveEvent
+#else
+#define MAYBE_RequestPermissionDispatchResolveEvent \
+  RequestPermissionDispatchResolveEvent
+#endif
+
 IN_PROC_BROWSER_TEST_F(PermissionElementBrowserTest,
-                       RequestPermissionDispatchResolveEvent) {
+                       MAYBE_RequestPermissionDispatchResolveEvent) {
   permissions::PermissionRequestManager::AutoResponseType responses[] = {
       permissions::PermissionRequestManager::AutoResponseType::ACCEPT_ALL,
       permissions::PermissionRequestManager::AutoResponseType::ACCEPT_ONCE,
@@ -301,7 +317,7 @@ IN_PROC_BROWSER_TEST_F(PermissionElementBrowserTest,
       web_contents()->GetPrimaryMainFrame());
   MediaStreamDevicePermissionContext* camera_permission_context =
       static_cast<MediaStreamDevicePermissionContext*>(
-          PermissionManagerFactory::GetForProfile(browser()->profile())
+          PermissionManagerFactory::GetForProfile(browser()->GetProfile())
               ->GetPermissionContextForTesting(
                   ContentSettingsType::MEDIASTREAM_CAMERA));
   camera_permission_context->set_can_request_device_permission_for_test(
@@ -394,12 +410,12 @@ IN_PROC_BROWSER_TEST_F(PermissionElementBrowserTest, TabSwitchingClosesPrompt) {
   observer.Wait();
 
   std::unique_ptr<content::WebContents> new_tab = content::WebContents::Create(
-      content::WebContents::CreateParams(browser()->profile()));
-  browser()->tab_strip_model()->AppendWebContents(std::move(new_tab),
-                                                  /*foreground*/ false);
+      content::WebContents::CreateParams(browser()->GetProfile()));
+  browser()->GetTabStripModel()->AppendWebContents(std::move(new_tab),
+                                                   /*foreground*/ false);
 
   ExpectNoEvents();
-  browser()->tab_strip_model()->ActivateTabAt(1);
+  browser()->GetTabStripModel()->ActivateTabAt(1);
   WaitForDismissEvent("camera");
 }
 
@@ -422,7 +438,6 @@ IN_PROC_BROWSER_TEST_F(PermissionElementBrowserTest,
   auto* permission_request_manager =
       permissions::PermissionRequestManager::FromWebContents(web_contents());
   permission_request_manager->Dismiss(/*prompt_options=*/std::monostate());
-  permission_request_manager->FinalizeCurrentRequests();
   WaitForDismissEvent("microphone");
 
   permission_request_manager->set_auto_response_for_test(
@@ -449,7 +464,8 @@ class PermissionElementWithSecurityBrowserTest
  public:
   PermissionElementWithSecurityBrowserTest() {
     feature_list_.InitWithFeatures({blink::features::kGeolocationElement,
-                                    blink::features::kUserMediaElement},
+                                    blink::features::kUserMediaElement,
+                                    blink::features::kUserMediaElementLegacy},
                                    {});
   }
 };
@@ -503,6 +519,7 @@ class PermissionElementStandardizedBrowserZoomTest
       feature_list_.InitWithFeatures(
           {blink::features::kGeolocationElement,
            blink::features::kUserMediaElement,
+           blink::features::kUserMediaElementLegacy,
            blink::features::kBypassPepcSecurityForTesting,
            blink::features::kStandardizedBrowserZoom},
           {});
@@ -510,6 +527,7 @@ class PermissionElementStandardizedBrowserZoomTest
       feature_list_.InitWithFeatures(
           {blink::features::kGeolocationElement,
            blink::features::kUserMediaElement,
+           blink::features::kUserMediaElementLegacy,
            blink::features::kBypassPepcSecurityForTesting},
           {blink::features::kStandardizedBrowserZoom});
     }
@@ -555,6 +573,7 @@ class PermissionElementNearElementBrowserTest
     feature_list_.InitWithFeaturesAndParameters(
         {{blink::features::kGeolocationElement, {}},
          {blink::features::kUserMediaElement, {}},
+         {blink::features::kUserMediaElementLegacy, {}},
          {blink::features::kBypassPepcSecurityForTesting, {}},
          {permissions::features::kPermissionElementPromptPositioning,
           {{"PermissionElementPromptPositioningParam", "near_element"}}}},
@@ -569,6 +588,7 @@ class PermissionElementWindowMiddleBrowserTest
     feature_list_.InitWithFeaturesAndParameters(
         {{blink::features::kGeolocationElement, {}},
          {blink::features::kUserMediaElement, {}},
+         {blink::features::kUserMediaElementLegacy, {}},
          {blink::features::kBypassPepcSecurityForTesting, {}},
          {permissions::features::kPermissionElementPromptPositioning,
           {{"PermissionElementPromptPositioningParam", "window_middle"}}}},
@@ -583,6 +603,7 @@ class PermissionElementLegacyPromptBrowserTest
     feature_list_.InitWithFeaturesAndParameters(
         {{blink::features::kGeolocationElement, {}},
          {blink::features::kUserMediaElement, {}},
+         {blink::features::kUserMediaElementLegacy, {}},
          {blink::features::kBypassPepcSecurityForTesting, {}},
          {permissions::features::kPermissionElementPromptPositioning,
           {{"PermissionElementPromptPositioningParam", "legacy_prompt"}}}},
@@ -622,6 +643,7 @@ class MiscellaneousElementBrowserTest
     feature_list_.InitWithFeatures(
         {blink::features::kGeolocationElement,
          blink::features::kUserMediaElement,
+         blink::features::kUserMediaElementLegacy,
          blink::features::kBypassPepcSecurityForTesting,
          blink::features::kInstallElement},
         {permissions::features::kPermissionElementPromptPositioning});
@@ -783,7 +805,7 @@ IN_PROC_BROWSER_TEST_F(MiscellaneousElementBrowserTest, CountMetrics) {
       {{blink::mojom::WebFeature::kHTMLPermissionElement, 0}});
 
   // UKM metrics are recorded when the page is unloaded or on a new navigation.
-  browser()->tab_strip_model()->CloseAllTabs();
+  browser()->GetTabStripModel()->CloseAllTabs();
   base::RunLoop().RunUntilIdle();
 
   auto entries = ukm_recorder.GetEntriesByName(
@@ -833,6 +855,7 @@ IN_PROC_BROWSER_TEST_F(MiscellaneousElementBrowserTest, InvalidStyleMetrics) {
 IN_PROC_BROWSER_TEST_F(MiscellaneousElementBrowserTest,
                        CapabilityElementAttributesCountMetrics) {
   WebFeatureHistogramTester histogram_tester;
+  ukm::TestAutoSetUkmRecorder ukm_recorder;
   NavigateToURL("/permissions/capability_element_attributes.html");
 
   // Access all attributes of InPagePermissionMixin and verify they are counted.
@@ -861,4 +884,45 @@ IN_PROC_BROWSER_TEST_F(MiscellaneousElementBrowserTest,
       {blink::mojom::WebFeature::kCapabilityElementOnPromptDismiss, 1},
       {blink::mojom::WebFeature::kCapabilityElementOnValidationStatusChange, 1},
   });
+
+  // UKM metrics are recorded when the page is unloaded or on a new navigation.
+  browser()->GetTabStripModel()->CloseAllTabs();
+  base::RunLoop().RunUntilIdle();
+
+  auto entries = ukm_recorder.GetEntriesByName(
+      ukm::builders::Blink_UseCounter::kEntryName);
+  std::vector<int64_t> ukm_features;
+  for (const ukm::mojom::UkmEntry* entry : entries) {
+    const auto* metric = ukm_recorder.GetEntryMetric(
+        entry, ukm::builders::Blink_UseCounter::kFeatureName);
+    if (metric) {
+      ukm_features.push_back(*metric);
+    }
+  }
+
+  EXPECT_THAT(ukm_features,
+              testing::Contains(static_cast<int64_t>(
+                  blink::mojom::WebFeature::kCapabilityElementIsValid)));
+  EXPECT_THAT(ukm_features,
+              testing::Contains(static_cast<int64_t>(
+                  blink::mojom::WebFeature::kCapabilityElementInvalidReason)));
+  EXPECT_THAT(ukm_features,
+              testing::Contains(static_cast<int64_t>(
+                  blink::mojom::WebFeature::
+                      kCapabilityElementInitialPermissionStatus)));
+  EXPECT_THAT(
+      ukm_features,
+      testing::Contains(static_cast<int64_t>(
+          blink::mojom::WebFeature::kCapabilityElementPermissionStatus)));
+  EXPECT_THAT(ukm_features,
+              testing::Contains(static_cast<int64_t>(
+                  blink::mojom::WebFeature::kCapabilityElementOnPromptAction)));
+  EXPECT_THAT(
+      ukm_features,
+      testing::Contains(static_cast<int64_t>(
+          blink::mojom::WebFeature::kCapabilityElementOnPromptDismiss)));
+  EXPECT_THAT(ukm_features,
+              testing::Contains(static_cast<int64_t>(
+                  blink::mojom::WebFeature::
+                      kCapabilityElementOnValidationStatusChange)));
 }

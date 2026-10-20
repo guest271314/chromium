@@ -4,9 +4,11 @@
 
 #include "third_party/blink/renderer/modules/canvas/canvas2d/base_rendering_context_2d.h"
 
+#include <memory>
 #include <optional>
 #include <string>
 
+#include "base/byte_size.h"
 #include "base/memory/scoped_refptr.h"
 #include "cc/paint/paint_canvas.h"
 #include "cc/paint/paint_flags.h"
@@ -16,6 +18,7 @@
 #include "cc/test/paint_op_matchers.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/platform/scheduler/test/renderer_scheduler_test_support.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_binding_for_testing.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_begin_layer_options.h"
@@ -23,8 +26,10 @@
 #include "third_party/blink/renderer/core/css/css_property_value_set.h"
 #include "third_party/blink/renderer/core/css/parser/css_parser.h"
 #include "third_party/blink/renderer/core/css/resolver/font_style_resolver.h"
+#include "third_party/blink/renderer/core/dom/document.h"
 #include "third_party/blink/renderer/core/execution_context/execution_context.h"
 #include "third_party/blink/renderer/core/geometry/dom_matrix.h"
+#include "third_party/blink/renderer/core/html/canvas/canvas_context_creation_attributes_core.h"
 #include "third_party/blink/renderer/core/html/canvas/canvas_performance_monitor.h"
 #include "third_party/blink/renderer/core/html/canvas/canvas_rendering_context.h"
 #include "third_party/blink/renderer/core/html/canvas/canvas_rendering_context_host.h"
@@ -44,6 +49,7 @@
 #include "third_party/blink/renderer/platform/graphics/image_orientation.h"
 #include "third_party/blink/renderer/platform/graphics/memory_managed_paint_recorder.h"
 #include "third_party/blink/renderer/platform/graphics/paint/paint_filter.h"
+#include "third_party/blink/renderer/platform/graphics/static_bitmap_image.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
 #include "third_party/blink/renderer/platform/heap/member.h"
 #include "third_party/blink/renderer/platform/testing/runtime_enabled_features_test_helpers.h"
@@ -53,6 +59,7 @@
 #include "third_party/skia/include/core/SkRefCnt.h"
 #include "third_party/skia/include/core/SkTileMode.h"
 #include "ui/gfx/geometry/size.h"
+#include "ui/gfx/hdr_metadata.h"
 
 namespace blink {
 
@@ -73,20 +80,23 @@ using ::cc::SaveLayerOp;
 // just gives a definition to all pure virtual method, making it instantiable.
 class TestRenderingContext2D final
     : public GarbageCollected<TestRenderingContext2D>,
-      public BaseRenderingContext2D,
-      public MemoryManagedPaintRecorder::Client {
+      public BaseRenderingContext2D {
  public:
-  explicit TestRenderingContext2D(V8TestingScope& scope)
+  explicit TestRenderingContext2D(
+      V8TestingScope& scope,
+      const CanvasContextCreationAttributesCore& attrs =
+          CanvasContextCreationAttributesCore())
       : BaseRenderingContext2D(
             MakeGarbageCollected<HTMLCanvasElement>(scope.GetDocument()),
-            CanvasContextCreationAttributesCore(),
+            attrs,
             scheduler::GetSingleThreadTaskRunnerForTesting()),
-        execution_context_(scope.GetExecutionContext()),
-        recorder_(gfx::Size(Width(), Height()), this) {}
+        execution_context_(scope.GetExecutionContext()) {
+    ConfigureRecorder(gfx::Size(Width(), Height()), /*is_graphite=*/false);
+  }
   ~TestRenderingContext2D() override = default;
 
   // Returns the content of the paint recorder, leaving it empty.
-  cc::PaintRecord FlushRecorder() { return recorder_.ReleaseMainRecording(); }
+  cc::PaintRecord FlushRecorder() { return Recorder()->ReleaseMainRecording(); }
 
   bool OriginClean() const override { return true; }
   void SetOriginTainted() override {}
@@ -94,7 +104,7 @@ class TestRenderingContext2D final
   int Width() const override { return 300; }
   int Height() const override { return 300; }
 
-  bool CanCreateResourceProvider() override { return false; }
+  bool CanCreateBacking() override { return false; }
 
   RespectImageOrientationEnum RespectImageOrientation() const override {
     return kRespectImageOrientation;
@@ -103,18 +113,12 @@ class TestRenderingContext2D final
   Color GetCurrentColor() const override { return Color::kBlack; }
 
   MemoryManagedPaintCanvas* GetOrCreatePaintCanvas() override {
-    // Context child classes uses `GetOrCreatePaintCanvas` to check for context
-    // loss.
-    if (isContextLost()) [[unlikely]] {
-      return nullptr;
-    }
-
-    return &recorder_.getRecordingCanvas();
+    return GetPaintCanvas();
   }
-  using BaseRenderingContext2D::GetPaintCanvas;  // Pull the non-const overload.
-  const MemoryManagedPaintCanvas* GetPaintCanvas() const override {
-    return &recorder_.getRecordingCanvas();
-  }
+  using BaseRenderingContext2D::ConfigureRecorder;
+  using BaseRenderingContext2D::CreateSoftwareSurface;
+  using BaseRenderingContext2D::FlushIfRecordingLimitExceeded;
+  using BaseRenderingContext2D::Snapshot;
   void WillDraw(const gfx::Rect& dirty_rect,
                 CanvasPerformanceMonitor::DrawType) override {}
 
@@ -132,6 +136,8 @@ class TestRenderingContext2D final
     context_lost_mode_ = context_lost_mode;
   }
 
+  void SetIsPaintable(bool is_paintable) { is_paintable_ = is_paintable; }
+
   void Trace(Visitor* visitor) const override {
     visitor->Trace(execution_context_);
     BaseRenderingContext2D::Trace(visitor);
@@ -147,14 +153,9 @@ class TestRenderingContext2D final
       RestoreMatrixClipStack(canvas);
     }
   }
-  void RecordingCleared() override {}
 
   std::optional<cc::PaintRecord> FlushCanvas(FlushReason) override {
-    return recorder_.ReleaseMainRecording();
-  }
-
-  const MemoryManagedPaintRecorder* Recorder() const override {
-    return &recorder_;
+    return Recorder()->ReleaseMainRecording();
   }
 
   bool ResolveFont(const String& new_font) override {
@@ -175,28 +176,24 @@ class TestRenderingContext2D final
     return true;
   }
 
-  CanvasResourceProvider* GetResourceProvider() const override {
-    return nullptr;
-  }
+  bool InitializeBacking() override { return false; }
 
-  CanvasResourceProvider* GetOrCreateResourceProvider() override {
-    return nullptr;
-  }
+  bool Is2DCanvasAccelerated() const override { return false; }
 
   // Implementing pure virtual functions from CanvasRenderingContext.
   scoped_refptr<StaticBitmapImage> GetImage() override { return nullptr; }
-  std::unique_ptr<CanvasResourceProvider> ReplaceResourceProvider(
-      std::unique_ptr<CanvasResourceProvider>) override {
+  scoped_refptr<StaticBitmapImage> PaintRenderingResultsToSnapshot(
+      SourceDrawingBuffer) override {
     return nullptr;
   }
 
   bool IsComposited() const override { return false; }
-  bool IsPaintable() const override { return true; }
+  bool IsPaintable() const override { return is_paintable_; }
   void Stop() override {}
 
   Member<ExecutionContext> execution_context_;
   bool restore_matrix_enabled_ = true;
-  MemoryManagedPaintRecorder recorder_;
+  bool is_paintable_ = true;
 };
 
 BeginLayerOptions* FilterOption(blink::V8TestingScope& scope,
@@ -260,6 +257,120 @@ TEST(BaseRenderingContextLayersCSSTests,
   EXPECT_THAT(context->FlushRecorder(),
               RecordedOpsAre(DrawRecordOpEq(PaintOpEq<SaveLayerOp>(flags),
                                             PaintOpEq<RestoreOp>())));
+}
+
+TEST(BaseRenderingContext2DTest, GetPaintCanvasRequiresIsPaintable) {
+  test::TaskEnvironment task_environment;
+  V8TestingScope scope;
+  auto* context = MakeGarbageCollected<TestRenderingContext2D>(scope);
+  ASSERT_NE(context->Recorder(), nullptr);
+  EXPECT_NE(context->GetPaintCanvas(), nullptr);
+
+  context->SetIsPaintable(false);
+  EXPECT_NE(context->Recorder(), nullptr);
+  EXPECT_EQ(context->GetPaintCanvas(), nullptr);
+
+  context->SetIsPaintable(true);
+  EXPECT_NE(context->GetPaintCanvas(), nullptr);
+}
+
+TEST(BaseRenderingContext2DTest, RecordingLimits) {
+  test::TaskEnvironment task_environment;
+  V8TestingScope scope;
+  auto* context = MakeGarbageCollected<TestRenderingContext2D>(scope);
+  const MemoryManagedPaintRecorder* initial_recorder = context->Recorder();
+  EXPECT_NE(initial_recorder, nullptr);
+  EXPECT_EQ(context->max_recorded_op_bytes(),
+            static_cast<size_t>(features::kMaxRecordedOpKB.Get()) * 1024);
+  EXPECT_EQ(context->max_pinned_image_bytes(),
+            static_cast<size_t>(features::kMaxPinnedImageKB.Get()) * 1024);
+
+  context->ConfigureRecorder(gfx::Size(300, 300), /*is_graphite=*/true);
+  EXPECT_EQ(context->Recorder(), initial_recorder);
+  EXPECT_EQ(
+      context->max_recorded_op_bytes(),
+      static_cast<size_t>(features::kMaxRecordedOpGraphiteKB.Get()) * 1024);
+  EXPECT_EQ(context->max_pinned_image_bytes(),
+            static_cast<size_t>(features::kMaxPinnedImageKB.Get()) * 1024);
+
+  context->ConfigureRecorder(gfx::Size(300, 300), /*is_graphite=*/false);
+  EXPECT_EQ(context->Recorder(), initial_recorder);
+  EXPECT_EQ(context->max_recorded_op_bytes(),
+            static_cast<size_t>(features::kMaxRecordedOpKB.Get()) * 1024);
+}
+
+TEST(BaseRenderingContext2DTest, FlushIfRecordingLimitExceeded) {
+  test::TaskEnvironment task_environment;
+  V8TestingScope scope;
+  auto* context = MakeGarbageCollected<TestRenderingContext2D>(scope);
+  const size_t initial_op_count = context->Recorder()->TotalOpCount();
+
+  // Under limit: no flush.
+  context->fillRect(0, 0, 1, 1);
+  EXPECT_GT(context->Recorder()->TotalOpCount(), initial_op_count);
+  const size_t op_count_under_limit = context->Recorder()->TotalOpCount();
+  context->FlushIfRecordingLimitExceeded();
+  EXPECT_EQ(context->Recorder()->TotalOpCount(), op_count_under_limit);
+
+  // Exceed op budget: FlushIfRecordingLimitExceeded flushes.
+  while (context->Recorder()->TotalOpBytesUsed() <=
+         context->max_recorded_op_bytes()) {
+    context->fillRect(0, 0, 1, 1);
+  }
+  context->FlushIfRecordingLimitExceeded();
+  EXPECT_EQ(context->Recorder()->TotalOpCount(), initial_op_count);
+
+  // When printing and clear_frame() is true, no flush occurs even if over
+  // limit.
+  scope.GetDocument().SetPrinting(Document::kPrinting);
+  while (context->Recorder()->TotalOpBytesUsed() <=
+         context->max_recorded_op_bytes()) {
+    context->fillRect(0, 0, 1, 1);
+  }
+  EXPECT_TRUE(context->clear_frame());
+  const size_t printing_op_count = context->Recorder()->TotalOpCount();
+  EXPECT_GT(printing_op_count, initial_op_count);
+  context->FlushIfRecordingLimitExceeded();
+  EXPECT_EQ(context->Recorder()->TotalOpCount(), printing_op_count);
+
+  // When printing but clear_frame() is false, flushing does occur when over
+  // limit.
+  context->set_clear_frame(false);
+  context->FlushIfRecordingLimitExceeded();
+  EXPECT_EQ(context->Recorder()->TotalOpCount(), initial_op_count);
+}
+
+TEST(BaseRenderingContext2DTest, HdrMetadata) {
+  test::TaskEnvironment task_environment;
+  V8TestingScope scope;
+  const gfx::Size kSize(10, 10);
+  gfx::HDRMetadata hdr_metadata;
+  hdr_metadata.SetExtendedRangeWithHeadroom(2.f);
+
+  CanvasContextCreationAttributesCore attrs;
+  attrs.hdr_metadata = hdr_metadata;
+  auto* context = MakeGarbageCollected<TestRenderingContext2D>(scope, attrs);
+  context->HostAsHTMLCanvasElement()->SetSize(kSize);
+  context->CreateSoftwareSurface();
+
+  ASSERT_TRUE(context->HasBacking());
+  scoped_refptr<StaticBitmapImage> snapshot = context->Snapshot();
+  ASSERT_TRUE(snapshot);
+  EXPECT_EQ(snapshot->GetHdrMetadata(), hdr_metadata);
+}
+
+TEST(BaseRenderingContext2DTest, AllocatedBufferSizeSoftware) {
+  test::TaskEnvironment task_environment;
+  V8TestingScope scope;
+  constexpr gfx::Size kSize(10, 10);
+
+  auto* context = MakeGarbageCollected<TestRenderingContext2D>(scope);
+  context->HostAsHTMLCanvasElement()->SetSize(kSize);
+  context->CreateSoftwareSurface();
+
+  ASSERT_TRUE(context->HasBacking());
+  EXPECT_EQ(context->AllocatedBufferSize(),
+            base::ByteSize(kSize.width() * kSize.height() * 4));
 }
 
 }  // namespace

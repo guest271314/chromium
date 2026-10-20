@@ -10,6 +10,7 @@
 #include <string>
 
 #import "components/autofill/core/common/unique_ids.h"
+#import "components/webauthn/core/browser/device_authorization/device_authorization_types.h"
 #import "components/webauthn/ios/passkey_types.h"
 
 @protocol IOSPasskeyClientCommands;
@@ -24,7 +25,7 @@ class IOSPasskeyClient {
   struct RequestInfo {
     RequestInfo(std::string frame_id,
                 std::string request_id,
-                std::optional<autofill::RemoteFrameToken> remote_frame_id =
+                std::optional<autofill::RemoteFrameToken> remote_frame_token =
                     std::nullopt);
     RequestInfo(const RequestInfo& other);
     RequestInfo& operator=(const RequestInfo& other);
@@ -39,7 +40,7 @@ class IOSPasskeyClient {
     // The request id associated with a PublicKeyCredential promise.
     std::string request_id;
     // The remote frame token used by ChildFrameRegistrar.
-    std::optional<autofill::RemoteFrameToken> remote_frame_id;
+    std::optional<autofill::RemoteFrameToken> remote_frame_token;
   };
 
   using InterstitialCallback = base::OnceCallback<void(bool)>;
@@ -50,13 +51,18 @@ class IOSPasskeyClient {
   virtual void SetIOSPasskeyClientCommandsHandler(
       id<IOSPasskeyClientCommands> handler) = 0;
 
-  // Performs user verification and returns whether it was successful.
-  virtual bool PerformUserVerification() = 0;
+  // Fetches the trusted vault keys for the provided `purpose` and calls
+  // `callback` with the fetched keys as input.
+  virtual void FetchTrustedVaultKeys(
+      ReauthenticatePurpose purpose,
+      PasskeyUserVerificationStatus user_verification_status,
+      FetchTrustedVaultKeysCallback callback) = 0;
 
-  // Fetches the keys for the provided purpose and calls the callback with the
-  // fetched keys as input.
-  virtual void FetchKeys(ReauthenticatePurpose purpose,
-                         KeysFetchedCallback callback) = 0;
+  // Fetches the device authorization keys, which are needed to decrypt
+  // passkeys stored in the `security_domain_encrypted` format, and calls
+  // `callback` with the result.
+  virtual void FetchDeviceAuthorizationKeys(
+      FetchDeviceAuthKeysCallback callback) = 0;
 
   // Shows the bottom sheet with passkey suggestions.
   virtual void ShowSuggestionBottomSheet(RequestInfo request_info) = 0;
@@ -79,6 +85,16 @@ class IOSPasskeyClient {
   // Returns whether passkeys can be saved to Google Password Manager based on
   // enterprise policies and sync status.
   virtual bool IsGpmPasskeySavingEnabled() const = 0;
+
+  // Returns whether automatic passkey upgrades are enabled based on user
+  // preferences.
+  virtual bool IsAutomaticPasskeyUpgradeEnabled() const = 0;
+
+  // Returns whether biometric authentication is enabled.
+  virtual bool IsBiometricsEnabled() const = 0;
+
+  // Notifies the client that a passkey was successfully created.
+  virtual void OnPasskeyCreated();
 
  protected:
   IOSPasskeyClient() = default;

@@ -20,7 +20,6 @@ import org.chromium.chrome.browser.preferences.ChromeSharedPreferences;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tabmodel.TabGroupMetadata;
 import org.chromium.chrome.browser.tabmodel.TabModelSelector;
-import org.chromium.chrome.browser.tabmodel.TabModelUtils;
 import org.chromium.ui.dragdrop.DragDropGlobalState;
 import org.chromium.ui.dragdrop.DragDropMetricUtils.DragDropType;
 import org.chromium.ui.dragdrop.DragDropMetricUtils.UrlIntentSource;
@@ -107,11 +106,7 @@ public class ChromeDragDropUtils {
         if (doesBelongToCurrentModel(isSourceIncognito, selector)) {
             Tab destTab = selector.getCurrentTab();
             assumeNonNull(destTab);
-            destIndex =
-                    TabModelUtils.getTabIndexById(
-                                    selector.getModel(destTab.isIncognitoBranded()),
-                                    destTab.getId())
-                            + 1;
+            destIndex = selector.getModel(destTab.isIncognitoBranded()).indexOf(destTab) + 1;
         } else {
             destIndex = selector.getModel(isSourceIncognito).getCount();
             Toast.makeText(context, R.string.tab_dropped_different_model, Toast.LENGTH_LONG).show();
@@ -134,12 +129,13 @@ public class ChromeDragDropUtils {
     /**
      * Retrieves {@link TabGroupMetadata} from the global drag-and-drop state.
      *
-     * @param globalState The {@link DragDropGlobalState} containing drag data.
+     * @param globalState The {@link DragDropGlobalState} containing drag data, or null.
      * @return The {@link TabGroupMetadata} if available, otherwise {@code null}.
      */
     public static @Nullable TabGroupMetadata getTabGroupMetadataFromGlobalState(
-            DragDropGlobalState globalState) {
-        if (globalState.getData() instanceof ChromeTabGroupDropDataAndroid data) {
+            @Nullable DragDropGlobalState globalState) {
+        if (globalState != null
+                && globalState.getData() instanceof ChromeTabGroupDropDataAndroid data) {
             return data.tabGroupMetadata;
         }
         return null;
@@ -148,11 +144,13 @@ public class ChromeDragDropUtils {
     /**
      * Retrieves a list of {@link Tab}s from the global drag-and-drop state.
      *
-     * @param globalState The {@link DragDropGlobalState} containing drag data.
+     * @param globalState The {@link DragDropGlobalState} containing drag data, or null.
      * @return The list of {@link Tab}s if available, otherwise {@code null}.
      */
-    public static @Nullable List<Tab> getTabsFromGlobalState(DragDropGlobalState globalState) {
-        if (globalState.getData() instanceof ChromeMultiTabDropDataAndroid data) {
+    public static @Nullable List<Tab> getTabsFromGlobalState(
+            @Nullable DragDropGlobalState globalState) {
+        if (globalState != null
+                && globalState.getData() instanceof ChromeMultiTabDropDataAndroid data) {
             return data.tabs;
         }
         return null;
@@ -161,11 +159,13 @@ public class ChromeDragDropUtils {
     /**
      * Retrieves the primary {@link Tab} from the global drag-and-drop state.
      *
-     * @param globalState The {@link DragDropGlobalState} containing drag data.
+     * @param globalState The {@link DragDropGlobalState} containing drag data, or null.
      * @return The primary {@link Tab} if available, otherwise {@code null}.
      */
-    public static @Nullable Tab getPrimaryTabFromGlobalState(DragDropGlobalState globalState) {
-        if (globalState.getData() instanceof ChromeMultiTabDropDataAndroid data) {
+    public static @Nullable Tab getPrimaryTabFromGlobalState(
+            @Nullable DragDropGlobalState globalState) {
+        if (globalState != null
+                && globalState.getData() instanceof ChromeMultiTabDropDataAndroid data) {
             return data.primaryTab;
         }
         return null;
@@ -174,11 +174,11 @@ public class ChromeDragDropUtils {
     /**
      * Retrieves a {@link Tab} from the global drag-and-drop state.
      *
-     * @param globalState The {@link DragDropGlobalState} containing drag data.
+     * @param globalState The {@link DragDropGlobalState} containing drag data, or null.
      * @return The {@link Tab} if available, otherwise {@code null}.
      */
-    public static @Nullable Tab getTabFromGlobalState(DragDropGlobalState globalState) {
-        if (globalState.getData() instanceof ChromeTabDropDataAndroid data) {
+    public static @Nullable Tab getTabFromGlobalState(@Nullable DragDropGlobalState globalState) {
+        if (globalState != null && globalState.getData() instanceof ChromeTabDropDataAndroid data) {
             return data.tab;
         }
         return null;

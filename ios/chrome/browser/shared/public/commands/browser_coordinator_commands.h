@@ -12,6 +12,9 @@
 #import "ios/chrome/browser/fullscreen/public/fullscreen_metrics.h"
 
 enum class ComposeboxEntrypoint;
+namespace send_tab_to_self {
+enum class ShareEntryPoint;
+}
 namespace base {
 class ScopedClosureRunner;
 }
@@ -72,11 +75,6 @@ enum class TrustedVaultUserActionTriggerForUMA;
 // Hides the composebox on the next run loop.
 - (void)hideComposebox;
 
-// Hides the composebox and, upon completion, opens the share sheet.
-// This is a temporary command that is only introduced for an experiment, see
-// crbug.com/479521675 for context.
-- (void)hideComposeboxAndShowShareSheet;
-
 // Hides the compose box on the next run loop. The completion block is called
 // once hidden.
 - (void)hideComposeboxWithCompletion:(ProceduralBlock)completion;
@@ -87,10 +85,6 @@ enum class TrustedVaultUserActionTriggerForUMA;
 
 // Shows the AddCreditCard UI.
 - (void)showAddCreditCard;
-
-// Shows the dialog for sending the page with `url` and `title` between a user's
-// devices.
-- (void)showSendTabToSelfUI:(const GURL&)url title:(NSString*)title;
 
 #if !defined(NDEBUG)
 // Inserts a new tab showing the HTML source of the current page.
@@ -121,22 +115,16 @@ enum class TrustedVaultUserActionTriggerForUMA;
 - (void)stopVoiceSearch;
 
 // Dismiss the password suggestions.
+// TODO(crbug.com/543354673): Remove this.
 - (void)dismissPasswordSuggestions;
 
-// Dismiss the payments suggestions.
-- (void)dismissPaymentSuggestions;
-
-// Dismisses the passkey creation bottom sheet.
-- (void)dismissPasskeyCreation;
-
 // Dismiss the card unmask authentication prompt.
-- (void)dismissCardUnmaskAuthentication;
-
-// Dismiss the plus address bottom sheet.
-- (void)dismissPlusAddressBottomSheet;
+// Deprecated: use AutofillCommands instead.
+- (void)legacyDismissCardUnmaskAuthentication;
 
 // Dismiss the virtual card enrollment bottom sheet.
-- (void)dismissVirtualCardEnrollmentBottomSheet;
+// Deprecated: use AutofillCommands instead.
+- (void)legacyDismissVirtualCardEnrollmentBottomSheet;
 
 // Shows the omnibox position choice screen.
 - (void)showOmniboxPositionChoice;
@@ -176,6 +164,9 @@ enum class TrustedVaultUserActionTriggerForUMA;
 // Show the add account view
 - (void)showAddAccountWithAccessPoint:(signin_metrics::AccessPoint)accessPoint
                        prefilledEmail:(NSString*)email;
+
+// Dismisses the multimodal actions menu.
+- (void)dismissMultimodalActionsMenu;
 
 // Forces fullscreen mode which means that toolbars are collapsed.
 - (void)forceFullscreenMode:(FullscreenModeTransitionTrigger)trigger;

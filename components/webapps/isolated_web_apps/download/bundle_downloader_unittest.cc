@@ -11,6 +11,7 @@
 #include "base/files/file_util.h"
 #include "base/files/scoped_temp_dir.h"
 #include "base/memory/scoped_refptr.h"
+#include "base/test/run_until.h"
 #include "base/test/task_environment.h"
 #include "base/test/test_future.h"
 #include "net/http/http_status_code.h"
@@ -61,7 +62,9 @@ TEST_F(IsolatedWebAppDownloaderTest, SuccessfulDownload) {
   base::test::TestFuture<int32_t> future;
   auto downloader = IsolatedWebAppDownloader::CreateAndStartDownloading(
       download_url(), bundle_path(), PARTIAL_TRAFFIC_ANNOTATION_FOR_TESTS,
-      shared_url_loader_factory_, future.GetCallback());
+      shared_url_loader_factory_,
+      /*client_security_state_address_space=*/std::nullopt,
+      future.GetCallback());
 
   EXPECT_THAT(future.Take(), Eq(net::OK));
   EXPECT_THAT(base::PathExists(bundle_path()), IsTrue());
@@ -78,7 +81,9 @@ TEST_F(IsolatedWebAppDownloaderTest, FailedDownload) {
   base::test::TestFuture<int32_t> future;
   auto downloader = IsolatedWebAppDownloader::CreateAndStartDownloading(
       download_url(), bundle_path(), PARTIAL_TRAFFIC_ANNOTATION_FOR_TESTS,
-      shared_url_loader_factory_, future.GetCallback());
+      shared_url_loader_factory_,
+      /*client_security_state_address_space=*/std::nullopt,
+      future.GetCallback());
 
   EXPECT_THAT(future.Take(), Eq(net::Error::ERR_HTTP_RESPONSE_CODE_FAILURE));
   EXPECT_THAT(base::PathExists(bundle_path()), IsFalse());
@@ -92,9 +97,10 @@ TEST_F(IsolatedWebAppDownloaderTest,
   base::test::TestFuture<std::optional<std::string>> future;
   auto downloader =
       IsolatedWebAppDownloader::Create(shared_url_loader_factory_);
-  downloader->DownloadInitialBytes(download_url(),
-                                   PARTIAL_TRAFFIC_ANNOTATION_FOR_TESTS,
-                                   future.GetCallback());
+  downloader->DownloadInitialBytes(
+      download_url(), PARTIAL_TRAFFIC_ANNOTATION_FOR_TESTS,
+      /*client_security_state_address_space=*/std::nullopt,
+      future.GetCallback());
 
   EXPECT_THAT(future.Take(), Eq(std::string(8 * 1024, 'x')));
 }
@@ -106,9 +112,10 @@ TEST_F(IsolatedWebAppDownloaderTest, SuccessfulPartialDownload) {
   base::test::TestFuture<std::optional<std::string>> future;
   auto downloader =
       IsolatedWebAppDownloader::Create(shared_url_loader_factory_);
-  downloader->DownloadInitialBytes(download_url(),
-                                   PARTIAL_TRAFFIC_ANNOTATION_FOR_TESTS,
-                                   future.GetCallback());
+  downloader->DownloadInitialBytes(
+      download_url(), PARTIAL_TRAFFIC_ANNOTATION_FOR_TESTS,
+      /*client_security_state_address_space=*/std::nullopt,
+      future.GetCallback());
 
   EXPECT_THAT(future.Take(), Eq(std::string(8 * 1024, 'x')));
 }
@@ -120,11 +127,100 @@ TEST_F(IsolatedWebAppDownloaderTest, SuccessfulPartialDownloadOfSmallContent) {
   base::test::TestFuture<std::optional<std::string>> future;
   auto downloader =
       IsolatedWebAppDownloader::Create(shared_url_loader_factory_);
-  downloader->DownloadInitialBytes(download_url(),
-                                   PARTIAL_TRAFFIC_ANNOTATION_FOR_TESTS,
-                                   future.GetCallback());
+  downloader->DownloadInitialBytes(
+      download_url(), PARTIAL_TRAFFIC_ANNOTATION_FOR_TESTS,
+      /*client_security_state_address_space=*/std::nullopt,
+      future.GetCallback());
 
   EXPECT_THAT(future.Take(), Eq("cthulhu"));
+}
+
+TEST_F(IsolatedWebAppDownloaderTest,
+       SetsNoClientSecurityStateWhenAddressSpaceOmitted) {
+  auto downloader =
+      IsolatedWebAppDownloader::Create(shared_url_loader_factory_);
+  base::test::TestFuture<int32_t> future;
+  downloader->DownloadSignedWebBundle(
+      download_url(), bundle_path(), PARTIAL_TRAFFIC_ANNOTATION_FOR_TESTS,
+      /*client_security_state_address_space=*/std::nullopt,
+      future.GetCallback());
+  EXPECT_TRUE(
+      base::test::RunUntil([&]() { return test_factory_.NumPending() > 0; }));
+
+  ASSERT_EQ(test_factory_.NumPending(), 1);
+  const network::ResourceRequest& request =
+      test_factory_.GetPendingRequest(0)->request;
+
+  EXPECT_TRUE(!request.trusted_params ||
+              !request.trusted_params->client_security_state);
+}
+
+TEST_F(IsolatedWebAppDownloaderTest,
+       SetsClientSecurityStateFromExplicitAddressSpace) {
+  auto downloader =
+      IsolatedWebAppDownloader::Create(shared_url_loader_factory_);
+  base::test::TestFuture<int32_t> future;
+  downloader->DownloadSignedWebBundle(
+      download_url(), bundle_path(), PARTIAL_TRAFFIC_ANNOTATION_FOR_TESTS,
+      network::mojom::IPAddressSpace::kPublic, future.GetCallback());
+  EXPECT_TRUE(
+      base::test::RunUntil([&]() { return test_factory_.NumPending() > 0; }));
+
+  ASSERT_EQ(test_factory_.NumPending(), 1);
+  const network::ResourceRequest& request =
+      test_factory_.GetPendingRequest(0)->request;
+
+  ASSERT_TRUE(request.trusted_params);
+  ASSERT_TRUE(request.trusted_params->client_security_state);
+  EXPECT_EQ(request.trusted_params->client_security_state->ip_address_space,
+            network::mojom::IPAddressSpace::kPublic);
+  EXPECT_TRUE(
+      request.trusted_params->client_security_state->is_web_secure_context);
+  EXPECT_EQ(request.trusted_params->client_security_state
+                ->local_network_access_request_policy,
+            network::mojom::LocalNetworkAccessRequestPolicy::kBlock);
+}
+
+TEST_F(IsolatedWebAppDownloaderTest,
+       SetsClientSecurityStateForLocalAddressSpace) {
+  auto downloader =
+      IsolatedWebAppDownloader::Create(shared_url_loader_factory_);
+  base::test::TestFuture<int32_t> future;
+  downloader->DownloadSignedWebBundle(
+      download_url(), bundle_path(), PARTIAL_TRAFFIC_ANNOTATION_FOR_TESTS,
+      network::mojom::IPAddressSpace::kLocal, future.GetCallback());
+  EXPECT_TRUE(
+      base::test::RunUntil([&]() { return test_factory_.NumPending() > 0; }));
+
+  ASSERT_EQ(test_factory_.NumPending(), 1);
+  const network::ResourceRequest& request =
+      test_factory_.GetPendingRequest(0)->request;
+
+  ASSERT_TRUE(request.trusted_params);
+  ASSERT_TRUE(request.trusted_params->client_security_state);
+  EXPECT_EQ(request.trusted_params->client_security_state->ip_address_space,
+            network::mojom::IPAddressSpace::kLocal);
+}
+
+TEST_F(IsolatedWebAppDownloaderTest,
+       SetsClientSecurityStateForLoopbackAddressSpace) {
+  auto downloader =
+      IsolatedWebAppDownloader::Create(shared_url_loader_factory_);
+  base::test::TestFuture<int32_t> future;
+  downloader->DownloadSignedWebBundle(
+      download_url(), bundle_path(), PARTIAL_TRAFFIC_ANNOTATION_FOR_TESTS,
+      network::mojom::IPAddressSpace::kLoopback, future.GetCallback());
+  EXPECT_TRUE(
+      base::test::RunUntil([&]() { return test_factory_.NumPending() > 0; }));
+
+  ASSERT_EQ(test_factory_.NumPending(), 1);
+  const network::ResourceRequest& request =
+      test_factory_.GetPendingRequest(0)->request;
+
+  ASSERT_TRUE(request.trusted_params);
+  ASSERT_TRUE(request.trusted_params->client_security_state);
+  EXPECT_EQ(request.trusted_params->client_security_state->ip_address_space,
+            network::mojom::IPAddressSpace::kLoopback);
 }
 
 }  // namespace web_app

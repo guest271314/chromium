@@ -23,7 +23,6 @@
 #include "base/system/sys_info.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/timer/elapsed_timer.h"
-#include "chrome/browser/ash/browser_delegate/browser_controller.h"
 #include "chrome/browser/ash/login/configuration_keys.h"
 #include "chrome/browser/ash/login/enrollment/enrollment_uma.h"
 #include "chrome/browser/ash/login/enrollment/timebound_user_context_holder.h"
@@ -39,14 +38,15 @@
 #include "chrome/browser/ash/policy/enrollment/enrollment_requisition_manager.h"
 #include "chrome/browser/ash/policy/enrollment/enrollment_status.h"
 #include "chrome/browser/ash/policy/handlers/tpm_auto_update_mode_policy_handler.h"
-#include "chrome/browser/browser_process.h"
 #include "chrome/browser/ui/ash/login/login_display_host.h"
 #include "chrome/browser/ui/ash/login/webui_login_view.h"
 #include "chrome/browser/ui/webui/ash/login/error_screen_handler.h"
 #include "chrome/browser/ui/webui/ash/login/online_login_utils.h"
+#include "chromeos/ash/components/browser_delegate/browser_controller.h"
 #include "chromeos/ash/components/dbus/dbus_thread_manager.h"
 #include "chromeos/ash/components/dbus/device_management/install_attributes_util.h"
 #include "chromeos/ash/components/login/auth/public/user_context.h"
+#include "chromeos/ash/components/login/session/process_shutdown.h"
 #include "chromeos/dbus/common/dbus_callback.h"
 #include "chromeos/dbus/tpm_manager/tpm_manager_client.h"
 #include "components/policy/core/common/cloud/cloud_policy_client.h"
@@ -139,7 +139,7 @@ EnrollmentScreen* EnrollmentScreen::Get(ScreenManager* manager) {
 EnrollmentScreen::EnrollmentScreen(
     PrefService* local_state,
     scoped_refptr<network::SharedURLLoaderFactory> shared_url_loader_factory,
-    const policy::BrowserPolicyConnectorAsh* browser_policy_connector_ash,
+    policy::BrowserPolicyConnectorAsh* browser_policy_connector_ash,
     base::WeakPtr<EnrollmentScreenView> view,
     ErrorScreen* error_screen,
     const ScreenExitCallback& exit_callback)
@@ -173,9 +173,10 @@ EnrollmentScreen::EnrollmentScreen(
 
 EnrollmentScreen::~EnrollmentScreen() {
   scoped_network_observation_.Reset();
-  DCHECK(!enrollment_launcher_ || g_browser_process->IsShuttingDown() ||
-         ash::BrowserController::GetInstance()->IsTryingToQuit() ||
-         DBusThreadManager::Get()->IsUsingFakes());
+  CHECK(!enrollment_launcher_ || IsProcessShuttingDown() ||
+            ash::BrowserController::GetInstance()->IsTryingToQuit() ||
+            DBusThreadManager::Get()->IsUsingFakes(),
+        base::NotFatalUntil::M161);
 }
 
 void EnrollmentScreen::SetEnrollmentConfig(
@@ -235,8 +236,10 @@ bool EnrollmentScreen::AdvanceToNextAuth() {
 
 void EnrollmentScreen::CreateEnrollmentLauncher() {
   if (!enrollment_launcher_) {
-    enrollment_launcher_ = EnrollmentLauncher::Create(this, effective_config_,
-                                                      enrolling_user_domain_);
+    enrollment_launcher_ = EnrollmentLauncher::Create(
+        &local_state_.get(), shared_url_loader_factory_,
+        &browser_policy_connector_ash_.get(), this, effective_config_,
+        enrolling_user_domain_);
   }
 }
 
@@ -265,7 +268,8 @@ void EnrollmentScreen::OnAuthCleared(base::OnceClosure callback) {
 }
 
 void EnrollmentScreen::ShowSkipEnrollmentDialogue() {
-  DCHECK(effective_config_.is_license_packaged_with_device);
+  CHECK(effective_config_.is_license_packaged_with_device,
+        base::NotFatalUntil::M161);
   if (view_) {
     view_->ShowSkipConfirmationDialog();
   }
@@ -567,6 +571,10 @@ bool EnrollmentScreen::HandleAccelerator(LoginAcceleratorAction action) {
 }
 
 void EnrollmentScreen::OnCancel() {
+  if (is_hidden()) {
+    return;
+  }
+
   if (enrollment_succeeded_) {
     // Cancellation is the same to confirmation after the successful enrollment.
     OnConfirmationClosed();
@@ -605,6 +613,10 @@ void EnrollmentScreen::OnCancel() {
 }
 
 void EnrollmentScreen::OnConfirmationClosed() {
+  if (is_hidden()) {
+    return;
+  }
+
   StartupUtils::MarkEulaAccepted(local_state_.get());
 
   // TODO(crbug.com/40805389): Logging as "WARNING" to make sure it's preserved
@@ -686,7 +698,9 @@ void EnrollmentScreen::OnIdentifierEntered(const std::string& email) {
   auto callback = base::BindOnce(&EnrollmentScreen::OnAccountStatusFetched,
                                  base::Unretained(this), email);
   status_checker_.reset();
-  status_checker_ = std::make_unique<AccountStatusCheckFetcher>(email);
+  status_checker_ = std::make_unique<AccountStatusCheckFetcher>(
+      shared_url_loader_factory_,
+      browser_policy_connector_ash_->device_management_service(), email);
   status_checker_->Fetch(std::move(callback),
                          /*fetch_enrollment_nudge_policy=*/false);
 }
@@ -910,6 +924,8 @@ void EnrollmentScreen::SetNetworkStateForTesting(const NetworkState* state) {
 // should be refactored in the future.
 void EnrollmentScreen::UpdateStateInternal(NetworkError::ErrorReason reason,
                                            bool force_update) {
+  CHECK_NE(reason, NetworkError::ERROR_REASON_FRAME_ERROR);
+
   if (!force_update && !IsOnEnrollmentScreen() &&
       !IsEnrollmentScreenHiddenByError()) {
     return;
@@ -923,7 +939,6 @@ void EnrollmentScreen::UpdateStateInternal(NetworkError::ErrorReason reason,
   const bool is_online = (state == NetworkStateInformer::ONLINE);
   const bool is_behind_captive_portal =
       (state == NetworkStateInformer::CAPTIVE_PORTAL);
-  const bool is_frame_error = reason == NetworkError::ERROR_REASON_FRAME_ERROR;
 
   LOG(WARNING) << "EnrollmentScreen::UpdateStateInternal(): "
                << "state=" << state << ", "
@@ -933,27 +948,21 @@ void EnrollmentScreen::UpdateStateInternal(NetworkError::ErrorReason reason,
     error_screen_->HideCaptivePortal();
   }
 
-  if (is_frame_error) {
-    LOG(WARNING) << "Retry page load";
-    // TODO(rsorokin): Too many consecutive reloads.
-    view_->ReloadSigninScreen();
-  }
-
-  if (!is_online || is_frame_error) {
-    SetupAndShowOfflineMessage(state, reason);
-  } else {
+  if (is_online) {
     HideOfflineMessage(state, reason);
+  } else {
+    SetupAndShowOfflineMessage(state, reason);
   }
 }
 
 void EnrollmentScreen::SetupAndShowOfflineMessage(
     NetworkStateInformer::State state,
     NetworkError::ErrorReason reason) {
+  CHECK_NE(reason, NetworkError::ERROR_REASON_FRAME_ERROR);
   const std::string network_path = network_state_informer_->network_path();
   const bool is_behind_captive_portal =
       state == NetworkStateInformer::CAPTIVE_PORTAL;
   const bool is_proxy_error = NetworkStateInformer::IsProxyError(state, reason);
-  const bool is_frame_error = reason == NetworkError::ERROR_REASON_FRAME_ERROR;
 
   if (is_proxy_error) {
     error_screen_->SetErrorState(NetworkError::ERROR_STATE_PROXY,
@@ -971,11 +980,6 @@ void EnrollmentScreen::SetupAndShowOfflineMessage(
         NetworkStateInformer::GetNetworkName(network_path);
     error_screen_->SetErrorState(NetworkError::ERROR_STATE_PORTAL,
                                  network_name);
-  } else if (is_frame_error) {
-    // TODO(b/249996052): Clean up dead code, this method is never called with
-    // `NetworkError::ERROR_REASON_FRAME_ERROR`.
-    error_screen_->SetErrorState(NetworkError::ERROR_STATE_LOADING_TIMEOUT,
-                                 std::string());
   } else {
     error_screen_->SetErrorState(NetworkError::ERROR_STATE_OFFLINE,
                                  std::string());

@@ -30,10 +30,7 @@
 chromium::import! {
   "//mojo/public/rust/system";
   "//base:sequenced_task_runner";
-  "//mojo/public/rust/mojom_value_parser";
-  "//mojo/public/rust/mojom_value_parser:mojom_value_parser_core";
 }
-use mojom_value_parser_core::{MojomType, MojomValue};
 
 use std::marker::PhantomData;
 // TODO(crbug.com/470438844): Replace some/all Arc/Mutexes with the
@@ -43,12 +40,22 @@ use std::marker::PhantomData;
 use std::sync::{Arc, Mutex, Weak};
 
 use sequenced_task_runner::SequencedTaskRunnerHandle;
-use system::message::RawMojoMessage;
-use system::message_pipe::MessageEndpoint;
 
 use crate::interface::{DynMojomInterface, MojomInterface};
+use crate::marker_types::{Associated, Primary};
 use crate::message::MojomMessage;
-use crate::message_pipe_watcher::{MessagePipeWatcher, ResponseSender};
+use crate::multiplex_router::{EndpointInfo, MultiplexRouterHandle, ResponseSender, RouterHandle};
+
+/// This type represents either a regular mojom `Receiver`, or an
+/// `AssociatedReceiver`. See the documentation of those types for details.
+pub struct GenericReceiver<StateTy: MojomInterface, Marker> {
+    router: RouterHandle,
+    // We never actually access this field after creation, we just
+    // need to keep it alive while the receiver is alive.
+    _state: Arc<Mutex<StateTy>>,
+    // fn() -> T acts like T, but is always `Send` and `Sync`
+    _phantom: PhantomData<fn() -> Marker>,
+}
 
 /// This type represents one end of a Mojo pipe corresponding to a
 /// particular Mojom `interface`. The parameter `T` names the interface:
@@ -67,64 +74,61 @@ use crate::message_pipe_watcher::{MessagePipeWatcher, ResponseSender};
 /// Note that a `PendingReceiver` can receive messages, but they will not be
 /// processed until it is bound. Once bound, the newly-created `Receiver`
 /// will immediately schedule processing of all pending messages.
-pub struct Receiver<StateTy: MojomInterface> {
-    // We never actually access either field after creation, we just need to
-    // to keep them alive while the receiver is alive.
-    _endpoint_watcher: MessagePipeWatcher,
-    _state: Arc<Mutex<StateTy>>,
-}
+pub type Receiver<T> = GenericReceiver<T, Primary>;
 
-/// This type represents one end of a Mojo pipe corresponding to with a
+/// This type is equivalent to `Receiver`, but does not own the underlying
+/// message pipe across which it sends messages. Instead, it is entangled with
+/// an associated remote, and exactly one end of each pair must be sent across
+/// an existing message pipe. Once that's done, all messages between the pair
+/// will utilize that pipe.
+///
+/// It is guaranteed that all messages across that pipe will be delivered in
+/// strict FIFO order; if one endpoint sends a message and its counterpart isn't
+/// yet ready to receive messages, _all_ messages on that pipe will be
+/// blocked.
+pub type AssociatedReceiver<T> = GenericReceiver<T, Associated>;
+
+/// This type represents a `Receiver` which has not yet been bound to a
+/// sequence, and is therefore unable to send messages.
+///
+/// A `PendingReceiver` holds one end of a Mojo pipe corresponding to with a
 /// particular Mojom `interface`. The parameter `T` names the interface:
 /// it will always be instantiated with `dyn SomeInterface`. Each
 /// `PendingReceiver` is entangled with exactly one `Remote` or
 /// `PendingRemote` elsewhere in the program, corresponding to the same
 /// `interface`, which holds the other end of the pipe.
+pub type PendingReceiver<T> = crate::pending_endpoint::PendingReceiver<T>;
+
+/// This type is equivalent to a `PendingReceiver`, but it does not hold a
+/// message pipe endpoint; instead, it will use an existing message pipe to send
+/// its messages.
 ///
-/// This type represents a `Receiver` which has not yet been bound to a
-/// sequence, and is therefore unable to send messages.
-pub struct PendingReceiver<T>
-where
-    T: DynMojomInterface + ?Sized,
-{
-    endpoint: MessageEndpoint,
-    _phantom: PhantomData<T>,
-}
+/// Each `PendingAssociatedReceiver` is entangled with a
+/// `(Pending)AssociatedRemote` elsewhere in the program. Exactly one of the
+/// pair should be sent over a pipe via a mojo message; afterwards, they will
+/// be associated with that pipe and communicate using it.
+pub type PendingAssociatedReceiver<T> =
+    crate::pending_associated_endpoint::PendingAssociatedReceiver<T>;
 
 /// This type is used to represent a self-owned receiver, which keeps itself
 /// alive until the other endpoint is disconnected.
 pub type SelfOwnedReceiver<StateTy> = Arc<Receiver<StateTy>>;
 pub type SelfOwnedReceiverWeak<StateTy> = Weak<Receiver<StateTy>>;
 
+pub type SelfOwnedAssociatedReceiver<StateTy> = Arc<AssociatedReceiver<StateTy>>;
+pub type SelfOwnedAssociatedReceiverWeak<StateTy> = Weak<AssociatedReceiver<StateTy>>;
+
 impl<T> PendingReceiver<T>
 where
     T: DynMojomInterface + ?Sized,
 {
-    /// Create a new PendingReceiver from a raw pipe endpoint.
-    ///
-    /// If you want to create a new remote/receiver pair, use
-    /// `PendingRemote::new_pipe` instead. This function is mostly useful
-    /// for creating a new `Receiver` from an endpoint received via mojo or FFI.
-    ///
-    /// Note that the caller is responsible for ensuring that `Self` has the
-    /// right instantiation of `T` as the other endpoint, or else incoming
-    /// messages will be incomprehensible.
-    pub fn new(endpoint: MessageEndpoint) -> Self {
-        Self { endpoint, _phantom: PhantomData }
-    }
-
-    /// Consume this PendingReceiver and return the underlying endpoint.
-    pub fn into_endpoint(self) -> MessageEndpoint {
-        self.endpoint
-    }
-
     /// Bind this `PendingReceiver` to the provided state object and the
     /// current default sequence.
     pub fn bind<StateTy>(self, state: StateTy) -> Receiver<StateTy>
     where
         StateTy: MojomInterface<DynTy = T> + Send + 'static,
     {
-        Receiver::new(self.endpoint, state)
+        self.bind_with_options(state, None, None)
     }
 
     /// Bind this `PendingReceiver` to the provided state object with the
@@ -142,7 +146,15 @@ where
             SequencedTaskRunnerHandle::get_current_default()
                 .expect("Must be called in a context with a default SequencedTaskRunner")
         });
-        Receiver::new_with_options(self.endpoint, state, runner, disconnect_handler)
+        let make_handle = |endpoint_info| -> RouterHandle {
+            let sets_high_bit = false; // Receivers set the high bit to 0
+            RouterHandle::Primary(MultiplexRouterHandle::new(
+                self.endpoint,
+                sets_high_bit,
+                endpoint_info,
+            ))
+        };
+        Receiver::new(make_handle, state, runner, disconnect_handler)
     }
 
     /// Create a new Receiver which owns itself; it will continue to live until
@@ -151,72 +163,116 @@ where
     where
         StateTy: MojomInterface<DynTy = T> + Sized + Send + 'static,
     {
-        // In order to provide a convenient user interface and also be fully memory
-        // safe, the types here get a little convoluted. We begin by constructing
-        // an `Arc<Mutex<Option<SelfOwnedReceiver>>`. We then pass a strong ref to
-        // that arc into the disconnect handler, so that it will get dropped when
-        // the handler runs. We then initialize the receiver with that handler, and
+        Receiver::bind_self_owned_internal(move |disconnect_handler| {
+            self.bind_with_options(state, None, disconnect_handler)
+        })
+    }
+}
+
+impl<T> PendingAssociatedReceiver<T>
+where
+    T: DynMojomInterface + ?Sized,
+{
+    /// Bind this `PendingReceiver` to the provided state object and the
+    /// current default sequence.
+    pub fn bind<StateTy>(self, state: StateTy) -> AssociatedReceiver<StateTy>
+    where
+        StateTy: MojomInterface<DynTy = T> + Send + 'static,
+    {
+        Self::bind_with_options(self, state, None, None)
+    }
+
+    /// Bind this `PendingReceiver` to the provided state object with the
+    /// provided options.
+    pub fn bind_with_options<StateTy>(
+        self,
+        state: StateTy,
+        runner: Option<SequencedTaskRunnerHandle>,
+        disconnect_handler: Option<Box<dyn FnOnce() + Send + 'static>>,
+    ) -> AssociatedReceiver<StateTy>
+    where
+        StateTy: MojomInterface<DynTy = T> + Send + 'static,
+    {
+        let runner = runner.unwrap_or_else(|| {
+            SequencedTaskRunnerHandle::get_current_default()
+                .expect("Must be called in a context with a default SequencedTaskRunner")
+        });
+        let make_handle = |endpoint_info| self.register_bound(endpoint_info);
+        AssociatedReceiver::new(make_handle, state, runner, disconnect_handler)
+    }
+
+    /// Create a new AssociatedReceiver which owns itself; it will continue to
+    /// live until the other end is disconnected.
+    pub fn bind_self_owned<StateTy>(
+        self,
+        state: StateTy,
+    ) -> SelfOwnedAssociatedReceiverWeak<StateTy>
+    where
+        StateTy: MojomInterface<DynTy = T> + Sized + Send + 'static,
+    {
+        AssociatedReceiver::bind_self_owned_internal(move |disconnect_handler| {
+            self.bind_with_options(state, None, disconnect_handler)
+        })
+    }
+}
+
+impl<StateTy, Marker> GenericReceiver<StateTy, Marker>
+where
+    StateTy: MojomInterface + Sized + Send + 'static,
+    Marker: 'static,
+{
+    fn bind_self_owned_internal(
+        bind_func: impl FnOnce(Option<Box<dyn FnOnce() + Send + 'static>>) -> Self,
+    ) -> Weak<Self> {
+        // In order to provide a convenient user interface and also be fully
+        // memory safe, the types here get a little convoluted. We begin
+        // by constructing an `Arc<Mutex<Option<SelfOwnedReceiver>>`. We
+        // then pass a strong ref to that arc into the disconnect
+        // handler, so that it will get dropped when the handler runs.
+        // We then initialize the receiver with that handler, and
         // swap it into the `Option`.
         //
         // However, to hide the details from the user, we want to only return a
         // reference to the receiver itself. To do that, the `SelfOwnedReceiver`
-        // type _also_ has an `Arc`, so we can return a weak reference to just that
-        // part and hide the `Mutex` and `Option` from the user.
+        // type _also_ has an `Arc`, so we can return a weak reference to just
+        // that part and hide the `Mutex` and `Option` from the user.
         //
         // Note that if we ever refit this class to be `unsafe`, then we could
-        // eliminate the outer `Arc` and `Mutex`, and possible the `Option` as well.
+        // eliminate the outer `Arc` and `Mutex`, and possible the `Option` as
+        // well.
 
         let receiver_holder = Arc::new(Mutex::new(None));
         let receiver_holder_clone = Arc::clone(&receiver_holder);
 
         let disconnect_handler = move || {
             // Drop our self-reference. This will cause the receiver
-            // itself to be dropped, unless the user is holding a strong reference
-            // (which it can get by `upgrade`ing the returned `Weak`).
+            // itself to be dropped, unless the user is holding a strong
+            // reference (which they can get by `upgrade`ing the
+            // returned `Weak`).
             drop(receiver_holder_clone);
         };
 
-        let receiver_strong =
-            Arc::new(self.bind_with_options(state, None, Some(Box::new(disconnect_handler))));
+        let receiver_strong = Arc::new(bind_func(Some(Box::new(disconnect_handler))));
         let receiver_weak = Arc::downgrade(&receiver_strong);
 
         *receiver_holder.lock().expect("Mutex should never be poisoned") = Some(receiver_strong);
 
         // At this point, the references are:
-        // - receiver_holder: The ref we just wrote to is about to be dropped, but
-        //   there's another strong ref in the disconnect handler, which is the only
-        //   other reference to the holder.
+        // - receiver_holder: The ref we just wrote to is about to be dropped,
+        //   but there's another strong ref in the disconnect handler, which is
+        //   the only other reference to the holder.
         // - receiver: There's a strong reference inside the holder, and a weak
         //   reference which we return here.
 
         return receiver_weak;
     }
-}
-
-impl<StateTy> Receiver<StateTy>
-where
-    StateTy: MojomInterface + Sized + Send + 'static,
-{
-    /// Create a new Receiver from a raw pipe endpoint, bound to the default
-    /// sequence.
-    // This function isn't `pub` because users should always get their `Receiver`s
-    // by `bind`ing a `PendingReceiver`.
-    fn new(endpoint: MessageEndpoint, state: StateTy) -> Self {
-        Self::new_with_options(
-            endpoint,
-            state,
-            SequencedTaskRunnerHandle::get_current_default()
-                .expect("Must be called in a context with a default SequencedTaskRunner"),
-            None,
-        )
-    }
 
     /// Create a new Receiver from a raw pipe endpoint, bound to the
     /// provided sequence.
-    // This function isn't `pub` because users should always get their `Receiver`s
-    // by `bind`ing a `PendingReceiver`.
-    fn new_with_options(
-        endpoint: MessageEndpoint,
+    // This function isn't `pub` because users should always get their
+    // `Receiver`s by `bind`ing a `PendingReceiver`.
+    fn new(
+        make_handle: impl FnOnce(EndpointInfo) -> RouterHandle,
         state: StateTy,
         runner: SequencedTaskRunnerHandle,
         disconnect_handler: Option<Box<dyn FnOnce() + Send + 'static>>,
@@ -224,15 +280,17 @@ where
         let state = Arc::new(Mutex::new(state));
         let state_weak = Arc::downgrade(&state);
 
-        let handler = move |raw_message, sender| {
+        let message_handler = move |raw_message, sender| {
             Self::incoming_message_handler(raw_message, &state_weak, sender)
         };
 
-        let endpoint_watcher =
-            MessagePipeWatcher::new_with_runner(endpoint, runner, handler, disconnect_handler)
-                .expect("System ran out of resources to create new mojo objects.");
+        let router = make_handle(EndpointInfo {
+            incoming_message_handler: Arc::new(message_handler),
+            disconnect_handler,
+            runner,
+        });
 
-        Self { _endpoint_watcher: endpoint_watcher, _state: state }
+        Self { router, _state: state, _phantom: PhantomData }
     }
 
     /// This is the function which is called by the endpoint watcher
@@ -240,57 +298,20 @@ where
     /// header, call the corresponding method on the state object, and then
     /// send a response back through the pipe (if the message expects one).
     fn incoming_message_handler(
-        mut raw_message: RawMojoMessage,
+        message: MojomMessage,
         state_weak: &Weak<Mutex<StateTy>>,
         sender: ResponseSender,
     ) {
-        let message: MojomMessage = match MojomMessage::from_raw(&raw_message) {
-            Ok(msg) => msg,
-            Err(err) => {
-                // The error here is a reminder to return immediately, which we do
-                let _ = raw_message.report_bad_message(&err.to_string());
-                return;
-            }
-        };
-
-        let expects_response = message
-            .header
-            .flags
-            .contains(crate::message_header::MessageHeaderFlags::EXPECTS_RESPONSE);
-
         let Some(state) = state_weak.upgrade() else {
             // If we can't get the state, then the receiver must have just been
             // unbound, so there's nothing more for us to do.
             return;
         };
 
-        // Call our internal state object's message handler, and provide a
-        // callback that either sends the response or panics because no response
-        // was expected.
-        // We might be able to make this more readable by moving the state calls
-        // out of the if statement using a type like itertools::Either, if we
-        // get that approved for use in chromium.
-        if expects_response {
-            // Make sure the request ID in the response header matches the request.
-            let request_id = message.header.request_id;
-            state.lock().expect("Mutex should never be poisoned").handle_incoming_message(
-                message,
-                move |mut response: MojomMessage| {
-                    response.header.request_id = request_id;
-                    let (payload, handles) = response.into_data();
-                    sender.try_send_response(
-                        RawMojoMessage::new_with_data(&payload, handles).unwrap(),
-                    );
-                },
-            );
-        } else {
-            state
-                .lock()
-                .expect("Mutex should never be poisoned")
-                .handle_incoming_message(message, |_| {
-                    panic!("Tried to send a response to a message that didn't expect one!")
-                })
-        };
+        state
+            .lock()
+            .expect("Mutex should never be poisoned")
+            .handle_incoming_message(message, sender);
     }
 
     // We deliberately do not implement `From` and `Into` for
@@ -298,36 +319,17 @@ where
     // stateful operations that should be done explicitly.
 }
 
-impl<T: DynMojomInterface + ?Sized> std::fmt::Debug for PendingReceiver<T> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("PendingReceiver").field("endpoint", &self.endpoint).finish()
-    }
-}
-
-impl<T: DynMojomInterface + ?Sized> PartialEq for PendingReceiver<T> {
-    fn eq(&self, other: &Self) -> bool {
-        self.endpoint == other.endpoint
-    }
-}
-
-impl<T: DynMojomInterface + ?Sized> Eq for PendingReceiver<T> {}
-
-impl<Context, T> mojom_value_parser::MojomParse<Context> for PendingReceiver<T>
+impl<StateTy> AssociatedReceiver<StateTy>
 where
-    T: DynMojomInterface + ?Sized + 'static,
+    StateTy: MojomInterface + Sized + Send + 'static,
 {
-    fn mojom_type() -> MojomType {
-        MojomType::PendingReceiver
-    }
-
-    fn into_mojom_value(self, _context: &Context) -> MojomValue {
-        MojomValue::PendingReceiver(self.into_endpoint())
-    }
-
-    fn try_from_mojom_value(value: MojomValue, _context: &Context) -> anyhow::Result<Self> {
-        match value {
-            MojomValue::PendingReceiver(handle) => Ok(PendingReceiver::new(handle)),
-            _ => anyhow::bail!("Expected PendingReceiver, got {:?}", value),
-        }
+    /// Checks if the endpoint has been associated with a specific pipe yet,
+    /// and is therefore ready to receive any messages that are sent to it.
+    ///
+    /// This only happens when the _other_ endpoint is sent via a Mojo message.
+    /// If this returns false, trying to use the endpoint (e.g. sending
+    /// messages) will panic.
+    pub fn ready_for_messages(&self) -> bool {
+        self.router.ready_for_messages()
     }
 }

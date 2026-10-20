@@ -20,9 +20,12 @@
 #import "ios/chrome/browser/contextual_panel/model/contextual_panel_tab_helper_observer_bridge.h"
 #import "ios/chrome/browser/infobars/model/infobar_badge_tab_helper.h"
 #import "ios/chrome/browser/infobars/model/infobar_badge_tab_helper_observer_bridge.h"
+#import "ios/chrome/browser/intelligence/bwg/model/gemini_browser_agent.h"
 #import "ios/chrome/browser/intelligence/bwg/model/gemini_service.h"
 #import "ios/chrome/browser/intelligence/bwg/model/gemini_tab_helper.h"
+#import "ios/chrome/browser/intelligence/bwg/utils/gemini_availability.h"
 #import "ios/chrome/browser/intelligence/bwg/utils/gemini_constants.h"
+#import "ios/chrome/browser/intelligence/contextual_cueing/contextual_cueing_tab_helper.h"
 #import "ios/chrome/browser/intelligence/features/features.h"
 #import "ios/chrome/browser/location_bar/badge/coordinator/location_bar_badge_mediator_delegate.h"
 #import "ios/chrome/browser/location_bar/badge/metrics/location_bar_badge_metrics.h"
@@ -32,11 +35,13 @@
 #import "ios/chrome/browser/location_bar/badge/ui/location_bar_badge_consumer.h"
 #import "ios/chrome/browser/location_bar/ui_bundled/location_bar_metrics.h"
 #import "ios/chrome/browser/shared/model/prefs/pref_names.h"
+#import "ios/chrome/browser/shared/model/profile/profile_ios.h"
 #import "ios/chrome/browser/shared/model/web_state_list/web_state_list.h"
 #import "ios/chrome/browser/shared/model/web_state_list/web_state_list_observer_bridge.h"
-#import "ios/chrome/browser/shared/public/commands/bwg_commands.h"
 #import "ios/chrome/browser/shared/public/commands/contextual_panel_entrypoint_iph_commands.h"
 #import "ios/chrome/browser/shared/public/commands/contextual_sheet_commands.h"
+#import "ios/chrome/browser/shared/public/commands/custom_leading_view_type.h"
+#import "ios/chrome/browser/shared/public/commands/gemini_commands.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/shared/ui/symbols/symbols.h"
 #import "ios/chrome/grit/ios_strings.h"
@@ -79,6 +84,8 @@ constexpr base::TimeDelta kStartCollapseTransitionTime = base::Seconds(5);
   raw_ptr<PrefService> _prefService;
   // Gemini service
   raw_ptr<GeminiService> _geminiService;
+  // Gemini browser agent
+  raw_ptr<GeminiBrowserAgent> _geminiBrowserAgent;
   // Bridge for the InfobarBadgeTabHelper observation.
   std::unique_ptr<InfobarBadgeTabHelperObserverBridge>
       _infobarBadgeObserverBridge;
@@ -95,12 +102,15 @@ constexpr base::TimeDelta kStartCollapseTransitionTime = base::Seconds(5);
       _activeContextualPanelObservationForwarder;
   // Boolean to track whether the FET promo is being displayed.
   BOOL _isFETPromoShowing;
+  // The current badge configuration being displayed or processed.
+  LocationBarBadgeConfiguration* _currentBadgeConfig;
 }
 
 - (instancetype)initWithWebStateList:(WebStateList*)webStateList
                              tracker:(feature_engagement::Tracker*)tracker
                          prefService:(PrefService*)prefService
-                       geminiService:(GeminiService*)geminiService {
+                       geminiService:(GeminiService*)geminiService
+                  geminiBrowserAgent:(GeminiBrowserAgent*)geminiBrowserAgent {
   self = [super init];
   if (self) {
     _webStateList = webStateList;
@@ -135,6 +145,7 @@ constexpr base::TimeDelta kStartCollapseTransitionTime = base::Seconds(5);
     _tracker = tracker;
     _prefService = prefService;
     _geminiService = geminiService;
+    _geminiBrowserAgent = geminiBrowserAgent;
   }
   return self;
 }
@@ -159,9 +170,11 @@ constexpr base::TimeDelta kStartCollapseTransitionTime = base::Seconds(5);
 
   _promoStartTimer = nullptr;
   _promoEndTimer = nullptr;
+  _currentBadgeConfig = nil;
   _tracker = nil;
   _prefService = nil;
   _geminiService = nil;
+  _geminiBrowserAgent = nullptr;
 }
 
 #pragma mark - WebStateListObserving
@@ -206,6 +219,7 @@ constexpr base::TimeDelta kStartCollapseTransitionTime = base::Seconds(5);
   if (!navigationContext->IsSameDocument()) {
     _promoStartTimer = nil;
     _promoEndTimer = nil;
+    _currentBadgeConfig = nil;
     [self.consumer hideBadge];
     [self ensureFETFeatureIsDismissed];
     [self preventContextualPanelEntryPoint:NO];
@@ -290,6 +304,7 @@ constexpr base::TimeDelta kStartCollapseTransitionTime = base::Seconds(5);
   }
 
   [self resetTimersAndUIStateAnimated:NO];
+  _currentBadgeConfig = config;
   [self.consumer setBadgeConfig:config];
   [self.consumer collapseBadgeContainer];
   [self.consumer showBadge];
@@ -314,6 +329,18 @@ constexpr base::TimeDelta kStartCollapseTransitionTime = base::Seconds(5);
   [self.consumer showUnreadBadge:unread];
 }
 
+- (void)setBadgeCustomLeadingViewType:(CustomLeadingViewType)type {
+  // No-op.
+}
+
+- (void)hideBadgeForType:(LocationBarBadgeType)type {
+  if (_currentBadgeConfig && _currentBadgeConfig.badgeType == type) {
+    _currentBadgeConfig = nil;
+    [self resetTimersAndUIStateAnimated:YES];
+    [self.consumer hideBadge];
+  }
+}
+
 #pragma mark - LocationBarBadgeMutator
 
 - (void)dismissIPHAnimated:(BOOL)animated {
@@ -322,22 +349,33 @@ constexpr base::TimeDelta kStartCollapseTransitionTime = base::Seconds(5);
 }
 
 - (void)badgeTapped:(LocationBarBadgeConfiguration*)badgeConfig {
+  if (_currentBadgeConfig && _currentBadgeConfig != badgeConfig) {
+    return;
+  }
+
   // Cancel any pending transition timers since user interacted with the badge.
   [self resetTimersAndUIStateAnimated:YES];
 
   switch (badgeConfig.badgeType) {
     case LocationBarBadgeType::kGeminiContextualCueChip: {
-      NSString* prompt = nil;
-      if (IsAskGeminiChipPrepopulateFloatyEnabled()) {
-        prompt = l10n_util::GetNSString(IDS_IOS_ASK_GEMINI_CHIP_PREFILL_PROMPT);
-      }
-
+      auto* tabHelper =
+          _activeWebState
+              ? contextual_cueing::ContextualCueingTabHelper::FromWebState(
+                    _activeWebState)
+              : nullptr;
+      NSString* prompt = tabHelper ? tabHelper->GetContextualCuePrompt() : nil;
       GeminiStartupState* state = [[GeminiStartupState alloc]
-          initWithEntryPoint:gemini::EntryPoint::OmniboxChip];
+          initWithEntryPoint:gemini::EntryPoint::ContextualCueChip];
       state.prepopulatedPrompt = prompt;
-      [self.BWGCommandHandler startGeminiFlowWithStartupState:state];
-      _tracker->NotifyEvent(
-          feature_engagement::events::kIOSGeminiContextualCueChipUsed);
+      state.shouldAutoSubmit = NO;
+      [self.delegate locationBarBadgeMediator:self
+          startGeminiEntryFlowWithStartupState:state];
+      if (tabHelper) {
+        tabHelper->RecordCueClicked();
+      } else {
+        _tracker->NotifyEvent(
+            feature_engagement::events::kIOSGeminiContextualCueChipUsed);
+      }
 
       // Ensure badge is hidden after the user interacts with it.
       if ([self.consumer isBadgeVisible]) {
@@ -346,7 +384,6 @@ constexpr base::TimeDelta kStartCollapseTransitionTime = base::Seconds(5);
       break;
     }
     case LocationBarBadgeType::kContextualPanelEntryPointSample:
-    case LocationBarBadgeType::kPriceInsights:
     case LocationBarBadgeType::kReaderMode:
       [self contextualPanelEntrypointBadgeTapped];
       break;
@@ -363,6 +400,14 @@ constexpr base::TimeDelta kStartCollapseTransitionTime = base::Seconds(5);
 - (void)handleBadgeContainerCollapse:(LocationBarBadgeType)badgeType {
   switch (badgeType) {
     case LocationBarBadgeType::kGeminiContextualCueChip: {
+      auto* tabHelper =
+          _activeWebState
+              ? contextual_cueing::ContextualCueingTabHelper::FromWebState(
+                    _activeWebState)
+              : nullptr;
+      if (tabHelper) {
+        tabHelper->RecordCueDismissed();
+      }
       [self ensureFETFeatureIsDismissed];
       [self preventContextualPanelEntryPoint:NO];
       break;
@@ -390,7 +435,7 @@ constexpr base::TimeDelta kStartCollapseTransitionTime = base::Seconds(5);
 // in-memory tracking states without side effects.
 - (void)ensureFETFeatureIsDismissed {
   if (_isFETPromoShowing) {
-    if (!IsAskGeminiChipIgnoreCriteria()) {
+    if (!IsAskGeminiChipIgnoreCriteriaEnabled()) {
       _tracker->Dismissed(feature_engagement::kIPHiOSGeminiContextualCueChip);
     }
     _isFETPromoShowing = NO;
@@ -454,7 +499,6 @@ constexpr base::TimeDelta kStartCollapseTransitionTime = base::Seconds(5);
   LocationBarBadgeType badgeType = badgeConfig.badgeType;
   switch (badgeType) {
     case LocationBarBadgeType::kContextualPanelEntryPointSample:
-    case LocationBarBadgeType::kPriceInsights:
     case LocationBarBadgeType::kReaderMode: {
       // Special case for first entrypoint appearances where an IPH is shown
       // instead of the large entrypoint. If showing the IPH fails, will
@@ -516,6 +560,7 @@ constexpr base::TimeDelta kStartCollapseTransitionTime = base::Seconds(5);
 - (void)resetTimersAndUIStateAnimated:(BOOL)animated {
   _promoStartTimer = nullptr;
   _promoEndTimer = nullptr;
+  _currentBadgeConfig = nil;
   [self dismissIPHAnimated:animated];
   [self cleanupAndTransitionToDefaultBadgeState];
 }
@@ -572,12 +617,24 @@ constexpr base::TimeDelta kStartCollapseTransitionTime = base::Seconds(5);
 // default, returns YES as badges should show given no other criteria.
 - (BOOL)shouldShowBadge:(LocationBarBadgeType)badgeType {
   switch (badgeType) {
-    case LocationBarBadgeType::kGeminiContextualCueChip:
+    case LocationBarBadgeType::kGeminiContextualCueChip: {
+      contextual_cueing::ContextualCueingTabHelper* tabHelper =
+          _activeWebState
+              ? contextual_cueing::ContextualCueingTabHelper::FromWebState(
+                    _activeWebState)
+              : nullptr;
+      if (tabHelper &&
+          tabHelper->GetContextualCueUiType() ==
+              contextual_cueing::ContextualCueUiType::kOmniboxChip) {
+        [self preventContextualPanelEntryPoint:YES];
+        return YES;
+      }
       if ([self shouldShowGeminiContextualBadge]) {
         [self preventContextualPanelEntryPoint:YES];
         return YES;
       }
       return NO;
+    }
     case LocationBarBadgeType::kNone:
       return NO;
     default:
@@ -596,7 +653,6 @@ constexpr base::TimeDelta kStartCollapseTransitionTime = base::Seconds(5);
   LocationBarBadgeType badgeType = badgeConfig.badgeType;
   switch (badgeType) {
     case LocationBarBadgeType::kContextualPanelEntryPointSample:
-    case LocationBarBadgeType::kPriceInsights:
     case LocationBarBadgeType::kReaderMode: {
       ContextualPanelTabHelper* contextualPanelTabHelper =
           ContextualPanelTabHelper::FromWebState(
@@ -616,7 +672,6 @@ constexpr base::TimeDelta kStartCollapseTransitionTime = base::Seconds(5);
 - (BOOL)shouldShowIPH:(LocationBarBadgeType)badgeType {
   switch (badgeType) {
     case LocationBarBadgeType::kContextualPanelEntryPointSample:
-    case LocationBarBadgeType::kPriceInsights:
     case LocationBarBadgeType::kReaderMode: {
       ContextualPanelTabHelper* contextualPanelTabHelper =
           ContextualPanelTabHelper::FromWebState(
@@ -627,7 +682,6 @@ constexpr base::TimeDelta kStartCollapseTransitionTime = base::Seconds(5);
     }
     default:
       return NO;
-      ;
   }
 }
 
@@ -635,7 +689,6 @@ constexpr base::TimeDelta kStartCollapseTransitionTime = base::Seconds(5);
 - (void)badgeShown:(LocationBarBadgeType)badgeType {
   switch (badgeType) {
     case LocationBarBadgeType::kContextualPanelEntryPointSample:
-    case LocationBarBadgeType::kPriceInsights:
     case LocationBarBadgeType::kReaderMode: {
       ContextualPanelTabHelper* contextualPanelTabHelper =
           ContextualPanelTabHelper::FromWebState(
@@ -656,7 +709,6 @@ constexpr base::TimeDelta kStartCollapseTransitionTime = base::Seconds(5);
 - (void)chipShown:(LocationBarBadgeType)badgeType {
   switch (badgeType) {
     case LocationBarBadgeType::kContextualPanelEntryPointSample:
-    case LocationBarBadgeType::kPriceInsights:
     case LocationBarBadgeType::kReaderMode: {
       ContextualPanelTabHelper* contextualPanelTabHelper =
           ContextualPanelTabHelper::FromWebState(
@@ -687,13 +739,18 @@ constexpr base::TimeDelta kStartCollapseTransitionTime = base::Seconds(5);
   if (IsChromeNextIaEnabled() && !self.active) {
     return NO;
   }
-  GeminiTabHelper* tabHelper = GeminiTabHelper::FromWebState(_activeWebState);
-  BOOL isPageEligible = tabHelper &&
-                        tabHelper->IsGeminiAvailableForWebState() &&
-                        _geminiService->IsProfileEligibleForGemini();
-  // TODO(crbug.com/465766925): Remove when feature is enabled by default.
-  BOOL isConsentEligible = IsAskGeminiChipAllowNonconsentedUsersEnabled() ||
-                           _prefService->GetBoolean(prefs::kIOSBwgConsent);
+  if (_geminiBrowserAgent && _geminiBrowserAgent->is_floaty_invoked()) {
+    return NO;
+  }
+  ProfileIOS* profile =
+      _activeWebState
+          ? ProfileIOS::FromBrowserState(_activeWebState->GetBrowserState())
+          : nullptr;
+  BOOL isPageEligible =
+      gemini::IsGeminiAvailable(gemini::EntryPoint::DirectOmniboxBadge, profile,
+                                _activeWebState)
+          .enabled;
+  BOOL isConsentEligible = _prefService->GetBoolean(prefs::kIOSBwgConsent);
 
   // Checks if an eligible amount of time has passed since the last chip
   // display.
@@ -709,7 +766,7 @@ constexpr base::TimeDelta kStartCollapseTransitionTime = base::Seconds(5);
     return NO;
   }
 
-  if (IsAskGeminiChipIgnoreCriteria()) {
+  if (IsAskGeminiChipIgnoreCriteriaEnabled()) {
     return YES;
   }
 
@@ -813,8 +870,7 @@ constexpr base::TimeDelta kStartCollapseTransitionTime = base::Seconds(5);
       badgeType = LocationBarBadgeType::kContextualPanelEntryPointSample;
       break;
     case ContextualPanelItemType::PriceInsightsItem:
-      badgeType = LocationBarBadgeType::kPriceInsights;
-      break;
+      NOTREACHED();
     case ContextualPanelItemType::ReaderModeItem:
       badgeType = LocationBarBadgeType::kReaderMode;
       break;
@@ -830,20 +886,8 @@ constexpr base::TimeDelta kStartCollapseTransitionTime = base::Seconds(5);
   NSString* accessibilityLabel =
       base::SysUTF8ToNSString(config->accessibility_label);
 
-  UIImage* image;
-  CGFloat symbolPointSize = kBadgeSymbolPointSize;
-  switch (config->image_type) {
-    case ContextualPanelItemConfiguration::EntrypointImageType::SFSymbol:
-      image = DefaultSymbolWithPointSize(
-          base::SysUTF8ToNSString(config->entrypoint_image_name),
-          symbolPointSize);
-      break;
-    case ContextualPanelItemConfiguration::EntrypointImageType::Image:
-      image = CustomSymbolWithPointSize(
-          base::SysUTF8ToNSString(config->entrypoint_image_name),
-          symbolPointSize);
-      break;
-  }
+  UIImage* image =
+      SymbolWithPointSize(config->entrypoint_symbol, kBadgeSymbolPointSize);
 
   LocationBarBadgeConfiguration* badgeConfig =
       [[LocationBarBadgeConfiguration alloc]

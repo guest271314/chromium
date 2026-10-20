@@ -9,15 +9,14 @@ import static androidx.test.espresso.matcher.ViewMatchers.assertThat;
 import static org.hamcrest.CoreMatchers.is;
 import static org.hamcrest.Matchers.equalTo;
 import static org.junit.Assert.assertNotNull;
-import static org.mockito.ArgumentMatchers.any;
+import static org.junit.Assert.assertTrue;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
-import static org.mockito.Mockito.when;
 
 import static org.chromium.chrome.browser.keyboard_accessory.sheet_tabs.AccessorySheetTabItemsModel.AccessorySheetDataPiece.Type.ADDRESS_INFO;
-import static org.chromium.chrome.browser.keyboard_accessory.sheet_tabs.AccessorySheetTabItemsModel.AccessorySheetDataPiece.Type.PLUS_ADDRESS_SECTION;
 import static org.chromium.chrome.browser.keyboard_accessory.sheet_tabs.AccessorySheetTabItemsModel.AccessorySheetDataPiece.Type.TITLE;
 import static org.chromium.chrome.browser.keyboard_accessory.sheet_tabs.AccessorySheetTabItemsModel.AccessorySheetDataPiece.getType;
+import static org.chromium.chrome.browser.keyboard_accessory.sheet_tabs.AccessorySheetTabProperties.IS_DEFAULT_A11Y_FOCUS_REQUESTED;
 
 import org.junit.After;
 import org.junit.Before;
@@ -28,8 +27,8 @@ import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 import org.robolectric.RuntimeEnvironment;
-import org.robolectric.annotation.Config;
 
+import org.chromium.base.CallbackUtils;
 import org.chromium.base.ContextUtils;
 import org.chromium.base.supplier.ObservableSuppliers;
 import org.chromium.base.supplier.SettableNullableObservableSupplier;
@@ -38,39 +37,37 @@ import org.chromium.chrome.browser.keyboard_accessory.AccessorySuggestionType;
 import org.chromium.chrome.browser.keyboard_accessory.AccessoryTabType;
 import org.chromium.chrome.browser.keyboard_accessory.data.KeyboardAccessoryData;
 import org.chromium.chrome.browser.keyboard_accessory.data.KeyboardAccessoryData.AccessorySheetData;
-import org.chromium.chrome.browser.keyboard_accessory.data.KeyboardAccessoryData.PlusAddressInfo;
 import org.chromium.chrome.browser.keyboard_accessory.data.KeyboardAccessoryData.UserInfo;
 import org.chromium.chrome.browser.keyboard_accessory.data.UserInfoField;
 import org.chromium.chrome.browser.profiles.Profile;
-import org.chromium.chrome.browser.util.ChromeAccessibilityUtil;
+import org.chromium.ui.accessibility.AccessibilityStateTestHelper;
 import org.chromium.ui.modelutil.ListObservable;
 
 /** Controller tests for the address accessory sheet. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 public class AddressAccessorySheetControllerTest {
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
 
     @Mock private Profile mProfile;
-    @Mock private AccessorySheetTabView mMockView;
     @Mock private ListObservable.ListObserver<Void> mMockItemListObserver;
 
+    private AccessorySheetTabView mView;
     private AddressAccessorySheetCoordinator mCoordinator;
     private AccessorySheetTabItemsModel mSheetDataPieces;
 
     @Before
     public void setUp() {
-        when(mMockView.getContext()).thenReturn(ContextUtils.getApplicationContext());
+        mView = new AccessorySheetTabView(ContextUtils.getApplicationContext(), null);
         mCoordinator =
                 new AddressAccessorySheetCoordinator(
-                        RuntimeEnvironment.application, mProfile, null);
+                        RuntimeEnvironment.getApplication(), mProfile, null);
         assertNotNull(mCoordinator);
         mSheetDataPieces = mCoordinator.getSheetDataPiecesForTesting();
     }
 
     @After
     public void tearDown() {
-        ChromeAccessibilityUtil.get().setAccessibilityEnabledForTesting(false);
+        AccessibilityStateTestHelper.setAccessibilityEnabledForTesting(false);
     }
 
     @Test
@@ -82,24 +79,22 @@ public class AddressAccessorySheetControllerTest {
 
     @Test
     public void testSetsViewAdapterOnTabCreation() {
-        when(mMockView.getParent()).thenReturn(mMockView);
         KeyboardAccessoryData.Tab tab = mCoordinator.getTab();
         assertNotNull(tab);
         assertNotNull(tab.getListener());
-        tab.getListener().onTabCreated(mMockView);
-        verify(mMockView).setAdapter(any());
+        tab.getListener().onTabCreated(mView);
+        assertNotNull(mView.getAdapter());
     }
 
     @Test
     public void testRequestDefaultFocus() {
-        ChromeAccessibilityUtil.get().setAccessibilityEnabledForTesting(true);
+        AccessibilityStateTestHelper.setAccessibilityEnabledForTesting(true);
 
-        when(mMockView.getParent()).thenReturn(mMockView);
         KeyboardAccessoryData.Tab tab = mCoordinator.getTab();
-        tab.getListener().onTabCreated(mMockView);
+        tab.getListener().onTabCreated(mView);
         tab.getListener().onTabShown();
 
-        verify(mMockView).requestDefaultA11yFocus();
+        assertTrue(mCoordinator.mModel.get(IS_DEFAULT_A11Y_FOCUS_REQUESTED));
     }
 
     @Test
@@ -115,7 +110,6 @@ public class AddressAccessorySheetControllerTest {
                 new AccessorySheetData(
                         AccessoryTabType.ADDRESSES,
                         /* userInfoTitle= */ "Addresses",
-                        /* plusAddressTitle= */ "",
                         /* warning= */ ""));
         verify(mMockItemListObserver).onItemRangeInserted(mSheetDataPieces, 0, 1);
         assertThat(mSheetDataPieces.size(), is(1));
@@ -125,7 +119,6 @@ public class AddressAccessorySheetControllerTest {
                 new AccessorySheetData(
                         AccessoryTabType.ADDRESSES,
                         /* userInfoTitle= */ "Other Addresses",
-                        /* plusAddressTitle= */ "",
                         /* warning= */ ""));
         verify(mMockItemListObserver).onItemRangeChanged(mSheetDataPieces, 0, 1, null);
         assertThat(mSheetDataPieces.size(), is(1));
@@ -139,7 +132,6 @@ public class AddressAccessorySheetControllerTest {
         testProvider.set(null);
         verifyNoMoreInteractions(mMockItemListObserver);
     }
-
     @Test
     public void testSplitsTabDataToList() {
         final SettableNullableObservableSupplier<AccessorySheetData> testProvider =
@@ -148,18 +140,7 @@ public class AddressAccessorySheetControllerTest {
                 new AccessorySheetData(
                         AccessoryTabType.ADDRESSES,
                         /* userInfoTitle= */ "",
-                        /* plusAddressTitle= */ "",
                         /* warning= */ "");
-        testData.getPlusAddressInfoList()
-                .add(
-                        new PlusAddressInfo(
-                                "google.com",
-                                new UserInfoField.Builder()
-                                        .setSuggestionType(AccessorySuggestionType.PLUS_ADDRESS)
-                                        .setDisplayText("example@gmail.com")
-                                        .setA11yDescription("example@gmail.com")
-                                        .setCallback(field -> {})
-                                        .build()));
         testData.getUserInfoList().add(new UserInfo("", false));
         testData.getUserInfoList()
                 .get(0)
@@ -177,19 +158,15 @@ public class AddressAccessorySheetControllerTest {
                                 .setDisplayText("Street")
                                 .setA11yDescription("Street")
                                 .setIsObfuscated(true)
-                                .setCallback(field -> {})
+                                .setCallback(CallbackUtils.emptyCallback())
                                 .build());
 
         mCoordinator.registerDataProvider(testProvider);
         testProvider.set(testData);
 
-        assertThat(mSheetDataPieces.size(), is(2));
-        assertThat(getType(mSheetDataPieces.get(0)), is(PLUS_ADDRESS_SECTION));
-        assertThat(getType(mSheetDataPieces.get(1)), is(ADDRESS_INFO));
-        assertThat(
-                mSheetDataPieces.get(0).getDataPiece(),
-                is(testData.getPlusAddressInfoList().get(0)));
-        assertThat(mSheetDataPieces.get(1).getDataPiece(), is(testData.getUserInfoList().get(0)));
+        assertThat(mSheetDataPieces.size(), is(1));
+        assertThat(getType(mSheetDataPieces.get(0)), is(ADDRESS_INFO));
+        assertThat(mSheetDataPieces.get(0).getDataPiece(), is(testData.getUserInfoList().get(0)));
     }
 
     @Test
@@ -200,16 +177,13 @@ public class AddressAccessorySheetControllerTest {
                 new AccessorySheetData(
                         AccessoryTabType.ADDRESSES,
                         /* userInfoTitle= */ "No addresses",
-                        /* plusAddressTitle= */ "No saved plus addresses",
                         /* warning= */ "");
         mCoordinator.registerDataProvider(testProvider);
 
         testProvider.set(testData);
 
-        assertThat(mSheetDataPieces.size(), is(2));
+        assertThat(mSheetDataPieces.size(), is(1));
         assertThat(getType(mSheetDataPieces.get(0)), is(TITLE));
         assertThat(mSheetDataPieces.get(0).getDataPiece(), is(equalTo("No addresses")));
-        assertThat(getType(mSheetDataPieces.get(1)), is(TITLE));
-        assertThat(mSheetDataPieces.get(1).getDataPiece(), is(equalTo("No saved plus addresses")));
     }
 }

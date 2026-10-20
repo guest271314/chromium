@@ -28,7 +28,6 @@ include_rules = [
   '+chromeos/ash/components/network/managed_network_configuration_handler.h',
   '+chromeos/ash/components/network/network_configuration_handler.h',
   '+chromeos/ash/components/network/network_profile_handler.h',
-  '+chromeos/ash/components/nearby/presence/conversions/proto_conversions.h',
   '+components/cross_device/nearby/nearby_features.h',
   '+components/onc/onc_constants.h',
   '+components/onc/onc_pref_names.h',
@@ -36,12 +35,13 @@ include_rules = [
   '+components/proxy_config/pref_proxy_config_tracker_impl.h',
   '+components/proxy_config/proxy_config_pref_names.h',
   '+components/sync_preferences/testing_pref_service_syncable.h',
-  '+components/user_manager',
   '+third_party/cros_system_api/dbus/shill/dbus-constants.h',
 ]
 
 specific_include_rules = {
-  "wifi_lan_medium_unittest\.cc": [
+  "wifi_lan_medium_unittest\\.cc": [
+    "+chrome/test/base/testing_browser_process.h",
     "+chromeos/ash/services/network_config/in_process_instance.h",
+    "+components/session_manager/test/user_session_test_environment.h",
   ],
 }

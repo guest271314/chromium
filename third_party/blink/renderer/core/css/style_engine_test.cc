@@ -40,6 +40,7 @@
 #include "third_party/blink/renderer/core/css/resolver/style_resolver_stats.h"
 #include "third_party/blink/renderer/core/css/style_change_reason.h"
 #include "third_party/blink/renderer/core/css/style_scope_frame.h"
+#include "third_party/blink/renderer/core/css/style_sheet_collection.h"
 #include "third_party/blink/renderer/core/css/style_sheet_contents.h"
 #include "third_party/blink/renderer/core/dom/document.h"
 #include "third_party/blink/renderer/core/dom/first_letter_pseudo_element.h"
@@ -82,6 +83,7 @@
 #include "third_party/blink/renderer/platform/testing/runtime_enabled_features_test_helpers.h"
 #include "third_party/blink/renderer/platform/testing/testing_platform_support.h"
 #include "third_party/blink/renderer/platform/testing/unit_test_helpers.h"
+#include "third_party/blink/renderer/platform/wtf/text/format.h"
 #include "ui/base/mojom/window_show_state.mojom-blink.h"
 #include "ui/gfx/geometry/size_f.h"
 
@@ -105,7 +107,8 @@ class StyleEngineTest : public PageTestBase {
   }
 
   const CSSValue* ComputedValue(Element* element, String property_name) {
-    CSSPropertyRef ref(property_name, GetDocument());
+    AtomicString atomic_name(property_name);
+    CSSPropertyRef ref(&atomic_name, GetDocument());
     DCHECK(ref.IsValid());
     return ref.GetProperty().CSSValueFromComputedStyle(
         element->ComputedStyleRef(),
@@ -164,6 +167,10 @@ class StyleEngineTest : public PageTestBase {
     return GetStyleEngine().functional_media_query_results_.size();
   }
 
+  StyleSheetCollection& GetDocumentStyleSheetCollection() {
+    return GetStyleEngine().GetDocumentStyleSheetCollection();
+  }
+
   // Returns the total size of the random() base value caches (element-shared
   // and element-dependent).
   wtf_size_t GetRandomBaseValueCacheSize() {
@@ -215,6 +222,42 @@ TEST_F(StyleEngineTest, DocumentDirtyAfterInject) {
   EXPECT_FALSE(IsDocumentStyleSheetCollectionClean());
   UpdateAllLifecyclePhases();
   EXPECT_TRUE(IsDocumentStyleSheetCollectionClean());
+}
+
+TEST_F(StyleEngineTest, UnrelatedStyleChangePreservesMixinMapIdentity) {
+  ScopedCSSMixinsForTest scoped_css_mixins(true);
+  SetBodyInnerHTML(R"HTML(
+    <style id="mixins">
+      @mixin --mixin() {
+        @result {
+          color: green;
+        }
+      }
+    </style>
+    <style id="unrelated">#unused { color: red; }</style>
+  )HTML");
+  UpdateAllLifecyclePhases();
+
+  StyleSheetCollection& collection = GetDocumentStyleSheetCollection();
+  ASSERT_TRUE(collection.Mixins().map_identifier.has_value());
+  const uint64_t original_identifier =
+      collection.Mixins().map_identifier.value();
+
+  GetDocument()
+      .getElementById(AtomicString("unrelated"))
+      ->setTextContent("#unused { color: blue; }");
+  UpdateAllLifecyclePhases();
+  EXPECT_EQ(original_identifier, collection.Mixins().map_identifier);
+
+  GetDocument().getElementById(AtomicString("mixins"))->setTextContent(R"CSS(
+        @mixin --mixin() {
+          @result {
+            color: blue;
+          }
+        }
+      )CSS");
+  UpdateAllLifecyclePhases();
+  EXPECT_NE(original_identifier, collection.Mixins().map_identifier);
 }
 
 TEST_F(StyleEngineTest, AnalyzedInject) {
@@ -771,6 +814,45 @@ TEST_F(StyleEngineTest, AnalyzedInject) {
       t11->GetComputedStyle()->VisitedDependentColor(GetCSSPropertyColor()));
 }
 
+TEST_F(StyleEngineTest, HoverActiveNotMatchedWhilePrinting) {
+  SetBodyInnerHTML(R"HTML(
+    <style>
+      #target { color: rgb(0, 0, 0); }
+      #target:hover { color: rgb(255, 0, 0); }
+      #target:active { color: rgb(0, 255, 0); }
+    </style>
+    <div id="target"></div>
+  )HTML");
+
+  Element* target = GetElementById("target");
+
+  target->SetHovered(true);
+  UpdateAllLifecyclePhasesForTest();
+  EXPECT_EQ(
+      Color::FromRGB(255, 0, 0),
+      target->GetComputedStyle()->VisitedDependentColor(GetCSSPropertyColor()));
+
+  gfx::SizeF page_size(400, 400);
+  GetDocument().GetFrame()->StartPrinting(WebPrintParams(page_size));
+  EXPECT_EQ(
+      Color::FromRGB(0, 0, 0),
+      target->GetComputedStyle()->VisitedDependentColor(GetCSSPropertyColor()));
+  GetDocument().GetFrame()->EndPrinting();
+
+  target->SetHovered(false);
+  target->SetActive(true);
+  UpdateAllLifecyclePhasesForTest();
+  EXPECT_EQ(
+      Color::FromRGB(0, 255, 0),
+      target->GetComputedStyle()->VisitedDependentColor(GetCSSPropertyColor()));
+
+  GetDocument().GetFrame()->StartPrinting(WebPrintParams(page_size));
+  EXPECT_EQ(
+      Color::FromRGB(0, 0, 0),
+      target->GetComputedStyle()->VisitedDependentColor(GetCSSPropertyColor()));
+  GetDocument().GetFrame()->EndPrinting();
+}
+
 TEST_F(StyleEngineTest, InjectedUserNoAuthorFontFace) {
   UpdateAllLifecyclePhases();
 
@@ -839,6 +921,33 @@ TEST_F(StyleEngineTest, IgnoreInvalidPropertyValue) {
   EXPECT_EQ(
       Color::FromRGB(255, 0, 0),
       t1->GetComputedStyle()->VisitedDependentColor(GetCSSPropertyColor()));
+}
+
+TEST_F(StyleEngineTest, LazyParseInlineStyleSheetPreservesComputedStyle) {
+  const char* kHtml =
+      "<style>#t1 { color: rgb(0, 128, 0); font-weight: bold }</style>"
+      "<div id='t1'></div>";
+
+  auto computed_color = [&]() {
+    GetDocument().body()->SetInnerHTMLWithoutTrustedTypes(kHtml);
+    UpdateAllLifecyclePhases();
+    Element* t1 = GetDocument().getElementById(AtomicString("t1"));
+    EXPECT_TRUE(t1);
+    return t1->GetComputedStyle()->VisitedDependentColor(GetCSSPropertyColor());
+  };
+
+  Color eager;
+  {
+    ScopedLazyParseInlineStyleSheetsForTest scoped_feature(false);
+    eager = computed_color();
+  }
+  Color lazy;
+  {
+    ScopedLazyParseInlineStyleSheetsForTest scoped_feature(true);
+    lazy = computed_color();
+  }
+  EXPECT_EQ(Color::FromRGB(0, 128, 0), eager);
+  EXPECT_EQ(eager, lazy);
 }
 
 TEST_F(StyleEngineTest, TextToSheetCache) {
@@ -1059,29 +1168,112 @@ TEST_F(StyleEngineTest, RuleSetInvalidationHostContext) {
   EXPECT_EQ(1u, after_count - before_count);
 }
 
-TEST_F(StyleEngineTest, HasViewportDependentMediaQueries) {
+TEST_F(StyleEngineTest, MayHaveViewportDependentMediaQueries) {
   GetDocument().body()->SetInnerHTMLWithoutTrustedTypes(R"HTML(
     <style>div {}</style>
     <style id='sheet' media='(min-width: 200px)'>
       div {}
     </style>
   )HTML");
+  UpdateAllLifecyclePhases();
 
+  EXPECT_TRUE(GetStyleEngine().MayHaveViewportDependentMediaQueries());
+
+  // The dependency is sticky for the lifetime of the StyleEngine: removing
+  // the stylesheet that introduced it does not clear the flag.
   Element* style_element = GetDocument().getElementById(AtomicString("sheet"));
-
-  for (unsigned i = 0; i < 10; i++) {
-    GetDocument().body()->RemoveChild(style_element);
-    UpdateAllLifecyclePhases();
-    GetDocument().body()->AppendChild(style_element);
-    UpdateAllLifecyclePhases();
-  }
-
-  EXPECT_TRUE(GetStyleEngine().HasViewportDependentMediaQueries());
-
   GetDocument().body()->RemoveChild(style_element);
   UpdateAllLifecyclePhases();
 
-  EXPECT_FALSE(GetStyleEngine().HasViewportDependentMediaQueries());
+  EXPECT_TRUE(GetStyleEngine().MayHaveViewportDependentMediaQueries());
+}
+
+TEST_F(StyleEngineTest,
+       NonMatchingMediaMutationStaysStickyAfterUnrelatedRebuild) {
+  GetDocument().body()->SetInnerHTMLWithoutTrustedTypes(R"HTML(
+    <style id="sheet" media="(min-width: 9000px)">div {}</style>
+  )HTML");
+  UpdateAllLifecyclePhases();
+
+  EXPECT_TRUE(GetStyleEngine().MayHaveViewportDependentMediaQueries());
+
+  // Mutating the non-matching stylesheet's media attribute to another
+  // non-matching, but no longer viewport-dependent, query does not clear the
+  // sticky dependency recorded on the StyleEngine.
+  Element* style_element = GetDocument().getElementById(AtomicString("sheet"));
+  style_element->setAttribute(html_names::kMediaAttr, AtomicString("print"));
+  UpdateAllLifecyclePhases();
+
+  EXPECT_TRUE(GetStyleEngine().MayHaveViewportDependentMediaQueries());
+
+  // An unrelated change to the active style sheets forces a CSSGlobalRuleSet
+  // rebuild. The sticky dependency must survive the rebuild rather than being
+  // recomputed from the (now non-viewport-dependent) live style sheets.
+  Element* unrelated_style =
+      GetDocument().CreateElementForBinding(AtomicString("style"));
+  unrelated_style->SetInnerHTMLWithoutTrustedTypes("span {}");
+  GetDocument().body()->appendChild(unrelated_style);
+  UpdateAllLifecyclePhases();
+
+  EXPECT_TRUE(GetStyleEngine().MayHaveViewportDependentMediaQueries());
+}
+
+TEST_F(StyleEngineTest, NonMatchingMediaMutationAddsViewportDependency) {
+  GetDocument().body()->SetInnerHTMLWithoutTrustedTypes(R"HTML(
+    <style id="sheet" media="print">div {}</style>
+  )HTML");
+  UpdateAllLifecyclePhases();
+
+  EXPECT_FALSE(GetStyleEngine().MayHaveViewportDependentMediaQueries());
+
+  Element* style_element = GetDocument().getElementById(AtomicString("sheet"));
+  style_element->setAttribute(html_names::kMediaAttr,
+                              AtomicString("(min-width: 9000px)"));
+  UpdateAllLifecyclePhases();
+
+  EXPECT_TRUE(GetStyleEngine().MayHaveViewportDependentMediaQueries());
+}
+
+TEST_F(StyleEngineTest, ShadowTreeNonMatchingMediaQuerySetsStickyDependency) {
+  GetDocument().body()->SetInnerHTMLWithoutTrustedTypes("<div id=host></div>");
+  Element* host = GetDocument().getElementById(AtomicString("host"));
+  ASSERT_TRUE(host);
+
+  ShadowRoot& shadow_root =
+      host->AttachShadowRootForTesting(ShadowRootMode::kOpen);
+  shadow_root.SetInnerHTMLWithoutTrustedTypes(R"HTML(
+    <style id="sheet" media="print">div {}</style>
+  )HTML");
+  UpdateAllLifecyclePhases();
+
+  EXPECT_FALSE(GetStyleEngine().MayHaveViewportDependentMediaQueries());
+
+  // Mutating the shadow tree's stylesheet media attribute to a
+  // viewport-dependent, still non-matching query sets the sticky flag on the
+  // StyleEngine, even though the TreeScope's active RuleSets don't change
+  // (the media query doesn't match either before or after).
+  Element* style_element = shadow_root.getElementById(AtomicString("sheet"));
+  ASSERT_TRUE(style_element);
+  style_element->setAttribute(html_names::kMediaAttr,
+                              AtomicString("(min-width: 9000px)"));
+  UpdateAllLifecyclePhases();
+
+  EXPECT_TRUE(GetStyleEngine().MayHaveViewportDependentMediaQueries());
+
+  // The dependency stays sticky across an unrelated CSSGlobalRuleSet rebuild
+  // and after the stylesheet that introduced it is removed.
+  Element* unrelated_style =
+      GetDocument().CreateElementForBinding(AtomicString("style"));
+  unrelated_style->SetInnerHTMLWithoutTrustedTypes("span {}");
+  GetDocument().body()->appendChild(unrelated_style);
+  UpdateAllLifecyclePhases();
+
+  EXPECT_TRUE(GetStyleEngine().MayHaveViewportDependentMediaQueries());
+
+  style_element->remove();
+  UpdateAllLifecyclePhases();
+
+  EXPECT_TRUE(GetStyleEngine().MayHaveViewportDependentMediaQueries());
 }
 
 TEST_F(StyleEngineTest, StyleMediaAttributeStyleChange) {
@@ -2932,9 +3124,11 @@ TEST_F(StyleEngineTest, ColorSchemeBaseBackgroundChange) {
   UpdateAllLifecyclePhases();
   mojom::blink::ColorScheme color_scheme = mojom::blink::ColorScheme::kLight;
   Color system_background_color = LayoutTheme::GetTheme().SystemColor(
-      CSSValueID::kCanvas, color_scheme,
-      GetDocument().GetColorProviderForPainting(color_scheme),
-      GetDocument().IsInWebAppScope() && GetDocument().IsInitialProfile());
+      CSSValueID::kCanvas,
+      /*theme_info=*/
+      {.color_provider =
+           GetDocument().GetColorProviderForPainting(color_scheme),
+       .color_scheme = color_scheme});
 
   EXPECT_EQ(system_background_color,
             GetDocument().View()->BaseBackgroundColor());
@@ -3110,71 +3304,6 @@ TEST_F(StyleEngineTest, RecalcPropagatedWritingMode) {
   EXPECT_FALSE(GetDocument().View()->NeedsLayout());
 }
 
-TEST_F(StyleEngineTest, GetComputedStyleOutsideFlatTree) {
-  GetDocument().body()->SetInnerHTMLWithoutTrustedTypes(
-      R"HTML(<div id="host"><div id="outer"><div id="inner"><div id="innermost"></div></div></div></div>)HTML");
-
-  auto* host = GetDocument().getElementById(AtomicString("host"));
-  auto* outer = GetDocument().getElementById(AtomicString("outer"));
-  auto* inner = GetDocument().getElementById(AtomicString("inner"));
-  auto* innermost = GetDocument().getElementById(AtomicString("innermost"));
-
-  host->AttachShadowRootForTesting(ShadowRootMode::kOpen);
-  UpdateAllLifecyclePhases();
-
-  EXPECT_TRUE(host->GetComputedStyle());
-  // ComputedStyle is not generated outside the flat tree.
-  EXPECT_FALSE(outer->GetComputedStyle());
-  EXPECT_FALSE(inner->GetComputedStyle());
-  EXPECT_FALSE(innermost->GetComputedStyle());
-
-  inner->EnsureComputedStyle();
-  const ComputedStyle* outer_style = outer->GetComputedStyle();
-  const ComputedStyle* inner_style = inner->GetComputedStyle();
-
-  ASSERT_TRUE(outer_style);
-  ASSERT_TRUE(inner_style);
-  EXPECT_FALSE(innermost->GetComputedStyle());
-  EXPECT_TRUE(outer_style->IsEnsuredOutsideFlatTree());
-  EXPECT_TRUE(inner_style->IsEnsuredOutsideFlatTree());
-  EXPECT_EQ(Color::kTransparent, inner_style->VisitedDependentColor(
-                                     GetCSSPropertyBackgroundColor()));
-
-  inner->SetInlineStyleProperty(CSSPropertyID::kBackgroundColor, "green");
-  UpdateAllLifecyclePhases();
-
-  // Old ensured style is not cleared before we re-ensure it.
-  EXPECT_TRUE(inner->NeedsStyleRecalc());
-  EXPECT_EQ(inner_style, inner->GetComputedStyle());
-
-  inner->EnsureComputedStyle();
-
-  // Outer style was not dirty - we still have the same ComputedStyle object.
-  EXPECT_EQ(outer_style, outer->GetComputedStyle());
-  EXPECT_NE(inner_style, inner->GetComputedStyle());
-
-  inner_style = inner->GetComputedStyle();
-  EXPECT_EQ(Color(0, 128, 0), inner_style->VisitedDependentColor(
-                                  GetCSSPropertyBackgroundColor()));
-
-  // Making outer dirty will require that we clear ComputedStyles all the way up
-  // ensuring the style for innermost later because of inheritance.
-  outer->SetInlineStyleProperty(CSSPropertyID::kColor, "green");
-  UpdateAllLifecyclePhases();
-
-  EXPECT_EQ(outer_style, outer->GetComputedStyle());
-  EXPECT_EQ(inner_style, inner->GetComputedStyle());
-  EXPECT_FALSE(innermost->GetComputedStyle());
-
-  auto* innermost_style = innermost->EnsureComputedStyle();
-
-  EXPECT_NE(outer_style, outer->GetComputedStyle());
-  EXPECT_NE(inner_style, inner->GetComputedStyle());
-  ASSERT_TRUE(innermost_style);
-  EXPECT_EQ(Color(0, 128, 0),
-            innermost_style->VisitedDependentColor(GetCSSPropertyColor()));
-}
-
 TEST_F(StyleEngineTest, MoveSlottedOutsideFlatTree) {
   GetDocument().body()->SetInnerHTMLWithoutTrustedTypes(R"HTML(
     <div id="parent">
@@ -3281,33 +3410,6 @@ TEST_F(StyleEngineTest, RemoveStyleRecalcRootFromFlatTree) {
   EXPECT_FALSE(slot->ChildNeedsStyleRecalc());
   EXPECT_FALSE(span->NeedsStyleRecalc());
   EXPECT_FALSE(GetStyleRecalcRoot());
-}
-
-TEST_F(StyleEngineTest, SlottedWithEnsuredStyleOutsideFlatTree) {
-  GetDocument().body()->SetInnerHTMLWithoutTrustedTypes(R"HTML(
-    <div id="host"><span></span></div>
-  )HTML");
-
-  auto* host = GetDocument().getElementById(AtomicString("host"));
-  auto* span = To<Element>(host->firstChild());
-
-  ShadowRoot& shadow_root =
-      host->AttachShadowRootForTesting(ShadowRootMode::kOpen);
-  shadow_root.SetInnerHTMLWithoutTrustedTypes(R"HTML(
-    <div><slot name="default"></slot></div>
-  )HTML");
-
-  UpdateAllLifecyclePhases();
-
-  // Ensure style outside the flat tree.
-  const ComputedStyle* style = span->EnsureComputedStyle();
-  ASSERT_TRUE(style);
-  EXPECT_TRUE(style->IsEnsuredOutsideFlatTree());
-
-  span->setAttribute(html_names::kSlotAttr, AtomicString("default"));
-  GetDocument().GetSlotAssignmentEngine().RecalcSlotAssignments();
-  EXPECT_EQ(span, GetStyleRecalcRoot());
-  EXPECT_FALSE(span->GetComputedStyle());
 }
 
 TEST_F(StyleEngineTest, ForceReattachRecalcRootAttachShadow) {
@@ -4128,14 +4230,13 @@ TEST_F(StyleEngineTest, HasViewportUnitFlags) {
     SCOPED_TRACE(data.value);
     auto holder = std::make_unique<DummyPageHolder>(gfx::Size(800, 600));
     Document& document = holder->GetDocument();
-    document.body()->SetInnerHTMLWithoutTrustedTypes(
-        UNSAFE_TODO(String::Format(R"HTML(
+    document.body()->SetInnerHTMLWithoutTrustedTypes(Format(R"HTML(
       <style>
-        div { width: %s; }
+        div {{ width: {}; }}
       </style>
       <div id=target></div>
     )HTML",
-                                   data.value)));
+                                                            data.value));
     document.View()->UpdateAllLifecyclePhasesForTest();
 
     Element* target = document.getElementById(AtomicString("target"));
@@ -4147,6 +4248,60 @@ TEST_F(StyleEngineTest, HasViewportUnitFlags) {
               target->GetComputedStyle()->HasDynamicViewportUnits());
     EXPECT_EQ(data.has_static, document.HasStaticViewportUnits());
     EXPECT_EQ(data.has_dynamic, document.HasDynamicViewportUnits());
+  }
+}
+
+TEST_F(StyleEngineTest, HasViewportUnitFlagsInGradient) {
+  // Gradient color stops are resolved lazily, when the gradient is painted,
+  // rather than during style resolution. The viewport dependency still has to
+  // be recorded on the style, or a viewport resize would not invalidate it.
+  struct {
+    const char* value;
+    bool has_static;
+    bool has_dynamic;
+  } test_data[] = {
+      {"10px", false, false},
+      {"10em", false, false},
+      {"50%", false, false},
+
+      {"10vw", true, false},
+      {"10vh", true, false},
+      {"10vmin", true, false},
+      {"10vmax", true, false},
+      {"10svh", true, false},
+      {"10lvh", true, false},
+
+      {"10dvw", false, true},
+      {"10dvh", false, true},
+
+      {"calc(10px + 10vh)", true, false},
+      {"calc(10px + 10dvh)", false, true},
+  };
+
+  for (const auto& data : test_data) {
+    SCOPED_TRACE(data.value);
+    auto holder = std::make_unique<DummyPageHolder>(gfx::Size(800, 600));
+    Document& document = holder->GetDocument();
+    document.body()->SetInnerHTMLWithoutTrustedTypes(Format(R"HTML(
+      <style>
+        div {{
+          width: 100px;
+          height: 100px;
+          background-image: linear-gradient(to bottom, red 0, blue {});
+        }}
+      </style>
+      <div id=target></div>
+    )HTML",
+                                                            data.value));
+    document.View()->UpdateAllLifecyclePhasesForTest();
+
+    Element* target = document.getElementById(AtomicString("target"));
+    ASSERT_TRUE(target);
+
+    EXPECT_EQ(data.has_static,
+              target->GetComputedStyle()->HasStaticViewportUnits());
+    EXPECT_EQ(data.has_dynamic,
+              target->GetComputedStyle()->HasDynamicViewportUnits());
   }
 }
 
@@ -4353,6 +4508,42 @@ TEST_F(StyleEngineTest, MediaQueriesChangeResizable) {
                 GetCSSPropertyBackgroundColor()));
 }
 
+TEST_F(StyleEngineTest, MediaQueriesChangeResizableBooleanContext) {
+  ScopedDesktopPWAsAdditionalWindowingControlsForTest scoped_feature(true);
+  GetDocument().body()->SetInnerHTMLWithoutTrustedTypes(R"HTML(
+    <style>
+      body {
+        background-color: white;
+      }
+      @media (resizable) {
+        body {
+          background-color: yellow;
+        }
+      }
+      @media not (resizable) {
+        body {
+          background-color: cyan;
+        }
+      }
+    </style>
+    <body></body>
+  )HTML");
+
+  // resizable
+  // Default is set in /third_party/blink/renderer/core/frame/settings.json5.
+  UpdateAllLifecyclePhases();
+  EXPECT_EQ(Color::FromRGB(/*yellow*/ 255, 255, 0),
+            GetDocument().body()->GetComputedStyle()->VisitedDependentColor(
+                GetCSSPropertyBackgroundColor()));
+
+  // not resizable
+  GetFrame().GetSettings()->SetResizable(false);
+  UpdateAllLifecyclePhases();
+  EXPECT_EQ(Color::FromRGB(/*cyan*/ 0, 255, 255),
+            GetDocument().body()->GetComputedStyle()->VisitedDependentColor(
+                GetCSSPropertyBackgroundColor()));
+}
+
 namespace {
 
 class TestMediaQueryListListener : public MediaQueryListListener {
@@ -4417,8 +4608,7 @@ TEST_F(StyleEngineSimTest, OwnerColorScheme) {
   test::RunPendingTasks();
   Compositor().BeginFrame();
 
-  auto* frame_element = To<HTMLIFrameElement>(
-      GetDocument().getElementById(AtomicString("frame")));
+  auto* frame_element = To<HTMLIFrameElement>(GetElementById("frame"));
   auto* frame_document = frame_element->contentDocument();
   ASSERT_TRUE(frame_document);
   EXPECT_EQ(mojom::blink::ColorScheme::kDark,
@@ -4462,12 +4652,10 @@ TEST_F(StyleEngineSimTest, OwnerColorSchemeBaseBackground) {
   test::RunPendingTasks();
   Compositor().BeginFrame();
 
-  auto* dark_document = To<HTMLIFrameElement>(GetDocument().getElementById(
-                                                  AtomicString("dark-frame")))
-                            ->contentDocument();
-  auto* light_document = To<HTMLIFrameElement>(GetDocument().getElementById(
-                                                   AtomicString("light-frame")))
-                             ->contentDocument();
+  auto* dark_document =
+      To<HTMLIFrameElement>(GetElementById("dark-frame"))->contentDocument();
+  auto* light_document =
+      To<HTMLIFrameElement>(GetElementById("light-frame"))->contentDocument();
   ASSERT_TRUE(dark_document);
   ASSERT_TRUE(light_document);
 
@@ -4591,8 +4779,7 @@ TEST_F(StyleEngineSimTest, IFramePreferredColorScheme) {
   test::RunPendingTasks();
   Compositor().BeginFrame();
 
-  auto* frame_element = To<HTMLIFrameElement>(
-      GetDocument().getElementById(AtomicString("frame")));
+  auto* frame_element = To<HTMLIFrameElement>(GetElementById("frame"));
   auto* frame_document = frame_element->contentDocument();
   ASSERT_TRUE(frame_document);
   EXPECT_EQ(mojom::blink::PreferredColorScheme::kLight,
@@ -5693,40 +5880,82 @@ TEST_F(StyleEngineTest, SystemFontsObeyDefaultFontSize) {
 
   // Now test degenerate cases
   GetDocument().GetSettings()->SetDefaultFontSize(-1);
-  GetDocument().GetStyleResolver().InvalidateMatchedPropertiesCache();
   UpdateAllLifecyclePhases();
   EXPECT_EQ(1, body->GetComputedStyle()->FontSize());
   EXPECT_EQ(1, input->GetComputedStyle()->FontSize());
 
   GetDocument().GetSettings()->SetDefaultFontSize(0);
-  GetDocument().GetStyleResolver().InvalidateMatchedPropertiesCache();
   UpdateAllLifecyclePhases();
   EXPECT_EQ(1, body->GetComputedStyle()->FontSize());
   EXPECT_EQ(13, input->GetComputedStyle()->FontSize());
 
   GetDocument().GetSettings()->SetDefaultFontSize(1);
-  GetDocument().GetStyleResolver().InvalidateMatchedPropertiesCache();
   UpdateAllLifecyclePhases();
   EXPECT_EQ(1, body->GetComputedStyle()->FontSize());
   EXPECT_EQ(1, input->GetComputedStyle()->FontSize());
 
   GetDocument().GetSettings()->SetDefaultFontSize(2);
-  GetDocument().GetStyleResolver().InvalidateMatchedPropertiesCache();
   UpdateAllLifecyclePhases();
   EXPECT_EQ(2, body->GetComputedStyle()->FontSize());
   EXPECT_EQ(2, input->GetComputedStyle()->FontSize());
 
   GetDocument().GetSettings()->SetDefaultFontSize(3);
-  GetDocument().GetStyleResolver().InvalidateMatchedPropertiesCache();
   UpdateAllLifecyclePhases();
   EXPECT_EQ(3, body->GetComputedStyle()->FontSize());
   EXPECT_EQ(0, input->GetComputedStyle()->FontSize());
 
   GetDocument().GetSettings()->SetDefaultFontSize(12345);
-  GetDocument().GetStyleResolver().InvalidateMatchedPropertiesCache();
   UpdateAllLifecyclePhases();
   EXPECT_EQ(10000, body->GetComputedStyle()->FontSize());
   EXPECT_EQ(10000, input->GetComputedStyle()->FontSize());
+}
+
+// Minimum font size changes must apply whether or not the body style changes.
+TEST_F(StyleEngineTest, MinimumFontSizeChange) {
+  GetDocument().GetSettings()->SetDefaultFontSize(16);
+  GetDocument().body()->SetInnerHTMLWithoutTrustedTypes(
+      R"HTML(<span style="font-size: 0.75rem"></span>)HTML");
+  UpdateAllLifecyclePhases();
+
+  Element* span = GetDocument().QuerySelector(AtomicString("span"));
+  ASSERT_TRUE(span);
+  EXPECT_EQ(12, span->GetComputedStyle()->FontSize());
+
+  GetDocument().GetSettings()->SetMinimumFontSize(14);
+  UpdateAllLifecyclePhases();
+  EXPECT_EQ(14, span->GetComputedStyle()->FontSize());
+
+  GetDocument().GetSettings()->SetMinimumFontSize(0);
+  UpdateAllLifecyclePhases();
+  EXPECT_EQ(12, span->GetComputedStyle()->FontSize());
+
+  GetDocument().GetSettings()->SetMinimumFontSize(20);
+  UpdateAllLifecyclePhases();
+  EXPECT_EQ(20, span->GetComputedStyle()->FontSize());
+}
+
+// Same as above, with em since the logical minimum skips rem.
+TEST_F(StyleEngineTest, MinimumLogicalFontSizeChange) {
+  GetDocument().GetSettings()->SetDefaultFontSize(16);
+  GetDocument().body()->SetInnerHTMLWithoutTrustedTypes(
+      R"HTML(<span style="font-size: 0.75em"></span>)HTML");
+  UpdateAllLifecyclePhases();
+
+  Element* span = GetDocument().QuerySelector(AtomicString("span"));
+  ASSERT_TRUE(span);
+  EXPECT_EQ(12, span->GetComputedStyle()->FontSize());
+
+  GetDocument().GetSettings()->SetMinimumLogicalFontSize(14);
+  UpdateAllLifecyclePhases();
+  EXPECT_EQ(14, span->GetComputedStyle()->FontSize());
+
+  GetDocument().GetSettings()->SetMinimumLogicalFontSize(0);
+  UpdateAllLifecyclePhases();
+  EXPECT_EQ(12, span->GetComputedStyle()->FontSize());
+
+  GetDocument().GetSettings()->SetMinimumLogicalFontSize(20);
+  UpdateAllLifecyclePhases();
+  EXPECT_EQ(20, span->GetComputedStyle()->FontSize());
 }
 
 TEST_F(StyleEngineTest, CascadeLayersInOriginsAndTreeScopes) {
@@ -5945,51 +6174,6 @@ TEST_F(StyleEngineTest, CascadeLayersSheetsRemoved) {
 
   // When all sheets are removed, shadow tree ScopedStyleResolver is cleared.
   ASSERT_FALSE(shadow->GetScopedStyleResolver());
-}
-
-TEST_F(StyleEngineTest, NonSlottedStyleDirty) {
-  GetDocument().body()->SetInnerHTMLWithoutTrustedTypes("<div id=host></div>");
-  auto* host = GetDocument().getElementById(AtomicString("host"));
-  ASSERT_TRUE(host);
-  host->AttachShadowRootForTesting(ShadowRootMode::kOpen);
-  UpdateAllLifecyclePhases();
-
-  // Add a child element to a shadow host with no slots. The inserted element is
-  // not marked for style recalc because the GetStyleRecalcParent() returns
-  // nullptr.
-  auto* span = MakeGarbageCollected<HTMLSpanElement>(GetDocument());
-  host->appendChild(span);
-  EXPECT_FALSE(host->ChildNeedsStyleRecalc());
-  EXPECT_FALSE(span->NeedsStyleRecalc());
-
-  UpdateAllLifecyclePhases();
-
-  // Set a style on the inserted child outside the flat tree.
-  // GetStyleRecalcParent() still returns nullptr, and the ComputedStyle of the
-  // child outside the flat tree is still null. No need to mark dirty.
-  span->SetInlineStyleProperty(CSSPropertyID::kColor, "red");
-  EXPECT_FALSE(host->ChildNeedsStyleRecalc());
-  EXPECT_FALSE(span->NeedsStyleRecalc());
-
-  // Ensure the ComputedStyle for the child and then change the style.
-  // GetStyleRecalcParent() is still null, which means the host is not marked
-  // with ChildNeedsStyleRecalc(), but the child needs to be marked dirty to
-  // make sure the next EnsureComputedStyle updates the style to reflect the
-  // changes.
-  const ComputedStyle* old_style = span->EnsureComputedStyle();
-  span->SetInlineStyleProperty(CSSPropertyID::kColor, "green");
-  EXPECT_FALSE(host->ChildNeedsStyleRecalc());
-  EXPECT_TRUE(span->NeedsStyleRecalc());
-  UpdateAllLifecyclePhases();
-
-  EXPECT_EQ(span->GetComputedStyle(), old_style);
-  const ComputedStyle* new_style = span->EnsureComputedStyle();
-  EXPECT_NE(new_style, old_style);
-
-  EXPECT_EQ(Color::FromRGB(255, 0, 0),
-            old_style->VisitedDependentColor(GetCSSPropertyColor()));
-  EXPECT_EQ(Color::FromRGB(0, 128, 0),
-            new_style->VisitedDependentColor(GetCSSPropertyColor()));
 }
 
 TEST_F(StyleEngineTest, CascadeLayerUseCount) {
@@ -6222,7 +6406,7 @@ TEST_F(StyleEngineSimTest, UserFontFaceOverrideWithCascadeLayers) {
   test::RunPendingTasks();
   Compositor().BeginFrame();
 
-  Element* target = GetDocument().getElementById(AtomicString("target"));
+  Element* target = GetElementById("target");
   EXPECT_EQ(80, target->OffsetWidth());
 }
 
@@ -6277,7 +6461,7 @@ TEST_F(StyleEngineSimTest, UserAndAuthorFontFaceOverrideWithCascadeLayers) {
 
   // User-defined font faces should not override author-defined font faces
   // regardless of cascade layers.
-  Element* target = GetDocument().getElementById(AtomicString("target"));
+  Element* target = GetElementById("target");
   EXPECT_EQ(80, target->OffsetWidth());
 }
 
@@ -6374,7 +6558,7 @@ TEST_F(StyleEngineTest, ScrollbarStyleNoExcessiveCaching) {
   EXPECT_FALSE(container->GetComputedStyle()->GetPseudoElementStyleCache());
   EXPECT_EQ("rgb(255, 0, 0)", custom_scrollbar->GetPart(kThumbPart)
                                   ->Style()
-                                  ->BackgroundColor()
+                                  .BackgroundColor()
                                   .GetColor()
                                   .SerializeAsCSSColor());
 
@@ -6383,7 +6567,7 @@ TEST_F(StyleEngineTest, ScrollbarStyleNoExcessiveCaching) {
   EXPECT_FALSE(container->GetComputedStyle()->GetPseudoElementStyleCache());
   EXPECT_EQ("rgb(0, 128, 0)", custom_scrollbar->GetPart(kThumbPart)
                                   ->Style()
-                                  ->BackgroundColor()
+                                  .BackgroundColor()
                                   .GetColor()
                                   .SerializeAsCSSColor());
 }
@@ -6779,7 +6963,7 @@ TEST_F(StyleEngineTest, CSSComparisonFunctionsUseCount) {
 TEST_F(StyleEngineTest, MathDepthOverflow) {
   css_test_helpers::RegisterProperty(
       GetDocument(), "--int16-max", "<integer>",
-      String::Format("%i", std::numeric_limits<int16_t>::max()), false);
+      String::Number(std::numeric_limits<int16_t>::max()), false);
 
   GetDocument().body()->SetInnerHTMLWithoutTrustedTypes(R"HTML(
     <style>
@@ -6848,7 +7032,7 @@ TEST_F(StyleEngineTest, RemovedBodyToHTMLPropagation) {
   ASSERT_TRUE(root);
   EXPECT_TRUE(root->ComputedStyleRef().IsHorizontalWritingMode())
       << "body to html propagation does not affect computed value";
-  EXPECT_FALSE(root->GetLayoutObject()->StyleRef().IsHorizontalWritingMode())
+  EXPECT_FALSE(root->GetLayoutObject()->Style().IsHorizontalWritingMode())
       << "body to html propagation affects used value";
 
   // Make sure that recalculating style for the root element does not trigger a
@@ -6860,7 +7044,7 @@ TEST_F(StyleEngineTest, RemovedBodyToHTMLPropagation) {
   UpdateAllLifecyclePhases();
   EXPECT_TRUE(root->ComputedStyleRef().IsHorizontalWritingMode())
       << "body to html propagation does not affect computed value";
-  EXPECT_TRUE(root->GetLayoutObject()->StyleRef().IsHorizontalWritingMode())
+  EXPECT_TRUE(root->GetLayoutObject()->Style().IsHorizontalWritingMode())
       << "No propagation from removed body";
 }
 
@@ -6931,7 +7115,7 @@ TEST_F(StyleEngineSimTest, ResizeWithBlockingSheetTransition) {
   Compositor().BeginFrame();
   test::RunPendingTasks();
 
-  Element* trans = GetDocument().getElementById(AtomicString("trans"));
+  Element* trans = GetElementById("trans");
   ASSERT_TRUE(trans);
 
   // Completing the linked stylesheet should not start a transition since the
@@ -6974,7 +7158,7 @@ TEST_F(StyleEngineSimTest, FocusWithBlockingSheetTransition) {
   Compositor().BeginFrame();
   test::RunPendingTasks();
 
-  Element* trans = GetDocument().getElementById(AtomicString("trans"));
+  Element* trans = GetElementById("trans");
   ASSERT_TRUE(trans);
 
   // Completing the linked stylesheet should not start a transition since the
@@ -7003,13 +7187,13 @@ TEST_F(StyleEngineSimTest,
   Compositor().BeginFrame();
   test::RunPendingTasks();
 
-  Element* first = GetDocument().getElementById(AtomicString("first"));
+  Element* first = GetElementById("first");
   EXPECT_TRUE(first);
   EXPECT_EQ(
       Color::FromRGB(0, 0, 0),
       first->GetComputedStyle()->VisitedDependentColor(GetCSSPropertyColor()));
 
-  Element* second = GetDocument().getElementById(AtomicString("second"));
+  Element* second = GetElementById("second");
   EXPECT_TRUE(second);
   EXPECT_EQ(
       Color::FromRGB(255, 0, 0),
@@ -7023,19 +7207,19 @@ TEST_F(StyleEngineSimTest,
   Compositor().BeginFrame();
   test::RunPendingTasks();
 
-  first = GetDocument().getElementById(AtomicString("first"));
+  first = GetElementById("first");
   EXPECT_TRUE(first);
   EXPECT_EQ(
       Color::FromRGB(0, 0, 0),
       first->GetComputedStyle()->VisitedDependentColor(GetCSSPropertyColor()));
 
-  second = GetDocument().getElementById(AtomicString("second"));
+  second = GetElementById("second");
   EXPECT_TRUE(second);
   EXPECT_EQ(
       Color::FromRGB(255, 0, 0),
       second->GetComputedStyle()->VisitedDependentColor(GetCSSPropertyColor()));
 
-  Element* third = GetDocument().getElementById(AtomicString("third"));
+  Element* third = GetElementById("third");
   EXPECT_TRUE(third);
   EXPECT_EQ(
       Color::FromRGB(255, 0, 0),
@@ -7046,29 +7230,122 @@ TEST_F(StyleEngineSimTest,
     <div id="fourth"> Fourth </div>
   )HTML");
 
-  first = GetDocument().getElementById(AtomicString("first"));
+  first = GetElementById("first");
   EXPECT_TRUE(first);
   EXPECT_EQ(
       Color::FromRGB(0, 0, 0),
       first->GetComputedStyle()->VisitedDependentColor(GetCSSPropertyColor()));
 
-  second = GetDocument().getElementById(AtomicString("second"));
+  second = GetElementById("second");
   EXPECT_TRUE(second);
   EXPECT_EQ(
       Color::FromRGB(0, 0, 0),
       second->GetComputedStyle()->VisitedDependentColor(GetCSSPropertyColor()));
 
-  third = GetDocument().getElementById(AtomicString("third"));
+  third = GetElementById("third");
   EXPECT_TRUE(third);
   EXPECT_EQ(
       Color::FromRGB(0, 0, 0),
       third->GetComputedStyle()->VisitedDependentColor(GetCSSPropertyColor()));
 
-  Element* fourth = GetDocument().getElementById(AtomicString("fourth"));
+  Element* fourth = GetElementById("fourth");
   EXPECT_TRUE(fourth);
   EXPECT_EQ(
       Color::FromRGB(0, 0, 0),
       fourth->GetComputedStyle()->VisitedDependentColor(GetCSSPropertyColor()));
+}
+
+TEST_F(StyleEngineTest, HasPseudoClassInvalidationForInsertionWithAttribute) {
+  GetDocument().body()->SetInnerHTMLWithoutTrustedTypes(R"HTML(
+    <style>
+      .a:has([any]) .d { background-color: lime; }
+    </style>
+    <div class='a'>
+      <div class="d"></div><div class="d"></div><div class="d"></div>
+      <div id="parent"></div>
+    </div>
+  )HTML");
+
+  UpdateAllLifecyclePhases();
+
+  unsigned start_count = GetStyleEngine().StyleForElementCount();
+  auto* div = MakeGarbageCollected<HTMLDivElement>(GetDocument());
+  GetDocument().getElementById(AtomicString("parent"))->AppendChild(div);
+  UpdateAllLifecyclePhases();
+  unsigned element_count =
+      GetStyleEngine().StyleForElementCount() - start_count;
+  ASSERT_EQ(1U, element_count);
+
+  start_count = GetStyleEngine().StyleForElementCount();
+  div = MakeGarbageCollected<HTMLDivElement>(GetDocument());
+  div->setAttribute(
+      QualifiedName(g_empty_atom, AtomicString("attr1"), g_empty_atom),
+      AtomicString("value1"));
+  GetDocument().getElementById(AtomicString("parent"))->AppendChild(div);
+  UpdateAllLifecyclePhases();
+  element_count = GetStyleEngine().StyleForElementCount() - start_count;
+  ASSERT_EQ(4U, element_count);
+}
+
+TEST_F(StyleEngineTest, HasPseudoClassInvalidationForInsertionWithIdAttribute) {
+  GetDocument().body()->SetInnerHTMLWithoutTrustedTypes(R"HTML(
+    <style>
+      .a:has([id="b"]) .c { background-color: lime; }
+    </style>
+    <div class='a'>
+      <div class="c"></div><div class="c"></div><div class="c"></div>
+      <div id="parent"></div>
+    </div>
+  )HTML");
+
+  UpdateAllLifecyclePhases();
+
+  unsigned start_count = GetStyleEngine().StyleForElementCount();
+  auto* div = MakeGarbageCollected<HTMLDivElement>(GetDocument());
+  GetDocument().getElementById(AtomicString("parent"))->AppendChild(div);
+  UpdateAllLifecyclePhases();
+  unsigned element_count =
+      GetStyleEngine().StyleForElementCount() - start_count;
+  ASSERT_EQ(1U, element_count);
+
+  start_count = GetStyleEngine().StyleForElementCount();
+  div = MakeGarbageCollected<HTMLDivElement>(GetDocument());
+  div->setAttribute(html_names::kIdAttr, AtomicString("b"));
+  GetDocument().getElementById(AtomicString("parent"))->AppendChild(div);
+  UpdateAllLifecyclePhases();
+  element_count = GetStyleEngine().StyleForElementCount() - start_count;
+  ASSERT_EQ(4U, element_count);
+}
+
+TEST_F(StyleEngineTest,
+       HasPseudoClassInvalidationForInsertionWithClassAttribute) {
+  GetDocument().body()->SetInnerHTMLWithoutTrustedTypes(R"HTML(
+    <style>
+      .a:has([class="b"]) .c { background-color: lime; }
+    </style>
+    <div class='a'>
+      <div class="c"></div><div class="c"></div><div class="c"></div>
+      <div id="parent"></div>
+    </div>
+  )HTML");
+
+  UpdateAllLifecyclePhases();
+
+  unsigned start_count = GetStyleEngine().StyleForElementCount();
+  auto* div = MakeGarbageCollected<HTMLDivElement>(GetDocument());
+  GetDocument().getElementById(AtomicString("parent"))->AppendChild(div);
+  UpdateAllLifecyclePhases();
+  unsigned element_count =
+      GetStyleEngine().StyleForElementCount() - start_count;
+  ASSERT_EQ(1U, element_count);
+
+  start_count = GetStyleEngine().StyleForElementCount();
+  div = MakeGarbageCollected<HTMLDivElement>(GetDocument());
+  div->setAttribute(html_names::kClassAttr, AtomicString("b"));
+  GetDocument().getElementById(AtomicString("parent"))->AppendChild(div);
+  UpdateAllLifecyclePhases();
+  element_count = GetStyleEngine().StyleForElementCount() - start_count;
+  ASSERT_EQ(4U, element_count);
 }
 
 TEST_F(StyleEngineTest, StyleElementTypeAttrChange) {
@@ -7735,7 +8012,7 @@ TEST_F(StyleEngineTest, UpdateRootFontRelativeUnits_NoRecalcForNonInherited) {
   UpdateAllLifecyclePhasesForTest();
 
   // Verify that the document is using root font-relative units (rem).
-  ASSERT_TRUE(GetStyleEngine().UsesRootFontRelativeUnits())
+  ASSERT_TRUE(GetStyleEngine().UsesRootRelativeUnits())
       << "Document should be using root font-relative units (rem)";
   // Also verify glyph-relative units (ch) are tracked.
   ASSERT_TRUE(GetStyleEngine().UsesGlyphRelativeUnits())
@@ -7845,6 +8122,164 @@ TEST_F(StyleEngineTest, DisplayContentsSetActiveWithActiveRules) {
       GetStyleEngine().StyleForElementCount() - start_count;
   // :active rule matches container, so style resolution should happen.
   EXPECT_GT(element_count, 0U);
+}
+
+TEST_F(StyleEngineTest, StyleSheetCacheShortAndLongText) {
+  StyleEngine& engine = GetStyleEngine();
+  const CSSParserContext* context =
+      MakeGarbageCollected<CSSParserContext>(GetDocument());
+
+  // 1. Short text (< 1024 chars).
+  String short_text = "div { color: red; }";
+  EXPECT_EQ(nullptr, engine.FindStyleSheetContents(short_text, context));
+
+  auto* short_contents =
+      MakeGarbageCollected<StyleSheetContents>(context, NullUrl());
+  short_contents->ParseString(short_text, /*allow_import_rules=*/false);
+  engine.AddStyleSheetContents(short_text, short_contents);
+
+  StyleSheetContents* found_short =
+      engine.FindStyleSheetContents(short_text, context);
+  EXPECT_EQ(short_contents, found_short);
+  EXPECT_TRUE(found_short->IsUsedFromTextCache());
+
+  // 2. Long text (>= 1024 chars, exercising FastHash).
+  StringBuilder sb;
+  for (int i = 0; i < 60; ++i) {
+    sb.Append(".class_");
+    sb.AppendNumber(i);
+    sb.Append(" { margin: 10px; padding: 5px; color: blue; }\n");
+  }
+  String long_text = sb.ToString();
+  ASSERT_GE(long_text.length(), 1024u);
+
+  EXPECT_EQ(nullptr, engine.FindStyleSheetContents(long_text, context));
+
+  auto* long_contents =
+      MakeGarbageCollected<StyleSheetContents>(context, NullUrl());
+  long_contents->ParseString(long_text, /*allow_import_rules=*/false);
+  engine.AddStyleSheetContents(long_text, long_contents);
+
+  StyleSheetContents* found_long =
+      engine.FindStyleSheetContents(long_text, context);
+  EXPECT_EQ(long_contents, found_long);
+  EXPECT_TRUE(found_long->IsUsedFromTextCache());
+}
+
+TEST_F(StyleEngineTest, StyleSheetCacheRejectsInvalidAndMismatchedBaseURL) {
+  StyleEngine& engine = GetStyleEngine();
+  const CSSParserContext* context =
+      MakeGarbageCollected<CSSParserContext>(GetDocument());
+
+  // 1. Add null contents or uncacheable contents (e.g. with import rule).
+  String text_with_import = "@import url('test.css'); div { color: green; }";
+  auto* import_contents =
+      MakeGarbageCollected<StyleSheetContents>(context, NullUrl());
+  import_contents->ParseString(text_with_import, /*allow_import_rules=*/true);
+  engine.AddStyleSheetContents(text_with_import, import_contents);
+  EXPECT_EQ(nullptr, engine.FindStyleSheetContents(text_with_import, context));
+
+  // 2. Mismatched BaseURL / parser context.
+  KURL other_base("https://other-domain.example.com/");
+  auto* other_context =
+      MakeGarbageCollected<CSSParserContext>(GetDocument(), other_base);
+  auto* other_contents =
+      MakeGarbageCollected<StyleSheetContents>(other_context, other_base);
+  String text = "p { color: yellow; }";
+  other_contents->ParseString(text, /*allow_import_rules=*/false);
+
+  // Storing with other_context.
+  engine.AddStyleSheetContents(text, other_contents);
+
+  // Querying with document context should not find it.
+  EXPECT_EQ(nullptr, engine.FindStyleSheetContents(text, context));
+  // Querying with other_context should find it.
+  EXPECT_EQ(other_contents, engine.FindStyleSheetContents(text, other_context));
+}
+
+TEST_F(StyleEngineTest, StyleSheetCacheNullAndInvalidContexts) {
+  StyleEngine& engine = GetStyleEngine();
+  const CSSParserContext* context =
+      MakeGarbageCollected<CSSParserContext>(GetDocument());
+  String text = "span { color: green; }";
+
+  // 1. Find with null parser_context returns nullptr.
+  EXPECT_EQ(nullptr, engine.FindStyleSheetContents(text, nullptr));
+
+  // 2. Add with null contents or null parser_context does nothing.
+  engine.AddStyleSheetContents(text, nullptr);
+  EXPECT_EQ(nullptr, engine.FindStyleSheetContents(text, context));
+
+  // 3. Add valid contents.
+  auto* contents = MakeGarbageCollected<StyleSheetContents>(context, NullUrl());
+  contents->ParseString(text, /*allow_import_rules=*/false);
+  engine.AddStyleSheetContents(text, contents);
+  EXPECT_EQ(contents, engine.FindStyleSheetContents(text, context));
+
+  // 4. Invalidate cacheability (e.g. SetHasSyntacticallyValidCSSHeader(false)),
+  // verify FindStyleSheetContents erases the entry and returns nullptr.
+  contents->SetHasSyntacticallyValidCSSHeader(false);
+  EXPECT_FALSE(contents->IsCacheableForStyleElement());
+  EXPECT_EQ(nullptr, engine.FindStyleSheetContents(text, context));
+  // Subsequent find confirms entry was erased from the cache.
+  EXPECT_EQ(nullptr, engine.FindStyleSheetContents(text, context));
+}
+
+TEST_F(StyleEngineTest, NoThrowawayMarkerStyleForListStyleNone) {
+  SetBodyInnerHTML(R"HTML(
+    <style>
+      ul { list-style: none; }
+      .green { color: green; }
+      .with-content::marker { content: "+"; }
+      #str { list-style-type: "*"; }
+    </style>
+    <ul>
+      <li id="none"><span id="child"></span></li>
+      <li id="str"></li>
+      <li id="content" class="with-content"></li>
+    </ul>
+  )HTML");
+  UpdateAllLifecyclePhasesForTest();
+
+  Element* none = GetDocument().getElementById(AtomicString("none"));
+  Element* child = GetDocument().getElementById(AtomicString("child"));
+  Element* str = GetDocument().getElementById(AtomicString("str"));
+  Element* content = GetDocument().getElementById(AtomicString("content"));
+
+  // A list item with neither a list-style nor ::marker rules has no marker;
+  // a list-style-type or ::marker 'content' alone is enough to generate one.
+  EXPECT_FALSE(none->GetPseudoElement(kPseudoIdMarker));
+  EXPECT_TRUE(str->GetPseudoElement(kPseudoIdMarker));
+  EXPECT_TRUE(content->GetPseudoElement(kPseudoIdMarker));
+
+  // Restyling a descendant of the markerless list item must not compute (and
+  // throw away) a ::marker style for the list item; only #child is resolved.
+  unsigned start_count = GetStyleEngine().StyleForElementCount();
+  child->classList().Add(AtomicString("green"));
+  UpdateAllLifecyclePhasesForTest();
+  EXPECT_EQ(1u, GetStyleEngine().StyleForElementCount() - start_count);
+  EXPECT_FALSE(none->GetPseudoElement(kPseudoIdMarker));
+
+  // A (non-independent) inherited change on the list item recalculates the
+  // list item and its child, but still no ::marker.
+  start_count = GetStyleEngine().StyleForElementCount();
+  none->SetInlineStyleProperty(CSSPropertyID::kFontSize, "20px");
+  UpdateAllLifecyclePhasesForTest();
+  EXPECT_EQ(2u, GetStyleEngine().StyleForElementCount() - start_count);
+  EXPECT_FALSE(none->GetPseudoElement(kPseudoIdMarker));
+
+  // Giving it a list-style-type generates the marker as usual ...
+  none->SetInlineStyleProperty(CSSPropertyID::kListStyleType, "disc");
+  UpdateAllLifecyclePhasesForTest();
+  ASSERT_TRUE(none->GetPseudoElement(kPseudoIdMarker));
+  EXPECT_TRUE(none->GetPseudoElement(kPseudoIdMarker)->GetLayoutObject());
+
+  // ... and so does a ::marker rule with 'content', even with no list-style.
+  none->RemoveInlineStyleProperty(CSSPropertyID::kListStyleType);
+  none->classList().Add(AtomicString("with-content"));
+  UpdateAllLifecyclePhasesForTest();
+  ASSERT_TRUE(none->GetPseudoElement(kPseudoIdMarker));
+  EXPECT_TRUE(none->GetPseudoElement(kPseudoIdMarker)->GetLayoutObject());
 }
 
 }  // namespace blink

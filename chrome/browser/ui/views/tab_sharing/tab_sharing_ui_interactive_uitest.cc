@@ -5,6 +5,7 @@
 #include "base/functional/callback_helpers.h"
 #include "base/test/scoped_feature_list.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/views/frame/contents_capture_border_view.h"
 #include "chrome/browser/ui/views/frame/contents_container_view.h"
@@ -38,7 +39,7 @@ class TabSharingMultiContentsViewTest
   }
 
  protected:
-  TabStripModel* tab_strip_model() { return browser()->tab_strip_model(); }
+  TabStripModel* tab_strip_model() { return browser()->GetTabStripModel(); }
 
   GURL GetTestUrl() { return embedded_test_server()->GetURL("/title1.html"); }
 
@@ -99,7 +100,7 @@ IN_PROC_BROWSER_TEST_F(TabSharingMultiContentsViewTest,
       CheckIsCaptureContentsBorderShowing(1, false), StopSharingTab(),
       InAnyContext(WaitForHide(kContentsCaptureBorder)),
       CheckIsCaptureContentsBorderShowing(0, false),
-      CheckIsCaptureContentsBorderShowing(1, false));
+      CheckIsCaptureContentsBorderShowing(1, false), ExitSplitView(0));
 }
 
 IN_PROC_BROWSER_TEST_F(TabSharingMultiContentsViewTest,
@@ -131,12 +132,12 @@ IN_PROC_BROWSER_TEST_F(TabSharingMultiContentsViewTest,
       WaitForShow(kContentsCaptureBorder),
       CheckIsCaptureContentsBorderShowing(0, true),
       CheckIsCaptureContentsBorderShowing(1, false), Do([this] {
-        TabStripModel* const tab_strip_model = browser()->tab_strip_model();
+        TabStripModel* const tab_strip_model = browser()->GetTabStripModel();
         tab_strip_model->ReverseTabsInSplit(
             tab_strip_model->GetTabAtIndex(0)->GetSplit().value());
       }),
       CheckIsCaptureContentsBorderShowing(0, false),
-      CheckIsCaptureContentsBorderShowing(1, true));
+      CheckIsCaptureContentsBorderShowing(1, true), ExitSplitView(0));
 }
 
 IN_PROC_BROWSER_TEST_F(TabSharingMultiContentsViewTest,
@@ -146,11 +147,7 @@ IN_PROC_BROWSER_TEST_F(TabSharingMultiContentsViewTest,
       SelectTab(kTabStripElementId, 0), EnterSplitView(0, 1), ShareTab(0),
       WaitForShow(kContentsCaptureBorder),
       CheckIsCaptureContentsBorderShowing(0, true),
-      CheckIsCaptureContentsBorderShowing(1, false), Do([this] {
-        TabStripModel* const tab_strip_model = browser()->tab_strip_model();
-        tab_strip_model->RemoveSplit(
-            tab_strip_model->GetTabAtIndex(0)->GetSplit().value());
-      }),
+      CheckIsCaptureContentsBorderShowing(1, false), ExitSplitView(0),
       SelectTab(kTabStripElementId, 0),
       CheckIsCaptureContentsBorderShowing(0, true),
       SelectTab(kTabStripElementId, 1), WaitForHide(kContentsCaptureBorder),
@@ -162,7 +159,7 @@ IN_PROC_BROWSER_TEST_F(TabSharingMultiContentsViewTest,
 class ChromeOsTabSharingTest : public TabSharingMultiContentsViewTest {
  public:
   TabCaptureContentsBorderHelper* GetTabCaptureContentsBorderHelper(int index) {
-    TabStripModel* const tab_strip_model = browser()->tab_strip_model();
+    TabStripModel* const tab_strip_model = browser()->GetTabStripModel();
     return TabCaptureContentsBorderHelper::FromWebContents(
         tab_strip_model->GetWebContentsAt(index));
   }

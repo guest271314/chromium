@@ -25,6 +25,7 @@
 #include "base/lazy_instance.h"
 #include "base/logging.h"
 #include "base/memory/ptr_util.h"
+#include "base/numerics/safe_conversions.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/threading/thread_restrictions.h"
 #include "base/time/time.h"
@@ -326,13 +327,19 @@ static void JNI_CronetUrlRequestContext_AddPkp(
                   "net::SHA256HashValue is not trivially copyable");
     static_assert(sizeof(net::SHA256HashValue) * CHAR_BIT == 256,
                   "net::SHA256HashValue contains overhead");
-    auto bytes_array_view = bytes_array.CreateView(env);
+    auto bytes_array_view = bytes_array.CreateViewCritical(env);
     if (bytes_array_view.length() != sizeof(net::SHA256HashValue)) {
       LOG(ERROR) << "Unable to add public key hash value.";
       continue;
     }
-    const int8_t* bytes = bytes_array_view.data();
-    net::HashValue hash(*reinterpret_cast<const net::SHA256HashValue*>(bytes));
+    base::span<const uint8_t> bytes =
+        // SAFETY: the JArray<int8_t> that bytes_array_view is a view of
+        // guarantees that there are bytes_array_view.length() bytes of data
+        // present at bytes_array_view.data().
+        UNSAFE_BUFFERS(base::span<const uint8_t>(
+            reinterpret_cast<const uint8_t*>(bytes_array_view.data()),
+            base::checked_cast<size_t>(bytes_array_view.length())));
+    net::HashValue hash(net::HashValueTag::HASH_VALUE_SHA256, bytes);
     pkp->pin_hashes.push_back(hash);
   }
   config->pkp_list.push_back(std::move(pkp));

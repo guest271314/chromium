@@ -7,6 +7,7 @@
 #include "third_party/blink/renderer/core/css/css_image_value.h"
 #include "third_party/blink/renderer/core/loader/resource/image_resource_content.h"
 #include "third_party/blink/renderer/core/style/style_image.h"
+#include "third_party/blink/renderer/platform/loader/fetch/resource_fetcher.h"
 
 namespace blink {
 
@@ -19,8 +20,9 @@ std::optional<gfx::Size> CSSURLImageValue::IntrinsicSize() const {
     return std::nullopt;
   }
 
-  DCHECK(!value_->IsCachePending());
-  ImageResourceContent* resource_content = value_->CachedImage()->CachedImage();
+  DCHECK(!value_->IsCachePending(fetcher_));
+  ImageResourceContent* resource_content =
+      value_->CachedImage(fetcher_)->CachedImage();
 
   return resource_content
              ? resource_content->IntrinsicSize(kRespectImageOrientation)
@@ -28,24 +30,27 @@ std::optional<gfx::Size> CSSURLImageValue::IntrinsicSize() const {
 }
 
 ResourceStatus CSSURLImageValue::Status() const {
-  if (value_->IsCachePending()) {
+  if (value_->IsCachePending(fetcher_)) {
     return ResourceStatus::kNotStarted;
   }
-  return value_->CachedImage()->CachedImage()->GetContentStatus();
+  return value_->CachedImage(fetcher_)->CachedImage()->GetContentStatus();
 }
 
 scoped_refptr<Image> CSSURLImageValue::GetSourceImageForCanvas(
-    SourceImageStatus*,
+    SourceImageStatus* status,
     const gfx::SizeF&) {
-  return GetImage();
+  scoped_refptr<Image> image = GetImage();
+  *status = image ? kNormalSourceImageStatus : kInvalidSourceImageStatus;
+  return image;
 }
 
 scoped_refptr<Image> CSSURLImageValue::GetImage() const {
-  if (value_->IsCachePending()) {
+  if (value_->IsCachePending(fetcher_)) {
     return nullptr;
   }
   // cachedImage can be null if image is StyleInvalidImage
-  ImageResourceContent* cached_image = value_->CachedImage()->CachedImage();
+  ImageResourceContent* cached_image =
+      value_->CachedImage(fetcher_)->CachedImage();
   if (cached_image) {
     // getImage() returns the nullImage() if the image is not available yet
     return cached_image->GetImage()->ImageForDefaultFrame();
@@ -63,6 +68,7 @@ const CSSValue* CSSURLImageValue::ToCSSValue() const {
 
 void CSSURLImageValue::Trace(Visitor* visitor) const {
   visitor->Trace(value_);
+  visitor->Trace(fetcher_);
   CSSStyleImageValue::Trace(visitor);
 }
 

@@ -72,6 +72,7 @@ import java.util.concurrent.atomic.AtomicReference;
     "hide-scrollbars"
 })
 @Batch(Batch.PER_CLASS)
+@DisableFeatures(ChromeFeatureList.ANDROID_BOTTOM_BAR)
 public class ViewTransitionPixelTest {
     @Rule
     public FreshCtaTransitTestRule mActivityTestRule =
@@ -81,6 +82,8 @@ public class ViewTransitionPixelTest {
     public ChromeRenderTestRule mRenderTestRule =
             ChromeRenderTestRule.Builder.withPublicCorpus()
                     .setBugComponent(RenderTestRule.Component.BLINK_VIEW_TRANSITIONS)
+                    .setRevision(1)
+                    .setDescription("Ligatures and contextual alternates disabled in UI text")
                     .build();
 
     private static final String TEXTFIELD_DOM_ID = "inputElement";
@@ -422,6 +425,7 @@ public class ViewTransitionPixelTest {
     @Test
     @MediumTest
     @Feature({"RenderTest"})
+    @DisabledTest(message = "https://crbug.com/562983036")
     public void testPageWiderThanICB() throws Throwable {
         String url = "/chrome/test/data/android/view_transition_wider_than_icb.html";
         mActivityTestRule.startOnTestServerUrl(url);

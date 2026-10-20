@@ -15,24 +15,33 @@ export function getHtml(this: ContextualEntrypointAndMenuElement) {
           exportparts="context-menu-entrypoint-icon, entrypoint-button"
           .inputState="${this.inputState}"
           .sharedTabs="${this.sharedTabs}"
-          .restoredTabs="${this.restoredTabs_}"
+          .restoredTabs="${this.aimThreadRestoredTabs}"
+          .smartTabSharingActive="${this.smartTabSharingActive}"
           @context-menu-entrypoint-click="${this.onContextMenuEntrypointClick_}"
-          ?upload-button-disabled="${this.uploadButtonDisabled}"
+          @context-menu-entrypoint-hover="${this.onContextMenuEntrypointHover_}"
           ?show-context-menu-description="${this.showContextMenuDescription}"
-          glif-animation-state="${this.glifAnimationState}"
-          .energyEffectAnimationEnabled="${this.energyEffectAnimationEnabled}">
+          .glifAnimationState="${this.glifAnimationState}"
+          .energyEffectAnimationEnabled="${this.energyEffectAnimationEnabled}"
+          .disableFallbackGlifAnimation="${this.disableFallbackGlifAnimation}">
       </cr-composebox-contextual-entrypoint-button>
     ` : ''}
     <cr-composebox-contextual-action-menu id="menu"
         .fileNum="${this.fileNum}"
-        .disabledTabIds="${this.disabledTabIds}"
-        .restoredTabIds="${this.restoredTabIds}"
+        .nonTabFileNum="${this.nonTabFileNum}"
+        .isSidePanel="${this.isSidePanel}"
+        .selectedTabIds="${this.selectedTabIds}"
+        .aimThreadRestoredTabs="${this.aimThreadRestoredTabs}"
         .tabSuggestions="${this.tabSuggestions}"
         .recentTabId="${this.recentTabId}"
         .inputState="${this.inputState}"
         .smartTabSharingActive="${this.smartTabSharingActive}"
+        .smartTabSharingVisible="${this.smartTabSharingVisible}"
+        .contextManagementInComposeboxEnabled="${this.contextManagementInComposeboxEnabled}"
+        .contextMenuTooltipsEnabled="${
+            this.composeboxContextMenuTooltipsEnabled}"
         .disableAutoReposition="${this.disableAutoReposition}"
-        .uploadButtonDisabled="${this.uploadButtonDisabled}"
+        .shareTabsFlyoutOpen="${this.shareTabsFlyoutOpen}"
+        .unboundedMenuEnabled="${this.unboundedMenuEnabled}"
         @close="${this.onMenuClose_}">
     </cr-composebox-contextual-action-menu>
   <!--_html_template_end_-->`;

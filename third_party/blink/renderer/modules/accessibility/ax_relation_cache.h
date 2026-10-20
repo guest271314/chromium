@@ -9,6 +9,8 @@
 
 #include <utility>
 
+#include "base/containers/span.h"
+#include "base/gtest_prod_util.h"
 #include "third_party/blink/renderer/core/html/forms/html_label_element.h"
 #include "third_party/blink/renderer/modules/accessibility/ax_object_cache_impl.h"
 #include "third_party/blink/renderer/platform/graphics/dom_node_id.h"
@@ -46,7 +48,8 @@ class AXRelationCache {
   bool IsAriaOwned(const AXObject*, bool check = true) const;
 
   // Returns the parent of the given object due to aria-owns, if valid,
-  // otherwise, removes the child from maps indicating that it is owned.
+  // otherwise, removes the child from maps indicating that it is owned and
+  // restores its natural parent.
   AXObject* ValidatedAriaOwner(const AXObject*);
 
   // Returns the validated owned children of this element with aria-owns.
@@ -58,8 +61,17 @@ class AXRelationCache {
   // Return true if any label ever pointed to the element via the for attribute.
   bool MayHaveHTMLLabelViaForAttribute(const HTMLElement&);
 
-  // True if any aria-describedy or aria-labelledby ever pointed to the element.
+  // True if any aria-describedby, aria-labelledby or interestfor ever pointed
+  // to the element.
   bool IsARIALabelOrDescription(Element&);
+
+  // True if any element currently has an interestfor relation to `target`.
+  bool HasInterestInvoker(const Element& target);
+
+  // Mark dirty each popover that is, or ever was, the target of a text relation
+  // from `source`. Used when interestfor changes, because the role of a former
+  // target may change. See AXObject::HasRichHintMinimumRole().
+  void MarkPopoverTextRelationTargetsDirty(const Element& source);
 
   // Process an element in the DOM tree that was either just added or whose id
   // just changed:
@@ -94,6 +106,9 @@ class AXRelationCache {
 
   // Remove given AXID from cache.
   void RemoveAXID(AXID);
+
+  // Forget an element's registered HTML id after it leaves the document.
+  void RemoveRegisteredIdAttribute(DOMNodeId node_id);
 
   // The child cannot be owned, either because the child was removed or the
   // relation was invalid, so remove from all relevant mappings.
@@ -157,7 +172,8 @@ class AXRelationCache {
   // specific time in the lifecycle.
   // Pass |force=true| when the mappings must be updated even though the
   // owned ids have not changed, e.g. when an object has been refreshed.
-  void UpdateAriaOwnsWithCleanLayout(AXObject* owner, bool force = false);
+  // Returns true when the owner's child mapping changes.
+  bool UpdateAriaOwnsWithCleanLayout(AXObject* owner, bool force = false);
   void QueueOwnerToUpdate(AXObject* owner);
 
   // Is there work to be done when layout becomes clean?
@@ -281,7 +297,8 @@ class AXRelationCache {
       bool force);
 
   // If any object is related to this object via <label for>, aria-owns,
-  // aria-describedby or aria-labeledby, update the text for the related object.
+  // aria-describedby, aria-labeledby or interestfor, update the text for the
+  // related object.
   void UpdateRelatedText(Node*);
 
   static base::span<std::pair<QualifiedName, Element::TinyBloomFilter>>
@@ -369,6 +386,14 @@ class AXRelationCache {
 
   // For each DOM node, the most recent id attribute value processed.
   HashMap<DOMNodeId, AtomicString> registered_id_attributes_;
+
+  FRIEND_TEST_ALL_PREFIXES(AccessibilityTest,
+                           RegisteredIdAttributesAreRemovedOnDisconnection);
+  FRIEND_TEST_ALL_PREFIXES(AccessibilityTest,
+                           DetachedElementsDoNotRegisterIdAttributes);
+  FRIEND_TEST_ALL_PREFIXES(
+      AccessibilityTest,
+      RegisteredIdAttributesSurviveConnectedAXObjectRecreation);
 
   // Helpers that call back into object cache
   AXObject* ObjectFromAXID(AXID) const;

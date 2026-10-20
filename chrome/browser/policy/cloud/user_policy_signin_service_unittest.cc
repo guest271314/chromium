@@ -46,11 +46,13 @@
 #include "components/sync_preferences/testing_pref_service_syncable.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/test/browser_task_environment.h"
+#include "extensions/buildflags/buildflags.h"
 #include "google_apis/gaia/gaia_constants.h"
 #include "google_apis/gaia/gaia_urls.h"
 #include "google_apis/gaia/google_service_auth_error.h"
 #include "net/base/net_errors.h"
 #include "net/http/http_status_code.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "services/network/public/cpp/weak_wrapper_shared_url_loader_factory.h"
 #include "services/network/test/test_network_connection_tracker.h"
 #include "services/network/test/test_url_loader_factory.h"
@@ -143,7 +145,7 @@ class UserPolicySigninServiceTest : public testing::Test {
 
     CHECK(!account_info.IsEmpty());
     service->RegisterForPolicyWithAccountId(
-        kTestUser, account_info.account_id,
+        kTestUser, account_info.GetAccountId(),
         /*is_registration_for_management_consistency_check=*/false,
         std::move(callback));
     ASSERT_TRUE(IsRequestActive());
@@ -225,8 +227,9 @@ class UserPolicySigninServiceTest : public testing::Test {
   }
 
   bool IsRequestActive() {
-    if (identity_test_env()->IsAccessTokenRequestPending())
+    if (identity_test_env()->IsAccessTokenRequestPending()) {
       return true;
+    }
     return test_url_loader_factory_.NumPending() > 0;
   }
 
@@ -448,8 +451,9 @@ TEST_F(UserPolicySigninServiceSignedInTest, InitWhileSignedInOAuthError) {
   ASSERT_TRUE(IsRequestActive());
 
   // Now fail the access token fetch.
-  GoogleServiceAuthError error(
-      GoogleServiceAuthError::INVALID_GAIA_CREDENTIALS);
+  GoogleServiceAuthError error =
+      GoogleServiceAuthError::FromInvalidGaiaCredentialsReason(
+          GoogleServiceAuthError::InvalidGaiaCredentialsReason::UNKNOWN);
   identity_test_env()->WaitForAccessTokenRequestIfNecessaryAndRespondWithError(
       error);
   ASSERT_FALSE(IsRequestActive());
@@ -993,12 +997,47 @@ TEST_F(UserPolicySigninServiceTest, SignOutThenSignInAgain) {
   identity_test_env()->ClearPrimaryAccount();
   ASSERT_FALSE(manager_->core()->service());
 
+  // Reset the registration callback state to filter out stale assertions before
+  // starting the next sign-in attempt.
+  register_completed_ = false;
+  dm_token_.clear();
+  client_id_.clear();
+  user_affiliation_ids_.clear();
+
   // Now sign in again.
   ASSERT_NO_FATAL_FAILURE(TestSuccessfulSignin());
 
   histogram_tester_.ExpectTotalCount(kRegisterCloudPolicyServiceHistogramName,
                                      0);
 }
+
+#if BUILDFLAG(IS_ANDROID)
+TEST_F(UserPolicySigninServiceTest, CanApplyPoliciesMetricOnSignIn) {
+  UserPolicySigninService* signin_service =
+      UserPolicySigninServiceFactory::GetForProfile(profile_.get());
+
+  // Disable testing override.
+  signin_service->set_profile_can_be_managed_for_testing(false);
+
+  // Seed the account as managed.
+  AccountInfo account_info =
+      identity_test_env()->MakeAccountAvailable(kTestUser);
+  AccountInfo::Builder builder(account_info);
+  builder.SetHostedDomain("test.com");
+  identity_test_env()->UpdateAccountInfoForAccount(builder.Build());
+
+  base::HistogramTester tester;
+
+  // Sign in. This should trigger OnPrimaryAccountChanged -> CanApplyPolicies.
+  identity_test_env()->SetPrimaryAccount(kTestUser,
+                                         signin::ConsentLevel::kSignin);
+
+  // Since ProfileCanBeManaged will return false (no profile manager or not set
+  // up), we expect the metric to be logged as false.
+  tester.ExpectUniqueSample(
+      "Enterprise.CloudPolicy.ProfileCanBeManagedForManagedUser", false, 1);
+}
+#endif  // BUILDFLAG(IS_ANDROID)
 
 }  // namespace
 

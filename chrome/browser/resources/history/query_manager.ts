@@ -8,7 +8,7 @@ import {EventTracker} from 'chrome://resources/js/event_tracker.js';
 import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
 import {CrLitElement} from 'chrome://resources/lit/v3_0/lit.rollup.js';
 
-import {BrowserServiceImpl} from './browser_service.js';
+import {BrowserProxyImpl} from './browser_proxy.js';
 import {RESULTS_PER_PAGE} from './constants.js';
 
 // Converts a JS Date object to a human readable string in the format of
@@ -30,6 +30,7 @@ export type ChangeQueryEvent = CustomEvent<{
   after: string | null,
   includeUserVisits?: boolean,
   includeActorVisits?: boolean,
+  clientIds?: string[],
 }>;
 
 declare global {
@@ -67,6 +68,7 @@ export class HistoryQueryManagerElement extends CrLitElement {
     after: null,
     includeUserVisits: true,
     includeActorVisits: true,
+    clientIds: [],
   };
   accessor queryResult: QueryResult = {
     info: null,
@@ -119,14 +121,14 @@ export class HistoryQueryManagerElement extends CrLitElement {
       afterTimestamp = afterDate.getTime();
     }
 
-    const browserService = BrowserServiceImpl.getInstance();
+    const browserProxy = BrowserProxyImpl.getInstance();
     const promise = incremental ?
-        browserService.handler.queryHistoryContinuation() :
-        browserService.handler.queryHistory(
+        browserProxy.handler.queryHistoryContinuation() :
+        browserProxy.handler.queryHistory(
             this.queryState.searchTerm, RESULTS_PER_PAGE,
             afterTimestamp ? afterTimestamp : null,
             this.queryState.includeUserVisits,
-            this.queryState.includeActorVisits);
+            this.queryState.includeActorVisits, this.queryState.clientIds);
     // Ignore rejected (cancelled) queries.
     promise.then((result) => this.onQueryResult_(result.results), () => {});
   }
@@ -167,6 +169,20 @@ export class HistoryQueryManagerElement extends CrLitElement {
       needsUpdate = true;
     }
 
+    if (changes.clientIds !== undefined) {
+      const newClientIds = changes.clientIds;
+      const oldClientIds = this.queryState.clientIds;
+      const changed = newClientIds.length !== oldClientIds.length ||
+          newClientIds.some((id, i) => id !== oldClientIds[i]);
+      if (changed) {
+        this.queryState = {
+          ...this.queryState,
+          clientIds: newClientIds,
+        };
+        needsUpdate = true;
+      }
+    }
+
     if (needsUpdate) {
       this.queryHistory_(false);
     }
@@ -195,7 +211,7 @@ export class HistoryQueryManagerElement extends CrLitElement {
 
     // TODO(tsergeant): Ignore incremental searches in this metric.
     if (this.queryState.searchTerm) {
-      BrowserServiceImpl.getInstance().recordAction('Search');
+      BrowserProxyImpl.getInstance().recordAction('Search');
       this.resultPendingMetricsTimestamp_ = performance.now();
     }
   }
@@ -207,7 +223,7 @@ export class HistoryQueryManagerElement extends CrLitElement {
     if (this.resultPendingMetricsTimestamp_ &&
         (performance.now() - this.resultPendingMetricsTimestamp_) >=
             QUERY_RESULT_MINIMUM_AGE) {
-      BrowserServiceImpl.getInstance().recordHistogram(
+      BrowserProxyImpl.getInstance().recordHistogram(
           'History.Embeddings.UserActions',
           HistoryEmbeddingsUserActions.NON_EMPTY_QUERY_HISTORY_SEARCH,
           HistoryEmbeddingsUserActions.END);

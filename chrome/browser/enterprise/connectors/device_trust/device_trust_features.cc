@@ -19,4 +19,17 @@ bool IsDTCKeyUploadedBySharedAPI() {
   return base::FeatureList::IsEnabled(kDTCKeyUploadedBySharedAPIEnabled);
 }
 
+BASE_FEATURE(kDeviceTrustConnectorAndroid, base::FEATURE_DISABLED_BY_DEFAULT);
+
+bool IsDeviceTrustConnectorAndroidEnabled() {
+  return base::FeatureList::IsEnabled(kDeviceTrustConnectorAndroid);
+}
+
+BASE_FEATURE(kDeviceTrustAndroidAttestationTokens,
+             base::FEATURE_ENABLED_BY_DEFAULT);
+
+bool IsDeviceTrustAndroidAttestationTokensEnabled() {
+  return base::FeatureList::IsEnabled(kDeviceTrustAndroidAttestationTokens);
+}
+
 }  // namespace enterprise_connectors

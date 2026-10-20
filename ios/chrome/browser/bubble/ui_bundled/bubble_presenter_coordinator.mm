@@ -16,28 +16,28 @@
 #import "ios/chrome/browser/intelligence/bwg/utils/gemini_feature_availability.h"
 #import "ios/chrome/browser/intelligence/features/features.h"
 #import "ios/chrome/browser/ntp/ui_bundled/new_tab_page_feature.h"
-#import "ios/chrome/browser/omnibox/model/omnibox_position/omnibox_position_browser_agent.h"
 #import "ios/chrome/browser/overlays/model/public/overlay_presenter.h"
-#import "ios/chrome/browser/reader_mode/model/features.h"
 #import "ios/chrome/browser/segmentation_platform/model/segmentation_platform_service_factory.h"
 #import "ios/chrome/browser/shared/coordinator/layout_guide/layout_guide_util.h"
+#import "ios/chrome/browser/shared/coordinator/scene/scene_state.h"
 #import "ios/chrome/browser/shared/model/application_context/application_context.h"
 #import "ios/chrome/browser/shared/model/browser/browser.h"
 #import "ios/chrome/browser/shared/model/prefs/pref_backed_boolean.h"
 #import "ios/chrome/browser/shared/model/prefs/pref_names.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
-#import "ios/chrome/browser/shared/public/commands/bwg_commands.h"
 #import "ios/chrome/browser/shared/public/commands/command_dispatcher.h"
 #import "ios/chrome/browser/shared/public/commands/fullscreen_commands.h"
+#import "ios/chrome/browser/shared/public/commands/gemini_commands.h"
 #import "ios/chrome/browser/shared/public/commands/help_commands.h"
 #import "ios/chrome/browser/shared/public/commands/page_action_menu_entry_point_commands.h"
 #import "ios/chrome/browser/shared/public/commands/popup_menu_commands.h"
 #import "ios/chrome/browser/shared/public/commands/tab_strip_commands.h"
 #import "ios/chrome/browser/shared/public/commands/toolbar_commands.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
+#import "ios/chrome/browser/shared/ui/util/omnibox_util.h"
 #import "ui/base/device_form_factor.h"
 
-@interface BubblePresenterCoordinator () <HelpCommands, BooleanObserver>
+@interface BubblePresenterCoordinator () <BooleanObserver, HelpCommands>
 
 @end
 
@@ -66,13 +66,14 @@
                        webStateList:self.browser->GetWebStateList()
                fullscreenController:FullscreenController::FromBrowser(
                                         self.browser)
+                        layoutState:self.browser->GetSceneState().layoutState
       overlayPresenterForWebContent:webContentPresenter
                       infobarBanner:infobarBannerPresenter
                        infobarModal:infobarModalPresenter];
 
   _presenter.delegate = self.bubblePresenterDelegate;
   _presenter.geminiHandler =
-      HandlerForProtocol(self.browser->GetCommandDispatcher(), BWGCommands);
+      HandlerForProtocol(self.browser->GetCommandDispatcher(), GeminiCommands);
   if (IsFullscreenRefactoringEnabled()) {
     _presenter.fullscreenHandler = HandlerForProtocol(
         self.browser->GetCommandDispatcher(), FullscreenCommands);
@@ -140,7 +141,7 @@
     case InProductHelpType::kDefaultSiteView: {
       [_presenter
           presentDefaultSiteViewTipBubbleWithSettingsMap:
-              ios::HostContentSettingsMapFactory::GetForProfile(profile)
+              ios::HostContentSettingsMapFactory::GetForProfile(profile).get()
                                         popupMenuHandler:popupMenuHandler];
       break;
     }
@@ -170,10 +171,8 @@
       break;
     }
     case InProductHelpType::kToolbarSwipe: {
-      OmniboxPositionBrowserAgent* omniboxAgent =
-          OmniboxPositionBrowserAgent::FromBrowser(self.browser);
       if (!IsChromeNextIaEnabled() ||
-          (omniboxAgent && omniboxAgent->IsCurrentLayoutBottomOmnibox())) {
+          IsCurrentLayoutBottomOmnibox(self.browser)) {
         [_presenter presentToolbarSwipeGestureInProductHelp];
       }
       break;
@@ -222,7 +221,6 @@
       break;
     }
     case InProductHelpType::kReaderModeOptions: {
-      CHECK(IsReaderModeAvailable());
       [_presenter presentReaderModeOptionsBubble];
       break;
     }
@@ -230,23 +228,35 @@
       CHECK(gemini::IsFeatureAvailable(gemini::Feature::kImageRemix,
                                        self.profile));
       CHECK(IsPageActionMenuEnabled());
-      id<BWGCommands> bwgHandler =
-          HandlerForProtocol(commandDispatcher, BWGCommands);
+      // Early exit if PageActionMenuEntryPointCommands is not registered on
+      // the command dispatcher, as presenting the Image Remix Tool tip
+      // triggers asynchronously via a posted task and the handler may not be
+      // registered yet.
+      if (![commandDispatcher
+              dispatchingForProtocol:@protocol(
+                                         PageActionMenuEntryPointCommands)]) {
+        break;
+      }
+      id<GeminiCommands> geminiHandler =
+          HandlerForProtocol(commandDispatcher, GeminiCommands);
       id<PageActionMenuEntryPointCommands> pageActionMenuEntryPointHandler =
           HandlerForProtocol(commandDispatcher,
                              PageActionMenuEntryPointCommands);
-      [_presenter presentGeminiImageRemixBubbleWithBWGHandler:bwgHandler
-                              pageActionMenuEntryPointHandler:
-                                  pageActionMenuEntryPointHandler];
+      [_presenter presentGeminiImageRemixBubbleWithGeminiHandler:geminiHandler
+                                 pageActionMenuEntryPointHandler:
+                                     pageActionMenuEntryPointHandler];
       break;
     }
     case InProductHelpType::kPinSiteToMostVisited: {
-      CHECK(IsContentSuggestionsCustomizable());
       [_presenter presentPinSiteToMostVisitedTilesBubble];
       break;
     }
     case InProductHelpType::kHomeBackgroundCustomization: {
       [_presenter presentHomeBackgroundCustomizationTipBubble];
+      break;
+    }
+    case InProductHelpType::kSendTabToSelfOmnibox: {
+      [_presenter presentSendTabToSelfOmniboxBubble];
       break;
     }
   }

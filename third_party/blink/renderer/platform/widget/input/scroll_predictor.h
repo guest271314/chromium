@@ -61,6 +61,10 @@ class PLATFORM_EXPORT ScrollPredictor {
 
   base::TimeDelta ResampleLatency(base::TimeDelta frame_interval) const;
 
+  bool ShouldResampleScrollEvents() const {
+    return should_resample_scroll_events_;
+  }
+
  private:
   friend class test::InputHandlerProxyEventQueueTest;
   friend class test::ScrollPredictorTest;
@@ -139,6 +143,11 @@ class PLATFORM_EXPORT ScrollPredictor {
   // generation.
   WebGestureEvent::InertialPhaseState last_inertial_phase_ =
       WebGestureEvent::InertialPhaseState::kUnknownMomentum;
+
+  // The original input timestamp of the scroll begin event which started the
+  // last scroll update's scroll. See
+  // `cc::ScrollEventMetrics::scroll_begin_generated_timestamp()`.
+  base::TimeTicks last_scroll_begin_generated_timestamp_;
 
   // The timestamp of when the scroll begin event which started the last scroll
   // update's scroll arrived in the renderer compositor.

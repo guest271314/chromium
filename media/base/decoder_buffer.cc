@@ -172,7 +172,7 @@ bool DecoderBuffer::DoSubsamplesMatch(const DecoderBuffer& buffer) {
 }
 
 void DecoderBuffer::set_discard_padding(const DiscardPadding& discard_padding) {
-  DCHECK(!end_of_stream());
+  CHECK(!end_of_stream());
   if (!side_data_ && discard_padding == DiscardPadding()) {
     return;
   }
@@ -180,7 +180,7 @@ void DecoderBuffer::set_discard_padding(const DiscardPadding& discard_padding) {
 }
 
 DecoderBufferSideData& DecoderBuffer::WritableSideData() {
-  DCHECK(!end_of_stream());
+  CHECK(!end_of_stream());
   if (!side_data()) {
     side_data_ = std::make_unique<DecoderBufferSideData>();
   }
@@ -189,7 +189,7 @@ DecoderBufferSideData& DecoderBuffer::WritableSideData() {
 
 void DecoderBuffer::set_side_data(
     std::unique_ptr<DecoderBufferSideData> side_data) {
-  DCHECK(!end_of_stream());
+  CHECK(!end_of_stream());
   side_data_ = std::move(side_data);
 }
 
@@ -199,7 +199,7 @@ bool DecoderBuffer::MatchesMetadataForTesting(
     return false;
   }
 
-  // Note: We use `side_data_` directly to avoid DCHECKs for EOS buffers.
+  // Note: We use `side_data_` directly to avoid CHECKs for EOS buffers.
   if (side_data_ && !side_data_->Matches(*buffer.side_data_)) {
     return false;
   }
@@ -221,6 +221,24 @@ bool DecoderBuffer::MatchesMetadataForTesting(
                           : true;
 }
 
+void DecoderBuffer::CopyMetadataClearBufferFrom(const DecoderBuffer& source) {
+  // EOS buffers are immutable, we shouldn't copy them.
+  CHECK(!end_of_stream());
+  CHECK(!source.end_of_stream());
+
+  // Destination buffer must not have DecryptConfig (decrypted buffer is clear).
+  CHECK(!decrypt_config());
+
+  if (source.side_data()) {
+    set_side_data(source.side_data()->Clone());
+  } else {
+    set_side_data(nullptr);
+  }
+  set_timestamp(source.timestamp());
+  set_duration(source.duration());
+  set_is_key_frame(source.is_key_frame());
+}
+
 bool DecoderBuffer::MatchesForTesting(const DecoderBuffer& buffer) const {
   if (!MatchesMetadataForTesting(buffer))  // IN-TEST
     return false;
@@ -229,7 +247,7 @@ bool DecoderBuffer::MatchesForTesting(const DecoderBuffer& buffer) const {
   if (end_of_stream())
     return true;
 
-  DCHECK(!buffer.end_of_stream());
+  CHECK(!buffer.end_of_stream());
   return base::span(*this) == base::span(buffer);
 }
 
@@ -275,7 +293,7 @@ std::string DecoderBuffer::AsHumanReadableString(bool verbose) const {
 }
 
 void DecoderBuffer::set_timestamp(base::TimeDelta timestamp) {
-  DCHECK(!end_of_stream());
+  CHECK(!end_of_stream());
   timestamp_ = timestamp;
 }
 
@@ -288,7 +306,9 @@ size_t DecoderBuffer::GetMemoryUsage() const {
 
   memory_usage += size();
 
-  // Side data and decrypt config would not change after construction.
+  // Side data may be added after construction (e.g, timed metadata attached by
+  // FFmpegDemuxer), so only fields that do not change are counted here. Callers
+  // that cache this value rely on it.
   if (side_data()) {
     memory_usage += sizeof(decltype(side_data_->spatial_layers)::value_type) *
                     side_data_->spatial_layers.capacity();

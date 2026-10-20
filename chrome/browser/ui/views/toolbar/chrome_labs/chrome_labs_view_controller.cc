@@ -18,7 +18,7 @@
 #include "chrome/browser/about_flags.h"
 #include "chrome/browser/flag_descriptions.h"
 #include "chrome/browser/lifetime/application_lifetime.h"
-#include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/toolbar/chrome_labs/chrome_labs_model.h"
 #include "chrome/browser/ui/toolbar/chrome_labs/chrome_labs_prefs.h"
 #include "chrome/browser/ui/toolbar/chrome_labs/chrome_labs_utils.h"
@@ -100,7 +100,7 @@ uint32_t GetCurrentDay() {
 
 ChromeLabsViewController::ChromeLabsViewController(
     ChromeLabsBubbleView* chrome_labs_bubble_view,
-    Browser* browser,
+    BrowserWindowInterface* browser,
     flags_ui::FlagsState* flags_state,
     flags_ui::FlagsStorage* flags_storage)
     : chrome_labs_bubble_view_(chrome_labs_bubble_view),
@@ -133,11 +133,11 @@ void ChromeLabsViewController::ParseModelDataAndAddLabs() {
   for (const auto& lab : all_labs) {
     const flags_ui::FeatureEntry* entry =
         flags_state_->FindFeatureEntryByName(lab.internal_name);
-    if (IsChromeLabsFeatureValid(lab, browser_->profile())) {
+    if (IsChromeLabsFeatureValid(lab, browser_->GetProfile())) {
       bool valid_entry_type =
           entry->type == flags_ui::FeatureEntry::FEATURE_VALUE ||
           entry->type == flags_ui::FeatureEntry::FEATURE_WITH_PARAMS_VALUE;
-      DCHECK(valid_entry_type);
+      CHECK(valid_entry_type, base::NotFatalUntil::M162);
       int default_index =
           GetIndexOfEnabledLabState(entry, flags_state_, flags_storage_);
       ChromeLabsItemView* lab_item = chrome_labs_bubble_view_->AddLabItem(
@@ -162,7 +162,7 @@ void ChromeLabsViewController::ParseModelDataAndAddLabs() {
               chrome_labs_bubble_view_.get(), lab.internal_name,
               flags_storage_));
       lab_item->SetShowNewBadge(
-          ShouldLabShowNewBadge(browser_->profile(), lab));
+          ShouldLabShowNewBadge(browser_->GetProfile(), lab));
     }
   }
 }
@@ -173,7 +173,7 @@ void ChromeLabsViewController::RestartToApplyFlags() {
   // we apply the newly selected flags.
   VLOG(1) << "Restarting to apply per-session flags...";
   ash::about_flags::FeatureFlagsUpdate(
-      *flags_storage_, browser_->profile()->GetOriginalProfile()->GetPrefs())
+      *flags_storage_, browser_->GetProfile()->GetOriginalProfile()->GetPrefs())
       .UpdateSessionManager();
 #endif
   // During the restart process some situations may cause previously active
@@ -204,7 +204,7 @@ user_education::DisplayNewBadge ChromeLabsViewController::ShouldLabShowNewBadge(
 
   base::DictValue& new_badge_prefs = update.Get();
   std::optional<int> start_day = new_badge_prefs.FindInt(lab.internal_name);
-  DCHECK(start_day);
+  CHECK(start_day, base::NotFatalUntil::M162);
   uint32_t current_day = GetCurrentDay();
   if (*start_day == chrome_labs_prefs::kChromeLabsNewExperimentPrefValue) {
     // Set the dictionary value of this experiment to the number of days since

@@ -7,6 +7,8 @@
 #import "ios/chrome/browser/composebox/menu/ui/composebox_menu_consumer.h"
 #import "ios/chrome/browser/composebox/menu/ui/composebox_menu_item_type.h"
 #import "ios/chrome/browser/composebox/public/composebox_attachment_selection.h"
+#import "ios/chrome/browser/composebox/public/features.h"
+#import "ios/chrome/browser/composebox/shared/coordinator/composebox_picker_drive_result.h"
 #import "ios/chrome/browser/composebox/shared/metrics/composebox_metrics_recorder.h"
 #import "ios/chrome/browser/composebox/ui/composebox_ui_input_state.h"
 #import "ios/chrome/browser/shared/model/web_state_list/web_state_list.h"
@@ -55,22 +57,40 @@
 
 #pragma mark - Public
 
+- (void)updateUIInputState:(ComposeboxUIInputState*)inputState {
+  _inputState = inputState;
+  [self.consumer setUIInputState:_inputState];
+}
+
 - (void)processImageItems:(NSArray<ComposeboxPickerImageResult*>*)imageItems {
-  NSMutableArray<ComposeboxPickerImageResult*>* updatedImageResults =
+  NSMutableArray<ComposeboxPickerImageResult*>* updatedImages =
       [[NSMutableArray alloc] init];
 
-  if (_preselection.images) {
-    updatedImageResults = [_preselection.images mutableCopy];
-  }
+  BOOL isCamera =
+      imageItems.firstObject.source == ComposeboxInputItemSource::kCameraPicker;
 
-  [updatedImageResults addObjectsFromArray:imageItems];
+  if (isCamera) {
+    if (_preselection.images) {
+      updatedImages = [_preselection.images mutableCopy];
+    }
+    [updatedImages addObjectsFromArray:imageItems];
+  } else {
+    // Gallery picker results. Retain existing non-gallery images from
+    // preselection, and replace gallery images with `imageItems`.
+    for (ComposeboxPickerImageResult* imageResult in _preselection.images) {
+      if (imageResult.source != ComposeboxInputItemSource::kGalleryPicker) {
+        [updatedImages addObject:imageResult];
+      }
+    }
+    [updatedImages addObjectsFromArray:imageItems];
+  }
 
   ComposeboxAttachmentSelection* selection =
       [[ComposeboxAttachmentSelection alloc]
-             initWithTabIDs:_preselection.tabIDs
-          cachedWebStateIDs:_preselection.cachedWebStateIDs
-                     images:updatedImageResults
-                      files:_preselection.files];
+          initWithTabSelection:_preselection.tabSelection
+                        images:updatedImages
+                         files:_preselection.files
+                    driveItems:_preselection.driveItems];
 
   [self.delegate composeboxMenuMediator:self didUpdateAttachments:selection];
 }
@@ -91,30 +111,58 @@
 
   ComposeboxAttachmentSelection* selection =
       [[ComposeboxAttachmentSelection alloc]
-             initWithTabIDs:_preselection.tabIDs
-          cachedWebStateIDs:_preselection.cachedWebStateIDs
-                     images:_preselection.images
-                      files:[updatedURLs allObjects]];
+          initWithTabSelection:_preselection.tabSelection
+                        images:_preselection.images
+                         files:[updatedURLs allObjects]
+                    driveItems:_preselection.driveItems];
   [self.delegate composeboxMenuMediator:self didUpdateAttachments:selection];
 }
 
-- (void)processWebStateIDs:(std::set<web::WebStateID>)selectedWebStateIDs
-         cachedWebStateIDs:(std::set<web::WebStateID>)cachedWebStateIDs {
+- (void)processDriveItems:(NSArray<ComposeboxPickerDriveResult*>*)driveItems {
+  NSMutableArray<ComposeboxPickerDriveResult*>* updatedDriveItems =
+      [[NSMutableArray alloc] init];
+
+  if (_preselection.driveItems) {
+    updatedDriveItems = [_preselection.driveItems mutableCopy];
+  }
+
+  [updatedDriveItems addObjectsFromArray:driveItems];
+
+  ComposeboxAttachmentSelection* selection =
+      [[ComposeboxAttachmentSelection alloc]
+          initWithTabSelection:_preselection.tabSelection
+                        images:_preselection.images
+                         files:_preselection.files
+                    driveItems:updatedDriveItems];
+  [self.delegate composeboxMenuMediator:self didUpdateAttachments:selection];
+}
+
+- (void)processTabSelection:(const ComposeboxTabSelection&)tabSelection {
   // As the tab picker is prepopulated, there's no need to handle the set
   // difference, as the web state IDs already take into account the
   // preselection.
   ComposeboxAttachmentSelection* selection =
       [[ComposeboxAttachmentSelection alloc]
-             initWithTabIDs:selectedWebStateIDs
-          cachedWebStateIDs:cachedWebStateIDs
-                     images:_preselection.images
-                      files:_preselection.files];
+          initWithTabSelection:tabSelection
+                        images:_preselection.images
+                         files:_preselection.files
+                    driveItems:_preselection.driveItems];
   [self.delegate composeboxMenuMediator:self didUpdateAttachments:selection];
 }
 
 - (NSUInteger)remainingNumberOfImagesAllowed {
   CHECK(_inputState);
   return _inputState.remainingNumberOfImagesAllowed;
+}
+
+- (NSArray<NSString*>*)attachedImageAssetIDs {
+  NSMutableArray<NSString*>* assetIDs = [[NSMutableArray alloc] init];
+  for (ComposeboxPickerImageResult* imageResult in _preselection.images) {
+    if (imageResult.assetID.length > 0) {
+      [assetIDs addObject:imageResult.assetID];
+    }
+  }
+  return [assetIDs copy];
 }
 
 - (void)setConsumer:(id<ComposeboxMenuConsumer>)consumer {
@@ -163,6 +211,17 @@
           composeboxMenuMediator:self
                      didTapModel:ComposeboxModelOption::kThinkingNoGenUI];
       break;
+    case ComposeboxMenuItemType::kModelFlash:
+      [self.delegate composeboxMenuMediator:self
+                                didTapModel:ComposeboxModelOption::kFlash];
+      break;
+    case ComposeboxMenuItemType::kModelProLatest:
+      [self.delegate composeboxMenuMediator:self
+                                didTapModel:ComposeboxModelOption::kProLatest];
+      break;
+    case ComposeboxMenuItemType::kAttachmentSharedTabs:
+      [self.delegate composeboxMenuMediatorDidRequestSharedTabs:self];
+      break;
     case ComposeboxMenuItemType::kAttachmentTabs:
       [self.delegate composeboxMenuMediatorDidRequestTabSelection:self];
       break;
@@ -175,6 +234,11 @@
     case ComposeboxMenuItemType::kAttachmentFiles:
       [self.delegate composeboxMenuMediatorDidRequestFileSelection:self];
       break;
+    case ComposeboxMenuItemType::kAttachmentDrive:
+      CHECK(IsComposeboxDriveOptionEnabled());
+      [self.delegate composeboxMenuMediatorDidRequestDriveFileSelection:self];
+      break;
+    case ComposeboxMenuItemType::kMoreOptionsSubmenu:
     case ComposeboxMenuItemType::kUnknown:
       break;
   }
@@ -184,7 +248,7 @@
   if (!_preselection) {
     return std::set<web::WebStateID>();
   }
-  return _preselection.tabIDs;
+  return _preselection.tabSelection.selected_ids;
 }
 
 - (std::set<web::WebStateID>)attachedWebStateIDsInCurrentContext {
@@ -193,7 +257,7 @@
     return webStateIDs;
   }
 
-  for (web::WebStateID webStateID : _preselection.tabIDs) {
+  for (web::WebStateID webStateID : _preselection.tabSelection.selected_ids) {
     if (!webStateID.valid()) {
       continue;
     }
@@ -229,11 +293,10 @@
 
   web::WebStateID activeWebStateID = activeWebState->GetUniqueIdentifier();
 
-  std::set<web::WebStateID> webStateIDs = _preselection.tabIDs;
-  webStateIDs.insert(activeWebStateID);
+  ComposeboxTabSelection tabSelection = _preselection.tabSelection;
+  tabSelection.selected_ids.insert(activeWebStateID);
 
-  [self processWebStateIDs:webStateIDs
-         cachedWebStateIDs:_preselection.cachedWebStateIDs];
+  [self processTabSelection:tabSelection];
 }
 
 @end

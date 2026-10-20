@@ -17,9 +17,8 @@
 #include "components/dom_distiller/content/browser/distiller_page_web_contents.h"
 #include "components/dom_distiller/core/article_entry.h"
 #include "components/dom_distiller/core/distiller.h"
+#include "components/dom_distiller/core/distiller_options.h"
 #include "content/public/browser/browser_context.h"
-#include "content/public/browser/storage_partition.h"
-#include "services/network/public/cpp/shared_url_loader_factory.h"
 
 #if BUILDFLAG(IS_ANDROID)
 #include "chrome/browser/android/dom_distiller/distiller_ui_handle_android.h"
@@ -86,10 +85,6 @@ DomDistillerServiceFactory::BuildServiceInstanceForBrowserContext(
 
   std::unique_ptr<DistillerPageFactory> distiller_page_factory(
       new DistillerPageWebContentsFactory(context));
-  std::unique_ptr<DistillerURLFetcherFactory> distiller_url_fetcher_factory(
-      new DistillerURLFetcherFactory(
-          context->GetDefaultStoragePartition()
-              ->GetURLLoaderFactoryForBrowserProcess()));
 
   dom_distiller::proto::DomDistillerOptions options;
   if (VLOG_IS_ON(1)) {
@@ -101,8 +96,8 @@ DomDistillerServiceFactory::BuildServiceInstanceForBrowserContext(
   // - "pagenum": detect anchors with numeric page numbers
   // Default is "next".
   options.set_pagination_algo("next");
-  std::unique_ptr<DistillerFactory> distiller_factory(new DistillerFactoryImpl(
-      std::move(distiller_url_fetcher_factory), options));
+  std::unique_ptr<DistillerFactory> distiller_factory(
+      new DistillerFactoryImpl(DistillerOptions(options)));
 
   std::unique_ptr<DistilledPagePrefs> distilled_page_prefs =
       std::make_unique<DistilledPagePrefs>(profile->GetPrefs());
@@ -131,7 +126,7 @@ void DomDistillerServiceFactory::UpdateDistilledPagePrefsDefaultFontScaling(
     content::BrowserContext* context) const {
   DomDistillerContextKeyedService* service =
       DomDistillerServiceFactory::GetForBrowserContext(context);
-  DCHECK(service);
+  CHECK(service, base::NotFatalUntil::M161);
   DistilledPagePrefs* distilled_page_prefs = service->GetDistilledPagePrefs();
 
   Profile* profile = Profile::FromBrowserContext(context);

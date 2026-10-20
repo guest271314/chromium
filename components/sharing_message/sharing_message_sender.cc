@@ -82,7 +82,7 @@ base::OnceClosure SharingMessageSender::SendIosPushMessageToDevice(
 
   message.set_sender_guid(local_device_info->guid());
   message.set_sender_device_name(
-      syncer::GetDeviceDisplayNames(local_device_info).full_name);
+      syncer::GetDeviceDisplayName(local_device_info));
 
   TRACE_EVENT_BEGIN("sharing", "Sharing.DoSendMessage",
                     perfetto::Track(trace_id));
@@ -233,7 +233,7 @@ base::OnceClosure SharingMessageSender::SendMessageToTarget(
 
   message.set_sender_guid(local_device_info->guid());
   message.set_sender_device_name(
-      syncer::GetDeviceDisplayNames(local_device_info).full_name);
+      syncer::GetDeviceDisplayName(local_device_info));
 
   task_runner_->PostDelayedTask(
       FROM_HERE,

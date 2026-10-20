@@ -6,10 +6,20 @@ package org.chromium.chrome.browser.ui.extensions.windowing;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertTrue;
+import static org.junit.Assume.assumeTrue;
 
+import android.app.Activity;
+import android.app.ActivityManager;
+import android.app.TaskLocation;
+import android.app.role.RoleManager;
+import android.content.Context;
 import android.content.Intent;
+import android.graphics.Rect;
 import android.os.Build;
+import android.os.OutcomeReceiver;
 
+import androidx.annotation.RequiresApi;
 import androidx.test.core.app.ApplicationProvider;
 import androidx.test.filters.MediumTest;
 
@@ -17,17 +27,19 @@ import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
+import org.chromium.base.ContextUtils;
 import org.chromium.base.IntentUtils;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.util.Batch;
+import org.chromium.base.test.util.CallbackHelper;
 import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.CriteriaHelper;
-import org.chromium.base.test.util.DisableIf;
 import org.chromium.base.test.util.Features;
 import org.chromium.base.test.util.MinAndroidSdkLevel;
 import org.chromium.base.test.util.Restriction;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
+import org.chromium.chrome.browser.ChromeTabbedActivity;
 import org.chromium.chrome.browser.browserservices.intents.BrowserServicesIntentDataProvider.CustomTabsUiType;
 import org.chromium.chrome.browser.customtabs.CustomTabActivityTestRule;
 import org.chromium.chrome.browser.customtabs.CustomTabActivityTypeTestUtils;
@@ -41,6 +53,7 @@ import org.chromium.chrome.browser.tabmodel.IncognitoTabHostUtils;
 import org.chromium.chrome.browser.ui.browser_window.ChromeAndroidTask;
 import org.chromium.chrome.browser.ui.browser_window.ChromeAndroidTaskFeatureKey;
 import org.chromium.chrome.browser.ui.browser_window.ChromeAndroidTaskTrackerFactory;
+import org.chromium.chrome.browser.util.AndroidTaskUtils;
 import org.chromium.chrome.browser.webapps.WebappActivityTestRule;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.chrome.test.transit.ChromeTransitTestRules;
@@ -51,12 +64,14 @@ import org.chromium.chrome.test.transit.page.WebPageStation;
 import org.chromium.ui.base.DeviceFormFactor;
 
 import java.util.Collections;
+import java.util.concurrent.TimeoutException;
 
 @RunWith(ChromeJUnit4ClassRunner.class)
 @Batch(value = Batch.PER_CLASS)
 @CommandLineFlags.Add(ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE)
 @Features.EnableFeatures(ChromeFeatureList.ANDROID_OPEN_INCOGNITO_AS_WINDOW)
 @MinAndroidSdkLevel(Build.VERSION_CODES.R)
+@RequiresApi(Build.VERSION_CODES.R)
 @NullMarked
 public class ExtensionWindowControllerBridgeIntegrationTest {
 
@@ -150,7 +165,6 @@ public class ExtensionWindowControllerBridgeIntegrationTest {
     @Test
     @MediumTest
     @Restriction(DeviceFormFactor.TABLET_OR_DESKTOP /* Test needs "new window" in app menu. */)
-    @DisableIf.Device(DeviceFormFactor.DESKTOP_FREEFORM) // crbug.com/511289158
     public void startChromeTabbedActivity_openNewWindow_notifyExtensionInternalsOfWindowCreation() {
         // Arrange:
         // (1) Launch ChromeTabbedActivity (the first window).
@@ -188,7 +202,6 @@ public class ExtensionWindowControllerBridgeIntegrationTest {
     @Test
     @MediumTest
     @Restriction(DeviceFormFactor.TABLET_OR_DESKTOP /* Test needs "new window" in app menu. */)
-    @DisableIf.Device(DeviceFormFactor.DESKTOP_FREEFORM) // crbug.com/511289158
     public void
             openIncognitoWindow_destroyIncognitoTabModel_notifyExtensionInternalsOfWindowDestruction() {
         // Arrange:
@@ -199,7 +212,7 @@ public class ExtensionWindowControllerBridgeIntegrationTest {
         WebPageStation blankPageStation = mFreshCtaTransitTestRule.startOnBlankPage();
         ExtensionWindowControllerBridgeImpl.initializeWindowControllerListObserverForTesting();
         IncognitoNewTabPageStation incognitoNtpStation =
-                blankPageStation.openRegularTabAppMenu().openNewIncognitoWindow();
+                blankPageStation.openNewIncognitoWindowFast();
         int incognitoTaskId = incognitoNtpStation.getActivity().getTaskId();
         var extensionWindowControllerBridge =
                 getExtensionWindowControllerBridge(
@@ -366,7 +379,6 @@ public class ExtensionWindowControllerBridgeIntegrationTest {
     @Test
     @MediumTest
     @Restriction(DeviceFormFactor.TABLET_OR_DESKTOP /* Test needs "new window" in app menu. */)
-    @DisableIf.Device(DeviceFormFactor.DESKTOP_FREEFORM) // crbug.com/511289158
     public void startChromeTabbedActivity_triggerTaskFocusChange_notifyExtensionWindowController() {
         // Arrange:
         // (1) Launch ChromeTabbedActivity (the first window).
@@ -698,6 +710,106 @@ public class ExtensionWindowControllerBridgeIntegrationTest {
                 (int) extensionInternalEvents.get(extensionInternalEvents.size() - 1));
     }
 
+    @Test
+    @MediumTest
+    @MinAndroidSdkLevel(Build.VERSION_CODES.CINNAMON_BUN)
+    @RequiresApi(Build.VERSION_CODES.CINNAMON_BUN)
+    @Restriction(DeviceFormFactor.DESKTOP_FREEFORM)
+    public void startChromeTabbedActivity_triggerTaskBoundsChange_notifyExtensionWindowController()
+            throws TimeoutException {
+        assumeTrue(
+                "The test suite requires the APK to be the default browser. "
+                        + "Please run "
+                        + "'adb shell cmd role add-role-holder android.app.role.BROWSER "
+                        + ContextUtils.getApplicationContext().getPackageName()
+                        + "'",
+                hasBrowserRole());
+
+        // Arrange:
+        // (1) Launch ChromeTabbedActivity.
+        // (2) Add a native WindowControllerListObserverForTesting to capture extension internal
+        // events.
+        WebPageStation webPageStation = mFreshCtaTransitTestRule.startOnBlankPage();
+        var chromeTabbedActivity = webPageStation.getActivity();
+        int firstTaskId = chromeTabbedActivity.getTaskId();
+        var extensionWindowControllerBridge =
+                getExtensionWindowControllerBridge(
+                        firstTaskId, webPageStation.getTab().getProfile());
+        assertNotNull(extensionWindowControllerBridge);
+        int extensionWindowId = extensionWindowControllerBridge.getExtensionWindowIdForTesting();
+        ExtensionWindowControllerBridgeImpl.initializeWindowControllerListObserverForTesting();
+
+        // Act:
+        Rect currentBounds =
+                chromeTabbedActivity.getWindowManager().getCurrentWindowMetrics().getBounds();
+        Rect newBounds =
+                new Rect(
+                        currentBounds.left + 100,
+                        currentBounds.top + 100,
+                        currentBounds.right - 100,
+                        currentBounds.bottom - 100);
+        setBounds(chromeTabbedActivity, newBounds);
+
+        // Assert.
+        var extensionInternalEvents =
+                ExtensionWindowControllerBridgeImpl.getExtensionInternalEventsForTesting()
+                        .get(extensionWindowId);
+        assertNotNull(extensionInternalEvents);
+        assertTrue(
+                extensionInternalEvents.contains(
+                        ExtensionInternalWindowEventForTesting.BOUNDS_CHANGED));
+    }
+
+    private static boolean hasBrowserRole() {
+        Context appContext = ContextUtils.getApplicationContext();
+        var roleManager = appContext.getSystemService(RoleManager.class);
+        return roleManager.isRoleHeld(RoleManager.ROLE_BROWSER);
+    }
+
+    private ActivityManager.AppTask getAppTask(Activity activity) {
+        var appTaskForActivity = AndroidTaskUtils.getAppTaskFromId(activity, activity.getTaskId());
+        assertNotNull(appTaskForActivity);
+        return appTaskForActivity;
+    }
+
+    private int getDisplayId(ChromeTabbedActivity chromeTabbedActivity) {
+        var windowAndroid = chromeTabbedActivity.getWindowAndroid();
+        assertNotNull(windowAndroid);
+
+        return windowAndroid.getDisplay().getDisplayId();
+    }
+
+    /**
+     * Sets the bounds of the given {@link ChromeTabbedActivity}'s Task.
+     *
+     * <p>The method won't return until the new bounds are applied or the operation fails.
+     */
+    @RequiresApi(Build.VERSION_CODES.CINNAMON_BUN)
+    private void setBounds(ChromeTabbedActivity chromeTabbedActivity, Rect newBounds)
+            throws TimeoutException {
+        var callBackHelper = new CallbackHelper();
+
+        OutcomeReceiver<TaskLocation, Exception> listener =
+                new OutcomeReceiver<>() {
+                    @Override
+                    public void onError(Exception e) {
+                        callBackHelper.notifyFailed(e.toString());
+                    }
+
+                    @Override
+                    public void onResult(TaskLocation tl) {
+                        callBackHelper.notifyCalled();
+                    }
+                };
+        getAppTask(chromeTabbedActivity)
+                .moveTaskTo(
+                        new TaskLocation(getDisplayId(chromeTabbedActivity), newBounds),
+                        Runnable::run,
+                        listener);
+
+        callBackHelper.waitForCallback(/* currentCallCount= */ 0);
+    }
+
     private Intent createCustomTabIntent(@CustomTabsUiType int customTabsUiType) {
         var intent =
                 CustomTabsIntentTestUtils.createMinimalCustomTabIntent(
@@ -715,8 +827,6 @@ public class ExtensionWindowControllerBridgeIntegrationTest {
         return ThreadUtils.runOnUiThreadBlocking(
                 () -> {
                     var chromeAndroidTaskTracker = ChromeAndroidTaskTrackerFactory.getInstance();
-                    assertNotNull(chromeAndroidTaskTracker);
-
                     return chromeAndroidTaskTracker.get(taskId);
                 });
     }

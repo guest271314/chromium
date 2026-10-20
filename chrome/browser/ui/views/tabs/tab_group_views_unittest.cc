@@ -8,17 +8,17 @@
 #include <string>
 #include <utility>
 
-#include "base/feature_list.h"
 #include "base/i18n/rtl.h"
-#include "base/test/scoped_feature_list.h"
+#include "base/i18n/test/scoped_rtl_for_testing.h"
 #include "build/build_config.h"
-#include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/views/tabs/fake_base_tab_strip_controller.h"
 #include "chrome/browser/ui/views/tabs/fake_tab_slot_controller.h"
 #include "chrome/browser/ui/views/tabs/tab_group_header.h"
 #include "chrome/browser/ui/views/tabs/tab_group_highlight.h"
 #include "chrome/browser/ui/views/tabs/tab_group_underline.h"
 #include "chrome/test/views/chrome_views_test_base.h"
+#include "components/tab_groups/tab_group_id.h"
+#include "ui/gfx/geometry/skia_conversions.h"
 #include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/widget/widget.h"
 
@@ -115,6 +115,18 @@ TEST_F(TabGroupViewsTest, HeaderTitleIsCentered) {
   EXPECT_EQ(CenteredTitleX(), title_label()->x());
 }
 
+TEST_F(TabGroupViewsTest, HeaderTitleChipHasOutsetClipPath) {
+  SetGroupTitle(u"Title");
+
+  const SkPath& clip_path = title_chip()->clip_path();
+  EXPECT_FALSE(clip_path.isEmpty());
+
+  gfx::Rect expected_clip_bounds = title_chip()->GetLocalBounds();
+  expected_clip_bounds.Outset(1);
+  EXPECT_EQ(gfx::SkRectToRectF(clip_path.getBounds()),
+            gfx::RectF(expected_clip_bounds));
+}
+
 // The visual centering offset for color-emoji titles only applies on macOS
 // (Apple Color Emoji has asymmetric side bearings). The tests below verify
 // that offset is applied. They are macOS-only because shaping color emoji
@@ -129,12 +141,10 @@ TEST_F(TabGroupViewsTest, SingleEmojiHeaderTitleIsVisuallyCentered) {
 }
 
 TEST_F(TabGroupViewsTest, SingleEmojiHeaderTitleIsVisuallyCenteredInRtl) {
-  base::i18n::SetRTLForTesting(true);
+  base::i18n::ScopedRTLForTesting scoped_rtl(true);
 
   SetGroupTitle(u"\U0001F60A");
   EXPECT_EQ(CenteredTitleX() - 1, title_label()->x());
-
-  base::i18n::SetRTLForTesting(false);
 }
 
 // Skin-tone modifier sequence: thumbs-up + medium skin tone. Two codepoints,
@@ -401,4 +411,35 @@ TEST_F(TabGroupViewsTest, UnderlineBoundsDragTabInGroup) {
     // Drag underline end should match the dragged tab's end.
     EXPECT_EQ(drag_underline_bounds.right(), dragged_tab->bounds().right());
   }
+}
+
+TEST_F(TabGroupViewsTest, UnderlineHiddenInFocusMode) {
+  Tab* tab = tab_container_->AddChildView(
+      std::make_unique<Tab>(tabs::TabHandle(1), tab_slot_controller_.get()));
+  tab->SetGroup(id_);
+  tab->SetBounds(100, 0, 100, 50);
+  group_views_->UpdateBounds();
+
+  EXPECT_TRUE(group_views_->underline()->GetVisible());
+
+  // Focus the group and verify underline becomes hidden.
+  tab_strip_controller_->SetFocusedGroup(id_);
+  group_views_->UpdateBounds();
+  EXPECT_FALSE(group_views_->underline()->GetVisible());
+
+  // Unfocus the group and verify underline becomes visible again.
+  tab_strip_controller_->SetFocusedGroup(std::nullopt);
+  group_views_->UpdateBounds();
+  EXPECT_TRUE(group_views_->underline()->GetVisible());
+
+  // Focus a different group and verify this group's underline is also hidden.
+  tab_groups::TabGroupId other_group = tab_groups::TabGroupId::GenerateNew();
+  tab_strip_controller_->SetFocusedGroup(other_group);
+  group_views_->UpdateBounds();
+  EXPECT_FALSE(group_views_->underline()->GetVisible());
+
+  // Unfocus the group and verify underline becomes visible again.
+  tab_strip_controller_->SetFocusedGroup(std::nullopt);
+  group_views_->UpdateBounds();
+  EXPECT_TRUE(group_views_->underline()->GetVisible());
 }

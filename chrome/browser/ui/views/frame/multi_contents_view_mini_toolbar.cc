@@ -7,7 +7,6 @@
 #include <optional>
 
 #include "base/functional/bind.h"
-#include "base/i18n/rtl.h"
 #include "base/metrics/user_metrics.h"
 #include "base/metrics/user_metrics_action.h"
 #include "base/strings/utf_string_conversions.h"
@@ -18,7 +17,8 @@
 #include "chrome/browser/ui/tabs/alert/tab_alert_controller.h"
 #include "chrome/browser/ui/tabs/alert/tab_alert_icon.h"
 #include "chrome/browser/ui/tabs/public/tab_features.h"
-#include "chrome/browser/ui/ui_features.h"
+#include "chrome/browser/ui/tabs/tab_enums.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/frame/contents_container_outline.h"
 #include "chrome/browser/ui/views/frame/contents_web_view.h"
@@ -30,8 +30,6 @@
 #include "components/url_formatter/url_formatter.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/url_constants.h"
-#include "third_party/skia/include/core/SkMatrix.h"
-#include "third_party/skia/include/core/SkPath.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/models/image_model.h"
@@ -40,7 +38,6 @@
 #include "ui/compositor/layer.h"
 #include "ui/gfx/geometry/insets.h"
 #include "ui/gfx/image/image_skia_operations.h"
-#include "ui/gfx/image/image_util.h"
 #include "ui/views/background.h"
 #include "ui/views/controls/button/image_button.h"
 #include "ui/views/controls/button/image_button_factory.h"
@@ -116,9 +113,10 @@ MultiContentsViewMiniToolbar::MultiContentsViewMiniToolbar(
   close_button_ = AddChildView(views::CreateVectorImageButtonWithNativeTheme(
       base::BindRepeating(&MultiContentsViewMiniToolbar::CloseCurrentView,
                           base::Unretained(this)),
-      features::IsRoundedIconsEnabled() ? kCloseIcon
+      features::IsRoundedIconsEnabled() ? kCloseWeight500CustomIcon
                                         : kCloseTabChromeRefreshOldIcon,
-      16, kColorMultiContentsViewMiniToolbarForeground));
+      features::IsRoundedIconsEnabled() ? 14 : 16,
+      kColorMultiContentsViewMiniToolbarForeground));
   SetAccessibleNameAndTooltip(close_button_, IDS_SPLIT_TAB_CLOSE);
   close_button_->SetProperty(
       views::kFlexBehaviorKey,
@@ -303,17 +301,15 @@ void MultiContentsViewMiniToolbar::CloseCurrentView() {
   base::RecordAction(
       base::UserMetricsAction("DesktopSplitView_MiniToolbarCloseView"));
 
-  TabStripModel* const model = browser_view_->browser()->tab_strip_model();
-  const int index = model->GetIndexOfWebContents(web_contents_);
-
-  if (index == TabStripModel::kNoTab) {
+  TabStripModel* const model = browser_view_->browser()->GetTabStripModel();
+  if (model->GetIndexOfWebContents(web_contents_) == TabStripModel::kNoTab) {
     // Only close the WebContents if it exists. crbug.com/459828484
     return;
   }
 
-  model->CloseWebContentsAt(index,
-                            TabCloseTypes::CLOSE_USER_GESTURE |
-                                TabCloseTypes::CLOSE_CREATE_HISTORICAL_TAB);
+  model->CloseWebContents(web_contents_,
+                          TabCloseTypes::CLOSE_USER_GESTURE |
+                              TabCloseTypes::CLOSE_CREATE_HISTORICAL_TAB);
 }
 
 BEGIN_METADATA(MultiContentsViewMiniToolbar)

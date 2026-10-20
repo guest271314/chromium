@@ -18,6 +18,39 @@ TEST(MetricsTypesTest, GetInvocationSourceString) {
             GetInvocationSourceString(mojom::InvocationSource::kUniversalCart));
   EXPECT_EQ("PasswordChange", GetInvocationSourceString(
                                   mojom::InvocationSource::kPasswordChange));
+  EXPECT_EQ(
+      "DaisyChainOnNewTab",
+      GetInvocationSourceString(mojom::InvocationSource::kDaisyChainOnNewTab));
+  EXPECT_EQ("DaisyChainOnFollowLink",
+            GetInvocationSourceString(
+                mojom::InvocationSource::kDaisyChainOnFollowLink));
+  EXPECT_EQ(
+      "ConversationSwitch",
+      GetInvocationSourceString(mojom::InvocationSource::kConversationSwitch));
+  EXPECT_EQ(
+      "DetachAttachButton",
+      GetInvocationSourceString(mojom::InvocationSource::kDetachAttachButton));
+  EXPECT_EQ("TabRestore",
+            GetInvocationSourceString(mojom::InvocationSource::kTabRestore));
+  EXPECT_EQ("ReshowInactive", GetInvocationSourceString(
+                                  mojom::InvocationSource::kReshowInactive));
+  EXPECT_EQ(
+      "ContextHubTopics",
+      GetInvocationSourceString(mojom::InvocationSource::kContextHubTopics));
+  EXPECT_EQ(
+      "ContextHubAutoTodos",
+      GetInvocationSourceString(mojom::InvocationSource::kContextHubAutoTodos));
+  EXPECT_EQ("WebContentsContextMenuLink",
+            GetInvocationSourceString(
+                mojom::InvocationSource::kWebContentsContextMenuLink));
+  EXPECT_EQ("WebContentsContextMenuPage",
+            GetInvocationSourceString(
+                mojom::InvocationSource::kWebContentsContextMenuPage));
+  EXPECT_EQ("WebContentsContextMenuTextSelection",
+            GetInvocationSourceString(
+                mojom::InvocationSource::kWebContentsContextMenuTextSelection));
+  EXPECT_EQ("ActorTool",
+            GetInvocationSourceString(mojom::InvocationSource::kActorTool));
 }
 
 TEST(MetricsTypesTest, GetResponseSegmentation) {
@@ -68,6 +101,79 @@ TEST(MetricsTypesTest, GetResponseSegmentation) {
             GetResponseSegmentation(
                 /*attached=*/false, mojom::WebClientMode::kAudio,
                 mojom::InvocationSource::kPasswordChange));
+
+  // DaisyChainOnNewTab Attached Text
+  EXPECT_EQ(ResponseSegmentation::kDaisyChainOnNewTabAttachedText,
+            GetResponseSegmentation(
+                /*attached=*/true, mojom::WebClientMode::kText,
+                mojom::InvocationSource::kDaisyChainOnNewTab));
+
+  // DaisyChainOnFollowLink Detached Audio
+  EXPECT_EQ(ResponseSegmentation::kDaisyChainOnFollowLinkDetachedAudio,
+            GetResponseSegmentation(
+                /*attached=*/false, mojom::WebClientMode::kAudio,
+                mojom::InvocationSource::kDaisyChainOnFollowLink));
+
+  // ConversationSwitch Detached Audio
+  EXPECT_EQ(ResponseSegmentation::kConversationSwitchDetachedAudio,
+            GetResponseSegmentation(
+                /*attached=*/false, mojom::WebClientMode::kAudio,
+                mojom::InvocationSource::kConversationSwitch));
+
+  // DetachAttachButton Attached Audio
+  EXPECT_EQ(ResponseSegmentation::kDetachAttachButtonAttachedAudio,
+            GetResponseSegmentation(
+                /*attached=*/true, mojom::WebClientMode::kAudio,
+                mojom::InvocationSource::kDetachAttachButton));
+
+  // TabRestore Detached Text
+  EXPECT_EQ(ResponseSegmentation::kTabRestoreDetachedText,
+            GetResponseSegmentation(
+                /*attached=*/false, mojom::WebClientMode::kText,
+                mojom::InvocationSource::kTabRestore));
+
+  // ReshowInactive Attached Text
+  EXPECT_EQ(ResponseSegmentation::kReshowInactiveAttachedText,
+            GetResponseSegmentation(
+                /*attached=*/true, mojom::WebClientMode::kText,
+                mojom::InvocationSource::kReshowInactive));
+
+  // ContextHubTopics Attached Text
+  EXPECT_EQ(ResponseSegmentation::kContextHubTopicsAttachedText,
+            GetResponseSegmentation(
+                /*attached=*/true, mojom::WebClientMode::kText,
+                mojom::InvocationSource::kContextHubTopics));
+
+  // ContextHubAutoTodos Attached Text
+  EXPECT_EQ(ResponseSegmentation::kContextHubAutoTodosAttachedText,
+            GetResponseSegmentation(
+                /*attached=*/true, mojom::WebClientMode::kText,
+                mojom::InvocationSource::kContextHubAutoTodos));
+
+  // WebContentsContextMenuLink Attached Text
+  EXPECT_EQ(ResponseSegmentation::kWebContentsContextMenuLinkAttachedText,
+            GetResponseSegmentation(
+                /*attached=*/true, mojom::WebClientMode::kText,
+                mojom::InvocationSource::kWebContentsContextMenuLink));
+
+  // WebContentsContextMenuPage Detached Audio
+  EXPECT_EQ(ResponseSegmentation::kWebContentsContextMenuPageDetachedAudio,
+            GetResponseSegmentation(
+                /*attached=*/false, mojom::WebClientMode::kAudio,
+                mojom::InvocationSource::kWebContentsContextMenuPage));
+
+  // WebContentsContextMenuTextSelection Attached Text
+  EXPECT_EQ(
+      ResponseSegmentation::kWebContentsContextMenuTextSelectionAttachedText,
+      GetResponseSegmentation(
+          /*attached=*/true, mojom::WebClientMode::kText,
+          mojom::InvocationSource::kWebContentsContextMenuTextSelection));
+
+  // ActorTool Attached Text
+  EXPECT_EQ(ResponseSegmentation::kActorToolAttachedText,
+            GetResponseSegmentation(
+                /*attached=*/true, mojom::WebClientMode::kText,
+                mojom::InvocationSource::kActorTool));
 }
 
 }  // namespace

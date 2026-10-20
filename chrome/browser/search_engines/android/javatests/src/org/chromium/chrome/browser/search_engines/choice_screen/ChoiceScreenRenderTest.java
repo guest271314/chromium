@@ -35,7 +35,10 @@ import org.chromium.base.test.params.ParameterAnnotations.ClassParameter;
 import org.chromium.base.test.params.ParameterSet;
 import org.chromium.base.test.params.ParameterizedRunner;
 import org.chromium.base.test.util.Batch;
+import org.chromium.base.test.util.DisableIf;
 import org.chromium.base.test.util.Feature;
+import org.chromium.base.test.util.Features.EnableFeatures;
+import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.lifecycle.ActivityLifecycleDispatcher;
 import org.chromium.chrome.browser.search_engines.R;
 import org.chromium.chrome.test.ChromeJUnit4RunnerDelegate;
@@ -43,6 +46,7 @@ import org.chromium.chrome.test.util.ChromeRenderTestRule;
 import org.chromium.components.browser_ui.modaldialog.AppModalPresenter;
 import org.chromium.components.search_engines.FakeSearchEngineCountryDelegate;
 import org.chromium.components.search_engines.SearchEngineChoiceService;
+import org.chromium.ui.base.DeviceFormFactor;
 import org.chromium.ui.modaldialog.ModalDialogManager;
 import org.chromium.ui.test.util.BlankUiTestActivity;
 import org.chromium.ui.test.util.NightModeTestUtils;
@@ -54,6 +58,7 @@ import java.util.List;
 @RunWith(ParameterizedRunner.class)
 @ParameterAnnotations.UseRunnerDelegate(ChromeJUnit4RunnerDelegate.class)
 @Batch(Batch.PER_CLASS)
+@EnableFeatures({ChromeFeatureList.DISABLE_SCROLLBAR_OF_FADING_EDGE_SCROLLVIEW})
 public class ChoiceScreenRenderTest {
     public @ClassParameter static List<ParameterSet> params = new NightModeParams().getParameters();
 
@@ -108,6 +113,7 @@ public class ChoiceScreenRenderTest {
     @Test
     @LargeTest
     @Feature("RenderTest")
+    @DisableIf.Device(DeviceFormFactor.DESKTOP) // https://crbug.com/565382187
     public void testSecondChoiceScreenBlockingDialog() throws Exception {
         ThreadUtils.runOnUiThreadBlocking(() -> mFakeDelegate.setIsDeviceChoiceRequired(true));
         showDialog();

@@ -153,8 +153,8 @@ void SignOutAndClearIdentities(ProceduralBlock completion) {
       ChangeProfileContinuation continuation =
           CreateChangeProfileSignoutContinuation(
               signout_source, /*force_snackbar_over_toolbar=*/false,
-              /*should_record_metrics=*/false, /*snackbar_message =*/nil,
-              std::move(switch_callback));
+              /*should_record_metrics=*/false,
+              /*snackbar_message_builder=*/{}, std::move(switch_callback));
       SceneState* scene_state = chrome_test_util::GetForegroundActiveScene();
       signin::SwitchToPersonalProfile(
           scene_state, ChangeProfileReason::kManagedAccountSignOut,
@@ -164,17 +164,12 @@ void SignOutAndClearIdentities(ProceduralBlock completion) {
     // Sign out current user and clear all browsing data on the device.
     signin::IdentityManager* identity_manager =
         IdentityManagerFactory::GetForProfile(profile);
-    AuthenticationService* authentication_service =
-        AuthenticationServiceFactory::GetForProfile(profile);
     if (identity_manager->HasPrimaryAccount(signin::ConsentLevel::kSignin)) {
-      ProceduralBlock signout_completion = ^{
-        ClearIdentities(completion);
-      };
-      authentication_service->SignOut(signin_metrics::ProfileSignout::kTest,
-                                      signout_completion);
-    } else {
-      ClearIdentities(completion);
+      AuthenticationService* authentication_service =
+          AuthenticationServiceFactory::GetForProfile(profile);
+      authentication_service->SignOut(signin_metrics::ProfileSignout::kTest);
     }
+    ClearIdentities(completion);
   }
 }
 

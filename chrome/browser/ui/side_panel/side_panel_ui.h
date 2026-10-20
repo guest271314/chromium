@@ -6,20 +6,30 @@
 #define CHROME_BROWSER_UI_SIDE_PANEL_SIDE_PANEL_UI_H_
 
 #include "base/callback_list.h"
-#include "chrome/browser/ui/side_panel/side_panel_entry.h"
 #include "chrome/browser/ui/side_panel/side_panel_entry_id.h"
 #include "chrome/browser/ui/side_panel/side_panel_entry_key.h"
 #include "chrome/browser/ui/side_panel/side_panel_enums.h"
+#include "ui/base/unowned_user_data/scoped_unowned_user_data.h"
 #include "ui/gfx/geometry/rect.h"
+
+class BrowserWindowInterface;
 
 namespace content {
 class WebContents;
 }  // namespace content
 
 // An abstract class of the side panel API. Get an instance of this class by
-// calling BrowserWindowInterface->GetFeatures().side_panel_ui()
+// calling SidePanelUI::From(browser).
 class SidePanelUI {
  public:
+  DECLARE_USER_DATA(SidePanelUI);
+
+  SidePanelUI() = default;
+  virtual ~SidePanelUI() = default;
+
+  static SidePanelUI* From(BrowserWindowInterface* browser);
+  static const SidePanelUI* From(const BrowserWindowInterface* browser);
+
   // Open side panel with entry_id.
   virtual void Show(SidePanelEntryId entry_id,
                     std::optional<SidePanelOpenTrigger> open_trigger,
@@ -79,7 +89,7 @@ class SidePanelUI {
 
   // Similar to IsSidePanelEntryShowing, but restricts to either the tab-scoped
   // or window-scoped registry.
-  virtual bool IsSidePanelEntryShowing(const SidePanelEntry::Key& entry_key,
+  virtual bool IsSidePanelEntryShowing(const SidePanelEntryKey& entry_key,
                                        bool for_tab) const = 0;
 
   // Register for this callback to detect when the side panel opens or changes.

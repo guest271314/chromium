@@ -7,11 +7,13 @@
 
 #include <memory>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "base/functional/callback.h"
 #include "base/values.h"
 #include "chrome/browser/ash/base/locale_util.h"
+#include "ui/base/ime/ash/input_method_descriptor.h"
 #include "ui/base/ime/ash/input_method_manager.h"
 
 namespace ash {
@@ -37,11 +39,12 @@ extern const char kMostRelevantLanguagesDivider[];
 // `most_relevant_language_codes` is NULL, the most relevant languages are read
 // from initial_locale in VPD. If `selected` matches the locale code of any
 // entry in the resulting list, that entry will be marked as selected.
+// Safe to call from any thread.
 base::ListValue GetUILanguageList(
     const std::string& app_locale,
     const std::vector<std::string>* most_relevant_language_codes,
     const std::string& selected,
-    input_method::InputMethodManager* input_method_manager);
+    const input_method::InputMethodDescriptors& descriptors);
 
 // Must be called on UI thread. Runs GetUILanguageList(), on Blocking Pool,
 // and calls `callback` on UI thread with result.
@@ -49,13 +52,13 @@ base::ListValue GetUILanguageList(
 // correct and has been successfully loaded.
 void ResolveUILanguageList(
     std::unique_ptr<locale_util::LanguageSwitchResult> language_switch_result,
-    input_method::InputMethodManager* input_method_manager,
+    input_method::InputMethodManager& input_method_manager,
     UILanguageListResolvedCallback callback);
 
 // Returns a minimal list of UI languages, which consists of active language
 // only. It is used as a placeholder until ResolveUILanguageList() finishes
 // on BlockingPool.
-base::ListValue GetMinimalUILanguageList();
+base::ListValue GetMinimalUILanguageList(std::string_view application_locale);
 
 // Returns the most first entry of `most_relevant_language_codes` that is
 // actually available (present in `available_locales`). If none of the entries

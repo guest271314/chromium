@@ -51,7 +51,7 @@ typedef NS_ENUM(NSInteger, ItemIdentifier) {
 
 - (instancetype)initWithUserEmail:(NSString*)userEmail
                      hostedDomain:(NSString*)hostedDomain {
-  self = [super init];
+  self = [super initWithConfiguration:[[ButtonStackConfiguration alloc] init]];
   if (self) {
     _userEmail = userEmail;
     _hostedDomain = hostedDomain;
@@ -72,7 +72,7 @@ typedef NS_ENUM(NSInteger, ItemIdentifier) {
       self.managedProfileCreationDataSource.mode;
 
   // Set banner.
-  self.bannerName = kEnterpriseSigninBannerSymbol;
+  self.bannerName = @"enterprise_signin_banner";
 
   self.titleText =
       l10n_util::GetNSString(IDS_IOS_ENTERPRISE_PROFILE_CREATION_TITLE);

@@ -8,18 +8,19 @@
 
 #include "base/memory/raw_ptr.h"
 #include "base/metrics/user_metrics.h"
-#include "base/strings/utf_string_conversions.h"
 #include "chrome/app/chrome_command_ids.h"
-#include "chrome/browser/themes/theme_properties.h"
 #include "chrome/browser/themes/theme_service.h"
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/bubble_anchor_util.h"
 #include "chrome/browser/ui/color/chrome_color_id.h"
 #include "chrome/browser/ui/layout_constants.h"
 #include "chrome/browser/ui/page_info/page_info_dialog.h"
+#include "chrome/browser/ui/tabs/tab_change_type.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/chrome_typography.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/web_applications/app_browser_controller.h"
+#include "chrome/browser/ui/window_metadata/window_metadata_controller.h"
 #include "chrome/grit/generated_resources.h"
 #include "components/omnibox/browser/location_bar_model.h"
 #include "components/security_interstitials/content/security_interstitial_tab_helper.h"
@@ -36,7 +37,6 @@
 #include "ui/color/color_id.h"
 #include "ui/color/color_provider.h"
 #include "ui/gfx/canvas.h"
-#include "ui/gfx/color_palette.h"
 #include "ui/gfx/color_utils.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/paint_vector_icon.h"
@@ -55,6 +55,7 @@
 #include "ui/views/style/typography_provider.h"
 #include "ui/views/view_class_properties.h"
 #include "url/gurl.h"
+#include "url/origin.h"
 
 namespace {
 
@@ -136,10 +137,13 @@ class CustomTabBarTitleOriginView : public views::View {
         .SetCrossAxisAlignment(views::LayoutAlignment::kStart);
   }
 
-  void Update(const std::u16string title, const std::u16string location) {
+  void Update(const std::u16string title,
+              const std::u16string location,
+              gfx::ElideBehavior location_elide_behavior) {
     if (title_label_) {
       title_label_->SetText(title);
     }
+    location_label_->SetElideBehavior(location_elide_behavior);
     location_label_->SetText(location);
     location_label_->SetVisible(!location.empty());
   }
@@ -191,6 +195,10 @@ class CustomTabBarTitleOriginView : public views::View {
 
   bool IsShowingOriginForTesting() const {
     return location_label_ && location_label_->GetVisible();
+  }
+
+  gfx::ElideBehavior GetLocationElideBehaviorForTesting() const {
+    return location_label_->GetElideBehavior();
   }
 
  private:
@@ -247,7 +255,7 @@ CustomTabBarView::CustomTabBarView(BrowserView* browser_view,
       .SetCrossAxisAlignment(views::LayoutAlignment::kStretch)
       .SetInteriorMargin(interior_margin);
 
-  browser_->tab_strip_model()->AddObserver(this);
+  browser_->GetTabStripModel()->AddObserver(this);
 }
 
 CustomTabBarView::~CustomTabBarView() = default;
@@ -321,7 +329,7 @@ void CustomTabBarView::OnThemeChanged() {
       color_provider->GetColor(kColorPwaToolbarButtonIconDisabled);
   SetImageFromVectorIconWithColor(
       close_button_,
-      features::IsRoundedIconsEnabled() ? vector_icons::kCloseSmallIcon
+      features::IsRoundedIconsEnabled() ? vector_icons::kCloseIcon
                                         : vector_icons::kCloseRoundedOldIcon,
       GetLayoutConstant(LayoutConstant::kLocationBarIconSize),
       {foreground_color, foreground_disabled_color});
@@ -333,7 +341,6 @@ void CustomTabBarView::OnThemeChanged() {
 }
 
 void CustomTabBarView::OnTabChangedAt(tabs::TabInterface* tab,
-                                      int index,
                                       TabChangeType change_type) {
   if (delegate_->GetWebContents() == tab->GetContents()) {
     UpdateContents();
@@ -349,11 +356,21 @@ void CustomTabBarView::OnTabStripModelChanged(
   }
 }
 
+bool CustomTabBarView::HasSecurityStateChanged() const {
+  web_app::AppBrowserController* const app_controller =
+      web_app::AppBrowserController::From(browser_);
+  if (app_controller && !app_controller->ShouldShowCustomTabBar()) {
+    return false;
+  }
+  return GetVisible() && location_icon_view_ &&
+         location_icon_view_->HasSecurityStateChanged();
+}
+
 void CustomTabBarView::UpdateContents() {
   // If the toolbar should not be shown don't update the UI, as the toolbar may
   // be animating out and it looks messy.
   web_app::AppBrowserController* const app_controller =
-      browser_->app_controller();
+      web_app::AppBrowserController::From(browser_);
   if (app_controller && !app_controller->ShouldShowCustomTabBar()) {
     return;
   }
@@ -365,13 +382,26 @@ void CustomTabBarView::UpdateContents() {
 
   content::NavigationEntry* entry = contents->GetController().GetVisibleEntry();
   std::u16string title, location;
-  title = Browser::FormatTitleForDisplay(entry->GetTitleForDisplay());
+  if (entry) {
+    title = WindowMetadataController::FormatTitleForDisplay(
+        entry->GetTitleForDisplay());
+  }
+  const GURL visible_url = contents->GetVisibleURL();
   if (ShouldDisplayUrl(contents)) {
     location = web_app::AppBrowserController::FormatUrlOrigin(
-        contents->GetVisibleURL(), url_formatter::kFormatUrlOmitDefaults);
+        visible_url, url_formatter::kFormatUrlOmitDefaults);
   }
 
-  title_origin_view_->Update(title, location);
+  // Only head-elide hierarchical HTTP/HTTPS origins (where the registrable
+  // domain is at the end). For opaque origins or non-HTTP/HTTPS schemes, tail
+  // elision is required so that a crafted suffix cannot spoof an HTTPS origin.
+  const url::Origin origin = url::Origin::Create(visible_url);
+  const gfx::ElideBehavior location_elide_behavior =
+      (!origin.opaque() && origin.GetURL().SchemeIsHTTPOrHTTPS())
+          ? gfx::ElideBehavior::ELIDE_HEAD
+          : gfx::ElideBehavior::ELIDE_TAIL;
+
+  title_origin_view_->Update(title, location, location_elide_behavior);
   location_icon_view_->Update(/*suppress animations = */ false);
 
   // Hide location icon if we're already hiding the origin.
@@ -453,6 +483,11 @@ bool CustomTabBarView::IsShowingOriginForTesting() const {
 
 bool CustomTabBarView::IsShowingCloseButtonForTesting() const {
   return close_button_->GetVisible();
+}
+
+gfx::ElideBehavior CustomTabBarView::GetLocationElideBehaviorForTesting()
+    const {
+  return title_origin_view_->GetLocationElideBehaviorForTesting();  // IN-TEST
 }
 
 void CustomTabBarView::GoBackToApp() {

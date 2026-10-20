@@ -21,6 +21,7 @@ include_rules = [
   "+third_party/ffmpeg",
   "+third_party/flac",
   "+third_party/fuzztest",
+  "+third_party/iamf_tools",
   "+third_party/libaom",
   "+third_party/libdrm",
   "+third_party/libgav1",
@@ -28,6 +29,9 @@ include_rules = [
   "+third_party/libyuv",
   "+third_party/openh264/src/codec/api/wels",
   "+third_party/opus",
+  # Required for C++ bridge headers (e.g. SymphoniaSourceBridge) interacting with
+  # Rust CXX bridge types such as rust::Slice.
+  "+third_party/rust/cxx",
   "+third_party/skia",
   "+ui/base/x/x11_user_input_monitor.h",
   "+ui/display",
@@ -65,7 +69,7 @@ specific_include_rules = {
   "null_video_sink_unittest.cc": [
     "+components/viz/common/frame_sinks/begin_frame_args.h",
   ],
-  "fuchsia_.*_mojom_traits\.h": [
+  "fuchsia_.*_mojom_traits\\.h": [
     "+mojo/public/cpp/base/fuchsia/fidl_interface_request_mojom_traits.h",
   ],
 }

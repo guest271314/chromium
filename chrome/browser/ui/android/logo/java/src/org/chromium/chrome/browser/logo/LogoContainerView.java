@@ -5,6 +5,7 @@
 package org.chromium.chrome.browser.logo;
 
 import android.content.Context;
+import android.graphics.drawable.AnimatedImageDrawable;
 import android.graphics.drawable.Drawable;
 import android.util.AttributeSet;
 import android.widget.FrameLayout;
@@ -47,6 +48,10 @@ public class LogoContainerView extends FrameLayout {
         }
     }
 
+    public void setNightMode(boolean isNightMode) {
+        mLogoView.setNightMode(isNightMode);
+    }
+
     public void endAnimationsForTesting() {
         mLogoView.endAnimationsForTesting(); // IN-TEST
     }
@@ -65,7 +70,7 @@ public class LogoContainerView extends FrameLayout {
         }
     }
 
-    void playAnimatedLogo(Object animatedLogo) {
+    void playAnimatedLogo(AnimatedImageDrawable animatedLogo) {
         mLoadingView.hideLoadingUi();
         mLogoView.playAnimatedLogo(animatedLogo);
     }
@@ -100,6 +105,14 @@ public class LogoContainerView extends FrameLayout {
         mLogoView.setLogoTopMargin(topMargin);
     }
 
+    void setLogoTopPadding(int topPadding) {
+        mLogoView.setPaddingRelative(
+                mLogoView.getPaddingStart(),
+                topPadding,
+                mLogoView.getPaddingEnd(),
+                mLogoView.getPaddingBottom());
+    }
+
     void setLogoBottomMargin(int bottomMargin) {
         MarginLayoutParams marginLayoutParams = (MarginLayoutParams) getLayoutParams();
         marginLayoutParams.bottomMargin = bottomMargin;
@@ -118,7 +131,7 @@ public class LogoContainerView extends FrameLayout {
         mLogoView.setAnimationEnabled(enabled);
     }
 
-    void setClickHandler(LogoProperties.ClickHandler handler) {
+    void setClickHandler(LogoView.ClickHandler handler) {
         mLogoView.setClickHandler(handler);
     }
 
@@ -151,7 +164,7 @@ public class LogoContainerView extends FrameLayout {
         return mLogoView.getAnimationEnabledForTesting(); // IN-TEST
     }
 
-    LogoProperties.@Nullable ClickHandler getClickHandlerForTesting() {
+    LogoView.@Nullable ClickHandler getClickHandlerForTesting() {
         return mLogoView.getClickHandlerForTesting(); // IN-TEST
     }
 

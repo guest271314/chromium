@@ -6,12 +6,11 @@ package org.chromium.chrome.browser.ui.android.webid.data;
 
 import android.graphics.Bitmap;
 
-import androidx.annotation.Nullable;
-
 import org.jni_zero.CalledByNative;
 import org.jni_zero.JniType;
 
 import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 
 /** Holds data about a relying party which is displayed on the FedCM bottom sheet. */
 @NullMarked
@@ -36,7 +35,7 @@ public class RelyingPartyData {
     public RelyingPartyData(
             @JniType("std::u16string") String rpForDisplay,
             @JniType("std::u16string") String iframeForDisplay,
-            @Nullable Bitmap rpIcon,
+            @JniType("SkBitmap") @Nullable Bitmap rpIcon,
             boolean displayStringsMayChange) {
         mRpForDisplay = rpForDisplay;
         mIframeForDisplay = iframeForDisplay;

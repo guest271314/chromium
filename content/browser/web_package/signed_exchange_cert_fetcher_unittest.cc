@@ -8,6 +8,7 @@
 #include <string_view>
 
 #include "base/base64.h"
+#include "base/containers/span.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
 #include "base/functional/callback_helpers.h"
@@ -58,9 +59,7 @@ class DeferringURLLoaderThrottle final : public blink::URLLoaderThrottle {
       net::RedirectInfo* redirect_info,
       const network::mojom::URLResponseHead& /* response_head */,
       bool* defer,
-      std::vector<std::string>* /* to_be_removed_headers */,
-      net::HttpRequestHeaders* /* modified_headers */,
-      net::HttpRequestHeaders* /* modified_cors_exempt_headers */) override {
+      network::HttpRequestHeadersUpdateParams* headers_update_params) override {
     will_redirect_request_called_ = true;
     *defer = true;
   }
@@ -99,10 +98,8 @@ class MockURLLoader final : public network::mojom::URLLoader {
 
   ~MockURLLoader() override = default;
 
-  MOCK_METHOD4(FollowRedirect,
-               void(const std::vector<std::string>&,
-                    const net::HttpRequestHeaders&,
-                    const net::HttpRequestHeaders&,
+  MOCK_METHOD2(FollowRedirect,
+               void(network::HttpRequestHeadersUpdateParams,
                     const std::optional<GURL>&));
   MOCK_METHOD2(SetPriority,
                void(net::RequestPriority priority,
@@ -188,12 +185,9 @@ class SignedExchangeCertFetcherTest : public testing::Test {
 
   static std::string CreateCertMessage(std::string_view cert_data) {
     cbor::Value::MapValue cbor_map;
-    cbor_map[cbor::Value("sct")] =
-        cbor::Value("SCT", cbor::Value::Type::BYTE_STRING);
-    cbor_map[cbor::Value("cert")] =
-        cbor::Value(cert_data, cbor::Value::Type::BYTE_STRING);
-    cbor_map[cbor::Value("ocsp")] =
-        cbor::Value("OCSP", cbor::Value::Type::BYTE_STRING);
+    cbor_map.emplace("sct", base::byte_span_from_cstring("SCT"));
+    cbor_map.emplace("cert", base::as_byte_span(cert_data));
+    cbor_map.emplace("ocsp", base::byte_span_from_cstring("OCSP"));
 
     cbor::Value::ArrayValue cbor_array;
     cbor_array.push_back(cbor::Value("\U0001F4DC\u26D3"));

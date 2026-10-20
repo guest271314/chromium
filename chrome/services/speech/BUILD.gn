@@ -2,7 +2,6 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-import("//build/config/chromeos/ui_mode.gni")
 import("//chrome/services/speech/buildflags/buildflags.gni")
 
 assert(enable_speech_service)
@@ -21,8 +20,6 @@ source_set("lib") {
     "speech_timestamp_estimator.cc",
     "speech_timestamp_estimator.h",
   ]
-
-  configs += [ "//build/config/compiler:wexit_time_destructors" ]
 
   public_deps = [
     "//media/mojo/mojom",

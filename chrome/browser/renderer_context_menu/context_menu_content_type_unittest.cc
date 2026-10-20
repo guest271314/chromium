@@ -80,6 +80,16 @@ TEST_F(ContextMenuContentTypeTest, CheckTypes) {
                     ContextMenuContentType::ITEM_GROUP_EDITABLE));
     EXPECT_TRUE(content_type->SupportsGroup(
                     ContextMenuContentType::ITEM_GROUP_SEARCH_PROVIDER));
+    EXPECT_TRUE(
+        content_type->SupportsGroup(ContextMenuContentType::ITEM_GROUP_GLIC));
+  }
+
+  {
+    content::ContextMenuParams params = CreateParams(MenuItem::SELECTION);
+    params.media_type = blink::mojom::ContextMenuDataMediaType::kImage;
+    auto content_type = std::make_unique<ContextMenuContentType>(params, true);
+    EXPECT_TRUE(
+        content_type->SupportsGroup(ContextMenuContentType::ITEM_GROUP_GLIC));
   }
 
   {
@@ -102,6 +112,8 @@ TEST_F(ContextMenuContentTypeTest, CheckTypes) {
                     ContextMenuContentType::ITEM_GROUP_SEARCHWEBFORIMAGE));
     EXPECT_TRUE(content_type->SupportsGroup(
                     ContextMenuContentType::ITEM_GROUP_PRINT));
+    EXPECT_FALSE(
+        content_type->SupportsGroup(ContextMenuContentType::ITEM_GROUP_GLIC));
 
     EXPECT_FALSE(content_type->SupportsGroup(
                     ContextMenuContentType::ITEM_GROUP_MEDIA_VIDEO));
@@ -147,4 +159,23 @@ TEST_F(ContextMenuContentTypeTest, CheckTypes) {
     EXPECT_TRUE(content_type->SupportsGroup(
                     ContextMenuContentType::ITEM_GROUP_PAGE));
   }
+}
+
+TEST_F(ContextMenuContentTypeTest, ReadAnythingType) {
+  content::ContextMenuParams params;
+  params.page_url =
+      GURL("chrome-untrusted://read-anything-side-panel.top-chrome/");
+
+  std::unique_ptr<ContextMenuContentType> content_type =
+      ContextMenuContentTypeFactory::Create(main_rfh(), params);
+
+  // Verify it behaves like ReadAnything content type (rejects PAGE group).
+  EXPECT_FALSE(
+      content_type->SupportsGroup(ContextMenuContentType::ITEM_GROUP_PAGE));
+
+  // Verify a normal page DOES support ITEM_GROUP_PAGE.
+  params.page_url = GURL("http://www.google.com");
+  content_type = ContextMenuContentTypeFactory::Create(main_rfh(), params);
+  EXPECT_TRUE(
+      content_type->SupportsGroup(ContextMenuContentType::ITEM_GROUP_PAGE));
 }

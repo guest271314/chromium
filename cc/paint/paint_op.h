@@ -23,6 +23,7 @@
 #include "base/debug/alias.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/scoped_refptr.h"
+#include "base/memory/stack_allocated.h"
 #include "base/notreached.h"
 #include "cc/base/math_util.h"
 #include "cc/paint/element_id.h"
@@ -61,18 +62,6 @@ class DisplayItemList;
 class PaintOpWriter;
 class PaintOpReader;
 
-class CC_PAINT_EXPORT ThreadsafePath : public SkPath {
- public:
-  explicit ThreadsafePath(const SkPath& path) : SkPath(path) {
-    updateBoundsCache();
-    getGenerationID();
-  }
-  ThreadsafePath() {
-    updateBoundsCache();
-    getGenerationID();
-  }
-};
-
 // See PaintOp::Serialize/Deserialize for comments.  Serialize() of derived
 // types don't write the type/serialized_size header because they don't know how
 // much data they will need to write. PaintOp::Serialize itself must update the
@@ -107,6 +96,7 @@ enum class PaintOpType : uint8_t {
   kDrawSkottie,
   kDrawSlug,
   kDrawTextBlob,
+  kDrawTextSlugs,
   kDrawVertices,
   kNoop,
   kRestore,
@@ -177,12 +167,11 @@ class CC_PAINT_EXPORT PaintOp {
   // Returns null on any errors.
   // The PaintOp is deserialized into the `output` buffer and returned
   // if valid.  nullptr is returned if the deserialization fails.
-  // `output_size` must be at least ComputeOpAlignedSize<LargestPaintOp>(),
+  // `output` must be at least ComputeOpAlignedSize<LargestPaintOp>() bytes,
   // to fit all ops.  The caller is responsible for destroying these ops.
   // After reading, it returns the number of bytes read in `read_bytes`.
   static PaintOp* Deserialize(base::span<const volatile uint8_t> input,
-                              void* output,
-                              size_t output_size,
+                              base::span<uint8_t> output,
                               size_t* read_bytes,
                               const DeserializeOptions& options);
   // Similar to the above, but deserializes into `buffer`.
@@ -392,7 +381,7 @@ class CC_PAINT_EXPORT ClipPathOp final : public PaintOpBaseInternal {
   bool HasNonAAPaint() const { return !antialias; }
   HAS_SERIALIZATION_FUNCTIONS();
 
-  ThreadsafePath path;
+  SkPath path;
   SkClipOp op;
   bool antialias;
   UsePaintCache use_cache = UsePaintCache::kDisabled;
@@ -813,7 +802,7 @@ class CC_PAINT_EXPORT DrawPathOp final : public PaintOpWithFlagsBaseInternal {
   int CountSlowPaths() const;
   HAS_SERIALIZATION_FUNCTIONS();
 
-  ThreadsafePath path;
+  SkPath path;
 
   // Changing the fill type on an SkPath does not change the
   // generation id. This can lead to caching issues so we explicitly
@@ -1070,8 +1059,6 @@ class CC_PAINT_EXPORT DrawTextBlobOp final
   HAS_SERIALIZATION_FUNCTIONS();
 
   sk_sp<SkTextBlob> blob;
-  mutable sk_sp<sktext::gpu::Slug> slug;
-  mutable std::vector<sk_sp<sktext::gpu::Slug>> extra_slugs;
   SkScalar x;
   SkScalar y;
   // This field isn't serialized.
@@ -1079,6 +1066,35 @@ class CC_PAINT_EXPORT DrawTextBlobOp final
 
  private:
   DrawTextBlobOp();
+};
+
+class CC_PAINT_EXPORT DrawTextSlugsOp final
+    : public PaintOpWithFlagsBaseInternal {
+  STACK_ALLOCATED();
+
+ public:
+  static constexpr PaintOpType kType = PaintOpType::kDrawTextSlugs;
+  static constexpr bool kIsDrawOp = true;
+  DrawTextSlugsOp() = delete;
+  explicit DrawTextSlugsOp(const DrawTextBlobOp& op);
+  ~DrawTextSlugsOp();
+  static void RasterWithFlags(const DrawTextSlugsOp* op,
+                              const PaintFlags* flags,
+                              SkCanvas* canvas,
+                              const PlaybackParams& params);
+  bool IsValid() const { return flags.IsValid(); }
+  bool HasDrawTextOps() const { return true; }
+  bool EqualsForTesting(const DrawTextSlugsOp& other) const;
+  HAS_SERIALIZATION_FUNCTIONS();
+
+  // These fields copied from the DrawTextBlobOp given to the constructor.
+  sk_sp<SkTextBlob> blob;
+  SkScalar x;
+  SkScalar y;
+  NodeId node_id = kInvalidNodeId;
+  // These fields used only during serialization.
+  mutable sk_sp<sktext::gpu::Slug> slug;
+  mutable std::vector<sk_sp<sktext::gpu::Slug>> extra_slugs;
 };
 
 class CC_PAINT_EXPORT NoopOp final : public PaintOpBaseInternal {

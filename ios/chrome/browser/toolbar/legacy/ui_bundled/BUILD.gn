@@ -62,12 +62,12 @@ source_set("coordinator") {
     "//ios/chrome/browser/lens/ui_bundled:lens_availability",
     "//ios/chrome/browser/lens/ui_bundled:lens_entrypoint",
     "//ios/chrome/browser/location_bar/ui_bundled",
-    "//ios/chrome/browser/main/model",
     "//ios/chrome/browser/menu/ui_bundled",
+    "//ios/chrome/browser/ntp/model",
     "//ios/chrome/browser/ntp/model:util",
     "//ios/chrome/browser/ntp/ui_bundled",
     "//ios/chrome/browser/ntp/ui_bundled:coordinator",
-    "//ios/chrome/browser/omnibox/model/omnibox_position",
+    "//ios/chrome/browser/omnibox/model/omnibox_focus",
     "//ios/chrome/browser/omnibox/ui",
     "//ios/chrome/browser/omnibox/ui:omnibox_internal",
     "//ios/chrome/browser/omnibox/ui/popup",
@@ -86,6 +86,7 @@ source_set("coordinator") {
     "//ios/chrome/browser/shared/coordinator/layout_guide",
     "//ios/chrome/browser/shared/coordinator/scene:scene_state_header",
     "//ios/chrome/browser/shared/model/application_context",
+    "//ios/chrome/browser/shared/model/browser",
     "//ios/chrome/browser/shared/model/prefs",
     "//ios/chrome/browser/shared/model/prefs:pref_names",
     "//ios/chrome/browser/shared/model/profile",
@@ -160,6 +161,7 @@ source_set("ui") {
     "//ios/chrome/browser/fullscreen/ui_bundled:ui",
     "//ios/chrome/browser/intelligence/features",
     "//ios/chrome/browser/keyboard/ui_bundled",
+    "//ios/chrome/browser/ntp/shared/metrics:home_metrics",
     "//ios/chrome/browser/ntp/ui_bundled",
     "//ios/chrome/browser/omnibox/public:features",
     "//ios/chrome/browser/orchestrator/ui_bundled",
@@ -189,7 +191,10 @@ source_set("ui") {
 source_set("unit_tests") {
   testonly = true
 
-  sources = [ "adaptive_toolbar_mediator_unittest.mm" ]
+  sources = [
+    "adaptive_toolbar_mediator_unittest.mm",
+    "secondary_toolbar_view_controller_unittest.mm",
+  ]
   deps = [
     ":coordinator",
     ":ui",
@@ -213,7 +218,7 @@ source_set("unit_tests") {
     "//ios/chrome/browser/fullscreen/ui_bundled",
     "//ios/chrome/browser/infobars/model",
     "//ios/chrome/browser/menu/ui_bundled",
-    "//ios/chrome/browser/omnibox/model/omnibox_position",
+    "//ios/chrome/browser/omnibox/model/omnibox_focus",
     "//ios/chrome/browser/policy/model:policy_util",
     "//ios/chrome/browser/popup_menu/public",
     "//ios/chrome/browser/reading_list/model",
@@ -231,6 +236,7 @@ source_set("unit_tests") {
     "//ios/chrome/browser/shared/public/features",
     "//ios/chrome/browser/shared/ui/symbols",
     "//ios/chrome/browser/shared/ui/util",
+    "//ios/chrome/browser/shared/ui/util:util_swift",
     "//ios/chrome/browser/toolbar/legacy/ui_bundled/buttons",
     "//ios/chrome/browser/toolbar/legacy/ui_bundled/fullscreen",
     "//ios/chrome/browser/toolbar/legacy/ui_bundled/public",
@@ -260,7 +266,6 @@ source_set("eg_app_support+eg2") {
     "//ios/chrome/browser/infobars/model",
     "//ios/chrome/browser/infobars/ui_bundled:eg_app_support+eg2",
     "//ios/chrome/test/app:test_support",
-    "//ios/testing:nserror_support",
   ]
 }
 
@@ -288,7 +293,9 @@ source_set("eg2_tests") {
     "//components/omnibox/browser:pref_names",
     "//components/strings",
     "//ios/chrome/app/strings",
+    "//ios/chrome/browser/app_bar/ui:constants",
     "//ios/chrome/browser/content_suggestions/public:ntp_home_constants",
+    "//ios/chrome/browser/location_bar/ui_bundled:constants",
     "//ios/chrome/browser/omnibox/eg_tests:eg_test_support+eg2",
     "//ios/chrome/browser/omnibox/public:constants",
     "//ios/chrome/browser/popup_menu/public",
@@ -297,13 +304,13 @@ source_set("eg2_tests") {
     "//ios/chrome/browser/shared/ui/util",
     "//ios/chrome/browser/start_surface/ui_bundled:feature_flags",
     "//ios/chrome/browser/toolbar/legacy/ui_bundled/public:constants",
+    "//ios/chrome/browser/toolbar/ui:constants",
     "//ios/chrome/common/ui/elements:form_input_accessory",
     "//ios/chrome/test:eg_test_support+eg2",
     "//ios/chrome/test/earl_grey:eg_test_support+eg2",
     "//ios/testing/earl_grey:eg_test_support+eg2",
     "//ios/web/common:features",
     "//ios/web/public/test:element_selector",
-    "//ios/web/public/test/http_server",
     "//net:test_support",
     "//ui/base",
   ]

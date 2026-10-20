@@ -5,6 +5,7 @@
 #ifndef CHROME_BROWSER_UI_VIEWS_FRAME_VERTICAL_TAB_STRIP_REGION_VIEW_H_
 #define CHROME_BROWSER_UI_VIEWS_FRAME_VERTICAL_TAB_STRIP_REGION_VIEW_H_
 
+#include <memory>
 #include <optional>
 
 #include "base/callback_list.h"
@@ -16,12 +17,13 @@
 #include "chrome/browser/ui/omnibox/omnibox_tab_helper.h"
 #include "chrome/browser/ui/tabs/tab_data.h"
 #include "chrome/browser/ui/tabs/vertical_tab_strip_state.h"
-#include "chrome/browser/ui/views/frame/tab_strip_region_view.h"
+#include "chrome/browser/ui/tabs/vertical_tab_strip_state_controller.h"
+#include "chrome/browser/ui/views/frame/base_tab_strip_region_view.h"
+#include "chrome/browser/ui/views/tabs/common/tab_strip_view.h"
 #include "chrome/browser/ui/views/tabs/hovercard/tab_hover_card_controller.h"
+#include "chrome/browser/ui/views/tabs/organizer/organizer_panel_host.h"
 #include "chrome/browser/ui/views/tabs/shared/drop_arrow.h"
-#include "chrome/browser/ui/views/tabs/vertical/vertical_tab_strip_controller.h"
 #include "chrome/browser/ui/views/tabs/vertical/vertical_tab_strip_expand_on_hover_lock.h"
-#include "chrome/browser/ui/views/tabs/vertical/vertical_tab_strip_view.h"
 #include "components/tabs/public/tab_interface.h"
 #include "ui/base/interaction/element_tracker.h"
 #include "ui/base/metadata/metadata_header_macros.h"
@@ -30,15 +32,12 @@
 #include "ui/views/accessible_pane_view.h"
 #include "ui/views/controls/resize_area_delegate.h"
 #include "ui/views/focus/focus_manager.h"
+#include "ui/views/layout/delegating_layout_manager.h"
 
 class BrowserView;
-class HoverTabSelector;
-class RootTabCollectionNode;
-class TabDragContext;
-class VerticalUnpinnedTabContainerView;
-class VerticalPinnedTabContainerView;
-class VerticalTabStripBottomContainer;
 class VerticalTabStripTopContainer;
+class VerticalTabStripBottomContainer;
+class VerticalTabStripFocusSwipeController;
 class ShadowFrameView;
 
 namespace tabs {
@@ -49,31 +48,21 @@ namespace views {
 class ResizeArea;
 class Separator;
 class View;
-class FlexLayout;
 }  // namespace views
 
 // Container for the vertical tabstrip and the other views sharing space with
 // it, excluding the caption buttons.
 class VerticalTabStripRegionView final
-    : public TabStripRegionView,
+    : public BaseTabStripRegionView,
       public views::ResizeAreaDelegate,
       public OmniboxTabHelper::Observer,
-      public tabs::VerticalTabStripStateController::Delegate {
-  METADATA_HEADER(VerticalTabStripRegionView, TabStripRegionView)
+      public tabs::VerticalTabStripStateController::Delegate,
+      public OrganizerPanelHost,
+      public views::LayoutDelegate {
+  METADATA_HEADER(VerticalTabStripRegionView, BaseTabStripRegionView)
 
  public:
   DECLARE_CLASS_CUSTOM_ELEMENT_EVENT_TYPE(kAnimationCompletedEvent);
-
-  // TODO(crbug.com/465833741): Replace constant with derived value based on
-  // caption buttons.
-  static constexpr int kUncollapsedMinWidth = 126;
-  // TODO(crbug.com/465832180): Replace constant based width final max width for
-  // view.
-  static constexpr int kUncollapsedMaxWidth = 400;
-  static constexpr int kCollapsedWidth = 56;
-  // TODO(crbug.com/465833741): Determine snapping behavior.
-  static constexpr int kCollapseSnapWidth =
-      (kUncollapsedMinWidth + kCollapsedWidth) / 2;
 
   explicit VerticalTabStripRegionView(
       tabs::VerticalTabStripStateController* state_controller,
@@ -84,9 +73,6 @@ class VerticalTabStripRegionView final
       delete;
   ~VerticalTabStripRegionView() override;
 
-  VerticalPinnedTabContainerView* GetPinnedTabsContainer();
-  VerticalUnpinnedTabContainerView* GetUnpinnedTabsContainer();
-
   VerticalTabStripTopContainer* GetTopContainer() {
     return top_button_container_;
   }
@@ -95,11 +81,7 @@ class VerticalTabStripRegionView final
     return bottom_button_container_;
   }
 
-  VerticalTabStripController* GetVerticalTabStripController() {
-    return tab_strip_controller_.get();
-  }
-
-  bool IsPositionInWindowCaption(const gfx::Point& point);
+  bool IsPositionInWindowCaption(const gfx::Point& point) override;
 
   // These methods provide the toolbar height and exclusion width, before the
   // layout of this view, for use in calculating positioning of child views. If
@@ -109,9 +91,12 @@ class VerticalTabStripRegionView final
   void SetToolbarHeightForLayout(int toolbar_height);
   void SetCaptionButtonWidthForLayout(int caption_button_width);
   void SetIsExitingExpandOnHoverForLayout(bool is_exiting_expand_on_hover);
+  void SetTransitionButtonOpacity(float opacity);
   bool WillWrapDueToOverflow(int available_width) const;
 
-  TabDragTarget* GetTabDragTarget(const gfx::Point& point_in_screen);
+  // views::LayoutDelegate:
+  views::ProposedLayout CalculateProposedLayout(
+      const views::SizeBounds& size_bounds) const override;
 
   // views::View:
   void AddedToWidget() override;
@@ -126,35 +111,6 @@ class VerticalTabStripRegionView final
   void OnMouseMoved(const ui::MouseEvent& event) override;
   void OnMouseExited(const ui::MouseEvent& event) override;
 
-  // TabStripRegionView
-  void InitializeTabStrip() override;
-  void ResetTabStrip() override;
-  bool IsTabStripEditable() const override;
-  bool IsTabStripCloseable() const override;
-  void UpdateLoadingAnimations(const base::TimeDelta& elapsed_time) override;
-  std::optional<int> GetFocusedTabIndex() const override;
-  const tabs::TabData& GetTabData(const tabs::TabHandle& tab) override;
-  views::View* GetTabAnchorViewAt(int tab_index) override;
-  views::View* GetTabGroupAnchorView(
-      const tab_groups::TabGroupId& group) override;
-  void OnTabGroupFocusChanged(
-      std::optional<tab_groups::TabGroupId> new_focused_group_id,
-      std::optional<tab_groups::TabGroupId> old_focused_group_id) override;
-  TabDragContext* GetDragContext() override;
-  std::optional<BrowserRootView::DropIndex> GetDropIndex(
-      const ui::DropTargetEvent& event) override;
-  BrowserRootView::DropTarget* GetDropTarget(
-      gfx::Point loc_in_local_coords) override;
-  views::View* GetViewForDrop() override;
-  bool CanDrop(const OSExchangeData& data) override;
-  bool GetDropFormats(int* formats,
-                      std::set<ui::ClipboardFormatType>* format_types) override;
-  void OnDragEntered(const ui::DropTargetEvent& event) override;
-  int OnDragUpdated(const ui::DropTargetEvent& event) override;
-  void OnDragExited() override;
-  void SetTabStripObserver(TabStripObserver* observer) override;
-  views::View* GetTabStripView() override;
-  bool TraverseUsingUpDownKeys() override;
   std::unique_ptr<ExpandOnHoverLock> GetExpandOnHoverLock(
       ExpandOnHoverLockType lock_type) override;
 
@@ -162,6 +118,9 @@ class VerticalTabStripRegionView final
   void HandleDragUpdate(
       const std::optional<BrowserRootView::DropIndex>& index) override;
   void HandleDragExited() override;
+  gfx::Point GetLinkDropArrowPosition(
+      const BrowserRootView::DropIndex& drop_index,
+      DropArrow::Direction* direction) override;
 
   // views::ResizeAreaDelegate:
   void OnResize(int resize_amount, bool done_resizing) override;
@@ -172,8 +131,11 @@ class VerticalTabStripRegionView final
   bool IsCollapsing() override;
   void RequestCollapse(bool collapse) override;
 
+  void SetOrganizerPanelShowPercent(double percent);
+  void UpdatePanelClips();
+
   views::Separator* tabs_separator_for_testing() {
-    return tab_strip_view_->GetTabsSeparator();
+    return tab_strip_view() ? tab_strip_view()->GetTabsSeparator() : nullptr;
   }
 
   bool is_expanded_on_hover() const { return is_expanded_on_hover_; }
@@ -183,14 +145,13 @@ class VerticalTabStripRegionView final
   }
 
   views::ResizeArea* resize_area_for_testing() { return resize_area_; }
-  RootTabCollectionNode* root_node_for_testing() { return root_node_.get(); }
   tabs::VerticalTabStripState target_collapse_state_for_testing() {
     return target_collapse_state_;
   }
-  void DisableTabStripEditingForTesting() override;
-  gfx::Rect GetLinkDropBoundsForTesting(
-      const BrowserRootView::DropIndex& drop_index,
-      DropArrow::Direction* direction);
+
+  VerticalTabStripFocusSwipeController* focus_swipe_controller_for_testing() {
+    return focus_swipe_controller_.get();
+  }
 
  private:
   // Since VerticalTabStripRegionView inherits from AccessiblePaneView, which is
@@ -212,37 +173,21 @@ class VerticalTabStripRegionView final
     raw_ptr<VerticalTabStripRegionView> region_view_;
   };
 
-  // To avoid extra motion during expand on hover when the user doesn't need the
-  // expanded state, we reset the expand on hover timer when the user clicks on
-  // a tab to give them time to exit the tab strip before triggering the expand
-  // on hover state. This class listens for those click events to restart the
-  // timer.
-  class ClickEventHandler : public ui::EventHandler {
-   public:
-    explicit ClickEventHandler(VerticalTabStripRegionView* region_view);
-    ClickEventHandler(const ClickEventHandler&) = delete;
-    ClickEventHandler& operator=(const ClickEventHandler&) = delete;
-    ~ClickEventHandler() override = default;
-
-    // ui::EventHandler:
-    void OnMouseEvent(ui::MouseEvent* event) override;
-
-   private:
-    raw_ptr<VerticalTabStripRegionView> region_view_;
-  };
-
   // Used to create and destroy locks for the expand on hover state.
   friend class VerticalTabStripExpandOnHoverLock;
 
+  // OrganizerPanelHost:
+  void SetOrganizerPanelView(std::unique_ptr<views::View> panel_view) override;
+  std::unique_ptr<views::View> TakeOrganizerPanelView() override;
+  bool HasOrganizerPanelView() const override;
+
   void HandleMouseExited();
 
-  views::View* SetTabStripView(std::unique_ptr<views::View> view);
-  void ClearTabStripView(views::View* view);
+  void AddTabStripView(std::unique_ptr<views::View> view) override;
+  std::unique_ptr<views::View> RemoveTabStripView(views::View* view) override;
 
   void OnCollapseStateChanged(
       tabs::VerticalTabStripCollapseState collapse_state);
-
-  void UpdateColors();
 
   void OnAnimationProgressed(const BrowserAnimationController* controller,
                              BrowserAnimationUpdate status);
@@ -250,20 +195,14 @@ class VerticalTabStripRegionView final
   // Get whether the collapse/expand animation is running.
   bool IsAnimatingSize() const;
 
-  bool IsFrameActive() const;
+  bool IsCollapseButtonHovered() const;
 
   // Returns the bounds within which tabs can be dragged in the vertical tab
   // strip.
-  gfx::Rect GetTabStripDraggableBounds() const;
-
-  void RecordNewTabButtonPressed();
-  void OnChildrenAdded();
-  void OnChildrenRemoved();
-  void OnChildMoved();
+  gfx::Rect GetTabStripDraggableBounds() const override;
 
   void OnExpandOnHoverEnabledChanged(bool enabled);
   void UpdateExpandOnHoverState(std::optional<bool> hovered = std::nullopt);
-  void RestartExpandOnHoverTimer(const base::TimeDelta& delay);
   void OnMouseVelocityHeuristicInterval();
   void CalculateMouseVelocityForExpandOnHover();
   void ResetExpandOnHoverTimers();
@@ -279,62 +218,24 @@ class VerticalTabStripRegionView final
                              OmniboxFocusChangeReason reason) override {}
   void OnOmniboxPopupVisibilityChanged(bool is_open) override;
 
-  void OnActiveTabChanged(const tabs::TabInterface* active_tab);
+  void OnActiveTabChanged(const tabs::TabInterface* active_tab) override;
 
-  void SetLinkDropArrow(const std::optional<BrowserRootView::DropIndex>& index);
-  gfx::Rect GetLinkDropBounds(const BrowserRootView::DropIndex& drop_index,
-                              DropArrow::Direction* direction);
+  // Organizer panel:
+  raw_ptr<views::View> organizer_panel_view_ = nullptr;
+  double organizer_panel_show_percent_ = 0.0;
 
-  // Returns the position that the link drop arrow should be pointing at.
-  gfx::Point GetLinkDropArrowPosition(
-      const BrowserRootView::DropIndex& drop_index,
-      DropArrow::Direction* direction);
-
-  // Returns the link drop bounds needed for an arrow pointing at `position`
-  // with the specified position.
-  gfx::Rect GetLinkDropBoundsFromPosition(gfx::Point position,
-                                          DropArrow::Direction direction);
-
-  raw_ptr<BrowserView> browser_view_;
-
-  // When false simulates a non-editable tabstrip. For testing only.
-  bool tab_strip_editable_for_testing_ = true;
-
+  raw_ptr<views::View> content_area_view_ = nullptr;
   raw_ptr<VerticalTabStripTopContainer> top_button_container_ = nullptr;
   raw_ptr<views::Separator> top_button_separator_ = nullptr;
-  raw_ptr<VerticalTabStripView> tab_strip_view_ = nullptr;
   raw_ptr<VerticalTabStripBottomContainer> bottom_button_container_ = nullptr;
   raw_ptr<views::View> gemini_button_ = nullptr;
   raw_ptr<views::ResizeArea> resize_area_ = nullptr;
   raw_ptr<ShadowFrameView> shadow_frame_ = nullptr;
   int resize_area_width_;
-  raw_ptr<views::FlexLayout> flex_layout_ = nullptr;
 
-  // The drag handler is a view (required for capturing mouse inputs during
-  // a drag loop) owned by the tab strip's View.
-  raw_ptr<VerticalTabDragHandler> drag_handler_ = nullptr;
-
-  std::unique_ptr<DropArrow> drop_arrow_;
-
-  std::unique_ptr<VerticalTabStripController> tab_strip_controller_;
-  std::unique_ptr<RootTabCollectionNode> root_node_;
-
-  const raw_ptr<TabStripModel> tab_strip_model_ = nullptr;
   const raw_ptr<tabs::VerticalTabStripStateController> state_controller_;
-  raw_ptr<actions::ActionItem> root_action_item_ = nullptr;
-  std::unique_ptr<TabHoverCardController> hover_card_controller_;
-  std::unique_ptr<HoverTabSelector> hover_tab_selector_;
-
-  base::CallbackListSubscription collapsed_state_changed_subscription_;
   std::optional<base::CallbackListSubscription>
       expand_on_hover_enabled_changed_subscription_;
-  base::CallbackListSubscription paint_as_active_subscription_;
-  std::optional<base::CallbackListSubscription> on_children_added_subscription_;
-  std::optional<base::CallbackListSubscription>
-      on_children_removed_subscription_;
-  std::optional<base::CallbackListSubscription> on_child_moved_subscription_;
-  std::optional<base::CallbackListSubscription>
-      on_active_tab_changed_subscription_;
   std::optional<base::CallbackListSubscription>
       on_animation_update_subscription_;
   base::ScopedObservation<OmniboxTabHelper, OmniboxTabHelper::Observer>
@@ -342,7 +243,7 @@ class VerticalTabStripRegionView final
 
   // The width of the vertical tabstrip at the beginning of the current resize
   // operation. Is std::nullopt when not resizing.
-  std::optional<int> starting_width_on_resize_ = std::nullopt;
+  std::optional<int> starting_width_on_resize_;
 
   // The intended collapse state by the user as a result of dragging the resize
   // area. This differs from the state controller in that its uncollapsed_width
@@ -353,11 +254,13 @@ class VerticalTabStripRegionView final
   // when the animation ends.
   tabs::VerticalTabStripState target_collapse_state_;
 
+  base::CallbackListSubscription collapsed_state_changed_subscription_;
   base::RepeatingCallback<void(bool)>
       update_state_controller_collapsed_callback_;
 
   base::OneShotTimer expand_on_hover_timer_;
   bool is_expanded_on_hover_ = false;
+  bool suppress_expand_on_hover_ = false;
   std::optional<base::TimeTicks> expand_on_hover_start_time_;
   base::RetainingOneShotTimer expand_on_hover_heuristic_timer_;
   std::optional<gfx::Point> point_at_expand_on_hover_timer_start_;
@@ -376,14 +279,17 @@ class VerticalTabStripRegionView final
   std::unique_ptr<TabHoverCardController::ScopedHideHoverCardLock>
       hover_card_animation_lock_;
 
-  // Used to track the time needed to create a new tab from the new tab button.
-  std::optional<base::TimeTicks> new_tab_button_pressed_start_time_;
-
   RegionViewFocusListener focus_listener_{this};
-  ClickEventHandler click_handler_{this};
+  std::unique_ptr<VerticalTabStripFocusSwipeController> focus_swipe_controller_;
+
+  // Allows the swipe controller to inspect tab dragging state and rotate
+  // focused tab groups on the TabStripModel.
+  friend class VerticalTabStripFocusSwipeController;
 
   // The mouse exit event debounce timer.
   base::OneShotTimer mouse_exit_timer_;
+
+  base::CallbackListSubscription paint_as_active_subscription_;
 };
 
 #endif  // CHROME_BROWSER_UI_VIEWS_FRAME_VERTICAL_TAB_STRIP_REGION_VIEW_H_

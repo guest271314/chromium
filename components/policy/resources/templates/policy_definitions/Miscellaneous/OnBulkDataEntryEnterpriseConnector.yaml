@@ -153,5 +153,6 @@ schema:
 supported_on:
 - chrome.*:84-
 - chrome_os:84-
+- ios:156-
 tags: []
 type: dict

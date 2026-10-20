@@ -6,7 +6,6 @@
 
 #import "base/strings/stringprintf.h"
 #import "base/strings/sys_string_conversions.h"
-#import "base/test/ios/wait_util.h"
 #import "components/dom_distiller/core/dom_distiller_features.h"
 #import "components/dom_distiller/core/mojom/distilled_page_prefs.mojom.h"
 #import "components/dom_distiller/core/pref_names.h"
@@ -23,7 +22,6 @@
 #import "ios/chrome/browser/optimization_guide/model/optimization_guide_test_app_interface.h"
 #import "ios/chrome/browser/popup_menu/public/popup_menu_constants.h"
 #import "ios/chrome/browser/reader_mode/model/constants.h"
-#import "ios/chrome/browser/reader_mode/model/features.h"
 #import "ios/chrome/browser/reader_mode/test/reader_mode_app_interface.h"
 #import "ios/chrome/browser/reader_mode/ui/constants.h"
 #import "ios/chrome/browser/settings/ui_bundled/settings_table_view_controller_constants.h"
@@ -52,14 +50,15 @@ namespace {
 
 using ::chrome_test_util::PrimaryToolbar;
 
-// Returns the badge used to open Reader Mode customization UI.
-id<GREYMatcher> ReaderModeCustomizationBadge() {
-  NSString* const badgeIdentifier =
+// Returns a matcher for the Reader Mode badge button that is sufficiently
+// visible.
+id<GREYMatcher> ReaderModeBadge() {
+  NSString* const badge_identifier =
       [ChromeEarlGrey isProactiveSuggestionsFrameworkEnabled]
           ? kBadgeButtonReaderModeAccessibilityIdentifier
           : kReaderModeChipViewAccessibilityIdentifier;
-  return grey_allOf(grey_accessibilityID(badgeIdentifier), grey_interactable(),
-                    nil);
+  return grey_allOf(grey_accessibilityID(badge_identifier),
+                    grey_sufficientlyVisible(), nil);
 }
 
 // Base font size for Reader Mode, in pixels. This is the font size that is
@@ -117,9 +116,7 @@ id<GREYMatcher> VisibleContextMenuItem(int message_id) {
 
 // Returns the Contextual Panel's entrypoint view GREY matcher.
 id<GREYMatcher> ContextualPanelEntrypointImageViewMatcher() {
-  // TODO(crbug.com/494235953): Clean up when feature is enabled by default.
-  if ([ChromeEarlGrey isAskGeminiChipEnabled] ||
-      [ChromeEarlGrey isProactiveSuggestionsFrameworkEnabled]) {
+  if ([ChromeEarlGrey isProactiveSuggestionsFrameworkEnabled]) {
     return grey_allOf(
         grey_accessibilityID(kLocationBarBadgeImageViewIdentifier),
         grey_interactable(), nil);
@@ -201,18 +198,22 @@ std::unique_ptr<net::test_server::HttpResponse> HandleReaderModeTestRequests(
 
   config.iph_feature_enabled =
       feature_engagement::kIPHiOSReaderModeLargeOmniboxEntrypointFeature.name;
-  config.features_enabled.push_back(kEnableReaderModeInUS);
 
   if ([self isRunningTest:@selector(testTurnOnReaderModeViaPageActionMenu)] ||
+      [self isRunningTest:@selector(testReaderModeDistillationFailure)] ||
+      [self isRunningTest:@selector(testReaderModeDistillationTimeout)] ||
       [self isRunningTest:@selector(testReaderModeChipShowsAIHubIfAvailable)] ||
+      [self isRunningTest:@selector(
+                              testPageActionMenuDismissedOnReaderModeHide)] ||
 #if TARGET_OS_SIMULATOR
-      [self isRunningTest:@selector
-            (testSampleContextualChipVisibleInReaderMode)] ||
+      [self
+          isRunningTest:@selector(testSampleContextualChipVisibleInReaderMode)]
 #else
-      [self isRunningTest:@selector
-            (FLAKY_testSampleContextualChipVisibleInReaderMode)] ||
+      [self
+          isRunningTest:@selector(
+                            FLAKY_testSampleContextualChipVisibleInReaderMode)]
 #endif
-      [self isRunningTest:@selector(testReaderModeChipHiddenInReaderMode)]) {
+  ) {
     config.features_enabled.push_back(kPageActionMenu);
     config.features_enabled.push_back(kProactiveSuggestionsFramework);
   } else {
@@ -224,53 +225,33 @@ std::unique_ptr<net::test_server::HttpResponse> HandleReaderModeTestRequests(
     config.features_disabled.push_back(kPageActionMenu);
     config.features_enabled.push_back(kGeminiKillSwitch);
   }
-  if ([self isRunningTest:@selector(testOmniboxEntryPointDisabled)]) {
-    config.features_disabled.push_back(kEnableReaderModeOmniboxEntryPointInUS);
-  } else {
-    config.features_enabled.push_back(kEnableReaderModeOmniboxEntryPointInUS);
-  }
 
-  if ([self isRunningTest:@selector(testReaderModeContentSettingsOldToggle)]) {
-    config.features_disabled.push_back(kEnableContentSettingsOptionForLinks);
-  }
-  if ([self isRunningTest:@selector(testReaderModeContentSettingsNewOptions)]) {
-    config.features_enabled.push_back(kEnableContentSettingsOptionForLinks);
+  // TODO(crbug.com/517120013): Fix or clean up legacy contextual panel and
+  // incognito badge tests under Chrome Next.
+  if ([self isRunningTest:@selector(testReaderModeDistillationFailure)] ||
+      [self isRunningTest:@selector(testReaderModeDistillationTimeout)] ||
+      [self isRunningTest:@selector(testTurnOnReaderModeViaPageActionMenu)] ||
+      [self isRunningTest:
+                @selector(
+                    testToggleReaderModeForDistillablePageInIncognitoMode)] ||
+      [self isRunningTest:@selector(testReaderModeBadgeVisibleInIncognito)]) {
+    config.features_disabled.push_back(kChromeNextIa);
   }
 
   if ([self isRunningTest:@selector(testReaderModeDistillationTimeout)]) {
     config.additional_args.push_back(
         "--" + std::string(switches::kForceReaderModeDistillationTimeout));
   }
-  if ([self isRunningTest:@selector(testReaderModeChipHiddenInReaderMode)] ||
 #if TARGET_OS_SIMULATOR
-      [self
+  if ([self
           isRunningTest:@selector(testSampleContextualChipVisibleInReaderMode)]
 #else
-      [self isRunningTest:@selector
-            (FLAKY_testSampleContextualChipVisibleInReaderMode)]
+  if ([self
+          isRunningTest:@selector(
+                            FLAKY_testSampleContextualChipVisibleInReaderMode)]
 #endif
   ) {
     config.features_enabled.push_back(kProactiveSuggestionsFramework);
-    config.features_enabled.push_back(kAskGeminiChip);
-  }
-#if TARGET_OS_SIMULATOR
-  if ([self isRunningTest:@selector
-            (testReaderModeChipVisibleWhenLeavingReaderModeWithPSFDisabled)]) {
-#else
-  if ([self
-          isRunningTest:@selector
-          (FLAKY_testReaderModeChipVisibleWhenLeavingReaderModeWithPSFDisabled)]) {
-#endif
-    config.features_disabled.push_back(kProactiveSuggestionsFramework);
-    config.features_disabled.push_back(kAskGeminiChip);
-  }
-#if TARGET_OS_SIMULATOR
-  if ([self isRunningTest:@selector
-            (testSampleContextualChipVisibleInReaderMode)]) {
-#else
-  if ([self isRunningTest:@selector
-            (FLAKY_testSampleContextualChipVisibleInReaderMode)]) {
-#endif
     config.features_enabled.push_back(kContextualPanelForceShowEntrypoint);
   }
   return config;
@@ -355,8 +336,7 @@ std::unique_ptr<net::test_server::HttpResponse> HandleReaderModeTestRequests(
   [ChromeEarlGrey
       waitForUIElementToAppearWithMatcher:
           grey_accessibilityID(kReaderModeViewAccessibilityIdentifier)];
-  [ChromeEarlGrey
-      waitForUIElementToAppearWithMatcher:ReaderModeCustomizationBadge()];
+  [ChromeEarlGrey waitForUIElementToAppearWithMatcher:ReaderModeBadge()];
 }
 
 // Asserts that the Reader Mode UI attributes, the distilled page and the
@@ -365,7 +345,7 @@ std::unique_ptr<net::test_server::HttpResponse> HandleReaderModeTestRequests(
   [ChromeEarlGrey
       waitForUIElementToDisappearWithMatcher:
           grey_accessibilityID(kReaderModeViewAccessibilityIdentifier)];
-  [[EarlGrey selectElementWithMatcher:ReaderModeCustomizationBadge()]
+  [[EarlGrey selectElementWithMatcher:ReaderModeBadge()]
       assertWithMatcher:grey_not(grey_sufficientlyVisible())];
 }
 
@@ -373,11 +353,8 @@ std::unique_ptr<net::test_server::HttpResponse> HandleReaderModeTestRequests(
 - (void)openReaderModeCustomizationOptions {
   if ([ChromeEarlGrey isProactiveSuggestionsFrameworkEnabled]) {
     // Tap the Reader Mode chip.
-    [[EarlGrey
-        selectElementWithMatcher:
-            grey_allOf(grey_accessibilityID(
-                           kBadgeButtonReaderModeAccessibilityIdentifier),
-                       grey_interactable(), nil)] performAction:grey_tap()];
+    [[EarlGrey selectElementWithMatcher:ReaderModeBadge()]
+        performAction:grey_tap()];
 
     // Verify the bottom sheet appears.
     id<GREYMatcher> bottomSheet =
@@ -394,9 +371,7 @@ std::unique_ptr<net::test_server::HttpResponse> HandleReaderModeTestRequests(
         performAction:grey_tap()];
   } else {
     // Tap the Reader Mode chip.
-    [[EarlGrey
-        selectElementWithMatcher:
-            grey_accessibilityID(kReaderModeChipViewAccessibilityIdentifier)]
+    [[EarlGrey selectElementWithMatcher:ReaderModeBadge()]
         performAction:grey_tap()];
   }
 
@@ -434,9 +409,7 @@ std::unique_ptr<net::test_server::HttpResponse> HandleReaderModeTestRequests(
   GREYAssertTrue(
       [ChromeEarlGrey showReaderModeAndWaitUntilReaderModeWebStateIsReady],
       @"Reader mode content could not be loaded");
-  [ChromeEarlGrey
-      waitForUIElementToAppearWithMatcher:
-          grey_accessibilityID(kReaderModeChipViewAccessibilityIdentifier)];
+  [ChromeEarlGrey waitForUIElementToAppearWithMatcher:ReaderModeBadge()];
 
   [ChromeEarlGrey
       waitForSufficientlyVisibleElementWithMatcher:
@@ -497,23 +470,6 @@ std::unique_ptr<net::test_server::HttpResponse> HandleReaderModeTestRequests(
   // Verifies that the navigation to the destination page happened.
   GREYAssertEqual(nonReaderModeURL, [ChromeEarlGrey webStateVisibleURL],
                   @"Did not navigate to non-Reader Mode url.");
-}
-
-// Tests that the user can show Reader Mode from the contextual panel entrypoint
-// on an eligible web page.
-- (void)testToggleReaderModeInContextualPanelEntrypointForDistillablePage {
-  [SigninEarlGrey signinWithFakeIdentity:self.fakeIdentity];
-  [self loadURLWithOptimizationGuideHints:self.testServer->GetURL(
-                                              "/article.html")];
-
-  // Open Reader Mode UI.
-  [self openReaderModeWithBadgeEntrypoint];
-  [self assertReaderModePageIsVisible];
-
-  // Check that the chip is a button with the expected accessibility label.
-  [[EarlGrey selectElementWithMatcher:ReaderModeCustomizationBadge()]
-      assertWithMatcher:chrome_test_util::ButtonWithAccessibilityLabelId(
-                            IDS_IOS_READER_MODE_CHIP_ACCESSIBILITY_LABEL)];
 }
 
 // Tests that theme change is applied to the Reading Mode web page.
@@ -966,29 +922,23 @@ std::unique_ptr<net::test_server::HttpResponse> HandleReaderModeTestRequests(
   [self assertReaderModePageIsVisible];
 
   // Tap the chip to open the options view.
-  [[EarlGrey selectElementWithMatcher:ReaderModeCustomizationBadge()]
+  [[EarlGrey selectElementWithMatcher:ReaderModeBadge()]
       performAction:grey_tap()];
 
   [ChromeEarlGrey verifyAccessibilityForCurrentScreen];
 }
 
-// Tests that the contextual panel entrypoint disappears and a failure snackbar
-// is presented when distillation fails.
+// Tests that a failure snackbar is presented when distillation fails.
 - (void)testReaderModeDistillationFailure {
   [SigninEarlGrey signinWithFakeIdentity:self.fakeIdentity];
   [self loadURLWithOptimizationGuideHints:self.testServer->GetURL(
                                               "/article.html")];
 
-  // Wait for the contextual panel entrypoint to appear.
-  id<GREYMatcher> entrypoint = chrome_test_util::ButtonWithAccessibilityLabelId(
-      IDS_IOS_CONTEXTUAL_PANEL_READER_MODE_MODEL_ENTRYPOINT_MESSAGE);
-  [ChromeEarlGrey waitForSufficientlyVisibleElementWithMatcher:entrypoint];
-
   // Make the page not distillable.
   [ChromeEarlGrey
       evaluateJavaScriptForSideEffect:@"document.body.outerHTML = ''"];
 
-  // Tap the entrypoint to trigger distillation.
+  // Trigger distillation.
   [self openReaderModeWithBadgeEntrypoint];
 
   // A snackbar should be displayed with a failure message.
@@ -1000,8 +950,7 @@ std::unique_ptr<net::test_server::HttpResponse> HandleReaderModeTestRequests(
   [ChromeEarlGrey waitForSufficientlyVisibleElementWithMatcher:snackbarMatcher];
 }
 
-// Tests that the contextual panel entrypoint disappears and a failure snackbar
-// is presented when distillation times out.
+// Tests that a failure snackbar is presented when distillation times out.
 - (void)testReaderModeDistillationTimeout {
   [SigninEarlGrey signinWithFakeIdentity:self.fakeIdentity];
   [self loadURLWithOptimizationGuideHints:self.testServer->GetURL(
@@ -1033,8 +982,7 @@ std::unique_ptr<net::test_server::HttpResponse> HandleReaderModeTestRequests(
   EXPECT_EQ(1, CountNumLinks());
 }
 
-// Tests that a sample contextual chip stays visible inside Reader mode if
-// kAskGeminiChip is enabled.
+// Tests that a sample contextual chip stays visible inside Reader mode.
 // TODO(crbug.com/481633359): Deflake this test.
 #if TARGET_OS_SIMULATOR
 #define MAYBE_testSampleContextualChipVisibleInReaderMode \
@@ -1059,34 +1007,6 @@ std::unique_ptr<net::test_server::HttpResponse> HandleReaderModeTestRequests(
       assertWithMatcher:grey_sufficientlyVisible()];
 }
 
-// Tests that the Reader mode contextual chip is hidden inside Reader mode if
-// kAskGeminiChip is enabled.
-- (void)testReaderModeChipHiddenInReaderMode {
-  [SigninEarlGrey signinWithFakeIdentity:self.fakeIdentity];
-  [self loadURLWithOptimizationGuideHints:self.testServer->GetURL(
-                                              "/article.html")];
-
-  // Wait for the Reader Mode contextual entrypoint to appear.
-  [ChromeEarlGrey waitForSufficientlyVisibleElementWithMatcher:
-                      ContextualPanelEntrypointImageViewMatcher()];
-
-  // Open Reader Mode UI.
-  GREYAssertTrue(
-      [ChromeEarlGrey showReaderModeAndWaitUntilReaderModeWebStateIsReady],
-      @"Reader mode content could not be loaded");
-  [self assertReaderModePageIsVisible];
-
-  // The Reader Mode contextual entrypoint should be hidden.
-  [[EarlGrey
-      selectElementWithMatcher:ContextualPanelEntrypointImageViewMatcher()]
-      assertWithMatcher:grey_notVisible()];
-  // The Reader mode badge button should be visible instead.
-  [[EarlGrey
-      selectElementWithMatcher:
-          grey_accessibilityID(kBadgeButtonReaderModeAccessibilityIdentifier)]
-      assertWithMatcher:grey_sufficientlyVisible()];
-}
-
 // Tests that the user can turn on Reader Mode from the page action menu.
 - (void)testTurnOnReaderModeViaPageActionMenu {
   GREYAssertTrue([ChromeEarlGrey isProactiveSuggestionsFrameworkEnabled],
@@ -1095,13 +1015,6 @@ std::unique_ptr<net::test_server::HttpResponse> HandleReaderModeTestRequests(
   [SigninEarlGrey signinWithFakeIdentity:self.fakeIdentity];
   [self loadURLWithOptimizationGuideHints:self.testServer->GetURL(
                                               "/article.html")];
-
-  // Wait for the contextual chip to appear and then disappear.
-  id<GREYMatcher> entrypoint = chrome_test_util::ButtonWithAccessibilityLabelId(
-      IDS_IOS_CONTEXTUAL_PANEL_READER_MODE_MODEL_ENTRYPOINT_MESSAGE);
-  [ChromeEarlGrey waitForSufficientlyVisibleElementWithMatcher:entrypoint];
-  [ChromeEarlGrey waitForUIElementToDisappearWithMatcher:entrypoint
-                                                 timeout:base::Seconds(10)];
 
   [self openReaderModeWithBadgeEntrypoint];
 
@@ -1121,7 +1034,7 @@ std::unique_ptr<net::test_server::HttpResponse> HandleReaderModeTestRequests(
   [self assertReaderModePageIsVisible];
 
   // Tap the Reader mode customization badge.
-  [[EarlGrey selectElementWithMatcher:grey_allOf(ReaderModeCustomizationBadge(),
+  [[EarlGrey selectElementWithMatcher:grey_allOf(ReaderModeBadge(),
                                                  grey_interactable(), nil)]
       performAction:grey_tap()];
 
@@ -1160,6 +1073,45 @@ std::unique_ptr<net::test_server::HttpResponse> HandleReaderModeTestRequests(
 
   // The Reader Mode UI is not visible.
   [self assertReaderModePageIsHidden];
+}
+
+// Tests that opening the Page Action Menu while in Reader Mode and then
+// programmatically hiding Reader Mode automatically dismisses the Page Action
+// Menu.
+- (void)testPageActionMenuDismissedOnReaderModeHide {
+  [SigninEarlGrey signinWithFakeIdentity:self.fakeIdentity];
+  [ChromeEarlGrey loadURL:self.testServer->GetURL("/article.html")];
+
+  // Open Reader Mode UI.
+  GREYAssertTrue(
+      [ChromeEarlGrey showReaderModeAndWaitUntilReaderModeWebStateIsReady],
+      @"Reader mode content could not be loaded");
+  [self assertReaderModePageIsVisible];
+
+  // Tap the Reader mode customization badge to open the Page Action Menu.
+  [[EarlGrey selectElementWithMatcher:grey_allOf(ReaderModeBadge(),
+                                                 grey_interactable(), nil)]
+      performAction:grey_tap()];
+
+  // Verify the Page Action Menu bottom sheet appears and is interactable.
+  id<GREYMatcher> bottomSheet =
+      grey_accessibilityID(kAIHubBottomSheetAccessibilityIdentifier);
+  id<GREYMatcher> readingModeOptionsButton =
+      chrome_test_util::ButtonWithAccessibilityLabelId(
+          IDS_IOS_AI_HUB_READER_MODE_OPTIONS_BUTTON_TITLE);
+  [ChromeEarlGrey
+      waitForSufficientlyVisibleElementWithMatcher:grey_allOf(
+                                                       grey_ancestor(
+                                                           bottomSheet),
+                                                       readingModeOptionsButton,
+                                                       grey_interactable(),
+                                                       nil)];
+
+  // Programmatically hide Reader mode.
+  [ChromeEarlGrey hideReaderMode];
+
+  // Verify the Page Action Menu bottom sheet automatically disappears.
+  [ChromeEarlGrey waitForUIElementToDisappearWithMatcher:bottomSheet];
 }
 
 // Tests that the text zoom UI can be opened from reader mode and that it
@@ -1235,9 +1187,7 @@ std::unique_ptr<net::test_server::HttpResponse> HandleReaderModeTestRequests(
       @"Reader mode content could not be loaded");
 
   // Reader mode and incognito badge should be visible.
-  [ChromeEarlGrey
-      waitForUIElementToAppearWithMatcher:
-          grey_accessibilityID(kReaderModeChipViewAccessibilityIdentifier)];
+  [ChromeEarlGrey waitForUIElementToAppearWithMatcher:ReaderModeBadge()];
   [ChromeEarlGrey
       waitForSufficientlyVisibleElementWithMatcher:
           grey_accessibilityID(kBadgeButtonIncognitoAccessibilityIdentifier)];
@@ -1281,18 +1231,6 @@ std::unique_ptr<net::test_server::HttpResponse> HandleReaderModeTestRequests(
   [self assertReaderModePageIsVisible];
 }
 
-// Tests that the killswitch to disable the omnibox entrypoint does not
-// interfere with other Reading Mode entrypoints.
-- (void)testOmniboxEntryPointDisabled {
-  [ChromeEarlGrey loadURL:self.testServer->GetURL("/article.html")];
-
-  // Verify that the omnibox entrypoint is disabled and the tools menu
-  // entrypoint is still available.
-  [self assertReaderModePageIsHidden];
-  [self assertReaderModeInToolsMenuWithMatcher:
-            grey_not(grey_accessibilityTrait(UIAccessibilityTraitNotEnabled))];
-}
-
 // Tests that the share menu is accessible via Reader Mode and records the
 // expected metrics.
 - (void)testShareMenuInReaderMode {
@@ -1330,89 +1268,11 @@ std::unique_ptr<net::test_server::HttpResponse> HandleReaderModeTestRequests(
   }
 }
 
-// Tests that the Reader mode chip is visible when leaving Reader mode if
-// PSF is disabled.
-// TODO(crbug.com/467908483): Remove this test once PSF is launched with
-// Reading Mode.
-// TODO(crbug.com/481633359): Deflake this test.
-#if TARGET_OS_SIMULATOR
-#define MAYBE_testReaderModeChipVisibleWhenLeavingReaderModeWithPSFDisabled \
-  testReaderModeChipVisibleWhenLeavingReaderModeWithPSFDisabled
-#else
-#define MAYBE_testReaderModeChipVisibleWhenLeavingReaderModeWithPSFDisabled \
-  FLAKY_testReaderModeChipVisibleWhenLeavingReaderModeWithPSFDisabled
-#endif
-- (void)MAYBE_testReaderModeChipVisibleWhenLeavingReaderModeWithPSFDisabled {
-  [self loadURLWithOptimizationGuideHints:self.testServer->GetURL(
-                                              "/article.html")];
-
-  // Wait for the Reader mode contextual panel entry point chip to be visible.
-  [ChromeEarlGrey waitForSufficientlyVisibleElementWithMatcher:
-                      ContextualPanelEntrypointImageViewMatcher()];
-
-  // Open Reader Mode UI.
-  GREYAssertTrue(
-      [ChromeEarlGrey showReaderModeAndWaitUntilReaderModeWebStateIsReady],
-      @"Reader mode content could not be loaded");
-  [self assertReaderModePageIsVisible];
-
-  // Close Reader Mode UI.
-  [ChromeEarlGrey hideReaderMode];
-
-  [self assertReaderModePageIsHidden];
-
-  // Wait for the Reader mode contextual panel entry point chip to be visible.
-  [ChromeEarlGrey waitForSufficientlyVisibleElementWithMatcher:
-                      ContextualPanelEntrypointImageViewMatcher()];
-}
-
-// Tests that disabling kEnableContentSettingsOptionForLinks shows the old
-// Reading Mode toggle in Content Settings.
-- (void)testReaderModeContentSettingsOldToggle {
-  [self loadURLWithOptimizationGuideHints:self.testServer->GetURL(
-                                              "/article.html")];
-
-  // Wait for the contextual panel entrypoint to appear.
-  [ChromeEarlGrey waitForSufficientlyVisibleElementWithMatcher:
-                      ContextualPanelEntrypointImageViewMatcher()];
-
-  // Open Content Settings.
-  [ChromeEarlGreyUI openSettingsMenu];
-  [ChromeEarlGreyUI
-      tapSettingsMenuButton:chrome_test_util::ContentSettingsButton()];
-
-  // Check that the Reading Mode toggle is visible.
-  id<GREYMatcher> readingModeToggleMatcher =
-      chrome_test_util::TableViewSwitchCell(
-          kSettingsShowReadingModeAvailableCellId, YES);
-  [[EarlGrey selectElementWithMatcher:readingModeToggleMatcher]
-      assertWithMatcher:grey_sufficientlyVisible()];
-
-  // Toggle it OFF.
-  [[EarlGrey selectElementWithMatcher:readingModeToggleMatcher]
-      performAction:chrome_test_util::TurnTableViewSwitchOn(NO)];
-
-  // Go back to the page.
-  [[EarlGrey selectElementWithMatcher:chrome_test_util::SettingsDoneButton()]
-      performAction:grey_tap()];
-
-  // Reload the page to ensure the contextual panel entrypoint is updated.
-  [ChromeEarlGrey reload];
-
-  // The contextual panel entrypoint should be hidden.
-  [ChromeEarlGrey waitForUIElementToDisappearWithMatcher:
-                      ContextualPanelEntrypointImageViewMatcher()];
-}
-
-// Tests that enabling kEnableContentSettingsOptionForLinks shows the new
-// Reading Mode section in Content Settings with multiple options.
+// Tests that the Reading Mode section in Content Settings shows multiple
+// options.
 - (void)testReaderModeContentSettingsNewOptions {
   [self loadURLWithOptimizationGuideHints:self.testServer->GetURL(
                                               "/article.html")];
-
-  // Wait for the contextual panel entrypoint to appear.
-  [ChromeEarlGrey waitForSufficientlyVisibleElementWithMatcher:
-                      ContextualPanelEntrypointImageViewMatcher()];
 
   // Open Content Settings.
   [ChromeEarlGreyUI openSettingsMenu];
@@ -1446,13 +1306,6 @@ std::unique_ptr<net::test_server::HttpResponse> HandleReaderModeTestRequests(
   // Go back to the page.
   [[EarlGrey selectElementWithMatcher:chrome_test_util::SettingsDoneButton()]
       performAction:grey_tap()];
-
-  // Reload the page to ensure the contextual panel entrypoint is updated.
-  [ChromeEarlGrey reload];
-
-  // The contextual panel entrypoint should be hidden.
-  [ChromeEarlGrey waitForUIElementToDisappearWithMatcher:
-                      ContextualPanelEntrypointImageViewMatcher()];
 
   // Open Reader Mode UI to check for links-hidden class.
   GREYAssertTrue(

@@ -13,19 +13,15 @@
 #include "base/types/optional_ref.h"
 #include "content/browser/first_party_sets/first_party_sets_handler_impl.h"
 #include "content/public/browser/first_party_sets_handler.h"
-#include "net/first_party_sets/first_party_sets_cache_filter.h"
 #include "net/first_party_sets/first_party_sets_context_config.h"
 #include "net/first_party_sets/global_first_party_sets.h"
 
 namespace base {
-class DictValue;
 class File;
 class Version;
 }  // namespace base
 
 namespace content {
-
-class BrowserContext;
 
 // Used to create a dummy FirstPartySetsHandlerImpl implementation for testing
 // purposes. Enabled by default.
@@ -43,39 +39,21 @@ class ScopedMockFirstPartySetsHandler
   void SetPublicFirstPartySets(const base::Version& version,
                                base::File sets_file) override;
   std::optional<net::FirstPartySetEntry> FindEntry(
-      const net::SchemefulSite& site,
-      const net::FirstPartySetsContextConfig& config) const override;
-  void GetContextConfigForPolicy(
-      base::optional_ref<const base::DictValue> policy,
-      base::OnceCallback<void(net::FirstPartySetsContextConfig)> callback)
-      override;
-  void ClearSiteDataOnChangedSetsForContext(
-      base::RepeatingCallback<content::BrowserContext*()>
-          browser_context_getter,
-      const std::string& browser_context_id,
-      net::FirstPartySetsContextConfig context_config,
-      base::OnceCallback<void(net::FirstPartySetsContextConfig,
-                              net::FirstPartySetsCacheFilter)> callback)
-      override;
+      const net::SchemefulSite& site) const override;
+  bool WhenInitComplete(base::OnceClosure callback) override;
   void ComputeFirstPartySetMetadata(
       const net::SchemefulSite& site,
       base::optional_ref<const net::SchemefulSite> top_frame_site,
-      const net::FirstPartySetsContextConfig& config,
       base::OnceCallback<void(net::FirstPartySetMetadata)> callback) override;
   bool ForEachEffectiveSetEntry(
-      const net::FirstPartySetsContextConfig& config,
       base::FunctionRef<bool(const net::SchemefulSite&,
                              const net::FirstPartySetEntry&)> f) const override;
   // FirstPartySetsHandlerImpl:
-  void Init(const base::FilePath& user_data_dir,
-            const net::LocalSetDeclaration& local_set) override;
+  void Init(const base::FilePath& user_data_dir) override;
   [[nodiscard]] std::optional<net::GlobalFirstPartySets> GetSets(
       base::OnceCallback<void(net::GlobalFirstPartySets)> callback) override;
 
   // Helper functions for tests to set up context.
-  void SetContextConfig(net::FirstPartySetsContextConfig config);
-
-  void SetCacheFilter(net::FirstPartySetsCacheFilter cache_filter);
 
   void SetGlobalSets(net::GlobalFirstPartySets global_sets);
 
@@ -90,8 +68,6 @@ class ScopedMockFirstPartySetsHandler
  private:
   raw_ptr<content::FirstPartySetsHandlerImpl> previous_;
   net::GlobalFirstPartySets global_sets_;
-  net::FirstPartySetsContextConfig config_;
-  net::FirstPartySetsCacheFilter cache_filter_;
 
   // Whether the instance should make every query deadlock.
   bool should_deadlock_ = false;

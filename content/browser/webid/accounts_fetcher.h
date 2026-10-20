@@ -5,6 +5,7 @@
 #ifndef CONTENT_BROWSER_WEBID_ACCOUNTS_FETCHER_H_
 #define CONTENT_BROWSER_WEBID_ACCOUNTS_FETCHER_H_
 
+#include <memory>
 #include <set>
 
 #include "base/containers/flat_map.h"
@@ -13,6 +14,8 @@
 #include "content/browser/webid/config_fetcher.h"
 #include "content/browser/webid/identity_provider_info.h"
 #include "content/browser/webid/idp_network_request_manager.h"
+#include "content/common/content_export.h"
+#include "content/public/browser/webid/native_idp_fetcher.h"
 #include "url/gurl.h"
 
 namespace content {
@@ -26,11 +29,12 @@ namespace webid {
 class Metrics;
 
 // A class that fetches accounts from a set of IDPs.
-class AccountsFetcher {
+class CONTENT_EXPORT AccountsFetcher {
  public:
+  using IdentityRequestAccountPtr = scoped_refptr<IdentityRequestAccount>;
   static constexpr char kWildcardDomainHint[] = "any";
 
-  struct IdentityProviderGetInfo {
+  struct CONTENT_EXPORT IdentityProviderGetInfo {
     IdentityProviderGetInfo(blink::mojom::IdentityProviderRequestOptionsPtr,
                             blink::mojom::RpContext rp_context,
                             blink::mojom::RpMode rp_mode,
@@ -45,20 +49,21 @@ class AccountsFetcher {
     std::optional<blink::mojom::Format> format;
   };
 
-  struct FedCmFetchingParams {
+  struct CONTENT_EXPORT FedCmFetchingParams {
     FedCmFetchingParams(blink::mojom::RpMode rp_mode,
                         int icon_ideal_size,
                         int icon_minimum_size,
-                        MediationRequirement mediation_requirement);
+                        ::password_manager::CredentialMediationRequirement
+                            mediation_requirement);
     ~FedCmFetchingParams();
 
     blink::mojom::RpMode rp_mode;
     int icon_ideal_size;
     int icon_minimum_size;
-    MediationRequirement mediation_requirement;
+    ::password_manager::CredentialMediationRequirement mediation_requirement;
   };
 
-  struct Result {
+  struct CONTENT_EXPORT Result {
     Result();
     ~Result();
     Result(Result&&);
@@ -68,8 +73,8 @@ class AccountsFetcher {
     std::unique_ptr<IdentityProviderInfo> idp_info;
     std::optional<IdpNetworkRequestManager::AccountsResponse> accounts;
     std::vector<IdentityRequestAccountPtr> filtered_accounts;
-    std::optional<blink::mojom::FederatedAuthRequestResult> error;
-    std::optional<webid::RequestIdTokenStatus> token_status;
+    std::optional<blink::mojom::FederatedRequestResult> error;
+    std::optional<RequestIdTokenStatus> token_status;
     // Whether the callback should be delayed for this result.
     // TODO(crbug.com/475277488): Remove this as callback delay should not be
     // per-result. Also consider removing `show_active_mode_modal_dialog` as
@@ -77,6 +82,7 @@ class AccountsFetcher {
     bool should_delay_callback = false;
     bool is_mismatch = false;
     bool show_active_mode_modal_dialog = false;
+    bool use_native_app_ui = false;
     base::TimeTicks accounts_fetched_time;
     base::TimeTicks client_metadata_fetched_time;
   };
@@ -86,7 +92,7 @@ class AccountsFetcher {
   using FilterAccountsCallback = base::RepeatingCallback<void(
       const GURL&,
       const GURL&,
-      std::vector<scoped_refptr<content::IdentityRequestAccount>>&)>;
+      std::vector<scoped_refptr<IdentityRequestAccount>>&)>;
 
   AccountsFetcher(
       RenderFrameHost& render_frame_host,
@@ -97,6 +103,9 @@ class AccountsFetcher {
       AccountsFetcherCallback callback);
   ~AccountsFetcher();
 
+  // Note that a single AccountsFetcher instance should invoke either
+  // FetchEndpointsForIdps() or FetchAccountsForIdps() only once in its
+  // lifetime.
   // Fetch well-known, config, accounts and client metadata endpoints for
   // passed-in IdPs. Uses parameters from `token_request_get_infos`.
   void FetchEndpointsForIdps(
@@ -107,10 +116,20 @@ class AccountsFetcher {
       const url::Origin& embedding_origin,
       FilterAccountsCallback filter_accounts_callback);
 
+  // Fetches accounts for IdPs whose config and well-known files are already
+  // fetched (e.g. from cache or after ConfigFetcher completion).
+  void FetchAccountsForIdps(
+      const std::vector<std::unique_ptr<IdentityProviderInfo>>& idp_infos,
+      const base::flat_map<GURL, IdentityProviderGetInfo>&
+          token_request_get_infos,
+      Metrics* fedcm_metrics,
+      const url::Origin& embedding_origin,
+      FilterAccountsCallback filter_accounts_callback);
+
   // Notifies metrics endpoint that either the user did not select the IDP in
   // the prompt or that there was an error in fetching data for the IDP.
   void SendAllFailedTokenRequestMetrics(
-      blink::mojom::FederatedAuthRequestResult result,
+      blink::mojom::FederatedRequestResult result,
       bool did_show_ui);
   void SendSuccessfulTokenRequestMetrics(
       const GURL& idp_config_url,
@@ -128,6 +147,12 @@ class AccountsFetcher {
       std::unique_ptr<IdentityProviderInfo> idp_info,
       FetchStatus status,
       IdpNetworkRequestManager::AccountsResponse accounts);
+
+  void OnNativeAccountsFetched(std::unique_ptr<IdentityProviderInfo> idp_info,
+                               std::optional<bool> old_idp_signin_status,
+                               FetchStatus status,
+                               base::TimeTicks accounts_fetched_time,
+                               NativeIdpFetcher::FetchResult result);
 
   void OnAccountsFetchSucceeded(
       std::unique_ptr<IdentityProviderInfo> idp_info,
@@ -166,6 +191,7 @@ class AccountsFetcher {
   // it had been populated. Otherwise, it uses the browser knowledge on which
   // accounts are returning and which are not.
   void ComputeLoginStates(const GURL& idp_config_url,
+                          const std::string& client_id,
                           std::vector<IdentityRequestAccountPtr>& accounts);
 
   // Updates the IdpSigninStatus in case of accounts fetch failure and shows a
@@ -173,8 +199,8 @@ class AccountsFetcher {
   void HandleAccountsFetchFailure(
       std::unique_ptr<IdentityProviderInfo> idp_info,
       std::optional<bool> old_idp_signin_status,
-      blink::mojom::FederatedAuthRequestResult result,
-      std::optional<webid::RequestIdTokenStatus> token_status,
+      blink::mojom::FederatedRequestResult result,
+      std::optional<RequestIdTokenStatus> token_status,
       const FetchStatus& status,
       std::vector<IdentityRequestAccountPtr> filtered_accounts,
       base::TimeTicks accounts_fetched_time);
@@ -184,16 +210,19 @@ class AccountsFetcher {
 
   void SendFailedTokenRequestMetrics(
       const GURL& metrics_endpoint,
-      blink::mojom::FederatedAuthRequestResult result,
+      blink::mojom::FederatedRequestResult result,
       bool did_show_ui);
 
   // Adds a fetch result to the end of the results_ vector and decrements
   // pending_requests_. If pending_requests_ reaches 0, runs the callback_.
   void AddResult(Result&& result);
 
-  base::flat_map<GURL,
-                 std::pair<blink::mojom::FederatedAuthRequestResult,
-                           content::webid::RequestIdTokenStatus>>
+  // Login dialog is only shown in Active Mode with 1 IDP.
+  bool ShouldImmediatelyShowLoginDialog() const;
+
+  base::flat_map<
+      GURL,
+      std::pair<blink::mojom::FederatedRequestResult, RequestIdTokenStatus>>
       idp_config_url_to_result_;
 
   std::unique_ptr<ConfigFetcher> config_fetcher_;
@@ -201,7 +230,7 @@ class AccountsFetcher {
   // Populated in OnAllConfigAndWellKnownFetched().
   base::flat_map<GURL, GURL> metrics_endpoints_;
 
-  // Owned by RequestService.
+  // Owned by RequestHandler.
   raw_ref<RenderFrameHost> render_frame_host_;
   raw_ptr<IdpNetworkRequestManager> network_manager_;
   raw_ptr<FederatedIdentityApiPermissionContextDelegate>

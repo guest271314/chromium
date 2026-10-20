@@ -27,10 +27,13 @@
 #include "components/autofill/core/browser/payments/test/test_credit_card_risk_based_authenticator.h"
 #include "components/autofill/core/browser/payments/test_payments_network_interface.h"
 #include "components/autofill/core/browser/payments/virtual_card_enrollment_manager.h"
+#include "components/autofill/core/browser/payments/wallet_reminder_notice_manager.h"
 #include "components/autofill/core/browser/single_field_fillers/payments/mock_merchant_promo_code_manager.h"
 #include "components/autofill/core/browser/suggestions/suggestion.h"
 #include "components/autofill/core/browser/ui/payments/autofill_progress_ui_type.h"
 #include "components/autofill/core/browser/ui/payments/bnpl_ui_delegate.h"
+#include "components/autofill/core/browser/ui/payments/payments_churned_users_ui_delegate.h"
+#include "components/autofill/core/browser/ui/payments/wallet_reminder_notice_ui_delegate.h"
 #include "components/autofill/core/common/autofill_prefs.h"
 
 #if !BUILDFLAG(IS_IOS)
@@ -52,8 +55,9 @@ class CardUnmaskPromptController;
 class CreditCardCvcAuthenticator;
 #if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
 class OmniboxAutofillDelegate;
+enum class SuggestionHidingReason;
 #endif
-class TouchToFillDelegate;
+class TouchToFillPaymentMethodDelegate;
 
 namespace payments {
 
@@ -168,7 +172,6 @@ class TestPaymentsAutofillClient : public PaymentsAutofillClient {
   CreditCardCvcAuthenticator& GetCvcAuthenticator() override;
   CreditCardOtpAuthenticator* GetOtpAuthenticator() override;
   TestCreditCardRiskBasedAuthenticator* GetRiskBasedAuthenticator() override;
-  bool IsRiskBasedAuthEffectivelyAvailable() const override;
   bool IsMandatoryReauthEnabled() override;
   void ShowMandatoryReauthOptInPrompt(
       base::OnceClosure accept_mandatory_reauth_callback,
@@ -180,23 +183,23 @@ class TestPaymentsAutofillClient : public PaymentsAutofillClient {
   MockIbanManager* GetIbanManager() override;
   MockIbanAccessManager* GetIbanAccessManager() override;
   MockMerchantPromoCodeManager* GetMerchantPromoCodeManager() override;
-  void OpenPromoCodeOfferDetailsURL(const GURL& url) override;
   AutofillOfferManager* GetAutofillOfferManager() override;
   void UpdateOfferNotification(
       const AutofillOfferData& offer,
       const OfferNotificationOptions& options) override;
   void DismissOfferNotification() override;
+  bool IsTabVisibleForOfferNotification() const override;
   bool ShowTouchToFillCreditCard(
-      base::WeakPtr<TouchToFillDelegate> delegate,
+      base::WeakPtr<TouchToFillPaymentMethodDelegate> delegate,
       base::span<const Suggestion> suggestions) override;
   bool ShowTouchToFillIban(
-      base::WeakPtr<TouchToFillDelegate> delegate,
-      base::span<const autofill::Iban> ibans_to_suggest) override;
+      base::WeakPtr<TouchToFillPaymentMethodDelegate> delegate,
+      base::span<const Iban> ibans_to_suggest) override;
   bool ShowTouchToFillAffiliatedLoyaltyCard(
-      base::WeakPtr<TouchToFillDelegate> delegate,
-      std::vector<autofill::LoyaltyCard> loyalty_cards_to_suggest) override;
+      base::WeakPtr<TouchToFillPaymentMethodDelegate> delegate,
+      std::vector<LoyaltyCard> loyalty_cards_to_suggest) override;
   bool ShowTouchToFillForAllLoyaltyCards(
-      base::WeakPtr<TouchToFillDelegate> delegate,
+      base::WeakPtr<TouchToFillPaymentMethodDelegate> delegate,
       std::vector<LoyaltyCard> loyalty_cards_to_suggest) override;
   bool OnPurchaseAmountExtracted(
       base::span<const payments::BnplIssuerContext> bnpl_issuer_contexts,
@@ -233,12 +236,44 @@ class TestPaymentsAutofillClient : public PaymentsAutofillClient {
   void ShowCreditCardSaveAndFillPendingDialog(
       CardSaveAndFillDialogCallback callback) override;
   void HideCreditCardSaveAndFillDialog() override;
-  bool IsTabModalPopupDeprecated() const override;
+  bool IsTabModalPopup() const override;
   BnplStrategy* GetBnplStrategy() override;
   BnplUiDelegate* GetBnplUiDelegate() override;
+  WalletReminderNoticeUiDelegate* GetWalletReminderNoticeUiDelegate() override;
+  WalletReminderNoticeManager* GetWalletReminderNoticeManager() override;
+  PaymentsChurnedUsersUiDelegate* GetPaymentsChurnedUsersUiDelegate() override;
+
+  void set_wallet_reminder_notice_ui_delegate(
+      std::unique_ptr<WalletReminderNoticeUiDelegate> ui_delegate) {
+    wallet_reminder_notice_ui_delegate_ = std::move(ui_delegate);
+  }
+
+  void set_payments_churned_users_ui_delegate(
+      std::unique_ptr<PaymentsChurnedUsersUiDelegate> ui_delegate) {
+    payments_churned_users_ui_delegate_ = std::move(ui_delegate);
+  }
+
+  void set_wallet_reminder_notice_manager(
+      std::unique_ptr<WalletReminderNoticeManager>
+          wallet_reminder_notice_manager) {
+    wallet_reminder_notice_manager_ = std::move(wallet_reminder_notice_manager);
+  }
+
 #if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
   OmniboxAutofillDelegate* GetOmniboxAutofillDelegate() override;
-  void ShowOmniboxAutofillChip() override;
+  void ShowExpandedOmniboxAutofillChip(
+      std::vector<Suggestion> suggestions,
+      base::OnceClosure on_chip_shown,
+      base::RepeatingCallback<void(base::span<const Suggestion>)>
+          on_suggestions_shown,
+      base::RepeatingCallback<void(SuggestionHidingReason)>
+          on_suggestions_hidden,
+      base::RepeatingCallback<void(const Suggestion&)> did_select_suggestion,
+      base::RepeatingClosure did_deselect_suggestion,
+      base::RepeatingCallback<
+          void(const Suggestion&,
+               const AutofillSuggestionDelegate::SuggestionMetadata&)>
+          did_accept_suggestion) override;
   void HideOmniboxAutofillChip() override;
 #endif
 
@@ -270,6 +305,17 @@ class TestPaymentsAutofillClient : public PaymentsAutofillClient {
 
   bool autofill_progress_dialog_shown() {
     return autofill_progress_dialog_shown_;
+  }
+
+  bool autofill_progress_dialog_closed() const {
+    return autofill_progress_dialog_closed_;
+  }
+
+  // Simulates the user cancelling the autofill progress dialog by running the
+  // `cancel_callback` that was passed to ShowAutofillProgressDialog().
+  void CancelAutofillProgressDialog() {
+    CHECK(autofill_progress_dialog_cancel_callback_);
+    std::move(autofill_progress_dialog_cancel_callback_).Run();
   }
 
   void set_payments_network_interface(
@@ -308,6 +354,20 @@ class TestPaymentsAutofillClient : public PaymentsAutofillClient {
            !legal_message_lines_.empty();
   }
 
+  std::vector<PaymentsAutofillClient::SaveIbanPromptCallback>&
+  confirm_upload_iban_to_cloud_callbacks() {
+    return confirm_upload_iban_to_cloud_callbacks_;
+  }
+
+  std::vector<base::OnceCallback<void(const std::string&)>>&
+  load_risk_data_callbacks() {
+    return load_risk_data_callbacks_;
+  }
+
+  void set_defer_load_risk_data_responses(bool defer) {
+    defer_load_risk_data_responses_ = defer;
+  }
+
   AutofillProgressUiType autofill_progress_dialog_type() const {
     return autofill_progress_dialog_type_;
   }
@@ -341,6 +401,17 @@ class TestPaymentsAutofillClient : public PaymentsAutofillClient {
     autofill_offer_manager_ = std::move(autofill_offer_manager);
   }
 
+  void set_is_tab_visible_for_offer_notification(bool visible) {
+    is_tab_visible_for_offer_notification_ = visible;
+  }
+
+  void set_merchant_promo_code_manager(
+      std::unique_ptr<MockMerchantPromoCodeManager>
+          mock_merchant_promo_code_manager) {
+    mock_merchant_promo_code_manager_ =
+        std::move(mock_merchant_promo_code_manager);
+  }
+
   bool unmask_authenticator_selection_dialog_shown() const {
     return unmask_authenticator_selection_dialog_shown_;
   }
@@ -368,6 +439,9 @@ class TestPaymentsAutofillClient : public PaymentsAutofillClient {
       multiple_request_payments_network_interface_;
 
   bool autofill_progress_dialog_shown_ = false;
+  bool autofill_progress_dialog_closed_ = false;
+
+  base::OnceClosure autofill_progress_dialog_cancel_callback_;
 
   bool autofill_error_dialog_shown_ = false;
 
@@ -375,6 +449,8 @@ class TestPaymentsAutofillClient : public PaymentsAutofillClient {
 
   bool confirm_save_iban_locally_called_ = false;
   bool confirm_upload_iban_to_cloud_called_ = false;
+  std::vector<PaymentsAutofillClient::SaveIbanPromptCallback>
+      confirm_upload_iban_to_cloud_callbacks_;
 
   // Populated if IBAN save was offered. True if bubble was shown, false
   // otherwise.
@@ -382,6 +458,9 @@ class TestPaymentsAutofillClient : public PaymentsAutofillClient {
 
   // True if LoadRiskData() was called, false otherwise.
   bool risk_data_loaded_ = false;
+  bool defer_load_risk_data_responses_ = false;
+  std::vector<base::OnceCallback<void(const std::string&)>>
+      load_risk_data_callbacks_;
 
   bool is_tab_model_popup_ = false;
 
@@ -438,9 +517,10 @@ class TestPaymentsAutofillClient : public PaymentsAutofillClient {
   bool credit_card_name_fix_flow_bubble_was_shown_ = false;
 #endif
 
-  testing::NiceMock<MockMerchantPromoCodeManager>
+  std::unique_ptr<MockMerchantPromoCodeManager>
       mock_merchant_promo_code_manager_;
   std::unique_ptr<AutofillOfferManager> autofill_offer_manager_;
+  bool is_tab_visible_for_offer_notification_ = true;
   std::unique_ptr<MockMandatoryReauthManager>
       mock_payments_mandatory_reauth_manager_;
 
@@ -453,6 +533,12 @@ class TestPaymentsAutofillClient : public PaymentsAutofillClient {
   // platform.
   // Lazily initialized: access only through `GetBnplUiDelegate()`.
   std::unique_ptr<BnplUiDelegate> bnpl_ui_delegate_;
+
+  std::unique_ptr<WalletReminderNoticeUiDelegate>
+      wallet_reminder_notice_ui_delegate_;
+  std::unique_ptr<WalletReminderNoticeManager> wallet_reminder_notice_manager_;
+  std::unique_ptr<PaymentsChurnedUsersUiDelegate>
+      payments_churned_users_ui_delegate_;
 
 #if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
   // The OmniboxAutofillDelegate used to handle the logic flow and user

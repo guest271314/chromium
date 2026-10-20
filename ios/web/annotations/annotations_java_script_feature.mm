@@ -4,6 +4,8 @@
 
 #import "ios/web/annotations/annotations_java_script_feature.h"
 
+#import <UIKit/UIKit.h>
+
 #import <vector>
 
 #import "base/logging.h"
@@ -20,6 +22,16 @@
 namespace {
 const char kScriptName[] = "text_main";
 const char kScriptHandlerName[] = "annotations";
+
+web::AnnotationsJavaScriptFeature* g_instance_for_testing = nullptr;
+
+web::JavaScriptFeature::FeatureScript::PlaceholderReplacements
+GetAnnotationsReplacements(bool trusted_event_check_enabled) {
+  return @{
+    @"{{SkipTrustedCheckForTesting}}" : trusted_event_check_enabled ? @"false"
+                                                                    : @"true"
+  };
+}
 }  // namespace
 
 namespace web {
@@ -28,20 +40,36 @@ const int kMaxAnnotationsTextLength = 65535;
 const int kMaxAnnotationsMetadataLength = 256;
 
 AnnotationsJavaScriptFeature::AnnotationsJavaScriptFeature()
+    : AnnotationsJavaScriptFeature(true) {}
+
+AnnotationsJavaScriptFeature::AnnotationsJavaScriptFeature(
+    bool trusted_event_check_enabled)
     : JavaScriptFeature(
           ContentWorld::kIsolatedWorld,
           {FeatureScript::CreateWithFilename(
               kScriptName,
               FeatureScript::InjectionTime::kDocumentStart,
               FeatureScript::TargetFrames::kMainFrame,
-              FeatureScript::ReinjectionBehavior::kInjectOncePerWindow)}) {}
+              FeatureScript::ReinjectionBehavior::kInjectOncePerWindow,
+              base::BindRepeating(&GetAnnotationsReplacements,
+                                  trusted_event_check_enabled))}),
+      trusted_event_check_enabled_(trusted_event_check_enabled) {}
 
 AnnotationsJavaScriptFeature::~AnnotationsJavaScriptFeature() = default;
 
 // static
 AnnotationsJavaScriptFeature* AnnotationsJavaScriptFeature::GetInstance() {
+  if (g_instance_for_testing) {
+    return g_instance_for_testing;
+  }
   static base::NoDestructor<AnnotationsJavaScriptFeature> instance;
   return instance.get();
+}
+
+// static
+void AnnotationsJavaScriptFeature::SetInstanceForTesting(
+    AnnotationsJavaScriptFeature* instance) {
+  g_instance_for_testing = instance;
 }
 
 void AnnotationsJavaScriptFeature::ExtractText(WebState* web_state,
@@ -113,7 +141,7 @@ void AnnotationsJavaScriptFeature::ScriptMessageReceived(
     return;
   }
 
-  base::Value* response = script_message.body();
+  base::Value* response = script_message.legacy_body();
   if (!response || !response->is_dict()) {
     return;
   }
@@ -191,6 +219,10 @@ void AnnotationsJavaScriptFeature::ScriptMessageReceived(
     manager->OnDecorated(web_state, annotations, successes, failures,
                          *cancelled);
   } else if (*command == "annotations.onClick") {
+    if (trusted_event_check_enabled_ && !script_message.is_user_interacting() &&
+        !UIAccessibilityIsVoiceOverRunning()) {
+      return;
+    }
     for (const auto pair : dict) {
       const std::string& key = pair.first;
       if (key != "command" && key != "data" && key != "rect" && key != "text" &&

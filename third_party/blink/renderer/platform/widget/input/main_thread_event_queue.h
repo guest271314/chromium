@@ -9,11 +9,13 @@
 #include <memory>
 #include <optional>
 
+#include "base/feature_list.h"
 #include "base/memory/raw_ptr.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/time/time.h"
 #include "base/timer/timer.h"
 #include "cc/input/touch_action.h"
+#include "cc/metrics/begin_main_frame_metrics.h"
 #include "third_party/blink/public/common/input/web_input_event.h"
 #include "third_party/blink/public/common/input/web_input_event_attribution.h"
 #include "third_party/blink/public/mojom/input/input_event_result.mojom-shared.h"
@@ -29,6 +31,8 @@ class EventMetrics;
 }
 
 namespace blink {
+
+PLATFORM_EXPORT BASE_DECLARE_FEATURE(kNoUrgentMainFrameForMouseMove);
 
 using HandledEventCallback =
     base::OnceCallback<void(mojom::blink::InputEventResultState ack_state,
@@ -55,7 +59,8 @@ class PLATFORM_EXPORT MainThreadEventQueueClient {
   virtual void InputEventsDispatched(bool raf_aligned) = 0;
 
   // Requests a BeginMainFrame callback from the compositor.
-  virtual void SetNeedsMainFrame(bool urgent) = 0;
+  virtual void SetNeedsMainFrame(cc::BeginMainFrameReason reason,
+                                 bool urgent) = 0;
 
   // Returns true if a main frame has been requested and has not yet run.
   virtual bool RequestedMainFramePending() = 0;
@@ -159,7 +164,7 @@ class PLATFORM_EXPORT MainThreadEventQueue
   void PostTaskToMainThread();
   void DispatchEvents();
   void PossiblyScheduleMainFrame();
-  void SetNeedsMainFrame(bool urgent);
+  void SetNeedsMainFrame(cc::BeginMainFrameReason reason, bool urgent);
   // Returns false if the event can not be handled and the HandledEventCallback
   // will not be run.
   bool HandleEventOnMainThread(const WebCoalescedInputEvent& event,
@@ -186,6 +191,7 @@ class PLATFORM_EXPORT MainThreadEventQueue
   friend class MainThreadEventQueueInitializationTest;
   raw_ptr<MainThreadEventQueueClient> client_;
   const bool allow_raf_aligned_input_;
+  const base::TimeDelta async_touch_move_interval_;
 
   // Contains data that are read and written on the main thread only.
   struct MainThreadOnly {

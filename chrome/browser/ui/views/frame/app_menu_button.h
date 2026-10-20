@@ -16,9 +16,10 @@
 #include "ui/base/metadata/metadata_header_macros.h"
 
 class AppMenu;
+class ActionAppMenu;
 class AppMenuButtonObserver;
 class AppMenuModel;
-class Browser;
+class BrowserWindowInterface;
 
 namespace views {
 class MenuButtonController;
@@ -45,8 +46,19 @@ class AppMenuButton : public ToolbarButton, public AppMenuControl {
   views::DialogDelegate* GetDialogDelegate() override;
   void CloseMenu() override;
   void ShowMenu() override;
+  void ShowMenuWithFlags(int run_types) override = 0;
+  views::MenuItemView* GetRootMenuItemViewForTesting() override;
+  ActionAppMenu* GetActionAppMenuForTesting() override;
+  void ExecuteCommandForTesting(int command_id, int mouse_event_flags) override;
+  void SetMenuTimerForTesting(base::ElapsedTimer timer) override;
   void AddObserver(AppMenuButtonObserver* observer) override;
   void RemoveObserver(AppMenuButtonObserver* observer) override;
+  bool HasFocus() const override;
+  void Focus(views::AccessiblePaneView* pane) override;
+  void SetTypeAndSeverity(
+      AppMenuIconController::TypeAndSeverity type_and_severity) override;
+  void SetIsMaximizedOrFullscreen(bool maximized_or_fullscreen) override;
+  views::View* GetFocusablePaneView() override;
 
   views::MenuButtonController* menu_button_controller() const {
     return menu_button_controller_;
@@ -55,17 +67,18 @@ class AppMenuButton : public ToolbarButton, public AppMenuControl {
   // Called by the app menu when it closes.
   virtual void OnMenuClosed();
 
-  void SetMenuTimerForTesting(base::ElapsedTimer timer);
-
   AppMenu* app_menu() { return menu_.get(); }
   AppMenuModel* app_menu_model() { return menu_model_.get(); }
+  ActionAppMenu* action_app_menu() { return action_menu_.get(); }
 
  protected:
-  // Show the menu. |menu_model| should be a newly created AppMenuModel.  The
-  // other params are forwarded to the created AppMenu.
   void RunMenu(std::unique_ptr<AppMenuModel> menu_model,
-               Browser* browser,
+               BrowserWindowInterface* browser,
                int run_flags);
+  // Not using an AppMenuModel because the new Block Style menu hierarchy
+  // is managed by the Actions framework.
+  void RunActionMenu(BrowserWindowInterface* browser_window_interface,
+                     int run_flags);
 
  private:
   // App model and menu.
@@ -75,6 +88,7 @@ class AppMenuButton : public ToolbarButton, public AppMenuControl {
   // destruction order. https://crbug.com/41382638
   std::unique_ptr<AppMenuModel> menu_model_;
   std::unique_ptr<AppMenu> menu_;
+  std::unique_ptr<ActionAppMenu> action_menu_;
 
   base::ObserverList<AppMenuButtonObserver>::Unchecked observer_list_;
 

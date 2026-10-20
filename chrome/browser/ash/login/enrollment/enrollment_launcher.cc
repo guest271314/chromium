@@ -22,6 +22,7 @@
 #include "base/logging.h"
 #include "base/memory/ptr_util.h"
 #include "base/memory/raw_ptr.h"
+#include "base/memory/raw_ref.h"
 #include "base/memory/weak_ptr.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/notreached.h"
@@ -39,11 +40,9 @@
 #include "chrome/browser/ash/policy/enrollment/enrollment_requisition_manager.h"
 #include "chrome/browser/ash/policy/enrollment/enrollment_status.h"
 #include "chrome/browser/ash/profiles/signin_profile_handler.h"
-#include "chrome/browser/browser_process.h"
-#include "chrome/browser/browser_process_platform_part.h"
-#include "chrome/browser/net/system_network_context_manager.h"
 #include "chromeos/ash/components/attestation/attestation_flow.h"
 #include "chromeos/ash/components/attestation/attestation_flow_adaptive.h"
+#include "chromeos/ash/components/login/session/process_shutdown.h"
 #include "chromeos/ash/components/system/statistics_provider.h"
 #include "chromeos/dbus/tpm_manager/tpm_manager.pb.h"
 #include "chromeos/dbus/tpm_manager/tpm_manager_client.h"
@@ -81,7 +80,13 @@ base::NoDestructor<EnrollmentLauncher::Factory> g_testing_factory;
 
 class EnrollmentLauncherImpl : public EnrollmentLauncher {
  public:
-  explicit EnrollmentLauncherImpl(EnrollmentStatusConsumer* status_consumer);
+  // `local_state` and `browser_policy_connector_ash` must be non-null and must
+  // outlive `this`. `shared_url_loader_factory` must be non-null.
+  EnrollmentLauncherImpl(
+      PrefService* local_state,
+      scoped_refptr<network::SharedURLLoaderFactory> shared_url_loader_factory,
+      policy::BrowserPolicyConnectorAsh* browser_policy_connector_ash,
+      EnrollmentStatusConsumer* status_consumer);
 
   EnrollmentLauncherImpl(const EnrollmentLauncherImpl&) = delete;
   EnrollmentLauncherImpl& operator=(const EnrollmentLauncherImpl&) = delete;
@@ -134,6 +139,12 @@ class EnrollmentLauncherImpl : public EnrollmentLauncher {
   // Revokes OAuth2 tokens stored in the oauth_fetcher_ or auth_data_.
   void RevokeOAuth2Tokens();
 
+  const raw_ref<PrefService> local_state_;
+  const scoped_refptr<network::SharedURLLoaderFactory>
+      shared_url_loader_factory_;
+  const raw_ref<policy::BrowserPolicyConnectorAsh>
+      browser_policy_connector_ash_;
+
   raw_ptr<EnrollmentStatusConsumer> status_consumer_;
 
   // Returns either OAuth token or DM token needed for the device attribute
@@ -164,8 +175,16 @@ class EnrollmentLauncherImpl : public EnrollmentLauncher {
 };
 
 EnrollmentLauncherImpl::EnrollmentLauncherImpl(
+    PrefService* local_state,
+    scoped_refptr<network::SharedURLLoaderFactory> shared_url_loader_factory,
+    policy::BrowserPolicyConnectorAsh* browser_policy_connector_ash,
     EnrollmentStatusConsumer* status_consumer)
-    : status_consumer_(status_consumer) {
+    : local_state_(CHECK_DEREF(local_state)),
+      shared_url_loader_factory_(std::move(shared_url_loader_factory)),
+      browser_policy_connector_ash_(CHECK_DEREF(browser_policy_connector_ash)),
+      status_consumer_(status_consumer) {
+  CHECK(shared_url_loader_factory_);
+
   // Init the TPM if it has not been done until now (in debug build we might
   // have not done that yet).
   chromeos::TpmManagerClient::Get()->TakeOwnership(
@@ -173,10 +192,10 @@ EnrollmentLauncherImpl::EnrollmentLauncherImpl(
 }
 
 EnrollmentLauncherImpl::~EnrollmentLauncherImpl() {
-  DCHECK(
-      g_browser_process->IsShuttingDown() ||
-      oauth_status_ == OAUTH_NOT_STARTED ||
-      (oauth_status_ == OAUTH_FINISHED && (success_ || oauth_data_cleared_)));
+  CHECK(IsProcessShuttingDown() || oauth_status_ == OAUTH_NOT_STARTED ||
+            (oauth_status_ == OAUTH_FINISHED &&
+             (success_ || oauth_data_cleared_)),
+        base::NotFatalUntil::M161);
 }
 
 void EnrollmentLauncherImpl::Setup(
@@ -187,20 +206,18 @@ void EnrollmentLauncherImpl::Setup(
 }
 
 void EnrollmentLauncherImpl::EnrollUsingAuthCode(const std::string& auth_code) {
-  DCHECK(oauth_status_ == OAUTH_NOT_STARTED);
+  CHECK(oauth_status_ == OAUTH_NOT_STARTED, base::NotFatalUntil::M161);
   oauth_status_ = OAUTH_STARTED_WITH_AUTH_CODE;
   oauth_fetcher_ =
       policy::PolicyOAuth2TokenFetcher::CreateInstance(kOAuthConsumerName);
   oauth_fetcher_->StartWithAuthCode(
-      auth_code,
-      g_browser_process->system_network_context_manager()
-          ->GetSharedURLLoaderFactory(),
+      auth_code, shared_url_loader_factory_,
       base::BindOnce(&EnrollmentLauncherImpl::OnTokenFetched,
                      weak_ptr_factory_.GetWeakPtr()));
 }
 
 void EnrollmentLauncherImpl::EnrollUsingToken(const std::string& token) {
-  DCHECK(oauth_status_ != OAUTH_STARTED_WITH_TOKEN);
+  CHECK(oauth_status_ != OAUTH_STARTED_WITH_TOKEN, base::NotFatalUntil::M161);
   if (oauth_status_ == OAUTH_NOT_STARTED) {
     oauth_status_ = OAUTH_STARTED_WITH_TOKEN;
   }
@@ -237,9 +254,7 @@ void EnrollmentLauncherImpl::RevokeOAuth2Tokens() {
     return;
   }
 
-  // TODO(crbug.com/404133029): Avoid using g_browser_process.
-  OAuth2TokenRevoker token_revoker(
-      g_browser_process->shared_url_loader_factory());
+  OAuth2TokenRevoker token_revoker(shared_url_loader_factory_);
   if (oauth_fetcher_) {
     if (!oauth_fetcher_->OAuth2AccessToken().empty()) {
       token_revoker.Start(oauth_fetcher_->OAuth2AccessToken());
@@ -257,10 +272,12 @@ void EnrollmentLauncherImpl::RevokeOAuth2Tokens() {
 }
 
 void EnrollmentLauncherImpl::DoEnroll(policy::DMAuth auth_data) {
-  DCHECK(auth_data_.empty() || auth_data_ == auth_data);
-  DCHECK(enrollment_config_.is_mode_attestation() ||
-         oauth_status_ == OAUTH_STARTED_WITH_AUTH_CODE ||
-         oauth_status_ == OAUTH_STARTED_WITH_TOKEN);
+  CHECK(auth_data_.empty() || auth_data_ == auth_data,
+        base::NotFatalUntil::M161);
+  CHECK(enrollment_config_.is_mode_attestation() ||
+            oauth_status_ == OAUTH_STARTED_WITH_AUTH_CODE ||
+            oauth_status_ == OAUTH_STARTED_WITH_TOKEN,
+        base::NotFatalUntil::M161);
 
   // Logging as "WARNING" to make sure it's preserved in the logs.
   LOG(WARNING) << "Enroll with token type: "
@@ -285,34 +302,33 @@ void EnrollmentLauncherImpl::DoEnroll(policy::DMAuth auth_data) {
     return;
   }
 
-  policy::BrowserPolicyConnectorAsh* connector =
-      g_browser_process->platform_part()->browser_policy_connector_ash();
+  browser_policy_connector_ash_->ScheduleServiceInitialization(0);
 
-  connector->ScheduleServiceInitialization(0);
-
-  DCHECK(!enrollment_handler_);
+  CHECK(!enrollment_handler_, base::NotFatalUntil::M161);
   policy::DeviceCloudPolicyManagerAsh* policy_manager =
-      connector->GetDeviceCloudPolicyManager();
+      browser_policy_connector_ash_->GetDeviceCloudPolicyManager();
   // DeviceDMToken callback is empty here because for device policies this
   // DMToken is already provided in the policy fetch requests.
   auto client = policy::CreateDeviceCloudPolicyClientAsh(
       system::StatisticsProvider::GetInstance(),
-      connector->device_management_service(),
-      g_browser_process->shared_url_loader_factory(),
+      browser_policy_connector_ash_->device_management_service(),
+      shared_url_loader_factory_,
       policy::CloudPolicyClient::DeviceDMTokenCallback());
 
   attestation_flow_ = CreateAttestationFlow();
 
-  const auto& local_state = CHECK_DEREF(g_browser_process->local_state());
   enrollment_handler_ = std::make_unique<policy::EnrollmentHandler>(
+      &local_state_.get(), shared_url_loader_factory_,
       policy_manager->device_store(), InstallAttributes::Get(),
-      connector->GetStateKeysBroker(), attestation_flow_.get(),
-      std::move(client),
+      browser_policy_connector_ash_->GetStateKeysBroker(),
+      attestation_flow_.get(), std::move(client),
       policy::BrowserPolicyConnectorAsh::CreateBackgroundTaskRunner(),
       enrollment_config_, auth_data_.Clone(),
       InstallAttributes::Get()->GetDeviceId(),
-      policy::EnrollmentRequisitionManager::GetDeviceRequisition(local_state),
-      policy::EnrollmentRequisitionManager::GetSubOrganization(local_state),
+      policy::EnrollmentRequisitionManager::GetDeviceRequisition(
+          local_state_.get()),
+      policy::EnrollmentRequisitionManager::GetSubOrganization(
+          local_state_.get()),
       base::BindOnce(&EnrollmentLauncherImpl::OnEnrollmentFinished,
                      weak_ptr_factory_.GetWeakPtr()));
 
@@ -333,10 +349,8 @@ std::string EnrollmentLauncherImpl::GetOAuth2RefreshToken() const {
 }
 
 void EnrollmentLauncherImpl::GetDeviceAttributeUpdatePermission() {
-  policy::BrowserPolicyConnectorAsh* connector =
-      g_browser_process->platform_part()->browser_policy_connector_ash();
   policy::DeviceCloudPolicyManagerAsh* policy_manager =
-      connector->GetDeviceCloudPolicyManager();
+      browser_policy_connector_ash_->GetDeviceCloudPolicyManager();
   policy::CloudPolicyClient* client = policy_manager->core()->client();
 
   std::optional<policy::DMAuth> auth =
@@ -372,10 +386,8 @@ EnrollmentLauncherImpl::GetDMAuthForDeviceAttributeUpdate(
 void EnrollmentLauncherImpl::UpdateDeviceAttributes(
     const std::string& asset_id,
     const std::string& location) {
-  policy::BrowserPolicyConnectorAsh* connector =
-      g_browser_process->platform_part()->browser_policy_connector_ash();
   policy::DeviceCloudPolicyManagerAsh* policy_manager =
-      connector->GetDeviceCloudPolicyManager();
+      browser_policy_connector_ash_->GetDeviceCloudPolicyManager();
   policy::CloudPolicyClient* client = policy_manager->core()->client();
 
   std::optional<policy::DMAuth> auth =
@@ -384,7 +396,7 @@ void EnrollmentLauncherImpl::UpdateDeviceAttributes(
   // If we got here, we must have successfully run
   // GetDeviceAttributeUpdatePermission, which required a non-empty
   // GetDMAuthForDeviceAttributeUpdate result.
-  DCHECK(auth.has_value());
+  CHECK(auth.has_value(), base::NotFatalUntil::M161);
 
   client->UpdateDeviceAttributes(
       std::move(auth.value()), asset_id, location,
@@ -407,9 +419,6 @@ void EnrollmentLauncherImpl::OnTokenFetched(
 
 void EnrollmentLauncherImpl::OnEnrollmentFinished(
     policy::EnrollmentStatus status) {
-  // TODO(crbug.com/404133029): Avoid using g_browser_process.
-  PrefService& local_state = CHECK_DEREF(g_browser_process->local_state());
-
   // Regardless how enrollment has finished, |enrollment_handler_| is expired.
   // |client| might still be needed to connect the manager.
   auto client = enrollment_handler_->ReleaseClient();
@@ -435,10 +444,8 @@ void EnrollmentLauncherImpl::OnEnrollmentFinished(
     return;
   }
 
-  policy::BrowserPolicyConnectorAsh* connector =
-      g_browser_process->platform_part()->browser_policy_connector_ash();
   policy::DeviceCloudPolicyManagerAsh* policy_manager =
-      connector->GetDeviceCloudPolicyManager();
+      browser_policy_connector_ash_->GetDeviceCloudPolicyManager();
 
   // Connect policy manager if necessary. If it has already been connected, no
   // reconnection needed.
@@ -451,8 +458,8 @@ void EnrollmentLauncherImpl::OnEnrollmentFinished(
 
   // TODO(crbug.com/454136007): Investigate why OOBE is marked completed here
   if (!features::IsOobeAutoEnrollmentCheckForcedEnabled() ||
-      local_state.GetBoolean(prefs::kAutoEnrollmentCheckExited)) {
-    StartupUtils::MarkOobeCompleted(local_state);
+      local_state_->GetBoolean(prefs::kAutoEnrollmentCheckExited)) {
+    StartupUtils::MarkOobeCompleted(local_state_.get());
   }
 
   status_consumer_->OnDeviceEnrolled();
@@ -691,6 +698,9 @@ EnrollmentLauncher::~EnrollmentLauncher() = default;
 
 // static
 std::unique_ptr<EnrollmentLauncher> EnrollmentLauncher::Create(
+    PrefService* local_state,
+    scoped_refptr<network::SharedURLLoaderFactory> shared_url_loader_factory,
+    policy::BrowserPolicyConnectorAsh* browser_policy_connector_ash,
     EnrollmentStatusConsumer* status_consumer,
     const policy::EnrollmentConfig& enrollment_config,
     const std::string& enrolling_user_domain) {
@@ -700,7 +710,9 @@ std::unique_ptr<EnrollmentLauncher> EnrollmentLauncher::Create(
                                   enrolling_user_domain);
   }
 
-  auto result = std::make_unique<EnrollmentLauncherImpl>(status_consumer);
+  auto result = std::make_unique<EnrollmentLauncherImpl>(
+      local_state, shared_url_loader_factory, browser_policy_connector_ash,
+      status_consumer);
   result->Setup(enrollment_config, enrolling_user_domain);
   return result;
 }

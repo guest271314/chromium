@@ -22,9 +22,9 @@
 #include "base/check.h"
 #include "base/functional/callback.h"
 #include "base/gtest_prod_util.h"
-#include "base/memory/advanced_memory_safety_checks.h"
 #include "base/memory/ptr_util.h"
 #include "base/memory/raw_ptr.h"
+#include "base/memory/sanitized_object.h"
 #include "base/observer_list.h"
 #include "base/scoped_observation.h"
 #include "base/types/pass_key.h"
@@ -37,6 +37,7 @@
 #include "ui/base/dragdrop/drop_target_event.h"
 #include "ui/base/dragdrop/mojom/drag_drop_types.mojom-forward.h"
 #include "ui/base/interaction/element_identifier.h"
+#include "ui/base/metadata/base_type_conversion.h"
 #include "ui/base/metadata/metadata_header_macros.h"
 #include "ui/base/metadata/metadata_types.h"
 #include "ui/base/metadata/metadata_utils.h"
@@ -231,7 +232,7 @@ enum class ViewLayer {
 //   base::CallbackListSubscription AddFrobbleChangedCallback(
 //       PropertyChangedCallback callback);
 //
-//   Each callback uses the the existing base::Bind mechanisms which allow for
+//   Each callback uses the existing base::Bind mechanisms which allow for
 //   various kinds of callbacks; object methods, normal functions and lambdas.
 //
 //   Example:
@@ -301,7 +302,7 @@ class VIEWS_EXPORT View : public ui::LayerDelegate,
                           public ui::metadata::MetaDataProvider {
   // Do not remove this macro!
   // The macro is maintained by the memory safety team.
-  ADVANCED_MEMORY_SAFETY_CHECKS();
+  SANITIZED_OBJECT();
 
  public:
   class OwnedByClientPassKey {
@@ -777,6 +778,7 @@ class VIEWS_EXPORT View : public ui::LayerDelegate,
 
   // ui::LayerObserver:
   void LayerDestroyed(ui::Layer* layer) override;
+  void OnLayerRecreated(ui::Layer* old_layer, ui::Layer* new_layer) override;
 
   // Overridden from ui::LayerOwner:
   std::unique_ptr<ui::Layer> RecreateLayer() override;
@@ -1986,14 +1988,6 @@ class VIEWS_EXPORT View : public ui::LayerDelegate,
   // order of the view tree.
   void ReorderLayers();
 
-  // This reorders the immediate children of |*parent_layer| to match the
-  // order of the view tree. Child layers which are owned by a view are
-  // reordered so that they are below any child layers not owned by a view.
-  // Widget::ReorderNativeViews() should be called to reorder any child layers
-  // with an associated view. Widget::ReorderNativeViews() may reorder layers
-  // below layers owned by a view.
-  virtual void ReorderChildLayers(ui::Layer* parent_layer);
-
   // Notifies parents about a layer being created or destroyed in a child. An
   // example where a subclass may override this method is when it wants to clip
   // the child by adding its own layer.
@@ -2334,6 +2328,18 @@ class VIEWS_EXPORT View : public ui::LayerDelegate,
   // parent in the correct order.
   void SetLayerParent(ui::Layer* parent_layer);
 
+  // This reorders the immediate children of |*parent_layer| to match the
+  // order of the view tree. Child layers which are owned by a view are
+  // reordered so that they are below any child layers not owned by a view.
+  // Widget::ReorderNativeViews() should be called to reorder any child layers
+  // with an associated view. Widget::ReorderNativeViews() may reorder layers
+  // below layers owned by a view.
+  //
+  // This is an implementation detail of ReorderLayers() and is deliberately
+  // not virtual: subclasses that need extra layers stacked relative to their
+  // own should use AddLayerToRegion() or a child view that paints to a layer.
+  void ReorderChildLayers(ui::Layer* parent_layer);
+
   // Returns true if this view is interested in VisibleBoundsChange event.
   bool GetNeedsNotificationWhenVisibleBoundsChangeImpl() const;
 
@@ -2553,17 +2559,6 @@ class VIEWS_EXPORT View : public ui::LayerDelegate,
   // fix the problem with FlexLayout. Remove this.
   bool layout_manager_use_constrained_space_ = true;
 
-  // Used to generate an UMA metric for the maximum reentrant call depth seen
-  // during layout. Normally the metric value will be one (Layout() was not
-  // reentered). But, we know Layout() is reentered at least sometimes and
-  // want to measure how often that is. We also want to know if it is ever
-  // reentered more than two deep.
-  int max_layout_call_depth_ = 0;
-
-  // Current Layout() reentrant call depth (used to help determine the
-  // max_layout_call_depth_, above).
-  int current_layout_call_depth_ = 0;
-
   // How many times this view has done layout since the last time it was
   // painted. This is used to compute metrics around unnecessary layout calls.
   int layouts_since_last_paint_ = 0;
@@ -2740,10 +2735,15 @@ class VIEWS_EXPORT BaseActionViewInterface : public ActionViewInterface {
   ~BaseActionViewInterface() override = default;
   void ActionItemChangedImpl(actions::ActionItem* action_item) override;
 
+ protected:
+  View* action_view() const { return action_view_; }
+
  private:
   raw_ptr<View> action_view_;
 };
 
 }  // namespace views
+
+EXPORT_ENUM_CONVERTERS(views::View::FocusBehavior, VIEWS_EXPORT)
 
 #endif  // UI_VIEWS_VIEW_H_

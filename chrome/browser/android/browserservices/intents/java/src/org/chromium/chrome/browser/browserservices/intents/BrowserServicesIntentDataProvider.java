@@ -25,7 +25,6 @@ import androidx.browser.customtabs.CustomContentAction;
 import androidx.browser.customtabs.CustomTabsIntent;
 import androidx.browser.customtabs.CustomTabsIntent.CloseButtonPosition;
 import androidx.browser.customtabs.CustomTabsIntent.OpenInBrowserState;
-import androidx.browser.customtabs.ExperimentalCustomContentAction;
 import androidx.browser.trusted.FileHandlingData;
 import androidx.browser.trusted.LaunchHandlerClientMode;
 import androidx.browser.trusted.TrustedWebActivityDisplayMode;
@@ -58,7 +57,6 @@ public abstract class BrowserServicesIntentDataProvider {
         CustomTabsUiType.DEFAULT,
         CustomTabsUiType.MEDIA_VIEWER,
         CustomTabsUiType.INFO_PAGE,
-        CustomTabsUiType.READER_MODE,
         CustomTabsUiType.MINIMAL_UI_WEBAPP,
         CustomTabsUiType.OFFLINE_PAGE,
         CustomTabsUiType.AUTH_TAB,
@@ -71,7 +69,7 @@ public abstract class BrowserServicesIntentDataProvider {
         int DEFAULT = 0;
         int MEDIA_VIEWER = 1;
         int INFO_PAGE = 2;
-        int READER_MODE = 3;
+        // int READER_MODE = 3; // Deprecated.
         int MINIMAL_UI_WEBAPP = 4;
         int OFFLINE_PAGE = 5;
         // int READ_LATER = 6; // Unused.
@@ -111,7 +109,6 @@ public abstract class BrowserServicesIntentDataProvider {
         IncognitoCctCallerId.OTHER_APPS,
         IncognitoCctCallerId.GOOGLE_APPS,
         IncognitoCctCallerId.OTHER_CHROME_FEATURES,
-        IncognitoCctCallerId.READER_MODE,
         IncognitoCctCallerId.READ_LATER,
         IncognitoCctCallerId.EPHEMERAL_TAB,
         IncognitoCctCallerId.DOWNLOAD_HOME,
@@ -127,7 +124,7 @@ public abstract class BrowserServicesIntentDataProvider {
         int OTHER_CHROME_FEATURES = 2;
 
         // Chrome Features
-        int READER_MODE = 3;
+        // int READER_MODE = 3; // Deprecated.
         int READ_LATER = 4;
 
         // An ephemeral custom tab without incognito branding.
@@ -207,7 +204,7 @@ public abstract class BrowserServicesIntentDataProvider {
     /**
      * @return The session specified in the intent, or null.
      */
-    public @Nullable SessionHolder<?> getSession() {
+    public @Nullable SessionHolder getSession() {
         return null;
     }
 
@@ -728,16 +725,6 @@ public abstract class BrowserServicesIntentDataProvider {
         return ACTIVITY_SIDE_SHEET_POSITION_END;
     }
 
-    /** Return whether omnibox is allowed to be displayed in the CCT. */
-    public boolean isInteractiveOmniboxAllowed() {
-        return false;
-    }
-
-    /** Return whether omnibox should be enabled for the calling package. */
-    public boolean isInteractiveOmniboxEnabled() {
-        return false;
-    }
-
     /**
      * Return the target network handle {@link android.net.Network#getNetworkHandle} that loads
      * associated with this intent must use. Defaults to {@code NetId.INVALID}, in which case we let
@@ -828,7 +815,6 @@ public abstract class BrowserServicesIntentDataProvider {
     /**
      * @return {@link List<CustomContentAction>} the developer defined contextual menu items.
      */
-    @ExperimentalCustomContentAction
     public List<CustomContentAction> getCustomContentActions() {
         return List.of();
     }
@@ -878,4 +864,18 @@ public abstract class BrowserServicesIntentDataProvider {
      */
     public void maybeAddAdditionalContentExtrasToOutboundIntent(
             Supplier<@Nullable Tab> tabProvider, Intent outboundIntent, int viewId) {}
+
+    /**
+     * @return Whether the CCT tab switcher is enabled.
+     */
+    public boolean isCctTabSwitcherEnabled() {
+        return false;
+    }
+
+    /**
+     * @return The {@link CustomTabIntentDataHolder} for this provider, or null if not applicable.
+     */
+    public @Nullable CustomTabIntentDataHolder getCustomTabIntentDataHolder() {
+        return null;
+    }
 }

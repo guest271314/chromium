@@ -8,6 +8,7 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNotSame;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
@@ -162,6 +163,9 @@ public class TabArchiverTest {
     public void tearDown() {
         runOnUiThreadBlocking(
                 () -> {
+                    if (mTabArchiver != null) {
+                        mTabArchiver.destroy();
+                    }
                     // Clear out all archived tabs between tests.
                     mArchivedTabModel
                             .getTabRemover()
@@ -218,11 +222,6 @@ public class TabArchiverTest {
                 () ->
                         assertEquals(
                                 Tab.INVALID_TAB_ID, mArchivedTabModel.getTabAt(0).getParentId()));
-        runOnUiThreadBlocking(
-                () ->
-                        assertEquals(
-                                mArchivedTabModel.getTabAt(0).getId(),
-                                mArchivedTabModel.getTabAt(0).getRootId()));
 
         watcher =
                 HistogramWatcher.newBuilder()
@@ -278,11 +277,6 @@ public class TabArchiverTest {
                 () ->
                         assertEquals(
                                 Tab.INVALID_TAB_ID, mArchivedTabModel.getTabAt(0).getParentId()));
-        runOnUiThreadBlocking(
-                () ->
-                        assertEquals(
-                                mArchivedTabModel.getTabAt(0).getId(),
-                                mArchivedTabModel.getTabAt(0).getRootId()));
 
         watcher =
                 HistogramWatcher.newBuilder()
@@ -667,8 +661,7 @@ public class TabArchiverTest {
         runOnUiThreadBlocking(
                 () -> {
                     mTabArchiveSettings.setArchiveDuplicateTabsEnabled(true);
-                    mTabArchiver.doArchivePass(
-                            mActivityTestRule.getActivity().getTabModelSelectorSupplier().get());
+                    mTabArchiver.doArchivePass(mRegularTabModelSelector);
                 });
         CriteriaHelper.pollUiThread(() -> 4 == getTabCountOnUiThread(mRegularTabModel));
         assertEquals(0, getTabCountOnUiThread(mArchivedTabModel));
@@ -1018,14 +1011,11 @@ public class TabArchiverTest {
                 () -> {
                     Tab archivedTab = mArchivedTabModel.getTabAt(0);
                     assertEquals(Tab.INVALID_TAB_ID, archivedTab.getParentId());
-                    assertEquals(archivedTab.getId(), archivedTab.getRootId());
 
-                    archivedTab.setRootId(7);
                     archivedTab.setParentId(7);
 
                     mTabArchiver.ensureArchivedTabsHaveCorrectFields();
                     assertEquals(Tab.INVALID_TAB_ID, archivedTab.getParentId());
-                    assertEquals(archivedTab.getId(), archivedTab.getRootId());
                 });
     }
 
@@ -1197,6 +1187,7 @@ public class TabArchiverTest {
                             // Immediately destroying the TabArchiver will verify that the task is
                             // correctly cancelled.
                             mTabArchiver.destroy();
+                            mTabArchiver = null;
                             return tab;
                         });
 
@@ -1252,6 +1243,7 @@ public class TabArchiverTest {
                     // This should cause the callback to be destroyed, and the ptd should still
                     // exist with the value set earlier in the test.
                     mTabArchiver.destroy();
+                    mTabArchiver = null;
                     ArchivePersistedTabData.from(
                             archivedTab,
                             (ptd) -> {
@@ -1300,6 +1292,70 @@ public class TabArchiverTest {
                                         .get()));
         CriteriaHelper.pollUiThread(() -> 2 == getTabCountOnUiThread(mRegularTabModel));
         assertEquals(0, getTabCountOnUiThread(mArchivedTabModel));
+    }
+
+    @Test
+    @MediumTest
+    public void testUnarchiveAndRestoreTabs_RestoreFrozenTabWithWebContentsState() {
+        Tab tab =
+                mActivityTestRule.loadUrlInNewTab(
+                        mActivityTestRule.getTestServer().getURL(TEST_PATH),
+                        /* incognito= */ false);
+
+        TabState state = runOnUiThreadBlocking(() -> TabStateExtractor.from(tab));
+        assertNotNull(state);
+        assertNotNull(state.contentsState);
+
+        // Close original tab and create a frozen tab in the archived tab model.
+        Tab archivedTab =
+                runOnUiThreadBlocking(
+                        () -> {
+                            mRegularTabModel
+                                    .getTabRemover()
+                                    .closeTabs(
+                                            TabClosureParams.closeTab(tab).allowUndo(false).build(),
+                                            /* allowDialog= */ false);
+                            return mArchivedTabCreator.createFrozenTab(
+                                    state, tab.getId(), INVALID_TAB_INDEX);
+                        });
+
+        assertEquals(1, getTabCountOnUiThread(mRegularTabModel));
+        assertEquals(1, getTabCountOnUiThread(mArchivedTabModel));
+
+        assertNotNull(archivedTab);
+        assertNull(archivedTab.getWebContents());
+        WebContentsState oldContentsState = archivedTab.getWebContentsState();
+        assertNotNull(oldContentsState);
+
+        // Unarchive and restore the frozen tab into the regular tab model.
+        runOnUiThreadBlocking(
+                () ->
+                        mTabArchiver.unarchiveAndRestoreTabs(
+                                mRegularTabCreator,
+                                Arrays.asList(archivedTab),
+                                /* updateTimestamp= */ true,
+                                /* areTabsBeingOpened= */ false));
+
+        assertEquals(2, getTabCountOnUiThread(mRegularTabModel));
+        assertEquals(0, getTabCountOnUiThread(mArchivedTabModel));
+
+        Tab restoredTab = runOnUiThreadBlocking(() -> mRegularTabModel.getTabById(tab.getId()));
+        assertNotNull(restoredTab);
+
+        // Verify that the restored tab has an independent WebContentsState instance and can be
+        // loaded / selected without crashing.
+        assertNotSame(oldContentsState, restoredTab.getWebContentsState());
+        runOnUiThreadBlocking(
+                () -> {
+                    assertTrue(restoredTab.loadIfNeeded(/* forceBackingSize= */ false));
+                });
+        CriteriaHelper.pollUiThread(() -> restoredTab.getWebContents() != null);
+        CriteriaHelper.pollUiThread(
+                () ->
+                        mActivityTestRule
+                                .getTestServer()
+                                .getURL(TEST_PATH)
+                                .equals(restoredTab.getUrl().getSpec()));
     }
 
     private void addRegularTabInBackgroundForArchive(String path) {

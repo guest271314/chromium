@@ -36,7 +36,7 @@
 #include "components/autofill/core/browser/form_parsing/address_field_parser.h"
 #include "components/autofill/core/browser/form_parsing/address_field_parser_ng.h"
 #include "components/autofill/core/browser/form_parsing/alternative_name_field_parser.h"
-#include "components/autofill/core/browser/form_parsing/autofill_parsing_utils.h"
+#include "components/autofill/core/browser/form_parsing/autofill_parsing_util.h"
 #include "components/autofill/core/browser/form_parsing/autofill_scanner.h"
 #include "components/autofill/core/browser/form_parsing/credit_card_field_parser.h"
 #include "components/autofill/core/browser/form_parsing/email_field_parser.h"
@@ -119,9 +119,8 @@ void MaybePrintMatchLogs(LogManager* log_manager,
 }
 
 bool IsRelevant(const FormFieldData& field) {
-  return !IsCheckable(field.check_status()) &&
-         (field.role() != FormFieldData::RoleAttribute::kPresentation ||
-          field.IsSelectElement());
+  return field.role() != FormFieldData::RoleAttribute::kPresentation ||
+         field.IsSelectElement();
 }
 
 }  // namespace
@@ -159,13 +158,7 @@ ParsingContext::ParsingContext(base::span<const FormFieldData> fields,
       pattern_file(pattern_file),
       active_features(active_features),
       regex_cache(GetAutofillRegexCache()),
-      log_manager(log_manager) {
-  if (base::FeatureList::IsEnabled(
-          features::kAutofillEnableCacheForRegexMatching)) {
-    matches_cache.emplace(
-        features::kAutofillEnableCacheForRegexMatchingCacheSizeParam.Get());
-  }
-}
+      log_manager(log_manager) {}
 
 ParsingContext::ParsingContext(
     base::span<const std::unique_ptr<AutofillField>> fields,
@@ -180,13 +173,7 @@ ParsingContext::ParsingContext(
       pattern_file(pattern_file),
       active_features(active_features),
       regex_cache(GetAutofillRegexCache()),
-      log_manager(log_manager) {
-  if (base::FeatureList::IsEnabled(
-          features::kAutofillEnableCacheForRegexMatching)) {
-    matches_cache.emplace(
-        features::kAutofillEnableCacheForRegexMatchingCacheSizeParam.Get());
-  }
-}
+      log_manager(log_manager) {}
 
 ParsingContext::~ParsingContext() = default;
 
@@ -197,9 +184,9 @@ bool FormFieldParser::MatchesRegexWithCache(
     std::u16string_view pattern,
     std::vector<std::u16string>* groups) {
   RegexMatchesCache::Key key;
-  if (!groups && context.matches_cache) {
+  if (!groups) {
     key = RegexMatchesCache::BuildKey(input, pattern);
-    std::optional<bool> cache_entry = context.matches_cache->Get(key);
+    std::optional<bool> cache_entry = context.matches_cache.Get(key);
     if (cache_entry.has_value()) {
       return cache_entry.value();
     }
@@ -207,8 +194,8 @@ bool FormFieldParser::MatchesRegexWithCache(
   const icu::RegexPattern* regex_pattern =
       context.regex_cache->GetRegexPattern(pattern);
   bool result = MatchesRegex(input, regex_pattern, groups);
-  if (!groups && context.matches_cache) {
-    context.matches_cache->Put(key, result);
+  if (!groups) {
+    context.matches_cache.Put(key, result);
   }
   return result;
 }
@@ -262,12 +249,9 @@ void FormFieldParser::ParseFormFields(ParsingContext& context,
   ParseFormFieldsPass(NameFieldParser::Parse, context, fields, &IsRelevant,
                       field_candidates);
 
-  if (base::FeatureList::IsEnabled(
-          features::kAutofillSupportPhoneticNameForJP)) {
-    // Alternative name (e.g. phonetic name) pass.
-    ParseFormFieldsPass(AlternativeNameFieldParser::Parse, context, fields,
-                        &IsRelevant, field_candidates);
-  }
+  // Alternative name (e.g. phonetic name) pass.
+  ParseFormFieldsPass(AlternativeNameFieldParser::Parse, context, fields,
+                      &IsRelevant, field_candidates);
 
   // Search pass.
   ParseFormFieldsPass(SearchFieldParser::Parse, context, fields, &IsRelevant,
@@ -303,9 +287,9 @@ void FormFieldParser::ClearCandidatesIfHeuristicsDidNotFindEnoughFields(
   // Set to count distinct field types.
   FieldTypeSet heuristic_types;
   for (const auto& [field_id, candidates] : field_candidates) {
-    if (FieldType heuristic_type = candidates.BestHeuristicType();
-        IsFillableFieldType(heuristic_type)) {
-      heuristic_types.insert(heuristic_type);
+    if (FieldCandidate best_candidate = candidates.BestHeuristicCandidate();
+        IsFillableFieldType(best_candidate.type)) {
+      heuristic_types.insert(best_candidate.type);
     }
   }
 
@@ -347,7 +331,7 @@ void FormFieldParser::ClearCandidatesIfHeuristicsDidNotFindEnoughFields(
   std::vector<WipedField> wiped_fields;
   if (IsLoggingActive(log_manager)) {
     for (const auto& [field_id, candidates] : field_candidates) {
-      FieldType heuristic_type = candidates.BestHeuristicType();
+      FieldType heuristic_type = candidates.BestHeuristicCandidate().type;
       if (!permitted_single_field_types.contains(heuristic_type)) {
         wiped_fields.emplace_back(WipedField{field_id, heuristic_type});
       }
@@ -358,13 +342,12 @@ void FormFieldParser::ClearCandidatesIfHeuristicsDidNotFindEnoughFields(
   // types, we expect field_candidates to be small and don't need to be
   // extremely performant. It's ok to use EraseIf even if in some cases we could
   // clear everything.
-  base::EraseIf(
-      field_candidates,
-      [&permitted_single_field_types](
-          const FieldCandidatesMap::container_type::value_type& candidate) {
-        return !permitted_single_field_types.contains(
-            candidate.second.BestHeuristicType());
-      });
+  base::EraseIf(field_candidates,
+                [&permitted_single_field_types](
+                    const FieldCandidatesMap::value_type& field_candidate) {
+                  return !permitted_single_field_types.contains(
+                      field_candidate.second.BestHeuristicCandidate().type);
+                });
 
   if (IsLoggingActive(log_manager)) {
     LogBuffer table_rows;
@@ -451,8 +434,7 @@ void FormFieldParser::ParseStandaloneEmailFields(
 }
 
 // static
-std::optional<FormFieldParser::MatchInfo>
-FormFieldParser::FieldMatchesMatchPatternRef(
+std::optional<MatchInfo> FormFieldParser::FieldMatchesMatchPatternRef(
     ParsingContext& context,
     const FormFieldData& field,
     std::string_view regex_name,
@@ -634,7 +616,7 @@ bool FormFieldParser::ParseEmptyLabel(ParsingContext& context,
 void FormFieldParser::AddClassification(
     const std::optional<FieldAndMatchInfo>& match,
     FieldType type,
-    float parser_score,
+    HeuristicParser parser_type,
     FieldCandidatesMap& field_candidates) {
   // Several fields are optional.
   if (!match.has_value()) {
@@ -644,31 +626,26 @@ void FormFieldParser::AddClassification(
   // When `kAutofillBetterLocalHeuristicPlaceholderSupport` is enabled,
   // different parsers might derive conflicting classifications based on
   // different labels. In this case, the higher quality label match should win.
-  // Conceptually, this is achieved by having a composite score of the form
-  // (`is_name_or_high_quality_label_match`, `parser_score`). Practically, since
-  // all parser scores are less than 2, adding 2 suffices.
-  CHECK_LT(parser_score, 2);
-  float score = match->match_info.matched_attribute ==
-                        MatchInfo::MatchAttribute::kLowQualityLabel
-                    ? parser_score
-                    : parser_score + 2;
+  // This is achieved by having a composite priority of the form
+  // (`is_name_or_high_quality_label_match`, `parser_type`).
+  const FieldCandidatePriority priority{
+      /*is_name_or_high_quality_label_match=*/
+      match->match_info.matched_attribute !=
+          MatchInfo::MatchAttribute::kLowQualityLabel,
+      /*parser_type=*/parser_type};
 
-  FieldCandidates& candidates = field_candidates[match->field->global_id()];
-  candidates.AddFieldCandidate(
-      type,
-      [&] {
-        switch (match->match_info.matched_attribute) {
-          case MatchInfo::MatchAttribute::kName:
-            return MatchAttribute::kName;
-          case MatchInfo::MatchAttribute::kHighQualityLabel:
-          case MatchInfo::MatchAttribute::kLowQualityLabel:
-            return MatchAttribute::kLabel;
-        }
-      }(),
-      score);
+  FieldCandidatesMap::iterator it =
+      field_candidates.find(match->field->global_id());
+  if (it != field_candidates.end()) {
+    it->second.AddFieldCandidate(type, match->match_info, priority);
+  } else {
+    field_candidates.insert(
+        {match->field->global_id(),
+         FieldCandidates(type, match->match_info, priority)});
+  }
 }
 
-std::optional<FormFieldParser::MatchInfo> FormFieldParser::Match(
+std::optional<MatchInfo> FormFieldParser::Match(
     ParsingContext& context,
     const FormFieldData& field,
     std::u16string_view pattern,
@@ -681,7 +658,7 @@ std::optional<FormFieldParser::MatchInfo> FormFieldParser::Match(
   // matches distinguish between low and high quality. Since low quality label
   // matches are scored lower, they should be prioritized lower than name
   // matches. This is done via `low_quality_label_fallback`.
-  std::optional<FormFieldParser::MatchInfo> low_quality_label_fallback;
+  std::optional<MatchInfo> low_quality_label_fallback;
   for (MatchAttribute attribute : match_attributes) {
     switch (attribute) {
       case MatchAttribute::kLabel:
@@ -706,7 +683,7 @@ std::optional<FormFieldParser::MatchInfo> FormFieldParser::Match(
 }
 
 // static
-std::optional<FormFieldParser::MatchInfo> FormFieldParser::MatchInLabel(
+std::optional<MatchInfo> FormFieldParser::MatchInLabel(
     ParsingContext& context,
     const FormFieldData& field,
     std::u16string_view pattern,
@@ -756,7 +733,7 @@ std::optional<FormFieldParser::MatchInfo> FormFieldParser::MatchInLabel(
 }
 
 // static
-std::optional<FormFieldParser::MatchInfo> FormFieldParser::MatchInName(
+std::optional<MatchInfo> FormFieldParser::MatchInName(
     ParsingContext& context,
     const FormFieldData& field,
     std::u16string_view pattern,

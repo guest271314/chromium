@@ -17,7 +17,9 @@
 #include "components/prefs/pref_service.h"
 #include "components/sessions/core/session_id.h"
 #include "third_party/metrics_proto/omnibox_event.pb.h"
+#include "ui/base/page_transition_types.h"
 #include "ui/base/ui_base_features.h"
+#include "ui/base/window_open_disposition.h"
 #include "url/gurl.h"
 
 namespace {
@@ -43,7 +45,7 @@ class LensOmniboxClient : public SearchboxOmniboxClient {
       TemplateURLRef::PostContent* post_content,
       WindowOpenDisposition disposition,
       ui::PageTransition transition,
-      AutocompleteMatchType::Type match_type,
+      omnibox::AutocompleteMatchType match_type,
       base::TimeTicks match_selection_timestamp,
       bool destination_url_entered_without_scheme,
       bool destination_url_entered_with_http_scheme,
@@ -89,7 +91,7 @@ void LensOmniboxClient::OnAutocompleteAccept(
     TemplateURLRef::PostContent* post_content,
     WindowOpenDisposition disposition,
     ui::PageTransition transition,
-    AutocompleteMatchType::Type match_type,
+    omnibox::AutocompleteMatchType match_type,
     base::TimeTicks match_selection_timestamp,
     bool destination_url_entered_without_scheme,
     bool destination_url_entered_with_http_scheme,
@@ -114,14 +116,12 @@ LensSearchboxHandler::LensSearchboxHandler(
           std::move(pending_page),
           profile,
           web_contents,
-          std::make_unique<OmniboxController>(
-              std::make_unique<LensOmniboxClient>(profile,
-                                                  web_contents,
-                                                  lens_searchbox_client),
-              lens::features::GetLensSearchboxAutocompleteTimeout())),
+          std::make_unique<LensOmniboxClient>(profile,
+                                              web_contents,
+                                              lens_searchbox_client),
+          lens::features::GetLensSearchboxAutocompleteTimeout()),
       lens_searchbox_client_(lens_searchbox_client) {
   autocomplete_controller_observation_.Observe(autocomplete_controller());
-
 }
 
 LensSearchboxHandler::~LensSearchboxHandler() = default;
@@ -145,13 +145,21 @@ void LensSearchboxHandler::OnFocusChanged(bool focused) {
   lens_searchbox_client_->OnFocusChanged(focused);
 }
 
-void LensSearchboxHandler::QueryAutocomplete(const std::u16string& input,
-                                             bool prevent_inline_autocomplete,
-                                             uint32_t cursor_position) {
+void LensSearchboxHandler::QueryAutocomplete(
+    int32_t query_id,
+    std::optional<int32_t> tab_id,
+    const std::u16string& input,
+    bool prevent_inline_autocomplete,
+    uint32_t cursor_position,
+    omnibox::SuggestInventory suggest_inventory,
+    bool is_on_focus,
+    const std::string& keyword,
+    searchbox::mojom::InputMethod input_method) {
   lens_searchbox_client_->OnTextModified();
 
-  SearchboxHandler::QueryAutocomplete(input, prevent_inline_autocomplete,
-                                      cursor_position);
+  SearchboxHandler::QueryAutocomplete(
+      query_id, tab_id, input, prevent_inline_autocomplete, cursor_position,
+      suggest_inventory, is_on_focus, keyword, input_method);
 }
 
 void LensSearchboxHandler::SetInputText(const std::string& input_text) {
@@ -164,7 +172,7 @@ void LensSearchboxHandler::SetThumbnail(const std::string& thumbnail_url,
 }
 
 void LensSearchboxHandler::OnThumbnailRemoved() {
-  omnibox_controller()->client()->OnThumbnailRemoved();
+  client()->OnThumbnailRemoved();
 }
 
 void LensSearchboxHandler::OnAutocompleteStopTimerTriggered(

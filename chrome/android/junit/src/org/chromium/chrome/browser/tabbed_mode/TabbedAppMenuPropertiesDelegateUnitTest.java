@@ -16,7 +16,6 @@ import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.atLeastOnce;
-import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -25,13 +24,19 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 
+import static org.chromium.chrome.browser.tabbed_mode.AppMenuUnitTestUtils.assertMenuItemsAreEqual;
+import static org.chromium.chrome.browser.tabbed_mode.AppMenuUnitTestUtils.assertMenuTitlesAreEqual;
+import static org.chromium.chrome.browser.tabbed_mode.AppMenuUnitTestUtils.findItemById;
+import static org.chromium.chrome.browser.tabbed_mode.AppMenuUnitTestUtils.item;
 import static org.chromium.chrome.browser.url_constants.UrlConstantResolver.getOriginalNativeNtpUrl;
 
 import android.content.Context;
 import android.content.pm.PackageManager;
-import android.graphics.drawable.Drawable;
+import android.text.Spannable;
 import android.view.ContextThemeWrapper;
+import android.view.LayoutInflater;
 import android.view.View;
+import android.widget.TextView;
 
 import androidx.annotation.Nullable;
 
@@ -51,13 +56,12 @@ import org.robolectric.Shadows;
 import org.robolectric.annotation.Config;
 import org.robolectric.shadows.ShadowPackageManager;
 
-import org.chromium.base.Callback;
 import org.chromium.base.ContextUtils;
 import org.chromium.base.DeviceInfo;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.Token;
+import org.chromium.base.TriState;
 import org.chromium.base.UserDataHost;
-import org.chromium.base.supplier.LazyOneshotSupplier;
 import org.chromium.base.supplier.ObservableSuppliers;
 import org.chromium.base.supplier.OneshotSupplierImpl;
 import org.chromium.base.supplier.SettableMonotonicObservableSupplier;
@@ -67,19 +71,32 @@ import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.ActivityTabProvider;
+import org.chromium.chrome.browser.ChromeCommandIds;
+import org.chromium.chrome.browser.KeyboardShortcuts;
+import org.chromium.chrome.browser.KeyboardShortcutsJni;
+import org.chromium.chrome.browser.RecentlyClosedEntriesManager;
+import org.chromium.chrome.browser.app.appmenu.AppMenuItemTheme;
 import org.chromium.chrome.browser.app.appmenu.AppMenuPropertiesDelegateImpl.MenuGroup;
+import org.chromium.chrome.browser.app.tabwindow.TabWindowManagerSingleton;
 import org.chromium.chrome.browser.bookmarks.BookmarkImageFetcher;
 import org.chromium.chrome.browser.bookmarks.BookmarkModel;
+import org.chromium.chrome.browser.bookmarks.BookmarkUtils;
 import org.chromium.chrome.browser.bookmarks.FakeBookmarkModel;
 import org.chromium.chrome.browser.bookmarks.PowerBookmarkUtils;
+import org.chromium.chrome.browser.bookmarks.bar.BookmarkBarUtils;
 import org.chromium.chrome.browser.commerce.ShoppingServiceFactory;
 import org.chromium.chrome.browser.device.DeviceConditions;
 import org.chromium.chrome.browser.enterprise.util.ManagedBrowserUtils;
 import org.chromium.chrome.browser.enterprise.util.ManagedBrowserUtilsJni;
+import org.chromium.chrome.browser.feature_engagement.TrackerFactory;
 import org.chromium.chrome.browser.feed.FeedFeatures;
 import org.chromium.chrome.browser.feed.FeedServiceBridge;
 import org.chromium.chrome.browser.feed.FeedServiceBridgeJni;
+import org.chromium.chrome.browser.feedback.FeedbackPolicyManager;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
+import org.chromium.chrome.browser.glic.GlicEnabling;
+import org.chromium.chrome.browser.glic.GlicUtils;
+import org.chromium.chrome.browser.gsa.GSAUtils;
 import org.chromium.chrome.browser.homepage.HomepageManager;
 import org.chromium.chrome.browser.hub.HubManager;
 import org.chromium.chrome.browser.hub.Pane;
@@ -95,36 +112,45 @@ import org.chromium.chrome.browser.multiwindow.MultiWindowTestUtils;
 import org.chromium.chrome.browser.multiwindow.MultiWindowUtils;
 import org.chromium.chrome.browser.offlinepages.OfflinePageUtils;
 import org.chromium.chrome.browser.omaha.UpdateMenuItemHelper;
+import org.chromium.chrome.browser.preferences.ChromePreferenceKeys;
+import org.chromium.chrome.browser.preferences.ChromeSharedPreferences;
 import org.chromium.chrome.browser.preferences.Pref;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.profiles.ProfileManager;
 import org.chromium.chrome.browser.readaloud.ReadAloudController;
+import org.chromium.chrome.browser.recent_tabs.ForeignSessionHelper;
+import org.chromium.chrome.browser.search_engines.TemplateUrlServiceFactory;
 import org.chromium.chrome.browser.signin.services.IdentityServicesProvider;
 import org.chromium.chrome.browser.signin.services.SigninManager;
 import org.chromium.chrome.browser.sync.SyncServiceFactory;
 import org.chromium.chrome.browser.tab.MockTab;
 import org.chromium.chrome.browser.tab.Tab;
+import org.chromium.chrome.browser.tabbed_mode.AppMenuUnitTestUtils.MenuItem;
 import org.chromium.chrome.browser.tabmodel.TabModel;
 import org.chromium.chrome.browser.tabmodel.TabModelSelector;
+import org.chromium.chrome.browser.tabwindow.TabWindowManager;
 import org.chromium.chrome.browser.toolbar.ToolbarManager;
 import org.chromium.chrome.browser.toolbar.menu_button.MenuItemState;
 import org.chromium.chrome.browser.toolbar.menu_button.MenuUiState;
 import org.chromium.chrome.browser.translate.TranslateBridge;
 import org.chromium.chrome.browser.translate.TranslateBridgeJni;
-import org.chromium.chrome.browser.ui.appmenu.AppMenuBookmarkItemProperties;
+import org.chromium.chrome.browser.ttc.TtcKeyedService;
+import org.chromium.chrome.browser.ttc.TtcKeyedServiceFactory;
 import org.chromium.chrome.browser.ui.appmenu.AppMenuDelegate;
 import org.chromium.chrome.browser.ui.appmenu.AppMenuHandler;
 import org.chromium.chrome.browser.ui.appmenu.AppMenuItemProperties;
 import org.chromium.chrome.browser.ui.appmenu.AppMenuItemWithSubmenuProperties;
 import org.chromium.chrome.browser.ui.default_browser_promo.DefaultBrowserPromoUtils;
-import org.chromium.chrome.browser.ui.extensions.ExtensionsBuildflags;
 import org.chromium.chrome.browser.ui.extensions.FakeExtensionUiBackendRule;
+import org.chromium.chrome.browser.ui.favicon.FaviconHelper;
+import org.chromium.chrome.browser.ui.favicon.FaviconHelperJni;
 import org.chromium.chrome.browser.ui.lens.LensOverlayTabHelper;
 import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager;
 import org.chromium.chrome.browser.ui.native_page.NativePage;
+import org.chromium.chrome.browser.ui.side_ui.SideUiCoordinator.SideUiId;
+import org.chromium.chrome.browser.ui.side_ui.SideUiStateProvider;
 import org.chromium.chrome.test.OverrideContextWrapperTestRule;
 import org.chromium.components.bookmarks.BookmarkId;
-import org.chromium.components.bookmarks.BookmarkItem;
 import org.chromium.components.browser_ui.accessibility.PageZoomManager;
 import org.chromium.components.browser_ui.accessibility.PageZoomUtils;
 import org.chromium.components.browser_ui.site_settings.WebsitePreferenceBridge;
@@ -133,12 +159,15 @@ import org.chromium.components.commerce.core.CommerceFeatureUtils;
 import org.chromium.components.commerce.core.CommerceFeatureUtilsJni;
 import org.chromium.components.commerce.core.ShoppingService;
 import org.chromium.components.content_settings.ContentSetting;
-import org.chromium.components.dom_distiller.core.DomDistillerFeatures;
 import org.chromium.components.dom_distiller.core.DomDistillerUrlUtilsJni;
+import org.chromium.components.extensions.ExtensionsBuildflags;
 import org.chromium.components.favicon.LargeIconBridge;
 import org.chromium.components.favicon.LargeIconBridgeJni;
+import org.chromium.components.feature_engagement.FeatureConstants;
+import org.chromium.components.feature_engagement.Tracker;
 import org.chromium.components.power_bookmarks.PowerBookmarkMeta;
 import org.chromium.components.prefs.PrefService;
+import org.chromium.components.search_engines.TemplateUrlService;
 import org.chromium.components.signin.identitymanager.IdentityManager;
 import org.chromium.components.sync.SyncService;
 import org.chromium.components.tab_groups.TabGroupsFeatureMap;
@@ -146,17 +175,20 @@ import org.chromium.components.user_prefs.UserPrefs;
 import org.chromium.components.user_prefs.UserPrefsJni;
 import org.chromium.components.webapps.AppBannerManager;
 import org.chromium.components.webapps.AppBannerManagerJni;
+import org.chromium.components.webapps.WebappsUtils;
 import org.chromium.content_public.browser.ContentFeatureList;
 import org.chromium.content_public.browser.NavigationController;
 import org.chromium.content_public.browser.WebContents;
 import org.chromium.google_apis.gaia.GoogleServiceAuthError;
 import org.chromium.google_apis.gaia.GoogleServiceAuthErrorState;
 import org.chromium.net.ConnectionType;
-import org.chromium.ui.accessibility.AccessibilityState;
+import org.chromium.ui.accessibility.AccessibilityStateTestHelper;
 import org.chromium.ui.modaldialog.ModalDialogManager;
+import org.chromium.ui.modelutil.MVCListAdapter;
 import org.chromium.ui.modelutil.MVCListAdapter.ListItem;
 import org.chromium.ui.modelutil.MVCListAdapter.ModelList;
 import org.chromium.ui.modelutil.PropertyModel;
+import org.chromium.ui.modelutil.PropertyModelChangeProcessor;
 import org.chromium.url.GURL;
 import org.chromium.url.JUnitTestGURLs;
 
@@ -164,7 +196,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Iterator;
 import java.util.List;
-import java.util.function.BiConsumer;
+import java.util.Set;
 
 /** Unit tests for {@link TabbedAppMenuPropertiesDelegate}. */
 // TODO(crbug.com/376238770): Removes ChromeFeatureList.NEW_TAB_PAGE_CUSTOMIZATION from
@@ -173,19 +205,23 @@ import java.util.function.BiConsumer;
 
 @RunWith(BaseRobolectricTestRunner.class)
 @DisableFeatures({
+    ChromeFeatureList.ENABLE_DOWNLOAD_SAVE_AS_CONTEXT_MENU,
     ChromeFeatureList.FEED_AUDIO_OVERVIEWS,
     ChromeFeatureList.LENS_OVERLAY_ANDROID,
     ChromeFeatureList.TASK_MANAGER_CLANK,
     ContentFeatureList.ANDROID_DEV_TOOLS_FRONTEND,
-    DomDistillerFeatures.READER_MODE_IMPROVEMENTS,
-    DomDistillerFeatures.READER_MODE_DISTILL_IN_APP,
     // TODO(crbug.com/504757384): Add test for three dot menu flag.
     ChromeFeatureList.THREE_DOT_MENU_BACK_BUTTON,
-    TabGroupsFeatureMap.UPDATE_TAB_GROUP_COLORS
+    TabGroupsFeatureMap.UPDATE_TAB_GROUP_COLORS,
+    ChromeFeatureList.IN_APP_WINDOW_MANAGER_DEPRECATION,
+    ChromeFeatureList.SUBMENUS_IN_APP_MENU_LFF,
+    ChromeFeatureList.INCOGNITO_MODE_FORCED_ANDROID,
+    ChromeFeatureList.TTC
 })
 @EnableFeatures({
     ChromeFeatureList.SUBMENUS_IN_APP_MENU,
-    ChromeFeatureList.ANDROID_PAGE_INFO_AS_APP_MENU_ITEM
+    ChromeFeatureList.ANDROID_PAGE_INFO_AS_APP_MENU_ITEM,
+    ChromeFeatureList.ANDROID_VERTICAL_TABS
 })
 public class TabbedAppMenuPropertiesDelegateUnitTest {
     // Constants defining flags that determines multi-window menu items visibility.
@@ -228,18 +264,20 @@ public class TabbedAppMenuPropertiesDelegateUnitTest {
     @Mock private TabModel mTabModel;
     @Mock private TabModel mIncognitoTabModel;
     @Mock private ToolbarManager mToolbarManager;
-    @Mock private View mDecorView;
     @Mock private LayoutStateProvider mLayoutStateProvider;
     @Mock private ManagedBrowserUtils.Natives mManagedBrowserUtilsJniMock;
     @Mock private Profile mProfile;
+    @Mock private Tracker mTracker;
     @Mock private AppMenuDelegate mAppMenuDelegate;
     @Mock private ModalDialogManager mDialogManager;
+    @Mock private TemplateUrlService mTemplateUrlService;
     @Mock private SnackbarManager mSnackbarManager;
     @Mock private OfflinePageUtils.Internal mOfflinePageUtils;
     @Mock private SigninManager mSigninManager;
     @Mock private IdentityManager mIdentityManager;
     @Mock private IdentityServicesProvider mIdentityService;
     @Mock private IncognitoUtils.Natives mIncognitoUtilsJniMock;
+    @Mock private ForeignSessionHelper mForeignSessionHelperMock;
     @Mock public WebsitePreferenceBridge.Natives mWebsitePreferenceBridgeJniMock;
     @Mock private IncognitoReauthController mIncognitoReauthControllerMock;
     @Mock private CommerceFeatureUtils.Natives mCommerceFeatureUtilsJniMock;
@@ -260,10 +298,15 @@ public class TabbedAppMenuPropertiesDelegateUnitTest {
     @Mock private PaneManager mPaneManager;
     @Mock private Pane mPane;
     @Mock private BookmarkImageFetcher mBookmarkImageFetcher;
+    @Mock private FaviconHelper.Natives mFaviconHelperJniMock;
+    @Mock private FeedbackPolicyManager mFeedbackPolicyManager;
+    @Mock private RecentlyClosedEntriesManager mRecentlyClosedEntriesManager;
+    @Mock private SideUiStateProvider mSideUiStateProvider;
 
     private ShadowPackageManager mShadowPackageManager;
 
     private FakeBookmarkModel mBookmarkModel;
+    private final View mDecorView = new View(ContextUtils.getApplicationContext());
     private final ActivityTabProvider mActivityTabProvider = new ActivityTabProvider();
     private final OneshotSupplierImpl<LayoutStateProvider> mLayoutStateProviderSupplier =
             new OneshotSupplierImpl<>();
@@ -276,6 +319,7 @@ public class TabbedAppMenuPropertiesDelegateUnitTest {
             mReadAloudControllerSupplier = ObservableSuppliers.createMonotonic();
 
     private TabbedAppMenuPropertiesDelegate mTabbedAppMenuPropertiesDelegate;
+    private SaveAndShareItemBuilder mSaveAndShareItemBuilder;
     private MenuUiState mUpdateAvailableMenuUiState;
 
     // Boolean flags to test multi-window menu visibility for various combinations.
@@ -288,24 +332,22 @@ public class TabbedAppMenuPropertiesDelegateUnitTest {
     // Used to ensure all the combinations are tested.
     private final boolean[] mFlagCombinations = new boolean[1 << 5];
 
-    // Represents a hierarchical menu item used for structural testing and assertions.
-    public static class MenuItem {
-        public final Object property;
-        public final MenuItem[] children;
-
-        public MenuItem(Object property, MenuItem... children) {
-            this.property = property;
-            this.children = children;
-        }
-    }
+    private boolean mCanActivateTabLayoutToggleMenu = true;
 
     @Before
     public void setUp() {
+        TrackerFactory.setTrackerForTests(mTracker);
         Context context =
                 new ContextThemeWrapper(
                         ContextUtils.getApplicationContext(), R.style.Theme_BrowserUI_DayNight);
+        BookmarkBarUtils.setActivityStateBookmarkBarCompatibleForTesting(true);
+        BookmarkBarUtils.setDeviceBookmarkBarCompatibleForTesting(true);
 
         mShadowPackageManager = Shadows.shadowOf(context.getPackageManager());
+
+        TemplateUrlServiceFactory.setInstanceForTesting(mTemplateUrlService);
+        when(mTemplateUrlService.isDefaultSearchEngineGoogle()).thenReturn(true);
+        GSAUtils.setFakePassableGsaEnvironmentForTesting(true);
 
         when(mTab.getUserDataHost()).thenReturn(new UserDataHost());
 
@@ -316,6 +358,7 @@ public class TabbedAppMenuPropertiesDelegateUnitTest {
         }
         when(mTab.getWebContents()).thenReturn(mWebContents);
         when(mTab.getProfile()).thenReturn(mProfile);
+        when(mTab.getUrl()).thenReturn(JUnitTestGURLs.EXAMPLE_URL);
         when(mProfile.getOriginalProfile()).thenReturn(mProfile);
         when(mWebContents.getNavigationController()).thenReturn(mNavigationController);
         when(mNavigationController.getUseDesktopUserAgent()).thenReturn(false);
@@ -327,6 +370,7 @@ public class TabbedAppMenuPropertiesDelegateUnitTest {
         when(mIncognitoTabModel.isIncognito()).thenReturn(true);
         when(mTabModel.getProfile()).thenReturn(mProfile);
         ManagedBrowserUtilsJni.setInstanceForTesting(mManagedBrowserUtilsJniMock);
+        GlicEnabling.setEnabledForTesting(false);
         ProfileManager.setLastUsedProfileForTesting(mProfile);
         WebsitePreferenceBridgeJni.setInstanceForTesting(mWebsitePreferenceBridgeJniMock);
         OfflinePageUtils.setInstanceForTesting(mOfflinePageUtils);
@@ -335,7 +379,7 @@ public class TabbedAppMenuPropertiesDelegateUnitTest {
         IdentityServicesProvider.setInstanceForTests(mIdentityService);
         when(mIdentityService.getIdentityManager(any(Profile.class))).thenReturn(mIdentityManager);
         when(mIdentityManager.hasPrimaryAccount()).thenReturn(true);
-        PageZoomUtils.setShouldShowMenuItemForTesting(false);
+        PageZoomUtils.setShouldShowMenuItemForTesting(TriState.FALSE);
         FeedFeatures.setFakePrefsForTest(mPrefService);
         FeedServiceBridgeJni.setInstanceForTesting(mFeedServiceBridgeJniMock);
         when(mSyncService.getAuthError())
@@ -348,6 +392,8 @@ public class TabbedAppMenuPropertiesDelegateUnitTest {
         Mockito.when(mAppBannerManagerJniMock.getInstallableWebAppManifestId(any()))
                 .thenReturn(null);
         UserPrefsJni.setInstanceForTesting(mUserPrefsNatives);
+        FeedbackPolicyManager.setInstanceForTesting(mFeedbackPolicyManager);
+        when(mFeedbackPolicyManager.isUserFeedbackAllowed()).thenReturn(true);
         when(mUserPrefsNatives.get(mProfile)).thenReturn(mPrefService);
 
         SyncServiceFactory.setInstanceForTesting(mSyncService);
@@ -388,6 +434,14 @@ public class TabbedAppMenuPropertiesDelegateUnitTest {
         mBookmarkModel.addBookmark(folderId, 0, "Bookmark in folder 1", JUnitTestGURLs.URL_3);
         mBookmarkModel.addBookmark(folderId, 1, "Bookmark in folder 2", JUnitTestGURLs.SEARCH_URL);
 
+        FaviconHelperJni.setInstanceForTesting(mFaviconHelperJniMock);
+        when(mFaviconHelperJniMock.init()).thenReturn(1L);
+
+        when(mRecentlyClosedEntriesManager.getRecentlyClosedEntries())
+                .thenReturn(new ArrayList<>());
+
+        when(mSideUiStateProvider.canShowSideUi(eq(SideUiId.SIDE_PANEL))).thenReturn(true);
+
         TabbedAppMenuPropertiesDelegate delegate =
                 new TabbedAppMenuPropertiesDelegate(
                         context,
@@ -405,9 +459,24 @@ public class TabbedAppMenuPropertiesDelegateUnitTest {
                         mReadAloudControllerSupplier,
                         mPageZoomManagerMock,
                         mHubManagerSupplier,
-                        /* openInAppMenuItemProvider= */ null);
+                        /* openInAppMenuItemProvider= */ null,
+                        /* recentlyClosedEntriesManagerSupplier= */ () ->
+                                mRecentlyClosedEntriesManager,
+                        () -> mSideUiStateProvider,
+                        /* xrSpaceModeObservableSupplier= */ ObservableSuppliers.createNonNull(
+                                false),
+                        /* canActivateTabLayoutToggleMenu= */ () ->
+                                mCanActivateTabLayoutToggleMenu);
         RobolectricUtil.runAllBackgroundAndUi();
         mTabbedAppMenuPropertiesDelegate = Mockito.spy(delegate);
+        mSaveAndShareItemBuilder =
+                Mockito.spy(
+                        mTabbedAppMenuPropertiesDelegate.getSaveAndShareItemBuilderForTesting());
+        mTabbedAppMenuPropertiesDelegate.setSaveAndShareItemBuilderForTesting(
+                mSaveAndShareItemBuilder);
+        mTabbedAppMenuPropertiesDelegate.setForeignSessionHelperForTesting(
+                mForeignSessionHelperMock);
+        when(mForeignSessionHelperMock.getForeignSessions()).thenReturn(new ArrayList<>());
 
         MultiWindowTestUtils.resetInstanceInfo();
 
@@ -420,15 +489,20 @@ public class TabbedAppMenuPropertiesDelegateUnitTest {
         DefaultBrowserPromoUtils.setInstanceForTesting(mMockDefaultBrowserPromoUtils);
 
         mTabbedAppMenuPropertiesDelegate.setImageFetcherForTesting(mBookmarkImageFetcher);
+        BookmarkUtils.setReadingListSupportedForTesting(true);
     }
 
     @After
     public void tearDown() {
-        AccessibilityState.setIsKnownScreenReaderEnabledForTesting(false);
+        AccessibilityStateTestHelper.setIsKnownScreenReaderEnabledForTesting(false);
+        BookmarkUtils.setReadingListSupportedForTesting(null);
+        WebappsUtils.setAddToHomeIntentSupportedForTesting(null);
+        ChromeSharedPreferences.getInstance().removeKey(ChromePreferenceKeys.VERTICAL_TABS_ENABLED);
+        DeviceInfo.resetIsDesktopForTesting();
     }
 
     @Nullable
-    private ListItem findItemById(Iterable<ListItem> items, int id) {
+    private static ListItem findItemById(Iterable<ListItem> items, int id) {
         for (ListItem item : items) {
             if (item.model.get(AppMenuItemProperties.MENU_ITEM_ID) == id) {
                 return item;
@@ -437,103 +511,23 @@ public class TabbedAppMenuPropertiesDelegateUnitTest {
         return null;
     }
 
-    private void assertMenuTreesAreEqual(
-            Iterable<ListItem> items,
-            List<MenuItem> expectedNodes,
-            BiConsumer<ListItem, Object> assertionLogic) {
-        List<ListItem> itemList = new ArrayList<>();
-        for (ListItem item : items) {
-            itemList.add(item);
-        }
-
-        assertEquals("Mismatched item count.", expectedNodes.size(), itemList.size());
-
-        for (int i = 0; i < expectedNodes.size(); i++) {
-            assertMenuTreesAreEqualRecursively(
-                    itemList.get(i), expectedNodes.get(i), assertionLogic);
-        }
-    }
-
-    private void assertMenuTreesAreEqualRecursively(
-            ListItem item, MenuItem expectedNode, BiConsumer<ListItem, Object> assertionLogic) {
-        assertionLogic.accept(item, expectedNode.property);
-
-        boolean hasSubItems =
-                item.model.containsKey(AppMenuItemWithSubmenuProperties.SUBMENU_PROVIDER);
-        assertEquals("Mismatched children.", expectedNode.children.length > 0, hasSubItems);
-
-        if (!hasSubItems) return;
-
-        List<ListItem> subItems =
-                item.model.get(AppMenuItemWithSubmenuProperties.SUBMENU_PROVIDER).get();
-        Assert.assertNotNull(subItems);
-
-        assertEquals("Mismatched children count.", expectedNode.children.length, subItems.size());
-
-        for (int i = 0; i < subItems.size(); i++) {
-            assertMenuTreesAreEqualRecursively(
-                    subItems.get(i), expectedNode.children[i], assertionLogic);
-        }
-    }
-
-    private void assertMenuItemsAreEqual(Iterable<ListItem> items, List<MenuItem> expectedItems) {
-
-        assertMenuTreesAreEqual(
-                items,
-                expectedItems,
-                (item, expectedId) -> {
-                    assertEquals(
-                            "We got " + getMenuTitle(item) + ", which was unexpected.",
-                            (int) expectedId,
-                            item.model.get(AppMenuItemProperties.MENU_ITEM_ID));
-                });
-    }
-
-    private void assertMenuTitlesAreEqual(Iterable<ListItem> items, List<MenuItem> expectedTitles) {
-        Context context = ContextUtils.getApplicationContext();
-        assertMenuTreesAreEqual(
-                items,
-                expectedTitles,
-                (item, expected) -> {
-                    CharSequence title =
-                            item.model.containsKey(AppMenuItemProperties.TITLE)
-                                    ? item.model.get(AppMenuItemProperties.TITLE)
-                                    : null;
-                    if (expected instanceof Integer) {
-                        int expectedTitleRes = (Integer) expected;
-                        String expectedTitleString =
-                                (expectedTitleRes == 0)
-                                        ? null
-                                        : context.getString(expectedTitleRes);
-                        assertEquals("Mismatched title:", expectedTitleString, title);
-                    } else {
-                        assertEquals("Mismatched title:", expected, title);
-                    }
-                });
-    }
-
     private void assertMenuItemsHaveIcons(Iterable<ListItem> items, List<MenuItem> expectedItems) {
-
-        assertMenuTreesAreEqual(
-                items,
-                expectedItems,
-                (item, expectedId) -> {
-                    if (item.type != AppMenuHandler.AppMenuItemType.BUTTON_ROW
-                            && item.type != AppMenuHandler.AppMenuItemType.DIVIDER
-                            && item.type != AppMenuHandler.AppMenuItemType.EMPTY) {
-                        boolean hasIcon =
-                                item.model.containsKey(AppMenuItemProperties.ICON)
-                                        && item.model.get(AppMenuItemProperties.ICON) != null;
-                        boolean hasIconSupplier =
-                                item.model.containsKey(AppMenuBookmarkItemProperties.ICON_SUPPLIER)
-                                        && item.model.get(
-                                                        AppMenuBookmarkItemProperties.ICON_SUPPLIER)
-                                                != null;
-                        Assert.assertTrue(
-                                "Item should have an icon: " + getMenuTitle(item),
-                                hasIcon || hasIconSupplier);
-                    }
-                });
+        for (ListItem item : items) {
+            if (item.type != AppMenuHandler.AppMenuItemType.BUTTON_ROW
+                    && item.type != AppMenuHandler.AppMenuItemType.DIVIDER
+                    && item.type != AppMenuHandler.AppMenuItemType.EMPTY
+                    && item.type != AppMenuHandler.AppMenuItemType.HEADER) {
+                boolean hasIcon =
+                        item.model.containsKey(AppMenuItemProperties.ICON)
+                                && item.model.get(AppMenuItemProperties.ICON) != null;
+                boolean hasIconSupplier =
+                        item.model.containsKey(AppMenuItemProperties.ICON_SUPPLIER)
+                                && item.model.get(AppMenuItemProperties.ICON_SUPPLIER) != null;
+                Assert.assertTrue(
+                        "Item should have an icon: " + getMenuTitle(item),
+                        hasIcon || hasIconSupplier);
+            }
+        }
     }
 
     private void assertActionBarItemsAreEqual(ModelList modelList, Integer... expectedItems) {
@@ -552,7 +546,7 @@ public class TabbedAppMenuPropertiesDelegateUnitTest {
     }
 
     private void setUpMocksForOverviewMenu() {
-        when(mLayoutStateProvider.isLayoutVisible(LayoutType.TAB_SWITCHER)).thenReturn(true);
+        when(mLayoutStateProvider.isLayoutVisible(LayoutType.HUB)).thenReturn(true);
         when(mTabModelSelector.getTotalTabCount()).thenReturn(1);
         setUpIncognitoMocks();
         assertEquals(MenuGroup.OVERVIEW_MODE_MENU, mTabbedAppMenuPropertiesDelegate.getMenuGroup());
@@ -573,6 +567,19 @@ public class TabbedAppMenuPropertiesDelegateUnitTest {
         when(tabmodel.getTabAt(1)).thenReturn(mockTab2);
     }
 
+    private void setDecorViewWidthDp(int widthDp) {
+        mDecorView.layout(
+                0,
+                0,
+                (int)
+                        (widthDp
+                                * ContextUtils.getApplicationContext()
+                                        .getResources()
+                                        .getDisplayMetrics()
+                                        .density),
+                0);
+    }
+
     @Test
     @Config(qualifiers = "sw320dp")
     public void testShouldShowIconRow_Phone() {
@@ -582,14 +589,7 @@ public class TabbedAppMenuPropertiesDelegateUnitTest {
     @Test
     @Config(qualifiers = "sw600dp")
     public void testShouldShowIconRow_Tablet() {
-        when(mDecorView.getWidth())
-                .thenReturn(
-                        (int)
-                                (600
-                                        * ContextUtils.getApplicationContext()
-                                                .getResources()
-                                                .getDisplayMetrics()
-                                                .density));
+        setDecorViewWidthDp(600);
         assertFalse(mTabbedAppMenuPropertiesDelegate.shouldShowIconRow());
     }
 
@@ -598,28 +598,14 @@ public class TabbedAppMenuPropertiesDelegateUnitTest {
     @EnableFeatures(ChromeFeatureList.TOOLBAR_TABLET_RESIZE_REFACTOR)
     public void testShouldShowIconRow_Tablet_MissingToolbarComponents() {
         doReturn(true).when(mToolbarManager).areAnyToolbarComponentsMissingForWidth(any());
-        when(mDecorView.getWidth())
-                .thenReturn(
-                        (int)
-                                (600
-                                        * ContextUtils.getApplicationContext()
-                                                .getResources()
-                                                .getDisplayMetrics()
-                                                .density));
+        setDecorViewWidthDp(600);
         assertTrue(mTabbedAppMenuPropertiesDelegate.shouldShowIconRow());
     }
 
     @Test
     @Config(qualifiers = "sw600dp")
     public void testShouldShowIconRow_TabletNarrow() {
-        when(mDecorView.getWidth())
-                .thenReturn(
-                        (int)
-                                (100
-                                        * ContextUtils.getApplicationContext()
-                                                .getResources()
-                                                .getDisplayMetrics()
-                                                .density));
+        setDecorViewWidthDp(100);
         assertTrue(mTabbedAppMenuPropertiesDelegate.shouldShowIconRow());
     }
 
@@ -645,46 +631,20 @@ public class TabbedAppMenuPropertiesDelegateUnitTest {
                                 item(R.id.icon_row_menu_id),
                                 item(R.id.new_tab_menu_id),
                                 item(R.id.new_incognito_tab_menu_id),
-                                item(R.id.divider_line_id),
                                 item(
-                                        R.id.passwords_and_autofill_parent_menu_id,
-                                        item(R.id.google_password_manager_menu_id),
-                                        item(R.id.payment_methods_menu_id),
-                                        item(R.id.addresses_and_more_menu_id)),
+                                        R.id.tab_groups_parent_menu_id,
+                                        item(R.id.create_new_tab_group_menu_id)),
+                                item(R.id.divider_line_id),
                                 item(
                                         R.id.history_parent_menu_id,
                                         item(R.id.open_history_menu_id),
-                                        item(R.id.recent_tabs_menu_id),
-                                        item(R.id.quick_delete_menu_id)),
+                                        item(R.id.recent_tabs_menu_id)),
+                                item(R.id.quick_delete_menu_id),
+                                item(R.id.divider_line_id),
                                 item(R.id.downloads_menu_id),
-                                item(
-                                        R.id.bookmarks_parent_menu_id,
-                                        item(R.id.all_bookmarks_menu_id),
-                                        item(R.id.bookmark_this_page_menu_id),
-                                        item(R.id.toggle_bookmarks_bar_menu_id),
-                                        item(R.id.divider_line_id),
-                                        item(
-                                                R.id.reading_list_parent_menu_id,
-                                                item(R.id.add_to_reading_list_menu_id),
-                                                item(R.id.show_reading_list_menu_id)),
-                                        item(R.id.divider_line_id),
-                                        item(R.id.bookmark_menu_id),
-                                        item(R.id.bookmark_menu_id),
-                                        item(
-                                                R.id.bookmark_folder_menu_id,
-                                                item(R.id.bookmark_menu_id),
-                                                item(R.id.bookmark_menu_id)),
-                                        item(R.id.divider_line_id),
-                                        item(
-                                                R.id.bookmark_folder_menu_id,
-                                                item(R.id.bookmark_folder_menu_id, item(0))),
-                                        item(R.id.bookmark_folder_menu_id, item(0))),
-                                item(
-                                        R.id.tab_groups_parent_menu_id,
-                                        item(R.id.add_to_group_menu_id),
-                                        item(R.id.create_new_tab_group_menu_id))));
+                                getExpectedBookmarksParentMenuItem()));
 
-        if (ExtensionsBuildflags.ENABLE_DESKTOP_ANDROID_EXTENSIONS) {
+        if (ExtensionsBuildflags.ENABLE_EXTENSIONS_CORE) {
             expectedItems.add(
                     item(
                             R.id.extensions_parent_menu_id,
@@ -693,16 +653,70 @@ public class TabbedAppMenuPropertiesDelegateUnitTest {
                             item(R.id.extensions_webstore_menu_id)));
         }
 
+        expectedItems.add(
+                item(
+                        R.id.passwords_and_autofill_parent_menu_id,
+                        item(R.id.google_password_manager_menu_id),
+                        item(R.id.payment_methods_menu_id),
+                        item(R.id.addresses_and_more_menu_id)));
+
         expectedItems.addAll(
                 Arrays.asList(
                         item(R.id.divider_line_id),
+                        item(R.id.more_tools_menu_id, item(R.id.ntp_customization_id)),
+                        item(R.id.divider_line_id),
                         item(R.id.preferences_id),
-                        item(R.id.ntp_customization_id),
                         item(
                                 R.id.help_parent_menu_id,
                                 item(R.id.about_chrome_menu_id),
                                 item(R.id.help_id),
                                 item(R.id.report_issue_menu_id))));
+
+        assertMenuItemsAreEqual(modelList, expectedItems);
+    }
+
+    @Test
+    @DisableFeatures({
+        ChromeFeatureList.SUBMENUS_IN_APP_MENU,
+        ChromeFeatureList.SUBMENUS_IN_APP_MENU_LFF
+    })
+    public void testPageMenuItems_Phone_Ntp_SubmenusDisabled() {
+        setUpMocksForPageMenu();
+        when(mTab.getUrl()).thenReturn(JUnitTestGURLs.NTP_URL);
+        when(mTab.isNativePage()).thenReturn(true);
+        when(mNativePage.isPdf()).thenReturn(false);
+        when(mTab.getNativePage()).thenReturn(mNativePage);
+        doReturn(false)
+                .when(mTabbedAppMenuPropertiesDelegate)
+                .shouldShowTranslateMenuItem(any(Tab.class));
+
+        assertEquals(MenuGroup.PAGE_MENU, mTabbedAppMenuPropertiesDelegate.getMenuGroup());
+        ModelList modelList = mTabbedAppMenuPropertiesDelegate.getMenuItems();
+        List<MenuItem> expectedItems =
+                new ArrayList<>(
+                        Arrays.asList(
+                                item(R.id.icon_row_menu_id),
+                                item(R.id.new_tab_menu_id),
+                                item(R.id.new_incognito_tab_menu_id),
+                                item(R.id.add_to_group_menu_id),
+                                item(R.id.divider_line_id),
+                                item(R.id.open_history_menu_id),
+                                item(R.id.quick_delete_menu_id),
+                                item(R.id.quick_delete_divider_line_id),
+                                item(R.id.downloads_menu_id),
+                                item(R.id.all_bookmarks_menu_id),
+                                item(R.id.recent_tabs_menu_id)));
+
+        if (ExtensionsBuildflags.ENABLE_EXTENSIONS_CORE) {
+            expectedItems.add(item(R.id.extensions_menu_menu_id));
+        }
+
+        expectedItems.addAll(
+                Arrays.asList(
+                        item(R.id.divider_line_id),
+                        item(R.id.preferences_id),
+                        item(R.id.ntp_customization_id),
+                        item(R.id.help_id)));
 
         assertMenuItemsAreEqual(modelList, expectedItems);
     }
@@ -729,48 +743,20 @@ public class TabbedAppMenuPropertiesDelegateUnitTest {
                                 item(R.id.icon_row_menu_id),
                                 item(R.id.new_tab_menu_id),
                                 item(R.id.new_incognito_tab_menu_id),
-                                item(R.id.divider_line_id),
                                 item(
-                                        R.id.passwords_and_autofill_parent_menu_id,
-                                        item(R.id.google_password_manager_menu_id),
-                                        item(R.id.payment_methods_menu_id),
-                                        item(R.id.addresses_and_more_menu_id)),
+                                        R.id.tab_groups_parent_menu_id,
+                                        item(R.id.create_new_tab_group_menu_id)),
+                                item(R.id.divider_line_id),
                                 item(
                                         R.id.history_parent_menu_id,
                                         item(R.id.open_history_menu_id),
-                                        item(R.id.recent_tabs_menu_id),
-                                        item(R.id.quick_delete_menu_id)),
-                                item(R.id.info_menu_id),
-                                item(R.id.page_info_divider_line_id),
+                                        item(R.id.recent_tabs_menu_id)),
+                                item(R.id.quick_delete_menu_id),
+                                item(R.id.divider_line_id),
                                 item(R.id.downloads_menu_id),
-                                item(
-                                        R.id.bookmarks_parent_menu_id,
-                                        item(R.id.all_bookmarks_menu_id),
-                                        item(R.id.bookmark_this_page_menu_id),
-                                        item(R.id.toggle_bookmarks_bar_menu_id),
-                                        item(R.id.divider_line_id),
-                                        item(
-                                                R.id.reading_list_parent_menu_id,
-                                                item(R.id.add_to_reading_list_menu_id),
-                                                item(R.id.show_reading_list_menu_id)),
-                                        item(R.id.divider_line_id),
-                                        item(R.id.bookmark_menu_id),
-                                        item(R.id.bookmark_menu_id),
-                                        item(
-                                                R.id.bookmark_folder_menu_id,
-                                                item(R.id.bookmark_menu_id),
-                                                item(R.id.bookmark_menu_id)),
-                                        item(R.id.divider_line_id),
-                                        item(
-                                                R.id.bookmark_folder_menu_id,
-                                                item(R.id.bookmark_folder_menu_id, item(0))),
-                                        item(R.id.bookmark_folder_menu_id, item(0))),
-                                item(
-                                        R.id.tab_groups_parent_menu_id,
-                                        item(R.id.add_to_group_menu_id),
-                                        item(R.id.create_new_tab_group_menu_id))));
+                                getExpectedBookmarksParentMenuItem()));
 
-        if (ExtensionsBuildflags.ENABLE_DESKTOP_ANDROID_EXTENSIONS) {
+        if (ExtensionsBuildflags.ENABLE_EXTENSIONS_CORE) {
             expectedItems.add(
                     item(
                             R.id.extensions_parent_menu_id,
@@ -778,6 +764,13 @@ public class TabbedAppMenuPropertiesDelegateUnitTest {
                             item(R.id.manage_extensions_menu_id),
                             item(R.id.extensions_webstore_menu_id)));
         }
+
+        expectedItems.add(
+                item(
+                        R.id.passwords_and_autofill_parent_menu_id,
+                        item(R.id.google_password_manager_menu_id),
+                        item(R.id.payment_methods_menu_id),
+                        item(R.id.addresses_and_more_menu_id)));
 
         expectedItems.addAll(
                 Arrays.asList(
@@ -789,6 +782,7 @@ public class TabbedAppMenuPropertiesDelegateUnitTest {
                                 item(R.id.send_to_devices_menu_id),
                                 item(R.id.qr_code_menu_id)),
                         item(R.id.find_in_page_id),
+                        item(R.id.more_tools_menu_id, item(R.id.info_menu_id)),
                         item(R.id.open_with_id),
                         item(R.id.divider_line_id),
                         item(R.id.preferences_id),
@@ -797,6 +791,58 @@ public class TabbedAppMenuPropertiesDelegateUnitTest {
                                 item(R.id.about_chrome_menu_id),
                                 item(R.id.help_id),
                                 item(R.id.report_issue_menu_id))));
+
+        assertMenuItemsAreEqual(modelList, expectedItems);
+    }
+
+    @Test
+    @Config(qualifiers = "sw320dp")
+    @DisableFeatures({
+        ChromeFeatureList.ANDROID_OPEN_INCOGNITO_AS_WINDOW,
+        ChromeFeatureList.SUBMENUS_IN_APP_MENU
+    })
+    public void testPageMenuItems_Phone_Pdf_SubmenusDisabled() {
+        setUpMocksForPageMenu();
+        when(mTab.getUrl()).thenReturn(JUnitTestGURLs.URL_1_WITH_PDF_PATH);
+        when(mTab.isNativePage()).thenReturn(true);
+        when(mNativePage.isPdf()).thenReturn(true);
+        when(mTab.getNativePage()).thenReturn(mNativePage);
+        doReturn(false)
+                .when(mTabbedAppMenuPropertiesDelegate)
+                .shouldShowTranslateMenuItem(any(Tab.class));
+
+        assertEquals(MenuGroup.PAGE_MENU, mTabbedAppMenuPropertiesDelegate.getMenuGroup());
+        ModelList modelList = mTabbedAppMenuPropertiesDelegate.getMenuItems();
+
+        List<MenuItem> expectedItems =
+                new ArrayList<>(
+                        Arrays.asList(
+                                item(R.id.icon_row_menu_id),
+                                item(R.id.new_tab_menu_id),
+                                item(R.id.new_incognito_tab_menu_id),
+                                item(R.id.add_to_group_menu_id),
+                                item(R.id.divider_line_id),
+                                item(R.id.open_history_menu_id),
+                                item(R.id.quick_delete_menu_id),
+                                item(R.id.info_menu_id),
+                                item(R.id.page_info_divider_line_id),
+                                item(R.id.downloads_menu_id),
+                                item(R.id.all_bookmarks_menu_id),
+                                item(R.id.recent_tabs_menu_id)));
+
+        if (ExtensionsBuildflags.ENABLE_EXTENSIONS_CORE) {
+            expectedItems.add(item(R.id.extensions_menu_menu_id));
+        }
+
+        expectedItems.addAll(
+                Arrays.asList(
+                        item(R.id.divider_line_id),
+                        item(R.id.share_menu_id),
+                        item(R.id.find_in_page_id),
+                        item(R.id.open_with_id),
+                        item(R.id.divider_line_id),
+                        item(R.id.preferences_id),
+                        item(R.id.help_id)));
 
         assertMenuItemsAreEqual(modelList, expectedItems);
     }
@@ -827,102 +873,38 @@ public class TabbedAppMenuPropertiesDelegateUnitTest {
             expectedTitles.add(item(R.string.menu_new_incognito_tab));
         }
 
+        expectedItems.add(
+                item(R.id.tab_groups_parent_menu_id, item(R.id.create_new_tab_group_menu_id)));
+        expectedTitles.add(
+                item(R.string.menu_tab_groups, item(R.string.menu_create_new_tab_group)));
+
         expectedItems.add(item(R.id.divider_line_id));
         expectedTitles.add(item(0));
 
         expectedItems.add(
                 item(
-                        R.id.passwords_and_autofill_parent_menu_id,
-                        item(R.id.google_password_manager_menu_id),
-                        item(R.id.payment_methods_menu_id),
-                        item(R.id.addresses_and_more_menu_id)));
-        expectedTitles.add(
-                item(
-                        R.string.menu_passwords_and_autofill,
-                        item(R.string.menu_google_password_manager),
-                        item(R.string.menu_payment_methods),
-                        item(R.string.menu_addresses_and_more)));
-        expectedItems.add(
-                item(
                         R.id.history_parent_menu_id,
                         item(R.id.open_history_menu_id),
-                        item(R.id.recent_tabs_menu_id),
-                        item(R.id.quick_delete_menu_id)));
+                        item(R.id.recent_tabs_menu_id)));
         expectedTitles.add(
                 item(
                         R.string.menu_history,
-                        item(R.string.menu_history),
-                        item(R.string.menu_recent_tabs),
-                        item(R.string.menu_quick_delete)));
+                        item(R.string.menu_open_history),
+                        item(R.string.menu_recent_tabs)));
 
-        if (!mTabbedAppMenuPropertiesDelegate.isTabletSizeScreen()) {
-            expectedItems.add(item(R.id.info_menu_id));
-            expectedTitles.add(item(R.string.menu_site_controls));
+        expectedItems.add(item(R.id.quick_delete_menu_id));
+        expectedTitles.add(item(R.string.menu_quick_delete));
 
-            expectedItems.add(item(R.id.page_info_divider_line_id));
-            expectedTitles.add(item(0));
-        }
+        expectedItems.add(item(R.id.divider_line_id));
+        expectedTitles.add(item(0));
 
         expectedItems.add(item(R.id.downloads_menu_id));
         expectedTitles.add(item(R.string.menu_downloads));
 
-        expectedItems.add(
-                item(
-                        R.id.bookmarks_parent_menu_id,
-                        item(R.id.all_bookmarks_menu_id),
-                        item(R.id.bookmark_this_page_menu_id),
-                        item(R.id.toggle_bookmarks_bar_menu_id),
-                        item(R.id.divider_line_id),
-                        item(
-                                R.id.reading_list_parent_menu_id,
-                                item(R.id.add_to_reading_list_menu_id),
-                                item(R.id.show_reading_list_menu_id)),
-                        item(R.id.divider_line_id),
-                        item(R.id.bookmark_menu_id),
-                        item(R.id.bookmark_menu_id),
-                        item(
-                                R.id.bookmark_folder_menu_id,
-                                item(R.id.bookmark_menu_id),
-                                item(R.id.bookmark_menu_id)),
-                        item(R.id.divider_line_id),
-                        item(
-                                R.id.bookmark_folder_menu_id,
-                                item(R.id.bookmark_folder_menu_id, item(0))),
-                        item(R.id.bookmark_folder_menu_id, item(0))));
-        expectedTitles.add(
-                item(
-                        R.string.menu_bookmarks,
-                        item(R.string.menu_bookmarks),
-                        item(R.string.menu_bookmark_this_page),
-                        item(R.string.menu_show_bookmarks_bar),
-                        item(0),
-                        item(
-                                R.string.menu_reading_list,
-                                item(R.string.menu_add_to_reading_list),
-                                item(R.string.menu_show_reading_list)),
-                        item(0),
-                        item("Bookmark 1"),
-                        item("Bookmark 2"),
-                        item(
-                                "Folder 1",
-                                item("Bookmark in folder 1"),
-                                item("Bookmark in folder 2")),
-                        item(0),
-                        item(R.string.menu_mobile_bookmarks, item("Partner bookmarks", item(0))),
-                        item(R.string.menu_other_bookmarks, item(0))));
+        expectedItems.add(getExpectedBookmarksParentMenuItem());
+        expectedTitles.add(getExpectedBookmarksParentMenuTitle());
 
-        expectedItems.add(
-                item(
-                        R.id.tab_groups_parent_menu_id,
-                        item(R.id.add_to_group_menu_id),
-                        item(R.id.create_new_tab_group_menu_id)));
-        expectedTitles.add(
-                item(
-                        R.string.menu_tab_groups,
-                        item(R.string.menu_add_tab_to_new_group),
-                        item(R.string.menu_create_new_tab_group)));
-
-        if (ExtensionsBuildflags.ENABLE_DESKTOP_ANDROID_EXTENSIONS) {
+        if (ExtensionsBuildflags.ENABLE_EXTENSIONS_CORE) {
             expectedItems.add(
                     item(
                             R.id.extensions_parent_menu_id,
@@ -937,33 +919,74 @@ public class TabbedAppMenuPropertiesDelegateUnitTest {
                             item(R.string.menu_chrome_webstore)));
         }
 
+        expectedItems.add(
+                item(
+                        R.id.passwords_and_autofill_parent_menu_id,
+                        item(R.id.google_password_manager_menu_id),
+                        item(R.id.payment_methods_menu_id),
+                        item(R.id.addresses_and_more_menu_id)));
+        expectedTitles.add(
+                item(
+                        R.string.menu_passwords_and_autofill,
+                        item(R.string.menu_google_password_manager),
+                        item(R.string.menu_payment_methods),
+                        item(R.string.menu_addresses_and_more)));
+
         expectedItems.add(item(R.id.divider_line_id));
         expectedTitles.add(item(0));
 
         expectedItems.add(
                 item(
                         R.id.save_and_share_parent_menu_id,
-                        item(R.id.universal_install),
-                        item(R.id.divider_line_id),
                         item(R.id.share_menu_id),
                         item(R.id.copy_link_menu_id),
                         item(R.id.send_to_devices_menu_id),
-                        item(R.id.qr_code_menu_id)));
+                        item(R.id.qr_code_menu_id),
+                        item(R.id.divider_line_id),
+                        item(R.id.universal_install)));
         expectedTitles.add(
                 item(
                         R.string.menu_save_and_share,
-                        item(R.string.menu_add_to_homescreen),
-                        item(0),
                         item(R.string.menu_share_page),
                         item(R.string.menu_copy_link),
                         item(R.string.menu_send_to_devices),
-                        item(R.string.menu_qr_code)));
+                        item(R.string.menu_qr_code),
+                        item(0),
+                        item(R.string.menu_install_create_shortcut)));
 
         expectedItems.add(item(R.id.find_in_page_id));
         expectedTitles.add(item(R.string.menu_find_in_page));
 
         expectedItems.add(item(R.id.translate_id));
         expectedTitles.add(item(R.string.menu_translate));
+
+        if (mTabbedAppMenuPropertiesDelegate.isTabletSizeScreen()) {
+            expectedItems.add(
+                    item(
+                            R.id.more_tools_menu_id,
+                            item(R.id.reader_mode_menu_id),
+                            item(R.id.divider_line_id),
+                            item(R.id.toggle_tab_layout_menu_id)));
+            expectedTitles.add(
+                    item(
+                            R.string.menu_more_tools,
+                            item(R.string.show_reading_mode_text),
+                            item(0),
+                            item(org.chromium.chrome.tab_ui.R.string.show_tabs_vertically)));
+        } else {
+            expectedItems.add(
+                    item(
+                            R.id.more_tools_menu_id,
+                            item(R.id.reader_mode_menu_id),
+                            item(R.id.divider_line_id),
+                            item(R.id.info_menu_id)));
+            expectedTitles.add(
+                    item(
+                            R.string.menu_more_tools,
+                            item(R.string.show_reading_mode_text),
+                            item(0),
+                            item(R.string.menu_site_controls)));
+        }
 
         if (!DeviceInfo.isDesktop()) {
             expectedItems.add(item(R.id.request_desktop_site_id));
@@ -1026,6 +1049,150 @@ public class TabbedAppMenuPropertiesDelegateUnitTest {
         testPageMenuItems_RegularPage();
     }
 
+    @Test
+    @DisableFeatures({ChromeFeatureList.SUBMENUS_IN_APP_MENU})
+    public void testPageMenuItems_Phone_RegularPage_SubmenusDisabled() {
+        testPageMenuItems_RegularPage_SubmenusDisabled();
+    }
+
+    @Test
+    @Config(qualifiers = "sw600dp")
+    @DisableFeatures({ChromeFeatureList.SUBMENUS_IN_APP_MENU})
+    public void testPageMenuItems_Tablet_RegularPage_SubmenusDisabled() {
+        testPageMenuItems_RegularPage_SubmenusDisabled();
+    }
+
+    private void testPageMenuItems_RegularPage_SubmenusDisabled() {
+        setUpMocksForPageMenu();
+        setMenuOptions(
+                new MenuOptions()
+                        .withShowTranslate()
+                        .withShowAddToHomeScreen()
+                        .withAutoDarkEnabled());
+        when(mTabModel.getCount()).thenReturn(1);
+
+        assertEquals(MenuGroup.PAGE_MENU, mTabbedAppMenuPropertiesDelegate.getMenuGroup());
+        ModelList modelList = mTabbedAppMenuPropertiesDelegate.getMenuItems();
+
+        List<MenuItem> expectedItems = new ArrayList<>();
+        List<MenuItem> expectedTitles = new ArrayList<>();
+
+        expectedItems.add(item(R.id.icon_row_menu_id));
+        expectedTitles.add(item(0));
+
+        expectedItems.add(item(R.id.new_tab_menu_id));
+        expectedTitles.add(item(R.string.menu_new_tab));
+
+        if (!IncognitoUtils.shouldOpenIncognitoAsWindow()) {
+            expectedItems.add(item(R.id.new_incognito_tab_menu_id));
+            expectedTitles.add(item(R.string.menu_new_incognito_tab));
+        }
+
+        expectedItems.add(item(R.id.add_to_group_menu_id));
+        expectedTitles.add(item(R.string.menu_add_tab_to_new_group));
+
+        // Divider
+        expectedItems.add(item(R.id.divider_line_id));
+        expectedTitles.add(item(0));
+
+        // History
+        expectedItems.add(item(R.id.open_history_menu_id));
+        expectedTitles.add(item(R.string.menu_history));
+
+        // Quick delete
+        expectedItems.add(item(R.id.quick_delete_menu_id));
+        expectedTitles.add(item(R.string.menu_quick_delete));
+
+        if (!mTabbedAppMenuPropertiesDelegate.isTabletSizeScreen()) {
+            expectedItems.add(item(R.id.info_menu_id));
+            expectedTitles.add(item(R.string.menu_site_controls));
+
+            expectedItems.add(item(R.id.page_info_divider_line_id));
+            expectedTitles.add(item(0));
+        } else {
+            expectedItems.add(item(R.id.quick_delete_divider_line_id));
+            expectedTitles.add(item(0));
+        }
+
+        // Downloads
+        expectedItems.add(item(R.id.downloads_menu_id));
+        expectedTitles.add(item(R.string.menu_downloads));
+
+        // Bookmarks
+        expectedItems.add(item(R.id.all_bookmarks_menu_id));
+        expectedTitles.add(item(R.string.menu_bookmarks));
+
+        // Recent tabs
+        expectedItems.add(item(R.id.recent_tabs_menu_id));
+        expectedTitles.add(item(R.string.menu_recent_tabs));
+
+        if (ExtensionsBuildflags.ENABLE_EXTENSIONS_CORE) {
+            expectedItems.add(item(R.id.extensions_menu_menu_id));
+            expectedTitles.add(item(R.string.menu_extensions_menu));
+        }
+
+        expectedItems.add(item(R.id.divider_line_id));
+        expectedTitles.add(item(0));
+
+        // Share
+        expectedItems.add(item(R.id.share_menu_id));
+        expectedTitles.add(item(R.string.menu_share_page));
+
+        // Find in page
+        expectedItems.add(item(R.id.find_in_page_id));
+        expectedTitles.add(item(R.string.menu_find_in_page));
+
+        // Translate
+        expectedItems.add(item(R.id.translate_id));
+        expectedTitles.add(item(R.string.menu_translate));
+
+        // Reader mode
+        expectedItems.add(item(R.id.reader_mode_menu_id));
+        expectedTitles.add(item(R.string.show_reading_mode_text));
+
+        // Universal install
+        expectedItems.add(item(R.id.universal_install));
+        expectedTitles.add(item(R.string.menu_install_create_shortcut));
+
+        if (!DeviceInfo.isDesktop()) {
+            expectedItems.add(item(R.id.request_desktop_site_id));
+            expectedTitles.add(item(R.string.menu_request_desktop_site));
+        }
+
+        expectedItems.add(item(R.id.auto_dark_web_contents_id));
+        expectedTitles.add(item(R.string.menu_auto_dark_web_contents));
+
+        expectedItems.add(item(R.id.divider_line_id));
+        expectedTitles.add(item(0));
+
+        expectedItems.add(item(R.id.preferences_id));
+        expectedTitles.add(item(R.string.menu_settings));
+
+        expectedItems.add(item(R.id.help_id));
+        expectedTitles.add(item(R.string.menu_help));
+
+        Integer[] expectedActionBarItems =
+                ChromeFeatureList.sThreeDotMenuBackButton.isEnabled()
+                        ? new Integer[] {
+                            R.id.forward_menu_id,
+                            R.id.back_menu_id,
+                            R.id.bookmark_this_page_id,
+                            R.id.offline_page_id,
+                            R.id.reload_menu_id
+                        }
+                        : new Integer[] {
+                            R.id.forward_menu_id,
+                            R.id.bookmark_this_page_id,
+                            R.id.offline_page_id,
+                            R.id.info_menu_id,
+                            R.id.reload_menu_id
+                        };
+
+        assertMenuItemsAreEqual(modelList, expectedItems);
+        assertMenuTitlesAreEqual(modelList, expectedTitles);
+        assertActionBarItemsAreEqual(modelList, expectedActionBarItems);
+    }
+
     private void testPageMenuItems_IncognitoPage() {
         setUpMocksForPageMenu();
         when(mTab.isIncognito()).thenReturn(true);
@@ -1050,94 +1217,21 @@ public class TabbedAppMenuPropertiesDelegateUnitTest {
         expectedItems.add(item(R.id.new_incognito_tab_menu_id));
         expectedTitles.add(item(R.string.menu_new_incognito_tab));
 
+        expectedItems.add(
+                item(R.id.tab_groups_parent_menu_id, item(R.id.create_new_tab_group_menu_id)));
+        expectedTitles.add(
+                item(R.string.menu_tab_groups, item(R.string.menu_create_new_tab_group)));
+
         expectedItems.add(item(R.id.divider_line_id));
         expectedTitles.add(item(0));
-
-        expectedItems.add(
-                item(
-                        R.id.passwords_and_autofill_parent_menu_id,
-                        item(R.id.google_password_manager_menu_id),
-                        item(R.id.payment_methods_menu_id),
-                        item(R.id.addresses_and_more_menu_id)));
-        expectedTitles.add(
-                item(
-                        R.string.menu_passwords_and_autofill,
-                        item(R.string.menu_google_password_manager),
-                        item(R.string.menu_payment_methods),
-                        item(R.string.menu_addresses_and_more)));
-        if (!IncognitoUtils.shouldOpenIncognitoAsWindow()) {
-            expectedItems.add(item(R.id.history_parent_menu_id, item(R.id.open_history_menu_id)));
-            expectedTitles.add(item(R.string.menu_history, item(R.string.menu_history)));
-        }
-
-        if (!mTabbedAppMenuPropertiesDelegate.isTabletSizeScreen()) {
-            expectedItems.add(item(R.id.info_menu_id));
-            expectedTitles.add(item(R.string.menu_site_controls));
-
-            expectedItems.add(item(R.id.page_info_divider_line_id));
-            expectedTitles.add(item(0));
-        }
 
         expectedItems.add(item(R.id.downloads_menu_id));
         expectedTitles.add(item(R.string.menu_downloads));
 
-        expectedItems.add(
-                item(
-                        R.id.bookmarks_parent_menu_id,
-                        item(R.id.all_bookmarks_menu_id),
-                        item(R.id.bookmark_this_page_menu_id),
-                        item(R.id.toggle_bookmarks_bar_menu_id),
-                        item(R.id.divider_line_id),
-                        item(
-                                R.id.reading_list_parent_menu_id,
-                                item(R.id.add_to_reading_list_menu_id),
-                                item(R.id.show_reading_list_menu_id)),
-                        item(R.id.divider_line_id),
-                        item(R.id.bookmark_menu_id),
-                        item(R.id.bookmark_menu_id),
-                        item(
-                                R.id.bookmark_folder_menu_id,
-                                item(R.id.bookmark_menu_id),
-                                item(R.id.bookmark_menu_id)),
-                        item(R.id.divider_line_id),
-                        item(
-                                R.id.bookmark_folder_menu_id,
-                                item(R.id.bookmark_folder_menu_id, item(0))),
-                        item(R.id.bookmark_folder_menu_id, item(0))));
-        expectedTitles.add(
-                item(
-                        R.string.menu_bookmarks,
-                        item(R.string.menu_bookmarks),
-                        item(R.string.menu_bookmark_this_page),
-                        item(R.string.menu_show_bookmarks_bar),
-                        item(0),
-                        item(
-                                R.string.menu_reading_list,
-                                item(R.string.menu_add_to_reading_list),
-                                item(R.string.menu_show_reading_list)),
-                        item(0),
-                        item("Bookmark 1"),
-                        item("Bookmark 2"),
-                        item(
-                                "Folder 1",
-                                item("Bookmark in folder 1"),
-                                item("Bookmark in folder 2")),
-                        item(0),
-                        item(R.string.menu_mobile_bookmarks, item("Partner bookmarks", item(0))),
-                        item(R.string.menu_other_bookmarks, item(0))));
+        expectedItems.add(getExpectedBookmarksParentMenuItem());
+        expectedTitles.add(getExpectedBookmarksParentMenuTitle());
 
-        expectedItems.add(
-                item(
-                        R.id.tab_groups_parent_menu_id,
-                        item(R.id.add_to_group_menu_id),
-                        item(R.id.create_new_tab_group_menu_id)));
-        expectedTitles.add(
-                item(
-                        R.string.menu_tab_groups,
-                        item(R.string.menu_add_tab_to_new_group),
-                        item(R.string.menu_create_new_tab_group)));
-
-        if (ExtensionsBuildflags.ENABLE_DESKTOP_ANDROID_EXTENSIONS) {
+        if (ExtensionsBuildflags.ENABLE_EXTENSIONS_CORE) {
             expectedItems.add(
                     item(
                             R.id.extensions_parent_menu_id,
@@ -1152,6 +1246,19 @@ public class TabbedAppMenuPropertiesDelegateUnitTest {
                             item(R.string.menu_chrome_webstore)));
         }
 
+        expectedItems.add(
+                item(
+                        R.id.passwords_and_autofill_parent_menu_id,
+                        item(R.id.google_password_manager_menu_id),
+                        item(R.id.payment_methods_menu_id),
+                        item(R.id.addresses_and_more_menu_id)));
+        expectedTitles.add(
+                item(
+                        R.string.menu_passwords_and_autofill,
+                        item(R.string.menu_google_password_manager),
+                        item(R.string.menu_payment_methods),
+                        item(R.string.menu_addresses_and_more)));
+
         expectedItems.add(item(R.id.divider_line_id));
         expectedTitles.add(item(0));
 
@@ -1160,14 +1267,12 @@ public class TabbedAppMenuPropertiesDelegateUnitTest {
                         R.id.save_and_share_parent_menu_id,
                         item(R.id.share_menu_id),
                         item(R.id.copy_link_menu_id),
-                        item(R.id.send_to_devices_menu_id),
                         item(R.id.qr_code_menu_id)));
         expectedTitles.add(
                 item(
                         R.string.menu_save_and_share,
                         item(R.string.menu_share_page),
                         item(R.string.menu_copy_link),
-                        item(R.string.menu_send_to_devices),
                         item(R.string.menu_qr_code)));
 
         expectedItems.add(item(R.id.find_in_page_id));
@@ -1175,6 +1280,34 @@ public class TabbedAppMenuPropertiesDelegateUnitTest {
 
         expectedItems.add(item(R.id.translate_id));
         expectedTitles.add(item(R.string.menu_translate));
+
+        if (mTabbedAppMenuPropertiesDelegate.isTabletSizeScreen()) {
+            expectedItems.add(
+                    item(
+                            R.id.more_tools_menu_id,
+                            item(R.id.reader_mode_menu_id),
+                            item(R.id.divider_line_id),
+                            item(R.id.toggle_tab_layout_menu_id)));
+            expectedTitles.add(
+                    item(
+                            R.string.menu_more_tools,
+                            item(R.string.show_reading_mode_text),
+                            item(0),
+                            item(org.chromium.chrome.tab_ui.R.string.show_tabs_vertically)));
+        } else {
+            expectedItems.add(
+                    item(
+                            R.id.more_tools_menu_id,
+                            item(R.id.reader_mode_menu_id),
+                            item(R.id.divider_line_id),
+                            item(R.id.info_menu_id)));
+            expectedTitles.add(
+                    item(
+                            R.string.menu_more_tools,
+                            item(R.string.show_reading_mode_text),
+                            item(0),
+                            item(R.string.menu_site_controls)));
+        }
 
         if (!DeviceInfo.isDesktop()) {
             expectedItems.add(item(R.id.request_desktop_site_id));
@@ -1239,6 +1372,187 @@ public class TabbedAppMenuPropertiesDelegateUnitTest {
 
     @Test
     @Config(qualifiers = "sw320dp")
+    @DisableFeatures({ChromeFeatureList.SUBMENUS_IN_APP_MENU})
+    public void testPageMenuItems_Phone_IncognitoPage_SubmenusDisabled() {
+        testPageMenuItems_IncognitoPage_SubmenusDisabled();
+    }
+
+    @Test
+    @Config(qualifiers = "sw600dp")
+    @DisableFeatures({ChromeFeatureList.SUBMENUS_IN_APP_MENU})
+    public void testPageMenuItems_Tablet_IncognitoPage_SubmenusDisabled() {
+        testPageMenuItems_IncognitoPage_SubmenusDisabled();
+    }
+
+    private void testPageMenuItems_IncognitoPage_SubmenusDisabled() {
+        setUpMocksForPageMenu();
+        when(mTab.isIncognito()).thenReturn(true);
+        when(mIncognitoTabModel.getCount()).thenReturn(1);
+        when(mTabModelSelector.getCurrentModel()).thenReturn(mIncognitoTabModel);
+        setMenuOptions(new MenuOptions().withShowTranslate().withAutoDarkEnabled());
+
+        assertEquals(MenuGroup.PAGE_MENU, mTabbedAppMenuPropertiesDelegate.getMenuGroup());
+        ModelList modelList = mTabbedAppMenuPropertiesDelegate.getMenuItems();
+
+        List<MenuItem> expectedItems = new ArrayList<>();
+        List<MenuItem> expectedTitles = new ArrayList<>();
+
+        expectedItems.add(item(R.id.icon_row_menu_id));
+        expectedTitles.add(item(0));
+
+        if (!IncognitoUtils.shouldOpenIncognitoAsWindow()) {
+            expectedItems.add(item(R.id.new_tab_menu_id));
+            expectedTitles.add(item(R.string.menu_new_tab));
+        }
+
+        expectedItems.add(item(R.id.new_incognito_tab_menu_id));
+        expectedTitles.add(item(R.string.menu_new_incognito_tab));
+
+        expectedItems.add(item(R.id.add_to_group_menu_id));
+        expectedTitles.add(item(R.string.menu_add_tab_to_new_group));
+
+        expectedItems.add(item(R.id.divider_line_id));
+        expectedTitles.add(item(0));
+
+        if (!IncognitoUtils.shouldOpenIncognitoAsWindow()) {
+            expectedItems.add(item(R.id.open_history_menu_id));
+            expectedTitles.add(item(R.string.menu_history));
+        }
+
+        if (!mTabbedAppMenuPropertiesDelegate.isTabletSizeScreen()) {
+            expectedItems.add(item(R.id.info_menu_id));
+            expectedTitles.add(item(R.string.menu_site_controls));
+
+            expectedItems.add(item(R.id.page_info_divider_line_id));
+            expectedTitles.add(item(0));
+        }
+
+        expectedItems.add(item(R.id.downloads_menu_id));
+        expectedTitles.add(item(R.string.menu_downloads));
+
+        expectedItems.add(item(R.id.all_bookmarks_menu_id));
+        expectedTitles.add(item(R.string.menu_bookmarks));
+
+        if (ExtensionsBuildflags.ENABLE_EXTENSIONS_CORE) {
+            expectedItems.add(item(R.id.extensions_menu_menu_id));
+            expectedTitles.add(item(R.string.menu_extensions_menu));
+        }
+
+        expectedItems.add(item(R.id.divider_line_id));
+        expectedTitles.add(item(0));
+
+        expectedItems.add(item(R.id.share_menu_id));
+        expectedTitles.add(item(R.string.menu_share_page));
+
+        expectedItems.add(item(R.id.find_in_page_id));
+        expectedTitles.add(item(R.string.menu_find_in_page));
+
+        expectedItems.add(item(R.id.translate_id));
+        expectedTitles.add(item(R.string.menu_translate));
+
+        expectedItems.add(item(R.id.reader_mode_menu_id));
+        expectedTitles.add(item(R.string.show_reading_mode_text));
+
+        if (!DeviceInfo.isDesktop()) {
+            expectedItems.add(item(R.id.request_desktop_site_id));
+            expectedTitles.add(item(R.string.menu_request_desktop_site));
+        }
+
+        expectedItems.add(item(R.id.auto_dark_web_contents_id));
+        expectedTitles.add(item(R.string.menu_auto_dark_web_contents));
+
+        expectedItems.add(item(R.id.divider_line_id));
+        expectedTitles.add(item(0));
+
+        expectedItems.add(item(R.id.preferences_id));
+        expectedTitles.add(item(R.string.menu_settings));
+
+        expectedItems.add(item(R.id.help_id));
+        expectedTitles.add(item(R.string.menu_help));
+
+        assertMenuItemsAreEqual(modelList, expectedItems);
+        assertMenuTitlesAreEqual(modelList, expectedTitles);
+
+        Integer[] expectedActionBarItems =
+                ChromeFeatureList.sThreeDotMenuBackButton.isEnabled()
+                        ? new Integer[] {
+                            R.id.forward_menu_id,
+                            R.id.back_menu_id,
+                            R.id.bookmark_this_page_id,
+                            R.id.offline_page_id,
+                            R.id.reload_menu_id
+                        }
+                        : new Integer[] {
+                            R.id.forward_menu_id,
+                            R.id.bookmark_this_page_id,
+                            R.id.offline_page_id,
+                            R.id.info_menu_id,
+                            R.id.reload_menu_id
+                        };
+        assertActionBarItemsAreEqual(modelList, expectedActionBarItems);
+    }
+
+    @Test
+    @Config(qualifiers = "sw320dp")
+    @EnableFeatures(ChromeFeatureList.INCOGNITO_MODE_FORCED_ANDROID)
+    public void testNewTabAndNewWindowHiding_WhenIncognitoForced_Phone() {
+        IncognitoUtils.setShouldOpenIncognitoAsWindowForTesting(false);
+        setUpMocksForPageMenu();
+        setMenuOptions(new MenuOptions().withAllSet().setNativePage(false));
+        doReturn(true).when(mIncognitoUtilsJniMock).getIncognitoModeForced(any());
+
+        MVCListAdapter.ModelList modelList = mTabbedAppMenuPropertiesDelegate.getMenuItems();
+
+        MVCListAdapter.ListItem newTabItem = findItemById(modelList, R.id.new_tab_menu_id);
+        assertNotNull("New Tab item should be visible", newTabItem);
+        assertFalse(newTabItem.model.get(AppMenuItemProperties.ENABLED));
+        assertTrue(newTabItem.model.get(AppMenuItemProperties.MANAGED));
+    }
+
+    @Test
+    @Config(qualifiers = "sw600dp")
+    @EnableFeatures(ChromeFeatureList.INCOGNITO_MODE_FORCED_ANDROID)
+    public void testNewTabAndNewWindowHiding_WhenIncognitoForced_Tablet() {
+        IncognitoUtils.setShouldOpenIncognitoAsWindowForTesting(true);
+        setUpMocksForPageMenu();
+        setMenuOptions(new MenuOptions().withAllSet().setNativePage(false));
+        doReturn(true).when(mIncognitoUtilsJniMock).getIncognitoModeForced(any());
+        doReturn(true).when(mTabbedAppMenuPropertiesDelegate).shouldShowNewWindow();
+
+        MVCListAdapter.ModelList modelList = mTabbedAppMenuPropertiesDelegate.getMenuItems();
+
+        MVCListAdapter.ListItem newTabItem = findItemById(modelList, R.id.new_tab_menu_id);
+        assertNotNull("New Tab item should be visible on Tablet", newTabItem);
+        assertFalse(newTabItem.model.get(AppMenuItemProperties.ENABLED));
+        assertTrue(newTabItem.model.get(AppMenuItemProperties.MANAGED));
+
+        MVCListAdapter.ListItem newWindowItem = findItemById(modelList, R.id.new_window_menu_id);
+        assertNotNull("New Window item should be visible on Tablet", newWindowItem);
+        assertFalse(newWindowItem.model.get(AppMenuItemProperties.ENABLED));
+        assertTrue(newWindowItem.model.get(AppMenuItemProperties.MANAGED));
+    }
+
+    @Test
+    @Config(qualifiers = "sw320dp")
+    @EnableFeatures(ChromeFeatureList.INCOGNITO_MODE_FORCED_ANDROID)
+    public void testNewTabAndNewWindowVisible_WhenIncognitoNotForced_Phone() {
+        testNewTabAndNewWindowVisible_WhenIncognitoNotForced();
+    }
+
+    private void testNewTabAndNewWindowVisible_WhenIncognitoNotForced() {
+        setUpMocksForPageMenu();
+        setMenuOptions(new MenuOptions().withAllSet().setNativePage(false));
+        doReturn(false).when(mIncognitoUtilsJniMock).getIncognitoModeForced(any());
+        doReturn(true).when(mTabbedAppMenuPropertiesDelegate).shouldShowNewWindow();
+
+        MVCListAdapter.ModelList modelList = mTabbedAppMenuPropertiesDelegate.getMenuItems();
+
+        assertNotNull(
+                "New Tab item should be visible", findItemById(modelList, R.id.new_tab_menu_id));
+    }
+
+    @Test
+    @Config(qualifiers = "sw320dp")
     @DisableFeatures(ChromeFeatureList.ANDROID_OPEN_INCOGNITO_AS_WINDOW)
     public void testPageMenuItems_Phone_RegularPage_WithPwa() {
         setUpMocksForPageMenu();
@@ -1263,100 +1577,38 @@ public class TabbedAppMenuPropertiesDelegateUnitTest {
         expectedItems.add(item(R.id.new_incognito_tab_menu_id));
         expectedTitles.add(item(R.string.menu_new_incognito_tab));
 
+        expectedItems.add(
+                item(R.id.tab_groups_parent_menu_id, item(R.id.create_new_tab_group_menu_id)));
+        expectedTitles.add(
+                item(R.string.menu_tab_groups, item(R.string.menu_create_new_tab_group)));
+
         expectedItems.add(item(R.id.divider_line_id));
         expectedTitles.add(item(0));
 
         expectedItems.add(
                 item(
-                        R.id.passwords_and_autofill_parent_menu_id,
-                        item(R.id.google_password_manager_menu_id),
-                        item(R.id.payment_methods_menu_id),
-                        item(R.id.addresses_and_more_menu_id)));
-        expectedTitles.add(
-                item(
-                        R.string.menu_passwords_and_autofill,
-                        item(R.string.menu_google_password_manager),
-                        item(R.string.menu_payment_methods),
-                        item(R.string.menu_addresses_and_more)));
-        expectedItems.add(
-                item(
                         R.id.history_parent_menu_id,
                         item(R.id.open_history_menu_id),
-                        item(R.id.recent_tabs_menu_id),
-                        item(R.id.quick_delete_menu_id)));
+                        item(R.id.recent_tabs_menu_id)));
         expectedTitles.add(
                 item(
                         R.string.menu_history,
-                        item(R.string.menu_history),
-                        item(R.string.menu_recent_tabs),
-                        item(R.string.menu_quick_delete)));
+                        item(R.string.menu_open_history),
+                        item(R.string.menu_recent_tabs)));
 
-        expectedItems.add(item(R.id.info_menu_id));
-        expectedTitles.add(item(R.string.menu_site_controls));
+        expectedItems.add(item(R.id.quick_delete_menu_id));
+        expectedTitles.add(item(R.string.menu_quick_delete));
 
-        expectedItems.add(item(R.id.page_info_divider_line_id));
+        expectedItems.add(item(R.id.divider_line_id));
         expectedTitles.add(item(0));
 
         expectedItems.add(item(R.id.downloads_menu_id));
         expectedTitles.add(item(R.string.menu_downloads));
 
-        expectedItems.add(
-                item(
-                        R.id.bookmarks_parent_menu_id,
-                        item(R.id.all_bookmarks_menu_id),
-                        item(R.id.bookmark_this_page_menu_id),
-                        item(R.id.toggle_bookmarks_bar_menu_id),
-                        item(R.id.divider_line_id),
-                        item(
-                                R.id.reading_list_parent_menu_id,
-                                item(R.id.add_to_reading_list_menu_id),
-                                item(R.id.show_reading_list_menu_id)),
-                        item(R.id.divider_line_id),
-                        item(R.id.bookmark_menu_id),
-                        item(R.id.bookmark_menu_id),
-                        item(
-                                R.id.bookmark_folder_menu_id,
-                                item(R.id.bookmark_menu_id),
-                                item(R.id.bookmark_menu_id)),
-                        item(R.id.divider_line_id),
-                        item(
-                                R.id.bookmark_folder_menu_id,
-                                item(R.id.bookmark_folder_menu_id, item(0))),
-                        item(R.id.bookmark_folder_menu_id, item(0))));
-        expectedTitles.add(
-                item(
-                        R.string.menu_bookmarks,
-                        item(R.string.menu_bookmarks),
-                        item(R.string.menu_bookmark_this_page),
-                        item(R.string.menu_show_bookmarks_bar),
-                        item(0),
-                        item(
-                                R.string.menu_reading_list,
-                                item(R.string.menu_add_to_reading_list),
-                                item(R.string.menu_show_reading_list)),
-                        item(0),
-                        item("Bookmark 1"),
-                        item("Bookmark 2"),
-                        item(
-                                "Folder 1",
-                                item("Bookmark in folder 1"),
-                                item("Bookmark in folder 2")),
-                        item(0),
-                        item(R.string.menu_mobile_bookmarks, item("Partner bookmarks", item(0))),
-                        item(R.string.menu_other_bookmarks, item(0))));
+        expectedItems.add(getExpectedBookmarksParentMenuItem());
+        expectedTitles.add(getExpectedBookmarksParentMenuTitle());
 
-        expectedItems.add(
-                item(
-                        R.id.tab_groups_parent_menu_id,
-                        item(R.id.add_to_group_menu_id),
-                        item(R.id.create_new_tab_group_menu_id)));
-        expectedTitles.add(
-                item(
-                        R.string.menu_tab_groups,
-                        item(R.string.menu_add_tab_to_new_group),
-                        item(R.string.menu_create_new_tab_group)));
-
-        if (ExtensionsBuildflags.ENABLE_DESKTOP_ANDROID_EXTENSIONS) {
+        if (ExtensionsBuildflags.ENABLE_EXTENSIONS_CORE) {
             expectedItems.add(
                     item(
                             R.id.extensions_parent_menu_id,
@@ -1371,33 +1623,59 @@ public class TabbedAppMenuPropertiesDelegateUnitTest {
                             item(R.string.menu_chrome_webstore)));
         }
 
+        expectedItems.add(
+                item(
+                        R.id.passwords_and_autofill_parent_menu_id,
+                        item(R.id.google_password_manager_menu_id),
+                        item(R.id.payment_methods_menu_id),
+                        item(R.id.addresses_and_more_menu_id)));
+        expectedTitles.add(
+                item(
+                        R.string.menu_passwords_and_autofill,
+                        item(R.string.menu_google_password_manager),
+                        item(R.string.menu_payment_methods),
+                        item(R.string.menu_addresses_and_more)));
+
         expectedItems.add(item(R.id.divider_line_id));
         expectedTitles.add(item(0));
 
         expectedItems.add(
                 item(
                         R.id.save_and_share_parent_menu_id,
-                        item(R.id.universal_install),
-                        item(R.id.divider_line_id),
                         item(R.id.share_menu_id),
                         item(R.id.copy_link_menu_id),
                         item(R.id.send_to_devices_menu_id),
-                        item(R.id.qr_code_menu_id)));
+                        item(R.id.qr_code_menu_id),
+                        item(R.id.divider_line_id),
+                        item(R.id.universal_install)));
         expectedTitles.add(
                 item(
                         R.string.menu_save_and_share,
-                        item(R.string.menu_add_to_homescreen),
-                        item(0),
                         item(R.string.menu_share_page),
                         item(R.string.menu_copy_link),
                         item(R.string.menu_send_to_devices),
-                        item(R.string.menu_qr_code)));
+                        item(R.string.menu_qr_code),
+                        item(0),
+                        item(R.string.menu_install_create_shortcut)));
 
         expectedItems.add(item(R.id.find_in_page_id));
         expectedTitles.add(item(R.string.menu_find_in_page));
 
         expectedItems.add(item(R.id.translate_id));
         expectedTitles.add(item(R.string.menu_translate));
+
+        expectedItems.add(
+                item(
+                        R.id.more_tools_menu_id,
+                        item(R.id.reader_mode_menu_id),
+                        item(R.id.divider_line_id),
+                        item(R.id.info_menu_id)));
+        expectedTitles.add(
+                item(
+                        R.string.menu_more_tools,
+                        item(R.string.show_reading_mode_text),
+                        item(0),
+                        item(R.string.menu_site_controls)));
 
         if (!DeviceInfo.isDesktop()) {
             expectedItems.add(item(R.id.request_desktop_site_id));
@@ -1469,48 +1747,20 @@ public class TabbedAppMenuPropertiesDelegateUnitTest {
                                 item(R.id.icon_row_menu_id),
                                 item(R.id.new_tab_menu_id),
                                 item(R.id.new_incognito_tab_menu_id),
-                                item(R.id.divider_line_id),
                                 item(
-                                        R.id.passwords_and_autofill_parent_menu_id,
-                                        item(R.id.google_password_manager_menu_id),
-                                        item(R.id.payment_methods_menu_id),
-                                        item(R.id.addresses_and_more_menu_id)),
+                                        R.id.tab_groups_parent_menu_id,
+                                        item(R.id.create_new_tab_group_menu_id)),
+                                item(R.id.divider_line_id),
                                 item(
                                         R.id.history_parent_menu_id,
                                         item(R.id.open_history_menu_id),
-                                        item(R.id.recent_tabs_menu_id),
-                                        item(R.id.quick_delete_menu_id)),
-                                item(R.id.info_menu_id),
-                                item(R.id.page_info_divider_line_id),
+                                        item(R.id.recent_tabs_menu_id)),
+                                item(R.id.quick_delete_menu_id),
+                                item(R.id.divider_line_id),
                                 item(R.id.downloads_menu_id),
-                                item(
-                                        R.id.bookmarks_parent_menu_id,
-                                        item(R.id.all_bookmarks_menu_id),
-                                        item(R.id.bookmark_this_page_menu_id),
-                                        item(R.id.toggle_bookmarks_bar_menu_id),
-                                        item(R.id.divider_line_id),
-                                        item(
-                                                R.id.reading_list_parent_menu_id,
-                                                item(R.id.add_to_reading_list_menu_id),
-                                                item(R.id.show_reading_list_menu_id)),
-                                        item(R.id.divider_line_id),
-                                        item(R.id.bookmark_menu_id),
-                                        item(R.id.bookmark_menu_id),
-                                        item(
-                                                R.id.bookmark_folder_menu_id,
-                                                item(R.id.bookmark_menu_id),
-                                                item(R.id.bookmark_menu_id)),
-                                        item(R.id.divider_line_id),
-                                        item(
-                                                R.id.bookmark_folder_menu_id,
-                                                item(R.id.bookmark_folder_menu_id, item(0))),
-                                        item(R.id.bookmark_folder_menu_id, item(0))),
-                                item(
-                                        R.id.tab_groups_parent_menu_id,
-                                        item(R.id.add_to_group_menu_id),
-                                        item(R.id.create_new_tab_group_menu_id))));
+                                getExpectedBookmarksParentMenuItem()));
 
-        if (ExtensionsBuildflags.ENABLE_DESKTOP_ANDROID_EXTENSIONS) {
+        if (ExtensionsBuildflags.ENABLE_EXTENSIONS_CORE) {
             expectedItems.add(
                     item(
                             R.id.extensions_parent_menu_id,
@@ -1519,19 +1769,32 @@ public class TabbedAppMenuPropertiesDelegateUnitTest {
                             item(R.id.extensions_webstore_menu_id)));
         }
 
+        expectedItems.add(
+                item(
+                        R.id.passwords_and_autofill_parent_menu_id,
+                        item(R.id.google_password_manager_menu_id),
+                        item(R.id.payment_methods_menu_id),
+                        item(R.id.addresses_and_more_menu_id)));
+
         expectedItems.addAll(
                 Arrays.asList(
                         item(R.id.divider_line_id),
                         item(
                                 R.id.save_and_share_parent_menu_id,
-                                item(R.id.universal_install),
-                                item(R.id.divider_line_id),
                                 item(R.id.share_menu_id),
                                 item(R.id.copy_link_menu_id),
                                 item(R.id.send_to_devices_menu_id),
-                                item(R.id.qr_code_menu_id)),
+                                item(R.id.qr_code_menu_id),
+                                item(R.id.divider_line_id),
+                                item(R.id.universal_install)),
                         item(R.id.find_in_page_id),
                         item(R.id.translate_id),
+                        item(
+                                R.id.more_tools_menu_id,
+                                item(R.id.reader_mode_menu_id),
+                                item(R.id.divider_line_id),
+                                item(R.id.info_menu_id),
+                                item(R.id.task_manager)),
                         // Request desktop site is hidden.
                         item(R.id.auto_dark_web_contents_id),
                         item(R.id.divider_line_id),
@@ -1568,50 +1831,20 @@ public class TabbedAppMenuPropertiesDelegateUnitTest {
                                 item(R.id.update_menu_id),
                                 item(R.id.new_tab_menu_id),
                                 item(R.id.new_incognito_tab_menu_id),
-                                item(R.id.divider_line_id),
                                 item(
-                                        R.id.passwords_and_autofill_parent_menu_id,
-                                        item(R.id.google_password_manager_menu_id),
-                                        item(R.id.payment_methods_menu_id),
-                                        item(R.id.addresses_and_more_menu_id)),
+                                        R.id.tab_groups_parent_menu_id,
+                                        item(R.id.create_new_tab_group_menu_id)),
+                                item(R.id.divider_line_id),
                                 item(
                                         R.id.history_parent_menu_id,
                                         item(R.id.open_history_menu_id),
-                                        item(R.id.recent_tabs_menu_id),
-                                        item(R.id.quick_delete_menu_id)),
-                                item(R.id.info_menu_id),
-                                item(R.id.page_info_divider_line_id),
+                                        item(R.id.recent_tabs_menu_id)),
+                                item(R.id.quick_delete_menu_id),
+                                item(R.id.divider_line_id),
                                 item(R.id.downloads_menu_id),
-                                item(
-                                        R.id.bookmarks_parent_menu_id,
-                                        item(R.id.all_bookmarks_menu_id),
-                                        item(R.id.bookmark_this_page_menu_id),
-                                        item(R.id.toggle_bookmarks_bar_menu_id),
-                                        item(R.id.divider_line_id),
-                                        item(
-                                                R.id.reading_list_parent_menu_id,
-                                                item(R.id.add_to_reading_list_menu_id),
-                                                item(R.id.show_reading_list_menu_id)),
-                                        item(R.id.divider_line_id),
-                                        item(R.id.bookmark_menu_id),
-                                        item(R.id.bookmark_menu_id),
-                                        item(
-                                                R.id.bookmark_folder_menu_id,
-                                                item(R.id.bookmark_menu_id),
-                                                item(R.id.bookmark_menu_id)),
-                                        item(R.id.divider_line_id),
-                                        item(
-                                                R.id.bookmark_folder_menu_id,
-                                                item(R.id.bookmark_folder_menu_id, item(0))),
-                                        item(R.id.bookmark_folder_menu_id, item(0)))));
+                                getExpectedBookmarksParentMenuItem()));
 
-        expectedItems.add(
-                item(
-                        R.id.tab_groups_parent_menu_id,
-                        item(R.id.add_to_group_menu_id),
-                        item(R.id.create_new_tab_group_menu_id)));
-
-        if (ExtensionsBuildflags.ENABLE_DESKTOP_ANDROID_EXTENSIONS) {
+        if (ExtensionsBuildflags.ENABLE_EXTENSIONS_CORE) {
             expectedItems.add(
                     item(
                             R.id.extensions_parent_menu_id,
@@ -1620,21 +1853,37 @@ public class TabbedAppMenuPropertiesDelegateUnitTest {
                             item(R.id.extensions_webstore_menu_id)));
         }
 
+        expectedItems.add(
+                item(
+                        R.id.passwords_and_autofill_parent_menu_id,
+                        item(R.id.google_password_manager_menu_id),
+                        item(R.id.payment_methods_menu_id),
+                        item(R.id.addresses_and_more_menu_id)));
+
         expectedItems.addAll(
                 Arrays.asList(
                         item(R.id.divider_line_id),
                         item(
                                 R.id.save_and_share_parent_menu_id,
-                                item(R.id.universal_install),
-                                item(R.id.divider_line_id),
                                 item(R.id.share_menu_id),
                                 item(R.id.copy_link_menu_id),
                                 item(R.id.send_to_devices_menu_id),
-                                item(R.id.qr_code_menu_id)),
+                                item(R.id.qr_code_menu_id),
+                                item(R.id.divider_line_id),
+                                item(R.id.universal_install)),
                         item(R.id.find_in_page_id),
                         item(R.id.translate_id),
+                        item(
+                                R.id.more_tools_menu_id,
+                                item(R.id.reader_mode_menu_id),
+                                item(R.id.divider_line_id),
+                                item(R.id.info_menu_id))));
+
+        expectedItems.add(item(R.id.request_desktop_site_id));
+
+        expectedItems.addAll(
+                Arrays.asList(
                         item(R.id.auto_dark_web_contents_id),
-                        item(R.id.reader_mode_prefs_id),
                         item(R.id.divider_line_id),
                         item(R.id.preferences_id),
                         item(
@@ -1653,7 +1902,7 @@ public class TabbedAppMenuPropertiesDelegateUnitTest {
         IncognitoUtils.setShouldOpenIncognitoAsWindowForTesting(true);
         when(mTabModel.getCount()).thenReturn(1);
         when(mTabModelSelector.getCurrentModel()).thenReturn(mTabModel);
-        when(mLayoutStateProvider.isLayoutVisible(LayoutType.TAB_SWITCHER)).thenReturn(true);
+        when(mLayoutStateProvider.isLayoutVisible(LayoutType.HUB)).thenReturn(true);
         when(mTabModelSelector.getTotalTabCount()).thenReturn(1);
         setUpIncognitoMocks();
         when(mTabbedAppMenuPropertiesDelegate.isMultiInstanceEnabled()).thenReturn(true);
@@ -1684,7 +1933,7 @@ public class TabbedAppMenuPropertiesDelegateUnitTest {
         when(mIncognitoTabModel.getCount()).thenReturn(1);
         when(mTabModelSelector.getCurrentModel()).thenReturn(mIncognitoTabModel);
         when(mIncognitoTabModel.isIncognito()).thenReturn(true);
-        when(mLayoutStateProvider.isLayoutVisible(LayoutType.TAB_SWITCHER)).thenReturn(true);
+        when(mLayoutStateProvider.isLayoutVisible(LayoutType.HUB)).thenReturn(true);
         when(mTabModelSelector.getTotalTabCount()).thenReturn(1);
         setUpIncognitoMocks();
 
@@ -1713,7 +1962,7 @@ public class TabbedAppMenuPropertiesDelegateUnitTest {
         when(mIncognitoTabModel.getCount()).thenReturn(1);
         when(mTabModelSelector.getCurrentModel()).thenReturn(mIncognitoTabModel);
         when(mIncognitoTabModel.isIncognito()).thenReturn(true);
-        when(mLayoutStateProvider.isLayoutVisible(LayoutType.TAB_SWITCHER)).thenReturn(true);
+        when(mLayoutStateProvider.isLayoutVisible(LayoutType.HUB)).thenReturn(true);
         when(mTabModelSelector.getTotalTabCount()).thenReturn(1);
         setUpIncognitoMocks();
         when(mTabbedAppMenuPropertiesDelegate.isMultiInstanceEnabled()).thenReturn(true);
@@ -1844,7 +2093,7 @@ public class TabbedAppMenuPropertiesDelegateUnitTest {
 
     private void checkOverviewMenuItems(boolean newIncognitoWindowEnabled) {
         setUpIncognitoMocks();
-        when(mLayoutStateProvider.isLayoutVisible(LayoutType.TAB_SWITCHER)).thenReturn(false);
+        when(mLayoutStateProvider.isLayoutVisible(LayoutType.HUB)).thenReturn(false);
         when(mTabModel.getCount()).thenReturn(0);
 
         assertEquals(
@@ -1887,13 +2136,16 @@ public class TabbedAppMenuPropertiesDelegateUnitTest {
     }
 
     @Test
-    @DisableFeatures(ChromeFeatureList.ANDROID_OPEN_INCOGNITO_AS_WINDOW)
-    public void testMenuItems_Accessibility_ImageDescriptions() {
+    @DisableFeatures({
+        ChromeFeatureList.ANDROID_OPEN_INCOGNITO_AS_WINDOW,
+        ChromeFeatureList.SUBMENUS_IN_APP_MENU
+    })
+    public void testMenuItems_Accessibility_ImageDescriptions_SubmenusDisabled() {
         setUpMocksForPageMenu();
         when(mTab.getUrl()).thenReturn(JUnitTestGURLs.SEARCH_URL);
         when(mTab.isNativePage()).thenReturn(false);
         doReturn(false)
-                .when(mTabbedAppMenuPropertiesDelegate)
+                .when(mSaveAndShareItemBuilder)
                 .shouldShowPaintPreview(anyBoolean(), any(Tab.class));
         doReturn(false)
                 .when(mTabbedAppMenuPropertiesDelegate)
@@ -1905,7 +2157,7 @@ public class TabbedAppMenuPropertiesDelegateUnitTest {
 
         // Test specific setup
         ThreadUtils.hasSubtleSideEffectsSetThreadAssertsDisabledForTesting(true);
-        AccessibilityState.setIsKnownScreenReaderEnabledForTesting(true);
+        AccessibilityStateTestHelper.setIsKnownScreenReaderEnabledForTesting(true);
 
         ModelList modelList = mTabbedAppMenuPropertiesDelegate.getMenuItems();
 
@@ -1915,48 +2167,112 @@ public class TabbedAppMenuPropertiesDelegateUnitTest {
                                 item(R.id.icon_row_menu_id),
                                 item(R.id.new_tab_menu_id),
                                 item(R.id.new_incognito_tab_menu_id),
+                                item(R.id.add_to_group_menu_id),
                                 item(R.id.divider_line_id),
-                                item(
-                                        R.id.passwords_and_autofill_parent_menu_id,
-                                        item(R.id.google_password_manager_menu_id),
-                                        item(R.id.payment_methods_menu_id),
-                                        item(R.id.addresses_and_more_menu_id)),
-                                item(
-                                        R.id.history_parent_menu_id,
-                                        item(R.id.open_history_menu_id),
-                                        item(R.id.recent_tabs_menu_id),
-                                        item(R.id.quick_delete_menu_id)),
+                                item(R.id.open_history_menu_id),
+                                item(R.id.quick_delete_menu_id),
                                 item(R.id.info_menu_id),
                                 item(R.id.page_info_divider_line_id),
                                 item(R.id.downloads_menu_id),
-                                item(
-                                        R.id.bookmarks_parent_menu_id,
-                                        item(R.id.all_bookmarks_menu_id),
-                                        item(R.id.bookmark_this_page_menu_id),
-                                        item(R.id.toggle_bookmarks_bar_menu_id),
-                                        item(R.id.divider_line_id),
-                                        item(
-                                                R.id.reading_list_parent_menu_id,
-                                                item(R.id.add_to_reading_list_menu_id),
-                                                item(R.id.show_reading_list_menu_id)),
-                                        item(R.id.divider_line_id),
-                                        item(R.id.bookmark_menu_id),
-                                        item(R.id.bookmark_menu_id),
-                                        item(
-                                                R.id.bookmark_folder_menu_id,
-                                                item(R.id.bookmark_menu_id),
-                                                item(R.id.bookmark_menu_id)),
-                                        item(R.id.divider_line_id),
-                                        item(
-                                                R.id.bookmark_folder_menu_id,
-                                                item(R.id.bookmark_folder_menu_id, item(0))),
-                                        item(R.id.bookmark_folder_menu_id, item(0))),
+                                item(R.id.all_bookmarks_menu_id),
+                                item(R.id.recent_tabs_menu_id)));
+
+        if (ExtensionsBuildflags.ENABLE_EXTENSIONS_CORE) {
+            expectedItems.add(item(R.id.extensions_menu_menu_id));
+        }
+
+        expectedItems.addAll(
+                Arrays.asList(
+                        item(R.id.divider_line_id),
+                        item(R.id.share_menu_id),
+                        item(R.id.find_in_page_id),
+                        item(R.id.reader_mode_menu_id),
+                        item(R.id.universal_install),
+                        item(R.id.request_desktop_site_id),
+                        item(R.id.auto_dark_web_contents_id),
+                        item(R.id.get_image_descriptions_id),
+                        item(R.id.divider_line_id),
+                        item(R.id.preferences_id),
+                        item(R.id.help_id)));
+
+        assertMenuItemsAreEqual(modelList, expectedItems);
+
+        // Ensure the text of the menu item is correct
+        assertEquals(
+                "Get image descriptions",
+                findItemById(modelList, R.id.get_image_descriptions_id)
+                        .model
+                        .get(AppMenuItemProperties.TITLE));
+
+        // Enable the feature and ensure text changes
+        when(mPrefService.getBoolean(Pref.ACCESSIBILITY_IMAGE_LABELS_ENABLED_ANDROID))
+                .thenReturn(true);
+
+        modelList = mTabbedAppMenuPropertiesDelegate.getMenuItems();
+        assertEquals(
+                "Stop image descriptions",
+                findItemById(modelList, R.id.get_image_descriptions_id)
+                        .model
+                        .get(AppMenuItemProperties.TITLE));
+
+        // Setup no wifi condition, and "only on wifi" user option.
+        DeviceConditions noWifi =
+                new DeviceConditions(false, 75, ConnectionType.CONNECTION_2G, false, false, true);
+        DeviceConditions.setForTesting(noWifi);
+        when(mPrefService.getBoolean(Pref.ACCESSIBILITY_IMAGE_LABELS_ONLY_ON_WIFI))
+                .thenReturn(true);
+
+        modelList = mTabbedAppMenuPropertiesDelegate.getMenuItems();
+        assertEquals(
+                "Get image descriptions",
+                findItemById(modelList, R.id.get_image_descriptions_id)
+                        .model
+                        .get(AppMenuItemProperties.TITLE));
+    }
+
+    @Test
+    @DisableFeatures(ChromeFeatureList.ANDROID_OPEN_INCOGNITO_AS_WINDOW)
+    public void testMenuItems_Accessibility_ImageDescriptions() {
+        setUpMocksForPageMenu();
+        when(mTab.getUrl()).thenReturn(JUnitTestGURLs.SEARCH_URL);
+        when(mTab.isNativePage()).thenReturn(false);
+        doReturn(false)
+                .when(mSaveAndShareItemBuilder)
+                .shouldShowPaintPreview(anyBoolean(), any(Tab.class));
+        doReturn(false)
+                .when(mTabbedAppMenuPropertiesDelegate)
+                .shouldShowTranslateMenuItem(any(Tab.class));
+
+        // Ensure the get image descriptions option is shown as needed
+        when(mPrefService.getBoolean(Pref.ACCESSIBILITY_IMAGE_LABELS_ENABLED_ANDROID))
+                .thenReturn(false);
+
+        // Test specific setup
+        ThreadUtils.hasSubtleSideEffectsSetThreadAssertsDisabledForTesting(true);
+        AccessibilityStateTestHelper.setIsKnownScreenReaderEnabledForTesting(true);
+
+        ModelList modelList = mTabbedAppMenuPropertiesDelegate.getMenuItems();
+
+        List<MenuItem> expectedItems =
+                new ArrayList<>(
+                        Arrays.asList(
+                                item(R.id.icon_row_menu_id),
+                                item(R.id.new_tab_menu_id),
+                                item(R.id.new_incognito_tab_menu_id),
                                 item(
                                         R.id.tab_groups_parent_menu_id,
-                                        item(R.id.add_to_group_menu_id),
-                                        item(R.id.create_new_tab_group_menu_id))));
+                                        item(R.id.create_new_tab_group_menu_id)),
+                                item(R.id.divider_line_id),
+                                item(
+                                        R.id.history_parent_menu_id,
+                                        item(R.id.open_history_menu_id),
+                                        item(R.id.recent_tabs_menu_id)),
+                                item(R.id.quick_delete_menu_id),
+                                item(R.id.divider_line_id),
+                                item(R.id.downloads_menu_id),
+                                getExpectedBookmarksParentMenuItem()));
 
-        if (ExtensionsBuildflags.ENABLE_DESKTOP_ANDROID_EXTENSIONS) {
+        if (ExtensionsBuildflags.ENABLE_EXTENSIONS_CORE) {
             expectedItems.add(
                     item(
                             R.id.extensions_parent_menu_id,
@@ -1965,18 +2281,30 @@ public class TabbedAppMenuPropertiesDelegateUnitTest {
                             item(R.id.extensions_webstore_menu_id)));
         }
 
+        expectedItems.add(
+                item(
+                        R.id.passwords_and_autofill_parent_menu_id,
+                        item(R.id.google_password_manager_menu_id),
+                        item(R.id.payment_methods_menu_id),
+                        item(R.id.addresses_and_more_menu_id)));
+
         expectedItems.addAll(
                 Arrays.asList(
                         item(R.id.divider_line_id),
                         item(
                                 R.id.save_and_share_parent_menu_id,
-                                item(R.id.universal_install),
-                                item(R.id.divider_line_id),
                                 item(R.id.share_menu_id),
                                 item(R.id.copy_link_menu_id),
                                 item(R.id.send_to_devices_menu_id),
-                                item(R.id.qr_code_menu_id)),
-                        item(R.id.find_in_page_id)));
+                                item(R.id.qr_code_menu_id),
+                                item(R.id.divider_line_id),
+                                item(R.id.universal_install)),
+                        item(R.id.find_in_page_id),
+                        item(
+                                R.id.more_tools_menu_id,
+                                item(R.id.reader_mode_menu_id),
+                                item(R.id.divider_line_id),
+                                item(R.id.info_menu_id))));
 
         if (!DeviceInfo.isDesktop()) {
             expectedItems.add(item(R.id.request_desktop_site_id));
@@ -2047,48 +2375,20 @@ public class TabbedAppMenuPropertiesDelegateUnitTest {
                                 item(R.id.icon_row_menu_id),
                                 item(R.id.new_tab_menu_id),
                                 item(R.id.new_incognito_tab_menu_id),
-                                item(R.id.divider_line_id),
                                 item(
-                                        R.id.passwords_and_autofill_parent_menu_id,
-                                        item(R.id.google_password_manager_menu_id),
-                                        item(R.id.payment_methods_menu_id),
-                                        item(R.id.addresses_and_more_menu_id)),
+                                        R.id.tab_groups_parent_menu_id,
+                                        item(R.id.create_new_tab_group_menu_id)),
+                                item(R.id.divider_line_id),
                                 item(
                                         R.id.history_parent_menu_id,
                                         item(R.id.open_history_menu_id),
-                                        item(R.id.recent_tabs_menu_id),
-                                        item(R.id.quick_delete_menu_id)),
-                                item(R.id.info_menu_id),
-                                item(R.id.page_info_divider_line_id),
+                                        item(R.id.recent_tabs_menu_id)),
+                                item(R.id.quick_delete_menu_id),
+                                item(R.id.divider_line_id),
                                 item(R.id.downloads_menu_id),
-                                item(
-                                        R.id.bookmarks_parent_menu_id,
-                                        item(R.id.all_bookmarks_menu_id),
-                                        item(R.id.bookmark_this_page_menu_id),
-                                        item(R.id.toggle_bookmarks_bar_menu_id),
-                                        item(R.id.divider_line_id),
-                                        item(
-                                                R.id.reading_list_parent_menu_id,
-                                                item(R.id.add_to_reading_list_menu_id),
-                                                item(R.id.show_reading_list_menu_id)),
-                                        item(R.id.divider_line_id),
-                                        item(R.id.bookmark_menu_id),
-                                        item(R.id.bookmark_menu_id),
-                                        item(
-                                                R.id.bookmark_folder_menu_id,
-                                                item(R.id.bookmark_menu_id),
-                                                item(R.id.bookmark_menu_id)),
-                                        item(R.id.divider_line_id),
-                                        item(
-                                                R.id.bookmark_folder_menu_id,
-                                                item(R.id.bookmark_folder_menu_id, item(0))),
-                                        item(R.id.bookmark_folder_menu_id, item(0))),
-                                item(
-                                        R.id.tab_groups_parent_menu_id,
-                                        item(R.id.add_to_group_menu_id),
-                                        item(R.id.create_new_tab_group_menu_id))));
+                                getExpectedBookmarksParentMenuItem()));
 
-        if (ExtensionsBuildflags.ENABLE_DESKTOP_ANDROID_EXTENSIONS) {
+        if (ExtensionsBuildflags.ENABLE_EXTENSIONS_CORE) {
             expectedItems.add(
                     item(
                             R.id.extensions_parent_menu_id,
@@ -2097,18 +2397,30 @@ public class TabbedAppMenuPropertiesDelegateUnitTest {
                             item(R.id.extensions_webstore_menu_id)));
         }
 
+        expectedItems.add(
+                item(
+                        R.id.passwords_and_autofill_parent_menu_id,
+                        item(R.id.google_password_manager_menu_id),
+                        item(R.id.payment_methods_menu_id),
+                        item(R.id.addresses_and_more_menu_id)));
+
         expectedItems.addAll(
                 Arrays.asList(
                         item(R.id.divider_line_id),
                         item(
                                 R.id.save_and_share_parent_menu_id,
-                                item(R.id.universal_install),
-                                item(R.id.divider_line_id),
                                 item(R.id.share_menu_id),
                                 item(R.id.copy_link_menu_id),
                                 item(R.id.send_to_devices_menu_id),
-                                item(R.id.qr_code_menu_id)),
-                        item(R.id.find_in_page_id)));
+                                item(R.id.qr_code_menu_id),
+                                item(R.id.divider_line_id),
+                                item(R.id.universal_install)),
+                        item(R.id.find_in_page_id),
+                        item(
+                                R.id.more_tools_menu_id,
+                                item(R.id.reader_mode_menu_id),
+                                item(R.id.divider_line_id),
+                                item(R.id.info_menu_id))));
 
         if (!DeviceInfo.isDesktop()) {
             expectedItems.add(item(R.id.request_desktop_site_id));
@@ -2138,101 +2450,21 @@ public class TabbedAppMenuPropertiesDelegateUnitTest {
         when(mTab.getUrl()).thenReturn(JUnitTestGURLs.SEARCH_URL);
         doReturn(true)
                 .when(mTabbedAppMenuPropertiesDelegate)
-                .shouldShowContentFilterHelpCenterMenuItem(any(Tab.class));
+                .shouldShowContentFilterHelpCenterMenuItem();
         doReturn(false)
                 .when(mTabbedAppMenuPropertiesDelegate)
                 .shouldShowManagedByMenuItem(any(Tab.class));
 
         ModelList modelList = mTabbedAppMenuPropertiesDelegate.getMenuItems();
 
-        // TODO(crbug.com/427240031): Stop asserting on menu items that are not subject of this
-        // test.
-        List<MenuItem> expectedItems =
-                new ArrayList<>(
-                        Arrays.asList(
-                                item(R.id.icon_row_menu_id),
-                                item(R.id.new_tab_menu_id),
-                                item(R.id.new_incognito_tab_menu_id),
-                                item(R.id.divider_line_id),
-                                item(
-                                        R.id.passwords_and_autofill_parent_menu_id,
-                                        item(R.id.google_password_manager_menu_id),
-                                        item(R.id.payment_methods_menu_id),
-                                        item(R.id.addresses_and_more_menu_id)),
-                                item(
-                                        R.id.history_parent_menu_id,
-                                        item(R.id.open_history_menu_id),
-                                        item(R.id.recent_tabs_menu_id),
-                                        item(R.id.quick_delete_menu_id)),
-                                item(R.id.info_menu_id),
-                                item(R.id.page_info_divider_line_id),
-                                item(R.id.downloads_menu_id),
-                                item(
-                                        R.id.bookmarks_parent_menu_id,
-                                        item(R.id.all_bookmarks_menu_id),
-                                        item(R.id.bookmark_this_page_menu_id),
-                                        item(R.id.toggle_bookmarks_bar_menu_id),
-                                        item(R.id.divider_line_id),
-                                        item(
-                                                R.id.reading_list_parent_menu_id,
-                                                item(R.id.add_to_reading_list_menu_id),
-                                                item(R.id.show_reading_list_menu_id)),
-                                        item(R.id.divider_line_id),
-                                        item(R.id.bookmark_menu_id),
-                                        item(R.id.bookmark_menu_id),
-                                        item(
-                                                R.id.bookmark_folder_menu_id,
-                                                item(R.id.bookmark_menu_id),
-                                                item(R.id.bookmark_menu_id)),
-                                        item(R.id.divider_line_id),
-                                        item(
-                                                R.id.bookmark_folder_menu_id,
-                                                item(R.id.bookmark_folder_menu_id, item(0))),
-                                        item(R.id.bookmark_folder_menu_id, item(0))),
-                                item(
-                                        R.id.tab_groups_parent_menu_id,
-                                        item(R.id.add_to_group_menu_id),
-                                        item(R.id.create_new_tab_group_menu_id))));
-
-        if (ExtensionsBuildflags.ENABLE_DESKTOP_ANDROID_EXTENSIONS) {
-            expectedItems.add(
-                    item(
-                            R.id.extensions_parent_menu_id,
-                            item(R.id.extensions_menu_menu_id),
-                            item(R.id.manage_extensions_menu_id),
-                            item(R.id.extensions_webstore_menu_id)));
-        }
-
-        expectedItems.addAll(
+        // Last two items are of our interest.
+        assertTrue(modelList.size() >= 2);
+        modelList.removeRange(0, modelList.size() - 2);
+        assertMenuItemsAreEqual(
+                modelList,
                 Arrays.asList(
-                        item(R.id.divider_line_id),
-                        item(
-                                R.id.save_and_share_parent_menu_id,
-                                item(R.id.universal_install),
-                                item(R.id.divider_line_id),
-                                item(R.id.share_menu_id),
-                                item(R.id.copy_link_menu_id),
-                                item(R.id.send_to_devices_menu_id),
-                                item(R.id.qr_code_menu_id)),
-                        item(R.id.find_in_page_id)));
-
-        if (!DeviceInfo.isDesktop()) {
-            expectedItems.add(item(R.id.request_desktop_site_id));
-        }
-
-        expectedItems.addAll(
-                Arrays.asList(
-                        item(R.id.auto_dark_web_contents_id),
-                        item(R.id.divider_line_id),
-                        item(R.id.preferences_id),
-                        item(
-                                R.id.help_parent_menu_id,
-                                item(R.id.about_chrome_menu_id),
-                                item(R.id.help_id),
-                                item(R.id.report_issue_menu_id)),
                         item(R.id.menu_item_content_filter_divider_line_id),
                         item(R.id.menu_item_content_filter_help_center_id)));
-        assertMenuItemsAreEqual(modelList, expectedItems);
     }
 
     @Test
@@ -2377,7 +2609,7 @@ public class TabbedAppMenuPropertiesDelegateUnitTest {
         setMenuOptions(new MenuOptions().withShowAddToHomeScreen());
         doReturn(true)
                 .when(mTabbedAppMenuPropertiesDelegate)
-                .shouldShowContentFilterHelpCenterMenuItem(any(Tab.class));
+                .shouldShowContentFilterHelpCenterMenuItem();
 
         assertEquals(MenuGroup.PAGE_MENU, mTabbedAppMenuPropertiesDelegate.getMenuGroup());
         ModelList modelList = mTabbedAppMenuPropertiesDelegate.getMenuItems();
@@ -2388,6 +2620,7 @@ public class TabbedAppMenuPropertiesDelegateUnitTest {
     @Test
     public void testNewIncognitoTabOption_WithReauthInProgress() {
         setUpMocksForPageMenu();
+        when(mTab.isIncognito()).thenReturn(true);
         setMenuOptions(
                 new MenuOptions()
                         .withShowTranslate()
@@ -2423,21 +2656,87 @@ public class TabbedAppMenuPropertiesDelegateUnitTest {
     }
 
     @Test
-    @EnableFeatures(DomDistillerFeatures.READER_MODE_IMPROVEMENTS + ":always_on_entry_point/false")
-    public void readerModeEntryPointDisabled() {
+    public void testIncognitoMenuItemViewBinder_EnabledState() {
+        Context context =
+                new ContextThemeWrapper(
+                        ContextUtils.getApplicationContext(), R.style.Theme_BrowserUI_DayNight);
+        View view = LayoutInflater.from(context).inflate(R.layout.custom_view_menu_item, null);
+        View title = view.findViewById(R.id.title);
+
+        PropertyModel model =
+                new PropertyModel.Builder(AppMenuItemProperties.ALL_KEYS)
+                        .with(AppMenuItemProperties.MENU_ITEM_ID, R.id.new_incognito_tab_menu_id)
+                        .with(AppMenuItemProperties.ENABLED, false)
+                        .build();
+        PropertyModelChangeProcessor.create(model, view, IncognitoMenuItemViewBinder::bind);
+
+        assertFalse(view.isEnabled());
+        assertFalse(view.isFocusable());
+        assertFalse(title.isEnabled());
+        assertFalse(title.isFocusable());
+
+        model.set(AppMenuItemProperties.ENABLED, true);
+        assertTrue(view.isEnabled());
+        assertTrue(view.isFocusable());
+        assertTrue(title.isEnabled());
+        assertFalse(title.isFocusable());
+    }
+
+    @Test
+    public void testIncognitoMenuItemViewBinder_ShortcutText() {
+        Context context =
+                new ContextThemeWrapper(
+                        ContextUtils.getApplicationContext(), R.style.Theme_BrowserUI_DayNight);
+        View view = LayoutInflater.from(context).inflate(R.layout.custom_view_menu_item, null);
+        TextView shortcut = view.findViewById(R.id.menu_item_shortcut);
+
+        PropertyModel model =
+                new PropertyModel.Builder(AppMenuItemProperties.ALL_KEYS)
+                        .with(AppMenuItemProperties.MENU_ITEM_ID, R.id.new_incognito_window_menu_id)
+                        .build();
+        PropertyModelChangeProcessor.create(model, view, IncognitoMenuItemViewBinder::bind);
+
+        assertEquals(View.GONE, shortcut.getVisibility());
+
+        model.set(AppMenuItemProperties.SHORTCUT_TEXT, "Ctrl+Shift+N");
+        assertEquals(View.VISIBLE, shortcut.getVisibility());
+        assertEquals("Ctrl+Shift+N", shortcut.getText().toString());
+
+        model.set(AppMenuItemProperties.SHORTCUT_TEXT, "");
+        assertEquals(View.GONE, shortcut.getVisibility());
+
+        model.set(AppMenuItemProperties.SHORTCUT_TEXT, "Ctrl+Shift+N");
+        assertEquals(View.VISIBLE, shortcut.getVisibility());
+
+        model.set(AppMenuItemProperties.SHORTCUT_TEXT, null);
+        assertEquals(View.GONE, shortcut.getVisibility());
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.ANDROID_KEYBOARD_SHORTCUT_HINTS)
+    public void testShortcutTextPopulatedWhenEnabled() {
         setUpMocksForPageMenu();
         when(mTab.getUrl()).thenReturn(JUnitTestGURLs.EXAMPLE_URL);
         doReturn(mTabModel).when(mTabModelSelector).getCurrentModel();
 
+        KeyboardShortcuts.Natives keyboardShortcutsJniMock = mock(KeyboardShortcuts.Natives.class);
+        KeyboardShortcutsJni.setInstanceForTesting(keyboardShortcutsJniMock);
+        when(keyboardShortcutsJniMock.getShortcutTextForCommandId(anyInt())).thenReturn("");
+        when(keyboardShortcutsJniMock.getShortcutTextForCommandId(ChromeCommandIds.NEW_TAB))
+                .thenReturn("Ctrl+T");
+
         ModelList modelList = mTabbedAppMenuPropertiesDelegate.getMenuItems();
 
-        assertFalse(isMenuVisible(modelList, R.id.reader_mode_menu_id));
+        // Check an arbitrary item to verify the SHORTCUT_TEXT wiring.
+        assertEquals(
+                "Ctrl+T",
+                findItemById(modelList, R.id.new_tab_menu_id)
+                        .model
+                        .get(AppMenuItemProperties.SHORTCUT_TEXT));
     }
 
     @Test
-    @DisableFeatures(DomDistillerFeatures.READER_MODE_IMPROVEMENTS + ":always_on_entry_point/false")
-    @EnableFeatures(DomDistillerFeatures.READER_MODE_DISTILL_IN_APP)
-    public void readerModeEntryPointEnabledWhenDistillingInApp() {
+    public void readerModeEntryPointEnabled() {
         setUpMocksForPageMenu();
         when(mTab.getUrl()).thenReturn(JUnitTestGURLs.EXAMPLE_URL);
         doReturn(mTabModel).when(mTabModelSelector).getCurrentModel();
@@ -2451,7 +2750,6 @@ public class TabbedAppMenuPropertiesDelegateUnitTest {
     }
 
     @Test
-    @EnableFeatures(DomDistillerFeatures.READER_MODE_IMPROVEMENTS + ":always_on_entry_point/true")
     public void readerModeEntryPointEnabled_ShowReadingMode() {
         setUpMocksForPageMenu();
         when(mTab.getUrl()).thenReturn(JUnitTestGURLs.EXAMPLE_URL);
@@ -2469,7 +2767,6 @@ public class TabbedAppMenuPropertiesDelegateUnitTest {
     }
 
     @Test
-    @EnableFeatures(DomDistillerFeatures.READER_MODE_IMPROVEMENTS + ":always_on_entry_point/true")
     public void readerModeEntryPointEnabled_HideReadingMode() {
         setUpMocksForPageMenu();
         when(mTab.getUrl()).thenReturn(JUnitTestGURLs.CHROME_DISTILLER_EXAMPLE_URL);
@@ -2487,7 +2784,6 @@ public class TabbedAppMenuPropertiesDelegateUnitTest {
     }
 
     @Test
-    @EnableFeatures(DomDistillerFeatures.READER_MODE_DISTILL_IN_APP)
     public void readerModeEntryPointEnabled_chromePage() {
         setUpMocksForPageMenu();
         when(mTab.getUrl()).thenReturn(new GURL(getOriginalNativeNtpUrl()));
@@ -2505,6 +2801,7 @@ public class TabbedAppMenuPropertiesDelegateUnitTest {
     @Test
     @EnableFeatures({ChromeFeatureList.SUBMENUS_IN_APP_MENU})
     public void nameWindowMenuVisible_Api31Enabled() {
+        MultiWindowTestUtils.ensureInitialized();
         setUpMocksForPageMenu();
         setMenuOptions(new MenuOptions());
         MultiWindowUtils.setMultiInstanceApi31EnabledForTesting(true);
@@ -2530,6 +2827,190 @@ public class TabbedAppMenuPropertiesDelegateUnitTest {
                 isMenuVisible(
                         createModelList(getSubmenuItems(modelList, R.id.more_tools_menu_id)),
                         R.id.name_window_menu_id));
+    }
+
+    /**
+     * Helper to set up a regular page menu on a tablet and return the More Tools submenu.
+     *
+     * @param isVerticalTabsEnabled The state to write to VERTICAL_TABS_ENABLED preferences.
+     * @return The populated ModelList for the More Tools submenu container.
+     */
+    private ModelList setUpPageMenuAndGetMoreToolsSubmenu(boolean isVerticalTabsEnabled) {
+        setUpMocksForPageMenu();
+        setMenuOptions(new MenuOptions());
+        when(mTabModel.getCount()).thenReturn(1);
+
+        ChromeSharedPreferences.getInstance()
+                .writeBoolean(ChromePreferenceKeys.VERTICAL_TABS_ENABLED, isVerticalTabsEnabled);
+
+        ModelList modelList = mTabbedAppMenuPropertiesDelegate.getMenuItems();
+        List<ListItem> moreToolsItems = getSubmenuItems(modelList, R.id.more_tools_menu_id);
+        return createModelList(moreToolsItems);
+    }
+
+    @Test
+    @EnableFeatures({ChromeFeatureList.ANDROID_VERTICAL_TABS})
+    @Config(qualifiers = "sw600dp")
+    public void tabLayoutToggleItem_ShowsVerticalOption_WhenHorizontalActive() {
+        // Set up the menu with vertical tabs disabled.
+        ModelList moreToolsSubmenu =
+                setUpPageMenuAndGetMoreToolsSubmenu(/* isVerticalTabsEnabled= */ false);
+
+        // Verify that the menu item exists in the submenu.
+        assertTrue(
+                "Vertical tabs menu item should exist in More tools",
+                isMenuVisible(moreToolsSubmenu, R.id.toggle_tab_layout_menu_id));
+
+        // Retrieve the item and inspect its model.
+        ListItem item = findItemById(moreToolsSubmenu, R.id.toggle_tab_layout_menu_id);
+        assertNotNull("Toggle layout item should be present", item);
+
+        CharSequence title = item.model.get(AppMenuItemProperties.TITLE);
+        assertNotNull("Title should not be null", title);
+
+        // Verify the title text contains "Show tabs vertically".
+        assertTrue(
+                "Title should contain 'Show tabs vertically'",
+                title.toString()
+                        .contains(
+                                ContextUtils.getApplicationContext()
+                                        .getString(
+                                                org.chromium.chrome.tab_ui.R.string
+                                                        .show_tabs_vertically)));
+    }
+
+    @Test
+    @EnableFeatures({ChromeFeatureList.ANDROID_VERTICAL_TABS})
+    @Config(qualifiers = "sw600dp")
+    public void tabLayoutToggleItem_ShowsHorizontalOption_WhenVerticalActive() {
+        // Set up the menu with vertical tabs enabled.
+        ModelList moreToolsSubmenu =
+                setUpPageMenuAndGetMoreToolsSubmenu(/* isVerticalTabsEnabled= */ true);
+
+        // The menu item id stays identical.
+        assertTrue(
+                "Vertical tabs item should exist in more tools",
+                isMenuVisible(moreToolsSubmenu, R.id.toggle_tab_layout_menu_id));
+
+        // Verify that the title dynamically changed to "Show tabs horizontally"
+        assertTrue(
+                "Title should shift to horizontal option",
+                isMenuVisibleWithCorrectTitle(
+                        moreToolsSubmenu,
+                        R.id.toggle_tab_layout_menu_id,
+                        ContextUtils.getApplicationContext()
+                                .getString(
+                                        org.chromium.chrome.tab_ui.R.string
+                                                .show_tabs_horizontally)));
+    }
+
+    @Test
+    @EnableFeatures({ChromeFeatureList.ANDROID_VERTICAL_TABS})
+    @Config(qualifiers = "sw600dp")
+    public void tabLayoutToggleItem_Disabled_WhenNotShowable() {
+        mCanActivateTabLayoutToggleMenu = false;
+        ModelList moreToolsSubmenu =
+                setUpPageMenuAndGetMoreToolsSubmenu(/* isVerticalTabsEnabled= */ false);
+
+        assertTrue(
+                "Vertical tabs item should exist in more tools when enabled",
+                isMenuVisible(moreToolsSubmenu, R.id.toggle_tab_layout_menu_id));
+        ListItem item = findItemById(moreToolsSubmenu, R.id.toggle_tab_layout_menu_id);
+        assertNotNull(item);
+        assertFalse(
+                "Vertical tabs item should be disabled when not showable.",
+                item.model.get(AppMenuItemProperties.ENABLED));
+    }
+
+    @Test
+    @EnableFeatures({ChromeFeatureList.ANDROID_VERTICAL_TABS})
+    @Config(qualifiers = "sw600dp")
+    public void tabLayoutToggleItem_showsNewBadge() {
+        when(mTracker.shouldTriggerHelpUi(FeatureConstants.ANDROID_VERTICAL_TABS_NEW_LABEL))
+                .thenReturn(true);
+
+        ModelList moreToolsSubmenu =
+                setUpPageMenuAndGetMoreToolsSubmenu(/* isVerticalTabsEnabled= */ false);
+
+        ListItem item = findItemById(moreToolsSubmenu, R.id.toggle_tab_layout_menu_id);
+        assertNotNull("Toggle layout menu item should be present", item);
+
+        CharSequence title = item.model.get(AppMenuItemProperties.TITLE);
+        assertNotNull(title);
+        assertTrue(
+                "Title should contain 'Show tabs vertically'",
+                title.toString()
+                        .contains(
+                                ContextUtils.getApplicationContext()
+                                        .getString(
+                                                org.chromium.chrome.tab_ui.R.string
+                                                        .show_tabs_vertically)));
+
+        assertTrue("Title should carry New badge spans", title instanceof Spannable);
+        Spannable spannableTitle = (Spannable) title;
+        Object[] spans = spannableTitle.getSpans(0, spannableTitle.length(), Object.class);
+        assertTrue("Spannable title should carry badge style spans", spans.length > 0);
+
+        verify(mTracker).shouldTriggerHelpUi(FeatureConstants.ANDROID_VERTICAL_TABS_NEW_LABEL);
+        verify(mTracker).dismissed(FeatureConstants.ANDROID_VERTICAL_TABS_NEW_LABEL);
+    }
+
+    @Test
+    @EnableFeatures({ChromeFeatureList.ANDROID_VERTICAL_TABS})
+    @Config(qualifiers = "sw600dp")
+    public void tabLayoutToggleItem_suppressesBadgeWhenVerticalActive() {
+        // When vertical tabs are active, the option switches to horizontal, so the "New" badge
+        // should not show.
+        ModelList moreToolsSubmenu =
+                setUpPageMenuAndGetMoreToolsSubmenu(/* isVerticalTabsEnabled= */ true);
+
+        ListItem item = findItemById(moreToolsSubmenu, R.id.toggle_tab_layout_menu_id);
+        assertNotNull(item);
+
+        CharSequence title = item.model.get(AppMenuItemProperties.TITLE);
+        assertNotNull(title);
+        assertTrue(
+                title.toString()
+                        .contains(
+                                ContextUtils.getApplicationContext()
+                                        .getString(
+                                                org.chromium.chrome.tab_ui.R.string
+                                                        .show_tabs_horizontally)));
+
+        // Verify the title is a plain String without the badge spans attached.
+        assertFalse("Title should not contain New text", title.toString().contains("New"));
+        assertFalse("Title should not carry badge spans", title instanceof Spannable);
+        verify(mTracker, never()).shouldTriggerHelpUi(any());
+    }
+
+    @Test
+    @EnableFeatures({ChromeFeatureList.ANDROID_VERTICAL_TABS})
+    @Config(qualifiers = "sw600dp")
+    public void tabLayoutToggleItem_DesktopDevice_SuppressesNewBadge() {
+        // Mock device form factor as Desktop.
+        DeviceInfo.setIsDesktopForTesting(true);
+
+        ModelList moreToolsSubmenu =
+                setUpPageMenuAndGetMoreToolsSubmenu(/* isVerticalTabsEnabled= */ false);
+
+        ListItem item = findItemById(moreToolsSubmenu, R.id.toggle_tab_layout_menu_id);
+        assertNotNull("Toggle layout menu item should be present", item);
+
+        CharSequence title = item.model.get(AppMenuItemProperties.TITLE);
+        assertNotNull("Title should not be null", title);
+        assertTrue(
+                title.toString()
+                        .contains(
+                                ContextUtils.getApplicationContext()
+                                        .getString(
+                                                org.chromium.chrome.tab_ui.R.string
+                                                        .show_tabs_vertically)));
+
+        // Verify the title is a plain String without the badge spans attached.
+        assertFalse(
+                "Title should not contain New text on Desktop", title.toString().contains("New"));
+        assertFalse("Title should not carry badge spans on Desktop", title instanceof Spannable);
+        verify(mTracker, never()).shouldTriggerHelpUi(any());
     }
 
     @Test
@@ -2596,7 +3077,7 @@ public class TabbedAppMenuPropertiesDelegateUnitTest {
     @Test
     public void pageZoomMenuOption_NotVisibleInReadingMode() {
         setUpMocksForPageMenu();
-        PageZoomUtils.setShouldShowMenuItemForTesting(true);
+        PageZoomUtils.setShouldShowMenuItemForTesting(TriState.TRUE);
         when(mTab.getUrl()).thenReturn(JUnitTestGURLs.CHROME_DISTILLER_EXAMPLE_URL);
         when(mDomDistillerUrlUtilsJni.isDistilledPage(any())).thenReturn(true);
 
@@ -2700,7 +3181,15 @@ public class TabbedAppMenuPropertiesDelegateUnitTest {
 
         ModelList modelList = mTabbedAppMenuPropertiesDelegate.getMenuItems();
 
-        ListItem item = findItemById(modelList, R.id.ntp_customization_id);
+        ListItem item;
+        if (ChromeFeatureList.isEnabled(ChromeFeatureList.SUBMENUS_IN_APP_MENU)) {
+            List<ListItem> submenu = getSubmenuItems(modelList, R.id.more_tools_menu_id);
+            assertNotNull(submenu);
+            item = findItemById(submenu, R.id.ntp_customization_id);
+        } else {
+            item = findItemById(modelList, R.id.ntp_customization_id);
+        }
+        assertNotNull(item);
         assertTrue(item.model.get(AppMenuItemProperties.ENABLED));
     }
 
@@ -3034,6 +3523,27 @@ public class TabbedAppMenuPropertiesDelegateUnitTest {
     }
 
     @Test
+    public void testReadAloudMenuItem_Submenu_notReadable() {
+        when(mTab.getUrl()).thenReturn(JUnitTestGURLs.EXAMPLE_URL);
+        when(mReadAloudController.isReadable(any())).thenReturn(false);
+        setUpMocksForPageMenu();
+        ModelList modelList = mTabbedAppMenuPropertiesDelegate.getMenuItems();
+        assertFalse(
+                isMenuVisibleInSubmenu(modelList, R.id.more_tools_menu_id, R.id.readaloud_menu_id));
+    }
+
+    @Test
+    public void testReadAloudMenuItem_Submenu_readable() {
+        when(mTab.getUrl()).thenReturn(JUnitTestGURLs.EXAMPLE_URL);
+        when(mReadAloudController.isReadable(any())).thenReturn(true);
+        setUpMocksForPageMenu();
+        ModelList modelList = mTabbedAppMenuPropertiesDelegate.getMenuItems();
+        assertTrue(
+                isMenuVisibleInSubmenu(modelList, R.id.more_tools_menu_id, R.id.readaloud_menu_id));
+    }
+
+    @Test
+    @DisableFeatures({ChromeFeatureList.SUBMENUS_IN_APP_MENU})
     public void testReadAloudMenuItem_readAloudNotEnabled() {
         when(mTab.getUrl()).thenReturn(JUnitTestGURLs.EXAMPLE_URL);
         setUpMocksForPageMenu();
@@ -3042,6 +3552,7 @@ public class TabbedAppMenuPropertiesDelegateUnitTest {
     }
 
     @Test
+    @DisableFeatures({ChromeFeatureList.SUBMENUS_IN_APP_MENU})
     public void testReadAloudMenuItem_notReadable() {
         when(mTab.getUrl()).thenReturn(JUnitTestGURLs.EXAMPLE_URL);
         when(mReadAloudController.isReadable(any())).thenReturn(false);
@@ -3051,6 +3562,7 @@ public class TabbedAppMenuPropertiesDelegateUnitTest {
     }
 
     @Test
+    @DisableFeatures({ChromeFeatureList.SUBMENUS_IN_APP_MENU})
     public void testReadAloudMenuItem_readable() {
         when(mTab.getUrl()).thenReturn(JUnitTestGURLs.EXAMPLE_URL);
         when(mReadAloudController.isReadable(any())).thenReturn(true);
@@ -3060,21 +3572,25 @@ public class TabbedAppMenuPropertiesDelegateUnitTest {
     }
 
     @Test
+    @DisableFeatures({ChromeFeatureList.SUBMENUS_IN_APP_MENU})
     public void testReadaloudMenuItem_readableBecomesUnreadable() {
         testReadAloudMenuItemUpdates(/* initiallyReadable= */ true, /* laterReadable= */ false);
     }
 
     @Test
+    @DisableFeatures({ChromeFeatureList.SUBMENUS_IN_APP_MENU})
     public void testReadaloudMenuItem_unreadableBecomesReadable() {
         testReadAloudMenuItemUpdates(/* initiallyReadable= */ false, /* laterReadable= */ true);
     }
 
     @Test
+    @DisableFeatures({ChromeFeatureList.SUBMENUS_IN_APP_MENU})
     public void testReadaloudMenuItem_noChangeInReadability_notReadable() {
         testReadAloudMenuItemUpdates(/* initiallyReadable= */ false, /* laterReadable= */ false);
     }
 
     @Test
+    @DisableFeatures({ChromeFeatureList.SUBMENUS_IN_APP_MENU})
     public void testReadaloudMenuItem_noChangeInReadability_readable() {
         testReadAloudMenuItemUpdates(/* initiallyReadable= */ true, /* laterReadable= */ true);
     }
@@ -3113,7 +3629,7 @@ public class TabbedAppMenuPropertiesDelegateUnitTest {
     @Test
     @Config(qualifiers = "sw320dp")
     public void testPageMenuItems_ExtensionsSubmenu() {
-        if (!ExtensionsBuildflags.ENABLE_DESKTOP_ANDROID_EXTENSIONS) {
+        if (!ExtensionsBuildflags.ENABLE_EXTENSIONS_CORE) {
             return;
         }
 
@@ -3154,7 +3670,7 @@ public class TabbedAppMenuPropertiesDelegateUnitTest {
     @Config(qualifiers = "sw320dp")
     @DisableFeatures({ChromeFeatureList.SUBMENUS_IN_APP_MENU})
     public void testPageMenuItems_ExtensionsItem_SubmenusDisabled() {
-        if (!ExtensionsBuildflags.ENABLE_DESKTOP_ANDROID_EXTENSIONS) {
+        if (!ExtensionsBuildflags.ENABLE_EXTENSIONS_CORE) {
             return;
         }
 
@@ -3181,6 +3697,9 @@ public class TabbedAppMenuPropertiesDelegateUnitTest {
     @Test
     public void testAddToGroup() {
         setUpMocksForPageMenu();
+        Token token1 = new Token(1L, 1L);
+        when(mTabModel.getAllTabGroupIds()).thenReturn(Set.of(token1));
+        when(mTabModel.containsTabGroup(token1)).thenReturn(true);
         when(mTab.getUrl()).thenReturn(GURL.emptyGURL());
         ModelList modelList = mTabbedAppMenuPropertiesDelegate.getMenuItems();
         assertTrue(isMenuVisible(modelList, R.id.tab_groups_parent_menu_id));
@@ -3225,7 +3744,7 @@ public class TabbedAppMenuPropertiesDelegateUnitTest {
 
     private void setUpMocksForPageMenu() {
         mActivityTabProvider.setForTesting(mTab);
-        when(mLayoutStateProvider.isLayoutVisible(LayoutType.TAB_SWITCHER)).thenReturn(false);
+        when(mLayoutStateProvider.isLayoutVisible(LayoutType.HUB)).thenReturn(false);
         doReturn(false)
                 .when(mTabbedAppMenuPropertiesDelegate)
                 .shouldCheckBookmarkStar(any(Tab.class));
@@ -3234,13 +3753,10 @@ public class TabbedAppMenuPropertiesDelegateUnitTest {
                 .shouldEnableDownloadPage(any(Tab.class));
         doReturn(false)
                 .when(mTabbedAppMenuPropertiesDelegate)
-                .shouldShowReaderModePrefs(any(Tab.class));
-        doReturn(false)
-                .when(mTabbedAppMenuPropertiesDelegate)
                 .shouldShowManagedByMenuItem(any(Tab.class));
         doReturn(false)
                 .when(mTabbedAppMenuPropertiesDelegate)
-                .shouldShowContentFilterHelpCenterMenuItem(any(Tab.class));
+                .shouldShowContentFilterHelpCenterMenuItem();
         doReturn(true)
                 .when(mTabbedAppMenuPropertiesDelegate)
                 .shouldShowAutoDarkItem(any(Tab.class), eq(false));
@@ -3460,7 +3976,6 @@ public class TabbedAppMenuPropertiesDelegateUnitTest {
         private boolean mShowTranslate;
         private boolean mShowUpdate;
         private boolean mShowMoveToOtherWindow;
-        private boolean mShowReaderModePrefs;
         private boolean mShowAddToHomeScreen;
         private boolean mShowPaintPreview;
         private boolean mIsAutoDarkEnabled;
@@ -3479,10 +3994,6 @@ public class TabbedAppMenuPropertiesDelegateUnitTest {
 
         protected boolean showMoveToOtherWindow() {
             return mShowMoveToOtherWindow;
-        }
-
-        protected boolean showReaderModePrefs() {
-            return mShowReaderModePrefs;
         }
 
         protected boolean showPaintPreview() {
@@ -3513,11 +4024,6 @@ public class TabbedAppMenuPropertiesDelegateUnitTest {
             return this;
         }
 
-        protected MenuOptions setShowReaderModePrefs(boolean state) {
-            mShowReaderModePrefs = state;
-            return this;
-        }
-
         protected MenuOptions setShowAddToHomeScreen(boolean state) {
             mShowAddToHomeScreen = state;
             return this;
@@ -3545,10 +4051,6 @@ public class TabbedAppMenuPropertiesDelegateUnitTest {
             return setShowUpdate(true);
         }
 
-        protected MenuOptions withShowReaderModePrefs() {
-            return setShowReaderModePrefs(true);
-        }
-
         protected MenuOptions withShowAddToHomeScreen() {
             return setShowAddToHomeScreen(true);
         }
@@ -3565,7 +4067,6 @@ public class TabbedAppMenuPropertiesDelegateUnitTest {
             return this.withNativePage()
                     .withShowTranslate()
                     .withShowUpdate()
-                    .withShowReaderModePrefs()
                     .withShowAddToHomeScreen()
                     .withShowPaintPreview()
                     .withAutoDarkEnabled();
@@ -3584,11 +4085,8 @@ public class TabbedAppMenuPropertiesDelegateUnitTest {
         doReturn(options.showMoveToOtherWindow())
                 .when(mTabbedAppMenuPropertiesDelegate)
                 .shouldShowMoveToOtherWindow();
-        doReturn(options.showReaderModePrefs())
-                .when(mTabbedAppMenuPropertiesDelegate)
-                .shouldShowReaderModePrefs(any(Tab.class));
         doReturn(options.showPaintPreview())
-                .when(mTabbedAppMenuPropertiesDelegate)
+                .when(mSaveAndShareItemBuilder)
                 .shouldShowPaintPreview(anyBoolean(), any(Tab.class));
         when(mWebsitePreferenceBridgeJniMock.getContentSetting(any(), anyInt(), any(), any()))
                 .thenReturn(
@@ -3674,15 +4172,76 @@ public class TabbedAppMenuPropertiesDelegateUnitTest {
     }
 
     @Test
+    public void testHelpMenuItem_PolicyDisabled() {
+        setUpMocksForPageMenu();
+        when(mFeedbackPolicyManager.isUserFeedbackAllowed()).thenReturn(false);
+
+        ModelList modelList = mTabbedAppMenuPropertiesDelegate.getMenuItems();
+        ListItem helpParentItem = findItemById(modelList, R.id.help_parent_menu_id);
+        assertNotNull(helpParentItem);
+
+        assertTrue(
+                helpParentItem.model.containsKey(
+                        AppMenuItemWithSubmenuProperties.SUBMENU_PROVIDER));
+        List<ListItem> subItems =
+                helpParentItem.model.get(AppMenuItemWithSubmenuProperties.SUBMENU_PROVIDER).get();
+        assertNotNull(subItems);
+
+        // Should contain "About Chrome" and "Help Center", but NOT "Report an issue".
+        assertNotNull(findItemById(subItems, R.id.about_chrome_menu_id));
+        assertNotNull(findItemById(subItems, R.id.help_id));
+        assertNull(findItemById(subItems, R.id.report_issue_menu_id));
+    }
+
+    @Test
+    public void testHelpMenuItem_PolicyEnabled() {
+        setUpMocksForPageMenu();
+        when(mFeedbackPolicyManager.isUserFeedbackAllowed()).thenReturn(true);
+
+        ModelList modelList = mTabbedAppMenuPropertiesDelegate.getMenuItems();
+        ListItem helpParentItem = findItemById(modelList, R.id.help_parent_menu_id);
+        assertNotNull(helpParentItem);
+
+        assertTrue(
+                helpParentItem.model.containsKey(
+                        AppMenuItemWithSubmenuProperties.SUBMENU_PROVIDER));
+        List<ListItem> subItems =
+                helpParentItem.model.get(AppMenuItemWithSubmenuProperties.SUBMENU_PROVIDER).get();
+        assertNotNull(subItems);
+
+        // Should contain "About Chrome", "Help Center" and "Report an issue".
+        assertNotNull(findItemById(subItems, R.id.about_chrome_menu_id));
+        assertNotNull(findItemById(subItems, R.id.help_id));
+        assertNotNull(findItemById(subItems, R.id.report_issue_menu_id));
+    }
+
+    @Test
     @EnableFeatures(ChromeFeatureList.GLIC)
     public void glicItemEnabled() {
         setUpMocksForPageMenu();
         when(mTab.getUrl()).thenReturn(JUnitTestGURLs.EXAMPLE_URL);
         when(mTab.isIncognito()).thenReturn(false);
+        GlicEnabling.setEnabledForTesting(true);
 
         ModelList modelList = mTabbedAppMenuPropertiesDelegate.getMenuItems();
 
         assertTrue(isMenuVisible(modelList, R.id.glic_menu_id));
+    }
+
+    @Test
+    @EnableFeatures({ChromeFeatureList.GLIC, ChromeFeatureList.ENABLE_ANDROID_SIDE_PANEL})
+    public void glicItemDisabled_SidePanelNotShowable() {
+        setUpMocksForPageMenu();
+        when(mTab.getUrl()).thenReturn(JUnitTestGURLs.EXAMPLE_URL);
+        when(mTab.isIncognito()).thenReturn(false);
+        GlicEnabling.setEnabledForTesting(true);
+        GlicUtils.setIsSidePanelFormFactorForTesting(true);
+
+        when(mSideUiStateProvider.canShowSideUi(eq(SideUiId.SIDE_PANEL))).thenReturn(false);
+
+        ModelList modelList = mTabbedAppMenuPropertiesDelegate.getMenuItems();
+
+        assertFalse(isMenuVisible(modelList, R.id.glic_menu_id));
     }
 
     @Test
@@ -3691,6 +4250,7 @@ public class TabbedAppMenuPropertiesDelegateUnitTest {
         setUpMocksForPageMenu();
         when(mTab.getUrl()).thenReturn(JUnitTestGURLs.EXAMPLE_URL);
         when(mTab.isIncognito()).thenReturn(true);
+        GlicEnabling.setEnabledForTesting(true);
 
         ModelList modelList = mTabbedAppMenuPropertiesDelegate.getMenuItems();
 
@@ -3703,6 +4263,7 @@ public class TabbedAppMenuPropertiesDelegateUnitTest {
         setUpMocksForPageMenu();
         when(mTab.getUrl()).thenReturn(JUnitTestGURLs.EXAMPLE_URL);
         when(mTab.isIncognito()).thenReturn(false);
+        GlicEnabling.setEnabledForTesting(false);
 
         ModelList modelList = mTabbedAppMenuPropertiesDelegate.getMenuItems();
 
@@ -3710,283 +4271,88 @@ public class TabbedAppMenuPropertiesDelegateUnitTest {
     }
 
     @Test
-    @EnableFeatures({ChromeFeatureList.SUBMENUS_IN_APP_MENU})
-    public void testToggleBookmarksBarMenuItemString() {
-        when(mTab.getUrl()).thenReturn(org.chromium.url.JUnitTestGURLs.EXAMPLE_URL);
+    @EnableFeatures(ChromeFeatureList.GLIC)
+    public void glicItemDisabled_NotEnabled() {
         setUpMocksForPageMenu();
+        when(mTab.getUrl()).thenReturn(JUnitTestGURLs.EXAMPLE_URL);
+        when(mTab.isIncognito()).thenReturn(false);
+        GlicEnabling.setEnabledForTesting(false);
 
-        // Bookmark bar is visible.
-        when(mPrefService.getBoolean(Pref.SHOW_BOOKMARK_BAR)).thenReturn(true);
         ModelList modelList = mTabbedAppMenuPropertiesDelegate.getMenuItems();
-        ListItem bookmarksParent = findItemById(modelList, R.id.bookmarks_parent_menu_id);
-        assertNotNull(bookmarksParent);
-        List<ListItem> subItems =
-                bookmarksParent.model.get(AppMenuItemWithSubmenuProperties.SUBMENU_PROVIDER).get();
-        ListItem toggleItem = null;
-        for (ListItem item : subItems) {
-            if (item.model.get(AppMenuItemProperties.MENU_ITEM_ID)
-                    == R.id.toggle_bookmarks_bar_menu_id) {
-                toggleItem = item;
-                break;
-            }
-        }
-        assertNotNull(toggleItem);
-        assertEquals(
-                ContextUtils.getApplicationContext().getString(R.string.menu_hide_bookmarks_bar),
-                toggleItem.model.get(AppMenuItemProperties.TITLE));
 
-        // Bookmark bar is hidden.
-        when(mPrefService.getBoolean(Pref.SHOW_BOOKMARK_BAR)).thenReturn(false);
-        modelList = mTabbedAppMenuPropertiesDelegate.getMenuItems();
-        bookmarksParent = findItemById(modelList, R.id.bookmarks_parent_menu_id);
-        subItems =
-                bookmarksParent.model.get(AppMenuItemWithSubmenuProperties.SUBMENU_PROVIDER).get();
-        toggleItem = null;
-        for (ListItem item : subItems) {
-            if (item.model.get(AppMenuItemProperties.MENU_ITEM_ID)
-                    == R.id.toggle_bookmarks_bar_menu_id) {
-                toggleItem = item;
-                break;
-            }
-        }
-        assertNotNull(toggleItem);
-        assertEquals(
-                ContextUtils.getApplicationContext().getString(R.string.menu_show_bookmarks_bar),
-                toggleItem.model.get(AppMenuItemProperties.TITLE));
+        assertFalse(isMenuVisible(modelList, R.id.glic_menu_id));
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.TTC)
+    public void ttcItemEnabled() {
+        setUpMocksForPageMenu();
+        when(mTab.isIncognito()).thenReturn(false);
+        TtcKeyedService service = mock(TtcKeyedService.class);
+        when(service.isEnabled()).thenReturn(true);
+        TtcKeyedServiceFactory.setForTesting(service);
+
+        ModelList modelList = mTabbedAppMenuPropertiesDelegate.getMenuItems();
+
+        assertTrue(isMenuVisible(modelList, R.id.ttc_menu_id));
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.TTC)
+    public void ttcItemDisabled_Incognito() {
+        setUpMocksForPageMenu();
+        when(mTab.isIncognito()).thenReturn(true);
+        TtcKeyedService service = mock(TtcKeyedService.class);
+        when(service.isEnabled()).thenReturn(true);
+        TtcKeyedServiceFactory.setForTesting(service);
+
+        ModelList modelList = mTabbedAppMenuPropertiesDelegate.getMenuItems();
+
+        assertFalse(isMenuVisible(modelList, R.id.ttc_menu_id));
+    }
+
+    @Test
+    @DisableFeatures(ChromeFeatureList.TTC)
+    public void ttcItemDisabled_FeatureDisabled() {
+        setUpMocksForPageMenu();
+        when(mTab.isIncognito()).thenReturn(false);
+        TtcKeyedService service = mock(TtcKeyedService.class);
+        when(service.isEnabled()).thenReturn(true);
+        TtcKeyedServiceFactory.setForTesting(service);
+
+        ModelList modelList = mTabbedAppMenuPropertiesDelegate.getMenuItems();
+
+        assertFalse(isMenuVisible(modelList, R.id.ttc_menu_id));
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.TTC)
+    public void ttcItemDisabled_ServiceNotEnabled() {
+        setUpMocksForPageMenu();
+        when(mTab.isIncognito()).thenReturn(false);
+        TtcKeyedService service = mock(TtcKeyedService.class);
+        when(service.isEnabled()).thenReturn(false);
+        TtcKeyedServiceFactory.setForTesting(service);
+
+        ModelList modelList = mTabbedAppMenuPropertiesDelegate.getMenuItems();
+
+        assertFalse(isMenuVisible(modelList, R.id.ttc_menu_id));
     }
 
     @Test
     @EnableFeatures({ChromeFeatureList.SUBMENUS_IN_APP_MENU})
-    public void testBookmarkMenu_NoBookmarks() {
-        mBookmarkModel.removeAllUserBookmarks();
+    public void testTabGroupsItem_Present() {
         setUpMocksForPageMenu();
-        when(mTab.getUrl()).thenReturn(JUnitTestGURLs.EXAMPLE_URL);
-
-        ModelList modelList = mTabbedAppMenuPropertiesDelegate.getMenuItems();
-        ListItem bookmarksParent = findItemById(modelList, R.id.bookmarks_parent_menu_id);
-        assertNotNull(bookmarksParent);
-
-        List<ListItem> subItems =
-                bookmarksParent.model.get(AppMenuItemWithSubmenuProperties.SUBMENU_PROVIDER).get();
-
-        List<MenuItem> expectedSubItems =
-                Arrays.asList(
-                        item(R.id.all_bookmarks_menu_id),
-                        item(R.id.bookmark_this_page_menu_id),
-                        item(R.id.toggle_bookmarks_bar_menu_id),
-                        item(R.id.divider_line_id),
-                        item(
-                                R.id.reading_list_parent_menu_id,
-                                item(R.id.add_to_reading_list_menu_id),
-                                item(R.id.show_reading_list_menu_id)),
-                        item(R.id.divider_line_id),
-                        item(
-                                R.id.bookmark_folder_menu_id,
-                                item(R.id.bookmark_folder_menu_id, item(0))),
-                        item(R.id.bookmark_folder_menu_id, item(0)));
-
-        assertMenuItemsAreEqual(subItems, expectedSubItems);
-    }
-
-    @Test
-    @EnableFeatures({ChromeFeatureList.SUBMENUS_IN_APP_MENU})
-    public void testBookmarkMenu_NestedFolders() {
-        BookmarkId folderId =
-                mBookmarkModel.addFolder(mBookmarkModel.getDesktopFolderId(), 0, "Folder 2");
-        mBookmarkModel.addBookmark(folderId, 0, "Bookmark 1", JUnitTestGURLs.URL_1);
-        BookmarkId nestedFolderId = mBookmarkModel.addFolder(folderId, 1, "Nested Folder");
-        mBookmarkModel.addBookmark(nestedFolderId, 0, "Nested Bookmark", JUnitTestGURLs.URL_2);
-
-        setUpMocksForPageMenu();
-        when(mTab.getUrl()).thenReturn(JUnitTestGURLs.EXAMPLE_URL);
-
-        ModelList modelList = mTabbedAppMenuPropertiesDelegate.getMenuItems();
-        ListItem bookmarksParent = findItemById(modelList, R.id.bookmarks_parent_menu_id);
-        assertNotNull(bookmarksParent);
-
-        List<ListItem> subItems =
-                bookmarksParent.model.get(AppMenuItemWithSubmenuProperties.SUBMENU_PROVIDER).get();
-
-        List<MenuItem> expectedSubItems =
-                Arrays.asList(
-                        item(R.id.all_bookmarks_menu_id),
-                        item(R.id.bookmark_this_page_menu_id),
-                        item(R.id.toggle_bookmarks_bar_menu_id),
-                        item(R.id.divider_line_id),
-                        item(
-                                R.id.reading_list_parent_menu_id,
-                                item(R.id.add_to_reading_list_menu_id),
-                                item(R.id.show_reading_list_menu_id)),
-                        item(R.id.divider_line_id),
-                        item(R.id.bookmark_menu_id),
-                        item(R.id.bookmark_menu_id),
-                        item(
-                                R.id.bookmark_folder_menu_id,
-                                item(R.id.bookmark_menu_id),
-                                item(R.id.bookmark_menu_id)),
-                        item(
-                                R.id.bookmark_folder_menu_id,
-                                item(R.id.bookmark_menu_id),
-                                item(R.id.bookmark_folder_menu_id, item(R.id.bookmark_menu_id))),
-                        item(R.id.divider_line_id),
-                        item(
-                                R.id.bookmark_folder_menu_id,
-                                item(R.id.bookmark_folder_menu_id, item(0))),
-                        item(R.id.bookmark_folder_menu_id, item(0)));
-
-        assertMenuItemsAreEqual(subItems, expectedSubItems);
-
-        List<MenuItem> expectedTitles =
-                Arrays.asList(
-                        item(R.string.menu_bookmarks),
-                        item(R.string.menu_bookmark_this_page),
-                        item(R.string.menu_show_bookmarks_bar),
-                        item(0),
-                        item(
-                                R.string.menu_reading_list,
-                                item(R.string.menu_add_to_reading_list),
-                                item(R.string.menu_show_reading_list)),
-                        item(0),
-                        item("Bookmark 1"),
-                        item("Bookmark 2"),
-                        item(
-                                "Folder 1",
-                                item("Bookmark in folder 1"),
-                                item("Bookmark in folder 2")),
-                        item(
-                                "Folder 2",
-                                item("Bookmark 1"),
-                                item("Nested Folder", item("Nested Bookmark"))),
-                        item(0),
-                        item(R.string.menu_mobile_bookmarks, item("Partner bookmarks", item(0))),
-                        item(R.string.menu_other_bookmarks, item(0)));
-        assertMenuTitlesAreEqual(subItems, expectedTitles);
-    }
-
-    @Test
-    @EnableFeatures({ChromeFeatureList.SUBMENUS_IN_APP_MENU})
-    public void testBookmarkMenu_EmptyFolder() {
-        mBookmarkModel.addFolder(mBookmarkModel.getDesktopFolderId(), 0, "Empty Folder");
-
-        setUpMocksForPageMenu();
-        when(mTab.getUrl()).thenReturn(JUnitTestGURLs.EXAMPLE_URL);
-
-        ModelList modelList = mTabbedAppMenuPropertiesDelegate.getMenuItems();
-        ListItem bookmarksParent = findItemById(modelList, R.id.bookmarks_parent_menu_id);
-        assertNotNull(bookmarksParent);
-
-        List<ListItem> subItems =
-                bookmarksParent.model.get(AppMenuItemWithSubmenuProperties.SUBMENU_PROVIDER).get();
-
-        List<MenuItem> expectedSubItems =
-                Arrays.asList(
-                        item(R.id.all_bookmarks_menu_id),
-                        item(R.id.bookmark_this_page_menu_id),
-                        item(R.id.toggle_bookmarks_bar_menu_id),
-                        item(R.id.divider_line_id),
-                        item(
-                                R.id.reading_list_parent_menu_id,
-                                item(R.id.add_to_reading_list_menu_id),
-                                item(R.id.show_reading_list_menu_id)),
-                        item(R.id.divider_line_id),
-                        item(R.id.bookmark_menu_id),
-                        item(R.id.bookmark_menu_id),
-                        item(
-                                R.id.bookmark_folder_menu_id,
-                                item(R.id.bookmark_menu_id),
-                                item(R.id.bookmark_menu_id)),
-                        item(R.id.bookmark_folder_menu_id, item(0)),
-                        item(R.id.divider_line_id),
-                        item(
-                                R.id.bookmark_folder_menu_id,
-                                item(R.id.bookmark_folder_menu_id, item(0))),
-                        item(R.id.bookmark_folder_menu_id, item(0)));
-
-        assertMenuItemsAreEqual(subItems, expectedSubItems);
-    }
-
-    @Test
-    @EnableFeatures({ChromeFeatureList.SUBMENUS_IN_APP_MENU})
-    @SuppressWarnings("unchecked")
-    public void testBookmarkMenu_Favicons() {
-        BookmarkId bookmarkId = mBookmarkModel.getChildAt(mBookmarkModel.getDesktopFolderId(), 0);
-        BookmarkItem bookmarkItem = mBookmarkModel.getBookmarkById(bookmarkId);
-
-        setUpMocksForPageMenu();
-        when(mTab.getUrl()).thenReturn(JUnitTestGURLs.EXAMPLE_URL);
-
-        ModelList modelList = mTabbedAppMenuPropertiesDelegate.getMenuItems();
-        ListItem bookmarksParent = findItemById(modelList, R.id.bookmarks_parent_menu_id);
-        List<ListItem> subItems =
-                bookmarksParent.model.get(AppMenuItemWithSubmenuProperties.SUBMENU_PROVIDER).get();
-
-        ListItem bookmarkListItem = findItemById(subItems, R.id.bookmark_menu_id);
-        assertNotNull(bookmarkListItem);
-
-        LazyOneshotSupplier<Drawable> iconSupplier =
-                bookmarkListItem.model.get(AppMenuBookmarkItemProperties.ICON_SUPPLIER);
-        assertNotNull(iconSupplier);
-
-        Drawable mockFavicon = mock(Drawable.class);
-        doAnswer(
-                        invocation -> {
-                            ((Callback<Drawable>) invocation.getArgument(1)).onResult(mockFavicon);
-                            return null;
-                        })
-                .when(mBookmarkImageFetcher)
-                .fetchFaviconForBookmark(eq(bookmarkItem), any());
-
-        // Accessing the supplier should trigger the fetch.
-        iconSupplier.get();
-
-        verify(mBookmarkImageFetcher).fetchFaviconForBookmark(eq(bookmarkItem), any());
-        assertEquals(mockFavicon, iconSupplier.get());
-    }
-
-    @Test
-    @EnableFeatures({ChromeFeatureList.SUBMENUS_IN_APP_MENU})
-    public void testTabGroupsSubmenu_WithGroups() {
-        TabModel tabModel = Mockito.mock(TabModel.class);
-        when(mTabModelSelector.getCurrentModel()).thenReturn(tabModel);
-        when(mTabModelSelector.getModel(false)).thenReturn(tabModel);
-        when(tabModel.getProfile()).thenReturn(mProfile);
-
-        Token token1 = new Token(1L, 1L);
-        when(tabModel.getAllTabGroupIds()).thenReturn(java.util.Set.of(token1));
-        when(tabModel.getTabGroupTitle(token1)).thenReturn("Group 1");
-        when(tabModel.getTabGroupColorWithFallback(token1))
-                .thenReturn(org.chromium.components.tab_groups.TabGroupColorId.BLUE);
-
-        setUpMocksForPageMenu();
-        when(mTab.getUrl()).thenReturn(JUnitTestGURLs.EXAMPLE_URL);
-
         ListItem tabGroupsParent =
                 findItemById(
                         mTabbedAppMenuPropertiesDelegate.getMenuItems(),
                         R.id.tab_groups_parent_menu_id);
         assertNotNull(tabGroupsParent);
-
-        List<ListItem> subItems =
-                tabGroupsParent.model.get(AppMenuItemWithSubmenuProperties.SUBMENU_PROVIDER).get();
-
-        List<MenuItem> expectedSubItems =
-                Arrays.asList(
-                        item(R.id.add_to_group_menu_id),
-                        item(R.id.create_new_tab_group_menu_id),
-                        item(R.id.divider_line_id),
-                        item(R.id.tab_group_menu_item_id));
-
-        assertMenuItemsAreEqual(subItems, expectedSubItems);
-
-        ListItem groupItem = findItemById(subItems, R.id.tab_group_menu_item_id);
-        assertNotNull(groupItem);
-        assertEquals("Group 1", groupItem.model.get(AppMenuItemProperties.TITLE));
     }
 
     @Test
     public void testHomepageMenuItem_shouldShow() {
         setUpMocksForPageMenu();
-        when(mTab.getUrl()).thenReturn(JUnitTestGURLs.EXAMPLE_URL);
 
         HomepageManager homepageManagerMock = mock(HomepageManager.class);
         HomepageManager.setInstanceForTesting(homepageManagerMock);
@@ -4000,7 +4366,6 @@ public class TabbedAppMenuPropertiesDelegateUnitTest {
     @Test
     public void testHomepageMenuItem_shouldNotShow() {
         setUpMocksForPageMenu();
-        when(mTab.getUrl()).thenReturn(JUnitTestGURLs.EXAMPLE_URL);
 
         HomepageManager homepageManagerMock = mock(HomepageManager.class);
         HomepageManager.setInstanceForTesting(homepageManagerMock);
@@ -4011,7 +4376,268 @@ public class TabbedAppMenuPropertiesDelegateUnitTest {
         assertNull("Homepage menu item should not be visible", homepageItem);
     }
 
-    private static MenuItem item(Object id, MenuItem... subItems) {
-        return new MenuItem(id, subItems);
+    @Test
+    @EnableFeatures({ChromeFeatureList.CROSS_WINDOW_TAB_GROUP_OPERATIONS})
+    public void testAddToGroupMenuItemString_WithGroupsInAnotherWindow_FlagEnabled() {
+        TabModel tabModel = Mockito.mock(TabModel.class);
+        when(tabModel.isIncognito()).thenReturn(false);
+        when(mTabModelSelector.getCurrentModel()).thenReturn(tabModel);
+        when(mTabModelSelector.getModel(false)).thenReturn(tabModel);
+        when(tabModel.getTabGroupCount()).thenReturn(0);
+
+        TabWindowManager tabWindowManager = Mockito.mock(TabWindowManager.class);
+        TabWindowManagerSingleton.setTabWindowManagerForTesting(tabWindowManager);
+
+        TabModelSelector anotherSelector = Mockito.mock(TabModelSelector.class);
+        TabModel anotherTabModel = Mockito.mock(TabModel.class);
+        when(anotherTabModel.isIncognito()).thenReturn(false);
+        when(anotherSelector.getCurrentModel()).thenReturn(anotherTabModel);
+        when(anotherSelector.getModel(false)).thenReturn(anotherTabModel);
+        when(anotherTabModel.getTabGroupCount()).thenReturn(1);
+        Token groupId = Token.createRandom();
+        when(anotherTabModel.getAllTabGroupIds()).thenReturn(Set.of(groupId));
+        when(anotherTabModel.containsTabGroup(groupId)).thenReturn(true);
+        when(anotherTabModel.getTabGroupTitle(groupId)).thenReturn("Group");
+        when(anotherTabModel.getTabsInGroup(groupId)).thenReturn(List.of());
+
+        when(tabWindowManager.getAllTabModelSelectors())
+                .thenReturn(Arrays.asList(mTabModelSelector, anotherSelector));
+
+        assertEquals(
+                R.string.menu_add_tab_to_group,
+                mTabbedAppMenuPropertiesDelegate.getAddToGroupMenuItemString(null));
+    }
+
+    @Test
+    @DisableFeatures({ChromeFeatureList.CROSS_WINDOW_TAB_GROUP_OPERATIONS})
+    public void testAddToGroupMenuItemString_WithGroupsInAnotherWindow_FlagDisabled() {
+        TabModel tabModel = Mockito.mock(TabModel.class);
+        when(tabModel.isIncognito()).thenReturn(false);
+        when(mTabModelSelector.getCurrentModel()).thenReturn(tabModel);
+        when(mTabModelSelector.getModel(false)).thenReturn(tabModel);
+        when(tabModel.getTabGroupCount()).thenReturn(0);
+
+        TabWindowManager tabWindowManager = Mockito.mock(TabWindowManager.class);
+        TabWindowManagerSingleton.setTabWindowManagerForTesting(tabWindowManager);
+
+        TabModelSelector anotherSelector = Mockito.mock(TabModelSelector.class);
+        TabModel anotherTabModel = Mockito.mock(TabModel.class);
+        when(anotherTabModel.isIncognito()).thenReturn(false);
+        when(anotherSelector.getCurrentModel()).thenReturn(anotherTabModel);
+        when(anotherSelector.getModel(false)).thenReturn(anotherTabModel);
+        when(anotherTabModel.getTabGroupCount()).thenReturn(1);
+
+        when(tabWindowManager.getAllTabModelSelectors())
+                .thenReturn(Arrays.asList(mTabModelSelector, anotherSelector));
+
+        assertEquals(
+                R.string.menu_add_tab_to_new_group,
+                mTabbedAppMenuPropertiesDelegate.getAddToGroupMenuItemString(null));
+    }
+
+    @Test
+    public void testSaveAndShareModel_NonIncognito() {
+        setUpMocksForPageMenu();
+        when(mTab.isIncognito()).thenReturn(false);
+        WebappsUtils.setAddToHomeIntentSupportedForTesting(false);
+        doReturn(false)
+                .when(mSaveAndShareItemBuilder)
+                .shouldShowPaintPreview(anyBoolean(), any(Tab.class));
+
+        ModelList modelList = mTabbedAppMenuPropertiesDelegate.getMenuItems();
+        ListItem saveAndShareItem = findItemById(modelList, R.id.save_and_share_parent_menu_id);
+        assertNotNull(saveAndShareItem);
+
+        MenuItem expected =
+                item(
+                        R.id.save_and_share_parent_menu_id,
+                        item(R.id.share_menu_id),
+                        item(R.id.copy_link_menu_id),
+                        item(R.id.send_to_devices_menu_id),
+                        item(R.id.qr_code_menu_id));
+
+        assertMenuItemsAreEqual(Arrays.asList(saveAndShareItem), Arrays.asList(expected));
+    }
+
+    @Test
+    public void testSaveAndShareModel_Incognito() {
+        setUpMocksForPageMenu();
+        when(mTabModelSelector.getCurrentModel()).thenReturn(mIncognitoTabModel);
+        when(mTab.isIncognito()).thenReturn(true);
+        WebappsUtils.setAddToHomeIntentSupportedForTesting(false);
+        doReturn(false)
+                .when(mSaveAndShareItemBuilder)
+                .shouldShowPaintPreview(anyBoolean(), any(Tab.class));
+
+        ModelList modelList = mTabbedAppMenuPropertiesDelegate.getMenuItems();
+        ListItem saveAndShareItem = findItemById(modelList, R.id.save_and_share_parent_menu_id);
+        assertNotNull(saveAndShareItem);
+
+        MenuItem expected =
+                item(
+                        R.id.save_and_share_parent_menu_id,
+                        item(R.id.share_menu_id),
+                        item(R.id.copy_link_menu_id),
+                        item(R.id.qr_code_menu_id));
+
+        assertMenuItemsAreEqual(Arrays.asList(saveAndShareItem), Arrays.asList(expected));
+    }
+
+    private MenuItem getExpectedBookmarksParentMenuItem() {
+        return item(
+                R.id.bookmarks_parent_menu_id,
+                item(R.id.bookmark_this_page_menu_id),
+                item(R.id.divider_line_id),
+                item(R.id.all_bookmarks_menu_id),
+                item(
+                        R.id.bookmark_folder_menu_id,
+                        item(R.id.bookmark_folder_menu_id, item(R.id.empty_item_menu_id))),
+                item(R.id.bookmark_folder_menu_id, item(R.id.empty_item_menu_id)),
+                item(
+                        R.id.reading_list_parent_menu_id,
+                        item(R.id.show_reading_list_menu_id),
+                        item(R.id.add_to_reading_list_menu_id)),
+                item(R.id.divider_line_id),
+                item(R.id.toggle_bookmarks_bar_menu_id),
+                item(R.id.divider_line_id),
+                item(R.id.bookmarks_header_menu_id),
+                item(R.id.bookmark_menu_id),
+                item(R.id.bookmark_menu_id),
+                item(
+                        R.id.bookmark_folder_menu_id,
+                        item(R.id.bookmark_menu_id),
+                        item(R.id.bookmark_menu_id)));
+    }
+
+    @Test
+    @DisableFeatures(ChromeFeatureList.ENABLE_DOWNLOAD_SAVE_AS_CONTEXT_MENU)
+    public void testDownloadActionModel_SaveAsDisabled() {
+        setUpMocksForPageMenu();
+        ModelList modelList = mTabbedAppMenuPropertiesDelegate.getMenuItems();
+        ListItem iconRow = findItemById(modelList, R.id.icon_row_menu_id);
+        ListItem item =
+                findItemById(
+                        iconRow.model.get(AppMenuItemProperties.ADDITIONAL_ICONS),
+                        R.id.offline_page_id);
+        assertEquals(
+                ContextUtils.getApplicationContext().getString(R.string.download_page),
+                item.model.get(AppMenuItemProperties.TITLE));
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.ENABLE_DOWNLOAD_SAVE_AS_CONTEXT_MENU)
+    public void testDownloadActionModel_SaveAsEnabled() {
+        DeviceInfo.setIsDesktopForTesting(true);
+        setUpMocksForPageMenu();
+        ModelList modelList = mTabbedAppMenuPropertiesDelegate.getMenuItems();
+        ListItem iconRow = findItemById(modelList, R.id.icon_row_menu_id);
+        ListItem item =
+                findItemById(
+                        iconRow.model.get(AppMenuItemProperties.ADDITIONAL_ICONS),
+                        R.id.offline_page_id);
+        assertEquals(
+                ContextUtils.getApplicationContext().getString(R.string.menu_save_page_as),
+                item.model.get(AppMenuItemProperties.TITLE));
+    }
+
+    @Test
+    @DisableFeatures(ChromeFeatureList.ENABLE_DOWNLOAD_SAVE_AS_CONTEXT_MENU)
+    public void testDownloadPageItemTitle_SaveAsDisabled() {
+        SaveAndShareItemBuilder builder =
+                new SaveAndShareItemBuilder(
+                        ContextUtils.getApplicationContext(),
+                        new AppMenuItemTheme(
+                                ContextUtils.getApplicationContext(), mTabModelSelector),
+                        /* isMenuIconAtStart= */ false,
+                        mTabModelSelector);
+        ListItem item = builder.buildDownloadPageItem(/* showIcon= */ true);
+        assertEquals(
+                ContextUtils.getApplicationContext().getString(R.string.menu_download_page),
+                item.model.get(AppMenuItemProperties.TITLE));
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.ENABLE_DOWNLOAD_SAVE_AS_CONTEXT_MENU)
+    public void testDownloadPageItemTitle_SaveAsEnabled() {
+        DeviceInfo.setIsDesktopForTesting(true);
+        SaveAndShareItemBuilder builder =
+                new SaveAndShareItemBuilder(
+                        ContextUtils.getApplicationContext(),
+                        new AppMenuItemTheme(
+                                ContextUtils.getApplicationContext(), mTabModelSelector),
+                        /* isMenuIconAtStart= */ false,
+                        mTabModelSelector);
+        ListItem item = builder.buildDownloadPageItem(/* showIcon= */ true);
+        assertEquals(
+                ContextUtils.getApplicationContext().getString(R.string.menu_save_page_as),
+                item.model.get(AppMenuItemProperties.TITLE));
+    }
+
+    private boolean isPrintVisible(boolean isDesktop) {
+        DeviceInfo.setIsDesktopForTesting(isDesktop);
+        setUpMocksForPageMenu();
+        return isMenuVisible(mTabbedAppMenuPropertiesDelegate.getMenuItems(), R.id.print_id);
+    }
+
+    @Test
+    public void testPrintMenuItem_Desktop() {
+        when(mPrefService.getBoolean(Pref.PRINTING_ENABLED)).thenReturn(true);
+        assertTrue(isPrintVisible(/* isDesktop= */ true));
+
+        when(mTab.getUrl()).thenReturn(new GURL("chrome://version"));
+        assertTrue(isPrintVisible(/* isDesktop= */ true));
+
+        when(mTab.getWebContents()).thenReturn(null);
+        assertFalse(isPrintVisible(/* isDesktop= */ true));
+
+        when(mTab.getWebContents()).thenReturn(mWebContents);
+        when(mTab.isNativePage()).thenReturn(true);
+        when(mTab.getNativePage()).thenReturn(mNativePage);
+        when(mNativePage.isPdf()).thenReturn(false);
+        assertFalse(isPrintVisible(/* isDesktop= */ true));
+
+        when(mNativePage.isPdf()).thenReturn(true);
+        assertTrue(isPrintVisible(/* isDesktop= */ true));
+
+        when(mPrefService.getBoolean(Pref.PRINTING_ENABLED)).thenReturn(false);
+        assertFalse(isPrintVisible(/* isDesktop= */ true));
+    }
+
+    @Test
+    public void testPrintMenuItem_Mobile() {
+        when(mPrefService.getBoolean(Pref.PRINTING_ENABLED)).thenReturn(true);
+        assertFalse(isPrintVisible(/* isDesktop= */ false));
+
+        when(mTab.getUrl()).thenReturn(new GURL("chrome://version"));
+        assertFalse(isPrintVisible(/* isDesktop= */ false));
+
+        when(mTab.isNativePage()).thenReturn(true);
+        when(mTab.getNativePage()).thenReturn(mNativePage);
+        when(mNativePage.isPdf()).thenReturn(true);
+        assertTrue(isPrintVisible(/* isDesktop= */ false));
+
+        when(mPrefService.getBoolean(Pref.PRINTING_ENABLED)).thenReturn(false);
+        assertFalse(isPrintVisible(/* isDesktop= */ false));
+    }
+
+    private MenuItem getExpectedBookmarksParentMenuTitle() {
+        return item(
+                R.string.menu_bookmarks_and_lists,
+                item(R.string.menu_bookmark_this_tab),
+                item(0),
+                item(R.string.menu_show_all_bookmarks),
+                item(R.string.menu_mobile_bookmarks, item("Partner bookmarks", item(0))),
+                item(R.string.menu_other_bookmarks, item(0)),
+                item(
+                        R.string.menu_reading_list,
+                        item(R.string.menu_show_reading_list),
+                        item(R.string.menu_add_to_reading_list)),
+                item(0),
+                item(R.string.menu_show_bookmarks_bar),
+                item(0),
+                item(R.string.bookmarks),
+                item("Bookmark 1"),
+                item("Bookmark 2"),
+                item("Folder 1", item("Bookmark in folder 1"), item("Bookmark in folder 2")));
     }
 }

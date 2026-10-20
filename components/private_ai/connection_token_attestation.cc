@@ -5,6 +5,8 @@
 #include "components/private_ai/connection_token_attestation.h"
 
 #include <algorithm>
+#include <optional>
+#include <string>
 #include <utility>
 
 #include "base/check.h"
@@ -18,8 +20,10 @@
 #include "base/task/sequenced_task_runner.h"
 #include "components/private_ai/common/base64_utils.h"
 #include "components/private_ai/common/private_ai_logger.h"
+#include "components/private_ai/features.h"
 #include "components/private_ai/phosphor/token_manager.h"
 #include "components/private_ai/proto/private_ai.pb.h"
+#include "components/private_ai/proto_utils/client_metadata_utils.h"
 #include "net/third_party/quiche/src/quiche/blind_sign_auth/proto/spend_token_data.pb.h"
 
 namespace private_ai {
@@ -43,12 +47,16 @@ ConnectionTokenAttestation::PendingRequest::operator=(PendingRequest&&) =
 
 ConnectionTokenAttestation::ConnectionTokenAttestation(
     std::unique_ptr<Connection> inner_connection,
+    proto::FeatureName feature_name,
     phosphor::TokenManager* token_manager,
     PrivateAiLogger* logger,
-    base::OnceCallback<void(StatusCode)> on_disconnect)
+    base::OnceCallback<void(StatusCode)> on_disconnect,
+    version_info::Channel channel)
     : inner_connection_(std::move(inner_connection)),
+      feature_name_(feature_name),
       token_manager_(token_manager),
       logger_(logger),
+      channel_(channel),
       on_disconnect_(std::move(on_disconnect)) {
   CHECK(inner_connection_);
   CHECK(token_manager_);
@@ -78,7 +86,7 @@ void ConnectionTokenAttestation::Send(proto::PrivateAiRequest request,
 
   if (attestation_state_ == AttestationState::kTokenFailed) {
     std::move(callback).Run(
-        base::unexpected(StatusCode::kClientAttestationFailed));
+        base::unexpected(StatusCode::kClientAttestationFailedRequestNotSent));
     return;
   }
 
@@ -93,11 +101,20 @@ void ConnectionTokenAttestation::FetchToken() {
 }
 
 void ConnectionTokenAttestation::OnTokenFetched(
-    std::optional<phosphor::BlindSignedAuthToken> auth_token) {
+    base::expected<phosphor::BlindSignedAuthToken,
+                   phosphor::TokenManager::Error> auth_token) {
   if (!auth_token.has_value()) {
-    logger_->LogError(FROM_HERE, "Failed to get anonymous auth token");
-    CallOnDisconnect(StatusCode::kClientAttestationFailed);
-    return;
+    switch (auth_token.error()) {
+      case phosphor::TokenManager::Error::kAccountNotAvailable:
+        logger_->LogError(FROM_HERE,
+                          "Failed to get anonymous auth token: not signed in");
+        CallOnDisconnect(StatusCode::kAccountNotAvailable);
+        return;
+      case phosphor::TokenManager::Error::kTokenFetchFailed:
+        logger_->LogError(FROM_HERE, "Failed to get anonymous auth token");
+        CallOnDisconnect(StatusCode::kClientAttestationTokenFetchFailed);
+        return;
+    }
   }
 
   // The `quiche::BlindSignAuth` library returns the token and extensions
@@ -111,7 +128,7 @@ void ConnectionTokenAttestation::OnTokenFetched(
 
   if (!token_str || !extensions_str) {
     logger_->LogError(FROM_HERE, "Failed to decode anonymous auth token");
-    CallOnDisconnect(StatusCode::kClientAttestationFailed);
+    CallOnDisconnect(StatusCode::kClientAttestationTokenDecodeFailed);
     return;
   }
 
@@ -121,10 +138,12 @@ void ConnectionTokenAttestation::OnTokenFetched(
 
   proto::PrivateAiRequest request_proto;
 
-  request_proto.set_feature_name(
-      proto::FeatureName::FEATURE_NAME_CHROME_CLIENT_ATTESTATION);
-  request_proto.mutable_anonymous_token_request()->set_anonymous_token(
-      token_data.SerializeAsString());
+  request_proto.set_feature_name(feature_name_);
+  auto* anon_token_req = request_proto.mutable_anonymous_token_request();
+  anon_token_req->set_anonymous_token(token_data.SerializeAsString());
+  if (base::FeatureList::IsEnabled(kPrivateAiSendClientMetadata)) {
+    *anon_token_req->mutable_client_metadata() = CreateClientMetadata(channel_);
+  }
 
   logger_->LogInfo(FROM_HERE, "Sending auth token");
 
@@ -157,21 +176,29 @@ void ConnectionTokenAttestation::OnInnerConnectionResponse(
     base::expected<proto::PrivateAiResponse, StatusCode> result) {
   if (attestation_state_ == AttestationState::kTokenSent) {
     if (!result.has_value()) {
-      // If *any* error occurs before we receive the first successful response
-      // after sending the token, we assume it's an attestation failure caused
-      // by an invalid token. The server closes the stream on invalid token,
-      // which surfaces as an error here.
-      logger_->LogError(
-          FROM_HERE,
-          base::StrCat({"Request failed with error code: ",
-                        base::NumberToString(static_cast<int>(result.error())),
-                        ", assuming token rejection."}));
-      attestation_state_ = AttestationState::kTokenFailed;
-      std::move(original_callback)
-          .Run(base::unexpected(StatusCode::kClientAttestationFailed));
-      // The connection is now considered broken due to failed attestation.
-      CallOnDisconnect(StatusCode::kClientAttestationFailed);
-      return;
+      base::UmaHistogramEnumeration(
+          "PrivateAi.Client.ClientAttestationRequestFailureReason",
+          result.error());
+
+      if (result.error() == StatusCode::kConnectionClosedByServer) {
+        // The server closes the stream on an invalid token without sending an
+        // error response, which surfaces as kConnectionClosedByServer before
+        // the first successful response.
+        logger_->LogError(FROM_HERE,
+                          base::StrCat({"Request failed with error code: ",
+                                        base::NumberToString(
+                                            static_cast<int>(result.error())),
+                                        ", assuming token rejection."}));
+        attestation_state_ = AttestationState::kTokenFailed;
+        if (original_callback) {
+          std::move(original_callback)
+              .Run(base::unexpected(
+                  StatusCode::kClientAttestationPresumedRejectedByServer));
+        }
+        // The connection is now considered broken due to failed attestation.
+        CallOnDisconnect(StatusCode::kClientAttestationFailedConnectionAborted);
+        return;
+      }
     } else {
       // If we reach here with result.has_value() and we were in kTokenSent
       // state, it means this is the first successful response, so the token was
@@ -180,7 +207,9 @@ void ConnectionTokenAttestation::OnInnerConnectionResponse(
     }
   }
 
-  std::move(original_callback).Run(std::move(result));
+  if (original_callback) {
+    std::move(original_callback).Run(std::move(result));
+  }
 }
 
 void ConnectionTokenAttestation::OnDestroy(StatusCode status_code) {

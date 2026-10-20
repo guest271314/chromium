@@ -4,10 +4,13 @@
 
 #include "components/private_ai/connection_proxy.h"
 
+#include <optional>
+#include <string>
 #include <utility>
 
 #include "base/base64url.h"
 #include "base/check.h"
+#include "base/functional/bind.h"
 #include "base/logging.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_util.h"
@@ -15,10 +18,10 @@
 #include "components/private_ai/common/base64_utils.h"
 #include "components/private_ai/common/private_ai_logger.h"
 #include "components/private_ai/phosphor/token_manager.h"
-#include "content/public/browser/network_service_instance.h"
 #include "net/http/http_request_headers.h"
 #include "net/proxy_resolution/proxy_config.h"
 #include "services/cert_verifier/public/mojom/cert_verifier_service_factory.mojom.h"
+#include "services/network/public/cpp/network_service_buildflags.h"
 #include "services/network/public/mojom/proxy_config.mojom.h"
 #include "url/origin.h"
 
@@ -84,11 +87,13 @@ ConnectionProxy::ConnectionProxy(
     const GURL& proxy_url,
     PrivateAiLogger* logger,
     phosphor::TokenManager* token_manager,
+    PrivateAiNetworkDriver* network_driver,
     InnerConnectionFactory inner_connection_factory,
     base::OnceCallback<void(StatusCode)> on_disconnect)
     : proxy_url_(proxy_url),
       logger_(logger),
       token_manager_(token_manager),
+      network_driver_(network_driver),
       inner_connection_factory_(std::move(inner_connection_factory)),
       on_disconnect_(std::move(on_disconnect)) {
   CHECK(proxy_url_.is_valid());
@@ -115,7 +120,9 @@ void ConnectionProxy::Send(proto::PrivateAiRequest request,
 
   if (!inner_connection_) {
     // Initialization failed or connection disconnected.
-    std::move(callback).Run(base::unexpected(StatusCode::kError));
+    std::move(callback).Run(
+        base::unexpected(StatusCode::kConnectionClosedByClient));
+    CallOnDisconnect(StatusCode::kConnectionClosedByClient);
     return;
   }
 
@@ -151,20 +158,35 @@ void ConnectionProxy::FetchToken() {
 }
 
 void ConnectionProxy::OnProxyToken(
-    std::optional<phosphor::BlindSignedAuthToken> auth_token) {
+    base::expected<phosphor::BlindSignedAuthToken,
+                   phosphor::TokenManager::Error> auth_token) {
   is_initializing_ = false;
 
-  if (!auth_token) {
-    logger_->LogError(FROM_HERE, "Failed to get auth token for proxy.");
-    CallOnDisconnect(StatusCode::kError);
-    return;
+  if (!auth_token.has_value()) {
+    switch (auth_token.error()) {
+      case phosphor::TokenManager::Error::kAccountNotAvailable:
+        logger_->LogError(FROM_HERE,
+                          "Failed to get auth token for proxy: not signed in.");
+        CallOnDisconnect(StatusCode::kAccountNotAvailable);
+        return;
+      case phosphor::TokenManager::Error::kTokenFetchFailed:
+        logger_->LogError(FROM_HERE, "Failed to get auth token for proxy.");
+        CallOnDisconnect(StatusCode::kProxyTokenFetchFailed);
+        return;
+    }
   }
 
-
+  // NOTE: If adding/modifying fields in 'context_params' here, also
+  // update the manual copying logic in PrivateAiNetworkDriverIOS
+  // (components/private_ai/ios/private_ai_network_driver_ios.mm) because iOS
+  // does not use the standard multi-process NetworkContext and must manually
+  // configure the in-process network context.
   auto context_params = network::mojom::NetworkContextParams::New();
+#if BUILDFLAG(IS_CT_SUPPORTED)
   context_params->enforce_chrome_ct_policy = true;
-  context_params->cert_verifier_params = content::GetCertVerifierParams(
-      cert_verifier::mojom::CertVerifierCreationParams::New());
+#endif
+  context_params->cert_verifier_params =
+      network_driver_->GetCertVerifierParams();
   context_params->initial_custom_proxy_config =
       internal::CreateCustomProxyConfig(proxy_url_, *auth_token, logger_);
 
@@ -176,11 +198,20 @@ void ConnectionProxy::OnProxyToken(
   logger_->LogInfo(FROM_HERE, "Got auth token for proxy. Connecting to " +
                                   proxy_url_.spec());
 
-  content::CreateNetworkContextInNetworkService(
+  network_driver_->CreateNetworkContext(
       proxied_context_.BindNewPipeAndPassReceiver(), std::move(context_params));
 
+  std::optional<bool> has_chrome_proxy = network_driver_->IsProxyConfigured();
+
   inner_connection_ =
-      std::move(inner_connection_factory_).Run(proxied_context_.get());
+      std::move(inner_connection_factory_)
+          .Run(base::BindRepeating(
+                   [](base::WeakPtr<ConnectionProxy> self)
+                       -> network::mojom::NetworkContext* {
+                     return self ? self->proxied_context_.get() : nullptr;
+                   },
+                   weak_factory_.GetWeakPtr()),
+               has_chrome_proxy);
 
   for (auto& pending : pending_requests_) {
     inner_connection_->Send(std::move(pending.request), pending.timeout,

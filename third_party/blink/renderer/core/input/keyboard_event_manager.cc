@@ -12,6 +12,7 @@
 #include "third_party/blink/public/common/input/web_input_event.h"
 #include "third_party/blink/public/mojom/frame/user_activation_notification_type.mojom-blink.h"
 #include "third_party/blink/public/mojom/input/focus_type.mojom-blink.h"
+#include "third_party/blink/public/mojom/manifest/display_mode.mojom-blink.h"
 #include "third_party/blink/public/platform/platform.h"
 #include "third_party/blink/renderer/core/dom/element.h"
 #include "third_party/blink/renderer/core/dom/events/simulated_click_options.h"
@@ -272,11 +273,11 @@ WebInputEventResult KeyboardEventManager::KeyEvent(
     mojom::blink::DisplayMode display_mode =
         frame_->GetWidgetForLocalRoot()->DisplayMode();
     should_send_key_events_to_js =
-        display_mode == blink::mojom::DisplayMode::kMinimalUi ||
-        display_mode == blink::mojom::DisplayMode::kStandalone ||
-        display_mode == blink::mojom::DisplayMode::kFullscreen ||
-        display_mode == blink::mojom::DisplayMode::kUnframed ||
-        display_mode == blink::mojom::DisplayMode::kWindowControlsOverlay;
+        display_mode == mojom::blink::DisplayMode::kMinimalUi ||
+        display_mode == mojom::blink::DisplayMode::kStandalone ||
+        display_mode == mojom::blink::DisplayMode::kFullscreen ||
+        display_mode == mojom::blink::DisplayMode::kUnframed ||
+        display_mode == mojom::blink::DisplayMode::kWindowControlsOverlay;
   }
 
   // We have 2 level of not exposing key event to js, not send and send but not
@@ -426,16 +427,29 @@ void KeyboardEventManager::DefaultKeyboardEventHandler(
     KeyboardEvent* event,
     Node* possible_focused_node) {
   if (event->type() == event_type_names::kKeydown) {
+    const String& key = event->key();
+    const bool is_process_key = event->keyCode() == kVKeyProcessKey;
+    // Editor commands can consume Home/End before focusgroup navigation.
+    // For non-process-key Home/End events, try focusgroup navigation first.
+    // HandleKeyboardEvent performs the runtime feature check before
+    // dispatching.
+    if (!is_process_key && (key == keywords::kHome || key == keywords::kEnd)) {
+      if (FocusgroupController::HandleKeyboardEvent(event, frame_)) {
+        event->SetDefaultHandled();
+        return;
+      }
+    }
+
     frame_->GetEditor().HandleKeyboardEvent(event);
     if (event->DefaultHandled())
       return;
 
     // Do not perform the default action when inside a IME composition context.
     // TODO(dtapuska): Replace this with isComposing support. crbug.com/625686
-    if (event->keyCode() == kVKeyProcessKey)
+    if (is_process_key) {
       return;
+    }
 
-    const AtomicString key(event->key());
     if (key == keywords::kTab) {
       DefaultTabEventHandler(event);
     } else if (key == keywords::kEscape) {
@@ -557,28 +571,28 @@ void KeyboardEventManager::DefaultNavigationKeyEventHandler(
   }
 }
 
-void KeyboardEventManager::DefaultTabEventHandler(KeyboardEvent* event) {
+bool KeyboardEventManager::DefaultTabEventHandler(KeyboardEvent* event) {
   DCHECK_EQ(event->type(), event_type_names::kKeydown);
   // We should only advance focus on tabs if no special modifier keys are held
   // down.
   if (event->ctrlKey() || event->metaKey()) {
-    return;
+    return false;
   }
 
 #if !BUILDFLAG(IS_MAC)
   // Option-Tab is a shortcut based on a system-wide preference on Mac but
   // should be ignored on all other platforms.
   if (event->altKey()) {
-    return;
+    return false;
   }
 #endif
 
   Page* page = frame_->GetPage();
   if (!page) {
-    return;
+    return false;
   }
   if (!page->TabKeyCyclesThroughElements()) {
-    return;
+    return false;
   }
 
   mojom::blink::FocusType focus_type = event->shiftKey()
@@ -587,7 +601,7 @@ void KeyboardEventManager::DefaultTabEventHandler(KeyboardEvent* event) {
 
   // Tabs can be used in design mode editing.
   if (frame_->GetDocument()->InDesignMode()) {
-    return;
+    return false;
   }
 
   if (page->GetFocusController().AdvanceFocus(focus_type,
@@ -596,7 +610,9 @@ void KeyboardEventManager::DefaultTabEventHandler(KeyboardEvent* event) {
                                                   ->GetInputDeviceCapabilities()
                                                   ->FiresTouchEvents(false))) {
     event->SetDefaultHandled();
+    return true;
   }
+  return false;
 }
 
 void KeyboardEventManager::DefaultEscapeEventHandler(KeyboardEvent* event) {

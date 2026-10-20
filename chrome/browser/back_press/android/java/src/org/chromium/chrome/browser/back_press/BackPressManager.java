@@ -21,10 +21,10 @@ import org.chromium.base.CallbackUtils;
 import org.chromium.base.ObserverList;
 import org.chromium.base.lifetime.Destroyable;
 import org.chromium.base.metrics.RecordHistogram;
+import org.chromium.base.supplier.SupplierUtils;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.feature_engagement.TrackerFactory;
-import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.components.browser_ui.widget.gesture.BackPressHandler;
 import org.chromium.components.browser_ui.widget.gesture.BackPressHandler.BackPressResult;
@@ -54,8 +54,8 @@ public class BackPressManager implements Destroyable, BackPressHandlerRegistry {
     private static final int sMetricsMaxValue;
 
     static {
-        // Max value is 28 - 1 obsolete value +1 for 0 indexing = 28 elements.
-        SparseIntArray map = new SparseIntArray(28);
+        // Values [0-30], including obsolete ones. 31 is the histogram boundary.
+        SparseIntArray map = new SparseIntArray(31);
         map.put(Type.TEXT_BUBBLE, 0);
         // map.put(Type.VR_DELEGATE, 1);
         // map.put(Type.AR_DELEGATE, 2);
@@ -83,9 +83,12 @@ public class BackPressManager implements Destroyable, BackPressHandlerRegistry {
         map.put(Type.CANCEL_TAB_SWITCHER_DRAG, 25);
         map.put(Type.ACTOR_OVERLAY, 26);
         map.put(Type.FUSEBOX_POPUP, 27);
+        map.put(Type.REALBOX, 28);
+        map.put(Type.TAB_SEARCH_OVERLAY, 29);
+        map.put(Type.SEND_TAB_TO_SELF, 30);
 
         // Add new one here and update array size.
-        sMetricsMaxValue = 28;
+        sMetricsMaxValue = 31;
         sMetricsMap = map;
     }
 
@@ -136,8 +139,7 @@ public class BackPressManager implements Destroyable, BackPressHandlerRegistry {
         @Override
         public void handleOnBackPressed() {
             mLastCalledHandlerType = -1;
-            if (ChromeFeatureList.sLockBackPressHandlerAtStart.isEnabled()
-                    && mActiveHandler != null) {
+            if (mActiveHandler != null) {
                 Boolean enabled = mActiveHandler.getHandleBackPressChangedSupplier().get();
                 if (enabled != null && enabled) {
                     int result = mActiveHandler.handleBackPress();
@@ -152,6 +154,8 @@ public class BackPressManager implements Destroyable, BackPressHandlerRegistry {
                     BackPressManager.this.handleBackPress();
                 }
             } else {
+                // mActiveHandler is always null on lower versions which do not support
+                // handleOnBackStarted
                 BackPressManager.this.handleBackPress();
             }
 
@@ -208,10 +212,6 @@ public class BackPressManager implements Destroyable, BackPressHandlerRegistry {
     private final OnBackPressedCallbackImpl mCallback = new OnBackPressedCallbackImpl(false);
 
     static final String HISTOGRAM = "Android.BackPress.Intercept";
-    static final String HISTOGRAM_CUSTOM_TAB_SAME_TASK =
-            "Android.BackPress.Intercept.CustomTab.SameTask";
-    static final String HISTOGRAM_CUSTOM_TAB_SEPARATE_TASK =
-            "Android.BackPress.Intercept.CustomTab.SeparateTask";
     static final String FAILURE_HISTOGRAM = "Android.BackPress.Failure";
 
     private final @Nullable BackPressHandler[] mHandlers = new BackPressHandler[Type.NUM_TYPES];
@@ -225,8 +225,8 @@ public class BackPressManager implements Destroyable, BackPressHandlerRegistry {
     private @Nullable OnBackInvokedCallback mOnSystemNavigationCallback;
     private Runnable mFallbackOnBackPressed;
     private int mLastCalledHandlerType = -1;
-    private Supplier<Boolean> mIsGestureNavEnabledSupplier = () -> false;
-    private @Nullable Supplier<Profile> mProfileSupplier;
+    private Supplier<Boolean> mIsGestureNavEnabledSupplier = SupplierUtils.alwaysFalse();
+    private @Nullable Supplier<@Nullable Profile> mProfileSupplier;
     private final ObserverList<OnSystemNavigationObserver> mOnSystemNavigationObservers =
             new ObserverList<>();
 
@@ -238,19 +238,6 @@ public class BackPressManager implements Destroyable, BackPressHandlerRegistry {
     public static void record(@Type int type) {
         RecordHistogram.recordEnumeratedHistogram(
                 HISTOGRAM, sMetricsMap.get(type), sMetricsMaxValue);
-    }
-
-    /**
-     * Record when the back press is consumed by a custom tab.
-     *
-     * @param type The {@link Type} which consumes the back press event.
-     * @param separateTask Whether the custom tab runs in a separate task.
-     */
-    public static void recordForCustomTab(@Type int type, boolean separateTask) {
-        RecordHistogram.recordEnumeratedHistogram(
-                separateTask ? HISTOGRAM_CUSTOM_TAB_SEPARATE_TASK : HISTOGRAM_CUSTOM_TAB_SAME_TASK,
-                sMetricsMap.get(type),
-                sMetricsMaxValue);
     }
 
     /**
@@ -404,7 +391,7 @@ public class BackPressManager implements Destroyable, BackPressHandlerRegistry {
     }
 
     /** Set a supplier to provide the current Profile. */
-    public void setProfileSupplier(Supplier<Profile> supplier) {
+    public void setProfileSupplier(Supplier<@Nullable Profile> supplier) {
         mProfileSupplier = supplier;
     }
 
@@ -496,13 +483,7 @@ public class BackPressManager implements Destroyable, BackPressHandlerRegistry {
     @VisibleForTesting
     @RequiresApi(api = Build.VERSION_CODES.TIRAMISU)
     void createOnSystemNavigationCallback() {
-        mOnSystemNavigationCallback =
-                new OnBackInvokedCallback() {
-                    @Override
-                    public void onBackInvoked() {
-                        onSystemNavigationInternal();
-                    }
-                };
+        mOnSystemNavigationCallback = this::onSystemNavigationInternal;
     }
 
     @Override
@@ -543,13 +524,5 @@ public class BackPressManager implements Destroyable, BackPressHandlerRegistry {
 
     public static String getHistogramForTesting() {
         return HISTOGRAM;
-    }
-
-    public static String getCustomTabSameTaskHistogramForTesting() {
-        return HISTOGRAM_CUSTOM_TAB_SAME_TASK;
-    }
-
-    public static String getCustomTabSeparateTaskHistogramForTesting() {
-        return HISTOGRAM_CUSTOM_TAB_SEPARATE_TASK;
     }
 }

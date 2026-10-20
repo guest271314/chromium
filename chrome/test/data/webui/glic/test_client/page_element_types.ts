@@ -75,7 +75,6 @@ export interface PageElementTypes {
   mic: HTMLAudioElement;
   audioDuckingOn: HTMLButtonElement;
   audioDuckingOff: HTMLButtonElement;
-  desktopScreenshot: HTMLButtonElement;
   desktopScreenshotImg: HTMLImageElement;
   desktopScreenshotErrorReason: HTMLSpanElement;
   panelScreenshot: HTMLButtonElement;
@@ -189,10 +188,19 @@ export interface PageElementTypes {
   manageSkillsBtn: HTMLButtonElement;
   browseSkillsBtn: HTMLButtonElement;
   skillsList: HTMLUListElement;
+  getChromeToolsBtn: HTMLButtonElement;
+  toolSelect: HTMLSelectElement;
+  toolArgumentsInput: HTMLTextAreaElement;
+  executeToolBtn: HTMLButtonElement;
+  toolsStatus: HTMLParagraphElement;
+  executeToolResult: HTMLTextAreaElement;
   stressTestEngageBtn: HTMLButtonElement;
   stressTestEngageRetainBtn: HTMLButtonElement;
   invocationLog: HTMLDivElement;
   clearInvocationLog: HTMLButtonElement;
+  counterAbuseShowInterstitial: HTMLInputElement;
+  counterAbuseThreatType: HTMLSelectElement;
+  processCounterAbuseVerdictTestEngageBtn: HTMLButtonElement;
 }
 
 export const $: PageElementTypes = new Proxy({}, {

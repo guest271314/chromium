@@ -16,14 +16,28 @@
 #import "ios/chrome/browser/assistant/ui/assistant_container_view.h"
 #import "ios/chrome/browser/assistant/ui/assistant_grabber_button.h"
 #import "ios/chrome/browser/keyboard/ui_bundled/UIKeyCommand+Chrome.h"
-#import "ios/chrome/browser/shared/coordinator/scene/state/layout_state.h"
+#import "ios/chrome/browser/shared/coordinator/scene/state/browser_layout_state.h"
+#import "ios/chrome/browser/shared/coordinator/scene/state/scene_layout_state.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/shared/ui/chrome_overlay_window/chrome_overlay_container_view.h"
+#import "ios/chrome/browser/shared/ui/util/layout_constants.h"
+#import "ios/chrome/browser/shared/ui/util/layout_guide_names.h"
+#import "ios/chrome/browser/shared/ui/util/util_swift.h"
 #import "ios/chrome/common/ui/colors/semantic_color_names.h"
 #import "ios/chrome/common/ui/util/constraints_ui_util.h"
 #import "ios/chrome/common/ui/util/ui_util.h"
 #import "ios/chrome/grit/ios_strings.h"
 #import "ui/base/l10n/l10n_util.h"
+
+namespace layout_state {
+class AssistantContainerViewControllerPassKeyFactory {
+ public:
+  static base::PassKey<AssistantContainerViewControllerPassKeyFactory>
+  CreateKey() {
+    return base::PassKey<AssistantContainerViewControllerPassKeyFactory>();
+  }
+};
+}  // namespace layout_state
 
 namespace {
 
@@ -43,20 +57,18 @@ constexpr CGFloat kMinTopPadding = 12.0;
 // Default percentage for the medium detent.
 constexpr NSInteger kDefaultMediumDetentPercentage = 50;
 
-// Returns the height for the medium detent, taking into account the
-// experimental setting percentage.
-NSInteger GetMediumDetentHeight(NSInteger absoluteMax) {
-  NSInteger percentage =
-      GetAssistantMediumDetentPercentage() ?: kDefaultMediumDetentPercentage;
-  return absoluteMax * (percentage / 100.0);
+// Helper function to return the domain passkey used to mutate the layout state.
+inline LayoutStateAssistantPassKey PassKey() {
+  return layout_state::AssistantContainerViewControllerPassKeyFactory::
+      CreateKey();
 }
-
 }  // namespace
 
 @interface AssistantContainerViewController () <
-    LayoutStateObserver,
-    UIGestureRecognizerDelegate,
-    AssistantContainerAccessibilityManagerDelegate>
+    AssistantContainerAccessibilityManagerDelegate,
+    BrowserLayoutStateObserver,
+    SceneLayoutStateObserver,
+    UIGestureRecognizerDelegate>
 @end
 
 @implementation AssistantContainerViewController {
@@ -100,6 +112,13 @@ NSInteger GetMediumDetentHeight(NSInteger absoluteMax) {
 
   // Manages accessibility properties and actions.
   AssistantContainerAccessibilityManager* _accessibilityManager;
+
+  // The current bottom corner radius.
+  CGFloat _bottomCornerRadius;
+  // The current bottom margin.
+  CGFloat _bottomMargin;
+  // Whether the grabber button is hidden.
+  BOOL _grabberHidden;
 }
 
 @synthesize isAnimating = _isAnimating;
@@ -114,6 +133,7 @@ NSInteger GetMediumDetentHeight(NSInteger absoluteMax) {
         AssistantContainerDetent::kMedium,
         AssistantContainerDetent::kLarge,
     };
+    _largestUndimmedDetent = kDefaultLargestUndimmedDetent;
   }
   return self;
 }
@@ -182,6 +202,8 @@ NSInteger GetMediumDetentHeight(NSInteger absoluteMax) {
     [_assistantContainerView.widthAnchor
         constraintLessThanOrEqualToConstant:kAssistantSheetMaxWidth]
   ];
+
+  [self updateGrabberVisibilityAnimated:NO];
 }
 
 - (void)didMoveToParentViewController:(UIViewController*)parent {
@@ -227,7 +249,7 @@ NSInteger GetMediumDetentHeight(NSInteger absoluteMax) {
   _hasAppeared = YES;
 
   // Focus or announce the grabber button on entry.
-  if (_assistantContainerView.grabberButton) {
+  if (_assistantContainerView.grabberButton && !_grabberHidden) {
     if (self.announceArrivalOnly) {
       NSString* message = l10n_util::GetNSString(
           IDS_IOS_ASSISTANT_SHEET_GRABBER_ACCESSIBILITY_LABEL);
@@ -241,6 +263,20 @@ NSInteger GetMediumDetentHeight(NSInteger absoluteMax) {
 }
 
 #pragma mark - Public
+
+- (NSInteger)heightForDetent:(AssistantContainerDetent)detent {
+  auto it = _detentHeights.find(detent);
+  if (it != _detentHeights.end()) {
+    return it->second;
+  }
+  return kInvalidDetentHeight;
+}
+
+- (void)animateToDetent:(AssistantContainerDetent)detent {
+  [self animateToDetent:detent
+               duration:kAssistantSheetSpringDuration
+                  curve:UIViewAnimationCurveEaseInOut];
+}
 
 - (void)animateToDetent:(AssistantContainerDetent)detentIdentifier
                duration:(NSTimeInterval)duration
@@ -277,6 +313,7 @@ NSInteger GetMediumDetentHeight(NSInteger absoluteMax) {
 
   if (duration <= 0) {
     [self executeAlongsideAnimationWithPercentage:targetPercentage];
+    [self updateLayoutStateCutoutRadius];
     [self didCompleteDetentAnimationWithDetent:detentIdentifier];
     return;
   }
@@ -287,26 +324,64 @@ NSInteger GetMediumDetentHeight(NSInteger absoluteMax) {
       options:options
       animations:^{
         [weakSelf executeAlongsideAnimationWithPercentage:targetPercentage];
+        [weakSelf updateLayoutStateCutoutRadius];
       }
       completion:^(BOOL finished) {
         [weakSelf didCompleteDetentAnimationWithDetent:detentIdentifier];
       }];
 }
 
-#pragma mark - Properties
+- (void)animateAlongsideTransitionPresented:(BOOL)presented {
+  BOOL isSheet =
+      self.presentationContext == AssistantPresentationContext::kSheet;
+  BOOL isSheetPresented = presented && isSheet;
+  CGFloat targetRadius =
+      isSheetPresented ? (_bottomCornerRadius + _bottomMargin) : 0.0;
+  [self.sceneLayoutState setAssistantContainerCutoutRadius:targetRadius
+                                                   passKey:PassKey()];
+  [self.sceneLayoutState setAssistantContainerInvoked:isSheetPresented
+                                              passKey:PassKey()];
+}
 
-- (void)setLayoutState:(LayoutState*)layoutState {
-  if (_layoutState == layoutState) {
+- (BOOL)isGrabberHidden {
+  return _grabberHidden;
+}
+
+- (void)setGrabberHidden:(BOOL)grabberHidden animated:(BOOL)animated {
+  // Cannot modify the grabber hidden state for side panel presentation.
+  if (_presentationContext != AssistantPresentationContext::kSheet) {
     return;
   }
-  [_layoutState removeObserver:self];
-  _layoutState = layoutState;
-  [_layoutState addObserver:self];
 
-  if (_layoutState) {
-    [self updatePresentationContextForSupportedState:
-              _layoutState.containedLayoutSupported];
+  if (_grabberHidden == grabberHidden) {
+    return;
   }
+
+  _grabberHidden = grabberHidden;
+  [self updateGrabberVisibilityAnimated:animated];
+}
+
+#pragma mark - Properties
+
+- (void)setBrowserLayoutState:(BrowserLayoutState*)browserLayoutState {
+  if (_browserLayoutState == browserLayoutState) {
+    return;
+  }
+  [_browserLayoutState removeObserver:self];
+  _browserLayoutState = browserLayoutState;
+  [_browserLayoutState addObserver:self];
+}
+
+- (void)setSceneLayoutState:(SceneLayoutState*)sceneLayoutState {
+  if (_sceneLayoutState == sceneLayoutState) {
+    return;
+  }
+  [_sceneLayoutState removeObserver:self];
+  _sceneLayoutState = sceneLayoutState;
+  [_sceneLayoutState addObserver:self];
+  [self
+      updatePresentationContextForSupportedState:sceneLayoutState
+                                                     .containedLayoutSupported];
 }
 
 - (void)setPresentationContext:
@@ -315,6 +390,12 @@ NSInteger GetMediumDetentHeight(NSInteger absoluteMax) {
     return;
   }
   _presentationContext = presentationContext;
+
+  if (_presentationContext != AssistantPresentationContext::kSheet) {
+    [self.sceneLayoutState setAssistantContainerCutoutRadius:0.0
+                                                     passKey:PassKey()];
+    [self.sceneLayoutState setAssistantContainerInvoked:NO passKey:PassKey()];
+  }
 
   if ([self.delegate respondsToSelector:@selector(assistantContainer:
                                                     didChangeContext:)]) {
@@ -374,17 +455,44 @@ NSInteger GetMediumDetentHeight(NSInteger absoluteMax) {
                                     availableDetents:self.detents];
 }
 
+- (void)setLargestUndimmedDetent:
+    (AssistantContainerDetent)largestUndimmedDetent {
+  if (_largestUndimmedDetent == largestUndimmedDetent) {
+    return;
+  }
+  _largestUndimmedDetent = largestUndimmedDetent;
+  if (_heightConstraint) {
+    [self updateContainerStylingForHeight:_heightConstraint.constant];
+  }
+}
+
 - (void)setMinimizedDetentHeight:(NSInteger)minimizedDetentHeight {
   _minimizedDetentHeight = minimizedDetentHeight;
   [self updateDetentHeights];
 }
 
-- (void)setAnchorView:(UIView*)anchorView {
-  if (_anchorView == anchorView) {
+- (void)setMediumDetentHeight:(std::optional<NSInteger>)mediumDetentHeight {
+  if (_mediumDetentHeight == mediumDetentHeight) {
     return;
   }
-  _anchorView = anchorView;
+  _mediumDetentHeight = mediumDetentHeight;
+  [self updateDetentHeights];
+  if (_activeDetent == AssistantContainerDetent::kMedium && _hasAppeared) {
+    [self animateToDetent:AssistantContainerDetent::kMedium];
+  }
+}
+
+- (void)setGuideName:(GuideName*)guideName {
+  if ([_guideName isEqualToString:guideName]) {
+    return;
+  }
+  _guideName = [guideName copy];
   [self updateHeightConstraint];
+
+  UIView* parentView = self.view.superview;
+  if (parentView) {
+    [self layoutInParentView:parentView];
+  }
 }
 
 #pragma mark - AssistantContainerAnimatable
@@ -445,9 +553,7 @@ NSInteger GetMediumDetentHeight(NSInteger absoluteMax) {
 // Completes the orientation transition by animating to the active detent.
 - (void)completeOrientationTransitionWithDetent:
     (AssistantContainerDetent)detent {
-  [self animateToDetent:detent
-               duration:kAssistantSheetSpringDuration
-                  curve:UIViewAnimationCurveEaseInOut];
+  [self animateToDetent:detent];
 }
 
 // Resumes all the previously paused scroll views.
@@ -499,9 +605,22 @@ NSInteger GetMediumDetentHeight(NSInteger absoluteMax) {
       _detentHeights[AssistantContainerDetent::kMinimized];
   CGFloat mediumHeight = _detentHeights[AssistantContainerDetent::kMedium];
   CGFloat largeHeight = _detentHeights[AssistantContainerDetent::kLarge];
+  CGFloat largestUndimmedHeight = _detentHeights[self.largestUndimmedDetent];
 
-  ContainerMorphingConstraints constraints = CalculateMorphingConstraints(
-      height, minimizedHeight, mediumHeight, largeHeight);
+  ContainerMorphingConstraints constraints =
+      CalculateMorphingConstraints(height, minimizedHeight, mediumHeight,
+                                   largeHeight, largestUndimmedHeight);
+
+  if (IsChromeNextIaEnabled()) {
+    BOOL isAppBarAtBottom =
+        self.sceneLayoutState.appBarPosition == AppBarPosition::kBottom;
+    BOOL isToolbarAtTop =
+        self.browserLayoutState.toolbarPosition == ToolbarPosition::kTop;
+    if (isAppBarAtBottom && isToolbarAtTop) {
+      constraints.bottom_corner_radius =
+          std::max(kAppBarCornerRadius, constraints.bottom_corner_radius);
+    }
+  }
 
   if (IsRegularXRegularSizeClass(self.traitCollection)) {
     // iPad floating sheet always has 4 rounded corners and a bottom margin.
@@ -518,6 +637,31 @@ NSInteger GetMediumDetentHeight(NSInteger absoluteMax) {
       updateTopCornerRadius:constraints.top_corner_radius
          bottomCornerRadius:constraints.bottom_corner_radius];
   _dimmingView.alpha = constraints.background_dimming_alpha;
+  _assistantContainerView.accessibilityViewIsModal =
+      constraints.background_dimming_alpha > 0.0;
+
+  _bottomCornerRadius = constraints.bottom_corner_radius;
+  _bottomMargin = constraints.bottom_margin;
+
+  // Guard layout updates to prevent transition animations from being
+  // overwritten by intermediate layout passes.
+  if (_hasAppeared && !self.isAnimating) {
+    [self updateLayoutStateCutoutRadius];
+  }
+}
+
+// Updates the App Bar cutout radius on SceneLayoutState using the current
+// styling values.
+- (void)updateLayoutStateCutoutRadius {
+  CGFloat radius = 0.0;
+  if (self.presentationContext == AssistantPresentationContext::kSheet) {
+    radius = _bottomCornerRadius + _bottomMargin;
+  }
+  if (IsCornerRadiusChangeSignificant(
+          self.sceneLayoutState.assistantContainerCutoutRadius, radius)) {
+    [self.sceneLayoutState setAssistantContainerCutoutRadius:radius
+                                                     passKey:PassKey()];
+  }
 }
 
 // Updates the accessibility identifier of the container view based on the
@@ -565,11 +709,13 @@ NSInteger GetMediumDetentHeight(NSInteger absoluteMax) {
         updateAccessibilityPropertiesWithCurrentDetent:newDetent
                                       availableDetents:self.detents];
 
-    // Announce the new state without losing VoiceOver focus.
-    NSString* valueString =
-        _assistantContainerView.grabberButton.accessibilityValue;
-    UIAccessibilityPostNotification(UIAccessibilityAnnouncementNotification,
-                                    valueString);
+    if (!_grabberHidden) {
+      // Announce the new state without losing VoiceOver focus.
+      NSString* valueString =
+          _assistantContainerView.grabberButton.accessibilityValue;
+      UIAccessibilityPostNotification(UIAccessibilityAnnouncementNotification,
+                                      valueString);
+    }
   }
 }
 
@@ -625,7 +771,7 @@ NSInteger GetMediumDetentHeight(NSInteger absoluteMax) {
   }
 
   _headerPanGesture.enabled = YES;
-  _assistantContainerView.grabberButton.enabled = YES;
+  _assistantContainerView.grabberButton.enabled = !_grabberHidden;
 }
 
 // Handles the tap on the grabber button to cycle through detents.
@@ -633,6 +779,8 @@ NSInteger GetMediumDetentHeight(NSInteger absoluteMax) {
   if (self.isAnimating) {
     return;
   }
+
+  [self.view endEditing:YES];
 
   std::vector<AssistantContainerDetent> currentDetents = self.detents;
 
@@ -649,9 +797,7 @@ NSInteger GetMediumDetentHeight(NSInteger absoluteMax) {
 
   AssistantContainerDetent targetDetent = currentDetents[nextIndex];
 
-  [self animateToDetent:targetDetent
-               duration:kAssistantSheetSpringDuration
-                  curve:UIViewAnimationCurveEaseInOut];
+  [self animateToDetent:targetDetent];
 }
 
 // Handles the pan gesture on the header to resize the container.
@@ -673,6 +819,12 @@ NSInteger GetMediumDetentHeight(NSInteger absoluteMax) {
     return;
   }
 
+  // If the grabber is hidden, allow only `handlePanGestureBegan` (e.g. to
+  // dismiss the keyboard) and ignore subsequent events to prevent resizing.
+  if (_grabberHidden && gesture.state != UIGestureRecognizerStateBegan) {
+    return;
+  }
+
   if (gesture.state == UIGestureRecognizerStateBegan) {
     [self handlePanGestureBegan:gesture];
   } else if (gesture.state == UIGestureRecognizerStateChanged) {
@@ -685,23 +837,23 @@ NSInteger GetMediumDetentHeight(NSInteger absoluteMax) {
 
 // Handles the tap gesture on the dimming view.
 - (void)handleDimmingViewTap:(UITapGestureRecognizer*)gesture {
-  if (_activeDetent != AssistantContainerDetent::kLarge) {
+  if (!_activeDetent.has_value() ||
+      _activeDetent.value() <= self.largestUndimmedDetent) {
     return;
   }
 
   AssistantContainerDetent detent = self.detents.front();
-  if (detent == AssistantContainerDetent::kLarge) {
+  if (detent == _activeDetent.value()) {
     return;
   }
 
-  [self animateToDetent:detent
-               duration:kAssistantSheetSpringDuration
-                  curve:UIViewAnimationCurveEaseInOut];
+  [self animateToDetent:detent];
 }
 
 // Handles the state when the pan gesture begins.
 - (void)handlePanGestureBegan:(UIPanGestureRecognizer*)gesture {
   CHECK(gesture == _headerPanGesture);
+  [self.view endEditing:YES];
   _initialConstraintHeight = _heightConstraint.constant;
 }
 
@@ -927,9 +1079,23 @@ NSInteger GetMediumDetentHeight(NSInteger absoluteMax) {
     return;
   }
 
+  UIView* anchorView = nil;
+  if (self.guideName && self.layoutGuideCenter) {
+    anchorView =
+        [self.layoutGuideCenter referencedViewUnderName:self.guideName];
+  }
+
+  // Retains the existing constraint if the new anchor is not yet in the
+  // hierarchy.
+  if (self.guideName && _outerBottomConstraint) {
+    if (!anchorView || ![anchorView isDescendantOfView:parentView]) {
+      return;
+    }
+  }
+
   NSLayoutYAxisAnchor* bottomAnchor = nil;
-  if (self.anchorView) {
-    bottomAnchor = self.anchorView.topAnchor;
+  if (anchorView && [anchorView isDescendantOfView:parentView]) {
+    bottomAnchor = anchorView.topAnchor;
   }
 
   if (!bottomAnchor) {
@@ -942,20 +1108,52 @@ NSInteger GetMediumDetentHeight(NSInteger absoluteMax) {
   if (!_innerBottomConstraint) {
     _innerBottomConstraint = [_assistantContainerView.bottomAnchor
         constraintEqualToAnchor:view.bottomAnchor];
-    _outerBottomConstraint =
-        [view.bottomAnchor constraintEqualToAnchor:bottomAnchor];
+    [_innerBottomConstraint setActive:YES];
+  }
 
-    [NSLayoutConstraint activateConstraints:@[
-      _outerBottomConstraint, _innerBottomConstraint
-    ]];
+  // If the constraint is already bound to the correct anchor, early return to
+  // avoid redundant constraint recreation.
+  if (_outerBottomConstraint &&
+      _outerBottomConstraint.secondAnchor == bottomAnchor) {
+    return;
+  }
+
+  // Animates the constraint update if it was already active, to ensure smooth
+  // transitions between layout guides.
+  BOOL shouldAnimate = _outerBottomConstraint != nil;
+
+  if (_outerBottomConstraint) {
+    [_outerBottomConstraint setActive:NO];
+    _outerBottomConstraint = nil;
+  }
+  _outerBottomConstraint =
+      [view.bottomAnchor constraintEqualToAnchor:bottomAnchor];
+  // The outer bottom constraint is only active in the sheet presentation
+  // context. In the panel presentation context, side panel constraints are
+  // used instead.
+  if (_presentationContext == AssistantPresentationContext::kSheet) {
+    [_outerBottomConstraint setActive:YES];
+  }
+
+  if (shouldAnimate) {
+    [UIView animateWithDuration:kAssistantSheetSpringDuration
+                          delay:0
+         usingSpringWithDamping:kAssistantSheetSpringDamping
+          initialSpringVelocity:0
+                        options:UIViewAnimationOptionBeginFromCurrentState
+                     animations:^{
+                       [parentView layoutIfNeeded];
+                     }
+                     completion:nil];
   }
 
   // Trigger initial adaptive layout once the view is successfully in the
   // hierarchy.
   [self applyLayoutForPresentationContext];
-  [self
-      updatePresentationContextForSupportedState:self.layoutState
-                                                     .containedLayoutSupported];
+  [self updatePresentationContextForSupportedState:
+            self.sceneLayoutState
+                ? self.sceneLayoutState.containedLayoutSupported
+                : NO];
 }
 
 // Updates the presentation context based on the layout state.
@@ -981,15 +1179,69 @@ NSInteger GetMediumDetentHeight(NSInteger absoluteMax) {
   }
 }
 
-#pragma mark - LayoutStateObserver
+// Updates the grabber button visibility with optional fade animation.
+- (void)updateGrabberVisibilityAnimated:(BOOL)animated {
+  if (!_assistantContainerView) {
+    return;
+  }
 
-- (void)layoutState:(LayoutState*)layoutState
+  if (!animated || !self.view.window) {
+    _assistantContainerView.grabberButton.hidden = _grabberHidden;
+    _assistantContainerView.grabberButton.alpha = _grabberHidden ? 0.0 : 1.0;
+    [self updateInteractionEnabledState];
+    return;
+  }
+
+  self.isAnimating = YES;
+
+  // Set hidden to NO to support fade out.
+  _assistantContainerView.grabberButton.hidden = NO;
+
+  __weak __typeof(self) weakSelf = self;
+  __weak AssistantContainerView* weakContainerView = _assistantContainerView;
+  [UIView animateWithDuration:kAssistantGrabberVisibilityAnimationDuration
+      animations:^{
+        weakContainerView.grabberButton.alpha =
+            [weakSelf isGrabberHidden] ? 0.0 : 1.0;
+      }
+      completion:^(BOOL finished) {
+        if (finished && weakContainerView) {
+          weakContainerView.grabberButton.hidden = [weakSelf isGrabberHidden];
+        }
+        weakSelf.isAnimating = NO;
+      }];
+}
+
+#pragma mark - SceneLayoutStateObserver
+
+- (void)layoutState:(SceneLayoutState*)layoutState
     didChangeContainedLayoutSupported:(BOOL)supported {
   [self updatePresentationContextForSupportedState:supported];
 }
 
+#pragma mark - BrowserLayoutStateObserver
+
+- (void)browserLayoutState:(BrowserLayoutState*)browserLayoutState
+    didChangeToolbarPosition:(ToolbarPosition)toolbarPosition {
+  [self updateContainerStylingForHeight:_heightConstraint.constant];
+}
+
+#pragma mark - Private
+
 // Configures the constraints for the panel layout.
 - (void)applyPanelLayoutConstraints {
+  // Bottom constraints are created in `layoutInParentView:` when moving to a
+  // parent view controller. Trait changes can fire earlier when the view is
+  // added to a parent view with different traits.
+  if (!_outerBottomConstraint || !_innerBottomConstraint) {
+    return;
+  }
+
+  CHECK(_leadingConstraint);
+  CHECK(_trailingConstraint);
+  CHECK(_heightConstraint);
+  CHECK(_widthRestrictedConstraints);
+
   UIView* view = self.view;
 
   [NSLayoutConstraint deactivateConstraints:_widthRestrictedConstraints];
@@ -1012,9 +1264,9 @@ NSInteger GetMediumDetentHeight(NSInteger absoluteMax) {
   }
   [NSLayoutConstraint activateConstraints:_sidePanelConstraints];
 
-  _headerPanGesture.enabled = NO;
+  _grabberHidden = YES;
   _dimmingView.hidden = YES;
-  _assistantContainerView.grabberButton.hidden = YES;
+  _assistantContainerView.grabberButton.hidden = _grabberHidden;
   _assistantContainerView.accessibilityViewIsModal = NO;
 }
 
@@ -1031,6 +1283,18 @@ NSInteger GetMediumDetentHeight(NSInteger absoluteMax) {
 
 // Configures the constraints for the sheet layout.
 - (void)applySheetLayoutConstraints {
+  // Bottom constraints are created in `layoutInParentView:` when moving to a
+  // parent view controller. Trait changes can fire earlier when the view is
+  // added to a parent view with different traits.
+  if (!_outerBottomConstraint || !_innerBottomConstraint) {
+    return;
+  }
+
+  CHECK(_leadingConstraint);
+  CHECK(_trailingConstraint);
+  CHECK(_heightConstraint);
+  CHECK(_widthRestrictedConstraints);
+
   UIView* view = self.view;
 
   [NSLayoutConstraint deactivateConstraints:_sidePanelConstraints];
@@ -1038,10 +1302,11 @@ NSInteger GetMediumDetentHeight(NSInteger absoluteMax) {
     _outerBottomConstraint, _innerBottomConstraint, _heightConstraint
   ]];
 
-  _headerPanGesture.enabled = YES;
   _dimmingView.hidden = NO;
-  _assistantContainerView.grabberButton.hidden = NO;
+  _assistantContainerView.grabberButton.hidden = _grabberHidden;
+  _assistantContainerView.grabberButton.alpha = _grabberHidden ? 0.0 : 1.0;
   _assistantContainerView.accessibilityViewIsModal = YES;
+  [self updateInteractionEnabledState];
 
   if (IsRegularXRegularSizeClass(self.traitCollection) ||
       IsIPhoneLandscapeLayout(self.traitCollection)) {
@@ -1090,10 +1355,24 @@ NSInteger GetMediumDetentHeight(NSInteger absoluteMax) {
               UIViewAnimationOptionBeginFromCurrentState
       animations:^{
         [weakSelf executeAlongsideAnimationWithPercentage:targetPercentage];
+        [weakSelf updateLayoutStateCutoutRadius];
       }
       completion:^(BOOL finished) {
         weakSelf.isAnimating = NO;
       }];
+}
+
+// Computes the height for the medium detent, taking into account optional
+// custom height and experimental setting percentage.
+- (NSInteger)computeMediumDetentHeight {
+  NSInteger absoluteMax = [self absoluteMaxHeight];
+  if (self.mediumDetentHeight.has_value()) {
+    return std::clamp(self.mediumDetentHeight.value(),
+                      self.minimizedDetentHeight, absoluteMax);
+  }
+  NSInteger percentage =
+      GetAssistantMediumDetentPercentage() ?: kDefaultMediumDetentPercentage;
+  return absoluteMax * (percentage / 100.0);
 }
 
 // Recomputes and caches the heights for all active detents.
@@ -1109,12 +1388,18 @@ NSInteger GetMediumDetentHeight(NSInteger absoluteMax) {
         _detentHeights[detent] = absoluteMax;
         break;
       case AssistantContainerDetent::kMedium:
-        _detentHeights[detent] = GetMediumDetentHeight(absoluteMax);
+        _detentHeights[detent] = [self computeMediumDetentHeight];
         break;
       case AssistantContainerDetent::kMinimized:
         _detentHeights[detent] = self.minimizedDetentHeight;
         break;
     }
+  }
+
+  if ([self.delegate
+          respondsToSelector:@selector(
+                                 assistantContainerDidUpdateDetentHeights:)]) {
+    [self.delegate assistantContainerDidUpdateDetentHeights:self];
   }
 }
 
@@ -1122,9 +1407,7 @@ NSInteger GetMediumDetentHeight(NSInteger absoluteMax) {
 
 - (void)accessibilityManagerDidRequestDetentChange:
     (AssistantContainerDetent)detent {
-  [self animateToDetent:detent
-               duration:kAssistantSheetSpringDuration
-                  curve:UIViewAnimationCurveEaseInOut];
+  [self animateToDetent:detent];
 }
 
 #pragma mark - UIResponder
@@ -1139,9 +1422,7 @@ NSInteger GetMediumDetentHeight(NSInteger absoluteMax) {
     AssistantContainerDetent currentDetent =
         _activeDetent.value_or(currentDetents.front());
     if (currentDetent != AssistantContainerDetent::kMinimized) {
-      [self animateToDetent:AssistantContainerDetent::kMinimized
-                   duration:kAssistantSheetSpringDuration
-                      curve:UIViewAnimationCurveEaseInOut];
+      [self animateToDetent:AssistantContainerDetent::kMinimized];
       return YES;
     }
   }

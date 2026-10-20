@@ -8,6 +8,7 @@
 
 #include <string>
 
+#include "base/containers/span.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/files/scoped_temp_dir.h"
@@ -286,6 +287,32 @@ TEST_F(ShortcutTest, ReplaceShortcutKeepOldArguments) {
   ShortcutProperties expected_properties(link_properties_2_);
   expected_properties.set_arguments(link_properties_.arguments);
   ValidateShortcut(link_file_, expected_properties);
+}
+
+// Test that set_arguments_to_merge sets arguments on creation and merges new
+// arguments with existing ones on update/replace, replacing matching switches.
+TEST_F(ShortcutTest, CreateUpdateAndReplaceShortcutMergeArguments) {
+  ShortcutProperties create_properties(link_properties_);
+  create_properties.set_arguments_to_merge(link_properties_.arguments);
+  ASSERT_TRUE(CreateOrUpdateShortcutLink(link_file_, create_properties,
+                                         ShortcutOperation::kCreateAlways));
+  ValidateShortcut(link_file_, link_properties_);
+
+  ShortcutProperties update_properties;
+  update_properties.set_arguments_to_merge(L"--magic=updated");
+  ASSERT_TRUE(CreateOrUpdateShortcutLink(link_file_, update_properties,
+                                         ShortcutOperation::kUpdateExisting));
+  ShortcutProperties expected_updated(link_properties_);
+  expected_updated.set_arguments(L"--awesome --magic=updated");
+  ValidateShortcut(link_file_, expected_updated);
+
+  link_properties_2_.set_arguments_to_merge(L"--magic=new --super");
+  ASSERT_TRUE(CreateOrUpdateShortcutLink(link_file_, link_properties_2_,
+                                         ShortcutOperation::kReplaceExisting));
+
+  ShortcutProperties expected_replaced(link_properties_2_);
+  expected_replaced.set_arguments(L"--awesome --magic=new --super");
+  ValidateShortcut(link_file_, expected_replaced);
 }
 
 }  // namespace win

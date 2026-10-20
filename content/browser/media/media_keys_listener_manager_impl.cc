@@ -15,7 +15,6 @@
 #include "content/browser/media/active_media_session_controller.h"
 #include "content/browser/media/system_media_controls/system_media_controls_notifier.h"
 #include "content/browser/media/system_media_controls/web_app_system_media_controls.h"
-#include "content/public/common/content_features.h"
 #include "media/audio/audio_manager.h"
 #include "ui/base/accelerators/accelerator.h"
 #include "ui/base/idle/idle.h"
@@ -39,22 +38,17 @@ MediaKeysListenerManager* MediaKeysListenerManager::GetInstance() {
 }
 
 MediaKeysListenerManagerImpl::MediaKeysListenerManagerImpl() {
-  DCHECK(!MediaKeysListenerManager::GetInstance());
+  CHECK(!MediaKeysListenerManager::GetInstance(), base::NotFatalUntil::M160);
 
 #if USE_INSTANCED_SYSTEM_MEDIA_CONTROLS_FOR_WEB_APPS
-  // If instanced system media controls are enabled, create the
-  // web_app_system_media_controls_manager_ that handles web app related system
-  // media controls.
-  if (ShouldUseWebAppSystemMediaControls()) {
-    web_app_system_media_controls_manager_ =
-        std::make_unique<WebAppSystemMediaControlsManager>();
-    web_app_system_media_controls_manager_->Init();
-  }
+  // Create for Windows and macOS only.
+  web_app_system_media_controls_manager_ =
+      std::make_unique<WebAppSystemMediaControlsManager>();
+  web_app_system_media_controls_manager_->Init();
 #endif  // USE_INSTANCED_SYSTEM_MEDIA_CONTROLS_FOR_WEB_APPS
   // Create the single ActiveMediaSessionController that follows the active
-  // session. It can be unsupported due to feature flag being off or platform
-  // constraints.
-  // When instanced system media controls are enabled, this AMSC follows only
+  // session.
+  // When instanced system media controls are supported, this AMSC follows only
   // browser related sessions while web app related ones are handled by
   // web_app_system_media_controls_manager_.
   browser_active_media_session_controller_ =
@@ -68,8 +62,9 @@ bool MediaKeysListenerManagerImpl::StartWatchingMediaKey(
     ui::KeyboardCode key_code,
     ui::MediaKeysListener::Delegate* delegate,
     base::UnguessableToken web_app_request_id) {
-  DCHECK(ui::MediaKeysListener::IsMediaKeycode(key_code));
-  DCHECK(delegate);
+  CHECK(ui::MediaKeysListener::IsMediaKeycode(key_code),
+        base::NotFatalUntil::M160);
+  CHECK(delegate, base::NotFatalUntil::M160);
   StartListeningForMediaKeysIfNecessary();
 
   // We don't want to start watching the key for an
@@ -97,14 +92,16 @@ bool MediaKeysListenerManagerImpl::StartWatchingMediaKey(
   // If this is the ActiveMediaSessionController, just update the flag.
   if (is_delegate_an_active_media_session_controller) {
     // |delegate| should never be for both the browser and a PWA
-    DCHECK(is_delegate_for_browser != is_delegate_for_pwa);
+    CHECK(is_delegate_for_browser != is_delegate_for_pwa,
+          base::NotFatalUntil::M160);
 
     if (is_delegate_for_browser) {
       listening_data->browser_active_media_session_controller_listening = true;
     } else if (is_delegate_for_pwa) {
       // If token is specified, it's a PWA that's starting to watch for a media
       // key. As a result, add it to the PWA list.
-      DCHECK(web_app_request_id != base::UnguessableToken::Null());
+      CHECK(web_app_request_id != base::UnguessableToken::Null(),
+            base::NotFatalUntil::M160);
       listening_data->listening_web_apps.insert(web_app_request_id);
     }
     UpdateWhichKeysAreListenedFor();
@@ -136,8 +133,9 @@ void MediaKeysListenerManagerImpl::StopWatchingMediaKey(
     ui::KeyboardCode key_code,
     ui::MediaKeysListener::Delegate* delegate,
     base::UnguessableToken web_app_request_id) {
-  DCHECK(ui::MediaKeysListener::IsMediaKeycode(key_code));
-  DCHECK(delegate);
+  CHECK(ui::MediaKeysListener::IsMediaKeycode(key_code),
+        base::NotFatalUntil::M160);
+  CHECK(delegate, base::NotFatalUntil::M160);
   StartListeningForMediaKeysIfNecessary();
 
   // Find or create the list of listening delegates for this key code.
@@ -170,7 +168,8 @@ void MediaKeysListenerManagerImpl::EnableInternalMediaKeyHandling() {
 void MediaKeysListenerManagerImpl::OnMediaKeysAccelerator(
     const ui::Accelerator& accelerator) {
   // We should never receive an accelerator that was never registered.
-  DCHECK(delegate_map_.contains(accelerator.key_code()));
+  CHECK(delegate_map_.contains(accelerator.key_code()),
+        base::NotFatalUntil::M160);
 
 #if BUILDFLAG(IS_APPLE)
   // For privacy, we don't want to handle media keys when the system is locked.
@@ -359,7 +358,7 @@ void MediaKeysListenerManagerImpl::StartListeningForMediaKeysIfNecessary() {
   } else {
     media_keys_listener_ = ui::MediaKeysListener::Create(
         this, ui::MediaKeysListener::Scope::kGlobal);
-    DCHECK(media_keys_listener_);
+    CHECK(media_keys_listener_, base::NotFatalUntil::M160);
   }
   EnsureAuxiliaryServices();
 }
@@ -421,10 +420,6 @@ void MediaKeysListenerManagerImpl::UpdateSystemMediaControlsEnabledControls() {
 #if USE_INSTANCED_SYSTEM_MEDIA_CONTROLS_FOR_WEB_APPS
   // This loops over active web app instanced system media controls and updates
   // what controls are available on each set of controls.
-  if (!ShouldUseWebAppSystemMediaControls()) {
-    return;
-  }
-
   for (auto* controls :
        web_app_system_media_controls_manager_->GetAllControls()) {
     system_media_controls::SystemMediaControls* smc =
@@ -463,7 +458,7 @@ void MediaKeysListenerManagerImpl::UpdateSystemMediaControlsEnabledControls() {
 }
 
 void MediaKeysListenerManagerImpl::UpdateMediaKeysListener() {
-  DCHECK(media_keys_listener_);
+  CHECK(media_keys_listener_, base::NotFatalUntil::M160);
 
   for (const auto& key_code_listening_data : delegate_map_) {
     const ui::KeyboardCode& key_code = key_code_listening_data.first;
@@ -513,7 +508,7 @@ bool MediaKeysListenerManagerImpl::ShouldActiveMediaSessionControllerReceiveKey(
 
   ListeningData* listening_data = itr->second.get();
 
-  DCHECK_NE(nullptr, listening_data);
+  CHECK_NE(nullptr, listening_data, base::NotFatalUntil::M160);
 
   return listening_data->browser_active_media_session_controller_listening ||
          (ShouldUseWebAppSystemMediaControls() &&
@@ -522,8 +517,7 @@ bool MediaKeysListenerManagerImpl::ShouldActiveMediaSessionControllerReceiveKey(
 
 bool MediaKeysListenerManagerImpl::ShouldUseWebAppSystemMediaControls() const {
 #if USE_INSTANCED_SYSTEM_MEDIA_CONTROLS_FOR_WEB_APPS
-  // This feature is enabled by default on Windows, disabled on mac.
-  return base::FeatureList::IsEnabled(features::kWebAppSystemMediaControls);
+  return true;
 #else
   return false;
 #endif  // USE_INSTANCED_SYSTEM_MEDIA_CONTROLS_FOR_WEB_APPS
@@ -562,9 +556,9 @@ void MediaKeysListenerManagerImpl::MaybeSendWebAppControlsEvent(
 ActiveMediaSessionController*
 MediaKeysListenerManagerImpl::GetControllerForSystemMediaControls(
     system_media_controls::SystemMediaControls* system_media_controls) {
-  // Check if system_media_controls is browser box.
-  // If kWebAppSystemMediaControls is not supported, we should always use the
-  // browser controller.
+  // Check if `system_media_controls` is the browser box. On platforms where
+  // instanced web-app system media controls aren't supported, the browser is
+  // the only possible controller.
   if (!ShouldUseWebAppSystemMediaControls() ||
       system_media_controls == browser_system_media_controls_.get()) {
     return browser_active_media_session_controller_.get();

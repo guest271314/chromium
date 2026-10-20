@@ -16,6 +16,7 @@
 #import "base/memory/weak_ptr.h"
 #import "base/notimplemented.h"
 #import "base/strings/sys_string_conversions.h"
+#import "base/strings/utf_string_conversions.h"
 #import "components/autofill/core/browser/data_manager/payments/payments_data_manager.h"
 #import "components/autofill/core/browser/data_model/payments/bnpl_issuer.h"
 #import "components/autofill/core/browser/field_types.h"
@@ -36,6 +37,7 @@
 #import "components/autofill/core/browser/payments/save_and_fill_manager_impl.h"
 #import "components/autofill/core/browser/payments/virtual_card_enroll_metrics_logger.h"
 #import "components/autofill/core/browser/payments/virtual_card_enrollment_manager.h"
+#import "components/autofill/core/browser/payments/wallet_reminder_notice_manager.h"
 #import "components/autofill/core/browser/ui/payments/autofill_progress_dialog_controller.h"
 #import "components/autofill/core/browser/ui/payments/autofill_progress_dialog_controller_impl.h"
 #import "components/autofill/core/browser/ui/payments/autofill_progress_ui_type.h"
@@ -46,6 +48,7 @@
 #import "components/autofill/core/browser/ui/payments/card_unmask_prompt_controller_impl.h"
 #import "components/autofill/core/browser/ui/payments/card_unmask_prompt_view.h"
 #import "components/autofill/core/browser/ui/payments/virtual_card_enroll_ui_model.h"
+#import "components/autofill/core/common/autofill_features.h"
 #import "components/autofill/core/common/autofill_payments_features.h"
 #import "components/autofill/core/common/autofill_prefs.h"
 #import "components/autofill/ios/browser/credit_card_save_metrics_ios.h"
@@ -58,12 +61,12 @@
 #import "ios/chrome/browser/autofill/ui_bundled/card_name_fix_flow_view_bridge.h"
 #import "ios/chrome/browser/autofill/ui_bundled/card_unmask_prompt_view_bridge.h"
 #import "ios/chrome/browser/autofill/ui_bundled/chrome_autofill_client_ios.h"
+#import "ios/chrome/browser/autofill/wallet_reminder_notice/ui/wallet_reminder_notice_ui_delegate_ios.h"
 #import "ios/chrome/browser/infobars/model/infobar_ios.h"
 #import "ios/chrome/browser/shared/public/commands/autofill_commands.h"
 #import "ios/public/provider/chrome/browser/risk_data/risk_data_api.h"
 #import "ios/web/public/web_state.h"
 #import "services/network/public/cpp/weak_wrapper_shared_url_loader_factory.h"
-#import "url/gurl.h"
 
 namespace autofill::payments {
 namespace {
@@ -79,7 +82,7 @@ std::unique_ptr<infobars::InfoBar> CreateSaveCardInfoBarMobile(
 }  // namespace
 
 IOSChromePaymentsAutofillClient::IOSChromePaymentsAutofillClient(
-    autofill::ChromeAutofillClientIOS* client,
+    ChromeAutofillClientIOS* client,
     web::WebState* web_state,
     infobars::InfoBarManager* infobar_manager,
     PrefService* pref_service)
@@ -95,7 +98,7 @@ IOSChromePaymentsAutofillClient::IOSChromePaymentsAutofillClient(
       pref_service_(pref_service),
       web_state_(web_state) {
   if (base::FeatureList::IsEnabled(
-          autofill::features::kAutofillEnableBottomSheetScanCardAndFill)) {
+          features::kAutofillEnableBottomSheetScanCardAndFill)) {
     save_and_fill_manager_ =
         std::make_unique<payments::SaveAndFillManagerImpl>(&client_.get());
   }
@@ -272,7 +275,7 @@ void IOSChromePaymentsAutofillClient::OnCardDataAvailable(
     const url::Origin& origin) {
   if (options.filled_card.record_type() ==
       CreditCard::RecordType::kVirtualCard) {
-    autofill::CreditCard card = options.filled_card;
+    CreditCard card = options.filled_card;
     card.set_cvc(options.cvc);
 
     ManualFillVirtualCardCache::CreateForWebState(web_state_);
@@ -343,10 +346,11 @@ void IOSChromePaymentsAutofillClient::ShowUnmaskAuthenticatorSelectionDialog(
     base::OnceClosure cancel_unmasking_closure) {
   AutofillBottomSheetTabHelper* bottom_sheet_tab_helper =
       AutofillBottomSheetTabHelper::FromWebState(web_state_);
-  auto controller = std::make_unique<
-      autofill::CardUnmaskAuthenticationSelectionDialogControllerImpl>(
-      challenge_options, std::move(confirm_unmask_challenge_option_callback),
-      std::move(cancel_unmasking_closure));
+  auto controller =
+      std::make_unique<CardUnmaskAuthenticationSelectionDialogControllerImpl>(
+          challenge_options,
+          std::move(confirm_unmask_challenge_option_callback),
+          std::move(cancel_unmasking_closure));
   card_unmask_authentication_selection_controller_ = controller->GetWeakPtr();
   bottom_sheet_tab_helper->ShowCardUnmaskAuthenticationSelection(
       std::move(controller));
@@ -482,11 +486,6 @@ IOSChromePaymentsAutofillClient::GetRiskBasedAuthenticator() {
   return risk_based_authenticator_.get();
 }
 
-bool IOSChromePaymentsAutofillClient::IsRiskBasedAuthEffectivelyAvailable()
-    const {
-  return true;
-}
-
 bool IOSChromePaymentsAutofillClient::IsMandatoryReauthEnabled() {
   return GetPaymentsDataManager().IsPaymentMethodsMandatoryReauthEnabled();
 }
@@ -499,7 +498,17 @@ void IOSChromePaymentsAutofillClient::ShowMandatoryReauthOptInPrompt(
 void IOSChromePaymentsAutofillClient::ShowMandatoryReauthOptInConfirmation() {}
 
 bool IOSChromePaymentsAutofillClient::IsAutofillPaymentMethodsEnabled() const {
-  return autofill::prefs::IsAutofillPaymentMethodsEnabled(pref_service_);
+  if (!prefs::IsAutofillPaymentMethodsEnabled(pref_service_)) {
+    return false;
+  }
+  if (base::FeatureList::IsEnabled(
+          features::kAutofillEnableAutofillSettingsEnterprisePolicy) &&
+      client_->IsAutofillTypeBlockedByPolicy(
+          client_->GetLastCommittedPrimaryMainFrameURL(),
+          AutofillClient::AutofillPolicyDataCategory::kPayments)) {
+    return false;
+  }
+  return true;
 }
 
 void IOSChromePaymentsAutofillClient::DisablePaymentsAutofill() {
@@ -519,14 +528,6 @@ IOSChromePaymentsAutofillClient::GetMerchantPromoCodeManager() {
   return nullptr;
 }
 
-void IOSChromePaymentsAutofillClient::OpenPromoCodeOfferDetailsURL(
-    const GURL& url) {
-  web_state_->OpenURL(web::WebState::OpenURLParams(
-      url, web::Referrer(), WindowOpenDisposition::NEW_FOREGROUND_TAB,
-      ui::PageTransition::PAGE_TRANSITION_AUTO_TOPLEVEL,
-      /*is_renderer_initiated=*/false));
-}
-
 AutofillOfferManager*
 IOSChromePaymentsAutofillClient::GetAutofillOfferManager() {
   return nullptr;
@@ -538,26 +539,32 @@ void IOSChromePaymentsAutofillClient::UpdateOfferNotification(
 
 void IOSChromePaymentsAutofillClient::DismissOfferNotification() {}
 
+bool IOSChromePaymentsAutofillClient::IsTabVisibleForOfferNotification() const {
+  // Offer notifications are not supported on iOS.
+  NOTIMPLEMENTED();
+  return false;
+}
+
 bool IOSChromePaymentsAutofillClient::ShowTouchToFillCreditCard(
-    base::WeakPtr<TouchToFillDelegate> delegate,
+    base::WeakPtr<TouchToFillPaymentMethodDelegate> delegate,
     base::span<const Suggestion> suggestions) {
   return false;
 }
 
 bool IOSChromePaymentsAutofillClient::ShowTouchToFillIban(
-    base::WeakPtr<TouchToFillDelegate> delegate,
+    base::WeakPtr<TouchToFillPaymentMethodDelegate> delegate,
     base::span<const Iban> ibans_to_suggest) {
   return false;
 }
 
 bool IOSChromePaymentsAutofillClient::ShowTouchToFillAffiliatedLoyaltyCard(
-    base::WeakPtr<TouchToFillDelegate> delegate,
+    base::WeakPtr<TouchToFillPaymentMethodDelegate> delegate,
     std::vector<LoyaltyCard> loyalty_cards_to_suggest) {
   return false;
 }
 
 bool IOSChromePaymentsAutofillClient::ShowTouchToFillForAllLoyaltyCards(
-    base::WeakPtr<TouchToFillDelegate> delegate,
+    base::WeakPtr<TouchToFillPaymentMethodDelegate> delegate,
     std::vector<LoyaltyCard> loyalty_cards_to_suggest) {
   return false;
 }
@@ -653,9 +660,23 @@ void IOSChromePaymentsAutofillClient::ShowCreditCardUploadSaveAndFillDialog(
 void IOSChromePaymentsAutofillClient::ShowCreditCardSaveAndFillPendingDialog(
     CardSaveAndFillDialogCallback callback) {}
 
-void IOSChromePaymentsAutofillClient::HideCreditCardSaveAndFillDialog() {}
+void IOSChromePaymentsAutofillClient::HideCreditCardSaveAndFillDialog() {
+  // Specifically for signed-out users executing a direct local save,
+  // `HideCreditCardSaveAndFillDialog` is called after the card is saved
+  // locally. Calling `CreditCardUploadCompleted` with `kPermanentFailure`
+  // triggers dismissal of the Save and Fill bottom sheet and displays the
+  // "Card saved to device" confirmation dialog, maintaining parity with the
+  // upload save fallback flow for signed-in users.
+  if ((client_->GetAutofillSaveCardInfoBarDelegateIOS() &&
+       !client_->GetAutofillSaveCardInfoBarDelegateIOS()->is_for_upload()) ||
+      (save_card_bottom_sheet_model_ &&
+       !save_card_bottom_sheet_model_->is_for_upload())) {
+    CreditCardUploadCompleted(PaymentsRpcResult::kPermanentFailure,
+                              std::nullopt);
+  }
+}
 
-bool IOSChromePaymentsAutofillClient::IsTabModalPopupDeprecated() const {
+bool IOSChromePaymentsAutofillClient::IsTabModalPopup() const {
   return false;
 }
 
@@ -668,6 +689,23 @@ BnplUiDelegate* IOSChromePaymentsAutofillClient::GetBnplUiDelegate() {
     bnpl_ui_delegate_ = std::make_unique<IosBnplUiDelegate>(&client_.get());
   }
   return bnpl_ui_delegate_.get();
+}
+
+WalletReminderNoticeUiDelegate*
+IOSChromePaymentsAutofillClient::GetWalletReminderNoticeUiDelegate() {
+  if (!wallet_reminder_notice_ui_delegate_) {
+    wallet_reminder_notice_ui_delegate_.emplace(web_state_,
+                                                client_->commands_handler());
+  }
+  return &*wallet_reminder_notice_ui_delegate_;
+}
+
+WalletReminderNoticeManager*
+IOSChromePaymentsAutofillClient::GetWalletReminderNoticeManager() {
+  if (!wallet_reminder_notice_manager_) {
+    wallet_reminder_notice_manager_.emplace(&client_.get());
+  }
+  return &*wallet_reminder_notice_manager_;
 }
 
 void IOSChromePaymentsAutofillClient::ShowSaveCreditCard(
@@ -696,11 +734,10 @@ void IOSChromePaymentsAutofillClient::ShowSaveCreditCard(
   if (!is_cvc_save_only) {
     // Logs the decision to not show the bottomsheet.
     autofill_metrics::LogSaveCreditCardPromptResultIOS(
-        autofill::autofill_metrics::SaveCreditCardPromptResultIOS::kNotShown,
+        autofill_metrics::SaveCreditCardPromptResultIOS::kNotShown,
         save_card_delegate->is_for_upload(),
         save_card_delegate->GetSaveCreditCardOptions(),
-        autofill::autofill_metrics::SaveCreditCardPromptOverlayType::
-            kBottomSheet);
+        autofill_metrics::SaveCreditCardPromptOverlayType::kBottomSheet);
   }
   InfobarType infobar_type = is_cvc_save_only
                                  ? InfobarType::kInfobarTypeSaveCvc

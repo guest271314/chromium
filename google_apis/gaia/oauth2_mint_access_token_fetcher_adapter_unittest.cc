@@ -16,6 +16,7 @@
 #include "base/test/mock_callback.h"
 #include "base/test/task_environment.h"
 #include "base/time/time.h"
+#include "crypto/sign.h"
 #include "google_apis/gaia/gaia_auth_util.h"
 #include "google_apis/gaia/gaia_constants.h"
 #include "google_apis/gaia/gaia_id.h"
@@ -103,12 +104,18 @@ class MockOAuth2MintTokenFlow : public OAuth2MintTokenFlow {
   void SimulateMintTokenSuccess(const std::string& access_token,
                                 const std::set<std::string>& granted_scopes,
                                 int time_to_live,
-                                bool is_encrypted) {
+                                bool is_encrypted,
+                                const std::string& upgrade_challenge = "") {
     MintTokenResult result;
     result.access_token = access_token;
     result.granted_scopes = granted_scopes;
     result.time_to_live = base::Seconds(time_to_live);
     result.is_token_encrypted = is_encrypted;
+    result.bound_token_upgrade_challenge = upgrade_challenge;
+    if (!upgrade_challenge.empty()) {
+      result.bound_token_upgrade_supported_algorithms = {
+          crypto::sign::ECDSA_SHA256, crypto::sign::RSA_PKCS1_SHA256};
+    }
     delegate_->OnMintTokenSuccess(result);
   }
   void SimulateMintTokenFailure(const GoogleServiceAuthError& error) {
@@ -165,7 +172,10 @@ Matcher<const OAuth2MintTokenFlow::Parameters&> ParamsEq(
       Field("bound_oauth_token", &Parameters::bound_oauth_token,
             expected.bound_oauth_token),
       Field("use_mtls_endpoints", &Parameters::use_mtls_endpoints,
-            expected.use_mtls_endpoints));
+            expected.use_mtls_endpoints),
+      Field("check_bound_token_upgrade_eligibility",
+            &Parameters::check_bound_token_upgrade_eligibility,
+            expected.check_bound_token_upgrade_eligibility));
 }
 
 OAuth2MintTokenFlow::Parameters GetTestOAuth2MintTokenFlowParameters(
@@ -299,6 +309,41 @@ TEST_F(OAuth2MintAccessTokenFetcherAdapterTest, ParamsUnbound) {
   EXPECT_THAT(mock_flow()->params(), ParamsEq(expected_params));
 }
 
+TEST_F(OAuth2MintAccessTokenFetcherAdapterTest, ParamsUpgradeEligibility) {
+  auto fetcher = CreateFetcher(/*is_refresh_token_bound=*/false);
+  base::MockCallback<OAuth2MintAccessTokenFetcherAdapter::TokenUpgradeCallback>
+      mock_upgrade_callback;
+  fetcher->EnableTokenUpgradeEligibility(mock_upgrade_callback.Get());
+  fetcher->Start(kTestClientId, kTestClientSecret, {kTestScope});
+  EXPECT_TRUE(mock_flow());
+  OAuth2MintTokenFlow::Parameters expected_params =
+      GetTestOAuth2MintTokenFlowParameters(/*bound_oauth_token=*/std::string());
+  expected_params.check_bound_token_upgrade_eligibility = true;
+  EXPECT_THAT(mock_flow()->params(), ParamsEq(expected_params));
+}
+
+TEST_F(OAuth2MintAccessTokenFetcherAdapterTest, SuccessWithUpgradeEligibility) {
+  auto fetcher = CreateFetcher(/*is_refresh_token_bound=*/false);
+  base::MockCallback<OAuth2MintAccessTokenFetcherAdapter::TokenUpgradeCallback>
+      mock_upgrade_callback;
+  fetcher->EnableTokenUpgradeEligibility(mock_upgrade_callback.Get());
+  fetcher->Start(kTestClientId, kTestClientSecret, {kTestScope});
+  base::TimeDelta kTimeToLive = base::Hours(4);
+  EXPECT_CALL(*mock_consumer(), OnGetTokenSuccess(HasAccessTokenWithTtl(
+                                    kTestAccessToken, kTimeToLive)));
+  EXPECT_CALL(mock_upgrade_callback, Run("challenge", _));
+  mock_flow()->SimulateMintTokenSuccess(kTestAccessToken, {kTestScope},
+                                        kTimeToLive.InSeconds(),
+                                        /*is_encrypted=*/false, "challenge");
+  VerifyUnboundFetchAuthErrorHistograms(GoogleServiceAuthError::NONE);
+  histogram_tester().ExpectUniqueSample(
+      "Signin.TokenBinding.UpgradeEligibility", /*sample=*/true,
+      /*expected_bucket_count=*/1);
+  histogram_tester().ExpectUniqueSample("Signin.TokenBinding.UpgradeRequested",
+                                        /*sample=*/true,
+                                        /*expected_bucket_count=*/1);
+}
+
 TEST_F(OAuth2MintAccessTokenFetcherAdapterTest, Success) {
   auto fetcher = CreateFetcher();
   fetcher->Start(kTestClientId, kTestClientSecret, {kTestScope});
@@ -310,6 +355,12 @@ TEST_F(OAuth2MintAccessTokenFetcherAdapterTest, Success) {
                                         /*is_encrypted=*/false);
   VerifyBoundFetchAuthErrorHistograms(GoogleServiceAuthError::NONE,
                                       kChallengeSentinelHistogramSuffix);
+  histogram_tester().ExpectUniqueSample(
+      "Signin.TokenBinding.UpgradeEligibility", /*sample=*/false,
+      /*expected_bucket_count=*/1);
+  histogram_tester().ExpectUniqueSample("Signin.TokenBinding.UpgradeRequested",
+                                        /*sample=*/false,
+                                        /*expected_bucket_count=*/1);
 }
 
 TEST_F(OAuth2MintAccessTokenFetcherAdapterTest, SuccessWithSignedAssertion) {
@@ -413,6 +464,43 @@ TEST_F(OAuth2MintAccessTokenFetcherAdapterTest, Failure) {
   VerifyBoundFetchAuthErrorHistograms(
       GoogleServiceAuthError::INVALID_GAIA_CREDENTIALS,
       kChallengeSentinelHistogramSuffix);
+}
+
+TEST_F(OAuth2MintAccessTokenFetcherAdapterTest, FailureWithSignedAssertion) {
+  auto fetcher = CreateFetcher();
+  fetcher->SetBindingKeyAssertion(kTestAssertion);
+  fetcher->Start(kTestClientId, kTestClientSecret, {kTestScope});
+  EXPECT_CALL(*mock_consumer(),
+              OnGetTokenFailure(
+                  GoogleServiceAuthError::FromInvalidGaiaCredentialsReason(
+                      GoogleServiceAuthError::InvalidGaiaCredentialsReason::
+                          TOKEN_BINDING_ASSERTION_REJECTED_BY_SERVER)));
+  mock_flow()->SimulateMintTokenFailure(
+      GoogleServiceAuthError::FromInvalidGaiaCredentialsReason(
+          GoogleServiceAuthError::InvalidGaiaCredentialsReason::
+              CREDENTIALS_REJECTED_BY_SERVER));
+  VerifyBoundFetchAuthErrorHistograms(
+      GoogleServiceAuthError::INVALID_GAIA_CREDENTIALS,
+      kSignedAssertionHistogramSuffix);
+}
+
+TEST_F(OAuth2MintAccessTokenFetcherAdapterTest, FailureWithFailedAssertion) {
+  auto fetcher = CreateFetcher();
+  fetcher->SetBindingKeyAssertion(
+      std::string(GaiaConstants::kTokenBindingAssertionFailedPlaceholder));
+  fetcher->Start(kTestClientId, kTestClientSecret, {kTestScope});
+  EXPECT_CALL(*mock_consumer(),
+              OnGetTokenFailure(
+                  GoogleServiceAuthError::FromInvalidGaiaCredentialsReason(
+                      GoogleServiceAuthError::InvalidGaiaCredentialsReason::
+                          TOKEN_BINDING_ASSERTION_GENERATION_FAILED)));
+  mock_flow()->SimulateMintTokenFailure(
+      GoogleServiceAuthError::FromInvalidGaiaCredentialsReason(
+          GoogleServiceAuthError::InvalidGaiaCredentialsReason::
+              CREDENTIALS_REJECTED_BY_SERVER));
+  VerifyBoundFetchAuthErrorHistograms(
+      GoogleServiceAuthError::INVALID_GAIA_CREDENTIALS,
+      kAssertionFailedHistogramSuffix);
 }
 
 TEST_F(OAuth2MintAccessTokenFetcherAdapterTest, FailureUnbound) {

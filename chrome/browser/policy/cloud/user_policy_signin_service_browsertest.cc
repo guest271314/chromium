@@ -20,7 +20,6 @@
 #include "chrome/browser/policy/profile_policy_connector.h"
 #include "chrome/browser/signin/chrome_signin_client_factory.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/webui/signin/signin_utils.h"
 #include "chrome/browser/ui/webui/signin/turn_sync_on_helper.h"
 #include "chrome/common/pref_names.h"
@@ -118,13 +117,13 @@ class UserPolicySigninServiceTest : public InProcessBrowserTest {
     DCHECK_EQ(helper_created_count_, helper_deleted_count_);
   }
 
-  Profile* profile() { return browser()->profile(); }
+  Profile* profile() { return browser()->GetProfile(); }
 
   SigninClient* signin_client() {
     return ChromeSigninClientFactory::GetForProfile(profile());
   }
 
-  const CoreAccountId& account_id() { return account_info_.account_id; }
+  const CoreAccountId& account_id() { return account_id_; }
 
   policy::PolicyService* GetPolicyService() {
     return profile()->GetProfilePolicyConnector()->policy_service();
@@ -140,8 +139,7 @@ class UserPolicySigninServiceTest : public InProcessBrowserTest {
     ++helper_created_count_;
     return new TurnSyncOnHelper(
         profile(), signin_metrics::AccessPoint::kBookmarkManager,
-        signin_metrics::PromoAction::PROMO_ACTION_WITH_DEFAULT,
-        account_info_.account_id,
+        signin_metrics::PromoAction::PROMO_ACTION_WITH_DEFAULT, account_id_,
         TurnSyncOnHelper::SigninAbortedMode::REMOVE_ACCOUNT,
         std::make_unique<TestTurnSyncOnHelperDelegate>(this),
         base::DoNothing());
@@ -234,11 +232,13 @@ class UserPolicySigninServiceTest : public InProcessBrowserTest {
 
     embedded_test_server_.StartAcceptingConnections();
 
-    account_info_ = MakeAccountAvailable(
-        identity_manager(), signin::AccountAvailabilityOptionsBuilder()
-                                .AsPrimary(signin::ConsentLevel::kSignin)
-                                .WithRefreshToken(kTestRefreshToken)
-                                .Build(kTestEmail));
+    account_id_ =
+        MakeAccountAvailable(identity_manager(),
+                             signin::AccountAvailabilityOptionsBuilder()
+                                 .AsPrimary(signin::ConsentLevel::kSignin)
+                                 .WithRefreshToken(kTestRefreshToken)
+                                 .Build(kTestEmail))
+            .GetAccountId();
     SetupFakeGaiaResponses();
   }
 
@@ -312,7 +312,7 @@ class UserPolicySigninServiceTest : public InProcessBrowserTest {
   net::EmbeddedTestServer embedded_test_server_;
   FakeGaia fake_gaia_;
   std::unique_ptr<policy::EmbeddedPolicyTestServer> policy_server_;
-  CoreAccountInfo account_info_;
+  CoreAccountId account_id_;
   base::OnceClosure sync_confirmation_shown_closure_;
   base::OnceClosure policy_hanging_closure_;
   base::OnceCallback<void(LoginUIService::SyncConfirmationUIClosedResult)>

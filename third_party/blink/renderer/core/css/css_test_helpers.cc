@@ -330,6 +330,8 @@ String ToString(PseudoId pseudo_id) {
       return "kPseudoIdViewTransitionNew";
     case kPseudoIdFirstLineInherited:
       return "kPseudoIdFirstLineInherited";
+    case kPseudoIdPrecomputedHover:
+      return "kPseudoIdPrecomputedHover";
     case kPseudoIdScrollbarThumb:
       return "kPseudoIdScrollbarThumb";
     case kPseudoIdScrollbarButton:
@@ -356,12 +358,18 @@ String ToString(PseudoId pseudo_id) {
       return "kPseudoIdDetailsContent";
     case kPseudoIdPickerSelect:
       return "kPseudoIdPickerSelect";
+    case kPseudoIdSelectListbox:
+      return "kPseudoIdSelectListbox";
     case kPseudoIdPermissionIcon:
       return "kPseudoIdPermissionIcon";
     case kAfterLastInternalPseudoId:
       return "kAfterLastInternalPseudoId";
     case kPseudoIdOverscrollAreaParent:
       return "kPseudoIdOverscrollAreaParent";
+    case kPseudoIdOverscrollBackdrop:
+      return "kPseudoIdOverscrollBackdrop";
+    case kPseudoIdSkeleton:
+      return "kPseudoIdSkeleton";
     case kPseudoIdInvalid:
       return "kPseudoIdInvalid";
   }

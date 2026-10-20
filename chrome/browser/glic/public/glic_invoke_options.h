@@ -7,6 +7,7 @@
 
 #include <optional>
 #include <string>
+#include <string_view>
 #include <variant>
 #include <vector>
 
@@ -16,6 +17,7 @@
 #include "base/time/time.h"
 #include "chrome/browser/glic/host/glic.mojom.h"
 #include "chrome/browser/glic/public/context/glic_sharing_manager.h"
+#include "chrome/browser/glic/public/glic_instance_id.h"
 #include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/global_routing_id.h"
 
@@ -54,18 +56,80 @@ struct NewTab {
   raw_ptr<BrowserWindowInterface> window = nullptr;
   bool open_in_foreground = true;
 };
+
+// Use the last active surface for the instance. If there is no last active
+// surface, falls back to creating a new tab in the specified window (or a new
+// window if null).
+struct LastActiveOrNew {
+  // The window to open the new tab in, used only for the fallback case where a
+  // new tab ends up being created.
+  raw_ptr<BrowserWindowInterface> window = nullptr;
+  // Whether to open the new tab in the foreground, used only for the fallback
+  // case where a new tab ends up being created.
+  bool open_in_foreground = true;
+};
+
+// Intended for internal use only. If you believe you need access to this
+// option, please reach out to c/b/glic/API_OWNERS.
+struct Floating {
+ private:
+  friend class GlicInstanceImpl;
+  friend class GlicInstanceCoordinatorImpl;
+  friend class GlicInvokeHandler;
+  Floating() = default;
+};
+
+// Specifies what an invocation should do when it resolves to an instance that
+// is already showing in live (audio) mode. Live mode runs in the floating
+// panel, so an invocation that targets a tab would otherwise pull the
+// conversation out of it and into that tab's side panel.
+//
+// This supersedes `GlicInvokeOptions::preserve_active_surface`, which only
+// applies to instances that are not in live mode. Apart from `kFail`, these
+// options work by choosing which surface the conversation is shown on, so they
+// require a `Target::surface` they can steer; combining one with a surface it
+// can't steer fails the invocation with
+// `GlicInvokeError::kInvalidConfiguration`. Leaving live mode is ultimately up
+// to the web client; the browser only chooses the surface and requests a mode.
+enum class LiveModeBehavior {
+  // Carry on in live mode: leave the conversation in the floating panel.
+  kProceedInLiveMode,
+  // Show the conversation in the targeted tab's side panel, even if it is
+  // currently in the floating panel. The side panel doesn't host live mode, so
+  // this leaves it. Requires a surface that resolves to a tab
+  // (`DefaultSurface`, `NewTab` or `TabHandle`).
+  kForceSidePanelTextMode,
+  // Keep the conversation in the floating panel and request that it be shown
+  // in text mode. Unlike `kProceedInLiveMode`, this moves a conversation that
+  // is showing elsewhere into the floating panel. Requires a surface that
+  // resolves to a tab or `Floating`.
+  kForceFloatingTextMode,
+  // Fail the invocation with `GlicInvokeError::kLiveModeActive`.
+  kFail,
+};
+
 // The target for the invocation.
 struct Target {
+  using Surface = std::variant<DefaultSurface,
+                               NewTab,
+                               tabs::TabHandle,
+                               Floating,
+                               LastActiveOrNew>;
+
   Target();
-  explicit Target(tabs::TabInterface* tab);
+  explicit Target(tabs::TabInterface& tab);
   explicit Target(BrowserWindowInterface* window);
   explicit Target(NewTab new_tab);
-  Target(tabs::TabInterface* tab,
-         std::variant<DefaultConversation, NewConversation, ConversationId>
-             conversation);
-  explicit Target(
-      std::variant<DefaultConversation, NewConversation, ConversationId>
-          conversation);
+  explicit Target(LastActiveOrNew last_active_or_new);
+  Target(tabs::TabInterface& tab,
+         std::variant<DefaultConversation,
+                      NewConversation,
+                      ConversationId,
+                      InstanceId> conversation);
+  explicit Target(std::variant<DefaultConversation,
+                               NewConversation,
+                               ConversationId,
+                               InstanceId> conversation);
   Target(Target&&);
   Target& operator=(Target&&);
   ~Target();
@@ -74,17 +138,24 @@ struct Target {
   // - DefaultSurface: Resolves to the active tab of the specified browser
   //   window, or creates a new window if no browser is specified.
   // - NewTab: Creates a new tab in the specified window, or a new window if
-  // null.
-  // - TabInterface*: Targets a specific tab. Must not be null.
-  std::variant<DefaultSurface, NewTab, raw_ptr<tabs::TabInterface>> surface =
-      DefaultSurface();
+  //   null.
+  // - TabHandle: Targets a specific tab.
+  // - Floating: Targets the floating panel.
+  // - LastActiveOrNew: Uses the last active embedder for the instance, or falls
+  //   back to creating a new tab.
+  Surface surface = DefaultSurface();
+
+  // What to do if this invocation resolves to an instance that is already
+  // showing in live (audio) mode. Defaults to leaving it in live mode.
+  LiveModeBehavior live_mode_behavior = LiveModeBehavior::kProceedInLiveMode;
 
   // Specifies which conversation to use or create.
   // - DefaultConversation: Uses the conversation already bound to the target
   //   surface if available, otherwise creates a new one.
   // - NewConversation: Forces the creation of a new conversation.
   // - ConversationId: Reconnects to a specific existing conversation.
-  std::variant<DefaultConversation, NewConversation, ConversationId>
+  // - InstanceId: Targets a specific existing instance.
+  std::variant<DefaultConversation, NewConversation, ConversationId, InstanceId>
       conversation = DefaultConversation();
 
   // Specifies the target for actuation.
@@ -130,40 +201,74 @@ struct AdditionalTabContext {
   PolicyCheck policy_check = PolicyCheck::kClipboard;
 };
 
+// LINT.IfChange(GlicInvokeError)
 // Possible errors that can occur during a Glic invocation.
 enum class GlicInvokeError {
-  kUnknown,
+  // 0 is reserved for success in metrics.
+  kUnknown = 1,
   // The invocation timed out before completion.
-  kTimeout,
+  kTimeout = 2,
   // The provided conversation ID was invalid (e.g. empty).
-  kInvalidConversationId,
+  kInvalidConversationId = 3,
   // The provided tab was invalid (e.g. null).
-  kInvalidTab,
+  kInvalidTab = 4,
   // The tab was closed before the invocation could complete.
-  kTabClosed,
-  // The instance was destroyed before the invocation could complete.
-  kInstanceDestroyed,
+  kTabClosed = 5,
+  // Deprecated: split by removal reason into the kInstanceDestroyed* values
+  // below.
+  // kInstanceDestroyed = 6,
   // The instance is already handling an invocation.
-  kInvokeInProgress,
+  kInvokeInProgress = 7,
   // The provided invocation configuration is invalid.
-  kInvalidConfiguration,
+  kInvalidConfiguration = 8,
   // Observed a navigation before the policy checks completed.
-  kAdditionalContextSawNavigation,
+  kAdditionalContextSawNavigation = 9,
   // The clipboard copy policy check failed for the given additional context.
-  kAdditionalContextFailedCopyPolicy,
+  kAdditionalContextFailedCopyPolicy = 10,
   // The clipboard paste policy check failed for the given additional context.
-  kAdditionalContextFailedPastePolicy,
+  kAdditionalContextFailedPastePolicy = 11,
   // Could not find the source frame instance for the policy checks.
-  kAdditionalContextNoSourceFrame,
+  kAdditionalContextNoSourceFrame = 12,
   // Could not find the web client frame instance for the policy checks.
-  kAdditionalContextNoClientFrame,
+  kAdditionalContextNoClientFrame = 13,
   // Could not create clipboard metadata for policy checks. This is likely due
   // to the context type not yet being supported.
-  kAdditionalContextNoClipboardMetadata,
+  kAdditionalContextNoClipboardMetadata = 14,
+  // The targeted Glic InstanceId could not be found or has closed.
+  kInstanceNotFound = 15,
+  // Profile is not enabled for Glic.
+  kProfileNotEnabled = 16,
+  // The invocation was cancelled.
+  kCancelled = 17,
+  // The invocation handler was superseded by another invocation.
+  kSuperseded = 18,
+  // The invocation targeted an instance that is in live mode, and
+  // `Target::live_mode_behavior` asked for it to fail.
+  kLiveModeActive = 19,
+  // The Glic client failed to load or reach a ready state.
+  kClientLoadError = 20,
+  // The instance was destroyed before the invocation could complete. The
+  // suffix says why the instance was removed (see InstanceRemovalReason).
+  kInstanceDestroyedBlankInstanceClosed = 21,
+  kInstanceDestroyedUnbound = 22,
+  kInstanceDestroyedArchived = 23,
+  kInstanceDestroyedSignedOut = 24,
+  kInstanceDestroyedShutdown = 25,
+  // The user explicitly closed the panel the invocation was showing before
+  // the client became usable (see Host::client_load_state()). Invocations
+  // that already have a usable client are not affected by a close.
+  kPanelClosed = 26,
+  kMaxValue = kPanelClosed,
 };
+// LINT.ThenChange(//tools/metrics/histograms/metadata/glic/enums.xml:GlicInvokeResult,//chrome/browser/glic/public/glic_invoke_options.cc:GlicInvokeErrorToString)
+
+// Returns a human-readable, non-localized description of `error`. Intended for
+// logging and developer-facing surfaces (e.g. chrome://glic-internals); not for
+// display to end users.
+std::string_view GlicInvokeErrorToString(GlicInvokeError error);
 
 // Details for invoking Glic with tabs shared. See
-// GlicSharingManager::PinTabs().
+// GlicSharingManagerInternal::PinTabs().
 struct TabSharingOptions {
   TabSharingOptions();
   TabSharingOptions(std::vector<tabs::TabHandle> tabs_to_pin,
@@ -178,6 +283,16 @@ struct TabSharingOptions {
   // Reason for pinning tabs, required to be set to something besides kUnknown
   // if `tabs_to_pin` isn't empty.
   GlicPinTrigger pin_trigger;
+};
+
+// Specifies how to wait for the First Run Experience (FRE) to complete.
+enum class FreCompletionWaitMode {
+  // Whether or not we wait depends on the FRE override and context.
+  kDefault,
+  // We do not wait for the FRE to complete, regardless of the FRE override.
+  kNever,
+  // Always wait for the FRE to complete before proceeding.
+  kAlways,
 };
 
 // Configuration options for invoking Glic.
@@ -212,8 +327,21 @@ struct GlicInvokeOptions {
   // Tabs to pin as part of invocation.
   TabSharingOptions tab_sharing;
 
+  // Whether to automatically pin the target tab when the side panel is bound
+  // to it. Defaults to true.
+  bool pin_on_bind = true;
+
   // Defines the target for the invocation (surface and conversation).
   Target target;
+
+  // Whether an invocation that targets a tab should leave the conversation on
+  // the surface it is already showing on, rather than moving it into that
+  // tab's side panel. Currently only applies to the floating panel.
+  //
+  // Targeting a specific conversation (`ConversationId`/`InstanceId`) also
+  // binds the tab to it. `DefaultConversation` does not: an unbound tab still
+  // gets its own conversation in its own side panel.
+  bool preserve_active_surface = false;
 
   // The feature mode to use for the invocation, triggering specific client
   // behaviours like actuation or image generation.
@@ -230,6 +358,7 @@ struct GlicInvokeOptions {
   // If this invocation is used by the skill feature, this specifies its ID.
   // TODO(b/507074189): make this a source-specific payload rather than a
   // general option.
+  // Deprecated: use skills_payload.skill_id instead.
   std::optional<std::string> skill_id;
 
   // The FRE override, if any.
@@ -242,11 +371,27 @@ struct GlicInvokeOptions {
   // The amount of time to wait before canceling the invocation.
   std::optional<base::TimeDelta> timeout;
 
+  // Whether to supersede and cancel an existing in-progress invocation on the
+  // target instance instead of failing with kInvokeInProgress.
+  bool supersede_if_in_progress = false;
+
   // Whether to wait until the side panel has fully opened and the web
   // contents have stabilized before sending the invoke payload to the client.
   // Defaults to false. If the panel was already open when the invoke was
   // triggered, this flag is ignored.
   bool wait_for_panel_open = false;
+
+  // Whether to focus the side panel when shown.
+  bool focus_on_show = true;
+
+  // Specifies how to wait for the First Run Experience (FRE) to complete
+  // before proceeding with the invocation.
+  FreCompletionWaitMode fre_completion_wait_mode =
+      FreCompletionWaitMode::kDefault;
+
+  // Browser-specific callback for when the side panel is opened (and stabilized
+  // if wait_for_panel_open is true).
+  base::OnceClosure on_panel_opened;
 
   // Browser-specific callback for when the invocation successfully completes.
   // This is called asynchronously.

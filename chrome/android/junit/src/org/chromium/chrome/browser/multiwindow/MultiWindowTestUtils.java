@@ -8,11 +8,8 @@ import android.content.Context;
 import android.util.Pair;
 
 import org.chromium.base.lifetime.Destroyable;
-import org.chromium.base.shared_preferences.SharedPreferencesManager;
 import org.chromium.base.supplier.OneshotSupplier;
 import org.chromium.chrome.browser.app.tabwindow.TabWindowManagerSingleton;
-import org.chromium.chrome.browser.preferences.MultiInstancePreferenceKeys;
-import org.chromium.chrome.browser.preferences.MultiInstanceSharedPreferences;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.profiles.ProfileProvider;
 import org.chromium.chrome.browser.tabmodel.NextTabPolicy.NextTabPolicySupplier;
@@ -35,11 +32,15 @@ public class MultiWindowTestUtils {
      * @param taskId ID of the task the activity instance runs in.
      */
     public static void createInstance(int instanceId, String url, int tabCount, int taskId) {
-        ChromeMultiInstancePersistentStore.writeActiveTabUrl(instanceId, url);
+        // 'writeLastAccessedTime' must be called first so that
+        // 'ChromeMultiInstancePersistentStore#hasInstance' returns true. Otherwise, it assumes
+        // the instance does not exist and blocks writes to all other fields.
         ChromeMultiInstancePersistentStore.writeLastAccessedTime(instanceId);
+        ChromeMultiInstancePersistentStore.writeActiveTabUrl(instanceId, url);
         ChromeMultiInstancePersistentStore.writeTabCount(
                 instanceId, tabCount, /* incognitoTabCount= */ 0);
         ChromeMultiInstancePersistentStore.writeTaskId(instanceId, taskId);
+        ChromeMultiInstancePersistentStore.writeIsRecoverable(instanceId, true);
         if (taskId != -1) MultiWindowUtils.addAppTaskIdForTesting(taskId);
     }
 
@@ -81,15 +82,11 @@ public class MultiWindowTestUtils {
     /** Clears instance information. */
     public static void resetInstanceInfo() {
         MultiInstancePersistentStore.resetForTesting();
-        SharedPreferencesManager prefs = MultiInstanceSharedPreferences.getInstance();
-        prefs.removeKeysWithPrefix(MultiInstancePreferenceKeys.MULTI_INSTANCE_URL);
-        prefs.removeKeysWithPrefix(MultiInstancePreferenceKeys.MULTI_INSTANCE_LAST_ACCESSED_TIME);
-        prefs.removeKeysWithPrefix(MultiInstancePreferenceKeys.MULTI_INSTANCE_CLOSURE_TIME);
-        prefs.removeKeysWithPrefix(MultiInstancePreferenceKeys.MULTI_INSTANCE_TAB_COUNT);
-        prefs.removeKeysWithPrefix(MultiInstancePreferenceKeys.MULTI_INSTANCE_TASK_MAP);
-        prefs.removeKey(
-                MultiInstancePreferenceKeys.MULTI_INSTANCE_INSTANCE_LIMIT_DOWNGRADE_TRIGGERED);
-        prefs.removeKey(MultiInstancePreferenceKeys.MULTI_INSTANCE_MAX_INSTANCE_LIMIT);
+    }
+
+    /** Ensures the persistent store is initialized for testing. */
+    public static void ensureInitialized() {
+        MultiInstancePersistentStore.ensureInitialized();
     }
 
     /** Enabled multi instance. */

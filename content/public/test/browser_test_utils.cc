@@ -48,10 +48,12 @@
 #include "build/build_config.h"
 #include "cc/test/pixel_test_utils.h"
 #include "components/input/render_widget_host_input_event_router.h"
+#include "components/viz/client/frame_eviction_manager.h"
 #include "components/viz/client/frame_evictor.h"
 #include "components/viz/common/frame_sinks/copy_output_result.h"
 #include "content/browser/file_system/file_system_manager_impl.h"
 #include "content/browser/file_system_access/file_system_access_manager_impl.h"
+#include "content/browser/process_lock.h"
 #include "content/browser/renderer_host/cross_process_frame_connector.h"
 #include "content/browser/renderer_host/frame_tree_node.h"
 #include "content/browser/renderer_host/media/media_stream_manager.h"
@@ -112,6 +114,7 @@
 #include "net/cookies/cookie_access_result.h"
 #include "net/cookies/cookie_constants.h"
 #include "net/cookies/cookie_util.h"
+#include "net/cookies/parsed_cookie.h"
 #include "net/filter/gzip_header.h"
 #include "net/filter/gzip_source_stream.h"
 #include "net/filter/mock_source_stream.h"
@@ -119,15 +122,14 @@
 #include "net/test/embedded_test_server/embedded_test_server.h"
 #include "net/test/embedded_test_server/http_request.h"
 #include "net/test/embedded_test_server/http_response.h"
-#include "net/test/python_utils.h"
 #include "net/traffic_annotation/network_traffic_annotation_test_helper.h"
+#include "partition_alloc/page_allocator.h"
 #include "services/network/public/cpp/features.h"
 #include "services/network/public/cpp/simple_url_loader.h"
 #include "services/network/public/mojom/cookie_manager.mojom.h"
 #include "services/network/public/mojom/network_context.mojom.h"
 #include "services/network/public/mojom/network_service.mojom.h"
 #include "services/network/public/mojom/network_service_test.mojom.h"
-#include "storage/browser/blob/blob_url_registry.h"
 #include "storage/browser/file_system/file_system_context.h"
 #include "testing/gmock/include/gmock/gmock-matchers.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -135,8 +137,8 @@
 #include "third_party/blink/public/common/chrome_debug_urls.h"
 #include "third_party/blink/public/common/frame/frame_visual_properties.h"
 #include "third_party/blink/public/common/input/synthetic_web_input_event_builders.h"
+#include "third_party/blink/public/common/input/web_touch_event.h"
 #include "third_party/blink/public/common/storage_key/storage_key.h"
-#include "third_party/blink/public/mojom/blob/blob_url_store.mojom-test-utils.h"
 #include "third_party/blink/public/mojom/filesystem/file_system.mojom.h"
 #include "third_party/blink/public/mojom/keyboard_lock/keyboard_lock.mojom-shared.h"
 #include "third_party/skia/include/core/SkBitmap.h"
@@ -180,6 +182,8 @@
 #if defined(USE_AURA)
 #include "content/browser/renderer_host/delegated_frame_host.h"
 #include "content/browser/renderer_host/render_widget_host_view_aura.h"
+#include "ui/aura/env.h"
+#include "ui/aura/test/env_test_helper.h"
 #include "ui/aura/test/window_event_dispatcher_test_api.h"
 #include "ui/aura/window.h"
 #include "ui/aura/window_event_dispatcher.h"
@@ -749,7 +753,7 @@ void NavigateToURLBlockUntilNavigationsComplete(
   }
 
   web_contents->GetController().LoadURLWithParams(params);
-  web_contents->GetOutermostWebContents()->Focus();
+  web_contents->Focus();
 
   // Wait until the expected number of navigations finish.
   same_tab_observer.Wait();
@@ -946,6 +950,18 @@ void SimulateUnresponsivePrimaryMainFrameAndWaitForExit(
   EXPECT_TRUE(web_contents->IsCrashed());
 }
 
+void SimulateOOMPrimaryMainFrameAndWaitForExit(WebContents* web_contents) {
+  RenderProcessHost* rph = web_contents->GetPrimaryMainFrame()->GetProcess();
+  RenderProcessHostWatcher watcher(
+      rph, RenderProcessHostWatcher::WATCH_FOR_PROCESS_EXIT);
+
+  EXPECT_TRUE(
+      rph->Shutdown(partition_alloc::kTerminateOnCommitFailureExitCode));
+  watcher.Wait();
+  EXPECT_FALSE(watcher.did_exit_normally());
+  EXPECT_TRUE(web_contents->IsCrashed());
+}
+
 void PwnCommitIPC(WebContents* web_contents,
                   const GURL& target_url,
                   const GURL& new_url,
@@ -961,9 +977,10 @@ bool CanCommitURLForTesting(int child_id, const GURL& url) {
 
 void SimulateUnresponsiveRenderer(WebContents* web_contents,
                                   RenderWidgetHost* widget) {
-  static_cast<WebContentsImpl*>(web_contents)
-      ->RendererUnresponsive(RenderWidgetHostImpl::From(widget),
-                             base::DoNothing());
+  RenderWidgetHostImpl::From(widget)->RendererIsUnresponsive(
+      RenderWidgetHostImpl::RendererIsUnresponsiveReason::
+          kOnInputEventAckTimeout,
+      base::DoNothing());
 }
 
 #if defined(USE_AURA)
@@ -1168,6 +1185,54 @@ void SimulateMouseEvent(WebContents* web_contents,
   mouse_event.SetPositionInScreen(point.x() + offset.x(),
                                   point.y() + offset.y());
 
+#if defined(USE_AURA)
+  // Because web contents drag drop requires the mouse button to be down,
+  // the Blink WebInputEvent button needs to be translated to its aura mouse
+  // button equivalent so aura::Env mouse_button_flags can be set correctly.
+  auto get_event_flags_for_button = [](blink::WebMouseEvent::Button button) {
+    switch (button) {
+      case blink::WebMouseEvent::Button::kLeft:
+        return ui::EF_LEFT_MOUSE_BUTTON;
+      case blink::WebMouseEvent::Button::kRight:
+        return ui::EF_RIGHT_MOUSE_BUTTON;
+      case blink::WebMouseEvent::Button::kMiddle:
+        return ui::EF_MIDDLE_MOUSE_BUTTON;
+      default:
+        return 0;
+    }
+  };
+  if (type == blink::WebInputEvent::Type::kMouseDown ||
+      type == blink::WebInputEvent::Type::kMouseMove) {
+    aura::Env::GetInstance()->SetLastMouseLocation(
+        gfx::Point(point.x() + offset.x(), point.y() + offset.y()));
+  }
+  // This function should not be used by unit tests, but if it somehow is, the
+  // global state below could be an issue when tests use the same process, if
+  // a test simulates a mouse down but not a mouse up, and the next test
+  // simulates a mouse up without a mouse down.
+  static base::NoDestructor<std::unique_ptr<aura::InputStateLookup>>
+      g_saved_input_state_lookup;
+
+  if (type == blink::WebInputEvent::Type::kMouseDown) {
+    if (aura::Env::GetInstance()->mouse_button_flags() == 0) {
+      *g_saved_input_state_lookup =
+          aura::test::EnvTestHelper(aura::Env::GetInstance())
+              .TakeInputStateLookup();
+    }
+    aura::Env::GetInstance()->set_mouse_button_flags(
+        aura::Env::GetInstance()->mouse_button_flags() |
+        get_event_flags_for_button(button));
+  } else if (type == blink::WebInputEvent::Type::kMouseUp) {
+    int flags = aura::Env::GetInstance()->mouse_button_flags() &
+                ~get_event_flags_for_button(button);
+    aura::Env::GetInstance()->set_mouse_button_flags(flags);
+    if (flags == 0) {
+      aura::test::EnvTestHelper(aura::Env::GetInstance())
+          .SetInputStateLookup(std::move(*g_saved_input_state_lookup));
+    }
+  }
+#endif
+
   web_contents_impl->GetInputEventRouter()->RouteMouseEvent(rwhvb, &mouse_event,
                                                             ui::LatencyInfo());
 }
@@ -1324,6 +1389,27 @@ void SimulateGestureEvent(WebContents* web_contents,
   RenderWidgetHostViewBase* view = static_cast<RenderWidgetHostViewBase*>(
       web_contents->GetRenderWidgetHostView());
   view->ProcessGestureEvent(gesture_event, latency);
+}
+
+void SimulateRoutedGestureEvent(WebContents* web_contents,
+                                const blink::WebGestureEvent& gesture_event) {
+  auto* web_contents_impl = static_cast<WebContentsImpl*>(web_contents);
+  auto* root_view = static_cast<RenderWidgetHostViewBase*>(
+      web_contents->GetRenderWidgetHostView());
+  CHECK(root_view);
+  web_contents_impl->GetInputEventRouter()->RouteGestureEvent(
+      root_view, &gesture_event, ui::LatencyInfo());
+}
+
+void SimulateRoutedTouchEvent(WebContents* web_contents,
+                              const blink::WebTouchEvent& touch_event) {
+  auto* web_contents_impl = static_cast<WebContentsImpl*>(web_contents);
+  auto* root_view = static_cast<RenderWidgetHostViewBase*>(
+      web_contents->GetRenderWidgetHostView());
+  CHECK(root_view);
+  blink::WebTouchEvent routed_event(touch_event);
+  web_contents_impl->GetInputEventRouter()->RouteTouchEvent(
+      root_view, &routed_event, ui::LatencyInfo());
 }
 
 void SimulateTouchGestureAt(WebContents* web_contents,
@@ -1798,7 +1884,9 @@ std::string AnnotateAndAdjustJsStackTraces(std::string_view js_error,
         std::string source_line(source_lines[line_number - 1]);
 
         int max_column_number = 60 - indent.length();
-        if (column_number > max_column_number) {
+        if (column_number > max_column_number &&
+            static_cast<size_t>(column_number - max_column_number) <
+                source_line.size()) {
           source_line = source_line.substr(column_number - max_column_number);
           column_number = max_column_number;
           source_line.replace(0, elision_mark.length(), elision_mark.data(),
@@ -2109,6 +2197,31 @@ bool HasOriginKeyedProcess(RenderFrameHost* frame) {
       .IsOriginKeyed();
 }
 
+bool HaveEmbedderIsolationWithSameUniqueInstance(RenderFrameHost* a,
+                                                 RenderFrameHost* b) {
+  auto* a_impl = static_cast<RenderFrameHostImpl*>(a);
+  auto* b_impl = static_cast<RenderFrameHostImpl*>(b);
+  const EmbedderIsolationInfo& a_eii =
+      a_impl->GetSiteInstance()->GetSiteInfo().embedder_isolation_info();
+  const EmbedderIsolationInfo& b_eii =
+      b_impl->GetSiteInstance()->GetSiteInfo().embedder_isolation_info();
+  return a_eii.is_unique_instance() && a_eii == b_eii;
+}
+
+bool HasUniqueInstanceIsolation(RenderFrameHost* frame) {
+  auto* frame_impl = static_cast<RenderFrameHostImpl*>(frame);
+  const EmbedderIsolationInfo& site_eii =
+      frame_impl->GetSiteInstance()->GetSiteInfo().embedder_isolation_info();
+  // The first clause checks the SiteInstance was assigned unique-instance
+  // isolation; the second checks the process it actually landed in is locked to
+  // that same instance id. The second clause is what catches cross-instance
+  // contamination -- a unique-instance frame reusing a process locked to a
+  // different instance's id -- which the first clause cannot see.
+  return site_eii.is_unique_instance() &&
+         frame_impl->GetProcess()->GetProcessLock().embedder_isolation_info() ==
+             site_eii;
+}
+
 std::vector<RenderFrameHost*> CollectAllRenderFrameHosts(
     RenderFrameHost* starting_rfh) {
   std::vector<RenderFrameHost*> visited_frames;
@@ -2231,7 +2344,7 @@ bool SetCookie(
   const bool has_partition_key = cookie_partition_key.has_value();
   const bool is_nonced =
       net::CookiePartitionKey::HasNonce(cookie_partition_key);
-  const bool has_attribute = base::ToLowerASCII(value).contains(";partitioned");
+  const bool has_attribute = net::ParsedCookie(value).IsPartitioned();
   if (!has_partition_key) {
     DCHECK(!has_attribute);
   }
@@ -2363,11 +2476,14 @@ ui::AXNodeData GetFocusedAccessibilityNodeInfo(WebContents* web_contents) {
 
 bool AccessibilityTreeContainsNodeWithName(ui::BrowserAccessibility* node,
                                            std::string_view name) {
-  // If an image annotation is set, it plays the same role as a name, so it
-  // makes sense to check both in the same test helper.
+  // If an image or canvas annotation is set, it plays the same role as a name,
+  // so it makes sense to check them in the same test helper.
   if (node->GetStringAttribute(ax::mojom::StringAttribute::kName) == name ||
       node->GetStringAttribute(ax::mojom::StringAttribute::kImageAnnotation) ==
-          name) {
+          name ||
+      (node->GetRole() == ax::mojom::Role::kCanvas &&
+       node->GetStringAttribute(
+           ax::mojom::StringAttribute::kCanvasAnnotation) == name)) {
     return true;
   }
   for (unsigned i = 0; i < node->PlatformChildCount(); i++) {
@@ -2668,16 +2784,17 @@ bool RenderProcessHostWatcher::Wait() {
   allow_renderer_crashes_.reset();
   // Call this here just in case something else quits the RunLoop.
   observation_.Reset();
-  return result;
+  return result && success_;
 }
-void RenderProcessHostWatcher::OnEvent() {
+void RenderProcessHostWatcher::OnEvent(bool success) {
+  success_ = success;
   waiter_helper_.OnEvent();
   observation_.Reset();
 }
 
 void RenderProcessHostWatcher::RenderProcessReady(RenderProcessHost* host) {
   if (type_ == WATCH_FOR_PROCESS_READY) {
-    OnEvent();
+    OnEvent(true);
   }
 }
 
@@ -2687,15 +2804,16 @@ void RenderProcessHostWatcher::RenderProcessExited(
   did_exit_normally_ =
       info.status == base::TERMINATION_STATUS_NORMAL_TERMINATION;
   if (type_ == WATCH_FOR_PROCESS_EXIT) {
-    OnEvent();
+    OnEvent(true);
+  } else if (type_ == WATCH_FOR_PROCESS_READY) {
+    OnEvent(false);
   }
 }
 
 void RenderProcessHostWatcher::RenderProcessHostDestroyed(
     RenderProcessHost* host) {
-  if (type_ == WATCH_FOR_HOST_DESTRUCTION) {
-    OnEvent();
-  }
+  OnEvent(type_ == WATCH_FOR_HOST_DESTRUCTION ||
+          type_ == WATCH_FOR_PROCESS_EXIT);
 }
 
 RenderProcessHostKillWaiter::RenderProcessHostKillWaiter(
@@ -3614,7 +3732,7 @@ void TestNavigationManager::RenderFrameCreated(
   NavigationRequest* request =
       host_impl->frame_tree_node()->navigation_request();
   if (host_impl->lifecycle_state() ==
-          RenderFrameHostImpl::LifecycleStateImpl::kSpeculative &&
+          RenderFrameHostLifecycleStateImpl::kSpeculative &&
       IsRequestCompatibleWithSpeculativeRFH(request) &&
       request->GetURL() == url_ &&
       (request == request_ || request_ == nullptr)) {
@@ -4272,6 +4390,11 @@ void PwnMessageHelper::OpenURL(RenderFrameHost* render_frame_host,
   params->disposition = WindowOpenDisposition::CURRENT_TAB;
   params->should_replace_current_entry = false;
   params->user_gesture = true;
+  params->initiator_state_token =
+      static_cast<RenderFrameHostImpl*>(render_frame_host)
+          ->current_initiator_state_token();
+  params->initiator_document_token =
+      static_cast<RenderFrameHostImpl*>(render_frame_host)->GetDocumentToken();
   static_cast<mojom::FrameHost*>(
       static_cast<RenderFrameHostImpl*>(render_frame_host))
       ->OpenURL(std::move(params));
@@ -4332,7 +4455,7 @@ void VerifyStaleContentOnFrameEviction(
 
   // Initially there should be no stale content set.
   EXPECT_FALSE(
-      delegated_frame_host->stale_content_layer()->has_external_content());
+      delegated_frame_host->stale_content_layer()->HasTransferableResource());
   EXPECT_EQ(delegated_frame_host->frame_eviction_state(),
             DelegatedFrameHost::FrameEvictionState::kNotStarted);
 
@@ -4351,37 +4474,28 @@ void VerifyStaleContentOnFrameEviction(
   waiter.WaitForEvictionState(
       DelegatedFrameHost::FrameEvictionState::kNotStarted);
   EXPECT_TRUE(
-      delegated_frame_host->stale_content_layer()->has_external_content());
+      delegated_frame_host->stale_content_layer()->HasTransferableResource());
 }
 
 #endif  // defined(USE_AURA)
 
-// static
-void BlobURLStoreInterceptor::Intercept(GURL target_url,
-                                        storage::BlobUrlRegistry* registry,
-                                        mojo::ReceiverId receiver_id) {
-  auto interceptor = base::WrapUnique(new BlobURLStoreInterceptor(target_url));
-  auto* raw_interceptor = interceptor.get();
-  auto impl = registry->receivers_for_testing().SwapImplForTesting(
-      receiver_id, std::move(interceptor));
-  raw_interceptor->url_store_ = std::move(impl);
+void SetMaxUnlockedCompositorFramesForTesting(size_t max) {
+  viz::FrameEvictionManager::GetInstance()->set_max_number_of_saved_frames(max);
 }
 
-blink::mojom::BlobURLStore* BlobURLStoreInterceptor::GetForwardingInterface() {
-  return url_store_.get();
+size_t GetUnlockedCompositorFrameCount() {
+  return viz::FrameEvictionManager::GetInstance()
+      ->GetUnlockedFramesCountForTesting();
 }
 
-void BlobURLStoreInterceptor::Register(
-    mojo::PendingRemote<blink::mojom::Blob> blob,
-    const GURL& url,
-    RegisterCallback callback) {
-  GetForwardingInterface()->Register(std::move(blob), target_url_,
-                                     std::move(callback));
+size_t GetLockedCompositorFrameCount() {
+  return viz::FrameEvictionManager::GetInstance()
+      ->GetLockedFramesCountForTesting();
 }
 
-BlobURLStoreInterceptor::BlobURLStoreInterceptor(GURL target_url)
-    : target_url_(target_url) {}
-BlobURLStoreInterceptor::~BlobURLStoreInterceptor() = default;
+void PurgeUnlockedCompositorFrames() {
+  viz::FrameEvictionManager::GetInstance()->PurgeAllUnlockedFrames();
+}
 
 namespace {
 
@@ -4743,6 +4857,7 @@ WebContents* CreateAndLoadWebContentsObserver::Wait() {
         << "Unexpected WebContents creation";
     // If the expected number of `WebContents` were created; finish waiting.
     if (filtered_web_contents.size() >= num_expected_contents_) {
+      creation_subscription_ = base::CallbackListSubscription();
       return filtered_web_contents[0];
     }
     // If insufficient `WebContents` were created, wait for another to be
@@ -4835,7 +4950,7 @@ void SpeculativeRenderFrameHostObserver::RenderFrameCreated(
   NavigationRequest* request =
       host_impl->frame_tree_node()->navigation_request();
   if (host_impl->lifecycle_state() ==
-          RenderFrameHostImpl::LifecycleStateImpl::kSpeculative &&
+          RenderFrameHostLifecycleStateImpl::kSpeculative &&
       IsRequestCompatibleWithSpeculativeRFH(request) &&
       request->GetURL() == url_) {
     run_loop_.Quit();
@@ -5097,12 +5212,13 @@ void CreateNewPopupWidgetInterceptor::CreateNewPopupWidget(
         RenderWidgetHostDelegate* delegate,
         base::SafeRef<SiteInstanceGroup> site_instance_group,
         int32_t routing_id,
-        bool hidden) override {
+        bool hidden,
+        GlobalRenderFrameHostId popup_creator_frame_id) override {
       CHECK(!last_created_widget_);
       last_created_widget_ =
           RenderWidgetHostFactory::CreateSelfOwnedRenderWidgetHost(
               frame_tree, delegate, std::move(site_instance_group), routing_id,
-              hidden);
+              hidden, popup_creator_frame_id);
       return last_created_widget_;
     }
 
@@ -5288,6 +5404,13 @@ void SimulateCharTyped(WebContents* web_contents, char16_t character) {
       process, RenderProcessHostWatcher::WATCH_FOR_PROCESS_EXIT);
   process->Shutdown(content::RESULT_CODE_KILLED);
   return watcher.Wait();
+}
+
+void SimulateDragStartForTesting(RenderFrameHost* source_rfh,
+                                 DropData* drop_data) {
+  auto* web_contents = static_cast<WebContentsImpl*>(
+      WebContents::FromRenderFrameHost(source_rfh));
+  web_contents->OnStartDragging(drop_data, source_rfh->GetGlobalFrameToken());
 }
 
 }  // namespace content

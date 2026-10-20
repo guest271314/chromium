@@ -24,7 +24,8 @@
 #import "ios/chrome/browser/signin/model/identity_manager_factory.h"
 #import "ios/chrome/common/ui/promo_style/promo_style_view_controller_delegate.h"
 
-@interface BestFeaturesScreenCoordinator () <BestFeaturesDelegate>
+@interface BestFeaturesScreenCoordinator () <BestFeaturesDelegate,
+                                             FirstRunScreenDelegate>
 
 @end
 
@@ -72,7 +73,7 @@
     if (!identityManager->HasPrimaryAccount(signin::ConsentLevel::kSignin)) {
       // Skip the Best Features Screen if the "signed in users only" arm is
       // enabled and the user is not signed in.
-      [_delegate screenWillFinishPresenting];
+      [_delegate firstRunScreenCoordinatorWantsToBeStopped:self];
       return;
     }
   }
@@ -133,7 +134,7 @@
   base::UmaHistogramEnumeration(
       first_run::kFirstRunStageHistogram,
       first_run::kBestFeaturesExperienceCompletionThroughMainScreen);
-  [_delegate screenWillFinishPresenting];
+  [_delegate firstRunScreenCoordinatorWantsToBeStopped:self];
 }
 
 #pragma mark - BestFeaturesDelegate
@@ -171,8 +172,18 @@
   }
 
   [self logItemSelection:item.type];
-  _detailScreenCoordinator.delegate = _delegate;
+  _detailScreenCoordinator.delegate = self;
   [_detailScreenCoordinator start];
+}
+
+#pragma mark - FirstRunScreenDelegate
+
+- (void)firstRunScreenCoordinatorWantsToBeStopped:
+    (ChromeCoordinator*)coordinator {
+  CHECK_EQ(coordinator, _detailScreenCoordinator, base::NotFatalUntil::M155);
+  [_detailScreenCoordinator stop];
+  _detailScreenCoordinator = nil;
+  [_delegate firstRunScreenCoordinatorWantsToBeStopped:self];
 }
 
 #pragma mark - Private

@@ -54,6 +54,45 @@ Color ResolveColorOperand(
   }
 }
 
+const CalculationValue* ResolveColorChannel(
+    const CSSValue& value,
+    const CSSLengthResolver& length_resolver) {
+  if (const auto* numeric = DynamicTo<CSSNumericLiteralValue>(value)) {
+    PixelsAndPercent literal;
+    if (numeric->IsAngle()) {
+      literal = PixelsAndPercent(numeric->ComputeDegrees());
+    } else if (numeric->IsPercentage()) {
+      literal = PixelsAndPercent(0., numeric->DoubleValue(), false, true);
+    } else {
+      // It's not actually a "pixels" value, but treating it as one simplifies
+      // storage and resolution.
+      literal = PixelsAndPercent(numeric->DoubleValue());
+    }
+    return MakeGarbageCollected<CalculationValue>(literal,
+                                                  Length::ValueRange::kAll);
+  }
+  if (const auto* identifier = DynamicTo<CSSIdentifierValue>(value)) {
+    if (identifier->GetValueID() == CSSValueID::kNone) {
+      return nullptr;
+    }
+    const auto* expression =
+        MakeGarbageCollected<CalculationExpressionColorChannelKeywordNode>(
+            CSSValueIDToColorChannelKeyword(identifier->GetValueID()));
+    return CalculationValue::CreateSimplified(expression,
+                                              Length::ValueRange::kAll);
+  }
+  if (const auto* function = DynamicTo<CSSMathFunctionValue>(value)) {
+    // TODO(crbug.com/487357825): ToCalcValue() should know when to not
+    // apply zoom.
+    float saved_zoom = length_resolver.Zoom();
+    const_cast<CSSLengthResolver&>(length_resolver).SetZoom(1.0f);
+    auto* result = function->ToCalcValue(length_resolver);
+    const_cast<CSSLengthResolver&>(length_resolver).SetZoom(saved_zoom);
+    return result;
+  }
+  NOTREACHED();
+}
+
 CSSValue* ConvertColorOperandToCSSValue(
     const StyleColor::ColorOrUnresolvedColorFunction& color_or_function,
     UnderlyingColorType type) {
@@ -88,6 +127,36 @@ const CSSValue* CalculationValueToCSSValue(
         To<CalculationExpressionColorChannelKeywordNode>(expression)->Value()));
   }
   return CSSMathFunctionValue::Create(CSSMathExpressionNode::Create(*channel));
+}
+
+std::optional<float> OptionalComponent(float value, bool is_none) {
+  return is_none ? std::nullopt : std::make_optional(value);
+}
+
+std::optional<double> ToChannelValue(const CalculationValue* calculation_value,
+                                     const EvaluationInput& evaluation_input,
+                                     double channel_percentage) {
+  if (!calculation_value) {
+    return std::nullopt;
+  }
+  // If the channel expression is a single channel keyword, then do an explicit
+  // lookup. Note: This means that 'keyword' and 'calc(keyword)' are both
+  // treated the same.
+  if (calculation_value->IsExpression()) {
+    const auto* expr = calculation_value->GetOrCreateExpression();
+    if (auto* channel_expr =
+            DynamicTo<CalculationExpressionColorChannelKeywordNode>(expr)) {
+      return evaluation_input.color_channel_keyword_values.at(
+          channel_expr->Value());
+    }
+  }
+  // The color function metadata table uses NaN to indicate that percentages
+  // are not applicable to a given channel. NaN is not suitable as a clamp
+  // limit for evaluating a CalculationValue, so translate it into float max.
+  const float max_value = (std::isnan(channel_percentage))
+                              ? std::numeric_limits<float>::max()
+                              : channel_percentage;
+  return calculation_value->Evaluate(max_value, evaluation_input);
 }
 
 }  // namespace
@@ -163,43 +232,9 @@ StyleColor::UnresolvedAlphaColor::UnresolvedAlphaColor(
     : UnresolvedColorFunction(UnresolvedColorFunction::Type::kAlphaColor),
       origin_color_(origin_color.color_or_unresolved_color_function_),
       origin_color_type_(ResolveColorOperandType(origin_color)) {
-  auto to_channel =
-      [&length_resolver](const CSSValue& value) -> const CalculationValue* {
-    if (const CSSNumericLiteralValue* numeric =
-            DynamicTo<CSSNumericLiteralValue>(value)) {
-      if (numeric->IsPercentage()) {
-        return MakeGarbageCollected<CalculationValue>(
-            PixelsAndPercent(0., numeric->DoubleValue(), false, true),
-            Length::ValueRange::kAll);
-      } else {
-        return MakeGarbageCollected<CalculationValue>(
-            PixelsAndPercent(numeric->DoubleValue()), Length::ValueRange::kAll);
-      }
-    } else if (const CSSIdentifierValue* identifier =
-                   DynamicTo<CSSIdentifierValue>(value)) {
-      if (identifier->GetValueID() == CSSValueID::kNone) {
-        return nullptr;
-      }
-      const CalculationExpressionNode* expression =
-          MakeGarbageCollected<CalculationExpressionColorChannelKeywordNode>(
-              CSSValueIDToColorChannelKeyword(identifier->GetValueID()));
-      return CalculationValue::CreateSimplified(expression,
-                                                Length::ValueRange::kAll);
-    } else if (const CSSMathFunctionValue* function =
-                   DynamicTo<CSSMathFunctionValue>(value)) {
-      float saved_zoom = length_resolver.Zoom();
-      const_cast<CSSLengthResolver&>(length_resolver).SetZoom(1.0f);
-      auto* result = function->ToCalcValue(length_resolver);
-      const_cast<CSSLengthResolver&>(length_resolver).SetZoom(saved_zoom);
-      return result;
-    } else {
-      NOTREACHED();
-    }
-  };
-
   if (alpha != nullptr) {
     alpha_was_specified_ = true;
-    alpha_ = to_channel(*alpha);
+    alpha_ = ResolveColorChannel(*alpha, length_resolver);
   } else {
     // https://drafts.csswg.org/css-color-5/#relative-alpha
     // If the alpha value is omitted, it defaults to that of the origin color.
@@ -219,24 +254,29 @@ Color StyleColor::UnresolvedAlphaColor::Resolve(
 
   // The alpha() function preserves the origin color's color space.
   // Set up evaluation context with the origin's alpha value.
-  std::vector<std::pair<ColorChannelKeyword, float>> keyword_values = {
-      {ColorChannelKeyword::kAlpha, resolved_origin.Alpha()}};
+  ColorChannelKeywordMap::container_type keyword_values = {
+      {ColorChannelKeyword::kAlpha,
+       OptionalComponent(resolved_origin.Alpha(),
+                         resolved_origin.AlphaIsNone())}};
 
   EvaluationInput evaluation_input;
   evaluation_input.color_channel_keyword_values =
       base::flat_map(std::move(keyword_values));
 
-  std::optional<double> new_alpha;
-  if (alpha_ != nullptr) {
-    new_alpha = alpha_->Evaluate(1.f, evaluation_input);
-    // Alpha is clamped to [0, 1].
-    new_alpha = ClampTo<double>(*new_alpha, 0.0, 1.0);
-  }
-  // else: new_alpha stays nullopt (none keyword)
+  std::optional<double> new_alpha = ToChannelValue(alpha_, evaluation_input, 1);
+  // Alpha is clamped to [0, 1].
+  new_alpha =
+      new_alpha.transform([](double v) { return ClampTo(v, 0.0, 1.0); });
 
   return Color::FromColorSpace(
-      resolved_origin.GetColorSpace(), resolved_origin.Param0(),
-      resolved_origin.Param1(), resolved_origin.Param2(), new_alpha);
+      resolved_origin.GetColorSpace(),
+      OptionalComponent(resolved_origin.Param0(),
+                        resolved_origin.Param0IsNone()),
+      OptionalComponent(resolved_origin.Param1(),
+                        resolved_origin.Param1IsNone()),
+      OptionalComponent(resolved_origin.Param2(),
+                        resolved_origin.Param2IsNone()),
+      new_alpha);
 }
 
 CSSValue* StyleColor::UnresolvedAlphaColor::ToCSSValue() const {
@@ -313,55 +353,12 @@ StyleColor::UnresolvedRelativeColor::UnresolvedRelativeColor(
       origin_color_(origin_color.color_or_unresolved_color_function_),
       origin_color_type_(ResolveColorOperandType(origin_color)),
       color_interpolation_space_(color_interpolation_space) {
-  auto to_channel =
-      [&length_resolver](const CSSValue& value) -> const CalculationValue* {
-    if (const CSSNumericLiteralValue* numeric =
-            DynamicTo<CSSNumericLiteralValue>(value)) {
-      if (numeric->IsAngle()) {
-        return MakeGarbageCollected<CalculationValue>(
-            PixelsAndPercent(numeric->ComputeDegrees()),
-            Length::ValueRange::kAll);
-      }
-      if (numeric->IsPercentage()) {
-        return MakeGarbageCollected<CalculationValue>(
-            PixelsAndPercent(0., numeric->DoubleValue(), false, true),
-            Length::ValueRange::kAll);
-      } else {
-        // It's not actually a "pixels" value, but treating it as one simplifies
-        // storage and resolution.
-        return MakeGarbageCollected<CalculationValue>(
-            PixelsAndPercent(numeric->DoubleValue()), Length::ValueRange::kAll);
-      }
-    } else if (const CSSIdentifierValue* identifier =
-                   DynamicTo<CSSIdentifierValue>(value)) {
-      if (identifier->GetValueID() == CSSValueID::kNone) {
-        return nullptr;
-      }
-      const CalculationExpressionNode* expression =
-          MakeGarbageCollected<CalculationExpressionColorChannelKeywordNode>(
-              CSSValueIDToColorChannelKeyword(identifier->GetValueID()));
-      return CalculationValue::CreateSimplified(expression,
-                                                Length::ValueRange::kAll);
-    } else if (const CSSMathFunctionValue* function =
-                   DynamicTo<CSSMathFunctionValue>(value)) {
-      // TODO(crbug.com/487357825): ToCalcValue() should know when to not
-      // apply zoom.
-      float saved_zoom = length_resolver.Zoom();
-      const_cast<CSSLengthResolver&>(length_resolver).SetZoom(1.0f);
-      auto* result = function->ToCalcValue(length_resolver);
-      const_cast<CSSLengthResolver&>(length_resolver).SetZoom(saved_zoom);
-      return result;
-    } else {
-      NOTREACHED();
-    }
-  };
-
-  channel0_ = to_channel(channel0);
-  channel1_ = to_channel(channel1);
-  channel2_ = to_channel(channel2);
-  if (alpha != nullptr) {
+  channel0_ = ResolveColorChannel(channel0, length_resolver);
+  channel1_ = ResolveColorChannel(channel1, length_resolver);
+  channel2_ = ResolveColorChannel(channel2, length_resolver);
+  if (alpha) {
     alpha_was_specified_ = true;
-    alpha_ = to_channel(*alpha);
+    alpha_ = ResolveColorChannel(*alpha, length_resolver);
   } else {
     // https://drafts.csswg.org/css-color-5/#rcs-intro
     // If the alpha value of the relative color is omitted, it defaults to that
@@ -401,19 +398,25 @@ Color StyleColor::UnresolvedRelativeColor::Resolve(
     const Color& current_color) const {
   Color resolved_origin =
       ResolveColorOperand(origin_color_, origin_color_type_, current_color);
-  resolved_origin.ConvertToColorSpace(color_interpolation_space_);
+  resolved_origin.ConvertToColorSpaceForInterpolation(
+      color_interpolation_space_);
 
   const ColorFunction::Metadata& function_metadata =
       ColorFunction::MetadataForColorSpace(color_interpolation_space_);
 
-  std::vector<std::pair<ColorChannelKeyword, float>> keyword_values = {
+  ColorChannelKeywordMap::container_type keyword_values = {
       {{CSSValueIDToColorChannelKeyword(function_metadata.channel_name[0]),
-        resolved_origin.Param0()},
+        OptionalComponent(resolved_origin.Param0(),
+                          resolved_origin.Param0IsNone())},
        {CSSValueIDToColorChannelKeyword(function_metadata.channel_name[1]),
-        resolved_origin.Param1()},
+        OptionalComponent(resolved_origin.Param1(),
+                          resolved_origin.Param1IsNone())},
        {CSSValueIDToColorChannelKeyword(function_metadata.channel_name[2]),
-        resolved_origin.Param2()},
-       {ColorChannelKeyword::kAlpha, resolved_origin.Alpha()}}};
+        OptionalComponent(resolved_origin.Param2(),
+                          resolved_origin.Param2IsNone())},
+       {ColorChannelKeyword::kAlpha,
+        OptionalComponent(resolved_origin.Alpha(),
+                          resolved_origin.AlphaIsNone())}}};
 
   // We need to make value adjustments for certain color spaces.
   //
@@ -427,37 +430,24 @@ Color StyleColor::UnresolvedRelativeColor::Resolve(
   // in the final result.
   if (color_interpolation_space_ == Color::ColorSpace::kHSL ||
       color_interpolation_space_ == Color::ColorSpace::kHWB) {
-    keyword_values[1].second *= 100.;
-    keyword_values[2].second *= 100.;
+    auto mult_by_100 = [](float value) { return value * 100; };
+    keyword_values[1].second = keyword_values[1].second.transform(mult_by_100);
+    keyword_values[2].second = keyword_values[2].second.transform(mult_by_100);
   }
 
   EvaluationInput evaluation_input;
   evaluation_input.color_channel_keyword_values =
       base::flat_map(std::move(keyword_values));
 
-  auto to_channel_value =
-      [&evaluation_input](const CalculationValue* calculation_value,
-                          double channel_percentage) -> std::optional<double> {
-    // The color function metadata table uses NaN to indicate that percentages
-    // are not applicable to a given channel. NaN is not suitable as a clamp
-    // limit for evaluating a CalculationValue, so translate it into float max.
-    const float max_value = (std::isnan(channel_percentage))
-                                ? std::numeric_limits<float>::max()
-                                : channel_percentage;
-    if (calculation_value != nullptr) {
-      return calculation_value->Evaluate(max_value, evaluation_input);
-    }
-    return std::nullopt;
-  };
-
   std::array<std::optional<double>, 3> params = {
-      to_channel_value(channel0_.Get(),
-                       function_metadata.channel_percentage[0]),
-      to_channel_value(channel1_.Get(),
-                       function_metadata.channel_percentage[1]),
-      to_channel_value(channel2_.Get(),
-                       function_metadata.channel_percentage[2])};
-  std::optional<double> param_alpha = to_channel_value(alpha_.Get(), 1.f);
+      ToChannelValue(channel0_.Get(), evaluation_input,
+                     function_metadata.channel_percentage[0]),
+      ToChannelValue(channel1_.Get(), evaluation_input,
+                     function_metadata.channel_percentage[1]),
+      ToChannelValue(channel2_.Get(), evaluation_input,
+                     function_metadata.channel_percentage[2])};
+  std::optional<double> param_alpha =
+      ToChannelValue(alpha_.Get(), evaluation_input, 1);
   ColorFunctionParser::MakePerColorSpaceAdjustments(
       /*is_relative_color=*/true,
       /*is_legacy_syntax=*/false, color_interpolation_space_, params,
@@ -498,7 +488,7 @@ Color StyleColor::Resolve(const Color& current_color,
     Color result =
         color_or_unresolved_color_function_.unresolved_color_function->Resolve(
             current_color);
-    if (Color::IsLegacyColorSpace(result.GetColorSpace()) &&
+    if (result.IsLegacy() &&
         color_or_unresolved_color_function_.unresolved_color_function
                 ->GetType() != UnresolvedColorFunction::Type::kContrastColor) {
       result.ConvertToColorSpace(Color::ColorSpace::kSRGB);
@@ -509,23 +499,18 @@ Color StyleColor::Resolve(const Color& current_color,
     return current_color;
   }
   if (EffectiveColorKeyword() != CSSValueID::kInvalid) {
-    // It is okay to pass nullptr for color_provider here because system colors
-    // are now resolved before used value time.
+    // System colors are resolved before used value time, so this path does not
+    // use the color provider, accent color, or accent exposure policy.
     CHECK(!IsSystemColorIncludingDeprecated());
-    return ColorFromKeyword(color_keyword_, color_scheme,
-                            /*color_provider=*/nullptr,
-                            /*can_expose_accent_color=*/false);
+    return ColorFromKeyword(color_keyword_, {.color_scheme = color_scheme});
   }
   return GetColor();
 }
 
 StyleColor StyleColor::ResolveSystemColor(
-    mojom::blink::ColorScheme color_scheme,
-    const ui::ColorProvider* color_provider,
-    bool can_expose_accent_color) const {
+    const ColorThemeInfo& theme_info) const {
   CHECK(IsSystemColor());
-  Color color = ColorFromKeyword(color_keyword_, color_scheme, color_provider,
-                                 can_expose_accent_color);
+  Color color = ColorFromKeyword(color_keyword_, theme_info);
   return StyleColor(color, color_keyword_);
 }
 
@@ -540,16 +525,13 @@ const CSSValue* StyleColor::ToCSSValue() const {
 }
 
 Color StyleColor::ColorFromKeyword(CSSValueID keyword,
-                                   mojom::blink::ColorScheme color_scheme,
-                                   const ui::ColorProvider* color_provider,
-                                   bool can_expose_accent_color) {
+                                   const ColorThemeInfo& theme_info) {
   std::string_view value_name = GetCSSValueName(keyword);
   if (const NamedColor* named_color = FindColor(value_name)) {
     return Color::FromRGBA32(named_color->argb_value);
   }
 
-  return LayoutTheme::GetTheme().SystemColor(
-      keyword, color_scheme, color_provider, can_expose_accent_color);
+  return LayoutTheme::GetTheme().SystemColor(keyword, theme_info);
 }
 
 bool StyleColor::IsColorKeyword(CSSValueID id) {

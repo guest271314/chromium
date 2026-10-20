@@ -8,9 +8,16 @@
 #include <cstddef>
 #include <utility>
 
+#include "partition_alloc/buildflags.h"
 #include "partition_alloc/page_allocator_constants.h"
 #include "partition_alloc/partition_address_space.h"
 #include "partition_alloc/partition_alloc_base/notreached.h"
+#include "partition_alloc/partition_alloc_public_constants.h"
+
+#if PA_CONFIG(MOVE_METADATA_OUT_OF_GIGACAGE) && \
+    !PA_CONFIG(DYNAMICALLY_SELECT_POOL_SIZE)
+#include <algorithm>
+#endif
 
 #if PA_BUILDFLAG(ENABLE_THREAD_ISOLATION)
 #include "partition_alloc/thread_isolation/thread_isolation.h"
@@ -140,7 +147,7 @@ PA_ALWAYS_INLINE constexpr size_t PartitionAddressSpace::MetadataRegionSize() {
 // the metadata for the SuperPage.
 PA_ALWAYS_INLINE std::ptrdiff_t PartitionAddressSpace::MetadataOffset(
     pool_handle pool) {
-  return offsets_to_metadata_[pool];
+  return setup_.offsets_to_metadata_[pool];
 }
 
 PA_ALWAYS_INLINE std::ptrdiff_t PartitionAddressSpace::MetadataOffsetFromAddr(
@@ -151,8 +158,8 @@ PA_ALWAYS_INLINE std::ptrdiff_t PartitionAddressSpace::MetadataOffsetFromAddr(
 #if PA_BUILDFLAG(DCHECKS_ARE_ON)
 PA_ALWAYS_INLINE bool PartitionAddressSpace::IsInMetadataRegion(
     uintptr_t address) {
-  return metadata_region_start_ <= address &&
-         address < metadata_region_start_ + MetadataRegionSize();
+  return setup_.metadata_region_start_ <= address &&
+         address < setup_.metadata_region_start_ + MetadataRegionSize();
 }
 #endif  // PA_BUILDFLAG(DCHECKS_ARE_ON)
 

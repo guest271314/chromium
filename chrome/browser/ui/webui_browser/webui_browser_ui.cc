@@ -4,15 +4,22 @@
 
 #include "chrome/browser/ui/webui_browser/webui_browser_ui.h"
 
+#include <array>
+
+#include "base/containers/to_vector.h"
 #include "base/notimplemented.h"
+#include "chrome/browser/bookmarks/bookmark_model_factory.h"
 #include "chrome/browser/contextual_search/contextual_search_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/bookmarks/bookmark_bar_controller.h"
+#include "chrome/browser/ui/bookmarks/bookmarks_service_feature.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/interaction/browser_elements.h"
 #include "chrome/browser/ui/omnibox/omnibox_next_features.h"
 #include "chrome/browser/ui/side_panel/side_panel_entry_id.h"
+#include "chrome/browser/ui/tabs/tab_drag_api/tab_drag_service_feature.h"
 #include "chrome/browser/ui/tabs/tab_strip_api/controllers/tab_strip_ui_controller_impl.h"
 #include "chrome/browser/ui/tabs/tab_strip_api/tab_strip_service_feature.h"
 #include "chrome/browser/ui/webui/cr_components/searchbox/searchbox_handler.h"
@@ -30,10 +37,13 @@
 #include "chrome/grit/tab_strip_api_resources_map.h"
 #include "chrome/grit/webui_browser_resources.h"
 #include "chrome/grit/webui_browser_resources_map.h"
+#include "chrome/grit/webui_toolbar_shared_resources.h"
+#include "chrome/grit/webui_toolbar_shared_resources_map.h"
 #include "components/contextual_search/contextual_search_service.h"
 #include "components/contextual_search/contextual_search_session_handle.h"
 #include "components/favicon_base/favicon_url_parser.h"
 #include "components/guest_contents/browser/guest_contents_host_impl.h"
+#include "components/surface_embed/browser/surface_embed_handle.h"
 #include "components/surface_embed/common/features.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/web_contents.h"
@@ -43,6 +53,7 @@
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/views/interaction/element_tracker_views.h"
 #include "ui/webui/tracked_element/tracked_element_handler.h"
+#include "ui/webui/tracked_element/tracked_element_handler_document_singleton.h"
 #include "ui/webui/webui_util.h"
 
 namespace {
@@ -105,6 +116,7 @@ WebUIBrowserUI::WebUIBrowserUI(content::WebUI* web_ui)
   webui::SetupWebUIDataSource(source, kWebuiBrowserResources,
                               IDR_WEBUI_BROWSER_WEBUI_BROWSER_HTML);
   source->AddResourcePaths(kTabStripApiResources);
+  source->AddResourcePaths(kWebuiToolbarSharedResources);
 
   static constexpr webui::LocalizedString kStrings[] = {
       // Localized strings (alphabetical order).
@@ -118,6 +130,9 @@ WebUIBrowserUI::WebUIBrowserUI(content::WebUI* web_ui)
 
   source->AddLocalizedStrings(
       SearchboxHandler::GetWebUIDataSourceDict(profile));
+
+  source->AddInteger("tabStripInset",
+                     WebUIBrowserPageHandler::GetTabStripInsetWidth());
 
   source->AddBoolean(
       "enableSurfaceEmbed",
@@ -140,6 +155,20 @@ WebUIBrowserUI::WebUIBrowserUI(content::WebUI* web_ui)
   content::URLDataSource::Add(
       profile, std::make_unique<FaviconSource>(
                    profile, chrome::FaviconUrlFormat::kFavicon2));
+
+  if (browser_) {
+    // This use of unretained is safe because the
+    // TrackedElementHandlerDocumentSingleton only stores the callback for at
+    // most the lifetime of the WebContents, which is always shorter than the
+    // Browser.
+    ui::TrackedElementHandlerDocumentSingleton::Register(
+        this, GetKnownElementIdentifiers(),
+        base::BindRepeating(
+            [](BrowserWindowInterface* browser) {
+              return BrowserElements::From(browser)->GetContext();
+            },
+            base::Unretained(browser_)));
+  }
 }
 
 WebUIBrowserUI::~WebUIBrowserUI() = default;
@@ -163,8 +192,7 @@ void WebUIBrowserUI::BindInterface(
 }
 
 void WebUIBrowserUI::BindInterface(
-    mojo::PendingReceiver<searchbox::mojom::PageHandlerFactory>
-        receiver) {
+    mojo::PendingReceiver<searchbox::mojom::PageHandlerFactory> receiver) {
   searchbox_page_factory_receiver_.reset();
   searchbox_page_factory_receiver_.Bind(std::move(receiver));
 }
@@ -183,6 +211,21 @@ void WebUIBrowserUI::CreatePageHandler(
 }
 
 void WebUIBrowserUI::BindInterface(
+    mojo::PendingReceiver<bookmarks_api::mojom::BookmarksService> receiver) {
+  WebUIBrowserWindow* window =
+      WebUIBrowserWindow::FromWebShellWebContents(web_ui()->GetWebContents());
+  if (window) {
+    BrowserWindowInterface* browser_window = window->browser();
+    if (browser_window) {
+      auto* feature = BookmarksServiceFeature::From(browser_window);
+      if (feature) {
+        feature->Accept(std::move(receiver));
+      }
+    }
+  }
+}
+
+void WebUIBrowserUI::BindInterface(
     mojo::PendingReceiver<guest_contents::mojom::GuestContentsHost> receiver) {
   guest_contents::GuestContentsHostImpl::Create(web_ui()->GetWebContents(),
                                                 std::move(receiver));
@@ -190,8 +233,7 @@ void WebUIBrowserUI::BindInterface(
 
 void WebUIBrowserUI::BindInterface(
     mojo::PendingReceiver<tabs_api::mojom::TabStripService> receiver) {
-  auto* tab_strip_service_feature =
-      browser_->browser_window_features()->tab_strip_service_feature();
+  auto* tab_strip_service_feature = TabStripServiceFeature::From(browser_);
   CHECK(tab_strip_service_feature) << "Browser missing TabStripService";
   tab_strip_service_feature->Accept(std::move(receiver));
 }
@@ -199,28 +241,24 @@ void WebUIBrowserUI::BindInterface(
 void WebUIBrowserUI::BindInterface(
     mojo::PendingReceiver<tabs_api::mojom::TabStripExperimentService>
         receiver) {
-  auto* tab_strip_service_feature =
-      browser_->browser_window_features()->tab_strip_service_feature();
+  auto* tab_strip_service_feature = TabStripServiceFeature::From(browser_);
   CHECK(tab_strip_service_feature) << "Browser missing TabStripService";
   tab_strip_service_feature->AcceptExperimental(std::move(receiver));
 }
 
 void WebUIBrowserUI::BindInterface(
-    mojo::PendingReceiver<tabs_api::mojom::TabStripUIController> receiver) {
-  auto* ui_controller =
-      browser_->browser_window_features()->tab_strip_ui_controller();
-  CHECK(ui_controller) << "Browser missing TabStripUIController";
-  ui_controller->Bind(std::move(receiver));
+    mojo::PendingReceiver<tabs_api::mojom::TabDragService> receiver) {
+  auto* tab_drag_service_feature = TabDragServiceFeature::From(browser_);
+  CHECK(tab_drag_service_feature) << "Browser missing TabDragService";
+  tab_drag_service_feature->AcceptDragService(
+      std::move(receiver), web_ui()->GetWebContents()->GetNativeView());
 }
 
 void WebUIBrowserUI::BindInterface(
-    mojo::PendingReceiver<tracked_element::mojom::TrackedElementHandler>
-        receiver) {
-  const ui::ElementContext context =
-      BrowserElements::From(browser_)->GetContext();
-  tracked_element_handler_ = std::make_unique<ui::TrackedElementHandler>(
-      web_ui()->GetWebContents(), context, GetKnownElementIdentifiers());
-  tracked_element_handler_->BindInterface(std::move(receiver));
+    mojo::PendingReceiver<tabs_api::mojom::TabStripUIController> receiver) {
+  auto* ui_controller = tabs_api::TabStripUIControllerImpl::From(browser_);
+  CHECK(ui_controller) << "Browser missing TabStripUIController";
+  ui_controller->Bind(std::move(receiver));
 }
 
 base::WeakPtr<WebUIBrowserUI> WebUIBrowserUI::GetWeakPtr() {
@@ -235,6 +273,8 @@ void WebUIBrowserUI::CreatePageHandler(
   auto* render_frame_host = web_ui()->GetRenderFrameHost();
   WebUIBrowserPageHandler::CreateForRenderFrameHost(*render_frame_host,
                                                     std::move(receiver), this);
+  page_->OnPaintAsActiveChanged(
+      browser_window()->widget()->ShouldPaintAsActive());
 }
 
 void WebUIBrowserUI::CreatePageHandler(
@@ -253,14 +293,16 @@ void WebUIBrowserUI::CreatePageHandler(
       ->Bind(std::move(page), std::move(receiver));
 }
 
-const std::vector<ui::ElementIdentifier>&
-WebUIBrowserUI::GetKnownElementIdentifiers() const {
-  static const std::vector<ui::ElementIdentifier> kKnownElementIdentifiers{
-      kContentsContainerViewElementId, kExtensionsMenuButtonElementId,
-      kLocationBarElementId,           kLocationIconElementId,
-      kToolbarAppMenuButtonElementId,  kToolbarAvatarButtonElementId,
-      kToolbarBackButtonElementId,     kToolbarForwardButtonElementId};
-  return kKnownElementIdentifiers;
+std::vector<ui::ElementIdentifier> WebUIBrowserUI::GetKnownElementIdentifiers()
+    const {
+  static constexpr auto kKnownElementIdentifiers =
+      std::to_array<ui::ElementIdentifier>(
+          {kContentsContainerViewElementId, kExtensionsMenuButtonElementId,
+           kToolbarActionViewElementId, kLocationBarElementId,
+           kLocationIconElementId, kToolbarAppMenuButtonElementId,
+           kToolbarAvatarButtonElementId, kToolbarBackButtonElementId,
+           kToolbarForwardButtonElementId});
+  return base::ToVector(kKnownElementIdentifiers);
 }
 
 void WebUIBrowserUI::BookmarkBarStateChanged(
@@ -273,18 +315,18 @@ void WebUIBrowserUI::BookmarkBarStateChanged(
 }
 
 void WebUIBrowserUI::ShowSidePanel(SidePanelEntryKey side_panel_entry_key) {
-  // Create guest contents.
+  // Create side panel contents.
   WebUIBrowserSidePanelUI* side_panel_ui =
       browser_window()->GetWebUIBrowserSidePanelUI();
   content::WebContents* web_contents =
       side_panel_ui->GetWebContentsForId(side_panel_entry_key.id());
   web_contents->SetColorProviderSource(browser_window());
   CHECK(web_contents);
-  auto* guest_handle =
-      guest_contents::GuestContentsHandle::CreateForWebContents(web_contents);
+  auto* embedded_handle =
+      surface_embed::SurfaceEmbedHandle::CreateForWebContents(web_contents);
 
   // Notify JS.
-  page_->ShowSidePanel(guest_handle->id(),
+  page_->ShowSidePanel(embedded_handle->id(),
                        SidePanelEntryIdToTitle(side_panel_entry_key.id()));
 }
 

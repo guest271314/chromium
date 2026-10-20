@@ -11,7 +11,6 @@
 <translation id="1253734725326687145">Đã di chuyển đích chạm lên trên cùng bên phải. Nhấn vào đây.</translation>
 <translation id="1266864766717917324">Không thể chia sẻ <ph name="CONTENT_TYPE" /></translation>
 <translation id="1269641567813814718">Phím Win</translation>
-<translation id="1291104554099683393">Hãy thử chia sẻ văn bản theo các đoạn nhỏ hơn.</translation>
 <translation id="1293699935367580298">Thoát</translation>
 <translation id="1368832886055348810">Trái sang Phải</translation>
 <translation id="1383876407941801731">Tìm kiếm</translation>
@@ -38,13 +37,11 @@
 <translation id="1901303067676059328">Chọn &amp;tất cả</translation>
 <translation id="19085484004813472">Đây là tính năng mới</translation>
 <translation id="2006524834898217237">Hãy đảm bảo thiết bị này có kết nối Internet.</translation>
-<translation id="208586643495776849">Vui lòng thử lại</translation>
 <translation id="2111134541987263231">Bật tuỳ chọn <ph name="BEGIN_BOLD" />Cho phép ở chế độ ẩn danh<ph name="END_BOLD" /></translation>
 <translation id="2141853158323869627">{DAYS,plural, =1{1 ngày}other{# ngày}}</translation>
 <translation id="2148716181193084225">Hôm nay</translation>
 <translation id="2168039046890040389">Page Up</translation>
 <translation id="2190355936436201913">(trống)</translation>
-<translation id="2192232475740621500">Sử dụng mật độ thấp</translation>
 <translation id="2267918077332197517">Chặn tất cả thông báo từ trang web này</translation>
 <translation id="2283117145434822734">F6</translation>
 <translation id="2289052229480071835">Nhấn vào các mục tiêu cảm ứng trên màn hình của bạn.</translation>
@@ -56,7 +53,6 @@
 <translation id="2388990488038464401">Gọi cho số này bằng điện thoại của bạn?</translation>
 <translation id="2435457462613246316">Hiện mật khẩu</translation>
 <translation id="24452542372838207">Mở rộng thông báo</translation>
-<translation id="2445449901874883781">Sử dụng mật độ cao</translation>
 <translation id="2448407890032181691">Đã di chuyển đích chạm xuống dưới cùng bên phải. Nhấn vào đây.</translation>
 <translation id="2482878487686419369">Thông báo</translation>
 <translation id="2497284189126895209">Tất cả Tệp tin</translation>
@@ -70,7 +66,7 @@
 <translation id="2653844658857826081">MỚI</translation>
 <translation id="2666092431469916601">Trên cùng</translation>
 <translation id="2824719307700604149">{YEARS,plural, =1{1 năm trước}other{# năm trước}}</translation>
-<translation id="2878511608894704031">Xóa tất cả</translation>
+<translation id="2878511608894704031">Xoá tất cả</translation>
 <translation id="2907671656515444832">{DAYS,plural, =1{trong 1 ngày}other{trong # ngày}}</translation>
 <translation id="2922712708897119705">Cột <ph name="COLUMN_NAME" /> sắp xếp theo thứ tự giảm dần.</translation>
 <translation id="293972288692056847">{COUNT,plural, =1{Không tìm thấy tiện ích}other{Không tìm thấy tiện ích}}</translation>
@@ -87,7 +83,6 @@
 <translation id="3306688585798492231">Màn hình tích hợp</translation>
 <translation id="335581015389089642">Giọng nói</translation>
 <translation id="3372635229069101468">Nhấp vào <ph name="BEGIN_BOLD" />Chi tiết<ph name="END_BOLD" /></translation>
-<translation id="3389286852084373014">Văn bản quá lớn</translation>
 <translation id="3406306243914553062">Nội dung HTML</translation>
 <translation id="3600566671520689681">{DAYS,plural, =1{Còn 1 ngày}other{Còn # ngày}}</translation>
 <translation id="3600969208114796418">Tệp <ph name="SAVEAS_EXTENSION_TYPE" /></translation>
@@ -130,7 +125,6 @@
 <translation id="5046499563572181734">Nhấn vào đây</translation>
 <translation id="5076340679995252485">&amp;Dán</translation>
 <translation id="520299402983819650"><ph name="QUANTITY" /> PB</translation>
-<translation id="5278860589123563674">Không gửi được</translation>
 <translation id="5283101102242354279">Bật một tiện ích ở chế độ Ẩn danh:</translation>
 <translation id="528468243742722775">Kết thúc</translation>
 <translation id="5329858601952122676">&amp;Xoá</translation>
@@ -190,7 +184,6 @@
 <translation id="6965382102122355670">OK</translation>
 <translation id="6974053822202609517">Phải sang Trái</translation>
 <translation id="7052633198403197513">F1</translation>
-<translation id="7170202025028120564">Các tùy chọn cài đặt hiển thị của ứng dụng sẽ có hiệu lực khi bạn khởi động lại ứng dụng vào lần sau.</translation>
 <translation id="7222373446505536781">F11</translation>
 <translation id="7238427729722629793">{MINUTES,plural, =1{Còn 1 phút}other{Còn # phút}}</translation>
 <translation id="7252604552361840748">Tìm tiện ích ở trên</translation>

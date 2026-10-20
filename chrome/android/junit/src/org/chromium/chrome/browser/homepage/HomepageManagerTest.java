@@ -9,6 +9,7 @@ import static org.mockito.Mockito.when;
 
 import static org.chromium.chrome.browser.url_constants.UrlConstantResolver.getOriginalNtpUrl;
 
+import org.junit.After;
 import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Rule;
@@ -20,18 +21,22 @@ import org.mockito.Mock;
 import org.mockito.Mockito;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
-import org.robolectric.annotation.Config;
 
+import org.chromium.base.Callback;
+import org.chromium.base.DeviceInfo;
+import org.chromium.base.FeatureOverrides;
 import org.chromium.base.UserDataHost;
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.chrome.browser.actor.ui.ActorUiTabController;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
+import org.chromium.chrome.browser.glic.GlicEnabling;
 import org.chromium.chrome.browser.new_tab_url.DseNewTabUrlManager;
 import org.chromium.chrome.browser.partnercustomizations.PartnerBrowserCustomizations;
 import org.chromium.chrome.browser.preferences.ChromePreferenceKeys;
 import org.chromium.chrome.browser.preferences.ChromeSharedPreferences;
+import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabLaunchType;
 import org.chromium.chrome.browser.tabmodel.TabCreator;
@@ -42,9 +47,10 @@ import org.chromium.ui.base.PageTransition;
 import org.chromium.url.GURL;
 import org.chromium.url.JUnitTestGURLs;
 
+import java.util.Locale;
+
 /** Unit tests for {@link HomepageManager}. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 @EnableFeatures(ChromeFeatureList.CHROME_NATIVE_URL_OVERRIDING)
 @DisableFeatures(ChromeFeatureList.GLIC)
 public class HomepageManagerTest {
@@ -52,12 +58,19 @@ public class HomepageManagerTest {
     @Mock private PartnerBrowserCustomizations mPartnerBrowserCustomizations;
     @Mock private ActorUiTabController mActorUiTabController;
 
+    private static final Locale DEFAULT_LOCALE = Locale.getDefault();
+
     @Before
     public void setUp() {
         PartnerBrowserCustomizations.setInstanceForTesting(mPartnerBrowserCustomizations);
         DseNewTabUrlManager.resetIsEeaChoiceCountryForTesting();
         ExtensionsUrlOverrideRegistry.resetRegistry();
         UrlConstantResolverFactory.resetResolvers();
+    }
+
+    @After
+    public void tearDown() {
+        Locale.setDefault(DEFAULT_LOCALE);
     }
 
     @Test
@@ -555,7 +568,8 @@ public class HomepageManagerTest {
 
     @Test
     @EnableFeatures(ChromeFeatureList.HOME_BUTTON_REMOVAL + ":remove_home_button_everywhere/true")
-    public void testIsHomepageEnabled_HomeButtonRemovalEnabled() {
+    @DisableFeatures(ChromeFeatureList.ANDROID_BOTTOM_BAR)
+    public void testIsHomepageEnabled_HomeButtonRemovalEverywhere_NoBottomBar() {
         HomepageManager homepageManager = HomepageManager.getInstance();
         ChromeSharedPreferences.getInstance()
                 .writeBoolean(ChromePreferenceKeys.HOMEPAGE_ENABLED, true);
@@ -563,8 +577,43 @@ public class HomepageManagerTest {
     }
 
     @Test
+    @EnableFeatures({
+        ChromeFeatureList.HOME_BUTTON_REMOVAL + ":remove_home_button_everywhere/true",
+        ChromeFeatureList.ANDROID_BOTTOM_BAR
+    })
+    public void testIsHomepageEnabled_HomeButtonRemovalEverywhere_WithBottomBar() {
+        HomepageManager homepageManager = HomepageManager.getInstance();
+        ChromeSharedPreferences.getInstance()
+                .writeBoolean(ChromePreferenceKeys.HOMEPAGE_ENABLED, true);
+        Assert.assertTrue(homepageManager.isHomepageEnabled());
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.HOME_BUTTON_REMOVAL + ":remove_home_button_everywhere/true")
+    @DisableFeatures(ChromeFeatureList.ANDROID_BOTTOM_BAR)
+    public void testShouldShowHomepageSettings_HomeButtonRemovalEverywhere_NoBottomBar() {
+        Assert.assertFalse(HomepageManager.shouldShowHomepageSettings());
+    }
+
+    @Test
+    @EnableFeatures({
+        ChromeFeatureList.HOME_BUTTON_REMOVAL + ":remove_home_button_everywhere/true",
+        ChromeFeatureList.ANDROID_BOTTOM_BAR
+    })
+    public void testShouldShowHomepageSettings_HomeButtonRemovalEverywhere_WithBottomBar() {
+        Assert.assertTrue(HomepageManager.shouldShowHomepageSettings());
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.HOME_BUTTON_REMOVAL + ":remove_home_button_everywhere/false")
+    public void testShouldShowHomepageSettings_HomeButtonRemovalEverywhereDisabled() {
+        Assert.assertTrue(HomepageManager.shouldShowHomepageSettings());
+    }
+
+    @Test
     @EnableFeatures({ChromeFeatureList.HOME_BUTTON_REMOVAL + ":keep_home_button_on_ntp/true"})
-    public void testShouldShowHomeButtonOnToolbar_KeepOnNtp() {
+    @DisableFeatures(ChromeFeatureList.ANDROID_BOTTOM_BAR)
+    public void testShouldShowHomeButtonOnToolbar_KeepOnNtp_NoBottomBar() {
         HomepageManager homepageManager = HomepageManager.getInstance();
         ChromeSharedPreferences.getInstance()
                 .writeBoolean(ChromePreferenceKeys.HOMEPAGE_ENABLED, true);
@@ -573,7 +622,21 @@ public class HomepageManagerTest {
     }
 
     @Test
+    @EnableFeatures({
+        ChromeFeatureList.HOME_BUTTON_REMOVAL + ":keep_home_button_on_ntp/true",
+        ChromeFeatureList.ANDROID_BOTTOM_BAR
+    })
+    public void testShouldShowHomeButtonOnToolbar_KeepOnNtp_WithBottomBar() {
+        HomepageManager homepageManager = HomepageManager.getInstance();
+        ChromeSharedPreferences.getInstance()
+                .writeBoolean(ChromePreferenceKeys.HOMEPAGE_ENABLED, true);
+        Assert.assertTrue(homepageManager.shouldShowHomeButtonOnToolbar(/* isNtp= */ true));
+        Assert.assertTrue(homepageManager.shouldShowHomeButtonOnToolbar(/* isNtp= */ false));
+    }
+
+    @Test
     @EnableFeatures({ChromeFeatureList.HOME_BUTTON_REMOVAL + ":keep_home_button_on_ntp/false"})
+    @DisableFeatures(ChromeFeatureList.ANDROID_BOTTOM_BAR)
     public void testShouldShowHomeButtonOnToolbar_NotKeepOnNtp() {
         HomepageManager homepageManager = HomepageManager.getInstance();
         ChromeSharedPreferences.getInstance()
@@ -584,6 +647,7 @@ public class HomepageManagerTest {
 
     @Test
     @EnableFeatures({ChromeFeatureList.HOME_BUTTON_REMOVAL + ":keep_home_button_on_ntp/true"})
+    @DisableFeatures(ChromeFeatureList.ANDROID_BOTTOM_BAR)
     public void testShouldShowHomeButtonOnToolbar_KeepOnNtp_IsNtp_HomepageDisabled() {
         HomepageManager homepageManager = HomepageManager.getInstance();
         ChromeSharedPreferences.getInstance()
@@ -594,7 +658,8 @@ public class HomepageManagerTest {
 
     @Test
     @EnableFeatures({ChromeFeatureList.HOME_BUTTON_REMOVAL + ":keep_home_button_on_ntp/true"})
-    public void testShouldShowHomepageMenuItem_KeepOnNtp() {
+    @DisableFeatures(ChromeFeatureList.ANDROID_BOTTOM_BAR)
+    public void testShouldShowHomepageMenuItem_KeepOnNtp_NoBottomBar() {
         HomepageManager homepageManager = HomepageManager.getInstance();
         ChromeSharedPreferences.getInstance()
                 .writeBoolean(ChromePreferenceKeys.HOMEPAGE_ENABLED, true);
@@ -602,7 +667,20 @@ public class HomepageManagerTest {
     }
 
     @Test
+    @EnableFeatures({
+        ChromeFeatureList.HOME_BUTTON_REMOVAL + ":keep_home_button_on_ntp/true",
+        ChromeFeatureList.ANDROID_BOTTOM_BAR
+    })
+    public void testShouldShowHomepageMenuItem_KeepOnNtp_WithBottomBar() {
+        HomepageManager homepageManager = HomepageManager.getInstance();
+        ChromeSharedPreferences.getInstance()
+                .writeBoolean(ChromePreferenceKeys.HOMEPAGE_ENABLED, true);
+        Assert.assertFalse(homepageManager.shouldShowHomepageMenuItem());
+    }
+
+    @Test
     @EnableFeatures({ChromeFeatureList.HOME_BUTTON_REMOVAL + ":keep_home_button_on_ntp/false"})
+    @DisableFeatures(ChromeFeatureList.ANDROID_BOTTOM_BAR)
     public void testShouldShowHomepageMenuItem_NotKeepOnNtp() {
         HomepageManager homepageManager = HomepageManager.getInstance();
         ChromeSharedPreferences.getInstance()
@@ -612,6 +690,7 @@ public class HomepageManagerTest {
 
     @Test
     @EnableFeatures({ChromeFeatureList.HOME_BUTTON_REMOVAL + ":keep_home_button_on_ntp/true"})
+    @DisableFeatures(ChromeFeatureList.ANDROID_BOTTOM_BAR)
     public void testShouldShowHomepageMenuItem_KeepOnNtp_HomepageDisabled() {
         HomepageManager homepageManager = HomepageManager.getInstance();
         ChromeSharedPreferences.getInstance()
@@ -664,10 +743,13 @@ public class HomepageManagerTest {
     @Test
     @EnableFeatures(ChromeFeatureList.GLIC)
     public void testOpenHomepage_WithActiveTab_GlicEnabled_ActorActive_ConfirmDialogShown() {
+        GlicEnabling.setEnabledForTesting(true);
         HomepageManager homepageManager = HomepageManager.getInstance();
         HomepagePolicyManager.setHomepageForTesting(true, JUnitTestGURLs.EXAMPLE_URL, false);
 
         Tab tab = Mockito.mock(Tab.class);
+        Profile profile = Mockito.mock(Profile.class);
+        Mockito.doReturn(profile).when(tab).getProfile();
         UserDataHost userDataHost = new UserDataHost();
         Mockito.doReturn(userDataHost).when(tab).getUserDataHost();
         userDataHost.setUserData(ActorUiTabController.class, mActorUiTabController);
@@ -675,7 +757,7 @@ public class HomepageManagerTest {
         Mockito.doReturn(true).when(mActorUiTabController).isActorActive();
         Mockito.doReturn(true)
                 .when(mActorUiTabController)
-                .showTaskAbortConfirmationDialog(ArgumentMatchers.any(Runnable.class));
+                .showTaskAbortConfirmationDialog(ArgumentMatchers.any());
 
         TabCreatorManager tabCreatorManager = Mockito.mock(TabCreatorManager.class);
 
@@ -685,12 +767,13 @@ public class HomepageManagerTest {
         Mockito.verify(tab, Mockito.never()).loadUrl(ArgumentMatchers.any());
         Mockito.verifyNoInteractions(tabCreatorManager);
 
-        ArgumentCaptor<Runnable> runnableCaptor = ArgumentCaptor.forClass(Runnable.class);
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<Callback<Boolean>> callbackCaptor = ArgumentCaptor.forClass(Callback.class);
         Mockito.verify(mActorUiTabController)
-                .showTaskAbortConfirmationDialog(runnableCaptor.capture());
+                .showTaskAbortConfirmationDialog(callbackCaptor.capture());
 
-        // Now run the navigation runnable, which should load the page on the tab.
-        runnableCaptor.getValue().run();
+        // Now run the navigation callback, which should load the page on the tab.
+        callbackCaptor.getValue().onResult(true);
 
         Mockito.verify(tab)
                 .loadUrl(
@@ -704,10 +787,13 @@ public class HomepageManagerTest {
     @Test
     @EnableFeatures(ChromeFeatureList.GLIC)
     public void testOpenHomepage_WithActiveTab_GlicEnabled_ActorActive_ConfirmDialogNotShown() {
+        GlicEnabling.setEnabledForTesting(true);
         HomepageManager homepageManager = HomepageManager.getInstance();
         HomepagePolicyManager.setHomepageForTesting(true, JUnitTestGURLs.EXAMPLE_URL, false);
 
         Tab tab = Mockito.mock(Tab.class);
+        Profile profile = Mockito.mock(Profile.class);
+        Mockito.doReturn(profile).when(tab).getProfile();
         UserDataHost userDataHost = new UserDataHost();
         Mockito.doReturn(userDataHost).when(tab).getUserDataHost();
         userDataHost.setUserData(ActorUiTabController.class, mActorUiTabController);
@@ -715,7 +801,7 @@ public class HomepageManagerTest {
         Mockito.doReturn(true).when(mActorUiTabController).isActorActive();
         Mockito.doReturn(false)
                 .when(mActorUiTabController)
-                .showTaskAbortConfirmationDialog(ArgumentMatchers.any(Runnable.class));
+                .showTaskAbortConfirmationDialog(ArgumentMatchers.any());
 
         TabCreatorManager tabCreatorManager = Mockito.mock(TabCreatorManager.class);
 
@@ -735,10 +821,13 @@ public class HomepageManagerTest {
     @Test
     @EnableFeatures(ChromeFeatureList.GLIC)
     public void testOpenHomepage_WithActiveTab_GlicEnabled_ActorNotActive() {
+        GlicEnabling.setEnabledForTesting(true);
         HomepageManager homepageManager = HomepageManager.getInstance();
         HomepagePolicyManager.setHomepageForTesting(true, JUnitTestGURLs.EXAMPLE_URL, false);
 
         Tab tab = Mockito.mock(Tab.class);
+        Profile profile = Mockito.mock(Profile.class);
+        Mockito.doReturn(profile).when(tab).getProfile();
         UserDataHost userDataHost = new UserDataHost();
         Mockito.doReturn(userDataHost).when(tab).getUserDataHost();
         userDataHost.setUserData(ActorUiTabController.class, mActorUiTabController);
@@ -758,5 +847,141 @@ public class HomepageManagerTest {
                                                 && params.getTransitionType()
                                                         == PageTransition.HOME_PAGE));
         Mockito.verifyNoInteractions(tabCreatorManager);
+    }
+
+    @Test
+    @EnableFeatures({ChromeFeatureList.HOME_BUTTON_REMOVAL + ":remove_home_button_everywhere/true"})
+    @DisableFeatures(ChromeFeatureList.ANDROID_BOTTOM_BAR)
+    public void testIsHomepageEnabled_HomeButtonRemovalEverywhere() {
+        HomepageManager homepageManager = HomepageManager.getInstance();
+        ChromeSharedPreferences.getInstance()
+                .writeBoolean(ChromePreferenceKeys.HOMEPAGE_ENABLED, true);
+
+        Locale.setDefault(Locale.US);
+        Assert.assertFalse(
+                "Homepage should be disabled in US geo under removal.",
+                homepageManager.isHomepageEnabled());
+
+        Locale.setDefault(Locale.CANADA);
+        Assert.assertTrue(
+                "Homepage should be enabled in non-US geo when restricted.",
+                homepageManager.isHomepageEnabled());
+
+        FeatureOverrides.newBuilder()
+                .param(ChromeFeatureList.HOME_BUTTON_REMOVAL, "apply_to_all_countries", true)
+                .apply();
+        Assert.assertFalse(
+                "Homepage should be disabled with everywhere removal enabled and"
+                        + " apply_to_all_countries set to true in non-US geo.",
+                homepageManager.isHomepageEnabled());
+    }
+
+    @Test
+    @EnableFeatures({ChromeFeatureList.HOME_BUTTON_REMOVAL + ":remove_home_button_everywhere/true"})
+    @DisableFeatures(ChromeFeatureList.ANDROID_BOTTOM_BAR)
+    public void testShouldShowHomepageSettings_HomeButtonRemovalEverywhere() {
+        Locale.setDefault(Locale.US);
+        Assert.assertFalse(
+                "Homepage settings should be hidden in US geo under removal.",
+                HomepageManager.shouldShowHomepageSettings());
+
+        Locale.setDefault(Locale.CANADA);
+        Assert.assertTrue(
+                "Homepage settings should still be visible in non-US geo when restricted.",
+                HomepageManager.shouldShowHomepageSettings());
+
+        FeatureOverrides.newBuilder()
+                .param(ChromeFeatureList.HOME_BUTTON_REMOVAL, "apply_to_all_countries", true)
+                .apply();
+        Assert.assertFalse(
+                "Homepage settings should be hidden with everywhere removal enabled and"
+                        + " apply_to_all_countries set to true in non-US geo.",
+                HomepageManager.shouldShowHomepageSettings());
+    }
+
+    @Test
+    @EnableFeatures({ChromeFeatureList.HOME_BUTTON_REMOVAL + ":keep_home_button_on_ntp/true"})
+    @DisableFeatures(ChromeFeatureList.ANDROID_BOTTOM_BAR)
+    public void testShouldShowHomeButtonOnToolbar_KeepOnNtp() {
+        HomepageManager homepageManager = HomepageManager.getInstance();
+        ChromeSharedPreferences.getInstance()
+                .writeBoolean(ChromePreferenceKeys.HOMEPAGE_ENABLED, true);
+
+        Locale.setDefault(Locale.US);
+        Assert.assertTrue(
+                "Home button should be shown on NTP in US geo.",
+                homepageManager.shouldShowHomeButtonOnToolbar(/* isNtp= */ true));
+        Assert.assertFalse(
+                "Home button should be hidden on non-NTP in US geo.",
+                homepageManager.shouldShowHomeButtonOnToolbar(/* isNtp= */ false));
+
+        Locale.setDefault(Locale.CANADA);
+        Assert.assertTrue(
+                "Home button should be shown on NTP in non-US geo when restricted.",
+                homepageManager.shouldShowHomeButtonOnToolbar(/* isNtp= */ true));
+        Assert.assertTrue(
+                "Home button should still be shown on non-NTP in non-US geo when restricted.",
+                homepageManager.shouldShowHomeButtonOnToolbar(/* isNtp= */ false));
+
+        FeatureOverrides.newBuilder()
+                .param(ChromeFeatureList.HOME_BUTTON_REMOVAL, "apply_to_all_countries", true)
+                .apply();
+        Assert.assertTrue(
+                "Home button should be shown on NTP with keep_on_ntp and apply_to_all_countries set"
+                        + " to true in non-US geo.",
+                homepageManager.shouldShowHomeButtonOnToolbar(/* isNtp= */ true));
+        Assert.assertFalse(
+                "Home button should be hidden on non-NTP with keep_on_ntp and"
+                        + " apply_to_all_countries set to true in non-US geo.",
+                homepageManager.shouldShowHomeButtonOnToolbar(/* isNtp= */ false));
+    }
+
+    @Test
+    @EnableFeatures({ChromeFeatureList.HOME_BUTTON_REMOVAL + ":keep_home_button_on_ntp/true"})
+    @DisableFeatures(ChromeFeatureList.ANDROID_BOTTOM_BAR)
+    public void testShouldShowHomepageMenuItem_KeepOnNtp() {
+        HomepageManager homepageManager = HomepageManager.getInstance();
+        ChromeSharedPreferences.getInstance()
+                .writeBoolean(ChromePreferenceKeys.HOMEPAGE_ENABLED, true);
+
+        Locale.setDefault(Locale.US);
+        Assert.assertTrue(
+                "Homepage menu item should be shown in US geo.",
+                homepageManager.shouldShowHomepageMenuItem());
+
+        Locale.setDefault(Locale.CANADA);
+        Assert.assertFalse(
+                "Homepage menu item should not be shown in non-US geo when restricted.",
+                homepageManager.shouldShowHomepageMenuItem());
+
+        FeatureOverrides.newBuilder()
+                .param(ChromeFeatureList.HOME_BUTTON_REMOVAL, "apply_to_all_countries", true)
+                .apply();
+        Assert.assertTrue(
+                "Homepage menu item should be shown with keep_on_ntp and apply_to_all_countries set"
+                        + " to true in non-US geo.",
+                homepageManager.shouldShowHomepageMenuItem());
+    }
+
+    @Test
+    @EnableFeatures({
+        ChromeFeatureList.HOME_BUTTON_REMOVAL + ":set_default_to_false_on_homepage_on_desktop/true"
+    })
+    public void testGetPrefHomepageEnabled_DesktopDefaultFalse() {
+        DeviceInfo.setIsDesktopForTesting(true);
+        HomepageManager homepageManager = HomepageManager.getInstance();
+
+        // Without preference written in SharedPreferences, should default to false on Desktop.
+        Assert.assertFalse(
+                "getPrefHomepageEnabled should default to false on Desktop",
+                homepageManager.getPrefHomepageEnabled());
+
+        // Once toggle is explicitly enabled, should read true from SharedPreferences.
+        ChromeSharedPreferences.getInstance()
+                .writeBoolean(ChromePreferenceKeys.HOMEPAGE_ENABLED, true);
+        Assert.assertTrue(
+                "getPrefHomepageEnabled should return true after preference is set.",
+                homepageManager.getPrefHomepageEnabled());
+        DeviceInfo.setIsDesktopForTesting(false);
     }
 }

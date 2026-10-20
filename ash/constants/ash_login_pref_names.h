@@ -97,9 +97,6 @@ inline constexpr char kLockScreenReauthenticationEnabled[] =
 inline constexpr char kPinUnlockAutosubmitEnabled[] =
     "pin_unlock_autosubmit_enabled";
 
-inline constexpr char kActivityTimeAfterOnboarding[] =
-    "oobe.activity_time_after_onboarding";
-
 // List of screens selected from the CHOOBE screen. This list is used to resume
 // CHOOBE flow if it's not completed yet.
 inline constexpr char kChoobeSelectedScreens[] = "oobe.choobe_selected_screens";
@@ -238,6 +235,24 @@ inline constexpr char kSecurityTokenSessionNotificationSeconds[] =
 // who was logged out, to be used as part of the notification message.
 inline constexpr char kSecurityTokenSessionNotificationScheduledDomain[] =
     "security_token_session_notification_scheduled";
+
+// Boolean pref indicating whether the supervised user has migrated EDU
+// secondary account to ARC++.
+inline constexpr char kEduCoexistenceArcMigrationCompleted[] =
+    "account_manager.edu_coexistence_arc_migration_completed";
+
+// Preference storing Easy Unlock pairing data.
+inline constexpr char kEasyUnlockPairing[] = "easy_unlock.pairing";
+
+// A Local State enum pref that controls the behavior when a user's online
+// password does not match the local cryptohome password (e.g. after an online
+// password change).
+// The following values are supported:
+// 0: Default behavior. The user is prompted to enter their old password or
+//    use the cryptohome recovery flow.
+// 1: AutoWipe. The user's cryptohome is automatically wiped and recreated.
+inline constexpr char kDeviceOnlinePasswordMismatchBehavior[] =
+    "device_online_password_mismatch_behavior";
 
 }  // namespace ash::prefs
 

@@ -23,6 +23,7 @@ static_assert(sizeof(base::stat_wrapper_t::st_size) >= 8);
 
 #include "base/check_op.h"
 #include "base/compiler_specific.h"
+#include "base/containers/span.h"
 #include "base/feature_list.h"
 #include "base/files/file_tracing.h"
 #include "base/metrics/field_trial_params.h"
@@ -70,6 +71,13 @@ namespace {
 #endif
 
 static_assert(sizeof(int64_t) == sizeof(OffsetType));
+
+Time TimeFromStatTimestamp(time_t seconds, int64_t nanoseconds) {
+  // Unlike Time::FromTimeT(), preserve zero seconds as the Unix epoch rather
+  // than treating it as a null time.
+  return Time::UnixEpoch() + Seconds(seconds) +
+         Microseconds(nanoseconds / Time::kNanosecondsPerMicrosecond);
+}
 
 bool IsReadWriteRangeValid(int64_t offset, int size) {
   if (size < 0 || !CheckAdd(offset, size - 1).IsValid() ||
@@ -231,17 +239,11 @@ void File::Info::FromStat(const stat_wrapper_t& stat_info) {
   int64_t creation_time_nsec = 0;
 #endif
 
-  last_modified =
-      Time::FromTimeT(last_modified_sec) +
-      Microseconds(last_modified_nsec / Time::kNanosecondsPerMicrosecond);
+  last_modified = TimeFromStatTimestamp(last_modified_sec, last_modified_nsec);
 
-  last_accessed =
-      Time::FromTimeT(last_accessed_sec) +
-      Microseconds(last_accessed_nsec / Time::kNanosecondsPerMicrosecond);
+  last_accessed = TimeFromStatTimestamp(last_accessed_sec, last_accessed_nsec);
 
-  creation_time =
-      Time::FromTimeT(creation_time_sec) +
-      Microseconds(creation_time_nsec / Time::kNanosecondsPerMicrosecond);
+  creation_time = TimeFromStatTimestamp(creation_time_sec, creation_time_nsec);
 }
 
 bool File::IsValid() const {
@@ -532,6 +534,7 @@ File::Error File::OSErrorToFileError(int saved_errno) {
     case EISDIR:
     case EROFS:
     case EPERM:
+    case EAGAIN:  // EWOULDBLOCK has the same value on all supported platforms.
       return FILE_ERROR_ACCESS_DENIED;
     case EBUSY:
     case ETXTBSY:
@@ -606,6 +609,10 @@ void File::DoInitialize(const FilePath& path, uint32_t flags) {
     open_flags |= O_APPEND | O_RDWR;
   } else if (flags & FLAG_APPEND) {
     open_flags |= O_APPEND | O_WRONLY;
+  }
+
+  if (flags & FLAG_NO_FOLLOW) {
+    open_flags |= O_NOFOLLOW;
   }
 
   static_assert(O_RDONLY == 0, "O_RDONLY must equal zero");

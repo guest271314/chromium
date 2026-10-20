@@ -14,8 +14,6 @@
 
 namespace media {
 
-class CrossOriginDataSource;
-
 // Abstracting informational methods into DataSourceInfo allows
 // "meta-datasource" objects like HlsDataSourceProvider to query it's entire
 // set of dependent data sources when calculating the data here.
@@ -69,15 +67,6 @@ class MEDIA_EXPORT DataSource : public DataSourceInfo {
     NONE,
     METADATA,
     AUTO,
-  };
-
-  class MEDIA_EXPORT Factory {
-   public:
-    virtual ~Factory();
-    virtual void Create(const GURL& uri,
-                        CacheMode cache_mode,
-                        EncodingMode encoding_mode,
-                        DataSourceCb cb) = 0;
   };
 
   DataSource();
@@ -135,6 +124,10 @@ class MEDIA_EXPORT DataSource : public DataSourceInfo {
   // an empty GURL.
   virtual GURL GetUrlAfterRedirects() const;
 
+  // The final URL from which data was loaded. If the request was intercepted
+  // by a service worker, this may differ from GetUrlAfterRedirects.
+  virtual GURL GetUrlDataOrigin() const;
+
   // Stops any outstanding speculative loading. Active and future Read() calls
   // will not be stopped. OnMediaIsPlaying() or OnMediaPlaybackRateChanged()
   // with a rate > 0 will reset this flag.
@@ -144,9 +137,6 @@ class MEDIA_EXPORT DataSource : public DataSourceInfo {
   // sources won't care too much about these events though.
   virtual void OnMediaPlaybackRateChanged(double playback_rate);
   virtual void OnMediaIsPlaying();
-
-  // Gets a CrossOriginDataSource version of |this|, or nullptr if it isn't one.
-  virtual CrossOriginDataSource* GetAsCrossOriginDataSource();
 };
 
 }  // namespace media

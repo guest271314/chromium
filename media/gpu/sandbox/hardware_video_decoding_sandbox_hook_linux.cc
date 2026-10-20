@@ -7,6 +7,7 @@
 #include <dlfcn.h>
 #include <sys/stat.h>
 
+#include "base/logging.h"
 #include "base/process/process_metrics.h"
 #include "base/strings/stringprintf.h"
 #include "build/build_config.h"
@@ -53,6 +54,27 @@ void AllowAccessToRenderNodes(std::vector<BrokerFilePermission>& permissions,
             BrokerFilePermission::ReadOnly(char_device_path + "/uevent"));
         permissions.push_back(
             BrokerFilePermission::ReadOnly(char_device_path + "/dev"));
+
+        // libdrm and graphics drivers query these specific sysfs files inside
+        // the sandbox (e.g. during vaInitialize) to identify the GPU and
+        // select/configure the correct driver. We whitelist them explicitly
+        // to avoid granting recursive read access to the whole device
+        // directory. Note: 'config' is omitted because 'revision' exists on
+        // target devices.
+        std::string device_path = char_device_path + "/device/";
+        for (const char* file : {
+                 "vendor",
+                 "device",
+                 "revision",
+                 "subsystem_vendor",
+                 "subsystem_device",
+                 "subsystem",
+                 "uevent",
+                 "drm",
+             }) {
+          permissions.push_back(
+              BrokerFilePermission::ReadOnly(device_path + file));
+        }
       }
     }
   }
@@ -84,6 +106,9 @@ bool HardwareVideoDecodingPreSandboxHookForVaapiOnIntel(
   //
   // TODO(b/210759684): we probably will need to do this for Linux as well.
   command_set.set(sandbox::syscall_broker::COMMAND_ACCESS);
+
+  // libdrm calls readlink on the 'subsystem' symlink to determine the bus type.
+  command_set.set(sandbox::syscall_broker::COMMAND_READLINK);
 
   AllowAccessToRenderNodes(permissions, /*include_sys_dev_char=*/true,
                            /*read_write=*/false);
@@ -233,6 +258,26 @@ bool HardwareVideoDecodingPreSandboxHook(
       break;
     case PolicyType::kV4L2:
       result_for_platform_policy =
+          HardwareVideoDecodingPreSandboxHookForV4L2(command_set, permissions);
+      break;
+    case PolicyType::kVaapiAndV4L2:
+      // The active backend is selected at runtime; grant the union of broker
+      // permissions so either path can open its devices. See the matching
+      // note in EvaluateSyscallForVaapiAndV4L2().
+      result_for_platform_policy =
+          HardwareVideoDecodingPreSandboxHookForVaapiOnIntel(command_set,
+                                                             permissions) &&
+          HardwareVideoDecodingPreSandboxHookForV4L2(command_set, permissions);
+      break;
+    case PolicyType::kVaapiOnAMDAndV4L2:
+      // AMD variant of the mixed build: pair the AMD VA-API broker setup
+      // (radeonsi/vulkan preload, read-write render nodes) with the V4L2
+      // device permissions. HardwareVideoDecodingPreSandboxHookForVaapiOnAMD()
+      // dlopen()s radeonsi_dri.so and fails if it is missing, so it must only
+      // be invoked on AMD hardware.
+      result_for_platform_policy =
+          HardwareVideoDecodingPreSandboxHookForVaapiOnAMD(command_set,
+                                                           permissions) &&
           HardwareVideoDecodingPreSandboxHookForV4L2(command_set, permissions);
       break;
   }

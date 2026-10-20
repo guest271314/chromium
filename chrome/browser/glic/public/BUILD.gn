@@ -12,3 +12,11 @@ source_set("features") {
     "//build:android_buildflags",
   ]
 }
+
+source_set("request_headers") {
+  sources = [
+    "glic_request_headers.cc",
+    "glic_request_headers.h",
+  ]
+  deps = [ "//services/network/public/mojom" ]
+}

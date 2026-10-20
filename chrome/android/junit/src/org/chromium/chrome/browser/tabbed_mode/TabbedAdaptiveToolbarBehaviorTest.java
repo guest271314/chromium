@@ -9,6 +9,7 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -28,6 +29,8 @@ import org.robolectric.annotation.Config;
 import org.chromium.base.supplier.MonotonicObservableSupplier;
 import org.chromium.base.supplier.NullableObservableSupplier;
 import org.chromium.base.supplier.ObservableSuppliers;
+import org.chromium.base.supplier.SettableNonNullObservableSupplier;
+import org.chromium.base.supplier.SupplierUtils;
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.base.test.util.Features.EnableFeatures;
@@ -39,11 +42,11 @@ import org.chromium.chrome.browser.bookmarks.BookmarkModel;
 import org.chromium.chrome.browser.bookmarks.TabBookmarker;
 import org.chromium.chrome.browser.browser_controls.BrowserControlsVisibilityManager;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
-import org.chromium.chrome.browser.glic.GlicButtonDelegate;
 import org.chromium.chrome.browser.glic.GlicEnabling;
 import org.chromium.chrome.browser.glic.GlicEnablingJni;
 import org.chromium.chrome.browser.glic.GlicKeyedService;
 import org.chromium.chrome.browser.glic.GlicKeyedServiceFactory;
+import org.chromium.chrome.browser.glic.toolbar_button.GlicButtonDelegate;
 import org.chromium.chrome.browser.lifecycle.ActivityLifecycleDispatcher;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.tab_group_suggestion.toolbar.GroupSuggestionsButtonController;
@@ -83,6 +86,10 @@ public class TabbedAdaptiveToolbarBehaviorTest {
             ObservableSuppliers.createMonotonic();
     private final NullableObservableSupplier<BookmarkModel> mBookmarkModelSupplier =
             ObservableSuppliers.createNullable();
+    private final SettableNonNullObservableSupplier<Boolean> mIsVerticalTabsActiveSupplier =
+            ObservableSuppliers.createNonNull(false);
+    private final SettableNonNullObservableSupplier<Boolean> mIsGlicPinnedSupplier =
+            ObservableSuppliers.createNonNull(false);
 
     private TabbedAdaptiveToolbarBehavior mBehavior;
 
@@ -95,6 +102,7 @@ public class TabbedAdaptiveToolbarBehaviorTest {
 
         when(mTabModelSelector.getCurrentModel()).thenReturn(mTabModel);
         when(mTabModel.getProfile()).thenReturn(mProfile);
+        when(mProfile.getOriginalProfile()).thenReturn(mProfile);
 
         mBehavior =
                 new TabbedAdaptiveToolbarBehavior(
@@ -110,19 +118,25 @@ public class TabbedAdaptiveToolbarBehaviorTest {
                         mTabStripVisibilitySupplier,
                         mGlicButtonDelegate,
                         () -> mChromeAndroidTask,
-                        mBrowserControlsVisibilityManager);
+                        mBrowserControlsVisibilityManager,
+                        mIsVerticalTabsActiveSupplier,
+                        mIsGlicPinnedSupplier);
     }
 
     @Test
     @Config(qualifiers = "w390dp-h820dp")
     @EnableFeatures(ChromeFeatureList.GLIC)
-    @DisableFeatures(ChromeFeatureList.ENABLE_ANDROID_SIDE_PANEL)
+    @DisableFeatures({
+        ChromeFeatureList.ENABLE_ANDROID_SIDE_PANEL,
+        ChromeFeatureList.ANDROID_BOTTOM_BAR
+    })
     public void testResultFilterWithGlicEnabled() {
         when(mGlicEnablingJniMock.isEnabledForProfile(eq(mProfile))).thenReturn(true);
         ActorKeyedServiceFactory.setForTesting(mActorKeyedService);
         when(mActorKeyedService.getCurrentActiveTask()).thenReturn(mActorTask);
         when(mActorKeyedService.getActiveTasks()).thenReturn(List.of(mActorTask));
-        mBehavior.registerPerSurfaceButtons(mAdaptiveToolbarButtonController, () -> null);
+        mBehavior.registerPerSurfaceButtons(
+                mAdaptiveToolbarButtonController, SupplierUtils.ofNull());
         assertTopResult(
                 /* segmentationResults= */ List.of(
                         AdaptiveToolbarButtonVariant.SHARE, AdaptiveToolbarButtonVariant.GLIC),
@@ -131,6 +145,70 @@ public class TabbedAdaptiveToolbarBehaviorTest {
 
     @Test
     @Config(qualifiers = "w390dp-h820dp")
+    @EnableFeatures(ChromeFeatureList.GLIC)
+    @DisableFeatures({
+        ChromeFeatureList.ENABLE_ANDROID_SIDE_PANEL,
+        ChromeFeatureList.ANDROID_BOTTOM_BAR
+    })
+    public void testResultFilterWithGlicEnabled_Incognito() {
+        Profile incognitoProfile = mock(Profile.class);
+        when(incognitoProfile.isOffTheRecord()).thenReturn(true);
+        when(incognitoProfile.getOriginalProfile()).thenReturn(mProfile);
+        when(mTabModel.getProfile()).thenReturn(incognitoProfile);
+        when(mGlicEnablingJniMock.isEnabledForProfile(eq(incognitoProfile))).thenReturn(false);
+        when(mGlicEnablingJniMock.isEnabledForProfile(eq(mProfile))).thenReturn(true);
+        ActorKeyedServiceFactory.setForTesting(mActorKeyedService);
+        when(mActorKeyedService.getCurrentActiveTask()).thenReturn(mActorTask);
+        when(mActorKeyedService.getActiveTasks()).thenReturn(List.of(mActorTask));
+        mBehavior.registerPerSurfaceButtons(
+                mAdaptiveToolbarButtonController, SupplierUtils.ofNull());
+        assertTopResult(
+                /* segmentationResults= */ List.of(
+                        AdaptiveToolbarButtonVariant.SHARE, AdaptiveToolbarButtonVariant.GLIC),
+                /* expectedTopResult= */ AdaptiveToolbarButtonVariant.GLIC);
+    }
+
+    @Test
+    @Config(qualifiers = "w390dp-h820dp")
+    @EnableFeatures(ChromeFeatureList.GLIC)
+    @DisableFeatures({
+        ChromeFeatureList.ENABLE_ANDROID_SIDE_PANEL,
+        ChromeFeatureList.ANDROID_BOTTOM_BAR
+    })
+    public void testResultFilter_VerticalTabAndGlicPinned() {
+        when(mGlicEnablingJniMock.isEnabledForProfile(eq(mProfile))).thenReturn(true);
+        ActorKeyedServiceFactory.setForTesting(mActorKeyedService);
+        when(mActorKeyedService.getCurrentActiveTask()).thenReturn(mActorTask);
+        when(mActorKeyedService.getActiveTasks()).thenReturn(List.of(mActorTask));
+        mBehavior.registerPerSurfaceButtons(
+                mAdaptiveToolbarButtonController, SupplierUtils.ofNull());
+
+        List<Integer> segmentationResultsGlicShare =
+                List.of(AdaptiveToolbarButtonVariant.GLIC, AdaptiveToolbarButtonVariant.SHARE);
+        // Case 1: Vertical tabs active and glic pinned -> GLIC is filtered.
+        mIsVerticalTabsActiveSupplier.set(true);
+        mIsGlicPinnedSupplier.set(true);
+        assertTopResult(
+                segmentationResultsGlicShare,
+                /* expectedTopResult= */ AdaptiveToolbarButtonVariant.SHARE);
+
+        // Case 2: Vertical tabs active, but glic NOT pinned -> GLIC is NOT filtered.
+        mIsGlicPinnedSupplier.set(false);
+        assertTopResult(
+                segmentationResultsGlicShare,
+                /* expectedTopResult= */ AdaptiveToolbarButtonVariant.GLIC);
+
+        // Case 3: Vertical tabs NOT active, glic pinned -> GLIC is NOT filtered.
+        mIsVerticalTabsActiveSupplier.set(false);
+        mIsGlicPinnedSupplier.set(true);
+        assertTopResult(
+                segmentationResultsGlicShare,
+                /* expectedTopResult= */ AdaptiveToolbarButtonVariant.GLIC);
+    }
+
+    @Test
+    @Config(qualifiers = "w390dp-h820dp")
+    @DisableFeatures(ChromeFeatureList.ANDROID_BOTTOM_BAR)
     public void testGetTopSegmentationResultOnPhone() {
         assertTopResult(
                 /* segmentationResults= */ List.of(
@@ -209,7 +287,8 @@ public class TabbedAdaptiveToolbarBehaviorTest {
     @EnableFeatures({ChromeFeatureList.GLIC, ChromeFeatureList.ANDROID_BOTTOM_BAR})
     @DisableFeatures(ChromeFeatureList.ENABLE_ANDROID_SIDE_PANEL)
     public void testRegisterPerSurfaceButtons_BottomBarEnabled() {
-        mBehavior.registerPerSurfaceButtons(mAdaptiveToolbarButtonController, () -> null);
+        mBehavior.registerPerSurfaceButtons(
+                mAdaptiveToolbarButtonController, SupplierUtils.ofNull());
         verify(mAdaptiveToolbarButtonController, never())
                 .addButtonVariant(eq(AdaptiveToolbarButtonVariant.NEW_TAB), any());
         verify(mAdaptiveToolbarButtonController, never())
@@ -226,7 +305,8 @@ public class TabbedAdaptiveToolbarBehaviorTest {
         ChromeFeatureList.ANDROID_BOTTOM_BAR
     })
     public void testRegisterPerSurfaceButtons_BottomBarDisabled() {
-        mBehavior.registerPerSurfaceButtons(mAdaptiveToolbarButtonController, () -> null);
+        mBehavior.registerPerSurfaceButtons(
+                mAdaptiveToolbarButtonController, SupplierUtils.ofNull());
         verify(mAdaptiveToolbarButtonController)
                 .addButtonVariant(eq(AdaptiveToolbarButtonVariant.NEW_TAB), any());
         verify(mAdaptiveToolbarButtonController)

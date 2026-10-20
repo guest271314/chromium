@@ -45,11 +45,11 @@ import org.chromium.chrome.browser.download.DownloadManagerBridge.DownloadEnqueu
 import org.chromium.chrome.browser.feature_engagement.TrackerFactory;
 import org.chromium.chrome.browser.incognito.IncognitoUtils;
 import org.chromium.chrome.browser.media.MediaViewerUtils;
+import org.chromium.chrome.browser.pdf.PdfUtils;
 import org.chromium.chrome.browser.preferences.Pref;
 import org.chromium.chrome.browser.profiles.OtrProfileId;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.profiles.ProfileKey;
-import org.chromium.chrome.browser.profiles.ProfileKeyUtil;
 import org.chromium.chrome.browser.profiles.ProfileManager;
 import org.chromium.components.download.DownloadCollectionBridge;
 import org.chromium.components.download.DownloadState;
@@ -63,6 +63,7 @@ import org.chromium.components.offline_items_collection.PendingState;
 import org.chromium.components.prefs.PrefService;
 import org.chromium.components.user_prefs.UserPrefs;
 import org.chromium.content_public.browser.BrowserStartupController;
+import org.chromium.ui.base.MimeTypeUtils;
 import org.chromium.ui.widget.Toast;
 
 import java.io.File;
@@ -109,7 +110,7 @@ public class DownloadManagerService implements DownloadServiceDelegate, ProfileM
     /** Generic interface for notifying external UI components about downloads and their states. */
     public interface DownloadObserver extends DownloadSharedPreferenceHelper.Observer {
         /** Called in response to {@link DownloadManagerService#getAllDownloads(OtrProfileId)}. */
-        void onAllDownloadsRetrieved(final List<DownloadItem> list, ProfileKey profileKey);
+        void onAllDownloadsRetrieved(List<DownloadItem> list, ProfileKey profileKey);
 
         /** Called when a download is created. */
         void onDownloadItemCreated(DownloadItem item);
@@ -263,10 +264,9 @@ public class DownloadManagerService implements DownloadServiceDelegate, ProfileM
     public void onActivityLaunched(DownloadMessageUiController.Delegate delegate) {
         if (mMessageUiController == null) {
             mMessageUiController = DownloadMessageUiControllerFactory.create(delegate);
-
-            DownloadManagerService.getDownloadManagerService()
-                    .checkForExternallyRemovedDownloads(
-                            ProfileKeyUtil.getLastUsedRegularProfileKey());
+            // Initialize native download manager service so that resumption handler will be
+            // created.
+            getNativeDownloadManagerService();
         }
     }
 
@@ -406,8 +406,7 @@ public class DownloadManagerService implements DownloadServiceDelegate, ProfileM
                 new AsyncTask<>() {
                     @Override
                     public Boolean doInBackground() {
-                        boolean canResolve = canResolveDownloadItem(item, isSupportedMimeType);
-                        return canResolve;
+                        return canResolveDownloadItem(item, isSupportedMimeType);
                     }
 
                     @Override
@@ -554,10 +553,7 @@ public class DownloadManagerService implements DownloadServiceDelegate, ProfileM
         request.userAgent = item.getDownloadInfo().getUserAgent();
         request.notifyCompleted = notifyCompleted;
         DownloadManagerBridge.enqueueNewDownload(
-                request,
-                response -> {
-                    onDownloadEnqueued(item, response);
-                });
+                request, response -> onDownloadEnqueued(item, response));
     }
 
     public void onDownloadEnqueued(DownloadItem downloadItem, DownloadEnqueueResponse response) {
@@ -941,10 +937,15 @@ public class DownloadManagerService implements DownloadServiceDelegate, ProfileM
 
     /**
      * Checks whether the download can be opened by the browser.
+     *
      * @param mimeType MIME type of the file.
+     * @param isIncognito Whether the download is in incognito mode.
      * @return Whether the download is openable by the browser.
      */
-    public boolean isDownloadOpenableInBrowser(@Nullable String mimeType) {
+    public boolean isDownloadOpenableInBrowser(@Nullable String mimeType, boolean isIncognito) {
+        if (MimeTypeUtils.PDF_MIME_TYPE.equalsIgnoreCase(mimeType)) {
+            return PdfUtils.shouldOpenPdfInline(isIncognito);
+        }
         // TODO(qinmin): for audio and video, check if the codec is supported by Chrome.
         return isSupportedMimeType(mimeType);
     }
@@ -1178,16 +1179,6 @@ public class DownloadManagerService implements DownloadServiceDelegate, ProfileM
                         IncognitoUtils.getProfileKeyFromOtrProfileId(otrProfileId));
     }
 
-    /**
-     * Checks if the files associated with any downloads have been removed by an external action.
-     *
-     * @param profileKey The {@link ProfileKey} to check the downloads for the the given profile.
-     */
-    public void checkForExternallyRemovedDownloads(ProfileKey profileKey) {
-        DownloadManagerServiceJni.get()
-                .checkForExternallyRemovedDownloads(getNativeDownloadManagerService(), profileKey);
-    }
-
     // Deprecated after new download backend.
     @CalledByNative
     private List<DownloadItem> createDownloadItemList() {
@@ -1235,11 +1226,8 @@ public class DownloadManagerService implements DownloadServiceDelegate, ProfileM
                                         externalStorageDir,
                                         dirs);
                         if (!isUnresumableOrCancelled(item) && missingOnSDCard) {
-                            mHandler.post(
-                                    () -> {
-                                        // TODO(shaktisahu): Show it on infobar in the right way.
-                                        mDownloadSnackbarController.onDownloadDirectoryNotFound();
-                                    });
+                            // TODO(shaktisahu): Show it on infobar in the right way.
+                            mHandler.post(mDownloadSnackbarController::onDownloadDirectoryNotFound);
                             prefService.setBoolean(Pref.SHOW_MISSING_SD_CARD_ERROR_ANDROID, false);
                             break;
                         }
@@ -1595,9 +1583,6 @@ public class DownloadManagerService implements DownloadServiceDelegate, ProfileM
                 ProfileKey profileKey);
 
         void getAllDownloads(long nativeDownloadManagerService, ProfileKey profileKey);
-
-        void checkForExternallyRemovedDownloads(
-                long nativeDownloadManagerService, ProfileKey profileKey);
 
         void updateLastAccessTime(
                 long nativeDownloadManagerService,

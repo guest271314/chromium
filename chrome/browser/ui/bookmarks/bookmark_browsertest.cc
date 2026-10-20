@@ -21,11 +21,12 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/tab_group_sync/tab_group_sync_service_factory.h"
+#include "chrome/browser/ui/bookmarks/bookmark_bar.h"
 #include "chrome/browser/ui/bookmarks/bookmark_bar_controller.h"
 #include "chrome/browser/ui/bookmarks/bookmark_drag_drop.h"
 #include "chrome/browser/ui/bookmarks/bookmark_tab_helper.h"
+#include "chrome/browser/ui/bookmarks/bookmark_tab_helper_observer.h"
 #include "chrome/browser/ui/bookmarks/bookmark_utils_desktop.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
 #include "chrome/browser/ui/browser_window.h"
@@ -46,6 +47,7 @@
 #include "components/saved_tab_groups/public/tab_group_sync_service.h"
 #include "components/security_interstitials/content/security_interstitial_tab_helper.h"
 #include "components/signin/public/base/signin_switches.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
@@ -56,7 +58,9 @@
 #include "ui/base/dragdrop/mojom/drag_drop_types.mojom-shared.h"
 #include "ui/base/dragdrop/os_exchange_data.h"
 #include "ui/base/interaction/element_tracker.h"
+#include "ui/base/page_transition_types.h"
 #include "ui/base/ui_base_features.h"
+#include "ui/base/window_open_disposition.h"
 #include "ui/gfx/image/image_skia.h"
 #include "ui/views/controls/button/checkbox.h"
 #include "ui/views/interaction/element_tracker_views.h"
@@ -108,8 +112,7 @@ class BookmarkBrowsertest : public InProcessBrowserTest {
  public:
   BookmarkBrowsertest() {
     feature_list_.InitWithFeatures(
-        /*enabled_features=*/{switches::kSyncEnableBookmarksInTransportMode,
-                              features::kBookmarkTabGroupConversion},
+        /*enabled_features=*/{switches::kSyncEnableBookmarksInTransportMode},
         /*disabled_features=*/{
 #if BUILDFLAG(IS_WIN)
             // This needs to be disabled so that animations are guaranteed to
@@ -127,7 +130,8 @@ class BookmarkBrowsertest : public InProcessBrowserTest {
            BookmarkBar::SHOW;
   }
 
-  static void CheckAnimation(Browser* browser, base::RunLoop* loop) {
+  static void CheckAnimation(BrowserWindowInterface* browser,
+                             base::RunLoop* loop) {
     if (!BrowserView::GetBrowserViewForBrowser(browser)
              ->IsBookmarkBarAnimating()) {
       loop->Quit();
@@ -178,7 +182,7 @@ IN_PROC_BROWSER_TEST_F(BookmarkBrowsertest, BookmarkBarVisibleWait) {
 
 // Verify that bookmarks persist browser restart.
 IN_PROC_BROWSER_TEST_F(BookmarkBrowsertest, PRE_Persist) {
-  BookmarkModel* bookmark_model = WaitForBookmarkModel(browser()->profile());
+  BookmarkModel* bookmark_model = WaitForBookmarkModel(browser()->GetProfile());
 
   const BookmarkNode* node = bookmarks::AddIfNotBookmarked(
       bookmark_model, GURL(kPersistBookmarkURL), kPersistBookmarkTitle);
@@ -194,7 +198,7 @@ IN_PROC_BROWSER_TEST_F(BookmarkBrowsertest, PRE_Persist) {
 #endif
 
 IN_PROC_BROWSER_TEST_F(BookmarkBrowsertest, MAYBE_Persist) {
-  BookmarkModel* bookmark_model = WaitForBookmarkModel(browser()->profile());
+  BookmarkModel* bookmark_model = WaitForBookmarkModel(browser()->GetProfile());
 
   GURL url(kPersistBookmarkURL);
   std::vector<raw_ptr<const BookmarkNode, VectorExperimental>> nodes =
@@ -210,7 +214,8 @@ IN_PROC_BROWSER_TEST_F(BookmarkBrowsertest, MAYBE_Persist) {
 
 // Sanity check that bookmarks from different profiles are separate.
 IN_PROC_BROWSER_TEST_F(BookmarkBrowsertest, MultiProfile) {
-  BookmarkModel* bookmark_model1 = WaitForBookmarkModel(browser()->profile());
+  BookmarkModel* bookmark_model1 =
+      WaitForBookmarkModel(browser()->GetProfile());
 
   base::RunLoop run_loop;
   Profile* profile2 = nullptr;
@@ -236,9 +241,9 @@ IN_PROC_BROWSER_TEST_F(BookmarkBrowsertest, MultiProfile) {
 
 // Sanity check that bookmarks from Incognito mode persist Incognito restart.
 IN_PROC_BROWSER_TEST_F(BookmarkBrowsertest, IncognitoPersistence) {
-  Browser* incognito_browser = CreateIncognitoBrowser();
+  BrowserWindowInterface* incognito_browser = CreateIncognitoBrowser();
   BookmarkModel* bookmark_model =
-      WaitForBookmarkModel(incognito_browser->profile());
+      WaitForBookmarkModel(incognito_browser->GetProfile());
 
   // Add bookmark for Incognito and ensure it is added.
   bookmarks::AddIfNotBookmarked(bookmark_model, GURL(kPersistBookmarkURL),
@@ -249,11 +254,11 @@ IN_PROC_BROWSER_TEST_F(BookmarkBrowsertest, IncognitoPersistence) {
   // Restart Incognito, and check again.
   CloseBrowserSynchronously(incognito_browser);
   incognito_browser = CreateIncognitoBrowser();
-  bookmark_model = WaitForBookmarkModel(incognito_browser->profile());
+  bookmark_model = WaitForBookmarkModel(incognito_browser->GetProfile());
   ASSERT_EQ(1u, bookmark_model->GetUniqueUrls().size());
 
   // Ensure it is also available in regular mode.
-  bookmark_model = WaitForBookmarkModel(browser()->profile());
+  bookmark_model = WaitForBookmarkModel(browser()->GetProfile());
   ASSERT_EQ(1u, bookmark_model->GetUniqueUrls().size());
 }
 
@@ -263,7 +268,7 @@ IN_PROC_BROWSER_TEST_F(BookmarkBrowsertest, IncognitoPersistence) {
 IN_PROC_BROWSER_TEST_F(
     BookmarkBrowsertest,
     OpenFolderAsGroupInIncognitoWhenBookmarksCantOpenInIncognito) {
-  BookmarkModel* bookmark_model = WaitForBookmarkModel(browser()->profile());
+  BookmarkModel* bookmark_model = WaitForBookmarkModel(browser()->GetProfile());
   const BookmarkNode* const folder = bookmark_model->AddFolder(
       bookmark_model->bookmark_bar_node(), 0, u"Folder");
   const BookmarkNode* const page1 = bookmark_model->AddURL(
@@ -271,9 +276,9 @@ IN_PROC_BROWSER_TEST_F(
   const BookmarkNode* const page2 = bookmark_model->AddURL(
       folder, 1, u"Settings", GURL(chrome::kChromeUISettingsURL));
 
-  Browser* incognito_browser = CreateIncognitoBrowser();
+  BrowserWindowInterface* incognito_browser = CreateIncognitoBrowser();
   BookmarkModel* incognito_model =
-      WaitForBookmarkModel(incognito_browser->profile());
+      WaitForBookmarkModel(incognito_browser->GetProfile());
   ASSERT_FALSE(incognito_model->root_node()->children().empty());
   ASSERT_TRUE(incognito_model->root_node()->children()[0]->is_folder());
   BookmarkNode* const incognito_folder =
@@ -282,336 +287,269 @@ IN_PROC_BROWSER_TEST_F(
   EXPECT_EQ(page1->url(), incognito_folder->children()[0]->url());
   EXPECT_EQ(page2->url(), incognito_folder->children()[1]->url());
 
-  const int browser_tabs = browser()->tab_strip_model()->count();
-  const int incognito_tabs = incognito_browser->tab_strip_model()->count();
+  const int browser_tabs = browser()->GetTabStripModel()->count();
+  const int incognito_tabs = incognito_browser->GetTabStripModel()->count();
 
   bookmarks::OpenAllIfAllowed(incognito_browser, {incognito_folder},
                               WindowOpenDisposition::NEW_BACKGROUND_TAB,
                               bookmarks::OpenAllBookmarksContext::kInGroup);
 
-  EXPECT_EQ(incognito_tabs, incognito_browser->tab_strip_model()->count());
-  EXPECT_EQ(browser_tabs + 2, browser()->tab_strip_model()->count());
+  EXPECT_EQ(incognito_tabs, incognito_browser->GetTabStripModel()->count());
+  EXPECT_EQ(browser_tabs + 2, browser()->GetTabStripModel()->count());
 }
 
-IN_PROC_BROWSER_TEST_F(BookmarkBrowsertest,
-                       ConvertBookmarkFolderToGroupCreateNewGroup) {
-  base::UserActionTester user_action_tester;
-  // Create a bookmark folder with 2 urls.
-  BookmarkModel* bookmark_model = WaitForBookmarkModel(browser()->profile());
-  const BookmarkNode* const folder = bookmark_model->AddFolder(
-      bookmark_model->bookmark_bar_node(), 0, u"Folder");
-  bookmark_model->AddURL(folder, 0, u"Extensions",
-                         GURL(chrome::kChromeUIExtensionsURL));
-  const BookmarkNode* bookmark_node = bookmark_model->AddURL(
-      folder, 1, u"Settings", GURL(chrome::kChromeUISettingsURL));
+IN_PROC_BROWSER_TEST_F(
+    BookmarkBrowsertest,
+    OpenBookmarkInSplitInIncognitoWhenBookmarkCantOpenInIncognito) {
+  BookmarkModel* bookmark_model = WaitForBookmarkModel(browser()->GetProfile());
+  bookmark_model->AddURL(bookmark_model->bookmark_bar_node(), 0, u"Settings",
+                         GURL(chrome::kChromeUISettingsURL));
 
-  tab_groups::TabGroupSyncService* tab_group_service =
-      tab_groups::TabGroupSyncServiceFactory::GetForProfile(
-          browser()->profile());
-  CHECK(tab_group_service);
+  BrowserWindowInterface* incognito_browser = CreateIncognitoBrowser();
+  BookmarkModel* incognito_model =
+      WaitForBookmarkModel(incognito_browser->GetProfile());
+  ASSERT_FALSE(incognito_model->bookmark_bar_node()->children().empty());
+  BookmarkNode* const incognito_page =
+      incognito_model->bookmark_bar_node()->children()[0].get();
 
-  // Convert to saved tab group for the first time.
-  {
-    EXPECT_EQ(
-        0u,
-        browser()->tab_strip_model()->group_model()->ListTabGroups().size());
+  const int browser_tabs = browser()->GetTabStripModel()->count();
+  const int incognito_tabs = incognito_browser->GetTabStripModel()->count();
 
-    bookmarks::OpenAllIfAllowed(browser(), {folder},
-                                WindowOpenDisposition::NEW_BACKGROUND_TAB,
-                                bookmarks::OpenAllBookmarksContext::kInGroup);
+  bookmarks::OpenAllIfAllowed(incognito_browser, {incognito_page},
+                              WindowOpenDisposition::NEW_BACKGROUND_TAB,
+                              bookmarks::OpenAllBookmarksContext::kInSplit);
 
-    ASSERT_EQ(
-        1u,
-        browser()->tab_strip_model()->group_model()->ListTabGroups().size());
+  EXPECT_EQ(incognito_tabs, incognito_browser->GetTabStripModel()->count());
+  EXPECT_EQ(browser_tabs + 1, browser()->GetTabStripModel()->count());
+}
 
-    auto saved_tab_group1 = tab_group_service->GetGroup(
-        browser()->tab_strip_model()->group_model()->ListTabGroups()[0]);
-    ASSERT_TRUE(saved_tab_group1.has_value());
-    ASSERT_EQ(2u, saved_tab_group1->saved_tabs().size());
-    ASSERT_EQ(GURL(chrome::kChromeUIExtensionsURL),
-              saved_tab_group1->saved_tabs()[0].url());
-    ASSERT_EQ(GURL(chrome::kChromeUISettingsURL),
-              saved_tab_group1->saved_tabs()[1].url());
-  }
+namespace {
 
-  // Remove a bookmark node and add a new one.
-  bookmark_model->Remove(
-      bookmark_node, bookmarks::metrics::BookmarkEditSource::kOther, FROM_HERE);
-  bookmark_model->AddURL(folder, 1, u"Version",
-                         GURL(chrome::kChromeUIVersionURL));
+enum class BookmarkOrder {
+  kDisallowedFirst,
+  kAllowedFirst,
+};
 
-  // Convert to saved tab group for the second time.
-  // User chooses to create new group.
-  {
-    views::NamedWidgetShownWaiter waiter(
-        views::test::AnyWidgetTestPasskey{},
-        bookmarks::kReplaceOrCreateGroupDialogName);
-
-    bookmarks::OpenAllIfAllowed(browser(), {folder},
-                                WindowOpenDisposition::NEW_BACKGROUND_TAB,
-                                bookmarks::OpenAllBookmarksContext::kInGroup);
-
-    views::Widget* dialog_widget = waiter.WaitIfNeededAndGet();
-    ASSERT_NE(nullptr, dialog_widget);
-    dialog_widget->widget_delegate()->AsDialogDelegate()->Accept();
-  }
-
-  EXPECT_EQ(1, user_action_tester.GetActionCount(
-                   "BookmarkTabGroupConversion_UserSelectCreateNewGroup"));
-
-  EXPECT_EQ(
-      2u, browser()->tab_strip_model()->group_model()->ListTabGroups().size());
-
-  // Verify group1 has the original URLS and group2 has the updated URLs.
-  {
-    auto saved_tab_group1 = tab_group_service->GetGroup(
-        browser()->tab_strip_model()->group_model()->ListTabGroups()[0]);
-    ASSERT_TRUE(saved_tab_group1.has_value());
-    ASSERT_EQ(2u, saved_tab_group1->saved_tabs().size());
-    ASSERT_EQ(GURL(chrome::kChromeUIExtensionsURL),
-              saved_tab_group1->saved_tabs()[0].url());
-    ASSERT_EQ(GURL(chrome::kChromeUISettingsURL),
-              saved_tab_group1->saved_tabs()[1].url());
-
-    auto saved_tab_group2 = tab_group_service->GetGroup(
-        browser()->tab_strip_model()->group_model()->ListTabGroups()[1]);
-    ASSERT_TRUE(saved_tab_group2.has_value());
-    ASSERT_EQ(2u, saved_tab_group2->saved_tabs().size());
-    ASSERT_EQ(GURL(chrome::kChromeUIExtensionsURL),
-              saved_tab_group2->saved_tabs()[0].url());
-    ASSERT_EQ(GURL(chrome::kChromeUIVersionURL),
-              saved_tab_group2->saved_tabs()[1].url());
+void PopulateBookmarks(BookmarkModel* model,
+                       const BookmarkNode* bbar,
+                       BookmarkOrder order,
+                       const GURL& url1,
+                       const GURL& url2) {
+  model->RemoveAllUserBookmarks(FROM_HERE);
+  const GURL settings_url(chrome::kChromeUISettingsURL);
+  const GURL extensions_url(chrome::kChromeUIExtensionsURL);
+  if (order == BookmarkOrder::kDisallowedFirst) {
+    model->AddURL(bbar, 0, u"Settings", settings_url);
+    model->AddURL(bbar, 1, u"Page1", url1);
+    model->AddURL(bbar, 2, u"Extensions", extensions_url);
+    model->AddURL(bbar, 3, u"Page2", url2);
+  } else {
+    model->AddURL(bbar, 0, u"Page1", url1);
+    model->AddURL(bbar, 1, u"Settings", settings_url);
+    model->AddURL(bbar, 2, u"Page2", url2);
+    model->AddURL(bbar, 3, u"Extensions", extensions_url);
   }
 }
 
-IN_PROC_BROWSER_TEST_F(BookmarkBrowsertest,
-                       ConvertBookmarkFolderToGroupOverrideOldGroup) {
-  base::UserActionTester user_action_tester;
-  // Create a bookmark folder with 2 urls.
-  BookmarkModel* bookmark_model = WaitForBookmarkModel(browser()->profile());
-  const BookmarkNode* const folder = bookmark_model->AddFolder(
-      bookmark_model->bookmark_bar_node(), 0, u"Folder");
-  bookmark_model->AddURL(folder, 0, u"Extensions",
-                         GURL(chrome::kChromeUIExtensionsURL));
-  const BookmarkNode* bookmark_node = bookmark_model->AddURL(
-      folder, 1, u"Settings", GURL(chrome::kChromeUISettingsURL));
-
-  tab_groups::TabGroupSyncService* tab_group_service =
-      tab_groups::TabGroupSyncServiceFactory::GetForProfile(
-          browser()->profile());
-  CHECK(tab_group_service);
-
-  // Convert to saved tab group for the first time.
-  {
-    EXPECT_EQ(
-        0u,
-        browser()->tab_strip_model()->group_model()->ListTabGroups().size());
-
-    bookmarks::OpenAllIfAllowed(browser(), {folder},
-                                WindowOpenDisposition::NEW_BACKGROUND_TAB,
-                                bookmarks::OpenAllBookmarksContext::kInGroup);
-
-    ASSERT_EQ(
-        1u,
-        browser()->tab_strip_model()->group_model()->ListTabGroups().size());
-
-    auto saved_tab_group1 = tab_group_service->GetGroup(
-        browser()->tab_strip_model()->group_model()->ListTabGroups()[0]);
-    ASSERT_TRUE(saved_tab_group1.has_value());
-    ASSERT_EQ(2u, saved_tab_group1->saved_tabs().size());
-    ASSERT_EQ(GURL(chrome::kChromeUIExtensionsURL),
-              saved_tab_group1->saved_tabs()[0].url());
-    ASSERT_EQ(GURL(chrome::kChromeUISettingsURL),
-              saved_tab_group1->saved_tabs()[1].url());
+void CloseAllTabsExceptFirst(BrowserWindowInterface* browser) {
+  CHECK(browser);
+  TabStripModel* tab_strip_model = browser->GetTabStripModel();
+  while (tab_strip_model->count() > 1) {
+    tab_strip_model->CloseWebContentsAt(tab_strip_model->count() - 1,
+                                        TabCloseTypes::CLOSE_NONE);
   }
-
-  // Remove a bookmark node and add a new one.
-  bookmark_model->Remove(
-      bookmark_node, bookmarks::metrics::BookmarkEditSource::kOther, FROM_HERE);
-  bookmark_model->AddURL(folder, 1, u"Version",
-                         GURL(chrome::kChromeUIVersionURL));
-
-  // Convert to saved tab group for the second time.
-  // User chooses to override the existing group.
-  {
-    views::NamedWidgetShownWaiter waiter(
-        views::test::AnyWidgetTestPasskey{},
-        bookmarks::kReplaceOrCreateGroupDialogName);
-
-    bookmarks::OpenAllIfAllowed(browser(), {folder},
-                                WindowOpenDisposition::NEW_BACKGROUND_TAB,
-                                bookmarks::OpenAllBookmarksContext::kInGroup);
-
-    views::Widget* dialog_widget = waiter.WaitIfNeededAndGet();
-    ASSERT_NE(nullptr, dialog_widget);
-
-    // Find and check the checkbox.
-    const ui::ElementContext context =
-        views::ElementTrackerViews::GetContextForView(
-            dialog_widget->GetContentsView());
-    views::Checkbox* checkbox =
-        views::ElementTrackerViews::GetInstance()
-            ->GetUniqueViewAs<views::Checkbox>(
-                kBookmarkReplaceOldGroupCheckboxId, context);
-    CHECK(checkbox);
-    ui::MouseEvent released_event(ui::EventType::kMouseReleased, gfx::PointF(),
-                                  gfx::PointF(), base::TimeTicks(), 0, 0);
-    views::test::ButtonTestApi(checkbox).NotifyClick(released_event);
-
-    dialog_widget->widget_delegate()->AsDialogDelegate()->Accept();
-  }
-
-  EXPECT_EQ(1, user_action_tester.GetActionCount(
-                   "BookmarkTabGroupConversion_UserSelectReplaceOldGroup"));
-
-  // Verify group1 has the updated URLs.
-  auto saved_tab_group1 = tab_group_service->GetGroup(
-      browser()->tab_strip_model()->group_model()->ListTabGroups()[0]);
-  ASSERT_TRUE(saved_tab_group1.has_value());
-  ASSERT_EQ(2u, saved_tab_group1->saved_tabs().size());
-  ASSERT_EQ(GURL(chrome::kChromeUIExtensionsURL),
-            saved_tab_group1->saved_tabs()[0].url());
-  ASSERT_EQ(GURL(chrome::kChromeUIVersionURL),
-            saved_tab_group1->saved_tabs()[1].url());
+  EXPECT_EQ(1, tab_strip_model->count());
 }
 
-IN_PROC_BROWSER_TEST_F(BookmarkBrowsertest, OpenAllBookmarks) {
-  Browser* regular_browser = browser();
+}  // namespace
+
+IN_PROC_BROWSER_TEST_F(BookmarkBrowsertest, OpenAllFromRegular_NewTab) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+  BrowserWindowInterface* regular_browser = browser();
   BookmarkModel* bookmark_model =
-      WaitForBookmarkModel(regular_browser->profile());
+      WaitForBookmarkModel(regular_browser->GetProfile());
   const BookmarkNode* const bbar = bookmark_model->bookmark_bar_node();
   ASSERT_TRUE(bbar->children().empty());
 
-  Browser* incognito_browser = CreateIncognitoBrowser();
-  BookmarkModel* incognito_model =
-      WaitForBookmarkModel(incognito_browser->profile());
-  const BookmarkNode* const incognito_bbar =
-      incognito_model->bookmark_bar_node();
+  // In regular mode, all URLs are allowed so bookmark ordering does not affect
+  // disposition filtering.
+  PopulateBookmarks(bookmark_model, bbar, BookmarkOrder::kDisallowedFirst,
+                    embedded_test_server()->GetURL("/title1.html"),
+                    embedded_test_server()->GetURL("/title2.html"));
 
-  auto close_all_tabs_except_first = [](Browser* browser) {
-    int num_tabs = browser->tab_strip_model()->count();
-    for (int i = 0; i < num_tabs - 1; ++i) {
-      browser->tab_strip_model()->CloseWebContentsAt(num_tabs - 1 - i, 0);
-    }
-    EXPECT_EQ(1, browser->tab_strip_model()->count());
-  };
+  EXPECT_EQ(1, regular_browser->GetTabStripModel()->count());
+  bookmarks::OpenAllIfAllowed(regular_browser, {bbar},
+                              WindowOpenDisposition::NEW_BACKGROUND_TAB);
+  EXPECT_EQ(5, regular_browser->GetTabStripModel()->count());
+  bookmark_model->RemoveAllUserBookmarks(FROM_HERE);
+}
 
-  auto open_urls_and_test = [&regular_browser, &incognito_browser, &bbar,
-                             &close_all_tabs_except_first, this]() {
-    // open all in new tab from regular browser
-    {
-      close_all_tabs_except_first(regular_browser);
-      close_all_tabs_except_first(incognito_browser);
-      bookmarks::OpenAllIfAllowed(regular_browser, {bbar},
-                                  WindowOpenDisposition::NEW_BACKGROUND_TAB);
-      int num_tabs_regular = regular_browser->tab_strip_model()->count();
-      int num_tabs_incognito = incognito_browser->tab_strip_model()->count();
-      EXPECT_EQ(num_tabs_regular, 5);
-      EXPECT_EQ(num_tabs_incognito, 1);
-    }
+IN_PROC_BROWSER_TEST_F(BookmarkBrowsertest, OpenAllFromRegular_NewWindow) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+  BrowserWindowInterface* regular_browser = browser();
+  BookmarkModel* bookmark_model =
+      WaitForBookmarkModel(regular_browser->GetProfile());
+  const BookmarkNode* const bbar = bookmark_model->bookmark_bar_node();
+  ASSERT_TRUE(bbar->children().empty());
 
-    // open all in a new window from regular browser
-    {
-      close_all_tabs_except_first(regular_browser);
-      close_all_tabs_except_first(incognito_browser);
-      bookmarks::OpenAllIfAllowed(regular_browser, {bbar},
-                                  WindowOpenDisposition::NEW_WINDOW);
-      BrowserWindowInterface* regular_browser2 = nullptr;
-      ForEachCurrentBrowserWindowInterfaceOrderedByActivation(
-          [&](BrowserWindowInterface* browser) {
-            if (browser != incognito_browser && browser != regular_browser) {
-              regular_browser2 = browser;
-            }
-            return !regular_browser2;
-          });
-      // new browser needs to be opened
-      EXPECT_NE(regular_browser2, nullptr);
-      int num_tabs_regular = regular_browser->tab_strip_model()->count();
-      int num_tabs_regular2 = regular_browser2->GetTabStripModel()->count();
-      EXPECT_EQ(num_tabs_regular, 1);
-      EXPECT_EQ(num_tabs_regular2, 4);
-      CloseBrowserSynchronously(regular_browser2);
-    }
+  // In regular mode, all URLs are allowed so bookmark ordering does not affect
+  // disposition filtering.
+  PopulateBookmarks(bookmark_model, bbar, BookmarkOrder::kDisallowedFirst,
+                    embedded_test_server()->GetURL("/title1.html"),
+                    embedded_test_server()->GetURL("/title2.html"));
 
-    // open all in a new incognito window from regular browser
-    {
-      close_all_tabs_except_first(regular_browser);
-      close_all_tabs_except_first(incognito_browser);
-      bookmarks::OpenAllIfAllowed(regular_browser, {bbar},
-                                  WindowOpenDisposition::OFF_THE_RECORD);
-      int num_tabs_incognito = incognito_browser->tab_strip_model()->count();
-      EXPECT_EQ(num_tabs_incognito, 3);
-    }
-  };
+  EXPECT_EQ(1, regular_browser->GetTabStripModel()->count());
+  bookmarks::OpenAllIfAllowed(regular_browser, {bbar},
+                              WindowOpenDisposition::NEW_WINDOW);
 
-  auto open_urls_from_incognito_and_test = [&regular_browser,
-                                            &incognito_browser, &incognito_bbar,
-                                            &close_all_tabs_except_first,
-                                            this]() {
-    // open all in new tab from incognito
-    {
-      close_all_tabs_except_first(regular_browser);
-      close_all_tabs_except_first(incognito_browser);
-      bookmarks::OpenAllIfAllowed(incognito_browser, {incognito_bbar},
-                                  WindowOpenDisposition::NEW_BACKGROUND_TAB);
-      int num_tabs_regular = regular_browser->tab_strip_model()->count();
-      int num_tabs_incognito = incognito_browser->tab_strip_model()->count();
-      EXPECT_EQ(num_tabs_regular, 3);
-      EXPECT_EQ(num_tabs_incognito, 3);
-    }
+  BrowserWindowInterface* regular_browser2 = nullptr;
+  ForEachCurrentBrowserWindowInterfaceOrderedByActivation(
+      [&](BrowserWindowInterface* browser_interface) {
+        if (browser_interface != regular_browser) {
+          regular_browser2 = browser_interface;
+        }
+        return !regular_browser2;
+      });
 
-    // open all in new window from incognito
-    {
-      close_all_tabs_except_first(regular_browser);
-      close_all_tabs_except_first(incognito_browser);
-      bookmarks::OpenAllIfAllowed(incognito_browser, {incognito_bbar},
-                                  WindowOpenDisposition::NEW_WINDOW);
-      BrowserWindowInterface* incognito_browser2 = nullptr;
-      ForEachCurrentBrowserWindowInterfaceOrderedByActivation(
-          [&](BrowserWindowInterface* browser) {
-            if (browser != incognito_browser && browser != regular_browser) {
-              incognito_browser2 = browser;
-            }
-            return !incognito_browser2;
-          });
-      // new browser needs to be opened
-      EXPECT_NE(incognito_browser2, nullptr);
-      int num_tabs_regular = regular_browser->tab_strip_model()->count();
-      int num_tabs_incognito = incognito_browser->tab_strip_model()->count();
-      int num_tabs_incognito2 = incognito_browser2->GetTabStripModel()->count();
-      EXPECT_EQ(num_tabs_regular, 3);
-      EXPECT_EQ(num_tabs_incognito, 1);
-      EXPECT_EQ(num_tabs_incognito2, 2);
-      CloseBrowserSynchronously(incognito_browser2);
-    }
-  };
+  ASSERT_NE(regular_browser2, nullptr);
+  EXPECT_EQ(1, regular_browser->GetTabStripModel()->count());
+  EXPECT_EQ(4, regular_browser2->GetTabStripModel()->count());
+  CloseBrowserSynchronously(regular_browser2);
+  bookmark_model->RemoveAllUserBookmarks(FROM_HERE);
+}
 
-  {
-    // Bookmark 4 pages, with the first and third one not being able to be
-    // opened in incognito mode
-    bookmark_model->AddURL(bbar, 0, u"Settings",
-                           GURL(chrome::kChromeUISettingsURL));
-    bookmark_model->AddURL(bbar, 1, u"Google", GURL("http://www.google.com"));
-    bookmark_model->AddURL(bbar, 2, u"Extensions",
-                           GURL(chrome::kChromeUIExtensionsURL));
-    bookmark_model->AddURL(bbar, 3, u"Gmail", GURL("http://mail.google.com"));
-    open_urls_and_test();
-    open_urls_from_incognito_and_test();
-    bookmark_model->RemoveAllUserBookmarks(FROM_HERE);
+IN_PROC_BROWSER_TEST_F(BookmarkBrowsertest, OpenAllFromRegular_Incognito) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+  BrowserWindowInterface* regular_browser = browser();
+  BookmarkModel* bookmark_model =
+      WaitForBookmarkModel(regular_browser->GetProfile());
+  const BookmarkNode* const bbar = bookmark_model->bookmark_bar_node();
+  ASSERT_TRUE(bbar->children().empty());
+
+  const GURL url1 = embedded_test_server()->GetURL("/title1.html");
+  const GURL url2 = embedded_test_server()->GetURL("/title2.html");
+
+  for (BookmarkOrder order :
+       {BookmarkOrder::kDisallowedFirst, BookmarkOrder::kAllowedFirst}) {
+    PopulateBookmarks(bookmark_model, bbar, order, url1, url2);
+
+    BrowserWindowInterface* incognito_browser = CreateIncognitoBrowser();
+    EXPECT_EQ(1, regular_browser->GetTabStripModel()->count());
+    EXPECT_EQ(1, incognito_browser->GetTabStripModel()->count());
+
+    bookmarks::OpenAllIfAllowed(regular_browser, {bbar},
+                                WindowOpenDisposition::OFF_THE_RECORD);
+    EXPECT_EQ(1, regular_browser->GetTabStripModel()->count());
+    EXPECT_EQ(3, incognito_browser->GetTabStripModel()->count());
+
+    CloseBrowserSynchronously(incognito_browser);
   }
-  {
-    // Bookmark 4 pages, with the second and fourth one not being able to be
-    // opened in incognito mode
-    bookmark_model->AddURL(bbar, 0, u"Google", GURL("http://www.google.com"));
-    bookmark_model->AddURL(bbar, 1, u"Settings",
-                           GURL(chrome::kChromeUISettingsURL));
-    bookmark_model->AddURL(bbar, 2, u"Gmail", GURL("http://mail.google.com"));
-    bookmark_model->AddURL(bbar, 3, u"Extensions",
-                           GURL(chrome::kChromeUIExtensionsURL));
-    open_urls_and_test();
-    open_urls_from_incognito_and_test();
-    bookmark_model->RemoveAllUserBookmarks(FROM_HERE);
+  bookmark_model->RemoveAllUserBookmarks(FROM_HERE);
+}
+
+IN_PROC_BROWSER_TEST_F(BookmarkBrowsertest, OpenAllFromIncognito_NewTab) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+  BrowserWindowInterface* regular_browser = browser();
+  BookmarkModel* bookmark_model =
+      WaitForBookmarkModel(regular_browser->GetProfile());
+  const BookmarkNode* const bbar = bookmark_model->bookmark_bar_node();
+  ASSERT_TRUE(bbar->children().empty());
+
+  const GURL url1 = embedded_test_server()->GetURL("/title1.html");
+  const GURL url2 = embedded_test_server()->GetURL("/title2.html");
+
+  for (BookmarkOrder order :
+       {BookmarkOrder::kDisallowedFirst, BookmarkOrder::kAllowedFirst}) {
+    PopulateBookmarks(bookmark_model, bbar, order, url1, url2);
+
+    BrowserWindowInterface* incognito_browser = CreateIncognitoBrowser();
+    BookmarkModel* incognito_model =
+        WaitForBookmarkModel(incognito_browser->GetProfile());
+    const BookmarkNode* const incognito_bbar =
+        incognito_model->bookmark_bar_node();
+
+    EXPECT_EQ(1, regular_browser->GetTabStripModel()->count());
+    EXPECT_EQ(1, incognito_browser->GetTabStripModel()->count());
+
+    bookmarks::OpenAllIfAllowed(incognito_browser, {incognito_bbar},
+                                WindowOpenDisposition::NEW_BACKGROUND_TAB);
+    EXPECT_EQ(3, regular_browser->GetTabStripModel()->count());
+    EXPECT_EQ(3, incognito_browser->GetTabStripModel()->count());
+
+    CloseBrowserSynchronously(incognito_browser);
+    CloseAllTabsExceptFirst(regular_browser);
   }
+  bookmark_model->RemoveAllUserBookmarks(FROM_HERE);
+}
+
+IN_PROC_BROWSER_TEST_F(BookmarkBrowsertest, OpenAllFromIncognito_NewWindow) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+  BrowserWindowInterface* regular_browser = browser();
+  BookmarkModel* bookmark_model =
+      WaitForBookmarkModel(regular_browser->GetProfile());
+  const BookmarkNode* const bbar = bookmark_model->bookmark_bar_node();
+  ASSERT_TRUE(bbar->children().empty());
+
+  const GURL url1 = embedded_test_server()->GetURL("/title1.html");
+  const GURL url2 = embedded_test_server()->GetURL("/title2.html");
+
+  for (BookmarkOrder order :
+       {BookmarkOrder::kDisallowedFirst, BookmarkOrder::kAllowedFirst}) {
+    PopulateBookmarks(bookmark_model, bbar, order, url1, url2);
+
+    BrowserWindowInterface* incognito_browser = CreateIncognitoBrowser();
+    BookmarkModel* incognito_model =
+        WaitForBookmarkModel(incognito_browser->GetProfile());
+    const BookmarkNode* const incognito_bbar =
+        incognito_model->bookmark_bar_node();
+
+    EXPECT_EQ(1, regular_browser->GetTabStripModel()->count());
+    EXPECT_EQ(1, incognito_browser->GetTabStripModel()->count());
+
+    bookmarks::OpenAllIfAllowed(incognito_browser, {incognito_bbar},
+                                WindowOpenDisposition::NEW_WINDOW);
+
+    BrowserWindowInterface* incognito_browser2 = nullptr;
+    ForEachCurrentBrowserWindowInterfaceOrderedByActivation(
+        [&](BrowserWindowInterface* browser_interface) {
+          if (browser_interface != incognito_browser &&
+              browser_interface != regular_browser) {
+            incognito_browser2 = browser_interface;
+          }
+          return !incognito_browser2;
+        });
+
+    ASSERT_NE(incognito_browser2, nullptr);
+    EXPECT_EQ(3, regular_browser->GetTabStripModel()->count());
+    EXPECT_EQ(1, incognito_browser->GetTabStripModel()->count());
+    EXPECT_EQ(2, incognito_browser2->GetTabStripModel()->count());
+
+    CloseBrowserSynchronously(incognito_browser2);
+    CloseBrowserSynchronously(incognito_browser);
+    CloseAllTabsExceptFirst(regular_browser);
+  }
+  bookmark_model->RemoveAllUserBookmarks(FROM_HERE);
+}
+
+IN_PROC_BROWSER_TEST_F(BookmarkBrowsertest, OpenAllFiltersJavascriptURLs) {
+  BookmarkModel* bookmark_model = WaitForBookmarkModel(browser()->GetProfile());
+  const BookmarkNode* const folder = bookmark_model->AddFolder(
+      bookmark_model->bookmark_bar_node(), 0, u"Folder");
+
+  // Add a normal URL and a javascript: URL.
+  bookmark_model->AddURL(folder, 0, u"Normal URL",
+                         GURL("https://www.example.com"));
+  bookmark_model->AddURL(folder, 1, u"Script URL", GURL("javascript:alert()"));
+
+  ASSERT_EQ(1, browser()->GetTabStripModel()->count());
+
+  bookmarks::OpenAllIfAllowed(browser(), {folder},
+                              WindowOpenDisposition::NEW_BACKGROUND_TAB,
+                              bookmarks::OpenAllBookmarksContext::kNone);
+  EXPECT_EQ(2, browser()->GetTabStripModel()->count());
+  EXPECT_EQ(
+      GURL("https://www.example.com"),
+      browser()->GetTabStripModel()->GetWebContentsAt(1)->GetVisibleURL());
 }
 
 IN_PROC_BROWSER_TEST_F(BookmarkBrowsertest,
@@ -623,12 +561,12 @@ IN_PROC_BROWSER_TEST_F(BookmarkBrowsertest,
   ASSERT_TRUE(https_server.Start());
   ASSERT_TRUE(embedded_test_server()->Start());
 
-  BookmarkModel* bookmark_model = WaitForBookmarkModel(browser()->profile());
+  BookmarkModel* bookmark_model = WaitForBookmarkModel(browser()->GetProfile());
   GURL bookmark_url = embedded_test_server()->GetURL("example.test", "/");
   bookmarks::AddIfNotBookmarked(bookmark_model, bookmark_url, u"Bookmark");
 
   content::WebContents* web_contents =
-      browser()->tab_strip_model()->GetActiveWebContents();
+      browser()->GetTabStripModel()->GetActiveWebContents();
   BookmarkTabHelper* tab_helper =
       BookmarkTabHelper::FromWebContents(web_contents);
   TestBookmarkTabHelperObserver bookmark_observer(tab_helper);
@@ -642,7 +580,7 @@ IN_PROC_BROWSER_TEST_F(BookmarkBrowsertest,
   // star should disappear.
   GURL error_url = https_server.GetURL("/");
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), error_url));
-  web_contents = browser()->tab_strip_model()->GetActiveWebContents();
+  web_contents = browser()->GetTabStripModel()->GetActiveWebContents();
   EXPECT_TRUE(
       chrome_browser_interstitials::IsShowingInterstitial(web_contents));
   EXPECT_FALSE(bookmark_observer.is_starred());
@@ -651,7 +589,7 @@ IN_PROC_BROWSER_TEST_F(BookmarkBrowsertest,
 // Provides coverage for the Bookmark Manager bookmark drag and drag image
 // generation for dragging a single bookmark.
 IN_PROC_BROWSER_TEST_F(BookmarkBrowsertest, DragSingleBookmark) {
-  BookmarkModel* model = WaitForBookmarkModel(browser()->profile());
+  BookmarkModel* model = WaitForBookmarkModel(browser()->GetProfile());
   const std::u16string page_title(u"foo");
   const GURL page_url("http://www.google.com");
   const BookmarkNode* root = model->bookmark_bar_node();
@@ -682,10 +620,10 @@ IN_PROC_BROWSER_TEST_F(BookmarkBrowsertest, DragSingleBookmark) {
 
   constexpr int kDragNodeIndex = 0;
   chrome::DragBookmarksForTest(
-      browser()->profile(),
+      browser()->GetProfile(),
       {{node},
        kDragNodeIndex,
-       browser()->tab_strip_model()->GetActiveWebContents(),
+       browser()->GetTabStripModel()->GetActiveWebContents(),
        ui::mojom::DragEventSource::kMouse,
        expected_point},
       std::move(cb));
@@ -697,7 +635,7 @@ IN_PROC_BROWSER_TEST_F(BookmarkBrowsertest, DragSingleBookmark) {
 // passes if the favicon update does not cause a crash. (see
 // https://crbug.com/40865326)
 IN_PROC_BROWSER_TEST_F(BookmarkBrowsertest, FaviconChangeDuringBookmarkDrag) {
-  BookmarkModel* model = WaitForBookmarkModel(browser()->profile());
+  BookmarkModel* model = WaitForBookmarkModel(browser()->GetProfile());
   const std::u16string kPageTitle(u"foo");
   const GURL kPageUrl("http://www.google.com");
   const GURL kFaviconUrl("http://www.google.com/favicon.ico");
@@ -719,10 +657,10 @@ IN_PROC_BROWSER_TEST_F(BookmarkBrowsertest, FaviconChangeDuringBookmarkDrag) {
 
   constexpr int kDragNodeIndex = 0;
   chrome::DragBookmarksForTest(
-      browser()->profile(),
+      browser()->GetProfile(),
       {{node},
        kDragNodeIndex,
-       browser()->tab_strip_model()->GetActiveWebContents(),
+       browser()->GetTabStripModel()->GetActiveWebContents(),
        ui::mojom::DragEventSource::kMouse,
        kExpectedPoint},
       std::move(cb));
@@ -733,7 +671,7 @@ IN_PROC_BROWSER_TEST_F(BookmarkBrowsertest, FaviconChangeDuringBookmarkDrag) {
 // Provides coverage for the Bookmark Manager bookmark drag and drag image
 // generation for dragging multiple bookmarks.
 IN_PROC_BROWSER_TEST_F(BookmarkBrowsertest, DragMultipleBookmarks) {
-  BookmarkModel* model = WaitForBookmarkModel(browser()->profile());
+  BookmarkModel* model = WaitForBookmarkModel(browser()->GetProfile());
   const std::u16string page_title = u"foo";
   const GURL page_url("http://www.google.com");
   const BookmarkNode* root = model->bookmark_bar_node();
@@ -769,11 +707,11 @@ IN_PROC_BROWSER_TEST_F(BookmarkBrowsertest, DragMultipleBookmarks) {
 
   constexpr int kDragNodeIndex = 1;
   chrome::DragBookmarksForTest(
-      browser()->profile(),
+      browser()->GetProfile(),
       {
           {node1, node2},
           kDragNodeIndex,
-          browser()->tab_strip_model()->GetActiveWebContents(),
+          browser()->GetTabStripModel()->GetActiveWebContents(),
           ui::mojom::DragEventSource::kMouse,
           expected_point,
       },
@@ -783,7 +721,7 @@ IN_PROC_BROWSER_TEST_F(BookmarkBrowsertest, DragMultipleBookmarks) {
 }
 
 IN_PROC_BROWSER_TEST_F(BookmarkBrowsertest, PRE_EmitUmaForTimeMetrics) {
-  BookmarkModel* bookmark_model = WaitForBookmarkModel(browser()->profile());
+  BookmarkModel* bookmark_model = WaitForBookmarkModel(browser()->GetProfile());
   const BookmarkNode* parent = bookmarks::GetParentForNewNodes(bookmark_model);
   const BookmarkNode* other_parent =
       bookmark_model->AddFolder(parent, 0, u"Folder");
@@ -807,7 +745,7 @@ IN_PROC_BROWSER_TEST_F(BookmarkBrowsertest, PRE_EmitUmaForTimeMetrics) {
 }
 
 IN_PROC_BROWSER_TEST_F(BookmarkBrowsertest, EmitUmaForTimeMetrics) {
-  WaitForBookmarkModel(browser()->profile());
+  WaitForBookmarkModel(browser()->GetProfile());
 
   // The total number of bookmarks is 7, but it gets rounded down due to
   // bucketing.
@@ -821,7 +759,7 @@ IN_PROC_BROWSER_TEST_F(BookmarkBrowsertest, EmitUmaForTimeMetrics) {
 }
 
 IN_PROC_BROWSER_TEST_F(BookmarkBrowsertest, PRE_EmitUmaForMostRecentlyUsed) {
-  BookmarkModel* bookmark_model = WaitForBookmarkModel(browser()->profile());
+  BookmarkModel* bookmark_model = WaitForBookmarkModel(browser()->GetProfile());
   BookmarkNode* parent = const_cast<BookmarkNode*>(bookmark_model->AddFolder(
       bookmarks::GetParentForNewNodes(bookmark_model), 0, u"Test Folder"));
   parent->set_date_added(base::Time::Now() - base::Days(3));
@@ -840,7 +778,7 @@ IN_PROC_BROWSER_TEST_F(BookmarkBrowsertest, PRE_EmitUmaForMostRecentlyUsed) {
 }
 
 IN_PROC_BROWSER_TEST_F(BookmarkBrowsertest, EmitUmaForMostRecentlyUsed) {
-  WaitForBookmarkModel(browser()->profile());
+  WaitForBookmarkModel(browser()->GetProfile());
 
   EXPECT_THAT(
       histogram_tester()->GetAllSamples(
@@ -859,7 +797,7 @@ IN_PROC_BROWSER_TEST_F(BookmarkBrowsertest, EmitUmaForMostRecentlyUsed) {
 
 IN_PROC_BROWSER_TEST_F(BookmarkBrowsertest,
                        EmitUmaForMostRecentlyUsed_NoBookmarks) {
-  WaitForBookmarkModel(browser()->profile());
+  WaitForBookmarkModel(browser()->GetProfile());
 
   EXPECT_THAT(
       histogram_tester()->GetAllSamples(
@@ -881,12 +819,12 @@ IN_PROC_BROWSER_TEST_F(BookmarkBrowsertest,
 IN_PROC_BROWSER_TEST_F(BookmarkBrowsertest, SameDocumentNavigation) {
   ASSERT_TRUE(embedded_test_server()->Start());
 
-  BookmarkModel* bookmark_model = WaitForBookmarkModel(browser()->profile());
+  BookmarkModel* bookmark_model = WaitForBookmarkModel(browser()->GetProfile());
   GURL bookmark_url = embedded_test_server()->GetURL("/title1.html");
   bookmarks::AddIfNotBookmarked(bookmark_model, bookmark_url, u"Bookmark");
 
   content::WebContents* web_contents =
-      browser()->tab_strip_model()->GetActiveWebContents();
+      browser()->GetTabStripModel()->GetActiveWebContents();
   BookmarkTabHelper* tab_helper =
       BookmarkTabHelper::FromWebContents(web_contents);
   TestBookmarkTabHelperObserver bookmark_observer(tab_helper);
@@ -903,12 +841,12 @@ IN_PROC_BROWSER_TEST_F(BookmarkBrowsertest,
                        DifferentDocumentNavigationWithoutFinishing) {
   ASSERT_TRUE(embedded_test_server()->Start());
 
-  BookmarkModel* bookmark_model = WaitForBookmarkModel(browser()->profile());
+  BookmarkModel* bookmark_model = WaitForBookmarkModel(browser()->GetProfile());
   GURL bookmark_url = embedded_test_server()->GetURL("/title1.html");
   bookmarks::AddIfNotBookmarked(bookmark_model, bookmark_url, u"Bookmark");
 
   content::WebContents* web_contents =
-      browser()->tab_strip_model()->GetActiveWebContents();
+      browser()->GetTabStripModel()->GetActiveWebContents();
   BookmarkTabHelper* tab_helper =
       BookmarkTabHelper::FromWebContents(web_contents);
   TestBookmarkTabHelperObserver bookmark_observer(tab_helper);
@@ -933,12 +871,12 @@ IN_PROC_BROWSER_TEST_F(BookmarkBrowsertest,
 IN_PROC_BROWSER_TEST_F(BookmarkBrowsertest, NonCommitURLNavigation) {
   ASSERT_TRUE(embedded_test_server()->Start());
 
-  BookmarkModel* bookmark_model = WaitForBookmarkModel(browser()->profile());
+  BookmarkModel* bookmark_model = WaitForBookmarkModel(browser()->GetProfile());
   GURL bookmark_url = embedded_test_server()->GetURL("/title1.html");
   bookmarks::AddIfNotBookmarked(bookmark_model, bookmark_url, u"Bookmark");
 
   content::WebContents* web_contents =
-      browser()->tab_strip_model()->GetActiveWebContents();
+      browser()->GetTabStripModel()->GetActiveWebContents();
   BookmarkTabHelper* tab_helper =
       BookmarkTabHelper::FromWebContents(web_contents);
   TestBookmarkTabHelperObserver bookmark_observer(tab_helper);
@@ -967,7 +905,7 @@ IN_PROC_BROWSER_TEST_F(BookmarkBrowsertest, NonCommitURLNavigation) {
 IN_PROC_BROWSER_TEST_F(BookmarkBrowsertest,
                        BookmarkCurrentTab_WithoutAccountNodes) {
   ASSERT_TRUE(embedded_test_server()->Start());
-  BookmarkModel* bookmark_model = WaitForBookmarkModel(browser()->profile());
+  BookmarkModel* bookmark_model = WaitForBookmarkModel(browser()->GetProfile());
 
   // If no folders have been modified, bookmarks are saved to other bookmarks by
   // default.
@@ -995,7 +933,7 @@ IN_PROC_BROWSER_TEST_F(BookmarkBrowsertest,
 IN_PROC_BROWSER_TEST_F(BookmarkBrowsertest,
                        BookmarkCurrentTab_WithAccountNodes) {
   ASSERT_TRUE(embedded_test_server()->Start());
-  BookmarkModel* bookmark_model = WaitForBookmarkModel(browser()->profile());
+  BookmarkModel* bookmark_model = WaitForBookmarkModel(browser()->GetProfile());
   bookmark_model->CreateAccountPermanentFolders();
 
   // If no folders have been modified, bookmarks are saved to account other
@@ -1048,7 +986,7 @@ class BookmarkPrerenderBrowsertest : public BookmarkBrowsertest {
   }
 
   content::WebContents* GetWebContents() {
-    return browser()->tab_strip_model()->GetActiveWebContents();
+    return browser()->GetTabStripModel()->GetActiveWebContents();
   }
 
  private:
@@ -1060,7 +998,7 @@ IN_PROC_BROWSER_TEST_F(BookmarkPrerenderBrowsertest,
   GURL initial_url = embedded_test_server()->GetURL("/empty.html");
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), initial_url));
 
-  BookmarkModel* bookmark_model = WaitForBookmarkModel(browser()->profile());
+  BookmarkModel* bookmark_model = WaitForBookmarkModel(browser()->GetProfile());
   GURL bookmark_url = embedded_test_server()->GetURL("/title1.html");
   bookmarks::AddIfNotBookmarked(bookmark_model, bookmark_url, u"Bookmark");
 

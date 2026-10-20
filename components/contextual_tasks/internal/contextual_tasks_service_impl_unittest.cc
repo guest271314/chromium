@@ -290,7 +290,8 @@ TEST_F(ContextualTasksServiceImplTest,
       identity_test_environment_.MakePrimaryAccountAvailable(
           "primary@example.com", signin::ConsentLevel::kSignin);
   identity_test_environment_.SetCookieAccounts(
-      {{primary_account_info.email, primary_account_info.gaia}});
+      {{std::string(primary_account_info.GetEmail()),
+        primary_account_info.GetGaiaId()}});
 
   ContextualTask task =
       service_->CreateTaskFromUrl(GURL("https://google.com?authuser=0"));
@@ -1338,6 +1339,51 @@ TEST_F(ContextualTasksServiceImplTest, GetContextualTaskForTab_NotFound) {
   std::optional<ContextualTask> recent_task =
       service_->GetContextualTaskForTab(tab_id);
   EXPECT_FALSE(recent_task.has_value());
+}
+
+TEST_F(ContextualTasksServiceImplTest, GetContextualTaskForTab_StickyEnabled) {
+  ScopedStickyConversationEnabledForTesting scoped_enabled(true);
+
+  ContextualTask task = service_->CreateTask();
+  base::Uuid task_id = task.GetTaskId();
+
+  service_->SetLastActiveTask(task_id);
+
+  SessionID tab_id = SessionID::FromSerializedValue(1);
+  std::optional<ContextualTask> result =
+      service_->GetContextualTaskForTab(tab_id);
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(result->GetTaskId(), task_id);
+}
+
+TEST_F(ContextualTasksServiceImplTest, GetContextualTaskForTab_StickyDisabled) {
+  ScopedStickyConversationEnabledForTesting scoped_enabled(false);
+
+  ContextualTask task = service_->CreateTask();
+  base::Uuid task_id = task.GetTaskId();
+
+  service_->SetLastActiveTask(task_id);
+
+  SessionID tab_id = SessionID::FromSerializedValue(1);
+  std::optional<ContextualTask> result =
+      service_->GetContextualTaskForTab(tab_id);
+  EXPECT_FALSE(result.has_value());
+}
+
+TEST_F(ContextualTasksServiceImplTest,
+       GetContextualTaskForTab_StickyClearedOnDelete) {
+  ScopedStickyConversationEnabledForTesting scoped_enabled(true);
+
+  ContextualTask task = service_->CreateTask();
+  base::Uuid task_id = task.GetTaskId();
+
+  service_->SetLastActiveTask(task_id);
+  service_->DeleteTask(task_id);
+
+  SessionID tab_id = SessionID::FromSerializedValue(1);
+  std::optional<ContextualTask> result =
+      service_->GetContextualTaskForTab(tab_id);
+  EXPECT_FALSE(result.has_value());
 }
 
 TEST_F(ContextualTasksServiceImplTest, DisassociateAllTabsFromTask) {

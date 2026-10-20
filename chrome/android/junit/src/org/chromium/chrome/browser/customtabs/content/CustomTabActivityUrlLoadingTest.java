@@ -4,11 +4,13 @@
 
 package org.chromium.chrome.browser.customtabs.content;
 
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.Mockito.clearInvocations;
 import static org.mockito.Mockito.doReturn;
-import static org.mockito.Mockito.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -29,9 +31,12 @@ import org.junit.runner.RunWith;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
-import org.robolectric.annotation.Config;
 
+import org.chromium.base.IntentUtils;
+import org.chromium.base.supplier.SupplierUtils;
 import org.chromium.base.test.BaseRobolectricTestRunner;
+import org.chromium.chrome.browser.ExternalIntentUrlChecker;
+import org.chromium.chrome.browser.ExternalIntentUrlCheckerJni;
 import org.chromium.chrome.browser.IntentHandler;
 import org.chromium.chrome.browser.IntentHandlerJni;
 import org.chromium.chrome.browser.autofill.AndroidAutofillAvailabilityStatus;
@@ -49,7 +54,6 @@ import org.chromium.url.Origin;
  * properly loaded in Custom Tabs in different conditions.
  */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 public class CustomTabActivityUrlLoadingTest {
     @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
 
@@ -63,15 +67,16 @@ public class CustomTabActivityUrlLoadingTest {
 
     @Mock private UserPrefsJni mMockUserPrefsJni;
     @Mock IntentHandler.Natives mIntentHandlerNativeMock;
+    @Mock ExternalIntentUrlChecker.Natives mExternalIntentUrlCheckerNativeMock;
 
     @Before
     public void setUp() {
-        Origin.setOpaqueOriginFactoryForTesting(() -> null);
+        Origin.setOpaqueOriginFactoryForTesting(SupplierUtils.ofNull());
         UserPrefsJni.setInstanceForTesting(mMockUserPrefsJni);
         doReturn(mock(PrefService.class)).when(mMockUserPrefsJni).get(any());
 
-        doReturn(true).when(mIntentHandlerNativeMock).validateLaunchUrl(eq(new GURL(INITIAL_URL)));
-        doReturn(true).when(mIntentHandlerNativeMock).validateLaunchUrl(eq(new GURL(OTHER_URL)));
+        ExternalIntentUrlCheckerJni.setInstanceForTesting(mExternalIntentUrlCheckerNativeMock);
+        doReturn(true).when(mExternalIntentUrlCheckerNativeMock).validateUrl(any());
         IntentHandlerJni.setInstanceForTesting(mIntentHandlerNativeMock);
 
         // Ensure the test can read the Autofill pref. Assume it's turned off by default.
@@ -178,6 +183,84 @@ public class CustomTabActivityUrlLoadingTest {
 
         verify(env.tabFromFactory, times(1)).loadUrl(any()); // Check that only one call was made.
         verify(env.tabFromFactory).loadUrl(argThat(params -> OTHER_URL.equals(params.getUrl())));
+    }
+
+    /**
+     * The sender of an intent can't be trusted, so an unattributed navigation must be made from an
+     * opaque origin rather than inheriting same-site cookies.
+     */
+    @Test
+    public void navigatesFromOpaqueOrigin_IfNoInitiatorOriginSpecified() {
+        Origin opaqueOrigin = mock(Origin.class);
+        Origin.setOpaqueOriginFactoryForTesting(() -> opaqueOrigin);
+        mTabController.setUpInitialTab(null);
+        mTabController.finishNativeInitialization();
+
+        LoadUrlParams params = new LoadUrlParams(OTHER_URL);
+        mNavigationController.navigate(params, new Intent());
+
+        assertEquals(opaqueOrigin, params.getInitiatorOrigin());
+    }
+
+    /**
+     * Regression test for crbug.com/40061291: callers that have verified the real initiator (e.g.
+     * TWA share targets, whose action is verified to be in the app's scope) set it themselves, and
+     * it must survive so that SameSite cookies are evaluated against it.
+     */
+    @Test
+    public void keepsInitiatorOrigin_IfSpecifiedByCaller() {
+        Origin.setOpaqueOriginFactoryForTesting(() -> mock(Origin.class));
+        Origin appOrigin = mock(Origin.class);
+        mTabController.setUpInitialTab(null);
+        mTabController.finishNativeInitialization();
+
+        LoadUrlParams params = new LoadUrlParams(OTHER_URL);
+        params.setInitiatorOrigin(appOrigin);
+        mNavigationController.navigate(params, new Intent());
+
+        assertEquals(appOrigin, params.getInitiatorOrigin());
+    }
+
+    @Test
+    public void skipsInitialLoad_WhenReparentingWithSkipLoadExtra() {
+        Tab transferredTab = env.prepareTransferredTab();
+        env.mIntent.putExtra(IntentHandler.EXTRA_SKIP_LOAD_ON_REPARENTING, true);
+
+        mTabController.setUpInitialTab(null);
+        mTabController.finishNativeInitialization();
+
+        assertTrue(
+                IntentUtils.safeGetBooleanExtra(
+                        env.mIntent, IntentHandler.EXTRA_SKIP_LOAD_ON_REPARENTING, false));
+        verify(transferredTab, never()).loadUrl(any());
+    }
+
+    @Test
+    public void loadsInitialUrl_WhenSkipLoadOnReparentingHasNoReparentingParams() {
+        env.mIntent.putExtra(IntentHandler.EXTRA_SKIP_LOAD_ON_REPARENTING, true);
+
+        mTabController.setUpInitialTab(null);
+        mTabController.finishNativeInitialization();
+
+        assertFalse(
+                IntentUtils.safeGetBooleanExtra(
+                        env.mIntent, IntentHandler.EXTRA_SKIP_LOAD_ON_REPARENTING, false));
+        verify(env.tabFromFactory).loadUrl(argThat(params -> INITIAL_URL.equals(params.getUrl())));
+    }
+
+    @Test
+    public void loadsUrlInHiddenTab_WithStaleSkipLoadOnReparentingExtra() {
+        Tab hiddenTab = env.prepareHiddenTab();
+        when(env.webContents.getLastCommittedUrl()).thenReturn(GURL.emptyGURL());
+        env.mIntent.putExtra(IntentHandler.EXTRA_SKIP_LOAD_ON_REPARENTING, true);
+
+        mTabController.setUpInitialTab(hiddenTab);
+        mTabController.finishNativeInitialization();
+
+        assertFalse(
+                IntentUtils.safeGetBooleanExtra(
+                        env.mIntent, IntentHandler.EXTRA_SKIP_LOAD_ON_REPARENTING, false));
+        verify(hiddenTab).loadUrl(any());
     }
 
     private CustomTabIntentDataProvider createDataProviderForNewIntent() {

@@ -110,7 +110,11 @@ class FakeSkiaOutputSurface : public SkiaOutputSurface {
   gpu::Mailbox CreateSolidColorSharedImage(
       const SkColor4f& color,
       const gfx::ColorSpace& color_space) override;
-  void DestroySharedImage(const gpu::Mailbox& mailbox) override {}
+  void DestroySharedImage(const gpu::Mailbox& mailbox) override;
+  const std::vector<gpu::Mailbox>& destroyed_mailboxes() const {
+    return destroyed_mailboxes_;
+  }
+  void clear_destroyed_mailboxes() { destroyed_mailboxes_.clear(); }
   void SetSharedImagePurgeable(const gpu::Mailbox& mailbox,
                                bool purgeable) override;
   bool SupportsBGRA() const override;
@@ -121,7 +125,6 @@ class FakeSkiaOutputSurface : public SkiaOutputSurface {
   std::unique_ptr<ImageContext> CreateImageContext(
       const TransferableResource& resource,
       bool concurrent_reads,
-      bool raw_draw_if_possible,
       uint32_t client_id) override;
 
   gpu::SharedImageInterface* GetSharedImageInterface();
@@ -143,6 +146,13 @@ class FakeSkiaOutputSurface : public SkiaOutputSurface {
     capabilities_.supports_delegated_ink = true;
   }
 
+  void SetRendererAllocatesImagesForTesting(bool allocates) {
+    capabilities_.renderer_allocates_images = allocates;
+    if (allocates) {
+      capabilities_.number_of_buffers = 3;
+    }
+  }
+
   gfx::DelegatedInkMetadata* last_delegated_ink_metadata() const {
     return last_delegated_ink_metadata_.get();
   }
@@ -159,7 +169,7 @@ class FakeSkiaOutputSurface : public SkiaOutputSurface {
     BUILDFLAG(USE_V4L2_CODEC)
   void DetileOverlay(gpu::Mailbox input,
                      const gfx::Size& input_visible_size,
-                     gpu::SyncToken input_sync_token,
+                     std::vector<gpu::SyncToken> input_sync_tokens,
                      gpu::Mailbox output,
                      const gfx::RectF& display_rect,
                      const gfx::RectF& crop_rect,
@@ -222,6 +232,7 @@ class FakeSkiaOutputSurface : public SkiaOutputSurface {
 
   sk_sp<GrDirectContext> gr_context_;
 
+  std::vector<gpu::Mailbox> destroyed_mailboxes_;
   base::WeakPtrFactory<FakeSkiaOutputSurface> weak_ptr_factory_{this};
 };
 

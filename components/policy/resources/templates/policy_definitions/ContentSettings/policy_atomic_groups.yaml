@@ -88,9 +88,6 @@ DirectSocketsSettings:
   - DefaultDirectSocketsSetting
   - DirectSocketsAllowedForUrls
   - DirectSocketsBlockedForUrls
-  - DefaultDirectSocketsPrivateNetworkAccessSetting
-  - DirectSocketsPrivateNetworkAccessAllowedForUrls
-  - DirectSocketsPrivateNetworkAccessBlockedForUrls
 ControlledFrameSettings:
   caption: Controlled Frame settings
   policies:
@@ -120,3 +117,9 @@ GeolocationSettings:
   - DefaultGeolocationSetting
   - PreciseGeolocationAllowedForUrls
   - GeolocationBlockedForUrls
+AutomaticDownloadsSettings:
+  caption: Automatic Downloads settings
+  policies:
+  - DefaultAutomaticDownloadsSetting
+  - AutomaticDownloadsAllowedForUrls
+  - AutomaticDownloadsBlockedForUrls

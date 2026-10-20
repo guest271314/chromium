@@ -9,6 +9,7 @@
 #include "chrome/browser/ui/webui/webui_embedding_context.h"
 #include "chrome/common/chrome_features.h"
 #include "components/tabs/public/tab_interface.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/render_widget_host_view.h"
 #include "content/public/browser/web_contents.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
@@ -46,6 +47,7 @@ void ActorOverlayWebView::ShowUI(tabs::TabInterface* tab,
   webui::SetTabInterface(web_contents(), tab);
 
   // Make the view background transparent so it can act as an overlay.
+  web_contents()->SetPageBaseBackgroundColor(SK_ColorTRANSPARENT);
   content::RenderWidgetHostView* rwhv =
       web_contents()->GetRenderWidgetHostView();
   if (rwhv) {
@@ -116,6 +118,12 @@ void ActorOverlayWebView::TriggerClickAnimation(base::OnceClosure callback) {
   }
 }
 
+void ActorOverlayWebView::SetCursorChip(const std::string& text) {
+  if (actor::ui::ActorOverlayUI* web_ui = GetWebUi()) {
+    web_ui->SetCursorChip(text);
+  }
+}
+
 actor::ui::ActorOverlayUI* ActorOverlayWebView::GetWebUi() {
   if (!web_contents()) {
     return nullptr;
@@ -128,6 +136,12 @@ actor::ui::ActorOverlayUI* ActorOverlayWebView::GetWebUi() {
 }
 
 void ActorOverlayWebView::PrimaryPageChanged(content::Page& page) {
+  content::RenderWidgetHostView* rwhv =
+      web_contents()->GetRenderWidgetHostView();
+  if (rwhv) {
+    rwhv->SetBackgroundColor(SK_ColorTRANSPARENT);
+  }
+
   if (pending_webui_init_callbacks_.empty()) {
     return;
   }

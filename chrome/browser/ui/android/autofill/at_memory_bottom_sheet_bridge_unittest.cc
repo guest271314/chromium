@@ -6,7 +6,11 @@
 
 #include <memory>
 
-#include "chrome/browser/autofill/android/at_memory_bottom_sheet_delegate.h"
+#include "base/test/scoped_feature_list.h"
+#include "chrome/browser/ui/autofill/at_memory_suggestion_controller.h"
+#include "chrome/test/base/testing_profile.h"
+#include "components/autofill/core/common/autofill_test_util.h"
+#include "content/public/test/browser_task_environment.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/android/window_android.h"
@@ -14,8 +18,16 @@
 namespace autofill {
 namespace {
 
-class MockAtMemoryBottomSheetDelegate : public AtMemoryBottomSheetDelegate {
+class MockAtMemorySuggestionController : public AtMemorySuggestionController {
  public:
+  MockAtMemorySuggestionController()
+      : AtMemorySuggestionController(
+            nullptr,
+            nullptr,
+            PopupControllerCommon(test::MakeFormGlobalId(),
+                                  test::MakeFieldGlobalId(),
+                                  gfx::RectF(),
+                                  base::i18n::UNKNOWN_DIRECTION)) {}
   MOCK_METHOD(void, OnDismissed, (), (override));
 };
 
@@ -23,19 +35,47 @@ class AtMemoryBottomSheetBridgeTest : public testing::Test {
  protected:
   void SetUp() override {
     window_ = ui::WindowAndroid::CreateForTesting();
-    bridge_ = std::make_unique<AtMemoryBottomSheetBridge>(window_->get());
+    controller_ = std::make_unique<MockAtMemorySuggestionController>();
+    bridge_ = std::make_unique<AtMemoryBottomSheetBridge>(
+        window_->get(), &profile_, controller_.get());
   }
 
+  content::BrowserTaskEnvironment task_environment_;
+  autofill::test::AutofillUnitTestEnvironment autofill_environment_;
+  TestingProfile profile_;
   std::unique_ptr<ui::WindowAndroid::ScopedWindowAndroidForTesting> window_;
+  std::unique_ptr<MockAtMemorySuggestionController> controller_;
   std::unique_ptr<AtMemoryBottomSheetBridge> bridge_;
 };
 
 TEST_F(AtMemoryBottomSheetBridgeTest, OnDismissedCallsDelegate) {
-  auto delegate = std::make_unique<MockAtMemoryBottomSheetDelegate>();
-  MockAtMemoryBottomSheetDelegate* delegate_ptr = delegate.get();
+  EXPECT_CALL(*controller_, OnDismissed());
+  bridge_->OnDismissed(nullptr);
+}
 
-  EXPECT_CALL(*delegate_ptr, OnDismissed());
-  bridge_->RequestShowContent(std::move(delegate));
+TEST_F(AtMemoryBottomSheetBridgeTest, HideDoesNotCrash) {
+  bridge_->Hide();
+}
+
+TEST_F(AtMemoryBottomSheetBridgeTest, RequestShowContentWithChildren) {
+  Suggestion child(u"Child label", SuggestionType::kAtMemorySearchResult);
+  child.labels = {{Suggestion::Text(u"Child sublabel")}};
+  Suggestion parent(u"Parent label", SuggestionType::kAtMemorySearchResult);
+  parent.labels = {{Suggestion::Text(u"Parent sublabel")}};
+  parent.children = {std::move(child)};
+
+  EXPECT_CALL(*controller_, OnDismissed());
+  bridge_->RequestShowContent({parent}, std::nullopt);
+}
+
+TEST_F(AtMemoryBottomSheetBridgeTest, RequestShowContentWithAtMemoryPayload) {
+  Suggestion suggestion(u"Passport", SuggestionType::kAtMemorySearchResult);
+  suggestion.labels = {{Suggestion::Text(u"Passport sublabel")}};
+  suggestion.payload =
+      Suggestion::AtMemoryPayload(u"Passport", MemoryDataType::kPassportNumber);
+
+  EXPECT_CALL(*controller_, OnDismissed());
+  bridge_->RequestShowContent({suggestion}, std::nullopt);
 }
 
 }  // namespace

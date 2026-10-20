@@ -73,7 +73,7 @@ static ScopedJavaLocalRef<jobject>
 JNI_DownloadManagerService_CreateJavaDownloadItem(
     JNIEnv* env,
     download::DownloadItem* item) {
-  DCHECK(!item->IsTransient());
+  CHECK(!item->IsTransient(), base::NotFatalUntil::M161);
   return Java_DownloadItem_createDownloadItem(
       env, DownloadManagerService::CreateJavaDownloadInfo(env, item),
       item->GetStartTime().InMillisecondsSinceUnixEpoch(),
@@ -248,12 +248,9 @@ void DownloadManagerService::OpenDownloadsPage(
     return;
 
   JNIEnv* env = base::android::AttachCurrentThread();
-  if (profile->IsIncognitoProfile()) {
-    profile->GetOTRProfileID().ConvertToJavaOTRProfileID(env);
-  }
   Java_DownloadManagerService_openDownloadsPage(
       env,
-      profile->IsIncognitoProfile()
+      profile->IsPrimaryOTRProfileWithRegularParent()
           ? profile->GetOTRProfileID().ConvertToJavaOTRProfileID(env)
           : nullptr,
       static_cast<int>(download_open_source));
@@ -338,22 +335,6 @@ void DownloadManagerService::GetAllDownloadsInternal(ProfileKey* profile_key) {
   Java_DownloadManagerService_onAllDownloadsRetrieved(
       env, java_ref_, j_download_item_list,
       profile_key->GetProfileKeyAndroid()->GetJavaObject());
-}
-
-void DownloadManagerService::CheckForExternallyRemovedDownloads(
-    JNIEnv* env,
-    const JavaRef<jobject>& j_profile_key) {
-  // Once the DownloadManager is initlaized, DownloadHistory will check for the
-  // removal of history files. If the history query is not yet complete, ignore
-  // requests to check for externally removed downloads.
-  if (!is_manager_initialized_)
-    return;
-
-  content::DownloadManager* manager = GetDownloadManager(
-      ProfileKeyAndroid::FromProfileKeyAndroid(j_profile_key));
-  if (!manager)
-    return;
-  manager->CheckForHistoryFilesRemoval();
 }
 
 void DownloadManagerService::UpdateLastAccessTime(
@@ -622,7 +603,7 @@ void DownloadManagerService::UpdateCoordinator(
 
 download::SimpleDownloadManagerCoordinator*
 DownloadManagerService::GetCoordinator(ProfileKey* profile_key) {
-  DCHECK(coordinators_.contains(profile_key));
+  CHECK(coordinators_.contains(profile_key), base::NotFatalUntil::M161);
   return coordinators_[profile_key];
 }
 

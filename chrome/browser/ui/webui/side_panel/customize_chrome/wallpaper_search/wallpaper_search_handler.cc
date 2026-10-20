@@ -15,6 +15,7 @@
 #include "base/base64.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
+#include "base/json/json_reader.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/strings/strcat.h"
 #include "base/task/sequenced_task_runner.h"
@@ -22,6 +23,7 @@
 #include "base/time/time.h"
 #include "base/timer/elapsed_timer.h"
 #include "base/token.h"
+#include "base/values.h"
 #include "chrome/browser/browser_features.h"
 #include "chrome/browser/feedback/show_feedback_page.h"
 #include "chrome/browser/optimization_guide/optimization_guide_keyed_service.h"
@@ -30,7 +32,6 @@
 #include "chrome/browser/search/background/wallpaper_search/wallpaper_search_background_manager.h"
 #include "chrome/browser/search/background/wallpaper_search/wallpaper_search_data.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/hats/hats_service_factory.h"
@@ -56,10 +57,10 @@
 #include "components/optimization_guide/proto/model_quality_service.pb.h"
 #include "components/prefs/pref_change_registrar.h"
 #include "components/search/ntp_features.h"
+#include "components/signin/public/identity_manager/identity_manager.h"
 #include "mojo/public/cpp/bindings/callback_helpers.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
 #include "net/traffic_annotation/network_traffic_annotation.h"
-#include "services/data_decoder/public/cpp/data_decoder.h"
 #include "services/network/public/cpp/resource_request.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "services/network/public/cpp/simple_url_loader.h"
@@ -67,6 +68,8 @@
 #include "skia/ext/skia_utils_base.h"
 #include "third_party/skia/include/core/SkBitmap.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/base/page_transition_types.h"
+#include "ui/base/window_open_disposition.h"
 #include "ui/gfx/codec/png_codec.h"
 #include "ui/gfx/geometry/size.h"
 #include "ui/gfx/image/image.h"
@@ -145,7 +148,6 @@ WallpaperSearchHandler::WallpaperSearchHandler(
     int64_t session_id,
     WallpaperSearchStringMap* string_map)
     : profile_(profile),
-      data_decoder_(std::make_unique<data_decoder::DataDecoder>()),
       image_decoder_(*image_decoder),
       wallpaper_search_background_manager_(
           *wallpaper_search_background_manager),
@@ -640,27 +642,17 @@ void WallpaperSearchHandler::OnDescriptorsRetrieved(
   if (remainder) {
     response = std::string(*remainder);
   }
-  data_decoder_->ParseJson(
-      response,
-      base::BindOnce(&WallpaperSearchHandler::OnDescriptorsJsonParsed,
-                     weak_ptr_factory_.GetWeakPtr(), std::move(callback)));
-}
-
-void WallpaperSearchHandler::OnDescriptorsJsonParsed(
-    GetDescriptorsCallback callback,
-    data_decoder::DataDecoder::ValueOrError result) {
-  if (!result.has_value() || !result->is_dict()) {
-    DVLOG(1) << "Parsing JSON failed: " << result.error();
+  std::optional<base::DictValue> dict =
+      base::JSONReader::ReadDict(response, base::JSON_PARSE_RFC);
+  if (!dict.has_value()) {
+    DVLOG(1) << "Parsing JSON failed.";
     std::move(callback).Run(nullptr);
     return;
   }
 
-  const base::ListValue* descriptor_a =
-      result->GetDict().FindList("descriptor_a");
-  const base::ListValue* descriptor_b =
-      result->GetDict().FindList("descriptor_b");
-  const base::ListValue* descriptor_c_labels =
-      result->GetDict().FindList("descriptor_c");
+  const base::ListValue* descriptor_a = dict->FindList("descriptor_a");
+  const base::ListValue* descriptor_b = dict->FindList("descriptor_b");
+  const base::ListValue* descriptor_c_labels = dict->FindList("descriptor_c");
   if (!descriptor_a || !descriptor_b || !descriptor_c_labels) {
     DVLOG(1) << "Parsing JSON failed: no valid descriptors.";
     std::move(callback).Run(nullptr);
@@ -829,23 +821,17 @@ void WallpaperSearchHandler::OnInspirationsRetrieved(
   if (remainder) {
     response = std::string(*remainder);
   }
-  data_decoder_->ParseJson(
-      response,
-      base::BindOnce(&WallpaperSearchHandler::OnInspirationsJsonParsed,
-                     weak_ptr_factory_.GetWeakPtr(), std::move(callback)));
-}
-
-void WallpaperSearchHandler::OnInspirationsJsonParsed(
-    GetInspirationsCallback callback,
-    data_decoder::DataDecoder::ValueOrError result) {
-  if (!result.has_value() || !result->is_list()) {
-    DVLOG(1) << "Parsing JSON failed: " << result.error();
+  std::optional<base::ListValue> list =
+      base::JSONReader::ReadList(response, base::JSON_PARSE_RFC);
+  if (!list.has_value()) {
+    DVLOG(1) << "Parsing JSON failed.";
     std::move(callback).Run(std::nullopt);
     return;
   }
+
   std::vector<side_panel::customize_chrome::mojom::InspirationGroupPtr>
       mojo_inspiration_groups;
-  for (const auto& inspiration : result->GetList()) {
+  for (const auto& inspiration : *list) {
     if (!inspiration.is_dict()) {
       continue;
     }

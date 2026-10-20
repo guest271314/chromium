@@ -9,6 +9,7 @@
 #include "base/time/time.h"
 #include "build/android_buildflags.h"
 #include "build/build_config.h"
+#include "extensions/buildflags/buildflags.h"
 
 namespace policy::features {
 
@@ -30,6 +31,9 @@ BASE_FEATURE(kUseCECFlagInPolicyData, base::FEATURE_ENABLED_BY_DEFAULT);
 #if BUILDFLAG(IS_ANDROID)
 BASE_FEATURE(kInitializePoliciesForSignedInUserInNewEntryPoints,
              base::FEATURE_ENABLED_BY_DEFAULT);
+
+BASE_FEATURE(kUseRestrictionsManagerInAppRestrictionsProvider,
+             base::FEATURE_DISABLED_BY_DEFAULT);
 #endif
 
 // Enables a configurable delay for policy registration.
@@ -41,11 +45,6 @@ const base::FeatureParam<base::TimeDelta> kPolicyRegistrationDelay{
 BASE_FEATURE(kSafeSitesCaptivePortalCheck, base::FEATURE_ENABLED_BY_DEFAULT);
 
 #if BUILDFLAG(IS_DESKTOP_ANDROID)
-// TODO(https://crbug.com/452666657): Remove this feature flag after launching
-// policies to supported on Android Desktop.
-BASE_FEATURE(kFuturePoliciesOnDesktopAndroid,
-             base::FEATURE_DISABLED_BY_DEFAULT);
-
 // A blocklist of policies to be blocked/ignored on Desktop Android.
 BASE_FEATURE(kDesktopAndroidPolicy, base::FEATURE_DISABLED_BY_DEFAULT);
 const base::FeatureParam<std::string> kDesktopAndroidPolicyBlocklist{
@@ -54,10 +53,10 @@ const base::FeatureParam<std::string> kDesktopAndroidPolicyBlocklist{
 
 // Used to enable extension install policy support.
 BASE_FEATURE(kEnableExtensionInstallPolicyFetching,
-#if BUILDFLAG(IS_CHROMEOS)
-             base::FEATURE_DISABLED_BY_DEFAULT);
-#else
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
              base::FEATURE_ENABLED_BY_DEFAULT);
+#else
+             base::FEATURE_DISABLED_BY_DEFAULT);
 #endif
 
 // When enabled, uses ManagementService to determine whether to honor sensitive
@@ -66,15 +65,46 @@ BASE_FEATURE(kEnableExtensionInstallPolicyFetching,
 BASE_FEATURE(kUseManagementServiceForSensitivePolicies,
              base::FEATURE_ENABLED_BY_DEFAULT);
 
+BASE_FEATURE(kFilterSensitivePoliciesOnWorkplaceJoinedDevices,
+             base::FEATURE_ENABLED_BY_DEFAULT);
+
 // Modifies behavior of policies utilizing URLBlocklistManager.
 // When enabled, bypasses the wildcard "*" in the blocklist for internal
 // chrome:// URLs such as chrome://ntp, chrome://bookmarks, etc.
 BASE_FEATURE(kBypassURLBlocklistWildcardForInternalChromeUrls,
              base::FEATURE_ENABLED_BY_DEFAULT);
 
+// Modifies behavior of policies utilizing URLBlocklistManager.
+// When enabled, downgrades the match level to neutral if the URL is allowed by
+// the wildcard '*' in the allowlist.
+BASE_FEATURE(kDowngradeURLAllowlistWildcardToNeutral,
+             base::FEATURE_ENABLED_BY_DEFAULT);
+
 BASE_FEATURE(kPolicyPageMojoMigration, base::FEATURE_DISABLED_BY_DEFAULT);
 
 BASE_FEATURE(kDeviceSignalsBackfillDisclaimer,
              base::FEATURE_DISABLED_BY_DEFAULT);
+const base::FeatureParam<bool> kClearDeviceSignalsPermissionOnStartup{
+    &kDeviceSignalsBackfillDisclaimer,
+    "clear_device_signals_permission_on_startup", false};
+
+BASE_FEATURE(kURLBlocklistOverridesIncognitoAllowlist,
+             base::FEATURE_ENABLED_BY_DEFAULT);
+
+BASE_FEATURE(kExportPlatformPoliciesJson, base::FEATURE_DISABLED_BY_DEFAULT);
+
+// When enabled, migrates user cloud management status and sign-in interception
+// policy fetching from the legacy SecureConnect endpoint to Device Management
+// Server.
+BASE_FEATURE(kMigrateSecureConnectApiToDmServer,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+const base::FeatureParam<base::TimeDelta>
+    kMigrateSecureConnectApiToDmServerFetchTimeout{
+        &kMigrateSecureConnectApiToDmServer, "fetch_timeout",
+        base::Seconds(10)};
+
+bool IsMigrateSecureConnectApiToDmServerEnabled() {
+  return base::FeatureList::IsEnabled(kMigrateSecureConnectApiToDmServer);
+}
 
 }  // namespace policy::features

@@ -10,6 +10,7 @@
 #include "base/functional/bind.h"
 #include "base/location.h"
 #include "base/task/sequenced_task_runner.h"
+#include "base/test/bind.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
@@ -213,10 +214,14 @@ class SecureChannelImplTest : public ::testing::Test {
   }
 
   void CreateSecureChannel(SecureChannel::ResponseCallback callback) {
+    established_called_ = false;
+    auto on_established =
+        base::BindLambdaForTesting([&]() { established_called_ = true; });
+
     secure_channel_ = std::make_unique<SecureChannelImpl>(
-        std::move(callback), std::move(transport_ptr_),
-        std::move(secure_session_ptr_), std::move(attestation_handler_ptr_),
-        &logger_);
+        std::move(on_established), std::move(callback),
+        std::move(transport_ptr_), std::move(secure_session_ptr_),
+        std::move(attestation_handler_ptr_), &logger_);
   }
 
   void SetUpAttestation();
@@ -238,6 +243,7 @@ class SecureChannelImplTest : public ::testing::Test {
   raw_ptr<FakeSecureSession> secure_session_;
   raw_ptr<MockAttestationHandler> attestation_handler_;
   Transport::ResponseCallback response_callback_;
+  bool established_called_ = false;
 };
 
 void SecureChannelImplTest::SetUpAttestation() {
@@ -318,6 +324,7 @@ TEST_F(SecureChannelImplTest, WriteAndEstablishConnectionSucceeds) {
       "PrivateAi.SecureChannel.GetHandshakeMessageLatency.Error", 0);
   histogram_tester_.ExpectTotalCount(
       "PrivateAi.SecureChannel.SendHandshakeRequestLatency.Error", 0);
+  EXPECT_TRUE(established_called_);
 }
 
 // Tests that a closed channel is reported through the response callback.
@@ -373,6 +380,7 @@ TEST_F(SecureChannelImplTest, AttestationErrorFailsWrite) {
       "PrivateAi.SecureChannel.GetHandshakeMessageLatency.Error", 0);
   histogram_tester_.ExpectTotalCount(
       "PrivateAi.SecureChannel.SendHandshakeRequestLatency.Error", 0);
+  EXPECT_FALSE(established_called_);
 }
 
 // Tests the case where attestation evidence conversion fails, leading to a
@@ -456,6 +464,38 @@ TEST_F(SecureChannelImplTest, TransportErrorDuringAttestationFailsRequest) {
       "PrivateAi.SecureChannel.GetHandshakeMessageLatency.Error", 0);
   histogram_tester_.ExpectTotalCount(
       "PrivateAi.SecureChannel.SendHandshakeRequestLatency.Error", 0);
+  EXPECT_FALSE(established_called_);
+}
+
+// Tests that a WebSocket connection failure during the attestation phase maps
+// to StatusCode::kNetworkError instead of StatusCode::kAttestationFailed.
+TEST_F(SecureChannelImplTest,
+       ConnectionFailedDuringAttestationFailsWithNetworkError) {
+  oak::session::v1::SessionRequest expected_attestation_request;
+  expected_attestation_request.mutable_attest_request();
+
+  EXPECT_CALL(*attestation_handler_, GetAttestationRequest())
+      .WillOnce(Return(expected_attestation_request.attest_request()));
+  EXPECT_CALL(*transport_,
+              Send(EqualsSessionRequest(expected_attestation_request)))
+      .WillOnce([&]() {
+        base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+            FROM_HERE, base::BindOnce(
+                           [](Transport::ResponseCallback cb) {
+                             cb.Run(base::unexpected(
+                                 Transport::TransportError::kConnectionFailed));
+                           },
+                           response_callback_));
+      });
+
+  base::test::TestFuture<base::expected<Response, StatusCode>> future;
+  CreateSecureChannel(future.GetRepeatingCallback());
+  EXPECT_TRUE(secure_channel_->Write(StringToBytes("secret request")));
+
+  const auto& result = future.Get();
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error(), StatusCode::kNetworkError);
+  EXPECT_FALSE(established_called_);
 }
 
 // Tests a transport-level error during the handshake phase of session
@@ -518,6 +558,7 @@ TEST_F(SecureChannelImplTest, TransportErrorDuringHandshakeFailsRequest) {
       "PrivateAi.SecureChannel.GetHandshakeMessageLatency.Success", 1);
   histogram_tester_.ExpectTotalCount(
       "PrivateAi.SecureChannel.SendHandshakeRequestLatency.Success", 0);
+  EXPECT_FALSE(established_called_);
 }
 
 // Tests a transport-level error after the session is established.
@@ -551,11 +592,52 @@ TEST_F(SecureChannelImplTest, TransportErrorAfterSessionEstablished) {
   ASSERT_FALSE(result.has_value());
   EXPECT_EQ(result.error(), StatusCode::kNetworkError);
 
-  histogram_tester_.ExpectTotalCount("PrivateAi.SecureChannel.SessionDuration",
+  histogram_tester_.ExpectTotalCount("PrivateAi.SecureChannel.SessionDuration2",
                                      1);
   histogram_tester_.ExpectUniqueSample(
       "PrivateAi.SecureChannel.RequestsPerSession", /*sample=*/1,
       /*expected_bucket_count=*/1);
+  EXPECT_TRUE(established_called_);
+}
+
+// Tests that a socket closed by server transport error in kEstablished state
+// maps to StatusCode::kConnectionClosedByServer.
+TEST_F(SecureChannelImplTest, TransportSocketClosedAfterSessionEstablished) {
+  SetUpAttestation();
+  SetUpHandshake();
+
+  oak::session::v1::SessionRequest expected_session_request;
+  {
+    oak::session::v1::EncryptedMessage encrypted_request;
+    encrypted_request.set_ciphertext("encrypted: secret request");
+    *expected_session_request.mutable_encrypted_message() = encrypted_request;
+  }
+
+  EXPECT_CALL(*transport_, Send(EqualsSessionRequest(expected_session_request)))
+      .WillOnce([&]() {
+        base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+            FROM_HERE, base::BindOnce(
+                           [](Transport::ResponseCallback cb) {
+                             cb.Run(base::unexpected(
+                                 Transport::TransportError::kSocketClosed));
+                           },
+                           response_callback_));
+      });
+
+  base::test::TestFuture<base::expected<Response, StatusCode>> future;
+  CreateSecureChannel(future.GetRepeatingCallback());
+  EXPECT_TRUE(secure_channel_->Write(StringToBytes("secret request")));
+
+  const auto& result = future.Get();
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error(), StatusCode::kConnectionClosedByServer);
+
+  histogram_tester_.ExpectTotalCount("PrivateAi.SecureChannel.SessionDuration2",
+                                     1);
+  histogram_tester_.ExpectUniqueSample(
+      "PrivateAi.SecureChannel.RequestsPerSession", /*sample=*/1,
+      /*expected_bucket_count=*/1);
+  EXPECT_TRUE(established_called_);
 }
 
 // Tests a failure in generating the initial attestation request.
@@ -583,6 +665,7 @@ TEST_F(SecureChannelImplTest, GetAttestationRequestFails) {
       "PrivateAi.SecureChannel.GetHandshakeMessageLatency.Error", 0);
   histogram_tester_.ExpectTotalCount(
       "PrivateAi.SecureChannel.SendHandshakeRequestLatency.Error", 0);
+  EXPECT_FALSE(established_called_);
 }
 
 // Tests that a response without an attestation response during attestation
@@ -667,6 +750,7 @@ TEST_F(SecureChannelImplTest, ProcessHandshakeResponseFails) {
       "PrivateAi.SecureChannel.GetHandshakeMessageLatency.Error", 0);
   histogram_tester_.ExpectTotalCount(
       "PrivateAi.SecureChannel.SendHandshakeRequestLatency.Success", 0);
+  EXPECT_FALSE(established_called_);
 }
 
 // Tests that a response without a handshake response during handshake fails.
@@ -783,6 +867,7 @@ TEST_F(SecureChannelImplTest, GetHandshakeMessageFails) {
 
   histogram_tester_.ExpectTotalCount(
       "PrivateAi.SecureChannel.GetHandshakeMessageLatency.Error", 1);
+  EXPECT_FALSE(established_called_);
 }
 
 // Tests that `Write` returns false if the channel is closed.

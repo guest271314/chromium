@@ -784,6 +784,25 @@ Usage: `[NotEnumerable]` can be specified on methods and attributes
 
 `[NotEnumerable]` indicates that the method or attribute is not enumerable.
 
+### [NotSubclassable]
+
+Summary: Disallows constructing subclasses of an interface.
+
+Usage: `[NotSubclassable]` can be specified on interfaces with a constructor.
+
+```webidl
+[Exposed=Window, NotSubclassable]
+interface XXX {
+  constructor();
+};
+```
+
+`[NotSubclassable]` makes the generated constructor reject `NewTarget`s
+that are not the interface's own constructor function, throwing a `TypeError("Illegal constructor")`.
+This forbids constructing subclasses with `class Foo extends XXX { ... }; new Foo()` (or equivalent
+`Reflect.construct` calls). The check only runs at construction time; existing
+instances may still be placed on the prototype chain of other objects.
+
 ### [PassAsSpan]
 
 Summary: Denotes that an argument should be passed as `base::span<const
@@ -1284,6 +1303,23 @@ interface NodeList {
 Setting this attribute makes the bindings generator create a callback that V8 would call on a fast path of [Array.prototype.indexOf](https://tc39.es/ecma262/#sec-array.prototype.indexof). Having such a callback avoids the need to materialize V8 wrappers and to cross V8-Blink boundary multiple times for every element in the collection.
 
 Only used in NodeList.idl to speed up the idiom of "attaching an event handler to elements matching a selector now or in the future, based on a root element". See, [example](https://source.chromium.org/chromium/chromium/src/+/435b391842a73b172749d98c4e051a80374d3a68:third_party/speedometer/v3.1/resources/todomvc/vanilla-examples/javascript-es5/src/helpers.js;l=24?q=%22Array.prototype.indexOf.call%28potentialElements,%20targetElement%29%22&ss=chromium%2Fchromium%2Fsrc).
+
+### [V8EnableIterableToList]
+
+Summary: `[V8EnableIterableToList]` enables fast single-shot iterable-to-list conversion for collections (e.g. `Array.from(nodeList)`).
+
+Usage: `[V8EnableIterableToList]` can be specified on [collection](https://dom.spec.whatwg.org/#concept-collection) interfaces:
+
+```webidl
+[V8EnableIterableToList]
+interface NodeList {
+  readonly attribute unsigned long length;
+  getter Node? item(unsigned long index);
+  ...
+};
+```
+
+Setting this attribute makes the bindings generator create an `IndexedPropertyIterableToListCallback` that V8 calls on a fast path of `IterableToList` (used by `Array.from`, array spread and function calls with spread arguments). Having such a callback materializes the whole `v8::Array` in a single C++ call, avoiding JS iterator allocation and multiple V8-Blink boundary crossings.
 
 ## Temporary Blink-specific IDL Extended Attributes
 

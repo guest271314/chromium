@@ -6,26 +6,22 @@
  * Library for generating and caching unique IDs for DOM nodes.
  */
 
+import {getOrCreateUniqueNodeId, hasUniqueNodeId, safeOwnerDocument} from '//components/autofill/ios/form_util/resources/unique_node_id.js';
+
 const DOM_NODE_ID_MANAGER_SYMBOL = Symbol.for('__gCrWebDomNodeIdManager');
 
 class DomNodeIdManager {
-  private readonly domNodeIdMap = new WeakMap<Node, number>();
   private readonly domNodeReverseMap = new Map<number, WeakRef<Node>>();
   private readonly domNodeRegistry = new FinalizationRegistry<number>((id) => {
     this.domNodeReverseMap.delete(id);
   });
-  private nextDomNodeId = 1;
 
   /**
    * Gets the ID for a node, creating one if it doesn't exist.
    */
   getOrCreateNodeId(node: Node): number {
-    let id = this.domNodeIdMap.get(node);
-    if (id === undefined) {
-      // Assign an ID to the node.
-      id = this.nextDomNodeId;
-      this.nextDomNodeId = id + 1;
-      this.domNodeIdMap.set(node, id);
+    const id = getOrCreateUniqueNodeId(node);
+    if (!this.domNodeReverseMap.has(id)) {
       this.domNodeReverseMap.set(id, new WeakRef(node));
       this.domNodeRegistry.register(node, id);
     }
@@ -36,7 +32,10 @@ class DomNodeIdManager {
    * Gets the ID for a node if it already exists.
    */
   getNodeId(node: Node): number|null {
-    return this.domNodeIdMap.get(node) ?? null;
+    if (hasUniqueNodeId(node)) {
+      return this.getOrCreateNodeId(node);
+    }
+    return null;
   }
 
   /**
@@ -74,8 +73,6 @@ function getManager(nodeWindow: Window): DomNodeIdManager {
   return nodeWindow[DOM_NODE_ID_MANAGER_SYMBOL];
 }
 
-// TODO(crbug.com/484985334): Look into using this for generating the IDs for
-// autofill. Both could use the same pool of IDs.
 /**
  * Gets the ID for a node, creating one if it doesn't exist.
  * Uses a global map and counter stored on the window tied to the `node`.
@@ -86,8 +83,7 @@ function getManager(nodeWindow: Window): DomNodeIdManager {
  */
 export function getOrCreateNodeId(node: Node): number|null {
   // Get the window tied to the node.
-  const nodeWindow =
-      (node instanceof Document ? node : node.ownerDocument)?.defaultView;
+  const nodeWindow = safeOwnerDocument(node)?.defaultView;
   if (!nodeWindow) {
     return null;
   }
@@ -103,8 +99,7 @@ export function getOrCreateNodeId(node: Node): number|null {
  * @return The ID for the node (>= 1), or null if it doesn't exist.
  */
 export function getNodeId(node: Node): number|null {
-  const nodeWindow =
-      (node instanceof Document ? node : node.ownerDocument)?.defaultView;
+  const nodeWindow = safeOwnerDocument(node)?.defaultView;
   if (!nodeWindow) {
     return null;
   }

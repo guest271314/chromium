@@ -6,6 +6,7 @@
 #define PARTITION_ALLOC_INTERNAL_PARTITION_ROOT_EXPORTS_H_
 
 #include "partition_alloc/partition_alloc_base/component_export.h"
+#include "partition_alloc/partition_alloc_public_constants.h"
 
 #if DEFINE_PARTITION_ROOT_EXPORT_TEMPLATE
 #define EXPORT_TEMPLATE \
@@ -17,54 +18,89 @@
       PA_COMPONENT_EXPORT(PARTITION_ALLOC))
 #endif
 
-EXPORT_TEMPLATE void* PartitionRoot::AllocInline<AllocFlags::kNone>(
-    size_t,
-    const char*);
-EXPORT_TEMPLATE void* PartitionRoot::AllocInline<AllocFlags::kNoHooks>(
-    size_t,
-    const char*);
-EXPORT_TEMPLATE void* PartitionRoot::AllocInline<AllocFlags::kZeroFill>(
-    size_t,
-    const char*);
-EXPORT_TEMPLATE void* PartitionRoot::AllocInline<
-    AllocFlags::kZeroFill | AllocFlags::kReturnNull>(size_t, const char*);
-EXPORT_TEMPLATE void*
-PartitionRoot::AllocInline<AllocFlags::kNoOverrideHooks |
-                           AllocFlags::kNoMemoryToolOverride>(size_t,
+EXPORT_TEMPLATE void* PartitionRoot::Alloc<AllocFlags::kNone>(size_t,
                                                               const char*);
-EXPORT_TEMPLATE void* PartitionRoot::AllocInline<
-    AllocFlags::kReturnNull | AllocFlags::kNoOverrideHooks |
+EXPORT_TEMPLATE void* PartitionRoot::Alloc<AllocFlags::kNoHooks>(size_t,
+                                                                 const char*);
+EXPORT_TEMPLATE void* PartitionRoot::Alloc<AllocFlags::kZeroFill>(size_t,
+                                                                  const char*);
+EXPORT_TEMPLATE void* PartitionRoot::Alloc<
+    AllocFlags::kZeroFill | AllocFlags::kReturnNull>(size_t, const char*);
+EXPORT_TEMPLATE void* PartitionRoot::Alloc<AllocFlags::kNoOverrideHooks |
+                                           AllocFlags::kNoMemoryToolOverride>(
+    size_t,
+    const char*);
+EXPORT_TEMPLATE void*
+PartitionRoot::Alloc<AllocFlags::kReturnNull | AllocFlags::kNoOverrideHooks |
+                     AllocFlags::kNoMemoryToolOverride>(size_t, const char*);
+EXPORT_TEMPLATE void*
+PartitionRoot::Alloc<AllocFlags::kReturnNull | AllocFlags::kZeroFill |
+                     AllocFlags::kNoOverrideHooks |
+                     AllocFlags::kNoMemoryToolOverride>(size_t, const char*);
+EXPORT_TEMPLATE void*
+PartitionRoot::Alloc<AllocFlags::kZeroFill | AllocFlags::kNoOverrideHooks |
+                     AllocFlags::kNoMemoryToolOverride>(size_t, const char*);
+EXPORT_TEMPLATE void* PartitionRoot::Alloc<AllocFlags::kReturnNull>(
+    size_t,
+    const char*);
+EXPORT_TEMPLATE void* PartitionRoot::Alloc<AllocFlags::kReturnNull |
+                                           AllocFlags::kNoHooks>(size_t,
+                                                                 const char*);
+EXPORT_TEMPLATE void*
+PartitionRoot::Alloc<AllocFlags::kZeroFill | AllocFlags::kNoHooks>(size_t,
+                                                                   const char*);
+EXPORT_TEMPLATE void*
+PartitionRoot::Alloc<AllocFlags::kReturnNull | AllocFlags::kZeroFill |
+                     AllocFlags::kNoHooks>(size_t, const char*);
+EXPORT_TEMPLATE void* PartitionRoot::Alloc<AllocFlags::kFastPathOrReturnNull>(
+    size_t,
+    const char*);
+EXPORT_TEMPLATE void*
+PartitionRoot::Alloc<AllocFlags::kNoHooks | AllocFlags::kNoOverrideHooks |
+                     AllocFlags::kNoMemoryToolOverride>(size_t, const char*);
+EXPORT_TEMPLATE void* PartitionRoot::Alloc<AllocFlags::kAllowGigaAllocations>(
+    size_t,
+    const char*);
+EXPORT_TEMPLATE void* PartitionRoot::Alloc<
+    AllocFlags::kAllowGigaAllocations | AllocFlags::kReturnNull>(size_t,
+                                                                 const char*);
+EXPORT_TEMPLATE void* PartitionRoot::Alloc<AllocFlags::kAllowGigaAllocations |
+                                           AllocFlags::kZeroFill>(size_t,
+                                                                  const char*);
+EXPORT_TEMPLATE void*
+PartitionRoot::Alloc<AllocFlags::kAllowGigaAllocations | AllocFlags::kZeroFill |
+                     AllocFlags::kReturnNull>(size_t, const char*);
+EXPORT_TEMPLATE void* PartitionRoot::Alloc<
+    AllocFlags::kAllowGigaAllocations | AllocFlags::kNoOverrideHooks |
     AllocFlags::kNoMemoryToolOverride>(size_t, const char*);
 EXPORT_TEMPLATE void*
-PartitionRoot::AllocInline<AllocFlags::kReturnNull | AllocFlags::kZeroFill |
-                           AllocFlags::kNoOverrideHooks |
-                           AllocFlags::kNoMemoryToolOverride>(size_t,
-                                                              const char*);
-EXPORT_TEMPLATE void* PartitionRoot::AllocInline<
+PartitionRoot::Alloc<AllocFlags::kAllowGigaAllocations |
+                     AllocFlags::kReturnNull | AllocFlags::kNoOverrideHooks |
+                     AllocFlags::kNoMemoryToolOverride>(size_t, const char*);
+EXPORT_TEMPLATE void*
+PartitionRoot::Alloc<AllocFlags::kAllowGigaAllocations | AllocFlags::kZeroFill |
+                     AllocFlags::kNoOverrideHooks |
+                     AllocFlags::kNoMemoryToolOverride>(size_t, const char*);
+EXPORT_TEMPLATE void* PartitionRoot::Alloc<
+    AllocFlags::kAllowGigaAllocations | AllocFlags::kReturnNull |
     AllocFlags::kZeroFill | AllocFlags::kNoOverrideHooks |
     AllocFlags::kNoMemoryToolOverride>(size_t, const char*);
-EXPORT_TEMPLATE void* PartitionRoot::AllocInline<AllocFlags::kReturnNull>(
-    size_t,
-    const char*);
-EXPORT_TEMPLATE void* PartitionRoot::AllocInline<
-    AllocFlags::kReturnNull | AllocFlags::kNoHooks>(size_t, const char*);
-EXPORT_TEMPLATE void* PartitionRoot::AllocInline<
-    AllocFlags::kZeroFill | AllocFlags::kNoHooks>(size_t, const char*);
-EXPORT_TEMPLATE void*
-PartitionRoot::AllocInline<AllocFlags::kReturnNull | AllocFlags::kZeroFill |
-                           AllocFlags::kNoHooks>(size_t, const char*);
-EXPORT_TEMPLATE void*
-PartitionRoot::AllocInline<AllocFlags::kFastPathOrReturnNull>(size_t,
-                                                              const char*);
-EXPORT_TEMPLATE void*
-PartitionRoot::AllocInline<AllocFlags::kNoHooks | AllocFlags::kNoOverrideHooks |
-                           AllocFlags::kNoMemoryToolOverride>(size_t,
-                                                              const char*);
+EXPORT_TEMPLATE void* PartitionRoot::Alloc<
+    AllocFlags::kNoHooks | AllocFlags::kNoOverrideHooks>(size_t, const char*);
 
 EXPORT_TEMPLATE void*
 PartitionRoot::Realloc<AllocFlags::kNone, FreeFlags::kNone>(void*,
                                                             size_t,
                                                             const char*);
+#if PA_BUILDFLAG(MEMORY_TOOL_REPLACES_ALLOCATOR)
+// Currently Realloc<AllocFlags::kZeroFill>() is used by only
+// PAMemoryToolReplacesTest. To avoid increasing the binary size, we don't
+// define the method without MEMORY_TOOL_REPLACES_ALLOCATOR.
+EXPORT_TEMPLATE void*
+PartitionRoot::Realloc<AllocFlags::kZeroFill, FreeFlags::kNone>(void*,
+                                                                size_t,
+                                                                const char*);
+#endif  // PA_BUILDFLAG(MEMORY_TOOL_REPLACES_ALLOCATOR)
 EXPORT_TEMPLATE void*
 PartitionRoot::Realloc<AllocFlags::kReturnNull, FreeFlags::kNone>(void*,
                                                                   size_t,
@@ -81,9 +117,19 @@ EXPORT_TEMPLATE void* PartitionRoot::Realloc<
     FreeFlags::kNoHooks | FreeFlags::kSchedulerLoopQuarantine>(void*,
                                                                size_t,
                                                                const char*);
+EXPORT_TEMPLATE void* PartitionRoot::Realloc<AllocFlags::kAllowGigaAllocations,
+                                             FreeFlags::kNone>(void*,
+                                                               size_t,
+                                                               const char*);
+EXPORT_TEMPLATE void* PartitionRoot::Realloc<
+    AllocFlags::kAllowGigaAllocations | AllocFlags::kReturnNull,
+    FreeFlags::kNone>(void*, size_t, const char*);
 
 EXPORT_TEMPLATE void* PartitionRoot::AlignedAlloc<AllocFlags::kNone>(size_t,
                                                                      size_t);
+EXPORT_TEMPLATE void* PartitionRoot::AlignedAlloc<AllocFlags::kReturnNull>(
+    size_t,
+    size_t);
 EXPORT_TEMPLATE void* PartitionRoot::AlignedAlloc<
     AllocFlags::kReturnNull | AllocFlags::kZeroFill>(size_t, size_t);
 EXPORT_TEMPLATE void* PartitionRoot::AlignedAlloc<AllocFlags::kNoHooks>(size_t,
@@ -91,6 +137,16 @@ EXPORT_TEMPLATE void* PartitionRoot::AlignedAlloc<AllocFlags::kNoHooks>(size_t,
 EXPORT_TEMPLATE void* PartitionRoot::AlignedAlloc<AllocFlags::kReturnNull |
                                                   AllocFlags::kNoHooks>(size_t,
                                                                         size_t);
+EXPORT_TEMPLATE void*
+PartitionRoot::AlignedAlloc<AllocFlags::kReturnNull | AllocFlags::kZeroFill |
+                            AllocFlags::kNoHooks>(size_t, size_t);
+EXPORT_TEMPLATE void*
+PartitionRoot::AlignedAlloc<AllocFlags::kAllowGigaAllocations>(size_t, size_t);
+EXPORT_TEMPLATE void* PartitionRoot::AlignedAlloc<
+    AllocFlags::kAllowGigaAllocations | AllocFlags::kReturnNull>(size_t,
+                                                                 size_t);
+EXPORT_TEMPLATE void* PartitionRoot::AlignedAlloc<
+    AllocFlags::kNoHooks | AllocFlags::kNoOverrideHooks>(size_t, size_t);
 
 EXPORT_TEMPLATE void PartitionRoot::FreeInline<FreeFlags::kNone>(void*);
 EXPORT_TEMPLATE void
@@ -101,8 +157,17 @@ EXPORT_TEMPLATE void
 PartitionRoot::FreeInline<FreeFlags::kSchedulerLoopQuarantine>(void*);
 EXPORT_TEMPLATE void PartitionRoot::FreeInline<FreeFlags::kNoHooks>(void*);
 EXPORT_TEMPLATE void PartitionRoot::FreeInline<
-    FreeFlags::kSchedulerLoopQuarantineForAdvancedMemorySafetyChecks>(void*);
+    FreeFlags::kSchedulerLoopQuarantineForSanitizedObject>(void*);
 EXPORT_TEMPLATE void PartitionRoot::FreeInline<FreeFlags::kIntendedLeak>(void*);
+EXPORT_TEMPLATE
+void PartitionRoot::FreeInline<FreeFlags::kNone>(void*, FreeSizeHint);
+EXPORT_TEMPLATE void PartitionRoot::FreeInline<FreeFlags::kNone>(
+    void*,
+    FreeSizeHint,
+    FreeAlignmentHint);
+EXPORT_TEMPLATE void PartitionRoot::FreeInline<FreeFlags::kIntendedLeak>(
+    void*,
+    FreeTypeIdHint);
 
 EXPORT_TEMPLATE void PartitionRoot::AlignedFree<FreeFlags::kNone>(void*);
 
@@ -113,24 +178,21 @@ EXPORT_TEMPLATE void PartitionRoot::FreeInUnknownRoot<
     FreeFlags::kNoHooks | FreeFlags::kSchedulerLoopQuarantine>(void*);
 
 EXPORT_TEMPLATE
-void PartitionRoot::FreeWithSize<FreeFlags::kNone>(void*, size_t);
+void PartitionRoot::FreeInUnknownRoot<FreeFlags::kNoHooks>(void*, FreeSizeHint);
 EXPORT_TEMPLATE
-void PartitionRoot::FreeWithSizeInUnknownRoot<FreeFlags::kNoHooks>(void*,
-                                                                   size_t);
+void PartitionRoot::FreeInUnknownRoot<
+    FreeFlags::kNoHooks | FreeFlags::kSchedulerLoopQuarantine>(void*,
+                                                               FreeSizeHint);
 EXPORT_TEMPLATE
-void PartitionRoot::FreeWithSizeInUnknownRoot<
-    FreeFlags::kNoHooks | FreeFlags::kSchedulerLoopQuarantine>(void*, size_t);
+void PartitionRoot::FreeInUnknownRoot<FreeFlags::kNoHooks>(void* object,
+                                                           FreeSizeHint,
+                                                           FreeAlignmentHint);
 EXPORT_TEMPLATE
-void PartitionRoot::FreeWithSizeAndAlignmentInUnknownRoot<FreeFlags::kNoHooks>(
+void PartitionRoot::FreeInUnknownRoot<FreeFlags::kNoHooks |
+                                      FreeFlags::kSchedulerLoopQuarantine>(
     void* object,
-    size_t size,
-    size_t alignment);
-EXPORT_TEMPLATE
-void PartitionRoot::FreeWithSizeAndAlignmentInUnknownRoot<
-    FreeFlags::kNoHooks | FreeFlags::kSchedulerLoopQuarantine>(
-    void* object,
-    size_t size,
-    size_t alignment);
+    FreeSizeHint,
+    FreeAlignmentHint);
 
 #undef EXPORT_TEMPLATE
 

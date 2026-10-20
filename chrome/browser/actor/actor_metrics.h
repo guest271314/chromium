@@ -10,12 +10,21 @@
 
 #include "chrome/browser/actor/actor_task.h"
 #include "chrome/browser/actor/execution_engine.h"
+#include "chrome/browser/glic/host/glic.mojom-shared.h"
 #include "chrome/common/actor.mojom.h"
 #include "components/actor/public/mojom/actor_types.mojom-forward.h"
 
-namespace optimization_guide::proto {
+namespace optimization_guide {
+enum class AIPageContentExtractionStatus;
+
+namespace proto {
 class ActionsResult;
-}  // namespace optimization_guide::proto
+}  // namespace proto
+}  // namespace optimization_guide
+
+namespace page_content_annotations {
+enum class ScreenshotCaptureStatus;
+}  // namespace page_content_annotations
 
 namespace actor {
 
@@ -55,11 +64,13 @@ void RecordActorTaskVisibilityDurationHistograms(
     ActorTask::StoppedReason stopped_reason);
 
 // Record task completion metrics.
-void RecordActorTaskCompletion(ActorTask::StoppedReason stopped_reason,
-                               base::TimeDelta total_time,
-                               base::TimeDelta controlled_time,
-                               size_t interruptions_count,
-                               size_t actions_count);
+void RecordActorTaskCompletion(
+    ActorTask::StoppedReason stopped_reason,
+    base::TimeDelta total_time,
+    base::TimeDelta controlled_time,
+    size_t interruptions_count,
+    size_t actions_count,
+    std::optional<glic::mojom::InvocationSource> invocation_source);
 
 // Recorded when a ActorTask is successfully created for the first time or not.
 void RecordActorTaskCreated(bool success);
@@ -70,8 +81,26 @@ void RecordActionResultCode(actor::mojom::ActionResultCode action_result_code);
 // Records the time spent fetching the APC for a PerformActions response.
 void RecordPageContextApcDuration(base::TimeDelta duration);
 
+// Histogram for tracking the outcome of an APC extraction for a PerformActions
+// response.
+inline constexpr std::string_view kActorPageContextApcStatus =
+    "Actor.PageContext.APC.Status";
+
+// Records the outcome of an APC extraction for a PerformActions response.
+void RecordPageContextApcStatus(
+    optimization_guide::AIPageContentExtractionStatus status);
+
 // Records the time spent fetching a screenshot for a PerformActions response.
 void RecordPageContextScreenshotDuration(base::TimeDelta duration);
+
+// Histogram for tracking the outcome of a screenshot capture for a
+// PerformActions response.
+inline constexpr std::string_view kActorPageContextScreenshotStatus =
+    "Actor.PageContext.Screenshot.Status";
+
+// Records the outcome of a screenshot capture for a PerformActions response.
+void RecordPageContextScreenshotStatus(
+    page_content_annotations::ScreenshotCaptureStatus status);
 
 // Records the number of tabs that were observed for a PerformActions response.
 void RecordPageContextTabCount(size_t tab_count);
@@ -104,6 +133,7 @@ void RecordObservationOutcomeHistogram(
 inline constexpr std::string_view kActorPageContextObservationOutcome =
     "Actor.PageContext.ObservationOutcome";
 
+// LINT.IfChange(ActorObservationOutcome)
 enum class ActorObservationOutcome {
   kSuccess,
   kSuccessAfterRetry,
@@ -111,6 +141,7 @@ enum class ActorObservationOutcome {
   kFailureAfterRetry,
   kMaxValue = kFailureAfterRetry,
 };
+// LINT.ThenChange(//tools/metrics/histograms/metadata/actor/enums.xml:ActorObservationOutcome)
 
 // Records the outcome of an post-performActions observation fetch.
 void RecordTabObservationResultHistogram(
@@ -121,6 +152,7 @@ void RecordTabObservationResultHistogram(
 inline constexpr std::string_view kActorPageContextTabObservationResult =
     "Actor.PageContext.TabObservationResult";
 
+// LINT.IfChange(ActorTabObservationResult)
 enum class ActorTabObservationResult {
   kSuccess,
   kTabWentAway,
@@ -135,6 +167,7 @@ enum class ActorTabObservationResult {
   kApcAndScreenshotNotOk,
   kMaxValue = kApcAndScreenshotNotOk,
 };
+// LINT.ThenChange(//tools/metrics/histograms/metadata/actor/enums.xml:ActorTabObservationResult)
 
 // LINT.IfChange(SplitModeTimeOfUseFrameStatus)
 enum class SplitModeTimeOfUseFrameStatus {

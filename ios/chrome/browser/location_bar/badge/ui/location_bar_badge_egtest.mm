@@ -9,7 +9,6 @@
 #import "components/feature_engagement/public/feature_constants.h"
 #import "components/omnibox/browser/omnibox_pref_names.h"
 #import "components/optimization_guide/core/hints/optimization_metadata.h"
-#import "components/optimization_guide/core/optimization_guide_switches.h"
 #import "components/optimization_guide/proto/contextual_cueing_metadata.pb.h"
 #import "components/optimization_guide/proto/hints.pb.h"
 #import "components/signin/internal/identity_manager/account_capabilities_constants.h"
@@ -20,7 +19,6 @@
 #import "ios/chrome/browser/intelligence/page_action_menu/utils/ai_hub_constants.h"
 #import "ios/chrome/browser/location_bar/badge/ui/location_bar_badge_constants.h"
 #import "ios/chrome/browser/optimization_guide/model/optimization_guide_test_app_interface.h"
-#import "ios/chrome/browser/reader_mode/model/features.h"
 #import "ios/chrome/browser/shared/model/prefs/pref_names.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/signin/model/fake_system_identity.h"
@@ -56,22 +54,19 @@ std::unique_ptr<net::test_server::HttpResponse> HandleRequest(
 @implementation LocationBarBadgeTestCase
 
 - (AppLaunchConfiguration)appConfigurationForTestCase {
-  AppLaunchConfiguration config;
+  AppLaunchConfiguration config = [super appConfigurationForTestCase];
   config.features_enabled.push_back(kPageActionMenu);
-
-  if ([self isRunningTest:@selector
-            (testAskGeminiChipDoesNotShowForNonConsentedUsers)]) {
-    config.features_enabled.push_back(kAskGeminiChip);
-  } else {
-    config.features_enabled_and_params.push_back(
-        {kAskGeminiChip, {{kAskGeminiChipIgnoreCriteria, "true"}}});
+  // TODO(crbug.com/511992708): Fix these tests when Chrome Next is enabled.
+  config.features_disabled.push_back(kChromeNextIa);
+  if (![self isRunningTest:
+                 @selector(testAskGeminiChipDoesNotShowForNonConsentedUsers)]) {
+    config.features_enabled.push_back(kAskGeminiChipIgnoreCriteria);
   }
 
   if ([self isRunningTest:@selector
             (testAskGeminiChipAppearsWithReaderModeLargeEntrypoint)]) {
     config.iph_feature_enabled =
         feature_engagement::kIPHiOSReaderModeLargeOmniboxEntrypointFeature.name;
-    config.features_enabled.push_back(kEnableReaderModeInUS);
   }
 
   return config;

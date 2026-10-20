@@ -7,6 +7,7 @@
 
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -14,11 +15,12 @@
 #include "android_webview/browser/aw_contents_io_thread_client.h"
 #include "android_webview/browser/aw_contents_origin_matcher.h"
 #include "android_webview/browser/aw_context_permissions_delegate.h"
-#include "android_webview/browser/aw_origin_matched_header.h"
 #include "android_webview/browser/aw_permission_manager.h"
 #include "android_webview/browser/aw_preconnector.h"
 #include "android_webview/browser/aw_ssl_host_state_delegate.h"
 #include "android_webview/browser/file_system_access/aw_file_system_access_permission_context.h"
+#include "android_webview/browser/http_headers/aw_header_interceptor_store.h"
+#include "android_webview/browser/http_headers/aw_origin_matched_header.h"
 #include "android_webview/browser/network_service/aw_proxy_config_monitor.h"
 #include "android_webview/browser/prefetch/aw_prefetch_manager.h"
 #include "base/android/jni_weak_ref.h"
@@ -29,6 +31,7 @@
 #include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
 #include "components/keyed_service/core/simple_factory_key.h"
+#include "components/origin_matcher/origin_matcher.h"
 #include "components/prefs/pref_registry_simple.h"
 #include "components/visitedlink/browser/visitedlink_delegate.h"
 #include "content/public/browser/browser_context.h"
@@ -37,6 +40,7 @@
 #include "services/cert_verifier/public/mojom/cert_verifier_service_factory.mojom-forward.h"
 #include "services/network/public/mojom/url_loader.mojom.h"
 #include "third_party/blink/public/mojom/permissions/permission_status.mojom-shared.h"
+#include "third_party/jni_zero/jni_raw_ptr.h"
 
 class GURL;
 class PrefService;
@@ -45,21 +49,25 @@ namespace content {
 class ClientHintsControllerDelegate;
 class SSLHostStateDelegate;
 class WebContents;
-}
+}  // namespace content
 
 namespace download {
 class InProgressDownloadManager;
 }
 
 namespace visitedlink {
+// TODO(crbug.com/517136103): Remove VisitedLinkWriter and only use
+// PartitionedVisitedLinkWriter
 class VisitedLinkWriter;
-}
+class PartitionedVisitedLinkWriter;
+}  // namespace visitedlink
 
 namespace android_webview {
 
 class AwBrowserContextIoThreadHandle;
 class AwContentRestrictionManagerClient;
 class AwContentRestrictionBlockedNavigationTracker;
+class AwHttpCacheManager;
 class AwQuotaManagerBridge;
 class CookieManager;
 
@@ -86,8 +94,7 @@ class AwBrowserContext : public content::BrowserContext,
 
   // Convenience method to returns the AwBrowserContext corresponding to the
   // given WebContents.
-  static AwBrowserContext* FromWebContents(
-      content::WebContents* web_contents);
+  static AwBrowserContext* FromWebContents(content::WebContents* web_contents);
 
   base::FilePath GetHttpCachePath();
   base::FilePath GetPrefStorePath();
@@ -126,10 +133,10 @@ class AwBrowserContext : public content::BrowserContext,
       const base::android::JavaRef<jobject>& io_thread_client);
 
   int AllowedPrerenderingCount() const;
-  void SetAllowedPrerenderingCount(JNIEnv* const env, int allowed_count);
-  void ClearAllowedPrerenderingCount(JNIEnv* const env);
+  void SetAllowedPrerenderingCount(JNIEnv* env, int allowed_count);
+  void ClearAllowedPrerenderingCount(JNIEnv* env);
 
-  void WarmUpSpareRenderer(JNIEnv* const env);
+  void WarmUpSpareRenderer(JNIEnv* env);
 
   // content::BrowserContext implementation.
   base::FilePath GetPath() const override;
@@ -252,13 +259,47 @@ class AwBrowserContext : public content::BrowserContext,
   const std::vector<scoped_refptr<AwOriginMatchedHeader>>&
   GetOriginMatchedHeaders();
 
-  // Adds a QUIC hints for the given origins.
-  void AddQuicHints(JNIEnv* env, const std::vector<GURL>& origins);
+  // Returns the `AwHeaderInterceptorStore` associated to this BrowserContext.
+  // This reference is valid for as long as this AwBrowserContext instance is
+  // alive.
+  AwHeaderInterceptorStore& GetHeaderInterceptorStore() {
+    return header_interceptor_store_;
+  }
+  jni_zero::JniRawPtr<AwHeaderInterceptorStore>
+  GetHeaderInterceptorStoreFromJava(JNIEnv* env);
 
+  // Adds QUIC hints for the given origins, wildcard suffixes, or enables QUIC
+  // by default.
+  void AddQuicHints(JNIEnv* env,
+                    const std::vector<GURL>& origins,
+                    const std::vector<std::string>& wildcard_suffixes,
+                    bool try_quic_by_default);
+
+  AwHttpCacheManager* GetHttpCacheManager() {
+    return http_cache_manager_.get();
+  }
   AwPrefetchManager& GetPrefetchManager() { return *prefetch_manager_.get(); }
+
+  // Records UMA metrics for cases where an operation was blocked waiting for
+  // NetworkContext initialization.
+  static void RecordNetworkContextInitializationBlocking(
+      std::string_view operation_detail,
+      base::TimeDelta duration,
+      bool was_blocked);
+
+  std::vector<std::string> SetCrossOriginIsolatedAllowList(
+      JNIEnv* env,
+      const std::vector<std::string>& origin_patterns);
+  std::vector<std::string> GetCrossOriginIsolatedAllowList(JNIEnv* env);
+
+  // Returns if an origin is allowed to use APIs that require
+  // CrossOriginIsolated. Checks if the origin matches any rule set by
+  // AwBrowserContext#SetCrossOriginIsolatedAllowList()
+  bool AllowCrossOriginIsolatedApis(const url::Origin& origin) const;
 
  private:
   friend class AwBrowserContextIoThreadHandle;
+  friend class AwBrowserContextTest;
   void CreateUserPrefService();
   void MigrateLocalStatePrefs();
 
@@ -278,7 +319,11 @@ class AwBrowserContext : public content::BrowserContext,
 
   scoped_refptr<AwQuotaManagerBridge> quota_manager_bridge_;
 
+  // TODO(crbug.com/517136103): Remove VisitedLinkWriter and only use
+  // PartitionedVisitedLinkWriter
   std::unique_ptr<visitedlink::VisitedLinkWriter> visitedlink_writer_;
+  std::unique_ptr<visitedlink::PartitionedVisitedLinkWriter>
+      partitioned_visitedlink_writer_;
 
   std::unique_ptr<PrefService> user_pref_service_;
   std::unique_ptr<AwSSLHostStateDelegate> ssl_host_state_delegate_;
@@ -306,6 +351,8 @@ class AwBrowserContext : public content::BrowserContext,
   // In generally, use GetCookieManager() rather than using this directly.
   std::unique_ptr<CookieManager> cookie_manager_;
 
+  std::unique_ptr<AwHttpCacheManager> http_cache_manager_;
+
   std::unique_ptr<AwPrefetchManager> prefetch_manager_;
   std::unique_ptr<AwPreconnector> preconnector_;
   std::unique_ptr<AwContentRestrictionManagerClient>
@@ -326,6 +373,10 @@ class AwBrowserContext : public content::BrowserContext,
   bool enable_stale_dns_ = false;
 
   std::vector<scoped_refptr<AwOriginMatchedHeader>> origin_matched_headers_;
+  AwHeaderInterceptorStore header_interceptor_store_;
+
+  std::unique_ptr<origin_matcher::OriginMatcher>
+      cross_origin_allow_list_matcher_;
 
   base::WeakPtrFactory<AwBrowserContext> weak_method_factory_{this};
 };

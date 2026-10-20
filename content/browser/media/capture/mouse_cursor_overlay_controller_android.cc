@@ -99,10 +99,6 @@ class MouseCursorOverlayController::Observer
     }
   }
 
-  void OnTouchEvent(const ui::MotionEventAndroid& event) override {
-    // Ignore touch events. The cursor overlay is strictly for mouse input.
-  }
-
   // ui::ViewAndroidObserver overrides:
   void OnViewAndroidDestroyed() override { StopTracking(); }
 
@@ -133,7 +129,9 @@ MouseCursorOverlayController::~MouseCursorOverlayController() {
   Stop();
 }
 
-void MouseCursorOverlayController::SetTargetView(gfx::NativeView view) {
+void MouseCursorOverlayController::SetTargetView(
+    gfx::NativeView view,
+    content::WebContents* target_web_contents) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(ui_sequence_checker_);
   observer_.reset();
   if (view) {

@@ -22,7 +22,6 @@
 #include "chromeos/components/quick_answers/public/cpp/quick_answers_state.h"
 #include "chromeos/components/quick_answers/quick_answers_client.h"
 #include "chromeos/components/quick_answers/quick_answers_model.h"
-#include "chromeos/constants/chromeos_features.h"
 #include "chromeos/strings/grit/chromeos_strings.h"
 #include "components/prefs/pref_service.h"
 #include "components/user_manager/user_manager.h"
@@ -89,12 +88,6 @@ bool ShouldShowQuickAnswers() {
 
   if (QuickAnswersState::IsEnabled()) {
     return true;
-  }
-
-  if (QuickAnswersState::GetFeatureType() ==
-          QuickAnswersState::FeatureType::kHmr &&
-      !chromeos::features::IsMagicBoostRevampForQuickAnswersEnabled()) {
-    return false;
   }
 
   base::expected<quick_answers::prefs::ConsentStatus, QuickAnswersState::Error>
@@ -302,17 +295,6 @@ QuickAnswersClient* QuickAnswersControllerImpl::GetClient() const {
 void QuickAnswersControllerImpl::DismissQuickAnswers(
     QuickAnswersExitPoint exit_point) {
   switch (visibility_) {
-    case QuickAnswersVisibility::kRichAnswersVisible: {
-      // For the rich-answers view, ignore dismissal by context-menu related
-      // actions as they should only affect the companion quick-answers views.
-      if (exit_point == QuickAnswersExitPoint::kContextMenuDismiss ||
-          exit_point == QuickAnswersExitPoint::kContextMenuClick) {
-        return;
-      }
-      quick_answers_ui_controller_->CloseRichAnswersView();
-      visibility_ = QuickAnswersVisibility::kClosed;
-      return;
-    }
     case QuickAnswersVisibility::kUserConsentVisible: {
       // TODO(b/340628526): Replace IsShowingUserConsentView condition and
       // visibility_ write with CHECK.
@@ -591,12 +573,6 @@ QuickAnswersControllerImpl::GetWeakPtr() {
 bool QuickAnswersControllerImpl::MaybeShowUserConsent(
     IntentType intent_type,
     const std::u16string& intent_text) {
-  if (QuickAnswersState::GetFeatureType() ==
-          QuickAnswersState::FeatureType::kHmr &&
-      !chromeos::features::IsMagicBoostRevampForQuickAnswersEnabled()) {
-    return false;
-  }
-
   if (quick_answers_ui_controller_->IsShowingUserConsentView()) {
     return false;
   }

@@ -123,8 +123,8 @@ class CONTENT_EXPORT NavigationControllerImpl : public NavigationController {
       const Referrer& referrer,
       ui::PageTransition type,
       const std::string& extra_headers) override;
-  base::WeakPtr<NavigationHandle> LoadURLWithParams(
-      const LoadURLParams& params) override;
+  base::expected<base::WeakPtr<NavigationHandle>, NavigationNotStartedReason>
+  LoadURLWithParamsForResult(const LoadURLParams& params) override;
   void LoadIfNecessary() override;
   void LoadOriginalRequestURL() override;
   base::WeakPtr<NavigationHandle> LoadPostCommitErrorPage(
@@ -145,8 +145,9 @@ class CONTENT_EXPORT NavigationControllerImpl : public NavigationController {
   void GoToOffset(int offset) override;
   bool RemoveEntryAtIndex(int index) override;
   void PruneForwardEntries() override;
-  const SessionStorageNamespaceMap& GetSessionStorageNamespaceMap() override;
-  SessionStorageNamespace* GetDefaultSessionStorageNamespace() override;
+  const SessionStorageNamespaceHandleMap& GetSessionStorageNamespaceMap()
+      override;
+  SessionStorageNamespaceHandle* GetDefaultSessionStorageNamespace() override;
   bool NeedsReload() override;
   void SetNeedsReload() override;
   void CancelPendingReload() override;
@@ -185,7 +186,8 @@ class CONTENT_EXPORT NavigationControllerImpl : public NavigationController {
       RenderFrameHostImpl* render_frame_host,
       mojo::PendingAssociatedRemote<mojom::NavigationClient>* navigation_client,
       blink::LocalFrameToken initiator_frame_token,
-      int initiator_process_id,
+      ChildProcessId initiator_process_id,
+      scoped_refptr<InitiatorNavigationState> initiator_navigation_state,
       base::TimeTicks actual_navigation_start);
 
   // Reloads the |frame_tree_node| and returns true. In some rare cases, there
@@ -225,11 +227,11 @@ class CONTENT_EXPORT NavigationControllerImpl : public NavigationController {
       RenderFrameHostImpl* render_frame_host,
       const GURL& url,
       const blink::LocalFrameToken* initiator_frame_token,
-      int initiator_process_id,
+      ChildProcessId initiator_process_id,
       const std::optional<url::Origin>& initiator_origin,
       const std::optional<GURL>& initiator_base_url,
       bool is_renderer_initiated,
-      SiteInstance* source_site_instance,
+      scoped_refptr<InitiatorNavigationState> initiator_navigation_state,
       const Referrer& referrer,
       ui::PageTransition page_transition,
       bool should_replace_current_entry,
@@ -240,7 +242,6 @@ class CONTENT_EXPORT NavigationControllerImpl : public NavigationController {
       network::mojom::SourceLocationPtr source_location,
       scoped_refptr<network::SharedURLLoaderFactory> blob_url_loader_factory,
       bool is_form_submission,
-      const std::optional<blink::Impression>& impression,
       bool has_user_gesture,
       bool started_by_ad,
       base::TimeTicks actual_navigation_start_time,
@@ -250,8 +251,8 @@ class CONTENT_EXPORT NavigationControllerImpl : public NavigationController {
       bool force_new_browsing_instance = false,
       bool is_container_initiated = false,
       bool has_rel_opener = false,
-      std::optional<std::u16string> embedder_shared_storage_context =
-          std::nullopt);
+      network::mojom::CSPDisposition should_check_main_world_csp =
+          network::mojom::CSPDisposition::CHECK);
 
   // Navigates to the history entry associated with the given navigation API
   // |key|. Searches |entries_| for a FrameNavigationEntry associated with
@@ -285,7 +286,7 @@ class CONTENT_EXPORT NavigationControllerImpl : public NavigationController {
 
   // The session storage namespace that all child `blink::WebView`s associated
   // with `partition_config` should use.
-  SessionStorageNamespace* GetSessionStorageNamespace(
+  SessionStorageNamespaceHandle* GetSessionStorageNamespace(
       const StoragePartitionConfig& partition_config);
 
   // Returns the index of the specified entry, or -1 if entry is not contained
@@ -402,7 +403,7 @@ class CONTENT_EXPORT NavigationControllerImpl : public NavigationController {
   // associated with a |partition_id| will CHECK() fail.
   void SetSessionStorageNamespace(
       const StoragePartitionConfig& partition_config,
-      SessionStorageNamespace* session_storage_namespace);
+      SessionStorageNamespaceHandle* session_storage_namespace);
 
   // Random data ---------------------------------------------------------------
 
@@ -716,7 +717,8 @@ class CONTENT_EXPORT NavigationControllerImpl : public NavigationController {
       FrameTreeNode* frame,
       ReloadType reload_type,
       const std::optional<blink::LocalFrameToken>& initiator_frame_token,
-      int initiator_process_id,
+      ChildProcessId initiator_process_id,
+      scoped_refptr<InitiatorNavigationState> initiator_navigation_state,
       std::optional<blink::scheduler::TaskAttributionId>
           soft_navigation_heuristics_task_id,
       base::TimeTicks actual_navigation_start,
@@ -727,9 +729,9 @@ class CONTENT_EXPORT NavigationControllerImpl : public NavigationController {
   // Starts a new navigation based on |load_params|, that doesn't correspond to
   // an existing NavigationEntry.
   // |actual_navigation_start| is the time the navigation began, for metrics.
-  base::WeakPtr<NavigationHandle> NavigateWithoutEntry(
-      const LoadURLParams& load_params,
-      base::TimeTicks actual_navigation_start);
+  base::expected<base::WeakPtr<NavigationHandle>, NavigationNotStartedReason>
+  NavigateWithoutEntry(const LoadURLParams& load_params,
+                       base::TimeTicks actual_navigation_start);
 
   // Handles a navigation to a renderer-debug URL.
   void HandleRendererDebugURL(FrameTreeNode* frame_tree_node, const GURL& url);
@@ -761,7 +763,8 @@ class CONTENT_EXPORT NavigationControllerImpl : public NavigationController {
   //
   // TODO(clamy): Remove the dependency on NavigationEntry and
   // FrameNavigationEntry.
-  std::unique_ptr<NavigationRequest> CreateNavigationRequestFromLoadParams(
+  base::expected<std::unique_ptr<NavigationRequest>, NavigationNotStartedReason>
+  CreateNavigationRequestFromLoadParams(
       FrameTreeNode* node,
       const LoadURLParams& load_params,
       bool override_user_agent,
@@ -776,8 +779,8 @@ class CONTENT_EXPORT NavigationControllerImpl : public NavigationController {
       bool is_embedder_initiated_fenced_frame_navigation = false,
       bool is_unfenced_top_navigation = false,
       bool is_container_initiated = false,
-      std::optional<std::u16string> embedder_shared_storage_context =
-          std::nullopt);
+      network::mojom::CSPDisposition should_check_main_world_csp =
+          network::mojom::CSPDisposition::CHECK);
 
   // Creates and returns a NavigationRequest for a navigation to |entry|. Will
   // return nullptr if the parameters are invalid and the navigation cannot
@@ -794,7 +797,8 @@ class CONTENT_EXPORT NavigationControllerImpl : public NavigationController {
       bool is_same_document_history_load,
       bool is_history_navigation_in_new_child_frame,
       const std::optional<blink::LocalFrameToken>& initiator_frame_token,
-      int initiator_process_id,
+      ChildProcessId initiator_process_id,
+      scoped_refptr<InitiatorNavigationState> initiator_navigation_state,
       base::TimeTicks actual_navigation_start,
       std::optional<blink::scheduler::TaskAttributionId>
           soft_navigation_heuristics_task_id = std::nullopt);
@@ -1117,6 +1121,11 @@ class CONTENT_EXPORT NavigationControllerImpl : public NavigationController {
   FrameTreeNode* GetTargetFrameTreeNodeForNavigation(
       const LoadURLParams& params);
 
+  // Returns true if the initial entry should be replaced when reloading.
+  // This happens when a reload occurs before the first noninitial navigation
+  // commits and replaces the initial entry.
+  bool ShouldReplaceInitialEntryForReload(ReloadType reload_type);
+
   // ---------------------------------------------------------------------------
 
   // The FrameTree this instance belongs to. Each FrameTree gets its own
@@ -1184,14 +1193,14 @@ class CONTENT_EXPORT NavigationControllerImpl : public NavigationController {
   // Prevent unsafe re-entrant calls to NavigateToPendingEntry.
   bool in_navigate_to_pending_entry_ = false;
 
-  // Used to find the appropriate SessionStorageNamespace for the storage
+  // Used to find the appropriate SessionStorageNamespaceHandle for the storage
   // partition of a NavigationEntry.
   //
   // A NavigationController may contain NavigationEntries that correspond to
   // different StoragePartitions. Even though they are part of the same
   // NavigationController, only entries in the same StoragePartition may
   // share session storage state with one another.
-  SessionStorageNamespaceMap session_storage_namespace_map_;
+  SessionStorageNamespaceHandleMap session_storage_namespace_map_;
 
   // The maximum number of entries that a navigation controller can store.
   static size_t max_entry_count_for_testing_;
@@ -1210,11 +1219,6 @@ class CONTENT_EXPORT NavigationControllerImpl : public NavigationController {
   // the wrong order in the history view.
   TimeSmoother time_smoother_;
 
-  // BackForwardCache:
-  //
-  // Stores frozen RenderFrameHost. Restores them on history navigation.
-  // See BackForwardCache class documentation.
-  BackForwardCacheImpl back_forward_cache_;
 
 #if BUILDFLAG(IS_ANDROID)
   // Stores captured screenshots for this `NavigationController`. The

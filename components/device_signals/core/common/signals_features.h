@@ -19,6 +19,7 @@ BASE_DECLARE_FEATURE(kDetectedAgentSignalCollectionEnabled);
 BASE_DECLARE_FEATURE(kPolicyDataCollectionEnabled);
 BASE_DECLARE_FEATURE(kCertificateCollectionEnabled);
 BASE_DECLARE_FEATURE(kContentBindingVersioningEnabled);
+BASE_DECLARE_FEATURE(kContentBindingVersioningEnabledIOS);
 
 // Signals reporting related feature parameters.
 extern const base::FeatureParam<bool> kTriggerOnCookieChange;
@@ -40,16 +41,8 @@ bool IsPolicyDataCollectionEnabled();
 bool IsCertificateCollectionEnabled();
 // Returns true if content binding versioning feature has been enabled.
 bool IsContentBindingVersioningEnabled();
-
-#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || \
-    BUILDFLAG(IS_CHROMEOS)
-BASE_DECLARE_FEATURE(kDeviceSignalsConsentDialog);
-
-// Returns true if device signals consent dialog has been enabled for
-// consent collection.
-bool IsConsentDialogEnabled();
-#endif  // BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) ||
-        // BUILDFLAG(IS_CHROMEOS)
+// Returns true if content binding versioning feature has been enabled on iOS.
+bool IsContentBindingVersioningEnabledIOS();
 
 // Feature flag for supporting the new private SecureConnect functions in
 // unaffiliated contexts via the consent flow.

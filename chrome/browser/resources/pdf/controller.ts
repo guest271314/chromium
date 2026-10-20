@@ -208,6 +208,10 @@ export interface SaveAttachmentMessage {
   attachmentIndex: number;
 }
 
+export interface FocusMessage {
+  type: 'focus';
+}
+
 // <if expr="enable_pdf_ink2">
 export interface SetAnnotationModeMessage {
   type: 'setAnnotationMode';
@@ -246,7 +250,7 @@ export type PluginMessageWithoutReply = StopScrollingMessage|ViewportMessage|
     HighlightTextFragmentsMessage|ResetPrintPreviewModeMessage|
     SetBackgroundColorMessage|LoadPreviewPageMessage|GetPasswordCompleteMessage|
     SetPresentationModeMessage|SaveMessage|GetSaveDataBlockMessage|
-    ReleaseSaveInBlockBuffersMessage
+    ReleaseSaveInBlockBuffersMessage|FocusMessage
     // <if expr="enable_pdf_ink2">
     |SetAnnotationModeMessage|AnnotationBrushMessage|EditTextAnnotationMessage|
     FinishTextAnnotationMessage|AnnotationRedoMessage|AnnotationUndoMessage
@@ -323,7 +327,7 @@ export enum PluginControllerEventType {
   // <if expr="enable_pdf_ink2">
   FINISH_INK_STROKE = 'PluginControllerEventType.FINISH_INK_STROKE',
   START_INK_STROKE = 'PluginControllerEventType.START_INK_STROKE',
-  UPDATE_INK_THUMBNAIL = 'PluginControllerEventType.UPDATE_INK_THUMBNAIL',
+  UPDATE_THUMBNAIL = 'PluginControllerEventType.UPDATE_THUMBNAIL',
   // </if>
   IS_ACTIVE_CHANGED = 'PluginControllerEventType.IS_ACTIVE_CHANGED',
   PLUGIN_MESSAGE = 'PluginControllerEventType.PLUGIN_MESSAGE',
@@ -464,13 +468,13 @@ export class PluginController implements ContentController {
   // </if>
 
   redo() {
-    // <if "enable_pdf_ink2">
+    // <if expr="enable_pdf_ink2">
     this.postMessage_({type: 'annotationRedo'});
     // </if>
   }
 
   undo() {
-    // <if "enable_pdf_ink2">
+    // <if expr="enable_pdf_ink2">
     this.postMessage_({type: 'annotationUndo'});
     // </if>
   }
@@ -655,6 +659,10 @@ export class PluginController implements ContentController {
       type: 'getNamedDestination',
       namedDestination: destination,
     });
+  }
+
+  focus() {
+    this.postMessage_({type: 'focus'});
   }
 
   setPresentationMode(enablePresentationMode: boolean) {
@@ -864,11 +872,9 @@ export class PluginController implements ContentController {
     resolver.resolve(messageData);
   }
 
-  // <if expr="enable_pdf_ink2">
   setPluginForTesting(plugin: HTMLEmbedElement) {
     this.setPlugin_(plugin);
   }
-  // </if>
 
   static getInstance(): PluginController {
     return instance || (instance = new PluginController());

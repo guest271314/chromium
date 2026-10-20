@@ -13,6 +13,7 @@
 #include "components/password_manager/core/browser/password_manager_test_utils.h"
 #include "components/password_manager/core/browser/password_store/password_form_converters.h"
 #include "components/password_manager/core/browser/password_store/test_password_store.h"
+#include "components/password_manager/core/browser/password_string.h"
 #include "components/password_manager/core/browser/ui/saved_passwords_presenter.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -21,7 +22,6 @@ namespace password_manager {
 
 namespace {
 
-using password_manager::PasswordForm;
 using testing::ElementsAre;
 using testing::IsEmpty;
 using testing::Pair;
@@ -32,7 +32,7 @@ PasswordForm CreatePasswordForm() {
   form.url = GURL("http://test.com/");
   form.signon_realm = "http://test.com/";
   form.username_value = u"username";
-  form.password_value = u"password";
+  form.password_value = PasswordString(u"password");
   form.in_store = PasswordForm::Store::kProfileStore;
   return form;
 }
@@ -51,27 +51,23 @@ class PasswordUndoHelperTest : public testing::Test {
 
   void RunUntilIdle() { task_env_.RunUntilIdle(); }
 
-  password_manager::TestPasswordStore* ProfileStore() {
-    return profile_store_.get();
-  }
-  password_manager::TestPasswordStore* AccountStore() {
-    return account_store_.get();
-  }
+  TestPasswordStore* ProfileStore() { return profile_store_.get(); }
+  TestPasswordStore* AccountStore() { return account_store_.get(); }
 
   PasswordUndoHelper& UndoHelper() { return undo_helper_; }
 
  private:
   base::test::SingleThreadTaskEnvironment task_env_;
-  scoped_refptr<password_manager::TestPasswordStore> profile_store_ =
+  scoped_refptr<TestPasswordStore> profile_store_ =
       base::MakeRefCounted<TestPasswordStore>(IsAccountStore(false));
-  scoped_refptr<password_manager::TestPasswordStore> account_store_ =
+  scoped_refptr<TestPasswordStore> account_store_ =
       base::MakeRefCounted<TestPasswordStore>(IsAccountStore(true));
   PasswordUndoHelper undo_helper_{profile_store_.get(), account_store_.get()};
 };
 
 TEST_F(PasswordUndoHelperTest, UndoSingleForm) {
   PasswordForm form = CreatePasswordForm();
-  ProfileStore()->AddLogin(password_manager::FromPasswordForm(form));
+  ProfileStore()->AddLogin(FromPasswordForm(form));
 
   RunUntilIdle();
 
@@ -80,9 +76,8 @@ TEST_F(PasswordUndoHelperTest, UndoSingleForm) {
 
   // Remove form
   UndoHelper().StartGroupingActions();
-  ProfileStore()->RemoveLogin(FROM_HERE,
-                              password_manager::FromPasswordForm(form));
-  UndoHelper().PasswordRemoved(form);
+  ProfileStore()->RemoveLogin(FROM_HERE, FromPasswordForm(form));
+  UndoHelper().PasswordRemoved(FromPasswordForm(form));
   UndoHelper().EndGroupingActions();
   RunUntilIdle();
 
@@ -97,8 +92,7 @@ TEST_F(PasswordUndoHelperTest, UndoSingleForm) {
 TEST_F(PasswordUndoHelperTest, UndoSingleBackupPasswordForm) {
   PasswordForm form_without_backup = CreatePasswordForm();
   PasswordForm form_with_backup(form_without_backup);
-  ProfileStore()->AddLogin(
-      password_manager::FromPasswordForm(form_with_backup));
+  ProfileStore()->AddLogin(FromPasswordForm(form_with_backup));
 
   RunUntilIdle();
 
@@ -108,9 +102,8 @@ TEST_F(PasswordUndoHelperTest, UndoSingleBackupPasswordForm) {
 
   // Remove backup
   UndoHelper().StartGroupingActions();
-  ProfileStore()->UpdateLogin(
-      password_manager::FromPasswordForm(form_without_backup));
-  UndoHelper().BackupPasswordRemoved(form_without_backup);
+  ProfileStore()->UpdateLogin(FromPasswordForm(form_without_backup));
+  UndoHelper().BackupPasswordRemoved(FromPasswordForm(form_without_backup));
   UndoHelper().EndGroupingActions();
   RunUntilIdle();
 
@@ -133,10 +126,9 @@ TEST_F(PasswordUndoHelperTest, UndoMultipleForms) {
   PasswordForm form_1_duplicate = form_1;
   form_1_duplicate.username_element = u"element";
 
-  ProfileStore()->AddLogin(password_manager::FromPasswordForm(form_1));
-  ProfileStore()->AddLogin(password_manager::FromPasswordForm(form_2));
-  ProfileStore()->AddLogin(
-      password_manager::FromPasswordForm(form_1_duplicate));
+  ProfileStore()->AddLogin(FromPasswordForm(form_1));
+  ProfileStore()->AddLogin(FromPasswordForm(form_2));
+  ProfileStore()->AddLogin(FromPasswordForm(form_1_duplicate));
 
   RunUntilIdle();
 
@@ -148,15 +140,12 @@ TEST_F(PasswordUndoHelperTest, UndoMultipleForms) {
 
   // Remove all forms
   UndoHelper().StartGroupingActions();
-  ProfileStore()->RemoveLogin(FROM_HERE,
-                              password_manager::FromPasswordForm(form_1));
-  ProfileStore()->RemoveLogin(FROM_HERE,
-                              password_manager::FromPasswordForm(form_2));
-  ProfileStore()->RemoveLogin(
-      FROM_HERE, password_manager::FromPasswordForm(form_1_duplicate));
-  UndoHelper().PasswordRemoved(form_1);
-  UndoHelper().PasswordRemoved(form_2);
-  UndoHelper().PasswordRemoved(form_1_duplicate);
+  ProfileStore()->RemoveLogin(FROM_HERE, FromPasswordForm(form_1));
+  ProfileStore()->RemoveLogin(FROM_HERE, FromPasswordForm(form_2));
+  ProfileStore()->RemoveLogin(FROM_HERE, FromPasswordForm(form_1_duplicate));
+  UndoHelper().PasswordRemoved(FromPasswordForm(form_1));
+  UndoHelper().PasswordRemoved(FromPasswordForm(form_2));
+  UndoHelper().PasswordRemoved(FromPasswordForm(form_1_duplicate));
   UndoHelper().EndGroupingActions();
   RunUntilIdle();
 
@@ -175,10 +164,10 @@ TEST_F(PasswordUndoHelperTest, UndoMultipleForms) {
 TEST_F(PasswordUndoHelperTest, UndoFormsMultipleStores) {
   PasswordForm profile_form = CreatePasswordForm();
   PasswordForm account_form = CreatePasswordForm();
-  account_form.in_store = password_manager::PasswordForm::Store::kAccountStore;
+  account_form.in_store = PasswordForm::Store::kAccountStore;
 
-  ProfileStore()->AddLogin(password_manager::FromPasswordForm(profile_form));
-  AccountStore()->AddLogin(password_manager::FromPasswordForm(account_form));
+  ProfileStore()->AddLogin(FromPasswordForm(profile_form));
+  AccountStore()->AddLogin(FromPasswordForm(account_form));
   RunUntilIdle();
 
   ASSERT_THAT(
@@ -190,12 +179,10 @@ TEST_F(PasswordUndoHelperTest, UndoFormsMultipleStores) {
 
   // Remove forms
   UndoHelper().StartGroupingActions();
-  ProfileStore()->RemoveLogin(FROM_HERE,
-                              password_manager::FromPasswordForm(profile_form));
-  AccountStore()->RemoveLogin(FROM_HERE,
-                              password_manager::FromPasswordForm(account_form));
-  UndoHelper().PasswordRemoved(profile_form);
-  UndoHelper().PasswordRemoved(account_form);
+  ProfileStore()->RemoveLogin(FROM_HERE, FromPasswordForm(profile_form));
+  AccountStore()->RemoveLogin(FROM_HERE, FromPasswordForm(account_form));
+  UndoHelper().PasswordRemoved(FromPasswordForm(profile_form));
+  UndoHelper().PasswordRemoved(FromPasswordForm(account_form));
   UndoHelper().EndGroupingActions();
   RunUntilIdle();
 

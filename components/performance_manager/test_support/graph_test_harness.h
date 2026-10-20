@@ -29,6 +29,7 @@
 #include "components/performance_manager/public/render_process_host_id.h"
 #include "components/performance_manager/public/render_process_host_proxy.h"
 #include "content/public/browser/browsing_instance_id.h"
+#include "content/public/browser/frame_tree_node_id.h"
 #include "content/public/test/browser_task_environment.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/common/tokens/tokens.h"
@@ -43,6 +44,9 @@ namespace performance_manager {
 // Returns a unique frame routing ID to use for test FrameNodes. The generated
 // id is not guaranteed to be different from ids set explicitly by the test.
 int NextTestFrameRoutingId();
+
+// Returns a unique FrameTreeNodeId to use for test FrameNodes.
+content::FrameTreeNodeId NextTestFrameTreeNodeId();
 
 // Returns a unique RenderProcessHostId to use for test ProcessNodes. The
 // generated id is not guaranteed to be different from ids set explicitly by the
@@ -114,21 +118,22 @@ struct TestNodeWrapper<FrameNodeImpl>::Factory {
       ProcessNodeImpl* process_node,
       PageNodeImpl* page_node,
       FrameNodeImpl* parent_frame_node,
-      FrameNodeImpl* outer_document_for_fenced_frame,
+      FrameNodeImpl* outer_document_for_inner_frame_root,
       int render_frame_id,
       const blink::LocalFrameToken& frame_token = blink::LocalFrameToken(),
+      content::FrameTreeNodeId frame_tree_node_id = NextTestFrameTreeNodeId(),
       content::BrowsingInstanceId browsing_instance_id =
           content::BrowsingInstanceId(0),
       content::SiteInstanceGroupId site_instance_group_id =
           content::SiteInstanceGroupId(0),
-      bool is_current = true,
       bool is_active = true) {
     return std::make_unique<FrameNodeImpl>(
         process_node, page_node, parent_frame_node,
-        outer_document_for_fenced_frame, render_frame_id, frame_token,
+        outer_document_for_inner_frame_root, render_frame_id, frame_token,
+        frame_tree_node_id,
         perfetto::NamedTrack("Frame",
                              base::PersistentHash(frame_token->AsBytes())),
-        browsing_instance_id, site_instance_group_id, is_current, is_active);
+        browsing_instance_id, site_instance_group_id, is_active);
   }
 };
 
@@ -184,7 +189,8 @@ template <>
 struct TestNodeWrapper<PageNodeImpl>::Factory {
   static std::unique_ptr<PageNodeImpl> Create(
       base::WeakPtr<content::WebContents> web_contents = nullptr,
-      const std::string& browser_context_id = std::string(),
+      const base::UnguessableToken& browser_context_id =
+          base::UnguessableToken(),
       const GURL& url = GURL(),
       PagePropertyFlags initial_property_flags = {},
       base::TimeTicks visibility_change_time = base::TimeTicks::Now(),
@@ -192,7 +198,8 @@ struct TestNodeWrapper<PageNodeImpl>::Factory {
           content::WebContents::UniqueToken()) {
     return std::make_unique<PageNodeImpl>(
         std::move(web_contents), page_token, browser_context_id, url,
-        initial_property_flags, visibility_change_time);
+        initial_property_flags, visibility_change_time,
+        perfetto::NamedTrack("PageNodeTest"));
   }
 };
 
@@ -203,7 +210,8 @@ struct TestNodeWrapper<WorkerNodeImpl>::Factory {
   static std::unique_ptr<WorkerNodeImpl> Create(
       WorkerNode::WorkerType worker_type,
       ProcessNodeImpl* process_node,
-      const std::string& browser_context_id = std::string(),
+      const base::UnguessableToken& browser_context_id =
+          base::UnguessableToken(),
       const blink::WorkerToken& token = blink::WorkerToken(),
       const url::Origin& origin = url::Origin()) {
     return std::make_unique<WorkerNodeImpl>(browser_context_id, worker_type,
@@ -265,7 +273,18 @@ class TestGraphImpl : public GraphImpl {
       PageNodeImpl* page_node,
       FrameNodeImpl* parent_frame_node = nullptr,
       content::BrowsingInstanceId browsing_instance_id =
-          content::BrowsingInstanceId());
+          content::BrowsingInstanceId(),
+      content::FrameTreeNodeId frame_tree_node_id = content::FrameTreeNodeId());
+
+  // Creates a speculative (non-active) frame node with an automatically
+  // generated routing id.
+  TestNodeWrapper<FrameNodeImpl> CreateSpeculativeFrameNodeAutoId(
+      ProcessNodeImpl* process_node,
+      PageNodeImpl* page_node,
+      FrameNodeImpl* parent_frame_node = nullptr,
+      content::BrowsingInstanceId browsing_instance_id =
+          content::BrowsingInstanceId(),
+      content::FrameTreeNodeId frame_tree_node_id = content::FrameTreeNodeId());
 
   // Wrappers around Create<ProcessNodeImpl>(...) that make the type of process
   // more clear.
@@ -314,9 +333,25 @@ class GraphTestHarness : public ::testing::Test {
       PageNodeImpl* page_node,
       FrameNodeImpl* parent_frame_node = nullptr,
       content::BrowsingInstanceId browsing_instance_id =
-          content::BrowsingInstanceId()) {
+          content::BrowsingInstanceId(),
+      content::FrameTreeNodeId frame_tree_node_id =
+          content::FrameTreeNodeId()) {
     return graph()->CreateFrameNodeAutoId(
-        process_node, page_node, parent_frame_node, browsing_instance_id);
+        process_node, page_node, parent_frame_node, browsing_instance_id,
+        frame_tree_node_id);
+  }
+
+  TestNodeWrapper<FrameNodeImpl> CreateSpeculativeFrameNodeAutoId(
+      ProcessNodeImpl* process_node,
+      PageNodeImpl* page_node,
+      FrameNodeImpl* parent_frame_node = nullptr,
+      content::BrowsingInstanceId browsing_instance_id =
+          content::BrowsingInstanceId(),
+      content::FrameTreeNodeId frame_tree_node_id =
+          content::FrameTreeNodeId()) {
+    return graph()->CreateSpeculativeFrameNodeAutoId(
+        process_node, page_node, parent_frame_node, browsing_instance_id,
+        frame_tree_node_id);
   }
 
   TestNodeWrapper<ProcessNodeImpl> CreateBrowserProcessNode() {

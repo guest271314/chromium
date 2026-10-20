@@ -27,6 +27,7 @@ source_set("history_clusters") {
   sources = [
     "history_clusters_metrics_logger.h",
     "history_clusters_service_factory.h",
+    "history_clusters_side_panel_utils.h",
     "history_clusters_tab_helper.h",
   ]
   public_deps = [
@@ -41,6 +42,7 @@ source_set("impl") {
   sources = [
     "history_clusters_metrics_logger.cc",
     "history_clusters_service_factory.cc",
+    "history_clusters_side_panel_utils.cc",
     "history_clusters_tab_helper.cc",
   ]
   deps = [
@@ -69,7 +71,6 @@ source_set("impl") {
     ]
   } else {
     deps += [
-      "//chrome/browser/ui",
       "//chrome/browser/ui/tabs:tab_strip",
       "//components/ntp_tiles",
     ]
@@ -84,6 +85,8 @@ if (!is_android) {
     deps = [
       ":history_clusters",
       ":impl",
+      "//chrome/browser/ui/webui/history",
+      "//chrome/browser/ui/webui/history_clusters",
       "//chrome/test:test_support",
       "//chrome/test:test_support_ui",
       "//components/history_clusters/core",
@@ -104,6 +107,7 @@ source_set("unit_tests") {
     "//chrome/browser/bookmarks",
     "//chrome/browser/history",
     "//chrome/test:test_support",
+    "//chrome/test/base:chrome_render_view_host_test_harness",
     "//components/bookmarks/browser",
     "//components/bookmarks/test",
     "//components/history/core/browser",

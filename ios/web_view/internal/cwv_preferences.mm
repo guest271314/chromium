@@ -95,6 +95,14 @@
       password_manager::prefs::kPasswordLeakDetectionEnabled);
 }
 
+- (void)setPasswordManagerSafeLifecycleEnabled:(BOOL)enabled {
+  // No-op: see the deprecation note in the header.
+}
+
+- (BOOL)isPasswordManagerSafeLifecycleEnabled {
+  return YES;
+}
+
 - (void)setSafeBrowsingEnabled:(BOOL)enabled {
   safe_browsing::SetSafeBrowsingState(
       _prefService,
@@ -115,12 +123,20 @@
   return ios_web_view::IsAutofillVCNUsageEnabled(_prefService);
 }
 
-- (void)setRiskBasedAuthenticationEnabled:(BOOL)enabled {
-  ios_web_view::SetRiskBasedAuthenticationEnabled(_prefService, enabled);
+- (void)setAutofillSafeLifecycleEnabled:(BOOL)enabled {
+  // No-op: see the deprecation note in the header.
 }
 
-- (BOOL)isRiskBasedAuthenticationEnabled {
-  return ios_web_view::IsRiskBasedAuthenticationEnabled(_prefService);
+- (BOOL)isAutofillSafeLifecycleEnabled {
+  return YES;
+}
+
+- (void)setAutofillScopedFormActivityEnabled:(BOOL)enabled {
+  ios_web_view::SetAutofillScopedFormActivityEnabled(_prefService, enabled);
+}
+
+- (BOOL)isAutofillScopedFormActivityEnabled {
+  return ios_web_view::IsAutofillScopedFormActivityEnabled(_prefService);
 }
 
 - (void)setTriggerNonFatalCheck:(BOOL)enabled {
@@ -141,6 +157,10 @@
       completionHandler();
     }
   }));
+}
+
+- (void)shutDown {
+  _prefService = nullptr;
 }
 
 @end

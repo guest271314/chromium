@@ -4,6 +4,7 @@
 
 #include "content/browser/preloading/prefetch/prefetch_response_reader.h"
 
+#include "base/byte_size.h"
 #include "base/debug/alias.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/no_destructor.h"
@@ -375,7 +376,7 @@ void PrefetchResponseReader::RecordOnPrefetchContainerDestroyed(
 
   if (completion_status_) {
     builder.SetDataLength(ukm::GetExponentialBucketMinForBytes(
-        completion_status_->encoded_data_length));
+        completion_status_->encoded_data_length.InBytes()));
 
     base::TimeDelta fetch_duration =
         completion_status_->completion_time - head_->load_timing.request_start;
@@ -530,9 +531,7 @@ void PrefetchResponseReader::ForwardResponse(
 }
 
 void PrefetchResponseReader::FollowRedirect(
-    const std::vector<std::string>& removed_headers,
-    const net::HttpRequestHeaders& modified_headers,
-    const net::HttpRequestHeaders& modified_cors_exempt_headers,
+    network::HttpRequestHeadersUpdateParams headers_update_params,
     const std::optional<GURL>& new_url) {
   // If a URL loader provided to |NavigationURLLoaderImpl| to intercept triggers
   // a redirect, then it will be interrupted before |FollowRedirect| is called,

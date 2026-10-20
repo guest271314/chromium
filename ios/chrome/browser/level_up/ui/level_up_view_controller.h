@@ -11,10 +11,35 @@
 #import "ios/chrome/browser/level_up/ui/level_up_profile_consumer.h"
 
 @protocol LevelUpCommands;
+@class LevelUpViewController;
+
+// Delegate protocol for Level Up view controller actions.
+@protocol LevelUpViewControllerDelegate <NSObject>
+
+// Called when the user taps the "See All" button on the tasks card.
+- (void)didTapSeeAllTasks:(LevelUpViewController*)controller;
+
+// Called when the user taps an individual task row in the checklist card.
+- (void)levelUpViewController:(LevelUpViewController*)controller
+                   didTapTask:(LevelUpTask*)task;
+
+// Called when the user toggles the progress updates menu item.
+- (void)didTapToggleProgressUpdates:(LevelUpViewController*)controller;
+
+// Called when the user taps the "Turn off Level Up" menu item.
+- (void)didTapTurnOffLevelUp:(LevelUpViewController*)controller;
+
+// Called when the user toggles the new tasks notification switch.
+- (void)didToggleNewTasksNotification:(BOOL)enabled;
+
+@end
 
 // View controller displaying Level Up bottom sheet.
 @interface LevelUpViewController
     : UIViewController <LevelUpConsumer, LevelUpProfileConsumer>
+
+// The delegate to receive action notifications.
+@property(nonatomic, weak) id<LevelUpViewControllerDelegate> delegate;
 
 // Command handler for Level Up commands.
 @property(nonatomic, weak) id<LevelUpCommands> handler;

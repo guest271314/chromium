@@ -6,6 +6,7 @@
 
 #include <memory>
 
+#include "base/check_deref.h"
 #include "base/check_op.h"
 #include "base/functional/bind.h"
 #include "base/memory/raw_ptr.h"
@@ -21,6 +22,7 @@
 #include "chrome/browser/enterprise/signin/profile_management_disclaimer_service_factory.h"
 #include "chrome/browser/enterprise/util/managed_browser_utils.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/regional_capabilities/regional_capabilities_service_factory.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/signin/signin_promo_util.h"
 #include "chrome/browser/signin/signin_util.h"
@@ -30,6 +32,7 @@
 #include "chrome/browser/ui/webui/signin/history_sync_optin_service.h"
 #include "chrome/browser/ui/webui/signin/history_sync_optin_service_factory.h"
 #include "chrome/browser/ui/webui/signin/turn_sync_on_helper_policy_fetch_tracker.h"
+#include "components/regional_capabilities/regional_capabilities_service.h"
 #include "components/signin/public/base/consent_level.h"
 #include "components/signin/public/base/signin_metrics.h"
 #include "components/signin/public/base/signin_switches.h"
@@ -111,33 +114,6 @@ void RecordSyncServiceStartupCompletionMetrics(base::TimeDelta elapsed_time) {
 void RecordSyncServiceStartupTimeoutMetrics(base::TimeDelta elapsed_time) {
   base::UmaHistogramTimes(kSyncServiceStartupAwaitTimeoutHistogramName,
                           elapsed_time);
-}
-
-void RecordMetricsForHistorySyncUserChoice(
-    HistorySyncOptinHelper::ScreenChoiceResult user_choice,
-    Profile* profile,
-    signin_metrics::AccessPoint access_point) {
-  auto user_choice_str = UserChoiceToStringMetric(user_choice);
-  auto histogram_name = base::StrCat(
-      {kHistorySyncOptIntAccessPointHistogramPrefix, user_choice_str});
-  auto action_name = base::StrCat(
-      {kHistorySyncOptIntAccessPointActionPrefix, user_choice_str});
-
-  base::RecordAction(base::UserMetricsAction(action_name.c_str()));
-  base::UmaHistogramEnumeration(histogram_name, access_point);
-
-  // Record successfully enabling history sync when originating from the
-  // AvatarPill promo.
-  if (user_choice == HistorySyncOptinHelper::ScreenChoiceResult::kAccepted &&
-      access_point == signin_metrics::AccessPoint::
-                          kHistorySyncOptinExpansionPillOnStartup) {
-    signin::RecordAvatarButtonPromoAcceptedAtPromoShownCount(
-        signin::ProfileMenuAvatarButtonPromoInfo::Type::kHistorySyncPromo,
-        IdentityManagerFactory::GetForProfile(profile)
-            ->GetPrimaryAccountInfo(signin::ConsentLevel::kSignin)
-            .gaia,
-        *profile->GetPrefs());
-  }
 }
 
 void RecordMetricsForSkippedHistoryScreen(
@@ -517,6 +493,45 @@ std::unique_ptr<HistorySyncOptinHelper> HistorySyncOptinHelper::Create(
   }
 }
 
+// static
+void HistorySyncOptinHelper::RecordMetricsForHistorySyncStarted(
+    signin_metrics::AccessPoint access_point) {
+  base::RecordAction(base::UserMetricsAction(
+      base::StrCat({kHistorySyncOptIntAccessPointActionPrefix, "Started"})
+          .c_str()));
+  base::UmaHistogramEnumeration(
+      base::StrCat({kHistorySyncOptIntAccessPointHistogramPrefix, "Started"}),
+      access_point);
+}
+
+// static
+void HistorySyncOptinHelper::RecordMetricsForHistorySyncUserChoice(
+    ScreenChoiceResult user_choice,
+    Profile* profile,
+    signin_metrics::AccessPoint access_point) {
+  auto user_choice_str = UserChoiceToStringMetric(user_choice);
+  auto histogram_name = base::StrCat(
+      {kHistorySyncOptIntAccessPointHistogramPrefix, user_choice_str});
+  auto action_name = base::StrCat(
+      {kHistorySyncOptIntAccessPointActionPrefix, user_choice_str});
+
+  base::RecordAction(base::UserMetricsAction(action_name.c_str()));
+  base::UmaHistogramEnumeration(histogram_name, access_point);
+
+  // Record successfully enabling history sync when originating from the
+  // AvatarPill promo.
+  if (user_choice == ScreenChoiceResult::kAccepted &&
+      access_point == signin_metrics::AccessPoint::
+                          kHistorySyncOptinExpansionPillOnStartup) {
+    signin::RecordAvatarButtonPromoAcceptedAtPromoShownCount(
+        signin::ProfileMenuAvatarButtonPromoInfo::Type::kHistorySyncPromo,
+        IdentityManagerFactory::GetForProfile(profile)
+            ->GetPrimaryAccountInfo(signin::ConsentLevel::kSignin)
+            .gaia,
+        *profile->GetPrefs());
+  }
+}
+
 HistorySyncOptinHelper::HistorySyncOptinHelper(
     signin::IdentityManager* identity_manager,
     Profile* profile,
@@ -524,11 +539,11 @@ HistorySyncOptinHelper::HistorySyncOptinHelper(
     Delegate* delegate,
     signin_metrics::AccessPoint access_point)
     : profile_(profile),
-      account_info_(account_info),
+      account_info_(account_info.GetCoreAccountInfo()),
       delegate_(delegate),
       account_state_fetcher_(std::make_unique<AccountStateFetcher>(
           identity_manager,
-          account_info,
+          account_info.GetCoreAccountInfo(),
           /*get_account_state_callback=*/
           base::BindRepeating(&HistorySyncOptinHelper::AccountIsManaged,
                               base::Unretained(this)),
@@ -614,6 +629,29 @@ void HistorySyncOptinHelper::ResumeShowHistorySyncOptinScreenFlow(
     }
   }
 
+  MaybeShowSignInCelebration(maybe_managed_account);
+}
+
+void HistorySyncOptinHelper::MaybeShowSignInCelebration(
+    signin::Tribool maybe_managed_account) {
+  if (maybe_managed_account != signin::Tribool::kFalse) {
+    AwaitSyncStartupAndShowHistorySyncScreen();
+    return;
+  }
+
+  if (access_point() == signin_metrics::AccessPoint::kForYouFre) {
+    const bool is_in_search_engine_choice_region =
+        CHECK_DEREF(regional_capabilities::RegionalCapabilitiesServiceFactory::
+                        GetForProfile(profile_))
+            .IsInSearchEngineChoiceScreenRegion();
+    if (switches::IsFirstRunDesktopRevampEnabled(
+            is_in_search_engine_choice_region)) {
+      delegate_->ShowSignInCelebration(base::BindOnce(
+          &HistorySyncOptinHelper::AwaitSyncStartupAndShowHistorySyncScreen,
+          weak_ptr_factory_.GetWeakPtr()));
+      return;
+    }
+  }
   AwaitSyncStartupAndShowHistorySyncScreen();
 }
 
@@ -647,9 +685,7 @@ void HistorySyncOptinHelper::ShowHistorySyncOptinScreen() {
       signin_util::ShouldShowHistorySyncOptinScreen(*profile_.get());
 
   if (result == signin_util::ShouldShowHistorySyncOptinResult::kShow) {
-    base::RecordAction(base::UserMetricsAction("Signin_HistorySync_Started"));
-    base::UmaHistogramEnumeration("Signin.HistorySyncOptIn.Started",
-                                  access_point());
+    RecordMetricsForHistorySyncStarted(access_point());
 
     delegate_->ShowHistorySyncOptinScreen(
         profile(), FlowCompletedCallback(base::BindOnce(
@@ -843,7 +879,7 @@ void HistorySyncOptinHelperInProfilePicker::
       IdentityManagerFactory::GetForProfile(profile())->FindExtendedAccountInfo(
           account_info());
   policy_helper_ = std::make_unique<HistorySyncOptinPolicyHelper>(
-      profile(), extended_account_info,
+      profile(), extended_account_info.GetCoreAccountInfo(),
       /*on_register_for_policies_callback=*/
       base::BindOnce(&HistorySyncOptinHelperInProfilePicker::
                          MaybeShowAccountManagementScreen,

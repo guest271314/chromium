@@ -11,6 +11,7 @@
 #include "chrome/test/base/in_process_browser_test.h"
 #include "content/public/test/browser_test.h"
 #include "net/dns/mock_host_resolver.h"
+#include "ui/base/window_open_disposition.h"
 
 class UITestUtilsBrowserTest : public InProcessBrowserTest {
  public:
@@ -49,7 +50,7 @@ IN_PROC_BROWSER_TEST_F(UITestUtilsBrowserTest, OpenTwoTabsInBackground) {
 IN_PROC_BROWSER_TEST_F(UITestUtilsBrowserTest, FindMatchingBrowsers) {
   BrowserWindowInterface* const regular_browser1 = browser();
   BrowserWindowInterface* const regular_browser2 =
-      CreateBrowser(browser()->profile());
+      CreateBrowser(browser()->GetProfile());
   BrowserWindowInterface* const incognito_browser = CreateIncognitoBrowser();
 
   // All browsers.

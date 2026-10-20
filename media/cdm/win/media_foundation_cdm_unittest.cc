@@ -8,6 +8,7 @@
 
 #include "base/functional/bind.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/test/gmock_callback_support.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/mock_callback.h"
 #include "base/test/run_until.h"
@@ -51,15 +52,6 @@ std::vector<uint8_t> StringToVector(const std::string& str) {
   return std::vector<uint8_t>(str.begin(), str.end());
 }
 
-// testing::InvokeArgument<N> does not work with base::OnceCallback. Use this
-// gmock action template to invoke base::OnceCallback. `k` is the k-th argument
-// and `T` is the callback's type.
-ACTION_TEMPLATE(InvokeCallbackArgument,
-                HAS_2_TEMPLATE_PARAMS(int, k, typename, T),
-                AND_1_VALUE_PARAMS(p0)) {
-  std::move(const_cast<T&>(std::get<k>(args))).Run(p0);
-}
-
 }  // namespace
 
 using Microsoft::WRL::ComPtr;
@@ -89,12 +81,12 @@ class MediaFoundationCdmTest : public testing::Test {
         mf_cdm_session_(MakeComPtr<StrictMock<MockMFCdmSession>>()),
         cdm_(base::MakeRefCounted<MediaFoundationCdm>(
             kTestUmaPrefix,
+            /*content_protection_hwnd=*/nullptr,
             base::BindRepeating(&MediaFoundationCdmTest::CreateMFCdm,
                                 base::Unretained(this)),
             base::BindRepeating(
                 &IsTypedSupportedCallbackHandler::Run,
                 base::Unretained(&is_type_supported_cb_handler_)),
-            store_client_token_cb_.Get(),
             cdm_event_cb_.Get(),
             base::BindRepeating(&MockCdmClient::OnSessionMessage,
                                 base::Unretained(&cdm_client_)),
@@ -184,8 +176,6 @@ class MediaFoundationCdmTest : public testing::Test {
 
   StrictMock<MockCdmClient> cdm_client_;
   IsTypedSupportedCallbackHandler is_type_supported_cb_handler_;
-  base::MockCallback<MediaFoundationCdm::StoreClientTokenCB>
-      store_client_token_cb_;
   StrictMock<base::MockCallback<MediaFoundationCdm::CdmEventCB>> cdm_event_cb_;
   ComPtr<StrictMock<MockMFCdm>> mf_cdm_;
   ComPtr<StrictMock<MockMFCdmSession>> mf_cdm_session_;
@@ -250,10 +240,8 @@ TEST_F(MediaFoundationCdmTest, GetStatusForPolicy_HdcpV1_0_KeyStatusUsable) {
   Initialize();
   EXPECT_CALL(is_type_supported_cb,
               Run("video/mp4;codecs=\"avc1\";features=\"hdcp=1\"", _))
-      .WillOnce(
-          InvokeCallbackArgument<1,
-                                 MediaFoundationCdm::IsTypeSupportedResultCB>(
-              /*value_or_error=*/base::ok(true)));
+      .WillOnce(base::test::RunOnceCallback<1>(
+          /*value_or_error=*/base::ok(true)));
   is_type_supported_cb_handler_.SetBehavior(is_type_supported_cb.Get());
 
   CdmKeyInformation::KeyStatus key_status;
@@ -269,10 +257,8 @@ TEST_F(MediaFoundationCdmTest, GetStatusForPolicy_HdcpV1_1_KeyStatusUsable) {
   Initialize();
   EXPECT_CALL(is_type_supported_cb,
               Run("video/mp4;codecs=\"avc1\";features=\"hdcp=2\"", _))
-      .WillOnce(
-          InvokeCallbackArgument<1,
-                                 MediaFoundationCdm::IsTypeSupportedResultCB>(
-              /*value_or_error=*/base::ok(true)));
+      .WillOnce(base::test::RunOnceCallback<1>(
+          /*value_or_error=*/base::ok(true)));
   is_type_supported_cb_handler_.SetBehavior(is_type_supported_cb.Get());
 
   CdmKeyInformation::KeyStatus key_status;
@@ -289,10 +275,8 @@ TEST_F(MediaFoundationCdmTest,
   Initialize();
   EXPECT_CALL(is_type_supported_cb,
               Run("video/mp4;codecs=\"avc1\";features=\"hdcp=2\"", _))
-      .WillOnce(
-          InvokeCallbackArgument<1,
-                                 MediaFoundationCdm::IsTypeSupportedResultCB>(
-              /*value_or_error=*/base::ok(false)));
+      .WillOnce(base::test::RunOnceCallback<1>(
+          /*value_or_error=*/base::ok(false)));
   is_type_supported_cb_handler_.SetBehavior(is_type_supported_cb.Get());
 
   CdmKeyInformation::KeyStatus key_status;
@@ -546,9 +530,6 @@ TEST_F(MediaFoundationCdmTest, LoadSession) {
 TEST_F(MediaFoundationCdmTest, UpdateSession) {
   Initialize();
   CreateSessionAndGenerateRequest();
-
-  COM_EXPECT_CALL(mf_cdm_, QueryInterface(IID_IMFAttributes, _))
-      .WillOnce(Return(E_FAIL));
 
   std::vector<uint8_t> response = StringToVector("response");
   COM_EXPECT_CALL(mf_cdm_session_, Update(NotNull(), response.size()))

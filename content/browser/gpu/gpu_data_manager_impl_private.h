@@ -29,7 +29,6 @@
 #include "media/base/supported_video_decoder_config.h"
 #include "media/video/video_encode_accelerator.h"
 #include "ui/display/display_observer.h"
-#include "ui/gl/gpu_preference.h"
 
 namespace base {
 class CommandLine;
@@ -53,9 +52,8 @@ class CONTENT_EXPORT GpuDataManagerImplPrivate {
   std::vector<std::string> GetDawnInfoList() const;
   bool GpuAccessAllowed(std::string* reason) const;
   bool GpuAccessAllowedForHardwareGpu(std::string* reason) const;
-  void RequestDx12VulkanVideoGpuInfoIfNeeded(
-      GpuDataManagerImpl::GpuInfoRequest request,
-      bool delayed);
+  void RequestGpuInfoIfNeeded(GpuDataManagerImpl::GpuInfoRequest request,
+                              bool delayed);
   bool IsEssentialGpuInfoAvailable() const;
   bool IsDx12VulkanVersionAvailable() const;
   bool IsGpuFeatureInfoAvailable() const;
@@ -68,6 +66,9 @@ class CONTENT_EXPORT GpuDataManagerImplPrivate {
   void DisableHardwareAcceleration();
   bool HardwareAccelerationEnabled() const;
   bool IsGpuRasterizationForUIEnabled() const;
+  bool supports_gpu_mode_hardware_gl() const {
+    return supports_gpu_mode_hardware_gl_;
+  }
 
   void UpdateGpuInfo(
       const gpu::GPUInfo& gpu_info,
@@ -75,15 +76,12 @@ class CONTENT_EXPORT GpuDataManagerImplPrivate {
 #if BUILDFLAG(IS_WIN)
   void UpdateDirectXInfo(uint32_t d3d12_feature_level,
                          uint32_t directml_feature_level);
-  void UpdateVulkanInfo(uint32_t vulkan_version);
   void UpdateDevicePerfInfo(const gpu::DevicePerfInfo& device_perf_info);
 
   void UpdateOverlayInfo(const gpu::OverlayInfo& overlay_info);
   void UpdateDXGIInfo(gfx::mojom::DXGIInfoPtr dxgi_info);
   void UpdateDirectXRequestStatus(bool request_continues);
-  void UpdateVulkanRequestStatus(bool request_continues);
   bool DirectXRequested() const;
-  bool VulkanRequested() const;
   void TerminateInfoCollectionGpuProcess();
   void SetUseAdapterLuid(const CHROME_LUID& luid);
   void ClearUseAdapterLuid();
@@ -124,8 +122,6 @@ class CONTENT_EXPORT GpuDataManagerImplPrivate {
   void ProcessCrashed();
 
   base::ListValue GetLogMessages() const;
-
-  void HandleGpuSwitch();
 
   void BlockDomainsFrom3DAPIs(const std::set<GURL>& urls,
                               gpu::DomainGuilt guilt);
@@ -244,7 +240,6 @@ class CONTENT_EXPORT GpuDataManagerImplPrivate {
   void NotifyGpuInfoUpdate();
 
   void RequestGpuSupportedDirectXVersion(bool delayed);
-  void RequestGpuSupportedVulkanVersion(bool delayed);
   void RequestDawnInfo(bool delayed, bool collect_metrics);
   void RequestMojoMediaVideoCapabilities();
 
@@ -259,9 +254,6 @@ class CONTENT_EXPORT GpuDataManagerImplPrivate {
   bool gpu_info_dx_valid_ = false;
   bool gpu_info_dx_requested_ = false;
   bool gpu_info_dx_request_failed_ = false;
-  bool gpu_info_vulkan_valid_ = false;
-  bool gpu_info_vulkan_requested_ = false;
-  bool gpu_info_vulkan_request_failed_ = false;
   std::optional<CHROME_LUID> use_adapter_luid_;
 #endif
   // The Dawn info queried from the GPU process.
@@ -274,6 +266,8 @@ class CONTENT_EXPORT GpuDataManagerImplPrivate {
   bool is_gpu_compositing_disabled_for_hardware_gpu_ = false;
   bool gpu_access_allowed_for_hardware_gpu_ = true;
   std::string gpu_access_blocked_reason_for_hardware_gpu_;
+
+  const bool supports_gpu_mode_hardware_gl_;
 
   gfx::GpuExtraInfo gpu_extra_info_;
 

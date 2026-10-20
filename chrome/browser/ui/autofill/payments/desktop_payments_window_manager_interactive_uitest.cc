@@ -2,6 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "chrome/browser/ui/autofill/payments/desktop_payments_window_manager.h"
+
 #include <memory>
 #include <string>
 #include <string_view>
@@ -10,14 +12,13 @@
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/mock_callback.h"
-#include "chrome/browser/ui/autofill/payments/desktop_payments_window_manager.h"
 #include "chrome/browser/ui/autofill/payments/desktop_payments_window_manager_test_api.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_tabstrip.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface_iterator.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/test/test_browser_ui.h"
 #include "chrome/browser/ui/views/autofill/payments/payments_window_user_consent_dialog_view.h"
 #include "chrome/test/base/interactive_test_utils.h"
@@ -33,14 +34,17 @@
 #include "components/autofill/core/browser/payments/payments_window_manager.h"
 #include "components/autofill/core/browser/payments/test_payments_autofill_client.h"
 #include "components/autofill/core/browser/payments/test_payments_network_interface.h"
-#include "components/autofill/core/browser/test_utils/autofill_test_utils.h"
+#include "components/autofill/core/browser/test_utils/autofill_test_util.h"
 #include "content/public/browser/site_instance.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/test/browser_test.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "ui/base/page_transition_types.h"
+#include "ui/base/window_open_disposition.h"
 #include "ui/views/window/dialog_client_view.h"
 
-namespace autofill {
+namespace autofill::payments {
+namespace {
 
 class TestContentAutofillClientForWindowManagerTest
     : public TestContentAutofillClient {
@@ -49,16 +53,14 @@ class TestContentAutofillClientForWindowManagerTest
       content::WebContents* web_contents)
       : TestContentAutofillClient(web_contents) {
     GetPaymentsAutofillClient()->set_payments_network_interface(
-        std::make_unique<payments::TestPaymentsNetworkInterface>(
-            nullptr, nullptr, nullptr));
+        std::make_unique<TestPaymentsNetworkInterface>(nullptr, nullptr,
+                                                       nullptr));
     GetPaymentsAutofillClient()->set_payments_window_manager(
-        std::make_unique<payments::DesktopPaymentsWindowManager>(this));
+        std::make_unique<DesktopPaymentsWindowManager>(this));
   }
 
   ~TestContentAutofillClientForWindowManagerTest() override = default;
 };
-
-namespace payments {
 
 constexpr std::string_view kTestUrl = "https://site.example/";
 constexpr std::string_view kBnplInitialUrl = "https://www.bnplinitialurl.com/";
@@ -251,6 +253,25 @@ IN_PROC_BROWSER_TEST_F(DesktopPaymentsWindowManagerInteractiveUiTest,
       client()->GetPaymentsAutofillClient()->autofill_error_dialog_shown());
 }
 
+// Tests that an error dialog is shown if the URL to open returned from the
+// server has a non-HTTP/HTTPS scheme.
+IN_PROC_BROWSER_TEST_F(DesktopPaymentsWindowManagerInteractiveUiTest,
+                       Vcn3ds_InvokeUi_BadUrlScheme_ErrorDialogShown) {
+  PaymentsWindowManager::Vcn3dsContext context;
+  context.card = test::GetVirtualCard();
+  context.context_token = kTestContextToken;
+  context.completion_callback = authentication_complete_callback_.Get();
+  context.user_consent_already_given = true;
+  Vcn3dsChallengeOptionMetadata metadata;
+  metadata.url_to_open = GURL("data:text/html,Hello");
+  metadata.success_query_param_name = "token";
+  metadata.failure_query_param_name = "failure";
+  context.challenge_option.vcn_3ds_metadata = std::move(metadata);
+  window_manager().InitVcn3dsAuthentication(std::move(context));
+  EXPECT_TRUE(
+      client()->GetPaymentsAutofillClient()->autofill_error_dialog_shown());
+}
+
 // Tests that an error dialog is shown if there is no success query param name
 // returned from the server.
 // TODO(crbug.com/435092593): Re-enable once flakiness is fixed.
@@ -325,11 +346,10 @@ IN_PROC_BROWSER_TEST_F(DesktopPaymentsWindowManagerInteractiveUiTest,
 
   // Navigate to a page where there is a token query param.
   GetPopupWebContents()->OpenURL(
-      content::OpenURLParams(GURL("https://site.example/?token=sometesttoken"),
-                             content::Referrer(),
-                             WindowOpenDisposition::CURRENT_TAB,
-                             ui::PageTransition::PAGE_TRANSITION_AUTO_TOPLEVEL,
-                             /*is_renderer_initiated=*/false),
+      content::OpenURLParams::CreateBrowserInitiated(
+          GURL("https://site.example/?token=sometesttoken"),
+          WindowOpenDisposition::CURRENT_TAB,
+          ui::PageTransition::PAGE_TRANSITION_AUTO_TOPLEVEL),
       /*navigation_handle_callback=*/{});
 
   WaitForPopupClose();
@@ -340,8 +360,8 @@ IN_PROC_BROWSER_TEST_F(DesktopPaymentsWindowManagerInteractiveUiTest,
   auto* autofill_client = client();
   EXPECT_TRUE(autofill_client->GetPaymentsAutofillClient()
                   ->autofill_progress_dialog_shown());
-  const std::optional<payments::UnmaskRequestDetails>& unmask_request =
-      static_cast<payments::TestPaymentsNetworkInterface*>(
+  const std::optional<UnmaskRequestDetails>& unmask_request =
+      static_cast<TestPaymentsNetworkInterface*>(
           autofill_client->GetPaymentsAutofillClient()
               ->GetPaymentsNetworkInterface())
           ->unmask_request();
@@ -402,11 +422,10 @@ IN_PROC_BROWSER_TEST_F(
 
   // Navigate to a page where there is a token query param.
   GetPopupWebContents()->OpenURL(
-      content::OpenURLParams(GURL("https://site.example/?token=sometesttoken"),
-                             content::Referrer(),
-                             WindowOpenDisposition::CURRENT_TAB,
-                             ui::PageTransition::PAGE_TRANSITION_AUTO_TOPLEVEL,
-                             /*is_renderer_initiated=*/false),
+      content::OpenURLParams::CreateBrowserInitiated(
+          GURL("https://site.example/?token=sometesttoken"),
+          WindowOpenDisposition::CURRENT_TAB,
+          ui::PageTransition::PAGE_TRANSITION_AUTO_TOPLEVEL),
       /*navigation_handle_callback=*/{});
 
   WaitForPopupClose();
@@ -442,11 +461,10 @@ IN_PROC_BROWSER_TEST_F(
 
   // Navigate to a page where there are shouldProceed and token query params.
   GetPopupWebContents()->OpenURL(
-      content::OpenURLParams(GURL("https://site.example/?token=sometesttoken"),
-                             content::Referrer(),
-                             WindowOpenDisposition::CURRENT_TAB,
-                             ui::PageTransition::PAGE_TRANSITION_AUTO_TOPLEVEL,
-                             /*is_renderer_initiated=*/false),
+      content::OpenURLParams::CreateBrowserInitiated(
+          GURL("https://site.example/?token=sometesttoken"),
+          WindowOpenDisposition::CURRENT_TAB,
+          ui::PageTransition::PAGE_TRANSITION_AUTO_TOPLEVEL),
       /*navigation_handle_callback=*/{});
 
   WaitForPopupClose();
@@ -467,11 +485,10 @@ IN_PROC_BROWSER_TEST_F(
   // Navigate to a page where there is a shouldProceed query param that denotes
   // failure.
   GetPopupWebContents()->OpenURL(
-      content::OpenURLParams(GURL("https://site.example/?failure=true"),
-                             content::Referrer(),
-                             WindowOpenDisposition::CURRENT_TAB,
-                             ui::PageTransition::PAGE_TRANSITION_AUTO_TOPLEVEL,
-                             /*is_renderer_initiated=*/false),
+      content::OpenURLParams::CreateBrowserInitiated(
+          GURL("https://site.example/?failure=true"),
+          WindowOpenDisposition::CURRENT_TAB,
+          ui::PageTransition::PAGE_TRANSITION_AUTO_TOPLEVEL),
       /*navigation_handle_callback=*/{});
 
   WaitForPopupClose();
@@ -492,11 +509,10 @@ IN_PROC_BROWSER_TEST_F(DesktopPaymentsWindowManagerInteractiveUiTest,
 
   // Navigate to a page where there is a token query param.
   GetPopupWebContents()->OpenURL(
-      content::OpenURLParams(GURL("https://site.example/?token=sometesttoken"),
-                             content::Referrer(),
-                             WindowOpenDisposition::CURRENT_TAB,
-                             ui::PageTransition::PAGE_TRANSITION_AUTO_TOPLEVEL,
-                             /*is_renderer_initiated=*/false),
+      content::OpenURLParams::CreateBrowserInitiated(
+          GURL("https://site.example/?token=sometesttoken"),
+          WindowOpenDisposition::CURRENT_TAB,
+          ui::PageTransition::PAGE_TRANSITION_AUTO_TOPLEVEL),
       /*navigation_handle_callback=*/{});
 
   WaitForPopupClose();
@@ -506,8 +522,8 @@ IN_PROC_BROWSER_TEST_F(DesktopPaymentsWindowManagerInteractiveUiTest,
   // with the correct fields set, and the progress dialog was shown.
   EXPECT_TRUE(
       client()->GetPaymentsAutofillClient()->autofill_progress_dialog_shown());
-  const std::optional<payments::UnmaskRequestDetails>& unmask_request =
-      static_cast<payments::TestPaymentsNetworkInterface*>(
+  const std::optional<UnmaskRequestDetails>& unmask_request =
+      static_cast<TestPaymentsNetworkInterface*>(
           client()->GetPaymentsAutofillClient()->GetPaymentsNetworkInterface())
           ->unmask_request();
   ASSERT_TRUE(unmask_request.has_value());
@@ -545,11 +561,10 @@ IN_PROC_BROWSER_TEST_F(
 
   // Navigate to a page where there is a token query param.
   GetPopupWebContents()->OpenURL(
-      content::OpenURLParams(GURL("https://site.example/?token=sometesttoken"),
-                             content::Referrer(),
-                             WindowOpenDisposition::CURRENT_TAB,
-                             ui::PageTransition::PAGE_TRANSITION_AUTO_TOPLEVEL,
-                             /*is_renderer_initiated=*/false),
+      content::OpenURLParams::CreateBrowserInitiated(
+          GURL("https://site.example/?token=sometesttoken"),
+          WindowOpenDisposition::CURRENT_TAB,
+          ui::PageTransition::PAGE_TRANSITION_AUTO_TOPLEVEL),
       /*navigation_handle_callback=*/{});
 
   WaitForPopupClose();
@@ -582,19 +597,18 @@ IN_PROC_BROWSER_TEST_F(
   // Navigate to a page where there is a failure query param that denotes
   // the authentication failed.
   GetPopupWebContents()->OpenURL(
-      content::OpenURLParams(GURL("https://site.example/?failure=true"),
-                             content::Referrer(),
-                             WindowOpenDisposition::CURRENT_TAB,
-                             ui::PageTransition::PAGE_TRANSITION_AUTO_TOPLEVEL,
-                             /*is_renderer_initiated=*/false),
+      content::OpenURLParams::CreateBrowserInitiated(
+          GURL("https://site.example/?failure=true"),
+          WindowOpenDisposition::CURRENT_TAB,
+          ui::PageTransition::PAGE_TRANSITION_AUTO_TOPLEVEL),
       /*navigation_handle_callback=*/{});
 
   WaitForPopupClose();
   EXPECT_FALSE(test_api(window_manager()).GetFlowState().has_value());
 
   // Check that the flow was ended and no UnmaskCardRequest was triggered.
-  const std::optional<payments::UnmaskRequestDetails>& unmask_request =
-      static_cast<payments::TestPaymentsNetworkInterface*>(
+  const std::optional<UnmaskRequestDetails>& unmask_request =
+      static_cast<TestPaymentsNetworkInterface*>(
           client()->GetPaymentsAutofillClient()->GetPaymentsNetworkInterface())
           ->unmask_request();
   ASSERT_FALSE(unmask_request.has_value());
@@ -621,11 +635,10 @@ IN_PROC_BROWSER_TEST_F(
   // Navigate to a page where there is a failure query param that denotes
   // the authentication failed.
   GetPopupWebContents()->OpenURL(
-      content::OpenURLParams(GURL("https://site.example/?failure=true"),
-                             content::Referrer(),
-                             WindowOpenDisposition::CURRENT_TAB,
-                             ui::PageTransition::PAGE_TRANSITION_AUTO_TOPLEVEL,
-                             /*is_renderer_initiated=*/false),
+      content::OpenURLParams::CreateBrowserInitiated(
+          GURL("https://site.example/?failure=true"),
+          WindowOpenDisposition::CURRENT_TAB,
+          ui::PageTransition::PAGE_TRANSITION_AUTO_TOPLEVEL),
       /*navigation_handle_callback=*/{});
 
   WaitForPopupClose();
@@ -651,8 +664,8 @@ IN_PROC_BROWSER_TEST_F(DesktopPaymentsWindowManagerInteractiveUiTest,
   EXPECT_FALSE(test_api(window_manager()).GetFlowState().has_value());
 
   // Check that the flow was ended and no UnmaskCardRequest was triggered.
-  const std::optional<payments::UnmaskRequestDetails>& unmask_request =
-      static_cast<payments::TestPaymentsNetworkInterface*>(
+  const std::optional<UnmaskRequestDetails>& unmask_request =
+      static_cast<TestPaymentsNetworkInterface*>(
           client()->GetPaymentsAutofillClient()->GetPaymentsNetworkInterface())
           ->unmask_request();
   ASSERT_FALSE(unmask_request.has_value());
@@ -696,11 +709,10 @@ IN_PROC_BROWSER_TEST_F(DesktopPaymentsWindowManagerInteractiveUiTest,
 
   // Navigate to a page where there is an unrecognized query param.
   GetPopupWebContents()->OpenURL(
-      content::OpenURLParams(
+      content::OpenURLParams::CreateBrowserInitiated(
           GURL("https://site.example/?unrecognizedQueryParam=true"),
-          content::Referrer(), WindowOpenDisposition::CURRENT_TAB,
-          ui::PageTransition::PAGE_TRANSITION_AUTO_TOPLEVEL,
-          /*is_renderer_initiated=*/false),
+          WindowOpenDisposition::CURRENT_TAB,
+          ui::PageTransition::PAGE_TRANSITION_AUTO_TOPLEVEL),
       /*navigation_handle_callback=*/{});
 
   ClosePopupAndWait();
@@ -708,8 +720,8 @@ IN_PROC_BROWSER_TEST_F(DesktopPaymentsWindowManagerInteractiveUiTest,
   EXPECT_FALSE(test_api(window_manager()).GetFlowState().has_value());
 
   // Check that the flow was ended and no UnmaskCardRequest was triggered.
-  const std::optional<payments::UnmaskRequestDetails>& unmask_request =
-      static_cast<payments::TestPaymentsNetworkInterface*>(
+  const std::optional<UnmaskRequestDetails>& unmask_request =
+      static_cast<TestPaymentsNetworkInterface*>(
           client()->GetPaymentsAutofillClient()->GetPaymentsNetworkInterface())
           ->unmask_request();
   ASSERT_FALSE(unmask_request.has_value());
@@ -735,11 +747,10 @@ IN_PROC_BROWSER_TEST_F(DesktopPaymentsWindowManagerInteractiveUiTest,
 
   // Navigate to a page where there is a token query param.
   GetPopupWebContents()->OpenURL(
-      content::OpenURLParams(GURL("https://site.example/?token=sometesttoken"),
-                             content::Referrer(),
-                             WindowOpenDisposition::CURRENT_TAB,
-                             ui::PageTransition::PAGE_TRANSITION_AUTO_TOPLEVEL,
-                             /*is_renderer_initiated=*/false),
+      content::OpenURLParams::CreateBrowserInitiated(
+          GURL("https://site.example/?token=sometesttoken"),
+          WindowOpenDisposition::CURRENT_TAB,
+          ui::PageTransition::PAGE_TRANSITION_AUTO_TOPLEVEL),
       /*navigation_handle_callback=*/{});
 
   WaitForPopupClose();
@@ -773,11 +784,10 @@ IN_PROC_BROWSER_TEST_F(
 
   // Navigate to a page where there is a token query param.
   GetPopupWebContents()->OpenURL(
-      content::OpenURLParams(GURL("https://site.example/?token=sometesttoken"),
-                             content::Referrer(),
-                             WindowOpenDisposition::CURRENT_TAB,
-                             ui::PageTransition::PAGE_TRANSITION_AUTO_TOPLEVEL,
-                             /*is_renderer_initiated=*/false),
+      content::OpenURLParams::CreateBrowserInitiated(
+          GURL("https://site.example/?token=sometesttoken"),
+          WindowOpenDisposition::CURRENT_TAB,
+          ui::PageTransition::PAGE_TRANSITION_AUTO_TOPLEVEL),
       /*navigation_handle_callback=*/{});
 
   WaitForPopupClose();
@@ -828,10 +838,9 @@ IN_PROC_BROWSER_TEST_F(DesktopPaymentsWindowManagerInteractiveUiTest,
 
   // Navigate to the URL that denotes success inside of the BNPL pop-up.
   GetPopupWebContents()->OpenURL(
-      content::OpenURLParams(success_url, content::Referrer(),
-                             WindowOpenDisposition::CURRENT_TAB,
-                             ui::PageTransition::PAGE_TRANSITION_AUTO_TOPLEVEL,
-                             /*is_renderer_initiated=*/false),
+      content::OpenURLParams::CreateBrowserInitiated(
+          success_url, WindowOpenDisposition::CURRENT_TAB,
+          ui::PageTransition::PAGE_TRANSITION_AUTO_TOPLEVEL),
       /*navigation_handle_callback=*/{});
 
   WaitForPopupClose();
@@ -860,12 +869,11 @@ IN_PROC_BROWSER_TEST_F(DesktopPaymentsWindowManagerInteractiveUiTest,
 
   // Navigate to the URL that denotes success inside of the BNPL pop-up.
   GetPopupWebContents()->OpenURL(
-      content::OpenURLParams(GURL(std::string(kBnplSuccessUrlPrefix) +
-                                  "testqueryparam?param1=true"),
-                             content::Referrer(),
-                             WindowOpenDisposition::CURRENT_TAB,
-                             ui::PageTransition::PAGE_TRANSITION_AUTO_TOPLEVEL,
-                             /*is_renderer_initiated=*/false),
+      content::OpenURLParams::CreateBrowserInitiated(
+          GURL(std::string(kBnplSuccessUrlPrefix) +
+               "testqueryparam?param1=true"),
+          WindowOpenDisposition::CURRENT_TAB,
+          ui::PageTransition::PAGE_TRANSITION_AUTO_TOPLEVEL),
       /*navigation_handle_callback=*/{});
 
   WaitForPopupClose();
@@ -884,12 +892,11 @@ IN_PROC_BROWSER_TEST_F(
 
   // Navigate to the URL that denotes success inside of the BNPL pop-up.
   GetPopupWebContents()->OpenURL(
-      content::OpenURLParams(GURL(std::string(kBnplSuccessUrlPrefix) +
-                                  "testqueryparam?param1=true"),
-                             content::Referrer(),
-                             WindowOpenDisposition::CURRENT_TAB,
-                             ui::PageTransition::PAGE_TRANSITION_AUTO_TOPLEVEL,
-                             /*is_renderer_initiated=*/false),
+      content::OpenURLParams::CreateBrowserInitiated(
+          GURL(std::string(kBnplSuccessUrlPrefix) +
+               "testqueryparam?param1=true"),
+          WindowOpenDisposition::CURRENT_TAB,
+          ui::PageTransition::PAGE_TRANSITION_AUTO_TOPLEVEL),
       /*navigation_handle_callback=*/{});
 
   WaitForPopupClose();
@@ -914,10 +921,9 @@ IN_PROC_BROWSER_TEST_F(DesktopPaymentsWindowManagerInteractiveUiTest,
 
   // Navigate to the URL that denotes failure inside of the BNPL pop-up.
   GetPopupWebContents()->OpenURL(
-      content::OpenURLParams(failure_url, content::Referrer(),
-                             WindowOpenDisposition::CURRENT_TAB,
-                             ui::PageTransition::PAGE_TRANSITION_AUTO_TOPLEVEL,
-                             /*is_renderer_initiated=*/false),
+      content::OpenURLParams::CreateBrowserInitiated(
+          failure_url, WindowOpenDisposition::CURRENT_TAB,
+          ui::PageTransition::PAGE_TRANSITION_AUTO_TOPLEVEL),
       /*navigation_handle_callback=*/{});
 
   WaitForPopupClose();
@@ -934,12 +940,11 @@ IN_PROC_BROWSER_TEST_F(DesktopPaymentsWindowManagerInteractiveUiTest,
 
   // Navigate to the URL that denotes failure inside of the BNPL pop-up.
   GetPopupWebContents()->OpenURL(
-      content::OpenURLParams(GURL(std::string(kBnplFailureUrlPrefix) +
-                                  "testqueryparam?param1=true"),
-                             content::Referrer(),
-                             WindowOpenDisposition::CURRENT_TAB,
-                             ui::PageTransition::PAGE_TRANSITION_AUTO_TOPLEVEL,
-                             /*is_renderer_initiated=*/false),
+      content::OpenURLParams::CreateBrowserInitiated(
+          GURL(std::string(kBnplFailureUrlPrefix) +
+               "testqueryparam?param1=true"),
+          WindowOpenDisposition::CURRENT_TAB,
+          ui::PageTransition::PAGE_TRANSITION_AUTO_TOPLEVEL),
       /*navigation_handle_callback=*/{});
 
   WaitForPopupClose();
@@ -958,12 +963,11 @@ IN_PROC_BROWSER_TEST_F(
 
   // Navigate to the URL that denotes success inside of the BNPL pop-up.
   GetPopupWebContents()->OpenURL(
-      content::OpenURLParams(GURL(std::string(kBnplFailureUrlPrefix) +
-                                  "testqueryparam?param1=true"),
-                             content::Referrer(),
-                             WindowOpenDisposition::CURRENT_TAB,
-                             ui::PageTransition::PAGE_TRANSITION_AUTO_TOPLEVEL,
-                             /*is_renderer_initiated=*/false),
+      content::OpenURLParams::CreateBrowserInitiated(
+          GURL(std::string(kBnplFailureUrlPrefix) +
+               "testqueryparam?param1=true"),
+          WindowOpenDisposition::CURRENT_TAB,
+          ui::PageTransition::PAGE_TRANSITION_AUTO_TOPLEVEL),
       /*navigation_handle_callback=*/{});
 
   WaitForPopupClose();
@@ -1034,11 +1038,9 @@ IN_PROC_BROWSER_TEST_F(DesktopPaymentsWindowManagerInteractiveUiTest,
 
   // Navigate to the URL that denotes the BNPL pop-up has not completed yet.
   GetPopupWebContents()->OpenURL(
-      content::OpenURLParams(success_url_with_different_prefix,
-                             content::Referrer(),
-                             WindowOpenDisposition::CURRENT_TAB,
-                             ui::PageTransition::PAGE_TRANSITION_AUTO_TOPLEVEL,
-                             /*is_renderer_initiated=*/false),
+      content::OpenURLParams::CreateBrowserInitiated(
+          success_url_with_different_prefix, WindowOpenDisposition::CURRENT_TAB,
+          ui::PageTransition::PAGE_TRANSITION_AUTO_TOPLEVEL),
       /*navigation_handle_callback=*/{});
 
   ClosePopupAndWait();
@@ -1228,6 +1230,5 @@ IN_PROC_BROWSER_TEST_F(PaymentsWindowUserConsentDialogIntegrationTest,
           })));
 }
 
-}  // namespace payments
-
-}  // namespace autofill
+}  // namespace
+}  // namespace autofill::payments

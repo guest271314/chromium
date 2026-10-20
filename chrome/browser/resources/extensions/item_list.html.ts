@@ -19,17 +19,18 @@ export function getHtml(this: ExtensionsItemListElement) {
         <extensions-review-panel .extensions="${this.unsafeExtensions_}"
             .delegate="${this.delegate as ServiceInterface}">
         </extensions-review-panel>
-      </div>` : ''}
+      </div>
+    ` : ''}
 
     ${this.shouldShowMv2DeprecationPanel_() ? html`
       <div class="items-container panel">
         <extensions-mv2-deprecation-panel
             .extensions="${this.mv2DeprecatedExtensions_}"
             .delegate="${this.delegate as ServiceInterface}"
-            .mv2ExperimentStage="${this.mv2ExperimentStage_}"
             ?show-title="${this.showSafetyCheckReviewPanel_}">
         </extensions-mv2-deprecation-panel>
-      </div>` : ''}
+      </div>
+    ` : ''}
 
     <div id="no-items" class="empty-list-message"
         ?hidden="${!this.shouldShowEmptyItemsMessage_()}">
@@ -46,7 +47,18 @@ export function getHtml(this: ExtensionsItemListElement) {
       <!-- section-header needs to left-align with the grid content below, and
            the easiest way to achieve this is to make it a grid as well. -->
       <h2 class="section-header items-container">
-        $i18n{extensionsSectionHeader}
+        <span class="section-header-contents">
+          <span>$i18n{extensionsSectionHeader}</span>
+          <span id="pinned-toggle-container"
+              ?hidden="${!this.showExtensionsPinnedByDefault_}">
+            <span id="pinned-toggle-label">$i18n{pinNewExtensions}</span>
+            <cr-toggle id="pinned-toggle"
+                ?checked="${this.extensionsPinnedByDefault}"
+                @change="${this.onExtensionsPinnedByDefaultChange_}"
+                aria-labelledby="pinned-toggle-label">
+            </cr-toggle>
+          </span>
+        </span>
       </h2>
       <div class="items-container">
         <!-- Render only a few items first, to improve initial render time,
@@ -58,9 +70,9 @@ export function getHtml(this: ExtensionsItemListElement) {
               ?safety-check-showing="${
                   this.hasSafetyCheckTriggeringExtension_()}"
               .delegate="${this.delegate as ServiceInterface}"
-              ?in-dev-mode="${this.inDevMode}"
-              .mv2ExperimentStage="${this.mv2ExperimentStage_}">
-          </extensions-item>`, 6)}
+              ?in-dev-mode="${this.inDevMode}">
+          </extensions-item>
+        `, 6)}
       </div>
     </div>
 
@@ -73,7 +85,8 @@ export function getHtml(this: ExtensionsItemListElement) {
           <extensions-item id="${item.id}" .data="${item}"
               .delegate="${this.delegate as ServiceInterface}"
               ?in-dev-mode="${this.inDevMode}">
-          </extensions-item>`, 6)}
+          </extensions-item>
+        `, 6)}
       </div>
     </div>
   </div>

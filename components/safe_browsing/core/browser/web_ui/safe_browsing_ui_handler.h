@@ -5,6 +5,7 @@
 #ifndef COMPONENTS_SAFE_BROWSING_CORE_BROWSER_WEB_UI_SAFE_BROWSING_UI_HANDLER_H_
 #define COMPONENTS_SAFE_BROWSING_CORE_BROWSER_WEB_UI_SAFE_BROWSING_UI_HANDLER_H_
 
+#include "base/memory/scoped_refptr.h"
 #include "base/values.h"
 #include "components/safe_browsing/core/browser/download_check_result.h"
 #include "components/safe_browsing/core/browser/web_ui/safe_browsing_local_state_delegate.h"
@@ -139,6 +140,11 @@ class SafeBrowsingUIHandler {
   // currently open chrome://safe-browsing tab was opened.
   void GetReportingEvents(const base::ListValue& args);
 
+  // Gets the V5 get-hash network lookups that have been collected since the
+  // oldest currently open chrome://safe-browsing tab was opened.
+  //  - `args`: the JavaScript callback ID passed in a ListValue.
+  void GetV5GetHashLookups(const base::ListValue& args);
+
   // Get the deep scanning requests that have been collected since the oldest
   // currently open chrome://safe-browsing tab was opened.
   void GetDeepScans(const base::ListValue& args);
@@ -197,8 +203,9 @@ class SafeBrowsingUIHandler {
   void OnGetCookie(const std::string& callback_id,
                    const std::vector<net::CanonicalCookie>& cookies);
 
-  void GetSavedPasswordsImpl(const std::string& callback_id,
-                             os_crypt_async::Encryptor encryptor);
+  void GetSavedPasswordsImpl(
+      const std::string& callback_id,
+      scoped_refptr<os_crypt_async::Encryptor> encryptor);
 
   mojo::Remote<network::mojom::CookieManager> cookie_manager_remote_;
 

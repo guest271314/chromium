@@ -10,6 +10,7 @@
 
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
+#include "third_party/blink/public/common/dom_storage/session_storage_namespace_id.h"
 
 namespace storage {
 
@@ -42,6 +43,11 @@ bool SessionStorageNamespaceImpl::HasChildNamespacesWaitingForClone() const {
 }
 void SessionStorageNamespaceImpl::ClearChildNamespacesWaitingForClone() {
   child_namespaces_waiting_for_clone_call_.clear();
+}
+void SessionStorageNamespaceImpl::AbandonChildNamespaceWaitingForClone(
+    const std::string& namespace_id) {
+  child_namespaces_waiting_for_clone_call_.erase(namespace_id);
+  abandoned_child_namespaces_.insert(namespace_id);
 }
 
 bool SessionStorageNamespaceImpl::HasAreaForStorageKeyForTesting(
@@ -117,12 +123,22 @@ void SessionStorageNamespaceImpl::Bind(
 }
 
 void SessionStorageNamespaceImpl::PurgeUnboundAreas() {
+  const bool database_migration_in_progress =
+      database_ && database_->is_migrating();
+
   auto it = storage_key_areas_.begin();
   while (it != storage_key_areas_.end()) {
-    if (!it->second->IsBound())
-      it = storage_key_areas_.erase(it);
-    else
+    SessionStorageAreaImpl& storage_area = *it->second;
+    if (storage_area.IsBound()) {
       ++it;
+    } else if (storage_area.data_map()->storage_area()->HasPendingCommit() &&
+               database_migration_in_progress) {
+      // To avoid losing the pending commit, don't purge the storage area during
+      // migration.
+      ++it;
+    } else {
+      it = storage_key_areas_.erase(it);
+    }
   }
 }
 
@@ -200,6 +216,22 @@ void SessionStorageNamespaceImpl::OpenArea(
 
 void SessionStorageNamespaceImpl::Clone(const std::string& clone_to_namespace) {
   DCHECK(IsPopulated());
+  // `clone_to_namespace` comes from the mojo peer and must be a valid session
+  // storage namespace ID. Reject invalid IDs here rather than crashing later
+  // when the shared map's metadata key is written.
+  if (clone_to_namespace.size() != blink::kSessionStorageNamespaceIdLength) {
+    receivers_.ReportBadMessage("Invalid session storage namespace ID.");
+    return;
+  }
+
+  // The namespace this clone was meant for was deleted before this call
+  // arrived, so there is nobody left to own the clone. Drop it instead of
+  // registering a namespace that would live until the storage service shuts
+  // down.
+  if (abandoned_child_namespaces_.erase(clone_to_namespace)) {
+    return;
+  }
+
   child_namespaces_waiting_for_clone_call_.erase(clone_to_namespace);
   delegate_->RegisterShallowClonedNamespace(namespace_id_, clone_to_namespace,
                                             storage_key_areas_);
@@ -255,6 +287,18 @@ void SessionStorageNamespaceImpl::CloneAllNamespacesWaitingForClone(
   child_namespaces_waiting_for_clone_call_.clear();
 }
 
+SessionStorageAreaImpl* SessionStorageNamespaceImpl::GetStorageAreaForTesting(
+    const blink::StorageKey& storage_key) {
+  if (!IsPopulated()) {
+    return nullptr;
+  }
+  auto it = storage_key_areas_.find(storage_key);
+  if (it == storage_key_areas_.end()) {
+    return nullptr;
+  }
+  return it->second.get();
+}
+
 void SessionStorageNamespaceImpl::FlushAreasForTesting() {
   for (auto& area : storage_key_areas_)
     area.second->FlushForTesting();
@@ -262,31 +306,12 @@ void SessionStorageNamespaceImpl::FlushAreasForTesting() {
 
 void SessionStorageNamespaceImpl::FlushStorageKeyForTesting(
     const blink::StorageKey& storage_key) {
-  if (!IsPopulated())
-    return;
-  auto it = storage_key_areas_.find(storage_key);
-  if (it == storage_key_areas_.end())
-    return;
-  it->second->data_map()->storage_area()->ScheduleImmediateCommit();
-}
-
-void SessionStorageNamespaceImpl::PutValueForTesting(
-    const blink::StorageKey& storage_key,
-    const std::vector<uint8_t>& key,
-    const std::vector<uint8_t>& value,
-    base::OnceCallback<void(bool)> callback) {
-  if (!IsPopulated()) {
+  SessionStorageAreaImpl* session_storage_area =
+      GetStorageAreaForTesting(storage_key);
+  if (!session_storage_area) {
     return;
   }
-
-  auto it = storage_key_areas_.find(storage_key);
-  if (it == storage_key_areas_.end()) {
-    return;
-  }
-
-  it->second->data_map()->storage_area()->Put(
-      key, value, /*client_old_value=*/std::nullopt,
-      /*source=*/nullptr, std::move(callback));
+  session_storage_area->data_map()->storage_area()->ScheduleImmediateCommit();
 }
 
 }  // namespace storage

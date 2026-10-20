@@ -133,8 +133,11 @@ bool URLDataSource::ShouldDenyXFrameOptions() {
 bool URLDataSource::ShouldServiceRequest(const GURL& url,
                                          BrowserContext* browser_context,
                                          int render_process_id) {
-  return url.SchemeIs(kChromeDevToolsScheme) || url.SchemeIs(kChromeUIScheme) ||
-         url.SchemeIs(kChromeUIUntrustedScheme);
+  if (IsChromeUntrustedDataSource(this)) {
+    return url.SchemeIs(kChromeUIUntrustedScheme);
+  }
+
+  return url.SchemeIs(kChromeUIScheme);
 }
 
 bool URLDataSource::ShouldServeMimeTypeAsContentTypeHeader() {

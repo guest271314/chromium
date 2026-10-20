@@ -68,6 +68,7 @@ template("chrome_app") {
     template("browserkit_extension") {
       _process_target = target_name
       _outer_target = _target_name
+
       tweak_info_plist("tweak_${_outer_target}_${_process_target}_plist") {
         info_plist = "//content/app/ios/appex/${_process_target}.plist"
       }
@@ -86,8 +87,9 @@ template("chrome_app") {
             [ "//content/app/ios/appex/${_process_target}.appex.entitlements" ]
       }
 
-      # We don't use ios_appex_bundle here because we don't want to mess with multiple
-      # toolkits as the core framework is built with the default toolkit.
+      # We don't use ios_appex_bundle here because we don't want to mess with
+      # multiple toolkits as the core framework is built with the default
+      # toolkit.
       ios_app_bundle("${_outer_target}_${_process_target}") {
         forward_variables_from(invoker,
                                "*",
@@ -113,9 +115,6 @@ template("chrome_app") {
           ldflags = []
         }
 
-        if (use_lld) {
-          ldflags += [ "-Wl,--ignore-auto-link-option=CoreAudioTypes" ]
-        }
         ldflags += [
           "-Wl,-no_application_extension",
           "-Wl,-rpath,@executable_path/../../Frameworks",

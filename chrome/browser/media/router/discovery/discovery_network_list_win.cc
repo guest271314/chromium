@@ -30,6 +30,7 @@
 #include "base/win/scoped_hstring.h"
 #include "base/win/win_util.h"
 #include "base/win/windows_version.h"
+#include "chrome/browser/media/router/discovery/discovery_network_info.h"
 #include "chrome/browser/media/router/discovery/discovery_network_list.h"
 
 namespace WinrtConnectivity = ABI::Windows::Networking::Connectivity;
@@ -126,12 +127,12 @@ class WlanApi {
         wlan_free_memory(reinterpret_cast<WlanFreeMemoryFunction>(
             GetProcAddress(library, "WlanFreeMemory"))),
         library_(library) {
-    DCHECK(library);
-    DCHECK(wlan_open_handle);
-    DCHECK(wlan_close_handle);
-    DCHECK(wlan_enum_interfaces);
-    DCHECK(wlan_query_interface);
-    DCHECK(wlan_free_memory);
+    CHECK(library, base::NotFatalUntil::M161);
+    CHECK(wlan_open_handle, base::NotFatalUntil::M161);
+    CHECK(wlan_close_handle, base::NotFatalUntil::M161);
+    CHECK(wlan_enum_interfaces, base::NotFatalUntil::M161);
+    CHECK(wlan_query_interface, base::NotFatalUntil::M161);
+    CHECK(wlan_free_memory, base::NotFatalUntil::M161);
   }
 
   HINSTANCE library_;

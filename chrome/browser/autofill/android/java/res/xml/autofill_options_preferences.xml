@@ -10,13 +10,13 @@ found in the LICENSE file.
     android:orderingFromXml="false">
 
    <!-- TODO(crbug.com/476754486): Nest the radio buttons and text message inside the preference category -->
-   <PreferenceCategory
+   <org.chromium.components.browser_ui.settings.ChromeBasePreferenceCategory
         android:id="@+id/autofill_service_provider_category"
         android:key="autofill_service_provider_category"
         android:order="0"
         android:title="@string/settings_autofill_service_provider"
         app:isPreferenceVisible="false" />
-    <org.chromium.chrome.browser.autofill.options.RadioButtonGroupThirdPartyPreference
+    <org.chromium.chrome.browser.autofill.settings.options.RadioButtonGroupThirdPartyPreference
         android:key="autofill_third_party_filling"
         android:order="1"
         android:selectable="false" />
@@ -25,34 +25,25 @@ found in the LICENSE file.
         android:order="2"
         app:allowDividerBelow="false" />
 
-    <PreferenceCategory
+    <org.chromium.components.browser_ui.settings.ChromeBasePreferenceCategory
         android:id="@+id/autofill_ai_category"
         android:key="autofill_ai_category"
         android:order="3"
         android:title="@string/settings_autofill_ai_page_title"
         app:isPreferenceVisible="false">
 
-        <!-- TODO(b/511147704): Rename title and summary string names. -->
-        <org.chromium.components.browser_ui.settings.ChromeBasePreference
-            android:id="@+id/autofill_ai_personal_context"
-            android:key="autofill_ai_personal_context"
-            android:order="0"
-            android:title="@string/accessibility_annotator_settings_title"
-            android:summary="@string/accessibility_annotator_settings_description_android"
-            android:widgetLayout="@layout/preference_widget_open_in_new"
-            app:isPreferenceVisible="false" />
-        <org.chromium.chrome.browser.autofill.options.AutofillAiPreference
+        <org.chromium.chrome.browser.autofill.settings.options.AutofillAiPreference
             android:key="autofill_ai_switch"
             android:layout="@layout/autofill_ai_preference"
-            android:order="1"
+            android:order="0"
             android:title="@string/settings_autofill_ai_page_title"
-            android:summary="@string/settings_autofill_ai_description" />
+            android:summary="@string/settings_autofill_ai_toggle_sub_label" />
 
         <org.chromium.components.browser_ui.settings.ChromeSwitchPreference
             android:id="@+id/autofill_ai_authentication_switch"
             android:key="autofill_ai_authentication_switch"
-            android:order="2"
+            android:order="1"
             android:title="@string/settings_autofill_ai_authentication_toggle_title"
             android:summary="@string/settings_autofill_ai_authentication_toggle_subtitle" />
-    </PreferenceCategory>
+    </org.chromium.components.browser_ui.settings.ChromeBasePreferenceCategory>
 </PreferenceScreen>

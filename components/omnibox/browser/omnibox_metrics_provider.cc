@@ -19,6 +19,7 @@
 #include "components/omnibox/browser/autocomplete_match.h"
 #include "components/omnibox/browser/autocomplete_provider.h"
 #include "components/omnibox/browser/autocomplete_result.h"
+#include "components/omnibox/browser/cross_device_tab_provider.h"
 #include "components/omnibox/browser/omnibox_field_trial.h"
 #include "components/omnibox/browser/omnibox_log.h"
 #include "components/omnibox/common/logger.h"
@@ -50,9 +51,9 @@ void GetScoringSignalsForLogging(const OmniboxScoringSignals& scoring_signals,
   // - autocomplete_controller.cc `RecordScoringSignalCoverageForProvider()`
   // - omnibox_metrics_provider.cc `GetScoringSignalsForLogging()`
   // - omnibox.mojom `struct Signals`
-  // - omnibox_page_handler.cc
+  // - omnibox_internals_page_handler.cc
   //   `TypeConverter<AutocompleteMatch::ScoringSignals, mojom::SignalsPtr>`
-  // - omnibox_page_handler.cc `TypeConverter<mojom::SignalsPtr,
+  // - omnibox_internals_page_handler.cc `TypeConverter<mojom::SignalsPtr,
   //   AutocompleteMatch::ScoringSignals>`
   // - omnibox_util.ts `signalNames`
   // - omnibox/histograms.xml
@@ -265,6 +266,10 @@ OmniboxMetricsProvider::GetClientSummarizedResultType(
           {OmniboxEventProto::Suggestion::FEATURED_ENTERPRISE_SEARCH,
            ClientSummarizedResultType::kSearch},
           {OmniboxEventProto::Suggestion::HISTORY_EMBEDDINGS_ANSWER,
+           ClientSummarizedResultType::kUrl},
+          {OmniboxEventProto::Suggestion::CROSS_DEVICE_TAB,
+           ClientSummarizedResultType::kUrl},
+          {OmniboxEventProto::Suggestion::RECENTLY_CLOSED_TAB,
            ClientSummarizedResultType::kUrl},
       });
 
@@ -542,6 +547,8 @@ void OmniboxMetricsProvider::RecordMetrics(const OmniboxLog& log) {
                       page_context}),
         ClientSummarizedResultType::kUrl);
   }
+
+  CrossDeviceTabProvider::RecordInteractionMetrics(log);
 
   // Log UKM event.
   if (log.ukm_source_id == ukm::kInvalidSourceId) {

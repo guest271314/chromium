@@ -10,10 +10,9 @@ export function getHtml(this: SignInCelebrationAppElement) {
   // clang-format off
   return html`<!--_html_template_start_-->
 <div id="headerContainer">
-  <cr-lottie id="avatarAnimation"
-      animation-url="${this.getAnimationUrl_()}"
-      single-loop
-      ?autoplay="${!this.disableAnimations_}">
+  <cr-lottie id="avatarAnimation" animation-url="${this.getAnimationUrl_()}"
+      @cr-lottie-completed="${this.onAvatarAnimationCrLottieCompleted_}"
+      single-loop ?autoplay="${!this.disableAnimations_}">
   </cr-lottie>
   <img id="avatar" src="${this.userInfo_.avatarUrl}" alt="">
 </div>

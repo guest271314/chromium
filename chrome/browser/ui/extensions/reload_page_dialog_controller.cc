@@ -43,7 +43,7 @@ namespace extensions {
 namespace {
 
 // Whether the dialog should be accepted without showing it on tests.
-std::optional<bool> g_accept_bubble_for_testing_ = std::nullopt;
+std::optional<bool> g_accept_bubble_for_testing_;
 
 // The size of the extension icon.
 constexpr int kIconSize = extension_misc::EXTENSION_ICON_SMALLISH;
@@ -235,8 +235,7 @@ void ReloadPageDialogController::Show() {
     extension_ids.push_back(info.id);
   }
 
-  ShowDialog(web_contents_->GetTopLevelNativeWindow(), extension_ids,
-             dialog_builder.Build());
+  ShowDialog(web_contents_, extension_ids, dialog_builder.Build());
 #endif  // BUILDFLAG(IS_ANDROID)
 }
 

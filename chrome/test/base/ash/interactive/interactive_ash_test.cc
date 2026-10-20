@@ -24,13 +24,16 @@
 #include "chrome/browser/ash/system_web_apps/system_web_app_manager.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/ui/ash/system_web_apps/system_web_app_ui_utils.h"
-#include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/interaction/browser_elements.h"
 #include "chrome/browser/ui/navigator/browser_navigator.h"
+#include "chrome/browser/ui/navigator/browser_navigator_params.h"
 #include "chrome/test/base/ash/interactive/settings/interactive_uitest_elements.h"
 #include "chrome/test/base/chromeos/crosier/aura_window_title_observer.h"
+#include "chromeos/ash/components/browser_delegate/browser_delegate.h"
 #include "ui/base/accelerators/accelerator.h"
 #include "ui/base/interaction/element_identifier.h"
+#include "ui/base/page_transition_types.h"
+#include "ui/base/window_open_disposition.h"
 #include "ui/events/event_constants.h"
 #include "url/gurl.h"
 
@@ -213,15 +216,17 @@ ui::ElementContext InteractiveAshTest::FindSystemWebApp(
     ash::SystemWebAppType type) {
   Profile* profile = GetActiveUserProfile();
   CHECK(profile);
-  Browser* browser = FindSystemWebAppBrowser(profile, type);
+  ash::BrowserDelegate* browser =
+      ash::FindSystemWebAppBrowser(profile, type, ash::BrowserType::kApp);
   CHECK(browser);
-  return BrowserElements::From(browser)->GetContext();
+  return BrowserElements::From(&browser->GetBrowser())->GetContext();
 }
 
 void InteractiveAshTest::CloseSystemWebApp(ash::SystemWebAppType type) {
   if (Profile* const profile = GetActiveUserProfile()) {
-    if (Browser* const browser = FindSystemWebAppBrowser(profile, type)) {
-      chrome::CloseWindow(browser);
+    if (ash::BrowserDelegate* const browser = ash::FindSystemWebAppBrowser(
+            profile, type, ash::BrowserType::kApp)) {
+      browser->Close();
     }
   }
 }

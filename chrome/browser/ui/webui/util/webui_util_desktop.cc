@@ -7,11 +7,12 @@
 #include "base/containers/fixed_flat_map.h"
 #include "base/containers/map_util.h"
 #include "base/strings/strcat.h"
+#include "chrome/browser/picture_in_picture/picture_in_picture_window_manager.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface_iterator.h"
+#include "chrome/browser/ui/browser_window/public/desktop_browser_window_capabilities.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/browser_window/public/profile_browser_collection.h"
 #include "chrome/common/chrome_features.h"
@@ -29,7 +30,6 @@
 #include "chrome/grit/side_panel_customize_chrome_code_cache_resources_map.h"
 #include "chrome/grit/side_panel_reading_list_code_cache_resources_map.h"
 #include "chrome/grit/side_panel_shared_code_cache_resources_map.h"
-#include "chrome/grit/side_panel_tabs_from_other_devices_code_cache_resources_map.h"
 #include "chrome/grit/webui_toolbar_code_cache_resources_map.h"
 #include "content/public/common/content_features.h"
 #include "ui/webui/resources/grit/webui_code_cache_resources_map.h"
@@ -63,15 +63,39 @@ const std::string_view* GetWebUIMetricsHostname(const GURL& webui_url) {
           {content::kChromeUIResourcesHost, "Resources"},
           {chrome::kChromeUISettingsHost, "Settings"},
           {chrome::kChromeUITabSearchHost, "TabSearch"},
-          {chrome::kChromeUITabsFromOtherDevicesSidePanelHost,
-           "TabsFromOtherDevices"},
           {chrome::kChromeUIThemeHost, "Theme"},
           {chrome::kChromeUITopChromeDomain, "TopChrome"},
       });
-  return base::FindOrNull(kWebUIHostnames, webui_url.GetHost());
+  return base::FindOrNull(kWebUIHostnames, webui_url.host());
 }
 
 }  // namespace
+
+BrowserWindowInterface* GetBrowserForOpeningWebUi(
+    BrowserWindowInterface* browser) {
+  if (!browser) {
+    return nullptr;
+  }
+
+  if (browser->GetType() != BrowserWindowInterface::Type::TYPE_FLOATING) {
+    return browser;
+  }
+
+  if (!DesktopBrowserWindowCapabilities::IsDocumentPictureInPicture(browser)) {
+    BrowserWindowInterface* tabbed_browser =
+        ProfileBrowserCollection::GetForProfile(browser->GetProfile())
+            ->FindTabbedBrowser();
+    return tabbed_browser ? tabbed_browser : browser;
+  }
+
+  auto* opener_web_contents =
+      PictureInPictureWindowManager::GetInstance()->GetWebContents();
+  // We should always have an opener web contents if the current browser is a
+  // picture-in-picture type.
+  DCHECK(opener_web_contents);
+  return GlobalBrowserCollection::GetInstance()->FindBrowserWithTab(
+      opener_web_contents);
+}
 
 ui::NativeTheme* GetNativeThemeDeprecated(content::WebContents* web_contents) {
   ui::NativeTheme* native_theme = nullptr;
@@ -83,8 +107,7 @@ ui::NativeTheme* GetNativeThemeDeprecated(content::WebContents* web_contents) {
 
     if (browser) {
       // Find for WebContents hosted in a tab.
-      native_theme =
-          browser->GetBrowserForMigrationOnly()->window()->GetNativeTheme();
+      native_theme = BrowserWindow::FromBrowser(browser)->GetNativeTheme();
     }
 
     if (!native_theme) {
@@ -131,7 +154,7 @@ const ui::ThemeProvider* GetThemeProviderDeprecated(
   BrowserWindowInterface* browser =
       ProfileBrowserCollection::GetForProfile(profile)->GetLastActiveBrowser();
   if (browser) {
-    return browser->GetBrowserForMigrationOnly()->window()->GetThemeProvider();
+    return BrowserWindow::FromBrowser(browser)->GetThemeProvider();
   }
 
   // Fallback 2: get the theme provider from the last created browser.
@@ -143,8 +166,7 @@ const ui::ThemeProvider* GetThemeProviderDeprecated(
       GetLastActiveBrowserWindowInterfaceWithAnyProfile();
 
   return browser_window_interface
-             ? browser_window_interface->GetBrowserForMigrationOnly()
-                   ->window()
+             ? BrowserWindow::FromBrowser(browser_window_interface)
                    ->GetThemeProvider()
              : nullptr;
 }
@@ -223,24 +245,8 @@ base::flat_map<GURL, int> GetWebUIResourceUrlToCodeCacheMap() {
         content::kChromeUIScheme, chrome::kChromeUIReadLaterHost,
         kSidePanelReadingListCodeCacheResources, url_to_code_cache_pairs);
 
-    // chrome://tabs-from-other-devices.top-chrome
-    if (base::FeatureList::IsEnabled(
-            features::kTabsFromOtherDevicesSidePanel)) {
-      AppendWebUIResourceURLToCodeCachePairs(
-          content::kChromeUIScheme,
-          chrome::kChromeUITabsFromOtherDevicesSidePanelHost,
-          kSidePanelSharedCodeCacheResources, url_to_code_cache_pairs);
-      AppendWebUIResourceURLToCodeCachePairs(
-          content::kChromeUIScheme,
-          chrome::kChromeUITabsFromOtherDevicesSidePanelHost,
-          kSidePanelTabsFromOtherDevicesCodeCacheResources,
-          url_to_code_cache_pairs);
-    }
-
     // chrome://webui_toolbar.top-chrome
-    if (features::IsWebUIToolbarEnabled() ||
-        base::FeatureList::IsEnabled(
-            features::kWebUIToolbarProcessOverheadExperiment)) {
+    if (features::IsWebUIToolbarEnabled()) {
       AppendWebUIResourceURLToCodeCachePairs(
           content::kChromeUIScheme, chrome::kChromeUIWebUIToolbarHost,
           kWebuiToolbarCodeCacheResources, url_to_code_cache_pairs);

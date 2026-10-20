@@ -36,9 +36,9 @@ class ASH_PUBLIC_EXPORT TestNewWindowDelegate : public NewWindowDelegate {
   void OpenCrosh() override;
   void OpenDiagnostics() override;
   void OpenGetHelp() override;
-  void RestoreTab() override;
+  void RestoreTab(const AccountId& account_id) override;
   void ShowShortcutCustomizationApp() override;
-  void ShowTaskManager() override;
+  void ShowTaskManager(bool from_context_menu) override;
   void OpenFeedbackPage(FeedbackSource source,
                         const std::string& description_template) override;
   void OpenPersonalizationHub() override;

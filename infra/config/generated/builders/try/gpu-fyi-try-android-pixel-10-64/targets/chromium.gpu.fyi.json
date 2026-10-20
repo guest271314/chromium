@@ -24,7 +24,6 @@
             "os": "Android",
             "pool": "chromium.tests.gpu"
           },
-          "expiration": 21600,
           "hard_timeout": 1800,
           "io_timeout": 1800,
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
@@ -60,7 +59,6 @@
             "os": "Android",
             "pool": "chromium.tests.gpu"
           },
-          "expiration": 21600,
           "hard_timeout": 1800,
           "io_timeout": 1800,
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com",
@@ -72,6 +70,7 @@
       {
         "args": [
           "--git-revision=${got_revision}",
+          "--bypass-skia-gold-functionality",
           "--gs-results-bucket=chromium-result-details",
           "--recover-devices"
         ],
@@ -99,7 +98,6 @@
             "os": "Android",
             "pool": "chromium.tests.gpu"
           },
-          "expiration": 21600,
           "hard_timeout": 1800,
           "io_timeout": 1800,
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
@@ -131,7 +129,6 @@
             "os": "Android",
             "pool": "chromium.tests.gpu"
           },
-          "expiration": 21600,
           "hard_timeout": 1800,
           "io_timeout": 1800,
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
@@ -149,14 +146,15 @@
           "--passthrough",
           "-v",
           "--stable-jobs",
-          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --force-online-connection-state-for-indicator",
           "--enforce-browser-version",
           "--git-revision=${got_revision}",
+          "--bypass-skia-gold-functionality",
+          "--jobs=1",
+          "--initial-find-device-attempts=3",
           "--dont-restore-color-profile-after-test",
           "--test-machine-name",
-          "${buildername}",
-          "--jobs=1",
-          "--initial-find-device-attempts=3"
+          "${buildername}"
         ],
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
@@ -182,7 +180,6 @@
             "os": "Android",
             "pool": "chromium.tests.gpu"
           },
-          "expiration": 21600,
           "hard_timeout": 1800,
           "idempotent": false,
           "io_timeout": 1800,
@@ -199,7 +196,7 @@
           "--passthrough",
           "-v",
           "--stable-jobs",
-          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --disable-skia-graphite",
           "--enforce-browser-version",
           "--jobs=1",
           "--initial-find-device-attempts=3"
@@ -209,7 +206,7 @@
         },
         "module_name": "//chrome/test:telemetry_gpu_integration_test_android_chrome",
         "module_scheme": "flat",
-        "name": "context_lost_passthrough_tests",
+        "name": "context_lost_passthrough_ganesh_tests",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -223,7 +220,6 @@
             "os": "Android",
             "pool": "chromium.tests.gpu"
           },
-          "expiration": 21600,
           "hard_timeout": 1800,
           "idempotent": false,
           "io_timeout": 1800,
@@ -240,9 +236,10 @@
           "--passthrough",
           "-v",
           "--stable-jobs",
-          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --force-online-connection-state-for-indicator",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --disable-skia-graphite --force-online-connection-state-for-indicator",
           "--enforce-browser-version",
           "--git-revision=${got_revision}",
+          "--bypass-skia-gold-functionality",
           "--dont-restore-color-profile-after-test",
           "--test-machine-name",
           "${buildername}",
@@ -254,7 +251,7 @@
         },
         "module_name": "//chrome/test:telemetry_gpu_integration_test_android_chrome",
         "module_scheme": "flat",
-        "name": "expected_color_pixel_passthrough_test",
+        "name": "expected_color_pixel_passthrough_ganesh_test",
         "precommit_args": [
           "--gerrit-issue=${patch_issue}",
           "--gerrit-patchset=${patch_set}",
@@ -273,7 +270,6 @@
             "os": "Android",
             "pool": "chromium.tests.gpu"
           },
-          "expiration": 21600,
           "hard_timeout": 1800,
           "idempotent": false,
           "io_timeout": 1800,
@@ -314,7 +310,6 @@
             "os": "Android",
             "pool": "chromium.tests.gpu"
           },
-          "expiration": 21600,
           "hard_timeout": 1800,
           "idempotent": false,
           "io_timeout": 1800,
@@ -355,7 +350,6 @@
             "os": "Android",
             "pool": "chromium.tests.gpu"
           },
-          "expiration": 21600,
           "hard_timeout": 1800,
           "idempotent": false,
           "io_timeout": 1800,
@@ -400,7 +394,6 @@
             "os": "Android",
             "pool": "chromium.tests.gpu"
           },
-          "expiration": 21600,
           "hard_timeout": 1800,
           "idempotent": false,
           "io_timeout": 1800,
@@ -417,9 +410,10 @@
           "--passthrough",
           "-v",
           "--stable-jobs",
-          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --force-online-connection-state-for-indicator",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --disable-skia-graphite --force-online-connection-state-for-indicator",
           "--enforce-browser-version",
           "--git-revision=${got_revision}",
+          "--bypass-skia-gold-functionality",
           "--dont-restore-color-profile-after-test",
           "--test-machine-name",
           "${buildername}",
@@ -431,7 +425,7 @@
         },
         "module_name": "//chrome/test:telemetry_gpu_integration_test_android_chrome",
         "module_scheme": "flat",
-        "name": "pixel_skia_gold_passthrough_test",
+        "name": "pixel_skia_gold_passthrough_ganesh_test",
         "precommit_args": [
           "--gerrit-issue=${patch_issue}",
           "--gerrit-patchset=${patch_set}",
@@ -450,7 +444,6 @@
             "os": "Android",
             "pool": "chromium.tests.gpu"
           },
-          "expiration": 21600,
           "hard_timeout": 1800,
           "idempotent": false,
           "io_timeout": 1800,
@@ -467,7 +460,7 @@
           "--passthrough",
           "-v",
           "--stable-jobs",
-          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --force-online-connection-state-for-indicator",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --disable-skia-graphite --force-online-connection-state-for-indicator",
           "--enforce-browser-version",
           "--dont-restore-color-profile-after-test",
           "--jobs=1",
@@ -478,7 +471,7 @@
         },
         "module_name": "//chrome/test:telemetry_gpu_integration_test_android_chrome",
         "module_scheme": "flat",
-        "name": "screenshot_sync_passthrough_tests",
+        "name": "screenshot_sync_passthrough_ganesh_tests",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -492,7 +485,6 @@
             "os": "Android",
             "pool": "chromium.tests.gpu"
           },
-          "expiration": 21600,
           "hard_timeout": 1800,
           "idempotent": false,
           "io_timeout": 1800,
@@ -533,7 +525,6 @@
             "os": "Android",
             "pool": "chromium.tests.gpu"
           },
-          "expiration": 21600,
           "hard_timeout": 1800,
           "idempotent": false,
           "io_timeout": 1800,
@@ -560,7 +551,7 @@
         },
         "module_name": "//chrome/test:telemetry_gpu_integration_test_android_chrome",
         "module_scheme": "flat",
-        "name": "webcodecs_tests",
+        "name": "webcodecs_validating_ganesh_tests",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -574,7 +565,6 @@
             "os": "Android",
             "pool": "chromium.tests.gpu"
           },
-          "expiration": 21600,
           "hard_timeout": 1800,
           "idempotent": false,
           "io_timeout": 1800,
@@ -618,7 +608,6 @@
             "os": "Android",
             "pool": "chromium.tests.gpu"
           },
-          "expiration": 21600,
           "hard_timeout": 1800,
           "idempotent": false,
           "io_timeout": 1800,
@@ -636,7 +625,7 @@
           "--passthrough",
           "-v",
           "--stable-jobs",
-          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-angle=gles --use-cmd-decoder=passthrough --use-gl=angle --force_high_performance_gpu",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-angle=gles --use-cmd-decoder=passthrough --use-gl=angle --disable-skia-graphite --force_high_performance_gpu",
           "--enforce-browser-version",
           "--read-abbreviated-json-results-from=../../content/test/data/gpu/webgl1_conformance_android_runtimes.json",
           "--jobs=1",
@@ -647,7 +636,7 @@
         },
         "module_name": "//chrome/test:telemetry_gpu_integration_test_android_chrome",
         "module_scheme": "flat",
-        "name": "webgl_conformance_gles_passthrough_tests",
+        "name": "webgl_conformance_gles_passthrough_ganesh_tests",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -661,7 +650,6 @@
             "os": "Android",
             "pool": "chromium.tests.gpu"
           },
-          "expiration": 21600,
           "hard_timeout": 1800,
           "idempotent": false,
           "io_timeout": 1800,
@@ -689,7 +677,7 @@
         },
         "module_name": "//chrome/test:telemetry_gpu_integration_test_android_chrome",
         "module_scheme": "flat",
-        "name": "webrtc_tests",
+        "name": "webrtc_validating_ganesh_tests",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -703,7 +691,6 @@
             "os": "Android",
             "pool": "chromium.tests.gpu"
           },
-          "expiration": 21600,
           "hard_timeout": 1800,
           "idempotent": false,
           "io_timeout": 1800,

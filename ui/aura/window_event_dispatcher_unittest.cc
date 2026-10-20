@@ -22,6 +22,7 @@
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/aura/client/aura_constants.h"
 #include "ui/aura/client/capture_client.h"
+#include "ui/aura/client/default_capture_client.h"
 #include "ui/aura/client/event_client.h"
 #include "ui/aura/client/focus_client.h"
 #include "ui/aura/env.h"
@@ -2594,6 +2595,41 @@ class CaptureWindowTracker : public test::TestWindowDelegate {
   std::unique_ptr<aura::Window> capture_window_;
 };
 
+class DeleteOtherWindowOnCaptureLostDelegate : public test::TestWindowDelegate {
+ public:
+  DeleteOtherWindowOnCaptureLostDelegate() = default;
+  ~DeleteOtherWindowOnCaptureLostDelegate() override = default;
+
+  void set_other_window(Window* other) { other_ = other; }
+
+  // test::TestWindowDelegate:
+  void OnCaptureLost() override {
+    if (other_) {
+      Window* raw_other = std::exchange(other_, nullptr);
+      delete raw_other;
+    }
+  }
+
+ private:
+  raw_ptr<Window> other_ = nullptr;
+};
+
+class DeleteHostOnCaptureLostDelegate : public test::TestWindowDelegate {
+ public:
+  DeleteHostOnCaptureLostDelegate() = default;
+  ~DeleteHostOnCaptureLostDelegate() override = default;
+
+  void set_host(std::unique_ptr<WindowTreeHost> host) {
+    host_ = std::move(host);
+  }
+
+  // test::TestWindowDelegate:
+  void OnCaptureLost() override { host_.reset(); }
+
+ private:
+  std::unique_ptr<WindowTreeHost> host_;
+};
+
 }  // namespace
 
 // Verifies handling loss of capture by the capture window being hidden.
@@ -2610,6 +2646,54 @@ TEST_F(WindowEventDispatcherTest, CaptureWindowDestroyed) {
   capture_window_tracker.CreateCaptureWindow(root_window());
   capture_window_tracker.reset();
   EXPECT_EQ(NULL, capture_window_tracker.capture_window());
+}
+
+using WindowEventDispatcherDeathTest = WindowEventDispatcherTest;
+
+// Verifies that deleting the new capture window during OnCaptureLost of the
+// old capture window causes a crash (due to ScopedDeleteBlocker).
+TEST_F(WindowEventDispatcherDeathTest, DeleteNewCaptureDuringOnCaptureLost) {
+  DeleteOtherWindowOnCaptureLostDelegate d1;
+  test::TestWindowDelegate d2;
+  std::unique_ptr<Window> w1(CreateNormalWindow(1, root_window(), &d1));
+
+  Window* w2 = CreateNormalWindow(2, root_window(), &d2);
+
+  d1.set_other_window(w2);
+
+  client::GetCaptureClient(root_window())->SetCapture(w1.get());
+  EXPECT_EQ(w1.get(),
+            client::GetCaptureClient(root_window())->GetCaptureWindow());
+
+  // This will trigger UpdateCapture(w1, w2).
+  // w1's OnCaptureLost will delete w2, which should crash due to
+  // ScopedDeleteBlocker.
+  EXPECT_DEATH(client::GetCaptureClient(root_window())->SetCapture(w2), "");
+}
+
+// Verifies that deleting the host/root window during OnCaptureLost of the
+// capture window causes a crash (due to ScopedDeleteBlocker).
+TEST_F(WindowEventDispatcherDeathTest, DeleteHostDuringOnCaptureLost) {
+  DeleteHostOnCaptureLostDelegate delegate;
+  std::unique_ptr<WindowTreeHost> host = WindowTreeHost::Create(
+      ui::PlatformWindowInitProperties{gfx::Rect{100, 100}});
+  host->InitHost();
+  host->window()->Show();
+
+  client::DefaultCaptureClient capture_client(host->window());
+
+  Window* w = CreateNormalWindow(1, host->window(), &delegate);
+  delegate.set_host(std::move(host));
+
+  client::GetCaptureClient(w->GetRootWindow())->SetCapture(w);
+  EXPECT_EQ(w,
+            client::GetCaptureClient(w->GetRootWindow())->GetCaptureWindow());
+
+  // This will trigger UpdateCapture(w, nullptr).
+  // w's OnCaptureLost will attempt to delete the host, which should crash due
+  // to ScopedDeleteBlocker on the root window.
+  EXPECT_DEATH(client::GetCaptureClient(w->GetRootWindow())->ReleaseCapture(w),
+               "");
 }
 
 namespace {
@@ -3196,6 +3280,7 @@ class AlwaysMouseDownInputStateLookup : public InputStateLookup {
  private:
   // InputStateLookup:
   bool IsMouseButtonDown() const override { return true; }
+  bool IsLeftMouseButtonDown() const override { return true; }
 };
 
 TEST_F(WindowEventDispatcherTest,

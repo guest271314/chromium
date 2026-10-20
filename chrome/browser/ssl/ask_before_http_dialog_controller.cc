@@ -70,9 +70,13 @@ void AddAskBeforeHttpDialogText(ui::DialogModel::Builder& dialog_model,
         AskBeforeHttpDialogController::kDescriptionTextId);
     return;
   } else if (warning_reason == HttpWarningReason::kAdvancedProtection) {
-    // TODO(crbug.com/351990829): Android text is slightly different.
+#if !BUILDFLAG(IS_ANDROID)
     auto description_text = ui::DialogModelLabel::CreateWithReplacement(
         IDS_ABH_PROMPT_ADVANCED_PROTECTION_PRIMARY_PARAGRAPH, link);
+#else
+    auto description_text = ui::DialogModelLabel::CreateWithReplacement(
+        IDS_ABH_PROMPT_ADVANCED_PROTECTION_PRIMARY_PARAGRAPH_ANDROID, link);
+#endif
     dialog_model.AddParagraph(
         description_text, /*header=*/u"",
         AskBeforeHttpDialogController::kDescriptionTextId);
@@ -88,6 +92,13 @@ void AddAskBeforeHttpDialogText(ui::DialogModel::Builder& dialog_model,
   } else if (warning_reason == HttpWarningReason::kIncognito) {
     auto description_text = ui::DialogModelLabel::CreateWithReplacement(
         IDS_ABH_PROMPT_INCOGNITO_PRIMARY_PARAGRAPH, link);
+    dialog_model.AddParagraph(
+        description_text, /*header=*/u"",
+        AskBeforeHttpDialogController::kDescriptionTextId);
+    return;
+  } else if (warning_reason == HttpWarningReason::kIsolatedMode) {
+    auto description_text = ui::DialogModelLabel::CreateWithReplacement(
+        IDS_ABH_PROMPT_ISOLATED_MODE_PRIMARY_PARAGRAPH, link);
     dialog_model.AddParagraph(
         description_text, /*header=*/u"",
         AskBeforeHttpDialogController::kDescriptionTextId);
@@ -177,6 +188,12 @@ void AskBeforeHttpDialogController::ShowDialog(
   if (!web_contents) {
     return;
   }
+#if BUILDFLAG(IS_ANDROID)
+  ui::WindowAndroid* window = web_contents->GetTopLevelNativeWindow();
+  if (!window || !window->GetModalDialogManagerBridge()) {
+    return;
+  }
+#endif
   Observe(web_contents);
   // Track the source ID for the navigation that triggered the dialog.
   navigation_source_id_ = navigation_source_id;
@@ -221,6 +238,9 @@ void AskBeforeHttpDialogController::ShowDialog(
   // dialog being dismissed for this reason doesn't trigger a "back to
   // safety" action.
   tab_dialog_params->block_new_modal = false;
+  // Ensure the dialog persists if the tab is detached and reparented into
+  // another window.
+  tab_dialog_params->close_on_detach = false;
 
   auto* tab = tabs::TabInterface::MaybeGetFromContents(web_contents);
   CHECK(tab);
@@ -237,7 +257,6 @@ void AskBeforeHttpDialogController::ShowDialog(
   focused_view->RequestFocus();
 #else
   current_dialog_model_ = dialog_model.get();
-  ui::WindowAndroid* window = web_contents->GetTopLevelNativeWindow();
   ui::ModalDialogWrapper::ShowTabModal(std::move(dialog_model), window);
 #endif
 }
@@ -283,8 +302,14 @@ void AskBeforeHttpDialogController::CloseDialog() {
 #if !BUILDFLAG(IS_ANDROID)
 void AskBeforeHttpDialogController::CloseDialogWidget(
     views::Widget::ClosedReason reason) {
-  // This is used as a callback for MakeCloseSynchronous() to catch other forms
-  // of dialog closing that aren't handled elsewhere.
+  // If the user explicitly closed the dialog via ESC key or the close button,
+  // trigger the "back to safety" action.
+  if (reason == views::Widget::ClosedReason::kEscKeyPressed ||
+      reason == views::Widget::ClosedReason::kCloseButtonClicked) {
+    OnGoBackButtonClicked();
+    return;
+  }
+
   if (reason == views::Widget::ClosedReason::kCancelButtonClicked) {
     // User pressed the "Continue to site" button.
     RecordHttpsFirstModeUKM(navigation_source_id_, fallback_reason_,
@@ -470,11 +495,12 @@ void AskBeforeHttpDialogController::OnHelpCenterLinkClicked(
     return;
   }
 
-  content::OpenURLParams params(
-      GURL(kLearnMoreLink), content::Referrer(),
-      ui::DispositionFromEventFlags(event.flags(),
-                                    WindowOpenDisposition::NEW_FOREGROUND_TAB),
-      ui::PAGE_TRANSITION_LINK, false);
+  content::OpenURLParams params =
+      content::OpenURLParams::CreateBrowserInitiated(
+          GURL(kLearnMoreLink),
+          ui::DispositionFromEventFlags(
+              event.flags(), WindowOpenDisposition::NEW_FOREGROUND_TAB),
+          ui::PAGE_TRANSITION_LINK);
   contents->OpenURL(params, /*navigation_handle_callback=*/{});
 }
 

@@ -23,6 +23,7 @@ class PasswordManagerDriver;
 class PasswordManagerClient;
 struct PasswordFormDigest;
 struct StoredCredential;
+class BrowserSavePasswordProgressLogger;
 }  // namespace password_manager
 
 namespace autofill {
@@ -59,6 +60,10 @@ void UpdateMetadataForUsage(password_manager::PasswordForm* credential);
 // iOS and required to always return non-null.
 bool IsLoggingActive(password_manager::PasswordManagerClient* client);
 
+// Returns a logger if logging is active.
+std::unique_ptr<password_manager::BrowserSavePasswordProgressLogger>
+GetLoggerIfAvailable(password_manager::PasswordManagerClient* client);
+
 // True iff the manual password generation is enabled for the current site.
 bool ManualPasswordGenerationEnabled(
     password_manager::PasswordManagerDriver* driver);
@@ -72,6 +77,19 @@ void UserTriggeredManualGenerationFromContextMenu(
 
 // Checks if password saving is possible at a storage level.
 bool IsAbleToSavePasswords(password_manager::PasswordManagerClient* client);
+
+// Returns true if the only blocking error is a trusted vault error.
+bool IsSavingBlockedByTrustedVaultError(
+    const password_manager::PasswordManagerClient* client,
+    const password_manager::PasswordFormManagerForUI* form_manager);
+
+// Returns true if password saving is blocked by a recoverable error. Returns
+// false, if saving is blocked by an unrecoverable error or not blocked at all.
+// TODO(crbug.com/464228247): Merge with IsSavingBlockedByTrustedVaultError when
+// other platforms handle more errors.
+bool IsSavingBlockedByRecoverableError(
+    const password_manager::PasswordManagerClient* client,
+    const password_manager::PasswordFormManagerForUI* form_manager);
 
 // Excluding protocol from a signon_realm means to remove from the signon_realm
 // what is before the web origin (with the protocol excluded as well). For
@@ -180,10 +198,6 @@ void SetCredentialProviderEnabledOnStartup(PrefService* local_state,
                                            bool enabled);
 #endif
 
-// Contains all special symbols considered for password-generation.
-inline constexpr std::u16string_view kSpecialSymbols =
-    u"!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~";
-
 // Helper functions for character type classification. The built-in functions
 // depend on locale, platform and other stuff. To make the output more
 // predictable, the function are re-implemented here.
@@ -196,7 +210,8 @@ bool IsLowercaseLetter(char16_t c);
 bool IsUppercaseLetter(char16_t c);
 
 // Checks if a supplied character |c| is a special symbol.
-// Special symbols are defined by the string |kSpecialSymbols|.
+// Special symbols are defined by
+// `password_manager::constants::kSpecialSymbols`.
 bool IsSpecialSymbol(char16_t c);
 
 // Returns true if 'type' is a username in a password-less form.

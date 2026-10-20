@@ -57,11 +57,6 @@ is_arm_cast_shell_build = (is_castos || is_cast_android) &&
 enable_python_utils =
     !is_arm_cast_shell_build && !is_android && !is_fuchsia && !is_ios
 
-# Platforms that cannot use python_utils (like Android but see full
-# list above) will instead use a remote server.
-use_remote_test_server =
-    !enable_python_utils && (enable_websockets || (is_cronet_build && !is_ios))
-
 # Whether //net should use an external GSSAPI library for implementing HTTP
 # Negotiate authentication. All platforms for which use_kerberos is true should
 # have some external implementation since //net doesn't have intrinsic support
@@ -74,12 +69,6 @@ use_remote_test_server =
 #              https://www.chromium.org/developers/design-documents/http-authentication/writing-a-spnego-authenticator-for-chrome-on-android
 use_external_gssapi = use_kerberos && !is_android && !is_win
 
-config("net_test_config") {
-  if (use_remote_test_server) {
-    defines = [ "USE_REMOTE_TEST_SERVER" ]
-  }
-}
-
 buildflag_header("buildflags") {
   header = "net_buildflags.h"
   flags = [
@@ -89,6 +78,7 @@ buildflag_header("buildflags") {
     "ENABLE_WEBSOCKETS=$enable_websockets",
     "ENABLE_CLIENT_CERTIFICATES=$enable_client_certificates",
     "INCLUDE_TRANSPORT_SECURITY_STATE_PRELOAD_LIST=$include_transport_security_state_preload_list",
+    "CHROME_KEY_PINNING_SUPPORTED=$chrome_key_pinning_supported",
     "USE_KERBEROS=$use_kerberos",
     "USE_EXTERNAL_GSSAPI=$use_external_gssapi",
     "CHROME_ROOT_STORE_OPTIONAL=$chrome_root_store_optional",
@@ -119,14 +109,6 @@ if (is_linux || is_chromeos) {
   net_configs += [ "//build/config/linux:libresolv" ]
 }
 
-source_set("constants") {
-  sources = [
-    "base/registry_controlled_domain_constants.h",
-    "base/trace_constants.h",
-  ]
-  deps = [ "//base" ]
-}
-
 buildflag_header("cronet_buildflags") {
   header = "cronet_buildflags.h"
   header_dir = "net/base"
@@ -149,10 +131,46 @@ source_set("net_features") {
   deps = [
     ":buildflags",
     ":disk_cache_buildflags",
-    ":net_export_header",
     "//base",
     "//crypto:buildflags",
+    "//net/base:net_export_header",
   ]
+}
+
+# Separated from the net target to isolate the dependency on the generated
+# Pure header target containing data structures for Chrome Root Store and EV
+# Root CA metadata. Separated so that both component("net") and the generated
+# data source_set can depend on it without circular includes.
+source_set("chrome_root_store_types") {
+  visibility = [ ":*" ]
+  sources = [ "cert/internal/chrome_root_store_data.h" ]
+  public_deps = [ "//base" ]
+}
+
+# Encapsulates the generated chrome-root-store-inc.cc, signer-set-inc.cc, and
+# chrome-ev-roots-inc.cc files. Isolating these in a separate source_set
+# prevents component("net")'s 1,000+ source files from waiting on
+# root_store_tool and signer_set_tool generation actions (inputdeps), while
+# avoiding any circular includes (no allow_circular_includes_from required).
+source_set("chrome_root_store_data") {
+  visibility = [ ":*" ]
+  public = []
+  configs += [ ":net_internal_config" ]
+  sources = []
+  deps = [
+    ":chrome_root_store_types",
+    "//base",
+  ]
+  if (chrome_root_store_supported || is_fuchsia) {
+    deps += [ "//net/data/ssl/chrome_root_store:gen_root_store_inc" ]
+    if (!is_android) {
+      sources += [ "cert/ev_root_ca_metadata_data.cc" ]
+    }
+  }
+  if (chrome_root_store_supported) {
+    sources += [ "cert/internal/trust_store_chrome_data.cc" ]
+    deps += [ "//net/data/ssl/chrome_root_store:gen_signer_set_inc" ]
+  }
 }
 
 component("net") {
@@ -169,6 +187,8 @@ component("net") {
     "base/backoff_entry_serializer.h",
     "base/base64.cc",
     "base/base64.h",
+    "base/bssl_refcounted.cc",
+    "base/bssl_refcounted.h",
     "base/cache_type.h",
     "base/chunked_upload_data_stream.cc",
     "base/chunked_upload_data_stream.h",
@@ -182,6 +202,7 @@ component("net") {
     "base/data_url.h",
     "base/does_url_match_filter.cc",
     "base/does_url_match_filter.h",
+    "base/ech_mode.h",
     "base/elements_upload_data_stream.cc",
     "base/elements_upload_data_stream.h",
     "base/expiring_cache.h",
@@ -207,12 +228,12 @@ component("net") {
     "base/interval.h",
     "base/io_buffer.cc",
     "base/io_buffer.h",
-    "base/ip_address.cc",
-    "base/ip_address.h",
     "base/ip_address_util.cc",
     "base/ip_address_util.h",
     "base/ip_endpoint.cc",
     "base/ip_endpoint.h",
+    "base/is_potentially_trustworthy.cc",
+    "base/is_potentially_trustworthy.h",
     "base/isolation_info.cc",
     "base/isolation_info.h",
     "base/load_flags.h",
@@ -227,8 +248,6 @@ component("net") {
     "base/load_timing_internal_info.h",
     "base/logging_network_change_observer.cc",
     "base/logging_network_change_observer.h",
-    "base/lookup_string_in_fixed_set.cc",
-    "base/lookup_string_in_fixed_set.h",
     "base/mime_sniffer.cc",
     "base/mime_sniffer.h",
     "base/mime_util.cc",
@@ -238,8 +257,6 @@ component("net") {
     "base/net_errors.cc",
     "base/net_errors.h",
     "base/net_info_source_list.h",
-    "base/net_module.cc",
-    "base/net_module.h",
     "base/net_platform_api_util.cc",
     "base/net_platform_api_util.h",
     "base/net_string_util.h",
@@ -254,6 +271,7 @@ component("net") {
     "base/network_delegate.h",
     "base/network_delegate_impl.cc",
     "base/network_delegate_impl.h",
+    "base/network_handle.cc",
     "base/network_handle.h",
     "base/network_interfaces.cc",
     "base/network_interfaces.h",
@@ -261,8 +279,6 @@ component("net") {
     "base/network_isolation_key.h",
     "base/network_isolation_partition.cc",
     "base/network_isolation_partition.h",
-    "base/parse_number.cc",
-    "base/parse_number.h",
     "base/pickle.h",
     "base/pickle_base_types.h",
     "base/pickle_traits.h",
@@ -288,17 +304,21 @@ component("net") {
     "base/rand_callback.h",
     "base/reconnect_notifier.cc",
     "base/reconnect_notifier.h",
-    "base/registry_controlled_domains/registry_controlled_domain.cc",
-    "base/registry_controlled_domains/registry_controlled_domain.h",
     "base/request_priority.cc",
     "base/request_priority.h",
+    "base/scheduler/net_task_priority.cc",
+    "base/scheduler/net_task_priority.h",
+    "base/scheduler/net_task_queues.cc",
+    "base/scheduler/net_task_queues.h",
+    "base/scheduler/net_task_scheduler.cc",
+    "base/scheduler/net_task_scheduler.h",
+    "base/scheduler/sequence_manager_configurator.cc",
+    "base/scheduler/sequence_manager_configurator.h",
     "base/scheme_host_port_matcher.cc",
     "base/scheme_host_port_matcher.h",
     "base/scheme_host_port_matcher_result.h",
     "base/scheme_host_port_matcher_rule.cc",
     "base/scheme_host_port_matcher_rule.h",
-    "base/schemeful_site.cc",
-    "base/schemeful_site.h",
     "base/session_usage.h",
     "base/sockaddr_storage.cc",
     "base/sockaddr_storage.h",
@@ -323,8 +343,6 @@ component("net") {
     "base/url_search_params_view.h",
     "base/url_unescape_iterator.cc",
     "base/url_unescape_iterator.h",
-    "base/url_util.cc",
-    "base/url_util.h",
     "cert/asn1_util.cc",
     "cert/asn1_util.h",
     "cert/caching_cert_verifier.cc",
@@ -473,17 +491,19 @@ component("net") {
     "device_bound_sessions/failed_request.cc",
     "device_bound_sessions/failed_request.h",
     "device_bound_sessions/inclusion_result.h",
+    "device_bound_sessions/jwk_utils.cc",
+    "device_bound_sessions/jwk_utils.h",
     "device_bound_sessions/session_access.cc",
     "device_bound_sessions/session_access.h",
+    "device_bound_sessions/session_binding_utils.cc",
+    "device_bound_sessions/session_binding_utils.h",
     "device_bound_sessions/session_display.cc",
     "device_bound_sessions/session_display.h",
     "device_bound_sessions/session_event.cc",
     "device_bound_sessions/session_event.h",
     "device_bound_sessions/session_inclusion_rules_display.cc",
     "device_bound_sessions/session_inclusion_rules_display.h",
-    "device_bound_sessions/session_key.cc",
     "device_bound_sessions/session_key.h",
-    "device_bound_sessions/session_params.cc",
     "device_bound_sessions/session_params.h",
     "device_bound_sessions/session_usage.cc",
     "device_bound_sessions/session_usage.h",
@@ -586,24 +606,18 @@ component("net") {
     "filter/source_stream.cc",
     "filter/source_stream.h",
     "filter/source_stream_type.h",
-    "first_party_sets/addition_overlaps_union_find.cc",
-    "first_party_sets/addition_overlaps_union_find.h",
     "first_party_sets/first_party_set_entry.cc",
     "first_party_sets/first_party_set_entry.h",
     "first_party_sets/first_party_set_entry_override.cc",
     "first_party_sets/first_party_set_entry_override.h",
     "first_party_sets/first_party_set_metadata.cc",
     "first_party_sets/first_party_set_metadata.h",
-    "first_party_sets/first_party_sets_cache_filter.cc",
-    "first_party_sets/first_party_sets_cache_filter.h",
     "first_party_sets/first_party_sets_context_config.cc",
     "first_party_sets/first_party_sets_context_config.h",
     "first_party_sets/first_party_sets_validator.cc",
     "first_party_sets/first_party_sets_validator.h",
     "first_party_sets/global_first_party_sets.cc",
     "first_party_sets/global_first_party_sets.h",
-    "first_party_sets/local_set_declaration.cc",
-    "first_party_sets/local_set_declaration.h",
     "first_party_sets/sets_mutation.cc",
     "first_party_sets/sets_mutation.h",
     "http/alternative_service.cc",
@@ -616,6 +630,8 @@ component("net") {
     "http/bidirectional_stream_request_info.h",
     "http/broken_alternative_services.cc",
     "http/broken_alternative_services.h",
+    "http/cache_body_compressor.cc",
+    "http/cache_body_compressor.h",
     "http/cache_body_decompressor.cc",
     "http/cache_body_decompressor.h",
     "http/http_auth.cc",
@@ -652,6 +668,8 @@ component("net") {
     "http/http_byte_range.h",
     "http/http_cache.cc",
     "http/http_cache.h",
+    "http/http_cache_invalidation_pickle_traits.cc",
+    "http/http_cache_invalidation_pickle_traits.h",
     "http/http_cache_transaction.cc",
     "http/http_cache_transaction.h",
     "http/http_cache_util.cc",
@@ -758,10 +776,12 @@ component("net") {
     "http/proxy_client_socket.h",
     "http/proxy_fallback.cc",
     "http/proxy_fallback.h",
+    "http/structured_headers.cc",
     "http/structured_headers.h",
     "http/transport_security_persister.cc",
     "http/transport_security_persister.h",
     "http/transport_security_state.h",
+    "http/transport_security_state_pins_source.h",
     "http/transport_security_state_source.h",
     "http/url_security_manager.cc",
     "http/url_security_manager.h",
@@ -863,6 +883,8 @@ component("net") {
     "proxy_resolution/proxy_resolution_request.h",
     "proxy_resolution/proxy_resolution_service.cc",
     "proxy_resolution/proxy_resolution_service.h",
+    "proxy_resolution/proxy_resolution_url_sanitizer.cc",
+    "proxy_resolution/proxy_resolution_url_sanitizer.h",
     "proxy_resolution/proxy_resolve_dns_operation.h",
     "proxy_resolution/proxy_resolver.h",
     "proxy_resolution/proxy_resolver_error_observer.h",
@@ -928,6 +950,10 @@ component("net") {
     "quic/quic_http_stream.h",
     "quic/quic_http_utils.cc",
     "quic/quic_http_utils.h",
+    "quic/quic_migration_attempt_context.cc",
+    "quic/quic_migration_attempt_context.h",
+    "quic/quic_network_connectivity_tracker.cc",
+    "quic/quic_network_connectivity_tracker.h",
     "quic/quic_proxy_client_socket.cc",
     "quic/quic_proxy_client_socket.h",
     "quic/quic_proxy_datagram_client_socket.cc",
@@ -946,18 +972,27 @@ component("net") {
     "quic/quic_session_key.h",
     "quic/quic_session_pool.cc",
     "quic/quic_session_pool.h",
+    "quic/quic_session_pool_async_dns_job.cc",
+    "quic/quic_session_pool_async_dns_job.h",
     "quic/quic_session_pool_direct_job.cc",
     "quic/quic_session_pool_direct_job.h",
+    "quic/quic_session_pool_endpoint_connector.cc",
+    "quic/quic_session_pool_endpoint_connector.h",
     "quic/quic_session_pool_job.cc",
     "quic/quic_session_pool_job.h",
     "quic/quic_session_pool_proxy_job.cc",
     "quic/quic_session_pool_proxy_job.h",
+    "quic/quic_socket_config_step.cc",
+    "quic/quic_socket_config_step.h",
     "quic/set_quic_flag.cc",
     "quic/set_quic_flag.h",
     "quic/web_transport_client.cc",
     "quic/web_transport_client.h",
     "quic/web_transport_error.cc",
     "quic/web_transport_error.h",
+    "quic/web_transport_send_stats_tracker.cc",
+    "quic/web_transport_send_stats_tracker.h",
+    "quic/web_transport_send_stream_stats.h",
     "shared_dictionary/shared_dictionary.h",
     "shared_dictionary/shared_dictionary_constants.h",
     "shared_dictionary/shared_dictionary_getter.h",
@@ -970,6 +1005,10 @@ component("net") {
     "shared_dictionary/shared_dictionary_network_transaction_factory.cc",
     "shared_dictionary/shared_dictionary_network_transaction_factory.h",
     "shared_dictionary/shared_dictionary_transaction_outcome.h",
+    "socket/bandwidth_throttle.cc",
+    "socket/bandwidth_throttle.h",
+    "socket/bottleneck_buffer.cc",
+    "socket/bottleneck_buffer.h",
     "socket/client_socket_factory.cc",
     "socket/client_socket_factory.h",
     "socket/client_socket_handle.cc",
@@ -992,11 +1031,18 @@ component("net") {
     "socket/datagram_client_socket.h",
     "socket/datagram_server_socket.h",
     "socket/datagram_socket.h",
+    "socket/delayed_datagram_socket.cc",
+    "socket/delayed_datagram_socket.h",
+    "socket/delayed_socket_config.h",
+    "socket/delayed_stream_socket.cc",
+    "socket/delayed_stream_socket.h",
     "socket/diff_serv_code_point.h",
     "socket/network_binding_client_socket_factory.cc",
     "socket/network_binding_client_socket_factory.h",
     "socket/next_proto.cc",
     "socket/next_proto.h",
+    "socket/read_multiple_emulator.cc",
+    "socket/read_multiple_emulator.h",
     "socket/server_socket.cc",
     "socket/server_socket.h",
     "socket/socket.cc",
@@ -1125,6 +1171,7 @@ component("net") {
     "ssl/client_cert_store_empty.h",
     "ssl/crypto_private_key.cc",
     "ssl/crypto_private_key.h",
+    "ssl/ech_mode_getter.h",
     "ssl/openssl_private_key.cc",
     "ssl/openssl_private_key.h",
     "ssl/openssl_ssl_util.cc",
@@ -1208,7 +1255,12 @@ component("net") {
     defines += [ "NET_DISABLE_BROTLI" ]
   }
   if (disable_zstd_filter) {
-    defines += [ "NET_DISABLE_ZSTD" ]
+    defines += [
+      "NET_DISABLE_ZSTD",
+      "NET_DISABLE_ZSTD_COMPRESS",
+    ]
+  } else if (optimize_for_size) {
+    defines += [ "NET_DISABLE_ZSTD_COMPRESS" ]
   }
 
   deps = [
@@ -1217,15 +1269,17 @@ component("net") {
     "//components/network_time/time_tracker",
     "//components/unexportable_keys",
     "//net/http:transport_security_state_generated_files",
+    "//third_party/rust/sfv/v0_15/wrapper",
     "//third_party/simdutf",
   ]
 
   public_deps = [
+    ":chrome_root_store_types",
     ":disk_cache_buildflags",
-    ":net_export_header",
     ":net_features",
     ":net_public_deps",
     "//base",
+    "//net/base:net_export_header",
     "//net/dns",
     "//net/dns:dns_client",
     "//net/dns:host_resolver",
@@ -1288,14 +1342,15 @@ component("net") {
 
   if (enable_device_bound_sessions) {
     sources += [
+      "device_bound_sessions/cookie_access_check_params.h",
       "device_bound_sessions/cookie_craving.cc",
       "device_bound_sessions/cookie_craving.h",
       "device_bound_sessions/dbsc_request.cc",
       "device_bound_sessions/dbsc_request.h",
+      "device_bound_sessions/generate_key_param.cc",
+      "device_bound_sessions/generate_key_param.h",
       "device_bound_sessions/host_patterns.cc",
       "device_bound_sessions/host_patterns.h",
-      "device_bound_sessions/jwk_utils.cc",
-      "device_bound_sessions/jwk_utils.h",
       "device_bound_sessions/refresh_result.h",
       "device_bound_sessions/registration_fetcher.cc",
       "device_bound_sessions/registration_fetcher.h",
@@ -1307,8 +1362,6 @@ component("net") {
       "device_bound_sessions/registration_result.h",
       "device_bound_sessions/session.cc",
       "device_bound_sessions/session.h",
-      "device_bound_sessions/session_binding_utils.cc",
-      "device_bound_sessions/session_binding_utils.h",
       "device_bound_sessions/session_challenge_param.cc",
       "device_bound_sessions/session_challenge_param.h",
       "device_bound_sessions/session_error.cc",
@@ -1325,6 +1378,8 @@ component("net") {
       "device_bound_sessions/session_store.h",
       "device_bound_sessions/session_store_impl.cc",
       "device_bound_sessions/session_store_impl.h",
+      "device_bound_sessions/single_sign_on_key_manager.cc",
+      "device_bound_sessions/single_sign_on_key_manager.h",
       "device_bound_sessions/unexportable_key_service_factory.cc",
       "device_bound_sessions/unexportable_key_service_factory.h",
       "device_bound_sessions/url_fetcher.cc",
@@ -1365,6 +1420,8 @@ component("net") {
       "cert/x509_util_android.cc",
       "proxy_resolution/proxy_config_service_android.cc",
       "proxy_resolution/proxy_config_service_android.h",
+      "ssl/ech_mode_getter_android.cc",
+      "ssl/ech_mode_getter_android.h",
       "ssl/ssl_platform_key_android.cc",
       "ssl/ssl_platform_key_android.h",
     ]
@@ -1394,9 +1451,24 @@ component("net") {
     sources += [
       "base/network_change_notifier_linux.cc",
       "base/network_change_notifier_linux.h",
+      "base/network_change_notifier_linux_portal.h",
+      "proxy_resolution/linux/linux_proxy_resolution_status.h",
+      "proxy_resolution/linux/linux_system_proxy_resolution_request.cc",
+      "proxy_resolution/linux/linux_system_proxy_resolution_request.h",
+      "proxy_resolution/linux/linux_system_proxy_resolution_service.cc",
+      "proxy_resolution/linux/linux_system_proxy_resolution_service.h",
+      "proxy_resolution/linux/linux_system_proxy_resolver.h",
       "proxy_resolution/proxy_config_service_linux.cc",
       "proxy_resolution/proxy_config_service_linux.h",
     ]
+    deps += [ "//build/config/linux/dbus:buildflags" ]
+    if (use_dbus && !is_cronet_build) {
+      sources += [ "base/network_change_notifier_linux_portal.cc" ]
+      deps += [
+        "//components/dbus",
+        "//dbus",
+      ]
+    }
     if (use_glib) {
       deps += [ "//ui/base/glib" ]
     }
@@ -1430,7 +1502,6 @@ component("net") {
       "cert/internal/trust_store_mac.h",
       "cert/test_keychain_search_list_mac.cc",
       "cert/test_keychain_search_list_mac.h",
-      "cert/test_root_certs_builtin.cc",
       "proxy_resolution/mac/mac_proxy_resolution_status.h",
       "proxy_resolution/mac/mac_system_proxy_resolution_request.cc",
       "proxy_resolution/mac/mac_system_proxy_resolution_request.h",
@@ -1487,7 +1558,6 @@ component("net") {
       "base/winsock_init.h",
       "base/winsock_util.cc",
       "base/winsock_util.h",
-      "cert/test_root_certs_builtin.cc",
       "cert/x509_util_win.cc",
       "cert/x509_util_win.h",
       "disk_cache/blockfile/file_win.cc",
@@ -1508,6 +1578,7 @@ component("net") {
       "proxy_resolution/win/proxy_config_service_win.h",
       "proxy_resolution/win/proxy_resolver_winhttp.cc",
       "proxy_resolution/win/proxy_resolver_winhttp.h",
+      "proxy_resolution/win/proxy_resolver_winhttp_test_hooks.h",
       "proxy_resolution/win/windows_system_proxy_resolution_request.cc",
       "proxy_resolution/win/windows_system_proxy_resolution_request.h",
       "proxy_resolution/win/windows_system_proxy_resolution_service.cc",
@@ -1543,6 +1614,7 @@ component("net") {
       "disk_cache/cache_util_posix.cc",
       "disk_cache/simple/simple_util_posix.cc",
       "http/url_security_manager_posix.cc",
+      "socket/extra_socket_defines.h",
       "socket/socket_posix.cc",
       "socket/socket_posix.h",
       "socket/tcp_socket_posix.cc",
@@ -1608,6 +1680,10 @@ component("net") {
     }
   }
 
+  if (chrome_root_store_only) {
+    sources += [ "cert/test_root_certs_builtin.cc" ]
+  }
+
   if (chrome_root_store_supported) {
     sources += [
       "cert/internal/trust_store_chrome.cc",
@@ -1616,7 +1692,6 @@ component("net") {
     deps += [
       "//base/version_info",
       "//net/cert:root_store_proto_lite",
-      "//net/data/ssl/chrome_root_store:gen_root_store_inc",
     ]
     if (is_win) {
       sources += [
@@ -1636,11 +1711,8 @@ component("net") {
 
   if (use_nss_certs) {
     sources += [
-      "cert/internal/trust_store_nss.cc",
-      "cert/internal/trust_store_nss.h",
       "cert/nss_cert_database.cc",
       "cert/nss_cert_database.h",
-      "cert/test_root_certs_builtin.cc",
       "cert/x509_util_nss.cc",
       "cert/x509_util_nss.h",
       "third_party/mozilla_security_manager/nsNSSCertificateDB.cpp",
@@ -1648,8 +1720,21 @@ component("net") {
       "third_party/mozilla_security_manager/nsPKCS12Blob.cpp",
       "third_party/mozilla_security_manager/nsPKCS12Blob.h",
     ]
-    deps += [ "//build:chromeos_buildflags" ]
-    if (!is_castos) {
+
+    # TODO(crbug.com/41467965): This is a public config because
+    # multi_threaded_cert_verifier.h depends on NSS. When the linked bug is
+    # fixed, switch this to a non-public config, so NSS usage must be explicit
+    # in the build.
+    public_configs = [ "//build/config/linux/nss" ]
+
+    if (use_nss_server_certs) {
+      sources += [
+        "cert/internal/trust_store_nss.cc",
+        "cert/internal/trust_store_nss.h",
+      ]
+    }
+
+    if (use_nss_client_certs) {
       sources += [
         "ssl/client_cert_store_nss.cc",
         "ssl/client_cert_store_nss.h",
@@ -1657,19 +1742,10 @@ component("net") {
         "ssl/ssl_platform_key_nss.h",
       ]
     }
-
-    # TODO(crbug.com/41467965): This is a public config because
-    # multi_threaded_cert_verifier.h depends on NSS. When the linked bug is
-    # fixed, switch this to a non-public config, so NSS usage must be explicit
-    # in the build.
-    public_configs = [ "//build/config/linux/nss" ]
   }
 
   if (is_fuchsia) {
-    deps += [
-      "//net/data/ssl/chrome_root_store:gen_root_store_inc",
-      "//third_party/fuchsia-sdk/sdk/pkg/async-loop-cpp",
-    ]
+    deps += [ "//third_party/fuchsia-sdk/sdk/pkg/async-loop-cpp" ]
     public_deps += [ "//third_party/fuchsia-sdk/sdk/fidl/fuchsia.net.interfaces:fuchsia.net.interfaces_hlcpp" ]
     sources += [
       "base/fuchsia/network_interface_cache.cc",
@@ -1742,8 +1818,6 @@ component("net") {
     sources += [
       "base/directory_lister.cc",
       "base/directory_lister.h",
-      "base/directory_listing.cc",
-      "base/directory_listing.h",
     ]
   }
 
@@ -1881,6 +1955,7 @@ component("net") {
       "disk_cache/sql/exclusive_operation_coordinator.cc",
       "disk_cache/sql/exclusive_operation_coordinator.h",
       "disk_cache/sql/indexed_pair_set.h",
+      "disk_cache/sql/shared_cache_client_remote.h",
       "disk_cache/sql/sql_async_task_manager.cc",
       "disk_cache/sql/sql_async_task_manager.h",
       "disk_cache/sql/sql_async_task_token.cc",
@@ -1902,24 +1977,33 @@ component("net") {
       "disk_cache/sql/sql_persistent_store_queries.h",
       "disk_cache/sql/sql_read_cache_memory_monitor.cc",
       "disk_cache/sql/sql_read_cache_memory_monitor.h",
+      "disk_cache/sql/sql_shared_cache.cc",
+      "disk_cache/sql/sql_shared_cache.h",
+      "disk_cache/sql/sql_shared_cache_blob_handle.h",
+      "disk_cache/sql/sql_shared_cache_handle.cc",
+      "disk_cache/sql/sql_shared_cache_handle.h",
       "disk_cache/sql/sql_shared_cache_index_database.cc",
       "disk_cache/sql/sql_shared_cache_index_database.h",
       "disk_cache/sql/sql_shared_cache_index_database_queries.h",
+      "disk_cache/sql/sql_shared_cache_isolated_database.cc",
+      "disk_cache/sql/sql_shared_cache_isolated_database.h",
+      "disk_cache/sql/sql_shared_cache_isolated_database_queries.h",
+      "disk_cache/sql/sql_shared_cache_isolated_database_reader.cc",
+      "disk_cache/sql/sql_shared_cache_isolated_database_reader.h",
+      "disk_cache/sql/sql_shared_cache_manager.cc",
+      "disk_cache/sql/sql_shared_cache_manager.h",
       "disk_cache/sql/sql_tracked_sequence_bound.h",
       "disk_cache/sql/sql_write_buffer_memory_monitor.cc",
       "disk_cache/sql/sql_write_buffer_memory_monitor.h",
     ]
     deps += [
       "//components/performance_manager/scenario_api",
+      "//components/sqlite_vfs",
       "//sql",
     ]
   }
-}
 
-# net_export.h has its own build target so that code (eg
-# net_nqe_proto) can use it without depending on the whole of //net.
-source_set("net_export_header") {
-  sources = [ "base/net_export.h" ]
+  deps += [ ":chrome_root_store_data" ]
 }
 
 # Private dependencies for the //net component and for any build targets (e.g.
@@ -1940,13 +2024,14 @@ source_set("net_deps") {
   ]
 
   public_deps = [
-    ":constants",
     ":cronet_buildflags",
     ":isolation_info_proto",
-    ":net_export_header",
     ":net_features",
     ":preload_decoder",
     "//base",
+    "//net/base:constants",
+    "//net/base:net_export_header",
+    "//net/base/module",
     "//net/base/registry_controlled_domains",
     "//third_party/protobuf:protobuf_lite",
     "//third_party/zlib",
@@ -1994,6 +2079,9 @@ source_set("net_deps") {
 
   if (!disable_zstd_filter) {
     public_deps += [ "//third_party/zstd:decompress" ]
+    if (!optimize_for_size) {
+      public_deps += [ "//third_party/zstd:compress" ]
+    }
   } else {
     public_deps += [ "//third_party/zstd:headers" ]
   }
@@ -2020,6 +2108,8 @@ source_set("net_public_deps") {
     ":net_nqe_proto",
     "//base",
     "//crypto",
+    "//net/base:registry_controlled_domains",
+    "//net/base/module",
     "//net/third_party/quiche",
     "//net/third_party/quiche:net_quic_test_tools_proto",
     "//net/third_party/uri_template",
@@ -2035,6 +2125,7 @@ source_set("net_public_deps") {
 
 grit("net_resources") {
   source = "base/net_resources.grd"
+  inputs = [ "base/dir_header.html" ]
   outputs = [
     "grit/net_resources.h",
     "net_resources.pak",
@@ -2049,7 +2140,7 @@ proto_library("net_nqe_proto") {
   cc_include = "net/base/net_export.h"
   component_build_force_source_set = true
 
-  link_deps = [ ":net_export_header" ]
+  link_deps = [ "//net/base:net_export_header" ]
 
   defines = [ "NET_IMPLEMENTATION" ]
 
@@ -2247,6 +2338,8 @@ static_library("test_support") {
     "ssl/test_ssl_config_service.h",
     "ssl/test_ssl_private_key.cc",
     "ssl/test_ssl_private_key.h",
+    "ssl/test_static_ech_mode_getter.cc",
+    "ssl/test_static_ech_mode_getter.h",
     "test/cert_builder.cc",
     "test/cert_builder.h",
     "test/cert_test_util.cc",
@@ -2321,6 +2414,8 @@ static_library("test_support") {
     "test/scoped_mutually_exclusive_feature_list.h",
     "test/ssl_test_util.cc",
     "test/ssl_test_util.h",
+    "test/target_network_test_util.cc",
+    "test/target_network_test_util.h",
     "test/test_certificate_data.h",
     "test/test_connection_cost_observer.cc",
     "test/test_connection_cost_observer.h",
@@ -2364,6 +2459,13 @@ static_library("test_support") {
     ]
   }
 
+  if (enable_device_bound_sessions) {
+    sources += [
+      "device_bound_sessions/mock_session_service.cc",
+      "device_bound_sessions/mock_session_service.h",
+    ]
+  }
+
   configs += [ "//build/config:precompiled_headers" ]
 
   public_deps = [
@@ -2384,11 +2486,16 @@ static_library("test_support") {
   deps = [
     ":quic_test_flags_utils",
     ":simple_quic_tools",
+    "//net/http:transport_security_state_pins_unittest_data_default",
     "//net/http:transport_security_state_unittest_data_default",
     "//third_party/zlib",
   ]
 
   if (chrome_root_store_supported) {
+    sources += [
+      "test/chrome_root_store_test_util.cc",
+      "test/chrome_root_store_test_util.h",
+    ]
     deps += [ "//net/cert:root_store_proto_lite" ]
   }
 
@@ -2415,8 +2522,6 @@ static_library("test_support") {
   if (use_nss_certs) {
     configs += [ "//build/config/linux/nss" ]
   }
-
-  public_configs = [ ":net_test_config" ]
 
   if (enable_python_utils) {
     sources += [
@@ -2606,6 +2711,8 @@ if (is_linux || is_chromeos || is_mac) {
 
 if (is_android) {
   generate_jni("net_jni_headers") {
+    # quic_server links this code.
+    use_weak_called_by_natives = true
     sources = [
       "android/java/src/org/chromium/net/AndroidCertVerifyResult.java",
       "android/java/src/org/chromium/net/AndroidKeyStore.java",
@@ -2736,6 +2843,7 @@ if (!is_ios) {
       "//url",
     ]
   }
+
   executable("quic_server") {
     testonly = true
     sources = [
@@ -2835,6 +2943,7 @@ target(_test_target_type, "net_unittests") {
     "base/ip_address_unittest.cc",
     "base/ip_address_util_unittest.cc",
     "base/ip_endpoint_unittest.cc",
+    "base/is_potentially_trustworthy_unittest.cc",
     "base/isolation_info_unittest.cc",
     "base/load_flags_to_string_unittest.cc",
     "base/lookup_string_in_fixed_set_unittest.cc",
@@ -2860,6 +2969,8 @@ target(_test_target_type, "net_unittests") {
     "base/proxy_server_unittest.cc",
     "base/proxy_string_util_unittest.cc",
     "base/registry_controlled_domains/registry_controlled_domain_unittest.cc",
+    "base/scheduler/net_task_queues_unittest.cc",
+    "base/scheduler/net_task_scheduler_unittest.cc",
     "base/scheme_host_port_matcher_rule_unittest.cc",
     "base/scheme_host_port_matcher_unittest.cc",
     "base/schemeful_site_unittest.cc",
@@ -2937,15 +3048,13 @@ target(_test_target_type, "net_unittests") {
     "disk_cache/simple/simple_version_upgrade_unittest.cc",
     "filter/filter_source_stream_unittest.cc",
     "filter/gzip_source_stream_unittest.cc",
-    "first_party_sets/addition_overlaps_union_find_unittest.cc",
     "first_party_sets/first_party_set_entry_override_unittest.cc",
-    "first_party_sets/first_party_sets_cache_filter_unittest.cc",
     "first_party_sets/first_party_sets_context_config_unittest.cc",
     "first_party_sets/first_party_sets_validator_unittest.cc",
     "first_party_sets/global_first_party_sets_unittest.cc",
-    "first_party_sets/local_set_declaration_unittest.cc",
     "first_party_sets/sets_mutation_unittest.cc",
     "http/alternative_service_unittest.cc",
+    "http/bidirectional_stream_multinetwork_unittest.cc",
     "http/bidirectional_stream_unittest.cc",
     "http/broken_alternative_services_unittest.cc",
     "http/http_auth_cache_unittest.cc",
@@ -2963,6 +3072,7 @@ target(_test_target_type, "net_unittests") {
     "http/http_auth_unittest.cc",
     "http/http_basic_state_unittest.cc",
     "http/http_byte_range_unittest.cc",
+    "http/http_cache_invalidation_pickle_traits_unittest.cc",
     "http/http_cache_unittest.cc",
     "http/http_cache_writers_unittest.cc",
     "http/http_chunked_decoder_unittest.cc",
@@ -3001,6 +3111,7 @@ target(_test_target_type, "net_unittests") {
     "http/no_vary_search_cache_storage_unittest.cc",
     "http/no_vary_search_cache_unittest.cc",
     "http/proxy_fallback_unittest.cc",
+    "http/structured_headers_unittest.cc",
     "http/test_upload_data_stream_not_allow_http1.cc",
     "http/test_upload_data_stream_not_allow_http1.h",
     "http/transport_security_persister_unittest.cc",
@@ -3032,6 +3143,7 @@ target(_test_target_type, "net_unittests") {
     "proxy_resolution/proxy_host_matching_rules_unittest.cc",
     "proxy_resolution/proxy_info_unittest.cc",
     "proxy_resolution/proxy_list_unittest.cc",
+    "proxy_resolution/proxy_resolution_url_sanitizer_unittest.cc",
     "proxy_resolution/system_proxy_resolution_service_unittest-inl.h",
     "quic/bidirectional_stream_quic_impl_unittest.cc",
     "quic/crypto/proof_test_chromium.cc",
@@ -3053,6 +3165,8 @@ target(_test_target_type, "net_unittests") {
     "quic/quic_end_to_end_unittest.cc",
     "quic/quic_http_stream_test.cc",
     "quic/quic_http_utils_test.cc",
+    "quic/quic_migration_attempt_context_unittest.cc",
+    "quic/quic_network_connectivity_tracker_unittest.cc",
     "quic/quic_network_transaction_unittest.cc",
     "quic/quic_proxy_client_socket_test_base.cc",
     "quic/quic_proxy_client_socket_test_base.h",
@@ -3060,6 +3174,7 @@ target(_test_target_type, "net_unittests") {
     "quic/quic_proxy_datagram_client_socket_unittest.cc",
     "quic/quic_session_attempt_manager_unittest.cc",
     "quic/quic_session_key_unittest.cc",
+    "quic/quic_session_pool_async_dns_job_unittest.cc",
     "quic/quic_session_pool_peer.cc",
     "quic/quic_session_pool_peer.h",
     "quic/quic_session_pool_proxy_job_unittest.cc",
@@ -3076,10 +3191,13 @@ target(_test_target_type, "net_unittests") {
     "quic/set_quic_flag_test.cc",
     "quic/test_quic_crypto_client_config_handle.cc",
     "quic/test_quic_crypto_client_config_handle.h",
+    "quic/web_transport_send_stats_tracker_unittest.cc",
     "shared_dictionary/shared_dictionary_header_checker_source_stream_unittest.cc",
     "shared_dictionary/shared_dictionary_isolation_key_unittest.cc",
     "shared_dictionary/shared_dictionary_network_transaction_factory_unittest.cc",
     "shared_dictionary/shared_dictionary_network_transaction_unittest.cc",
+    "socket/bandwidth_throttle_unittest.cc",
+    "socket/bottleneck_buffer_unittest.cc",
     "socket/client_socket_pool_base_unittest.cc",
     "socket/client_socket_pool_unittest.cc",
     "socket/connect_job_factory_unittest.cc",
@@ -3087,6 +3205,8 @@ target(_test_target_type, "net_unittests") {
     "socket/connect_job_test_util.cc",
     "socket/connect_job_test_util.h",
     "socket/connect_job_unittest.cc",
+    "socket/delayed_datagram_socket_unittest.cc",
+    "socket/delayed_stream_socket_unittest.cc",
     "socket/mock_client_socket_pool_manager.cc",
     "socket/mock_client_socket_pool_manager.h",
     "socket/sequenced_socket_data_unittest.cc",
@@ -3143,14 +3263,17 @@ target(_test_target_type, "net_unittests") {
     "ssl/ssl_cipher_suite_names_unittest.cc",
     "ssl/ssl_client_auth_cache_unittest.cc",
     "ssl/ssl_client_session_cache_unittest.cc",
+    "ssl/ssl_config_service_defaults_unittest.cc",
     "ssl/ssl_config_service_unittest.cc",
     "ssl/ssl_config_unittest.cc",
     "ssl/ssl_connection_status_flags_unittest.cc",
-    "ssl/ssl_platform_key_util_unittest.cc",
+    "test/cert_builder_unittest.cc",
     "test/embedded_test_server/embedded_test_server_unittest.cc",
     "test/embedded_test_server/http_request_unittest.cc",
     "test/embedded_test_server/http_response_unittest.cc",
+    "test/net_task_environment_unittest.cc",
     "test/run_all_unittests.cc",
+    "test/test_with_task_environment_unittest.cc",
     "tools/content_decoder_tool/content_decoder_tool.cc",
     "tools/content_decoder_tool/content_decoder_tool.h",
     "tools/content_decoder_tool/content_decoder_tool_unittest.cc",
@@ -3159,6 +3282,7 @@ target(_test_target_type, "net_unittests") {
     "tools/dump_cache/dump_cache_helper_unittest.cc",
     "tools/quic/quic_simple_client_test.cc",
     "tools/tld_cleanup/tld_cleanup_util_unittest.cc",
+    "url_request/multinetwork_unittest.cc",
     "url_request/redirect_info_unittest.cc",
     "url_request/redirect_util_unittest.cc",
     "url_request/storage_access_status_cache_unittest.cc",
@@ -3195,6 +3319,7 @@ target(_test_target_type, "net_unittests") {
   if (is_linux) {
     sources += [
       "base/network_change_notifier_linux_unittest.cc",
+      "proxy_resolution/linux/linux_system_proxy_resolution_service_unittest.cc",
       "proxy_resolution/proxy_config_service_linux_unittest.cc",
     ]
   }
@@ -3220,6 +3345,7 @@ target(_test_target_type, "net_unittests") {
     sources += [
       "cert/x509_util_apple_unittest.cc",
       "proxy_resolution/proxy_chain_util_apple_unittest.cc",
+      "proxy_resolution/proxy_resolver_apple_unittest.cc",
     ]
   }
 
@@ -3234,6 +3360,7 @@ target(_test_target_type, "net_unittests") {
       "proxy_resolution/win/dhcp_pac_file_adapter_fetcher_win_unittest.cc",
       "proxy_resolution/win/dhcp_pac_file_fetcher_win_unittest.cc",
       "proxy_resolution/win/proxy_config_service_win_unittest.cc",
+      "proxy_resolution/win/proxy_resolver_winhttp_unittest.cc",
       "proxy_resolution/win/windows_system_proxy_resolution_service_unittest.cc",
       "ssl/client_cert_store_win_unittest.cc",
       "ssl/ssl_platform_key_win_unittest.cc",
@@ -3243,17 +3370,31 @@ target(_test_target_type, "net_unittests") {
   configs += [ "//build/config:precompiled_headers" ]
   defines = []
   if (disable_zstd_filter) {
-    defines += [ "NET_DISABLE_ZSTD" ]
+    defines += [
+      "NET_DISABLE_ZSTD",
+      "NET_DISABLE_ZSTD_COMPRESS",
+    ]
+  } else if (optimize_for_size) {
+    defines += [ "NET_DISABLE_ZSTD_COMPRESS" ]
   }
 
   fuzztests = [
+    "CRLSetTest.ParseDoesNotCrash",
+    "HostCacheTest.CheckHostCacheSerialization",
+    "HostResolverCacheFuzzTest.SerializationDoesNotCrash",
     "HpackHeaderTableFuzzTest.CanCallMethodSequence",
+    "HttpAuthHandlerDigestTest.DigestAuthDoesNotCrash",
     "HttpNoVarySearchTest.AreEquivalentImplementationsMatch",
+    "HttpUtilTest.ParseFetchSingleRangeNeverCrashes",
     "PickleTest.FuzzRoundTrip",
     "ParseProxyListFuzzer.TestOneInput",
     "QuicheHostnameUtilsFuzzTest.FuzzPropertyNormalizationIsIdempotentForValidSni",
     "QuicVersionsFuzzTest.ParseSerializeParseIdentityProperty",
+    "SchemefulSiteTest.FuzzSchemefulSite",
     "SocketPoolAdditionalCapacityTest.ValidateRandomizedInputs",
+    "StructuredHeadersTest.ParseDictionaryParity",
+    "StructuredHeadersTest.ParseItemParity",
+    "StructuredHeadersTest.ParseListParity",
     "TransportParametersFuzzTest.ParseTransportParametersDoesNotCrash",
     "UrlUnescapeIteratorTest.SameOutputAsUnescapePercentEncodedUrl",
   ]
@@ -3273,20 +3414,22 @@ target(_test_target_type, "net_unittests") {
     "//components/network_time/time_tracker",
     "//crypto",
     "//crypto:test_support",
-    "//net:constants",
+    "//net/base:constants",
     "//net/base/registry_controlled_domains",
     "//net/base/registry_controlled_domains:lookup_strings_test_sets",
     "//net/base/registry_controlled_domains:registry_controlled_domains_test_dafsas",
     "//net/cert:root_store_proto_lite",
     "//net/dns:tests",
     "//net/dns/public:tests",
-    "//net/http:transport_security_state_unittest_data",
+    "//net/http:transport_security_state_pins_unittest_data_default",
     "//net/http:transport_security_state_unittest_data_default",
     "//net/third_party/quiche:quiche_tests",
     "//net/third_party/uri_template:uri_template_tests",
     "//net/tools/huffman_trie:huffman_trie_generator_sources",
     "//testing/gmock",
     "//testing/gtest",
+    "//testing/libfuzzer/proto:url_proto",
+    "//testing/libfuzzer/proto:url_proto_converter",
     "//third_party/abseil-cpp:absl",
     "//third_party/abseil-cpp:test_support",
     "//third_party/anonymous_tokens:anonymous_tokens_tests",
@@ -3298,10 +3441,22 @@ target(_test_target_type, "net_unittests") {
     "//url:buildflags",
   ]
 
+  if (is_linux) {
+    deps += [ "//build/config/linux/dbus:buildflags" ]
+    if (use_dbus && !is_cronet_build) {
+      deps += [
+        "//components/dbus",
+        "//dbus",
+        "//dbus:test_support",
+      ]
+    }
+  }
+
   if (!is_cronet_build) {
     sources += [
       "extras/sqlite/sqlite_persistent_cookie_store_unittest.cc",
       "extras/sqlite/sqlite_persistent_shared_dictionary_store_unittest.cc",
+      "extras/sqlite/sqlite_persistent_store_backend_base_unittest.cc",
       "log/trace_net_log_observer_unittest.cc",
     ]
 
@@ -3360,6 +3515,8 @@ target(_test_target_type, "net_unittests") {
     "data/embedded_test_server/",
     "data/file_stream_unittest/",
     "data/filter_unittests/",
+    "data/fuzzer_data/",
+    "data/fuzzer_dictionaries/",
     "data/gencerts/",
     "data/pac_file_fetcher_unittest/",
     "data/quic_http_response_cache_data/",
@@ -3418,11 +3575,13 @@ target(_test_target_type, "net_unittests") {
 
   if (use_nss_certs) {
     sources += [
-      "cert/internal/trust_store_nss_unittest.cc",
       "cert/nss_cert_database_unittest.cc",
       "cert/x509_util_nss_unittest.cc",
     ]
-    if (!is_castos) {
+    if (use_nss_server_certs) {
+      sources += [ "cert/internal/trust_store_nss_unittest.cc" ]
+    }
+    if (use_nss_client_certs) {
       sources += [
         "ssl/client_cert_store_nss_unittest.cc",
         "ssl/ssl_platform_key_nss_unittest.cc",
@@ -3466,6 +3625,7 @@ target(_test_target_type, "net_unittests") {
       "websockets/websocket_handshake_challenge_test.cc",
       "websockets/websocket_handshake_stream_create_helper_test.cc",
       "websockets/websocket_inflater_test.cc",
+      "websockets/websocket_multinetwork_test.cc",
       "websockets/websocket_stream_cookie_test.cc",
       "websockets/websocket_stream_create_test_base.cc",
       "websockets/websocket_stream_create_test_base.h",
@@ -3542,9 +3702,17 @@ target(_test_target_type, "net_unittests") {
 
   if (!disable_zstd_filter) {
     sources += [ "filter/zstd_source_stream_unittest.cc" ]
+    if (!optimize_for_size) {
+      sources += [ "http/cache_body_compressor_unittest.cc" ]
+    }
 
-    # http_cache_unittest.cc calls ZSTD_compress directly to build fixtures.
-    deps += [ "//third_party/zstd:compress" ]
+    # http_cache_unittest.cc calls ZSTD_compress() directly to build read-path
+    # fixtures; cache_body_compressor_unittest.cc calls ZSTD_decompressStream()
+    # to verify round-trip correctness.
+    deps += [
+      "//third_party/zstd:compress",
+      "//third_party/zstd:decompress",
+    ]
   }
 
   if (is_android) {
@@ -3590,6 +3758,7 @@ target(_test_target_type, "net_unittests") {
     deps += [
       "//base/version_info",
       "//net/data/ssl/chrome_root_store:gen_root_store_test_inc",
+      "//net/data/ssl/chrome_root_store:gen_signer_set_inc",
     ]
 
     if (is_win) {
@@ -3610,10 +3779,9 @@ target(_test_target_type, "net_unittests") {
   if (enable_device_bound_sessions) {
     sources += [
       "device_bound_sessions/cookie_craving_unittest.cc",
+      "device_bound_sessions/generate_key_param_unittest.cc",
       "device_bound_sessions/host_patterns_unittest.cc",
       "device_bound_sessions/jwk_utils_unittest.cc",
-      "device_bound_sessions/mock_session_service.cc",
-      "device_bound_sessions/mock_session_service.h",
       "device_bound_sessions/mock_session_store.cc",
       "device_bound_sessions/mock_session_store.h",
       "device_bound_sessions/registration_fetcher_param_unittest.cc",
@@ -3626,6 +3794,7 @@ target(_test_target_type, "net_unittests") {
       "device_bound_sessions/session_store_impl_unittest.cc",
       "device_bound_sessions/session_store_unittest.cc",
       "device_bound_sessions/session_unittest.cc",
+      "device_bound_sessions/single_sign_on_key_manager_unittest.cc",
       "device_bound_sessions/unexportable_key_service_factory_unittest.cc",
       "device_bound_sessions/url_fetcher_unittest.cc",
     ]
@@ -3643,23 +3812,33 @@ target(_test_target_type, "net_unittests") {
       "disk_cache/sql/eviction_candidate_aggregator_unittest.cc",
       "disk_cache/sql/exclusive_operation_coordinator_unittest.cc",
       "disk_cache/sql/indexed_pair_set_unittest.cc",
+      "disk_cache/sql/mock_shared_cache_client_remote.cc",
+      "disk_cache/sql/mock_shared_cache_client_remote.h",
       "disk_cache/sql/sql_async_task_manager_unittest.cc",
       "disk_cache/sql/sql_backend_impl_unittest.cc",
       "disk_cache/sql/sql_persistent_store_in_memory_index_unittest.cc",
       "disk_cache/sql/sql_persistent_store_unittest.cc",
       "disk_cache/sql/sql_shared_cache_index_database_unittest.cc",
+      "disk_cache/sql/sql_shared_cache_isolated_database_reader_unittest.cc",
+      "disk_cache/sql/sql_shared_cache_isolated_database_unittest.cc",
+      "disk_cache/sql/sql_shared_cache_manager_unittest.cc",
+      "disk_cache/sql/sql_shared_cache_unittest.cc",
       "disk_cache/sql/sql_tracked_sequence_bound_unittest.cc",
       "disk_cache/sql/test_util.cc",
       "disk_cache/sql/test_util.h",
     ]
 
-    deps += [ "//components/performance_manager/scenario_api:test_support" ]
+    deps += [
+      "//components/performance_manager/scenario_api:test_support",
+      "//components/sqlite_vfs",
+    ]
 
     # Platforms where sqlite_dev_shell is defined.
     if (is_win || is_mac || is_linux || is_chromeos) {
       sources += [
         "disk_cache/sql/sql_persistent_store_queries_unittest.cc",
         "disk_cache/sql/sql_shared_cache_index_database_queries_unittest.cc",
+        "disk_cache/sql/sql_shared_cache_isolated_database_queries_unittest.cc",
       ]
       data_deps += [ "//third_party/sqlite:sqlite_dev_shell" ]
     }
@@ -3752,6 +3931,7 @@ if (use_fuzzing_engine) {
       "socket/fuzzed_socket_factory.cc",
       "socket/fuzzed_socket_factory.h",
     ]
+
     public_deps = [
       "//base/test:test_support",
       "//net/dns:fuzzer_test_support",
@@ -3760,6 +3940,7 @@ if (use_fuzzing_engine) {
       "//base",
       "//base:i18n",
       "//net",
+      "//testing/libfuzzer:libfuzzer_exports",
     ]
     data = [
       "data/fuzzer_data/",
@@ -3925,21 +4106,6 @@ fuzzer_test("net_lookup_string_in_fixed_set_fuzzer") {
   dict = "data/fuzzer_dictionaries/net_get_domain_and_registry_fuzzer.dict"
 }
 
-fuzzer_test("net_base_schemeful_site_fuzzer") {
-  sources = [ "base/schemeful_site_fuzzer.cc" ]
-  deps = [
-    ":net_fuzzer_test_support",
-    "//base",
-    "//net",
-    "//testing/libfuzzer/proto:url_proto",
-    "//testing/libfuzzer/proto:url_proto_converter",
-    "//third_party/libprotobuf-mutator",
-  ]
-
-  # TODO(crbug.com/505034799): Migrate to FUZZ_TEST.
-  is_fuzztest_compatible = false
-}
-
 fuzzer_test("net_cert_ct_decode_signed_certificate_timestamp_fuzzer") {
   sources = [ "cert/decode_signed_certificate_timestamp_fuzzer.cc" ]
   deps = [
@@ -4083,17 +4249,6 @@ fuzzer_test("net_gzip_source_stream_fuzzer") {
   ]
 }
 
-fuzzer_test("net_crl_set_fuzzer") {
-  sources = [ "cert/crl_set_fuzzer.cc" ]
-  deps = [
-    ":net_fuzzer_test_support",
-    ":test_support",
-    "//base",
-    "//net",
-  ]
-  seed_corpus = "data/fuzzer_data/net_crl_set_fuzzer/"
-}
-
 fuzzer_test("net_spdy_headers_to_http_response_headers_fuzzer") {
   sources = [ "spdy/spdy_headers_to_http_response_headers_fuzzer.cc" ]
   deps = [
@@ -4154,20 +4309,7 @@ if (use_fuzzing_engine) {
   # binaries.
   source_set("net_web_socket_encoder_fuzzer_deps") {
     testonly = true
-    visibility = [
-      ":net_web_socket_encoder_fuzzer",
-      ":net_web_socket_encoder_fuzzer__apk__compile_java",
-      ":net_web_socket_encoder_fuzzer__apk__compile_resources",
-      ":net_web_socket_encoder_fuzzer__apk__create",
-      ":net_web_socket_encoder_fuzzer__apk__java",
-      ":net_web_socket_encoder_fuzzer__apk__java__dex",
-      ":net_web_socket_encoder_fuzzer__apk__java__header",
-      ":net_web_socket_encoder_fuzzer__apk__java__validate",
-      ":net_web_socket_encoder_fuzzer__library",
-      ":net_web_socket_encoder_fuzzer__library__jni_registration__native_sources",
-      ":net_web_socket_encoder_fuzzer_executable",
-      ":run_net_web_socket_encoder_fuzzer",
-    ]
+    visibility = [ ":*" ]
     public_deps = [
       ":net_fuzzer_test_support",
       "//net",
@@ -4194,16 +4336,6 @@ fuzzer_test("net_http_chunked_decoder_fuzzer") {
 fuzzer_test("net_http_auth_handler_basic_fuzzer") {
   sources = [ "http/http_auth_handler_basic_fuzzer.cc" ]
   dict = "data/fuzzer_dictionaries/net_http_auth_handler_basic_fuzzer.dict"
-  deps = [
-    ":net_fuzzer_test_support",
-    ":test_support",
-    "//net",
-  ]
-}
-
-fuzzer_test("net_http_auth_handler_digest_fuzzer") {
-  sources = [ "http/http_auth_handler_digest_fuzzer.cc" ]
-  dict = "data/fuzzer_dictionaries/net_http_auth_handler_digest_fuzzer.dict"
   deps = [
     ":net_fuzzer_test_support",
     ":test_support",

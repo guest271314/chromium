@@ -21,18 +21,21 @@
 #include "components/embedder_support/user_agent_utils.h"
 #include "components/enterprise/common/proto/connectors.pb.h"
 #include "components/policy/core/common/cloud/cloud_policy_store.h"
+#include "components/policy/core/common/cloud/cloud_policy_util.h"
 #include "components/policy/core/common/cloud/user_cloud_policy_manager.h"
 #include "components/policy/proto/device_management_backend.pb.h"
 #include "components/user_manager/user.h"
-#include "components/user_manager/user_manager.h"
 
 #if BUILDFLAG(IS_CHROMEOS)
+#include "base/check_deref.h"
 #include "chrome/browser/ash/login/users/affiliation.h"
 #include "chrome/browser/ash/policy/core/browser_policy_connector_ash.h"
 #include "chrome/browser/ash/policy/core/device_local_account_policy_service.h"
 #include "chrome/browser/ash/policy/core/user_cloud_policy_manager_ash.h"
 #include "chrome/browser/ash/profiles/profile_helper.h"
 #include "chrome/browser/browser_process_platform_part_ash.h"
+#include "components/session_manager/core/session.h"
+#include "components/session_manager/core/session_manager.h"
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
 namespace {
@@ -166,6 +169,7 @@ base::DictValue GetContext(Profile* profile) {
   if (!device_dm_token.empty()) {
     request.mutable_device()->set_dm_token(device_dm_token);
   }
+  request.mutable_device()->set_os_platform(policy::GetOSPlatform());
 #endif
 
   std::optional<std::string> user_dm_token = GetUserDmToken(profile);
@@ -245,8 +249,6 @@ std::optional<std::string> GetUserClientId(Profile* profile) {
 std::optional<std::string> GetMGSUserClientId() {
   policy::BrowserPolicyConnectorAsh* connector =
       g_browser_process->platform_part()->browser_policy_connector_ash();
-  const user_manager::UserManager* user_manager =
-      user_manager::UserManager::Get();
   policy::DeviceLocalAccountPolicyService* policy_service =
       connector->GetDeviceLocalAccountPolicyService();
 
@@ -255,14 +257,18 @@ std::optional<std::string> GetMGSUserClientId() {
     return std::nullopt;
   }
 
+  // TODO(crbug.com/278643115): Take the account_id from the callers.
   const policy::DeviceLocalAccountPolicyBroker* policy_broker =
       policy_service->GetBrokerForUser(
-          user_manager->GetActiveUser()->GetAccountId().GetUserEmail());
+          CHECK_DEREF(
+              session_manager::SessionManager::Get()->GetActiveSession())
+              .account_id()
+              .GetUserEmail());
 
   // The policy broker is null if the active user does not belong to an existing
   // device-local account, which should never be the case when calling this
   // function.
-  DCHECK(policy_broker);
+  CHECK(policy_broker, base::NotFatalUntil::M162);
 
   const enterprise_management::PolicyData* policy_data =
       policy_broker->core()->store()->policy();

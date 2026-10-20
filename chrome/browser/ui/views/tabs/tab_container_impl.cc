@@ -7,13 +7,10 @@
 #include <algorithm>
 #include <memory>
 
-#include "base/bits.h"
-#include "base/containers/adapters.h"
+#include "base/check.h"
 #include "base/i18n/rtl.h"
-#include "base/types/to_address.h"
 #include "chrome/browser/ui/layout_constants.h"
-#include "chrome/browser/ui/tabs/features.h"
-#include "chrome/browser/ui/ui_features.h"
+#include "chrome/browser/ui/tabs/tab_enums.h"
 #include "chrome/browser/ui/views/frame/browser_root_view.h"
 #include "chrome/browser/ui/views/tabs/dragging/tab_drag_context.h"
 #include "chrome/browser/ui/views/tabs/dragging/tab_drag_controller.h"
@@ -31,23 +28,23 @@
 #include "chrome/browser/ui/views/tabs/tab_strip_layout_types.h"
 #include "chrome/browser/ui/views/tabs/tab_style_views.h"
 #include "chrome/browser/ui/views/tabs/z_orderable_tab_container_element.h"
-#include "chrome/grit/theme_resources.h"
 #include "components/tab_groups/tab_group_id.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/mojom/menu_source_type.mojom.h"
-#include "ui/base/resource/resource_bundle.h"
 #include "ui/display/screen.h"
 #include "ui/gfx/image/image_skia.h"
 #include "ui/gfx/image/image_skia_operations.h"
 #include "ui/views/accessibility/view_accessibility.h"
-#include "ui/views/controls/image_view.h"
-#include "ui/views/layout/layout_provider.h"
 #include "ui/views/mouse_watcher_view_host.h"
 #include "ui/views/rect_based_targeting_utils.h"
 #include "ui/views/view_utils.h"
 
 namespace {
-
+// When the window has a top drag handle, a thin strip at the top of
+// inactive tabs and the new tab button can be treated as part of the window
+// drag handle, to increase draggability.  This region starts 1 DIP above
+// the top of the separator.
+constexpr int kDragHandleExtension = 6;
 }  // namespace
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -98,6 +95,8 @@ TabContainerImpl::TabContainerImpl(
           base::BindRepeating(&TabContainerImpl::GetTabsViewModel,
                               base::Unretained(this)))) {
   SetEventTargeter(std::make_unique<views::ViewTargeter>(this));
+  GetViewAccessibility().SetRole(ax::mojom::Role::kTabList);
+  GetViewAccessibility().SetIsMultiselectable(true);
 
   bounds_animator_.AddObserver(this);
 
@@ -143,8 +142,9 @@ std::vector<Tab*> TabContainerImpl::AddTabs(
   }
 
   for (auto& param : tabs_params) {
-    Tab* tab_ptr = AddChildView(std::move(param.tab));
-    OrderTabSlotView(tab_ptr);
+    const size_t child_index = GetChildIndexForSlotView(param.tab.get());
+    Tab* tab_ptr = AddChildViewAt(std::move(param.tab), child_index);
+    MarkZOrderCacheDirty();
     added_tabs.push_back(tab_ptr);
   }
 
@@ -154,6 +154,17 @@ std::vector<Tab*> TabContainerImpl::AddTabs(
     for (auto& param : tabs_params) {
       StartInsertTabAnimation(param.model_index);
     }
+  } else if (GetWidget() && !GetWidget()->IsVisible() && !IsAnimating()) {
+    // Nothing can be seen until the widget is shown, and Layout() then does
+    // what CompleteAnimationAndLayout() would do now (ideal bounds, snap, slot
+    // visibility), so a single layout at that point gives the same result.
+    // Laying out the whole strip for every tab added to a hidden widget is
+    // quadratic in the number of tabs, which matters when a large session is
+    // restored into a window that is not shown yet. An animation that is
+    // still running (the widget was hidden while tabs were moving) is
+    // completed right away as before, so the strip never waits in a
+    // half-animated state.
+    InvalidateLayout();
   } else {
     CompleteAnimationAndLayout();
   }
@@ -326,9 +337,9 @@ void TabContainerImpl::OnGroupCreated(const tab_groups::TabGroupId& group) {
 
 void TabContainerImpl::OnGroupEditorOpened(
     const tab_groups::TabGroupId& group) {
-  // The context menu relies on a Browser object which is not provided in
-  // TabStripTest.
-  if (tab_slot_controller_->GetBrowser()) {
+  // The context menu relies on a BrowserWindowInterface object which is not
+  // provided in TabStripTest.
+  if (tab_slot_controller_->GetBrowserWindowInterface()) {
     group_views_[group]->header()->ShowContextMenuForViewImpl(
         this, gfx::Point(), ui::mojom::MenuSourceType::kNone);
   }
@@ -565,20 +576,13 @@ bool TabContainerImpl::IsRectInContentArea(const gfx::Rect& rect) {
   }
 
   if (controller_->CanExtendDragHandle()) {
-    // When the window has a top drag handle, a thin strip at the top of
-    // inactive tabs and the new tab button can be treated as part of the window
-    // drag handle, to increase draggability.  This region starts 1 DIP above
-    // the top of the separator.
-    const int drag_handle_extension =
-        TabStyle::Get()->GetDragHandleExtension(height());
-
     // A hit on an inactive tab is in the content area unless it is in the thin
     // strip mentioned above.
     const std::optional<size_t> tab_index = tabs_view_model_.GetIndexOfView(v);
     if (tab_index.has_value() && IsValidModelIndex(tab_index.value())) {
       Tab* tab = GetTabAtModelIndex(tab_index.value());
       gfx::Rect tab_drag_handle = tab->GetMirroredBounds();
-      tab_drag_handle.set_height(drag_handle_extension);
+      tab_drag_handle.set_height(kDragHandleExtension);
       return tab->IsActive() || !tab_drag_handle.Intersects(rect);
     }
   }
@@ -697,6 +701,7 @@ void TabContainerImpl::CompleteAnimationAndLayout() {
   SnapToIdealBounds();
 
   SetTabSlotVisibility();
+  UpdateAccessibleTabIndicesIfNeeded();
   SchedulePaint();
 }
 
@@ -741,9 +746,14 @@ void TabContainerImpl::ExitTabClosingMode() {
 }
 
 void TabContainerImpl::SetTabSlotVisibility() {
+  UpdateIdealBounds();
+
+  const std::optional<tab_groups::TabGroupId> focused_group =
+      controller_->GetFocusedGroup();
+
   std::set<tab_groups::TabGroupId> visibility_changed_groups;
   bool last_tab_visible = false;
-  std::optional<tab_groups::TabGroupId> last_tab_group = std::nullopt;
+  std::optional<tab_groups::TabGroupId> last_tab_group;
   std::vector<Tab*> tabs = layout_helper_->GetTabs();
   for (auto it = tabs.rbegin(); true; ++it) {
     Tab* tab = it != tabs.rend() ? *it : nullptr;
@@ -753,15 +763,19 @@ void TabContainerImpl::SetTabSlotVisibility() {
 
       // If we change the visibility of a group header, we must recalculate that
       // group's underline bounds.
-      if (last_tab_visible != group_view->header()->GetVisible()) {
+      bool should_header_be_visible = last_tab_visible;
+      if (focused_group.has_value() && last_tab_group != focused_group) {
+        should_header_be_visible = false;
+      }
+      if (should_header_be_visible != group_view->header()->GetVisible()) {
         visibility_changed_groups.insert(last_tab_group.value());
       }
-      group_view->header()->SetVisible(last_tab_visible);
+      group_view->header()->SetVisible(should_header_be_visible);
 
       // Hide underlines if they would underline an invisible tab, but don't
       // show underlines if they're hidden during a header drag session.
       if (!group_view->header()->dragging()) {
-        group_view->underline()->MaybeSetVisible(last_tab_visible);
+        group_view->underline()->MaybeSetVisible(should_header_be_visible);
       }
     }
 
@@ -773,13 +787,27 @@ void TabContainerImpl::SetTabSlotVisibility() {
     last_tab_visible = ShouldTabBeVisible(tab);
     last_tab_group = tab->closing() ? std::nullopt : current_group;
 
+    // Tabs outside the focused group are implicitly collapsed in focus mode,
+    // unless they are pinned.
+    bool is_collapsed_by_focus_mode = false;
+    if (focused_group.has_value()) {
+      if (!tab->data().pinned) {
+        is_collapsed_by_focus_mode =
+            !current_group.has_value() ||
+            current_group.value() != focused_group.value();
+      }
+    }
+
     // Collapsed tabs disappear once they've reached their minimum size. This
     // is different than very small non-collapsed tabs, because in that case
     // the tab (and its favicon) must still be visible.
+    const bool is_collapsed_by_group =
+        current_group.has_value() &&
+        controller_->IsGroupCollapsed(current_group.value());
+
     const bool is_collapsed =
-        (current_group.has_value() &&
-         controller_->IsGroupCollapsed(current_group.value()) &&
-         tab->bounds().width() <= tab->tab_style()->GetTabOverlap());
+        (is_collapsed_by_group || is_collapsed_by_focus_mode) &&
+        (tab->bounds().width() <= tab->tab_style()->GetTabOverlap());
     const bool should_be_visible = is_collapsed ? false : last_tab_visible;
 
     // If we change the visibility of a tab in a group, we must recalculate that
@@ -844,6 +872,7 @@ void TabContainerImpl::Layout(PassKey) {
   }
 
   SetTabSlotVisibility();
+  UpdateAccessibleTabIndicesIfNeeded();
 }
 
 void TabContainerImpl::PaintChildren(const views::PaintInfo& paint_info) {
@@ -855,7 +884,10 @@ void TabContainerImpl::PaintChildren(const views::PaintInfo& paint_info) {
 
   UpdateZOrderCacheIfDirty();
   for (const auto& child : z_ordered_children_cache_) {
-    child.view()->Paint(paint_info);
+    // The compositor handles painting children with layers separately.
+    if (!child.view()->layer()) {
+      child.view()->Paint(paint_info);
+    }
   }
 }
 
@@ -1186,8 +1218,12 @@ void TabContainerImpl::SnapToIdealBounds() {
 }
 
 int TabContainerImpl::CalculateAvailableWidthForTabs() const {
-  return override_available_width_for_tabs_.value_or(
-      GetAvailableWidthForTabContainer());
+  int available_width = GetAvailableWidthForTabContainer();
+  if (override_available_width_for_tabs_.has_value()) {
+    int capped = std::min(*override_available_width_for_tabs_, available_width);
+    return capped;
+  }
+  return available_width;
 }
 
 void TabContainerImpl::StartInsertTabAnimation(int model_index) {
@@ -1225,8 +1261,8 @@ void TabContainerImpl::StartRemoveTabAnimation(Tab* tab,
   // closing mode. See crbug.com/40838229.
   UpdateIdealBounds();
   if (in_tab_close_ && GetTabCount() > 0 &&
-      override_available_width_for_tabs_ >
-          tabs_view_model_.ideal_bounds(GetTabCount() - 1).right()) {
+      override_available_width_for_tabs_.value_or(0) >=
+          layout_helper_->CalculatePreferredWidth()) {
     // Tab closing mode is no longer constraining tab widths - they're at full
     // size. Exit tab closing mode so that it doesn't artificially inflate our
     // bounds.
@@ -1269,25 +1305,75 @@ void TabContainerImpl::StartRemoveTabAnimation(Tab* tab,
                 std::make_unique<RemoveTabDelegate>(this, tab));
 }
 
+std::optional<tab_groups::TabGroupId>
+TabContainerImpl::GetGroupHeaderPrecedingClosingTab(
+    Tab* tab,
+    int former_model_index) const {
+  // tab->group() has already been cleared when the tab is closing.
+  // We can determine if `tab` was the leading tab in a group by checking the
+  // tab now at `former_model_index`.
+
+  if (former_model_index >= GetTabCount()) {
+    return std::nullopt;
+  }
+
+  std::optional<tab_groups::TabGroupId> next_tab_group =
+      GetTabAtModelIndex(former_model_index)->group();
+  if (!next_tab_group.has_value()) {
+    return std::nullopt;
+  }
+
+  const auto group_views_it = group_views_.find(next_tab_group.value());
+  if (group_views_it == group_views_.end()) {
+    return std::nullopt;
+  }
+
+  // Ensure the closing tab was physically to the right of the header.
+  const bool was_in_next_group =
+      group_views_it->second->header()->bounds().x() <= tab->bounds().x();
+  if (!was_in_next_group) {
+    return std::nullopt;
+  }
+
+  // If at index 0 or the previous tab belonged to a different group, this tab
+  // was the first tab in the group and was preceded by the group header.
+  if (former_model_index == 0 ||
+      GetTabAtModelIndex(former_model_index - 1)->group() != next_tab_group) {
+    return next_tab_group;
+  }
+
+  return std::nullopt;
+}
+
 gfx::Rect TabContainerImpl::GetTargetBoundsForClosingTab(
     Tab* tab,
     int former_model_index) const {
   const int tab_overlap = TabStyle::Get()->GetTabOverlap();
 
-  // Compute the target bounds for animating this tab closed.  The tab's left
-  // edge should stay joined to the right edge of the previous tab, if any.
+  // Compute the target bounds for animating this tab closed.
   gfx::Rect target_bounds = tab->bounds();
-  target_bounds.set_x(
-      (former_model_index > 0)
-          ? (tabs_view_model_.ideal_bounds(former_model_index - 1).right() -
-             tab_overlap)
-          : 0);
+  int target_x = 0;
 
-  // The tab should animate to the width of the overlap in order to close at the
-  // same speed the surrounding tabs are moving, since at this width the
-  // subsequent tab is naturally positioned at the same X coordinate.
+  std::optional<tab_groups::TabGroupId> preceding_group =
+      GetGroupHeaderPrecedingClosingTab(tab, former_model_index);
+  if (preceding_group.has_value()) {
+    // If the tab was preceded by a group header, the left edge should be joined
+    // to the right of the header.
+    const auto header_bounds_it =
+        layout_helper_->group_header_ideal_bounds().find(
+            preceding_group.value());
+    if (header_bounds_it != layout_helper_->group_header_ideal_bounds().end()) {
+      target_x = header_bounds_it->second.right() - tab_overlap;
+    }
+  } else if (former_model_index > 0) {
+    // Otherwise, the tab's left edge should stay joined to the right edge of
+    // the previous tab.
+    target_x = tabs_view_model_.ideal_bounds(former_model_index - 1).right() -
+               tab_overlap;
+  }
+
+  target_bounds.set_x(target_x);
   target_bounds.set_width(tab_overlap);
-
   return target_bounds;
 }
 
@@ -1305,17 +1391,10 @@ std::optional<int> TabContainerImpl::GetMidAnimationTrailingX() const {
   }
 
   // During animations not related to a drag session, we want to tightly hug
-  // our tabs. This allows the NTB to slide smoothly as tabs are opened and
-  // closed.
-
-  int trailing_x = 0;
-  // The visual order of the tabs can be out of sync with the logical order,
-  // so we have to check all of them to find the visually trailing-most one.
-  for (views::View* child : children()) {
-    trailing_x = std::max(trailing_x, child->bounds().right());
-  }
-
-  return trailing_x;
+  // our tabs. The `overall_bounds_view_` is animated smoothly to the ideal
+  // trailing X and is free from the rounding jitter of individual child
+  // views.
+  return overall_bounds_view_->bounds().right();
 }
 
 void TabContainerImpl::CloseTabInViewModel(int index) {
@@ -1340,17 +1419,20 @@ void TabContainerImpl::OnTabRemoved(Tab* tab) {
 void TabContainerImpl::UpdateClosingModeOnRemovedTab(int model_index,
                                                      bool was_active) {
   // The tab at `model_index` has already been removed from the model, but is
-  // still in `tabs_view_model_`.  Index math with care!
-  const int model_count = GetTabCount() - 1;
+  // still in `tabs_view_model_`. Index math with care!
+  const int visible_tab_count = GetVisibleTabCount();
 
-  // If we're closing the last tab, tab closing mode is no longer meaningful.
-  if (model_count == 0) {
+  // If we're closing the last visible tab, tab closing mode is no longer
+  // meaningful.
+  if (visible_tab_count <= 1) {
     ExitTabClosingMode();
+    return;
   }
 
-  // No updates needed if we aren't in tab closing mode or are closing the
-  // trailingmost tab.
-  if (!in_tab_close_ || model_index == model_count) {
+  const int last_visible_tab_index = GetLastVisibleTabModelIndex();
+  // Closing the trailingmost visible tab allows remaining visible tabs to
+  // expand.
+  if (!in_tab_close_ || model_index >= last_visible_tab_index) {
     return;
   }
 
@@ -1385,9 +1467,48 @@ void TabContainerImpl::UpdateClosingModeOnRemovedTab(int model_index,
     }
   }
 
+  const int current_width =
+      override_available_width_for_tabs_.value_or(GetIdealTrailingX());
   override_available_width_for_tabs_ =
-      tabs_view_model_.ideal_bounds(model_count).right() - size_delta +
-      TabStyle::Get()->GetTabOverlap();
+      current_width - size_delta + TabStyle::Get()->GetTabOverlap();
+}
+
+bool TabContainerImpl::IsTabVisible(const Tab* tab) const {
+  if (!tab) {
+    return false;
+  }
+  if (tab->data().pinned) {
+    return true;
+  }
+  std::optional<tab_groups::TabGroupId> focused_group =
+      controller_->GetFocusedGroup();
+  if (focused_group.has_value()) {
+    return tab->group() == focused_group;
+  }
+  if (tab->group().has_value() &&
+      controller_->IsGroupCollapsed(tab->group().value())) {
+    return false;
+  }
+  return true;
+}
+
+int TabContainerImpl::GetVisibleTabCount() const {
+  int count = 0;
+  for (int i = 0; i < GetTabCount(); ++i) {
+    if (IsTabVisible(GetTabAtModelIndex(i))) {
+      ++count;
+    }
+  }
+  return count;
+}
+
+int TabContainerImpl::GetLastVisibleTabModelIndex() const {
+  for (int i = GetTabCount() - 1; i >= 0; --i) {
+    if (IsTabVisible(GetTabAtModelIndex(i))) {
+      return i;
+    }
+  }
+  return -1;
 }
 
 void TabContainerImpl::ResizeLayoutTabs() {
@@ -1479,9 +1600,16 @@ void TabContainerImpl::OrderTabSlotView(TabSlotView* slot_view) {
   }
 
   // `slot_view` is in the wrong place in children(). Fix it.
-  std::vector<TabSlotView*> slots = layout_helper_->GetTabSlotViews();
-  size_t target_slot_index =
-      std::ranges::find(slots, slot_view) - slots.begin();
+  ReorderChildView(slot_view, GetChildIndexForSlotView(slot_view));
+  MarkZOrderCacheDirty();
+}
+
+size_t TabContainerImpl::GetChildIndexForSlotView(
+    const TabSlotView* slot_view) const {
+  const std::vector<TabSlotView*> slots = layout_helper_->GetTabSlotViews();
+  const auto slot_it = std::ranges::find(slots, slot_view);
+  CHECK(slot_it != slots.end());
+  const size_t target_slot_index = slot_it - slots.begin();
   // Find the index in children() that corresponds to `target_slot_index`.
   size_t view_index = 0;
   for (size_t slot_index = 0; slot_index < target_slot_index; ++slot_index) {
@@ -1494,9 +1622,7 @@ void TabContainerImpl::OrderTabSlotView(TabSlotView* slot_view) {
     }
     ++view_index;
   }
-
-  ReorderChildView(slot_view, view_index);
-  MarkZOrderCacheDirty();
+  return view_index;
 }
 
 bool TabContainerImpl::IsPointInTab(
@@ -1558,6 +1684,7 @@ bool TabContainerImpl::ShouldTabBeVisible(const Tab* tab) const {
   // tabstrip were resized to its greatest possible width, it shouldn't be
   // visible.
   int right_edge = tab->bounds().right();
+
   const int tabstrip_right =
       tab->parent() != this ? drag_position_delegate_->GetTabDragAreaWidth()
                             : GetAvailableWidthForTabContainer();
@@ -1703,6 +1830,22 @@ void TabContainerImpl::SetDropArrow(
 }
 
 void TabContainerImpl::UpdateAccessibleTabIndices() {
+  // Adding, removing or moving a tab changes the position of every tab after
+  // it and the set size of all of them, so the update has to walk the whole
+  // strip. Every such change also invalidates the layout, so do the walk as
+  // part of the next layout instead of once per change: a burst of changes,
+  // e.g. a session restore inserting hundreds of tabs, then walks the strip
+  // once. Assistive technology reads the attributes after the strip has been
+  // laid out.
+  accessible_tab_indices_dirty_ = true;
+  InvalidateLayout();
+}
+
+void TabContainerImpl::UpdateAccessibleTabIndicesIfNeeded() {
+  if (!accessible_tab_indices_dirty_) {
+    return;
+  }
+  accessible_tab_indices_dirty_ = false;
   const int num_tabs = GetTabCount();
   for (int i = 0; i < num_tabs; ++i) {
     GetTabAtModelIndex(i)->GetViewAccessibility().SetPosInSet(i + 1);

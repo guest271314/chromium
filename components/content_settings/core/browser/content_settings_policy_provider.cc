@@ -51,6 +51,10 @@ struct PrefsForManagedContentSettingsMapEntry {
 // verifies this invariant or documents any necessary deviation.
 constexpr PrefsForManagedContentSettingsMapEntry
     kPrefsForManagedContentSettingsMap[] = {
+        {prefs::kManagedAutomaticDownloadsAllowedForUrls,
+         ContentSettingsType::AUTOMATIC_DOWNLOADS, CONTENT_SETTING_ALLOW},
+        {prefs::kManagedAutomaticDownloadsBlockedForUrls,
+         ContentSettingsType::AUTOMATIC_DOWNLOADS, CONTENT_SETTING_BLOCK},
         {prefs::kManagedAutomaticFullscreenAllowedForUrls,
          ContentSettingsType::AUTOMATIC_FULLSCREEN, CONTENT_SETTING_ALLOW},
         {prefs::kManagedAutomaticFullscreenBlockedForUrls,
@@ -145,12 +149,6 @@ constexpr PrefsForManagedContentSettingsMapEntry
          ContentSettingsType::DIRECT_SOCKETS, CONTENT_SETTING_ALLOW},
         {prefs::kManagedDirectSocketsBlockedForUrls,
          ContentSettingsType::DIRECT_SOCKETS, CONTENT_SETTING_BLOCK},
-        {prefs::kManagedDirectSocketsPrivateNetworkAccessAllowedForUrls,
-         ContentSettingsType::DIRECT_SOCKETS_PRIVATE_NETWORK_ACCESS,
-         CONTENT_SETTING_ALLOW},
-        {prefs::kManagedDirectSocketsPrivateNetworkAccessBlockedForUrls,
-         ContentSettingsType::DIRECT_SOCKETS_PRIVATE_NETWORK_ACCESS,
-         CONTENT_SETTING_BLOCK},
         {prefs::kManagedSubAppsWithoutPromptsAllowedForOrigins,
          ContentSettingsType::SUB_APPS_WITHOUT_PROMPTS, CONTENT_SETTING_ALLOW},
         {prefs::kManagedSubAppsWithoutPromptsBlockedForOrigins,
@@ -199,6 +197,8 @@ constexpr PrefsForManagedContentSettingsMapEntry
 };
 
 constexpr const char* kManagedPrefs[] = {
+    prefs::kManagedAutomaticDownloadsAllowedForUrls,
+    prefs::kManagedAutomaticDownloadsBlockedForUrls,
     prefs::kManagedAutomaticFullscreenAllowedForUrls,
     prefs::kManagedAutomaticFullscreenBlockedForUrls,
     prefs::kManagedAutoSelectCertificateForUrls,
@@ -255,8 +255,6 @@ constexpr const char* kManagedPrefs[] = {
     prefs::kManagedWebPrintingBlockedForUrls,
     prefs::kManagedDirectSocketsAllowedForUrls,
     prefs::kManagedDirectSocketsBlockedForUrls,
-    prefs::kManagedDirectSocketsPrivateNetworkAccessAllowedForUrls,
-    prefs::kManagedDirectSocketsPrivateNetworkAccessBlockedForUrls,
     prefs::kManagedSubAppsWithoutPromptsAllowedForOrigins,
     prefs::kManagedSubAppsWithoutPromptsBlockedForOrigins,
 #if BUILDFLAG(IS_CHROMEOS)
@@ -277,6 +275,7 @@ constexpr const char* kManagedPrefs[] = {
 // is managed any user defined exceptions (patterns) for this type are ignored.
 constexpr const char* kManagedDefaultPrefs[] = {
     prefs::kManagedDefaultAdsSetting,
+    prefs::kManagedDefaultAutomaticDownloadsSetting,
     prefs::kManagedDefaultClipboardSetting,
     prefs::kManagedDefaultCookiesSetting,
     prefs::kManagedDefaultFileSystemReadGuardSetting,
@@ -302,7 +301,6 @@ constexpr const char* kManagedDefaultPrefs[] = {
     prefs::kManagedDefaultWebPrintingSetting,
     prefs::kManagedDefaultDirectSocketsSetting,
     prefs::kManagedDefaultSubAppsWithoutPromptsSetting,
-    prefs::kManagedDefaultDirectSocketsPrivateNetworkAccessSetting,
     prefs::kManagedDefaultControlledFrameSetting,
 #if BUILDFLAG(IS_CHROMEOS)
     prefs::kManagedDefaultSmartCardConnectSetting,
@@ -373,6 +371,8 @@ struct PolicyProvider::PrefsForManagedDefaultMapEntry {
 const PolicyProvider::PrefsForManagedDefaultMapEntry
     PolicyProvider::kPrefsForManagedDefault[] = {
         {ContentSettingsType::ADS, prefs::kManagedDefaultAdsSetting},
+        {ContentSettingsType::AUTOMATIC_DOWNLOADS,
+         prefs::kManagedDefaultAutomaticDownloadsSetting},
         {ContentSettingsType::CLIPBOARD_READ_WRITE,
          prefs::kManagedDefaultClipboardSetting},
         {ContentSettingsType::COOKIES, prefs::kManagedDefaultCookiesSetting},
@@ -419,8 +419,6 @@ const PolicyProvider::PrefsForManagedDefaultMapEntry
          prefs::kManagedDefaultWebPrintingSetting},
         {ContentSettingsType::DIRECT_SOCKETS,
          prefs::kManagedDefaultDirectSocketsSetting},
-        {ContentSettingsType::DIRECT_SOCKETS_PRIVATE_NETWORK_ACCESS,
-         prefs::kManagedDefaultDirectSocketsPrivateNetworkAccessSetting},
         {ContentSettingsType::CONTROLLED_FRAME,
          prefs::kManagedDefaultControlledFrameSetting},
         {ContentSettingsType::SUB_APPS_WITHOUT_PROMPTS,

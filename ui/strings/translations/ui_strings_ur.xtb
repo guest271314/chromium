@@ -11,7 +11,6 @@
 <translation id="1253734725326687145">ٹچ ٹارگیٹ کو اوپر دائیں طرف منتقل کیا گیا۔ یہاں تھپتھپائیں۔</translation>
 <translation id="1266864766717917324"><ph name="CONTENT_TYPE" /> کا اشتراک نہیں کیا جا سکا</translation>
 <translation id="1269641567813814718">Win</translation>
-<translation id="1291104554099683393">چھوٹے ٹکڑوں میں متن کا اشتراک کرنے کی کوشش کریں۔</translation>
 <translation id="1293699935367580298">Esc</translation>
 <translation id="1368832886055348810">بائیں سے دائیں</translation>
 <translation id="1383876407941801731">تلاش کریں</translation>
@@ -38,13 +37,11 @@
 <translation id="1901303067676059328">&amp;سبھی کو منتخب کریں</translation>
 <translation id="19085484004813472">یہ نئی خصوصیت ہے</translation>
 <translation id="2006524834898217237">یہ یقینی بنائیں کہ آپ کا آلہ انٹرنیٹ سے منسلک ہے۔</translation>
-<translation id="208586643495776849">براہ کرم دوبارہ کوشش کریں</translation>
 <translation id="2111134541987263231"><ph name="BEGIN_BOLD" />پوشیدگی وضع میں اجازت دیں<ph name="END_BOLD" /> کو آن کریں</translation>
 <translation id="2141853158323869627">{DAYS,plural, =1{1d}other{#d}}</translation>
 <translation id="2148716181193084225">آج</translation>
 <translation id="2168039046890040389">صفحہ اوپر</translation>
 <translation id="2190355936436201913">(خالی)</translation>
-<translation id="2192232475740621500">کم کثافت کا استعمال کریں</translation>
 <translation id="2267918077332197517">اس سائٹ سے تمام اطلاعات کو بلاک کریں</translation>
 <translation id="2283117145434822734">F6</translation>
 <translation id="2289052229480071835">اپنی اسکرین پر ٹچ اہداف کو تھپتھپائیں۔</translation>
@@ -56,7 +53,6 @@
 <translation id="2388990488038464401">آپ کے فون سے اس نمبر پر کال کریں؟</translation>
 <translation id="2435457462613246316">پاس ورڈ دکھائیں</translation>
 <translation id="24452542372838207">اطلاع پھیلائيں</translation>
-<translation id="2445449901874883781">زیادہ کثافت کا استعمال کریں</translation>
 <translation id="2448407890032181691">ٹچ ٹارگیٹ کو اوپر دائیں طرف منتقل کیا گیا۔ یہاں تھپتھپائیں۔</translation>
 <translation id="2482878487686419369">اطلاعات</translation>
 <translation id="2497284189126895209">سبھی فائلیں</translation>
@@ -87,7 +83,6 @@
 <translation id="3306688585798492231">پہلے سے شامل ڈسپلے</translation>
 <translation id="335581015389089642">اسپیچ</translation>
 <translation id="3372635229069101468"><ph name="BEGIN_BOLD" />تفصیلات<ph name="END_BOLD" /> پر کلک کریں</translation>
-<translation id="3389286852084373014">متن کافی بڑا ہے</translation>
 <translation id="3406306243914553062">‏HTML مواد</translation>
 <translation id="3600566671520689681">{DAYS,plural, =1{1 دن باقی}other{# دن باقی}}</translation>
 <translation id="3600969208114796418"><ph name="SAVEAS_EXTENSION_TYPE" /> فائل</translation>
@@ -130,7 +125,6 @@
 <translation id="5046499563572181734">یہاں تھپتھپائیں</translation>
 <translation id="5076340679995252485">&amp;پیسٹ کریں</translation>
 <translation id="520299402983819650">‎<ph name="QUANTITY" /> PB</translation>
-<translation id="5278860589123563674">بھیجنا ناکام ہو گیا</translation>
 <translation id="5283101102242354279">پوشیدگی وضع میں ایکسٹینشن کو آن کریں:</translation>
 <translation id="528468243742722775">اختتام</translation>
 <translation id="5329858601952122676">&amp;حذف کریں</translation>
@@ -190,7 +184,6 @@
 <translation id="6965382102122355670">ٹھیک ہے</translation>
 <translation id="6974053822202609517">دائیں سے بائیں</translation>
 <translation id="7052633198403197513">F1</translation>
-<translation id="7170202025028120564">اگلی بار ری اسٹارٹ ہونے پر آپ کی ایپلیکیشن کے ڈسپلے کی ترتیبات لاگو ہوں گی۔</translation>
 <translation id="7222373446505536781">F11</translation>
 <translation id="7238427729722629793">{MINUTES,plural, =1{1 منٹ باقی}other{# منٹ باقی}}</translation>
 <translation id="7252604552361840748">اوپر ایکسٹینشن تلاش کریں</translation>

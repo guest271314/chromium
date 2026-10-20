@@ -7,12 +7,10 @@ package org.chromium.chrome.browser.omnibox;
 import android.net.Uri;
 import android.text.Spanned;
 import android.text.TextUtils;
-import android.util.Range;
 
 import org.chromium.base.ResettersForTesting;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
-import org.chromium.chrome.browser.contextual_tasks.ContextualTasksUtils;
 import org.chromium.chrome.browser.ui.native_page.NativePage;
 import org.chromium.components.embedder_support.util.UrlConstants;
 import org.chromium.components.embedder_support.util.UrlUtilities;
@@ -25,12 +23,6 @@ import java.util.Set;
 /** Encapsulates all data that is necessary for the URL bar to display its contents. */
 @NullMarked
 public class UrlBarData {
-    /** The selection range that selects no text, and places the cursor at the end of input. */
-    public static final Range<Integer> SELECT_ALL = Range.create(0, Integer.MAX_VALUE);
-
-    /** The selection range encapsulating all the text. */
-    public static final Range<Integer> SELECT_END =
-            Range.create(Integer.MAX_VALUE, Integer.MAX_VALUE);
 
     /** The URL schemes that don't need to be displayed complete with path. */
     public static final Set<String> SCHEMES_TO_SPLIT =
@@ -87,11 +79,6 @@ public class UrlBarData {
         return forUrlAndText(url, displayText, null);
     }
 
-    public static void setShouldShowUrlForTesting(boolean shouldShow) {
-        sShouldShowUrlForTesting = shouldShow;
-        ResettersForTesting.register(() -> sShouldShowUrlForTesting = null);
-    }
-
     /** Returns whether supplied URL should be shown in the Omnibox/Suggestions list. */
     public static boolean shouldShowUrl(GURL gurl, boolean isOffTheRecord) {
         if (sShouldShowUrlForTesting != null) {
@@ -101,8 +88,6 @@ public class UrlBarData {
         boolean shouldSuppress =
                 // Don't show the NTP URL
                 UrlUtilities.isNtpUrl(gurl)
-                        // Don't show the AI page URL
-                        || ContextualTasksUtils.isContextualTasksUrl(gurl)
                         // Don't show other Chrome URLs on mobile devices.
                         || (!OmniboxCapabilities.isDesktopPlatform()
                                 && NativePage.isChromePageUrl(gurl, isOffTheRecord));
@@ -118,7 +103,7 @@ public class UrlBarData {
      *     Spanned} that contains formatting to highlight parts of the display text
      * @param editingText the text that should replace the display text when editing the contents of
      *     the URL bar, or null to use the {@link #displayText} when editing
-     * @returns new instance of UrlBarData, possibly UrlBarData.EMPTY if all supplied parameters are
+     * @return new instance of UrlBarData, possibly UrlBarData.EMPTY if all supplied parameters are
      *     null, empty, or invalid.
      */
     public static UrlBarData forUrlAndText(
@@ -247,5 +232,10 @@ public class UrlBarData {
         this.originStartIndex = originStartIndex;
         this.originEndIndex = originEndIndex;
         this.editingText = editingText;
+    }
+
+    public static void setShouldShowUrlForTesting(boolean shouldShow) {
+        sShouldShowUrlForTesting = shouldShow;
+        ResettersForTesting.register(() -> sShouldShowUrlForTesting = null);
     }
 }

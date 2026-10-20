@@ -7,12 +7,14 @@
 #include <array>
 #include <bit>
 #include <bitset>
+#include <ranges>
 #include <utility>
 
 #include "base/bits.h"
 #include "base/compiler_specific.h"
 #include "base/containers/span.h"
 #include "base/logging.h"
+#include "base/numerics/safe_conversions.h"
 #include "media/gpu/macros.h"
 #include "media/gpu/svc_layers.h"
 #include "media/gpu/vaapi/vaapi_common.h"
@@ -38,8 +40,6 @@ constexpr gfx::Size kAV1AlignmentSize(64, 64);
 constexpr int kCDEFStrengthDivisor = 4;
 constexpr int kPrimaryReferenceNone = 7;
 
-#define ARRAY_SIZE(x) (sizeof(x) / sizeof(x[0]))
-
 // Convert Qindex, whose range is 0-255, to the quantizer parameter used in
 // libaom av1 rate control, whose range is 0-63.
 // The table is generated from the table of
@@ -62,9 +62,9 @@ uint8_t QindexToQuantizer(uint8_t q_index) {
       59, 59, 59, 60, 60, 60, 60, 61, 61, 61, 61, 62, 62, 62, 62, 62, 63, 63,
       63, 63, 63, 63,
   });
-  static_assert(std::size(kQindexToQuantizer) == 256,
+  static_assert(kQindexToQuantizer.size() == 256,
                 "Unexpected kQindexToQuantizer size");
-  CHECK_LT(base::strict_cast<size_t>(q_index), std::size(kQindexToQuantizer));
+  CHECK_LT(base::strict_cast<size_t>(q_index), kQindexToQuantizer.size());
   return kQindexToQuantizer[q_index];
 }
 
@@ -332,13 +332,10 @@ AV1BitstreamBuilder::FrameHeader FillAV1BuilderFrameHeader(
 
   pic_hdr.cdef_damping_minus_3 = pic_param.cdef_damping_minus_3;
   pic_hdr.cdef_bits = pic_param.cdef_bits;
-  for (size_t i = 0; i < ARRAY_SIZE(current_params.cdef_y_pri_strength); i++) {
-    pic_hdr.cdef_y_pri_strength[i] =
-        UNSAFE_TODO(current_params.cdef_y_pri_strength[i]);
-    pic_hdr.cdef_y_sec_strength[i] = current_params.cdef_y_sec_strength[i];
-    pic_hdr.cdef_uv_pri_strength[i] = current_params.cdef_uv_pri_strength[i];
-    pic_hdr.cdef_uv_sec_strength[i] = current_params.cdef_uv_sec_strength[i];
-  }
+  pic_hdr.cdef_y_pri_strength = current_params.cdef_y_pri_strength;
+  pic_hdr.cdef_y_sec_strength = current_params.cdef_y_sec_strength;
+  pic_hdr.cdef_uv_pri_strength = current_params.cdef_uv_pri_strength;
+  pic_hdr.cdef_uv_sec_strength = current_params.cdef_uv_sec_strength;
   pic_hdr.reduced_tx_set = pic_param.picture_flags.bits.reduced_tx_set;
   pic_hdr.tx_mode =
       static_cast<libgav1::TxMode>(pic_param.mode_control_flags.bits.tx_mode);
@@ -416,11 +413,11 @@ bool AV1VaapiVideoEncoderDelegate::Initialize(
   }
 
   visible_size_ = config.input_visible_size;
-  coded_size_ =
-      gfx::Size(base::bits::AlignUpDeprecatedDoNotUse(
-                    visible_size_.width(), kAV1AlignmentSize.width()),
-                base::bits::AlignUpDeprecatedDoNotUse(
-                    visible_size_.height(), kAV1AlignmentSize.height()));
+  coded_size_ = gfx::Size(
+      base::bits::AlignUp(base::checked_cast<uint32_t>(visible_size_.width()),
+                          uint32_t{kAV1AlignmentSize.width()}),
+      base::bits::AlignUp(base::checked_cast<uint32_t>(visible_size_.height()),
+                          uint32_t{kAV1AlignmentSize.height()}));
 
   current_params_.framerate = config.framerate;
   current_params_.drop_frame_thresh = config.drop_frame_thresh_percentage;
@@ -431,40 +428,18 @@ bool AV1VaapiVideoEncoderDelegate::Initialize(
       config.content_type ==
       VideoEncodeAccelerator::Config::ContentType::kDisplay;
 
-  // Treat 0 framerate as "use default". This matches the precedent set by
-  // VideoEncodeAccelerator::kDefaultFramerate and allows callers (e.g., WebRTC)
-  // to signal "encoder's choice" when the actual framerate is not yet known.
-  if (current_params_.framerate == 0) {
-    VLOGF(1) << "Framerate is 0, using default "
-             << VideoEncodeAccelerator::kDefaultFramerate << " fps";
-    current_params_.framerate = VideoEncodeAccelerator::kDefaultFramerate;
-  }
-
   level_idx_ = ComputeLevel(coded_size_, current_params_.framerate);
   if (level_idx_ < 0) {
-    // Fall back to Level 3.1 (index 5), which is a safe baseline for most
-    // WebRTC scenarios and common resolutions up to 1080p at 60fps.
-    // This prevents "level: not available" errors in the sequence header
-    // which can cause decoders to reject the bitstream (crbug.com/471780477).
-    VLOGF(1) << "Could not compute level index for " << coded_size_.ToString()
-             << " at " << current_params_.framerate
-             << "fps, falling back to Level 3.1 (index 5)";
-    level_idx_ = 5;
+    LOG(ERROR) << "Could not compute level index";
+    return false;
   }
 
   frame_num_ = current_params_.intra_period;
 
-  // Default to 8x8 (smallest supported) and let the driver request a larger
-  // minimum if needed.
-  seg_size_ = 8;
-
-  // If the driver query fails, keep the default.
   if (!vaapi_wrapper_->GetMinAV1SegmentSize(AV1PROFILE_PROFILE_MAIN,
                                             seg_size_)) {
-    seg_size_ = 8;
-  }
-  if (seg_size_ < 8u) {
-    seg_size_ = 8u;
+    LOG(ERROR) << "Could not get minimum segment size";
+    return false;
   }
 
   uint32_t seg_map_width =
@@ -533,7 +508,7 @@ bool AV1VaapiVideoEncoderDelegate::UpdateRates(
   rc_config.frame_drop_thresh =
       base::strict_cast<int>(current_params_.drop_frame_thresh);
   rc_config.framerate = current_params_.framerate;
-  uint64_t bitrate_sum = 0;
+  int bitrate_sum = 0;
   for (int tid = 0; tid < num_temporal_layers_; ++tid) {
     UNSAFE_TODO(rc_config.ts_rate_decimator[tid]) =
         1u << (num_temporal_layers_ - tid - 1);
@@ -1062,15 +1037,13 @@ bool AV1VaapiVideoEncoderDelegate::FillPictureParam(
 
   pic_param.cdef_damping_minus_3 = 5 - 3;
   pic_param.cdef_bits = 3;
-  for (size_t i = 0; i < ARRAY_SIZE(current_params_.cdef_y_pri_strength); i++) {
-    UNSAFE_TODO({
-      pic_param.cdef_y_strengths[i] =
-          current_params_.cdef_y_pri_strength[i] * kCDEFStrengthDivisor +
-          current_params_.cdef_y_sec_strength[i];
-      pic_param.cdef_uv_strengths[i] =
-          current_params_.cdef_uv_pri_strength[i] * kCDEFStrengthDivisor +
-          current_params_.cdef_uv_sec_strength[i];
-    })
+  for (auto [y, y_pri, y_sec, uv, uv_pri, uv_sec] : std::views::zip(
+           pic_param.cdef_y_strengths, current_params_.cdef_y_pri_strength,
+           current_params_.cdef_y_sec_strength, pic_param.cdef_uv_strengths,
+           current_params_.cdef_uv_pri_strength,
+           current_params_.cdef_uv_sec_strength)) {
+    y = y_pri * kCDEFStrengthDivisor + y_sec;
+    uv = uv_pri * kCDEFStrengthDivisor + uv_sec;
   }
 
   pic_param.loop_restoration_flags.bits.yframe_restoration_type = 0;

@@ -4,6 +4,7 @@
 
 #include "content/browser/preloading/prefetch/prefetch_url_loader_interceptor.h"
 
+#include "base/check_is_test.h"
 #include "base/debug/dump_without_crashing.h"
 #include "base/memory/weak_ptr.h"
 #include "base/metrics/histogram_macros.h"
@@ -71,16 +72,12 @@ PrefetchURLLoaderInterceptor::PrefetchURLLoaderInterceptor(
     base::WeakPtr<ServiceWorkerMainResourceHandle>
         service_worker_handle_for_navigation,
     FrameTreeNodeId frame_tree_node_id,
-    std::optional<blink::DocumentToken> initiator_document_token,
-    base::WeakPtr<PrefetchServingPageMetricsContainer>
-        serving_page_metrics_container)
+    std::optional<blink::DocumentToken> initiator_document_token)
     : expected_service_worker_state_(expected_service_worker_state),
       service_worker_handle_for_navigation_(
           std::move(service_worker_handle_for_navigation)),
       frame_tree_node_id_(frame_tree_node_id),
-      initiator_document_token_(std::move(initiator_document_token)),
-      serving_page_metrics_container_(
-          std::move(serving_page_metrics_container)) {
+      initiator_document_token_(std::move(initiator_document_token)) {
   if (!features::IsPrefetchServiceWorkerEnabled(
           BrowserContextFromFrameTreeNodeId(frame_tree_node_id_))) {
     CHECK_EQ(expected_service_worker_state_,
@@ -134,6 +131,42 @@ void PrefetchURLLoaderInterceptor::MaybeCreateLoader(
     return;
   }
 
+  PrefetchService* prefetch_service =
+      PrefetchService::GetFromFrameTreeNodeId(frame_tree_node_id_);
+  if (!prefetch_service) {
+    redirect_serving_handle_ = PrefetchServingHandle();
+    TRACE_EVENT_END("loading");
+    std::move(loader_callback_).Run(std::nullopt);
+    return;
+  }
+
+  FrameTreeNode* frame_tree_node =
+      FrameTreeNode::GloballyFindByID(frame_tree_node_id_);
+  CHECK(frame_tree_node);
+  NavigationRequest* navigation_request = frame_tree_node->navigation_request();
+  // `NavigationRequest` is gone unexpectedly in unit tests.
+  // TODO(crbug.com/548008832): Fix tests and turn this into
+  // `CHECK(navigation_request)`.
+  if (!navigation_request) {
+    CHECK_IS_TEST();
+    redirect_serving_handle_ = PrefetchServingHandle();
+    TRACE_EVENT_END("loading");
+    std::move(loader_callback_).Run(std::nullopt);
+    return;
+  }
+
+  // Only the default storage partition is supported for prefetches.
+  // Here the navigation target's `StoragePartition` is checked, while the
+  // prefetch initiator's `StoragePartition` is checked at prefetch time in
+  // `PrefetchService::CheckEligibilityOfPrefetch()`.
+  if (navigation_request->GetTargetStoragePartition() !=
+      prefetch_service->GetBrowserContext()->GetDefaultStoragePartition()) {
+    redirect_serving_handle_ = PrefetchServingHandle();
+    TRACE_EVENT_END("loading");
+    std::move(loader_callback_).Run(std::nullopt);
+    return;
+  }
+
   if (redirect_serving_handle_ &&
       redirect_serving_handle_.DoesCurrentURLToServeMatch(
           tentative_resource_request.url)) {
@@ -170,8 +203,6 @@ void PrefetchURLLoaderInterceptor::MaybeCreateLoader(
     redirect_serving_handle_ = PrefetchServingHandle();
   }
 
-  FrameTreeNode* frame_tree_node =
-      FrameTreeNode::GloballyFindByID(frame_tree_node_id_);
   if (!frame_tree_node->IsOutermostMainFrame()) {
     // The prefetch code does not currently deal with prefetching within a frame
     // (i.e., where the partition which should be assigned to the request is not
@@ -188,7 +219,7 @@ void PrefetchURLLoaderInterceptor::MaybeCreateLoader(
 
   TRACE_EVENT_END("loading");
   GetPrefetch(
-      tentative_resource_request.url,
+      *prefetch_service, tentative_resource_request.url,
       base::BindOnce(&PrefetchURLLoaderInterceptor::OnGetPrefetchComplete,
                      weak_factory_.GetWeakPtr(), tentative_resource_request.url,
 
@@ -198,6 +229,7 @@ void PrefetchURLLoaderInterceptor::MaybeCreateLoader(
 }
 
 void PrefetchURLLoaderInterceptor::GetPrefetch(
+    PrefetchService& prefetch_service,
     const GURL& url,
     base::OnceCallback<void(PrefetchServingHandle)> get_prefetch_callback)
     const {
@@ -205,29 +237,13 @@ void PrefetchURLLoaderInterceptor::GetPrefetch(
                     perfetto::Flow::FromPointer(
                         const_cast<PrefetchURLLoaderInterceptor*>(this)));
 
-  PrefetchService* prefetch_service =
-      PrefetchService::GetFromFrameTreeNodeId(frame_tree_node_id_);
-  if (!prefetch_service) {
-    TRACE_EVENT_END("loading");
-    std::move(get_prefetch_callback).Run({});
-    return;
-  }
-
-  if (!initiator_document_token_.has_value()) {
-    // TODO(crbug.com/40288091): Currently PrefetchServingPageMetricsContainer
-    // is created only when the navigation is renderer-initiated and its
-    // initiator document has PrefetchDocumentManager.
-    CHECK(!serving_page_metrics_container_);
-  }
-
   auto callback = base::BindOnce(&OnGotPrefetchToServe, frame_tree_node_id_,
                                  url, std::move(get_prefetch_callback));
   auto key = PrefetchKey(initiator_document_token_, url);
   TRACE_EVENT_END("loading");
   PrefetchMatchResolver::FindPrefetch(
-      frame_tree_node_id_, *prefetch_service, std::move(key),
-      expected_service_worker_state_, serving_page_metrics_container_,
-      std::move(callback),
+      frame_tree_node_id_, prefetch_service, std::move(key),
+      expected_service_worker_state_, std::move(callback),
       perfetto::Flow::FromPointer(
           const_cast<PrefetchURLLoaderInterceptor*>(this)));
 }
@@ -264,7 +280,7 @@ void PrefetchURLLoaderInterceptor::OnGetPrefetchComplete(
       // TODO(https://crbug.com/413207408): Monitor the reports and fix
       // `ServiceWorkerClient::CalculateStorageKeyForUpdateUrls()` if there
       // are actual mismatches.
-      DCHECK(false);
+      CHECK(false, base::NotFatalUntil::M159);
       base::debug::DumpWithoutCrashing();
 
       // We anyway gracefully fallback to non-prefetch path.
@@ -310,15 +326,6 @@ void PrefetchURLLoaderInterceptor::OnGetPrefetchComplete(
   RenderFrameHost* render_frame_host = frame_tree_node->current_frame_host();
   NavigationRequest* navigation_request = frame_tree_node->navigation_request();
   bool bypass_redirect_checks = false;
-
-  // For prerendered pages, the page is not presented to the user
-  // when it is commitred. The activation beacon will be sent on the
-  // PrerenderHost activation.
-  if (prefetch_container && navigation_request &&
-      !navigation_request->IsInPrerenderedMainFrame()) {
-    navigation_request->set_activation_beacon_url(
-        prefetch_container->GetActivationBeaconUrl());
-  }
 
   if (GetPrefetchCompleteCallbackForTesting()) {
     GetPrefetchCompleteCallbackForTesting().Run(prefetch_container);  // IN-TEST

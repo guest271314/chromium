@@ -10,17 +10,22 @@
 #import "base/feature_list.h"
 #import "base/functional/bind.h"
 #import "base/functional/callback.h"
+#import "base/metrics/histogram_functions.h"
 #import "base/notimplemented.h"
 #import "base/strings/sys_string_conversions.h"
 #import "base/strings/utf_string_conversions.h"
+#import "base/time/time.h"
 #import "base/types/optional_util.h"
 #import "components/autofill/core/browser/integrators/password_manager/password_manager_autofill_helper_delegate.h"
 #import "components/autofill/core/browser/logging/log_manager.h"
 #import "components/autofill/core/browser/logging/log_router.h"
 #import "components/autofill/ios/browser/autofill_client_ios.h"
+#import "components/device_reauth/device_auth_availability_checker.h"
+#import "components/device_reauth/device_authenticator.h"
 #import "components/enterprise/connectors/core/features.h"
 #import "components/enterprise/connectors/core/reporting_event_router.h"
 #import "components/keyed_service/core/service_access_type.h"
+#import "components/password_manager/core/browser/features/password_features.h"
 #import "components/password_manager/core/browser/password_form.h"
 #import "components/password_manager/core/browser/password_form_manager_for_ui.h"
 #import "components/password_manager/core/browser/password_manager.h"
@@ -36,7 +41,14 @@
 #import "components/ukm/ios/ukm_url_recorder.h"
 #import "components/webauthn/ios/features.h"
 #import "components/webauthn/ios/ios_webauthn_credentials_delegate_factory.h"
+#import "components/webauthn/ios/passkey_tab_helper.h"
+#import "ios/chrome/browser/device_reauth/model/ios_device_authenticator.h"
+#import "ios/chrome/browser/device_reauth/model/ios_device_authenticator_factory.h"
+#import "ios/chrome/browser/device_reauth/model/reauthentication_service.h"
+#import "ios/chrome/browser/device_reauth/model/reauthentication_service_factory.h"
 #import "ios/chrome/browser/enterprise/connectors/reporting/ios_reporting_event_router_factory.h"
+#import "ios/chrome/browser/intelligence/actor/model/actor_tab_helper.h"
+#import "ios/chrome/browser/intelligence/actor/public/actor_control_state.h"
 #import "ios/chrome/browser/metrics/model/ios_profile_metrics_service_factory.h"
 #import "ios/chrome/browser/passwords/model/features.h"
 #import "ios/chrome/browser/passwords/model/ios_chrome_account_password_store_factory.h"
@@ -55,10 +67,14 @@
 #import "ios/chrome/browser/signin/model/identity_manager_factory.h"
 #import "ios/chrome/browser/sync/model/sync_service_factory.h"
 #import "ios/chrome/browser/translate/model/chrome_ios_translate_client.h"
+#import "ios/web/public/web_state.h"
 #import "net/cert/cert_status_flags.h"
+#import "services/metrics/public/cpp/metrics_utils.h"
+#import "services/metrics/public/cpp/ukm_builders.h"
 #import "services/metrics/public/cpp/ukm_recorder.h"
 #import "services/network/public/cpp/shared_url_loader_factory.h"
 #import "url/gurl.h"
+#import "url/origin.h"
 
 using password_manager::PasswordFormManagerForUI;
 using password_manager::PasswordManagerMetricsRecorder;
@@ -70,6 +86,9 @@ namespace {
 
 // The check was triggered by the user entering a password on a webpage.
 inline constexpr char kPasswordBreachEntryTrigger[] = "PASSWORD_ENTRY";
+
+// Threshold within which a login submission is associated with Touch to Fill.
+constexpr base::TimeDelta kTouchToFillSubmissionTimeout = base::Minutes(1);
 
 }  // namespace
 
@@ -98,12 +117,46 @@ bool IOSChromePasswordManagerClient::PromptUserToChooseCredentials(
   return false;
 }
 
+bool IOSChromePasswordManagerClient::IsReauthBeforeFillingRequired(
+    device_reauth::DeviceAuthAvailabilityChecker* checker) {
+  CHECK(checker);
+  return checker->CanAuthenticateWithBiometricOrScreenLock();
+}
+
+bool IOSChromePasswordManagerClient::IsReauthBeforeFillingRequiredLegacy(
+    device_reauth::DeviceAuthenticator* authenticator) {
+  CHECK(authenticator);
+  return authenticator->CanAuthenticateWithBiometricOrScreenLock();
+}
+
+std::unique_ptr<device_reauth::DeviceAuthAvailabilityChecker>
+IOSChromePasswordManagerClient::GetDeviceAuthAvailabilityChecker() {
+  ProfileIOS* profile = bridge_.profile;
+  CHECK(profile);
+  id<ReauthenticationProtocol> reauthModule =
+      ReauthenticationServiceFactory::GetForProfile(profile)->GetReauthModule();
+  return CreateIOSDeviceAuthAvailabilityChecker(reauthModule);
+}
+
+std::unique_ptr<device_reauth::DeviceAuthenticator>
+IOSChromePasswordManagerClient::GetDeviceAuthenticator() {
+  ProfileIOS* profile = bridge_.profile;
+  CHECK(profile);
+  device_reauth::DeviceAuthParams params(
+      base::Seconds(60), device_reauth::DeviceAuthSource::kPasswordManager);
+  id<ReauthenticationProtocol> reauthModule =
+      ReauthenticationServiceFactory::GetForProfile(profile)->GetReauthModule();
+  return CreateIOSDeviceAuthenticator(reauthModule, profile, params);
+}
+
 bool IOSChromePasswordManagerClient::PromptUserToSaveOrUpdatePassword(
     std::unique_ptr<PasswordFormManagerForUI> form_to_save,
     bool update_password) {
   if (form_to_save->IsBlocklisted()) {
     return false;
   }
+
+  RecordPasswordLogin(form_to_save.get());
 
   [bridge_ removePasswordInfoBarManualFallback:YES];
 
@@ -146,7 +199,11 @@ void IOSChromePasswordManagerClient::FocusedInputChanged(
 void IOSChromePasswordManagerClient::AutomaticPasswordSave(
     std::unique_ptr<PasswordFormManagerForUI> saved_form_manager,
     bool is_update_confirmation) {
-  NOTIMPLEMENTED();
+  RecordPasswordLogin(saved_form_manager.get());
+
+  if (base::FeatureList::IsEnabled(kPasswordSavedInfobar)) {
+    [bridge_ showPasswordSavedInfoBar:std::move(saved_form_manager)];
+  }
 }
 
 void IOSChromePasswordManagerClient::PromptUserToEnableAutosignin() {
@@ -232,6 +289,7 @@ void IOSChromePasswordManagerClient::NotifyUserCouldBeAutoSignedIn(
 void IOSChromePasswordManagerClient::NotifySuccessfulLoginWithExistingPassword(
     std::unique_ptr<password_manager::PasswordFormManagerForUI>
         submitted_manager) {
+  RecordPasswordLogin(submitted_manager.get());
   helper_.NotifySuccessfulLoginWithExistingPassword(
       std::move(submitted_manager));
   [bridge_
@@ -243,6 +301,16 @@ void IOSChromePasswordManagerClient::NotifySuccessfulLoginWithExistingPassword(
 
 bool IOSChromePasswordManagerClient::IsPasswordChangeOngoing() {
   return false;
+}
+
+bool IOSChromePasswordManagerClient::IsActorTaskActive() {
+  web::WebState* web_state = bridge_.webState;
+  if (!web_state) {
+    return false;
+  }
+  ActorTabHelper* actor_tab_helper = ActorTabHelper::FromWebState(web_state);
+  return actor_tab_helper && actor_tab_helper->GetControlState() ==
+                                 actor::ActorControlState::kActorControlled;
 }
 
 void IOSChromePasswordManagerClient::MaybeReportEnterpriseLoginEvent(
@@ -293,16 +361,73 @@ void IOSChromePasswordManagerClient::NotifyUserCredentialsWereLeaked(
 
 void IOSChromePasswordManagerClient::NotifyKeychainError() {}
 
-bool IOSChromePasswordManagerClient::IsSavingAndFillingEnabled(
-    const GURL& url) const {
-  return *saving_passwords_enabled_ && !IsOffTheRecord() &&
-         !net::IsCertStatusError(GetMainFrameCertStatus()) &&
-         IsFillingEnabled(url);
+void IOSChromePasswordManagerClient::NotifyOnSuccessfulLogin(
+    const std::u16string& submitted_username) {
+  if (!touch_to_fill_state_) {
+    return;
+  }
+
+  const base::TimeDelta delta =
+      base::TimeTicks::Now() - touch_to_fill_state_->fill_time;
+  // Filter out unrelated logins or negative elapsed times (e.g. clock anomaly).
+  if (delta >= base::TimeDelta() && delta < kTouchToFillSubmissionTimeout &&
+      touch_to_fill_state_->username == submitted_username) {
+    base::UmaHistogramMediumTimes(kTouchToFillTimeToSuccessfulLoginHistogram,
+                                  delta);
+    ukm::builders::TouchToFill_TimeToSuccessfulLogin(GetUkmSourceId())
+        .SetTimeToSuccessfulLogin(
+            ukm::GetExponentialBucketMinForUserTiming(delta.InMilliseconds()))
+        .Record(ukm::UkmRecorder::Get());
+
+    base::UmaHistogramBoolean(
+        kTouchToFillSuccessfulSubmissionWasObservedHistogram, true);
+    touch_to_fill_state_.reset();
+  } else {
+    ResetSubmissionTrackingAfterTouchToFill();
+  }
 }
 
-bool IOSChromePasswordManagerClient::IsFillingEnabled(const GURL& url) const {
-  return url.DeprecatedGetOriginAsURL() !=
-         GURL(password_manager::kPasswordManagerAccountDashboardURL);
+void IOSChromePasswordManagerClient::StartSubmissionTrackingAfterTouchToFill(
+    const std::u16string& filled_username) {
+  touch_to_fill_state_ = {
+      .username = filled_username,
+      .fill_time = base::TimeTicks::Now(),
+  };
+}
+
+void IOSChromePasswordManagerClient::ResetSubmissionTrackingAfterTouchToFill() {
+  if (touch_to_fill_state_) {
+    base::UmaHistogramBoolean(
+        kTouchToFillSuccessfulSubmissionWasObservedHistogram, false);
+    touch_to_fill_state_.reset();
+  }
+}
+
+bool IOSChromePasswordManagerClient::IsSavingAndFillingEnabled(
+    const url::Origin& origin,
+    base::optional_ref<const GURL> url) const {
+  return *saving_passwords_enabled_ && !IsOffTheRecord() &&
+         !net::IsCertStatusError(GetMainFrameCertStatus()) &&
+         IsFillingEnabled(origin, url);
+}
+
+bool IOSChromePasswordManagerClient::IsFillingEnabled(
+    const url::Origin& origin,
+    base::optional_ref<const GURL> url) const {
+  if (origin.opaque() &&
+      base::FeatureList::IsEnabled(
+          password_manager::features::kPasswordBlockOpaqueOrigins)) {
+    return false;
+  }
+
+  if (url && !base::FeatureList::IsEnabled(
+                 password_manager::features::kPasswordBlockOpaqueOrigins)) {
+    return url->DeprecatedGetOriginAsURL() !=
+           GURL(password_manager::kPasswordManagerAccountDashboardURL);
+  }
+
+  return origin != url::Origin::Create(GURL(
+                       password_manager::kPasswordManagerAccountDashboardURL));
 }
 
 bool IOSChromePasswordManagerClient::IsFieldFilledWithOtp(
@@ -430,4 +555,31 @@ IOSChromePasswordManagerClient::GetAutofillCrowdsourcingManager() {
   CHECK(autofill_client);
 
   return &autofill_client->GetCrowdsourcingManager();
+}
+
+webauthn::PasskeyTabHelper*
+IOSChromePasswordManagerClient::GetPasskeyTabHelper() const {
+  web::WebState* web_state = bridge_.webState;
+  if (!web_state) {
+    return nullptr;
+  }
+  return webauthn::PasskeyTabHelper::FromWebState(web_state);
+}
+
+void IOSChromePasswordManagerClient::RecordPasswordLogin(
+    const password_manager::PasswordFormManagerForUI* form_manager) {
+  if (!form_manager) {
+    return;
+  }
+  const auto& credentials = form_manager->GetPendingCredentials();
+  url::Origin origin = url::Origin::Create(credentials.url);
+  if (origin.opaque()) {
+    return;
+  }
+  auto* passkey_tab_helper = GetPasskeyTabHelper();
+  if (!passkey_tab_helper) {
+    return;
+  }
+  passkey_tab_helper->RecordPasswordLogin(
+      base::UTF16ToUTF8(credentials.username_value), origin);
 }

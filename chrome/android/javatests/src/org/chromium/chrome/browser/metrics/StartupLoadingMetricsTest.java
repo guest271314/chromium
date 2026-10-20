@@ -31,6 +31,7 @@ import org.chromium.base.test.util.CriteriaNotSatisfiedException;
 import org.chromium.base.test.util.DisableIf;
 import org.chromium.base.test.util.DisabledTest;
 import org.chromium.base.test.util.DoNotBatch;
+import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.base.test.util.HistogramWatcher;
 import org.chromium.chrome.browser.LauncherShortcutActivity;
 import org.chromium.chrome.browser.base.ColdStartTracker;
@@ -39,6 +40,7 @@ import org.chromium.chrome.browser.customtabs.CustomTabActivityTestRule;
 import org.chromium.chrome.browser.customtabs.CustomTabsConnection;
 import org.chromium.chrome.browser.customtabs.CustomTabsIntentTestUtils;
 import org.chromium.chrome.browser.customtabs.CustomTabsTestUtils;
+import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.page_load_metrics.PageLoadMetrics;
 import org.chromium.chrome.browser.page_load_metrics.PageLoadMetricsTest;
@@ -48,7 +50,7 @@ import org.chromium.chrome.test.ChromeActivityTestRule;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.chrome.test.transit.ChromeTransitTestRules;
 import org.chromium.chrome.test.transit.FreshCtaTransitTestRule;
-import org.chromium.chrome.test.transit.ntp.IncognitoNewTabPageStation;
+import org.chromium.chrome.test.transit.ntp.RegularNewTabPageStation;
 import org.chromium.chrome.test.util.ChromeApplicationTestUtils;
 import org.chromium.chrome.test.util.ChromeTabUtils;
 import org.chromium.ui.base.DeviceFormFactor;
@@ -57,6 +59,8 @@ import org.chromium.ui.base.DeviceFormFactor;
 @RunWith(ChromeJUnit4ClassRunner.class)
 @DoNotBatch(reason = "These startup tests rely on having exactly one process start per test.")
 @CommandLineFlags.Add(ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE)
+// TODO(b/555414915): Update Android tests with WebUI NTP enabled on AL.
+@DisableFeatures(ChromeFeatureList.USE_WEB_UI_NTP_ANDROID)
 public class StartupLoadingMetricsTest {
     private static final String TEST_PAGE = "/chrome/test/data/android/google.html";
     private static final String TEST_PAGE_2 = "/chrome/test/data/android/test.html";
@@ -80,14 +84,16 @@ public class StartupLoadingMetricsTest {
             "Startup.Android.Cold.NewTabPage.TimeSpentInBinder";
     private static final String NTP_BINDER_COUNTS_COLD_HISTOGRAM =
             "Startup.Android.Cold.NewTabPage.TotalBinderTransactions";
-    private static final String COLD_START_TIME_TO_FIRST_FRAME =
-            "Startup.Android.Cold.TimeToFirstFrame";
+    private static final String COLD_START_TIME_TO_FIRST_FRAME2 =
+            "Startup.Android.Cold.TimeToFirstFrame2";
 
     private static final String TABBED_SUFFIX = ".Tabbed";
     private static final String WEB_APK_SUFFIX = ".WebApk";
 
+    // ApplicationStartInfo is available with Android 15, but getStartComponent is only
+    // available with Android 16.
     private static final boolean APPLICATION_START_INFO_SUPPORTED =
-            (Build.VERSION.SDK_INT >= Build.VERSION_CODES.VANILLA_ICE_CREAM);
+            (Build.VERSION.SDK_INT >= Build.VERSION_CODES.BAKLAVA);
 
     private CustomTabsConnection mConnectionToCleanup;
 
@@ -106,6 +112,7 @@ public class StartupLoadingMetricsTest {
     public void setUp() {
         ColdStartTracker.setStartedAsColdForTesting();
         SimpleStartupForegroundSessionDetector.resetForTesting();
+        StartupMetricsTracker.setBypassStartChecksForTesting();
     }
 
     @After
@@ -129,13 +136,18 @@ public class StartupLoadingMetricsTest {
 
     private void runAndWaitForPageLoadMetricsRecorded(Runnable runnable) throws Exception {
         PageLoadMetricsTest.PageLoadMetricsTestObserver testObserver =
-                new PageLoadMetricsTest.PageLoadMetricsTestObserver();
-        ThreadUtils.runOnUiThreadBlocking(() -> PageLoadMetrics.addObserver(testObserver, false));
-        runnable.run();
-        // First Contentful Paint may be recorded asynchronously after a page load is finished, we
-        // have to wait the event to occur.
-        testObserver.waitForFirstContentfulPaintEvent();
-        ThreadUtils.runOnUiThreadBlocking(() -> PageLoadMetrics.removeObserver(testObserver));
+                new PageLoadMetricsTest.PageLoadMetricsTestObserver(
+                        /* expectedWebContents= */ null);
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> PageLoadMetrics.addObserver(testObserver, /* supportPrerendering= */ false));
+        try {
+            runnable.run();
+            // First Contentful Paint may be recorded asynchronously after a page load is finished,
+            // we have to wait the event to occur.
+            testObserver.waitForFirstContentfulPaintEvent();
+        } finally {
+            ThreadUtils.runOnUiThreadBlocking(() -> PageLoadMetrics.removeObserver(testObserver));
+        }
     }
 
     private void loadUrlAndWaitForPageLoadMetricsRecorded(
@@ -214,21 +226,16 @@ public class StartupLoadingMetricsTest {
     public void testStartWithMainLauncerShortcutRecorded() throws Exception {
         HistogramWatcher histogramWatcher =
                 HistogramWatcher.newBuilder()
-                        .expectAnyRecordTimes(NTP_TIME_TO_FIRST_DRAW_COLD_HISTOGRAM, 0)
+                        .expectNoRecords(NTP_TIME_TO_FIRST_DRAW_COLD_HISTOGRAM)
                         .expectAnyRecordTimes(
-                                COLD_START_TIME_TO_FIRST_FRAME,
+                                COLD_START_TIME_TO_FIRST_FRAME2,
                                 APPLICATION_START_INFO_SUPPORTED ? 1 : 0)
                         .build();
-        Intent intent = new Intent(LauncherShortcutActivity.ACTION_OPEN_NEW_INCOGNITO_TAB);
+        Intent intent = new Intent(LauncherShortcutActivity.ACTION_OPEN_NEW_TAB);
         intent.setClass(ContextUtils.getApplicationContext(), LauncherShortcutActivity.class);
-        runAndWaitForPageLoadMetricsRecorded(
-                () ->
-                        mTabbedActivityTestRule
-                                .startWithIntentPlusUrlTo(intent, null)
-                                .arriveAt(
-                                        IncognitoNewTabPageStation.newBuilder()
-                                                .withEntryPoint()
-                                                .build()));
+        mTabbedActivityTestRule
+                .startWithIntentPlusUrlTo(intent, /* url= */ null)
+                .arriveAt(RegularNewTabPageStation.newBuilder().withEntryPoint().build());
         assertMainIntentLaunchColdStartHistogramRecorded(1);
         waitForHistogram(histogramWatcher);
     }
@@ -242,9 +249,6 @@ public class StartupLoadingMetricsTest {
         HistogramWatcher histogramWatcher =
                 HistogramWatcher.newBuilder()
                         .expectNoRecords(MAIN_INTENT_TIME_TO_FIRST_DRAW_WARM_MS_HISTOGRAM)
-                        .expectAnyRecordTimes(
-                                COLD_START_TIME_TO_FIRST_FRAME,
-                                APPLICATION_START_INFO_SUPPORTED ? 1 : 0)
                         .build();
 
         runAndWaitForPageLoadMetricsRecorded(
@@ -259,7 +263,6 @@ public class StartupLoadingMetricsTest {
         histogramWatcher =
                 HistogramWatcher.newBuilder()
                         .expectAnyRecordTimes(MAIN_INTENT_TIME_TO_FIRST_DRAW_WARM_MS_HISTOGRAM, 2)
-                        .expectAnyRecordTimes(COLD_START_TIME_TO_FIRST_FRAME, 0)
                         .build();
         runAndWaitForPageLoadMetricsRecorded(
                 () -> {
@@ -352,12 +355,13 @@ public class StartupLoadingMetricsTest {
     /** Tests that the startup loading histograms are recorded correctly for NTP launches */
     @Test
     @LargeTest
+    @DisableIf.Device(DeviceFormFactor.DESKTOP) // https://crbug.com/570146323
     public void testNtpRecordedCorrectly() throws Exception {
         HistogramWatcher histogramWatcher =
                 HistogramWatcher.newBuilder()
                         .expectAnyRecordTimes(NTP_TIME_TO_FIRST_DRAW_COLD_HISTOGRAM, 1)
                         .expectAnyRecordTimes(
-                                COLD_START_TIME_TO_FIRST_FRAME,
+                                COLD_START_TIME_TO_FIRST_FRAME2,
                                 APPLICATION_START_INFO_SUPPORTED ? 1 : 0)
                         .build();
         runAndWaitForPageLoadMetricsRecorded(() -> mTabbedActivityTestRule.startOnNtp());
@@ -530,7 +534,7 @@ public class StartupLoadingMetricsTest {
         CustomTabsConnection connection = CustomTabsTestUtils.setUpConnection();
         mConnectionToCleanup = connection;
         CustomTabsSessionToken token = CustomTabsSessionToken.createMockSessionTokenForTesting();
-        var sessionHolder = new SessionHolder<>(token);
+        var sessionHolder = SessionHolder.of(token);
         connection.newSession(token);
         connection.setCanUseHiddenTabForSession(sessionHolder, false);
         Intent intent =

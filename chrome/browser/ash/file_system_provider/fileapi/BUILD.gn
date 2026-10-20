@@ -1,7 +1,6 @@
 # Copyright 2024 The Chromium Authors
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
-import("//build/config/chromeos/ui_mode.gni")
 
 assert(is_chromeos)
 
@@ -22,8 +21,6 @@ static_library("fileapi") {
     "watcher_manager.cc",
     "watcher_manager.h",
   ]
-
-  public_deps = [ "//chrome/browser:browser_public_dependencies" ]
 
   deps = [
     "//base",
@@ -54,6 +51,7 @@ source_set("unit_tests") {
     "//chrome/browser/ash/file_system_provider:test_support",
     "//chrome/browser/ash/fileapi",
     "//chrome/test:test_support",
+    "//chrome/test/base:testing_browser_process",
     "//content/test:test_support",
     "//extensions/browser",
     "//net",
@@ -61,8 +59,4 @@ source_set("unit_tests") {
     "//storage/browser:test_support",
     "//testing/gtest",
   ]
-
-  # TODO(crbug.com/40031409): Fix code that adds exit-time destructors and
-  # enable the diagnostic by removing this line.
-  configs += [ "//build/config/compiler:no_exit_time_destructors" ]
 }

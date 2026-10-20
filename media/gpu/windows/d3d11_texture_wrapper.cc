@@ -22,7 +22,7 @@
 #include "gpu/ipc/service/shared_image_stub.h"
 #include "media/base/media_switches.h"
 #include "media/base/win/mf_helpers.h"
-#include "media/gpu/windows/d3d11_picture_buffer.h"
+#include "media/gpu/windows/d3d_picture_buffer.h"
 #include "media/gpu/windows/format_utils.h"
 #include "mojo/public/cpp/bindings/callback_helpers.h"
 
@@ -36,60 +36,68 @@ DefaultTexture2DWrapper::DefaultTexture2DWrapper(
     const gfx::Size& size,
     const gfx::ColorSpace& output_color_space,
     viz::SharedImageFormat output_si_format,
-    ComD3D11Device device)
+    ComD3D11Device device,
+    gpu::GpuDriverBugWorkarounds workarounds)
     : size_(size),
       output_color_space_(output_color_space),
       output_si_format_(output_si_format),
-      video_device_(std::move(device)) {}
+      video_device_(std::move(device)),
+      workarounds_(std::move(workarounds)) {}
 
 DefaultTexture2DWrapper::~DefaultTexture2DWrapper() = default;
 
-D3D11Status DefaultTexture2DWrapper::BeginSharedImageAccess() {
+D3DStatus DefaultTexture2DWrapper::BeginSharedImageAccess() {
   if (shared_image_access_) {
-    return D3D11Status::Codes::kOk;
+    return D3DStatus::Codes::kOk;
   }
 
   if (shared_image_rep_) {
     TRACE_EVENT0("gpu", "D3D11TextureWrapper::BeginScopedWriteAccess");
     shared_image_access_ = shared_image_rep_->BeginScopedWriteAccess();
     if (!shared_image_access_) {
-      return {D3D11Status::Codes::
+      return {D3DStatus::Codes::
                   kVideoDecodeImageRepresentationBeginScopedWriteAccessFailed,
               "Failed to begin shared image access"};
     }
   }
 
-  return D3D11Status::Codes::kOk;
+  return D3DStatus::Codes::kOk;
 }
 
-D3D11Status DefaultTexture2DWrapper::ProcessTexture(
-    scoped_refptr<gpu::ClientSharedImage>& shared_image_dest) {
+D3DStatus DefaultTexture2DWrapper::ProcessTexture(
+    scoped_refptr<gpu::ClientSharedImage>& shared_image_dest,
+    scoped_refptr<gfx::D3DSharedFence> decode_fence) {
   // If we've received an error, then return it to our caller.  This is probably
   // from some previous operation.
   // TODO(liberato): Return the error.
+  if (decode_fence) {
+    CHECK(shared_image_access_);
+    shared_image_access_->SetEndAccessFence(std::move(decode_fence));
+  }
+
   if (shared_image_access_) {
     TRACE_EVENT0("gpu", "D3D11TextureWrapper::EndScopedWriteAccess");
     shared_image_access_.reset();
   }
 
   shared_image_dest = shared_image_;
-  return D3D11Status::Codes::kOk;
+  return D3DStatus::Codes::kOk;
 }
 
 const gfx::Size& DefaultTexture2DWrapper::GetSize() const {
   return size_;
 }
 
-D3D11Status DefaultTexture2DWrapper::Init(
+D3DStatus DefaultTexture2DWrapper::Init(
     scoped_refptr<base::SingleThreadTaskRunner> gpu_task_runner,
     GetCommandBufferHelperCB get_helper_cb,
     ComD3D11Texture2D texture,
     size_t array_slice,
-    scoped_refptr<media::D3D11PictureBuffer> picture_buffer,
+    scoped_refptr<media::D3DPictureBuffer> picture_buffer,
     Texture2DWrapper::PictureBufferGPUResourceInitDoneCB
         picture_buffer_gpu_resource_init_done_cb) {
   if (SharedImageFormatToDXGIFormat(output_si_format_) == DXGI_FORMAT_UNKNOWN) {
-    return D3D11Status::Codes::kUnsupportedTextureFormatForBind;
+    return D3DStatus::Codes::kUnsupportedTextureFormatForBind;
   }
 
   picture_buffer_gpu_resource_init_done_cb_ =
@@ -110,17 +118,17 @@ D3D11Status DefaultTexture2DWrapper::Init(
       std::move(gpu_task_runner), std::move(on_error_cb),
       std::move(get_helper_cb), size_, output_color_space_, output_si_format_,
       video_device_, texture, array_slice, std::move(picture_buffer),
-      std::move(gpu_resource_init_cb));
-  return D3D11Status::Codes::kOk;
+      std::move(gpu_resource_init_cb), workarounds_);
+  return D3DStatus::Codes::kOk;
 }
 
-void DefaultTexture2DWrapper::OnError(D3D11Status status) {
+void DefaultTexture2DWrapper::OnError(D3DStatus status) {
   if (!received_error_)
     received_error_ = status;
 }
 
 void DefaultTexture2DWrapper::OnGPUResourceInitDone(
-    scoped_refptr<media::D3D11PictureBuffer> picture_buffer,
+    scoped_refptr<media::D3DPictureBuffer> picture_buffer,
     std::unique_ptr<gpu::VideoImageRepresentation> shared_image_rep,
     scoped_refptr<gpu::ClientSharedImage> client_shared_image) {
   DCHECK(shared_image_rep);
@@ -141,14 +149,15 @@ DefaultTexture2DWrapper::GpuResources::GpuResources(
     ComD3D11Device video_device,
     ComD3D11Texture2D texture,
     size_t array_slice,
-    scoped_refptr<media::D3D11PictureBuffer> picture_buffer,
-    GPUResourceInitCB gpu_resource_init_cb) {
+    scoped_refptr<media::D3DPictureBuffer> picture_buffer,
+    GPUResourceInitCB gpu_resource_init_cb,
+    const gpu::GpuDriverBugWorkarounds& workarounds) {
   CHECK(texture);
 
   helper_ = get_helper_cb.Run();
   if (!helper_) {
     std::move(on_error_cb)
-        .Run(std::move(D3D11Status::Codes::kGetCommandBufferHelperFailed));
+        .Run(std::move(D3DStatus::Codes::kGetCommandBufferHelperFailed));
     return;
   }
 
@@ -156,10 +165,20 @@ DefaultTexture2DWrapper::GpuResources::GpuResources(
 
   // Usage flags to allow the display compositor to draw from it, video to
   // decode from it, and webgl/canvas to read from it.
-  gpu::SharedImageUsageSet usage =
-      gpu::SHARED_IMAGE_USAGE_VIDEO_DECODE |
-      gpu::SHARED_IMAGE_USAGE_GLES2_READ | gpu::SHARED_IMAGE_USAGE_RASTER_READ |
-      gpu::SHARED_IMAGE_USAGE_DISPLAY_READ | gpu::SHARED_IMAGE_USAGE_SCANOUT;
+  gpu::SharedImageUsageSet usage = gpu::SHARED_IMAGE_USAGE_VIDEO_DECODE |
+                                   gpu::SHARED_IMAGE_USAGE_GLES2_READ |
+                                   gpu::SHARED_IMAGE_USAGE_RASTER_READ |
+                                   gpu::SHARED_IMAGE_USAGE_DISPLAY_READ;
+
+  // The swapchain presenter currently only supports NV12 and P010 overlay,
+  // with BGRA only as fallback when DWM continuously fails to overlay submitted
+  // video. As a result, we should not allow overlay for non-NV12/P010 formats
+  // which may cause chroma downsampling when blitting into the back buffer.
+  // See https://crbugs.com/331679628 for more details.
+  if (output_si_format == viz::MultiPlaneFormat::kP010 ||
+      output_si_format == viz::MultiPlaneFormat::kNV12) {
+    usage |= gpu::SHARED_IMAGE_USAGE_SCANOUT;
+  }
 
   HRESULT hr = S_OK;
   scoped_refptr<gpu::DXGISharedHandleState> dxgi_shared_handle_state;
@@ -171,8 +190,11 @@ DefaultTexture2DWrapper::GpuResources::GpuResources(
     hr = texture.As(&dxgi_resource);
     CHECK_EQ(hr, S_OK);
 
-    // WebGPU will potentially read directly from this texture.
-    usage |= gpu::SHARED_IMAGE_USAGE_WEBGPU_READ;
+    if (!(workarounds.disable_sharing_nv12_from_d3d11_to_d3d12 &&
+          output_si_format == viz::MultiPlaneFormat::kNV12)) {
+      // WebGPU will potentially read directly from this texture.
+      usage |= gpu::SHARED_IMAGE_USAGE_WEBGPU_READ;
+    }
 
     HANDLE shared_handle = nullptr;
     hr = dxgi_resource->CreateSharedHandle(
@@ -181,7 +203,7 @@ DefaultTexture2DWrapper::GpuResources::GpuResources(
     if (FAILED(hr)) {
       DLOG(ERROR) << "CreateSharedHandle failed with error " << std::hex << hr;
       std::move(on_error_cb)
-          .Run(std::move(D3D11Status::Codes::kCreateSharedHandleFailed));
+          .Run(std::move(D3DStatus::Codes::kCreateSharedHandleFailed));
       return;
     }
 
@@ -213,17 +235,17 @@ DefaultTexture2DWrapper::GpuResources::GpuResources(
           is_thread_safe);
   if (!shared_image) {
     std::move(on_error_cb)
-        .Run(std::move(D3D11Status::Codes::kCreateSharedImageFailed));
+        .Run(std::move(D3DStatus::Codes::kCreateSharedImageFailed));
     return;
   }
 
   auto* memory_type_tracker = helper_->GetMemoryTypeTracker();
   std::unique_ptr<gpu::VideoImageRepresentation> shared_image_rep =
-      shared_image_manager->ProduceVideo(
-          video_device.Get(), shared_image->mailbox(), memory_type_tracker);
+      shared_image_manager->ProduceVideo(video_device, shared_image->mailbox(),
+                                         memory_type_tracker);
   if (!shared_image_rep) {
     std::move(on_error_cb)
-        .Run(D3D11Status::Codes::kProduceVideoDecodeImageRepresentationFailed);
+        .Run(D3DStatus::Codes::kProduceVideoDecodeImageRepresentationFailed);
     shared_image_ = nullptr;
     return;
   }

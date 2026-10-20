@@ -5,7 +5,6 @@
 package org.chromium.components.browser_ui.util;
 
 import org.junit.Assert;
-import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -21,11 +20,6 @@ import org.chromium.url.GURL;
 @RunWith(BaseRobolectricTestRunner.class)
 public class DownloadUtilsTest {
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
-
-    @Before
-    public void setUp() {
-        GURL.ensureNativeInitializedForGURL();
-    }
 
     @Test
     public void testFormatUrlForDisplayInNotification_InvalidOrEmptyUrl() {
@@ -124,5 +118,12 @@ public class DownloadUtilsTest {
 
         String formatted = DownloadUtils.formatUrlForDisplayInNotification(url, limit);
         Assert.assertNull(formatted);
+    }
+
+    @Test
+    public void testFormatUrlForDisplayInNotification_BlobUrl() {
+        GURL blobUrl = new GURL("blob:https://example.test/f81d4fae-7dec-11d0-a765-00a0c91e6bf6");
+        String formatted = DownloadUtils.formatUrlForDisplayInNotification(blobUrl, 25);
+        Assert.assertEquals("example.test", formatted);
     }
 }

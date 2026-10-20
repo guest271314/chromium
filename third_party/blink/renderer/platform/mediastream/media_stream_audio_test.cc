@@ -4,10 +4,15 @@
 
 #include <stdint.h>
 
-#include <ranges>
+#include <algorithm>
+#include <cstddef>
+#include <memory>
+#include <optional>
 
 #include "base/atomicops.h"
-#include "base/compiler_specific.h"
+#include "base/check_op.h"
+#include "base/containers/span.h"
+#include "base/numerics/safe_conversions.h"
 #include "base/synchronization/lock.h"
 #include "base/synchronization/waitable_event.h"
 #include "base/test/task_environment.h"
@@ -15,16 +20,21 @@
 #include "base/threading/platform_thread.h"
 #include "base/threading/thread_checker.h"
 #include "base/time/time.h"
+#include "build/buildflag.h"
 #include "media/base/audio_bus.h"
 #include "media/base/audio_glitch_info.h"
 #include "media/base/audio_parameters.h"
 #include "media/base/audio_timestamp_helper.h"
+#include "media/base/channel_layout.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/platform/modules/mediastream/web_media_stream_audio_sink.h"
+#include "third_party/blink/public/platform/modules/mediastream/web_media_stream_source.h"
 #include "third_party/blink/public/platform/scheduler/test/renderer_scheduler_test_support.h"
-#include "third_party/blink/public/platform/web_string.h"
 #include "third_party/blink/public/web/web_heap.h"
+#include "third_party/blink/renderer/platform/heap/garbage_collected.h"
+#include "third_party/blink/renderer/platform/heap/persistent.h"
 #include "third_party/blink/renderer/platform/mediastream/media_stream_audio_deliverer.h"
+#include "third_party/blink/renderer/platform/mediastream/media_stream_audio_processor_options.h"
 #include "third_party/blink/renderer/platform/mediastream/media_stream_audio_source.h"
 #include "third_party/blink/renderer/platform/mediastream/media_stream_audio_track.h"
 #include "third_party/blink/renderer/platform/mediastream/media_stream_component_impl.h"
@@ -78,6 +88,19 @@ class FakeMediaStreamAudioSource final : public MediaStreamAudioSource,
   void SetBufferSize(int new_buffer_size) {
     DCHECK_CALLED_ON_VALID_THREAD(main_thread_checker_);
     base::subtle::NoBarrier_Store(&next_buffer_size_, new_buffer_size);
+  }
+
+  void SetAudioProcessingProperties(
+      const blink::AudioProcessingProperties& properties) {
+    properties_ = properties;
+  }
+  std::optional<blink::AudioProcessingProperties>
+  GetInitialAudioProcessingProperties() const override {
+    return properties_;
+  }
+  std::optional<blink::AudioProcessingProperties> GetAudioProcessingProperties()
+      const override {
+    return properties_;
   }
 
  protected:
@@ -135,6 +158,7 @@ class FakeMediaStreamAudioSource final : public MediaStreamAudioSource,
   base::subtle::Atomic32 next_buffer_size_;
   std::unique_ptr<media::AudioBus> audio_bus_;
   int sample_count_;
+  std::optional<blink::AudioProcessingProperties> properties_;
 };
 
 // A simple WebMediaStreamAudioSink that consumes audio and confirms the
@@ -206,7 +230,7 @@ class FakeMediaStreamAudioSink final : public WebMediaStreamAudioSink {
       base::subtle::NoBarrier_Store(&audio_is_silent_, 0);
       base::span<const float> data = audio_bus.channel(0);
       if (expected_sample_count_ == -1) {
-        expected_sample_count_ = static_cast<int64_t>(data[0]);
+        expected_sample_count_ = base::checked_cast<int>(data[0]);
       }
       CHECK_LE(expected_sample_count_ + audio_bus.frames(),
                kMaxValueSafelyConvertableToFloat);
@@ -539,6 +563,73 @@ TEST(MediaStreamAudioTestStandalone, GetAudioFrameStats) {
     EXPECT_EQ(stats.MinimumLatency(), stats.Latency());
     EXPECT_EQ(stats.MaximumLatency(), stats.Latency());
   }
+}
+
+TEST_F(MediaStreamAudioTest,
+       VoiceIsolationDefinesSessionIdentityUnderChromeWideEchoCancellation) {
+  auto audio_source = std::make_unique<FakeMediaStreamAudioSource>();
+
+  AudioProcessingProperties enabled_properties;
+  enabled_properties.voice_isolation =
+      AudioProcessingProperties::VoiceIsolationType::kVoiceIsolationEnabled;
+
+  AudioProcessingProperties disabled_properties;
+  disabled_properties.voice_isolation =
+      AudioProcessingProperties::VoiceIsolationType::kVoiceIsolationDisabled;
+
+  audio_source->SetAudioProcessingProperties(enabled_properties);
+
+#if BUILDFLAG(CHROME_WIDE_ECHO_CANCELLATION)
+  // When the source was initialized with voice isolation enabled, only
+  // requested properties with voice isolation enabled should match.
+  EXPECT_TRUE(
+      audio_source->HasSameSessionIdentityProperties(enabled_properties));
+  EXPECT_FALSE(
+      audio_source->HasSameSessionIdentityProperties(disabled_properties));
+
+  // When the source was initialized with voice isolation disabled, only
+  // requested properties with voice isolation disabled should match.
+  audio_source->SetAudioProcessingProperties(disabled_properties);
+  EXPECT_FALSE(
+      audio_source->HasSameSessionIdentityProperties(enabled_properties));
+  EXPECT_TRUE(
+      audio_source->HasSameSessionIdentityProperties(disabled_properties));
+#else
+  EXPECT_TRUE(
+      audio_source->HasSameSessionIdentityProperties(enabled_properties));
+  EXPECT_TRUE(
+      audio_source->HasSameSessionIdentityProperties(disabled_properties));
+#endif
+}
+
+TEST_F(
+    MediaStreamAudioTest,
+    VoiceIsolationExcludedFromInterlockingPropertiesUnderChromeWideEchoCancellation) {
+  auto audio_source_1 = std::make_unique<FakeMediaStreamAudioSource>();
+  auto audio_source_2 = std::make_unique<FakeMediaStreamAudioSource>();
+
+  AudioProcessingProperties properties_1;
+  AudioProcessingProperties properties_2;
+
+  audio_source_1->SetAudioProcessingProperties(properties_1);
+  audio_source_2->SetAudioProcessingProperties(properties_2);
+  EXPECT_TRUE(
+      audio_source_1->HasSameInterlockingProperties(audio_source_2.get()));
+
+  properties_2.voice_isolation =
+      AudioProcessingProperties::VoiceIsolationType::kVoiceIsolationEnabled;
+  audio_source_2->SetAudioProcessingProperties(properties_2);
+
+#if BUILDFLAG(CHROME_WIDE_ECHO_CANCELLATION)
+  // Under chrome-wide AEC, voice isolation is a session identity property and
+  // should NOT be checked in HasSameInterlockingProperties.
+  EXPECT_TRUE(
+      audio_source_1->HasSameInterlockingProperties(audio_source_2.get()));
+#else
+  // Without chrome-wide AEC, voice isolation is an interlocking property.
+  EXPECT_FALSE(
+      audio_source_1->HasSameInterlockingProperties(audio_source_2.get()));
+#endif
 }
 
 }  // namespace blink

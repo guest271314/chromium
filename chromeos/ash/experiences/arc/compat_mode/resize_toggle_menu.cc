@@ -8,10 +8,10 @@
 #include <utility>
 
 #include "ash/public/cpp/arc_compat_mode_util.h"
-#include "ash/public/cpp/style/color_provider.h"
 #include "ash/public/cpp/window_properties.h"
 #include "ash/resources/vector_icons/vector_icons.h"
 #include "ash/strings/grit/ash_strings.h"
+#include "ash/style/style_util.h"
 #include "ash/style/typography.h"
 #include "base/check.h"
 #include "base/functional/bind.h"
@@ -42,6 +42,7 @@
 #include "ui/views/border.h"
 #include "ui/views/bubble/bubble_border.h"
 #include "ui/views/bubble/bubble_dialog_delegate_view.h"
+#include "ui/views/controls/focus_ring.h"
 #include "ui/views/controls/highlight_path_generator.h"
 #include "ui/views/controls/image_view.h"
 #include "ui/views/highlight_border.h"
@@ -114,10 +115,10 @@ ResizeToggleMenu::MenuButtonView::MenuButtonView(PressedCallback callback,
   ash::TypographyProvider::Get()->StyleLabel(ash::TypographyToken::kCrosButton2,
                                              *label);
 
+  // The border is only used to inset the contents; it is never painted.
   SetBorder(views::CreateRoundedRectBorder(kBorderThicknessDp, kButtonRadius,
-                                           gfx::kPlaceholderColor));
-  SetBackground(views::CreateRoundedRectBackground(gfx::kPlaceholderColor,
-                                                   kButtonRadius));
+                                           SK_ColorTRANSPARENT));
+  UpdateColors();
 
   const int focus_ring_radius = 16;
   // With Jellyroll, the ring should have a 4dp gap from the view. Setting a
@@ -143,11 +144,6 @@ void ResizeToggleMenu::MenuButtonView::SetSelected(bool is_selected) {
   UpdateColors();
 }
 
-void ResizeToggleMenu::MenuButtonView::OnThemeChanged() {
-  views::Button::OnThemeChanged();
-  UpdateColors();
-}
-
 gfx::Size ResizeToggleMenu::MenuButtonView::CalculatePreferredSize(
     const views::SizeBounds& available_size) const {
   constexpr int kWidth = 96;
@@ -163,9 +159,10 @@ void ResizeToggleMenu::MenuButtonView::UpdateColors() {
   title_->SetEnabledColor(is_selected_ ? cros_tokens::kCrosSysOnPrimary
                                        : cros_tokens::kCrosSysOnSurface);
 
-  background()->SetColor(is_selected_ ? cros_tokens::kCrosSysPrimary
-                                      : cros_tokens::kCrosSysSystemOnBase);
-  GetBorder()->SetColor(SK_ColorTRANSPARENT);
+  SetBackground(views::CreateRoundedRectBackground(
+      is_selected_ ? cros_tokens::kCrosSysPrimary
+                   : cros_tokens::kCrosSysSystemOnBase,
+      kButtonRadius));
 }
 
 BEGIN_METADATA(ResizeToggleMenu, MenuButtonView)
@@ -194,11 +191,10 @@ ResizeToggleMenu::ResizeToggleMenu(
       widget_, GetAnchorRect(),
       base::BindRepeating(&ResizeToggleMenu::ApplyResizeCompatMode,
                           base::Unretained(this)));
-  bubble_widget_ = views::BubbleDialogDelegate::CreateBubble(
-      bubble_delegate_.get(),
-      base::BindOnce(&ResizeToggleMenu::OnBubbleWidgetClosing,
-                     weak_ptr_factory_.GetWeakPtr()));
-  widget_observation_.Observe(widget_.get());
+  bubble_widget_ =
+      views::BubbleDialogDelegate::CreateBubble(bubble_delegate_.get());
+  widget_observations_.AddObservation(widget_.get());
+  widget_observations_.AddObservation(bubble_widget_.get());
   OverlayDialog::Show(widget_->GetNativeWindow(),
                       base::BindOnce(&ResizeToggleMenu::CloseBubble,
                                      weak_ptr_factory_.GetWeakPtr()),
@@ -210,16 +206,13 @@ ResizeToggleMenu::~ResizeToggleMenu() {
   CloseBubble();
 }
 
-void ResizeToggleMenu::OnBubbleWidgetClosing(
-    views::Widget::ClosedReason reason) {
-  if (on_bubble_widget_closing_callback_) {
+void ResizeToggleMenu::OnWidgetClosing(views::Widget* widget) {
+  if (widget == bubble_widget_.get() && on_bubble_widget_closing_callback_) {
     std::move(on_bubble_widget_closing_callback_).Run();
   }
 
-  bubble_widget_.reset();
-
   OverlayDialog::CloseIfAny(widget_->GetNativeWindow());
-  widget_observation_.Reset();
+  widget_observations_.RemoveAllObservations();
   widget_ = nullptr;
 }
 
@@ -289,9 +282,9 @@ ResizeToggleMenu::MakeBubbleDelegate(
       gfx::RoundedCornersF(kBubbleCornerRadius));
   contents_layer->SetIsFastRoundedCorner(true);
   if (chromeos::features::IsSystemBlurEnabled()) {
-    contents_layer->SetBackgroundBlur(ash::ColorProvider::kBackgroundBlurSigma);
+    contents_layer->SetBackgroundBlur(ash::StyleUtil::kBackgroundBlurSigma);
     contents_layer->SetBackdropFilterQuality(
-        ash::ColorProvider::kBackgroundBlurQuality);
+        ash::StyleUtil::kBackgroundBlurQuality);
     contents_layer->SetFillsBoundsOpaquely(false);
   }
 
@@ -361,7 +354,7 @@ void ResizeToggleMenu::ApplyResizeCompatMode(ash::ResizeCompatMode mode) {
 }
 
 bool ResizeToggleMenu::IsBubbleShown() const {
-  return bubble_widget_ && !bubble_widget_->IsClosed();
+  return bubble_delegate_ && bubble_delegate_->GetWidget();
 }
 
 void ResizeToggleMenu::CloseBubble() {

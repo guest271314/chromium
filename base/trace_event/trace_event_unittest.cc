@@ -36,6 +36,7 @@
 #include "base/strings/stringprintf.h"
 #include "base/synchronization/waitable_event.h"
 #include "base/task/single_thread_task_runner.h"
+#include "base/test/task_environment.h"
 #include "base/test/tracing/trace_test_utils.h"
 #include "base/threading/platform_thread.h"
 #include "base/threading/thread.h"
@@ -178,6 +179,7 @@ class TraceEventTestFixture : public testing::Test {
 
  private:
   // We want our singleton torn down after each test.
+  base::test::TaskEnvironment task_environment_;
   base::test::TracingEnvironment tracing_environment_;
   ShadowingAtExitManager at_exit_manager_;
   Lock lock_;
@@ -383,16 +385,14 @@ void TraceWithAllMacroVariants(WaitableEvent* task_complete_event) {
                          TRACE_EVENT_SCOPE_THREAD, "name1", "value1", "name2",
                          "value2");
 
-    TRACE_EVENT_BEGIN0("test_all", "TRACE_EVENT_BEGIN0 call");
-    TRACE_EVENT_BEGIN1("test_all", "TRACE_EVENT_BEGIN1 call", "name1",
-                       "value1");
-    TRACE_EVENT_BEGIN2("test_all", "TRACE_EVENT_BEGIN2 call", "name1", "value1",
-                       "name2", "value2");
+    TRACE_EVENT_BEGIN("test_all", "TRACE_EVENT_BEGIN call");
+    TRACE_EVENT_BEGIN("test_all", "TRACE_EVENT_BEGIN call", "name1", "value1");
+    TRACE_EVENT_BEGIN("test_all", "TRACE_EVENT_BEGIN call", "name1", "value1",
+                      "name2", "value2");
 
-    TRACE_EVENT_END0("test_all", "TRACE_EVENT_BEGIN2 call");
-    TRACE_EVENT_END1("test_all", "TRACE_EVENT_BEGIN1 call", "name1", "value1");
-    TRACE_EVENT_END2("test_all", "TRACE_EVENT_BEGIN0 call", "name1", "value1",
-                     "name2", "value2");
+    TRACE_EVENT_END("test_all");
+    TRACE_EVENT_END("test_all", "name1", "value1");
+    TRACE_EVENT_END("test_all", "name1", "value1", "name2", "value2");
 
     TRACE_EVENT_ASYNC_BEGIN0("test_all", "TRACE_EVENT_ASYNC_BEGIN0 call",
                              kAsyncId);
@@ -508,11 +508,11 @@ void ValidateAllTraceMacrosCreatedData(const ListValue& trace_parsed) {
   EXPECT_SUB_FIND_("name2");
   EXPECT_SUB_FIND_("value2");
 
-  EXPECT_FIND_("TRACE_EVENT_BEGIN0 call");
-  EXPECT_FIND_("TRACE_EVENT_BEGIN1 call");
+  EXPECT_FIND_("TRACE_EVENT_BEGIN call");
+  EXPECT_FIND_("TRACE_EVENT_BEGIN call");
   EXPECT_SUB_FIND_("name1");
   EXPECT_SUB_FIND_("value1");
-  EXPECT_FIND_("TRACE_EVENT_BEGIN2 call");
+  EXPECT_FIND_("TRACE_EVENT_BEGIN call");
   EXPECT_SUB_FIND_("name1");
   EXPECT_SUB_FIND_("value1");
   EXPECT_SUB_FIND_("name2");
@@ -892,7 +892,7 @@ TEST_F(TraceEventTestFixture, AsyncBeginEndEvents) {
   TRACE_EVENT_ASYNC_BEGIN0("cat", "name1", id);
   TRACE_EVENT_ASYNC_STEP_INTO0("cat", "name1", id, "step1");
   TRACE_EVENT_ASYNC_END0("cat", "name1", id);
-  TRACE_EVENT_BEGIN0("cat", "name2");
+  TRACE_EVENT_BEGIN("cat", "name2");
   TRACE_EVENT_ASYNC_BEGIN0("cat", "name3", 0);
   TRACE_EVENT_ASYNC_STEP_PAST0("cat", "name3", 0, "step2");
 
@@ -919,13 +919,11 @@ TEST_F(TraceEventTestFixture, AsyncBeginEndEvents) {
 TEST_F(TraceEventTestFixture, AsyncBeginEndPointerNotMangled) {
   void* ptr = this;
 
-  TraceLog::GetInstance()->SetProcessID(100);
   BeginTrace();
   TRACE_EVENT_ASYNC_BEGIN0("cat", "name1", ptr);
   TRACE_EVENT_ASYNC_BEGIN0("cat", "name2", ptr);
   EndTraceAndFlush();
 
-  TraceLog::GetInstance()->SetProcessID(200);
   BeginTrace();
   TRACE_EVENT_ASYNC_BEGIN0("cat", "name1", ptr);
   TRACE_EVENT_ASYNC_END0("cat", "name1", ptr);
@@ -1522,13 +1520,13 @@ TEST_F(TraceEventTestFixture, EchoToConsole) {
 
   TraceLog::GetInstance()->SetEnabled(
       TraceConfig(kRecordAllCategoryFilter, ECHO_TO_CONSOLE));
-  TRACE_EVENT_BEGIN0("test_a", "begin_end");
+  TRACE_EVENT_BEGIN("test_a", "begin_end");
   {
     TRACE_EVENT0("test_b", "duration");
     TRACE_EVENT0("test_b1", "duration1");
   }
   TRACE_EVENT_INSTANT0("test_c", "instant", TRACE_EVENT_SCOPE_GLOBAL);
-  TRACE_EVENT_END0("test_a", "begin_end");
+  TRACE_EVENT_END("test_a");
 
   EndTraceAndFlush();
   delete g_log_buffer;

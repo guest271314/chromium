@@ -13,24 +13,25 @@
 #include "base/feature_list.h"
 #include "base/i18n/char_iterator.h"
 #include "base/logging.h"
-#include "base/memory/raw_ptr.h"
+#include "base/metrics/histogram_functions.h"
 #include "base/notreached.h"
 #include "base/strings/string_util.h"
-#include "base/supports_user_data.h"
 #include "base/types/expected.h"
 #include "base/types/expected_macros.h"
 #include "components/optimization_guide/content/browser/autofill_annotations_provider.h"
 #include "components/optimization_guide/content/browser/page_content_proto_provider.h"
-#include "components/optimization_guide/core/optimization_guide_features.h"
 #include "components/optimization_guide/core/optimization_guide_proto_util.h"
 #include "components/optimization_guide/core/page_content_proto_serializer.h"
 #include "components/optimization_guide/proto/features/common_quality_data.pb.h"
+#include "content/public/browser/render_frame_host.h"
+#include "content/public/browser/render_widget_host_view.h"
 #include "content/public/browser/web_contents.h"
 #include "third_party/abseil-cpp/absl/functional/overload.h"
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/mojom/content_extraction/ai_page_content.mojom.h"
 #include "third_party/blink/public/mojom/content_extraction/ai_page_content_metadata.mojom.h"
 #include "third_party/blink/public/mojom/forms/form_control_type.mojom-shared.h"
+#include "ui/gfx/geometry/rect_conversions.h"
 #include "url/gurl.h"
 
 namespace optimization_guide {
@@ -54,12 +55,80 @@ BASE_FEATURE(kAnnotatedPageContentAutofillOtpRedactions,
 // tree are still redacted. This acts as a killswitch for that security fix.
 BASE_FEATURE(kAnnotatedPageContentRedactOrphanFrames,
              base::FEATURE_ENABLED_BY_DEFAULT);
+
+// Controls whether we verify and clamp renderer-reported popup bounds
+// against trusted browser-side widget bounds.
+BASE_FEATURE(kAnnotatedPageContentVerifyPopupBounds,
+             base::FEATURE_ENABLED_BY_DEFAULT);
 }  // namespace features
 
 namespace {
 
+// Represents the results of browser-side verification for extracted popups.
+// These values are persisted to logs. Entries should not be renumbered and
+// numeric values should never be reused.
+//
+// LINT.IfChange(PageContentPopupValidationStatus)
+enum class PageContentPopupValidationStatus {
+  kValid = 0,
+  kAlreadyHasPopup = 1,
+  kNoActivePopup = 2,
+  kEmptyBounds = 3,
+  kMismatchedBounds = 4,
+  kMaxValue = kMismatchedBounds,
+};
+// LINT.ThenChange(//tools/metrics/histograms/enums.xml:PageContentPopupValidationStatus)
+
+void RecordPopupValidationStatus(PageContentPopupValidationStatus status) {
+  base::UmaHistogramEnumeration(
+      "OptimizationGuide.PageContentExtraction.PopupValidationStatus", status);
+}
+
 // This is the same as `kInvalidDOMNodeId` defined in blink.
 constexpr int kInvalidDOMNodeId = 0;
+
+gfx::Rect GetTrustedPopupBoundsInBlinkSpace(
+    const RenderFrameInfo& opener_frame_info) {
+  content::RenderFrameHost* rfh = content::RenderFrameHost::FromFrameToken(
+      opener_frame_info.global_frame_token);
+  if (!rfh) {
+    return gfx::Rect();
+  }
+
+  content::RenderWidgetHostView* rwhv = rfh->GetView();
+  if (!rwhv) {
+    return gfx::Rect();
+  }
+
+  content::WebContents* web_contents =
+      content::WebContents::FromRenderFrameHost(rfh);
+  if (!web_contents) {
+    return gfx::Rect();
+  }
+
+  content::RenderWidgetHostView* main_rwhv =
+      web_contents->GetPrimaryMainFrame()->GetView();
+  if (!main_rwhv) {
+    return gfx::Rect();
+  }
+
+  gfx::Rect main_frame_view_rect_dips = main_rwhv->GetViewBounds();
+  float device_scale_factor = rwhv->GetDeviceScaleFactor();
+
+  gfx::Rect trusted_relative_dips = opener_frame_info.popup_bounds_in_dips;
+  trusted_relative_dips.Offset(-main_frame_view_rect_dips.OffsetFromOrigin());
+
+  return gfx::ScaleToEnclosingRect(trusted_relative_dips, device_scale_factor);
+}
+
+bool AreBoundsWithinTolerance(const gfx::Rect& rect1,
+                              const gfx::Rect& rect2,
+                              int tolerance) {
+  return std::abs(rect1.x() - rect2.x()) <= tolerance &&
+         std::abs(rect1.y() - rect2.y()) <= tolerance &&
+         std::abs(rect1.width() - rect2.width()) <= tolerance &&
+         std::abs(rect1.height() - rect2.height()) <= tolerance;
+}
 
 std::optional<AutofillFieldMetadata> GetAutofillFieldData(
     std::optional<content::GlobalRenderFrameHostToken> source_frame_token,
@@ -201,6 +270,12 @@ ConvertInteractionDisabledReason(
         kCursorNotAllowed:
       return optimization_guide::proto::
           INTERACTION_DISABLED_REASON_CURSOR_NOT_ALLOWED;
+    case blink::mojom::AIPageContentInteractionDisabledReason::kAriaHidden:
+      return optimization_guide::proto::INTERACTION_DISABLED_REASON_ARIA_HIDDEN;
+    case blink::mojom::AIPageContentInteractionDisabledReason::
+        kAriaRolePresentational:
+      return optimization_guide::proto::
+          INTERACTION_DISABLED_REASON_ARIA_ROLE_PRESENTATIONAL;
   }
   NOTREACHED();
 }
@@ -246,6 +321,12 @@ optimization_guide::proto::ContentAttributeType ConvertAttributeType(
       return optimization_guide::proto::CONTENT_ATTRIBUTE_TABLE_CELL;
     case blink::mojom::AIPageContentAttributeType::kListItem:
       return optimization_guide::proto::CONTENT_ATTRIBUTE_LIST_ITEM;
+    case blink::mojom::AIPageContentAttributeType::kDialogModal:
+      return optimization_guide::proto::CONTENT_ATTRIBUTE_DIALOG_MODAL;
+    case blink::mojom::AIPageContentAttributeType::kDialogModeless:
+      return optimization_guide::proto::CONTENT_ATTRIBUTE_DIALOG_MODELESS;
+    case blink::mojom::AIPageContentAttributeType::kMath:
+      return optimization_guide::proto::CONTENT_ATTRIBUTE_MATH;
   }
   NOTREACHED();
 }
@@ -475,6 +556,7 @@ void ConvertImageInfo(
         *mojom_image_info.source_origin,
         proto_image_info->mutable_security_origin());
   }
+  proto_image_info->set_url(mojom_image_info.url.spec());
 }
 
 void ConvertSvgRootData(
@@ -740,9 +822,17 @@ void ConvertTableRowData(
   }
 }
 
+void ConvertMathData(const blink::mojom::AIPageContentMathData& mojom_math_data,
+                     optimization_guide::proto::MathData* proto_math_data) {
+  if (mojom_math_data.stripped_mathml) {
+    proto_math_data->set_stripped_mathml(*mojom_math_data.stripped_mathml);
+  }
+  proto_math_data->set_is_block(mojom_math_data.is_block);
+}
+
 // `source_frame_token` is std::nullopt for documents inside popup windows since
 // they're not associated with a `RenderFrameHost`.
-base::expected<void, std::string> ConvertAttributes(
+base::expected<void, AIPageContentError> ConvertAttributes(
     std::optional<content::GlobalRenderFrameHostToken> source_frame_token,
     ConvertAIPageContentToProtoSession& session,
     const blink::mojom::AIPageContentAttributes& mojom_attributes,
@@ -785,57 +875,72 @@ base::expected<void, std::string> ConvertAttributes(
   if (mojom_attributes.text_info) {
     if (mojom_attributes.attribute_type !=
         blink::mojom::AIPageContentAttributeType::kText) {
-      return base::unexpected("text_info present, but node isn't kText");
+      return base::unexpected(AIPageContentError{
+          AIPageContentExtractionStatus::kAttributeTypeMismatch,
+          "text_info present, but node isn't kText"});
     }
     ConvertTextInfo(*mojom_attributes.text_info,
                     proto_attributes->mutable_text_data());
   } else if (mojom_attributes.image_info) {
     if (mojom_attributes.attribute_type !=
         blink::mojom::AIPageContentAttributeType::kImage) {
-      return base::unexpected("image_info present, but node isn't kImage");
+      return base::unexpected(AIPageContentError{
+          AIPageContentExtractionStatus::kAttributeTypeMismatch,
+          "image_info present, but node isn't kImage"});
     }
     ConvertImageInfo(*mojom_attributes.image_info,
                      proto_attributes->mutable_image_data());
   } else if (mojom_attributes.svg_root_data) {
     if (mojom_attributes.attribute_type !=
         blink::mojom::AIPageContentAttributeType::kSvgRoot) {
-      return base::unexpected("svg_root_data present, but node isn't kSvgRoot");
+      return base::unexpected(AIPageContentError{
+          AIPageContentExtractionStatus::kAttributeTypeMismatch,
+          "svg_root_data present, but node isn't kSvgRoot"});
     }
     ConvertSvgRootData(*mojom_attributes.svg_root_data,
                        proto_attributes->mutable_svg_root_data());
   } else if (mojom_attributes.canvas_data) {
     if (mojom_attributes.attribute_type !=
         blink::mojom::AIPageContentAttributeType::kCanvas) {
-      return base::unexpected("canvas_data present, but node isn't kCanvas");
+      return base::unexpected(AIPageContentError{
+          AIPageContentExtractionStatus::kAttributeTypeMismatch,
+          "canvas_data present, but node isn't kCanvas"});
     }
     ConvertCanvasData(*mojom_attributes.canvas_data,
                       proto_attributes->mutable_canvas_data());
   } else if (mojom_attributes.video_data) {
     if (mojom_attributes.attribute_type !=
         blink::mojom::AIPageContentAttributeType::kVideo) {
-      return base::unexpected("video_data present, but node isn't kVideo");
+      return base::unexpected(AIPageContentError{
+          AIPageContentExtractionStatus::kAttributeTypeMismatch,
+          "video_data present, but node isn't kVideo"});
     }
     ConvertVideoData(*mojom_attributes.video_data,
                      proto_attributes->mutable_video_data());
   } else if (mojom_attributes.anchor_data) {
     if (mojom_attributes.attribute_type !=
         blink::mojom::AIPageContentAttributeType::kAnchor) {
-      return base::unexpected("anchor_data present, but node isn't kAnchor");
+      return base::unexpected(AIPageContentError{
+          AIPageContentExtractionStatus::kAttributeTypeMismatch,
+          "anchor_data present, but node isn't kAnchor"});
     }
     ConvertAnchorData(*mojom_attributes.anchor_data,
                       proto_attributes->mutable_anchor_data());
   } else if (mojom_attributes.form_data) {
     if (mojom_attributes.attribute_type !=
         blink::mojom::AIPageContentAttributeType::kForm) {
-      return base::unexpected("form_data present, but node isn't kForm");
+      return base::unexpected(AIPageContentError{
+          AIPageContentExtractionStatus::kAttributeTypeMismatch,
+          "form_data present, but node isn't kForm"});
     }
     ConvertFormData(*mojom_attributes.form_data,
                     proto_attributes->mutable_form_data());
   } else if (mojom_attributes.form_control_data) {
     if (mojom_attributes.attribute_type !=
         blink::mojom::AIPageContentAttributeType::kFormControl) {
-      return base::unexpected(
-          "form_control_data present, but node isn't kFormControl");
+      return base::unexpected(AIPageContentError{
+          AIPageContentExtractionStatus::kAttributeTypeMismatch,
+          "form_control_data present, but node isn't kFormControl"});
     }
     ConvertFormControlData(
         *mojom_attributes.form_control_data,
@@ -844,18 +949,30 @@ base::expected<void, std::string> ConvertAttributes(
   } else if (mojom_attributes.table_data) {
     if (mojom_attributes.attribute_type !=
         blink::mojom::AIPageContentAttributeType::kTable) {
-      return base::unexpected("table_data present, but node isn't kTable");
+      return base::unexpected(AIPageContentError{
+          AIPageContentExtractionStatus::kAttributeTypeMismatch,
+          "table_data present, but node isn't kTable"});
     }
     ConvertTableData(*mojom_attributes.table_data,
                      proto_attributes->mutable_table_data());
   } else if (mojom_attributes.table_row_data) {
     if (mojom_attributes.attribute_type !=
         blink::mojom::AIPageContentAttributeType::kTableRow) {
-      return base::unexpected(
-          "table_row_data present, but node isn't kTableRow");
+      return base::unexpected(AIPageContentError{
+          AIPageContentExtractionStatus::kAttributeTypeMismatch,
+          "table_row_data present, but node isn't kTableRow"});
     }
     ConvertTableRowData(*mojom_attributes.table_row_data,
                         proto_attributes->mutable_table_row_data());
+  } else if (mojom_attributes.math_data) {
+    if (mojom_attributes.attribute_type !=
+        blink::mojom::AIPageContentAttributeType::kMath) {
+      return base::unexpected(AIPageContentError{
+          AIPageContentExtractionStatus::kAttributeTypeMismatch,
+          "math_data present, but node isn't kMath"});
+    }
+    ConvertMathData(*mojom_attributes.math_data,
+                    proto_attributes->mutable_math_data());
   }
   if (mojom_attributes.label) {
     proto_attributes->set_label(*mojom_attributes.label);
@@ -973,8 +1090,23 @@ void ConvertFrameData(
       metadata.frame_metadata.back()->has_media_transcripts = true;
     }
   }
-  for (const auto& tool : mojom_frame_data.script_tools) {
-    ConvertScriptTool(*tool, proto_frame_data->add_script_tools());
+  // Silently drop `script_tools` rather than killing the renderer if
+  // `!render_frame_info.script_tools_are_allowed` and
+  // `!mojom_frame_data.script_tools.empty()`. `GetAIPageContent` is requested
+  // over an unassociated `blink.mojom.AIPageContentAgent` pipe and
+  // `GetRenderFrameInfo()` is evaluated asynchronously on the `RenderFrameHost`
+  // only after all subframes have responded. If a frame legitimately sends
+  // `script_tools` from a document where `Permissions-Policy: tools` is
+  // enabled, and later commits a navigation that reuses the same
+  // `RenderFrameHost` to a document with `Permissions-Policy: tools=()` while
+  // the browser is still waiting on other subframes, `script_tools_are_allowed`
+  // will be false by the time conversion runs. `RenderFrameHost` reuse happens
+  // when RenderDocument is disabled, *and* also independently when navigating
+  // away from the initial empty document.
+  if (render_frame_info.script_tools_are_allowed) {
+    for (const auto& tool : mojom_frame_data.script_tools) {
+      ConvertScriptTool(*tool, proto_frame_data->add_script_tools());
+    }
   }
 
   // Accessibility focus is tracked globally in the browser, so it should be set
@@ -1034,7 +1166,7 @@ class Converter {
         page_content_result_(page_content_result) {}
   ~Converter() = default;
 
-  base::expected<void, std::string> ConvertNode(
+  base::expected<void, AIPageContentError> ConvertNode(
       content::GlobalRenderFrameHostToken source_frame_token,
       const blink::mojom::AIPageContentNode& mojom_node,
       int accessibility_focused_node_id,
@@ -1054,7 +1186,9 @@ class Converter {
     if (mojom_attributes.attribute_type ==
         blink::mojom::AIPageContentAttributeType::kIframe) {
       if (!mojom_attributes.iframe_data) {
-        return base::unexpected("iframe missing iframe_data");
+        return base::unexpected(AIPageContentError{
+            AIPageContentExtractionStatus::kMissingIframeData,
+            "iframe missing iframe_data"});
       }
 
       const auto& iframe_data = *mojom_attributes.iframe_data;
@@ -1070,7 +1204,9 @@ class Converter {
           // generation for the whole tree.
           return base::ok();
         }
-        return base::unexpected("could not find render_frame_info for iframe");
+        return base::unexpected(AIPageContentError{
+            AIPageContentExtractionStatus::kSubframeTornDown,
+            "could not find render_frame_info for iframe"});
       }
 
       // Security check: Verify that the child frame is a child of the current
@@ -1082,8 +1218,10 @@ class Converter {
           content::RenderFrameHost::FromFrameToken(source_frame_token);
       if (child_rfh && parent_rfh &&
           child_rfh->GetParentOrOuterDocument() != parent_rfh) {
-        return base::unexpected(
-            "compromised renderer: iframe is not a child of the current frame");
+        return base::unexpected(AIPageContentError{
+            AIPageContentExtractionStatus::kIframeNotChildOfCurrentFrame,
+            "compromised renderer: iframe is not a child of the current "
+            "frame"});
       }
 
       optimization_guide::proto::PageInteractionInfo*
@@ -1096,13 +1234,16 @@ class Converter {
         // RemoteFrame should have no child nodes since the content is out of
         // process.
         if (!mojom_node.children_nodes.empty()) {
-          return base::unexpected("remote frame contains child nodes");
+          return base::unexpected(AIPageContentError{
+              AIPageContentExtractionStatus::kRemoteFrameHasChildNodes,
+              "remote frame contains child nodes"});
         }
 
         // The embedder shouldn't be providing LocalFrameData for remote frames.
         if (iframe_data.content) {
-          return base::unexpected(
-              "embedder incorrectly provided content for this iframe");
+          return base::unexpected(AIPageContentError{
+              AIPageContentExtractionStatus::kRemoteFrameHasInlineContent,
+              "embedder incorrectly provided content for this iframe"});
         }
 
         auto it =
@@ -1118,7 +1259,7 @@ class Converter {
         return std::visit(
             absl::Overload{
                 [&](const blink::mojom::AIPageContentPtr& page_content) mutable
-                    -> base::expected<void, std::string> {
+                    -> base::expected<void, AIPageContentError> {
                   AddRendererPasswordRedactionBoxes(*page_content);
                   auto* proto_child_frame_node =
                       proto_node->add_children_nodes();
@@ -1144,7 +1285,7 @@ class Converter {
                   return base::ok();
                 },
                 [&](const blink::mojom::RedactedFrameMetadataPtr& r) mutable
-                    -> base::expected<void, std::string> {
+                    -> base::expected<void, AIPageContentError> {
                   ConvertRedactedIframeData(
                       *render_frame_info, iframe_data,
                       /*mojom_redacted_frame_metadata*/ *r.get(),
@@ -1154,9 +1295,10 @@ class Converter {
             it->second);
       } else /* this is a local frame */ {
         if (!iframe_data.content) {
-          return base::unexpected(
+          return base::unexpected(AIPageContentError{
+              AIPageContentExtractionStatus::kLocalFrameMissingContent,
               "local frame missing local_frame_data or "
-              "redacted_frame_metadata");
+              "redacted_frame_metadata"});
         }
 
         switch (iframe_data.content->which()) {
@@ -1217,13 +1359,15 @@ class Converter {
 
   // Popup windows (annoyingly) do not have an RFH and cannot contain iframes,
   // so their traversal can be greatly simplified.
-  base::expected<void, std::string> ConvertPopupNode(
+  base::expected<void, AIPageContentError> ConvertPopupNode(
       const blink::mojom::AIPageContentNode& mojom_node,
       optimization_guide::proto::ContentNode* proto_node) {
     const auto& mojom_attributes = *mojom_node.content_attributes;
     if (mojom_attributes.attribute_type ==
         blink::mojom::AIPageContentAttributeType::kIframe) {
-      return base::unexpected("iframe is unexpected in popup");
+      return base::unexpected(AIPageContentError{
+          AIPageContentExtractionStatus::kUnexpectedIframeInPopup,
+          "iframe is unexpected in popup"});
     }
 
     RETURN_IF_ERROR(ConvertAttributes(
@@ -1243,7 +1387,7 @@ class Converter {
     return base::ok();
   }
 
-  base::expected<void, std::string> ConvertPopup(
+  base::expected<void, AIPageContentError> ConvertPopup(
       const blink::mojom::AIPageContentPopup& mojom_popup,
       const RenderFrameInfo& opener_frame_info) {
     if (!base::FeatureList::IsEnabled(
@@ -1252,22 +1396,65 @@ class Converter {
     }
 
     if (page_content_proto().has_popup_window()) {
+      RecordPopupValidationStatus(
+          PageContentPopupValidationStatus::kAlreadyHasPopup);
       return base::ok();
     }
 
     if (!opener_frame_info.has_active_popup) {
+      RecordPopupValidationStatus(
+          PageContentPopupValidationStatus::kNoActivePopup);
       // This could be a race condition where the popup was closed between the
       // start of extraction and the renderer's response. We skip the popup
       // but continue with the rest of the page content.
       return base::ok();
     }
 
+    const bool verify_bounds = base::FeatureList::IsEnabled(
+        features::kAnnotatedPageContentVerifyPopupBounds);
+
+    gfx::Rect validated_bounds = mojom_popup.visible_bounding_box;
+    bool is_bounds_mismatched = false;
+    if (verify_bounds) {
+      gfx::Rect trusted_bounds =
+          GetTrustedPopupBoundsInBlinkSpace(opener_frame_info);
+      if (trusted_bounds.IsEmpty()) {
+        RecordPopupValidationStatus(
+            PageContentPopupValidationStatus::kEmptyBounds);
+        // Skip extracting the popup entirely since it is empty/unverified.
+        return base::ok();
+      }
+      validated_bounds = trusted_bounds;
+
+      // Tolerance in pixels to permit minor renderer-browser coordinates
+      // alignment variances.
+      static constexpr int kPopupBoundsTolerancePixels = 3;
+
+      if (!AreBoundsWithinTolerance(mojom_popup.visible_bounding_box,
+                                    validated_bounds,
+                                    kPopupBoundsTolerancePixels)) {
+        is_bounds_mismatched = true;
+        RecordPopupValidationStatus(
+            PageContentPopupValidationStatus::kMismatchedBounds);
+      } else {
+        RecordPopupValidationStatus(PageContentPopupValidationStatus::kValid);
+      }
+    } else {
+      RecordPopupValidationStatus(PageContentPopupValidationStatus::kValid);
+    }
+
     optimization_guide::proto::PopupWindow* popup_window =
         page_content_proto().mutable_popup_window();
 
-    // First, walk the popup's DOM tree to create proto::ContentNodes.
-    RETURN_IF_ERROR(ConvertPopupNode(*mojom_popup.root_node,
-                                     popup_window->mutable_root_node()));
+    if (is_bounds_mismatched) {
+      // Outside tolerance limits: skip parsing/converting the untrusted popup
+      // tree entirely for security, leaving only a secure empty root node.
+      popup_window->mutable_root_node();
+    } else {
+      // Walk the popup's DOM tree to create proto::ContentNodes.
+      RETURN_IF_ERROR(ConvertPopupNode(*mojom_popup.root_node,
+                                       popup_window->mutable_root_node()));
+    }
 
     // Set the document ID to the frame which opened the popup (might be wrong,
     // because we treat a main page and its same-site iframes as the same
@@ -1278,8 +1465,7 @@ class Converter {
     popup_window->set_opener_common_ancestor_dom_node_id(
         mojom_popup.opener_dom_node_id);
 
-    ConvertRect(mojom_popup.visible_bounding_box,
-                popup_window->mutable_visible_bounding_box());
+    ConvertRect(validated_bounds, popup_window->mutable_visible_bounding_box());
 
     return base::ok();
   }
@@ -1410,9 +1596,21 @@ class Converter {
       }
     }
 
+    content::GlobalRenderFrameHostToken child_frame_token = frame_token;
+    if (mojom_attributes.attribute_type ==
+        blink::mojom::AIPageContentAttributeType::kIframe) {
+      if (mojom_attributes.iframe_data) {
+        if (auto render_frame_info = get_render_frame_info_.Run(
+                frame_token.child_id,
+                mojom_attributes.iframe_data->frame_token)) {
+          child_frame_token = render_frame_info->global_frame_token;
+        }
+      }
+    }
+
     // Recurse into children.
     for (const auto& child : mojom_node.children_nodes) {
-      CollectRedactionBoxesForOrphanNode(frame_token, *child);
+      CollectRedactionBoxesForOrphanNode(child_frame_token, *child);
     }
   }
 
@@ -1464,7 +1662,7 @@ ConvertAIPageContentToProtoSession::ConvertAIPageContentToProtoSession() =
 ConvertAIPageContentToProtoSession::~ConvertAIPageContentToProtoSession() =
     default;
 
-base::expected<void, std::string> ConvertAIPageContentToProto(
+base::expected<void, AIPageContentError> ConvertAIPageContentToProto(
     blink::mojom::AIPageContentOptionsPtr main_frame_options,
     content::GlobalRenderFrameHostToken main_frame_token,
     const AIPageContentMap& page_content_map,
@@ -1473,8 +1671,11 @@ base::expected<void, std::string> ConvertAIPageContentToProto(
     optimization_guide::AIPageContentResult& page_content_result) {
   auto it = page_content_map.find(main_frame_token);
   if (it == page_content_map.end()) {
-    return base::unexpected(
-        "could not find AIPageContent or RedactedFrameMetadata for main frame");
+    return base::unexpected(AIPageContentError{
+        AIPageContentExtractionStatus::
+            kMainFrameEmptyOrDisconnectedRendererResponse,
+        "could not find AIPageContent or RedactedFrameMetadata for main "
+        "frame"});
   }
 
   const blink::mojom::AIPageContent* main_frame_page_content = nullptr;
@@ -1489,15 +1690,18 @@ base::expected<void, std::string> ConvertAIPageContentToProto(
              it->second);
 
   if (!main_frame_page_content) {
-    return base::unexpected(
-        "Main content frame was redacted; this should not happen.");
+    return base::unexpected(AIPageContentError{
+        AIPageContentExtractionStatus::kMainFrameRedacted,
+        "Main content frame was redacted; this should not happen."});
   }
 
   auto render_frame_info = get_render_frame_info.Run(
       main_frame_token.child_id, main_frame_token.frame_token);
   // The frame may have been torn down or crashed before we got a response.
   if (!render_frame_info) {
-    return base::unexpected("could not find RenderFrameInfo for main frame");
+    return base::unexpected(AIPageContentError{
+        AIPageContentExtractionStatus::kMainFrameTornDown,
+        "could not find RenderFrameInfo for main frame"});
   }
 
   optimization_guide::proto::PageInteractionInfo* proto_page_interaction_info =

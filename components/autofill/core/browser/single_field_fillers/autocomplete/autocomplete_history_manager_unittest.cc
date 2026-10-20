@@ -13,23 +13,35 @@
 #include "base/run_loop.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/synchronization/waitable_event.h"
+#include "base/task/single_thread_task_runner.h"
 #include "base/test/gmock_callback_support.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/mock_callback.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
 #include "base/time/time.h"
+#include "base/values.h"
 #include "base/version_info/version_info.h"
 #include "build/build_config.h"
+#include "components/autofill/core/browser/form_structure_test_api.h"
 #include "components/autofill/core/browser/foundations/test_autofill_client.h"
-#include "components/autofill/core/browser/test_utils/autofill_test_utils.h"
+#include "components/autofill/core/browser/test_utils/autofill_form_test_util.h"
+#include "components/autofill/core/browser/test_utils/autofill_test_util.h"
+#include "components/autofill/core/browser/test_utils/autofill_testing_pref_service.h"
 #include "components/autofill/core/browser/webdata/autocomplete/autocomplete_entry.h"
+#include "components/autofill/core/browser/webdata/autocomplete/autocomplete_table_label_sensitive.h"
 #include "components/autofill/core/browser/webdata/autofill_webdata_service.h"
 #include "components/autofill/core/browser/webdata/mock_autofill_webdata_service.h"
+#include "components/autofill/core/common/autofill_debug_features.h"
 #include "components/autofill/core/common/autofill_features.h"
 #include "components/autofill/core/common/autofill_prefs.h"
-#include "components/autofill/core/common/autofill_test_utils.h"
+#include "components/autofill/core/common/autofill_test_util.h"
 #include "components/autofill/core/common/form_data.h"
+#include "components/autofill/core/common/html_field_types.h"
+#include "components/optimization_guide/core/feature_registry/feature_registration.h"
+#include "components/optimization_guide/core/model_execution/model_execution_prefs.h"
+#include "components/personal_context/core/mock_personal_context_eligibility_service.h"
+#include "components/personal_context/core/personal_context_prefs.h"
 #include "components/prefs/testing_pref_service.h"
 #include "components/version_info/version_info.h"
 #include "testing/gmock/include/gmock/gmock.h"
@@ -38,18 +50,24 @@
 
 namespace autofill {
 namespace {
-constexpr int kTestDbQuryId = 100;
+constexpr int kTestDbQueryId = 100;
 
 using OnSuggestionsReturnedCallback =
     SingleFieldFillRouter::OnSuggestionsReturnedCallback;
 using ::autofill::test::CreateTestFormField;
+using ::base::test::RunOnceCallback;
 using ::testing::_;
 using ::testing::AllOf;
+using ::testing::Contains;
+using ::testing::ElementsAre;
 using ::testing::Eq;
 using ::testing::Field;
 using ::testing::IsEmpty;
 using ::testing::IsTrue;
+using ::testing::Not;
+using ::testing::Property;
 using ::testing::Return;
+using ::testing::SizeIs;
 using ::testing::UnorderedElementsAre;
 
 using MockSuggestionsReturnedCallback =
@@ -91,8 +109,8 @@ class AutocompleteHistoryManagerTest : public testing::Test {
     task_environment_.AdvanceClock(
         base::Time::FromSecondsSinceUnixEpoch(1546889367) - base::Time::Now());
     web_data_service_ = base::MakeRefCounted<MockAutofillWebDataService>();
-    autocomplete_manager_ = std::make_unique<AutocompleteHistoryManager>();
-    autocomplete_manager_->Init(web_data_service_, prefs_.get(), false);
+    autocomplete_manager_ = std::make_unique<AutocompleteHistoryManager>(
+        web_data_service_, prefs_.get());
     ON_CALL(autofill_client_, GetAutocompleteHistoryManager())
         .WillByDefault(Return(autocomplete_manager_.get()));
     test_field_ =
@@ -130,13 +148,28 @@ class AutocompleteHistoryManagerTest : public testing::Test {
                              date_last_used);
   }
 
+  void SetBlockedPolicy(std::string_view url_pattern,
+                        std::vector<std::string_view> blocked_types) {
+    base::ListValue blocked_list;
+    base::DictValue entry;
+    entry.Set("url_pattern", url_pattern);
+    base::ListValue types;
+    for (std::string_view type : blocked_types) {
+      types.Append(type);
+    }
+    entry.Set("blocked_types", std::move(types));
+    blocked_list.Append(std::move(entry));
+    prefs_->SetManagedPref(prefs::kAutofillTypesBlocked,
+                           std::move(blocked_list));
+  }
+
   base::test::SingleThreadTaskEnvironment task_environment_{
       base::test::TaskEnvironment::TimeSource::MOCK_TIME};
   test::AutofillUnitTestEnvironment autofill_test_environment_;
   MockAutofillClient autofill_client_;
   scoped_refptr<MockAutofillWebDataService> web_data_service_;
   std::unique_ptr<AutocompleteHistoryManager> autocomplete_manager_;
-  std::unique_ptr<PrefService> prefs_;
+  std::unique_ptr<test::AutofillTestingPrefService> prefs_;
   FormFieldData test_field_;
   FormData test_form_data_;
 };
@@ -148,19 +181,23 @@ TEST_F(AutocompleteHistoryManagerTest, CreditCardNumberValue) {
   form.set_url(GURL("http://myform.com/form.html"));
   form.set_action(GURL("http://myform.com/submit.html"));
 
-  // Valid Visa credit card number pulled from the paypal help site.
-  FormFieldData valid_cc;
-  valid_cc.set_label(u"Credit Card");
-  valid_cc.set_name(u"ccnum");
-  valid_cc.set_value(u"4012888888881881");
-  valid_cc.set_properties_mask(valid_cc.properties_mask() | kUserTyped);
-  valid_cc.set_form_control_type(FormControlType::kInputText);
-  form.set_fields({valid_cc});
+  // Valid Visa credit card numbers formatted with various separators (spaces,
+  // hyphens, dots, and Unicode whitespace).
+  for (std::u16string_view cc_val :
+       {u"4012888888881881", u"4012 8888 8888 1881", u"4012-8888-8888-1881",
+        u"4012.8888.8888.1881", u"4012\u00A08888\u202F8888\u00A01881"}) {
+    FormFieldData valid_cc;
+    valid_cc.set_label(u"Credit Card");
+    valid_cc.set_name(u"ccnum");
+    valid_cc.set_value(std::u16string(cc_val));
+    valid_cc.set_properties_mask(valid_cc.properties_mask() | kUserTyped);
+    valid_cc.set_form_control_type(FormControlType::kInputText);
+    form.set_fields({valid_cc});
 
-  EXPECT_CALL(*(web_data_service_.get()), AddFormFields(_)).Times(0);
-  autocomplete_manager_->OnWillSubmitFormWithFields(
-      form.fields(),
-      /*is_autocomplete_enabled=*/true);
+    EXPECT_CALL(*(web_data_service_.get()), AddFormFields(_)).Times(0);
+    autocomplete_manager_->OnWillSubmitFormWithFields(form.fields(),
+                                                      /*form=*/nullptr);
+  }
 }
 
 // Contrary test to AutocompleteHistoryManagerTest.CreditCardNumberValue.  The
@@ -182,9 +219,8 @@ TEST_F(AutocompleteHistoryManagerTest, NonCreditCardNumberValue) {
   form.set_fields({invalid_cc});
 
   EXPECT_CALL(*(web_data_service_.get()), AddFormFields(_));
-  autocomplete_manager_->OnWillSubmitFormWithFields(
-      form.fields(),
-      /*is_autocomplete_enabled=*/true);
+  autocomplete_manager_->OnWillSubmitFormWithFields(form.fields(),
+                                                    /*form=*/nullptr);
 }
 
 // Tests that IBANs are not sent to the WebDatabase to be saved.
@@ -194,18 +230,22 @@ TEST_F(AutocompleteHistoryManagerTest, IbanValue) {
   form.set_url(GURL("http://myform.com/form.html"));
   form.set_action(GURL("http://myform.com/submit.html"));
 
-  FormFieldData iban;
-  iban.set_label(u"International Bank Account Number");
-  iban.set_name(u"iban");
-  iban.set_value(u"DE75512108001245126199");
-  iban.set_properties_mask(iban.properties_mask() | kUserTyped);
-  iban.set_form_control_type(FormControlType::kInputText);
-  form.set_fields({iban});
+  // Valid IBANs formatted with spaces, hyphens, and dots.
+  for (std::u16string_view iban_val :
+       {u"DE75512108001245126199", u"DE75 5121 0800 1245 1261 99",
+        u"DE75-5121-0800-1245-1261-99", u"DE75.5121.0800.1245.1261.99"}) {
+    FormFieldData iban;
+    iban.set_label(u"International Bank Account Number");
+    iban.set_name(u"iban");
+    iban.set_value(std::u16string(iban_val));
+    iban.set_properties_mask(iban.properties_mask() | kUserTyped);
+    iban.set_form_control_type(FormControlType::kInputText);
+    form.set_fields({iban});
 
-  EXPECT_CALL(*web_data_service_, AddFormFields(_)).Times(0);
-  autocomplete_manager_->OnWillSubmitFormWithFields(
-      form.fields(),
-      /*is_autocomplete_enabled=*/true);
+    EXPECT_CALL(*web_data_service_, AddFormFields(_)).Times(0);
+    autocomplete_manager_->OnWillSubmitFormWithFields(form.fields(),
+                                                      /*form=*/nullptr);
+  }
 }
 
 // Tests that SSNs are not sent to the WebDatabase to be saved.
@@ -215,18 +255,22 @@ TEST_F(AutocompleteHistoryManagerTest, SSNValue) {
   form.set_url(GURL("http://myform.com/form.html"));
   form.set_action(GURL("http://myform.com/submit.html"));
 
-  FormFieldData ssn;
-  ssn.set_label(u"Social Security Number");
-  ssn.set_name(u"ssn");
-  ssn.set_value(u"078-05-1120");
-  ssn.set_properties_mask(ssn.properties_mask() | kUserTyped);
-  ssn.set_form_control_type(FormControlType::kInputText);
-  form.set_fields({ssn});
+  // Valid SSNs formatted with hyphens, spaces, dots, and Unicode whitespace.
+  for (std::u16string_view ssn_val :
+       {u"078051120", u"078-05-1120", u"078 05 1120", u"078.05.1120",
+        u"078\u00A005\u202F1120"}) {
+    FormFieldData ssn;
+    ssn.set_label(u"Social Security Number");
+    ssn.set_name(u"ssn");
+    ssn.set_value(std::u16string(ssn_val));
+    ssn.set_properties_mask(ssn.properties_mask() | kUserTyped);
+    ssn.set_form_control_type(FormControlType::kInputText);
+    form.set_fields({ssn});
 
-  EXPECT_CALL(*web_data_service_, AddFormFields(_)).Times(0);
-  autocomplete_manager_->OnWillSubmitFormWithFields(
-      form.fields(),
-      /*is_autocomplete_enabled=*/true);
+    EXPECT_CALL(*web_data_service_, AddFormFields(_)).Times(0);
+    autocomplete_manager_->OnWillSubmitFormWithFields(form.fields(),
+                                                      /*form=*/nullptr);
+  }
 }
 
 // Verify that autocomplete text is saved for search fields.
@@ -246,9 +290,8 @@ TEST_F(AutocompleteHistoryManagerTest, SearchField) {
   form.set_fields({search_field});
 
   EXPECT_CALL(*(web_data_service_.get()), AddFormFields(_));
-  autocomplete_manager_->OnWillSubmitFormWithFields(
-      form.fields(),
-      /*is_autocomplete_enabled=*/true);
+  autocomplete_manager_->OnWillSubmitFormWithFields(form.fields(),
+                                                    /*form=*/nullptr);
 }
 
 TEST_F(AutocompleteHistoryManagerTest, AutocompleteFeatureOff) {
@@ -267,9 +310,153 @@ TEST_F(AutocompleteHistoryManagerTest, AutocompleteFeatureOff) {
   form.set_fields({search_field});
 
   EXPECT_CALL(*(web_data_service_.get()), AddFormFields(_)).Times(0);
-  autocomplete_manager_->OnWillSubmitFormWithFields(
-      form.fields(),
-      /*is_autocomplete_enabled=*/false);
+  // Autocomplete saving is controlled by the address Autofill pref.
+  prefs::SetAutofillProfileEnabled(prefs_.get(), false);
+  autocomplete_manager_->OnWillSubmitFormWithFields(form.fields(),
+                                                    /*form=*/nullptr);
+}
+
+// Tests that autocomplete history is not saved on form submission when the
+// domain's contact_info policy category is blocked.
+TEST_F(AutocompleteHistoryManagerTest,
+       OnWillSubmitFormWithFields_BlockedByPolicy_Domain) {
+  base::test::ScopedFeatureList feature_list{
+      features::kAutofillEnableAutofillSettingsEnterprisePolicy};
+  FormData form_data = test::GetFormData({
+      .fields = {{.role = NAME_FIRST, .value = u"John"}},
+      .url = "https://blocked.com/form.html",
+      .main_frame_origin = url::Origin::Create(GURL("https://blocked.com")),
+  });
+  FormStructure form_structure(form_data);
+  test_api(form_structure).SetFieldTypes({NAME_FIRST});
+
+  SetBlockedPolicy("blocked.com", {"contact_info"});
+
+  // The database should receive zero AddFormFields calls since the site is
+  // blocked for contact_info.
+  EXPECT_CALL(*web_data_service_, AddFormFields).Times(0);
+  autocomplete_manager_->OnWillSubmitFormWithFields(form_data.fields(),
+                                                    &form_structure);
+}
+
+// Tests that autocomplete history saving is globally blocked when wildcard "*"
+// is configured for the contact_info category in enterprise policy.
+TEST_F(AutocompleteHistoryManagerTest,
+       OnWillSubmitFormWithFields_BlockedByPolicy_Wildcard) {
+  base::test::ScopedFeatureList feature_list{
+      features::kAutofillEnableAutofillSettingsEnterprisePolicy};
+  FormData form_data = test::GetFormData({
+      .fields = {{.role = NAME_FIRST, .value = u"John"}},
+      .url = "https://example.com/form.html",
+  });
+  FormStructure form_structure(form_data);
+  test_api(form_structure).SetFieldTypes({NAME_FIRST});
+
+  SetBlockedPolicy("*", {"contact_info"});
+
+  // Expect zero saves across any domain for contact_info fields.
+  EXPECT_CALL(*web_data_service_, AddFormFields).Times(0);
+  autocomplete_manager_->OnWillSubmitFormWithFields(form_data.fields(),
+                                                    &form_structure);
+}
+
+// Tests that uncategorized fields (e.g. search fields) are not blocked when
+// only contact_info is blocked by enterprise policy.
+TEST_F(
+    AutocompleteHistoryManagerTest,
+    OnWillSubmitFormWithFields_AllowedForUncategorizedFieldsWhenContactInfoBlocked) {
+  base::test::ScopedFeatureList feature_list{
+      features::kAutofillEnableAutofillSettingsEnterprisePolicy};
+  FormData form_data = test::GetFormData({
+      .fields = {{.role = UNKNOWN_TYPE,
+                  .name = u"search",
+                  .value = u"my query"}},
+      .url = "https://blocked.com/form.html",
+      .main_frame_origin = url::Origin::Create(GURL("https://blocked.com")),
+  });
+  FormStructure form_structure(form_data);
+  test_api(form_structure).SetFieldTypes({UNKNOWN_TYPE});
+
+  SetBlockedPolicy("blocked.com", {"contact_info"});
+
+  // The search field is uncategorized (UNKNOWN_TYPE) and should be saved.
+  EXPECT_CALL(
+      *web_data_service_,
+      AddFormFields(ElementsAre(Property(&FormFieldData::name, u"search"))));
+  autocomplete_manager_->OnWillSubmitFormWithFields(form_data.fields(),
+                                                    &form_structure);
+}
+
+// Tests that unparsed form submissions (where form is null) are saved even
+// when contact_info is blocked via wildcard.
+TEST_F(AutocompleteHistoryManagerTest,
+       OnWillSubmitFormWithFields_AllowedWhenFormIsNull) {
+  base::test::ScopedFeatureList feature_list{
+      features::kAutofillEnableAutofillSettingsEnterprisePolicy};
+  FormFieldData search_field = test::GetFormFieldData({
+      .role = UNKNOWN_TYPE,
+      .name = u"search",
+      .value = u"my query",
+  });
+
+  SetBlockedPolicy("*", {"contact_info"});
+
+  EXPECT_CALL(
+      *web_data_service_,
+      AddFormFields(ElementsAre(Property(&FormFieldData::name, u"search"))));
+  autocomplete_manager_->OnWillSubmitFormWithFields({search_field},
+                                                    /*form=*/nullptr);
+}
+
+// Tests that when submitting a form with multiple fields belonging to different
+// categories (contact_info vs payments), only the fields corresponding to
+// unblocked categories are saved into autocomplete history.
+TEST_F(AutocompleteHistoryManagerTest,
+       OnWillSubmitFormWithFields_BlockedByPolicy_PerFieldCategory) {
+  base::test::ScopedFeatureList feature_list{
+      features::kAutofillEnableAutofillSettingsEnterprisePolicy};
+  FormData form_data = test::GetFormData({
+      .fields = {{.role = NAME_FIRST, .name = u"first_name", .value = u"John"},
+                 {.role = CREDIT_CARD_NAME_FULL,
+                  .name = u"card_name",
+                  .value = u"John Doe"}},
+      .url = "https://example.com/form.html",
+      .main_frame_origin = url::Origin::Create(GURL("https://example.com")),
+  });
+  FormStructure form_structure(form_data);
+  test_api(form_structure).SetFieldTypes({NAME_FIRST, CREDIT_CARD_NAME_FULL});
+
+  SetBlockedPolicy("example.com", {"payments"});
+
+  // Only the name_field (contact_info) should be saved; card_name_field
+  // (payments) is blocked.
+  EXPECT_CALL(*web_data_service_, AddFormFields(ElementsAre(Property(
+                                      &FormFieldData::name, u"first_name"))));
+  autocomplete_manager_->OnWillSubmitFormWithFields(form_data.fields(),
+                                                    &form_structure);
+}
+
+// Tests that if a field maps to multiple categories (e.g. NAME_FIRST maps to
+// both contact_info and identity_docs), autocomplete saving is blocked if ANY
+// of those categories is blocked by policy (here, only identity_docs).
+TEST_F(AutocompleteHistoryManagerTest,
+       OnWillSubmitFormWithFields_BlockedByPolicy_MultiCategoryField) {
+  base::test::ScopedFeatureList feature_list{
+      features::kAutofillEnableAutofillSettingsEnterprisePolicy};
+  FormData form_data = test::GetFormData({
+      .fields = {{.role = NAME_FIRST, .value = u"John"}},
+      .url = "https://example.com/form.html",
+      .main_frame_origin = url::Origin::Create(GURL("https://example.com")),
+  });
+  FormStructure form_structure(form_data);
+  test_api(form_structure).SetFieldTypes({NAME_FIRST});
+
+  // Block only identity_docs (contact_info remains unblocked).
+  SetBlockedPolicy("example.com", {"identity_docs"});
+
+  EXPECT_CALL(*web_data_service_, AddFormFields).Times(0);
+  autocomplete_manager_->OnWillSubmitFormWithFields(form_data.fields(),
+                                                    &form_structure);
 }
 
 // Verify that we don't save invalid values in Autocomplete.
@@ -295,9 +482,8 @@ TEST_F(AutocompleteHistoryManagerTest, InvalidValues) {
                    make_field(u"Search3", u"other search", u"      ")});
 
   EXPECT_CALL(*(web_data_service_.get()), AddFormFields(_)).Times(0);
-  autocomplete_manager_->OnWillSubmitFormWithFields(
-      form.fields(),
-      /*is_autocomplete_enabled=*/true);
+  autocomplete_manager_->OnWillSubmitFormWithFields(form.fields(),
+                                                    /*form=*/nullptr);
 }
 
 // Tests that text entered into fields specifying autocomplete="off" is not sent
@@ -321,33 +507,8 @@ TEST_F(AutocompleteHistoryManagerTest, FieldWithAutocompleteOff) {
   form.set_fields({field});
 
   EXPECT_CALL(*web_data_service_, AddFormFields(_)).Times(0);
-  autocomplete_manager_->OnWillSubmitFormWithFields(
-      form.fields(),
-      /*is_autocomplete_enabled=*/true);
-}
-
-// Shouldn't save entries when in Incognito mode.
-TEST_F(AutocompleteHistoryManagerTest, Incognito) {
-  autocomplete_manager_->Init(web_data_service_, prefs_.get(),
-                              /*is_off_the_record_=*/true);
-  FormData form;
-  form.set_name(u"MyForm");
-  form.set_url(GURL("http://myform.com/form.html"));
-  form.set_action(GURL("http://myform.com/submit.html"));
-
-  // Search field.
-  FormFieldData search_field;
-  search_field.set_label(u"Search");
-  search_field.set_name(u"search");
-  search_field.set_value(u"my favorite query");
-  search_field.set_properties_mask(search_field.properties_mask() | kUserTyped);
-  search_field.set_form_control_type(FormControlType::kInputSearch);
-  form.set_fields({search_field});
-
-  EXPECT_CALL(*web_data_service_, AddFormFields(_)).Times(0);
-  autocomplete_manager_->OnWillSubmitFormWithFields(
-      form.fields(),
-      /*is_autocomplete_enabled=*/true);
+  autocomplete_manager_->OnWillSubmitFormWithFields(form.fields(),
+                                                    /*form=*/nullptr);
 }
 
 #if !BUILDFLAG(IS_IOS)
@@ -371,9 +532,8 @@ TEST_F(AutocompleteHistoryManagerTest, UserInputNotFocusable) {
   form.set_fields({search_field});
 
   EXPECT_CALL(*(web_data_service_.get()), AddFormFields(_));
-  autocomplete_manager_->OnWillSubmitFormWithFields(
-      form.fields(),
-      /*is_autocomplete_enabled=*/true);
+  autocomplete_manager_->OnWillSubmitFormWithFields(form.fields(),
+                                                    /*form=*/nullptr);
 }
 #endif
 
@@ -396,58 +556,45 @@ TEST_F(AutocompleteHistoryManagerTest, PresentationField) {
   form.set_fields({field});
 
   EXPECT_CALL(*web_data_service_, AddFormFields(_)).Times(0);
-  autocomplete_manager_->OnWillSubmitFormWithFields(
-      form.fields(),
-      /*is_autocomplete_enabled=*/true);
+  autocomplete_manager_->OnWillSubmitFormWithFields(form.fields(),
+                                                    /*form=*/nullptr);
 }
 
-// Tests that the Init function will trigger the Autocomplete Retention Policy
-// cleanup if the flag is enabled, we're not in OTR and it hadn't run in the
-// current major version.
-TEST_F(AutocompleteHistoryManagerTest, Init_TriggersCleanup) {
+// Tests that creating an AutocompleteHistoryManager will trigger the
+// Autocomplete Retention Policy cleanup if it hadn't run in the current major
+// version.
+TEST_F(AutocompleteHistoryManagerTest, RetentionPolicy_TriggersCleanup) {
   // Set the retention policy cleanup to a past major version.
   prefs_->SetInteger(prefs::kAutocompleteLastVersionRetentionPolicy,
                      version_info::GetMajorVersionNumberAsInt() - 1);
 
   EXPECT_CALL(*web_data_service_, RemoveExpiredAutocompleteEntries).Times(1);
-  autocomplete_manager_->Init(web_data_service_, prefs_.get(),
-                              /*is_off_the_record=*/false);
+  AutocompleteHistoryManager manager(web_data_service_, prefs_.get());
 }
 
-// Tests that the Init function will not trigger the Autocomplete Retention
-// Policy when running in OTR.
-TEST_F(AutocompleteHistoryManagerTest, Init_OTR_Not_TriggersCleanup) {
+// Tests that creating an AutocompleteHistoryManager will not crash even if we
+// don't have a DB.
+TEST_F(AutocompleteHistoryManagerTest, RetentionPolicy_NullDB_NoCrash) {
   // Set the retention policy cleanup to a past major version.
   prefs_->SetInteger(prefs::kAutocompleteLastVersionRetentionPolicy,
                      version_info::GetMajorVersionNumberAsInt() - 1);
 
   EXPECT_CALL(*web_data_service_, RemoveExpiredAutocompleteEntries).Times(0);
-  autocomplete_manager_->Init(web_data_service_, prefs_.get(),
-                              /*is_off_the_record=*/true);
+  AutocompleteHistoryManager manager(/*profile_database=*/nullptr,
+                                     prefs_.get());
 }
 
-// Tests that the Init function will not crash even if we don't have a DB.
-TEST_F(AutocompleteHistoryManagerTest, Init_NullDB_NoCrash) {
-  // Set the retention policy cleanup to a past major version.
-  prefs_->SetInteger(prefs::kAutocompleteLastVersionRetentionPolicy,
-                     version_info::GetMajorVersionNumberAsInt() - 1);
-
-  EXPECT_CALL(*web_data_service_, RemoveExpiredAutocompleteEntries).Times(0);
-  autocomplete_manager_->Init(nullptr, prefs_.get(),
-                              /*is_off_the_record=*/false);
-}
-
-// Tests that the Init function will not trigger the Autocomplete Retention
-// Policy when running in a major version that was already cleaned.
+// Tests that creating an AutocompleteHistoryManager will not trigger the
+// Autocomplete Retention Policy when running in a major version that was
+// already cleaned.
 TEST_F(AutocompleteHistoryManagerTest,
-       Init_SameMajorVersion_Not_TriggersCleanup) {
+       RetentionPolicy_SameMajorVersion_Not_TriggersCleanup) {
   // Set the retention policy cleanup to the current major version.
   prefs_->SetInteger(prefs::kAutocompleteLastVersionRetentionPolicy,
                      version_info::GetMajorVersionNumberAsInt());
 
   EXPECT_CALL(*web_data_service_, RemoveExpiredAutocompleteEntries).Times(0);
-  autocomplete_manager_->Init(web_data_service_, prefs_.get(),
-                              /*is_off_the_record=*/false);
+  AutocompleteHistoryManager manager(web_data_service_, prefs_.get());
 }
 
 // Make sure suggestions are not returned if the field should not autocomplete.
@@ -468,7 +615,7 @@ TEST_F(AutocompleteHistoryManagerTest,
 
   // Simulate request for suggestions.
   autocomplete_manager_->OnGetSingleFieldSuggestions(
-      test_form_data_, /*form_structure=*/nullptr, test_field_,
+      test_form_data_, /*form=*/nullptr, test_field_,
       /*trigger_autofill_field=*/nullptr, autofill_client_,
       mock_callback.Get());
   run_loop.Run();
@@ -488,7 +635,7 @@ TEST_F(AutocompleteHistoryManagerTest,
                                           test_field_.value(), _, _))
       .WillOnce([&](auto, auto, int, DbCallback callback) {
         db_callback = std::move(callback);
-        return kTestDbQuryId;
+        return kTestDbQueryId;
       });
 
   MockSuggestionsReturnedCallback mock_callback;
@@ -497,12 +644,12 @@ TEST_F(AutocompleteHistoryManagerTest,
       .WillOnce(base::test::RunClosure(run_loop.QuitClosure()));
 
   autocomplete_manager_->OnGetSingleFieldSuggestions(
-      test_form_data_, /*form_structure=*/nullptr, test_field_,
+      test_form_data_, /*form=*/nullptr, test_field_,
       /*trigger_autofill_field=*/nullptr, autofill_client_,
       mock_callback.Get());
 
   ASSERT_FALSE(db_callback.is_null());
-  std::move(db_callback).Run(kTestDbQuryId, std::move(mocked_results));
+  std::move(db_callback).Run(kTestDbQueryId, std::move(mocked_results));
   run_loop.Run();
 }
 
@@ -525,7 +672,7 @@ TEST_F(AutocompleteHistoryManagerTest,
       .WillOnce(base::test::RunClosure(run_loop.QuitClosure()));
   // Simulate request for suggestions.
   autocomplete_manager_->OnGetSingleFieldSuggestions(
-      test_form_data_, /*form_structure=*/nullptr, test_field_,
+      test_form_data_, /*form=*/nullptr, test_field_,
       /*trigger_autofill_field=*/nullptr, autofill_client_,
       mock_callback.Get());
   run_loop.Run();
@@ -550,7 +697,7 @@ TEST_F(AutocompleteHistoryManagerTest,
         .WillOnce(base::test::RunClosure(run_loop.QuitClosure()));
   // Simulate request for suggestions.
   autocomplete_manager_->OnGetSingleFieldSuggestions(
-      test_form_data_, /*form_structure=*/nullptr, test_field_,
+      test_form_data_, /*form=*/nullptr, test_field_,
       /*trigger_autofill_field=*/nullptr, autofill_client_,
       mock_callback.Get());
   run_loop.Run();
@@ -574,7 +721,7 @@ TEST_F(AutocompleteHistoryManagerTest,
       .WillOnce(base::test::RunClosure(run_loop.QuitClosure()));
   // Simulate request for suggestions.
   autocomplete_manager_->OnGetSingleFieldSuggestions(
-      test_form_data_, /*form_structure=*/nullptr, test_field_,
+      test_form_data_, /*form=*/nullptr, test_field_,
       /*trigger_autofill_field=*/nullptr, autofill_client_,
       mock_callback.Get());
   run_loop.Run();
@@ -599,7 +746,7 @@ TEST_F(AutocompleteHistoryManagerTest,
                                           test_field_.value(), _, _))
       .WillOnce([&](auto, auto, int, DbCallback callback) {
         db_callback = std::move(callback);
-        return kTestDbQuryId;
+        return kTestDbQueryId;
       });
 
   base::RunLoop run_loop;
@@ -611,12 +758,12 @@ TEST_F(AutocompleteHistoryManagerTest,
 
   // Simulate request for suggestions.
   autocomplete_manager_->OnGetSingleFieldSuggestions(
-      test_form_data_, /*form_structure=*/nullptr, test_field_,
+      test_form_data_, /*form=*/nullptr, test_field_,
       /*trigger_autofill_field=*/nullptr, autofill_client_,
       mock_callback.Get());
 
   ASSERT_FALSE(db_callback.is_null());
-  std::move(db_callback).Run(kTestDbQuryId, std::move(mocked_results));
+  std::move(db_callback).Run(kTestDbQueryId, std::move(mocked_results));
   run_loop.Run();
 }
 
@@ -639,7 +786,7 @@ TEST_F(AutocompleteHistoryManagerTest,
                                           test_field_.value(), _, _))
       .WillOnce([&](auto, auto, int, DbCallback callback) {
         db_callback = std::move(callback);
-        return kTestDbQuryId;
+        return kTestDbQueryId;
       });
 
   base::RunLoop run_loop;
@@ -651,12 +798,12 @@ TEST_F(AutocompleteHistoryManagerTest,
 
   // Simulate request for suggestions.
   autocomplete_manager_->OnGetSingleFieldSuggestions(
-      test_form_data_, /*form_structure=*/nullptr, test_field_,
+      test_form_data_, /*form=*/nullptr, test_field_,
       /*trigger_autofill_field=*/nullptr, autofill_client_,
       mock_callback.Get());
 
   ASSERT_FALSE(db_callback.is_null());
-  std::move(db_callback).Run(kTestDbQuryId, std::move(mocked_results));
+  std::move(db_callback).Run(kTestDbQueryId, std::move(mocked_results));
   run_loop.Run();
 }
 
@@ -673,7 +820,7 @@ TEST_F(AutocompleteHistoryManagerTest,
                                           test_field_.value(), _, _))
       .WillOnce([&](auto, auto, int, DbCallback callback) {
         db_callback = std::move(callback);
-        return kTestDbQuryId;
+        return kTestDbQueryId;
       });
 
   base::RunLoop run_loop;
@@ -684,12 +831,12 @@ TEST_F(AutocompleteHistoryManagerTest,
       .WillOnce(base::test::RunClosure(run_loop.QuitClosure()));
 
   autocomplete_manager_->OnGetSingleFieldSuggestions(
-      test_form_data_, /*form_structure=*/nullptr, test_field_,
+      test_form_data_, /*form=*/nullptr, test_field_,
       /*trigger_autofill_field=*/nullptr, autofill_client_,
       mock_callback.Get());
 
   ASSERT_FALSE(db_callback.is_null());
-  std::move(db_callback).Run(kTestDbQuryId, std::move(mocked_results));
+  std::move(db_callback).Run(kTestDbQueryId, std::move(mocked_results));
   run_loop.Run();
 }
 
@@ -708,7 +855,7 @@ TEST_F(AutocompleteHistoryManagerTest,
                                           test_field_.value(), _, _))
       .WillOnce([&](auto, auto, int, DbCallback callback) {
         db_callback = std::move(callback);
-        return kTestDbQuryId;
+        return kTestDbQueryId;
       });
 
   base::RunLoop run_loop;
@@ -716,12 +863,12 @@ TEST_F(AutocompleteHistoryManagerTest,
   EXPECT_CALL(mock_callback, Run(test_field_.global_id(), IsEmpty()))
       .WillOnce(base::test::RunClosure(run_loop.QuitClosure()));
   autocomplete_manager_->OnGetSingleFieldSuggestions(
-      test_form_data_, /*form_structure=*/nullptr, test_field_,
+      test_form_data_, /*form=*/nullptr, test_field_,
       /*trigger_autofill_field=*/nullptr, autofill_client_,
       mock_callback.Get());
 
   ASSERT_FALSE(db_callback.is_null());
-  std::move(db_callback).Run(kTestDbQuryId, std::move(mocked_results));
+  std::move(db_callback).Run(kTestDbQueryId, std::move(mocked_results));
   run_loop.Run();
 }
 
@@ -741,7 +888,7 @@ TEST_F(AutocompleteHistoryManagerTest,
                                           test_field_.value(), _, _))
       .WillOnce([&](auto, auto, int, DbCallback callback) {
         db_callback = std::move(callback);
-        return kTestDbQuryId;
+        return kTestDbQueryId;
       });
 
   // Simulate request for suggestions.
@@ -753,12 +900,12 @@ TEST_F(AutocompleteHistoryManagerTest,
       .WillOnce(base::test::RunClosure(run_loop.QuitClosure()));
 
   autocomplete_manager_->OnGetSingleFieldSuggestions(
-      test_form_data_, /*form_structure=*/nullptr, test_field_,
+      test_form_data_, /*form=*/nullptr, test_field_,
       /*trigger_autofill_field=*/nullptr, autofill_client_,
       mock_callback.Get());
 
   ASSERT_FALSE(db_callback.is_null());
-  std::move(db_callback).Run(kTestDbQuryId, std::move(mocked_results));
+  std::move(db_callback).Run(kTestDbQueryId, std::move(mocked_results));
   run_loop.Run();
 }
 
@@ -778,9 +925,151 @@ TEST_F(AutocompleteHistoryManagerTest,
 }
 
 TEST_F(AutocompleteHistoryManagerTest,
+       OnSingleFieldSuggestionSelected_UpdatesMetadata) {
+  Suggestion suggestion(u"TestValue", SuggestionType::kAutocompleteEntry);
+  suggestion.payload = GetAutocompleteEntry(
+      test_field_.name(), u"TestValue",
+      /*date_created=*/base::Time::Now() - base::Days(20),
+      /*date_last_used=*/base::Time::Now() - base::Days(10));
+
+  EXPECT_CALL(*(web_data_service_.get()),
+              AddFormFields(ElementsAre(
+                  AllOf(Property(&FormFieldData::name, test_field_.name()),
+                        Property(&FormFieldData::value, u"TestValue")))));
+
+  autocomplete_manager_->OnSingleFieldSuggestionSelected(suggestion);
+}
+
+// Test that upon accepting a label-sensitive autocomplete suggestion, we
+// correctly log the number of days since its last usage.
+TEST_F(AutocompleteHistoryManagerTest,
+       OnSingleFieldSuggestionSelected_ShouldLogDays_LabelSensitive) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndEnableFeature(
+      features::kAutofillLabelSensitiveAutocomplete);
+
+  Suggestion suggestion(u"TestValue", SuggestionType::kAutocompleteEntry);
+  suggestion.payload = AutocompleteSearchResultLabelSensitive(
+      u"TestValue", MatchingType::kNameAndLabel, test_field_.name(),
+      test_field_.label(), /*count=*/1,
+      /*date_last_used=*/base::Time::Now() - base::Days(10));
+
+  base::HistogramTester histogram_tester;
+  autocomplete_manager_->OnSingleFieldSuggestionSelected(suggestion);
+  histogram_tester.ExpectBucketCount("Autocomplete.DaysSinceLastUse", 10, 1);
+}
+
+// Test that upon accepting a label-sensitive autocomplete suggestion, we
+// correctly update the entry's metadata in the database.
+TEST_F(AutocompleteHistoryManagerTest,
+       OnSingleFieldSuggestionSelected_UpdatesMetadata_LabelSensitive) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndEnableFeature(
+      features::kAutofillLabelSensitiveAutocomplete);
+
+  Suggestion suggestion(u"TestValue", SuggestionType::kAutocompleteEntry);
+  suggestion.payload = AutocompleteSearchResultLabelSensitive(
+      u"TestValue", MatchingType::kNameAndLabel, test_field_.name(),
+      test_field_.label(), /*count=*/1,
+      /*date_last_used=*/base::Time::Now() - base::Days(10));
+
+  EXPECT_CALL(*(web_data_service_.get()),
+              AddFormFields(ElementsAre(
+                  AllOf(Property(&FormFieldData::name, test_field_.name()),
+                        Property(&FormFieldData::label, test_field_.label()),
+                        Property(&FormFieldData::value, u"TestValue")))));
+
+  autocomplete_manager_->OnSingleFieldSuggestionSelected(suggestion);
+}
+
+// Tests that migration is triggered when the Finch migration generation is
+// greater than the stored migration generation pref.
+TEST_F(AutocompleteHistoryManagerTest,
+       Migration_TriggersWhenGenerationIncreases) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeatureWithParameters(
+      features::kAutofillLabelSensitiveAutocomplete,
+      {{"autocomplete_label_sensitive_migration_generation", "2"}});
+  prefs_->SetInteger(
+      prefs::kAutofillAutocompleteLabelSensitiveMigrationGeneration, 1);
+
+  EXPECT_CALL(*web_data_service_, MigrateDataFromLegacyTable);
+  AutocompleteHistoryManager manager(web_data_service_, prefs_.get());
+}
+
+// Tests that migration is not triggered when the stored migration generation
+// pref is already equal to or greater than the Finch migration generation.
+TEST_F(AutocompleteHistoryManagerTest,
+       Migration_DoesNotTriggerWhenGenerationMatchesOrLess) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeatureWithParameters(
+      features::kAutofillLabelSensitiveAutocomplete,
+      {{"autocomplete_label_sensitive_migration_generation", "2"}});
+  prefs_->SetInteger(
+      prefs::kAutofillAutocompleteLabelSensitiveMigrationGeneration, 2);
+
+  EXPECT_CALL(*web_data_service_, MigrateDataFromLegacyTable).Times(0);
+  AutocompleteHistoryManager manager(web_data_service_, prefs_.get());
+}
+
+// Tests that migration is not triggered when the label-sensitive autocomplete
+// feature is disabled.
+TEST_F(AutocompleteHistoryManagerTest,
+       Migration_DoesNotTriggerWhenFeatureDisabled) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndDisableFeature(
+      features::kAutofillLabelSensitiveAutocomplete);
+  prefs_->SetInteger(
+      prefs::kAutofillAutocompleteLabelSensitiveMigrationGeneration, 0);
+
+  EXPECT_CALL(*web_data_service_, MigrateDataFromLegacyTable).Times(0);
+  AutocompleteHistoryManager manager(web_data_service_, prefs_.get());
+}
+
+// Tests that the migration generation pref is updated upon successful
+// migration.
+TEST_F(AutocompleteHistoryManagerTest, Migration_PrefUpdatedOnSuccess) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeatureWithParameters(
+      features::kAutofillLabelSensitiveAutocomplete,
+      {{"autocomplete_label_sensitive_migration_generation", "2"}});
+  prefs_->SetInteger(
+      prefs::kAutofillAutocompleteLabelSensitiveMigrationGeneration, 1);
+
+  EXPECT_CALL(*web_data_service_, MigrateDataFromLegacyTable)
+      .WillOnce(RunOnceCallback<0>(
+          kTestDbQueryId, std::make_unique<WDResult<bool>>(BOOL_RESULT, true)));
+  AutocompleteHistoryManager manager(web_data_service_, prefs_.get());
+
+  EXPECT_EQ(prefs_->GetInteger(
+                prefs::kAutofillAutocompleteLabelSensitiveMigrationGeneration),
+            2);
+}
+
+// Tests that the migration generation pref is not updated if migration fails.
+TEST_F(AutocompleteHistoryManagerTest, Migration_PrefNotUpdatedOnFailure) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeatureWithParameters(
+      features::kAutofillLabelSensitiveAutocomplete,
+      {{"autocomplete_label_sensitive_migration_generation", "2"}});
+  prefs_->SetInteger(
+      prefs::kAutofillAutocompleteLabelSensitiveMigrationGeneration, 1);
+
+  EXPECT_CALL(*web_data_service_, MigrateDataFromLegacyTable)
+      .WillOnce(RunOnceCallback<0>(
+          kTestDbQueryId,
+          std::make_unique<WDResult<bool>>(BOOL_RESULT, false)));
+  AutocompleteHistoryManager manager(web_data_service_, prefs_.get());
+
+  EXPECT_EQ(prefs_->GetInteger(
+                prefs::kAutofillAutocompleteLabelSensitiveMigrationGeneration),
+            1);
+}
+
+TEST_F(AutocompleteHistoryManagerTest,
        SuggestionsReturned_InvokeHandler_TwoRequests_OneHandler_Cancels) {
-  int kTestDbQuryId_first = 100;
-  int kTestDbQuryId_second = 101;
+  int kTestDbQueryId_first = 100;
+  int kTestDbQueryId_second = 101;
 
   std::vector<AutocompleteEntry> expected_values_first = {
       GetAutocompleteEntry(test_field_.name(), u"SomePrefixOne")};
@@ -803,37 +1092,36 @@ TEST_F(AutocompleteHistoryManagerTest,
         // Correctly move the move-only callback.
         db_callback_first = std::move(callback);
         // The function must return a handle.
-        return kTestDbQuryId_first;
+        return kTestDbQueryId_first;
       })
       .WillOnce([&](auto, auto, int, DbCallback callback) {
         // Correctly move the move-only callback.
         db_callback_second = std::move(callback);
         // The function must return a handle.
-        return kTestDbQuryId_second;
+        return kTestDbQueryId_second;
       });
 
   base::RunLoop run_loop;
   MockSuggestionsReturnedCallback mock_callback;
   EXPECT_CALL(mock_callback, Run).Times(0);
   autocomplete_manager_->OnGetSingleFieldSuggestions(
-      test_form_data_, /*form_structure=*/nullptr, test_field_,
+      test_form_data_, /*form=*/nullptr, test_field_,
       /*trigger_autofill_field=*/nullptr, autofill_client_,
       mock_callback.Get());
 
-  EXPECT_CALL(*web_data_service_, CancelRequest(kTestDbQuryId_first))
-      .Times(1);
+  EXPECT_CALL(*web_data_service_, CancelRequest(kTestDbQueryId_first)).Times(1);
   EXPECT_CALL(mock_callback,
               Run(test_field_.global_id(), HasSingleSuggestionWithMainText(
                                                u"SomePrefixTwo")))
       .WillOnce(base::test::RunClosure(run_loop.QuitClosure()));
   autocomplete_manager_->OnGetSingleFieldSuggestions(
-      test_form_data_, /*form_structure=*/nullptr, test_field_,
+      test_form_data_, /*form=*/nullptr, test_field_,
       /*trigger_autofill_field=*/nullptr, autofill_client_,
       mock_callback.Get());
 
   ASSERT_FALSE(db_callback_second.is_null());
   std::move(db_callback_second)
-      .Run(kTestDbQuryId_second, std::move(mocked_results_second));
+      .Run(kTestDbQueryId_second, std::move(mocked_results_second));
   run_loop.Run();
 }
 
@@ -850,24 +1138,24 @@ TEST_F(AutocompleteHistoryManagerTest, SuggestionsReturned_CancelPendingQuery) {
                                           test_field_.value(), _, _))
       .WillOnce([&](auto, auto, int, DbCallback callback) {
         db_callback = std::move(callback);
-        return kTestDbQuryId;
+        return kTestDbQueryId;
       });
 
   base::RunLoop run_loop;
   MockSuggestionsReturnedCallback mock_callback;
-  EXPECT_CALL(mock_callback, Run(test_field_.global_id(), testing::IsEmpty()))
+  EXPECT_CALL(mock_callback, Run(test_field_.global_id(), IsEmpty()))
       .WillOnce(base::test::RunClosure(run_loop.QuitClosure()));
   autocomplete_manager_->OnGetSingleFieldSuggestions(
-      test_form_data_, /*form_structure=*/nullptr, test_field_,
+      test_form_data_, /*form=*/nullptr, test_field_,
       /*trigger_autofill_field=*/nullptr, autofill_client_,
       mock_callback.Get());
 
   // Simulate cancelling the request.
-  EXPECT_CALL(*web_data_service_, CancelRequest(kTestDbQuryId));
+  EXPECT_CALL(*web_data_service_, CancelRequest(kTestDbQueryId));
   autocomplete_manager_->CancelPendingQuery();
 
   ASSERT_FALSE(db_callback.is_null());
-  std::move(db_callback).Run(kTestDbQuryId, std::move(mocked_results_one));
+  std::move(db_callback).Run(kTestDbQueryId, std::move(mocked_results_one));
   run_loop.Run();
 }
 
@@ -892,19 +1180,19 @@ TEST_F(AutocompleteHistoryManagerTest, NoAutocompleteSuggestionsForTextarea) {
                                           test_field_.value(), _, _))
       .WillOnce([&](auto, auto, int, DbCallback callback) {
         db_callback = std::move(callback);
-        return kTestDbQuryId;
+        return kTestDbQueryId;
       });
 
   MockSuggestionsReturnedCallback mock_callback;
-  EXPECT_CALL(mock_callback, Run(test_field_.global_id(), testing::SizeIs(1)));
+  EXPECT_CALL(mock_callback, Run(test_field_.global_id(), SizeIs(1)));
 
   autocomplete_manager_->OnGetSingleFieldSuggestions(
-      test_form_data_, /*form_structure=*/nullptr, test_field_,
+      test_form_data_, /*form=*/nullptr, test_field_,
       /*trigger_autofill_field=*/nullptr, autofill_client_,
       mock_callback.Get());
 
   ASSERT_FALSE(db_callback.is_null());
-  std::move(db_callback).Run(kTestDbQuryId, std::move(mocked_results));
+  std::move(db_callback).Run(kTestDbQueryId, std::move(mocked_results));
 }
 
 TEST_F(AutocompleteHistoryManagerTest, DestructorCancelsRequests) {
@@ -916,18 +1204,18 @@ TEST_F(AutocompleteHistoryManagerTest, DestructorCancelsRequests) {
                                           test_field_.value(), _, _))
       .WillOnce([&run_loop]() {
         run_loop.Quit();
-        return kTestDbQuryId;
+        return kTestDbQueryId;
       });
 
   // Simulate request for suggestions.
   autocomplete_manager_->OnGetSingleFieldSuggestions(
-      test_form_data_, /*form_structure=*/nullptr, test_field_,
+      test_form_data_, /*form=*/nullptr, test_field_,
       /*trigger_autofill_field=*/nullptr, autofill_client_,
       mock_callback.Get());
   run_loop.Run();
 
   // Expect a cancel call.
-  EXPECT_CALL(*web_data_service_, CancelRequest(kTestDbQuryId));
+  EXPECT_CALL(*web_data_service_, CancelRequest(kTestDbQueryId));
 
   autocomplete_manager_.reset();
 
@@ -943,13 +1231,13 @@ TEST_F(AutocompleteHistoryManagerTest, EntriesCleanup_Success) {
   EXPECT_EQ(-1,
             prefs_->GetInteger(prefs::kAutocompleteLastVersionRetentionPolicy));
 
-  size_t cleanup_result = 10;
+  bool cleanup_result = true;
   base::HistogramTester histogram_tester;
   MockSuggestionsReturnedCallback mock_callback;
 
   autocomplete_manager_->OnAutofillCleanupReturned(
-      1, std::make_unique<WDResult<size_t>>(AUTOFILL_CLEANUP_RESULT,
-                                            cleanup_result));
+      1, std::make_unique<WDResult<bool>>(AUTOFILL_CLEANUP_RESULT,
+                                          cleanup_result));
 
   EXPECT_EQ(version_info::GetMajorVersionNumberAsInt(),
             prefs_->GetInteger(prefs::kAutocompleteLastVersionRetentionPolicy));
@@ -967,6 +1255,10 @@ TEST_F(AutocompleteHistoryManagerTest, IsFieldNameMeaningfulForAutocomplete) {
   EXPECT_TRUE(IsMeaningful(u"city"));
   EXPECT_TRUE(IsMeaningful(u"search"));
   EXPECT_TRUE(IsMeaningful(u"payment_info"));
+  EXPECT_TRUE(IsMeaningful(u"email_verification"));
+  EXPECT_TRUE(IsMeaningful(u"verification"));
+  EXPECT_TRUE(IsMeaningful(u"verify"));
+  EXPECT_TRUE(IsMeaningful(u"security"));
 
   // Names that are not meaningful.
   EXPECT_FALSE(IsMeaningful(u"field1"));
@@ -990,6 +1282,14 @@ TEST_F(AutocompleteHistoryManagerTest, IsFieldNameMeaningfulForAutocomplete) {
   EXPECT_FALSE(IsMeaningful(u"cc_cvc"));
   EXPECT_FALSE(IsMeaningful(u"cvn_number"));
   EXPECT_FALSE(IsMeaningful(u"cvv"));
+  EXPECT_FALSE(IsMeaningful(u"csc"));
+  EXPECT_FALSE(IsMeaningful(u"my_csc_value"));
+  EXPECT_FALSE(IsMeaningful(u"cvd"));
+  EXPECT_FALSE(IsMeaningful(u"my_cvd_value"));
+  EXPECT_FALSE(IsMeaningful(u"ccv"));
+  EXPECT_FALSE(IsMeaningful(u"my_ccv_value"));
+  EXPECT_FALSE(IsMeaningful(u"cvn"));
+  EXPECT_FALSE(IsMeaningful(u"my_cvn_value"));
   EXPECT_FALSE(IsMeaningful(u"captcha_input"));
   EXPECT_FALSE(IsMeaningful(u"password"));
   EXPECT_FALSE(IsMeaningful(u"pass2"));
@@ -1001,6 +1301,329 @@ TEST_F(AutocompleteHistoryManagerTest, IsFieldNameMeaningfulForAutocomplete) {
   EXPECT_FALSE(IsMeaningful(u"my_senha_value"));
   EXPECT_FALSE(IsMeaningful(u"pincode"));
   EXPECT_FALSE(IsMeaningful(u"my_pincode_value"));
+  EXPECT_FALSE(IsMeaningful(u"flight_verification"));
+  EXPECT_FALSE(IsMeaningful(u"card_verification"));
+  EXPECT_FALSE(IsMeaningful(u"verification_code"));
+  EXPECT_FALSE(IsMeaningful(u"verify_card"));
+  EXPECT_FALSE(IsMeaningful(u"verify_code"));
+  EXPECT_FALSE(IsMeaningful(u"security_code"));
+  EXPECT_FALSE(IsMeaningful(u"card_security_code"));
+  EXPECT_FALSE(IsMeaningful(u"verifycard"));
+  EXPECT_FALSE(IsMeaningful(u"verify-card"));
+  EXPECT_FALSE(IsMeaningful(u"verifycode"));
+  EXPECT_FALSE(IsMeaningful(u"verify-code"));
+  EXPECT_FALSE(IsMeaningful(u"security-code"));
+  EXPECT_FALSE(IsMeaningful(u"securitycode"));
+  EXPECT_FALSE(IsMeaningful(u"security_value"));
+  EXPECT_FALSE(IsMeaningful(u"security-value"));
+  EXPECT_FALSE(IsMeaningful(u"securityvalue"));
+  EXPECT_FALSE(IsMeaningful(u"security_number"));
+  EXPECT_FALSE(IsMeaningful(u"security-number"));
+  EXPECT_FALSE(IsMeaningful(u"securitynumber"));
+}
+
+// Tests that fields with ineligible autocomplete types (e.g., credit card info,
+// promo codes, IBANs, and autofilled loyalty cards) are filtered out and not
+// saved.
+TEST_F(AutocompleteHistoryManagerTest, ClassificationBasedFiltering) {
+  FormData form = test::GetFormData(
+      {.fields = {
+           {.role = CREDIT_CARD_NUMBER, .value = u"1234567890123456"},
+           {.role = CREDIT_CARD_VERIFICATION_CODE, .value = u"123"},
+           {.role = CREDIT_CARD_STANDALONE_VERIFICATION_CODE, .value = u"456"},
+           {.role = LOYALTY_MEMBERSHIP_ID, .value = u"999"},
+           {.role = MERCHANT_PROMO_CODE, .value = u"PROMO123"},
+           {.role = IBAN_VALUE, .value = u"DE75512108001245126199"},
+           {.role = NAME_FIRST, .value = u"John"}}});
+
+  FormStructure form_structure{form};
+  ASSERT_EQ(7u, form_structure.field_count());
+
+  test_api(form_structure)
+      .SetFieldTypes({CREDIT_CARD_NUMBER, CREDIT_CARD_VERIFICATION_CODE,
+                      CREDIT_CARD_STANDALONE_VERIFICATION_CODE,
+                      LOYALTY_MEMBERSHIP_ID, MERCHANT_PROMO_CODE, IBAN_VALUE,
+                      NAME_FIRST});
+
+  // Mark the loyalty card field as autofilled.
+  form_structure.field(3)->AddFieldModifier(FieldModifier::kAutofill);
+
+  // Only the last field (NAME_FIRST) is saveable in Autocomplete.
+  // Credit card numbers, CVC, Loyalty card (autofilled), Merchant Promo, and
+  // IBAN fields are skipped.
+  EXPECT_CALL(
+      *(web_data_service_.get()),
+      AddFormFields(ElementsAre(Property(&FormFieldData::value, u"John"))));
+
+  autocomplete_manager_->OnWillSubmitFormWithFields(form.fields(),
+                                                    &form_structure);
+}
+
+// Tests that CVC fields tagged through autocomplete attribute are not saved in
+// history even when the type wasn't predicted.
+TEST_F(AutocompleteHistoryManagerTest,
+       AutocompleteAttributeBasedFiltering_CvcWithoutTypePrediction) {
+  FormData form =
+      test::GetFormData({.fields = {{.role = CREDIT_CARD_VERIFICATION_CODE,
+                                     .name = u"Name not matching CC regex",
+                                     .value = u"000",
+                                     .autocomplete_attribute = "cc-csc"},
+                                    {.role = CREDIT_CARD_VERIFICATION_CODE,
+                                     .name = u"Name not matching CC regex",
+                                     .value = u"111"}}});
+  FormStructure form_structure{form};
+  // Simulate rationalizing the types to UNKNOWN_TYPE.
+  form_structure.field(0)->SetTypeTo(
+      AutofillType(UNKNOWN_TYPE), AutofillPredictionSource::kRationalization);
+  form_structure.field(1)->SetTypeTo(
+      AutofillType(UNKNOWN_TYPE), AutofillPredictionSource::kRationalization);
+
+  EXPECT_CALL(
+      *(web_data_service_.get()),
+      AddFormFields(ElementsAre(Property(&FormFieldData::value, u"111"))));
+
+  autocomplete_manager_->OnWillSubmitFormWithFields(form.fields(),
+                                                    &form_structure);
+}
+
+// Tests that loyalty card fields are saved in autocomplete history if they
+// were entered manually (i.e., not autofilled).
+TEST_F(AutocompleteHistoryManagerTest, LoyaltyCardManualEntryIsSaved) {
+  FormData form = test::GetFormData(
+      {.fields = {{.role = LOYALTY_MEMBERSHIP_ID, .value = u"999"}}});
+
+  FormStructure form_structure{form};
+  ASSERT_EQ(1u, form_structure.field_count());
+
+  test_api(form_structure).SetFieldTypes({LOYALTY_MEMBERSHIP_ID});
+
+  // Since last_modifier is NOT kAutofill, it should be saved.
+  EXPECT_CALL(
+      *(web_data_service_.get()),
+      AddFormFields(ElementsAre(Property(&FormFieldData::value, u"999"))));
+
+  autocomplete_manager_->OnWillSubmitFormWithFields(form.fields(),
+                                                    &form_structure);
+}
+
+// Tests that fields autofilled by standard Autofill or Autocomplete are not
+// saved to the Autocomplete database during form submission.
+TEST_F(AutocompleteHistoryManagerTest, PreventSavingAutofilledFields) {
+  FormData form = test::GetFormData(
+      {.fields = {
+           {.role = NAME_FIRST, .value = u"John"},
+           {.role = NAME_LAST, .value = u"Doe"},
+           {.role = EMAIL_ADDRESS, .value = u"john.doe@example.com"},
+       }});
+
+  FormStructure form_structure{form};
+  ASSERT_EQ(3u, form_structure.field_count());
+
+  test_api(form_structure)
+      .SetFieldTypes({NAME_FIRST, NAME_LAST, EMAIL_ADDRESS});
+
+  // field(0) (NAME_FIRST) is autofilled by address Autofill.
+  form_structure.field(0)->AddFieldModifier(FieldModifier::kAutofill);
+  form_structure.field(0)->set_filling_product(FillingProduct::kAddress);
+
+  // field(1) (NAME_LAST) is autocompleted (filled by single field
+  // autocomplete).
+  form_structure.field(1)->AddFieldModifier(FieldModifier::kAutofill);
+  form_structure.field(1)->set_filling_product(FillingProduct::kAutocomplete);
+
+  // field(2) (EMAIL_ADDRESS) is not autofilled.
+
+  // Only field(2) (EMAIL_ADDRESS) is saveable in Autocomplete.
+  // Field(0) is skipped because it was autofilled by address Autofill.
+  // Field(1) is skipped because it was autocompleted (and not edited).
+  EXPECT_CALL(*(web_data_service_.get()),
+              AddFormFields(ElementsAre(
+                  Property(&FormFieldData::value, u"john.doe@example.com"))));
+
+  autocomplete_manager_->OnWillSubmitFormWithFields(form.fields(),
+                                                    &form_structure);
+}
+
+// Tests that if a field was autocompleted (filled by Autocomplete) and then
+// edited by the user, the user-edited value is allowed to be saved to the
+// Autocomplete database. However, if a field was filled by a structured
+// Autofill product and then edited, it is still prevented from being saved.
+TEST_F(AutocompleteHistoryManagerTest,
+       PreventSavingAutofilledFields_AllowEditedAutocomplete) {
+  FormData form =
+      test::GetFormData({.fields = {
+                             {.role = NAME_FIRST, .value = u"JohnEdited"},
+                             {.role = NAME_LAST, .value = u"DoeEdited"},
+                         }});
+
+  FormStructure form_structure{form};
+  ASSERT_EQ(2u, form_structure.field_count());
+
+  test_api(form_structure).SetFieldTypes({NAME_FIRST, NAME_LAST});
+
+  // field(0) (NAME_FIRST) is autofilled by address Autofill and then edited.
+  form_structure.field(0)->AddFieldModifier(FieldModifier::kAutofill);
+  form_structure.field(0)->set_filling_product(FillingProduct::kAddress);
+  form_structure.field(0)->AddFieldModifier(FieldModifier::kUser);
+
+  // field(1) (NAME_LAST) is autocompleted and then edited.
+  form_structure.field(1)->AddFieldModifier(FieldModifier::kAutofill);
+  form_structure.field(1)->set_filling_product(FillingProduct::kAutocomplete);
+  form_structure.field(1)->AddFieldModifier(FieldModifier::kUser);
+
+  // Only field(1) is saveable because it was autocompleted and then edited.
+  // Field(0) is skipped because it was autofilled by address Autofill and
+  // edited.
+  EXPECT_CALL(*(web_data_service_.get()),
+              AddFormFields(
+                  ElementsAre(Property(&FormFieldData::value, u"DoeEdited"))));
+
+  autocomplete_manager_->OnWillSubmitFormWithFields(form.fields(),
+                                                    &form_structure);
+}
+
+class AutocompleteHistoryManagerAtMemoryTest
+    : public AutocompleteHistoryManagerTest {
+ public:
+  void SetUp() override {
+    AutocompleteHistoryManagerTest::SetUp();
+
+    feature_list_.InitWithFeatures(
+        /*enabled_features=*/{features::kAutofillAtMemory,
+                              features::kShowAutocompleteAtMemoryButton},
+        /*disabled_features=*/{});
+
+    // Enable personal context toggle.
+    autofill_client_.GetPrefs()->registry()->RegisterIntegerPref(
+        optimization_guide::prefs::kFindAndFillWithGeminiSettings,
+        std::to_underlying(optimization_guide::model_execution::prefs::
+                               ModelExecutionEnterprisePolicyValue::kAllow));
+    autofill_client_.GetPrefs()->SetBoolean(
+        personal_context::prefs::kPersonalContextInAutofillSettingsToggleStatus,
+        true);
+
+    // Set mock enablement service state to enabled.
+    ON_CALL(personal_context_service_, GetEligibilityState)
+        .WillByDefault(Return(
+            personal_context::PersonalContextEligibilityState::kEligible));
+    autofill_client_.set_personal_context_eligibility_service(
+        &personal_context_service_);
+
+    // Mock database query response.
+    ON_CALL(*web_data_service_,
+            GetFormValuesForElementName(test_field_.name(), test_field_.value(),
+                                        _, _))
+        .WillByDefault([&](auto, auto, int, DbCallback callback) {
+          base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
+              FROM_HERE,
+              base::BindOnce(std::move(callback), kTestDbQueryId,
+                             GetMockedDbResults({GetAutocompleteEntry(
+                                 test_field_.name(), u"Some Value")})));
+          return kTestDbQueryId;
+        });
+  }
+
+ protected:
+  base::test::ScopedFeatureList feature_list_;
+  personal_context::MockPersonalContextEligibilityService
+      personal_context_service_;
+};
+
+// Tests that if both URLs allowed, AtMemory suggestion is returned.
+TEST_F(AutocompleteHistoryManagerAtMemoryTest,
+       AtMemorySuggestions_BothUrlsAllowed) {
+  GURL allowed_main("https://allowed-main.com");
+  GURL allowed_field("https://allowed-field.com");
+
+  autofill_client_.set_last_committed_primary_main_frame_url(allowed_main);
+  test_field_.set_origin(url::Origin::Create(allowed_field));
+
+  MockAutofillOptimizationGuideDecider* decider =
+      autofill_client_.GetAutofillOptimizationGuideDecider();
+  ON_CALL(*decider, ShouldBlockAtMemory(allowed_main))
+      .WillByDefault(Return(false));
+  ON_CALL(*decider, ShouldBlockAtMemory(allowed_field))
+      .WillByDefault(Return(false));
+
+  base::RunLoop run_loop;
+  MockSuggestionsReturnedCallback mock_callback;
+  EXPECT_CALL(mock_callback,
+              Run(test_field_.global_id(),
+                  Contains(Field(&Suggestion::type,
+                                 SuggestionType::kAutocompleteAtMemoryButton))))
+      .WillOnce(base::test::RunClosure(run_loop.QuitClosure()));
+
+  autocomplete_manager_->OnGetSingleFieldSuggestions(
+      test_form_data_, /*form_structure=*/nullptr, test_field_,
+      /*trigger_autofill_field=*/nullptr, autofill_client_,
+      mock_callback.Get());
+  run_loop.Run();
+}
+
+// Tests that if the main frame URL is blocked, the AtMemory suggestion is not
+// returned.
+TEST_F(AutocompleteHistoryManagerAtMemoryTest,
+       AtMemorySuggestions_MainFrameUrlBlocked) {
+  GURL allowed_field("https://allowed-field.com");
+  GURL blocked_main("https://blocked-main.com");
+
+  autofill_client_.set_last_committed_primary_main_frame_url(blocked_main);
+  test_field_.set_origin(url::Origin::Create(allowed_field));
+
+  MockAutofillOptimizationGuideDecider* decider =
+      autofill_client_.GetAutofillOptimizationGuideDecider();
+  ON_CALL(*decider, ShouldBlockAtMemory(blocked_main))
+      .WillByDefault(Return(true));
+  ON_CALL(*decider, ShouldBlockAtMemory(allowed_field))
+      .WillByDefault(Return(false));
+
+  base::RunLoop run_loop;
+  MockSuggestionsReturnedCallback mock_callback;
+  EXPECT_CALL(
+      mock_callback,
+      Run(test_field_.global_id(),
+          Not(Contains(Field(&Suggestion::type,
+                             SuggestionType::kAutocompleteAtMemoryButton)))))
+      .WillOnce(base::test::RunClosure(run_loop.QuitClosure()));
+
+  autocomplete_manager_->OnGetSingleFieldSuggestions(
+      test_form_data_, /*form_structure=*/nullptr, test_field_,
+      /*trigger_autofill_field=*/nullptr, autofill_client_,
+      mock_callback.Get());
+  run_loop.Run();
+}
+
+// Tests that if the field frame URL is blocked, the AtMemory suggestion is not
+// returned.
+TEST_F(AutocompleteHistoryManagerAtMemoryTest,
+       AtMemorySuggestions_FieldOriginUrlBlocked) {
+  GURL allowed_main("https://allowed-main.com");
+  GURL blocked_field("https://blocked-field.com");
+
+  autofill_client_.set_last_committed_primary_main_frame_url(allowed_main);
+  test_field_.set_origin(url::Origin::Create(blocked_field));
+
+  MockAutofillOptimizationGuideDecider* decider =
+      autofill_client_.GetAutofillOptimizationGuideDecider();
+  ON_CALL(*decider, ShouldBlockAtMemory(allowed_main))
+      .WillByDefault(Return(false));
+  ON_CALL(*decider, ShouldBlockAtMemory(blocked_field))
+      .WillByDefault(Return(true));
+
+  base::RunLoop run_loop;
+  MockSuggestionsReturnedCallback mock_callback;
+  EXPECT_CALL(
+      mock_callback,
+      Run(test_field_.global_id(),
+          Not(Contains(Field(&Suggestion::type,
+                             SuggestionType::kAutocompleteAtMemoryButton)))))
+      .WillOnce(base::test::RunClosure(run_loop.QuitClosure()));
+
+  autocomplete_manager_->OnGetSingleFieldSuggestions(
+      test_form_data_, /*form_structure=*/nullptr, test_field_,
+      /*trigger_autofill_field=*/nullptr, autofill_client_,
+      mock_callback.Get());
+  run_loop.Run();
 }
 
 }  // namespace autofill

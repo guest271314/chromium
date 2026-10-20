@@ -51,7 +51,7 @@
 #include "base/android/apk_info.h"
 #include "chrome/browser/ui/android/android_about_app_info.h"
 #else
-#include "chrome/browser/ui/webui/theme_source.h"
+#include "chrome/browser/ui/webui/theme_source.h"  // nogncheck
 #endif
 
 #if BUILDFLAG(IS_CHROMEOS)
@@ -209,6 +209,18 @@ int VersionUI::VersionProcessorVariation() {
   return IDS_VERSION_UI_64BIT;
 #endif  // defined(ARCH_CPU_X86)
 #endif  // defined(ARCH_CPU_ARM64)
+#elif BUILDFLAG(IS_LINUX)
+#if defined(ARCH_CPU_X86_64)
+  return IDS_VERSION_UI_64BIT_INTEL;
+#elif defined(ARCH_CPU_ARM64)
+  return IDS_VERSION_UI_64BIT_ARM;
+#elif defined(ARCH_CPU_64_BITS)
+  return IDS_VERSION_UI_64BIT;
+#elif defined(ARCH_CPU_32_BITS)
+  return IDS_VERSION_UI_32BIT;
+#else
+#error Update for a processor that is neither 32-bit nor 64-bit.
+#endif
 #elif defined(ARCH_CPU_64_BITS)
   return IDS_VERSION_UI_64BIT;
 #elif defined(ARCH_CPU_32_BITS)
@@ -219,7 +231,7 @@ int VersionUI::VersionProcessorVariation() {
 }
 
 // static
-base::RefCountedMemory* VersionUI::GetFaviconResourceBytes(
+scoped_refptr<base::RefCountedMemory> VersionUI::GetFaviconResourceBytes(
     ui::ResourceScaleFactor scale_factor) {
   return ui::ResourceBundle::GetSharedInstance().LoadDataResourceBytesForScale(
       IDR_PRODUCT_FAVICON, scale_factor);

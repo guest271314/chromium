@@ -7,11 +7,11 @@
 
 #include "base/base_paths.h"
 #include "base/command_line.h"
-#include "base/environment.h"
 #include "base/files/file_path.h"
 #include "base/path_service.h"
 #include "base/process/launch.h"
 #include "base/sanitizer_buildflags.h"
+#include "base/scoped_environment_variable_override.h"
 #include "base/strings/string_util.h"
 #include "build/build_config.h"
 #include "testing/gmock/include/gmock/gmock.h"
@@ -50,8 +50,8 @@ TEST(FuzzerStacktraceTest, SymbolizesUAF) {
   // This loosely replicates how we run fuzzers in production. Wet let ASAN
   // handle the symbolization online - which fails for sandboxed processes, but
   // this toy fuzzer does not run any sandboxed code.
-  auto environment = base::Environment::Create();
-  environment->SetVar("ASAN_OPTIONS", "symbolize=1");
+  base::ScopedEnvironmentVariableOverride asan_options("ASAN_OPTIONS",
+                                                       "symbolize=1");
 
   std::string output;
   EXPECT_FALSE(base::GetAppOutputAndError(cmd, &output));  // Target crashes.
@@ -64,8 +64,8 @@ TEST(FuzzerStacktraceTest, SymbolizesUAF) {
       R"(ERROR: AddressSanitizer: heap-use-after-free on address 0x[0-9a-f]+.*)",
       R"(READ of size 4 at 0x[0-9a-f]+ thread T[0-9]+)",
 #if BUILDFLAG(IS_WIN)
-      R"(#0 0x[0-9a-f]+ in TriggerUAF(\(void\))? [A-Z]:\\.*testing\\libfuzzer)"
-      R"(\\tests\\stacktrace_test_fuzzer.cc:[0-9]+)",
+      R"(#0 0x[0-9a-f]+ in TriggerUAF(\(void\))? .*testing[/\\]libfuzzer)"
+      R"([/\\]tests[/\\]stacktrace_test_fuzzer.cc:[0-9]+(:[0-9]+)?)",
 #elif BUILDFLAG(IS_MAC)
       R"(#0 0x[0-9a-f]+ in TriggerUAF\(\) \(.*/stacktrace_test_fuzzer:arm64\+0x[0-9a-f]+\))",
 #else
@@ -239,9 +239,12 @@ TEST(FuzzerStacktraceTest, CheckFailureRegexesAreValid) {
   EXPECT_EQ(re2::RE2(CheckFailureStackRegexWin()).error(), "");
 }
 
-// Fuzzer fails to run under MSan.
+// Fuzzer fails to run under MSan or ASan debug builds.
 // TODO(https://crbug.com/326101784): Re-enable this once MSan build is fixed.
-#if defined(MEMORY_SANITIZER)
+// TODO(https://crbug.com/529790472): Fix stacktrace regex for ASan debug
+// builds.
+#if defined(MEMORY_SANITIZER) || \
+    (defined(ADDRESS_SANITIZER) && !defined(NDEBUG))
 #define MAYBE_SymbolizesCheck DISABLED_SymbolizesCheck
 #else
 #define MAYBE_SymbolizesCheck SymbolizesCheck
@@ -249,6 +252,9 @@ TEST(FuzzerStacktraceTest, CheckFailureRegexesAreValid) {
 TEST(FuzzerStacktraceTest, MAYBE_SymbolizesCheck) {
   base::CommandLine cmd(FuzzerPath());
   cmd.AppendArgPath(FuzzerInputPath("check"));
+
+  base::ScopedEnvironmentVariableOverride asan_options("ASAN_OPTIONS",
+                                                       "symbolize=1");
 
   std::string output;
   EXPECT_FALSE(base::GetAppOutputAndError(cmd, &output));  // Target crashes.

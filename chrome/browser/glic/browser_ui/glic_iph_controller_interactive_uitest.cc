@@ -2,11 +2,19 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "chrome/browser/glic/browser_ui/glic_iph_controller.h"
+
 #include <memory>
 
+#include "base/test/metrics/histogram_tester.h"
+#include "base/test/run_until.h"
 #include "base/test/scoped_feature_list.h"
-#include "chrome/browser/glic/browser_ui/glic_iph_controller.h"
+#include "chrome/browser/glic/glic_warming_checks.h"
 #include "chrome/browser/glic/host/glic_features.mojom.h"
+#include "chrome/browser/glic/host/glic_web_contents_warming_pool.h"
+#include "chrome/browser/glic/public/features.h"
+#include "chrome/browser/glic/public/glic_keyed_service.h"
+#include "chrome/browser/glic/service/glic_instance_coordinator_impl.h"
 #include "chrome/browser/glic/test_support/glic_test_util.h"
 #include "chrome/browser/glic/test_support/interactive_glic_test.h"
 #include "chrome/browser/profiles/profile.h"
@@ -28,27 +36,30 @@ namespace {
 
 DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kFirstTab);
 
-class FreWebUiStateObserver
-    : public ui::test::StateObserver<mojom::FreWebUiState> {
- public:
-  explicit FreWebUiStateObserver(GlicFreController& controller)
-      : subscription_(controller.AddWebUiStateChangedCallback(
-            base::BindRepeating(&FreWebUiStateObserver::OnWebUiStateChanged,
-                                base::Unretained(this)))) {}
-
-  void OnWebUiStateChanged(mojom::FreWebUiState new_state) {
-    OnStateObserverStateChanged(new_state);
-  }
-
- private:
-  base::CallbackListSubscription subscription_;
-};
-
-DEFINE_LOCAL_STATE_IDENTIFIER_VALUE(FreWebUiStateObserver, kFreWebUiState);
 
 }  // namespace
 
 using TestBase = test::InteractiveGlicFeaturePromoTest;
+
+// TODO(crbug.com/567225822): These tests are flaky on TSan due to a data race
+// between GlicTestEnvironment::SetupEmbeddedTestServers() modifying the
+// process-wide CommandLine on the main thread (after the browser has started)
+// and GCM reading it on the IO thread.
+#if defined(THREAD_SANITIZER)
+#define MAYBE_ShowPromoBlockedByAuthError DISABLED_ShowPromoBlockedByAuthError
+#define MAYBE_ShowPromoWithCtaEndsInGlic DISABLED_ShowPromoWithCtaEndsInGlic
+#define MAYBE_WarmsOnIphShownWhenFeatureEnabled \
+  DISABLED_WarmsOnIphShownWhenFeatureEnabled
+#define MAYBE_DoesNotWarmOnIphShownWhenFeatureDisabled \
+  DISABLED_DoesNotWarmOnIphShownWhenFeatureDisabled
+#else
+#define MAYBE_ShowPromoBlockedByAuthError ShowPromoBlockedByAuthError
+#define MAYBE_ShowPromoWithCtaEndsInGlic ShowPromoWithCtaEndsInGlic
+#define MAYBE_WarmsOnIphShownWhenFeatureEnabled \
+  WarmsOnIphShownWhenFeatureEnabled
+#define MAYBE_DoesNotWarmOnIphShownWhenFeatureDisabled \
+  DoesNotWarmOnIphShownWhenFeatureDisabled
+#endif
 
 class GlicIphControllerTestBase : public TestBase {
  public:
@@ -70,7 +81,7 @@ class GlicIphControllerTestBase : public TestBase {
     embedded_test_server()->ServeFilesFromSourceDirectory(
         GetChromeTestDataDir());
     TestBase::SetUpOnMainThread();
-    SetFRECompletion(browser()->profile(), prefs::FreStatus::kNotStarted);
+    SetFRECompletion(browser()->GetProfile(), prefs::FreStatus::kNotStarted);
   }
 
   GURL Title1() const {
@@ -80,13 +91,10 @@ class GlicIphControllerTestBase : public TestBase {
     return test_url.ReplaceComponents(replacements);
   }
 
-  GlicFreController& GetFreController() {
-    return glic_service()->fre_controller();
-  }
 
   auto ShowPromoForTest() {
     return Do([&]() {
-      browser()->GetFeatures().glic_iph_controller()->MaybeShowPromoForTest();
+      glic::GlicIphController::From(browser())->MaybeShowPromoForTest();
     });
   }
 
@@ -113,18 +121,11 @@ class GlicIphControllerTestClassic : public GlicIphControllerTestBase {
   ~GlicIphControllerTestClassic() override = default;
 };
 
-// Test that settings changes are reflected in the show state of the controller
-// delegate.
-IN_PROC_BROWSER_TEST_F(GlicIphControllerTestClassic, ShowPromo) {
-  RunTestSequence(ObserveState(kFreWebUiState, std::ref(GetFreController())),
-                  WaitForGlicIph({feature_engagement::kIPHGlicPromoFeature}),
-                  PressDefaultPromoButton());
-}
 
 // Confirms that the promo is not shown if the user's profile has a signed-in
 // account that needs to be re-authenticated.
 IN_PROC_BROWSER_TEST_F(GlicIphControllerTestClassic,
-                       ShowPromoBlockedByAuthError) {
+                       MAYBE_ShowPromoBlockedByAuthError) {
   RunTestSequence(
       // Prepares the browser to show the IPH.
       InstrumentTab(kFirstTab), NavigateWebContents(kFirstTab, Title1()),
@@ -149,8 +150,9 @@ class GlicIphControllerTestTryIt : public GlicIphControllerTestBase {
 
 // TODO(b/503834154): Write a test for IPH promo leading into trust-first FRE
 
-IN_PROC_BROWSER_TEST_F(GlicIphControllerTestTryIt, ShowPromoWithCtaEndsInGlic) {
-  SetFRECompletion(browser()->profile(), prefs::FreStatus::kCompleted);
+IN_PROC_BROWSER_TEST_F(GlicIphControllerTestTryIt,
+                       MAYBE_ShowPromoWithCtaEndsInGlic) {
+  SetFRECompletion(browser()->GetProfile(), prefs::FreStatus::kCompleted);
   RunTestSequence(WaitForGlicIph({feature_engagement::kIPHGlicTryItFeature}),
                   PressDefaultPromoButton(),
                   WaitForAndInstrumentGlic(kHostAndContents));
@@ -167,8 +169,8 @@ class GlicIphControllerTestPromoDisabled : public GlicIphControllerTestBase {
 };
 
 IN_PROC_BROWSER_TEST_F(GlicIphControllerTestPromoDisabled,
-                       ShowPromoWithCtaEndsInGlic) {
-  SetFRECompletion(browser()->profile(), prefs::FreStatus::kCompleted);
+                       MAYBE_ShowPromoWithCtaEndsInGlic) {
+  SetFRECompletion(browser()->GetProfile(), prefs::FreStatus::kCompleted);
   RunTestSequence(WaitForGlicIph({feature_engagement::kIPHGlicTryItFeature}),
                   PressDefaultPromoButton(),
                   WaitForAndInstrumentGlic(kHostAndContents));
@@ -189,11 +191,114 @@ class GlicIphControllerTestMultiInstance : public GlicIphControllerTestBase {
 // TODO(b/503834154): Write a test for IPH promo leading into trust-first FRE.
 
 IN_PROC_BROWSER_TEST_F(GlicIphControllerTestMultiInstance,
-                       ShowPromoWithCtaEndsInGlic) {
-  SetFRECompletion(browser()->profile(), prefs::FreStatus::kCompleted);
+                       MAYBE_ShowPromoWithCtaEndsInGlic) {
+  SetFRECompletion(browser()->GetProfile(), prefs::FreStatus::kCompleted);
   RunTestSequence(WaitForGlicIph({feature_engagement::kIPHGlicTryItFeature}),
                   PressDefaultPromoButton(),
                   WaitForAndInstrumentGlic(kHostAndContents));
+}
+
+class GlicIphControllerWarmingInteractiveUiTest
+    : public GlicIphControllerTestBase {
+ public:
+  GlicIphControllerWarmingInteractiveUiTest()
+      : GlicIphControllerTestBase({feature_engagement::kIPHGlicTryItFeature}) {
+    scoped_feature_list_.InitWithFeatures(
+        /*enabled_features=*/{features::kGlicWarmOnIph,
+                              features::kGlicAnchorEntryPointForOnboardedUsers},
+        /*disabled_features=*/{features::kGlicWarming});
+  }
+  ~GlicIphControllerWarmingInteractiveUiTest() override = default;
+
+  void SetUp() override {
+    ForceConnectionTypeForTesting(
+        net::NetworkChangeNotifier::ConnectionType::CONNECTION_WIFI);
+    GlicIphControllerTestBase::SetUp();
+  }
+
+  void TearDown() override {
+    GlicIphControllerTestBase::TearDown();
+    ForceConnectionTypeForTesting(std::nullopt);
+  }
+
+  bool IsWarmed() {
+    auto* keyed_service = GlicKeyedService::Get(browser()->GetProfile());
+    auto& coordinator = static_cast<GlicInstanceCoordinatorImpl&>(
+        keyed_service->instance_coordinator());
+    return coordinator.GetWebContentsWarmingPoolForTesting()
+        .HasWarmedContainerForTesting();
+  }
+
+ private:
+  base::test::ScopedFeatureList scoped_feature_list_;
+};
+
+IN_PROC_BROWSER_TEST_F(GlicIphControllerWarmingInteractiveUiTest,
+                       MAYBE_WarmsOnIphShownWhenFeatureEnabled) {
+  base::HistogramTester histogram_tester;
+  EXPECT_FALSE(IsWarmed());
+
+  RunTestSequence(WaitForGlicIph({feature_engagement::kIPHGlicTryItFeature}));
+
+  EXPECT_TRUE(base::test::RunUntil([this]() { return IsWarmed(); }));
+
+  histogram_tester.ExpectBucketCount("Glic.Prewarming.ChecksResult.Iph",
+                                     GlicPrewarmingChecksResult::kSuccess, 1);
+  histogram_tester.ExpectBucketCount(
+      "Glic.WarmingPool.ContainerCreationReason",
+      GlicWebContentsWarmingPool::ContainerCreationReason::kIph, 1);
+}
+
+class GlicIphControllerWarmingDisabledInteractiveUiTest
+    : public GlicIphControllerTestBase {
+ public:
+  GlicIphControllerWarmingDisabledInteractiveUiTest()
+      : GlicIphControllerTestBase({feature_engagement::kIPHGlicTryItFeature}) {
+    scoped_feature_list_.InitWithFeatures(
+        /*enabled_features=*/{features::kGlicAnchorEntryPointForOnboardedUsers},
+        /*disabled_features=*/{features::kGlicWarmOnIph,
+                               features::kGlicWarming});
+  }
+  ~GlicIphControllerWarmingDisabledInteractiveUiTest() override = default;
+
+  void SetUp() override {
+    ForceConnectionTypeForTesting(
+        net::NetworkChangeNotifier::ConnectionType::CONNECTION_WIFI);
+    GlicIphControllerTestBase::SetUp();
+  }
+
+  void TearDown() override {
+    GlicIphControllerTestBase::TearDown();
+    ForceConnectionTypeForTesting(std::nullopt);
+  }
+
+  bool IsWarmed() {
+    auto* keyed_service = GlicKeyedService::Get(browser()->GetProfile());
+    auto& coordinator = static_cast<GlicInstanceCoordinatorImpl&>(
+        keyed_service->instance_coordinator());
+    return coordinator.GetWebContentsWarmingPoolForTesting()
+        .HasWarmedContainerForTesting();
+  }
+
+ private:
+  base::test::ScopedFeatureList scoped_feature_list_;
+};
+
+IN_PROC_BROWSER_TEST_F(GlicIphControllerWarmingDisabledInteractiveUiTest,
+                       MAYBE_DoesNotWarmOnIphShownWhenFeatureDisabled) {
+  base::HistogramTester histogram_tester;
+  EXPECT_FALSE(IsWarmed());
+
+  RunTestSequence(WaitForGlicIph({feature_engagement::kIPHGlicTryItFeature}));
+
+  base::PlatformThread::Sleep(base::Milliseconds(200));
+  base::RunLoop().RunUntilIdle();
+  EXPECT_FALSE(IsWarmed());
+
+  histogram_tester.ExpectTotalCount("Glic.Prewarming.ChecksResult.Iph", 0);
+  histogram_tester.ExpectBucketCount(
+      "Glic.WarmingPool.ContainerCreationReason",
+      GlicWebContentsWarmingPool::ContainerCreationReason::kIph, 0);
 }
 
 }  // namespace glic

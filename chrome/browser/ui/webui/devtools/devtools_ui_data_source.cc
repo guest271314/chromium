@@ -31,6 +31,7 @@
 #include "net/base/load_flags.h"
 #include "net/traffic_annotation/network_traffic_annotation.h"
 #include "services/network/public/cpp/resource_request.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "url/url_constants.h"
 
 namespace {
@@ -159,8 +160,9 @@ void DevToolsDataSource::StartDataRequest(
                        base::CompareCase::INSENSITIVE_ASCII)) {
     std::string path_without_params = PathWithoutParams(path);
 
-    DCHECK(base::StartsWith(path_without_params, bundled_path_prefix,
-                            base::CompareCase::INSENSITIVE_ASCII));
+    CHECK(base::StartsWith(path_without_params, bundled_path_prefix,
+                           base::CompareCase::INSENSITIVE_ASCII),
+          base::NotFatalUntil::M162);
     std::string path_under_bundled =
         path_without_params.substr(bundled_path_prefix.length());
     if (!MaybeHandleCustomRequest(path_under_bundled, &callback)) {
@@ -174,7 +176,8 @@ void DevToolsDataSource::StartDataRequest(
   std::string empty_path_prefix(chrome::kChromeUIDevToolsBlankPath);
   if (base::StartsWith(path, empty_path_prefix,
                        base::CompareCase::INSENSITIVE_ASCII)) {
-    std::move(callback).Run(new base::RefCountedStaticMemory());
+    std::move(callback).Run(
+        base::MakeRefCounted<base::RefCountedStaticMemory>());
     return;
   }
 
@@ -190,7 +193,7 @@ void DevToolsDataSource::StartDataRequest(
     GURL remote_url(kRemoteFrontendBase +
                     path.substr(remote_path_prefix.length()));
 
-    CHECK_EQ(remote_url.GetHost(), kRemoteFrontendDomain);
+    CHECK_EQ(remote_url.host(), kRemoteFrontendDomain);
     if (remote_url.is_valid() &&
         DevToolsUIBindings::IsValidRemoteFrontendURL(remote_url)) {
       StartRemoteDataRequest(remote_url, std::move(callback));
@@ -210,7 +213,7 @@ void DevToolsDataSource::StartDataRequest(
     if (!custom_devtools_frontend.is_empty()) {
       GURL devtools_url(custom_devtools_frontend.spec() +
                         path.substr(custom_path_prefix.length()));
-      DCHECK(devtools_url.is_valid());
+      CHECK(devtools_url.is_valid(), base::NotFatalUntil::M162);
       StartCustomDataRequest(devtools_url, std::move(callback));
       return;
     }
@@ -241,6 +244,13 @@ bool DevToolsDataSource::ShouldDenyXFrameOptions() {
 
 bool DevToolsDataSource::ShouldServeMimeTypeAsContentTypeHeader() {
   return true;
+}
+
+bool DevToolsDataSource::ShouldServiceRequest(
+    const GURL& url,
+    content::BrowserContext* browser_context,
+    int render_process_id) {
+  return url.SchemeIs(content::kChromeDevToolsScheme);
 }
 
 void DevToolsDataSource::StartBundledDataRequest(
@@ -358,7 +368,7 @@ void DevToolsDataSource::StartFileRequest(const std::string& path,
                                           GotDataCallback callback) {
   base::FilePath base_path;
   GURL custom_devtools_frontend = GetCustomDevToolsFrontendURL();
-  DCHECK(custom_devtools_frontend.SchemeIsFile());
+  CHECK(custom_devtools_frontend.SchemeIsFile(), base::NotFatalUntil::M162);
   if (!net::FileURLToFilePath(custom_devtools_frontend, &base_path)) {
     std::move(callback).Run(CreateNotFoundResponse());
     LOG(WARNING) << "Unable to find DevTools resource: " << path;

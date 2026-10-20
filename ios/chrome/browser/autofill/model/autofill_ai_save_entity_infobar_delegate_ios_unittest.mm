@@ -8,7 +8,7 @@
 #import "base/notimplemented.h"
 #import "base/test/task_environment.h"
 #import "components/autofill/core/browser/data_model/autofill_ai/entity_instance.h"
-#import "components/autofill/core/browser/test_utils/entity_data_test_utils.h"
+#import "components/autofill/core/browser/test_utils/entity_data_test_util.h"
 #import "components/grit/components_scaled_resources.h"
 #import "components/strings/grit/components_strings.h"
 #import "ios/chrome/browser/autofill/autofill_ai/public/save_entity_params.h"
@@ -141,5 +141,40 @@ INSTANTIATE_TEST_SUITE_P(AllEntityTypes,
                                            EntityTypeName::kRedressNumber,
                                            EntityTypeName::kFlightReservation,
                                            EntityTypeName::kShipment));
+
+// These tests are not associated with specific entity types, therefore they are
+// put into a separate non-parameterized test fixture class.
+using AutofillAiSaveEntityInfoBarDelegateIOSSimpleTest = PlatformTest;
+
+TEST_F(AutofillAiSaveEntityInfoBarDelegateIOSSimpleTest,
+       IconTintingConfiguration) {
+  base::test::TaskEnvironment task_environment;
+  EntityInstance entity = test::GetPassportEntityInstance();
+
+  {
+    // Test standard/local record configuration:
+    SaveEntityParams params(entity, std::nullopt, kTestUserEmail,
+                            /*bool save_is_synchronous=*/true,
+                            base::DoNothing());
+    AutofillAiSaveEntityInfoBarDelegateIOS delegate(std::move(params),
+                                                    base::DoNothing());
+    EXPECT_TRUE(delegate.UseIconBackgroundTint());
+    EXPECT_TRUE(delegate.IgnoreIconColorWithTint());
+  }
+
+  {
+    // Test Google Wallet (server) record configuration:
+    test::PassportEntityOptions options;
+    options.record_type = EntityInstance::RecordType::kServerWallet;
+    EntityInstance wallet_entity = test::GetPassportEntityInstance(options);
+    SaveEntityParams params(wallet_entity, std::nullopt, kTestUserEmail,
+                            /*bool save_is_synchronous=*/true,
+                            base::DoNothing());
+    AutofillAiSaveEntityInfoBarDelegateIOS delegate(std::move(params),
+                                                    base::DoNothing());
+    EXPECT_TRUE(delegate.UseIconBackgroundTint());
+    EXPECT_FALSE(delegate.IgnoreIconColorWithTint());
+  }
+}
 
 }  // namespace autofill

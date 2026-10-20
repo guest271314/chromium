@@ -92,6 +92,13 @@ pub struct ScopedRefPtr<T: CxxRefCounted> {
 }
 
 impl<T: CxxRefCounted> ScopedRefPtr<T> {
+    /// Create a new ScopedRefPtr from a reference to an existing C++ object,
+    /// incrementing its ref count.
+    pub fn clone_from_ref(val: &T) -> Self {
+        val.add_ref();
+        ScopedRefPtr { ptr: NonNull::from(val) }
+    }
+
     /// Create a new ScopedRefPtr from a pointer to a C++ value which was
     /// obtained from a C++ scoped_refptr.
     ///
@@ -118,14 +125,12 @@ impl<T: CxxRefCounted> ScopedRefPtr<T> {
     /// behavior. The return value of this function should typically only be
     /// used as an argument to C++ FFI methods.
     #[allow(clippy::mut_from_ref)]
-    #[allow(mutable_transmutes)]
     pub fn as_pin(&self) -> std::pin::Pin<&mut T> {
-        let cpp_obj_ref: &T = self; // Via `impl Deref`.
-
-        // SAFETY: `&mut` exclusivity/aliasing rules don't apply to ZSTs
-        // (based on the `cxx::kind::Opaque` constraint of the type).
         assert!(std::mem::size_of::<T>() == 0);
-        let cpp_obj_mut_ref = unsafe { std::mem::transmute::<&T, &mut T>(cpp_obj_ref) };
+        // SAFETY: `self.ptr` is a `NonNull<T>` wrapping a raw `*mut T`. `&mut`
+        // exclusivity rules don't apply to ZSTs (this type is
+        // `cxx::kind::Opaque`).
+        let cpp_obj_mut_ref = unsafe { &mut *self.ptr.as_ptr() };
 
         // SAFETY:
         // * No public APIs expose `&mut T`
@@ -158,10 +163,10 @@ impl<T: CxxRefCounted> std::ops::Deref for ScopedRefPtr<T> {
     type Target = T;
 
     fn deref(&self) -> &T {
+        assert!(std::mem::size_of::<T>() == 0);
         // SAFETY: The safety invariants of the `ptr` field guarantee that
         // aliasing rules don't apply (`T` is a ZST) and that `ptr` points to
         // valid, aligned data.
-        assert!(std::mem::size_of::<T>() == 0);
         unsafe { self.ptr.as_ref() }
     }
 }
@@ -186,4 +191,5 @@ const _: () = {
 // SAFETY: it's safe to send/share T, and the CxxRefCountedThreadSafe
 // implementation guarantees that the ref-counting is itself thread-safe.
 unsafe impl<T: Send + Sync + CxxRefCountedThreadSafe> Send for ScopedRefPtr<T> {}
+// SAFETY: As above
 unsafe impl<T: Send + Sync + CxxRefCountedThreadSafe> Sync for ScopedRefPtr<T> {}

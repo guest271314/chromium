@@ -8,10 +8,13 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "base/functional/callback_forward.h"
 #include "base/memory/raw_ptr.h"
+#include "base/scoped_observation.h"
+#include "base/types/optional_ref.h"
 #include "build/build_config.h"
 #include "build/buildflag.h"
 #include "components/autofill/core/browser/foundations/autofill_manager.h"
@@ -19,7 +22,10 @@
 #include "components/autofill/core/common/password_generation_util.h"
 #include "components/autofill/core/common/unique_ids.h"
 #include "components/credential_management/content_credential_manager.h"
+#include "components/critical_actions/core/browser/critical_action_types.h"
 #include "components/enterprise/buildflags/buildflags.h"
+#include "components/history/core/browser/history_service.h"
+#include "components/history/core/browser/history_service_observer.h"
 #include "components/password_manager/content/browser/content_password_manager_driver_factory.h"
 #include "components/password_manager/core/browser/http_auth_manager.h"
 #include "components/password_manager/core/browser/http_auth_manager_impl.h"
@@ -51,8 +57,9 @@
 #include "chrome/browser/password_manager/android/generated_password_saved_message_delegate.h"
 #include "chrome/browser/password_manager/android/password_manager_error_message_delegate.h"
 #include "chrome/browser/password_manager/android/save_update_password_message_delegate.h"
-#include "chrome/browser/touch_to_fill/password_manager/touch_to_fill_controller.h"
+#include "chrome/browser/touch_to_fill/password_manager/touch_to_fill_password_manager_controller.h"
 #include "components/enterprise/connectors/core/features.h"
+#include "components/password_manager/content/browser/keyboard_replacing_surface_visibility_controller.h"
 #include "components/password_manager/core/browser/credential_cache.h"
 #include "components/password_manager/core/browser/first_cct_page_load_passwords_ukm_recorder.h"
 #endif
@@ -97,6 +104,7 @@ namespace password_manager {
 class CredManController;
 class FieldInfoManager;
 class KeyboardReplacingSurfaceVisibilityController;
+class PasswordManagerCriticalActionLogger;
 class WebAuthnCredentialsDelegate;
 }  // namespace password_manager
 
@@ -136,8 +144,13 @@ class ChromePasswordManagerClient
   ~ChromePasswordManagerClient() override;
 
   // PasswordManagerClient implementation.
-  bool IsSavingAndFillingEnabled(const GURL& url) const override;
-  bool IsFillingEnabled(const GURL& url) const override;
+  using password_manager::PasswordManagerClient::IsFillingEnabled;
+  using password_manager::PasswordManagerClient::IsSavingAndFillingEnabled;
+  bool IsSavingAndFillingEnabled(
+      const url::Origin& origin,
+      base::optional_ref<const GURL> url) const override;
+  bool IsFillingEnabled(const url::Origin& origin,
+                        base::optional_ref<const GURL> url) const override;
   bool IsFieldFilledWithOtp(autofill::FormGlobalId form_id,
                             autofill::FieldGlobalId field_id) override;
   bool IsAutoSignInEnabled() const override;
@@ -171,7 +184,11 @@ class ChromePasswordManagerClient
 #endif
 
   bool IsReauthBeforeFillingRequired(
+      device_reauth::DeviceAuthAvailabilityChecker* checker) override;
+  bool IsReauthBeforeFillingRequiredLegacy(
       device_reauth::DeviceAuthenticator* authenticator) override;
+  std::unique_ptr<device_reauth::DeviceAuthAvailabilityChecker>
+  GetDeviceAuthAvailabilityChecker() override;
   // Returns a pointer to the DeviceAuthenticator which is created on demand.
   // This is currently only implemented for Android, Mac and Windows. On all
   // other platforms this will always be null.
@@ -221,6 +238,7 @@ class ChromePasswordManagerClient
   metrics::ProfileMetricsService* GetProfileMetricsService() override;
   PrefService* GetLocalStatePrefs() const override;
   const syncer::SyncService* GetSyncService() const override;
+  password_manager::ActionableError GetActionableError() const override;
   affiliations::AffiliationService* GetAffiliationService() override;
   password_manager::PasswordStoreInterface* GetProfilePasswordStore()
       const override;
@@ -257,8 +275,8 @@ class ChromePasswordManagerClient
   safe_browsing::PasswordProtectionService* GetPasswordProtectionService()
       const override;
 #endif
-  void TriggerUserPerceptionOfPasswordManagerSurvey(
-      const std::string& filling_assistance) override;
+  void TriggerPersonalizationAndTrustSurvey(
+      std::string_view filling_assistance) override;
 
 #if defined(ON_FOCUS_PING_ENABLED) && BUILDFLAG(SAFE_BROWSING_AVAILABLE)
   void CheckSafeBrowsingReputation(const GURL& form_action,
@@ -306,6 +324,8 @@ class ChromePasswordManagerClient
   void UpdateFormManagers() override;
   void NavigateToManagePasswordsPage(
       password_manager::ManagePasswordsReferrer referrer) override;
+  void OnPasswordFilled(
+      password_manager::PasswordManagerDriver* driver) override;
 
 #if BUILDFLAG(IS_ANDROID)
   void NavigateToManagePasskeysPage(
@@ -314,13 +334,14 @@ class ChromePasswordManagerClient
 
   bool IsIsolationForPasswordSitesEnabled() const override;
   bool IsNewTabPage() const override;
+  bool IsChromeSigninPage() const override;
   password_manager::WebAuthnCredentialsDelegate*
   GetWebAuthnCredentialsDelegateForDriver(
       password_manager::PasswordManagerDriver* driver) override;
 #if BUILDFLAG(IS_ANDROID)
   webauthn::WebAuthnCredManDelegate* GetWebAuthnCredManDelegateForDriver(
       password_manager::PasswordManagerDriver* driver) override;
-  void MarkSharedCredentialsAsNotified(const GURL& url) override;
+  void MarkSharedCredentialsAsNotified(const url::Origin& origin) override;
 #endif  // BUILDFLAG(IS_ANDROID)
   version_info::Channel GetChannel() const override;
   void RefreshPasswordManagerSettingsIfNeeded() const override;
@@ -381,11 +402,17 @@ class ChromePasswordManagerClient
         render_frame_host);
   }
 #if BUILDFLAG(IS_ANDROID)
-  void SetTouchToFillControllerForTesting(
-      std::unique_ptr<TouchToFillController> controller) {
+  void SetTouchToFillPasswordManagerControllerForTesting(
+      std::unique_ptr<TouchToFillPasswordManagerController> controller) {
     touch_to_fill_controller_ = std::move(controller);
   }
 
+  void SetKeyboardReplacingSurfaceVisibilityControllerForTesting(
+      std::unique_ptr<
+          password_manager::KeyboardReplacingSurfaceVisibilityController>
+          controller) {
+    keyboard_replacing_surface_visibility_controller_ = std::move(controller);
+  }
 #endif  // BUILDFLAG(IS_ANDROID)
 #endif  // defined(UNIT_TEST)
 
@@ -429,7 +456,8 @@ class ChromePasswordManagerClient
   Profile* GetProfile() const;
 
 #if BUILDFLAG(IS_ANDROID)
-  TouchToFillController* GetOrCreateTouchToFillController();
+  TouchToFillPasswordManagerController*
+  GetOrCreateTouchToFillPasswordManagerController();
 
   void ContinueShowKeyboardReplacingSurface(
       base::WeakPtr<password_manager::PasswordManagerDriver> weak_driver,
@@ -443,6 +471,7 @@ class ChromePasswordManagerClient
   void ResourceLoadComplete(
       content::RenderFrameHost* render_frame_host,
       const content::GlobalRequestID& request_id,
+      const GURL& original_url,
       const blink::mojom::ResourceLoadInfo& resource_load_info) override;
   void OnFedCmFederatedLogin(bool success) override;
 
@@ -482,13 +511,10 @@ class ChromePasswordManagerClient
   void ShowPasswordGenerationPopup(
       autofill::password_generation::PasswordGenerationType type,
       password_manager::ContentPasswordManagerDriver* driver,
-      const autofill::password_generation::PasswordGenerationUIData& ui_data);
-  void MaybeShowSavePasswordPrimingPromo(const GURL& current_url) override;
+      const autofill::password_generation::PasswordGenerationUIData& ui_data,
+      bool is_manually_triggered);
+  void MaybeShowSavePasswordPrimingPromo(const url::Origin& origin) override;
 #endif  // !BUILDFLAG(IS_ANDROID)
-
-  gfx::RectF TransformToRootCoordinates(
-      content::RenderFrameHost* frame_host,
-      const gfx::RectF& bounds_in_frame_coordinates);
 
 #if BUILDFLAG(IS_ANDROID)
   void ResetErrorMessageDelegate();
@@ -516,6 +542,11 @@ class ChromePasswordManagerClient
                                              autofill::FormGlobalId form_id,
                                              FieldTypeSource source);
 
+  // `T` is `device_reauth::DeviceAuthenticator` or
+  // `device_reauth::DeviceAuthAvailabilityChecker`.
+  template <typename T>
+  bool IsReauthBeforeFillingRequiredImpl(T* availability_provider);
+
   void OnNonPasswordLoginDetected();
 
   password_manager::PasswordManager password_manager_;
@@ -526,16 +557,17 @@ class ChromePasswordManagerClient
   // Holds and facilitates a credential store for each origin in this tab.
   password_manager::CredentialCache credential_cache_;
 
-  // Controller for the Touch To Fill sheet. Created on demand during the first
-  // call to GetOrCreateTouchToFillController().
-  std::unique_ptr<TouchToFillController> touch_to_fill_controller_;
+  // Controller for the Touch To Fill passwords sheet. Created on demand during
+  // the first call to GetOrCreateTouchToFillPasswordManagerController().
+  std::unique_ptr<TouchToFillPasswordManagerController>
+      touch_to_fill_controller_;
 
   // Controller for Android Credential Manager API. Created on demand.
   std::unique_ptr<password_manager::CredManController> cred_man_controller_;
 
   // Controller for CredMan and TouchToFill visibility. Both
-  // `TouchToFillController` and `CredManController` share the same instance to
-  // control their visibility state.
+  // `TouchToFillPasswordManagerController` and `CredManController` share the
+  // same instance to control their visibility state.
   std::unique_ptr<
       password_manager::KeyboardReplacingSurfaceVisibilityController>
       keyboard_replacing_surface_visibility_controller_;
@@ -622,6 +654,9 @@ class ChromePasswordManagerClient
       undo_password_change_controller_;
 
   bool apply_client_side_prediction_override_ = false;
+
+  std::unique_ptr<password_manager::PasswordManagerCriticalActionLogger>
+      critical_action_logger_;
 
   base::WeakPtrFactory<ChromePasswordManagerClient> weak_ptr_factory_{this};
 

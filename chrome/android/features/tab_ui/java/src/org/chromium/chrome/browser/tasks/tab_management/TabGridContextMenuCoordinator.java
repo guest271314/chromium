@@ -15,7 +15,6 @@ import androidx.annotation.IdRes;
 import androidx.annotation.StringRes;
 import androidx.annotation.VisibleForTesting;
 
-import org.chromium.base.Token;
 import org.chromium.base.metrics.RecordUserAction;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
@@ -32,6 +31,7 @@ import org.chromium.chrome.browser.tab.TabId;
 import org.chromium.chrome.browser.tab_group_sync.TabGroupSyncServiceFactory;
 import org.chromium.chrome.browser.tabmodel.TabClosureParams;
 import org.chromium.chrome.browser.tabmodel.TabClosureParamsUtils;
+import org.chromium.chrome.browser.tabmodel.TabGroupUtils;
 import org.chromium.chrome.browser.tabmodel.TabModel;
 import org.chromium.chrome.tab_ui.R;
 import org.chromium.components.browser_ui.widget.ListItemBuilder;
@@ -190,9 +190,11 @@ public class TabGridContextMenuCoordinator extends TabOverflowMenuCoordinator<@T
                         .share(tab, /* shareDirectly= */ false, TAB_STRIP_CONTEXT_MENU);
                 recordUserActionWithPrefix("ShareTab");
             } else if (menuId == R.id.add_to_new_tab_group) {
-                tabModel.createSingleTabGroup(tab);
-                Token groupId = assumeNonNull(tab.getTabGroupId());
-                dialogManager.showDialog(groupId, tabModel);
+                TabGroupUtils.createNewGroupForTabs(
+                        List.of(tab),
+                        tabModel,
+                        /* tabMovedCallback= */ null,
+                        groupId -> dialogManager.showDialog(groupId, tabModel));
                 recordUserActionWithPrefix("AddToNewGroup");
             } else if (menuId == R.id.add_to_tab_group) {
                 coordinator.showBottomSheet(List.of(tab));
@@ -243,7 +245,10 @@ public class TabGridContextMenuCoordinator extends TabOverflowMenuCoordinator<@T
 
         boolean isIncognito = tab.isIncognitoBranded();
 
-        if (mTabModel.getTabGroupCount() == 0) {
+        GroupWindowChecker windowChecker =
+                new GroupWindowChecker(mActivity, mTabGroupSyncService, mTabModel);
+        boolean hasTabGroups = windowChecker.hasOtherGroups(tab.getTabGroupId());
+        if (!hasTabGroups) {
             itemList.add(
                     new ListItemBuilder()
                             .withTitleRes(R.string.menu_add_tab_to_new_group)
@@ -254,9 +259,7 @@ public class TabGridContextMenuCoordinator extends TabOverflowMenuCoordinator<@T
         } else {
             @StringRes
             int title =
-                    tab.getTabGroupId() == null
-                            ? R.string.menu_add_tab_to_group
-                            : R.string.menu_move_tab_to_group;
+                    TabGroupUiUtils.getAddToGroupMenuItemString(tab.getTabGroupId(), hasTabGroups);
             itemList.add(
                     new ListItemBuilder()
                             .withTitleRes(title)
@@ -315,9 +318,7 @@ public class TabGridContextMenuCoordinator extends TabOverflowMenuCoordinator<@T
 
         itemList.add(buildTogglePinStateItem(tab));
 
-        if (ChromeFeatureList.sMediaIndicatorsAndroid.isEnabled()) {
-            itemList.add(buildMuteUnmuteSiteItem(tab, isIncognito));
-        }
+        itemList.add(buildMuteUnmuteSiteItem(tab, isIncognito));
 
         itemList.add(
                 new ListItemBuilder()

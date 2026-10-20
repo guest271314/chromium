@@ -20,6 +20,7 @@
 #include "ash/constants/ash_features.h"
 #include "ash/constants/ash_pref_names.h"
 #include "ash/constants/ash_switches.h"
+#include "ash/constants/chrome_switches.h"
 #include "ash/public/cpp/test/shell_test_api.h"
 #include "ash/shell.h"
 #include "ash/style/dark_light_mode_controller_impl.h"
@@ -100,7 +101,6 @@
 #include "chrome/browser/ash/file_manager/path_util.h"
 #include "chrome/browser/ash/file_manager/volume.h"
 #include "chrome/browser/ash/file_manager/volume_manager.h"
-#include "chrome/browser/ash/file_system_provider/cloud_file_info.h"
 #include "chrome/browser/ash/file_system_provider/fake_extension_provider.h"
 #include "chrome/browser/ash/file_system_provider/fake_provided_file_system.h"
 #include "chrome/browser/ash/file_system_provider/provided_file_system_info.h"
@@ -128,21 +128,22 @@
 #include "chrome/browser/notifications/notification_handler.h"
 #include "chrome/browser/platform_util.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/sync_file_system/mock_remote_file_sync_service.h"
 #include "chrome/browser/sync_file_system/remote_file_sync_service.h"
 #include "chrome/browser/sync_file_system/sync_file_system_service.h"
 #include "chrome/browser/sync_file_system/sync_file_system_service_factory.h"
 #include "chrome/browser/ui/ash/sharesheet/sharesheet_util.h"
 #include "chrome/browser/ui/ash/system_web_apps/system_web_app_ui_utils.h"
-#include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/browser_select_file_dialog_controller.h"
 #include "chrome/browser/ui/browser_window.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_features.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface_iterator.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/select_file_dialog_extension/select_file_dialog_extension.h"
 #include "chrome/common/chrome_paths.h"
 #include "chrome/common/chrome_switches.h"
-#include "chrome/common/extensions/api/file_system_provider_capabilities/file_system_provider_capabilities_handler.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/test/base/fake_gaia_mixin.h"
 #include "chrome/test/base/test_switches.h"
@@ -170,6 +171,7 @@
 #include "chromeos/ash/experiences/arc/test/arc_util_test_support.h"
 #include "chromeos/ash/experiences/arc/test/connection_holder_util.h"
 #include "chromeos/ash/experiences/arc/test/fake_file_system_instance.h"
+#include "chromeos/ash/experiences/extensions/common/api/file_system_provider_capabilities/file_system_provider_capabilities_handler.h"
 #include "chromeos/constants/chromeos_features.h"
 #include "chromeos/dbus/constants/dbus_switches.h"
 #include "components/account_id/account_id.h"
@@ -259,6 +261,7 @@ class GuestOsFileWatcher;
 }  // namespace guest_os
 
 #if BUILDFLAG(ENABLE_PDF)
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "pdf/pdf_features.h"
 #endif  // BUILDFLAG(ENABLE_PDF)
 
@@ -1081,7 +1084,6 @@ std::ostream& operator<<(std::ostream& out,
   PRINT_IF_NOT_DEFAULT(native_smb)
   PRINT_IF_NOT_DEFAULT(offline)
   PRINT_IF_NOT_DEFAULT(photos_documents_provider)
-  PRINT_IF_NOT_DEFAULT(single_partition_format)
   PRINT_IF_NOT_DEFAULT(tablet_mode)
   PRINT_IF_NOT_DEFAULT(enable_arc_vm)
 
@@ -1470,7 +1472,8 @@ class DriveFsTestVolume : public TestVolume {
 
     EXPECT_FALSE(integration_service_);
     integration_service_ = new drive::DriveIntegrationService(
-        g_browser_process->local_state(), profile, std::string(),
+        g_browser_process->local_state(), profile,
+        IdentityManagerFactory::GetForProfile(profile), std::string(),
         root_path().Append("v1"), CreateDriveFsBootstrapListener());
 
     return integration_service_;
@@ -2017,7 +2020,7 @@ class FileSystemProviderTestVolume : public TestVolume {
     fake_file_system->AddEntry(base::FilePath(entry.target_path), folder,
                                entry.name_text, file_contents.length(),
                                entry.last_modified_time, entry.mime_type,
-                               /*cloud_file_info=*/nullptr, file_contents);
+                               file_contents);
   }
 
  private:
@@ -2179,7 +2182,9 @@ class MockGuestOsMountProvider : public guest_os::GuestOsMountProvider {
   MockGuestOsMountProvider(Profile* profile,
                            std::string name,
                            std::string vm_type)
-      : profile_(profile), name_(name) {
+      : guest_os::GuestOsMountProvider(g_browser_process->local_state()),
+        profile_(profile),
+        name_(name) {
     if (vm_type == "bruschetta") {
       vm_type_ = guest_os::VmType::BRUSCHETTA;
     } else if (vm_type == "termina") {
@@ -2329,9 +2334,9 @@ void FileManagerBrowserTestBase::SetUpCommandLine(
     // (At the time of writing, exactly one does).
     // Although in this path no browser is created (and so one can never
     // close..), setting this to false prevents InProcessBrowserTest from adding
-    // the kDisableZeroBrowsersOpenForTests flag, which would prevent
-    // `ChromeBrowserMainPartsAsh` from adding the keepalive that normally
-    // stops chromeos from shutting down unexpectedly.
+    // the ash::switches::kDisableZeroBrowsersOpenForTests flag, which would
+    // prevent `ChromeBrowserMainPartsAsh` from adding the keepalive that
+    // normally stops chromeos from shutting down unexpectedly.
     set_exit_when_last_browser_closes(false);
   }
 
@@ -2339,12 +2344,12 @@ void FileManagerBrowserTestBase::SetUpCommandLine(
     command_line->AppendSwitch(ash::switches::kGuestSession);
     command_line->AppendSwitchNative(ash::switches::kLoginUser, "$guest");
     command_line->AppendSwitchASCII(ash::switches::kLoginProfile, "user");
-    command_line->AppendSwitch(switches::kIncognito);
+    command_line->AppendSwitch(ash::chrome_switches::kIncognito);
     set_chromeos_user_ = false;
   }
 
   if (options.guest_mode == IN_INCOGNITO) {
-    command_line->AppendSwitch(switches::kIncognito);
+    command_line->AppendSwitch(ash::chrome_switches::kIncognito);
   }
 
   if (options.offline) {
@@ -2356,10 +2361,6 @@ void FileManagerBrowserTestBase::SetUpCommandLine(
 
   if (options.arc) {
     arc::SetArcAvailableCommandLineForTesting(command_line);
-  }
-
-  if (options.single_partition_format) {
-    enabled_features.push_back(ash::features::kFilesSinglePartitionFormat);
   }
 
   if (options.enable_drive_trash) {
@@ -2380,18 +2381,6 @@ void FileManagerBrowserTestBase::SetUpCommandLine(
     enabled_features.push_back(ash::features::kNewFilesPolicyUX);
   } else {
     disabled_features.push_back(ash::features::kNewFilesPolicyUX);
-  }
-
-  if (options.enable_mirrorsync) {
-    enabled_features.push_back(ash::features::kDriveFsMirroring);
-  } else {
-    disabled_features.push_back(ash::features::kDriveFsMirroring);
-  }
-
-  if (options.enable_upload_office_to_cloud) {
-    enabled_features.push_back(chromeos::features::kUploadOfficeToCloud);
-  } else {
-    disabled_features.push_back(chromeos::features::kUploadOfficeToCloud);
   }
 
   if (command_line->HasSwitch(switches::kDevtoolsCodeCoverage) &&
@@ -2472,11 +2461,11 @@ void FileManagerBrowserTestBase::SetUpCommandLine(
   }
 
   if (options.enable_skyvault) {
-    enabled_features.push_back(features::kSkyVault);
+    enabled_features.push_back(ash::features::kSkyVault);
     enabled_features.push_back(ash::features::kSkyVaultV2);
     enabled_features.push_back(ash::features::kSkyVaultV3);
   } else {
-    disabled_features.push_back(features::kSkyVault);
+    disabled_features.push_back(ash::features::kSkyVault);
     disabled_features.push_back(ash::features::kSkyVaultV2);
     disabled_features.push_back(ash::features::kSkyVaultV3);
   }
@@ -2741,7 +2730,7 @@ void FileManagerBrowserTestBase::StartTest() {
   const std::string full_test_name = GetFullTestCaseName();
   LOG(INFO) << "FileManagerBrowserTest::StartTest " << full_test_name;
 
-  static const base::FilePath test_extension_dir = base::FilePath(
+  const base::FilePath test_extension_dir(
       FILE_PATH_LITERAL("ui/file_manager/integration_tests/tsc"));
   LaunchExtension(base::DIR_GEN_TEST_DATA_ROOT, test_extension_dir,
                   GetTestExtensionManifestName());
@@ -3751,7 +3740,8 @@ void FileManagerBrowserTestBase::OnCommand(const std::string& name,
   // stores the navigation observer, which later could be used via the
   // `waitForSelectFileDialogNavigation` message.
   if (name == "runSelectFileDialog") {
-    browser()->OpenFile();
+    BrowserSelectFileDialogController::From(browser())->OpenFile();
+
     test_navigation_observer_ =
         std::make_unique<content::TestNavigationObserver>(
             browser()->tab_strip_model()->GetActiveWebContents(), 1);
@@ -3784,11 +3774,6 @@ void FileManagerBrowserTestBase::OnCommand(const std::string& name,
 
   if (name == "isBannersFrameworkEnabled") {
     *output = base::ToString(options.enable_banners_framework);
-    return;
-  }
-
-  if (name == "isMirrorSyncEnabled") {
-    *output = base::ToString(options.enable_mirrorsync);
     return;
   }
 
@@ -3898,12 +3883,6 @@ void FileManagerBrowserTestBase::OnCommand(const std::string& name,
     downloads_path = downloads_path.AppendASCII("Downloads");
     auto* download_prefs = DownloadPrefs::FromBrowserContext(profile());
     download_prefs->SetSaveFilePath(downloads_path);
-    return;
-  }
-
-  if (name == "onDropFailedPluginVmDirectoryNotShared") {
-    EventRouterFactory::GetForProfile(profile())
-        ->DropFailedPluginVmDirectoryNotShared();
     return;
   }
 

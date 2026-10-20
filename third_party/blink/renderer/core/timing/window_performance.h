@@ -31,6 +31,8 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_CORE_TIMING_WINDOW_PERFORMANCE_H_
 #define THIRD_PARTY_BLINK_RENDERER_CORE_TIMING_WINDOW_PERFORMANCE_H_
 
+#include <optional>
+
 #include "base/feature_list.h"
 #include "base/time/time.h"
 #include "components/viz/common/frame_sinks/begin_frame_args.h"
@@ -53,6 +55,7 @@
 #include "third_party/blink/renderer/platform/heap/collection_support/heap_vector.h"
 #include "third_party/blink/renderer/platform/weborigin/kurl.h"
 #include "third_party/blink/renderer/platform/wtf/wtf_size_t.h"
+#include "ui/events/types/scroll_input_type.h"
 
 namespace viz {
 class FrameTimingDetails;
@@ -63,8 +66,12 @@ namespace blink {
 class AnimationFrameTimingInfo;
 class InteractionContentfulPaint;
 class InteractiveDetector;
-class PerformanceTimingForReporting;
 class LocalDOMWindow;
+class Node;
+class PerformanceElementTiming;
+class PerformanceSoftNavigation;
+class PerformanceTimingForReporting;
+class SoftNavigationContext;
 
 class CORE_EXPORT WindowPerformance final : public Performance,
                                             public PerformanceMonitor::Client,
@@ -148,15 +155,7 @@ class CORE_EXPORT WindowPerformance final : public Performance,
   void OnPaintFinished();
   void OnBeginMainFrame(viz::BeginFrameId frame_id);
 
-  void AddElementTiming(const AtomicString& name,
-                        const String& url,
-                        const gfx::RectF& rect,
-                        const DOMPaintTimingInfo&,
-                        base::TimeTicks load_time,
-                        const AtomicString& identifier,
-                        const gfx::Size& intrinsic_size,
-                        const AtomicString& id,
-                        Element*);
+  void AddElementTiming(PerformanceElementTiming*);
 
   void AddContainerTiming(const DOMPaintTimingInfo& paint_timing_info,
                           const gfx::Rect& rect,
@@ -165,6 +164,11 @@ class CORE_EXPORT WindowPerformance final : public Performance,
                           const AtomicString& identifier,
                           Element* last_painted_element,
                           const DOMPaintTimingInfo& first_paint_timing_info);
+
+  void AddScrollTiming(base::TimeTicks start_time,
+                       base::TimeTicks end_time,
+                       ui::ScrollInputType input_type,
+                       Node* target);
 
   void OnBodyLoadFinished(int64_t encoded_body_size, int64_t decoded_body_size);
   void QueueLongAnimationFrameTiming(
@@ -181,28 +185,29 @@ class CORE_EXPORT WindowPerformance final : public Performance,
                       ExecutionContext* task_context,
                       bool has_multiple_contexts) override;
 
+  void markConditional(ScriptState*, const AtomicString& mark_name) override;
+  void measureConditional(ScriptState*,
+                          const AtomicString& measure_name,
+                          const AtomicString& start_mark,
+                          const AtomicString& end_mark) override;
+
   void AddLayoutShiftEntry(LayoutShift*);
   void AddVisibilityStateEntry(bool is_visible, base::TimeTicks start_time);
-  void AddSoftNavigationEntry(
-      const AtomicString& name,
+  PerformanceSoftNavigation* AddSoftNavigation(
       base::TimeTicks start_time,
       const DOMPaintTimingInfo& paint_timing_info,
-      uint32_t navigation_id,
-      V8NavigationType::Enum navigation_type,
-      uint64_t interaction_id,
-      InteractionContentfulPaint* largest_interaction_contentful_paint);
+      SoftNavigationContext* context);
 
   // For soft navigations and back-forward cache restoration. This increments
   // the navigation ID, as specified in
   // https://w3c.github.io/performance-timeline/.
   void IncrementNavigationId() { navigation_id_generator_.IncrementId(); }
 
-  // Returns the navigation ID, as specified in
-  // https://w3c.github.io/performance-timeline/; this appears as navigationId
-  // in https://developer.mozilla.org/en-US/docs/Web/API/PerformanceEntry
-  // instances.
-  uint64_t NavigationId() const override {
-    return navigation_id_generator_.GetValue().id;
+  // Returns the navigation ID info, containing the web-exposed navigationId
+  // (https://w3c.github.io/performance-timeline/) and the monotonic ordinal
+  // offset.
+  PerformanceTimelineEntryIdInfo NavigationId() const override {
+    return navigation_id_generator_.GetValue();
   }
 
   // PageVisibilityObserver
@@ -263,13 +268,16 @@ class CORE_EXPORT WindowPerformance final : public Performance,
   // order; stop as soon as seeing an event with pending presentation promise.
   void TryFlushEventTimingQueue();
   void FlushEventTiming(InteractiveDetector* interactive_detector,
-                        Member<PerformanceEventTiming> event_timing_entry);
+                        Member<PerformanceEventTiming> event_timing_entry,
+                        PerformanceEventTiming* primary_entry);
 
   void TryReportAsFirstInputTiming(PerformanceEventTiming* event_timing_entry);
 
   // Notify observer that an event timing entry is ready and add it to the event
   // timing buffer if needed.
-  void ReportEventTimingToPerformanceTimeline(PerformanceEventTiming* entry);
+  void ReportEventTimingToPerformanceTimeline(
+      PerformanceEventTiming* entry,
+      PerformanceEventTiming* primary_entry);
 
   template <typename Callback>
   void IterateEventTimingsByAnimationFrame(uint64_t frame_index,

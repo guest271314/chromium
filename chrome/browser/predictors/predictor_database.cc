@@ -92,7 +92,6 @@ PredictorDatabaseInternal::PredictorDatabaseInternal(
     : db_path_(profile->GetPath().Append(kPredictorDatabaseName)),
       db_(std::make_unique<sql::Database>(
           sql::DatabaseOptions()
-              .set_preload(true)
               // TODO(pwnall): Add a meta table and remove this option.
               .set_mmap_alt_status_discouraged(true)
               .set_enable_views_discouraged(
@@ -126,7 +125,8 @@ PredictorDatabaseInternal::~PredictorDatabaseInternal() {
 }
 
 void PredictorDatabaseInternal::Initialize() {
-  DCHECK(db_task_runner_->RunsTasksInCurrentSequence());
+  CHECK(db_task_runner_->RunsTasksInCurrentSequence(),
+        base::NotFatalUntil::M162);
   if (autocomplete_table_->IsCancelled() ||
       resource_prefetch_tables_->IsCancelled()) {
     return;
@@ -148,15 +148,17 @@ void PredictorDatabaseInternal::Initialize() {
 }
 
 void PredictorDatabaseInternal::SetCancelled() {
-  DCHECK(BrowserThread::CurrentlyOn(BrowserThread::UI) ||
-         !BrowserThread::IsThreadInitialized(BrowserThread::UI));
+  CHECK(BrowserThread::CurrentlyOn(BrowserThread::UI) ||
+            !BrowserThread::IsThreadInitialized(BrowserThread::UI),
+        base::NotFatalUntil::M162);
 
   autocomplete_table_->SetCancelled();
   resource_prefetch_tables_->SetCancelled();
 }
 
 void PredictorDatabaseInternal::LogDatabaseStats() {
-  DCHECK(db_task_runner_->RunsTasksInCurrentSequence());
+  CHECK(db_task_runner_->RunsTasksInCurrentSequence(),
+        base::NotFatalUntil::M162);
 
   autocomplete_table_->LogDatabaseStats();
   if (is_loading_predictor_enabled_) {

@@ -25,6 +25,7 @@
 #include "base/hash/sha1.h"
 #include "base/logging.h"
 #include "base/memory/raw_ptr.h"
+#include "base/memory/self_deleting.h"
 #include "base/memory/weak_ptr.h"
 #include "base/metrics/field_trial.h"
 #include "base/metrics/histogram.h"
@@ -32,7 +33,6 @@
 #include "base/metrics/user_metrics.h"
 #include "base/no_destructor.h"
 #include "base/numerics/safe_conversions.h"
-#include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
@@ -56,8 +56,11 @@
 #include "content/public/browser/render_process_host.h"
 #include "content/public/common/child_process_id.h"
 #include "content/public/common/content_features.h"
+#include "extensions/browser/component_extension_resource_manager.h"
 #include "extensions/browser/content_verifier/content_verifier.h"
 #include "extensions/browser/content_verifier/content_verify_job.h"
+#include "extensions/browser/extension_config_map.h"
+#include "extensions/browser/extension_config_map_factory.h"
 #include "extensions/browser/extension_navigation_ui_data.h"
 #include "extensions/browser/extension_registry.h"
 #include "extensions/browser/extension_registry_factory.h"
@@ -71,6 +74,7 @@
 #include "extensions/common/extension_features.h"
 #include "extensions/common/extension_id.h"
 #include "extensions/common/extension_resource.h"
+#include "extensions/common/extension_urls.h"
 #include "extensions/common/file_util.h"
 #include "extensions/common/manifest_handlers/background_info.h"
 #include "extensions/common/manifest_handlers/cross_origin_isolation_info.h"
@@ -202,7 +206,10 @@ bool AllowExtensionResourceLoad(const network::ResourceRequest& request,
                                 const ExtensionSet& extensions,
                                 const ProcessMap& process_map,
                                 const GURL& upstream_url) {
+  // A null child_id indicates the request is initiated from the browser process
+  // (e.g., during main-frame navigations).
   const bool is_main_frame =
+      child_id.is_null() &&
       destination == network::mojom::RequestDestination::kDocument;
   if (is_incognito &&
       !ExtensionCanLoadInIncognito(is_main_frame, extension,
@@ -371,18 +378,21 @@ void GetSecurityPolicyForURL(const network::ResourceRequest& request,
       (extension.creation_flags() & Extension::FOLLOW_SYMLINKS_ANYWHERE) != 0;
 }
 
-bool IsPathEqualTo(const GURL& url, std::string_view test) {
-  std::string_view path_piece = url.path();
-  return path_piece.size() > 1 && path_piece.substr(1) == test;
-}
-
-bool IsFaviconURL(const GURL& url) {
-  return IsPathEqualTo(url, kFaviconSourcePath) ||
-         IsPathEqualTo(url, base::StrCat({kFaviconSourcePath, "/"}));
-}
-
-bool IsBackgroundPageURL(const GURL& url) {
-  return IsPathEqualTo(url, kGeneratedBackgroundPageFilename);
+ExtensionConfigProvider* GetDynamicResourceProvider(
+    const Extension* extension,
+    const GURL& url,
+    content::BrowserContext* browser_context) {
+  if (!extension) {
+    return nullptr;
+  }
+  auto* config_map =
+      ExtensionConfigMapFactory::GetForBrowserContext(browser_context);
+  auto* config_provider =
+      config_map ? config_map->GetConfigProvider(*extension) : nullptr;
+  if (config_provider && config_provider->IsDynamicResource(url.GetPath())) {
+    return config_provider;
+  }
+  return nullptr;
 }
 
 bool IsBackgroundServiceWorker(const Extension& extension,
@@ -602,9 +612,7 @@ class ExtensionURLLoader : public network::mojom::URLLoader {
 
   // network::mojom::URLLoader:
   void FollowRedirect(
-      const std::vector<std::string>& removed_headers,
-      const net::HttpRequestHeaders& modified_headers,
-      const net::HttpRequestHeaders& modified_cors_exempt_headers,
+      network::HttpRequestHeadersUpdateParams headers_update_params,
       const std::optional<GURL>& new_url) override {
     // new_url isn't expected to have a value, but prefer it if it's populated.
     if (new_url.has_value()) {
@@ -870,9 +878,25 @@ class ExtensionURLLoader : public network::mojom::URLLoader {
       }
     }
 
-    const bool is_background_page_url = IsBackgroundPageURL(request_.url);
-    const bool is_favicon_url = IsFaviconURL(request_.url);
-    if (is_background_page_url || is_favicon_url) {
+    const bool is_background_page_url =
+        IsGeneratedBackgroundPageURL(request_.url);
+    const bool is_favicon_url = IsGeneratedFaviconURL(request_.url);
+    if (is_background_page_url &&
+        base::FeatureList::IsEnabled(
+            extensions_features::
+                kRestrictGeneratedPathsInWebAccessibleResources) &&
+        request_.request_initiator &&
+        request_.request_initiator->GetTupleOrPrecursorTupleIfOpaque() !=
+            extension->origin().GetTupleOrPrecursorTupleIfOpaque()) {
+      // Generated background pages are only served to the extension's own
+      // origin.
+      CompleteRequestAndDeleteThis(net::ERR_BLOCKED_BY_CLIENT);
+      return;
+    }
+
+    auto* dynamic_resource_provider = GetDynamicResourceProvider(
+        extension.get(), request_.url, browser_context_);
+    if (is_background_page_url || is_favicon_url || dynamic_resource_provider) {
       // Handle background page requests immediately with a simple generated
       // chunk of HTML.
 
@@ -893,6 +917,15 @@ class ExtensionURLLoader : public network::mojom::URLLoader {
             browser_context_, extension.get(), request_.url, tracker_.get(),
             base::BindOnce(&ExtensionURLLoader::OnFaviconRetrieved,
                            weak_ptr_factory_.GetWeakPtr(), std::move(head)));
+      } else if (dynamic_resource_provider) {
+        std::string contents =
+            dynamic_resource_provider->GetDynamicResourceContent(
+                request_.url.GetPath(), *browser_context_);
+        head->mime_type = "text/javascript";
+        head->charset = "utf-8";
+        head->headers->SetHeader("Content-Type",
+                                 "text/javascript; charset=utf-8");
+        WriteData(std::move(head), base::as_byte_span(contents));
       }
       return;
     }
@@ -910,7 +943,7 @@ class ExtensionURLLoader : public network::mojom::URLLoader {
     if (!bundle_resource_path.empty()) {
       ExtensionsBrowserClient::Get()->LoadResourceFromResourceBundle(
           request_, loader_.Unbind(), bundle_resource_path, resource_id,
-          std::move(headers), client_.Unbind());
+          std::move(headers), client_.Unbind(), browser_context_);
       DeleteThis();
       return;
     }
@@ -1023,8 +1056,7 @@ class ExtensionURLLoaderFactory : public network::SelfDeletingURLLoaderFactory {
       return pending_remote;
     }
 
-    // Manages its own lifetime.
-    new ExtensionURLLoaderFactory(
+    base::MakeSelfDeleting<ExtensionURLLoaderFactory>(
         browser_context, is_web_view_request, render_process_id,
         std::move(initiator_origin),
         pending_remote.InitWithNewPipeAndPassReceiver());
@@ -1032,11 +1064,6 @@ class ExtensionURLLoaderFactory : public network::SelfDeletingURLLoaderFactory {
     return pending_remote;
   }
 
-  static void EnsureShutdownNotifierFactoryBuilt() {
-    ExtensionProtocolShutdownNotifierFactory::GetInstance();
-  }
-
- private:
   // Constructs ExtensionURLLoaderFactory bound to the |factory_receiver|.
   //
   // The factory is self-owned - it will delete itself once there are no more
@@ -1048,8 +1075,9 @@ class ExtensionURLLoaderFactory : public network::SelfDeletingURLLoaderFactory {
       bool is_web_view_request,
       content::ChildProcessId render_process_id,
       std::optional<url::Origin> initiator_origin,
-      mojo::PendingReceiver<network::mojom::URLLoaderFactory> factory_receiver)
-      : network::SelfDeletingURLLoaderFactory(std::move(factory_receiver)),
+      mojo::PendingReceiver<network::mojom::URLLoaderFactory> factory_receiver,
+      base::SelfDeletingPassKey key)
+      : network::SelfDeletingURLLoaderFactory(std::move(factory_receiver), key),
         browser_context_(browser_context),
         is_web_view_request_(is_web_view_request),
         render_process_id_(render_process_id),
@@ -1067,6 +1095,11 @@ class ExtensionURLLoaderFactory : public network::SelfDeletingURLLoaderFactory {
                 base::Unretained(this)));
   }
 
+  static void EnsureShutdownNotifierFactoryBuilt() {
+    ExtensionProtocolShutdownNotifierFactory::GetInstance();
+  }
+
+ private:
   ~ExtensionURLLoaderFactory() override = default;
 
   // network::mojom::URLLoaderFactory:

@@ -15,6 +15,7 @@ import static androidx.test.espresso.intent.Intents.intending;
 import static androidx.test.espresso.intent.matcher.IntentMatchers.anyIntent;
 import static androidx.test.espresso.matcher.ViewMatchers.hasDescendant;
 import static androidx.test.espresso.matcher.ViewMatchers.hasSibling;
+import static androidx.test.espresso.matcher.ViewMatchers.isDescendantOfA;
 import static androidx.test.espresso.matcher.ViewMatchers.isDisplayed;
 import static androidx.test.espresso.matcher.ViewMatchers.isEnabled;
 import static androidx.test.espresso.matcher.ViewMatchers.withChild;
@@ -55,6 +56,7 @@ import androidx.test.platform.app.InstrumentationRegistry;
 import org.hamcrest.Matcher;
 import org.hamcrest.Matchers;
 import org.junit.Assert;
+import org.junit.Assume;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
@@ -95,8 +97,8 @@ import org.chromium.chrome.browser.safe_browsing.SafeBrowsingState;
 import org.chromium.chrome.browser.safety_hub.SafetyHubMetricUtils.DashboardInteractions;
 import org.chromium.chrome.browser.safety_hub.SafetyHubMetricUtils.NotificationsModuleInteractions;
 import org.chromium.chrome.browser.safety_hub.SafetyHubMetricUtils.PermissionsModuleInteractions;
-import org.chromium.chrome.browser.settings.SettingsActivity;
-import org.chromium.chrome.browser.settings.SettingsActivityTestRule;
+import org.chromium.chrome.browser.settings.SettingsInTab;
+import org.chromium.chrome.browser.settings.SettingsTestRule;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.chrome.test.transit.ChromeTransitTestRules;
@@ -110,7 +112,6 @@ import org.chromium.components.policy.test.annotations.Policies;
 import org.chromium.components.signin.test.util.TestAccounts;
 import org.chromium.components.user_prefs.UserPrefs;
 import org.chromium.content_public.common.ContentUrlConstants;
-import org.chromium.ui.base.DeviceFormFactor;
 import org.chromium.ui.test.util.DeviceRestriction;
 import org.chromium.ui.test.util.GmsCoreVersionRestriction;
 import org.chromium.ui.test.util.RenderTestRule;
@@ -125,7 +126,8 @@ import java.util.List;
 @CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
 @Features.DisableFeatures({
     ChromeFeatureList.EDGE_TO_EDGE_EVERYWHERE,
-    ChromeFeatureList.SETTINGS_MULTI_COLUMN
+    ChromeFeatureList.SETTINGS_IN_TAB,
+    ChromeFeatureList.SETTINGS_IN_TAB_DESKTOP
 })
 @Restriction(DeviceRestriction.RESTRICTION_TYPE_NON_AUTO)
 @DisableIf.Build(
@@ -233,27 +235,28 @@ public final class SafetyHubTest {
             NotificationPermissions.create("http://example2.com", "*", 8);
 
     private static final String PREF_NOTIFICATIONS_REVIEW = "notifications_review";
-    private static final int RENDER_TEST_REVISION = 3;
+    private static final int RENDER_TEST_REVISION = 4;
 
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
 
     @Rule
-    public SettingsActivityTestRule<SafetyHubPermissionsFragment> mPermissionsFragmentTestRule =
-            new SettingsActivityTestRule<>(SafetyHubPermissionsFragment.class);
+    public SettingsTestRule<SafetyHubPermissionsFragment> mPermissionsFragmentTestRule =
+            new SettingsTestRule<>(SafetyHubPermissionsFragment.class);
 
     @Rule
-    public SettingsActivityTestRule<SafetyHubNotificationsFragment> mNotificationsFragmentTestRule =
-            new SettingsActivityTestRule<>(SafetyHubNotificationsFragment.class);
+    public SettingsTestRule<SafetyHubNotificationsFragment> mNotificationsFragmentTestRule =
+            new SettingsTestRule<>(SafetyHubNotificationsFragment.class);
 
     @Rule
-    public SettingsActivityTestRule<SafetyHubFragment> mSafetyHubFragmentTestRule =
-            new SettingsActivityTestRule<>(SafetyHubFragment.class);
+    public SettingsTestRule<SafetyHubFragment> mSafetyHubFragmentTestRule =
+            new SettingsTestRule<>(SafetyHubFragment.class);
 
     @Rule
     public ChromeRenderTestRule mRenderTestRule =
             ChromeRenderTestRule.Builder.withPublicCorpus()
                     .setBugComponent(RenderTestRule.Component.UI_SETTINGS_PRIVACY)
                     .setRevision(RENDER_TEST_REVISION)
+                    .setDescription("Ligatures and contextual alternates disabled in UI text")
                     .build();
 
     @Rule
@@ -320,8 +323,7 @@ public final class SafetyHubTest {
 
     @Test
     @SmallTest
-    @Features.EnableFeatures(
-            ChromeFeatureList.SAFETY_HUB_DISRUPTIVE_NOTIFICATION_REVOCATION + ":shadow_run/false")
+    @Features.EnableFeatures(ChromeFeatureList.SAFETY_HUB_DISRUPTIVE_NOTIFICATION_REVOCATION)
     public void testFragmentAppearanceDisruptiveRevocation() throws IOException {
         mSafetyHubFragmentTestRule.startSettingsActivity();
         SafetyHubExpandablePreference preference =
@@ -330,20 +332,8 @@ public final class SafetyHubTest {
     }
 
     @Test
-    @MediumTest
-    @Features.EnableFeatures(
-            ChromeFeatureList.SAFETY_HUB_DISRUPTIVE_NOTIFICATION_REVOCATION + ":shadow_run/true")
-    public void testFragmentAppearanceShadowRun() throws IOException {
-        mSafetyHubFragmentTestRule.startSettingsActivity();
-        SafetyHubExpandablePreference preference =
-                mSafetyHubFragmentTestRule.getFragment().findPreference(PREF_NOTIFICATIONS_REVIEW);
-        Assert.assertTrue(preference.isVisible());
-    }
-
-    @Test
     @LargeTest
     @Feature({"RenderTest", "SafetyHubPermissions"})
-    @Features.DisableFeatures(ChromeFeatureList.SETTINGS_MULTI_COLUMN)
     public void testPermissionsSubpageAppearance() throws IOException {
         mUnusedPermissionsBridge.setPermissionsDataForReview(
                 new PermissionsData[] {PERMISSIONS_DATA_1, PERMISSIONS_DATA_2});
@@ -356,7 +346,6 @@ public final class SafetyHubTest {
     @Test
     @LargeTest
     @Feature({"RenderTest", "SafetyHubPermissions"})
-    @Features.DisableFeatures(ChromeFeatureList.SETTINGS_MULTI_COLUMN)
     public void testNotificationPermissionsSubpageAppearance() throws IOException {
         mUnusedPermissionsBridge.setPermissionsDataForReview(
                 new PermissionsData[] {PERMISSIONS_DATA_3, PERMISSIONS_DATA_4, PERMISSIONS_DATA_5});
@@ -369,7 +358,6 @@ public final class SafetyHubTest {
     @Test
     @LargeTest
     @Feature({"RenderTest", "SafetyHubNotifications"})
-    @Features.DisableFeatures(ChromeFeatureList.SETTINGS_MULTI_COLUMN)
     public void testNotificationsSubpageAppearance() throws IOException {
         mNotificationPermissionReviewBridge.setNotificationPermissionsForReview(
                 new NotificationPermissions[] {
@@ -507,15 +495,22 @@ public final class SafetyHubTest {
     @LargeTest
     @Feature({"SafetyHubPermissions"})
     public void testPermissionsToSiteSettings() {
-        SettingsActivity activity = mPermissionsFragmentTestRule.startSettingsActivity();
+        mPermissionsFragmentTestRule.startSettingsActivity();
         var histogramWatcher =
                 HistogramWatcher.newSingleRecordWatcher(
                         PERMISSIONS_INTERACTIONS_HISTOGRAM_NAME,
                         PermissionsModuleInteractions.GO_TO_SETTINGS);
 
-        openActionBarOverflowOrOptionsMenu(activity);
+        openActionBarOverflowOrOptionsMenu(mPermissionsFragmentTestRule.getActivity());
         onViewWaiting(withText(R.string.safety_hub_go_to_site_settings_button)).perform(click());
-        onViewWaiting(withText(R.string.prefs_site_settings)).check(matches(isDisplayed()));
+        onViewWaiting(
+                        allOf(
+                                withText(R.string.prefs_site_settings),
+                                anyOf(
+                                        withParent(withId(R.id.action_bar)),
+                                        withParent(withId(R.id.settings_title_in_detailed_pane))),
+                                isDisplayed()))
+                .check(matches(isDisplayed()));
 
         histogramWatcher.assertExpected();
     }
@@ -692,19 +687,22 @@ public final class SafetyHubTest {
     @LargeTest
     @Feature({"SafetyHubNotifications"})
     public void testNotificationsToNotificationSettings() {
-        SettingsActivity activity = mNotificationsFragmentTestRule.startSettingsActivity();
+        mNotificationsFragmentTestRule.startSettingsActivity();
         var histogramWatcher =
                 HistogramWatcher.newSingleRecordWatcher(
                         NOTIFICATIONS_INTERACTIONS_HISTOGRAM_NAME,
                         NotificationsModuleInteractions.GO_TO_SETTINGS);
 
-        openActionBarOverflowOrOptionsMenu(activity);
+        openActionBarOverflowOrOptionsMenu(mNotificationsFragmentTestRule.getActivity());
         onViewWaiting(withText(R.string.safety_hub_go_to_notification_settings_button))
                 .perform(click());
         onViewWaiting(
                         allOf(
                                 withText(R.string.push_notifications_permission_title),
-                                withParent(withId(R.id.action_bar))))
+                                anyOf(
+                                        withParent(withId(R.id.action_bar)),
+                                        withParent(withId(R.id.settings_title_in_detailed_pane))),
+                                isDisplayed()))
                 .check(matches(isDisplayed()));
 
         histogramWatcher.assertExpected();
@@ -738,7 +736,8 @@ public final class SafetyHubTest {
         // Click on the secondary button and verity that the Safe Browsing settings is opened.
         scrollToExpandedPreference(safeBrowsingTitle);
         clickOnSecondaryButtonNextToText(safeBrowsingTitle);
-        onViewWaiting(withText(R.string.prefs_safe_browsing_title)).check(matches(isDisplayed()));
+        onViewWaiting(allOf(withText(R.string.prefs_safe_browsing_title), isDisplayed()))
+                .check(matches(isDisplayed()));
 
         histogramWatcher.assertExpected();
     }
@@ -2028,7 +2027,14 @@ public final class SafetyHubTest {
         // Click on the secondary button and verify that the site settings page is opened.
         scrollToExpandedPreference(permissionsTitle);
         clickOnSecondaryButtonNextToText(permissionsTitle);
-        onViewWaiting(withText(R.string.prefs_site_settings)).check(matches(isDisplayed()));
+        onViewWaiting(
+                        allOf(
+                                withText(R.string.prefs_site_settings),
+                                anyOf(
+                                        withParent(withId(R.id.action_bar)),
+                                        withParent(withId(R.id.settings_title_in_detailed_pane))),
+                                isDisplayed()))
+                .check(matches(isDisplayed()));
 
         histogramWatcher.assertExpected();
     }
@@ -2127,7 +2133,10 @@ public final class SafetyHubTest {
         onViewWaiting(
                         allOf(
                                 withText(R.string.push_notifications_permission_title),
-                                withParent(withId(R.id.action_bar))))
+                                anyOf(
+                                        withParent(withId(R.id.action_bar)),
+                                        withParent(withId(R.id.settings_title_in_detailed_pane))),
+                                isDisplayed()))
                 .check(matches(isDisplayed()));
 
         histogramWatcher.assertExpected();
@@ -2274,8 +2283,10 @@ public final class SafetyHubTest {
 
     @Test
     @MediumTest
-    @DisableIf.Device(DeviceFormFactor.DESKTOP_FREEFORM) // crbug.com/511289088
     public void testHelpCenterArticle() {
+        // Settings in a tab doesn't have a help button or menu.
+        Assume.assumeTrue(!SettingsInTab.shouldOpenSettingsInTab());
+
         mSafetyHubFragmentTestRule.startSettingsActivity();
         var histogramWatcher =
                 HistogramWatcher.newSingleRecordWatcher(
@@ -2497,18 +2508,19 @@ public final class SafetyHubTest {
 
     static View getRootViewSanitized(int text) {
         View[] view = {null};
-        onViewWaiting(withText(text)).check((v, e) -> view[0] = v.getRootView());
+        onViewWaiting(allOf(withText(text), isDisplayed()))
+                .check((v, e) -> view[0] = v.getRootView());
         ThreadUtils.runOnUiThreadBlocking(() -> RenderTestRule.sanitize(view[0]));
         return view[0];
     }
 
     private void scrollToPreference(Matcher<View> matcher) {
-        onView(withId(R.id.recycler_view))
+        onView(allOf(withId(R.id.recycler_view), isDescendantOfA(withId(R.id.preferences_detail))))
                 .perform(RecyclerViewActions.scrollTo(hasDescendant(matcher)));
     }
 
     private void scrollToExpandedPreference(String text) {
-        onView(withId(R.id.recycler_view))
+        onView(allOf(withId(R.id.recycler_view), isDescendantOfA(withId(R.id.preferences_detail))))
                 .perform(
                         RecyclerViewActions.scrollTo(
                                 hasDescendant(
@@ -2525,7 +2537,8 @@ public final class SafetyHubTest {
     }
 
     private void scrollToLastPosition() {
-        onView(withId(R.id.recycler_view)).perform(RecyclerViewActions.scrollToLastPosition());
+        onView(allOf(withId(R.id.recycler_view), isDescendantOfA(withId(R.id.preferences_detail))))
+                .perform(RecyclerViewActions.scrollToLastPosition());
     }
 
     private void setAccountCompromisedPasswordsCount(int count) {

@@ -4,8 +4,8 @@
 
 #import "ios/chrome/browser/lens_overlay/model/lens_overlay_overflow_menu_factory.h"
 
-#import "ios/chrome/browser/lens_overlay/coordinator/lens_overlay_availability.h"
 #import "ios/chrome/browser/lens_overlay/model/lens_overlay_overflow_menu_delegate.h"
+#import "ios/chrome/browser/lens_overlay/public/lens_overlay_availability.h"
 #import "ios/chrome/browser/menu/ui_bundled/browser_action_factory.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
 #import "ios/chrome/browser/shared/model/url/chrome_url_constants.h"
@@ -49,8 +49,7 @@ const CGFloat kMenuSymbolSize = 18;
   UIImage* image;
 
 #if BUILDFLAG(IOS_USE_BRANDED_ASSETS)
-  image = MakeSymbolMonochrome(
-      CustomSymbolWithPointSize(kGoogleIconSymbol, kMenuSymbolSize));
+  image = SymbolWithPointSize(SymbolGoogleIconMonochrome, kMenuSymbolSize);
 #endif
 
   return [self openURLInNewTabAction:GURL(kMyActivityURL)
@@ -64,7 +63,7 @@ const CGFloat kMenuSymbolSize = 18;
 
 #if BUILDFLAG(IOS_USE_BRANDED_ASSETS)
   image = MakeSymbolMonochrome(
-      DefaultSymbolWithPointSize(kInfoCircleSymbol, kMenuSymbolSize));
+      SymbolWithPointSize(SymbolInfoCircle, kMenuSymbolSize));
 #endif
 
   return [self openURLInNewTabAction:GURL(kLearnMoreLensURL)
@@ -101,7 +100,7 @@ const CGFloat kMenuSymbolSize = 18;
   UIImage* image;
 #if BUILDFLAG(IOS_USE_BRANDED_ASSETS)
   image = MakeSymbolMonochrome(
-      CustomSymbolWithPointSize(kCameraLensSymbol, kMenuSymbolSize));
+      SymbolWithPointSize(SymbolCameraLens, kMenuSymbolSize));
 #endif
 
   return [UIAction actionWithTitle:title

@@ -12,6 +12,7 @@
 #include "base/command_line.h"
 #include "base/feature_list.h"
 #include "base/memory/raw_ptr.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/run_loop.h"
 #include "base/test/gmock_callback_support.h"
 #include "base/test/gtest_util.h"
@@ -41,7 +42,7 @@
 #include "components/sync/base/sync_util.h"
 #include "components/sync/base/user_selectable_type.h"
 #include "components/sync/engine/sync_status.h"
-#include "components/sync/nigori/key_derivation_params.h"
+#include "components/sync/model/crypto/key_derivation_params.h"
 #include "components/sync/nigori/required_passphrase_verifier_impl.h"
 #include "components/sync/service/bookmark_sync_error_state.h"
 #include "components/sync/service/sync_service_observer.h"
@@ -524,6 +525,58 @@ TEST_F(SyncServiceImplTest, DisabledByPolicyBeforeInitThenPolicyRemoved) {
   EXPECT_TRUE(service()->IsSyncFeatureActive());
 }
 
+#if BUILDFLAG(IS_CHROMEOS)
+TEST_F(
+    SyncServiceImplTest,
+    DisabledByPolicyBeforeInit_DisablesOsTypesWhenFlagEnabledAndNoSyncConsent) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(syncer::kReplaceSyncPromosWithSignInPromos);
+
+  prefs()->SetManagedPref(prefs::internal::kSyncManaged, base::Value(true));
+  SignInWithoutSyncConsent();
+
+  InitializeService();
+  base::RunLoop().RunUntilIdle();
+
+  // Sync was disabled due to the policy.
+  ASSERT_EQ(SyncService::DisableReasonSet(
+                {SyncService::DISABLE_REASON_ENTERPRISE_POLICY}),
+            service()->GetDisableReasons());
+
+  // It should NOT set SyncFeatureDisabledViaDashboard.
+  EXPECT_FALSE(
+      service()->GetUserSettings()->IsSyncFeatureDisabledViaDashboard());
+
+  // But it should disable OS types.
+  EXPECT_FALSE(service()->GetUserSettings()->IsSyncAllOsTypesEnabled());
+  EXPECT_TRUE(service()->GetUserSettings()->GetSelectedOsTypes().empty());
+}
+
+TEST_F(SyncServiceImplTest,
+       DisabledByPolicyBeforeInit_DoesNotDisableOsTypesWithSyncConsent) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(syncer::kReplaceSyncPromosWithSignInPromos);
+
+  prefs()->SetManagedPref(prefs::internal::kSyncManaged, base::Value(true));
+  SignInWithSyncConsent();
+
+  InitializeService();
+  base::RunLoop().RunUntilIdle();
+
+  // Sync was disabled due to the policy.
+  ASSERT_EQ(SyncService::DisableReasonSet(
+                {SyncService::DISABLE_REASON_ENTERPRISE_POLICY}),
+            service()->GetDisableReasons());
+
+  // It should set SyncFeatureDisabledViaDashboard.
+  EXPECT_TRUE(
+      service()->GetUserSettings()->IsSyncFeatureDisabledViaDashboard());
+
+  // But it should NOT disable OS types.
+  EXPECT_TRUE(service()->GetUserSettings()->IsSyncAllOsTypesEnabled());
+}
+#endif  // BUILDFLAG(IS_CHROMEOS)
+
 // Verify that disable by enterprise policy works even after the backend has
 // been initialized.
 TEST_F(SyncServiceImplTest, DisabledByPolicyAfterInit) {
@@ -782,7 +835,7 @@ TEST_F(
   // This call represents the initial passphrase type coming in from the server.
   service()->PassphraseTypeChanged(PassphraseType::kCustomPassphrase);
 
-#if !(BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX))
+#if BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_IOS)
   // UserSelectableType::kAutofill should have been disabled.
   EXPECT_FALSE(service()->GetUserSettings()->GetSelectedTypes().Has(
       UserSelectableType::kAutofill));
@@ -833,7 +886,7 @@ TEST_F(
   // This call represents the initial passphrase type coming in from the server.
   service()->PassphraseTypeChanged(PassphraseType::kCustomPassphrase);
 
-#if !(BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX))
+#if BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_IOS)
   // UserSelectableType::kAutofill should have been disabled.
   EXPECT_FALSE(service()->GetUserSettings()->GetSelectedTypes().Has(
       UserSelectableType::kAutofill));
@@ -917,9 +970,6 @@ TEST_F(
 
 class SyncServiceImplBookmarksLimitExceededErrorTest
     : public SyncServiceImplTest {
- private:
-  base::test::ScopedFeatureList feature_list_{
-      kSyncShowBookmarksLimitExceededError};
 };
 
 TEST_F(SyncServiceImplBookmarksLimitExceededErrorTest,
@@ -1074,7 +1124,7 @@ TEST_F(SyncServiceImplTest, RevokeAccessTokenFromTokenService) {
   AccountInfo secondary_account_info =
       identity_test_env()->MakeAccountAvailable("test_user2@gmail.com");
   identity_test_env()->RemoveRefreshTokenForAccount(
-      secondary_account_info.account_id);
+      secondary_account_info.GetAccountId());
   EXPECT_FALSE(service()->GetAccessTokenForTest().empty());
 
   identity_test_env()->RemoveRefreshTokenForPrimaryAccount();
@@ -1543,6 +1593,42 @@ TEST_F(SyncServiceImplTest,
       /*expected_bucket_count=*/1);
 }
 
+// Checks that syncing preferences are being copied to transport mode upon
+// `DISABLE_SYNC_ON_CLIENT` error. Regression test for
+// https://crbug.com/534244680.
+TEST_F(SyncServiceImplTest,
+       DisableSyncOnClientCopiesSyncPreferencesToTransportMode) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(
+      kSyncCopyPreferencesToTransportModeOnServerForcedDisable);
+
+  PopulatePrefsForInitialSyncFeatureSetupComplete();
+  SignInWithSyncConsent();
+  std::vector<FakeControllerInitParams> params;
+  params.emplace_back(PASSWORDS, /*enable_transport_mode=*/true);
+  InitializeService(std::move(params));
+  base::RunLoop().RunUntilIdle();
+
+  ASSERT_TRUE(service()->IsSyncFeatureEnabled());
+  // Disabling password syncing in Sync-the-feature mode.
+  UserSelectableTypeSet enabled_types =
+      service()->GetUserSettings()->GetSelectedTypes();
+  enabled_types.Remove(UserSelectableType::kPasswords);
+  service()->GetUserSettings()->SetSelectedTypes(/*sync_everything=*/false,
+                                                 enabled_types);
+  ASSERT_FALSE(service()->GetUserSettings()->GetSelectedTypes().Has(
+      UserSelectableType::kPasswords));
+
+  // Simulating a Sync error that causes switching to Sync-the-transport mode.
+  SyncProtocolError client_cmd;
+  client_cmd.action = DISABLE_SYNC_ON_CLIENT;
+  service()->OnActionableProtocolError(client_cmd);
+
+  ASSERT_FALSE(service()->IsSyncFeatureEnabled());
+  EXPECT_FALSE(service()->GetUserSettings()->GetSelectedTypes().Has(
+      UserSelectableType::kPasswords));
+}
+
 TEST_F(SyncServiceImplTest,
        DisableSyncOnClientLogsPassphraseTypeForEncryptionObsolete) {
   const PassphraseType kPassphraseType = PassphraseType::kKeystorePassphrase;
@@ -1596,14 +1682,14 @@ TEST_F(SyncServiceImplTest, DisableSyncOnClientClearsPassphrasePrefForAccount) {
       identity_manager()
           ->GetPrimaryAccountInfo(signin::ConsentLevel::kSignin)
           .gaia;
-  os_crypt_async::Encryptor encryptor =
+  scoped_refptr<os_crypt_async::Encryptor> encryptor =
       os_crypt_async::GetTestEncryptorForTesting();
   CustomPassphraseBootstrapToken token =
       CustomPassphraseBootstrapToken::CreateFakeForTesting(1);
 
-  sync_prefs.SetEncryptionBootstrapTokenForAccount(token, encryptor, gaia_id);
+  sync_prefs.SetEncryptionBootstrapTokenForAccount(token, *encryptor, gaia_id);
   ASSERT_THAT(
-      sync_prefs.GetEncryptionBootstrapTokenForAccount(encryptor, gaia_id),
+      sync_prefs.GetEncryptionBootstrapTokenForAccount(*encryptor, gaia_id),
       MatchesToken(token));
 
   // Clear sync from the dashboard.
@@ -1615,7 +1701,7 @@ TEST_F(SyncServiceImplTest, DisableSyncOnClientClearsPassphrasePrefForAccount) {
   // The passphrase for account pref cleared when sync is cleared from
   // dashboard.
   EXPECT_TRUE(
-      sync_prefs.GetEncryptionBootstrapTokenForAccount(encryptor, gaia_id)
+      sync_prefs.GetEncryptionBootstrapTokenForAccount(*encryptor, gaia_id)
           .IsEmpty());
 }
 
@@ -1641,14 +1727,14 @@ TEST_F(SyncServiceImplTest,
       identity_manager()
           ->GetPrimaryAccountInfo(signin::ConsentLevel::kSignin)
           .gaia;
-  os_crypt_async::Encryptor encryptor =
+  scoped_refptr<os_crypt_async::Encryptor> encryptor =
       os_crypt_async::GetTestEncryptorForTesting();
   CustomPassphraseBootstrapToken token =
       CustomPassphraseBootstrapToken::CreateFakeForTesting(1);
 
-  sync_prefs.SetEncryptionBootstrapTokenForAccount(token, encryptor, gaia_id);
+  sync_prefs.SetEncryptionBootstrapTokenForAccount(token, *encryptor, gaia_id);
   ASSERT_THAT(
-      sync_prefs.GetEncryptionBootstrapTokenForAccount(encryptor, gaia_id),
+      sync_prefs.GetEncryptionBootstrapTokenForAccount(*encryptor, gaia_id),
       MatchesToken(token));
 
   // Clear sync from the dashboard.
@@ -1660,7 +1746,7 @@ TEST_F(SyncServiceImplTest,
   // The passphrase for account pref cleared when sync is cleared from
   // dashboard.
   EXPECT_TRUE(
-      sync_prefs.GetEncryptionBootstrapTokenForAccount(encryptor, gaia_id)
+      sync_prefs.GetEncryptionBootstrapTokenForAccount(*encryptor, gaia_id)
           .IsEmpty());
 }
 
@@ -1684,14 +1770,14 @@ TEST_F(SyncServiceImplTest, EncryptionObsoleteClearsPassphrasePrefForAccount) {
       identity_manager()
           ->GetPrimaryAccountInfo(signin::ConsentLevel::kSignin)
           .gaia;
-  os_crypt_async::Encryptor encryptor =
+  scoped_refptr<os_crypt_async::Encryptor> encryptor =
       os_crypt_async::GetTestEncryptorForTesting();
   CustomPassphraseBootstrapToken token =
       CustomPassphraseBootstrapToken::CreateFakeForTesting(1);
 
-  sync_prefs.SetEncryptionBootstrapTokenForAccount(token, encryptor, gaia_id);
+  sync_prefs.SetEncryptionBootstrapTokenForAccount(token, *encryptor, gaia_id);
   ASSERT_THAT(
-      sync_prefs.GetEncryptionBootstrapTokenForAccount(encryptor, gaia_id),
+      sync_prefs.GetEncryptionBootstrapTokenForAccount(*encryptor, gaia_id),
       MatchesToken(token));
 
   SyncProtocolError client_cmd;
@@ -1701,7 +1787,7 @@ TEST_F(SyncServiceImplTest, EncryptionObsoleteClearsPassphrasePrefForAccount) {
 
   // The passphrase for account pref should be cleared.
   EXPECT_TRUE(
-      sync_prefs.GetEncryptionBootstrapTokenForAccount(encryptor, gaia_id)
+      sync_prefs.GetEncryptionBootstrapTokenForAccount(*encryptor, gaia_id)
           .IsEmpty());
 }
 
@@ -1853,7 +1939,12 @@ TEST_F(SyncServiceImplTest,
 }
 #endif
 
+#if BUILDFLAG(IS_ANDROID)
 TEST_F(SyncServiceImplTest, ShouldEnableAndDisableInvalidationsForSessions) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndDisableFeature(
+      kAlwaysRegisterSessionsInvalidationsAndroid);
+
   PopulatePrefsForInitialSyncFeatureSetupComplete();
   SignInWithSyncConsent();
   std::vector<FakeControllerInitParams> params;
@@ -1870,7 +1961,6 @@ TEST_F(SyncServiceImplTest, ShouldEnableAndDisableInvalidationsForSessions) {
   service()->SetInvalidationsForSessionsEnabled(false);
 }
 
-#if BUILDFLAG(IS_ANDROID)
 TEST_F(SyncServiceImplTest,
        ShouldAlwaysSubscribeToSessionsListingsIfFeatureEnabled) {
   base::test::ScopedFeatureList scoped_feature_list;
@@ -1880,7 +1970,7 @@ TEST_F(SyncServiceImplTest,
   AccountInfo account_info = identity_test_env()->MakePrimaryAccountAvailable(
       kTestUser, signin::ConsentLevel::kSignin);
   SyncPrefs(prefs()).SetSelectedTypeForAccount(UserSelectableType::kTabs, true,
-                                               account_info.gaia);
+                                               account_info.GetGaiaId());
 
   std::vector<FakeControllerInitParams> params;
   params.emplace_back(DEVICE_INFO, /*enable_transport_mode=*/true);
@@ -3085,6 +3175,18 @@ TEST_F(SyncServiceImplTest, ShouldQueueTaskUntilEngineInitialized) {
   base::MockCallback<base::OnceClosure> mock_task2;
   EXPECT_CALL(mock_task2, Run()).Times(1);
   service()->RunOrQueueTaskOnEngineInitializedForTest(mock_task2.Get());
+}
+
+TEST_F(SyncServiceImplTest, AvoidCachingCredentialsInEngineWhenFeatureEnabled) {
+  base::test::ScopedFeatureList feature_list(kSyncUsePropagatedAccessToken);
+
+  PopulatePrefsForInitialSyncFeatureSetupComplete();
+  SignInWithSyncConsent();
+  InitializeService();
+  base::RunLoop().RunUntilIdle();
+
+  ASSERT_FALSE(service()->GetAccessTokenForTest().empty());
+  EXPECT_FALSE(engine()->last_credentials().has_value());
 }
 
 }  // namespace

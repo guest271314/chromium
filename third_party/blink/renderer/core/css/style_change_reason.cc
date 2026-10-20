@@ -16,6 +16,7 @@ const char kActiveStylesheetsUpdate[] = "ActiveStylesheetsUpdate";
 const char kAffectedByHas[] = "Affected by :has()";
 const char kAnimation[] = "Animation";
 const char kAttribute[] = "Attribute";
+const char kBodyColorChange[] = "BodyColorChange";
 const char kConditionalBackdrop[] = "Conditional ::backdrop";
 const char kControl[] = "Control";
 const char kControlValue[] = "ControlValue";
@@ -40,7 +41,9 @@ const char kKeyframesRuleChange[] = "@keyframes rule change";
 const char kLanguage[] = "Language";
 const char kLinkColorChange[] = "LinkColorChange";
 const char kMediaQuery[] = "Media Query changed";
+const char kNavigationQuery[] = "Navigation Query changed";
 const char kNodeInserted[] = "Node was inserted into tree";
+const char kOverscroll[] = "Overscroll";
 const char kPictureSourceChanged[] = "PictureSourceChange";
 const char kPlatformColorChange[] = "PlatformColorChange";
 const char kPluginChanged[] = "Plugin Changed";
@@ -75,7 +78,6 @@ DEFINE_GLOBAL(, AtomicString, g_focus);
 DEFINE_GLOBAL(, AtomicString, g_focus_visible);
 DEFINE_GLOBAL(, AtomicString, g_focus_within);
 DEFINE_GLOBAL(, AtomicString, g_hover);
-DEFINE_GLOBAL(, AtomicString, g_overscroll_target);
 DEFINE_GLOBAL(, AtomicString, g_past);
 DEFINE_GLOBAL(, AtomicString, g_patching);
 DEFINE_GLOBAL(, AtomicString, g_unresolved);
@@ -98,8 +100,6 @@ void Init() {
   new (base::NotNullTag::kNotNull, (void*)&g_focus_within)
       AtomicString(":focus-within");
   new (base::NotNullTag::kNotNull, (void*)&g_hover) AtomicString(":hover");
-  new (base::NotNullTag::kNotNull, (void*)&g_overscroll_target)
-      AtomicString(":-internal-overscroll-target");
   new (base::NotNullTag::kNotNull, (void*)&g_past) AtomicString(":past");
   new (base::NotNullTag::kNotNull, (void*)&g_patching)
       AtomicString(":patching");

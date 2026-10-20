@@ -12,6 +12,7 @@
 
 #include "base/check.h"
 #include "base/containers/auto_spanification_helper.h"
+#include "base/containers/span.h"
 #include "base/files/file_path.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
@@ -34,7 +35,7 @@
 #include "media/base/video_frame.h"
 #include "media/base/video_util.h"
 #include "media/capture/mojom/video_capture_buffer.mojom.h"
-#include "media/renderers/paint_canvas_video_renderer.h"
+#include "media/gfx/paint_canvas_video_renderer.h"
 #include "services/audio/public/cpp/device_factory.h"
 #include "ui/gfx/image/image_skia_operations.h"
 

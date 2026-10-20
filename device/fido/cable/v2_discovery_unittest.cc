@@ -23,7 +23,6 @@
 #include "device/fido/cable/v2_test_util.h"
 #include "device/fido/fido_authenticator.h"
 #include "device/fido/mock_fido_discovery_observer.h"
-#include "device/fido/public/cable_discovery_data.h"
 #include "device/fido/public/fido_constants.h"
 #include "services/network/public/mojom/network_context.mojom.h"
 #include "services/network/test/test_network_context.h"
@@ -72,8 +71,9 @@ class MockTunnelServer : public network::TestNetworkContext {
           auth_handler,
       mojo::PendingRemote<network::mojom::TrustedHeaderClient> header_client,
       const std::optional<base::UnguessableToken>& throttling_profile_id,
-      const std::optional<base::UnguessableToken>& network_restrictions_id)
-      override {
+      const base::UnguessableToken& network_restrictions_id,
+      network::mojom::IPAddressSpace target_address_space,
+      std::optional<int64_t> target_network) override {
     create_called_ = true;
   }
 
@@ -93,7 +93,6 @@ class CableV2DiscoveryTest : public ::testing::Test {
           return mock_tunnel_server_.get();
         }),
         qr_generator_key_, /*contact_device_stream=*/nullptr,
-        /*extension_contents=*/std::vector<device::CableDiscoveryData>(),
         /*pairing_callback=*/std::nullopt,
         /*invalidated_pairing_callback=*/std::nullopt,
         /*event_callback=*/std::nullopt, /*must_support_ctap=*/true);

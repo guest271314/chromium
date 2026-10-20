@@ -11,7 +11,6 @@
 <translation id="1253734725326687145">Aanraakdoel verplaatst naar rechtsboven. Tik hier.</translation>
 <translation id="1266864766717917324">Kan <ph name="CONTENT_TYPE" /> niet delen</translation>
 <translation id="1269641567813814718">Win</translation>
-<translation id="1291104554099683393">Verdeel de tekst in kleinere stukken en deel in meerdere keren.</translation>
 <translation id="1293699935367580298">Esc</translation>
 <translation id="1368832886055348810">Links naar rechts</translation>
 <translation id="1383876407941801731">Zoeken</translation>
@@ -38,13 +37,11 @@
 <translation id="1901303067676059328">&amp;Alles selecteren</translation>
 <translation id="19085484004813472">Dit is een nieuwe functie</translation>
 <translation id="2006524834898217237">Zorg dat dit apparaat is verbonden met internet.</translation>
-<translation id="208586643495776849">Probeer het opnieuw</translation>
 <translation id="2111134541987263231">Zet <ph name="BEGIN_BOLD" />Toestaan in incognitomodus<ph name="END_BOLD" /> aan</translation>
 <translation id="2141853158323869627">{DAYS,plural, =1{1 d}other{# d}}</translation>
 <translation id="2148716181193084225">Vandaag</translation>
 <translation id="2168039046890040389">Pagina omhoog</translation>
 <translation id="2190355936436201913">(leeg)</translation>
-<translation id="2192232475740621500">Lage dichtheid gebruiken</translation>
 <translation id="2267918077332197517">Alle meldingen van deze site blokkeren</translation>
 <translation id="2283117145434822734">F6</translation>
 <translation id="2289052229480071835">Tik op de tikdoelen op je scherm.</translation>
@@ -56,7 +53,6 @@
 <translation id="2388990488038464401">Dit nummer bellen vanaf je telefoon?</translation>
 <translation id="2435457462613246316">Wachtwoord bekijken</translation>
 <translation id="24452542372838207">Melding uitvouwen</translation>
-<translation id="2445449901874883781">Hoge dichtheid gebruiken</translation>
 <translation id="2448407890032181691">Aanraakdoel verplaatst naar rechtsonder. Tik hier.</translation>
 <translation id="2482878487686419369">Meldingen</translation>
 <translation id="2497284189126895209">Alle bestanden</translation>
@@ -87,7 +83,6 @@
 <translation id="3306688585798492231">Ingebouwd scherm</translation>
 <translation id="335581015389089642">Spraak</translation>
 <translation id="3372635229069101468">Klik op <ph name="BEGIN_BOLD" />Details<ph name="END_BOLD" /></translation>
-<translation id="3389286852084373014">Tekst is te groot</translation>
 <translation id="3406306243914553062">Html-content</translation>
 <translation id="3600566671520689681">{DAYS,plural, =1{1 dag resterend}other{# dagen resterend}}</translation>
 <translation id="3600969208114796418"><ph name="SAVEAS_EXTENSION_TYPE" />-bestand</translation>
@@ -130,7 +125,6 @@
 <translation id="5046499563572181734">Tik hier</translation>
 <translation id="5076340679995252485">&amp;Plakken</translation>
 <translation id="520299402983819650"><ph name="QUANTITY" /> PB</translation>
-<translation id="5278860589123563674">Verzenden mislukt</translation>
 <translation id="5283101102242354279">Zet een extensie aan in de incognitomodus:</translation>
 <translation id="528468243742722775">Beëindigen</translation>
 <translation id="5329858601952122676">Verwij&amp;deren</translation>
@@ -190,7 +184,6 @@
 <translation id="6965382102122355670">OK</translation>
 <translation id="6974053822202609517">Rechts naar links</translation>
 <translation id="7052633198403197513">F1</translation>
-<translation id="7170202025028120564">De weergave-instellingen van je app worden van kracht als de app opnieuw wordt opgestart.</translation>
 <translation id="7222373446505536781">F11</translation>
 <translation id="7238427729722629793">{MINUTES,plural, =1{1 min. resterend}other{# min. resterend}}</translation>
 <translation id="7252604552361840748">Zoek de bovenstaande extensie</translation>

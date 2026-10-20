@@ -13,6 +13,7 @@ import org.chromium.chrome.browser.search_engines.settings.common.SearchEngineLi
 import org.chromium.chrome.browser.search_engines.settings.common.SiteSearchProperties;
 import org.chromium.chrome.browser.search_engines.settings.common.SiteSearchViewBinder;
 import org.chromium.chrome.browser.search_engines.settings.dialog.SiteSearchDialogCoordinator;
+import org.chromium.components.search_engines.SearchEngineSettingsDataProvider;
 import org.chromium.ui.modaldialog.ModalDialogManager;
 import org.chromium.ui.modelutil.ListObservable;
 import org.chromium.ui.modelutil.ListObservable.ListObserver;
@@ -35,7 +36,8 @@ public class InactiveShortcutCoordinator {
             Context context,
             Profile profile,
             SearchEngineListPreference pref,
-            ModalDialogManager modalDialogManager) {
+            ModalDialogManager modalDialogManager,
+            SearchEngineSettingsDataProvider settingsDataProvider) {
         mModelList = new ModelList();
         mAdapter = new InactiveShortcutAdapter(context, mModelList);
 
@@ -50,6 +52,7 @@ public class InactiveShortcutCoordinator {
                         context,
                         mModelList,
                         profile,
+                        settingsDataProvider,
                         mSiteSearchDialogCoordinator::removeTemplateUrl);
 
         mListObserver =
@@ -78,10 +81,12 @@ public class InactiveShortcutCoordinator {
     }
 
     public void destroy() {
+        // Clear the adapter first so the change processor can notify the preference to unbind it
+        // before being destroyed.
         mPropertyModel.set(SiteSearchProperties.ADAPTER, null);
         mPropertyModelChangeProcessor.destroy();
         mModelList.removeObserver(mListObserver);
-        mAdapter.destroy();
         mMediator.destroy();
+        mAdapter.destroy();
     }
 }

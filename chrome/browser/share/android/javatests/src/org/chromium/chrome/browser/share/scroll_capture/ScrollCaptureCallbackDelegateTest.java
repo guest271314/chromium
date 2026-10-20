@@ -18,12 +18,11 @@ import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Point;
 import android.graphics.Rect;
+import android.os.Build;
 import android.os.CancellationSignal;
 import android.util.Size;
 import android.view.Surface;
 import android.view.View;
-
-import androidx.test.filters.SmallTest;
 
 import org.junit.Assert;
 import org.junit.Before;
@@ -39,13 +38,16 @@ import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 import org.mockito.quality.Strictness;
 import org.robolectric.Robolectric;
+import org.robolectric.annotation.Config;
 
 import org.chromium.base.Callback;
 import org.chromium.base.MemoryPressureLevel;
 import org.chromium.base.memory.MemoryPressureMonitor;
 import org.chromium.base.test.BaseRobolectricTestRunner;
-import org.chromium.base.test.util.Batch;
+import org.chromium.base.test.util.Features.DisableFeatures;
+import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.base.test.util.HistogramWatcher;
+import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.paint_preview.PaintPreviewCompositorUtils;
 import org.chromium.chrome.browser.paint_preview.PaintPreviewCompositorUtilsJni;
 import org.chromium.chrome.browser.share.long_screenshots.bitmap_generation.EntryManager;
@@ -60,7 +62,6 @@ import org.chromium.content.browser.webcontents.WebContentsImpl;
 
 /** Tests for the {@link ScrollCaptureCallbackDelegate} */
 @RunWith(BaseRobolectricTestRunner.class)
-@Batch(Batch.UNIT_TESTS)
 public class ScrollCaptureCallbackDelegateTest {
     @Mock private Tab mTab;
     @Mock private WebContentsImpl mWebContents;
@@ -70,12 +71,12 @@ public class ScrollCaptureCallbackDelegateTest {
     @Mock private LongScreenshotsEntry mEntry;
     @Mock private Callback<Rect> mRectConsumer;
     @Mock private PaintPreviewCompositorUtils.Natives mCompositorUtils;
-    @Mock private View mView;
     @Mock private Runnable mOnReady;
     @Mock private Surface mSurface;
     @Mock private Canvas mCanvas;
 
     private Activity mActivity;
+    private View mView;
 
     @Captor private ArgumentCaptor<BitmapGeneratorObserver> mObserverCaptor;
     @Captor private ArgumentCaptor<Rect> mRectCaptor;
@@ -93,6 +94,7 @@ public class ScrollCaptureCallbackDelegateTest {
         doReturn(false).when(mCompositorUtils).stopWarmCompositor();
         doNothing().when(mCompositorUtils).warmupCompositor();
         mActivity = Robolectric.setupActivity(Activity.class);
+        mView = new View(mActivity);
         when(mTab.getContext()).thenReturn(mActivity);
 
         when(mTab.getView()).thenReturn(mView);
@@ -102,13 +104,13 @@ public class ScrollCaptureCallbackDelegateTest {
         when(mRenderCoordinates.getMinPageScaleFactor()).thenReturn(1f);
         when(mRenderCoordinates.getLastFrameViewportWidthPixInt()).thenReturn(200);
         when(mRenderCoordinates.getLastFrameViewportHeightPixInt()).thenReturn(500);
+        when(mSurface.isValid()).thenReturn(true);
 
         mScrollCaptureCallbackObj = new ScrollCaptureCallbackDelegate(mEntryManagerWrapper);
         ((ScrollCaptureCallbackDelegate) mScrollCaptureCallbackObj).setCurrentTab(mTab);
     }
 
     @Test
-    @SmallTest
     public void testScrollCaptureSearch() {
         ScrollCaptureCallbackDelegate scrollCaptureCallback =
                 (ScrollCaptureCallbackDelegate) mScrollCaptureCallbackObj;
@@ -134,7 +136,6 @@ public class ScrollCaptureCallbackDelegateTest {
     }
 
     @Test
-    @SmallTest
     public void testScrollCaptureStart_CaptureInProgress() {
         ScrollCaptureCallbackDelegate scrollCaptureCallback =
                 (ScrollCaptureCallbackDelegate) mScrollCaptureCallbackObj;
@@ -150,7 +151,6 @@ public class ScrollCaptureCallbackDelegateTest {
     }
 
     @Test
-    @SmallTest
     public void testScrollCaptureStart_GenerationErrorOrder() {
         ScrollCaptureCallbackDelegate scrollCaptureCallback =
                 (ScrollCaptureCallbackDelegate) mScrollCaptureCallbackObj;
@@ -167,7 +167,6 @@ public class ScrollCaptureCallbackDelegateTest {
     }
 
     @Test
-    @SmallTest
     public void testScrollCaptureStart_CompositorReady_EmptySize() {
         ScrollCaptureCallbackDelegate scrollCaptureCallback =
                 (ScrollCaptureCallbackDelegate) mScrollCaptureCallbackObj;
@@ -184,7 +183,6 @@ public class ScrollCaptureCallbackDelegateTest {
     }
 
     @Test
-    @SmallTest
     public void testScrollCaptureStart_Success() {
         ScrollCaptureCallbackDelegate scrollCaptureCallback =
                 (ScrollCaptureCallbackDelegate) mScrollCaptureCallbackObj;
@@ -206,7 +204,6 @@ public class ScrollCaptureCallbackDelegateTest {
     }
 
     @Test
-    @SmallTest
     public void testScrollCaptureStart_NonZeroYOffset() {
         ScrollCaptureCallbackDelegate scrollCaptureCallback =
                 (ScrollCaptureCallbackDelegate) mScrollCaptureCallbackObj;
@@ -224,7 +221,6 @@ public class ScrollCaptureCallbackDelegateTest {
     }
 
     @Test
-    @SmallTest
     public void testScrollCaptureStart_GenerationError() {
         ScrollCaptureCallbackDelegate scrollCaptureCallback =
                 (ScrollCaptureCallbackDelegate) mScrollCaptureCallbackObj;
@@ -248,7 +244,6 @@ public class ScrollCaptureCallbackDelegateTest {
     }
 
     @Test
-    @SmallTest
     public void testScrollCaptureStart_InsufficientMemory() {
         ScrollCaptureCallbackDelegate scrollCaptureCallback =
                 (ScrollCaptureCallbackDelegate) mScrollCaptureCallbackObj;
@@ -272,7 +267,6 @@ public class ScrollCaptureCallbackDelegateTest {
     }
 
     @Test
-    @SmallTest
     public void testScrollCaptureSearch_MemoryPressure() {
         ScrollCaptureCallbackDelegate scrollCaptureCallback =
                 (ScrollCaptureCallbackDelegate) mScrollCaptureCallbackObj;
@@ -291,7 +285,56 @@ public class ScrollCaptureCallbackDelegateTest {
     }
 
     @Test
-    @SmallTest
+    @Config(sdk = Build.VERSION_CODES.BAKLAVA)
+    @EnableFeatures(ChromeFeatureList.LONG_SCREENSHOTS_NO_MEMORY_CHECK)
+    @DisableFeatures(ChromeFeatureList.LONG_SCREENSHOTS_LENIENT_MEMORY_CHECK)
+    public void testScrollCaptureSearch_MemoryPressure_NoMemoryCheck() {
+        ScrollCaptureCallbackDelegate scrollCaptureCallback =
+                (ScrollCaptureCallbackDelegate) mScrollCaptureCallbackObj;
+        CancellationSignal signal = new CancellationSignal();
+
+        // Memory pressure is MODERATE, but flag is enabled. Should NOT return empty Rect.
+        MemoryPressureMonitor.INSTANCE.setLastReportedPressureForTesting(
+                MemoryPressureLevel.MODERATE);
+
+        when(mRenderCoordinates.getLastFrameViewportWidthPixInt()).thenReturn(500);
+        when(mRenderCoordinates.getLastFrameViewportHeightPixInt()).thenReturn(2000);
+
+        Assert.assertEquals(
+                new Rect(0, 0, 500, 2000), scrollCaptureCallback.onScrollCaptureSearch(signal));
+
+        // On Android 16+ (BAKLAVA), even under CRITICAL memory pressure, it should still work.
+        MemoryPressureMonitor.INSTANCE.setLastReportedPressureForTesting(
+                MemoryPressureLevel.CRITICAL);
+        Assert.assertEquals(
+                new Rect(0, 0, 500, 2000), scrollCaptureCallback.onScrollCaptureSearch(signal));
+    }
+
+    @Test
+    @Config(sdk = Build.VERSION_CODES.VANILLA_ICE_CREAM)
+    @EnableFeatures(ChromeFeatureList.LONG_SCREENSHOTS_NO_MEMORY_CHECK)
+    @DisableFeatures(ChromeFeatureList.LONG_SCREENSHOTS_LENIENT_MEMORY_CHECK)
+    public void testScrollCaptureSearch_MemoryPressure_NoMemoryCheck_PreBaklava() {
+        ScrollCaptureCallbackDelegate scrollCaptureCallback =
+                (ScrollCaptureCallbackDelegate) mScrollCaptureCallbackObj;
+        CancellationSignal signal = new CancellationSignal();
+
+        when(mRenderCoordinates.getLastFrameViewportWidthPixInt()).thenReturn(500);
+        when(mRenderCoordinates.getLastFrameViewportHeightPixInt()).thenReturn(2000);
+
+        // On Android < 16 (Pre-BAKLAVA), MODERATE pressure should be allowed (lenient threshold).
+        MemoryPressureMonitor.INSTANCE.setLastReportedPressureForTesting(
+                MemoryPressureLevel.MODERATE);
+        Assert.assertEquals(
+                new Rect(0, 0, 500, 2000), scrollCaptureCallback.onScrollCaptureSearch(signal));
+
+        // CRITICAL memory pressure should still be blocked on Android < 16 to avoid framework NPE.
+        MemoryPressureMonitor.INSTANCE.setLastReportedPressureForTesting(
+                MemoryPressureLevel.CRITICAL);
+        Assert.assertTrue(scrollCaptureCallback.onScrollCaptureSearch(signal).isEmpty());
+    }
+
+    @Test
     public void testScrollCaptureRequest_NullContentArea() {
         ScrollCaptureCallbackDelegate scrollCaptureCallback =
                 (ScrollCaptureCallbackDelegate) mScrollCaptureCallbackObj;
@@ -305,7 +348,6 @@ public class ScrollCaptureCallbackDelegateTest {
     }
 
     @Test
-    @SmallTest
     public void testScrollCaptureRequest() {
         ScrollCaptureCallbackDelegate scrollCaptureCallback =
                 (ScrollCaptureCallbackDelegate) mScrollCaptureCallbackObj;
@@ -380,10 +422,85 @@ public class ScrollCaptureCallbackDelegateTest {
         // was out of the content area.
         Assert.assertEquals(new Rect(0, -1000, 500, -500), mRectCaptor.getValue());
 
+        // Test invalid surface at request entry (skips generateEntry)
+        when(mSurface.isValid()).thenReturn(false);
+        captureArea.set(0, -1500, 500, -500);
+        scrollCaptureCallback.onScrollCaptureImageRequest(
+                mSurface, signal, captureArea, mRectConsumer);
+        inOrder.verify(mRectConsumer).onResult(eq(new Rect()));
+        when(mSurface.isValid()).thenReturn(true);
+
+        // Test invalid surface when bitmap callback runs
+        doAnswer(
+                        invocation -> {
+                            when(mSurface.isValid()).thenReturn(false);
+                            EntryListener listener = invocation.getArgument(0);
+                            listener.onResult(EntryStatus.BITMAP_GENERATED);
+                            return null;
+                        })
+                .when(mEntry)
+                .setListener(any(EntryListener.class));
+        captureArea.set(0, -1500, 500, -500);
+        scrollCaptureCallback.onScrollCaptureImageRequest(
+                mSurface, signal, captureArea, mRectConsumer);
+        inOrder.verify(mEntryManager).generateEntry(any());
+        inOrder.verify(mEntry).setListener(any());
+        inOrder.verify(mEntry).getBitmap();
+        inOrder.verify(mRectConsumer).onResult(eq(new Rect()));
+        when(mSurface.isValid()).thenReturn(true);
+
+        // Test canceled signal when bitmap callback runs
+        doAnswer(
+                        invocation -> {
+                            signal.cancel();
+                            EntryListener listener = invocation.getArgument(0);
+                            listener.onResult(EntryStatus.BITMAP_GENERATED);
+                            return null;
+                        })
+                .when(mEntry)
+                .setListener(any(EntryListener.class));
+        captureArea.set(0, -1500, 500, -500);
+        scrollCaptureCallback.onScrollCaptureImageRequest(
+                mSurface, signal, captureArea, mRectConsumer);
+        inOrder.verify(mEntryManager).generateEntry(any());
+        inOrder.verify(mEntry).setListener(any());
+        inOrder.verify(mEntry).getBitmap();
+        inOrder.verify(mRectConsumer).onResult(eq(new Rect()));
+
+        // Test canceled signal at request entry (skips generateEntry)
+        captureArea.set(0, -1500, 500, -500);
+        scrollCaptureCallback.onScrollCaptureImageRequest(
+                mSurface, signal, captureArea, mRectConsumer);
+        inOrder.verify(mRectConsumer).onResult(eq(new Rect()));
+
+        // Test lockCanvas throwing IllegalArgumentException
+        CancellationSignal activeSignal = new CancellationSignal();
+        doAnswer(
+                        invocation -> {
+                            EntryListener listener = invocation.getArgument(0);
+                            listener.onResult(EntryStatus.BITMAP_GENERATED);
+                            return null;
+                        })
+                .when(mEntry)
+                .setListener(any(EntryListener.class));
+        when(mSurface.lockCanvas(any())).thenThrow(new IllegalArgumentException());
+        captureArea.set(0, -1500, 500, -500);
+        scrollCaptureCallback.onScrollCaptureImageRequest(
+                mSurface, activeSignal, captureArea, mRectConsumer);
+        inOrder.verify(mEntryManager).generateEntry(any());
+        inOrder.verify(mEntry).setListener(any());
+        inOrder.verify(mEntry).getBitmap();
+        inOrder.verify(mSurface).lockCanvas(any());
+        inOrder.verify(mRectConsumer).onResult(eq(new Rect()));
+
         // Test end capture
+        HistogramWatcher heightWatcher =
+                HistogramWatcher.newSingleRecordWatcher(
+                        "Sharing.ScrollCapture.CapturedHeightPercentageOfViewport", 50);
         scrollCaptureCallback.onScrollCaptureEnd(mOnReady);
         inOrder.verify(mEntryManager).destroy();
         Assert.assertNull(scrollCaptureCallback.getContentAreaForTesting());
         inOrder.verify(mOnReady).run();
+        heightWatcher.assertExpected();
     }
 }

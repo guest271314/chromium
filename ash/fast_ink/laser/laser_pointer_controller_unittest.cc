@@ -322,10 +322,8 @@ TEST_F(LaserPointerControllerTest, MouseCursorState) {
   EXPECT_FALSE(cursor_manager->IsCursorLocked());
   EXPECT_EQ(1, controller_test_api_->laser_points().GetNumberOfPoints());
   event_generator->ReleaseTouch();
-  // Wait until laser pointer view created by touch goes away. Otherwise mouse
-  // event will be dropped.
-  EXPECT_TRUE(base::test::RunUntil(
-      [&]() { return !controller_test_api_->HasLaserPointerView(); }));
+  // We reset the pointer view to simulate the timer expiration or view reuse.
+  controller_test_api_->ResetPointerView();
 
   // Verify that moving the mouse cursor shows the cursor.
   event_generator->MoveMouseTo(gfx::Point(6, 6));
@@ -359,9 +357,11 @@ TEST_F(LaserPointerControllerTest, TouchTakeOverMouse) {
       event_generator->EnterPenPointerMode();
     }
     event_generator->PressTouch();
-    // A new laser pointer view is created by touch event.
-    EXPECT_NE(view_created_by_mouse,
+    // The existing laser pointer view is reused for the touch event.
+    EXPECT_EQ(view_created_by_mouse,
               controller_test_api_->GetLaserPointerView());
+    // Since the view is reused but reset, the point from the mouse event is
+    // cleared.
     EXPECT_EQ(1, controller_test_api_->laser_points().GetNumberOfPoints());
     event_generator->MoveTouch(gfx::Point(2, 2));
     event_generator->MoveTouch(gfx::Point(1, 1));
@@ -407,6 +407,35 @@ TEST_F(LaserPointerControllerTest, NoMouseInterference) {
     }
   }
 
+  controller_test_api_->SetEnabled(false);
+}
+
+// Verify that the laser pointer view is reused if a new gesture starts while
+// the view is still kept alive.
+TEST_F(LaserPointerControllerTest, LaserPointerViewReuse) {
+  ui::test::EventGenerator* event_generator = GetEventGenerator();
+  controller_test_api_->SetEnabled(true);
+
+  // 1. Create laser pointer view.
+  event_generator->PressTouch();
+  event_generator->MoveTouch(gfx::Point(1, 1));
+  auto* view_1 = controller_test_api_->GetLaserPointerView();
+  EXPECT_TRUE(view_1);
+  EXPECT_EQ(2, controller_test_api_->laser_points().GetNumberOfPoints());
+
+  // 2. Release touch to trigger fade out and keep-alive.
+  event_generator->ReleaseTouch();
+  EXPECT_TRUE(controller_test_api_->HasLaserPointerView());
+
+  // 3. Start a new gesture before the keep-alive timer expires.
+  event_generator->PressTouch();
+  auto* view_2 = controller_test_api_->GetLaserPointerView();
+
+  // 4. Verify the view is reused and points are reset.
+  EXPECT_EQ(view_1, view_2);
+  EXPECT_EQ(1, controller_test_api_->laser_points().GetNumberOfPoints());
+
+  event_generator->ReleaseTouch();
   controller_test_api_->SetEnabled(false);
 }
 
@@ -463,6 +492,58 @@ TEST_F(LaserPointerControllerTestWithPalette, LaserPointerPaletteDisable) {
         << "While processing testcase " << i;
     event_generator->ReleaseTouch();
   }
+}
+
+// Verify that tapping the palette while a laser pointer view is still alive
+// (e.g. kept alive after a previous gesture) is not consumed by the laser
+// pointer and reaches the palette tray.
+TEST_F(LaserPointerControllerTestWithPalette,
+       PaletteReceivesEventsWhileLaserPointerViewAlive) {
+  PaletteTray* palette =
+      controller_test_api_->GetPaletteTrayOnDisplay(GetPrimaryDisplay().id());
+  ASSERT_TRUE(palette);
+
+  ui::test::EventGenerator* event_generator = GetEventGenerator();
+  event_generator->EnterPenPointerMode();
+  controller_test_api_->SetEnabled(true);
+
+  // Draw with the laser pointer away from the palette so that a laser pointer
+  // view is created and kept alive after the gesture ends.
+  event_generator->PressTouch(GetPrimaryDisplay().bounds().CenterPoint());
+  event_generator->ReleaseTouch();
+  ASSERT_TRUE(controller_test_api_->GetLaserPointerView());
+  ASSERT_FALSE(palette->GetBubbleView());
+
+  // Tapping the palette with the stylus should toggle the palette bubble.
+  event_generator->PressTouch(palette->GetBoundsInScreen().CenterPoint());
+  event_generator->ReleaseTouch();
+  EXPECT_TRUE(palette->GetBubbleView());
+}
+
+// Verify that dragging an ongoing laser pointer gesture onto the palette ends
+// the gesture instead of drawing over the palette.
+TEST_F(LaserPointerControllerTestWithPalette, DraggingOntoPaletteEndsGesture) {
+  PaletteTray* palette =
+      controller_test_api_->GetPaletteTrayOnDisplay(GetPrimaryDisplay().id());
+  ASSERT_TRUE(palette);
+
+  ui::test::EventGenerator* event_generator = GetEventGenerator();
+  event_generator->EnterPenPointerMode();
+
+  // Palette does not appear until a stylus is seen for the first time.
+  event_generator->PressMoveAndReleaseTouchTo(
+      GetPrimaryDisplay().bounds().CenterPoint());
+
+  controller_test_api_->SetEnabled(true);
+  event_generator->PressTouch(GetPrimaryDisplay().bounds().CenterPoint());
+  ASSERT_TRUE(controller_test_api_->HasLaserPointerView());
+
+  event_generator->MoveTouch(palette->GetBoundsInScreen().CenterPoint());
+  EXPECT_FALSE(controller_test_api_->HasLaserPointerView());
+
+  // The gesture does not resume while the stylus stays on the palette.
+  event_generator->ReleaseTouch();
+  EXPECT_FALSE(controller_test_api_->HasLaserPointerView());
 }
 
 }  // namespace ash

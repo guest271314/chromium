@@ -17,9 +17,11 @@ import androidx.preference.DialogPreference;
 
 import org.chromium.build.annotations.Initializer;
 import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.download.DirectoryOption;
 import org.chromium.chrome.browser.download.R;
 import org.chromium.chrome.browser.download.settings.DownloadDirectoryAdapter.DownloadLocationHelper;
+import org.chromium.components.browser_ui.settings.SettingsUtils;
 
 /** The preference used to save the download directory in download settings page. */
 @NullMarked
@@ -31,20 +33,21 @@ public class DownloadLocationPreference extends DialogPreference
      */
     private final DownloadLocationPreferenceAdapter mAdapter;
 
-    private DownloadLocationHelper mLocationHelper;
+    private @Nullable DownloadLocationHelper mLocationHelper;
 
     /** Constructor for DownloadLocationPreference. */
     public DownloadLocationPreference(Context context, AttributeSet attrs) {
         super(context, attrs);
+        SettingsUtils.initializePreferenceDefaults(context, attrs, this);
         setDialogLayoutResource(R.layout.download_location_preference);
         mAdapter = new DownloadLocationPreferenceAdapter(getContext(), this);
-        mAdapter.update();
     }
 
     /** Set the helper to access and update the default download location. */
     @Initializer
     public void setDownloadLocationHelper(DownloadLocationHelper helper) {
         mLocationHelper = helper;
+        mAdapter.update();
     }
 
     /** Updates the summary that shows the download location directory. */
@@ -85,7 +88,7 @@ public class DownloadLocationPreference extends DialogPreference
     }
 
     @Override
-    public DownloadLocationHelper getDownloadLocationHelper() {
+    public @Nullable DownloadLocationHelper getDownloadLocationHelper() {
         return mLocationHelper;
     }
 

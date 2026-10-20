@@ -5,8 +5,6 @@
 #include "chrome/browser/ui/views/location_bar/location_bar_layout.h"
 
 #include "base/memory/raw_ptr.h"
-#include "chrome/browser/themes/theme_properties.h"
-#include "components/lens/lens_features.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/views/view.h"
 
@@ -64,7 +62,8 @@ DecorationInfo::DecorationInfo(int y,
       intra_item_padding(intra_item_padding),
       edge_item_padding(edge_item_padding),
       view(view) {
-  DCHECK((max_fraction == 0.0) || (!auto_collapse && (max_fraction > 0.0)));
+  CHECK((max_fraction == 0.0) || (!auto_collapse && (max_fraction > 0.0)),
+        base::NotFatalUntil::M162);
 }
 
 // LocationBarLayout ---------------------------------------------------------

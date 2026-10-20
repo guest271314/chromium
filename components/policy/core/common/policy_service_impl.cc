@@ -8,12 +8,16 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <functional>
+#include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
 #include "base/containers/flat_set.h"
 #include "base/functional/bind.h"
+#include "base/hash/hash.h"
 #include "base/location.h"
 #include "base/memory/ptr_util.h"
 #include "base/metrics/histogram_functions.h"
@@ -34,6 +38,7 @@
 #include "components/policy/policy_constants.h"
 #include "components/strings/grit/components_strings.h"
 #include "extensions/buildflags/buildflags.h"
+#include "third_party/abseil-cpp/absl/container/flat_hash_map.h"
 
 #if BUILDFLAG(IS_ANDROID)
 #include "components/policy/core/common/android/policy_service_android.h"
@@ -47,28 +52,21 @@ namespace policy {
 
 namespace {
 
+#if !BUILDFLAG(IS_CHROMEOS)
 // Metrics should not be enforced so if this policy is set as mandatory
 // downgrade it to a recommended level policy.
 void DowngradeMetricsReportingToRecommendedPolicy(PolicyMap* policies) {
-  // Capture both the Chrome-only and device-level policies on Chrome OS.
-  const std::vector<const char*> metrics_keys = {
-#if BUILDFLAG(IS_CHROMEOS)
-      policy::key::kDeviceMetricsReportingEnabled,
-#else
-      policy::key::kMetricsReportingEnabled,
-#endif
-  };
-  for (const char* policy_key : metrics_keys) {
-    PolicyMap::Entry* policy = policies->GetMutable(policy_key);
-    if (policy && policy->level != POLICY_LEVEL_RECOMMENDED &&
-        policy->value(base::Value::Type::BOOLEAN) &&
-        policy->value(base::Value::Type::BOOLEAN)->GetBool()) {
-      policy->level = POLICY_LEVEL_RECOMMENDED;
-      policy->AddMessage(PolicyMap::MessageType::kInfo,
-                         IDS_POLICY_IGNORED_MANDATORY_REPORTING_POLICY);
-    }
+  PolicyMap::Entry* policy =
+      policies->GetMutable(policy::key::kMetricsReportingEnabled);
+  if (policy && policy->level != POLICY_LEVEL_RECOMMENDED &&
+      policy->value(base::Value::Type::BOOLEAN) &&
+      policy->value(base::Value::Type::BOOLEAN)->GetBool()) {
+    policy->level = POLICY_LEVEL_RECOMMENDED;
+    policy->AddMessage(PolicyMap::MessageType::kInfo,
+                       IDS_POLICY_IGNORED_MANDATORY_REPORTING_POLICY);
   }
 }
+#endif  // !BUILDFLAG(IS_CHROMEOS)
 
 // Returns the string values of |policy|. Returns an empty set if the values are
 // not strings.
@@ -246,6 +244,15 @@ const PolicyMap& PolicyServiceImpl::GetPolicies(
     const PolicyNamespace& ns) const {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   return policy_bundle_.Get(ns);
+}
+
+std::optional<size_t> PolicyServiceImpl::GetInitialChromePolicyValueHash(
+    std::string_view policy_name) const {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  auto it = startup_chrome_policy_hash_map_.find(policy_name);
+  return it != startup_chrome_policy_hash_map_.end()
+             ? std::make_optional(it->second)
+             : std::nullopt;
 }
 
 bool PolicyServiceImpl::IsInitializationComplete(PolicyDomain domain) const {
@@ -445,14 +452,25 @@ PolicyBundle PolicyServiceImpl::MergePolicyBundles(
   DefaultChromeAppsMigrator chrome_apps_migrator;
 #endif  // BUILDFLAG(IS_CHROMEOS)
   for (const PolicyBundle* policy_bundle : bundles) {
-    PolicyBundle provided_bundle = policy_bundle->Clone();
-    IgnoreUserCloudPrecedencePolicies(&provided_bundle.Get(chrome_namespace));
-    DowngradeMetricsReportingToRecommendedPolicy(
-        &provided_bundle.Get(chrome_namespace));
-#if BUILDFLAG(IS_CHROMEOS)
-    chrome_apps_migrator.Migrate(&provided_bundle.Get(chrome_namespace));
-#endif  // BUILDFLAG(IS_CHROMEOS)
-    bundle.MergeFrom(provided_bundle);
+    // Merge non-chrome namespaces directly from the provider. No clone is
+    // needed because PolicyMap::MergeFrom deep-copies individual entries
+    // internally — the provider's data is never mutated. Only the chrome
+    // namespace requires cloning for pre-merge mutations below.
+    for (const auto& [ns, map] : *policy_bundle) {
+      if (ns != chrome_namespace) {
+        bundle.Get(ns).MergeFrom(map);
+      }
+    }
+
+    // Clone only the chrome-namespace PolicyMap for pre-merge mutations.
+    PolicyMap chrome_clone = policy_bundle->Get(chrome_namespace).Clone();
+    IgnoreUserCloudPrecedencePolicies(&chrome_clone);
+#if !BUILDFLAG(IS_CHROMEOS)
+    DowngradeMetricsReportingToRecommendedPolicy(&chrome_clone);
+#else
+    chrome_apps_migrator.Migrate(&chrome_clone);
+#endif  // !BUILDFLAG(IS_CHROMEOS)
+    bundle.Get(chrome_namespace).MergeFrom(std::move(chrome_clone));
   }
 
   auto& chrome_policies = bundle.Get(chrome_namespace);
@@ -598,6 +616,20 @@ void PolicyServiceImpl::MaybeNotifyPolicyDomainStatusChange(
             .size(),
         base::Time::Now() - creation_time_);
   }
+
+  // Check if POLICY_DOMAIN_CHROME has just become initialized and we haven't
+  // cached the startup chrome policy map.
+  if (!initial_snapshot_taken_ &&
+      std::ranges::contains(updated_domains, POLICY_DOMAIN_CHROME) &&
+      policy_domain_status_[POLICY_DOMAIN_CHROME] ==
+          PolicyDomainStatus::kPolicyReady) {
+    VLOG_POLICY(1, POLICY_PROCESSING)
+        << "Taking initial snapshot of POLICY_DOMAIN_CHROME policies";
+    const PolicyNamespace chrome_namespace(POLICY_DOMAIN_CHROME, std::string());
+    startup_chrome_policy_hash_map_ =
+        CopyPoliciesStartupHash(policy_bundle_.Get(chrome_namespace));
+    initial_snapshot_taken_ = true;
+  }
 }
 
 void PolicyServiceImpl::CheckRefreshComplete() {
@@ -645,4 +677,21 @@ void PolicyServiceImpl::RecordInitializationTime(
   }
 }
 
+absl::flat_hash_map<std::string, size_t>
+PolicyServiceImpl::CopyPoliciesStartupHash(
+    const PolicyMap& startup_policy_map) {
+  absl::flat_hash_map<std::string, size_t>
+      startup_policy_dynamic_refresh_false_map;
+  for (const auto& [key, entry] : startup_policy_map) {
+    const policy::PolicyDetails* policy_details = GetChromePolicyDetails(key);
+    if (policy_details && !policy_details->supports_dynamic_refresh) {
+      const base::Value* policy_value = entry.value_unsafe();
+      if (policy_value) {
+        size_t hash = policy::PolicyValueHash(*policy_value);
+        startup_policy_dynamic_refresh_false_map[key] = hash;
+      }
+    }
+  }
+  return startup_policy_dynamic_refresh_false_map;
+}
 }  // namespace policy

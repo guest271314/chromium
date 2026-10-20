@@ -465,7 +465,6 @@
         "test_id_prefix": "ninja://third_party/pthreadpool:pthreadpool_unittests/"
       },
       {
-        "experiment_percentage": 100,
         "module_name": "//third_party/puffin:puffin_unittests",
         "module_scheme": "gtest",
         "name": "puffin_unittests",
@@ -478,6 +477,13 @@
         "name": "remoting_unittests",
         "test": "remoting_unittests",
         "test_id_prefix": "ninja://remoting:remoting_unittests/"
+      },
+      {
+        "module_name": "//rlz:rlz_unittests",
+        "module_scheme": "gtest",
+        "name": "rlz_unittests",
+        "test": "rlz_unittests",
+        "test_id_prefix": "ninja://rlz:rlz_unittests/"
       },
       {
         "module_name": "//sandbox/win:sbox_integration_tests",

@@ -11,6 +11,7 @@
 
 #include "base/compiler_specific.h"
 #include "base/containers/span.h"
+#include "base/containers/to_vector.h"
 #include "components/webcrypto/algorithms/asymmetric_key_util.h"
 #include "components/webcrypto/algorithms/util.h"
 #include "components/webcrypto/blink_key_handle.h"
@@ -195,9 +196,9 @@ int GetGroupDegreeInBytes(EC_KEY* ec) {
 }
 
 // Extracts the public key as affine coordinates (x,y).
-Status GetPublicKey(EC_KEY* ec,
-                    bssl::UniquePtr<BIGNUM>* x,
-                    bssl::UniquePtr<BIGNUM>* y) {
+Status GetEcPublicKeyAffineCoordinates(EC_KEY* ec,
+                                       bssl::UniquePtr<BIGNUM>* x,
+                                       bssl::UniquePtr<BIGNUM>* y) {
   const EC_GROUP* group = EC_KEY_get0_group(ec);
   const EC_POINT* point = EC_KEY_get0_public_key(ec);
 
@@ -331,6 +332,23 @@ Status EcAlgorithm::ExportKey(blink::WebCryptoKeyFormat format,
     default:
       return Status::ErrorUnsupportedExportKeyFormat();
   }
+}
+
+Status EcAlgorithm::GetPublicKey(const blink::WebCryptoKey& key,
+                                 blink::WebCryptoKeyUsageMask usages,
+                                 blink::WebCryptoKey* public_key) const {
+  Status status = CheckKeyCreationUsages(all_public_key_usages_, usages);
+  if (status.IsError()) {
+    return status;
+  }
+
+  bssl::UniquePtr<EVP_PKEY> pub_pkey(EVP_PKEY_copy_public(GetEVP_PKEY(key)));
+  if (!pub_pkey) {
+    return Status::OperationError();
+  }
+
+  return CreateWebCryptoPublicKey(std::move(pub_pkey), key.Algorithm(), true,
+                                  usages, public_key);
 }
 
 Status EcAlgorithm::ImportKeyRaw(base::span<const uint8_t> key_data,
@@ -563,18 +581,14 @@ Status EcAlgorithm::ExportKeyRaw(const blink::WebCryptoKey& key,
     return Status::ErrorUnexpected();
 
   // Serialize the public key as an uncompressed point in X9.62 form.
-  uint8_t* raw;
-  size_t raw_len;
   bssl::ScopedCBB cbb;
   if (!CBB_init(cbb.get(), 0) ||
       !EC_POINT_point2cbb(cbb.get(), EC_KEY_get0_group(ec),
                           EC_KEY_get0_public_key(ec),
-                          POINT_CONVERSION_UNCOMPRESSED, nullptr) ||
-      !CBB_finish(cbb.get(), &raw, &raw_len)) {
+                          POINT_CONVERSION_UNCOMPRESSED, nullptr)) {
     return Status::OperationError();
   }
-  buffer->assign(raw, UNSAFE_TODO(raw + raw_len));
-  OPENSSL_free(raw);
+  *buffer = base::ToVector(crypto::CbbAsSpan(cbb.get()));
 
   return Status::Success();
 }
@@ -623,7 +637,7 @@ Status EcAlgorithm::ExportKeyJwk(const blink::WebCryptoKey& key,
 
   bssl::UniquePtr<BIGNUM> x;
   bssl::UniquePtr<BIGNUM> y;
-  status = GetPublicKey(ec, &x, &y);
+  status = GetEcPublicKeyAffineCoordinates(ec, &x, &y);
   if (status.IsError())
     return status;
 

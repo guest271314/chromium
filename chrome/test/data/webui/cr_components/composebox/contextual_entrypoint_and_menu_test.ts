@@ -5,12 +5,14 @@
 import 'chrome://contextual-tasks/strings.m.js';
 import 'chrome://resources/cr_components/composebox/contextual_entrypoint_and_menu.js';
 
+import {TabSuggestionsState} from 'chrome://resources/cr_components/composebox/common.js';
 import type {ContextualEntrypointAndMenuElement} from 'chrome://resources/cr_components/composebox/contextual_entrypoint_and_menu.js';
 import type {ContextualEntrypointButtonElement} from 'chrome://resources/cr_components/composebox/contextual_entrypoint_button.js';
 import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
+import type {TabInfo} from 'chrome://resources/mojo/components/omnibox/browser/searchbox.mojom-webui.js';
 import {ToolMode} from 'chrome://resources/mojo/components/omnibox/composebox/composebox_query.mojom-webui.js';
 import type {InputState} from 'chrome://resources/mojo/components/omnibox/composebox/composebox_query.mojom-webui.js';
-import {assertFalse, assertTrue} from 'chrome://webui-test/chai_assert.js';
+import {assertEquals, assertFalse, assertTrue} from 'chrome://webui-test/chai_assert.js';
 import {$$, eventToPromise, microtasksFinished} from 'chrome://webui-test/test_util.js';
 
 import {createValidInputState} from './composebox_test_utils.js';
@@ -26,6 +28,7 @@ suite('ContextualEntrypointAndMenu', () => {
     Object.assign(entrypointAndMenu, {
       inputState,
       usePecApi: loadTimeData.getBoolean('contextualMenuUsePecApi'),
+      tabSuggestionsState: TabSuggestionsState.LOADED,
     });
     document.body.appendChild(entrypointAndMenu);
     await microtasksFinished();
@@ -75,10 +78,12 @@ suite('ContextualEntrypointAndMenu', () => {
   });
 
   test('context menu shown on entrypoint click event', async () => {
+    const openedPromise =
+        eventToPromise('context-menu-opened', entrypointAndMenu);
     // Act.
     $$(entrypointAndMenu, '#entrypointButton')!.dispatchEvent(
         new Event('context-menu-entrypoint-click'));
-    await microtasksFinished();
+    await openedPromise;
 
     // Assert.
     assertTrue(entrypointAndMenu.$.menu.open);
@@ -235,5 +240,168 @@ suite('ContextualEntrypointAndMenu', () => {
     assertFalse(innerActionMenu.disableAutoReposition);
     assertTrue(innerActionMenu.$.menu.hasAttribute('auto-reposition'));
     assertTrue(innerActionMenu.$.menu.autoReposition);
+  });
+
+  suite('aimThreadRestoredTabs', () => {
+    test(
+        'forwards aimThreadRestoredTabs to entrypoint button and action menu',
+        async () => {
+          const restoredTabs: TabInfo[] = [
+            {
+              tabId: 1,
+              title: 'Tab 1',
+              url: 'about:blank?1',
+              showInCurrentTabChip: false,
+              showInPreviousTabChip: false,
+              isLoading: false,
+              lastActive: {internalValue: 0n},
+            },
+            {
+              tabId: 2,
+              title: 'Tab 2',
+              url: 'about:blank?2',
+              showInCurrentTabChip: false,
+              showInPreviousTabChip: false,
+              isLoading: false,
+              lastActive: {internalValue: 0n},
+            },
+          ];
+
+          entrypointAndMenu.aimThreadRestoredTabs = restoredTabs;
+          await entrypointAndMenu.updateComplete;
+
+          const entrypointButton = $$(entrypointAndMenu, '#entrypointButton') as
+              ContextualEntrypointButtonElement;
+          assertTrue(!!entrypointButton);
+          assertEquals(restoredTabs, entrypointButton.restoredTabs);
+
+          const menu = entrypointAndMenu.$.menu;
+          assertTrue(!!menu);
+          assertEquals(restoredTabs, menu.aimThreadRestoredTabs);
+        });
+  });
+
+  suite('SuggestionsLoadingDelay', () => {
+    test(
+        'click when not loaded and not loading requests load and delays opening',
+        async () => {
+          entrypointAndMenu.tabSuggestionsState =
+              TabSuggestionsState.NOT_STARTED;
+          entrypointAndMenu.menuOpenDelayMs = 1000;
+          await microtasksFinished();
+
+          let requestedLoad = false;
+          entrypointAndMenu.addEventListener(
+              'request-tab-suggestions-load', () => {
+                requestedLoad = true;
+              });
+
+          const button = $$(entrypointAndMenu, '#entrypointButton')!;
+          button.dispatchEvent(new Event('context-menu-entrypoint-click'));
+          await microtasksFinished();
+
+          assertTrue(requestedLoad);
+          assertEquals(
+              TabSuggestionsState.LOADING,
+              entrypointAndMenu.tabSuggestionsState);
+          assertFalse(entrypointAndMenu.$.menu.open);
+
+          const openedPromise =
+              eventToPromise('context-menu-opened', entrypointAndMenu);
+          entrypointAndMenu.tabSuggestionsState = TabSuggestionsState.LOADED;
+          await openedPromise;
+
+          assertTrue(entrypointAndMenu.$.menu.open);
+        });
+
+    test('menu opening is delayed when suggestions are loading', async () => {
+      entrypointAndMenu.tabSuggestionsState = TabSuggestionsState.LOADING;
+      entrypointAndMenu.menuOpenDelayMs = 1000;
+      await microtasksFinished();
+
+      const button = $$(entrypointAndMenu, '#entrypointButton')!;
+      button.dispatchEvent(new Event('context-menu-entrypoint-click'));
+      await microtasksFinished();
+
+      assertFalse(entrypointAndMenu.$.menu.open);
+
+      const openedPromise =
+          eventToPromise('context-menu-opened', entrypointAndMenu);
+      entrypointAndMenu.tabSuggestionsState = TabSuggestionsState.LOADED;
+      await openedPromise;
+
+      assertTrue(entrypointAndMenu.$.menu.open);
+    });
+
+    test(
+        'menu opening fallback opens after timeout if loading takes too long',
+        async () => {
+          const openedPromise =
+              eventToPromise('context-menu-opened', entrypointAndMenu);
+          entrypointAndMenu.tabSuggestionsState = TabSuggestionsState.LOADING;
+          entrypointAndMenu.menuOpenDelayMs = 10;
+          await microtasksFinished();
+
+          const button = $$(entrypointAndMenu, '#entrypointButton')!;
+          button.dispatchEvent(new Event('context-menu-entrypoint-click'));
+          await microtasksFinished();
+
+          assertFalse(entrypointAndMenu.$.menu.open);
+
+          await openedPromise;
+
+          assertTrue(entrypointAndMenu.$.menu.open);
+        });
+
+    test('menu opens immediately if not loading', async () => {
+      const openedPromise =
+          eventToPromise('context-menu-opened', entrypointAndMenu);
+      const button = $$(entrypointAndMenu, '#entrypointButton')!;
+      button.dispatchEvent(new Event('context-menu-entrypoint-click'));
+      await openedPromise;
+
+      assertTrue(entrypointAndMenu.$.menu.open);
+    });
+
+    test('hover event is fired', async () => {
+      const hoverEventPromise =
+          eventToPromise('context-menu-entrypoint-hover', entrypointAndMenu);
+
+      const entrypointButton = $$(entrypointAndMenu, '#entrypointButton');
+      assertTrue(!!entrypointButton);
+
+      const hoverTarget = entrypointButton.shadowRoot!.querySelector('div')!;
+      assertTrue(!!hoverTarget);
+      hoverTarget.dispatchEvent(new Event('pointerenter'));
+
+      assertTrue(!!(await hoverEventPromise));
+    });
+
+    test(
+        'unboundedMenuEnabled property reflects and propagates to menu',
+        async () => {
+          entrypointAndMenu.unboundedMenuEnabled = true;
+          await microtasksFinished();
+
+          assertTrue(entrypointAndMenu.hasAttribute('unbounded-menu-enabled'));
+          assertTrue(entrypointAndMenu.$.menu.unboundedMenuEnabled);
+
+          entrypointAndMenu.unboundedMenuEnabled = false;
+          await microtasksFinished();
+
+          assertFalse(entrypointAndMenu.hasAttribute('unbounded-menu-enabled'));
+          assertFalse(entrypointAndMenu.$.menu.unboundedMenuEnabled);
+        });
+
+    test(
+        'composeboxContextMenuTooltipsEnabled propagates to menu', async () => {
+          entrypointAndMenu.composeboxContextMenuTooltipsEnabled = true;
+          await microtasksFinished();
+          assertTrue(entrypointAndMenu.$.menu.contextMenuTooltipsEnabled);
+
+          entrypointAndMenu.composeboxContextMenuTooltipsEnabled = false;
+          await microtasksFinished();
+          assertFalse(entrypointAndMenu.$.menu.contextMenuTooltipsEnabled);
+        });
   });
 });

@@ -70,7 +70,9 @@ public final class CronetStatsLog {
      * long time_to_send_first_byte_millis, long time_to_establish_dns_micros, long
      * time_to_establish_ssl_micros, long time_to_connect_micros, long
      * time_to_send_first_byte_micros, long time_to_receive_header_last_byte_micros, int is_proxied,
-     * int can_use_adaptive_network_selection);<br>
+     * int can_use_adaptive_network_selection, long request_body_size_kb, long
+     * response_body_size_kb, long upload_goodput_bytes_per_sec, long
+     * download_goodput_bytes_per_sec, int is_cached);<br>
      */
     public static final int CRONET_TRAFFIC_REPORTED = 704;
 
@@ -108,6 +110,13 @@ public final class CronetStatsLog {
      * winner, int main_stream_state, int fallback_stream_state);<br>
      */
     public static final int CRONET_ADAPTIVE_TRAFFIC_TERMINATED = 215001;
+
+    /**
+     * CronetUmaMetricReported cronet_uma_metric_reported<br>
+     * Usage: StatsLog.write(StatsLog.CRONET_UMA_METRIC_REPORTED, int uid, int source, long
+     * metric_hash, int metric_value);<br>
+     */
+    public static final int CRONET_UMA_METRIC_REPORTED = 215002;
 
     // Constants for enum values.
 
@@ -418,6 +427,11 @@ public final class CronetStatsLog {
     public static final int
             CRONET_TRAFFIC_REPORTED__CAN_USE_ADAPTIVE_NETWORK_SELECTION__OPTIONAL_BOOLEAN_FALSE = 2;
 
+    // Values for CronetTrafficReported.is_cached
+    public static final int CRONET_TRAFFIC_REPORTED__IS_CACHED__IS_CACHED_UNKNOWN = 0;
+    public static final int CRONET_TRAFFIC_REPORTED__IS_CACHED__IS_CACHED_NOT_CACHED = 1;
+    public static final int CRONET_TRAFFIC_REPORTED__IS_CACHED__IS_CACHED_CACHE_HIT = 2;
+
     // Values for CronetEngineBuilderInitialized.author
     public static final int CRONET_ENGINE_BUILDER_INITIALIZED__AUTHOR__AUTHOR_UNSPECIFIED = 0;
     public static final int CRONET_ENGINE_BUILDER_INITIALIZED__AUTHOR__AUTHOR_API = 1;
@@ -529,6 +543,13 @@ public final class CronetStatsLog {
             CRONET_ADAPTIVE_TRAFFIC_TERMINATED__FALLBACK_STREAM_STATE__CRONET_REQUEST_STATE_CANCELLED =
                     5;
 
+    // Values for CronetUmaMetricReported.source
+    public static final int CRONET_UMA_METRIC_REPORTED__SOURCE__CRONET_SOURCE_UNSPECIFIED = 0;
+    public static final int CRONET_UMA_METRIC_REPORTED__SOURCE__CRONET_SOURCE_EMBEDDED_NATIVE = 1;
+    public static final int CRONET_UMA_METRIC_REPORTED__SOURCE__CRONET_SOURCE_GMSCORE_NATIVE = 2;
+    public static final int CRONET_UMA_METRIC_REPORTED__SOURCE__CRONET_SOURCE_EMBEDDED_JAVA = 3;
+    public static final int CRONET_UMA_METRIC_REPORTED__SOURCE__CRONET_SOURCE_HTTPENGINE_NATIVE = 4;
+
     // Annotation constants.
     @android.annotation.SuppressLint("InlinedApi")
     public static final byte ANNOTATION_ID_IS_UID = StatsLog.ANNOTATION_ID_IS_UID;
@@ -585,6 +606,21 @@ public final class CronetStatsLog {
         builder.writeLong(arg3);
         builder.writeBoolean(arg4);
         builder.writeBoolean(arg5);
+
+        builder.usePooledBuffer();
+        StatsLog.write(builder.build());
+    }
+
+    public static void write(int code, int arg1, int arg2, long arg3, int arg4) {
+        final StatsEvent.Builder builder = StatsEvent.newBuilder();
+        builder.setAtomId(code);
+        builder.writeInt(arg1);
+        if (CRONET_UMA_METRIC_REPORTED == code) {
+            builder.addBooleanAnnotation(ANNOTATION_ID_IS_UID, true);
+        }
+        builder.writeInt(arg2);
+        builder.writeLong(arg3);
+        builder.writeInt(arg4);
 
         builder.usePooledBuffer();
         StatsLog.write(builder.build());
@@ -756,7 +792,12 @@ public final class CronetStatsLog {
             long arg36,
             long arg37,
             int arg38,
-            int arg39) {
+            int arg39,
+            long arg40,
+            long arg41,
+            long arg42,
+            long arg43,
+            int arg44) {
         final StatsEvent.Builder builder = StatsEvent.newBuilder();
         builder.setAtomId(code);
         builder.writeLong(arg1);
@@ -801,6 +842,11 @@ public final class CronetStatsLog {
         builder.writeLong(arg37);
         builder.writeInt(arg38);
         builder.writeInt(arg39);
+        builder.writeLong(arg40);
+        builder.writeLong(arg41);
+        builder.writeLong(arg42);
+        builder.writeLong(arg43);
+        builder.writeInt(arg44);
 
         builder.usePooledBuffer();
         StatsLog.write(builder.build());

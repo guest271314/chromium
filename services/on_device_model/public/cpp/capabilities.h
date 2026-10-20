@@ -9,6 +9,9 @@
 
 namespace on_device_model {
 
+// Minimum VRAM required for audio input support (6GB).
+inline constexpr int kAudioVramMinMb = 6144;
+
 // A set of capabilities a model can have.
 enum class CapabilityFlags {
   // Model supports image input.
@@ -21,9 +24,7 @@ enum class CapabilityFlags {
   kMinValue = kImageInput,
   kMaxValue = kToolUse,
 };
-using Capabilities = base::EnumSet<CapabilityFlags,
-                                   CapabilityFlags::kMinValue,
-                                   CapabilityFlags::kMaxValue>;
+using Capabilities = base::EnumSet<CapabilityFlags>;
 
 }  // namespace on_device_model
 

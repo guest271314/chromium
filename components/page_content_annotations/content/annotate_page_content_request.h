@@ -25,9 +25,17 @@
 #include "components/page_content_annotations/core/page_content_extraction_types.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_contents_observer.h"
-#include "content/public/browser/web_contents_user_data.h"
 #include "pdf/buildflags.h"
 #include "third_party/blink/public/mojom/content_extraction/ai_page_content.mojom.h"
+#include "ui/base/unowned_user_data/scoped_unowned_user_data.h"
+
+namespace base {
+class ScopedClosureRunner;
+}
+
+namespace tabs {
+class TabInterface;
+}  // namespace tabs
 
 namespace optimization_guide {
 class PageContextEligibility;
@@ -54,16 +62,31 @@ using FetchPageContextCallback =
 using GetTabIdCallback =
     base::RepeatingCallback<std::optional<int64_t>(content::WebContents*)>;
 
-// Class for deciding when a page is ready for getting page content, and
-// extracts page content.
+// A WebContentsObserver / WebContentsUserData class that manages the lifecycle
+// of page content extraction for the main frame of a WebContents.
+//
+// AnnotatedPageContentRequest implements a state machine that observes
+// navigation, load, visibility, and FCP events to determine when the page has
+// "settled" (layout is stable and loading is complete) and is ready for
+// extraction. It supports automatic extraction on load or tab backgrounding, as
+// well as on-demand extractions (extracting either `AnnotatedPageContent` for
+// HTML pages, or text for PDFs).
+//
+// The class coordinates with `PageContentExtractionService` to cache results,
+// and uses `PageContextFetcher` under the hood to perform the actual extraction
+// IPC.
+//
+// For a detailed guide of this flow, see
+// `components/page_content_annotations/content/pces_guide.md`.
+//
 // TODO(b/490161242): Rename this class to reflect that it's the observer.
 // TODO(b/487632737): Rename this class to reflect that it requests either:
 // - `AnnotatedPageContent` for non-PDF pages.
 // - Text for PDF pages.
-class AnnotatedPageContentRequest
-    : public content::WebContentsObserver,
-      public content::WebContentsUserData<AnnotatedPageContentRequest> {
+class AnnotatedPageContentRequest : public content::WebContentsObserver {
  public:
+  DECLARE_USER_DATA(AnnotatedPageContentRequest);
+
   // LINT.IfChange(TriggerSource)
   // These values are persisted to logs. Entries should not be renumbered and
   // numeric values should never be reused.
@@ -75,16 +98,10 @@ class AnnotatedPageContentRequest
   };
   // LINT.ThenChange(//tools/metrics/histograms/metadata/optimization/enums.xml:OptimizationGuidePageContentExtractionTriggerSource)
 
-  static std::unique_ptr<AnnotatedPageContentRequest> Create(
-      content::WebContents* web_contents,
-      PageContentExtractionService& page_content_extraction_service,
-      FetchPageContextCallback fetch_page_context_callback,
-      GetTabIdCallback get_tab_id_callback);
-
   AnnotatedPageContentRequest(
+      tabs::TabInterface& tab,
       content::WebContents* web_contents,
       PageContentExtractionService& page_content_extraction_service,
-      blink::mojom::AIPageContentOptionsPtr request,
       FetchPageContextCallback fetch_page_context_callback,
       GetTabIdCallback get_tab_id_callback);
 
@@ -93,12 +110,9 @@ class AnnotatedPageContentRequest
       delete;
   ~AnnotatedPageContentRequest() override;
 
-  // Creates an instance for testing that is not attached as UserData.
-  static std::unique_ptr<AnnotatedPageContentRequest> CreateForTesting(
-      content::WebContents* web_contents,
-      PageContentExtractionService& page_content_extraction_service,
-      FetchPageContextCallback fetch_page_context_callback,
-      GetTabIdCallback get_tab_id_callback);
+  static AnnotatedPageContentRequest* From(tabs::TabInterface* tab);
+  static AnnotatedPageContentRequest* FromWebContents(
+      content::WebContents* web_contents);
   // Returns the cached APC for `page` and whether it is eligible for
   // server upload. Will return nullopt if not available or not supported (e.g.
   // for PDFs, the text extraction result is never cached).
@@ -113,11 +127,17 @@ class AnnotatedPageContentRequest
   // These methods will resolve synchronously if the extraction is already
   // complete, or wait for the initial extraction to finish if there is one
   // pending. If the extraction request is cleared or reset (e.g. from a
-  // navigation or destruction), the callbacks will resolve with std::nullopt.
+  // navigation or destruction), or if the initial extraction wasn't triggered,
+  // the callbacks will resolve with std::nullopt.
   void GetCachedContentAndEligibilityAsync(
       GetExtractedPageContentAndEligibilityCallback callback);
   void GetServerUploadEligibilityAsync(
       GetServerUploadEligibilityCallback callback);
+
+  // Equivalent to GetCachedContentAndEligibilityAsync, except that if the
+  // initial extraction has not yet been triggered, it will be.
+  void GetContentAndEligibilityAsync(
+      GetExtractedPageContentAndEligibilityCallback callback);
 
   // Extracts a new APC for `page` and computes its eligibility for server
   // upload, and caches the new result. It will wait for the initial
@@ -129,14 +149,7 @@ class AnnotatedPageContentRequest
       GetExtractedPageContentAndEligibilityCallback callback);
 
  private:
-  friend class content::WebContentsUserData<AnnotatedPageContentRequest>;
   friend class AnnotatePageContentRequestTest;
-
-  AnnotatedPageContentRequest(
-      content::WebContents* web_contents,
-      PageContentExtractionService& page_content_extraction_service,
-      FetchPageContextCallback fetch_page_context_callback,
-      GetTabIdCallback get_tab_id_callback);
 
   // content::WebContentsObserver:
   void PrimaryPageChanged(content::Page& page) override;
@@ -145,7 +158,8 @@ class AnnotatedPageContentRequest
   void DidFinishNavigation(
       content::NavigationHandle* navigation_handle) override;
   void DidStopLoading() override;
-  void OnFirstContentfulPaintInPrimaryMainFrame() override;
+  void OnFirstContentfulPaintInPrimaryMainFrame(
+      base::TimeTicks presentation_time) override;
   void OnVisibilityChanged(content::Visibility visibility) override;
 
   void DidFinishNavigationWithPageSettledMonitor(
@@ -198,11 +212,11 @@ class AnnotatedPageContentRequest
   bool IsPageReadyForExtraction() const;
 
 #if BUILDFLAG(ENABLE_PDF)
-  void RequestPdfPageCount();
-  void RequestPdfText(TriggerSource trigger_source);
+  void RequestPdf(TriggerSource trigger_source);
 
-  // Invoked when pdf document is loaded, so that the metadata can be queried.
-  void OnPdfDocumentLoadComplete();
+  void RequestPdfPageCount(base::ScopedClosureRunner metrics_recorder);
+  void RequestPdfText(TriggerSource trigger_source,
+                      base::ScopedClosureRunner metrics_recorder);
 #endif  // BUILDFLAG(ENABLE_PDF)
 
   void OnPageContextEligibilityAPILoaded(
@@ -303,9 +317,10 @@ class AnnotatedPageContentRequest
 
   base::OnceClosure page_settled_callback_for_testing_;
 
-  base::WeakPtrFactory<AnnotatedPageContentRequest> weak_factory_{this};
+  ui::ScopedUnownedUserData<AnnotatedPageContentRequest>
+      scoped_unowned_user_data_;
 
-  WEB_CONTENTS_USER_DATA_KEY_DECL();
+  base::WeakPtrFactory<AnnotatedPageContentRequest> weak_factory_{this};
 };
 
 }  // namespace page_content_annotations

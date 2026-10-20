@@ -11,6 +11,7 @@
 #include "base/containers/fixed_flat_map.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
+#include "base/memory/self_deleting.h"
 #include "chrome/browser/persisted_state_db/session_proto_db_factory.h"
 #include "components/commerce/core/proto/merchant_signal_db_content.pb.h"
 #include "content/public/browser/android/browser_context_handle.h"
@@ -33,7 +34,7 @@ void OnLoadCallbackSingleEntry(const base::android::JavaRef<jobject>& jcallback,
     base::android::RunObjectCallbackAndroid(jcallback, nullptr);
     return;
   }
-  DCHECK(data.size() == 1);
+  CHECK(data.size() == 1, base::NotFatalUntil::M161);
   MerchantSignalProto proto = std::move(data.at(0).second);
   JNIEnv* env = base::android::AttachCurrentThread();
   base::android::ScopedJavaLocalRef<jobject> signal =
@@ -69,8 +70,10 @@ void OnUpdateCallback(
 }
 }  // namespace
 
-MerchantSignalDB::MerchantSignalDB(content::BrowserContext* browser_context)
-    : proto_db_(SessionProtoDBFactory<MerchantSignalProto>::GetInstance()
+MerchantSignalDB::MerchantSignalDB(content::BrowserContext* browser_context,
+                                   base::SelfDeletingPassKey key)
+    : base::SelfDeleting(key),
+      proto_db_(SessionProtoDBFactory<MerchantSignalProto>::GetInstance()
                     ->GetForProfile(browser_context)) {}
 MerchantSignalDB::~MerchantSignalDB() = default;
 
@@ -124,13 +127,17 @@ void MerchantSignalDB::DeleteAll(
       base::android::ScopedJavaGlobalRef<jobject>(joncomplete_for_testing)));
 }
 
+void MerchantSignalDB::Destroy(JNIEnv* env) {
+  delete this;
+}
+
 static void JNI_MerchantTrustSignalsEventStorage_Init(
     JNIEnv* env,
     const base::android::JavaRef<jobject>& obj,
     const base::android::JavaRef<jobject>& jprofile) {
   Java_MerchantTrustSignalsEventStorage_setNativePtr(
       env, obj,
-      reinterpret_cast<intptr_t>(new MerchantSignalDB(
+      reinterpret_cast<intptr_t>(base::MakeSelfDeleting<MerchantSignalDB>(
           content::BrowserContextFromJavaHandle(jprofile))));
 }
 

@@ -9,12 +9,7 @@
 
 namespace trusted_vault {
 
-#if !BUILDFLAG(IS_ANDROID)
-BASE_FEATURE(kSetClientEncryptionKeysJsApi, base::FEATURE_DISABLED_BY_DEFAULT);
-#endif
-
 BASE_FEATURE(kEnableTrustedVaultSHA256, base::FEATURE_ENABLED_BY_DEFAULT);
-
-BASE_FEATURE(kE2eeRotationProofBypassFix, base::FEATURE_ENABLED_BY_DEFAULT);
-
+BASE_FEATURE(kTrustedVaultSharedRecoveryFactorsAndEncryption,
+             base::FEATURE_DISABLED_BY_DEFAULT);
 }  // namespace trusted_vault

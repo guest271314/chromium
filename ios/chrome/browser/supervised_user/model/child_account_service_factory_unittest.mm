@@ -6,6 +6,7 @@
 
 #import "components/supervised_user/core/browser/child_account_service.h"
 #import "ios/chrome/browser/shared/model/profile/test/test_profile_ios.h"
+#import "ios/chrome/browser/supervised_user/model/child_account_service_factory.h"
 #import "ios/chrome/test/ios_chrome_scoped_testing_local_state.h"
 #import "ios/web/public/test/web_task_environment.h"
 #import "testing/platform_test.h"
@@ -14,7 +15,10 @@
 class ChildAccountServiceFactoryTest : public PlatformTest {
  public:
   ChildAccountServiceFactoryTest() {
-    profile_ = TestProfileIOS::Builder().Build();
+    TestProfileIOS::Builder builder;
+    builder.AddTestingFactory(ChildAccountServiceFactory::GetInstance(),
+                              ChildAccountServiceFactory::GetDefaultFactory());
+    profile_ = std::move(builder).Build();
   }
 
   ProfileIOS* GetRegularProfile() { return profile_.get(); }

@@ -9,6 +9,7 @@ import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
@@ -17,8 +18,12 @@ import static org.mockito.Mockito.verify;
 
 import android.app.Activity;
 import android.content.Context;
+import android.content.pm.ApplicationInfo;
+import android.content.pm.PackageManager;
+import android.content.pm.ProviderInfo;
 import android.net.Uri;
 import android.os.Build;
+import android.os.Process;
 
 import org.junit.After;
 import org.junit.Assert;
@@ -32,19 +37,19 @@ import org.mockito.Mockito;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 import org.mockito.stubbing.Answer;
+import org.robolectric.Robolectric;
 import org.robolectric.annotation.Config;
 
 import org.chromium.base.Callback;
+import org.chromium.base.TriState;
 import org.chromium.base.supplier.ObservableSuppliers;
 import org.chromium.base.supplier.SettableMonotonicObservableSupplier;
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.RobolectricUtil;
-import org.chromium.base.test.util.Features;
 import org.chromium.base.test.util.HistogramWatcher;
 import org.chromium.chrome.browser.data_sharing.DataSharingTabManager;
 import org.chromium.chrome.browser.enterprise.util.DataProtectionBridge;
 import org.chromium.chrome.browser.feature_engagement.TrackerFactory;
-import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.lifecycle.ActivityLifecycleDispatcher;
 import org.chromium.chrome.browser.pdf.PdfUtils;
 import org.chromium.chrome.browser.profiles.Profile;
@@ -57,18 +62,26 @@ import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tabmodel.TabModelSelector;
 import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager;
 import org.chromium.chrome.browser.ui.signin.SigninAndHistorySyncActivityLauncher;
+import org.chromium.chrome.browser.webshare.ShareServiceImplementationFactory;
 import org.chromium.chrome.test.OverrideContextWrapperTestRule;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
 import org.chromium.components.browser_ui.share.ShareParams;
 import org.chromium.components.browser_ui.util.AutomotiveUtils;
+import org.chromium.components.dom_distiller.core.DomDistillerUrlUtils;
+import org.chromium.components.dom_distiller.core.DomDistillerUrlUtilsJni;
 import org.chromium.components.favicon.LargeIconBridgeJni;
 import org.chromium.components.feature_engagement.Tracker;
+import org.chromium.content_public.browser.PermissionsPolicyFeature;
 import org.chromium.content_public.browser.RenderFrameHost;
+import org.chromium.content_public.browser.WebContents;
+import org.chromium.content_public.browser.WebContentsStatics;
 import org.chromium.ui.base.ActivityResultTracker;
 import org.chromium.ui.base.WindowAndroid;
 import org.chromium.ui.modaldialog.ModalDialogManager;
 import org.chromium.url.GURL;
 import org.chromium.url.JUnitTestGURLs;
+import org.chromium.webshare.mojom.ShareError;
+import org.chromium.webshare.mojom.ShareService;
 
 import java.lang.ref.WeakReference;
 import java.util.ArrayList;
@@ -76,9 +89,7 @@ import java.util.List;
 
 /** Unit test for {@link ShareDelegateImpl} that mocked out most native class calls. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(
-        manifest = Config.NONE,
-        sdk = {BaseRobolectricTestRunner.MIN_SDK, 34})
+@Config(sdk = {BaseRobolectricTestRunner.MIN_SDK, 34})
 public class ShareDelegateImplUnitTest {
     @Rule public MockitoRule mockitoRule = MockitoJUnit.rule();
 
@@ -87,6 +98,7 @@ public class ShareDelegateImplUnitTest {
             new OverrideContextWrapperTestRule();
 
     @Mock private Context mContext;
+    @Mock private PackageManager mPackageManager;
     @Mock private RenderFrameHost mRenderFrameHost;
     @Mock private BottomSheetController mBottomSheetController;
     @Mock private ShareSheetDelegate mShareSheetController;
@@ -95,7 +107,6 @@ public class ShareDelegateImplUnitTest {
     @Mock private ActivityLifecycleDispatcher mActivityLifecycleDispatcher;
     @Mock private TabModelSelector mTabModelSelector;
     @Mock private WindowAndroid mWindowAndroid;
-    @Mock private Activity mActivity;
     @Mock private LargeIconBridgeJni mLargeIconBridgeJni;
     @Mock private Tracker mTracker;
     @Mock private DataSharingTabManager mDataSharingTabManager;
@@ -105,6 +116,9 @@ public class ShareDelegateImplUnitTest {
     @Mock SnackbarManager mSnackbarManager;
 
     @Mock private DataProtectionBridge.Natives mDataProtectionBridgeMock;
+    @Mock private DomDistillerUrlUtils.Natives mDomDistillerUrlUtilsJniMock;
+
+    private Activity mActivity;
 
     private final ArgumentCaptor<ShareParams> mShareParamsCaptor =
             ArgumentCaptor.forClass(ShareParams.class);
@@ -164,8 +178,15 @@ public class ShareDelegateImplUnitTest {
         ShareHelper.setShareWithLastUsedComponentHookForTesting(() -> mShareHelperCallCount++);
         LargeIconBridgeJni.setInstanceForTesting(mLargeIconBridgeJni);
         TrackerFactory.setTrackerForTests(mTracker);
+        mActivity = Robolectric.buildActivity(Activity.class).get();
         Mockito.doReturn(new WeakReference<>(mActivity)).when(mWindowAndroid).getActivity();
         DataProtectionBridge.setInstanceForTesting(mDataProtectionBridgeMock);
+        DomDistillerUrlUtilsJni.setInstanceForTesting(mDomDistillerUrlUtilsJniMock);
+        doAnswer(invocation -> new GURL((String) invocation.getArgument(0)))
+                .when(mDomDistillerUrlUtilsJniMock)
+                .getOriginalUrlFromDistillerUrl(anyString());
+        doReturn(mPackageManager).when(mContext).getPackageManager();
+        doReturn("org.chromium.chrome").when(mContext).getPackageName();
 
         // TODO(crbug.com/406591712): Update to stubbing share methods when those are added.
         doAnswer(sShareIsAllowedByPolicy)
@@ -270,7 +291,6 @@ public class ShareDelegateImplUnitTest {
     }
 
     @Test
-    @Features.EnableFeatures(ChromeFeatureList.ENABLE_CLIPBOARD_DATA_CONTROLS_ANDROID)
     public void testShareText_allowedByPolicy() {
         doAnswer(sShareIsAllowedByPolicy)
                 .when(mDataProtectionBridgeMock)
@@ -287,7 +307,6 @@ public class ShareDelegateImplUnitTest {
     }
 
     @Test
-    @Features.EnableFeatures(ChromeFeatureList.ENABLE_CLIPBOARD_DATA_CONTROLS_ANDROID)
     public void testShareText_notAllowedByPolicy() {
         doAnswer(sShareIsNotAllowedByPolicy)
                 .when(mDataProtectionBridgeMock)
@@ -303,7 +322,6 @@ public class ShareDelegateImplUnitTest {
     }
 
     @Test
-    @Features.EnableFeatures(ChromeFeatureList.ENABLE_CLIPBOARD_DATA_CONTROLS_ANDROID)
     public void testShareText_emptyText_bypassesPolicyCheck() {
         doAnswer(sShareIsNotAllowedByPolicy)
                 .when(mDataProtectionBridgeMock)
@@ -318,7 +336,6 @@ public class ShareDelegateImplUnitTest {
     }
 
     @Test
-    @Features.EnableFeatures(ChromeFeatureList.ENABLE_CLIPBOARD_DATA_CONTROLS_ANDROID)
     public void testShareLink_allowedByPolicy() {
         doAnswer(sShareIsAllowedByPolicy)
                 .when(mDataProtectionBridgeMock)
@@ -337,7 +354,6 @@ public class ShareDelegateImplUnitTest {
     }
 
     @Test
-    @Features.EnableFeatures(ChromeFeatureList.ENABLE_CLIPBOARD_DATA_CONTROLS_ANDROID)
     public void testShareLink_notAllowedByPolicy() {
         doAnswer(sShareIsNotAllowedByPolicy)
                 .when(mDataProtectionBridgeMock)
@@ -355,7 +371,6 @@ public class ShareDelegateImplUnitTest {
     }
 
     @Test
-    @Features.EnableFeatures(ChromeFeatureList.ENABLE_CLIPBOARD_DATA_CONTROLS_ANDROID)
     public void testShareLink_emptyUrl_bypassesPolicyCheck() {
         doAnswer(sShareIsNotAllowedByPolicy)
                 .when(mDataProtectionBridgeMock)
@@ -369,7 +384,6 @@ public class ShareDelegateImplUnitTest {
     }
 
     @Test
-    @Features.EnableFeatures(ChromeFeatureList.ENABLE_CLIPBOARD_DATA_CONTROLS_ANDROID)
     public void testShareImage_allowedByPolicy() {
         doAnswer(sShareIsAllowedByPolicy)
                 .when(mDataProtectionBridgeMock)
@@ -390,7 +404,6 @@ public class ShareDelegateImplUnitTest {
     }
 
     @Test
-    @Features.EnableFeatures(ChromeFeatureList.ENABLE_CLIPBOARD_DATA_CONTROLS_ANDROID)
     public void testShareImage_notAllowedByPolicy() {
         doAnswer(sShareIsNotAllowedByPolicy)
                 .when(mDataProtectionBridgeMock)
@@ -410,7 +423,6 @@ public class ShareDelegateImplUnitTest {
     }
 
     @Test
-    @Features.EnableFeatures(ChromeFeatureList.ENABLE_CLIPBOARD_DATA_CONTROLS_ANDROID)
     public void testShareImage_emptyUrl_bypassesPolicyCheck() {
         doAnswer(sShareIsNotAllowedByPolicy)
                 .when(mDataProtectionBridgeMock)
@@ -425,7 +437,6 @@ public class ShareDelegateImplUnitTest {
     }
 
     @Test
-    @Features.EnableFeatures(ChromeFeatureList.ENABLE_CLIPBOARD_DATA_CONTROLS_ANDROID)
     public void testShare_nullRenderFrameHost_bypassesPolicyCheck() {
         doAnswer(sShareIsNotAllowedByPolicy)
                 .when(mDataProtectionBridgeMock)
@@ -442,26 +453,230 @@ public class ShareDelegateImplUnitTest {
     }
 
     @Test
-    @Features.DisableFeatures(ChromeFeatureList.ENABLE_CLIPBOARD_DATA_CONTROLS_ANDROID)
-    public void testShare_featureFlagDisabled_bypassesPolicyCheck() {
-        doAnswer(sShareIsNotAllowedByPolicy)
+    public void testWebShareText_allowedByPolicy() {
+        doAnswer(sShareIsAllowedByPolicy)
                 .when(mDataProtectionBridgeMock)
-                .verifyCopyTextIsAllowedByPolicy(anyString(), any(), any());
-        String shareText = "shareText";
+                .verifyShareTextIsAllowedByPolicy(anyString(), any(), any());
+        String shareText = "sample_data";
 
         ShareParams shareParams =
-                new ShareParams.Builder(mWindowAndroid, "", "").setText(shareText).build();
+                new ShareParams.Builder(mWindowAndroid, "sample_title", "")
+                        .setText(shareText)
+                        .build();
         ChromeShareExtras chromeShareExtras =
-                new ChromeShareExtras.Builder().setRenderFrameHost(mRenderFrameHost).build();
+                new ChromeShareExtras.Builder()
+                        .setDetailedContentType(DetailedContentType.WEB_SHARE)
+                        .setRenderFrameHost(mRenderFrameHost)
+                        .build();
 
-        testShareExpectAllowed(shareParams, chromeShareExtras);
+        testShareExpectAllowed(shareParams, chromeShareExtras, ShareOrigin.WEBSHARE_API);
         Assert.assertEquals(shareText, mShareParamsCaptor.getValue().getText());
+    }
+
+    @Test
+    public void testWebShareText_notAllowedByPolicy() {
+        doAnswer(sShareIsNotAllowedByPolicy)
+                .when(mDataProtectionBridgeMock)
+                .verifyShareTextIsAllowedByPolicy(anyString(), any(), any());
+        String shareText = "sample_data";
+
+        ShareParams shareParams =
+                new ShareParams.Builder(mWindowAndroid, "sample_title", "")
+                        .setText(shareText)
+                        .build();
+        ChromeShareExtras chromeShareExtras =
+                new ChromeShareExtras.Builder()
+                        .setDetailedContentType(DetailedContentType.WEB_SHARE)
+                        .setRenderFrameHost(mRenderFrameHost)
+                        .build();
+
+        testShareExpectNotAllowed(shareParams, chromeShareExtras, ShareOrigin.WEBSHARE_API);
+    }
+
+    @Test
+    public void testWebShareLink_allowedByPolicy() {
+        doAnswer(sShareIsAllowedByPolicy)
+                .when(mDataProtectionBridgeMock)
+                .verifyShareUrlIsAllowedByPolicy(anyString(), any(), any());
+        String shareUrl = "https://example.com";
+
+        ShareParams shareParams =
+                new ShareParams.Builder(mWindowAndroid, "sample_title", shareUrl)
+                        .setBypassFixingDomDistillerUrl(true)
+                        .build();
+        ChromeShareExtras chromeShareExtras =
+                new ChromeShareExtras.Builder()
+                        .setDetailedContentType(DetailedContentType.WEB_SHARE)
+                        .setRenderFrameHost(mRenderFrameHost)
+                        .build();
+
+        testShareExpectAllowed(shareParams, chromeShareExtras, ShareOrigin.WEBSHARE_API);
+        Assert.assertEquals(shareUrl, mShareParamsCaptor.getValue().getUrl());
+    }
+
+    @Test
+    public void testWebShareLink_notAllowedByPolicy() {
+        doAnswer(sShareIsNotAllowedByPolicy)
+                .when(mDataProtectionBridgeMock)
+                .verifyShareUrlIsAllowedByPolicy(anyString(), any(), any());
+        String shareUrl = "https://example.com";
+
+        ShareParams shareParams =
+                new ShareParams.Builder(mWindowAndroid, "sample_title", shareUrl)
+                        .setBypassFixingDomDistillerUrl(true)
+                        .build();
+        ChromeShareExtras chromeShareExtras =
+                new ChromeShareExtras.Builder()
+                        .setDetailedContentType(DetailedContentType.WEB_SHARE)
+                        .setRenderFrameHost(mRenderFrameHost)
+                        .build();
+
+        testShareExpectNotAllowed(shareParams, chromeShareExtras, ShareOrigin.WEBSHARE_API);
+    }
+
+    @Test
+    public void testShareServiceImplementationFactory_frameScopingAndDelegation() {
+        WebContents webContents = mock(WebContents.class);
+        doReturn(mWindowAndroid).when(webContents).getTopLevelNativeWindow();
+        WebContentsStatics.setWebContentsForTesting(webContents);
+
+        ShareDelegate mockShareDelegate = mock(ShareDelegate.class);
+        ShareDelegateSupplier.setInstanceForTesting(
+                ObservableSuppliers.createMonotonic(mockShareDelegate));
+
+        doReturn(true).when(mRenderFrameHost).isFeatureEnabled(PermissionsPolicyFeature.WEB_SHARE);
+        doReturn(true).when(mRenderFrameHost).consumeTransientUserActivation();
+
+        ShareServiceImplementationFactory factory =
+                new ShareServiceImplementationFactory(mRenderFrameHost);
+        ShareService shareService = factory.createImpl();
+        Assert.assertNotNull(shareService);
+
+        org.chromium.url.mojom.Url invalidUrl = new org.chromium.url.mojom.Url();
+        invalidUrl.url = "javascript:void(0)";
+
+        int[] shareError = new int[1];
+        shareService.share(
+                "sample_title", "sample_text", invalidUrl, null, error -> shareError[0] = error);
+
+        Assert.assertEquals(ShareError.PERMISSION_DENIED, shareError[0]);
+        verify(mRenderFrameHost).terminateRendererDueToBadMessage(11);
+
+        org.chromium.url.mojom.Url validUrl = new org.chromium.url.mojom.Url();
+        validUrl.url = "https://example.com";
+
+        shareService.share("sample_title", "sample_text", validUrl, null, error -> {});
+
+        ArgumentCaptor<ChromeShareExtras> extrasCaptor =
+                ArgumentCaptor.forClass(ChromeShareExtras.class);
+        verify(mockShareDelegate)
+                .share(
+                        any(ShareParams.class),
+                        extrasCaptor.capture(),
+                        eq(ShareOrigin.WEBSHARE_API));
+
+        ChromeShareExtras capturedExtras = extrasCaptor.getValue();
+        Assert.assertEquals(mRenderFrameHost, capturedExtras.getRenderFrameHost());
+        Assert.assertEquals(DetailedContentType.WEB_SHARE, capturedExtras.getDetailedContentType());
+    }
+
+    @Test
+    public void testShareServiceImplementationFactory_noTransientUserActivation() {
+        WebContents webContents = mock(WebContents.class);
+        doReturn(mWindowAndroid).when(webContents).getTopLevelNativeWindow();
+        WebContentsStatics.setWebContentsForTesting(webContents);
+
+        ShareDelegate mockShareDelegate = mock(ShareDelegate.class);
+        ShareDelegateSupplier.setInstanceForTesting(
+                ObservableSuppliers.createMonotonic(mockShareDelegate));
+
+        doReturn(true).when(mRenderFrameHost).isFeatureEnabled(PermissionsPolicyFeature.WEB_SHARE);
+        doReturn(false).when(mRenderFrameHost).consumeTransientUserActivation();
+
+        ShareServiceImplementationFactory factory =
+                new ShareServiceImplementationFactory(mRenderFrameHost);
+        ShareService shareService = factory.createImpl();
+        Assert.assertNotNull(shareService);
+
+        org.chromium.url.mojom.Url validUrl = new org.chromium.url.mojom.Url();
+        validUrl.url = "https://example.com";
+
+        int[] shareError = new int[1];
+        shareService.share(
+                "sample_title", "sample_text", validUrl, null, error -> shareError[0] = error);
+
+        Assert.assertEquals(ShareError.PERMISSION_DENIED, shareError[0]);
+        verify(mRenderFrameHost).consumeTransientUserActivation();
+        verify(mockShareDelegate, never()).share(any(), any(), anyInt());
+    }
+
+    @Test
+    public void testShareServiceImplementationFactory_permissionsPolicyDisabled() {
+        WebContents webContents = mock(WebContents.class);
+        doReturn(mWindowAndroid).when(webContents).getTopLevelNativeWindow();
+        WebContentsStatics.setWebContentsForTesting(webContents);
+
+        ShareDelegate mockShareDelegate = mock(ShareDelegate.class);
+        ShareDelegateSupplier.setInstanceForTesting(
+                ObservableSuppliers.createMonotonic(mockShareDelegate));
+
+        doReturn(false).when(mRenderFrameHost).isFeatureEnabled(PermissionsPolicyFeature.WEB_SHARE);
+
+        ShareServiceImplementationFactory factory =
+                new ShareServiceImplementationFactory(mRenderFrameHost);
+        ShareService shareService = factory.createImpl();
+        Assert.assertNotNull(shareService);
+
+        org.chromium.url.mojom.Url validUrl = new org.chromium.url.mojom.Url();
+        validUrl.url = "https://example.com";
+
+        int[] shareError = new int[1];
+        shareService.share(
+                "sample_title", "sample_text", validUrl, null, error -> shareError[0] = error);
+
+        Assert.assertEquals(ShareError.INTERNAL_ERROR, shareError[0]);
+        verify(mockShareDelegate, never()).share(any(), any(), anyInt());
+    }
+
+    @Test
+    public void testShareServiceImplementationFactory_destroyedWebContents() {
+        WebContents webContents = mock(WebContents.class);
+        doReturn(true).when(webContents).isDestroyed();
+        WebContentsStatics.setWebContentsForTesting(webContents);
+
+        ShareDelegate mockShareDelegate = mock(ShareDelegate.class);
+        ShareDelegateSupplier.setInstanceForTesting(
+                ObservableSuppliers.createMonotonic(mockShareDelegate));
+
+        doReturn(true).when(mRenderFrameHost).isFeatureEnabled(PermissionsPolicyFeature.WEB_SHARE);
+
+        ShareServiceImplementationFactory factory =
+                new ShareServiceImplementationFactory(mRenderFrameHost);
+        ShareService shareService = factory.createImpl();
+        Assert.assertNotNull(shareService);
+
+        org.chromium.url.mojom.Url validUrl = new org.chromium.url.mojom.Url();
+        validUrl.url = "https://example.com";
+
+        int[] shareError = new int[1];
+        shareService.share(
+                "sample_title", "sample_text", validUrl, null, error -> shareError[0] = error);
+
+        Assert.assertEquals(ShareError.INTERNAL_ERROR, shareError[0]);
+        verify(mockShareDelegate, never()).share(any(), any(), anyInt());
     }
 
     private void testShareExpectAllowed(
             ShareParams shareParams, ChromeShareExtras chromeShareExtras) {
+        testShareExpectAllowed(shareParams, chromeShareExtras, ShareOrigin.CONTEXT_MENU);
+    }
+
+    private void testShareExpectAllowed(
+            ShareParams shareParams,
+            ChromeShareExtras chromeShareExtras,
+            @ShareOrigin int shareOrigin) {
         createShareDelegate(false, mShareSheetController);
-        mShareDelegate.share(shareParams, chromeShareExtras, ShareOrigin.CONTEXT_MENU);
+        mShareDelegate.share(shareParams, chromeShareExtras, shareOrigin);
         verify(mShareSheetController)
                 .share(
                         mShareParamsCaptor.capture(),
@@ -484,8 +699,15 @@ public class ShareDelegateImplUnitTest {
 
     private void testShareExpectNotAllowed(
             ShareParams shareParams, ChromeShareExtras chromeShareExtras) {
+        testShareExpectNotAllowed(shareParams, chromeShareExtras, ShareOrigin.CONTEXT_MENU);
+    }
+
+    private void testShareExpectNotAllowed(
+            ShareParams shareParams,
+            ChromeShareExtras chromeShareExtras,
+            @ShareOrigin int shareOrigin) {
         createShareDelegate(false, mShareSheetController);
-        mShareDelegate.share(shareParams, chromeShareExtras, ShareOrigin.CONTEXT_MENU);
+        mShareDelegate.share(shareParams, chromeShareExtras, shareOrigin);
         verify(mShareSheetController, never())
                 .share(
                         any(),
@@ -584,7 +806,7 @@ public class ShareDelegateImplUnitTest {
                                 mWindowAndroid, "", JUnitTestGURLs.TEXT_FRAGMENT_URL.getSpec())
                         .setBypassFixingDomDistillerUrl(true)
                         .setText("text")
-                        .setLinkToTextSuccessful(true)
+                        .setLinkToTextSuccessful(TriState.TRUE)
                         .build();
         extras =
                 new ChromeShareExtras.Builder()
@@ -619,7 +841,7 @@ public class ShareDelegateImplUnitTest {
                                         List.of(
                                                 Uri.parse("content://path/to/image1"),
                                                 Uri.parse("content://path/to/image2"))))
-                        .setLinkToTextSuccessful(true)
+                        .setLinkToTextSuccessful(TriState.TRUE)
                         .setFileContentType("image/png")
                         .build();
         extras =
@@ -734,5 +956,53 @@ public class ShareDelegateImplUnitTest {
         Assert.assertEquals(
                 "Page title should be set on ShareParams.", pdfTitle, params.getTitle());
         Assert.assertEquals("URL should be empty on ShareParams.", "", params.getUrl());
+    }
+
+    @Test
+    public void testShareUnsafePDf() {
+        final String pdfTitle = "unsafe.pdf";
+        final String contentUri =
+                "content://org.chromium.chrome.FileProvider/passwords/ChromePass.csv";
+        final String pdfUrl = PdfUtils.encodePdfPageUrl(contentUri);
+        doReturn(true).when(mTab).isNativePage();
+        doReturn(new GURL(pdfUrl)).when(mTab).getUrl();
+        doReturn(pdfTitle).when(mTab).getTitle();
+        doReturn(mock(WindowAndroid.class)).when(mTab).getWindowAndroid();
+
+        // Setup mock package manager to identify this URI as coming from this app.
+        ProviderInfo providerInfo = new ProviderInfo();
+        providerInfo.packageName = "org.chromium.chrome";
+        providerInfo.applicationInfo = new ApplicationInfo();
+        providerInfo.applicationInfo.uid = Process.myUid();
+        doReturn(providerInfo)
+                .when(mPackageManager)
+                .resolveContentProvider("org.chromium.chrome.FileProvider", 0);
+
+        createShareDelegate(false, mShareSheetController);
+        mShareDelegate.share(mTab, false, ShareOrigin.OVERFLOW_MENU);
+        verify(mShareSheetController)
+                .share(
+                        mShareParamsCaptor.capture(),
+                        any(),
+                        any(),
+                        any(),
+                        any(),
+                        any(),
+                        any(),
+                        any(),
+                        any(),
+                        anyInt(),
+                        anyLong(),
+                        anyBoolean(),
+                        any(),
+                        any(),
+                        any(),
+                        any());
+
+        ShareParams params = mShareParamsCaptor.getValue();
+        // Should NOT be shared as file because it is unsafe.
+        Assert.assertNull("File URIs should be null for unsafe PDF.", params.getFileUris());
+        // Should be shared as URL instead.
+        Assert.assertEquals("URL should be the visible PDF URL.", pdfUrl, params.getUrl());
     }
 }

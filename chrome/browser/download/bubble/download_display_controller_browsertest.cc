@@ -21,7 +21,6 @@
 #include "chrome/browser/download/download_prefs.h"
 #include "chrome/browser/download/offline_item_model_manager_factory.h"
 #include "chrome/browser/offline_items_collection/offline_content_aggregator_factory.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/download/download_display.h"
 #include "chrome/common/chrome_switches.h"
 #include "chrome/test/base/in_process_browser_test.h"
@@ -117,6 +116,7 @@ class FakeDownloadDisplay : public DownloadDisplay {
   int GetAnnouncementCount() const { return announcement_count_; }
   void OpenSecuritySubpage(
       const offline_items_collection::ContentId&) override {}
+  void OnOfflineItemsInitialized() override {}
 
  private:
   bool shown_ = false;
@@ -263,7 +263,7 @@ class DownloadDisplayControllerTest : public InProcessBrowserTest {
 
     mock_update_service_ =
         std::make_unique<StrictMock<MockDownloadBubbleUpdateService>>(
-            browser()->profile(), items_, offline_items_);
+            browser()->GetProfile(), items_, offline_items_);
     // Will be called when the DownloadDisplayController is constructed.
     EXPECT_CALL(*mock_update_service_, GetProgressInfo(_))
         .WillRepeatedly(Return(DownloadDisplay::ProgressInfo()));
@@ -336,7 +336,7 @@ class DownloadDisplayControllerTest : public InProcessBrowserTest {
       items.push_back(&item(i));
     }
     content::DownloadItemUtils::AttachInfoForTesting(
-        &(item(index)), browser()->profile(), nullptr);
+        &(item(index)), browser()->GetProfile(), nullptr);
     mock_update_service_->AddModel(
         MockDownloadBubbleUpdateService::ModelType::kDownloadItem);
     DownloadDisplay::ProgressInfo progress_info;

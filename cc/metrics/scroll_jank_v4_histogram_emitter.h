@@ -8,7 +8,9 @@
 #include <variant>
 
 #include "base/containers/enum_set.h"
+#include "base/memory/weak_ptr.h"
 #include "cc/cc_export.h"
+#include "cc/metrics/scroll_jank_os_reporter.h"
 #include "cc/metrics/scroll_jank_v4_result.h"
 #include "third_party/abseil-cpp/absl/container/inlined_vector.h"
 
@@ -48,6 +50,8 @@ class CC_EXPORT ScrollJankV4HistogramEmitter {
   void OnScrollStarted();
   void OnScrollEnded();
 
+  void SetOsReporter(base::WeakPtr<ScrollJankOsReporter> os_reporter);
+
   static constexpr int kHistogramEmitFrequency = 64;
   static constexpr const char* kDelayedFramesWindowHistogram =
       "Event.ScrollJank.DelayedFramesPercentage4.FixedWindow";
@@ -79,8 +83,7 @@ class CC_EXPORT ScrollJankV4HistogramEmitter {
   // don't count towards the histogram frame count.
   struct SingleFrameData {
     // Reasons why the frame is janky. Might be empty.
-    base::EnumSet<JankReason, JankReason::kMinValue, JankReason::kMaxValue>
-        jank_reasons;
+    base::EnumSet<JankReason> jank_reasons;
 
     // Total number of VSyncs that Chrome missed (for any reason). Whenever a
     // frame is missed, it could be delayed by >=1 vsyncs, this helps us track
@@ -213,6 +216,7 @@ class CC_EXPORT ScrollJankV4HistogramEmitter {
 
   JankDataFixedWindow fixed_window_;
   JankDataPerScroll per_scroll_;
+  base::WeakPtr<ScrollJankOsReporter> os_reporter_;
 };
 
 }  // namespace cc

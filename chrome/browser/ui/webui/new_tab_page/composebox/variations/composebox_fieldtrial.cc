@@ -52,7 +52,6 @@ omnibox::NTPComposeboxConfig GetNTPComposeboxConfig() {
   auto* composebox = default_config.mutable_composebox();
 
   auto* image_upload = composebox->mutable_image_upload();
-  image_upload->set_enable_webp_encoding(false);
   image_upload->set_downscale_max_image_size(1500000);
   image_upload->set_downscale_max_image_width(1600);
   image_upload->set_downscale_max_image_height(1600);
@@ -127,10 +126,6 @@ omnibox::NTPComposeboxConfig GetNTPComposeboxConfig() {
 }  // namespace
 
 bool IsNtpComposeboxEnabled(Profile* profile) {
-// TODO(b/502297163): Implement for Android.
-#if BUILDFLAG(IS_ANDROID)
-  return true;
-#else
   if (!profile) {
     return false;
   }
@@ -157,7 +152,6 @@ bool IsNtpComposeboxEnabled(Profile* profile) {
   return base::FeatureList::IsEnabled(kNtpComposebox) &&
          aim_eligibility_service->IsAimEligible() &&
          aim_eligibility_service->IsFuseboxEligible();
-#endif
 }
 
 std::unique_ptr<
@@ -171,7 +165,7 @@ CreateQueryControllerConfigParams() {
   return config_params;
 }
 
-BASE_FEATURE(kNtpComposebox, base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kNtpComposebox, base::FEATURE_ENABLED_BY_DEFAULT);
 
 const base::FeatureParam<std::string> kConfigParam(&kNtpComposebox,
                                                    "NtpComposeboxConfigParam",
@@ -195,11 +189,6 @@ const base::FeatureParam<bool> kShowContextMenuTabPreviews(
     "NtpComposeboxShowContextMenuTabPreviews",
     false);
 
-const base::FeatureParam<bool> kShowContextMenuDescription(
-    &kNtpComposebox,
-    "NtpComposeboxShowContextMenuDescription",
-    true);
-
 const base::FeatureParam<bool> kShowContextMenuHeaders(&kNtpComposebox,
                                                        "ShowContextMenuHeaders",
                                                        true);
@@ -217,17 +206,6 @@ const base::FeatureParam<bool> kContextMenuEnableMultiTabSelection(
     "NtpComposeboxContextMenuEnableMultiTabSelection",
     true);
 
-const base::FeatureParam<bool> kEnableThreadsRail(&kNtpComposebox,
-                                                  "EnableThreadsRail",
-                                                  false);
-const base::FeatureParam<bool> kEnableThreadsRailLogo(&kNtpComposebox,
-                                                      "EnableThreadsRailLogo",
-                                                      false);
-
-const base::FeatureParam<bool> kUseNtpComposeboxFork(&kNtpComposebox,
-                                                     "useNtpComposeboxFork",
-                                                     false);
-
 FeatureConfig::FeatureConfig() : config(GetNTPComposeboxConfig()) {}
 
 FeatureConfig::FeatureConfig(const FeatureConfig&) = default;
@@ -241,10 +219,6 @@ FeatureConfig::~FeatureConfig() = default;
 namespace ntp_realbox {
 
 bool IsNtpRealboxNextEnabled(Profile* profile) {
-// TODO(b/502297163): Implement for Android.
-#if BUILDFLAG(IS_ANDROID)
-  return true;
-#else
   if (!profile) {
     return false;
   }
@@ -275,10 +249,9 @@ bool IsNtpRealboxNextEnabled(Profile* profile) {
   return base::FeatureList::IsEnabled(kNtpRealboxNext) &&
          aim_eligibility_service->IsAimEligible() &&
          aim_eligibility_service->IsFuseboxEligible();
-#endif
 }
 
-BASE_FEATURE(kNtpRealboxNext, base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kNtpRealboxNext, base::FEATURE_ENABLED_BY_DEFAULT);
 
 const base::FeatureParam<PlaceholderText>::Option kSteadyPlaceholderOptions[] =
     {
@@ -297,5 +270,7 @@ const base::FeatureParam<bool> kMultiLineEnabled(&kNtpRealboxNext,
                                                  true);
 
 BASE_FEATURE(kNtpRealboxCyclingPlaceholders, base::FEATURE_DISABLED_BY_DEFAULT);
+
+BASE_FEATURE(kNtpRealboxDynamicAiModeButton, base::FEATURE_DISABLED_BY_DEFAULT);
 
 }  // namespace ntp_realbox

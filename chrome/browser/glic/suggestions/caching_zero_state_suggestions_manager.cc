@@ -4,6 +4,7 @@
 
 #include "chrome/browser/glic/suggestions/caching_zero_state_suggestions_manager.h"
 
+#include "base/memory/raw_ptr.h"
 #include "base/types/id_type.h"
 #include "chrome/browser/glic/suggestions/contextual_cueing_service.h"
 #include "content/public/browser/page.h"
@@ -43,7 +44,6 @@ class CachingContextualCueingServiceImpl
             .is_focused_tab_request = true,
             .urls = std::move(urls),
             .is_fre = is_fre,
-            .supported_tools = supported_tools,
             .focused_page = focused_page,
         },
         std::move(callback));
@@ -62,7 +62,7 @@ class CachingContextualCueingServiceImpl
   }
 
   bool GetContextualGlicZeroStateSuggestionsForPinnedTabs(
-      std::vector<content::WebContents*> pinned_web_contents,
+      std::vector<raw_ptr<content::WebContents>> pinned_web_contents,
       bool is_fre,
       std::optional<std::vector<std::string>> supported_tools,
       content::WebContents* focused_tab,
@@ -73,7 +73,7 @@ class CachingContextualCueingServiceImpl
       urls.push_back(focused_tab->GetLastCommittedURL());
       focused_page.page = focused_tab->GetPrimaryPage().GetWeakPtr();
     }
-    for (auto* web_contents : pinned_web_contents) {
+    for (content::WebContents* web_contents : pinned_web_contents) {
       if (web_contents != focused_tab &&
           web_contents->GetLastCommittedURL().is_valid()) {
         urls.push_back(web_contents->GetLastCommittedURL());
@@ -85,7 +85,6 @@ class CachingContextualCueingServiceImpl
             .is_focused_tab_request = false,
             .urls = std::move(urls),
             .is_fre = is_fre,
-            .supported_tools = supported_tools,
             .focused_page = focused_page,
         },
         std::move(callback));
@@ -142,7 +141,6 @@ class CachingContextualCueingServiceImpl
     bool is_focused_tab_request = false;
     std::vector<GURL> urls;
     bool is_fre = false;
-    std::optional<std::vector<std::string>> supported_tools;
     PageReference focused_page;
 
     bool operator==(const CacheKey& other) const = default;

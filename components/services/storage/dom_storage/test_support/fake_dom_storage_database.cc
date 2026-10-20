@@ -6,6 +6,7 @@
 
 #include <utility>
 
+#include "base/notreached.h"
 #include "components/services/storage/dom_storage/test_support/dom_storage_database_testing.h"
 
 namespace storage {
@@ -13,11 +14,8 @@ namespace storage {
 FakeDomStorageDatabase::FakeDomStorageDatabase(DbStatus open_status)
     : open_status_(std::move(open_status)) {
   // After a successful Open(), SessionStorageImpl calls ReadAllMetadata() and
-  // passes the result to SessionStorageMetadata::Initialize(), which accesses
-  // next_map_id.value() unconditionally. Real databases always populate
-  // next_map_id, so we do the same to avoid a crash.
+  // passes the result to SessionStorageMetadata::Initialize().
   Metadata metadata;
-  metadata.next_map_id = 0;
   read_all_metadata_result_ = std::move(metadata);
 }
 
@@ -86,6 +84,14 @@ DbStatus FakeDomStorageDatabase::PurgeOrigins(std::set<url::Origin> origins) {
 
 DbStatus FakeDomStorageDatabase::CleanUpStaleData() {
   return DbStatus::OK();
+}
+
+void FakeDomStorageDatabase::Close() {
+  NOTREACHED();
+}
+
+void FakeDomStorageDatabase::DetachFromSequence() {
+  NOTREACHED();
 }
 
 DbStatus FakeDomStorageDatabase::PutVersionForTesting(int64_t version) {

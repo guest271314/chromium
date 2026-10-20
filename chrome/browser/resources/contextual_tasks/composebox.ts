@@ -2,14 +2,13 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+import './contextual_tasks_inner_composebox.js';
 import '//resources/cr_components/composebox/composebox_dropdown.js';
-import '//resources/cr_components/composebox/composebox.js';
 import '//resources/cr_components/localized_link/localized_link.js';
 
-import type {ComposeboxElement} from '//resources/cr_components/composebox/composebox.js';
+import {GlifAnimationState} from '//resources/cr_components/composebox/common.js';
 import type {PageHandlerRemote} from '//resources/cr_components/composebox/composebox.mojom-webui.js';
 import {LensOverlayDismissalSource} from '//resources/cr_components/composebox/composebox.mojom-webui.js';
-import type {ComposeboxDropdownElement} from '//resources/cr_components/composebox/composebox_dropdown.js';
 import {ComposeboxProxyImpl, createAutocompleteMatch} from '//resources/cr_components/composebox/composebox_proxy.js';
 import {GlowAnimationState, VoiceSearchState} from '//resources/cr_components/search/constants.js';
 import {I18nMixinLit} from '//resources/cr_elements/i18n_mixin_lit.js';
@@ -17,54 +16,57 @@ import {assert} from '//resources/js/assert.js';
 import {EventTracker} from '//resources/js/event_tracker.js';
 import {loadTimeData} from '//resources/js/load_time_data.js';
 import type {AutocompleteMatch, AutocompleteResult, PageCallbackRouter as SearchboxPageCallbackRouter, PageHandlerRemote as SearchboxPageHandlerRemote} from '//resources/mojo/components/omnibox/browser/searchbox.mojom-webui.js';
-import type {InputState} from '//resources/mojo/components/omnibox/composebox/composebox_query.mojom-webui.js';
+import type {InputState, ModelMode} from '//resources/mojo/components/omnibox/composebox/composebox_query.mojom-webui.js';
 import {InputType, ToolMode} from '//resources/mojo/components/omnibox/composebox/composebox_query.mojom-webui.js';
 import type {UnguessableToken} from '//resources/mojo/mojo/public/mojom/base/unguessable_token.mojom-webui.js';
 import {CrLitElement} from 'chrome://resources/lit/v3_0/lit.rollup.js';
 import type {PropertyValues} from 'chrome://resources/lit/v3_0/lit.rollup.js';
-import {WindowOpenDisposition} from 'chrome://resources/mojo/ui/base/mojom/window_open_disposition.mojom-webui.js';
 
 import {getCss} from './composebox.css.js';
 import {getHtml} from './composebox.html.js';
 import {IconType} from './contextual_tasks.mojom-webui.js';
-import type {InjectedInput, PageHandlerInterface} from './contextual_tasks.mojom-webui.js';
-import {BrowserProxyImpl} from './contextual_tasks_browser_proxy.js';
+import type {InjectedInput} from './contextual_tasks.mojom-webui.js';
+import type {ContextualTasksInnerComposeboxElement} from './contextual_tasks_inner_composebox.js';
 
 const ICON_TYPE_TO_NAME: {[id: number]: string} = {
   [IconType.kUnspecified]: 'unspecified',
   [IconType.kAdd]: 'add',
   [IconType.kFormatQuoteFilled]: 'quoteFilled',
   [IconType.kImage]: 'image',
+  [IconType.kFollowUp]: 'followUp',
   [IconType.kDrivePdf]: 'drivePdf',
   [IconType.kCheck]: 'check',
   [IconType.kInvertedFormatQuoteFilled]: 'invertedQuoteFilled',
 };
 
 function recordVoiceSearchAction(voiceSearchState: VoiceSearchState) {
-  // Safety return statement in rare case chrome metrics is not available.
-  if (!chrome.histograms) {
+  const metricsService = chrome.histograms || chrome.metricsPrivate;
+  if (!metricsService) {
     return;
   }
 
-  chrome.histograms.recordEnumerationValue(
+  metricsService.recordEnumerationValue(
       'ContextualTasks.VoiceSearch.StateV2', voiceSearchState,
       VoiceSearchState.MAX_VALUE + 1);
 }
 
 function createGhostMatch(): AutocompleteMatch {
-  return createAutocompleteMatch({
-    contents: '\u200b',
-    description: '\u200b',
+  const match = createAutocompleteMatch({
     type: 'SEARCH_SUGGEST',
     isSearchType: true,
-    iconPath: '//resources/cr_components/searchbox/icons/search_spark.svg',
+    iconPath:
+        (document.documentElement.hasAttribute('webui-rounded-icons') ?
+             '//resources/cr_components/searchbox/icons/search_spark.svg' :
+             '//resources/cr_components/searchbox/icons/search_spark_old.svg'),
   });
+  match.suggestTemplate.primaryText.text = '\u200b';
+  match.suggestTemplate.secondaryText.text = '\u200b';
+  return match;
 }
 export interface ContextualTasksComposeboxElement {
   $: {
-    composebox: ComposeboxElement,
+    composebox: ContextualTasksInnerComposeboxElement,
     composeboxContainer: HTMLElement,
-    contextualTasksSuggestionsContainer: ComposeboxDropdownElement,
   };
 }
 
@@ -113,7 +115,6 @@ export class ContextualTasksComposeboxElement extends I18nMixinLit
       },
       showContextMenu_: {
         type: Boolean,
-        value: loadTimeData.getBoolean('composeboxShowContextMenu'),
       },
       voiceSearchCoherenceEnabled_: {
         type: Boolean,
@@ -148,8 +149,12 @@ export class ContextualTasksComposeboxElement extends I18nMixinLit
       lensButtonDisabled_: {type: Boolean},
       caretAnimationsEnabled_: {type: Boolean},
       usePecApi_: {type: Boolean},
+      smartTabSharingVisible_: {type: Boolean},
+      contextManagementInComposeboxEnabled_: {type: Boolean},
+      clearAllInputsWhenSubmittingQuery_: {type: Boolean},
       energyEffectEnabled_: {type: Boolean, reflect: true},
       energyEffectAnimationEnabled_: {type: Boolean, reflect: true},
+      glifAnimationState_: {type: String},
     };
   }
   accessor enableNativeZeroStateSuggestions: boolean = false;
@@ -160,12 +165,16 @@ export class ContextualTasksComposeboxElement extends I18nMixinLit
   accessor isLensOverlayShowing: boolean = false;
   accessor isOverlayOpenForAimVisualSearch: boolean = false;
   accessor inputEnabled: boolean = true;
+  private focusRetryCount_ = 0;
+  private focusAnimationFrameId_: number|null = null;
 
   protected accessor zeroStateSuggestions_: AutocompleteResult = {
+    queryId: -1,
     input: '',
     suggestionGroupsMap: {},
     matches: Array(5).fill(null).map(() => createGhostMatch()),
     smartComposeInlineHint: null,
+    showAimActivityLink: false,
     sequenceId: 0,
   };
   /* If suggestions are loading. Set this any time that should hide suggestions
@@ -178,7 +187,8 @@ export class ContextualTasksComposeboxElement extends I18nMixinLit
   protected accessor showContextMenu_: boolean =
       loadTimeData.getBoolean('composeboxShowContextMenu');
   protected accessor voiceSearchCoherenceEnabled_: boolean =
-      loadTimeData.getBoolean('voiceSearchCoherenceComposeboxesEnabled');
+      loadTimeData.getBoolean(
+          'voiceSearchCoherenceCobrowsingComposeboxEnabled');
   protected accessor inputState_: InputState|null = null;
   protected accessor showSuggestionsActivityLink_: boolean = false;
   protected accessor inVoiceSearchMode_: boolean = false;
@@ -189,7 +199,6 @@ export class ContextualTasksComposeboxElement extends I18nMixinLit
   protected searchboxHandler_: SearchboxPageHandlerRemote;
   private eventTracker_: EventTracker = new EventTracker();
   private pageHandler_: PageHandlerRemote;
-  private contextualTasksHandler_: PageHandlerInterface;
   private searchboxCallbackRouter_: SearchboxPageCallbackRouter;
   private searchboxListenerIds_: number[] = [];
   private shouldSubmitAfterUpload_: boolean = false;
@@ -207,6 +216,12 @@ export class ContextualTasksComposeboxElement extends I18nMixinLit
       loadTimeData.getBoolean('caretAnimationEnabled');
   protected accessor usePecApi_: boolean =
       loadTimeData.getBoolean('contextualMenuUsePecApi');
+  protected accessor smartTabSharingVisible_: boolean =
+      loadTimeData.getBoolean('composeboxSmartTabSharingVisible');
+  protected accessor contextManagementInComposeboxEnabled_: boolean =
+      loadTimeData.getBoolean('contextManagementInComposeboxEnabled');
+  protected accessor clearAllInputsWhenSubmittingQuery_: boolean =
+      loadTimeData.getBoolean('clearAllInputsWhenSubmittingQuery');
   protected accessor energyEffectEnabled_: boolean =
       loadTimeData.getBoolean('energyEffectEnabled');
   // The use of energyEffectEnabled to set energyEffectAnimationEnabled_ is
@@ -214,11 +229,12 @@ export class ContextualTasksComposeboxElement extends I18nMixinLit
   // across all surfaces (= Nextbox, Omnibox, and Realbox).
   protected accessor energyEffectAnimationEnabled_: boolean =
       loadTimeData.getBoolean('energyEffectEnabled');
+  protected accessor glifAnimationState_: GlifAnimationState =
+      GlifAnimationState.INELIGIBLE;
 
   constructor() {
     super();
     this.pageHandler_ = ComposeboxProxyImpl.getInstance().handler;
-    this.contextualTasksHandler_ = BrowserProxyImpl.getInstance().handler;
     this.searchboxCallbackRouter_ =
         ComposeboxProxyImpl.getInstance().searchboxCallbackRouter;
     this.searchboxHandler_ = ComposeboxProxyImpl.getInstance().searchboxHandler;
@@ -236,6 +252,7 @@ export class ContextualTasksComposeboxElement extends I18nMixinLit
       // Do not play the glow animation if opening on a thread.
       if (!this.isZeroState) {
         composebox.animationState = GlowAnimationState.NONE;
+        this.glifAnimationState_ = GlifAnimationState.INELIGIBLE;
       }
       this.eventTracker_.add(
           composebox, 'can-submit-files-and-input-changed',
@@ -245,6 +262,7 @@ export class ContextualTasksComposeboxElement extends I18nMixinLit
               this.shouldSubmitAfterUpload_ = false;
               composebox.submitQuery();
             }
+            this.fire('update-tooltip-visibility');
           });
       this.eventTracker_.add(composebox, 'composebox-focus-in', () => {
         this.isComposeboxFocused_ = true;
@@ -263,11 +281,13 @@ export class ContextualTasksComposeboxElement extends I18nMixinLit
         if (this.isZeroState || this.forceSkipSubmitGlifAnimation_) {
           this.forceSkipSubmitGlifAnimation_ = false;
           composebox.animationState = GlowAnimationState.NONE;
+          this.glifAnimationState_ = GlifAnimationState.INELIGIBLE;
           this.clearInputAndFocus(/* querySubmitted= */ true);
           return;
         }
         // Force animation to replay visibly on subsequent submissions.
         composebox.animationState = GlowAnimationState.NONE;
+        this.glifAnimationState_ = GlifAnimationState.INELIGIBLE;
         requestAnimationFrame(() => {
           composebox.animationState = GlowAnimationState.SUBMITTING;
         });
@@ -351,12 +371,30 @@ export class ContextualTasksComposeboxElement extends I18nMixinLit
   // Must have `$` access in updated to avoid violating Lit contract since
   // `willUpdate` runs before `render`, which will cause `$` to not be
   // populated yet.
-  override updated(changedProperties: PropertyValues<this>) {
+  override async updated(changedProperties: PropertyValues<this>) {
     super.updated(changedProperties);
     if (changedProperties.has('isZeroState')) {
       if (this.isZeroState) {
         // Opening zero state triggers animation.
         this.$.composebox.animationState = GlowAnimationState.SUBMITTING;
+        const limitingEnabled =
+            loadTimeData.getBoolean('contextMenuAnimationLimitingEnabled');
+        if (limitingEnabled) {
+          const {canShow: allowed} =
+              await this.pageHandler_.canShowNextboxAnimation();
+          if (allowed) {
+            this.glifAnimationState_ = GlifAnimationState.STARTED;
+            this.pageHandler_.recordNextboxAnimationImpression(true);
+          } else {
+            this.glifAnimationState_ = GlifAnimationState.INELIGIBLE;
+            this.pageHandler_.recordNextboxAnimationImpression(false);
+          }
+        } else {
+          this.glifAnimationState_ = GlifAnimationState.STARTED;
+          this.pageHandler_.recordNextboxAnimationImpression(true);
+        }
+      } else {
+        this.glifAnimationState_ = GlifAnimationState.INELIGIBLE;
       }
       if (this.isZeroState && !this.isSidePanel) {
         // Get zero state autocomplete matches. In the side panel, we wait for
@@ -402,7 +440,7 @@ export class ContextualTasksComposeboxElement extends I18nMixinLit
         '';
   }
 
-  // Called when cr-composebox suggestion activity link should be
+  // Called when the inner composebox suggestion activity link should be
   // shown or hidden. That is calculated based on results and
   // `showDropdown_`.
   protected onShowSuggestionActivityLink_(e: CustomEvent<boolean>) {
@@ -413,8 +451,7 @@ export class ContextualTasksComposeboxElement extends I18nMixinLit
     e.detail.event.preventDefault();
     const anchor = e.detail.event.target as HTMLAnchorElement;
     if (anchor && anchor.href) {
-      this.contextualTasksHandler_.openUrl(
-          anchor.href, WindowOpenDisposition.NEW_FOREGROUND_TAB);
+      this.pageHandler_.navigateUrl(anchor.href);
     }
   }
 
@@ -439,7 +476,7 @@ export class ContextualTasksComposeboxElement extends I18nMixinLit
   // Handle keyboard events on the suggestions dropdown.
   protected onDropdownKeydown_(e: KeyboardEvent) {
     if (e.key === 'Enter') {
-      this.navigateToMatch_(this.selectedMatchIndex_);
+      this.navigateToMatch_(this.selectedMatchIndex_, /*viaKeyboard=*/ true);
       e.preventDefault();
       e.stopPropagation();
     }
@@ -456,31 +493,44 @@ export class ContextualTasksComposeboxElement extends I18nMixinLit
     this.selectedMatchIndex_ = e.detail.index;
   }
 
-  private navigateToMatch_(index: number) {
+  private navigateToMatch_(index: number, viaKeyboard: boolean) {
     const match = this.zeroStateSuggestions_?.matches[index];
 
     if (match) {
       this.searchboxHandler_.openAutocompleteMatch(
+          /*resultSequenceId=*/ this.zeroStateSuggestions_.sequenceId,
           /*line=*/ index,
           /*url=*/ match.destinationUrl,
           /*areMatchesShowing=*/ true,
-          /*mouseButton=*/ 0,
-          /*altKey=*/ false,
-          /*ctrlKey=*/ false,
-          /*metaKey=*/ false,
-          /*shiftKey=*/ false);
+          /*mouseButton=*/ 0, {
+            altKey: false,
+            ctrlKey: false,
+            metaKey: false,
+            shiftKey: false,
+          },
+          /*viaKeyboard=*/ viaKeyboard);
     }
     this.clearInputAndFocus(/* querySubmitted= */ true);
     this.selectedMatchIndex_ = -1;
+  }
+
+  override focus() {
+    this.$.composebox.focusInput();
   }
 
   clearInputAndFocus(querySubmitted: boolean = false): void {
     const hadContent = this.$.composebox.input.trim().length > 0 ||
         this.$.composebox.hasFiles();
 
-    // Clear text from composebox and focus.
-    this.$.composebox.clearAllInputs(
-        querySubmitted, /* shouldBlockAutoSuggestedTabs= */ false);
+    // When submitting a query, clear all inputs. When refocusing or starting a
+    // new thread, only clear typed text and manual attachments to keep the
+    // auto-suggested tab.
+    if (querySubmitted) {
+      this.$.composebox.clearAllInputs(
+          querySubmitted, /* shouldBlockAutoSuggestedTabs= */ false);
+    } else {
+      this.$.composebox.clearInputsForNewThread();
+    }
     this.$.composebox.focusInput();
 
     // Unconditionally clearing matches wipes out the zero state suggestions
@@ -559,10 +609,41 @@ export class ContextualTasksComposeboxElement extends I18nMixinLit
         (this.inputState?.isCanvasQuerySubmitted ?? false);
   }
 
+  onInputStateUpdate(
+      toolMode?: ToolMode|number, modelMode?: ModelMode|number,
+      _data?: Record<string, unknown>) {
+    // If tool or model are defined, update them and update related states.
+    if (toolMode !== undefined && toolMode !== null) {
+      if (this.inputState_) {
+        this.inputState_ = {
+          ...this.inputState_,
+          activeTool: toolMode as ToolMode,
+        };
+      }
+
+      this.inToolMode_ =
+          (this.inputState_?.activeTool ?? toolMode) !== ToolMode.kUnspecified;
+
+      this.searchboxHandler_.setActiveToolMode(
+          toolMode as ToolMode, /*isSetByAim=*/ true);
+    }
+
+    if (modelMode !== undefined && modelMode !== null) {
+      if (this.inputState_) {
+        this.inputState_ = {
+          ...this.inputState_,
+          activeModel: modelMode as ModelMode,
+        };
+      }
+      this.searchboxHandler_.setActiveModelMode(
+          modelMode as ModelMode,
+          /*isSetByAim=*/ true);
+    }
+  }
+
   getComposebox() {
     return this.$.composebox;
   }
-
 
   get isComposeboxFocusedForTesting() {
     return this.isComposeboxFocused_;
@@ -582,6 +663,40 @@ export class ContextualTasksComposeboxElement extends I18nMixinLit
 
   get resizeObserverForTesting() {
     return this.resizeObserver_;
+  }
+
+  get inToolModeForTesting() {
+    return this.inToolMode_;
+  }
+
+  tryFocus() {
+    if (this.focusAnimationFrameId_ !== null) {
+      cancelAnimationFrame(this.focusAnimationFrameId_);
+      this.focusAnimationFrameId_ = null;
+    }
+    this.focusRetryCount_ = 0;
+    this.runFocusLoop_();
+  }
+
+  private runFocusLoop_() {
+    this.focus();
+    if (this.isInputFocused_()) {
+      this.focusAnimationFrameId_ = null;
+      this.fire('composebox-focused');
+    } else if (this.focusRetryCount_ < 10) {
+      this.focusRetryCount_++;
+      this.focusAnimationFrameId_ =
+          requestAnimationFrame(() => this.runFocusLoop_());
+    } else {
+      this.focusAnimationFrameId_ = null;
+    }
+  }
+
+  private isInputFocused_(): boolean {
+    const inputEl = this.$.composebox.getInputElement()?.inputElement;
+    return inputEl ?
+        (inputEl.getRootNode() as ShadowRoot).activeElement === inputEl :
+        false;
   }
 }
 

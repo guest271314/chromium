@@ -40,11 +40,10 @@ class MacPortTest(port_testcase.PortTestCase):
     full_port_name = 'mac-mac15'
     port_maker = mac.MacPort
 
-    def assert_name(self, port_name, os_version_string, expected,
-                    machine=None):
-        port = self.make_port(os_version=os_version_string,
-                              port_name=port_name,
-                              machine=machine)
+    def assert_name(self, port_name, os_version_string, expected, machine=None):
+        port = self.make_port(
+            os_version=os_version_string, port_name=port_name, machine=machine
+        )
         self.assertEqual(expected, port.name())
 
     def test_operating_system(self):
@@ -52,45 +51,46 @@ class MacPortTest(port_testcase.PortTestCase):
 
     def test_get_platform_tags(self):
         port = self.make_port()
-        self.assertEqual(port.get_platform_tags(),
-                         {'mac', 'mac15', 'x86', 'release'})
+        self.assertEqual(
+            port.get_platform_tags(), {'mac', 'mac15', 'x86', 'release'}
+        )
 
     def test_versions(self):
-        self.assert_name(None, 'mac12', 'mac-mac12')
         self.assert_name(None, 'mac13', 'mac-mac13')
         self.assert_name(None, 'mac14', 'mac-mac14')
         self.assert_name(None, 'mac15', 'mac-mac15')
-        self.assert_name('mac', 'mac12', 'mac-mac12')
         self.assert_name('mac', 'mac13', 'mac-mac13')
         self.assert_name('mac', 'mac14', 'mac-mac14')
         self.assert_name('mac', 'mac15', 'mac-mac15')
 
-        self.assert_name(None, 'mac12', 'mac-mac12-arm64', 'arm64')
         self.assert_name(None, 'mac13', 'mac-mac13-arm64', 'arm64')
         self.assert_name(None, 'mac14', 'mac-mac14-arm64', 'arm64')
         self.assert_name(None, 'mac15', 'mac-mac15-arm64', 'arm64')
-        self.assert_name('mac', 'mac12', 'mac-mac12-arm64', 'arm64')
         self.assert_name('mac', 'mac13', 'mac-mac13-arm64', 'arm64')
         self.assert_name('mac', 'mac14', 'mac-mac14-arm64', 'arm64')
         self.assert_name('mac', 'mac15', 'mac-mac15-arm64', 'arm64')
 
     def test_driver_name_option(self):
         self.assertTrue(
-            self.make_port().path_to_driver().endswith('Content Shell'))
+            self.make_port().path_to_driver().endswith('Content Shell')
+        )
         port = self.make_port(
-            options=optparse.Values(dict(driver_name='OtherDriver')))
+            options=optparse.Values(dict(driver_name='OtherDriver'))
+        )
         self.assertTrue(port.path_to_driver().endswith('OtherDriver'))
 
     def test_path_to_image_diff(self):
-        self.assertEqual(self.make_port()._path_to_image_diff(),
-                         '/mock-checkout/out/Release/image_diff')
+        self.assertEqual(
+            self.make_port()._path_to_image_diff(),
+            '/mock-checkout/out/Release/image_diff',
+        )
 
     def test_path_to_apache_config_file(self):
         port = self.make_port()
-        port._apache_version = lambda: '2.4'  # pylint: disable=protected-access
+        port._apache_version = lambda: '2.4'
         self.assertEqual(
             port.path_to_apache_config_file(),
-            '/mock-checkout/third_party/blink/tools/apache_config/apache2-httpd-2.4-php7.conf'
+            '/mock-checkout/third_party/blink/tools/apache_config/apache2-httpd-2.4-php7.conf',
         )
 
     def test_default_smoke_test_only(self):
@@ -100,8 +100,8 @@ class MacPortTest(port_testcase.PortTestCase):
         """
         port = self.make_port(os_version='mac15')
         self.assertFalse(port.default_smoke_test_only())
-        all_tests_platform = MockPlatformInfo('mac', 'mac15')
+        all_tests_platform = MockPlatformInfo('mac', 'mac15')  # noqa: F841
 
     def test_default_timeout_ms(self):
         port = self.make_port(os_version='mac15')
-        default_timeout = port._default_timeout_ms()
+        default_timeout = port._default_timeout_ms()  # noqa: F841

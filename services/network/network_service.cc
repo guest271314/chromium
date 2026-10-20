@@ -11,6 +11,7 @@
 #include <utility>
 #include <vector>
 
+#include "base/barrier_closure.h"
 #include "base/check.h"
 #include "base/check_is_test.h"
 #include "base/check_op.h"
@@ -38,11 +39,13 @@
 #include "base/task/task_traits.h"
 #include "base/task/thread_pool.h"
 #include "base/timer/timer.h"
+#include "base/trace_event/trace_event.h"
 #include "base/types/pass_key.h"
 #include "base/values.h"
 #include "build/build_config.h"
 #include "build/chromecast_buildflags.h"
 #include "components/vrp_flags/buildflags.h"
+#include "components/webrtc/features.h"
 #include "mojo/public/cpp/bindings/callback_helpers.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "mojo/public/cpp/bindings/scoped_message_error_crash_key.h"
@@ -55,6 +58,7 @@
 #include "net/base/network_change_notifier.h"
 #include "net/base/network_change_notifier_passive.h"
 #include "net/base/port_util.h"
+#include "net/base/scheduler/net_task_scheduler.h"
 #include "net/cert/cert_database.h"
 #include "net/cert/ct_log_response_parser.h"
 #include "net/cert/internal/system_trust_store.h"
@@ -66,21 +70,21 @@
 #include "net/dns/public/dns_config_overrides.h"
 #include "net/dns/public/dns_over_https_config.h"
 #include "net/dns/public/doh_provider_entry.h"
+#include "net/dns/public/insecure_dns_mode.h"
 #include "net/dns/system_dns_config_change_notifier.h"
 #include "net/dns/test_dns_config_service.h"
 #include "net/filter/filter_source_stream.h"
-#include "net/first_party_sets/global_first_party_sets.h"
 #include "net/http/http_auth_handler_factory.h"
 #include "net/log/file_net_log_observer.h"
 #include "net/log/net_log.h"
 #include "net/log/net_log_capture_mode.h"
 #include "net/log/net_log_util.h"
+#include "net/net_buildflags.h"
 #include "net/nqe/network_quality_estimator.h"
 #include "net/socket/client_socket_pool_manager.h"
 #include "net/ssl/ssl_key_logger_impl.h"
 #include "net/url_request/url_request_context.h"
 #include "services/network/dns_config_change_manager.h"
-#include "services/network/first_party_sets/first_party_sets_manager.h"
 #include "services/network/http_auth_cache_proxy_copier.h"
 #include "services/network/net_log_exporter.h"
 #include "services/network/net_log_proxy_sink.h"
@@ -93,11 +97,9 @@
 #include "services/network/public/cpp/network_switches.h"
 #include "services/network/public/cpp/parsed_headers.h"
 #include "services/network/public/cpp/source_stream_to_data_pipe.h"
-#include "services/network/public/mojom/key_pinning.mojom.h"
 #include "services/network/public/mojom/network_service_test.mojom.h"
 #include "services/network/public/mojom/system_dns_resolution.mojom-forward.h"
 #include "services/network/restricted_cookie_manager.h"
-#include "services/network/scheduler/network_service_task_scheduler.h"
 #include "services/network/url_loader.h"
 
 #if BUILDFLAG(IS_ANDROID) && defined(ARCH_CPU_ARMEL)
@@ -118,23 +120,36 @@
 #endif
 
 #if BUILDFLAG(IS_CT_SUPPORTED)
+#include "net/http/transport_security_state.h"
 #include "services/network/sct_auditing/sct_auditing_cache.h"
 #endif
+
+#if BUILDFLAG(CHROME_KEY_PINNING_SUPPORTED)
+#include "net/http/transport_security_state.h"
+#include "services/network/public/mojom/key_pinning.mojom.h"
+#endif  // BUILDFLAG(CHROME_KEY_PINNING_SUPPORTED)
 
 #if BUILDFLAG(ENABLE_VRP_FLAGS)
 #include "components/vrp_flags/vrp_flags.h"       // nogncheck
 #include "components/vrp_flags/vrp_flags_impl.h"  // nogncheck
 #endif                                            // BUILDFLAG(ENABLE_VRP_FLAGS)
 
-namespace net {
-class FirstPartySetEntry;
-}
+#if BUILDFLAG(IS_WIN)
+#include "base/native_library.h"
+#endif  // BUILDFLAG(IS_WIN)
 
 namespace network {
 
 namespace {
 
 NetworkService* g_network_service = nullptr;
+
+#if BUILDFLAG(IS_WIN)
+void PrewarmCryptbaseLibrary() {
+  TRACE_EVENT("loading", "PrewarmCryptbaseLibrary");
+  base::PinSystemLibrary(FILE_PATH_LITERAL("cryptbase.dll"));
+}
+#endif  // BUILDFLAG(IS_WIN)
 
 std::unique_ptr<net::NetworkChangeNotifier> CreateNetworkChangeNotifierIfNeeded(
     net::NetworkChangeNotifier::ConnectionType initial_connection_type,
@@ -384,26 +399,36 @@ NetworkService::NetworkService(
     std::unique_ptr<service_manager::BinderRegistry> registry,
     mojo::PendingReceiver<mojom::NetworkService> receiver,
     bool delay_initialization_until_set_client)
-    : net_log_(net::NetLog::Get()), registry_(std::move(registry)) {
+    : net_log_(net::NetLog::Get()),
+      registry_(std::move(registry)),
+      time_to_first_context_timer_(base::ElapsedTimer()) {
+  TRACE_EVENT0("loading", "NetworkService::NetworkService");
   DCHECK(!g_network_service);
   g_network_service = this;
 
-  if (base::FeatureList::IsEnabled(features::kNetworkServiceTaskScheduler)) {
-    NetworkServiceTaskScheduler::MaybeCreate();
+  if (base::FeatureList::IsEnabled(net::features::kNetTaskScheduler)) {
+    net::NetTaskScheduler::MaybeCreate();
   }
+
+#if BUILDFLAG(IS_WIN)
+  if (base::FeatureList::IsEnabled(features::kPrewarmCryptbase)) {
+    base::ThreadPool::PostTask(
+        FROM_HERE,
+        {base::MayBlock(), base::ThreadPolicy::MUST_USE_FOREGROUND,
+         base::TaskShutdownBehavior::CONTINUE_ON_SHUTDOWN},
+        base::BindOnce(&PrewarmCryptbaseLibrary));
+  }
+#endif  // BUILDFLAG(IS_WIN)
 
   ContentDecodingInterceptor::SetIsNetworkServiceRunningInTheCurrentProcess(
       true, {});
 
-  // |registry_| is nullptr when a NetworkService is out-of-process.
+  // `registry` holds a valid instance when a NetworkService is out-of-process.
   if (registry_) {
     mojo::SetDefaultProcessErrorHandler(base::BindRepeating(&HandleBadMessage));
 #if BUILDFLAG(IS_LINUX)
-    if (base::FeatureList::IsEnabled(
-            net::features::kAddressTrackerLinuxIsProxied)) {
-      net::NetworkChangeNotifier::SetFactory(
-          new network::NetworkChangeNotifierPassiveFactory());
-    }
+    net::NetworkChangeNotifier::SetFactory(
+        new network::NetworkChangeNotifierPassiveFactory());
 #endif
   }
 
@@ -421,6 +446,8 @@ void NetworkService::Initialize(mojom::NetworkServiceParamsPtr params,
   if (initialized_) {
     return;
   }
+
+  TRACE_EVENT0("loading", "NetworkService::Initialize");
 
   initialized_ = true;
 
@@ -452,8 +479,6 @@ void NetworkService::Initialize(mojom::NetworkServiceParamsPtr params,
     // The NetworkChangeNotifierPassive should only be included if it's
     // necessary to instantiate an AddressMapCacheLinux rather than an
     // AddressTrackerLinux.
-    DCHECK(base::FeatureList::IsEnabled(
-        net::features::kAddressTrackerLinuxIsProxied));
     // There should be a factory that creates NetworkChangeNotifierPassives.
     DCHECK(net::NetworkChangeNotifier::GetFactory());
     // Network service should be out of process or it's unsandboxed and can just
@@ -498,17 +523,12 @@ void NetworkService::Initialize(mojom::NetworkServiceParamsPtr params,
         std::move(params->default_observer));
   }
 
-  first_party_sets_manager_ =
-      std::make_unique<FirstPartySetsManager>(params->first_party_sets_enabled);
-
-
 #if BUILDFLAG(IS_CT_SUPPORTED)
   constexpr size_t kMaxSCTAuditingCacheEntries = 1024;
   sct_auditing_cache_ =
       std::make_unique<SCTAuditingCache>(kMaxSCTAuditingCacheEntries);
 #endif
 
-  metrics_updater_ = std::make_unique<RestrictedCookieManagerMetrics>();
 }
 
 NetworkService::~NetworkService() {
@@ -671,13 +691,15 @@ void NetworkService::SetSystemDnsResolver(
 void NetworkService::StartNetLog(base::File file,
                                  uint64_t max_total_size,
                                  net::NetLogCaptureMode capture_mode,
+                                 net::NetLogFileFormat file_format,
                                  base::DictValue constants,
                                  std::optional<base::TimeDelta> duration) {
   if (max_total_size == net::FileNetLogObserver::kNoLimit) {
-    StartNetLogUnbounded(std::move(file), capture_mode, std::move(constants));
+    StartNetLogUnbounded(std::move(file), capture_mode, file_format,
+                         std::move(constants));
   } else {
     StartNetLogBounded(std::move(file), max_total_size, capture_mode,
-                       std::move(constants));
+                       file_format, std::move(constants));
   }
   if (duration.has_value() && !duration->is_zero()) {
     base::SequencedTaskRunner::GetCurrentDefault()->PostDelayedTask(
@@ -724,6 +746,13 @@ void NetworkService::SetSSLKeyLogFile(base::File file) {
 void NetworkService::CreateNetworkContext(
     mojo::PendingReceiver<mojom::NetworkContext> receiver,
     mojom::NetworkContextParamsPtr params) {
+  TRACE_EVENT0("loading", "NetworkService::CreateNetworkContext");
+  if (time_to_first_context_timer_) {
+    base::UmaHistogramMediumTimes(
+        "NetworkService.TimeToFirstCreateNetworkContext",
+        time_to_first_context_timer_->Elapsed());
+    time_to_first_context_timer_.reset();
+  }
 #if BUILDFLAG(IS_ANDROID)
   if (params->cookie_store_ready_callback) {
     auto pending = std::make_unique<PendingNetworkContext>(
@@ -745,26 +774,16 @@ void NetworkService::CreateNetworkContext(
 }
 
 void NetworkService::ConfigureStubHostResolver(
-    bool insecure_dns_client_enabled,
+    net::InsecureDnsMode insecure_dns_mode,
     bool happy_eyeballs_v3_enabled,
     net::SecureDnsMode secure_dns_mode,
     const net::DnsOverHttpsConfig& dns_over_https_config,
     bool additional_dns_types_enabled,
-    const std::vector<net::IPEndPoint>& fallback_doh_nameservers,
-    bool insecure_dns_via_platform_apis_enabled) {
+    const std::vector<net::IPEndPoint>& fallback_doh_nameservers) {
   // Enable or disable the insecure part of DnsClient. "DnsClient" is the class
   // that implements the stub resolver.
-  net::HostResolverManager::InsecureDnsMode mode;
-  if (insecure_dns_client_enabled && insecure_dns_via_platform_apis_enabled) {
-    mode = net::HostResolverManager::InsecureDnsMode::kEnabledPlatform;
-  } else if (insecure_dns_client_enabled) {
-    mode = net::HostResolverManager::InsecureDnsMode::kEnabledBuiltIn;
-  } else {
-    mode = net::HostResolverManager::InsecureDnsMode::kDisabled;
-  }
-
   host_resolver_manager_->SetInsecureDnsClientEnabled(
-      mode, additional_dns_types_enabled);
+      insecure_dns_mode, additional_dns_types_enabled);
 
   // Configure DNS over HTTPS.
   DCHECK(dns_config_overrides_set_by_ == FunctionTag::None ||
@@ -915,6 +934,19 @@ void NetworkService::OnClientCertStoreChanged() {
 void NetworkService::OnPeerToPeerConnectionsCountChange(uint32_t count) {
   network_quality_estimator_manager_->GetNetworkQualityEstimator()
       ->OnPeerToPeerConnectionsCountChange(count);
+
+  // Only boost when running out of process (|registry_| is non-null); the
+  // in-process network thread has its own priority handling (see
+  // BoostNetworkThreadPriority in
+  // content/browser/network_service_instance_impl.cc).
+  if (registry_ && base::FeatureList::IsEnabled(
+                       webrtc::features::kWebRTCBoostMediaIOThreads)) {
+    if (count > 0 && !io_thread_type_lease_) {
+      io_thread_type_lease_.emplace(base::ThreadType::kAudioProcessing);
+    } else if (count == 0) {
+      io_thread_type_lease_.reset();
+    }
+  }
 }
 
 #if BUILDFLAG(IS_ANDROID)
@@ -999,6 +1031,7 @@ void NetworkService::SetCtEnforcementEnabled(
 
 #endif  // BUILDFLAG(IS_CT_SUPPORTED)
 
+#if BUILDFLAG(CHROME_KEY_PINNING_SUPPORTED)
 void NetworkService::UpdateKeyPinsList(mojom::PinListPtr pin_list,
                                        base::Time update_time) {
   pins_list_updated_ = true;
@@ -1021,6 +1054,7 @@ void NetworkService::UpdateKeyPinsList(mojom::PinListPtr pin_list,
     }
   }
 }
+#endif  // BUILDFLAG(CHROME_KEY_PINNING_SUPPORTED)
 
 #if BUILDFLAG(IS_ANDROID)
 void NetworkService::DumpWithoutCrashing(base::Time dump_request_time) {
@@ -1040,10 +1074,6 @@ void NetworkService::BindTestInterfaceForTesting(
     auto pipe = receiver.PassPipe();
     registry_->TryBindInterface(mojom::NetworkServiceTest::Name_, &pipe);
   }
-}
-
-void NetworkService::SetFirstPartySets(net::GlobalFirstPartySets sets) {
-  first_party_sets_manager_->SetCompleteSets(std::move(sets));
 }
 
 void NetworkService::SetExplicitlyAllowedPorts(
@@ -1121,6 +1151,7 @@ void NetworkService::SetTLS13EarlyDataEnabled(bool enabled) {
 void NetworkService::StartNetLogBounded(base::File file,
                                         uint64_t max_total_size,
                                         net::NetLogCaptureMode capture_mode,
+                                        net::NetLogFileFormat file_format,
                                         base::DictValue client_constants) {
   base::DictValue constants = net::GetNetConstants();
   constants.Merge(std::move(client_constants));
@@ -1134,13 +1165,14 @@ void NetworkService::StartNetLogBounded(base::File file,
       base::BindOnce(
           &NetworkService::OnStartNetLogBoundedScratchDirectoryCreated,
           weak_factory_.GetWeakPtr(), std::move(file), max_total_size,
-          capture_mode, std::move(constants)));
+          capture_mode, file_format, std::move(constants)));
 }
 
 void NetworkService::OnStartNetLogBoundedScratchDirectoryCreated(
     base::File file,
     uint64_t max_total_size,
     net::NetLogCaptureMode capture_mode,
+    net::NetLogFileFormat file_format,
     base::DictValue constants,
     const base::FilePath& in_progress_dir_path) {
   if (in_progress_dir_path.empty()) {
@@ -1150,19 +1182,20 @@ void NetworkService::OnStartNetLogBoundedScratchDirectoryCreated(
 
   file_net_log_observer_ = net::FileNetLogObserver::CreateBoundedPreExisting(
       in_progress_dir_path, std::move(file), max_total_size, capture_mode,
-      std::make_unique<base::DictValue>(std::move(constants)));
+      std::make_unique<base::DictValue>(std::move(constants)), file_format);
   file_net_log_observer_->StartObserving(net_log_);
 }
 
 void NetworkService::StartNetLogUnbounded(base::File file,
                                           net::NetLogCaptureMode capture_mode,
+                                          net::NetLogFileFormat file_format,
                                           base::DictValue client_constants) {
   base::DictValue constants = net::GetNetConstants();
   constants.Merge(std::move(client_constants));
 
   file_net_log_observer_ = net::FileNetLogObserver::CreateUnboundedPreExisting(
       std::move(file), capture_mode,
-      std::make_unique<base::DictValue>(std::move(constants)));
+      std::make_unique<base::DictValue>(std::move(constants)), file_format);
   file_net_log_observer_->StartObserving(net_log_);
 }
 
@@ -1266,12 +1299,25 @@ void NetworkService::Bind(
   receiver_.Bind(std::move(receiver));
 }
 
+void NetworkService::BindNetworkContextCreator(
+    mojo::PendingReceiver<mojom::NetworkContextCreator> receiver) {
+  context_creator_receiver_set_.Add(this, std::move(receiver));
+}
+
 mojom::URLLoaderNetworkServiceObserver*
 NetworkService::GetDefaultURLLoaderNetworkServiceObserver() {
   if (default_url_loader_network_service_observer_) {
     return default_url_loader_network_service_observer_.get();
   }
   return nullptr;
+}
+
+RestrictedCookieManager::UmaMetricsUpdater*
+NetworkService::GetMetricsUpdater() {
+  if (!metrics_updater_) {
+    metrics_updater_ = std::make_unique<RestrictedCookieManagerMetrics>();
+  }
+  return metrics_updater_.get();
 }
 
 void NetworkService::ResetMetricsUpdaterForTesting() {
@@ -1350,6 +1396,16 @@ NetworkService::MaybeCreateDurableMessageWriter(
   }
   return std::make_unique<MultipleDurableMessageWriterImpl>(
       std::move(messages));
+}
+
+void NetworkService::ProcessSharedCacheEligibleEntriesForTesting(
+    base::OnceClosure callback) {
+  auto barrier_closure =
+      base::BarrierClosure(network_contexts_.size(), std::move(callback));
+  for (NetworkContext* context : network_contexts_) {
+    context->ProcessSharedCacheEligibleEntriesForTesting(  // IN-TEST
+        barrier_closure);
+  }
 }
 
 }  // namespace network

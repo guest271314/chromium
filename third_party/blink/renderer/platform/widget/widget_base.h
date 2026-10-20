@@ -184,12 +184,12 @@ class PLATFORM_EXPORT WidgetBase : public mojom::blink::Widget,
   void ApplyViewportChanges(const cc::ApplyViewportChangesArgs& args) override;
   void UpdateCompositorScrollState(
       const cc::CompositorCommitData& commit_data) override;
+  void UpdateAnimatedImageState(
+      const cc::CompositorCommitData& commit_data) override;
   void BeginMainFrame(const viz::BeginFrameArgs& args) override;
   void OnDeferMainFrameUpdatesChanged(bool) override;
-  void OnDeferCommitsChanged(
-      bool defer_status,
-      cc::PaintHoldingReason reason,
-      std::optional<cc::PaintHoldingCommitTrigger> trigger) override;
+  void OnDeferCommitsChanged(bool defer_status,
+                             cc::PaintHoldingReason reason) override;
   void OnCommitRequested() override;
   void DidBeginMainFrame() override;
   void RequestNewLayerTreeFrameSink(
@@ -217,6 +217,14 @@ class PLATFORM_EXPORT WidgetBase : public mojom::blink::Widget,
   void ScheduleAnimationForWebTests() override;
   std::unique_ptr<cc::RenderFrameMetadataObserver> CreateRenderFrameObserver()
       override;
+
+  std::unique_ptr<cc::LayerTreeFrameSink> CreateUnboundedFrameSink(
+      CrossVariantMojoRemote<
+          viz::mojom::blink::CompositorFrameSinkInterfaceBase>
+          unbounded_sink_remote,
+      CrossVariantMojoReceiver<
+          viz::mojom::blink::CompositorFrameSinkClientInterfaceBase>
+          unbounded_client_receiver);
 
   // scheduler::WidgetScheduler::Delegate overrides:
   void RequestBeginMainFrameNotExpected(bool) override;
@@ -290,11 +298,14 @@ class PLATFORM_EXPORT WidgetBase : public mojom::blink::Widget,
                          const gfx::Range& replacement_range,
                          int selection_start,
                          int selection_end,
-                         mojom::blink::ImeState ime_state);
+                         mojom::blink::ImeState ime_state,
+                         DOMNodeIdType target_dom_node_id);
   void ImeCommitText(const String& text,
                      const Vector<ui::ImeTextSpan>& ime_text_spans,
                      const gfx::Range& replacement_range,
-                     int relative_cursor_pos);
+                     int relative_cursor_pos,
+                     DOMNodeIdType target_dom_node_id);
+  void PasteIntoNode(const String& text, DOMNodeIdType target_dom_node_id);
   void ImeFinishComposingText(bool keep_selection);
   bool IsForProvisionalFrame();
   void FlushInputProcessedCallback();
@@ -376,7 +387,7 @@ class PLATFORM_EXPORT WidgetBase : public mojom::blink::Widget,
   gfx::Point BlinkSpaceToFlooredDIPs(const gfx::Point& point);
   gfx::Size BlinkSpaceToFlooredDIPs(const gfx::Size& size);
   gfx::Rect BlinkSpaceToEnclosedDIPs(const gfx::Rect& rect);
-  gfx::RectF BlinkSpaceToDIPs(const gfx::RectF& rectF);
+  gfx::RectF BlinkSpaceToDIPs(const gfx::RectF& rect);
 
   void BindWidgetCompositor(
       mojo::PendingReceiver<mojom::blink::WidgetCompositor> receiver);
@@ -425,10 +436,6 @@ class PLATFORM_EXPORT WidgetBase : public mojom::blink::Widget,
 
   // Helper to get the non-emulated device scale factor.
   float GetOriginalDeviceScaleFactor() const;
-
-  // Indicates a change in scheduling needs that should be forwarded to viz.
-  void RequestEfficientScheduling(
-      bool prefer_efficient_scheduling) const override;
 
  private:
   static void AssertAreCompatible(const WidgetBase& a, const WidgetBase& b);

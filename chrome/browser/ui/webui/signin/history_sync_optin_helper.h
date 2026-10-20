@@ -159,6 +159,7 @@ class HistorySyncOptinHelper {
    public:
     // Called when the HistorySyncOptinHelper completes its flow.
     virtual void OnHistorySyncOptinHelperFlowFinished() {}
+
    protected:
     ~Observer() override = default;
   };
@@ -177,6 +178,9 @@ class HistorySyncOptinHelper {
     // after the history sync optin screen (e.g. opening of the browser in the
     // profile picker flow).
     virtual void FinishFlowWithoutHistorySyncOptin() = 0;
+    // Displays the sign in celebration screen.
+    virtual void ShowSignInCelebration(
+        base::OnceClosure celebration_finished) = 0;
   };
 
   static std::unique_ptr<HistorySyncOptinHelper> Create(
@@ -185,6 +189,14 @@ class HistorySyncOptinHelper {
       const AccountInfo& account_info,
       Delegate* delegate,
       LaunchContext launch_context,
+      signin_metrics::AccessPoint access_point);
+
+  static void RecordMetricsForHistorySyncStarted(
+      signin_metrics::AccessPoint access_point);
+
+  static void RecordMetricsForHistorySyncUserChoice(
+      ScreenChoiceResult user_choice,
+      Profile* profile,
       signin_metrics::AccessPoint access_point);
 
   virtual ~HistorySyncOptinHelper();
@@ -240,6 +252,8 @@ class HistorySyncOptinHelper {
 
   void AwaitSyncStartupAndShowHistorySyncScreen();
 
+  void MaybeShowSignInCelebration(signin::Tribool maybe_managed_account);
+
   // Accessors.
   Profile* profile() { return profile_.get(); }
   const CoreAccountInfo& account_info() const { return account_info_; }
@@ -254,7 +268,6 @@ class HistorySyncOptinHelper {
       ManagementStatusState::kManagementDisclaimerNotStarted;
 
  private:
-
   base::ObserverList<Observer> observers_;
   const raw_ptr<Profile> profile_;
   const CoreAccountInfo account_info_;

@@ -10,6 +10,8 @@ import static androidx.test.espresso.matcher.ViewMatchers.withId;
 import static androidx.test.espresso.matcher.ViewMatchers.withText;
 
 import static org.hamcrest.CoreMatchers.allOf;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doReturn;
 
 import static org.chromium.ui.test.util.ViewUtils.onViewWaiting;
 
@@ -29,6 +31,7 @@ import android.widget.ImageView;
 
 import androidx.annotation.Nullable;
 import androidx.browser.customtabs.CustomTabsIntent;
+import androidx.browser.customtabs.CustomTabsSessionToken;
 import androidx.core.widget.ImageViewCompat;
 import androidx.test.core.app.ApplicationProvider;
 import androidx.test.filters.SmallTest;
@@ -42,6 +45,9 @@ import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.RuleChain;
 import org.junit.runner.RunWith;
+import org.mockito.Mock;
+import org.mockito.junit.MockitoJUnit;
+import org.mockito.junit.MockitoRule;
 
 import org.chromium.base.CommandLine;
 import org.chromium.base.ContextUtils;
@@ -64,7 +70,6 @@ import org.chromium.chrome.browser.browserservices.intents.SessionHolder;
 import org.chromium.chrome.browser.customtabs.features.toolbar.CustomTabToolbar;
 import org.chromium.chrome.browser.customtabs.features.toolbar.CustomTabToolbar.CustomTabLocationBar;
 import org.chromium.chrome.browser.firstrun.FirstRunStatus;
-import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.offlinepages.ClientId;
 import org.chromium.chrome.browser.offlinepages.OfflinePageBridge;
@@ -77,6 +82,9 @@ import org.chromium.chrome.browser.test.ScreenShooter;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.chrome.test.util.ChromeRenderTestRule;
 import org.chromium.components.offlinepages.SavePageResult;
+import org.chromium.components.security_state.ConnectionSecurityLevel;
+import org.chromium.components.security_state.SecurityStateModel;
+import org.chromium.components.security_state.SecurityStateModelJni;
 import org.chromium.components.url_formatter.SchemeDisplay;
 import org.chromium.components.url_formatter.UrlFormatter;
 import org.chromium.content_public.browser.test.util.TestTouchUtils;
@@ -96,6 +104,10 @@ import java.util.concurrent.TimeoutException;
 @CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
 public class TrustedCdnPublisherUrlTest {
     public CustomTabActivityTestRule mCustomTabActivityTestRule = new CustomTabActivityTestRule();
+
+    @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
+    @Mock SecurityStateModel.Natives mSecurityStateModelNatives;
+
     public ChromeRenderTestRule mRenderTestRule =
             ChromeRenderTestRule.Builder.withPublicCorpus()
                     .setBugComponent(ChromeRenderTestRule.Component.UI_BROWSER_MOBILE_CUSTOM_TABS)
@@ -148,6 +160,12 @@ public class TrustedCdnPublisherUrlTest {
         ThreadUtils.runOnUiThreadBlocking(() -> FirstRunStatus.setFirstRunFlowComplete(true));
 
         LibraryLoader.getInstance().ensureInitialized();
+
+        SecurityStateModelJni.setInstanceForTesting(mSecurityStateModelNatives);
+        doReturn(ConnectionSecurityLevel.SECURE)
+                .when(mSecurityStateModelNatives)
+                .getSecurityLevelForWebContents(any());
+
         mWebServer = TestWebServer.start();
         if (mOverrideTrustedCdn.isEnabled()) {
             CommandLine.getInstance()
@@ -242,15 +260,32 @@ public class TrustedCdnPublisherUrlTest {
     @SmallTest
     @Feature({"UiCatalogue"})
     @OverrideTrustedCdn
+    public void testNotSecureConnectionLevel() throws Exception {
+        doReturn(ConnectionSecurityLevel.WARNING)
+                .when(mSecurityStateModelNatives)
+                .getSecurityLevelForWebContents(any());
+
+        runTrustedCdnPublisherUrlTest(
+                "https://example.com/test",
+                "com.example.test",
+                null,
+                R.drawable.omnibox_not_secure_warning);
+    }
+
+    @Test
+    @SmallTest
+    @Feature({"UiCatalogue"})
+    @OverrideTrustedCdn
     public void testPageInfo() throws Exception {
         runTrustedCdnPublisherUrlTest(
                 "https://example.com/test",
                 "com.example.test",
                 "example.com",
                 R.drawable.omnibox_https_valid_page_info);
+        int clickTargetId = R.id.title_url_container;
         TestTouchUtils.performClickOnMainSync(
                 InstrumentationRegistry.getInstrumentation(),
-                mCustomTabActivityTestRule.getActivity().findViewById(R.id.security_button));
+                mCustomTabActivityTestRule.getActivity().findViewById(clickTargetId));
         InstrumentationRegistry.getInstrumentation().waitForIdleSync();
         mScreenShooter.shoot("Page Info");
     }
@@ -425,9 +460,10 @@ public class TrustedCdnPublisherUrlTest {
                 CustomTabsIntentTestUtils.createMinimalCustomTabIntent(targetContext, testUrl);
         intent.putExtra(
                 CustomTabsIntent.EXTRA_TITLE_VISIBILITY_STATE, CustomTabsIntent.SHOW_PAGE_TITLE);
-        var sessionHolder = SessionHolder.getSessionHolderFromIntent(intent);
+        var sessionHolder =
+                SessionHolder.of(CustomTabsSessionToken.getSessionTokenFromIntent(intent));
         CustomTabsConnection connection = CustomTabsTestUtils.warmUpAndWait();
-        connection.newSession(sessionHolder.getSessionAsCustomTab());
+        connection.newSession(sessionHolder.getToken());
         connection.overridePackageNameForSessionForTesting(sessionHolder, clientPackage);
         connection.setTrustedPublisherUrlPackageForTest("com.example.test");
 
@@ -453,22 +489,17 @@ public class TrustedCdnPublisherUrlTest {
     }
 
     private void verifySecurityIcon(int expectedSecurityIcon) {
-        // TODO(sinansahin): Clean up once the feature flag is removed.
-        boolean nestIcon = ChromeFeatureList.sCctNestedSecurityIcon.isEnabled();
-
-        if (nestIcon
-                && (expectedSecurityIcon == R.drawable.omnibox_https_valid_page_info
-                        || expectedSecurityIcon == R.drawable.omnibox_info)) {
+        if (expectedSecurityIcon == R.drawable.omnibox_https_valid_page_info
+                || expectedSecurityIcon == R.drawable.omnibox_info) {
             expectedSecurityIcon = 0;
         }
 
-        int securityId = nestIcon ? R.id.security_icon : R.id.security_button;
+        int securityId = R.id.security_icon;
         ImageView securityButton =
                 mCustomTabActivityTestRule.getActivity().findViewById(securityId);
-        // Clean up -- end
 
         if (expectedSecurityIcon == 0) {
-            Assert.assertEquals(View.INVISIBLE, securityButton.getVisibility());
+            Assert.assertEquals(View.GONE, securityButton.getVisibility());
         } else {
             onViewWaiting(withId(securityId)).check(matches(isDisplayed()));
 

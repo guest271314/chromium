@@ -11,6 +11,7 @@ import android.app.Activity;
 import android.app.HandoffActivityData;
 import android.app.HandoffActivityDataRequestInfo;
 import android.app.HandoffActivityParams;
+import android.content.ComponentName;
 import android.content.Context;
 import android.net.Uri;
 import android.os.Bundle;
@@ -21,17 +22,20 @@ import android.provider.Browser;
 import androidx.annotation.IntDef;
 import androidx.annotation.VisibleForTesting;
 
+import org.chromium.base.Callback;
 import org.chromium.base.lifetime.Destroyable;
 import org.chromium.base.metrics.RecordHistogram;
 import org.chromium.base.metrics.RecordUserAction;
+import org.chromium.build.annotations.Contract;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.ActivityTabProvider;
 import org.chromium.chrome.browser.ActivityTabProvider.ActivityTabTabObserver;
+import org.chromium.chrome.browser.ExternalIntentUrlChecker;
 import org.chromium.chrome.browser.IntentHandler;
+import org.chromium.chrome.browser.intents.BrowserIntentUtils;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tabmodel.TabModelSelector;
-import org.chromium.chrome.browser.tabmodel.TabModelSelectorObserver;
 import org.chromium.url.GURL;
 
 import java.lang.annotation.Retention;
@@ -44,7 +48,7 @@ import java.util.Objects;
  */
 @NullMarked
 @SuppressLint("NewApi")
-public class HandoffController implements TabModelSelectorObserver, Destroyable {
+public class HandoffController implements Destroyable {
     @IntDef({
         HandoffEnableTrigger.TAB_SWITCH,
         HandoffEnableTrigger.URL_NAVIGATION,
@@ -60,6 +64,8 @@ public class HandoffController implements TabModelSelectorObserver, Destroyable 
     private final ActivityTabProvider mActivityTabProvider;
     private final Delegate mDelegate;
     private final ActivityTabTabObserver mActivityTabTabObserver;
+    private final Callback<@Nullable Tab> mCurrentTabObserver =
+            _ -> updateHandoffState(HandoffEnableTrigger.TAB_SWITCH);
 
     private @Nullable GURL mTabLastUrlSeen;
 
@@ -75,11 +81,9 @@ public class HandoffController implements TabModelSelectorObserver, Destroyable 
     private static class DelegateImpl implements Delegate {
         @Override
         public void setHandoffEnabled(Activity activity, boolean enabled) {
-            // TODO(crbug.com/444503472): Re-enabling setAllowHandoffWithoutPackageInstalled(true)
-            //  pending approval to open URLs in the receiver's default browser.
             HandoffActivityParams params =
                     new HandoffActivityParams.Builder()
-                            .setAllowHandoffWithoutPackageInstalled(false)
+                            .setAllowHandoffWithoutPackageInstalled(true)
                             .build();
             activity.setHandoffEnabled(enabled, params);
         }
@@ -97,7 +101,10 @@ public class HandoffController implements TabModelSelectorObserver, Destroyable 
             extras.putString(Browser.EXTRA_APPLICATION_ID, activity.getPackageName());
             extras.putBoolean(Browser.EXTRA_CREATE_NEW_TAB, true);
 
-            return new HandoffActivityData.Builder(activity.getComponentName())
+            return new HandoffActivityData.Builder(
+                            new ComponentName(
+                                    activity,
+                                    BrowserIntentUtils.CHROME_LAUNCHER_ACTIVITY_CLASS_NAME))
                     .setFallbackUri(Uri.parse(url))
                     .setExtras(extras)
                     .build();
@@ -121,7 +128,7 @@ public class HandoffController implements TabModelSelectorObserver, Destroyable 
         mTabModelSelector = tabModelSelector;
         mActivityTabProvider = activityTabProvider;
         mDelegate = delegate;
-        mTabModelSelector.addObserver(this);
+        mTabModelSelector.getCurrentTabSupplier().addSyncObserver(mCurrentTabObserver);
 
         Tab currentTab = activityTabProvider.get();
         mTabLastUrlSeen = (currentTab != null) ? currentTab.getUrl() : null;
@@ -153,13 +160,7 @@ public class HandoffController implements TabModelSelectorObserver, Destroyable 
     @Override
     public void destroy() {
         mActivityTabTabObserver.destroy();
-        mTabModelSelector.removeObserver(this);
-    }
-
-    // TabModelSelectorObserver implementation.
-    @Override
-    public void onChange() {
-        updateHandoffState(HandoffEnableTrigger.TAB_SWITCH);
+        mTabModelSelector.getCurrentTabSupplier().removeObserver(mCurrentTabObserver);
     }
 
     ActivityTabTabObserver getActiveTabObserverForTesting() {
@@ -168,27 +169,14 @@ public class HandoffController implements TabModelSelectorObserver, Destroyable 
 
     /**
      * Updates the handoff enablement state for the activity. Handoff is disabled if the user is in
-     * Incognito mode or if there is no active tab (e.g. in the tab switcher).
+     * Incognito mode, if there is no active tab (e.g. in the tab switcher), or if the current URL
+     * is an internal/unsafe scheme.
      */
     private void updateHandoffState(@HandoffEnableTrigger int updateType) {
         if (mActivityTabProvider == null) return;
 
         Tab tab = mActivityTabProvider.get();
-        boolean isIncognito = mTabModelSelector.isIncognitoBrandedModelSelected();
-
-        // 1. Check enterprise policy / user restrictions.
-        UserManager userManager = (UserManager) mActivity.getSystemService(Context.USER_SERVICE);
-        boolean isDisallowedByPolicy = false;
-        if (userManager != null) {
-            Bundle restrictions = userManager.getUserRestrictions();
-            // TODO(crbug.com/444503472): Change "disallow_handoff" to UserManager#DISALLOW_HANDOFF,
-            // once it is integrated into the Chrome build.
-            isDisallowedByPolicy = restrictions.getBoolean("disallow_handoff", false);
-        }
-
-        // 2. Opt-out if in incognito, disallowed by policy, or no active tab to protect
-        // privacy/comply with enterprise/reflect actual activity.
-        boolean handoffEnabled = tab != null && !isIncognito && !isDisallowedByPolicy;
+        boolean handoffEnabled = isHandoffEnabled(tab);
         boolean wasHandoffEnabled = mDelegate.isHandoffEnabled(mActivity);
 
         if (handoffEnabled && !wasHandoffEnabled) {
@@ -215,11 +203,31 @@ public class HandoffController implements TabModelSelectorObserver, Destroyable 
         mDelegate.setHandoffEnabled(mActivity, handoffEnabled);
     }
 
+    @Contract("null -> false")
+    private boolean isHandoffEnabled(@Nullable Tab tab) {
+        if (tab == null || tab.isIncognitoBranded() || isDisallowedByPolicy()) {
+            return false;
+        }
+        return !ExternalIntentUrlChecker.isUnsafeExternalIntentUrl(
+                tab.getUrl(), /* allowLocalFiles= */ false);
+    }
+
+    private boolean isDisallowedByPolicy() {
+        UserManager userManager = (UserManager) mActivity.getSystemService(Context.USER_SERVICE);
+        if (userManager != null) {
+            Bundle restrictions = userManager.getUserRestrictions();
+            // TODO(crbug.com/444503472): Change "disallow_handoff" to UserManager#DISALLOW_HANDOFF,
+            // once it is integrated into the Chrome build.
+            return restrictions.getBoolean("disallow_handoff", false);
+        }
+        return false;
+    }
+
     public @Nullable HandoffActivityData onHandoffActivityDataRequested(
             HandoffActivityDataRequestInfo requestInfo) {
         // 1. Get the active tab.
         Tab tab = mActivityTabProvider.get();
-        if (tab == null || tab.isOffTheRecord()) {
+        if (!isHandoffEnabled(tab)) {
             return null;
         }
 

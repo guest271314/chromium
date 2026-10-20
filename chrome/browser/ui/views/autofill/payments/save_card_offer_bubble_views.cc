@@ -18,47 +18,33 @@
 #include "chrome/browser/ui/dialogs/browser_dialogs.h"
 #include "chrome/browser/ui/hats/hats_service.h"
 #include "chrome/browser/ui/hats/hats_service_factory.h"
-#include "chrome/browser/ui/views/accessibility/theme_tracking_non_accessible_image_view.h"
 #include "chrome/browser/ui/views/autofill/payments/dialog_view_ids.h"
 #include "chrome/browser/ui/views/chrome_layout_provider.h"
-#include "chrome/browser/ui/views/chrome_typography.h"
 #include "chrome/grit/browser_resources.h"
 #include "chrome/grit/generated_resources.h"
-#include "chrome/grit/theme_resources.h"
 #include "components/autofill/core/browser/data_model/payments/credit_card.h"
 #include "components/autofill/core/browser/data_quality/validation.h"
-#include "components/autofill/core/browser/metrics/autofill_metrics.h"
-#include "components/autofill/core/browser/metrics/payments/credit_card_save_metrics.h"
 #include "components/autofill/core/browser/payments/legal_message_line.h"
-#include "components/autofill/core/browser/studies/autofill_experiments.h"
 #include "components/autofill/core/common/autofill_clock.h"
-#include "components/autofill/core/common/autofill_features.h"
 #include "components/autofill/core/common/autofill_payments_features.h"
 #include "components/strings/grit/components_strings.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/mojom/dialog_button.mojom.h"
 #include "ui/base/resource/resource_bundle.h"
-#include "ui/base/ui_base_types.h"
-#include "ui/gfx/color_palette.h"
 #include "ui/gfx/geometry/insets.h"
-#include "ui/gfx/image/image_skia_operations.h"
-#include "ui/gfx/paint_vector_icon.h"
 #include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/border.h"
 #include "ui/views/bubble/bubble_border.h"
 #include "ui/views/bubble/bubble_frame_view.h"
 #include "ui/views/bubble/tooltip_icon.h"
-#include "ui/views/controls/button/label_button.h"
 #include "ui/views/controls/combobox/combobox.h"
 #include "ui/views/controls/label.h"
-#include "ui/views/controls/separator.h"
 #include "ui/views/controls/styled_label.h"
 #include "ui/views/controls/textfield/textfield.h"
 #include "ui/views/controls/throbber.h"
 #include "ui/views/layout/box_layout.h"
 #include "ui/views/style/typography.h"
-#include "ui/views/style/typography_provider.h"
 
 namespace autofill {
 
@@ -85,6 +71,8 @@ void SaveCardOfferBubbleViews::Init() {
   if (controller() && (controller()->GetPaymentsBubbleType() ==
                            PaymentsBubbleType::kUploadSave ||
                        controller()->GetPaymentsBubbleType() ==
+                           PaymentsBubbleType::kUploadCardholderNameUpdate ||
+                       controller()->GetPaymentsBubbleType() ==
                            PaymentsBubbleType::kUploadInProgress)) {
     loading_row_ = AddChildView(CreateLoadingRow());
     if (controller()->GetPaymentsBubbleType() ==
@@ -97,8 +85,11 @@ void SaveCardOfferBubbleViews::Init() {
 }
 
 bool SaveCardOfferBubbleViews::Accept() {
-  bool show_throbber = controller() && controller()->GetPaymentsBubbleType() ==
-                                           PaymentsBubbleType::kUploadSave;
+  bool show_throbber =
+      controller() && (controller()->GetPaymentsBubbleType() ==
+                           PaymentsBubbleType::kUploadSave ||
+                       controller()->GetPaymentsBubbleType() ==
+                           PaymentsBubbleType::kUploadCardholderNameUpdate);
 
   if (show_throbber) {
     ShowThrobber();
@@ -133,23 +124,25 @@ bool SaveCardOfferBubbleViews::IsDialogButtonEnabled(
     return true;
   }
 
-  DCHECK_EQ(ui::mojom::DialogButton::kOk, button);
+  CHECK_EQ(ui::mojom::DialogButton::kOk, button, base::NotFatalUntil::M162);
   if (cardholder_name_textfield_) {
     // Make sure we are not requesting cardholder name and expiration date at
     // the same time.
-    DCHECK(!month_input_dropdown_ && !year_input_dropdown_);
-    // If requesting the user confirm the name, it cannot be blank.
+    CHECK(!month_input_dropdown_ && !year_input_dropdown_,
+          base::NotFatalUntil::M162);
+    // If requesting the user confirm the name, it cannot be blank and must be
+    // a valid cardholder name.
     std::u16string trimmed_text;
     base::TrimWhitespace(cardholder_name_textfield_->GetText(), base::TRIM_ALL,
                          &trimmed_text);
-    return !trimmed_text.empty();
+    return !trimmed_text.empty() && IsValidNameOnCard(trimmed_text);
   }
   // If requesting the user select the expiration date, it cannot be unselected
   // or expired.
   if (month_input_dropdown_ || year_input_dropdown_) {
     // Make sure we are not requesting cardholder name and expiration date at
     // the same time.
-    DCHECK(!cardholder_name_textfield_);
+    CHECK(!cardholder_name_textfield_, base::NotFatalUntil::M162);
     int month_value = 0, year_value = 0;
     if (!base::StringToInt(
             month_input_dropdown_->GetModel()->GetItemAt(
@@ -173,6 +166,7 @@ void SaveCardOfferBubbleViews::AddedToWidget() {
   int lottie_resource_id;
   switch (controller()->GetPaymentsBubbleType()) {
     case PaymentsBubbleType::kUploadSave:
+    case PaymentsBubbleType::kUploadCardholderNameUpdate:
     case PaymentsBubbleType::kUploadInProgress:
     case PaymentsBubbleType::kUploadComplete:
       lottie_resource_id = base::FeatureList::IsEnabled(
@@ -199,7 +193,7 @@ void SaveCardOfferBubbleViews::AddedToWidget() {
 void SaveCardOfferBubbleViews::ContentsChanged(
     views::Textfield* sender,
     const std::u16string& new_contents) {
-  DCHECK_EQ(cardholder_name_textfield_, sender);
+  CHECK_EQ(cardholder_name_textfield_, sender, base::NotFatalUntil::M162);
   DialogModelChanged();
 }
 
@@ -208,79 +202,38 @@ SaveCardOfferBubbleViews::~SaveCardOfferBubbleViews() = default;
 std::unique_ptr<views::View> SaveCardOfferBubbleViews::CreateMainContentView() {
   std::unique_ptr<views::View> view =
       SaveCardBubbleViews::CreateMainContentView();
-  ChromeLayoutProvider* provider = ChromeLayoutProvider::Get();
   view->SetID(controller()->IsUploadSave()
                   ? DialogViewId::MAIN_CONTENT_VIEW_UPLOAD
                   : DialogViewId::MAIN_CONTENT_VIEW_LOCAL);
 
+  if (controller()->GetPaymentsBubbleType() ==
+      PaymentsBubbleType::kUploadCardholderNameUpdate) {
+    // SaveCardBubbleViews::CreateMainContentView() adds the explanation label
+    // (index 0) and the card description view (index 1). Insert the cardholder
+    // name textfield at index 1 so it appears above the card description view.
+    view->AddChildViewAt(
+        CreateCardholderNameTextfield(
+            controller()->GetCard().GetRawInfo(CREDIT_CARD_NAME_FULL)),
+        1);
+
+    if (!base::FeatureList::IsEnabled(
+            features::kAutofillEnableWalletBrandingV2)) {
+      std::u16string user_email =
+          base::UTF8ToUTF16(controller()->GetAccountInfo().GetEmail());
+      ui::ImageModel user_avatar =
+          GetProfileAvatar(controller()->GetAccountInfo());
+      if (!user_email.empty() && !user_avatar.IsEmpty()) {
+        view->AddChildView(
+            CreateUserAvatarAndEmailView(user_email, user_avatar));
+      }
+    }
+    return view;
+  }
+
   // If necessary, add the cardholder name label and textfield to the upload
   // save dialog.
   if (controller()->ShouldRequestNameFromUser()) {
-    std::unique_ptr<views::View> cardholder_name_label_row =
-        std::make_unique<views::View>();
-
-    // Set up cardholder name label.
-    // TODO(jsaul): DISTANCE_RELATED_BUTTON_HORIZONTAL isn't the right choice
-    //              here, but DISTANCE_RELATED_CONTROL_HORIZONTAL gives too much
-    //              padding. Make a new Harmony DistanceMetric?
-    cardholder_name_label_row->SetLayoutManager(
-        std::make_unique<views::BoxLayout>(
-            views::BoxLayout::Orientation::kHorizontal, gfx::Insets(),
-            provider->GetDistanceMetric(
-                views::DISTANCE_RELATED_BUTTON_HORIZONTAL)));
-    std::unique_ptr<views::Label> cardholder_name_label =
-        std::make_unique<views::Label>(
-            l10n_util::GetStringUTF16(
-                IDS_AUTOFILL_SAVE_CARD_PROMPT_CARDHOLDER_NAME),
-            views::style::CONTEXT_DIALOG_BODY_TEXT,
-            views::style::STYLE_SECONDARY);
-    cardholder_name_label->SetHorizontalAlignment(gfx::ALIGN_LEFT);
-    cardholder_name_label_row->AddChildView(std::move(cardholder_name_label));
-
-    // Prepare the prefilled cardholder name.
-    std::u16string prefilled_name = base::UTF8ToUTF16(
-        controller()->GetAccountInfo().GetFullName().value_or(""));
-
-    // Set up cardholder name label tooltip ONLY if the cardholder name
-    // textfield will be prefilled and sync transport for Wallet data is not
-    // active. Otherwise, this tooltip's info will appear in CreateExtraView()'s
-    // tooltip.
-    if (!prefilled_name.empty() &&
-        !controller()->IsPaymentsSyncTransportEnabledWithoutSyncFeature()) {
-      constexpr int kTooltipIconSize = 12;
-      std::unique_ptr<views::TooltipIcon> cardholder_name_tooltip =
-          std::make_unique<views::TooltipIcon>(
-              l10n_util::GetStringUTF16(
-                  IDS_AUTOFILL_SAVE_CARD_PROMPT_CARDHOLDER_NAME_TOOLTIP),
-              kTooltipIconSize);
-      cardholder_name_tooltip->SetAnchorPointArrow(
-          views::BubbleBorder::Arrow::TOP_LEFT);
-      cardholder_name_tooltip->SetID(DialogViewId::CARDHOLDER_NAME_TOOLTIP);
-      cardholder_name_label_row->AddChildView(
-          std::move(cardholder_name_tooltip));
-    }
-
-    // Set up cardholder name textfield.
-    DCHECK(!cardholder_name_textfield_);
-    cardholder_name_textfield_ = new views::Textfield();
-    cardholder_name_textfield_->set_controller(this);
-    cardholder_name_textfield_->SetID(DialogViewId::CARDHOLDER_NAME_TEXTFIELD);
-    cardholder_name_textfield_->GetViewAccessibility().SetName(
-        l10n_util::GetStringUTF16(
-            IDS_AUTOFILL_SAVE_CARD_PROMPT_CARDHOLDER_NAME));
-    cardholder_name_textfield_->SetTextInputType(
-        ui::TextInputType::TEXT_INPUT_TYPE_TEXT);
-    cardholder_name_textfield_->SetText(prefilled_name);
-
-    // Add cardholder name elements to a single view, then to the final dialog.
-    std::unique_ptr<views::View> cardholder_name_view =
-        std::make_unique<views::View>();
-    cardholder_name_view->SetLayoutManager(std::make_unique<views::BoxLayout>(
-        views::BoxLayout::Orientation::kVertical, gfx::Insets(),
-        provider->GetDistanceMetric(views::DISTANCE_RELATED_CONTROL_VERTICAL)));
-    cardholder_name_view->AddChildView(std::move(cardholder_name_label_row));
-    cardholder_name_view->AddChildViewRaw(cardholder_name_textfield_.get());
-    view->AddChildView(std::move(cardholder_name_view));
+    view->AddChildView(CreateRequestCardholderNameForAccountCreationView());
   }
 
   if (controller()->ShouldRequestExpirationDateFromUser()) {
@@ -294,6 +247,77 @@ std::unique_ptr<views::View> SaveCardOfferBubbleViews::CreateMainContentView() {
   }
 
   return view;
+}
+
+std::unique_ptr<views::View>
+SaveCardOfferBubbleViews::CreateRequestCardholderNameForAccountCreationView() {
+  ChromeLayoutProvider* provider = ChromeLayoutProvider::Get();
+  std::unique_ptr<views::View> cardholder_name_label_row =
+      std::make_unique<views::View>();
+
+  // Set up cardholder name label.
+  cardholder_name_label_row->SetLayoutManager(
+      std::make_unique<views::BoxLayout>(
+          views::BoxLayout::Orientation::kHorizontal, gfx::Insets(),
+          provider->GetDistanceMetric(
+              views::DISTANCE_RELATED_BUTTON_HORIZONTAL)));
+  std::unique_ptr<views::Label> cardholder_name_label =
+      std::make_unique<views::Label>(
+          l10n_util::GetStringUTF16(
+              IDS_AUTOFILL_SAVE_CARD_PROMPT_CARDHOLDER_NAME),
+          views::style::CONTEXT_DIALOG_BODY_TEXT,
+          views::style::STYLE_SECONDARY);
+  cardholder_name_label->SetHorizontalAlignment(gfx::ALIGN_LEFT);
+  cardholder_name_label_row->AddChildView(std::move(cardholder_name_label));
+
+  // Prepare the prefilled cardholder name.
+  std::u16string prefilled_name = base::UTF8ToUTF16(
+      controller()->GetAccountInfo().GetFullName().value_or(""));
+
+  // Set up cardholder name label tooltip ONLY if the cardholder name
+  // textfield will be prefilled and sync transport for Wallet data is not
+  // active. Otherwise, this tooltip's info will appear in CreateExtraView()'s
+  // tooltip.
+  if (!prefilled_name.empty() &&
+      !controller()->IsPaymentsSyncTransportEnabledWithoutSyncFeature()) {
+    constexpr int kTooltipIconSize = 12;
+    std::unique_ptr<views::TooltipIcon> cardholder_name_tooltip =
+        std::make_unique<views::TooltipIcon>(
+            l10n_util::GetStringUTF16(
+                IDS_AUTOFILL_SAVE_CARD_PROMPT_CARDHOLDER_NAME_TOOLTIP),
+            kTooltipIconSize);
+    cardholder_name_tooltip->SetAnchorPointArrow(
+        views::BubbleBorder::Arrow::TOP_LEFT);
+    cardholder_name_tooltip->SetID(DialogViewId::CARDHOLDER_NAME_TOOLTIP);
+    cardholder_name_label_row->AddChildView(std::move(cardholder_name_tooltip));
+  }
+
+  // Add cardholder name elements to a single view, then to the final dialog.
+  std::unique_ptr<views::View> cardholder_name_view =
+      std::make_unique<views::View>();
+  cardholder_name_view->SetLayoutManager(std::make_unique<views::BoxLayout>(
+      views::BoxLayout::Orientation::kVertical, gfx::Insets(),
+      provider->GetDistanceMetric(views::DISTANCE_RELATED_CONTROL_VERTICAL)));
+  cardholder_name_view->AddChildView(std::move(cardholder_name_label_row));
+  cardholder_name_view->AddChildView(
+      CreateCardholderNameTextfield(prefilled_name));
+  return cardholder_name_view;
+}
+
+std::unique_ptr<views::Textfield>
+SaveCardOfferBubbleViews::CreateCardholderNameTextfield(
+    const std::u16string& prefilled_name) {
+  CHECK(!cardholder_name_textfield_, base::NotFatalUntil::M162);
+  auto cardholder_name_textfield = std::make_unique<views::Textfield>();
+  cardholder_name_textfield->set_controller(this);
+  cardholder_name_textfield->SetID(DialogViewId::CARDHOLDER_NAME_TEXTFIELD);
+  cardholder_name_textfield->GetViewAccessibility().SetName(
+      l10n_util::GetStringUTF16(IDS_AUTOFILL_SAVE_CARD_PROMPT_CARDHOLDER_NAME));
+  cardholder_name_textfield->SetTextInputType(
+      ui::TextInputType::TEXT_INPUT_TYPE_TEXT);
+  cardholder_name_textfield->SetText(prefilled_name);
+  cardholder_name_textfield_ = cardholder_name_textfield.get();
+  return cardholder_name_textfield;
 }
 
 std::unique_ptr<views::View>

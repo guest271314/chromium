@@ -37,6 +37,10 @@ class NavigationHandle;
 class RenderFrameHost;
 }
 
+namespace url {
+class Origin;
+}
+
 namespace guest_view {
 
 class GuestViewEvent;
@@ -239,8 +243,10 @@ class GuestViewBase : public content::BrowserPluginGuestDelegate,
   // Returns the URL of the owner RenderFrameHost's last committed URL.
   const GURL& GetOwnerLastCommittedURL() const;
 
-  // Returns the URL of the owner RenderFrameHost's SiteInstance.
-  const GURL& GetOwnerSiteURL() const;
+  // Returns a URL representing the owner RenderFrameHost's origin, derived from
+  // its last committed origin. For opaque origins (e.g., sandboxed frames),
+  // uses the precursor tuple origin.
+  GURL GetOwnerSiteURL() const;
 
   // Returns the host of the owner WebContents. If the owner RenderFrameHost is
   // for an extension, returns the host of its URL, which is an extension ID. If
@@ -283,10 +289,11 @@ class GuestViewBase : public content::BrowserPluginGuestDelegate,
   // permission requests of the given `type`.
   virtual bool IsPermissionRequestable(ContentSettingsType type) const;
 
-  // If the GuestView overrides |type|, returns the permission result of |type|.
-  // Otherwise, returns nullopt.
+  // If the GuestView overrides the permission result for `type` and
+  // `requesting_origin`, returns that result. Otherwise, returns nullopt.
   virtual std::optional<content::PermissionResult> OverridePermissionResult(
-      ContentSettingsType type) const;
+      ContentSettingsType type,
+      const url::Origin& requesting_origin) const;
 
   content::RenderFrameHost* GetGuestMainFrame() const;
 
@@ -335,6 +342,9 @@ class GuestViewBase : public content::BrowserPluginGuestDelegate,
   content::RenderFrameHost* GetProspectiveOuterDocument() override;
 
   // WebContentsDelegate implementation.
+  content::KeyboardEventProcessingResult PreHandleKeyboardEvent(
+      content::WebContents* source,
+      const input::NativeWebKeyboardEvent& event) override;
   bool HandleKeyboardEvent(content::WebContents* source,
                            const input::NativeWebKeyboardEvent& event) override;
 
@@ -482,6 +492,8 @@ class GuestViewBase : public content::BrowserPluginGuestDelegate,
       content::RenderFrameHost* render_frame_host,
       const url::Origin& security_origin,
       blink::mojom::MediaStreamType type) override;
+  bool GuestShouldAllowRendererInitiatedCrossProcessNavigation(
+      bool is_outermost_main_frame_navigation) override;
 
   // WebContentsDelegate implementation.
   void ActivateContents(content::WebContents* contents) final;

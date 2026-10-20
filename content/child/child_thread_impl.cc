@@ -12,7 +12,6 @@
 #include <utility>
 
 #include "base/base_switches.h"
-#include "base/check.h"
 #include "base/clang_profiling_buildflags.h"
 #include "base/command_line.h"
 #include "base/compiler_specific.h"
@@ -29,6 +28,7 @@
 #include "base/memory/ptr_util.h"
 #include "base/message_loop/message_pump.h"
 #include "base/metrics/field_trial.h"
+#include "base/metrics/histogram_functions.h"
 #include "base/power_monitor/power_monitor.h"
 #include "base/process/process.h"
 #include "base/process/process_handle.h"
@@ -47,6 +47,7 @@
 #include "content/child/child_performance_coordinator.h"
 #include "content/child/child_process.h"
 #include "content/child/child_process_synthetic_trial_syncer.h"
+#include "content/child/host_receiver_batcher.h"
 #include "content/child/memory_coordinator/child_memory_coordinator.h"
 #include "content/common/child_process.mojom.h"
 #include "content/common/content_constants_internal.h"
@@ -57,8 +58,7 @@
 #include "content/public/common/content_client.h"
 #include "content/public/common/content_features.h"
 #include "content/public/common/content_switches.h"
-#include "ipc/ipc_channel_factory.h"
-#include "ipc/ipc_sync_channel.h"
+#include "ipc/ipc_channel_proxy.h"
 #include "mojo/core/embedder/scoped_ipc_support.h"
 #include "mojo/public/cpp/bindings/binder_map.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
@@ -78,6 +78,7 @@
 #include "services/resource_coordinator/public/mojom/memory_instrumentation/memory_instrumentation.mojom.h"
 #include "services/tracing/public/cpp/background_tracing/background_tracing_agent_impl.h"
 #include "services/tracing/public/cpp/background_tracing/background_tracing_agent_provider_impl.h"
+#include "third_party/blink/public/common/features.h"
 
 #if BUILDFLAG(IS_POSIX)
 #include "base/posix/global_descriptors.h"
@@ -478,29 +479,6 @@ class ChildThreadImpl::IOThreadState
                        battery_saver_mode_enabled));
   }
 
-#if BUILDFLAG(IS_WIN)
-  void FreeAslrBeacons(const std::vector<uint64_t>& base_addresses) override {
-    for (uint64_t base_address : base_addresses) {
-      // The address is passed as a 64-bit value over Mojo to maintain a
-      // consistent cross-architecture interface. Explicitly cast it back
-      // to uintptr_t which will safely truncate on 32-bit architectures where
-      // the upper 32 bits are guaranteed to be zero. base::checked_cast ensures
-      // that it is never silently truncated to a value that doesn't fit.
-      void* address_ptr =
-          reinterpret_cast<void*>(base::checked_cast<uintptr_t>(base_address));
-
-      CHECK(::VirtualFree(address_ptr, 0, MEM_RELEASE));
-    }
-
-    // Securely clear the base_addresses from the vector to prevent leaking the
-    // browser's ASLR base to compromised child processes.
-    if (!base_addresses.empty()) {
-      ::SecureZeroMemory(const_cast<uint64_t*>(base_addresses.data()),
-                         base_addresses.size() * sizeof(uint64_t));
-    }
-  }
-#endif
-
   const scoped_refptr<base::SequencedTaskRunner> main_thread_task_runner_;
   const base::WeakPtr<ChildThreadImpl> weak_main_thread_;
   const base::RepeatingClosure quit_closure_;
@@ -627,11 +605,10 @@ void ChildThreadImpl::Init(const Options& options) {
   main_thread_runner_ = base::SingleThreadTaskRunner::GetCurrentDefault();
 
   if (options.with_legacy_ipc_channel) {
-    channel_ = IPC::SyncChannel::Create(
+    channel_ = std::make_unique<IPC::ChannelProxy>(
         this, ChildProcess::current()->io_task_runner(),
         ipc_task_runner_ ? ipc_task_runner_
-                         : base::SingleThreadTaskRunner::GetCurrentDefault(),
-        ChildProcess::current()->GetShutDownEvent());
+                         : base::SingleThreadTaskRunner::GetCurrentDefault());
     if (options.urgent_message_observer) {
       channel_->SetUrgentMessageObserver(options.urgent_message_observer);
     }
@@ -690,6 +667,14 @@ void ChildThreadImpl::Init(const Options& options) {
   child_process_host_ = mojo::SharedRemote<mojom::ChildProcessHost>(
       std::move(remote_host), GetIOTaskRunner());
 
+  // Coalesces the burst of host-receiver binds issued below (and elsewhere
+  // during startup) into batched IPCs. Must exist before the first
+  // BindHostReceiverBatched() call.
+  host_receiver_batcher_ = std::make_unique<HostReceiverBatcher>(
+      base::BindRepeating(&ChildThreadImpl::SendHostReceivers,
+                          weak_factory_.GetWeakPtr()),
+      main_thread_runner_);
+
   // In single process mode, browser-side tracing and memory will cover the
   // whole process including renderers.
   if (!IsInBrowserProcess()) {
@@ -697,7 +682,7 @@ void ChildThreadImpl::Init(const Options& options) {
     mojo::PendingRemote<memory_instrumentation::mojom::ClientProcess> process;
     auto process_receiver = process.InitWithNewPipeAndPassReceiver();
     mojo::Remote<memory_instrumentation::mojom::CoordinatorConnector> connector;
-    BindHostReceiver(connector.BindNewPipeAndPassReceiver());
+    BindHostReceiverBatched(connector.BindNewPipeAndPassReceiver());
     connector->RegisterCoordinatorClient(
         coordinator.InitWithNewPipeAndPassReceiver(), std::move(process));
     memory_instrumentation::ClientProcessImpl::CreateInstance(
@@ -717,16 +702,23 @@ void ChildThreadImpl::Init(const Options& options) {
     // communication from the browser process (see https://crbug.com/821790 for
     // details)
     mojo::PendingRemote<device::mojom::PowerMonitor> remote_power_monitor;
-    BindHostReceiver(remote_power_monitor.InitWithNewPipeAndPassReceiver());
+    if (!base::CommandLine::ForCurrentProcess()->HasSwitch(
+            switches::kTopChromeWebUI) ||
+        !base::FeatureList::IsEnabled(
+            blink::features::kWebUIBypassMojoConnections)) {
+      BindHostReceiverBatched(
+          remote_power_monitor.InitWithNewPipeAndPassReceiver());
+    }
     source_ptr->Init(std::move(remote_power_monitor));
   }
 
   performance_coordinator_ = std::make_unique<ChildPerformanceCoordinator>();
-  BindHostReceiver(performance_coordinator_->InitializeAndPassReceiver());
+  BindHostReceiverBatched(
+      performance_coordinator_->InitializeAndPassReceiver());
 
   if (!IsInBrowserProcess()) {
     // Connect the global ChildMemoryCoordinator with the browser registry.
-    BindHostReceiver(ChildMemoryCoordinator::BindAndPassReceiver());
+    BindHostReceiverBatched(ChildMemoryCoordinator::BindAndPassReceiver());
   }
 
 #if BUILDFLAG(IS_POSIX)
@@ -743,12 +735,8 @@ void ChildThreadImpl::Init(const Options& options) {
   // Add filters passed here via options.
   if (options.with_legacy_ipc_channel) {
     DCHECK(legacy_ipc_bootstrap_pipe.is_valid());
-    channel_->Init(IPC::ChannelFactory::CreateClientFactory(
-                       std::move(legacy_ipc_bootstrap_pipe),
-                       ChildProcess::current()->io_task_runner(),
-                       ipc_task_runner_
-                           ? ipc_task_runner_
-                           : base::SingleThreadTaskRunner::GetCurrentDefault()),
+    channel_->Init(std::move(legacy_ipc_bootstrap_pipe),
+                   IPC::Channel::MODE_CLIENT,
                    /*create_pipe_now=*/true);
   }
 
@@ -786,7 +774,7 @@ void ChildThreadImpl::Init(const Options& options) {
   // browser process (because it's the same process).
   if (!IsInBrowserProcess()) {
     mojo::PendingRemote<mojom::FieldTrialRecorder> pending_remote;
-    BindHostReceiver(pending_remote.InitWithNewPipeAndPassReceiver());
+    BindHostReceiverBatched(pending_remote.InitWithNewPipeAndPassReceiver());
     mojo::SharedRemote<mojom::FieldTrialRecorder> shared_remote(
         std::move(pending_remote));
     field_trial_syncer_ =
@@ -797,22 +785,11 @@ void ChildThreadImpl::Init(const Options& options) {
 }
 
 ChildThreadImpl::~ChildThreadImpl() {
-  if (channel_) {
-    // The ChannelProxy object caches a pointer to the IPC thread, so need to
-    // reset it as it's not guaranteed to outlive this object.
-    // NOTE: this also has the side-effect of not closing the main IPC channel
-    // to the browser process.  This is needed because this is the signal that
-    // the browser uses to know that this process has died, so we need it to be
-    // alive until this process is shut down, and the OS closes the handle
-    // automatically.  We used to watch the object handle on Windows to do this,
-    // but it wasn't possible to do so on POSIX.
-    channel_->ClearIPCTaskRunner();
-  } else if (!IsInBrowserProcess()) {
-    // With no legacy IPC channel, the browser monitors the lifetime of the
-    // ChildProcessHost connection to detect our exit. For reasons similar to
-    // above, we leak our side of this connection to ensure that the browser
-    // does not observe disconnection until after our process is actually
-    // terminated.
+  if (!IsInBrowserProcess()) {
+    // The browser monitors the lifetime of the ChildProcessHost connection to
+    // detect our exit. We leak our side of this connection to ensure that the
+    // browser does not observe disconnection until after our process is
+    // actually terminated.
     auto leaked_remote =
         std::make_unique<mojo::SharedRemote<mojom::ChildProcessHost>>(
             std::move(child_process_host_));
@@ -872,6 +849,25 @@ void ChildThreadImpl::BindHostReceiver(mojo::GenericPendingReceiver receiver) {
     child_process_host_->BindHostReceiver(std::move(receiver));
 }
 
+void ChildThreadImpl::BindHostReceiverBatched(
+    mojo::GenericPendingReceiver receiver) {
+  // `host_receiver_batcher_` is created early in Init(); guard against any bind
+  // that races ahead of it by falling back to an immediate (correct) send.
+  if (host_receiver_batcher_) {
+    host_receiver_batcher_->AddReceiver(std::move(receiver));
+  } else {
+    BindHostReceiver(std::move(receiver));
+  }
+}
+
+void ChildThreadImpl::SendHostReceivers(
+    std::vector<mojo::GenericPendingReceiver> receivers) {
+  if (!child_process_host_ || receivers.empty()) {
+    return;
+  }
+  child_process_host_->BindHostReceivers(std::move(receivers));
+}
+
 void ChildThreadImpl::OnAssociatedInterfaceRequest(
     const std::string& interface_name,
     mojo::ScopedInterfaceEndpointHandle handle) {
@@ -905,6 +901,9 @@ void ChildThreadImpl::GetBackgroundTracingAgentProvider(
 
 void ChildThreadImpl::DisconnectChildProcessHost() {
   child_process_host_.reset();
+  if (host_receiver_batcher_) {
+    host_receiver_batcher_->Clear();
+  }
 }
 
 void ChildThreadImpl::BindServiceInterface(

@@ -154,9 +154,9 @@ void FragmentItemsBuilder::AddLine(const PhysicalLineBoxFragment& line_fragment,
 
     // If the line is hidden (e.g. because of line-clamp), annotations on that
     // line should be hidden as well.
-    if (line_fragment.IsHiddenForPaint()) {
+    if (line_fragment.IsHiddenDueToLayout()) {
       for (auto& item : *annotation_line.line_items) {
-        item.is_hidden_for_paint = true;
+        item.is_hidden_due_to_layout = true;
       }
     }
 
@@ -366,12 +366,6 @@ FragmentItemsBuilder::AddPreviousItems(const PhysicalBoxFragment& container,
   return AddPreviousItemsResult();
 }
 
-const FragmentItemsBuilder::ItemWithOffsetList& FragmentItemsBuilder::Items(
-    const PhysicalSize& outer_size) {
-  ConvertToPhysical(outer_size);
-  return items_;
-}
-
 // Convert internal logical offsets to physical. Items are kept with logical
 // offset until outer box size is determined.
 void FragmentItemsBuilder::ConvertToPhysical(const PhysicalSize& outer_size) {
@@ -448,8 +442,8 @@ std::optional<PhysicalSize> FragmentItemsBuilder::ToFragmentItems(
   ConvertToPhysical(outer_size);
   std::optional<PhysicalSize> new_size;
   if (node_.IsSvgText()) {
-    new_size = SvgTextLayoutAlgorithm(node_, GetWritingMode())
-                   .Layout(TextContent(false), items_);
+    new_size =
+        SvgTextLayoutAlgorithm(node_, GetWritingMode()).Layout(*this, items_);
   }
   new (data) FragmentItems(this);
   return new_size;

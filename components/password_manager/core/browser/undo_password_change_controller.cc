@@ -37,11 +37,6 @@ bool IsFormEligibleForProactiveRecovery(
     return false;
   }
 
-  if (password_manager_util::GetMatchType(*form_best_match) ==
-      password_manager_util::GetLoginMatchType::kGrouped) {
-    return false;
-  }
-
   if (!form_best_match->GetPasswordBackup()) {
     return false;
   }
@@ -192,7 +187,7 @@ void UndoPasswordChangeController::OnPasswordFormParsed(
         password_manager_util::FindCredentialByUsername(
             form_manager->GetBestMatches(), failed_login_form_->username_value);
     if (!IsFormEligibleForProactiveRecovery(
-            form_best_match, failed_login_form_->password_value)) {
+            form_best_match, failed_login_form_->password_value.value())) {
       FinishObserving();
       return;
     }

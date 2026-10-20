@@ -62,11 +62,11 @@ TEST(HEVCAnalyzeAnnexBTest, InvalidAnnexBConstructs) {
       // For these cases, lack of conformance is determined before detecting any
       // IDR or non-IDR slices, so the non-conformant frames' keyframe analysis
       // reports std::nullopt (which means undetermined analysis result).
-      {"AUD", std::nullopt},        // No VCL present.
-      {"AUD,SPS", std::nullopt},    // No VCL present.
-      {"SPS AUD I", std::nullopt},  // Parameter sets must come after AUD.
-      {"EOS", std::nullopt},        // EOS must come after a VCL.
-      {"EOB", std::nullopt},        // EOB must come after a VCL.
+      {"AUD", std::nullopt},      // No VCL present.
+      {"AUD,SPS", std::nullopt},  // No VCL present.
+      {"SPS AUD I", true},        // Parameter sets must come after AUD.
+      {"EOS", std::nullopt},      // EOS must come after a VCL.
+      {"EOB", std::nullopt},      // EOB must come after a VCL.
 
       // For these cases, IDR slice is first VCL and is detected before
       // conformance failure, so the non-conformant frame is reported as a
@@ -75,6 +75,7 @@ TEST(HEVCAnalyzeAnnexBTest, InvalidAnnexBConstructs) {
       {"I SPS", true},      // SPS must come before first VCL.
       {"FD PREFIX_SEI I",
        true},  // FD before VCL is non-conformant but keyframe is detected.
+      {"PREFIX_SEI AUD I", true},  // AUD must be first NALU.
 
       // For this case, P slice is first VCL and is detected before conformance
       // failure, so the non-conformant frame is reported as a non-keyframe.
@@ -111,6 +112,36 @@ TEST(HEVCAnalyzeAnnexBTest, HEVCDecoderConfigurationRecordTakenFromStream) {
   std::vector<uint8_t> output;
   EXPECT_TRUE(record.Serialize(output));
   EXPECT_TRUE(test_data == output);
+}
+
+TEST(HEVCAnalyzeAnnexBTest, HEVCDecoderConfigurationRecordDefaultValues) {
+  HEVCDecoderConfigurationRecord record;
+  EXPECT_EQ(record.configuration_version, 0);
+  EXPECT_EQ(record.general_profile_space, 0);
+  EXPECT_EQ(record.general_tier_flag, 0);
+  EXPECT_EQ(record.general_profile_idc, 0);
+  EXPECT_EQ(record.general_profile_compatibility_flags, 0u);
+  EXPECT_EQ(record.general_constraint_indicator_flags, 0u);
+  EXPECT_EQ(record.general_level_idc, 0);
+  EXPECT_EQ(record.min_spatial_segmentation_idc, 0);
+  EXPECT_EQ(record.parallelism_type, 0);
+  EXPECT_EQ(record.chroma_format, 0);
+  EXPECT_EQ(record.bit_depth_luma_minus8, 0);
+  EXPECT_EQ(record.bit_depth_chroma_minus8, 0);
+  EXPECT_EQ(record.avg_frame_rate, 0);
+  EXPECT_EQ(record.constant_frame_rate, 0);
+  EXPECT_EQ(record.num_temporal_layers, 0);
+  EXPECT_EQ(record.temporal_id_nested, 0);
+  EXPECT_EQ(record.length_size_minus_one, 0);
+  EXPECT_EQ(record.num_of_arrays, 0);
+  EXPECT_TRUE(record.arrays.empty());
+
+#if BUILDFLAG(ENABLE_HEVC_PARSER_AND_HW_DECODER)
+  EXPECT_FALSE(record.GetColorSpace().IsSpecified());
+  EXPECT_EQ(record.GetChromaSampling(), VideoChromaSampling::kUnknown);
+  EXPECT_TRUE(record.GetHDRMetadata().IsEmpty());
+  EXPECT_EQ(record.GetAlphaMode(), VideoDecoderConfig::AlphaMode::kIsOpaque);
+#endif  // BUILDFLAG(ENABLE_HEVC_PARSER_AND_HW_DECODER)
 }
 
 }  // namespace media::mp4

@@ -8,7 +8,6 @@
 #include <utility>
 
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface_iterator.h"
 #include "chrome/browser/ui/tab_modal_confirm_dialog.h"
@@ -78,9 +77,7 @@ void JavaScriptTabModalDialogManagerDelegateDesktop::SetTabNeedsAttention(
   }
 
   TabStripModel* tab_strip_model = browser->GetTabStripModel();
-  SetTabNeedsAttentionImpl(
-      attention, tab_strip_model,
-      tab_strip_model->GetIndexOfWebContents(web_contents_));
+  SetTabNeedsAttentionImpl(attention, tab_strip_model, web_contents_);
 }
 
 bool JavaScriptTabModalDialogManagerDelegateDesktop::IsWebContentsForemost() {
@@ -144,7 +141,7 @@ void JavaScriptTabModalDialogManagerDelegateDesktop::OnTabStripModelChanged(
       // At this point, this WebContents is no longer in the tabstrip. The usual
       // teardown will not be able to turn off the attention indicator, so that
       // must be done here.
-      SetTabNeedsAttentionImpl(false, tab_strip_model, replace->index);
+      SetTabNeedsAttentionImpl(false, tab_strip_model, replace->new_contents);
 
       javascript_dialogs::TabModalDialogManager::FromWebContents(web_contents_)
           ->CloseDialogWithReason(javascript_dialogs::TabModalDialogManager::
@@ -176,8 +173,8 @@ void JavaScriptTabModalDialogManagerDelegateDesktop::OnTabStripModelChanged(
 void JavaScriptTabModalDialogManagerDelegateDesktop::SetTabNeedsAttentionImpl(
     bool attention,
     TabStripModel* tab_strip_model,
-    int index) {
-  tab_strip_model->SetTabNeedsAttentionAt(index, attention);
+    content::WebContents* web_contents) {
+  tab_strip_model->SetTabNeedsAttention(web_contents, attention);
   if (attention) {
     tab_strip_model->AddObserver(this);
     tab_strip_model_being_observed_ = tab_strip_model;

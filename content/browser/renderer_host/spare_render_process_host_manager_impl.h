@@ -72,6 +72,7 @@ enum class NoSpareRendererReason {
 
 CONTENT_EXPORT BASE_DECLARE_FEATURE(kKillSpareRenderOnMemoryPressure);
 CONTENT_EXPORT BASE_DECLARE_FEATURE(kSpareRPHKeepOneAliveOnMemoryPressure);
+CONTENT_EXPORT BASE_DECLARE_FEATURE(kSpareRPHUseCriticalMemoryPressure);
 
 class CONTENT_EXPORT SpareRenderProcessHostManagerImpl
     : public SpareRenderProcessHostManager,
@@ -93,7 +94,7 @@ class CONTENT_EXPORT SpareRenderProcessHostManagerImpl
   void AddObserver(Observer* observer) override;
   void RemoveObserver(Observer* observer) override;
   RenderProcessHost* WarmupSpare(BrowserContext* browser_context) override;
-  const std::vector<RenderProcessHost*>& GetSpares() override;
+  const std::vector<raw_ptr<RenderProcessHost>>& GetSpares() override;
   std::vector<ChildProcessId> GetSpareIds() override;
   void CleanupSparesForTesting() override;
   const std::optional<LastSpareRendererCreationInfo>&
@@ -226,6 +227,18 @@ class CONTENT_EXPORT SpareRenderProcessHostManagerImpl
   DoesEmbedderAllowSpareUsage(BrowserContext* browser_context,
                               SiteInstanceImpl* site_instance);
 
+  // Destroys an individual spare renderer and notifies observers.
+  void DestroySpare(RenderProcessHost* spare_rph,
+                    std::optional<SpareRendererDispatchResult> dispatch_result);
+
+  // Trims excess spare renderers from the tail down to `target_count`.
+  void TrimSpares(size_t target_count,
+                  std::optional<SpareRendererDispatchResult> dispatch_result);
+
+  // Calculates the target number of spares based on active feature flags and
+  // the current memory limit.
+  size_t GetTargetSpareRPHCount() const;
+
   base::MemoryConsumerRegistration memory_consumer_registration_;
 
   // The clients who want to know when the spare render process host has
@@ -233,7 +246,7 @@ class CONTENT_EXPORT SpareRenderProcessHostManagerImpl
   base::ObserverList<Observer> observer_list_;
 
   // All spare RPHs. RPH instances are self-owned, hence the raw pointers.
-  std::vector<RenderProcessHost*> spare_rphs_;
+  std::vector<raw_ptr<RenderProcessHost>> spare_rphs_;
 
   // The timer used to track the startup time of the spare renderer process.
   // The elapsed time will be tracked even if the spare renderer is destroyed

@@ -146,6 +146,10 @@ void AddTabStripColorMixer(ui::ColorProvider* provider,
       ui::AlphaBlend(kColorTabBackgroundActiveFrameInactive,
                      kColorTabBackgroundInactiveFrameInactive,
                      /* 40% opacity */ 0.4 * SK_AlphaOPAQUE)};
+  mixer[kColorTabForegroundInactiveHoverFrameActive] = {
+      kColorTabForegroundInactiveFrameActive};
+  mixer[kColorTabForegroundInactiveHoverFrameInactive] = {
+      kColorTabForegroundInactiveFrameInactive};
   mixer[kColorTabBackgroundSelectedFrameActive] = {
       ui::AlphaBlend(kColorTabBackgroundActiveFrameActive,
                      kColorTabBackgroundInactiveFrameActive,
@@ -195,20 +199,31 @@ void AddTabStripColorMixer(ui::ColorProvider* provider,
 
   // TODO (crbug.com/40883407): consolidate the new tab button color ids once
   // the refresh flag is enabled by default.
-  mixer[kColorNewTabButtonCRForegroundFrameActive] = {kColorToolbarButtonIcon};
+  mixer[kColorNewTabButtonCRForegroundFrameActive] = {
+      kColorTabForegroundInactiveFrameActive};
   mixer[kColorNewTabButtonCRForegroundFrameInactive] = {
       kColorToolbarButtonIconInactive};
-  mixer[kColorNewTabButtonCRBackgroundFrameActive] = {kColorToolbar};
-  mixer[kColorNewTabButtonCRBackgroundFrameInactive] = {kColorToolbar};
+  mixer[kColorNewTabButtonCRBackgroundFrameActive] = {
+      kColorTabBackgroundInactiveFrameActive};
+  mixer[kColorNewTabButtonCRBackgroundFrameInactive] = {
+      kColorTabBackgroundInactiveFrameInactive};
   mixer[kColorTabSearchButtonCRForegroundFrameActive] = {
-      kColorToolbarButtonIcon};
+      kColorNewTabButtonCRForegroundFrameActive};
   mixer[kColorTabSearchButtonCRForegroundFrameInactive] = {
-      kColorToolbarButtonIconInactive};
+      kColorNewTabButtonCRForegroundFrameInactive};
   mixer[kColorTabStripComboButtonSeparator] = {ui::kColorSeparator};
   mixer[kColorTabStripControlButtonInkDrop] = ui::SetAlpha(
       kColorNewTabButtonInkDropFrameActive, std::ceil(0.16f * 255.0f));
+  mixer[kColorTabStripControlButtonInkDropFrameInactive] = ui::SetAlpha(
+      kColorNewTabButtonInkDropFrameInactive, std::ceil(0.16f * 255.0f));
   mixer[kColorTabStripControlButtonInkDropRipple] = ui::SetAlpha(
       kColorNewTabButtonInkDropFrameActive, std::ceil(0.14f * 255.0f));
+  mixer[kColorTabStripControlButtonInkDropRippleFrameInactive] = ui::SetAlpha(
+      kColorNewTabButtonInkDropFrameInactive, std::ceil(0.14f * 255.0f));
+  mixer[kColorTabStripScrollButtonBackground] = {
+      kColorTabBackgroundInactiveFrameActive};
+  mixer[kColorTabStripScrollButtonIcon] = {
+      kColorTabForegroundInactiveFrameActive};
 
   /* Vertical Tab Strip colors. */
   mixer[kColorVerticalTabStripShadow] =

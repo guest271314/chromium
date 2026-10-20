@@ -25,9 +25,14 @@
 #include "base/synchronization/condition_variable.h"
 #include "base/synchronization/lock.h"
 #include "base/test/gtest_util.h"
+#include "base/test/scoped_feature_list.h"
 #include "base/threading/simple_thread.h"
 #include "build/build_config.h"
 #include "testing/gmock/include/gmock/gmock.h"
+
+#if BUILDFLAG(IS_WIN)
+#include "base/features.h"
+#endif
 
 namespace base {
 
@@ -265,6 +270,8 @@ TEST_F(PersistentMemoryAllocatorTest, AllocateAndIterate) {
   EXPECT_EQ(0U, iter3.GetNext(&type));
   EXPECT_NE(nullptr, allocator3->GetAsObject<TestObject1>(block1));
   EXPECT_NE(nullptr, allocator3->GetAsObject<TestObject2>(block2));
+  EXPECT_NE(nullptr, allocator3->GetAsArray<uint32_t>(
+                         block1, TestObject1::kPersistentTypeId, 1));
 
   // Ensure that GetNextOfType works.
   PersistentMemoryAllocator::Iterator iter1c(allocator_.get());
@@ -823,7 +830,7 @@ TEST(FilePersistentMemoryAllocatorTest, CreationTest) {
   auto mmfile = std::make_unique<MemoryMappedFile>();
   ASSERT_TRUE(mmfile->Initialize(file_path));
   EXPECT_TRUE(mmfile->IsValid());
-  const size_t mmlength = mmfile->length();
+  const size_t mmlength = mmfile->bytes().size();
   EXPECT_GE(meminfo1.total, mmlength);
 
   FilePersistentMemoryAllocator file(std::move(mmfile), 0, 0, "",
@@ -854,6 +861,14 @@ TEST(FilePersistentMemoryAllocatorTest, CreationTest) {
   // verify that it runs without CHECK violations.
   file.Flush(false);
   file.Flush(true);
+
+#if BUILDFLAG(IS_WIN)
+  {
+    test::ScopedFeatureList feature_list;
+    feature_list.InitAndEnableFeature(features::kFlushFileBuffersOnSyncFlush);
+    file.Flush(true);
+  }
+#endif
 }
 
 TEST(FilePersistentMemoryAllocatorTest, ExtendTest) {
@@ -946,7 +961,7 @@ TEST(FilePersistentMemoryAllocatorTest, AcceptableTest) {
 
     mmfile = std::make_unique<MemoryMappedFile>();
     ASSERT_TRUE(mmfile->Initialize(File(file_path, file_flags), map_access));
-    EXPECT_EQ(filesize, mmfile->length());
+    EXPECT_EQ(filesize, mmfile->bytes().size());
     if (FilePersistentMemoryAllocator::IsFileAcceptable(*mmfile, read_only)) {
       // Make sure construction doesn't crash. It will, however, cause
       // error messages warning about about a corrupted memory segment.

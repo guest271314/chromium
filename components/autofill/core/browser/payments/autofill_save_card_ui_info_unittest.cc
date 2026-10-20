@@ -8,16 +8,18 @@
 
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/test/scoped_feature_list.h"
 #include "build/branding_buildflags.h"
 #include "components/autofill/core/browser/foundations/autofill_client.h"
 #include "components/autofill/core/browser/payments/payments_autofill_client.h"
 #include "components/autofill/core/browser/payments/test_legal_message_line.h"
-#include "components/autofill/core/browser/test_utils/autofill_test_utils.h"
+#include "components/autofill/core/browser/test_utils/autofill_test_util.h"
 #include "components/autofill/core/common/autofill_payments_features.h"
 #include "components/autofill/core/common/credit_card_network_identifiers.h"
 #include "components/grit/components_scaled_resources.h"
 #include "components/signin/public/identity_manager/account_info.h"
 #include "components/strings/grit/components_strings.h"
+#include "google_apis/gaia/gaia_id.h"
 #include "testing/gmock/include/gmock/gmock-matchers.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/skia/include/core/SkBitmap.h"
@@ -109,13 +111,79 @@ TEST(AutofillSaveCardUiInfoTestForLocalSave,
   EXPECT_TRUE(ui_info.is_for_bottom_sheet);
 }
 
+// Tests that the bottom sheet is only shown when there are 0 strikes when the
+// strike limit experiment is disabled.
+TEST(AutofillSaveCardUiInfoTestForLocalSave,
+     ShouldShowBottomSheetWhenStrikeLimitExperimentDisabled) {
+  base::test::ScopedFeatureList features;
+  features.InitAndDisableFeature(
+      features::kAutofillSaveCardBottomSheetStrikeLimitIos);
+
+  // 0 strikes -> Bottom sheet should be shown.
+  AutofillSaveCardUiInfo ui_info_0_strikes =
+      AutofillSaveCardUiInfo::CreateForLocalSave(
+          payments::PaymentsAutofillClient::SaveCreditCardOptions()
+              .with_num_strikes(0),
+          test::GetCreditCard());
+  EXPECT_TRUE(ui_info_0_strikes.is_for_bottom_sheet);
+
+  // 1 strike -> Bottom sheet should NOT be shown (falls back to banner).
+  AutofillSaveCardUiInfo ui_info_1_strike =
+      AutofillSaveCardUiInfo::CreateForLocalSave(
+          payments::PaymentsAutofillClient::SaveCreditCardOptions()
+              .with_num_strikes(1),
+          test::GetCreditCard());
+  EXPECT_FALSE(ui_info_1_strike.is_for_bottom_sheet);
+}
+
+// Tests that the bottom sheet is shown up to the 3rd attempt when the strike
+// limit experiment is enabled with default parameter (max strikes = 3).
+TEST(AutofillSaveCardUiInfoTestForLocalSave,
+     ShouldShowBottomSheetWhenStrikeLimitExperimentEnabled) {
+  base::test::ScopedFeatureList features;
+  features.InitAndEnableFeature(
+      features::kAutofillSaveCardBottomSheetStrikeLimitIos);
+
+  // 0 strikes -> Bottom sheet should be shown.
+  AutofillSaveCardUiInfo ui_info_0_strikes =
+      AutofillSaveCardUiInfo::CreateForLocalSave(
+          payments::PaymentsAutofillClient::SaveCreditCardOptions()
+              .with_num_strikes(0),
+          test::GetCreditCard());
+  EXPECT_TRUE(ui_info_0_strikes.is_for_bottom_sheet);
+
+  // 1 strike -> Bottom sheet should be shown.
+  AutofillSaveCardUiInfo ui_info_1_strike =
+      AutofillSaveCardUiInfo::CreateForLocalSave(
+          payments::PaymentsAutofillClient::SaveCreditCardOptions()
+              .with_num_strikes(1),
+          test::GetCreditCard());
+  EXPECT_TRUE(ui_info_1_strike.is_for_bottom_sheet);
+
+  // 2 strikes -> Bottom sheet should be shown.
+  AutofillSaveCardUiInfo ui_info_2_strikes =
+      AutofillSaveCardUiInfo::CreateForLocalSave(
+          payments::PaymentsAutofillClient::SaveCreditCardOptions()
+              .with_num_strikes(2),
+          test::GetCreditCard());
+  EXPECT_TRUE(ui_info_2_strikes.is_for_bottom_sheet);
+
+  // 3 strikes -> Bottom sheet should NOT be shown.
+  AutofillSaveCardUiInfo ui_info_3_strikes =
+      AutofillSaveCardUiInfo::CreateForLocalSave(
+          payments::PaymentsAutofillClient::SaveCreditCardOptions()
+              .with_num_strikes(3),
+          test::GetCreditCard());
+  EXPECT_FALSE(ui_info_3_strikes.is_for_bottom_sheet);
+}
+
 // Only applicable for local save bottomsheet since AutofillSaveCardUiInfo's
 // `confirm_text` is not used by local save card infobar.
 
 // Tests confirm text for local save card bottomsheet.
 TEST(AutofillSaveCardUiInfoTestForLocalSave, VerifyConfirmTextForBottomSheet) {
   auto ui_info = AutofillSaveCardUiInfo::CreateForLocalSave(
-      autofill::payments::PaymentsAutofillClient::SaveCreditCardOptions()
+      payments::PaymentsAutofillClient::SaveCreditCardOptions()
           .with_card_save_type(CardSaveType::kCardSaveOnly),
       test::GetCreditCard());
   EXPECT_EQ(ui_info.confirm_text,
@@ -127,7 +195,7 @@ TEST(AutofillSaveCardUiInfoTestForLocalSave, VerifyConfirmTextForBottomSheet) {
 TEST(AutofillSaveCardUiInfoTestForLocalSave,
      VerifyConfirmTextForBottomSheetWhenRequestingNameFromUser) {
   auto ui_info = AutofillSaveCardUiInfo::CreateForLocalSave(
-      autofill::payments::PaymentsAutofillClient::SaveCreditCardOptions()
+      payments::PaymentsAutofillClient::SaveCreditCardOptions()
           .with_card_save_type(CardSaveType::kCardSaveOnly)
           .with_should_request_name_from_user(true),
       test::GetCreditCard());
@@ -140,7 +208,7 @@ TEST(AutofillSaveCardUiInfoTestForLocalSave,
 TEST(AutofillSaveCardUiInfoTestForLocalSave,
      VerifyConfirmTextForBottomSheetWhenRequestingExpiryDateFromUser) {
   auto ui_info = AutofillSaveCardUiInfo::CreateForLocalSave(
-      autofill::payments::PaymentsAutofillClient::SaveCreditCardOptions()
+      payments::PaymentsAutofillClient::SaveCreditCardOptions()
           .with_card_save_type(CardSaveType::kCardSaveOnly)
           .with_should_request_expiration_date_from_user(true),
       test::GetCreditCard());
@@ -153,7 +221,7 @@ TEST(AutofillSaveCardUiInfoTestForLocalSave,
 TEST(AutofillSaveCardUiInfoTestForLocalSave,
      VerifyConfirmTextForBottomSheetWhenRequestingExpiryDateAndNameFromUser) {
   auto ui_info = AutofillSaveCardUiInfo::CreateForLocalSave(
-      autofill::payments::PaymentsAutofillClient::SaveCreditCardOptions()
+      payments::PaymentsAutofillClient::SaveCreditCardOptions()
           .with_card_save_type(CardSaveType::kCardSaveOnly)
           .with_should_request_expiration_date_from_user(true)
           .with_should_request_name_from_user(true),
@@ -323,9 +391,10 @@ TEST_P(AutofillSaveCardUiInfoTestForUploadSave, VerifyCommonAttributes) {
   card.SetNickname(u"My Card");
   LegalMessageLines legal_message_lines(
       {TestLegalMessageLine("example message")});
-  AccountInfo account_info;
-  account_info.account_image = gfx::test::CreateImage(11, 17);
-  account_info.email = "example email";
+  AccountInfo account_info =
+      AccountInfo::Builder(GaiaId("test_id"), "example email")
+          .SetAvatarImage(gfx::test::CreateImage(11, 17))
+          .Build();
 
   auto ui_info = AutofillSaveCardUiInfo::CreateForUploadSave(
       /*options=*/{}, card, legal_message_lines, account_info,
@@ -556,7 +625,7 @@ TEST_P(AutofillSaveCardUiInfoTestForUploadSave,
   EXPECT_EQ(ui_info.description_text,
             l10n_util::GetStringFUTF16(
                 IDS_AUTOFILL_SAVE_CVC_TO_WALLET_PROMPT_EXPLANATION_UPLOAD_IOS,
-                base::UTF8ToUTF16(AccountInfo().email)));
+                base::UTF8ToUTF16(AccountInfo().GetEmail())));
   EXPECT_EQ(ui_info.confirm_text,
             l10n_util::GetStringUTF16(IDS_AUTOFILL_SAVE_CARD_INFOBAR_ACCEPT));
 }
@@ -578,7 +647,7 @@ TEST_P(AutofillSaveCardUiInfoTestForUploadSave,
   EXPECT_EQ(ui_info.description_text,
             l10n_util::GetStringFUTF16(
                 IDS_AUTOFILL_SAVE_CVC_PROMPT_EXPLANATION_UPLOAD_IOS,
-                base::UTF8ToUTF16(AccountInfo().email)));
+                base::UTF8ToUTF16(AccountInfo().GetEmail())));
   EXPECT_EQ(ui_info.confirm_text,
             l10n_util::GetStringUTF16(IDS_AUTOFILL_SAVE_CARD_INFOBAR_ACCEPT));
 }

@@ -27,7 +27,7 @@ void MaybeReportDeepScanningVerdict(
     const std::string& file_name,
     const HashCallbackVariant& sha256_or_cb,
     const std::string& mime_type,
-    const std::string& trigger,
+    DataTransferEventTrigger trigger,
     const std::string& content_transfer_method,
     const std::string& source_email,
     const int64_t content_size,
@@ -47,7 +47,7 @@ void ReportAnalysisConnectorWarningBypass(
     const std::string& file_name,
     const HashCallbackVariant& sha256_or_cb,
     const std::string& mime_type,
-    const std::string& trigger,
+    DataTransferEventTrigger trigger,
     const std::string& content_transfer_method,
     const int64_t content_size,
     const ContentAnalysisResponse& response,
@@ -83,7 +83,8 @@ void InitializeBinaryUploadRequest(BinaryUploadRequest* request,
 // the user was allowed to use the data independent of the scanning result.
 EventResult CalculateEventResult(const AnalysisSettings& settings,
                                  bool allowed_by_scan_result,
-                                 bool should_warn);
+                                 bool should_warn,
+                                 ScanRequestUploadResult result);
 
 // Returns true if `result` as returned by BinaryUploadService is considered a
 // fail-closed result, regardless of attempting a cloud-based or a local-based
@@ -130,10 +131,12 @@ enum class ScanningCrashKey {
   PENDING_TEXT_UPLOADS,
   PENDING_FILE_DOWNLOADS,
   PENDING_PRINTS,
+  PENDING_NETWORK_REQUESTS,
   TOTAL_FILE_UPLOADS,
   TOTAL_TEXT_UPLOADS,
   TOTAL_FILE_DOWNLOADS,
-  TOTAL_PRINTS
+  TOTAL_PRINTS,
+  TOTAL_NETWORK_REQUESTS
 };
 void IncrementCrashKey(ScanningCrashKey key, int delta = 1);
 void DecrementCrashKey(ScanningCrashKey key, int delta = 1);

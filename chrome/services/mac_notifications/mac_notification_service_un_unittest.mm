@@ -4,6 +4,7 @@
 
 #import "chrome/services/mac_notifications/mac_notification_service_un.h"
 
+#import <AppKit/AppKit.h>
 #import <UserNotifications/UserNotifications.h>
 
 #include <string>
@@ -11,6 +12,9 @@
 #include <vector>
 
 #include "base/apple/bundle_locations.h"
+#include "base/apple/foundation_util.h"
+#include "base/files/file_path.h"
+#include "base/files/file_util.h"
 #include "base/run_loop.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/sys_string_conversions.h"
@@ -33,6 +37,7 @@
 #import "third_party/ocmock/OCMock/OCMock.h"
 #import "third_party/ocmock/gtest_support.h"
 #import "third_party/ocmock/ocmock_extensions.h"
+#include "third_party/skia/include/core/SkBitmap.h"
 #include "ui/gfx/image/image_skia.h"
 #include "url/gurl.h"
 
@@ -407,6 +412,307 @@ TEST_F(MacNotificationServiceUNTest, DisplayNotification) {
 
   // Expect a new notification category for this notification.
   EXPECT_EQ(1u, category_count_);
+}
+
+TEST_F(MacNotificationServiceUNTest, DisplayNotificationWithIcon) {
+  base::RunLoop run_loop;
+  __block base::FilePath icon_path;
+  __block void (^saved_completion_handler)(NSError* _Nullable) = nil;
+
+  OCMExpect(
+      [mock_notification_center_
+          addNotificationRequest:[OCMArg checkWithBlock:^BOOL(
+                                             UNNotificationRequest* request) {
+            NSArray<UNNotificationAttachment*>* attachments =
+                request.content.attachments;
+            EXPECT_EQ(1u, attachments.count);
+            if (attachments.count == 1u) {
+              icon_path = base::apple::NSURLToFilePath(attachments[0].URL);
+            }
+            return YES;
+          }]
+           withCompletionHandler:[OCMArg checkWithBlock:^BOOL(void (
+                                     ^completion_handler)(NSError* _Nullable)) {
+             saved_completion_handler = [completion_handler copy];
+             return YES;
+           }]])
+      .andDo(invokeClosure(run_loop.QuitClosure()));
+
+  auto notification = CreateMojoNotification("notificationId", "profileId",
+                                             /*incognito=*/true);
+  SkBitmap bitmap;
+  bitmap.allocN32Pixels(64, 64);
+  bitmap.eraseARGB(255, 100, 150, 200);
+  notification->icon = gfx::ImageSkia::CreateFrom1xBitmap(bitmap);
+  service_remote_->DisplayNotification(std::move(notification));
+
+  run_loop.Run();
+  EXPECT_OCMOCK_VERIFY(mock_notification_center_);
+
+  ASSERT_FALSE(icon_path.empty());
+  EXPECT_TRUE(base::PathExists(icon_path));
+  // The path must be canonicalized (no symlinks such as /var -> /private/var).
+  EXPECT_EQ(icon_path, base::MakeAbsoluteFilePath(icon_path));
+
+  // Even after 30 seconds, the file should still exist while the request is in
+  // flight.
+  task_environment_.FastForwardBy(base::Seconds(30));
+  EXPECT_TRUE(base::PathExists(icon_path));
+
+  // Once the completion handler is invoked, the temporary file is deleted.
+  ASSERT_TRUE(saved_completion_handler);
+  saved_completion_handler(nil);
+  saved_completion_handler = nil;
+  task_environment_.RunUntilIdle();
+  EXPECT_FALSE(base::PathExists(icon_path));
+}
+
+TEST_F(MacNotificationServiceUNTest,
+       DisplayNotificationWithIcon_RetriesWithoutAttachmentOnError) {
+  base::HistogramTester histogram_tester;
+  base::RunLoop run_loop;
+  __block base::FilePath icon_path;
+
+  NSError* attachment_error =
+      [NSError errorWithDomain:UNErrorDomain
+                          code:UNErrorCodeAttachmentMoveIntoDataStoreFailed
+                      userInfo:nil];
+
+  // First attempt has the icon attachment and fails with an attachment error.
+  OCMExpect([mock_notification_center_
+      addNotificationRequest:[OCMArg checkWithBlock:^BOOL(
+                                         UNNotificationRequest* request) {
+        NSArray<UNNotificationAttachment*>* attachments =
+            request.content.attachments;
+        if (attachments.count != 1u) {
+          return NO;
+        }
+        icon_path = base::apple::NSURLToFilePath(attachments[0].URL);
+        return YES;
+      }]
+       withCompletionHandler:([OCMArg
+                                 invokeBlockWithArgs:attachment_error, nil])]);
+
+  // Second attempt retries without attachments.
+  OCMExpect(
+      [mock_notification_center_
+          addNotificationRequest:[OCMArg checkWithBlock:^BOOL(
+                                             UNNotificationRequest* request) {
+            EXPECT_NSEQ(@"i|profileId|notificationId", request.identifier);
+            EXPECT_NSEQ(@"title", request.content.title);
+            return request.content.attachments.count == 0u;
+          }]
+           withCompletionHandler:([OCMArg
+                                     invokeBlockWithArgs:[NSNull null], nil])])
+      .andDo(invokeClosure(run_loop.QuitClosure()));
+
+  auto notification = CreateMojoNotification("notificationId", "profileId",
+                                             /*incognito=*/true);
+  SkBitmap bitmap;
+  bitmap.allocN32Pixels(64, 64);
+  bitmap.eraseARGB(255, 100, 150, 200);
+  notification->icon = gfx::ImageSkia::CreateFrom1xBitmap(bitmap);
+  service_remote_->DisplayNotification(std::move(notification));
+
+  run_loop.Run();
+  task_environment_.RunUntilIdle();
+  EXPECT_OCMOCK_VERIFY(mock_notification_center_);
+
+  ASSERT_FALSE(icon_path.empty());
+  EXPECT_FALSE(base::PathExists(icon_path));
+  histogram_tester.ExpectUniqueSample(
+      "Notifications.macOS.DeliveryResult.Banner",
+      UNErrorCodeAttachmentMoveIntoDataStoreFailed, 1);
+  histogram_tester.ExpectUniqueSample(
+      "Notifications.macOS.DeliveryResult.RetryWithoutAttachment.Banner", 0, 1);
+}
+
+TEST_F(MacNotificationServiceUNTest,
+       DisplayNotificationWithIcon_DoesNotRetryOnNonAttachmentError) {
+  base::HistogramTester histogram_tester;
+  base::RunLoop run_loop;
+  __block base::FilePath icon_path;
+
+  NSError* non_attachment_error =
+      [NSError errorWithDomain:UNErrorDomain
+                          code:UNErrorCodeNotificationsNotAllowed
+                      userInfo:nil];
+
+  OCMExpect(
+      [mock_notification_center_
+          addNotificationRequest:[OCMArg checkWithBlock:^BOOL(
+                                             UNNotificationRequest* request) {
+            NSArray<UNNotificationAttachment*>* attachments =
+                request.content.attachments;
+            if (attachments.count != 1u) {
+              return NO;
+            }
+            icon_path = base::apple::NSURLToFilePath(attachments[0].URL);
+            return YES;
+          }]
+           withCompletionHandler:([OCMArg
+                                     invokeBlockWithArgs:non_attachment_error,
+                                                         nil])])
+      .andDo(invokeClosure(run_loop.QuitClosure()));
+
+  auto notification = CreateMojoNotification("notificationId", "profileId",
+                                             /*incognito=*/true);
+  SkBitmap bitmap;
+  bitmap.allocN32Pixels(64, 64);
+  bitmap.eraseARGB(255, 100, 150, 200);
+  notification->icon = gfx::ImageSkia::CreateFrom1xBitmap(bitmap);
+  service_remote_->DisplayNotification(std::move(notification));
+
+  run_loop.Run();
+  task_environment_.RunUntilIdle();
+  EXPECT_OCMOCK_VERIFY(mock_notification_center_);
+
+  ASSERT_FALSE(icon_path.empty());
+  EXPECT_FALSE(base::PathExists(icon_path));
+  histogram_tester.ExpectUniqueSample(
+      "Notifications.macOS.DeliveryResult.Banner",
+      UNErrorCodeNotificationsNotAllowed, 1);
+  histogram_tester.ExpectTotalCount(
+      "Notifications.macOS.DeliveryResult.RetryWithoutAttachment.Banner", 0);
+}
+
+TEST_F(MacNotificationServiceUNTest,
+       DisplayNotificationWithIcon_DoesNotRetryIfClosedBeforeCompletion) {
+  base::HistogramTester histogram_tester;
+  base::RunLoop display_loop;
+  __block void (^saved_completion_handler)(NSError* _Nullable) = nil;
+
+  OCMExpect(
+      [mock_notification_center_
+          addNotificationRequest:[OCMArg checkWithBlock:^BOOL(
+                                             UNNotificationRequest* request) {
+            return request.content.attachments.count == 1u;
+          }]
+           withCompletionHandler:[OCMArg checkWithBlock:^BOOL(void (
+                                     ^completion_handler)(NSError* _Nullable)) {
+             saved_completion_handler = [completion_handler copy];
+             return YES;
+           }]])
+      .andDo(invokeClosure(display_loop.QuitClosure()));
+
+  auto notification = CreateMojoNotification("notificationId", "profileId",
+                                             /*incognito=*/true);
+  SkBitmap bitmap;
+  bitmap.allocN32Pixels(64, 64);
+  bitmap.eraseARGB(255, 100, 150, 200);
+  notification->icon = gfx::ImageSkia::CreateFrom1xBitmap(bitmap);
+  service_remote_->DisplayNotification(std::move(notification));
+
+  display_loop.Run();
+  EXPECT_OCMOCK_VERIFY(mock_notification_center_);
+
+  // Close the notification before the first attempt's completion handler runs.
+  base::RunLoop close_loop;
+  OCMExpect(
+      [mock_notification_center_ removeDeliveredNotificationsWithIdentifiers:@[
+        @"i|profileId|notificationId"
+      ]])
+      .andDo(invokeClosure(close_loop.QuitClosure()));
+  service_remote_->CloseNotification(mojom::NotificationIdentifier::New(
+      "notificationId",
+      mojom::ProfileIdentifier::New("profileId", /*incognito=*/true)));
+  close_loop.Run();
+  EXPECT_OCMOCK_VERIFY(mock_notification_center_);
+
+  // Now invoke the completion handler with an attachment error; it should not
+  // retry since the notification was already closed.
+  ASSERT_TRUE(saved_completion_handler);
+  NSError* attachment_error =
+      [NSError errorWithDomain:UNErrorDomain
+                          code:UNErrorCodeAttachmentMoveIntoDataStoreFailed
+                      userInfo:nil];
+  saved_completion_handler(attachment_error);
+  saved_completion_handler = nil;
+  task_environment_.RunUntilIdle();
+  EXPECT_OCMOCK_VERIFY(mock_notification_center_);
+
+  histogram_tester.ExpectUniqueSample(
+      "Notifications.macOS.DeliveryResult.Banner",
+      UNErrorCodeAttachmentMoveIntoDataStoreFailed, 1);
+  histogram_tester.ExpectTotalCount(
+      "Notifications.macOS.DeliveryResult.RetryWithoutAttachment.Banner", 0);
+}
+
+TEST_F(MacNotificationServiceUNTest,
+       RedisplayNotificationWithIcon_RetriesWithoutAttachmentOnError) {
+  auto notification = CreateMojoNotification("notificationId", "profileId",
+                                             /*incognito=*/false,
+                                             /*renotify=*/false);
+  SkBitmap bitmap;
+  bitmap.allocN32Pixels(64, 64);
+  bitmap.eraseARGB(255, 100, 150, 200);
+  notification->icon = gfx::ImageSkia::CreateFrom1xBitmap(bitmap);
+
+  {
+    base::RunLoop run_loop;
+    OCMExpect([mock_notification_center_ addNotificationRequest:[OCMArg any]
+                                          withCompletionHandler:[OCMArg any]])
+        .andDo(invokeClosure(run_loop.QuitClosure()));
+    service_remote_->DisplayNotification(notification.Clone());
+    run_loop.Run();
+    EXPECT_OCMOCK_VERIFY(mock_notification_center_);
+  }
+
+  {
+    base::HistogramTester histogram_tester;
+    base::RunLoop run_loop;
+    NSError* attachment_error =
+        [NSError errorWithDomain:UNErrorDomain
+                            code:UNErrorCodeAttachmentMoveIntoDataStoreFailed
+                        userInfo:nil];
+
+    OCMExpect([mock_notification_center_
+        getDeliveredNotificationsWithCompletionHandler:
+            ([OCMArg invokeBlockWithArgs:@[
+              CreateNotification("notificationId", "profileId",
+                                 /*incognito=*/false, /*display=*/false)
+            ],
+                                         nil])]);
+
+    // First replacement attempt includes the attachment and fails.
+    OCMExpect([mock_notification_center_
+        replaceContentForRequestWithIdentifier:@"r|profileId|notificationId"
+                            replacementContent:
+                                [OCMArg checkWithBlock:^BOOL(
+                                            UNNotificationContent* content) {
+                                  return content.attachments.count == 1u;
+                                }]
+                             completionHandler:
+                                 ([OCMArg invokeBlockWithArgs:attachment_error,
+                                                              nil])]);
+
+    // Second replacement attempt retries without attachments.
+    OCMExpect(
+        [mock_notification_center_
+            replaceContentForRequestWithIdentifier:@"r|profileId|notificationId"
+                                replacementContent:
+                                    [OCMArg
+                                        checkWithBlock:^BOOL(
+                                            UNNotificationContent* content) {
+                                          return content.attachments.count ==
+                                                 0u;
+                                        }]
+                                 completionHandler:
+                                     ([OCMArg invokeBlockWithArgs:[NSNull null],
+                                                                  nil])])
+        .andDo(invokeClosure(run_loop.QuitClosure()));
+
+    service_remote_->DisplayNotification(notification.Clone());
+    run_loop.Run();
+    task_environment_.RunUntilIdle();
+    EXPECT_OCMOCK_VERIFY(mock_notification_center_);
+    histogram_tester.ExpectUniqueSample(
+        "Notifications.macOS.DeliveryResult.Banner",
+        UNErrorCodeAttachmentMoveIntoDataStoreFailed, 1);
+    histogram_tester.ExpectUniqueSample(
+        "Notifications.macOS.DeliveryResult.RetryWithoutAttachment.Banner", 0,
+        1);
+  }
 }
 
 TEST_F(MacNotificationServiceUNTest, RedisplayNotification) {
@@ -893,22 +1199,37 @@ TEST_F(MacNotificationServiceUNTest,
       &mock_handler};
 
   mojom::PermissionStatus status = mojom::PermissionStatus::kNotDetermined;
-  base::RunLoop loop;
   auto service = std::make_unique<MacNotificationServiceUN>(
       handler_receiver.BindNewPipeAndPassRemote(),
       base::BindLambdaForTesting([&](mojom::PermissionStatus new_status) {
+        EXPECT_NE(new_status, mojom::PermissionStatus::kPromptPending);
         status = new_status;
-        loop.Quit();
       }),
       mock_notification_center);
-  loop.Run();
-  EXPECT_EQ(status, mojom::PermissionStatus::kDenied);
 
-  base::test::TestFuture<mojom::RequestPermissionResult> permission_result;
-  service->RequestPermission(permission_result.GetCallback());
-  EXPECT_EQ(permission_result.Get(),
-            mojom::RequestPermissionResult::kPermissionPreviouslyDenied);
-  EXPECT_EQ(status, mojom::PermissionStatus::kDenied);
+  // Call `RequestPermission` immediately while the initial
+  // `SynchronizePermissionStatus` reply from the constructor is still pending
+  // on the task runner (so the sync reply arrives while
+  // `pending_permission_requests_` is non-empty and before the
+  // `RequestPermission` settings callback). `kPromptPending` should not be
+  // reported.
+  {
+    base::test::TestFuture<mojom::RequestPermissionResult> permission_result;
+    service->RequestPermission(permission_result.GetCallback());
+    EXPECT_EQ(permission_result.Get(),
+              mojom::RequestPermissionResult::kPermissionPreviouslyDenied);
+    EXPECT_EQ(status, mojom::PermissionStatus::kDenied);
+  }
+
+  // Calling `RequestPermission` again after the status is already synchronized
+  // should also not report `kPromptPending`.
+  {
+    base::test::TestFuture<mojom::RequestPermissionResult> permission_result;
+    service->RequestPermission(permission_result.GetCallback());
+    EXPECT_EQ(permission_result.Get(),
+              mojom::RequestPermissionResult::kPermissionPreviouslyDenied);
+    EXPECT_EQ(status, mojom::PermissionStatus::kDenied);
+  }
 }
 
 TEST_F(MacNotificationServiceUNTest,
@@ -943,6 +1264,58 @@ TEST_F(MacNotificationServiceUNTest,
 
   current_status = UNAuthorizationStatusAuthorized;
   EXPECT_EQ(status.Take(), mojom::PermissionStatus::kGranted);
+}
+
+TEST_F(MacNotificationServiceUNTest,
+       PermissionStateChangedCallback_ApplicationDidBecomeActive) {
+  // Reset the service created by the test harness so it doesn't interfere with
+  // the one created in this test.
+  ResetService();
+
+  UNAuthorizationStatus current_status = UNAuthorizationStatusAuthorized;
+  auto& status_ref = current_status;
+  id settings = OCMClassMock([UNNotificationSettings class]);
+  OCMStub([settings authorizationStatus]).andDo(^(NSInvocation* invocation) {
+    [invocation setReturnValue:(void*)(&status_ref)];
+  });
+  id mock_notification_center = CreateMockNotificationCenter(settings);
+
+  MockNotificationActionHandler mock_handler;
+  mojo::Receiver<mojom::MacNotificationActionHandler> handler_receiver{
+      &mock_handler};
+
+  base::test::TestFuture<mojom::PermissionStatus> status;
+  auto service = std::make_unique<MacNotificationServiceUN>(
+      handler_receiver.BindNewPipeAndPassRemote(),
+      status.GetRepeatingCallback(), mock_notification_center);
+  EXPECT_EQ(status.Take(), mojom::PermissionStatus::kGranted);
+
+  // Becoming active without a status change should not run the callback.
+  // Only advance mock time by a second (well below the 10 minute periodic
+  // synchronization interval), so only the activation can trigger a poll.
+  [NSNotificationCenter.defaultCenter
+      postNotificationName:NSApplicationDidBecomeActiveNotification
+                    object:nil];
+  task_environment_.FastForwardBy(base::Seconds(1));
+  EXPECT_FALSE(status.IsReady());
+
+  // A status change is picked up as soon as the app becomes active.
+  current_status = UNAuthorizationStatusDenied;
+  [NSNotificationCenter.defaultCenter
+      postNotificationName:NSApplicationDidBecomeActiveNotification
+                    object:nil];
+  task_environment_.FastForwardBy(base::Seconds(1));
+  ASSERT_TRUE(status.IsReady());
+  EXPECT_EQ(status.Take(), mojom::PermissionStatus::kDenied);
+
+  // After the service is destroyed, becoming active is a no-op.
+  service.reset();
+  current_status = UNAuthorizationStatusAuthorized;
+  [NSNotificationCenter.defaultCenter
+      postNotificationName:NSApplicationDidBecomeActiveNotification
+                    object:nil];
+  task_environment_.FastForwardBy(base::Seconds(1));
+  EXPECT_FALSE(status.IsReady());
 }
 
 }  // namespace mac_notifications

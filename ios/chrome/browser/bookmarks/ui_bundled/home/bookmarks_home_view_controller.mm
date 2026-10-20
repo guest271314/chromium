@@ -6,8 +6,10 @@
 
 #import <algorithm>
 #import <set>
+#import <utility>
 
 #import "base/apple/foundation_util.h"
+#import "base/containers/to_vector.h"
 #import "base/i18n/message_formatter.h"
 #import "base/ios/ios_util.h"
 #import "base/memory/raw_ptr.h"
@@ -59,14 +61,15 @@
 #import "ios/chrome/browser/incognito_reauth/ui_bundled/incognito_reauth_scene_agent.h"
 #import "ios/chrome/browser/intents/model/intents_donation_helper.h"
 #import "ios/chrome/browser/keyboard/ui_bundled/UIKeyCommand+Chrome.h"
+#import "ios/chrome/browser/menu/public/menu_histograms.h"
 #import "ios/chrome/browser/menu/ui_bundled/browser_action_factory.h"
-#import "ios/chrome/browser/menu/ui_bundled/menu_histograms.h"
 #import "ios/chrome/browser/metrics/model/new_tab_page_uma.h"
 #import "ios/chrome/browser/net/model/crurl.h"
 #import "ios/chrome/browser/policy/model/policy_util.h"
 #import "ios/chrome/browser/shared/coordinator/alert/action_sheet_coordinator.h"
 #import "ios/chrome/browser/shared/coordinator/alert/alert_coordinator.h"
 #import "ios/chrome/browser/shared/coordinator/scene/scene_state.h"
+#import "ios/chrome/browser/shared/coordinator/scene/scene_state_observer.h"
 #import "ios/chrome/browser/shared/coordinator/scene/state/incognito_state.h"
 #import "ios/chrome/browser/shared/model/browser/browser.h"
 #import "ios/chrome/browser/shared/model/browser/browser_provider.h"
@@ -83,7 +86,6 @@
 #import "ios/chrome/browser/shared/ui/elements/home_waiting_view.h"
 #import "ios/chrome/browser/shared/ui/symbols/symbols.h"
 #import "ios/chrome/browser/shared/ui/table_view/cells/table_view_url_item.h"
-#import "ios/chrome/browser/shared/ui/table_view/legacy_chrome_table_view_styler.h"
 #import "ios/chrome/browser/shared/ui/table_view/table_view_illustrated_empty_view.h"
 #import "ios/chrome/browser/shared/ui/table_view/table_view_model.h"
 #import "ios/chrome/browser/shared/ui/table_view/table_view_navigation_controller_constants.h"
@@ -140,7 +142,7 @@ typedef NS_ENUM(NSInteger, BookmarksContextBarState) {
 constexpr CGFloat kSpaceBetweenAccountAndProfileSections = 32.0;
 
 // Returns a vector of all URLs in `nodes`.
-std::vector<GURL> GetUrlsToOpen(const std::vector<const BookmarkNode*>& nodes) {
+std::vector<GURL> GetUrlsToOpen(const bookmark_utils_ios::NodeVector& nodes) {
   std::vector<GURL> urls;
   for (const BookmarkNode* node : nodes) {
     if (node->is_url()) {
@@ -152,7 +154,7 @@ std::vector<GURL> GetUrlsToOpen(const std::vector<const BookmarkNode*>& nodes) {
 
 // Given a set of BookmarkNode pointers, it returns their IDs in a set.
 BookmarkNodeIDSet GetBookmarkNodeIDSet(
-    const std::set<const BookmarkNode*>& nodes) {
+    const bookmark_utils_ios::NodeSet& nodes) {
   BookmarkNodeIDSet nodeIDs;
   for (const BookmarkNode* node : nodes) {
     nodeIDs.emplace(node->id());
@@ -163,12 +165,13 @@ BookmarkNodeIDSet GetBookmarkNodeIDSet(
 }  // namespace
 
 @interface BookmarksHomeViewController () <
-    BookmarksEditorCoordinatorDelegate,
-    BookmarksFolderEditorCoordinatorDelegate,
-    BookmarksFolderChooserCoordinatorDelegate,
-    BookmarksHomeConsumer,
     BookmarkModelBridgeObserver,
+    BookmarksEditorCoordinatorDelegate,
+    BookmarksFolderChooserCoordinatorDelegate,
+    BookmarksFolderEditorCoordinatorDelegate,
+    BookmarksHomeConsumer,
     BookmarkTableCellTitleEditDelegate,
+    SceneStateObserver,
     TableViewURLDragDataSource,
     TableViewURLDropDelegate,
     UIGestureRecognizerDelegate,
@@ -272,11 +275,11 @@ BookmarkNodeIDSet GetBookmarkNodeIDSet(
 
 - (instancetype)initWithBrowser:(Browser*)browser {
   CHECK(browser, base::NotFatalUntil::M152);
-
   UITableViewStyle style = ChromeTableViewStyle();
   self = [super initWithStyle:style];
   if (self) {
     _browser = browser->AsWeakPtr();
+    [browser->GetSceneState() addObserver:self];
     ProfileIOS* profile = self.profile;
     _webStateList = browser->GetWebStateList();
 
@@ -290,7 +293,14 @@ BookmarkNodeIDSet GetBookmarkNodeIDSet(
   return self;
 }
 
+- (void)dealloc {
+  [self shutdown];
+}
+
 - (void)shutdown {
+  if (_isShutDown) {
+    return;
+  }
   _isShutDown = YES;
   [self stopSigninCoordinator];
   [self.editingFolderCell stopEdit];
@@ -301,6 +311,9 @@ BookmarkNodeIDSet GetBookmarkNodeIDSet(
   _displayedFolderNode = nullptr;
   self.mediator.consumer = nil;
   self.mediator = nil;
+  if (_browser) {
+    [_browser->GetSceneState() removeObserver:self];
+  }
   _browser = nullptr;
   [self.searchController dismissViewControllerAnimated:YES completion:nil];
   [self dismissActionSheetCoordinator];
@@ -416,6 +429,10 @@ BookmarkNodeIDSet GetBookmarkNodeIDSet(
 - (void)viewDidLoad {
   [super viewDidLoad];
 
+  if (!_bookmarkModel) {
+    return;
+  }
+
   // Set Navigation Bar, Toolbar and TableView appearance.
   self.navigationController.navigationBarHidden = NO;
 
@@ -470,7 +487,7 @@ BookmarkNodeIDSet GetBookmarkNodeIDSet(
 - (void)viewWillAppear:(BOOL)animated {
   [super viewWillAppear:animated];
 
-  if (_isShutDown) {
+  if (_isShutDown || !_bookmarkModel) {
     // After `shutdown` is called, `_profile` is null.
     return;
   }
@@ -497,6 +514,12 @@ BookmarkNodeIDSet GetBookmarkNodeIDSet(
   [IntentDonationHelper donateIntent:IntentType::kOpenBookmarks];
 }
 
+// Note: Unlike a standard trio of mediator-coordinator-viewcontroller,
+// multiple `BookmarksHomeViewController` instances are pushed for subfolder
+// navigation under a single coordinator and a single mediator.
+// `viewDidDisappear:` cannot be used for shutdown as subfolder navigation
+// would prematurely destroy the coordinator's shared mediator. Teardown is
+// instead tied to root container removal (`parent == nil`).
 - (void)didMoveToParentViewController:(UIViewController*)parent {
   [super didMoveToParentViewController:parent];
   if (_isShutDown) {
@@ -708,9 +731,9 @@ BookmarkNodeIDSet GetBookmarkNodeIDSet(
   [_signinCoordinator stop];
   __weak __typeof(self) weakSelf = self;
   [command addSigninCompletion:^(SigninCoordinator* coordinator,
-                                 SigninCoordinatorResult result,
-                                 id<SystemIdentity>) {
-    [weakSelf signinDidCompleteWithCoordinator:coordinator result:result];
+                                 SigninCoordinatorResultOrIdentity result) {
+    [weakSelf signinDidCompleteWithCoordinator:coordinator
+                                        result:std::move(result)];
   }];
   _signinCoordinator = [SigninCoordinator
       signinCoordinatorWithCommand:command
@@ -747,9 +770,10 @@ BookmarkNodeIDSet GetBookmarkNodeIDSet(
 #pragma mark - BookmarksHomeConsumer Helper
 
 - (void)signinDidCompleteWithCoordinator:(SigninCoordinator*)coordinator
-                                  result:(SigninCoordinatorResult)result {
-  CHECK_EQ(_signinCoordinator, coordinator, base::NotFatalUntil::M151);
-  [self.mediator signinDidCompleteWithResult:result];
+                                  result:(SigninCoordinatorResultOrIdentity)
+                                             result {
+  CHECK_EQ(_signinCoordinator, coordinator);
+  [self.mediator signinDidCompleteWithResult:std::move(result)];
   [self stopSigninCoordinator];
 }
 
@@ -874,13 +898,13 @@ BookmarkNodeIDSet GetBookmarkNodeIDSet(
   }
 
   base::RecordAction(base::UserMetricsAction(userAction));
-  const BookmarkNode* editedNode = *(nodes.begin());
-  const BookmarkNode* selectedFolder = editedNode->parent();
+  const BookmarkNode* movedNode = *(nodes.begin());
+  const BookmarkNode* selectedFolder = movedNode->parent();
   _UIDisabled = YES;
   _folderChooserCoordinator = [[BookmarksFolderChooserCoordinator alloc]
       initWithBaseViewController:self.navigationController
                          browser:_browser.get()
-                     hiddenNodes:nodes];
+                      movedNodes:nodes];
   [_folderChooserCoordinator setSelectedFolder:selectedFolder];
   _folderChooserCoordinator.delegate = self;
   [_folderChooserCoordinator start];
@@ -1109,6 +1133,12 @@ BookmarkNodeIDSet GetBookmarkNodeIDSet(
     BookmarksHomeViewController* controller =
         [self createControllerWithDisplayedFolderNode:folder];
     [self.navigationController pushViewController:controller animated:YES];
+    if (![self.navigationController.viewControllers
+            containsObject:controller]) {
+      // This push can fail if the navigation controller’s list of VC is
+      // currently changing. See crbug.com/515121885.
+      [controller shutdown];
+    }
     return;
   }
   [self jumpToFolder:folder];
@@ -1206,7 +1236,7 @@ BookmarkNodeIDSet GetBookmarkNodeIDSet(
   }
 }
 
-- (void)handleSelectEditNodes:(const std::set<const BookmarkNode*>&)nodes {
+- (void)handleSelectEditNodes:(const bookmark_utils_ios::NodeSet&)nodes {
   // Early return if bookmarks table is not in edit mode.
   if (!self.mediator.currentlyInEditMode) {
     return;
@@ -1311,18 +1341,20 @@ BookmarkNodeIDSet GetBookmarkNodeIDSet(
   CHECK(folder, base::NotFatalUntil::M152);
   CHECK(!folder->is_url(), base::NotFatalUntil::M152);
 
-  // Copy the list of edited nodes from BookmarksFolderChooserCoordinator before
+  // Copy the list of moved nodes from BookmarksFolderChooserCoordinator before
   // `stopFolderChooserCoordinator` sets `_folderChooserCoordinator` to nil.
   std::set<raw_ptr<const bookmarks::BookmarkNode>> editedNodesSet =
-      _folderChooserCoordinator.editedNodes;
-  CHECK_GE(editedNodesSet.size(), 1u, base::NotFatalUntil::M152);
-
+      _folderChooserCoordinator.movedNodes;
   [self stopFolderChooserCoordinator];
 
   [self setTableViewEditing:NO];
+  if (editedNodesSet.empty()) {
+    // All nodes of the sets have been deleted in the meantime. Nothing to do.
+    return;
+  }
   ProfileIOS* profile = self.profile;
-  std::vector<const BookmarkNode*> editedNodesVector(editedNodesSet.begin(),
-                                                     editedNodesSet.end());
+  bookmark_utils_ios::NodeVector editedNodesVector =
+      base::ToVector(editedNodesSet);
   SnackbarMessage* snackbarMessage =
       bookmark_utils_ios::MoveBookmarksWithUndoSnackbar(
           editedNodesVector, _bookmarkModel.get(), folder, profile,
@@ -1565,7 +1597,7 @@ BookmarkNodeIDSet GetBookmarkNodeIDSet(
     // Even if Apple documentation hints toward reconfiguring the row instead
     // of just updating the cell, it creates a visible jank. Use the item
     // configuration method instead. See crbug.com/479692041 for more info.
-    [item configureCell:cell withStyler:self.styler];
+    [item configureCell:cell];
   }
 }
 
@@ -1783,8 +1815,7 @@ BookmarkNodeIDSet GetBookmarkNodeIDSet(
 
 // Returns a button to add a new folder to the bookmarks.
 - (UIBarButtonItem*)createNewFolderButton {
-  UIImage* newFolderIcon =
-      DefaultSymbolWithConfiguration(kFolderBadgePlusSymbol, nil);
+  UIImage* newFolderIcon = SymbolWithConfiguration(SymbolFolderBadgePlus, nil);
 
   UIBarButtonItem* newFolderButton =
       [[UIBarButtonItem alloc] initWithImage:newFolderIcon
@@ -1827,7 +1858,7 @@ BookmarkNodeIDSet GetBookmarkNodeIDSet(
   if (!_bookmarkModel) {
     return;
   }
-  std::set<const bookmarks::BookmarkNode*> allEditableNodes;
+  bookmark_utils_ios::NodeSet allEditableNodes;
   NSArray<TableViewItem*>* items = [self.tableViewModel
       itemsInSectionWithIdentifier:BookmarksHomeSectionIdentifierBookmarks];
 
@@ -2014,7 +2045,7 @@ BookmarkNodeIDSet GetBookmarkNodeIDSet(
   }
   // Create a new selectedNodesForEditMode set to check if some selected nodes
   // are removed.
-  std::set<const BookmarkNode*> newEditNodes;
+  bookmark_utils_ios::NodeSet newEditNodes;
 
   // Add selected nodes to selectedNodesForEditMode only if they are not removed
   // (still exist in the table).
@@ -2121,7 +2152,8 @@ BookmarkNodeIDSet GetBookmarkNodeIDSet(
       bookmarks::prefs::kEditBookmarksEnabled);
 }
 
-// Returns the bookmark node associated with `indexPath`.
+// Returns the bookmark node associated with `indexPath`. Returns nil if the
+// node has been deleted.
 - (const BookmarkNode*)nodeAtIndexPath:(NSIndexPath*)indexPath {
   if (!_bookmarkModel) {
     return nullptr;
@@ -2166,8 +2198,8 @@ BookmarkNodeIDSet GetBookmarkNodeIDSet(
   return [self.tableViewModel numberOfItemsInSection:section] > 0;
 }
 
-- (std::vector<const BookmarkNode*>)selectedNodesForEditMode {
-  std::vector<const BookmarkNode*> nodes;
+- (bookmark_utils_ios::NodeVector)selectedNodesForEditMode {
+  bookmark_utils_ios::NodeVector nodes;
   if (self.mediator.currentlyShowingSearchResults) {
     // Create a vector of edit nodes in the same order as the selected nodes.
     std::ranges::copy(self.mediator.selectedNodesForEditMode,
@@ -2272,6 +2304,7 @@ BookmarkNodeIDSet GetBookmarkNodeIDSet(
                                    title:title
                                 scenario:SharingScenario::BookmarkEntry];
   UIView* cellView = [self.tableView cellForRowAtIndexPath:indexPath];
+  [self.sharingCoordinator stop];
   self.sharingCoordinator =
       [[SharingCoordinator alloc] initWithBaseViewController:self
                                                      browser:_browser.get()
@@ -2386,7 +2419,7 @@ BookmarkNodeIDSet GetBookmarkNodeIDSet(
   if ([self isAnyControllerPresenting]) {
     return;
   }
-  const std::set<const BookmarkNode*> nodes =
+  const bookmark_utils_ios::NodeSet nodes =
       self.mediator.selectedNodesForEditMode;
   switch (self.contextBarState) {
     case BookmarksContextBarDefault:
@@ -2418,7 +2451,7 @@ BookmarkNodeIDSet GetBookmarkNodeIDSet(
   if ([self isAnyControllerPresenting]) {
     return;
   }
-  const std::set<const BookmarkNode*> nodes =
+  const bookmark_utils_ios::NodeSet& nodes =
       self.mediator.selectedNodesForEditMode;
   // Center button is shown and is clickable only when at least
   // one node is selected.
@@ -2538,7 +2571,7 @@ BookmarkNodeIDSet GetBookmarkNodeIDSet(
 #pragma mark - Context Menu
 
 - (void)configureCoordinator:(AlertCoordinator*)coordinator
-     forMultipleBookmarkURLs:(const std::set<const BookmarkNode*>)nodes {
+     forMultipleBookmarkURLs:(const bookmark_utils_ios::NodeSet&)nodes {
   __weak BookmarksHomeViewController* weakSelf = self;
   coordinator.alertController.view.accessibilityIdentifier =
       kBookmarksHomeContextMenuIdentifier;
@@ -2599,7 +2632,7 @@ BookmarkNodeIDSet GetBookmarkNodeIDSet(
                  style:UIAlertActionStyleDefault
                enabled:![self isIncognitoForced]];
 
-  if (base::ios::IsMultipleScenesSupported()) {
+  if (_browser && _browser->GetSceneState().multipleScenesAvailable) {
     titleString = GetNSString(IDS_IOS_CONTENT_CONTEXT_OPENINNEWWINDOW);
     auto action = ^{
       [weakSelf actionSheetOpenNewWindowActionWithURL:nodeURL];
@@ -2659,7 +2692,7 @@ BookmarkNodeIDSet GetBookmarkNodeIDSet(
 }
 
 - (void)configureCoordinator:(AlertCoordinator*)coordinator
-    forMixedAndMultiFolderSelection:(const std::set<const BookmarkNode*>)nodes {
+    forMixedAndMultiFolderSelection:(const bookmark_utils_ios::NodeSet&)nodes {
   __weak BookmarksHomeViewController* weakSelf = self;
   coordinator.alertController.view.accessibilityIdentifier =
       kBookmarksHomeContextMenuIdentifier;
@@ -2687,7 +2720,7 @@ BookmarkNodeIDSet GetBookmarkNodeIDSet(
 
 - (void)actionSheetOpenAction {
   [self dismissActionSheetCoordinator];
-  std::vector<const BookmarkNode*> selectedNodesForEditMode =
+  bookmark_utils_ios::NodeVector selectedNodesForEditMode =
       [self selectedNodesForEditMode];
   [self openAllURLs:GetUrlsToOpen(selectedNodesForEditMode)
         inIncognito:NO
@@ -2696,7 +2729,7 @@ BookmarkNodeIDSet GetBookmarkNodeIDSet(
 
 - (void)actionSheetOpenIncognitoAction {
   [self dismissActionSheetCoordinator];
-  std::vector<const BookmarkNode*> selectedNodesForEditMode =
+  bookmark_utils_ios::NodeVector selectedNodesForEditMode =
       [self selectedNodesForEditMode];
   [self openAllURLs:GetUrlsToOpen(selectedNodesForEditMode)
         inIncognito:YES
@@ -2966,7 +2999,7 @@ BookmarkNodeIDSet GetBookmarkNodeIDSet(
     if (!node) {
       return;
     }
-    std::set<const BookmarkNode*> nodes;
+    bookmark_utils_ios::NodeSet nodes;
     nodes.insert(node);
     [self deleteBookmarkNodes:nodes
                    userAction:"MobileBookmarkManagerEntryDeleted"];
@@ -3080,7 +3113,14 @@ BookmarkNodeIDSet GetBookmarkNodeIDSet(
           sectionIdentifierForSectionIndex:indexPath.section]);
   if (IsABookmarkNodeSectionForIdentifier(sectionIdentifier)) {
     const BookmarkNode* node = [self nodeAtIndexPath:indexPath];
-    CHECK(node, base::NotFatalUntil::M152);
+    if (!node) {
+      // If the user tapped on an entry and the list changed before the current
+      // method is called, that cause a wrong entry to be opened. In particular
+      // if the last entry was tapped and an entry is removed, the node don’t
+      // exists. Let’s just do nothing in this last case.
+      [tableView deselectRowAtIndexPath:indexPath animated:YES];
+      return;
+    }
     // If table is in edit mode, record all the nodes added to edit set.
     if (self.mediator.currentlyInEditMode) {
       if ([self isNodeEditableByUser:node]) {
@@ -3133,6 +3173,9 @@ BookmarkNodeIDSet GetBookmarkNodeIDSet(
       self.mediator.currentlyInEditMode) {
     const BookmarkNode* node = [self nodeAtIndexPath:indexPath];
     CHECK(node, base::NotFatalUntil::M152);
+    if (!node) {
+      return;
+    }
     self.mediator.selectedNodesForEditMode.erase(node);
     [self handleSelectEditNodes:self.mediator.selectedNodesForEditMode];
   }
@@ -3245,6 +3288,13 @@ BookmarkNodeIDSet GetBookmarkNodeIDSet(
               base::SysUTF8ToNSString(URL.spec()), URL,
               self.displayedFolderNode, index, _bookmarkModel.get(),
               self.profile)];
+}
+
+#pragma mark - SceneStateObserver
+
+- (void)sceneState:(SceneState*)sceneState
+    multipleScenesAvailabilityDidChange:(BOOL)multipleScenesAvailable {
+  [self dismissActionSheetCoordinator];
 }
 
 @end

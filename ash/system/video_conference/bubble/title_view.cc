@@ -8,7 +8,6 @@
 
 #include "ash/constants/ash_features.h"
 #include "ash/constants/notifier_catalogs.h"
-#include "ash/public/cpp/style/color_provider.h"
 #include "ash/public/cpp/system/anchored_nudge_data.h"
 #include "ash/public/cpp/system/anchored_nudge_manager.h"
 #include "ash/resources/vector_icons/vector_icons.h"
@@ -82,15 +81,11 @@ TitleView::TitleView(base::OnceClosure close_bubble_callback) {
                                         *title_label);
   SetFlexForView(title_column, 1);
 
-  if (features::IsVcTrayTitleHeaderEnabled()) {
-    AddChildView(std::make_unique<MicTestButton>());
-    VideoConferenceTrayController::Get()->UpdateSidetoneSupportedState();
-  }
+  AddChildView(std::make_unique<MicTestButton>());
+  VideoConferenceTrayController::Get()->UpdateSidetoneSupportedState();
 
-  if (features::IsVcStudioLookEnabled()) {
-    AddChildView(
-        std::make_unique<SettingsButton>(std::move(close_bubble_callback)));
-  }
+  AddChildView(
+      std::make_unique<SettingsButton>(std::move(close_bubble_callback)));
 }
 
 TitleView::~TitleView() {

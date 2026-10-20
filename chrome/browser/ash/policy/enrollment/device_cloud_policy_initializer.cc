@@ -7,49 +7,47 @@
 #include <memory>
 #include <utility>
 
+#include "base/check.h"
 #include "base/functional/bind.h"
 #include "base/logging.h"
 #include "chrome/browser/ash/policy/core/device_cloud_policy_client_factory_ash.h"
 #include "chrome/browser/ash/policy/core/device_cloud_policy_manager_ash.h"
 #include "chrome/browser/ash/policy/core/device_cloud_policy_store_ash.h"
 #include "chrome/browser/ash/policy/enrollment/auto_enrollment_type_checker.h"
-#include "chrome/browser/browser_process.h"
-#include "chrome/browser/net/system_network_context_manager.h"
-#include "chrome/common/chrome_content_client.h"
 #include "chromeos/ash/components/cryptohome/cryptohome_parameters.h"
 #include "chromeos/ash/components/install_attributes/install_attributes.h"
 #include "chromeos/ash/components/system/statistics_provider.h"
 #include "components/policy/core/common/cloud/cloud_policy_client.h"
 #include "components/policy/core/common/cloud/cloud_policy_core.h"
 #include "components/policy/core/common/cloud/device_management_service.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
 
 namespace policy {
 
 DeviceCloudPolicyInitializer::DeviceCloudPolicyInitializer(
+    scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
     DeviceManagementService* enterprise_service,
     ash::InstallAttributes* install_attributes,
     ServerBackedStateKeysBroker* state_keys_broker,
     DeviceCloudPolicyStoreAsh* policy_store,
     DeviceCloudPolicyManagerAsh* policy_manager,
     ash::system::StatisticsProvider* statistics_provider)
-    : enterprise_service_(enterprise_service),
+    : url_loader_factory_(std::move(url_loader_factory)),
+      enterprise_service_(enterprise_service),
       install_attributes_(install_attributes),
       state_keys_broker_(state_keys_broker),
       policy_store_(policy_store),
       policy_manager_(policy_manager),
-      statistics_provider_(statistics_provider) {}
-
-void DeviceCloudPolicyInitializer::SetSystemURLLoaderFactoryForTesting(
-    scoped_refptr<network::SharedURLLoaderFactory> system_url_loader_factory) {
-  system_url_loader_factory_for_testing_ = system_url_loader_factory;
+      statistics_provider_(statistics_provider) {
+  CHECK(url_loader_factory_);
 }
 
 DeviceCloudPolicyInitializer::~DeviceCloudPolicyInitializer() {
-  DCHECK(!is_initialized_);
+  CHECK(!is_initialized_, base::NotFatalUntil::M160);
 }
 
 void DeviceCloudPolicyInitializer::Init() {
-  DCHECK(!is_initialized_);
+  CHECK(!is_initialized_, base::NotFatalUntil::M160);
 
   is_initialized_ = true;
 
@@ -73,7 +71,7 @@ void DeviceCloudPolicyInitializer::Init() {
 }
 
 void DeviceCloudPolicyInitializer::Shutdown() {
-  DCHECK(is_initialized_);
+  CHECK(is_initialized_, base::NotFatalUntil::M160);
 
   policy_store_->RemoveObserver(this);
   state_keys_update_subscription_ = {};
@@ -105,10 +103,7 @@ std::unique_ptr<CloudPolicyClient> DeviceCloudPolicyInitializer::CreateClient(
   // DeviceDMToken callback is empty here because for device policies this
   // DMToken is already provided in the policy fetch requests.
   return CreateDeviceCloudPolicyClientAsh(
-      statistics_provider_, device_management_service,
-      system_url_loader_factory_for_testing_
-          ? system_url_loader_factory_for_testing_
-          : g_browser_process->shared_url_loader_factory(),
+      statistics_provider_, device_management_service, url_loader_factory_,
       CloudPolicyClient::DeviceDMTokenCallback());
 }
 

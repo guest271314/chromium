@@ -42,6 +42,7 @@ void RecordHomeAction(IOSHomeActionType type, bool isStartSurface) {
   } else {
     UMA_HISTOGRAM_ENUMERATION(kActionOnNTPHistogram, type);
   }
+  UMA_HISTOGRAM_ENUMERATION(kActionOnHomeHistogram, type);
 }
 
 void RecordMagicStackClick(ContentSuggestionsModuleType type,
@@ -93,6 +94,13 @@ void RecordModuleFreshnessSignal(ContentSuggestionsModuleType module_type,
           0);
       base::RecordAction(
           base::UserMetricsAction("IOSMagicStackTabResumptionFreshSignal"));
+      break;
+    }
+    case ContentSuggestionsModuleType::kLevelUp: {
+      profile_pref_service->SetInteger(
+          prefs::kIosMagicStackSegmentationLevelUpImpressionsSinceFreshness, 0);
+      base::RecordAction(
+          base::UserMetricsAction("IOSMagicStackLevelUpFreshSignal"));
       break;
     }
     default:
@@ -159,6 +167,16 @@ void LogTopModuleImpressionForType(ContentSuggestionsModuleType module_type,
       }
       break;
     }
+    case ContentSuggestionsModuleType::kLevelUp: {
+      int freshness_impression_count = profile_pref_service->GetInteger(
+          prefs::kIosMagicStackSegmentationLevelUpImpressionsSinceFreshness);
+      if (freshness_impression_count >= 0) {
+        profile_pref_service->SetInteger(
+            prefs::kIosMagicStackSegmentationLevelUpImpressionsSinceFreshness,
+            freshness_impression_count + 1);
+      }
+      break;
+    }
     case ContentSuggestionsModuleType::kSetUpListDefaultBrowser:
     case ContentSuggestionsModuleType::kSetUpListAutofill:
     case ContentSuggestionsModuleType::kSetUpListNotifications:
@@ -172,6 +190,7 @@ void LogTopModuleImpressionForType(ContentSuggestionsModuleType module_type,
     case ContentSuggestionsModuleType::kInvalid:
     case ContentSuggestionsModuleType::kTipsWithProductImage:
     case ContentSuggestionsModuleType::kTips:
+    case ContentSuggestionsModuleType::kTipsNTPThemeActionable:
     case ContentSuggestionsModuleType::kAppBundlePromo:
     case ContentSuggestionsModuleType::kDefaultBrowser:
       break;

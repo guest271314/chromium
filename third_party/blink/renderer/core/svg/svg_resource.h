@@ -78,13 +78,20 @@ class SVGResource : public GarbageCollected<SVGResource> {
 
   virtual bool IsLoading() const { return false; }
 
-  Element* Target() const { return target_.Get(); }
+  Element* Target() const { return target_; }
   // Returns the target's LayoutObject (if target exists and is attached to the
   // layout tree). Also perform cycle-checking, and may thus return nullptr if
   // this SVGResourceClient -> SVGResource reference would start a cycle.
   LayoutSVGResourceContainer* ResourceContainer(SVGResourceClient&) const;
   // Same as the above, minus the cycle-checking.
-  LayoutSVGResourceContainer* ResourceContainerNoCycleCheck() const;
+  enum class Usage {
+    kElement,  // Intent to use the target element only. This may return an
+               // Element with stale layout, and should thus not be used when
+               // the intent is to use the layout structures (for example to
+               // paint a resource).
+    kContent,  // Intent to use the content of the resource for painting.
+  };
+  LayoutSVGResourceContainer* ResourceContainerNoCycleCheck(Usage usage) const;
   // Run cycle-checking for this SVGResourceClient -> SVGResource
   // reference. Used internally by the cycle-checking, and shouldn't be called
   // directly in general.
@@ -103,7 +110,9 @@ class SVGResource : public GarbageCollected<SVGResource> {
  protected:
   SVGResource();
 
+  LayoutSVGResourceContainer* ResourceContainerForCycleCheck() const;
   void InvalidateCycleCache();
+  virtual void UpdateContentLifecycleForUse() const = 0;
   void NotifyContentChanged();
 
   Member<Element> target_;
@@ -142,6 +151,7 @@ class LocalSVGResource final : public SVGResource {
   void Trace(Visitor*) const override;
 
  private:
+  void UpdateContentLifecycleForUse() const override {}
   void TargetChanged(const AtomicString& id);
 
   Member<TreeScope> tree_scope_;
@@ -156,7 +166,8 @@ class ExternalSVGResourceDocumentContent final
  public:
   explicit ExternalSVGResourceDocumentContent(
       const KURL&,
-      const CSSUrlRequestModifiers& modifiers);
+      const CSSUrlRequestModifiers& modifiers,
+      const Referrer& referrer);
 
   void Load(Document&, CrossOriginAttributeValue) override;
   void LoadWithoutCSP(Document&) override;
@@ -166,6 +177,7 @@ class ExternalSVGResourceDocumentContent final
  private:
   bool IsLoading() const override;
   Element* ResolveTarget();
+  void UpdateContentLifecycleForUse() const override;
 
   // SVGResourceDocumentObserver:
   void ResourceNotifyFinished(SVGResourceDocumentContent*) override;
@@ -174,6 +186,7 @@ class ExternalSVGResourceDocumentContent final
   Member<SVGResourceDocumentContent> document_content_;
   KURL url_;
   CSSUrlRequestModifiers modifiers_;
+  Referrer referrer_;
 };
 
 // External resource reference (see SVGResource) with an ImageResourceContent
@@ -193,6 +206,7 @@ class ExternalSVGResourceImageContent final : public SVGResource,
 
   bool IsLoading() const override;
   Element* ResolveTarget();
+  void UpdateContentLifecycleForUse() const override;
 
   // ImageResourceObserver overrides
   void ImageNotifyFinished(ImageResourceContent*) override;

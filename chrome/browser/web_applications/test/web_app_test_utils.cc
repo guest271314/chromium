@@ -47,14 +47,13 @@
 #include "base/values.h"
 #include "chrome/app/chrome_command_ids.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_commands.h"
-#include "chrome/browser/ui/views/web_apps/web_app_dialog_test_support.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/web_applications/web_app_dialogs.h"
-#include "chrome/browser/web_applications/isolated_web_apps/isolated_web_app_integrity_block_data.h"
-#include "chrome/browser/web_applications/isolated_web_apps/isolation_data.h"
 #include "chrome/browser/web_applications/model/app_installed_by.h"
 #include "chrome/browser/web_applications/model/display_override.h"
+#include "chrome/browser/web_applications/model/integrity_block_data.h"
+#include "chrome/browser/web_applications/model/isolation_data.h"
 #include "chrome/browser/web_applications/model/migration_behavior.h"
 #include "chrome/browser/web_applications/model/migration_source.h"
 #include "chrome/browser/web_applications/model/pending_migration_info.h"
@@ -117,9 +116,6 @@
 #include "url/origin.h"
 
 namespace {
-
-std::vector<std::string> test_features = {
-    "default_on_feature", "default_self_feature", "default_disabled_feature"};
 
 constexpr std::string_view kEd25519PublicKeyBase64 =
     "3QrKLntnXWmBkrbLLoobC0uh7u0ahMcKQSqsbX4q7MM=";
@@ -218,10 +214,6 @@ apps::FileHandlers CreateRandomFileHandlers(uint32_t suffix) {
     file_handler.action = GURL("https://example.com/open-" + suffix_str);
     file_handler.accept.push_back(std::move(accept_entry1));
     file_handler.accept.push_back(std::move(accept_entry2));
-    file_handler.downloaded_icons.emplace_back(
-        GURL("https://example.com/image.png"), 16);
-    file_handler.downloaded_icons.emplace_back(
-        GURL("https://example.com/image2.png"), 48);
     file_handler.display_name = base::ASCIIToUTF16(suffix_str) + u" file";
 
     file_handlers.push_back(std::move(file_handler));
@@ -582,7 +574,7 @@ web_package::SignedWebBundleSignatureInfo CreateSignatureInfo(
 
 // Creates an IntegrityBlockData object with the primary key type guaranteed to
 // be present, and a random mix of other available key types.
-std::optional<IsolatedWebAppIntegrityBlockData> CreateRandomIntegrityBlockData(
+std::optional<IntegrityBlockData> CreateRandomIntegrityBlockData(
     RandomHelper& random,
     web_package::SignedWebBundleId::Type primary_key_type) {
   if (!random.next_bool()) {
@@ -611,7 +603,7 @@ std::optional<IsolatedWebAppIntegrityBlockData> CreateRandomIntegrityBlockData(
 
   std::mt19937 rng(random.next_uint());
   std::ranges::shuffle(signatures, rng);
-  return IsolatedWebAppIntegrityBlockData(std::move(signatures));
+  return IntegrityBlockData(std::move(signatures));
 }
 
 std::vector<blink::Manifest::RelatedApplication>
@@ -1189,7 +1181,7 @@ std::unique_ptr<WebApp> CreateRandomWebApp(
     });
 
     IsolationData::Builder idb(get_location_type(), iwa_version);
-    std::optional<IsolatedWebAppIntegrityBlockData> integrity_block_data =
+    std::optional<IntegrityBlockData> integrity_block_data =
         CreateRandomIntegrityBlockData(random, *primary_key_type);
     if (integrity_block_data) {
       idb.SetIntegrityBlockData(std::move(*integrity_block_data));
@@ -1221,6 +1213,8 @@ std::unique_ptr<WebApp> CreateRandomWebApp(
     }
     if (dev_mode && random.next_bool()) {
       idb.SetUpdateManifestUrl(GURL("https://update-manifest.com"));
+    }
+    if (random.next_bool()) {
       idb.SetUpdateChannel(UpdateChannel::default_channel());
     }
     if (random.next_bool()) {
@@ -1387,17 +1381,18 @@ void TestDeclineDialogCallback(
 
 // TODO(b/329703817): Make this smarter by waiting for a specific dialog, and
 // then triggering accept on the dialog.
-webapps::AppId InstallPwaForCurrentUrl(Browser* browser) {
+webapps::AppId InstallPwaForCurrentUrl(BrowserWindowInterface* browser) {
   // Depending on the installability criteria, different dialogs can be used.
-  web_app::test::ScopedAutoAcceptCreateShortcutDialog auto_accept;
-  web_app::test::ScopedAutoCheckChromeOsOpenInWindow auto_check;
-  web_app::test::ScopedAutoAcceptWebAppDialogs auto_accept_pwa;
-  SetAutoAcceptDiyAppsInstallDialogForTesting(true);
-  WebAppTestInstallWithOsHooksObserver observer(browser->profile());
+  base::AutoReset<web_app::InstallDialogTestResponse> auto_accept =
+      web_app::SetPwaInstallationAutoRespondForTesting(
+          web_app::InstallDialogTestResponse::kAcceptAndLaunch);
+  base::AutoReset<web_app::CreateShortcutDialogCheckState> auto_check =
+      web_app::SetCreateShortcutDialogCheckStateForTesting(
+          web_app::CreateShortcutDialogCheckState::kChecked);
+  WebAppTestInstallWithOsHooksObserver observer(browser->GetProfile());
   observer.BeginListening();
   CHECK(chrome::ExecuteCommand(browser, IDC_INSTALL_PWA));
   webapps::AppId app_id = observer.Wait();
-  SetAutoAcceptDiyAppsInstallDialogForTesting(false);
   return app_id;
 }
 

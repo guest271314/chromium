@@ -9,11 +9,14 @@
 
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
+#include "base/test/protobuf_matchers.h"
 #include "base/test/task_environment.h"
 #include "chrome/browser/password_manager/android/password_store_android_backend_bridge_helper.h"
 #include "chrome/browser/password_manager/android/password_store_android_backend_dispatcher_bridge.h"
 #include "chrome/browser/password_manager/android/password_store_android_backend_receiver_bridge.h"
 #include "components/password_manager/core/browser/password_store/password_form_converters.h"
+#include "components/password_manager/core/browser/password_string.h"
+#include "components/sync/protocol/deletion_origin.pb.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -27,7 +30,6 @@ using testing::NiceMock;
 using testing::Optional;
 using testing::Return;
 using testing::StrictMock;
-using testing::VariantWith;
 using testing::WithArg;
 using JobId = PasswordStoreAndroidBackendDispatcherBridge::JobId;
 
@@ -40,7 +42,7 @@ constexpr base::Time kTestDateCreated = base::Time::FromTimeT(1500);
 PasswordForm CreateTestLogin() {
   PasswordForm form;
   form.username_value = kTestUsername;
-  form.password_value = kTestPassword;
+  form.password_value = PasswordString(std::u16string(kTestPassword));
   form.url = GURL(kTestUrl);
   form.signon_realm = kTestUrl;
   form.date_created = kTestDateCreated;
@@ -53,7 +55,10 @@ class MockBackendConsumer
               OnCompleteWithLogins,
               (JobId, std::vector<StoredCredential>),
               (override));
-  MOCK_METHOD(void, OnLoginsChanged, (JobId, PasswordChanges), (override));
+  MOCK_METHOD(void,
+              OnLoginsChanged,
+              (JobId, std::optional<PasswordStoreChangeList>),
+              (override));
   MOCK_METHOD(void, OnError, (JobId, AndroidBackendError), (override));
 };
 
@@ -100,6 +105,11 @@ class MockPasswordStoreAndroidBackendDispatcherBridge
               RemoveLogin,
               (JobId, const StoredCredential&, std::string),
               (override));
+  MOCK_METHOD(
+      void,
+      RemoveLogin,
+      (JobId, const StoredCredential&, std::string, sync_pb::DeletionOrigin),
+      (override));
 };
 
 }  // namespace
@@ -213,6 +223,18 @@ TEST_F(PasswordStoreAndroidBackendBridgeHelperImplTest,
   auto form = CreateTestLogin();
   JobId job_id = helper()->RemoveLogin(FromPasswordForm(form), kTestAccount);
   EXPECT_CALL(*dispatcher_bridge(), RemoveLogin(job_id, _, kTestAccount));
+  RunUntilIdle();
+}
+
+TEST_F(PasswordStoreAndroidBackendBridgeHelperImplTest,
+       RemoveLoginWithDeletionOriginCallsBridge) {
+  auto form = CreateTestLogin();
+  sync_pb::DeletionOrigin deletion_origin;
+  JobId job_id = helper()->RemoveLogin(FromPasswordForm(form), kTestAccount,
+                                       deletion_origin);
+  EXPECT_CALL(*dispatcher_bridge(),
+              RemoveLogin(job_id, _, kTestAccount,
+                          base::test::EqualsProto(deletion_origin)));
   RunUntilIdle();
 }
 

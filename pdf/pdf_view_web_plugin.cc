@@ -198,7 +198,7 @@ class PerProcessInitializer final {
     return *instance;
   }
 
-  void Acquire(bool use_skia) {
+  void Acquire(bool enable_xfa, bool use_skia) {
     DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
 
     DCHECK_GE(init_count_, 0);
@@ -207,7 +207,8 @@ class PerProcessInitializer final {
     }
 
     DCHECK(!IsSDKInitializedViaPlugin());
-    InitializeSDK(/*enable_v8=*/true, use_skia, FontMappingMode::kBlink);
+    InitializeSDK(/*enable_v8=*/true, enable_xfa, use_skia,
+                  FontMappingMode::kBlink);
     SetIsSDKInitializedViaPlugin(true);
   }
 
@@ -245,7 +246,8 @@ bool IsPrintPreviewUrl(std::string_view url) {
 }
 
 int ExtractPrintPreviewPageIndex(std::string_view src_url) {
-  // Sample `src_url` format: chrome-untrusted://print/id/page_index/print.pdf
+  // Sample `src_url` format:
+  // chrome-untrusted://print/token/page_index/print.pdf
   // The page_index is zero-based, but can be negative with special meanings.
   std::vector<std::string_view> url_substr =
       base::SplitStringPiece(src_url.substr(kChromeUntrustedPrintHost.size()),
@@ -312,8 +314,9 @@ class PdfViewWebPlugin::PdfInkModuleClientImpl : public PdfInkModuleClient {
 
   // PdfInkModuleClient:
   void AddFont(FontId font_id,
+               const std::string& font_name,
                base::span<const uint8_t> serialized_typeface) override {
-    plugin_->engine_->AddFont(font_id, serialized_typeface);
+    plugin_->engine_->AddFont(font_id, font_name, serialized_typeface);
   }
 
   void ClearSelection() override { plugin_->engine_->ClearTextSelection(); }
@@ -326,10 +329,12 @@ class PdfViewWebPlugin::PdfInkModuleClientImpl : public PdfInkModuleClient {
 
   void DrawText(int page_index,
                 InkTextId id,
-                base::span<const InkTextInfo> text_info,
+                base::span<const InkTextLine> text_lines,
+                float ascent,
                 double pdf_zoom,
                 const InkTextBoxAttributes& attributes) override {
-    plugin_->engine_->DrawText(page_index, id, text_info, pdf_zoom, attributes);
+    plugin_->engine_->DrawText(page_index, id, text_lines, ascent, pdf_zoom,
+                               attributes);
   }
 
   void ExtendSelectionByPoint(const gfx::PointF& point) override {
@@ -478,7 +483,7 @@ class PdfViewWebPlugin::PdfInkModuleClientImpl : public PdfInkModuleClient {
     plugin_->engine_->UpdateStrokeActive(page_index, id, active);
   }
 
-  void UpdateTextActiveAndInvalidate(InkTextId id, bool active) override {
+  void UpdateTextActiveAndInvalidate(TextId id, bool active) override {
     plugin_->engine_->UpdateTextActiveAndInvalidate(id, active);
   }
 
@@ -586,7 +591,10 @@ bool PdfViewWebPlugin::InitializeCommon() {
   base::debug::SetCrashKeyString(subresource_url, params->original_url);
 
   use_skia_renderer_ = params->use_skia;
-  PerProcessInitializer::GetInstance().Acquire(params->use_skia);
+  PerProcessInitializer::GetInstance().Acquire(
+      /*enable_xfa=*/params->script_option ==
+          PDFiumFormFiller::ScriptOption::kJavaScriptAndXFA,
+      params->use_skia);
   initialized_ = true;
 
   // Check if the PDF is being loaded in the PDF chrome extension. We only allow
@@ -972,6 +980,11 @@ bool PdfViewWebPlugin::CanCopy() const {
   return engine_->HasPermission(DocumentPermission::kCopy);
 }
 
+std::optional<base::i18n::TextDirection>
+PdfViewWebPlugin::GetFocusedFormTextDirection() const {
+  return engine_->GetFocusedFormTextDirection();
+}
+
 bool PdfViewWebPlugin::ExecuteEditCommand(const blink::WebString& name,
                                           const blink::WebString& value) {
   if (name == "SelectAll") {
@@ -1001,6 +1014,20 @@ bool PdfViewWebPlugin::ExecuteEditCommand(const blink::WebString& name,
 
   if (name == "Redo") {
     return Redo();
+  }
+
+  if (name == "MakeTextWritingDirectionLeftToRight") {
+    return SetFocusedFormTextDirection(base::i18n::LEFT_TO_RIGHT);
+  }
+
+  if (name == "MakeTextWritingDirectionRightToLeft") {
+    return SetFocusedFormTextDirection(base::i18n::RIGHT_TO_LEFT);
+  }
+
+  if (name == "MakeTextWritingDirectionNatural") {
+    // Setting base::i18n::UNKNOWN_DIRECTION falls back to PDFium's
+    // auto-direction logic.
+    return SetFocusedFormTextDirection(base::i18n::UNKNOWN_DIRECTION);
   }
 
   return false;
@@ -1512,6 +1539,19 @@ void PdfViewWebPlugin::DocumentLoadComplete() {
   pdf_host_->UpdateContentRestrictions(GetContentRestrictions());
 }
 
+void PdfViewWebPlugin::OnFirstContentPainted() {
+  // Only a full-page PDF represents what the user navigated to; a PDF embedded
+  // in an HTML page is already covered by that page's own paint timing.
+  if (!full_frame_) {
+    return;
+  }
+
+  // The engine fires this at most once, so this is not re-entrant. Sampled
+  // here rather than in the engine so the timestamp is taken on the same clock
+  // the browser compares it against.
+  pdf_host_->OnPdfFirstContentPainted(base::TimeTicks::Now());
+}
+
 void PdfViewWebPlugin::DocumentLoadFailed() {
   DCHECK_EQ(DocumentLoadState::kLoading, document_load_state_);
   document_load_state_ = DocumentLoadState::kFailed;
@@ -1741,10 +1781,8 @@ void PdfViewWebPlugin::MoveRangeSelectionExtent(const gfx::PointF& extent) {
   engine_->MoveRangeSelectionExtent(FrameToPdfCoordinates(extent));
 }
 
-void PdfViewWebPlugin::SetSelectionBounds(const gfx::PointF& base,
-                                          const gfx::PointF& extent) {
-  engine_->SetSelectionBounds(FrameToPdfCoordinates(base),
-                              FrameToPdfCoordinates(extent));
+void PdfViewWebPlugin::SetSelectionBase(const gfx::PointF& base) {
+  engine_->SetSelectionBase(FrameToPdfCoordinates(base));
 }
 
 void PdfViewWebPlugin::GetPdfBytes(uint32_t size_limit,
@@ -1770,6 +1808,19 @@ void PdfViewWebPlugin::GetMostVisiblePageIndex(
   std::move(callback).Run(page_index);
 }
 
+void PdfViewWebPlugin::HasMeaningfulText(HasMeaningfulTextCallback callback) {
+  std::move(callback).Run(engine_ && engine_->HasMeaningfulText());
+}
+
+void PdfViewWebPlugin::HasJavaScript(HasJavaScriptCallback callback) {
+  std::move(callback).Run(engine_ && engine_->HasJavaScript());
+}
+
+void PdfViewWebPlugin::IsPasswordProtected(
+    IsPasswordProtectedCallback callback) {
+  std::move(callback).Run(engine_ && engine_->IsPasswordProtected());
+}
+
 void PdfViewWebPlugin::GetPageText(int32_t page_index,
                                    GetPageTextCallback callback) {
   if (page_index < 0 || page_index >= engine_->GetNumberOfPages()) {
@@ -1788,6 +1839,12 @@ void PdfViewWebPlugin::GetSaveDataBufferHandlerForDrive(
     buffer_handler = std::make_unique<OriginalDataHandlerForDrive>(this);
   } else {
     buffer_handler = std::make_unique<ModifiedDataBufferHandlerForDrive>(this);
+#if BUILDFLAG(ENABLE_PDF_INK2)
+    if (request_type == pdf::mojom::SaveRequestType::kAnnotation &&
+        ink_module_) {
+      ink_module_->RecordMetricsOnSave();
+    }
+#endif  // BUILDFLAG(ENABLE_PDF_INK2)
   }
   const uint32_t file_size = buffer_handler->GetFileSize();
   if (!file_size) {
@@ -1891,12 +1948,13 @@ void PdfViewWebPlugin::HandleGetNamedDestinationMessage(
   std::optional<PDFiumEngine::NamedDestination> named_destination =
       engine_->GetNamedDestination(*message.FindString("namedDestination"));
 
-  const int page_number = named_destination.has_value()
-                              ? base::checked_cast<int>(named_destination->page)
-                              : -1;
+  const int page_index =
+      named_destination.has_value()
+          ? base::checked_cast<int>(named_destination->page_index)
+          : -1;
 
   base::DictValue reply = PrepareReplyMessage(message);
-  reply.Set("pageNumber", page_number);
+  reply.Set("pageIndex", page_index);
 
   if (named_destination.has_value() && !named_destination->view.empty()) {
     std::ostringstream view_stream;
@@ -1966,7 +2024,8 @@ void PdfViewWebPlugin::HandleGetSaveDataBlockMessage(
 void PdfViewWebPlugin::HandleGetSuggestedFileName(
     const base::DictValue& message) {
   client_->PostMessage(PrepareReplyMessage(message).Set(
-      "fileName", GetFileNameForSaveFromUrl(url_)));
+      "fileName", GetFileNameForSaveFromUrlAndSuggestion(
+                      url_, engine_->GetFileNameFromContentDisposition())));
 }
 
 void PdfViewWebPlugin::HandleGetThumbnailMessage(
@@ -2241,10 +2300,19 @@ void PdfViewWebPlugin::SaveToBuffer(pdf::mojom::SaveRequestType request_type,
 
   engine_->KillFormFocus();
 
-  auto message = base::DictValue()
-                     .Set("type", "saveData")
-                     .Set("token", token)
-                     .Set("fileName", GetFileNameForSaveFromUrl(url_));
+#if BUILDFLAG(ENABLE_PDF_INK2)
+  if (request_type == pdf::mojom::SaveRequestType::kAnnotation && ink_module_) {
+    ink_module_->RecordMetricsOnSave();
+  }
+#endif  // BUILDFLAG(ENABLE_PDF_INK2)
+
+  auto message =
+      base::DictValue()
+          .Set("type", "saveData")
+          .Set("token", token)
+          .Set("fileName",
+               GetFileNameForSaveFromUrlAndSuggestion(
+                   url_, engine_->GetFileNameFromContentDisposition()));
 
   // Expose `edit_mode_` state for integration testing.
   message.Set("editModeForTesting", edit_mode_);
@@ -2347,6 +2415,12 @@ PdfViewWebPlugin::SaveDataBlock PdfViewWebPlugin::SaveBlockToBuffer(
 
   if (offset == 0) {
     PopulateBufferWithModifiedFileData(save_data_buffer_);
+#if BUILDFLAG(ENABLE_PDF_INK2)
+    if (request_type == pdf::mojom::SaveRequestType::kAnnotation &&
+        ink_module_) {
+      ink_module_->RecordMetricsOnSave();
+    }
+#endif  // BUILDFLAG(ENABLE_PDF_INK2)
   } else {
     CHECK(save_data_buffer_.size());
   }
@@ -2786,6 +2860,15 @@ bool PdfViewWebPlugin::Redo() {
   return true;
 }
 
+bool PdfViewWebPlugin::SetFocusedFormTextDirection(
+    base::i18n::TextDirection direction) {
+  if (!CanEditText()) {
+    return false;
+  }
+
+  return engine_->SetFocusedFormTextDirection(direction);
+}
+
 bool PdfViewWebPlugin::HandleWebInputEvent(const blink::WebInputEvent& event) {
   // Ignore user input in read-only mode.
   if (engine_->IsReadOnly()) {
@@ -2877,8 +2960,10 @@ void PdfViewWebPlugin::RecordDocumentMetrics() {
   if (ink_module_) {
     // Use a timeout limit of 100ms, which will capture over 90 percent of PDFs
     // without increasing the PDF load time a significant amount.
-    RecordPdfLoadedWithV2InkAnnotations(
-        engine_->ContainsV2InkPath(base::Milliseconds(100)));
+    PDFiumEngine::InkIdentifiers ink_identifiers =
+        engine_->ScanForInkAnnotations(base::Milliseconds(100));
+    RecordPdfLoadedWithV2InkAnnotations(ink_identifiers.v2_ink_path);
+    RecordPdfLoadedWithInkTextAnnotations(ink_identifiers.ink_text_annotations);
   }
 #endif  // BUILDFLAG(ENABLE_PDF_INK2)
 }
@@ -2946,8 +3031,12 @@ void PdfViewWebPlugin::SendMetadata() {
 
   metadata.Set("linearized", document_metadata.linearized);
 
-  if (!document_metadata.title.empty()) {
-    metadata.Set("title", document_metadata.title);
+  std::string title = document_metadata.title;
+  if (title.empty()) {
+    title = engine_->GetFileNameFromContentDisposition();
+  }
+  if (!title.empty()) {
+    metadata.Set("title", std::move(title));
   }
 
   if (!document_metadata.author.empty()) {
@@ -3029,6 +3118,10 @@ void PdfViewWebPlugin::HandleResetPrintPreviewModeMessage(
   preview_pages_info_ = base::queue<PreviewPageInfo>();
   preview_document_load_state_ = DocumentLoadState::kComplete;
   document_load_state_ = DocumentLoadState::kLoading;
+  // Reload accessibility once the new document finishes loading.
+  if (accessibility_state_ == AccessibilityState::kLoaded) {
+    accessibility_state_ = AccessibilityState::kPending;
+  }
   last_progress_sent_ = 0;
   LoadUrl(url_, base::BindOnce(&PdfViewWebPlugin::DidOpen,
                                weak_factory_.GetWeakPtr()));
@@ -3189,13 +3282,6 @@ void PdfViewWebPlugin::SendThumbnail(base::DictValue reply,
   reply.Set("width", thumbnail.image_size().width());
   reply.Set("height", thumbnail.image_size().height());
   client_->PostMessage(std::move(reply));
-
-#if BUILDFLAG(ENABLE_PDF_INK2)
-  if (ink_module_) {
-    ink_module_->GenerateAndSendInkThumbnail(page_index,
-                                             thumbnail.image_size());
-  }
-#endif
 }
 
 #if BUILDFLAG(ENABLE_PDF_INK2)
@@ -3239,6 +3325,10 @@ PdfViewWebPlugin::GetAccessibilityDocInfo() const {
   doc_info->text_accessible =
       engine_->HasPermission(DocumentPermission::kCopyAccessible);
   doc_info->text_copyable = engine_->HasPermission(DocumentPermission::kCopy);
+  const auto& language_tag = engine_->GetDocumentMetadata().language_tag;
+  if (language_tag.has_value()) {
+    doc_info->language = std::string(language_tag->tag_string());
+  }
   return doc_info;
 }
 

@@ -36,10 +36,6 @@ export function isPlayStoreAvailable(): boolean {
   return loadTimeData.getBoolean('isPlayStoreAvailable');
 }
 
-export function isPluginVmAvailable(): boolean {
-  return loadTimeData.getBoolean('isPluginVmAvailable');
-}
-
 export function isAppParentalControlsFeatureAvailable(): boolean {
   return loadTimeData.getBoolean('isAppParentalControlsFeatureAvailable');
 }
@@ -56,10 +52,6 @@ export function isCrostiniSupported(): boolean {
 // Device page
 export function isExternalStorageEnabled(): boolean {
   return loadTimeData.getBoolean('isExternalStorageEnabled');
-}
-
-export function isDisplayBrightnessControlInSettingsEnabled(): boolean {
-  return loadTimeData.getBoolean('enableDisplayBrightnessControlInSettings');
 }
 
 export function isSkyVaultEnabled(): boolean {

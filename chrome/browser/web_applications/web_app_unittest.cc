@@ -22,8 +22,8 @@
 #include "base/strings/to_string.h"
 #include "base/test/values_test_util.h"
 #include "base/values.h"
-#include "chrome/browser/web_applications/isolated_web_apps/isolated_web_app_integrity_block_data.h"
 #include "chrome/browser/web_applications/model/display_override.h"
+#include "chrome/browser/web_applications/model/integrity_block_data.h"
 #include "chrome/browser/web_applications/test/fake_web_app_provider.h"
 #include "chrome/browser/web_applications/test/web_app_install_test_utils.h"
 #include "chrome/browser/web_applications/test/web_app_test.h"
@@ -135,7 +135,7 @@ static constexpr char kEcdsaP256SHA256SignatureHex[] =
     "3044022007381524F538B04F99CCC62703F06C87F66EF41BDA18A22D8E57952AA23E53A6"
     "022063C7F81D3A44798CB95823FA38FC23B15E0483744657FF49E1E83AB8C06B63C2";
 
-IsolatedWebAppIntegrityBlockData CreateIntegrityBlockData() {
+IntegrityBlockData CreateIntegrityBlockData() {
   std::vector<web_package::SignedWebBundleSignatureInfo> signatures;
 
   // EcdsaP256SHA256:
@@ -150,7 +150,7 @@ IsolatedWebAppIntegrityBlockData CreateIntegrityBlockData() {
             std::move(public_key), std::move(signature)));
   }
 
-  return IsolatedWebAppIntegrityBlockData(std::move(signatures));
+  return IntegrityBlockData(std::move(signatures));
 }
 
 }  // namespace
@@ -425,7 +425,7 @@ TEST(WebAppTest, IsolationDataPendingUpdateInfoDebugValue) {
 
   static constexpr std::string_view kUpdateManifestUrl =
       "https://update-manifest.com";
-  static const UpdateChannel kUpdateChannel = UpdateChannel::default_channel();
+  const UpdateChannel update_channel = UpdateChannel::default_channel();
 
   auto integrity_block_data = CreateIntegrityBlockData();
   app.SetIsolationData(
@@ -438,7 +438,7 @@ TEST(WebAppTest, IsolationDataPendingUpdateInfoDebugValue) {
               *IwaVersion::Create("2.0.0"), integrity_block_data))
           .SetIntegrityBlockData(integrity_block_data)
           .SetUpdateManifestUrl(GURL(kUpdateManifestUrl))
-          .SetUpdateChannel(kUpdateChannel)
+          .SetUpdateChannel(update_channel)
           .Build());
 
   EXPECT_TRUE(app.isolation_data().has_value());
@@ -479,7 +479,7 @@ TEST(WebAppTest, IsolationDataPendingUpdateInfoDebugValue) {
       base::ReplaceStringPlaceholders(
           kExpectedIsolationDataFormat,
           {ib_data_serialized, ib_data_serialized,
-           GURL(kUpdateManifestUrl).spec(), kUpdateChannel.ToString()},
+           GURL(kUpdateManifestUrl).spec(), update_channel.ToString()},
           /*offsets=*/nullptr),
       base::JSON_PARSE_CHROMIUM_EXTENSIONS);
 
@@ -487,6 +487,36 @@ TEST(WebAppTest, IsolationDataPendingUpdateInfoDebugValue) {
   base::DictValue* debug_isolation_data = debug_app.FindDict("isolation_data");
   EXPECT_TRUE(debug_isolation_data != nullptr);
   EXPECT_EQ(*debug_isolation_data, expected_isolation_data);
+}
+
+TEST(WebAppTest, IsolationDataUpdateChannelNonDevMode) {
+  GURL kStartUrl("isolated-app://random_name");
+  WebApp app(GenerateManifestIdFromStartUrlOnly(kStartUrl),
+             /*start_url=*/kStartUrl, /*scope=*/kStartUrl);
+
+  const UpdateChannel kBetaChannel = *UpdateChannel::Create("beta");
+  const UpdateChannel kCanaryChannel = *UpdateChannel::Create("canary");
+
+  // Test r-value Builder::SetUpdateChannel overload for non-dev mode.
+  app.SetIsolationData(
+      IsolationData::Builder(
+          IwaStorageOwnedBundle{"random_name", /*dev_mode=*/false},
+          *IwaVersion::Create("1.0.0"))
+          .SetUpdateChannel(kBetaChannel)
+          .Build());
+
+  ASSERT_TRUE(app.isolation_data().has_value());
+  EXPECT_FALSE(app.isolation_data()->location().dev_mode());
+  EXPECT_EQ(kBetaChannel, app.isolation_data()->update_channel());
+
+  // Test l-value Builder::SetUpdateChannel overload for non-dev mode.
+  IsolationData::Builder builder(
+      IwaStorageOwnedBundle{"random_name", /*dev_mode=*/false},
+      *IwaVersion::Create("1.0.0"));
+  builder.SetUpdateChannel(kCanaryChannel);
+  IsolationData isolation_data = std::move(builder).Build();
+  EXPECT_FALSE(isolation_data.location().dev_mode());
+  EXPECT_EQ(kCanaryChannel, isolation_data.update_channel());
 }
 
 TEST(WebAppTest, DisplayOverrideDebugValue) {

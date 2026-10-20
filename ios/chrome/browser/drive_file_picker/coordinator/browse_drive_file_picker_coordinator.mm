@@ -7,6 +7,7 @@
 #import "base/memory/raw_ptr.h"
 #import "base/memory/weak_ptr.h"
 #import "components/image_fetcher/core/image_data_fetcher.h"
+#import "ios/chrome/browser/composebox/shared/ui/composebox_snackbar_presenter.h"
 #import "ios/chrome/browser/drive/model/drive_list.h"
 #import "ios/chrome/browser/drive/model/drive_service.h"
 #import "ios/chrome/browser/drive/model/drive_service_factory.h"
@@ -31,9 +32,9 @@
 #import "services/network/public/cpp/shared_url_loader_factory.h"
 
 @interface BrowseDriveFilePickerCoordinator () <
+    BrowseDriveFilePickerCoordinatorDelegate,
     DriveFilePickerMediatorDelegate,
-    DriveFilePickerTableViewControllerDelegate,
-    BrowseDriveFilePickerCoordinatorDelegate>
+    DriveFilePickerTableViewControllerDelegate>
 
 @end
 
@@ -98,6 +99,7 @@
            initWithWebState:_webState.get()
                     options:_options
                      isRoot:NO
+              forComposebox:self.forComposebox
             identityManager:IdentityManagerFactory::GetForProfile(profile)
       authenticationService:AuthenticationServiceFactory::GetForProfile(
                                 profile)];
@@ -109,6 +111,7 @@
   _mediator.accountManagerService =
       ChromeAccountManagerServiceFactory::GetForProfile(profile);
   _mediator.imageFetcher = _imageFetcher;
+  _mediator.maxAttachmentCount = self.maxAttachmentCount;
 
   _viewController.delegate = self;
   _viewController.driveFilePickerHandler = HandlerForProtocol(
@@ -120,7 +123,13 @@
   _viewController.mutator = _mediator;
   [_mediator setCollection:std::move(_collection)];
   _mediator.consumer = _viewController;
-  _mediator.metricsHelper = _metricsHelper;
+
+  // Since the Composebox flow bypasses local downloads completely and records
+  // its own native metrics, the mediator does not need the metrics helper in
+  // Composebox mode.
+  if (!self.forComposebox) {
+    _mediator.metricsHelper = _metricsHelper;
+  }
 }
 
 - (void)stop {
@@ -159,6 +168,9 @@
                                    options:options
                              metricsHelper:_metricsHelper];
   _childBrowseCoordinator.delegate = self;
+  _childBrowseCoordinator.forComposebox = self.forComposebox;
+  _childBrowseCoordinator.maxAttachmentCount = self.maxAttachmentCount;
+  _childBrowseCoordinator.snackbarPresenter = self.snackbarPresenter;
   [_childBrowseCoordinator start];
 }
 
@@ -199,6 +211,17 @@
       !searchActivated;
 }
 
+- (void)mediator:(DriveFilePickerMediator*)mediator
+    didPickDriveItems:(const std::vector<DriveItem>&)driveItems {
+  CHECK(self.forComposebox);
+  [self.delegate coordinator:self didPickDriveItems:driveItems];
+}
+
+- (void)mediatorDidReachAttachmentLimit:(DriveFilePickerMediator*)mediator {
+  [self.snackbarPresenter
+      showSnackbarForAttachmentLimit:self.maxAttachmentCount];
+}
+
 #pragma mark - DriveFilePickerTableViewControllerDelegate
 
 - (void)viewControllerDidDisappear:(UIViewController*)viewController {
@@ -229,6 +252,12 @@
 - (void)coordinator:(ChromeCoordinator*)coordinator
     didAllowDismiss:(BOOL)allowDismiss {
   [self.delegate coordinator:self didAllowDismiss:allowDismiss];
+}
+
+- (void)coordinator:(ChromeCoordinator*)coordinator
+    didPickDriveItems:(const std::vector<DriveItem>&)driveItems {
+  CHECK(self.forComposebox);
+  [self.delegate coordinator:self didPickDriveItems:driveItems];
 }
 
 #pragma mark - Private

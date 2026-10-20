@@ -18,6 +18,7 @@
 
 namespace cc::slim {
 class Layer;
+class NinePatchLayer;
 class SolidColorLayer;
 class UIResourceLayer;
 }  // namespace cc::slim
@@ -89,6 +90,18 @@ class TabStripSceneLayer : public SceneLayer {
                           int32_t keyboard_focus_ring_resource_id,
                           int32_t keyboard_focus_ring_color);
 
+  // Positions the layer of the WebUI new tab button (owned by the
+  // TabStripNtbWebUiHost at |native_host|) inside the tab strip. Used instead
+  // of the native new tab button when AndroidNewTabButtonTabstripWebUI is on.
+  // The region is hidden until the host's layer is available (i.e. during
+  // startup).
+  void UpdateNtbWebUi(JNIEnv* env,
+                      int64_t native_host,
+                      float x,
+                      float y,
+                      float width,
+                      float height);
+
   void UpdateGlicButton(JNIEnv* env,
                         int32_t resource_id,
                         float x,
@@ -104,6 +117,7 @@ class TabStripSceneLayer : public SceneLayer {
                         bool is_keyboard_focused,
                         int32_t keyboard_focus_ring_resource_id,
                         int32_t keyboard_focus_ring_color,
+                        float keyboard_focus_ring_offset,
                         int32_t text_texture_id,
                         float button_start_padding,
                         float icon_text_padding,
@@ -133,6 +147,7 @@ class TabStripSceneLayer : public SceneLayer {
                              bool is_keyboard_focused,
                              int32_t keyboard_focus_ring_resource_id,
                              int32_t keyboard_focus_ring_color,
+                             float keyboard_focus_ring_offset,
                              int32_t text_texture_id,
                              float button_start_padding,
                              float icon_text_padding,
@@ -152,6 +167,20 @@ class TabStripSceneLayer : public SceneLayer {
                                  bool is_keyboard_focused,
                                  int32_t keyboard_focus_ring_resource_id,
                                  int32_t keyboard_focus_ring_color);
+
+  void UpdateTabSearchButton(JNIEnv* env,
+                             int32_t resource_id,
+                             int32_t bg_resource_id,
+                             float x,
+                             float y,
+                             bool visible,
+                             bool should_apply_hover_highlight,
+                             int32_t tint,
+                             int32_t background_tint,
+                             float button_alpha,
+                             bool is_keyboard_focused,
+                             int32_t keyboard_focus_ring_resource_id,
+                             int32_t keyboard_focus_ring_color);
 
   void UpdateTabStripFade(JNIEnv* env,
                           bool is_left,
@@ -179,16 +208,16 @@ class TabStripSceneLayer : public SceneLayer {
                         bool shouldShowTabOutline,
                         bool close_pressed,
                         bool should_hide_favicon,
-                        bool should_show_media_indicator,
-                        int32_t media_indicator_resource_id,
-                        int32_t media_indicator_tint,
-                        float media_indicator_width,
-                        float media_indicator_spacing,
-                        float media_indicator_internal_padding,
-                        float title_to_media_indicator_spacing,
-                        int32_t tab_indicator_overlay_resource_id,
-                        float tab_indicator_overlay_rotation,
-                        float tab_indicator_overlay_width,
+                        bool should_show_alert_indicator,
+                        int32_t alert_indicator_resource_id,
+                        int32_t alert_indicator_tint,
+                        float alert_indicator_width,
+                        float alert_indicator_spacing,
+                        float alert_indicator_internal_padding,
+                        float title_to_alert_indicator_spacing,
+                        int32_t alert_indicator_overlay_resource_id,
+                        float alert_indicator_overlay_rotation,
+                        float alert_indicator_overlay_width,
                         float toolbar_width,
                         float x,
                         float y,
@@ -198,9 +227,11 @@ class TabStripSceneLayer : public SceneLayer {
                         float divider_offset_x,
                         float bottom_margin,
                         float top_margin,
+                        float content_padding_x,
                         float close_button_padding,
+                        float close_button_extra_offset,
                         float close_button_alpha,
-                        float width_to_hide_tab_title,
+                        float desktop_min_tab_width,
                         bool is_start_divider_visible,
                         bool is_end_divider_visible,
                         bool is_loading,
@@ -213,8 +244,8 @@ class TabStripSceneLayer : public SceneLayer {
                         int32_t stroke_width,
                         float folio_foot_length,
                         bool is_pinned,
-                        float pinned_icon_offset_x,
-                        bool is_underlined,
+                        float underline_opacity,
+                        float underline_shimmer_offset,
                         int32_t underline_start_color,
                         int32_t underline_end_color,
                         int32_t underline_width_threshold);
@@ -275,7 +306,7 @@ class TabStripSceneLayer : public SceneLayer {
       scoped_refptr<cc::slim::SolidColorLayer> background_layer,
       scoped_refptr<cc::slim::UIResourceLayer> icon_layer,
       scoped_refptr<cc::slim::UIResourceLayer> text_layer,
-      scoped_refptr<cc::slim::UIResourceLayer> focus_ring_layer,
+      scoped_refptr<cc::slim::NinePatchLayer> focus_ring_layer,
       int32_t resource_id,
       float x,
       float y,
@@ -289,6 +320,8 @@ class TabStripSceneLayer : public SceneLayer {
       bool is_keyboard_focused,
       int32_t keyboard_focus_ring_resource_id,
       int32_t keyboard_focus_ring_color,
+      float keyboard_focus_ring_offset,
+      bool should_flip_keyboard_focus_ring,
       int32_t text_texture_id,
       float button_start_padding,
       float icon_text_padding,
@@ -308,6 +341,8 @@ class TabStripSceneLayer : public SceneLayer {
   scoped_refptr<cc::slim::UIResourceLayer> new_tab_button_;
   scoped_refptr<cc::slim::UIResourceLayer> new_tab_button_background_;
   scoped_refptr<cc::slim::UIResourceLayer> new_tab_button_keyboard_focus_ring_;
+  // Parent of the WebUI new tab button WebContents layer.
+  scoped_refptr<cc::slim::Layer> ntb_webui_container_;
   scoped_refptr<cc::slim::SolidColorLayer> left_fade_;
   scoped_refptr<cc::slim::SolidColorLayer> right_fade_;
 
@@ -323,19 +358,24 @@ class TabStripSceneLayer : public SceneLayer {
   scoped_refptr<cc::slim::UIResourceLayer> glic_dismiss_nudge_button_;
   scoped_refptr<cc::slim::UIResourceLayer>
       glic_dismiss_nudge_button_keyboard_focus_ring_;
-  scoped_refptr<cc::slim::UIResourceLayer> glic_button_keyboard_focus_ring_;
+  scoped_refptr<cc::slim::NinePatchLayer> glic_button_keyboard_focus_ring_;
 
   scoped_refptr<cc::slim::Layer> glic_actor_button_container_;
   scoped_refptr<cc::slim::UIResourceLayer> glic_actor_button_;
   scoped_refptr<cc::slim::SolidColorLayer> glic_actor_button_background_;
   scoped_refptr<cc::slim::UIResourceLayer> glic_actor_button_text_;
-  scoped_refptr<cc::slim::UIResourceLayer>
+  scoped_refptr<cc::slim::NinePatchLayer>
       glic_actor_button_keyboard_focus_ring_;
 
   scoped_refptr<cc::slim::UIResourceLayer> model_selector_button_;
   scoped_refptr<cc::slim::UIResourceLayer> model_selector_button_background_;
   scoped_refptr<cc::slim::UIResourceLayer>
       model_selector_button_keyboard_focus_ring_;
+
+  scoped_refptr<cc::slim::UIResourceLayer> tab_search_button_;
+  scoped_refptr<cc::slim::UIResourceLayer> tab_search_button_background_;
+  scoped_refptr<cc::slim::UIResourceLayer>
+      tab_search_button_keyboard_focus_ring_;
   scoped_refptr<cc::slim::SolidColorLayer> scrim_layer_;
 
   unsigned write_index_ = 0;

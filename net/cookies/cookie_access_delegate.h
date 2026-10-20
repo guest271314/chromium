@@ -7,23 +7,15 @@
 
 #include <optional>
 
-#include "base/containers/flat_map.h"
-#include "base/containers/flat_set.h"
-#include "base/functional/callback_forward.h"
 #include "net/base/net_export.h"
-#include "net/base/schemeful_site.h"
 #include "net/cookies/canonical_cookie.h"
 #include "net/cookies/cookie_constants.h"
 #include "net/cookies/cookie_partition_key.h"
-#include "net/first_party_sets/first_party_set_entry.h"
-#include "net/first_party_sets/first_party_set_metadata.h"
-#include "net/first_party_sets/first_party_sets_cache_filter.h"
 #include "url/gurl.h"
 #include "url/origin.h"
 
 namespace net {
 
-class SchemefulSite;
 class SiteForCookies;
 
 class NET_EXPORT CookieAccessDelegate {
@@ -57,24 +49,6 @@ class NET_EXPORT CookieAccessDelegate {
       const GURL& url,
       const SiteForCookies& site_for_cookies,
       const url::Origin& top_level_origin) const = 0;
-
-  // Calls `callback` with First-Party Sets metadata about `site` and
-  // `top_frame_site`, and cache filter info for `site`. Cache filter info is
-  // used to determine if the existing HTTP cache entries for `site` are allowed
-  // to be accessed.
-  //
-  // This may return a result synchronously, or asynchronously invoke `callback`
-  // with the result. The callback will be invoked iff the return value is
-  // nullopt; i.e. a result will be provided via return value or callback, but
-  // not both, and not neither.
-  [[nodiscard]] virtual std::optional<
-      std::pair<FirstPartySetMetadata, FirstPartySetsCacheFilter::MatchInfo>>
-  ComputeFirstPartySetMetadataMaybeAsync(
-      const net::SchemefulSite& site,
-      const net::SchemefulSite* top_frame_site,
-      base::OnceCallback<void(FirstPartySetMetadata,
-                              FirstPartySetsCacheFilter::MatchInfo)> callback)
-      const = 0;
 };
 
 }  // namespace net

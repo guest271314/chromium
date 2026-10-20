@@ -12,6 +12,7 @@
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
 #include "third_party/blink/renderer/platform/weborigin/security_origin.h"
 #include "third_party/blink/renderer/platform/wtf/text/atomic_string.h"
+#include "third_party/blink/renderer/platform/wtf/vector.h"
 
 namespace blink {
 
@@ -92,7 +93,24 @@ class ScriptTimingInfo : public GarbageCollected<ScriptTimingInfo> {
   scoped_refptr<const SecurityOrigin> security_origin_;
 };
 
-class AnimationFrameTimingInfo
+struct ConditionalMarkInfo {
+  ConditionalMarkInfo(const AtomicString& name, base::TimeTicks start_time)
+      : name(name), start_time(start_time) {}
+  AtomicString name;
+  base::TimeTicks start_time;
+};
+
+struct ConditionalMeasureInfo {
+  ConditionalMeasureInfo(const AtomicString& name,
+                         base::TimeTicks start_time,
+                         base::TimeTicks end_time)
+      : name(name), start_time(start_time), end_time(end_time) {}
+  AtomicString name;
+  base::TimeTicks start_time;
+  base::TimeTicks end_time;
+};
+
+class AnimationFrameTimingInfo final
     : public GarbageCollected<AnimationFrameTimingInfo> {
  public:
   explicit AnimationFrameTimingInfo(base::TimeTicks start_time)
@@ -125,6 +143,24 @@ class AnimationFrameTimingInfo
     scripts_ = scripts;
   }
 
+  const Vector<ConditionalMarkInfo>& ConditionalMarks() const {
+    return conditional_marks_;
+  }
+
+  void SetConditionalMarks(
+      const Vector<ConditionalMarkInfo>& conditional_marks) {
+    conditional_marks_ = conditional_marks;
+  }
+
+  const Vector<ConditionalMeasureInfo>& ConditionalMeasures() const {
+    return conditional_measures_;
+  }
+
+  void SetConditionalMeasures(
+      const Vector<ConditionalMeasureInfo>& conditional_measures) {
+    conditional_measures_ = conditional_measures;
+  }
+
   const base::TimeDelta& TotalBlockingDuration() const {
     return total_blocking_duration_;
   }
@@ -153,9 +189,12 @@ class AnimationFrameTimingInfo
   void SetDidPause() { did_pause_ = true; }
   bool DidPause() const { return did_pause_; }
 
+  uint32_t ScriptCount() const { return script_count_; }
+  void SetScriptCount(uint32_t count) { script_count_ = count; }
+
   uint64_t GetTraceId() const;
 
-  virtual void Trace(Visitor*) const;
+  void Trace(Visitor*) const;
 
  private:
   // Measured at the beginning of the first task that caused a frame update,
@@ -185,12 +224,17 @@ class AnimationFrameTimingInfo
   base::TimeDelta layout_duration_;
 
   HeapVector<Member<ScriptTimingInfo>> scripts_;
+  Vector<ConditionalMarkInfo> conditional_marks_;
+  Vector<ConditionalMeasureInfo> conditional_measures_;
 
   // Id for the BeginFrame, which triggered this animation frame.
   viz::BeginFrameId begin_frame_id_;
 
   // Whether the LoAF included sync XHR or alerts (pause).
   bool did_pause_ = false;
+
+  // Number of JS entry points observed within this entry's interval.
+  uint32_t script_count_ = 0;
 
   // Unique ID used to tie together trace events for this animation frame.
   mutable uint64_t trace_id_ = 0;

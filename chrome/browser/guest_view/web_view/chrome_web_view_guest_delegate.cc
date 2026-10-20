@@ -18,6 +18,7 @@
 #include "content/public/common/url_constants.h"
 #include "extensions/browser/api/web_request/web_request_api.h"
 #include "extensions/browser/guest_view/web_view/web_view_constants.h"
+#include "extensions/buildflags/buildflags.h"
 #include "ui/base/mojom/menu_source_type.mojom.h"
 #include "url/gurl.h"
 
@@ -57,8 +58,17 @@ bool ChromeWebViewGuestDelegate::HandleContextMenu(
     content::RenderFrameHost& render_frame_host,
     const content::ContextMenuParams& params) {
   content::WebContents* web_contents = web_view_guest()->web_contents();
-  DCHECK_EQ(web_contents,
-            content::WebContents::FromRenderFrameHost(&render_frame_host));
+  CHECK_EQ(web_contents,
+           content::WebContents::FromRenderFrameHost(&render_frame_host),
+           base::NotFatalUntil::M161);
+
+  ContextMenuDelegate* menu_delegate =
+      ContextMenuDelegate::FromWebContents(web_contents);
+#if BUILDFLAG(IS_ANDROID)
+  if (!menu_delegate) {  // TODO(b/479602478): May be null on Android.
+    return false;
+  }
+#endif
 
   if ((params.source_type == ui::mojom::MenuSourceType::kLongPress ||
        params.source_type == ui::mojom::MenuSourceType::kLongTap ||
@@ -74,13 +84,6 @@ bool ChromeWebViewGuestDelegate::HandleContextMenu(
     return true;
   }
 
-  ContextMenuDelegate* menu_delegate =
-      ContextMenuDelegate::FromWebContents(web_contents);
-#if BUILDFLAG(IS_ANDROID)
-  if (!menu_delegate) {  // TODO(b/479602478): May be null on Android.
-    return false;
-  }
-#endif
   CHECK(menu_delegate);
 
   int request_id = ++pending_context_menu_request_id_;

@@ -14,18 +14,14 @@
 #include "base/values.h"
 #include "net/log/net_log_heavily_redacted_allowlist.h"
 #include "net/log/net_log_values.h"
-#include "third_party/abseil-cpp/absl/container/flat_hash_set.h"
 
 namespace net {
 
 namespace {
 
 void HeavilyRedactParams(base::DictValue& params) {
-  static const base::NoDestructor<absl::flat_hash_set<std::string_view>>
-      kAllowlist(kNetLogHeavilyRedactedParamAllowlist.cbegin(),
-                 kNetLogHeavilyRedactedParamAllowlist.cend());
   for (auto param = params.begin(); param != params.end();) {
-    if (kAllowlist->contains(param->first)) {
+    if (kNetLogHeavilyRedactedParamAllowlist.contains(param->first)) {
       ++param;
     } else {
       param = params.erase(param);
@@ -196,9 +192,11 @@ std::string NetLog::TickCountToString(const base::TimeTicks& time) {
 
 // static
 std::string NetLog::TimeToString(base::Time time) {
-  // Convert the base::Time to its (approximate) equivalent in base::TimeTicks.
+  // Convert the base::Time to its (approximate) equivalent in base::TimeTicks
+  // by anchoring both clocks to the current instant. This keeps the serialized
+  // value on the same timeline as the TimeTicks-based event timestamps.
   base::TimeTicks time_ticks =
-      base::TimeTicks::UnixEpoch() + (time - base::Time::UnixEpoch());
+      base::TimeTicks::Now() - (base::Time::Now() - time);
   return TickCountToString(time_ticks);
 }
 

@@ -13,6 +13,7 @@
 #include "base/files/scoped_temp_dir.h"
 #include "base/functional/bind.h"
 #include "base/lazy_instance.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/strings/string_util.h"
@@ -33,7 +34,6 @@
 #include "extensions/browser/blocklist.h"
 #include "extensions/browser/blocklist_check.h"
 #include "extensions/browser/content_verifier/content_verifier.h"
-#include "extensions/browser/convert_user_script.h"
 #include "extensions/browser/event_router_factory.h"
 #include "extensions/browser/extension_assets_manager.h"
 #include "extensions/browser/extension_file_task_runner.h"
@@ -55,8 +55,6 @@
 #include "extensions/browser/install_stage.h"
 #include "extensions/browser/install_tracker.h"
 #include "extensions/browser/load_error_reporter.h"
-#include "extensions/browser/pending_extension_info.h"
-#include "extensions/browser/pending_extension_manager.h"
 #include "extensions/browser/permissions/permissions_updater.h"
 #include "extensions/browser/policy_check.h"
 #include "extensions/browser/preload_check_group.h"
@@ -135,14 +133,16 @@ void CrxInstaller::EnsureShutdownNotifierFactoryBuilt() {
 // static
 scoped_refptr<CrxInstaller> CrxInstaller::CreateSilent(
     content::BrowserContext* context) {
-  return new CrxInstaller(context, nullptr, nullptr);
+  return base::MakeRefCounted<CrxInstaller>(base::PassKey<CrxInstaller>(),
+                                            context, nullptr, nullptr);
 }
 
 // static
 scoped_refptr<CrxInstaller> CrxInstaller::Create(
     content::BrowserContext* context,
     std::unique_ptr<ExtensionInstallPromptClient> client) {
-  return new CrxInstaller(context, std::move(client), nullptr);
+  return base::MakeRefCounted<CrxInstaller>(
+      base::PassKey<CrxInstaller>(), context, std::move(client), nullptr);
 }
 
 // static
@@ -150,8 +150,15 @@ scoped_refptr<CrxInstaller> CrxInstaller::Create(
     content::BrowserContext* context,
     std::unique_ptr<ExtensionInstallPromptClient> client,
     const InstallApproval* approval) {
-  return new CrxInstaller(context, std::move(client), approval);
+  return base::MakeRefCounted<CrxInstaller>(
+      base::PassKey<CrxInstaller>(), context, std::move(client), approval);
 }
+
+CrxInstaller::CrxInstaller(base::PassKey<CrxInstaller>,
+                           content::BrowserContext* context,
+                           std::unique_ptr<ExtensionInstallPromptClient> client,
+                           const InstallApproval* approval)
+    : CrxInstaller(context, std::move(client), approval) {}
 
 CrxInstaller::CrxInstaller(content::BrowserContext* context,
                            std::unique_ptr<ExtensionInstallPromptClient> client,
@@ -164,7 +171,6 @@ CrxInstaller::CrxInstaller(content::BrowserContext* context,
       fail_install_if_unexpected_version_(false),
       extensions_enabled_(registrar_->extensions_enabled()),
       delete_source_(false),
-      // See header file comment on |client_| for why we use a raw pointer here.
       client_(client.release()),
       apps_require_extension_mime_type_(false),
       allow_silent_install_(false),
@@ -221,10 +227,9 @@ CrxInstaller::CrxInstaller(content::BrowserContext* context,
 CrxInstaller::~CrxInstaller() {
   DCHECK(!browser_context_ || installer_callbacks_.empty());
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
-  // Ensure |client_| and |install_checker_| data members are destroyed on the
-  // UI thread. The |client_| dialog has a weak reference as |this| is its
-  // delegate, and |install_checker_| owns WeakPtrs, so must be destroyed on the
-  // same thread that created it.
+  // Ensure |client_| data member is destroyed on the UI thread. The |client_|
+  // dialog has a weak reference as |this| is its delegate, so must be destroyed
+  // on the same thread that created it.
 }
 
 void CrxInstaller::InstallCrx(const base::FilePath& source_file) {
@@ -278,42 +283,6 @@ void CrxInstaller::InstallUnpackedCrx(const ExtensionId& extension_id,
   }
 }
 
-void CrxInstaller::InstallUserScript(const base::FilePath& source_file,
-                                     const GURL& download_url) {
-  DCHECK(!download_url.is_empty());
-
-  if (!AcquireKeepAlive()) {
-    return;
-  }
-  NotifyCrxInstallBegin();
-
-  source_file_ = source_file;
-  download_url_ = download_url;
-
-  if (!shared_file_task_runner_->PostTask(
-          FROM_HERE,
-          base::BindOnce(&CrxInstaller::ConvertUserScriptOnSharedFileThread,
-                         this))) {
-    NOTREACHED();
-  }
-}
-
-void CrxInstaller::ConvertUserScriptOnSharedFileThread() {
-  std::u16string error;
-  scoped_refptr<Extension> extension = ConvertUserScriptToExtension(
-      source_file_, download_url_, install_directory_, &error);
-  if (!extension.get()) {
-    ReportFailureFromSharedFileThread(CrxInstallError(
-        CrxInstallErrorType::OTHER,
-        CrxInstallErrorDetail::CONVERT_USER_SCRIPT_TO_EXTENSION_FAILED, error));
-    return;
-  }
-
-  OnUnpackSuccessOnSharedFileThread(extension->path(), extension->path(),
-                                    nullptr, extension, SkBitmap(),
-                                    /*ruleset_install_prefs=*/{});
-}
-
 void CrxInstaller::UpdateExtensionFromUnpackedCrx(
     const ExtensionId& extension_id,
     const std::string& public_key,
@@ -323,52 +292,37 @@ void CrxInstaller::UpdateExtensionFromUnpackedCrx(
   }
 
   is_update_ = true;
-  expected_id_ = extension_id;
+
   const Extension* extension = ExtensionRegistry::Get(browser_context_)
                                    ->GetInstalledExtension(extension_id);
-  if (extension) {
-    install_source_ = extension->location();
-    InitializeCreationFlagsForUpdate(extension, Extension::NO_FLAGS);
-    const ExtensionPrefs* extension_prefs =
-        ExtensionPrefs::Get(browser_context_);
-    CHECK(extension_prefs);
-    set_do_not_sync(extension_prefs->DoNotSync(extension_id));
-  } else {
-    // The extension is not installed. Is it pending?
-    const PendingExtensionManager* pending_manager =
-        PendingExtensionManager::Get(browser_context_);
-    CHECK(pending_manager);
-    if (const PendingExtensionInfo* pending_info =
-            pending_manager->GetById(extension_id)) {
-      set_install_source(pending_info->install_source());
-      int creation_flags = pending_info->creation_flags();
-      if (extension_urls::IsWebstoreUpdateUrl(pending_info->update_url())) {
-        creation_flags |= Extension::FROM_WEBSTORE;
-      }
-      set_creation_flags(creation_flags);
-    } else {
-      // It is not pending. Abandon the installation, the extension was
-      // probably removed while the update was downloading.
-      LOG(WARNING) << "Will not update extension " << extension_id
-                   << " because it is not installed";
-      if (delete_source_) {
-        temp_dir_ = unpacked_dir;
-      }
-      if (installer_callbacks_.empty()) {
-        shared_file_task_runner_->PostTask(
-            FROM_HERE, base::BindOnce(&CrxInstaller::CleanupTempFiles, this));
-      } else {
-        shared_file_task_runner_->PostTaskAndReply(
-            FROM_HERE, base::BindOnce(&CrxInstaller::CleanupTempFiles, this),
-            base::BindOnce(
-                &CrxInstaller::RunInstallerCallbacks, this,
-                CrxInstallError(
-                    CrxInstallErrorType::OTHER,
-                    CrxInstallErrorDetail::UPDATE_NON_EXISTING_EXTENSION)));
-      }
-      return;
+  if (!extension) {
+    LOG(WARNING) << "Will not update extension " << extension_id
+                 << " because it is not installed";
+    if (delete_source_) {
+      temp_dir_ = unpacked_dir;
     }
+    if (installer_callbacks_.empty()) {
+      shared_file_task_runner_->PostTask(
+          FROM_HERE, base::BindOnce(&CrxInstaller::CleanupTempFiles, this));
+    } else {
+      shared_file_task_runner_->PostTaskAndReply(
+          FROM_HERE, base::BindOnce(&CrxInstaller::CleanupTempFiles, this),
+          base::BindOnce(
+              &CrxInstaller::RunInstallerCallbacks, this,
+              CrxInstallError(
+                  CrxInstallErrorType::OTHER,
+                  CrxInstallErrorDetail::UPDATE_NON_EXISTING_EXTENSION)));
+    }
+    return;
   }
+
+  expected_id_ = extension_id;
+  install_source_ = extension->location();
+  InitializeCreationFlagsForUpdate(extension, Extension::NO_FLAGS);
+
+  const ExtensionPrefs* extension_prefs = ExtensionPrefs::Get(browser_context_);
+  DCHECK(extension_prefs);
+  set_do_not_sync(extension_prefs->DoNotSync(extension_id));
 
   InstallUnpackedCrx(extension_id, public_key, unpacked_dir);
 }
@@ -433,10 +387,11 @@ std::optional<CrxInstallError> CrxInstaller::AllowInstall(
             base::FilePath(), install_source_, *expected_manifest_,
             creation_flags_, extension->id(), &error);
         if (error.empty()) {
-          valid = !(PermissionMessageProvider::Get()->IsPrivilegeIncrease(
-              dummy_extension->permissions_data()->active_permissions(),
-              extension->permissions_data()->active_permissions(),
-              extension->GetType()));
+          valid = dummy_extension->GetType() == extension->GetType() &&
+                  !(PermissionMessageProvider::Get()->IsPrivilegeIncrease(
+                      dummy_extension->permissions_data()->active_permissions(),
+                      extension->permissions_data()->active_permissions(),
+                      extension->GetType()));
         }
       }
     }
@@ -491,40 +446,8 @@ std::optional<CrxInstallError> CrxInstaller::AllowInstall(
               base::ASCIIToUTF16(Extension::kMimeType)));
     }
 
-    // If the client_ is NULL, then the app is either being installed via
-    // an internal mechanism like sync, external_extensions, or default apps.
-    // In that case, we don't want to enforce things like the install origin.
-    if (!is_gallery_install() && client_) {
-      // For apps with a gallery update URL, require that they be installed
-      // from the gallery.
-      // TODO(erikkay) Apply this rule for paid extensions and themes as well.
-      if (UpdatesFromWebstore(*extension)) {
-        return CrxInstallError(
-            CrxInstallErrorType::OTHER,
-            CrxInstallErrorDetail::NOT_INSTALLED_FROM_GALLERY,
-            l10n_util::GetStringFUTF16(
-                IDS_EXTENSION_INSTALL_GALLERY_ONLY,
-                l10n_util::GetStringUTF16(IDS_EXTENSION_WEB_STORE_TITLE)));
-      }
-
-      // For self-hosted apps, verify that the entire extent is on the same
-      // host (or a subdomain of the host) the download happened from.  There's
-      // no way for us to verify that the app controls any other hosts.
-      URLPattern pattern(UserScript::ValidUserScriptSchemes());
-      pattern.SetHost(download_url_.GetHost());
-      pattern.SetMatchSubdomains(true);
-
-      const URLPatternSet& patterns = extension_->web_extent();
-      for (auto i = patterns.begin(); i != patterns.end(); ++i) {
-        if (!pattern.MatchesHost(i->host())) {
-          return CrxInstallError(
-              CrxInstallErrorType::OTHER,
-              CrxInstallErrorDetail::INCORRECT_INSTALL_HOST,
-              l10n_util::GetStringUTF16(
-                  IDS_EXTENSION_INSTALL_INCORRECT_INSTALL_HOST));
-        }
-      }
-    }
+    // Additional install-origin checks for user-initiated app installs are
+    // performed in CheckInstall() on the UI thread.
   }
 
   return std::nullopt;
@@ -678,6 +601,57 @@ void CrxInstaller::CheckInstall() {
     return;
   }
 
+  // If `client_` is null, then the app is being installed via an internal
+  // mechanism like sync, external_extensions, or default apps. In that case,
+  // install origin enforcement is not needed.
+  if (extension()->is_app() && !is_gallery_install() && client_ &&
+      !Manifest::IsExternalLocation(install_source_)) {
+    // For apps with a gallery update URL, require that they be installed from
+    // the gallery.
+    // TODO(erikkay) Apply this rule for paid extensions and themes as well.
+    if (UpdatesFromWebstore(*extension())) {
+      ReportFailureFromUIThread(CrxInstallError(
+          CrxInstallErrorType::OTHER,
+          CrxInstallErrorDetail::NOT_INSTALLED_FROM_GALLERY,
+          l10n_util::GetStringFUTF16(
+              IDS_EXTENSION_INSTALL_GALLERY_ONLY,
+              l10n_util::GetStringUTF16(IDS_EXTENSION_WEB_STORE_TITLE))));
+      return;
+    }
+
+    // For self-hosted apps, verify that the entire extent is on the same host
+    // (or a subdomain of the host) the download happened from. There is no
+    // way to verify that the app controls any other hosts.
+    if (!extension()->web_extent().is_empty()) {
+      // A pattern with an empty host and match_subdomains matches every host,
+      // so any web extent must be rejected when there is no download host
+      // available to compare against.
+      if (!download_url_.has_host()) {
+        ReportFailureFromUIThread(
+            CrxInstallError(CrxInstallErrorType::OTHER,
+                            CrxInstallErrorDetail::INCORRECT_INSTALL_HOST,
+                            l10n_util::GetStringUTF16(
+                                IDS_EXTENSION_INSTALL_INCORRECT_INSTALL_HOST)));
+        return;
+      }
+
+      URLPattern pattern(UserScript::ValidUserScriptSchemes());
+      pattern.SetHost(download_url_.host());
+      pattern.SetMatchSubdomains(true);
+
+      for (const URLPattern& web_extent_pattern : extension()->web_extent()) {
+        if (!pattern.MatchesHost(web_extent_pattern.host())) {
+          ReportFailureFromUIThread(CrxInstallError(
+              CrxInstallErrorType::OTHER,
+              CrxInstallErrorDetail::INCORRECT_INSTALL_HOST,
+              l10n_util::GetStringUTF16(
+                  IDS_EXTENSION_INSTALL_INCORRECT_INSTALL_HOST)));
+          return;
+        }
+      }
+    }
+  }
+
   // TODO(crbug.com/40387578): Move this code to a utility class to avoid
   // duplication of SharedModuleService::CheckImports code.
   if (SharedModuleInfo::ImportsModules(extension())) {
@@ -768,13 +742,13 @@ void CrxInstaller::OnInstallChecksComplete(const PreloadCheck::Errors& errors) {
   }
 
   // Check the blocklist state.
-  if (errors.count(PreloadCheck::Error::kBlocklistedId) ||
-      errors.count(PreloadCheck::Error::kBlocklistedUnknown)) {
+  if (errors.contains(PreloadCheck::Error::kBlocklistedId) ||
+      errors.contains(PreloadCheck::Error::kBlocklistedUnknown)) {
     if (allow_silent_install_) {
       // NOTE: extension may still be blocklisted, but we're forced to silently
       // install it. In this case, ExtensionService::OnExtensionInstalled needs
       // to deal with it.
-      if (errors.count(PreloadCheck::Error::kBlocklistedId)) {
+      if (errors.contains(PreloadCheck::Error::kBlocklistedId)) {
         install_flags_ |= kInstallFlagIsBlocklistedForMalware;
       }
     } else {
@@ -793,7 +767,7 @@ void CrxInstaller::OnInstallChecksComplete(const PreloadCheck::Errors& errors) {
   }
 
   // Check for policy errors.
-  if (errors.count(PreloadCheck::Error::kDisallowedByPolicy)) {
+  if (errors.contains(PreloadCheck::Error::kDisallowedByPolicy)) {
     // We don't want to show the error infobar for installs from the WebStore,
     // because the WebStore already shows an error dialog itself.
     // Note: |client_| can be NULL in unit_tests!
@@ -856,6 +830,18 @@ void CrxInstaller::ConfirmInstall() {
 
   current_version_ = base::Version(ExtensionPrefs::Get(browser_context_)
                                        ->GetVersionString(extension()->id()));
+
+  // User-downloaded installations require an install prompt client to confirm
+  // permissions unless pre-approved (e.g. from the webstore). If no prompt
+  // client is available (for example, if no browser window or tab is open),
+  // abort the install to avoid installing the extension silently. Non-user
+  // download flows (such as external providers) have their own separate
+  // acknowledgment lifecycles and may use CreateSilent() without a client.
+  if (was_triggered_by_user_download() && !client_ && !approved_) {
+    ReportFailureFromUIThread(CrxInstallError(
+        CrxInstallErrorType::OTHER, CrxInstallErrorDetail::USER_ABORTED));
+    return;
+  }
 
   if (client_ && (!allow_silent_install_ || !approved_) &&
       !update_from_settings_page_) {
@@ -1323,7 +1309,7 @@ base::SequencedTaskRunner* CrxInstaller::GetUnpackerTaskRunner() {
 
 void CrxInstaller::set_withhold_permissions() {
   DCHECK(base::FeatureList::IsEnabled(
-      extensions_features::kAllowWithholdingExtensionPermissionsOnInstall));
+      extensions_features::kExtensionInstallSiteAccessOptions));
   creation_flags_ |= Extension::WITHHOLD_PERMISSIONS;
 }
 

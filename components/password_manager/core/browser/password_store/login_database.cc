@@ -12,6 +12,7 @@
 #include <map>
 #include <memory>
 #include <set>
+#include <string>
 #include <string_view>
 #include <utility>
 
@@ -24,6 +25,7 @@
 #include "base/functional/bind.h"
 #include "base/logging.h"
 #include "base/memory/raw_ptr.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/numerics/safe_conversions.h"
@@ -38,6 +40,7 @@
 #include "build/build_config.h"
 #include "components/affiliations/core/browser/affiliation_utils.h"
 #include "components/affiliations/core/browser/sql_table_builder.h"
+#include "components/os_crypt/async/common/encryptor.h"
 #include "components/password_manager/core/browser/features/password_features.h"
 #include "components/password_manager/core/browser/password_form.h"
 #include "components/password_manager/core/browser/password_manager_metrics_util.h"
@@ -47,11 +50,14 @@
 #include "components/password_manager/core/browser/password_store/password_notes_table.h"
 #include "components/password_manager/core/browser/password_store/password_store_change.h"
 #include "components/password_manager/core/browser/password_store/psl_matching_helper.h"
+#include "components/password_manager/core/browser/password_string.h"
 #include "components/password_manager/core/common/password_manager_features.h"
 #include "components/sync/base/data_type.h"
 #include "components/sync/model/metadata_batch.h"
 #include "components/sync/protocol/data_type_state.pb.h"
 #include "components/sync/protocol/entity_metadata.pb.h"
+#include "crypto/process_bound_string.h"
+#include "crypto/secure_util.h"
 #include "sql/database.h"
 #include "sql/sqlite_result_code.h"
 #include "sql/sqlite_result_code_values.h"
@@ -177,7 +183,9 @@ enum LoginDatabaseTableColumns {
 
 enum class HistogramSize { SMALL, LARGE };
 
-// An enum for UMA reporting. Add values to the end only.
+// LINT.IfChange(DatabaseInitError)
+// These values are persisted to logs. Entries should not be renumbered and
+// numeric values should never be reused.
 enum DatabaseInitError {
   INIT_OK = 0,
   OPEN_FILE_ERROR = 1,
@@ -195,6 +203,7 @@ enum DatabaseInitError {
 
   DATABASE_INIT_ERROR_COUNT,
 };
+// LINT.ThenChange(//tools/metrics/histograms/metadata/password/enums.xml:LoginDatabaseInitError)
 
 // Represents the encryption issues of the login database. Entries should
 // not be renumbered and numeric values should never be reused. Always keep this
@@ -816,7 +825,8 @@ bool MigrateDatabase(unsigned current_version,
     fix_time_format.Assign(db->GetUniqueStatement(
         "UPDATE logins SET date_created = (date_created * ?) + ?"));
     fix_time_format.BindInt64(0, base::Time::kMicrosecondsPerSecond);
-    fix_time_format.BindInt64(1, base::Time::kTimeTToMicrosecondsOffset);
+    fix_time_format.BindInt64(1,
+                              base::Time::kMicrosecondsFromWindowsToUnixEpoch);
     if (!fix_time_format.Run()) {
       return false;
     }
@@ -993,12 +1003,12 @@ std::unique_ptr<sync_pb::EntityMetadata> DecryptAndParseSyncEntityMetadata(
 
 EncryptionResult DecryptPasswordFromStatement(
     sql::Statement& s,
-    std::u16string* plaintext_password,
+    PasswordString* decrypted_password,
     EncryptDecryptInterface* decryptor) {
-  CHECK(plaintext_password);
+  CHECK(decrypted_password);
   std::string encrypted_password = s.ColumnBlobAsString(COLUMN_PASSWORD_VALUE);
   EncryptionResult encryption_result =
-      decryptor->DecryptedString(encrypted_password, plaintext_password);
+      decryptor->DecryptedString(encrypted_password, decrypted_password);
   if (encryption_result != EncryptionResult::kSuccess) {
     DLOG(WARNING) << "Password decryption failed, encryption_result is "
                   << static_cast<int>(encryption_result);
@@ -1062,7 +1072,7 @@ bool ShouldDeleteUndecryptablePasswords(
 
 struct LoginDatabase::PrimaryKeyAndPassword {
   int primary_key;
-  std::u16string decrypted_password;
+  PasswordString decrypted_password;
   std::string keychain_identifier;
 };
 
@@ -1078,14 +1088,40 @@ LoginDatabase::LoginDatabase(const base::FilePath& db_path,
 
 LoginDatabase::~LoginDatabase() = default;
 
+EncryptionResult LoginDatabase::EncryptedString(
+    const crypto::SecureU16String& plain_text,
+    std::string* cipher_text) const {
+  std::string plain_text_utf8 = base::UTF16ToUTF8(plain_text);
+  bool result =
+      encryptor_ && encryptor_->EncryptString(plain_text_utf8, cipher_text);
+  crypto::SecureZeroBuffer(base::as_writable_byte_span(plain_text_utf8));
+  return result ? EncryptionResult::kSuccess
+                : EncryptionResult::kServiceFailure;
+}
+
+bool LoginDatabase::DecryptStringToPasswordString(
+    const std::string& cipher_text,
+    PasswordString* decrypted_text) const {
+  std::string plain_text_utf8;
+  bool result =
+      encryptor_ && encryptor_->DecryptString(cipher_text, &plain_text_utf8);
+  if (result) {
+    std::u16string plain_text_utf16 = base::UTF8ToUTF16(plain_text_utf8);
+    *decrypted_text = PasswordString(std::move(plain_text_utf16));
+  } else {
+    *decrypted_text = PasswordString();
+  }
+  crypto::SecureZeroBuffer(base::as_writable_byte_span(plain_text_utf8));
+  return result;
+}
+
 bool LoginDatabase::Init(
     OnUndecryptablePasswordsRemoved on_undecryptable_passwords_removed,
-    os_crypt_async::Encryptor encryptor) {
+    scoped_refptr<os_crypt_async::Encryptor> encryptor) {
   TRACE_EVENT0("passwords", "LoginDatabase::Init");
   on_undecryptable_passwords_removed_ =
       std::move(on_undecryptable_passwords_removed);
-  encryptor_ =
-      std::make_unique<os_crypt_async::Encryptor>(std::move(encryptor));
+  encryptor_ = std::move(encryptor);
 
   if (!db_.Open(db_path_)) {
     LogDatabaseInitError(OPEN_FILE_ERROR);
@@ -1264,7 +1300,7 @@ void LoginDatabase::ReportInaccessiblePasswordsMetrics() {
 
   size_t failed_encryption = 0;
   while (get_passwords_statement.Step()) {
-    std::u16string decrypted_password;
+    PasswordString decrypted_password;
     if (DecryptedString(get_passwords_statement.ColumnString(0),
                         &decrypted_password) != EncryptionResult::kSuccess) {
       ++failed_encryption;
@@ -1331,9 +1367,9 @@ PasswordStoreChangeList LoginDatabase::AddLogin(StoredCredential cred,
       }
       return PasswordStoreChangeList();
     }
-    cred.password_value = plaintext_password;
+    cred.password_value = PasswordString(std::move(plaintext_password));
   } else {
-    if (!CreateKeychainIdentifier(cred.password_value,
+    if (!CreateKeychainIdentifier(cred.password_value.value(),
                                   &cred.keychain_identifier)) {
       if (error) {
         *error = AddCredentialError::kEncryptionServiceFailure;
@@ -1345,8 +1381,8 @@ PasswordStoreChangeList LoginDatabase::AddLogin(StoredCredential cred,
   CHECK(cred.keychain_identifier.empty());
 #endif  // BUILDFLAG(IS_IOS)
   std::string encrypted_password;
-  if (EncryptedString(cred.password_value, &encrypted_password) !=
-      EncryptionResult::kSuccess) {
+  if (EncryptedString(cred.password_value.secure_value(),
+                      &encrypted_password) != EncryptionResult::kSuccess) {
     if (error) {
       *error = AddCredentialError::kEncryptionServiceFailure;
     }
@@ -1418,8 +1454,8 @@ PasswordStoreChangeList LoginDatabase::UpdateLogin(
     *error = UpdateCredentialError::kNone;
   }
   std::string encrypted_password;
-  if (EncryptedString(cred.password_value, &encrypted_password) !=
-      EncryptionResult::kSuccess) {
+  if (EncryptedString(cred.password_value.secure_value(),
+                      &encrypted_password) != EncryptionResult::kSuccess) {
     if (error) {
       *error = UpdateCredentialError::kEncryptionServiceFailure;
     }
@@ -1433,7 +1469,7 @@ PasswordStoreChangeList LoginDatabase::UpdateLogin(
 #if BUILDFLAG(IS_IOS)
   DeleteEncryptedPasswordFromKeychain(
       old_primary_key_password.keychain_identifier);
-  if (!CreateKeychainIdentifier(cred.password_value,
+  if (!CreateKeychainIdentifier(cred.password_value.value(),
                                 &new_keychain_identifier)) {
     if (error) {
       *error = UpdateCredentialError::kEncryptionServiceFailure;
@@ -1511,6 +1547,8 @@ PasswordStoreChangeList LoginDatabase::UpdateLogin(
   // TODO(crbug.com/40774419): It should be the responsibility of the caller to
   // set `password_issues` to empty.
   // Remove this once all `UpdateLogin` calls have been checked.
+  // TODO(crbug.com/530591026): Re-evaluate if the credential could be updated
+  // in a way that it has `password_issues` set when the password was changed.
   if (password_changed) {
     updated_cred.password_issues =
         base::flat_map<InsecureType, InsecurityMetadata>();
@@ -1887,7 +1925,7 @@ bool LoginDatabase::DeleteAndRecreateDatabaseFile() {
   db_.Close();
   sql::Database::Delete(db_path_);
   return Init(std::move(on_undecryptable_passwords_removed_),
-              std::move(*encryptor_));
+              std::move(encryptor_));
 }
 
 DatabaseCleanupResult LoginDatabase::DeleteUndecryptableLogins() {
@@ -1909,7 +1947,7 @@ DatabaseCleanupResult LoginDatabase::DeleteUndecryptableLogins() {
   while (s.Step()) {
     std::string encrypted_password =
         s.ColumnBlobAsString(COLUMN_PASSWORD_VALUE);
-    std::u16string decrypted_password;
+    PasswordString decrypted_password;
     if (DecryptedString(encrypted_password, &decrypted_password) ==
         EncryptionResult::kSuccess) {
       continue;
@@ -1939,19 +1977,9 @@ DatabaseCleanupResult LoginDatabase::DeleteUndecryptableLogins() {
   return DatabaseCleanupResult::kSuccess;
 }
 
-bool LoginDatabase::BeginTransaction() {
-  TRACE_EVENT0("passwords", "LoginDatabase::BeginTransaction");
-  return db_.BeginTransactionDeprecated();
-}
-
-void LoginDatabase::RollbackTransaction() {
-  TRACE_EVENT0("passwords", "LoginDatabase::RollbackTransaction");
-  db_.RollbackTransactionDeprecated();
-}
-
-bool LoginDatabase::CommitTransaction() {
-  TRACE_EVENT0("passwords", "LoginDatabase::CommitTransaction");
-  return db_.CommitTransactionDeprecated();
+std::unique_ptr<sql::Transaction> LoginDatabase::CreateTransaction() {
+  TRACE_EVENT0("passwords", "LoginDatabase::CreateTransaction");
+  return std::make_unique<sql::Transaction>(&db_);
 }
 
 LoginDatabase::SyncMetadataStore::SyncMetadataStore(LoginDatabase* login_db)
@@ -2072,7 +2100,6 @@ void LoginDatabase::SyncMetadataStore::DeleteAllSyncMetadata(
     syncer::DataType data_type) {
   TRACE_EVENT0("passwords", "SyncMetadataStore::DeleteAllSyncMetadata");
   CHECK_EQ(data_type, syncer::PASSWORDS);
-  CHECK_EQ(data_type, syncer::PASSWORDS);
   ClearAllSyncMetadata(&login_db_->db_, data_type);
 }
 
@@ -2173,16 +2200,18 @@ LoginDatabase::PrimaryKeyAndPassword LoginDatabase::GetPrimaryKeyAndPassword(
   s.BindString(4, cred.signon_realm);
 
   if (s.Step()) {
-    PrimaryKeyAndPassword result = {s.ColumnInt(0)};
+    PasswordString decrypted_password;
     std::string encrypted_password = s.ColumnBlobAsString(1);
-    result.keychain_identifier = s.ColumnBlobAsString(2);
-    if (DecryptedString(encrypted_password, &result.decrypted_password) !=
+    if (DecryptedString(encrypted_password, &decrypted_password) !=
         EncryptionResult::kSuccess) {
-      result.decrypted_password.clear();
+      decrypted_password = {};
     }
+    PrimaryKeyAndPassword result = {s.ColumnInt(0),
+                                    std::move(decrypted_password)};
+    result.keychain_identifier = s.ColumnBlobAsString(2);
     return result;
   }
-  return {-1, std::u16string(), std::string()};
+  return {-1, {}, std::string()};
 }
 
 FormRetrievalResult LoginDatabase::StatementToStoredCredentials(
@@ -2204,7 +2233,7 @@ FormRetrievalResult LoginDatabase::StatementToStoredCredentials(
   }
 
   while (statement->Step()) {
-    std::u16string plaintext_password;
+    PasswordString plaintext_password;
     EncryptionResult result =
         DecryptPasswordFromStatement(*statement, &plaintext_password, this);
     if (result == EncryptionResult::kItemFailure ||

@@ -29,6 +29,7 @@
 #include "base/metrics/user_metrics.h"
 #include "base/numerics/safe_conversions.h"
 #include "components/prefs/pref_service.h"
+#include "components/vector_icons/vector_icons.h"
 #include "ui/base/models/image_model.h"
 
 namespace ash {
@@ -136,6 +137,12 @@ void ShelfContextMenuModel::ExecuteCommand(int command_id, int event_flags) {
     case MENU_SHOW_DESK_NAME:
       SetShowDeskButtonInShelfPref(prefs, true);
       break;
+    case MENU_TASK_MANAGER:
+      base::RecordAction(
+          base::UserMetricsAction("Shelf_ContextMenu_Task_Manager"));
+      NewWindowDelegate::GetInstance()->ShowTaskManager(
+          /*from_context_menu=*/true);
+      break;
     // Using reorder CommandId in ash/public/cpp/app_menu_constants.h
     case REORDER_BY_NAME_ALPHABETICAL:
       AppListModelProvider::Get()->model()->delegate()->RequestAppListSort(
@@ -228,6 +235,12 @@ void ShelfContextMenuModel::AddShelfAndWallpaperItems() {
                                          ui::kColorAshSystemUIMenuIcon));
     }
   }
+
+  AddItemWithStringIdAndIcon(
+      MENU_TASK_MANAGER, IDS_ASH_SHELF_CONTEXT_MENU_TASK_MANAGER,
+      ui::ImageModel::FromVectorIcon(vector_icons::kTableChartIcon,
+                                     ui::kColorAshSystemUIMenuIcon,
+                                     kAppContextMenuIconSize));
 }
 
 }  // namespace ash

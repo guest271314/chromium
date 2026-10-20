@@ -5,6 +5,9 @@
 #include "chrome/browser/ui/views/tab_contents/chrome_web_contents_view_focus_helper.h"
 
 #include "base/memory/ptr_util.h"
+#include "chrome/browser/ui/browser_element_identifiers.h"
+#include "chrome/browser/ui/location_bar/location_bar.h"
+#include "chrome/browser/ui/location_bar/location_bar_override_data.h"
 #include "chrome/browser/ui/sad_tab_controller.h"
 #include "chrome/browser/ui/sad_tab_helper.h"
 #include "chrome/browser/ui/tabs/public/tab_dialog_manager.h"
@@ -14,7 +17,22 @@
 #include "content/public/browser/render_widget_host_view.h"
 #include "content/public/browser/web_contents.h"
 #include "ui/views/focus/focus_manager.h"
+#include "ui/views/view_class_properties.h"
 #include "ui/views/widget/widget.h"
+
+namespace {
+
+bool IsInWebUIToolbar(views::View* view_to_check) {
+  for (views::View* v = view_to_check; v; v = v->parent()) {
+    if (v->GetProperty(views::kElementIdentifierKey) ==
+        kWebUIToolbarElementIdentifier) {
+      return true;
+    }
+  }
+  return false;
+}
+
+}  // namespace
 
 ChromeWebContentsViewFocusHelper::ChromeWebContentsViewFocusHelper(
     content::WebContents* web_contents)
@@ -24,8 +42,9 @@ ChromeWebContentsViewFocusHelper::ChromeWebContentsViewFocusHelper(
 ChromeWebContentsViewFocusHelper::~ChromeWebContentsViewFocusHelper() = default;
 
 bool ChromeWebContentsViewFocusHelper::Focus() {
-  SadTabHelper* sad_tab_helper =
-      SadTabHelper::FromWebContents(&GetWebContents());
+  tabs::TabInterface* tab =
+      tabs::TabInterface::MaybeGetFromContents(&GetWebContents());
+  SadTabHelper* sad_tab_helper = tab ? SadTabHelper::From(tab) : nullptr;
   if (sad_tab_helper) {
     SadTabController* sad_tab =
         static_cast<SadTabController*>(sad_tab_helper->sad_tab());
@@ -77,9 +96,30 @@ bool ChromeWebContentsViewFocusHelper::TakeFocus(bool reverse) {
 
 void ChromeWebContentsViewFocusHelper::StoreFocus() {
   last_focused_view_tracker_.SetView(nullptr);
-  if (GetFocusManager()) {
-    last_focused_view_tracker_.SetView(GetFocusManager()->GetFocusedView());
+  if (!GetFocusManager()) {
+    return;
   }
+
+  views::View* focused_view = GetFocusManager()->GetFocusedView();
+  if (!focused_view) {
+    return;
+  }
+
+  // Most things on the toolbar are FocusBehavior::ACCESSIBLE_ONLY, and don't
+  // get focus restored to them on tab switch. When the WebUI toolbar is in use,
+  // those get lumped with things that should get focus, like the location bar,
+  // resulting in undesired restoration (see crbug.com/508632926). So save
+  // webui-toolbar focus only if something in the location bar is focused.
+  // This will get WebView focus restored uniformly, and
+  // WebUIReadOnlyOmnibox::OnTabChanged will take care of element focus.
+  if (IsInWebUIToolbar(focused_view)) {
+    auto* location_bar =
+        location_bar::GetLocationBarForWebContents(&GetWebContents());
+    if (!location_bar || !location_bar->IsFocusWithin()) {
+      return;
+    }
+  }
+  last_focused_view_tracker_.SetView(focused_view);
 }
 
 bool ChromeWebContentsViewFocusHelper::RestoreFocus() {

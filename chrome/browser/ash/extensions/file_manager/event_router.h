@@ -15,6 +15,7 @@
 
 #include "base/gtest_prod_util.h"
 #include "base/memory/raw_ptr.h"
+#include "base/scoped_observation.h"
 #include "chrome/browser/ash/drive/drive_integration_service.h"
 #include "chrome/browser/ash/drive/file_system_util.h"
 #include "chrome/browser/ash/extensions/file_manager/device_event_router.h"
@@ -32,10 +33,10 @@
 #include "chrome/browser/ash/guest_os/public/guest_os_mount_provider_registry.h"
 #include "chrome/browser/ash/policy/skyvault/local_user_files_policy_observer.h"
 #include "chrome/browser/ui/webui/ash/cloud_upload/cloud_upload_util.h"
-#include "chrome/common/extensions/api/file_manager_private.h"
 #include "chromeos/ash/components/settings/timezone_settings.h"
 #include "chromeos/ash/experiences/arc/intent_helper/arc_intent_helper_observer.h"
 #include "chromeos/ash/experiences/arc/session/arc_service_manager.h"
+#include "chromeos/ash/experiences/extensions/common/api/file_manager_private.h"
 #include "chromeos/dbus/dlp/dlp_client.h"
 #include "components/keyed_service/core/keyed_service.h"
 #include "components/services/app_service/public/cpp/app_registry_cache.h"
@@ -47,6 +48,7 @@
 #include "url/origin.h"
 
 class PrefChangeRegistrar;
+class PrefService;
 class Profile;
 
 using OutputsType =
@@ -82,7 +84,8 @@ class EventRouter
                                    bool got_error,
                                    const std::vector<url::Origin>& listeners)>;
 
-  explicit EventRouter(Profile* profile);
+  // `local_state` must be non-null and outlive `this`.
+  EventRouter(PrefService* local_state, Profile* profile);
 
   EventRouter(const EventRouter&) = delete;
   EventRouter& operator=(const EventRouter&) = delete;
@@ -149,12 +152,6 @@ class EventRouter
   void OnFormatCompleted(const std::string& device_path,
                          const std::string& device_label,
                          bool success) override;
-  void OnPartitionStarted(const std::string& device_path,
-                          const std::string& device_label,
-                          bool success) override;
-  void OnPartitionCompleted(const std::string& device_path,
-                            const std::string& device_label,
-                            bool success) override;
   void OnRenameStarted(const std::string& device_path,
                        const std::string& device_label,
                        bool success) override;
@@ -169,6 +166,7 @@ class EventRouter
   void OnFileSystemMountFailed() override;
   void OnDriveConnectionStatusChanged(
       drive::util::ConnectionStatus status) override;
+  void OnDriveIntegrationServiceDestroyed() override;
 
   // GuestOsSharePath::Observer implementation.
   void OnPersistedPathRegistered(const std::string& vm_name,
@@ -180,10 +178,6 @@ class EventRouter
 
   // display::DisplayObserver overrides.
   void OnDisplayTabletStateChanged(display::TabletState state) override;
-
-  // Notifies FilesApp that file drop to Plugin VM was not in a shared directory
-  // and failed FilesApp will show the "Move to Windows files" dialog.
-  void DropFailedPluginVmDirectoryNotShared();
 
   // Called by the UI to notify the result of a displayed dialog.
   void OnDriveDialogResult(drivefs::mojom::DialogResult result);
@@ -348,6 +342,10 @@ class EventRouter
   base::ScopedObservation<apps::AppRegistryCache,
                           apps::AppRegistryCache::Observer>
       app_registry_cache_observer_{this};
+
+  base::ScopedObservation<drive::DriveIntegrationService,
+                          drive::DriveIntegrationService::Observer>
+      drive_observation_{this};
 
   display::ScopedDisplayObserver display_observer_{this};
 

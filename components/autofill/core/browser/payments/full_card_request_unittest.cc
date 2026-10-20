@@ -22,7 +22,7 @@
 #include "components/autofill/core/browser/payments/payments_autofill_client.h"
 #include "components/autofill/core/browser/payments/payments_network_interface.h"
 #include "components/autofill/core/browser/payments/test_payments_network_interface.h"
-#include "components/autofill/core/browser/test_utils/autofill_test_utils.h"
+#include "components/autofill/core/browser/test_utils/autofill_test_util.h"
 #include "components/autofill/core/browser/ui/payments/card_unmask_prompt_options.h"
 #include "components/autofill/core/common/autofill_clock.h"
 #include "components/autofill/core/common/autofill_payments_features.h"
@@ -36,26 +36,26 @@
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace autofill::payments {
+namespace {
 
 using testing::_;
 using testing::NiceMock;
 using PaymentsRpcCardType = PaymentsAutofillClient::PaymentsRpcCardType;
 using PaymentsRpcResult = PaymentsAutofillClient::PaymentsRpcResult;
-using UnmaskCardReason = payments::PaymentsAutofillClient::UnmaskCardReason;
+using UnmaskCardReason = PaymentsAutofillClient::UnmaskCardReason;
 
-namespace {
 // The consumer of the full card request API.
 class MockResultDelegate : public FullCardRequest::ResultDelegate {
  public:
   MOCK_METHOD(void,
               OnFullCardRequestSucceeded,
-              (const payments::FullCardRequest&,
+              (const FullCardRequest&,
                const CreditCard&,
                const std::u16string&),
               (override));
   MOCK_METHOD(void,
               OnFullCardRequestFailed,
-              (CreditCard::RecordType, payments::FullCardRequest::FailureType),
+              (CreditCard::RecordType, FullCardRequest::FailureType),
               (override));
 
   base::WeakPtr<MockResultDelegate> AsWeakPtr() {
@@ -80,11 +80,11 @@ class MockUIDelegate : public FullCardRequest::UIDelegate {
               (PaymentsRpcResult),
               (override));
 #if BUILDFLAG(IS_ANDROID)
-  MOCK_METHOD(bool, ShouldOfferFidoAuth, (), (const override));
+  MOCK_METHOD(bool, ShouldOfferFidoAuth, (), (const, override));
   MOCK_METHOD(bool,
               UserOptedInToFidoFromSettingsPageOnMobile,
               (),
-              (const override));
+              (const, override));
 #endif
 
   base::WeakPtr<MockUIDelegate> AsWeakPtr() {
@@ -103,7 +103,6 @@ class MockPaymentsDataManager : public TestPaymentsDataManager {
               (const CreditCard& credit_card),
               (override));
 };
-}  // namespace
 
 // TODO(crbug.com/41412501): Simplify this test setup.
 // The test fixture for full card request.
@@ -158,7 +157,7 @@ class FullCardRequestTest : public testing::Test {
   void OnDidGetRealPan(PaymentsRpcResult result,
                        const std::string& real_pan,
                        bool is_virtual_card = false) {
-    payments::UnmaskResponseDetails response;
+    UnmaskResponseDetails response;
     response.card_type = is_virtual_card ? PaymentsRpcCardType::kVirtualCard
                                          : PaymentsRpcCardType::kServerCard;
     request_->OnDidGetRealPan(result, response.with_real_pan(real_pan));
@@ -168,7 +167,7 @@ class FullCardRequestTest : public testing::Test {
                                const std::string& real_pan,
                                const std::string& dcvv,
                                bool is_virtual_card = false) {
-    payments::UnmaskResponseDetails response;
+    UnmaskResponseDetails response;
     response.card_type = is_virtual_card ? PaymentsRpcCardType::kVirtualCard
                                          : PaymentsRpcCardType::kServerCard;
     request_->OnDidGetRealPan(result,
@@ -209,8 +208,8 @@ class FullCardRequestTest : public testing::Test {
   variations::test::ScopedVariationsIdsProvider scoped_variations_ids_provider_{
       variations::VariationsIdsProvider::Mode::kUseSignedInState};
   syncer::TestSyncService sync_service_;
-  MockResultDelegate result_delegate_;
-  MockUIDelegate ui_delegate_;
+  testing::NiceMock<MockResultDelegate> result_delegate_;
+  testing::NiceMock<MockUIDelegate> ui_delegate_;
   TestAutofillClient autofill_client_;
   network::TestURLLoaderFactory test_url_loader_factory_;
   scoped_refptr<network::SharedURLLoaderFactory> test_shared_loader_factory_;
@@ -370,7 +369,7 @@ TEST_F(FullCardRequestTest,
       ui_delegate().AsWeakPtr(), GURL("https://example.com/"),
       "test_context_token", challenge_option);
   ASSERT_TRUE(request().GetShouldUnmaskCardForTesting());
-  payments::UnmaskRequestDetails* request_details =
+  UnmaskRequestDetails* request_details =
       request().GetUnmaskRequestDetailsForTesting();
   EXPECT_EQ(request_details->selected_challenge_option->type,
             CardUnmaskChallengeOptionType::kCvc);
@@ -386,7 +385,7 @@ TEST_F(FullCardRequestTest,
   details.exp_year = base::UTF8ToUTF16(test::NextYear());
   details.enable_fido_auth = false;
   card_unmask_delegate().OnUnmaskPromptAccepted(details);
-  payments::UnmaskResponseDetails response;
+  UnmaskResponseDetails response;
   response.real_pan = "4111";
   response.dcvv = "123";
   response.expiration_month = "12";
@@ -413,8 +412,8 @@ TEST_F(FullCardRequestTest, OneRequestAtATime) {
       FullCardRequestOptions()
           .with_credit_card(CreditCard(
               CreditCard::RecordType::kMaskedServerCard, "server_id_2"))
-          .with_unmask_card_reason(payments::PaymentsAutofillClient::
-                                       UnmaskCardReason::kPaymentRequest));
+          .with_unmask_card_reason(
+              PaymentsAutofillClient::UnmaskCardReason::kPaymentRequest));
 }
 
 // After the first request completes, it's OK to start the second request.
@@ -738,8 +737,8 @@ TEST_F(FullCardRequestTest, UnmaskForPaymentRequest) {
       FullCardRequestOptions()
           .with_credit_card(CreditCard(
               CreditCard::RecordType::kMaskedServerCard, "server_id"))
-          .with_unmask_card_reason(payments::PaymentsAutofillClient::
-                                       UnmaskCardReason::kPaymentRequest));
+          .with_unmask_card_reason(
+              PaymentsAutofillClient::UnmaskCardReason::kPaymentRequest));
   CardUnmaskDelegate::UserProvidedUnmaskDetails details;
   details.cvc = u"123";
   card_unmask_delegate().OnUnmaskPromptAccepted(details);
@@ -859,4 +858,5 @@ TEST_P(FullCardRequestCardBenefitsTest, Benefits_ClientBehaviorConstants) {
             ShouldShowCardBenefits());
 }
 
+}  // namespace
 }  // namespace autofill::payments

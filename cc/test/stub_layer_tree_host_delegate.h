@@ -27,10 +27,7 @@ class StubLayerTreeHostDelegate : public LayerTreeHostDelegate {
   void DidUpdateLayers() override {}
   void BeginMainFrame(const viz::BeginFrameArgs& args) override {}
   void OnDeferMainFrameUpdatesChanged(bool) override {}
-  void OnDeferCommitsChanged(
-      bool,
-      PaintHoldingReason,
-      std::optional<PaintHoldingCommitTrigger>) override {}
+  void OnDeferCommitsChanged(bool, PaintHoldingReason) override {}
   void OnCommitRequested() override {}
   void RecordStartOfFrameMetrics() override {}
   void RecordEndOfFrameMetrics(base::TimeTicks,
@@ -43,6 +40,8 @@ class StubLayerTreeHostDelegate : public LayerTreeHostDelegate {
   void UpdateLayerTreeHost() override {}
   void ApplyViewportChanges(const ApplyViewportChangesArgs&) override {}
   void UpdateCompositorScrollState(
+      const CompositorCommitData& commit_data) override {}
+  void UpdateAnimatedImageState(
       const CompositorCommitData& commit_data) override {}
   void RequestNewLayerTreeFrameSink() override {}
   void DidInitializeLayerTreeFrameSink() override {}

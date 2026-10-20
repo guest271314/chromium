@@ -27,12 +27,15 @@
 #include <unicode/unistr.h>
 #include <unicode/uvernum.h>
 
+#include <string_view>
+
 #include "base/compiler_specific.h"
 #include "third_party/blink/public/platform/platform.h"
 #include "third_party/blink/public/strings/grit/blink_strings.h"
 #include "third_party/blink/renderer/core/frame/web_feature.h"
 #include "third_party/blink/renderer/core/html/forms/html_input_element.h"
 #include "third_party/blink/renderer/core/html/parser/html_parser_idioms.h"
+#include "third_party/blink/renderer/core/html_names.h"
 #include "third_party/blink/renderer/core/input_type_names.h"
 #include "third_party/blink/renderer/core/page/chrome_client.h"
 #include "third_party/blink/renderer/platform/bindings/script_regexp.h"
@@ -89,8 +92,7 @@ String EmailInputType::ConvertEmailAddressToAscii(const ScriptRegexp& regexp,
   // 8bit and non-8bit strings separately.
   host.Ensure16Bit();
 
-  auto host_span = host.Span16();
-  icu::UnicodeString idn_domain_name(host_span.data(), host_span.size());
+  icu::UnicodeString idn_domain_name{std::u16string_view(host.Span16())};
   icu::UnicodeString domain_name;
 
   // Leak |idna| at the end.
@@ -282,9 +284,10 @@ String EmailInputType::SanitizeValue(const String& proposed_value) const {
     return StripLeadingAndTrailingHtmlSpaces(no_line_break_value).ToString();
   Vector<StringView> addresses = ParseMultipleValues(no_line_break_value);
   StringBuilder stripped_value;
-  stripped_value.AppendRange(addresses, ",", [](const auto& address) {
-    return StripLeadingAndTrailingHtmlSpaces(address);
-  });
+  stripped_value.AppendRange(
+      addresses, ",", [](const auto& address, StringBuilder& b) {
+        b.Append(StripLeadingAndTrailingHtmlSpaces(address));
+      });
   return stripped_value.ReleaseString();
 }
 
@@ -298,10 +301,11 @@ String EmailInputType::ConvertFromVisibleValue(
   Vector<StringView> addresses = ParseMultipleValues(sanitized_value);
   StringBuilder builder;
   builder.ReserveCapacity(sanitized_value.length());
-  builder.AppendRange(addresses, ",", [&](const auto& address) {
-    return ConvertEmailAddressToAscii(
-        GetElement().GetDocument().EnsureEmailRegexp(), address);
-  });
+  builder.AppendRange(
+      addresses, ",", [&](const auto& address, StringBuilder& b) {
+        b.Append(ConvertEmailAddressToAscii(
+            GetElement().GetDocument().EnsureEmailRegexp(), address));
+      });
   return builder.ReleaseString();
 }
 
@@ -313,9 +317,10 @@ String EmailInputType::VisibleValue() const {
   Vector<StringView> addresses = ParseMultipleValues(value);
   StringBuilder builder;
   builder.ReserveCapacity(value.length());
-  builder.AppendRange(addresses, ",", [&](const auto& address) {
-    return ConvertEmailAddressToUnicode(address.ToString());
-  });
+  builder.AppendRange(
+      addresses, ",", [&](const auto& address, StringBuilder& b) {
+        b.Append(ConvertEmailAddressToUnicode(address.ToString()));
+      });
   return builder.ReleaseString();
 }
 

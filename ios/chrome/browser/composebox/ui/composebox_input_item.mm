@@ -36,6 +36,18 @@
   return _identifier;
 }
 
+- (BOOL)readyForSend {
+  switch (_state) {
+    case ComposeboxInputItemState::kDeferred:
+    case ComposeboxInputItemState::kLoading:
+    case ComposeboxInputItemState::kUploading:
+      return NO;
+    case ComposeboxInputItemState::kLoaded:
+    case ComposeboxInputItemState::kError:
+      return YES;
+  }
+}
+
 - (BOOL)isEqual:(id)other {
   if (self == other) {
     return YES;
@@ -64,7 +76,12 @@
     copy.type = self.type;
     copy.imageProvider = self.imageProvider;
     copy.fileURL = self.fileURL;
+    copy.tabURL = self.tabURL;
     copy.source = self.source;
+    copy.driveIdentifier = self.driveIdentifier;
+    copy.driveResourceKey = self.driveResourceKey;
+    copy.driveMimeType = self.driveMimeType;
+    copy.performedAnimation = copy.performedAnimation;
   }
   return copy;
 }

@@ -15,11 +15,13 @@
 #include <vector>
 
 #include "base/android/application_status_listener.h"
+#include "base/check.h"
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/location.h"
 #include "base/memory/raw_ref.h"
 #include "base/time/time.h"
+#include "chrome/browser/auxiliary_search/auxiliary_search_donation_service_bridge.h"
 #include "chrome/browser/auxiliary_search/auxiliary_search_provider.h"
 #include "chrome/browser/flags/android/chrome_feature_list.h"
 #include "chrome/browser/visited_url_ranking/visited_url_ranking_service_factory.h"
@@ -29,6 +31,7 @@
 #include "components/page_content_annotations/core/page_content_annotations_service.h"
 #include "components/prefs/pref_registry_simple.h"
 #include "components/prefs/pref_service.h"
+#include "components/signin/public/identity_manager/identity_manager.h"
 #include "components/visited_url_ranking/public/features.h"
 #include "components/visited_url_ranking/public/fetch_options.h"
 #include "components/visited_url_ranking/public/url_visit.h"
@@ -110,22 +113,34 @@ AuxiliarySearchDonationService::AuxiliarySearchDonationService(
     page_content_annotations::PageContentAnnotationsService*
         page_content_annotations_service,
     visited_url_ranking::VisitedURLRankingService* ranking_service,
+    signin::IdentityManager* identity_manager,
     PrefService* pref_service,
-    DonateCallback donate_callback)
+    std::unique_ptr<Delegate> testing_delegate)
     : page_content_annotations_service_(
           raw_ref<page_content_annotations::PageContentAnnotationsService>::
               from_ptr(page_content_annotations_service)),
       ranking_service_(
           raw_ref<visited_url_ranking::VisitedURLRankingService>::from_ptr(
               ranking_service)),
+      identity_manager_(
+          raw_ref<signin::IdentityManager>::from_ptr(identity_manager)),
       pref_service_(raw_ref<PrefService>::from_ptr(pref_service)),
-      donate_callback_(std::move(donate_callback)),
       application_status_listener_(
           base::android::ApplicationStatusListener::New(base::BindRepeating(
               &AuxiliarySearchDonationService::OnApplicationStateChanged,
               // Listener is destroyed at destructor, and
               // object will be alive for any callback.
               base::Unretained(this)))) {
+  is_browsing_data_donation_enabled_.Init(
+      prefs::kAuxiliarySearchBrowsingDataDonationEnabled, &pref_service_.get(),
+      base::BindRepeating(
+          &AuxiliarySearchDonationService::OnBrowsingDataDonationPrefChanged,
+          weak_factory_.GetWeakPtr()));
+  if (!testing_delegate) {
+    testing_delegate = std::make_unique<AuxiliarySearchDonationServiceBridge>(
+        is_browsing_data_donation_enabled_.GetValue());
+  }
+  delegate_ = std::move(testing_delegate);
   page_content_annotations_service_->AddObserver(
       page_content_annotations::AnnotationType::kContentVisibility, this);
 }
@@ -137,6 +152,8 @@ AuxiliarySearchDonationService::~AuxiliarySearchDonationService() {
 
 void AuxiliarySearchDonationService::RegisterProfilePrefs(
     PrefRegistrySimple* registry) {
+  registry->RegisterBooleanPref(
+      prefs::kAuxiliarySearchBrowsingDataDonationEnabled, true);
   registry->RegisterTimePref(
       prefs::kAuxiliarySearchLastDonatedHistoryEntryVisitTime, base::Time());
 }
@@ -144,10 +161,12 @@ void AuxiliarySearchDonationService::RegisterProfilePrefs(
 void AuxiliarySearchDonationService::OnPageContentAnnotated(
     const page_content_annotations::HistoryVisit& visit,
     const page_content_annotations::PageContentAnnotationsResult& result) {
-  // Ignore annotations from remote visits (navigation ID is 0).
+  // Ignore annotations from remote visits (navigation ID is 0) or if browsing
+  // data donation is disabled.
   if (result.GetType() !=
           page_content_annotations::AnnotationType::kContentVisibility ||
-      visit.navigation_id == 0) {
+      visit.navigation_id == 0 ||
+      !is_browsing_data_donation_enabled_.GetValue()) {
     return;
   }
 
@@ -236,7 +255,10 @@ void AuxiliarySearchDonationService::DonateHistoryEntries(
     std::vector<HistoryData> entries,
     const visited_url_ranking::URLVisitsMetadata& metadata) {
   if (!entries.empty()) {
-    donate_callback_.Run(std::move(entries));
+    CoreAccountInfo account_info =
+        identity_manager_->GetPrimaryAccountInfo(signin::ConsentLevel::kSignin);
+    delegate_->DonateHistoryEntries(std::move(entries),
+                                    std::move(account_info));
   }
 
   if (!metadata.most_recent_timestamp.has_value()) {
@@ -255,5 +277,13 @@ void AuxiliarySearchDonationService::OnApplicationStateChanged(
   if (state == base::android::APPLICATION_STATE_HAS_PAUSED_ACTIVITIES &&
       donation_timer_.IsRunning()) {
     donation_timer_.FireNow();
+  }
+}
+
+void AuxiliarySearchDonationService::OnBrowsingDataDonationPrefChanged() {
+  delegate_->SetBrowsingDataDonationEnabled(
+      is_browsing_data_donation_enabled_.GetValue());
+  if (!is_browsing_data_donation_enabled_.GetValue()) {
+    donation_timer_.Stop();
   }
 }

@@ -32,13 +32,15 @@ import org.chromium.base.supplier.NullableObservableSupplier;
 import org.chromium.base.supplier.OneShotCallback;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
+import org.chromium.chrome.browser.glic.GlicKeyedService;
+import org.chromium.chrome.browser.glic.GlicKeyedServiceFactory;
 import org.chromium.chrome.browser.lifecycle.ActivityLifecycleDispatcher;
 import org.chromium.chrome.browser.lifecycle.ConfigurationChangedObserver;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.settings.SettingsNavigationFactory;
 import org.chromium.chrome.browser.tab.CurrentTabObserver;
-import org.chromium.chrome.browser.tab.EmptyTabObserver;
 import org.chromium.chrome.browser.tab.Tab;
+import org.chromium.chrome.browser.tab.TabObserver;
 import org.chromium.chrome.browser.toolbar.R;
 import org.chromium.chrome.browser.toolbar.adaptive.AdaptiveToolbarStatePredictor.UiState;
 import org.chromium.chrome.browser.toolbar.adaptive.settings.AdaptiveToolbarSettingsFragment;
@@ -64,7 +66,8 @@ public class AdaptiveToolbarButtonController
         implements ButtonDataProvider,
                 ButtonDataObserver,
                 SharedPreferences.OnSharedPreferenceChangeListener,
-                ConfigurationChangedObserver {
+                ConfigurationChangedObserver,
+                GlicKeyedService.AllowedChangedObserver {
 
     private final Context mContext;
     private final ObserverList<ButtonDataObserver> mObservers = new ObserverList<>();
@@ -103,6 +106,7 @@ public class AdaptiveToolbarButtonController
             AdaptiveToolbarButtonVariant.UNKNOWN;
     private @Nullable CurrentTabObserver mPageLoadMetricsRecorder;
     private @Nullable NullableObservableSupplier<Tab> mTabSupplier;
+    private @Nullable GlicKeyedService mGlicKeyedService;
 
     /**
      * Constructs the {@link AdaptiveToolbarButtonController}.
@@ -251,9 +255,14 @@ public class AdaptiveToolbarButtonController
         setSingleProvider(AdaptiveToolbarButtonVariant.UNKNOWN);
         mObservers.clear();
         mCallbackController.destroy();
+        mToolbarBehavior.destroy();
         ContextUtils.getAppSharedPreferences().unregisterOnSharedPreferenceChangeListener(this);
         mToolbarContainer.removeOnLayoutChangeListener(mLayoutChangeListener);
         mLifecycleDispatcher.unregister(this);
+
+        if (mGlicKeyedService != null) {
+            mGlicKeyedService.removeAllowedChangedObserver(this);
+        }
 
         if (mPageLoadMetricsRecorder != null) {
             mPageLoadMetricsRecorder.destroy();
@@ -307,7 +316,7 @@ public class AdaptiveToolbarButtonController
             RecordHistogram.recordEnumeratedHistogram(
                     "Android.AdaptiveToolbarButton.SessionVariant",
                     receivedButtonData.getButtonSpec().getButtonVariant(),
-                    AdaptiveToolbarButtonVariant.MAX_VALUE);
+                    AdaptiveToolbarButtonVariant.MAX_VALUE + 1);
         }
 
         mButtonData.setCanShow(
@@ -346,7 +355,7 @@ public class AdaptiveToolbarButtonController
             RecordHistogram.recordEnumeratedHistogram(
                     "Android.AdaptiveToolbarButton.Clicked",
                     buttonVariant,
-                    AdaptiveToolbarButtonVariant.MAX_VALUE);
+                    AdaptiveToolbarButtonVariant.MAX_VALUE + 1);
             receivedListener.onClick(view);
         };
     }
@@ -362,7 +371,9 @@ public class AdaptiveToolbarButtonController
 
         // If the dynamic button is no longer available, switch to the session button variant.
         if (!canShowHint
-                && (mButtonData.getButtonSpec() == null || mButtonData.getButtonSpec().getButtonVariant() != mSessionButtonVariant)) {
+                && (mButtonData.getButtonSpec() == null
+                        || mButtonData.getButtonSpec().getButtonVariant()
+                                != mSessionButtonVariant)) {
             setSingleProvider(mSessionButtonVariant);
             notifyObservers(true);
         }
@@ -371,13 +382,17 @@ public class AdaptiveToolbarButtonController
     @VisibleForTesting
     void setProfile(Profile profile) {
         assert mAdaptiveToolbarStatePredictor == null;
-        profile = profile.getOriginalProfile();
+        Profile originalProfile = profile.getOriginalProfile();
         mAdaptiveToolbarStatePredictor =
                 new AdaptiveToolbarStatePredictor(
-                        mContext, profile, mAndroidPermissionDelegate, mToolbarBehavior);
+                        mContext, originalProfile, mAndroidPermissionDelegate, mToolbarBehavior);
         ContextUtils.getAppSharedPreferences().registerOnSharedPreferenceChangeListener(this);
 
-        if (!AdaptiveToolbarFeatures.isCustomizationEnabled()) return;
+        mGlicKeyedService = GlicKeyedServiceFactory.getForProfile(originalProfile);
+        if (mGlicKeyedService != null) {
+            mGlicKeyedService.addAllowedChangedObserver(this);
+        }
+
         mAdaptiveToolbarStatePredictor.recomputeUiState(mUiStateCallback);
         AdaptiveToolbarStats.recordSelectedSegmentFromSegmentationPlatformAsync(
                 mContext, mAdaptiveToolbarStatePredictor);
@@ -389,6 +404,13 @@ public class AdaptiveToolbarButtonController
         // Clearing mOriginalButtonSpec forces a refresh of mButtonData on the next get()
         mOriginalButtonSpec = null;
         notifyObservers(mButtonData.canShow());
+    }
+
+    @Override
+    public void onAllowedStateChanged() {
+        if (mAdaptiveToolbarStatePredictor != null) {
+            mAdaptiveToolbarStatePredictor.recomputeUiState(mUiStateCallback);
+        }
     }
 
     private void notifyObservers(boolean canShowHint) {
@@ -411,7 +433,6 @@ public class AdaptiveToolbarButtonController
         assert mAdaptiveToolbarStatePredictor != null;
         if (ADAPTIVE_TOOLBAR_CUSTOMIZATION_SETTINGS.equals(key)
                 || ADAPTIVE_TOOLBAR_CUSTOMIZATION_ENABLED.equals(key)) {
-            assert AdaptiveToolbarFeatures.isCustomizationEnabled();
             mAdaptiveToolbarStatePredictor.recomputeUiState(mUiStateCallback);
         }
     }
@@ -432,7 +453,7 @@ public class AdaptiveToolbarButtonController
         RecordHistogram.recordEnumeratedHistogram(
                 "Android.AdaptiveToolbarButton.Variant.OnPageLoad",
                 actionToShow,
-                AdaptiveToolbarButtonVariant.MAX_VALUE);
+                AdaptiveToolbarButtonVariant.MAX_VALUE + 1);
         if (mOriginalButtonSpec != null && mOriginalButtonSpec.getButtonVariant() == actionToShow) {
             return;
         }
@@ -452,7 +473,7 @@ public class AdaptiveToolbarButtonController
         mPageLoadMetricsRecorder =
                 new CurrentTabObserver(
                         tabSupplier,
-                        new EmptyTabObserver() {
+                        new TabObserver() {
                             @Override
                             public void onDidStartNavigationInPrimaryMainFrame(
                                     Tab tab, NavigationHandle navigationHandle) {
@@ -467,7 +488,7 @@ public class AdaptiveToolbarButtonController
                                 RecordHistogram.recordEnumeratedHistogram(
                                         "Android.AdaptiveToolbarButton.Variant.OnStartNavigation",
                                         currentVariant,
-                                        AdaptiveToolbarButtonVariant.MAX_VALUE);
+                                        AdaptiveToolbarButtonVariant.MAX_VALUE + 1);
                             }
                         },
                         null);

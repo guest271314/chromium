@@ -11,7 +11,6 @@
 #include "base/metrics/histogram_functions.h"
 #include "chrome/browser/ui/views/location_bar/location_bar_view.h"
 #include "chrome/browser/ui/views/permissions/chip/chip_controller.h"
-#include "chrome/grit/generated_resources.h"
 #include "components/permissions/features.h"
 #include "components/permissions/permission_prompt.h"
 #include "components/permissions/permission_util.h"
@@ -24,11 +23,10 @@
 #include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/bubble/bubble_dialog_delegate_view.h"
 
-PermissionPromptChip::PermissionPromptChip(Browser* browser,
-                                           content::WebContents* web_contents,
+PermissionPromptChip::PermissionPromptChip(content::WebContents* web_contents,
                                            Delegate* delegate)
-    : PermissionPromptDesktop(browser, web_contents, delegate) {
-  DCHECK(delegate);
+    : PermissionPromptDesktop(web_contents, delegate) {
+  CHECK(delegate, base::NotFatalUntil::M162);
   LocationBar* lb = GetLocationBar();
 
   // Before showing a chip make sure the LocationBar is in a valid state. That

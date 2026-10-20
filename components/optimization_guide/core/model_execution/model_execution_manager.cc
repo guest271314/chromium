@@ -14,30 +14,22 @@
 #include "base/strings/stringprintf.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/types/expected.h"
-#include "components/optimization_guide/core/model_execution/feature_keys.h"
+#include "components/optimization_guide/core/feature_registry/feature_keys.h"
 #include "components/optimization_guide/core/model_execution/model_execution_features.h"
 #include "components/optimization_guide/core/model_execution/model_execution_fetcher_impl.h"
 #include "components/optimization_guide/core/model_execution/optimization_guide_model_execution_error.h"
 #include "components/optimization_guide/core/model_execution/remote_model_executor.h"
 #include "components/optimization_guide/core/model_quality/model_quality_log_entry.h"
-#include "components/optimization_guide/core/optimization_guide_constants.h"
 #include "components/optimization_guide/core/optimization_guide_enums.h"
 #include "components/optimization_guide/core/optimization_guide_logger.h"
 #include "components/optimization_guide/core/optimization_guide_prefs.h"
-#include "components/optimization_guide/core/optimization_guide_proto_util.h"
 #include "components/optimization_guide/core/optimization_guide_util.h"
 #include "components/optimization_guide/proto/common_types.pb.h"
-#include "net/base/url_util.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
 
 namespace optimization_guide {
 
 namespace {
-
-const std::string& ProtoName(ModelBasedCapabilityKey feature) {
-  return proto::ModelExecutionFeature_Name(
-      ToModelExecutionFeatureProto(feature));
-}
 
 class ScopedModelExecutionResponseLogger {
  public:
@@ -54,7 +46,7 @@ class ScopedModelExecutionResponseLogger {
     OPTIMIZATION_GUIDE_LOGGER(
         optimization_guide_common::mojom::LogSource::MODEL_EXECUTION,
         optimization_guide_logger_)
-        << "OnModelExecutionResponse - Feature : " << ProtoName(feature_) << " "
+        << "OnModelExecutionResponse - Feature : " << feature_ << " "
         << message_;
   }
 
@@ -91,7 +83,6 @@ void RecordModelExecutionLatency(ModelBasedCapabilityKey feature,
 size_t GetMaxParallelFeatureExecutions(ModelBasedCapabilityKey feature) {
   switch (feature) {
     case ModelBasedCapabilityKey::kCompose:
-    case ModelBasedCapabilityKey::kTabOrganization:
     case ModelBasedCapabilityKey::kWallpaperSearch:
     case ModelBasedCapabilityKey::kTest:
     case ModelBasedCapabilityKey::kHistorySearch:
@@ -110,7 +101,20 @@ size_t GetMaxParallelFeatureExecutions(ModelBasedCapabilityKey feature) {
     case ModelBasedCapabilityKey::kAnnotationReducerOnePResolver:
     case ModelBasedCapabilityKey::kAnnotationReducerQueryClassifier:
     case ModelBasedCapabilityKey::kContextualCueing:
+    case ModelBasedCapabilityKey::kCardRecommendations:
+    case ModelBasedCapabilityKey::kReadAloudGenerateText:
+    case ModelBasedCapabilityKey::kSmartSelectionSuggestions:
+    case ModelBasedCapabilityKey::kTtc:
+    case ModelBasedCapabilityKey::kQuickAnswers:
       return 1;
+    case ModelBasedCapabilityKey::kReadAloudSynthesize:
+      // Since ReadAloud prefetches speech synthesis chunks concurrently for
+      // low-latency playback, allow multiple parallel executions.
+      return 10;
+    case ModelBasedCapabilityKey::kContextHub:
+      // Allow multiple parallel executions for `kContextHub` due to the large
+      // size of tab APC, which is inputted per tab into the model.
+      return 10;
     case ModelBasedCapabilityKey::kFormsClassifications:
       // Since there can be multiple forms on a single page, multiple parallel
       // executions are allowed for `kFormsClassifications`.
@@ -125,8 +129,10 @@ size_t GetMaxParallelFeatureExecutions(ModelBasedCapabilityKey feature) {
 
 bool IsEligibleForPrivateAI(ModelBasedCapabilityKey feature) {
   switch (feature) {
-    case ModelBasedCapabilityKey::kZeroStateSuggestions:
     case ModelBasedCapabilityKey::kContextualCueing:
+    case ModelBasedCapabilityKey::kFormsClassifications:
+    case ModelBasedCapabilityKey::kZeroStateSuggestions:
+    case ModelBasedCapabilityKey::kPasswordChangeSubmission:
       return true;
     default:
       return false;
@@ -147,7 +153,6 @@ ModelExecutionManager::ModelExecutionManager(
         model_quality_uploader_service)
     : model_quality_uploader_service_(model_quality_uploader_service),
       optimization_guide_logger_(optimization_guide_logger),
-      model_execution_service_url_(switches::GetModelExecutionServiceURL()),
       delegate_(std::move(delegate)),
       url_loader_factory_(url_loader_factory),
       identity_manager_(identity_manager) {}
@@ -191,34 +196,7 @@ void ModelExecutionManager::ExecuteModel(
     OPTIMIZATION_GUIDE_LOGGER(
         optimization_guide_common::mojom::LogSource::MODEL_EXECUTION,
         optimization_guide_logger_)
-        << "ExecuteModel: " << ProtoName(feature);
-    switch (feature) {
-      case ModelBasedCapabilityKey::kTabOrganization: {
-        proto::Any any = AnyWrapProto(request_metadata);
-        auto tab_request = optimization_guide::ParsedAnyMetadata<
-            optimization_guide::proto::TabOrganizationRequest>(any);
-        std::string tabs = "";
-        for (const auto& tab : tab_request->tabs()) {
-          tabs += base::StringPrintf("%s\"%s\"", tabs.empty() ? "" : ",",
-                                     tab.title());
-        }
-        OPTIMIZATION_GUIDE_LOGGER(
-            optimization_guide_common::mojom::LogSource::MODEL_EXECUTION,
-            optimization_guide_logger_)
-            << "TabOrganization Request: "
-            << base::StringPrintf(
-                   "{\"model_strategy\": \"%s\", \"tabs\" : [%s]}",
-                   optimization_guide::proto::
-                       TabOrganizationRequest_TabOrganizationModelStrategy_Name(
-                           tab_request->model_strategy()),
-                   tabs);
-
-        break;
-      }
-      default: {
-        break;
-      }
-    }
+        << "ExecuteModel: " << feature;
   }
 
   // Create log request if not already provided.
@@ -268,8 +246,7 @@ ModelExecutionManager::CreateModelExecutionFetcher(
   switch (service_type) {
     case ModelExecutionServiceType::kDefault:
       return std::make_unique<ModelExecutionFetcherImpl>(
-          url_loader_factory_, model_execution_service_url_,
-          optimization_guide_logger_);
+          url_loader_factory_, optimization_guide_logger_);
     case ModelExecutionServiceType::kPrivateAi:
       if (!delegate_) {
         return nullptr;
@@ -371,36 +348,7 @@ void ModelExecutionManager::OnModelExecuteResponse(
     OPTIMIZATION_GUIDE_LOGGER(
         optimization_guide_common::mojom::LogSource::MODEL_EXECUTION,
         optimization_guide_logger_)
-        << "ExecuteModel Response: " << ProtoName(feature);
-    switch (feature) {
-      case ModelBasedCapabilityKey::kTabOrganization: {
-        std::string message = "";
-        auto tab_response = optimization_guide::ParsedAnyMetadata<
-            optimization_guide::proto::TabOrganizationResponse>(
-            execute_response->response_metadata());
-        message += "Response: [";
-        int group_cnt = 0;
-        for (const auto& tab_group : tab_response->tab_groups()) {
-          std::string tab_titles = "";
-          for (const auto& tab : tab_group.tabs()) {
-            tab_titles += base::StringPrintf(
-                "%s\" %s \"", tab_titles.empty() ? "" : ",", tab.title());
-          }
-          message += base::StringPrintf(
-              "%s{"
-              "\"label\": \"%s\", "
-              "\"tabs\": [%s] }",
-              group_cnt > 0 ? "," : "", tab_group.label(), tab_titles);
-          group_cnt += 1;
-        }
-        message += "]";
-        scoped_logger.set_message(message);
-        break;
-      }
-      default: {
-        break;
-      }
-    }
+        << "ExecuteModel Response: " << feature;
   }
 
   RecordModelExecutionResultHistogram(feature, true);

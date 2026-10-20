@@ -2,11 +2,10 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include <oleacc.h>
 #include <windows.h>  // Must be before the UIA header.
-#include <wrl/client.h>
 
-#include <uiautomation.h>
+#include <oleacc.h>
+#include <wrl/client.h>
 
 #include "base/containers/circular_deque.h"
 #include "base/strings/string_util.h"
@@ -15,9 +14,9 @@
 #include "base/win/scoped_com_initializer.h"
 #include "base/win/scoped_variant.h"
 #include "chrome/app/chrome_command_ids.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/browser_window.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/omnibox/omnibox_view.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/omnibox/omnibox_view_views.h"
@@ -36,6 +35,8 @@
 #include "ui/base/test/ui_controls.h"
 #include "ui/views/win/hwnd_util.h"
 #include "url/gurl.h"
+
+#include <uiautomation.h>
 
 // We could move this into a utility file in the future if it ends up
 // being useful to other tests.
@@ -202,7 +203,7 @@ class NavigationAccessibilityTest : public InProcessBrowserTest {
   }
 
   void SendKeyPress(ui::KeyboardCode key) {
-    gfx::NativeWindow native_window = browser()->window()->GetNativeWindow();
+    gfx::NativeWindow native_window = browser()->GetWindow()->GetNativeWindow();
     ASSERT_NO_FATAL_FAILURE(ASSERT_TRUE(ui_test_utils::SendKeyPressToWindowSync(
         native_window, key, false, false, false, false)));
   }
@@ -318,7 +319,7 @@ IN_PROC_BROWSER_TEST_F(NarratorContainmentEnabledBrowserTest,
       CLSID_CUIAutomation, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&uia)));
 
   HWND top_hwnd =
-      views::HWNDForNativeWindow(browser()->window()->GetNativeWindow());
+      views::HWNDForNativeWindow(browser()->GetWindow()->GetNativeWindow());
   ASSERT_NE(nullptr, top_hwnd);
 
   Microsoft::WRL::ComPtr<IUIAutomationElement> hwnd_elem;

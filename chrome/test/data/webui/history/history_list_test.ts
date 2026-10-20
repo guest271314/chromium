@@ -3,7 +3,8 @@
 // found in the LICENSE file.
 
 import type {CrA11yAnnouncerMessagesSentEvent, HistoryAppElement, HistoryEntry, HistoryItemElement, HistoryListElement, HistoryToolbarElement} from 'chrome://history/history.js';
-import {BrowserServiceImpl, CrRouter} from 'chrome://history/history.js';
+import {BrowserProxyImpl, CrRouter} from 'chrome://history/history.js';
+import {CriticalActionType, OpenConversationResult} from 'chrome://resources/cr_components/history/history.mojom-webui.js';
 import {webUIListenerCallback} from 'chrome://resources/js/cr.js';
 import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
 import {isMac} from 'chrome://resources/js/platform.js';
@@ -12,14 +13,14 @@ import {assertDeepEquals, assertEquals, assertFalse, assertGT, assertNotEquals, 
 import {pressAndReleaseKeyOn} from 'chrome://webui-test/keyboard_mock_interactions.js';
 import {eventToPromise, microtasksFinished} from 'chrome://webui-test/test_util.js';
 
-import {TestBrowserService} from './test_browser_service.js';
+import {TestHistoryBrowserProxy} from './test_browser_proxy.js';
 import {createHistoryEntry, createHistoryInfo, shiftClick, waitForEvent} from './test_util.js';
 
 suite('HistoryListTest', function() {
   let app: HistoryAppElement;
   let element: HistoryListElement;
   let toolbar: HistoryToolbarElement;
-  let testService: TestBrowserService;
+  let testProxy: TestHistoryBrowserProxy;
 
   const TEST_HISTORY_RESULTS = [
     createHistoryEntry('2016-03-15', 'https://www.google.com'),
@@ -50,23 +51,21 @@ suite('HistoryListTest', function() {
     // Make viewport tall enough to render all items.
     document.body.style.height = '1000px';
     CrRouter.resetForTesting();
-    testService = new TestBrowserService();
-    BrowserServiceImpl.setInstance(testService);
+    testProxy = new TestHistoryBrowserProxy();
+    BrowserProxyImpl.setInstance(testProxy);
 
     app = document.createElement('history-app');
   });
 
   /**
-   * @param queryResults The query results to initialize
-   *     the page with.
+   * @param queryResults The query results to initialize the page with.
    * @param query The query to use in the QueryInfo.
-   * @return Promise that resolves when initialization is complete
-   *     and the lazy loaded module has been loaded.
+   * @return Promise that resolves when initialization is complete.
    */
-  function finishSetup(
+  async function finishSetup(
       queryResults: HistoryEntry[], finished: boolean = true,
       query?: string): Promise<void> {
-    testService.handler.setResultFor('queryHistory', Promise.resolve({
+    testProxy.handler.setResultFor('queryHistory', Promise.resolve({
       results:
           {info: {finished: finished, term: query || ''}, value: queryResults},
     }));
@@ -77,17 +76,30 @@ suite('HistoryListTest', function() {
     const queryManager = app.shadowRoot.querySelector('history-query-manager');
     assertTrue(!!queryManager);
     queryManager.queryState = {...queryManager.queryState, incremental: true};
-    return Promise
-        .all([
-          testService.handler.whenCalled('queryHistory'),
-          microtasksFinished(),
-          eventToPromise('viewport-filled', element.$.infiniteList),
-        ])
-        .then(() => {});
+    await Promise.all([
+      testProxy.handler.whenCalled('queryHistory'),
+      eventToPromise('viewport-filled', element.$.infiniteList),
+    ]);
+    await microtasksFinished();
   }
 
   function getHistoryData(): HistoryEntry[] {
     return element.$.infiniteList.items;
+  }
+
+  // Scrolls `app`'s scroll target to `distanceFromBottom` px above the bottom,
+  // asserting first that `scrollHeight` is large enough to actually scroll.
+  // Callers testing the 500px continuation threshold should include a 10px
+  // buffer (e.g. 510px) to prevent fractional CSS-to-device-pixel rounding on
+  // high-DPI displays (e.g. Android Desktop or Mac Retina) from calculating
+  // lowerScroll < 500 and prematurely triggering a continuation query.
+  function scrollToDistanceFromBottom(distanceFromBottom: number) {
+    const scrollTarget = app.getScrollTargetForTesting();
+    assertGT(
+        scrollTarget.scrollHeight,
+        scrollTarget.offsetHeight + distanceFromBottom);
+    scrollTarget.scrollTop = scrollTarget.scrollHeight -
+        scrollTarget.offsetHeight - distanceFromBottom;
   }
 
   test('IsEmpty', async () => {
@@ -95,14 +107,12 @@ suite('HistoryListTest', function() {
     assertTrue(element.isEmpty);
 
     // Load some results.
-    testService.handler.resetResolver('queryHistory');
-    testService.handler.setResultFor(
-        'queryHistoryContinuation',
-        Promise.resolve(
-            {results: {info: createHistoryInfo(), value: ADDITIONAL_RESULTS}}));
-    element.dispatchEvent(new CustomEvent(
-        'query-history', {detail: true, bubbles: true, composed: true}));
-    await testService.handler.whenCalled('queryHistoryContinuation');
+    testProxy.handler.resetResolver('queryHistory');
+    testProxy.handler.setResultFor('queryHistoryContinuation', Promise.resolve({
+      results: {info: createHistoryInfo(), value: ADDITIONAL_RESULTS},
+    }));
+    element.fire('query-history', true);
+    await testProxy.handler.whenCalled('queryHistoryContinuation');
     await microtasksFinished();
 
     assertFalse(element.isEmpty);
@@ -122,11 +132,11 @@ suite('HistoryListTest', function() {
     await microtasksFinished();
     const dialog = element.$.dialog.get();
     assertTrue(dialog.open);
-    testService.handler.resetResolver('queryHistory');
-    testService.handler.setResultFor('removeVisits', Promise.resolve([visit]));
-    testService.handler.setResultFor('queryHistory', Promise.resolve({}));
+    testProxy.handler.resetResolver('queryHistory');
+    testProxy.handler.setResultFor('removeVisits', Promise.resolve([visit]));
+    testProxy.handler.setResultFor('queryHistory', Promise.resolve({}));
     element.shadowRoot.querySelector<HTMLElement>('.action-button')!.click();
-    const visits = await testService.handler.whenCalled('removeVisits');
+    const visits = await testProxy.handler.whenCalled('removeVisits');
     assertEquals(1, visits.length);
     assertEquals('http://example.com', visits[0].url);
     assertEquals(Date.parse('2015-01-01 UTC'), visits[0].timestamps[0]);
@@ -134,7 +144,7 @@ suite('HistoryListTest', function() {
     // The list should fire a query-history event which results in a
     // queryHistory call, since deleting the only item results in an
     // empty history list.
-    return testService.handler.whenCalled('queryHistory');
+    return testProxy.handler.whenCalled('queryHistory');
   });
 
   test('CancellingSelectionOfMultipleItems', async function() {
@@ -246,14 +256,12 @@ suite('HistoryListTest', function() {
 
   async function loadWithAdditionalResults() {
     await finishSetup(TEST_HISTORY_RESULTS);
-    testService.handler.resetResolver('queryHistory');
-    testService.handler.setResultFor(
-        'queryHistoryContinuation',
-        Promise.resolve(
-            {results: {info: createHistoryInfo(), value: ADDITIONAL_RESULTS}}));
-    element.dispatchEvent(new CustomEvent(
-        'query-history', {detail: true, bubbles: true, composed: true}));
-    await testService.handler.whenCalled('queryHistoryContinuation');
+    testProxy.handler.resetResolver('queryHistory');
+    testProxy.handler.setResultFor('queryHistoryContinuation', Promise.resolve({
+      results: {info: createHistoryInfo(), value: ADDITIONAL_RESULTS},
+    }));
+    element.fire('query-history', true);
+    await testProxy.handler.whenCalled('queryHistoryContinuation');
     return microtasksFinished();
   }
 
@@ -317,12 +325,11 @@ suite('HistoryListTest', function() {
     assertNotEquals('', element.$.noResults.textContent.trim());
     assertTrue(element.$.infiniteList.hidden);
 
-    testService.handler.setResultFor('queryHistory', Promise.resolve({
+    testProxy.handler.setResultFor('queryHistory', Promise.resolve({
       results: {info: createHistoryInfo(), value: TEST_HISTORY_RESULTS},
     }));
-    element.dispatchEvent(new CustomEvent(
-        'query-history', {bubbles: true, composed: true, detail: false}));
-    await testService.handler.whenCalled('queryHistory');
+    element.fire('query-history', false);
+    await testProxy.handler.whenCalled('queryHistory');
     await microtasksFinished();
     assertTrue(element.$.noResults.hidden);
     assertFalse(element.$.infiniteList.hidden);
@@ -330,8 +337,8 @@ suite('HistoryListTest', function() {
 
   test('MoreFromThisSiteSendsAndSetsCorrectData', async function() {
     await finishSetup(TEST_HISTORY_RESULTS);
-    testService.handler.resetResolver('queryHistory');
-    testService.handler.setResultFor('queryHistory', Promise.resolve({
+    testProxy.handler.resetResolver('queryHistory');
+    testProxy.handler.setResultFor('queryHistory', Promise.resolve({
       results: {
         info: createHistoryInfo('www.google.com'),
         value: TEST_HISTORY_RESULTS,
@@ -343,7 +350,7 @@ suite('HistoryListTest', function() {
     element.$.sharedMenu.get();
     element.shadowRoot.querySelector<HTMLElement>('#menuMoreButton')!.click();
     await microtasksFinished();
-    const query = await testService.handler.whenCalled('queryHistory');
+    const query = await testProxy.handler.whenCalled('queryHistory');
     assertEquals('host:www.google.com', query[0]);
     assertEquals(
         'host:www.google.com',
@@ -375,16 +382,15 @@ suite('HistoryListTest', function() {
     app.shadowRoot.querySelector(
                       'history-query-manager')!.queryState.incremental = false;
 
-    testService.handler.resetResolver('queryHistory');
-    testService.handler.setResultFor('queryHistory', Promise.resolve({
+    testProxy.handler.resetResolver('queryHistory');
+    testProxy.handler.setResultFor('queryHistory', Promise.resolve({
       results: {
         info: createHistoryInfo('ample'),
         value: [createHistoryEntry('2016-06-9', 'https://www.example.com')],
       },
     }));
-    element.dispatchEvent(new CustomEvent(
-        'query-history', {bubbles: true, composed: true, detail: false}));
-    await testService.handler.whenCalled('queryHistory');
+    element.fire('query-history', false);
+    await testProxy.handler.whenCalled('queryHistory');
     assertEquals(0, toolbar.count);
   });
 
@@ -401,15 +407,15 @@ suite('HistoryListTest', function() {
 
     toolbar.deleteSelectedItems();
     await microtasksFinished();
-    testService.handler.resetResolver('removeVisits');
-    testService.handler.setResultFor('removeVisits', Promise.resolve());
+    testProxy.handler.resetResolver('removeVisits');
+    testProxy.handler.setResultFor('removeVisits', Promise.resolve());
 
     // Confirmation dialog should appear.
     assertTrue(dialog.open);
     element.shadowRoot.querySelector<HTMLElement>('.action-button')!.click();
     await microtasksFinished();
 
-    const visits = await testService.handler.whenCalled('removeVisits');
+    const visits = await testProxy.handler.whenCalled('removeVisits');
     assertEquals(4, visits.length);
 
     const expectedResult1 = TEST_HISTORY_RESULTS[2]!;
@@ -475,14 +481,14 @@ suite('HistoryListTest', function() {
     items[1]!.$.menuButton.click();
     await microtasksFinished();
 
-    testService.handler.setResultFor(
+    testProxy.handler.setResultFor(
         'removeVisits', Promise.resolve([TEST_HISTORY_RESULTS[1]]));
 
     element.$.sharedMenu.get();
     element.shadowRoot.querySelector<HTMLElement>('#menuRemoveButton')!.click();
     await microtasksFinished();
 
-    const visits = await testService.handler.whenCalled('removeVisits');
+    const visits = await testProxy.handler.whenCalled('removeVisits');
     assertEquals(1, visits.length);
     assertEquals(TEST_HISTORY_RESULTS[1]!.url, visits[0]!.url);
     assertEquals(
@@ -503,12 +509,317 @@ suite('HistoryListTest', function() {
         Array.from(items).slice(0, 3).map(i => i.selected));
   });
 
+  test('ReviewGeminiActivityViaMenuButton', async function() {
+    loadTimeData.overrideValues({
+      myActivityGeminiAppsUrl: 'https://myactivity.google.com/product/gemini',
+      isCriticalActionsEnabled: true,
+    });
+    const historyEntry =
+        createHistoryEntry('2025-08-26 10:00', 'http://www.google.com');
+    historyEntry.isActorVisit = true;
+    await finishSetup([historyEntry]);
+
+    const item = element.shadowRoot.querySelector('history-item');
+    assertTrue(!!item);
+    item.$.menuButton.click();
+    await microtasksFinished();
+
+    element.$.sharedMenu.get();
+    const reviewButton = element.shadowRoot.querySelector<HTMLElement>(
+        '#menuReviewGeminiActivityButton');
+    assertTrue(!!reviewButton);
+    assertFalse(reviewButton.hidden);
+
+    const hr = element.shadowRoot.querySelector<HTMLElement>('#sharedMenu .hr');
+    assertTrue(!!hr);
+    assertFalse(hr.hidden);
+
+    reviewButton.click();
+    await microtasksFinished();
+
+    const url = await testProxy.whenCalled('navigateToUrl');
+    assertEquals('https://myactivity.google.com/product/gemini', url);
+  });
+
+  test(
+      'ReviewGeminiActivityHiddenWhenCriticalActionsDisabled',
+      async function() {
+        loadTimeData.overrideValues({
+          myActivityGeminiAppsUrl:
+              'https://myactivity.google.com/product/gemini',
+          isCriticalActionsEnabled: false,
+        });
+        const historyEntry =
+            createHistoryEntry('2025-08-26 10:00', 'http://www.google.com');
+        historyEntry.isActorVisit = true;
+        await finishSetup([historyEntry]);
+
+        const item = element.shadowRoot.querySelector('history-item');
+        assertTrue(!!item);
+        item.$.menuButton.click();
+        await microtasksFinished();
+
+        element.$.sharedMenu.get();
+        const reviewButton = element.shadowRoot.querySelector<HTMLElement>(
+            '#menuReviewGeminiActivityButton');
+        assertTrue(!!reviewButton);
+        assertTrue(reviewButton.hidden);
+
+        const hr =
+            element.shadowRoot.querySelector<HTMLElement>('#sharedMenu .hr');
+        assertTrue(!!hr);
+        assertTrue(hr.hidden);
+      });
+
+  test('ReviewGeminiActivityHiddenForNonActorVisit', async function() {
+    loadTimeData.overrideValues({
+      myActivityGeminiAppsUrl: 'https://myactivity.google.com/product/gemini',
+      isCriticalActionsEnabled: true,
+    });
+    const historyEntry =
+        createHistoryEntry('2025-08-26 10:00', 'http://www.google.com');
+    historyEntry.isActorVisit = false;
+    await finishSetup([historyEntry]);
+
+    const item = element.shadowRoot.querySelector('history-item');
+    assertTrue(!!item);
+    item.$.menuButton.click();
+    await microtasksFinished();
+
+    element.$.sharedMenu.get();
+    const reviewButton = element.shadowRoot.querySelector<HTMLElement>(
+        '#menuReviewGeminiActivityButton');
+    assertTrue(!!reviewButton);
+    assertTrue(reviewButton.hidden);
+
+    const hr = element.shadowRoot.querySelector<HTMLElement>('#sharedMenu .hr');
+    assertTrue(!!hr);
+    assertTrue(hr.hidden);
+  });
+
+  test(
+      'ReviewGeminiActivityShownForNonActorVisitsWithCriticalActions',
+      async function() {
+        loadTimeData.overrideValues({
+          myActivityGeminiAppsUrl:
+              'https://myactivity.google.com/product/gemini',
+          isCriticalActionsEnabled: true,
+          isCriticalActionsChatLinkoutsEnabled: false,
+        });
+        const historyEntry =
+            createHistoryEntry('2025-08-26 10:00', 'http://www.google.com');
+        historyEntry.isActorVisit = false;
+        historyEntry.criticalActions = [
+          {
+            id: 'action-123',
+            label: 'Password filled',
+            tooltip: 'Saved passwords',
+            linkoutUrl: 'chrome://password-manager',
+            actionType: CriticalActionType.kCredentialAccess,
+          },
+        ];
+        await finishSetup([historyEntry]);
+
+        const item = element.shadowRoot.querySelector('history-item');
+        assertTrue(!!item);
+        item.$.menuButton.click();
+        await microtasksFinished();
+
+        element.$.sharedMenu.get();
+        const reviewButton = element.shadowRoot.querySelector<HTMLElement>(
+            '#menuReviewGeminiActivityButton');
+        assertTrue(!!reviewButton);
+        assertFalse(reviewButton.hidden);
+
+        const hr = element.shadowRoot.querySelector<HTMLElement>('.hr');
+        assertTrue(!!hr);
+        assertFalse(hr.hidden);
+
+        reviewButton.click();
+        await microtasksFinished();
+
+        const url = await testProxy.whenCalled('navigateToUrl');
+        assertEquals('https://myactivity.google.com/product/gemini', url);
+      });
+
+  test('GoToGeminiChatViaMenuButton', async function() {
+    loadTimeData.overrideValues({
+      isCriticalActionsEnabled: true,
+      isCriticalActionsChatLinkoutsEnabled: true,
+    });
+    const historyEntry =
+        createHistoryEntry('2025-08-26 10:00', 'http://www.google.com');
+    historyEntry.isActorVisit = true;
+    historyEntry.criticalActions = [
+      {
+        id: 'action-123',
+        label: 'Downloaded item',
+        tooltip: 'Downloads',
+        linkoutUrl: 'chrome://downloads',
+        actionType: CriticalActionType.kDownload,
+      },
+    ];
+    await finishSetup([historyEntry]);
+
+    const item = element.shadowRoot.querySelector('history-item');
+    assertTrue(!!item);
+    item.$.menuButton.click();
+    await microtasksFinished();
+
+    element.$.sharedMenu.get();
+    const goToGeminiChatButton = element.shadowRoot.querySelector<HTMLElement>(
+        '#menuGoToGeminiChatButton');
+    assertTrue(!!goToGeminiChatButton);
+    assertFalse(goToGeminiChatButton.hidden);
+
+    const reviewButton = element.shadowRoot.querySelector<HTMLElement>(
+        '#menuReviewGeminiActivityButton');
+    assertTrue(!!reviewButton);
+    assertTrue(reviewButton.hidden);
+
+    const hr = element.shadowRoot.querySelector<HTMLElement>('.hr');
+    assertTrue(!!hr);
+    assertFalse(hr.hidden);
+
+    goToGeminiChatButton.click();
+    await microtasksFinished();
+
+    const actionId =
+        await testProxy.handler.whenCalled('openCriticalActionConversation');
+    assertEquals('action-123', actionId);
+    assertFalse(element.$.errorToast.open);
+  });
+
+  test('GoToGeminiChatShowsErrorToastOnFailure', async function() {
+    loadTimeData.overrideValues({
+      isCriticalActionsEnabled: true,
+      isCriticalActionsChatLinkoutsEnabled: true,
+    });
+    testProxy.handler.setResultFor(
+        'openCriticalActionConversation', Promise.resolve({
+          result: OpenConversationResult.kErrorInternal,
+        }));
+    const historyEntry =
+        createHistoryEntry('2025-08-26 10:00', 'http://www.google.com');
+    historyEntry.isActorVisit = true;
+    historyEntry.criticalActions = [
+      {
+        id: 'action-123',
+        label: 'Downloaded item',
+        tooltip: 'Downloads',
+        linkoutUrl: 'chrome://downloads',
+        actionType: CriticalActionType.kDownload,
+      },
+    ];
+    await finishSetup([historyEntry]);
+
+    const item = element.shadowRoot.querySelector('history-item');
+    assertTrue(!!item);
+    item.$.menuButton.click();
+    await microtasksFinished();
+
+    element.$.sharedMenu.get();
+    const goToGeminiChatButton = element.shadowRoot.querySelector<HTMLElement>(
+        '#menuGoToGeminiChatButton');
+    assertTrue(!!goToGeminiChatButton);
+    assertFalse(goToGeminiChatButton.hidden);
+
+    assertFalse(element.$.errorToast.open);
+    goToGeminiChatButton.click();
+    await microtasksFinished();
+
+    const actionId =
+        await testProxy.handler.whenCalled('openCriticalActionConversation');
+    assertEquals('action-123', actionId);
+    assertTrue(element.$.errorToast.open);
+  });
+
+  test('GoToGeminiChatHiddenWhenChatLinkoutsDisabled', async function() {
+    loadTimeData.overrideValues({
+      isCriticalActionsEnabled: true,
+      isCriticalActionsChatLinkoutsEnabled: false,
+      myActivityGeminiAppsUrl: 'https://myactivity.google.com/product/gemini',
+    });
+    const historyEntry =
+        createHistoryEntry('2025-08-26 10:00', 'http://www.google.com');
+    historyEntry.isActorVisit = true;
+    historyEntry.criticalActions = [
+      {
+        id: 'action-123',
+        label: 'Downloaded item',
+        tooltip: 'Downloads',
+        linkoutUrl: 'chrome://downloads',
+        actionType: CriticalActionType.kDownload,
+      },
+    ];
+    await finishSetup([historyEntry]);
+
+    const item = element.shadowRoot.querySelector('history-item');
+    assertTrue(!!item);
+    item.$.menuButton.click();
+    await microtasksFinished();
+
+    element.$.sharedMenu.get();
+    const goToGeminiChatButton = element.shadowRoot.querySelector<HTMLElement>(
+        '#menuGoToGeminiChatButton');
+    assertTrue(!!goToGeminiChatButton);
+    assertTrue(goToGeminiChatButton.hidden);
+
+    const reviewButton = element.shadowRoot.querySelector<HTMLElement>(
+        '#menuReviewGeminiActivityButton');
+    assertTrue(!!reviewButton);
+    assertFalse(reviewButton.hidden);
+  });
+
+  test('GoToGeminiChatShownForNonActorVisitsWithCriticalActions', async function() {
+    loadTimeData.overrideValues({
+      isCriticalActionsEnabled: true,
+      isCriticalActionsChatLinkoutsEnabled: true,
+    });
+    testProxy.handler.setResultFor(
+        'openCriticalActionConversation', Promise.resolve({
+          result: OpenConversationResult.kSuccess,
+        }));
+    const historyEntry =
+        createHistoryEntry('2025-08-26 10:00', 'http://www.google.com');
+    historyEntry.isActorVisit = false;
+    historyEntry.criticalActions = [
+      {
+        id: 'action-123',
+        label: 'Password filled',
+        tooltip: 'Saved passwords',
+        linkoutUrl: 'chrome://password-manager',
+        actionType: CriticalActionType.kCredentialAccess,
+      },
+    ];
+    await finishSetup([historyEntry]);
+
+    const item = element.shadowRoot.querySelector('history-item');
+    assertTrue(!!item);
+    item.$.menuButton.click();
+    await microtasksFinished();
+
+    element.$.sharedMenu.get();
+    const goToGeminiChatButton = element.shadowRoot.querySelector<HTMLElement>(
+        '#menuGoToGeminiChatButton');
+    assertTrue(!!goToGeminiChatButton);
+    assertFalse(goToGeminiChatButton.hidden);
+
+    goToGeminiChatButton.click();
+    await microtasksFinished();
+
+    const actionId =
+        await testProxy.handler.whenCalled('openCriticalActionConversation');
+    assertEquals('action-123', actionId);
+    assertFalse(element.$.errorToast.open);
+  });
+
   test('DeleteDisabledWhilePending', async function() {
     let items: NodeListOf<HistoryItemElement>;
     await finishSetup(TEST_HISTORY_RESULTS);
 
     const delayedRemove = new PromiseResolver();
-    testService.handler.setResultFor('removeVisits', delayedRemove.promise);
+    testProxy.handler.setResultFor('removeVisits', delayedRemove.promise);
 
     element.$.infiniteList.fillCurrentViewport();
     await microtasksFinished();
@@ -527,7 +838,7 @@ suite('HistoryListTest', function() {
     element.shadowRoot.querySelector<HTMLElement>('#menuRemoveButton')!.click();
     await microtasksFinished();
 
-    const visits = await testService.handler.whenCalled('removeVisits');
+    const visits = await testProxy.handler.whenCalled('removeVisits');
     assertEquals(1, visits.length);
     assertEquals(TEST_HISTORY_RESULTS[1]!.url, visits[0]!.url);
     assertEquals(
@@ -545,10 +856,10 @@ suite('HistoryListTest', function() {
                    .querySelector('cr-button')!.disabled);
 
     // Key event should be ignored.
-    assertEquals(1, testService.handler.getCallCount('removeVisits'));
+    assertEquals(1, testProxy.handler.getCallCount('removeVisits'));
     pressAndReleaseKeyOn(document.body, 46, [], 'Delete');
     await microtasksFinished();
-    assertEquals(1, testService.handler.getCallCount('removeVisits'));
+    assertEquals(1, testProxy.handler.getCallCount('removeVisits'));
 
     delayedRemove.resolve({});
     await microtasksFinished();
@@ -593,7 +904,7 @@ suite('HistoryListTest', function() {
     ]);
 
     assertEquals(2, toolbar.count);
-    testService.handler.setResultFor(
+    testProxy.handler.setResultFor(
         'removeVisits',
         Promise.resolve([TEST_HISTORY_RESULTS[1], TEST_HISTORY_RESULTS[2]]));
     pressAndReleaseKeyOn(document.body, 46, [], 'Delete');
@@ -606,7 +917,7 @@ suite('HistoryListTest', function() {
     await microtasksFinished();
     assertTrue(dialog.open);
     element.shadowRoot.querySelector<HTMLElement>('.action-button')!.click();
-    const toRemove = await testService.handler.whenCalled('removeVisits');
+    const toRemove = await testProxy.handler.whenCalled('removeVisits');
     assertEquals('https://www.example.com', toRemove[0].url);
     assertEquals('https://www.google.com', toRemove[1].url);
     assertEquals(Date.parse('2016-03-14 10:00 UTC'), toRemove[0].timestamps[0]);
@@ -616,10 +927,10 @@ suite('HistoryListTest', function() {
   test('DeleteDialogClosedOnBackNavigation', async function() {
     // Ensure that state changes are always mirrored to the URL.
     await finishSetup([]);
-    testService.handler.resetResolver('queryHistory');
+    testProxy.handler.resetResolver('queryHistory');
     CrRouter.getInstance().setDwellTime(0);
 
-    testService.handler.setResultFor('queryHistory', Promise.resolve({
+    testProxy.handler.setResultFor('queryHistory', Promise.resolve({
       results: {
         info: createHistoryInfo('something else'),
         value: TEST_HISTORY_RESULTS,
@@ -628,23 +939,17 @@ suite('HistoryListTest', function() {
 
     // Navigate from chrome://history/ to
     // chrome://history/?q=something else.
-    app.dispatchEvent(new CustomEvent('change-query', {
-      bubbles: true,
-      composed: true,
-      detail: {search: 'something else'},
+    app.fire('change-query', {search: 'something else'});
+    await testProxy.handler.whenCalled('queryHistory');
+    testProxy.handler.resetResolver('queryHistory');
+    testProxy.handler.setResultFor('queryHistoryContinuation', Promise.resolve({
+      results: {
+        info: createHistoryInfo('something else'),
+        value: ADDITIONAL_RESULTS,
+      },
     }));
-    await testService.handler.whenCalled('queryHistory');
-    testService.handler.resetResolver('queryHistory');
-    testService.handler.setResultFor(
-        'queryHistoryContinuation', Promise.resolve({
-          results: {
-            info: createHistoryInfo('something else'),
-            value: ADDITIONAL_RESULTS,
-          },
-        }));
-    element.dispatchEvent(new CustomEvent(
-        'query-history', {bubbles: true, composed: true, detail: true}));
-    await testService.handler.whenCalled('queryHistoryContinuation');
+    element.fire('query-history', true);
+    await testProxy.handler.whenCalled('queryHistoryContinuation');
     await eventToPromise('items-rendered', element.$.infiniteList);
     const items = element.shadowRoot.querySelectorAll('history-item');
     items[2]!.$.checkbox.click();
@@ -654,7 +959,7 @@ suite('HistoryListTest', function() {
     // Confirmation dialog should appear.
     assertTrue(element.$.dialog.getIfExists()!.open);
     // Navigate back to chrome://history.
-    testService.handler.setResultFor('queryHistory', Promise.resolve({
+    testProxy.handler.setResultFor('queryHistory', Promise.resolve({
       results: {
         info: createHistoryInfo('something else'),
         value: TEST_HISTORY_RESULTS,
@@ -672,23 +977,23 @@ suite('HistoryListTest', function() {
     await finishSetup([createHistoryEntry('2016-03-15', fileURL)]);
     const items = element.shadowRoot.querySelectorAll('history-item');
     items[0]!.$.link.click();
-    const url = await testService.whenCalled('navigateToUrl');
+    const url = await testProxy.whenCalled('navigateToUrl');
     assertEquals(fileURL, url);
   });
 
   test('DeleteHistoryResultsInQueryHistoryEvent', async function() {
     await finishSetup(TEST_HISTORY_RESULTS);
-    testService.handler.resetResolver('queryHistory');
+    testProxy.handler.resetResolver('queryHistory');
     webUIListenerCallback('history-deleted');
     const items = element.shadowRoot.querySelectorAll('history-item');
     items[2]!.$.checkbox.click();
     items[3]!.$.checkbox.click();
     await microtasksFinished();
 
-    testService.handler.resetResolver('queryHistory');
+    testProxy.handler.resetResolver('queryHistory');
     webUIListenerCallback('history-deleted');
     await microtasksFinished();
-    assertEquals(0, testService.handler.getCallCount('queryHistory'));
+    assertEquals(0, testProxy.handler.getCallCount('queryHistory'));
   });
 
   test('SetsScrollTarget', async () => {
@@ -718,22 +1023,23 @@ suite('HistoryListTest', function() {
 
     let singleResultMessage =
         await getMessagesForResults('some query', [TEST_HISTORY_RESULTS[0]!]);
-    assertEquals(`Found 1 search result for 'some query'`, singleResultMessage);
+    assertEquals(
+        'Found 1 search result for \'some query\'', singleResultMessage);
 
     let multipleResultsMessage =
         await getMessagesForResults('new query', TEST_HISTORY_RESULTS);
     assertEquals(
-        `Found 4 search results for 'new query'`, multipleResultsMessage);
+        'Found 4 search results for \'new query\'', multipleResultsMessage);
 
     loadTimeData.overrideValues({enableHistoryEmbeddings: true});
     singleResultMessage =
         await getMessagesForResults('some query', [TEST_HISTORY_RESULTS[0]!]);
-    assertEquals(`Found 1 exact match for 'some query'`, singleResultMessage);
+    assertEquals('Found 1 exact match for \'some query\'', singleResultMessage);
 
     multipleResultsMessage =
         await getMessagesForResults('new query', TEST_HISTORY_RESULTS);
     assertEquals(
-        `Found 4 exact matches for 'new query'`, multipleResultsMessage);
+        'Found 4 exact matches for \'new query\'', multipleResultsMessage);
   });
 
   test('ScrollingLoadsMore', async () => {
@@ -753,92 +1059,114 @@ suite('HistoryListTest', function() {
     for (let i = 0; i < itemsNeeded; i++) {
       results.push(createHistoryEntry('2016-03-15', 'https://www.google.com'));
     }
+    // TODO(crbug.com/509908129): Use static CSS file to remove side effect.
+    // Because finishSetup is being called a second time, the history-app is
+    // going to get reconnected. First, clear out the document body to mitigate
+    // side effects, such as addition of the color theme CSS file.
+    document.body.innerHTML = window.trustedTypes!.emptyHTML;
     await finishSetup(results, /*finished=*/ false);
-    testService.handler.reset();
+    testProxy.handler.reset();
     // Make scroll debounce shorter to shorten some wait times below.
     element.setScrollDebounceForTest(1);
 
-    // This check ensures the line below actually scrolls.
-    assertGT(
-        app.getScrollTargetForTesting().scrollHeight,
-        app.getScrollTargetForTesting().offsetHeight + 500);
-
     // Scroll to just under the threshold to make sure more results don't load.
-    app.getScrollTargetForTesting().scrollTop =
-        app.getScrollTargetForTesting().scrollHeight -
-        app.getScrollTargetForTesting().offsetHeight - 500;
+    scrollToDistanceFromBottom(510);
     // Wait for the scroll observer to trigger.
     await eventToPromise('scroll-timeout-for-test', element);
-    assertEquals(
-        0, testService.handler.getCallCount('queryHistoryContinuation'));
+    assertEquals(0, testProxy.handler.getCallCount('queryHistoryContinuation'));
 
     // Set up more results.
-    testService.handler.setResultFor(
-        'queryHistoryContinuation', Promise.resolve({
-          results: {
-            info: {finished: false, term: ''},
-            value: [
-              createHistoryEntry(
-                  '2013-02-13 10:00', 'https://en.wikipedia.org'),
-              createHistoryEntry('2013-02-13 9:50', 'https://www.youtube.com'),
-              createHistoryEntry('2013-02-11', 'https://www.google.com'),
-              createHistoryEntry('2013-02-10', 'https://www.example.com'),
-            ],
-          },
-        }));
+    testProxy.handler.setResultFor('queryHistoryContinuation', Promise.resolve({
+      results: {
+        info: {finished: false, term: ''},
+        value: [
+          createHistoryEntry('2013-02-13 10:00', 'https://en.wikipedia.org'),
+          createHistoryEntry('2013-02-13 9:50', 'https://www.youtube.com'),
+          createHistoryEntry('2013-02-11', 'https://www.google.com'),
+          createHistoryEntry('2013-02-10', 'https://www.example.com'),
+        ],
+      },
+    }));
 
     // Scroll to within 500px of the scroll height. More results should be
     // requested.
-    app.getScrollTargetForTesting().scrollTop =
-        app.getScrollTargetForTesting().scrollHeight -
-        app.getScrollTargetForTesting().offsetHeight - 400;
-    await testService.handler.whenCalled('queryHistoryContinuation');
+    scrollToDistanceFromBottom(400);
+    await testProxy.handler.whenCalled('queryHistoryContinuation');
     await microtasksFinished();
-    assertEquals(
-        1, testService.handler.getCallCount('queryHistoryContinuation'));
-    testService.handler.reset();
+    assertEquals(1, testProxy.handler.getCallCount('queryHistoryContinuation'));
+    testProxy.handler.reset();
 
     // Should not respond to scroll when inactive.
     element.isActive = false;
-    // This check ensures the line below actually scrolls.
-    assertGT(
-        app.getScrollTargetForTesting().scrollHeight,
-        app.getScrollTargetForTesting().offsetHeight + 500);
-    app.getScrollTargetForTesting().scrollTop =
-        app.getScrollTargetForTesting().scrollHeight -
-        app.getScrollTargetForTesting().offsetHeight - 400;
+    scrollToDistanceFromBottom(400);
     // Wait longer than scroll debounce.
     await new Promise(resolve => setTimeout(resolve, 10));
-    assertEquals(
-        0, testService.handler.getCallCount('queryHistoryContinuation'));
+    assertEquals(0, testProxy.handler.getCallCount('queryHistoryContinuation'));
   });
 
   test('ResizingLoadsMore', async () => {
     // Simulate a shorter window to make this easier.
     document.body.style.maxHeight = '300px';
     document.body.style.height = '300px';
-    await finishSetup(TEST_HISTORY_RESULTS, /*finished=*/ false);
-    testService.handler.reset();
+    // Enough items to scroll in the short window, so no results are loaded
+    // until the window is resized.
+    const results = [];
+    for (let i = 0; i < 10; i++) {
+      results.push(createHistoryEntry('2016-03-15', 'https://www.google.com'));
+    }
+    await finishSetup(results, /*finished=*/ false);
+    testProxy.handler.reset();
 
-    // Set up more results.
-    testService.handler.setResultFor(
-        'queryHistoryContinuation', Promise.resolve({
-          results: {
-            info: {finished: false, term: ''},
-            value: [
-              createHistoryEntry(
-                  '2013-02-13 10:00', 'https://en.wikipedia.org'),
-            ],
-          },
-        }));
-
+    // Set up more results. Report them as finished so that the taller window
+    // doesn't keep requesting more.
+    testProxy.handler.setResultFor('queryHistoryContinuation', Promise.resolve({
+      results: {
+        info: {finished: true, term: ''},
+        value: [
+          createHistoryEntry('2013-02-13 10:00', 'https://en.wikipedia.org'),
+        ],
+      },
+    }));
 
     // Simulate resizing the window. More results should be loaded.
     document.body.style.maxHeight = '800px';
     document.body.style.height = '800px';
-    await testService.handler.whenCalled('queryHistoryContinuation');
-    assertEquals(
-        1, testService.handler.getCallCount('queryHistoryContinuation'));
+    await testProxy.handler.whenCalled('queryHistoryContinuation');
+    assertEquals(1, testProxy.handler.getCallCount('queryHistoryContinuation'));
+  });
+
+  test('LoadsMoreResultsWithoutScrollingWhenListIsShort', async () => {
+    // If the loaded results don't fill the viewport and more are
+    // available, the next batch should be requested without any scrolling.
+    testProxy.handler.setResultFor('queryHistoryContinuation', Promise.resolve({
+      results: {
+        info: {finished: true, term: ''},
+        value: [
+          createHistoryEntry('2013-02-13 10:00', 'https://en.wikipedia.org'),
+        ],
+      },
+    }));
+    await finishSetup(TEST_HISTORY_RESULTS, /*finished=*/ false);
+
+    await testProxy.handler.whenCalled('queryHistoryContinuation');
+    await microtasksFinished();
+    assertEquals(1, testProxy.handler.getCallCount('queryHistoryContinuation'));
+    assertEquals(TEST_HISTORY_RESULTS.length + 1, getHistoryData().length);
+  });
+
+  test('DoesNotLoadMoreResultsWithoutScrollingWhenListOverflows', async () => {
+    // Simulate a shorter window so that the results overflow it.
+    document.body.style.maxHeight = '300px';
+    document.body.style.height = '300px';
+    const results = [];
+    for (let i = 0; i < 20; i++) {
+      results.push(createHistoryEntry('2016-03-15', 'https://www.google.com'));
+    }
+    await finishSetup(results, /*finished=*/ false);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    await microtasksFinished();
+
+    assertEquals(0, testProxy.handler.getCallCount('queryHistoryContinuation'));
   });
 
   test('SharedMenuClosesOnFocusout', async () => {
@@ -873,7 +1201,6 @@ suite('HistoryListTest', function() {
   });
 
   teardown(function() {
-    app.dispatchEvent(new CustomEvent(
-        'change-query', {bubbles: true, composed: true, detail: {search: ''}}));
+    app.fire('change-query', {search: ''});
   });
 });

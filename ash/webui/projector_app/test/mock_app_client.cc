@@ -22,7 +22,7 @@ MockAppClient::MockAppClient() {
 
 MockAppClient::~MockAppClient() = default;
 
-signin::IdentityManager* MockAppClient::GetIdentityManager() {
+signin::IdentityManager* MockAppClient::identity_manager() {
   return identity_test_environment_.identity_manager();
 }
 
@@ -40,10 +40,10 @@ void MockAppClient::WaitForAccessRequest(const std::string& account_email) {
 
 void MockAppClient::GrantOAuthTokenFor(const std::string& account_email,
                                        const base::Time& expiry_time) {
-  const auto& core_account_id =
-      GetIdentityManager()
+  const CoreAccountId core_account_id =
+      identity_manager()
           ->FindExtendedAccountInfoByEmailAddress(account_email)
-          .account_id;
+          .GetAccountId();
   identity_test_environment_
       .WaitForAccessTokenRequestIfNecessaryAndRespondWithToken(
           core_account_id, "validToken", expiry_time);
@@ -52,7 +52,8 @@ void MockAppClient::GrantOAuthTokenFor(const std::string& account_email,
 void MockAppClient::AddSecondaryAccount(const std::string& account_email) {
   const auto& account_info =
       identity_test_environment_.MakeAccountAvailable(account_email);
-  identity_test_environment_.SetRefreshTokenForAccount(account_info.account_id);
+  identity_test_environment_.SetRefreshTokenForAccount(
+      account_info.GetAccountId());
 }
 
 void MockAppClient::MakeFetchTokenFailWithError(

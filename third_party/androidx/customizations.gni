@@ -5,8 +5,21 @@
 import("//build/config/android/rules.gni")
 
 template("_androidx_prebuilt") {
-  target(invoker.target_type, target_name) {
-    forward_variables_from(invoker, "*", [ "target_type" ])
+  _target_type = invoker.target_type
+
+  # This library was discontinued and deleted at the version chrome relied
+  # on. See: https://crbug.com/528459998
+  if (target_name == "androidx_interpolator_interpolator_java") {
+    _target_type = "java_group"
+  }
+
+  target(_target_type, target_name) {
+    if (target_name == "androidx_interpolator_interpolator_java") {
+      not_needed(invoker, "*")
+      public_deps = [ "//third_party/androidx/local_modifications/interpolator:interpolator_java" ]
+    } else {
+      forward_variables_from(invoker, "*", [ "target_type" ])
+    }
 
     if (target_name == "androidx_annotation_annotation_java") {
       # Ensure this dep is the suggested one when targets are missing it.
@@ -35,8 +48,7 @@ template("_androidx_prebuilt") {
 
       # Manifest and proguard config have just one entry: Adding (and -keep'ing
       # android:appComponentFactory="androidx.core.app.CoreComponentFactory"
-      # Chrome does not use this feature and it causes a scary stack trace to be
-      # shown when incremental_install=true.
+      # Chrome does not use this feature.
       ignore_manifest = true
       ignore_proguard_configs = true
 
@@ -67,9 +79,29 @@ template("_androidx_prebuilt") {
       ignore_proguard_configs = true
     } else if (target_name == "androidx_graphics_graphics_core_java") {
       ignore_native_libraries = true
+      bytecode_rewriter_target =
+          "//build/android/bytecode:system_load_library_remover"
+      bytecode_rewriter_args = [ "org.chromium.androidx.GraphicsCoreJniLoader" ]
+      deps += [ "//third_party/androidx/local_modifications/graphics_core:graphics_core_java" ]
+    } else if (target_name == "androidx_ink_ink_nativeloader_android_java") {
+      ignore_native_libraries = true
+
+      # Avoid dep onto //third_party/ink for non-chrome checkouts.
+      if (build_with_chromium) {
+        bytecode_rewriter_target =
+            "//build/android/bytecode:system_load_library_remover"
+        bytecode_rewriter_args = [ "org.chromium.androidx.InkJniLoader" ]
+        deps += [ "//third_party/androidx/local_modifications/ink:ink_java" ]
+        if (defined(visibility)) {
+          visibility += [ "//third_party/ink:*" ]
+        }
+      }
     } else if (filter_include([ target_name ], [ "androidx_ink_*" ]) != []) {
       if (invoker.target_type == "android_aar_prebuilt") {
         ignore_native_libraries = true
+      }
+      if (defined(visibility) && build_with_chromium) {
+        visibility += [ "//third_party/ink:*" ]
       }
     } else if (target_name == "androidx_graphics_graphics_path_java") {
       ignore_native_libraries = true
@@ -90,6 +122,8 @@ template("_androidx_prebuilt") {
       ignore_proguard_configs = true
     } else if (target_name == "androidx_test_uiautomator_uiautomator_java") {
       deps += [ ":androidx_test_runner_java" ]
+    } else if (target_name == "androidx_tracing_tracing_android_java") {
+      ignore_native_libraries = true
     } else if (target_name == "androidx_tracing_tracing_perfetto_java") {
       # b/280878596
       jar_excluded_patterns = [ "dalvik/*" ]
@@ -117,6 +151,12 @@ template("_androidx_prebuilt") {
       visibility = [
         "//android_webview/tools/system_webview_shell:*",
         "//third_party/android_deps:*",
+        "//third_party/androidx:*",
+      ]
+    } else if (target_name == "androidx_web_web_java") {
+      visibility = [
+        "//android_webview/tools/system_webview_shell:*",
+        "//third_party/android_deps:*",
       ]
     } else if (target_name == "androidx_datastore_datastore_core_android_java") {
       ignore_native_libraries = true
@@ -128,8 +168,6 @@ template("_androidx_prebuilt") {
     } else if (target_name == "androidx_compose_ui_ui_java") {
       public_deps = [ ":compose_ui_overrides_java" ]
     } else if (filter_include([ target_name ], [ "androidx_xr_*" ]) != []) {
-      # Configs are overly broad.
-      ignore_proguard_configs = true
       proguard_configs = [ "androidx_xr.flags" ]
 
       # ChromeXR uses APIs that require the native code.
@@ -142,6 +180,15 @@ template("_androidx_prebuilt") {
       # However, we add it via the dep onto android_xr_extensions_java.
       ignore_manifest = true
       deps += [ "//third_party/android_sdk:android_xr_extensions_java" ]
+
+      # The scenecore and arcore AARs contain broad wildcard keep rules (-keep
+      # class ...**) that keep thousands of unused methods and fail the size
+      # bot. We only want to allow the runtime and openxr AAR proguard files,
+      # which contain the specific JNI data models.
+      if (target_name != "androidx_xr_runtime_runtime_java" &&
+          target_name != "androidx_xr_arcore_arcore_openxr_java") {
+        ignore_proguard_configs = true
+      }
     }
   }
 

@@ -28,8 +28,9 @@
 
 #include "third_party/blink/renderer/core/page/spatial_navigation.h"
 
+#include <ranges>
+
 #include "base/compiler_specific.h"
-#include "base/containers/adapters.h"
 #include "third_party/blink/public/mojom/scroll/scrollbar_mode.mojom-blink.h"
 #include "third_party/blink/renderer/core/dom/node_traversal.h"
 #include "third_party/blink/renderer/core/frame/local_frame.h"
@@ -274,7 +275,7 @@ bool IsUnobscured(const FocusCandidate& candidate) {
                         HitTestRequest::kAllowChildFrameContent);
 
   const HitTestResult::NodeSet& nodes = result.ListBasedTestResult();
-  for (const auto& hit_node : base::Reversed(nodes)) {
+  for (const auto& hit_node : std::views::reverse(nodes)) {
     if (candidate.visible_node->ContainsIncludingHostElements(*hit_node))
       return true;
 
@@ -312,26 +313,12 @@ bool ScrollInDirection(Node* container, SpatialNavigationDirection direction) {
       dx = -pixels_per_line_step;
       break;
     case SpatialNavigationDirection::kRight:
-      // TODO(bokan, https://crbug.com/952326): Fix this DCHECK.
-      //  DCHECK_GT(container->GetLayoutBox()->ScrollWidth(),
-      //            container->GetLayoutBoxForScrolling()
-      //                    ->GetScrollableArea()
-      //                    ->ScrollPosition()
-      //                    .X() +
-      //                container->GetLayoutBox()->ClientWidth());
       dx = pixels_per_line_step;
       break;
     case SpatialNavigationDirection::kUp:
       dy = -pixels_per_line_step;
       break;
     case SpatialNavigationDirection::kDown:
-      // TODO(bokan, https://crbug.com/952326): Fix this DCHECK.
-      //  DCHECK_GT(container->GetLayoutBox()->ScrollHeight(),
-      //            container->GetLayoutBoxForScrolling()
-      //                    ->GetScrollableArea()
-      //                    ->ScrollPosition()
-      //                    .Y() +
-      //                container->GetLayoutBox()->ClientHeight());
       dy = pixels_per_line_step;
       break;
     default:
@@ -352,7 +339,7 @@ bool ScrollInDirection(Node* container, SpatialNavigationDirection direction) {
   return true;
 }
 
-bool IsScrollableNode(const Node* node) {
+bool IsScrollableNode(const Node* node, SpatialNavigationDirection direction) {
   if (!node)
     return false;
 
@@ -360,12 +347,22 @@ bool IsScrollableNode(const Node* node) {
     return true;
 
   if (auto* box = DynamicTo<LayoutBox>(node->GetLayoutObject())) {
-    return box->IsUserScrollable();
+    switch (direction) {
+      case SpatialNavigationDirection::kLeft:
+      case SpatialNavigationDirection::kRight:
+        return box->HasScrollableOverflowX();
+      case SpatialNavigationDirection::kUp:
+      case SpatialNavigationDirection::kDown:
+        return box->HasScrollableOverflowY();
+      case SpatialNavigationDirection::kNone:
+        return box->IsUserScrollable();
+    }
   }
   return false;
 }
 
-Node* ScrollableAreaOrDocumentOf(Node* node) {
+Node* ScrollableAreaOrDocumentOf(Node* node,
+                                 SpatialNavigationDirection direction) {
   DCHECK(node);
   Node* parent = node;
   do {
@@ -374,18 +371,19 @@ Node* ScrollableAreaOrDocumentOf(Node* node) {
       parent = document->GetFrame()->DeprecatedLocalOwner();
     else
       parent = parent->ParentOrShadowHostNode();
-  } while (parent && !IsScrollableAreaOrDocument(parent));
+  } while (parent && !IsScrollableAreaOrDocument(parent, direction));
 
   return parent;
 }
 
-bool IsScrollableAreaOrDocument(const Node* node) {
+bool IsScrollableAreaOrDocument(const Node* node,
+                                SpatialNavigationDirection direction) {
   if (!node)
     return false;
 
   auto* frame_owner_element = DynamicTo<HTMLFrameOwnerElement>(node);
   return (frame_owner_element && frame_owner_element->ContentFrame()) ||
-         IsScrollableNode(node);
+         IsScrollableNode(node, direction);
 }
 
 bool CanScrollInDirection(const Node* container,
@@ -394,8 +392,9 @@ bool CanScrollInDirection(const Node* container,
   if (auto* document = DynamicTo<Document>(container))
     return CanScrollInDirection(document->GetFrame(), direction);
 
-  if (!IsScrollableNode(container))
+  if (!IsScrollableNode(container, direction)) {
     return false;
+  }
 
   const Element* container_element = DynamicTo<Element>(container);
   if (!container_element)
@@ -409,7 +408,7 @@ bool CanScrollInDirection(const Node* container,
     return false;
 
   DCHECK(container->GetLayoutObject());
-  const ComputedStyle& style = container->GetLayoutObject()->StyleRef();
+  const ComputedStyle& style = container->GetLayoutObject()->Style();
   switch (direction) {
     case SpatialNavigationDirection::kLeft:
       return (style.OverflowX() != EOverflow::kHidden &&
@@ -452,7 +451,7 @@ bool CanScrollInDirection(const LocalFrame* frame,
     return false;
   ScrollableArea* scrollable_area = frame->View()->GetScrollableArea();
   gfx::Size size = scrollable_area->ContentsSize();
-  gfx::Vector2d offset = scrollable_area->ScrollOffsetInt();
+  gfx::Vector2d offset = scrollable_area->PixelSnappedScrollOffset();
   PhysicalRect rect(scrollable_area->VisibleContentRect(kIncludeScrollbars));
 
   switch (direction) {
@@ -482,10 +481,10 @@ PhysicalRect NodeRectInRootFrame(const Node* node) {
   // Inset the bounding box by the border.
   // TODO(bokan): As far as I can tell, this is to work around empty iframes
   // that have a border. It's unclear if that's still useful.
-  rect.ContractEdges(LayoutUnit(object->StyleRef().BorderTopWidth()),
-                     LayoutUnit(object->StyleRef().BorderRightWidth()),
-                     LayoutUnit(object->StyleRef().BorderBottomWidth()),
-                     LayoutUnit(object->StyleRef().BorderLeftWidth()));
+  rect.ContractEdges(LayoutUnit(object->Style().BorderTopWidth()),
+                     LayoutUnit(object->Style().BorderRightWidth()),
+                     LayoutUnit(object->Style().BorderBottomWidth()),
+                     LayoutUnit(object->Style().BorderLeftWidth()));
 
   object->MapToVisualRectInAncestorSpace(/*ancestor=*/nullptr, rect);
   return rect;
@@ -604,6 +603,12 @@ bool BothOnTopmostPaintLayerInStackingContext(
     return false;
 
   const LayoutObject* origin = current_interest.visible_node->GetLayoutObject();
+  // An <area> uses its associated <img> as the visible node, and that image may
+  // have no layout object when it isn't rendered.
+  if (!origin) {
+    return false;
+  }
+
   const PaintLayer* focused_layer = origin->PaintingLayer();
   if (!focused_layer || focused_layer->IsRootLayer())
     return false;
@@ -833,7 +838,7 @@ PhysicalRect ShrinkInlineBoxToLineBox(const LayoutObject& layout_object,
   // anything. This is, for example, needed to not break
   // snav-stay-in-overflow-div.html where the link's inline box doesn't fill
   // the entire line box vertically.
-  LayoutUnit line_height = layout_object.StyleRef().ComputedLineHeightAsFixed();
+  LayoutUnit line_height = layout_object.Style().ComputedLineHeightAsFixed();
   LayoutUnit current_height = GetLogicalHeight(node_rect, layout_object);
   if (line_height >= current_height)
     return node_rect;
@@ -864,7 +869,8 @@ PhysicalRect SearchOriginFragment(const PhysicalRect& visible_part,
   // entire bounding rect which is a union of all fragments) as search origin.
   Vector<gfx::QuadF> fragments;
   fragmented.AbsoluteQuads(
-      fragments, kTraverseDocumentBoundaries | kApplyRemoteMainFrameTransform);
+      fragments, {MapCoordinatesMode::kTraverseDocumentBoundaries,
+                  MapCoordinatesMode::kApplyRemoteMainFrameTransform});
   switch (direction) {
     case SpatialNavigationDirection::kLeft:
     case SpatialNavigationDirection::kDown:
@@ -926,7 +932,8 @@ PhysicalRect SearchOrigin(const PhysicalRect& viewport_rect_of_root_frame,
     return visible_part;
   }
 
-  Node* container = ScrollableAreaOrDocumentOf(focus_node);
+  Node* container =
+      ScrollableAreaOrDocumentOf(focus_node, SpatialNavigationDirection::kNone);
   while (container) {
     if (!IsOffscreen(container)) {
       // The first scroller that encloses focus and is [partially] visible.
@@ -934,7 +941,8 @@ PhysicalRect SearchOrigin(const PhysicalRect& viewport_rect_of_root_frame,
       return OppositeEdge(direction, Intersection(box_in_root_frame,
                                                   viewport_rect_of_root_frame));
     }
-    container = ScrollableAreaOrDocumentOf(container);
+    container = ScrollableAreaOrDocumentOf(container,
+                                           SpatialNavigationDirection::kNone);
   }
   return OppositeEdge(direction, viewport_rect_of_root_frame);
 }

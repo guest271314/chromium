@@ -7,10 +7,10 @@
 #include <utility>
 #include <vector>
 
+#include "base/no_destructor.h"
 #include "base/test/gtest_util.h"
 #include "chrome/browser/chromeos/extensions/component_extension_content_settings/component_extension_content_settings_allowlist.h"
 #include "chrome/browser/content_settings/host_content_settings_map_factory.h"
-#include "chrome/common/extensions/extension_constants.h"
 #include "chrome/test/base/chrome_render_view_host_test_harness.h"
 #include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile_manager.h"
@@ -29,13 +29,18 @@ namespace extensions {
 namespace {
 inline constexpr char kNotAllowlistedId[] = "not-allowlisted-extension";
 
-static const ComponentExtensionContentSettingsAllowlist::
-    ExtensionsContentSettingsTypes
-        kTestComponentExtensionsContentSettingsTypes = {
-            {extension_misc::kPdfExtensionId,
-             {ContentSettingsType::FILE_SYSTEM_READ_GUARD,
-              ContentSettingsType::FILE_SYSTEM_WRITE_GUARD}},
-            {kNotAllowlistedId, {}}};
+const ComponentExtensionContentSettingsAllowlist::
+    ExtensionsContentSettingsTypes&
+    GetTestComponentExtensionsContentSettingsTypes() {
+  static const base::NoDestructor<ComponentExtensionContentSettingsAllowlist::
+                                      ExtensionsContentSettingsTypes>
+      val({{extension_misc::kPdfExtensionId,
+            {ContentSettingsType::FILE_SYSTEM_READ_GUARD,
+             ContentSettingsType::FILE_SYSTEM_WRITE_GUARD}},
+           {kNotAllowlistedId, {}}});
+  return *val;
+}
+
 }  // namespace
 
 class ComponentExtensionContentSettingsProviderTest
@@ -81,7 +86,7 @@ class ComponentExtensionContentSettingsProviderTest
     ChromeRenderViewHostTestHarness::SetUp();
     ComponentExtensionContentSettingsAllowlist::
         SetComponentExtensionsContentSettingsTypesForTesting(
-            kTestComponentExtensionsContentSettingsTypes);
+            GetTestComponentExtensionsContentSettingsTypes());
   }
 
  private:

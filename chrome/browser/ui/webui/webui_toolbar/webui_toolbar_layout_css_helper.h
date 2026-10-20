@@ -10,10 +10,15 @@
 
 #include "content/public/browser/web_ui_data_source.h"
 #include "third_party/blink/public/mojom/loader/local_resource_loader_config.mojom.h"
+#include "url/origin.h"
+
+namespace gfx {
+class Insets;
+}  // namespace gfx
 
 namespace views {
 class TypographyProvider;
-}
+}  // namespace views
 
 /* Provides a CSS file defining CSS variables corresponding to all the
  * LayoutConstants, and some fonts. This should normally be hooked up as a
@@ -29,9 +34,12 @@ class WebUIToolbarLayoutCssHelper {
 
   static void SetAsRequestFilter(content::WebUIDataSource* source);
 
-  // Configures local resource loading for the layout CSS.
+  // Serves layout_constants_v0.css in-process to the WebUI at `origin`.
+  // Callers pass the `requesting_origin` that
+  // `WebUIController::PopulateLocalResourceLoaderConfig()` receives.
   static void PopulateLocalResourceLoaderConfig(
-      blink::mojom::LocalResourceLoaderConfig* config);
+      blink::mojom::LocalResourceLoaderConfig* config,
+      const url::Origin& origin);
 
   // Escapes name of CSS font, trying to preserve the original codepoint
   // sequence. Assumes valid utf-8.
@@ -46,6 +54,10 @@ class WebUIToolbarLayoutCssHelper {
       int style,
       const views::TypographyProvider& typography_provider,
       std::string& out);
+
+  static void AddInsets(std::string_view prefix,
+                        const gfx::Insets& insets,
+                        std::string& css_string);
 };
 
 #endif  // CHROME_BROWSER_UI_WEBUI_WEBUI_TOOLBAR_WEBUI_TOOLBAR_LAYOUT_CSS_HELPER_H_

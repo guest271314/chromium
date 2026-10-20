@@ -107,6 +107,26 @@ class SpellcheckCustomDictionaryTest : public testing::Test {
         std::move(dictionary_change), path);
   }
 
+  // Wrappers around private methods of SpellcheckCustomDictionary to make them
+  // accessible to tests (since TEST_F creates a subclass and friendship is not
+  // inherited).
+  void Apply(SpellcheckCustomDictionary* dict,
+             const SpellcheckCustomDictionary::Change& change) {
+    dict->Apply(change);
+  }
+  void Notify(SpellcheckCustomDictionary* dict,
+              const SpellcheckCustomDictionary::Change& change) {
+    dict->Notify(change);
+  }
+  void Sync(SpellcheckCustomDictionary* dict,
+            const SpellcheckCustomDictionary::Change& change) {
+    dict->Sync(change);
+  }
+  void Save(SpellcheckCustomDictionary* dict,
+            std::unique_ptr<SpellcheckCustomDictionary::Change> change) {
+    dict->Save(std::move(change));
+  }
+
   // A wrapper around SpellcheckCustomDictionary::OnLoaded private method to
   // avoid a large number of FRIEND_TEST declarations in
   // SpellcheckCustomDictionary.
@@ -141,6 +161,22 @@ class SpellcheckCustomDictionaryTest : public testing::Test {
 
   TestingProfile profile_;
   std::list<TestingProfile> extra_profiles_;
+};
+
+// Pins `kSpellcheckSeparateLocalAndAccountDictionaries` to disabled. Tests that
+// assert the legacy behaviour, where sync changes are applied directly to the
+// local word list and local words are committed to the server, use this
+// fixture. The enabled behaviour is covered by
+// SpellcheckCustomDictionaryTestWithSeparateLocalAndAccountDictionaries below.
+class SpellcheckCustomDictionaryTestWithoutSeparateLocalAndAccountDictionaries
+    : public SpellcheckCustomDictionaryTest {
+ protected:
+  SpellcheckCustomDictionaryTestWithoutSeparateLocalAndAccountDictionaries() {
+    scoped_feature_list_.InitAndDisableFeature(
+        syncer::kSpellcheckSeparateLocalAndAccountDictionaries);
+  }
+
+  base::test::ScopedFeatureList scoped_feature_list_;
 };
 
 // Counts the number of notifications for dictionary load and change.
@@ -292,7 +328,8 @@ TEST_F(SpellcheckCustomDictionaryTest, CorruptedWriteShouldBeRecovered) {
   EXPECT_EQ(expected, LoadDictionaryFile(path)->words);
 }
 
-TEST_F(SpellcheckCustomDictionaryTest, ProcessSyncChanges) {
+TEST_F(SpellcheckCustomDictionaryTestWithoutSeparateLocalAndAccountDictionaries,
+       ProcessSyncChanges) {
   SpellcheckService* spellcheck_service =
       SpellcheckServiceFactory::GetForContext(&profile_);
   SpellcheckCustomDictionary* dictionary =
@@ -518,9 +555,15 @@ TEST_F(SpellcheckCustomDictionaryTest, DictionaryTooBigToContiueSyncing) {
                    .has_value());
   EXPECT_TRUE(custom_dictionary->IsSyncing());
 
+  auto change = std::make_unique<SpellcheckCustomDictionary::Change>();
   for (size_t i = 0; i < spellcheck::kMaxSyncableDictionaryWords - 1; ++i) {
-    custom_dictionary->AddWord("foo" + base::NumberToString(i));
+    change->AddWord("foo" + base::NumberToString(i));
   }
+  change->Sanitize(custom_dictionary->GetWords());
+  Apply(custom_dictionary, *change);
+  Notify(custom_dictionary, *change);
+  Sync(custom_dictionary, *change);
+  Save(custom_dictionary, std::move(change));
   EXPECT_TRUE(custom_dictionary->IsSyncing());
 
   custom_dictionary->AddWord("bar");
@@ -537,7 +580,8 @@ TEST_F(SpellcheckCustomDictionaryTest, DictionaryTooBigToContiueSyncing) {
             custom_dictionary2->GetWords().size());
 }
 
-TEST_F(SpellcheckCustomDictionaryTest, LoadAfterSyncStart) {
+TEST_F(SpellcheckCustomDictionaryTestWithoutSeparateLocalAndAccountDictionaries,
+       LoadAfterSyncStart) {
   SpellcheckService* spellcheck_service =
       SpellcheckServiceFactory::GetForContext(&profile_);
   SpellcheckCustomDictionary* custom_dictionary =
@@ -566,7 +610,8 @@ TEST_F(SpellcheckCustomDictionaryTest, LoadAfterSyncStart) {
   EXPECT_EQ(2UL, custom_dictionary2->GetWords().size());
 }
 
-TEST_F(SpellcheckCustomDictionaryTest, LoadAfterSyncStartTooBigToSync) {
+TEST_F(SpellcheckCustomDictionaryTestWithoutSeparateLocalAndAccountDictionaries,
+       LoadAfterSyncStartTooBigToSync) {
   SpellcheckService* spellcheck_service =
       SpellcheckServiceFactory::GetForContext(&profile_);
   SpellcheckCustomDictionary* custom_dictionary =
@@ -599,7 +644,8 @@ TEST_F(SpellcheckCustomDictionaryTest, LoadAfterSyncStartTooBigToSync) {
             custom_dictionary2->GetWords().size());
 }
 
-TEST_F(SpellcheckCustomDictionaryTest, LoadDuplicatesAfterSync) {
+TEST_F(SpellcheckCustomDictionaryTestWithoutSeparateLocalAndAccountDictionaries,
+       LoadDuplicatesAfterSync) {
   SpellcheckService* spellcheck_service =
       SpellcheckServiceFactory::GetForContext(&profile_);
   SpellcheckCustomDictionary* custom_dictionary =
@@ -727,9 +773,16 @@ TEST_F(SpellcheckCustomDictionaryTest, DictionarySyncLimit) {
                         server_custom_dictionary)))
             .has_value());
 
+    auto dictionary_change =
+        std::make_unique<SpellcheckCustomDictionary::Change>();
     for (size_t i = 0; i < spellcheck::kMaxSyncableDictionaryWords; ++i) {
-      custom_dictionary->AddWord("foo" + base::NumberToString(i));
+      dictionary_change->AddWord("foo" + base::NumberToString(i));
     }
+    dictionary_change->Sanitize(custom_dictionary->GetWords());
+    Apply(custom_dictionary, *dictionary_change);
+    Notify(custom_dictionary, *dictionary_change);
+    Sync(custom_dictionary, *dictionary_change);
+    Save(custom_dictionary, std::move(dictionary_change));
 
     EXPECT_TRUE(custom_dictionary->IsSyncing());
     EXPECT_EQ(spellcheck::kMaxSyncableDictionaryWords,
@@ -762,9 +815,16 @@ TEST_F(SpellcheckCustomDictionaryTest, DictionarySyncLimit) {
 
     // Add the maximum number of words to the client. These words are all
     // different from those on the server.
+    auto dictionary_change =
+        std::make_unique<SpellcheckCustomDictionary::Change>();
     for (size_t i = 0; i < spellcheck::kMaxSyncableDictionaryWords; ++i) {
-      client_custom_dictionary->AddWord("bar" + base::NumberToString(i));
+      dictionary_change->AddWord("bar" + base::NumberToString(i));
     }
+    dictionary_change->Sanitize(client_custom_dictionary->GetWords());
+    Apply(client_custom_dictionary, *dictionary_change);
+    Notify(client_custom_dictionary, *dictionary_change);
+    Sync(client_custom_dictionary, *dictionary_change);
+    Save(client_custom_dictionary, std::move(dictionary_change));
     EXPECT_EQ(client_custom_dictionary->IsSyncing(),
               base::FeatureList::IsEnabled(
                   syncer::kSpellcheckSeparateLocalAndAccountDictionaries));
@@ -791,17 +851,6 @@ TEST_F(SpellcheckCustomDictionaryTest, HasWord) {
   EXPECT_TRUE(custom_dictionary->HasWord("foo"));
   EXPECT_FALSE(custom_dictionary->HasWord("bar"));
 }
-
-class SpellcheckCustomDictionaryTestWithoutSeparateLocalAndAccountDictionaries
-    : public SpellcheckCustomDictionaryTest {
- protected:
-  SpellcheckCustomDictionaryTestWithoutSeparateLocalAndAccountDictionaries() {
-    scoped_feature_list_.InitAndDisableFeature(
-        syncer::kSpellcheckSeparateLocalAndAccountDictionaries);
-  }
-
-  base::test::ScopedFeatureList scoped_feature_list_;
-};
 
 TEST_F(SpellcheckCustomDictionaryTestWithoutSeparateLocalAndAccountDictionaries,
        MergeDataAndStartSyncing) {

@@ -12,13 +12,11 @@
 #import "base/functional/bind.h"
 #import "base/functional/callback_helpers.h"
 #import "base/strings/sys_string_conversions.h"
-#import "components/enterprise/common/proto/connectors.pb.h"
-#import "components/enterprise/connectors/core/analysis_settings.h"
 #import "components/enterprise/connectors/core/cloud_content_scanning/files_request_handler_base.h"
-#import "components/enterprise/connectors/core/common.h"
 #import "components/policy/core/common/policy_pref_names.h"
 #import "components/prefs/pref_service.h"
 #import "ios/chrome/browser/download/model/auto_deletion/auto_deletion_service.h"
+#import "ios/chrome/browser/download/model/browser_download_service.h"
 #import "ios/chrome/browser/download/model/download_directory_util.h"
 #import "ios/chrome/browser/download/model/download_file_service.h"
 #import "ios/chrome/browser/download/model/download_file_service_factory.h"
@@ -28,19 +26,15 @@
 #import "ios/chrome/browser/drive/model/drive_service_factory.h"
 #import "ios/chrome/browser/drive/model/drive_tab_helper.h"
 #import "ios/chrome/browser/drive/model/upload_task.h"
-#import "ios/chrome/browser/enterprise/cloud_content_scanning/model/files_request_handler_ios.h"
-#import "ios/chrome/browser/enterprise/cloud_content_scanning/model/ios_cloud_binary_upload_service.h"
-#import "ios/chrome/browser/enterprise/cloud_content_scanning/model/ios_cloud_binary_upload_service_factory.h"
-#import "ios/chrome/browser/enterprise/cloud_content_scanning/model/scan_decision_helper.h"
+#import "ios/chrome/browser/enterprise/cloud_content_scanning/model/cloud_content_scanning_helper.h"
 #import "ios/chrome/browser/enterprise/connectors/analysis/content_analysis_info.h"
-#import "ios/chrome/browser/enterprise/connectors/connectors_service.h"
-#import "ios/chrome/browser/enterprise/connectors/connectors_service_factory.h"
 #import "ios/chrome/browser/shared/model/application_context/application_context.h"
 #import "ios/chrome/browser/shared/model/browser/browser.h"
 #import "ios/chrome/browser/shared/model/browser/browser_list.h"
 #import "ios/chrome/browser/shared/model/browser/browser_list_factory.h"
 #import "ios/chrome/browser/shared/model/prefs/pref_names.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
+#import "ios/chrome/browser/shared/model/utils/mime_type_util.h"
 #import "ios/chrome/browser/shared/model/web_state_list/browser_util.h"
 #import "ios/chrome/browser/shared/public/commands/command_dispatcher.h"
 #import "ios/chrome/browser/shared/public/commands/snackbar_commands.h"
@@ -69,42 +63,8 @@ DownloadManagerTabHelper::~DownloadManagerTabHelper() {
 
 #pragma mark - Public methods
 
-// static
-bool DownloadManagerTabHelper::ShouldRestrictDownloadToFile(
-    web::WebState* web_state) {
-  ProfileIOS* profile =
-      ProfileIOS::FromBrowserState(web_state->GetBrowserState());
-  PrefService* pref_service = profile->GetPrefs();
-  return static_cast<policy::DownloadRestriction>(pref_service->GetInteger(
-             policy::policy_prefs::kDownloadRestrictions)) ==
-         policy::DownloadRestriction::ALL_FILES;
-}
-
-// static
-bool DownloadManagerTabHelper::ShouldRestrictDownload(
-    web::WebState* web_state) {
-  ProfileIOS* profile =
-      ProfileIOS::FromBrowserState(web_state->GetBrowserState());
-  PrefService* pref_service = profile->GetPrefs();
-  AuthenticationService* auth_service =
-      AuthenticationServiceFactory::GetForProfile(profile);
-  bool is_save_to_drive_available = drive::IsSaveToDriveAvailable(
-      profile->IsOffTheRecord(), IdentityManagerFactory::GetForProfile(profile),
-      drive::DriveServiceFactory::GetForProfile(profile), pref_service,
-      auth_service);
-  return ShouldRestrictDownloadToFile(web_state) && !is_save_to_drive_available;
-}
-
 void DownloadManagerTabHelper::SetCurrentDownload(
     std::unique_ptr<web::DownloadTask> task) {
-  // Check if the download should be restricted.
-  if (task && ShouldRestrictDownload(web_state_)) {
-    if (web_state_->IsVisible()) {
-      ShowRestrictDownloadSnackbar();
-    }
-    return;
-  }
-
   // If downloads are persistent, they cannot be lost once completed.
   if (!task_ || (task_->GetState() == web::DownloadTask::State::kComplete &&
                  !WillDownloadTaskBeSavedToDrive())) {
@@ -179,6 +139,7 @@ void DownloadManagerTabHelper::CleanupCurrentDownload() {
   }
   files_request_handler_.reset();
   content_analysis_info_.reset();
+  has_processed_complete_task_ = false;
 }
 
 void DownloadManagerTabHelper::AdaptToFullscreen(bool adapt_to_fullscreen) {
@@ -212,7 +173,7 @@ bool DownloadManagerTabHelper::WillDownloadTaskBeSavedToDrive() const {
 
 void DownloadManagerTabHelper::WasShown(web::WebState* web_state) {
   if (task_ && delegate_ && !delegate_started_) {
-    if (ShouldRestrictDownload(web_state_)) {
+    if (BrowserDownloadService::ShouldRestrictAllDownloads(web_state_)) {
       SetCurrentDownload(nullptr);
       return;
     }
@@ -340,6 +301,9 @@ void DownloadManagerTabHelper::MoveComplete(bool move_completed,
                                             const base::FilePath& source_path,
                                             const base::FilePath& final_path) {
   DCHECK(move_completed);
+  if (move_completed) {
+    task_final_file_path_ = final_path;
+  }
   MaybeSetDownloadPathForAutoDeletion();
   [delegate_ downloadManagerTabHelperDidChangeState:this];
 }
@@ -384,7 +348,13 @@ DownloadFileService* DownloadManagerTabHelper::GetDownloadFileService() {
 }
 
 void DownloadManagerTabHelper::MaybeMoveDownloadToDownloadsDirectory(
+    base::WeakPtr<web::DownloadTask> task,
     bool shouldProceed) {
+  // Ignore the result if it does not correspond to the current download.
+  if (!task || task.get() != task_.get()) {
+    return;
+  }
+
   if (!shouldProceed) {
     CleanupCurrentDownload();
     return;
@@ -415,45 +385,21 @@ void DownloadManagerTabHelper::ProcessCompleteDownloadTask() {
     return;
   }
 
-  CHECK(web_state_);
-  ProfileIOS* profile =
-      ProfileIOS::FromBrowserState(web_state_->GetBrowserState());
-
-  const GURL& url = task_->GetRedirectedUrl();
-  std::optional<enterprise_connectors::AnalysisSettings> settings =
-      std::nullopt;
-
-  enterprise_connectors::ConnectorsService* connectors_service =
-      enterprise_connectors::ConnectorsServiceFactory::GetForProfile(profile);
-  if (connectors_service) {
-    settings = connectors_service->GetAnalysisSettings(
-        url, enterprise_connectors::AnalysisConnector::FILE_DOWNLOADED);
+  if (has_processed_complete_task_) {
+    return;
   }
+  has_processed_complete_task_ = true;
 
-  content_analysis_info_ =
-      std::make_unique<enterprise_connectors::ContentAnalysisInfo>(
-          url,
-          std::move(settings).value_or(
-              enterprise_connectors::AnalysisSettings()),
-          enterprise_connectors::ContentAnalysisRequest::NORMAL_DOWNLOAD,
-          *web_state_);
-  auto files_request_handler_delegate = std::make_unique<
-      enterprise_connectors::FilesRequestHandlerIOS>(
-      profile, task_->GetResponsePath(),
-      base::BindOnce(
-          &enterprise_connectors::HandleScanDecision, web_state_->GetWeakPtr(),
+  enterprise_connectors::FileDownloadScanningResources resources =
+      enterprise_connectors::PrepareCloudContentScanning(
+          web_state_, task_->GetRedirectedUrl(), task_->GetResponsePath(),
           enterprise_connectors::TriggerType::kSavePrompt,
           base::BindOnce(
               &DownloadManagerTabHelper::MaybeMoveDownloadToDownloadsDirectory,
-              weak_ptr_factory_.GetWeakPtr())));
+              weak_ptr_factory_.GetWeakPtr(), task_->GetWeakPtr()));
+  files_request_handler_ = std::move(resources.files_request_handler);
+  content_analysis_info_ = std::move(resources.content_analysis_info);
 
-  // Send the download file for enterprise DLP download content scanning.
-  files_request_handler_ = std::make_unique<
-      enterprise_connectors::FilesRequestHandlerBase>(
-      content_analysis_info_.get(),
-      enterprise_connectors::IOSCloudBinaryUploadServiceFactory::GetForProfile(
-          profile),
-      url, "", enterprise_connectors::DeepScanAccessPoint::DOWNLOAD,
-      std::move(files_request_handler_delegate));
+  // Upload the file for content scanning.
   files_request_handler_->UploadData();
 }

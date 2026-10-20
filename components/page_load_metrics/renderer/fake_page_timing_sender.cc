@@ -31,11 +31,12 @@ void FakePageTimingSender::SendTiming(
     std::vector<mojom::SoftNavigationMetricsPtr> soft_navigation_metrics,
     std::vector<mojom::LargestContentfulPaintTimingPtr>
         soft_largest_contentful_paint,
-    std::vector<mojom::CustomUserTimingMarkPtr> user_timings) {
+    std::vector<mojom::CustomUserTimingMarkPtr> user_timings,
+    const mojom::FontLoadingMetricsPtr& font_loading_metrics) {
   validator_->UpdateTiming(timing, metadata, new_features, resources,
                            render_data, cpu_timing, event_timings,
                            subresource_load_metrics, soft_navigation_metrics,
-                           soft_largest_contentful_paint);
+                           soft_largest_contentful_paint, font_loading_metrics);
 }
 
 void FakePageTimingSender::SendCustomUserTiming(
@@ -126,10 +127,11 @@ void FakePageTimingSender::PageTimingValidator::UpdateExpectedInteractionTiming(
     const base::TimeDelta interaction_duration,
     uint64_t interaction_offset,
     const base::TimeTicks interaction_time,
-    const base::TimeTicks processing_start) {
-  expected_event_timings_.push_back(
-      mojom::EventTiming::New(interaction_duration, interaction_offset,
-                              interaction_time, processing_start));
+    const base::TimeTicks processing_start,
+    uint64_t performance_timeline_navigation_id) {
+  expected_event_timings_.push_back(mojom::EventTiming::New(
+      interaction_duration, interaction_offset, interaction_time,
+      processing_start, performance_timeline_navigation_id));
 }
 void FakePageTimingSender::PageTimingValidator::
     VerifyExpectedInteractionTiming() const {
@@ -214,7 +216,8 @@ void FakePageTimingSender::PageTimingValidator::UpdateTiming(
         subresource_load_metrics,
     const std::vector<mojom::SoftNavigationMetricsPtr>& soft_navigation_metrics,
     const std::vector<mojom::LargestContentfulPaintTimingPtr>&
-        soft_largest_contentful_paint) {
+        soft_largest_contentful_paint,
+    const mojom::FontLoadingMetricsPtr& font_loading_metrics) {
   actual_timings_.push_back(timing.Clone());
   for (const auto& s : soft_navigation_metrics) {
     actual_soft_navigation_metrics_.push_back(s->Clone());
@@ -241,9 +244,7 @@ void FakePageTimingSender::PageTimingValidator::UpdateTiming(
   actual_main_frame_viewport_rect_ = metadata->main_frame_viewport_rect;
 
   for (const mojom::EventTimingPtr& user_interaction : event_timings) {
-    actual_event_timings_.emplace_back(mojom::EventTiming::New(
-        user_interaction->duration, user_interaction->interaction_id,
-        user_interaction->start_time, user_interaction->processing_start));
+    actual_event_timings_.emplace_back(user_interaction.Clone());
   }
 
   actual_subresource_load_metrics_ = subresource_load_metrics;

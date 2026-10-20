@@ -52,6 +52,7 @@
 #include "third_party/blink/renderer/core/svg/svg_symbol_element.h"
 #include "third_party/blink/renderer/core/svg/svg_text_element.h"
 #include "third_party/blink/renderer/core/svg/svg_title_element.h"
+#include "third_party/blink/renderer/core/svg/svg_zoom_migration.h"
 #include "third_party/blink/renderer/core/svg_names.h"
 #include "third_party/blink/renderer/core/xlink_names.h"
 #include "third_party/blink/renderer/core/xml/parser/xml_document_parser.h"
@@ -617,7 +618,8 @@ gfx::RectF SVGUseElement::GetBBox() {
   // SVGUseElement.
   gfx::RectF bbox = transformable_container.ObjectBoundingBox();
   bbox.Offset(transformable_container.AdditionalTranslation());
-  return bbox;
+  return NoopWillBeInvScaleRect(
+      bbox, transformable_container.Style().EffectiveZoom());
 }
 
 void SVGUseElement::QueueOrDispatchPendingEvent(
@@ -638,9 +640,7 @@ void SVGUseElement::ResourceNotifyFinished(
   // This can happen when a resource revalidation causes all observing <use>
   // elements to be notified, but we only want to rebuild the shadow tree when
   // this element has initiated the resource fetch.
-  if (RuntimeEnabledFeatures::
-          SvgPartitionSVGDocumentResourcesInMemoryCacheEnabled() &&
-      !notification_pending_) {
+  if (!notification_pending_) {
     return;
   }
   auto load_event_delayer = std::move(resource_load_event_delayer_);

@@ -19,6 +19,7 @@
 #include <utility>
 #include <vector>
 
+#include "base/auto_reset.h"
 #include "base/check.h"
 #include "base/check_op.h"
 #include "base/compiler_specific.h"
@@ -26,7 +27,6 @@
 #include "base/dcheck_is_on.h"
 #include "base/feature.h"
 #include "base/feature_list.h"
-#include "base/files/drive_info.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/format_macros.h"
@@ -81,46 +81,16 @@
 
 namespace sql {
 
-namespace {
+// When enabled, don't commit or rollback transactions if they have already been
+// rolled back by a statement error (e.g. SQLITE_FULL).
+BASE_FEATURE(kCheckAutoCommitInCommitAndRollback,
+             base::FEATURE_ENABLED_BY_DEFAULT);
 
-// Features to evaluate the hypothesis that preloading sql::Database causes
-// memory contention (using Browser.MainThreadsCongestion as a proxy) for
-// minimal gains.
-//
-// Context: We previously validated that preloading the main DLL causes memory
-// contention, and the benefits don't outweigh this downside on fixed SSDs.
-//
-// When enabled, the "preload" option is ignored unconditionally.
-BASE_FEATURE(kInhibitSQLPreload, base::FEATURE_DISABLED_BY_DEFAULT);
-//
-// When enabled, the "preload" option is ignored *only if the database is on a
-// fixed SSD*.
-BASE_FEATURE(kInhibitSQLPreloadOnFixedSSD, base::FEATURE_DISABLED_BY_DEFAULT);
+namespace {
 
 // When enabled, the call to ReleaseCacheMemoryIfNeeded are ignored.
 BASE_FEATURE(kInhibitSQLReleaseCacheMemoryIfNeeded,
              base::FEATURE_DISABLED_BY_DEFAULT);
-
-// Returns true if `path` is on a drive that has no seek penalty and isn't
-// removable, or if that information cannot be obtained (most drives are fixed
-// and have no seek penalty, so `true` is the result that is most likely to be
-// correct).
-bool FilePathIsFixedSSD(const base::FilePath& path) {
-  std::optional<base::DriveInfo> drive_info = base::GetFileDriveInfo(path);
-  if (!drive_info) {
-    return true;
-  }
-
-  return !drive_info->has_seek_penalty.value_or(false)
-#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX) || \
-    BUILDFLAG(IS_CHROMEOS)
-         && !drive_info->is_removable.value_or(false)
-#endif
-#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
-         && !drive_info->is_usb.value_or(false)
-#endif
-      ;
-}
 
 // The name of the main database associated with a sqlite3* connection.
 //
@@ -252,7 +222,7 @@ enum class OpenDatabaseFailedReason {
   kMaxValue = kPragmaJournalFailed
 };
 
-// LINT.ThenChange(//tools/metrics/histograms/metadata/sql/enums.xml)
+// LINT.ThenChange(//tools/metrics/histograms/metadata/sql/enums.xml:OpenDatabaseFailedReason)
 // Reports the reason for a failure in Database::Open(...).
 void RecordOpenDatabaseFailureReason(const std::string& histogram_tag,
                                      OpenDatabaseFailedReason reason) {
@@ -279,7 +249,7 @@ enum class RazeDatabaseFailedReason {
   kMaxValue = kCheckpointFailed
 };
 
-// LINT.ThenChange(//tools/metrics/histograms/metadata/sql/enums.xml)
+// LINT.ThenChange(//tools/metrics/histograms/metadata/sql/enums.xml:RazeDatabaseFailedReason)
 // Reports the reason for a failure in Database::Raze(...).
 void RecordRazeDatabaseFailureReason(const std::string& histogram_tag,
                                      RazeDatabaseFailedReason reason) {
@@ -581,6 +551,10 @@ Database::Database(DatabaseOptions options, Database::Tag tag)
 }
 
 Database::~Database() {
+  // The error callback is not allowed to destroy `this`, or else, using the
+  // `Database` after any `Statement` execution would risk a use-after-free.
+  CHECK(!executing_error_callback_);
+
   Close();
 }
 
@@ -598,12 +572,6 @@ bool Database::Open(const base::FilePath& path) {
     RecordTimingHistogram("Sql.Database.DatabaseOpenTime.",
                           open_timer.Elapsed());
   };
-
-  // Preload the database before opening it to ensure it's working with the
-  // exclusive mode.
-  if (options_.preload_) {
-    PreloadInternal(path);
-  }
 
   {
     ScopedOpenErrorReporter reporter(this,
@@ -644,6 +612,10 @@ void Database::DetachFromSequence() {
 
 void Database::CloseInternal(bool forced) {
   TRACE_EVENT0("sql", "Database::CloseInternal");
+
+  absl::Cleanup report_time = [this, timer = base::ElapsedTimer()] {
+    RecordTimingHistogram("Sql.Database.DatabaseCloseTime.", timer.Elapsed());
+  };
 
   CHECK_EQ(outstanding_blob_count_, 0U)
       << "All StreamingBlobHandles should be destroyed before closing "
@@ -699,8 +671,7 @@ void Database::CloseInternal(bool forced) {
     db_ = nullptr;
     auto sqlite_result_code = ToSqliteResultCode(sqlite3_close(raw_db));
 
-    CHECK_NE(sqlite_result_code, SqliteResultCode::kBusy,
-             base::NotFatalUntil::M141)
+    CHECK_NE(sqlite_result_code, SqliteResultCode::kBusy)
         << "sqlite3_close() called while resources (statements, blobs, etc) "
            "are still alive";
     DCHECK_EQ(sqlite_result_code, SqliteResultCode::kOk)
@@ -712,6 +683,7 @@ void Database::CloseInternal(bool forced) {
     // not call `RollbackAllTransactions()`, but we still must account for the
     // implicit rollback in our internal bookkeeping.
     transaction_nesting_ = 0;
+    needs_rollback_ = false;
   }
 }
 
@@ -1003,8 +975,8 @@ std::string Database::CollectCorruptionInfo() {
   // If the file cannot be accessed it is unlikely that an integrity check will
   // turn up actionable information.
   const base::FilePath db_path = DbPath();
-  std::optional<int64_t> db_size = GetFileSize(db_path);
-  if (db_size && *db_size < 0) {
+  std::optional<int64_t> db_size = base::GetFileSize(db_path);
+  if (!db_size.has_value() || *db_size < 0) {
     return std::string();
   }
 
@@ -1242,7 +1214,7 @@ bool Database::RazeInternal() {
       return false;
     }
     // Page size isn't changed until the database is vacuumed.
-    std::ignore = Execute("VACUUM");
+    std::ignore = Vacuum();
     // Re-enter WAL mode.
     if (UseWALMode()) {
       std::ignore = Execute("PRAGMA journal_mode=WAL;");
@@ -1295,6 +1267,17 @@ bool Database::Raze() {
   return result;
 }
 
+bool Database::Vacuum() {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  TRACE_EVENT0("sql", "Database::Vacuum");
+
+  if (!is_open() || transaction_nesting_ != 0) {
+    return false;
+  }
+  Statement statement(GetCachedStatement(StatementID(SQL_FROM_HERE), "VACUUM"));
+  return statement.Run();
+}
+
 bool Database::RazeAndPoison() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
@@ -1306,7 +1289,7 @@ bool Database::RazeAndPoison() {
   }
 
   // Raze() cannot run in a transaction.
-  RollbackAllTransactions();
+  RollbackAllTransactions(InternalApiToken());
 
   bool result = Raze();
 
@@ -1432,8 +1415,8 @@ bool Database::BeginTransaction(InternalApiToken) {
 
 void Database::RollbackTransaction(InternalApiToken) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-
   TRACE_EVENT0("sql", "Database::RollbackTransaction");
+  CHECK(is_open(), base::NotFatalUntil::M155);
 
   DCHECK_GE(transaction_nesting_, 0);
   if (!transaction_nesting_) {
@@ -1455,8 +1438,8 @@ void Database::RollbackTransaction(InternalApiToken) {
 
 bool Database::CommitTransaction(InternalApiToken) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-
   TRACE_EVENT0("sql", "Database::CommitTransaction");
+  CHECK(is_open(), base::NotFatalUntil::M155);
 
   DCHECK_GE(transaction_nesting_, 0);
   if (!transaction_nesting_) {
@@ -1474,6 +1457,14 @@ bool Database::CommitTransaction(InternalApiToken) {
 
   if (needs_rollback_) {
     DoRollback();
+    return false;
+  }
+
+  if (sqlite3_get_autocommit(db_) != 0 &&
+      base::FeatureList::IsEnabled(kCheckAutoCommitInCommitAndRollback)) {
+    // The current explicit transaction was already automatically rolled-back by
+    // SQLite in response to a statement error (e.g. SQLITE_FULL). There is
+    // nothing left to commit.
     return false;
   }
 
@@ -1533,10 +1524,10 @@ void Database::RollbackTransactionDeprecated() {
   RollbackTransaction(InternalApiToken());
 }
 
-void Database::RollbackAllTransactions() {
+void Database::RollbackAllTransactions(InternalApiToken) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-
   TRACE_EVENT0("sql", "Database::RollbackAllTransactions");
+  CHECK(is_open(), base::NotFatalUntil::M155);
 
   DCHECK_GE(transaction_nesting_, 0);
   if (transaction_nesting_ > 0) {
@@ -1886,7 +1877,7 @@ std::optional<StreamingBlobHandle> Database::GetStreamingBlob(
 void Database::OnStreamingBlobClosed(SqliteResultCode result,
                                      const char* error_source) {
   --outstanding_blob_count_;
-  if (handling_error_nesting_ == 0 && !IsSqliteSuccessCode(result)) {
+  if (!IsSqliteSuccessCode(result)) {
     OnSqliteError(ToSqliteErrorCode(result), nullptr, error_source);
   }
 }
@@ -2488,38 +2479,6 @@ bool Database::OpenInternal(const std::string& db_file_path) {
   return is_open();
 }
 
-void Database::PreloadInternal(const base::FilePath& path) {
-  TRACE_EVENT0("sql", "Database::PreloadInternal");
-
-  // TODO(crbug.com/40904059): Consider moving this to a DCHECK after fixing
-  // or migrating callsites that call Preload(...) on in-memory databases.
-  if (in_memory_) {
-    return;
-  }
-
-  if (base::FeatureList::IsEnabled(kInhibitSQLPreload)) {
-    return;
-  }
-
-  base::ScopedBlockingCall scoped_blocking_call(FROM_HERE,
-                                                base::BlockingType::MAY_BLOCK);
-
-  if (base::FeatureList::IsEnabled(kInhibitSQLPreloadOnFixedSSD) &&
-      FilePathIsFixedSSD(path)) {
-    return;
-  }
-
-  // Maximum number of bytes that will be prefetched from the database.
-  //
-  // This limit is very aggressive. The main trade-off involved is that having
-  // SQLite block on reading from disk has a high impact on Chrome startup cost
-  // for the databases that are on the critical path to startup. So, the limit
-  // must exceed the expected sizes of databases on the critical path.
-  static constexpr int kPreReadSize = 128 * 1024 * 1024;  // 128 MB
-  base::PreReadFile(path, /*is_executable=*/false, /*sequential=*/false,
-                    kPreReadSize);
-}
-
 void Database::ConfigureSqliteDatabaseObject() {
   auto sqlite_result_code = ToSqliteResultCode(
       sqlite3_db_config(db_, SQLITE_DBCONFIG_ENABLE_FKEY, 0, nullptr));
@@ -2541,6 +2500,15 @@ void Database::ConfigureSqliteDatabaseObject() {
 
 void Database::DoRollback() {
   TRACE_EVENT0("sql", "Database::DoRollback");
+
+  if (sqlite3_get_autocommit(db_) != 0 &&
+      base::FeatureList::IsEnabled(kCheckAutoCommitInCommitAndRollback)) {
+    // The current explicit transaction was already automatically rolled-back by
+    // SQLite in response to a statement error (e.g. SQLITE_FULL). There is
+    // nothing left to rollback.
+    needs_rollback_ = false;
+    return;
+  }
 
   Statement rollback(GetCachedStatement(rollback_statement_id_, "ROLLBACK"));
   // A valid "ROLLBACK" statement was cached by `BeginTransaction`. That
@@ -2577,8 +2545,6 @@ void Database::OnSqliteError(SqliteErrorCode sqlite_error_code,
 
   DCHECK_NE(statement != nullptr, sql_statement != nullptr)
       << __func__ << " should either get a Statement or a raw SQL string";
-
-  ++handling_error_nesting_;
 
   // Use `base::UmaHistogramSparse` because sqlite result codes aren't
   // sequential. The large integers they represent make it so that the
@@ -2623,24 +2589,15 @@ void Database::OnSqliteError(SqliteErrorCode sqlite_error_code,
   // Inform the error expecter that we've encountered the error.
   std::ignore = IsExpectedSqliteError(static_cast<int>(sqlite_error_code));
 
-  if (!error_callback_.is_null()) {
-    base::WeakPtr<Database> weak_this =
-        weak_factory_lifetime_tracker_.GetWeakPtr();
-
+  if (!executing_error_callback_ && !error_callback_.is_null()) {
     // Create an additional reference to the state in `error_callback_`, so the
     // state doesn't go away if the callback changes `error_callback_` by
     // calling set_error_callback() or reset_error_callback(). This avoids a
     // subtle source of use-after-frees. See https://crbug.com/254584.
     ErrorCallback error_callback_copy = error_callback_;
+    base::AutoReset auto_reset(&executing_error_callback_, true);
     error_callback_copy.Run(static_cast<int>(sqlite_error_code), statement);
-
-    // Abort if `error_callback_` deleted this `Database` object.
-    if (!weak_this) {
-      return;
-    }
   }
-
-  --handling_error_nesting_;
 }
 
 std::string Database::GetDiagnosticInfo(int sqlite_error_code,
@@ -2692,6 +2649,13 @@ std::string Database::GetDiagnosticInfo(int sqlite_error_code,
   }
 
   return result;
+}
+
+bool Database::ReportMemoryUsage(base::trace_event::ProcessMemoryDump* pmd,
+                                 const std::string& dump_name) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  return memory_dump_provider_ &&
+         memory_dump_provider_->ReportMemoryUsage(pmd, dump_name);
 }
 
 bool Database::FullIntegrityCheck(std::vector<std::string>* messages) {

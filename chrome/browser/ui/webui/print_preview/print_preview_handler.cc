@@ -56,6 +56,7 @@
 #include "components/printing/common/cloud_print_cdd_conversion.h"
 #include "components/url_formatter/url_formatter.h"
 #include "content/public/browser/browser_context.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_process_host.h"
 #include "content/public/browser/web_contents.h"
@@ -81,13 +82,9 @@
 #if BUILDFLAG(IS_CHROMEOS)
 #include "ash/constants/ash_pref_names.h"
 #include "ash/webui/settings/public/constants/routes.mojom.h"
-#include "chrome/browser/ash/crosapi/crosapi_ash.h"
-#include "chrome/browser/ash/crosapi/crosapi_manager.h"
-#include "chrome/browser/ash/crosapi/local_printer_ash.h"
 #include "chrome/browser/ash/drive/drive_integration_service.h"
 #include "chrome/browser/ash/drive/drive_integration_service_factory.h"
 #include "chromeos/ash/experiences/settings_ui/settings_app_manager.h"
-#include "chromeos/crosapi/mojom/local_printer.mojom.h"
 #include "components/session_manager/core/session.h"
 #include "components/session_manager/core/session_manager.h"
 #include "components/user_manager/user_manager.h"
@@ -381,11 +378,6 @@ base::DictValue GetPolicies(const PrefService& prefs) {
 }  // namespace
 
 PrintPreviewHandler::PrintPreviewHandler() {
-#if BUILDFLAG(IS_CHROMEOS)
-  DCHECK(crosapi::CrosapiManager::IsInitialized());
-  local_printer_ =
-      crosapi::CrosapiManager::Get()->crosapi_ash()->local_printer_ash();
-#endif
   ReportUserActionHistogram(UserActionBuckets::kPreviewStarted);
 }
 
@@ -459,21 +451,11 @@ WebContents* PrintPreviewHandler::preview_web_contents() {
 
 PrefService* PrintPreviewHandler::GetPrefs() {
   auto* prefs = Profile::FromWebUI(web_ui())->GetPrefs();
-  DCHECK(prefs);
+  CHECK(prefs, base::NotFatalUntil::M162);
   return prefs;
 }
 
 void PrintPreviewHandler::ReadPrinterTypeDenyListFromPrefs() {
-#if BUILDFLAG(IS_CHROMEOS)
-  if (!local_printer_) {
-    return;
-  }
-
-  local_printer_->GetPrinterTypeDenyList(
-      base::BindOnce(&PrintPreviewHandler::OnPrinterTypeDenyListReady,
-                     weak_factory_.GetWeakPtr()));
-  return;
-#else
   PrefService* prefs = GetPrefs();
   if (!prefs->HasPrefPath(prefs::kPrinterTypeDenyList)) {
     return;
@@ -500,7 +482,6 @@ void PrintPreviewHandler::ReadPrinterTypeDenyListFromPrefs() {
     deny_list.push_back(printer_type);
   }
   OnPrinterTypeDenyListReady(deny_list);
-#endif  // BUILDFLAG(IS_CHROMEOS)
 }
 
 void PrintPreviewHandler::OnPrinterTypeDenyListReady(
@@ -604,7 +585,7 @@ void PrintPreviewHandler::HandleGetPrinterCapabilities(
 }
 
 void PrintPreviewHandler::HandleGetPreview(const base::ListValue& args) {
-  DCHECK_EQ(2U, args.size());
+  CHECK_EQ(2U, args.size(), base::NotFatalUntil::M162);
 
   // All of the conditions below should be guaranteed by the print preview
   // javascript.
@@ -621,7 +602,7 @@ void PrintPreviewHandler::HandleGetPreview(const base::ListValue& args) {
   // Add an additional key in order to identify |print_preview_ui| later on
   // when calling PrintPreviewUI::ShouldCancelRequest() on the IO thread.
   settings.Set(kPreviewUIID,
-               print_preview_ui()->GetIDForPrintPreviewUI().value());
+               print_preview_ui()->GetIDForPrintPreviewUI().ToString());
 
   WebContents* initiator = GetInitiator();
   auto* manager =
@@ -637,7 +618,7 @@ void PrintPreviewHandler::HandleGetPreview(const base::ListValue& args) {
   // headers and footers are to be displayed.
   std::optional<bool> display_header_footer_opt =
       settings.FindBool(kSettingHeaderFooterEnabled);
-  DCHECK(display_header_footer_opt);
+  CHECK(display_header_footer_opt, base::NotFatalUntil::M162);
   if (display_header_footer_opt.value_or(false)) {
     settings.Set(kSettingHeaderFooterTitle, initiator->GetTitle());
 
@@ -691,19 +672,19 @@ void PrintPreviewHandler::HandleDoPrint(const base::ListValue& args) {
     RejectJavascriptCallback(base::Value(callback_id), base::Value("NO_DATA"));
     return;
   }
-  DCHECK(data->size());
+  CHECK(data->size(), base::NotFatalUntil::M162);
 
-  // After validating |settings|, record metrics.
-  const mojom::RequestPrintPreviewParams* request_params = GetRequestParams();
-  CHECK(request_params);
-  bool is_pdf = !request_params->is_modifiable;
+  // After validating `settings`, record metrics.
+  std::optional<bool> maybe_is_pdf = IsPrintingPdf();
+  CHECK(maybe_is_pdf.has_value());
   if (last_preview_settings_.has_value()) {
-    ReportPrintSettingsStats(settings, last_preview_settings_.value(), is_pdf);
+    ReportPrintSettingsStats(settings, last_preview_settings_.value(),
+                             maybe_is_pdf.value());
   }
   {
     PrintDocumentTypeBuckets doc_type =
-        is_pdf ? PrintDocumentTypeBuckets::kPdfDocument
-               : PrintDocumentTypeBuckets::kHtmlDocument;
+        maybe_is_pdf.value() ? PrintDocumentTypeBuckets::kPdfDocument
+                             : PrintDocumentTypeBuckets::kHtmlDocument;
     ReportPrintDocumentTypeHistograms(doc_type);
   }
   ReportUserActionHistogram(user_action);
@@ -854,7 +835,7 @@ void PrintPreviewHandler::GetLocaleInformation(base::DictValue* settings) {
     thousands_delimiter.clear();
   }
   size_t decimal_pos = number_format.find('6') + 1;
-  DCHECK_NE(number_format[decimal_pos], '7');
+  CHECK_NE(number_format[decimal_pos], '7', base::NotFatalUntil::M162);
   std::u16string decimal_delimiter = number_format.substr(decimal_pos, 1);
   settings->Set(kDecimalDelimiter, decimal_delimiter);
   settings->Set(kThousandsDelimiter, thousands_delimiter);
@@ -881,20 +862,32 @@ void PrintPreviewHandler::SendInitialSettings(
     const std::string& callback_id,
     base::DictValue policies,
     const std::string& default_printer) {
-  const mojom::RequestPrintPreviewParams* request_params = GetRequestParams();
-  mojom::RequestPrintPreviewParams dummy_params;
-  if (!request_params) {
+  bool is_pdf;
+  mojom::RequestPrintPreviewParams default_placeholder_params;
+
+  // `request_params` and `maybe_is_pdf` should both be non-null or both be
+  // null.
+  auto* dialog_controller = PrintPreviewDialogController::GetInstance();
+  CHECK(dialog_controller);
+  const mojom::RequestPrintPreviewParams* request_params =
+      dialog_controller->GetRequestParams(preview_web_contents());
+  std::optional<bool> maybe_is_pdf = IsPrintingPdf();
+  if (request_params) {
+    CHECK(maybe_is_pdf.has_value());
+    is_pdf = maybe_is_pdf.value();
+  } else {
     // This only happens with a direct navigation to chrome://print, which can
-    // happen in some tests. Just use `dummy_params` to set up the test with
-    // some sane values, so it does not crash.
-    dummy_params.is_modifiable = true;
-    request_params = &dummy_params;
+    // happen in some tests. Just use `default_placeholder_params` to set up the
+    // test with some default values, so it does not crash.
+    CHECK(!maybe_is_pdf.has_value());
+    constexpr bool kIsPdf = false;
+    is_pdf = kIsPdf;
+    request_params = &default_placeholder_params;
   }
 
   base::DictValue initial_settings;
   initial_settings.Set(kDocumentTitle, print_preview_ui()->initiator_title());
-  initial_settings.Set(kSettingPreviewModifiable,
-                       request_params->is_modifiable);
+  initial_settings.Set(kSettingPreviewModifiable, !is_pdf);
 #if BUILDFLAG(IS_CHROMEOS)
   initial_settings.Set(kSettingPreviewIsFromArc, request_params->is_from_arc);
 #endif
@@ -973,20 +966,22 @@ WebContents* PrintPreviewHandler::GetInitiator() {
   return dialog_controller->GetInitiator(preview_web_contents());
 }
 
-const mojom::RequestPrintPreviewParams*
-PrintPreviewHandler::GetRequestParams() {
+std::optional<bool> PrintPreviewHandler::IsPrintingPdf() {
   auto* dialog_controller = PrintPreviewDialogController::GetInstance();
   CHECK(dialog_controller);
-  return dialog_controller->GetRequestParams(preview_web_contents());
+  return dialog_controller->IsPrintingPdf(preview_web_contents());
 }
 
-void PrintPreviewHandler::OnPrintPreviewReady(int preview_uid, int request_id) {
+void PrintPreviewHandler::OnPrintPreviewReady(
+    const base::UnguessableToken& preview_uid,
+    int request_id) {
   std::string callback_id = GetCallbackId(request_id);
   if (callback_id.empty()) {
     return;
   }
 
-  ResolveJavascriptCallback(base::Value(callback_id), base::Value(preview_uid));
+  ResolveJavascriptCallback(base::Value(callback_id),
+                            base::Value(preview_uid.ToString()));
 }
 
 void PrintPreviewHandler::OnPrintPreviewFailed(int request_id) {
@@ -1007,7 +1002,7 @@ void PrintPreviewHandler::OnPrintPreviewFailed(int request_id) {
 
   // Keep track of failures.
   bool inserted = preview_failures_.insert(request_id).second;
-  DCHECK(inserted);
+  CHECK(inserted, base::NotFatalUntil::M162);
   RejectJavascriptCallback(base::Value(callback_id),
                            base::Value("PREVIEW_FAILED"));
 }
@@ -1059,9 +1054,10 @@ void PrintPreviewHandler::SendPageLayoutReady(
                     base::Value(all_pages_have_custom_orientation));
 }
 
-void PrintPreviewHandler::SendPagePreviewReady(int page_index,
-                                               int preview_uid,
-                                               int preview_request_id) {
+void PrintPreviewHandler::SendPagePreviewReady(
+    int page_index,
+    const base::UnguessableToken& preview_uid,
+    int preview_request_id) {
   // With print compositing, by the time compositing finishes and this method
   // gets called, the print preview may have failed. Since the failure message
   // may have arrived first, check for this case and bail out instead of
@@ -1075,7 +1071,8 @@ void PrintPreviewHandler::SendPagePreviewReady(int page_index,
   }
 
   FireWebUIListener("page-preview-ready", base::Value(page_index),
-                    base::Value(preview_uid), base::Value(preview_request_id));
+                    base::Value(preview_uid.ToString()),
+                    base::Value(preview_request_id));
 }
 
 void PrintPreviewHandler::OnPrintPreviewCancelled(int request_id) {
@@ -1140,11 +1137,12 @@ PdfPrinterHandler* PrintPreviewHandler::GetPdfPrinterHandler() {
 
 void PrintPreviewHandler::OnAddedPrinters(mojom::PrinterType printer_type,
                                           base::ListValue printers) {
-  DCHECK(printer_type == mojom::PrinterType::kExtension ||
-         printer_type == mojom::PrinterType::kLocal);
+  CHECK(printer_type == mojom::PrinterType::kExtension ||
+            printer_type == mojom::PrinterType::kLocal,
+        base::NotFatalUntil::M162);
   // Save the count here, as `printers` gets moved below.
   const size_t printer_count = printers.size();
-  DCHECK(printer_count);
+  CHECK(printer_count, base::NotFatalUntil::M162);
   FireWebUIListener("printers-added",
                     base::Value(static_cast<int>(printer_type)), printers);
 

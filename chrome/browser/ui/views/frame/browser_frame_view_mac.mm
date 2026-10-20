@@ -15,25 +15,29 @@
 #include "base/numerics/safe_conversions.h"
 #include "base/time/time.h"
 #include "base/timer/timer.h"
+#include "chrome/browser/headless/headless_mode_util.h"
 #include "chrome/browser/picture_in_picture/picture_in_picture_window_manager.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/themes/theme_properties.h"
 #include "chrome/browser/themes/theme_service.h"
 #include "chrome/browser/themes/theme_service_factory.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/cocoa/fullscreen/fullscreen_menubar_tracker.h"
 #include "chrome/browser/ui/cocoa/fullscreen/fullscreen_toolbar_controller.h"
 #include "chrome/browser/ui/color/chrome_color_provider_utils.h"
 #include "chrome/browser/ui/exclusive_access/exclusive_access_manager.h"
 #include "chrome/browser/ui/exclusive_access/fullscreen_controller.h"
 #include "chrome/browser/ui/fullscreen_util_mac.h"
+#include "chrome/browser/ui/immersive/immersive_mode_controller.h"
 #include "chrome/browser/ui/layout_constants.h"
 #include "chrome/browser/ui/tabs/tab_style.h"
 #include "chrome/browser/ui/view_ids.h"
 #include "chrome/browser/ui/views/bookmarks/bookmark_bar_view.h"
+#include "chrome/browser/ui/views/frame/browser_native_widget.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/frame/browser_widget.h"
 #include "chrome/browser/ui/views/frame/caption_button_placeholder_container.h"
-#include "chrome/browser/ui/views/frame/immersive_mode_controller.h"
+#include "chrome/browser/ui/views/frame/glass_frame_service.h"
 #include "chrome/browser/ui/views/frame/tab_strip_region_view.h"
 #include "chrome/browser/ui/views/tabs/tab_strip.h"
 #include "chrome/browser/ui/views/toolbar/toolbar_view.h"
@@ -83,6 +87,20 @@ BrowserFrameViewMac::BrowserFrameViewMac(BrowserWidget* frame,
                                          BrowserView* browser_view)
     : BrowserFrameView(frame, browser_view),
       fullscreen_session_timer_(std::make_unique<base::OneShotTimer>()) {
+  // GlassFrameService is only available if glass frame is enabled.
+  if (auto* const glass_service = GlassFrameService::GetInstance()) {
+    SetPaintToLayer();
+    is_glass_frame_eligible_ =
+        glass_service->IsBrowserWindowEligible(browser_view->browser());
+    layer()->SetFillsBoundsOpaquely(!is_glass_frame_eligible_);
+    glass_frame_service_subscription_ =
+        glass_service->RegisterGlassFrameEligibilityChangedCallback(
+            browser_view->browser(),
+            base::BindRepeating(
+                &BrowserFrameViewMac::OnGlassFrameEligibilityChanged,
+                base::Unretained(this)));
+  }
+
   if (web_app::AppBrowserController::IsWebApp(browser_view->browser())) {
     auto* provider =
         web_app::WebAppProvider::GetForWebApps(browser_view->GetProfile());
@@ -109,11 +127,6 @@ BrowserFrameViewMac::BrowserFrameViewMac(BrowserWidget* frame,
       caption_button_placeholder_container_ =
           AddChildView(std::make_unique<CaptionButtonPlaceholderContainer>());
     }
-  }
-
-  if (features::IsGlassFrameEnabled()) {
-    SetPaintToLayer();
-    layer()->SetFillsBoundsOpaquely(false);
   }
 }
 
@@ -233,7 +246,7 @@ int BrowserFrameViewMac::GetTopInset(bool restored) const {
 }
 
 void BrowserFrameViewMac::UpdateFullscreenTopUI() {
-  Browser* browser = GetBrowserView()->browser();
+  BrowserWindowInterface* browser = GetBrowserView()->browser();
   // Update to the new toolbar style if needed.
   FullscreenToolbarStyle new_style;
   if (fullscreen_utils::IsInContentFullscreen(browser)) {
@@ -292,7 +305,9 @@ void BrowserFrameViewMac::UpdateFullscreenTopUI() {
 
   // Notify browser that top ui state has been changed so that we can update
   // the bookmark bar state as well.
-  browser->FullscreenTopUIStateChanged();
+  ExclusiveAccessManager::From(browser)
+      ->fullscreen_controller()
+      ->FullscreenTopUIStateChanged();
 
   // Re-layout if toolbar style changes in fullscreen mode.
   if (browser_widget()->IsFullscreen()) {
@@ -322,7 +337,9 @@ void BrowserFrameViewMac::UpdateThrobber(bool running) {}
 
 void BrowserFrameViewMac::PaintAsActiveChanged() {
   UpdateCaptionButtonPlaceholderContainerBackground();
-  BrowserFrameView::PaintAsActiveChanged();
+  if (!is_glass_frame_eligible_) {
+    BrowserFrameView::PaintAsActiveChanged();
+  }
 }
 
 void BrowserFrameViewMac::OnThemeChanged() {
@@ -363,7 +380,7 @@ gfx::Rect BrowserFrameViewMac::GetWindowBoundsForClientBounds(
   // explicitly add it. If a custom titlebar is being drawn, this calculation
   // will be zero.
   NSWindow* window = GetWidget()->GetNativeWindow().GetNativeNSWindow();
-  DCHECK(window);
+  CHECK(window, base::NotFatalUntil::M162);
   top_inset += window.frame.size.height -
                [window contentRectForFrameRect:window.frame].size.height;
 
@@ -405,6 +422,12 @@ void BrowserFrameViewMac::WindowControlsOverlayEnabledChanged() {
 gfx::Size BrowserFrameViewMac::GetMinimumSize() const {
   gfx::Size client_size = browser_widget()->client_view()->GetMinimumSize();
 
+  // Headless mode does not enforce macOS desktop window aspect ratio
+  // constraints.
+  if (headless::IsHeadlessMode()) {
+    return client_size;
+  }
+
   // macOS apps generally don't allow their windows to get shorter than a
   // certain height, which empirically seems to be related to their *minimum*
   // width rather than their current width. This 4:3 ratio was chosen
@@ -440,8 +463,10 @@ BrowserFrameViewMac::GetCaptionButtonBounds() const {
 
   // In popups, the titlebar is system-drawn and the caption buttons aren't part
   // of the client area.
-  if (GetBrowserView()->browser()->is_type_popup() ||
-      GetBrowserView()->browser()->is_type_devtools()) {
+  if (GetBrowserView()->browser()->GetType() ==
+          BrowserWindowInterface::Type::TYPE_POPUP ||
+      GetBrowserView()->browser()->GetType() ==
+          BrowserWindowInterface::Type::TYPE_DEVTOOLS) {
     return result;
   }
 
@@ -476,20 +501,20 @@ void BrowserFrameViewMac::OnPaint(gfx::Canvas* canvas) {
     return;
   }
 
-  SkColor frame_color = GetFrameColor(BrowserFrameActiveState::kUseCurrent);
-  if (features::IsGlassFrameEnabled()) {
-    const SkAlpha frame_alpha = color_utils::IsDark(frame_color)
-                                    ? kBrowserFrameAlphaDark
-                                    : kBrowserFrameAlphaLight;
-    canvas->DrawColor(SkColorSetA(frame_color, frame_alpha));
-  } else {
-    canvas->DrawColor(frame_color);
+  if (is_glass_frame_eligible_) {
+    // In glass mode, painting to frame color happens in the opaque background
+    // view instead.
+    return;
+  }
 
-    auto* theme_service = ThemeServiceFactory::GetForProfile(
-        GetBrowserView()->browser()->profile());
-    if (!theme_service->UsingSystemTheme()) {
-      PaintThemedFrame(canvas);
-    }
+  const SkColor frame_color =
+      GetFrameColor(BrowserFrameActiveState::kUseCurrent);
+  canvas->DrawColor(frame_color);
+
+  auto* theme_service = ThemeServiceFactory::GetForProfile(
+      GetBrowserView()->browser()->GetProfile());
+  if (!theme_service->UsingSystemTheme()) {
+    PaintThemedFrame(canvas);
   }
 }
 
@@ -528,16 +553,15 @@ int BrowserFrameViewMac::TopUIFullscreenYOffset() const {
   }
 
   CGFloat menu_bar_height =
-      [[[NSApplication sharedApplication] mainMenu] menuBarHeight];
+      NSApplication.sharedApplication.mainMenu.menuBarHeight;
   // If there's a camera notch, the window is already below where the menu bar
   // will be, so we shouldn't account for it.
-  if (@available(macos 12.0.1, *)) {
-    id screen = [GetWidget()->GetNativeWindow().GetNativeNSWindow() screen];
-    NSEdgeInsets insets = [screen safeAreaInsets];
-    if (insets.top != 0) {
-      menu_bar_height = 0;
-    }
+  NSScreen* screen = GetWidget()->GetNativeWindow().GetNativeNSWindow().screen;
+  NSEdgeInsets insets = screen.safeAreaInsets;
+  if (insets.top != 0) {
+    menu_bar_height = 0;
   }
+
   CGFloat title_bar_height =
       NSHeight([NSWindow frameRectForContentRect:NSZeroRect
                                        styleMask:NSWindowStyleMaskTitled]);
@@ -561,7 +585,7 @@ void BrowserFrameViewMac::UpdateCaptionButtonPlaceholderContainerBackground() {
   if (caption_button_placeholder_container_) {
     caption_button_placeholder_container_->SetBackground(
         views::CreateSolidBackground(
-            features::IsGlassFrameEnabled()
+            is_glass_frame_eligible_
                 ? SK_ColorTRANSPARENT
                 : GetFrameColor(BrowserFrameActiveState::kUseCurrent)));
   }
@@ -578,4 +602,13 @@ void BrowserFrameViewMac::EmitFullscreenSessionHistograms() {
   // Max duration of 1 day.
   UMA_HISTOGRAM_CUSTOM_TIMES("Session.BrowserFullscreen.DurationUpTo24H", delta,
                              base::Milliseconds(1), base::Days(1), 100);
+}
+
+void BrowserFrameViewMac::OnGlassFrameEligibilityChanged(bool is_eligible) {
+  if (is_eligible == is_glass_frame_eligible_) {
+    return;
+  }
+  is_glass_frame_eligible_ = is_eligible;
+  layer()->SetFillsBoundsOpaquely(!is_glass_frame_eligible_);
+  SchedulePaint();
 }

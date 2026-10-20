@@ -12,6 +12,7 @@
 #include "base/feature_list.h"
 #include "content/browser/android/selection/composited_touch_handle_drawable.h"
 #include "content/browser/renderer_host/render_widget_host_view_android.h"
+#include "content/browser/renderer_host/text_input_manager.h"
 #include "content/browser/web_contents/web_contents_impl.h"
 #include "content/browser/web_contents/web_contents_view_android.h"
 #include "content/common/features.h"
@@ -21,6 +22,7 @@
 #include "third_party/blink/public/common/context_menu_data/edit_flags.h"
 #include "third_party/blink/public/mojom/context_menu/context_menu.mojom.h"
 #include "third_party/blink/public/mojom/input/input_handler.mojom.h"
+#include "ui/base/ime/text_input_flags.h"
 #include "ui/base/models/menu_model.h"
 #include "ui/base/mojom/menu_source_type.mojom.h"
 #include "ui/gfx/android/android_surface_control_compat.h"
@@ -76,7 +78,7 @@ JNI_SelectionPopupControllerImpl_IsMagnifierWithSurfaceControlSupported(
 static int64_t JNI_SelectionPopupControllerImpl_Init(
     JNIEnv* env,
     WebContents* web_contents) {
-  DCHECK(web_contents);
+  CHECK(web_contents, base::NotFatalUntil::M159);
 
   // Owns itself and gets destroyed when |WebContentsDestroyed| is called.
   auto* controller = new SelectionPopupController(web_contents);
@@ -300,34 +302,47 @@ bool SelectionPopupController::ShowSelectionMenu(
       !!(params.edit_flags & blink::ContextMenuDataEditFlags::kCanSelectAll);
   const bool can_edit_richly =
       !!(params.edit_flags & blink::ContextMenuDataEditFlags::kCanEditRichly);
-  const bool is_password_type =
+  bool is_password_type =
       params.form_control_type == blink::mojom::FormControlType::kInputPassword;
+  if (rwhva_) {
+    TextInputManager* text_input_manager = rwhva_->GetTextInputManager();
+    if (text_input_manager) {
+      const ui::mojom::TextInputState* state =
+          text_input_manager->GetTextInputState();
+      if (state &&
+          (state->flags & (ui::TEXT_INPUT_FLAG_HAS_BEEN_PASSWORD |
+                           ui::TEXT_INPUT_FLAG_HAS_BEEN_CUSTOM_PASSWORD))) {
+        is_password_type = true;
+      }
+    }
+  }
   const ScopedJavaLocalRef<jstring> jselected_text =
       ConvertUTF16ToJavaString(env, params.selection_text);
   const bool should_suggest =
       params.source_type == ui::mojom::MenuSourceType::kTouch ||
       params.source_type == ui::mojom::MenuSourceType::kLongPress;
 
-    extra_items_menu_model_.reset();
+  extra_items_menu_model_.reset();
+  if (selection_popup_delegate_) {
+    selection_popup_delegate_->OnShowSelectionPopup(*render_frame_host, params);
     extra_items_menu_model_ =
-        selection_popup_delegate_
-            ? selection_popup_delegate_->GetSelectionPopupExtraItems(
-                  *render_frame_host, params)
-            : nullptr;
-    ui::MenuModel* menu_model = extra_items_menu_model_.get();
-    menu_model_bridge_ = std::make_unique<ui::MenuModelBridge>(
-        menu_model ? menu_model->AsWeakPtr() : nullptr);
+        selection_popup_delegate_->GetSelectionPopupExtraItems(
+            *render_frame_host, params);
+  }
+  ui::MenuModel* menu_model = extra_items_menu_model_.get();
+  menu_model_bridge_ = std::make_unique<ui::MenuModelBridge>(
+      menu_model ? menu_model->AsWeakPtr() : nullptr);
 
-    Java_SelectionPopupControllerImpl_showSelectionMenu(
-        env, obj, params.x, params.y, params.selection_rect.x(),
-        params.selection_rect.y(), params.selection_rect.right(),
-        params.selection_rect.bottom(), handle_height, params.is_editable,
-        is_password_type, jselected_text, params.selection_start_offset,
-        can_select_all, can_edit_richly, should_suggest,
-        static_cast<int>(params.source_type),
-        render_frame_host->GetJavaRenderFrameHost(),
-        menu_model_bridge_->GetJavaObject());
-    return true;
+  Java_SelectionPopupControllerImpl_showSelectionMenu(
+      env, obj, params.x, params.y, params.selection_rect.x(),
+      params.selection_rect.y(), params.selection_rect.right(),
+      params.selection_rect.bottom(), handle_height, params.is_editable,
+      is_password_type, jselected_text, params.selection_start_offset,
+      can_select_all, can_edit_richly, should_suggest,
+      static_cast<int>(params.source_type),
+      render_frame_host->GetJavaRenderFrameHost(),
+      menu_model_bridge_->GetJavaObject());
+  return true;
 }
 
 void SelectionPopupController::OnSelectAroundCaretAck(

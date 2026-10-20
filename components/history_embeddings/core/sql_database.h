@@ -8,6 +8,7 @@
 #include <optional>
 
 #include "base/files/file_path.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/sequence_checker.h"
 #include "base/thread_annotations.h"
@@ -43,7 +44,7 @@ class SqlDatabase : public VectorDatabase {
   // initialized until valid metadata is provided.
   void SetEmbedderMetadata(
       passage_embeddings::EmbedderMetadata embedder_metadata,
-      os_crypt_async::Encryptor encryptor);
+      scoped_refptr<os_crypt_async::Encryptor> encryptor);
 
   // Gets the passages associated with `url_id`. Returns nullopt if there's
   // nothing available.
@@ -70,7 +71,8 @@ class SqlDatabase : public VectorDatabase {
   size_t GetEmbeddingDimensions() const override;
   bool AddUrlData(UrlData url_data) override;
   std::unique_ptr<UrlDataIterator> MakeUrlDataIterator(
-      std::optional<base::Time> time_range_start) override;
+      std::optional<base::Time> time_range_start,
+      const std::vector<history::URLID>& url_id_filter) override;
 
   // These three methods are used to keep the on-disk persistence in sync with
   // History deletions, either from user action or time-based expiration.
@@ -136,7 +138,7 @@ class SqlDatabase : public VectorDatabase {
   // Metadata of the embeddings model.
   std::optional<passage_embeddings::EmbedderMetadata> embedder_metadata_;
 
-  std::optional<os_crypt_async::Encryptor> encryptor_;
+  scoped_refptr<os_crypt_async::Encryptor> encryptor_;
 
   // The underlying SQL database.
   sql::Database db_ GUARDED_BY_CONTEXT(sequence_checker_);

@@ -4,7 +4,9 @@
 
 #include "third_party/blink/renderer/modules/xr/xr_webgl_drawing_context.h"
 
+#include "base/functional/callback_helpers.h"
 #include "third_party/blink/renderer/modules/webgl/webgl_rendering_context_base.h"
+#include "third_party/blink/renderer/modules/xr/xr_layer_shared_image_manager.h"
 #include "third_party/blink/renderer/modules/xr/xr_webgl_binding.h"
 #include "third_party/blink/renderer/modules/xr/xr_webgl_frame_transport_context_impl.h"
 #include "third_party/blink/renderer/modules/xr/xr_webgl_swap_chain.h"
@@ -69,6 +71,14 @@ XRSession* XRWebGLDrawingContext::session() const {
 std::unique_ptr<SharedImageHolder>
 XRWebGLDrawingContext::TransferToSharedImageHolder() {
   return color_swap_chain_->TransferToSharedImageHolder();
+}
+
+std::unique_ptr<SharedImageHolder>
+XRWebGLDrawingContext::DoneWithSharedBuffer() {
+  if (!color_swap_chain_) {
+    return nullptr;
+  }
+  return color_swap_chain_->DoneWithSharedBuffer();
 }
 
 XRFrameTransportDelegate* XRWebGLDrawingContext::GetTransportDelegate() {

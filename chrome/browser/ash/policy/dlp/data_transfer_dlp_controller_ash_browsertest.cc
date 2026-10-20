@@ -25,7 +25,6 @@
 #include "chrome/browser/chromeos/policy/dlp/test/dlp_rules_manager_test_utils.h"
 #include "chrome/browser/enterprise/data_controls/dlp_reporting_manager.h"
 #include "chrome/browser/enterprise/data_controls/dlp_reporting_manager_test_helper.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "components/enterprise/common/proto/synced/dlp_policy_event.pb.h"
 #include "components/enterprise/data_controls/core/browser/component.h"
@@ -173,7 +172,7 @@ class DataTransferDlpAshBrowserTest : public InProcessBrowserTest {
     InProcessBrowserTest::SetUpOnMainThread();
 
     policy::DlpRulesManagerFactory::GetInstance()->SetTestingFactory(
-        browser()->profile(),
+        browser()->GetProfile(),
         base::BindRepeating(&DataTransferDlpAshBrowserTest::SetDlpRulesManager,
                             base::Unretained(this)));
     ASSERT_TRUE(DlpRulesManagerFactory::GetForPrimaryProfile());
@@ -218,7 +217,7 @@ class DataTransferDlpAshBrowserTest : public InProcessBrowserTest {
 
     // Setup CrostiniManager for testing.
     crostini::CrostiniManager* crostini_manager =
-        crostini::CrostiniManager::GetForProfile(browser()->profile());
+        crostini::CrostiniManager::GetForProfile(browser()->GetProfile());
     crostini_manager->set_skip_restart_for_testing();
     crostini_manager->AddRunningVmForTesting(crostini::kCrostiniDefaultVmName);
     crostini_manager->AddRunningContainerForTesting(

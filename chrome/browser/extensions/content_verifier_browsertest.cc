@@ -28,6 +28,7 @@
 #include "chrome/browser/extensions/content_verifier_test_utils.h"
 #include "chrome/browser/extensions/corrupted_extension_reinstaller.h"
 #include "chrome/browser/extensions/devtools_util.h"
+#include "chrome/browser/extensions/extension_browser_test_util.h"
 #include "chrome/browser/extensions/extension_browsertest.h"
 #include "chrome/browser/extensions/extension_management_test_util.h"
 #include "chrome/browser/extensions/external_provider_manager.h"
@@ -61,6 +62,7 @@
 #include "extensions/common/file_util.h"
 #include "extensions/test/extension_test_message_listener.h"
 #include "third_party/zlib/google/compression_utils.h"
+#include "ui/base/window_open_disposition.h"
 
 #if BUILDFLAG(IS_CHROMEOS)
 #include "chrome/browser/extensions/browsertest_util.h"
@@ -262,22 +264,6 @@ class ContentVerifierTest : public ExtensionBrowserTest {
     EXPECT_THAT(
         prefs->GetDisableReasons(extension_id),
         testing::UnorderedElementsAre(disable_reason::DISABLE_CORRUPTED));
-  }
-
-  // Reads private key from |private_key_path| and generates extension id using
-  // it.
-  std::string GetExtensionIdFromPrivateKeyFile(
-      const base::FilePath& private_key_path) {
-    std::string private_key_contents;
-    EXPECT_TRUE(
-        base::ReadFileToString(private_key_path, &private_key_contents));
-    std::string private_key_bytes;
-    EXPECT_TRUE(
-        Extension::ParsePEMKeyBytes(private_key_contents, &private_key_bytes));
-    auto signing_key = crypto::keypair::PrivateKey::FromPrivateKeyInfo(
-        base::as_byte_span(private_key_bytes));
-    std::vector<uint8_t> public_key = signing_key->ToSubjectPublicKeyInfo();
-    return crx_file::id_util::GenerateId(public_key);
   }
 
   // Creates a random signing key and sets |extension_id| according to it.
@@ -527,14 +513,14 @@ IN_PROC_BROWSER_TEST_F(ContentVerifierTestWithForcedHashes,
 
   // ... And we should have recorded metrics for where we found the corruption.
   histogram_tester.ExpectUniqueSample(
-      "Extensions.ContentVerification.VerifyFailedOnFileMV3."
+      "Extensions.ContentVerification.VerifyFailedOnFile."
       "ServiceWorkerScript",
       ContentVerifyJob::HASH_MISMATCH, 1);
   // We hard-code the script type here to avoid exposing it publicly from the
   // class.
   constexpr int kServiceWorkerScriptFileType = 3;
   histogram_tester.ExpectUniqueSample(
-      "Extensions.ContentVerification.VerifyFailedOnFileTypeMV3",
+      "Extensions.ContentVerification.VerifyFailedOnFileType",
       kServiceWorkerScriptFileType, 1);
 }
 
@@ -684,14 +670,14 @@ IN_PROC_BROWSER_TEST_F(ContentVerifierTest, TestServiceWorker_AcrossSession) {
 
   // ... And we should have recorded metrics for where we found the corruption.
   histogram_tester.ExpectUniqueSample(
-      "Extensions.ContentVerification.VerifyFailedOnFileMV3."
+      "Extensions.ContentVerification.VerifyFailedOnFile."
       "ServiceWorkerScript",
       ContentVerifyJob::HASH_MISMATCH, 1);
   // We hard-code the script type here to avoid exposing it publicly from the
   // class.
   constexpr int kServiceWorkerScriptFileType = 3;
   histogram_tester.ExpectUniqueSample(
-      "Extensions.ContentVerification.VerifyFailedOnFileTypeMV3",
+      "Extensions.ContentVerification.VerifyFailedOnFileType",
       kServiceWorkerScriptFileType, 1);
 }
 
@@ -1046,8 +1032,9 @@ IN_PROC_BROWSER_TEST_F(ContentVerifierTest,
       test_data_dir_.AppendASCII("content_verifier/storage_permission");
   base::FilePath crx_path = PackExtension(unpacked_path);
   ASSERT_TRUE(base::PathExists(crx_path.DirName().AppendASCII("temp.pem")));
-  const std::string extension_id = GetExtensionIdFromPrivateKeyFile(
-      crx_path.DirName().AppendASCII("temp.pem"));
+  const std::string extension_id =
+      browser_test_util::GetExtensionIdFromPrivateKeyFile(
+          crx_path.DirName().AppendASCII("temp.pem"));
 
   TestContentVerifySingleJobObserver observer(
       extension_id, base::FilePath().AppendASCII("background.js"));
@@ -1320,8 +1307,9 @@ IN_PROC_BROWSER_TEST_F(ContentVerifierPolicyTest,
 
   // Wait for the extension to be installed by policy we set up in
   // SetUpInProcessBrowserTestFixture.
-  if (!registry->GetInstalledExtension(id_))
+  if (!registry->GetInstalledExtension(id_)) {
     EXPECT_TRUE(registry_observer.WaitForExtensionInstalled());
+  }
 
   // Simulate corruption of the extension so that we can test what happens
   // at startup in the non-PRE test.

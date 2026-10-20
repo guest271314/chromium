@@ -47,6 +47,7 @@ import org.chromium.components.browser_ui.settings.ManagedPreferenceDelegate;
 import org.chromium.components.browser_ui.settings.SettingsUtils;
 import org.chromium.components.browser_ui.settings.search.SettingsIndexData;
 import org.chromium.components.commerce.core.CommerceFeatureUtils;
+import org.chromium.components.omnibox.OmniboxCapabilities;
 import org.chromium.components.prefs.PrefService;
 import org.chromium.components.signin.identitymanager.IdentityManager;
 import org.chromium.components.signin.metrics.SignoutReason;
@@ -132,7 +133,7 @@ public class GoogleServicesSettings extends ChromeBaseSettingsFragment
         mUsageAndCrashReporting.setOnPreferenceChangeListener(this);
         mUsageAndCrashReporting.setManagedPreferenceDelegate(mManagedPreferenceDelegate);
         // TODO(b/483043192): Add UI for new Metrics Consent settings.
-        if (mPrivacyPrefManager.shouldUseMetricsConsentRestructure()) {
+        if (mPrivacyPrefManager.shouldUseMetricsChoiceRestructure()) {
             mUsageAndCrashReporting.setVisible(false);
         }
 
@@ -180,7 +181,7 @@ public class GoogleServicesSettings extends ChromeBaseSettingsFragment
     public void onCreateOptionsMenu(Menu menu, MenuInflater inflater) {
         menu.clear();
         MenuItem help =
-                menu.add(Menu.NONE, R.id.menu_id_targeted_help, Menu.NONE, R.string.menu_help);
+                menu.add(Menu.NONE, R.id.menu_id_targeted_help, Menu.NONE, getHelpMenuStringRes());
         help.setIcon(R.drawable.ic_help_24dp);
     }
 
@@ -222,6 +223,7 @@ public class GoogleServicesSettings extends ChromeBaseSettingsFragment
                     assertNonNull(assumeNonNull(mSnackbarManagerSupplier).get()),
                     SignoutReason.USER_DISABLED_ALLOW_CHROME_SIGN_IN,
                     /* showConfirmDialog= */ true,
+                    /* offerDataDeletionChoice= */ false,
                     () -> {
                         mPrefService.setBoolean(Pref.SIGNIN_ALLOWED, false);
                         updatePreferences();
@@ -232,7 +234,7 @@ public class GoogleServicesSettings extends ChromeBaseSettingsFragment
         } else if (PREF_SEARCH_SUGGESTIONS.equals(key)) {
             mPrefService.setBoolean(Pref.SEARCH_SUGGEST_ENABLED, (boolean) newValue);
         } else if (PREF_USAGE_AND_CRASH_REPORTING.equals(key)) {
-            UmaSessionStats.changeMetricsReportingConsent(
+            UmaSessionStats.changeMetricsReportingState(
                     (boolean) newValue, ChangeMetricsReportingStateCalledFrom.UI_SETTINGS);
         } else if (PREF_URL_KEYED_ANONYMIZED_DATA.equals(key)) {
             UnifiedConsentServiceBridge.setUrlKeyedAnonymizedDataCollectionEnabled(
@@ -299,7 +301,7 @@ public class GoogleServicesSettings extends ChromeBaseSettingsFragment
     }
 
     private static boolean shouldShowContextualSearch() {
-        return ContextualSearchFieldTrial.isEnabled();
+        return ContextualSearchFieldTrial.isEnabled() && !OmniboxCapabilities.isDesktopPlatform();
     }
 
     private static boolean shouldShowPriceTrackingAnnotations(Profile profile) {

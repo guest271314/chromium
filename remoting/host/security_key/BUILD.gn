@@ -10,10 +10,8 @@ source_set("security_key") {
     "security_key_auth_handler.h",
     "security_key_auth_handler_mojo.cc",
     "security_key_auth_handler_mojo.h",
-    "security_key_extension.cc",
-    "security_key_extension.h",
-    "security_key_extension_session.cc",
-    "security_key_extension_session.h",
+    "security_key_data_channel_handler.cc",
+    "security_key_data_channel_handler.h",
     "security_key_ipc_constants.cc",
     "security_key_ipc_constants.h",
     "security_key_message.cc",
@@ -33,8 +31,8 @@ source_set("security_key") {
     "//mojo/public/cpp/system",
     "//net",
     "//net/traffic_annotation",
+    "//remoting/base",
     "//remoting/base:logging",
-    "//remoting/host:host_extension",
     "//remoting/host/mojom",
     "//remoting/proto",
     "//remoting/protocol",
@@ -81,8 +79,6 @@ if (is_win) {
   }
 
   executable("remote_security_key") {
-    configs += [ "//build/config/compiler:wexit_time_destructors" ]
-
     defines =
         host_predefines + [ "REMOTING_HOST_BINARY=BINARY_REMOTE_SECURITY_KEY" ]
 
@@ -110,7 +106,7 @@ source_set("unit_tests") {
 
   sources = [
     "security_key_auth_handler_mojo_unittest.cc",
-    "security_key_extension_session_unittest.cc",
+    "security_key_data_channel_handler_unittest.cc",
     "security_key_message_reader_impl_unittest.cc",
     "security_key_message_writer_impl_unittest.cc",
   ]
@@ -128,6 +124,7 @@ source_set("unit_tests") {
     "//remoting/host/mojom",
     "//remoting/host/setup:common",
     "//remoting/protocol",
+    "//remoting/protocol:test_support",
   ]
 
   if (is_posix) {

@@ -5,11 +5,11 @@
 #include "chrome/browser/ui/webui/ash/settings/services/metrics/per_session_settings_user_action_tracker.h"
 
 #include "ash/constants/ash_login_pref_names.h"
+#include "ash/constants/ash_pref_names.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/strings/string_number_conversions.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/metrics/chrome_metrics_service_accessor.h"
-#include "chrome/common/pref_names.h"
 #include "components/metrics/metrics_service.h"
 #include "components/prefs/scoped_user_pref_update.h"
 
@@ -48,7 +48,7 @@ PerSessionSettingsUserActionTracker::PerSessionSettingsUserActionTracker(
     : metric_start_time_(base::TimeTicks::Now()),
       window_last_active_timestamp_(base::TimeTicks::Now()),
       profile_pref_service_(profile_pref_service) {
-  DCHECK(profile_pref_service_);
+  CHECK(profile_pref_service_, base::NotFatalUntil::M162);
 }
 
 PerSessionSettingsUserActionTracker::~PerSessionSettingsUserActionTracker() {
@@ -62,7 +62,7 @@ PerSessionSettingsUserActionTracker::~PerSessionSettingsUserActionTracker() {
 }
 
 bool PerSessionSettingsUserActionTracker::HasUserMetricsConsent() {
-  DCHECK(g_browser_process);
+  CHECK(g_browser_process, base::NotFatalUntil::M162);
 
   metrics::MetricsService* metrics_service_ =
       g_browser_process->metrics_service();
@@ -70,8 +70,8 @@ bool PerSessionSettingsUserActionTracker::HasUserMetricsConsent() {
   // Metrics consent can be either per-device, ie. the profile that is the owner
   // of the device, or per-user. If no per-user consent is provided, we will use
   // the device settings.
-  if (metrics_service_->GetCurrentUserMetricsConsent().has_value()) {
-    return metrics_service_->GetCurrentUserMetricsConsent().value();
+  if (metrics_service_->GetCurrentUserMetricsChoice().has_value()) {
+    return metrics_service_->GetCurrentUserMetricsChoice().value();
   }
 
   // Return the device setting.
@@ -87,12 +87,12 @@ void PerSessionSettingsUserActionTracker::
   // the user revokes their consent for UMA. The pref gets cleared and will
   // never record the Device Lifetime metric again.
   if (profile_pref_service_
-          ->FindPreference(::prefs::kHasEverRevokedMetricsConsent)
+          ->FindPreference(ash::prefs::kHasEverRevokedMetricsConsent)
           ->IsDefaultValue()) {
-    profile_pref_service_->SetBoolean(::prefs::kHasEverRevokedMetricsConsent,
+    profile_pref_service_->SetBoolean(ash::prefs::kHasEverRevokedMetricsConsent,
                                       !metric_consent_pref_value_);
   } else if (!metric_consent_pref_value_) {
-    profile_pref_service_->SetBoolean(::prefs::kHasEverRevokedMetricsConsent,
+    profile_pref_service_->SetBoolean(ash::prefs::kHasEverRevokedMetricsConsent,
                                       true);
   }
 }
@@ -111,11 +111,11 @@ void PerSessionSettingsUserActionTracker::RecordLifetimeMetricToPref() {
   // histogram.
   // NOTE: prefs::kOobeOnboardingTime does not exist for users in guest mode.
   if (!profile_pref_service_->GetBoolean(
-          ::prefs::kHasResetFirst7DaysSettingsUsedCount) &&
+          ash::prefs::kHasResetFirst7DaysSettingsUsedCount) &&
       profile_pref_service_->HasPrefPath(prefs::kOobeOnboardingTime) &&
       !IsTodayInFirst7Days()) {
     profile_pref_service_->SetBoolean(
-        ::prefs::kHasResetFirst7DaysSettingsUsedCount, true);
+        ash::prefs::kHasResetFirst7DaysSettingsUsedCount, true);
     ClearTotalUniqueSettingsChangedPref();
   }
 
@@ -126,7 +126,8 @@ bool PerSessionSettingsUserActionTracker::IsTodayInFirst7Days() {
   // The pref kOobeOnboardingTime does not get set for users in guest mode.
   // Because we are accessing the value of the pref, we must ensure that it does
   // exist.
-  DCHECK(profile_pref_service_->HasPrefPath(prefs::kOobeOnboardingTime));
+  CHECK(profile_pref_service_->HasPrefPath(prefs::kOobeOnboardingTime),
+        base::NotFatalUntil::M162);
   return base::Time::Now() - profile_pref_service_->GetTime(
                                  ::ash::prefs::kOobeOnboardingTime) <=
          kOneWeek;
@@ -134,7 +135,7 @@ bool PerSessionSettingsUserActionTracker::IsTodayInFirst7Days() {
 
 void PerSessionSettingsUserActionTracker::
     ClearTotalUniqueSettingsChangedPref() {
-  profile_pref_service_->ClearPref(::prefs::kTotalUniqueOsSettingsChanged);
+  profile_pref_service_->ClearPref(ash::prefs::kTotalUniqueOsSettingsChanged);
 }
 
 void PerSessionSettingsUserActionTracker::RecordPageFocus() {
@@ -244,7 +245,7 @@ void PerSessionSettingsUserActionTracker::
     UpdateSettingsPrefTotalUniqueChanged() {
   // Fetch the dictionary from the pref.
   ScopedDictPrefUpdate total_unique_settings_changed_(
-      profile_pref_service_, ::prefs::kTotalUniqueOsSettingsChanged);
+      profile_pref_service_, ash::prefs::kTotalUniqueOsSettingsChanged);
   base::DictValue& pref_data = total_unique_settings_changed_.Get();
 
   // Set the dictionary.

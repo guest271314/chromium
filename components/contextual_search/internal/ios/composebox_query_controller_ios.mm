@@ -23,6 +23,8 @@ void ComposeboxQueryControllerIOS::CreateImageUploadRequest(
     std::optional<GURL> page_url,
     std::optional<std::string> page_title,
     std::optional<std::string> file_name,
+    UploadImageType image_type,
+    std::optional<std::string> mime_type_string,
     RequestBodyProtoCreatedCallback callback) {
   CHECK(image_options.has_value());
   // On iOS, we use UIImage for decoding and resizing.
@@ -40,6 +42,16 @@ void ComposeboxQueryControllerIOS::CreateImageUploadRequest(
   scoped_refptr<lens::RefCountedLensOverlayClientLogs> ref_counted_logs =
       base::MakeRefCounted<lens::RefCountedLensOverlayClientLogs>();
 
+  if (std::optional<lens::ImageData> image_data_proto =
+          MaybeCreateC2paBypassImageData(image_data, image.size.width,
+                                         image.size.height, mime_type_string)) {
+    CreateFileUploadRequestProtoWithImageDataAndContinue(
+        request_id, CreateClientContext(), ref_counted_logs,
+        std::move(callback), page_url, page_title, file_name, image_type,
+        std::move(*image_data_proto));
+    return;
+  }
+
   // Downscaling and encoding is done on a background thread.
   create_request_task_runner_->PostTaskAndReplyWithResult(
       FROM_HERE,
@@ -48,5 +60,6 @@ void ComposeboxQueryControllerIOS::CreateImageUploadRequest(
       base::BindOnce(&ComposeboxQueryController::
                          CreateFileUploadRequestProtoWithImageDataAndContinue,
                      request_id, CreateClientContext(), ref_counted_logs,
-                     std::move(callback), page_url, page_title, file_name));
+                     std::move(callback), page_url, page_title, file_name,
+                     image_type));
 }

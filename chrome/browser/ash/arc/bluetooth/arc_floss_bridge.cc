@@ -19,6 +19,7 @@
 #include "device/bluetooth/floss/floss_dbus_manager.h"
 #include "device/bluetooth/floss/floss_sdp_types.h"
 #include "device/bluetooth/floss/floss_socket_manager.h"
+#include "mojo/public/cpp/platform/platform_handle.h"
 
 using device::BluetoothUUID;
 using floss::BluetoothDeviceFloss;
@@ -117,20 +118,19 @@ void ArcFlossBridge::CreateSdpRecord(mojom::BluetoothSdpRecordPtr record_mojo,
           Convert(mojo::TypeConverter<
                   bluez::BluetoothServiceRecordBlueZ,
                   mojom::BluetoothSdpRecordPtr>::Convert(record_mojo));
-  const std::optional<device::BluetoothUUID> uuid =
-      floss::GetUUIDFromSdpRecord(sdp_record);
-  if (!uuid.has_value()) {
+  const device::BluetoothUUID uuid = floss::GetUUIDFromSdpRecord(sdp_record);
+  if (!uuid.IsValid()) {
     arc::mojom::BluetoothCreateSdpRecordResultPtr result =
         arc::mojom::BluetoothCreateSdpRecordResult::New();
     result->status = mojom::BluetoothStatus::PARM_INVALID;
     std::move(callback).Run(std::move(result));
     return;
   }
-  create_sdp_record_callbacks_.insert_or_assign(*uuid, std::move(callback));
+  create_sdp_record_callbacks_.insert_or_assign(uuid, std::move(callback));
 
   floss::ResponseCallback<bool> response_callback =
       base::BindOnce(&ArcFlossBridge::CreateSdpRecordComplete,
-                     weak_factory_.GetWeakPtr(), *uuid);
+                     weak_factory_.GetWeakPtr(), uuid);
   floss::FlossDBusManager::Get()->GetAdapterClient()->CreateSdpRecord(
       std::move(response_callback), sdp_record);
 }
@@ -218,32 +218,28 @@ void ArcFlossBridge::SdpSearchComplete(
     records_bluez.push_back(
         mojo::TypeConverter<bluez::BluetoothServiceRecordBlueZ,
                             floss::BtSdpRecord>::Convert(record));
-    std::optional<floss::BtSdpHeaderOverlay> header =
-        GetHeaderOverlayFromSdpRecord(record);
-    if (!header.has_value()) {
-      continue;
-    }
+    floss::BtSdpHeaderOverlay header =
+        floss::GetHeaderOverlayFromSdpRecord(record);
     // This record may be for an L2CAP service, but callers have to specify what
     // protocol they want to use anyway.
     uuid_lookups_.insert_or_assign(
-        std::make_pair(device.address, header->rfcomm_channel_number),
-        header->uuid);
+        std::make_pair(device.address, header.rfcomm_channel_number),
+        header.uuid);
   }
   OnGetServiceRecordsFinished(std::move(address), uuid, records_bluez);
 }
 
 void ArcFlossBridge::SdpRecordCreated(const floss::BtSdpRecord record,
                                       const int32_t handle) {
-  const std::optional<device::BluetoothUUID> uuid =
-      floss::GetUUIDFromSdpRecord(record);
-  if (!uuid.has_value()) {
+  const device::BluetoothUUID uuid = floss::GetUUIDFromSdpRecord(record);
+  if (!uuid.IsValid()) {
     return;
   }
   arc::mojom::BluetoothCreateSdpRecordResultPtr callback_result =
       arc::mojom::BluetoothCreateSdpRecordResult::New();
   callback_result->status = mojom::BluetoothStatus::SUCCESS;
   callback_result->service_handle = handle;
-  CompleteCreateSdpRecord(*uuid, std::move(callback_result));
+  CompleteCreateSdpRecord(uuid, std::move(callback_result));
 }
 
 void ArcFlossBridge::SendCachedDevices() const {
@@ -453,9 +449,7 @@ void ArcFlossBridge::OnCreateConnectSocketCallback(
   std::move(callback).Run(mojom::BluetoothStatus::SUCCESS,
                           sock_wrapper->remote.BindNewPipeAndPassReceiver());
   auto connection = mojom::BluetoothSocketConnection::New();
-  mojo::ScopedHandle handle = mojo::WrapPlatformHandle(
-      mojo::PlatformHandle(std::move(sock_wrapper->file)));
-  connection->sock = std::move(handle);
+  connection->sock = mojo::PlatformHandle(std::move(sock_wrapper->file));
   switch (sock_wrapper->sock_type) {
     case mojom::BluetoothSocketType::TYPE_RFCOMM:
     case mojom::BluetoothSocketType::TYPE_L2CAP_LE:
@@ -530,10 +524,8 @@ void ArcFlossBridge::OnConnectionAccepted(
     return;
   }
 
-  mojo::ScopedHandle handle =
-      mojo::WrapPlatformHandle(mojo::PlatformHandle(std::move(*socket.fd)));
   auto connection = mojom::BluetoothSocketConnection::New();
-  connection->sock = std::move(handle);
+  connection->sock = mojo::PlatformHandle(std::move(*socket.fd));
   connection->addr =
       mojom::BluetoothAddress::From(socket.remote_device.address);
   connection->port = socket.port;

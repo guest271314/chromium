@@ -21,13 +21,13 @@
 #include "base/test/mock_callback.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/test_future.h"
-#include "chrome/browser/password_manager/actor_login/internal/actor_login_delegate_impl.h"
 #include "chrome/common/actor.mojom.h"
 #include "chrome/common/chrome_render_frame.mojom.h"
 #include "chrome/test/base/chrome_render_view_host_test_harness.h"
 #include "components/optimization_guide/proto/features/actor_login.pb.h"
 #include "components/optimization_guide/proto/features/common_quality_data.pb.h"
 #include "components/page_content_annotations/content/mojom/page_stability.mojom.h"
+#include "components/password_manager/core/browser/actor_login/internal/actor_login_delegate_impl.h"
 #include "components/password_manager/core/browser/actor_login/internal/actor_login_metrics_helper.h"
 #include "components/password_manager/core/browser/actor_login/test/mock_actor_login_delegate.h"
 #include "components/password_manager/core/browser/actor_login/test/mock_actor_login_permission_service.h"
@@ -40,10 +40,14 @@
 #include "content/public/test/web_contents_tester.h"
 #include "mojo/public/cpp/bindings/associated_receiver_set.h"
 #include "mojo/public/cpp/bindings/associated_remote.h"
+#include "pdf/buildflags.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/common/associated_interfaces/associated_interface_provider.h"
+#include "third_party/blink/public/common/tokens/tokens.h"
 #include "third_party/blink/public/mojom/window_features/window_features.mojom.h"
+#include "ui/base/page_transition_types.h"
+#include "ui/base/window_open_disposition.h"
 
 namespace actor_login {
 namespace {
@@ -135,17 +139,23 @@ class MockChromeRenderFrame : public chrome::mojom::ChromeRenderFrame {
               (override));
   MOCK_METHOD(void,
               GetCrossDocumentScriptToolResult,
-              (const base::UnguessableToken&,
+              (const blink::ToolInvocationToken&,
                GetCrossDocumentScriptToolResultCallback),
               (override));
+#if BUILDFLAG(ENABLE_PDF)
+  MOCK_METHOD(void,
+              PdfPageCaptured,
+              (const std::u16string& contents,
+               const std::string& pdf_lang,
+               const GURL& page_url),
+              (override));
+#endif
 
  private:
   mojo::AssociatedReceiverSet<chrome::mojom::ChromeRenderFrame> receivers_;
 };
 
 }  // namespace
-
-
 
 using AttemptLoginDetails =
     optimization_guide::proto::ActorLoginQuality_AttemptLoginDetails;
@@ -184,8 +194,8 @@ class ActorLoginSiwgControllerTest : public ChromeRenderViewHostTestHarness {
     NavigateAndCommit(GURL("https://example.com/login"));
   }
 
-  base::WeakPtr<MockActorLoginQualityLogger> mqls_logger() {
-    return mock_mqls_logger_.AsWeakPtr();
+  scoped_refptr<MockActorLoginQualityLogger> mqls_logger() {
+    return mock_mqls_logger_;
   }
 
   void SimulateContinuationLoginResult(content::WebContentsObserver* observer,
@@ -204,7 +214,8 @@ class ActorLoginSiwgControllerTest : public ChromeRenderViewHostTestHarness {
 
  protected:
   StrictMock<MockActorLoginPermissionService> mock_permission_service_;
-  MockActorLoginQualityLogger mock_mqls_logger_;
+  scoped_refptr<MockActorLoginQualityLogger> mock_mqls_logger_ =
+      base::MakeRefCounted<MockActorLoginQualityLogger>();
   testing::NiceMock<MockActionSequenceDelegate> mock_action_sequence_delegate_;
 };
 
@@ -246,7 +257,7 @@ TEST_F(ActorLoginSiwgControllerTest, DelegatesClick) {
   expected_details.set_button_click_succeeded(true);
 
   EXPECT_CALL(
-      mock_mqls_logger_,
+      *mock_mqls_logger_,
       AddAttemptLoginDetails(EqualsAttemptLoginDetails(expected_details)));
 
   controller->StartFederatedLogin(std::move(metrics_helper_owned));
@@ -287,6 +298,112 @@ TEST_F(ActorLoginSiwgControllerTest, DelegatesClick) {
                                       1);
 }
 
+// A federated login which needs a button click reports its outcome long after
+// the attempt login tool, which created the quality logger, is gone. The
+// controller has to keep the logger alive until then, otherwise the outcome is
+// missing from the uploaded log.
+TEST_F(ActorLoginSiwgControllerTest, LogsOutcomeAfterLoggerCreatorIsGone) {
+  base::MockCallback<LoginStatusResultOrErrorReply> finished_callback;
+
+  base::OnceCallback<void(bool)> captured_callback;
+  EXPECT_CALL(mock_action_sequence_delegate_, RegisterActionSequenceEnded)
+      .WillOnce([&](base::OnceCallback<void(bool)> callback) {
+        captured_callback = std::move(callback);
+        return base::CallbackListSubscription();
+      });
+
+  Credential credential;
+  credential.federation_detail = FederationDetail();
+
+  base::test::TestFuture<bool> post_button_click_login_result_future;
+  auto controller = std::make_unique<ActorLoginSiwgController>(
+      web_contents(), credential, false, mock_permission_service_,
+      finished_callback.Get(), mock_action_sequence_delegate_.GetWeakPtr(),
+      mqls_logger(), base::TimeTicks::Now(),
+      post_button_click_login_result_future.GetCallback());
+
+  base::RunLoop run_loop;
+  EXPECT_CALL(finished_callback,
+              Run(base::test::ValueIs(LoginStatusResult::kRequiresButtonClick)))
+      .WillOnce(base::test::RunClosure(run_loop.QuitClosure()));
+  controller->StartFederatedLogin(
+      std::make_unique<ActorLoginMetricsHelper>(ukm::kInvalidSourceId));
+  run_loop.Run();
+
+  // The tool finishes as soon as it has handed the button click over to the
+  // action sequence, and is destroyed. Simulate it dropping its reference to
+  // the logger, which the controller must keep alive. The raw pointer stays
+  // valid precisely because the controller holds a reference, so check that
+  // it does before dropping the only other one.
+  ASSERT_FALSE(mock_mqls_logger_->HasOneRef());
+  MockActorLoginQualityLogger* logger = mock_mqls_logger_.get();
+  mock_mqls_logger_.reset();
+
+  const int kAttemptLoginTimeMs = 50;
+  AttemptLoginDetails expected_details;
+  expected_details.set_outcome(
+      optimization_guide::proto::
+          ActorLoginQuality_AttemptLoginDetails_AttemptLoginOutcome_FEDERATED_SUCCESS);
+  expected_details.set_attempt_login_time_ms(kAttemptLoginTimeMs);
+  expected_details.set_button_click_required(true);
+  expected_details.set_button_click_succeeded(true);
+  EXPECT_CALL(*logger, AddAttemptLoginDetails(
+                           EqualsAttemptLoginDetails(expected_details)));
+
+  task_environment()->AdvanceClock(base::Milliseconds(kAttemptLoginTimeMs));
+
+  // The button click succeeded and the identity provider returned a token.
+  std::move(captured_callback).Run(true);
+  auto* request =
+      content::webid::FederatedEmbedderLoginRequest::Get(web_contents());
+  ASSERT_TRUE(request);
+  request->OnFederatedResultReceived(
+      content::webid::FederatedLoginResult::kSuccess);
+
+  EXPECT_TRUE(post_button_click_login_result_future.Get());
+}
+
+// A login the user never completes must not keep the quality log alive beyond
+// the controller: once the controller is gone, so is the last reference the
+// login flow holds, and the log is uploaded without any attempt login details,
+// which is what marks the flow as abandoned.
+TEST_F(ActorLoginSiwgControllerTest, AbandonedFlowReleasesTheLogger) {
+  base::MockCallback<LoginStatusResultOrErrorReply> finished_callback;
+
+  EXPECT_CALL(mock_action_sequence_delegate_, RegisterActionSequenceEnded)
+      .WillOnce([](base::OnceCallback<void(bool)>) {
+        return base::CallbackListSubscription();
+      });
+
+  Credential credential;
+  credential.federation_detail = FederationDetail();
+
+  auto controller = std::make_unique<ActorLoginSiwgController>(
+      web_contents(), credential, false, mock_permission_service_,
+      finished_callback.Get(), mock_action_sequence_delegate_.GetWeakPtr(),
+      mqls_logger(), base::TimeTicks::Now(), base::DoNothing());
+
+  base::RunLoop run_loop;
+  EXPECT_CALL(finished_callback,
+              Run(base::test::ValueIs(LoginStatusResult::kRequiresButtonClick)))
+      .WillOnce(base::test::RunClosure(run_loop.QuitClosure()));
+  controller->StartFederatedLogin(
+      std::make_unique<ActorLoginMetricsHelper>(ukm::kInvalidSourceId));
+  run_loop.Run();
+
+  // The button is never clicked, so the outcome of the login never arrives and
+  // nothing is added to the log.
+  EXPECT_CALL(*mock_mqls_logger_, AddAttemptLoginDetails).Times(0);
+  ASSERT_FALSE(mock_mqls_logger_->HasOneRef());
+
+  // The delegate destroys the controller once the flow can no longer finish,
+  // at the latest when the tab is gone.
+  controller.reset();
+
+  // No participant of the login flow is left, so the log is uploaded.
+  EXPECT_TRUE(mock_mqls_logger_->HasOneRef());
+}
+
 TEST_F(ActorLoginSiwgControllerTest, StoresPermissionOnSuccess) {
   base::MockCallback<LoginStatusResultOrErrorReply> finished_callback;
   auto metrics_helper_owned =
@@ -315,7 +432,7 @@ TEST_F(ActorLoginSiwgControllerTest, StoresPermissionOnSuccess) {
   expected_details.set_button_click_required(true);
 
   EXPECT_CALL(
-      mock_mqls_logger_,
+      *mock_mqls_logger_,
       AddAttemptLoginDetails(EqualsAttemptLoginDetails(expected_details)));
 
   base::RunLoop login_run_loop;
@@ -379,7 +496,7 @@ TEST_F(ActorLoginSiwgControllerTest, DoesNotStorePermissionOnFailure) {
   expected_details.set_button_click_required(true);
 
   EXPECT_CALL(
-      mock_mqls_logger_,
+      *mock_mqls_logger_,
       AddAttemptLoginDetails(EqualsAttemptLoginDetails(expected_details)));
 
   base::RunLoop start_run_loop;

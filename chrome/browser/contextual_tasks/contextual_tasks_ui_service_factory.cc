@@ -61,7 +61,7 @@ ContextualTasksUiServiceFactory::ContextualTasksUiServiceFactory()
 std::unique_ptr<KeyedService>
 ContextualTasksUiServiceFactory::BuildServiceInstanceForBrowserContext(
     content::BrowserContext* context) const {
-  if (!base::FeatureList::IsEnabled(kContextualTasks)) {
+  if (!contextual_tasks::IsContextualTasksUIEnabled()) {
     return nullptr;
   }
 
@@ -84,21 +84,26 @@ ContextualTasksUiServiceFactory::BuildServiceInstanceForBrowserContext(
           profile->GetPrefs(), IdentityManagerFactory::GetForProfile(profile),
           AimEligibilityServiceFactory::GetForProfile(profile));
 
-  return std::make_unique<ContextualTasksUiService>(
+  auto service = std::make_unique<ContextualTasksUiService>(
       profile, std::move(delegate),
       ContextualTasksServiceFactory::GetForProfile(profile),
       IdentityManagerFactory::GetForProfile(profile),
       AimEligibilityServiceFactory::GetForProfile(profile),
       std::move(eligibility_manager), std::move(cookie_synchronizer));
+  return service;
 }
 
 void ContextualTasksUiServiceFactory::RegisterProfilePrefs(
     user_prefs::PrefRegistrySyncable* registry) {
   registry->RegisterIntegerPref(kContextualTasksOnboardingTooltipDismissedCount,
                                 0);
+  registry->RegisterIntegerPref(kContextualTasksAskGTooltipDismissedCount,
+                                0);
+
   registry->RegisterBooleanPref(kContextualTasksShareOpenTabsEveryThread,
                                 false);
   registry->RegisterDictionaryPref(kContextualTasksSiteExclusions);
+  registry->RegisterIntegerPref(kContextualTasksSessionCountPostOnboarding, -1);
 }
 
 bool ContextualTasksUiServiceFactory::ServiceIsCreatedWithBrowserContext()

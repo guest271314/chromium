@@ -94,7 +94,8 @@ ScopedSVGPaintState::~ScopedSVGPaintState() {
 
   if (should_paint_clip_path_as_mask_image_) {
     ClipPathClipper::PaintClipPathAsMaskImage(paint_info_.context, object_,
-                                              display_item_client_);
+                                              display_item_client_,
+                                              paint_info_.GetPaintFlags());
   }
 }
 
@@ -142,21 +143,22 @@ void ScopedSVGPaintState::ApplyPaintPropertyState(
   auto& paint_controller = paint_info_.context.GetPaintController();
   auto state = paint_controller.CurrentPaintChunkProperties();
 
-  const auto* filter = properties.Filter();
-  if (filter && filter->Filter() && filter->Filter()->OriginTainted() &&
-      (paint_info_.GetPaintFlags() & PaintFlag::kPrivacyPreserving)) {
-    filter = nullptr;
-  }
-
-  if (filter) {
-    state.SetEffect(*filter);
-  } else if (const auto* effect = properties.Effect()) {
-    state.SetEffect(*effect);
-  }
-
+  const EffectPaintPropertyNodeOrAlias* effect = properties.Filter();
   const auto* filter_clip = properties.PixelMovingFilterClipExpander();
-  if (!filter) {
+  if (!effect) {
+    effect = properties.Effect();
     filter_clip = nullptr;
+  }
+
+  if (paint_info_.GetPaintFlags() & PaintFlag::kReadBackAllowedRendering) {
+    while (effect && (effect->Unalias().IsInTaintedSubtree())) {
+      filter_clip = nullptr;
+      effect = effect->Parent();
+    }
+  }
+
+  if (effect) {
+    state.SetEffect(*effect);
   }
 
   if (filter_clip) {
@@ -199,7 +201,7 @@ ScopedSVGPaintState::PaintBehavior ScopedSVGPaintState::ComputePaintBehavior(
   if (paint_info.phase == PaintPhase::kForeground &&
       RuntimeEnabledFeatures::SvgFilterPaintsForHiddenContentEnabled() &&
       !paint_info.IsRenderingClipPathAsMaskImage() &&
-      object.StyleRef().Filter().HasReferenceFilter()) {
+      object.Style().Filter().HasReferenceFilter()) {
     return {PaintComponent::kReferenceFilter};
   }
 

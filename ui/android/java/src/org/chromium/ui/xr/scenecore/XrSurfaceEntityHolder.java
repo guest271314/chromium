@@ -57,12 +57,41 @@ public interface XrSurfaceEntityHolder<EntityType> extends XrTransformableEntity
     void setSurfaceShape(@XrSurfaceEntityShape int shape);
 
     /**
+     * Sets a custom mesh for the surface shape. This is used when the surface shape is set to
+     * {@link XrSurfaceEntityShape#CUSTOM}.
+     *
+     * @param meshDatas The mesh data to apply.
+     */
+    void setSurfaceShape(XrMeshData[] meshDatas);
+
+    /**
      * Sets the pixel dimensions of the surface.
      *
      * @param width The new width of the surface in pixels.
      * @param height The new height of the surface in pixels.
      */
     void setSurfacePixelDimensions(int width, int height);
+
+    /** Returns the corner radius of the quad surface in spatial units (meters). */
+    float getCornerRadius();
+
+    /**
+     * Sets the corner radius of the quad surface in spatial units (meters).
+     *
+     * @param radius The new corner radius.
+     */
+    void setCornerRadius(float radius);
+
+    /**
+     * Sets rectangular edge feathering parameters for the surface entity.
+     *
+     * @param leftRight The edge fadeout radius on the left and right edges.
+     * @param topBottom The edge fadeout radius on the top and bottom edges.
+     */
+    void setRectangleEdgeFeathering(float leftRight, float topBottom);
+
+    /** Removes edge feathering from the surface entity. */
+    void removeEdgeFeathering();
 
     /** Callback interface for surface lifecycle events. */
     interface Callback {

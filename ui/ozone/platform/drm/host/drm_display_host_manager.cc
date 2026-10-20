@@ -54,11 +54,15 @@ const int kAuthFailSleepMs = 100;
 // Log a warning after failing to authenticate for this many milliseconds.
 const int kLogAuthFailDelayMs = 1000;
 
-constexpr auto kDisplayActionString = std::to_array<std::string_view>({
+// Maximum number of attempts to authenticate the DRM device before proceeding.
+// With kAuthFailSleepMs = 100, 50 attempts corresponds to ~5 seconds.
+constexpr int kMaxAuthAttempts = 50;
+
+constexpr std::array<std::string_view, 3> kDisplayActionString = {
     "ADD",
     "REMOVE",
     "CHANGE",
-});
+};
 
 // Find sysfs device path for the given device path.
 base::FilePath MapDevPathToSysPath(const base::FilePath& device_path) {
@@ -112,8 +116,9 @@ std::unique_ptr<DrmWrapper> OpenDrmDevice(const base::FilePath& dev_path,
 
   base::ScopedFD scoped_fd;
   int num_auth_attempts = 0;
+  bool is_authenticated = false;
   const base::TimeTicks start_time = base::TimeTicks::Now();
-  while (true) {
+  while (num_auth_attempts < kMaxAuthAttempts) {
     scoped_fd.reset();
     int fd = HANDLE_EINTR(open(dev_path.value().c_str(), O_RDWR | O_CLOEXEC));
     if (fd < 0) {
@@ -128,7 +133,8 @@ std::unique_ptr<DrmWrapper> OpenDrmDevice(const base::FilePath& dev_path,
     const bool should_log_error =
         (base::TimeTicks::Now() - start_time).InMilliseconds() >=
         kLogAuthFailDelayMs;
-    drm_magic_t magic = 0;
+    drm_magic_t magic;
+    UNSAFE_TODO(memset(&magic, 0, sizeof(magic)));
     // We need to make sure the DRM device has enough privilege. Use the DRM
     // authentication logic to figure out if the device has enough permissions.
     int drm_errno = drmGetMagic(fd, &magic);
@@ -142,6 +148,13 @@ std::unique_ptr<DrmWrapper> OpenDrmDevice(const base::FilePath& dev_path,
     }
     drm_errno = drmAuthMagic(fd, magic);
     if (drm_errno) {
+      // If authenticating fails (e.g. because the previously crashing process
+      // held DRM master and is being torn down), try explicitly acquiring DRM
+      // master on this file descriptor.
+      if (drmSetMaster(fd) == 0 && drmAuthMagic(fd, magic) == 0) {
+        is_authenticated = true;
+        break;
+      }
       LOG_IF(ERROR, should_log_error)
           << "Failed to authenticate: " << dev_path.value()
           << " with errno: " << drm_errno << " after " << num_auth_attempts
@@ -149,12 +162,19 @@ std::unique_ptr<DrmWrapper> OpenDrmDevice(const base::FilePath& dev_path,
       usleep(kAuthFailSleepMs * 1000);
       continue;
     }
+    is_authenticated = true;
     break;
   }
 
-  VLOG(1) << "Succeeded authenticating " << dev_path.value() << " in "
-          << (base::TimeTicks::Now() - start_time).InMilliseconds() << " ms "
-          << "with " << num_auth_attempts << " attempt(s)";
+  if (!is_authenticated) {
+    LOG(WARNING) << "Failed to authenticate " << dev_path.value() << " after "
+                 << num_auth_attempts
+                 << " attempt(s); proceeding with unauthenticated device";
+  } else {
+    VLOG(1) << "Succeeded authenticating " << dev_path.value() << " in "
+            << (base::TimeTicks::Now() - start_time).InMilliseconds() << " ms "
+            << "with " << num_auth_attempts << " attempt(s)";
+  }
 
   auto drm = std::make_unique<DrmWrapper>(sys_path, std::move(scoped_fd),
                                           is_primary_device);
@@ -205,7 +225,8 @@ std::vector<DisplayCard> GetValidDisplayCards() {
       continue;
     }
 
-    struct drm_mode_card_res res = {};
+    struct drm_mode_card_res res;
+    UNSAFE_TODO(memset(&res, 0, sizeof(struct drm_mode_card_res)));
     int ret = drmIoctl(fd.get(), DRM_IOCTL_MODE_GETRESOURCES, &res);
     VPLOG_IF(1, ret) << "Failed to get DRM resources for '" << card_path << "'";
 
@@ -439,8 +460,7 @@ void DrmDisplayHostManager::ProcessEvent() {
     const std::string seqnum = seqnum_it == event.display_event_props.end()
                                    ? ""
                                    : ("(SEQNUM:" + seqnum_it->second + ")");
-    VLOG(1) << "Got display event "
-            << kDisplayActionString.at(static_cast<size_t>(event.action_type))
+    VLOG(1) << "Got display event " << kDisplayActionString[event.action_type]
             << seqnum << " for " << event.path.value();
     switch (event.action_type) {
       case DeviceEvent::ADD:

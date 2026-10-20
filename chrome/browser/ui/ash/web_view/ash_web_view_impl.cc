@@ -14,6 +14,7 @@
 #include "content/public/browser/focused_node_details.h"
 #include "content/public/browser/host_zoom_map.h"
 #include "content/public/browser/media_session.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/page.h"
 #include "content/public/browser/render_process_host.h"
 #include "content/public/browser/render_view_host.h"
@@ -24,6 +25,7 @@
 #include "third_party/blink/public/mojom/mediastream/media_stream.mojom.h"
 #include "ui/aura/window.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
+#include "ui/base/window_open_disposition.h"
 #include "ui/gfx/geometry/rounded_corners_f.h"
 #include "ui/views/controls/webview/web_contents_set_background_color.h"
 #include "ui/views/controls/webview/webview.h"
@@ -55,7 +57,7 @@ gfx::NativeView AshWebViewImpl::GetNativeView() {
 }
 
 void AshWebViewImpl::ChildPreferredSizeChanged(views::View* child) {
-  DCHECK_EQ(web_view_, child);
+  CHECK_EQ(web_view_, child, base::NotFatalUntil::M162);
   SetPreferredSize(web_view_->GetPreferredSize());
 }
 
@@ -97,7 +99,7 @@ views::View* AshWebViewImpl::GetInitiallyFocusedView() {
 }
 
 void AshWebViewImpl::SetCornerRadii(const gfx::RoundedCornersF& corner_radii) {
-  web_view_->holder()->SetCornerRadii(corner_radii);
+  web_view_->holder()->SetNativeViewCornerRadii(corner_radii);
 }
 
 const base::UnguessableToken& AshWebViewImpl::GetMediaSessionRequestId() {
@@ -112,7 +114,8 @@ void AshWebViewImpl::AddedToWidget() {
   // Apply rounded corners. This can't be done earlier since it
   // requires `web_view_->holder()->native_view()` to be initialized.
   if (params_.rounded_corners.has_value()) {
-    web_view_->holder()->SetCornerRadii(params_.rounded_corners.value());
+    web_view_->holder()->SetNativeViewCornerRadii(
+        params_.rounded_corners.value());
   }
 }
 
@@ -168,13 +171,13 @@ void AshWebViewImpl::ActivateContents(content::WebContents* contents) {
 
 void AshWebViewImpl::ResizeDueToAutoResize(content::WebContents* web_contents,
                                            const gfx::Size& new_size) {
-  DCHECK_EQ(web_contents_.get(), web_contents);
+  CHECK_EQ(web_contents_.get(), web_contents, base::NotFatalUntil::M162);
   web_view_->SetPreferredSize(new_size);
 }
 
 bool AshWebViewImpl::TakeFocus(content::WebContents* web_contents,
                                bool reverse) {
-  DCHECK_EQ(web_contents_.get(), web_contents);
+  CHECK_EQ(web_contents_.get(), web_contents, base::NotFatalUntil::M162);
   auto* focus_manager = GetFocusManager();
   if (focus_manager) {
     focus_manager->ClearNativeFocus();
@@ -185,7 +188,7 @@ bool AshWebViewImpl::TakeFocus(content::WebContents* web_contents,
 void AshWebViewImpl::NavigationStateChanged(
     content::WebContents* web_contents,
     content::InvalidateTypes changed_flags) {
-  DCHECK_EQ(web_contents_.get(), web_contents);
+  CHECK_EQ(web_contents_.get(), web_contents, base::NotFatalUntil::M162);
   UpdateCanGoBack();
 }
 
@@ -257,7 +260,8 @@ void AshWebViewImpl::RenderFrameHostChanged(
 }
 
 void AshWebViewImpl::PrimaryPageChanged(content::Page& page) {
-  DCHECK_EQ(&page.GetMainDocument(), web_contents_->GetPrimaryMainFrame());
+  CHECK_EQ(&page.GetMainDocument(), web_contents_->GetPrimaryMainFrame(),
+           base::NotFatalUntil::M162);
   if (!web_contents_->GetRenderWidgetHostView()) {
     return;
   }

@@ -8,39 +8,30 @@
 
 #include "base/command_line.h"
 #include "base/memory/raw_ref.h"
-#include "base/numerics/safe_conversions.h"
-#include "base/scoped_observation.h"
 #include "build/build_config.h"
 #include "build/buildflag.h"
-#include "chrome/browser/browser_process.h"
 #include "chrome/browser/themes/custom_theme_supplier.h"
 #include "chrome/browser/themes/theme_properties.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
 #include "chrome/browser/ui/color/chrome_color_id.h"
-#include "chrome/browser/ui/layout_constants.h"
 #include "chrome/browser/ui/tabs/tab_style.h"
-#include "chrome/browser/ui/tabs/tab_types.h"
-#include "chrome/browser/ui/view_ids.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
-#include "chrome/browser/ui/views/frame/tab_strip_region_view.h"
+#include "chrome/browser/ui/views/frame/browser_widget.h"
+#include "chrome/browser/ui/views/frame/safe_invoke/safe_invoke.h"
 #include "chrome/browser/ui/web_applications/app_browser_controller.h"
 #include "chrome/grit/theme_resources.h"
 #include "third_party/skia/include/core/SkColor.h"
-#include "ui/base/hit_test.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/theme_provider.h"
 #include "ui/color/color_id.h"
 #include "ui/gfx/canvas.h"
-#include "ui/gfx/color_palette.h"
 #include "ui/gfx/color_utils.h"
 #include "ui/gfx/geometry/rect_conversions.h"
 #include "ui/gfx/geometry/rounded_corners_f.h"
 #include "ui/gfx/geometry/size_f.h"
 #include "ui/gfx/image/image.h"
 #include "ui/gfx/paint_vector_icon.h"
-#include "ui/gfx/scoped_canvas.h"
 #include "ui/views/background.h"
-#include "ui/views/controls/label.h"
 #include "ui/views/layout/layout_types.h"
 #include "ui/views/view.h"
 #include "ui/views/view_class_properties.h"
@@ -48,6 +39,7 @@
 
 #if BUILDFLAG(IS_WIN)
 #include "chrome/browser/taskbar/taskbar_decorator_win.h"
+#include "chrome/browser/ui/layout_constants.h"
 #include "ui/display/win/screen_win.h"
 #include "ui/views/win/hwnd_util.h"
 #endif
@@ -119,8 +111,11 @@ gfx::Rect BrowserFrameView::BoundsAndMargins::ToEnclosingRect() const {
 BrowserFrameView::BrowserFrameView(BrowserWidget* browser_widget,
                                    BrowserView* browser_view)
     : browser_widget_(browser_widget), browser_view_(browser_view) {
-  DCHECK(browser_widget_);
-  DCHECK(browser_view_);
+  CHECK(browser_widget_, base::NotFatalUntil::M162);
+  CHECK(browser_view_, base::NotFatalUntil::M162);
+  paint_as_active_subscription_ =
+      browser_widget_->RegisterPaintAsActiveChangedCallback(base::BindRepeating(
+          &BrowserFrameView::PaintAsActiveChanged, base::Unretained(this)));
   SetProperty(views::kElementIdentifierKey, kBrowserFrameElementId);
   if (base::CommandLine::ForCurrentProcess()->HasSwitch(
           kShowBrowserFrameRegionsCommandLineSwitch)) {
@@ -208,7 +203,7 @@ bool BrowserFrameView::IsFrameCondensed() const {
 
 bool BrowserFrameView::HasVisibleBackgroundTabShapes(
     BrowserFrameActiveState active_state) const {
-  DCHECK(GetBrowserView()->GetSupportsTabStrip());
+  CHECK(GetBrowserView()->GetSupportsTabStrip(), base::NotFatalUntil::M162);
 
   const bool active = ShouldPaintAsActiveForState(active_state);
   const std::optional<int> bg_id = GetCustomBackgroundId(active_state);
@@ -264,6 +259,10 @@ SkColor BrowserFrameView::GetFrameColor(
 
 std::optional<int> BrowserFrameView::GetCustomBackgroundId(
     BrowserFrameActiveState active_state) const {
+  if (GetBrowserView()->GetEnterpriseIsolatedMode()) {
+    return std::nullopt;
+  }
+
   const ui::ThemeProvider* tp = GetThemeProvider();
   const bool incognito = GetBrowserView()->GetIncognito();
   const bool active = ShouldPaintAsActiveForState(active_state);
@@ -315,10 +314,9 @@ void BrowserFrameView::PaintAsActiveChanged() {
 }
 
 ClientFrameElementInfo BrowserFrameView::GetClientFrameElementInfo() const {
-  if (auto* const browser_view = GetBrowserView()) {
-    return browser_view->GetFrameElementInfo();
-  }
-  return ClientFrameElementInfo();
+  return SafeInvoke(GetBrowserView())
+      .Then(&BrowserView::GetFrameElementInfo)
+      .value_or(ClientFrameElementInfo());
 }
 
 BrowserFrameView::BoundsAndMargins BrowserFrameView::GetCaptionButtonBounds()
@@ -348,6 +346,7 @@ gfx::ImageSkia BrowserFrameView::GetFrameImage(
 gfx::ImageSkia BrowserFrameView::GetFrameOverlayImage(
     BrowserFrameActiveState active_state) const {
   if (GetBrowserView()->GetIncognito() ||
+      GetBrowserView()->GetEnterpriseIsolatedMode() ||
       !GetBrowserView()->GetIsNormalType()) {
     return gfx::ImageSkia();
   }

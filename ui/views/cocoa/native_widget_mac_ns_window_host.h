@@ -12,6 +12,7 @@
 #include <utility>
 #include <vector>
 
+#include "base/functional/callback_helpers.h"
 #include "base/memory/raw_ptr.h"
 #include "components/remote_cocoa/app_shim/native_widget_ns_window_host_helper.h"
 #include "components/remote_cocoa/app_shim/ns_view_ids.h"
@@ -45,6 +46,10 @@ class ScopedNativeWindowMapping;
 namespace ui {
 class RecyclableCompositorMac;
 }  // namespace ui
+
+namespace views::test {
+class BridgedNativeWidgetTestApi;
+}  // namespace views::test
 
 namespace views {
 
@@ -103,7 +108,7 @@ class VIEWS_EXPORT NativeWidgetMacNSWindowHost
     return native_widget_mac_;
   }
   NativeWidgetMacNSWindowHost* parent() const { return parent_; }
-  std::vector<NativeWidgetMacNSWindowHost*> children() const {
+  const std::vector<raw_ptr<NativeWidgetMacNSWindowHost>>& children() const {
     return children_;
   }
 
@@ -141,6 +146,10 @@ class VIEWS_EXPORT NativeWidgetMacNSWindowHost
   remote_cocoa::NativeWidgetNSWindowBridge* GetInProcessNSWindowBridge() const {
     return in_process_ns_window_bridge_.get();
   }
+
+  // Request a video capture lock to prevent the compositor from being hidden
+  // while video capture is active.
+  [[nodiscard]] base::ScopedClosureRunner CreateVideoCaptureLock();
 
   TooltipManager* tooltip_manager() { return tooltip_manager_.get(); }
 
@@ -290,8 +299,12 @@ class VIEWS_EXPORT NativeWidgetMacNSWindowHost
   // Set the color mode of the window.
   void SetColorMode(ui::ColorProviderKey::ColorMode color_mode);
 
+  // Synchronize layer opaqueness and compositor background color.
+  void SetLayerAndCompositorOpaque(bool opaque);
+
  private:
   friend class TextInputHost;
+  friend class views::test::BridgedNativeWidgetTestApi;
 
   void UpdateCompositorProperties();
   void DestroyCompositor();
@@ -325,7 +338,6 @@ class VIEWS_EXPORT NativeWidgetMacNSWindowHost
                  gfx::Point* baseline_point) override;
   remote_cocoa::DragDropClient* GetDragDropClient() override;
   ui::TextInputClient* GetTextInputClient() override;
-  bool MustPostTaskToRunModalSheetAnimation() const override;
 
   // remote_cocoa::ApplicationHost::Observer:
   void OnApplicationHostDestroying(
@@ -496,7 +508,7 @@ class VIEWS_EXPORT NativeWidgetMacNSWindowHost
 
   // Parent and child widgets.
   raw_ptr<NativeWidgetMacNSWindowHost> parent_ = nullptr;
-  std::vector<NativeWidgetMacNSWindowHost*> children_;
+  std::vector<raw_ptr<NativeWidgetMacNSWindowHost>> children_;
 
   // The factory that was used to create |remote_ns_window_remote_|. This must
   // be the same as |parent_->application_host_|.
@@ -568,7 +580,8 @@ class VIEWS_EXPORT NativeWidgetMacNSWindowHost
 
   // Weak pointers to event monitors for this widget. The event monitors
   // themselves will remove themselves from this list.
-  std::list<NativeWidgetMacEventMonitor*> event_monitors_;
+  std::list<raw_ptr<NativeWidgetMacEventMonitor, DanglingUntriaged>>
+      event_monitors_;
 
   std::unique_ptr<ui::RecyclableCompositorMac> compositor_;
   std::unique_ptr<remote_cocoa::ScopedCGWindowID> scoped_cg_window_id_;
@@ -584,8 +597,16 @@ class VIEWS_EXPORT NativeWidgetMacNSWindowHost
   // based on enterprise policies.
   bool allow_screenshots_ = true;
 
+  bool window_will_close_called_ = false;
+
   mojo::AssociatedReceiver<remote_cocoa::mojom::NativeWidgetNSWindowHost>
       remote_ns_window_host_receiver_{this};
+
+  void UpdateCompositorVisibility();
+  void OnVideoCaptureLockDestroyed();
+
+  // Number of active video capture locks.
+  uint32_t video_capture_count_ = 0;
 
   base::ScopedObservation<View, ViewObserver> root_view_observation_{this};
 

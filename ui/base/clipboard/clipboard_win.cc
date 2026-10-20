@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 // Many of these functions are based on those found in
 // webkit/port/platform/PasteboardWin.cpp
 
@@ -35,6 +30,7 @@
 #include "base/lazy_instance.h"
 #include "base/notreached.h"
 #include "base/numerics/safe_conversions.h"
+#include "base/numerics/safe_math.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
@@ -189,8 +185,8 @@ HGLOBAL CreateGlobalData(const std::basic_string<charT>& str) {
     ::GlobalAlloc(GMEM_MOVEABLE, ((str.size() + 1) * sizeof(charT)));
   if (data) {
     charT* raw_data = static_cast<charT*>(::GlobalLock(data));
-    memcpy(raw_data, str.data(), str.size() * sizeof(charT));
-    raw_data[str.size()] = '\0';
+    UNSAFE_TODO(memcpy(raw_data, str.data(), str.size() * sizeof(charT)));
+    UNSAFE_TODO(raw_data[str.size()] = '\0');
     ::GlobalUnlock(data);
   }
   return data;
@@ -239,7 +235,13 @@ bool ReadFilenamesAvailable() {
 
 // Limit the size of clipboard data to 256 MiB to prevent allocation failures.
 // See https://crbug.com/1164680.
-constexpr auto kMaxClipboardSize = base::MiBU(256);
+constexpr auto kMaxClipboardSize = base::MiB(256);
+
+// A DIB scanline is padded up to a whole number of 4-byte (32-bit DWORD)
+// boundaries, so its byte length depends on this alignment rather than on
+// width * bytes-per-pixel alone.
+constexpr size_t kDibRowAlignmentBits = 32;
+constexpr size_t kDibRowAlignmentBytes = 4;
 
 HANDLE GetClipboardDataWithLimit(UINT format) {
   HANDLE data = ::GetClipboardData(format);
@@ -267,9 +269,7 @@ ClipboardWin::ClipboardWin() {
   if (base::CurrentUIThread::IsSet())
     clipboard_owner_ = std::make_unique<base::win::MessageWindow>();
 
-  if (base::FeatureList::IsEnabled(features::kPlatformClipboardMonitor)) {
-    ui::ClipboardMonitor::GetInstance()->SetNotifier(this);
-  }
+  ui::ClipboardMonitor::GetInstance()->SetNotifier(this);
 
   if (base::FeatureList::IsEnabled(features::kNonBlockingOsClipboardReads)) {
     worker_task_runner_ = base::ThreadPool::CreateSequencedTaskRunner(
@@ -758,8 +758,8 @@ void ClipboardWin::ReadHTMLInternal(
 
   std::vector<size_t> offsets = {start_index - html_start,
                                  end_index - html_start};
-  markup->assign(base::UTF8ToUTF16AndAdjustOffsets(cf_html.data() + html_start,
-                                                   &offsets));
+  markup->assign(base::UTF8ToUTF16AndAdjustOffsets(
+      UNSAFE_TODO(cf_html.data() + html_start), &offsets));
   // Ensure the Fragment points within the string; see https://crbug.com/607181.
   size_t end = std::min(offsets[1], markup->length());
   *fragment_start = base::checked_cast<uint32_t>(std::min(offsets[0], end));
@@ -781,7 +781,7 @@ std::u16string ClipboardWin::ReadSvgInternal(
   if (base::FeatureList::IsEnabled(features::kUseUtf8EncodingForSvgImage)) {
     result = base::UTF8ToUTF16(data);
   } else {
-    result.assign(reinterpret_cast<const char16_t*>(data.data()),
+    result.assign(UNSAFE_TODO(reinterpret_cast<const char16_t*>(data.data())),
                   data.size() / sizeof(char16_t));
   }
   TrimAfterNull(&result);
@@ -907,9 +907,13 @@ std::vector<ui::FileInfo> ClipboardWin::ReadFilenamesInternal(
     {
       // filename using Unicode
       base::win::ScopedHGlobal<wchar_t*> filename(data);
-      if (filename.data() && filename.data()[0]) {
-        base::FilePath path(filename.data());
-        result.emplace_back(path, base::FilePath());
+      if (filename.data()) {
+        std::wstring_view path(filename.data(),
+                               filename.size() / sizeof(wchar_t));
+        path = path.substr(0, path.find(L'\0'));
+        if (!path.empty()) {
+          result.emplace_back(base::FilePath(path), base::FilePath());
+        }
       }
     }
     return result;
@@ -921,9 +925,13 @@ std::vector<ui::FileInfo> ClipboardWin::ReadFilenamesInternal(
     {
       // filename using ASCII
       base::win::ScopedHGlobal<char*> filename(data);
-      if (filename.data() && filename.data()[0]) {
-        base::FilePath path(base::SysNativeMBToWide(filename.data()));
-        result.emplace_back(path, base::FilePath());
+      if (filename.data()) {
+        std::string_view path(filename.data(), filename.size());
+        path = path.substr(0, path.find('\0'));
+        if (!path.empty()) {
+          result.emplace_back(base::FilePath(base::SysNativeMBToWide(path)),
+                              base::FilePath());
+        }
       }
     }
   }
@@ -1128,7 +1136,7 @@ void ClipboardWin::WriteData(const ClipboardFormatType& format,
     return;
 
   char* hdata_ptr = static_cast<char*>(::GlobalLock(hdata));
-  memcpy(hdata_ptr, data.data(), data.size());
+  UNSAFE_TODO(memcpy(hdata_ptr, data.data(), data.size()));
   ::GlobalUnlock(hdata);
   WriteToClipboard(format, hdata);
 }
@@ -1137,30 +1145,25 @@ void ClipboardWin::WriteClipboardHistory() {
   // Write a zero value to the clipboard to indicate that the clipboard history
   // is not available.
   DWORD value = 0;
-  WriteData(
-      ClipboardFormatType::ClipboardHistoryType(),
-      base::span(reinterpret_cast<const uint8_t*>(&value), sizeof(value)));
+  WriteData(ClipboardFormatType::ClipboardHistoryType(),
+            base::byte_span_from_ref(value));
 }
 
 void ClipboardWin::WriteUploadCloudClipboard() {
   // Write a zero value to the clipboard to indicate that the cloud clipboard
   // is not available.
   DWORD value = 0;
-  WriteData(
-      ClipboardFormatType::UploadCloudClipboardType(),
-      base::span(reinterpret_cast<const uint8_t*>(&value), sizeof(value)));
+  WriteData(ClipboardFormatType::UploadCloudClipboardType(),
+            base::byte_span_from_ref(value));
 }
 
 void ClipboardWin::WriteConfidentialDataForPassword() {
   // Write a zero value to the clipboard to indicate that the clipboard history
   // and cloud clipboard are not available.
   DWORD value = 0;
-  WriteData(
-      ClipboardFormatType::ClipboardHistoryType(),
-      base::span(reinterpret_cast<const uint8_t*>(&value), sizeof(value)));
-  WriteData(
-      ClipboardFormatType::UploadCloudClipboardType(),
-      base::span(reinterpret_cast<const uint8_t*>(&value), sizeof(value)));
+  auto value_bytes = base::byte_span_from_ref(value);
+  WriteData(ClipboardFormatType::ClipboardHistoryType(), value_bytes);
+  WriteData(ClipboardFormatType::UploadCloudClipboardType(), value_bytes);
 }
 
 template <typename Result>
@@ -1233,9 +1236,8 @@ SkBitmap ClipboardWin::ReadBitmapInternal(ClipboardBuffer buffer,
     return SkBitmap();
   }
 
-  // We use a DIB rather than a DDB here since ::GetObject() with the
-  // HBITMAP returned from ::GetClipboardData(CF_BITMAP) always reports a color
-  // depth of 32bpp.
+  // CF_DIB includes the source BITMAPINFOHEADER, whose bit depth is needed to
+  // locate the color table and pixel data correctly.
   HANDLE hdata = ::GetClipboardData(CF_DIB);
   if (!hdata) {
     return SkBitmap();
@@ -1244,6 +1246,16 @@ SkBitmap ClipboardWin::ReadBitmapInternal(ClipboardBuffer buffer,
   BITMAPINFO* bitmap = locked.data();
   if (!bitmap)
     return SkBitmap();
+
+  // The clipboard payload size is the only trustworthy bound on the DIB; the
+  // header fields read below are supplied by whoever wrote the clipboard data
+  // and are validated against it before any offset is dereferenced.
+  const size_t dib_size = locked.size();
+  // Reading any BITMAPINFOHEADER field when the payload is smaller than the
+  // header would itself be out of bounds.
+  if (dib_size < sizeof(BITMAPINFOHEADER)) {
+    return SkBitmap();
+  }
 
   // Reject LONG_MIN because abs(LONG_MIN) is undefined behavior,
   // and LONG_MIN is clearly not a valid image height.
@@ -1299,9 +1311,47 @@ SkBitmap ClipboardWin::ReadBitmapInternal(ClipboardBuffer buffer,
       // Return an empty image for unsupported bit depths.
       return SkBitmap();
   }
-  const void* bitmap_bits = reinterpret_cast<const char*>(bitmap) +
-                            bitmap->bmiHeader.biSize +
-                            color_table_length * sizeof(RGBQUAD);
+  // The pixel bits follow the header and color table. Both offsets come from
+  // header fields the clipboard writer controls, so their sum can already point
+  // past the end of the payload.
+  base::CheckedNumeric<size_t> checked_bits_offset = base::CheckAdd(
+      size_t{bitmap->bmiHeader.biSize},
+      base::CheckMul(static_cast<size_t>(color_table_length), sizeof(RGBQUAD)));
+
+  // GDI reads each scanline as a run of bytes padded up to a DWORD, so the
+  // pixel data spans row_stride * height; deriving it from width *
+  // bytes-per-pixel would under-count a narrow sub-32bpp row and leave a
+  // readable overrun.
+  base::CheckedNumeric<size_t> checked_row_stride =
+      (base::CheckMul(base::CheckedNumeric<size_t>(bitmap->bmiHeader.biWidth),
+                      bitmap->bmiHeader.biBitCount) +
+       (kDibRowAlignmentBits - 1)) /
+      kDibRowAlignmentBits * kDibRowAlignmentBytes;
+
+  // The full read extent is the pixel-data offset plus every padded scanline.
+  base::CheckedNumeric<size_t> checked_required_size =
+      checked_bits_offset +
+      (checked_row_stride * static_cast<size_t>(bi_height_abs));
+
+  // If a bogus header field overflowed the offset arithmetic, treat it as
+  // invalid.
+  size_t bits_offset = 0;
+  if (!checked_bits_offset.AssignIfValid(&bits_offset)) {
+    return SkBitmap();
+  }
+  // Likewise if the total read extent overflowed.
+  size_t required_size = 0;
+  if (!checked_required_size.AssignIfValid(&required_size)) {
+    return SkBitmap();
+  }
+  // The declared geometry does not fit the payload; proceeding would let
+  // ::SetDIBitsToDevice read adjacent process heap and expose it to the page
+  // through async clipboard reads.
+  if (required_size > dib_size) {
+    return SkBitmap();
+  }
+  const void* bitmap_bits =
+      UNSAFE_TODO(reinterpret_cast<const char*>(bitmap) + bits_offset);
 
   void* dst_bits;
   // dst_hbitmap is freed by the release_proc in skia_bitmap (below)

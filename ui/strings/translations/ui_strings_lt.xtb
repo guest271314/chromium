@@ -11,7 +11,6 @@
 <translation id="1253734725326687145">Jutiklinė sritis perkelta į viršų dešinėn. Palieskite čia.</translation>
 <translation id="1266864766717917324">Nepavyko bendrinti turinio: <ph name="CONTENT_TYPE" /></translation>
 <translation id="1269641567813814718">Win</translation>
-<translation id="1291104554099683393">Pabandykite bendrinti teksto pranešimą mažesnėmis dalimis.</translation>
 <translation id="1293699935367580298">Esc</translation>
 <translation id="1368832886055348810">Iš kairės į dešinę</translation>
 <translation id="1383876407941801731">Ieškoti</translation>
@@ -38,13 +37,11 @@
 <translation id="1901303067676059328">Pasirinkti &amp;viską</translation>
 <translation id="19085484004813472">Tai nauja funkcija</translation>
 <translation id="2006524834898217237">Įsitikinkite, kad šis įrenginys prijungtas prie interneto.</translation>
-<translation id="208586643495776849">Bandykite dar kartą</translation>
 <translation id="2111134541987263231">Įjunkite parinktį <ph name="BEGIN_BOLD" />Leisti inkognito režimu<ph name="END_BOLD" />.</translation>
 <translation id="2141853158323869627">{DAYS,plural, =1{1 d.}one{# d.}few{# d.}many{# d.}other{# d.}}</translation>
 <translation id="2148716181193084225">Šiandien</translation>
 <translation id="2168039046890040389">Puslapį į viršų</translation>
 <translation id="2190355936436201913">(tuščias)</translation>
-<translation id="2192232475740621500">Naudoti mažą tankį</translation>
 <translation id="2267918077332197517">Blokuoti visus šios svetainės pranešimus</translation>
 <translation id="2283117145434822734">F6</translation>
 <translation id="2289052229480071835">Palieskite jutiklines sritis ekrane.</translation>
@@ -56,7 +53,6 @@
 <translation id="2388990488038464401">Skambinti šiuo numeriu iš jūsų telefono?</translation>
 <translation id="2435457462613246316">Rodyti slaptažodį</translation>
 <translation id="24452542372838207">Išskleisti pranešimą</translation>
-<translation id="2445449901874883781">Naudoti didelį tankį</translation>
 <translation id="2448407890032181691">Jutiklinė sritis perkelta į apačią dešinėn. Palieskite čia.</translation>
 <translation id="2482878487686419369">Pranešimai</translation>
 <translation id="2497284189126895209">Visi failai</translation>
@@ -87,7 +83,6 @@
 <translation id="3306688585798492231">Įtaisytasis ekranas</translation>
 <translation id="335581015389089642">Kalba</translation>
 <translation id="3372635229069101468">Spustelėkite <ph name="BEGIN_BOLD" />Išsami informacija<ph name="END_BOLD" />.</translation>
-<translation id="3389286852084373014">Teksto pranešimas per didelis</translation>
 <translation id="3406306243914553062">HTML turinys</translation>
 <translation id="3600566671520689681">{DAYS,plural, =1{Liko 1 diena}one{Liko # diena}few{Liko # dienos}many{Liko # dienos}other{Liko # dienų}}</translation>
 <translation id="3600969208114796418">Failas „<ph name="SAVEAS_EXTENSION_TYPE" />“</translation>
@@ -130,7 +125,6 @@
 <translation id="5046499563572181734">Palieskite čia</translation>
 <translation id="5076340679995252485">&amp;Įklijuoti</translation>
 <translation id="520299402983819650"><ph name="QUANTITY" /> PB</translation>
-<translation id="5278860589123563674">Nepavyko išsiųsti</translation>
 <translation id="5283101102242354279">Įjunkite plėtinį inkognito režimu.</translation>
 <translation id="528468243742722775">Baigti</translation>
 <translation id="5329858601952122676">&amp;Pašalinti</translation>
@@ -190,7 +184,6 @@
 <translation id="6965382102122355670">Gerai</translation>
 <translation id="6974053822202609517">Iš dešinės į kairę</translation>
 <translation id="7052633198403197513">F1</translation>
-<translation id="7170202025028120564">Programos vaizdo nustatymai įsigalios kitą kartą ją iš naujo paleidus.</translation>
 <translation id="7222373446505536781">F11</translation>
 <translation id="7238427729722629793">{MINUTES,plural, =1{Liko 1 min.}one{Liko # min.}few{Liko # min.}many{Liko # min.}other{Liko # min.}}</translation>
 <translation id="7252604552361840748">Raskite plėtinį anksčiau nurodytu adresu.</translation>

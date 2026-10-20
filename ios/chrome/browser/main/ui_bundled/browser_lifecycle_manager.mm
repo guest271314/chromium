@@ -30,7 +30,9 @@
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
 #import "ios/chrome/browser/shared/model/web_state_list/web_state_list.h"
 #import "ios/chrome/browser/shared/public/commands/command_dispatcher.h"
+#import "ios/chrome/browser/shared/public/commands/gemini_commands.h"
 #import "ios/chrome/browser/shared/public/commands/scene_commands.h"
+#import "ios/chrome/browser/shared/public/commands/scene_sign_in_commands.h"
 #import "ios/chrome/browser/shared/public/commands/settings_commands.h"
 #import "ios/chrome/browser/snapshots/model/snapshot_browser_agent.h"
 #import "ios/chrome/browser/tabs/model/inactive_tabs/features.h"
@@ -40,8 +42,7 @@
   raw_ptr<ProfileIOS> _profile;
 
   __weak SceneState* _sceneState;
-  __weak id<SceneCommands> _sceneEndpoint;
-  __weak id<SettingsCommands> _settingsEndpoint;
+  BrowserCommandEndpoints _commandEndpoints;
 
   std::unique_ptr<Browser> _mainBrowser;
   std::unique_ptr<Browser> _otrBrowser;
@@ -54,16 +55,13 @@
 
 - (instancetype)initWithProfile:(ProfileIOS*)profile
                      sceneState:(SceneState*)sceneState
-                  sceneEndpoint:(id<SceneCommands>)sceneEndpoint
-               settingsEndpoint:(id<SettingsCommands>)settingsEndpoint {
-  TRACE_EVENT("ui",
-              "-[BrowserLifecycleManager "
-              "initWithProfile:sceneState:sceneEndpoint:settingsEndpoint:]");
+               commandEndpoints:(BrowserCommandEndpoints)commandEndpoints {
+  TRACE_EVENT("ui", "-[BrowserLifecycleManager "
+                    "initWithProfile:sceneState:commandEndpoints:]");
   if ((self = [super init])) {
     _profile = profile;
     _sceneState = sceneState;
-    _sceneEndpoint = sceneEndpoint;
-    _settingsEndpoint = settingsEndpoint;
+    _commandEndpoints = commandEndpoints;
 
     // Create all browsers.
     _mainBrowser = Browser::Create(_profile, _sceneState);
@@ -83,11 +81,13 @@
 }
 
 - (void)createMainCoordinatorAndInterface {
+  CHECK(!_isShutdown, base::NotFatalUntil::M152);
   TRACE_EVENT("ui",
               "-[BrowserLifecycleManager createMainCoordinatorAndInterface]");
-  DCHECK(!_mainInterface)
-      << "-createMainCoordinatorAndInterface must not be called once";
+  CHECK(!_mainInterface, base::NotFatalUntil::M155)
+      << "-createMainCoordinatorAndInterface must not be called multiple times";
 
+  CHECK(!_mainBrowserCoordinator, base::NotFatalUntil::M155);
   // Create the main coordinator, and thus the main interface.
   _mainBrowserCoordinator = [[BrowserCoordinator alloc]
       initWithBaseViewController:nil
@@ -247,16 +247,24 @@
   }
 }
 
-- (void)shutdown {
-  CHECK(!_isShutdown, base::NotFatalUntil::M152);
-  _isShutdown = YES;
-
+- (void)prepareForShutdown {
+  // Prevent null pointer dereference crashes if this method is called after
+  // `-shutdown` has already run and reset `_mainBrowser` and `_otrBrowser`.
+  if (_isShutdown) {
+    return;
+  }
   // Inform the command dispatchers of the shutdown. Should be in reverse
   // order of -init.
   Browser* inactiveBrowser = _mainBrowser->GetInactiveBrowser();
   [_otrBrowser->GetCommandDispatcher() prepareForShutdown];
   [inactiveBrowser->GetCommandDispatcher() prepareForShutdown];
   [_mainBrowser->GetCommandDispatcher() prepareForShutdown];
+}
+
+- (void)shutdown {
+  CHECK(!_isShutdown, base::NotFatalUntil::M152);
+  [self prepareForShutdown];
+  _isShutdown = YES;
 
   // At this stage, new BrowserCoordinators shouldn't be lazily constructed by
   // calling their property getters.
@@ -270,6 +278,7 @@
   [self cleanupBrowser:_otrBrowser.get()];
   _otrBrowser.reset();
 
+  Browser* inactiveBrowser = _mainBrowser->GetInactiveBrowser();
   [self cleanupBrowser:inactiveBrowser];
   [self cleanupBrowser:_mainBrowser.get()];
   _mainBrowser->DestroyInactiveBrowser();
@@ -288,10 +297,14 @@
   [dispatcher startDispatchingToTarget:reauthAgent
                            forProtocol:@protocol(IncognitoReauthCommands)];
 
-  [dispatcher startDispatchingToTarget:_sceneEndpoint
+  [dispatcher startDispatchingToTarget:_commandEndpoints.sceneEndpoint
                            forProtocol:@protocol(SceneCommands)];
-  [dispatcher startDispatchingToTarget:_settingsEndpoint
+  [dispatcher startDispatchingToTarget:_commandEndpoints.sceneSignInEndpoint
+                           forProtocol:@protocol(SceneSignInCommands)];
+  [dispatcher startDispatchingToTarget:_commandEndpoints.settingsEndpoint
                            forProtocol:@protocol(SettingsCommands)];
+  [dispatcher startDispatchingToTarget:_commandEndpoints.geminiEndpoint
+                           forProtocol:@protocol(GeminiCommands)];
 }
 
 // Sets up an existing browser.
@@ -316,11 +329,12 @@
 
 // Create the OTR interface object.
 - (WrangledBrowser*)createOTRInterface {
+  CHECK(!_isShutdown, base::NotFatalUntil::M152);
   TRACE_EVENT("ui", "-[BrowserLifecycleManager createOTRInterface]");
-  DCHECK(!_incognitoInterface);
+  CHECK(!_incognitoInterface, base::NotFatalUntil::M155);
 
   // The backing coordinator should not have been created yet.
-  DCHECK(!_incognitoBrowserCoordinator);
+  CHECK(!_incognitoBrowserCoordinator, base::NotFatalUntil::M155);
   _incognitoBrowserCoordinator =
       [[BrowserCoordinator alloc] initWithBaseViewController:nil
                                                      browser:_otrBrowser.get()];

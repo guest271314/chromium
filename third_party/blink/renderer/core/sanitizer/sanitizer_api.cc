@@ -48,56 +48,25 @@ const Sanitizer* SanitizerFromOptions(const FragmentParserOptions& options,
 bool SanitizerAPI::AllowMutatingRootElement(
     Sanitizer::Mode mode,
     const ContainerNode* context_element) {
-  if (mode == Sanitizer::Mode::kSafe && context_element->IsElementNode()) {
-    const Element* real_element = To<Element>(context_element);
-    if (real_element->TagQName() == html_names::kScriptTag ||
-        real_element->TagQName() == svg_names::kScriptTag) {
-      return false;
-    }
+  if (mode == Sanitizer::Mode::kUnsafe) {
+    return true;
   }
-  return true;
-}
-
-void SanitizerAPI::SanitizeInternal(Sanitizer::Mode mode,
-                                    const ContainerNode* context_element,
-                                    ContainerNode* root_element,
-                                    FragmentParserOptions options,
-                                    ExceptionState& exception_state) {
-  // Per spec, we need to parse & sanitize into an inert (non-active) document.
-  CHECK(!root_element->GetDocument().IsActive());
-
-  if (exception_state.HadException()) {
-    root_element->setTextContent("");
-    return;
+  if (!context_element->IsElementNode()) {
+    return true;
   }
 
-  if (!AllowMutatingRootElement(mode, context_element)) {
-    root_element->setTextContent("");
-    return;
-  }
-
-  const Sanitizer* sanitizer =
-      SanitizerFromOptions(options, mode, exception_state);
-  if (exception_state.HadException()) {
-    root_element->setTextContent("");
-    return;
-  }
-
-  CHECK(sanitizer);
-  switch (mode) {
-    case Sanitizer::Mode::kSafe:
-      sanitizer->SanitizeSafe(root_element);
-      break;
-    case Sanitizer::Mode::kUnsafe:
-      sanitizer->SanitizeUnsafe(root_element);
-      break;
-  }
+  const Element* real_element = To<Element>(context_element);
+  return !html_names::kScriptTag.Matches(real_element->TagQName()) &&
+         !svg_names::kScriptTag.Matches(real_element->TagQName());
 }
 
 StreamingSanitizer* SanitizerAPI::CreateStreamingSanitizer(
     Sanitizer::Mode mode,
     FragmentParserOptions options,
     ExceptionState& exception_state) {
+  if (mode == Sanitizer::Mode::kUnsafe && !options.WillSanitize()) {
+    return nullptr;
+  }
   const Sanitizer* sanitizer =
       SanitizerFromOptions(options, mode, exception_state);
   if (exception_state.HadException()) {

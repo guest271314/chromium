@@ -19,9 +19,9 @@
 #include "chrome/browser/sharing/sharing_service_factory.h"
 #include "chrome/browser/sync/device_info_sync_service_factory.h"
 #include "chrome/browser/sync/test/integration/sessions_helper.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/frame/toolbar_button_provider.h"
-#include "chrome/browser/ui/views/page_action/page_action_icon_view.h"
 #include "components/gcm_driver/fake_gcm_profile_service.h"
 #include "components/sharing_message/proto/sharing_message.pb.h"
 #include "components/sharing_message/sharing_channel_sender.h"
@@ -68,14 +68,13 @@ void SharingBrowserTest::SetUpOnMainThread() {
 }
 
 void SharingBrowserTest::Init(
-    syncer::DeviceInfo::SharingFeature first_device_feature,
-    syncer::DeviceInfo::SharingFeature second_device_feature) {
+    syncer::DeviceInfo::SharingFeature device_feature) {
   ASSERT_TRUE(SetupSync());
 
   GURL url = embedded_test_server()->GetURL("mock.http", GetTestPageURL());
   ASSERT_TRUE(sessions_helper::OpenTab(0, url));
 
-  web_contents_ = GetBrowser(0)->tab_strip_model()->GetWebContentsAt(0);
+  web_contents_ = GetBrowser(0)->GetTabStripModel()->GetWebContentsAt(0);
   ASSERT_TRUE(NavigateToURL(web_contents_, url));
 
   sharing_service_ = SharingServiceFactory::GetForBrowserContext(GetProfile(0));
@@ -86,7 +85,7 @@ void SharingBrowserTest::Init(
   sharing_channel_sender->SetSharingMessageBridgeForTesting(
       &fake_sharing_message_bridge_);
 
-  SetUpDevices(first_device_feature, second_device_feature);
+  SetUpDevices(device_feature, device_feature);
 }
 
 void SharingBrowserTest::SetUpDevices(
@@ -176,7 +175,7 @@ std::unique_ptr<TestRenderViewContextMenu> SharingBrowserTest::InitContextMenu(
 void SharingBrowserTest::CheckLastReceiver(
     const SharingTargetDeviceInfo& device) const {
   const syncer::DeviceInfo* device_info =
-      fake_device_info_tracker_.GetDeviceInfo(device.guid());
+      fake_device_info_tracker_.GetChromeDeviceInfo(device.guid());
   ASSERT_TRUE(device_info);
 
   auto fcm_configuration = GetFCMChannel(*device_info);
@@ -204,11 +203,4 @@ SharingService* SharingBrowserTest::sharing_service() const {
 
 content::WebContents* SharingBrowserTest::web_contents() const {
   return web_contents_;
-}
-
-PageActionIconView* SharingBrowserTest::GetPageActionIconView(
-    PageActionIconType type) {
-  return BrowserView::GetBrowserViewForBrowser(GetBrowser(0))
-      ->toolbar_button_provider()
-      ->GetPageActionIconView(type);
 }

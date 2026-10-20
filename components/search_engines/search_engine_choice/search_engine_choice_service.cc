@@ -19,7 +19,6 @@
 #include "base/memory/ptr_util.h"
 #include "base/memory/raw_ref.h"
 #include "base/metrics/histogram_functions.h"
-#include "base/metrics/puma_histogram_functions.h"
 #include "base/metrics/user_metrics.h"
 #include "base/no_destructor.h"
 #include "base/not_fatal_until.h"
@@ -66,6 +65,8 @@
 
 using ::country_codes::CountryId;
 using ::regional_capabilities::SearchEngineChoiceScreenConditions;
+using LocationCompatibility =
+    ::regional_capabilities::RegionalCapabilitiesService::LocationCompatibility;
 
 namespace search_engines {
 namespace {
@@ -259,6 +260,7 @@ regional_capabilities::FunnelStage ToFunnelStage(
       return regional_capabilities::FunnelStage::kNotInRegionalScope;
 
     case SearchEngineChoiceScreenConditions::kAlreadyCompleted:
+    case SearchEngineChoiceScreenConditions::kAlreadyCompletedImported:
       return regional_capabilities::FunnelStage::kAlreadyCompleted;
 
     // TODO(crbug.com/438717568): Do these 2 need to have a dedicated bucket?
@@ -279,6 +281,7 @@ regional_capabilities::FunnelStage ToFunnelStage(
     case SearchEngineChoiceScreenConditions::kAlreadyBeingShown:
     case SearchEngineChoiceScreenConditions::kUsingPersistedGuestSessionChoice:
     case SearchEngineChoiceScreenConditions::kIncompatibleCurrentLocation:
+    case SearchEngineChoiceScreenConditions::kUnavailableCurrentLocation:
     case SearchEngineChoiceScreenConditions::kAccountNotEligible:
     case SearchEngineChoiceScreenConditions::kIneligibleSurface:
     case SearchEngineChoiceScreenConditions::kManaged:
@@ -293,8 +296,8 @@ void RecordLegacyStaticEligibilityInternal(
     search_engines::SearchEngineChoiceService::Client& client,
     metrics::ProfileMetricsService& profile_metrics_service,
     SearchEngineChoiceScreenConditions condition) {
-  if (base::FeatureList::IsEnabled(
-          switches::kInvalidateSearchEngineChoiceOnDeviceRestoreDetection) &&
+  if (switches::
+          IsInvalidateSearchEngineChoiceOnDeviceRestoreDetectionEnabled() &&
       client.IsDeviceRestoreDetectedInCurrentSession()) {
     base::UmaHistogramEnumeration(
         kChoiceScreenProfileInitConditionsPostRestoreHistogram, condition);
@@ -302,17 +305,14 @@ void RecordLegacyStaticEligibilityInternal(
 
   profile_metrics_service.UmaHistogramEnumeration(
       kSearchEngineChoiceScreenProfileInitConditionsHistogram, condition);
-  base::PumaHistogramEnumeration(
-      base::PumaType::kRc,
-      kPumaSearchChoiceScreenProfileInitConditionsHistogram, condition);
 }
 
 bool IsChoiceImported(const ChoiceCompletionMetadata& completion_metadata,
                       SearchEngineChoiceService::Client& client,
                       const PrefService& profile_prefs,
                       bool include_previous_just_in_time_detection) {
-  if (!base::FeatureList::IsEnabled(
-          switches::kInvalidateSearchEngineChoiceOnDeviceRestoreDetection)) {
+  if (!switches::
+          IsInvalidateSearchEngineChoiceOnDeviceRestoreDetectionEnabled()) {
     // Feature disabled, don't detect imported choices.
     return false;
   }
@@ -321,7 +321,7 @@ bool IsChoiceImported(const ChoiceCompletionMetadata& completion_metadata,
     return false;
   }
 
-  if (switches::kInvalidateChoiceOnRestoreIsRetroactive.Get()) {
+  if (switches::IsInvalidateChoiceOnRestoreRetroactive()) {
     // Retroactive detection is activated, report the choice as imported.
     return true;
   }
@@ -381,7 +381,7 @@ bool AccountCanMakeChoiceScreenChoice(
   // Treat accounts with signin::Tribool::kUnknown (this covers signed-out
   // users, and signed-in users where the capability is not known yet) as able
   // to make a choice.
-  return account_info.capabilities
+  return account_info.GetAccountCapabilities()
              .can_make_chrome_search_engine_choice_screen_choice() !=
          signin::Tribool::kFalse;
 #else
@@ -595,6 +595,9 @@ SearchEngineChoiceService::GetStaticChoiceScreenConditions(
   if (status == ChoiceStatus::kValid) {
     return SearchEngineChoiceScreenConditions::kAlreadyCompleted;
   }
+  if (status == ChoiceStatus::kValidAndImported) {
+    return SearchEngineChoiceScreenConditions::kAlreadyCompletedImported;
+  }
 
   if (status == ChoiceStatus::kManaged) {
     return SearchEngineChoiceScreenConditions::kManaged;
@@ -612,8 +615,12 @@ SearchEngineChoiceService::GetStaticChoiceScreenConditions(
     return SearchEngineChoiceScreenConditions::kControlledByPolicy;
   }
 
-  if (!regional_capabilities_service_
-           ->IsChoiceScreenCompatibleWithCurrentLocation()) {
+  if (regional_capabilities_service_
+          ->IsChoiceScreenCompatibleWithCurrentLocation() ==
+      LocationCompatibility::kIncompatible) {
+    // Only check for `kIncompatible` here, do not flag `kLocationUnknown`. The
+    // latter will be handled as part of Dynamic checks, which may respond
+    // differently according to the calling context.
     return SearchEngineChoiceScreenConditions::kIncompatibleCurrentLocation;
   }
 
@@ -641,13 +648,30 @@ SearchEngineChoiceService::GetStaticChoiceScreenConditions(
 
 SearchEngineChoiceScreenConditions
 SearchEngineChoiceService::GetDynamicChoiceScreenConditions(
-    const TemplateURLService& template_url_service) const {
+    const TemplateURLService& template_url_service,
+    DynamicConditionsCheckContext context) const {
 #if !BUILDFLAG(CHOICE_SCREEN_IN_CHROME)
   return SearchEngineChoiceScreenConditions::kUnsupportedBrowserType;
 #else
+
+  switch (regional_capabilities_service_
+              ->IsChoiceScreenCompatibleWithCurrentLocation()) {
+    case LocationCompatibility::kIncompatible:
+      return SearchEngineChoiceScreenConditions::kIncompatibleCurrentLocation;
+    case LocationCompatibility::kLocationUnknown:
+      if (!context.allow_unknown_current_location) {
+        return SearchEngineChoiceScreenConditions::kUnavailableCurrentLocation;
+      }
+      break;
+    case LocationCompatibility::kCompatible:
+      break;
+  }
+
   switch (EvaluateSearchProviderChoice(template_url_service)) {
     case ChoiceStatus::kValid:
       return SearchEngineChoiceScreenConditions::kAlreadyCompleted;
+    case ChoiceStatus::kValidAndImported:
+      return SearchEngineChoiceScreenConditions::kAlreadyCompletedImported;
     case ChoiceStatus::kDefaultSearchDisabled:
     case ChoiceStatus::kCurrentIsSetByPolicy:
       // It is possible that between the static checks at service creation
@@ -666,6 +690,11 @@ SearchEngineChoiceService::GetDynamicChoiceScreenConditions(
       return SearchEngineChoiceScreenConditions::
           kHasRemovedPrepopulatedSearchEngine;
     case ChoiceStatus::kCurrentCannotBeHighlighted:
+#if BUILDFLAG(IS_IOS)
+      if (switches::IsSearchEngineChoiceScreenSnackbarEnabled()) {
+        return SearchEngineChoiceScreenConditions::kEligible;
+      }
+#endif
       return SearchEngineChoiceScreenConditions::
           kHasNonHighlightablePrepopulatedSearchEngine;
     case ChoiceStatus::kCurrentIsNotPrepopulated:
@@ -703,8 +732,7 @@ void SearchEngineChoiceService::RecordProfileLoadEligibility(
                                              *profile_metrics_service_);
   }
 
-  CHECK(!recorded_profile_load_choice_screen_eligibility_.has_value(),
-        base::NotFatalUntil::M149);
+  CHECK(!recorded_profile_load_choice_screen_eligibility_.has_value());
   recorded_profile_load_choice_screen_eligibility_ = condition;
 }
 
@@ -732,8 +760,8 @@ bool SearchEngineChoiceService::IsSurfaceEligible(
 
 void SearchEngineChoiceService::RecordTriggeringEligibility(
     SearchEngineChoiceScreenConditions condition) {
-  if (base::FeatureList::IsEnabled(
-          switches::kInvalidateSearchEngineChoiceOnDeviceRestoreDetection) &&
+  if (switches::
+          IsInvalidateSearchEngineChoiceOnDeviceRestoreDetectionEnabled() &&
       client_->IsDeviceRestoreDetectedInCurrentSession()) {
     base::UmaHistogramEnumeration(
         kChoiceScreenNavigationConditionsPostRestoreHistogram, condition);
@@ -741,9 +769,6 @@ void SearchEngineChoiceService::RecordTriggeringEligibility(
 
   profile_metrics_service_->UmaHistogramEnumeration(
       kSearchEngineChoiceScreenNavigationConditionsHistogram, condition);
-  base::PumaHistogramEnumeration(
-      base::PumaType::kRc, kPumaSearchChoiceScreenNavigationConditionsHistogram,
-      condition);
 
   regional_capabilities::RecordTriggeringFunnelStageDetails(
       condition, *profile_metrics_service_);
@@ -753,8 +778,8 @@ void SearchEngineChoiceService::RecordTriggeringEligibility(
 
 void SearchEngineChoiceService::RecordChoiceScreenEvent(
     SearchEngineChoiceScreenEvents event) {
-  if (base::FeatureList::IsEnabled(
-          switches::kInvalidateSearchEngineChoiceOnDeviceRestoreDetection) &&
+  if (switches::
+          IsInvalidateSearchEngineChoiceOnDeviceRestoreDetectionEnabled() &&
       client_->IsDeviceRestoreDetectedInCurrentSession()) {
     base::UmaHistogramEnumeration(kChoiceScreenEventsPostRestoreHistogram,
                                   event);
@@ -762,8 +787,6 @@ void SearchEngineChoiceService::RecordChoiceScreenEvent(
 
   profile_metrics_service_->UmaHistogramEnumeration(
       kSearchEngineChoiceScreenEventsHistogram, event);
-  base::PumaHistogramEnumeration(base::PumaType::kRc,
-                                 kPumaSearchChoiceScreenEventsHistogram, event);
 
   if (event == SearchEngineChoiceScreenEvents::kChoiceScreenWasDisplayed ||
       event == SearchEngineChoiceScreenEvents::kFreChoiceScreenWasDisplayed ||
@@ -778,8 +801,7 @@ std::unique_ptr<search_engines::ChoiceScreenData>
 SearchEngineChoiceService::GetChoiceScreenData(
     const SearchTermsData& search_terms_data,
     const TemplateURL* default_search_provider) {
-  CHECK(regional_capabilities_service_->IsInSearchEngineChoiceScreenRegion(),
-        base::NotFatalUntil::M149);
+  CHECK(regional_capabilities_service_->IsInSearchEngineChoiceScreenRegion());
   // We call `GetPrepopulatedEngines` instead of
   // `GetSearchProvidersUsingLoadedEngines` because the latter will return the
   // list of search engines that might have been modified by the user (by
@@ -820,19 +842,33 @@ void SearchEngineChoiceService::RecordChoiceMade(
     TemplateURLService* template_url_service) {
   CHECK_NE(choice_location, ChoiceMadeLocation::kOther);
 
+  auto is_in_choice_screen_region =
+      regional_capabilities_service_->IsInSearchEngineChoiceScreenRegion();
+
   // TODO(https://crbug.com/435638443): Add regression test to check that
   // choices made after restore detection are properly recorded.
-  // Tri-bool, `nullopt` means there is no choice to keep nor wipe.
-  std::optional<bool> should_keep_existing_choice_record = std::nullopt;
+  bool should_keep_existing_choice_record = false;
   if (auto completion_metadata = GetChoiceCompletionMetadata(*profile_prefs_);
       completion_metadata.has_value()) {
+    std::optional<SearchEngineChoiceWipeReason> record_wipe_reason =
+        std::nullopt;
     if (IsChoiceImported(completion_metadata.value(),
                          CHECK_DEREF(client_.get()), profile_prefs_.get(),
                          /* include_previous_just_in_time_detection= */ true)) {
       // Clear sentinel data associated with the previous choice being renewed.
-      should_keep_existing_choice_record = false;
+      record_wipe_reason =
+          SearchEngineChoiceWipeReason::kChoiceRemadeAfterImport;
+    } else if (regional_capabilities_service_->GetSerializedActiveProgram() !=
+                   completion_metadata->serialized_program &&
+               // Don't wipe pre-existing choices outside of choice program
+               // regions.
+               is_in_choice_screen_region) {
+      record_wipe_reason = SearchEngineChoiceWipeReason::kProgramChanged;
+    }
+
+    if (record_wipe_reason.has_value()) {
+      WipeSearchEngineChoicePrefs(*profile_prefs_, *record_wipe_reason);
     } else {
-      // Don't modify the prefs if they were already set.
       should_keep_existing_choice_record = true;
     }
   }
@@ -841,17 +877,15 @@ void SearchEngineChoiceService::RecordChoiceMade(
   // is part of that logic.
   ClearSearchEngineChoiceInvalidation(*profile_prefs_);
 
-  if (should_keep_existing_choice_record.has_value()) {
-    if (should_keep_existing_choice_record.value()) {
-      return;
-    }
-
-    WipeSearchEngineChoicePrefs(
-        *profile_prefs_,
-        SearchEngineChoiceWipeReason::kChoiceRemadeAfterImport);
+  if (should_keep_existing_choice_record) {
+    // There is an existing record AND we should keep it. In this case, being
+    // called from a choice screen is not expected.
+    CHECK_NE(choice_location, ChoiceMadeLocation::kChoiceScreen,
+             base::NotFatalUntil::M158);
+    return;
   }
 
-  if (!regional_capabilities_service_->IsInSearchEngineChoiceScreenRegion()) {
+  if (!is_in_choice_screen_region) {
     return;
   }
 
@@ -910,13 +944,16 @@ void SearchEngineChoiceService::MaybeRecordChoiceScreenDisplayState(
         // cache. If programs are compatible, we should NOT have reached this
         // state. Re-entry for the same program is a bug. See
         // crbug.com/390272573.
-        NOTREACHED(base::NotFatalUntil::M153);
+        NOTREACHED(base::NotFatalUntil::M158);
       }
 
       // If we are recording a new display state because we changed programs,
       // we should wipe any pending one from that previous session & program.
       profile_prefs_->ClearPref(
           prefs::kDefaultSearchProviderPendingChoiceScreenDisplayState);
+
+      // TODO(crbug.com/515743795): Check whether this also ends up being
+      // unreachable, using the histogram below.
       base::UmaHistogramEnumeration(
           "Search.ChoicePrefsCheck.PendingChoiceScreenDisplayStateStatus",
           PendingDisplayStateStatus::kProgramMismatch);
@@ -1042,6 +1079,10 @@ SearchEngineChoiceService::GetChoiceRenewalReasons(
     const regional_capabilities::ChoiceScreenEligibilityConfig&
         eligibility_config,
     const ChoiceCompletionMetadata& completion_metadata) const {
+  // TODO(crbug.com/515743795): Refactor implementation to ensure consistency
+  // with `RecordChoiceMade`, as it has a similar logic to decide whether to
+  // overwrite previous choices.
+
   ChoiceRenewalReasons reasons;
 
   if (!eligibility_config.should_preserve_imported_choice &&
@@ -1081,6 +1122,12 @@ SearchEngineChoiceService::EvaluateSearchProviderChoice(
     if (renewal_reasons.empty()) {
       // The choice is not outdated and is also not made on an incompatible
       // program, so it's still valid.
+      if (IsChoiceImported(
+              *completion_metadata, CHECK_DEREF(client_.get()),
+              profile_prefs_.get(),
+              /* include_previous_just_in_time_detection= */ true)) {
+        return ChoiceStatus::kValidAndImported;
+      }
       return ChoiceStatus::kValid;
     }
   }
@@ -1200,6 +1247,7 @@ void SearchEngineChoiceService::RegisterLocalStatePrefs(
 // static
 void SearchEngineChoiceService::RegisterProfilePrefs(
     user_prefs::PrefRegistrySyncable* registry) {
+  // TODO(crbug.com/556263496): Restrict direct access to this pref.
   registry->RegisterInt64Pref(
       prefs::kDefaultSearchProviderChoiceScreenCompletionTimestamp, 0);
   registry->RegisterStringPref(

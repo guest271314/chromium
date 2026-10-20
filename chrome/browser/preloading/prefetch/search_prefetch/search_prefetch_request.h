@@ -10,7 +10,7 @@
 #include "base/callback_list.h"
 #include "base/functional/callback.h"
 #include "chrome/browser/preloading/prefetch/search_prefetch/search_prefetch_url_loader.h"
-#include "chrome/browser/preloading/prerender/search_prewarm_progress_service.h"
+#include "chrome/browser/preloading/prerender/search_preload_progress_service.h"
 #include "services/network/public/cpp/resource_request.h"
 #include "url/gurl.h"
 
@@ -129,10 +129,6 @@ class SearchPrefetchRequest {
   // `MaybeStartPrerenderSearchResult` will be called soon.
   void ResetPrerenderUpgrader();
 
-  // Record the time at which the user clicked a suggestion matching this
-  // prefetch.
-  void RecordClickTime();
-
   // Takes ownership of underlying data/objects needed to serve the response.
   scoped_refptr<StreamingSearchPrefetchURLLoader> TakeSearchPrefetchURLLoader();
 
@@ -218,9 +214,6 @@ class SearchPrefetchRequest {
 
   base::TimeTicks time_start_prefetch_request_;
 
-  // The time at which the prefetched URL was clicked in the Omnibox.
-  base::TimeTicks time_clicked_;
-
   // Once set, this request will trigger search prerender upon receiving success
   // response.
   base::WeakPtr<PrerenderManager> prerender_manager_;
@@ -232,7 +225,7 @@ class SearchPrefetchRequest {
 
   // Prewarm page loading status tracker to throttle the concurrent requests to
   // search.
-  base::WeakPtr<SearchPrewarmProgressService> prewarm_progress_service_;
+  base::WeakPtr<SearchPreloadProgressService> prewarm_progress_service_;
 
   base::CallbackListSubscription prewarm_finished_subscription_;
 

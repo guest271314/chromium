@@ -8,11 +8,11 @@
 
 #include "ash/constants/notifier_catalogs.h"
 #include "ash/public/cpp/notification_utils.h"
+#include "ash/strings/grit/ash_strings.h"
 #include "base/check_deref.h"
 #include "base/functional/bind.h"
 #include "base/strings/utf_string_conversions.h"
 #include "chrome/browser/ash/policy/core/browser_policy_connector_ash.h"
-#include "chrome/grit/generated_resources.h"
 #include "chromeos/dbus/power/power_manager_client.h"
 #include "components/vector_icons/vector_icons.h"
 #include "ui/base/l10n/l10n_util.h"
@@ -89,7 +89,7 @@ void AdbSideloadingPolicyChangeNotification::Show(Type type) {
 
   auto notification = ash::CreateSystemNotificationPtr(
       message_center::NOTIFICATION_TYPE_SIMPLE, notification_id, title, text,
-      std::u16string() /*display_source*/, GURL(),
+      std::u16string() /*display_source*/,
       message_center::NotifierId(message_center::NotifierType::SYSTEM_COMPONENT,
                                  notification_id, catalog_name),
       message_center::RichNotificationData(),
@@ -115,7 +115,7 @@ void AdbSideloadingPolicyChangeNotification::HandleNotificationClick(
   if (!button_index)
     return;
 
-  DCHECK(*button_index == 0);
+  CHECK(*button_index == 0, base::NotFatalUntil::M160);
 
   chromeos::PowerManagerClient::Get()->RequestRestart(
       power_manager::REQUEST_RESTART_FOR_USER,

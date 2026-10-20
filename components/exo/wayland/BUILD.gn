@@ -218,10 +218,6 @@ source_set("wayland") {
   if (use_xkbcommon) {
     deps += [ "//ui/events/keycodes:xkb" ]
   }
-
-  # TODO(crbug.com/40031409): Fix code that adds exit-time destructors and
-  # enable the diagnostic by removing this line.
-  configs += [ "//build/config/compiler:no_exit_time_destructors" ]
 }
 
 static_library("ui_controls_protocol") {
@@ -297,6 +293,7 @@ source_set("unit_tests") {
     "output_controller_test_api.h",
     "output_controller_unittest.cc",
     "output_metrics_unittest.cc",
+    "remote_shell_security_unittest.cc",
     "serial_tracker_unittest.cc",
     "server_unittest.cc",
     "shell_unittest.cc",
@@ -315,6 +312,7 @@ source_set("unit_tests") {
     "zaura_shell_unittest.cc",
     "zcr_remote_shell_impl_unittest.cc",
     "zcr_remote_shell_unittest.cc",
+    "zxdg_output_manager_unittest.cc",
   ]
 
   deps = [
@@ -350,10 +348,6 @@ source_set("unit_tests") {
     "//ui/views:test_support",
     "//ui/wm/public",
   ]
-
-  # TODO(crbug.com/40031409): Fix code that adds exit-time destructors and
-  # enable the diagnostic by removing this line.
-  configs += [ "//build/config/compiler:no_exit_time_destructors" ]
 }
 
 config("client_support_config") {

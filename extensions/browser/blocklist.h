@@ -18,6 +18,7 @@
 #include "base/memory/weak_ptr.h"
 #include "base/observer_list.h"
 #include "base/observer_list_types.h"
+#include "base/scoped_observation.h"
 #include "components/keyed_service/core/keyed_service.h"
 #include "extensions/browser/blocklist_state.h"
 #include "extensions/buildflags/buildflags.h"
@@ -51,16 +52,13 @@ class Blocklist : public KeyedService {
     ~Observer() override;
 
    private:
-    raw_ptr<Blocklist> blocklist_;
+    base::ScopedObservation<Blocklist, Observer> blocklist_observation_{this};
   };
 
   using BlocklistStateMap = std::map<ExtensionId, BlocklistState>;
 
   using GetBlocklistedIDsCallback =
       base::OnceCallback<void(const BlocklistStateMap&)>;
-
-  using GetMalwareIDsCallback =
-      base::OnceCallback<void(const std::set<ExtensionId>&)>;
 
   using IsBlocklistedCallback = base::OnceCallback<void(BlocklistState)>;
 
@@ -83,13 +81,6 @@ class Blocklist : public KeyedService {
   // see ExtensionPrefs::IsExtensionBlocklisted.
   void GetBlocklistedIDs(const std::set<ExtensionId>& ids,
                          GetBlocklistedIDsCallback callback);
-
-  // From the subset of extension IDs passed in via `ids`, select the ones
-  // marked in the blocklist as BLOCKLISTED_MALWARE and asynchronously pass
-  // to `callback`. Basically, will call GetBlocklistedIDs and filter its
-  // results.
-  void GetMalwareIDs(const std::set<ExtensionId>& ids,
-                     GetMalwareIDsCallback callback);
 
   // More convenient form of GetBlocklistedIDs for checking a single extension.
   void IsBlocklisted(const ExtensionId& extension_id,

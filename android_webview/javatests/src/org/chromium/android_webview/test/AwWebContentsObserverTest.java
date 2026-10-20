@@ -18,6 +18,7 @@ import org.chromium.android_webview.AwContentsStatics;
 import org.chromium.android_webview.AwNavigation;
 import org.chromium.android_webview.AwPage;
 import org.chromium.android_webview.AwWebContentsObserver;
+import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.util.CallbackHelper;
 import org.chromium.base.test.util.Feature;
 import org.chromium.build.annotations.Nullable;
@@ -25,9 +26,12 @@ import org.chromium.content_public.browser.GlobalRenderFrameHostId;
 import org.chromium.content_public.browser.LifecycleState;
 import org.chromium.content_public.browser.NavigationHandle;
 import org.chromium.content_public.browser.Page;
+import org.chromium.content_public.browser.test.mock.MockPage;
 import org.chromium.content_public.browser.test.util.TestCallbackHelperContainer;
 import org.chromium.ui.base.PageTransition;
 import org.chromium.url.GURL;
+
+import java.util.HashMap;
 
 /** Tests for the AwWebContentsObserver class. */
 @RunWith(Parameterized.class)
@@ -72,9 +76,12 @@ public class AwWebContentsObserverTest extends AwParameterizedTest {
                 mContentsClient.getOnPageFinishedHelper();
 
         int callCount = onPageFinishedHelper.getCallCount();
-        Page page = Page.createForTesting();
-        mWebContentsObserver.didFinishLoadInPrimaryMainFrame(
-                page, frameId, mExampleURL, true, LifecycleState.ACTIVE);
+        Page page = new MockPage();
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    mWebContentsObserver.didFinishLoadInPrimaryMainFrame(
+                            page, frameId, mExampleURL, true, LifecycleState.ACTIVE);
+                });
         mWebContentsObserver.didStopLoading(mExampleURL, true);
         onPageFinishedHelper.waitForCallback(callCount);
         Assert.assertEquals(
@@ -91,14 +98,17 @@ public class AwWebContentsObserverTest extends AwParameterizedTest {
         Assert.assertEquals(page, awPageWithLoadEventFired.getInternalPageForTesting());
 
         callCount = onPageFinishedHelper.getCallCount();
-        mWebContentsObserver.didFinishLoadInPrimaryMainFrame(
-                Page.createForTesting(),
-                frameId,
-                mUnreachableWebDataUrl,
-                false,
-                LifecycleState.ACTIVE);
-        mWebContentsObserver.didFinishLoadInPrimaryMainFrame(
-                Page.createForTesting(), frameId, mSyncURL, true, LifecycleState.ACTIVE);
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    mWebContentsObserver.didFinishLoadInPrimaryMainFrame(
+                            new MockPage(),
+                            frameId,
+                            mUnreachableWebDataUrl,
+                            false,
+                            LifecycleState.ACTIVE);
+                    mWebContentsObserver.didFinishLoadInPrimaryMainFrame(
+                            new MockPage(), frameId, mSyncURL, true, LifecycleState.ACTIVE);
+                });
         mWebContentsObserver.didStopLoading(mSyncURL, true);
         onPageFinishedHelper.waitForCallback(callCount);
         Assert.assertEquals(
@@ -147,8 +157,11 @@ public class AwWebContentsObserverTest extends AwParameterizedTest {
                 !fragmentNavigation,
                 !isRendererInitiated,
                 PageTransition.TYPED);
-        mWebContentsObserver.didFinishLoadInPrimaryMainFrame(
-                Page.createForTesting(), frameId, mSyncURL, true, LifecycleState.ACTIVE);
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    mWebContentsObserver.didFinishLoadInPrimaryMainFrame(
+                            new MockPage(), frameId, mSyncURL, true, LifecycleState.ACTIVE);
+                });
         mWebContentsObserver.didStopLoading(mSyncURL, true);
         onPageFinishedHelper.waitForCallback(callCount);
         onPageFinishedHelper.waitForCallback(callCount);
@@ -248,7 +261,10 @@ public class AwWebContentsObserverTest extends AwParameterizedTest {
                         transition,
                         /* hasUserGesture= */ false,
                         /* isReload= */ false);
-        mWebContentsObserver.didStartNavigationInPrimaryMainFrame(navigation);
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    mWebContentsObserver.didStartNavigationInPrimaryMainFrame(navigation);
+                });
 
         // Check that onNavigationStarted() is called correctly.
         AwNavigation awNavigationStart = mNavigationListener.getLastStartedNavigation();
@@ -275,7 +291,7 @@ public class AwWebContentsObserverTest extends AwParameterizedTest {
                 awNavigationStart.didCommitErrorPage());
         Assert.assertNull("onNavigationStarted should have null page", awNavigationStart.getPage());
 
-        @Nullable Page page = Page.createForTesting();
+        @Nullable Page page = new MockPage();
         navigation.didFinish(
                 gurl,
                 isErrorPage,
@@ -291,8 +307,13 @@ public class AwWebContentsObserverTest extends AwParameterizedTest {
                 /* isPdf= */ false,
                 /* mimeType= */ "",
                 page,
-                /* isSameOrigin= */ true);
-        mWebContentsObserver.didFinishNavigationInPrimaryMainFrame(navigation);
+                /* isSameOrigin= */ true,
+                new HashMap<>(),
+                /* ignoredDuplicateNavigationCount= */ 0);
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    mWebContentsObserver.didFinishNavigationInPrimaryMainFrame(navigation);
+                });
 
         // Check that onNavigationCompleted() is called correctly.
         AwNavigation awNavigationComplete = mNavigationListener.getLastCompletedNavigation();

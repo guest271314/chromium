@@ -9,6 +9,7 @@
 #include <utility>
 #include <vector>
 
+#include "base/strings/strcat.h"
 #include "base/test/task_environment.h"
 #include "build/build_config.h"
 #include "content/browser/renderer_host/frame_tree_node.h"
@@ -82,10 +83,8 @@ class SignedExchangeLoaderTest : public testing::Test {
     ~MockURLLoader() override = default;
 
     // network::mojom::URLLoader overrides:
-    MOCK_METHOD4(FollowRedirect,
-                 void(const std::vector<std::string>&,
-                      const net::HttpRequestHeaders&,
-                      const net::HttpRequestHeaders&,
+    MOCK_METHOD2(FollowRedirect,
+                 void(network::HttpRequestHeadersUpdateParams,
                       const std::optional<GURL>&));
     MOCK_METHOD2(SetPriority,
                  void(net::RequestPriority priority,
@@ -161,7 +160,8 @@ TEST_F(SignedExchangeLoaderTest, Simple) {
   base::RunLoop run_loop;
   raw_producer->Write(
       std::make_unique<mojo::StringDataSource>(
-          MockSignedExchangeHandler::kMockSxgPrefix + "Hello, world!",
+          base::StrCat(
+              {MockSignedExchangeHandler::kMockSxgPrefix, "Hello, world!"}),
           mojo::StringDataSource::AsyncWritingMode::
               STRING_MAY_BE_INVALIDATED_BEFORE_COMPLETION),
       base::BindOnce([](std::unique_ptr<mojo::DataPipeProducer> producer,

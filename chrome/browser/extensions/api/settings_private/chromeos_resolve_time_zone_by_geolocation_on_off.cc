@@ -5,6 +5,7 @@
 #include "chrome/browser/extensions/api/settings_private/chromeos_resolve_time_zone_by_geolocation_on_off.h"
 
 #include "ash/constants/ash_pref_names.h"
+#include "base/check_deref.h"
 #include "chrome/browser/ash/system/timezone_resolver_manager.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/browser_process_platform_part.h"
@@ -70,11 +71,9 @@ SetPrefResult GeneratedResolveTimezoneByGeolocationOnOff::SetPref(
     return SetPrefResult::PREF_TYPE_MISMATCH;
   }
 
-  // Check if preference is policy or primary-user controlled, and therefore
-  // cannot deactivate automatic timezone.
-  if (ash::system::TimeZoneResolverManager::
-          IsTimeZoneResolutionPolicyControlled() ||
-      !profile_->IsSameOrParent(profile_util::GetPrimaryUserProfile())) {
+  // Check if preference is policy, primary-user, or parent controlled, and
+  // therefore cannot deactivate automatic timezone.
+  if (!IsTimeZonePrefModifiable()) {
     return SetPrefResult::PREF_NOT_MODIFIABLE;
   }
 

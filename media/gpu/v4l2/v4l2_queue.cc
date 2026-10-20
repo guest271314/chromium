@@ -13,6 +13,7 @@
 #include <sys/mman.h>
 
 #include "base/compiler_specific.h"
+#include "base/memory/raw_ptr.h"
 #include "base/memory/ref_counted.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/not_fatal_until.h"
@@ -194,7 +195,7 @@ class V4L2Buffer {
 
   const IoctlAsCallback ioctl_cb_;
   const MmapAsCallback mmap_cb_;
-  std::vector<void*> plane_mappings_;
+  std::vector<raw_ptr<void>> plane_mappings_;
 
   // V4L2 data as queried by QUERYBUF.
   struct v4l2_buffer v4l2_buffer_ = {};
@@ -1311,7 +1312,7 @@ class V4L2BufferRefFactory {
   }
 };
 
-CroStatus::Or<uint64_t> V4L2Queue::GetFreeSecureHandle() {
+base::expected<uint64_t, CroStatus> V4L2Queue::GetFreeSecureHandle() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   // Go through the list of secure buffers and find one that is not owned or
   // queued.
@@ -1321,7 +1322,7 @@ CroStatus::Or<uint64_t> V4L2Queue::GetFreeSecureHandle() {
       return buf.secure_handle;
     }
   }
-  return CroStatus::Codes::kSecureBufferPoolEmpty;
+  return base::unexpected(CroStatus::Codes::kSecureBufferPoolEmpty);
 }
 
 void V4L2Queue::ReleaseSecureHandle(uint64_t secure_handle) {
@@ -1871,8 +1872,10 @@ std::optional<base::ScopedFD> V4L2RequestsQueue::CreateRequestFD() {
 std::optional<V4L2RequestRef> V4L2RequestsQueue::GetFreeRequest() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
-  V4L2Request* request_ptr =
-      free_requests_.empty() ? nullptr : free_requests_.front();
+  V4L2Request* request_ptr = nullptr;
+  if (!free_requests_.empty()) {
+    request_ptr = free_requests_.front();
+  }
   if (request_ptr && request_ptr->IsCompleted()) {
     // Previous request is already completed, just recycle it.
     free_requests_.pop();

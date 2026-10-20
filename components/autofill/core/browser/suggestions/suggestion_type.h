@@ -46,6 +46,7 @@ enum class SuggestionType {
   kManageAddress = 10,
   kManageAutofillAi = 64,
   kManageAutofillAiIdentityDocs = 75,
+  kManageAutofillAiShopping = 91,
   kManageAutofillAiTravel = 76,
   kManageCreditCard = 11,
   kManageIban = 12,
@@ -123,7 +124,7 @@ enum class SuggestionType {
 
   // Promotion suggestions.
   kMerchantPromoCodeEntry = 41,
-  kSeePromoCodeDetails = 42,
+  // kSeePromoCodeDetails = 42, // DEPRECATED
 
   // Federated profiles suggestions.
   kIdentityCredential = 66,
@@ -140,17 +141,25 @@ enum class SuggestionType {
   // Webauthn suggestions.
   kWebauthnCredential = 43,
   kWebauthnSignInWithAnotherDevice = 44,
+  kWebauthnPasskeyQrCode = 86,
 
   // One time password suggestions.
+  // Represents an SMS OTP suggestion.
   kOneTimePasswordEntry = 74,
+  // Represents a Gmail OTP suggestion. Having a separate suggestion type allows
+  // recording distinct acceptance/impression metrics in AutofillSuggestionType
+  // histograms and configuring differing UI styling (e.g. Gmail icon and sender
+  // email labels vs Android Messages icon) without risking regressions to SMS
+  // OTP flows.
+  kGmailOneTimePasswordEntry = 100,
+  // Suggestion action to open Gmail for OTPs when no OTP was detected.
+  kOpenGmailForOtps = 101,
 
   // Other suggestions.
   kTitle = 45,
   kSeparator = 46,
-  // TODO(crbug.com/40266549): Rename to Undo once iOS implements it - it still
-  // works as clear form there.
-  kUndoOrClear = 47,
-  kMixedFormMessage = 48,
+  kUndo = 47,
+  // kMixedFormMessage = 48, // DEPRECATED
 
   // Top level suggestion rendered when test addresses are available. Shown only
   // when DevTools is open.
@@ -178,7 +187,7 @@ enum class SuggestionType {
   // Throbber suggestion to indicate loading state.
   kLoadingThrobber = 77,
 
-  // Memory search result for @memory feature.
+  // Memory search result for AtMemory feature.
   kAtMemorySearchResult = 78,
 
   // Buy-Now-Pay-Later footnote suggestion to display the privacy notice with
@@ -193,16 +202,68 @@ enum class SuggestionType {
   kAutocompleteAtMemoryButton = 81,
 
   // Suggestion to open Gemini in the sidebar.
-  kOpenGemini = 82,
+  kAtMemoryOpenGemini = 82,
 
-  // Suggestion to display when @memory search fails to connect to the server.
+  // Suggestion to display when AtMemory search fails to connect to the server.
   kAtMemoryNoConnection = 83,
 
   // Suggestion that triggers AtMemory search when accepted.
   kAtMemorySearchAffordance = 84,
 
-  // Next ID: 85
-  kMaxValue = kAtMemorySearchAffordance
+  // Personal context notice. This is a footer note rather than a real
+  // selectable suggestion.
+  kPersonalContextNotice = 85,
+
+  // Suggestion shown when fetching Ambient Autofill suggestions is in progress.
+  kFetchingAmbientData = 87,
+
+  // Suggestion to display when AtMemory search fails due to an unexpected or
+  // generic error.
+  kAtMemoryGenericError = 88,
+
+  // Maximize Credit Card Benefits suggestion that, when clicked, prompts Gemini
+  // to recommend credit cards for autofill
+  kMaximizeCreditCardBenefitsEntry = 89,
+
+  // Fallback suggestion to open a subpopup displaying other orders.
+  kAutofillAiOtherOrders = 90,
+
+  // A suggestion shown to users as a notice about the usage of private
+  // inference.
+  kAutofillAiPrivateInferenceNotice = 92,
+
+  // Suggestion to open the enhanced autofill settings page.
+  kManageEnhancedAutofill = 93,
+
+  // Suggestion to display the AI disclosure for AtMemory.
+  kAtMemoryAiDisclosure = 94,
+
+  // Fallback suggestion to open a subpopup displaying other shipments.
+  kAutofillAiOtherShipments = 95,
+
+  // Suggestion displaying source attribution for AtMemory search results.
+  kAtMemorySourceAttribution = 96,
+
+  // Suggestion shown in the fetching state of AtMemory.
+  kAtMemoryFetching = 97,
+
+  // Option in the child submenu of an Autofill AI suggestion to remove this
+  // info.
+  kRemoveAutofillAi = 98,
+
+  // Option in the child submenu of an Autofill AI suggestion showing specific
+  // entity source info.
+  kAutofillAiSourceAttribution = 99,
+
+  // Suggestion to manage Wallet Direct Offers.
+  kManageOffers = 102,
+
+  // Suggestion to display the keyboard shortcut settings promo for AtMemory.
+  kAtMemoryShortcutSettingsPromo = 103,
+
+  // Next ID: 104
+
+  kMaxValue = kAtMemoryShortcutSettingsPromo
 };
 // LINT.ThenChange(/tools/metrics/histograms/metadata/autofill/enums.xml:SuggestionType)
 

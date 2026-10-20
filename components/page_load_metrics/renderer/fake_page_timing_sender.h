@@ -88,7 +88,8 @@ class FakePageTimingSender : public PageTimingSender {
         const base::TimeDelta interaction_duration,
         uint64_t interaction_offset,
         const base::TimeTicks interaction_time,
-        const base::TimeTicks processing_start);
+        const base::TimeTicks processing_start,
+        uint64_t performance_timeline_navigation_id);
 
     void UpdateExpectedSubresourceLoadMetrics(
         const blink::SubresourceLoadMetrics& subresource_load_metrics);
@@ -129,7 +130,8 @@ class FakePageTimingSender : public PageTimingSender {
         const std::vector<mojom::SoftNavigationMetricsPtr>&
             soft_navigation_metrics,
         const std::vector<mojom::LargestContentfulPaintTimingPtr>&
-            soft_largest_contentful_paint);
+            soft_largest_contentful_paint,
+        const mojom::FontLoadingMetricsPtr& font_loading_metrics);
 
    private:
     std::vector<mojom::PageLoadTimingPtr> expected_timings_;
@@ -180,7 +182,8 @@ class FakePageTimingSender : public PageTimingSender {
       std::vector<mojom::SoftNavigationMetricsPtr> soft_navigation_metrics,
       std::vector<mojom::LargestContentfulPaintTimingPtr>
           soft_largest_contentful_paint,
-      std::vector<mojom::CustomUserTimingMarkPtr> user_timings) override;
+      std::vector<mojom::CustomUserTimingMarkPtr> user_timings,
+      const mojom::FontLoadingMetricsPtr& font_loading_metrics) override;
 
   void SendCustomUserTiming(mojom::CustomUserTimingMarkPtr timing) override;
 

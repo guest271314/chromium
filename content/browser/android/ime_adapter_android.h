@@ -89,6 +89,7 @@ class CONTENT_EXPORT ImeAdapterAndroid : public RenderWidgetHostConnector {
   void HandleStylusWritingGestureAction(JNIEnv*,
                                         const int32_t,
                                         const base::android::JavaRef<jobject>&);
+  void CancelPreviewGesture();
 
   void OnStylusWritingGestureActionCompleted(
       int,
@@ -118,6 +119,8 @@ class CONTENT_EXPORT ImeAdapterAndroid : public RenderWidgetHostConnector {
       const gfx::Rect& caret_bounds);
 
   bool InsertMediaFromBytes(JNIEnv* env,
+                            int render_process_id,
+                            int render_frame_id,
                             const base::android::JavaRef<jbyteArray>& bytes,
                             const base::android::JavaRef<jstring>& extension);
 

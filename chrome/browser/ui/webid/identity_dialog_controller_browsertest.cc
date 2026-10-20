@@ -19,7 +19,7 @@
 #include "chrome/browser/actor/ui/event_dispatcher.h"
 #include "chrome/browser/actor/ui/test_support/mock_event_dispatcher.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/webid/account_selection_view.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "content/public/browser/webid/identity_request_account.h"
@@ -27,7 +27,7 @@
 #include "content/public/test/browser_test.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "third_party/blink/public/mojom/webid/federated_auth_request.mojom.h"
+#include "third_party/blink/public/mojom/webid/federated_request.mojom.h"
 #include "url/gurl.h"
 #include "url/origin.h"
 
@@ -107,6 +107,11 @@ class MockAccountSelectionView : public AccountSelectionView {
                blink::mojom::RpMode),
               (override));
 
+  MOCK_METHOD(bool,
+              ShowNativeAppUi,
+              (const content::NativeAppRequestOptions&),
+              (override));
+
   MOCK_METHOD(void, SetCanShowUi, (bool can_show_ui), (override));
 
   MOCK_METHOD(std::string, GetTitle, (), (const, override));
@@ -180,7 +185,7 @@ class IdentityDialogControllerBrowserTest : public InProcessBrowserTest {
 
   TaskId SimulateNewActiveActorTask() {
     actor::ActorKeyedService* actor_service =
-        actor::ActorKeyedService::Get(browser()->profile());
+        actor::ActorKeyedService::Get(browser()->GetProfile());
     CHECK(actor_service);
 
     actor::TaskId task_id = actor_service->CreateTask(
@@ -207,7 +212,7 @@ class IdentityDialogControllerBrowserTest : public InProcessBrowserTest {
   void SimulateActorTaskFinished(IdentityDialogController* controller,
                                  TaskId task_id) {
     actor::ActorKeyedService* actor_service =
-        actor::ActorKeyedService::Get(browser()->profile());
+        actor::ActorKeyedService::Get(browser()->GetProfile());
     EXPECT_NE(actor_service, nullptr);
     actor_service->StopTask(task_id,
                             actor::ActorTask::StoppedReason::kTaskComplete);
@@ -266,6 +271,4 @@ IN_PROC_BROWSER_TEST_F(IdentityDialogControllerBrowserTest,
       /*on_add_account=*/base::DoNothing(),
       /*dismiss_callback=*/base::DoNothing(),
       /*accounts_displayed_callback=*/base::DoNothing()));
-
-  EXPECT_FALSE(controller->DidShowUi());
 }

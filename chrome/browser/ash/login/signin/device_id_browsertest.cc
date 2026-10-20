@@ -5,6 +5,7 @@
 #include <memory>
 
 #include "ash/constants/ash_switches.h"
+#include "ash/constants/chrome_switches.h"
 #include "ash/public/cpp/login_screen_test_api.h"
 #include "base/command_line.h"
 #include "base/files/file_path.h"
@@ -13,6 +14,7 @@
 #include "base/json/json_writer.h"
 #include "base/path_service.h"
 #include "base/test/test_future.h"
+#include "base/threading/thread_restrictions.h"
 #include "chrome/browser/ash/login/test/cryptohome_mixin.h"
 #include "chrome/browser/ash/login/test/js_checker.h"
 #include "chrome/browser/ash/login/test/oobe_base_test.h"
@@ -27,13 +29,15 @@
 #include "chrome/browser/ui/ash/login/login_display_host.h"
 #include "chrome/browser/ui/webui/ash/login/gaia_screen_handler.h"
 #include "chrome/browser/ui/webui/ash/login/user_creation_screen_handler.h"
-#include "chrome/common/chrome_switches.h"
 #include "chrome/test/base/fake_gaia_mixin.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chromeos/dbus/constants/dbus_paths.h"
 #include "components/prefs/pref_service.h"
+#include "components/session_manager/core/session.h"
+#include "components/session_manager/core/session_manager.h"
 #include "components/signin/public/base/signin_pref_names.h"
 #include "components/user_manager/known_user.h"
+#include "components/user_manager/user.h"
 #include "components/user_manager/user_manager.h"
 #include "content/public/test/browser_test.h"
 #include "google_apis/gaia/gaia_id.h"
@@ -131,7 +135,14 @@ class DeviceIDTest : public OobeBaseTest,
     params.emails = {user_id};
     params.refresh_token = refresh_token;
     fake_gaia_.fake_gaia()->UpdateConfiguration(params);
-    fake_gaia_.fake_gaia()->MapEmailToGaiaId(user_id, gaia_id);
+    // Configure FakeGaia to issue OAuth access tokens for this refresh token.
+    //
+    // Previously, asynchronous Mojo delays in AccountManagerFacade masked the
+    // missing FakeGaia configuration by deferring token availability until
+    // after session startup. Without those delays, token availability fires
+    // immediately during startup, requiring FakeGaia to be configured to avoid
+    // token fetch hangs/timeouts.
+    fake_gaia_.SetupFakeGaiaForLogin(user_id, gaia_id, refresh_token);
 
     LoginDisplayHost::default_host()
         ->GetOobeUI()
@@ -141,10 +152,23 @@ class DeviceIDTest : public OobeBaseTest,
     test::WaitForPrimaryUserSessionStart();
   }
 
-  void SignInOffline(const std::string& user_id, const std::string& password) {
+  void SignInOffline(const std::string& user_id,
+                     const std::string& password,
+                     const std::string& refresh_token = kRefreshToken1,
+                     const GaiaId& gaia_id = FakeGaiaMixin::kFakeUserGaiaId) {
     cryptohome_mixin_.ApplyAuthConfigIfUserExists(
         AccountId::FromUserEmail(user_id),
         test::UserAuthConfig::Create(test::kDefaultAuthSetup));
+
+    // Configure FakeGaia to issue OAuth access tokens for this refresh token.
+    //
+    // Previously, asynchronous Mojo delays in AccountManagerFacade masked the
+    // missing FakeGaia configuration by deferring token availability until
+    // after session startup. Without those delays, token availability fires
+    // immediately during startup, and token refresh requests will hit FakeGaia;
+    // this setup ensures they succeed rather than failing with
+    // HTTP_BAD_REQUEST.
+    fake_gaia_.SetupFakeGaiaForLogin(user_id, gaia_id, refresh_token);
 
     LoginScreenTestApi::SubmitPassword(AccountId::FromUserEmail(user_id),
                                        FakeGaiaMixin::kFakeUserPassword,
@@ -166,7 +190,7 @@ class DeviceIDTest : public OobeBaseTest,
 
   base::FilePath GetRefreshTokenToDeviceIdMapFilePath() const {
     return base::CommandLine::ForCurrentProcess()
-        ->GetSwitchValuePath(::switches::kUserDataDir)
+        ->GetSwitchValuePath(ash::chrome_switches::kUserDataDir)
         .Append(kRefreshTokenToDeviceIdMapFile);
   }
 
@@ -252,8 +276,8 @@ IN_PROC_BROWSER_TEST_F(DeviceIDTest, PRE_PRE_PRE_NewUsers) {
       GetDeviceId(AccountId::FromUserEmail(FakeGaiaMixin::kFakeUserEmail));
   EXPECT_FALSE(device_id.empty());
 
-  SignInOffline(FakeGaiaMixin::kFakeUserEmail,
-                FakeGaiaMixin::kFakeUserPassword);
+  SignInOffline(FakeGaiaMixin::kFakeUserEmail, FakeGaiaMixin::kFakeUserPassword,
+                kRefreshToken2);
   CheckDeviceIDIsConsistent(
       AccountId::FromUserEmail(FakeGaiaMixin::kFakeUserEmail), kRefreshToken2);
 
@@ -280,7 +304,8 @@ IN_PROC_BROWSER_TEST_F(DeviceIDTest, PRE_NewUsers) {
   RemoveUser(AccountId::FromUserEmail(kSecondUserEmail));
 }
 
-IN_PROC_BROWSER_TEST_F(DeviceIDTest, NewUsers) {
+// TODO(crbug.com/530372848): Re-enable the test.
+IN_PROC_BROWSER_TEST_F(DeviceIDTest, DISABLED_NewUsers) {
   EXPECT_TRUE(GetDeviceId(AccountId::FromUserEmail(kSecondUserEmail)).empty());
   ASSERT_TRUE(LoginScreenTestApi::ClickAddUserButton());
   OobeScreenWaiter(UserCreationView::kScreenId).Wait();
@@ -303,10 +328,15 @@ IN_PROC_BROWSER_TEST_F(DeviceIDTest, PRE_Migration) {
                kRefreshToken1, FakeGaiaMixin::kFakeUserGaiaId);
 
   // Simulate user that has device ID saved only in preferences (pre-M44).
-  PrefService* prefs =
-      ProfileHelper::Get()
-          ->GetProfileByUser(user_manager::UserManager::Get()->GetActiveUser())
-          ->GetPrefs();
+  const session_manager::Session* active_session =
+      session_manager::SessionManager::Get()->GetActiveSession();
+  ASSERT_TRUE(active_session);
+  user_manager::User* user =
+      user_manager::UserManager::Get()->FindUserAndModify(
+          active_session->account_id());
+  ASSERT_TRUE(user);
+  PrefService* prefs = user->GetProfilePrefs();
+  ASSERT_TRUE(prefs);
   prefs->SetString(
       prefs::kGoogleServicesSigninScopedDeviceId,
       GetDeviceId(AccountId::FromUserEmail(FakeGaiaMixin::kFakeUserEmail)));
@@ -339,10 +369,15 @@ IN_PROC_BROWSER_TEST_F(DeviceIDTest, PRE_LegacyUsers) {
   SignInOnline(FakeGaiaMixin::kFakeUserEmail, FakeGaiaMixin::kFakeUserPassword,
                kRefreshToken1, FakeGaiaMixin::kFakeUserGaiaId);
 
-  PrefService* prefs =
-      ProfileHelper::Get()
-          ->GetProfileByUser(user_manager::UserManager::Get()->GetActiveUser())
-          ->GetPrefs();
+  const session_manager::Session* active_session =
+      session_manager::SessionManager::Get()->GetActiveSession();
+  ASSERT_TRUE(active_session);
+  user_manager::User* user =
+      user_manager::UserManager::Get()->FindUserAndModify(
+          active_session->account_id());
+  ASSERT_TRUE(user);
+  PrefService* prefs = user->GetProfilePrefs();
+  ASSERT_TRUE(prefs);
   EXPECT_TRUE(
       prefs->GetString(prefs::kGoogleServicesSigninScopedDeviceId).empty());
 

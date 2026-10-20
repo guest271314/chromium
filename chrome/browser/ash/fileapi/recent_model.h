@@ -19,7 +19,7 @@
 #include "chrome/browser/ash/fileapi/file_accumulator.h"
 #include "chrome/browser/ash/fileapi/recent_file.h"
 #include "chrome/browser/ash/fileapi/recent_source.h"
-#include "chrome/common/extensions/api/file_manager_private.h"
+#include "chromeos/ash/experiences/extensions/common/api/file_manager_private.h"
 #include "components/keyed_service/core/keyed_service.h"
 #include "storage/browser/file_system/file_system_url.h"
 
@@ -162,7 +162,10 @@ class RecentModel : public KeyedService {
   struct CallContext {
     CallContext(const SearchCriteria& search_criteria,
                 GetRecentFilesCallback callback);
-    CallContext(CallContext&& context);
+    CallContext(const CallContext&) = delete;
+    CallContext& operator=(const CallContext&) = delete;
+    CallContext(CallContext&&) = delete;
+    CallContext& operator=(CallContext&&) = delete;
     ~CallContext();
 
     // The parameters of the last query. These are used to check if the
@@ -211,7 +214,7 @@ class RecentModel : public KeyedService {
   std::vector<std::unique_ptr<RecentSource>> sources_;
 
   // Cached GetRecentFiles() response.
-  std::optional<std::vector<RecentFile>> cached_files_ = std::nullopt;
+  std::optional<std::vector<RecentFile>> cached_files_;
 
   // The parameters of the last query. These are used to check if the
   // cached content can be re-used.

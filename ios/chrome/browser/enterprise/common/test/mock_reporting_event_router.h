@@ -40,7 +40,8 @@ class MockReportingEventRouter
               (const GURL& url,
                const std::string& threat_type,
                const safe_browsing::RTLookupResponse& response,
-               const ReferrerChain& referrer_chain),
+               const ReferrerChain& referrer_chain,
+               const std::string& tab_title),
               (override));
   MOCK_METHOD(void,
               ReportPaste,
@@ -51,6 +52,14 @@ class MockReportingEventRouter
               ReportPasteWarningBypassed,
               (const data_controls::ClipboardContext&,
                const data_controls::Verdict&),
+              (override));
+  MOCK_METHOD(void,
+              ReportPasteFromGemini,
+              (const GURL&,
+               const std::string&,
+               const data_controls::Verdict&,
+               int64_t,
+               bool),
               (override));
   MOCK_METHOD(void,
               ReportCopy,

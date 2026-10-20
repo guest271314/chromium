@@ -32,7 +32,7 @@ public class ChildAccountService {
     @VisibleForTesting
     @CalledByNative
     static void reauthenticateChildAccount(
-            WindowAndroid windowAndroid,
+            @JniType("ui::WindowAndroid*") WindowAndroid windowAndroid,
             @JniType("CoreAccountInfo") CoreAccountInfo accountInfo,
             final long nativeOnFailureCallback) {
         ThreadUtils.assertOnUiThread();
@@ -48,7 +48,7 @@ public class ChildAccountService {
         }
         AccountManagerFacadeProvider.getInstance()
                 .updateCredentials(
-                        assertNonNull(accountInfo),
+                        assertNonNull(accountInfo).getId(),
                         activity,
                         success -> {
                             if (!success) {

@@ -18,10 +18,10 @@
 
 #include "base/check_is_test.h"
 #include "base/compiler_specific.h"
+#include "base/containers/span.h"
 #include "base/functional/callback.h"
 #include "base/functional/callback_helpers.h"
 #include "base/memory/weak_ptr.h"
-#include "base/metrics/histogram_functions.h"
 #include "base/task/bind_post_task.h"
 #include "base/task/thread_pool.h"
 #include "chromeos/ash/components/chaps_util/chaps_util.h"
@@ -29,12 +29,12 @@
 #include "chromeos/ash/components/kcer/chaps/high_level_chaps_client.h"
 #include "chromeos/ash/components/kcer/helpers/key_helper.h"
 #include "chromeos/ash/components/kcer/helpers/pkcs12_validator.h"
-#include "chromeos/ash/components/kcer/kcer_histograms.h"
 #include "chromeos/ash/components/kcer/kcer_token.h"
 #include "chromeos/ash/components/kcer/kcer_utils.h"
 #include "chromeos/ash/components/kcer/key_permissions.pb.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
+#include "crypto/chaps_support.h"
 #include "crypto/nss_key_util.h"
 #include "crypto/scoped_nss_types.h"
 #include "net/base/net_errors.h"
@@ -798,6 +798,42 @@ void GetCertProvisioningIdOnWorkerThread(
       UNSAFE_TODO(cert_prov_attribute->data + cert_prov_attribute->len)));
 }
 
+void GetBrowserEnterpriseClientCertTagOnWorkerThread(
+    BrowserEnterpriseClientCertTagAttributeId attribute_id,
+    crypto::ScopedPK11Slot slot,
+    PrivateKeyHandle key,
+    Kcer::GetBrowserEnterpriseClientCertTagCallback callback) {
+  base::expected<crypto::ScopedSECKEYPrivateKey, Error> private_key =
+      GetSECKEYPrivateKey(slot, key);
+  if (!private_key.has_value()) {
+    return std::move(callback).Run(base::unexpected(private_key.error()));
+  }
+  const crypto::ScopedSECKEYPrivateKey& sec_private_key = private_key.value();
+
+  crypto::ScopedSECItem tag_attribute(SECITEM_AllocItem(/*arena=*/nullptr,
+                                                        /*item=*/nullptr,
+                                                        /*len=*/0));
+
+  SECStatus status = PK11_ReadRawAttribute(
+      /*objType=*/PK11_TypePrivKey, sec_private_key.get(), attribute_id.value(),
+      tag_attribute.get());
+
+  if (status != SECSuccess) {
+    int error = PORT_GetError();
+    if (error == SEC_ERROR_BAD_DATA) {
+      // Attribute was never set; treat as untagged rather than as an error.
+      return std::move(callback).Run(false);
+    }
+    return std::move(callback).Run(
+        base::unexpected(Error::kFailedToReadAttribute));
+  }
+
+  if (tag_attribute->len == 0 || tag_attribute->data == nullptr) {
+    return std::move(callback).Run(false);
+  }
+  return std::move(callback).Run(tag_attribute->data[0] != 0);
+}
+
 void GetTokenInfoOnWorkerThread(crypto::ScopedPK11Slot slot,
                                 Kcer::GetTokenInfoCallback callback) {
   TokenInfo token_info;
@@ -820,10 +856,17 @@ void GetKeyInfoOnWorkerThread(crypto::ScopedPK11Slot slot,
   const crypto::ScopedSECKEYPrivateKey& sec_private_key = private_key.value();
 
   constexpr CK_ATTRIBUTE_TYPE kKeyInSoftware = CKA_VENDOR_DEFINED + 5;
-  // All keys in chaps without the attribute are hardware backed.
-  key_info.is_hardware_backed = !PK11_HasAttributeSet(
-      slot.get(), sec_private_key->pkcs11ID, kKeyInSoftware,
-      /*haslock=*/PR_FALSE);
+  if (!crypto::IsSlotProvidedByChaps(slot.get())) {
+    // kKeyInSoftware is a Chaps vendor extension; NSS softoken never sets it,
+    // so "absent => hardware backed" below would invert on a slot Chaps
+    // doesn't provide (e.g. a no-TPM device's software fallback slot).
+    key_info.is_hardware_backed = false;
+  } else {
+    // All keys in chaps without the attribute are hardware backed.
+    key_info.is_hardware_backed = !PK11_HasAttributeSet(
+        slot.get(), sec_private_key->pkcs11ID, kKeyInSoftware,
+        /*haslock=*/PR_FALSE);
+  }
 
   switch (SECKEY_GetPrivateKeyType(sec_private_key.get())) {
     case rsaKey:
@@ -883,6 +926,7 @@ void SetKeyPermissionsOnWorkerThread(KeyPermissionsAttributeId attribute_id,
                                    serialized_permissions.size());
 
   SECItem attribute_value;
+  attribute_value.type = siBuffer;
   attribute_value.data = serialized_permissions.data();
   attribute_value.len = serialized_permissions.size();
 
@@ -909,8 +953,36 @@ void SetCertProvisioningProfileIdOnWorkerThread(
   }
 
   SECItem attribute_value;
+  attribute_value.type = siBuffer;
   attribute_value.data = reinterpret_cast<uint8_t*>(cert_prov_id.data());
   attribute_value.len = cert_prov_id.size();
+
+  if (SECStatus res = PK11_WriteRawAttribute(
+          /*objType=*/PK11_TypePrivKey, private_key.value().get(),
+          attribute_id.value(), &attribute_value);
+      res != SECSuccess) {
+    return std::move(callback).Run(
+        base::unexpected(Error::kFailedToWriteAttribute));
+  }
+  return std::move(callback).Run({});
+}
+
+void SetBrowserEnterpriseClientCertTagOnWorkerThread(
+    BrowserEnterpriseClientCertTagAttributeId attribute_id,
+    crypto::ScopedPK11Slot slot,
+    PrivateKeyHandle key,
+    Kcer::StatusCallback callback) {
+  base::expected<crypto::ScopedSECKEYPrivateKey, Error> private_key =
+      GetSECKEYPrivateKey(slot, key);
+  if (!private_key.has_value()) {
+    return std::move(callback).Run(base::unexpected(private_key.error()));
+  }
+
+  uint8_t tag_value = 1u;
+  SECItem attribute_value;
+  attribute_value.type = siBuffer;
+  attribute_value.data = &tag_value;
+  attribute_value.len = sizeof(tag_value);
 
   if (SECStatus res = PK11_WriteRawAttribute(
           /*objType=*/PK11_TypePrivKey, private_key.value().get(),
@@ -1104,9 +1176,6 @@ void KcerTokenImplNss::ImportPkcs12Cert(Pkcs12Blob pkcs12_blob,
         std::move(pkcs12_blob), std::move(password), hardware_backed,
         mark_as_migrated, std::move(callback)));
   }
-
-  RecordKcerPkcs12ImportUmaEvent(
-      KcerPkcs12ImportEvent::AttemptedPkcs12ChapsImport);
 
   // Block task queue, attach queue unblocking and notification sending to the
   // callback.
@@ -1434,6 +1503,31 @@ void KcerTokenImplNss::GetCertProvisioningProfileId(
                      std::move(key), std::move(unblocking_callback)));
 }
 
+void KcerTokenImplNss::GetBrowserEnterpriseClientCertTag(
+    PrivateKeyHandle key,
+    Kcer::GetBrowserEnterpriseClientCertTagCallback callback) {
+  DCHECK_CURRENTLY_ON(content::BrowserThread::IO);
+
+  if (state_ == State::kInitializationFailed) [[unlikely]] {
+    return HandleInitializationFailed(std::move(callback));
+  } else if (is_blocked_) {
+    return task_queue_.push_back(base::BindOnce(
+        &KcerTokenImplNss::GetBrowserEnterpriseClientCertTag,
+        weak_factory_.GetWeakPtr(), std::move(key), std::move(callback)));
+  }
+
+  // Block task queue, attach unblocking task to the callback.
+  auto unblocking_callback = std::move(callback).Then(BlockQueueGetUnblocker());
+
+  base::ThreadPool::PostTask(
+      FROM_HERE,
+      {base::MayBlock(), base::TaskShutdownBehavior::CONTINUE_ON_SHUTDOWN},
+      base::BindOnce(&GetBrowserEnterpriseClientCertTagOnWorkerThread,
+                     GetBrowserEnterpriseClientCertTagAttributeId(),
+                     crypto::ScopedPK11Slot(PK11_ReferenceSlot(slot_.get())),
+                     std::move(key), std::move(unblocking_callback)));
+}
+
 void KcerTokenImplNss::SetKeyNickname(PrivateKeyHandle key,
                                       std::string nickname,
                                       Kcer::StatusCallback callback) {
@@ -1511,6 +1605,31 @@ void KcerTokenImplNss::SetCertProvisioningProfileId(
                      crypto::ScopedPK11Slot(PK11_ReferenceSlot(slot_.get())),
                      std::move(key), std::move(profile_id),
                      std::move(unblocking_callback)));
+}
+
+void KcerTokenImplNss::SetBrowserEnterpriseClientCertTag(
+    PrivateKeyHandle key,
+    Kcer::StatusCallback callback) {
+  DCHECK_CURRENTLY_ON(content::BrowserThread::IO);
+
+  if (state_ == State::kInitializationFailed) [[unlikely]] {
+    return HandleInitializationFailed(std::move(callback));
+  } else if (is_blocked_) {
+    return task_queue_.push_back(base::BindOnce(
+        &KcerTokenImplNss::SetBrowserEnterpriseClientCertTag,
+        weak_factory_.GetWeakPtr(), std::move(key), std::move(callback)));
+  }
+
+  // Block task queue, attach unblocking task to the callback.
+  auto unblocking_callback = std::move(callback).Then(BlockQueueGetUnblocker());
+
+  base::ThreadPool::PostTask(
+      FROM_HERE,
+      {base::MayBlock(), base::TaskShutdownBehavior::CONTINUE_ON_SHUTDOWN},
+      base::BindOnce(&SetBrowserEnterpriseClientCertTagOnWorkerThread,
+                     GetBrowserEnterpriseClientCertTagAttributeId(),
+                     crypto::ScopedPK11Slot(PK11_ReferenceSlot(slot_.get())),
+                     std::move(key), std::move(unblocking_callback)));
 }
 
 // `did_modify` indicates whether a modification was actually made (which should
@@ -1651,10 +1770,24 @@ CertProvisioningIdAttributeId
 KcerTokenImplNss::GetCertProvisioningIdAttributeId() const {
   if (translate_attributes_for_testing_) [[unlikely]] {
     CHECK_IS_TEST();
+    // IMPORTANT: The attribute id is shared with BrowserEnterpriseClientCertTag
+    // in tests, which means setting one will set the other one to same value.
     return CertProvisioningIdAttributeId(CKA_START_DATE);
   }
   return CertProvisioningIdAttributeId(
       pkcs11_custom_attributes::kCkaChromeOsBuiltinProvisioningProfileId);
+}
+
+BrowserEnterpriseClientCertTagAttributeId
+KcerTokenImplNss::GetBrowserEnterpriseClientCertTagAttributeId() const {
+  if (translate_attributes_for_testing_) [[unlikely]] {
+    CHECK_IS_TEST();
+    // IMPORTANT: The attribute id is shared with CertProvisioningIdAttributeId
+    // in tests, which means setting one will set the other one to same value.
+    return BrowserEnterpriseClientCertTagAttributeId(CKA_START_DATE);
+  }
+  return BrowserEnterpriseClientCertTagAttributeId(
+      pkcs11_custom_attributes::kCkaBrowserEnterpriseClientCertKey);
 }
 
 }  // namespace kcer::internal

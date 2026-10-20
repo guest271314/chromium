@@ -19,13 +19,13 @@
 #import "components/autofill/core/browser/payments/autofill_save_card_ui_info.h"
 #import "components/autofill/core/browser/payments/payments_autofill_client.h"
 #import "components/autofill/core/browser/payments/test_legal_message_line.h"
-#import "components/autofill/core/browser/test_utils/autofill_test_utils.h"
+#import "components/autofill/core/browser/test_utils/autofill_test_util.h"
 #import "components/autofill/core/common/autofill_payments_features.h"
 #import "components/autofill/ios/browser/credit_card_save_metrics_ios.h"
 #import "components/grit/components_scaled_resources.h"
 #import "components/strings/grit/components_strings.h"
 #import "ios/chrome/browser/autofill/model/bottom_sheet/save_card_bottom_sheet_model.h"
-#import "ios/chrome/browser/autofill/model/message/save_card_message_with_links.h"
+#import "ios/chrome/browser/autofill/model/message/autofill_legal_message_line.h"
 #import "ios/chrome/browser/autofill/ui_bundled/autofill_credit_card_ui_type.h"
 #import "ios/chrome/browser/autofill/ui_bundled/bottom_sheet/bottom_sheet_constants.h"
 #import "ios/chrome/browser/autofill/ui_bundled/bottom_sheet/save_card_bottom_sheet_consumer.h"
@@ -71,6 +71,7 @@ constexpr std::string_view kCreditCardUploadSuccessConfirmationResultPrefix =
 
 autofill::AutofillSaveCardUiInfo CreateAutofillSaveCardUiInfo(bool for_upload) {
   autofill::AutofillSaveCardUiInfo ui_info = autofill::AutofillSaveCardUiInfo();
+  ui_info.is_for_upload = for_upload;
   ui_info.title_text = std::u16string(u"Title");
   ui_info.description_text = std::u16string(u"Description Text");
   ui_info.logo_icon_id = IDR_INFOBAR_AUTOFILL_CC;
@@ -111,7 +112,7 @@ autofill::AutofillSaveCardUiInfo CreateAutofillSaveCardUiInfo(bool for_upload) {
 @property(nonatomic, copy) NSString* expiryDate;
 @property(nonatomic, copy) NSString* cardAccessibilityLabel;
 @property(nonatomic, strong) UIImage* issuerIcon;
-@property(nonatomic, strong) NSArray<SaveCardMessageWithLinks*>* legalMessages;
+@property(nonatomic, strong) NSArray<AutofillLegalMessageLine*>* legalMessages;
 @property(nonatomic, assign) BOOL saveButtonEnabled;
 
 @end
@@ -244,8 +245,8 @@ TEST_F(SaveCardBottomSheetMediatorTest, SetConsumer) {
       [[FakeSaveCardBottomSheetConsumer alloc] init];
   mediator_.consumer = consumer;
   TestCommonAttributesOfConsumer(consumer);
-  NSMutableArray<SaveCardMessageWithLinks*>* messages =
-      [SaveCardMessageWithLinks convertFrom:model_->legal_messages()];
+  NSArray<AutofillLegalMessageLine*>* messages =
+      [AutofillLegalMessageLine convertFrom:model_->legal_messages()];
   for (NSUInteger index = 0; index < [messages count]; index++) {
     EXPECT_NSEQ(messages[index].messageText,
                 (consumer.legalMessages[index]).messageText);
@@ -275,25 +276,11 @@ TEST_F(SaveCardBottomSheetMediatorTest, SetConsumer) {
 }
 
 // Test that mediator provides logoType and logoAccessibilityLabel as a data
-// source for upload save bottomsheet with Wallet branding.
+// source for upload save bottomsheet.
 TEST_F(SaveCardBottomSheetMediatorTest, DataSource) {
-  base::test::ScopedFeatureList feature_list(
-      autofill::features::kAutofillEnableWalletBranding);
   EXPECT_EQ(kGoogleWalletLogo, mediator_.logoType);
   EXPECT_NSEQ(base::SysUTF16ToNSString(l10n_util::GetStringUTF16(
                   IDS_AUTOFILL_GOOGLE_WALLET_LOGO_ACCESSIBLE_NAME)),
-              mediator_.logoAccessibilityLabel);
-}
-
-// Test that mediator provides logoType and logoAccessibilityLabel as a data
-// source for upload save bottomsheet.
-TEST_F(SaveCardBottomSheetMediatorTest, DataSource_BrandingFlagOff) {
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndDisableFeature(
-      autofill::features::kAutofillEnableWalletBranding);
-  EXPECT_EQ(kGoogleWalletLogo, mediator_.logoType);
-  EXPECT_NSEQ(base::SysUTF16ToNSString(l10n_util::GetStringUTF16(
-                  IDS_AUTOFILL_GOOGLE_PAY_LOGO_ACCESSIBLE_NAME)),
               mediator_.logoAccessibilityLabel);
 }
 
@@ -987,3 +974,53 @@ INSTANTIATE_TEST_SUITE_P(
         autofill::payments::PaymentsAutofillClient::CardSaveType::kCardSaveOnly,
         autofill::payments::PaymentsAutofillClient::CardSaveType::
             kCardSaveWithCvc));
+
+class SaveCardBottomSheetMediatorTestForSaveScanAndFill
+    : public SaveCardBottomSheetMediatorTest {
+ public:
+  SaveCardBottomSheetMediatorTestForSaveScanAndFill()
+      : SaveCardBottomSheetMediatorTest(/*for_upload=*/true) {
+    // Re-initialize model and mediator with CardSaveAndFillDialogCallback.
+    model_ = nullptr;
+    [mediator_ disconnect];
+
+    using Variant = std::variant<
+        autofill::payments::PaymentsAutofillClient::LocalSaveCardPromptCallback,
+        autofill::payments::PaymentsAutofillClient::
+            UploadSaveCardPromptCallback,
+        autofill::payments::PaymentsAutofillClient::
+            CardSaveAndFillDialogCallback>;
+
+    std::unique_ptr<MockSaveCardBottomSheetModel> model =
+        std::make_unique<MockSaveCardBottomSheetModel>(
+            CreateAutofillSaveCardUiInfo(/*for_upload=*/true),
+            Variant(static_cast<autofill::payments::PaymentsAutofillClient::
+                                    CardSaveAndFillDialogCallback>(
+                base::DoNothing())),
+            autofill::payments::PaymentsAutofillClient::SaveCreditCardOptions()
+                .with_num_strikes(0));
+    model_ = model.get();
+    mediator_ = [[SaveCardBottomSheetMediator alloc]
+                initWithUIModel:std::move(model)
+        autofillCommandsHandler:mock_autofill_commands_handler_];
+  }
+};
+
+TEST_F(SaveCardBottomSheetMediatorTestForSaveScanAndFill, SetConsumer) {
+  FakeSaveCardBottomSheetConsumer* consumer =
+      [[FakeSaveCardBottomSheetConsumer alloc] init];
+  mediator_.consumer = consumer;
+  TestCommonAttributesOfConsumer(consumer);
+
+  // Even though the C++ delegate holds CardSaveAndFillDialogCallback (so
+  // save_card_delegate()->is_for_upload() is false), the model's
+  // is_for_upload() is true because ui_info.is_for_upload is true, so legal
+  // messages must be populated.
+  NSArray<AutofillLegalMessageLine*>* messages =
+      [AutofillLegalMessageLine convertFrom:model_->legal_messages()];
+  ASSERT_GT([messages count], 0u);
+  for (NSUInteger index = 0; index < [messages count]; index++) {
+    EXPECT_NSEQ(messages[index].messageText,
+                (consumer.legalMessages[index]).messageText);
+  }
+}

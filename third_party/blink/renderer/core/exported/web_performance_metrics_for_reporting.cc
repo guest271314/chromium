@@ -122,17 +122,8 @@ double WebPerformanceMetricsForReporting::DomContentLoadedEventStart() const {
       .InSecondsF();
 }
 
-double WebPerformanceMetricsForReporting::DomContentLoadedEventEnd() const {
-  return base::Milliseconds(private_->timing()->domContentLoadedEventEnd())
-      .InSecondsF();
-}
-
 double WebPerformanceMetricsForReporting::LoadEventStart() const {
   return base::Milliseconds(private_->timing()->loadEventStart()).InSecondsF();
-}
-
-double WebPerformanceMetricsForReporting::LoadEventEnd() const {
-  return base::Milliseconds(private_->timing()->loadEventEnd()).InSecondsF();
 }
 
 double WebPerformanceMetricsForReporting::FirstPaint() const {
@@ -278,6 +269,33 @@ WebPerformanceMetricsForReporting::UserTimingMarkFullyVisible() const {
 std::optional<base::TimeDelta>
 WebPerformanceMetricsForReporting::UserTimingMarkInteractive() const {
   return private_->timingForReporting()->UserTimingMarkInteractive();
+}
+
+base::TimeDelta WebPerformanceMetricsForReporting::SystemFallbackFontTime()
+    const {
+  return private_->timingForReporting()->SystemFallbackFontTime();
+}
+
+uint32_t WebPerformanceMetricsForReporting::SystemFallbackFontCount() const {
+  return private_->timingForReporting()->SystemFallbackFontCount();
+}
+
+base::TimeDelta
+WebPerformanceMetricsForReporting::SystemFallbackFontInitialDuration() const {
+  return private_->timingForReporting()->SystemFallbackFontInitialDuration();
+}
+
+uint32_t WebPerformanceMetricsForReporting::ShapeCacheHitCount() const {
+  return private_->timingForReporting()->ShapeCacheHitCount();
+}
+
+uint32_t WebPerformanceMetricsForReporting::ShapeCacheMissCount() const {
+  return private_->timingForReporting()->ShapeCacheMissCount();
+}
+
+std::vector<ScriptFontFallbackDetailsForReporting>
+WebPerformanceMetricsForReporting::GetScriptFontFallbackDetails() const {
+  return private_->timingForReporting()->GetScriptFontFallbackDetails();
 }
 
 std::optional<std::tuple<std::string, base::TimeDelta>>

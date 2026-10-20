@@ -9,14 +9,21 @@
 #include "base/base_paths.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
+#include "base/files/scoped_temp_dir.h"
 #include "base/json/json_writer.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/path_service.h"
 #include "base/strings/string_split.h"
+#include "base/threading/thread_restrictions.h"
 #include "build/build_config.h"
 #include "chrome/browser/headless/test/headless_browser_test_utils.h"
+#include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/omnibox/omnibox_next_features.h"
+#include "chrome/common/pref_names.h"
 #include "components/headless/select_file_dialog/headless_select_file_dialog.h"
 #include "components/headless/test/shared_test_util.h"
+#include "components/prefs/pref_service.h"
 #include "content/public/common/content_switches.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
 #include "services/network/public/cpp/network_switches.h"
@@ -67,6 +74,13 @@ bool HeadlessModeProtocolBrowserTest::IsSharedTestScript() {
 }
 
 void HeadlessModeProtocolBrowserTest::SetUp() {
+  webui_omnibox_feature_list_.InitWithFeatures(
+      /*enabled_features=*/{},
+      /*disabled_features=*/
+      // TODO(crbug.com/452061489): Fix tests that fail when the WebUI Omnibox
+      // is enabled and then remove these two Features.
+      {omnibox::internal::kWebUIOmniboxPopup,
+       omnibox::internal::kWebUIOmniboxAimPopup});
   LoadTestMetaInfo();
   HeadlessModeDevTooledBrowserTest::SetUp();
 }
@@ -202,18 +216,10 @@ void HeadlessModeProtocolBrowserTest::ProcessTestResult(
 HEADLESS_MODE_PROTOCOL_TEST(DomFocus, "input/dom-focus.js")
 HEADLESS_MODE_PROTOCOL_TEST(FocusEvent, "input/focus-event.js")
 
-// Flaky crbug.com/40902570
-HEADLESS_MODE_PROTOCOL_TEST(DISABLED_FocusBlurNotifications,
-                            "input/focus-blur-notifications.js")
+HEADLESS_MODE_PROTOCOL_TEST(FocusBlurNotifications,
+                            "shared/focus-blur-notifications.js")
 
-// TODO(crbug.com/40257054): Re-enable this test
-#if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN)
-#define MAYBE_InputClipboardOps DISABLED_InputClipboardOps
-#else
-#define MAYBE_InputClipboardOps InputClipboardOps
-#endif
-HEADLESS_MODE_PROTOCOL_TEST(MAYBE_InputClipboardOps,
-                            "input/input-clipboard-ops.js")
+HEADLESS_MODE_PROTOCOL_TEST(InputClipboardOps, "shared/input-clipboard-ops.js")
 
 HEADLESS_MODE_PROTOCOL_TEST(DocumentFocusOnLoad,
                             "input/document-focus-on-load.js")
@@ -233,22 +239,26 @@ class HeadlessModeInputSelectFileDialogTest
   }
 
   void FinishAsyncTest() override {
-    EXPECT_TRUE(select_file_dialog_has_run_);
-
-    HeadlessModeProtocolBrowserTest::FinishAsyncTest();
+    finish_async_test_called_ = true;
+    if (select_file_dialog_has_run_) {
+      HeadlessModeProtocolBrowserTest::FinishAsyncTest();
+    }
   }
 
  private:
   void OnSelectFileDialogCallback(ui::SelectFileDialog::Type type) {
     select_file_dialog_has_run_ = true;
+    if (finish_async_test_called_) {
+      HeadlessModeProtocolBrowserTest::FinishAsyncTest();
+    }
   }
 
   bool select_file_dialog_has_run_ = false;
+  bool finish_async_test_called_ = false;
 };
 
-// TODO(crbug.com/40919351, crbug.com/443993825): flaky on Mac/Linux/Win.
 HEADLESS_MODE_PROTOCOL_TEST_F(HeadlessModeInputSelectFileDialogTest,
-                              DISABLED_InputSelectFileDialog,
+                              InputSelectFileDialog,
                               "input/input-select-file-dialog.js")
 
 class HeadlessModeScreencastTest : public HeadlessModeProtocolBrowserTest {
@@ -312,21 +322,12 @@ HEADLESS_MODE_PROTOCOL_TEST(FullscreenRestoreWindow,
 HEADLESS_MODE_PROTOCOL_TEST(MaximizedWindowSize,
                             "shared/maximized-window-size.js")
 
-// These currently fail on Mac, see https://crbug.com/40288046
-#if !BUILDFLAG(IS_MAC)
 HEADLESS_MODE_PROTOCOL_TEST(FullscreenWindowSize,
                             "shared/fullscreen-window-size.js")
 HEADLESS_MODE_PROTOCOL_TEST(FullscreenWindowSizeScaled,
                             "shared/fullscreen-window-size-scaled.js")
-#endif  // !BUILDFLAG(IS_MAC)
 
-// TODO(http://crbug.com/491505696): Fails on macOS.
-#if BUILDFLAG(IS_MAC)
-#define MAYBE_SetZoomedWindowBounds DISABLED_SetZoomedWindowBounds
-#else
-#define MAYBE_SetZoomedWindowBounds SetZoomedWindowBounds
-#endif
-HEADLESS_MODE_PROTOCOL_TEST(MAYBE_SetZoomedWindowBounds,
+HEADLESS_MODE_PROTOCOL_TEST(SetZoomedWindowBounds,
                             "shared/set-zoomed-window-bounds.js")
 
 HEADLESS_MODE_PROTOCOL_TEST(PrintToPdfTinyPage,
@@ -380,26 +381,29 @@ HEADLESS_MODE_PROTOCOL_TEST(OzoneScreenSizeOverride,
                             "sanity/ozone-screen-size-override.js")
 #endif
 
-// This currently results in an unexpected screen orientation type,
-// see http://crbug.com/398150465.
 HEADLESS_MODE_PROTOCOL_TEST(MultipleScreenDetails,
                             "shared/multiple-screen-details.js")
 
-// TODO(crbug.com/40283476): MoveWindowBetweenScreens is failing on Mac
-// TODO(crbug.com/484218769): Failing/flaky on other platforms as well
-HEADLESS_MODE_PROTOCOL_TEST(DISABLED_MoveWindowBetweenScreens,
+// If this test flakes, please re-open http://crbug.com/543040219.
+HEADLESS_MODE_PROTOCOL_TEST(MoveWindowBetweenScreens,
                             "shared/move-window-between-screens.js")
 
 HEADLESS_MODE_PROTOCOL_TEST(WindowOpenOnSecondaryScreen,
                             "shared/window-open-on-secondary-screen.js")
 
-// TODO(crbug.com/40283476): CreateTargetSecondaryScreen is failing on Mac
-#if !BUILDFLAG(IS_MAC)
-#define MAYBE_CreateTargetSecondaryScreen CreateTargetSecondaryScreen
-#else
-#define MAYBE_CreateTargetSecondaryScreen DISABLED_CreateTargetSecondaryScreen
-#endif
-HEADLESS_MODE_PROTOCOL_TEST(MAYBE_CreateTargetSecondaryScreen,
+HEADLESS_MODE_PROTOCOL_TEST(WindowOpenClickOpenerId,
+                            "shared/window-open-click-opener-id.js")
+
+HEADLESS_MODE_PROTOCOL_TEST(WindowOpenNoopenerClickOpenerId,
+                            "shared/window-open-noopener-click-opener-id.js")
+
+HEADLESS_MODE_PROTOCOL_TEST(WindowOpenShiftClickOpenerId,
+                            "shared/window-open-shift-click-opener-id.js")
+
+HEADLESS_MODE_PROTOCOL_TEST(WindowOpenMiddleClick,
+                            "shared/window-open-middle-click.js")
+
+HEADLESS_MODE_PROTOCOL_TEST(CreateTargetSecondaryScreen,
                             "shared/create-target-secondary-screen.js")
 
 HEADLESS_MODE_PROTOCOL_TEST(WindowOpenPopupPlacement,
@@ -413,46 +417,25 @@ HEADLESS_MODE_PROTOCOL_TEST(WindowSizeSwitchLargerThanScreen,
 
 HEADLESS_MODE_PROTOCOL_TEST(WindowScreenAvail, "shared/window-screen-avail.js")
 
-// TODO(crbug.com/424797525): Fails Mac 13.
-#if BUILDFLAG(IS_MAC)
-#define MAYBE_StartFullscreenSwitch DISABLED_StartFullscreenSwitch
-#else
-#define MAYBE_StartFullscreenSwitch StartFullscreenSwitch
-#endif
-
-HEADLESS_MODE_PROTOCOL_TEST(MAYBE_StartFullscreenSwitch,
+HEADLESS_MODE_PROTOCOL_TEST(StartFullscreenSwitch,
                             "sanity/start-fullscreen-switch.js")
-
-// TODO(crbug.com/423951863): Fails on Mac 13.
-#if BUILDFLAG(IS_MAC)
-#define MAYBE_StartFullscreenSwitchScaled DISABLED_StartFullscreenSwitchScaled
-#else
-#define MAYBE_StartFullscreenSwitchScaled StartFullscreenSwitchScaled
-#endif
-
-HEADLESS_MODE_PROTOCOL_TEST(MAYBE_StartFullscreenSwitchScaled,
+HEADLESS_MODE_PROTOCOL_TEST(StartFullscreenSwitchScaled,
                             "sanity/start-fullscreen-switch-scaled.js")
 
-// TODO(crbug.com/430156442): These fail on Mac 13
-#if BUILDFLAG(IS_MAC)
-#define MAYBE_WindowStateTransitions DISABLED_WindowStateTransitions
-#define MAYBE_WindowZoomOnSecondaryScreen DISABLED_WindowZoomOnSecondaryScreen
-#define MAYBE_WindowZoomSizeMatchesWorkArea \
-  DISABLED_WindowZoomSizeMatchesWorkArea
-#else
-#define MAYBE_WindowStateTransitions WindowStateTransitions
-#define MAYBE_WindowZoomOnSecondaryScreen WindowZoomOnSecondaryScreen
-#define MAYBE_WindowZoomSizeMatchesWorkArea WindowZoomSizeMatchesWorkArea
-#endif
-
-HEADLESS_MODE_PROTOCOL_TEST(MAYBE_WindowStateTransitions,
+HEADLESS_MODE_PROTOCOL_TEST(WindowStateTransitions,
                             "shared/window-state-transitions.js")
 
-HEADLESS_MODE_PROTOCOL_TEST(MAYBE_WindowZoomOnSecondaryScreen,
+HEADLESS_MODE_PROTOCOL_TEST(WindowZoomOnSecondaryScreen,
                             "shared/window-zoom-on-secondary-screen.js")
 
-HEADLESS_MODE_PROTOCOL_TEST(MAYBE_WindowZoomSizeMatchesWorkArea,
+// On macOS fullscreen uses display bounds rather than work area.
+#if BUILDFLAG(IS_MAC)
+HEADLESS_MODE_PROTOCOL_TEST(WindowZoomSizeMatchesScreen,
+                            "shared/window-zoom-size-matches-screen.js")
+#else
+HEADLESS_MODE_PROTOCOL_TEST(WindowZoomSizeMatchesWorkArea,
                             "shared/window-zoom-size-matches-work-area.js")
+#endif
 
 HEADLESS_MODE_PROTOCOL_TEST(WindowScreenScaleFactor,
                             "shared/window-screen-scale-factor.js")
@@ -522,5 +505,94 @@ HEADLESS_MODE_PROTOCOL_TEST(SetPrimaryScreenScaled,
 
 HEADLESS_MODE_PROTOCOL_TEST(RangeMouseEventAfterNodeRemoval,
                             "shared/range-mouse-event-after-node-removal.js")
+
+HEADLESS_MODE_PROTOCOL_TEST(GetCanvasContextWebGL,
+                            "shared/get-canvas-context-webgl.js")
+
+HEADLESS_MODE_PROTOCOL_TEST(PopupWindowHasOpener,
+                            "shared/popup-window-has-opener.js")
+
+HEADLESS_MODE_PROTOCOL_TEST(NormalWindowHasOpener,
+                            "shared/normal-window-has-opener.js")
+
+HEADLESS_MODE_PROTOCOL_TEST(GetBrowserContexts,
+                            "shared/get-browser-contexts.js")
+
+class HeadlessModeProtocolBrowserTestWithDownload
+    : public HeadlessModeProtocolBrowserTest {
+ public:
+  void SetUp() override {
+    ASSERT_TRUE(download_dir_.CreateUniqueTempDir());
+    HeadlessModeProtocolBrowserTest::SetUp();
+  }
+
+ protected:
+  base::DictValue GetPageUrlExtraParams() override {
+    base::DictValue dict;
+    dict.Set("downloadPath", download_dir_.GetPath().AsUTF8Unsafe());
+    return dict;
+  }
+
+ private:
+  base::ScopedTempDir download_dir_;
+};
+
+HEADLESS_MODE_PROTOCOL_TEST_F(HeadlessModeProtocolBrowserTestWithDownload,
+                              FileDownload,
+                              "shared/file-download.js")
+
+HEADLESS_MODE_PROTOCOL_TEST_F(HeadlessModeProtocolBrowserTestWithDownload,
+                              FileDownloadRepeated,
+                              "shared/file-download-repeated.js")
+
+HEADLESS_MODE_PROTOCOL_TEST_F(HeadlessModeProtocolBrowserTestWithDownload,
+                              FileDownloadSecondTab,
+                              "shared/file-download-second-tab.js")
+
+// Configure DeveloperToolsAvailabilityBlocklist before DevTools sessions attach
+// so URLBlocklistManager enforces the policy synchronously.
+class HeadlessModeDevToolsPolicyBlocklistProtocolTest
+    : public HeadlessModeProtocolBrowserTest {
+ public:
+  void SetUpOnMainThread() override {
+    HeadlessModeProtocolBrowserTest::SetUpOnMainThread();
+    base::ListValue blocklist;
+    blocklist.Append("a.test/protocol/blocked_route");
+    blocklist.Append("b.test/protocol/blocked_route");
+    browser()->GetProfile()->GetPrefs()->SetList(
+        prefs::kDeveloperToolsAvailabilityBlocklist, std::move(blocklist));
+  }
+};
+
+HEADLESS_MODE_PROTOCOL_TEST_F(HeadlessModeDevToolsPolicyBlocklistProtocolTest,
+                              SameDocumentNavigationBlocklist,
+                              "target/same-document-navigation-blocklist.js")
+
+HEADLESS_MODE_PROTOCOL_TEST_F(
+    HeadlessModeDevToolsPolicyBlocklistProtocolTest,
+    OopifSameDocumentNavigationBlocklist,
+    "target/oopif-same-document-navigation-blocklist.js")
+
+class HeadlessModeDevToolsPolicyAllowlistProtocolTest
+    : public HeadlessModeProtocolBrowserTest {
+ public:
+  void SetUpOnMainThread() override {
+    HeadlessModeProtocolBrowserTest::SetUpOnMainThread();
+    // Block a.test so non-allowlisted paths on a.test are disallowed while the
+    // test harness on harness.test remains unaffected.
+    base::ListValue blocklist;
+    blocklist.Append("a.test");
+    browser()->GetProfile()->GetPrefs()->SetList(
+        prefs::kDeveloperToolsAvailabilityBlocklist, std::move(blocklist));
+    base::ListValue allowlist;
+    allowlist.Append("a.test/protocol/inspector-protocol-page.html");
+    browser()->GetProfile()->GetPrefs()->SetList(
+        prefs::kDeveloperToolsAvailabilityAllowlist, std::move(allowlist));
+  }
+};
+
+HEADLESS_MODE_PROTOCOL_TEST_F(HeadlessModeDevToolsPolicyAllowlistProtocolTest,
+                              SameDocumentNavigationAllowlist,
+                              "target/same-document-navigation-allowlist.js")
 
 }  // namespace headless

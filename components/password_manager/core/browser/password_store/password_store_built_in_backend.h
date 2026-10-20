@@ -13,13 +13,16 @@
 #include "base/memory/weak_ptr.h"
 #include "base/scoped_observation.h"
 #include "base/sequence_checker.h"
+#include "base/types/expected.h"
 #include "components/password_manager/core/browser/password_manager_metrics_util.h"
 #include "components/password_manager/core/browser/password_store/actionable_error.h"
 #include "components/password_manager/core/browser/password_store/password_store.h"
 #include "components/password_manager/core/browser/password_store/password_store_backend.h"
+#include "components/password_manager/core/browser/password_store/password_store_backend_error.h"
 #include "components/password_manager/core/browser/password_store/password_store_change.h"
 #include "components/password_manager/core/browser/password_store/password_store_interface.h"
 #include "components/password_manager/core/browser/password_store/smart_bubble_stats_store.h"
+#include "components/password_manager/core/browser/password_store/stored_credential.h"
 #include "components/prefs/pref_service.h"
 #include "components/sync/model/wipe_model_upon_sync_disabled_behavior.h"
 #include "components/sync/service/sync_service_observer.h"
@@ -126,12 +129,13 @@ class PasswordStoreBuiltInBackend : public PasswordStoreBackend,
   // the main sequence.
   void InjectAffiliationAndBrandingInformation(
       BackendLoginsOrErrorReply callback,
-      BackendLoginsResultOrError forms_or_error);
+      base::expected<std::vector<StoredCredential>, PasswordStoreBackendError>
+          forms_or_error);
 
   void OnEncryptorReceived(RemoteChangesReceived remote_form_changes_received,
                            base::RepeatingClosure sync_enabled_or_disabled_cb,
                            base::OnceCallback<void(bool)> completion,
-                           os_crypt_async::Encryptor encryptor);
+                           scoped_refptr<os_crypt_async::Encryptor> encryptor);
 
   void WritePasswordRemovalReasonPrefs(IsAccountStore is_account_store);
 
@@ -161,6 +165,8 @@ class PasswordStoreBuiltInBackend : public PasswordStoreBackend,
       GUARDED_BY_CONTEXT(sequence_checker_);
 
   bool is_database_initialized_successfully_ = false;
+
+  const IsAccountStore is_account_store_ = IsAccountStore(false);
 
   // Used to get information if there are any passwords saved to the login db.
   raw_ptr<PrefService> pref_service_;

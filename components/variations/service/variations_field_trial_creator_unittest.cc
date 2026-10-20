@@ -46,6 +46,7 @@
 #include "components/metrics/field_trials_provider.h"
 #include "components/metrics/metrics_service.h"
 #include "components/metrics/metrics_state_manager.h"
+#include "components/metrics/startup_visibility.h"
 #include "components/metrics/test/test_enabled_state_provider.h"
 #include "components/prefs/testing_pref_service.h"
 #include "components/variations/field_trial_config/field_trial_util.h"
@@ -57,7 +58,7 @@
 #include "components/variations/service/safe_seed_manager.h"
 #include "components/variations/service/variations_service.h"
 #include "components/variations/service/variations_service_client.h"
-#include "components/variations/variations_safe_seed_store_local_state.h"
+#include "components/variations/variations_safe_seed_store.h"
 #include "components/variations/variations_seed_store.h"
 #include "components/variations/variations_switches.h"
 #include "components/variations/variations_test_utils.h"
@@ -106,10 +107,11 @@ std::unique_ptr<VariationsSeedStore> CreateSeedStore(
     const base::FilePath& seed_file_dir) {
   return std::make_unique<VariationsSeedStore>(
       local_state, /*initial_seed=*/nullptr,
-      /*signature_verification_enabled=*/true,
-      std::make_unique<VariationsSafeSeedStoreLocalState>(
-          local_state, seed_file_dir, version_info::Channel::UNKNOWN,
-          /*entropy_providers=*/nullptr),
+      /*signature_verification_enabled_on_load=*/true,
+      /*signature_verification_enabled_on_receive=*/true,
+      std::make_unique<VariationsSafeSeedStore>(local_state, seed_file_dir,
+                                                version_info::Channel::UNKNOWN,
+                                                /*entropy_providers=*/nullptr),
       version_info::Channel::UNKNOWN, seed_file_dir);
 }
 
@@ -278,8 +280,8 @@ class MockSafeSeedManager : public SafeSeedManager {
                     base::Time seed_fetch_time));
 
   void SetActiveSeedState(
-      const std::string& seed_data,
-      const std::string& base64_seed_signature,
+      std::string seed_data,
+      std::string base64_seed_signature,
       int seed_milestone,
       std::unique_ptr<ClientFilterableState> client_filterable_state,
       base::Time seed_fetch_time) override {
@@ -316,6 +318,7 @@ class TestVariationsServiceClient : public VariationsServiceClient {
     return true;
   }
   bool IsEnterprise() override { return false; }
+  bool IsChromeEnterpriseCoreSupported() override { return true; }
 
  private:
   // VariationsServiceClient:
@@ -335,13 +338,30 @@ class MockVariationsServiceClient : public TestVariationsServiceClient {
   MOCK_METHOD(Study::FormFactor, GetCurrentFormFactor, (), (override));
 };
 
+class TestVariationsServiceClientWithoutEnterpriseSupport
+    : public TestVariationsServiceClient {
+ public:
+  TestVariationsServiceClientWithoutEnterpriseSupport() = default;
+
+  TestVariationsServiceClientWithoutEnterpriseSupport(
+      const TestVariationsServiceClientWithoutEnterpriseSupport&) = delete;
+  TestVariationsServiceClientWithoutEnterpriseSupport& operator=(
+      const TestVariationsServiceClientWithoutEnterpriseSupport&) = delete;
+
+  ~TestVariationsServiceClientWithoutEnterpriseSupport() override = default;
+
+  // VariationsServiceClient:
+  bool IsChromeEnterpriseCoreSupported() override { return false; }
+};
+
 class TestVariationsSeedStore : public VariationsSeedStore {
  public:
   explicit TestVariationsSeedStore(PrefService* local_state)
       : VariationsSeedStore(local_state,
                             /*initial_seed=*/nullptr,
-                            /*signature_verification_enabled=*/true,
-                            std::make_unique<VariationsSafeSeedStoreLocalState>(
+                            /*signature_verification_enabled_on_load=*/true,
+                            /*signature_verification_enabled_on_receive=*/true,
+                            std::make_unique<VariationsSafeSeedStore>(
                                 local_state,
                                 /*seed_file_dir=*/base::FilePath(),
                                 version_info::Channel::UNKNOWN,
@@ -618,7 +638,8 @@ TEST_F(FieldTrialCreatorTest, SetUpFieldTrials_ValidSeed_NoLastFetchTime) {
       user_data_dir_path());
 
   // Simulate a first run by leaving fetch time empty.
-  EXPECT_EQ(base::Time(), field_trial_creator.GetLatestSeedFetchTime());
+  EXPECT_EQ(base::Time(),
+            field_trial_creator.seed_store()->GetLatestSeedFetchTime());
 
   // Check that field trials are created from the seed. Since the test study has
   // only one experiment with 100% probability weight, we must be part of it.
@@ -714,7 +735,8 @@ TEST_F(FieldTrialCreatorTest, SetUpFieldTrials_ExpiredSeed) {
 // Verify that a regular seed is not used when the milestone with which it was
 // fetched is greater than the client's milestone.
 TEST_F(FieldTrialCreatorTest, SetUpFieldTrials_FutureMilestone) {
-  const int future_seed_milestone = 7890;
+  const int future_seed_milestone =
+      version_info::GetMajorVersionNumberAsInt() + 5;
 
   // When the seed is associated with a future milestone (relative to the
   // client's milestone), no field trials should be created from the seed.
@@ -897,7 +919,8 @@ TEST_F(FieldTrialCreatorTest, SetUpFieldTrials_ExpiredSafeSeed) {
 // Verify that no seed is applied when (i) safe mode is triggered and (ii) the
 // loaded safe seed was fetched with a future milestone.
 TEST_F(FieldTrialCreatorTest, SetUpFieldTrials_SafeSeedForFutureMilestone) {
-  const int future_seed_milestone = 7890;
+  const int future_seed_milestone =
+      version_info::GetMajorVersionNumberAsInt() + 5;
 
   // The safe seed manager should not be informed of the active seed state.
   NiceMock<MockSafeSeedManager> safe_seed_manager(local_state());
@@ -1154,8 +1177,9 @@ TEST_F(FieldTrialCreatorTest, SetUpFieldTrials_LoadsCountryOnFirstRun) {
   // the interaction between these two classes is what's being tested.
   auto seed_store = std::make_unique<VariationsSeedStore>(
       local_state(), std::move(initial_seed),
-      /*signature_verification_enabled=*/false,
-      std::make_unique<VariationsSafeSeedStoreLocalState>(
+      /*signature_verification_enabled_on_load=*/false,
+      /*signature_verification_enabled_on_receive=*/false,
+      std::make_unique<VariationsSafeSeedStore>(
           local_state(),
           /*seed_file_dir=*/base::FilePath(), version_info::Channel::UNKNOWN,
           /*entropy_providers=*/nullptr),
@@ -1830,6 +1854,28 @@ TEST_F(FieldTrialCreatorTest,
                   ->GetDict(enterprise_groups::kEnterpriseGroupsProfilePref)
                   .FindList("Profile 1"),
               ::testing::IsNull());
+}
+
+TEST_F(FieldTrialCreatorTest,
+       GetEnterpriseGroupsFromPrefsReturnsEmptyForUnsupportedPlatform) {
+  TestVariationsServiceClientWithoutEnterpriseSupport variations_service_client;
+  NiceMock<MockSafeSeedManager> safe_seed_manager(local_state());
+  TestVariationsFieldTrialCreator field_trial_creator(
+      local_state(), &variations_service_client, &safe_seed_manager,
+      user_data_dir_path());
+
+  base::DictValue enterprise_groups_dict;
+  enterprise_groups_dict.Set(
+      "Profile 1", base::ListValue().Append("123").Append("profiles"));
+  enterprise_groups_dict.Set(
+      "Profile 2", base::ListValue().Append("456").Append("profiles"));
+  local_state()->SetDict(enterprise_groups::kEnterpriseGroupsProfilePref,
+                         std::move(enterprise_groups_dict));
+  local_state()->SetList(enterprise_groups::kEnterpriseGroupsBrowserPref,
+                         base::ListValue().Append("456").Append("browser"));
+
+  EXPECT_THAT(field_trial_creator.GetEnterpriseGroupsFromPrefs(),
+              ::testing::IsEmpty());
 }
 
 struct SeedWithLimitedLayerTestParams {

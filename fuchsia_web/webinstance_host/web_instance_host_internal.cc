@@ -11,7 +11,6 @@
 
 #include "base/base_switches.h"
 #include "base/command_line.h"
-#include "base/files/file_path.h"
 #include "base/logging.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
@@ -208,18 +207,6 @@ void RegisterWebInstanceProductData(std::string_view absolute_component_url) {
       kFeedbackAnnotationsNamespace);
 }
 
-bool IsValidContentDirectoryName(std::string_view file_name) {
-  if (file_name.find_first_of(base::FilePath::kSeparators, 0,
-                              base::FilePath::kSeparatorsLength - 1) !=
-      std::string_view::npos) {
-    return false;
-  }
-  if (file_name == base::FilePath::kCurrentDirectory ||
-      file_name == base::FilePath::kParentDirectory) {
-    return false;
-  }
-  return true;
-}
 
 zx_status_t AppendLaunchArgs(fuchsia::web::CreateContextParams& params,
                              base::CommandLine& launch_args) {
@@ -423,47 +410,49 @@ void AppendDynamicServices(fuchsia::web::ContextFeatureFlags features,
     ContextFeatureFlags value;
     std::string_view service;
   } kServices[] = {
-    {ContextFeatureFlags::NETWORK, ContextFeatureFlags::NETWORK,
-     "fuchsia.net.interfaces.State"},
-    {ContextFeatureFlags::NETWORK, ContextFeatureFlags::NETWORK,
-     "fuchsia.net.name.Lookup"},
-    {ContextFeatureFlags::NETWORK, ContextFeatureFlags::NETWORK,
-     "fuchsia.posix.socket.Provider"},
-    {ContextFeatureFlags::AUDIO, ContextFeatureFlags::AUDIO,
-     "fuchsia.media.Audio"},
-    {ContextFeatureFlags::AUDIO, ContextFeatureFlags::AUDIO,
-     "fuchsia.media.AudioDeviceEnumerator"},
-    {ContextFeatureFlags::AUDIO, ContextFeatureFlags::AUDIO,
-     "fuchsia.media.SessionAudioConsumerFactory"},
-    {ContextFeatureFlags::VULKAN, ContextFeatureFlags::VULKAN,
-     "fuchsia.tracing.provider.Registry"},
-    {ContextFeatureFlags::VULKAN, ContextFeatureFlags::VULKAN,
-     "fuchsia.vulkan.loader.Loader"},
-    {ContextFeatureFlags::HARDWARE_VIDEO_DECODER,
-     ContextFeatureFlags::HARDWARE_VIDEO_DECODER,
-     "fuchsia.mediacodec.CodecFactory"},
+      {ContextFeatureFlags::NETWORK, ContextFeatureFlags::NETWORK,
+       "fuchsia.net.interfaces.State"},
+      {ContextFeatureFlags::NETWORK, ContextFeatureFlags::NETWORK,
+       "fuchsia.net.name.Lookup"},
+      {ContextFeatureFlags::NETWORK, ContextFeatureFlags::NETWORK,
+       "fuchsia.posix.socket.Provider"},
+      {ContextFeatureFlags::AUDIO, ContextFeatureFlags::AUDIO,
+       "fuchsia.media.Audio"},
+      {ContextFeatureFlags::AUDIO, ContextFeatureFlags::AUDIO,
+       "fuchsia.media.AudioDeviceEnumerator"},
+      {ContextFeatureFlags::AUDIO, ContextFeatureFlags::AUDIO,
+       "fuchsia.media.SessionAudioConsumerFactory"},
+      {ContextFeatureFlags::AUDIO, ContextFeatureFlags::AUDIO,
+       "fuchsia.settings.Input"},
+      {ContextFeatureFlags::VULKAN, ContextFeatureFlags::VULKAN,
+       "fuchsia.tracing.provider.Registry"},
+      {ContextFeatureFlags::VULKAN, ContextFeatureFlags::VULKAN,
+       "fuchsia.vulkan.loader.Loader"},
+      {ContextFeatureFlags::HARDWARE_VIDEO_DECODER,
+       ContextFeatureFlags::HARDWARE_VIDEO_DECODER,
+       "fuchsia.mediacodec.CodecFactory"},
   // HARDWARE_VIDEO_DECODER_ONLY does not require any additional services.
 #if BUILDFLAG(ENABLE_WIDEVINE)
-    {ContextFeatureFlags::WIDEVINE_CDM, ContextFeatureFlags::WIDEVINE_CDM,
-     "fuchsia.media.drm.Widevine"},
+      {ContextFeatureFlags::WIDEVINE_CDM, ContextFeatureFlags::WIDEVINE_CDM,
+       "fuchsia.media.drm.Widevine"},
 #endif
-    {ContextFeatureFlags::HEADLESS, kNoFeaturesRequested,
-     "fuchsia.accessibility.semantics.SemanticsManager"},
-    {ContextFeatureFlags::HEADLESS, kNoFeaturesRequested,
-     "fuchsia.ui.composition.Allocator"},
-    {ContextFeatureFlags::HEADLESS, kNoFeaturesRequested,
-     "fuchsia.ui.composition.Flatland"},
+      {ContextFeatureFlags::HEADLESS, kNoFeaturesRequested,
+       "fuchsia.accessibility.semantics.SemanticsManager"},
+      {ContextFeatureFlags::HEADLESS, kNoFeaturesRequested,
+       "fuchsia.ui.composition.Allocator"},
+      {ContextFeatureFlags::HEADLESS, kNoFeaturesRequested,
+       "fuchsia.ui.composition.Flatland"},
 #if BUILDFLAG(ENABLE_CAST_RECEIVER)
-    {ContextFeatureFlags::LEGACYMETRICS, ContextFeatureFlags::LEGACYMETRICS,
-     "fuchsia.legacymetrics.MetricsRecorder"},
+      {ContextFeatureFlags::LEGACYMETRICS, ContextFeatureFlags::LEGACYMETRICS,
+       "fuchsia.legacymetrics.MetricsRecorder"},
 #endif
-    {ContextFeatureFlags::KEYBOARD, ContextFeatureFlags::KEYBOARD,
-     "fuchsia.ui.input3.Keyboard"},
-    {ContextFeatureFlags::VIRTUAL_KEYBOARD,
-     ContextFeatureFlags::VIRTUAL_KEYBOARD,
-     "fuchsia.input.virtualkeyboard.ControllerCreator"},
-    {ContextFeatureFlags::DISABLE_DYNAMIC_CODE_GENERATION, kNoFeaturesRequested,
-     "fuchsia.kernel.VmexResource"},
+      {ContextFeatureFlags::KEYBOARD, ContextFeatureFlags::KEYBOARD,
+       "fuchsia.ui.input3.Keyboard"},
+      {ContextFeatureFlags::VIRTUAL_KEYBOARD,
+       ContextFeatureFlags::VIRTUAL_KEYBOARD,
+       "fuchsia.input.virtualkeyboard.ControllerCreator"},
+      {ContextFeatureFlags::DISABLE_DYNAMIC_CODE_GENERATION,
+       kNoFeaturesRequested, "fuchsia.kernel.VmexResource"},
   };
   for (const auto& [flag, value, service] : kServices) {
     if ((features & flag) == value) {

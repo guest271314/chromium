@@ -50,6 +50,12 @@ class FormActivityTabHelper
   virtual void AddObserver(FormActivityObserver* observer);
   virtual void RemoveObserver(FormActivityObserver* observer);
 
+  // Forces `submitted_by_user` to be true in `FormSubmissionHandler`.
+  // Used by tests simulating a click event to submit forms.
+  void SetForceSubmittedByUserForTesting(bool force) {
+    force_submitted_by_user_for_testing_ = force;
+  }
+
  private:
   friend class web::WebStateUserData<FormActivityTabHelper>;
 
@@ -72,8 +78,13 @@ class FormActivityTabHelper
   void FormSubmissionHandler(web::WebState* web_state,
                              const web::ScriptMessage& message);
 
-  // The observers.
-  base::ObserverList<FormActivityObserver>::Unchecked observers_;
+  // The observers. Reentrancy is allowed because observer callbacks (such as
+  // reloading first responder input views in UIKit) can trigger iOS
+  // accessibility hooks (e.g., QuickSpeak) that spin a nested CFRunLoop and
+  // dispatch incoming WebKit script messages synchronously.
+  base::ReentrantObserverList<FormActivityObserver>::Unchecked observers_;
+
+  bool force_submitted_by_user_for_testing_ = false;
 };
 
 }  // namespace autofill

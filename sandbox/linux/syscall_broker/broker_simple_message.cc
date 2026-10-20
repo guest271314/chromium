@@ -9,6 +9,8 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include <array>
+
 #include "base/check_op.h"
 #include "base/compiler_specific.h"
 #include "base/containers/span.h"
@@ -58,16 +60,15 @@ ssize_t BrokerSimpleMessage::SendRecvMsgWithFlagsMultipleFds(
   if (!base::CreateSocketPair(&recv_sock, &send_sock))
     return -1;
 
-  // The length of this array is actually hardcoded, but the compiler isn't
-  // smart enough to figure that out.
-  ALLOW_VLA(int send_fds_with_reply_socket
-                [base::UnixDomainSocket::kMaxFileDescriptors];)
+  std::array<int, base::UnixDomainSocket::kMaxFileDescriptors>
+      send_fds_with_reply_socket = {};
   send_fds_with_reply_socket[0] = send_sock.get();
   for (size_t i = 0; i < send_fds.size(); i++) {
-    UNSAFE_TODO(send_fds_with_reply_socket[i + 1]) = send_fds[i];
+    send_fds_with_reply_socket[i + 1] = send_fds[i];
   }
   if (!SendMsgMultipleFds(
-          fd, UNSAFE_TODO({send_fds_with_reply_socket, send_fds.size() + 1}))) {
+          fd,
+          base::span(send_fds_with_reply_socket).first(send_fds.size() + 1))) {
     return -1;
   }
 
@@ -99,7 +100,11 @@ bool BrokerSimpleMessage::SendMsgMultipleFds(int fd,
   RAW_CHECK(send_fds.size() <= base::UnixDomainSocket::kMaxFileDescriptors);
 
   struct msghdr msg = {};
-  const void* buf = reinterpret_cast<const void*>(message_.data());
+  // SAFETY: message_ is a statically allocated buffer and length_ represents
+  // the size of the message. We obtain the raw pointer to pass to POSIX writev
+  // system call via iovec.
+  const void* buf =
+      UNSAFE_BUFFERS(reinterpret_cast<const void*>(message_.data()));
   struct iovec iov = {const_cast<void*>(buf), length_};
   msg.msg_iov = &iov;
   msg.msg_iovlen = 1;
@@ -379,7 +384,7 @@ bool BrokerSimpleMessage::ValidateType(EntryType expected_type) {
 }
 
 void BrokerSimpleMessage::WriteBytes(base::span<const uint8_t> bytes) {
-  DCHECK_LT(write_next_offset_ + bytes.size(), message_.size());
+  DCHECK_LE(write_next_offset_ + bytes.size(), message_.size());
   base::span(message_)
       .subspan(write_next_offset_, bytes.size())
       .copy_from_nonoverlapping(bytes);

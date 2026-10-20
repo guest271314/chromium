@@ -891,6 +891,11 @@ IN_PROC_BROWSER_TEST_F(PrintPreviewDestinationListTest,
   RunTestCase("FireDestinationSelected");
 }
 
+IN_PROC_BROWSER_TEST_F(PrintPreviewDestinationListTest,
+                       ActiveItemHasTabindexZero) {
+  RunTestCase("ActiveItemHasTabindexZero");
+}
+
 class PrintPreviewPrintButtonTest : public PrintPreviewBrowserTest {
  protected:
   void RunTestCase(const std::string& testCase) {
@@ -1009,8 +1014,8 @@ IN_PROC_BROWSER_TEST_F(PrintPreviewDestinationSettingsTest,
   RunTestCase("SelectRecentDestination");
 }
 
-IN_PROC_BROWSER_TEST_F(PrintPreviewDestinationSettingsTest, OpenDialog) {
-  RunTestCase("OpenDialog");
+IN_PROC_BROWSER_TEST_F(PrintPreviewDestinationSettingsTest, SeeMoreButton) {
+  RunTestCase("SeeMoreButton");
 }
 
 IN_PROC_BROWSER_TEST_F(PrintPreviewDestinationSettingsTest,

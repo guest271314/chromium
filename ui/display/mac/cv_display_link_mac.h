@@ -14,6 +14,7 @@
 
 #include "base/apple/scoped_typeref.h"
 #include "base/functional/callback_forward.h"
+#include "base/memory/raw_ptr.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/sequence_checker.h"
 #include "base/task/single_thread_task_runner.h"
@@ -96,10 +97,14 @@ class CVDisplayLinkMac : public DisplayLinkMac {
 
   // CVDisplayLink for querying VSync timing info.
   base::apple::ScopedTypeRef<CVDisplayLinkRef> display_link_;
+
+  // Whether CVDisplayLink VSync callbacks have been requested to run. To verify
+  // the actual running status, query the CoreVideo Frameworks API
+  // `CVDisplayLinkIsRunning()`.
   bool display_link_is_running_ = false;
 
   // Each VSyncCallbackMac holds a reference to `this`.
-  std::set<VSyncCallbackMac*> callbacks_;
+  std::set<raw_ptr<VSyncCallbackMac, DanglingUntriaged>> callbacks_;
 
   // The task runner for the thread on which this is called and on which all
   // callbacks will be made.

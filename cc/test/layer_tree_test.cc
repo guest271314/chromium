@@ -453,10 +453,7 @@ class LayerTreeHostDelegateForTesting
   }
 
   void OnDeferMainFrameUpdatesChanged(bool) override {}
-  void OnDeferCommitsChanged(
-      bool,
-      PaintHoldingReason,
-      std::optional<PaintHoldingCommitTrigger>) override {}
+  void OnDeferCommitsChanged(bool, PaintHoldingReason) override {}
   void OnCommitRequested() override { test_hooks_->OnCommitRequested(); }
 
   void RecordStartOfFrameMetrics() override {}
@@ -482,6 +479,9 @@ class LayerTreeHostDelegateForTesting
       base::TimeTicks first_scroll_timestamp) override {}
 
   void UpdateCompositorScrollState(
+      const CompositorCommitData& commit_data) override {}
+
+  void UpdateAnimatedImageState(
       const CompositorCommitData& commit_data) override {}
 
   void RequestNewLayerTreeFrameSink() override {
@@ -611,10 +611,10 @@ class LayerTreeHostForTesting : public LayerTreeHost {
     return host_impl;
   }
 
-  void SetNeedsCommit() override {
+  void SetNeedsCommit(bool urgent) override {
     if (!test_started_)
       return;
-    LayerTreeHost::SetNeedsCommit();
+    LayerTreeHost::SetNeedsCommit(urgent);
   }
 
   void SetNeedsUpdateLayers() override {
@@ -1137,8 +1137,7 @@ void LayerTreeTest::DispatchDeferringCommitsStatus(bool is_deferring_commits) {
     layer_tree_host_->StartDeferringCommits(
         base::Milliseconds(1000), PaintHoldingReason::kFirstContentfulPaint);
   } else {
-    layer_tree_host_->StopDeferringCommits(
-        PaintHoldingCommitTrigger::kFirstContentfulPaint);
+    layer_tree_host_->StopDeferringCommits();
   }
 }
 

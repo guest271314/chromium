@@ -8,13 +8,18 @@
 #include "base/functional/callback_helpers.h"
 #include "build/branding_buildflags.h"
 #include "build/chromeos_buildflags.h"
+#include "chrome/browser/profiles/profile.h"
 #include "components/guest_view/buildflags/buildflags.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_process_host.h"
 #include "content/public/browser/service_worker_version_base_info.h"
+#include "extensions/browser/extension_mojo_binder_registry.h"
+#include "extensions/browser/extension_mojo_binder_registry_factory.h"
 #include "extensions/buildflags/buildflags.h"
+#include "extensions/common/constants.h"
 #include "extensions/common/extension.h"
+#include "extensions/common/manifest.h"
 #include "extensions/common/permissions/api_permission.h"
 #include "extensions/common/permissions/permissions_data.h"
 #include "mojo/public/cpp/bindings/binder_map.h"
@@ -26,14 +31,13 @@
 #endif
 
 #if BUILDFLAG(IS_CHROMEOS)
+#include "ash/constants/ash_extension_constants.h"
 #include "ash/webui/camera_app_ui/camera_app_ui.h"
 #include "build/config/chromebox_for_meetings/buildflags.h"
 #include "chrome/browser/ash/remote_apps/remote_apps_manager.h"
 #include "chrome/browser/ash/remote_apps/remote_apps_manager_factory.h"
-#include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/speech/extension_api/tts_engine_extension_observer_chromeos.h"
 #include "chrome/browser/speech/extension_api/tts_engine_extension_observer_chromeos_factory.h"
-#include "chrome/common/extensions/extension_constants.h"
 #include "chromeos/ash/components/enhanced_network_tts/enhanced_network_tts_impl.h"
 #include "chromeos/ash/components/enhanced_network_tts/mojom/enhanced_network_tts.mojom.h"
 #include "chromeos/ash/components/language_packs/language_packs_impl.h"
@@ -85,7 +89,7 @@ void BindMachineLearningService(
     content::RenderFrameHost* render_frame_host,
     mojo::PendingReceiver<
         chromeos::machine_learning::mojom::MachineLearningService> receiver) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
   chromeos::machine_learning::ServiceConnection::GetInstance()
       ->BindMachineLearningService(std::move(receiver));
 }
@@ -125,14 +129,14 @@ void BindRemoteAppsFactory(
   ash::RemoteAppsManager* remote_apps_manager =
       ash::RemoteAppsManagerFactory::GetForProfile(
           Profile::FromBrowserContext(render_frame_host->GetBrowserContext()));
-  DCHECK(remote_apps_manager);
+  CHECK(remote_apps_manager, base::NotFatalUntil::M161);
   remote_apps_manager->BindFactoryInterface(std::move(pending_receiver));
 }
 
 void BindCfmServiceContext(
     content::RenderFrameHost* render_frame_host,
     mojo::PendingReceiver<chromeos::cfm::mojom::CfmServiceContext> receiver) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
   chromeos::cfm::ServiceConnection::GetInstance()->BindServiceContext(
       std::move(receiver));
 #if BUILDFLAG(PLATFORM_CFM)
@@ -172,7 +176,7 @@ void PopulateChromeFrameBindersForExtension(
     mojo::BinderMapWithContext<content::RenderFrameHost*>* binder_map,
     content::RenderFrameHost* render_frame_host,
     const Extension* extension) {
-  DCHECK(extension);
+  CHECK(extension, base::NotFatalUntil::M161);
 
 #if BUILDFLAG(IS_CHROMEOS)
 
@@ -203,7 +207,9 @@ void PopulateChromeFrameBindersForExtension(
 // TODO(b/341493979): Deprecate after CfM LaCrOS migration is completed.
 #if BUILDFLAG(PLATFORM_CFM)
   if (chromeos::cfm::IsChromeboxForMeetingsHashedAppId(
-          extension->hashed_id().value())) {
+          extension->hashed_id().value_sha256()) ||
+      chromeos::cfm::IsChromeboxForMeetingsHashedAppId(
+          extension->hashed_id().value_sha1())) {
     binder_map->Add<ash::cfm::mojom::XuCamera>(
         [](content::RenderFrameHost* frame_host,
            mojo::PendingReceiver<ash::cfm::mojom::XuCamera> receiver) {
@@ -273,7 +279,9 @@ void PopulateChromeFrameBindersForExtension(
 
   // Only allow specific extensions to bind CfmServiceContext
   if (chromeos::cfm::IsChromeboxForMeetingsHashedAppId(
-          extension->hashed_id().value())) {
+          extension->hashed_id().value_sha256()) ||
+      chromeos::cfm::IsChromeboxForMeetingsHashedAppId(
+          extension->hashed_id().value_sha1())) {
     binder_map->Add<chromeos::cfm::mojom::CfmServiceContext>(
         &BindCfmServiceContext);
 
@@ -300,6 +308,11 @@ void PopulateChromeFrameBindersForExtension(
   binder_map->Add<mime_handler::MimeHandlerService>(&BindMimeHandlerService);
   binder_map->Add<mime_handler::BeforeUnloadControl>(&BindBeforeUnloadControl);
 #endif  // BUILDFLAG(ENABLE_EXTENSIONS)
+
+  if (auto* registry = ExtensionMojoBinderRegistryFactory::GetForBrowserContext(
+          render_frame_host->GetBrowserContext())) {
+    registry->PopulateFrameBinders(binder_map, render_frame_host, *extension);
+  }
 }
 
 void PopulateChromeServiceWorkerBindersForExtension(
@@ -307,6 +320,8 @@ void PopulateChromeServiceWorkerBindersForExtension(
         binder_map,
     content::BrowserContext* browser_context,
     const Extension* extension) {
+  CHECK(extension, base::NotFatalUntil::M161);
+
 #if BUILDFLAG(IS_CHROMEOS)
   if (extension->id() == extension_misc::kGoogleSpeechSynthesisExtensionId) {
     binder_map->Add<chromeos::tts::mojom::GoogleTtsStream>(base::BindRepeating(
@@ -336,6 +351,12 @@ void PopulateChromeServiceWorkerBindersForExtension(
             browser_context));
   }
 #endif  // BUILDFLAG(IS_CHROMEOS)
+
+  if (auto* registry = ExtensionMojoBinderRegistryFactory::GetForBrowserContext(
+          browser_context)) {
+    registry->PopulateServiceWorkerBinders(binder_map, browser_context,
+                                           *extension);
+  }
 }
 
 }  // namespace extensions

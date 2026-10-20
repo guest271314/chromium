@@ -13,7 +13,6 @@ import org.chromium.base.Log;
 import org.chromium.base.shared_preferences.SharedPreferencesManager;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
-import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.preferences.ChromePreferenceKeys;
 import org.chromium.chrome.browser.preferences.ChromeSharedPreferences;
 import org.chromium.components.browser_ui.settings.search.SettingsIndexData;
@@ -31,6 +30,7 @@ public class RecentSearchQueue extends LinkedHashMap<String, SettingsIndexData.E
     private static final int MAX_SIZE = 3;
 
     private @Nullable static RecentSearchQueue sInstance;
+    private boolean mDirty;
 
     /** Returns {@link RecentSearchQueue} instance. */
     public static RecentSearchQueue getInstance() {
@@ -40,9 +40,32 @@ public class RecentSearchQueue extends LinkedHashMap<String, SettingsIndexData.E
         return sInstance;
     }
 
+    private void addInternal(SettingsIndexData.Entry entry) {
+        put(entry.key, entry);
+    }
+
     /** Adds a new search entry to the recent search list. */
     public void add(SettingsIndexData.Entry entry) {
-        put(entry.key, entry);
+        addInternal(entry);
+        mDirty = true;
+    }
+
+    private void clearInternal() {
+        super.clear();
+    }
+
+    @Override
+    public void clear() {
+        clearInternal();
+        mDirty = true;
+    }
+
+    /**
+     * Clears recent entries and immediately schedules the explicit user deletion for persistence.
+     */
+    public void clearAndPersist() {
+        clear();
+        flushIfDirty();
     }
 
     @Override
@@ -52,15 +75,18 @@ public class RecentSearchQueue extends LinkedHashMap<String, SettingsIndexData.E
 
     @CalledByNative
     public static void deleteDiskData() {
-        if (!ChromeFeatureList.sSearchInSettings.isEnabled()) return;
-
-        if (sInstance != null) sInstance.clear();
+        if (sInstance != null) {
+            sInstance.clearInternal();
+            sInstance.mDirty = false;
+        }
         SharedPreferencesManager preferencesManager = ChromeSharedPreferences.getInstance();
         preferencesManager.removeKey(ChromePreferenceKeys.SETTINGS_RECENT_SEARCH_ENTRIES);
     }
 
-    /** Persist the recent entries to disk and reset cached data. */
-    public void persistToDiskAndReset() {
+    /** Persists pending user mutations, if any. */
+    public void flushIfDirty() {
+        if (!mDirty) return;
+
         JSONArray jsonArray = new JSONArray();
         for (SettingsIndexData.Entry entry : values()) {
             var obj = entry.toJsonObject();
@@ -69,7 +95,13 @@ public class RecentSearchQueue extends LinkedHashMap<String, SettingsIndexData.E
         SharedPreferencesManager preferencesManager = ChromeSharedPreferences.getInstance();
         preferencesManager.writeString(
                 ChromePreferenceKeys.SETTINGS_RECENT_SEARCH_ENTRIES, jsonArray.toString());
-        clear();
+        mDirty = false;
+    }
+
+    /** Persist the recent entries to disk and reset cached data. */
+    public void persistToDiskAndReset() {
+        flushIfDirty();
+        clearInternal();
         sInstance = null;
     }
 
@@ -94,7 +126,7 @@ public class RecentSearchQueue extends LinkedHashMap<String, SettingsIndexData.E
             try {
                 JSONObject obj = jsonArray.getJSONObject(i);
                 var entry = SettingsIndexData.Entry.fromJson(obj);
-                if (entry != null) add(entry);
+                if (entry != null) addInternal(entry);
             } catch (JSONException e) {
                 Log.e(TAG, "Error restoring Entry from JSON object");
             }

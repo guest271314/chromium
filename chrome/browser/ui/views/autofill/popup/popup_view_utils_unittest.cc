@@ -4,13 +4,22 @@
 
 #include "chrome/browser/ui/views/autofill/popup/popup_view_utils.h"
 
+#include <memory>
 #include <vector>
 
 #include "chrome/browser/ui/views/autofill/popup/popup_base_view.h"
+#include "chrome/browser/ui/views/autofill/popup/popup_view_views.h"
 #include "components/autofill/core/browser/ui/popup_open_enums.h"
+#include "components/feature_engagement/public/feature_constants.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "ui/base/interaction/element_identifier.h"
+#include "ui/views/view.h"
 
 namespace autofill {
+
+namespace {
+
+BASE_FEATURE(kTestFeature, base::FEATURE_DISABLED_BY_DEFAULT);
 
 std::vector<views::BubbleArrowSide> GetDefaultPopupSides() {
   return {PopupBaseView::kDefaultPreferredPopupSides.begin(),
@@ -543,5 +552,39 @@ TEST(PopupViewUtilsTest, HtmlPopupOverlapsWithAutofillPopup) {
   EXPECT_TRUE(internal::BoundsOverlapWithHtmlFormPopup(
       gfx::Rect(50, 50, 100, 100), {non_overlapping_popup, kBasePopup}));
 }
+
+TEST(PopupViewsUtilsTest, TrackAndRun_Basic) {
+  auto view = std::make_unique<views::View>();
+  bool cb2_called = false;
+
+  bool survived = TrackAndRun(
+      view.get(), [&view]() { view.reset(); },
+      [&cb2_called]() { cb2_called = true; });
+
+  EXPECT_FALSE(survived);
+  EXPECT_FALSE(cb2_called);
+}
+
+
+TEST(PopupViewUtilsTest, GetAutofillPopupCellElementIdentifier) {
+  // Null feature maps to invalid element identifier.
+  EXPECT_FALSE(GetAutofillPopupCellElementIdentifier(nullptr));
+
+  // Unknown feature maps to invalid element identifier.
+  EXPECT_FALSE(GetAutofillPopupCellElementIdentifier(&kTestFeature));
+
+  // Virtual card feature maps to kAutofillCreditCardSuggestionEntryElementId.
+  EXPECT_EQ(GetAutofillPopupCellElementIdentifier(
+                &feature_engagement::kIPHAutofillVirtualCardSuggestionFeature),
+            PopupViewViews::kAutofillCreditCardSuggestionEntryElementId);
+
+  // Standalone CVC feature maps to kAutofillStandaloneCvcSuggestionElementId.
+  EXPECT_EQ(
+      GetAutofillPopupCellElementIdentifier(
+          &feature_engagement::kIPHAutofillVirtualCardCVCSuggestionFeature),
+      PopupViewViews::kAutofillStandaloneCvcSuggestionElementId);
+}
+
+}  // namespace
 
 }  // namespace autofill

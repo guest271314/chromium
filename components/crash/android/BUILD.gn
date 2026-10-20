@@ -65,8 +65,6 @@ robolectric_library("junit") {
     "//base:tasks_java",
     "//base/version_info/android:version_constants_java",
     "//components/minidump_uploader:minidump_uploader_java_test_support",
-    "//content/public/test/android:content_java_test_support",
-    "//third_party/androidx:androidx_test_runner_java",
     "//third_party/junit",
   ]
 }
@@ -103,37 +101,10 @@ source_set("unit_tests") {
   ]
 }
 
-_java_handler_jni_sources =
-    [ "java/src/org/chromium/components/crash/browser/CrashpadMain.java" ]
-
-generate_jni("java_handler_jni_headers") {
-  sources = _java_handler_jni_sources
-}
-
-android_library("handler_java") {
-  deps = [
-    "//build/android:build_java",
-    "//third_party/jni_zero:jni_zero_java",
-  ]
-
-  srcjar_deps = [ ":java_handler_jni_headers" ]
-  sources = _java_handler_jni_sources
-}
-
-static_library("crashpad_main") {
-  sources = [ "crashpad_main.cc" ]
-
-  deps = [
-    ":java_handler_jni_headers",
-    "//base",
-    "//third_party/crashpad/crashpad/client",
-    "//third_party/crashpad/crashpad/handler",
-  ]
-}
-
 source_set("anr_skipped_reason") {
   sources = [ "anr_skipped_reason.h" ]
 }
+
 java_cpp_enum("anr_skipped_reason_enum") {
   sources = [ "anr_skipped_reason.h" ]
 }
@@ -149,6 +120,7 @@ _anr_collector_jni_sources =
 generate_jni("anr_collector_jni_headers") {
   sources = _anr_collector_jni_sources
 }
+
 android_library("anr_collector_java") {
   deps = [
     ":anr_data_proto_java",

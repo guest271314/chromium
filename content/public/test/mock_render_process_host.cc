@@ -19,13 +19,13 @@
 #include "base/time/time.h"
 #include "build/build_config.h"
 #include "content/browser/child_process_host_impl.h"
-#include "content/browser/child_process_security_policy_impl.h"
 #include "content/browser/file_system_access/file_system_access_error.h"
 #include "content/browser/process_lock.h"
 #include "content/browser/renderer_host/render_process_host_impl.h"
 #include "content/browser/renderer_host/render_view_host_impl.h"
 #include "content/browser/renderer_host/render_widget_host_impl.h"
 #include "content/browser/renderer_host/spare_render_process_host_manager_impl.h"
+#include "content/browser/security/cpsp/child_process_security_policy_impl.h"
 #include "content/common/renderer.mojom.h"
 #include "content/public/browser/android/child_process_importance.h"
 #include "content/public/browser/browser_context.h"
@@ -78,7 +78,6 @@ MockRenderProcessHost::MockRenderProcessHost(
       deletion_callback_called_(false),
       is_for_guests_only_(is_for_guests_only),
       priority_(base::Process::Priority::kUserBlocking),
-      is_unused_(true),
       pending_view_count_(0),
       worker_ref_count_(0),
       pending_reuse_ref_count_(0),
@@ -98,6 +97,7 @@ MockRenderProcessHost::~MockRenderProcessHost() {
       observer.RenderProcessHostDestroyed(this);
     RenderProcessHostImpl::UnregisterHost(GetID());
   }
+  ClearAllUserData();
 }
 
 void MockRenderProcessHost::SimulateCrash() {
@@ -129,6 +129,10 @@ void MockRenderProcessHost::SimulateReady() {
   is_ready_ = true;
   for (auto& observer : observers_)
     observer.RenderProcessReady(this);
+}
+
+bool MockRenderProcessHost::IsMock() const {
+  return true;
 }
 
 bool MockRenderProcessHost::Init() {
@@ -207,12 +211,20 @@ bool MockRenderProcessHost::IsForGuestsOnly() {
   return is_for_guests_only_;
 }
 
+bool MockRenderProcessHost::IsPrivileged() {
+  return GetProcessLock().is_privileged();
+}
+
 bool MockRenderProcessHost::IsJitDisabled() {
   return false;
 }
 
 bool MockRenderProcessHost::AreV8OptimizationsDisabled() {
-  return false;
+  return are_v8_optimizations_disabled_;
+}
+
+void MockRenderProcessHost::SetAreV8OptimizationsDisabled(bool disabled) {
+  are_v8_optimizations_disabled_ = disabled;
 }
 
 bool MockRenderProcessHost::DisallowV8FeatureFlagOverrides() {
@@ -220,7 +232,11 @@ bool MockRenderProcessHost::DisallowV8FeatureFlagOverrides() {
 }
 
 bool MockRenderProcessHost::IsPdf() {
-  return false;
+  return is_pdf_;
+}
+
+void MockRenderProcessHost::SetIsPdf(bool is_pdf) {
+  is_pdf_ = is_pdf;
 }
 
 void MockRenderProcessHost::OnMediaStreamAdded() {}
@@ -240,9 +256,17 @@ void MockRenderProcessHost::OnBoostForLoadingAdded() {}
 
 void MockRenderProcessHost::OnBoostForLoadingRemoved() {}
 
-void MockRenderProcessHost::OnImmersiveXrSessionStarted() {}
+void MockRenderProcessHost::OnImmersiveXrSessionStarted() {
+  has_immersive_xr_session_ = true;
+}
 
-void MockRenderProcessHost::OnImmersiveXrSessionStopped() {}
+void MockRenderProcessHost::OnImmersiveXrSessionStopped() {
+  has_immersive_xr_session_ = false;
+}
+
+bool MockRenderProcessHost::HasImmersiveXrSessionForTesting() const {
+  return has_immersive_xr_session_;
+}
 
 StoragePartition* MockRenderProcessHost::GetStoragePartition() {
   return browser_context_->GetStoragePartition(storage_partition_config_);
@@ -279,11 +303,9 @@ bool MockRenderProcessHost::FastShutdownStarted() {
 }
 
 const base::Process& MockRenderProcessHost::GetProcess() {
-  if (process.IsValid())
-    return process;
-
-  static const base::Process current_process(base::Process::Current());
-  return current_process;
+  // While launching, match RenderProcessHostImpl::GetProcess(): a sentinel
+  // for "no process".
+  return process_still_launching_ ? null_process_ : current_process_;
 }
 
 bool MockRenderProcessHost::IsReady() {
@@ -374,7 +396,6 @@ void MockRenderProcessHost::RemovePriorityClient(
   priority_clients_.erase(priority_client);
 }
 
-#if !BUILDFLAG(IS_ANDROID)
 void MockRenderProcessHost::SetPriorityOverride(
     base::Process::Priority priority) {}
 
@@ -383,7 +404,6 @@ bool MockRenderProcessHost::HasPriorityOverride() {
 }
 
 void MockRenderProcessHost::ClearPriorityOverride() {}
-#endif  // !BUILDFLAG(IS_ANDROID)
 
 #if BUILDFLAG(IS_ANDROID)
 void MockRenderProcessHost::GraduateSpareToNormalRendererPriority() {}
@@ -491,7 +511,7 @@ void MockRenderProcessHost::ForEachRenderFrameHost(
     // Speculative RFHs are not exposed to //content embedders, so we have to
     // explicitly check them here to avoid leaks.
     if (rfh->lifecycle_state() ==
-        RenderFrameHostImpl::LifecycleStateImpl::kSpeculative) {
+        RenderFrameHostLifecycleStateImpl::kSpeculative) {
       continue;
     }
     on_render_frame_host(rfh);
@@ -559,11 +579,11 @@ bool MockRenderProcessHost::MayReuseHost() {
 }
 
 bool MockRenderProcessHost::IsUnused() {
-  return is_unused_;
+  return GetProcessLock().is_unused();
 }
 
 void MockRenderProcessHost::SetIsUsed() {
-  is_unused_ = false;
+  ChildProcessSecurityPolicyImpl::GetInstance()->SetProcessIsUsed(GetID());
 }
 
 bool MockRenderProcessHost::HostHasNotBeenUsed() {
@@ -579,7 +599,7 @@ void MockRenderProcessHost::SetProcessLock(
     const IsolationContext& isolation_context,
     const ProcessLock& process_lock) {
   ChildProcessSecurityPolicyImpl::GetInstance()->LockProcess(
-      isolation_context, GetID(), !IsUnused(), process_lock);
+      isolation_context, GetID(), process_lock);
   if (process_lock.IsASiteOrOrigin())
     is_renderer_locked_to_site_ = true;
 }
@@ -620,6 +640,29 @@ void MockRenderProcessHost::GetSandboxedFileSystemForBucket(
 std::string
 MockRenderProcessHost::GetInfoForBrowserContextDestructionCrashReporting() {
   return std::string();
+}
+
+const std::string&
+MockRenderProcessHost::GetUnresponsiveDocumentJavascriptCallStack() const {
+  return unresponsive_document_javascript_call_stack_;
+}
+
+const blink::LocalFrameToken&
+MockRenderProcessHost::GetUnresponsiveDocumentToken() const {
+  return unresponsive_document_token_;
+}
+
+std::optional<blink::OomInterventionMetrics>
+MockRenderProcessHost::GetCrashMemoryMetrics() const {
+  return std::nullopt;
+}
+
+void MockRenderProcessHost::SetUnresponsiveDocumentJSCallStackAndToken(
+    std::string javascript_call_stack,
+    blink::LocalFrameToken token) {
+  unresponsive_document_javascript_call_stack_ =
+      std::move(javascript_call_stack);
+  unresponsive_document_token_ = token;
 }
 
 void MockRenderProcessHost::WriteIntoTrace(

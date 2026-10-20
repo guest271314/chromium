@@ -16,7 +16,6 @@
 #include "chrome/browser/nearby_sharing/nearby_sharing_service_impl.h"
 #include "chrome/browser/nearby_sharing/text_attachment.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/navigator/browser_navigator.h"
 #include "chrome/browser/ui/navigator/browser_navigator_params.h"
 #include "chrome/browser/ui/scoped_tabbed_browser_displayer.h"
@@ -24,13 +23,13 @@
 #include "chrome/browser/ui/webui/nearby_share/shared_resources.h"
 #include "chrome/browser/ui/webui/plural_string_handler.h"
 #include "chrome/browser/ui/webui/sanitized_image/sanitized_image_source.h"
+#include "chrome/browser/ui/webui/theme_source.h"
 #include "chrome/common/webui_url_constants.h"
 #include "chrome/grit/generated_resources.h"
 #include "chrome/grit/nearby_share_dialog_resources.h"
 #include "chrome/grit/nearby_share_dialog_resources_map.h"
 #include "chrome/grit/theme_resources.h"
 #include "chromeos/components/sharesheet/constants.h"
-#include "chromeos/constants/chromeos_features.h"
 #include "content/public/browser/url_data_source.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_ui.h"
@@ -38,6 +37,7 @@
 #include "mojo/public/cpp/bindings/self_owned_receiver.h"
 #include "net/base/url_util.h"
 #include "services/network/public/mojom/content_security_policy.mojom.h"
+#include "ui/base/page_transition_types.h"
 #include "ui/base/resource/resource_bundle.h"
 #include "ui/base/webui/web_ui_util.h"
 #include "ui/views/controls/webview/webview.h"
@@ -68,8 +68,9 @@ bool NearbyShareDialogUIConfig::IsWebUIEnabled(
 NearbyShareDialogUI::NearbyShareDialogUI(content::WebUI* web_ui)
     : ui::MojoWebUIController(web_ui, /*enable_chrome_send=*/true) {
   Profile* profile = Profile::FromWebUI(web_ui);
-  DCHECK(NearbySharingServiceFactory::IsNearbyShareSupportedForBrowserContext(
-      profile));
+  CHECK(NearbySharingServiceFactory::IsNearbyShareSupportedForBrowserContext(
+            profile),
+        base::NotFatalUntil::M162);
 
   nearby_service_ = NearbySharingServiceFactory::GetForBrowserContext(profile);
 
@@ -79,6 +80,7 @@ NearbyShareDialogUI::NearbyShareDialogUI(content::WebUI* web_ui)
 
   content::URLDataSource::Add(profile,
                               std::make_unique<SanitizedImageSource>(profile));
+  content::URLDataSource::Add(profile, std::make_unique<ThemeSource>(profile));
 
   webui::SetupWebUIDataSource(html_source, kNearbyShareDialogResources,
                               IDR_NEARBY_SHARE_DIALOG_NEARBY_SHARE_DIALOG_HTML);
@@ -124,8 +126,8 @@ NearbyShareDialogUI::NearbyShareDialogUI(content::WebUI* web_ui)
   const GURL& url = web_ui->GetWebContents()->GetVisibleURL();
   SetAttachmentFromQueryParameter(url);
 
-  html_source->AddBoolean("isQuickShareV2Enabled",
-                          chromeos::features::IsQuickShareV2Enabled());
+  // TODO(crbug.com/350547931): Remove the feature for WebUI.
+  html_source->AddBoolean("isQuickShareV2Enabled", true);
 }
 
 NearbyShareDialogUI::~NearbyShareDialogUI() = default;
@@ -178,13 +180,12 @@ bool NearbyShareDialogUI::HandleKeyboardEvent(
 
 void NearbyShareDialogUI::WebContentsCreated(
     content::WebContents* source_contents,
-    int opener_render_process_id,
-    int opener_render_frame_id,
+    const content::GlobalRenderFrameHostId& opener_id,
     const std::string& frame_name,
     const GURL& target_url,
     content::WebContents* new_contents) {
   chrome::ScopedTabbedBrowserDisplayer displayer(Profile::FromWebUI(web_ui()));
-  NavigateParams nav_params(displayer.browser(), target_url,
+  NavigateParams nav_params(displayer.browser_window_interface(), target_url,
                             ui::PageTransition::PAGE_TRANSITION_LINK);
   Navigate(&nav_params);
 }

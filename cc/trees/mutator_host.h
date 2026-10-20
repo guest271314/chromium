@@ -8,15 +8,11 @@
 #include <memory>
 #include <vector>
 
+#include "base/time/time.h"
 #include "cc/paint/element_id.h"
 #include "cc/trees/mutator_host_delegate.h"
 #include "ui/gfx/geometry/point_f.h"
 #include "ui/gfx/geometry/vector2d_f.h"
-
-namespace base {
-class TimeDelta;
-class TimeTicks;
-}  // namespace base
 
 namespace cc {
 
@@ -25,6 +21,18 @@ class MutatorHostDelegate;
 class LayerTreeMutator;
 class PropertyTrees;
 class ScrollTree;
+
+struct AnimationTickResult {
+  // True if any animation changed a value this frame; callers use it to decide
+  // whether the current frame must be redrawn / committed.
+  bool animated = false;
+
+  // True if some animation needs a follow-up frame to keep progressing (callers
+  // request another BeginImplFrame). Scroll-linked animations leave this false,
+  // since new scroll input requests its own frame, letting the compositor go
+  // idle when scrolling stops.
+  bool needs_next_frame = false;
+};
 
 // Used as the return value of GetAnimationScales() to indicate that there is
 // no active transform animation or the scale cannot be computed.
@@ -67,10 +75,10 @@ class MutatorHost {
   virtual bool ActivateAnimations(MutatorEvents* events) = 0;
   // TODO(smcgruer): Once we only tick scroll-based animations on scroll, we
   // don't need to pass the scroll tree in here.
-  virtual bool TickAnimations(base::TimeTicks monotonic_time,
-                              const ScrollTree& scroll_tree,
-                              bool is_active_tree,
-                              MutatorEvents* events) = 0;
+  virtual AnimationTickResult TickAnimations(base::TimeTicks monotonic_time,
+                                             const ScrollTree& scroll_tree,
+                                             bool is_active_tree,
+                                             MutatorEvents* events) = 0;
   // Tick animations that depends on scroll offset.
   virtual void TickScrollAnimations(base::TimeTicks monotonic_time,
                                     const ScrollTree& scroll_tree) = 0;
@@ -156,9 +164,13 @@ class MutatorHost {
   virtual bool HasViewTransition() const = 0;
   virtual bool HasScrollLinkedAnimation(ElementId for_scroller) const = 0;
 
-  // Iterates through all animations and returns the minimum tick interval.
-  // Returns 0 if there is a continuous animation which should be ticked
-  // as fast as possible.
+  // Iterates through all currently-ticking animations and returns the common
+  // harmonic tick interval. If every active animation has a stepped timing
+  // function and their cadences can be harmonized within drift limits, returns
+  // the common tick interval.
+  // Returns 0 if there is any continuous animation (or incompatible stepped
+  // animations) which should be ticked as fast as possible.
+  // Returns TimeDelta::Max() if there are no active animations.
   virtual base::TimeDelta MinimumTickInterval() const = 0;
 
   using TrackedAnimationSequenceId = size_t;

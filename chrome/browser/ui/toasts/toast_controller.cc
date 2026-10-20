@@ -15,6 +15,7 @@
 #include "base/check_op.h"
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
+#include "base/i18n/message_formatter.h"
 #include "base/location.h"
 #include "base/time/time.h"
 #include "base/timer/timer.h"
@@ -34,6 +35,7 @@
 #include "chrome/browser/ui/toasts/toast_features.h"
 #include "chrome/browser/ui/toasts/toast_metrics.h"
 #include "chrome/browser/ui/toasts/toast_view.h"
+#include "chrome/browser/ui/views/frame/multi_contents_view.h"
 #include "chrome/browser/ui/views/interaction/browser_elements_views.h"
 #include "chrome/browser/ui/webui_browser/webui_browser.h"
 #include "chrome/common/pref_names.h"
@@ -42,6 +44,7 @@
 #include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/web_contents.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/base/unowned_user_data/unowned_user_data_host.h"
 #include "ui/views/bubble/bubble_dialog_delegate_view.h"
 #include "ui/views/focus/focus_manager.h"
 #include "ui/views/view.h"
@@ -49,18 +52,34 @@
 
 #if BUILDFLAG(IS_MAC)
 #include "chrome/browser/ui/fullscreen_util_mac.h"
+#include "ui/views/views_features.h"
 #endif
+
+DEFINE_USER_DATA(ToastController);
 
 ToastParams::ToastParams(ToastId id) : toast_id(id) {}
 ToastParams::ToastParams(ToastParams&& other) noexcept = default;
 ToastParams& ToastParams::operator=(ToastParams&& other) noexcept = default;
 ToastParams::~ToastParams() = default;
 
+// static
+ToastController* ToastController::From(
+    BrowserWindowInterface* browser_window_interface) {
+  return browser_window_interface
+             ? Get(browser_window_interface->GetUnownedUserDataHost())
+             : nullptr;
+}
+
 ToastController::ToastController(
     BrowserWindowInterface* browser_window_interface,
     const ToastRegistry* toast_registry)
     : browser_window_interface_(browser_window_interface),
-      toast_registry_(toast_registry) {}
+      toast_registry_(toast_registry) {
+  if (browser_window_interface_) {
+    scoped_unowned_user_data_.emplace(
+        browser_window_interface_->GetUnownedUserDataHost(), *this);
+  }
+}
 
 ToastController::~ToastController() = default;
 
@@ -88,7 +107,7 @@ ToastController* ToastController::MaybeGetForTabInterface(
     return nullptr;
   }
 
-  return bwi->GetFeatures().toast_controller();
+  return ToastController::From(bwi);
 }
 
 void ToastController::Init() {
@@ -140,6 +159,14 @@ bool ToastController::MaybeShowToast(ToastParams params) {
 #if BUILDFLAG(IS_MAC)
 void ToastController::OnWidgetActivationChanged(views::Widget* widget,
                                                 bool active) {
+  // These workarounds are only needed when focusing a View in an inactive
+  // widget does not activate the widget.
+  // TODO(crbug.com/40486728): Remove once kMacActivateWidgetOnFocusRequest is
+  // removed.
+  if (base::FeatureList::IsEnabled(
+          views::features::kMacActivateWidgetOnFocusRequest)) {
+    return;
+  }
   if (active) {
     // Clears the stored focus view so that after widget activation occurs,
     // focus will not advance out of the widget and into the ContentsWebView.
@@ -191,7 +218,7 @@ base::CallbackListSubscription ToastController::RegisterOnWidgetDestroyed(
 }
 
 void ToastController::PrimaryPageChanged(content::Page& page) {
-  ClearTabScopedToasts();
+  ClearTabScopedToasts(/*is_navigation=*/true);
 }
 
 base::OneShotTimer* ToastController::GetToastCloseTimerForTesting() {
@@ -209,7 +236,7 @@ void ToastController::OnActiveTabChanged(
   omnibox_helper_observer_.Reset();
   omnibox_helper_observer_.Observe(tab_helper);
   Observe(web_contents);
-  ClearTabScopedToasts();
+  ClearTabScopedToasts(/*is_navigation=*/false);
 }
 
 void ToastController::QueueToast(ToastParams params) {
@@ -235,7 +262,11 @@ void ToastController::OnOmniboxPopupVisibilityChanged(bool popup_is_open) {
 void ToastController::UpdateToastWidgetVisibility(bool show_toast_widget) {
   if (toast_widget_) {
     if (show_toast_widget) {
-      toast_widget_->ShowInactive();
+      // Avoid calling ShowInactive() if the toast is already visible, as doing
+      // so could deactivate an already-active toast widget.
+      if (!toast_widget_->IsVisible()) {
+        toast_widget_->ShowInactive();
+      }
     } else {
       toast_widget_->Hide();
     }
@@ -267,10 +298,10 @@ void ToastController::ShowToast(ToastParams params) {
       toast_registry_->GetToastSpecification(params.toast_id);
   CHECK(current_toast_spec);
   CHECK_EQ(current_toast_spec->has_menu(), !!params.menu_model);
+  CHECK_EQ(current_toast_spec->has_action_button_data_callback(),
+           params.action_button_callback_data.has_value());
   CHECK(current_toast_spec->body_string_id() != 0 ||
         params.body_string_override.has_value());
-  CHECK(params.body_string_replacement_params.empty() ||
-        !params.body_string_cardinality_param.has_value());
 
   currently_showing_toast_id_ = params.toast_id;
   currently_showing_toast_close_callback_ =
@@ -289,6 +320,9 @@ void ToastController::ShowToast(ToastParams params) {
 }
 
 void ToastController::CloseToast(toasts::ToastCloseReason reason) {
+  // Stop the auto-dismiss timer to prevent it from firing while the toast view
+  // is closing or animating out.
+  toast_close_timer_.Stop();
   if (toast_view_) {
     toast_view_->Close(reason);
   }
@@ -298,11 +332,7 @@ void ToastController::CreateToast(ToastParams params,
                                   const ToastSpecification* spec) {
   // TODO(crbug.com/364730656): Replace this logic when improving
   // ToastController testability.
-  views::View* anchor_view = nullptr;
-  if (browser_window_interface_) {
-    anchor_view = BrowserElementsViews::From(browser_window_interface_)
-                      ->GetView(kTopContainerElementId);
-  }
+  views::View* anchor_view = GetAnchorView(spec->is_global_scope());
   if (!anchor_view) {
     // Don't actually create the toast in unit tests
     // TODO(webium): show toast in webui browser.
@@ -318,10 +348,24 @@ void ToastController::CreateToast(ToastParams params,
           : FormatString(spec->body_string_id(),
                          params.body_string_replacement_params,
                          params.body_string_cardinality_param);
-  auto toast_view = std::make_unique<toasts::ToastView>(
-      anchor_view, body_string, spec->icon(), params.image_override,
-      ShouldRenderToastOverWebContents(),
-      base::BindRepeating(&RecordToastDismissReason, params.toast_id));
+  std::unique_ptr<toasts::ToastView> toast_view;
+  // Toasts have either a static vector icon or an animated throbber. For
+  // throbber toasts, instantiate an iconless ToastView and add the throbber
+  // child view below.
+  if (spec->has_icon()) {
+    toast_view = std::make_unique<toasts::ToastView>(
+        anchor_view, body_string, spec->icon(), params.image_override,
+        ShouldRenderToastOverWebContents(),
+        base::BindRepeating(&RecordToastDismissReason, params.toast_id));
+  } else {
+    toast_view = std::make_unique<toasts::ToastView>(
+        anchor_view, body_string, ShouldRenderToastOverWebContents(),
+        base::BindRepeating(&RecordToastDismissReason, params.toast_id));
+  }
+
+  if (spec->has_throbber()) {
+    toast_view->AddThrobber();
+  }
 
   if (spec->has_close_button()) {
     toast_view->AddCloseButton(
@@ -333,8 +377,11 @@ void ToastController::CreateToast(ToastParams params,
         FormatString(spec->action_button_string_id().value(),
                      params.action_button_string_replacement_params,
                      std::nullopt),
-        spec->action_button_callback().Then(base::BindRepeating(
-            &RecordToastActionButtonClicked, params.toast_id)));
+        spec->GetActionButtonCallback(
+                browser_window_interface_,
+                std::move(params.action_button_callback_data))
+            .Then(base::BindRepeating(&RecordToastActionButtonClicked,
+                                      params.toast_id)));
   }
 
   if (spec->has_menu()) {
@@ -350,22 +397,13 @@ void ToastController::CreateToast(ToastParams params,
       false);
   toast_observer_.Observe(toast_widget_);
   fullscreen_subscription_ =
-      browser_window_interface_->GetExclusiveAccessManager()
+      ExclusiveAccessManager::From(browser_window_interface_)
           ->fullscreen_controller()
           ->RegisterOnFullscreenStateChanged(
               base::BindRepeating(&ToastController::OnFullscreenStateChanged,
                                   base::Unretained(this)));
   toast_widget_->SetVisibilityChangedAnimationsEnabled(false);
-  // Set the the focus traversable parent of the toast widget to be the parent
-  // of the anchor view, so that when focus leaves the toast, the search for the
-  // next focusable view will start from the right place. However, does not set
-  // the anchor view's focus traversable to be the toast widget, because when
-  // focus leaves the toast widget it will go into the anchor view's focus
-  // traversable if it exists, so doing that would trap focus inside of the
-  // toast widget.
-  toast_widget_->SetFocusTraversableParent(
-      anchor_view->parent()->GetWidget()->GetFocusTraversable());
-  toast_widget_->SetFocusTraversableParentView(anchor_view);
+  UpdateToastWidgetFocusTraversableParent(anchor_view);
 
   if (!is_omnibox_popup_showing_) {
     toast_widget_->ShowInactive();
@@ -380,6 +418,11 @@ std::u16string ToastController::FormatString(
     std::vector<std::u16string> replacements,
     std::optional<int> cardinality) {
   if (cardinality.has_value()) {
+    if (!replacements.empty()) {
+      return base::i18n::MessageFormatter::FormatWithNumberedArgs(
+          l10n_util::GetStringFUTF16(string_id, replacements, nullptr),
+          cardinality.value());
+    }
     return l10n_util::GetPluralStringFUTF16(string_id, cardinality.value());
   } else {
     return l10n_util::GetStringFUTF16(string_id, replacements, nullptr);
@@ -387,26 +430,89 @@ std::u16string ToastController::FormatString(
 }
 
 void ToastController::OnFullscreenStateChanged() {
+  UpdateToastAnchor();
   toast_view_->UpdateRenderToastOverWebContentsAndPaint(
       ShouldRenderToastOverWebContents());
 }
 
-void ToastController::ClearTabScopedToasts() {
+void ToastController::UpdateToastAnchor() {
+  bool global_scope =
+      toast_registry_
+          ->GetToastSpecification(currently_showing_toast_id_.value())
+          ->is_global_scope();
+  views::View* anchor_view = GetAnchorView(global_scope);
+  if (!anchor_view) {
+    return;
+  }
+
+  views::Widget* anchor_widget = anchor_view->GetWidget();
+  if (toast_widget_->parent() != anchor_widget) {
+    toast_widget_->Reparent(anchor_widget);
+  }
+  toast_view_->SetAnchorView(anchor_view);
+  UpdateToastWidgetFocusTraversableParent(anchor_view);
+}
+
+views::View* ToastController::GetAnchorView(bool global_scope) {
+  if (browser_window_interface_) {
+    ExclusiveAccessManager* exclusive_access_manager =
+        ExclusiveAccessManager::From(browser_window_interface_);
+    bool browser_full_screen = exclusive_access_manager->context() &&
+                               exclusive_access_manager->fullscreen_controller()
+                                   ->IsFullscreenForBrowser();
+    BrowserElementsViews* browser_elements_views =
+        BrowserElementsViews::From(browser_window_interface_);
+    if (global_scope || browser_full_screen) {
+      return browser_elements_views->GetView(kTopContainerElementId);
+    } else {
+      MultiContentsView* multi_contents_view = AsViewClass<MultiContentsView>(
+          browser_elements_views->GetView(kMultiContentsViewElementId));
+      return multi_contents_view
+                 ? multi_contents_view->GetActiveContentsContainerView()
+                       ->GetToastAnchorView()
+                 : nullptr;
+    }
+  }
+  return nullptr;
+}
+
+void ToastController::UpdateToastWidgetFocusTraversableParent(
+    views::View* anchor_view) {
+  // Set the the focus traversable parent of the toast widget to be the parent
+  // of the anchor view, so that when focus leaves the toast, the search for the
+  // next focusable view will start from the right place. However, does not set
+  // the anchor view's focus traversable to be the toast widget, because when
+  // focus leaves the toast widget it will go into the anchor view's focus
+  // traversable if it exists, so doing that would trap focus inside of the
+  // toast widget.
+  toast_widget_->SetFocusTraversableParent(
+      anchor_view->parent()->GetWidget()->GetFocusTraversable());
+  toast_widget_->SetFocusTraversableParentView(anchor_view);
+}
+
+void ToastController::ClearTabScopedToasts(bool is_navigation) {
   if (next_toast_params_.has_value()) {
     const ToastId toast_id = next_toast_params_.value().toast_id;
     const ToastSpecification* const specification =
         toast_registry_->GetToastSpecification(toast_id);
-    RecordToastDismissReason(toast_id, toasts::ToastCloseReason::kAbort);
-    if (!specification->is_global_scope()) {
+
+    const bool should_persist =
+        is_navigation && specification->persist_on_navigation();
+    if (!specification->is_global_scope() && !should_persist) {
+      RecordToastDismissReason(toast_id, toasts::ToastCloseReason::kAbort);
       next_toast_params_ = std::nullopt;
     }
   }
 
-  if (currently_showing_toast_id_.has_value() &&
-      !toast_registry_
-           ->GetToastSpecification(currently_showing_toast_id_.value())
-           ->is_global_scope()) {
-    toast_close_timer_.Stop();
-    CloseToast(toasts::ToastCloseReason::kAbort);
+  if (currently_showing_toast_id_.has_value()) {
+    const ToastSpecification* const specification =
+        toast_registry_->GetToastSpecification(
+            currently_showing_toast_id_.value());
+
+    const bool should_persist =
+        is_navigation && specification->persist_on_navigation();
+    if (!specification->is_global_scope() && !should_persist) {
+      CloseToast(toasts::ToastCloseReason::kAbort);
+    }
   }
 }

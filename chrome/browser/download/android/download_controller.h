@@ -64,12 +64,19 @@ class DownloadController : public DownloadControllerBase {
   static void CloseTabIfEmpty(content::WebContents* web_contents,
                               download::DownloadItem* download);
 
+  // Schedules the removal of a download item on the UI thread.
+  static void ScheduleRemoveDownloadItem(download::DownloadItem* download);
+
   // Callback when user permission prompt finishes. Args: whether file access
   // permission is acquired, which permission to update.
   using AcquirePermissionCallback =
       base::OnceCallback<void(bool, const std::string&)>;
 
   DownloadCallbackValidator* validator() { return &validator_; }
+
+  // Shows or queues the DangerousDownloadDialog for `item`. Returns whether
+  // the dialog was shown or queued.
+  bool ShowDangerousDownloadDialog(download::DownloadItem* item);
 
  private:
   friend struct base::DefaultSingletonTraits<DownloadController>;
@@ -88,16 +95,18 @@ class DownloadController : public DownloadControllerBase {
   void OnDownloadUpdated(download::DownloadItem* item) override;
   void OnDownloadDestroyed(download::DownloadItem* item) override;
 
-  // The download item contains dangerous file types.
-  // Shows the DangerousDownloadDialog (generic dangerous filetype warning).
-  void OnDangerousDownload(download::DownloadItem* item);
+  // The download item contains dangerous file types. Shows the
+  // DangerousDownloadDialog (generic dangerous filetype warning). Returns
+  // whether the dialog was shown.
+  bool OnDangerousDownload(download::DownloadItem* item);
 
-  // The download item contains sensitive content.
-  // Shows the PolicyWarningDownloadDialog.
-  void OnSensitiveDownload(download::DownloadItem* item);
+  // The download item contains sensitive content. Shows the
+  // PolicyWarningDownloadDialog. Returns whether the dialog was shown.
+  bool OnSensitiveDownload(download::DownloadItem* item);
 
   // Shows the UI warnings from Safe Browsing malicious APK download check.
-  void ShowDangerousDownloadWarning(DownloadUIModel& model);
+  // Returns whether the dialog was shown.
+  bool ShowDangerousDownloadWarning(DownloadUIModel& model);
 
   // Helper methods to start android download on UI thread.
   void StartAndroidDownload(const content::WebContents::Getter& wc_getter,
@@ -114,6 +123,10 @@ class DownloadController : public DownloadControllerBase {
 
   // Whether or not we should show an app verification prompt for `item`
   bool ShouldShowAppVerificationPrompt(download::DownloadItem* item);
+
+  // Helper function to get the window for a download item.
+  ui::WindowAndroid* GetWindowHelper(download::DownloadItem* item,
+                                     bool should_schedule_removal);
 
   std::string default_file_name_;
 

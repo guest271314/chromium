@@ -1078,23 +1078,32 @@ size_t GraphBuilderCoreml::WeightsFileHandle::GetByteSize(
 }
 
 std::string GetCoreMLNameFromInput(std::string_view input_name,
-                                   OperandId operand_id) {
+                                   OperandId operand_id,
+                                   bool is_scalar) {
   // Prefix is added to user provided names to avoid collision with intermediate
   // operands' names. `operand_id` is added to avoid collision with other
   // inputs' sanitized values.
-  return base::JoinString({kInputNamePrefix, SanitizeName(input_name),
-                           base::NumberToString(operand_id.value())},
-                          kStringSeparator);
+  return base::JoinString(
+      {is_scalar ? "scalar_input" : kInputNamePrefix, SanitizeName(input_name),
+       base::NumberToString(operand_id.value())},
+      kStringSeparator);
 }
 
 std::string GetCoreMLNameFromOutput(std::string_view output_name,
-                                    OperandId operand_id) {
+                                    OperandId operand_id,
+                                    bool is_scalar) {
   // Prefix is added to user provided names to avoid collision with intermediate
   // operands' names. `operand_id` is added to avoid collision with other
   // outputs' sanitized values.
-  return base::JoinString({kOutputNamePrefix, SanitizeName(output_name),
-                           base::NumberToString(operand_id.value())},
-                          kStringSeparator);
+  return base::JoinString(
+      {is_scalar ? "scalar_output" : kOutputNamePrefix,
+       SanitizeName(output_name), base::NumberToString(operand_id.value())},
+      kStringSeparator);
+}
+
+bool IsScalarCoreMLName(std::string_view coreml_name) {
+  return coreml_name.starts_with("scalar_input_") ||
+         coreml_name.starts_with("scalar_output_");
 }
 
 // static
@@ -1148,12 +1157,8 @@ ContextProperties GraphBuilderCoreml::GetContextProperties() {
       OperandDataType::kFloat32, OperandDataType::kFloat16,
       OperandDataType::kInt32, OperandDataType::kInt8, OperandDataType::kUint8};
 
-  static constexpr SupportedDataTypes kGatherIndicesSupportedDataTypes{
-      OperandDataType::kInt32, OperandDataType::kInt8, OperandDataType::kUint8};
-
-  static constexpr SupportedDataTypes kInts8Ints32{
-      OperandDataType::kInt8, OperandDataType::kUint8, OperandDataType::kInt32,
-      OperandDataType::kUint32};
+  static constexpr SupportedDataTypes kInts8Int32{
+      OperandDataType::kInt8, OperandDataType::kUint8, OperandDataType::kInt32};
   SupportedDataTypes arg_min_max_input_supported_data_types = kFloatsAndInt32;
 
   static constexpr SupportedDataTypes kArgMinMaxOutputSupportedDataTypes{
@@ -1207,7 +1212,7 @@ ContextProperties GraphBuilderCoreml::GetContextProperties() {
        {kFloatsAndInt32, kMaxRank},
        // TODO(crbug.com/361603703): Support constant (u)int4 inputs via
        // https://apple.github.io/coremltools/source/coremltools.converters.mil.mil.ops.defs.html#coremltools.converters.mil.mil.ops.defs.iOS18.compression.constexpr_blockwise_shift_scale
-       /*dequantize_linear_input=*/{kInts8Ints32, kMaxRank},
+       /*dequantize_linear_input=*/{kInts8Int32, kMaxRank},
        /*dequantize_linear_scale=*/
        {DataTypeConstraint::kFloat16To32, kMaxRank},
        /*add_input=*/{kFloatsAndInt32, kMaxRank},
@@ -1273,14 +1278,14 @@ ContextProperties GraphBuilderCoreml::GetContextProperties() {
        // operators, but WebNN does not have corresponding types. See docs here:
        // https://apple.github.io/coremltools/source/coremltools.converters.mil.mil.ops.defs.html#coremltools.converters.mil.mil.ops.defs.iOS17.scatter_gather.gather
        /*gather_input=*/{kFloat16To32Int8To32AndUint8, kMaxRank},
-       /*gather_indices=*/{kGatherIndicesSupportedDataTypes, kMaxRank},
+       /*gather_indices=*/{kInts8Int32, kMaxRank},
        // Note that INT16, and UINT16 is also supported by CoreML, but WebNN
        // does not have corresponding types. See docs here:
        // https://apple.github.io/coremltools/source/coremltools.converters.mil.mil.ops.defs.html#coremltools.converters.mil.mil.ops.defs.iOS17.scatter_gather.gather_along_axis
        /*gather_elements_input=*/{kFloatsAndInt32, kMaxRank},
-       /*gather_elements_indices=*/{kGatherIndicesSupportedDataTypes, kMaxRank},
+       /*gather_elements_indices=*/{kInts8Int32, kMaxRank},
        /*gather_nd_input=*/{kFloat16To32Int8To32AndUint8, kMaxRank},
-       /*gather_nd_indices=*/{kGatherIndicesSupportedDataTypes, kMaxRank},
+       /*gather_nd_indices=*/{kInts8Int32, kMaxRank},
        /*gelu_input=*/
        {DataTypeConstraint::kFloat16To32, kMaxRank},
        /*gemm_a=*/
@@ -1338,10 +1343,10 @@ ContextProperties GraphBuilderCoreml::GetContextProperties() {
        /*max_pool2d_input=*/
        {DataTypeConstraint::kFloat16To32, {3, 5}},
        /*prelu_input=*/
-       {kFloatsAndInt32, kMaxRank},
+       {DataTypeConstraint::kFloat16To32, kMaxRank},
        /*quantize_linear_input=*/{DataTypeConstraint::kFloat16To32, kMaxRank},
        /*quantize_linear_zero_point=*/
-       {kInts8Ints32, kMaxRank},
+       {kInts8Int32, kMaxRank},
        /*reduce_l1_input=*/
        {kFloatsAndInt32, kMaxRank},
        /*reduce_l2_input=*/
@@ -2007,15 +2012,7 @@ GraphBuilderCoreml::AddOperationForArgMinMax(
       MILDataTypeToOperandType(output_operand_info.mil_data_type)));
 
   OperandId input_operand_id = operation.input_operand_id;
-  // CoreML doesn't support scalar input, in this case reshape to 1D then
-  // reshape back.
-  if (input_operand_info.dimensions.empty()) {
-    ASSIGN_OR_RETURN(input_operand_id, GenerateInternalOperandInfo(
-                                           input_operand_info.mil_data_type,
-                                           base::span<const uint32_t>({1})));
-    RETURN_IF_ERROR(AddOperationForReshape(operation.input_operand_id,
-                                           input_operand_id, block));
-  }
+
   CoreML::Specification::MILSpec::Operation* op = block.add_operations();
   switch (operation.kind) {
     case mojom::ArgMinMax_Kind::kMin:
@@ -2037,19 +2034,8 @@ GraphBuilderCoreml::AddOperationForArgMinMax(
            CreateScalarImmediateValue(operation.keep_dimensions)},
       });
 
-  // No need to add a reshape when keep_dimensions=false as the output is
-  // already scalar.
-  if (input_operand_info.dimensions.empty() && operation.keep_dimensions) {
-    ASSIGN_OR_RETURN(
-        OperandId intermediate_output_operand_id,
-        GenerateInternalOperandInfo(output_operand_info.mil_data_type,
-                                    base::span<const uint32_t>({1})));
-    PopulateNamedValueType(intermediate_output_operand_id, *op->add_outputs());
-    RETURN_IF_ERROR(AddOperationForReshape(intermediate_output_operand_id,
-                                           operation.output_operand_id, block));
-  } else {
-    PopulateNamedValueType(operation.output_operand_id, *op->add_outputs());
-  }
+
+  PopulateNamedValueType(operation.output_operand_id, *op->add_outputs());
   return base::ok();
 }
 
@@ -2389,8 +2375,7 @@ GraphBuilderCoreml::AddOperationForDequantizeLinear(
   CHECK(context_properties_.data_type_limits.dequantize_linear_input.data_types
             .Has(zero_point_operand_data_type));
 
-  if (input_operand_data_type == OperandDataType::kInt32 ||
-      input_operand_data_type == OperandDataType::kUint32) {
+  if (input_operand_data_type == OperandDataType::kInt32) {
     return AddOperationForDequantizeLinearEmulate(operation, block);
   }
 
@@ -4425,8 +4410,8 @@ GraphBuilderCoreml::AddOperationForLstm(
           operand_data_type, bias_dimensions, bias_new_order));
     }
   } else if (bias_operand_id || recurrent_bias_operand_id) {
-    OperandId coreml_bias_param =
-        bias_operand_id.value_or(*recurrent_bias_operand_id);
+    OperandId coreml_bias_param = *bias_operand_id.or_else(
+        [&] { return recurrent_bias_operand_id; });
     base::span<const uint8_t> bias =
         constant_operands_->at(coreml_bias_param)->ByteSpan();
     RETURN_IF_ERROR(SetInputFromConstantReordered(
@@ -4876,8 +4861,7 @@ GraphBuilderCoreml::AddOperationForQuantizeLinear(
   CHECK(context_properties_.data_type_limits.quantize_linear_zero_point
             .data_types.Has(zero_point_operand_data_type));
 
-  if (zero_point_operand_data_type == OperandDataType::kInt32 ||
-      zero_point_operand_data_type == OperandDataType::kUint32) {
+  if (zero_point_operand_data_type == OperandDataType::kInt32) {
     return AddOperationForQuantizeLinearEmulate(operation, block);
   }
 
@@ -5585,9 +5569,11 @@ GraphBuilderCoreml::AddOperationForPrelu(
   CHECK_EQ(input_operand_info.mil_data_type,
            GetOperandInfo(operation.slope_operand_id).mil_data_type);
 
+  // A slope which out-ranks the input broadcasts the output beyond the input
+  // shape, which the CoreML prelu below cannot express.
   if (input_operand_info.dimensions.size() != 4u ||
       !constant_operands_->contains(operation.slope_operand_id) ||
-      slope_shape.size() < 3u) {
+      slope_shape.size() < 3u || slope_shape.size() > 4u) {
     return AddOperationForPreluEmulate(operation, block);
   }
 
@@ -5644,9 +5630,11 @@ GraphBuilderCoreml::AddOperationForPreluEmulate(
       CreateFloatValue(input_operand_info.mil_data_type, 0.0f), min_result,
       mojom::ElementWiseBinary::Kind::kMin, block));
 
+  const OperandInfo& output_operand_info =
+      GetOperandInfo(operation.output_operand_id);
   ASSIGN_OR_RETURN(OperandId mul_slope,
                    GenerateInternalOperandInfo(input_operand_info.mil_data_type,
-                                               input_operand_info.dimensions));
+                                               output_operand_info.dimensions));
   RETURN_IF_ERROR(AddOperationForElementwiseBinary(
       min_result, operation.slope_operand_id, mul_slope,
       mojom::ElementWiseBinary::Kind::kMul, block));
@@ -6034,14 +6022,16 @@ std::string GraphBuilderCoreml::GetCoreMLNameFromOperand(OperandId operand_id) {
   switch (operand.kind) {
     case mojom::Operand::Kind::kInput:
       CHECK(operand.name.has_value());
-      return GetCoreMLNameFromInput(operand.name.value(), operand_id);
+      return GetCoreMLNameFromInput(operand.name.value(), operand_id,
+                                    operand.descriptor.Rank() == 0);
     case mojom::Operand::Kind::kConstant:
       return base::JoinString({kIntermediateOperandPrefix,
                                base::NumberToString(operand_id.value())},
                               kStringSeparator);
     case mojom::Operand::Kind::kOutput:
       if (operand.name.has_value()) {
-        return GetCoreMLNameFromOutput(operand.name.value(), operand_id);
+        return GetCoreMLNameFromOutput(operand.name.value(), operand_id,
+                                       operand.descriptor.Rank() == 0);
       } else {
         // Intermediate outputs don't have names so use operand_id instead.
         return base::JoinString({kIntermediateOperandPrefix,

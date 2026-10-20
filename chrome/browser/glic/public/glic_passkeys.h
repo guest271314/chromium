@@ -6,10 +6,9 @@
 #define CHROME_BROWSER_GLIC_PUBLIC_GLIC_PASSKEYS_H_
 
 #include "base/types/pass_key.h"
-#include "chrome/browser/glic/host/glic.mojom.h"
+#include "chrome/browser/glic/host/glic.mojom-shared.h"
 #include "chrome/browser/glic/public/glic_context_menu_invocation_helper.h"
 
-class GlicExperimentalTriggeringMessageHandler;
 namespace tabs {
 class TabInterface;
 }
@@ -17,16 +16,22 @@ class TabInterface;
 namespace extensions {
 class GlicPrivateInvokeFunction;
 class PdfViewerPrivateGlicSummarizeFunction;
-}
+}  // namespace extensions
 
 namespace indigo {
 class IndigoPageActionController;
 }
 
-class PasswordChangeFromCheckupDelegate;
+class ContextHubPageHandler;
+class GlicPasswordChangeActuator;
+
+namespace actor {
+class ActorGeminiPanelToolBrowserTest;
+}
 
 namespace ttc {
 class AiOverlayTools;
+class ToolController;
 }
 
 namespace skills {
@@ -36,8 +41,10 @@ class SkillsInvocationInteractiveUiTest;
 
 namespace glic {
 
-class AnchoredNudgeController;
+class GlicExperimentalTriggeringCoordinator;
 class GlicInternalsPageHandler;
+class SelectionOverlayController;
+class SelectionSuggestion;
 
 template <mojom::InvocationSource Source>
 class AndroidAutoSubmitPasskeyHelper;
@@ -54,20 +61,28 @@ class InvokeWithAutoSubmitPasskeyProvider {
   // Example of how to add new friends:
   // friend class SomeClassThatNeedsAutoSubmit;
   // friend void SomeClass::SomeFunctionThatNeedsAutoSubmit();
-  friend class AnchoredNudgeController;
   friend void GlicContextMenuInvocationHelper::HandleContextualMenuClick(
-      tabs::TabInterface* tab);
+      tabs::TabInterface* tab,
+      const std::u16string& selection_text,
+      content::GlobalRenderFrameHostId rfh_id);
   friend class extensions::GlicPrivateInvokeFunction;
   friend class extensions::PdfViewerPrivateGlicSummarizeFunction;
-  friend class ::PasswordChangeFromCheckupDelegate;
+  friend class ::ContextHubPageHandler;
+  friend class ::GlicPasswordChangeActuator;
   friend class GlicInternalsPageHandler;
   friend class GlicInstanceCoordinatorBrowserTest;
+  friend class GlicInvokeBrowserTest;
   friend class GlicInstanceCoordinatorTrustFirstOnboardingArm1BrowserTest;
   friend class GlicApiTestPasskeys;
-  friend class ::GlicExperimentalTriggeringMessageHandler;
+  friend class GlicExperimentalTriggeringCoordinator;
   friend class GlicCueTarget;
+  friend class GlicSelectionWidgetController;
+  friend class SelectionOverlayController;
+  friend class SelectionSuggestion;
   friend class ::indigo::IndigoPageActionController;
+  friend class ::actor::ActorGeminiPanelToolBrowserTest;
   friend class ::ttc::AiOverlayTools;
+  friend class ::ttc::ToolController;
   friend class ::skills::SkillsUiTabController;
   friend class ::skills::SkillsInvocationInteractiveUiTest;
   friend class AndroidAutoSubmitPasskeyHelper<

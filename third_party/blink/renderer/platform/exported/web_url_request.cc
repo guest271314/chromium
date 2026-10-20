@@ -414,10 +414,6 @@ void WebURLRequest::SetRequestedWithHeader(const WebString& value) {
   resource_request_->SetRequestedWithHeader(value);
 }
 
-const WebString WebURLRequest::GetPurposeHeader() const {
-  return resource_request_->GetPurposeHeader();
-}
-
 const base::UnguessableToken& WebURLRequest::GetFetchWindowId() const {
   return resource_request_->GetFetchWindowId();
 }
@@ -472,6 +468,10 @@ int WebURLRequest::GetLoadFlagsForWebUrlRequest() const {
             SecurityOrigin::Create(resource_request_->Url()).get())) {
       load_flags |= net::LOAD_RESTRICTED_PREFETCH_FOR_MAIN_FRAME;
     }
+  }
+
+  if (resource_request_->RequiresLoadIgnoreLimits()) {
+    load_flags |= net::LOAD_IGNORE_LIMITS;
   }
 
   return load_flags;

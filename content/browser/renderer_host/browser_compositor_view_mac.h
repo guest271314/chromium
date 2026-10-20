@@ -19,13 +19,14 @@
 #include "ui/compositor/compositor.h"
 #include "ui/compositor/compositor_observer.h"
 #include "ui/compositor/layer_observer.h"
+#include "ui/compositor/layer_surface.h"
 #include "ui/display/screen_info.h"
 #include "ui/gfx/ca_layer_params.h"
 
 namespace ui {
 class AcceleratedWidgetMacNSView;
 class RecyclableCompositorMac;
-}
+}  // namespace ui
 
 namespace content {
 
@@ -77,9 +78,7 @@ class CONTENT_EXPORT BrowserCompositorMac : public DelegatedFrameHostClient,
   // Update the renderer's SurfaceId to reflect the current dimensions of the
   // NSView. This will allocate a new SurfaceId, so should only be called
   // when necessary.
-  void UpdateSurfaceFromNSView(
-      const gfx::Size& new_size_dip,
-      bool refresh_rate_changed_on_same_display = false);
+  void UpdateSurfaceFromNSView(const gfx::Size& new_size_dip);
 
   // Update the renderer's SurfaceId to reflect |new_size_in_pixels| in
   // anticipation of the NSView resizing during auto-resize.
@@ -117,7 +116,7 @@ class CONTENT_EXPORT BrowserCompositorMac : public DelegatedFrameHostClient,
   static void DisableRecyclingForShutdown();
 
   // DelegatedFrameHostClient implementation.
-  ui::Layer* DelegatedFrameHostGetLayer() const override;
+  ui::LayerSurface* GetDelegatedFrameHostLayer() const override;
   bool DelegatedFrameHostIsVisible() const override;
   SkColor DelegatedFrameHostGetGutterColor() const override;
   void OnFrameTokenChanged(uint32_t frame_token,
@@ -150,6 +149,8 @@ class CONTENT_EXPORT BrowserCompositorMac : public DelegatedFrameHostClient,
   ui::Compositor* GetCompositor() const;
 
   void InvalidateSurfaceAllocationGroup();
+
+  void SetEvictOnHide(bool evict_on_hide);
 
  private:
   // ui::LayerObserver implementation:
@@ -188,7 +189,7 @@ class CONTENT_EXPORT BrowserCompositorMac : public DelegatedFrameHostClient,
   std::unique_ptr<ui::RecyclableCompositorMac> recyclable_compositor_;
 
   std::unique_ptr<DelegatedFrameHost> delegated_frame_host_;
-  std::unique_ptr<ui::Layer> root_layer_;
+  std::unique_ptr<ui::LayerSurface> root_layer_;
 
   SkColor background_color_ = SK_ColorWHITE;
 

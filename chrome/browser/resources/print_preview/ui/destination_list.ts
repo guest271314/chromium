@@ -127,6 +127,7 @@ export class PrintPreviewDestinationListElement extends CrLitElement {
     if (e.key === 'Enter') {
       this.onDestinationClick_(e);
       e.stopPropagation();
+      e.preventDefault();
     }
   }
 
@@ -149,14 +150,6 @@ export class PrintPreviewDestinationListElement extends CrLitElement {
    */
   protected getAriaRowindex_(index: number): number {
     return index + 1;
-  }
-
-  protected onDestinationRowFocus_(e: Event) {
-    // Forward focus to the 'print-preview-destination-list-item'.
-    const item =
-        (e.target as HTMLElement).querySelector<HTMLElement>('.list-item');
-    assert(!!item);
-    item.focus();
   }
 }
 

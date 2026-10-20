@@ -117,6 +117,7 @@ class MockHistoryEmbeddingsSearch
                std::optional<base::Time> time_range_start,
                size_t count,
                bool skip_answering,
+               std::vector<history::URLID> url_id_filter,
                history_embeddings::SearchResultCallback callback),
               (override));
 };
@@ -129,10 +130,6 @@ class HistoryEmbeddingsProviderTest : public testing::Test,
 
     os_crypt_ = os_crypt_async::GetTestOSCryptAsyncForTesting(
         /*is_sync_for_unittests=*/true);
-
-    auto feature_parameters = history_embeddings::GetFeatureParameters();
-    feature_parameters.use_ml_answerer = false;
-    history_embeddings::SetFeatureParametersForTesting(feature_parameters);
 
     CHECK(history_dir_.CreateUniqueTempDir());
     client_ = std::make_unique<FakeAutocompleteProviderClient>();
@@ -151,11 +148,12 @@ class HistoryEmbeddingsProviderTest : public testing::Test,
     // can be ran to simulate `Search()` responding asyncly.
     ON_CALL(*history_embeddings_search_,
             Search(testing::_, testing::_, testing::_, testing::_, testing::_,
-                   testing::_))
+                   testing::_, testing::_))
         .WillByDefault(
             [&](history_embeddings::SearchResult* previous_search_result,
                 std::string query, std::optional<base::Time> time_range_start,
                 size_t count, bool skip_answering,
+                std::vector<history::URLID> url_id_filter,
                 history_embeddings::SearchResultCallback callback) {
               search_callbacks_.push_back(base::BindOnce(
                   [](history_embeddings::SearchResultCallback callback,
@@ -207,7 +205,7 @@ TEST_F(HistoryEmbeddingsProviderTest, Start) {
       .WillOnce(testing::Return(false));
   EXPECT_CALL(*history_embeddings_search_,
               Search(testing::_, testing::_, testing::_, testing::_, testing::_,
-                     testing::_))
+                     testing::_, testing::_))
       .Times(0);
   history_embeddings_provider_->Start(long_input, false);
   EXPECT_FALSE(trigger_service->GetFeatureTriggeredInSession(trigger_feature));
@@ -229,7 +227,7 @@ TEST_F(HistoryEmbeddingsProviderTest, Start) {
 
   EXPECT_CALL(*history_embeddings_search_,
               Search(testing::_, testing::_, testing::_, testing::_, testing::_,
-                     testing::_))
+                     testing::_, testing::_))
       .Times(0);
   history_embeddings_provider_->Start(short_input, false);
   EXPECT_FALSE(trigger_service->GetFeatureTriggeredInSession(trigger_feature));
@@ -238,16 +236,17 @@ TEST_F(HistoryEmbeddingsProviderTest, Start) {
   // Sync queries should be blocked.
   EXPECT_CALL(*history_embeddings_search_,
               Search(testing::_, testing::_, testing::_, testing::_, testing::_,
-                     testing::_))
+                     testing::_, testing::_))
       .Times(0);
   history_embeddings_provider_->Start(sync_long_input, false);
   EXPECT_FALSE(trigger_service->GetFeatureTriggeredInSession(trigger_feature));
   trigger_service->ResetSession();
 
   // Long queries should pass.
-  EXPECT_CALL(*history_embeddings_search_,
-              Search(testing::_, "query query query",
-                     std::optional<base::Time>{}, 3u, false, testing::_))
+  EXPECT_CALL(
+      *history_embeddings_search_,
+      Search(testing::_, "query query query", std::optional<base::Time>{}, 3u,
+             false, testing::_, testing::_))
       .Times(1);
   history_embeddings_provider_->Start(long_input, false);
   EXPECT_TRUE(trigger_service->GetFeatureTriggeredInSession(trigger_feature));
@@ -394,7 +393,7 @@ TEST_F(HistoryEmbeddingsProviderTest, Stop) {
 
 TEST_F(HistoryEmbeddingsProviderTest, DeleteMatch) {
   AutocompleteMatch match(history_embeddings_provider_.get(), 1000, true,
-                          AutocompleteMatchType::HISTORY_EMBEDDINGS);
+                          omnibox::AutocompleteMatchType::kHistoryEmbeddings);
   match.destination_url = GURL{"https://en.wikipedia.org/wiki/Matenadaran"};
   history_embeddings_provider_->matches_.push_back(match);
   history_embeddings_provider_->DeleteMatch(match);
@@ -419,7 +418,7 @@ TEST_F(HistoryEmbeddingsProviderTest,
   EXPECT_EQ(history_embeddings_provider_->matches_[0].relevance, 500);
   EXPECT_EQ(history_embeddings_provider_->matches_[0].deletable, true);
   EXPECT_EQ(history_embeddings_provider_->matches_[0].type,
-            AutocompleteMatchType::HISTORY_EMBEDDINGS);
+            omnibox::AutocompleteMatchType::kHistoryEmbeddings);
   EXPECT_EQ(history_embeddings_provider_->matches_[0].destination_url.spec(),
             "https://url.com/");
   EXPECT_EQ(history_embeddings_provider_->matches_[0].description, u"title");
@@ -454,7 +453,7 @@ TEST_F(HistoryEmbeddingsProviderTest,
   EXPECT_EQ(history_embeddings_provider_->matches_[0].relevance, 500);
   EXPECT_EQ(history_embeddings_provider_->matches_[0].deletable, true);
   EXPECT_EQ(history_embeddings_provider_->matches_[0].type,
-            AutocompleteMatchType::HISTORY_EMBEDDINGS);
+            omnibox::AutocompleteMatchType::kHistoryEmbeddings);
   EXPECT_EQ(history_embeddings_provider_->matches_[0].destination_url.spec(),
             "https://url.com/");
   EXPECT_EQ(history_embeddings_provider_->matches_[0].description, u"title");
@@ -507,18 +506,18 @@ TEST_F(HistoryEmbeddingsProviderTest,
   auto expected_match_1 =
       AllOf(Field(&AutocompleteMatch::relevance, 750),
             Field(&AutocompleteMatch::type,
-                  AutocompleteMatchType::HISTORY_EMBEDDINGS),
+                  omnibox::AutocompleteMatchType::kHistoryEmbeddings),
             Field(&AutocompleteMatch::destination_url, "https://url1.com/"));
   auto expected_match_2 =
       AllOf(Field(&AutocompleteMatch::relevance, 500),
             Field(&AutocompleteMatch::type,
-                  AutocompleteMatchType::HISTORY_EMBEDDINGS),
+                  omnibox::AutocompleteMatchType::kHistoryEmbeddings),
             Field(&AutocompleteMatch::destination_url,
                   "https://url2.com/path?key=value"));
   auto expected_match_3 =
       AllOf(Field(&AutocompleteMatch::relevance, 250),
             Field(&AutocompleteMatch::type,
-                  AutocompleteMatchType::HISTORY_EMBEDDINGS),
+                  omnibox::AutocompleteMatchType::kHistoryEmbeddings),
             Field(&AutocompleteMatch::destination_url, "https://url3.com/"));
 
   // Expect only non-answer matches.
@@ -543,7 +542,7 @@ TEST_F(HistoryEmbeddingsProviderTest,
           expected_match_1, expected_match_2, expected_match_3,
           AllOf(Field(&AutocompleteMatch::relevance, 749),
                 Field(&AutocompleteMatch::type,
-                      AutocompleteMatchType::HISTORY_EMBEDDINGS_ANSWER),
+                      omnibox::AutocompleteMatchType::kHistoryEmbeddingsAnswer),
                 Field(&AutocompleteMatch::destination_url, ""),
                 Field(&AutocompleteMatch::history_embeddings_answer_header_text,
                       u"Searching for a summary\x2026"),
@@ -568,7 +567,7 @@ TEST_F(HistoryEmbeddingsProviderTest,
           expected_match_1, expected_match_2, expected_match_3,
           AllOf(Field(&AutocompleteMatch::relevance, 499),
                 Field(&AutocompleteMatch::type,
-                      AutocompleteMatchType::HISTORY_EMBEDDINGS_ANSWER),
+                      omnibox::AutocompleteMatchType::kHistoryEmbeddingsAnswer),
                 Field(&AutocompleteMatch::destination_url,
                       "chrome://history/?q=query"),
                 Field(&AutocompleteMatch::history_embeddings_answer_header_text,
@@ -608,8 +607,9 @@ TEST_F(HistoryEmbeddingsProviderTest,
               expected_match_1, expected_match_2, expected_match_3,
               AllOf(
                   Field(&AutocompleteMatch::relevance, 749),
-                  Field(&AutocompleteMatch::type,
-                        AutocompleteMatchType::HISTORY_EMBEDDINGS_ANSWER),
+                  Field(
+                      &AutocompleteMatch::type,
+                      omnibox::AutocompleteMatchType::kHistoryEmbeddingsAnswer),
                   Field(&AutocompleteMatch::destination_url, ""),
                   Field(
                       &AutocompleteMatch::history_embeddings_answer_header_text,

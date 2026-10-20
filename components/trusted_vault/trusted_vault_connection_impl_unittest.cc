@@ -19,6 +19,7 @@
 #include "base/test/mock_callback.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
+#include "base/test/test_future.h"
 #include "base/types/expected.h"
 #include "components/signin/public/identity_manager/access_token_info.h"
 #include "components/signin/public/identity_manager/account_info.h"
@@ -46,7 +47,9 @@ namespace trusted_vault {
 namespace {
 
 using testing::_;
+using testing::ElementsAreArray;
 using testing::Eq;
+using testing::IsEmpty;
 using testing::IsNull;
 using testing::Ne;
 using testing::NotNull;
@@ -216,7 +219,7 @@ class TrustedVaultConnectionImplTest
   TrustedVaultConnectionImpl* connection() {
     if (!connection_) {
       connection_ = std::make_unique<TrustedVaultConnectionImpl>(
-          security_domain(), kTestURL,
+          kTestURL,
           base::MakeRefCounted<network::WeakWrapperSharedURLLoaderFactory>(
               &test_url_loader_factory_)
               ->Clone(),
@@ -232,7 +235,7 @@ class TrustedVaultConnectionImplTest
   CreateConnectionWithAccessTokenError(
       TrustedVaultAccessTokenFetcher::FetchingError fetching_error) {
     return std::make_unique<TrustedVaultConnectionImpl>(
-        security_domain(), kTestURL,
+        kTestURL,
         base::MakeRefCounted<network::WeakWrapperSharedURLLoaderFactory>(
             &test_url_loader_factory_)
             ->Clone(),
@@ -306,6 +309,41 @@ class TrustedVaultConnectionImplTest
         request_url.spec(), response_body, response_http_code);
   }
 
+  bool RespondToDownloadGaiaPasswordPublicKeyRequest(
+      net::HttpStatusCode response_http_code,
+      const std::string& response_content) {
+    base::RunLoop().RunUntilIdle();
+    return test_url_loader_factory_.SimulateResponseForPendingRequest(
+        GetFullDownloadGaiaPasswordPublicKeyURLForTesting(kTestURL).spec(),
+        response_content, response_http_code);
+  }
+
+  bool RespondToDownloadGaiaPasswordPublicKeyRequestWithNetworkError() {
+    base::RunLoop().RunUntilIdle();
+    return test_url_loader_factory_.SimulateResponseForPendingRequest(
+        GetFullDownloadGaiaPasswordPublicKeyURLForTesting(kTestURL),
+        network::URLLoaderCompletionStatus(net::ERR_FAILED),
+        /*response_head=*/network::mojom::URLResponseHead::New(),
+        /*content=*/std::string());
+  }
+
+  bool RespondToRotateSharedKeyRequest(net::HttpStatusCode response_http_code,
+                                       const std::string& response_content) {
+    base::RunLoop().RunUntilIdle();
+    return test_url_loader_factory_.SimulateResponseForPendingRequest(
+        GetFullRotateSharedKeyURLForTesting(kTestURL, security_domain()).spec(),
+        response_content, response_http_code);
+  }
+
+  bool RespondToRotateSharedKeyRequestWithNetworkError() {
+    base::RunLoop().RunUntilIdle();
+    return test_url_loader_factory_.SimulateResponseForPendingRequest(
+        GetFullRotateSharedKeyURLForTesting(kTestURL, security_domain()),
+        network::URLLoaderCompletionStatus(net::ERR_FAILED),
+        /*response_head=*/network::mojom::URLResponseHead::New(),
+        /*content=*/std::string());
+  }
+
   base::test::SingleThreadTaskEnvironment& task_environment() {
     return task_environment_;
   }
@@ -314,7 +352,7 @@ class TrustedVaultConnectionImplTest
 
   const std::vector<std::vector<uint8_t>> kTrustedVaultKeys = {{1, 2},
                                                                {1, 2, 3, 4}};
-  const GURL kTestURL = GURL("https://test.com/test");
+  const GURL kTestURL = GURL("https://test.com/test/");
 
  private:
   base::test::SingleThreadTaskEnvironment task_environment_{
@@ -339,7 +377,8 @@ TEST_P(TrustedVaultConnectionImplTest,
 
   std::unique_ptr<TrustedVaultConnection::Request> request =
       connection()->RegisterLocalDeviceWithoutKeys(
-          /*account_info=*/CoreAccountInfo(), key_pair->public_key(),
+          /*account_info=*/CoreAccountInfo(), security_domain(),
+          key_pair->public_key(),
           TrustedVaultConnection::RegisterAuthenticationFactorCallback());
   EXPECT_THAT(request, NotNull());
 
@@ -400,7 +439,7 @@ TEST_P(TrustedVaultConnectionImplTest,
 
   std::unique_ptr<TrustedVaultConnection::Request> request =
       connection()->RegisterAuthenticationFactor(
-          /*account_info=*/CoreAccountInfo(),
+          /*account_info=*/CoreAccountInfo(), security_domain(),
           GetTrustedVaultKeysWithVersions(kTrustedVaultKeys, kLastKeyVersion),
           key_pair->public_key(), LocalPhysicalDevice(),
           TrustedVaultConnection::RegisterAuthenticationFactorCallback());
@@ -473,7 +512,7 @@ TEST_P(TrustedVaultConnectionImplTest,
   std::unique_ptr<SecureBoxKeyPair> key_pair = MakeTestKeyPair();
   std::unique_ptr<TrustedVaultConnection::Request> request =
       connection()->RegisterAuthenticationFactor(
-          /*account_info=*/CoreAccountInfo(),
+          /*account_info=*/CoreAccountInfo(), security_domain(),
           MemberKeys(kVersion, kWrappedKey, kProof), key_pair->public_key(),
           LocalPhysicalDevice(),
           TrustedVaultConnection::RegisterAuthenticationFactorCallback());
@@ -506,7 +545,7 @@ TEST_P(TrustedVaultConnectionImplTest,
 
   std::unique_ptr<TrustedVaultConnection::Request> request =
       connection()->RegisterAuthenticationFactor(
-          /*account_info=*/CoreAccountInfo(),
+          /*account_info=*/CoreAccountInfo(), security_domain(),
           GetTrustedVaultKeysWithVersions(kTrustedVaultKeys,
                                           /*last_key_version=*/1234),
           key_pair->public_key(),
@@ -540,7 +579,7 @@ TEST_P(TrustedVaultConnectionImplTest,
 
   std::unique_ptr<TrustedVaultConnection::Request> request =
       connection()->RegisterAuthenticationFactor(
-          /*account_info=*/CoreAccountInfo(),
+          /*account_info=*/CoreAccountInfo(), security_domain(),
           GetTrustedVaultKeysWithVersions(kTrustedVaultKeys,
                                           /*last_key_version=*/1234),
           key_pair->public_key(),
@@ -580,7 +619,7 @@ TEST_P(TrustedVaultConnectionImplTest,
 
   std::unique_ptr<TrustedVaultConnection::Request> request =
       connection()->RegisterAuthenticationFactor(
-          /*account_info=*/CoreAccountInfo(),
+          /*account_info=*/CoreAccountInfo(), security_domain(),
           GetTrustedVaultKeysWithVersions(kTrustedVaultKeys,
                                           /*last_key_version=*/1234),
           key_pair->public_key(), LockScreenKnowledgeFactor(),
@@ -614,7 +653,7 @@ TEST_P(TrustedVaultConnectionImplTest,
 
   std::unique_ptr<TrustedVaultConnection::Request> request =
       connection()->RegisterAuthenticationFactor(
-          /*account_info=*/CoreAccountInfo(),
+          /*account_info=*/CoreAccountInfo(), security_domain(),
           GetTrustedVaultKeysWithVersions(kTrustedVaultKeys,
                                           /*last_key_version=*/1),
           key_pair->public_key(), LocalPhysicalDevice(), callback.Get());
@@ -654,8 +693,8 @@ TEST_P(TrustedVaultConnectionImplTest,
 
   std::unique_ptr<TrustedVaultConnection::Request> request =
       connection()->RegisterLocalDeviceWithoutKeys(
-          /*account_info=*/CoreAccountInfo(), key_pair->public_key(),
-          callback.Get());
+          /*account_info=*/CoreAccountInfo(), security_domain(),
+          key_pair->public_key(), callback.Get());
   ASSERT_THAT(request, NotNull());
 
   const int kServerConstantKeyVersion = 100;
@@ -679,8 +718,8 @@ TEST_P(TrustedVaultConnectionImplTest,
 
   std::unique_ptr<TrustedVaultConnection::Request> request =
       connection()->RegisterLocalDeviceWithoutKeys(
-          /*account_info=*/CoreAccountInfo(), key_pair->public_key(),
-          callback.Get());
+          /*account_info=*/CoreAccountInfo(), security_domain(),
+          key_pair->public_key(), callback.Get());
   ASSERT_THAT(request, NotNull());
 
   const int kServerConstantKeyVersion = 100;
@@ -714,7 +753,7 @@ TEST_P(TrustedVaultConnectionImplTest,
 
   std::unique_ptr<TrustedVaultConnection::Request> request =
       connection()->RegisterAuthenticationFactor(
-          /*account_info=*/CoreAccountInfo(),
+          /*account_info=*/CoreAccountInfo(), security_domain(),
           GetTrustedVaultKeysWithVersions(kTrustedVaultKeys,
                                           /*last_key_version=*/0),
           key_pair->public_key(), LocalPhysicalDevice(), callback.Get());
@@ -738,7 +777,7 @@ TEST_P(TrustedVaultConnectionImplTest,
 
   std::unique_ptr<TrustedVaultConnection::Request> request =
       connection()->RegisterAuthenticationFactor(
-          /*account_info=*/CoreAccountInfo(),
+          /*account_info=*/CoreAccountInfo(), security_domain(),
           GetTrustedVaultKeysWithVersions(kTrustedVaultKeys,
                                           /*last_key_version=*/0),
           key_pair->public_key(), LocalPhysicalDevice(), callback.Get());
@@ -762,7 +801,7 @@ TEST_P(TrustedVaultConnectionImplTest,
 
   std::unique_ptr<TrustedVaultConnection::Request> request =
       connection()->RegisterAuthenticationFactor(
-          /*account_info=*/CoreAccountInfo(),
+          /*account_info=*/CoreAccountInfo(), security_domain(),
           GetTrustedVaultKeysWithVersions(kTrustedVaultKeys,
                                           /*last_key_version=*/1),
           key_pair->public_key(), LocalPhysicalDevice(), callback.Get());
@@ -786,7 +825,7 @@ TEST_P(TrustedVaultConnectionImplTest,
 
   std::unique_ptr<TrustedVaultConnection::Request> request =
       connection()->RegisterAuthenticationFactor(
-          /*account_info=*/CoreAccountInfo(),
+          /*account_info=*/CoreAccountInfo(), security_domain(),
           GetTrustedVaultKeysWithVersions(kTrustedVaultKeys,
                                           /*last_key_version=*/1),
           key_pair->public_key(), LocalPhysicalDevice(), callback.Get());
@@ -811,7 +850,7 @@ TEST_P(TrustedVaultConnectionImplTest,
 
   std::unique_ptr<TrustedVaultConnection::Request> request =
       connection()->RegisterAuthenticationFactor(
-          /*account_info=*/CoreAccountInfo(),
+          /*account_info=*/CoreAccountInfo(), security_domain(),
           GetTrustedVaultKeysWithVersions(kTrustedVaultKeys,
                                           /*last_key_version=*/1),
           key_pair->public_key(), LocalPhysicalDevice(), callback.Get());
@@ -837,7 +876,7 @@ TEST_P(TrustedVaultConnectionImplTest,
 
   std::unique_ptr<TrustedVaultConnection::Request> request =
       connection()->RegisterAuthenticationFactor(
-          /*account_info=*/CoreAccountInfo(),
+          /*account_info=*/CoreAccountInfo(), security_domain(),
           GetTrustedVaultKeysWithVersions(kTrustedVaultKeys,
                                           /*last_key_version=*/1),
           key_pair->public_key(), LocalPhysicalDevice(), callback.Get());
@@ -876,7 +915,7 @@ TEST_P(
           Eq(0)));
   std::unique_ptr<TrustedVaultConnection::Request> request =
       connection->RegisterAuthenticationFactor(
-          /*account_info=*/CoreAccountInfo(),
+          /*account_info=*/CoreAccountInfo(), security_domain(),
           GetTrustedVaultKeysWithVersions(kTrustedVaultKeys,
                                           /*last_key_version=*/1),
           key_pair->public_key(), LocalPhysicalDevice(), callback.Get());
@@ -896,7 +935,7 @@ TEST_P(TrustedVaultConnectionImplTest, ShouldCancelJoinSecurityDomainsRequest) {
 
   std::unique_ptr<TrustedVaultConnection::Request> request =
       connection()->RegisterAuthenticationFactor(
-          /*account_info=*/CoreAccountInfo(),
+          /*account_info=*/CoreAccountInfo(), security_domain(),
           GetTrustedVaultKeysWithVersions(kTrustedVaultKeys,
                                           /*last_key_version=*/1),
           key_pair->public_key(), LocalPhysicalDevice(), callback.Get());
@@ -913,7 +952,7 @@ TEST_P(TrustedVaultConnectionImplTest, ShouldCancelJoinSecurityDomainsRequest) {
 TEST_P(TrustedVaultConnectionImplTest, ShouldSendGetSecurityDomainsRequest) {
   std::unique_ptr<TrustedVaultConnection::Request> request =
       connection()->DownloadNewKeys(
-          /*account_info=*/CoreAccountInfo(),
+          /*account_info=*/CoreAccountInfo(), security_domain(),
           TrustedVaultKeyAndVersion(/*key=*/std::vector<uint8_t>(),
                                     /*version=*/1),
           /*device_key_pair=*/MakeTestKeyPair(), base::DoNothing());
@@ -940,7 +979,7 @@ TEST_P(TrustedVaultConnectionImplTest,
 
   std::unique_ptr<TrustedVaultConnection::Request> request =
       connection()->DownloadNewKeys(
-          /*account_info=*/CoreAccountInfo(),
+          /*account_info=*/CoreAccountInfo(), security_domain(),
           TrustedVaultKeyAndVersion(/*key=*/std::vector<uint8_t>(),
                                     /*version=*/1),
           /*device_key_pair=*/MakeTestKeyPair(), callback.Get());
@@ -968,7 +1007,7 @@ TEST_P(TrustedVaultConnectionImplTest,
           _));
   std::unique_ptr<TrustedVaultConnection::Request> request =
       connection->DownloadNewKeys(
-          /*account_info=*/CoreAccountInfo(),
+          /*account_info=*/CoreAccountInfo(), security_domain(),
           TrustedVaultKeyAndVersion(
               /*key=*/std::vector<uint8_t>(),
               /*version=*/1),
@@ -985,7 +1024,7 @@ TEST_P(TrustedVaultConnectionImplTest,
 
   std::unique_ptr<TrustedVaultConnection::Request> request =
       connection()->DownloadNewKeys(
-          /*account_info=*/CoreAccountInfo(),
+          /*account_info=*/CoreAccountInfo(), security_domain(),
           TrustedVaultKeyAndVersion(
               /*key=*/std::vector<uint8_t>(),
               /*version=*/1),
@@ -1003,7 +1042,7 @@ TEST_P(TrustedVaultConnectionImplTest,
        ShouldSendGetSecurityDomainRequestWhenRetrievingRecoverability) {
   std::unique_ptr<TrustedVaultConnection::Request> request =
       connection()->DownloadIsRecoverabilityDegraded(
-          /*account_info=*/CoreAccountInfo(),
+          /*account_info=*/CoreAccountInfo(), security_domain(),
           TrustedVaultConnection::IsRecoverabilityDegradedCallback());
   ASSERT_THAT(request, NotNull());
 
@@ -1025,7 +1064,8 @@ TEST_P(TrustedVaultConnectionImplTest,
 
   std::unique_ptr<TrustedVaultConnection::Request> request =
       connection()->DownloadIsRecoverabilityDegraded(
-          /*account_info=*/CoreAccountInfo(), callback.Get());
+          /*account_info=*/CoreAccountInfo(), security_domain(),
+          callback.Get());
   ASSERT_THAT(request, NotNull());
 
   EXPECT_CALL(callback, Run(TrustedVaultRecoverabilityStatus::kNotDegraded));
@@ -1038,7 +1078,7 @@ TEST_P(TrustedVaultConnectionImplTest,
   testing::Mock::VerifyAndClearExpectations(&callback);
 
   request = connection()->DownloadIsRecoverabilityDegraded(
-      /*account_info=*/CoreAccountInfo(), callback.Get());
+      /*account_info=*/CoreAccountInfo(), security_domain(), callback.Get());
   ASSERT_THAT(request, NotNull());
 
   EXPECT_CALL(callback, Run(TrustedVaultRecoverabilityStatus::kDegraded));
@@ -1057,7 +1097,8 @@ TEST_P(TrustedVaultConnectionImplTest,
 
   std::unique_ptr<TrustedVaultConnection::Request> request =
       connection()->DownloadIsRecoverabilityDegraded(
-          /*account_info=*/CoreAccountInfo(), callback.Get());
+          /*account_info=*/CoreAccountInfo(), security_domain(),
+          callback.Get());
   ASSERT_THAT(request, NotNull());
 
   EXPECT_CALL(callback, Run(TrustedVaultRecoverabilityStatus::kError));
@@ -1076,7 +1117,8 @@ TEST_P(TrustedVaultConnectionImplTest,
 
   std::unique_ptr<TrustedVaultConnection::Request> request =
       connection()->DownloadIsRecoverabilityDegraded(
-          /*account_info=*/CoreAccountInfo(), callback.Get());
+          /*account_info=*/CoreAccountInfo(), security_domain(),
+          callback.Get());
   ASSERT_THAT(request, NotNull());
 
   EXPECT_CALL(callback, Run(TrustedVaultRecoverabilityStatus::kError));
@@ -1086,7 +1128,7 @@ TEST_P(TrustedVaultConnectionImplTest,
                                         /*response_body=*/"invalid proto"));
 
   request = connection()->DownloadIsRecoverabilityDegraded(
-      /*account_info=*/CoreAccountInfo(), callback.Get());
+      /*account_info=*/CoreAccountInfo(), security_domain(), callback.Get());
   ASSERT_THAT(request, NotNull());
 
   EXPECT_CALL(callback, Run(TrustedVaultRecoverabilityStatus::kError));
@@ -1104,7 +1146,8 @@ TEST_P(TrustedVaultConnectionImplTest,
 
   std::unique_ptr<TrustedVaultConnection::Request> request =
       connection()->DownloadIsRecoverabilityDegraded(
-          /*account_info=*/CoreAccountInfo(), callback.Get());
+          /*account_info=*/CoreAccountInfo(), security_domain(),
+          callback.Get());
   ASSERT_THAT(request, NotNull());
 
   EXPECT_CALL(callback, Run).Times(0);
@@ -1146,7 +1189,7 @@ TEST_P(TrustedVaultConnectionImplTest,
 
   std::unique_ptr<TrustedVaultConnection::Request> request =
       connection()->DownloadAuthenticationFactorsRegistrationState(
-          /*account_info=*/CoreAccountInfo(), callback.Get(),
+          /*account_info=*/CoreAccountInfo(), security_domain(), callback.Get(),
           base::NullCallback());
   ASSERT_THAT(request, NotNull());
 
@@ -1176,7 +1219,7 @@ TEST_P(TrustedVaultConnectionImplTest,
 
   std::unique_ptr<TrustedVaultConnection::Request> request =
       connection()->DownloadAuthenticationFactorsRegistrationState(
-          /*account_info=*/CoreAccountInfo(),
+          /*account_info=*/CoreAccountInfo(), security_domain(),
           {trusted_vault_pb::SecurityDomainMember::MEMBER_TYPE_PHYSICAL_DEVICE},
           callback.Get(), base::NullCallback());
   ASSERT_THAT(request, NotNull());
@@ -1355,8 +1398,8 @@ TEST_P(TrustedVaultConnectionImplTest,
     testing::StrictMock<base::MockRepeatingClosure> keep_alive_callback;
     std::unique_ptr<TrustedVaultConnection::Request> request =
         connection()->DownloadAuthenticationFactorsRegistrationState(
-            /*account_info=*/CoreAccountInfo(), std::move(callback),
-            keep_alive_callback.Get());
+            /*account_info=*/CoreAccountInfo(), security_domain(),
+            std::move(callback), keep_alive_callback.Get());
     ASSERT_THAT(request, NotNull());
 
     std::optional<std::string> prev_next_page_token;
@@ -1415,7 +1458,7 @@ TEST_P(TrustedVaultConnectionImplTest,
 
   std::unique_ptr<TrustedVaultConnection::Request> request =
       connection()->DownloadAuthenticationFactorsRegistrationState(
-          /*account_info=*/CoreAccountInfo(), callback.Get(),
+          /*account_info=*/CoreAccountInfo(), security_domain(), callback.Get(),
           base::NullCallback());
   ASSERT_THAT(request, NotNull());
 
@@ -1439,7 +1482,7 @@ TEST_P(TrustedVaultConnectionImplTest,
 
   std::unique_ptr<TrustedVaultConnection::Request> request =
       connection()->DownloadAuthenticationFactorsRegistrationState(
-          /*account_info=*/CoreAccountInfo(), callback.Get(),
+          /*account_info=*/CoreAccountInfo(), security_domain(), callback.Get(),
           base::NullCallback());
   ASSERT_THAT(request, NotNull());
 
@@ -1453,6 +1496,279 @@ TEST_P(TrustedVaultConnectionImplTest,
       /*recovery_factor_filter=*/{},
       /*next_page_token=*/std::nullopt, net::HTTP_OK,
       /*response_body=*/"not a valid protobuf"));
+}
+
+TEST_P(TrustedVaultConnectionImplTest, DownloadGaiaPasswordPublicKeySuccess) {
+  std::string expected_public_key = "test_public_key_bytes";
+  trusted_vault_pb::GetCurrentGaiaPasswordEncryptionKeyDataResponse response;
+  response.mutable_current_gaia_password_encryption_key_data()->set_public_key(
+      expected_public_key);
+
+  base::test::TestFuture<TrustedVaultDownloadPasswordPublicKeyStatus,
+                         const std::vector<uint8_t>&>
+      future;
+
+  std::unique_ptr<TrustedVaultConnection::Request> request =
+      connection()->DownloadGaiaPasswordPublicKey(
+          CoreAccountInfo(), security_domain(), future.GetCallback());
+  ASSERT_THAT(request, NotNull());
+
+  EXPECT_TRUE(RespondToDownloadGaiaPasswordPublicKeyRequest(
+      net::HTTP_OK, response.SerializeAsString()));
+
+  EXPECT_EQ(future.Get<0>(),
+            TrustedVaultDownloadPasswordPublicKeyStatus::kSuccess);
+  EXPECT_THAT(future.Get<1>(), ElementsAreArray(expected_public_key.begin(),
+                                                expected_public_key.end()));
+}
+
+TEST_P(TrustedVaultConnectionImplTest,
+       DownloadGaiaPasswordPublicKeyNetworkError) {
+  base::test::TestFuture<TrustedVaultDownloadPasswordPublicKeyStatus,
+                         const std::vector<uint8_t>&>
+      future;
+
+  std::unique_ptr<TrustedVaultConnection::Request> request =
+      connection()->DownloadGaiaPasswordPublicKey(
+          CoreAccountInfo(), security_domain(), future.GetCallback());
+  ASSERT_THAT(request, NotNull());
+
+  EXPECT_TRUE(RespondToDownloadGaiaPasswordPublicKeyRequestWithNetworkError());
+
+  EXPECT_EQ(future.Get<0>(),
+            TrustedVaultDownloadPasswordPublicKeyStatus::kNetworkError);
+  EXPECT_THAT(future.Get<1>(), IsEmpty());
+}
+
+TEST_P(TrustedVaultConnectionImplTest,
+       DownloadGaiaPasswordPublicKeyParsingError) {
+  base::test::TestFuture<TrustedVaultDownloadPasswordPublicKeyStatus,
+                         const std::vector<uint8_t>&>
+      future;
+
+  std::unique_ptr<TrustedVaultConnection::Request> request =
+      connection()->DownloadGaiaPasswordPublicKey(
+          CoreAccountInfo(), security_domain(), future.GetCallback());
+  ASSERT_THAT(request, NotNull());
+
+  EXPECT_TRUE(RespondToDownloadGaiaPasswordPublicKeyRequest(
+      net::HTTP_OK, "corrupted_proto_bytes"));
+
+  EXPECT_EQ(future.Get<0>(),
+            TrustedVaultDownloadPasswordPublicKeyStatus::kOtherError);
+  EXPECT_THAT(future.Get<1>(), IsEmpty());
+}
+
+TEST_P(TrustedVaultConnectionImplTest,
+       DownloadGaiaPasswordPublicKeyEmptyKeyError) {
+  trusted_vault_pb::GetCurrentGaiaPasswordEncryptionKeyDataResponse response;
+  // The public key inside the response is empty.
+
+  base::test::TestFuture<TrustedVaultDownloadPasswordPublicKeyStatus,
+                         const std::vector<uint8_t>&>
+      future;
+
+  std::unique_ptr<TrustedVaultConnection::Request> request =
+      connection()->DownloadGaiaPasswordPublicKey(
+          CoreAccountInfo(), security_domain(), future.GetCallback());
+  ASSERT_THAT(request, NotNull());
+
+  EXPECT_TRUE(RespondToDownloadGaiaPasswordPublicKeyRequest(
+      net::HTTP_OK, response.SerializeAsString()));
+
+  EXPECT_EQ(future.Get<0>(),
+            TrustedVaultDownloadPasswordPublicKeyStatus::kOtherError);
+  EXPECT_THAT(future.Get<1>(), IsEmpty());
+}
+
+TEST_P(TrustedVaultConnectionImplTest,
+       DownloadGaiaPasswordPublicKeyAccessTokenFetchingFailure) {
+  std::unique_ptr<TrustedVaultConnectionImpl> connection =
+      CreateConnectionWithAccessTokenError(
+          TrustedVaultAccessTokenFetcher::FetchingError::kPersistentAuthError);
+
+  base::test::TestFuture<TrustedVaultDownloadPasswordPublicKeyStatus,
+                         const std::vector<uint8_t>&>
+      future;
+
+  std::unique_ptr<TrustedVaultConnection::Request> request =
+      connection->DownloadGaiaPasswordPublicKey(
+          CoreAccountInfo(), security_domain(), future.GetCallback());
+  ASSERT_THAT(request, NotNull());
+
+  EXPECT_EQ(future.Get<0>(), TrustedVaultDownloadPasswordPublicKeyStatus::
+                                 kPersistentAccessTokenFetchError);
+  EXPECT_THAT(future.Get<1>(), IsEmpty());
+
+  // No requests should be sent to the network.
+  EXPECT_THAT(GetPendingHTTPRequest(), IsNull());
+}
+
+TEST_P(TrustedVaultConnectionImplTest, RotateSharedKeySuccess) {
+  trusted_vault_pb::RotateSharedKeyRequest request_proto;
+  request_proto.set_security_domain("test_security_domain");
+
+  int new_epoch = 123;
+  trusted_vault_pb::RotateSharedKeyResponse response_proto;
+  response_proto.set_new_epoch(new_epoch);
+
+  base::test::TestFuture<TrustedVaultKeyRotationStatus, int> future;
+
+  std::unique_ptr<TrustedVaultConnection::Request> request =
+      connection()->RotateSharedKey(CoreAccountInfo(), security_domain(),
+                                    request_proto, future.GetCallback());
+  ASSERT_THAT(request, NotNull());
+
+  // Verify request sent.
+  const network::TestURLLoaderFactory::PendingRequest* pending_request =
+      GetPendingHTTPRequest();
+  ASSERT_THAT(pending_request, NotNull());
+  const network::ResourceRequest& resource_request = pending_request->request;
+  EXPECT_THAT(resource_request.method, Eq("POST"));
+  EXPECT_THAT(resource_request.url, Eq(GetFullRotateSharedKeyURLForTesting(
+                                        kTestURL, security_domain())));
+
+  trusted_vault_pb::RotateSharedKeyRequest deserialized_body;
+  EXPECT_TRUE(deserialized_body.ParseFromString(
+      network::GetUploadData(resource_request)));
+  EXPECT_THAT(deserialized_body.security_domain(), Eq("test_security_domain"));
+
+  // Respond
+  EXPECT_TRUE(RespondToRotateSharedKeyRequest(
+      net::HTTP_OK, response_proto.SerializeAsString()));
+
+  EXPECT_THAT(future.Get<0>(), Eq(TrustedVaultKeyRotationStatus::kSuccess));
+  EXPECT_THAT(future.Get<1>(), Eq(new_epoch));
+}
+
+TEST_P(TrustedVaultConnectionImplTest, RotateSharedKeyNetworkError) {
+  trusted_vault_pb::RotateSharedKeyRequest request_proto;
+
+  base::test::TestFuture<TrustedVaultKeyRotationStatus, int> future;
+
+  std::unique_ptr<TrustedVaultConnection::Request> request =
+      connection()->RotateSharedKey(CoreAccountInfo(), security_domain(),
+                                    request_proto, future.GetCallback());
+  ASSERT_THAT(request, NotNull());
+
+  // Advance time to bypass retry logic.
+  task_environment().FastForwardBy(
+      TrustedVaultConnectionImpl::kMaxKeyRotationRetryDuration);
+
+  EXPECT_TRUE(RespondToRotateSharedKeyRequestWithNetworkError());
+
+  EXPECT_THAT(future.Get<0>(),
+              Eq(TrustedVaultKeyRotationStatus::kNetworkError));
+  EXPECT_THAT(future.Get<1>(), Eq(0));
+}
+
+TEST_P(TrustedVaultConnectionImplTest, RotateSharedKeyBadRequest) {
+  trusted_vault_pb::RotateSharedKeyRequest request_proto;
+
+  base::test::TestFuture<TrustedVaultKeyRotationStatus, int> future;
+
+  std::unique_ptr<TrustedVaultConnection::Request> request =
+      connection()->RotateSharedKey(CoreAccountInfo(), security_domain(),
+                                    request_proto, future.GetCallback());
+  ASSERT_THAT(request, NotNull());
+
+  EXPECT_TRUE(RespondToRotateSharedKeyRequest(net::HTTP_BAD_REQUEST, ""));
+
+  EXPECT_THAT(future.Get<0>(),
+              Eq(TrustedVaultKeyRotationStatus::kMembershipMismatch));
+  EXPECT_THAT(future.Get<1>(), Eq(0));
+}
+
+TEST_P(TrustedVaultConnectionImplTest, RotateSharedKeyNotFound) {
+  trusted_vault_pb::RotateSharedKeyRequest request_proto;
+
+  base::test::TestFuture<TrustedVaultKeyRotationStatus, int> future;
+
+  std::unique_ptr<TrustedVaultConnection::Request> request =
+      connection()->RotateSharedKey(CoreAccountInfo(), security_domain(),
+                                    request_proto, future.GetCallback());
+  ASSERT_THAT(request, NotNull());
+
+  EXPECT_TRUE(RespondToRotateSharedKeyRequest(net::HTTP_NOT_FOUND, ""));
+
+  EXPECT_THAT(future.Get<0>(),
+              Eq(TrustedVaultKeyRotationStatus::kEmptySecurityDomain));
+  EXPECT_THAT(future.Get<1>(), Eq(0));
+}
+
+TEST_P(TrustedVaultConnectionImplTest, RotateSharedKeyConflict) {
+  trusted_vault_pb::RotateSharedKeyRequest request_proto;
+
+  base::test::TestFuture<TrustedVaultKeyRotationStatus, int> future;
+
+  std::unique_ptr<TrustedVaultConnection::Request> request =
+      connection()->RotateSharedKey(CoreAccountInfo(), security_domain(),
+                                    request_proto, future.GetCallback());
+  ASSERT_THAT(request, NotNull());
+
+  EXPECT_TRUE(RespondToRotateSharedKeyRequest(net::HTTP_CONFLICT, ""));
+
+  EXPECT_THAT(future.Get<0>(),
+              Eq(TrustedVaultKeyRotationStatus::kLocalDataObsolete));
+  EXPECT_THAT(future.Get<1>(), Eq(0));
+}
+
+TEST_P(TrustedVaultConnectionImplTest, RotateSharedKeyInternalServerError) {
+  trusted_vault_pb::RotateSharedKeyRequest request_proto;
+
+  base::test::TestFuture<TrustedVaultKeyRotationStatus, int> future;
+
+  std::unique_ptr<TrustedVaultConnection::Request> request =
+      connection()->RotateSharedKey(CoreAccountInfo(), security_domain(),
+                                    request_proto, future.GetCallback());
+  ASSERT_THAT(request, NotNull());
+
+  EXPECT_TRUE(
+      RespondToRotateSharedKeyRequest(net::HTTP_INTERNAL_SERVER_ERROR, ""));
+
+  EXPECT_THAT(future.Get<0>(), Eq(TrustedVaultKeyRotationStatus::kOtherError));
+  EXPECT_THAT(future.Get<1>(), Eq(0));
+}
+
+TEST_P(TrustedVaultConnectionImplTest, RotateSharedKeyParsingError) {
+  trusted_vault_pb::RotateSharedKeyRequest request_proto;
+
+  base::test::TestFuture<TrustedVaultKeyRotationStatus, int> future;
+
+  std::unique_ptr<TrustedVaultConnection::Request> request =
+      connection()->RotateSharedKey(CoreAccountInfo(), security_domain(),
+                                    request_proto, future.GetCallback());
+  ASSERT_THAT(request, NotNull());
+
+  EXPECT_TRUE(
+      RespondToRotateSharedKeyRequest(net::HTTP_OK, "corrupted_proto_bytes"));
+
+  EXPECT_THAT(future.Get<0>(), Eq(TrustedVaultKeyRotationStatus::kOtherError));
+  EXPECT_THAT(future.Get<1>(), Eq(0));
+}
+
+TEST_P(TrustedVaultConnectionImplTest,
+       RotateSharedKeyAccessTokenFetchingFailure) {
+  std::unique_ptr<TrustedVaultConnectionImpl> connection =
+      CreateConnectionWithAccessTokenError(
+          TrustedVaultAccessTokenFetcher::FetchingError::kPersistentAuthError);
+
+  trusted_vault_pb::RotateSharedKeyRequest request_proto;
+
+  base::test::TestFuture<TrustedVaultKeyRotationStatus, int> future;
+
+  std::unique_ptr<TrustedVaultConnection::Request> request =
+      connection->RotateSharedKey(CoreAccountInfo(), security_domain(),
+                                  request_proto, future.GetCallback());
+  ASSERT_THAT(request, NotNull());
+
+  // No requests should be sent to the network.
+  EXPECT_THAT(GetPendingHTTPRequest(), IsNull());
+
+  EXPECT_THAT(
+      future.Get<0>(),
+      Eq(TrustedVaultKeyRotationStatus::kPersistentAccessTokenFetchError));
+  EXPECT_THAT(future.Get<1>(), Eq(0));
 }
 
 }  // namespace

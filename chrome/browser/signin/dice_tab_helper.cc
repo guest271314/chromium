@@ -14,9 +14,9 @@
 #include "base/time/time.h"
 #include "chrome/browser/metrics/profile_metrics_service_factory.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
+#include "chrome/browser/signin/signin_promo.h"
 #include "chrome/browser/signin/signin_util.h"
 #include "chrome/browser/sync/sync_service_factory.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
@@ -38,6 +38,7 @@
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_entry.h"
 #include "content/public/browser/navigation_handle.h"
+#include "device/bluetooth/bluetooth_adapter.h"
 #include "google_apis/gaia/gaia_auth_util.h"
 
 namespace {
@@ -65,7 +66,7 @@ DiceTabHelper::GetEnableSyncCallbackForBrowser() {
                                 signin_metrics::PromoAction promo_action,
                                 content::WebContents* web_contents,
                                 const CoreAccountInfo& account_info) {
-    DCHECK(profile);
+    CHECK(profile, base::NotFatalUntil::M162);
     BrowserWindowInterface* browser =
         web_contents
             ? GlobalBrowserCollection::GetInstance()->FindBrowserWithTab(
@@ -78,7 +79,7 @@ DiceTabHelper::GetEnableSyncCallbackForBrowser() {
 
     bool is_sync_promo =
         access_point ==
-            signin_metrics::AccessPoint::kAvatarBubbleSignInWithSyncPromo ||
+            signin_metrics::AccessPoint::kProfileMenuPrimaryButton ||
         access_point == signin_metrics::AccessPoint::kSettings ||
         access_point == signin_metrics::AccessPoint::kSettingsYourSavedInfo;
     TurnSyncOnHelper::SigninAbortedMode abort_mode =
@@ -87,8 +88,7 @@ DiceTabHelper::GetEnableSyncCallbackForBrowser() {
 
     // TurnSyncOnHelper is suicidal (it will kill itself once it
     // finishes enabling sync).
-    new TurnSyncOnHelper(profile, browser->GetBrowserForMigrationOnly(),
-                         access_point, promo_action,
+    new TurnSyncOnHelper(profile, browser, access_point, promo_action,
                          account_info.account_id, abort_mode, is_sync_promo);
   });
 }
@@ -153,8 +153,8 @@ DiceTabHelper::GetShowSigninErrorCallbackForBrowser() {
     if (!browser) {
       return;
     }
-    LoginUIServiceFactory::GetForProfile(profile)->DisplayLoginResult(
-        browser->GetFeatures(), error);
+    LoginUIServiceFactory::GetForProfile(profile)->DisplayLoginResult(*browser,
+                                                                      error);
   });
 }
 
@@ -166,7 +166,11 @@ DiceTabHelper::DiceTabHelper(content::WebContents* web_contents)
       content::WebContentsObserver(web_contents),
       state_{std::make_unique<ResetableState>()} {}
 
-DiceTabHelper::~DiceTabHelper() = default;
+DiceTabHelper::~DiceTabHelper() {
+  for (auto& observer : observer_list_) {
+    observer.OnDiceTabHelperWillDestroy();
+  }
+}
 
 void DiceTabHelper::InitializeSigninFlow(
     const GURL& signin_url,
@@ -179,8 +183,9 @@ void DiceTabHelper::InitializeSigninFlow(
     EnableHistorySyncOptinCallback history_sync_optin_callback,
     OnSigninHeaderReceived on_signin_header_received_callback,
     ShowSigninErrorCallback show_signin_error_callback) {
-  DCHECK(signin_url.is_valid());
-  DCHECK(state_->signin_url.is_empty() || state_->signin_url == signin_url);
+  CHECK(signin_url.is_valid(), base::NotFatalUntil::M162);
+  CHECK(state_->signin_url.is_empty() || state_->signin_url == signin_url,
+        base::NotFatalUntil::M162);
 
   Reset();
   state_->redirect_url = redirect_url;
@@ -194,11 +199,15 @@ void DiceTabHelper::InitializeSigninFlow(
       std::move(on_signin_header_received_callback);
   state_->show_signin_error_callback = std::move(show_signin_error_callback);
 
-  is_chrome_signin_page_ = true;
+  SetIsChromeSigninPage(true);
   signin_page_load_recorded_ = false;
 
+  if (switches::IsMagiChromePasskeyAutofillEnabled()) {
+    KeepBluetoothAdapterAlive();
+  }
+
   if (reason == signin_metrics::Reason::kSigninPrimaryAccount) {
-    state_->sync_signin_flow_status = SyncSigninFlowStatus::kStarted;
+    state_->signin_flow_status = SigninFlowStatus::kStarted;
   }
 
   Profile* profile =
@@ -239,11 +248,11 @@ bool DiceTabHelper::IsChromeSigninPage() const {
   return is_chrome_signin_page_;
 }
 
-bool DiceTabHelper::IsSyncSigninInProgress() const {
-  return state_->sync_signin_flow_status == SyncSigninFlowStatus::kStarted;
+bool DiceTabHelper::IsChromeSigninInProgress() const {
+  return state_->signin_flow_status == SigninFlowStatus::kStarted;
 }
 
-void DiceTabHelper::OnSyncSigninFlowComplete() {
+void DiceTabHelper::OnSigninFlowComplete() {
   // The flow is complete, reset to initial state.
   StopInterceptionBubbleTimer();
   Reset();
@@ -271,6 +280,14 @@ void DiceTabHelper::UpdateSigninErrorCallback(
 
 void DiceTabHelper::UpdateRedirectUrl(const GURL& redirect_url) {
   state_->redirect_url = redirect_url;
+}
+
+void DiceTabHelper::AddObserver(Observer* observer) {
+  observer_list_.AddObserver(observer);
+}
+
+void DiceTabHelper::RemoveObserver(Observer* observer) {
+  observer_list_.RemoveObserver(observer);
 }
 
 // static
@@ -343,6 +360,25 @@ bool DiceTabHelper::IsTokenExchangeDone() const {
   return state_->elapsed_time_since_lst_arrival_timer.get();
 }
 
+void DiceTabHelper::KeepBluetoothAdapterAlive() {
+  // Runs the check as soon as the sign-in flow starts, so that the Bluetooth
+  // power state is available by the time the sign-in page loads and its
+  // WebAuthn request reuses the adapter. On macOS, the check starts the
+  // adapter's first background poll when Bluetooth is present and permitted;
+  // until that poll completes, the adapter reports Bluetooth as off. The result
+  // is ignored: only the adapter is needed, to hold it in `bluetooth_adapter_`.
+  signin::IsHybridTransportSupportedForQrCodeSignin(base::BindOnce(
+      &DiceTabHelper::OnGetBluetoothAdapter, weak_ptr_factory_.GetWeakPtr()));
+}
+
+void DiceTabHelper::OnGetBluetoothAdapter(
+    bool hybrid_transport_supported,
+    scoped_refptr<device::BluetoothAdapter> adapter) {
+  if (is_chrome_signin_page_) {
+    bluetooth_adapter_ = std::move(adapter);
+  }
+}
+
 void DiceTabHelper::DidStartNavigation(
     content::NavigationHandle* navigation_handle) {
   if (!is_chrome_signin_page_) {
@@ -360,7 +396,7 @@ void DiceTabHelper::DidStartNavigation(
     // Note that currently any indication of a navigation is enough to consider
     // this tab unsuitable for re-use, even if the navigation does not end up
     // committing.
-    is_chrome_signin_page_ = false;
+    SetIsChromeSigninPage(false);
   }
 }
 
@@ -381,7 +417,7 @@ void DiceTabHelper::DidFinishNavigation(
     // Note that currently any indication of a navigation is enough to consider
     // this tab unsuitable for re-use, even if the navigation does not end up
     // committing.
-    is_chrome_signin_page_ = false;
+    SetIsChromeSigninPage(false);
     return;
   }
 
@@ -401,6 +437,19 @@ bool DiceTabHelper::IsSigninPageNavigation(
 
 void DiceTabHelper::Reset() {
   state_ = std::make_unique<ResetableState>();
+}
+
+void DiceTabHelper::SetIsChromeSigninPage(bool is_signin_page) {
+  if (is_chrome_signin_page_ == is_signin_page) {
+    return;
+  }
+  is_chrome_signin_page_ = is_signin_page;
+  if (!is_chrome_signin_page_) {
+    bluetooth_adapter_.reset();
+  }
+  for (auto& observer : observer_list_) {
+    observer.OnIsChromeSigninPageChanged(is_chrome_signin_page_);
+  }
 }
 
 WEB_CONTENTS_USER_DATA_KEY_IMPL(DiceTabHelper);

@@ -20,6 +20,7 @@ import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.content.Intent;
 import android.content.res.Configuration;
+import android.os.Looper;
 import android.provider.Settings;
 import android.view.View;
 import android.view.ViewGroup;
@@ -36,7 +37,6 @@ import org.robolectric.Robolectric;
 
 import org.chromium.base.Callback;
 import org.chromium.base.test.BaseRobolectricTestRunner;
-import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.HistogramWatcher;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.notifications.channels.ChromeChannelDefinitions.ChannelId;
@@ -48,6 +48,7 @@ import org.chromium.components.browser_ui.bottomsheet.BottomSheetObserver;
 import org.chromium.components.browser_ui.notifications.BaseNotificationManagerProxy;
 import org.chromium.components.browser_ui.notifications.BaseNotificationManagerProxyFactory;
 import org.chromium.components.browser_ui.notifications.NotificationProxyUtils;
+import org.chromium.components.browser_ui.notifications.channels.ChannelsInitializer;
 import org.chromium.components.prefs.PrefService;
 import org.chromium.components.user_prefs.UserPrefs;
 import org.chromium.ui.base.ViewUtils;
@@ -55,7 +56,6 @@ import org.chromium.ui.widget.ButtonCompat;
 
 /** Unit tests for {@link FindsOptInCoordinator}. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Batch(Batch.UNIT_TESTS)
 public class FindsOptInCoordinatorUnitTest {
     @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
 
@@ -71,6 +71,7 @@ public class FindsOptInCoordinatorUnitTest {
 
     @Before
     public void setUp() {
+        ChannelsInitializer.resetForTesting();
         mActivity = Robolectric.buildActivity(Activity.class).create().get();
         mActivity.setTheme(R.style.Theme_BrowserUI_DayNight);
 
@@ -118,11 +119,20 @@ public class FindsOptInCoordinatorUnitTest {
         // Mock app-level notifications enabled.
         NotificationProxyUtils.setNotificationEnabledForTest(true);
 
-        // Mock channel doesn't exist.
+        // Mock channel doesn't exist on first call, but exists on second call.
+        NotificationChannel mockEnabledChannel =
+                new NotificationChannel(
+                        ChannelId.CHROME_FINDS, "Finds", NotificationManager.IMPORTANCE_DEFAULT);
         doAnswer(
                         invocation -> {
                             Callback<NotificationChannel> callback = invocation.getArgument(1);
                             callback.onResult(null);
+                            return null;
+                        })
+                .doAnswer(
+                        invocation -> {
+                            Callback<NotificationChannel> callback = invocation.getArgument(1);
+                            callback.onResult(mockEnabledChannel);
                             return null;
                         })
                 .when(mNotificationManagerProxy)
@@ -136,23 +146,11 @@ public class FindsOptInCoordinatorUnitTest {
         ButtonCompat positiveButton =
                 mCoordinator.getContentViewForTesting().findViewById(R.id.opt_in_positive_button);
         positiveButton.performClick();
+        shadowOf(Looper.getMainLooper()).idle();
 
         assertEquals(
                 FindsOptInCoordinator.FindsOptInUserInteraction.ACCEPTED,
                 mCoordinator.getUserInteractionTypeForTesting());
-
-        // Mock channel query to return an enabled channel, simulating successful creation.
-        NotificationChannel mockEnabledChannel =
-                new NotificationChannel(
-                        ChannelId.CHROME_FINDS, "Finds", NotificationManager.IMPORTANCE_DEFAULT);
-        doAnswer(
-                        invocation -> {
-                            Callback<NotificationChannel> callback = invocation.getArgument(1);
-                            callback.onResult(mockEnabledChannel);
-                            return null;
-                        })
-                .when(mNotificationManagerProxy)
-                .getNotificationChannel(eq(ChannelId.CHROME_FINDS), any());
 
         // Simulate sheet closure as a result of opt-in.
         simulateSheetClosed(StateChangeReason.NONE);

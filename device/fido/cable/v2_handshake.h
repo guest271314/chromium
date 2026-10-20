@@ -18,7 +18,6 @@
 #include "components/cbor/values.h"
 #include "device/fido/cable/noise.h"
 #include "device/fido/cable/v2_constants.h"
-#include "device/fido/public/cable_discovery_data.h"
 #include "device/fido/public/fido_constants.h"
 #include "third_party/boringssl/src/include/openssl/base.h"
 
@@ -228,7 +227,7 @@ bssl::UniquePtr<EC_KEY> ECKeyFromSeed(
 // somehow, the size overflows.
 COMPONENT_EXPORT(DEVICE_FIDO)
 std::optional<std::vector<uint8_t>> EncodePaddedCBORMap(
-    cbor::Value::MapValue map);
+    const cbor::Value::MapValue& map);
 
 // DecodePaddedCBORMap unpads and decodes a CBOR map as produced by
 // |EncodePaddedCBORMap|.

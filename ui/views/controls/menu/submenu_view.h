@@ -175,6 +175,7 @@ class VIEWS_EXPORT SubmenuView : public View,
   int min_icon_height() const { return min_icon_height_; }
   int label_start() const { return label_start_; }
   int trailing_padding() const { return trailing_padding_; }
+  int content_start() const { return content_start_; }
 
   // Max width of minor text (accelerator or subtitle) in child menu items. This
   // doesn't include children's children, only direct children.
@@ -256,6 +257,9 @@ class VIEWS_EXPORT SubmenuView : public View,
   // The width of the padding after the minor text. If there is a dedicated
   // submenu arrow column, it fits inside this.
   int trailing_padding_ = 0;
+
+  // X-coordinate of where the content (icon / gutter) starts.
+  int content_start_ = 0;
 
   // See description above getter.
   mutable int max_minor_text_width_ = 0;

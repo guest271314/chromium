@@ -13,6 +13,7 @@
 #include "cc/layers/layer_collections.h"
 
 namespace gfx {
+class Rect;
 class Transform;
 class Vector2dF;
 }  // namespace gfx
@@ -53,9 +54,8 @@ UpdatePropertyTreesAndRenderSurfaces(LayerTreeImpl* layer_tree_impl,
 void CC_EXPORT FindLayersThatNeedUpdates(LayerTreeHost* layer_tree_host,
                                          LayerList* update_layer_list);
 
-void CC_EXPORT
-FindLayersThatNeedUpdates(LayerTreeImpl* layer_tree_impl,
-                          std::vector<LayerImpl*>* visible_layer_list);
+void CC_EXPORT FindLayersThatNeedUpdates(LayerTreeImpl* layer_tree_impl,
+                                         LayerImplList* visible_layer_list);
 
 gfx::Transform CC_EXPORT DrawTransform(const LayerImpl* layer,
                                        const TransformTree& transform_tree,
@@ -65,6 +65,9 @@ gfx::Transform CC_EXPORT ScreenSpaceTransform(const Layer* layer,
                                               const TransformTree& tree);
 gfx::Transform CC_EXPORT ScreenSpaceTransform(const LayerImpl* layer,
                                               const TransformTree& tree);
+
+gfx::Rect CC_EXPORT LayerVisibleRect(const LayerImpl* layer,
+                                     PropertyTrees* property_trees);
 
 void CC_EXPORT UpdatePageScaleFactor(PropertyTrees* property_trees,
                                      TransformNode* page_scale_node,

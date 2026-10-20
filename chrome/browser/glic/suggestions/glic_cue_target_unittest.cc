@@ -4,390 +4,771 @@
 
 #include "chrome/browser/glic/suggestions/glic_cue_target.h"
 
+#include <memory>
+
+#include "base/test/run_until.h"
 #include "base/test/scoped_feature_list.h"
-#include "chrome/browser/actor/actor_keyed_service_fake.h"
-#include "chrome/browser/contextual_cueing/contextual_cueing_metrics.h"
+#include "chrome/browser/contextual_cueing/features.h"
 #include "chrome/browser/glic/glic_pref_names.h"
+#include "chrome/browser/glic/glic_pref_names_internal.h"
 #include "chrome/browser/glic/glic_profile_manager.h"
 #include "chrome/browser/glic/public/features.h"
 #include "chrome/browser/glic/public/glic_enabling.h"
-#include "chrome/browser/glic/public/glic_invoke_options.h"
-#include "chrome/browser/glic/public/glic_keyed_service.h"
+#include "chrome/browser/glic/suggestions/glic_cue_tab_state.h"
 #include "chrome/browser/glic/test_support/mock_glic_keyed_service.h"
-#include "chrome/browser/global_features.h"
-#include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/profiles/profile_manager.h"
-#include "chrome/browser/sessions/session_tab_helper_factory.h"
-#include "chrome/browser/ui/browser_window/test/mock_browser_window_interface.h"
-#include "chrome/browser/ui/tabs/tab_strip_model.h"
-#include "chrome/browser/ui/tabs/test_tab_strip_model_delegate.h"
+#include "chrome/browser/history/history_service_factory.h"
+#include "chrome/browser/page_content_annotations/page_content_annotations_service_factory.h"
+#include "chrome/browser/signin/identity_manager_factory.h"
+#include "chrome/browser/signin/identity_test_environment_profile_adaptor.h"
+#include "chrome/browser/sync/sync_service_factory.h"
+#include "chrome/test/base/chrome_render_view_host_test_harness.h"
 #include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile.h"
-#include "chrome/test/base/testing_profile_manager.h"
-#include "components/optimization_guide/proto/features/contextual_cueing.pb.h"
-#include "components/prefs/pref_service.h"
-#include "components/sessions/content/session_tab_helper.h"
-#include "components/sessions/core/session_id.h"
-#include "components/signin/public/identity_manager/identity_test_environment.h"
-#include "components/tabs/public/tab_handle_factory.h"
-#include "content/public/test/browser_task_environment.h"
-#include "content/public/test/test_renderer_host.h"
+#include "components/page_content_annotations/core/page_content_annotations_common.h"
+#include "components/page_content_annotations/core/test_page_content_annotations_service.h"
+#include "components/pdf/common/constants.h"
+#include "components/sync/service/sync_service.h"
+#include "components/sync/service/sync_user_settings.h"
+#include "components/sync/test/test_sync_service.h"
+#include "components/tabs/public/mock_tab_interface.h"
+#include "content/public/browser/navigation_controller.h"
+#include "content/public/browser/navigation_entry.h"
 #include "content/public/test/web_contents_tester.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "ui/base/resource/resource_bundle.h"
 #include "ui/base/unowned_user_data/unowned_user_data_host.h"
 
-#if BUILDFLAG(IS_CHROMEOS)
-#include "chrome/browser/ash/test/glic_user_session_test_helper.h"
-#endif  // BUILDFLAG(IS_CHROMEOS)
+#if !BUILDFLAG(IS_ANDROID)
+#include "chrome/browser/ui/browser_window/test/mock_browser_window_interface.h"
+#endif
 
 namespace glic {
 namespace {
 
-using ::testing::_;
-using ::testing::Exactly;
-using ::testing::NiceMock;
-using ::testing::Return;
-using ::testing::ReturnRef;
+using ::page_content_annotations::Category;
+using ::page_content_annotations::CategoryType;
+using ::page_content_annotations::PageContentAnnotationsResult;
 
-class GlicCueTargetTest : public testing::Test {
+class GlicCueTargetTest : public ChromeRenderViewHostTestHarness {
  public:
+  explicit GlicCueTargetTest(bool discard_shopping_pdfs = true) {
+    feature_list_.InitWithFeaturesAndParameters(
+        {
+            {contextual_cueing::kContextualCueingV2,
+             {{"ContextualCueingV2EduClassifierThreshold", "0.7"},
+              {"ContextualCueingV2ShoppingClassifierThreshold", "0.6"},
+              {"ContextualCueingV2DiscardShoppingPdfs",
+               discard_shopping_pdfs ? "true" : "false"}}},
+        },
+        {});
+  }
+
+  TestingProfile::TestingFactories GetTestingFactories() const override {
+    return IdentityTestEnvironmentProfileAdaptor::
+        GetIdentityTestEnvironmentFactoriesWithAppendedFactories(
+            {TestingProfile::TestingFactory{
+                SyncServiceFactory::GetInstance(),
+                base::BindRepeating([](content::BrowserContext* context)
+                                        -> std::unique_ptr<KeyedService> {
+                  return std::make_unique<syncer::TestSyncService>();
+                })}});
+  }
+
   void SetUp() override {
-    GlicEnabling::SetBypassEnablementChecksForTesting(true);
-    raw_ptr<TestingProfileManager> testing_profile_manager =
-        TestingBrowserProcess::GetGlobal()->SetUpGlobalFeaturesForTesting(
-            /*profile_manager=*/true);
-#if BUILDFLAG(IS_CHROMEOS)
-    glic_user_session_test_helper_.PreProfileSetUp(
-        testing_profile_manager->profile_manager());
-#endif  // BUILDFLAG(IS_CHROMEOS)
+    TestingBrowserProcess::GetGlobal()->SetUpGlobalFeaturesForTesting(
+        /*profile_manager=*/true);
+    ChromeRenderViewHostTestHarness::SetUp();
 
-    profile_ = testing_profile_manager->CreateTestingProfile("profile");
-    mock_browser_window_interface_ =
-        std::make_unique<NiceMock<MockBrowserWindowInterface>>();
-    ON_CALL(*mock_browser_window_interface_, GetProfile())
-        .WillByDefault(Return(profile_));
-    ON_CALL(*mock_browser_window_interface_, GetUnownedUserDataHost())
-        .WillByDefault(ReturnRef(user_data_host_));
-    actor_keyed_service_ =
-        std::make_unique<actor::ActorKeyedServiceFake>(profile_);
+    identity_test_env_adaptor_ =
+        std::make_unique<IdentityTestEnvironmentProfileAdaptor>(profile());
 
+    // We don't strictly need these to be fully functional because
+    // IsPageEligible doesn't use them, but the constructor requires them.
     mock_glic_keyed_service_ = std::make_unique<MockGlicKeyedService>(
-        profile_, identity_test_environment_.identity_manager(),
-        testing_profile_manager->profile_manager(), &glic_profile_manager_,
-        /*contextual_cueing_service=*/nullptr, actor_keyed_service_.get());
+        profile(), IdentityManagerFactory::GetForProfile(profile()),
+        TestingBrowserProcess::GetGlobal()->profile_manager(),
+        &glic_profile_manager_, nullptr, nullptr);
 
-    tab_strip_model_delegate_ = std::make_unique<TestTabStripModelDelegate>();
-    tab_strip_model_delegate_->SetBrowserWindowInterface(
-        mock_browser_window_interface_.get());
-    tab_strip_model_ = std::make_unique<TabStripModel>(
-        tab_strip_model_delegate_.get(), profile_);
+    mock_tab_ = std::make_unique<tabs::MockTabInterface>();
+    EXPECT_CALL(*mock_tab_, GetProfile())
+        .WillRepeatedly(testing::Return(profile()));
+#if !BUILDFLAG(IS_ANDROID)
+    mock_browser_window_interface_ =
+        std::make_unique<testing::NiceMock<MockBrowserWindowInterface>>();
+    EXPECT_CALL(*mock_tab_, GetBrowserWindowInterface())
+        .WillRepeatedly(testing::Return(mock_browser_window_interface_.get()));
+#endif
+
+    target_ = std::make_unique<GlicCueTarget>(
+        *mock_glic_keyed_service_,
+        /*optimization_guide_keyed_service=*/nullptr, *mock_tab_);
   }
 
   void TearDown() override {
-    tab_strip_model_.reset();
-    tab_strip_model_delegate_.reset();
-    mock_glic_keyed_service_.reset();
-    actor_keyed_service_.reset();
+    target_.reset();
+#if !BUILDFLAG(IS_ANDROID)
     mock_browser_window_interface_.reset();
-    profile_ = nullptr;
-
+#endif
+    mock_tab_.reset();
+    mock_glic_keyed_service_.reset();
+    identity_test_env_adaptor_.reset();
+    ChromeRenderViewHostTestHarness::TearDown();
     TestingBrowserProcess::GetGlobal()->TearDownGlobalFeaturesForTesting();
+  }
 
-#if BUILDFLAG(IS_CHROMEOS)
-    glic_user_session_test_helper_.PostProfileTearDown();
-#endif  // BUILDFLAG(IS_CHROMEOS)
-    GlicEnabling::SetBypassEnablementChecksForTesting(false);
+  PageContentAnnotationsResult CreateAnnotationResult(CategoryType type,
+                                                      int score_percent) {
+    return PageContentAnnotationsResult::CreateCategoryResults(
+        {{type, static_cast<float>(score_percent) / 100.0f}});
+  }
+
+  PageContentAnnotationsResult CreateMultiAnnotationResult(CategoryType type1,
+                                                           int score1_percent,
+                                                           CategoryType type2,
+                                                           int score2_percent) {
+    return PageContentAnnotationsResult::CreateCategoryResults(
+        {{type1, static_cast<float>(score1_percent) / 100.0f},
+         {type2, static_cast<float>(score2_percent) / 100.0f}});
   }
 
  protected:
-  SessionID CreateTab() {
-    tab_strip_model_->AppendTab(
-        std::make_unique<tabs::TabModel>(
-            content::WebContentsTester::CreateTestWebContents(profile_,
-                                                              nullptr),
-            tab_strip_model_.get()),
-        /*foreground=*/true);
-    auto* tab_model =
-        static_cast<tabs::TabModel*>(tab_strip_model_->GetTabAtIndex(0));
-    return sessions::SessionTabHelper::FromWebContents(tab_model->GetContents())
-        ->session_id();
-  }
+  GlicEnabling::ScopedBypassEnablementChecksForTesting scoped_glic_bypass_;
+  base::test::ScopedFeatureList feature_list_;
 
-  tabs::TabHandle GetTabHandle(SessionID id) {
-    return tabs::TabHandle(tabs::SessionMappedTabHandleFactory::GetInstance()
-                               .GetHandleForSessionId(id.id()));
-  }
-
-  content::BrowserTaskEnvironment task_environment_;
-  content::RenderViewHostTestEnabler rvh_test_enabler_;
-  signin::IdentityTestEnvironment identity_test_environment_;
+  std::unique_ptr<IdentityTestEnvironmentProfileAdaptor>
+      identity_test_env_adaptor_;
   GlicProfileManager glic_profile_manager_;
-  raw_ptr<Profile> profile_ = nullptr;
-  ui::UnownedUserDataHost user_data_host_;
-  std::unique_ptr<NiceMock<MockBrowserWindowInterface>>
+
+  std::unique_ptr<tabs::MockTabInterface> mock_tab_;
+#if !BUILDFLAG(IS_ANDROID)
+  std::unique_ptr<testing::NiceMock<MockBrowserWindowInterface>>
       mock_browser_window_interface_;
-  std::unique_ptr<actor::ActorKeyedServiceFake> actor_keyed_service_;
+#endif
   std::unique_ptr<MockGlicKeyedService> mock_glic_keyed_service_;
-  std::unique_ptr<TestTabStripModelDelegate> tab_strip_model_delegate_;
-  std::unique_ptr<TabStripModel> tab_strip_model_;
-  const tabs::TabModel::PreventFeatureInitializationForTesting prevent_;
-#if BUILDFLAG(IS_CHROMEOS)
-  // glic can run only in User session, so it needs to set up user session
-  // manually on ChromeOS.
-  ash::GlicUserSessionTestHelper glic_user_session_test_helper_;
-#endif  // BUILDFLAG(IS_CHROMEOS)
+
+  std::unique_ptr<GlicCueTarget> target_;
 };
 
-TEST_F(GlicCueTargetTest, IsEligible) {
-  GlicCueTarget target(*mock_glic_keyed_service_,
-                       /*optimization_guide_keyed_service=*/nullptr,
-                       *mock_browser_window_interface_);
+#if !BUILDFLAG(IS_ANDROID)
+TEST_F(GlicCueTargetTest, IsEligible_HistorySync) {
+  profile()->GetPrefs()->SetBoolean(prefs::kGlicPinnedToTabstrip, true);
+  EXPECT_CALL(*mock_glic_keyed_service_, IsPanelShowingForBrowser(testing::_))
+      .WillRepeatedly(testing::Return(false));
 
-  // Ineligible profile, don't cue regardless of panel state
-  GlicEnabling::SetBypassEnablementChecksForTesting(false);
-  EXPECT_CALL(*mock_glic_keyed_service_, IsPanelShowingForBrowser(_))
-      .Times(Exactly(0));
-  EXPECT_FALSE(target.IsEligible());
+  auto* sync_service = static_cast<syncer::TestSyncService*>(
+      SyncServiceFactory::GetForProfile(profile()));
+  sync_service->SetSignedIn(signin::ConsentLevel::kSignin);
 
-  // Eligible profile but the panel is showing
-  GlicEnabling::SetBypassEnablementChecksForTesting(true);
-  EXPECT_CALL(*mock_glic_keyed_service_, IsPanelShowingForBrowser(_))
-      .WillOnce(Return(true));
-  EXPECT_FALSE(target.IsEligible());
+  // History sync off -> Ineligible.
+  sync_service->GetUserSettings()->SetSelectedType(
+      syncer::UserSelectableType::kHistory, false);
+  EXPECT_FALSE(target_->IsEligible());
 
-  // Eligible profile and the panel isn't showing, so we are eligible to cue
-  EXPECT_CALL(*mock_glic_keyed_service_, IsPanelShowingForBrowser(_))
-      .WillOnce(Return(false));
-  EXPECT_TRUE(target.IsEligible());
-
-  // Eligible profile, panel isn't showing, but "Show Gemini at the top of the
-  // browser" is explicitly turned off.
-  profile_->GetPrefs()->SetBoolean(prefs::kGlicPinnedToTabstrip, false);
-  EXPECT_CALL(*mock_glic_keyed_service_, IsPanelShowingForBrowser(_))
-      .Times(Exactly(0));
-  EXPECT_FALSE(target.IsEligible());
+  // History sync on -> Eligible.
+  sync_service->GetUserSettings()->SetSelectedType(
+      syncer::UserSelectableType::kHistory, true);
+  EXPECT_TRUE(target_->IsEligible());
 }
 
-TEST_F(GlicCueTargetTest, OnClick_AutoSubmitEnabled) {
-  base::test::ScopedFeatureList features(
-      features::kGlicContextualCueingV2AutoSubmit);
+TEST_F(GlicCueTargetTest, IsEligible_NoBrowserWindow) {
+  profile()->GetPrefs()->SetBoolean(prefs::kGlicPinnedToTabstrip, true);
 
-  GlicCueTarget target(*mock_glic_keyed_service_,
-                       /*optimization_guide_keyed_service=*/nullptr,
-                       *mock_browser_window_interface_);
+  auto* sync_service = static_cast<syncer::TestSyncService*>(
+      SyncServiceFactory::GetForProfile(profile()));
+  sync_service->SetSignedIn(signin::ConsentLevel::kSignin);
+  sync_service->GetUserSettings()->SetSelectedType(
+      syncer::UserSelectableType::kHistory, true);
 
-  contextual_cueing::GlicCueActionData glic_data;
-  glic_data.prompt = "test prompt";
-  glic_data.tabs_to_share.emplace_back(123);
-  glic_data.tabs_to_share.emplace_back(456);
-
-  contextual_cueing::CueActionData data = glic_data;
-
-  EXPECT_CALL(*mock_glic_keyed_service_, InvokeWithAutoSubmit(_, _))
-      .WillOnce([](InvokeWithAutoSubmitPasskey, GlicInvokeOptions options)
-                    -> base::WeakPtr<glic::GlicInstance> {
-        EXPECT_TRUE(std::holds_alternative<raw_ptr<tabs::TabInterface>>(
-            options.target.surface));
-        EXPECT_EQ(1u, options.prompts.size());
-        EXPECT_EQ("test prompt", options.prompts[0]);
-        EXPECT_EQ(glic::mojom::InvocationSource::kAutoOpenedByContextualCue,
-                  options.GetInvocationSource());
-        EXPECT_TRUE(std::holds_alternative<glic::NewConversation>(
-            options.target.conversation));
-        // Two tabs plus the active tab.
-        EXPECT_EQ(3ul, options.tab_sharing.tabs_to_pin.size());
-        EXPECT_EQ(123, options.tab_sharing.tabs_to_pin[0].raw_value());
-        EXPECT_EQ(456, options.tab_sharing.tabs_to_pin[1].raw_value());
-        EXPECT_EQ(GlicPinTrigger::kContextualCue,
-                  options.tab_sharing.pin_trigger);
-        return base::WeakPtr<glic::GlicInstance>();
-      });
-
-  target.OnClick(data);
+  EXPECT_CALL(*mock_tab_, GetBrowserWindowInterface())
+      .WillRepeatedly(testing::Return(nullptr));
+  EXPECT_FALSE(target_->IsEligible());
 }
 
-TEST_F(GlicCueTargetTest, OnClick_AutoSubmitDisabled) {
-  base::test::ScopedFeatureList features;
-  features.InitAndDisableFeature(features::kGlicContextualCueingV2AutoSubmit);
+TEST_F(GlicCueTargetTest, IsEligible_ActiveUserBackoff) {
+  profile()->GetPrefs()->SetBoolean(prefs::kGlicPinnedToTabstrip, true);
+  EXPECT_CALL(*mock_glic_keyed_service_, IsPanelShowingForBrowser(testing::_))
+      .WillRepeatedly(testing::Return(false));
 
-  GlicCueTarget target(*mock_glic_keyed_service_,
-                       /*optimization_guide_keyed_service=*/nullptr,
-                       *mock_browser_window_interface_);
+  auto* sync_service = static_cast<syncer::TestSyncService*>(
+      SyncServiceFactory::GetForProfile(profile()));
+  sync_service->SetSignedIn(signin::ConsentLevel::kSignin);
+  sync_service->GetUserSettings()->SetSelectedType(
+      syncer::UserSelectableType::kHistory, true);
 
-  contextual_cueing::GlicCueActionData glic_data;
-  glic_data.prompt = "test prompt";
-  glic_data.tabs_to_share.emplace_back(123);
-  glic_data.tabs_to_share.emplace_back(456);
+  // Never invoked -> Eligible.
+  profile()->GetPrefs()->ClearPref(prefs::kGlicLastInvokedTime);
+  EXPECT_TRUE(target_->IsEligible());
 
-  contextual_cueing::CueActionData data = glic_data;
+  // Invoked 1 day ago (< 2 days default) -> Ineligible.
+  profile()->GetPrefs()->SetTime(prefs::kGlicLastInvokedTime,
+                                 base::Time::Now() - base::Days(1));
+  EXPECT_FALSE(target_->IsEligible());
 
-  EXPECT_CALL(*mock_glic_keyed_service_, Invoke(_))
-      .WillOnce([](GlicInvokeOptions options)
-                    -> base::WeakPtr<glic::GlicInstance> {
-        EXPECT_TRUE(std::holds_alternative<raw_ptr<tabs::TabInterface>>(
-            options.target.surface));
-        EXPECT_EQ(1u, options.prompts.size());
-        EXPECT_EQ("test prompt", options.prompts[0]);
-        EXPECT_EQ(glic::mojom::InvocationSource::kAutoOpenedByContextualCue,
-                  options.GetInvocationSource());
-        EXPECT_TRUE(std::holds_alternative<glic::NewConversation>(
-            options.target.conversation));
-        // Two tabs plus the active tab.
-        EXPECT_EQ(3ul, options.tab_sharing.tabs_to_pin.size());
-        EXPECT_EQ(123, options.tab_sharing.tabs_to_pin[0].raw_value());
-        EXPECT_EQ(456, options.tab_sharing.tabs_to_pin[1].raw_value());
-        EXPECT_EQ(GlicPinTrigger::kContextualCue,
-                  options.tab_sharing.pin_trigger);
-        return base::WeakPtr<glic::GlicInstance>();
-      });
-
-  target.OnClick(data);
+  // Invoked 3 days ago (>= 2 days default) -> Eligible.
+  profile()->GetPrefs()->SetTime(prefs::kGlicLastInvokedTime,
+                                 base::Time::Now() - base::Days(3));
+  EXPECT_TRUE(target_->IsEligible());
 }
 
-TEST_F(GlicCueTargetTest, OnEditPrompt) {
-  GlicCueTarget target(*mock_glic_keyed_service_,
-                       /*optimization_guide_keyed_service=*/nullptr,
-                       *mock_browser_window_interface_);
+TEST_F(GlicCueTargetTest, IsEligible_ActiveUserBackoff_CustomParam) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndEnableFeatureWithParameters(
+      features::kGlicContextualCueV2ActiveUserBackoff,
+      {{"MinDaysSinceLastInvocation", "5"}});
 
-  contextual_cueing::GlicCueActionData glic_data;
-  glic_data.prompt = "test prompt";
-  glic_data.tabs_to_share.emplace_back(123);
-  glic_data.tabs_to_share.emplace_back(456);
+  profile()->GetPrefs()->SetBoolean(prefs::kGlicPinnedToTabstrip, true);
+  EXPECT_CALL(*mock_glic_keyed_service_, IsPanelShowingForBrowser(testing::_))
+      .WillRepeatedly(testing::Return(false));
 
-  contextual_cueing::CueActionData data = glic_data;
+  auto* sync_service = static_cast<syncer::TestSyncService*>(
+      SyncServiceFactory::GetForProfile(profile()));
+  sync_service->SetSignedIn(signin::ConsentLevel::kSignin);
+  sync_service->GetUserSettings()->SetSelectedType(
+      syncer::UserSelectableType::kHistory, true);
 
-  EXPECT_CALL(*mock_glic_keyed_service_, Invoke(_))
-      .WillOnce(
-          [](GlicInvokeOptions options) -> base::WeakPtr<glic::GlicInstance> {
-            EXPECT_TRUE(std::holds_alternative<raw_ptr<tabs::TabInterface>>(
-                options.target.surface));
-            EXPECT_EQ(1u, options.prompts.size());
-            EXPECT_EQ("test prompt", options.prompts[0]);
-            EXPECT_EQ(glic::mojom::InvocationSource::kAutoOpenedByContextualCue,
-                      options.GetInvocationSource());
-            EXPECT_TRUE(std::holds_alternative<glic::NewConversation>(
-                options.target.conversation));
-            // Two tabs plus the active tab.
-            EXPECT_EQ(3ul, options.tab_sharing.tabs_to_pin.size());
-            EXPECT_EQ(123, options.tab_sharing.tabs_to_pin[0].raw_value());
-            EXPECT_EQ(456, options.tab_sharing.tabs_to_pin[1].raw_value());
-            EXPECT_EQ(GlicPinTrigger::kContextualCue,
-                      options.tab_sharing.pin_trigger);
+  // Invoked 3 days ago (< 5 days) -> Ineligible.
+  profile()->GetPrefs()->SetTime(prefs::kGlicLastInvokedTime,
+                                 base::Time::Now() - base::Days(3));
+  EXPECT_FALSE(target_->IsEligible());
 
-            return base::WeakPtr<glic::GlicInstance>();
-          });
-
-  target.OnEditPrompt(data);
+  // Invoked 6 days ago (>= 5 days) -> Eligible.
+  profile()->GetPrefs()->SetTime(prefs::kGlicLastInvokedTime,
+                                 base::Time::Now() - base::Days(6));
+  EXPECT_TRUE(target_->IsEligible());
 }
 
-TEST_F(GlicCueTargetTest, GetIcon) {
-  GlicCueTarget target(*mock_glic_keyed_service_,
-                       /*optimization_guide_keyed_service=*/nullptr,
-                       *mock_browser_window_interface_);
-  if (ui::ResourceBundle::HasSharedInstance()) {
-    EXPECT_FALSE(target.GetAnchoredMessageIcon().IsEmpty());
-    EXPECT_FALSE(target.GetOmniboxChipIcon().IsEmpty());
+TEST_F(GlicCueTargetTest, IsEligible_ActiveUserBackoff_FeatureDisabled) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndDisableFeature(
+      features::kGlicContextualCueV2ActiveUserBackoff);
+
+  profile()->GetPrefs()->SetBoolean(prefs::kGlicPinnedToTabstrip, true);
+  EXPECT_CALL(*mock_glic_keyed_service_, IsPanelShowingForBrowser(testing::_))
+      .WillRepeatedly(testing::Return(false));
+
+  auto* sync_service = static_cast<syncer::TestSyncService*>(
+      SyncServiceFactory::GetForProfile(profile()));
+  sync_service->SetSignedIn(signin::ConsentLevel::kSignin);
+  sync_service->GetUserSettings()->SetSelectedType(
+      syncer::UserSelectableType::kHistory, true);
+
+  // Invoked 1 hour ago -> Still eligible because feature is disabled.
+  profile()->GetPrefs()->SetTime(prefs::kGlicLastInvokedTime,
+                                 base::Time::Now() - base::Hours(1));
+  EXPECT_TRUE(target_->IsEligible());
+}
+
+TEST_F(GlicCueTargetTest, IsEligible_VerticalFeaturesDisabled) {
+  profile()->GetPrefs()->SetBoolean(prefs::kGlicPinnedToTabstrip, true);
+  EXPECT_CALL(*mock_glic_keyed_service_, IsPanelShowingForBrowser(testing::_))
+      .WillRepeatedly(testing::Return(false));
+
+  auto* sync_service = static_cast<syncer::TestSyncService*>(
+      SyncServiceFactory::GetForProfile(profile()));
+  sync_service->SetSignedIn(signin::ConsentLevel::kSignin);
+  sync_service->GetUserSettings()->SetSelectedType(
+      syncer::UserSelectableType::kHistory, true);
+
+  {
+    // Only Edu disabled -> still eligible (Shopping enabled).
+    base::test::ScopedFeatureList scoped_feature_list;
+    scoped_feature_list.InitAndDisableFeature(
+        features::kGlicContextualCuesHandleEdu);
+    EXPECT_TRUE(target_->IsEligible());
+  }
+
+  {
+    // Both Edu and Shopping disabled -> ineligible.
+    base::test::ScopedFeatureList scoped_feature_list;
+    scoped_feature_list.InitWithFeatures(
+        /*enabled_features=*/{},
+        /*disabled_features=*/{features::kGlicContextualCuesHandleEdu,
+                               features::kGlicContextualCuesHandleShopping});
+    EXPECT_FALSE(target_->IsEligible());
   }
 }
-
-TEST_F(GlicCueTargetTest, CueActionDataFromResponse) {
-#if BUILDFLAG(IS_CHROMEOS)
-  GTEST_SKIP() << "crbug.com/41100311: Disabled on ChromeOS until profile "
-                  "loading is fixed for this test.";
-#else
-  GlicCueTarget target(*mock_glic_keyed_service_,
-                       /*optimization_guide_keyed_service=*/nullptr,
-                       *mock_browser_window_interface_);
-
-  optimization_guide::proto::ContextualCueingResponse response;
-  auto* surface = response.mutable_gemini_in_chrome_surface();
-  surface->set_prompt("response prompt");
-
-  SessionID session_id_a = CreateTab();
-  surface->add_tabs_to_share()->set_tab_id(session_id_a.id());
-  SessionID session_id_b = CreateTab();
-  surface->add_tabs_to_share()->set_tab_id(session_id_b.id());
-
-  contextual_cueing::CueTabMetrics tab_metrics;
-  contextual_cueing::CueActionData data =
-      target.CueActionDataFromResponse(response, tab_metrics);
-  ASSERT_TRUE(
-      std::holds_alternative<contextual_cueing::GlicCueActionData>(data));
-  auto& glic_data = std::get<contextual_cueing::GlicCueActionData>(data);
-  EXPECT_EQ("response prompt", glic_data.prompt);
-  EXPECT_EQ(2ul, glic_data.tabs_to_share.size());
-  EXPECT_EQ(GetTabHandle(session_id_a), glic_data.tabs_to_share[0]);
-  EXPECT_EQ(GetTabHandle(session_id_b), glic_data.tabs_to_share[1]);
-  EXPECT_EQ(2, tab_metrics.matched_count);
-  EXPECT_EQ(0, tab_metrics.missing_count);
-  EXPECT_EQ(0, tab_metrics.navigated_away_count);
 #endif
+
+TEST_F(GlicCueTargetTest, IsPageEligible_LowScoreEdu) {
+  auto result = CreateAnnotationResult(CategoryType::kEducation, 60);
+  EXPECT_FALSE(target_->IsPageEligible(result, web_contents()));
 }
 
-TEST_F(GlicCueTargetTest, CueActionDataFromResponse_InvalidTabs) {
-  GlicCueTarget target(*mock_glic_keyed_service_,
-                       /*optimization_guide_keyed_service=*/nullptr,
-                       *mock_browser_window_interface_);
-
-  optimization_guide::proto::ContextualCueingResponse response;
-  auto* surface = response.mutable_gemini_in_chrome_surface();
-  surface->set_prompt("response prompt");
-
-  // Strange session IDs that don't match any existing tabs.
-  surface->add_tabs_to_share()->set_tab_id(-1);
-  surface->add_tabs_to_share()->set_tab_id(12345);
-
-  contextual_cueing::CueTabMetrics tab_metrics;
-  contextual_cueing::CueActionData data =
-      target.CueActionDataFromResponse(response, tab_metrics);
-  ASSERT_TRUE(
-      std::holds_alternative<contextual_cueing::GlicCueActionData>(data));
-  auto& glic_data = std::get<contextual_cueing::GlicCueActionData>(data);
-  EXPECT_EQ("response prompt", glic_data.prompt);
-  // No valid tabs to share.
-  EXPECT_TRUE(glic_data.tabs_to_share.empty());
-  EXPECT_EQ(0, tab_metrics.matched_count);
-  EXPECT_EQ(2, tab_metrics.missing_count);
-  EXPECT_EQ(0, tab_metrics.navigated_away_count);
+TEST_F(GlicCueTargetTest, IsPageEligible_HighScoreEdu) {
+  auto result = CreateAnnotationResult(CategoryType::kEducation, 80);
+  EXPECT_TRUE(target_->IsPageEligible(result, web_contents()));
 }
 
-TEST_F(GlicCueTargetTest, CueActionDataFromResponse_DefaultTabContextDisabled) {
-#if BUILDFLAG(IS_CHROMEOS)
-  GTEST_SKIP() << "crbug.com/41100311: Disabled on ChromeOS until profile "
-                  "loading is fixed for this test.";
-#else
-  GlicCueTarget target(*mock_glic_keyed_service_,
-                       /*optimization_guide_keyed_service=*/nullptr,
-                       *mock_browser_window_interface_);
+TEST_F(GlicCueTargetTest, IsPageEligible_HighScoreEdu_Disabled) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndDisableFeature(
+      features::kGlicContextualCuesHandleEdu);
 
-  optimization_guide::proto::ContextualCueingResponse response;
-  auto* surface = response.mutable_gemini_in_chrome_surface();
-  surface->set_prompt("response prompt");
+  auto edu_result = CreateAnnotationResult(CategoryType::kEducation, 80);
+  EXPECT_FALSE(target_->IsPageEligible(edu_result, web_contents()));
 
-  SessionID session_id_a = CreateTab();
-  surface->add_tabs_to_share()->set_tab_id(session_id_a.id());
-  SessionID session_id_b = CreateTab();
-  surface->add_tabs_to_share()->set_tab_id(session_id_b.id());
+  auto shopping_result = CreateAnnotationResult(CategoryType::kShopping, 70);
+  EXPECT_TRUE(target_->IsPageEligible(shopping_result, web_contents()));
+}
 
-  // User turns off default tab context sharing.
-  profile_->GetPrefs()->SetBoolean(prefs::kGlicDefaultTabContextEnabled, false);
+TEST_F(GlicCueTargetTest, IsPageEligible_LowScoreShopping) {
+  auto result = CreateAnnotationResult(CategoryType::kShopping, 50);
+  EXPECT_FALSE(target_->IsPageEligible(result, web_contents()));
+}
 
-  contextual_cueing::CueTabMetrics tab_metrics;
-  contextual_cueing::CueActionData data =
-      target.CueActionDataFromResponse(response, tab_metrics);
-  ASSERT_TRUE(
-      std::holds_alternative<contextual_cueing::GlicCueActionData>(data));
-  auto& glic_data = std::get<contextual_cueing::GlicCueActionData>(data);
-  EXPECT_EQ("response prompt", glic_data.prompt);
-  // No tabs shared.
-  EXPECT_EQ(0ul, glic_data.tabs_to_share.size());
-  EXPECT_EQ(0, tab_metrics.matched_count);
-  EXPECT_EQ(0, tab_metrics.missing_count);
-  EXPECT_EQ(0, tab_metrics.navigated_away_count);
-#endif
+TEST_F(GlicCueTargetTest, IsPageEligible_HighScoreShopping) {
+  auto result = CreateAnnotationResult(CategoryType::kShopping, 70);
+  EXPECT_TRUE(target_->IsPageEligible(result, web_contents()));
+}
+
+TEST_F(GlicCueTargetTest, IsPageEligible_HighScoreShopping_Disabled) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndDisableFeature(
+      features::kGlicContextualCuesHandleShopping);
+
+  auto shopping_result = CreateAnnotationResult(CategoryType::kShopping, 70);
+  EXPECT_FALSE(target_->IsPageEligible(shopping_result, web_contents()));
+
+  auto edu_result = CreateAnnotationResult(CategoryType::kEducation, 80);
+  EXPECT_TRUE(target_->IsPageEligible(edu_result, web_contents()));
+}
+
+TEST_F(GlicCueTargetTest, IsPageEligible_HighScoreShopping_PdfDiscarded) {
+  // Simulate a PDF.
+  content::WebContentsTester::For(web_contents())
+      ->SetMainFrameMimeType(pdf::kPDFMimeType);
+
+  auto result = CreateAnnotationResult(CategoryType::kShopping, 80);
+  // Although it's high score shopping, we discard shopping PDFs.
+  EXPECT_FALSE(target_->IsPageEligible(result, web_contents()));
+}
+
+TEST_F(GlicCueTargetTest, IsPageEligible_HighScoreEdu_PdfNotDiscarded) {
+  // Simulate a PDF.
+  content::WebContentsTester::For(web_contents())
+      ->SetMainFrameMimeType(pdf::kPDFMimeType);
+
+  auto result = CreateAnnotationResult(CategoryType::kEducation, 80);
+  // High score edu PDFs are still eligible.
+  EXPECT_TRUE(target_->IsPageEligible(result, web_contents()));
+}
+
+TEST_F(GlicCueTargetTest, IsPageEligible_HighScoreEduAndShopping_PdfDiscarded) {
+  // Simulate a PDF.
+  content::WebContentsTester::For(web_contents())
+      ->SetMainFrameMimeType(pdf::kPDFMimeType);
+
+  auto result = CreateMultiAnnotationResult(CategoryType::kEducation, 80,
+                                            CategoryType::kShopping, 80);
+  // When kDiscardShoppingPdfs is true, having shopping present disqualifies it.
+  EXPECT_FALSE(target_->IsPageEligible(result, web_contents()));
+}
+
+class GlicCueTargetDoNotDiscardShoppingPdfsTest : public GlicCueTargetTest {
+ public:
+  GlicCueTargetDoNotDiscardShoppingPdfsTest()
+      : GlicCueTargetTest(/*discard_shopping_pdfs=*/false) {}
+};
+
+TEST_F(GlicCueTargetDoNotDiscardShoppingPdfsTest,
+       IsPageEligible_HighScoreEdu_Pdf) {
+  content::WebContentsTester::For(web_contents())
+      ->SetMainFrameMimeType(pdf::kPDFMimeType);
+
+  auto result = CreateAnnotationResult(CategoryType::kEducation, 80);
+  EXPECT_TRUE(target_->IsPageEligible(result, web_contents()));
+}
+
+TEST_F(GlicCueTargetDoNotDiscardShoppingPdfsTest,
+       IsPageEligible_HighScoreShopping_Pdf) {
+  content::WebContentsTester::For(web_contents())
+      ->SetMainFrameMimeType(pdf::kPDFMimeType);
+
+  auto result = CreateAnnotationResult(CategoryType::kShopping, 80);
+  // When kDiscardShoppingPdfs is false, shopping PDFs are eligible.
+  EXPECT_TRUE(target_->IsPageEligible(result, web_contents()));
+}
+
+TEST_F(GlicCueTargetDoNotDiscardShoppingPdfsTest,
+       IsPageEligible_HighScoreEduAndShopping_Pdf) {
+  content::WebContentsTester::For(web_contents())
+      ->SetMainFrameMimeType(pdf::kPDFMimeType);
+
+  auto result = CreateMultiAnnotationResult(CategoryType::kEducation, 80,
+                                            CategoryType::kShopping, 80);
+  // When kDiscardShoppingPdfs is false, having both high scores is eligible.
+  EXPECT_TRUE(target_->IsPageEligible(result, web_contents()));
 }
 
 }  // namespace
+
+// ---------------------------------------------------------------------------
+// Async CheckEligibility tests for GlicCueTabState
+// ---------------------------------------------------------------------------
+
+class GlicCueTargetAsyncTest : public ChromeRenderViewHostTestHarness {
+ public:
+  GlicCueTargetAsyncTest()
+      : ChromeRenderViewHostTestHarness(
+            base::test::TaskEnvironment::TimeSource::MOCK_TIME) {
+    feature_list_.InitWithFeaturesAndParameters(
+        {
+            {contextual_cueing::kContextualCueingV2,
+             {{"ContextualCueingV2EduClassifierThreshold", "0.7"},
+              {"ContextualCueingV2ShoppingClassifierThreshold", "0.6"}}},
+            {contextual_cueing::kContextualCueingV2MultiSource,
+             {{"ContextualCueingV2MultiSourceAnnotationTimeout", "3s"}}},
+        },
+        {});
+  }
+
+  TestingProfile::TestingFactories GetTestingFactories() const override {
+    return IdentityTestEnvironmentProfileAdaptor::
+        GetIdentityTestEnvironmentFactoriesWithAppendedFactories(
+            {TestingProfile::TestingFactory{
+                 PageContentAnnotationsServiceFactory::GetInstance(),
+                 base::BindRepeating(
+                     [](content::BrowserContext* context)
+                         -> std::unique_ptr<KeyedService> {
+                       return page_content_annotations::
+                           TestPageContentAnnotationsService::Create(
+                               /*optimization_guide_model_provider=*/nullptr,
+                               /*history_service=*/nullptr);
+                     })},
+             TestingProfile::TestingFactory{
+                 HistoryServiceFactory::GetInstance(),
+                 base::BindRepeating([](content::BrowserContext* context)
+                                         -> std::unique_ptr<KeyedService> {
+                   return nullptr;
+                 })}});
+  }
+
+  void SetUp() override {
+    TestingBrowserProcess::GetGlobal()->SetUpGlobalFeaturesForTesting(
+        /*profile_manager=*/true);
+    ChromeRenderViewHostTestHarness::SetUp();
+    identity_test_env_adaptor_ =
+        std::make_unique<IdentityTestEnvironmentProfileAdaptor>(profile());
+    mock_glic_keyed_service_ = std::make_unique<MockGlicKeyedService>(
+        profile(), IdentityManagerFactory::GetForProfile(profile()),
+        TestingBrowserProcess::GetGlobal()->profile_manager(),
+        &glic_profile_manager_, nullptr, nullptr);
+    mock_tab_ = std::make_unique<tabs::MockTabInterface>();
+    EXPECT_CALL(*mock_tab_, GetProfile())
+        .WillRepeatedly(testing::Return(profile()));
+    EXPECT_CALL(*mock_tab_, GetContents())
+        .WillRepeatedly(testing::Return(web_contents()));
+    EXPECT_CALL(*mock_tab_, GetUnownedUserDataHost())
+        .WillRepeatedly(testing::ReturnRef(user_data_host_));
+
+    target_ = std::make_unique<GlicCueTarget>(
+        *mock_glic_keyed_service_,
+        /*optimization_guide_keyed_service=*/nullptr, *mock_tab_);
+
+    cue_tab_state_ = std::make_unique<GlicCueTabState>(*mock_tab_);
+  }
+
+  void TearDown() override {
+    target_.reset();
+    cue_tab_state_.reset();
+    mock_tab_.reset();
+    mock_glic_keyed_service_.reset();
+    identity_test_env_adaptor_.reset();
+    ChromeRenderViewHostTestHarness::TearDown();
+    TestingBrowserProcess::GetGlobal()->TearDownGlobalFeaturesForTesting();
+  }
+
+  void CallCheckEligibility(base::WeakPtr<content::WebContents> contents,
+                            bool* out_eligible) {
+    base::RunLoop run_loop;
+    target_->CheckEligibility(
+        std::move(contents), contextual_cueing::CueIntrusiveness::kLoud,
+        base::BindOnce(
+            [](bool* out, base::OnceClosure quit, bool eligible,
+               contextual_cueing::CueTarget::ContentGenerator) {
+              *out = eligible;
+              std::move(quit).Run();
+            },
+            out_eligible, run_loop.QuitClosure()));
+    run_loop.Run();
+  }
+
+  PageContentAnnotationsResult CreateEligibleResult() {
+    return PageContentAnnotationsResult::CreateCategoryResults(
+        {{CategoryType::kEducation, 0.9f}});
+  }
+
+  PageContentAnnotationsResult CreateIneligibleResult() {
+    return PageContentAnnotationsResult::CreateCategoryResults(
+        {{CategoryType::kEducation, 0.3f}});
+  }
+
+  page_content_annotations::HistoryVisit CreateVisit(const GURL& url) {
+    page_content_annotations::HistoryVisit visit(base::Time::Now(), url);
+    if (web_contents()->GetController().GetLastCommittedEntry()) {
+      visit.nav_entry_timestamp = web_contents()
+                                      ->GetController()
+                                      .GetLastCommittedEntry()
+                                      ->GetTimestamp();
+    }
+    return visit;
+  }
+
+ protected:
+  GlicEnabling::ScopedBypassEnablementChecksForTesting scoped_glic_bypass_;
+  base::test::ScopedFeatureList feature_list_;
+
+  std::unique_ptr<IdentityTestEnvironmentProfileAdaptor>
+      identity_test_env_adaptor_;
+  GlicProfileManager glic_profile_manager_;
+  ui::UnownedUserDataHost user_data_host_;
+  std::unique_ptr<tabs::MockTabInterface> mock_tab_;
+  std::unique_ptr<MockGlicKeyedService> mock_glic_keyed_service_;
+  std::unique_ptr<GlicCueTarget> target_;
+  std::unique_ptr<GlicCueTabState> cue_tab_state_;
+};
+
+TEST_F(GlicCueTargetAsyncTest, CheckEligibility_NullWebContents) {
+  bool eligible = true;
+  CallCheckEligibility(nullptr, &eligible);
+  EXPECT_FALSE(eligible);
+}
+
+TEST_F(GlicCueTargetAsyncTest, CheckEligibility_NoAnnotationService) {
+  cue_tab_state_->SetAnnotationServiceForTesting(nullptr);
+  bool eligible = true;
+  CallCheckEligibility(web_contents()->GetWeakPtr(), &eligible);
+  EXPECT_FALSE(eligible);
+}
+
+TEST_F(GlicCueTargetAsyncTest, CheckEligibility_CacheHit_Eligible) {
+  const GURL url("https://example.com/edu");
+  content::WebContentsTester::For(web_contents())->NavigateAndCommit(url);
+
+  // Pre-populate the cache with an eligible annotation.
+  cue_tab_state_->OnPageContentAnnotated(CreateVisit(url),
+                                         CreateEligibleResult());
+
+  bool eligible = false;
+  CallCheckEligibility(web_contents()->GetWeakPtr(), &eligible);
+  EXPECT_TRUE(eligible);
+}
+
+TEST_F(GlicCueTargetAsyncTest, CheckEligibility_CacheHit_Ineligible) {
+  const GURL url("https://example.com/low");
+  content::WebContentsTester::For(web_contents())->NavigateAndCommit(url);
+
+  cue_tab_state_->OnPageContentAnnotated(CreateVisit(url),
+                                         CreateIneligibleResult());
+
+  bool eligible = true;
+  CallCheckEligibility(web_contents()->GetWeakPtr(), &eligible);
+  EXPECT_FALSE(eligible);
+}
+
+TEST_F(GlicCueTargetAsyncTest, CheckEligibility_CacheMiss_AnnotationArrives) {
+  const GURL url("https://example.com/pending");
+  content::WebContentsTester::For(web_contents())->NavigateAndCommit(url);
+
+  bool eligible = false;
+  bool callback_ran = false;
+  target_->CheckEligibility(
+      web_contents()->GetWeakPtr(), contextual_cueing::CueIntrusiveness::kLoud,
+      base::BindOnce(
+          [](bool* out_eligible, bool* out_ran, bool eligible,
+             contextual_cueing::CueTarget::ContentGenerator) {
+            *out_eligible = eligible;
+            *out_ran = true;
+          },
+          &eligible, &callback_ran));
+
+  // Callback should not have fired synchronously.
+  EXPECT_FALSE(callback_ran);
+
+  // Simulate annotation arriving.
+  cue_tab_state_->OnPageContentAnnotated(CreateVisit(url),
+                                         CreateEligibleResult());
+  EXPECT_TRUE(base::test::RunUntil([&]() { return callback_ran; }));
+
+  EXPECT_TRUE(callback_ran);
+  EXPECT_TRUE(eligible);
+}
+
+TEST_F(GlicCueTargetAsyncTest,
+       CheckEligibility_AnnotationUrlDiffersInQueryParams) {
+  const GURL committed_url("https://example.com/pending?query=1");
+  const GURL annotated_url("https://example.com/pending?query=2");
+  content::WebContentsTester::For(web_contents())
+      ->NavigateAndCommit(committed_url);
+
+  bool eligible = false;
+  bool callback_ran = false;
+  target_->CheckEligibility(
+      web_contents()->GetWeakPtr(), contextual_cueing::CueIntrusiveness::kLoud,
+      base::BindOnce(
+          [](bool* out_eligible, bool* out_ran, bool eligible,
+             contextual_cueing::CueTarget::ContentGenerator) {
+            *out_eligible = eligible;
+            *out_ran = true;
+          },
+          &eligible, &callback_ran));
+
+  // Callback should not have fired synchronously.
+  EXPECT_FALSE(callback_ran);
+
+  // An annotation for a different path should not resolve the check.
+  const GURL mismatched_url("https://example.com/other?query=1");
+  cue_tab_state_->OnPageContentAnnotated(CreateVisit(mismatched_url),
+                                         CreateEligibleResult());
+  base::RunLoop run_loop;
+  base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+      FROM_HERE, run_loop.QuitClosure());
+  run_loop.Run();
+  EXPECT_FALSE(callback_ran);
+
+  // Simulate annotation arriving with a URL that differs only in query params.
+  cue_tab_state_->OnPageContentAnnotated(CreateVisit(annotated_url),
+                                         CreateEligibleResult());
+  EXPECT_TRUE(base::test::RunUntil([&]() { return callback_ran; }));
+
+  EXPECT_TRUE(callback_ran);
+  EXPECT_TRUE(eligible);
+}
+
+TEST_F(GlicCueTargetAsyncTest, CheckEligibility_CacheMiss_Timeout) {
+  const GURL url("https://example.com/timeout");
+  content::WebContentsTester::For(web_contents())->NavigateAndCommit(url);
+
+  bool eligible = true;
+  bool callback_ran = false;
+  target_->CheckEligibility(
+      web_contents()->GetWeakPtr(), contextual_cueing::CueIntrusiveness::kLoud,
+      base::BindOnce(
+          [](bool* out_eligible, bool* out_ran, bool eligible,
+             contextual_cueing::CueTarget::ContentGenerator) {
+            *out_eligible = eligible;
+            *out_ran = true;
+          },
+          &eligible, &callback_ran));
+
+  EXPECT_FALSE(callback_ran);
+
+  // Fast-forward past the 3-second timeout.
+  task_environment()->FastForwardBy(base::Seconds(4));
+
+  EXPECT_TRUE(callback_ran);
+  EXPECT_FALSE(eligible);
+}
+
+TEST_F(GlicCueTargetAsyncTest, CheckEligibility_NewCheckCancelsPending) {
+  const GURL url1("https://example.com/first");
+  const GURL url2("https://different.com/second");
+  content::WebContentsTester::For(web_contents())->NavigateAndCommit(url1);
+
+  bool eligible1 = true;
+  bool callback1_ran = false;
+  target_->CheckEligibility(
+      web_contents()->GetWeakPtr(), contextual_cueing::CueIntrusiveness::kLoud,
+      base::BindOnce(
+          [](bool* out_eligible, bool* out_ran, bool eligible,
+             contextual_cueing::CueTarget::ContentGenerator) {
+            *out_eligible = eligible;
+            *out_ran = true;
+          },
+          &eligible1, &callback1_ran));
+
+  // Navigate to a second URL. DidFinishNavigation cancels callback1.
+  content::WebContentsTester::For(web_contents())->NavigateAndCommit(url2);
+
+  // First callback should be cancelled (fired with false) by
+  // DidFinishNavigation. Wait for the cancellation task to run clean.
+  EXPECT_TRUE(base::test::RunUntil([&]() { return callback1_ran; }));
+  EXPECT_TRUE(callback1_ran);
+  EXPECT_FALSE(eligible1);
+
+  // Now safely issue a new check for url2.
+  bool eligible2 = false;
+  bool callback2_ran = false;
+  target_->CheckEligibility(
+      web_contents()->GetWeakPtr(), contextual_cueing::CueIntrusiveness::kLoud,
+      base::BindOnce(
+          [](bool* out_eligible, bool* out_ran, bool eligible,
+             contextual_cueing::CueTarget::ContentGenerator) {
+            *out_eligible = eligible;
+            *out_ran = true;
+          },
+          &eligible2, &callback2_ran));
+
+  // Second check is now pending. Deliver annotation for url2.
+  cue_tab_state_->OnPageContentAnnotated(CreateVisit(url2),
+                                         CreateEligibleResult());
+  EXPECT_TRUE(base::test::RunUntil([&]() { return callback2_ran; }));
+
+  EXPECT_TRUE(callback2_ran);
+  EXPECT_TRUE(eligible2);
+}
+
+TEST_F(GlicCueTargetAsyncTest, CheckEligibility_TabStateDestroyedDuringWait) {
+  const GURL url("https://example.com/destroyed");
+  content::WebContentsTester::For(web_contents())->NavigateAndCommit(url);
+
+  bool eligible = true;
+  bool callback_ran = false;
+  target_->CheckEligibility(
+      web_contents()->GetWeakPtr(), contextual_cueing::CueIntrusiveness::kLoud,
+      base::BindOnce(
+          [](bool* out_eligible, bool* out_ran, bool eligible,
+             contextual_cueing::CueTarget::ContentGenerator) {
+            *out_eligible = eligible;
+            *out_ran = true;
+          },
+          &eligible, &callback_ran));
+
+  // Destroy the tab state while the check is pending, as TabFeatures does
+  // when the tab goes away. GlicCueTabState's destructor will fire the
+  // pending callback with false.
+  cue_tab_state_.reset();
+  EXPECT_TRUE(base::test::RunUntil([&]() { return callback_ran; }));
+
+  EXPECT_TRUE(callback_ran);
+  EXPECT_FALSE(eligible);
+}
+
+TEST_F(GlicCueTargetAsyncTest, DestructorFiresPendingCallback) {
+  const GURL url("https://example.com/dtor");
+  content::WebContentsTester::For(web_contents())->NavigateAndCommit(url);
+
+  bool eligible = true;
+  bool callback_ran = false;
+  target_->CheckEligibility(
+      web_contents()->GetWeakPtr(), contextual_cueing::CueIntrusiveness::kLoud,
+      base::BindOnce(
+          [](bool* out_eligible, bool* out_ran, bool eligible,
+             contextual_cueing::CueTarget::ContentGenerator) {
+            *out_eligible = eligible;
+            *out_ran = true;
+          },
+          &eligible, &callback_ran));
+
+  // Destroy target while check is pending.
+  // When the annotation arrives later, GlicCueTabState will see target is gone
+  // and resolve with false.
+  target_.reset();
+
+  cue_tab_state_->OnPageContentAnnotated(CreateVisit(url),
+                                         CreateEligibleResult());
+  EXPECT_TRUE(base::test::RunUntil([&]() { return callback_ran; }));
+
+  EXPECT_TRUE(callback_ran);
+  EXPECT_FALSE(eligible);
+}
+
+TEST_F(GlicCueTargetTest, RequiresModelExecutionAndSupportsIntrusiveness) {
+  EXPECT_TRUE(target_->RequiresModelExecution());
+  EXPECT_TRUE(target_->SupportsIntrusiveness(
+      contextual_cueing::CueIntrusiveness::kLoud));
+  EXPECT_FALSE(target_->SupportsIntrusiveness(
+      contextual_cueing::CueIntrusiveness::kQuiet));
+}
+
 }  // namespace glic

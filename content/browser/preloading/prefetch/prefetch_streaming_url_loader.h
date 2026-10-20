@@ -58,7 +58,8 @@ class CONTENT_EXPORT PrefetchStreamingURLLoader
       BrowserContext* browser_context_for_service_worker,
       OnServiceWorkerStateDeterminedCallback
           on_service_worker_state_determined_callback,
-      perfetto::Flow flow);
+      perfetto::Flow flow,
+      bool is_constructed_from_pre_prefetch);
 
   // Must be called only from `CreateAndStart()`.
   PrefetchStreamingURLLoader(
@@ -116,12 +117,14 @@ class CONTENT_EXPORT PrefetchStreamingURLLoader
       scoped_refptr<network::SharedURLLoaderFactory> network_url_loader_factory,
       const network::ResourceRequest& request,
       const net::NetworkTrafficAnnotationTag& network_traffic_annotation,
-      base::TimeDelta timeout_duration);
+      base::TimeDelta timeout_duration,
+      bool is_constructed_from_pre_prefetch);
   void ServiceWorkerInterceptorLoaderCallback(
       scoped_refptr<network::SharedURLLoaderFactory> network_url_loader_factory,
       const network::ResourceRequest& request,
       const net::NetworkTrafficAnnotationTag& network_traffic_annotation,
       base::TimeDelta timeout_duration,
+      bool is_constructed_from_pre_prefetch,
       std::optional<NavigationLoaderInterceptor::Result> interceptor_result);
   void Start(PrefetchServiceWorkerState final_service_worker_state,
              scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
@@ -177,9 +180,11 @@ class CONTENT_EXPORT PrefetchStreamingURLLoader
   // deletion.
   base::OnceClosure on_deletion_scheduled_for_tests_;
 
-  // Called just before URLLoaderFactory is started. At that time, ServiceWorker
-  // interceptor (if any) is already done, and it's known whether there is a
-  // ServiceWorker controller, indicated by `ServiceWorkerState`.
+  // Called just before URLLoaderFactory is started, or just before failing a
+  // prefetch constructed from a PrePrefetch that found a ServiceWorker
+  // controller. At that time, ServiceWorker interceptor (if any) is already
+  // done, and it's known whether there is a ServiceWorker controller,
+  // indicated by `PrefetchServiceWorkerState`.
   OnServiceWorkerStateDeterminedCallback
       on_service_worker_state_determined_callback_;
 

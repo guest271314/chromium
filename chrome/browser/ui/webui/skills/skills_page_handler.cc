@@ -11,9 +11,11 @@
 #include "chrome/browser/skills/skills_service_factory.h"
 #include "chrome/browser/skills/skills_ui_window_controller.h"
 #include "chrome/browser/ui/webui/skills/skills.mojom-shared.h"
+#include "components/skills/public/skills_constants.h"
 #include "components/skills/public/skill.h"
 #include "components/skills/public/skill.mojom.h"
 #include "components/skills/public/skills_metrics.h"
+#include "components/skills/public/skills_prefs.h"
 #include "components/skills/public/skills_types.h"
 #include "components/sync/protocol/skill_specifics.pb.h"
 #include "components/tabs/public/tab_interface.h"
@@ -27,6 +29,11 @@ namespace {
 SkillCategoryToSkillMap Translate1PSkills(const SkillProtoList& skills_list) {
   SkillCategoryToSkillMap translated_map;
   for (const auto& skill : skills_list) {
+    // Skills belonging to the "Internal" category are used programmatically
+    // (e.g., by Indigo) and should be hidden from the WebUI browser.
+    if (skill.category() == "Internal") {
+      continue;
+    }
     Skill translated_skill;
     translated_skill.id = skill.id();
     translated_skill.name = skill.name();
@@ -34,8 +41,12 @@ SkillCategoryToSkillMap Translate1PSkills(const SkillProtoList& skills_list) {
     translated_skill.prompt = skill.prompt();
     translated_skill.description = skill.description();
     translated_skill.curated_by = skill.curated_by();
-    translated_skill.image_url = GURL(skill.image_url());
     translated_skill.source = sync_pb::SkillSource::SKILL_SOURCE_FIRST_PARTY;
+
+    GURL image_url(skill.image_url());
+    if (SkillsService::IsValidSkillImageUrl(image_url)) {
+      translated_skill.image_url = std::move(image_url);
+    }
     translated_map[skill.category()].push_back(std::move(translated_skill));
   }
   return translated_map;
@@ -87,6 +98,11 @@ SkillsPageHandler::SkillsPageHandler(
       web_contents_(CHECK_DEREF(web_contents)),
       profile_(CHECK_DEREF(
           Profile::FromBrowserContext(web_contents->GetBrowserContext()))) {
+  pref_registrar_.Init(profile_->GetPrefs());
+  pref_registrar_.Add(
+      skills::prefs::kChromeSkillsEnabled,
+      base::BindRepeating(&SkillsPageHandler::OnSkillsEnabledPrefChanged,
+                          base::Unretained(this)));
   if (auto* service =
           SkillsServiceFactory::GetForProfile(base::to_address(profile_))) {
     service_observation_.Observe(service);
@@ -215,16 +231,32 @@ void SkillsPageHandler::Request1PSkills() {
   }
 }
 
+// TODO(b/543404064): Rename to `GetInitialDiscoverySkills()` to reflect that
+// this returns discovery and enterprise provided skills, not just 1P skills.
 void SkillsPageHandler::GetInitial1PSkills(
     GetInitial1PSkillsCallback callback) {
   auto scoped_callback = mojo::WrapCallbackWithDefaultInvokeIfNotRun(
       std::move(callback), mojom::BrowseSkillsInitialState::New());
   auto* service =
       SkillsServiceFactory::GetForProfile(base::to_address(profile_));
-  auto state = mojom::BrowseSkillsInitialState::New();
-  state->topics_info_list = service->Get1PTopicsInfo();
-  state->skill_map = Translate1PSkills(service->Get1PSkills());
-  std::move(scoped_callback).Run(std::move(state));
+  if (!service) {
+    std::move(scoped_callback).Run(mojom::BrowseSkillsInitialState::New());
+    return;
+  }
+  std::move(scoped_callback)
+      .Run(GetDiscoverySkills(service->Get1PTopicsInfo(),
+                              service->Get1PSkills()));
+}
+
+void SkillsPageHandler::OnProvidedSkillsChanged(
+    skills::SkillsProvider* provider) {
+  auto* service =
+      SkillsServiceFactory::GetForProfile(base::to_address(profile_));
+  if (!service) {
+    return;
+  }
+  page_->Update1PSkills(
+      GetDiscoverySkills(service->Get1PTopicsInfo(), service->Get1PSkills()));
 }
 
 void SkillsPageHandler::OnDiscoverySkillsUpdated(
@@ -249,10 +281,9 @@ void SkillsPageHandler::OnDiscoverySkillsUpdated(
 
   // If the data exists that means we have an updated list of skills.
   if (first_party_skill_data) {
-    auto state = mojom::BrowseSkillsInitialState::New();
-    state->topics_info_list = first_party_skill_data->topics_info_list;
-    state->skill_map = Translate1PSkills(first_party_skill_data->skills_list);
-    page_->Update1PSkills(std::move(state));
+    page_->Update1PSkills(
+        GetDiscoverySkills(first_party_skill_data->topics_info_list,
+                           first_party_skill_data->skills_list));
   }
 }
 
@@ -278,6 +309,44 @@ void SkillsPageHandler::RecordSkillsManagementAction(
     skills::mojom::SkillsManagementPage page,
     skills::mojom::SkillsManagementAction action) {
   skills::RecordSkillsManagementAction(page, action);
+}
+
+mojom::BrowseSkillsInitialStatePtr SkillsPageHandler::GetDiscoverySkills(
+    const std::vector<skills::proto::TopicInfo>& topics_info_list,
+    const skills::SkillProtoList& skills_list) {
+  auto state = mojom::BrowseSkillsInitialState::New();
+  state->topics_info_list = topics_info_list;
+  state->skill_map = Translate1PSkills(skills_list);
+  AppendProvidedSkills(state.get());
+  return state;
+}
+
+void SkillsPageHandler::AppendProvidedSkills(
+    mojom::BrowseSkillsInitialState* state) {
+  auto* service =
+      SkillsServiceFactory::GetForProfile(base::to_address(profile_));
+  if (!service) {
+    return;
+  }
+
+  std::vector<skills::Skill> enterprise_skills;
+  for (const auto& [id, skill] : service->GetProvidedSkills()) {
+    enterprise_skills.push_back(*skill);
+  }
+
+  if (!enterprise_skills.empty()) {
+    std::sort(enterprise_skills.begin(), enterprise_skills.end(),
+              [](const skills::Skill& a, const skills::Skill& b) {
+                return a.name < b.name;
+              });
+    state->skill_map[kFromYourOrganizationCategory] =
+        std::move(enterprise_skills);
+  }
+}
+
+void SkillsPageHandler::OnSkillsEnabledPrefChanged() {
+  page_->SetSkillsEnabled(SkillsServiceFactory::IsSkillsEnabledForProfile(
+      base::to_address(profile_)));
 }
 
 }  // namespace skills

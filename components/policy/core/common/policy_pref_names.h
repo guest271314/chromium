@@ -44,6 +44,12 @@ namespace policy_prefs {
 inline constexpr char kAzureActiveDirectoryManagement[] =
     "management.platform.azure_active_directory";
 
+// TODO(crbug.com/531448879): Revert this change when AzureAD logic migration is
+// complete.
+// Integer pref that stores Azure Active Directory device management authority.
+inline constexpr char kAzureActiveDirectoryDeviceManagement[] =
+    "management.platform.azure_active_directory_device";
+
 // Integer pref that stores the Windows enterprise MDM management authority.
 inline constexpr char kEnterpriseMDMManagementWindows[] =
     "management.platform.enterprise_mdm_win";
@@ -51,6 +57,10 @@ inline constexpr char kEnterpriseMDMManagementWindows[] =
 // Integer pref that stores the Mac enterprise MDM management authority.
 inline constexpr char kEnterpriseMDMManagementMac[] =
     "management.platform.enterprise_mdm_mac";
+#elif BUILDFLAG(IS_ANDROID)
+// Integer pref that stores the Android enterprise MDM/ownership management authority.
+inline constexpr char kEnterpriseMDMManagementAndroid[] =
+    "management.platform.enterprise_mdm_android";
 #endif
 
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_ANDROID)
@@ -239,6 +249,13 @@ inline constexpr char kFloatingWorkspaceEnabled[] =
     "ash.floating_workspace_enabled";
 #endif
 
+#if BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_ANDROID)
+// Boolean controlling whether users can add secondary Google accounts. Set via
+// the SecondaryGoogleAccountSigninAllowed policy; defaults to true.
+inline constexpr char kSecondaryGoogleAccountSigninAllowed[] =
+    "account_manager.secondary_google_account_signin_allowed";
+#endif  // BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_ANDROID)
+
 // A boolean value indicating whether the built-in AI APIs are enabled.
 inline constexpr char kBuiltInAIAPIsEnabled[] =
     "policy.built_in_ai_apis_enabled";
@@ -248,6 +265,11 @@ inline constexpr char kBuiltInAIAPIsEnabled[] =
 // If false, explicit permission delegation is required.
 inline constexpr char kLocalNetworkAccessPermissionsPolicyDefaultEnabled[] =
     "policy.local_network_access_permissions_policy_default_enabled";
+
+// A boolean pref indicating whether WebSockets are disconnected when a page
+// enters the Back/Forward Cache.
+inline constexpr char kBackForwardCacheForWebSocketsAllowed[] =
+    "policy.back_forward_cache_for_web_sockets_allowed";
 
 }  // namespace policy_prefs
 }  // namespace policy

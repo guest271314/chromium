@@ -10,15 +10,23 @@
 #import "ios/chrome/browser/intelligence/bwg/model/gemini_session_delegate.h"
 #import "ios/chrome/browser/intelligence/bwg/model/gemini_view_state_delegate.h"
 
+class PrefService;
 class WebStateList;
 
-@protocol BWGCommands;
+namespace feature_engagement {
+class Tracker;
+}
+
+@protocol GeminiChatMessageHandler;
+@protocol GeminiCommands;
 @protocol SettingsCommands;
 
 // Handler for the Gemini sessions.
 @interface GeminiSessionHandler : NSObject <GeminiSessionDelegate>
 
 - (instancetype)initWithWebStateList:(WebStateList*)webStateList
+                             tracker:(feature_engagement::Tracker*)tracker
+                         prefService:(PrefService*)prefService
     NS_DESIGNATED_INITIALIZER;
 
 - (instancetype)init NS_UNAVAILABLE;
@@ -27,10 +35,17 @@ class WebStateList;
 @property(nonatomic, weak) id<GeminiViewStateDelegate> geminiViewStateDelegate;
 
 // The Gemini commands handler used by this session handler.
-@property(nonatomic, weak) id<BWGCommands> geminiHandler;
+@property(nonatomic, weak) id<GeminiCommands> geminiHandler;
+
+// The handler consulted before user chat messages are sent. Nil when no
+// feature intercepts chat messages, in which case every message is sent.
+@property(nonatomic, weak) id<GeminiChatMessageHandler> chatMessageHandler;
 
 // The settings commands handler used by this session handler.
 @property(nonatomic, weak) id<SettingsCommands> settingsHandler;
+
+// Whether the current session is the first session.
+@property(nonatomic, assign) BOOL isFirstSession;
 
 @end
 

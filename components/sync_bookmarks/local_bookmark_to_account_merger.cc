@@ -8,12 +8,12 @@
 #include <cstddef>
 #include <list>
 #include <optional>
+#include <ranges>
 #include <string>
 #include <unordered_map>
 #include <utility>
 #include <vector>
 
-#include "base/containers/adapters.h"
 #include "base/containers/flat_set.h"
 #include "base/feature_list.h"
 #include "base/hash/hash.h"
@@ -212,7 +212,7 @@ void LocalBookmarkToAccountMerger::RemoveChildrenAt(
   // lead to quadratic behavior. However, A/B experiments via variations led to
   // the conclusion that this simple implementation isn't slower than more
   // sophisticated variants, even at high percentiles.
-  for (size_t index : base::Reversed(indices_to_remove)) {
+  for (size_t index : std::views::reverse(indices_to_remove)) {
     const bookmarks::BookmarkNode* child = parent->children().at(index).get();
     model_->Remove(child, kEditSourceForMetrics, location);
   }
@@ -333,10 +333,10 @@ void LocalBookmarkToAccountMerger::MoveOrMergeDescendants(
   }
 
   // Remove the local nodes that were flagged for removal above.
-  RemoveChildrenAt(
-      local_subtree_root,
-      base::flat_set<size_t>(base::sorted_unique, local_indices_to_remove),
-      FROM_HERE);
+  RemoveChildrenAt(local_subtree_root,
+                   base::flat_set<size_t>(base::sorted_unique,
+                                          std::move(local_indices_to_remove)),
+                   FROM_HERE);
 }
 
 void LocalBookmarkToAccountMerger::MergeAndDeleteDescendantsThatMatchByUuid(
@@ -369,7 +369,7 @@ void LocalBookmarkToAccountMerger::MergeAndDeleteDescendantsThatMatchByUuid(
 
   RemoveChildrenAt(
       local_subtree_root,
-      base::flat_set<size_t>(base::sorted_unique, indices_to_remove),
+      base::flat_set<size_t>(base::sorted_unique, std::move(indices_to_remove)),
       FROM_HERE);
 }
 

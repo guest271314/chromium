@@ -926,7 +926,6 @@ inline CSSIdentifierValue::CSSIdentifierValue(EFillSizeType fill_size)
     case EFillSizeType::kCover:
       value_id_ = CSSValueID::kCover;
       break;
-    case EFillSizeType::kSizeNone:
     case EFillSizeType::kSizeLength:
     default:
       NOTREACHED();
@@ -1246,9 +1245,6 @@ inline CSSIdentifierValue::CSSIdentifierValue(ShapeBox css_box)
     case ShapeBox::kContentBox:
       value_id_ = CSSValueID::kContentBox;
       break;
-    case ShapeBox::kMissing:
-      // The missing box should convert to a null value.
-      NOTREACHED();
   }
 }
 
@@ -1303,6 +1299,12 @@ inline CSSIdentifierValue::CSSIdentifierValue(ItemPosition item_position)
     case ItemPosition::kEnd:
       value_id_ = CSSValueID::kEnd;
       break;
+    case ItemPosition::kFlowStart:
+      value_id_ = CSSValueID::kFlowStart;
+      break;
+    case ItemPosition::kFlowEnd:
+      value_id_ = CSSValueID::kFlowEnd;
+      break;
     case ItemPosition::kSelfStart:
       value_id_ = CSSValueID::kSelfStart;
       break;
@@ -1349,6 +1351,10 @@ inline ItemPosition CSSIdentifierValue::ConvertTo() const {
       return ItemPosition::kStart;
     case CSSValueID::kEnd:
       return ItemPosition::kEnd;
+    case CSSValueID::kFlowStart:
+      return ItemPosition::kFlowStart;
+    case CSSValueID::kFlowEnd:
+      return ItemPosition::kFlowEnd;
     case CSSValueID::kSelfStart:
       return ItemPosition::kSelfStart;
     case CSSValueID::kSelfEnd:
@@ -1389,6 +1395,12 @@ inline CSSIdentifierValue::CSSIdentifierValue(ContentPosition content_position)
     case ContentPosition::kEnd:
       value_id_ = CSSValueID::kEnd;
       break;
+    case ContentPosition::kFlowStart:
+      value_id_ = CSSValueID::kFlowStart;
+      break;
+    case ContentPosition::kFlowEnd:
+      value_id_ = CSSValueID::kFlowEnd;
+      break;
     case ContentPosition::kFlexStart:
       value_id_ = CSSValueID::kFlexStart;
       break;
@@ -1421,6 +1433,10 @@ inline ContentPosition CSSIdentifierValue::ConvertTo() const {
       return ContentPosition::kStart;
     case CSSValueID::kEnd:
       return ContentPosition::kEnd;
+    case CSSValueID::kFlowStart:
+      return ContentPosition::kFlowStart;
+    case CSSValueID::kFlowEnd:
+      return ContentPosition::kFlowEnd;
     case CSSValueID::kFlexStart:
       return ContentPosition::kFlexStart;
     case CSSValueID::kFlexEnd:
@@ -1555,6 +1571,9 @@ inline CSSIdentifierValue::CSSIdentifierValue(cc::SnapAxis axis)
     case cc::SnapAxis::kBoth:
       value_id_ = CSSValueID::kBoth;
       break;
+    case cc::SnapAxis::kPair:
+      value_id_ = CSSValueID::kPair;
+      break;
   }
 }
 
@@ -1571,6 +1590,8 @@ inline cc::SnapAxis CSSIdentifierValue::ConvertTo() const {
       return cc::SnapAxis::kInline;
     case CSSValueID::kBoth:
       return cc::SnapAxis::kBoth;
+    case CSSValueID::kPair:
+      return cc::SnapAxis::kPair;
     default:
       break;
   }
@@ -1690,16 +1711,10 @@ inline EMarginTrim CSSIdentifierValue::ConvertTo() const {
       return kMarginTrimNone;
     case CSSValueID::kBlock:
       return kMarginTrimBlock;
-    case CSSValueID::kInline:
-      return kMarginTrimInline;
     case CSSValueID::kBlockStart:
       return kMarginTrimBlockStart;
-    case CSSValueID::kInlineStart:
-      return kMarginTrimInlineStart;
     case CSSValueID::kBlockEnd:
       return kMarginTrimBlockEnd;
-    case CSSValueID::kInlineEnd:
-      return kMarginTrimInlineEnd;
     default:
       NOTREACHED();
   }
@@ -2249,9 +2264,14 @@ inline CSSIdentifierValue::CSSIdentifierValue(PositionVisibility visibility)
     case PositionVisibility::kAlways:
       value_id_ = CSSValueID::kAlways;
       break;
-    // TODO(crbug.com/332933527): Support kAnchorsValid.
-    case PositionVisibility::kAnchorsVisible:
-      value_id_ = CSSValueID::kAnchorsVisible;
+    case PositionVisibility::kAnchorValid:
+      value_id_ = CSSValueID::kAnchorValid;
+      break;
+    case PositionVisibility::kAnchorVisible:
+      value_id_ =
+          RuntimeEnabledFeatures::PositionVisibilitySingularValuesEnabled()
+              ? CSSValueID::kAnchorVisible
+              : CSSValueID::kAnchorsVisible;
       break;
     case PositionVisibility::kNoOverflow:
       value_id_ = CSSValueID::kNoOverflow;
@@ -2264,9 +2284,11 @@ inline PositionVisibility CSSIdentifierValue::ConvertTo() const {
   switch (GetValueID()) {
     case CSSValueID::kAlways:
       return PositionVisibility::kAlways;
-    // TODO(crbug.com/332933527): Support kAnchorsValid.
+    case CSSValueID::kAnchorValid:
+      return PositionVisibility::kAnchorValid;
+    case CSSValueID::kAnchorVisible:
     case CSSValueID::kAnchorsVisible:
-      return PositionVisibility::kAnchorsVisible;
+      return PositionVisibility::kAnchorVisible;
     case CSSValueID::kNoOverflow:
       return PositionVisibility::kNoOverflow;
     default:

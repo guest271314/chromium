@@ -49,7 +49,8 @@
 #include "components/policy/core/common/mock_policy_service.h"
 #include "components/policy/core/common/policy_service.h"
 #include "components/prefs/pref_service.h"
-#include "components/search_engines/search_engines_pref_names.h"
+#include "components/search_engines/search_engine_choice/search_engine_choice_service.h"
+#include "components/search_engines/search_engine_choice/search_engine_choice_utils.h"
 #include "components/search_engines/template_url.h"
 #include "components/search_engines/template_url_service.h"
 #include "components/signin/public/base/consent_level.h"
@@ -105,7 +106,6 @@ struct ExpectedMetricsState {
 
   bool sync_opt_in_started = false;
   bool sync_opt_in_completed = false;
-  bool sync_settings_opened = false;
   std::optional<signin_metrics::ProfileSignout> profile_signout;
   bool sync_turn_off = false;
 };
@@ -341,8 +341,11 @@ class TurnSyncOnHelperTest : public testing::Test {
 
   void SetUp() override {
     // TurnSyncOnHelperTest is no longer used when the feature is enabled.
-    scoped_feature_list_.InitAndDisableFeature(
-        syncer::kReplaceSyncPromosWithSignInPromos);
+    scoped_feature_list_.InitWithFeatures(
+        /*enabled_features=*/{},
+        /*disabled_features=*/{
+            syncer::kReplaceSyncPromosWithSignInPromos,
+            syncer::kReplaceSyncPromosWithSigninPromosNewSignin});
     const base::FilePath temp_user_data_dir =
         base::CreateUniqueTempDirectoryScopedToTest();
     TestingBrowserProcess::GetGlobal()->SetProfileManager(
@@ -360,7 +363,8 @@ class TurnSyncOnHelperTest : public testing::Test {
                                               /*add_to_storage=*/true);
     identity_test_env_profile_adaptor_ =
         std::make_unique<IdentityTestEnvironmentProfileAdaptor>(profile_);
-    account_id_ = identity_test_env()->MakeAccountAvailable(kEmail).account_id;
+    account_id_ =
+        identity_test_env()->MakeAccountAvailable(kEmail).GetAccountId();
 
     user_policy_signin_service_ = static_cast<FakeUserPolicySigninService*>(
         policy::UserPolicySigninServiceFactory::GetForProfile(profile()));
@@ -490,19 +494,19 @@ class TurnSyncOnHelperTest : public testing::Test {
   void WaitUntilFlowCompletion() { flow_completion_loop_.Run(); }
 
   void UseEnterpriseAccount() {
-    CoreAccountInfo core_account_info =
+    AccountInfo created_account_info =
         identity_test_env()->MakeAccountAvailable(kEnterpriseEmail);
-    account_id_ = core_account_info.account_id;
+    account_id_ = created_account_info.GetAccountId();
     user_policy_signin_service_->set_account(account_id_, kEnterpriseEmail);
 
     // Update the account info to have a consistent hosted domain field.
-    AccountInfo account_info =
-        identity_manager()->FindExtendedAccountInfo(core_account_info);
+    AccountInfo account_info = identity_manager()->FindExtendedAccountInfo(
+        created_account_info.GetCoreAccountInfo());
     EXPECT_FALSE(account_info.IsEmpty());
     account_info = AccountInfo::Builder(account_info)
                        .SetHostedDomain(kEnterpriseHostedDomain)
                        .Build();
-    AccountCapabilitiesTestMutator(&account_info.capabilities)
+    AccountCapabilitiesTestMutator(&account_info)
         .set_is_subject_to_enterprise_features(true);
     signin::UpdateAccountInfoForAccount(identity_manager(), account_info);
   }
@@ -590,11 +594,6 @@ class TurnSyncOnHelperTest : public testing::Test {
                 BucketsAre(Bucket(kAccessPoint,
                                   expected.sync_opt_in_completed ? 1 : 0)));
 
-    EXPECT_THAT(
-        histogram_tester_->GetAllSamples("Signin.SyncOptIn.OpenedSyncSettings"),
-        BucketsAre(
-            Bucket(kAccessPoint, expected.sync_settings_opened ? 1 : 0)));
-
     if (expected.profile_signout) {
       EXPECT_THAT(histogram_tester_->GetAllSamples("Signin.SignOut.Completed"),
                   BucketsAre(Bucket(expected.profile_signout.value(), 1)));
@@ -646,10 +645,10 @@ class TurnSyncOnHelperTest : public testing::Test {
       const AccountInfo& account_info,
       signin::SigninChoiceCallback callback) {
     EXPECT_FALSE(sync_confirmation_shown_);
-    EXPECT_FALSE(account_info.email.empty());
+    EXPECT_FALSE(account_info.GetEmail().empty());
     EXPECT_TRUE(enterprise_confirmation_email_.empty())
         << "Enterprise confirmation should be shown only once.";
-    enterprise_confirmation_email_ = account_info.email;
+    enterprise_confirmation_email_ = account_info.GetEmail();
     if (run_delegate_callbacks_) {
       std::move(callback).Run(enterprise_choice_);
     }
@@ -1518,16 +1517,13 @@ TEST_F(TurnSyncOnHelperTest, SearchEngineImportedToNewProfile) {
 
   // Set some search engine in the source profile.
   const char kCustomSearchEngineDomain[] = "bar.com";
-  int64_t search_engine_choice_timestamp =
-      base::Time::Now().ToDeltaSinceWindowsEpoch().InSeconds();
-  const char kChoiceVersion[] = "1.2.3.4";
-  PrefService* pref_service = profile()->GetPrefs();
-  pref_service->SetInt64(
-      prefs::kDefaultSearchProviderChoiceScreenCompletionTimestamp,
-      search_engine_choice_timestamp);
-  pref_service->SetString(
-      prefs::kDefaultSearchProviderChoiceScreenCompletionVersion,
-      kChoiceVersion);
+  search_engines::MarkSearchEngineChoiceCompletedForTesting(
+      *profile()->GetPrefs());
+  base::expected<search_engines::ChoiceCompletionMetadata,
+                 search_engines::ChoiceCompletionMetadata::ParseError>
+      original_metadata =
+          search_engines::GetChoiceCompletionMetadata(*profile()->GetPrefs());
+  ASSERT_TRUE(original_metadata.has_value());
 
   TemplateURLService* template_url_service =
       TemplateURLServiceFactory::GetForProfile(profile());
@@ -1557,12 +1553,17 @@ TEST_F(TurnSyncOnHelperTest, SearchEngineImportedToNewProfile) {
 
   // Check that the search engine was imported in the created profile.
   PrefService* new_pref_service = created_profile->GetPrefs();
-  EXPECT_EQ(new_pref_service->GetInt64(
-                prefs::kDefaultSearchProviderChoiceScreenCompletionTimestamp),
-            search_engine_choice_timestamp);
-  EXPECT_EQ(new_pref_service->GetString(
-                prefs::kDefaultSearchProviderChoiceScreenCompletionVersion),
-            kChoiceVersion);
+  base::expected<search_engines::ChoiceCompletionMetadata,
+                 search_engines::ChoiceCompletionMetadata::ParseError>
+      new_metadata =
+          search_engines::GetChoiceCompletionMetadata(*new_pref_service);
+  ASSERT_TRUE(new_metadata.has_value());
+  EXPECT_EQ(
+      new_metadata->timestamp.ToDeltaSinceWindowsEpoch().InSeconds(),
+      original_metadata->timestamp.ToDeltaSinceWindowsEpoch().InSeconds());
+  EXPECT_EQ(new_metadata->version, original_metadata->version);
+  EXPECT_EQ(new_metadata->serialized_program,
+            original_metadata->serialized_program);
 
   TemplateURLService* new_template_url_service =
       TemplateURLServiceFactory::GetForProfile(created_profile);
@@ -1651,8 +1652,7 @@ TEST_F(TurnSyncOnHelperTest, ConfigureSync) {
   CheckSigninMetrics({.sign_in_access_point = kAccessPoint,
                       .sign_in_recorded = true,
                       .sync_opt_in_started = true,
-                      .sync_opt_in_completed = true,
-                      .sync_settings_opened = true});
+                      .sync_opt_in_completed = true});
 }
 
 // Tests that the user is signed in and Sync configuration is complete.

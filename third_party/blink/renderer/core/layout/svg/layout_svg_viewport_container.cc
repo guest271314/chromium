@@ -23,6 +23,7 @@
 #include "third_party/blink/renderer/core/layout/svg/layout_svg_viewport_container.h"
 
 #include "third_party/blink/renderer/core/layout/hit_test_location.h"
+#include "third_party/blink/renderer/core/layout/hit_test_result.h"
 #include "third_party/blink/renderer/core/layout/svg/svg_layout_info.h"
 #include "third_party/blink/renderer/core/layout/svg/svg_layout_support.h"
 #include "third_party/blink/renderer/core/layout/svg/transform_helper.h"
@@ -30,6 +31,7 @@
 #include "third_party/blink/renderer/core/svg/svg_animated_length.h"
 #include "third_party/blink/renderer/core/svg/svg_length_context.h"
 #include "third_party/blink/renderer/core/svg/svg_viewport_container_element.h"
+#include "third_party/blink/renderer/core/svg/svg_zoom_migration.h"
 
 namespace blink {
 
@@ -85,7 +87,8 @@ SVGTransformChange LayoutSVGViewportContainer::UpdateLocalTransform(
 }
 
 gfx::RectF LayoutSVGViewportContainer::ViewBoxRect() const {
-  return To<SVGViewportContainerElement>(*GetElement()).CurrentViewBoxRect();
+  return To<SVGViewportContainerElement>(*GetElement())
+      .CurrentViewBoxRect(NoZoomWillBeSvgObjectZoom(Style()));
 }
 
 bool LayoutSVGViewportContainer::NodeAtPoint(
@@ -95,7 +98,8 @@ bool LayoutSVGViewportContainer::NodeAtPoint(
     HitTestPhase phase) {
   NOT_DESTROYED();
   // Respect the viewport clip which is in parent coordinates.
-  if (SVGLayoutSupport::IsOverflowHidden(*this)) {
+  if (SVGLayoutSupport::IsOverflowHidden(*this) &&
+      !result.GetHitTestRequest().IsHitTestVisualOverflow()) {
     TransformedHitTestLocation local_transformed_hit_location(
         hit_test_location, LocalSVGTransform());
 
@@ -119,19 +123,21 @@ AffineTransform LayoutSVGViewportContainer::ComputeViewboxTransform() const {
   const auto* svg = To<SVGViewportContainerElement>(GetElement());
 
   return AffineTransform::Translation(viewport_.x(), viewport_.y()) *
-         svg->ViewBoxToViewTransform(viewport_.size());
+         svg->ViewBoxToViewTransform(viewport_.size(),
+                                     NoZoomWillBeSvgObjectZoom(Style()));
 }
 
 void LayoutSVGViewportContainer::StyleDidChange(
     StyleDifference diff,
     const ComputedStyle* old_style,
+    const ComputedStyle& new_style,
     const StyleChangeContext& style_change_context) {
   NOT_DESTROYED();
-  LayoutSVGTransformableContainer::StyleDidChange(diff, old_style,
+  LayoutSVGTransformableContainer::StyleDidChange(diff, old_style, new_style,
                                                   style_change_context);
 
   if (old_style && (SVGLayoutSupport::IsOverflowHidden(*old_style) !=
-                    SVGLayoutSupport::IsOverflowHidden(StyleRef()))) {
+                    SVGLayoutSupport::IsOverflowHidden(new_style))) {
     // See NeedsOverflowClip() in PaintPropertyTreeBuilder for the reason.
     SetNeedsPaintPropertyUpdate();
   }

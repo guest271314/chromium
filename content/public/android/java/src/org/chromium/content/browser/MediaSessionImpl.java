@@ -6,14 +6,18 @@ package org.chromium.content.browser;
 
 import org.jni_zero.CalledByNative;
 import org.jni_zero.JNINamespace;
+import org.jni_zero.JniType;
 import org.jni_zero.NativeMethods;
 
 import org.chromium.base.ObserverList;
+import org.chromium.base.TriState;
+import org.chromium.base.TriStateUtils;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.content_public.browser.MediaSession;
 import org.chromium.content_public.browser.MediaSessionObserver;
 import org.chromium.content_public.browser.WebContents;
+import org.chromium.media_session.mojom.MediaSession.SuspendType;
 import org.chromium.services.media_session.MediaImage;
 import org.chromium.services.media_session.MediaMetadata;
 import org.chromium.services.media_session.MediaPosition;
@@ -36,7 +40,7 @@ public class MediaSessionImpl extends MediaSession {
     private final ObserverList.RewindableIterator<MediaSessionObserver> mObserversIterator;
 
     private boolean mIsControllable;
-    private @Nullable Boolean mIsSuspended;
+    private @TriState int mIsSuspended;
     private @Nullable MediaMetadata mMetadata;
     private @Nullable List<MediaImage> mImagesList;
     private @Nullable HashSet<Integer> mActionSet;
@@ -49,8 +53,8 @@ public class MediaSessionImpl extends MediaSession {
     @Override
     public void addObserver(MediaSessionObserver observer) {
         mObservers.addObserver(observer);
-        if (mIsSuspended != null) {
-            observer.mediaSessionStateChanged(mIsControllable, mIsSuspended);
+        if (mIsSuspended != TriState.NOT_SET) {
+            observer.mediaSessionStateChanged(mIsControllable, mIsSuspended == TriState.TRUE);
         }
         if (mMetadata != null) {
             observer.mediaSessionMetadataChanged(mMetadata);
@@ -77,13 +81,13 @@ public class MediaSessionImpl extends MediaSession {
     }
 
     @Override
-    public void resume() {
-        MediaSessionImplJni.get().resume(mNativeMediaSessionAndroid);
+    public void resume(@SuspendType.EnumType int suspendType) {
+        MediaSessionImplJni.get().resume(mNativeMediaSessionAndroid, suspendType);
     }
 
     @Override
-    public void suspend() {
-        MediaSessionImplJni.get().suspend(mNativeMediaSessionAndroid);
+    public void suspend(@SuspendType.EnumType int suspendType) {
+        MediaSessionImplJni.get().suspend(mNativeMediaSessionAndroid, suspendType);
     }
 
     @Override
@@ -138,7 +142,7 @@ public class MediaSessionImpl extends MediaSession {
     @CalledByNative
     private void mediaSessionStateChanged(boolean isControllable, boolean isSuspended) {
         mIsControllable = isControllable;
-        mIsSuspended = isSuspended;
+        mIsSuspended = TriStateUtils.from(isSuspended);
 
         for (mObserversIterator.rewind(); mObserversIterator.hasNext(); ) {
             mObserversIterator.next().mediaSessionStateChanged(isControllable, isSuspended);
@@ -146,7 +150,7 @@ public class MediaSessionImpl extends MediaSession {
     }
 
     @CalledByNative
-    private void mediaSessionMetadataChanged(MediaMetadata metadata) {
+    private void mediaSessionMetadataChanged(@Nullable MediaMetadata metadata) {
         mMetadata = metadata;
         for (mObserversIterator.rewind(); mObserversIterator.hasNext(); ) {
             mObserversIterator.next().mediaSessionMetadataChanged(metadata);
@@ -194,9 +198,13 @@ public class MediaSessionImpl extends MediaSession {
 
     @NativeMethods
     public interface Natives {
-        void resume(long nativeMediaSessionAndroid);
+        void resume(
+                long nativeMediaSessionAndroid,
+                @JniType("media_session::mojom::MediaSession::SuspendType") int suspendType);
 
-        void suspend(long nativeMediaSessionAndroid);
+        void suspend(
+                long nativeMediaSessionAndroid,
+                @JniType("media_session::mojom::MediaSession::SuspendType") int suspendType);
 
         void stop(long nativeMediaSessionAndroid);
 

@@ -48,6 +48,14 @@ bool OSExchangeData::IsFromPrivileged() const {
   return provider_->IsFromPrivileged();
 }
 
+void OSExchangeData::SetChromeDragId(const base::UnguessableToken& drag_id) {
+  provider_->SetChromeDragId(drag_id);
+}
+
+std::optional<base::UnguessableToken> OSExchangeData::GetChromeDragId() const {
+  return provider_->GetChromeDragId();
+}
+
 void OSExchangeData::SetString(std::u16string_view data) {
   provider_->SetString(data);
 }
@@ -132,7 +140,7 @@ bool OSExchangeData::HasAnyFormat(
 }
 
 void OSExchangeData::SetFileContents(const base::FilePath& filename,
-                                     const std::string& file_contents) {
+                                     base::span<const uint8_t> file_contents) {
   provider_->SetFileContents(filename, file_contents);
 }
 

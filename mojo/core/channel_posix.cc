@@ -21,6 +21,7 @@
 #include "base/logging.h"
 #include "base/message_loop/message_pump_for_io.h"
 #include "base/metrics/histogram_macros.h"
+#include "base/posix/eintr_wrapper.h"
 #include "base/synchronization/lock.h"
 #include "base/task/current_thread.h"
 #include "base/task/single_thread_task_runner.h"
@@ -29,6 +30,7 @@
 #include "base/types/fixed_array.h"
 #include "build/build_config.h"
 #include "mojo/public/cpp/platform/socket_utils_posix.h"
+#include "mojo/core/configuration.h"
 
 #if (BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_ANDROID))
 #include "mojo/core/channel_linux.h"
@@ -46,10 +48,13 @@ const size_t kMaxBatchReadCapacity = 256 * 1024;
 class MessageView {
  public:
   // Owns |message|. |offset| indexes the first unsent byte in the message.
-  MessageView(Channel::MessagePtr message, size_t offset)
+  MessageView(Channel::MessagePtr message,
+              size_t offset,
+              base::TimeTicks start_time = base::TimeTicks::Now())
       : message_(std::move(message)),
         offset_(offset),
-        handles_(message_->TakeHandles()) {
+        handles_(message_->TakeHandles()),
+        start_time_(start_time) {
     DCHECK(!message_->data_num_bytes() || message_->data_num_bytes() > offset_);
   }
 
@@ -63,8 +68,10 @@ class MessageView {
   ~MessageView() {
     if (message_ && base::ShouldRecordSubsampledMetric(
                         Channel::kMetricSubsamplingProbability)) {
-      UMA_HISTOGRAM_TIMES("Mojo.Channel.WriteMessageLatency",
-                          base::TimeTicks::Now() - start_time_);
+      base::TimeDelta latency = base::TimeTicks::Now() - start_time_;
+      UMA_HISTOGRAM_CUSTOM_MICROSECONDS_TIMES("Mojo.Channel.WriteLatencyUs",
+                                              latency, base::Microseconds(1),
+                                              base::Seconds(1), 100);
     }
   }
 
@@ -106,7 +113,7 @@ class MessageView {
   std::vector<PlatformHandleInTransit> handles_;
   size_t num_handles_sent_ = 0;
 
-  base::TimeTicks start_time_ = base::TimeTicks::Now();
+  base::TimeTicks start_time_;
 };
 
 ChannelPosix::ChannelPosix(
@@ -144,6 +151,8 @@ void ChannelPosix::ShutDownImpl() {
 void ChannelPosix::Write(MessagePtr message) {
   RecordSentMessageMetricsSubsampled(message->data_num_bytes());
 
+  base::TimeTicks start_time = base::TimeTicks::Now();
+
   bool write_error = false;
   {
     base::AutoLock lock(write_lock_);
@@ -151,11 +160,11 @@ void ChannelPosix::Write(MessagePtr message) {
       return;
     }
     if (outgoing_messages_.empty()) {
-      if (!WriteNoLock(MessageView(std::move(message), 0))) {
+      if (!WriteNoLock(MessageView(std::move(message), 0, start_time))) {
         reject_writes_ = write_error = true;
       }
     } else {
-      outgoing_messages_.emplace_back(std::move(message), 0);
+      outgoing_messages_.emplace_back(std::move(message), 0, start_time);
     }
   }
   if (write_error) {
@@ -244,6 +253,10 @@ void ChannelPosix::WaitForWriteOnIOThreadNoLock() {
 void ChannelPosix::ShutDownOnIOThread() {
   base::CurrentThread::Get()->RemoveDestructionObserver(this);
 
+  if (socket_.is_valid() && mojo::core::GetConfiguration().is_broker_process) {
+    std::ignore = HANDLE_EINTR(shutdown(socket_.get(), SHUT_RDWR));
+  }
+
   {
     base::AutoLock lock(write_lock_);
     reject_writes_ = true;
@@ -283,6 +296,13 @@ void ChannelPosix::OnFdReadable(int fd) {
   do {
     buffer_capacity = next_read_size;
     char* buffer = GetReadBuffer(&buffer_capacity);
+    // A null buffer means that computing the read size overflowed, which means
+    // we received a malformed message; bail.
+    if (!buffer) {
+      read_error = true;
+      validation_error = true;
+      break;
+    }
     DCHECK_GT(buffer_capacity, 0u);
 
     std::vector<base::ScopedFD> incoming_fds;
@@ -352,18 +372,34 @@ bool ChannelPosix::WriteNoLock(MessageView message_view) {
 
     ssize_t result;
     if (handles_written < num_handles) {
-      iovec iov = {const_cast<void*>(message_view.data()),
-                   message_view.data_num_bytes()};
       size_t num_handles_to_send =
           std::min(num_handles - handles_written, kMaxSendmsgHandles);
-      // TODO(crbug.com/439305148): Sending a large number of handles without
-      // a payload causes the message to be dropped.
-      CHECK(num_handles_to_send && (message_view.data_num_bytes() > 0));
+
+      // On Linux SOCK_STREAM sockets, sendmsg() must transmit at least 1 byte
+      // of non-ancillary data payload alongside SCM_RIGHTS file descriptors;
+      // otherwise, the ancillary data may be silently dropped by the kernel. If
+      // there are more handle batches left to send after this one, hold back at
+      // least 1 byte of data payload per future handle batch so subsequent
+      // sendmsg() calls have data bytes to pair with their descriptors.
+      size_t remaining_handles_after_this =
+          (num_handles - handles_written) - num_handles_to_send;
+      size_t num_future_batches =
+          (remaining_handles_after_this + kMaxSendmsgHandles - 1) /
+          kMaxSendmsgHandles;
+
+      if (message_view.data_num_bytes() < num_future_batches + 1) {
+        return false;
+      }
+      size_t bytes_to_send = message_view.data_num_bytes();
+      if (num_future_batches > 0) {
+        bytes_to_send -= num_future_batches;
+      }
+
+      iovec iov = {const_cast<void*>(message_view.data()), bytes_to_send};
       std::vector<base::ScopedFD> fds(num_handles_to_send);
       for (size_t i = 0; i < num_handles_to_send; ++i) {
         fds[i] = handles[i + handles_written].TakeHandle().TakeFD();
       }
-      // TODO: Handle lots of handles.
       result = SendmsgWithHandles(socket_.get(), &iov, 1, fds);
       if (result >= 0) {
 #if BUILDFLAG(IS_IOS)

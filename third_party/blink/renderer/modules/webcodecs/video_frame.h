@@ -58,13 +58,14 @@ class MODULES_EXPORT VideoFrame final : public ScriptWrappable,
  public:
   using CopyToPromise = ScriptPromise<IDLSequence<PlaneLayout>>;
 
-  // Creates a VideoFrame with a new VideoFrameHandle wrapping |frame|, and
-  // monitored using |monitoring_source_id|.
+  // Creates a VideoFrame with a new VideoFrameHandle wrapping `frame`, and
+  // monitored using `monitoring_source_id`. If `timestamp` is provided, it
+  // will be used instead of `frame->timestamp()`.
   VideoFrame(scoped_refptr<media::VideoFrame> frame,
              ExecutionContext*,
              std::string monitoring_source_id = std::string(),
              sk_sp<SkImage> sk_image = nullptr,
-             bool use_capture_timestamp = false);
+             std::optional<base::TimeDelta> timestamp = std::nullopt);
 
   // Creates a VideoFrame from an existing handle.
   // All frames sharing |handle| will have their |handle_| invalidated if any of
@@ -107,7 +108,7 @@ class MODULES_EXPORT VideoFrame final : public ScriptWrappable,
   uint32_t allocationSize(VideoFrameCopyToOptions* options, ExceptionState&);
 
   CopyToPromise copyTo(ScriptState* script_state,
-                       const AllowSharedBufferSource* destination,
+                       AllowSharedBufferSource* destination,
                        VideoFrameCopyToOptions* options,
                        ExceptionState& exception_state);
 
@@ -143,7 +144,7 @@ class MODULES_EXPORT VideoFrame final : public ScriptWrappable,
   bool IsOpaque() const override;
   bool IsAccelerated() const override;
 
-  void ConvertAndCopyToRGB(scoped_refptr<media::VideoFrame> frame,
+  bool ConvertAndCopyToRGB(scoped_refptr<media::VideoFrame> frame,
                            const gfx::Rect& src_rect,
                            const VideoFrameLayout& dest_layout,
                            base::span<uint8_t> buffer,
@@ -151,7 +152,7 @@ class MODULES_EXPORT VideoFrame final : public ScriptWrappable,
 
   CopyToPromise CopyToAsync(ScriptState* script_state,
                             scoped_refptr<media::VideoFrame> frame,
-                            gfx::Rect src_rect,
+                            scoped_refptr<media::VideoFrame> dest_frame,
                             const AllowSharedBufferSource* destination,
                             const VideoFrameLayout& dest_layout);
 

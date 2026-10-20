@@ -5,7 +5,7 @@
 #include "content/renderer/renderer_main_platform_delegate.h"
 
 #include "base/android/android_info.h"
-#include "base/metrics/histogram_macros.h"
+#include "base/system/sys_info.h"
 #include "base/trace_event/trace_event.h"
 #include "content/renderer/seccomp_sandbox_status_android.h"
 #include "sandbox/linux/seccomp-bpf-helpers/seccomp_starter_android.h"
@@ -35,6 +35,11 @@ void RendererMainPlatformDelegate::PlatformUninitialize() {
 
 bool RendererMainPlatformDelegate::EnableSandbox() {
   TRACE_EVENT0("startup", "RendererMainPlatformDelegate::EnableSandbox");
+
+  // Cache these values before the sandbox blocks access.
+  base::SysInfo::MaxFrequencyPerProcessor();
+  base::SysInfo::NumberOfEfficientProcessors();
+
   sandbox::SeccompStarterAndroid starter(
       base::android::android_info::sdk_int());
   // The policy compiler is only available if USE_SECCOMP_BPF is enabled.
@@ -64,9 +69,6 @@ bool RendererMainPlatformDelegate::EnableSandbox() {
   starter.StartSandbox();
 
   SetSeccompSandboxStatus(starter.status());
-  UMA_HISTOGRAM_ENUMERATION("Android.SeccompStatus.RendererSandbox",
-                            starter.status(),
-                            sandbox::SeccompSandboxStatus::STATUS_MAX);
 
   return true;
 }

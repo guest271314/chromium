@@ -9,11 +9,15 @@
 #include <utility>
 
 #include "ash/constants/ash_features.h"
+#include "base/check_deref.h"
+#include "base/check_is_test.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/strings/strcat.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/task/task_traits.h"
+#include "base/time/default_clock.h"
+#include "base/time/default_tick_clock.h"
 #include "chrome/browser/apps/app_service/app_icon/app_icon_factory.h"
 #include "chrome/browser/apps/app_service/app_icon/app_icon_util.h"
 #include "chrome/browser/apps/app_service/app_install/app_install_service.h"
@@ -37,6 +41,7 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/grit/browser_resources.h"
 #include "chrome/grit/chrome_unscaled_resources.h"
+#include "chromeos/ash/components/browser_context_helper/annotated_account_id.h"
 #include "chromeos/ash/components/browser_context_helper/browser_context_types.h"
 #include "chromeos/constants/chromeos_features.h"
 #include "components/account_id/account_id.h"
@@ -46,7 +51,7 @@
 #include "components/grit/components_resources.h"
 #include "components/services/app_service/public/cpp/app_capability_access_cache_wrapper.h"
 #include "components/services/app_service/public/cpp/app_registry_cache_wrapper.h"
-#include "components/services/app_service/public/cpp/features.h"
+#include "components/services/app_service/public/cpp/app_service_registry.h"
 #include "components/services/app_service/public/cpp/icon_effects.h"
 #include "components/services/app_service/public/cpp/intent_filter.h"
 #include "components/services/app_service/public/cpp/intent_filter_util.h"
@@ -69,6 +74,26 @@ constexpr int32_t kAppDialogIconSize = 48;
 
 namespace apps {
 
+AppServiceProxyAsh::ScopedAppServiceRegistrar::ScopedAppServiceRegistrar(
+    AppServiceRegistry* registry)
+    : registry_(CHECK_DEREF(registry)) {}
+
+AppServiceProxyAsh::ScopedAppServiceRegistrar::~ScopedAppServiceRegistrar() {
+  if (!account_id_.empty()) {
+    registry_->Unregister(account_id_);
+  }
+}
+
+void AppServiceProxyAsh::ScopedAppServiceRegistrar::Register(
+    const AccountId& account_id,
+    AppService* app_service) {
+  CHECK(account_id_.empty());
+  CHECK(!account_id.empty());
+  CHECK(app_service);
+  account_id_ = account_id;
+  registry_->Register(account_id_, app_service);
+}
+
 AppServiceProxyAsh::OnAppsRequest::OnAppsRequest(std::vector<AppPtr> deltas,
                                                  AppType app_type,
                                                  bool should_notify_initialized)
@@ -84,6 +109,24 @@ AppServiceProxyAsh::AppServiceProxyAsh(
     : AppServiceProxyBase(profile, publisher_host_factory),
       icon_reader_(profile),
       icon_writer_(profile) {
+  // For regular users, the instance is created against the main profile,
+  // but for guest users, the instance is created against their incognito
+  // profiles. To take the AccountId properly for both cases, we pass the
+  // original profile to AnnotatedAccountId::Get().
+  const AccountId* account_id =
+      ash::AnnotatedAccountId::Get(profile->GetOriginalProfile());
+  if (auto* registry = apps::AppServiceRegistry::Get();
+      account_id && registry) {
+    app_service_registrar_.emplace(registry).Register(*account_id, this);
+  } else {
+    // On unittests, AppServiceRegistry may not be yet instantiated.
+    // TODO(crbug.com/477191550): After migrating ChromeOS system into
+    // AppServiceRegistry use, revisit here to decide whether or not to keep
+    // this condition.
+    // TODO(crbug.com/547000240): For some unknown cases, AppServiceProxyAsh
+    // is created for non-user profiles. Investigate the cases, and revive
+    // the CHECK_IS_TEST().
+  }
 }
 
 AppServiceProxyAsh::~AppServiceProxyAsh() {
@@ -149,7 +192,10 @@ void AppServiceProxyAsh::Initialize() {
   if (!profile_->AsTestingProfile() &&
       !::ash::IsShimlessRmaAppBrowserContext(profile_)) {
     app_platform_metrics_service_ =
-        std::make_unique<apps::AppPlatformMetricsService>(profile_);
+        std::make_unique<apps::AppPlatformMetricsService>(
+            profile_, base::DefaultClock::GetInstance(),
+            base::DefaultTickClock::GetInstance(),
+            base::SequencedTaskRunner::GetCurrentDefault());
     base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
         FROM_HERE, base::BindOnce(&AppServiceProxyAsh::InitAppPlatformMetrics,
                                   weak_ptr_factory_.GetWeakPtr()));
@@ -372,10 +418,6 @@ void AppServiceProxyAsh::LaunchAppWithIntent(const std::string& app_id,
   }
 }
 
-base::WeakPtr<AppServiceProxyAsh> AppServiceProxyAsh::GetWeakPtr() {
-  return weak_ptr_factory_.GetWeakPtr();
-}
-
 void AppServiceProxyAsh::ReInitializeCrostiniForTesting() {
   if (publisher_host_) {
     publisher_host_->ReInitializeCrostiniForTesting();  // IN-TEST
@@ -530,7 +572,7 @@ void AppServiceProxyAsh::UninstallImpl(const std::string& app_id,
                                          &callback](
                                             const apps::AppUpdate& update) {
     auto icon_key = update.IconKey();
-    DCHECK(icon_key.has_value());
+    CHECK(icon_key.has_value(), base::NotFatalUntil::M161);
     auto app_type = update.AppType();
     auto uninstall_dialog_ptr = std::make_unique<UninstallDialog>(
         profile_, app_type, update.AppId(), update.Name(), parent_window,
@@ -557,14 +599,14 @@ void AppServiceProxyAsh::OnUninstallDialogClosed(
     UninstallDialog* uninstall_dialog) {
   if (uninstall) {
     auto* publisher = GetPublisher(app_type);
-    DCHECK(publisher);
+    CHECK(publisher, base::NotFatalUntil::M161);
     publisher->Uninstall(app_id, uninstall_source, clear_site_data,
                          report_abuse);
 
     PerformPostUninstallTasks(app_type, app_id, uninstall_source);
   }
 
-  DCHECK(uninstall_dialog);
+  CHECK(uninstall_dialog, base::NotFatalUntil::M161);
   auto it = uninstall_dialogs_.find(app_id);
   CHECK(it != uninstall_dialogs_.end());
   uninstall_dialogs_.erase(it);
@@ -606,7 +648,7 @@ bool AppServiceProxyAsh::MaybeShowLaunchPreventionDialog(
       pending_pause_requests_.IsPaused(update.AppId())) {
     ash::app_time::AppTimeLimitInterface* app_limit =
         ash::ChildUserServiceFactory::GetForBrowserContext(profile_);
-    DCHECK(app_limit);
+    CHECK(app_limit, base::NotFatalUntil::M161);
     auto time_limit =
         app_limit->GetTimeLimitForApp(update.AppId(), update.AppType());
     if (!time_limit.has_value()) {

@@ -29,16 +29,13 @@
 LINK_RESOURCE_ID(0, 0)
 
 // InfoBar resources.
-LINK_RESOURCE_ID(IDR_INFOBAR_AUTOFILL_CC, R.drawable.infobar_autofill_cc)
+LINK_RESOURCE_ID(IDR_INFOBAR_AUTOFILL_CC, R.drawable.ic_autofill_cc)
 
 // Android only infobars.
-DECLARE_RESOURCE_ID(IDR_ANDROID_INFOBAR_LITE_MODE, R.drawable.preview_pin_round)
-DECLARE_RESOURCE_ID(IDR_ANDROID_INFOBAR_NOTIFICATIONS_OFF,
+DECLARE_RESOURCE_ID(IDR_ANDROID_MESSAGE_NOTIFICATIONS_OFF,
                     R.drawable.permission_push_notification_off)
-DECLARE_RESOURCE_ID(IDR_ANDROID_INFOBAR_PREVIEWS, R.drawable.infobar_chrome)
-DECLARE_RESOURCE_ID(IDR_ANDROID_INFOBAR_SAFETYTIP_SHIELD,
+DECLARE_RESOURCE_ID(IDR_ANDROID_MESSAGE_SAFETYTIP_SHIELD,
                     R.drawable.safetytip_shield)
-DECLARE_RESOURCE_ID(IDR_ANDROID_INFOBAR_TRANSLATE, R.drawable.infobar_translate)
 LINK_RESOURCE_ID(IDR_AUTOFILL_GOOGLE_PAY_WITH_DIVIDER,
                  R.drawable.google_pay_with_divider)
 
@@ -73,7 +70,7 @@ DECLARE_RESOURCE_ID(IDR_ANDROID_PASSWORD_MANAGER_LOGO_24DP,
 #endif
 
 // The icon shown when an update to GMSCore is needed.
-DECLARE_RESOURCE_ID(IDR_ANDROID_IC_ERROR, R.drawable.ic_error)
+DECLARE_RESOURCE_ID(IDR_ANDROID_IC_ERROR, R.drawable.ic_error_24dp)
 
 DECLARE_RESOURCE_ID(IDR_SEND_TAB_TO_SELF, R.drawable.send_tab)
 
@@ -82,6 +79,10 @@ DECLARE_RESOURCE_ID(IDR_ANDROID_AUTOFILL_ADDRESS,
                     R.drawable.ic_location_on_fill_24dp)
 DECLARE_RESOURCE_ID(IDR_ANDROID_AUTOFILL_UPLOAD_ADDRESS,
                     R.drawable.ic_cloud_upload_24dp)
+
+// Icon displayed in the email verification message on Android.
+DECLARE_RESOURCE_ID(IDR_ANDROID_AUTOFILL_EMAIL_VERIFIED,
+                    R.drawable.ic_mark_email_read_24dp)
 
 // We use PNG files for the following images.
 LINK_RESOURCE_ID(IDR_CREDIT_CARD_CVC_HINT_BACK, R.drawable.cvc_icon)
@@ -92,6 +93,11 @@ DECLARE_RESOURCE_ID(IDR_ANDROID_INFO_OUTLINE_LOGO_24DP, R.drawable.ic_info_24dp)
 
 // A generic help icon.
 DECLARE_RESOURCE_ID(IDR_ANDROID_IC_HELP_24DP, R.drawable.ic_help_24dp)
+
+DECLARE_RESOURCE_ID(IDR_ANDROID_IC_SPARK_24DP, R.drawable.ic_spark_24dp)
+DECLARE_RESOURCE_ID(IDR_ANDROID_IC_SPARK_BLUE, R.drawable.ic_spark_blue_24dp)
+DECLARE_RESOURCE_ID(IDR_ANDROID_IC_GOOGLE_SERVICES,
+                    R.drawable.ic_google_services_24dp)
 
 // About this site resources
 // Page insights logo is used for Google branded builds only.

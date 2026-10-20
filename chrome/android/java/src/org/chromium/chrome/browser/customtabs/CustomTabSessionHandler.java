@@ -28,6 +28,7 @@ import org.chromium.chrome.browser.customtabs.content.CustomTabActivityTabProvid
 import org.chromium.chrome.browser.customtabs.content.CustomTabIntentHandler;
 import org.chromium.chrome.browser.customtabs.features.toolbar.CustomTabToolbarCoordinator;
 import org.chromium.chrome.browser.lifecycle.ActivityLifecycleDispatcher;
+import org.chromium.chrome.browser.lifecycle.DestroyObserver;
 import org.chromium.chrome.browser.lifecycle.StartStopWithNativeObserver;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.components.embedder_support.util.Origin;
@@ -40,7 +41,8 @@ import java.util.function.Supplier;
  * unregisters itself in {@link SessionDataHolder}.
  */
 @NullMarked
-public class CustomTabSessionHandler implements SessionHandler, StartStopWithNativeObserver {
+public class CustomTabSessionHandler
+        implements SessionHandler, StartStopWithNativeObserver, DestroyObserver {
 
     private static final String TAG = "CctSessionHandler";
 
@@ -83,8 +85,19 @@ public class CustomTabSessionHandler implements SessionHandler, StartStopWithNat
         SessionDataHolder.getInstance().removeActiveHandler(this);
     }
 
+    // SessionDataHolder stores a weak reference to this handler per task, and weak references are
+    // not cleared until garbage collection. Clear it explicitly on destruction so cross-task
+    // routing cannot dispatch to a destroyed activity. The task's session entry and activity class
+    // are kept so CLEAR_TOP routing still works if Android later recreates this activity (see
+    // SessionDataHolder#removeHandlerFromTask). Complemented by handleIntent(), which returns false
+    // for a finishing or destroyed activity so LaunchIntentDispatcher launches a new one instead.
     @Override
-    public @Nullable SessionHolder<?> getSession() {
+    public void onDestroy() {
+        SessionDataHolder.getInstance().removeHandlerFromTask(this);
+    }
+
+    @Override
+    public @Nullable SessionHolder getSession() {
         return mIntentDataProvider.getSession();
     }
 
@@ -149,8 +162,10 @@ public class CustomTabSessionHandler implements SessionHandler, StartStopWithNat
 
     @Override
     public boolean handleIntent(Intent intent) {
-        // This method exists only for legacy reasons, see LaunchIntentDispatcher#
-        // clearTopIntentsForCustomTabsEnabled.
+        if (mActivity.isFinishing() || mActivity.isDestroyed()) return false;
+        // This method is used for legacy non-clearTop intent delivery as well as
+        // cross-task TWA shortcut intent routing (see
+        // LaunchIntentDispatcher#launchCustomTabActivity).
         CustomTabIntentDataProvider dataProvider =
                 new CustomTabIntentDataProvider(
                         intent, mActivity, CustomTabsIntent.COLOR_SCHEME_LIGHT);
@@ -160,7 +175,7 @@ public class CustomTabSessionHandler implements SessionHandler, StartStopWithNat
 
     @Override
     public boolean canUseReferrer(Uri referrer) {
-        SessionHolder<?> session = mIntentDataProvider.getSession();
+        SessionHolder session = mIntentDataProvider.getSession();
         String packageName =
                 CustomTabsConnection.getInstance().getClientPackageNameForSession(session);
         if (TextUtils.isEmpty(packageName)) return false;

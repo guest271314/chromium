@@ -21,8 +21,13 @@
 #include "base/synchronization/lock.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/test/bind.h"
+#include "base/test/metrics/histogram_tester.h"
 #include "base/test/simple_test_tick_clock.h"
+#include "base/test/tracing/trace_test_utils.h"
 #include "base/time/time.h"
+#include "base/timer/mock_timer.h"
+#include "base/trace_event/trace_config.h"
+#include "base/trace_event/trace_log.h"
 #include "base/unguessable_token.h"
 #include "build/build_config.h"
 #include "cc/animation/animation_host.h"
@@ -35,7 +40,6 @@
 #include "cc/layers/picture_layer.h"
 #include "cc/layers/solid_color_layer.h"
 #include "cc/layers/texture_layer.h"
-#include "cc/layers/video_layer.h"
 #include "cc/layers/view_transition_content_layer.h"
 #include "cc/metrics/begin_main_frame_metrics.h"
 #include "cc/metrics/events_metrics_manager.h"
@@ -44,6 +48,7 @@
 #include "cc/resources/ui_resource_manager.h"
 #include "cc/test/fake_content_layer_client.h"
 #include "cc/test/fake_frame_info.h"
+#include "cc/test/fake_layer_tree_host.h"
 #include "cc/test/fake_layer_tree_host_delegate.h"
 #include "cc/test/fake_paint_image_generator.h"
 #include "cc/test/fake_picture_layer.h"
@@ -52,7 +57,6 @@
 #include "cc/test/fake_recording_source.h"
 #include "cc/test/fake_scoped_ui_resource.h"
 #include "cc/test/fake_scrollbar_layer.h"
-#include "cc/test/fake_video_frame_provider.h"
 #include "cc/test/layer_test_common.h"
 #include "cc/test/layer_tree_test.h"
 #include "cc/test/mock_latency_info_swap_promise_monitor.h"
@@ -62,6 +66,7 @@
 #include "cc/test/skia_common.h"
 #include "cc/test/stub_input_handler_client.h"
 #include "cc/test/test_layer_tree_frame_sink.h"
+#include "cc/test/test_task_graph_runner.h"
 #include "cc/trees/clip_node.h"
 #include "cc/trees/compositor_commit_data.h"
 #include "cc/trees/effect_node.h"
@@ -71,6 +76,7 @@
 #include "cc/trees/paint_holding_reason.h"
 #include "cc/trees/property_tree_layer_tree_delegate.h"
 #include "cc/trees/proxy.h"
+#include "cc/trees/proxy_impl.h"
 #include "cc/trees/proxy_main.h"
 #include "cc/trees/scroll_node.h"
 #include "cc/trees/single_thread_proxy.h"
@@ -90,6 +96,7 @@
 #include "components/viz/common/quads/draw_quad.h"
 #include "components/viz/common/quads/texture_draw_quad.h"
 #include "components/viz/common/quads/tile_draw_quad.h"
+#include "components/viz/common/surfaces/local_surface_id.h"
 #include "components/viz/service/display/output_surface.h"
 #include "components/viz/service/display/skia_output_surface.h"
 #include "components/viz/service/layers/layer_context_impl.h"
@@ -894,7 +901,16 @@ class LayerTreeHostTestSetNeedsCommit2 : public LayerTreeHostTest {
   std::atomic<int> num_draws_;
 };
 
-TEST_F(LayerTreeHostTestSetNeedsCommit2, RunMultiThread_DelegatingRenderer) {
+// TODO(crbug.com/527726460): Flaky on Linux and Windows debug builds.
+#if (BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_WIN)) && !defined(NDEBUG)
+#define MAYBE_RunMultiThread_DelegatingRenderer \
+  DISABLED_RunMultiThread_DelegatingRenderer
+#else
+#define MAYBE_RunMultiThread_DelegatingRenderer \
+  RunMultiThread_DelegatingRenderer
+#endif
+TEST_F(LayerTreeHostTestSetNeedsCommit2,
+       MAYBE_RunMultiThread_DelegatingRenderer) {
   RunTest(CompositorMode::THREADED);
 }
 
@@ -2108,18 +2124,29 @@ SINGLE_THREAD_TEST_F(LayerTreeHostTestAnimationTransformMutatedUsingLayerLists);
 class LayerTreeHostTestAnimationFilterMutatedNotUsingLayerLists
     : public LayerTreeHostTest {
  protected:
+  void SetupTree() override {
+    root_ = Layer::Create();
+    child_ = Layer::Create();
+    root_->AddChild(child_);
+    layer_tree_host()->SetRootLayer(root_);
+    LayerTreeHostTest::SetupTree();
+  }
+
   void BeginTest() override {
-    Layer* root = layer_tree_host()->root_layer();
     FilterOperations filters;
-    EXPECT_EQ(FilterOperations(), root->filters());
+    EXPECT_EQ(FilterOperations(), child_->filters());
     filters.Append(FilterOperation::CreateOpacityFilter(0.5f));
     layer_tree_host()->SetElementFilterMutated(
-        root->element_id(), ElementListType::ACTIVE, filters);
+        child_->element_id(), ElementListType::ACTIVE, filters);
     // When not using layer lists, filters are just stored directly on the
     // layer.
-    EXPECT_EQ(filters, root->filters());
+    EXPECT_EQ(filters, child_->filters());
     EndTest();
   }
+
+ private:
+  scoped_refptr<Layer> root_;
+  scoped_refptr<Layer> child_;
 };
 
 SINGLE_THREAD_TEST_F(LayerTreeHostTestAnimationFilterMutatedNotUsingLayerLists);
@@ -2132,27 +2159,42 @@ class LayerTreeHostTestAnimationFilterMutatedUsingLayerLists
   }
 
  protected:
+  void SetupTree() override {
+    root_ = Layer::Create();
+    child_ = Layer::Create();
+    root_->AddChild(child_);
+    layer_tree_host()->SetRootLayer(root_);
+    LayerTreeHostTest::SetupTree();
+    CopyProperties(root_.get(), child_.get());
+    auto& effect_node = CreateEffectNode(child_.get());
+    effect_node.render_surface_reason = RenderSurfaceReason::kTest;
+  }
+
   void BeginTest() override {
-    Layer* root = layer_tree_host()->root_layer();
-    EXPECT_EQ(FilterOperations(), layer_tree_host()
-                                      ->property_trees()
-                                      ->effect_tree()
-                                      .FindNodeFromElementId(root->element_id())
-                                      ->filters);
+    EXPECT_EQ(FilterOperations(),
+              layer_tree_host()
+                  ->property_trees()
+                  ->effect_tree()
+                  .FindNodeFromElementId(child_->element_id())
+                  ->filters);
 
     FilterOperations filters;
     filters.Append(FilterOperation::CreateOpacityFilter(0.5f));
     layer_tree_host()->SetElementFilterMutated(
-        root->element_id(), ElementListType::ACTIVE, filters);
+        child_->element_id(), ElementListType::ACTIVE, filters);
 
     // The filter should have been set directly on the effect node instead.
     EXPECT_EQ(filters, layer_tree_host()
                            ->property_trees()
                            ->effect_tree()
-                           .FindNodeFromElementId(root->element_id())
+                           .FindNodeFromElementId(child_->element_id())
                            ->filters);
     EndTest();
   }
+
+ private:
+  scoped_refptr<Layer> root_;
+  scoped_refptr<Layer> child_;
 };
 
 SINGLE_THREAD_TEST_F(LayerTreeHostTestAnimationFilterMutatedUsingLayerLists);
@@ -3719,7 +3761,8 @@ class LayerTreeHostTestDeviceScaleFactorScalesViewportAndLayers
 
     // Both layers should be drawing into the root render surface.
     ASSERT_EQ(1u, render_surface_list.size());
-    ASSERT_EQ(GetRenderSurface(root), render_surface_list[0]);
+    ASSERT_EQ(GetRenderSurface(root),
+              impl->active_tree()->GetRenderSurface(render_surface_list[0]));
     ASSERT_EQ(2, GetRenderSurface(root)->num_contributors());
 
     // The root render surface is the size of the viewport.
@@ -5763,28 +5806,6 @@ class LayerInvalidateCausesDraw : public LayerTreeHostTest {
   int num_draws_;
 };
 
-// VideoLayer must support being invalidated and then passing that along
-// to the compositor thread, even though no resources are updated in
-// response to that invalidation.
-class LayerTreeHostTestVideoLayerInvalidate : public LayerInvalidateCausesDraw {
- public:
-  void SetupTree() override {
-    LayerTreeHostTest::SetupTree();
-    scoped_refptr<VideoLayer> video_layer =
-        VideoLayer::Create(&provider_, media::VIDEO_ROTATION_0);
-    video_layer->SetBounds(gfx::Size(10, 10));
-    video_layer->SetIsDrawable(true);
-    layer_tree_host()->root_layer()->AddChild(video_layer);
-
-    invalidate_layer_ = video_layer;
-  }
-
- private:
-  FakeVideoFrameProvider provider_;
-};
-
-SINGLE_AND_MULTI_THREAD_TEST_F(LayerTreeHostTestVideoLayerInvalidate);
-
 class LayerTreeHostTestPushHiddenLayer : public LayerTreeHostTest {
  protected:
   void SetupTree() override {
@@ -7265,6 +7286,77 @@ class LayerTreeHostTestBypassSchedulerPauseSoon : public LayerTreeHostTest {
 
 MULTI_THREAD_TEST_F(LayerTreeHostTestBypassSchedulerPauseSoon);
 
+class LayerTreeHostTestPauseRenderingUntilVisibilityChangeTimeout
+    : public LayerTreeHostTest {
+ public:
+  void BeginTest() override { PostSetNeedsCommitToMainThread(); }
+
+  void DidActivateTreeOnThread(LayerTreeHostImpl* host_impl) override {
+    if (!timer_initialized_) {
+      timer_initialized_ = true;
+      auto timer = std::make_unique<base::MockOneShotTimer>();
+      auto* proxy_impl =
+          static_cast<ProxyImpl*>(host_impl->delegate_for_testing());
+      proxy_impl->SetPauseRenderingUntilVisibilityChangeTimerForTesting(
+          std::move(timer));
+    }
+  }
+
+  void DidCommitAndDrawFrame() override {
+    if (layer_tree_host()->SourceFrameNumber() == 1) {
+      rendering_paused_ = layer_tree_host()->PauseRendering();
+      rendering_paused_->SetDelayUntilVisibilityChange();
+      rendering_paused_.reset();
+
+      auto* proxy_main = static_cast<ProxyMain*>(layer_tree_host()->proxy());
+      ImplThreadTaskRunner()->PostTask(
+          FROM_HERE,
+          base::BindOnce(
+              &LayerTreeHostTestPauseRenderingUntilVisibilityChangeTimeout::
+                  FireTimerOnImplThread,
+              base::Unretained(this), proxy_main->proxy_impl_for_testing()));
+    } else if (timer_fired_) {
+      EndTest();
+    }
+  }
+
+  void FireTimerOnImplThread(ProxyImpl* proxy_impl) {
+    auto* mock_timer = static_cast<base::MockOneShotTimer*>(
+        proxy_impl->PauseRenderingUntilVisibilityChangeTimerForTesting());
+    EXPECT_TRUE(mock_timer->IsRunning());
+    EXPECT_EQ(mock_timer->GetCurrentDelay(), base::Milliseconds(300));
+    mock_timer->Fire();
+    EXPECT_FALSE(mock_timer->IsRunning());
+    timer_fired_ = true;
+
+    MainThreadTaskRunner()->PostTask(
+        FROM_HERE,
+        base::BindOnce(
+            &LayerTreeHostTestPauseRenderingUntilVisibilityChangeTimeout::
+                UnpauseAndCommitOnMainThread,
+            base::Unretained(this)));
+  }
+
+  void UnpauseAndCommitOnMainThread() {
+    layer_tree_host()->SetNeedsCommitWithForcedRedraw();
+  }
+
+  void AfterTest() override {
+    histogram_tester_.ExpectUniqueSample(
+        "Compositing.Renderer.PauseRenderingUntilVisibilityChangeTimeout", true,
+        1);
+  }
+
+ private:
+  std::unique_ptr<ScopedPauseRendering> rendering_paused_;
+  bool timer_initialized_ = false;
+  bool timer_fired_ = false;
+  base::HistogramTester histogram_tester_;
+};
+
+MULTI_THREAD_TEST_F(
+    LayerTreeHostTestPauseRenderingUntilVisibilityChangeTimeout);
+
 class LayerTreeHostTestActivateOnInvisible : public LayerTreeHostTest {
  public:
   LayerTreeHostTestActivateOnInvisible()
@@ -7690,7 +7782,9 @@ class LayerTreeHostTestCrispUpAfterPinchEnds : public LayerTreeHostTest {
       case 3:
         // Wait one extra frame to make sure tiling with scale 1.0 is deleted
         // in TreesInViz mode.
-        host_impl->SetNeedsFullViewportRedraw();
+        host_impl->SetFullViewportDamage();
+        host_impl->SetNeedsRedraw(/*animation_only=*/false,
+                                  /*skip_if_inside_draw=*/false);
         break;
       case 4:
         // Pinch zoom back to 1.f but don't end it.
@@ -8553,16 +8647,16 @@ class LayerTreeHostTestSubmitFrameResources : public LayerTreeHostTest {
                                    DrawResult draw_result) override {
     frame->render_passes.clear();
 
-    viz::CompositorRenderPass* child_pass = AddRenderPass(
-        &frame->render_passes, viz::CompositorRenderPassId{2},
-        gfx::Rect(3, 3, 100, 100), gfx::Transform(), FilterOperations());
+    viz::CompositorRenderPass* child_pass =
+        AddRenderPass(&frame->render_passes, viz::CompositorRenderPassId{2},
+                      gfx::Rect(3, 3, 100, 100), gfx::Transform());
     std::vector<viz::ResourceId> child_resources =
         AddOneOfEveryQuadType(child_pass, host_impl->resource_provider(),
                               viz::CompositorRenderPassId{0});
 
-    viz::CompositorRenderPass* pass = AddRenderPass(
-        &frame->render_passes, viz::CompositorRenderPassId{1},
-        gfx::Rect(3, 3, 100, 100), gfx::Transform(), FilterOperations());
+    viz::CompositorRenderPass* pass =
+        AddRenderPass(&frame->render_passes, viz::CompositorRenderPassId{1},
+                      gfx::Rect(3, 3, 100, 100), gfx::Transform());
     std::vector<viz::ResourceId> root_resources = AddOneOfEveryQuadType(
         pass, host_impl->resource_provider(), child_pass->id);
 
@@ -9708,6 +9802,8 @@ class LayerTreeHostTestEventsMetrics : public LayerTreeHostTest {
   void SimulateEventOnMain() {
     base::SimpleTestTickClock tick_clock;
     tick_clock.Advance(base::Microseconds(10));
+    base::TimeTicks scroll_begin_generated_timestamp = tick_clock.NowTicks();
+    tick_clock.Advance(base::Microseconds(10));
     base::TimeTicks scroll_begin_arrival_timestamp = tick_clock.NowTicks();
     tick_clock.Advance(base::Microseconds(10));
     base::TimeTicks event_time = tick_clock.NowTicks();
@@ -9723,6 +9819,8 @@ class LayerTreeHostTestEventsMetrics : public LayerTreeHostTest {
             /*arrived_in_browser_main_timestamp=*/
             arrived_in_browser_main_timestamp,
             /*tick_clock=*/&tick_clock, /*trace_id=*/std::nullopt,
+            /*scroll_begin_generated_timestamp=*/
+            scroll_begin_generated_timestamp,
             /*scroll_begin_arrival_timestamp=*/scroll_begin_arrival_timestamp);
     DCHECK_NE(metrics, nullptr);
     {
@@ -9973,8 +10071,7 @@ class LayerTreeHostTestKeepEventsMetricsForDeferredCommit
   }
 
   void StopDeferringCommitOnMain() {
-    layer_tree_host()->StopDeferringCommits(
-        PaintHoldingCommitTrigger::kFirstContentfulPaint);
+    layer_tree_host()->StopDeferringCommits();
   }
 
   void PostStopDeferringCommit() {
@@ -12258,6 +12355,83 @@ class LayerTreeHostTestTreesInVizSyncViewportDeltas : public LayerTreeHostTest {
 };
 
 SINGLE_AND_MULTI_THREAD_TEST_F(LayerTreeHostTestTreesInVizSyncViewportDeltas);
+
+class LayerTreeHostTestSetMemoryPolicy : public LayerTreeHostTest {
+ public:
+  void InitializeSettings(LayerTreeSettings* settings) override {
+    settings->memory_policy = ManagedMemoryPolicy(
+        256u * 1024u * 1024u, gpu::MemoryAllocation::CUTOFF_ALLOW_NICE_TO_HAVE,
+        ManagedMemoryPolicy::kDefaultNumResourcesLimit);
+  }
+
+  void BeginTest() override { PostSetNeedsCommitToMainThread(); }
+
+  void DidCommit() override {
+    if (layer_tree_host()->SourceFrameNumber() == 1) {
+      layer_tree_host()->SetMemoryPolicy(
+          ManagedMemoryPolicy(1024u * 1024u * 1024u,
+                              gpu::MemoryAllocation::CUTOFF_ALLOW_NICE_TO_HAVE,
+                              ManagedMemoryPolicy::kDefaultNumResourcesLimit));
+      PostSetNeedsCommitToMainThread();
+    }
+  }
+
+  void CommitCompleteOnThread(LayerTreeHostImpl* host_impl) override {
+    if (host_impl->sync_tree()->source_frame_number() == 0) {
+      EXPECT_EQ(
+          256u * 1024u * 1024u,
+          host_impl->ActualManagedMemoryPolicy().bytes_limit_when_visible);
+    } else if (host_impl->sync_tree()->source_frame_number() == 1) {
+      EXPECT_EQ(
+          1024u * 1024u * 1024u,
+          host_impl->ActualManagedMemoryPolicy().bytes_limit_when_visible);
+      EXPECT_EQ(1024u * 1024u * 1024u,
+                host_impl->global_tile_state().hard_memory_limit_in_bytes);
+      EndTest();
+    }
+  }
+};
+
+SINGLE_AND_MULTI_THREAD_TEST_F(LayerTreeHostTestSetMemoryPolicy);
+
+// A parent can send an invalid viz::LocalSurfaceId after a valid one, for
+// example when the browser resizes a hidden view that has no surface yet.
+// Hashing that id for the "viz.surface_id_flow" trace flows used to DCHECK
+// (https://crbug.com/548257127).
+TEST(LayerTreeHostLocalSurfaceIdTest,
+     InvalidLocalSurfaceIdFromParentWithSurfaceIdFlowTracing) {
+  base::test::TracingEnvironment tracing_environment;
+  base::trace_event::TraceLog::GetInstance()->SetEnabled(
+      base::trace_event::TraceConfig(
+          TRACE_DISABLED_BY_DEFAULT("viz.surface_id_flow"), ""));
+
+  FakeLayerTreeHostDelegate delegate;
+  TestTaskGraphRunner task_graph_runner;
+  auto animation_host = AnimationHost::CreateForTesting(ThreadInstance::kMain);
+  std::unique_ptr<FakeLayerTreeHost> host = FakeLayerTreeHost::Create(
+      &delegate, &task_graph_runner, animation_host.get());
+  host->InitializeForTesting(
+      TaskRunnerProvider::Create(
+          base::SingleThreadTaskRunner::GetCurrentDefault(), nullptr),
+      std::make_unique<FakeProxy>());
+
+  const viz::LocalSurfaceId valid_id(
+      1u, base::UnguessableToken::CreateForTesting(2u, 3u));
+  host->SetLocalSurfaceIdFromParent(valid_id);
+  EXPECT_EQ(valid_id, host->local_surface_id_from_parent());
+
+  host->SetLocalSurfaceIdFromParent(viz::LocalSurfaceId());
+  EXPECT_FALSE(host->local_surface_id_from_parent().is_valid());
+
+  // Valid ids are still accepted, and traced, after the invalid one.
+  const viz::LocalSurfaceId next_valid_id(
+      2u, base::UnguessableToken::CreateForTesting(2u, 3u));
+  host->SetLocalSurfaceIdFromParent(next_valid_id);
+  EXPECT_EQ(next_valid_id, host->local_surface_id_from_parent());
+
+  // Disable tracing to avoid teardown failures.
+  base::trace_event::TraceLog::GetInstance()->SetDisabled();
+}
 
 }  // namespace
 }  // namespace cc

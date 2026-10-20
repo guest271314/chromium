@@ -4,27 +4,36 @@
 
 #include "chrome/browser/ui/views/extensions/extensions_menu_entry_view.h"
 
+#include "base/functional/bind.h"
+#include "base/functional/callback.h"
 #include "base/metrics/user_metrics.h"
 #include "base/metrics/user_metrics_action.h"
+#include "base/strings/strcat.h"
 #include "chrome/app/vector_icons/vector_icons.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/color/chrome_color_id.h"
 #include "chrome/browser/ui/views/chrome_layout_provider.h"
 #include "chrome/browser/ui/views/controls/hover_button.h"
 #include "chrome/grit/generated_resources.h"
+#include "components/strings/grit/components_strings.h"
 #include "components/vector_icons/vector_icons.h"
 #include "extensions/common/extension_features.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/mojom/menu_source_type.mojom.h"
 #include "ui/base/ui_base_features.h"
+#include "ui/events/event.h"
+#include "ui/strings/grit/ui_strings.h"
 #include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/controls/button/button.h"
 #include "ui/views/controls/button/menu_button_controller.h"
 #include "ui/views/controls/button/toggle_button.h"
 #include "ui/views/controls/highlight_path_generator.h"
+#include "ui/views/controls/label.h"
+#include "ui/views/input_event_activation_protector.h"
+#include "ui/views/metadata/view_factory.h"
 #include "ui/views/vector_icons.h"
+#include "ui/views/view_utils.h"
 
 namespace {
 
@@ -65,7 +74,7 @@ views::Builder<HoverButton> GetSitePermissionsButtonBuilder(
     // button is not disabled.
     auto arrow_icon = ui::ImageModel::FromVectorIcon(
         features::IsRoundedIconsEnabled()
-            ? vector_icons::kKeyboardArrowRightIcon
+            ? vector_icons::kKeyboardArrowRightFlippableIcon
             : vector_icons::kSubmenuArrowChromeRefreshOldIcon,
         kColorExtensionMenuIcon, small_icon_size);
 
@@ -80,6 +89,83 @@ views::Builder<HoverButton> GetSitePermissionsButtonBuilder(
 
 }  // namespace
 
+// TODO(crbug.com/563454001): Revisit this once Benjamin's (bkeen@) widget-level
+// input protection system is landed.
+// A toggle button in `ExtensionsMenuEntryView` that grants or revokes site
+// access for an extension. It uses `views::InputEventActivationProtector` to
+// prevent unintended interactions after view creation, visibility changes, or
+// cross-origin navigations.
+class ExtensionsMenuSiteAccessToggle : public views::ToggleButton {
+  METADATA_HEADER(ExtensionsMenuSiteAccessToggle, views::ToggleButton)
+
+ public:
+  ExtensionsMenuSiteAccessToggle() { ResetInputProtection(); }
+  ExtensionsMenuSiteAccessToggle(const ExtensionsMenuSiteAccessToggle&) =
+      delete;
+  ExtensionsMenuSiteAccessToggle& operator=(
+      const ExtensionsMenuSiteAccessToggle&) = delete;
+  ~ExtensionsMenuSiteAccessToggle() override = default;
+
+  // Resets the protection window in `views::InputEventActivationProtector` when
+  // the displayed site origin changes across a navigation.
+  void ResetInputProtection() {
+    input_protector_.MaybeUpdateViewProtectedTimeStamp(/*force=*/true);
+  }
+
+  // views::View:
+  void VisibilityChanged(views::View* starting_from, bool is_visible) override {
+    views::ToggleButton::VisibilityChanged(starting_from, is_visible);
+    input_protector_.VisibilityChanged(is_visible);
+  }
+
+  void AddedToWidget() override {
+    views::ToggleButton::AddedToWidget();
+    if (IsDrawn()) {
+      input_protector_.VisibilityChanged(/*is_visible=*/true);
+    }
+  }
+
+  void RemovedFromWidget() override {
+    views::ToggleButton::RemovedFromWidget();
+    input_protector_.VisibilityChanged(/*is_visible=*/false);
+  }
+
+  bool GetNeedsNotificationWhenVisibleBoundsChange() const override {
+    return true;
+  }
+
+  void OnVisibleBoundsChanged() override {
+    input_protector_.MaybeUpdateViewProtectedTimeStamp();
+  }
+
+  void OnBoundsChanged(const gfx::Rect& previous_bounds) override {
+    views::ToggleButton::OnBoundsChanged(previous_bounds);
+    input_protector_.MaybeUpdateViewProtectedTimeStamp();
+  }
+
+  // views::Button:
+  void NotifyClick(const ui::Event& event) override {
+    if (input_protector_.IsPossiblyUnintendedInteraction(
+            event, /*allow_key_events=*/false)) {
+      return;
+    }
+    views::ToggleButton::NotifyClick(event);
+  }
+
+ private:
+  views::InputEventActivationProtector input_protector_;
+};
+
+BEGIN_METADATA(ExtensionsMenuSiteAccessToggle)
+END_METADATA
+
+BEGIN_VIEW_BUILDER(/* no export */,
+                   ExtensionsMenuSiteAccessToggle,
+                   views::ToggleButton)
+END_VIEW_BUILDER
+
+DEFINE_VIEW_BUILDER(/* no export */, ExtensionsMenuSiteAccessToggle)
+
 DEFINE_ELEMENT_IDENTIFIER_VALUE(kExtensionsMenuEntryViewElementId);
 
 ExtensionsMenuEntryView::ExtensionsMenuEntryView(
@@ -87,7 +173,8 @@ ExtensionsMenuEntryView::ExtensionsMenuEntryView(
     bool is_enterprise,
     ToolbarActionViewModel* view_model,
     views::Button::PressedCallback action_button_callback,
-    base::RepeatingCallback<void(bool)> site_access_toggle_callback,
+    base::RepeatingCallback<void(const url::Origin&, bool)>
+        site_access_toggle_callback,
     views::Button::PressedCallback site_permissions_button_callback)
     : extension_id_(view_model->GetId()) {
   CHECK(base::FeatureList::IsEnabled(
@@ -140,11 +227,11 @@ ExtensionsMenuEntryView::ExtensionsMenuEntryView(
                       // in between menu items.
                       .SetBorder(views::CreateEmptyBorder(gfx::Insets(0)))
                       .SetFocusRingCornerRadius(provider->GetCornerRadiusMetric(
-                          views::ShapeContextTokens::
+                          ChromeShapeContextTokens::
                               kExtensionsMenuButtonRadius))
                       .SetFocusBehavior(views::View::FocusBehavior::ALWAYS),
                   // Site access toggle.
-                  views::Builder<views::ToggleButton>()
+                  views::Builder<ExtensionsMenuSiteAccessToggle>()
                       .CopyAddressTo(&site_access_toggle_)
                       .SetProperty(
                           views::kMarginsKey,
@@ -152,14 +239,26 @@ ExtensionsMenuEntryView::ExtensionsMenuEntryView(
                       .SetAccessibleName(l10n_util::GetStringFUTF16(
                           IDS_EXTENSIONS_MENU_EXTENSION_SITE_ACCESS_TOGGLE_ACCESSIBLE_NAME,
                           view_model->GetActionName()))
+                      // Pass `this` to access `origin()` at click time rather
+                      // than binding a static copy of the origin.
                       .SetCallback(base::BindRepeating(
-                          [](views::ToggleButton* toggle_button,
-                             base::RepeatingCallback<void(bool)>
+                          [](ExtensionsMenuEntryView* entry_view,
+                             const base::RepeatingCallback<void(
+                                 const url::Origin&, bool)>&
                                  site_access_toggle_callback) {
                             site_access_toggle_callback.Run(
-                                toggle_button->GetIsOn());
+                                entry_view->origin(),
+                                entry_view->site_access_toggle_->GetIsOn());
                           },
-                          site_access_toggle_, site_access_toggle_callback)),
+                          // Passing `base::Unretained(this)` is safe because
+                          // `site_access_toggle_` is a child view of `this`
+                          // (`ExtensionsMenuEntryView`). The view hierarchy
+                          // guarantees that `views::View::~View()` destroys all
+                          // child views and their bound callbacks before `this`
+                          // is deallocated, so the callback can never outlive
+                          // `this`.
+                          base::Unretained(this),
+                          std::move(site_access_toggle_callback))),
                   // Context menu button.
                   views::Builder<HoverButton>(
                       std::make_unique<HoverButton>(
@@ -190,7 +289,23 @@ ExtensionsMenuEntryView::ExtensionsMenuEntryView(
                   std::move(site_permissions_button_callback), is_enterprise,
                   small_icon_size, icon_size, icon_label_spacing,
                   button_icon_label_spacing)
-                  .CopyAddressTo(&site_permissions_button_)))
+                  .CopyAddressTo(&site_permissions_button_),
+              views::Builder<views::Label>()
+                  .CopyAddressTo(&site_permissions_label_)
+                  .SetTextContext(views::style::CONTEXT_BUTTON)
+                  .SetTextStyle(views::style::STYLE_BODY_5)
+                  .SetEnabledColor(kColorExtensionsMenuSecondaryText)
+                  .SetHorizontalAlignment(gfx::ALIGN_LEFT)
+                  .SetElideBehavior(gfx::ELIDE_TAIL)
+                  .SetProperty(views::kFlexBehaviorKey,
+                               views::FlexSpecification(
+                                   views::LayoutOrientation::kHorizontal,
+                                   views::MinimumFlexSizeRule::kScaleToZero,
+                                   views::MaximumFlexSizeRule::kPreferred))
+                  .SetProperty(views::kMarginsKey,
+                               gfx::Insets::VH(0, icon_size))
+                  .SetBorder(views::CreateEmptyBorder(
+                      gfx::Insets::VH(0, icon_label_spacing)))))
       .BuildChildren();
 
   SetupContextMenuButton(view_model);
@@ -201,19 +316,32 @@ ExtensionsMenuEntryView::ExtensionsMenuEntryView(
   // accessible name.
   site_access_toggle_->GetViewAccessibility().SetDescription(
       std::u16string(), ax::mojom::DescriptionFrom::kAttributeExplicitlyEmpty);
+  action_button_->GetViewAccessibility().SetIsLeaf(true);
+  context_menu_button_->GetViewAccessibility().SetIsLeaf(true);
   site_permissions_button_->GetViewAccessibility().SetDescription(
+      std::u16string(), ax::mojom::DescriptionFrom::kAttributeExplicitlyEmpty);
+  site_permissions_button_->GetViewAccessibility().SetIsLeaf(true);
+  site_permissions_label_->GetViewAccessibility().SetDescription(
       std::u16string(), ax::mojom::DescriptionFrom::kAttributeExplicitlyEmpty);
 
   // Add rounded corners to the site permissions button.
   site_permissions_button_->SetFocusRingCornerRadius(
       views::LayoutProvider::Get()->GetCornerRadiusMetric(
-          views::ShapeContextTokens::kExtensionsMenuButtonRadius));
+          ChromeShapeContextTokens::kExtensionsMenuButtonRadius));
 }
 
 ExtensionsMenuEntryView::~ExtensionsMenuEntryView() = default;
 
 void ExtensionsMenuEntryView::Update(
     ExtensionsMenuViewModel::MenuEntryState entry_state) {
+  if (origin_ != entry_state.origin) {
+    origin_ = entry_state.origin;
+    if (auto* toggle = views::AsViewClass<ExtensionsMenuSiteAccessToggle>(
+            site_access_toggle_)) {
+      toggle->ResetInputProtection();
+    }
+  }
+
   site_access_toggle_->SetVisible(
       entry_state.site_access_toggle.status !=
       ExtensionsMenuViewModel::ControlState::Status::kHidden);
@@ -221,30 +349,48 @@ void ExtensionsMenuEntryView::Update(
   site_access_toggle_->SetTooltipText(
       entry_state.site_access_toggle.tooltip_text);
 
-  site_permissions_button_->SetVisible(
+  bool is_permissions_visible =
       entry_state.site_permissions_button.status !=
-      ExtensionsMenuViewModel::ControlState::Status::kHidden);
+      ExtensionsMenuViewModel::ControlState::Status::kHidden;
   bool is_permissions_enabled =
       entry_state.site_permissions_button.status ==
       ExtensionsMenuViewModel::ControlState::Status::kEnabled;
-  site_permissions_button_->SetEnabled(true);
-  site_permissions_button_->SetState(is_permissions_enabled
-                                         ? views::Button::STATE_NORMAL
-                                         : views::Button::STATE_DISABLED);
-  // The site permissions text is not intended to be focusable as it is not
-  // clickable in this view. Ignore the button in accessibility so screen
-  // readers read the label inside it without treating it as a button.
-  site_permissions_button_->GetViewAccessibility().SetIsIgnored(true);
-  site_permissions_button_->SetFocusBehavior(views::View::FocusBehavior::NEVER);
-  site_permissions_button_->SetText(entry_state.site_permissions_button.text);
-  site_permissions_button_->SetTooltipText(
-      entry_state.site_permissions_button.tooltip_text);
-  site_permissions_button_->GetViewAccessibility().SetName(
-      entry_state.site_permissions_button.accessible_name);
 
-  // Update button size after changing its contents so it fits in the menu
-  // entry row.
-  site_permissions_button_->PreferredSizeChanged();
+  if (!is_permissions_visible) {
+    site_permissions_button_->SetVisible(false);
+    site_permissions_label_->SetVisible(false);
+  } else if (is_permissions_enabled) {
+    site_permissions_button_->SetVisible(true);
+    site_permissions_label_->SetVisible(false);
+
+    site_permissions_button_->SetState(views::Button::STATE_NORMAL);
+    site_permissions_button_->SetText(entry_state.site_permissions_button.text);
+    site_permissions_button_->SetTooltipText(
+        entry_state.site_permissions_button.tooltip_text);
+    site_permissions_button_->GetViewAccessibility().SetName(
+        entry_state.site_permissions_button.accessible_name);
+    site_permissions_button_->GetViewAccessibility().SetIsIgnored(false);
+    site_permissions_button_->GetViewAccessibility().SetIsLeaf(true);
+    site_permissions_button_->SetFocusBehavior(
+        views::View::FocusBehavior::ALWAYS);
+    site_permissions_button_->PreferredSizeChanged();
+  } else {
+    site_permissions_button_->SetVisible(false);
+    site_permissions_label_->SetVisible(true);
+
+    // Set the label's text to the full accessible name (which includes the
+    // enterprise/policy suffix if applicable). This ensures the text and the
+    // accessible name are identical, completely preventing any AXPosition
+    // text boundary crashes on Linux while providing full info to both visual
+    // and screen reader users.
+    site_permissions_label_->SetText(
+        entry_state.site_permissions_button.accessible_name);
+    site_permissions_label_->SetCustomTooltipText(
+        entry_state.site_permissions_button.tooltip_text);
+    site_permissions_label_->GetViewAccessibility().SetIsIgnored(false);
+    site_permissions_label_->SetFocusBehavior(
+        views::View::FocusBehavior::NEVER);
+  }
 
   UpdateActionButton(entry_state.action_button);
   UpdateContextMenuButton(entry_state.context_menu_button);
@@ -256,6 +402,7 @@ void ExtensionsMenuEntryView::UpdateActionButton(
   action_button_->SetText(button_state.text);
   action_button_->SetTooltipText(button_state.tooltip_text);
   action_button_->SetAccessibleName(button_state.accessible_name);
+  action_button_->GetViewAccessibility().SetIsLeaf(true);
   bool is_action_enabled =
       button_state.status ==
       ExtensionsMenuViewModel::ControlState::Status::kEnabled;
@@ -299,6 +446,7 @@ void ExtensionsMenuEntryView::UpdateContextMenuButton(
                                       three_dot_icon);
   context_menu_button_->GetViewAccessibility().SetName(
       button_state.accessible_name);
+  context_menu_button_->GetViewAccessibility().SetIsLeaf(true);
 }
 
 void ExtensionsMenuEntryView::SetupContextMenuButton(

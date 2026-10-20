@@ -14,6 +14,8 @@
 #include "content/browser/service_worker/service_worker_hid_delegate_observer.h"
 #include "content/browser/service_worker/service_worker_test_utils.h"
 #include "content/browser/service_worker/service_worker_usb_delegate_observer.h"
+#include "content/public/browser/content_browser_client.h"
+#include "content/public/common/content_client.h"
 #include "content/public/test/test_browser_context.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
@@ -91,7 +93,6 @@ void EmbeddedWorkerInstanceTestHarness::StopAndResetWorker() {
   worker_version_.reset();
 }
 
-#if !BUILDFLAG(IS_ANDROID)
 void EmbeddedWorkerInstanceTestHarness::BindHidServiceToWorker(
     const GURL& origin,
     mojo::PendingReceiver<blink::mojom::HidService> receiver) {
@@ -99,7 +100,6 @@ void EmbeddedWorkerInstanceTestHarness::BindHidServiceToWorker(
   EXPECT_NE(worker, nullptr);
   worker->BindHidService(url::Origin::Create(origin), std::move(receiver));
 }
-#endif  // !BUILDFLAG(IS_ANDROID)
 
 void EmbeddedWorkerInstanceTestHarness::BindUsbServiceToWorker(
     const GURL& origin,

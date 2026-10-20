@@ -43,11 +43,12 @@
 #include "chrome/browser/ash/policy/status_collector/managed_session_service.h"
 #include "chrome/browser/ash/policy/uploading/status_uploader.h"
 #include "chrome/browser/ash/policy/uploading/system_log_uploader.h"
+#include "chrome/browser/ash/policy/uploading/system_log_uploader_delegate.h"
 #include "chrome/browser/browser_process.h"
-#include "chrome/common/pref_names.h"
+#include "chrome/browser/policy/chrome_browser_policy_connector.h"
 #include "chromeos/ash/components/install_attributes/install_attributes.h"
 #include "chromeos/ash/components/system/statistics_provider.h"
-#include "chromeos/constants/chromeos_features.h"
+#include "components/policy/core/browser/browser_policy_connector.h"
 #include "components/policy/core/common/cloud/cloud_external_data_manager.h"
 #include "components/policy/core/common/cloud/cloud_policy_client.h"
 #include "components/policy/core/common/cloud/cloud_policy_core.h"
@@ -72,6 +73,15 @@ namespace {
 // Keep the default value in sync with device_status_frequency in
 // DeviceReportingProto in components/policy/proto/chrome_device_policy.proto.
 constexpr base::TimeDelta kDeviceStatusUploadFrequency = base::Hours(3);
+
+constexpr char kSystemLogUploadUrlTail[] = "/upload";
+
+GURL GetSystemLogUploadUrl() {
+  std::string url =
+      g_browser_process->browser_policy_connector()->GetDeviceManagementUrl() +
+      kSystemLogUploadUrlTail;
+  return GURL(url);
+}
 
 }  // namespace
 
@@ -115,10 +125,14 @@ void DeviceCloudPolicyManagerAsh::Init(SchemaRegistry* registry) {
   }
 }
 
-void DeviceCloudPolicyManagerAsh::Initialize(PrefService* local_state) {
+void DeviceCloudPolicyManagerAsh::Initialize(
+    PrefService* local_state,
+    scoped_refptr<network::SharedURLLoaderFactory> shared_url_loader_factory) {
   CHECK(local_state);
+  CHECK(shared_url_loader_factory);
 
   local_state_ = local_state;
+  shared_url_loader_factory_ = std::move(shared_url_loader_factory);
 
   // If supported, we'll want to know about re-enrollment state keys.
   if (AutoEnrollmentTypeChecker::AreFREStateKeysSupported()) {
@@ -158,8 +172,9 @@ void DeviceCloudPolicyManagerAsh::Shutdown() {
   machine_certificate_uploader_.reset();
   external_data_manager_->Disconnect();
   state_keys_update_subscription_ = {};
+  shared_url_loader_factory_ = nullptr;
+  local_state_ = nullptr;
   CloudPolicyManager::Shutdown();
-  signin_profile_forwarding_schema_registry_.reset();
   auth_screens_schema_registry_.reset();
 }
 
@@ -167,24 +182,32 @@ void DeviceCloudPolicyManagerAsh::Shutdown() {
 void DeviceCloudPolicyManagerAsh::RegisterPrefs(PrefRegistrySimple* registry) {
   ReportingUserTracker::RegisterPrefs(registry);
 
-  registry->RegisterDictionaryPref(::prefs::kServerBackedDeviceState);
+  registry->RegisterDictionaryPref(ash::prefs::kServerBackedDeviceState);
   registry->RegisterBooleanPref(ash::prefs::kRemoveUsersRemoteCommand, false);
   registry->RegisterStringPref(ash::prefs::kLastRsuDeviceIdUploaded,
                                std::string());
-  registry->RegisterListPref(prefs::kStoreLogStatesAcrossReboots);
-  registry->RegisterDictionaryPref(
-      policy::prefs::kEventBasedLogLastUploadTimes);
+  registry->RegisterListPref(ash::prefs::kStoreLogStatesAcrossReboots);
+  registry->RegisterDictionaryPref(ash::prefs::kEventBasedLogLastUploadTimes);
 }
 
 void DeviceCloudPolicyManagerAsh::StartConnection(
     std::unique_ptr<CloudPolicyClient> client_to_connect,
     ash::InstallAttributes* install_attributes) {
   CHECK(!service());
+  CHECK(local_state_);
+  CHECK(shared_url_loader_factory_);
+
+  // TODO(crbug.com/404133022): Inject NetworkQualityTracker to this class.
+  // Since NetworkQualityTracker is created after DeviceCommandsFactoryAsh, it
+  // should be injected via StartConnection or a dedicated call.
+  auto* network_quality_tracker = g_browser_process->network_quality_tracker();
 
   // If supported, set state keys here so the first policy fetch submits them to
   // the server.
   if (AutoEnrollmentTypeChecker::AreFREStateKeysSupported()) {
-    client_to_connect->SetStateKeysToUpload(state_keys_broker_->state_keys());
+    client_to_connect->SetStateKeysToUpload(
+        state_keys_broker_->state_keys(),
+        state_keys_broker_->current_time_quantum_index());
   }
 
   // Create the component cloud policy service for fetching, caching and
@@ -192,29 +215,20 @@ void DeviceCloudPolicyManagerAsh::StartConnection(
   if (!component_policy_disabled_for_testing_) {
     const base::FilePath component_policy_cache_dir =
         base::PathService::CheckedGet(ash::DIR_SIGNIN_PROFILE_COMPONENT_POLICY);
-    if (chromeos::features::IsLockScreenBadgeAuthEnabled()) {
-      CHECK(auth_screens_schema_registry_);
-      CreateComponentCloudPolicyService(
-          dm_protocol::kChromeSigninExtensionPolicyType,
-          component_policy_cache_dir, client_to_connect.get(),
-          auth_screens_schema_registry_.get());
-    } else {
-      CHECK(signin_profile_forwarding_schema_registry_);
-      CreateComponentCloudPolicyService(
-          dm_protocol::kChromeSigninExtensionPolicyType,
-          component_policy_cache_dir, client_to_connect.get(),
-          signin_profile_forwarding_schema_registry_.get());
-    }
+    CHECK(auth_screens_schema_registry_);
+    CreateComponentCloudPolicyService(
+        dm_protocol::kChromeSigninExtensionPolicyType,
+        component_policy_cache_dir, client_to_connect.get(),
+        auth_screens_schema_registry_.get());
   }
 
   core()->Connect(std::move(client_to_connect));
   core()->StartRefreshScheduler();
   core()->RefreshSoon(PolicyFetchReason::kBrowserStart);
   core()->TrackRefreshDelayPref(local_state_,
-                                ::prefs::kDevicePolicyRefreshRate);
+                                ash::prefs::kDevicePolicyRefreshRate);
 
-  external_data_manager_->Connect(
-      g_browser_process->shared_url_loader_factory());
+  external_data_manager_->Connect(shared_url_loader_factory_);
 
   enrollment_certificate_uploader_ =
       std::make_unique<ash::attestation::EnrollmentCertificateUploaderImpl>(
@@ -223,10 +237,9 @@ void DeviceCloudPolicyManagerAsh::StartConnection(
       std::make_unique<ash::attestation::EnrollmentIdUploadManager>(
           client(), enrollment_certificate_uploader_.get());
   lookup_key_uploader_ = std::make_unique<LookupKeyUploader>(
-      device_store(), g_browser_process->local_state(),
-      enrollment_certificate_uploader_.get());
-  euicc_status_uploader_ = std::make_unique<EuiccStatusUploader>(
-      client(), g_browser_process->local_state());
+      device_store(), local_state_, enrollment_certificate_uploader_.get());
+  euicc_status_uploader_ =
+      std::make_unique<EuiccStatusUploader>(client(), local_state_);
 
   // Don't create a MachineCertificateUploader if machine cert requests are
   // disabled.
@@ -241,6 +254,7 @@ void DeviceCloudPolicyManagerAsh::StartConnection(
   // Start remote commands services now that we have setup everything they need.
   core()->StartRemoteCommandsService(
       std::make_unique<DeviceCommandsFactoryAsh>(
+          local_state_, shared_url_loader_factory_,
           machine_certificate_uploader_.get(), *crd_delegate_),
       PolicyInvalidationScope::kDevice);
 
@@ -252,12 +266,16 @@ void DeviceCloudPolicyManagerAsh::StartConnection(
   if (install_attributes->IsCloudManaged()) {
     CreateManagedSessionServiceAndReporters();
     CreateStatusUploader(managed_session_service_.get());
-    syslog_uploader_ =
-        std::make_unique<SystemLogUploader>(nullptr, task_runner_);
+    syslog_uploader_ = std::make_unique<SystemLogUploader>(
+        local_state_,
+        std::make_unique<SystemLogUploaderDelegate>(shared_url_loader_factory_,
+                                                    task_runner_),
+        task_runner_, GetSystemLogUploadUrl());
     metric_reporting_manager_ = reporting::MetricReportingManager::Create(
-        managed_session_service_.get());
+        local_state_, network_quality_tracker, managed_session_service_.get());
     os_updates_reporter_ = reporting::OsUpdatesReporter::Create();
-    event_based_log_manager_ = std::make_unique<EventBasedLogManager>();
+    event_based_log_manager_ =
+        std::make_unique<EventBasedLogManager>(local_state_, this);
   }
 
   NotifyConnected();
@@ -272,32 +290,11 @@ void DeviceCloudPolicyManagerAsh::OnPolicyStoreReady(
 }
 
 bool DeviceCloudPolicyManagerAsh::HasSchemaRegistry() const {
-  if (chromeos::features::IsLockScreenBadgeAuthEnabled()) {
-    return auth_screens_schema_registry_ != nullptr;
-  } else {
-    return signin_profile_forwarding_schema_registry_ != nullptr;
-  }
+  return auth_screens_schema_registry_ != nullptr;
 }
 
-void DeviceCloudPolicyManagerAsh::SetSigninProfileSchemaRegistry(
+void DeviceCloudPolicyManagerAsh::AddAuthScreenSchemaRegistry(
     SchemaRegistry* schema_registry) {
-  if (chromeos::features::IsLockScreenBadgeAuthEnabled()) {
-    if (!auth_screens_schema_registry_) {
-      auth_screens_schema_registry_ =
-          std::make_unique<CombinedSchemaRegistry>();
-    }
-    auth_screens_schema_registry_->Track(schema_registry);
-  } else {
-    DCHECK(!signin_profile_forwarding_schema_registry_);
-    signin_profile_forwarding_schema_registry_ =
-        std::make_unique<ForwardingSchemaRegistry>(schema_registry);
-  }
-  NotifyGotRegistry();
-}
-
-void DeviceCloudPolicyManagerAsh::SetLockProfileSchemaRegistry(
-    SchemaRegistry* schema_registry) {
-  DCHECK(chromeos::features::IsLockScreenBadgeAuthEnabled());
   if (!auth_screens_schema_registry_) {
     auth_screens_schema_registry_ = std::make_unique<CombinedSchemaRegistry>();
   }
@@ -316,7 +313,7 @@ void DeviceCloudPolicyManagerAsh::OnUserManagerWillBeDestroyed() {
   // DeviceStatusCollector internally holds the reference to the
   // ReportingUserTracker instance, so should be released via Shutdown()
   // before this is reached.
-  DCHECK(!status_uploader_);
+  CHECK(!status_uploader_, base::NotFatalUntil::M160);
   reporting_user_tracker_.reset();
   user_manager_observation_.Reset();
 }
@@ -366,7 +363,9 @@ void DeviceCloudPolicyManagerAsh::OnUserRemoved(
 
 void DeviceCloudPolicyManagerAsh::OnStateKeysUpdated() {
   if (client()) {
-    client()->SetStateKeysToUpload(state_keys_broker_->state_keys());
+    client()->SetStateKeysToUpload(
+        state_keys_broker_->state_keys(),
+        state_keys_broker_->current_time_quantum_index());
   }
 }
 
@@ -406,7 +405,7 @@ void DeviceCloudPolicyManagerAsh::CreateManagedSessionServiceAndReporters() {
 
   managed_session_service_ = std::make_unique<ManagedSessionService>();
   login_logout_reporter_ = ash::reporting::LoginLogoutReporter::Create(
-      managed_session_service_.get());
+      local_state_, managed_session_service_.get());
 
   user_added_removed_reporter_ = ::reporting::UserAddedRemovedReporter::Create(
       std::move(users_to_be_removed_), managed_session_service_.get());

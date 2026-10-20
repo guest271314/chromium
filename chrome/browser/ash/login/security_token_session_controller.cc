@@ -11,6 +11,7 @@
 #include "ash/constants/ash_login_pref_names.h"
 #include "ash/constants/notifier_catalogs.h"
 #include "ash/public/cpp/notification_utils.h"
+#include "ash/strings/grit/ash_strings.h"
 #include "base/containers/flat_map.h"
 #include "base/containers/flat_set.h"
 #include "base/functional/bind.h"
@@ -23,15 +24,12 @@
 #include "base/trace_event/trace_event.h"
 #include "chrome/browser/ash/certificate_provider/certificate_provider_service.h"
 #include "chrome/browser/ash/certificate_provider/certificate_provider_service_factory.h"
-#include "chrome/browser/ash/login/lock/screen_locker.h"
-#include "chrome/browser/ash/profiles/profile_helper.h"
-#include "chrome/browser/browser_process.h"
+#include "chrome/browser/ash/login/lock/screen_locker_controller.h"
 #include "chrome/browser/enterprise/util/managed_browser_utils.h"
 #include "chrome/browser/extensions/forced_extensions/force_installed_tracker.h"
-#include "chrome/browser/notifications/system_notification_helper.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/ash/security_token_restriction/security_token_session_restriction_view.h"
-#include "chrome/grit/generated_resources.h"
+#include "chromeos/ash/components/browser_context_helper/browser_context_types.h"
 #include "chromeos/ash/components/login/auth/challenge_response/known_user_pref_utils.h"
 #include "chromeos/ash/components/login/auth/public/challenge_response_key.h"
 #include "chromeos/components/certificate_provider/certificate_info.h"
@@ -51,6 +49,7 @@
 #include "net/cert/x509_util.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/chromeos/devicetype_utils.h"
+#include "ui/message_center/message_center.h"
 #include "ui/message_center/public/cpp/notification.h"
 #include "ui/views/widget/widget.h"
 #include "ui/views/window/dialog_delegate.h"
@@ -123,9 +122,9 @@ bool SanitizeDomain(const std::string& domain, std::string& sanitized_domain) {
 
 void DisplayNotification(const std::u16string& title,
                          const std::u16string& text) {
-  message_center::Notification notification = CreateSystemNotification(
+  auto notification = CreateSystemNotificationPtr(
       message_center::NOTIFICATION_TYPE_SIMPLE, kNotificationId, title, text,
-      /*display_source=*/std::u16string(), /*origin_url=*/GURL(),
+      /*display_source=*/std::u16string(),
       message_center::NotifierId(message_center::NotifierType::SYSTEM_COMPONENT,
                                  kNotifierSecurityTokenSession,
                                  NotificationCatalogName::kSecurityToken),
@@ -134,10 +133,11 @@ void DisplayNotification(const std::u16string& title,
           base::DoNothingAs<void()>()),
       chromeos::kEnterpriseIcon,
       message_center::SystemNotificationWarningLevel::NORMAL);
-  notification.set_fullscreen_visibility(
+  notification->set_fullscreen_visibility(
       message_center::FullscreenVisibility::OVER_USER);
-  notification.SetSystemPriority();
-  SystemNotificationHelper::GetInstance()->Display(notification);
+  notification->SetSystemPriority();
+  message_center::MessageCenter::Get()->AddNotification(
+      std::move(notification));
 }
 
 // Loads the persistently stored information about the challenge-response keys
@@ -191,16 +191,16 @@ SecurityTokenSessionController::SecurityTokenSessionController(
     PrefService* local_state,
     const user_manager::User* primary_user,
     chromeos::CertificateProviderService* certificate_provider_service)
-    : is_user_profile_(ProfileHelper::IsPrimaryProfile(profile)),
+    : is_user_profile_(IsUserBrowserContext(profile)),
       local_state_(local_state),
       primary_user_(primary_user),
       certificate_provider_service_(certificate_provider_service),
       extensions_tracker_(extensions::ExtensionRegistry::Get(profile), profile),
       session_manager_(session_manager::SessionManager::Get()),
       session_activation_seconds_(kSessionActivationTimeout) {
-  DCHECK(local_state_);
-  DCHECK(primary_user_);
-  DCHECK(certificate_provider_service_);
+  CHECK(local_state_, base::NotFatalUntil::M161);
+  CHECK(primary_user_, base::NotFatalUntil::M161);
+  CHECK(certificate_provider_service_, base::NotFatalUntil::M161);
   session_manager_observation_.Observe(session_manager_.get());
   certificate_provider_ =
       certificate_provider_service_->CreateCertificateProvider();
@@ -442,7 +442,7 @@ void SecurityTokenSessionController::TriggerAction() {
     case Behavior::kIgnore:
       return;
     case Behavior::kLock:
-      ScreenLocker::Show();
+      ScreenLockerController::Get().ShowLockScreen();
       AddLockNotification();
       return;
     case Behavior::kLogout:

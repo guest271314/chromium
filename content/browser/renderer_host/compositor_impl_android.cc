@@ -29,6 +29,7 @@
 #include "base/threading/thread.h"
 #include "base/threading/thread_checker.h"
 #include "base/time/time.h"
+#include "base/trace_event/trace_event.h"
 #include "cc/animation/animation_host.h"
 #include "cc/base/switches.h"
 #include "cc/input/input_handler.h"
@@ -189,14 +190,14 @@ Compositor* Compositor::CreateOffscreen(CompositorClient* client,
 
 // static
 void Compositor::Initialize() {
-  DCHECK(!CompositorImpl::IsInitialized());
+  CHECK(!CompositorImpl::IsInitialized(), base::NotFatalUntil::M152);
   g_initialized = true;
 }
 
 // static
 void Compositor::CreateContextProvider(
     ContextProviderCallback callback) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M152);
   BrowserGpuChannelHostFactory::instance()->EstablishGpuChannel(base::BindOnce(
       &CreateContextProviderAfterGpuChannelEstablished, std::move(callback)));
 }
@@ -219,7 +220,7 @@ CompositorImpl::CompositorImpl(CompositorClient* client,
       pending_frames_(0U),
       layer_tree_frame_sink_request_pending_(false),
       lock_manager_(base::SingleThreadTaskRunner::GetCurrentDefault()) {
-  DCHECK(client);
+  CHECK(client, base::NotFatalUntil::M152);
 
   SetRootWindow(root_window);
 
@@ -233,13 +234,14 @@ CompositorImpl::~CompositorImpl() {
     observer.OnBeginFrameSourceShuttingDown();
   }
 
-  DetachRootWindow();
-  // Clean-up any surface references.
+  // Clean-up any surface references before detaching the root window so that
+  // resetting occlusion on detach does not wake the display during teardown.
   if (!is_offscreen_rendering_) {
     SetSurface(nullptr, false, nullptr);
   } else {
     SetVisible(false);
   }
+  DetachRootWindow();
 
   BrowserGpuChannelHostFactory::instance()->MaybeCloseChannel();
 }
@@ -258,15 +260,15 @@ ui::ResourceManager& CompositorImpl::GetResourceManager() {
 }
 
 void CompositorImpl::SetRootWindow(gfx::NativeWindow root_window) {
-  DCHECK(root_window);
-  DCHECK(!root_window->GetLayer());
+  CHECK(root_window, base::NotFatalUntil::M152);
+  CHECK(!root_window->GetLayer(), base::NotFatalUntil::M152);
 
   // TODO(mthiesse): Right now we only support swapping the root window without
   // a surface. If we want to support swapping with a surface we need to
   // handle visibility, swapping begin frame sources, etc.
   // These checks ensure we have no begin frame source, and that we don't need
   // to register one on the new window.
-  DCHECK(!window_ || is_offscreen_rendering_);
+  CHECK(!window_ || is_offscreen_rendering_, base::NotFatalUntil::M152);
 
   scoped_refptr<cc::slim::Layer> root_layer;
   if (root_window_) {
@@ -333,15 +335,15 @@ std::optional<gpu::SurfaceHandle> CompositorImpl::SetSurface(
 }
 
 void CompositorImpl::SetBackgroundColor(int color) {
-  DCHECK(host_);
+  CHECK(host_, base::NotFatalUntil::M152);
   host_->set_background_color(SkColor4f::FromColor(color));
 }
 
 void CompositorImpl::CreateLayerTreeHost() {
-  DCHECK(!host_);
+  CHECK(!host_, base::NotFatalUntil::M152);
 
   host_ = cc::slim::LayerTree::Create(this);
-  DCHECK(!host_->IsVisible());
+  CHECK(!host_->IsVisible(), base::NotFatalUntil::M152);
   host_->SetViewportRectAndScale(gfx::Rect(size_), root_window_->GetDipScale(),
                                  GenerateLocalSurfaceId());
   OnUpdateOverlayTransform();
@@ -350,11 +352,19 @@ void CompositorImpl::CreateLayerTreeHost() {
   }
 }
 
+viz::mojom::DisplayVisibility CompositorImpl::GetDisplayVisibility() const {
+  if (!host_ || !host_->IsVisible() || window_occluded_) {
+    return viz::mojom::DisplayVisibility::kInvisible;
+  }
+  return draw_paused_ ? viz::mojom::DisplayVisibility::kPaused
+                      : viz::mojom::DisplayVisibility::kVisible;
+}
+
 void CompositorImpl::SetVisible(bool visible) {
   TRACE_EVENT1("cc", "CompositorImpl::SetVisible", "visible", visible);
 
   if (!visible) {
-    DCHECK(host_->IsVisible());
+    CHECK(host_->IsVisible(), base::NotFatalUntil::M152);
     // Tear down the display first, synchronously completing any pending
     // draws/readbacks if possible.
     TearDownDisplayAndUnregisterRootFrameSink();
@@ -369,7 +379,7 @@ void CompositorImpl::SetVisible(bool visible) {
     // completed.
     CompositorDependenciesAndroid::Get().OnCompositorHidden(this);
   } else {
-    DCHECK(!host_->IsVisible());
+    CHECK(!host_->IsVisible(), base::NotFatalUntil::M152);
     CompositorDependenciesAndroid::Get().OnCompositorVisible(this);
     RegisterRootFrameSink();
     host_->SetVisible(true);
@@ -453,13 +463,51 @@ void CompositorImpl::SetNeedsComposite() {
 }
 
 void CompositorImpl::SetDrawPaused(bool paused) {
-  if (draw_paused_ == paused) {
+  const auto previous_visibility = GetDisplayVisibility();
+  draw_paused_ = paused;
+  if (GetDisplayVisibility() != previous_visibility) {
+    UpdateDisplayVisibility();
+  }
+}
+
+void CompositorImpl::SetWindowOccluded(bool occluded) {
+  TRACE_EVENT("compositor", "CompositorImpl::SetWindowOccluded", "occluded",
+              occluded);
+  if (is_offscreen_rendering_ || window_occluded_ == occluded ||
+      !base::FeatureList::IsEnabled(
+          features::kPropagateOcclusionToVizAndroid)) {
     return;
   }
-  draw_paused_ = paused;
-  if (display_private_) {
-    display_private_->SetDisplayVisible(!draw_paused_);
+  // TODO(crbug.com/505314004): Handle the case of casting (e.g. presentation
+  // mode or screen capture), which should be handled similarly to Aura by
+  // keeping the display visible even when the window is occluded.
+  const auto previous_visibility = GetDisplayVisibility();
+  window_occluded_ = occluded;
+  if (window_occluded_) {
+    // Setting the display visibility to kPaused or kInvisible only stops Viz
+    // from drawing, not from issuing BeginFrames. Defer BeginFrames here to
+    // stop generating frames on the browser side, though ideally this would be
+    // handled in Viz.
+    defer_begin_frame_ = base::ScopedClosureRunner(host_->DeferBeginFrame());
+  } else {
+    defer_begin_frame_.RunAndReset();
   }
+  if (GetDisplayVisibility() != previous_visibility) {
+    UpdateDisplayVisibility();
+  }
+}
+
+void CompositorImpl::UpdateDisplayVisibility() {
+  if (!display_private_) {
+    return;
+  }
+
+  const viz::mojom::DisplayVisibility visibility = GetDisplayVisibility();
+  if (visibility != viz::mojom::DisplayVisibility::kVisible &&
+      !pending_surface_copies_.empty()) {
+    display_private_->ForceImmediateDrawAndSwapIfPossible();
+  }
+  display_private_->SetDisplayVisible(visibility);
 }
 
 void CompositorImpl::MaybeCompositeNow() {
@@ -494,14 +542,15 @@ void CompositorImpl::DidFailToInitializeLayerTreeFrameSink() {
 }
 
 void CompositorImpl::HandlePendingLayerTreeFrameSinkRequest() {
-  DCHECK(layer_tree_frame_sink_request_pending_);
+  CHECK(layer_tree_frame_sink_request_pending_, base::NotFatalUntil::M152);
 
   // We might have been made invisible now.
   if (!host_->IsVisible()) {
     return;
   }
 
-  DCHECK(is_offscreen_rendering_ || surface_handle_ != gpu::kNullSurfaceHandle);
+  CHECK(is_offscreen_rendering_ || surface_handle_ != gpu::kNullSurfaceHandle,
+        base::NotFatalUntil::M153);
   BrowserGpuChannelHostFactory::instance()->EstablishGpuChannel(base::BindOnce(
       &CompositorImpl::OnGpuChannelEstablished, weak_factory_.GetWeakPtr()));
 }
@@ -530,8 +579,9 @@ void CompositorImpl::OnGpuChannelEstablished(
   }
 
   if (!is_offscreen_rendering_) {
-    DCHECK(window_);
-    DCHECK_NE(surface_handle_, gpu::kNullSurfaceHandle);
+    CHECK(window_, base::NotFatalUntil::M153);
+    CHECK_NE(surface_handle_, gpu::kNullSurfaceHandle,
+             base::NotFatalUntil::M153);
   }
 
   int32_t stream_id = kGpuStreamIdDefault;
@@ -613,7 +663,7 @@ void CompositorImpl::DidSubmitCompositorFrame() {
 
 void CompositorImpl::DidReceiveCompositorFrameAck() {
   TRACE_EVENT0("compositor", "CompositorImpl::DidReceiveCompositorFrameAck");
-  DCHECK_GT(pending_frames_, 0U);
+  CHECK_GT(pending_frames_, 0U, base::NotFatalUntil::M153);
   pending_frames_--;
   client_->DidSwapFrame(pending_frames_);
 }
@@ -627,7 +677,7 @@ void CompositorImpl::DidLoseLayerTreeFrameSink() {
 ui::WindowAndroidCompositor::ScopedKeepSurfaceAliveCallback
 CompositorImpl::TakeScopedKeepSurfaceAliveCallback(
     const viz::SurfaceId& surface_id) {
-  DCHECK(surface_id.is_valid());
+  CHECK(surface_id.is_valid(), base::NotFatalUntil::M153);
   CHECK(pending_surface_copies_.find(pending_surface_copy_id_) ==
         pending_surface_copies_.end());
   pending_surface_copies_[pending_surface_copy_id_] =
@@ -666,7 +716,7 @@ void CompositorImpl::AddChildFrameSink(const viz::FrameSinkId& frame_sink_id) {
   if (GetHostFrameSinkManager()->IsFrameSinkIdRegistered(frame_sink_id_)) {
     bool result = GetHostFrameSinkManager()->RegisterFrameSinkHierarchy(
         frame_sink_id_, frame_sink_id);
-    DCHECK(result);
+    CHECK(result, base::NotFatalUntil::M153);
   } else {
     pending_child_frame_sink_ids_.insert(frame_sink_id);
   }
@@ -762,7 +812,7 @@ void CompositorImpl::OnUpdateOverlayTransform() {
 
 void CompositorImpl::InitializeVizLayerTreeFrameSink(
     scoped_refptr<viz::ContextProviderCommandBuffer> context_provider) {
-  DCHECK(root_window_);
+  CHECK(root_window_, base::NotFatalUntil::M153);
 
   pending_frames_ = 0;
   gpu_capabilities_ = context_provider->ContextCapabilities();
@@ -815,7 +865,7 @@ void CompositorImpl::InitializeVizLayerTreeFrameSink(
 
   display_private_->SetSwapCompletionCallbackEnabled(
       enable_swap_completion_callbacks_);
-  display_private_->SetDisplayVisible(!draw_paused_);
+  display_private_->SetDisplayVisible(GetDisplayVisibility());
   display_private_->Resize(size_);
   display_private_->SetDisplayColorSpaces(display_color_spaces_);
   display_private_->SetSupportedRefreshRates(
@@ -847,7 +897,8 @@ void CompositorImpl::OnContextCreationResult(
 
 void CompositorImpl::OnFatalOrSurfaceContextCreationFailure(
     gpu::ContextResult context_result) {
-  DCHECK(gpu::IsFatalOrSurfaceFailure(context_result));
+  CHECK(gpu::IsFatalOrSurfaceFailure(context_result),
+        base::NotFatalUntil::M153);
   LOG_IF(FATAL, context_result == gpu::ContextResult::kFatalFailure)
       << "Fatal error making Gpu context";
 
@@ -921,14 +972,14 @@ void CompositorImpl::SetDidSwapBuffersCallbackEnabled(bool enable) {
 
 void CompositorImpl::AddSimpleBeginFrameObserver(
     ui::HostBeginFrameObserver::SimpleBeginFrameObserver* obs) {
-  DCHECK(obs);
+  CHECK(obs, base::NotFatalUntil::M153);
   simple_begin_frame_observers_.AddObserver(obs);
   MaybeUpdateObserveBeginFrame();
 }
 
 void CompositorImpl::RemoveSimpleBeginFrameObserver(
     ui::HostBeginFrameObserver::SimpleBeginFrameObserver* obs) {
-  DCHECK(obs);
+  CHECK(obs, base::NotFatalUntil::M153);
   simple_begin_frame_observers_.RemoveObserver(obs);
   MaybeUpdateObserveBeginFrame();
 }

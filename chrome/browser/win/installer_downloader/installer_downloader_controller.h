@@ -10,12 +10,14 @@
 #include <optional>
 
 #include "base/callback_list.h"
+#include "base/files/file_path.h"
 #include "base/functional/callback.h"
 #include "chrome/browser/win/installer_downloader/installer_downloader_active_browser_window_tracker.h"
 #include "components/infobars/core/infobar_manager.h"
 
-class ScopedProfileKeepAlive;
 class BrowserWindowInterface;
+class Profile;
+class ScopedProfileKeepAlive;
 
 namespace base {
 class FilePath;
@@ -79,9 +81,12 @@ class InstallerDownloaderController final
 
   ~InstallerDownloaderController() override;
 
-  // Determines whether the installer downloader infobar should be shown for the
-  // profile associated with the active WebContents. The infobar is not shown
-  // for guest profiles or if there is no active WebContents.
+  // Whether the infobar may be shown to, and download for, `profile`. Only
+  // regular profile qualify, so not Guest and not off-the-record.
+  static bool IsEligibleProfile(const Profile& profile);
+
+  // Whether the infobar may be shown in the last active window, per
+  // IsEligibleProfile().
   bool ShouldShowInfobarForCurrentProfile();
 
   // Called early during the browser startup and will show the installer
@@ -101,6 +106,8 @@ class InstallerDownloaderController final
   void SetShouldShowInfobarForProfileCallbackForTesting(
       ShouldShowInfobarForProfileCallback callback);
 
+  void ResetSessionStateForTesting();
+
  private:
   using BrowserAndActiveTabTrackerMap = std::map<
       BrowserWindowInterface*,
@@ -113,6 +120,7 @@ class InstallerDownloaderController final
   void OnDownloadCompleted(std::unique_ptr<ScopedProfileKeepAlive> keep_alive,
                            bool success);
 
+  void RegisterInfoBar();
   void RegisterBrowserWindowEvents();
 
   void OnActiveBrowserWindowChanged(BrowserWindowInterface* bwi);
@@ -149,6 +157,13 @@ class InstallerDownloaderController final
   // actual browser session. As a result, the infobar should no longer be
   // visible until the next browser session.
   bool infobar_closed_ = false;
+
+  // Tracks whether the centralized infobar has been shown in this session.
+  bool infobar_shown_ = false;
+
+  // Cached destination for the installer download when using centralized
+  // infobars.
+  std::optional<base::FilePath> destination_;
 
   // Accept/Dismiss callbacks are invoked before the infobar get removed. This
   // flag will indicated that the close event has been initiate by the user or

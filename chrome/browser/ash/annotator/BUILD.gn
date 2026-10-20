@@ -3,7 +3,6 @@
 # found in the LICENSE file.
 
 import("//ash/webui/projector_app/projector_app.gni")
-import("//build/config/chromeos/ui_mode.gni")
 
 assert(is_chromeos)
 
@@ -12,8 +11,6 @@ static_library("annotator") {
     "untrusted_annotator_ui_config.cc",
     "untrusted_annotator_ui_config.h",
   ]
-
-  public_deps = [ "//chrome/browser:browser_public_dependencies" ]
 
   deps = [
     "//ash/constants",

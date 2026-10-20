@@ -109,6 +109,11 @@ class CORE_EXPORT StyleCascade {
   // provide a different filter.
   void Apply(CascadeFilter = CascadeFilter());
 
+  // Rebuild the cascade map to include precomputed :hover style, and apply the
+  // cascaded values for the set of supported precomputed properties on top of
+  // the actual style.
+  void ApplyPrecomputedHover();
+
   // Returns a CSSBitset containing the !important declarations (collecting
   // declarations if needed). If there are no !important declarations,
   // returns nullptr. Can only be called once (or will DCHECK), as the bitset
@@ -120,6 +125,9 @@ class CORE_EXPORT StyleCascade {
   std::unique_ptr<CSSBitset> ReleaseImportantSet();
 
   bool InlineStyleLost() const { return map_.InlineStyleLost(); }
+  bool PresentationAttributeStyleLost() const {
+    return map_.PresentationAttributeStyleLost();
+  }
 
   // Resets the cascade to its initial state. Note that this does not undo
   // any changes already applied to the StyleResolverState/ComputedStyle.
@@ -197,6 +205,10 @@ class CORE_EXPORT StyleCascade {
       const CSSUnparsedDeclarationValue&,
       const TreeScope*,
       const CSSParserContext&);
+
+  void SetApplyPrecomputeHoverRules(bool apply_precompute_hover_rules) {
+    apply_precompute_hover_rules_ = apply_precompute_hover_rules;
+  }
 
  private:
   friend class TestCascade;
@@ -443,6 +455,7 @@ class CORE_EXPORT StyleCascade {
   const CSSValue* ResolveRevert(const CSSProperty&,
                                 const CSSValue&,
                                 const TreeScope*,
+                                CascadePriority,
                                 CascadeOrigin&,
                                 CascadeResolver&);
   const CSSValue* ResolveRevertLayer(const CSSProperty&,
@@ -455,6 +468,11 @@ class CORE_EXPORT StyleCascade {
                                     CascadePriority,
                                     CascadeOrigin&,
                                     CascadeResolver&);
+  const CSSValue* ResolveRevertTo(const CascadePriority*,
+                                  const CSSProperty&,
+                                  CascadePriority,
+                                  CascadeOrigin&,
+                                  CascadeResolver&);
   const CSSValue* ResolveFlipRevert(const CSSProperty&,
                                     const CSSFlipRevertValue&,
                                     const TreeScope*,
@@ -528,6 +546,10 @@ class CORE_EXPORT StyleCascade {
 
     // Parent stack frame (for dynamic scoping).
     FunctionContext* parent = nullptr;
+
+    // CSS random() might differ between custom functions invocations, we
+    // use this counter to keep track of different invocations.
+    wtf_size_t invocation_count = 0;
   };
 
   // The Resolve*Into functions either resolve dependencies, append to the
@@ -621,6 +643,7 @@ class CORE_EXPORT StyleCascade {
       CascadeResolver&,
       const CSSParserContext&,
       FunctionContext*,
+      CSSParserLocalContext&,
       bool& is_attr_tainted);
 
   // NOTE: The FunctionContext object must be the _caller's_ function context,
@@ -685,7 +708,7 @@ class CORE_EXPORT StyleCascade {
                                           CascadeResolver&,
                                           const CSSParserContext&,
                                           FunctionContext*,
-                                          const CSSPropertyName*);
+                                          CSSParserLocalContext&);
 
   // Find the type associated with a given local variable (or custom property).
   // The return value may be a pointer directly into a PropertyRegistration;
@@ -798,7 +821,7 @@ class CORE_EXPORT StyleCascade {
   // never happens.
   bool TreatAsRevertLayer(CascadePriority) const;
 
-  const Document& GetDocument() const;
+  Document& GetDocument() const;
   const TreeScope* GetTreeScope(CascadePriority) const;
   const MixinParameterBindings* GetMixinParameterBindings(
       CascadePriority) const;
@@ -850,6 +873,11 @@ class CORE_EXPORT StyleCascade {
   bool depends_on_cascade_affecting_property_ = false;
   // See comment in StyleCascade::AddExplicitDefaults (.cc file).
   bool effective_zoom_changed_ = false;
+  // With RuntimeEnabledFeatures::CompositeHoverStyleEnabled(), rules only
+  // trivially failing :hover in subject with a predefined set of CSS properties
+  // will be included in MatchResult. They will be skipped while building the
+  // cascade map when this flag is false.
+  bool apply_precompute_hover_rules_ = false;
 };
 
 }  // namespace blink

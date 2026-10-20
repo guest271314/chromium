@@ -116,8 +116,8 @@ class CORE_EXPORT MouseEvent : public UIEventWithKeyState {
 
   uint16_t buttons() const { return buttons_; }
   bool ButtonDown() const { return button_ != -1; }
-  EventTarget* relatedTarget() const { return related_target_.Get(); }
-  void SetRelatedTarget(EventTarget* related_target) {
+  EventTarget* relatedTarget() const override { return related_target_.Get(); }
+  void SetRelatedTarget(EventTarget* related_target) override {
     related_target_ = related_target;
   }
   SyntheticEventType GetSyntheticEventType() const {

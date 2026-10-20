@@ -9,6 +9,7 @@
 
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
+#include "base/strings/string_util.h"
 #include "media/capture/video/video_capture_device_info.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
@@ -20,6 +21,28 @@
 #include "services/video_capture/texture_virtual_device_mojo_adapter.h"
 
 namespace video_capture {
+
+namespace {
+
+bool IsValidVirtualDevice(const media::VideoCaptureDeviceInfo& device_info) {
+  if (device_info.descriptor.model_id != "") {
+    return false;
+  }
+  if (!base::StartsWith(device_info.descriptor.device_id,
+                        media::kVirtualDeviceIdPrefix,
+                        base::CompareCase::SENSITIVE)) {
+    return false;
+  }
+  const std::string& display_name = device_info.descriptor.display_name();
+  if (!display_name.empty() &&
+      !base::StartsWith(display_name, media::kVirtualDeviceDisplayNamePrefix,
+                        base::CompareCase::SENSITIVE)) {
+    return false;
+  }
+  return true;
+}
+
+}  // namespace
 
 class VirtualDeviceEnabledDeviceFactory::VirtualDeviceEntry {
  public:
@@ -134,6 +157,11 @@ VirtualDeviceEnabledDeviceFactory::~VirtualDeviceEnabledDeviceFactory() =
 
 void VirtualDeviceEnabledDeviceFactory::GetDeviceInfos(
     GetDeviceInfosCallback callback) {
+  if (!device_factory_) {
+    OnGetDeviceInfos(std::move(callback), {});
+    return;
+  }
+
   device_factory_->GetDeviceInfos(
       base::BindOnce(&VirtualDeviceEnabledDeviceFactory::OnGetDeviceInfos,
                      weak_factory_.GetWeakPtr(), std::move(callback)));
@@ -142,6 +170,14 @@ void VirtualDeviceEnabledDeviceFactory::GetDeviceInfos(
 void VirtualDeviceEnabledDeviceFactory::CreateDevice(
     const std::string& device_id,
     CreateDeviceCallback callback) {
+  if (!device_factory_) {
+    DeviceInfo info{
+        nullptr, media::VideoCaptureError::kVideoCaptureSystemDeviceIdNotFound};
+    OnDeviceFactoryDeviceCreated(device_id, std::move(callback),
+                                 std::move(info));
+    return;
+  }
+
   device_factory_->CreateDevice(
       device_id,
       base::BindOnce(
@@ -184,7 +220,9 @@ void VirtualDeviceEnabledDeviceFactory::StopDevice(
     virtual_device_iter->second.StopDevice();
     return;
   }
-  device_factory_->StopDevice(device_id);
+  if (device_factory_) {
+    device_factory_->StopDevice(device_id);
+  }
 }
 
 void VirtualDeviceEnabledDeviceFactory::AddSharedMemoryVirtualDevice(
@@ -192,6 +230,15 @@ void VirtualDeviceEnabledDeviceFactory::AddSharedMemoryVirtualDevice(
     mojo::PendingRemote<mojom::Producer> producer_pending_remote,
     mojo::PendingReceiver<mojom::SharedMemoryVirtualDevice>
         virtual_device_receiver) {
+  if (!IsValidVirtualDevice(device_info)) {
+    return;
+  }
+  if (!device_factory_) {
+    CompleteAddSharedMemoryVirtualDevice(device_info,
+                                         std::move(producer_pending_remote),
+                                         std::move(virtual_device_receiver));
+    return;
+  }
   device_factory_->GetDeviceInfos(base::BindOnce(
       &VirtualDeviceEnabledDeviceFactory::OnGetDeviceInfosForVirtualDevice,
       weak_factory_.GetWeakPtr(), device_info.descriptor.device_id,
@@ -235,6 +282,14 @@ void VirtualDeviceEnabledDeviceFactory::AddTextureVirtualDevice(
     const media::VideoCaptureDeviceInfo& device_info,
     mojo::PendingReceiver<mojom::TextureVirtualDevice>
         virtual_device_receiver) {
+  if (!IsValidVirtualDevice(device_info)) {
+    return;
+  }
+  if (!device_factory_) {
+    CompleteAddTextureVirtualDevice(device_info,
+                                    std::move(virtual_device_receiver));
+    return;
+  }
   device_factory_->GetDeviceInfos(base::BindOnce(
       &VirtualDeviceEnabledDeviceFactory::OnGetDeviceInfosForVirtualDevice,
       weak_factory_.GetWeakPtr(), device_info.descriptor.device_id,
@@ -270,6 +325,14 @@ void VirtualDeviceEnabledDeviceFactory::AddGpuMemoryBufferVirtualDevice(
     const media::VideoCaptureDeviceInfo& device_info,
     mojo::PendingReceiver<mojom::GpuMemoryBufferVirtualDevice>
         virtual_device_receiver) {
+  if (!IsValidVirtualDevice(device_info)) {
+    return;
+  }
+  if (!device_factory_) {
+    CompleteAddGpuMemoryBufferVirtualDevice(device_info,
+                                            std::move(virtual_device_receiver));
+    return;
+  }
   device_factory_->GetDeviceInfos(base::BindOnce(
       &VirtualDeviceEnabledDeviceFactory::OnGetDeviceInfosForVirtualDevice,
       weak_factory_.GetWeakPtr(), device_info.descriptor.device_id,
@@ -353,11 +416,11 @@ void VirtualDeviceEnabledDeviceFactory::OnGetDeviceInfos(
     GetDeviceInfosCallback callback,
     const std::vector<media::VideoCaptureDeviceInfo>& device_infos) {
   std::vector<media::VideoCaptureDeviceInfo> all_device_infos;
+  all_device_infos.insert(std::end(all_device_infos), std::begin(device_infos),
+                          std::end(device_infos));
   for (const auto& device_entry : virtual_devices_by_id_) {
     all_device_infos.push_back(device_entry.second.device_info());
   }
-  all_device_infos.insert(std::end(all_device_infos), std::begin(device_infos),
-                          std::end(device_infos));
   std::move(callback).Run(all_device_infos);
 }
 
@@ -394,7 +457,9 @@ void VirtualDeviceEnabledDeviceFactory::OnDevicesChangedObserverDisconnected(
 #if BUILDFLAG(IS_WIN)
 void VirtualDeviceEnabledDeviceFactory::OnGpuInfoUpdate(
     const CHROME_LUID& luid) {
-  device_factory_->OnGpuInfoUpdate(luid);
+  if (device_factory_) {
+    device_factory_->OnGpuInfoUpdate(luid);
+  }
 }
 #endif
 

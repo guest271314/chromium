@@ -16,12 +16,18 @@
 #include "base/android/jni_string.h"
 #include "base/android/scoped_java_ref.h"
 #include "base/check_op.h"
+#include "base/feature_list.h"
+#include "base/metrics/histogram_functions.h"
 #include "base/native_library.h"
 #include "base/strings/string_split.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/threading/scoped_blocking_call.h"
+#include "base/time/time.h"
+#include "base/timer/elapsed_timer.h"
+#include "net/base/cronet_buildflags.h"
 #include "net/base/features.h"
 #include "net/base/net_errors.h"
+#include "net/base/network_handle.h"
 #include "net/dns/public/dns_protocol.h"
 
 // Must come after all headers that specialize FromJniType() / ToJniType().
@@ -37,6 +43,14 @@ using base::android::ToJavaArrayOfByteArray;
 using base::android::ToJavaByteArray;
 
 namespace net::android {
+
+BASE_FEATURE(kPropagateStrictEchMode,
+#if BUILDFLAG(CRONET_BUILD)
+             base::FEATURE_ENABLED_BY_DEFAULT
+#else
+             base::FEATURE_DISABLED_BY_DEFAULT
+#endif
+);
 
 std::vector<std::string> GetUserAddedRoots() {
   std::vector<std::string> roots;
@@ -110,6 +124,24 @@ bool IsCleartextPermitted(std::string_view host) {
   JNIEnv* env = AttachCurrentThread();
   ScopedJavaLocalRef<jstring> host_string = ConvertUTF8ToJavaString(env, host);
   return Java_AndroidNetworkLibrary_isCleartextPermitted(env, host_string);
+}
+
+EchMode GetEchMode(std::string_view host) {
+  // DomainEncryptionMode was introduced in Android CINNAMON_BUN.
+  // Return default value early to avoid JNI overhead.
+  if (base::android::android_info::sdk_int() <
+      base::android::android_info::SDK_VERSION_CINNAMON_BUN) {
+    return EchMode::kOpportunistic;
+  }
+
+  JNIEnv* env = AttachCurrentThread();
+  EchMode mode = static_cast<EchMode>(
+      Java_AndroidNetworkLibrary_getEchMode(env, std::string(host)));
+  if (!base::FeatureList::IsEnabled(kPropagateStrictEchMode) &&
+      mode == EchMode::kStrict) {
+    return EchMode::kOpportunistic;
+  }
+  return mode;
 }
 
 bool HaveOnlyLoopbackAddresses() {
@@ -210,6 +242,9 @@ bool GetCurrentDnsServers(std::vector<IPEndPoint>* dns_servers,
                           bool* dns_over_tls_active,
                           std::string* dns_over_tls_hostname,
                           std::vector<std::string>* search_suffixes) {
+  if (!base::android::IsJavaAvailable()) {
+    return false;
+  }
   JNIEnv* env = AttachCurrentThread();
   // Get the DNS status for the current default network.
   ScopedJavaLocalRef<jobject> result =
@@ -228,6 +263,9 @@ bool GetDnsServersForNetwork(std::vector<IPEndPoint>* dns_servers,
   DCHECK_GE(base::android::android_info::sdk_int(),
             base::android::android_info::SDK_VERSION_P);
 
+  if (!base::android::IsJavaAvailable()) {
+    return false;
+  }
   JNIEnv* env = AttachCurrentThread();
   ScopedJavaLocalRef<jobject> result =
       Java_AndroidNetworkLibrary_getDnsStatusForNetwork(env, network);
@@ -238,6 +276,9 @@ bool GetDnsServersForNetwork(std::vector<IPEndPoint>* dns_servers,
 }
 
 bool ReportBadDefaultNetwork() {
+  if (!base::android::IsJavaAvailable()) {
+    return false;
+  }
   return Java_AndroidNetworkLibrary_reportBadDefaultNetwork(
       AttachCurrentThread());
 }
@@ -269,16 +310,24 @@ int BindToNetwork(SocketDescriptor socket, handles::NetworkHandle network) {
   if (network == handles::kInvalidNetworkHandle)
     return ERR_INVALID_ARGUMENT;
 
+  if (handles::GetEmulateNetworkBindingForTesting()) {
+    return OK;
+  }
+
   int rv;
   static MarshmallowSetNetworkForSocket marshmallow_set_network_for_socket =
       GetMarshmallowSetNetworkForSocket();
   if (!marshmallow_set_network_for_socket) {
     return ERR_NOT_IMPLEMENTED;
   }
+  const base::ElapsedTimer timer;
   rv = marshmallow_set_network_for_socket(network, socket);
   if (rv) {
     rv = errno;
   }
+  base::UmaHistogramCustomMicrosecondsTimes(
+      "Net.Android.BindToNetworkDuration", timer.Elapsed(),
+      base::Microseconds(1), base::Seconds(1), 50);
   // If |network| has since disconnected, |rv| will be ENONET.  Surface this as
   // ERR_NETWORK_CHANGED, rather than MapSystemError(ENONET) which gives back
   // the less descriptive ERR_FAILED.

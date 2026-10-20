@@ -31,8 +31,15 @@
 #include "extensions/buildflags/buildflags.h"
 
 #if BUILDFLAG(IS_CHROMEOS)
-#include "chrome/browser/ash/settings/scoped_cros_settings_test_helper.h"
 #include "components/user_manager/scoped_user_manager.h"
+
+namespace ash {
+class ScopedCrosSettingsTestHelper;
+}  // namespace ash
+#endif
+
+#if BUILDFLAG(IS_WIN)
+class ProfileLoadTracker;
 #endif
 
 class ExtensionSpecialStoragePolicy;
@@ -242,7 +249,13 @@ class TestingProfile : public Profile {
 
     TestingProfile* BuildIncognito(TestingProfile* original_profile);
 
+#if BUILDFLAG(IS_WIN)
+    Builder& EnableProfileLoadTracker();
+#endif
+
     const base::FilePath& GetPath() const { return path_; }
+    const std::string& profile_name() const { return profile_name_; }
+    bool is_supervised_profile() const { return is_supervised_profile_; }
 
    private:
     // If true, Build() has already been called.
@@ -257,7 +270,7 @@ class TestingProfile : public Profile {
     raw_ptr<Delegate> delegate_ = nullptr;
     CreateMode create_mode_ = CreateMode::kSynchronous;
     bool guest_session_ = false;
-    bool allows_browser_windows_ = true;
+    std::optional<bool> allows_browser_windows_;
     bool is_new_profile_ = false;
     bool is_supervised_profile_ = false;
 #if BUILDFLAG(IS_CHROMEOS)
@@ -273,6 +286,9 @@ class TestingProfile : public Profile {
     std::string profile_name_{kDefaultProfileUserName};
     std::optional<bool> override_policy_connector_is_managed_;
     scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory_;
+#if BUILDFLAG(IS_WIN)
+    bool profile_load_tracker_enabled_ = false;
+#endif
   };
 
   // Multi-profile aware constructor that takes the path to a directory managed
@@ -302,7 +318,7 @@ class TestingProfile : public Profile {
       std::unique_ptr<sync_preferences::PrefServiceSyncable> prefs,
       TestingProfile* parent,
       bool guest_session,
-      bool allows_browser_windows,
+      std::optional<bool> allows_browser_windows,
       bool is_new_profile,
       bool is_supervised_profile,
 #if BUILDFLAG(IS_CHROMEOS)
@@ -317,7 +333,12 @@ class TestingProfile : public Profile {
       const std::string& profile_name,
       std::optional<bool> override_policy_connector_is_managed,
       const OTRProfileID* otr_profile_id,
-      scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory);
+      scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory
+#if BUILDFLAG(IS_WIN)
+      ,
+      bool profile_load_tracker_enabled = false
+#endif
+  );
 
   ~TestingProfile() override;
 
@@ -454,6 +475,10 @@ class TestingProfile : public Profile {
     permission_controller_delegate_ = std::move(delegate);
   }
 
+#if BUILDFLAG(IS_WIN)
+  void AckCrashForTracking() override;
+#endif
+
  private:
   // Called when profile is deleted.
   ProfileDestructionCallback profile_destruction_callback_;
@@ -556,6 +581,11 @@ class TestingProfile : public Profile {
   std::unique_ptr<policy::PolicyService> policy_service_;
 
   scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory_;
+
+#if BUILDFLAG(IS_WIN)
+  bool profile_load_tracker_enabled_ = false;
+  std::unique_ptr<ProfileLoadTracker> profile_load_tracker_;
+#endif
 
   base::WeakPtrFactory<TestingProfile> weak_factory_{this};
 };

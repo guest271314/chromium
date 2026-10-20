@@ -6,6 +6,7 @@
 
 #include <utility>
 
+#include "base/android/android_info.h"
 #include "base/android/callback_android.h"
 #include "base/android/jni_android.h"
 #include "base/android/jni_array.h"
@@ -13,6 +14,7 @@
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
+#include "base/memory_coordinator/traits.h"
 #include "base/memory_coordinator/utils.h"
 #include "base/metrics/histogram_functions.h"
 #include "chrome/browser/flags/android/chrome_feature_list.h"
@@ -59,6 +61,13 @@ static void JNI_LongScreenshotsTabService_ReleaseCaptureResultPtr(
   delete reinterpret_cast<paint_preview::CaptureResult*>(j_capture_result_ptr);
 }
 
+namespace {
+
+constexpr base::MemoryConsumerTraits kLongScreenshotsMemoryConsumerTraits(
+    base::MemoryConsumerTraits::ConsumerType::kPassive);
+
+}  // namespace
+
 LongScreenshotsTabService::LongScreenshotsTabService(
     std::unique_ptr<paint_preview::PaintPreviewFileMixin> file_mixin,
     std::unique_ptr<paint_preview::PaintPreviewPolicy> policy,
@@ -69,14 +78,12 @@ LongScreenshotsTabService::LongScreenshotsTabService(
       google_amp_cache_path_regex_(kGoogleAmpCachePathPattern),
       google_amp_viewer_path_regex_(kGoogleAmpViewerPathPattern),
       google_news_path_regex_(kGoogleNewsPathPattern),
-      memory_consumer_registration_(
-          "LongScreenshotsTabService",
-          // TODO(crbug.com/489671163): Use correct traits.
-          std::nullopt,
-          this) {
-  DCHECK(google_amp_cache_path_regex_.ok());
-  DCHECK(google_amp_viewer_path_regex_.ok());
-  DCHECK(google_news_path_regex_.ok());
+      memory_consumer_registration_("LongScreenshotsTabService",
+                                    kLongScreenshotsMemoryConsumerTraits,
+                                    this) {
+  CHECK(google_amp_cache_path_regex_.ok(), base::NotFatalUntil::M161);
+  CHECK(google_amp_viewer_path_regex_.ok(), base::NotFatalUntil::M161);
+  CHECK(google_news_path_regex_.ok(), base::NotFatalUntil::M161);
 
   JNIEnv* env = base::android::AttachCurrentThread();
 
@@ -106,16 +113,25 @@ void LongScreenshotsTabService::CaptureTab(
     paint_preview::mojom::ClipCoordOverride clip_x_coord_override,
     paint_preview::mojom::ClipCoordOverride clip_y_coord_override) {
   base::UmaHistogramPercentage("Sharing.LongScreenshots.MemoryLimitOnCapture",
-                               memory_limit());
+                               memory_limit().percent());
 
-  int memory_threshold =
-      base::FeatureList::IsEnabled(
-          chrome::android::kLongScreenshotsLenientMemoryCheck)
-          ? base::kCriticalMemoryPressureThreshold
-          : base::kModerateMemoryPressureThreshold;
+  bool no_memory_check = base::FeatureList::IsEnabled(
+      chrome::android::kLongScreenshotsNoMemoryCheck);
+  base::MemoryLimit memory_threshold =
+      (no_memory_check ||
+       base::FeatureList::IsEnabled(
+           chrome::android::kLongScreenshotsLenientMemoryCheck))
+          ? base::MemoryLimit::CriticalPressureThreshold()
+          : base::MemoryLimit::ModeratePressureThreshold();
 
-  // If the system is under memory pressure don't try to capture.
-  if (memory_limit() <= memory_threshold) {
+  // If the system is under memory pressure don't try to capture. On Android <
+  // 16 (BAKLAVA), only fall back to CriticalPressureThreshold() instead of
+  // skipping the memory check entirely (b/278379299).
+  bool skip_memory_check =
+      base::android::android_info::sdk_int() >=
+          base::android::android_info::SDK_VERSION_BAKLAVA &&
+      no_memory_check;
+  if (!skip_memory_check && memory_limit() <= memory_threshold) {
     JNIEnv* env = base::android::AttachCurrentThread();
     Java_LongScreenshotsTabService_processCaptureTabStatus(
         env, java_ref_, Status::kLowMemoryDetected);

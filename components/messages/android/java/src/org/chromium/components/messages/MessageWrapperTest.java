@@ -6,9 +6,12 @@ package org.chromium.components.messages;
 
 import static org.mockito.Mockito.never;
 
+import android.content.Context;
 import android.graphics.Bitmap;
+import android.graphics.drawable.Drawable;
+import android.view.ContextThemeWrapper;
 
-import androidx.test.filters.SmallTest;
+import androidx.swiperefreshlayout.widget.CircularProgressDrawable;
 
 import org.junit.Assert;
 import org.junit.Before;
@@ -20,7 +23,9 @@ import org.mockito.Mockito;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 
+import org.chromium.base.ContextUtils;
 import org.chromium.base.test.BaseRobolectricTestRunner;
+import org.chromium.ui.base.WindowAndroid;
 import org.chromium.ui.modelutil.PropertyModel;
 
 /** Unit test for MessageWrapper. */
@@ -37,7 +42,6 @@ public class MessageWrapperTest {
 
     /** Tests that message properties are correctly propagated to PropertyModel. */
     @Test
-    @SmallTest
     public void testMessageProperties() {
         MessageWrapper message = MessageWrapper.create(1, MessageIdentifier.TEST_MESSAGE);
         PropertyModel messageProperties = message.getMessageProperties();
@@ -107,12 +111,11 @@ public class MessageWrapperTest {
 
     /** Tests that native functions are called in response to callbacks invocation. */
     @Test
-    @SmallTest
     public void testCallbacks() {
         final long nativePtr = 1;
         MessageWrapper message = MessageWrapper.create(nativePtr, MessageIdentifier.TEST_MESSAGE);
         PropertyModel messageProperties = message.getMessageProperties();
-        var unused = messageProperties.get(MessageBannerProperties.ON_PRIMARY_ACTION).get();
+        var _ = messageProperties.get(MessageBannerProperties.ON_PRIMARY_ACTION).get();
         Mockito.verify(mNativeMock).handleActionClick(nativePtr);
         messageProperties.get(MessageBannerProperties.ON_SECONDARY_ACTION).run();
         Mockito.verify(mNativeMock).handleSecondaryActionClick(nativePtr);
@@ -124,14 +127,13 @@ public class MessageWrapperTest {
 
     /** Tests that native callbacks are not delivered if the MessageWrapper was destroyed. */
     @Test
-    @SmallTest
     public void testDestroyedMessageWrapperCallbacks() {
         final long nativePtr = 1;
         MessageWrapper message = MessageWrapper.create(nativePtr, MessageIdentifier.TEST_MESSAGE);
         PropertyModel messageProperties = message.getMessageProperties();
 
         message.clearNativePtr();
-        var unused = messageProperties.get(MessageBannerProperties.ON_PRIMARY_ACTION).get();
+        var _ = messageProperties.get(MessageBannerProperties.ON_PRIMARY_ACTION).get();
         Mockito.verify(mNativeMock, never()).handleActionClick(nativePtr);
         messageProperties.get(MessageBannerProperties.ON_SECONDARY_ACTION).run();
         Mockito.verify(mNativeMock, never()).handleSecondaryActionClick(nativePtr);
@@ -142,9 +144,10 @@ public class MessageWrapperTest {
                 .handleDismissCallback(Mockito.anyLong(), Mockito.anyInt());
     }
 
-    /** Tests the secondary menu functionality including addition, selection and clearance of items. */
+    /**
+     * Tests the secondary menu functionality including addition, selection and clearance of items.
+     */
     @Test
-    @SmallTest
     public void testSecondaryMenuUpdates() {
         final long nativePtr = 1;
         MessageWrapper message = MessageWrapper.create(1, MessageIdentifier.TEST_MESSAGE);
@@ -156,7 +159,7 @@ public class MessageWrapperTest {
         // Add secondary menu items.
         PropertyModel item1 = message.addSecondaryMenuItem(1, 0, "Item 1");
         message.addSecondaryMenuItemDivider();
-        PropertyModel item2 = message.addSecondaryMenuItem(2, 0, "Item 2");
+        message.addSecondaryMenuItem(2, 0, "Item 2");
         MessageSecondaryMenuItems messageSecondaryMenuItems =
                 message.getMessageSecondaryMenuItemsForTesting();
         Assert.assertEquals(
@@ -172,5 +175,39 @@ public class MessageWrapperTest {
         message.clearSecondaryMenuItems();
         Assert.assertEquals(
                 "Secondary menu is not cleared.", 0, messageSecondaryMenuItems.mMenuItems.size());
+    }
+
+    /** Tests that showLoadingSpinner attaches a running CircularProgressDrawable with TINT_NONE. */
+    @Test
+    public void testShowLoadingSpinner() {
+        MessageWrapper message = MessageWrapper.create(1, MessageIdentifier.TEST_MESSAGE);
+        PropertyModel messageProperties = message.getMessageProperties();
+
+        Assert.assertFalse(message.showLoadingSpinner(null));
+
+        Context context =
+                new ContextThemeWrapper(
+                        ContextUtils.getApplicationContext(), R.style.Theme_BrowserUI_DayNight);
+        WindowAndroid window = new WindowAndroid(context, /* occlusionTrackingAllowed= */ false);
+
+        Assert.assertTrue(message.showLoadingSpinner(window));
+
+        Drawable icon = messageProperties.get(MessageBannerProperties.ICON);
+        Assert.assertNotNull(icon);
+        Assert.assertTrue(icon instanceof CircularProgressDrawable);
+        Assert.assertTrue(((CircularProgressDrawable) icon).isRunning());
+        icon.setVisible(false, false);
+        Assert.assertFalse(((CircularProgressDrawable) icon).isRunning());
+        icon.setVisible(true, false);
+        Assert.assertTrue(((CircularProgressDrawable) icon).isRunning());
+        Assert.assertTrue(
+                messageProperties
+                        .getAllSetProperties()
+                        .contains(MessageBannerProperties.ICON_TINT_COLOR));
+        Assert.assertEquals(
+                MessageBannerProperties.TINT_NONE,
+                messageProperties.get(MessageBannerProperties.ICON_TINT_COLOR));
+
+        window.destroy();
     }
 }

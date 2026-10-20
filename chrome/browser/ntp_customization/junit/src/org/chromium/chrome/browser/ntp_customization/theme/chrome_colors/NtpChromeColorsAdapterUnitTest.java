@@ -8,17 +8,16 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.Mockito.any;
-import static org.mockito.Mockito.clearInvocations;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
+
+import static org.chromium.ui.test.util.MockitoHelper.clearInvocations;
 
 import android.content.Context;
 import android.view.ContextThemeWrapper;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.FrameLayout;
-import android.widget.ImageView;
 
 import androidx.recyclerview.widget.RecyclerView;
 import androidx.test.core.app.ApplicationProvider;
@@ -45,8 +44,6 @@ public class NtpChromeColorsAdapterUnitTest {
 
     @Mock private Callback<NtpThemeColorInfo> mOnItemClickCallback;
     @Mock private View.OnClickListener mOnClickListener;
-    @Mock private View mItemView;
-    @Mock private ImageView mCircleView;
 
     private Context mContext;
     private List<NtpThemeColorInfo> mColorInfoList;
@@ -124,18 +121,14 @@ public class NtpChromeColorsAdapterUnitTest {
 
     @Test
     public void testBindViewHolder_setOnClickListener() {
-        when(mItemView.getContext()).thenReturn(mContext);
-        when(mItemView.findViewById(R.id.color_circle)).thenReturn(mCircleView);
-        when(mItemView.getResources()).thenReturn(mContext.getResources());
-        mViewHolder = new NtpChromeColorsAdapter.ColorViewHolder(mItemView);
+        ViewGroup parent = new FrameLayout(mContext);
+        mViewHolder = mAdapter.onCreateViewHolder(parent, /* viewType= */ 0);
+        assertFalse(mViewHolder.itemView.hasOnClickListeners());
 
         // Binds the first item view.
         int position = 0;
         mAdapter.onBindViewHolder(mViewHolder, position);
-        verify(mItemView).setOnClickListener(any(View.OnClickListener.class));
-
-        clearInvocations(mItemView);
-        verify(mItemView, never()).setOnClickListener(any(View.OnClickListener.class));
+        assertTrue(mViewHolder.itemView.hasOnClickListeners());
     }
 
     @Test
@@ -155,8 +148,6 @@ public class NtpChromeColorsAdapterUnitTest {
     }
 
     @Test
-    // clearInvocations(T...) is varargs; generic mock triggers unchecked.
-    @SuppressWarnings("unchecked")
     public void testSetSelectedPosition() {
         // Initial selected position is 0.
         assertEquals(0, mAdapter.getSelectedPositionForTesting());

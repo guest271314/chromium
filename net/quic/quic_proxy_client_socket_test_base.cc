@@ -178,7 +178,8 @@ void QuicProxyClientSocketTestBase::InitializeSession() {
                          proxy_chain_, SessionUsage::kDestination, SocketTag(),
                          NetworkAnonymizationKey(), SecureDnsPolicy::kAllow,
                          /*require_dns_https_alpn=*/false,
-                         /*disable_cert_verification_network_fetches=*/false)),
+                         /*disable_cert_verification_network_fetches=*/false,
+                         handles::kInvalidNetworkHandle)),
       /*require_confirmation=*/false,
       /*migrate_session_early_v2=*/false,
       /*migrate_session_on_network_change_v2=*/false,
@@ -202,7 +203,8 @@ void QuicProxyClientSocketTestBase::InitializeSession() {
       /*socket_performance_watcher=*/nullptr, ConnectionEndpointMetadata(),
       /*enable_origin_frame=*/true, /*allow_server_preferred_address=*/true,
       MultiplexedSessionCreationInitiator::kUnknown,
-      NetLogWithSource::Make(NetLogSourceType::NONE));
+      NetLogWithSource::Make(NetLogSourceType::NONE),
+      QuicConnectionReuseDetails());
 
   writer->set_delegate(session_.get());
 

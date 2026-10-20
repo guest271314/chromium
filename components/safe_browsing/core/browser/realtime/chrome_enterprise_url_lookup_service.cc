@@ -38,6 +38,12 @@ namespace {
 // From chrome/common/webui_url_constants.h
 inline constexpr char kChromeUINewTabPageURL[] = "chrome://new-tab-page/";
 inline constexpr char kChromeUINewTabURL[] = "chrome://newtab/";
+inline constexpr char kChromeUIOmniboxPopupAimURL[] =
+    "chrome://omnibox-popup.top-chrome/omnibox_popup_aim.html";
+inline constexpr char kChromeUIOmniboxPopupURL[] =
+    "chrome://omnibox-popup.top-chrome/";
+inline constexpr char kWarmupURL[] =
+    "https://www.google.com/search/warmup.html";
 
 // From content/public/common/url_constants.h
 inline constexpr char kChromeUIScheme[] = "chrome";
@@ -81,12 +87,15 @@ ChromeEnterpriseRealTimeUrlLookupService::
         policy::ManagementService* management_service,
         bool is_off_the_record,
         bool is_guest_session,
+        bool is_isolated_profile,
         base::RepeatingCallback<std::string()> get_profile_email_callback,
         base::RepeatingCallback<std::string(const GURL&)>
             get_content_area_account_email_callback,
         base::RepeatingCallback<bool()> is_profile_affiliated_callback,
         bool is_command_line_switch_supported,
-        IntelligentScanDelegate* intelligent_scan_delegate)
+        IntelligentScanDelegate* intelligent_scan_delegate,
+        base::RepeatingCallback<network::mojom::NetworkContext*()>
+            network_context_getter)
     : RealTimeUrlLookupServiceBase(url_loader_factory,
                                    cache_manager,
                                    get_user_population_callback,
@@ -94,13 +103,15 @@ ChromeEnterpriseRealTimeUrlLookupService::
                                    std::move(token_fetcher),
                                    pref_service,
                                    webui_delegate,
-                                   intelligent_scan_delegate),
+                                   intelligent_scan_delegate,
+                                   std::move(network_context_getter)),
       connectors_service_(connectors_service),
       pref_service_(pref_service),
       identity_manager_(identity_manager),
       management_service_(management_service),
       is_off_the_record_(is_off_the_record),
       is_guest_session_(is_guest_session),
+      is_isolated_profile_(is_isolated_profile),
       get_profile_email_callback_(get_profile_email_callback),
       get_content_area_account_email_callback_(
           get_content_area_account_email_callback),
@@ -114,12 +125,14 @@ bool ChromeEnterpriseRealTimeUrlLookupService::CanPerformFullURLLookup() const {
   return RealTimePolicyEngine::CanPerformEnterpriseFullURLLookup(
       pref_service_,
       connectors_service_->GetDMTokenForRealTimeUrlCheck().has_value(),
-      is_off_the_record_, is_guest_session_);
+      is_off_the_record_, is_guest_session_, is_isolated_profile_);
 }
 
 bool ChromeEnterpriseRealTimeUrlLookupService::
     CanPerformFullURLLookupWithToken() const {
-  DCHECK(CanPerformFullURLLookup());
+  if (!CanPerformFullURLLookup()) {
+    return false;
+  }
 
   // Don't allow using the access token if the managed profile doesn't match the
   // managed device and the URL check is set at device level.
@@ -231,7 +244,10 @@ bool ChromeEnterpriseRealTimeUrlLookupService::
     ShouldOverrideKnownSafeUrlDecision(const GURL& url) const {
   // No need to check new tab to reduce number of rpc calls
   bool new_tab = url == kChromeUINewTabPageURL || url == kChromeUINewTabURL;
-  return url.SchemeIs(kChromeUIScheme) && !new_tab;
+  bool omnibox_popup = url == kChromeUIOmniboxPopupURL ||
+                       url == kChromeUIOmniboxPopupAimURL;
+  bool warmup = url == kWarmupURL;
+  return url.SchemeIs(kChromeUIScheme) && !new_tab && !omnibox_popup && !warmup;
 }
 
 bool ChromeEnterpriseRealTimeUrlLookupService::CanCheckUrl(const GURL& url) {

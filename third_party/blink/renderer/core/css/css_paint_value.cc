@@ -28,11 +28,9 @@ CSSPaintValue::CSSPaintValue(CSSCustomIdentValue* name,
     : CSSImageGeneratorValue(kPaintClass),
       name_(name),
       paint_image_generator_observer_(MakeGarbageCollected<Observer>(this)),
-      off_thread_paint_state_(
-          (!threaded_compositing_enabled ||
-           !RuntimeEnabledFeatures::OffMainThreadCSSPaintEnabled())
-              ? OffThreadPaintState::kMainThread
-              : OffThreadPaintState::kUnknown) {}
+      off_thread_paint_state_(!threaded_compositing_enabled
+                                  ? OffThreadPaintState::kMainThread
+                                  : OffThreadPaintState::kUnknown) {}
 
 CSSPaintValue::CSSPaintValue(CSSCustomIdentValue* name)
     : CSSPaintValue(name, Thread::CompositorThread()) {}
@@ -145,7 +143,7 @@ scoped_refptr<Image> CSSPaintValue::GetImage(
         generator.NativeInvalidationProperties();
     const Vector<AtomicString>& custom_properties =
         generator.CustomInvalidationProperties();
-    float zoom = layout_object.StyleRef().EffectiveZoom();
+    float zoom = layout_object.Style().EffectiveZoom();
     CompositorPaintWorkletInput::PropertyKeys input_property_keys;
     auto style_data = PaintWorkletStylePropertyMap::BuildCrossThreadData(
         document, layout_object.UniqueId(), style, native_properties,

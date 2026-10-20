@@ -9,6 +9,7 @@
 #import "base/test/scoped_feature_list.h"
 #import "components/prefs/pref_service.h"
 #import "components/signin/public/base/signin_pref_names.h"
+#import "components/sync/test/test_sync_service.h"
 #import "ios/chrome/app/application_delegate/app_state.h"
 #import "ios/chrome/app/application_delegate/fake_startup_information.h"
 #import "ios/chrome/app/profile/profile_init_stage.h"
@@ -19,37 +20,24 @@
 #import "ios/chrome/browser/policy/model/policy_util.h"
 #import "ios/chrome/browser/shared/coordinator/scene/scene_state.h"
 #import "ios/chrome/browser/shared/coordinator/scene/state/scene_ui_blocker_state.h"
+#import "ios/chrome/browser/shared/coordinator/scene/test/fake_scene_state.h"
 #import "ios/chrome/browser/shared/model/application_context/application_context.h"
 #import "ios/chrome/browser/shared/model/profile/test/test_profile_ios.h"
+#import "ios/chrome/browser/shared/model/profile/test/test_profile_manager_ios.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/signin/model/authentication_service.h"
 #import "ios/chrome/browser/signin/model/authentication_service_factory.h"
-#import "ios/chrome/browser/signin/model/fake_authentication_service_delegate.h"
 #import "ios/chrome/browser/signin/model/fake_system_identity.h"
 #import "ios/chrome/browser/signin/model/fake_system_identity_manager.h"
 #import "ios/chrome/browser/signin/model/identity_manager_factory.h"
+#import "ios/chrome/browser/sync/model/sync_service_factory.h"
+#import "ios/chrome/browser/sync/model/test_sync_service_utils.h"
 #import "ios/chrome/test/ios_chrome_scoped_testing_local_state.h"
 #import "ios/web/public/test/web_task_environment.h"
 #import "testing/gtest/include/gtest/gtest.h"
 #import "testing/platform_test.h"
-
-// Fake SceneState to set sceneSessionID.
-@interface TaskUpdaterFakeSceneState : SceneState
-- (void)setFakeSceneSessionID:(const std::string&)sessionID;
-@end
-
-@implementation TaskUpdaterFakeSceneState {
-  std::string _fakeSceneSessionID;
-}
-
-- (const std::string&)sceneSessionID {
-  return _fakeSceneSessionID;
-}
-
-- (void)setFakeSceneSessionID:(const std::string&)sessionID {
-  _fakeSceneSessionID = sessionID;
-}
-@end
+#import "third_party/ocmock/OCMock/OCMock.h"
+#import "third_party/ocmock/gtest_support.h"
 
 // Fake TaskOrchestrator to record calls.
 @interface FakeTaskOrchestrator : TaskOrchestrator
@@ -59,7 +47,7 @@
 @implementation FakeTaskOrchestrator
 
 - (void)updateToStage:(TaskExecutionStage)stage
-             forScene:(std::string_view)sceneSessionID {
+             forScene:(SceneState*)sceneState {
   self.stage = stage;
 }
 
@@ -83,9 +71,10 @@ class TaskUpdaterSceneAgentTest : public PlatformTest {
     TestProfileIOS::Builder builder;
     builder.AddTestingFactory(
         AuthenticationServiceFactory::GetInstance(),
-        AuthenticationServiceFactory::GetFactoryWithDelegate(
-            std::make_unique<FakeAuthenticationServiceDelegate>()));
-    profile_ = std::move(builder).Build();
+        AuthenticationServiceFactory::GetDefaultFactory());
+    builder.AddTestingFactory(SyncServiceFactory::GetInstance(),
+                              base::BindRepeating(&CreateTestSyncService));
+    profile_ = profile_manager_.AddProfileWithBuilder(std::move(builder));
 
     fake_startup_information_ = [[FakeStartupInformation alloc] init];
     app_state_ =
@@ -95,35 +84,59 @@ class TaskUpdaterSceneAgentTest : public PlatformTest {
     [app_state_ setValue:fake_task_orchestrator_ forKey:@"taskOrchestrator"];
 
     profile_state_ = [[ProfileState alloc] initWithAppState:app_state_];
-    profile_state_.profile = profile_.get();
+    profile_state_.profile = profile_;
 
-    scene_state_ =
-        [[TaskUpdaterFakeSceneState alloc] initWithAppState:app_state_];
-    [scene_state_ setFakeSceneSessionID:"scene-1"];
+    id fake_scene = OCMClassMock([UIWindowScene class]);
+    id fake_session = OCMClassMock([UISceneSession class]);
+    OCMStub([fake_session persistentIdentifier]).andReturn(@"scene-1");
+    OCMStub([fake_scene session]).andReturn(fake_session);
+
+    scene_state_ = [[FakeSceneState alloc] initWithProfile:profile_];
     scene_state_.profileState = profile_state_;
+    scene_state_.scene = fake_scene;
 
     agent_ = [[TaskUpdaterSceneAgent alloc] init];
     [scene_state_ addAgent:agent_];
+
+    mock_application_ = OCMPartialMock([UIApplication sharedApplication]);
+    OCMStub([mock_application_ applicationState])
+        .andReturn(UIApplicationStateActive);
+  }
+
+  void TearDown() override {
+    [(OCMockObject*)mock_application_ stopMocking];
+    mock_application_ = nil;
+    [scene_state_ shutdown];
+    scene_state_ = nil;
+    agent_ = nil;
+    profile_state_ = nil;
+    fake_task_orchestrator_ = nil;
+    app_state_ = nil;
+    fake_startup_information_ = nil;
+    profile_ = nullptr;
+    PlatformTest::TearDown();
   }
 
   AuthenticationService* auth_service() {
-    return AuthenticationServiceFactory::GetForProfile(profile_.get());
+    return AuthenticationServiceFactory::GetForProfile(profile_);
   }
 
   signin::IdentityManager* identity_manager() {
-    return IdentityManagerFactory::GetForProfile(profile_.get());
+    return IdentityManagerFactory::GetForProfile(profile_);
   }
 
   web::WebTaskEnvironment task_environment_;
   base::test::ScopedFeatureList scoped_feature_list_;
   IOSChromeScopedTestingLocalState local_state_;
-  std::unique_ptr<TestProfileIOS> profile_;
-  FakeStartupInformation* fake_startup_information_;
-  AppState* app_state_;
-  FakeTaskOrchestrator* fake_task_orchestrator_;
-  ProfileState* profile_state_;
-  TaskUpdaterFakeSceneState* scene_state_;
-  TaskUpdaterSceneAgent* agent_;
+  TestProfileManagerIOS profile_manager_;
+  raw_ptr<TestProfileIOS> profile_ = nullptr;
+  FakeStartupInformation* fake_startup_information_ = nil;
+  AppState* app_state_ = nil;
+  FakeTaskOrchestrator* fake_task_orchestrator_ = nil;
+  ProfileState* profile_state_ = nil;
+  FakeSceneState* scene_state_ = nil;
+  TaskUpdaterSceneAgent* agent_ = nil;
+  id mock_application_ = nil;
 };
 
 // Tests that TaskExecutionProfileLoaded is sent when profile is loaded.
@@ -157,8 +170,10 @@ TEST_F(TaskUpdaterSceneAgentTest, TestUIBlocker) {
   scene_state_.UIEnabled = YES;
 
   // Set a UI blocker before becoming active.
-  TaskUpdaterFakeSceneState* blocker_target =
-      [[TaskUpdaterFakeSceneState alloc] initWithAppState:app_state_];
+  FakeSceneState* blocker_target =
+      [[FakeSceneState alloc] initWithProfile:profile_.get()];
+  scene_state_.profileState = profile_state_;
+  scene_state_.sceneSessionID = "scene-2";
   [profile_state_ incrementBlockingUICounterForTarget:blocker_target];
 
   scene_state_.activationLevel = SceneActivationLevelForegroundActive;
@@ -172,6 +187,8 @@ TEST_F(TaskUpdaterSceneAgentTest, TestUIBlocker) {
 
   EXPECT_EQ(fake_task_orchestrator_.stage,
             TaskExecutionStage::TaskExecutionUIReady);
+
+  [blocker_target shutdown];
 }
 
 // Tests that TaskExecutionUIReady is NOT sent if presenting modal overlay.
@@ -272,4 +289,44 @@ TEST_F(TaskUpdaterSceneAgentTest, TestUIReadyResetToStageNone) {
   // Should be reset to None.
   EXPECT_EQ(fake_task_orchestrator_.stage,
             TaskExecutionStage::TaskExecutionStageNone);
+}
+
+// Test that TaskExecutionProfileLoaded is sent when presentingModalOverlay
+// becomes YES after reaching TaskExecutionUIReady.
+TEST_F(TaskUpdaterSceneAgentTest, TestUIReadyResetOnModalOverlay) {
+  SetProfileStateInitStage(profile_state_, ProfileInitStage::kFinal);
+  scene_state_.UIEnabled = YES;
+  scene_state_.activationLevel = SceneActivationLevelForegroundActive;
+
+  EXPECT_EQ(fake_task_orchestrator_.stage,
+            TaskExecutionStage::TaskExecutionUIReady);
+
+  scene_state_.uiBlockerState.presentingModalOverlay = YES;
+  EXPECT_EQ(fake_task_orchestrator_.stage,
+            TaskExecutionStage::TaskExecutionProfileLoaded);
+
+  scene_state_.uiBlockerState.presentingModalOverlay = NO;
+  EXPECT_EQ(fake_task_orchestrator_.stage,
+            TaskExecutionStage::TaskExecutionUIReady);
+}
+
+// Test that TaskExecutionProfileLoaded is sent when a sign-in flow starts
+// after reaching TaskExecutionUIReady, and restored when sign-in ends.
+TEST_F(TaskUpdaterSceneAgentTest, TestUIReadyResetOnSigninStart) {
+  SetProfileStateInitStage(profile_state_, ProfileInitStage::kFinal);
+  scene_state_.UIEnabled = YES;
+  scene_state_.activationLevel = SceneActivationLevelForegroundActive;
+
+  EXPECT_EQ(fake_task_orchestrator_.stage,
+            TaskExecutionStage::TaskExecutionUIReady);
+
+  {
+    std::unique_ptr<SigninInProgress> signin_in_progress =
+        [scene_state_ createSigninInProgress];
+    EXPECT_EQ(fake_task_orchestrator_.stage,
+              TaskExecutionStage::TaskExecutionProfileLoaded);
+  }
+
+  EXPECT_EQ(fake_task_orchestrator_.stage,
+            TaskExecutionStage::TaskExecutionUIReady);
 }

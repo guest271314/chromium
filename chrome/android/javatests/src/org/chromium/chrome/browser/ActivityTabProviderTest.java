@@ -230,11 +230,10 @@ public class ActivityTabProviderTest {
         int callCount = mActivityTabChangedHelper.getCallCount();
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
-                    selector.tryCloseTab(
+                    selector.closeTab(
                             TabClosureParams.closeTab(getModelSelectedTab())
-                                    .allowUndo(false)
-                                    .build(),
-                            /* allowDialog= */ false);
+                                    .allowUndo(/* allowUndo= */ false)
+                                    .build());
                 });
         mActivityTabChangedHelper.waitForCallback(callCount);
 
@@ -252,13 +251,14 @@ public class ActivityTabProviderTest {
     @Restriction(DeviceFormFactor.PHONE)
     public void testTriggerOnLastTabRemoved() throws TimeoutException {
         TabModelSelector selector = mActivity.getTabModelSelector();
+        Tab tabToRemove = getModelSelectedTab();
 
         int callCount = mActivityTabChangedHelper.getCallCount();
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
                     selector.getCurrentModel()
                             .getTabRemover()
-                            .removeTab(getModelSelectedTab(), /* allowDialog= */ false);
+                            .removeTab(tabToRemove, /* allowDialog= */ false);
                 });
         mActivityTabChangedHelper.waitForCallback(callCount);
 
@@ -267,6 +267,9 @@ public class ActivityTabProviderTest {
                 callCount + 1,
                 mActivityTabChangedHelper.getCallCount());
         assertEquals("The activity's tab should be null.", null, mActivityTab);
+
+        // Clean up the removed tab to prevent memory leaks.
+        ThreadUtils.runOnUiThreadBlocking(tabToRemove::destroy);
     }
 
     /**
@@ -295,9 +298,10 @@ public class ActivityTabProviderTest {
                 () -> {
                     mActivity
                             .getTabModelSelector()
-                            .tryCloseTab(
-                                    TabClosureParams.closeTab(startingTab).allowUndo(false).build(),
-                                    /* allowDialog= */ false);
+                            .closeTab(
+                                    TabClosureParams.closeTab(startingTab)
+                                            .allowUndo(/* allowUndo= */ false)
+                                            .build());
                 });
 
         assertEquals("The activity tab should not have changed.", activityTabBefore, mActivityTab);

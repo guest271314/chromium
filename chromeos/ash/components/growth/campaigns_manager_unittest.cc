@@ -17,6 +17,7 @@
 #include "base/files/scoped_temp_dir.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/stringprintf.h"
+#include "base/test/gmock_callback_support.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_chromeos_version_info.h"
 #include "base/test/scoped_feature_list.h"
@@ -32,8 +33,9 @@
 #include "components/account_id/account_id.h"
 #include "components/prefs/pref_registry_simple.h"
 #include "components/prefs/testing_pref_service.h"
+#include "components/session_manager/test/user_session_test_environment.h"
 #include "components/signin/public/identity_manager/tribool.h"
-#include "components/user_manager/fake_user_manager.h"
+#include "components/user_manager/user_manager.h"
 #include "components/version_info/version_info.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -178,7 +180,6 @@ inline constexpr char kValidDemoModeTargeting[] = R"(
       "storeIds": ["2", "4", "6"],
       "countries": ["US"],
       "capability": {
-        "isCloudGamingDevice": true,
         "isFeatureAwareDevice": true
       }
     }
@@ -245,20 +246,9 @@ inline constexpr char kGetCampaignBySlotAttemptHistogramName[] =
 inline constexpr char kGetCampaignBySlotHistogramName[] =
     "Ash.Growth.CampaignsManager.GetCampaignBySlot";
 
-inline const base::Version kDefaultVersion("1.0.0.0");
-
 inline constexpr char kTestPref1[] = "pref1";
 inline constexpr char kTestPref2[] = "pref2";
 inline constexpr char kTestPref3[] = "pref3";
-
-// testing::InvokeArgument<N> does not work with base::OnceCallback. Use this
-// gmock action template to invoke base::OnceCallback. `k` is the k-th argument
-// and `T` is the callback's type.
-ACTION_TEMPLATE(InvokeCallbackArgument,
-                HAS_2_TEMPLATE_PARAMS(int, k, typename, T),
-                AND_1_VALUE_PARAMS(p0)) {
-  std::move(const_cast<T&>(std::get<k>(args))).Run(p0);
-}
 
 }  // namespace
 
@@ -288,7 +278,11 @@ class CampaignsManagerTest : public testing::Test {
     testing::Test::SetUp();
 
     InitializePrefService();
-    InitializeUserManager();
+    ash::test::UserSessionTestEnvironment::RegisterLocalStatePrefs(
+        local_state_->registry());
+    user_session_test_environment_ =
+        std::make_unique<ash::test::UserSessionTestEnvironment>(
+            local_state_.get());
 
     campaigns_manager_ =
         std::make_unique<CampaignsManager>(&mock_client_, local_state_.get());
@@ -297,10 +291,8 @@ class CampaignsManagerTest : public testing::Test {
   }
 
   void TearDown() override {
-    // Clean up user manager.
-    fake_user_manager_->Shutdown();
-    fake_user_manager_->Destroy();
-    fake_user_manager_.reset();
+    campaigns_manager_.reset();
+    user_session_test_environment_.reset();
 
     testing::Test::TearDown();
   }
@@ -318,8 +310,7 @@ class CampaignsManagerTest : public testing::Test {
     base::WriteFile(campaigns_file, file_content);
 
     EXPECT_CALL(mock_client_, LoadCampaignsComponent(_))
-        .WillOnce(InvokeCallbackArgument<0, CampaignComponentLoadedCallback>(
-            temp_dir_.GetPath()));
+        .WillOnce(base::test::RunOnceCallback<0>(temp_dir_.GetPath()));
 
     base::test::TestFuture<void> load_completed_waiter;
     campaigns_manager_->LoadCampaigns(load_completed_waiter.GetCallback(),
@@ -331,17 +322,15 @@ class CampaignsManagerTest : public testing::Test {
   }
 
   void MockDemoMode(bool in_demo_mode,
-                    bool cloud_gaming_device,
                     bool feature_aware_device,
                     const std::string_view& store_id,
                     const std::string_view& retailer_id,
                     const std::string_view& country) {
-    MockDemoMode(in_demo_mode, cloud_gaming_device, feature_aware_device,
-                 store_id, retailer_id, country, kDefaultVersion);
+    MockDemoMode(in_demo_mode, feature_aware_device, store_id, retailer_id,
+                 country, base::Version("1.0.0.0"));
   }
 
   void MockDemoMode(bool in_demo_mode,
-                    bool cloud_gaming_device,
                     bool feature_aware_device,
                     const std::string_view& store_id,
                     const std::string_view& retailer_id,
@@ -349,8 +338,6 @@ class CampaignsManagerTest : public testing::Test {
                     const base::Version& app_version) {
     EXPECT_CALL(mock_client_, IsDeviceInDemoMode)
         .WillRepeatedly(testing::Return(in_demo_mode));
-    EXPECT_CALL(mock_client_, IsCloudGamingDevice)
-        .WillRepeatedly(testing::Return(cloud_gaming_device));
     EXPECT_CALL(mock_client_, IsFeatureAwareDevice)
         .WillRepeatedly(testing::Return(feature_aware_device));
     local_state_->SetString(ash::prefs::kDemoModeStoreId, store_id);
@@ -422,7 +409,8 @@ class CampaignsManagerTest : public testing::Test {
   }
 
   void VerifyOwnerAccountValid(bool is_valid) {
-    const AccountId& owner_account_id = fake_user_manager_->GetOwnerAccountId();
+    const AccountId& owner_account_id =
+        user_manager::UserManager::Get()->GetOwnerAccountId();
     ASSERT_EQ(is_valid, owner_account_id.is_valid());
   }
 
@@ -610,10 +598,11 @@ class CampaignsManagerTest : public testing::Test {
   base::ScopedTempDir temp_dir_;
   std::unique_ptr<TestingPrefServiceSimple> local_state_;
   std::unique_ptr<TestingPrefServiceSimple> pref_;
+  std::unique_ptr<ash::test::UserSessionTestEnvironment>
+      user_session_test_environment_;
   std::unique_ptr<CampaignsManager> campaigns_manager_;
   // A sub-class might override this from `InitializeScopedFeatureList`.
   base::test::ScopedFeatureList scoped_feature_list_;
-  std::unique_ptr<user_manager::FakeUserManager> fake_user_manager_;
 
  private:
   void InitializePrefService() {
@@ -631,20 +620,12 @@ class CampaignsManagerTest : public testing::Test {
     pref_->registry()->RegisterStringPref(kTestPref2, "v2");
     pref_->registry()->RegisterBooleanPref(kTestPref3, true);
   }
-
-  void InitializeUserManager() {
-    user_manager::UserManagerImpl::RegisterPrefs(local_state_->registry());
-    fake_user_manager_ =
-        std::make_unique<user_manager::FakeUserManager>(local_state_.get());
-    fake_user_manager_->Initialize();
-  }
 };
 
 TEST_F(CampaignsManagerTest, LoadAndGetDemoModeCampaign) {
   base::HistogramTester histogram_tester;
   MockDemoMode(
       /*in_demo_mode=*/true,
-      /*cloud_gaming_device=*/true,
       /*feature_aware_device=*/true,
       /*store_id=*/"2",
       /*retailer_id=*/"bby",
@@ -708,7 +689,6 @@ TEST_F(CampaignsManagerTest, LoadAndGetDemoModeCampaignInOobe) {
 TEST_F(CampaignsManagerTest, GetCampaignNoTargeting) {
   MockDemoMode(
       /*in_demo_mode=*/true,
-      /*cloud_gaming_device=*/true,
       /*feature_aware_device=*/true,
       /*store_id=*/"2",
       /*retailer_id=*/"bby",
@@ -727,7 +707,6 @@ TEST_F(CampaignsManagerTest, GetCampaignNoTargeting) {
 TEST_F(CampaignsManagerTest, GetCampaignNoTargetingNotInDemoMode) {
   MockDemoMode(
       /*in_demo_mode=*/false,
-      /*cloud_gaming_device=*/true,
       /*feature_aware_device=*/true,
       /*store_id=*/"2",
       /*retailer_id=*/"bby",
@@ -776,7 +755,6 @@ TEST_F(CampaignsManagerTest, GetDemoModeCampaignNotInDemoMode) {
 
   MockDemoMode(
       /*in_demo_mode=*/false,
-      /*cloud_gaming_device=*/true,
       /*feature_aware_device=*/true,
       /*store_id=*/"2",
       /*retailer_id=*/"bby",
@@ -794,25 +772,9 @@ TEST_F(CampaignsManagerTest, GetDemoModeCampaignNotInDemoMode) {
                                       /*expected_bucket_count=*/0);
 }
 
-TEST_F(CampaignsManagerTest, GetDemoModeCampaignNotGamingDevice) {
-  MockDemoMode(
-      /*in_demo_mode=*/true,
-      /*cloud_gaming_device=*/false,
-      /*feature_aware_device=*/true,
-      /*store_id=*/"2",
-      /*retailer_id=*/"bby",
-      /*country=*/"US");
-
-  LoadComponentAndVerifyLoadComplete(
-      base::StringPrintf(kValidCampaignsFileTemplate, kValidDemoModeTargeting));
-
-  ASSERT_EQ(nullptr, campaigns_manager_->GetCampaignBySlot(Slot::kDemoModeApp));
-}
-
 TEST_F(CampaignsManagerTest, GetDemoModeCampaignNotFeatureAwareDevice) {
   MockDemoMode(
       /*in_demo_mode=*/true,
-      /*cloud_gaming_device=*/true,
       /*feature_aware_device=*/false,
       /*store_id=*/"2",
       /*retailer_id=*/"bby",
@@ -830,7 +792,6 @@ TEST_F(CampaignsManagerTest, GetDemoModeCampaignstoreIdMismatch) {
 
   MockDemoMode(
       /*in_demo_mode=*/true,
-      /*cloud_gaming_device=*/true,
       /*feature_aware_device=*/true,
       /*store_id=*/"1",
       /*retailer_id=*/"bby",
@@ -842,7 +803,6 @@ TEST_F(CampaignsManagerTest, GetDemoModeCampaignstoreIdMismatch) {
 TEST_F(CampaignsManagerTest, GetDemoModeCampaignRetailerIdMismatch) {
   MockDemoMode(
       /*in_demo_mode=*/true,
-      /*cloud_gaming_device=*/true,
       /*feature_aware_device=*/true,
       /*store_id=*/"2",
       /*retailer_id=*/"abc",
@@ -857,7 +817,6 @@ TEST_F(CampaignsManagerTest, GetDemoModeCampaignRetailerIdMismatch) {
 TEST_F(CampaignsManagerTest, GetDemoModeCampaignCanonicalizedRetailerId) {
   MockDemoMode(
       /*in_demo_mode=*/true,
-      /*cloud_gaming_device=*/true,
       /*feature_aware_device=*/true,
       /*store_id=*/"2",
       /*retailer_id=*/"bestbuy",
@@ -871,7 +830,6 @@ TEST_F(CampaignsManagerTest, GetDemoModeCampaignCanonicalizedRetailerId) {
             "storeIds": ["2", "4", "6"],
             "countries": ["US"],
             "capability": {
-              "isCloudGamingDevice": true,
               "isFeatureAwareDevice": true
             }
           }
@@ -885,7 +843,6 @@ TEST_F(CampaignsManagerTest, GetDemoModeCampaignCanonicalizedRetailerId) {
 TEST_F(CampaignsManagerTest, GetDemoModeCampaignCountryMismatch) {
   MockDemoMode(
       /*in_demo_mode=*/true,
-      /*cloud_gaming_device=*/true,
       /*feature_aware_device=*/true,
       /*store_id=*/"2",
       /*retailer_id=*/"bby",
@@ -901,7 +858,6 @@ TEST_F(CampaignsManagerTest, GetDemoModeCampaignAppVersionTargeting) {
   const base::Version expected_app_version("1.0.0.0");
   MockDemoMode(
       /*in_demo_mode=*/true,
-      /*cloud_gaming_device=*/true,
       /*feature_aware_device=*/true,
       /*store_id=*/"2",
       /*retailer_id=*/"bby",
@@ -926,7 +882,6 @@ TEST_F(CampaignsManagerTest, GetDemoModeCampaignWithInvalidAppVersion) {
   const base::Version empty_version;
   MockDemoMode(
       /*in_demo_mode=*/true,
-      /*cloud_gaming_device=*/true,
       /*feature_aware_device=*/true,
       /*store_id=*/"2",
       /*retailer_id=*/"bby",
@@ -951,7 +906,6 @@ TEST_F(CampaignsManagerTest,
   const base::Version empty_version;
   MockDemoMode(
       /*in_demo_mode=*/true,
-      /*cloud_gaming_device=*/true,
       /*feature_aware_device=*/true,
       /*store_id=*/"2",
       /*retailer_id=*/"bby",
@@ -979,7 +933,6 @@ TEST_F(CampaignsManagerTest, GetDemoModeCampaignAppVersionMinMismatch) {
   const base::Version expected_app_version("1.0.0.0");
   MockDemoMode(
       /*in_demo_mode=*/true,
-      /*cloud_gaming_device=*/true,
       /*feature_aware_device=*/true,
       /*store_id=*/"2",
       /*retailer_id=*/"bby",
@@ -1003,7 +956,6 @@ TEST_F(CampaignsManagerTest, GetDemoModeCampaignAppVersionMaxMismatch) {
   const base::Version expected_app_version("1.0.0.2");
   MockDemoMode(
       /*in_demo_mode=*/true,
-      /*cloud_gaming_device=*/true,
       /*feature_aware_device=*/true,
       /*store_id=*/"2",
       /*retailer_id=*/"bby",
@@ -1018,7 +970,6 @@ TEST_F(CampaignsManagerTest, GetDemoModeCampaignAppVersionMinOnly) {
 
   MockDemoMode(
       /*in_demo_mode=*/true,
-      /*cloud_gaming_device=*/true,
       /*feature_aware_device=*/true,
       /*store_id=*/"2",
       /*retailer_id=*/"bby",
@@ -1042,7 +993,6 @@ TEST_F(CampaignsManagerTest, GetDemoModeCampaignAppVersionMinOnlyMismstch) {
   const base::Version expected_app_version("1.0.0.2");
   MockDemoMode(
       /*in_demo_mode=*/true,
-      /*cloud_gaming_device=*/true,
       /*feature_aware_device=*/true,
       /*store_id=*/"2",
       /*retailer_id=*/"bby",
@@ -1065,7 +1015,6 @@ TEST_F(CampaignsManagerTest, GetDemoModeCampaignAppVersionMaxOnly) {
   const base::Version expected_app_version("1.0.0.3");
   MockDemoMode(
       /*in_demo_mode=*/true,
-      /*cloud_gaming_device=*/true,
       /*feature_aware_device=*/true,
       /*store_id=*/"2",
       /*retailer_id=*/"bby",
@@ -1089,7 +1038,6 @@ TEST_F(CampaignsManagerTest, GetDemoModeCampaignAppVersionMaxOnlyMismstch) {
   const base::Version expected_app_version("1.0.0.4");
   MockDemoMode(
       /*in_demo_mode=*/true,
-      /*cloud_gaming_device=*/true,
       /*feature_aware_device=*/true,
       /*store_id=*/"2",
       /*retailer_id=*/"bby",
@@ -1112,7 +1060,6 @@ TEST_F(CampaignsManagerTest, GetDemoModeCampaignAppVersionInvalidAppVersion) {
   const base::Version expected_app_version = base::Version();
   MockDemoMode(
       /*in_demo_mode=*/true,
-      /*cloud_gaming_device=*/true,
       /*feature_aware_device=*/true,
       /*store_id=*/"2",
       /*retailer_id=*/"bby",
@@ -1139,8 +1086,7 @@ TEST_F(CampaignsManagerTest, LoadCampaignsFailed) {
   ASSERT_TRUE(temp_dir_.CreateUniqueTempDir());
 
   EXPECT_CALL(mock_client_, LoadCampaignsComponent(_))
-      .WillOnce(InvokeCallbackArgument<0, CampaignComponentLoadedCallback>(
-          std::nullopt));
+      .WillOnce(base::test::RunOnceCallback<0>(std::nullopt));
 
   campaigns_manager_->LoadCampaigns(base::DoNothing());
   observer.Wait();
@@ -1169,8 +1115,7 @@ TEST_F(CampaignsManagerTest, LoadCampaignsFailedWithGrowthInternalsEnabled) {
   ASSERT_TRUE(temp_dir_.CreateUniqueTempDir());
 
   EXPECT_CALL(mock_client_, LoadCampaignsComponent(_))
-      .WillOnce(InvokeCallbackArgument<0, CampaignComponentLoadedCallback>(
-          std::nullopt));
+      .WillOnce(base::test::RunOnceCallback<0>(std::nullopt));
 
   EXPECT_FALSE(CampaignsLogger::Get()->HasLogForTesting());
 
@@ -1191,8 +1136,7 @@ TEST_F(CampaignsManagerTest, LoadCampaignsFailedWithoutGrowthInternalsEnabled) {
   ASSERT_TRUE(temp_dir_.CreateUniqueTempDir());
 
   EXPECT_CALL(mock_client_, LoadCampaignsComponent(_))
-      .WillOnce(InvokeCallbackArgument<0, CampaignComponentLoadedCallback>(
-          std::nullopt));
+      .WillOnce(base::test::RunOnceCallback<0>(std::nullopt));
 
   EXPECT_FALSE(CampaignsLogger::Get()->HasLogForTesting());
 
@@ -1212,8 +1156,7 @@ TEST_F(CampaignsManagerTest, LoadCampaignsNoFile) {
   ASSERT_TRUE(temp_dir_.CreateUniqueTempDir());
 
   EXPECT_CALL(mock_client_, LoadCampaignsComponent(_))
-      .WillOnce(InvokeCallbackArgument<0, CampaignComponentLoadedCallback>(
-          temp_dir_.GetPath()));
+      .WillOnce(base::test::RunOnceCallback<0>(temp_dir_.GetPath()));
 
   campaigns_manager_->LoadCampaigns(base::DoNothing());
   observer.Wait();

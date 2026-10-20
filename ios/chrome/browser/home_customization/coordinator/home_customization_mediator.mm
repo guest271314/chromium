@@ -11,6 +11,7 @@
 #import "components/ntp_tiles/pref_names.h"
 #import "components/prefs/pref_service.h"
 #import "components/safety_check/safety_check_pref_names.h"
+#import "components/segmentation_platform/embedder/home_modules/tips_manager/signal_constants.h"
 #import "ios/chrome/browser/content_suggestions/set_up_list/public/set_up_list_utils.h"
 #import "ios/chrome/browser/discover_feed/model/discover_feed_visibility_browser_agent.h"
 #import "ios/chrome/browser/discover_feed/model/feed_constants.h"
@@ -24,31 +25,43 @@
 #import "ios/chrome/browser/shared/model/prefs/pref_names.h"
 #import "ios/chrome/browser/shared/model/url/chrome_url_constants.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
+#import "ios/chrome/browser/tips_manager/model/tips_manager_ios.h"
 #import "url/gurl.h"
 
 @implementation HomeCustomizationMediator {
   // Pref service to handle preference changes.
-  raw_ptr<PrefService, DanglingUntriaged> _prefService;
+  raw_ptr<PrefService> _prefService;
   // Browser agent to be notified of Discover eligibility.
-  raw_ptr<DiscoverFeedVisibilityBrowserAgent, DanglingUntriaged>
+  raw_ptr<DiscoverFeedVisibilityBrowserAgent>
       _discoverFeedVisibilityBrowserAgent;
   // ShoppingService used to determine ShopCard toggle
   // eligibility.
   raw_ptr<commerce::ShoppingService> _shoppingService;
+  // TipsManager used to notify customization signals.
+  raw_ptr<TipsManagerIOS> _tipsManager;
 }
 
 - (instancetype)initWithPrefService:(PrefService*)prefService
     discoverFeedVisibilityBrowserAgent:
         (DiscoverFeedVisibilityBrowserAgent*)discoverFeedVisibilityBrowserAgent
                        shoppingService:
-                           (commerce::ShoppingService*)shoppingService {
+                           (commerce::ShoppingService*)shoppingService
+                           tipsManager:(TipsManagerIOS*)tipsManager {
   self = [super init];
   if (self) {
     _prefService = prefService;
     _discoverFeedVisibilityBrowserAgent = discoverFeedVisibilityBrowserAgent;
     _shoppingService = shoppingService;
+    _tipsManager = tipsManager;
   }
   return self;
+}
+
+- (void)disconnect {
+  _prefService = nullptr;
+  _discoverFeedVisibilityBrowserAgent = nullptr;
+  _shoppingService = nullptr;
+  _tipsManager = nullptr;
 }
 
 #pragma mark - Public
@@ -141,6 +154,10 @@
 - (void)toggleModuleVisibilityForType:(CustomizationToggleType)type
                               enabled:(BOOL)enabled {
   [HomeCustomizationMetricsRecorder recordCellToggled:type];
+  if (_tipsManager) {
+    _tipsManager->NotifySignal(
+        segmentation_platform::tips_manager::signals::kNTPCustomized);
+  }
   switch (type) {
     // Main page toggles.
     case CustomizationToggleType::kMostVisited:

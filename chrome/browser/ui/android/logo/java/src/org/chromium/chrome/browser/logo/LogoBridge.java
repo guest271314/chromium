@@ -13,6 +13,7 @@ import org.jni_zero.JniType;
 import org.jni_zero.NativeMethods;
 
 import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.profiles.Profile;
 
 /** Provides access to the search provider's logo via the C++ LogoService. */
@@ -23,23 +24,60 @@ public class LogoBridge {
         /** The logo image. Non-null. */
         public final Bitmap image;
 
-        /** The URL to navigate to when the user clicks on the logo. May be null. */
-        public final String onClickUrl;
+        /** The dark mode logo image. May be null. */
+        public final @Nullable Bitmap darkImage;
 
-        /** The accessibility text describing the logo. May be null. */
-        public final String altText;
+        /** The URL to navigate to when the user clicks on the logo. */
+        public final @Nullable String onClickUrl;
+
+        /** The accessibility text describing the logo. */
+        public final @Nullable String altText;
 
         /**
          * The URL to download animated GIF logo. If null, there is no animated logo to download.
          */
-        public final String animatedLogoUrl;
+        public final @Nullable String animatedLogoUrl;
+
+        /**
+         * The URL to download dark mode animated GIF logo. If null, there is no dark animated logo
+         * to download.
+         */
+        public final @Nullable String darkAnimatedLogoUrl;
+
+        /** The URL to ping when the logo is shown. */
+        public final @Nullable String logUrl;
+
+        /** The URL to ping when the dark mode logo is shown. */
+        public final @Nullable String darkLogUrl;
+
+        /** The URL to ping when the CTA image is shown. */
+        public final @Nullable String ctaLogUrl;
+
+        /** The URL to ping when the dark mode CTA image is shown. */
+        public final @Nullable String darkCtaLogUrl;
 
         @VisibleForTesting(otherwise = VisibleForTesting.PACKAGE_PRIVATE)
-        public Logo(Bitmap image, String onClickUrl, String altText, String animatedLogoUrl) {
+        public Logo(
+                Bitmap image,
+                @Nullable Bitmap darkImage,
+                @Nullable String onClickUrl,
+                @Nullable String altText,
+                @Nullable String animatedLogoUrl,
+                @Nullable String darkAnimatedLogoUrl,
+                @Nullable String logUrl,
+                @Nullable String darkLogUrl,
+                @Nullable String ctaLogUrl,
+                @Nullable String darkCtaLogUrl) {
             this.image = image;
+            this.darkImage = darkImage;
             this.onClickUrl = onClickUrl;
             this.altText = altText;
             this.animatedLogoUrl = animatedLogoUrl;
+            this.darkAnimatedLogoUrl = darkAnimatedLogoUrl;
+            this.logUrl = logUrl;
+            this.darkLogUrl = darkLogUrl;
+            this.ctaLogUrl = ctaLogUrl;
+            this.darkCtaLogUrl = darkCtaLogUrl;
         }
     }
 
@@ -88,9 +126,40 @@ public class LogoBridge {
         LogoBridgeJni.get().getCurrentLogo(mNativeLogoBridge, logoObserver);
     }
 
+    /**
+     * Records an impression for a doodle.
+     *
+     * @param logUrl The URL to ping to record the impression.
+     */
+    public void recordImpression(@Nullable String logUrl) {
+        if (mNativeLogoBridge != 0 && logUrl != null) {
+            LogoBridgeJni.get().recordImpression(mNativeLogoBridge, logUrl);
+        }
+    }
+
     @CalledByNative
-    private static Logo createLogo(Bitmap image, String onClickUrl, String altText, String gifUrl) {
-        return new Logo(image, onClickUrl, altText, gifUrl);
+    private static Logo createLogo(
+            @JniType("SkBitmap") Bitmap image,
+            @JniType("SkBitmap") @Nullable Bitmap darkImage,
+            @JniType("std::optional<std::string>") @Nullable String onClickUrl,
+            @JniType("std::optional<std::string>") @Nullable String altText,
+            @JniType("std::optional<std::string>") @Nullable String gifUrl,
+            @JniType("std::optional<std::string>") @Nullable String darkGifUrl,
+            @JniType("std::optional<std::string>") @Nullable String logUrl,
+            @JniType("std::optional<std::string>") @Nullable String darkLogUrl,
+            @JniType("std::optional<std::string>") @Nullable String ctaLogUrl,
+            @JniType("std::optional<std::string>") @Nullable String darkCtaLogUrl) {
+        return new Logo(
+                image,
+                darkImage,
+                onClickUrl,
+                altText,
+                gifUrl,
+                darkGifUrl,
+                logUrl,
+                darkLogUrl,
+                ctaLogUrl,
+                darkCtaLogUrl);
     }
 
     @NativeMethods
@@ -98,6 +167,8 @@ public class LogoBridge {
         long init(@JniType("Profile*") Profile profile);
 
         void getCurrentLogo(long nativeLogoBridge, LogoObserver logoObserver);
+
+        void recordImpression(long nativeLogoBridge, @JniType("std::string") String logUrl);
 
         void destroy(long nativeLogoBridge);
     }

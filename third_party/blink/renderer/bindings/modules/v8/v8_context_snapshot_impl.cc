@@ -5,6 +5,7 @@
 #include "third_party/blink/renderer/bindings/modules/v8/v8_context_snapshot_impl.h"
 
 #include <array>
+#include <tuple>
 
 #include "third_party/blink/public/platform/platform.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_context_snapshot.h"
@@ -237,11 +238,13 @@ void DeserializeAPIWrapperCallback(v8::Local<v8::Object> holder,
   CHECK(deserializer_data->world.IsMainWorld());
   V8DOMWrapper::SetNativeInfo(deserializer_data->isolate, holder,
                               deserializer_data->html_document);
-  const bool result =
+  // The return value is discarded because whether SetWrapperInInlineStorage
+  // associates a new wrapper (true) or retains an existing wrapper (false),
+  // the Document is guaranteed to hold a valid wrapper in inline storage.
+  std::ignore =
       DOMDataStore::SetWrapperInInlineStorage</*entered_context=*/false>(
           deserializer_data->isolate, deserializer_data->html_document,
           V8HTMLDocument::GetWrapperTypeInfo(), holder);
-  CHECK(result);
 }
 
 // We only care for WrapperTypeInfo and do not supply an actual instance of
@@ -310,7 +313,6 @@ void TakeSnapshotForWorld(v8::SnapshotCreator* snapshot_creator,
 v8::Local<v8::Context> V8ContextSnapshotImpl::CreateContext(
     v8::Isolate* isolate,
     const DOMWrapperWorld& world,
-    v8::ExtensionConfiguration* extension_config,
     v8::Local<v8::Object> global_proxy,
     Document* document) {
   DCHECK(document);
@@ -342,9 +344,8 @@ v8::Local<v8::Context> V8ContextSnapshotImpl::CreateContext(
   v8::DeserializeAPIWrapperCallback api_wrappers_deserializer(
       DeserializeAPIWrapperCallback, &deserializer_data);
   return v8::Context::FromSnapshot(
-             isolate, WorldToIndex(world), internal_field_desrializer,
-             extension_config, global_proxy,
-             document->GetExecutionContext()->GetMicrotaskQueue(),
+             isolate, WorldToIndex(world), internal_field_desrializer, nullptr,
+             global_proxy, document->GetExecutionContext()->GetMicrotaskQueue(),
              v8::DeserializeContextDataCallback(), api_wrappers_deserializer)
       .ToLocalChecked();
 }
@@ -487,8 +488,8 @@ const intptr_t* V8ContextSnapshotImpl::GetReferenceTable() {
   // `size_bytes` bytes. We divide by the sizeof `intptr_t` to get the
   // number of elements.
   DCHECK(!(size_bytes % sizeof(intptr_t)));
-  auto unified_table_span =
-      UNSAFE_BUFFERS(base::span(unified_table, size_bytes / sizeof(intptr_t)));
+  auto unified_table_span = UNSAFE_BUFFERS(base::span(
+      base::unchecked, unified_table, size_bytes / sizeof(intptr_t)));
   size_t offset_count = 0;
   for (const auto& table : tables) {
     unified_table_span.subspan(offset_count, table.size())

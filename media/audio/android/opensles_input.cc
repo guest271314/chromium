@@ -52,7 +52,7 @@ OpenSLESInputStream::OpenSLESInputStream(AudioManagerAndroid* audio_manager,
 
 OpenSLESInputStream::~OpenSLESInputStream() {
   DVLOG(2) << __PRETTY_FUNCTION__;
-  DCHECK(thread_checker_.CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   DCHECK(!recorder_object_.Get());
   DCHECK(!engine_object_.Get());
   DCHECK(!recorder_);
@@ -61,7 +61,7 @@ OpenSLESInputStream::~OpenSLESInputStream() {
 
 AudioInputStream::OpenOutcome OpenSLESInputStream::Open() {
   DVLOG(2) << __PRETTY_FUNCTION__;
-  DCHECK(thread_checker_.CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   if (engine_object_.Get())
     return AudioInputStream::OpenOutcome::kFailed;
 
@@ -74,7 +74,7 @@ AudioInputStream::OpenOutcome OpenSLESInputStream::Open() {
 
 void OpenSLESInputStream::Start(AudioInputCallback* callback) {
   DVLOG(2) << __PRETTY_FUNCTION__;
-  DCHECK(thread_checker_.CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   DCHECK(callback);
   DCHECK(recorder_);
   DCHECK(simple_buffer_queue_);
@@ -97,7 +97,7 @@ void OpenSLESInputStream::Start(AudioInputCallback* callback) {
               ->Enqueue(simple_buffer_queue_, audio_data_[i].data(),
                         buffer_size_bytes_);
     if (SL_RESULT_SUCCESS != err) {
-      HandleError(err);
+      HandleError(err, Error::kStartupFailed);
       started_ = false;
       return;
     }
@@ -108,7 +108,7 @@ void OpenSLESInputStream::Start(AudioInputCallback* callback) {
   // will implicitly start the filling process.
   err = (*recorder_)->SetRecordState(recorder_, SL_RECORDSTATE_RECORDING);
   if (SL_RESULT_SUCCESS != err) {
-    HandleError(err);
+    HandleError(err, Error::kStartupFailed);
     started_ = false;
     return;
   }
@@ -118,7 +118,7 @@ void OpenSLESInputStream::Start(AudioInputCallback* callback) {
 
 void OpenSLESInputStream::Stop() {
   DVLOG(2) << __PRETTY_FUNCTION__;
-  DCHECK(thread_checker_.CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   if (!started_)
     return;
 
@@ -138,7 +138,7 @@ void OpenSLESInputStream::Stop() {
 
 void OpenSLESInputStream::Close() {
   DVLOG(2) << __PRETTY_FUNCTION__;
-  DCHECK(thread_checker_.CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   // Stop the stream if it is still recording.
   Stop();
@@ -180,7 +180,7 @@ bool OpenSLESInputStream::GetAutomaticGainControl() {
 }
 
 bool OpenSLESInputStream::IsMuted() {
-  return false;
+  return audio_manager_->IsMicrophoneMuted();
 }
 
 void OpenSLESInputStream::SetOutputDeviceForAec(
@@ -189,7 +189,7 @@ void OpenSLESInputStream::SetOutputDeviceForAec(
 }
 
 bool OpenSLESInputStream::CreateRecorder() {
-  DCHECK(thread_checker_.CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   DCHECK(!engine_object_.Get());
   DCHECK(!recorder_object_.Get());
   DCHECK(!recorder_);
@@ -316,23 +316,23 @@ void OpenSLESInputStream::ReadBufferQueue() {
                                audio_data_[active_buffer_index_].data(),
                                buffer_size_bytes_);
   if (SL_RESULT_SUCCESS != err)
-    HandleError(err);
+    HandleError(err, Error::kRuntimeError);
 
   active_buffer_index_ = (active_buffer_index_ + 1) % kMaxNumOfBuffersInQueue;
 }
 
 void OpenSLESInputStream::SetupAudioBuffer() {
-  DCHECK(thread_checker_.CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   DCHECK(audio_data_[0].empty());
   for (int i = 0; i < kMaxNumOfBuffersInQueue; ++i) {
     audio_data_[i] = base::HeapArray<uint8_t>::WithSize(buffer_size_bytes_);
   }
 }
 
-void OpenSLESInputStream::HandleError(SLresult error) {
+void OpenSLESInputStream::HandleError(SLresult error, Error error_code) {
   DLOG(ERROR) << "OpenSLES Input error " << error;
   if (callback_)
-    callback_->OnError();
+    callback_->OnError(error_code);
 }
 
 }  // namespace media

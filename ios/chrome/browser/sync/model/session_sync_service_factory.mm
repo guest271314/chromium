@@ -8,15 +8,16 @@
 
 #import "base/memory/raw_ptr.h"
 #import "base/memory/weak_ptr.h"
-#import "base/no_destructor.h"
 #import "base/time/time.h"
 #import "components/dom_distiller/core/url_constants.h"
 #import "components/history/core/browser/history_service.h"
 #import "components/keyed_service/core/service_access_type.h"
 #import "components/sync/model/data_type_store_service.h"
 #import "components/sync/service/sync_service.h"
+#import "components/sync_device_info/device_info.h"
 #import "components/sync_device_info/device_info_sync_service.h"
 #import "components/sync_device_info/device_info_tracker.h"
+#import "components/sync_device_info/device_name_util.h"
 #import "components/sync_sessions/local_session_event_router.h"
 #import "components/sync_sessions/session_sync_prefs.h"
 #import "components/sync_sessions/session_sync_service_impl.h"
@@ -76,6 +77,22 @@ class SyncSessionsClientImpl final : public sync_sessions::SyncSessionsClient {
 
   ~SyncSessionsClientImpl() override {}
 
+  std::optional<std::string> GetSessionDisplayNameFromDeviceInfo(
+      const std::string& session_tag) const override {
+    CHECK(device_info_service_);
+
+    const syncer::DeviceInfoTracker* tracker =
+        device_info_service_->GetDeviceInfoTracker();
+    CHECK(tracker);
+
+    const syncer::DeviceInfo* device_info =
+        tracker->GetChromeDeviceInfo(session_tag);
+    if (!device_info) {
+      return std::nullopt;
+    }
+    return syncer::GetDeviceDisplayName(device_info);
+  }
+
   // SyncSessionsClient implementation.
   sync_sessions::SessionSyncPrefs* GetSessionSyncPrefs() override {
     return &session_sync_prefs_;
@@ -128,31 +145,16 @@ class SyncSessionsClientImpl final : public sync_sessions::SyncSessionsClient {
 }  // namespace
 
 // static
-SessionSyncServiceFactory* SessionSyncServiceFactory::GetInstance() {
-  static base::NoDestructor<SessionSyncServiceFactory> instance;
-  return instance.get();
-}
-
-// static
 bool SessionSyncServiceFactory::ShouldSyncURLForTesting(const GURL& url) {
   return ShouldSyncURLImpl(url);
 }
 
-// static
-SessionSyncService* SessionSyncServiceFactory::GetForProfile(
-    ProfileIOS* profile) {
-  return GetInstance()->GetServiceForProfileAs<SessionSyncService>(
-      profile, /*create=*/true);
-}
-
-SessionSyncServiceFactory::SessionSyncServiceFactory()
-    : ProfileKeyedServiceFactoryIOS("SessionSyncService") {
+SessionSyncServiceFactory::SessionSyncServiceFactory(PassKey key)
+    : TypedProfileKeyedServiceFactoryIOS(std::move(key), "SessionSyncService") {
   DependsOn(ios::HistoryServiceFactory::GetInstance());
   DependsOn(DataTypeStoreServiceFactory::GetInstance());
   DependsOn(DeviceInfoSyncServiceFactory::GetInstance());
 }
-
-SessionSyncServiceFactory::~SessionSyncServiceFactory() = default;
 
 std::unique_ptr<KeyedService>
 SessionSyncServiceFactory::BuildServiceInstanceFor(ProfileIOS* profile) const {

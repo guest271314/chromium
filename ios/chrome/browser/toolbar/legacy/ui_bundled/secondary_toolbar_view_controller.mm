@@ -173,11 +173,11 @@
       hasBottomSafeArea ? kBottomAdaptiveLocationBarVerticalMarginFullscreen
                         : 0;
 
-  return AlignValueToPixel((kBottomAdaptiveLocationBarTopMargin * progress +
-                            fullscreenMargin * (1 - progress)) *
-                               clampedFontSizeMultiplier +
-                           (clampedFontSizeMultiplier - 1) *
-                               kLocationBarVerticalMarginDynamicType);
+  return AlignValueToLowerPixel(
+      (kBottomAdaptiveLocationBarTopMargin * progress +
+       fullscreenMargin * (1 - progress)) *
+          clampedFontSizeMultiplier +
+      (clampedFontSizeMultiplier - 1) * kLocationBarVerticalMarginDynamicType);
 }
 
 /// Updates keyboard constraints with `notification`. When
@@ -354,6 +354,24 @@
 // Changes related to the toolbar itself.
 - (void)setToolbarFaded:(BOOL)faded {
   self.view.alpha = faded ? 0 : 1;
+}
+
+#pragma mark - Properties
+
+- (void)setLocationBarViewController:
+    (UIViewController*)locationBarViewController {
+  // Resets `locationIndicatorActive` when the location bar is removed. This
+  // prevents an inconsistent active indicator state (and potential crash) when
+  // the secondary toolbar no longer has an omnibox.
+  [super setLocationBarViewController:locationBarViewController];
+  if (!self.hasOmnibox && self.locationIndicatorActive) {
+    self.locationIndicatorActive = NO;
+    [self.toolbarHeightDelegate
+        adjustSecondaryToolbarForKeyboardHeight:0
+                                    isCollapsed:NO
+                                       duration:0
+                                          curve:UIViewAnimationCurveEaseInOut];
+  }
 }
 
 @end

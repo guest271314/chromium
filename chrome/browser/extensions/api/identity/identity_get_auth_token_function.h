@@ -22,9 +22,14 @@
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "extensions/browser/extension_function.h"
 #include "extensions/browser/extension_function_histogram_value.h"
+#include "extensions/buildflags/buildflags.h"
 #include "google_apis/gaia/gaia_id.h"
 #include "google_apis/gaia/google_service_auth_error.h"
 #include "google_apis/gaia/oauth2_mint_token_flow.h"
+
+#if BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS)
+#include "components/signin/public/browser/web_signin_tracker.h"
+#endif
 
 namespace signin {
 class AccessTokenFetcher;
@@ -84,6 +89,21 @@ class IdentityGetAuthTokenFunction : public ExtensionFunction,
                              EXPERIMENTAL_IDENTITY_GETAUTHTOKEN)
 
   IdentityGetAuthTokenFunction();
+
+#if BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS)
+  // Overrides how long the function waits for the Gaia cookies to be updated
+  // before giving up and failing the request. Restores the default value on
+  // destruction. Must not be nested.
+  class ScopedCookieWaiterTimeoutForTesting {
+   public:
+    explicit ScopedCookieWaiterTimeoutForTesting(base::TimeDelta timeout);
+    ScopedCookieWaiterTimeoutForTesting(
+        const ScopedCookieWaiterTimeoutForTesting&) = delete;
+    ScopedCookieWaiterTimeoutForTesting& operator=(
+        const ScopedCookieWaiterTimeoutForTesting&) = delete;
+    ~ScopedCookieWaiterTimeoutForTesting();
+  };
+#endif
 
   const ExtensionTokenKey* GetExtensionTokenKeyForTest() { return &token_key_; }
 
@@ -156,6 +176,11 @@ class IdentityGetAuthTokenFunction : public ExtensionFunction,
   // might be started.
   void GetAuthTokenForAccount(const GaiaId& gaia_id);
 
+#if BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS)
+  void OnWebSigninTrackerResult(signin::WebSigninTracker::Result result);
+  void StartWaitingForCookies();
+#endif
+
   // signin::IdentityManager::Observer implementation:
   void OnRefreshTokenUpdatedForAccount(
       const CoreAccountInfo& account_info) override;
@@ -218,9 +243,16 @@ class IdentityGetAuthTokenFunction : public ExtensionFunction,
 #endif
 
   // Methods for invoking UI. Overridable for testing.
+#if !BUILDFLAG(IS_CHROMEOS)
   virtual void ShowExtensionLoginPrompt();
-  virtual void ShowRemoteConsentDialog(
-      const RemoteConsentResolutionData& resolution_data);
+#endif
+
+  // Entry point for the remote consent flow. On platforms where Gaia cookies
+  // are reconciled asynchronously, this may first wait for the cookies to be
+  // updated before invoking `ShowRemoteConsentDialog()`.
+  void StartRemoteConsentFlow();
+
+  virtual void ShowRemoteConsentDialog();
 
   std::string GetOAuth2ClientId() const;
 
@@ -262,9 +294,21 @@ class IdentityGetAuthTokenFunction : public ExtensionFunction,
   // a permissions prompt will be popped up to the user.
   RemoteConsentResolutionData resolution_data_;
   std::unique_ptr<RefreshTokensLoadedWaiter> refresh_tokens_loaded_waiter_;
+#if BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS)
+  // Waits for the account to be available in the cookie jar before showing the
+  // remote consent dialog. Kept alive after reporting its result, until the
+  // next wait.
+  std::unique_ptr<signin::WebSigninTracker> web_signin_tracker_;
+  // Result reported from the `web_signin_tracker_` constructor, handled once
+  // the constructor returns.
+  std::optional<signin::WebSigninTracker::Result> synchronous_tracker_result_;
+#endif
   std::unique_ptr<GaiaRemoteConsentFlow> gaia_remote_consent_flow_;
   std::string consent_result_;
-  // Added for debugging https://crbug.com/40134189.
+  // Indicates whether remote consent was approved for this request.
+  // Used for UMA logging and to gate persisting the account binding in
+  // `OnMintTokenSuccess`. See https://crbug.com/40134189 and
+  // https://crbug.com/497087197.
   bool remote_consent_approved_ = false;
 
   // Invoked when IdentityAPI is shut down.

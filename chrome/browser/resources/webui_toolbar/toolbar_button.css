@@ -4,16 +4,23 @@
 
 /* #css_wrapper_metadata_start
  * #type=style-lit
+ * #import=//resources/cr_elements/cr_hidden_style_lit.css.js
+ * #import=/shared/help_bubble_anchor.css.js
+ * #import=./overflowable_action.css.js
  * #scheme=relative
+ * #include=cr-hidden-style-lit help-bubble-anchor overflowable-action
  * #css_wrapper_metadata_end */
 
 :host {
   align-items: center;
   display: inline-flex;
+  flex: none;
   justify-content: center;
   position: relative;
-  height: var(--toolbar-button-height);
-  width: var(--toolbar-button-height);
+  --button-height: var(--toolbar-button-height);
+  --button-width: var(--toolbar-button-height);
+  height: var(--button-height);
+  width: var(--button-width);
 }
 
 cr-icon-button {
@@ -24,7 +31,37 @@ cr-icon-button {
   --cr-icon-button-fill-color: var(--color-toolbar-button-icon);
 }
 
+cr-button {
+  cursor: default;
+  /* Zero out font-size and line-height because cr-button wraps slotted content
+   * in an inline span. This collapses the font baseline offset, ensuring the
+   * icon is vertically centered. This is safe as toolbar buttons using
+   * cr-button are strictly icon-only and have no text. */
+  font-size: 0;
+  line-height: 0;
+  margin: 0;
+  /* cr-button would normally paint the focus ring outset, but that would clip
+   * against the toolbar bounds, so we paint it inset instead. */
+  outline-offset: -2px;
+  padding: 0;
+  min-width: var(--toolbar-button-height);
+  --cr-button-size: var(--toolbar-button-height);
+  --cr-button-height: var(--toolbar-button-height);
+  --cr-button-icon-size: var(--toolbar-button-icon-size);
+  --cr-button-fill-color: var(--color-toolbar-button-icon);
+  --cr-button-background-color: transparent;
+  --cr-button-border-color: transparent;
+  --cr-button-border: 0;
+}
+
+/* Like native toolbar buttons, use the inactive icon color while the browser
+ * window is inactive on Mac. The browser sets controls-appear-inactive. */
+:host-context(toolbar-app[controls-appear-inactive]) cr-icon-button {
+  --cr-icon-button-fill-color: var(--color-toolbar-button-icon-inactive);
+}
+
 cr-icon-button[is-menu-open],
+cr-button[is-menu-open],
 :host(.anchor-highlight) cr-icon-button {
   background-color: var(--cr-active-background-color);
 }
@@ -55,4 +92,29 @@ cr-icon-button[is-menu-open],
 cr-icon-button[is-activated] {
   --cr-icon-button-fill-color: var(--color-toolbar-action-item-engaged,
       var(--google-blue-600));
+}
+
+cr-button[is-activated] {
+  --cr-button-fill-color: var(--color-toolbar-action-item-engaged,
+      var(--google-blue-600));
+}
+
+/* While an IPH is anchored to the button, paint the icon in the feature promo
+ * highlight color, matching native ToolbarButton::GetForegroundColor().
+ * Engaged buttons keep the engaged color, as native SplitTabsToolbarButton and
+ * PinnedActionToolbarButton do. Buttons that pick their own icon color in
+ * native (e.g. the performance intervention button) keep it through their
+ * more specific #button rules. cr-button (extensions) is not included:
+ * native extension action buttons (ToolbarActionView) are not ToolbarButtons,
+ * and the extensions menu button draws its icon through icon-from-table, whose
+ * color is set inline from the icon table, so CSS cannot recolor it. */
+:host(.help-anchor-highlight)
+    cr-icon-button.iph-visual-target:not([is-activated]) {
+  --cr-icon-button-fill-color: var(--color-toolbar-feature-promo-highlight);
+}
+
+icon-from-table {
+  width: var(--toolbar-button-icon-size);
+  height: var(--toolbar-button-icon-size);
+  --icon-size: var(--toolbar-button-icon-size);
 }

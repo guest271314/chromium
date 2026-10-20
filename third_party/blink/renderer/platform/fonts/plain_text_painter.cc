@@ -7,6 +7,7 @@
 #include <cmath>
 
 #include "base/containers/adapters.h"
+#include "base/memory_coordinator/traits.h"
 #include "base/memory_coordinator/utils.h"
 #include "third_party/blink/renderer/platform/fonts/character_range.h"
 #include "third_party/blink/renderer/platform/fonts/plain_text_node.h"
@@ -17,14 +18,34 @@
 
 namespace blink {
 
+namespace {
+
+constexpr base::MemoryConsumerTraits kPlainTextPainterTraits{
+    // Shape caches are capped; complex pages up to tens of MBs.
+    base::MemoryConsumerTraits::EstimatedMemoryUsage::kMedium,
+    // Clearing the maps reads the nested entries being freed.
+    base::MemoryConsumerTraits::ReleaseMemoryDataAccess::kReads,
+    // Shape results can be recalculated.
+    base::MemoryConsumerTraits::InformationRetention::kLossless,
+    // Map clearing is synchronous.
+    base::MemoryConsumerTraits::ExecutionType::kSynchronous,
+    // Either it keeps or clears everything.
+    base::MemoryConsumerTraits::SupportsMemoryLimit::kNo,
+    // Shaping is relatively cheap.
+    base::MemoryConsumerTraits::RecreateMemoryCost::kCheap,
+    // Holds references managed by Blink Oilpan GC.
+    base::MemoryConsumerTraits::ReleaseGCReferences::kYes,
+    // Performs a one-shot clear on memory pressure.
+    base::MemoryConsumerTraits::IsStateful::kNo};
+
+}  // namespace
+
 PlainTextPainter::PlainTextPainter(PlainTextPainter::Mode mode) : mode_(mode) {
   // We don't use FrameShapeCache in the kShared mode. See GetCacheFor().
   if (mode_ == kCanvas) {
     memory_consumer_registration_.emplace(
-        "PlainTextPainter",
-        /*traits=*/std::nullopt,  // TODO(crbug.com/489671163): Fill traits.
-        this, MemoryConsumerRegistration::CheckUnregister::kDisabled,
-        MemoryConsumerRegistration::CheckRegistryExists::kDisabled);
+        "PlainTextPainter", kPlainTextPainterTraits, this,
+        MemoryConsumerRegistration::CheckUnregister::kDisabled);
   }
 }
 
@@ -81,8 +102,8 @@ void PlainTextPainter::DrawWithoutBidi(const TextRun& run,
 
 bool PlainTextPainter::DrawWithBidiReorder(
     const TextRun& run,
-    unsigned from_index,
-    unsigned to_index,
+    wtf_size_t from_index,
+    wtf_size_t to_index,
     const Font& font,
     Font::CustomFontNotReadyAction action,
     cc::PaintCanvas& canvas,
@@ -162,8 +183,8 @@ float PlainTextPainter::ComputeInlineSize(const TextRun& run,
 }
 
 float PlainTextPainter::ComputeSubInlineSize(const TextRun& run,
-                                             unsigned from_index,
-                                             unsigned to_index,
+                                             wtf_size_t from_index,
+                                             wtf_size_t to_index,
                                              const Font& font,
                                              gfx::RectF* glyph_bounds) {
   if (run.length() == 0) {
@@ -178,8 +199,8 @@ float PlainTextPainter::ComputeSubInlineSize(const TextRun& run,
       continue;
     }
     // Calculate the required indexes for this specific run.
-    unsigned run_from = std::max(0u, from_index - start_offset);
-    unsigned run_to = std::min(item.Length(), to_index - start_offset);
+    wtf_size_t run_from = std::max(0u, from_index - start_offset);
+    wtf_size_t run_to = std::min(item.Length(), to_index - start_offset);
     // Measure the subrun.
     StringView sub_text(node.TextContent(), start_offset, item.Length());
     TextRun text_run(sub_text, item.Direction());

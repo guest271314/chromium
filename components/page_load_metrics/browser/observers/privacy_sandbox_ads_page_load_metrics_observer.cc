@@ -48,9 +48,6 @@ std::string PrivacySandboxAdsPageLoadMetricsObserver::GetHistogramName(
     PrivacySandboxAdsApi api) {
   const char* suffix;
   switch (api) {
-    case PrivacySandboxAdsApi::kAttributionReporting:
-      suffix = "AttributionReporting";
-      break;
     case PrivacySandboxAdsApi::kFencedFrames:
       suffix = "FencedFrames";
       break;
@@ -59,9 +56,6 @@ std::string PrivacySandboxAdsPageLoadMetricsObserver::GetHistogramName(
       break;
     case PrivacySandboxAdsApi::kProtectedAudienceJoinAdInterestGroup:
       suffix = "ProtectedAudienceJoinAdInterestGroup";
-      break;
-    case PrivacySandboxAdsApi::kPrivateAggregation:
-      suffix = "PrivateAggregation";
       break;
     case PrivacySandboxAdsApi::kSharedStorage:
       suffix = "SharedStorage";
@@ -148,9 +142,6 @@ void PrivacySandboxAdsPageLoadMetricsObserver::OnFeaturesUsageObserved(
 
     std::optional<PrivacySandboxAdsApi> api;
     switch (static_cast<WebFeature>(feature.value())) {
-      case WebFeature::kAttributionReportingAPIAll:
-        api = PrivacySandboxAdsApi::kAttributionReporting;
-        break;
       case WebFeature::kHTMLFencedFrameElement:
         api = PrivacySandboxAdsApi::kFencedFrames;
         break;
@@ -159,9 +150,6 @@ void PrivacySandboxAdsPageLoadMetricsObserver::OnFeaturesUsageObserved(
         break;
       case WebFeature::kV8Navigator_JoinAdInterestGroup_Method:
         api = PrivacySandboxAdsApi::kProtectedAudienceJoinAdInterestGroup;
-        break;
-      case WebFeature::kPrivateAggregationApiAll:
-        api = PrivacySandboxAdsApi::kPrivateAggregation;
         break;
       case WebFeature::kSharedStorageAPI_SharedStorage_DOMReference:
       case WebFeature::kSharedStorageAPI_Run_Method:

@@ -10,8 +10,8 @@
 #include "third_party/blink/public/web/web_input_method_controller.h"
 #include "third_party/blink/renderer/bindings/core/v8/active_script_wrappable.h"
 #include "third_party/blink/renderer/core/core_export.h"
-#include "third_party/blink/renderer/core/dom/element_rare_data_field.h"
 #include "third_party/blink/renderer/core/dom/events/event_target.h"
+#include "third_party/blink/renderer/core/dom/node_rare_data_field.h"
 #include "third_party/blink/renderer/core/execution_context/execution_context_lifecycle_observer.h"
 #include "third_party/blink/renderer/platform/wtf/vector.h"
 #include "ui/base/ime/ime_text_span.h"
@@ -30,11 +30,10 @@ class InputMethodController;
 // modern operating systems to facilitate various input modalities to unlock
 // advanced editing scenarios. For more information please refer
 // https://github.com/MicrosoftEdge/MSEdgeExplainers/blob/master/EditContext/explainer.md.
-
 class CORE_EXPORT EditContext final : public EventTarget,
                                       public ActiveScriptWrappable<EditContext>,
                                       public WebInputMethodController,
-                                      public ElementRareDataField {
+                                      public NodeRareDataField {
   DEFINE_WRAPPERTYPEINFO();
 
  public:
@@ -210,6 +209,10 @@ class CORE_EXPORT EditContext final : public EventTarget,
   // Delete `before` characters preceding the current `selection_start_` and
   // `after` characters following the current `selection_end_`.
   void DeleteSurroundingText(int before, int after);
+  // Delete `before` characters preceding the current `selection_start_` and
+  // `after` characters following the current `selection_end_`, where the
+  // lengths are supplied in code points, not in UTF-16 code unit or in glyphs.
+  void DeleteSurroundingTextInCodePoints(int before, int after);
 
   // Change the selection range.
   // Optionally dispatch TextInputEvent to notify the
@@ -232,6 +235,15 @@ class CORE_EXPORT EditContext final : public EventTarget,
 
  private:
   InputMethodController& GetInputMethodController() const;
+
+  // Called when `control_bounds_` or `selection_bounds_` change. If this is
+  // the active EditContext, schedules a main frame so that
+  // WidgetBase::UpdateTextInputState() runs (from DidBeginMainFrame()) and
+  // sends the new bounds to the browser via TextInputStateChanged. Without
+  // this, bounds updated from a timer or other async task (which neither
+  // mutate the DOM nor dirty layout) would not be sent until some unrelated
+  // frame is produced.
+  void ScheduleTextInputStateUpdateIfActive();
 
   void DeleteCurrentSelection();
 

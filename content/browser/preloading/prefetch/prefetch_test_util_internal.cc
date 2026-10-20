@@ -16,9 +16,9 @@
 #include "content/browser/preloading/prefetch/prefetch_streaming_url_loader.h"
 #include "content/browser/preloading/preloading.h"
 #include "content/browser/preloading/preloading_data_impl.h"
+#include "content/browser/renderer_host/render_frame_host_impl.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/frame_accept_header.h"
-#include "content/public/browser/prefetch_metrics.h"
 #include "content/public/common/content_client.h"
 #include "content/public/test/mock_navigation_handle.h"
 #include "net/cookies/site_for_cookies.h"
@@ -70,6 +70,7 @@ class TestPrefetchContainerObserver final : public PrefetchContainerObserver {
       const PrefetchContainer& prefetch_container) override {
     on_complete_loop_.Quit();
   }
+  void OnPrefetchStale(const PrefetchContainer& prefetch_container) override {}
 
   base::WeakPtr<PrefetchContainer> prefetch_container_;
   base::RunLoop on_complete_loop_;
@@ -205,7 +206,9 @@ base::WeakPtr<PrefetchStreamingURLLoader> CreateStreamingURLLoaderForTests(
       /*browser_context_for_service_worker=*/nullptr,
       base::BindOnce(&PrefetchContainer::OnServiceWorkerStateDetermined,
                      prefetch_container),
-      perfetto::Flow::ProcessScoped(0));
+      perfetto::Flow::ProcessScoped(0),
+      prefetch_container ? prefetch_container->IsConstructedFromPrePrefetch()
+                         : false);
 
   if (prefetch_container) {
     prefetch_container->SetStreamingURLLoader(streaming_loader);
@@ -229,6 +232,7 @@ void MakeServableStreamingURLLoaderForTest(
     network::mojom::URLResponseHeadPtr head,
     const std::string body,
     network::URLLoaderCompletionStatus status) {
+  prefetch_container->SimulatePrefetchEligibleForTest();
   prefetch_container->SimulatePrefetchStartedForTest();
 
   const GURL kTestUrl = GURL("https://test.com");
@@ -261,11 +265,14 @@ void MakeServableStreamingURLLoaderForTest(
   CHECK(weak_streaming_loader);
   CHECK(weak_response_reader);
   CHECK(weak_response_reader->Servable(base::TimeDelta::Max()));
+  CHECK_EQ(prefetch_container->GetLoadState(),
+           PrefetchContainer::LoadState::kCompleted);
 }
 
 network::TestURLLoaderFactory::PendingRequest
 MakeManuallyServableStreamingURLLoaderForTest(
     PrefetchContainer* prefetch_container) {
+  prefetch_container->SimulatePrefetchEligibleForTest();
   prefetch_container->SimulatePrefetchStartedForTest();
 
   const GURL kTestUrl = GURL("https://test.com");
@@ -292,6 +299,7 @@ void MakeServableStreamingURLLoaderWithRedirectForTest(
     PrefetchContainer* prefetch_container,
     const GURL& original_url,
     const GURL& redirect_url) {
+  prefetch_container->SimulatePrefetchEligibleForTest();
   prefetch_container->SimulatePrefetchStartedForTest();
 
   network::TestURLLoaderFactory test_url_loader_factory;
@@ -348,12 +356,15 @@ void MakeServableStreamingURLLoaderWithRedirectForTest(
   CHECK(weak_first_response_reader);
   CHECK(weak_second_response_reader);
   CHECK(weak_second_response_reader->Servable(base::TimeDelta::Max()));
+  CHECK_EQ(prefetch_container->GetLoadState(),
+           PrefetchContainer::LoadState::kCompleted);
 }
 
 void MakeServableStreamingURLLoadersWithNetworkTransitionRedirectForTest(
     PrefetchContainer* prefetch_container,
     const GURL& original_url,
     const GURL& redirect_url) {
+  prefetch_container->SimulatePrefetchEligibleForTest();
   prefetch_container->SimulatePrefetchStartedForTest();
 
   network::TestURLLoaderFactory test_url_loader_factory;
@@ -430,6 +441,8 @@ void MakeServableStreamingURLLoadersWithNetworkTransitionRedirectForTest(
   CHECK(weak_second_streaming_loader);
   CHECK(weak_second_response_reader);
   CHECK(weak_second_response_reader->Servable(base::TimeDelta::Max()));
+  CHECK_EQ(prefetch_container->GetLoadState(),
+           PrefetchContainer::LoadState::kCompleted);
 }
 
 PrefetchTestURLLoaderClient::PrefetchTestURLLoaderClient() = default;
@@ -522,7 +535,7 @@ ScopedMockContentBrowserClient::ScopedMockContentBrowserClient() {
       WillCreateURLLoaderFactory(
           _, _, _,
           ContentBrowserClient::URLLoaderFactoryType::kDocumentSubResource, _,
-          _, _, _, _, _, _, _, _, _))
+          _, _, _, _, _, _, _, _, _, _))
       .Times(::testing::AnyNumber());
 }
 
@@ -551,7 +564,8 @@ void TestPrefetchService::EvictPrefetch(size_t index) {
   ASSERT_TRUE(prefetches_[index]);
   base::WeakPtr<PrefetchContainer> prefetch_container = prefetches_[index];
   prefetches_.erase(prefetches_.begin() + index);
-  MayReleasePrefetch(prefetch_container);
+  MayReleasePrefetch(prefetch_container,
+                     /*prefetch_status_on_destruction=*/std::nullopt);
 }
 
 PrefetchingMetricsTestBase::PrefetchingMetricsTestBase()
@@ -566,8 +580,10 @@ void PrefetchingMetricsTestBase::SetUp() {
   attempt_entry_builder_ =
       std::make_unique<test::PreloadingAttemptUkmEntryBuilder>(
           content_preloading_predictor::kSpeculationRules);
+  histogram_tester_ = std::make_unique<base::HistogramTester>();
 }
 void PrefetchingMetricsTestBase::TearDown() {
+  histogram_tester_.reset();
   test_ukm_recorder_.reset();
   attempt_entry_builder_.reset();
   RenderViewHostTestHarness::TearDown();
@@ -581,38 +597,59 @@ blink::DocumentToken PrefetchingMetricsTestBase::MainDocumentToken() {
   return main_rfhi()->GetDocumentToken();
 }
 
-void PrefetchingMetricsTestBase::ExpectPrefetchNoNetErrorOrResponseReceived(
-    const base::HistogramTester& histogram_tester,
-    bool is_eligible,
-    bool browser_initiated_prefetch) {
-  histogram_tester.ExpectTotalCount("PrefetchProxy.Prefetch.Mainframe.RespCode",
-                                    0);
-  histogram_tester.ExpectTotalCount("PrefetchProxy.Prefetch.Mainframe.NetError",
-                                    0);
-  histogram_tester.ExpectTotalCount(
-      "PrefetchProxy.Prefetch.Mainframe.BodyLength", 0);
-  histogram_tester.ExpectTotalCount(
+void PrefetchingMetricsTestBase::ExpectPrefetchResponseReceivedNotRecorded() {
+  histogram_tester().ExpectTotalCount(
+      "PrefetchProxy.Prefetch.Mainframe.RespCode", 0);
+  histogram_tester().ExpectTotalCount(
       "PrefetchProxy.Prefetch.Mainframe.TotalTime", 0);
-  histogram_tester.ExpectTotalCount(
+  histogram_tester().ExpectTotalCount(
       "PrefetchProxy.Prefetch.Mainframe.ConnectTime", 0);
+}
 
-  if (!browser_initiated_prefetch) {
-    std::optional<PrefetchReferringPageMetrics> referring_page_metrics =
-        PrefetchReferringPageMetrics::GetForCurrentDocument(main_rfh());
-    EXPECT_EQ(referring_page_metrics->prefetch_attempted_count, 1);
-    EXPECT_EQ(referring_page_metrics->prefetch_eligible_count,
-              is_eligible ? 1 : 0);
-    EXPECT_EQ(referring_page_metrics->prefetch_successful_count, 0);
+void PrefetchingMetricsTestBase::ExpectPrefetchResponseReceivedRecorded(
+    net::HttpStatusCode response_code) {
+  histogram_tester().ExpectUniqueSample(
+      "PrefetchProxy.Prefetch.Mainframe.RespCode", response_code, 1);
+  histogram_tester().ExpectUniqueSample(
+      "PrefetchProxy.Prefetch.Mainframe.TotalTime", kTotalTimeDuration, 1);
+  histogram_tester().ExpectUniqueSample(
+      "PrefetchProxy.Prefetch.Mainframe.ConnectTime", kConnectTimeDuration, 1);
+}
+
+void PrefetchingMetricsTestBase::ExpectPrefetchCompleteNotRecorded() {
+  histogram_tester().ExpectTotalCount(
+      "PrefetchProxy.Prefetch.Mainframe.NetError", 0);
+  histogram_tester().ExpectTotalCount(
+      "PrefetchProxy.Prefetch.Mainframe.BodyLength", 0);
+}
+
+void PrefetchingMetricsTestBase::ExpectPrefetchCompleteRecorded(
+    std::optional<int> body_length,
+    int net_error) {
+  histogram_tester().ExpectUniqueSample(
+      "PrefetchProxy.Prefetch.Mainframe.NetError", -net_error, 1);
+  if (body_length.has_value()) {
+    histogram_tester().ExpectUniqueSample(
+        "PrefetchProxy.Prefetch.Mainframe.BodyLength", *body_length, 1);
+  } else {
+    histogram_tester().ExpectTotalCount(
+        "PrefetchProxy.Prefetch.Mainframe.BodyLength", 0);
   }
 }
 
+void PrefetchingMetricsTestBase::ExpectPrefetchNoNetErrorOrResponseReceived(
+    bool is_eligible,
+    bool browser_initiated_prefetch) {
+  ExpectPrefetchResponseReceivedNotRecorded();
+  ExpectPrefetchCompleteNotRecorded();
+
+}
+
 void PrefetchingMetricsTestBase::ExpectPrefetchNotEligible(
-    const base::HistogramTester& histogram_tester,
     PreloadingEligibility expected_eligibility,
     bool is_accurate,
     bool browser_initiated_prefetch) {
-  ExpectPrefetchNoNetErrorOrResponseReceived(histogram_tester,
-                                             /*is_eligible=*/false,
+  ExpectPrefetchNoNetErrorOrResponseReceived(/*is_eligible=*/false,
                                              browser_initiated_prefetch);
 
   if (!browser_initiated_prefetch) {
@@ -624,13 +661,11 @@ void PrefetchingMetricsTestBase::ExpectPrefetchNotEligible(
 }
 
 void PrefetchingMetricsTestBase::ExpectPrefetchFailedBeforeResponseReceived(
-    const base::HistogramTester& histogram_tester,
     PrefetchStatus expected_prefetch_status,
     bool is_accurate) {
-  ExpectPrefetchNoNetErrorOrResponseReceived(histogram_tester,
-                                             /*is_eligible=*/true);
-  histogram_tester.ExpectUniqueSample("Preloading.Prefetch.PrefetchStatus",
-                                      expected_prefetch_status, 1);
+  ExpectPrefetchNoNetErrorOrResponseReceived(/*is_eligible=*/true);
+  histogram_tester().ExpectUniqueSample("Preloading.Prefetch.PrefetchStatus",
+                                        expected_prefetch_status, 1);
   ExpectCorrectUkmLogs(
       {.outcome = PreloadingTriggeringOutcome::kFailure,
        .failure = ToPreloadingFailureReason(expected_prefetch_status),
@@ -638,34 +673,19 @@ void PrefetchingMetricsTestBase::ExpectPrefetchFailedBeforeResponseReceived(
 }
 
 void PrefetchingMetricsTestBase::ExpectPrefetchFailedNetError(
-    const base::HistogramTester& histogram_tester,
     int expected_net_error_code,
     blink::mojom::SpeculationEagerness eagerness,
     bool is_accurate_triggering,
     bool browser_initiated_prefetch) {
-  histogram_tester.ExpectTotalCount("PrefetchProxy.Prefetch.Mainframe.RespCode",
-                                    0);
-  histogram_tester.ExpectUniqueSample(
-      "PrefetchProxy.Prefetch.Mainframe.NetError",
-      std::abs(expected_net_error_code), 1);
-  histogram_tester.ExpectTotalCount(
-      "PrefetchProxy.Prefetch.Mainframe.BodyLength", 0);
-  histogram_tester.ExpectTotalCount(
-      "PrefetchProxy.Prefetch.Mainframe.TotalTime", 0);
-  histogram_tester.ExpectTotalCount(
-      "PrefetchProxy.Prefetch.Mainframe.ConnectTime", 0);
+  ExpectPrefetchResponseReceivedNotRecorded();
+  ExpectPrefetchCompleteRecorded(/*body_length=*/std::nullopt,
+                                 expected_net_error_code);
 
-  histogram_tester.ExpectUniqueSample("Preloading.Prefetch.PrefetchStatus",
-                                      PrefetchStatus::kPrefetchFailedNetError,
-                                      1);
+  histogram_tester().ExpectUniqueSample("Preloading.Prefetch.PrefetchStatus",
+                                        PrefetchStatus::kPrefetchFailedNetError,
+                                        1);
 
   if (!browser_initiated_prefetch) {
-    std::optional<PrefetchReferringPageMetrics> referring_page_metrics =
-        PrefetchReferringPageMetrics::GetForCurrentDocument(main_rfh());
-    EXPECT_EQ(referring_page_metrics->prefetch_attempted_count, 1);
-    EXPECT_EQ(referring_page_metrics->prefetch_eligible_count, 1);
-    EXPECT_EQ(referring_page_metrics->prefetch_successful_count, 0);
-
     ExpectCorrectUkmLogs({.outcome = PreloadingTriggeringOutcome::kFailure,
                           .failure = ToPreloadingFailureReason(
                               PrefetchStatus::kPrefetchFailedNetError),
@@ -675,55 +695,27 @@ void PrefetchingMetricsTestBase::ExpectPrefetchFailedNetError(
 }
 
 void PrefetchingMetricsTestBase::ExpectPrefetchFailedAfterResponseReceived(
-    const base::HistogramTester& histogram_tester,
     net::HttpStatusCode expected_response_code,
     int expected_body_length,
     PrefetchStatus expected_prefetch_status) {
-  histogram_tester.ExpectUniqueSample(
-      "PrefetchProxy.Prefetch.Mainframe.RespCode", expected_response_code, 1);
-  histogram_tester.ExpectUniqueSample(
-      "PrefetchProxy.Prefetch.Mainframe.NetError", net::OK, 1);
-  histogram_tester.ExpectUniqueSample(
-      "PrefetchProxy.Prefetch.Mainframe.BodyLength", expected_body_length, 1);
-  histogram_tester.ExpectUniqueSample(
-      "PrefetchProxy.Prefetch.Mainframe.TotalTime", kTotalTimeDuration, 1);
-  histogram_tester.ExpectUniqueSample(
-      "PrefetchProxy.Prefetch.Mainframe.ConnectTime", kConnectTimeDuration, 1);
+  ExpectPrefetchResponseReceivedRecorded(expected_response_code);
+  ExpectPrefetchCompleteRecorded(expected_body_length);
 
-  std::optional<PrefetchReferringPageMetrics> referring_page_metrics =
-      PrefetchReferringPageMetrics::GetForCurrentDocument(main_rfh());
-  EXPECT_EQ(referring_page_metrics->prefetch_attempted_count, 1);
-  EXPECT_EQ(referring_page_metrics->prefetch_eligible_count, 1);
-  EXPECT_EQ(referring_page_metrics->prefetch_successful_count, 0);
 
-  histogram_tester.ExpectUniqueSample("Preloading.Prefetch.PrefetchStatus",
-                                      expected_prefetch_status, 1);
+  histogram_tester().ExpectUniqueSample("Preloading.Prefetch.PrefetchStatus",
+                                        expected_prefetch_status, 1);
   ExpectCorrectUkmLogs(
       {.outcome = PreloadingTriggeringOutcome::kFailure,
        .failure = ToPreloadingFailureReason(expected_prefetch_status)});
 }
 
 void PrefetchingMetricsTestBase::ExpectPrefetchSuccess(
-    const base::HistogramTester& histogram_tester,
     int expected_body_length,
     blink::mojom::SpeculationEagerness eagerness,
     bool is_accurate) {
-  histogram_tester.ExpectUniqueSample(
-      "PrefetchProxy.Prefetch.Mainframe.RespCode", net::HTTP_OK, 1);
-  histogram_tester.ExpectUniqueSample(
-      "PrefetchProxy.Prefetch.Mainframe.NetError", net::OK, 1);
-  histogram_tester.ExpectUniqueSample(
-      "PrefetchProxy.Prefetch.Mainframe.BodyLength", expected_body_length, 1);
-  histogram_tester.ExpectUniqueSample(
-      "PrefetchProxy.Prefetch.Mainframe.TotalTime", kTotalTimeDuration, 1);
-  histogram_tester.ExpectUniqueSample(
-      "PrefetchProxy.Prefetch.Mainframe.ConnectTime", kConnectTimeDuration, 1);
+  ExpectPrefetchResponseReceivedRecorded();
+  ExpectPrefetchCompleteRecorded(expected_body_length);
 
-  std::optional<PrefetchReferringPageMetrics> referring_page_metrics =
-      PrefetchReferringPageMetrics::GetForCurrentDocument(main_rfh());
-  EXPECT_EQ(referring_page_metrics->prefetch_attempted_count, 1);
-  EXPECT_EQ(referring_page_metrics->prefetch_eligible_count, 1);
-  EXPECT_EQ(referring_page_metrics->prefetch_successful_count, 1);
 
   ExpectCorrectUkmLogs({.is_accurate = is_accurate, .eagerness = eagerness});
 }
@@ -822,18 +814,79 @@ WithPrefetchRearchParam::~WithPrefetchRearchParam() = default;
 
 // static
 std::vector<PrefetchRearchParam> PrefetchRearchParam::Params() {
+  // Write parameter combinations declaratively instead of using `for` loops.
   return {
-      PrefetchRearchParam{.force_off_the_main_thread = false},
-      PrefetchRearchParam{.force_off_the_main_thread = true},
+      PrefetchRearchParam{
+          .force_off_the_main_thread = false,
+          .unblock_async_policy = std::nullopt,
+      },
+      PrefetchRearchParam{
+          .force_off_the_main_thread = false,
+          .unblock_async_policy =
+              features::PrefetchMatchResolverUnblockAsyncPolicy::kAsyncBlocked,
+      },
+      PrefetchRearchParam{
+          .force_off_the_main_thread = false,
+          .unblock_async_policy = features::
+              PrefetchMatchResolverUnblockAsyncPolicy::kAsyncBlockedUnmatch,
+      },
+      PrefetchRearchParam{
+          .force_off_the_main_thread = true,
+          .check_will_create_url_loader_factory = false,
+          .unblock_async_policy = std::nullopt,
+      },
+      PrefetchRearchParam{
+          .force_off_the_main_thread = true,
+          .check_will_create_url_loader_factory = true,
+          .unblock_async_policy = std::nullopt,
+      },
+      PrefetchRearchParam{
+          .force_off_the_main_thread = true,
+          .check_will_create_url_loader_factory = true,
+          .unblock_async_policy =
+              features::PrefetchMatchResolverUnblockAsyncPolicy::kAsyncBlocked,
+      },
+      PrefetchRearchParam{
+          .force_off_the_main_thread = true,
+          .check_will_create_url_loader_factory = true,
+          .unblock_async_policy = features::
+              PrefetchMatchResolverUnblockAsyncPolicy::kAsyncBlockedUnmatch,
+      },
   };
 }
 
 void WithPrefetchRearchParam::InitRearchFeatures() {
   if (param_.force_off_the_main_thread) {
-    feature_list_force_off_the_main_thread_.InitWithFeatures(
+    std::vector<base::test::FeatureRefAndParams> enabled_features;
+    enabled_features.push_back(
         {features::kPrefetchOffTheMainThread,
-         features::kPrefetchOffTheMainThreadForceForTesting},
+         {{features::kPrefetchOffTheMainThreadCheckWillCreateURLLoaderFactory
+               .name,
+           param_.check_will_create_url_loader_factory ? "true" : "false"}}});
+    enabled_features.push_back(
+        {features::kPrefetchOffTheMainThreadForceForTesting, {}});
+
+    feature_list_force_off_the_main_thread_.InitWithFeaturesAndParameters(
+        enabled_features, {});
+  }
+  if (param_.unblock_async_policy.has_value()) {
+    const char* policy_str = nullptr;
+    switch (*param_.unblock_async_policy) {
+      case features::PrefetchMatchResolverUnblockAsyncPolicy::kAsyncBlocked:
+        policy_str = "AsyncBlocked";
+        break;
+      case features::PrefetchMatchResolverUnblockAsyncPolicy::
+          kAsyncBlockedUnmatch:
+        policy_str = "AsyncBlockedUnmatch";
+        break;
+    }
+    feature_list_unblock_async_.InitWithFeaturesAndParameters(
+        {{features::kPrefetchMatchResolverUnblockAsync,
+          {{"unblock_async_policy", policy_str}}}},
         {});
+  } else {
+    feature_list_unblock_async_.InitWithFeatures(
+        {}, {features::kPrefetchMatchResolverUnblockAsync});
   }
 }
 
@@ -876,9 +929,6 @@ void VerifyCommonRequestState(const GURL& url,
 
   EXPECT_EQ(request.load_flags, net::LOAD_PREFETCH);
 
-  EXPECT_EQ(request.headers.GetHeader(blink::kPurposeHeaderName),
-            std::optional<std::string>(blink::kSecPurposePrefetchHeaderValue));
-
   std::string sec_purpose_header_value;
   if (options.sec_purpose_header_value) {
     sec_purpose_header_value = options.sec_purpose_header_value.value();
@@ -894,7 +944,7 @@ void VerifyCommonRequestState(const GURL& url,
 
   EXPECT_EQ(request.headers.GetHeader(net::HttpRequestHeaders::kAccept),
             std::optional<std::string>(FrameAcceptHeaderValue(
-                /*allow_sxg_responses=*/true, browser_context)));
+                /*allow_sxg_responses=*/false, browser_context)));
 
   EXPECT_EQ(request.headers.GetHeader("Upgrade-Insecure-Requests"),
             std::optional<std::string>("1"));

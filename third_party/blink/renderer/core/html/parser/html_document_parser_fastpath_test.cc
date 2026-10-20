@@ -82,20 +82,25 @@ TEST(HTMLDocumentParserFastpathTest,
                                      HtmlFastPathResult::kSucceeded, 0);
 }
 
-TEST(HTMLDocumentParserFastpathTest, LongTextIsSplit) {
+TEST(HTMLDocumentParserFastpathTest, LongTextIsNotSplit) {
   test::TaskEnvironment task_environment;
   ScopedNullExecutionContext execution_context;
   auto* document =
       HTMLDocument::CreateForTest(execution_context.GetExecutionContext());
   document->write("<body></body>");
   auto* div = MakeGarbageCollected<HTMLDivElement>(*document);
-  std::vector<LChar> chars(Text::kDefaultLengthLimit + 1, 'a');
+
+  // We previously split nodes at 64k.
+  constexpr wtf_size_t kLargeTextLength = (1 << 16) + 1;
+  std::vector<LChar> chars(kLargeTextLength, 'a');
   div->SetInnerHTMLWithoutTrustedTypes(String(base::span(chars)));
   Text* text_node = To<Text>(div->firstChild());
   ASSERT_TRUE(text_node);
-  // Text is split at 64k for performance. See
-  // HTMLConstructionSite::FlushPendingText for more details.
-  EXPECT_EQ(Text::kDefaultLengthLimit, text_node->length());
+
+  // Text nodes are no longer split by length, so the entire run of text is kept
+  // in a single Text node.
+  EXPECT_EQ(kLargeTextLength, text_node->length());
+  EXPECT_FALSE(text_node->nextSibling());
 }
 
 TEST(HTMLDocumentParserFastpathTest, MaximumHTMLParserDOMTreeDepth) {
@@ -227,10 +232,11 @@ TEST(HTMLDocumentParserFastpathTest, HTMLInputElementCheckedState) {
   // Set the state for new controls, which triggers a different code path in
   // HTMLInputElement::ParseAttribute.
   div1->SetInnerHTMLWithoutTrustedTypes("<select form='ff'></select>");
-  DocumentState* document_state = document->GetFormController().ControlStates();
+  DocumentState* document_state =
+      document->EnsureFormController().ControlStates();
   Vector<String> state1 = document_state->ToStateVector();
-  document->GetFormController().SetStateForNewControls(state1);
-  EXPECT_TRUE(document->GetFormController().HasControlStates());
+  document->EnsureFormController().SetStateForNewControls(state1);
+  EXPECT_TRUE(document->EnsureFormController().HasControlStates());
 
   div2->SetInnerHTMLWithoutTrustedTypes("<input checked='true'>");
   HTMLInputElement* input_element = To<HTMLInputElement>(div2->firstChild());

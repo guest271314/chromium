@@ -10,6 +10,7 @@
 #import "ios/chrome/browser/ai_prototyping/ui/ai_prototyping_consumer.h"
 #import "ios/chrome/browser/ai_prototyping/ui/ai_prototyping_freeform_view_controller.h"
 #import "ios/chrome/browser/ai_prototyping/ui/ai_prototyping_tab_organization_view_controller.h"
+#import "ios/chrome/browser/ai_prototyping/ui/ai_prototyping_ui_catalog_view_controller.h"
 #import "ios/chrome/browser/ai_prototyping/utils/ai_prototyping_constants.h"
 #import "ios/chrome/browser/intelligence/features/features.h"
 #import "ios/chrome/common/ui/colors/semantic_color_names.h"
@@ -32,15 +33,18 @@
 
 @implementation AIPrototypingViewController
 
-- (instancetype)init {
-  self = [super init];
+- (instancetype)initWithTTCViewController:
+    (UIViewController<AIPrototypingViewControllerProtocol>*)ttcViewController {
+  self = [super initWithNibName:nil bundle:nil];
   if (self) {
     _actorViewController = [[AIPrototypingActorViewController alloc]
         initForFeature:AIPrototypingFeature::kActorTools];
-    _menuPages = [NSArray
+    NSMutableArray* pages = [NSMutableArray
         arrayWithObjects:
             [[AIPrototypingFreeformViewController alloc]
                 initForFeature:AIPrototypingFeature::kFreeform],
+            [[AIPrototypingUICatalogNavigationController alloc]
+                initForFeature:AIPrototypingFeature::kUICatalog],
             [[AIPrototypingTabOrganizationViewController alloc]
                 initForFeature:AIPrototypingFeature::kSmartTabGrouping],
             [[AIPrototypingCalendarViewController alloc]
@@ -48,9 +52,15 @@
             [[AIPrototypingAPCViewController alloc]
                 initForFeature:AIPrototypingFeature::kAPC],
             _actorViewController, nil];
+    if (ttcViewController) {
+      [pages addObject:ttcViewController];
+    }
+    _menuPages = [pages copy];
   }
   return self;
 }
+
+#pragma mark - UIViewController
 
 - (void)viewDidLoad {
   [super viewDidLoad];
@@ -104,6 +114,10 @@
   }
 }
 
+- (void)updateWindowId:(NSString*)windowId {
+  [_actorViewController updateWindowId:windowId];
+}
+
 - (void)updateTabList:(NSArray<NSDictionary*>*)tabs {
   [_actorViewController updateTabList:tabs];
 }
@@ -122,8 +136,14 @@
                     pageViewController:(UIPageViewController*)pageViewController
     viewControllerBeforeViewController:
         (UIViewController<AIPrototypingViewControllerProtocol>*)viewController {
+  if ([_menuPages count] <= 1) {
+    return nil;
+  }
   NSUInteger currentIndex = [_menuPages indexOfObject:viewController];
-  if (currentIndex > 0) {
+  if (currentIndex == 0) {
+    return [_menuPages lastObject];
+  }
+  if (currentIndex != NSNotFound) {
     return [_menuPages objectAtIndex:(currentIndex - 1)];
   }
   return nil;
@@ -133,8 +153,14 @@
                    pageViewController:(UIPageViewController*)pageViewController
     viewControllerAfterViewController:
         (UIViewController<AIPrototypingViewControllerProtocol>*)viewController {
+  if ([_menuPages count] <= 1) {
+    return nil;
+  }
   NSUInteger currentIndex = [_menuPages indexOfObject:viewController];
-  if (currentIndex < ([_menuPages count] - 1)) {
+  if (currentIndex == ([_menuPages count] - 1)) {
+    return [_menuPages firstObject];
+  }
+  if (currentIndex != NSNotFound) {
     return [_menuPages objectAtIndex:(currentIndex + 1)];
   }
   return nil;

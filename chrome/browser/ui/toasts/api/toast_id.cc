@@ -23,8 +23,6 @@ std::string_view GetToastName(ToastId toast_id) {
       return "NonMilestoneUpdate";
     case ToastId::kClearBrowsingData:
       return "ClearBrowsingData";
-    case ToastId::kPlusAddressOverride:
-      return "PlusAddressOverride";
     case ToastId::kSyncEsbOn:
       return "SyncEsbOn";
     case ToastId::kSyncEsbOnWithoutActionButton:
@@ -59,8 +57,8 @@ std::string_view GetToastName(ToastId toast_id) {
       return "CopiedToClipboard";
     case ToastId::kEnhancedBundledSecuritySettings:
       return "EnhancedBundledSecuritySettings";
-    case ToastId::kAutofillAiFetchFromWalletErrorMessage:
-      return "AutofillAiFetchFromWalletErrorMessage";
+    case ToastId::kAutofillAiFetchEntityErrorMessage:
+      return "AutofillAiFetchEntityErrorMessage";
     case ToastId::kTranslate:
       return "Translate";
     case ToastId::kAutofillAiSaveToWalletErrorMessage:
@@ -89,6 +87,52 @@ std::string_view GetToastName(ToastId toast_id) {
       return "ReportUnsafeSiteConfirmation";
     case ToastId::kDefaultBrowserUpdateSuccess:
       return "DefaultBrowserUpdateSuccess";
+    case ToastId::kSendTabToSelfNoInternetConnection:
+      return "SendTabToSelfNoInternetConnection";
+    case ToastId::kIndigoInvokeError:
+      return "IndigoInvokeError";
+    case ToastId::kTabStripSwitchDelayedHorizontal:
+      return "TabStripSwitchDelayedHorizontal";
+    case ToastId::kTabStripSwitchDelayedVertical:
+      return "TabStripSwitchDelayedVertical";
+    case ToastId::kAutofillAiPreFetchErrorMessage:
+      return "AutofillAiPreFetchErrorMessage";
+    case ToastId::kEnterpriseCopyAudit:
+      return "EnterpriseCopyAudit";
+    case ToastId::kEnterpriseCopyKeptInManagedChrome:
+      return "EnterpriseCopyKeptInManagedChrome";
+    case ToastId::kDictationError:
+      return "DictationError";
+    case ToastId::kDictationStopped:
+      return "DictationStopped";
+    case ToastId::kDictationNoMicrophoneError:
+      return "DictationNoMicrophoneError";
+    case ToastId::kGlicSelectionHiddenForSite:
+      return "GlicSelectionHiddenForSite";
+    case ToastId::kEnterpriseCopyWarning:
+      return "EnterpriseCopyWarning";
+    case ToastId::kEnterpriseCopyBlocked:
+      return "EnterpriseCopyBlocked";
+    case ToastId::kIndigoDeleteError:
+      return "IndigoDeleteError";
+    case ToastId::kIndigoDeleteSuccess:
+      return "IndigoDeleteSuccess";
+    case ToastId::kAtMemorySpiiFetchErrorMessage:
+      return "AtMemorySpiiFetchErrorMessage";
+    case ToastId::kEmailVerificationLoading:
+      return "EmailVerificationLoading";
+    case ToastId::kScheduledRestartOnIdle:
+      return "ScheduledRestartOnIdle";
+    case ToastId::kEmailVerificationError:
+      return "EmailVerificationError";
+    case ToastId::kAutofillAiSuggestionRemoved:
+      return "AutofillAiSuggestionRemoved";
+    case ToastId::kTtcGenericError:
+      return "TtcGenericError";
+    case ToastId::kTtcNoMicrophoneError:
+      return "TtcNoMicrophoneError";
+    case ToastId::kTabGroupFocusExited:
+      return "TabGroupFocusExited";
   }
 
   NOTREACHED();

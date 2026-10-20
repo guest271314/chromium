@@ -5,9 +5,6 @@
 #import "ios/chrome/browser/first_run/public/features.h"
 
 #import "base/metrics/field_trial_params.h"
-#import "components/regional_capabilities/regional_capabilities_service.h"
-#import "ios/chrome/browser/regional_capabilities/model/regional_capabilities_service_factory.h"
-#import "ios/chrome/browser/shared/model/profile/profile_ios.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
 
 namespace first_run {
@@ -19,12 +16,18 @@ BASE_FEATURE(kBestFeaturesScreenInFirstRun,
              "BestFeaturesScreenInFirstRunExperience",
              base::FEATURE_DISABLED_BY_DEFAULT);
 
-BASE_FEATURE(kManualLogUploadsInTheFRE, base::FEATURE_ENABLED_BY_DEFAULT);
-
 BASE_FEATURE(kSkipDefaultBrowserPromoInFirstRun,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
-BASE_FEATURE(kUpdatedFirstRunSequence, base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kUpdatedFirstRunSequence, base::FEATURE_ENABLED_BY_DEFAULT);
+
+BASE_FEATURE(kPostFREIphInProfileAgent, base::FEATURE_ENABLED_BY_DEFAULT);
+
+BASE_FEATURE(kQueryDeviceSwitcherSignalsInFirstRun,
+             base::FEATURE_ENABLED_BY_DEFAULT);
+
+BASE_FEATURE(kQuerySwitcherInfoSignalInFirstRun,
+             base::FEATURE_DISABLED_BY_DEFAULT);
 
 const char kAnimatedDefaultBrowserPromoInFREExperimentType[] =
     "AnimatedDefaultBrowserPromoInFREExperimentType";
@@ -44,7 +47,7 @@ BASE_FEATURE_PARAM(int,
                    kUpdatedFirstRunSequenceParamFeature,
                    &kUpdatedFirstRunSequence,
                    kUpdatedFirstRunSequenceParam,
-                   1);
+                   2);
 
 BASE_FEATURE_PARAM(
     int,
@@ -65,12 +68,8 @@ BestFeaturesScreenVariationType GetBestFeaturesScreenVariationType() {
       kBestFeaturesScreenInFirstRunParamFeature.Get());
 }
 
-UpdatedFRESequenceVariationType GetUpdatedFRESequenceVariation(
-    ProfileIOS* profile) {
-  regional_capabilities::RegionalCapabilitiesService* regional_capabilities =
-      ios::RegionalCapabilitiesServiceFactory::GetForProfile(profile);
-  if (!base::FeatureList::IsEnabled(kUpdatedFirstRunSequence) ||
-      regional_capabilities->IsInSearchEngineChoiceScreenRegion()) {
+UpdatedFRESequenceVariationType GetUpdatedFRESequenceVariation() {
+  if (!base::FeatureList::IsEnabled(kUpdatedFirstRunSequence)) {
     return UpdatedFRESequenceVariationType::kDisabled;
   }
   return static_cast<UpdatedFRESequenceVariationType>(
@@ -86,6 +85,23 @@ AnimatedDefaultBrowserPromoInFREExperimentType
 AnimatedDefaultBrowserPromoInFREExperimentTypeEnabled() {
   return static_cast<AnimatedDefaultBrowserPromoInFREExperimentType>(
       kAnimatedDefaultBrowserPromoInFREExperimentTypeFeature.Get());
+}
+
+bool IsSkipDefaultBrowserPromoInFirstRunEnabled(bool is_in_eea_country) {
+  return is_in_eea_country &&
+         base::FeatureList::IsEnabled(kSkipDefaultBrowserPromoInFirstRun);
+}
+
+bool IsPostFREIphInProfileAgentEnabled() {
+  return base::FeatureList::IsEnabled(kPostFREIphInProfileAgent);
+}
+
+bool IsQueryDeviceSwitcherSignalsInFirstRunEnabled() {
+  return base::FeatureList::IsEnabled(kQueryDeviceSwitcherSignalsInFirstRun);
+}
+
+bool IsQuerySwitcherInfoSignalInFirstRunEnabled() {
+  return base::FeatureList::IsEnabled(kQuerySwitcherInfoSignalInFirstRun);
 }
 
 }  // namespace first_run

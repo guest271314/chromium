@@ -3,18 +3,20 @@
 // found in the LICENSE file.
 #include "chrome/browser/password_manager/password_change/model_quality_logs_uploader.h"
 
-#include "base/feature_list.h"
+#include <algorithm>
+
 #include "base/logging.h"
 #include "base/strings/string_util.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/optimization_guide/optimization_guide_keyed_service.h"
 #include "chrome/browser/optimization_guide/optimization_guide_keyed_service_factory.h"
-#include "chrome/browser/password_manager/password_change/features.h"
+#include "chrome/browser/password_manager/password_change/change_password_form_waiter.h"
 #include "chrome/browser/password_manager/password_change/login_state_checker.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/translate/chrome_translate_client.h"
 #include "components/actor/public/mojom/actor_types.mojom.h"
 #include "components/affiliations/core/browser/affiliation_utils.h"
+#include "components/autofill/core/browser/proto/password_requirements.pb.h"
 #include "components/autofill/core/common/form_field_data.h"
 #include "components/optimization_guide/core/model_quality/model_quality_log_entry.h"
 #include "components/password_manager/core/browser/password_form.h"
@@ -36,7 +38,8 @@ using FieldData =
     optimization_guide::proto::PasswordChangeQuality_FormData_FieldData;
 using FieldType = optimization_guide::proto::
     PasswordChangeQuality_FormData_FieldData_FieldType;
-using FormDiscardReason = ModelQualityLogsUploader::FormDiscardReason;
+using password_change::DiscardedForm;
+using password_change::FormDiscardReason;
 
 namespace {
 int64_t ComputeRequestLatencyMs(base::Time server_request_start_time) {
@@ -232,9 +235,11 @@ void SetFormData(FormData& form_data_proto,
   form_data_proto.set_form_name(
       base::UTF16ToUTF8(form.form_data.name_attribute()));
   form_data_proto.set_url(form.url.spec());
+  form_data_proto.clear_button_text();
   for (const auto& button : form.form_data.button_titles()) {
     form_data_proto.add_button_text(base::UTF16ToUTF8(button.first));
   }
+  form_data_proto.clear_field_data();
   for (const auto& field : form.form_data.fields()) {
     FieldData field_data;
     field_data.set_signature(
@@ -274,6 +279,57 @@ ToProtoDiscardReason(FormDiscardReason reason) {
     case FormDiscardReason::kFormNotVisible:
       return optimization_guide::proto::
           PasswordChangeQuality_FormData_DiscardReason_FORM_NOT_VISIBLE;
+    case FormDiscardReason::kNotInPrimaryMainFrame:
+      // TODO(crbug.com/541869870): Add a dedicated value for
+      // kNotInPrimaryMainFrame.
+      return optimization_guide::proto::
+          PasswordChangeQuality_FormData_DiscardReason_UNKNOWN_REASON;
+  }
+}
+
+void SetCharacterClass(
+    optimization_guide::proto::PasswordRequirementsSpec::CharacterClass& dest,
+    const autofill::PasswordRequirementsSpec::CharacterClass& src) {
+  if (src.has_character_set()) {
+    dest.set_character_set(src.character_set());
+  }
+  if (src.has_min()) {
+    dest.set_min(src.min());
+  }
+  if (src.has_max()) {
+    dest.set_max(src.max());
+  }
+}
+
+void SetPasswordRequirementsSpecProto(
+    optimization_guide::proto::PasswordRequirementsSpec& dest,
+    const autofill::PasswordRequirementsSpec& src) {
+  if (src.has_priority()) {
+    dest.set_priority(src.priority());
+  }
+  if (src.has_spec_version()) {
+    dest.set_spec_version(src.spec_version());
+  }
+  if (src.has_min_length()) {
+    dest.set_min_length(src.min_length());
+  }
+  if (src.has_max_length()) {
+    dest.set_max_length(src.max_length());
+  }
+  if (src.has_lower_case()) {
+    SetCharacterClass(*dest.mutable_lower_case(), src.lower_case());
+  }
+  if (src.has_upper_case()) {
+    SetCharacterClass(*dest.mutable_upper_case(), src.upper_case());
+  }
+  if (src.has_alphabetic()) {
+    SetCharacterClass(*dest.mutable_alphabetic(), src.alphabetic());
+  }
+  if (src.has_numeric()) {
+    SetCharacterClass(*dest.mutable_numeric(), src.numeric());
+  }
+  if (src.has_symbols()) {
+    SetCharacterClass(*dest.mutable_symbols(), src.symbols());
   }
 }
 
@@ -377,9 +433,6 @@ void ModelQualityLogsUploader::SetOpenFormQuality(
     }
   }
 
-  final_log_data_.mutable_password_change_submission()->MergeFrom(
-      *logging_data);
-
   open_form_quality->mutable_request()->CopyFrom(logging_data->request());
   if (logging_data->has_model_execution_info()) {
     open_form_quality->mutable_model_execution_info()->CopyFrom(
@@ -417,9 +470,6 @@ void ModelQualityLogsUploader::SetSubmitFormQuality(
     }
   }
 
-  final_log_data_.mutable_password_change_submission()->MergeFrom(
-      *logging_data);
-
   submit_form_quality->mutable_request()->CopyFrom(logging_data->request());
   if (logging_data->has_model_execution_info()) {
     submit_form_quality->mutable_model_execution_info()->CopyFrom(
@@ -442,8 +492,6 @@ void ModelQualityLogsUploader::SetVerifySubmissionQuality(
               ->mutable_verify_submission();
 
   QualityStatus quality_status = GetVerifySubmissionQualityStatus(response);
-  final_log_data_.mutable_password_change_submission()->MergeFrom(
-      *logging_data);
 
   final_log_data_.mutable_password_change_submission()
       ->mutable_quality()
@@ -509,36 +557,37 @@ void ModelQualityLogsUploader::SetChangePasswordFormData(
   SetFormData(*quality->mutable_change_password_form_data(), password_form);
 }
 
-void ModelQualityLogsUploader::RecordDiscardedForm(
-    const password_manager::PasswordForm* password_form,
-    FormDiscardReason discard_reason) {
-  if (!base::FeatureList::IsEnabled(
-          password_change::features::kRecordDiscardedFormsToModelQualityLogs)) {
-    return;
-  }
-
-  if (!password_form) {
-    return;
-  }
-
+void ModelQualityLogsUploader::RecordDiscardedForms(
+    base::span<const DiscardedForm> discarded_forms) {
   optimization_guide::proto::PasswordChangeQuality* quality =
       final_log_data_.mutable_password_change_submission()->mutable_quality();
 
-  optimization_guide::proto::PasswordChangeQuality_FormData_DiscardReason
-      proto_discard_reason = ToProtoDiscardReason(discard_reason);
+  for (const auto& [password_form, discard_reason] : discarded_forms) {
+    optimization_guide::proto::PasswordChangeQuality_FormData_DiscardReason
+        proto_discard_reason = ToProtoDiscardReason(discard_reason);
 
-  uint64_t form_signature =
-      autofill::CalculateFormSignature(password_form->form_data).value();
-  for (const auto& discarded_form : quality->discarded_forms_data()) {
-    if (discarded_form.form_signature() == form_signature &&
-        discarded_form.discard_reason() == proto_discard_reason) {
-      return;
+    uint64_t form_signature =
+        autofill::CalculateFormSignature(password_form.form_data).value();
+    if (std::ranges::any_of(
+            quality->discarded_forms_data(), [&](const auto& existing) {
+              return existing.form_signature() == form_signature &&
+                     existing.discard_reason() == proto_discard_reason;
+            })) {
+      continue;
     }
-  }
 
-  FormData* form_data_proto = quality->add_discarded_forms_data();
-  SetFormData(*form_data_proto, *password_form);
-  form_data_proto->set_discard_reason(proto_discard_reason);
+    FormData* form_data_proto = quality->add_discarded_forms_data();
+    SetFormData(*form_data_proto, password_form);
+    form_data_proto->set_discard_reason(proto_discard_reason);
+  }
+}
+
+void ModelQualityLogsUploader::SetPasswordRequirementsSpec(
+    const autofill::PasswordRequirementsSpec& spec) {
+  optimization_guide::proto::PasswordChangeQuality* quality =
+      final_log_data_.mutable_password_change_submission()->mutable_quality();
+  SetPasswordRequirementsSpecProto(
+      *quality->mutable_password_requirements_spec(), spec);
 }
 
 void ModelQualityLogsUploader::SetStepDuration(FlowStep step,

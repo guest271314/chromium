@@ -23,6 +23,7 @@ import org.chromium.base.test.util.DisabledTest;
 import org.chromium.base.test.util.DoNotBatch;
 import org.chromium.base.test.util.Feature;
 import org.chromium.base.test.util.Features.DisableFeatures;
+import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.homepage.HomepageManager;
 import org.chromium.chrome.browser.homepage.HomepageTestRule;
@@ -36,6 +37,9 @@ import org.chromium.url.GURL;
 @DoNotBatch(reason = "Testing tests start up and homepage loading.")
 @RunWith(ChromeJUnit4ClassRunner.class)
 @DisableFeatures(ChromeFeatureList.DISABLE_PARTNER_HOMEPAGE_ANDROID)
+@EnableFeatures(
+        ChromeFeatureList.HOME_BUTTON_REMOVAL
+                + ":set_default_to_false_on_homepage_on_desktop/false")
 public class PartnerHomepageUnitTest {
 
     @Rule
@@ -43,8 +47,6 @@ public class PartnerHomepageUnitTest {
             new BasePartnerBrowserCustomizationUnitTestRule();
 
     @Rule public HomepageTestRule mHomepageTestRule = new HomepageTestRule();
-
-    public static final String TAG = "PartnerHomepageUnitTest";
 
     private static final GURL TEST_CUSTOM_HOMEPAGE_GURL = new GURL("http://chrome.com");
 

@@ -6,13 +6,14 @@
 
 #include <utility>
 
+#include "base/functional/bind.h"
+#include "base/functional/callback.h"
 #include "base/functional/callback_helpers.h"
 #include "base/i18n/icu_util.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/no_destructor.h"
-#include "base/task/bind_post_task.h"
+#include "base/run_loop.h"
 #include "base/task/sequenced_task_runner.h"
-#include "base/threading/platform_thread.h"
-#include "base/threading/thread.h"
 #include "content/browser/blob_storage/chrome_blob_storage_context.h"  // [nogncheck]
 #include "content/browser/cache_storage/cache_storage_control_wrapper.h"  // [nogncheck]
 #include "content/browser/code_cache/generated_code_cache_context.h"  // [nogncheck]
@@ -187,23 +188,22 @@ void CodeCacheHostTestcase::TearDown(base::OnceClosure done_closure) {
 void CodeCacheHostTestcase::TearDownOnUIThread(base::OnceClosure done_closure) {
   code_cache_host_receivers_.clear();
 
-  scoped_refptr<base::SequencedTaskRunner> context_runner =
-      generated_code_cache_context_->GetTaskRunner(
-          generated_code_cache_context_);
-  generated_code_cache_context_->Shutdown();
-  generated_code_cache_context_.reset();
-  cache_storage_control_wrapper_.reset();
-  browser_context_.reset();
+  // Shutdown the context and wait for backend cleanup before continuing
+  // teardown.
+  generated_code_cache_context_->ShutdownForTesting(base::BindOnce(
+      [](CodeCacheHostTestcase* self, base::OnceClosure done_closure) {
+        // Destroy the BrowserContext now on the UI thread.
+        self->generated_code_cache_context_.reset();
+        self->cache_storage_control_wrapper_.reset();
+        self->browser_context_.reset();
 
-  // GeneratedCodeCacheContext::Shutdown posts a task to the code cache thread
-  // to do its work. Continue with tear down on the fuzzer thread after it
-  // completes.
-  context_runner->PostTask(
-      FROM_HERE,
-      base::BindPostTask(
-          GetFuzzerTaskRunner(),
-          base::BindOnce(&CodeCacheHostTestcase::TearDownOnFuzzerThread,
-                         base::Unretained(this), std::move(done_closure))));
+        // Complete tear down on the fuzzer thread.
+        GetFuzzerTaskRunner()->PostTask(
+            FROM_HERE,
+            base::BindOnce(&CodeCacheHostTestcase::TearDownOnFuzzerThread,
+                           base::Unretained(self), std::move(done_closure)));
+      },
+      base::Unretained(this), std::move(done_closure)));
 }
 
 void CodeCacheHostTestcase::TearDownOnFuzzerThread(

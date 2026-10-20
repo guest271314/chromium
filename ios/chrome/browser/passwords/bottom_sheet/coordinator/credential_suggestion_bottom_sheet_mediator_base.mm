@@ -4,12 +4,23 @@
 
 #import "ios/chrome/browser/passwords/bottom_sheet/coordinator/credential_suggestion_bottom_sheet_mediator_base.h"
 
+#import <algorithm>
+
+#import "base/base64.h"
+#import "base/functional/bind.h"
 #import "base/notreached.h"
 #import "base/scoped_observation.h"
 #import "base/strings/sys_string_conversions.h"
 #import "components/autofill/ios/browser/form_suggestion.h"
+#import "components/password_manager/core/browser/passkey_credential.h"
 #import "components/password_manager/core/browser/password_ui_utils.h"
+#import "components/password_manager/core/browser/ui/credential_ui_entry.h"
 #import "components/webauthn/ios/ios_passkey_client.h"
+#import "components/webauthn/ios/ios_webauthn_credentials_delegate.h"
+#import "components/webauthn/ios/ios_webauthn_credentials_delegate_factory.h"
+#import "components/webauthn/ios/passkey_java_script_feature.h"
+#import "components/webauthn/ios/passkey_suggestion_utils.h"
+#import "components/webauthn/ios/passkey_tab_helper.h"
 #import "ios/chrome/browser/favicon/model/favicon_loader.h"
 #import "ios/chrome/browser/passwords/bottom_sheet/coordinator/credential_suggestion_bottom_sheet_mediator_base+Subclassing.h"
 #import "ios/chrome/browser/passwords/bottom_sheet/coordinator/password_suggestion_bottom_sheet_exit_reason.h"
@@ -19,6 +30,8 @@
 #import "ios/chrome/browser/shared/model/web_state_list/web_state_list_observer_bridge.h"
 #import "ios/chrome/common/ui/reauthentication/reauthentication_protocol.h"
 #import "ios/chrome/grit/ios_strings.h"
+#import "ios/web/public/js_messaging/web_frame.h"
+#import "ios/web/public/js_messaging/web_frames_manager.h"
 #import "ios/web/public/web_state.h"
 #import "ui/base/l10n/l10n_util.h"
 #import "url/gurl.h"
@@ -39,6 +52,15 @@
 // The WebStateList observed by this mediator.
 @property(nonatomic, readonly) WebStateList* webStateList;
 
+// Delegate used to fetch and select passkey suggestions.
+@property(nonatomic, assign)
+    base::WeakPtr<webauthn::IOSWebAuthnCredentialsDelegate>
+        webAuthnCredentialsDelegate;
+
+// Returns the webauthn::PasskeyTabHelper for the active webstate or nil if it
+// can't be retrieved.
+- (webauthn::PasskeyTabHelper*)passkeyTabHelper;
+
 @end
 
 @implementation CredentialSuggestionBottomSheetMediatorBase {
@@ -53,6 +75,9 @@
 
   // Information about the pending passkey request.
   std::optional<webauthn::IOSPasskeyClient::RequestInfo> _requestInfo;
+
+  // Vector of credentials related to the current page.
+  std::vector<password_manager::CredentialUIEntry> _credentials;
 }
 
 - (instancetype)
@@ -72,13 +97,40 @@
     _webStateListObservation.emplace(&(*_webStateListObserver));
     _webStateListObservation->Observe(_webStateList);
 
-    _URL = _webStateList->GetActiveWebState()->GetLastCommittedURL();
+    web::WebState* activeWebState = _webStateList->GetActiveWebState();
+    _URL = activeWebState->GetLastCommittedURL();
 
     _domain = @"";
     if (!_URL.is_empty()) {
       url::Origin origin = url::Origin::Create(_URL);
       _domain =
           base::SysUTF8ToNSString(password_manager::GetShownOrigin(origin));
+    }
+
+    if (_requestInfo.has_value() &&
+        _requestInfo->remote_frame_token.has_value()) {
+      web::WebFramesManager* framesManager =
+          webauthn::PasskeyJavaScriptFeature::GetInstance()
+              ->GetWebFramesManager(activeWebState);
+      web::WebFrame* frame =
+          framesManager ? framesManager->GetFrameWithId(_requestInfo->frame_id)
+                        : nullptr;
+      if (frame) {
+        __weak __typeof(self) weakSelf = self;
+        auto callback = base::BindOnce(
+            [](CredentialSuggestionBottomSheetMediatorBase* mediator,
+               webauthn::IOSWebAuthnCredentialsDelegate* delegate) {
+              mediator.webAuthnCredentialsDelegate =
+                  delegate ? delegate->GetWeakPtr() : nullptr;
+            },
+            weakSelf);
+
+        webauthn::IOSWebAuthnCredentialsDelegateFactory::GetFactory(
+            activeWebState)
+            ->GetDelegateForRemoteFrameToken(*_requestInfo->remote_frame_token,
+                                             frame->GetSecurityOrigin(),
+                                             std::move(callback));
+      }
     }
   }
   return self;
@@ -101,10 +153,46 @@
   _webStateListObserver.reset();
   _webStateList = nullptr;
   _reauthenticationModule = nil;
+  _webAuthnCredentialsDelegate = nullptr;
 }
 
 - (BOOL)hasSuggestions {
   return [self.suggestions count] > 0;
+}
+
+- (std::optional<password_manager::CredentialUIEntry>)
+    getCredentialForFormSuggestion:(FormSuggestion*)formSuggestion {
+  if (formSuggestion.type == autofill::SuggestionType::kWebauthnCredential) {
+    std::optional<std::vector<uint8_t>> credentialId = base::Base64Decode(
+        webauthn::GetPasskeySuggestionEncodedCredentialId(formSuggestion));
+    if (!credentialId || credentialId->empty()) {
+      return std::nullopt;
+    }
+    auto it = std::ranges::find_if(
+        _credentials,
+        [&credentialId](const password_manager::CredentialUIEntry& credential) {
+          return credential.passkey_credential_id == *credentialId;
+        });
+    return it != _credentials.end()
+               ? std::optional<password_manager::CredentialUIEntry>(*it)
+               : std::nullopt;
+  }
+
+  std::u16string username = base::SysNSStringToUTF16(formSuggestion.value);
+  auto it = std::ranges::find_if(
+      _credentials,
+      [&username](const password_manager::CredentialUIEntry& credential) {
+        return credential.passkey_credential_id.empty() &&
+               credential.username == username;
+      });
+  return it != _credentials.end()
+             ? std::optional<password_manager::CredentialUIEntry>(*it)
+             : std::nullopt;
+}
+
+- (void)setCredentialsForTesting:
+    (std::vector<password_manager::CredentialUIEntry>)credentials {
+  _credentials = std::move(credentials);
 }
 
 - (void)didSelectSuggestion:(FormSuggestion*)formSuggestion
@@ -124,9 +212,11 @@
     };
 
     NSString* reason = l10n_util::GetNSString(IDS_IOS_AUTOFILL_REAUTH_REASON);
+    BOOL canReusePreviousAuth =
+        [self canReusePreviousAuthForSuggestion:formSuggestion];
     [_reauthenticationModule
         attemptReauthWithLocalizedReason:reason
-                    canReusePreviousAuth:YES
+                    canReusePreviousAuth:canReusePreviousAuth
                                  handler:completionHandler];
   } else {
     [self selectSuggestion:formSuggestion atIndex:index completion:completion];
@@ -140,11 +230,43 @@
   NOTREACHED();
 }
 
+- (void)clearCredentials {
+  _credentials.clear();
+}
+
+- (void)addCredential:(const password_manager::CredentialUIEntry&)credential {
+  _credentials.push_back(credential);
+}
+
+- (void)fetchPasskeyCredentials {
+  webauthn::IOSWebAuthnCredentialsDelegate* delegate =
+      self.webAuthnCredentialsDelegate.get();
+  if (!delegate) {
+    return;
+  }
+
+  base::expected<
+      const std::vector<password_manager::PasskeyCredential>*,
+      password_manager::WebAuthnCredentialsDelegate::PasskeysUnavailableReason>
+      passkeys = delegate->GetPasskeys();
+  if (passkeys.has_value() && *passkeys) {
+    for (const password_manager::PasskeyCredential& passkey : **passkeys) {
+      _credentials.push_back(password_manager::CredentialUIEntry(passkey));
+    }
+  }
+}
+
 - (void)selectSuggestion:(FormSuggestion*)suggestion
                    atIndex:(NSInteger)index
     reauthenticationResult:(ReauthenticationResult)result
                 completion:(ProceduralBlock)completion {
   if (result != ReauthenticationResult::kFailure) {
+    if (result == ReauthenticationResult::kSuccess &&
+        suggestion.type == autofill::SuggestionType::kWebauthnCredential &&
+        self.webAuthnCredentialsDelegate) {
+      self.webAuthnCredentialsDelegate->MarkPasskeyAsUserVerified(
+          webauthn::GetPasskeySuggestionEncodedCredentialId(suggestion));
+    }
     [self selectSuggestion:suggestion atIndex:index completion:completion];
   } else {
     [self disconnect];
@@ -158,6 +280,7 @@
 }
 
 - (void)onDismissWithoutAnyCredentialAction {
+  [self deferPasskeyRequestToRenderer];
 }
 
 - (BOOL)hasPendingRequest:
@@ -192,6 +315,16 @@
 
 #pragma mark - Private
 
+// Returns whether the previous authentication can be reused for the given
+// suggestion.
+- (BOOL)canReusePreviousAuthForSuggestion:(FormSuggestion*)formSuggestion {
+  if (formSuggestion.type != autofill::SuggestionType::kWebauthnCredential) {
+    return YES;
+  }
+  return self.webAuthnCredentialsDelegate &&
+         self.webAuthnCredentialsDelegate->CanReusePreviousSigninAuth();
+}
+
 // Closes the current bottom sheet when the web state changes.
 - (void)onWebStateChanged {
   // Disconnect so anything that relies on the webstate behind the mediator can
@@ -201,6 +334,28 @@
   // As there is no more context for showing the bottom sheet, end the
   // presentation.
   [self.presenter endPresentation];
+}
+
+- (webauthn::PasskeyTabHelper*)passkeyTabHelper {
+  if (!self.webStateList) {
+    return nil;
+  }
+
+  web::WebState* activeWebState = self.webStateList->GetActiveWebState();
+  if (!activeWebState) {
+    return nil;
+  }
+
+  return webauthn::PasskeyTabHelper::FromWebState(activeWebState);
+}
+
+- (void)deferPasskeyRequestToRenderer {
+  webauthn::PasskeyTabHelper* passkeyTabHelper = [self passkeyTabHelper];
+  if (!passkeyTabHelper || !_requestInfo.has_value()) {
+    return;
+  }
+
+  passkeyTabHelper->DeferPendingRequestToRenderer(_requestInfo->request_id);
 }
 
 @end

@@ -28,6 +28,7 @@
 #include "base/trace_event/typed_macros.h"
 #include "partition_alloc/oom.h"
 #include "partition_alloc/partition_alloc.h"
+#include "partition_alloc/partition_alloc_public_constants.h"
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/platform/platform.h"
 #include "third_party/blink/renderer/platform/bindings/buildflags.h"
@@ -46,7 +47,6 @@
 #include "third_party/blink/renderer/platform/wtf/functional.h"
 #include "third_party/blink/renderer/platform/wtf/thread_specific.h"
 #include "third_party/blink/renderer/platform/wtf/vector.h"
-#include "third_party/snappy/src/snappy.h"
 #include "third_party/zlib/google/compression_utils.h"
 
 #if BUILDFLAG(HAS_ZSTD_COMPRESSION)
@@ -150,7 +150,7 @@ class NullableCharBuffer final {
   explicit NullableCharBuffer(size_t size) {
     data_ = reinterpret_cast<char*>(
         Partitions::BufferPartition()
-            ->AllocInline<partition_alloc::AllocFlags::kReturnNull>(
+            ->Alloc<partition_alloc::AllocFlags::kReturnNull>(
                 size, "NullableCharBuffer"));
     size_ = size;
   }
@@ -327,9 +327,6 @@ ParkableStringImpl::GetCompressionAlgorithm() {
     return CompressionAlgorithm::kZstd;
   }
 #endif  // BUILDFLAG(HAS_ZSTD_COMPRESSION)
-  if (features::ParkableStringsUseSnappy()) {
-    return CompressionAlgorithm::kSnappy;
-  }
   return CompressionAlgorithm::kZlib;
 }
 
@@ -728,20 +725,7 @@ String ParkableStringImpl::UnparkInternal() {
       }
       break;
     }
-    case CompressionAlgorithm::kSnappy: {
-      size_t uncompressed_size;
 
-      // As above, if size is incorrect, or if data is corrupted, prefer
-      // crashing.
-      CHECK(snappy::GetUncompressedLength(compressed_string_piece.data(),
-                                          compressed_string_piece.size(),
-                                          &uncompressed_size));
-      CHECK_EQ(uncompressed_size, chars.size());
-      CHECK(snappy::RawUncompress(compressed_string_piece.data(),
-                                  compressed_string_piece.size(), chars.data()))
-          << "Decompression failed, corrupted data?";
-      break;
-    }
 #if BUILDFLAG(HAS_ZSTD_COMPRESSION)
     case CompressionAlgorithm::kZstd: {
       uint64_t content_size = ZSTD_getFrameContentSize(
@@ -846,12 +830,7 @@ void ParkableStringImpl::CompressInBackground(
       case CompressionAlgorithm::kZlib:
         buffer_size = data.size();
         break;
-      case CompressionAlgorithm::kSnappy:
-        // Contrary to other compression algorithms, snappy requires the buffer
-        // to be at least this size, rather than aborting if the provided buffer
-        // is too small.
-        buffer_size = snappy::MaxCompressedLength(data.size());
-        break;
+
 #if BUILDFLAG(HAS_ZSTD_COMPRESSION)
       case CompressionAlgorithm::kZstd:
         buffer_size = ZSTD_compressBound(data.size());
@@ -868,13 +847,7 @@ void ParkableStringImpl::CompressInBackground(
           ok = compression::GzipCompress(data, buffer.data(), buffer.size(),
                                          &compressed_size, nullptr, nullptr);
           break;
-        case CompressionAlgorithm::kSnappy:
-          snappy::RawCompress(data.data(), data.size(), buffer.data(),
-                              &compressed_size);
-          if (compressed_size > data.size()) {
-            ok = false;
-          }
-          break;
+
 #if BUILDFLAG(HAS_ZSTD_COMPRESSION)
         case CompressionAlgorithm::kZstd:
           compressed_size =

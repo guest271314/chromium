@@ -24,16 +24,8 @@
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/web_contents.h"
-#include "extensions/buildflags/buildflags.h"
 #include "third_party/blink/public/mojom/window_features/window_features.mojom.h"
 #include "ui/base/unowned_user_data/unowned_user_data_host.h"
-
-#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
-#include "chrome/browser/devtools/devtools_window.h"
-#include "chrome/browser/extensions/extension_browser_window_helper.h"
-#include "chrome/common/pref_names.h"
-#include "content/public/browser/devtools_agent_host.h"
-#endif  // BUILDFLAG(ENABLE_EXTENSIONS_CORE)
 
 namespace {
 using base::android::AttachCurrentThread;
@@ -60,17 +52,6 @@ AndroidBrowserWindow::AndroidBrowserWindow(
       profile_(CHECK_DEREF(profile)),
       session_id_(SessionID::NewUnique()) {
   java_android_browser_window_.Reset(env, java_android_browser_window);
-
-#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
-  extension_browser_window_helper_ =
-      std::make_unique<extensions::ExtensionBrowserWindowHelper>(this, profile);
-
-  profile_pref_registrar_.Init(profile_->GetPrefs());
-  profile_pref_registrar_.Add(
-      prefs::kDevToolsAvailability,
-      base::BindRepeating(&AndroidBrowserWindow::OnDevToolsAvailabilityChanged,
-                          base::Unretained(this)));
-#endif  // BUILDFLAG(ENABLE_EXTENSIONS_CORE)
 }
 
 AndroidBrowserWindow::~AndroidBrowserWindow() {
@@ -202,21 +183,5 @@ content::WebContents* AndroidBrowserWindow::OpenURL(
 
   return nullptr;
 }
-
-base::android::ScopedJavaLocalRef<jobject> AndroidBrowserWindow::GetActivity() {
-  return Java_AndroidBrowserWindow_getActivity(AttachCurrentThread(),
-                                               java_android_browser_window_);
-}
-
-#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
-void AndroidBrowserWindow::OnDevToolsAvailabilityChanged() {
-  for (auto& agent_host : content::DevToolsAgentHost::GetAll()) {
-    if (!DevToolsWindow::AllowDevToolsFor(&profile_.get(),
-                                          agent_host->GetWebContents())) {
-      agent_host->ForceDetachAllSessions();
-    }
-  }
-}
-#endif  // BUILDFLAG(ENABLE_EXTENSIONS_CORE)
 
 DEFINE_JNI(AndroidBrowserWindow)

@@ -7,10 +7,11 @@
 #include <algorithm>
 
 #include "base/check_deref.h"
-#include "base/debug/dump_without_crashing.h"
+#include "base/memory/raw_ptr.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/trace_event/trace_event.h"
 #include "build/build_config.h"
+#include "components/vrp_flags/buildflags.h"
 #include "content/browser/back_forward_cache/back_forward_cache_subframe_navigation_throttle.h"
 #include "content/browser/devtools/devtools_instrumentation.h"
 #include "content/browser/picture_in_picture/document_picture_in_picture_navigation_throttle.h"
@@ -29,6 +30,7 @@
 #include "content/browser/renderer_host/network_restrictions_navigation_throttle.h"
 #include "content/browser/renderer_host/renderer_cancellation_throttle.h"
 #include "content/browser/renderer_host/subframe_history_navigation_throttle.h"
+#include "content/browser/renderer_host/untrusted_web_ui_navigation_throttle.h"
 #include "content/browser/webid/navigation_interceptor.h"
 #include "content/common/features.h"
 #include "content/public/browser/navigation_handle.h"
@@ -36,6 +38,11 @@
 #if BUILDFLAG(IS_ANDROID)
 #include "content/browser/renderer_host/android_spare_renderer_navigation_throttle.h"
 #endif  // BUILDFLAG(IS_ANDROID)
+
+#if BUILDFLAG(ENABLE_VRP_FLAGS)
+#include "components/vrp_flags/vrp_flags.h"                     // nogncheck
+#include "content/browser/vrp_flags/vrp_navigation_throttle.h"  // nogncheck
+#endif
 
 namespace content {
 
@@ -68,7 +75,7 @@ NavigationThrottleRegistryImpl::NavigationThrottleRegistryImpl(
 NavigationThrottleRegistryImpl::~NavigationThrottleRegistryImpl() = default;
 
 void NavigationThrottleRegistryImpl::RegisterNavigationThrottles() {
-  if (navigation_request_->IsInitialWebUISyncNavigation()) {
+  if (navigation_request_->IsInitialWebUINavigation()) {
     // Skip adding throttles for navigations to the initial WebUI.
     return;
   }
@@ -86,6 +93,12 @@ void NavigationThrottleRegistryImpl::RegisterNavigationThrottles() {
   // The NavigationRequest associated with the NavigationThrottles this
   // NavigationThrottleRunner manages.
   navigation_request_->GetDelegate()->CreateThrottlesForNavigation(*this);
+
+#if BUILDFLAG(ENABLE_VRP_FLAGS)
+  if (vrp_flags::IsEnabled()) {
+    VrpNavigationThrottle::MaybeCreateAndAdd(*this);
+  }
+#endif
 
   // Check for renderer-initiated main frame navigations to blocked URL schemes
   // (data, filesystem). This is done early as it may block the main frame
@@ -124,6 +137,10 @@ void NavigationThrottleRegistryImpl::RegisterNavigationThrottles() {
 
   // Prevent navigations to/from Isolated Web Apps.
   IsolatedWebAppThrottle::MaybeCreateAndAdd(*this);
+
+  // Prevent unexpected renderer-initiated navigations of chrome-untrusted://
+  // documents.
+  UntrustedWebUINavigationThrottle::MaybeCreateAndAdd(*this);
 
   devtools_instrumentation::CreateAndAddNavigationThrottles(*this);
 
@@ -168,7 +185,7 @@ void NavigationThrottleRegistryImpl::RegisterNavigationThrottles() {
 
 void NavigationThrottleRegistryImpl::
     RegisterNavigationThrottlesForCommitWithoutUrlLoader() {
-  if (navigation_request_->IsInitialWebUISyncNavigation()) {
+  if (navigation_request_->IsInitialWebUINavigation()) {
     // Skip adding throttles for navigations to the initial WebUI.
     return;
   }
@@ -180,6 +197,11 @@ void NavigationThrottleRegistryImpl::
   // NavigationThrottles.
   std::vector<std::unique_ptr<NavigationThrottle>> testing_throttles =
       std::move(throttles_);
+
+  // Let the embedder register throttles that want to observe navigations that
+  // commit without a URL loader (via WillCommitWithoutUrlLoader()).
+  navigation_request_->GetDelegate()->CreateThrottlesForCommitWithoutUrlLoader(
+      *this);
 
   // Defer any same-document subframe history navigations if there is an
   // associated main-frame same-document history navigation in progress, until
@@ -205,6 +227,10 @@ void NavigationThrottleRegistryImpl::
   // windows.
   DocumentPictureInPictureNavigationThrottle::MaybeCreateAndAdd(*this);
 #endif  // !BUILDFLAG(IS_ANDROID)
+
+  // Prevent unexpected renderer-initiated navigations of chrome-untrusted://
+  // documents that commit without a URL loader.
+  UntrustedWebUINavigationThrottle::MaybeCreateAndAdd(*this);
 
   // Insert all testing NavigationThrottles last.
   throttles_.insert(throttles_.end(),
@@ -232,21 +258,7 @@ void NavigationThrottleRegistryImpl::ProcessNavigationEvent(
 void NavigationThrottleRegistryImpl::ResumeProcessingNavigationEvent(
     NavigationThrottle* resuming_throttle) {
   auto it = deferring_throttles_.find(resuming_throttle);
-  if (it == deferring_throttles_.end()) {
-    // TODO(https://crbug.com/411238078): Upgrade to CHECK_EQ once remaining
-    // known cases are fixed. Until then, collect dump data and ignore the
-    // resume request to avoid bypassing required throttle checks.
-    const char* deferring_throttle_name =
-        deferring_throttles_.empty()
-            ? "null"
-            : (*deferring_throttles_.begin())->GetNameForLogging();
-    SCOPED_CRASH_KEY_STRING32("Bug411238078", "expected_throttle",
-                              deferring_throttle_name);
-    SCOPED_CRASH_KEY_STRING32("Bug411238078", "actual_throttle",
-                              resuming_throttle->GetNameForLogging());
-    base::debug::DumpWithoutCrashing();
-    return;
-  }
+  CHECK(it != deferring_throttles_.end());
   deferring_throttles_.erase(it);
 
   navigation_throttle_runner_->ResumeProcessingNavigationEvent(
@@ -260,7 +272,7 @@ void NavigationThrottleRegistryImpl::OnDeferProcessingNavigationEvent(
   deferring_throttles_.insert(deferring_throttle);
 }
 
-const std::set<NavigationThrottle*>&
+const std::set<raw_ptr<NavigationThrottle>>&
 NavigationThrottleRegistryImpl::GetDeferringThrottles() const {
   return deferring_throttles_;
 }
@@ -281,7 +293,7 @@ void NavigationThrottleRegistryImpl::AddThrottle(
   TRACE_EVENT(TRACE_DISABLED_BY_DEFAULT("navigation"),
               "NavigationThrottleRegistryImpl::AddThrottle",
               "navigation_throttle", navigation_throttle->GetNameForLogging());
-  CHECK(!navigation_request_->IsInitialWebUISyncNavigation());
+  CHECK(!navigation_request_->IsInitialWebUINavigation());
   throttles_.push_back(std::move(navigation_throttle));
 }
 

@@ -62,7 +62,7 @@
 #include "components/viz/test/test_in_process_context_provider.h"
 #include "media/base/video_facing.h"
 #include "media/base/video_frame.h"
-#include "media/renderers/paint_canvas_video_renderer.h"
+#include "media/gfx/paint_canvas_video_renderer.h"
 #include "third_party/skia/include/core/SkBitmap.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/ui_base_types.h"
@@ -135,6 +135,17 @@ gfx::Rect GetTooSmallToFitCameraRegion() {
 }
 
 }  // namespace
+
+TEST(CameraIdOrderingTest, OrdersByModelThenNumber) {
+  const CameraId camera_a1("camera_a", 1);
+  const CameraId camera_a2("camera_a", 2);
+  const CameraId camera_b1("camera_b", 1);
+
+  EXPECT_FALSE(camera_a1 < camera_a1);
+  EXPECT_TRUE(camera_a1 < camera_a2);
+  EXPECT_TRUE(camera_a2 < camera_b1);
+  EXPECT_FALSE(camera_b1 < camera_a2);
+}
 
 class CaptureModeCameraTest : public AshTestBase {
  public:
@@ -4231,7 +4242,7 @@ TEST_F(CameraPreviewWithNotificationTest,
 
 class CameraPreviewWithHoldingSpaceTest : public CaptureModeCameraTest {
  public:
-  CameraPreviewWithHoldingSpaceTest() { set_start_session(false); }
+  CameraPreviewWithHoldingSpaceTest() = default;
   CameraPreviewWithHoldingSpaceTest(const CameraPreviewWithHoldingSpaceTest&) =
       delete;
   CameraPreviewWithHoldingSpaceTest& operator=(
@@ -4249,6 +4260,11 @@ class CameraPreviewWithHoldingSpaceTest : public CaptureModeCameraTest {
   }
 
   // CaptureModeCameraTest:
+  void SetUpInitParams(AshTestHelper::InitParams& init_params) override {
+    CaptureModeCameraTest::SetUpInitParams(init_params);
+    init_params.start_session = false;
+  }
+
   void SetUp() override {
     CaptureModeCameraTest::SetUp();
 

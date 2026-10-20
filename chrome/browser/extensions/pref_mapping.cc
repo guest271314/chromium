@@ -10,7 +10,6 @@
 
 #include "base/memory/singleton.h"
 #include "base/strings/stringprintf.h"
-#include "chrome/browser/extensions/pref_transformer_interface.h"
 #include "chrome/browser/prefetch/pref_names.h"
 #include "chrome/browser/preloading/preloading_prefs.h"
 #include "chrome/common/pref_names.h"
@@ -23,6 +22,7 @@
 #include "components/safe_browsing/core/common/safe_browsing_prefs.h"
 #include "components/spellcheck/browser/pref_names.h"
 #include "components/translate/core/browser/translate_pref_names.h"
+#include "extensions/browser/pref_transformer_interface.h"
 #include "extensions/buildflags/buildflags.h"
 
 #if BUILDFLAG(IS_CHROMEOS)
@@ -48,6 +48,8 @@ const PrefMappingEntry kMappings[] = {
     {"autofillAddressEnabled", autofill::prefs::kAutofillProfileEnabled,
      APIPermissionID::kPrivacy, APIPermissionID::kPrivacy},
     {"autofillCreditCardEnabled", autofill::prefs::kAutofillCreditCardEnabled,
+     APIPermissionID::kPrivacy, APIPermissionID::kPrivacy},
+    {"autofillSettings", autofill::prefs::kAutofillTypesBlocked,
      APIPermissionID::kPrivacy, APIPermissionID::kPrivacy},
     {"hyperlinkAuditingEnabled", prefs::kEnableHyperlinkAuditing,
      APIPermissionID::kPrivacy, APIPermissionID::kPrivacy},
@@ -96,9 +98,6 @@ const PrefMappingEntry kMappings[] = {
      APIPermissionID::kPrivacy, APIPermissionID::kPrivacy},
     {"webRTCUDPPortRange", prefs::kWebRTCUDPPortRange,
      APIPermissionID::kPrivacy, APIPermissionID::kPrivacy},
-    {"relatedWebsiteSetsEnabled",
-     prefs::kPrivacySandboxRelatedWebsiteSetsEnabled, APIPermissionID::kPrivacy,
-     APIPermissionID::kPrivacy},
     {"proxyOverrideRulesPrivate", proxy_config::prefs::kProxyOverrideRules,
      APIPermissionID::kProxyOverrideRulesPrivate,
      APIPermissionID::kProxyOverrideRulesPrivate},
@@ -232,8 +231,9 @@ PrefMapping::PrefMapping() {
     event_mapping_[pref.browser_pref] =
         PrefMapData(event_name, pref.read_permission, pref.write_permission);
   }
-  DCHECK_EQ(std::size(kMappings), mapping_.size());
-  DCHECK_EQ(std::size(kMappings), event_mapping_.size());
+  CHECK_EQ(std::size(kMappings), mapping_.size(), base::NotFatalUntil::M161);
+  CHECK_EQ(std::size(kMappings), event_mapping_.size(),
+           base::NotFatalUntil::M161);
 }
 
 PrefMapping::~PrefMapping() = default;

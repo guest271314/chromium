@@ -51,7 +51,7 @@ class COMPOSITOR_EXPORT RecyclableCompositorMac
                      float scale_factor,
                      const gfx::DisplayColorSpaces& display_color_spaces,
                      int64_t display_id,
-                     bool refresh_rate_changed_on_same_display);
+                     float refresh_rate);
 
  private:
   // Invalidate the compositor's surface information.

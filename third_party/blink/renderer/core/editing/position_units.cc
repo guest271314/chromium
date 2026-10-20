@@ -128,10 +128,8 @@ UChar32 CharacterAfterAlgorithm(const PositionTemplate<Strategy>& position) {
     return 0;
   }
 
-  const unsigned offset =
-      static_cast<unsigned>(canonical_position.OffsetInContainerNode());
-  const unsigned length = text_node->length();
-  if (offset >= length) {
+  const wtf_size_t offset = canonical_position.OffsetInContainerNode();
+  if (offset >= text_node->length()) {
     return 0;
   }
 
@@ -236,12 +234,12 @@ PositionInFlatTree EndOfEditableContent(const PositionInFlatTree& position) {
 }
 
 Position StartOfEditableContent(const Position& position) {
-  return ToPositionInDOMTree(
+  return ToPositionInDomTree(
       StartOfEditableContent(ToPositionInFlatTree(position)));
 }
 
 Position EndOfEditableContent(const Position& position) {
-  return ToPositionInDOMTree(
+  return ToPositionInDomTree(
       EndOfEditableContent(ToPositionInFlatTree(position)));
 }
 

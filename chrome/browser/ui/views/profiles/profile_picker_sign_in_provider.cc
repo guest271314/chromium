@@ -7,14 +7,11 @@
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
-#include "base/functional/callback_helpers.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/strings/string_util.h"
-#include "base/strings/to_string.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/profiles/delete_profile_helper.h"
 #include "chrome/browser/profiles/keep_alive/profile_keep_alive_types.h"
-#include "chrome/browser/profiles/nuke_profile_directory_utils.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_attributes_storage.h"
 #include "chrome/browser/profiles/profile_avatar_icon_util.h"
@@ -26,10 +23,8 @@
 #include "chrome/browser/themes/theme_service.h"
 #include "chrome/browser/themes/theme_service_factory.h"
 #include "chrome/browser/trusted_vault/trusted_vault_encryption_keys_tab_helper.h"
-#include "chrome/browser/ui/navigator/browser_navigator.h"
-#include "chrome/browser/ui/navigator/browser_navigator_params.h"
 #include "chrome/browser/ui/views/profiles/profile_management_types.h"
-#include "chrome/browser/ui/views/profiles/profile_picker_view.h"
+#include "chrome/browser/ui/views/profiles/profile_picker_utils.h"
 #include "chrome/browser/ui/views/profiles/profile_picker_web_contents_host.h"
 #include "chrome/browser/ui/webui/signin/signin_ui_error.h"
 #include "chrome/common/url_constants.h"
@@ -37,7 +32,6 @@
 #include "components/safe_browsing/buildflags.h"
 #include "components/signin/public/base/consent_level.h"
 #include "components/signin/public/base/signin_metrics.h"
-#include "components/signin/public/base/signin_switches.h"
 #include "components/signin/public/identity_manager/account_info.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "components/sync/base/features.h"
@@ -47,8 +41,8 @@
 #include "content/public/browser/web_contents.h"
 #include "google_apis/gaia/gaia_auth_util.h"
 #include "google_apis/gaia/gaia_urls.h"
-#include "net/base/url_util.h"
 #include "third_party/blink/public/mojom/window_features/window_features.mojom.h"
+#include "ui/base/window_open_disposition.h"
 #include "ui/views/controls/webview/web_contents_set_background_color.h"
 #include "url/gurl.h"
 
@@ -132,7 +126,7 @@ void ProfilePickerSignInProvider::SwitchToSignIn(
     host_->ShowScreen(
         contents(), GURL(),
         base::BindOnce(std::move(switch_finished_callback.value()), true));
-    host_->SetNativeToolbarVisible(true);
+    host_->SetNativeToolbarSigninButtonsVisible(true);
     return;
   }
 
@@ -162,23 +156,6 @@ void ProfilePickerSignInProvider::ReloadSignInPage() {
   }
 }
 
-void ProfilePickerSignInProvider::NavigateBack() {
-  if (!IsInitialized() || !contents()) {
-    return;
-  }
-
-  if (contents()->GetController().CanGoBack()) {
-    contents()->GetController().GoBack();
-    return;
-  }
-
-  // Move from sign-in back to the previous screen of profile creation.
-  // Do not load any url because the desired screen is still loaded in the
-  // picker contents.
-  host_->ShowScreenInPickerContents(GURL(), base::OnceClosure());
-  host_->SetNativeToolbarVisible(false);
-}
-
 bool ProfilePickerSignInProvider::HandleContextMenu(
     content::RenderFrameHost& render_frame_host,
     const content::ContextMenuParams& params) {
@@ -206,12 +183,9 @@ content::WebContents* ProfilePickerSignInProvider::AddNewContents(
     return nullptr;
   }
 
-  NavigateParams params(profile_, target_url, ui::PAGE_TRANSITION_LINK);
-  // Open all links as new popups.
-  params.disposition = WindowOpenDisposition::NEW_POPUP;
-  params.contents_to_insert = std::move(new_contents);
-  params.window_features = window_features;
-  Navigate(&params);
+  OpenLearnMorePopup(profile_, std::move(new_contents), target_url,
+                     window_features);
+
   return nullptr;
 }
 
@@ -227,12 +201,6 @@ void ProfilePickerSignInProvider::NavigationStateChanged(
   if (source != contents_.get()) {
     return;
   }
-
-  // The first Gaia screen has no back history. If CanGoBack() is `false`, we
-  // are on the first screen and the "Don't sign in" button (if exists) should
-  // be visible.
-  host_->SetNativeToolbarDontSignInButtonVisible(
-      !contents_->GetController().CanGoBack());
 
   const GURL& visible_url = contents_->GetVisibleURL();
   auto primary_account =
@@ -326,10 +294,11 @@ void ProfilePickerSignInProvider::OnProfileInitialized(
       contents(), host_->GetPreferredBackgroundColor());
 
   base::OnceClosure navigation_finished_closure =
-      base::BindOnce(&ProfilePickerWebContentsHost::SetNativeToolbarVisible,
-                     // Unretained is enough as the callback is called by the
-                     // host itself.
-                     base::Unretained(host_), /*visible=*/true)
+      base::BindOnce(
+          &ProfilePickerWebContentsHost::SetNativeToolbarSigninButtonsVisible,
+          // Unretained is enough as the callback is called by the
+          // host itself.
+          base::Unretained(host_), /*visible=*/true)
           .Then(base::BindOnce(std::move(switch_finished_callback.value()),
                                true));
   host_->ShowScreen(contents(), BuildSigninURL(),
@@ -350,7 +319,7 @@ bool ProfilePickerSignInProvider::IsInitialized() const {
 void ProfilePickerSignInProvider::FinishFlow(
     const CoreAccountInfo& account_info) {
   DCHECK(IsInitialized());
-  host_->SetNativeToolbarVisible(false);
+  host_->SetNativeToolbarSigninButtonsVisible(false);
   ResetWebContentsDelegates();
   std::move(callback_).Run(profile_.get(), account_info, std::move(contents_),
                            StepSwitchFinishedCallback());

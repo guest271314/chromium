@@ -34,29 +34,11 @@ SingleFieldFillRouter::~SingleFieldFillRouter() = default;
 
 void SingleFieldFillRouter::OnWillSubmitForm(
     const FormData& form,
-    const FormStructure* form_structure,
-    bool is_autocomplete_enabled) {
+    const FormStructure* form_structure) {
   CHECK(!form_structure ||
         form.fields().size() == form_structure->field_count());
-  std::vector<FormFieldData> autocomplete_fields;
-  for (size_t i = 0; i < form.fields().size(); ++i) {
-    // If |form_structure| is present, then the fields in |form_structure| and
-    // the fields in |form| are 1:1. |form_structure| not being present
-    // indicates we may have fields that were not able to be parsed, so we route
-    // them to autocomplete functionality by default.
-    bool skip_because_promo_code =
-        merchant_promo_code_manager_ && form_structure &&
-        form_structure->field(i)->Type().GetTypes().contains(
-            MERCHANT_PROMO_CODE);
-    bool skip_because_iban =
-        iban_manager_ && form_structure &&
-        form_structure->field(i)->Type().GetTypes().contains(IBAN_VALUE);
-    if (!skip_because_iban && !skip_because_promo_code) {
-      autocomplete_fields.push_back(form.fields()[i]);
-    }
-  }
-  autocomplete_history_manager_->OnWillSubmitFormWithFields(
-      autocomplete_fields, is_autocomplete_enabled);
+  autocomplete_history_manager_->OnWillSubmitFormWithFields(form.fields(),
+                                                            form_structure);
   if (iban_manager_) {
     iban_manager_->OnWillSubmitFormWithFields();
   }
@@ -68,11 +50,12 @@ void SingleFieldFillRouter::CancelPendingQueries() {
 
 void SingleFieldFillRouter::OnRemoveCurrentSingleFieldSuggestion(
     const std::u16string& field_name,
+    const std::u16string& field_label,
     const std::u16string& value,
     SuggestionType type) {
   if (type == SuggestionType::kAutocompleteEntry) {
     autocomplete_history_manager_->OnRemoveCurrentSingleFieldSuggestion(
-        field_name, value, type);
+        field_name, field_label, value, type);
   }
 }
 
@@ -80,8 +63,7 @@ void SingleFieldFillRouter::OnSingleFieldSuggestionSelected(
     const Suggestion& suggestion) {
   SuggestionType type = suggestion.type;
   if (merchant_promo_code_manager_ &&
-      (type == SuggestionType::kMerchantPromoCodeEntry ||
-       type == SuggestionType::kSeePromoCodeDetails)) {
+      type == SuggestionType::kMerchantPromoCodeEntry) {
     merchant_promo_code_manager_->OnSingleFieldSuggestionSelected(suggestion);
   } else if (iban_manager_ && type == SuggestionType::kIbanEntry) {
     iban_manager_->OnSingleFieldSuggestionSelected(suggestion);

@@ -34,6 +34,7 @@
 #include "base/debug/dump_without_crashing.h"
 #include "base/feature_list.h"
 #include "base/metrics/histogram_functions.h"
+#include "base/numerics/safe_conversions.h"
 #include "services/network/public/cpp/features.h"
 #include "services/network/public/cpp/web_sandbox_flags.h"
 #include "services/network/public/mojom/content_security_policy.mojom-blink.h"
@@ -220,6 +221,21 @@ String ContentSecurityPolicy::StripURLForUseInReport(
   return CSPStripURL(url).GetString();
 }
 
+// static
+bool ContentSecurityPolicy::ContainsDanglingMarkupSignal(
+    const String& attribute_name,
+    const String& attribute_value) {
+  static const char kScriptString[] = "<SCRIPT";
+  static const char kStyleString[] = "<STYLE";
+  static const char kLinkString[] = "<LINK";
+  return attribute_name.FindIgnoringAsciiCase(kScriptString) != kNotFound ||
+         attribute_name.FindIgnoringAsciiCase(kStyleString) != kNotFound ||
+         attribute_name.FindIgnoringAsciiCase(kLinkString) != kNotFound ||
+         attribute_value.FindIgnoringAsciiCase(kScriptString) != kNotFound ||
+         attribute_value.FindIgnoringAsciiCase(kStyleString) != kNotFound ||
+         attribute_value.FindIgnoringAsciiCase(kLinkString) != kNotFound;
+}
+
 bool ContentSecurityPolicy::IsNonceableElement(const Element* element) {
   if (element->nonce().IsNull())
     return false;
@@ -238,18 +254,8 @@ bool ContentSecurityPolicy::IsNonceableElement(const Element* element) {
     nonceable = false;
 
   if (nonceable) {
-    static const char kScriptString[] = "<SCRIPT";
-    static const char kStyleString[] = "<STYLE";
-    static const char kLinkString[] = "<LINK";
     for (const Attribute& attr : element->Attributes()) {
-      const AtomicString& name = attr.LocalName();
-      const AtomicString& value = attr.Value();
-      if (name.FindIgnoringAsciiCase(kScriptString) != kNotFound ||
-          name.FindIgnoringAsciiCase(kStyleString) != kNotFound ||
-          name.FindIgnoringAsciiCase(kLinkString) != kNotFound ||
-          value.FindIgnoringAsciiCase(kScriptString) != kNotFound ||
-          value.FindIgnoringAsciiCase(kStyleString) != kNotFound ||
-          value.FindIgnoringAsciiCase(kLinkString) != kNotFound) {
+      if (ContainsDanglingMarkupSignal(attr.LocalName(), attr.Value())) {
         nonceable = false;
         break;
       }
@@ -313,7 +319,20 @@ void ContentSecurityPolicy::ApplyPolicySideEffectsToDelegate() {
     Count(WebFeature::kTrustedTypesEnabled);
   }
 
-  delegate_->AddInsecureRequestPolicy(insecure_request_policy_);
+  // Update the delegate's local SecurityContext state only. Do NOT notify
+  // the browser here: this function runs from BindToDelegate() during
+  // DocumentLoader::DidInstallNewDocument, i.e. before the new document has
+  // committed. Sending EnforceInsecureRequestPolicy /
+  // EnforceInsecureNavigationsSet IPCs here would route via
+  // GetLocalFrameHostRemote() to the previously committed document's
+  // RenderFrameHost and corrupt browser-side replicated state, causing
+  // spurious same-document commit mismatches (crbug/40580002). The browser
+  // learns the authoritative values from DidCommitProvisionalLoadParams
+  // once the commit happens (see Navigator::DidNavigate).
+  //
+  // The post-bind dynamic <meta> path (AddPolicies() below, when called on
+  // an already-bound CSP) explicitly notifies the browser after this call.
+  delegate_->ApplyInsecureRequestPolicy(insecure_request_policy_);
 
   for (const auto& console_message : console_messages_)
     delegate_->AddConsoleMessage(console_message);
@@ -333,6 +352,9 @@ void ContentSecurityPolicy::ReportUseCounters(
     const Vector<network::mojom::blink::ContentSecurityPolicyPtr>& policies) {
   for (const auto& policy : policies) {
     Count(GetUseCounterType(policy->header->type));
+    if (policy->treat_as_public_address) {
+      Count(WebFeature::kLocalNetworkAccessShouldTreatAsPublicAddressCsp);
+    }
     if (CSPDirectiveListAllowDynamic(*policy,
                                      CSPDirectiveName::ScriptSrcAttr) ||
         CSPDirectiveListAllowDynamic(*policy,
@@ -347,7 +369,8 @@ void ContentSecurityPolicy::ReportUseCounters(
             *policy, this, ReportingDisposition::kSuppressReporting,
             kWillNotThrowException, g_empty_string,
             /*script_hash_values=*/{},
-            delegate_ && delegate_->ScriptSrcExtendedHashesEnabled())) {
+            delegate_ && delegate_->ScriptSrcExtendedHashesEnabled(),
+            /*trusted_types_enforced=*/false)) {
       Count(WebFeature::kCSPWithUnsafeEval);
     }
 
@@ -469,6 +492,13 @@ void ContentSecurityPolicy::AddPolicies(
     return;
 
   ApplyPolicySideEffectsToDelegate();
+  // If this CSP is already bound, this call represents a post-bind dynamic
+  // policy addition (e.g. <meta http-equiv>). For document loads, header
+  // policies are added before BindToDelegate() and are propagated to the
+  // browser via commit params instead. Because we are past bind, the mojo
+  // remote now correctly routes to this document's RenderFrameHost, so it
+  // is safe to notify the browser directly. See crbug/40580002.
+  delegate_->NotifyBrowserOfInsecureRequestPolicy(insecure_request_policy_);
   ReportUseCounters(policies_to_report);
 
   delegate_->DidAddContentSecurityPolicies(std::move(policies_to_report));
@@ -565,7 +595,7 @@ void ContentSecurityPolicy::ComputeInternalStateForParsedPolicy(
       disallow_script_for_synthetic_response_ = false;
       base::UmaHistogramCounts100(
           kSyntheticResponseBlockedResourceCountHistogramName,
-          blocked_count_for_synthetic_response_);
+          base::saturated_cast<int>(blocked_count_for_synthetic_response_));
     }
   }
 }
@@ -594,7 +624,7 @@ bool ContentSecurityPolicy::AllowInline(
     const String& content,
     const String& nonce,
     const String& context_url,
-    const OrdinalNumber& context_line,
+    const TextPosition& context_position,
     ReportingDisposition reporting_disposition) {
   DCHECK(element || inline_type == InlineType::kScriptAttribute ||
          inline_type == InlineType::kNavigation);
@@ -650,8 +680,8 @@ bool ContentSecurityPolicy::AllowInline(
     is_allowed &=
         CheckHashAgainstPolicy(csp_hash_values, *policy, inline_type) ||
         CSPDirectiveListAllowInline(*policy, this, inline_type, element,
-                                    content, nonce, context_url, context_line,
-                                    reporting_disposition);
+                                    content, nonce, context_url,
+                                    context_position, reporting_disposition);
   }
 
   return is_allowed;
@@ -683,6 +713,17 @@ bool ContentSecurityPolicy::AllowEval(
     ReportingDisposition reporting_disposition,
     ContentSecurityPolicy::ExceptionStatus exception_status,
     const String& script_content) {
+  // https://w3c.github.io/webappsec-csp/#can-compile-strings
+  // 'trusted-types-eval' applies _only_ when Trusted Types is enforced, i.e.
+  // when some enforcing policy requires Trusted Types for 'script'. Note that
+  // in most other contexts, we only check whether TT is required -- report only
+  // or not -- because even in report-only we need to run the checks in order to
+  // generate the reports. This, however, is a global property, so we compute it
+  // here and pass it to each per-policy check.
+  bool trusted_types_enforced =
+      std::ranges::any_of(policies_, [](const auto& policy) {
+        return CSPDirectiveListRequiresTrustedTypesEnforcing(*policy);
+      });
   bool is_allowed = true;
   Vector<network::IntegrityMetadata> csp_hash_values;
   FillInCSPHashValues(script_content, hash_algorithms_used_, csp_hash_values);
@@ -690,7 +731,8 @@ bool ContentSecurityPolicy::AllowEval(
     is_allowed &= CSPDirectiveListAllowEval(
         *policy, this, reporting_disposition, exception_status, script_content,
         csp_hash_values,
-        delegate_ && delegate_->ScriptSrcExtendedHashesEnabled());
+        delegate_ && delegate_->ScriptSrcExtendedHashesEnabled(),
+        trusted_types_enforced);
   }
   return is_allowed;
 }
@@ -705,30 +747,6 @@ bool ContentSecurityPolicy::AllowWasmCodeGeneration(
         *policy, this, reporting_disposition, exception_status, script_content);
   }
   return is_allowed;
-}
-
-bool ContentSecurityPolicy::AllowTrustedTypesEval(
-    ReportingDisposition reporting_disposition,
-    ContentSecurityPolicy::ExceptionStatus exception_status) {
-  // https://www.w3.org/TR/CSP3/#can-compile-strings, step 5.3.3
-  // "If source-list contains a source expression which is [...] "'unsafe-eval'"
-
-  // The spec wants 'trusted-types-eval' to apply _only_ when Trusted Types is
-  // enforced. Note that in most other contexts, we only check whether TT is
-  // required -- report only or not -- because even in report-only we need to
-  // run the checks in order to generate the reports. This, however, requires
-  // TT to enabled in an enforcing directive. Because that is a global
-  // property, we need to check it here.
-  bool trusted_types_is_enforced =
-      std::ranges::any_of(policies_, [&](const auto& policy) {
-        return CSPDirectiveListRequiresTrustedTypesEnforcing(*policy);
-      });
-  bool trusted_types_eval_applies =
-      std::ranges::any_of(policies_, [&](const auto& policy) {
-        return CSPDirectiveListAllowTrustedTypesEval(
-            *policy, this, reporting_disposition, exception_status);
-      });
-  return trusted_types_is_enforced && trusted_types_eval_applies;
 }
 
 HashSet<HashAlgorithm> ContentSecurityPolicy::HashesToReport() const {
@@ -756,7 +774,10 @@ void ContentSecurityPolicy::AddHashReportIfNeeded(
       }
 
       CSPHashReportBody* body = MakeGarbageCollected<CSPHashReportBody>(
-          url, integrity_hash, "subresource", "script");
+          StripURLForUseInReport(
+              window->GetContentSecurityPolicyDelegate().GetSecurityOrigin(),
+              KURL(url), CSPDirectiveName::DefaultSrc),
+          integrity_hash, "subresource", "script");
       Report* report_to_queue = MakeGarbageCollected<Report>(
           ReportType::kCSPHash,
           StripURLForUseInReport(
@@ -800,15 +821,15 @@ std::optional<CSPDirectiveName> GetDirectiveTypeFromRequestContextType(
     case mojom::blink::RequestContextType::VIDEO:
       return CSPDirectiveName::MediaSrc;
 
-    case mojom::blink::RequestContextType::ATTRIBUTION_SRC:
     case mojom::blink::RequestContextType::BEACON:
     case mojom::blink::RequestContextType::EVENT_SOURCE:
     case mojom::blink::RequestContextType::FETCH:
     case mojom::blink::RequestContextType::JSON:
     case mojom::blink::RequestContextType::PING:
-    case mojom::blink::RequestContextType::XML_HTTP_REQUEST:
     case mojom::blink::RequestContextType::SUBRESOURCE:
     case mojom::blink::RequestContextType::SUBRESOURCE_WEBBUNDLE:
+    case mojom::blink::RequestContextType::TEXT:
+    case mojom::blink::RequestContextType::XML_HTTP_REQUEST:
       return CSPDirectiveName::ConnectSrc;
 
     case mojom::blink::RequestContextType::EMBED:
@@ -1039,6 +1060,22 @@ bool ContentSecurityPolicy::AllowBaseURI(const KURL& url) {
   // here.
   return AllowFromSource(CSPDirectiveName::BaseURI, url, url,
                          RedirectStatus::kNoRedirect);
+}
+
+// static
+bool ContentSecurityPolicy::AllowBaseURI(
+    const KURL& url,
+    const Vector<network::mojom::blink::ContentSecurityPolicyPtr>& policies) {
+  for (const auto& policy : policies) {
+    if (!CSPDirectiveListAllowFromSource(
+             *policy, /*policy=*/nullptr, CSPDirectiveName::BaseURI,
+             /*document_url=*/KURL(), url, url, RedirectStatus::kNoRedirect,
+             ReportingDisposition::kSuppressReporting)
+             .IsAllowed()) {
+      return false;
+    }
+  }
+  return true;
 }
 
 bool ContentSecurityPolicy::AllowConnectToSource(
@@ -1378,12 +1415,15 @@ void ContentSecurityPolicy::ReportViolation(
       blocked_url, header, header_type, violation_type, source_location, source,
       source_prefix, eval_hash, url_hash);
 
+  // Suppress reports pointing at extension URLs loaded outside of extensions.
+  //
   // TODO(mkwst): Obviously, we shouldn't hit this check, as extension-loaded
   // resources should be allowed regardless. We apparently do, however, so
   // we should at least stop spamming reporting endpoints. See
   // https://crbug.com/524356 for detail.
-  if (!violation_data->sourceFile().empty() &&
-      ShouldBypassContentSecurityPolicy(KURL(violation_data->sourceFile()))) {
+  if (source_location &&
+      ShouldBypassContentSecurityPolicy(KURL(source_location->Url())) &&
+      !ShouldBypassContentSecurityPolicy(relevant_delegate->Url())) {
     return;
   }
   PostViolationReport(violation_data, context_frame, report_endpoints,

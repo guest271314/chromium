@@ -11,6 +11,7 @@
 #include "base/functional/callback.h"
 #include "base/logging.h"
 #include "base/metrics/histogram_functions.h"
+#include "chrome/browser/metrics/profile_metrics_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/signin/dice_tab_helper.h"
 #include "chrome/browser/signin/dice_web_signin_interceptor.h"
@@ -33,6 +34,7 @@
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/web_contents.h"
 #include "google_apis/gaia/core_account_id.h"
+#include "ui/base/page_transition_types.h"
 #include "url/gurl.h"
 
 namespace {
@@ -42,7 +44,8 @@ struct InterceptionBubbleParams {
   signin_metrics::AccessPoint access_point =
       signin_metrics::AccessPoint::kWebSignin;
   bool is_new_account = false;
-  bool is_sync_signin_tab = false;
+  bool is_chrome_signin_tab = false;
+  signin::Tribool primary_is_connected = signin::Tribool::kUnknown;
 };
 
 // Helper function similar to DiceTabHelper::FromWebContents(), but also handles
@@ -77,7 +80,7 @@ void RetryInterceptionBubble(base::WeakPtr<content::WebContents> web_contents,
   // No need to trigger the bubble if we are not in a sync-signin tab, or if we
   // are in a WebSignin case (as this is handled by the first interception
   // attempt).
-  if (!interceptor || !bubble_params.is_sync_signin_tab ||
+  if (!interceptor || !bubble_params.is_chrome_signin_tab ||
       bubble_params.access_point == signin_metrics::AccessPoint::kWebSignin) {
     return;
   }
@@ -87,14 +90,14 @@ void RetryInterceptionBubble(base::WeakPtr<content::WebContents> web_contents,
   interceptor->MaybeInterceptWebSignin(
       web_contents.get(), bubble_params.account_id,
       signin_metrics::AccessPoint::kWebSignin, bubble_params.is_new_account,
-      /*is_sync_signin=*/false);
+      /*is_chrome_signin=*/false, bubble_params.primary_is_connected);
 }
 }  // namespace
 
 // static
 std::unique_ptr<ProcessDiceHeaderDelegateImpl>
 ProcessDiceHeaderDelegateImpl::Create(content::WebContents* web_contents) {
-  bool is_sync_signin_tab = false;
+  bool is_chrome_signin_tab = false;
   signin_metrics::AccessPoint access_point =
       signin_metrics::AccessPoint::kWebSignin;
   signin_metrics::PromoAction promo_action =
@@ -107,7 +110,7 @@ ProcessDiceHeaderDelegateImpl::Create(content::WebContents* web_contents) {
 
   DiceTabHelper* tab_helper = GetDiceTabHelperFromWebContents(web_contents);
   if (tab_helper) {
-    is_sync_signin_tab = tab_helper->IsSyncSigninInProgress();
+    is_chrome_signin_tab = tab_helper->IsChromeSigninInProgress();
     redirect_url = tab_helper->redirect_url();
     access_point = tab_helper->signin_access_point();
     promo_action = tab_helper->signin_promo_action();
@@ -115,7 +118,7 @@ ProcessDiceHeaderDelegateImpl::Create(content::WebContents* web_contents) {
     // after completion of a signin flow.
     show_signin_error_callback =
         std::move(tab_helper->GetShowSigninErrorCallback());
-    if (is_sync_signin_tab) {
+    if (is_chrome_signin_tab) {
       enable_sync_callback = tab_helper->GetEnableSyncCallback();
       history_sync_optin_callback = tab_helper->GetHistorySyncOptinCallback();
     }
@@ -131,7 +134,7 @@ ProcessDiceHeaderDelegateImpl::Create(content::WebContents* web_contents) {
   }
 
   return std::make_unique<ProcessDiceHeaderDelegateImpl>(
-      web_contents, is_sync_signin_tab, access_point, promo_action,
+      web_contents, is_chrome_signin_tab, access_point, promo_action,
       std::move(redirect_url), std::move(enable_sync_callback),
       std::move(history_sync_optin_callback),
       std::move(on_signin_header_received),
@@ -140,7 +143,7 @@ ProcessDiceHeaderDelegateImpl::Create(content::WebContents* web_contents) {
 
 ProcessDiceHeaderDelegateImpl::ProcessDiceHeaderDelegateImpl(
     content::WebContents* web_contents,
-    bool is_sync_signin_tab,
+    bool is_chrome_signin_tab,
     signin_metrics::AccessPoint access_point,
     signin_metrics::PromoAction promo_action,
     GURL redirect_url,
@@ -151,7 +154,7 @@ ProcessDiceHeaderDelegateImpl::ProcessDiceHeaderDelegateImpl(
     : web_contents_(web_contents->GetWeakPtr()),
       profile_(raw_ref<Profile>::from_ptr(
           Profile::FromBrowserContext(web_contents->GetBrowserContext()))),
-      is_sync_signin_tab_(is_sync_signin_tab),
+      is_chrome_signin_tab_(is_chrome_signin_tab),
       access_point_(access_point),
       promo_action_(promo_action),
       redirect_url_(std::move(redirect_url)),
@@ -159,8 +162,9 @@ ProcessDiceHeaderDelegateImpl::ProcessDiceHeaderDelegateImpl(
       history_sync_optin_callback_(std::move(history_sync_optin_callback)),
       on_signin_header_received_(std::move(on_signin_header_received)),
       show_signin_error_callback_(std::move(show_signin_error_callback)) {
-  DCHECK_EQ(!is_sync_signin_tab_, enable_sync_callback_.is_null());
-  DCHECK(show_signin_error_callback_);
+  CHECK_EQ(!is_chrome_signin_tab_, enable_sync_callback_.is_null(),
+           base::NotFatalUntil::M162);
+  CHECK(show_signin_error_callback_, base::NotFatalUntil::M162);
 }
 
 ProcessDiceHeaderDelegateImpl::~ProcessDiceHeaderDelegateImpl() = default;
@@ -172,7 +176,7 @@ bool ProcessDiceHeaderDelegateImpl::ShouldEnableSync() {
     return false;
   }
 
-  if (!is_sync_signin_tab_) {
+  if (!is_chrome_signin_tab_) {
     VLOG(1)
         << "Do not start sync after web sign-in [not a Chrome sign-in tab].";
     return false;
@@ -191,7 +195,7 @@ bool ProcessDiceHeaderDelegateImpl::ShouldEnableHistorySync() {
   if (!syncer::IsReplaceSyncPromosWithSignInPromosEnabled()) {
     return false;
   }
-  if (!is_sync_signin_tab_) {
+  if (!is_chrome_signin_tab_) {
     VLOG(1) << "Do not start history sync after web sign-in [not a Chrome "
                "sign-in tab].";
     return false;
@@ -249,37 +253,47 @@ void ProcessDiceHeaderDelegateImpl::AttemptChromeSignin(
   bool should_auto_sign_in = false;
   AccountInfo account_info =
       identity_manager->FindExtendedAccountInfoByAccountId(account_id);
+  const bool has_primary_account =
+      identity_manager->HasPrimaryAccount(signin::ConsentLevel::kSignin);
   if (access_point_ == signin_metrics::AccessPoint::kWebSignin) {
     // When automation is enabled, automatically promote web sign in to Chrome
     // sign in.
-    const bool auto_accept_signin =
+    const bool auto_accept_from_command_line =
         base::CommandLine::ForCurrentProcess()->HasSwitch(
             switches::kBrowserSigninAutoAccept);
+
+    const bool auto_accept_from_user_choice =
+        SigninPrefs(*profile_.get().GetPrefs())
+            .GetChromeSigninInterceptionUserChoice(account_info.GetGaiaId()) ==
+        ChromeSigninUserChoice::kSignin;
 
     // If the user did not choose the signin choice, do not proceed with a
     // sign in from a Web Signin.
     should_auto_sign_in =
-        auto_accept_signin ||
-        SigninPrefs(*profile_.get().GetPrefs())
-                .GetChromeSigninInterceptionUserChoice(account_info.gaia) ==
-            ChromeSigninUserChoice::kSignin;
+        auto_accept_from_command_line || auto_accept_from_user_choice;
     if (!should_auto_sign_in) {
       return;
     }
 
     // Proceed with the access point as the choice remembered.
     access_point_ = signin_metrics::AccessPoint::kSigninChoiceRemembered;
+    if (!has_primary_account) {
+      signin_metrics::LogSignInOffered(
+          access_point_,
+          signin_metrics::PromoAction::PROMO_ACTION_NO_SIGNIN_PROMO);
+      signin_metrics::LogSignInStarted(
+          access_point_,
+          *ProfileMetricsServiceFactory::GetForProfile(&profile_.get()));
+    }
   }
 
   // This access point should only be used as a result of a non Uno flow.
   CHECK_NE(signin_metrics::AccessPoint::kDesktopSigninManager, access_point_);
-
-  const bool has_primary_account =
-      identity_manager->HasPrimaryAccount(signin::ConsentLevel::kSignin);
   if (should_auto_sign_in && !has_primary_account) {
     // Sign-in the user in the browser if user can sign. If not, we fail
     // silently as the signin attempt was not an explicit user action.
-    AttemptSettingPrimaryAccount(account_info, /*show_signin_error=*/false);
+    AttemptSettingPrimaryAccount(account_info.GetCoreAccountInfo(),
+                                 /*show_signin_error=*/false);
   }
   // TODO(crbug.com/425645725): Once this metric is removed, the whole function
   // can be simplified. See example at:
@@ -290,27 +304,39 @@ void ProcessDiceHeaderDelegateImpl::AttemptChromeSignin(
 
 void ProcessDiceHeaderDelegateImpl::HandleTokenExchangeSuccess(
     CoreAccountId account_id,
-    bool is_new_account) {
+    bool is_new_account,
+    signin::Tribool primary_is_connected) {
+  initiator_account_id_ = account_id;
   AttemptChromeSignin(account_id);
 
-  // is_sync_signin_tab_ tells whether the current signin is happening in a tab
-  // that was opened from a "Enable Sync" Chrome UI. Usually this is indeed a
-  // sync signin, but it is not always the case: the user may abandon the sync
-  // signin and do a simple web signin in the same tab instead.
+  // is_chrome_signin_tab_ tells whether the current signin is happening in a
+  // tab that was opened from a Chrome sign-in UI. Usually this is indeed a
+  // Chrome signin, but it is not always the case: the user may abandon the flow
+  // and do a simple web signin in the same tab instead.
   auto* interceptor =
       DiceWebSigninInterceptorFactory::GetForProfile(&profile_.get());
-  interceptor->MaybeInterceptWebSignin(web_contents_.get(), account_id,
-                                       access_point_, is_new_account,
-                                       is_sync_signin_tab_);
+  interceptor->MaybeInterceptWebSignin(
+      web_contents_.get(), account_id, access_point_, is_new_account,
+      is_chrome_signin_tab_, primary_is_connected);
   DiceTabHelper* tab_helper =
       GetDiceTabHelperFromWebContents(web_contents_.get());
   if (tab_helper) {
     base::OnceClosure retry_interception_bubble_callback = base::BindOnce(
         &RetryInterceptionBubble, web_contents_->GetWeakPtr(),
         InterceptionBubbleParams{account_id, access_point_, is_new_account,
-                                 is_sync_signin_tab_});
+                                 is_chrome_signin_tab_, primary_is_connected});
     tab_helper->OnTokenExchangeSuccess(
         std::move(retry_interception_bubble_callback));
+  }
+}
+
+void ProcessDiceHeaderDelegateImpl::OnDiceSigninSessionComplete(
+    std::vector<CoreAccountId> secondary_accounts) {
+  auto* interceptor =
+      DiceWebSigninInterceptorFactory::GetForProfile(&profile_.get());
+  if (interceptor) {
+    interceptor->OnDiceSigninSessionComplete(initiator_account_id_,
+                                             std::move(secondary_accounts));
   }
 }
 
@@ -333,7 +359,21 @@ void ProcessDiceHeaderDelegateImpl::CompleteChromeSignInAfterGaiaSignin(
   content::WebContents* web_contents = web_contents_.get();
   DiceTabHelper* tab_helper = GetDiceTabHelperFromWebContents(web_contents);
   if (tab_helper) {
-    tab_helper->OnSyncSigninFlowComplete();
+    tab_helper->OnSigninFlowComplete();
+  }
+
+  // The sign-in flow applies to the primary account. A concurrent sign-in flow
+  // may have made a different account primary in the meantime, in which case
+  // this flow must not proceed. See crbug.com/552764207.
+  const bool matches_primary_account =
+      identity_manager->GetPrimaryAccountId(signin::ConsentLevel::kSignin) ==
+      account_info.account_id;
+  base::UmaHistogramBoolean(
+      "Signin.EnableSyncHeader.AccountMatchesPrimaryAccount",
+      matches_primary_account);
+  if (!matches_primary_account) {
+    // Deliberately no `Redirect()`: the sign-in flow did not succeed.
+    return;
   }
 
   if (syncer::IsReplaceSyncPromosWithSignInPromosEnabled()) {
@@ -362,11 +402,12 @@ void ProcessDiceHeaderDelegateImpl::CompleteChromeSignInAfterGaiaSignin(
 void ProcessDiceHeaderDelegateImpl::HandleTokenExchangeFailure(
     const std::string& email,
     const GoogleServiceAuthError& error) {
-  DCHECK_NE(GoogleServiceAuthError::NONE, error.state());
+  CHECK_NE(GoogleServiceAuthError::NONE, error.state(),
+           base::NotFatalUntil::M162);
   content::WebContents* web_contents = web_contents_.get();
   DiceTabHelper* tab_helper = GetDiceTabHelperFromWebContents(web_contents);
   if (tab_helper) {
-    tab_helper->OnSyncSigninFlowComplete();
+    tab_helper->OnSigninFlowComplete();
   }
 
   if (ShouldEnableHistorySync() || ShouldEnableSync()) {

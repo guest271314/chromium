@@ -5,8 +5,12 @@
 #ifndef CONTENT_BROWSER_PRELOADING_PREFETCH_PREFETCH_HANDLE_IMPL_H_
 #define CONTENT_BROWSER_PRELOADING_PREFETCH_PREFETCH_HANDLE_IMPL_H_
 
+#include <atomic>
+
 #include "base/functional/callback.h"
+#include "base/memory/ref_counted.h"
 #include "base/memory/weak_ptr.h"
+#include "content/browser/preloading/prefetch/prefetch_container_async_observer.h"
 #include "content/public/browser/prefetch_handle.h"
 
 namespace content {
@@ -31,6 +35,7 @@ class PrefetchHandleImpl final : public PrefetchHandle {
                const std::optional<int>& response_code)>
           on_prefetch_completed_or_failed) override;
   bool IsAlive() const override;
+  bool IsPrefetchStale() const override;
 
   // TODO(crbug.com/390329781): The following methods are tentative interface
   // for incrementally migrating `//content/` internal code to `PrefetchHandle`.
@@ -42,13 +47,35 @@ class PrefetchHandleImpl final : public PrefetchHandle {
   void SetPrefetchStatusOnReleaseStartedPrefetch(
       PrefetchStatus prefetch_status_on_release_started_prefetch);
 
+ protected:
+  scoped_refptr<PrefetchStalenessAtomicState> GetStalenessAtomicState()
+      const override;
+
  private:
   class PrefetchContainerObserverForCallback;
 
+  // The `content::PrefetchContainerObserver` to be registered to
+  // `PrefetchContainer`.
+  PrefetchContainerObserver& GetObserver() const;
+  // The underlying `PrefetchHandleImpl::PrefetchContainerObserver`, for setting
+  // the callbacks.
+  PrefetchContainerObserverForCallback& GetUnderlyingObserver() const;
+
   base::WeakPtr<PrefetchService> prefetch_service_;
   base::WeakPtr<PrefetchContainer> prefetch_container_;
+
+  using AsyncObserverForCallback =
+      PrefetchContainerAsyncObserver<PrefetchContainerObserverForCallback>;
+
+  // Exactly one of these two is non-null, depending on
+  // `features::kPrefetchAsyncPrefetchHandleCallback`.
+  // TODO(crbug.com/480271813): Cleanup this once the feature is settled.
   std::unique_ptr<PrefetchContainerObserverForCallback>
       prefetch_container_observer_;
+  std::unique_ptr<AsyncObserverForCallback> prefetch_container_async_observer_;
+
+  scoped_refptr<PrefetchStalenessAtomicState> is_stale_;
+
   std::optional<PrefetchStatus> prefetch_status_on_release_started_prefetch_;
 };
 

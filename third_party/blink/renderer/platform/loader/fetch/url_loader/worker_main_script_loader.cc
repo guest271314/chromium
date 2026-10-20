@@ -4,7 +4,9 @@
 
 #include "third_party/blink/renderer/platform/loader/fetch/url_loader/worker_main_script_loader.h"
 
+#include "base/byte_size.h"
 #include "base/containers/span.h"
+#include "base/numerics/safe_conversions.h"
 #include "services/network/public/cpp/header_util.h"
 #include "services/network/public/cpp/record_ontransfersizeupdate_utils.h"
 #include "services/network/public/mojom/early_hints.mojom.h"
@@ -12,6 +14,7 @@
 #include "third_party/blink/public/common/loader/referrer_utils.h"
 #include "third_party/blink/public/mojom/loader/code_cache.mojom-blink.h"
 #include "third_party/blink/public/mojom/timing/resource_timing.mojom-blink.h"
+#include "third_party/blink/public/platform/platform.h"
 #include "third_party/blink/public/platform/resource_load_info_notifier_wrapper.h"
 #include "third_party/blink/public/platform/url_conversion.h"
 #include "third_party/blink/public/platform/web_url.h"
@@ -27,6 +30,7 @@
 #include "third_party/blink/renderer/platform/loader/fetch/script_cached_metadata_handler.h"
 #include "third_party/blink/renderer/platform/loader/fetch/url_loader/cached_metadata_handler.h"
 #include "third_party/blink/renderer/platform/loader/fetch/url_loader/worker_main_script_loader_client.h"
+#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/blink/renderer/platform/wtf/functional.h"
 
 namespace blink {
@@ -76,6 +80,8 @@ void WorkerMainScriptLoader::Start(
   WebURLResponse response =
       WebURLResponse::Create(WebURL(last_request_url_), *response_head,
                              response_head->ssl_info.has_value(), request_id_);
+  response.SetCacheStorageSideDataWriter(
+      std::move(response_head->cache_storage_side_data_writer));
   resource_response_ = response.ToResourceResponse();
   resource_load_info_notifier_wrapper_->NotifyResourceResponseReceived(
       std::move(response_head));
@@ -167,8 +173,9 @@ void WorkerMainScriptLoader::OnComplete(
     has_seen_end_of_data_ = true;
 
   // Reports resource timing info for the worker main script.
-  resource_response_.SetEncodedBodyLength(status.encoded_body_length);
-  resource_response_.SetDecodedBodyLength(status.decoded_body_length);
+  resource_response_.SetEncodedBodyLength(status.encoded_body_length.InBytes());
+  resource_response_.SetDecodedBodyLength(
+      base::checked_cast<int64_t>(status.decoded_body_length.InBytes()));
   resource_response_.SetCurrentRequestUrl(last_request_url_);
 
   // https://fetch.spec.whatwg.org/#fetch-finale
@@ -180,6 +187,8 @@ void WorkerMainScriptLoader::OnComplete(
     mojom::blink::ResourceTimingInfoPtr timing_info = CreateResourceTimingInfo(
         start_time_, initial_request_url_, &resource_response_);
     timing_info->response_end = status.completion_time;
+    timing_info->initiator_url =
+        resource_loader_options_.initiator_info.initiator_url;
     fetch_context_->AddResourceTiming(std::move(timing_info),
                                       fetch_initiator_type_names::kOther);
   }
@@ -196,10 +205,29 @@ CachedMetadataHandler* WorkerMainScriptLoader::CreateCachedMetadataHandler() {
     return nullptr;
   }
 
+  if (resource_response_.WasFetchedViaServiceWorker() &&
+      !RuntimeEnabledFeatures::ServiceWorkerCodeCacheEnabled()) {
+    return nullptr;
+  }
+
+  const bool use_source_hash =
+      resource_response_.ShouldUseSourceHashForJSCodeCache();
+  if (use_source_hash && !Platform::Current()->ShouldUseCodeCacheWithHashing(
+                             WebURL(initial_request_url_))) {
+    return nullptr;
+  }
+
   std::unique_ptr<CachedMetadataSender> cached_metadata_sender =
       CachedMetadataSender::Create(
           resource_response_, mojom::blink::CodeCacheType::kJavascript,
           SecurityOrigin::Create(initial_request_url_));
+  if (use_source_hash) {
+    return MakeGarbageCollected<ScriptCachedMetadataHandlerWithHashing>(
+        script_encoding_, std::move(cached_metadata_sender));
+  }
+
+  CHECK(!resource_response_.WasFetchedViaServiceWorker() ||
+        !RuntimeEnabledFeatures::ServiceWorkerCodeCacheHashingEnabled());
   return MakeGarbageCollected<ScriptCachedMetadataHandler>(
       script_encoding_, std::move(cached_metadata_sender));
 }
@@ -279,6 +307,7 @@ void WorkerMainScriptLoader::NotifyCompletionIfAppropriate() {
     resource_load_observer_->DidFinishLoading(
         initial_request_.InspectorId(), base::TimeTicks::Now(),
         resource_response_.EncodedDataLength(),
+        resource_response_.EncodedBodyLength(),
         resource_response_.DecodedBodyLength());
   } else {
     client->OnFailedLoadingWorkerMainScript();

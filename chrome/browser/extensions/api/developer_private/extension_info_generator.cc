@@ -15,14 +15,17 @@
 #include "base/functional/bind.h"
 #include "base/location.h"
 #include "base/metrics/histogram_functions.h"
+#include "base/notreached.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/task/single_thread_task_runner.h"
 #include "chrome/browser/extensions/api/developer_private/developer_private_api.h"
 #include "chrome/browser/extensions/api/developer_private/inspectable_views_finder.h"
 #include "chrome/browser/extensions/commands/command_service.h"
 #include "chrome/browser/extensions/error_console/error_console.h"
+#include "chrome/browser/extensions/extension_management.h"
 #include "chrome/browser/extensions/extension_safety_check_utils.h"
 #include "chrome/browser/extensions/extension_service.h"
+#include "chrome/browser/extensions/extension_ui_util.h"
 #include "chrome/browser/extensions/extension_util.h"
 #include "chrome/browser/extensions/shared_module_service_factory.h"
 #include "chrome/browser/extensions/sync/account_extension_tracker.h"
@@ -31,7 +34,6 @@
 #include "chrome/browser/ui/webui/extensions/extension_icon_source.h"
 #include "chrome/common/extensions/manifest_handlers/app_launch_info.h"
 #include "chrome/common/pref_names.h"
-#include "chrome/grit/branded_strings.h"
 #include "chrome/grit/generated_resources.h"
 #include "components/signin/public/base/signin_switches.h"
 #include "components/sync/base/features.h"
@@ -46,7 +48,8 @@
 #include "extensions/browser/extension_util.h"
 #include "extensions/browser/icon_util.h"
 #include "extensions/browser/image_loader.h"
-#include "extensions/browser/manifest_v2_experiment_manager.h"
+#include "extensions/browser/managed_installation_mode.h"
+#include "extensions/browser/manifest_v2_handler.h"
 #include "extensions/browser/path_util.h"
 #include "extensions/browser/permissions/site_permissions_helper.h"
 #include "extensions/browser/shared_module_service.h"
@@ -61,6 +64,7 @@
 #include "extensions/common/install_warning.h"
 #include "extensions/common/manifest.h"
 #include "extensions/common/manifest_handlers/background_info.h"
+#include "extensions/common/manifest_handlers/description_info.h"
 #include "extensions/common/manifest_handlers/icons_handler.h"
 #include "extensions/common/manifest_handlers/manifest_url_handlers.h"
 #include "extensions/common/manifest_handlers/offline_enabled_info.h"
@@ -94,25 +98,25 @@ namespace {
 developer::ExtensionType GetExtensionType(Manifest::Type manifest_type) {
   developer::ExtensionType type = developer::ExtensionType::kExtension;
   switch (manifest_type) {
-    case Manifest::TYPE_EXTENSION:
+    case Manifest::Type::kExtension:
       type = developer::ExtensionType::kExtension;
       break;
-    case Manifest::TYPE_THEME:
+    case Manifest::Type::kTheme:
       type = developer::ExtensionType::kTheme;
       break;
-    case Manifest::TYPE_HOSTED_APP:
+    case Manifest::Type::kHostedApp:
       type = developer::ExtensionType::kHostedApp;
       break;
-    case Manifest::TYPE_LEGACY_PACKAGED_APP:
+    case Manifest::Type::kLegacyPackagedApp:
       type = developer::ExtensionType::kLegacyPackagedApp;
       break;
-    case Manifest::TYPE_PLATFORM_APP:
+    case Manifest::Type::kPlatformApp:
       type = developer::ExtensionType::kPlatformApp;
       break;
-    case Manifest::TYPE_SHARED_MODULE:
+    case Manifest::Type::kSharedModule:
       type = developer::ExtensionType::kSharedModule;
       break;
-    case Manifest::TYPE_CHROMEOS_SYSTEM_EXTENSION:
+    case Manifest::Type::kChromeOSSystemExtension:
       type = developer::ExtensionType::kExtension;
       break;
     default:
@@ -590,7 +594,12 @@ void ExtensionInfoGenerator::FillExtensionInfo(const Extension& extension,
   Profile* profile = Profile::FromBrowserContext(browser_context_);
 
   // ControlledInfo.
-  bool is_policy_location = Manifest::IsPolicyLocation(extension.location());
+  ManagedInstallationMode install_mode =
+      extension_management->GetInstallationMode(&extension);
+  bool is_policy_location =
+      Manifest::IsPolicyLocation(extension.location()) ||
+      install_mode == ManagedInstallationMode::kForced ||
+      install_mode == ManagedInstallationMode::kRecommended;
   if (is_policy_location) {
     info.controlled_info.emplace();
     info.controlled_info->text =
@@ -635,7 +644,7 @@ void ExtensionInfoGenerator::FillExtensionInfo(const Extension& extension,
     }
   }
 
-  info.description = extension.description();
+  info.description = DescriptionInfo::GetDescription(extension);
 
   // Disable reasons.
   DisableReasonSet disable_reasons =
@@ -664,6 +673,29 @@ void ExtensionInfoGenerator::FillExtensionInfo(const Extension& extension,
   info.disable_reasons.unsupported_developer_extension =
       disable_reasons.contains(
           disable_reason::DISABLE_UNSUPPORTED_DEVELOPER_EXTENSION);
+  info.disable_reasons.disabled_by_another_extension =
+      disable_reasons.contains(disable_reason::DISABLE_BY_ANOTHER_EXTENSION);
+  if (info.disable_reasons.disabled_by_another_extension) {
+    std::string id;
+    extension_prefs_->ReadPrefAsString(extension.id(),
+                                       kDisableReasonByExtensionId, &id);
+    std::string name;
+    if (!id.empty()) {
+      const Extension* disabling_extension =
+          ExtensionRegistry::Get(browser_context_)
+              ->GetExtensionById(id, ExtensionRegistry::EVERYTHING);
+      if (disabling_extension) {
+        name = disabling_extension->short_name().empty()
+                   ? disabling_extension->name()
+                   : disabling_extension->short_name();
+      }
+    }
+
+    if (!name.empty()) {
+      info.disable_reasons.disabled_by_extension_name = base::UTF16ToUTF8(
+          ui_util::GetFixupExtensionNameForUIDisplay(base::UTF8ToUTF16(name)));
+    }
+  }
 
   // Error collection.
   bool error_console_enabled =
@@ -866,13 +898,10 @@ void ExtensionInfoGenerator::FillExtensionInfo(const Extension& extension,
   }
 
   // MV2 deprecation.
-  ManifestV2ExperimentManager* mv2_experiment_manager =
-      ManifestV2ExperimentManager::Get(profile);
-  CHECK(mv2_experiment_manager);
+  ManifestV2Handler* mv2_handler = ManifestV2Handler::Get(profile);
+  CHECK(mv2_handler);
   info.is_affected_by_mv2_deprecation =
-      mv2_experiment_manager->IsExtensionAffected(extension);
-  info.did_acknowledge_mv2_deprecation_notice =
-      mv2_experiment_manager->DidUserAcknowledgeNotice(extension.id());
+      mv2_handler->IsExtensionAffected(extension);
   if (info.web_store_url.length() > 0) {
     info.recommendations_url =
         extension_urls::GetNewWebstoreItemRecommendationsUrl(extension.id())
@@ -887,6 +916,9 @@ void ExtensionInfoGenerator::FillExtensionInfo(const Extension& extension,
       base::FeatureList::IsEnabled(syncer::kReplaceSyncPromosWithSignInPromos)
 #endif
       ;
+
+  info.can_show_review_prompt =
+      ui_util::ShouldShowReviewPrompt(extension, *profile);
 
   // The icon. This section must come last as it moves `info`.
   ExtensionResource icon = IconsInfo::GetIconResource(

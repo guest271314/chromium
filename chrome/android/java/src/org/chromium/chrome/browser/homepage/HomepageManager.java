@@ -13,6 +13,8 @@ import android.content.Context;
 
 import androidx.annotation.VisibleForTesting;
 
+import org.chromium.base.ContextUtils;
+import org.chromium.base.DeviceInfo;
 import org.chromium.base.ObserverList;
 import org.chromium.base.ResettersForTesting;
 import org.chromium.base.metrics.RecordHistogram;
@@ -33,6 +35,7 @@ import org.chromium.chrome.browser.settings.SettingsNavigationFactory;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabLaunchType;
 import org.chromium.chrome.browser.tabmodel.TabCreatorManager;
+import org.chromium.chrome.browser.ui.bottombar.BottomBarConfigUtils;
 import org.chromium.chrome.browser.url_constants.UrlConstantResolver;
 import org.chromium.components.embedder_support.util.UrlConstants;
 import org.chromium.components.embedder_support.util.UrlUtilities;
@@ -112,11 +115,20 @@ public class HomepageManager
         }
     }
 
+    /** Returns whether the home button removal everywhere is enabled. */
+    private static boolean isHomeButtonRemovalEverywhereEnabled() {
+        return !isDesktopExceptionEnabled()
+                && ChromeFeatureList.sHomeButtonRemovalEverywhere.getValue()
+                && PartnerBrowserCustomizations.isCountryImpacted(
+                        ChromeFeatureList.sHomeButtonRemovalApplyToAllCountries.getValue())
+                && !BottomBarConfigUtils.isBottomBarEnabled(ContextUtils.getApplicationContext());
+    }
+
     /**
      * @return Whether or not homepage is enabled.
      */
     public boolean isHomepageEnabled() {
-        if (ChromeFeatureList.sHomeButtonRemovalEverywhere.getValue()) {
+        if (isHomeButtonRemovalEverywhereEnabled()) {
             return false;
         }
         if (HomepagePolicyManager.isShowHomeButtonManaged()) {
@@ -126,12 +138,29 @@ public class HomepageManager
     }
 
     /**
+     * Returns whether to keep the home button on the New Tab Page during the home button removal.
+     */
+    private static boolean isHomeButtonRemovalKeepOnNtpEnabled() {
+        return ChromeFeatureList.sHomeButtonRemovalKeepOnNtp.getValue()
+                && PartnerBrowserCustomizations.isCountryImpacted(
+                        ChromeFeatureList.sHomeButtonRemovalApplyToAllCountries.getValue())
+                && !BottomBarConfigUtils.isBottomBarEnabled(ContextUtils.getApplicationContext());
+    }
+
+    /** Returns whether desktop should be in exception. */
+    private static boolean isDesktopExceptionEnabled() {
+        return DeviceInfo.isDesktop()
+                && ChromeFeatureList.sHomeButtonRemovalSetDefaultToFalseOnHomepageOnDesktop
+                        .getValue();
+    }
+
+    /**
      * Returns whether the home button should be shown on the toolbar.
      *
      * @param isNtp Whether the current page is the New Tab Page.
      */
     public boolean shouldShowHomeButtonOnToolbar(boolean isNtp) {
-        if (ChromeFeatureList.sHomeButtonRemovalKeepOnNtp.getValue() && !isNtp) {
+        if (isHomeButtonRemovalKeepOnNtpEnabled() && !isNtp) {
             return false;
         }
         return isHomepageEnabled();
@@ -139,12 +168,12 @@ public class HomepageManager
 
     /** Returns whether the homepage menu item should be shown in the three-dot button app menu. */
     public boolean shouldShowHomepageMenuItem() {
-        return ChromeFeatureList.sHomeButtonRemovalKeepOnNtp.getValue() && isHomepageEnabled();
+        return isHomeButtonRemovalKeepOnNtpEnabled() && isHomepageEnabled();
     }
 
     /** Returns whether the homepage settings should be visible. */
     public static boolean shouldShowHomepageSettings() {
-        return !ChromeFeatureList.sHomeButtonRemovalEverywhere.getValue();
+        return !isHomeButtonRemovalEverywhereEnabled();
     }
 
     /**
@@ -183,7 +212,7 @@ public class HomepageManager
     }
 
     /**
-     * {@see #getHomepageGurl(boolean)}, but may still return the partner homepage for zero tabs
+     * {@link #getHomepageGurl(boolean)}, but may still return the partner homepage for zero tabs
      * depending on {@link ChromeFeatureList#sDisablePartnerHomepageAndroidForZeroTabs}.
      */
     public GURL getHomepageGurlForZeroTabs(boolean isIncognito) {
@@ -238,7 +267,7 @@ public class HomepageManager
                 ChromeSharedPreferences.getInstance()
                         .readString(
                                 ChromePreferenceKeys.HOMEPAGE_PARTNER_CUSTOMIZED_DEFAULT_GURL, "");
-        if (!homepagePartnerDefaultGurlSerialized.equals("")) {
+        if (!homepagePartnerDefaultGurlSerialized.isEmpty()) {
             GURL homepagePartnerDefaultGurl =
                     GURL.deserialize(homepagePartnerDefaultGurlSerialized);
             if (!homepagePartnerDefaultGurl.isEmpty()) {
@@ -252,7 +281,7 @@ public class HomepageManager
                                 ChromePreferenceKeys
                                         .DEPRECATED_HOMEPAGE_PARTNER_CUSTOMIZED_DEFAULT_URI,
                                 "");
-        if (!homepagePartnerDefaultUri.equals("")) {
+        if (!homepagePartnerDefaultUri.isEmpty()) {
             GURL homepagePartnerDefaultGurl = new GURL(homepagePartnerDefaultUri);
             if (homepagePartnerDefaultGurl.isValid()) {
                 ChromeSharedPreferences.getInstance()
@@ -316,8 +345,11 @@ public class HomepageManager
      *
      * @see #isHomepageEnabled
      */
-    private boolean getPrefHomepageEnabled() {
-        return mSharedPreferencesManager.readBoolean(ChromePreferenceKeys.HOMEPAGE_ENABLED, true);
+    @VisibleForTesting
+    boolean getPrefHomepageEnabled() {
+        boolean defaultEnabled = !isDesktopExceptionEnabled();
+        return mSharedPreferencesManager.readBoolean(
+                ChromePreferenceKeys.HOMEPAGE_ENABLED, defaultEnabled);
     }
 
     /** Sets the user preference for whether the homepage is enabled. */
@@ -342,14 +374,14 @@ public class HomepageManager
     public GURL getPrefHomepageCustomGurl() {
         String homepageCustomGurlSerialized =
                 mSharedPreferencesManager.readString(ChromePreferenceKeys.HOMEPAGE_CUSTOM_GURL, "");
-        if (!homepageCustomGurlSerialized.equals("")) {
+        if (!homepageCustomGurlSerialized.isEmpty()) {
             return GURL.deserialize(homepageCustomGurlSerialized);
         }
 
         String homepageCustomUri =
                 mSharedPreferencesManager.readString(
                         ChromePreferenceKeys.DEPRECATED_HOMEPAGE_CUSTOM_URI, "");
-        if (!homepageCustomUri.equals("")) {
+        if (!homepageCustomUri.isEmpty()) {
             GURL homepageCustomGurl = new GURL(homepageCustomUri);
             if (homepageCustomGurl.isValid()) {
                 mSharedPreferencesManager.writeString(
@@ -591,12 +623,13 @@ public class HomepageManager
         if (currentTab != null) {
             ActorUiTabController actorUiTabController = ActorUiTabController.from(currentTab);
             if (actorUiTabController != null && actorUiTabController.isActorActive()) {
-                Runnable navigateRunnable =
-                        () -> {
-                            currentTab.loadUrl(
-                                    new LoadUrlParams(homePageUrl, PageTransition.HOME_PAGE));
-                        };
-                if (actorUiTabController.showTaskAbortConfirmationDialog(navigateRunnable)) {
+                if (actorUiTabController.showTaskAbortConfirmationDialog(
+                        (confirmed) -> {
+                            if (confirmed) {
+                                currentTab.loadUrl(
+                                        new LoadUrlParams(homePageUrl, PageTransition.HOME_PAGE));
+                            }
+                        })) {
                     return;
                 }
             }

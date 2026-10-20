@@ -22,6 +22,7 @@
 
 #include "third_party/blink/renderer/core/svg/svg_resource_document_content.h"
 
+#include "base/auto_reset.h"
 #include "base/notreached.h"
 #include "base/task/single_thread_task_runner.h"
 #include "third_party/blink/renderer/core/frame/local_frame.h"
@@ -40,11 +41,6 @@
 namespace blink {
 
 namespace {
-
-bool CanReuseContent(const SVGResourceDocumentContent& content) {
-  // Don't reuse if loading failed.
-  return !content.ErrorOccurred();
-}
 
 bool AllowedRequestMode(const ResourceRequest& request) {
   return request.GetMode() == network::mojom::blink::RequestMode::kSameOrigin ||
@@ -153,9 +149,7 @@ SVGResourceDocumentContent::UpdateDocument(scoped_refptr<SharedBuffer> data,
 }
 
 void SVGResourceDocumentContent::LoadingFinished() {
-  LocalFrame* frame = document_host_->GetFrame();
-  frame->View()->UpdateAllLifecyclePhasesExceptPaint(
-      DocumentUpdateReason::kSVGImage);
+  UpdateLifecycleForUse();
   UpdateStatus(ResourceStatus::kCached);
 }
 
@@ -217,7 +211,8 @@ void SVGResourceDocumentContent::NotifyObserver(
 }
 
 void SVGResourceDocumentContent::NotifyObservers() {
-  for (auto& observer : observers_) {
+  HeapVector<Member<SVGResourceDocumentObserver>> observer_list(observers_);
+  for (auto& observer : observer_list) {
     observer->ResourceNotifyFinished(this);
   }
 }
@@ -240,8 +235,24 @@ SVGResourceTarget* SVGResourceDocumentContent::GetResourceTarget(
   return &svg_target->EnsureResourceTarget();
 }
 
+void SVGResourceDocumentContent::UpdateLifecycleForUse() {
+  if (!document_host_) {
+    return;
+  }
+  // Temporarily disable content-changed notifications triggered by the
+  // lifecycle update.
+  base::AutoReset validate_scope(&inhibit_content_change_, true);
+  LocalFrame* frame = document_host_->GetFrame();
+  frame->View()->UpdateAllLifecyclePhasesExceptPaint(
+      DocumentUpdateReason::kSVGImage);
+}
+
 void SVGResourceDocumentContent::ContentChanged() {
-  for (auto& observer : observers_) {
+  if (inhibit_content_change_) {
+    return;
+  }
+  HeapVector<Member<SVGResourceDocumentObserver>> observer_list(observers_);
+  for (auto& observer : observer_list) {
     observer->ResourceContentChanged(this);
   }
 }
@@ -279,15 +290,8 @@ SVGResourceDocumentContent* SVGResourceDocumentContent::Fetch(
 
   Page* page = document.GetPage();
   auto& cache = page->GetSVGDocumentResourceTracker();
-  const SVGDocumentResourceTracker::CacheKey key =
-      SVGDocumentResourceTracker::MakeCacheKey(params);
-
-  if (!RuntimeEnabledFeatures::
-          SvgPartitionSVGDocumentResourcesInMemoryCacheEnabled()) {
-    auto* cached_content = cache.Get(key);
-    if (cached_content && CanReuseContent(*cached_content)) {
-      return cached_content;
-    }
+  if (cache.IsDisposed()) {
+    return nullptr;
   }
 
   SVGDocumentResource* resource = SVGDocumentResource::Fetch(
@@ -296,13 +300,8 @@ SVGResourceDocumentContent* SVGResourceDocumentContent::Fetch(
     return nullptr;
   }
 
-  if (RuntimeEnabledFeatures::
-          SvgPartitionSVGDocumentResourcesInMemoryCacheEnabled()) {
-    cache.AddResource(resource);
-    UseCounter::Count(document, WebFeature::kExternalSVGDocumentResources);
-  } else {
-    cache.Put(key, resource->GetContent());
-  }
+  cache.AddResource(resource);
+  UseCounter::Count(document, WebFeature::kExternalSVGDocumentResources);
 
   return resource->GetContent();
 }

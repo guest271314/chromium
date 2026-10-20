@@ -11,6 +11,7 @@
 #import "components/metrics/metrics_pref_names.h"
 #import "components/metrics/metrics_reporting_choice_service.h"
 #import "components/password_manager/core/browser/password_manager_client.h"
+#import "components/password_manager/core/browser/password_manager_util.h"
 #import "components/password_manager/core/common/password_manager_pref_names.h"
 #import "components/password_manager/ios/ios_password_manager_driver.h"
 #import "components/prefs/pref_service.h"
@@ -19,11 +20,15 @@
 #import "components/signin/public/identity_manager/identity_manager.h"
 #import "components/sync/service/sync_service.h"
 #import "components/sync/service/sync_user_settings.h"
+#import "components/webauthn/core/browser/device_authorization/device_authorization_service.h"
+#import "components/webauthn/core/browser/device_authorization/device_authorization_types.h"
 #import "components/webauthn/ios/features.h"
 #import "components/webauthn/ios/ios_passkey_client.h"
 #import "components/webauthn/ios/ios_passkey_client_commands.h"
 #import "components/webauthn/ios/passkey_types.h"
 #import "ios/chrome/browser/credential_provider/model/credential_provider_buildflags.h"
+#import "ios/chrome/browser/device_reauth/model/reauthentication_service.h"
+#import "ios/chrome/browser/device_reauth/model/reauthentication_service_factory.h"
 #import "ios/chrome/browser/passwords/model/password_tab_helper.h"
 #import "ios/chrome/browser/shared/model/application_context/application_context.h"
 #import "ios/chrome/browser/shared/model/browser/browser_list.h"
@@ -31,9 +36,13 @@
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
 #import "ios/chrome/browser/signin/model/identity_manager_factory.h"
 #import "ios/chrome/browser/sync/model/sync_service_factory.h"
+#import "ios/chrome/browser/webauthn/model/ios_device_authorization_service_factory.h"
 #import "ios/chrome/browser/webauthn/public/scoped_passkey_keychain_provider_override.h"
 #import "ios/chrome/common/credential_provider/passkey_keychain_provider_bridge.h"
+#import "ios/chrome/common/ui/reauthentication/reauthentication_protocol.h"
+#import "ios/chrome/grit/ios_strings.h"
 #import "ios/web/public/web_state.h"
+#import "ui/base/l10n/l10n_util.h"
 
 #if BUILDFLAG(IOS_CREDENTIAL_PROVIDER_ENABLED)
 #import "ios/chrome/browser/credential_provider/model/credential_provider_browser_agent.h"
@@ -43,25 +52,64 @@
 @interface IOSChromePasskeyClientBridgeDelegate
     : NSObject <PasskeyKeychainProviderBridgeDelegate>
 
-- (instancetype)initWithClient:(IOSChromePasskeyClient*)client;
+- (instancetype)initWithClient:(IOSChromePasskeyClient*)client
+                  reauthModule:(id<ReauthenticationProtocol>)reauthModule;
+
+- (void)setUserVerificationStatus:
+    (webauthn::PasskeyUserVerificationStatus)status;
+
+- (webauthn::PasskeyUserVerificationStatus)userVerificationStatus;
 
 @end
 
 @implementation IOSChromePasskeyClientBridgeDelegate {
   raw_ptr<IOSChromePasskeyClient> _client;
+  __weak id<ReauthenticationProtocol> _reauthModule;
+  webauthn::PasskeyUserVerificationStatus _userVerificationStatus;
 }
 
-- (instancetype)initWithClient:(IOSChromePasskeyClient*)client {
+- (instancetype)initWithClient:(IOSChromePasskeyClient*)client
+                  reauthModule:(id<ReauthenticationProtocol>)reauthModule {
   self = [super init];
   if (self) {
     _client = client;
+    _reauthModule = reauthModule;
   }
   return self;
 }
 
-- (void)performUserVerificationIfNeeded:(ProceduralBlock)completion {
-  // TODO(crbug.com/460485614): Implement user verification.
-  completion();
+- (void)setUserVerificationStatus:
+    (webauthn::PasskeyUserVerificationStatus)status {
+  _userVerificationStatus = status;
+  if (status == webauthn::PasskeyUserVerificationStatus::kRequired) {
+    [_reauthModule clearAuthValidity];
+  }
+}
+
+- (webauthn::PasskeyUserVerificationStatus)userVerificationStatus {
+  return _userVerificationStatus;
+}
+
+- (void)performUserVerificationIfNeeded:
+    (UserVerificationCompletionBlock)completion {
+  if (_userVerificationStatus !=
+      webauthn::PasskeyUserVerificationStatus::kRequired) {
+    completion(YES);
+    return;
+  }
+
+  if (![_reauthModule canAttemptReauth]) {
+    completion(NO);
+    return;
+  }
+  [_reauthModule
+      attemptReauthWithLocalizedReason:
+          l10n_util::GetNSString(IDS_IOS_PASSKEY_CREATION_START_REAUTH_REASON)
+                  canReusePreviousAuth:YES
+                               handler:^(ReauthenticationResult result) {
+                                 completion(result !=
+                                            ReauthenticationResult::kFailure);
+                               }];
 }
 
 - (void)showWelcomeScreenWithPurpose:
@@ -73,7 +121,7 @@
 }
 
 - (void)providerDidCompleteReauthentication {
-  // TODO(crbug.com/460485614): Handle that.
+  _userVerificationStatus = webauthn::PasskeyUserVerificationStatus::kCompleted;
 }
 
 @end
@@ -81,7 +129,13 @@
 IOSChromePasskeyClient::IOSChromePasskeyClient(web::WebState* web_state) {
   CHECK(web_state);
   web_state_ = web_state->GetWeakPtr();
-  profile_ = ProfileIOS::FromBrowserState(web_state_->GetBrowserState());
+
+  // IOSChromePasskeyClient should behave exactly the same way in and out of
+  // incognito. In incognito mode, an interstitial is presented to the user
+  // before allowing assertion or registration requests, but the logic should
+  // always use the original profile.
+  profile_ = ProfileIOS::FromBrowserState(web_state_->GetBrowserState())
+                 ->GetOriginalProfile();
 }
 
 IOSChromePasskeyClient::~IOSChromePasskeyClient() = default;
@@ -105,8 +159,12 @@ IOSChromePasskeyClient::GetPasskeyKeychainProviderBridge() {
         navigationItemTitleView:nil];
   }
 
-  bridge_delegate_ =
-      [[IOSChromePasskeyClientBridgeDelegate alloc] initWithClient:this];
+  id<ReauthenticationProtocol> reauthModule =
+      ReauthenticationServiceFactory::GetForProfile(profile_)
+          ->GetReauthModule();
+  bridge_delegate_ = [[IOSChromePasskeyClientBridgeDelegate alloc]
+      initWithClient:this
+        reauthModule:reauthModule];
   passkey_keychain_provider_bridge_.delegate = bridge_delegate_;
 
   return passkey_keychain_provider_bridge_;
@@ -121,31 +179,51 @@ id<IOSPasskeyClientCommands> IOSChromePasskeyClient::GetCommandHandler() const {
   return command_handler_;
 }
 
-bool IOSChromePasskeyClient::PerformUserVerification() {
-  // TODO(crbug.com/460484682): Perform user verification.
-  // See PasskeyKeychainProvider::Reauthenticate and ReauthenticationModule.
-  return false;
-}
+void IOSChromePasskeyClient::FetchTrustedVaultKeys(
+    webauthn::ReauthenticatePurpose purpose,
+    webauthn::PasskeyUserVerificationStatus user_verification_status,
+    webauthn::FetchTrustedVaultKeysCallback callback) {
+  IOSChromePasskeyClientBridgeDelegate* delegate =
+      base::apple::ObjCCast<IOSChromePasskeyClientBridgeDelegate>(
+          GetPasskeyKeychainProviderBridge().delegate);
 
-void IOSChromePasskeyClient::FetchKeys(webauthn::ReauthenticatePurpose purpose,
-                                       webauthn::KeysFetchedCallback callback) {
+  [delegate setUserVerificationStatus:user_verification_status];
+
   CoreAccountInfo account =
       IdentityManagerFactory::GetForProfile(profile_)->GetPrimaryAccountInfo(
           signin::ConsentLevel::kSignin);
 
   auto completion_block = base::CallbackToBlock(base::BindOnce(
       [](id<IOSPasskeyClientCommands> handler,
-         webauthn::KeysFetchedCallback inner_callback,
+         IOSChromePasskeyClientBridgeDelegate* delegate,
+         webauthn::FetchTrustedVaultKeysCallback inner_callback,
          webauthn::SharedKeyList trusted_vault_keys, NSError* error) {
-        std::move(inner_callback).Run(std::move(trusted_vault_keys), error);
+        bool did_complete_uv =
+            [delegate userVerificationStatus] ==
+            webauthn::PasskeyUserVerificationStatus::kCompleted;
+        std::move(inner_callback)
+            .Run(std::move(trusted_vault_keys), did_complete_uv);
         [handler dismissPasskeyWelcomeScreen];
       },
-      command_handler_, std::move(callback)));
+      command_handler_, delegate, std::move(callback)));
   [GetPasskeyKeychainProviderBridge()
       fetchTrustedVaultKeysForGaia:account.gaia.ToNSString()
                         credential:nil
                            purpose:purpose
                         completion:completion_block];
+}
+
+void IOSChromePasskeyClient::FetchDeviceAuthorizationKeys(
+    webauthn::FetchDeviceAuthKeysCallback callback) {
+  webauthn::DeviceAuthorizationService* service =
+      IOSDeviceAuthorizationServiceFactory::GetForProfile(profile_);
+  if (!service) {
+    std::move(callback).Run(webauthn::DeviceAuthFetchResult());
+    return;
+  }
+
+  // TODO(crbug.com/405036154): Show the ReAuth UI if ReAuth is required.
+  service->GetOrFetchKeys(std::move(callback));
 }
 
 void IOSChromePasskeyClient::ShowSuggestionBottomSheet(
@@ -192,14 +270,32 @@ bool IOSChromePasskeyClient::IsGpmPasskeySavingEnabled() const {
       !prefs->GetBoolean(password_manager::prefs::kCredentialsEnablePasskeys)) {
     return false;
   }
-  // Use the original profile to check sync status, as the Incognito profile
-  // does not have a SyncService, but passkey saving in Incognito still saves
-  // to the user's account if they choose to proceed.
+
   syncer::SyncService* sync_service =
-      SyncServiceFactory::GetForProfile(profile_->GetOriginalProfile());
+      SyncServiceFactory::GetForProfile(profile_);
   if (!sync_service || !sync_service->GetUserSettings()->GetSelectedTypes().Has(
                            syncer::UserSelectableType::kPasswords)) {
     return false;
   }
   return true;
+}
+
+bool IOSChromePasskeyClient::IsAutomaticPasskeyUpgradeEnabled() const {
+  return profile_->GetPrefs()->GetBoolean(
+      password_manager::prefs::kAutomaticPasskeyUpgrades);
+}
+
+bool IOSChromePasskeyClient::IsBiometricsEnabled() const {
+  id<ReauthenticationProtocol> reauth_module =
+      ReauthenticationServiceFactory::GetForProfile(profile_)
+          ->GetReauthModule();
+  return [reauth_module canAttemptReauthWithBiometrics];
+}
+
+void IOSChromePasskeyClient::OnPasskeyCreated() {
+  PrefService* localState = GetApplicationContext()->GetLocalState();
+  if (!password_manager_util::IsCredentialProviderEnabledOnStartup(
+          localState)) {
+    [command_handler_ showCredentialProviderPromoOnPasskeyCreated];
+  }
 }

@@ -43,10 +43,6 @@ namespace breakpad {
 class CrashHandlerHostLinux;
 }
 
-namespace device {
-class BluetoothAdapterCast;
-}
-
 namespace media {
 class CdmFactory;
 }
@@ -71,7 +67,6 @@ class CastWebService;
 class CastWindowManager;
 class CastFeatureListCreator;
 class DisplaySettingsManager;
-class GeneralAudienceBrowsingService;
 class ServiceConnector;
 
 namespace media {
@@ -147,14 +142,6 @@ class CastContentBrowserClient
       ::media::AudioLogFactory* audio_log_factory) override;
   bool OverridesAudioManager() override;
   media::MediaCapsImpl* media_caps();
-
-#if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_FUCHSIA)
-  // Create a BluetoothAdapter for WebBluetooth support.
-  // TODO(slan): This further couples the browser to the Cast service. Remove
-  // this once the dedicated Bluetooth service has been implemented.
-  // (b/76155468)
-  virtual scoped_refptr<device::BluetoothAdapterCast> CreateBluetoothAdapter();
-#endif  // !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_FUCHSIA)
 
   // chromecast::metrics::CastMetricsServiceDelegate implementation:
   void SetMetricsClientId(const std::string& client_id) override;
@@ -242,8 +229,7 @@ class CastContentBrowserClient
   std::unique_ptr<content::NavigationUIData> GetNavigationUIData(
       content::NavigationHandle* navigation_handle) override;
   bool ShouldEnableStrictSiteIsolation() override;
-  void CreateThrottlesForNavigation(
-      content::NavigationThrottleRegistry& registry) override;
+  bool ShouldIsolateErrorPage(bool in_main_frame) override;
   void RegisterNonNetworkSubresourceURLLoaderFactories(
       int render_process_id,
       int render_frame_id,
@@ -270,8 +256,6 @@ class CastContentBrowserClient
   CastFeatureListCreator* GetCastFeatureListCreator() {
     return cast_feature_list_creator_;
   }
-
-  void CreateGeneralAudienceBrowsingService();
 
   virtual std::unique_ptr<::media::CdmFactory> CreateCdmFactory(
       ::media::mojom::FrameInterfaceFactory* frame_interfaces);
@@ -360,8 +344,6 @@ class CastContentBrowserClient
   std::unique_ptr<os_crypt_async::OSCryptAsync> os_crypt_async_;
   std::unique_ptr<CastNetworkContexts> cast_network_contexts_;
   std::unique_ptr<media::CmaBackendFactory> cma_backend_factory_;
-  std::unique_ptr<GeneralAudienceBrowsingService>
-      general_audience_browsing_service_;
 
   CastFeatureListCreator* cast_feature_list_creator_;
 };

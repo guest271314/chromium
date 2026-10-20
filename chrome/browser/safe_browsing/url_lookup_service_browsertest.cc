@@ -4,16 +4,19 @@
 
 #include "components/safe_browsing/core/browser/realtime/url_lookup_service.h"
 
+#include "base/metrics/field_trial.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/safe_browsing/url_lookup_service_factory.h"
 #include "chrome/browser/signin/identity_test_environment_profile_adaptor.h"
-#include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "components/prefs/pref_service.h"
 #include "components/safe_browsing/core/common/safe_browsing_prefs.h"
 #include "components/safe_browsing/core/common/utils.h"
+#include "components/sessions/core/session_id.h"
 #include "components/variations/pref_names.h"
+#include "components/variations/seed_reader_writer.h"
 #include "content/public/test/browser_test.h"
 #include "net/dns/mock_host_resolver.h"
 
@@ -25,7 +28,12 @@ constexpr std::string_view kRealtimeEndpoint = "/realtime_endpoint";
 
 class SafeBrowsingUrlLookupServiceTest : public InProcessBrowserTest {
  public:
-  SafeBrowsingUrlLookupServiceTest() = default;
+  SafeBrowsingUrlLookupServiceTest() {
+    // TODO(https://crbug.com/564792943): Update tests so they work with the
+    // SeedFile.
+    base::FieldTrialList::CreateFieldTrial(variations::kSeedFileTrial,
+                                           variations::kControlGroup);
+  }
   SafeBrowsingUrlLookupServiceTest(const SafeBrowsingUrlLookupServiceTest&) =
       delete;
   SafeBrowsingUrlLookupServiceTest& operator=(
@@ -46,7 +54,7 @@ class SafeBrowsingUrlLookupServiceTest : public InProcessBrowserTest {
     host_resolver()->AddRule("*", "127.0.0.1");
     identity_test_env_adaptor_ =
         std::make_unique<IdentityTestEnvironmentProfileAdaptor>(
-            browser()->profile());
+            browser()->GetProfile());
   }
 
   void SetUpInProcessBrowserTestFixture() override {
@@ -98,10 +106,10 @@ class SafeBrowsingUrlLookupServiceTest : public InProcessBrowserTest {
 IN_PROC_BROWSER_TEST_F(SafeBrowsingUrlLookupServiceTest,
                        ServiceRespectsLocationChanges) {
   safe_browsing::SetSafeBrowsingState(
-      browser()->profile()->GetPrefs(),
+      browser()->GetProfile()->GetPrefs(),
       safe_browsing::SafeBrowsingState::ENHANCED_PROTECTION);
   auto* url_lookup_service =
-      RealTimeUrlLookupServiceFactory::GetForProfile(browser()->profile());
+      RealTimeUrlLookupServiceFactory::GetForProfile(browser()->GetProfile());
 
   // By default for ESB, full URL lookups should be enabled.
   EXPECT_TRUE(url_lookup_service->CanPerformFullURLLookup());
@@ -127,10 +135,10 @@ IN_PROC_BROWSER_TEST_F(SafeBrowsingUrlLookupServiceTest, LookupWithToken) {
       secure_embedded_test_server()->GetURL(kRealtimeEndpoint));
 
   safe_browsing::SetSafeBrowsingState(
-      browser()->profile()->GetPrefs(),
+      browser()->GetProfile()->GetPrefs(),
       safe_browsing::SafeBrowsingState::ENHANCED_PROTECTION);
   auto* url_lookup_service =
-      RealTimeUrlLookupServiceFactory::GetForProfile(browser()->profile());
+      RealTimeUrlLookupServiceFactory::GetForProfile(browser()->GetProfile());
 
   base::RunLoop run_loop;
   url_lookup_service->StartLookup(
@@ -150,10 +158,10 @@ IN_PROC_BROWSER_TEST_F(SafeBrowsingUrlLookupServiceTest, LookupWithoutToken) {
       secure_embedded_test_server()->GetURL(kRealtimeEndpoint));
 
   safe_browsing::SetSafeBrowsingState(
-      browser()->profile()->GetPrefs(),
+      browser()->GetProfile()->GetPrefs(),
       safe_browsing::SafeBrowsingState::ENHANCED_PROTECTION);
   auto* url_lookup_service =
-      RealTimeUrlLookupServiceFactory::GetForProfile(browser()->profile());
+      RealTimeUrlLookupServiceFactory::GetForProfile(browser()->GetProfile());
 
   base::RunLoop run_loop;
   url_lookup_service->StartLookup(

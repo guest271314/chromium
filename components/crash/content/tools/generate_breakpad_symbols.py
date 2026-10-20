@@ -29,8 +29,9 @@ if sys.platform == 'win32':
   CONCURRENT_TASKS = min(CONCURRENT_TASKS, 56)
 
 # The BINARY_INFO tuple describes a binary as dump_syms identifies it.
-BINARY_INFO = collections.namedtuple('BINARY_INFO',
-                                     ['platform', 'arch', 'hash', 'name'])
+BINARY_INFO = collections.namedtuple(
+  'BINARY_INFO', ['platform', 'arch', 'hash', 'name']
+)
 
 
 def _GetDumpSymsBinary(dump_syms_path: str, build_dir: str):
@@ -39,8 +40,11 @@ def _GetDumpSymsBinary(dump_syms_path: str, build_dir: str):
     DUMP_SYMS = 'dump_syms'
     dump_syms_path = os.path.join(os.path.expanduser(build_dir), DUMP_SYMS)
 
-  if not os.access(dump_syms_path, os.X_OK):
+  if not os.path.isfile(dump_syms_path):
     print(f'Cannot find {dump_syms_path}.')
+    return None
+  if not os.access(dump_syms_path, os.X_OK):
+    print(f'File is not executable:{dump_syms_path}.')
     return None
 
   return dump_syms_path
@@ -59,7 +63,7 @@ def Resolve(path, exe_path, loader_path, rpaths):
   if path.find('@rpath') != -1:
     for rpath in rpaths:
       new_path = path.replace('@rpath', rpath)
-      if os.access(new_path, os.X_OK):
+      if os.path.isfile(new_path):
         return new_path
     return ''
   return path
@@ -95,7 +99,7 @@ def _GetSharedLibraryDependenciesAndroidOrChromeOS(binary):
     m = lib_re.search(line)
     if m:
       lib = os.path.join(binary_path, m.group(1))
-      if os.access(lib, os.X_OK):
+      if os.path.isfile(lib):
         result.append(lib)
   return result
 
@@ -108,39 +112,16 @@ def GetSharedLibraryDependenciesAndroid(binary):
   return _GetSharedLibraryDependenciesAndroidOrChromeOS(binary)
 
 
-def GetDeveloperDirMac():
-  """Finds a good DEVELOPER_DIR value to run Mac dev tools.
-
-  It checks the existing DEVELOPER_DIR and `xcode-select -p` and uses
-  one of those if the folder exists, and falls back to one of the
-  existing system folders with dev tools.
-
-  Returns:
-    (string) path to assign to DEVELOPER_DIR env var.
-  """
-  candidate_paths = []
-  if 'DEVELOPER_DIR' in os.environ:
-    candidate_paths.append(os.environ['DEVELOPER_DIR'])
-  candidate_paths.extend([
-      subprocess.check_output(['xcode-select', '-p']).decode('utf-8').strip(),
-      # Most Mac 10.1[0-2] bots have at least one Xcode installed.
-      '/Applications/Xcode.app',
-      '/Applications/Xcode9.0.app',
-      '/Applications/Xcode8.0.app',
-      # Mac 10.13 bots don't have any Xcode installed, but have CLI tools as a
-      # temporary workaround.
-      '/Library/Developer/CommandLineTools',
-  ])
-  for path in candidate_paths:
-    if os.path.exists(path):
-      return path
-  print('WARNING: no value found for DEVELOPER_DIR. Some commands may fail.')
-
-
 def GetSharedLibraryDependenciesMac(binary, exe_path):
   """Return absolute paths to all shared library dependencies of the binary.
 
   This implementation assumes that we're running on a Mac system."""
+  # Imported here so that other platforms, which may run this script outside
+  # vpython, don't need macholib.
+  from macholib import mach_o
+  from macholib.MachO import MachO
+  from macholib.ptypes import sizeof
+
   # realpath() serves two purposes:
   # 1. If an executable is linked against a framework, it links against
   #    Framework.framework/Framework, which is a symlink to
@@ -150,61 +131,41 @@ def GetSharedLibraryDependenciesMac(binary, exe_path):
   #    "foo.dylib" in the current directory, dirname() would return an empty
   #    string, causing "@loader_path/foo" to incorrectly expand to "/foo".
   loader_path = os.path.dirname(os.path.realpath(binary))
-  env = os.environ.copy()
 
-  SRC_ROOT_PATH = os.path.join(os.path.dirname(__file__), '../../../..')
-  hermetic_otool_path = os.path.join(SRC_ROOT_PATH, 'build', 'mac_files',
-                                     'xcode_binaries', 'Contents', 'Developer',
-                                     'Toolchains', 'XcodeDefault.xctoolchain',
-                                     'usr', 'bin', 'otool')
-  if os.path.exists(hermetic_otool_path):
-    otool_path = hermetic_otool_path
-  else:
-    developer_dir = GetDeveloperDirMac()
-    if developer_dir:
-      env['DEVELOPER_DIR'] = developer_dir
-    otool_path = 'otool'
-
-  otool = subprocess.check_output([otool_path, '-lm', binary],
-                                  env=env).decode('utf-8').splitlines()
   rpaths = []
-  dylib_id = None
-  for idx, line in enumerate(otool):
-    if line.find('cmd LC_RPATH') != -1:
-      m = re.match(r' *path (.*) \(offset .*\)$', otool[idx + 2])
-      rpath = m.group(1)
+  dylibs = []
+  for header in MachO(binary).headers:
+    for load_cmd, cmd, data in header.commands:
+      if load_cmd.cmd != mach_o.LC_RPATH:
+        continue
+      # `cmd.path` is an offset from the start of the load command, while
+      # `data` holds only the bytes after the fixed-size command structs.
+      offset = cmd.path - sizeof(load_cmd.__class__) - sizeof(cmd.__class__)
+      rpath = data[offset : data.find(b'\0', offset)].decode('utf-8')
       rpath = rpath.replace('@loader_path', loader_path)
       rpath = rpath.replace('@executable_path', exe_path)
       rpaths.append(rpath)
-    elif line.find('cmd LC_ID_DYLIB') != -1:
-      m = re.match(r' *name (.*) \(offset .*\)$', otool[idx + 2])
-      dylib_id = m.group(1)
+    dylibs.extend(name for _, _, name in header.walkRelocatables())
   # `man dyld` says that @rpath is resolved against a stack of LC_RPATHs from
   # all executable images leading to the load of the current module. This is
   # intentionally not implemented here, since we require that every .dylib
   # contains all the rpaths it needs on its own, without relying on rpaths of
   # the loading executables.
 
-  otool = subprocess.check_output([otool_path, '-Lm', binary],
-                                  env=env).decode('utf-8').splitlines()
-  lib_re = re.compile(r'\t(.*) \(compatibility .*\)$')
   deps = []
-  for line in otool:
-    m = lib_re.match(line)
-    if m:
-      # For frameworks and shared libraries, `otool -L` prints the LC_ID_DYLIB
-      # as the first line. Filter that out.
-      if m.group(1) == dylib_id:
-        continue
-      dep = Resolve(m.group(1), exe_path, loader_path, rpaths)
-      if dep:
-        deps.append(os.path.normpath(dep))
-      else:
-        print(('ERROR: failed to resolve %s, exe_path %s, loader_path %s, '
-               'rpaths %s' %
-               (m.group(1), exe_path, loader_path, ', '.join(rpaths))),
-              file=sys.stderr)
-        sys.exit(1)
+  for dylib in dylibs:
+    dep = Resolve(dylib, exe_path, loader_path, rpaths)
+    if dep:
+      deps.append(os.path.normpath(dep))
+    else:
+      print(
+        (
+          'ERROR: failed to resolve %s, exe_path %s, loader_path %s, '
+          'rpaths %s' % (dylib, exe_path, loader_path, ', '.join(rpaths))
+        ),
+        file=sys.stderr,
+      )
+      sys.exit(1)
   return deps
 
 
@@ -213,6 +174,14 @@ def GetSharedLibraryDependenciesChromeOS(binary):
 
   This implementation assumes that we're running on a Linux system, but
   compiled for ChromeOS."""
+  return _GetSharedLibraryDependenciesAndroidOrChromeOS(binary)
+
+
+def GetSharedLibraryDependenciesFuchsia(binary):
+  """Return absolute paths to all shared library dependencies of the binary.
+
+  This implementation assumes that we're running on a Linux system, but
+  compiled for Fuchsia."""
   return _GetSharedLibraryDependenciesAndroidOrChromeOS(binary)
 
 
@@ -227,6 +196,8 @@ def GetSharedLibraryDependencies(options, binary, exe_path):
     deps = GetSharedLibraryDependenciesMac(binary, exe_path)
   elif options.platform == 'chromeos':
     deps = GetSharedLibraryDependenciesChromeOS(binary)
+  elif options.platform == 'fuchsia':
+    deps = GetSharedLibraryDependenciesFuchsia(binary)
   else:
     print("Platform not supported.")
     sys.exit(1)
@@ -234,15 +205,16 @@ def GetSharedLibraryDependencies(options, binary, exe_path):
   result = []
   build_dir = os.path.abspath(options.build_dir)
   for dep in deps:
-    if (os.access(dep, os.X_OK)
-        and os.path.abspath(os.path.dirname(dep)).startswith(build_dir)):
+    if os.path.isfile(dep) and os.path.abspath(os.path.dirname(dep)).startswith(
+      build_dir
+    ):
       result.append(dep)
   return result
 
 
 def GetTransitiveDependencies(options):
   """Return absolute paths to the transitive closure of all shared library
-     dependencies of the binary, along with the binary itself."""
+  dependencies of the binary, along with the binary itself."""
   binary = os.path.abspath(options.binary)
   exe_path = os.path.dirname(binary)
   if options.platform == 'linux':
@@ -250,8 +222,12 @@ def GetTransitiveDependencies(options):
     deps = set(GetSharedLibraryDependencies(options, binary, exe_path))
     deps.add(binary)
     return list(deps)
-  elif (options.platform == 'darwin' or options.platform == 'android'
-        or options.platform == 'chromeos'):
+  elif (
+    options.platform == 'darwin'
+    or options.platform == 'android'
+    or options.platform == 'chromeos'
+    or options.platform == 'fuchsia'
+  ):
     binaries = set([binary])
     q = [binary]
     while q:
@@ -286,15 +262,17 @@ def GetBinaryInfoFromHeaderInfo(header_info):
 
 def CreateSymbolDir(options, output_dir, relative_hash_dir):
   """Create the directory to store breakpad symbols in. On Android/Linux, we
-     also create a symlink in case the hash in the binary is missing."""
+  also create a symlink in case the hash in the binary is missing."""
   mkdir_p(output_dir)
   if options.platform == 'android' or options.platform == 'linux':
     try:
       os.symlink(
-          relative_hash_dir,
-          os.path.join(os.path.dirname(output_dir),
-                       '000000000000000000000000000000000'))
-    except:
+        relative_hash_dir,
+        os.path.join(
+          os.path.dirname(output_dir), '000000000000000000000000000000000'
+        ),
+      )
+    except:  # noqa: E722
       pass
 
 
@@ -323,8 +301,9 @@ def GenerateSymbols(options, binaries):
             reason = "Could not locate dump_syms executable."
             break
 
-          dump_syms_output = subprocess.check_output([dump_syms, '-i',
-                                                      binary]).decode('utf-8')
+          dump_syms_output = subprocess.check_output(
+            [dump_syms, '-i', binary]
+          ).decode('utf-8')
           header_info = dump_syms_output.splitlines()[0]
           binary_info = GetBinaryInfoFromHeaderInfo(header_info)
           if not binary_info:
@@ -333,8 +312,9 @@ def GenerateSymbols(options, binaries):
             break
 
           # See if the output file already exists.
-          output_dir = os.path.join(options.symbols_dir, binary_info.name,
-                                    binary_info.hash)
+          output_dir = os.path.join(
+            options.symbols_dir, binary_info.name, binary_info.hash
+          )
           output_path = os.path.join(output_dir, binary_info.name + '.sym')
           if os.path.isfile(output_path):
             should_dump_syms = False
@@ -366,7 +346,7 @@ def GenerateSymbols(options, binaries):
         CreateSymbolDir(options, output_dir, binary_info.hash)
         with open(output_path, 'wb') as f:
           subprocess.check_call([dump_syms, '-r', binary], stdout=f)
-      except Exception as e:
+      except Exception:
         with exceptions_lock:
           exceptions.append(traceback.format_exc())
       finally:
@@ -382,56 +362,65 @@ def GenerateSymbols(options, binaries):
 
   q.join()
   if exceptions:
-    exception_str = ('One or more exceptions occurred while generating '
-                     'symbols:\n')
+    exception_str = (
+      'One or more exceptions occurred while generating symbols:\n'
+    )
     exception_str += '\n'.join(exceptions)
     raise Exception(exception_str)
 
 
 def main():
   parser = argparse.ArgumentParser()
-  parser.add_argument('--build-dir',
-                      required=True,
-                      help='The build output directory.')
-  parser.add_argument('--symbols-dir',
-                      required=True,
-                      help='The directory where to write the symbols file.')
-  parser.add_argument('--binary',
-                      required=True,
-                      help='The path of the binary to generate symbols for.')
-  parser.add_argument('--dump-syms-path',
-                      default='',
-                      help='The path of the dump_syms binary. If not provided, '
-                      'by default looks in --build-dir for it.')
-  parser.add_argument('--clear',
-                      default=False,
-                      action='store_true',
-                      help='Clear the symbols directory before writing new '
-                      'symbols.')
-  parser.add_argument('-j',
-                      '--jobs',
-                      default=CONCURRENT_TASKS,
-                      action='store',
-                      type=int,
-                      help='Number of parallel tasks to run.')
-  parser.add_argument('-v',
-                      '--verbose',
-                      action='store_true',
-                      help='Print verbose status output.')
-  parser.add_argument('--platform',
-                      default=sys.platform,
-                      help='Target platform of the binary.')
+  parser.add_argument(
+    '--build-dir', required=True, help='The build output directory.'
+  )
+  parser.add_argument(
+    '--symbols-dir',
+    required=True,
+    help='The directory where to write the symbols file.',
+  )
+  parser.add_argument(
+    '--binary',
+    required=True,
+    help='The path of the binary to generate symbols for.',
+  )
+  parser.add_argument(
+    '--dump-syms-path',
+    default='',
+    help='The path of the dump_syms binary. If not provided, '
+    'by default looks in --build-dir for it.',
+  )
+  parser.add_argument(
+    '--clear',
+    default=False,
+    action='store_true',
+    help='Clear the symbols directory before writing new symbols.',
+  )
+  parser.add_argument(
+    '-j',
+    '--jobs',
+    default=CONCURRENT_TASKS,
+    action='store',
+    type=int,
+    help='Number of parallel tasks to run.',
+  )
+  parser.add_argument(
+    '-v', '--verbose', action='store_true', help='Print verbose status output.'
+  )
+  parser.add_argument(
+    '--platform', default=sys.platform, help='Target platform of the binary.'
+  )
 
   args = parser.parse_args()
 
-  if not os.access(args.binary, os.X_OK):
+  if not os.path.isfile(args.binary):
     print(f'Cannot find {args.binary}')
     return 1
 
   if args.clear:
     try:
       shutil.rmtree(args.symbols_dir)
-    except:
+    except:  # noqa: E722
       pass
 
   if not _GetDumpSymsBinary(args.dump_syms_path, args.build_dir):

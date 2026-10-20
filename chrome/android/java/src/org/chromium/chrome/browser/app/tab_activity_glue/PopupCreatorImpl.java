@@ -9,18 +9,19 @@ import static android.view.Display.INVALID_DISPLAY;
 import android.app.Activity;
 import android.app.ActivityManager.AppTask;
 import android.app.ActivityOptions;
+import android.app.InfeasibleActivityOptionsException;
 import android.content.Context;
 import android.content.Intent;
 import android.graphics.Rect;
 import android.os.Build;
 import android.os.Bundle;
-import android.util.AndroidRuntimeException;
 import android.util.Pair;
 
 import androidx.core.graphics.Insets;
 import androidx.core.view.WindowInsetsCompat;
 
-import org.chromium.base.AconfigFlaggedApiDelegate;
+import org.jni_zero.CalledByNativeForTesting;
+
 import org.chromium.base.ContextUtils;
 import org.chromium.base.IntentUtils;
 import org.chromium.base.Log;
@@ -40,7 +41,6 @@ import org.chromium.chrome.browser.customtabs.CustomTabIntentDataProvider;
 import org.chromium.chrome.browser.customtabs.IncognitoCustomTabIntentDataProvider;
 import org.chromium.chrome.browser.customtabs.PopupCreator;
 import org.chromium.chrome.browser.customtabs.features.desktop_popup_header.DesktopPopupHeaderUtils;
-import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.media.AutoPictureInPictureTabHelper;
 import org.chromium.chrome.browser.media.DocumentPictureInPictureActivity;
 import org.chromium.chrome.browser.profiles.Profile;
@@ -50,12 +50,14 @@ import org.chromium.chrome.browser.tab.TabDelegateFactory;
 import org.chromium.chrome.browser.util.AndroidTaskUtils;
 import org.chromium.chrome.browser.util.PictureInPictureWindowOptions;
 import org.chromium.chrome.browser.util.WindowFeatures;
+import org.chromium.content_public.browser.RenderFrameHost;
 import org.chromium.content_public.browser.WebContents;
 import org.chromium.ui.base.WindowAndroid;
 import org.chromium.ui.display.DisplayAndroid;
 import org.chromium.ui.display.DisplayUtil;
 import org.chromium.ui.insets.InsetObserver;
 import org.chromium.ui.insets.WindowInsetsUtils;
+import org.chromium.url.Origin;
 
 /** Handles launching new popup windows as CCTs and Document Picture-in-Picture windows. */
 @NullMarked
@@ -69,6 +71,7 @@ public class PopupCreatorImpl implements PopupCreator {
     private static @Nullable Boolean sMoveTabToNewPopupResultForTesting;
     private static @Nullable Boolean sMoveToNewDocumentPiPWindowResultForTesting;
     private static @Nullable Boolean sSetMovableTaskRequiredForPopupsForTesting;
+    private static @Nullable Boolean sTryStartActivityResultForTesting;
 
     @Override
     public boolean createNewPopup(
@@ -83,7 +86,6 @@ public class PopupCreatorImpl implements PopupCreator {
 
         final Intent intent =
                 createTrustedPopupIntent(windowFeatures, isIncognito, additionalIntentExtras);
-
         return tryStartActivity(context, intent, optionsBundle);
     }
 
@@ -95,6 +97,14 @@ public class PopupCreatorImpl implements PopupCreator {
             @Nullable WindowFeatures windowFeatures,
             @Nullable Bundle additionalIntentExtras,
             @Nullable Bundle startActivityOptions) {
+        // Only allow popups for the main incognito profile. Other OTR profiles
+        // cannot have popups. The caller transfers ownership of webContents to
+        // this method, so if popup creation fails we must destroy webContents.
+        if (profile.isOffTheRecord() && !profile.isPrimaryOtrProfile()) {
+            webContents.destroy();
+            return false;
+        }
+
         TabDelegateFactory delegateFactory = CustomTabDelegateFactory.createEmpty();
         Tab tab = TabBuilder.createDetachedSpareTab(context, delegateFactory, profile, webContents);
 
@@ -121,6 +131,13 @@ public class PopupCreatorImpl implements PopupCreator {
             return sMoveTabToNewPopupResultForTesting;
         }
 
+        Profile profile = tab.getProfile();
+        // Only allow popups for the main incognito profile. Other OTR profiles
+        // cannot have popups.
+        if (profile != null && profile.isOffTheRecord() && !profile.isPrimaryOtrProfile()) {
+            return false;
+        }
+
         Bundle optionsBundle =
                 resolveStartActivityOptions(null, windowFeatures, tab.getWindowAndroid());
 
@@ -128,7 +145,9 @@ public class PopupCreatorImpl implements PopupCreator {
             return false;
         }
 
-        final Intent intent = initializePopupIntent(windowFeatures, tab.isIncognitoBranded());
+        final Intent intent =
+                createTrustedPopupIntent(windowFeatures, tab.isIncognitoBranded(), null);
+        intent.putExtra(IntentHandler.EXTRA_SKIP_LOAD_ON_REPARENTING, true);
 
         return getReparentingTask(tab).begin(tab.getContext(), intent, optionsBundle, null);
     }
@@ -175,7 +194,7 @@ public class PopupCreatorImpl implements PopupCreator {
      */
     public static void adjustWindowBoundsToRequested(
             ChromeActivity activity, @Nullable WindowFeatures requestedWindowFeaturesDp) {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.BAKLAVA) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.CINNAMON_BUN) {
             return;
         }
 
@@ -202,17 +221,14 @@ public class PopupCreatorImpl implements PopupCreator {
         final Rect targetWindowBoundsPx = new Rect(realWindowBoundsPx);
         Log.v(
                 TAG,
-                "adjustWindowBounds: current viewport size = ("
-                        + realViewportWidthDp
-                        + " x "
-                        + realViewportHeightDp
-                        + ") [dp]");
-        Log.v(TAG, "adjustWindowBounds: top-level window bounds = " + realWindowBoundsPx + " [px]");
+                "adjustWindowBounds: current viewport size = (%d x %d) [dp]",
+                realViewportWidthDp,
+                realViewportHeightDp);
+        Log.v(TAG, "adjustWindowBounds: top-level window bounds = %s [px]", realWindowBoundsPx);
         Log.v(
                 TAG,
-                "adjustWindowBounds: requested WindowFeatures = "
-                        + requestedWindowFeaturesDp
-                        + " [dp]");
+                "adjustWindowBounds: requested WindowFeatures = %s [dp]",
+                requestedWindowFeaturesDp);
 
         if (requestedWindowFeaturesDp.width != null && requestedWindowFeaturesDp.height != null) {
             final WindowAndroid windowAndroid = activity.getWindowAndroid();
@@ -265,11 +281,11 @@ public class PopupCreatorImpl implements PopupCreator {
                         Math.abs(heightDiffDp));
             }
 
-            Log.v(TAG, "adjustWindowBounds: widthDiffDp = " + widthDiffDp + " dp");
-            Log.v(TAG, "adjustWindowBounds: widthDiffPx = " + widthDiffPx + " px");
-            Log.v(TAG, "adjustWindowBounds: heightDiffDp = " + heightDiffDp + " dp");
-            Log.v(TAG, "adjustWindowBounds: heightDiffPx = " + heightDiffPx + " px");
-            Log.v(TAG, "adjustWindowBounds: display.getDipScale() = " + display.getDipScale());
+            Log.v(TAG, "adjustWindowBounds: widthDiffDp = %d dp", widthDiffDp);
+            Log.v(TAG, "adjustWindowBounds: widthDiffPx = %d px", widthDiffPx);
+            Log.v(TAG, "adjustWindowBounds: heightDiffDp = %d dp", heightDiffDp);
+            Log.v(TAG, "adjustWindowBounds: heightDiffPx = %d px", heightDiffPx);
+            Log.v(TAG, "adjustWindowBounds: display.getDipScale() = %s", display.getDipScale());
 
             final InsetObserver insetObserver = windowAndroid.getInsetObserver();
             Insets windowInsetsOnSourceDisplay = Insets.NONE;
@@ -281,19 +297,16 @@ public class PopupCreatorImpl implements PopupCreator {
             }
             Log.v(
                     TAG,
-                    "adjustWindowBounds: current window insets = "
-                            + windowInsetsOnSourceDisplay
-                            + " [px]");
+                    "adjustWindowBounds: current window insets = %s [px]",
+                    windowInsetsOnSourceDisplay);
             Log.v(
                     TAG,
-                    "adjustWindowBounds: getTopControlsHeight from activity's BCM = "
-                            + activity.getBrowserControlsManager().getTopControlsHeight()
-                            + " px");
+                    "adjustWindowBounds: getTopControlsHeight from activity's BCM = %d px",
+                    activity.getBrowserControlsManager().getTopControlsHeight());
             Log.v(
                     TAG,
-                    "adjustWindowBounds: getTopControlsHairlineHeight from activity's BCM = "
-                            + activity.getBrowserControlsManager().getTopControlsHairlineHeight()
-                            + " px");
+                    "adjustWindowBounds: getTopControlsHairlineHeight from activity's BCM = %d px",
+                    activity.getBrowserControlsManager().getTopControlsHairlineHeight());
         }
 
         if (realWindowBoundsPx.equals(targetWindowBoundsPx)) {
@@ -302,16 +315,10 @@ public class PopupCreatorImpl implements PopupCreator {
         }
         Log.v(
                 TAG,
-                "adjustWindowBounds: repositioning required -- current bounds = "
-                        + realWindowBoundsPx
-                        + ", target bounds = "
-                        + targetWindowBoundsPx);
-
-        final AconfigFlaggedApiDelegate delegate = AconfigFlaggedApiDelegate.getInstance();
-        if (delegate == null) {
-            Log.w(TAG, "adjustWindowBounds: AconfigFlaggedApiDelegate is null -- bailing out");
-            return;
-        }
+                "adjustWindowBounds: repositioning required -- current bounds = %s, target bounds ="
+                        + " %s",
+                realWindowBoundsPx,
+                targetWindowBoundsPx);
 
         final AppTask appTask = AndroidTaskUtils.getAppTaskFromId(activity, activity.getTaskId());
         if (appTask == null) {
@@ -320,25 +327,40 @@ public class PopupCreatorImpl implements PopupCreator {
         }
 
         Log.v(TAG, "adjustWindowBounds: dispatching the moveTaskTo call");
-        delegate.moveTaskTo(appTask, INVALID_DISPLAY /* current display */, targetWindowBoundsPx);
+        AndroidTaskUtils.moveTaskTo(
+                appTask, INVALID_DISPLAY /* current display */, targetWindowBoundsPx);
     }
 
     @Override
     public boolean tryStartActivity(
             Context context, Intent intent, @Nullable Bundle activityOptions) {
+        if (sTryStartActivityResultForTesting != null) {
+            return sTryStartActivityResultForTesting;
+        }
         try {
             context.startActivity(intent, activityOptions);
         } catch (SecurityException e) {
             Log.w(TAG, "tryStartActivity: no permission to start a movable task", e);
-            return false;
-        } catch (AndroidRuntimeException e) {
-            final AconfigFlaggedApiDelegate delegate = AconfigFlaggedApiDelegate.getInstance();
-            if (delegate == null) {
-                Log.w(TAG, "tryStartActivity: AconfigFlaggedApiDelegate is null");
-                return false;
+            // On devices where Chrome lacks REPOSITION_SELF_WINDOWS permission, launching an
+            // activity with setMovableTaskRequired(true) triggers a SecurityException. Fall back
+            // to starting the activity without movableTaskRequired option.
+            if (activityOptions != null) {
+                Bundle fallbackOptions = new Bundle(activityOptions);
+                fallbackOptions.remove("android.activity.movableTaskRequired");
+                try {
+                    context.startActivity(intent, fallbackOptions);
+                    return true;
+                } catch (SecurityException retryException) {
+                    Log.w(
+                            TAG,
+                            "tryStartActivity: retry without movableTaskRequired also failed",
+                            retryException);
+                }
             }
-
-            if (delegate.isInfeasibleActivityOptionsException(e)) {
+            return false;
+        } catch (Throwable e) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.CINNAMON_BUN
+                    && e instanceof InfeasibleActivityOptionsException) {
                 Log.w(
                         TAG,
                         "tryStartActivity: startActivity threw InfeasibleActivityOptionsException");
@@ -376,9 +398,8 @@ public class PopupCreatorImpl implements PopupCreator {
         }
         Log.v(
                 TAG,
-                "getPopupInsetsForecast: windowInsetsOnSourceDisplay = "
-                        + windowInsetsOnSourceDisplay
-                        + " [px]");
+                "getPopupInsetsForecast: windowInsetsOnSourceDisplay = %s [px]",
+                windowInsetsOnSourceDisplay);
 
         final float densityFactor =
                 targetDisplay.getDipScale() / sourceWindow.getDisplay().getDipScale();
@@ -396,9 +417,8 @@ public class PopupCreatorImpl implements PopupCreator {
                                         * densityFactor));
         Log.v(
                 TAG,
-                "getPopupInsetsForecast: forecastedWindowInsetsOnTargetDisplay = "
-                        + forecastedWindowInsetsOnTargetDisplay
-                        + " [px]");
+                "getPopupInsetsForecast: forecastedWindowInsetsOnTargetDisplay = %s [px]",
+                forecastedWindowInsetsOnTargetDisplay);
 
         final int totalTopControlsHeightPx =
                 predictBrowserTopControlsTotalHeightBelowTopInsetPx(
@@ -408,7 +428,7 @@ public class PopupCreatorImpl implements PopupCreator {
                 Insets.add(
                         forecastedWindowInsetsOnTargetDisplay,
                         Insets.of(0, 0, 0, totalTopControlsHeightPx));
-        Log.v(TAG, "getPopupInsetsForecast: totalInsets = " + totalInsets + " [px]");
+        Log.v(TAG, "getPopupInsetsForecast: totalInsets = %s [px]", totalInsets);
         final Insets invertedTotalInsets = Insets.subtract(Insets.NONE, totalInsets);
         return invertedTotalInsets;
     }
@@ -420,14 +440,9 @@ public class PopupCreatorImpl implements PopupCreator {
      */
     private static int predictBrowserTopControlsTotalHeightBelowTopInsetPx(
             Context targetDisplayContext, int topInsetPx) {
-        // Without edge-to-edge drawing the caption bar is precisely the top inset.
-        int captionBarOverflowOverTopInsetPx = 0;
-        if (ChromeFeatureList.isEnabled(ChromeFeatureList.ANDROID_WINDOW_POPUP_CUSTOM_TAB_UI)) {
-            final int customTabsE2EHeaderHeightPx =
-                    DesktopPopupHeaderUtils.getFinalHeaderHeightPx(
-                            targetDisplayContext, topInsetPx);
-            captionBarOverflowOverTopInsetPx = customTabsE2EHeaderHeightPx - topInsetPx;
-        }
+        final int customTabsE2EHeaderHeightPx =
+                DesktopPopupHeaderUtils.getFinalHeaderHeightPx(targetDisplayContext, topInsetPx);
+        final int captionBarOverflowOverTopInsetPx = customTabsE2EHeaderHeightPx - topInsetPx;
 
         final int customTabsHeaderHeightPx =
                 targetDisplayContext
@@ -458,6 +473,11 @@ public class PopupCreatorImpl implements PopupCreator {
         ResettersForTesting.register(() -> sInsetsForecastForTesting = null);
     }
 
+    public static void setMoveTabToNewPopupResultForTesting(boolean result) {
+        sMoveTabToNewPopupResultForTesting = result;
+        ResettersForTesting.register(() -> sMoveTabToNewPopupResultForTesting = null);
+    }
+
     /**
      * If this is set to {@code false}, contextual popups will be launched without specifying the
      * {@link android.app.ActivityOptions#setMovableTaskRequired(boolean)} option.
@@ -468,21 +488,16 @@ public class PopupCreatorImpl implements PopupCreator {
         ResettersForTesting.register(() -> sSetMovableTaskRequiredForPopupsForTesting = null);
     }
 
-    private static Intent createTrustedPopupIntent(
-            @Nullable WindowFeatures windowFeatures,
-            boolean isIncognito,
-            @Nullable Bundle additionalIntentExtras) {
-        Intent intent = initializePopupIntent(windowFeatures, isIncognito);
-        IntentUtils.addTrustedIntentExtras(intent);
-
-        if (additionalIntentExtras != null) {
-            intent.putExtras(additionalIntentExtras);
-        }
-        return intent;
+    @CalledByNativeForTesting
+    public static void setTryStartActivityResultForTesting(boolean result) {
+        sTryStartActivityResultForTesting = result;
+        ResettersForTesting.register(() -> sTryStartActivityResultForTesting = null);
     }
 
-    private static Intent initializePopupIntent(
-            @Nullable WindowFeatures windowFeatures, boolean isIncognito) {
+    private static Intent createTrustedPopupIntent(
+            @Nullable WindowFeatures windowFeatures,
+            boolean isIncognitoBranded,
+            @Nullable Bundle additionalIntentExtras) {
         Intent intent = new Intent();
         intent.setClass(ContextUtils.getApplicationContext(), CustomTabActivity.class);
         intent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_MULTIPLE_TASK);
@@ -490,10 +505,15 @@ public class PopupCreatorImpl implements PopupCreator {
         if (windowFeatures != null) {
             intent.putExtra(EXTRA_REQUESTED_WINDOW_FEATURES, windowFeatures.toBundle());
         }
-        if (isIncognito) {
+        if (additionalIntentExtras != null) {
+            intent.putExtras(additionalIntentExtras);
+        }
+        if (isIncognitoBranded) {
             IncognitoCustomTabIntentDataProvider.addIncognitoExtrasForChromeFeatures(
                     intent, IncognitoCctCallerId.CONTEXTUAL_POPUP);
         }
+
+        IntentUtils.addTrustedIntentExtras(intent);
 
         return intent;
     }
@@ -508,9 +528,29 @@ public class PopupCreatorImpl implements PopupCreator {
         intent.putExtra(
                 DocumentPictureInPictureActivity.WINDOW_OPTIONS_KEY, windowOptions.toBundle());
 
+        // Record the opener's origin at the time of the request to prevent origin spoofing
+        // if the opener navigates before the Activity completes its launch.
+        WebContents opener = webContents.getDocumentPictureInPictureOpener();
+        if (opener != null) {
+            intent.putExtra(
+                    DocumentPictureInPictureActivity.INITIAL_OPENER_ORIGIN_KEY,
+                    getOpenerOriginString(opener));
+        }
+
         intent.setAction(Intent.ACTION_VIEW);
 
         return intent;
+    }
+
+    private static String getOpenerOriginString(WebContents opener) {
+        RenderFrameHost frame = opener.getMainFrame();
+        Origin origin =
+                frame != null
+                        ? frame.getLastCommittedOrigin()
+                        : (opener.getLastCommittedUrl() != null
+                                ? Origin.create(opener.getLastCommittedUrl())
+                                : null);
+        return (origin != null && !origin.isOpaque()) ? origin.toString() : "";
     }
 
     private static @Nullable Bundle resolveStartActivityOptions(
@@ -528,10 +568,7 @@ public class PopupCreatorImpl implements PopupCreator {
     private static @Nullable ActivityOptions createPopupActivityOptions(
             @Nullable Rect windowBounds, @Nullable WindowAndroid sourceWindow) {
         return createPopupActivityOptions(
-                windowBounds,
-                sourceWindow,
-                ChromeFeatureList.isEnabled(
-                        ChromeFeatureList.ANDROID_WINDOW_POPUP_PREDICT_FINAL_BOUNDS));
+                windowBounds, sourceWindow, /* predictFinalBounds= */ true);
     }
 
     private static @Nullable ActivityOptions createDocumentPipActivityOptions(
@@ -549,19 +586,14 @@ public class PopupCreatorImpl implements PopupCreator {
 
         if (sSetMovableTaskRequiredForPopupsForTesting == null
                 || sSetMovableTaskRequiredForPopupsForTesting) {
-            final AconfigFlaggedApiDelegate delegate = AconfigFlaggedApiDelegate.getInstance();
-            if (delegate == null) {
-                Log.w(TAG, "createPopupActivityOptions: AconfigFlaggedApiDelegate is null");
-                return null;
-            }
-
-            activityOptions = delegate.setMovableTaskRequired(activityOptions);
-            if (activityOptions == null) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.CINNAMON_BUN) {
+                activityOptions.setMovableTaskRequired(true);
+            } else {
                 return null;
             }
         }
 
-        if (windowBounds == null) {
+        if (windowBounds == null || windowBounds.isEmpty()) {
             return activityOptions;
         }
 
@@ -596,6 +628,9 @@ public class PopupCreatorImpl implements PopupCreator {
 
         final int widthDp = windowFeatures.width;
         final int heightDp = windowFeatures.height;
+        if (widthDp <= 0 || heightDp <= 0) {
+            return null;
+        }
         final int leftDp = windowFeatures.left == null ? 0 : windowFeatures.left;
         final int topDp = windowFeatures.top == null ? 0 : windowFeatures.top;
 

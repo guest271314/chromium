@@ -8,8 +8,6 @@
 #include <cstdlib>
 
 #include "base/check_deref.h"
-#include "base/feature_list.h"
-#include "base/i18n/rtl.h"
 #include "base/notreached.h"
 #include "chrome/browser/actor/ui/actor_overlay_web_view.h"
 #include "chrome/browser/browser_process.h"
@@ -18,7 +16,8 @@
 #include "chrome/browser/ui/color/chrome_color_id.h"
 #include "chrome/browser/ui/read_anything/read_anything_immersive_overlay_view.h"
 #include "chrome/browser/ui/sad_tab_helper.h"
-#include "chrome/browser/ui/ui_features.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
+#include "chrome/browser/ui/view_ids.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/frame/contents_container_view.h"
 #include "chrome/browser/ui/views/frame/contents_separator.h"
@@ -30,6 +29,7 @@
 #include "chrome/browser/ui/views/frame/multi_contents_view_delegate.h"
 #include "chrome/browser/ui/views/frame/multi_contents_view_drop_target_controller.h"
 #include "chrome/browser/ui/views/frame/multi_contents_view_mini_toolbar.h"
+#include "chrome/browser/ui/views/frame/safe_invoke/safe_invoke.h"
 #include "chrome/browser/ui/views/frame/scrim_view.h"
 #include "chrome/browser/ui/views/frame/themed_background.h"
 #include "chrome/browser/ui/views/new_tab_footer/footer_web_view.h"
@@ -38,18 +38,15 @@
 #include "chrome/common/webui_url_constants.h"
 #include "components/prefs/pref_service.h"
 #include "components/split_tabs/split_tab_visual_data.h"
+#include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/url_constants.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/ozone_buildflags.h"
 #include "ui/compositor/layer.h"
-#include "ui/compositor/layer_type.h"
-#include "ui/events/types/event_type.h"
 #include "ui/gfx/geometry/outsets.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/geometry/rounded_corners_f.h"
-#include "ui/gfx/scoped_canvas.h"
-#include "ui/ozone/public/ozone_platform.h"
 #include "ui/views/layout/flex_layout_types.h"
 #include "ui/views/layout/layout_types.h"
 #include "ui/views/layout/proposed_layout.h"
@@ -99,7 +96,7 @@ MultiContentsView::MultiContentsView(
   drop_target_controller_ =
       std::make_unique<MultiContentsViewDropTargetController>(
           *drop_target_view_, *delegate_, g_browser_process->local_state(),
-          browser_view_->browser()->tab_strip_model());
+          browser_view_->browser()->GetTabStripModel());
 
   contents_separators_.top_separator =
       AddChildView(ContentsSeparator::CreateLayerBasedContentsSeparator());
@@ -118,14 +115,27 @@ MultiContentsView::MultiContentsView(
 
   contents_separators_.corner_separator =
       AddChildView(std::make_unique<CustomFloatingCorner>(
-          *browser_view_, CustomFloatingCorner::CornerOrientation::kTopLeading,
+          *browser_view_, CornerOrientation::kTopLeading,
           views::ShapeContextTokens::kContentSeparatorRadius,
           CustomFloatingCorner::ToolbarTheme(),
           kColorToolbarContentAreaSeparator));
   contents_separators_.corner_separator->SetProperty(
       views::kElementIdentifierKey, kContentsSeparatorTopCornerElementId);
 
-  for (auto* contents_container_view : contents_container_views_) {
+  // Create the view that will house the Lens overlay. This view is visible but
+  // transparent view that is used as a container for the Lens overlay WebView.
+  // It must have a higher index than contents_view so that it is drawn on top
+  // of it. Uses a fill layout so that the overlay WebView can fill the entire
+  // container.
+  auto lens_overlay_view = std::make_unique<views::View>();
+  lens_overlay_view->SetID(VIEW_ID_LENS_OVERLAY);
+  lens_overlay_view->SetProperty(views::kElementIdentifierKey,
+                                 kLensOverlayViewElementId);
+  lens_overlay_view->SetVisible(false);
+  lens_overlay_view->SetLayoutManager(std::make_unique<views::FillLayout>());
+  lens_overlay_view_ = AddChildView(std::move(lens_overlay_view));
+
+  for (auto& contents_container_view : contents_container_views_) {
     auto& view_map = container_focusable_map_[contents_container_view];
 
     auto* contents_view = contents_container_view->contents_view();
@@ -173,13 +183,15 @@ MultiContentsView::MultiContentsView(
 }
 
 MultiContentsView::~MultiContentsView() {
-  // Clear the map before `RemoveAllChildViews()` to avoid having dangling
-  // pointers.
+  // Clear the map and vectors before `RemoveAllChildViews()` to avoid having
+  // dangling pointers.
   container_focusable_map_.clear();
+  contents_container_views_.clear();
   if (drop_target_controller_) {
     drop_target_controller_.reset();
   }
   drop_target_view_ = nullptr;
+  lens_overlay_view_ = nullptr;
   resize_area_ = nullptr;
   contents_separators_.Reset();
   background_view_ = nullptr;
@@ -204,17 +216,27 @@ ContentsContainerView* MultiContentsView::GetInactiveContentsContainerView()
   return contents_container_views_[GetInactiveIndex()];
 }
 
-const gfx::RoundedCornersF& MultiContentsView::background_radii() const {
+const gfx::RoundedCornersF& MultiContentsView::GetBackgroundRadii() const {
   return background_view_->GetRoundedCorners();
 }
 
 void MultiContentsView::SetBackgroundRadii(const gfx::RoundedCornersF& radii) {
+  if (radii == GetBackgroundRadii()) {
+    return;
+  }
+
   background_view_->SetRoundedCorners(radii);
+
+  if (!IsInSplitView()) {
+    GetActiveContentsContainerView()->SetRoundedCorners(radii);
+    GetInactiveContentsContainerView()->SetRoundedCorners(
+        gfx::RoundedCornersF());
+  }
 }
 
 ContentsContainerView* MultiContentsView::GetContentsContainerViewFor(
     content::WebContents* web_contents) const {
-  for (auto* container_view : contents_container_views_) {
+  for (auto& container_view : contents_container_views_) {
     if (container_view->contents_view()->web_contents() == web_contents) {
       return container_view;
     }
@@ -250,11 +272,11 @@ void MultiContentsView::SetWebContentsAtIndex(
     UpdateContentsBorderAndOverlay();
   }
 
-  if (web_contents) {
-    if (auto* sad_tab_helper = SadTabHelper::FromWebContents(web_contents)) {
-      sad_tab_helper->ReinstallInWebView();
-    }
-  }
+  SafeInvoke(web_contents)
+      .Then(Overload<content::WebContents*>(
+          &tabs::TabInterface::MaybeGetFromContents))
+      .Then(&SadTabHelper::From)
+      .Then(&SadTabHelper::ReinstallInWebView);
 }
 
 void MultiContentsView::ShowSplitView(
@@ -265,6 +287,7 @@ void MultiContentsView::ShowSplitView(
     visual_data_ = visual_data;
     contents_container_views_[1]->SetVisible(true);
     resize_area_->SetVisible(true);
+    resize_area_->SetLayout(visual_data.split_layout());
     UpdateContentsBorderAndOverlay();
   } else {
     // If the split view is visible, update the split visual data.
@@ -278,34 +301,33 @@ void MultiContentsView::CloseSplitView() {
   }
 
   if (active_index_ != 0) {
-    ContentsContainerView* start_view = contents_container_views_[0];
-    ContentsContainerView* active_view =
-        contents_container_views_[active_index_];
-
-    // Move the active WebContents so that the first ContentsContainerView in
-    // contents_container_views_ can always be visible.
-    std::iter_swap(contents_container_views_.begin(),
-                   contents_container_views_.begin() + active_index_);
-
-    // Reorder the child views so that focus order will be consistent with
-    // contents_container_views_.
-    size_t start_view_child_index = GetIndexOf(start_view).value();
-    size_t active_view_child_index = GetIndexOf(active_view).value();
-    ReorderChildView(start_view, active_view_child_index);
-    ReorderChildView(active_view, start_view_child_index);
-
-    active_index_ = 0;
+    SwapContentsInSplitView();
   }
   contents_container_views_[1]->contents_view()->SetWebContents(nullptr);
   contents_container_views_[1]->SetVisible(false);
   resize_area_->SetVisible(false);
   UpdateContentsBorderAndOverlay();
 
-  if (auto* active_contents = GetActiveContentsView()->web_contents()) {
-    if (auto* sad_tab_helper = SadTabHelper::FromWebContents(active_contents)) {
-      sad_tab_helper->ReinstallInWebView();
-    }
-  }
+  SafeInvoke(GetActiveContentsView()->web_contents())
+      .Then(Overload<content::WebContents*>(
+          &tabs::TabInterface::MaybeGetFromContents))
+      .Then(&SadTabHelper::From)
+      .Then(&SadTabHelper::ReinstallInWebView);
+}
+
+void MultiContentsView::SwapContentsInSplitView() {
+  // Reorder the child views so that focus order will be consistent with
+  // contents_container_views_.
+  ContentsContainerView* start_view = contents_container_views_[0];
+  ContentsContainerView* end_view = contents_container_views_[1];
+  size_t start_view_child_index = GetIndexOf(start_view).value();
+  size_t end_view_child_index = GetIndexOf(end_view).value();
+  ReorderChildView(start_view, end_view_child_index);
+  ReorderChildView(end_view, start_view_child_index);
+
+  std::swap(contents_container_views_[0], contents_container_views_[1]);
+
+  active_index_ = active_index_ == 0 ? 1 : 0;
 }
 
 void MultiContentsView::SetActiveIndex(int index) {
@@ -327,6 +349,7 @@ void MultiContentsView::UpdateSplitVisualData(
   }
 
   visual_data_ = visual_data;
+  resize_area_->SetLayout(visual_data.split_layout());
   InvalidateLayout();
 }
 
@@ -339,7 +362,7 @@ void MultiContentsView::SetHighlightActiveContentsView(bool is_highlighted) {
 
 void MultiContentsView::ExecuteOnEachVisibleContentsView(
     base::RepeatingCallback<void(ContentsWebView*)> callback) {
-  for (auto* contents_container_view : contents_container_views_) {
+  for (auto& contents_container_view : contents_container_views_) {
     if (contents_container_view->GetVisible()) {
       callback.Run(contents_container_view->contents_view());
     }
@@ -361,16 +384,17 @@ void MultiContentsView::SetTargetContentBounds(
   InvalidateLayout(/*avoid_propagate_during_layout=*/true);
 }
 
-void MultiContentsView::SetIsAnimatingContent(bool is_animating) {
-  for (auto* contents_container_view : contents_container_views_) {
+void MultiContentsView::SetIsAnimatingContent(bool is_animating,
+                                              bool is_origin_changing) {
+  for (auto& contents_container_view : contents_container_views_) {
     contents_container_view->contents_view()->SetIsAnimatingBounds(
-        is_animating);
+        is_animating, is_origin_changing);
   }
 }
 
 std::vector<views::View*> MultiContentsView::GetAccessiblePanes() {
   std::vector<views::View*> accessible_panes;
-  for (auto* contents_container_view : contents_container_views_) {
+  for (auto& contents_container_view : contents_container_views_) {
     auto contents_accessible_panes =
         contents_container_view->GetAccessiblePanes();
     accessible_panes.insert(accessible_panes.end(),
@@ -381,37 +405,35 @@ std::vector<views::View*> MultiContentsView::GetAccessiblePanes() {
 }
 
 void MultiContentsView::OnResize(int resize_amount, bool done_resizing) {
-  if (!initial_start_width_on_resize_.has_value()) {
-    initial_start_width_on_resize_ =
-        std::make_optional(contents_container_views_[0]->size().width());
+  if (!initial_start_size_on_resize_.has_value()) {
+    initial_start_size_on_resize_ = std::make_optional(
+        GetResizeAxisComponent(contents_container_views_[0]->size()));
   }
-  double total_width = contents_container_views_[0]->size().width() +
-                       contents_container_views_[0]->GetInsets().width() +
-                       contents_container_views_[1]->size().width() +
-                       contents_container_views_[1]->GetInsets().width();
-  double end_width = (initial_start_width_on_resize_.value() +
-                      contents_container_views_[0]->GetInsets().width() +
-                      static_cast<double>(resize_amount));
+  double total_size =
+      GetResizeAxisComponent(contents_container_views_[0]->size()) +
+      GetResizeAxisComponent(contents_container_views_[1]->size());
+  double new_start_size = initial_start_size_on_resize_.value() + resize_amount;
 
-  // If end_width is within the snap point widths, update to the snap point.
+  // If new_start_size is within the snap point sizes, update to the snap
+  // point.
   delegate_->ResizeWebContents(
-      CalculateRatioWithSnapPoints(end_width, total_width), done_resizing);
+      CalculateRatioWithSnapPoints(new_start_size, total_size), done_resizing);
 
   if (done_resizing) {
-    initial_start_width_on_resize_ = std::nullopt;
+    initial_start_size_on_resize_ = std::nullopt;
   }
 }
 
 double MultiContentsView::CalculateRatioWithSnapPoints(
-    double end_width,
-    double total_width) const {
+    double start_size,
+    double total_size) const {
   for (const double& snap_point : snap_points_) {
-    double dp_snap_point = snap_point * total_width;
-    if (std::abs(dp_snap_point - end_width) < kSnapDistance) {
+    double dp_snap_point = snap_point * total_size;
+    if (std::abs(dp_snap_point - start_size) < kSnapDistance) {
       return snap_point;
     }
   }
-  return end_width / total_width;
+  return start_size / total_size;
 }
 
 void MultiContentsView::OnThemeChanged() {
@@ -436,7 +458,7 @@ void MultiContentsView::OnWebContentsFocused(views::WebView* web_view) {
 
 void MultiContentsView::OnActorOverlayFocused(views::WebView* web_view) {
   if (IsInSplitView() && GetWidget()->IsVisible()) {
-    for (auto* contents_container_view : contents_container_views_) {
+    for (auto& contents_container_view : contents_container_views_) {
       if (contents_container_view->actor_overlay_web_view() &&
           contents_container_view->actor_overlay_web_view() == web_view &&
           GetInactiveContentsView() ==
@@ -450,7 +472,7 @@ void MultiContentsView::OnActorOverlayFocused(views::WebView* web_view) {
 
 void MultiContentsView::OnNtpFooterFocused(views::WebView* web_view) {
   if (IsInSplitView() && GetWidget()->IsVisible()) {
-    for (auto* contents_container_view : contents_container_views_) {
+    for (auto& contents_container_view : contents_container_views_) {
       if (contents_container_view->new_tab_footer_view() &&
           contents_container_view->new_tab_footer_view() == web_view &&
           GetInactiveContentsView() ==
@@ -498,6 +520,9 @@ views::ProposedLayout MultiContentsView::CalculateProposedLayout(
   available_space =
       CalculateSeparatorLayouts(available_space, layouts.child_layouts);
 
+  if (IsInSplitView()) {
+    available_space.Inset(split_view_insets_);
+  }
   ViewSizes sizes = GetViewSizes(available_space);
 
   gfx::Rect start_rect, resize_rect, end_rect;
@@ -517,32 +542,17 @@ views::ProposedLayout MultiContentsView::CalculateProposedLayout(
                          gfx::Size(available_space.width(), sizes.end));
   }
 
-  if (IsInSplitView()) {
-    if (GetSplitLayout() == split_tabs::SplitTabLayout::kStacked) {
-      start_rect.Inset(gfx::Insets::TLBR(split_view_insets_.top(),
-                                         split_view_insets_.left(), 0,
-                                         split_view_insets_.right()));
-      end_rect.Inset(gfx::Insets::TLBR(0, split_view_insets_.left(),
-                                       split_view_insets_.bottom(),
-                                       split_view_insets_.right()));
-    } else {
-      start_rect.Inset(gfx::Insets::TLBR(split_view_insets_.top(),
-                                         split_view_insets_.left(),
-                                         split_view_insets_.bottom(), 0));
-      end_rect.Inset(gfx::Insets::TLBR(split_view_insets_.top(), 0,
-                                       split_view_insets_.bottom(),
-                                       split_view_insets_.right()));
-    }
-  }
-
-  layouts.child_layouts.emplace_back(contents_container_views_[0],
+  layouts.child_layouts.emplace_back(contents_container_views_[0].get(),
                                      contents_container_views_[0]->GetVisible(),
                                      start_rect);
   layouts.child_layouts.emplace_back(resize_area_.get(),
                                      resize_area_->GetVisible(), resize_rect);
-  layouts.child_layouts.emplace_back(contents_container_views_[1],
+  layouts.child_layouts.emplace_back(contents_container_views_[1].get(),
                                      contents_container_views_[1]->GetVisible(),
                                      end_rect);
+  layouts.child_layouts.emplace_back(lens_overlay_view_.get(),
+                                     lens_overlay_view_->GetVisible(),
+                                     gfx::Rect(width, height));
 
   layouts.host_size = gfx::Size(width, height);
   return layouts;
@@ -550,23 +560,16 @@ views::ProposedLayout MultiContentsView::CalculateProposedLayout(
 
 void MultiContentsView::BeforeApplyLayout(const views::ProposedLayout& layout) {
   if (!target_content_bounds_) {
-    for (auto* contents : contents_container_views_) {
+    for (auto& contents : contents_container_views_) {
       contents->SetTargetContentBounds(std::nullopt);
     }
     return;
   }
 
   if (!IsInSplitView()) {
-    auto* const contents = GetActiveContentsContainerView();
-    contents->SetTargetContentBounds(
-        -target_content_bounds_->clipped_area.ToOutsets());
-
-    // Clear out the other contents just in case.
-    for (auto* other : contents_container_views_) {
-      if (other != contents) {
-        other->SetTargetContentBounds(std::nullopt);
-      }
-    }
+    const auto outsets = -target_content_bounds_->clipped_area.ToOutsets();
+    GetActiveContentsContainerView()->SetTargetContentBounds(outsets);
+    GetInactiveContentsContainerView()->SetTargetContentBounds(std::nullopt);
     return;
   }
 
@@ -574,8 +577,16 @@ void MultiContentsView::BeforeApplyLayout(const views::ProposedLayout& layout) {
   //
   // This is a bit more expensive than a normal layout but only happens during
   // animation when the target bounds are set.
-  const auto target_layout = CalculateProposedLayout(
-      views::SizeBounds(target_content_bounds_->actual_size));
+  views::ProposedLayout target_layout;
+  {
+    // Need to temporarily override the split view insets.
+    const auto split_view_insets =
+        gfx::Insets::TLBR(split_view_insets_.top(), kSplitViewContentInset,
+                          kSplitViewContentInset, kSplitViewContentInset);
+    base::AutoReset inset_override(&split_view_insets_, split_view_insets);
+    target_layout = CalculateProposedLayout(
+        views::SizeBounds(target_content_bounds_->actual_size));
+  }
 
   const auto& default_clip = target_content_bounds_->clipped_area;
 
@@ -586,7 +597,7 @@ void MultiContentsView::BeforeApplyLayout(const views::ProposedLayout& layout) {
 
   gfx::Outsets first_outsets = gfx::Outsets::TLBR(
       default_clip.top(), 0, default_clip.bottom(), default_clip.left());
-  auto* const first = contents_container_views_[0];
+  auto* const first = contents_container_views_[0].get();
   auto* const first_current = layout.GetLayoutFor(first);
   auto* const first_target = target_layout.GetLayoutFor(first);
   if (first_current && first_target) {
@@ -596,7 +607,7 @@ void MultiContentsView::BeforeApplyLayout(const views::ProposedLayout& layout) {
 
   gfx::Outsets second_outsets = gfx::Outsets::TLBR(
       default_clip.top(), 0, default_clip.bottom(), default_clip.right());
-  auto* const second = contents_container_views_[1];
+  auto* const second = contents_container_views_[1].get();
   auto* const second_current = layout.GetLayoutFor(second);
   auto* const second_target = target_layout.GetLayoutFor(second);
   if (second_current && second_target) {
@@ -610,39 +621,43 @@ void MultiContentsView::BeforeApplyLayout(const views::ProposedLayout& layout) {
 
 gfx::Rect MultiContentsView::CalculateDropTargetLayout(
     const gfx::Rect& available_space,
-    std::vector<views::ChildLayout>& child_layouts) const {
+    views::ProposedLayout::ChildLayoutList& child_layouts) const {
   CHECK(IsDragAndDropEnabled());
   if (!drop_target_view_->GetVisible()) {
     child_layouts.emplace_back(drop_target_view_.get(), false, gfx::Rect());
     return available_space;
   }
 
-  const int drop_target_width =
-      drop_target_view_->GetPreferredWidth(available_space.width());
+  CHECK(drop_target_view_->side().has_value());
+  const int drop_target_size = drop_target_view_->GetSizeForAvailableSpace(
+      drop_target_view_->side() == MultiContentsDropTargetView::DropSide::BOTTOM
+          ? available_space.height()
+          : available_space.width());
 
-  const int drop_target_x = (drop_target_view_->side() ==
-                             MultiContentsDropTargetView::DropSide::START)
-                                ? available_space.x()
-                                : available_space.right() - drop_target_width;
-  const int remaining_space_x =
-      available_space.x() + ((drop_target_view_->side() ==
-                              MultiContentsDropTargetView::DropSide::START)
-                                 ? drop_target_width
-                                 : 0);
+  gfx::Rect drop_target_bounds = available_space;
+  gfx::Rect remaining_space = available_space;
+  switch (drop_target_view_->side().value()) {
+    case MultiContentsDropTargetView::DropSide::START:
+      remaining_space.Inset(gfx::Insets().set_left(drop_target_size));
+      break;
+    case MultiContentsDropTargetView::DropSide::END:
+      remaining_space.Inset(gfx::Insets().set_right(drop_target_size));
+      break;
+    case MultiContentsDropTargetView::DropSide::BOTTOM:
+      remaining_space.Inset(gfx::Insets().set_bottom(drop_target_size));
+      break;
+    default:
+      NOTREACHED();
+  }
+  drop_target_bounds.Subtract(remaining_space);
 
-  child_layouts.emplace_back(
-      drop_target_view_.get(), true,
-      gfx::Rect(drop_target_x, available_space.y(), drop_target_width,
-                available_space.height()));
-
-  return gfx::Rect(remaining_space_x, available_space.y(),
-                   available_space.width() - drop_target_width,
-                   available_space.height());
+  child_layouts.emplace_back(drop_target_view_.get(), true, drop_target_bounds);
+  return remaining_space;
 }
 
 gfx::Rect MultiContentsView::CalculateSeparatorLayouts(
     const gfx::Rect& available_space,
-    std::vector<views::ChildLayout>& child_layouts) const {
+    views::ProposedLayout::ChildLayoutList& child_layouts) const {
   if (IsInSplitView()) {
     child_layouts.emplace_back(contents_separators_.top_separator.get(), false,
                                gfx::Rect());
@@ -699,15 +714,13 @@ gfx::Rect MultiContentsView::CalculateSeparatorLayouts(
     if (should_show_leading) {
       corner_layout.bounds =
           gfx::Rect(available_space.origin(), corner_preferred_size);
-      corner_separator->SetOrientation(
-          CustomFloatingCorner::CornerOrientation::kTopLeading);
+      corner_separator->SetOrientation(CornerOrientation::kTopLeading);
     } else {
       corner_layout.bounds = gfx::Rect(
           gfx::Point(available_space.right() - corner_preferred_size.width(),
                      available_space.y()),
           corner_preferred_size);
-      corner_separator->SetOrientation(
-          CustomFloatingCorner::CornerOrientation::kTopTrailing);
+      corner_separator->SetOrientation(CornerOrientation::kTopTrailing);
     }
   }
   child_layouts.push_back(corner_layout);
@@ -782,12 +795,16 @@ int MultiContentsView::GetMinViewSize(gfx::Rect available_space) const {
 }
 
 void MultiContentsView::UpdateContentsBorderAndOverlay() {
-  for (auto* contents_container_view : contents_container_views_) {
+  const bool is_in_split = IsInSplitView();
+  for (auto& contents_container_view : contents_container_views_) {
     const bool is_active =
         contents_container_view->contents_view() == GetActiveContentsView();
+    contents_container_view->SetRoundedCorners(
+        is_in_split
+            ? kSplitViewContentRoundedCorners
+            : (is_active ? GetBackgroundRadii() : gfx::RoundedCornersF()));
     contents_container_view->UpdateBorderAndOverlay(
-        IsInSplitView(), is_active,
-        is_active && active_contents_view_highlighted_);
+        is_in_split, is_active, is_active && active_contents_view_highlighted_);
   }
 }
 
@@ -843,6 +860,13 @@ void MultiContentsView::SetSplitViewInsets(const gfx::Insets& insets) {
   // This can be called during BrowserView layout, so protect against creating a
   // layout loop.
   InvalidateLayout(/*avoid_propagate_during_layout=*/true);
+}
+
+int MultiContentsView::GetResizeAxisComponent(const gfx::Size& size) const {
+  return (visual_data_.split_layout() ==
+          split_tabs::SplitTabLayout::kSideBySide)
+             ? size.width()
+             : size.height();
 }
 
 BEGIN_METADATA(MultiContentsView)

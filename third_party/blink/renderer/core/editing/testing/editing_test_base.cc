@@ -11,6 +11,7 @@
 #include "third_party/blink/renderer/core/editing/position.h"
 #include "third_party/blink/renderer/core/editing/selection_template.h"
 #include "third_party/blink/renderer/core/editing/testing/selection_sample.h"
+#include "third_party/blink/renderer/core/frame/local_frame.h"
 #include "third_party/blink/renderer/core/frame/local_frame_view.h"
 #include "third_party/blink/renderer/core/html/html_element.h"
 #include "third_party/blink/renderer/core/testing/dummy_page_holder.h"
@@ -21,35 +22,39 @@ EditingTestBase::EditingTestBase() = default;
 
 EditingTestBase::~EditingTestBase() = default;
 
+Editor& EditingTestBase::GetEditor() const {
+  return GetFrame().GetEditor();
+}
+
 Position EditingTestBase::SetCaretTextToBody(
     const std::string& selection_text) {
-  const SelectionInDOMTree selection = SetSelectionTextToBody(selection_text);
+  const SelectionInDomTree selection = SetSelectionTextToBody(selection_text);
   DCHECK(selection.IsCaret())
       << "|selection_text| should contain a caret marker '|'";
   return selection.Anchor();
 }
 
-SelectionInDOMTree EditingTestBase::SetSelectionTextToBody(
+SelectionInDomTree EditingTestBase::SetSelectionTextToBody(
     const std::string& selection_text) {
   return SetSelectionText(GetDocument().body(), selection_text);
 }
 
-SelectionInDOMTree EditingTestBase::SetSelectionText(
+SelectionInDomTree EditingTestBase::SetSelectionText(
     HTMLElement* element,
     const std::string& selection_text) {
-  const SelectionInDOMTree selection =
+  const SelectionInDomTree selection =
       SelectionSample::SetSelectionText(element, selection_text);
   UpdateAllLifecyclePhasesForTest();
   return selection;
 }
 
 std::string EditingTestBase::GetSelectionTextFromBody(
-    const SelectionInDOMTree& selection) const {
+    const SelectionInDomTree& selection) const {
   return SelectionSample::GetSelectionText(*GetDocument().body(), selection);
 }
 
 std::string EditingTestBase::GetSelectionTextFromBody() const {
-  return GetSelectionTextFromBody(Selection().GetSelectionInDOMTree());
+  return GetSelectionTextFromBody(Selection().GetSelectionInDomTree());
 }
 
 std::string EditingTestBase::GetSelectionTextInFlatTreeFromBody(
@@ -63,10 +68,10 @@ std::string EditingTestBase::GetCaretTextFromBody(
   DCHECK(position.IsValidFor(GetDocument()))
       << "A valid position must be provided " << position;
   return GetSelectionTextFromBody(
-      SelectionInDOMTree::Builder().Collapse(position).Build());
+      SelectionInDomTree::Builder().Collapse(position).Build());
 }
 
-ShadowRoot* EditingTestBase::CreateShadowRootForElementWithIDAndSetInnerHTML(
+ShadowRoot* EditingTestBase::CreateShadowRootForElementWithIdAndSetInnerHtml(
     TreeScope& scope,
     const char* host_element_id,
     const char* shadow_root_content) {
@@ -81,7 +86,7 @@ ShadowRoot* EditingTestBase::CreateShadowRootForElementWithIDAndSetInnerHTML(
 
 ShadowRoot* EditingTestBase::SetShadowContent(const char* shadow_content,
                                               const char* host) {
-  ShadowRoot* shadow_root = CreateShadowRootForElementWithIDAndSetInnerHTML(
+  ShadowRoot* shadow_root = CreateShadowRootForElementWithIdAndSetInnerHtml(
       GetDocument(), host, shadow_content);
   return shadow_root;
 }

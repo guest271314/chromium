@@ -25,14 +25,24 @@ using InkModeledShapeId = base::StrongAlias<class InkModeledShapeIdTag, size_t>;
 // Identifies ink::Stroke objects.
 using InkStrokeId = base::StrongAlias<class InkStrokeIdTag, size_t>;
 
-// Identifies Ink text objects.
+// Identifies Ink text objects loaded from the PDF.
+using InkLoadedTextId = base::StrongAlias<class InkLoadedTextIdTag, size_t>;
+
+// Identifies newly created Ink text objects.
 using InkTextId = base::StrongAlias<class InkTextIdTag, size_t>;
 
 // Set of all IDs.
-using IdType = std::variant<InkStrokeId, InkModeledShapeId, InkTextId>;
+using IdType =
+    std::variant<InkStrokeId, InkModeledShapeId, InkTextId, InkLoadedTextId>;
+
+// Variant of only text IDs.
+using TextId = std::variant<InkTextId, InkLoadedTextId>;
 
 // Returns the underlying value of an IdType.
 size_t GetIdTypeValue(const IdType& id);
+
+// Converts a TextId to an IdType.
+IdType TextIdToIdType(const TextId& id);
 
 // Compares IdTypes by their underlying values, breaking ties by comparing their
 // index.

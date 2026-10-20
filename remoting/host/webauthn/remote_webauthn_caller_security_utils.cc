@@ -4,30 +4,32 @@
 
 #include "remoting/host/webauthn/remote_webauthn_caller_security_utils.h"
 
+#include <algorithm>
 #include <optional>
 
 #include "base/base_paths.h"
+#include "base/command_line.h"
+#include "base/files/file_path.h"
 #include "base/logging.h"
 #include "base/notimplemented.h"
 #include "base/path_service.h"
 #include "base/process/process_handle.h"
 #include "build/build_config.h"
+#include "remoting/host/webauthn/remote_webauthn_constants.h"
+
+#if BUILDFLAG(IS_LINUX)
+#include "base/containers/fixed_flat_set.h"
+#endif
 
 #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_WIN)
-#include "base/containers/fixed_flat_set.h"
-#include "base/files/file_path.h"
 #include "remoting/host/base/process_util.h"
 #endif
 
 #if BUILDFLAG(IS_WIN)
 #include <windows.h>
 
-#include <memory>
-#include <string>
-
-#include "base/logging.h"
 #include "base/win/scoped_handle.h"
-#include "remoting/host/win/trust_util.h"
+#include "base/win/trust_util.h"
 #endif
 
 #if BUILDFLAG(IS_MAC)
@@ -59,57 +61,6 @@ constexpr auto kAllowedCallerPrograms =
 
 #elif BUILDFLAG(IS_WIN)
 
-// Keys for base::PathService to retrieve paths to directories where apps are
-// installed.
-constexpr int kAppsDirectoryPathKeys[] = {
-    base::DIR_PROGRAM_FILES,
-    base::DIR_PROGRAM_FILESX86,
-    base::DIR_PROGRAM_FILES6432,
-    base::DIR_LOCAL_APP_DATA,
-};
-
-// Relative to the Program Files directory.
-constexpr auto kAllowedCallerPrograms =
-    base::MakeFixedFlatSet<base::FilePath::StringViewType>({
-        L"Google\\Chrome\\Application\\chrome.exe",
-        L"Google\\Chrome Beta\\Application\\chrome.exe",
-        L"Google\\Chrome SxS\\Application\\chrome.exe",
-        L"Google\\Chrome Dev\\Application\\chrome.exe",
-    });
-
-// Helper to verify that the cmd.exe binary is located in a trusted system
-// directory.
-bool IsSystemCmd(const base::FilePath& process_image_path) {
-  if (!base::FilePath::CompareEqualIgnoreCase(
-          process_image_path.BaseName().value(), L"cmd.exe")) {
-    return false;
-  }
-
-  base::FilePath process_dir = process_image_path.DirName();
-
-  base::FilePath system_dir;
-  if (base::PathService::Get(base::DIR_SYSTEM, &system_dir)) {
-    if (base::FilePath::CompareEqualIgnoreCase(process_dir.value(),
-                                               system_dir.value())) {
-      return true;
-    }
-  }
-
-  // Also check for the native system directory if it's different (e.g.
-  // SysWOW64 vs System32).
-  base::FilePath windows_dir;
-  if (base::PathService::Get(base::DIR_WINDOWS, &windows_dir)) {
-    if (base::FilePath::CompareEqualIgnoreCase(
-            process_dir.value(), windows_dir.Append(L"System32").value()) ||
-        base::FilePath::CompareEqualIgnoreCase(
-            process_dir.value(), windows_dir.Append(L"SysWOW64").value())) {
-      return true;
-    }
-  }
-
-  return false;
-}
-
 #elif BUILDFLAG(IS_MAC)
 
 constexpr auto kAllowedIdentifiers = std::to_array<const std::string_view>(
@@ -134,56 +85,19 @@ bool IsLaunchedByTrustedProcess() {
   base::FilePath parent_image_path = GetProcessImagePath(parent_pid);
   return kAllowedCallerPrograms.contains(parent_image_path.value());
 #elif BUILDFLAG(IS_WIN)
-  base::ProcessId parent_pid =
-      base::GetParentProcessId(base::GetCurrentProcessHandle());
-  base::FilePath parent_image_path = GetProcessImagePath(parent_pid);
-
-  // On Windows, Chrome launches native messaging hosts via cmd for stdio
-  // communication. See:
-  //   chrome/browser/extensions/api/messaging/native_process_launcher_win.cc
-  // Therefore, we check if the parent is cmd and skip to the grandparent if
-  // that's the case. It's possible to do stdio communications without cmd, so
-  // we don't require the parent to always be cmd.
-
-  // Use IsSystemCmd() for comparison as a 64-bit Chrome launches a 64-bit
-  // cmd.exe which is in C:\Windows\System32, but for a 32-bit native messaging
-  // host, C:\Windows\System32 will be redirected to C:\Windows\SysWOW64, so we
-  // perform case-insensitive directory checks.
-  if (IsSystemCmd(parent_image_path)) {
-    // Skip to the grandparent.
-    base::win::ScopedHandle parent_handle(
-        OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, parent_pid));
-    if (parent_handle.is_valid()) {
-      parent_pid = base::GetParentProcessId(parent_handle.Get());
-      parent_image_path = GetProcessImagePath(parent_pid);
-    } else {
-      PLOG(ERROR) << "Failed to query parent info.";
-    }
+  base::ProcessId launcher_pid = GetLauncherProcessIdFromStdioPipes();
+  if (launcher_pid == base::kNullProcessId) {
+    LOG(ERROR) << "Failed to resolve launcher PID from stdio pipes.";
+    return false;
   }
 
-  // Check if the caller's image path is allowlisted.
-  for (int path_key : kAppsDirectoryPathKeys) {
-    base::FilePath apps_dir_path;
-    if (!base::PathService::Get(path_key, &apps_dir_path)) {
-      continue;
-    }
-    if (!apps_dir_path.IsParent(parent_image_path)) {
-      continue;
-    }
-    for (const base::FilePath::StringViewType& allowed_caller_program :
-         kAllowedCallerPrograms) {
-      base::FilePath allowed_caller_program_full_path =
-          apps_dir_path.Append(allowed_caller_program);
-      if (base::FilePath::CompareEqualIgnoreCase(
-              parent_image_path.value(),
-              allowed_caller_program_full_path.value())) {
-        // Caller's path is allowlisted, now also check if it's properly signed.
-        return IsBinaryTrusted(parent_image_path);
-      }
-    }
+  base::FilePath launcher_image_path = GetProcessImagePath(launcher_pid);
+  if (launcher_image_path.empty()) {
+    LOG(ERROR) << "Failed to get launcher process image path.";
+    return false;
   }
-  // Caller's path is not allowlisted.
-  return false;
+
+  return base::win::IsBinaryTrusted(launcher_image_path);
 #elif BUILDFLAG(IS_MAC)
   // TODO: crbug.com/410903981 - move away from PID-based security checks, which
   // might be susceptible of PID reuse attacks, if Apple provides APIs to query
@@ -215,6 +129,33 @@ bool IsLaunchedByTrustedProcess() {
   NOTIMPLEMENTED();
   return true;
 #endif
+}
+
+bool IsLaunchedByTrustedExtension(const base::CommandLine& command_line) {
+  const base::CommandLine::StringVector& args = command_line.GetArgs();
+  if (args.empty()) {
+    LOG(ERROR) << "Caller origin argument is missing.";
+    return false;
+  }
+  // Chrome passes the caller origin as GURL::spec(), i.e.
+  // "chrome-extension://<id>/". The trailing slash is optional here since the
+  // public native messaging documentation omits it.
+  constexpr base::CommandLine::StringViewType kExtensionOriginPrefix =
+      FILE_PATH_LITERAL("chrome-extension://");
+  base::CommandLine::StringViewType origin = args[0];
+  bool is_allowed = false;
+  if (origin.starts_with(kExtensionOriginPrefix)) {
+    base::CommandLine::StringViewType id =
+        origin.substr(kExtensionOriginPrefix.size());
+    if (id.ends_with(FILE_PATH_LITERAL('/'))) {
+      id.remove_suffix(1);
+    }
+    is_allowed = std::ranges::contains(GetRemoteWebAuthnExtensionIds(), id);
+  }
+  if (!is_allowed) {
+    LOG(ERROR) << "Caller origin is not allowed: " << args[0];
+  }
+  return is_allowed;
 }
 
 }  // namespace remoting

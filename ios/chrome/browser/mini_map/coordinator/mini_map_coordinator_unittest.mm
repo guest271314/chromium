@@ -23,7 +23,6 @@
 #import "ios/chrome/browser/shared/public/commands/scene_commands.h"
 #import "ios/chrome/browser/shared/public/commands/settings_commands.h"
 #import "ios/chrome/browser/shared/public/commands/snackbar_commands.h"
-#import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/grit/ios_branded_strings.h"
 #import "ios/chrome/grit/ios_strings.h"
 #import "ios/chrome/test/providers/mini_map/test_mini_map.h"
@@ -394,9 +393,6 @@ TEST_F(MiniMapCoordinatorTest, TestFooterButtons) {
 
 // Tests that Native Preview is presented when initialized with a URL.
 TEST_F(MiniMapCoordinatorTest, TestPresentNativePreview) {
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndEnableFeature(kIOSMiniMapUniversalLink);
-
   id mini_map_controller = OCMStrictProtocolMock(@protocol(MiniMapController));
   factory_.controller = mini_map_controller;
 
@@ -410,6 +406,55 @@ TEST_F(MiniMapCoordinatorTest, TestPresentNativePreview) {
                          withIPH:NO
                             mode:MiniMapMode::kMapNativePreviewURL];
   OCMExpect([mini_map_controller configureURL:url]);
+  OCMExpect([mini_map_controller configureIncognito:NO]);
+  OCMExpect([mini_map_controller configureCompletion:[OCMArg any]]);
+  OCMExpect(
+      [mini_map_controller configureCompletionWithSearchQuery:[OCMArg any]]);
+  OCMExpect([mini_map_controller configureFailureCompletion:[OCMArg any]]);
+  OCMExpect([mini_map_controller configureFooterWithTitle:[OCMArg any]
+                                       leadingButtonTitle:[OCMArg any]
+                                      trailingButtonTitle:[OCMArg any]
+                                      leadingButtonAction:[OCMArg any]
+                                     trailingButtonAction:[OCMArg any]]);
+
+  OCMExpect([mini_map_controller
+      presentMapsNativePreviewWithPresentingViewController:[OCMArg any]]);
+
+  [coordinator_ start];
+
+  EXPECT_OCMOCK_VERIFY(mini_map_controller);
+}
+
+// Tests that Native Preview is presented when initialized with a URL in
+// Incognito mode.
+TEST_F(MiniMapCoordinatorTest, TestPresentNativePreviewIncognito) {
+  id mini_map_controller = OCMStrictProtocolMock(@protocol(MiniMapController));
+  factory_.controller = mini_map_controller;
+
+  NSURL* url = [NSURL URLWithString:@"https://maps.google.com/maps/foo"];
+
+  browser_ = std::make_unique<TestBrowser>(
+      profile_->CreateOffTheRecordProfileWithTestingFactories());
+  CommandDispatcher* dispatcher = browser_->GetCommandDispatcher();
+  [dispatcher startDispatchingToTarget:mock_scene_handler_
+                           forProtocol:@protocol(SceneCommands)];
+  [dispatcher
+      startDispatchingToTarget:mock_application_settings_command_handler_
+                   forProtocol:@protocol(SettingsCommands)];
+  [dispatcher startDispatchingToTarget:mock_mini_map_command_handler_
+                           forProtocol:@protocol(MiniMapCommands)];
+  [dispatcher startDispatchingToTarget:mock_snackbar_command_handler_
+                           forProtocol:@protocol(SnackbarCommands)];
+
+  coordinator_ = [[MiniMapCoordinator alloc]
+      initWithBaseViewController:root_view_controller_
+                         browser:browser_.get()
+                            text:nil
+                             URL:url
+                         withIPH:NO
+                            mode:MiniMapMode::kMapNativePreviewURL];
+  OCMExpect([mini_map_controller configureURL:url]);
+  OCMExpect([mini_map_controller configureIncognito:YES]);
   OCMExpect([mini_map_controller configureCompletion:[OCMArg any]]);
   OCMExpect(
       [mini_map_controller configureCompletionWithSearchQuery:[OCMArg any]]);
@@ -447,6 +492,7 @@ TEST_F(MiniMapCoordinatorTest, TestNativePreviewFooterButtons) {
                             mode:MiniMapMode::kMapNativePreviewURL];
 
   OCMExpect([mini_map_controller configureURL:url]);
+  OCMExpect([mini_map_controller configureIncognito:NO]);
   OCMExpect([mini_map_controller configureCompletion:[OCMArg any]]);
   OCMExpect(
       [mini_map_controller configureCompletionWithSearchQuery:[OCMArg any]]);

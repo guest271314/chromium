@@ -12,11 +12,14 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "base/check.h"
 #include "base/containers/flat_set.h"
 #include "base/memory/raw_ptr.h"
+#include "base/memory/raw_ref.h"
+#include "base/memory/raw_span.h"
 #include "base/memory/weak_ptr.h"
 #include "base/observer_list.h"
 #include "base/time/time.h"
@@ -49,8 +52,8 @@
 
 #if BUILDFLAG(IS_CHROMEOS)
 // TODO(crbug.com/376575664): Remove this include directive when the
-// ADVANCED_MEMORY_SAFETY_CHECKS macro is removed.
-#include "base/memory/advanced_memory_safety_checks.h"
+// SANITIZED_OBJECT macro is removed.
+#include "base/memory/sanitized_object.h"
 #endif
 
 namespace cc {
@@ -118,11 +121,34 @@ class AURA_EXPORT Window : public ui::LayerDelegate,
                            public viz::HostFrameSinkClient {
 #if BUILDFLAG(IS_CHROMEOS)
   // TODO(crbug.com/376575664): Remove this macro once the bug gets fixed.
-  ADVANCED_MEMORY_SAFETY_CHECKS();
+  SANITIZED_OBJECT();
 #endif
 
  public:
   METADATA_HEADER_BASE(Window);
+
+  using Windows = std::vector<raw_ptr<Window, VectorExperimental>>;
+
+  // A helper class to ensure that the Window is not deleted while it is
+  // notifying observers or doing other operations where re-entrant deletion
+  // would be problematic. Attempting to delete the Window while a
+  // ScopedDeleteBlocker is active will cause a crash. This is no-op if
+  // if nullptr is passed.
+  class AURA_EXPORT ScopedDeleteBlocker {
+   public:
+    explicit ScopedDeleteBlocker(Window* window);
+    explicit ScopedDeleteBlocker(const Windows& windows);
+    ScopedDeleteBlocker(const ScopedDeleteBlocker&) = delete;
+    ScopedDeleteBlocker& operator=(const ScopedDeleteBlocker&) = delete;
+    ~ScopedDeleteBlocker();
+
+   private:
+    raw_ptr<Window> window_ = nullptr;
+    base::raw_span<const raw_ptr<Window, VectorExperimental>> windows_;
+  };
+
+  // Asserts that at least one `ScopedDeleteBlocker` is active on this Window.
+  void AssertDeleteBlocked() const { CHECK(delete_block_count_ > 0u); }
 
   // Initial value of id() for newly created windows.
   static constexpr int kInitialId = -1;
@@ -161,8 +187,6 @@ class AURA_EXPORT Window : public ui::LayerDelegate,
     kMaxValue = HIDDEN,
   };
 
-  using Windows = std::vector<raw_ptr<Window, VectorExperimental>>;
-
   explicit Window(WindowDelegate* delegate,
                   client::WindowType type = client::WINDOW_TYPE_UNKNOWN);
 
@@ -180,6 +204,12 @@ class AURA_EXPORT Window : public ui::LayerDelegate,
   }
   bool owned_by_parent() const { return owned_by_parent_; }
 
+  // Sets whether the window's layer is managed by its parent window.
+  // If set to false, the layer is not automatically parented to the parent
+  // window's layer, and stacking operations (z-order) are ignored.
+  void SetLayerManagedByParent(bool layer_managed_by_parent);
+  bool layer_managed_by_parent() const { return layer_managed_by_parent_; }
+
   // A type is used to identify a class of Windows and customize behavior such
   // as event handling and parenting.  This field should only be consumed by the
   // shell -- Aura itself shouldn't contain type-specific logic.
@@ -190,7 +220,7 @@ class AURA_EXPORT Window : public ui::LayerDelegate,
   void SetId(int id);
 
   // ui::GestureConsumer:
-  const std::string& GetName() const override;
+  std::string_view GetName() const override;
   void SetName(const std::string& name);
 
   const std::u16string& GetTitle() const;
@@ -211,6 +241,11 @@ class AURA_EXPORT Window : public ui::LayerDelegate,
   WindowDelegate* delegate() { return delegate_; }
   const WindowDelegate* delegate() const { return delegate_; }
 
+  // Returns the bounds of the window relative to its parent.
+  // Note that if the window's layer is not managed by its parent (see
+  // SetLayerManagedByParent), the layer's bounds may be in a different
+  // coordinate space, but `bounds()` still represents the window's logical
+  // bounds relative to its parent window.
   const gfx::Rect& bounds() const { return bounds_; }
 
   Window* parent() { return parent_; }
@@ -310,6 +345,10 @@ class AURA_EXPORT Window : public ui::LayerDelegate,
   // this function returns the same value as `GetBoundsInScreen()`.
   gfx::Rect GetActualBoundsInScreen() const;
 
+  // Similar to `GetBoundsInScreen()` except that the returned value ignores
+  // any transforms.
+  gfx::Rect GetBoundsInScreenWithoutTransform() const;
+
   // Note: Must be called after initializing the window.
   void SetTransform(const gfx::Transform& transform);
   const gfx::Transform& transform() const;
@@ -334,6 +373,11 @@ class AURA_EXPORT Window : public ui::LayerDelegate,
 
   // Changes the bounds of the window. If present, the window's parent's
   // LayoutManager may adjust the bounds.
+  // If the window's layer is not managed by its parent (see
+  // SetLayerManagedByParent), the layer's bounds are updated to match the
+  // new bounds in the coordinate system of the parent window's layer. This
+  // requires that the transform between the layer and its parent's layer is
+  // a simple translation, otherwise it will crash.
   // Note: Must be called after initializing the window.
   void SetBounds(const gfx::Rect& new_bounds);
 
@@ -344,7 +388,9 @@ class AURA_EXPORT Window : public ui::LayerDelegate,
                          const display::Display& dst_display);
 
   // Returns the target bounds of the window. If the window's layer is
-  // not animating, it simply returns the current bounds.
+  // not managed by its parent, this returns the layer's target bounds
+  // converted to the parent window's coordinate space. Otherwise, if the
+  // window's layer is not animating, it simply returns the current bounds.
   gfx::Rect GetTargetBounds() const;
 
   // Forwards directly to the layer. See Layer::ScheduleDraw() for details.
@@ -491,10 +537,12 @@ class AURA_EXPORT Window : public ui::LayerDelegate,
   void GetDebugInfo(const aura::Window* active_window,
                     const aura::Window* focused_window,
                     const aura::Window* capture_window,
-                    std::ostringstream* out) const;
+                    std::ostringstream* out,
+                    bool scrub_data = false) const;
 #if DCHECK_IS_ON()
   // These methods are useful when debugging.
-  std::string GetWindowHierarchy(int depth) const;
+  std::string GetWindowHierarchy(int depth,
+                                 const Window* active_window = nullptr) const;
   void PrintWindowHierarchy(int depth) const;
 #endif
 
@@ -627,6 +675,11 @@ class AURA_EXPORT Window : public ui::LayerDelegate,
 
   // Changes the bounds of the window without condition.
   void SetBoundsInternal(const gfx::Rect& new_bounds);
+
+  // Helper method to notify observers, layout manager, and delegate when the
+  // window's bounds change.
+  void NotifyBoundsChanged(const gfx::Rect& old_bounds,
+                           ui::PropertyChangeReason reason);
 
   // Updates the visible state of the layer and the Window, but does not make
   // visible-state specific changes. Called from Show()/Hide().
@@ -769,10 +822,19 @@ class AURA_EXPORT Window : public ui::LayerDelegate,
 
   // True if this window is being destroyed.
   bool is_destroying_ = false;
+  // True if this window is being destroyed and past the point that
+  // it should no longer be used.
+  bool is_destroyed_ = false;
 
   // True if the Window is owned by its parent - i.e. it will be deleted by its
   // parent during its parents destruction.
   bool owned_by_parent_ = true;
+
+  // True if the window's layer is managed by its parent window.
+  // When false, the layer is not automatically added/removed from the parent's
+  // layer, and stacking operations (z-order) are ignored for this window's
+  // layer.
+  bool layer_managed_by_parent_ = true;
 
   raw_ptr<WindowDelegate, AcrossTasksDanglingUntriaged> delegate_;
 
@@ -867,6 +929,8 @@ class AURA_EXPORT Window : public ui::LayerDelegate,
 
   // Used when this is embedding external content.
   base::WeakPtr<cc::LayerTreeFrameSink> frame_sink_;
+
+  size_t delete_block_count_ = 0;
 
   base::WeakPtrFactory<Window> weak_factory_{this};
 };

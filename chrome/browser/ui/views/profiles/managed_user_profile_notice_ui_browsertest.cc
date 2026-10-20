@@ -2,17 +2,14 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "chrome/browser/ui/webui/signin/managed_user_profile_notice_ui.h"
-
 #include <optional>
 
 #include "base/functional/callback_helpers.h"
 #include "base/no_destructor.h"
 #include "base/strings/strcat.h"
 #include "base/test/scoped_feature_list.h"
-#include "build/build_config.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/profiles/profile_ui_test_utils.h"
 #include "chrome/browser/ui/test/test_browser_ui.h"
 #include "chrome/browser/ui/views/profiles/profile_management_step_controller.h"
@@ -38,7 +35,6 @@ enum class ScreenVersion {
 struct ManagedUserProfileNoticePixelTestParam {
   PixelTestParam pixel_test_param;
   ScreenVersion screen_version = ScreenVersion::kOld;
-  bool use_primary_and_tonal_buttons = false;
 };
 
 std::string ParamToTestSuffix(
@@ -57,8 +53,7 @@ std::string ParamToTestSuffix(
       break;
   }
   return base::StrCat(
-      {info.param.pixel_test_param.test_suffix, screen_version_suffix,
-       info.param.use_primary_and_tonal_buttons ? "Tonal" : ""});
+      {info.param.pixel_test_param.test_suffix, screen_version_suffix});
 }
 
 std::unique_ptr<signin::EnterpriseProfileCreationDialogParams>
@@ -91,12 +86,8 @@ const std::vector<ManagedUserProfileNoticePixelTestParam>& GetTestParams() {
           for (ScreenVersion screen_version :
                {ScreenVersion::kOld, ScreenVersion::kRefreshed,
                 ScreenVersion::kRevamped}) {
-            for (bool use_primary_and_tonal_buttons : {false, true}) {
-              params.push_back({.pixel_test_param = window_param,
-                                .screen_version = screen_version,
-                                .use_primary_and_tonal_buttons =
-                                    use_primary_and_tonal_buttons});
-            }
+            params.push_back({.pixel_test_param = window_param,
+                              .screen_version = screen_version});
           }
         }
         return params;
@@ -123,8 +114,14 @@ class ManagedUserProfileNoticeStepControllerForTest
 
   void Show(StepSwitchFinishedCallback step_shown_callback,
             bool reset_state) override {
+    ManagedUserProfileNoticeParams::CreateForWebContents(
+        host().GetPickerContents(),
+        /*browser=*/nullptr,
+        ManagedUserProfileNoticeUI::ScreenType::kProfilePicker,
+        CreateEnterpriseProfileCreationDialogParams(account_info_));
+
     // Reload the WebUI in the picker contents.
-    host()->ShowScreenInPickerContents(
+    host().ShowScreenInPickerContents(
         managed_user_notice_url_,
         base::BindOnce(&ManagedUserProfileNoticeStepControllerForTest::
                            OnManagedUserProfileNoticeLoaded,
@@ -132,23 +129,8 @@ class ManagedUserProfileNoticeStepControllerForTest
                        std::move(step_shown_callback)));
   }
 
-  void OnNavigateBackRequested() override { NOTREACHED(); }
-
   void OnManagedUserProfileNoticeLoaded(
       StepSwitchFinishedCallback step_shown_callback) {
-    ManagedUserProfileNoticeUI* managed_user_notice_ui =
-        host()
-            ->GetPickerContents()
-            ->GetWebUI()
-            ->GetController()
-            ->GetAs<ManagedUserProfileNoticeUI>();
-
-    CHECK(managed_user_notice_ui);
-    managed_user_notice_ui->Initialize(
-        /*browser=*/nullptr,
-        ManagedUserProfileNoticeUI::ScreenType::kProfilePicker,
-        CreateEnterpriseProfileCreationDialogParams(account_info_));
-
     if (!step_shown_callback->is_null()) {
       std::move(step_shown_callback.value()).Run(/*success=*/true);
     }
@@ -176,9 +158,7 @@ class ManagedUserProfileNoticeUIWindowPixelTest
           GetParam().screen_version == ScreenVersion::kRefreshed ||
               GetParam().screen_version == ScreenVersion::kRevamped},
          {switches::kFirstRunDesktopRevamp,
-          GetParam().screen_version == ScreenVersion::kRevamped},
-         {switches::kUsePrimaryAndTonalButtonsForPromos,
-          GetParam().use_primary_and_tonal_buttons}});
+          GetParam().screen_version == ScreenVersion::kRevamped}});
   }
 
   ~ManagedUserProfileNoticeUIWindowPixelTest() override {
@@ -198,7 +178,7 @@ class ManagedUserProfileNoticeUIWindowPixelTest
         GetParam().screen_version == ScreenVersion::kRefreshed ||
         GetParam().screen_version == ScreenVersion::kRevamped;
     profile_picker_view_ = new ProfileManagementStepTestView(
-        ProfilePicker::Params::ForFirstRun(browser()->profile()->GetPath(),
+        ProfilePicker::Params::ForFirstRun(browser()->GetProfile()->GetPath(),
                                            base::DoNothing()),
         ProfileManagementFlowController::Step::kPostSignInFlow,
         /*step_controller_factory=*/
@@ -224,10 +204,11 @@ class ManagedUserProfileNoticeUIWindowPixelTest
   bool VerifyUi() override {
     views::Widget* widget = GetWidgetForScreenshot();
 
+    const std::string baseline = "8481376";
     const testing::TestInfo* test_info =
         testing::UnitTest::GetInstance()->current_test_info();
-    const std::string screenshot_name =
-        base::StrCat({test_info->test_suite_name(), "_", test_info->name()});
+    const std::string screenshot_name = base::StrCat(
+        {test_info->test_suite_name(), "_", test_info->name(), "_", baseline});
 
     return VerifyPixelUi(widget, "ManagedUserProfileNoticeUIWindowPixelTest",
                          screenshot_name) != ui::test::ActionResult::kFailed;
@@ -261,13 +242,6 @@ class ManagedUserProfileNoticeUIWindowPixelTest
 
 IN_PROC_BROWSER_TEST_P(ManagedUserProfileNoticeUIWindowPixelTest,
                        InvokeUi_default) {
-#if BUILDFLAG(IS_WIN)
-  if (base::FeatureList::IsEnabled(features::kInitialWebUI)) {
-    GTEST_SKIP() << "Skipping test because it fails with InitialWebUI enabled. "
-                    "See b/477426026.";
-  }
-#endif
-
   ShowAndVerifyUi();
 }
 

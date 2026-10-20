@@ -6,10 +6,17 @@
 #define COMPONENTS_WEBAUTHN_IOS_IOS_WEBAUTHN_CREDENTIALS_DELEGATE_FACTORY_H_
 
 #import "base/containers/flat_map.h"
+#import "base/functional/callback.h"
 #import "base/memory/raw_ptr.h"
+#import "base/memory/weak_ptr.h"
+#import "components/autofill/core/common/unique_ids.h"
 #import "components/webauthn/ios/ios_webauthn_credentials_delegate.h"
 #import "ios/web/public/js_messaging/web_frames_manager.h"
 #import "ios/web/public/web_state_user_data.h"
+
+namespace url {
+class Origin;
+}  // namespace url
 
 namespace web {
 class WebState;
@@ -41,6 +48,16 @@ class IOSWebAuthnCredentialsDelegateFactory
   IOSWebAuthnCredentialsDelegate* GetDelegateForFrameId(
       const std::string& frame_id);
 
+  // Resolves the delegate for the given `remote_frame_token` and passes it to
+  // `callback` if the resolved isolated-world frame's security origin matches
+  // `expected_origin` (passing `nullptr` otherwise). If the mapping is not yet
+  // registered, the callback will run asynchronously when the mapping becomes
+  // available.
+  void GetDelegateForRemoteFrameToken(
+      autofill::RemoteFrameToken remote_frame_token,
+      const url::Origin& expected_origin,
+      base::OnceCallback<void(IOSWebAuthnCredentialsDelegate*)> callback);
+
  private:
   friend class web::WebStateUserData<IOSWebAuthnCredentialsDelegateFactory>;
 
@@ -55,6 +72,9 @@ class IOSWebAuthnCredentialsDelegateFactory
       delegate_map_;
 
   raw_ptr<web::WebState> web_state_;
+
+  base::WeakPtrFactory<IOSWebAuthnCredentialsDelegateFactory> weak_factory_{
+      this};
 };
 
 }  // namespace webauthn

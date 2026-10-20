@@ -7,6 +7,7 @@
 
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "base/memory/shared_memory_mapping.h"
 #include "base/threading/platform_thread.h"
@@ -17,7 +18,6 @@
 #include "cc/input/browser_controls_state.h"
 #include "cc/metrics/begin_main_frame_metrics.h"
 #include "cc/paint/draw_image.h"
-#include "cc/trees/paint_holding_commit_trigger.h"
 #include "cc/trees/paint_holding_reason.h"
 #include "cc/trees/task_runner_provider.h"
 #include "components/viz/common/frame_sinks/begin_frame_source.h"
@@ -32,6 +32,7 @@ class Rect;
 namespace cc {
 class LayerTreeFrameSink;
 class LayerTreeMutator;
+struct ManagedMemoryPolicy;
 class PaintWorkletLayerPainter;
 class RenderFrameMetadataObserver;
 
@@ -58,10 +59,11 @@ class CC_EXPORT Proxy {
     SetNeedsAnimate(reason, false);
   }
   virtual void SetNeedsUpdateLayers() = 0;
-  virtual void SetNeedsCommit() = 0;
+  virtual void SetNeedsCommit(bool urgent = false) = 0;
   virtual void SetNeedsRedraw(const gfx::Rect& damage_rect) = 0;
   virtual void SetTargetLocalSurfaceId(
       const viz::LocalSurfaceId& target_local_surface_id) = 0;
+  virtual void SetMemoryPolicy(const ManagedMemoryPolicy& policy) = 0;
 
   // Detaches the InputDelegateForCompositor (InputHandler) bound on the
   // compositor thread.
@@ -91,13 +93,12 @@ class CC_EXPORT Proxy {
                                      PaintHoldingReason reason) = 0;
 
   // Immediately stop deferring commits.
-  virtual void StopDeferringCommits(PaintHoldingCommitTrigger) = 0;
+  virtual void StopDeferringCommits() = 0;
 
   virtual bool IsDeferringCommits() const = 0;
 
   virtual bool CommitRequested() const = 0;
 
-  virtual void SetShouldThrottleFrameRate(bool flag) = 0;
   virtual void SetRequestHighFramerate(bool flag) {}
 
   // Must be called before using the proxy.
@@ -151,6 +152,17 @@ class CC_EXPORT Proxy {
   // frame of a renderer and inside a cross-document view transition.
   // Only implemented for the proxy_main.
   virtual void SendImmediateBeginMainFrame() {}
+
+  // Callbacks for unbounded element frames.
+  virtual void SetUnboundedFrameSink(
+      std::unique_ptr<LayerTreeFrameSink> unbounded_frame_sink,
+      const viz::LocalSurfaceId& local_surface_id) {}
+  virtual void SetUnboundedFrameSinkId(
+      const viz::FrameSinkId& frame_sink_id,
+      const viz::LocalSurfaceId& local_surface_id) {}
+  virtual void DismissUnboundedFrameSink() {}
+  virtual void SetUnboundedLocalSurfaceId(
+      const viz::LocalSurfaceId& local_surface_id) {}
 };
 
 }  // namespace cc

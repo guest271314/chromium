@@ -24,8 +24,6 @@
 #include "third_party/blink/renderer/core/layout/svg/layout_svg_root.h"
 
 #include "base/auto_reset.h"
-#include "base/feature_list.h"
-#include "third_party/blink/public/common/features.h"
 #include "third_party/blink/renderer/core/editing/position_with_affinity.h"
 #include "third_party/blink/renderer/core/frame/frame_owner.h"
 #include "third_party/blink/renderer/core/frame/local_frame.h"
@@ -52,21 +50,18 @@
 #include "third_party/blink/renderer/core/svg/svg_animated_rect.h"
 #include "third_party/blink/renderer/core/svg/svg_element.h"
 #include "third_party/blink/renderer/core/svg/svg_svg_element.h"
+#include "third_party/blink/renderer/core/svg/svg_zoom_migration.h"
 #include "third_party/blink/renderer/platform/geometry/length_functions.h"
+#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 
 namespace blink {
 
-LayoutSVGRoot::LayoutSVGRoot(SVGElement* node)
-    : LayoutReplaced(node),
-      needs_transform_update_(true),
-      has_non_isolated_blending_descendants_(false),
-      has_non_isolated_blending_descendants_dirty_(false) {}
+LayoutSVGRoot::LayoutSVGRoot(SVGElement* node) : LayoutReplaced(node) {}
 
 LayoutSVGRoot::~LayoutSVGRoot() = default;
 
 void LayoutSVGRoot::Trace(Visitor* visitor) const {
   visitor->Trace(content_);
-  visitor->Trace(text_set_);
   LayoutReplaced::Trace(visitor);
 }
 
@@ -104,7 +99,7 @@ NaturalSizingInfo LayoutSVGRoot::UnscaledNaturalSizingInfo(
 PhysicalNaturalSizingInfo LayoutSVGRoot::GetNaturalDimensions() const {
   NOT_DESTROYED();
   NaturalSizingInfo sizing_info = UnscaledNaturalSizingInfo();
-  sizing_info.size.Scale(StyleRef().EffectiveZoom());
+  sizing_info.size.Scale(Style().EffectiveZoom());
   return PhysicalNaturalSizingInfo::FromSizingInfo(sizing_info);
 }
 
@@ -152,10 +147,11 @@ void LayoutSVGRoot::LayoutRoot(const PhysicalRect& content_rect) {
   NOT_DESTROYED();
   DCHECK(NeedsLayout());
 
-  base::AutoReset<const PhysicalSize*> reset(&new_content_size_,
-                                             &content_rect.size, nullptr);
+  base::AutoReset<
+      raw_ptr<const PhysicalSize, UnprotectedInRelease | DanglingUntriaged>>
+      reset(&new_content_size_, &content_rect.size, nullptr);
 
-  const PhysicalSize old_content_size = PhysicalContentBoxSize();
+  const PhysicalSize old_content_size = PhysicalContentBoxRect().size;
 
   // Whether we have a self-painting layer depends on whether there are
   // compositing descendants (see: |HasCompositingDescendants()| which is called
@@ -192,8 +188,10 @@ void LayoutSVGRoot::LayoutRoot(const PhysicalRect& content_rect) {
       SelfNeedsFullLayout() || old_content_size != content_rect.size;
 
   SVGLayoutInfo layout_info;
-  layout_info.scale_factor_changed = screen_scale_factor_changed;
+  layout_info.scale_factor_changed =
+      screen_scale_factor_changed || container_scale_changed_;
   layout_info.viewport_changed = viewport_may_have_changed;
+  container_scale_changed_ = false;
 
   const SVGLayoutResult content_result = content_.Layout(layout_info);
 
@@ -215,15 +213,11 @@ void LayoutSVGRoot::LayoutRoot(const PhysicalRect& content_rect) {
   }
 }
 
-void LayoutSVGRoot::RecalcVisualOverflow() {
-  NOT_DESTROYED();
-  LayoutReplaced::RecalcVisualOverflow();
-  if (!ClipsToContentBox())
-    AddContentsVisualOverflow(ComputeContentsVisualOverflow());
-}
-
 PhysicalRect LayoutSVGRoot::ComputeContentsVisualOverflow() const {
   NOT_DESTROYED();
+  if (ClipsToContentBox()) {
+    return PhysicalRect();
+  }
   gfx::RectF content_visual_rect = VisualRectInLocalSVGCoordinates();
   content_visual_rect =
       local_to_border_box_transform_.MapRect(content_visual_rect);
@@ -236,6 +230,17 @@ PhysicalRect LayoutSVGRoot::ComputeContentsVisualOverflow() const {
                       PhysicalRect(InfiniteIntRect()));
 }
 
+PhysicalRect LayoutSVGRoot::VisualOverflowRectIncludingFilters() const {
+  NOT_DESTROYED();
+  gfx::RectF content_visual_rect =
+      content_.ComputeVisualOverflowRectIncludingFilters();
+  content_visual_rect =
+      local_to_border_box_transform_.MapRect(content_visual_rect);
+  PhysicalRect rect = PhysicalRect::EnclosingRect(content_visual_rect);
+  rect = ApplyFiltersToRect(rect);
+  return Intersection(rect, PhysicalRect(InfiniteIntRect()));
+}
+
 void LayoutSVGRoot::PaintReplaced(const PaintInfo& paint_info,
                                   const PhysicalOffset& paint_offset) const {
   NOT_DESTROYED();
@@ -244,10 +249,10 @@ void LayoutSVGRoot::PaintReplaced(const PaintInfo& paint_info,
   SVGRootPainter(*this).PaintReplaced(paint_info, paint_offset);
 }
 
-void LayoutSVGRoot::WillBeDestroyed() {
+void LayoutSVGRoot::WillBeDestroyed(const ComputedStyle* style) {
   NOT_DESTROYED();
-  SVGResources::ClearEffects(*this);
-  LayoutReplaced::WillBeDestroyed();
+  SVGResources::ClearEffects(*this, style);
+  LayoutReplaced::WillBeDestroyed(style);
 }
 
 bool LayoutSVGRoot::IntrinsicSizeIsFontMetricsDependent() const {
@@ -260,7 +265,7 @@ bool LayoutSVGRoot::IntrinsicSizeIsFontMetricsDependent() const {
 bool LayoutSVGRoot::StyleChangeAffectsIntrinsicSize(
     const ComputedStyle& old_style) const {
   NOT_DESTROYED();
-  const ComputedStyle& style = StyleRef();
+  const ComputedStyle& style = Style();
   // If the writing mode changed from a horizontal mode to a vertical
   // mode, or vice versa, then our intrinsic dimensions will have
   // changed.
@@ -271,9 +276,7 @@ bool LayoutSVGRoot::StyleChangeAffectsIntrinsicSize(
   // any other font-relative unit), any changes to the font may change said
   // dimensions.
   if (IntrinsicSizeIsFontMetricsDependent() &&
-      (base::FeatureList::IsEnabled(blink::features::kCSSFontComparisonFix)
-           ? !base::ValuesEquivalent(old_style.GetFont(), style.GetFont())
-           : old_style.GetFont() != style.GetFont())) {
+      !base::ValuesEquivalent(old_style.GetFont(), style.GetFont())) {
     return true;
   }
   return false;
@@ -295,22 +298,16 @@ void LayoutSVGRoot::IntrinsicSizingInfoChanged() {
 void LayoutSVGRoot::StyleDidChange(
     StyleDifference diff,
     const ComputedStyle* old_style,
+    const ComputedStyle& new_style,
     const StyleChangeContext& style_change_context) {
   NOT_DESTROYED();
-  LayoutReplaced::StyleDidChange(diff, old_style, style_change_context);
+  LayoutReplaced::StyleDidChange(diff, old_style, new_style,
+                                 style_change_context);
 
   if (old_style && StyleChangeAffectsIntrinsicSize(*old_style))
     IntrinsicSizingInfoChanged();
 
   SVGResources::UpdateEffects(*this, diff, old_style);
-
-  if (diff.transform_changed) {
-    for (auto& svg_text : text_set_) {
-      svg_text->SetNeedsLayout(layout_invalidation_reason::kStyleChange,
-                               kMarkContainerChain);
-      svg_text->SetNeedsTextMetricsUpdate();
-    }
-  }
 
   if (!Parent())
     return;
@@ -329,7 +326,7 @@ void LayoutSVGRoot::AddChild(LayoutObject* child, LayoutObject* before_child) {
   LayoutReplaced::AddChild(child, before_child);
 
   bool should_isolate_descendants =
-      (child->IsBlendingAllowed() && child->StyleRef().HasBlendMode()) ||
+      (child->IsBlendingAllowed() && child->Style().HasBlendMode()) ||
       child->HasNonIsolatedBlendingDescendants();
   if (should_isolate_descendants)
     DescendantIsolationRequirementsChanged(kDescendantIsolationRequired);
@@ -342,7 +339,7 @@ void LayoutSVGRoot::RemoveChild(LayoutObject* child) {
   content_.MarkBoundsDirtyFromRemovedChild();
 
   bool had_non_isolated_descendants =
-      (child->IsBlendingAllowed() && child->StyleRef().HasBlendMode()) ||
+      (child->IsBlendingAllowed() && child->Style().HasBlendMode()) ||
       child->HasNonIsolatedBlendingDescendants();
   if (had_non_isolated_descendants)
     DescendantIsolationRequirementsChanged(kDescendantIsolationNeedsUpdate);
@@ -380,16 +377,18 @@ void LayoutSVGRoot::InsertedIntoTree() {
   LayoutReplaced::InsertedIntoTree();
   LayoutSVGResourceContainer::MarkForLayoutAndParentResourceInvalidation(*this,
                                                                          false);
-  if (StyleRef().HasSVGEffect())
+  if (Style().HasSVGEffect()) {
     SetNeedsPaintPropertyUpdate();
+  }
 }
 
 void LayoutSVGRoot::WillBeRemovedFromTree() {
   NOT_DESTROYED();
   LayoutSVGResourceContainer::MarkForLayoutAndParentResourceInvalidation(*this,
                                                                          false);
-  if (StyleRef().HasSVGEffect())
+  if (Style().HasSVGEffect()) {
     SetNeedsPaintPropertyUpdate();
+  }
   LayoutReplaced::WillBeRemovedFromTree();
 }
 
@@ -430,10 +429,11 @@ SVGTransformChange LayoutSVGRoot::BuildLocalToBorderBoxTransform(
   SVGTransformChangeDetector change_detector(local_to_border_box_transform_);
   auto* svg = To<SVGSVGElement>(GetNode());
   DCHECK(svg);
-  float scale = StyleRef().EffectiveZoom();
+  const float scale = SvgObjectZoomWillBeNoZoom(Style());
   gfx::SizeF content_size(content_rect.size.width / scale,
                           content_rect.size.height / scale);
-  local_to_border_box_transform_ = svg->ViewBoxToViewTransform(content_size);
+  local_to_border_box_transform_ = svg->ViewBoxToViewTransform(
+      content_size, NoZoomWillBeSvgObjectZoom(Style()));
 
   gfx::Vector2dF translate = svg->CurrentTranslate();
   AffineTransform view_to_border_box_transform(
@@ -444,6 +444,22 @@ SVGTransformChange LayoutSVGRoot::BuildLocalToBorderBoxTransform(
   return change_detector.ComputeChange(local_to_border_box_transform_);
 }
 
+gfx::Transform LayoutSVGRoot::LocalToBorderBoxTransform3D() const {
+  NOT_DESTROYED();
+  gfx::Transform transform = local_to_border_box_transform_.ToTransform();
+  const ComputedStyle& style = Style();
+  if (!RuntimeEnabledFeatures::SvgCss3dTransformsEnabled() ||
+      !style.HasPerspective()) {
+    return transform;
+  }
+  gfx::Transform perspective;
+  perspective.ApplyPerspectiveDepth(style.UsedPerspective());
+  const gfx::PointF origin = PerspectiveOrigin();
+  perspective.ApplyTransformOrigin(origin.x(), origin.y(), 0);
+  transform.PostConcat(perspective);
+  return transform;
+}
+
 AffineTransform LayoutSVGRoot::LocalToSVGParentTransform() const {
   NOT_DESTROYED();
   PhysicalOffset location = PhysicalLocation();
@@ -452,14 +468,33 @@ AffineTransform LayoutSVGRoot::LocalToSVGParentTransform() const {
          local_to_border_box_transform_;
 }
 
+void LayoutSVGRoot::SetContainerScale(const gfx::Vector2dF& container_scale) {
+  NOT_DESTROYED();
+  // Only update the scale factors and trigger relayout if descendants use
+  // non-scaling-stroke. The flag is computed during layout and reflects the
+  // previous layout pass; style changes that add/remove non-scaling-stroke
+  // trigger layout independently via style invalidation.
+  if (!View()->ContainsNonScalingStroke()) {
+    return;
+  }
+  if (container_scale_ == container_scale) {
+    return;
+  }
+  container_scale_ = container_scale;
+  container_scale_changed_ = true;
+  SetNeedsLayoutAndFullPaintInvalidation(
+      layout_invalidation_reason::kSvgChanged);
+}
+
 gfx::RectF LayoutSVGRoot::ViewBoxRect() const {
-  return To<SVGSVGElement>(*GetNode()).CurrentViewBoxRect();
+  return To<SVGSVGElement>(*GetNode())
+      .CurrentViewBoxRect(NoZoomWillBeSvgObjectZoom(Style()));
 }
 
 gfx::SizeF LayoutSVGRoot::ViewportSize() const {
   const PhysicalSize& viewport_size =
-      new_content_size_ ? *new_content_size_ : PhysicalContentBoxSize();
-  const float zoom = StyleRef().EffectiveZoom();
+      new_content_size_ ? *new_content_size_ : PhysicalContentBoxRect().size;
+  const float zoom = SvgObjectZoomWillBeNoZoom(Style());
   return gfx::SizeF(viewport_size.width / zoom, viewport_size.height / zoom);
 }
 
@@ -501,18 +536,6 @@ void LayoutSVGRoot::IntersectChildren(HitTestResult& result,
   content_.HitTest(result, location, HitTestPhase::kForeground);
 }
 
-void LayoutSVGRoot::AddSvgTextDescendant(LayoutSVGText& svg_text) {
-  NOT_DESTROYED();
-  DCHECK(!text_set_.Contains(&svg_text));
-  text_set_.insert(&svg_text);
-}
-
-void LayoutSVGRoot::RemoveSvgTextDescendant(LayoutSVGText& svg_text) {
-  NOT_DESTROYED();
-  DCHECK(text_set_.Contains(&svg_text));
-  text_set_.erase(&svg_text);
-}
-
 PaintLayerType LayoutSVGRoot::LayerTypeRequired() const {
   NOT_DESTROYED();
   auto layer_type_required = LayoutReplaced::LayerTypeRequired();
@@ -541,11 +564,12 @@ OverflowClipAxes LayoutSVGRoot::ComputeOverflowClipAxes() const {
     return LayoutReplaced::ComputeOverflowClipAxes();
 
   // the outermost svg is clipped if auto.
-  if (StyleRef().OverflowX() == EOverflow::kHidden ||
-      StyleRef().OverflowX() == EOverflow::kAuto ||
-      StyleRef().OverflowX() == EOverflow::kScroll ||
-      StyleRef().OverflowX() == EOverflow::kClip)
+  if (Style().OverflowX() == EOverflow::kHidden ||
+      Style().OverflowX() == EOverflow::kAuto ||
+      Style().OverflowX() == EOverflow::kScroll ||
+      Style().OverflowX() == EOverflow::kClip) {
     return kOverflowClipBothAxis;
+  }
 
   return LayoutReplaced::ComputeOverflowClipAxes();
 }

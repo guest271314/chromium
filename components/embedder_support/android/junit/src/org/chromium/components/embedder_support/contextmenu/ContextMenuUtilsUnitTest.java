@@ -9,6 +9,8 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 
 import android.app.Activity;
 import android.content.Context;
@@ -19,8 +21,6 @@ import android.view.View;
 import android.view.Window;
 import android.view.WindowManager;
 import android.webkit.URLUtil;
-
-import androidx.test.filters.SmallTest;
 
 import org.junit.After;
 import org.junit.Assert;
@@ -42,6 +42,7 @@ import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.blink_public.common.ContextMenuDataMediaFlags;
 import org.chromium.blink_public.common.ContextMenuDataMediaType;
 import org.chromium.components.embedder_support.contextmenu.ContextMenuUtils.HeaderInfo;
+import org.chromium.content_public.browser.AdditionalNavigationParams;
 import org.chromium.content_public.browser.WebContents;
 import org.chromium.content_public.common.ContentFeatures;
 import org.chromium.ui.base.ViewAndroidDelegate;
@@ -69,7 +70,8 @@ public class ContextMenuUtilsUnitTest {
 
     @Before
     public void setup() {
-        mActivity = Robolectric.buildActivity(Activity.class).create().get();
+        // Make the activity visible so that its content view is attached to a window.
+        mActivity = Robolectric.buildActivity(Activity.class).setup().get();
     }
 
     @After
@@ -78,7 +80,6 @@ public class ContextMenuUtilsUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testGetHeaderInfo_noCustomItemPresent() {
         ContextMenuParams params =
                 new ContextMenuParams(
@@ -119,7 +120,6 @@ public class ContextMenuUtilsUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testGetHeaderInfo_customItemPresent_notImage() {
         ContextMenuParams params =
                 new ContextMenuParams(
@@ -165,7 +165,6 @@ public class ContextMenuUtilsUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testGetHeaderInfo_customItemPresent_isImageLink() {
         ContextMenuParams params =
                 new ContextMenuParams(
@@ -206,7 +205,6 @@ public class ContextMenuUtilsUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testGetHeaderInfo_customItemPresent_isImageNotAnchor() {
         ContextMenuParams params =
                 new ContextMenuParams(
@@ -247,7 +245,6 @@ public class ContextMenuUtilsUnitTest {
     }
 
     @Test
-    @SmallTest
     public void getAltText_hasAltTextText() {
         ContextMenuParams params =
                 new ContextMenuParams(
@@ -275,7 +272,6 @@ public class ContextMenuUtilsUnitTest {
     }
 
     @Test
-    @SmallTest
     public void getAltText_noAltTextTextHasLinkText() {
         ContextMenuParams params =
                 new ContextMenuParams(
@@ -303,7 +299,6 @@ public class ContextMenuUtilsUnitTest {
     }
 
     @Test
-    @SmallTest
     public void getAltText_noAltTextTextOrLinkText() {
         ContextMenuParams params =
                 new ContextMenuParams(
@@ -332,7 +327,6 @@ public class ContextMenuUtilsUnitTest {
     }
 
     @Test
-    @SmallTest
     public void getAltText_noShareParams() {
         ContextMenuParams params =
                 new ContextMenuParams(
@@ -402,7 +396,6 @@ public class ContextMenuUtilsUnitTest {
     }
 
     @Test
-    @SmallTest
     @Config(qualifiers = "sw320dp")
     @DisableFeatures({ContentFeatures.TOUCH_DRAG_AND_CONTEXT_MENU})
     public void isDragDropEnabled_featureDisabledPopupNotSupported() {
@@ -412,7 +405,6 @@ public class ContextMenuUtilsUnitTest {
     }
 
     @Test
-    @SmallTest
     @Config(qualifiers = "sw320dp")
     @EnableFeatures({ContentFeatures.TOUCH_DRAG_AND_CONTEXT_MENU})
     public void isDragDropEnabled_featureEnabledPopupNotSupported() {
@@ -422,7 +414,6 @@ public class ContextMenuUtilsUnitTest {
     }
 
     @Test
-    @SmallTest
     @Config(qualifiers = "sw600dp")
     @DisableFeatures({ContentFeatures.TOUCH_DRAG_AND_CONTEXT_MENU})
     public void isDragDropEnabled_featureDisabledPopupSupported() {
@@ -432,7 +423,6 @@ public class ContextMenuUtilsUnitTest {
     }
 
     @Test
-    @SmallTest
     @Config(qualifiers = "sw600dp")
     @EnableFeatures({ContentFeatures.TOUCH_DRAG_AND_CONTEXT_MENU})
     public void isDragDropEnabled_featureEnabledPopupSupported() {
@@ -442,7 +432,6 @@ public class ContextMenuUtilsUnitTest {
     }
 
     @Test
-    @SmallTest
     public void isMouseOrHighlightPopup_mouse() {
         ContextMenuParams params =
                 new ContextMenuParams(
@@ -472,7 +461,6 @@ public class ContextMenuUtilsUnitTest {
     }
 
     @Test
-    @SmallTest
     public void isMouseOrHighlightPopup_highlight() {
         ContextMenuParams params =
                 new ContextMenuParams(
@@ -502,7 +490,6 @@ public class ContextMenuUtilsUnitTest {
     }
 
     @Test
-    @SmallTest
     public void isMouseOrHighlightPopup_neither() {
         ContextMenuParams params =
                 new ContextMenuParams(
@@ -532,13 +519,11 @@ public class ContextMenuUtilsUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testGetTouchPointCoordinates_popupWindow() {
         doTestGetTouchPointCoordinates(true);
     }
 
     @Test
-    @SmallTest
     public void testGetTouchPointCoordinates_dialog() {
         doTestGetTouchPointCoordinates(false);
     }
@@ -546,26 +531,17 @@ public class ContextMenuUtilsUnitTest {
     private void doTestGetTouchPointCoordinates(boolean isPopup) {
         Context context = mActivity;
 
-        // In a real Android environment, the containerView would be part of a
-        // layout hierarchy that's been inflated and attached to a Window.
-        // However, in our JUnit tests, we don't have a real layout, so we need
-        // to mock the containerView and its behavior.
-        View mockContainerView = mock(View.class);
+        View containerView = new View(context);
+        containerView.setTranslationX(200);
+        containerView.setTranslationY(300);
+        mActivity.setContentView(containerView);
+        int[] containerLocation = new int[2];
+        containerView.getLocationOnScreen(containerLocation);
+        assertTrue(containerLocation[0] >= 200);
+        assertTrue(containerLocation[1] >= 300);
+
         Window mockWindow = mock(Window.class);
         WindowManager.LayoutParams mockLayoutParams = mock(WindowManager.LayoutParams.class);
-
-        int[] mockLocation = {200, 300};
-        // Simulate the behavior of View.getLocationOnScreen(), which populates the passed-in int
-        // array with the view's screen coordinates.
-        Mockito.doAnswer(
-                        invocation -> {
-                            int[] location = invocation.getArgument(0);
-                            location[0] = mockLocation[0];
-                            location[1] = mockLocation[1];
-                            return null;
-                        })
-                .when(mockContainerView)
-                .getLocationOnScreen(Mockito.any(int[].class));
 
         mockLayoutParams.x = 10;
         mockLayoutParams.y = 20;
@@ -574,7 +550,7 @@ public class ContextMenuUtilsUnitTest {
 
         int triggeringTouchXDp = 100;
         int triggeringTouchYDp = 200;
-        float topContentOffsetPx = 50f;
+        int topContentOffsetPx = 50;
 
         ContextMenuParams params =
                 new ContextMenuParams(
@@ -600,12 +576,7 @@ public class ContextMenuUtilsUnitTest {
 
         Point result =
                 ContextMenuUtils.getTouchPointCoordinates(
-                        context,
-                        mockWindow,
-                        params,
-                        topContentOffsetPx,
-                        isPopup,
-                        mockContainerView);
+                        context, mockWindow, params, topContentOffsetPx, isPopup, containerView);
 
         // We need to check if the X and Y have been correctly modified by the method.
         final float density = context.getResources().getDisplayMetrics().density;
@@ -615,8 +586,8 @@ public class ContextMenuUtilsUnitTest {
         int expectedY = (int) (touchPointYPx + topContentOffsetPx);
 
         if (isPopup) {
-            expectedX += mockLocation[0];
-            expectedY += mockLocation[1];
+            expectedX += containerLocation[0];
+            expectedY += containerLocation[1];
 
             expectedX += mockLayoutParams.x;
             expectedY += mockLayoutParams.y;
@@ -627,13 +598,11 @@ public class ContextMenuUtilsUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testComputeDragShadowRect_dragStarted() {
         doTestComputeDragShadowRect(true);
     }
 
     @Test
-    @SmallTest
     public void testComputeDragShadowRect_dragNotStarted() {
         doTestComputeDragShadowRect(false);
     }
@@ -662,14 +631,12 @@ public class ContextMenuUtilsUnitTest {
     }
 
     @Test
-    @SmallTest
     @EnableFeatures({ContentFeatures.TOUCH_DRAG_AND_CONTEXT_MENU})
     public void testGetContextMenuAnchorRect_dragDropEnabled() {
         doTestGetContextMenuAnchorRect(true);
     }
 
     @Test
-    @SmallTest
     @DisableFeatures({ContentFeatures.TOUCH_DRAG_AND_CONTEXT_MENU})
     public void testGetContextMenuAnchorRect_dragDropNotEnabled() {
         doTestGetContextMenuAnchorRect(false);
@@ -681,7 +648,7 @@ public class ContextMenuUtilsUnitTest {
         View containerView = new View(context);
         int triggeringTouchXDp = 100;
         int triggeringTouchYDp = 200;
-        float topContentOffsetPx = 50f;
+        int topContentOffsetPx = 50;
 
         int shadowWidth = 60;
         int shadowHeight = 50;
@@ -780,5 +747,60 @@ public class ContextMenuUtilsUnitTest {
 
         doReturn(viewAndroidDelegate).when(mWebContentsMock).getViewAndroidDelegate();
         doReturn(dragStateTracker).when(viewAndroidDelegate).getDragStateTracker();
+    }
+
+    @Test
+    public void testContextMenuParamsDestroy() {
+        AdditionalNavigationParams unusedParams = mock(AdditionalNavigationParams.class);
+        ContextMenuParams menuParamsUnused =
+                new ContextMenuParams(
+                        0,
+                        mMenuModelBridge,
+                        ContextMenuDataMediaType.NONE,
+                        ContextMenuDataMediaFlags.MEDIA_NONE,
+                        GURL.emptyGURL(),
+                        GURL.emptyGURL(),
+                        sLinkText,
+                        GURL.emptyGURL(),
+                        new GURL(sSrcUrl),
+                        ALT_TEXT,
+                        null,
+                        false,
+                        0,
+                        0,
+                        MenuSourceType.NONE,
+                        false,
+                        /* openedFromInterestFor= */ false,
+                        /* interestForNodeID= */ 0,
+                        unusedParams);
+        menuParamsUnused.destroy();
+        verify(unusedParams).destroy();
+
+        AdditionalNavigationParams takenParams = mock(AdditionalNavigationParams.class);
+        ContextMenuParams menuParamsTaken =
+                new ContextMenuParams(
+                        0,
+                        mMenuModelBridge,
+                        ContextMenuDataMediaType.NONE,
+                        ContextMenuDataMediaFlags.MEDIA_NONE,
+                        GURL.emptyGURL(),
+                        GURL.emptyGURL(),
+                        sLinkText,
+                        GURL.emptyGURL(),
+                        new GURL(sSrcUrl),
+                        ALT_TEXT,
+                        null,
+                        false,
+                        0,
+                        0,
+                        MenuSourceType.NONE,
+                        false,
+                        /* openedFromInterestFor= */ false,
+                        /* interestForNodeID= */ 0,
+                        takenParams);
+        Assert.assertEquals(takenParams, menuParamsTaken.takeAdditionalNavigationParams());
+        Assert.assertNull(menuParamsTaken.takeAdditionalNavigationParams());
+        menuParamsTaken.destroy();
+        verify(takenParams, never()).destroy();
     }
 }

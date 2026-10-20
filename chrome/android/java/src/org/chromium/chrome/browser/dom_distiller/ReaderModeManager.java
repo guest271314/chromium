@@ -6,23 +6,19 @@ package org.chromium.chrome.browser.dom_distiller;
 
 import static org.chromium.build.NullUtil.assertNonNull;
 import static org.chromium.build.NullUtil.assumeNonNull;
-import static org.chromium.components.embedder_support.util.UrlConstants.DISTILLER_SCHEME;
 
 import android.app.Activity;
 import android.content.Intent;
 import android.content.res.Resources;
-import android.net.Uri;
 import android.os.SystemClock;
 import android.util.Pair;
 
 import androidx.annotation.IntDef;
 import androidx.annotation.VisibleForTesting;
-import androidx.browser.customtabs.CustomTabsIntent;
 
+import org.chromium.base.Callback;
 import org.chromium.base.CommandLine;
 import org.chromium.base.IntentUtils;
-import org.chromium.base.RequiredCallback;
-import org.chromium.base.SysUtils;
 import org.chromium.base.UserData;
 import org.chromium.base.metrics.RecordHistogram;
 import org.chromium.base.metrics.RecordUserAction;
@@ -31,15 +27,9 @@ import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.IntentHandler;
+import org.chromium.chrome.browser.actor.ui.ActorUiTabController;
 import org.chromium.chrome.browser.browser_controls.BrowserControlsVisibilityManager;
-import org.chromium.chrome.browser.browserservices.intents.BrowserServicesIntentDataProvider;
-import org.chromium.chrome.browser.browserservices.intents.BrowserServicesIntentDataProvider.CustomTabsUiType;
-import org.chromium.chrome.browser.customtabs.CustomTabActivity;
-import org.chromium.chrome.browser.customtabs.CustomTabIntentDataProvider;
-import org.chromium.chrome.browser.customtabs.IncognitoCustomTabIntentDataProvider;
-import org.chromium.chrome.browser.document.ChromeLauncherActivity;
 import org.chromium.chrome.browser.dom_distiller.TabDistillabilityProvider.DistillabilityObserver;
-import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.fullscreen.BrowserControlsManager;
 import org.chromium.chrome.browser.fullscreen.BrowserControlsManagerSupplier;
@@ -47,10 +37,9 @@ import org.chromium.chrome.browser.fullscreen.FullscreenManager;
 import org.chromium.chrome.browser.night_mode.GlobalNightModeStateProviderHolder;
 import org.chromium.chrome.browser.night_mode.NightModeStateProvider;
 import org.chromium.chrome.browser.profiles.Profile;
-import org.chromium.chrome.browser.tab.EmptyTabObserver;
 import org.chromium.chrome.browser.tab.Tab;
-import org.chromium.chrome.browser.tab.Tab.LoadUrlResult;
 import org.chromium.chrome.browser.tab.TabHidingType;
+import org.chromium.chrome.browser.tab.TabObserver;
 import org.chromium.chrome.browser.tab.TabSelectionType;
 import org.chromium.chrome.browser.tab.TabUtils;
 import org.chromium.chrome.browser.toolbar.adaptive.AdaptiveToolbarButtonVariant;
@@ -58,7 +47,6 @@ import org.chromium.chrome.browser.ui.messages.snackbar.Snackbar;
 import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager;
 import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManagerProvider;
 import org.chromium.components.dom_distiller.core.DistilledPagePrefs;
-import org.chromium.components.dom_distiller.core.DomDistillerFeatures;
 import org.chromium.components.dom_distiller.core.DomDistillerUrlUtils;
 import org.chromium.components.messages.DismissReason;
 import org.chromium.components.messages.MessageBannerProperties;
@@ -67,10 +55,8 @@ import org.chromium.components.messages.MessageDispatcherProvider;
 import org.chromium.components.messages.MessageIdentifier;
 import org.chromium.components.messages.MessageScopeType;
 import org.chromium.components.messages.PrimaryActionClickBehavior;
-import org.chromium.components.navigation_interception.InterceptNavigationDelegate;
 import org.chromium.components.ukm.UkmRecorder;
 import org.chromium.content_public.browser.LoadCommittedDetails;
-import org.chromium.content_public.browser.LoadUrlParams;
 import org.chromium.content_public.browser.NavigationController;
 import org.chromium.content_public.browser.NavigationEntry;
 import org.chromium.content_public.browser.NavigationHandle;
@@ -79,7 +65,6 @@ import org.chromium.content_public.browser.WebContentsObserver;
 import org.chromium.dom_distiller.mojom.Theme;
 import org.chromium.ui.base.WindowAndroid;
 import org.chromium.ui.modelutil.PropertyModel;
-import org.chromium.ui.util.ColorUtils;
 import org.chromium.url.GURL;
 
 import java.lang.annotation.Retention;
@@ -93,8 +78,7 @@ import java.util.function.Supplier;
  * loading.
  */
 @NullMarked
-public class ReaderModeManager extends EmptyTabObserver
-        implements UserData, NightModeStateProvider.Observer {
+public class ReaderModeManager implements TabObserver, UserData, NightModeStateProvider.Observer {
 
     // LINT.IfChange(DomDistillerEntryPoint)
 
@@ -107,6 +91,7 @@ public class ReaderModeManager extends EmptyTabObserver
         EntryPoint.MESSAGE,
         EntryPoint.APP_MENU,
         EntryPoint.TOOLBAR_BUTTON,
+        EntryPoint.CONTEXT_MENU,
         EntryPoint.MAX_VALUE
     })
     @Retention(RetentionPolicy.SOURCE)
@@ -122,7 +107,10 @@ public class ReaderModeManager extends EmptyTabObserver
         /** The user opened reader mode through the toolbar button. */
         int TOOLBAR_BUTTON = 3;
 
-        int MAX_VALUE = TOOLBAR_BUTTON;
+        /** The user opened reader mode through the context menu. */
+        int CONTEXT_MENU = 4;
+
+        int MAX_VALUE = CONTEXT_MENU;
     }
 
     // LINT.ThenChange(//tools/metrics/histograms/metadata/accessibility/enums.xml:DomDistillerEntryPoint)
@@ -160,12 +148,8 @@ public class ReaderModeManager extends EmptyTabObserver
         int STARTED = 2;
     }
 
-    /** The key to access this object from a {@Tab}. */
+    /** The key to access this object from a {@link Tab}. */
     public static final Class<ReaderModeManager> USER_DATA_KEY = ReaderModeManager.class;
-
-    /** The intent extra that indicates origin from Reader Mode */
-    public static final String EXTRA_READER_MODE_PARENT =
-            "org.chromium.chrome.browser.dom_distiller.EXTRA_READER_MODE_PARENT";
 
     /** Histogram name for the state of the reader mode accessibility setting. */
     public static final String ACCESSIBILITY_SETTING_HISTOGRAM =
@@ -174,12 +158,6 @@ public class ReaderModeManager extends EmptyTabObserver
     /** Histogram name for the end distillability result. */
     public static final String PAGE_DISTILLATION_RESULT_HISTOGRAM =
             "DomDistiller.Android.OnDistillableResult.PageDistillationResult";
-
-    /**
-     * Field param for MTB-CCT indicating that the fallback UI for reader mode is overflow menu. If
-     * false, the fallback UI will be Message.
-     */
-    public static final String CPA_FALLBACK_MENU_PARAM = "reader_mode_fallback_menu";
 
     /** The url of the last page visited if the last page was reader mode page. Otherwise null. */
     private @Nullable GURL mReaderModePageUrl;
@@ -222,9 +200,6 @@ public class ReaderModeManager extends EmptyTabObserver
 
     /** The supplier of MessageDispatcher to display the message. */
     private final Supplier<@Nullable MessageDispatcher> mMessageDispatcherSupplier;
-
-    // Hold on to the InterceptNavigationDelegate that the custom tab uses.
-    @Nullable InterceptNavigationDelegate mCustomTabNavigationDelegate;
 
     /** Whether the messages UI was requested for a navigation. */
     private boolean mMessageRequestedForNavigation;
@@ -294,67 +269,6 @@ public class ReaderModeManager extends EmptyTabObserver
         setDefaultThemeAsBrowserTheme(webContents);
     }
 
-    // TabObserver implementation.
-    @Override
-    public void onLoadUrl(Tab tab, LoadUrlParams params, LoadUrlResult loadUrlResult) {
-        // If a distiller URL was loaded and this is a custom tab, add a navigation
-        // handler to bring any navigations back to the main chrome activity.
-        Activity activity = TabUtils.getActivity(tab);
-        int uiType = CustomTabsUiType.DEFAULT;
-        if (activity != null && activity.getIntent().getExtras() != null) {
-            uiType =
-                    activity.getIntent()
-                            .getExtras()
-                            .getInt(CustomTabIntentDataProvider.EXTRA_UI_TYPE);
-        }
-        if (tab == null
-                || uiType != CustomTabsUiType.READER_MODE
-                || !DomDistillerUrlUtils.isDistilledPage(params.getUrl())) {
-            return;
-        }
-
-        WebContents webContents = tab.getWebContents();
-        if (webContents == null) return;
-
-        mCustomTabNavigationDelegate =
-                new InterceptNavigationDelegate() {
-                    @Override
-                    public void shouldIgnoreNavigation(
-                            NavigationHandle navigationHandle,
-                            GURL escapedUrl,
-                            boolean hiddenCrossFrame,
-                            boolean isSandboxedFrame,
-                            boolean shouldRunAsync,
-                            RequiredCallback<Boolean> resultCallback) {
-                        if (DomDistillerUrlUtils.isDistilledPage(navigationHandle.getUrl())
-                                || navigationHandle.isExternalProtocol()) {
-                            resultCallback.onResult(false);
-                            return;
-                        }
-
-                        Intent returnIntent =
-                                new Intent(Intent.ACTION_VIEW, Uri.parse(escapedUrl.getSpec()));
-                        assertNonNull(activity);
-                        returnIntent.setClassName(activity, ChromeLauncherActivity.class.getName());
-
-                        // Set the parent ID of the tab to be created.
-                        returnIntent.putExtra(
-                                EXTRA_READER_MODE_PARENT,
-                                IntentUtils.safeGetIntExtra(
-                                        activity.getIntent(),
-                                        EXTRA_READER_MODE_PARENT,
-                                        Tab.INVALID_TAB_ID));
-
-                        activity.startActivity(returnIntent);
-                        activity.finish();
-                        resultCallback.onResult(true);
-                    }
-                };
-
-        DomDistillerTabUtils.setInterceptNavigationDelegate(
-                mCustomTabNavigationDelegate, webContents);
-    }
-
     @Override
     public void onShown(Tab shownTab, @TabSelectionType int type) {
         // If the reader mode prompt was dismissed, stop here.
@@ -382,15 +296,7 @@ public class ReaderModeManager extends EmptyTabObserver
 
     @Override
     public void onHidden(Tab tab, @TabHidingType int reason) {
-        boolean isCustomTabDistillation = shouldDistillInCustomTab();
-        boolean isHiddenTabCustomTab = tab.isCustomTab();
-        // When custom tab distillation is first triggered, this onHidden function will trigger for
-        // the non-CCT tab. We want to ensure that we do not trigger onExitReaderMode when starting
-        // up reader mode in CCT. Subsequent onHidden calls when in CCT experience will have
-        // isHiddenTabCustomTab to be true.
-        if (isCustomTabDistillation && !isHiddenTabCustomTab) {
-            return;
-        } else if (mIsViewingReaderModePage) {
+        if (mIsViewingReaderModePage) {
             onExitReaderMode();
         }
     }
@@ -648,7 +554,7 @@ public class ReaderModeManager extends EmptyTabObserver
     }
 
     private boolean shouldSuppressForCpa() {
-        if (mTab.isCustomTab() && ChromeFeatureList.sCctAdaptiveButton.isEnabled()) {
+        if (mTab.isCustomTab()) {
             // If the manager hasn't been notified of the CPA yet, don't show the prompt for now.
             // Later it will be shown if CPA is determined to be hidden.
             if (!mHasBeenNotifiedOfCpa) {
@@ -656,13 +562,8 @@ public class ReaderModeManager extends EmptyTabObserver
                 return true;
             }
 
-            // Do not proceed to show Message UI if CPA is shown, or the fallback UI will be in
-            // the overflow menu.
-            if (mIsReaderModeButtonShowingOnToolbar
-                    || ChromeFeatureList.getFieldTrialParamByFeatureAsBoolean(
-                            ChromeFeatureList.CCT_ADAPTIVE_BUTTON,
-                            CPA_FALLBACK_MENU_PARAM,
-                            false)) {
+            // Do not proceed to show Message UI if CPA is shown.
+            if (mIsReaderModeButtonShowingOnToolbar) {
                 return true;
             }
         }
@@ -733,34 +634,39 @@ public class ReaderModeManager extends EmptyTabObserver
     }
 
     public void activateReaderMode(@EntryPoint int entryPoint) {
-        // Contextual page action buttons can't be dismissed, instead we consider a shown but unused
-        // button as "dismissed" and mute the site on setReaderModeUiShown(). When the button gets
-        // clicked we un-mute the site to prevent the rate limiting logic from showing the CPA
-        // button for this site on other tabs.
-        removeUrlFromMutedSites(mDistillerUrl);
+        Callback<Boolean> activateCallback =
+                (confirmed) -> {
+                    if (!confirmed) return;
+                    // Contextual page action buttons can't be dismissed, instead we consider a
+                    // shown but unused
+                    // button as "dismissed" and mute the site on setReaderModeUiShown(). When the
+                    // button gets
+                    // clicked we un-mute the site to prevent the rate limiting logic from showing
+                    // the CPA
+                    // button for this site on other tabs.
+                    removeUrlFromMutedSites(mDistillerUrl);
 
-        if (shouldDistillInCustomTab()) {
-            distillInCustomTab();
-        } else {
-            navigateToReaderMode();
+                    navigateToReaderMode();
+                    RecordUserAction.record("MobileReaderModeActivated");
+                    if (mHasBeenNotifiedOfCpa && !mIsReaderModeButtonShowingOnToolbar) {
+                        RecordHistogram.recordEnumeratedHistogram(
+                                "CustomTab.AdaptiveToolbarButton.FallbackUi",
+                                AdaptiveToolbarButtonVariant.READER_MODE,
+                                AdaptiveToolbarButtonVariant.MAX_VALUE + 1);
+                    }
+                    recordEntryPointMetric(entryPoint);
+                };
+
+        ActorUiTabController controller = ActorUiTabController.from(mTab);
+        if (controller == null || !controller.showTaskAbortConfirmationDialog(activateCallback)) {
+            activateCallback.onResult(true);
         }
-        RecordUserAction.record("MobileReaderModeActivated");
-        boolean isCpaFallbackMessage =
-                !ChromeFeatureList.getFieldTrialParamByFeatureAsBoolean(
-                        ChromeFeatureList.CCT_ADAPTIVE_BUTTON, CPA_FALLBACK_MENU_PARAM, false);
-        if (mHasBeenNotifiedOfCpa && !mIsReaderModeButtonShowingOnToolbar && isCpaFallbackMessage) {
-            RecordHistogram.recordEnumeratedHistogram(
-                    "CustomTab.AdaptiveToolbarButton.FallbackUi",
-                    AdaptiveToolbarButtonVariant.READER_MODE,
-                    AdaptiveToolbarButtonVariant.MAX_VALUE);
-        }
-        recordEntryPointMetric(entryPoint);
     }
 
     private void recordEntryPointMetric(@EntryPoint int entryPoint) {
         @EntryPointTabType int entryPointTabType;
         boolean isIncognito = mTab.isIncognito();
-        boolean isOrWillBeCustomTab = mTab.isCustomTab() || shouldDistillInCustomTab();
+        boolean isOrWillBeCustomTab = mTab.isCustomTab();
         Activity activity = TabUtils.getActivity(mTab);
         Intent intent = (activity != null) ? activity.getIntent() : null;
         // Incognito CCT does not return true when checking mTab.isIncognito().
@@ -780,14 +686,6 @@ public class ReaderModeManager extends EmptyTabObserver
             entryPointTabType = EntryPointTabType.REGULAR_TAB;
         }
         ReaderModeMetrics.recordReaderModeEntryPoint(entryPoint, entryPointTabType);
-    }
-
-    private boolean shouldDistillInCustomTab() {
-        return !SysUtils.isLowEndDevice() && !shouldUseRegularTabsForDistillation();
-    }
-
-    private boolean shouldUseRegularTabsForDistillation() {
-        return DomDistillerFeatures.sReaderModeDistillInApp.isEnabled();
     }
 
     /** Navigate the current tab to a Reader Mode URL. */
@@ -829,12 +727,12 @@ public class ReaderModeManager extends EmptyTabObserver
                         return;
                     }
 
+                    String message =
+                            mTab.getContext()
+                                    .getString(R.string.reader_mode_unavailable_snackbar_message);
                     snackbarManager.showSnackbar(
                             Snackbar.make(
-                                            mTab.getContext()
-                                                    .getString(
-                                                            R.string
-                                                                    .reader_mode_unavailable_snackbar_message),
+                                            message,
                                             new SnackbarManager.SnackbarController() {},
                                             Snackbar.TYPE_NOTIFICATION,
                                             Snackbar.UMA_UNKNOWN)
@@ -873,47 +771,6 @@ public class ReaderModeManager extends EmptyTabObserver
         return browserControlsManager == null
                 ? null
                 : browserControlsManager.getFullscreenManager();
-    }
-
-    private void distillInCustomTab() {
-        Activity activity = TabUtils.getActivity(mTab);
-        WebContents webContents = mTab.getWebContents();
-        if (webContents == null) return;
-
-        GURL url = webContents.getLastCommittedUrl();
-
-        onStartedReaderMode();
-
-        DomDistillerTabUtils.distillCurrentPage(webContents);
-
-        String distillerUrl =
-                DomDistillerUrlUtils.getDistillerViewUrlFromUrl(
-                        DISTILLER_SCHEME, url.getSpec(), webContents.getTitle());
-
-        assertNonNull(activity);
-        CustomTabsIntent.Builder builder = new CustomTabsIntent.Builder();
-        builder.setShowTitle(true);
-        builder.setColorScheme(
-                ColorUtils.inNightMode(activity)
-                        ? CustomTabsIntent.COLOR_SCHEME_DARK
-                        : CustomTabsIntent.COLOR_SCHEME_LIGHT);
-        CustomTabsIntent customTabsIntent = builder.build();
-        customTabsIntent.intent.setClassName(activity, CustomTabActivity.class.getName());
-
-        // Customize items on menu as Reader Mode UI to show 'Find in page' and 'Preference' only.
-        CustomTabIntentDataProvider.addReaderModeUiExtras(customTabsIntent.intent);
-
-        // Add the parent ID as an intent extra for back button functionality.
-        customTabsIntent.intent.putExtra(EXTRA_READER_MODE_PARENT, mTab.getId());
-
-        // Use Incognito CCT if the source page is in Incognito mode.
-        if (mTab.isIncognito()) {
-            IncognitoCustomTabIntentDataProvider.addIncognitoExtrasForChromeFeatures(
-                    customTabsIntent.intent,
-                    BrowserServicesIntentDataProvider.IncognitoCctCallerId.READER_MODE);
-        }
-
-        customTabsIntent.launchUrl(activity, Uri.parse(distillerUrl));
     }
 
     /**
@@ -965,11 +822,7 @@ public class ReaderModeManager extends EmptyTabObserver
             return false;
         }
 
-        // For in-app distillation, messages are only used for CCTs.
-        if (DomDistillerFeatures.sReaderModeDistillInApp.isEnabled()) {
-            return tab.isCustomTab();
-        }
-        return tab.isCustomTab() || tab.isIncognito();
+        return tab.isCustomTab();
     }
 
     /**
@@ -980,8 +833,8 @@ public class ReaderModeManager extends EmptyTabObserver
      * @param isDistillable Whether the tab is considered distillable.
      * @param isMobileOptimized Whether the tab is considered optimized for mobile.
      * @param isLast Whether this is the last signal we'll get for the tab.
-     * @returns A pair which contains: pair.first - Whether distillability has been fully
-     *     determined. pair.second - The current distillation status.
+     * @return A pair which contains: pair.first - Whether distillability has been fully determined.
+     *     pair.second - The current distillation status.
      */
     public static Pair<Boolean, Integer> computeDistillationStatus(
             Tab tab, boolean isDistillable, boolean isMobileOptimized, boolean isLast) {
@@ -1039,29 +892,14 @@ public class ReaderModeManager extends EmptyTabObserver
         sMutedSites.clear();
     }
 
-    /** @return Whether Reader mode and its new UI are enabled. */
-    public static boolean isEnabled() {
-        boolean enabled =
-                CommandLine.getInstance().hasSwitch(ChromeSwitches.ENABLE_DOM_DISTILLER)
-                        && !CommandLine.getInstance()
-                                .hasSwitch(ChromeSwitches.DISABLE_READER_MODE_BOTTOM_BAR)
-                        && DomDistillerTabUtils.isDistillerHeuristicsEnabled();
-        return enabled;
-    }
-
     /**
-     * Determine if Reader Mode created the intent for a tab being created.
-     *
-     * @param intent The Intent creating a new tab.
-     * @return True whether the intent was created by Reader Mode.
+     * @return Whether Reader mode and its new UI are enabled.
      */
-    public static boolean isReaderModeCreatedIntent(Intent intent) {
-        // Ensure that the intent is from a trusted intent.
-        if (!IntentHandler.wasIntentSenderChrome(intent)) return false;
-        int readerParentId =
-                IntentUtils.safeGetIntExtra(
-                        intent, ReaderModeManager.EXTRA_READER_MODE_PARENT, Tab.INVALID_TAB_ID);
-        return readerParentId != Tab.INVALID_TAB_ID;
+    public static boolean isEnabled() {
+        return CommandLine.getInstance().hasSwitch(ChromeSwitches.ENABLE_DOM_DISTILLER)
+                && !CommandLine.getInstance()
+                        .hasSwitch(ChromeSwitches.DISABLE_READER_MODE_BOTTOM_BAR)
+                && DomDistillerTabUtils.isDistillerHeuristicsEnabled();
     }
 
     /**
@@ -1074,11 +912,11 @@ public class ReaderModeManager extends EmptyTabObserver
      */
     public void onContextualPageActionShown(
             OneshotSupplier<Boolean> showCpaButton, boolean isReaderMode) {
-        // If the feature is enabled and the tab is a custom tab, the manager should be aware if the
-        // displayed contextual page action is the reader one. Once determined, #tryShowingPrompt
-        // can successfully decide between showing a message prompt or suppressing it in favor of
-        // the contextual page action's UI.
-        if (ChromeFeatureList.sCctAdaptiveButton.isEnabled() && mTab.isCustomTab()) {
+        // If the tab is a custom tab, the manager should be aware if the displayed contextual page
+        // action is the reader one. Once determined, #tryShowingPrompt can successfully decide
+        // between showing a message prompt or suppressing it in favor of the contextual page
+        // action's UI.
+        if (mTab.isCustomTab()) {
             mHasBeenNotifiedOfCpa = true;
             showCpaButton.runSyncOrOnAvailable(
                     show -> {

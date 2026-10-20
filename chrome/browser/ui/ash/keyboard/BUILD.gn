@@ -18,8 +18,6 @@ static_library("keyboard") {
     "chrome_keyboard_web_contents.h",
   ]
 
-  public_deps = [ "//chrome/browser:browser_public_dependencies" ]
-
   deps = [
     "//ash",
     "//ash/constants",
@@ -27,14 +25,13 @@ static_library("keyboard") {
     "//ash/public/cpp",
     "//chrome/browser/profiles:profile",
     "//chrome/browser/profiles:profile_manager",
-    "//chrome/common",
     "//components/prefs",
     "//components/session_manager/core",
     "//content/public/browser",
     "//extensions/browser",
     "//extensions/browser/api/virtual_keyboard_private:virtual_keyboard_delegate",
     "//extensions/common",
-    "//ui/compositor_extra",
+    "//ui/decoration",
     "//url",
   ]
 }
@@ -64,6 +61,7 @@ source_set("unit_tests") {
     ":keyboard",
     "//base",
     "//chrome/test:test_support",
+    "//chrome/test/base:chrome_render_view_host_test_harness",
     "//content/public/browser",
     "//url",
   ]
@@ -85,9 +83,10 @@ source_set("browser_tests") {
     "//ash/public/cpp",
     "//base",
     "//chrome/browser/apps/platform_apps",
+    "//chrome/browser/apps/platform_apps:browser_test_support",
     "//chrome/browser/ash/input_method:test_support",
     "//chrome/browser/profiles:profile",
-    "//chrome/browser/ui",
+    "//chrome/browser/ui:browser_window_header",
     "//chrome/test:test_support",
     "//extensions/browser",
     "//extensions/common",

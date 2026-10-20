@@ -8,12 +8,11 @@
 
 #include "ash/constants/ash_features.h"
 #include "base/check_op.h"
-#include "base/memory/ptr_util.h"
 #include "base/strings/stringprintf.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
-#include "chromeos/ash/components/login/login_state/login_state.h"
+#include "chrome/test/base/testing_browser_process.h"
 #include "chromeos/ash/components/network/device_state.h"
 #include "chromeos/ash/components/network/fake_stub_cellular_networks_provider.h"
 #include "chromeos/ash/components/network/metrics/cellular_network_metrics_logger.h"
@@ -32,11 +31,14 @@
 #include "chromeos/services/network_config/public/mojom/cros_network_config.mojom.h"
 #include "components/onc/onc_constants.h"
 #include "components/prefs/testing_pref_service.h"
-#include "components/user_manager/fake_user_manager.h"
+#include "components/session_manager/core/session.h"
+#include "components/session_manager/core/session_manager.h"
+#include "components/session_manager/test/user_session_test_environment.h"
 #include "components/user_manager/scoped_user_manager.h"
 #include "components/user_manager/test_helper.h"
 #include "components/user_manager/user.h"
 #include "components/user_manager/user_manager.h"
+#include "components/user_manager/user_manager_impl.h"
 #include "google_apis/gaia/gaia_id.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -96,25 +98,22 @@ class ApnMigratorTest : public testing::Test {
 
   // testing::Test
   void SetUp() override {
-    // TODO(b/278643115) Remove LoginState dependency.
-    LoginState::Initialize();
-
-    user_manager::UserManagerImpl::RegisterPrefs(local_state_.registry());
-    fake_user_manager_.Reset(
-        std::make_unique<user_manager::FakeUserManager>(&local_state_));
     const AccountId account_id =
         AccountId::FromUserEmailGaiaId("test@test", GaiaId("fakegaia"));
-    fake_user_manager_->AddGaiaUser(account_id,
-                                    user_manager::UserType::kRegular);
-    fake_user_manager_->UserLoggedIn(
-        account_id, user_manager::TestHelper::GetFakeUsernameHash(account_id));
+    user_session_test_environment_ =
+        std::make_unique<ash::test::UserSessionTestEnvironment>(
+            TestingBrowserProcess::GetGlobal()->local_state());
+    ASSERT_TRUE(user_session_test_environment_->AddRegularUser(account_id));
+    user_session_test_environment_->LogIn(account_id);
+    user_hash_ =
+        user_manager::UserManager::Get()->FindUser(account_id)->username_hash();
 
     managed_cellular_pref_handler_ =
-        base::WrapUnique(new testing::NiceMock<MockManagedCellularPrefHandler>);
-    managed_network_configuration_handler_ = base::WrapUnique(
-        new testing::NiceMock<MockManagedNetworkConfigurationHandler>);
+        std::make_unique<testing::NiceMock<MockManagedCellularPrefHandler>>();
+    managed_network_configuration_handler_ = std::make_unique<
+        testing::NiceMock<MockManagedNetworkConfigurationHandler>>();
     network_metadata_store_ =
-        base::WrapUnique(new testing::NiceMock<MockNetworkMetadataStore>());
+        std::make_unique<testing::NiceMock<MockNetworkMetadataStore>>();
     cros_network_config_ = std::make_unique<FakeCrosNetworkConfig>();
     OverrideInProcessInstanceForTesting(cros_network_config_.get());
 
@@ -137,8 +136,7 @@ class ApnMigratorTest : public testing::Test {
     apn_migrator_.reset();
     managed_network_configuration_handler_.reset();
     managed_cellular_pref_handler_.reset();
-    fake_user_manager_.Reset();
-    LoginState::Shutdown();
+    user_session_test_environment_.reset();
   }
 
   void TriggerNetworkListChanged() {
@@ -172,6 +170,8 @@ class ApnMigratorTest : public testing::Test {
         ui_data.c_str()));
   }
 
+  const std::string& user_hash() const { return user_hash_; }
+
   void ClearCellularServices() { return network_state_helper_.ClearServices(); }
 
   const std::vector<ApnPropertiesPtr>& GetCustomApns() {
@@ -198,9 +198,9 @@ class ApnMigratorTest : public testing::Test {
 
  private:
   base::test::SingleThreadTaskEnvironment task_environment_;
-  TestingPrefServiceSimple local_state_;
-  user_manager::TypedScopedUserManager<user_manager::FakeUserManager>
-      fake_user_manager_;
+  std::unique_ptr<ash::test::UserSessionTestEnvironment>
+      user_session_test_environment_;
+  std::string user_hash_;
 
   NetworkStateTestHelper network_state_helper_{
       /*use_default_devices_and_services=*/true};
@@ -433,11 +433,7 @@ TEST_F(ApnMigratorTest, AlreadyMigratedNetworks) {
 
   EXPECT_CALL(*managed_cellular_pref_handler(),
               ContainsApnMigratedIccid(Eq(kTestCellularIccid3)))
-#if DCHECK_IS_ON()
       .Times(2)
-#else
-      .Times(1)
-#endif  // DCHECK_IS_ON()
       .WillRepeatedly(Return(false));
 
   EXPECT_CALL(*managed_network_configuration_handler(),
@@ -572,8 +568,7 @@ TEST_F(ApnMigratorTest, MigrateNetworkEmptyIccid) {
               GetPreRevampCustomApnList(kTestCellularGuid1))
       .Times(0);
   EXPECT_CALL(*managed_network_configuration_handler(),
-              GetManagedProperties(LoginState::Get()->primary_user_hash(),
-                                   cellular_service_path_1, _))
+              GetManagedProperties(user_hash(), cellular_service_path_1, _))
       .Times(0);
   // Function under test.
   TriggerNetworkListChanged();
@@ -604,8 +599,7 @@ TEST_F(ApnMigratorTest, SkipMigratingWhenNoChangeInIccids) {
       .Times(2)
       .WillRepeatedly(Return(&populated_apn_list));
   EXPECT_CALL(*managed_network_configuration_handler(),
-              GetManagedProperties(LoginState::Get()->primary_user_hash(),
-                                   cellular_service_path_1, _))
+              GetManagedProperties(user_hash(), cellular_service_path_1, _))
       .Times(1)
       .WillOnce(WithArg<2>([&](network_handler::PropertiesCallback callback) {
         ASSERT_TRUE(get_managed_properties_callback.is_null());
@@ -689,8 +683,7 @@ TEST_F(ApnMigratorTest, MigrateNetworkAlreadyMigrating) {
       .Times(1)
       .WillOnce(Return(&populated_apn_list));
   EXPECT_CALL(*managed_network_configuration_handler(),
-              GetManagedProperties(LoginState::Get()->primary_user_hash(),
-                                   cellular_service_path_1, _))
+              GetManagedProperties(user_hash(), cellular_service_path_1, _))
       .Times(1)
       .WillOnce(WithArg<2>([&get_managed_properties_callback](
                                network_handler::PropertiesCallback callback) {
@@ -713,8 +706,7 @@ TEST_F(ApnMigratorTest, MigrateNetworkAlreadyMigrating) {
                 GetPreRevampCustomApnList(kTestCellularGuid1))
         .Times(0);
     EXPECT_CALL(*managed_network_configuration_handler(),
-                GetManagedProperties(LoginState::Get()->primary_user_hash(),
-                                     cellular_service_path_1, _))
+                GetManagedProperties(user_hash(), cellular_service_path_1, _))
         .Times(0);
     // Function under test.
     TriggerNetworkListChanged();
@@ -742,8 +734,7 @@ TEST_F(ApnMigratorTest, MigrateNetworkAlreadyMigrating) {
       .Times(1)
       .WillOnce(Return(&populated_apn_list));
   EXPECT_CALL(*managed_network_configuration_handler(),
-              GetManagedProperties(LoginState::Get()->primary_user_hash(),
-                                   cellular_service_path_1, _))
+              GetManagedProperties(user_hash(), cellular_service_path_1, _))
       .Times(1)
       .WillOnce(WithArg<2>([&get_managed_properties_callback](
                                network_handler::PropertiesCallback callback) {
@@ -777,8 +768,7 @@ TEST_F(ApnMigratorTest, MigrateNetworkNoPropertiesOrNotFound) {
       .Times(1)
       .WillOnce(Return(&populated_apn_list));
   EXPECT_CALL(*managed_network_configuration_handler(),
-              GetManagedProperties(LoginState::Get()->primary_user_hash(),
-                                   cellular_service_path_1, _))
+              GetManagedProperties(user_hash(), cellular_service_path_1, _))
       .Times(1)
       .WillOnce(WithArg<2>([&get_managed_properties_callback](
                                network_handler::PropertiesCallback callback) {
@@ -808,8 +798,7 @@ TEST_F(ApnMigratorTest, MigrateNetworkNoPropertiesOrNotFound) {
       .Times(1)
       .WillOnce(Return(&populated_apn_list));
   EXPECT_CALL(*managed_network_configuration_handler(),
-              GetManagedProperties(LoginState::Get()->primary_user_hash(),
-                                   cellular_service_path_1, _))
+              GetManagedProperties(user_hash(), cellular_service_path_1, _))
       .Times(1)
       .WillOnce(WithArg<2>([&](network_handler::PropertiesCallback callback) {
         ASSERT_TRUE(get_managed_properties_callback.is_null());
@@ -855,8 +844,7 @@ TEST_F(ApnMigratorTest, MigrateNetworkCustomApnRemovedDuringMigration) {
       .Times(1)
       .WillOnce(Return(&populated_apn_list));
   EXPECT_CALL(*managed_network_configuration_handler(),
-              GetManagedProperties(LoginState::Get()->primary_user_hash(),
-                                   cellular_service_path_1, _))
+              GetManagedProperties(user_hash(), cellular_service_path_1, _))
       .Times(1)
       .WillOnce(WithArg<2>([&get_managed_properties_callback](
                                network_handler::PropertiesCallback callback) {
@@ -905,8 +893,7 @@ TEST_F(ApnMigratorTest, MigrateNetworkCustomApnRemovedDuringMigration) {
       .Times(1)
       .WillOnce(Return(&populated_apn_list));
   EXPECT_CALL(*managed_network_configuration_handler(),
-              GetManagedProperties(LoginState::Get()->primary_user_hash(),
-                                   cellular_service_path_1, _))
+              GetManagedProperties(user_hash(), cellular_service_path_1, _))
       .Times(1)
       .WillOnce(WithArg<2>([&get_managed_properties_callback](
                                network_handler::PropertiesCallback callback) {
@@ -971,8 +958,7 @@ TEST_F(ApnMigratorTest,
       .Times(2)
       .WillRepeatedly(Return(&populated_apn_list));
   EXPECT_CALL(*managed_network_configuration_handler(),
-              GetManagedProperties(LoginState::Get()->primary_user_hash(),
-                                   cellular_service_path_1, _))
+              GetManagedProperties(user_hash(), cellular_service_path_1, _))
       .Times(1)
       .WillOnce(WithArg<2>([&](network_handler::PropertiesCallback callback) {
         ASSERT_TRUE(get_managed_properties_callback.is_null());
@@ -1041,8 +1027,7 @@ TEST_F(ApnMigratorTest,
       .Times(2)
       .WillRepeatedly(Return(&populated_apn_list));
   EXPECT_CALL(*managed_network_configuration_handler(),
-              GetManagedProperties(LoginState::Get()->primary_user_hash(),
-                                   cellular_service_path_1, _))
+              GetManagedProperties(user_hash(), cellular_service_path_1, _))
       .Times(1)
       .WillOnce(WithArg<2>([&get_managed_properties_callback](
                                network_handler::PropertiesCallback callback) {
@@ -1127,8 +1112,7 @@ TEST_F(ApnMigratorTest,
       .Times(2)
       .WillRepeatedly(Return(&populated_apn_list));
   EXPECT_CALL(*managed_network_configuration_handler(),
-              GetManagedProperties(LoginState::Get()->primary_user_hash(),
-                                   cellular_service_path_1, _))
+              GetManagedProperties(user_hash(), cellular_service_path_1, _))
       .Times(1)
       .WillOnce(WithArg<2>([&](network_handler::PropertiesCallback callback) {
         ASSERT_TRUE(get_managed_properties_callback.is_null());
@@ -1206,8 +1190,7 @@ TEST_F(ApnMigratorTest,
       .Times(2)
       .WillRepeatedly(Return(&populated_apn_list));
   EXPECT_CALL(*managed_network_configuration_handler(),
-              GetManagedProperties(LoginState::Get()->primary_user_hash(),
-                                   cellular_service_path_1, _))
+              GetManagedProperties(user_hash(), cellular_service_path_1, _))
       .Times(1)
       .WillOnce(WithArg<2>([&](network_handler::PropertiesCallback callback) {
         ASSERT_TRUE(get_managed_properties_callback.is_null());
@@ -1301,8 +1284,7 @@ TEST_F(
       .Times(2)
       .WillRepeatedly(Return(&populated_apn_list));
   EXPECT_CALL(*managed_network_configuration_handler(),
-              GetManagedProperties(LoginState::Get()->primary_user_hash(),
-                                   cellular_service_path_1, _))
+              GetManagedProperties(user_hash(), cellular_service_path_1, _))
       .Times(1)
       .WillOnce(WithArg<2>([&](network_handler::PropertiesCallback callback) {
         ASSERT_TRUE(get_managed_properties_callback.is_null());
@@ -1382,8 +1364,7 @@ TEST_F(
       .Times(2)
       .WillRepeatedly(Return(&populated_apn_list));
   EXPECT_CALL(*managed_network_configuration_handler(),
-              GetManagedProperties(LoginState::Get()->primary_user_hash(),
-                                   cellular_service_path_1, _))
+              GetManagedProperties(user_hash(), cellular_service_path_1, _))
       .Times(1)
       .WillOnce(WithArg<2>([&](network_handler::PropertiesCallback callback) {
         ASSERT_TRUE(get_managed_properties_callback.is_null());
@@ -1462,8 +1443,7 @@ TEST_F(ApnMigratorTest,
       .Times(2)
       .WillRepeatedly(Return(&populated_apn_list));
   EXPECT_CALL(*managed_network_configuration_handler(),
-              GetManagedProperties(LoginState::Get()->primary_user_hash(),
-                                   cellular_service_path_1, _))
+              GetManagedProperties(user_hash(), cellular_service_path_1, _))
       .Times(1)
       .WillOnce(WithArg<2>([&](network_handler::PropertiesCallback callback) {
         ASSERT_TRUE(get_managed_properties_callback.is_null());
@@ -1548,8 +1528,7 @@ TEST_F(
       .Times(2)
       .WillRepeatedly(Return(&populated_apn_list));
   EXPECT_CALL(*managed_network_configuration_handler(),
-              GetManagedProperties(LoginState::Get()->primary_user_hash(),
-                                   cellular_service_path_1, _))
+              GetManagedProperties(user_hash(), cellular_service_path_1, _))
       .Times(1)
       .WillOnce(WithArg<2>([&](network_handler::PropertiesCallback callback) {
         ASSERT_TRUE(get_managed_properties_callback.is_null());
@@ -1631,8 +1610,7 @@ TEST_F(
       .Times(2)
       .WillRepeatedly(Return(&populated_apn_list));
   EXPECT_CALL(*managed_network_configuration_handler(),
-              GetManagedProperties(LoginState::Get()->primary_user_hash(),
-                                   cellular_service_path_1, _))
+              GetManagedProperties(user_hash(), cellular_service_path_1, _))
       .Times(1)
       .WillOnce(WithArg<2>([&](network_handler::PropertiesCallback callback) {
         ASSERT_TRUE(get_managed_properties_callback.is_null());
@@ -1716,8 +1694,7 @@ TEST_F(
       .Times(2)
       .WillRepeatedly(Return(&populated_apn_list));
   EXPECT_CALL(*managed_network_configuration_handler(),
-              GetManagedProperties(LoginState::Get()->primary_user_hash(),
-                                   cellular_service_path_1, _))
+              GetManagedProperties(user_hash(), cellular_service_path_1, _))
       .Times(1)
       .WillOnce(WithArg<2>([&](network_handler::PropertiesCallback callback) {
         ASSERT_TRUE(get_managed_properties_callback.is_null());
@@ -1820,8 +1797,7 @@ TEST_F(
       .Times(2)
       .WillRepeatedly(Return(&populated_apn_list));
   EXPECT_CALL(*managed_network_configuration_handler(),
-              GetManagedProperties(LoginState::Get()->primary_user_hash(),
-                                   cellular_service_path_1, _))
+              GetManagedProperties(user_hash(), cellular_service_path_1, _))
       .Times(1)
       .WillOnce(WithArg<2>([&](network_handler::PropertiesCallback callback) {
         ASSERT_TRUE(get_managed_properties_callback.is_null());
@@ -1926,8 +1902,7 @@ TEST_F(
       .Times(2)
       .WillRepeatedly(Return(&populated_apn_list));
   EXPECT_CALL(*managed_network_configuration_handler(),
-              GetManagedProperties(LoginState::Get()->primary_user_hash(),
-                                   cellular_service_path_1, _))
+              GetManagedProperties(user_hash(), cellular_service_path_1, _))
       .Times(1)
       .WillOnce(WithArg<2>([&](network_handler::PropertiesCallback callback) {
         ASSERT_TRUE(get_managed_properties_callback.is_null());
@@ -2007,8 +1982,7 @@ TEST_F(ApnMigratorTest, MigrateNonManagedNetwork_Default) {
       .Times(2)
       .WillRepeatedly(Return(&populated_apn_list));
   EXPECT_CALL(*managed_network_configuration_handler(),
-              GetManagedProperties(LoginState::Get()->primary_user_hash(),
-                                   cellular_service_path_1, _))
+              GetManagedProperties(user_hash(), cellular_service_path_1, _))
       .Times(1)
       .WillOnce(WithArg<2>([&](network_handler::PropertiesCallback callback) {
         ASSERT_TRUE(get_managed_properties_callback.is_null());

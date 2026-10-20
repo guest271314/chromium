@@ -17,19 +17,19 @@
 #include "chrome/browser/glic/public/glic_enabling.h"
 #include "chrome/browser/glic/public/glic_keyed_service.h"
 #include "chrome/browser/glic/public/glic_keyed_service_factory.h"
-#include "chrome/browser/new_tab_page/promos/promo_service.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/search/search.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/profile_browser_collection.h"
 #include "chrome/browser/ui/chrome_pages.h"
 #include "chrome/browser/ui/customize_chrome/side_panel_controller.h"
 #include "chrome/browser/ui/navigator/browser_navigator.h"
+#include "chrome/browser/ui/navigator/browser_navigator_params.h"
 #include "chrome/browser/ui/tabs/public/tab_features.h"
 #include "chrome/browser/ui/tabs/split_tab_metrics.h"
 #include "chrome/browser/ui/tabs/tab_group_model.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/tabs/vertical_tab_strip_metrics.h"
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/webui/webui_embedding_context.h"
@@ -49,6 +49,7 @@
 #include "components/safe_browsing/core/common/safe_browsing_prefs.h"
 #include "components/safe_browsing/core/common/safebrowsing_referral_methods.h"
 #include "components/saved_tab_groups/public/features.h"
+#include "components/split_tabs/split_tab_visual_data.h"
 #include "components/tabs/public/tab_interface.h"
 #include "components/user_education/common/tutorial/tutorial_identifier.h"
 #include "components/user_education/common/tutorial/tutorial_service.h"
@@ -137,9 +138,6 @@ void BrowserCommandHandler::CanExecuteCommand(
     case Command::kStartPasswordManagerTutorial:
       can_execute = TutorialServiceExists();
       break;
-    case Command::kOpenAutofillSettings:
-      can_execute = true;
-      break;
     case Command::kOpenAISettings:
       can_execute = true;
       break;
@@ -153,9 +151,6 @@ void BrowserCommandHandler::CanExecuteCommand(
       can_execute = true;
       break;
     case Command::kOpenGlicSettings:
-      can_execute = true;
-      break;
-    case Command::kPrewarmGlicFre:
       can_execute = true;
       break;
     case Command::kOpenSplitView:
@@ -185,9 +180,10 @@ void BrowserCommandHandler::ExecuteCommand(Command command_id,
   std::move(callback).Run(command_executed);
 }
 
-void BrowserCommandHandler::ExecuteCommandWithDisposition(
+void BrowserCommandHandler::HandleCommandWithDisposition(
     int id,
-    WindowOpenDisposition disposition) {
+    WindowOpenDisposition disposition,
+    base::TimeTicks time_stamp) {
   const auto command = static_cast<Command>(id);
   base::UmaHistogramEnumeration(kPromoBrowserCommandHistogramName, command);
 
@@ -235,10 +231,6 @@ void BrowserCommandHandler::ExecuteCommandWithDisposition(
     case Command::kStartPasswordManagerTutorial:
       StartPasswordManagerTutorial();
       break;
-    case Command::kOpenAutofillSettings:
-      NavigateToURL(GURL(chrome::GetSettingsUrl(chrome::kAutofillSubPage)),
-                    disposition);
-      break;
     case Command::kOpenAISettings:
       OpenAISettings();
       break;
@@ -256,9 +248,6 @@ void BrowserCommandHandler::ExecuteCommandWithDisposition(
     }
     case Command::kOpenGlicSettings:
       OpenGlicSettings();
-      break;
-    case Command::kPrewarmGlicFre:
-      // No-op: Glic FRE pre-warming is removed.
       break;
     case Command::kOpenSplitView:
       OpenSplitView();
@@ -283,13 +272,12 @@ void BrowserCommandHandler::OnTutorialStarted(
 void BrowserCommandHandler::StartTutorial(StartTutorialInPage::Params params) {
   BrowserWindowInterface* browser =
       ProfileBrowserCollection::GetForProfile(profile_)->GetLastActiveBrowser();
-  StartTutorialInPage::Start(browser->GetBrowserForMigrationOnly(),
-                             std::move(params));
+  StartTutorialInPage::Start(browser, std::move(params));
 }
 
 bool BrowserCommandHandler::TutorialServiceExists() {
   auto* service = UserEducationServiceFactory::GetForBrowserContext(profile_);
-  auto* tutorial_service = service ? &service->tutorial_service() : nullptr;
+  auto* tutorial_service = service ? service->tutorial_service() : nullptr;
   return !!tutorial_service;
 }
 
@@ -384,8 +372,7 @@ void BrowserCommandHandler::OpenGlic() {
   auto* browser_window = webui::GetBrowserWindowInterface(web_contents_);
 
   glic_service->ToggleUI(browser_window, /*prevent_close=*/false,
-                         glic::mojom::InvocationSource::kWhatsNew,
-                         /*prompt_suggestion=*/std::nullopt);
+                         glic::mojom::InvocationSource::kWhatsNew);
 }
 
 void BrowserCommandHandler::OpenGlicSettings() {

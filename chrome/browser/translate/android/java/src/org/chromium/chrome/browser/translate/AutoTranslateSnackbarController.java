@@ -15,6 +15,7 @@ import androidx.appcompat.content.res.AppCompatResources;
 
 import org.jni_zero.CalledByNative;
 import org.jni_zero.JNINamespace;
+import org.jni_zero.JniType;
 import org.jni_zero.NativeMethods;
 
 import org.chromium.base.LocaleUtils;
@@ -87,7 +88,7 @@ class AutoTranslateSnackbarController implements SnackbarManager.SnackbarControl
     // Class methods called by native.
     // Create and show a Snackbar for the given target language code.
     @CalledByNative
-    public void show(String targetLanguage) {
+    public void show(@JniType("std::string") String targetLanguage) {
         Activity activity = mActivity.get();
         assumeNonNull(activity);
         Resources resources = activity.getResources();
@@ -96,7 +97,7 @@ class AutoTranslateSnackbarController implements SnackbarManager.SnackbarControl
                 LocaleUtils.getUpdatedLocaleForChromium(Locale.forLanguageTag(targetLanguage));
         String targetLanguageName = targetLocale.getDisplayLanguage();
         Drawable icon =
-                AppCompatResources.getDrawable(activity, R.drawable.infobar_translate_compact);
+                AppCompatResources.getDrawable(activity, R.drawable.message_translate_compact);
 
         TargetLanguageData targetLanguageData = new TargetLanguageData(targetLanguage);
         String title =
@@ -123,7 +124,8 @@ class AutoTranslateSnackbarController implements SnackbarManager.SnackbarControl
     /** Create a new AutoTranslateSnackbarController */
     @CalledByNative
     public static @Nullable AutoTranslateSnackbarController create(
-            WebContents webContents, long nativeAutoTranslateSnackbarController) {
+            @JniType("content::WebContents*") WebContents webContents,
+            long nativeAutoTranslateSnackbarController) {
         WindowAndroid window = webContents.getTopLevelNativeWindow();
         if (window == null) return null;
 
@@ -139,7 +141,9 @@ class AutoTranslateSnackbarController implements SnackbarManager.SnackbarControl
 
     @NativeMethods
     interface Natives {
-        void onUndoActionPressed(long nativeAutoTranslateSnackbarController, String targetLanguage);
+        void onUndoActionPressed(
+                long nativeAutoTranslateSnackbarController,
+                @JniType("std::string") String targetLanguage);
 
         void onDismissNoAction(long nativeAutoTranslateSnackbarController);
     }

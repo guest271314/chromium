@@ -16,8 +16,10 @@ class XRSpace;
 
 class XRShapedLayer : public XRCompositionLayer {
  public:
-  XRShapedLayer(const XRLayerInit* init,
+  XRShapedLayer(XRSession* session,
+                const XRLayerInit* init,
                 V8XRLayerLayout::Enum final_layout,
+                V8XRTextureType::Enum texture_type,
                 XRGraphicsBinding* binding,
                 XRLayerDrawingContext* drawing_context);
   ~XRShapedLayer() override = default;

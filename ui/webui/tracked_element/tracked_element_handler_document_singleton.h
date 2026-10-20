@@ -6,8 +6,9 @@
 #define UI_WEBUI_TRACKED_ELEMENT_TRACKED_ELEMENT_HANDLER_DOCUMENT_SINGLETON_H_
 
 #include <optional>
-#include <vector>
 
+#include "base/containers/span.h"
+#include "base/functional/callback.h"
 #include "base/memory/weak_ptr.h"
 #include "ui/base/interaction/element_identifier.h"
 
@@ -25,13 +26,13 @@ class TrackedElementHandler;
 // of how the handler is stored and configured.
 class TrackedElementHandlerDocumentSingleton {
  public:
+  using ContextGetter = base::RepeatingCallback<ui::ElementContext(void)>;
   // Registers the configuration for TrackedElementHandlers in a WebContents.
   // This should be called by the WebUIController during its construction.
-  // If `context` is nullopt, the `controller` is used as the context.
-  static void Register(
-      content::WebUIController* controller,
-      std::vector<ui::ElementIdentifier> identifiers,
-      std::optional<ui::ElementContext> context = std::nullopt);
+  // If `context_getter` is_null, the `controller` is used as the context.
+  static void Register(content::WebUIController* controller,
+                       base::span<const ui::ElementIdentifier> identifiers,
+                       ContextGetter context_getter = {});
 
   // Returns the TrackedElementHandler for the given `rfh`, creating it if
   // necessary based on the registration info from `Register`.
@@ -39,6 +40,13 @@ class TrackedElementHandlerDocumentSingleton {
   // WebContents or if the handler could not be created.
   static base::WeakPtr<TrackedElementHandler> GetOrCreate(
       content::RenderFrameHost* rfh);
+
+  // Like above, but if `Register` hasn't been called yet, will post `callback`
+  // if it ever does get called, rather than failing.
+  // `callback` will never be called synchronously.
+  static void GetOrCreateAsync(
+      content::RenderFrameHost* rfh,
+      base::OnceCallback<void(base::WeakPtr<TrackedElementHandler>)> callback);
 };
 
 }  // namespace ui

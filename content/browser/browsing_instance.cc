@@ -6,11 +6,12 @@
 
 #include "base/check_op.h"
 #include "base/command_line.h"
-#include "content/browser/child_process_security_policy_impl.h"
 #include "content/browser/origin_agent_cluster_isolation_state.h"
+#include "content/browser/security/cpsp/child_process_security_policy_impl.h"
 #include "content/browser/site_info.h"
 #include "content/browser/site_instance_group.h"
 #include "content/browser/site_instance_impl.h"
+#include "content/common/features.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/content_browser_client.h"
 #include "content/public/browser/site_isolation_policy.h"
@@ -42,7 +43,7 @@ BrowsingInstance::BrowsingInstance(
       default_site_instance_group_(nullptr),
       web_exposed_isolation_info_(web_exposed_isolation_info),
       is_fixed_storage_partition_(is_fixed_storage_partition) {
-  DCHECK(browser_context);
+  CHECK(browser_context, base::NotFatalUntil::M160);
   if (is_guest) {
     CHECK(is_fixed_storage_partition);
   }
@@ -63,8 +64,9 @@ scoped_refptr<SiteInstanceImpl> BrowsingInstance::GetSiteInstanceForURL(
     const UrlInfo& url_info,
     SiteInstanceGroup* creation_group,
     bool allow_default_instance) {
+  const SiteInfo site_info = ComputeSiteInfoForURL(url_info);
   scoped_refptr<SiteInstanceImpl> site_instance =
-      GetSiteInstanceForURLHelper(url_info, allow_default_instance);
+      GetSiteInstanceForURLHelper(url_info, site_info, allow_default_instance);
 
   if (site_instance) {
     return site_instance;
@@ -79,7 +81,11 @@ scoped_refptr<SiteInstanceImpl> BrowsingInstance::GetSiteInstanceForURL(
   // carries guest information contained within SiteInfo.
   if (SiteInstanceImpl::ShouldAssignSiteForUrlInfo(url_info) ||
       isolation_context_.is_guest()) {
-    instance->SetSite(url_info);
+    if (base::FeatureList::IsEnabled(features::kPrecomputeSiteInfo)) {
+      instance->SetSiteInfoAndOriginalUrl(site_info, url_info.url);
+    } else {
+      instance->SetSite(url_info);
+    }
   }
 
   // Add the new SiteInstance to `group`, if it exists.
@@ -93,14 +99,15 @@ scoped_refptr<SiteInstanceImpl> BrowsingInstance::GetSiteInstanceForURL(
 
 SiteInfo BrowsingInstance::GetSiteInfoForURL(const UrlInfo& url_info,
                                              bool allow_default_instance) {
+  const SiteInfo site_info = ComputeSiteInfoForURL(url_info);
   scoped_refptr<SiteInstanceImpl> site_instance =
-      GetSiteInstanceForURLHelper(url_info, allow_default_instance);
+      GetSiteInstanceForURLHelper(url_info, site_info, allow_default_instance);
 
   if (site_instance) {
     return site_instance->GetSiteInfo();
   }
 
-  return ComputeSiteInfoForURL(url_info);
+  return site_info;
 }
 
 scoped_refptr<SiteInstanceImpl> BrowsingInstance::GetSiteInstanceForSiteInfo(
@@ -111,7 +118,7 @@ scoped_refptr<SiteInstanceImpl> BrowsingInstance::GetSiteInstanceForSiteInfo(
   }
 
   scoped_refptr<SiteInstanceImpl> instance = new SiteInstanceImpl(this);
-  instance->SetSite(site_info);
+  instance->SetSiteInfo(site_info);
   return instance;
 }
 
@@ -127,8 +134,8 @@ BrowsingInstance::GetMaybeGroupRelatedSiteInstanceForURL(
 
 scoped_refptr<SiteInstanceImpl> BrowsingInstance::GetSiteInstanceForURLHelper(
     const UrlInfo& url_info,
+    const SiteInfo& site_info,
     bool allow_default_instance) {
-  const SiteInfo site_info = ComputeSiteInfoForURL(url_info);
   auto i = site_instance_map_.find(site_info);
   if (i != site_instance_map_.end()) {
     return i->second.get();
@@ -148,7 +155,8 @@ scoped_refptr<SiteInstanceImpl> BrowsingInstance::GetSiteInstanceForURLHelper(
       // via RegisterSiteInstance().
       site_instance->SetSiteInfoToDefault(
           site_info.GetStoragePartitionConfig());
-      DCHECK_EQ(default_site_instance_, site_instance.get());
+      CHECK_EQ(default_site_instance_, site_instance.get(),
+               base::NotFatalUntil::M160);
     }
 
     // Add |site_info| to the set so we can keep track of all the sites the
@@ -161,8 +169,9 @@ scoped_refptr<SiteInstanceImpl> BrowsingInstance::GetSiteInstanceForURLHelper(
 }
 
 void BrowsingInstance::RegisterSiteInstance(SiteInstanceImpl* site_instance) {
-  DCHECK(site_instance->browsing_instance_.get() == this);
-  DCHECK(site_instance->HasSite());
+  CHECK(site_instance->browsing_instance_.get() == this,
+        base::NotFatalUntil::M160);
+  CHECK(site_instance->HasSite(), base::NotFatalUntil::M160);
 
   // Verify that the SiteInstance's StoragePartitionConfig matches this
   // BrowsingInstance's StoragePartitionConfig if it already has one.
@@ -183,7 +192,7 @@ void BrowsingInstance::RegisterSiteInstance(SiteInstanceImpl* site_instance) {
   // Explicitly prevent the default SiteInstance from being added since
   // the map is only supposed to contain instances that map to a single site.
   if (site_instance->IsDefaultSiteInstance()) {
-    DCHECK(!ShouldUseDefaultSiteInstanceGroup());
+    CHECK(!ShouldUseDefaultSiteInstanceGroup(), base::NotFatalUntil::M160);
     CHECK(!default_site_instance_);
     default_site_instance_ = site_instance;
     return;
@@ -204,8 +213,9 @@ void BrowsingInstance::RegisterSiteInstance(SiteInstanceImpl* site_instance) {
 }
 
 void BrowsingInstance::UnregisterSiteInstance(SiteInstanceImpl* site_instance) {
-  DCHECK(site_instance->browsing_instance_.get() == this);
-  DCHECK(site_instance->HasSite());
+  CHECK(site_instance->browsing_instance_.get() == this,
+        base::NotFatalUntil::M160);
+  CHECK(site_instance->HasSite(), base::NotFatalUntil::M160);
 
   if (site_instance == default_site_instance_) {
     // The last reference to the default SiteInstance is being destroyed.
@@ -230,10 +240,12 @@ BrowsingInstanceId BrowsingInstance::NextBrowsingInstanceId() {
 BrowsingInstance::~BrowsingInstance() {
   // We should only be deleted when all of the SiteInstances that refer to
   // us are gone.
+  // TODO(crbug.com/569105157): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
   DCHECK(site_instance_map_.empty());
-  DCHECK_EQ(0u, active_contents_count_);
-  DCHECK(!default_site_instance_);
-  DCHECK(!default_site_instance_group_);
+  CHECK_EQ(0u, active_contents_count_, base::NotFatalUntil::M160);
+  CHECK(!default_site_instance_, base::NotFatalUntil::M160);
+  CHECK(!default_site_instance_group_, base::NotFatalUntil::M160);
 
   // Remove any origin isolation opt-ins related to this instance.
   ChildProcessSecurityPolicyImpl* policy =
@@ -261,8 +273,9 @@ SiteInfo BrowsingInstance::ComputeSiteInfoForURL(
 
   // The WebExposedIsolationInfos must be compatible for this function to make
   // sense.
-  DCHECK(WebExposedIsolationInfo::AreCompatible(
-      url_info.web_exposed_isolation_info, web_exposed_isolation_info_));
+  CHECK(WebExposedIsolationInfo::AreCompatible(
+            url_info.web_exposed_isolation_info, web_exposed_isolation_info_),
+        base::NotFatalUntil::M160);
 
   // If the passed in UrlInfo has a null WebExposedIsolationInfo, meaning that
   // it is compatible with any isolation state, we reuse the isolation state of
@@ -273,7 +286,8 @@ SiteInfo BrowsingInstance::ComputeSiteInfoForURL(
 }
 
 int BrowsingInstance::EstimateOriginAgentClusterOverhead() {
-  DCHECK(SiteIsolationPolicy::IsProcessIsolationForOriginAgentClusterEnabled());
+  CHECK(SiteIsolationPolicy::IsProcessIsolationForOriginAgentClusterEnabled(),
+        base::NotFatalUntil::M160);
 
   std::set<SiteInfo> site_info_set;
   std::set<SiteInfo> site_info_set_no_oac;
@@ -313,7 +327,8 @@ int BrowsingInstance::EstimateOriginAgentClusterOverhead() {
     site_info_set_no_oac.insert(
         site_info.GetNonOriginKeyedEquivalentForMetrics(isolation_context_));
   }
-  DCHECK_GE(site_info_set.size(), site_info_set_no_oac.size());
+  CHECK_GE(site_info_set.size(), site_info_set_no_oac.size(),
+           base::NotFatalUntil::M160);
   int result = site_info_set.size() - site_info_set_no_oac.size();
   return result;
 }
@@ -323,7 +338,7 @@ void BrowsingInstance::IncrementActiveContentsCount() {
 }
 
 void BrowsingInstance::DecrementActiveContentsCount() {
-  DCHECK_LT(0u, active_contents_count_);
+  CHECK_LT(0u, active_contents_count_, base::NotFatalUntil::M160);
   active_contents_count_--;
 }
 

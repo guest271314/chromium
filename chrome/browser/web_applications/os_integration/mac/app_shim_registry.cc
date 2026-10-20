@@ -11,6 +11,7 @@
 #include "base/base64.h"
 #include "base/functional/callback.h"
 #include "base/logging.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/no_destructor.h"
 #include "chrome/browser/browser_process.h"
@@ -32,6 +33,11 @@ void LogGetHmacKeyResult(AppShimRegistry::GetHmacKeyResult result) {
 
 void LogSaveHmacKeyResult(AppShimRegistry::SaveHmacKeyResult result) {
   base::UmaHistogramEnumeration("Apps.AppShimRegistry.HmacKeyStore.SaveResult",
+                                result);
+}
+
+void LogVerifyCdHashResult(AppShimRegistry::VerifyCdHashResult result) {
+  base::UmaHistogramEnumeration("Apps.AppShimRegistry.VerifyCdHashResult",
                                 result);
 }
 
@@ -376,11 +382,12 @@ void AppShimRegistry::SaveCdHashForApp(const std::string& app_id,
           .Then(std::move(callback)));
 }
 
-void AppShimRegistry::DoSaveCdHashForApp(const std::string& app_id,
-                                         std::vector<uint8_t> cd_hash,
-                                         os_crypt_async::Encryptor encryptor) {
+void AppShimRegistry::DoSaveCdHashForApp(
+    const std::string& app_id,
+    std::vector<uint8_t> cd_hash,
+    scoped_refptr<os_crypt_async::Encryptor> encryptor) {
   std::string cd_hash_hmac_base64 = base::Base64Encode(
-      crypto::hmac::SignSha256(GetCdHashHmacKey(encryptor), cd_hash));
+      crypto::hmac::SignSha256(GetCdHashHmacKey(*encryptor), cd_hash));
   SetAppInfo(app_id, /*installed_profiles=*/nullptr,
              /*last_active_profiles=*/nullptr, /*handlers=*/nullptr,
              &cd_hash_hmac_base64,
@@ -403,23 +410,26 @@ void AppShimRegistry::VerifyCdHashForApp(
 bool AppShimRegistry::DoVerifyCdHashForApp(
     const std::string& app_id,
     std::vector<uint8_t> cd_hash,
-    os_crypt_async::Encryptor encryptor) {
+    scoped_refptr<os_crypt_async::Encryptor> encryptor) {
   const base::DictValue& cache = GetPrefService()->GetDict(kAppShims);
   const base::DictValue* app_info = cache.FindDict(app_id);
   if (!app_info) {
     LOG(WARNING) << "No info found for app_id";
+    LogVerifyCdHashResult(VerifyCdHashResult::kNoAppInfo);
     return false;
   }
 
   const std::string* cd_hash_hmac_base64 = app_info->FindString(kCdHashHmac);
   if (!cd_hash_hmac_base64 || cd_hash_hmac_base64->empty()) {
     LOG(WARNING) << "App shim has no associated code directory hash";
+    LogVerifyCdHashResult(VerifyCdHashResult::kNoCdHash);
     return false;
   }
 
   auto cd_hash_hmac = base::Base64Decode(*cd_hash_hmac_base64);
   if (!cd_hash_hmac) {
     LOG(WARNING) << "App shim's code directory hash could not be decoded";
+    LogVerifyCdHashResult(VerifyCdHashResult::kDecodeFailure);
     return false;
   }
 
@@ -427,43 +437,47 @@ bool AppShimRegistry::DoVerifyCdHashForApp(
       base::span(*cd_hash_hmac).to_fixed_extent<crypto::hash::kSha256Size>();
   if (!cd_hash_hmac_span) {
     LOG(WARNING) << "App shim's code directory hash is unexpected size";
+    LogVerifyCdHashResult(VerifyCdHashResult::kUnexpectedSize);
     return false;
   }
 
-  return crypto::hmac::VerifySha256(GetCdHashHmacKey(encryptor), cd_hash,
-                                    *cd_hash_hmac_span);
+  bool verified = crypto::hmac::VerifySha256(GetCdHashHmacKey(*encryptor),
+                                             cd_hash, *cd_hash_hmac_span);
+  LogVerifyCdHashResult(verified ? VerifyCdHashResult::kSuccess
+                                 : VerifyCdHashResult::kVerificationFailed);
+  return verified;
 }
 
 void AppShimRegistry::SaveNotificationPermissionStatusForApp(
     const std::string& app_id,
-    mac_notifications::mojom::PermissionStatus status) {
+    NotificationPermissionStatus status) {
   SetAppInfo(app_id, /*installed_profiles=*/nullptr,
              /*last_active_profiles=*/nullptr, /*handlers=*/nullptr,
              /*cd_hash_hmac_base64=*/nullptr, &status);
 }
 
-mac_notifications::mojom::PermissionStatus
+AppShimRegistry::NotificationPermissionStatus
 AppShimRegistry::GetNotificationPermissionStatusForApp(
     const std::string& app_id) {
-  using PermissionStatus = mac_notifications::mojom::PermissionStatus;
   const base::DictValue& cache = GetPrefService()->GetDict(kAppShims);
   const base::DictValue* app_info = cache.FindDict(app_id);
   if (!app_info) {
-    return PermissionStatus::kNotDetermined;
+    return NotificationPermissionStatus::kNotDetermined;
   }
   std::optional<int> status_as_int =
       app_info->FindInt(kNotificationPermissionStatus);
   if (!status_as_int.has_value()) {
-    return PermissionStatus::kNotDetermined;
+    return NotificationPermissionStatus::kNotDetermined;
   }
   switch (*status_as_int) {
-    case static_cast<int>(PermissionStatus::kNotDetermined):
-    case static_cast<int>(PermissionStatus::kPromptPending):
-    case static_cast<int>(PermissionStatus::kDenied):
-    case static_cast<int>(PermissionStatus::kGranted):
-      return static_cast<PermissionStatus>(*status_as_int);
+    case static_cast<int>(NotificationPermissionStatus::kNotDetermined):
+    case static_cast<int>(NotificationPermissionStatus::kPromptPending):
+    case static_cast<int>(NotificationPermissionStatus::kImplicitlyDenied):
+    case static_cast<int>(NotificationPermissionStatus::kGranted):
+    case static_cast<int>(NotificationPermissionStatus::kExplicitlyDenied):
+      return static_cast<NotificationPermissionStatus>(*status_as_int);
   }
-  return PermissionStatus::kNotDetermined;
+  return NotificationPermissionStatus::kNotDetermined;
 }
 
 base::CallbackListSubscription AppShimRegistry::RegisterAppChangedCallback(
@@ -508,8 +522,7 @@ void AppShimRegistry::SetAppInfo(
     const std::set<base::FilePath>* last_active_profiles,
     const std::map<base::FilePath, HandlerInfo>* handlers,
     const std::string* cd_hash_hmac_base64,
-    const mac_notifications::mojom::PermissionStatus*
-        notification_permission_status) {
+    const NotificationPermissionStatus* notification_permission_status) {
   ScopedDictPrefUpdate update(GetPrefService(), kAppShims);
 
   // If there are no installed profiles, clear the app's key.

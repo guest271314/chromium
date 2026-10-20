@@ -11,13 +11,19 @@
 #include "base/functional/callback_forward.h"
 #include "base/run_loop.h"
 #include "base/supports_user_data.h"
+#include "base/test/scoped_feature_list.h"
+#include "build/build_config.h"
 #include "chrome/browser/ai/ai_manager.h"
 #include "chrome/browser/optimization_guide/mock_optimization_guide_keyed_service.h"
 #include "chrome/test/base/chrome_render_view_host_test_harness.h"
-#include "components/optimization_guide/core/model_execution/manifest_broker/test/fake_manifest_broker.h"
+#if BUILDFLAG(IS_ANDROID)
 #include "components/optimization_guide/core/model_execution/test/fake_model_assets.h"
-#include "components/optimization_guide/core/model_execution/test/fake_model_broker.h"
-#include "components/optimization_guide/core/model_execution/test/mock_on_device_capability.h"
+#include "components/optimization_guide/core/model_execution/test/fake_model_broker_android.h"
+#else
+#include "components/optimization_guide/core/model_execution/manifest_broker/test/fake_manifest_broker.h"
+#include "components/optimization_guide/core/model_execution/manifest_broker/test/scenario_builder.h"
+#endif
+#include "components/optimization_guide/proto/manifest.pb.h"
 #include "components/optimization_guide/proto/on_device_model_execution_config.pb.h"
 #include "components/update_client/crx_update_item.h"
 #include "mojo/public/cpp/bindings/receiver.h"
@@ -100,11 +106,15 @@ class AITestUtils {
     void TearDown() override;
 
    protected:
+    virtual void SetupBroker();
     virtual void SetupMockOptimizationGuideKeyedService();
     virtual void SetupNullOptimizationGuideKeyedService();
 
-    virtual optimization_guide::proto::OnDeviceModelExecutionFeatureConfig
-    CreateConfig() = 0;
+    virtual optimization_guide::proto::SolutionConfig CreateSolution() = 0;
+
+    void SetSolutionConfig(
+        optimization_guide::proto::SolutionConfig solution_config);
+    void SetModelInputContextLimit(uint32_t max_input_tokens);
 
     blink::mojom::AIManager* GetAIManagerInterface();
     mojo::Remote<blink::mojom::AIManager> GetAIManagerRemote();
@@ -113,6 +123,11 @@ class AITestUtils {
     // Navigates to disable the specified policy and recreates `ai_manager_`.
     void DisablePolicy(network::mojom::PermissionsPolicyFeature feature);
 
+    void InstallBaseModel();
+    void UnInstallBaseModel();
+    void SetSizeInTokens(uint32_t size);
+    void SetExecuteResult(const std::vector<std::string>& result);
+
     // Helpers to set enterprise policies and user settings for testing.
     void SetBuiltInAIAPIsEnterprisePolicy(bool allowed);
     void SetGenAILocalEnterprisePolicy(bool allowed);
@@ -120,24 +135,17 @@ class AITestUtils {
 
     raw_ptr<MockOptimizationGuideKeyedService>
         mock_optimization_guide_keyed_service_;
-    std::unique_ptr<optimization_guide::FakeModelBroker> fake_broker_;
-    std::unique_ptr<optimization_guide::FakeAdaptationAsset> fake_asset_;
+
+#if BUILDFLAG(IS_ANDROID)
+    base::test::ScopedFeatureList scoped_feature_list_;
+    std::unique_ptr<optimization_guide::FakeModelBrokerAndroid> fake_broker_;
+    std::vector<std::unique_ptr<optimization_guide::FakeAdaptationAsset>>
+        fake_assets_;
+#else
+    std::unique_ptr<optimization_guide::FakeManifestBroker> fake_broker_;
+#endif
 
     std::unique_ptr<AIManager> ai_manager_;
-  };
-
-  class AITestManifestBase : public AITestBase {
-   public:
-    AITestManifestBase();
-    ~AITestManifestBase() override;
-
-   protected:
-    virtual void SetupManifest();
-    void SetupMockOptimizationGuideKeyedService() override;
-    void TearDown() override;
-
-    std::unique_ptr<optimization_guide::FakeManifestBroker>
-        fake_manifest_broker_;
   };
 
   // Converts string language codes to AILanguageCode mojo struct.

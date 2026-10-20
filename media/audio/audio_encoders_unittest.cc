@@ -23,6 +23,7 @@
 #include "media/base/audio_encoder.h"
 #include "media/base/audio_timestamp_helper.h"
 #include "media/base/converting_audio_fifo.h"
+#include "media/base/media_serializers.h"
 #include "media/base/status.h"
 #include "media/media_buildflags.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -98,33 +99,6 @@ constexpr auto kTestAudioParamsAAC = std::to_array<TestAudioParams>({
     {AudioCodec::kAAC, 1, 44100},
 });
 #endif  // HAS_AAC_ENCODER
-
-std::string EncoderStatusCodeToString(EncoderStatus::Codes code) {
-  switch (code) {
-    case EncoderStatus::Codes::kOk:
-      return "kOk";
-    case EncoderStatus::Codes::kEncoderInitializeNeverCompleted:
-      return "kEncoderInitializeNeverCompleted";
-    case EncoderStatus::Codes::kEncoderInitializeTwice:
-      return "kEncoderInitializeTwice";
-    case EncoderStatus::Codes::kEncoderFailedEncode:
-      return "kEncoderFailedEncode";
-    case EncoderStatus::Codes::kEncoderUnsupportedProfile:
-      return "kEncoderUnsupportedProfile";
-    case EncoderStatus::Codes::kEncoderUnsupportedCodec:
-      return "kEncoderUnsupportedCodec";
-    case EncoderStatus::Codes::kEncoderUnsupportedConfig:
-      return "kEncoderUnsupportedConfig";
-    case EncoderStatus::Codes::kEncoderInitializationError:
-      return "kEncoderInitializationError";
-    case EncoderStatus::Codes::kEncoderFailedFlush:
-      return "kEncoderFailedFlush";
-    case EncoderStatus::Codes::kEncoderMojoConnectionError:
-      return "kEncoderMojoConnectionError";
-    default:
-      NOTREACHED();
-  }
-}
 
 bool TimesAreNear(base::TimeTicks t1,
                   base::TimeTicks t2,
@@ -224,8 +198,7 @@ class AudioEncodersTest : public ::testing::TestWithParam<TestAudioParams> {
     AudioEncoder::EncoderStatusCB done_cb =
         base::BindLambdaForTesting([&](EncoderStatus error) {
           if (!error.is_ok()) {
-            FAIL() << "Error code: " << EncoderStatusCodeToString(error.code())
-                   << "\nError message: " << error.message();
+            FAIL() << MediaSerializeForTesting(error);
           }
           called_done = true;
         });
@@ -268,8 +241,7 @@ class AudioEncodersTest : public ::testing::TestWithParam<TestAudioParams> {
       pending_callback_results_.emplace_back();
       done_cb = base::BindLambdaForTesting([&](EncoderStatus error) {
         if (!error.is_ok()) {
-          FAIL() << "Error code: " << EncoderStatusCodeToString(error.code())
-                 << "\nError message: " << error.message();
+          FAIL() << MediaSerializeForTesting(error);
         }
 
         pending_callback_results_[pending_callback_count_].status_code =
@@ -294,8 +266,9 @@ class AudioEncodersTest : public ::testing::TestWithParam<TestAudioParams> {
     bool flush_done = false;
     auto flush_done_cb = base::BindLambdaForTesting([&](EncoderStatus error) {
       if (error.code() != status_code) {
-        FAIL() << "Expected " << EncoderStatusCodeToString(status_code)
-               << " but got " << EncoderStatusCodeToString(error.code());
+        FAIL() << "Expected " << static_cast<int>(status_code) << " but got "
+               << static_cast<int>(error.code())
+               << " Full trace: " << MediaSerializeForTesting(error);
       }
       flush_done = true;
     });
@@ -313,11 +286,16 @@ class AudioEncodersTest : public ::testing::TestWithParam<TestAudioParams> {
     }
   }
 
-  // The amount of front padding that the encoder emits.
-  size_t GetExpectedPadding() {
+  // The amount of padding that the encoder emits.
+  size_t GetExpectedPadding(size_t input_frames = 0) {
 #if BUILDFLAG(IS_MAC)
     if (options_.codec == AudioCodec::kAAC)
       return 2112;
+#elif BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_WIN)
+    if (options_.codec == AudioCodec::kAAC && input_frames > 0 &&
+        input_frames < 2 * static_cast<size_t>(frames_per_buffer_)) {
+      return frames_per_buffer_;
+    }
 #endif
     return 0;
   }
@@ -329,7 +307,9 @@ class AudioEncodersTest : public ::testing::TestWithParam<TestAudioParams> {
         frames_per_buffer_ -
         (expected_duration_helper_->frame_count() % frames_per_buffer_);
 
-    int64_t amount_of_padding = GetExpectedPadding() + frame_remainder;
+    int64_t amount_of_padding =
+        GetExpectedPadding(expected_duration_helper_->frame_count()) +
+        frame_remainder;
 
     // Padding is re-emitted after each flush.
     amount_of_padding *= flush_count;
@@ -384,7 +364,7 @@ TEST_P(AudioEncodersTest, InitializeTwice) {
   auto done_cb = base::BindLambdaForTesting([&](EncoderStatus error) {
     if (error.code() != EncoderStatus::Codes::kEncoderInitializeTwice)
       FAIL() << "Expected kEncoderInitializeTwice error but got "
-             << EncoderStatusCodeToString(error.code());
+             << MediaSerializeForTesting(error);
     called_done = true;
   });
 
@@ -409,7 +389,7 @@ TEST_P(AudioEncodersTest, EncodeWithoutInitialize) {
   auto done_cb = base::BindLambdaForTesting([&](EncoderStatus error) {
     if (error.code() != EncoderStatus::Codes::kEncoderInitializeNeverCompleted)
       FAIL() << "Expected kEncoderInitializeNeverCompleted error but got "
-             << EncoderStatusCodeToString(error.code());
+             << MediaSerializeForTesting(error);
     called_done = true;
   });
 
@@ -446,6 +426,22 @@ TEST_P(AudioEncodersTest, EncodeAndFlush) {
   ValidateOutputDuration();
 }
 
+TEST_P(AudioEncodersTest, ShortInputAndFlush) {
+  if (EncoderHasDelay()) {
+    return;
+  }
+
+  InitializeEncoder();
+  ProduceAudioAndEncode(
+      base::TimeTicks::Now(),
+      std::max(1, static_cast<int>(options_.sample_rate * 0.01)));
+
+  FlushAndVerifyStatus();
+
+  ValidateDoneCallbacksRun();
+  ValidateOutputDuration();
+}
+
 TEST_P(AudioEncodersTest, EncodeAndFlushTwice) {
   if (EncoderHasDelay())
     return;
@@ -464,8 +460,7 @@ TEST_P(AudioEncodersTest, EncodeAndFlushTwice) {
       bool called_flush = false;
       auto flush_cb = base::BindLambdaForTesting([&](EncoderStatus error) {
         if (error.code() != EncoderStatus::Codes::kOk) {
-          FAIL() << "Expected kOk but got "
-                 << EncoderStatusCodeToString(error.code());
+          FAIL() << "Expected kOk but got " << MediaSerializeForTesting(error);
         }
         called_flush = true;
       });
@@ -492,8 +487,7 @@ TEST_P(AudioEncodersTest, ProvideInputAfterDoneCb) {
   bool called_done = false;
   auto done_lambda = [&](EncoderStatus error) {
     if (error.code() != EncoderStatus::Codes::kOk)
-      FAIL() << "Expected kOk but got "
-             << EncoderStatusCodeToString(error.code());
+      FAIL() << "Expected kOk but got " << MediaSerializeForTesting(error);
     called_done = true;
   };
   AudioEncoder::EncoderStatusCB done_cb =
@@ -727,7 +721,7 @@ TEST_P(AudioOpusEncoderTest, ExtraData) {
 }
 
 TEST_P(AudioOpusEncoderTest, FullCycleEncodeDecode) {
-  const int kOpusDecoderSampleRate = 48000;
+  constexpr int kOpusDecoderSampleRate = 48000;
   const int kOpusDecoderFramesPerBuffer = AudioTimestampHelper::TimeToFrames(
       kOpusBufferDuration, kOpusDecoderSampleRate);
 
@@ -976,7 +970,17 @@ INSTANTIATE_TEST_SUITE_P(Opus,
                          AudioOpusEncoderTest,
                          testing::ValuesIn(kTestAudioParamsOpus));
 
-#if HAS_AAC_ENCODER
+// Note: theoretically we could create the test fixture AACAudioEncoderTest with
+// only `HAS_AAC_ENCODER`. However, since it's a parameterized test and there
+// are no test cases without the other two flags, this results in an empty
+// parameterized test on some builders, which causes the test suite to crash.
+// See https://crbug.com/568313689 for an example.
+//
+// Feel free to break these conditions up in the future if there are tests where
+// only `HAS_AAC_ENCODER` is required.
+#if HAS_AAC_ENCODER && BUILDFLAG(ENABLE_FFMPEG) && \
+    BUILDFLAG(USE_PROPRIETARY_CODECS)
+
 class AACAudioEncoderTest : public AudioEncodersTest {
  public:
   AACAudioEncoderTest() = default;
@@ -984,7 +988,6 @@ class AACAudioEncoderTest : public AudioEncodersTest {
   AACAudioEncoderTest& operator=(const AACAudioEncoderTest&) = delete;
   ~AACAudioEncoderTest() override = default;
 
-#if BUILDFLAG(ENABLE_FFMPEG) && BUILDFLAG(USE_PROPRIETARY_CODECS)
   void InitializeDecoder() {
     decoder_ = std::make_unique<FFmpegAudioDecoder>(
         base::SequencedTaskRunner::GetCurrentDefault(), &media_log);
@@ -1024,23 +1027,8 @@ class AACAudioEncoderTest : public AudioEncodersTest {
   MockMediaLog media_log;
   std::unique_ptr<FFmpegAudioDecoder> decoder_;
   int decoder_output_callback_count = 0;
-#endif  // BUILDFLAG(ENABLE_FFMPEG) && BUILDFLAG(USE_PROPRIETARY_CODECS)
 };
 
-#if BUILDFLAG(IS_WIN)
-// `MFAudioEncoder` requires `kMinSamplesForOutput` before `Flush` can be called
-// successfully.
-TEST_P(AACAudioEncoderTest, FlushWithTooLittleInput) {
-  InitializeEncoder(base::DoNothing());
-  ProduceAudioAndEncode();
-
-  FlushAndVerifyStatus(EncoderStatus::Codes::kEncoderFailedFlush);
-
-  ValidateDoneCallbacksRun();
-}
-#endif
-
-#if BUILDFLAG(ENABLE_FFMPEG) && BUILDFLAG(USE_PROPRIETARY_CODECS)
 TEST_P(AACAudioEncoderTest, FullCycleEncodeDecode) {
   InitializeDecoder();
 
@@ -1154,11 +1142,12 @@ TEST_P(AACAudioEncoderTest, AacOutputFormat) {
     FlushAndVerifyStatus();
   }
 }
-#endif  // BUILDFLAG(ENABLE_FFMPEG) && BUILDFLAG(USE_PROPRIETARY_CODECS)
 
 INSTANTIATE_TEST_SUITE_P(AAC,
                          AACAudioEncoderTest,
                          testing::ValuesIn(kTestAudioParamsAAC));
-#endif  // HAS_AAC_ENCODER
+
+#endif  // HAS_AAC_ENCODER && BUILDFLAG(ENABLE_FFMPEG) &&
+        // BUILDFLAG(USE_PROPRIETARY_CODECS)
 
 }  // namespace media

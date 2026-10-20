@@ -16,6 +16,7 @@
 #include "third_party/blink/renderer/core/editing/markers/spell_check_marker.h"
 #include "third_party/blink/renderer/core/editing/markers/suggestion_marker_properties.h"
 #include "third_party/blink/renderer/core/editing/selection_template.h"
+#include "third_party/blink/renderer/core/editing/spellcheck/hot_mode_spell_check_requester.h"
 #include "third_party/blink/renderer/core/editing/spellcheck/spell_check_requester.h"
 #include "third_party/blink/renderer/core/editing/spellcheck/spell_check_requester_helper.h"
 #include "third_party/blink/renderer/core/editing/spellcheck/spell_check_test_base.h"
@@ -42,7 +43,7 @@ class SpellCheckerTest : public SpellCheckTestBase,
     }
   }
 
-  unsigned LayoutCount() const {
+  wtf_size_t LayoutCount() const {
     return Page().GetFrameView().LayoutCountForTesting();
   }
   DummyPageHolder& Page() const { return GetDummyPageHolder(); }
@@ -58,11 +59,7 @@ class SpellCheckerTest : public SpellCheckTestBase,
 INSTANTIATE_TEST_SUITE_P(All, SpellCheckerTest, testing::Bool());
 
 void SpellCheckerTest::ForceLayout() {
-  LocalFrameView& frame_view = Page().GetFrameView();
-  gfx::Rect frame_rect = frame_view.FrameRect();
-  frame_rect.set_width(frame_rect.width() + 1);
-  frame_rect.set_height(frame_rect.height() + 1);
-  Page().GetFrameView().SetFrameRect(frame_rect);
+  GetDocument().View()->SetNeedsLayout();
   GetDocument().UpdateStyleAndLayout(DocumentUpdateReason::kTest);
 }
 
@@ -96,7 +93,7 @@ TEST_P(SpellCheckerTest, AdvancedToNextMisspellingWrapSearchNoCrash) {
 
   Element* div = QuerySelector("div");
   div->Focus();
-  Selection().SetSelection(SelectionInDOMTree::Builder()
+  Selection().SetSelection(SelectionInDomTree::Builder()
                                .Collapse(Position::LastPositionInNode(*div))
                                .Build(),
                            SetSelectionOptions());
@@ -114,13 +111,13 @@ TEST_P(SpellCheckerTest, SpellCheckDoesNotCauseUpdateLayout) {
 
   Position new_position(input->InnerEditorElement()->firstChild(), 3);
   GetDocument().GetFrame()->Selection().SetSelection(
-      SelectionInDOMTree::Builder().Collapse(new_position).Build(),
+      SelectionInDomTree::Builder().Collapse(new_position).Build(),
       SetSelectionOptions());
   ASSERT_EQ(3u, input->selectionStart());
 
   EXPECT_TRUE(GetSpellChecker().IsSpellCheckingEnabled());
   ForceLayout();
-  unsigned start_count = LayoutCount();
+  wtf_size_t start_count = LayoutCount();
   GetSpellChecker().RespondToChangedSelection();
   EXPECT_EQ(start_count, LayoutCount());
 }
@@ -227,7 +224,7 @@ TEST_P(SpellCheckerTest, GetSpellCheckMarkerUnderSelection_FirstCharSelected) {
       EphemeralRange(Position(text, 0), Position(text, 8)));
 
   GetDocument().GetFrame()->Selection().SetSelection(
-      SelectionInDOMTree::Builder()
+      SelectionInDomTree::Builder()
           .SetBaseAndExtent(Position(text, 0), Position(text, 1))
           .Build(),
       SetSelectionOptions());
@@ -255,7 +252,7 @@ TEST_P(SpellCheckerTest, GetSpellCheckMarkerUnderSelection_LastCharSelected) {
       EphemeralRange(Position(text, 0), Position(text, 8)));
 
   GetDocument().GetFrame()->Selection().SetSelection(
-      SelectionInDOMTree::Builder()
+      SelectionInDomTree::Builder()
           .SetBaseAndExtent(Position(text, 7), Position(text, 8))
           .Build(),
       SetSelectionOptions());
@@ -284,7 +281,7 @@ TEST_P(SpellCheckerTest,
       EphemeralRange(Position(text, 0), Position(text, 1)));
 
   GetDocument().GetFrame()->Selection().SetSelection(
-      SelectionInDOMTree::Builder()
+      SelectionInDomTree::Builder()
           .SetBaseAndExtent(Position(text, 0), Position(text, 1))
           .Build(),
       SetSelectionOptions());
@@ -313,7 +310,7 @@ TEST_P(SpellCheckerTest,
       EphemeralRange(Position(text, 0), Position(text, 1)));
 
   GetDocument().GetFrame()->Selection().SetSelection(
-      SelectionInDOMTree::Builder()
+      SelectionInDomTree::Builder()
           .SetBaseAndExtent(Position(text, 0), Position(text, 0))
           .Build(),
       SetSelectionOptions());
@@ -342,7 +339,7 @@ TEST_P(SpellCheckerTest,
       EphemeralRange(Position(text, 0), Position(text, 1)));
 
   GetDocument().GetFrame()->Selection().SetSelection(
-      SelectionInDOMTree::Builder()
+      SelectionInDomTree::Builder()
           .SetBaseAndExtent(Position(text, 1), Position(text, 1))
           .Build(),
       SetSelectionOptions());
@@ -371,7 +368,7 @@ TEST_P(SpellCheckerTest,
       EphemeralRange(Position(text, 0), Position(text, 8)));
 
   GetDocument().GetFrame()->Selection().SetSelection(
-      SelectionInDOMTree::Builder()
+      SelectionInDomTree::Builder()
           .SetBaseAndExtent(Position(text, 0), Position(text, 0))
           .Build(),
       SetSelectionOptions());
@@ -400,7 +397,7 @@ TEST_P(SpellCheckerTest,
       EphemeralRange(Position(text, 0), Position(text, 8)));
 
   GetDocument().GetFrame()->Selection().SetSelection(
-      SelectionInDOMTree::Builder()
+      SelectionInDomTree::Builder()
           .SetBaseAndExtent(Position(text, 8), Position(text, 8))
           .Build(),
       SetSelectionOptions());
@@ -428,7 +425,7 @@ TEST_P(SpellCheckerTest, GetSpellCheckMarkerUnderSelection_CaretMiddleOfWord) {
       EphemeralRange(Position(text, 0), Position(text, 8)));
 
   GetDocument().GetFrame()->Selection().SetSelection(
-      SelectionInDOMTree::Builder()
+      SelectionInDomTree::Builder()
           .SetBaseAndExtent(Position(text, 4), Position(text, 4))
           .Build(),
       SetSelectionOptions());
@@ -457,7 +454,7 @@ TEST_P(SpellCheckerTest,
       EphemeralRange(Position(text, 2), Position(text, 10)));
 
   GetDocument().GetFrame()->Selection().SetSelection(
-      SelectionInDOMTree::Builder()
+      SelectionInDomTree::Builder()
           .SetBaseAndExtent(Position(text, 1), Position(text, 1))
           .Build(),
       SetSelectionOptions());
@@ -482,7 +479,7 @@ TEST_P(SpellCheckerTest,
       EphemeralRange(Position(text, 0), Position(text, 8)));
 
   GetDocument().GetFrame()->Selection().SetSelection(
-      SelectionInDOMTree::Builder()
+      SelectionInDomTree::Builder()
           .SetBaseAndExtent(Position(text, 9), Position(text, 9))
           .Build(),
       SetSelectionOptions());
@@ -508,7 +505,7 @@ TEST_P(SpellCheckerTest, GetSpellCheckMarkerUnderSelection_MultiNodeMisspell) {
       EphemeralRange(Position(first_text, 0), Position(third_text, 3)));
 
   GetDocument().GetFrame()->Selection().SetSelection(
-      SelectionInDOMTree::Builder()
+      SelectionInDomTree::Builder()
           .SetBaseAndExtent(Position(second_text, 1), Position(second_text, 1))
           .Build(),
       SetSelectionOptions());
@@ -714,6 +711,44 @@ TEST_P(SpellCheckerTest, GetSpellingMarkers) {
 
   EXPECT_EQ(0u, request->GetSpellingMarkers().size());
 #endif
+}
+
+TEST_P(SpellCheckerTest, HotModeNestedSpellcheckFalse) {
+  SetBodyContent(
+      "<div contenteditable='true' spellcheck='true'>"
+      "hello <span id='nocheck' spellcheck='false'>world</span>"
+      "</div>");
+  UpdateAllLifecyclePhasesForTest();
+
+  Element* span = QuerySelector("#nocheck");
+  HotModeSpellCheckRequester requester(
+      GetSpellChecker().GetSpellCheckRequester());
+  int sequence_before =
+      GetSpellChecker().GetSpellCheckRequester().LastRequestSequence();
+
+  requester.CheckSpellingAt(Position(span->firstChild(), 0));
+
+  EXPECT_EQ(sequence_before,
+            GetSpellChecker().GetSpellCheckRequester().LastRequestSequence());
+}
+
+TEST_P(SpellCheckerTest, HotModeNestedSpellcheckTrue) {
+  SetBodyContent(
+      "<div contenteditable='true' spellcheck='false'>"
+      "hello <span id='check' spellcheck='true'>world</span>"
+      "</div>");
+  UpdateAllLifecyclePhasesForTest();
+
+  Element* span = QuerySelector("#check");
+  HotModeSpellCheckRequester requester(
+      GetSpellChecker().GetSpellCheckRequester());
+  int sequence_before =
+      GetSpellChecker().GetSpellCheckRequester().LastRequestSequence();
+
+  requester.CheckSpellingAt(Position(span->firstChild(), 0));
+
+  EXPECT_GT(GetSpellChecker().GetSpellCheckRequester().LastRequestSequence(),
+            sequence_before);
 }
 
 }  // namespace blink

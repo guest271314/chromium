@@ -9,15 +9,15 @@ import static androidx.test.espresso.matcher.ViewMatchers.assertThat;
 import static org.hamcrest.CoreMatchers.is;
 import static org.hamcrest.Matchers.equalTo;
 import static org.junit.Assert.assertNotNull;
-import static org.mockito.ArgumentMatchers.any;
+import static org.junit.Assert.assertTrue;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
-import static org.mockito.Mockito.when;
 
 import static org.chromium.chrome.browser.keyboard_accessory.sheet_tabs.AccessorySheetTabItemsModel.AccessorySheetDataPiece.Type.CREDIT_CARD_INFO;
 import static org.chromium.chrome.browser.keyboard_accessory.sheet_tabs.AccessorySheetTabItemsModel.AccessorySheetDataPiece.Type.PROMO_CODE_INFO;
 import static org.chromium.chrome.browser.keyboard_accessory.sheet_tabs.AccessorySheetTabItemsModel.AccessorySheetDataPiece.Type.TITLE;
 import static org.chromium.chrome.browser.keyboard_accessory.sheet_tabs.AccessorySheetTabItemsModel.AccessorySheetDataPiece.getType;
+import static org.chromium.chrome.browser.keyboard_accessory.sheet_tabs.AccessorySheetTabProperties.IS_DEFAULT_A11Y_FOCUS_REQUESTED;
 
 import org.junit.After;
 import org.junit.Before;
@@ -28,8 +28,8 @@ import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 import org.robolectric.RuntimeEnvironment;
-import org.robolectric.annotation.Config;
 
+import org.chromium.base.CallbackUtils;
 import org.chromium.base.supplier.ObservableSuppliers;
 import org.chromium.base.supplier.SettableNullableObservableSupplier;
 import org.chromium.base.test.BaseRobolectricTestRunner;
@@ -43,36 +43,36 @@ import org.chromium.chrome.browser.keyboard_accessory.data.KeyboardAccessoryData
 import org.chromium.chrome.browser.keyboard_accessory.data.KeyboardAccessoryData.UserInfo;
 import org.chromium.chrome.browser.keyboard_accessory.data.UserInfoField;
 import org.chromium.chrome.browser.profiles.Profile;
-import org.chromium.chrome.browser.util.ChromeAccessibilityUtil;
+import org.chromium.ui.accessibility.AccessibilityStateTestHelper;
 import org.chromium.ui.modelutil.ListObservable;
 
 /** Controller tests for the credit card accessory sheet. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 public class CreditCardAccessorySheetControllerTest {
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
 
-    @Mock private AccessorySheetTabView mMockView;
     @Mock private ListObservable.ListObserver<Void> mMockItemListObserver;
     @Mock private Profile mMockProfile;
     @Mock private AutofillImageFetcher mMockImageFetcher;
 
+    private AccessorySheetTabView mView;
     private CreditCardAccessorySheetCoordinator mCoordinator;
     private AccessorySheetTabItemsModel mSheetDataPieces;
 
     @Before
     public void setUp() {
+        mView = new AccessorySheetTabView(RuntimeEnvironment.getApplication(), null);
         AutofillImageFetcherFactory.setInstanceForTesting(mMockImageFetcher);
         mCoordinator =
                 new CreditCardAccessorySheetCoordinator(
-                        RuntimeEnvironment.application, mMockProfile, null);
+                        RuntimeEnvironment.getApplication(), mMockProfile, null);
         assertNotNull(mCoordinator);
         mSheetDataPieces = mCoordinator.getSheetDataPiecesForTesting();
     }
 
     @After
     public void tearDown() {
-        ChromeAccessibilityUtil.get().setAccessibilityEnabledForTesting(false);
+        AccessibilityStateTestHelper.setAccessibilityEnabledForTesting(false);
     }
 
     @Test
@@ -84,24 +84,22 @@ public class CreditCardAccessorySheetControllerTest {
 
     @Test
     public void testSetsViewAdapterOnTabCreation() {
-        when(mMockView.getParent()).thenReturn(mMockView);
         KeyboardAccessoryData.Tab tab = mCoordinator.getTab();
         assertNotNull(tab);
         assertNotNull(tab.getListener());
-        tab.getListener().onTabCreated(mMockView);
-        verify(mMockView).setAdapter(any());
+        tab.getListener().onTabCreated(mView);
+        assertNotNull(mView.getAdapter());
     }
 
     @Test
     public void testRequestDefaultFocus() {
-        ChromeAccessibilityUtil.get().setAccessibilityEnabledForTesting(true);
+        AccessibilityStateTestHelper.setAccessibilityEnabledForTesting(true);
 
-        when(mMockView.getParent()).thenReturn(mMockView);
         KeyboardAccessoryData.Tab tab = mCoordinator.getTab();
-        tab.getListener().onTabCreated(mMockView);
+        tab.getListener().onTabCreated(mView);
         tab.getListener().onTabShown();
 
-        verify(mMockView).requestDefaultA11yFocus();
+        assertTrue(mCoordinator.mModel.get(IS_DEFAULT_A11Y_FOCUS_REQUESTED));
     }
 
     @Test
@@ -116,7 +114,6 @@ public class CreditCardAccessorySheetControllerTest {
                 new AccessorySheetData(
                         AccessoryTabType.CREDIT_CARDS,
                         /* userInfoTitle= */ "Payments",
-                        /* plusAddressTitle= */ "",
                         /* warning= */ ""));
         verify(mMockItemListObserver).onItemRangeInserted(mSheetDataPieces, 0, 1);
         assertThat(mSheetDataPieces.size(), is(1));
@@ -126,7 +123,6 @@ public class CreditCardAccessorySheetControllerTest {
                 new AccessorySheetData(
                         AccessoryTabType.CREDIT_CARDS,
                         /* userInfoTitle= */ "Other Payments",
-                        /* plusAddressTitle= */ "",
                         /* warning= */ ""));
         verify(mMockItemListObserver).onItemRangeChanged(mSheetDataPieces, 0, 1, null);
         assertThat(mSheetDataPieces.size(), is(1));
@@ -149,7 +145,6 @@ public class CreditCardAccessorySheetControllerTest {
                 new AccessorySheetData(
                         AccessoryTabType.CREDIT_CARDS,
                         /* userInfoTitle= */ "",
-                        /* plusAddressTitle= */ "",
                         /* warning= */ "");
         testData.getUserInfoList().add(new UserInfo("", false));
         testData.getUserInfoList()
@@ -159,7 +154,7 @@ public class CreditCardAccessorySheetControllerTest {
                                 .setSuggestionType(AccessorySuggestionType.CREDIT_CARD_NAME_FULL)
                                 .setDisplayText("Todd")
                                 .setA11yDescription("Todd")
-                                .setCallback(field -> {})
+                                .setCallback(CallbackUtils.emptyCallback())
                                 .build());
         testData.getUserInfoList()
                 .get(0)
@@ -169,7 +164,7 @@ public class CreditCardAccessorySheetControllerTest {
                                 .setDisplayText("**** 9219")
                                 .setA11yDescription("**** 9219")
                                 .setIsObfuscated(true)
-                                .setCallback(field -> {})
+                                .setCallback(CallbackUtils.emptyCallback())
                                 .build());
         testData.getPromoCodeInfoList().add(new PromoCodeInfo());
         testData.getPromoCodeInfoList()
@@ -179,7 +174,7 @@ public class CreditCardAccessorySheetControllerTest {
                                 .setSuggestionType(AccessorySuggestionType.PROMO_CODE)
                                 .setDisplayText("50$OFF")
                                 .setA11yDescription("Promo Code for Todd Tester")
-                                .setCallback(field -> {})
+                                .setCallback(CallbackUtils.emptyCallback())
                                 .build(),
                         /* detailsText= */ "Get $50 off when you use this code at checkout.");
 
@@ -203,7 +198,6 @@ public class CreditCardAccessorySheetControllerTest {
                 new AccessorySheetData(
                         AccessoryTabType.CREDIT_CARDS,
                         /* userInfoTitle= */ "Payments",
-                        /* plusAddressTitle= */ "",
                         /* warning= */ "");
         mCoordinator.registerDataProvider(testProvider);
 
@@ -222,7 +216,6 @@ public class CreditCardAccessorySheetControllerTest {
                 new AccessorySheetData(
                         AccessoryTabType.CREDIT_CARDS,
                         /* userInfoTitle= */ "No payment methods",
-                        /* plusAddressTitle= */ "",
                         /* warning= */ "");
 
         testData.getPromoCodeInfoList().add(new PromoCodeInfo());
@@ -233,7 +226,7 @@ public class CreditCardAccessorySheetControllerTest {
                                 .setSuggestionType(AccessorySuggestionType.PROMO_CODE)
                                 .setDisplayText("50$OFF")
                                 .setA11yDescription("Promo Code for Todd Tester")
-                                .setCallback(field -> {})
+                                .setCallback(CallbackUtils.emptyCallback())
                                 .build(),
                         /* detailsText= */ "Get $50 off when you use this code at checkout.");
 

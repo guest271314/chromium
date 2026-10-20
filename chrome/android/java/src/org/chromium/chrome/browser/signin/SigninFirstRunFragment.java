@@ -14,12 +14,17 @@ import android.content.Intent;
 import android.content.res.Configuration;
 import android.graphics.drawable.Drawable;
 import android.os.Bundle;
+import android.transition.Scene;
+import android.transition.Transition;
+import android.transition.TransitionInflater;
+import android.transition.TransitionManager;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.accessibility.AccessibilityEvent;
 import android.widget.FrameLayout;
 
+import androidx.activity.OnBackPressedCallback;
 import androidx.annotation.MainThread;
 import androidx.annotation.StringRes;
 import androidx.fragment.app.Fragment;
@@ -32,16 +37,20 @@ import org.chromium.base.task.TaskTraits;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.R;
-import org.chromium.chrome.browser.enterprise.util.EnterpriseInfo;
 import org.chromium.chrome.browser.firstrun.FirstRunFragment;
 import org.chromium.chrome.browser.firstrun.FirstRunUtils;
 import org.chromium.chrome.browser.firstrun.MobileFreProgress;
 import org.chromium.chrome.browser.firstrun.SkipTosDialogPolicyListener;
+import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.privacy.settings.PrivacyPreferencesManagerImpl;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.profiles.ProfileProvider;
 import org.chromium.chrome.browser.signin.services.BadgeConfig;
+import org.chromium.chrome.browser.signin.services.IdentityServicesProvider;
 import org.chromium.chrome.browser.ui.device_lock.DeviceLockCoordinator;
+import org.chromium.chrome.browser.ui.enterprise_signals_disclaimer.EnterpriseSignalsDisclaimerCoordinator;
+import org.chromium.chrome.browser.ui.signin.ConfirmManagedSyncDataDialogCoordinator;
+import org.chromium.chrome.browser.ui.signin.SigninAndHistorySyncCoordinator;
 import org.chromium.chrome.browser.ui.signin.SigninSurveyController;
 import org.chromium.chrome.browser.ui.signin.SigninUtils;
 import org.chromium.chrome.browser.ui.signin.fullscreen_signin.FullscreenSigninConfig;
@@ -49,7 +58,9 @@ import org.chromium.chrome.browser.ui.signin.fullscreen_signin.FullscreenSigninC
 import org.chromium.chrome.browser.ui.signin.fullscreen_signin.FullscreenSigninMediator;
 import org.chromium.chrome.browser.ui.signin.fullscreen_signin.FullscreenSigninView;
 import org.chromium.components.browser_ui.device_lock.DeviceLockActivityLauncher;
+import org.chromium.components.policy.EnterpriseInfo;
 import org.chromium.components.signin.AccountManagerFacadeProvider;
+import org.chromium.components.signin.base.CoreAccountInfo;
 import org.chromium.components.signin.metrics.AccountConsistencyPromoAction;
 import org.chromium.components.signin.metrics.SigninAccessPoint;
 import org.chromium.google_apis.gaia.CoreAccountId;
@@ -61,7 +72,8 @@ import org.chromium.ui.modaldialog.ModalDialogManagerHolder;
 public class SigninFirstRunFragment extends Fragment
         implements FirstRunFragment,
                 FullscreenSigninCoordinator.Delegate,
-                DeviceLockCoordinator.Delegate {
+                DeviceLockCoordinator.Delegate,
+                EnterpriseSignalsDisclaimerCoordinator.Delegate {
     private static final int ADD_ACCOUNT_REQUEST_CODE = 1;
 
     private @Nullable FrameLayout mFragmentView;
@@ -70,8 +82,12 @@ public class SigninFirstRunFragment extends Fragment
     private @Nullable SkipTosDialogPolicyListener mSkipTosDialogPolicyListener;
     private FullscreenSigninCoordinator mFullscreenSigninCoordinator;
     private @Nullable DeviceLockCoordinator mDeviceLockCoordinator;
+    private @Nullable EnterpriseSignalsDisclaimerCoordinator mManagementNoticeCoordinator;
+    private ConfirmManagedSyncDataDialogCoordinator.@Nullable Listener mManagementNoticeListener;
+    private @Nullable OnBackPressedCallback mManagementNoticeBackPressCallback;
     private boolean mExitFirstRunCalled;
     private boolean mDelayedExitFirstRunCalledForTesting;
+    private boolean mCenteredLayoutInflated;
 
     public SigninFirstRunFragment() {}
 
@@ -93,7 +109,9 @@ public class SigninFirstRunFragment extends Fragment
                                 /* logoId= */ 0,
                                 /* shouldDisableSignin= */ DeviceInfo.isAutomotive(),
                                 /* surveyType= */ SigninSurveyController.SigninSurveyType.FRE,
-                                /* selectedAccountEmail= */ null),
+                                /* selectedAccountEmail= */ null,
+                                /* signinFlow= */ SigninAndHistorySyncCoordinator.SigninFlow
+                                        .DEFAULT_SIGNIN),
                         SigninAccessPoint.START_PAGE);
 
         var pageDelegate = assumeNonNull(getPageDelegate());
@@ -123,24 +141,33 @@ public class SigninFirstRunFragment extends Fragment
             mDeviceLockCoordinator.destroy();
             mDeviceLockCoordinator = null;
         }
+        if (mManagementNoticeBackPressCallback != null) {
+            mManagementNoticeBackPressCallback.remove();
+            mManagementNoticeBackPressCallback = null;
+        }
+        if (mManagementNoticeCoordinator != null) {
+            mManagementNoticeCoordinator.destroy();
+            mManagementNoticeCoordinator = null;
+        }
     }
 
     @Override
     public void onConfigurationChanged(Configuration newConfig) {
         super.onConfigurationChanged(newConfig);
-        // Keep device lock page if it's currently displayed.
-        if (mDeviceLockCoordinator != null) {
-            return;
-        }
         assumeNonNull(mFragmentView);
-        // Inflate the view required for the current configuration and set it as the fragment view.
-        mFragmentView.removeAllViews();
+        // Device lock or the management notice screens don't have configuration-specific layouts.
+        // However, the main view does. Because of this on each configuration change the main view
+        // must be reinflated, even if it's not currently displayed.
         mMainView =
                 inflateFragmentView(
                         (LayoutInflater)
                                 getActivity().getSystemService(Context.LAYOUT_INFLATER_SERVICE),
                         getActivity());
-        mFragmentView.addView(mMainView);
+        // Keep the device lock page or management notice if it's currently displayed.
+        if (mDeviceLockCoordinator == null && mManagementNoticeCoordinator == null) {
+            mFragmentView.removeAllViews();
+            mFragmentView.addView(mMainView);
+        }
     }
 
     @Override
@@ -185,12 +212,12 @@ public class SigninFirstRunFragment extends Fragment
 
     /** Implements {@link FullscreenSigninCoordinator.Delegate}. */
     @Override
-    public void addAccount() {
+    public void addAccount(@Nullable String accountEmail) {
         assumeNonNull(getPageDelegate())
                 .recordFreProgressHistogram(MobileFreProgress.WELCOME_ADD_ACCOUNT);
         AccountManagerFacadeProvider.getInstance()
                 .createAddAccountIntent(
-                        null,
+                        accountEmail,
                         (@Nullable Intent intent) -> {
                             if (intent != null) {
                                 startActivityForResult(intent, ADD_ACCOUNT_REQUEST_CODE);
@@ -216,6 +243,12 @@ public class SigninFirstRunFragment extends Fragment
         if (pageDelegate != null) {
             pageDelegate.advanceToNextPage();
         }
+    }
+
+    /** Implements {@link FullscreenSigninCoordinator.Delegate} */
+    @Override
+    public void abortFlow() {
+        exitFirstRun();
     }
 
     /** Implements {@link FullscreenSigninCoordinator.Delegate}. */
@@ -315,15 +348,24 @@ public class SigninFirstRunFragment extends Fragment
 
     private View inflateFragmentView(LayoutInflater inflater, Activity activity) {
         boolean useLandscapeLayout = SigninUtils.shouldShowDualPanesHorizontalLayout(activity);
+        boolean useCentered = useCenteredLayout();
+
+        int layoutId;
+        if (useLandscapeLayout) {
+            layoutId =
+                    useCentered
+                            ? R.layout.fullscreen_signin_landscape_centered_view
+                            : R.layout.fullscreen_signin_landscape_view;
+        } else {
+            layoutId =
+                    useCentered
+                            ? R.layout.fullscreen_signin_portrait_centered_view
+                            : R.layout.fullscreen_signin_portrait_view;
+        }
 
         final FullscreenSigninView view =
-                (FullscreenSigninView)
-                        inflater.inflate(
-                                useLandscapeLayout
-                                        ? R.layout.fullscreen_signin_landscape_view
-                                        : R.layout.fullscreen_signin_portrait_view,
-                                null,
-                                false);
+                (FullscreenSigninView) inflater.inflate(layoutId, null, false);
+        mCenteredLayoutInflated = useCentered;
         mFullscreenSigninCoordinator.setView(view);
         return view;
     }
@@ -387,6 +429,86 @@ public class SigninFirstRunFragment extends Fragment
         mFragmentView.addView(mMainView);
     }
 
+    /** Implements {@link FullscreenSigninCoordinator.Delegate}. */
+    @Override
+    public void displayManagementNotice(
+            CoreAccountInfo account, ConfirmManagedSyncDataDialogCoordinator.Listener listener) {
+        if (!isAdded()) return;
+
+        Profile profile =
+                ProfileProvider.getOrCreateProfile(
+                        assertNonNull(getProfileSupplier().get()), false);
+        mManagementNoticeListener = listener;
+        mManagementNoticeCoordinator =
+                new EnterpriseSignalsDisclaimerCoordinator(
+                        requireContext(),
+                        assertNonNull(IdentityServicesProvider.get().getIdentityManager(profile)),
+                        account,
+                        EnterpriseSignalsDisclaimerCoordinator.PresentationMode
+                                .FIRST_RUN_EXPERIENCE,
+                        this);
+        setView(mManagementNoticeCoordinator.getView());
+
+        // Treat back press while the notice is displayed as a decline.
+        mManagementNoticeBackPressCallback =
+                new OnBackPressedCallback(/* enabled= */ true) {
+                    @Override
+                    public void handleOnBackPressed() {
+                        onDecline();
+                    }
+                };
+        requireActivity()
+                .getOnBackPressedDispatcher()
+                .addCallback(this, mManagementNoticeBackPressCallback);
+    }
+
+    /** Implements {@link EnterpriseSignalsDisclaimerCoordinator.Delegate}. */
+    @Override
+    public void showInfoPage(String url) {
+        assumeNonNull(getPageDelegate()).showInfoPage(url);
+    }
+
+    /** Implements {@link EnterpriseSignalsDisclaimerCoordinator.Delegate}. */
+    @Override
+    public void onAccept() {
+        var listener = dismissManagementNotice();
+        if (listener != null) {
+            listener.onConfirm();
+        }
+    }
+
+    /** Implements {@link EnterpriseSignalsDisclaimerCoordinator.Delegate}. */
+    @Override
+    public void onDecline() {
+        var listener = dismissManagementNotice();
+        if (listener != null) {
+            listener.onCancel();
+        }
+    }
+
+    /**
+     * Hides and destroys the management notice.
+     *
+     * @return The listener that should be notified about the user's decision, or null if the notice
+     *     wasn't showing.
+     */
+    private ConfirmManagedSyncDataDialogCoordinator.@Nullable Listener dismissManagementNotice() {
+        var listener = mManagementNoticeListener;
+        mManagementNoticeListener = null;
+        if (mManagementNoticeBackPressCallback != null) {
+            mManagementNoticeBackPressCallback.remove();
+            mManagementNoticeBackPressCallback = null;
+        }
+        if (mManagementNoticeCoordinator != null) {
+            if (mFragmentView != null) {
+                restoreMainView();
+            }
+            mManagementNoticeCoordinator.destroy();
+            mManagementNoticeCoordinator = null;
+        }
+        return listener;
+    }
+
     boolean getDelayedExitFirstRunCalledForTesting() {
         return mDelayedExitFirstRunCalledForTesting;
     }
@@ -405,5 +527,47 @@ public class SigninFirstRunFragment extends Fragment
 
     @Nullable BadgeConfig getContinueButtonBadgeConfigForTesting() {
         return mFullscreenSigninCoordinator.getContinueButtonBadgeConfigForTesting(); // IN-TEST
+    }
+
+    @Override
+    public void onInitialLoadCompleted() {
+        if (!isAdded()) return;
+        if (mCenteredLayoutInflated) return;
+        if (mFragmentView == null) return;
+
+        if (useCenteredLayout()) {
+            // TODO(crbug.com/537826242): This scene transition is only needed to support
+            // flag-guarding by transitioning between two different layout files
+            // (standard vs centered). Once the flag is permanently enabled, we should merge them
+            // into a single ConstraintLayout file and move this transition back to the view binder
+            // (reusing beginDelayedTransition) to remove this scene transition code.
+            mCenteredLayoutInflated = true;
+            final FrameLayout fragmentView = mFragmentView;
+            boolean useLandscapeLayout =
+                    SigninUtils.shouldShowDualPanesHorizontalLayout(getActivity());
+            int layoutId =
+                    useLandscapeLayout
+                            ? R.layout.fullscreen_signin_landscape_centered_view
+                            : R.layout.fullscreen_signin_portrait_centered_view;
+
+            Scene scene = Scene.getSceneForLayout(fragmentView, layoutId, getActivity());
+            scene.setEnterAction(
+                    () -> {
+                        FullscreenSigninView newView =
+                                assertNonNull(fragmentView.findViewById(R.id.fullscreen_signin));
+                        mMainView = newView;
+                        mFullscreenSigninCoordinator.setView(newView);
+                    });
+            Transition transition =
+                    TransitionInflater.from(getActivity())
+                            .inflateTransition(R.transition.fullscreen_signin_transition);
+
+            TransitionManager.go(scene, transition);
+        }
+    }
+
+    private boolean useCenteredLayout() {
+        return getNativeInitializationPromise().isFulfilled()
+                && ChromeFeatureList.isEnabled(ChromeFeatureList.ANDROID_FRE_LAYOUT_UPDATE);
     }
 }

@@ -27,6 +27,7 @@ namespace blink {
 
 class ExceptionState;
 class HTMLCanvasElement;
+class CanvasToneMapping;
 class HTMLImageElement;
 class HTMLVideoElement;
 class ImageBitmap;
@@ -40,6 +41,7 @@ class VideoFrame;
 class WebGLActiveInfo;
 class WebGLObject;
 class WebGLBuffer;
+class WebGLCopyElementImageConfig;
 class WebGLFramebuffer;
 class WebGLProgram;
 class WebGLQuery;
@@ -87,6 +89,8 @@ class MODULES_EXPORT WebGLRenderingContextWebGPUBase
   void setDrawingBufferColorSpace(ScriptState*,
                                   const V8PredefinedColorSpace& color_space,
                                   ExceptionState&);
+  CanvasToneMapping* drawingBufferToneMapping(
+      const CanvasToneMapping* tone_mapping = nullptr);
   V8PredefinedColorSpace unpackColorSpace(ScriptState*) const;
   void setUnpackColorSpace(ScriptState*,
                            const V8PredefinedColorSpace& color_space,
@@ -602,49 +606,13 @@ class MODULES_EXPORT WebGLRenderingContextWebGPUBase
                   MaybeShared<DOMArrayBufferView> data,
                   int64_t src_offset);
 
-  void texElementImage2D(GLenum target,
-                         GLint level,
-                         GLint internalformat,
-                         GLenum format,
-                         GLenum type,
-                         const V8UnionElementOrElementImage* element,
-                         ExceptionState& exception_state);
-
-  void texElementImage2D(GLenum target,
-                         GLint level,
-                         GLint internalformat,
-                         GLsizei width,
-                         GLsizei height,
-                         GLenum format,
-                         GLenum type,
-                         const V8UnionElementOrElementImage* element,
-                         ExceptionState& exception_state);
-
-  void texElementImage2D(GLenum target,
-                         GLint level,
-                         GLint internalformat,
-                         GLfloat sx,
-                         GLfloat sy,
-                         GLfloat swidth,
-                         GLfloat sheight,
-                         GLenum format,
-                         GLenum type,
-                         const V8UnionElementOrElementImage* element,
-                         ExceptionState& exception_state);
-
-  void texElementImage2D(GLenum target,
-                         GLint level,
-                         GLint internalformat,
-                         GLfloat sx,
-                         GLfloat sy,
-                         GLfloat swidth,
-                         GLfloat sheight,
-                         GLsizei width,
-                         GLsizei height,
-                         GLenum format,
-                         GLenum type,
-                         const V8UnionElementOrElementImage* element,
-                         ExceptionState& exception_state);
+  void texElementSubImage2D(GLenum target,
+                            GLint level,
+                            GLint xoffset,
+                            GLint yoffset,
+                            const V8UnionElementOrElementImage* element,
+                            const WebGLCopyElementImageConfig* config,
+                            ExceptionState& exception_state);
 
   void texSubImage2D(GLenum target,
                      GLint level,
@@ -1305,9 +1273,7 @@ class MODULES_EXPORT WebGLRenderingContextWebGPUBase
   // **************************************************************************
   // Start of CanvasRenderingContext implementation
   // **************************************************************************
-  SkAlphaType GetAlphaType() const override;
-  viz::SharedImageFormat GetSharedImageFormat() const override;
-  gfx::ColorSpace GetColorSpace() const override;
+  bool IsOpaque() const override;
   base::ByteSize AllocatedBufferSize() const override;
   bool isContextLost() const override;
   scoped_refptr<StaticBitmapImage> GetImage() override;
@@ -1325,10 +1291,11 @@ class MODULES_EXPORT WebGLRenderingContextWebGPUBase
       VideoFrameCopyCompletedCallback) override;
 
   cc::Layer* CcLayer() const override;
-  void Reshape(int width, int height) override;
+  void Reshape(gfx::Size old_size, gfx::Size new_size) override;
   void Stop() override;
   void FinalizeFrame(FlushReason) override;
-  bool PushFrame() override;
+  scoped_refptr<CanvasResource> GetResourceForPushFrame(
+      bool& should_call_push_frame) override;
 
   // **************************************************************************
   // End of CanvasRenderingContext implementation

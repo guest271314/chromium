@@ -9,12 +9,12 @@
 #include "base/trace_event/trace_event.h"
 #include "base/values.h"
 #include "chrome/browser/ash/boot_times_recorder/boot_times_recorder.h"
-#include "chrome/browser/ash/profiles/profile_helper.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/lifetime/application_lifetime.h"
 #include "chrome/browser/lifetime/application_lifetime_chromeos.h"
 #include "chrome/browser/lifetime/termination_notification.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
 #include "chromeos/ash/components/dbus/dbus_thread_manager.h"
 #include "chromeos/ash/components/dbus/session_manager/session_manager_client.h"
 #include "chromeos/ash/components/dbus/update_engine/update_engine_client.h"
@@ -33,13 +33,13 @@ namespace {
 ash::UpdateEngineClient* GetUpdateEngineClient() {
   ash::UpdateEngineClient* update_engine_client =
       ash::UpdateEngineClient::Get();
-  DCHECK(update_engine_client);
+  CHECK(update_engine_client, base::NotFatalUntil::M161);
   return update_engine_client;
 }
 
 void ReportSessionUMAMetrics() {
-  // GetProfileByUser() will crash in tests if profile_manager() from
-  // g_browser_process is not initialized.
+  // BrowserContextHelper looks up the user's profile through ProfileManager,
+  // which may be uninitialized in tests.
   if (!user_manager::UserManager::IsInitialized() ||
       !g_browser_process->profile_manager()) {
     return;
@@ -51,7 +51,8 @@ void ReportSessionUMAMetrics() {
     return;
   }
 
-  Profile* profile = ash::ProfileHelper::Get()->GetProfileByUser(primary_user);
+  Profile* profile = Profile::FromBrowserContext(
+      ash::BrowserContextHelper::Get()->GetBrowserContextByUser(primary_user));
   // Could be nullptr in tests.
   if (!profile) {
     return;
@@ -122,7 +123,7 @@ void RelaunchIgnoreUnloadHandlers() {
 }
 
 void RelaunchForUpdate() {
-  DCHECK(UpdatePending());
+  CHECK(UpdatePending(), base::NotFatalUntil::M161);
   GetUpdateEngineClient()->RebootAfterUpdate();
 }
 
@@ -164,7 +165,7 @@ bool SetLocaleForNextStart(PrefService* local_state) {
 }
 
 void StopSession() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
   // Only call this function once.
   static bool notified = false;
   if (notified) {

@@ -11,7 +11,6 @@ import androidx.test.core.app.ApplicationProvider;
 import org.junit.runner.Description;
 import org.junit.runners.model.Statement;
 
-import org.chromium.base.Callback;
 import org.chromium.base.ThreadUtils;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.app.tabmodel.AsyncTabParamsManagerSingleton;
@@ -26,15 +25,16 @@ import org.chromium.chrome.browser.tab.TabLaunchType;
 import org.chromium.chrome.browser.tab.TabSelectionType;
 import org.chromium.chrome.browser.tab_ui.TabContentManager;
 import org.chromium.chrome.browser.tabmodel.NextTabPolicy.NextTabPolicySupplier;
-import org.chromium.chrome.test.ChromeBrowserTestRule;
+import org.chromium.chrome.test.util.browser.signin.SigninTestRule;
 import org.chromium.content_public.browser.LoadUrlParams;
+import org.chromium.content_public.browser.test.NativeLibraryTestUtils;
 
 import java.util.HashSet;
 import java.util.Set;
 import java.util.function.Supplier;
 
 /** Basis for testing tab model selector observers. */
-public class TabModelSelectorObserverTestRule extends ChromeBrowserTestRule {
+public class TabModelSelectorObserverTestRule extends SigninTestRule {
     // Test activity type that does not restore tab on cold restart.
     // Any type other than ActivityType.TABBED works.
     private static final @ActivityType int NO_RESTORE_TYPE = ActivityType.CUSTOM_TAB;
@@ -68,6 +68,7 @@ public class TabModelSelectorObserverTestRule extends ChromeBrowserTestRule {
     }
 
     private void setUp() {
+        NativeLibraryTestUtils.loadNativeLibraryAndInitBrowserProcess();
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
                     initialize();
@@ -79,11 +80,6 @@ public class TabModelSelectorObserverTestRule extends ChromeBrowserTestRule {
                 new TabModelSelectorBase(null, false) {
                     @Override
                     public void requestToShowTab(Tab tab, int type) {}
-
-                    @Override
-                    public boolean isTabModelRestored() {
-                        return true;
-                    }
 
                     @Override
                     public Tab openNewTab(
@@ -123,7 +119,7 @@ public class TabModelSelectorObserverTestRule extends ChromeBrowserTestRule {
                     public void requestToShowTab(Tab tab, @TabSelectionType int type) {}
 
                     @Override
-                    public boolean isTabModelRestored() {
+                    public boolean isTabStateInitialized() {
                         return true;
                     }
 
@@ -246,9 +242,6 @@ public class TabModelSelectorObserverTestRule extends ChromeBrowserTestRule {
             super.removeObserver(observer);
             mObserverSet.remove(observer);
         }
-
-        @Override
-        public void addDelegateModelObserver(Callback<TabModelInternal> callback) {}
 
         @Override
         public void addIncognitoObserver(IncognitoTabModelObserver observer) {}

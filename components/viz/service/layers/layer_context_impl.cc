@@ -26,6 +26,7 @@
 #include "cc/animation/animation_host.h"
 #include "cc/animation/animation_timeline.h"
 #include "cc/animation/keyframe_effect.h"
+#include "cc/base/features.h"
 #include "cc/debug/layer_tree_debug_state.h"
 #include "cc/debug/rendering_stats_instrumentation.h"
 #include "cc/input/browser_controls_offset_manager.h"
@@ -100,6 +101,7 @@ cc::LayerTreeSettings GetDisplayTreeSettings(
   settings.enable_fluent_scrollbar = remote_settings->enable_fluent_scrollbar;
   settings.enable_fluent_overlay_scrollbar =
       remote_settings->enable_fluent_overlay_scrollbar;
+  settings.enable_unbounded_element = remote_settings->enable_unbounded_element;
   return settings;
 }
 
@@ -240,6 +242,12 @@ base::expected<void, std::string> UpdatePropertyTreeNode(
     cc::PropertyTrees& trees,
     cc::TransformNode& node,
     const mojom::TransformNode& wire) {
+  if (wire.id == cc::kSecondaryRootPropertyNodeId &&
+      wire.parent_id == cc::kInvalidPropertyNodeId) {
+    return base::unexpected(
+        "Invalid parent_id for non-root property tree node");
+  }
+
   auto& tree = trees.transform_tree_mutable();
   if (!IsOptionalPropertyTreeIndexValid(tree, wire.parent_frame_id)) {
     return base::unexpected("Invalid parent_frame_id");
@@ -377,6 +385,11 @@ base::expected<void, std::string> UpdatePropertyTreeNode(
     return base::unexpected(
         "Invalid view_transition_target_id for effect node");
   }
+  if (wire.render_surface_reason != cc::RenderSurfaceReason::kNone &&
+      !wire.element_id) {
+    return base::unexpected(
+        "Effect node with render surface must have a valid element_id");
+  }
   node.transform_id = wire.transform_id;
   node.clip_id = wire.clip_id;
   node.element_id = wire.element_id;
@@ -390,17 +403,13 @@ base::expected<void, std::string> UpdatePropertyTreeNode(
   // CalculateRenderProperties(). It should only be cleared in
   // ResetAllChangeTracking() which happens at the end of every frame.
   if (wire.effect_changed) {
-    node.effect_changed = true;
+    node.SetEffectChanged(cc::DamageReason::kUntracked);
   }
   node.render_surface_reason = wire.render_surface_reason;
   node.surface_contents_scale = wire.surface_contents_scale;
   node.subtree_capture_id = wire.subtree_capture_id;
   node.subtree_size = wire.subtree_size;
-
-  if (wire.blend_mode > static_cast<uint32_t>(SkBlendMode::kLastMode)) {
-    return base::unexpected("Invalid blend_mode for effect node");
-  }
-  node.blend_mode = static_cast<SkBlendMode>(wire.blend_mode);
+  node.blend_mode = wire.blend_mode;
   node.target_id = wire.target_id;
   node.view_transition_target_id = wire.view_transition_target_id;
   node.closest_ancestor_with_cached_render_surface_id =
@@ -470,6 +479,116 @@ base::expected<void, std::string> UpdatePropertyTreeNode(
   return base::ok();
 }
 
+base::expected<void, std::string> ValidateTreeIndices(
+    cc::LayerTreeImpl& layers) {
+  const cc::PropertyTrees& property_trees = *layers.property_trees();
+  const auto& transform_tree = property_trees.transform_tree();
+  const auto& clip_tree = property_trees.clip_tree();
+  const auto& effect_tree = property_trees.effect_tree();
+  const auto& scroll_tree = property_trees.scroll_tree();
+
+  for (size_t i = cc::kContentsRootPropertyNodeId; i < transform_tree.size();
+       ++i) {
+    const auto& node = transform_tree.Node(i);
+    if (!IsOptionalPropertyTreeIndexValid(transform_tree,
+                                          node.parent_frame_id)) {
+      return base::unexpected("Invalid parent_frame_id in transform tree");
+    }
+    if (node.sticky_position_constraint_id != -1 &&
+        static_cast<size_t>(node.sticky_position_constraint_id) >=
+            transform_tree.sticky_position_data().size()) {
+      return base::unexpected("Invalid sticky_position_constraint_id");
+    }
+    if (node.anchor_position_scroll_data_id != -1 &&
+        static_cast<size_t>(node.anchor_position_scroll_data_id) >=
+            transform_tree.anchor_position_scroll_data().size()) {
+      return base::unexpected("Invalid anchor_position_scroll_data_id");
+    }
+  }
+
+  for (size_t i = cc::kContentsRootPropertyNodeId; i < clip_tree.size(); ++i) {
+    const auto& node = clip_tree.Node(i);
+    if (!IsPropertyTreeIndexValid(transform_tree, node.transform_id)) {
+      return base::unexpected("Invalid transform_id in clip tree");
+    }
+    if (!IsOptionalPropertyTreeIndexValid(effect_tree,
+                                          node.pixel_moving_filter_id)) {
+      return base::unexpected("Invalid pixel_moving_filter_id in clip tree");
+    }
+  }
+
+  for (size_t i = cc::kContentsRootPropertyNodeId; i < effect_tree.size();
+       ++i) {
+    const auto& node = effect_tree.Node(i);
+    if (node.HasRenderSurface() && !node.element_id) {
+      return base::unexpected(
+          "Effect node with render surface must have a valid element_id");
+    }
+    if (!IsPropertyTreeIndexValid(transform_tree, node.transform_id)) {
+      return base::unexpected("Invalid transform_id in effect tree");
+    }
+    if (!IsPropertyTreeIndexValid(clip_tree, node.clip_id)) {
+      return base::unexpected("Invalid clip_id in effect tree");
+    }
+    if (!IsPropertyTreeIndexValid(effect_tree, node.target_id)) {
+      return base::unexpected("Invalid target_id in effect tree");
+    }
+    if (!IsOptionalPropertyTreeIndexValid(
+            effect_tree, node.closest_ancestor_with_cached_render_surface_id)) {
+      return base::unexpected(
+          "Invalid closest_ancestor_with_cached_render_surface_id in effect "
+          "tree");
+    }
+    if (!IsOptionalPropertyTreeIndexValid(
+            effect_tree, node.closest_ancestor_with_copy_request_id)) {
+      return base::unexpected(
+          "Invalid closest_ancestor_with_copy_request_id in effect tree");
+    }
+    if (!IsOptionalPropertyTreeIndexValid(
+            effect_tree, node.closest_ancestor_being_captured_id)) {
+      return base::unexpected(
+          "Invalid closest_ancestor_being_captured_id in effect tree");
+    }
+    if (!IsOptionalPropertyTreeIndexValid(
+            effect_tree, node.closest_ancestor_with_shared_element_id)) {
+      return base::unexpected(
+          "Invalid closest_ancestor_with_shared_element_id in effect tree");
+    }
+    if (!IsOptionalPropertyTreeIndexValid(effect_tree,
+                                          node.view_transition_target_id)) {
+      return base::unexpected(
+          "Invalid view_transition_target_id in effect tree");
+    }
+  }
+
+  for (size_t i = cc::kContentsRootPropertyNodeId; i < scroll_tree.size();
+       ++i) {
+    const auto& node = scroll_tree.Node(i);
+    if (node.transform_id != cc::kInvalidPropertyNodeId &&
+        !IsPropertyTreeIndexValid(transform_tree, node.transform_id)) {
+      return base::unexpected("Invalid transform_id in scroll tree");
+    }
+  }
+
+  for (auto* layer : layers) {
+    if (!IsPropertyTreeIndexValid(transform_tree,
+                                  layer->transform_tree_index())) {
+      return base::unexpected("Invalid transform_tree_index for layer");
+    }
+    if (!IsPropertyTreeIndexValid(clip_tree, layer->clip_tree_index())) {
+      return base::unexpected("Invalid clip_tree_index for layer");
+    }
+    if (!IsPropertyTreeIndexValid(effect_tree, layer->effect_tree_index())) {
+      return base::unexpected("Invalid effect_tree_index for layer");
+    }
+    if (!IsPropertyTreeIndexValid(scroll_tree, layer->scroll_tree_index())) {
+      return base::unexpected("Invalid scroll_tree_index for layer");
+    }
+  }
+
+  return base::ok();
+}
+
 template <typename TreeType>
 base::expected<bool, std::string> ResizePropertyTree(TreeType& tree,
                                                      uint32_t num_nodes) {
@@ -514,6 +633,11 @@ base::expected<bool, std::string> UpdatePropertyTree(
       return base::unexpected("Invalid property tree node parent_id");
     }
 
+    if (wire->id > cc::kRootPropertyNodeId && wire->parent_id >= wire->id) {
+      return base::unexpected(
+          "Property tree node parent_id must be less than id");
+    }
+
     if (wire->parent_id == cc::kInvalidPropertyNodeId &&
         wire->id != cc::kRootPropertyNodeId &&
         wire->id != cc::kSecondaryRootPropertyNodeId) {
@@ -522,9 +646,12 @@ base::expected<bool, std::string> UpdatePropertyTree(
     }
 
     auto& node = tree.MutableNode(wire->id);
+    // Defer updating node ID and parent ID until validation succeeds to
+    // prevent corrupting the tree state on failure. See
+    // https://crbug.com/537935016
+    RETURN_IF_ERROR(UpdatePropertyTreeNode(trees, node, *wire));
     node.id = wire->id;
     node.parent_id = wire->parent_id;
-    RETURN_IF_ERROR(UpdatePropertyTreeNode(trees, node, *wire));
   }
 
   if (cc::kRootPropertyNodeId >= static_cast<int>(tree.size())) {
@@ -623,6 +750,18 @@ base::expected<bool, std::string> UpdateTransformTreeProperties(
   if (update.device_transform_scale_factor <= 0 ||
       !std::isfinite(update.device_transform_scale_factor)) {
     return base::unexpected("Invalid device_transform_scale_factor");
+  }
+  for (int id : update.nodes_affected_by_outer_viewport_bounds_delta) {
+    if (!IsPropertyTreeIndexValid(tree, id)) {
+      return base::unexpected(
+          "Invalid node ID in nodes_affected_by_outer_viewport_bounds_delta");
+    }
+  }
+  for (int id : update.nodes_affected_by_safe_area_bottom) {
+    if (!IsPropertyTreeIndexValid(tree, id)) {
+      return base::unexpected(
+          "Invalid node ID in nodes_affected_by_safe_area_bottom");
+    }
   }
   tree.set_page_scale_factor(update.page_scale_factor);
   tree.set_device_scale_factor(update.device_scale_factor);
@@ -828,7 +967,12 @@ void UpdateTileDisplayLayerExtra(const mojom::TileDisplayLayerExtraPtr& extra,
   layer.SetIsBackdropFilterMask(extra->is_backdrop_filter_mask);
   layer.SetIsDirectlyCompositedImage(extra->is_directly_composited_image);
   layer.SetNearestNeighbor(extra->nearest_neighbor);
-  layer.SetContentColorUsage(extra->content_color_usage);
+  if (extra->has_animated_image_update_rect) {
+    layer.set_has_animated_image_update_rect();
+  }
+  if (extra->has_non_animated_image_update_rect) {
+    layer.set_has_non_animated_image_update_rect();
+  }
   layer.SetRecordedBounds(extra->recorded_bounds);
   layer.SetProposedTilingScalesForDeletion(
       extra->proposed_tiling_scales_for_deletion);
@@ -1451,6 +1595,10 @@ base::expected<void, std::string> DeserializeAnimationCurve(
     curve->AddKeyframe(std::move(keyframe));
   }
 
+  if (wire.group_id == cc::KeyframeModel::kInvalidGroup) {
+    return base::unexpected("Invalid group_id");
+  }
+
   auto model = cc::KeyframeModel::Create(
       std::move(curve), wire.id, wire.group_id,
       cc::KeyframeModel::TargetPropertyId(wire.target_property_type));
@@ -1498,15 +1646,8 @@ base::expected<void, std::string> DeserializeAnimation(
                 *wire_model, *animation));
         break;
       case mojom::AnimationKeyframeValue::Tag::kSize:
-        RETURN_IF_ERROR(
-            DeserializeAnimationCurve<gfx::KeyframedSizeAnimationCurve>(
-                *wire_model, *animation));
-        break;
       case mojom::AnimationKeyframeValue::Tag::kRect:
-        RETURN_IF_ERROR(
-            DeserializeAnimationCurve<gfx::KeyframedRectAnimationCurve>(
-                *wire_model, *animation));
-        break;
+        return base::unexpected("Unsupported keyframe value type");
       case mojom::AnimationKeyframeValue::Tag::kTransform:
         RETURN_IF_ERROR(
             DeserializeAnimationCurve<gfx::KeyframedTransformAnimationCurve>(
@@ -1560,6 +1701,50 @@ base::expected<void, std::string> DeserializeAnimationUpdates(
 
   return base::ok();
 }
+
+class DirectLayerTreeFrameSink : public cc::LayerTreeFrameSink {
+ public:
+  DirectLayerTreeFrameSink(base::WeakPtr<CompositorFrameSinkSupport> support,
+                           const LocalSurfaceId& local_surface_id)
+      : support_(std::move(support)), local_surface_id_(local_surface_id) {}
+  ~DirectLayerTreeFrameSink() override = default;
+
+  // cc::LayerTreeFrameSink overrides:
+  void SetLocalSurfaceId(const LocalSurfaceId& local_surface_id) override {
+    local_surface_id_ = local_surface_id;
+  }
+
+  void SubmitCompositorFrame(CompositorFrame frame,
+                             bool hit_test_data_changed) override {
+    if (!support_) {
+      std::vector<ReturnedResource> returned_resources =
+          TransferableResource::ReturnResources(frame.resource_list);
+      if (!returned_resources.empty() && client_) {
+        client_->ReclaimResources(std::move(returned_resources));
+      }
+      return;
+    }
+    support_->MaybeSubmitCompositorFrame(local_surface_id_, std::move(frame),
+                                         std::nullopt, 0);
+  }
+
+  void DidNotProduceFrame(const BeginFrameAck& ack,
+                          cc::FrameSkippedReason reason) override {
+    if (support_) {
+      support_->DidNotProduceFrame(ack);
+    }
+  }
+
+  void NotifyNewLocalSurfaceIdExpectedWhilePaused() override {
+    if (support_) {
+      support_->NotifyNewLocalSurfaceIdExpectedWhilePaused();
+    }
+  }
+
+ private:
+  const base::WeakPtr<CompositorFrameSinkSupport> support_;
+  LocalSurfaceId local_surface_id_;
+};
 
 }  // namespace
 
@@ -1617,6 +1802,7 @@ LayerContextImpl::LayerContextImpl(
 }
 
 LayerContextImpl::~LayerContextImpl() {
+  ResetBoundUnboundedFrameSink();
   DoReturnResources();
   host_impl_->ReleaseLayerTreeFrameSink();
 }
@@ -1692,12 +1878,15 @@ void LayerContextImpl::SetNeedsOneBeginImplFrameOnImplThread() {
   }
 }
 
+void LayerContextImpl::NotifyInputEvent() {}
+
 void LayerContextImpl::SetNeedsPrepareTilesOnImplThread() {
   NOTREACHED();
 }
 
 void LayerContextImpl::SetNeedsCommitOnImplThread(cc::BeginMainFrameReason,
-                                                  bool urgent) {
+                                                  bool urgent,
+                                                  bool unthrottled) {
   NOTREACHED();
 }
 
@@ -1872,6 +2061,7 @@ void LayerContextImpl::UpdateDisplayTree(mojom::LayerTreeUpdatePtr update) {
 
 base::expected<void, std::string> LayerContextImpl::DoUpdateDisplayTree(
     mojom::LayerTreeUpdatePtr update) {
+  TryBindUnboundedFrameSink();
   TRACE_EVENT0("viz", "LayerContextImpl::DoUpdateDisplayTree");
   cc::LayerTreeImpl& layers = *host_impl_->active_tree();
   cc::PropertyTrees& property_trees = *layers.property_trees();
@@ -1954,6 +2144,10 @@ base::expected<void, std::string> LayerContextImpl::DoUpdateDisplayTree(
       UpdatePropertyTree(property_trees, property_trees.scroll_tree_mutable(),
                          update->scroll_nodes));
 
+  // Property tree updates may have invalidated the existing viewport property
+  // ID values. Update them now.
+  RETURN_IF_ERROR(UpdateViewportPropertyIds(layers, property_trees, *update));
+
   // Pull any copy output requests that came in over the wire.
   for (const auto& wire : update->effect_nodes) {
     for (auto&& copy_request : wire->copy_output_requests) {
@@ -2024,6 +2218,8 @@ base::expected<void, std::string> LayerContextImpl::DoUpdateDisplayTree(
 
   host_impl_->set_tracked_element_rects_from_client(
       std::move(update->tracked_element_rects));
+  host_impl_->set_frame_interval_inputs_from_client(
+      std::move(update->frame_interval_inputs));
 
   for (const auto& latency : update->latency_info) {
     if (latency.terminated()) {
@@ -2071,7 +2267,10 @@ base::expected<void, std::string> LayerContextImpl::DoUpdateDisplayTree(
     }
   }
 
-  // This needs to happen before SetPageSvaleFactorAndLimitsForDisplayTree().
+  // Call UpdateViewportPropertyIds() to set layer properties (namely,
+  // is_inner_viewport_scroll_layer_). This needs to happen after
+  // CreateOrUpdateLayers() sets layer element IDs and before
+  // SetPageScaleFactorAndLimitsForDisplayTree().
   RETURN_IF_ERROR(UpdateViewportPropertyIds(layers, property_trees, *update));
 
   layers.set_background_color(update->background_color);
@@ -2101,6 +2300,10 @@ base::expected<void, std::string> LayerContextImpl::DoUpdateDisplayTree(
       !std::isfinite(update->external_page_scale_factor)) {
     return base::unexpected("Invalid external page scale factor");
   }
+  // The renderer has already applied this scale to serialized effect nodes, so
+  // Viz cannot rediscover the change while updating surface contents scales.
+  const bool external_page_scale_factor_changed =
+      layers.external_page_scale_factor() != update->external_page_scale_factor;
   layers.SetExternalPageScaleFactor(update->external_page_scale_factor);
 
   if (update->device_scale_factor <= 0 ||
@@ -2134,9 +2337,6 @@ base::expected<void, std::string> LayerContextImpl::DoUpdateDisplayTree(
       std::clamp(update->browser_controls_params.bottom_controls_min_height,
                  0.f, update->browser_controls_params.bottom_controls_height);
   layers.SetBrowserControlsParams(update->browser_controls_params);
-  DUMP_WILL_BE_CHECK_EQ(
-      update->browser_controls_shrink_blink_size,
-      update->browser_controls_params.browser_controls_shrink_blink_size);
   host_impl_->browser_controls_manager()->SetOffsetTagModifications(
       update->browser_controls_offset_tag_modifications);
 
@@ -2208,6 +2408,9 @@ base::expected<void, std::string> LayerContextImpl::DoUpdateDisplayTree(
       property_trees.transform_tree().needs_update());
   property_trees.clip_tree_mutable().set_needs_update(
       clip_size_changed || clip_nodes_changed ||
+      // External scale changes surface contents scales, which affects clips
+      // expressed in surface space.
+      external_page_scale_factor_changed ||
       property_trees.clip_tree().needs_update());
   property_trees.effect_tree_mutable().set_needs_update(
       effect_size_changed || effect_nodes_changed ||
@@ -2231,6 +2434,9 @@ base::expected<void, std::string> LayerContextImpl::DoUpdateDisplayTree(
       layers.set_needs_update_draw_properties();
     }
   }
+
+  // Ensure all property tree and layer indices are valid.
+  RETURN_IF_ERROR(ValidateTreeIndices(layers));
 
   const bool render_surfaces_changed =
       property_trees.effect_tree_mutable().CreateOrReuseRenderSurfaces(
@@ -2379,6 +2585,88 @@ base::expected<void, std::string> LayerContextImpl::DoSetTargetLocalSurfaceId(
   }
   host_impl_->SetTargetLocalSurfaceId(target_local_surface_id);
   return base::ok();
+}
+
+void LayerContextImpl::SetUnboundedFrameSinkId(
+    const FrameSinkId& frame_sink_id,
+    const LocalSurfaceId& local_surface_id) {
+  // Unbounded surface FrameSinkIds are allocated by the browser process, so
+  // they must not use the renderer's own client_id namespace.
+  if (frame_sink_id.client_id() ==
+      compositor_sink_->frame_sink_id().client_id()) {
+    HandleBadMojoMessage("SetUnboundedFrameSinkId",
+                         "Invalid client_id for Unbounded Element");
+    return;
+  }
+  pending_unbounded_frame_sink_id_ = frame_sink_id;
+  pending_unbounded_local_surface_id_ = local_surface_id;
+  TryBindUnboundedFrameSink();
+}
+
+void LayerContextImpl::ResetBoundUnboundedFrameSink() {
+  if (bound_unbounded_frame_sink_id_.is_valid()) {
+    if (auto* support =
+            compositor_sink_->frame_sink_manager()->GetFrameSinkForId(
+                bound_unbounded_frame_sink_id_)) {
+      support->set_resource_return_delegate(nullptr);
+    }
+    bound_unbounded_frame_sink_id_ = FrameSinkId();
+  }
+  unbounded_support_.reset();
+}
+
+void LayerContextImpl::SetUnboundedLocalSurfaceId(
+    const LocalSurfaceId& local_surface_id) {
+  if (pending_unbounded_frame_sink_id_.is_valid()) {
+    pending_unbounded_local_surface_id_ = local_surface_id;
+  } else {
+    host_impl_->SetUnboundedLocalSurfaceId(local_surface_id);
+  }
+}
+
+void LayerContextImpl::DismissUnboundedFrameSink() {
+  ResetBoundUnboundedFrameSink();
+  pending_unbounded_frame_sink_id_ = FrameSinkId();
+  pending_unbounded_local_surface_id_ = LocalSurfaceId();
+  host_impl_->DismissUnboundedFrameSink();
+}
+
+void LayerContextImpl::TryBindUnboundedFrameSink() {
+  if (!pending_unbounded_frame_sink_id_.is_valid()) {
+    return;
+  }
+  if (!compositor_sink_->frame_sink_manager()->IsValidUnboundedFrameSinkId(
+          compositor_sink_->frame_sink_id(),
+          pending_unbounded_frame_sink_id_)) {
+    return;
+  }
+  if (bound_unbounded_frame_sink_id_.is_valid()) {
+    ResetBoundUnboundedFrameSink();
+    host_impl_->DismissUnboundedFrameSink();
+  }
+  CompositorFrameSinkSupport* support =
+      compositor_sink_->frame_sink_manager()->GetFrameSinkForId(
+          pending_unbounded_frame_sink_id_);
+  if (!support) {
+    // When TreesInViz is enabled, the browser process does not create a
+    // CompositorFrameSink via IPC for unbounded elements. Auto-instantiate an
+    // internal CompositorFrameSinkSupport here so Viz can composite and
+    // render the unbounded element's surface.
+    CHECK(base::FeatureList::IsEnabled(features::kTreesInViz));
+    unbounded_support_ = std::make_unique<CompositorFrameSinkSupport>(
+        /*client=*/nullptr, compositor_sink_->frame_sink_manager(),
+        pending_unbounded_frame_sink_id_, /*is_root=*/false);
+    support = unbounded_support_.get();
+  }
+  DCHECK(!support->resource_return_delegate());
+  support->set_resource_return_delegate(this);
+  bound_unbounded_frame_sink_id_ = pending_unbounded_frame_sink_id_;
+  auto direct_sink = std::make_unique<DirectLayerTreeFrameSink>(
+      support->GetWeakPtr(), pending_unbounded_local_surface_id_);
+  host_impl_->SetUnboundedFrameSink(std::move(direct_sink),
+                                    pending_unbounded_local_surface_id_);
+  pending_unbounded_frame_sink_id_ = FrameSinkId();
+  pending_unbounded_local_surface_id_ = LocalSurfaceId();
 }
 
 }  // namespace viz

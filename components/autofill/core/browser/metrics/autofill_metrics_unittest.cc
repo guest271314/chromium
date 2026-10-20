@@ -12,6 +12,7 @@
 #include <utility>
 #include <vector>
 
+#include "base/auto_reset.h"
 #include "base/base64.h"
 #include "base/check.h"
 #include "base/containers/fixed_flat_map.h"
@@ -42,18 +43,19 @@
 #include "components/autofill/core/browser/filling/filling_product.h"
 #include "components/autofill/core/browser/form_structure.h"
 #include "components/autofill/core/browser/form_structure_test_api.h"
+#include "components/autofill/core/browser/foundations/autofill_manager_test_api.h"
 #include "components/autofill/core/browser/foundations/browser_autofill_manager.h"
 #include "components/autofill/core/browser/foundations/test_autofill_client.h"
 #include "components/autofill/core/browser/foundations/test_autofill_driver.h"
 #include "components/autofill/core/browser/foundations/test_browser_autofill_manager.h"
 #include "components/autofill/core/browser/metrics/autofill_metrics_test_base.h"
-#include "components/autofill/core/browser/metrics/autofill_metrics_utils.h"
+#include "components/autofill/core/browser/metrics/autofill_metrics_util.h"
 #include "components/autofill/core/browser/metrics/form_events/address_form_event_logger.h"
 #include "components/autofill/core/browser/metrics/form_events/credit_card_form_event_logger.h"
 #include "components/autofill/core/browser/metrics/form_events/form_events.h"
 #include "components/autofill/core/browser/metrics/form_interactions_ukm_logger.h"
 #include "components/autofill/core/browser/metrics/payments/credit_card_save_metrics.h"
-#include "components/autofill/core/browser/metrics/ukm_metrics_test_utils.h"
+#include "components/autofill/core/browser/metrics/ukm_metrics_test_util.h"
 #include "components/autofill/core/browser/payments/credit_card_access_manager.h"
 #include "components/autofill/core/browser/payments/payments_autofill_client.h"
 #include "components/autofill/core/browser/payments/test_credit_card_save_manager.h"
@@ -61,17 +63,18 @@
 #include "components/autofill/core/browser/suggestions/payments/payments_suggestion_generator_util.h"
 #include "components/autofill/core/browser/suggestions/suggestion.h"
 #include "components/autofill/core/browser/suggestions/suggestion_type.h"
-#include "components/autofill/core/browser/test_utils/autofill_form_test_utils.h"
-#include "components/autofill/core/browser/test_utils/autofill_test_utils.h"
+#include "components/autofill/core/browser/test_utils/autofill_form_test_util.h"
+#include "components/autofill/core/browser/test_utils/autofill_test_util.h"
 #include "components/autofill/core/browser/test_utils/test_autofill_clock.h"
-#include "components/autofill/core/browser/test_utils/valuables_data_test_utils.h"
+#include "components/autofill/core/browser/test_utils/valuables_data_test_util.h"
 #include "components/autofill/core/browser/ui/autofill_external_delegate.h"
 #include "components/autofill/core/browser/ui/test_autofill_external_delegate.h"
+#include "components/autofill/core/browser/webdata/autocomplete/autocomplete_table_label_sensitive.h"
 #include "components/autofill/core/browser/webdata/autofill_webdata_service.h"
 #include "components/autofill/core/common/autofill_clock.h"
 #include "components/autofill/core/common/autofill_features.h"
 #include "components/autofill/core/common/autofill_payments_features.h"
-#include "components/autofill/core/common/autofill_test_utils.h"
+#include "components/autofill/core/common/autofill_test_util.h"
 #include "components/autofill/core/common/dense_set.h"
 #include "components/autofill/core/common/form_data.h"
 #include "components/autofill/core/common/form_data_test_api.h"
@@ -600,8 +603,9 @@ TEST_F(AutofillMetricsTest, CreditCardCheckoutFlowUserActions) {
     base::UserActionTester user_action_tester;
     DidShowAutofillSuggestions(form, /*field_index=*/0,
                                SuggestionType::kCreditCardEntry);
-    EXPECT_EQ(1, user_action_tester.GetActionCount(
-                     "Autofill_ShowedCreditCardSuggestions"));
+    EXPECT_EQ(user_action_tester.GetActionCount(
+                  "Autofill_ShowedCreditCardSuggestions"),
+              1);
   }
 
   // Simulate showing a credit card suggestion polled from "Credit card number"
@@ -610,8 +614,9 @@ TEST_F(AutofillMetricsTest, CreditCardCheckoutFlowUserActions) {
     base::UserActionTester user_action_tester;
     DidShowAutofillSuggestions(form, /*field_index=*/1,
                                SuggestionType::kCreditCardEntry);
-    EXPECT_EQ(1, user_action_tester.GetActionCount(
-                     "Autofill_ShowedCreditCardSuggestions"));
+    EXPECT_EQ(user_action_tester.GetActionCount(
+                  "Autofill_ShowedCreditCardSuggestions"),
+              1);
   }
 
   // Simulate selecting a credit card suggestions.
@@ -620,17 +625,16 @@ TEST_F(AutofillMetricsTest, CreditCardCheckoutFlowUserActions) {
     external_delegate().OnQuery(
         form, form.fields().front(),
         /*caret_bounds=*/gfx::Rect(),
-        AutofillSuggestionTriggerSource::kFormControlElementClicked,
-        /*update_datalist=*/false);
+        AutofillSuggestionTriggerSource::kFormControlElementClicked);
 
     external_delegate().DidAcceptSuggestion(
         test::CreateAutofillSuggestion(SuggestionType::kCreditCardEntry,
                                        u"Test",
                                        Suggestion::Guid(kTestLocalCardId)),
-        AutofillSuggestionDelegate::SuggestionMetadata{.row = 0});
+        AutofillSuggestionDelegate::SuggestionMetadata{.multi_index = {0}});
 
-    EXPECT_EQ(1,
-              user_action_tester.GetActionCount("Autofill_SelectedSuggestion"));
+    EXPECT_EQ(user_action_tester.GetActionCount("Autofill_SelectedSuggestion"),
+              1);
   }
 
   // Simulate showing a credit card suggestion polled from "Credit card number"
@@ -639,8 +643,9 @@ TEST_F(AutofillMetricsTest, CreditCardCheckoutFlowUserActions) {
     base::UserActionTester user_action_tester;
     DidShowAutofillSuggestions(form, /*field_index=*/1,
                                SuggestionType::kCreditCardEntry);
-    EXPECT_EQ(1, user_action_tester.GetActionCount(
-                     "Autofill_ShowedCreditCardSuggestions"));
+    EXPECT_EQ(user_action_tester.GetActionCount(
+                  "Autofill_ShowedCreditCardSuggestions"),
+              1);
   }
 
 #if !BUILDFLAG(IS_IOS)
@@ -650,15 +655,14 @@ TEST_F(AutofillMetricsTest, CreditCardCheckoutFlowUserActions) {
     external_delegate().OnQuery(
         form, form.fields().front(),
         /*caret_bounds=*/gfx::Rect(),
-        AutofillSuggestionTriggerSource::kFormControlElementClicked,
-        /*update_datalist=*/false);
+        AutofillSuggestionTriggerSource::kFormControlElementClicked);
 
     external_delegate().DidAcceptSuggestion(
-        Suggestion(SuggestionType::kUndoOrClear),
-        AutofillSuggestionDelegate::SuggestionMetadata{.row = 0});
+        Suggestion(SuggestionType::kUndo),
+        AutofillSuggestionDelegate::SuggestionMetadata{.multi_index = {0}});
 
     EXPECT_EQ(
-        1, user_action_tester.GetActionCount("Autofill_UndoPaymentsAutofill"));
+        user_action_tester.GetActionCount("Autofill_UndoPaymentsAutofill"), 1);
   }
 #endif
 
@@ -668,8 +672,9 @@ TEST_F(AutofillMetricsTest, CreditCardCheckoutFlowUserActions) {
     base::UserActionTester user_action_tester;
     DidShowAutofillSuggestions(form, /*field_index=*/1,
                                SuggestionType::kCreditCardEntry);
-    EXPECT_EQ(1, user_action_tester.GetActionCount(
-                     "Autofill_ShowedCreditCardSuggestions"));
+    EXPECT_EQ(user_action_tester.GetActionCount(
+                  "Autofill_ShowedCreditCardSuggestions"),
+              1);
   }
 
   // Simulate selecting a credit card suggestions.
@@ -678,29 +683,30 @@ TEST_F(AutofillMetricsTest, CreditCardCheckoutFlowUserActions) {
     external_delegate().OnQuery(
         form, form.fields().front(),
         /*caret_bounds=*/gfx::Rect(),
-        AutofillSuggestionTriggerSource::kFormControlElementClicked,
-        /*update_datalist=*/false);
+        AutofillSuggestionTriggerSource::kFormControlElementClicked);
 
     external_delegate().DidAcceptSuggestion(
         test::CreateAutofillSuggestion(SuggestionType::kCreditCardEntry,
                                        u"Test",
                                        Suggestion::Guid(kTestLocalCardId)),
-        AutofillSuggestionDelegate::SuggestionMetadata{.row = 0});
+        AutofillSuggestionDelegate::SuggestionMetadata{.multi_index = {0}});
 
-    EXPECT_EQ(1,
-              user_action_tester.GetActionCount("Autofill_SelectedSuggestion"));
+    EXPECT_EQ(user_action_tester.GetActionCount("Autofill_SelectedSuggestion"),
+              1);
   }
 
   // Simulate filling a credit card suggestion.
   {
     base::UserActionTester user_action_tester;
     autofill_manager().FillOrPreviewForm(
-        mojom::ActionPersistence::kFill, form,
+        mojom::ActionPersistence::kFill, form.global_id(),
         form.fields().front().global_id(),
         paydm().GetCreditCardByGUID(kTestLocalCardId),
-        AutofillTriggerSource::kPopup, /*blocked_fields=*/{});
-    EXPECT_EQ(1, user_action_tester.GetActionCount(
-                     "Autofill_FilledCreditCardSuggestion"));
+        AutofillTriggerSource::kPopup, /*require_user_confirmation=*/false,
+        /*blocked_fields=*/{});
+    EXPECT_EQ(user_action_tester.GetActionCount(
+                  "Autofill_FilledCreditCardSuggestion"),
+              1);
   }
 
   // Simulate submitting the credit card form.
@@ -709,8 +715,8 @@ TEST_F(AutofillMetricsTest, CreditCardCheckoutFlowUserActions) {
     autofill_manager().OnAskForValuesToFillTest(form,
                                                 form.fields()[0].global_id());
     SubmitForm(form);
-    EXPECT_EQ(1,
-              user_action_tester.GetActionCount("Autofill_OnWillSubmitForm"));
+    EXPECT_EQ(user_action_tester.GetActionCount("Autofill_OnWillSubmitForm"),
+              1);
   }
 
   // Expect one record for a click on the cardholder name field and one record
@@ -793,16 +799,18 @@ TEST_F(AutofillMetricsTest, ProfileCheckoutFlowUserActions) {
   {
     base::UserActionTester user_action_tester;
     DidShowAutofillSuggestions(form);
-    EXPECT_EQ(1, user_action_tester.GetActionCount(
-                     "Autofill_ShowedProfileSuggestions"));
+    EXPECT_EQ(
+        user_action_tester.GetActionCount("Autofill_ShowedProfileSuggestions"),
+        1);
   }
 
   // Simulate showing a profile suggestion polled from "City" field.
   {
     base::UserActionTester user_action_tester;
     DidShowAutofillSuggestions(form, /*field_index=*/1);
-    EXPECT_EQ(1, user_action_tester.GetActionCount(
-                     "Autofill_ShowedProfileSuggestions"));
+    EXPECT_EQ(
+        user_action_tester.GetActionCount("Autofill_ShowedProfileSuggestions"),
+        1);
   }
 
   // Simulate selecting a profile suggestions.
@@ -811,25 +819,25 @@ TEST_F(AutofillMetricsTest, ProfileCheckoutFlowUserActions) {
     external_delegate().OnQuery(
         form, form.fields().front(),
         /*caret_bounds=*/gfx::Rect(),
-        AutofillSuggestionTriggerSource::kFormControlElementClicked,
-        /*update_datalist=*/false);
+        AutofillSuggestionTriggerSource::kFormControlElementClicked);
 
     external_delegate().DidAcceptSuggestion(
         test::CreateAutofillSuggestion(SuggestionType::kCreditCardEntry,
                                        u"Test",
                                        Suggestion::Guid(kTestProfileId)),
-        AutofillSuggestionDelegate::SuggestionMetadata{.row = 0});
+        AutofillSuggestionDelegate::SuggestionMetadata{.multi_index = {0}});
 
-    EXPECT_EQ(1,
-              user_action_tester.GetActionCount("Autofill_SelectedSuggestion"));
+    EXPECT_EQ(user_action_tester.GetActionCount("Autofill_SelectedSuggestion"),
+              1);
   }
 
   // Simulate filling a profile suggestion.
   {
     base::UserActionTester user_action_tester;
     FillTestProfile(form);
-    EXPECT_EQ(1, user_action_tester.GetActionCount(
-                     "Autofill_FilledProfileSuggestion"));
+    EXPECT_EQ(
+        user_action_tester.GetActionCount("Autofill_FilledProfileSuggestion"),
+        1);
   }
 
   // Simulate submitting the profile form.
@@ -838,8 +846,8 @@ TEST_F(AutofillMetricsTest, ProfileCheckoutFlowUserActions) {
     autofill_manager().OnAskForValuesToFillTest(form,
                                                 form.fields()[0].global_id());
     SubmitForm(form);
-    EXPECT_EQ(1,
-              user_action_tester.GetActionCount("Autofill_OnWillSubmitForm"));
+    EXPECT_EQ(user_action_tester.GetActionCount("Autofill_OnWillSubmitForm"),
+              1);
   }
 
   {
@@ -905,7 +913,7 @@ TEST_F(AutofillMetricsTest, LoyaltyCardCheckoutFlowUserActions) {
     autofill_manager().AddSeenForm(
         form, {LOYALTY_MEMBERSHIP_PROGRAM, LOYALTY_MEMBERSHIP_ID});
     EXPECT_EQ(
-        1, user_action_tester.GetActionCount("Autofill_ParsedLoyaltyCardForm"));
+        user_action_tester.GetActionCount("Autofill_ParsedLoyaltyCardForm"), 1);
   }
 
   // Simulate showing a loyalty card suggestion polled from "Loyalty Number"
@@ -913,8 +921,9 @@ TEST_F(AutofillMetricsTest, LoyaltyCardCheckoutFlowUserActions) {
   {
     base::UserActionTester user_action_tester;
     DidShowAutofillSuggestions(form);
-    EXPECT_EQ(1, user_action_tester.GetActionCount(
-                     "Autofill_ShowedLoyaltyCardSuggestions"));
+    EXPECT_EQ(user_action_tester.GetActionCount(
+                  "Autofill_ShowedLoyaltyCardSuggestions"),
+              1);
   }
 }
 
@@ -999,9 +1008,11 @@ TEST_F(AutofillMetricsTest, CreditCardGetRealPanDuration_ServerCard) {
     // Simulating filling a masked card server suggestion.
     base::HistogramTester histogram_tester;
     autofill_manager().FillOrPreviewForm(
-        mojom::ActionPersistence::kFill, form, form.fields().back().global_id(),
+        mojom::ActionPersistence::kFill, form.global_id(),
+        form.fields().back().global_id(),
         paydm().GetCreditCardByGUID(kTestMaskedCardId),
-        AutofillTriggerSource::kPopup, /*blocked_fields=*/{});
+        AutofillTriggerSource::kPopup, /*require_user_confirmation=*/false,
+        /*blocked_fields=*/{});
     OnDidGetRealPan(PaymentsRpcResult::kSuccess, "6011000990139424");
     histogram_tester.ExpectTotalCount(
         "Autofill.UnmaskPrompt.GetRealPanDuration", 1);
@@ -1021,9 +1032,11 @@ TEST_F(AutofillMetricsTest, CreditCardGetRealPanDuration_ServerCard) {
     // Simulating filling a masked card server suggestion.
     base::HistogramTester histogram_tester;
     autofill_manager().FillOrPreviewForm(
-        mojom::ActionPersistence::kFill, form, form.fields().back().global_id(),
+        mojom::ActionPersistence::kFill, form.global_id(),
+        form.fields().back().global_id(),
         paydm().GetCreditCardByGUID(kTestMaskedCardId),
-        AutofillTriggerSource::kPopup, /*blocked_fields=*/{});
+        AutofillTriggerSource::kPopup, /*require_user_confirmation=*/false,
+        /*blocked_fields=*/{});
     OnDidGetRealPan(PaymentsRpcResult::kPermanentFailure, std::string());
     histogram_tester.ExpectTotalCount(
         "Autofill.UnmaskPrompt.GetRealPanDuration", 1);
@@ -1043,9 +1056,11 @@ TEST_F(AutofillMetricsTest, CreditCardGetRealPanDuration_ServerCard) {
     // Simulating filling a masked card server suggestion.
     base::HistogramTester histogram_tester;
     autofill_manager().FillOrPreviewForm(
-        mojom::ActionPersistence::kFill, form, form.fields().back().global_id(),
+        mojom::ActionPersistence::kFill, form.global_id(),
+        form.fields().back().global_id(),
         paydm().GetCreditCardByGUID(kTestMaskedCardId),
-        AutofillTriggerSource::kPopup, /*blocked_fields=*/{});
+        AutofillTriggerSource::kPopup, /*require_user_confirmation=*/false,
+        /*blocked_fields=*/{});
     OnDidGetRealPan(PaymentsRpcResult::kClientSideTimeout, std::string());
     histogram_tester.ExpectTotalCount(
         "Autofill.UnmaskPrompt.GetRealPanDuration", 1);
@@ -1078,9 +1093,11 @@ TEST_F(AutofillMetricsTest, CreditCardGetRealPanDuration_BadServerResponse) {
     // Simulating filling a masked card server suggestion.
     base::HistogramTester histogram_tester;
     autofill_manager().FillOrPreviewForm(
-        mojom::ActionPersistence::kFill, form, form.fields().back().global_id(),
+        mojom::ActionPersistence::kFill, form.global_id(),
+        form.fields().back().global_id(),
         paydm().GetCreditCardByGUID(kTestMaskedCardId),
-        AutofillTriggerSource::kPopup, /*blocked_fields=*/{});
+        AutofillTriggerSource::kPopup, /*require_user_confirmation=*/false,
+        /*blocked_fields=*/{});
     OnDidGetRealPanWithNonHttpOkResponse();
     histogram_tester.ExpectTotalCount(
         "Autofill.UnmaskPrompt.GetRealPanDuration", 1);
@@ -1660,7 +1677,7 @@ TEST_F(AutofillMetricsTest, AddressSubmittedFormEvents) {
     // Check if FormEvent UKM is logged properly
     auto entries =
         test_ukm_recorder().GetEntriesByName(UkmFormEventType::kEntryName);
-    EXPECT_EQ(3u, entries.size());
+    EXPECT_EQ(entries.size(), 3u);
   }
 }
 
@@ -1754,7 +1771,7 @@ TEST_F(AutofillMetricsTest, AddressWillSubmitFormEvents) {
     // Check if FormEvent UKM is logged properly
     auto entries =
         test_ukm_recorder().GetEntriesByName(UkmFormEventType::kEntryName);
-    EXPECT_EQ(4u, entries.size());
+    EXPECT_EQ(entries.size(), 4u);
   }
 
   // Reset the autofill manager state.
@@ -1784,7 +1801,7 @@ TEST_F(AutofillMetricsTest, AddressWillSubmitFormEvents) {
     // Check if FormEvent UKM is logged properly
     auto entries =
         test_ukm_recorder().GetEntriesByName(UkmFormEventType::kEntryName);
-    EXPECT_EQ(3u, entries.size());
+    EXPECT_EQ(entries.size(), 3u);
   }
 }
 
@@ -1931,11 +1948,6 @@ TEST_F(AutofillMetricsTest, MAYBE_FormFillDuration) {
   test_api(second_form).field(3).set_value(u"51512345678");
 
   auto autofill_form = [&](FormData& form) {
-    if (!base::FeatureList::IsEnabled(features::kAutofillFixIsAutofilled)) {
-      for (FormFieldData& field : test_api(form).fields()) {
-        field.set_is_autofilled_according_to_renderer(true);
-      }
-    }
     FormStructure& form_structure =
         *test_api(autofill_manager()).FindCachedFormById(form.global_id());
     for (const std::unique_ptr<AutofillField>& field :
@@ -2326,11 +2338,7 @@ class AutofillMetricsParseQueryResponseTest : public AutofillMetricsTest {
     AutofillMetricsTest::SetUp();
 
     forms_.push_back(test::GetFormData(
-        {.fields = {{.role = NAME_FULL},
-                    {.role = ADDRESS_HOME_LINE1},
-                    {.label = u"radio_button",
-                     // Checkable fields should be ignored in parsing.
-                     .form_control_type = FormControlType::kInputRadio}}}));
+        {.fields = {{.role = NAME_FULL}, {.role = ADDRESS_HOME_LINE1}}}));
     SeeForm(forms_.back());
 
     forms_.push_back(test::GetFormData(
@@ -2457,8 +2465,8 @@ TEST_F(AutofillMetricsTest, RecordCardUploadDecisionMetric_InvalidUrl) {
   GURL url("");
   test_ukm_recorder().Purge();
   LogCardUploadDecisionsUkm(&test_ukm_recorder(), -1, url, 1);
-  EXPECT_EQ(0ul, test_ukm_recorder().sources_count());
-  EXPECT_EQ(0ul, test_ukm_recorder().entries_count());
+  EXPECT_EQ(test_ukm_recorder().sources_count(), 0ul);
+  EXPECT_EQ(test_ukm_recorder().entries_count(), 0ul);
 }
 
 // Tests that no UKM is logged when the ukm service is null.
@@ -2466,8 +2474,8 @@ TEST_F(AutofillMetricsTest, RecordCardUploadDecisionMetric_NoUkmService) {
   GURL url("https://www.google.com");
   test_ukm_recorder().Purge();
   LogCardUploadDecisionsUkm(nullptr, -1, url, 1);
-  EXPECT_EQ(0ul, test_ukm_recorder().sources_count());
-  EXPECT_EQ(0ul, test_ukm_recorder().entries_count());
+  EXPECT_EQ(test_ukm_recorder().sources_count(), 0ul);
+  EXPECT_EQ(test_ukm_recorder().entries_count(), 0ul);
 }
 
 TEST_F(AutofillMetricsTest, DynamicFormMetrics) {
@@ -2491,7 +2499,8 @@ TEST_F(AutofillMetricsTest, DynamicFormMetrics) {
   test_api(form).Remove(-1);
 
   // Trigger a refill, the refill metric should be updated.
-  autofill_manager().OnFormsSeen({form}, /*removed_forms=*/{});
+  autofill_manager().OnFormsSeen({form}, /*removed_forms=*/{},
+                                 AutofillManagerTestApi::pass_key());
   EXPECT_THAT(histogram_tester.GetAllSamples("Autofill.FormEvents.Address"),
               BucketsInclude(Bucket(FORM_EVENT_DID_DYNAMIC_REFILL, 1)));
 }
@@ -2711,10 +2720,170 @@ TEST_F(AutofillMetricsTest, AutocompleteOneTimeCodeFormFilledDuration) {
 
 TEST_F(AutofillMetricsTest, OnAutocompleteSuggestionsShown) {
   base::HistogramTester histogram_tester;
-  AutofillMetrics::OnAutocompleteSuggestionsShown();
+  AutofillMetrics::OnAutocompleteSuggestionsShown({});
   histogram_tester.ExpectBucketCount(
       "Autocomplete.Events3", AutofillMetrics::AUTOCOMPLETE_SUGGESTIONS_SHOWN,
       /*expected_count=*/1);
+}
+
+// Tests that when `kAutofillLabelSensitiveAutocomplete` is enabled,
+// `OnAutocompleteSuggestionsShown` records `AUTOCOMPLETE_SUGGESTIONS_SHOWN` to
+// `Autocomplete.Events3` and once for each distinct `MatchingType` present in
+// the suggestions list.
+TEST_F(AutofillMetricsTest, OnAutocompleteSuggestionsShown_MatchingTypes) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(
+      features::kAutofillLabelSensitiveAutocomplete);
+
+  base::HistogramTester histogram_tester;
+  auto create_suggestion = [](std::u16string value,
+                              MatchingType matching_type) {
+    Suggestion suggestion(value, SuggestionType::kAutocompleteEntry);
+    suggestion.payload = AutocompleteSearchResultLabelSensitive(
+        value, matching_type, /*query_name=*/u"name",
+        /*query_label=*/u"label", /*count=*/1);
+    return suggestion;
+  };
+
+  std::vector<Suggestion> suggestions = {
+      create_suggestion(u"val1", MatchingType::kName),
+      create_suggestion(u"val2", MatchingType::kName),
+      create_suggestion(u"val3", MatchingType::kLabel),
+      create_suggestion(u"val4", MatchingType::kNameAndLabel),
+      Suggestion(u"address", SuggestionType::kAddressEntry),
+  };
+
+  AutofillMetrics::OnAutocompleteSuggestionsShown(suggestions);
+
+  histogram_tester.ExpectBucketCount(
+      "Autocomplete.Events3", AutofillMetrics::AUTOCOMPLETE_SUGGESTIONS_SHOWN,
+      /*expected_count=*/1);
+  histogram_tester.ExpectBucketCount(
+      "Autocomplete.NameBasedSuggestions",
+      AutofillMetrics::AUTOCOMPLETE_SUGGESTIONS_SHOWN,
+      /*expected_count=*/1);
+  histogram_tester.ExpectBucketCount(
+      "Autocomplete.LabelBasedSuggestions",
+      AutofillMetrics::AUTOCOMPLETE_SUGGESTIONS_SHOWN,
+      /*expected_count=*/1);
+  histogram_tester.ExpectBucketCount(
+      "Autocomplete.BothNameAndLabelBasedSuggestions",
+      AutofillMetrics::AUTOCOMPLETE_SUGGESTIONS_SHOWN,
+      /*expected_count=*/1);
+}
+
+// Tests that when `kAutofillLabelSensitiveAutocomplete` is disabled,
+// `OnAutocompleteSuggestionsShown` records only to `Autocomplete.Events3` and
+// not to any matching-type histograms.
+TEST_F(AutofillMetricsTest, OnAutocompleteSuggestionsShown_FeatureDisabled) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndDisableFeature(
+      features::kAutofillLabelSensitiveAutocomplete);
+
+  base::HistogramTester histogram_tester;
+  Suggestion suggestion(u"val", SuggestionType::kAutocompleteEntry);
+  suggestion.payload = AutocompleteSearchResultLabelSensitive(
+      u"val", MatchingType::kLabel, /*query_name=*/u"name",
+      /*query_label=*/u"label", /*count=*/1);
+
+  AutofillMetrics::OnAutocompleteSuggestionsShown({suggestion});
+
+  histogram_tester.ExpectBucketCount(
+      "Autocomplete.Events3", AutofillMetrics::AUTOCOMPLETE_SUGGESTIONS_SHOWN,
+      /*expected_count=*/1);
+  histogram_tester.ExpectTotalCount("Autocomplete.LabelBasedSuggestions", 0);
+}
+
+// Tests that `LogAutocompleteEvent` with an explicit `MatchingType` records the
+// event to both `Autocomplete.Events3` and the corresponding matching-type
+// histogram.
+TEST_F(AutofillMetricsTest, LogAutocompleteEvent_WithMatchingType) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(
+      features::kAutofillLabelSensitiveAutocomplete);
+
+  {
+    base::HistogramTester histogram_tester;
+    AutofillMetrics::LogAutocompleteEvent(
+        AutofillMetrics::AUTOCOMPLETE_SUGGESTION_SELECTED,
+        MatchingType::kLabel);
+    histogram_tester.ExpectBucketCount(
+        "Autocomplete.Events3",
+        AutofillMetrics::AUTOCOMPLETE_SUGGESTION_SELECTED, 1);
+    histogram_tester.ExpectBucketCount(
+        "Autocomplete.LabelBasedSuggestions",
+        AutofillMetrics::AUTOCOMPLETE_SUGGESTION_SELECTED, 1);
+    histogram_tester.ExpectTotalCount("Autocomplete.NameBasedSuggestions", 0);
+    histogram_tester.ExpectTotalCount(
+        "Autocomplete.BothNameAndLabelBasedSuggestions", 0);
+  }
+  {
+    base::HistogramTester histogram_tester;
+    AutofillMetrics::LogAutocompleteEvent(
+        AutofillMetrics::AUTOCOMPLETE_SUGGESTION_SELECTED, MatchingType::kName);
+    histogram_tester.ExpectBucketCount(
+        "Autocomplete.Events3",
+        AutofillMetrics::AUTOCOMPLETE_SUGGESTION_SELECTED, 1);
+    histogram_tester.ExpectBucketCount(
+        "Autocomplete.NameBasedSuggestions",
+        AutofillMetrics::AUTOCOMPLETE_SUGGESTION_SELECTED, 1);
+    histogram_tester.ExpectTotalCount("Autocomplete.LabelBasedSuggestions", 0);
+    histogram_tester.ExpectTotalCount(
+        "Autocomplete.BothNameAndLabelBasedSuggestions", 0);
+  }
+  {
+    base::HistogramTester histogram_tester;
+    AutofillMetrics::LogAutocompleteEvent(
+        AutofillMetrics::AUTOCOMPLETE_SUGGESTION_SELECTED,
+        MatchingType::kNameAndLabel);
+    histogram_tester.ExpectBucketCount(
+        "Autocomplete.Events3",
+        AutofillMetrics::AUTOCOMPLETE_SUGGESTION_SELECTED, 1);
+    histogram_tester.ExpectBucketCount(
+        "Autocomplete.BothNameAndLabelBasedSuggestions",
+        AutofillMetrics::AUTOCOMPLETE_SUGGESTION_SELECTED, 1);
+    histogram_tester.ExpectTotalCount("Autocomplete.LabelBasedSuggestions", 0);
+    histogram_tester.ExpectTotalCount("Autocomplete.NameBasedSuggestions", 0);
+  }
+  {
+    base::HistogramTester histogram_tester;
+    AutofillMetrics::LogAutocompleteEvent(
+        AutofillMetrics::AUTOCOMPLETE_SUGGESTION_DELETED, MatchingType::kLabel);
+    histogram_tester.ExpectBucketCount(
+        "Autocomplete.Events3",
+        AutofillMetrics::AUTOCOMPLETE_SUGGESTION_DELETED, 1);
+    histogram_tester.ExpectBucketCount(
+        "Autocomplete.LabelBasedSuggestions",
+        AutofillMetrics::AUTOCOMPLETE_SUGGESTION_DELETED, 1);
+  }
+}
+
+// Tests that `LogAutocompleteEvent` extracting `MatchingType` from a
+// `Suggestion` payload records the event to both `Autocomplete.Events3` and the
+// corresponding matching-type histogram.
+TEST_F(AutofillMetricsTest, LogAutocompleteEvent_WithSuggestion) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(
+      features::kAutofillLabelSensitiveAutocomplete);
+
+  base::HistogramTester histogram_tester;
+  Suggestion suggestion(u"val", SuggestionType::kAutocompleteEntry);
+  suggestion.payload = AutocompleteSearchResultLabelSensitive(
+      u"val", MatchingType::kLabel, /*query_name=*/u"name",
+      /*query_label=*/u"label", /*count=*/1);
+
+  AutofillMetrics::LogAutocompleteEvent(
+      AutofillMetrics::AUTOCOMPLETE_SUGGESTION_SELECTED, suggestion);
+
+  histogram_tester.ExpectBucketCount(
+      "Autocomplete.Events3", AutofillMetrics::AUTOCOMPLETE_SUGGESTION_SELECTED,
+      1);
+  histogram_tester.ExpectBucketCount(
+      "Autocomplete.LabelBasedSuggestions",
+      AutofillMetrics::AUTOCOMPLETE_SUGGESTION_SELECTED, 1);
+  histogram_tester.ExpectTotalCount("Autocomplete.NameBasedSuggestions", 0);
+  histogram_tester.ExpectTotalCount(
+      "Autocomplete.BothNameAndLabelBasedSuggestions", 0);
 }
 
 TEST_F(AutofillMetricsTest, LogServerCardLinkClicked) {
@@ -2749,6 +2918,8 @@ TEST_F(AutofillMetricsTest, GetFieldTypeUserEditStatusMetric) {
 
 // Base class for cross-frame filling metrics, in particular for
 // Autofill.CreditCard.SeamlessFills.*.
+// This uses the simplified security model of `TestAutofillDriver` which only
+// allows filling fields from the same origin.
 class AutofillMetricsCrossFrameFormTest : public AutofillMetricsTest {
  public:
   struct CreditCardAndCvc {
@@ -2803,16 +2974,6 @@ class AutofillMetricsCrossFrameFormTest : public AutofillMetricsTest {
     ASSERT_NE(form_.main_frame_origin(), form_.fields()[1].origin());
     ASSERT_NE(form_.main_frame_origin(), form_.fields()[3].origin());
     ASSERT_EQ(form_.fields()[1].origin(), form_.fields()[3].origin());
-
-    // Mock a simplified security model which allows to filter (only) fields
-    // from the same origin.
-    autofill_driver().SetFieldTypeMapFilter(base::BindRepeating(
-        [](AutofillMetricsCrossFrameFormTest* self,
-           const url::Origin& triggered_origin, FieldGlobalId field,
-           FieldType) {
-          return triggered_origin == self->GetFieldById(field).origin();
-        },
-        this));
   }
 
   CreditCard& credit_card() { return credit_card_; }
@@ -2821,10 +2982,12 @@ class AutofillMetricsCrossFrameFormTest : public AutofillMetricsTest {
   // mimic its effect on |form_|.
   void FillForm(const FormFieldData& triggering_field) {
     EXPECT_CALL(credit_card_access_manager(), FetchCreditCard)
-        .WillOnce(base::test::RunOnceCallback<1>(credit_card()));
+        .WillOnce(base::test::RunOnceCallback<2>(credit_card()));
     autofill_manager().FillOrPreviewForm(
-        mojom::ActionPersistence::kFill, form_, triggering_field.global_id(),
-        &credit_card_, AutofillTriggerSource::kPopup, /*blocked_fields=*/{});
+        mojom::ActionPersistence::kFill, form_.global_id(),
+        triggering_field.global_id(), &credit_card_,
+        AutofillTriggerSource::kPopup, /*require_user_confirmation=*/false,
+        /*blocked_fields=*/{});
   }
 
   // Sets the field values of |form_| according to the parameters.
@@ -2905,13 +3068,6 @@ class AutofillMetricsSeamlessnessTest
   static constexpr auto kBitmask = MetricName::Variant::kBitmask;
 
  protected:
-  AutofillMetricsSeamlessnessTest() {
-    scoped_features_.InitAndEnableFeatureWithParameters(
-        features::kAutofillLogUKMEventsWithSamplingOnSession,
-        {{features::kAutofillLogUKMEventsWithSamplingOnSessionRate.name,
-          "100"}});
-  }
-
   void InitAutofillClient() override {
     AutofillMetricsCrossFrameFormTest::InitAutofillClient();
 
@@ -2920,7 +3076,8 @@ class AutofillMetricsSeamlessnessTest
   }
 
  private:
-  base::test::ScopedFeatureList scoped_features_;
+  base::AutoReset<int> sampling_override_ =
+      autofill_metrics::SetUkmSamplingRateForTesting(100);
 };
 
 // Tests that Autofill.CreditCard.SeamlessFills.* is not emitted for manual
@@ -2984,6 +3141,8 @@ TEST_F(AutofillMetricsSeamlessnessTest,
   };
 
   SeeForm(form_);
+  FormStructure& form_structure =
+      *test_api(autofill_manager()).FindCachedFormById(form_.global_id());
 
   credit_card().clear_cvc();
 
@@ -2998,6 +3157,7 @@ TEST_F(AutofillMetricsSeamlessnessTest,
   SetFormValues({CREDIT_CARD_NAME_FULL, CREDIT_CARD_EXP_DATE_4_DIGIT_YEAR},
                 /*is_autofilled_according_to_renderer=*/true,
                 /*is_user_typed=*/false);
+  test_api(form_structure).UpdateFormData(form_);
 
   // Fakes an Autofill with the following behavior:
   // - before security and assuming a complete profile: kFullFill;
@@ -3011,6 +3171,7 @@ TEST_F(AutofillMetricsSeamlessnessTest,
   SetFormValues({CREDIT_CARD_NUMBER},
                 /*is_autofilled_according_to_renderer=*/true,
                 /*is_user_typed=*/false);
+  test_api(form_structure).UpdateFormData(form_);
 
   SubmitForm(form_);
   DeleteDriverToCommitMetrics();
@@ -3168,7 +3329,8 @@ TEST_F(AutofillMetricsSeamlessnessTest, CreditCardFormRecordOnIFrames) {
       skipped_status_vector = {FieldFillingSkipReason::kNotSkipped,
                                FieldFillingSkipReason::kAlreadyAutofilled};
     } else {
-      skipped_status_vector = {FieldFillingSkipReason::kNotSkipped};
+      skipped_status_vector = {FieldFillingSkipReason::kNotSkipped,
+                               FieldFillingSkipReason::kIframeSecurityPolicy};
     }
     DenseSet<AutofillStatus> autofill_status_vector;
     int field_log_events_count = 0;
@@ -3216,6 +3378,127 @@ TEST_F(AutofillMetricsSeamlessnessTest, CreditCardFormRecordOnIFrames) {
   }
   EXPECT_THAT(GetUkmEvents(test_ukm_recorder(), UFIT::kEntryName),
               UkmEventsAre(expected_events));
+}
+
+// Tests that Autofill.KeyMetrics.FillingReadiness.AvailableRequiredDataSources
+// correctly evaluates the form requirements and the user's available data.
+TEST_F(AutofillMetricsTest, FormRequirementsAndAvailabilityMetrics) {
+  // Setup user data: Ensure the user has at least one Address profile
+  // but explicitly has zero Credit Cards available.
+  personal_data().test_address_data_manager().AddProfile(
+      test::GetFullProfile());
+  personal_data().test_payments_data_manager().ClearAllLocalData();
+  personal_data().test_payments_data_manager().ClearCreditCards();
+
+  // Create a form that requires precisely 2 distinct data sources:
+  // 1. An address data source (ADDRESS_HOME_LINE1)
+  // 2. A payments data source (CREDIT_CARD_NUMBER)
+  FormData form = test::GetFormData(
+      {.fields = {{.role = ADDRESS_HOME_LINE1}, {.role = CREDIT_CARD_NUMBER}}});
+
+  auto form_structure = std::make_unique<FormStructure>(form);
+  form_structure->field(0)->set_server_predictions(
+      {test::CreateFieldPrediction(ADDRESS_HOME_LINE1)});
+  form_structure->field(1)->set_server_predictions(
+      {test::CreateFieldPrediction(CREDIT_CARD_NUMBER)});
+
+  base::HistogramTester histogram_tester;
+
+  AutofillMetrics::LogFillingReadinessMetrics(*form_structure,
+                                              autofill_client());
+
+  // We expect the `.Required2` histogram to be used since the form requires
+  // both Address and Payments data.
+  // We expect the recorded sample to be `1` since the user only has Address
+  // data available (Credit Cards were cleared).
+  histogram_tester.ExpectUniqueSample(
+      "Autofill.KeyMetrics.FillingReadiness.AvailableRequiredDataSources."
+      "Required2",
+      1, 1);
+}
+
+TEST_F(AutofillMetricsTest, ScanCreditCardPromptShown) {
+  base::HistogramTester histogram_tester;
+
+  AutofillMetrics::LogScanCreditCardPromptShown(
+      AutofillMetrics::ScanCreditCardPromptEntryPoint::kKeyboardAccessory,
+      /*is_new_user=*/true);
+  histogram_tester.ExpectUniqueSample(
+      "Autofill.ScanCreditCardPrompt.NewUser.Shown.EntryPoint",
+      AutofillMetrics::ScanCreditCardPromptEntryPoint::kKeyboardAccessory, 1);
+
+  AutofillMetrics::LogScanCreditCardPromptShown(
+      AutofillMetrics::ScanCreditCardPromptEntryPoint::kBottomsheet,
+      /*is_new_user=*/true);
+  histogram_tester.ExpectBucketCount(
+      "Autofill.ScanCreditCardPrompt.NewUser.Shown.EntryPoint",
+      AutofillMetrics::ScanCreditCardPromptEntryPoint::kBottomsheet, 1);
+
+  AutofillMetrics::LogScanCreditCardPromptShown(
+      AutofillMetrics::ScanCreditCardPromptEntryPoint::kSettingsPage,
+      /*is_new_user=*/false);
+  histogram_tester.ExpectUniqueSample(
+      "Autofill.ScanCreditCardPrompt.ExistingUser.Shown.EntryPoint",
+      AutofillMetrics::ScanCreditCardPromptEntryPoint::kSettingsPage, 1);
+}
+
+TEST_F(AutofillMetricsTest, ScanCreditCardPromptSelected) {
+  base::HistogramTester histogram_tester;
+
+  AutofillMetrics::LogScanCreditCardPromptSelected(
+      AutofillMetrics::ScanCreditCardPromptEntryPoint::kKeyboardAccessory,
+      /*is_new_user=*/true);
+  histogram_tester.ExpectUniqueSample(
+      "Autofill.ScanCreditCardPrompt.NewUser.Selected.EntryPoint",
+      AutofillMetrics::ScanCreditCardPromptEntryPoint::kKeyboardAccessory, 1);
+
+  AutofillMetrics::LogScanCreditCardPromptSelected(
+      AutofillMetrics::ScanCreditCardPromptEntryPoint::kBottomsheet,
+      /*is_new_user=*/true);
+  histogram_tester.ExpectBucketCount(
+      "Autofill.ScanCreditCardPrompt.NewUser.Selected.EntryPoint",
+      AutofillMetrics::ScanCreditCardPromptEntryPoint::kBottomsheet, 1);
+
+  AutofillMetrics::LogScanCreditCardPromptSelected(
+      AutofillMetrics::ScanCreditCardPromptEntryPoint::kSettingsPage,
+      /*is_new_user=*/false);
+  histogram_tester.ExpectUniqueSample(
+      "Autofill.ScanCreditCardPrompt.ExistingUser.Selected.EntryPoint",
+      AutofillMetrics::ScanCreditCardPromptEntryPoint::kSettingsPage, 1);
+}
+
+TEST_F(AutofillMetricsTest, ScanCreditCardScreenType) {
+  base::HistogramTester histogram_tester;
+
+  AutofillMetrics::LogScanCreditCardScreenType(
+      AutofillMetrics::ScanCreditCardScreenType::kUnknown);
+  histogram_tester.ExpectBucketCount(
+      "Autofill.ScanCreditCard.Completed.ScreenType",
+      AutofillMetrics::ScanCreditCardScreenType::kUnknown, 1);
+
+  AutofillMetrics::LogScanCreditCardScreenType(
+      AutofillMetrics::ScanCreditCardScreenType::kOcr);
+  histogram_tester.ExpectBucketCount(
+      "Autofill.ScanCreditCard.Completed.ScreenType",
+      AutofillMetrics::ScanCreditCardScreenType::kOcr, 1);
+
+  AutofillMetrics::LogScanCreditCardScreenType(
+      AutofillMetrics::ScanCreditCardScreenType::kNfc);
+  histogram_tester.ExpectBucketCount(
+      "Autofill.ScanCreditCard.Completed.ScreenType",
+      AutofillMetrics::ScanCreditCardScreenType::kNfc, 1);
+}
+
+TEST_F(AutofillMetricsTest, ScanCreditCardCompletedNewUser) {
+  base::HistogramTester histogram_tester;
+
+  AutofillMetrics::LogScanCreditCardCompletedNewUser(true);
+  histogram_tester.ExpectBucketCount(
+      "Autofill.ScanCreditCard.Completed.NewUser", true, 1);
+
+  AutofillMetrics::LogScanCreditCardCompletedNewUser(false);
+  histogram_tester.ExpectBucketCount(
+      "Autofill.ScanCreditCard.Completed.NewUser", false, 1);
 }
 
 }  // namespace

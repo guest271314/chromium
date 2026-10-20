@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "base/memory/raw_ptr.h"
+#include "base/memory/raw_ref.h"
 #include "base/memory/weak_ptr.h"
 #include "chrome/browser/ash/crostini/crostini_export_import.h"
 #include "chrome/browser/ash/crostini/crostini_manager.h"
@@ -21,6 +22,7 @@
 #include "components/services/app_service/public/cpp/intent.h"
 #include "content/public/browser/web_ui_message_handler.h"
 
+class PrefService;
 class Profile;
 
 namespace crostini {
@@ -31,13 +33,14 @@ struct CrostiniDiskInfo;
 namespace ash::settings {
 
 class CrostiniHandler : public content::WebUIMessageHandler,
-                        public crostini::CrostiniDialogStatusObserver,
+                        public crostini::CrostiniInstallerStatusObserver,
                         public crostini::CrostiniExportImport::Observer,
                         public crostini::CrostiniPortForwarder::Observer,
                         public guest_os::ContainerStartedObserver,
                         public crostini::ContainerShutdownObserver {
  public:
-  explicit CrostiniHandler(Profile* profile);
+  // `local_state` must be non-null and must outlive `this`.
+  CrostiniHandler(PrefService* local_state, Profile* profile);
 
   CrostiniHandler(const CrostiniHandler&) = delete;
   CrostiniHandler& operator=(const CrostiniHandler&) = delete;
@@ -62,9 +65,8 @@ class CrostiniHandler : public content::WebUIMessageHandler,
   void HandleImportDiskImage(const base::ListValue& args);
   // Handle a request for the CrostiniInstallerView status.
   void HandleCrostiniInstallerStatusRequest(const base::ListValue& args);
-  // crostini::CrostiniDialogStatusObserver
-  void OnCrostiniDialogStatusChanged(crostini::DialogType dialog_type,
-                                     bool open) override;
+  // crostini::CrostiniInstallerStatusObserver
+  void OnCrostiniInstallerStatusChanged(bool open) override;
   // Handle a request for the CrostiniExportImport operation status.
   void HandleCrostiniExportImportOperationStatusRequest(
       const base::ListValue& args);
@@ -145,6 +147,7 @@ class CrostiniHandler : public content::WebUIMessageHandler,
   // Handle a request to start uninstalling Bruschetta
   void HandleRequestBruschettaUninstallerView(const base::ListValue& args);
 
+  const raw_ref<PrefService> local_state_;
   raw_ptr<Profile> profile_;
   base::CallbackListSubscription adb_sideloading_device_policy_subscription_;
   PrefChangeRegistrar pref_change_registrar_;

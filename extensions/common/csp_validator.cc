@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "base/check_op.h"
+#include "base/command_line.h"
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
@@ -28,11 +29,10 @@
 #include "extensions/common/extension_features.h"
 #include "extensions/common/install_warning.h"
 #include "extensions/common/manifest_constants.h"
+#include "extensions/common/switches.h"
 #include "net/base/registry_controlled_domains/registry_controlled_domain.h"
 
-namespace extensions {
-
-namespace csp_validator {
+namespace extensions::csp_validator {
 
 namespace {
 
@@ -65,21 +65,22 @@ const char kAllowTopNavigation[] = "allow-top-navigation";
 // List of CSP hash-source prefixes that are accepted. Blink is a bit more
 // lenient, but we only accept standard hashes to be forward-compatible.
 // http://www.w3.org/TR/2015/CR-CSP2-20150721/#hash_algo
-const char* const kHashSourcePrefixes[] = {
-  "'sha256-",
-  "'sha384-",
-  "'sha512-"
+constexpr std::string_view kHashSourcePrefixes[] = {
+    "'sha256-",
+    "'sha384-",
+    "'sha512-",
 };
 
-// https://infra.spec.whatwg.org/#ascii-whitespace.
-const char kWhitespaceDelimiters[] = " \t\r\n\f";
-
 constexpr char kChromeResourcesUrl[] = "chrome://resources";
+constexpr char kChromeWebUITestUrl[] = "chrome://webui-test";
 constexpr const char* const kExtensionsAllowedToUseChromeResources[] = {
     extension_misc::kChromeVoxExtensionId,
     extension_misc::kIndigoExtensionId,
     // Used for ComponentExtensionWorkerChromeResourcesBrowserTest.
     extension_misc::kChromeResourcesTestExtensionId,
+    extension_misc::kAimEligibilityExtensionId,
+    extension_misc::kContextualTasksExtensionId,
+    extension_misc::kNewTabPageExtensionId,
 };
 
 using Directive = CSPParser::Directive;
@@ -223,10 +224,10 @@ bool IsHashSource(std::string_view source) {
     return false;
 
   size_t hash_end = source.length() - 1;
-  for (const char* prefix : kHashSourcePrefixes) {
+  for (std::string_view prefix : kHashSourcePrefixes) {
     if (base::StartsWith(source, prefix,
                          base::CompareCase::INSENSITIVE_ASCII)) {
-      for (size_t i = strlen(prefix); i < hash_end; ++i) {
+      for (size_t i = prefix.length(); i < hash_end; ++i) {
         const char c = source[i];
         // The hash must be base64-encoded. Do not allow any other characters.
         if (!base::IsAsciiAlpha(c) && !base::IsAsciiDigit(c) && c != '+' &&
@@ -305,8 +306,9 @@ std::string GetAppSandboxSecureDirectiveValues(
     // Keyword directive sources are surrounded with quotes, e.g. 'self',
     // 'sha256-...', 'unsafe-eval', 'nonce-...'. These do not specify a remote
     // host or '*', so keep them and restrict the rest.
-    if (source_lower.size() > 1u && source_lower[0] == '\'' &&
-        source_lower.back() == '\'') {
+    if ((source_lower.size() > 1u && source_lower[0] == '\'' &&
+         source_lower.back() == '\'') ||
+        source_lower == "blob:" || source_lower == "filesystem:") {
       seen_self_or_none |= source_lower == "'none'" || source_lower == "'self'";
       sane_csp_parts.push_back(source_lower);
     } else if (warnings) {
@@ -398,7 +400,7 @@ class CSPEnforcer {
   CSPEnforcer(const CSPEnforcer&) = delete;
   CSPEnforcer& operator=(const CSPEnforcer&) = delete;
 
-  virtual ~CSPEnforcer() {}
+  virtual ~CSPEnforcer() = default;
 
   // Returns the enforced CSP.
   // Emits warnings in |warnings| for insecure directive values. If
@@ -513,7 +515,7 @@ class ExtensionCSPEnforcer : public CSPEnforcer {
 
 class AppSandboxPageCSPEnforcer : public CSPEnforcer {
  public:
-  AppSandboxPageCSPEnforcer(std::string manifest_key)
+  explicit AppSandboxPageCSPEnforcer(std::string manifest_key)
       : CSPEnforcer(std::move(manifest_key),
                     false,
                     base::BindRepeating(&GetAppSandboxSecureDirectiveValues)) {
@@ -540,12 +542,12 @@ class AppSandboxPageCSPEnforcer : public CSPEnforcer {
 }  //  namespace
 
 bool ContentSecurityPolicyIsLegal(const std::string& policy) {
-  // We block these characters to prevent HTTP header injection when
-  // representing the content security policy as an HTTP header.
-  const char kBadChars[] = {',', '\r', '\n', '\0'};
-
-  return policy.find_first_of(kBadChars, 0, std::size(kBadChars)) ==
-         std::string::npos;
+  // We block commas, newlines, nulls, control characters, and non-printable
+  // ASCII characters (like DEL) to prevent HTTP header injection and parser
+  // differentials with the runtime CSP parser.
+  return std::ranges::all_of(policy, [](char c) {
+    return c == '\t' || c == '\f' || (base::IsAsciiPrintable(c) && c != ',');
+  });
 }
 
 Directive::Directive(std::string_view directive_string,
@@ -575,7 +577,7 @@ void CSPParser::Parse() {
            policy_, ";", base::TRIM_WHITESPACE, base::SPLIT_WANT_NONEMPTY)) {
     // Get whitespace separated tokens.
     std::vector<std::string_view> tokens = base::SplitStringPiece(
-        directive_str, kWhitespaceDelimiters, base::TRIM_WHITESPACE,
+        directive_str, base::kWhitespaceASCII, base::TRIM_WHITESPACE,
         base::SPLIT_WANT_NONEMPTY);
 
     // |directive_str| is non-empty and has had whitespace trimmed. Hence, it
@@ -596,11 +598,11 @@ void CSPParser::Parse() {
 }
 
 std::string SanitizeContentSecurityPolicy(
-    const std::string& policy,
+    std::string_view policy,
     std::string manifest_key,
     int options,
     std::vector<InstallWarning>* warnings) {
-  CSPParser csp_parser(policy);
+  CSPParser csp_parser(std::string{policy});
 
   bool allow_insecure_object_src = options & OPTIONS_ALLOW_INSECURE_OBJECT_SRC;
   ExtensionCSPEnforcer csp_enforcer(std::move(manifest_key),
@@ -619,6 +621,9 @@ std::string GetSandboxedPageCSPDisallowingRemoteSources(
 
 bool ContentSecurityPolicyIsSandboxed(
     const std::string& policy, Manifest::Type type) {
+  if (!ContentSecurityPolicyIsLegal(policy)) {
+    return false;
+  }
   bool seen_sandbox = false;
   CSPParser parser(policy);
   for (const auto& directive : parser.directives()) {
@@ -636,7 +641,7 @@ bool ContentSecurityPolicyIsSandboxed(
 
       // Platform apps don't allow navigation.
       if (type == Manifest::Type::kPlatformApp &&
-          token_lower_case == kAllowTopNavigation) {
+          base::StartsWith(token_lower_case, kAllowTopNavigation)) {
         return false;
       }
     }
@@ -647,13 +652,14 @@ bool ContentSecurityPolicyIsSandboxed(
 
 bool DoesCSPDisallowRemoteCode(const std::string& extension_id,
                                mojom::ManifestLocation location,
-                               const std::string& content_security_policy,
+                               std::string_view content_security_policy,
                                std::string_view manifest_key,
                                std::u16string* error) {
   DCHECK(error);
 
   struct DirectiveMapping {
-    DirectiveMapping(DirectiveStatus status) : status(std::move(status)) {}
+    explicit DirectiveMapping(DirectiveStatus status)
+        : status(std::move(status)) {}
 
     DirectiveStatus status;
     raw_ptr<const CSPParser::Directive, DanglingUntriaged> directive = nullptr;
@@ -675,7 +681,7 @@ bool DoesCSPDisallowRemoteCode(const std::string& extension_id,
   };
 
   // Populate |directive_mappings|.
-  CSPParser csp_parser(content_security_policy);
+  CSPParser csp_parser(std::string{content_security_policy});
   for (DirectiveMapping* mapping : directive_mappings) {
     // Find the first matching directive. As per
     // http://www.w3.org/TR/CSP/#parse-a-csp-policy, duplicate directive names
@@ -742,6 +748,14 @@ bool DoesCSPDisallowRemoteCode(const std::string& extension_id,
             return true;
           }
 
+          if (source_lower == kChromeWebUITestUrl &&
+              IsWebUITestAllowedForLocation(location)) {
+            // chrome://webui-test only exists in browser tests. Built-in
+            // component extensions may load test helpers from it when the
+            // test-only switch is set.
+            return true;
+          }
+
           return source_lower == kSelfSource || source_lower == kNoneSource ||
                  IsLocalHostSource(source_lower) ||
                  source_lower == kWasmUnsafeEvalSource;
@@ -762,7 +776,7 @@ bool DoesCSPDisallowRemoteCode(const std::string& extension_id,
     if (mapping == &default_src_mapping)
       continue;
 
-    if (mapping->directive && secure_directives.count(mapping->directive)) {
+    if (mapping->directive && secure_directives.contains(mapping->directive)) {
       // We already checked this directive and know it's secure. Skip it.
       continue;
     }
@@ -786,6 +800,10 @@ bool IsExtensionAllowedToUseChromeResources(const std::string& extension_id) {
                                extension_id);
 }
 
-}  // namespace csp_validator
+bool IsWebUITestAllowedForLocation(mojom::ManifestLocation location) {
+  return location == mojom::ManifestLocation::kComponent &&
+         base::CommandLine::ForCurrentProcess()->HasSwitch(
+             switches::kAllowWebUITestInComponentExtensions);
+}
 
-}  // namespace extensions
+}  // namespace extensions::csp_validator

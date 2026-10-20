@@ -57,6 +57,12 @@
 #include "services/viz/privileged/mojom/compositing/frame_sinks_metrics_recorder.mojom.h"
 #include "services/viz/public/mojom/compositing/video_detector_observer.mojom.h"
 
+#if BUILDFLAG(IS_MAC)
+namespace ui {
+class WindowServerEventPumpThread;
+}
+#endif
+
 namespace viz {
 
 class CapturableFrameSink;
@@ -142,6 +148,10 @@ class VIZ_SERVICE_EXPORT FrameSinkManagerImpl
                            bool report_activation) override;
   void InvalidateFrameSinkId(const FrameSinkId& frame_sink_id,
                              InvalidateFrameSinkIdCallback callback) override;
+  void RequestNonEmptyFrameNotification(
+      const FrameSinkId& frame_sink_id) override;
+  void CancelNonEmptyFrameNotification(
+      const FrameSinkId& frame_sink_id) override;
   void SetFrameSinkDebugLabel(const FrameSinkId& frame_sink_id,
                               const std::string& debug_label) override;
   void CreateRootCompositorFrameSink(
@@ -172,6 +182,13 @@ class VIZ_SERVICE_EXPORT FrameSinkManagerImpl
   void UnregisterFrameSinkHierarchy(
       const FrameSinkId& parent_frame_sink_id,
       const FrameSinkId& child_frame_sink_id) override;
+  // Returns true if `unbounded_frame_sink_id` is a valid target for an
+  // unbounded surface under `parent_frame_sink_id`. This checks that the ID is
+  // registered in Viz by the Browser process or is a registered descendant
+  // in the frame sink hierarchy of `parent_frame_sink_id`.
+  bool IsValidUnboundedFrameSinkId(
+      const FrameSinkId& parent_frame_sink_id,
+      const FrameSinkId& unbounded_frame_sink_id) const;
   void AddVideoDetectorObserver(
       mojo::PendingRemote<mojom::VideoDetectorObserver> observer) override;
   void CreateVideoCapturer(
@@ -235,6 +252,7 @@ class VIZ_SERVICE_EXPORT FrameSinkManagerImpl
 
   // SurfaceObserver implementation.
   void OnFirstSurfaceActivation(const SurfaceInfo& surface_info) override;
+  void OnSurfaceActivated(const SurfaceId& surface_id) override;
 
   void UpdateHitTestRegionData(
       const FrameSinkId& frame_sink_id,
@@ -340,9 +358,6 @@ class VIZ_SERVICE_EXPORT FrameSinkManagerImpl
   void OnFrameSinkMobileOptimizedChanged(const FrameSinkId& frame_sink_id,
                                          bool is_mobile_optimized);
 
-  void OnFrameSinkInteractionChanged(const FrameSinkId& frame_sink_id,
-                                     bool is_handling_interaction);
-
   // Returns ids of all FrameSinks that were registered.
   std::vector<FrameSinkId> GetRegisteredFrameSinkIds() const;
 
@@ -437,25 +452,16 @@ class VIZ_SERVICE_EXPORT FrameSinkManagerImpl
     return copy_output_request_result_size_for_testing_;
   }
 
-  base::flat_set<FrameSinkId> interactive_frame_sink_ids_for_testing() const {
-    return interactive_frame_sink_ids_;
-  }
-
   void RequestBeginFrameForGpuService(bool toggle);
 
   GpuServiceImpl* GetGpuService();
 
-#if BUILDFLAG(IS_ANDROID)
-  // Android: if true, opts the current ADPF session (held by viz) into
-  // power-efficient scheduling.
-  void SetPreferEfficientScheduling(bool prefer_efficient_scheduling) const;
-#endif
-
 #if BUILDFLAG(IS_MAC)
-  // This is called after SetSupportedDisplayLinkId() in the browser process.
-  // Forces every RootCompositorFrameSink associated with the specified display
-  // to update its DisplayLinkMac. This ensures that frame sinks stay in sync
-  // with the display configuration when displays are added or removed.
+  // Forces every RootCompositorFrameSink to update its DisplayLinkMac. Called
+  // when the browser-side CADisplayLink for `display_id` changes validity
+  // (e.g. a display is added or removed), or when the GPU-side
+  // WindowServerEventPumpThread fails and all frame sinks must fall back to a
+  // timer. In the latter case `display_id` is ignored.
   void UpdateVSyncDisplays(int64_t display_id);
 #endif
 
@@ -546,10 +552,8 @@ class VIZ_SERVICE_EXPORT FrameSinkManagerImpl
   // Applies throttling to all descendants of `throttled_roots`, and disables
   // throttling for all descendants of `captured_roots` (e.g. during video
   // capture).
-  void ApplyThrottlingRules(
-      const base::flat_set<FrameSinkId>& throttled_roots,
-      const base::flat_set<FrameSinkId>& captured_roots,
-      const base::flat_set<FrameSinkId>& interacting_roots);
+  void ApplyThrottlingRules(const base::flat_set<FrameSinkId>& throttled_roots,
+                            const base::flat_set<FrameSinkId>& captured_roots);
 
   // Check to see if |throttle_interval_| has any effect. For example if
   // |global_throttle_interval_| is longer then |throttle_interval| it will
@@ -560,6 +564,10 @@ class VIZ_SERVICE_EXPORT FrameSinkManagerImpl
   // `display_hit_test_query_` when `InputOnViz` flag is enabled.
   void MaybeEraseHitTestQuery(const FrameSinkId& frame_sink_id);
   void MaybeAddHitTestQuery(const FrameSinkId& frame_sink_id);
+
+  // Consumes the pending RequestNonEmptyFrameNotification() for `frame_sink_id`
+  // and notifies the client. There must be a pending request.
+  void NotifyFirstNonEmptyFrame(const FrameSinkId& frame_sink_id);
 
   // Provides an output surface for CreateRootCompositorFrameSink().
   const raw_ptr<OutputSurfaceProvider> output_surface_provider_;
@@ -605,6 +613,17 @@ class VIZ_SERVICE_EXPORT FrameSinkManagerImpl
   // destroyed when frame sink is invalidated.
   base::flat_map<FrameSinkId, FrameSinkData> frame_sink_data_;
 
+  // FrameSinkIds with a pending RequestNonEmptyFrameNotification().
+  // Deliberately tracked here rather than on CompositorFrameSinkSupport, whose
+  // lifetime is tied to a single mojom::CompositorFrameSink pipe: a client that
+  // destroys and recreates its sink (or simply closes the pipe after submitting
+  // a frame) must not be able to disarm or reset the request. Entries are
+  // removed once the notification is sent, on
+  // CancelNonEmptyFrameNotification(), and on InvalidateFrameSinkId(). Empty in
+  // the steady state, which keeps OnSurfaceActivated() cheap. See
+  // https://crbug.com/40055319.
+  base::flat_set<FrameSinkId> pending_non_empty_frame_notifications_;
+
   // Set of BeginFrameSource along with associated FrameSinkIds. Any child
   // that is implicitly using this frame sink must be reachable by the
   // parent in the dag.
@@ -646,10 +665,6 @@ class VIZ_SERVICE_EXPORT FrameSinkManagerImpl
   // The ids of the frame sinks that are currently being captured.
   // These frame sinks should not be throttled.
   base::flat_set<FrameSinkId> captured_frame_sink_ids_;
-  // The ids of the frame sinks that are currently handling interaction.
-  // These frame sinks should not be throttled, and other frame sinks may be
-  // throttled when this set is not empty.
-  base::flat_set<FrameSinkId> interactive_frame_sink_ids_;
 
   // Ids of the frame sinks that have been requested to throttle.
   base::flat_set<FrameSinkId> frame_sink_ids_to_throttle_;
@@ -697,12 +712,14 @@ class VIZ_SERVICE_EXPORT FrameSinkManagerImpl
   mojo::Receiver<mojom::FrameSinksMetricsRecorder> metrics_receiver_{this};
   mojo::Receiver<mojom::FrameSinkManagerTestApi> test_api_receiver_{this};
 
-  base::ObserverList<FrameSinkObserver>::Unchecked observer_list_;
+  base::ObserverList<FrameSinkObserver> observer_list_;
 
 #if BUILDFLAG(IS_MAC)
   // Only one ExternalBeginFrameSourceMojoMac object is created and is
   // shared by all RootCompositorFrameSinks.
   std::unique_ptr<ExternalBeginFrameSourceMojoMac> external_begin_frame_source_;
+
+  std::unique_ptr<ui::WindowServerEventPumpThread> window_server_event_thread_;
 #endif
 
   // Counts frames for test.

@@ -32,20 +32,26 @@ self.onmessage = async function(e) {
       if (devicePromise) await devicePromise;
       const args = e.data.args || [];
       const target = e.data.elementImage;
-      const destination = { texture: ctx.getCurrentTexture() };
+      const destDict = {texture: ctx.getCurrentTexture()};
+
+      const sourceDict = { source: target };
 
       if (args.length === 6) {
-        // [sx, sy, swidth, sheight, destWidth, destHeight]
-        queue.copyElementImageToTexture(target, args[0], args[1], args[2], args[3], args[4], args[5], destination);
+        sourceDict.sourceX = args[0];
+        sourceDict.sourceY = args[1];
+        sourceDict.sourceWidth = args[2];
+        sourceDict.sourceHeight = args[3];
+        destDict.size = {width: args[4], height: args[5]};
       } else if (args.length === 4) {
-        // [sx, sy, swidth, sheight]
-        queue.copyElementImageToTexture(target, args[0], args[1], args[2], args[3], destination);
+        sourceDict.sourceX = args[0];
+        sourceDict.sourceY = args[1];
+        sourceDict.sourceWidth = args[2];
+        sourceDict.sourceHeight = args[3];
       } else if (args.length === 2) {
-        // [destWidth, destHeight]
-        queue.copyElementImageToTexture(target, args[0], args[1], destination);
-      } else {
-        queue.copyElementImageToTexture(target, destination);
+        destDict.size = {width: args[0], height: args[1]};
       }
+
+      queue.drawElementImageToTexture(sourceDict, destDict);
       self.postMessage('done');
     }
   } catch (err) {

@@ -79,6 +79,8 @@ TEST_F(GaiaUrlsTest, InitializeDefault_AllUrls) {
             "https://tasks.googleapis.com/");
   EXPECT_EQ(gaia_urls()->people_api_origin_url(),
             "https://people.googleapis.com/");
+  EXPECT_EQ(gaia_urls()->kids_management_api_origin_url(),
+            "https://kidsmanagement-pa.googleapis.com/");
   EXPECT_EQ(gaia_urls()->embedded_setup_chromeos_url().spec(),
             "https://accounts.google.com/embedded/setup/v2/chromeos");
   EXPECT_EQ(gaia_urls()->embedded_setup_chromeos_kid_signup_url().spec(),
@@ -93,14 +95,17 @@ TEST_F(GaiaUrlsTest, InitializeDefault_AllUrls) {
             "https://accounts.google.com/samlredirect");
   EXPECT_EQ(gaia_urls()->signin_chrome_sync_dice().spec(),
             "https://accounts.google.com/signin/chrome/sync?ssp=1");
-  EXPECT_EQ(gaia_urls()->signin_chrome_sync_keys_retrieval_url().spec(),
+  EXPECT_EQ(gaia_urls()->SigninChromeSyncKeysRetrievalUrl(0).spec(),
             std::string("https://accounts.google.com/encryption/unlock/") +
-                kSigninChromeSyncKeysPlatformSuffix);
+                kSigninChromeSyncKeysPlatformSuffix + "?authuser=0");
   EXPECT_EQ(
-      gaia_urls()->signin_chrome_sync_keys_recoverability_degraded_url().spec(),
+      gaia_urls()->SigninChromeSyncKeysRecoverabilityDegradedUrl(0).spec(),
       std::string("https://accounts.google.com/encryption/unlock/") +
           kSigninChromeSyncKeysPlatformSuffix +
-          std::string("?kdi=CAIaDgoKY2hyb21lc3luYxAB"));
+          std::string("?kdi=CAIaDgoKY2hyb21lc3luYxAB&authuser=0"));
+  EXPECT_EQ(gaia_urls()->SigninChromePasskeyUnlockDesktopEmbeddedUrl(0).spec(),
+            "https://accounts.google.com/encryption/unlock/"
+            "desktopembedded?kdi=CAESDgoMaHdfcHJvdGVjdGVk&authuser=0");
   EXPECT_EQ(gaia_urls()->service_logout_url().spec(),
             "https://accounts.google.com/Logout");
   EXPECT_EQ(gaia_urls()->LogOutURLWithSource("").spec(),
@@ -122,9 +127,6 @@ TEST_F(GaiaUrlsTest, InitializeDefault_AllUrls) {
   EXPECT_EQ(gaia_urls()->account_capabilities_batch_get_url().spec(),
             "https://accountcapabilities-pa.googleapis.com/v1/"
             "accountcapabilities:batchGet");
-  EXPECT_EQ(gaia_urls()->account_capabilities_get_all_visible_url().spec(),
-            "https://accountcapabilities-pa.googleapis.com/v1/"
-            "accountcapabilities:getAllVisible");
   EXPECT_EQ(gaia_urls()->GetCheckConnectionInfoURLWithSource("").spec(),
             "https://accounts.google.com/GetCheckConnectionInfo");
   EXPECT_EQ(gaia_urls()->oauth2_token_url().spec(),
@@ -135,6 +137,8 @@ TEST_F(GaiaUrlsTest, InitializeDefault_AllUrls) {
             "https://oauthaccountmanager.googleapis.com/v1/issuetoken");
   EXPECT_EQ(gaia_urls()->mtls_oauth2_issue_token_url().spec(),
             "https://oauthaccountmanager.mtls.googleapis.com/v1/issuetoken");
+  EXPECT_EQ(gaia_urls()->oauth2_upgrade_token_url().spec(),
+            "https://oauthaccountmanager.googleapis.com/v1/upgradetoken");
   EXPECT_EQ(gaia_urls()->oauth2_token_info_url().spec(),
             "https://www.googleapis.com/oauth2/v2/tokeninfo");
   EXPECT_EQ(gaia_urls()->oauth2_revoke_url().spec(),
@@ -174,14 +178,17 @@ TEST_F(GaiaUrlsTest, InitializeDefault_URLSwitches) {
             "https://test-gaia.com/samlredirect");
   EXPECT_EQ(gaia_urls()->signin_chrome_sync_dice().spec(),
             "https://test-gaia.com/signin/chrome/sync?ssp=1");
-  EXPECT_EQ(gaia_urls()->signin_chrome_sync_keys_retrieval_url().spec(),
+  EXPECT_EQ(gaia_urls()->SigninChromeSyncKeysRetrievalUrl(0).spec(),
             std::string("https://test-gaia.com/encryption/unlock/") +
-                kSigninChromeSyncKeysPlatformSuffix);
+                kSigninChromeSyncKeysPlatformSuffix + "?authuser=0");
   EXPECT_EQ(
-      gaia_urls()->signin_chrome_sync_keys_recoverability_degraded_url().spec(),
+      gaia_urls()->SigninChromeSyncKeysRecoverabilityDegradedUrl(0).spec(),
       std::string("https://test-gaia.com/encryption/unlock/") +
           kSigninChromeSyncKeysPlatformSuffix +
-          std::string("?kdi=CAIaDgoKY2hyb21lc3luYxAB"));
+          std::string("?kdi=CAIaDgoKY2hyb21lc3luYxAB&authuser=0"));
+  EXPECT_EQ(gaia_urls()->SigninChromePasskeyUnlockDesktopEmbeddedUrl(0).spec(),
+            "https://test-gaia.com/encryption/unlock/"
+            "desktopembedded?kdi=CAESDgoMaHdfcHJvdGVjdGVk&authuser=0");
   EXPECT_EQ(gaia_urls()->service_logout_url().spec(),
             "https://test-gaia.com/Logout");
   EXPECT_EQ(gaia_urls()->LogOutURLWithSource("").spec(),
@@ -205,6 +212,8 @@ TEST_F(GaiaUrlsTest, InitializeDefault_URLSwitches) {
             "https://test-googleapis.com/oauth2/v4/token");
   EXPECT_EQ(gaia_urls()->oauth2_issue_token_url().spec(),
             "https://test-oauthaccountmanager.com/v1/issuetoken");
+  EXPECT_EQ(gaia_urls()->oauth2_upgrade_token_url().spec(),
+            "https://test-oauthaccountmanager.com/v1/upgradetoken");
   EXPECT_EQ(gaia_urls()->oauth2_token_info_url().spec(),
             "https://test-googleapis.com/oauth2/v2/tokeninfo");
   EXPECT_EQ(gaia_urls()->oauth2_revoke_url().spec(),
@@ -275,6 +284,8 @@ TEST_F(GaiaUrlsTest, InitializeFromConfig_AllUrls) {
             "https://tasks.will-be-overridden.com/");
   EXPECT_EQ(gaia_urls()->people_api_origin_url(),
             "https://people.will-be-overridden.com/");
+  EXPECT_EQ(gaia_urls()->kids_management_api_origin_url(),
+            "https://kidsmanagement.will-be-overridden.com/");
   EXPECT_EQ(gaia_urls()->embedded_setup_chromeos_url().spec(),
             "https://accounts.example.com/embedded/setup/v2/chromeos");
   EXPECT_EQ(gaia_urls()->embedded_setup_chromeos_kid_signup_url().spec(),
@@ -289,12 +300,16 @@ TEST_F(GaiaUrlsTest, InitializeFromConfig_AllUrls) {
             "https://accounts.example.com/samlredirect");
   EXPECT_EQ(gaia_urls()->signin_chrome_sync_dice().spec(),
             "https://accounts.example.com/signin/chrome/sync?ssp=1");
-  EXPECT_EQ(gaia_urls()->signin_chrome_sync_keys_retrieval_url().spec(),
-            "https://accounts.example.com/encryption/unlock/example-platform");
+  EXPECT_EQ(gaia_urls()->SigninChromeSyncKeysRetrievalUrl(0).spec(),
+            "https://accounts.example.com/encryption/unlock/"
+            "example-platform?authuser=0");
   EXPECT_EQ(
-      gaia_urls()->signin_chrome_sync_keys_recoverability_degraded_url().spec(),
+      gaia_urls()->SigninChromeSyncKeysRecoverabilityDegradedUrl(0).spec(),
       "https://accounts.example.com/encryption/unlock/example-platform?"
-      "kdi=CAIaDgoKY2hyb21lc3luYxAB");
+      "kdi=CAIaDgoKY2hyb21lc3luYxAB&authuser=0");
+  EXPECT_EQ(gaia_urls()->SigninChromePasskeyUnlockDesktopEmbeddedUrl(0).spec(),
+            "https://accounts.example.com/encryption/unlock/"
+            "desktopembedded?kdi=CAESDgoMaHdfcHJvdGVjdGVk&authuser=0");
   EXPECT_EQ(gaia_urls()->service_logout_url().spec(),
             "https://accounts.example.com/Logout");
   EXPECT_EQ(gaia_urls()->LogOutURLWithSource("").spec(),
@@ -315,9 +330,6 @@ TEST_F(GaiaUrlsTest, InitializeFromConfig_AllUrls) {
             "https://accounts.example.com/embedded/xreauth/chrome");
   EXPECT_EQ(gaia_urls()->account_capabilities_batch_get_url().spec(),
             "https://accountcapabilities.exampleapis.com/v1/capabilities");
-  EXPECT_EQ(gaia_urls()->account_capabilities_get_all_visible_url().spec(),
-            "https://accountcapabilities.exampleapis.com/v1/"
-            "getAllVisibleCapabilities");
   EXPECT_EQ(gaia_urls()->GetCheckConnectionInfoURLWithSource("").spec(),
             "https://accounts.example.com/GetCheckConnectionInfo");
   EXPECT_EQ(gaia_urls()->oauth2_token_url().spec(),
@@ -328,6 +340,8 @@ TEST_F(GaiaUrlsTest, InitializeFromConfig_AllUrls) {
             "https://oauthaccountmanager.exampleapis.com/v1/issuetoken");
   EXPECT_EQ(gaia_urls()->mtls_oauth2_issue_token_url().spec(),
             "https://mtls.oauthaccountmanager.exampleapis.com/v1/issuetoken");
+  EXPECT_EQ(gaia_urls()->oauth2_upgrade_token_url().spec(),
+            "https://oauthaccountmanager.exampleapis.com/v1/upgradetoken");
   EXPECT_EQ(gaia_urls()->oauth2_token_info_url().spec(),
             "https://www.exampleapis.com/oauth2/v2/tokeninfo");
   EXPECT_EQ(gaia_urls()->oauth2_revoke_url().spec(),
@@ -352,6 +366,8 @@ TEST_F(GaiaUrlsTest, InitializeFromConfig_AllBaseUrls) {
             "https://tasks.exampleapis.com/");
   EXPECT_EQ(gaia_urls()->people_api_origin_url(),
             "https://people.exampleapis.com/");
+  EXPECT_EQ(gaia_urls()->kids_management_api_origin_url(),
+            "https://kidsmanagement.exampleapis.com/");
   EXPECT_EQ(gaia_urls()->embedded_setup_chromeos_url().spec(),
             "https://accounts.example.com/embedded/setup/v2/chromeos");
   EXPECT_EQ(gaia_urls()->embedded_setup_windows_url().spec(),
@@ -362,14 +378,14 @@ TEST_F(GaiaUrlsTest, InitializeFromConfig_AllBaseUrls) {
             "https://accounts.example.com/samlredirect");
   EXPECT_EQ(gaia_urls()->signin_chrome_sync_dice().spec(),
             "https://accounts.example.com/signin/chrome/sync?ssp=1");
-  EXPECT_EQ(gaia_urls()->signin_chrome_sync_keys_retrieval_url().spec(),
+  EXPECT_EQ(gaia_urls()->SigninChromeSyncKeysRetrievalUrl(0).spec(),
             std::string("https://accounts.example.com/encryption/unlock/") +
-                kSigninChromeSyncKeysPlatformSuffix);
+                kSigninChromeSyncKeysPlatformSuffix + "?authuser=0");
   EXPECT_EQ(
-      gaia_urls()->signin_chrome_sync_keys_recoverability_degraded_url().spec(),
+      gaia_urls()->SigninChromeSyncKeysRecoverabilityDegradedUrl(0).spec(),
       std::string("https://accounts.example.com/encryption/unlock/") +
           kSigninChromeSyncKeysPlatformSuffix +
-          std::string("?kdi=CAIaDgoKY2hyb21lc3luYxAB"));
+          std::string("?kdi=CAIaDgoKY2hyb21lc3luYxAB&authuser=0"));
   EXPECT_EQ(gaia_urls()->service_logout_url().spec(),
             "https://accounts.example.com/Logout");
   EXPECT_EQ(gaia_urls()->LogOutURLWithSource("").spec(),
@@ -391,9 +407,6 @@ TEST_F(GaiaUrlsTest, InitializeFromConfig_AllBaseUrls) {
   EXPECT_EQ(gaia_urls()->account_capabilities_batch_get_url().spec(),
             "https://accountcapabilities.exampleapis.com/v1/"
             "accountcapabilities:batchGet");
-  EXPECT_EQ(gaia_urls()->account_capabilities_get_all_visible_url().spec(),
-            "https://accountcapabilities.exampleapis.com/v1/"
-            "accountcapabilities:getAllVisible");
   EXPECT_EQ(gaia_urls()->GetCheckConnectionInfoURLWithSource("").spec(),
             "https://accounts.example.com/GetCheckConnectionInfo");
   EXPECT_EQ(gaia_urls()->oauth2_token_url().spec(),
@@ -404,6 +417,8 @@ TEST_F(GaiaUrlsTest, InitializeFromConfig_AllBaseUrls) {
             "https://oauthaccountmanager.exampleapis.com/v1/issuetoken");
   EXPECT_EQ(gaia_urls()->mtls_oauth2_issue_token_url().spec(),
             "https://mtls.oauthaccountmanager.exampleapis.com/v1/issuetoken");
+  EXPECT_EQ(gaia_urls()->oauth2_upgrade_token_url().spec(),
+            "https://oauthaccountmanager.exampleapis.com/v1/upgradetoken");
   EXPECT_EQ(gaia_urls()->oauth2_token_info_url().spec(),
             "https://www.exampleapis.com/oauth2/v2/tokeninfo");
   EXPECT_EQ(gaia_urls()->oauth2_revoke_url().spec(),
@@ -476,21 +491,55 @@ TEST_F(GaiaUrlsTest, InitializeFromConfig_NotAJson) {
   EXPECT_DEATH_IF_SUPPORTED(gaia_urls(), "Couldn't parse Gaia config file");
 }
 
-TEST_F(GaiaUrlsTest, SigninChromePasskeyUnlockUrl_FeatureEnabled) {
-  base::test::ScopedFeatureList feature_list(
-      gaia::features::kSigninChromePasskeyUnlockUrlUsesAccountIndex);
+TEST_F(GaiaUrlsTest, SigninChromePasskeyUnlockUrl) {
   EXPECT_EQ(gaia_urls()->SigninChromePasskeyUnlockUrl(1).spec(),
             base::StrCat({"https://accounts.google.com/encryption/unlock/",
                           kSigninChromeSyncKeysPlatformSuffix,
                           "?kdi=CAESDgoMaHdfcHJvdGVjdGVk&authuser=1"}));
 }
 
-TEST_F(GaiaUrlsTest, SigninChromePasskeyUnlockUrl_FeatureDisabled) {
+TEST_F(GaiaUrlsTest, SigninChromeSyncKeysRetrievalUrl_FeatureEnabled) {
+  base::test::ScopedFeatureList feature_list(
+      gaia::features::kSigninChromeSyncKeysUrlUsesAccountIndex);
+  EXPECT_EQ(gaia_urls()->SigninChromeSyncKeysRetrievalUrl(1).spec(),
+            base::StrCat({"https://accounts.google.com/encryption/unlock/",
+                          kSigninChromeSyncKeysPlatformSuffix, "?authuser=1"}));
+}
+
+TEST_F(GaiaUrlsTest, SigninChromeSyncKeysRetrievalUrl_FeatureDisabled) {
   base::test::ScopedFeatureList feature_list;
   feature_list.InitAndDisableFeature(
-      gaia::features::kSigninChromePasskeyUnlockUrlUsesAccountIndex);
-  EXPECT_EQ(gaia_urls()->SigninChromePasskeyUnlockUrl(0).spec(),
+      gaia::features::kSigninChromeSyncKeysUrlUsesAccountIndex);
+  EXPECT_EQ(gaia_urls()->SigninChromeSyncKeysRetrievalUrl(0).spec(),
             base::StrCat({"https://accounts.google.com/encryption/unlock/",
-                          kSigninChromeSyncKeysPlatformSuffix,
-                          "?kdi=CAESDgoMaHdfcHJvdGVjdGVk"}));
+                          kSigninChromeSyncKeysPlatformSuffix}));
+}
+
+TEST_F(GaiaUrlsTest,
+       SigninChromeSyncKeysRecoverabilityDegradedUrl_FeatureEnabled) {
+  base::test::ScopedFeatureList feature_list(
+      gaia::features::kSigninChromeSyncKeysUrlUsesAccountIndex);
+  EXPECT_EQ(
+      gaia_urls()->SigninChromeSyncKeysRecoverabilityDegradedUrl(1).spec(),
+      base::StrCat({"https://accounts.google.com/encryption/unlock/",
+                    kSigninChromeSyncKeysPlatformSuffix,
+                    "?kdi=CAIaDgoKY2hyb21lc3luYxAB&authuser=1"}));
+}
+
+TEST_F(GaiaUrlsTest,
+       SigninChromeSyncKeysRecoverabilityDegradedUrl_FeatureDisabled) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndDisableFeature(
+      gaia::features::kSigninChromeSyncKeysUrlUsesAccountIndex);
+  EXPECT_EQ(
+      gaia_urls()->SigninChromeSyncKeysRecoverabilityDegradedUrl(0).spec(),
+      base::StrCat({"https://accounts.google.com/encryption/unlock/",
+                    kSigninChromeSyncKeysPlatformSuffix,
+                    "?kdi=CAIaDgoKY2hyb21lc3luYxAB"}));
+}
+
+TEST_F(GaiaUrlsTest, SigninChromePasskeyUnlockDesktopEmbeddedUrl) {
+  EXPECT_EQ(gaia_urls()->SigninChromePasskeyUnlockDesktopEmbeddedUrl(1).spec(),
+            "https://accounts.google.com/encryption/unlock/"
+            "desktopembedded?kdi=CAESDgoMaHdfcHJvdGVjdGVk&authuser=1");
 }

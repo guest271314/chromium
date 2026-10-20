@@ -80,7 +80,7 @@ class PLATFORM_EXPORT HarfBuzzFace final
   hb_font_t* GetScaledFont() const;
 
   bool HasSpaceInLigaturesOrKerning(TypesettingFeatures);
-  unsigned UnitsPerEmFromHeadTable();
+  wtf_size_t UnitsPerEmFromHeadTable();
   Glyph HbGlyphForCharacter(UChar32 character);
 
   hb_codepoint_t HarfBuzzGetGlyphForTesting(UChar32 character,
@@ -92,9 +92,9 @@ class PLATFORM_EXPORT HarfBuzzFace final
 
   static void Init();
 
-  static VariationSelectorMode GetVariationSelectorMode();
+  VariationSelectorMode GetVariationSelectorMode();
 
-  static void SetVariationSelectorMode(VariationSelectorMode value);
+  void SetVariationSelectorMode(VariationSelectorMode value);
 
  private:
   void PrepareHarfBuzzFontData();

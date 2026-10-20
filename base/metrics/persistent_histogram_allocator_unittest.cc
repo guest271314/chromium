@@ -10,11 +10,13 @@
 #include "base/debug/leak_annotations.h"
 #include "base/files/file.h"
 #include "base/files/file_util.h"
+#include "base/files/memory_mapped_file.h"
 #include "base/files/scoped_temp_dir.h"
 #include "base/memory/raw_ptr.h"
 #include "base/metrics/bucket_ranges.h"
 #include "base/metrics/histogram.h"
 #include "base/metrics/histogram_functions.h"
+#include "base/metrics/metrics_hashes.h"
 #include "base/metrics/persistent_memory_allocator.h"
 #include "base/metrics/sample_vector.h"
 #include "base/metrics/sparse_histogram.h"
@@ -77,15 +79,16 @@ TEST_F(PersistentHistogramAllocatorTest, CreateAndIterate) {
 
   // Try basic construction
   HistogramBase* histogram = Histogram::FactoryGet(
-      "TestHistogram", 1, 1000, 10, HistogramBase::kIsPersistent);
+      "TestHistogram", 1, 1000, 10, HistogramBase::kUmaTargetedHistogramFlag);
   EXPECT_TRUE(histogram);
   histogram->CheckName("TestHistogram");
   PersistentMemoryAllocator::MemoryInfo meminfo1;
   allocator_->GetMemoryInfo(&meminfo1);
   EXPECT_GT(meminfo0.free, meminfo1.free);
 
-  HistogramBase* linear_histogram = LinearHistogram::FactoryGet(
-      "TestLinearHistogram", 1, 1000, 10, HistogramBase::kIsPersistent);
+  HistogramBase* linear_histogram =
+      LinearHistogram::FactoryGet("TestLinearHistogram", 1, 1000, 10,
+                                  HistogramBase::kUmaTargetedHistogramFlag);
   EXPECT_TRUE(linear_histogram);
   linear_histogram->CheckName("TestLinearHistogram");
   PersistentMemoryAllocator::MemoryInfo meminfo2;
@@ -93,7 +96,7 @@ TEST_F(PersistentHistogramAllocatorTest, CreateAndIterate) {
   EXPECT_GT(meminfo1.free, meminfo2.free);
 
   HistogramBase* boolean_histogram = BooleanHistogram::FactoryGet(
-      "TestBooleanHistogram", HistogramBase::kIsPersistent);
+      "TestBooleanHistogram", HistogramBase::kUmaTargetedHistogramFlag);
   EXPECT_TRUE(boolean_histogram);
   boolean_histogram->CheckName("TestBooleanHistogram");
   PersistentMemoryAllocator::MemoryInfo meminfo3;
@@ -103,8 +106,9 @@ TEST_F(PersistentHistogramAllocatorTest, CreateAndIterate) {
   std::vector<int> custom_ranges;
   custom_ranges.push_back(1);
   custom_ranges.push_back(5);
-  HistogramBase* custom_histogram = CustomHistogram::FactoryGet(
-      "TestCustomHistogram", custom_ranges, HistogramBase::kIsPersistent);
+  HistogramBase* custom_histogram =
+      CustomHistogram::FactoryGet("TestCustomHistogram", custom_ranges,
+                                  HistogramBase::kUmaTargetedHistogramFlag);
   EXPECT_TRUE(custom_histogram);
   custom_histogram->CheckName("TestCustomHistogram");
   PersistentMemoryAllocator::MemoryInfo meminfo4;
@@ -145,6 +149,134 @@ TEST_F(PersistentHistogramAllocatorTest, CreateAndIterate) {
 
   recovered = histogram_iter.GetNext();
   EXPECT_FALSE(recovered);
+}
+
+TEST_F(PersistentHistogramAllocatorTest, LocalHistogramsAreNotPersistent) {
+  PersistentMemoryAllocator::MemoryInfo meminfo0;
+  allocator_->GetMemoryInfo(&meminfo0);
+
+  HistogramBase* histogram = Histogram::FactoryGet("LocalHistogram", 1, 1000,
+                                                   10, HistogramBase::kNoFlags);
+  ASSERT_TRUE(histogram);
+  EXPECT_FALSE(histogram->HasFlags(HistogramBase::kIsPersistent));
+
+  HistogramBase* linear_histogram = LinearHistogram::FactoryGet(
+      "LocalLinearHistogram", 1, 1000, 10, HistogramBase::kNoFlags);
+  ASSERT_TRUE(linear_histogram);
+  EXPECT_FALSE(linear_histogram->HasFlags(HistogramBase::kIsPersistent));
+
+  HistogramBase* boolean_histogram = BooleanHistogram::FactoryGet(
+      "LocalBooleanHistogram", HistogramBase::kNoFlags);
+  ASSERT_TRUE(boolean_histogram);
+  EXPECT_FALSE(boolean_histogram->HasFlags(HistogramBase::kIsPersistent));
+
+  HistogramBase* custom_histogram = CustomHistogram::FactoryGet(
+      "LocalCustomHistogram", {1, 5}, HistogramBase::kNoFlags);
+  ASSERT_TRUE(custom_histogram);
+  EXPECT_FALSE(custom_histogram->HasFlags(HistogramBase::kIsPersistent));
+
+  HistogramBase* sparse_histogram = SparseHistogram::FactoryGet(
+      "LocalSparseHistogram", HistogramBase::kNoFlags);
+  ASSERT_TRUE(sparse_histogram);
+  EXPECT_FALSE(sparse_histogram->HasFlags(HistogramBase::kIsPersistent));
+
+  PersistentMemoryAllocator::MemoryInfo meminfo1;
+  allocator_->GetMemoryInfo(&meminfo1);
+  EXPECT_EQ(meminfo0.free, meminfo1.free);
+
+  PersistentHistogramAllocator::Iterator histogram_iter(
+      GlobalHistogramAllocator::Get());
+  EXPECT_FALSE(histogram_iter.GetNext());
+}
+
+// Tests that persistent histograms can be recovered from a file mapped strictly
+// as OS READ_ONLY memory, similar to what `FileMetricsProvider` does on
+// startup.
+TEST_F(PersistentHistogramAllocatorTest, FileReadonlyRecovery) {
+  constexpr char kHistogramName[] = "ReadOnlyTestHistogram";
+  constexpr char kLinearHistogramName[] = "ReadOnlyTestLinearHistogram";
+  constexpr char kBooleanHistogramName[] = "ReadOnlyTestBooleanHistogram";
+  constexpr char kCustomHistogramName[] = "ReadOnlyTestCustomHistogram";
+  constexpr char kSparseHistogramName[] = "ReadOnlyTestSparseHistogram";
+
+  // 1. Create a persistent standard histogram testing all flags.
+  HistogramBase* histogram = Histogram::FactoryGet(kHistogramName, 1, 1000, 10,
+                                                   HistogramBase::kAllFlags);
+  ASSERT_TRUE(histogram);
+  histogram->Add(50);
+
+  // 2. Create a persistent linear histogram testing all flags.
+  HistogramBase* linear_histogram = LinearHistogram::FactoryGet(
+      kLinearHistogramName, 1, 1000, 10, HistogramBase::kAllFlags);
+  ASSERT_TRUE(linear_histogram);
+  linear_histogram->Add(50);
+
+  // 3. Create a persistent boolean histogram testing all flags.
+  HistogramBase* boolean_histogram = BooleanHistogram::FactoryGet(
+      kBooleanHistogramName, HistogramBase::kAllFlags);
+  ASSERT_TRUE(boolean_histogram);
+  boolean_histogram->Add(1);
+
+  // 4. Create a persistent custom histogram testing all flags.
+  const std::vector<int> custom_ranges = {1, 5, 10, 50, 100};
+  HistogramBase* custom_histogram = CustomHistogram::FactoryGet(
+      kCustomHistogramName, custom_ranges, HistogramBase::kAllFlags);
+  ASSERT_TRUE(custom_histogram);
+  custom_histogram->Add(5);
+
+  // 5. Create a persistent sparse histogram testing all flags.
+  HistogramBase* sparse_histogram = SparseHistogram::FactoryGet(
+      kSparseHistogramName, HistogramBase::kAllFlags);
+  ASSERT_TRUE(sparse_histogram);
+  sparse_histogram->Add(50);
+
+  ScopedTempDir temp_dir;
+  ASSERT_TRUE(temp_dir.CreateUniqueTempDir());
+  const FilePath file_path =
+      temp_dir.GetPath().AppendASCII("persistent_memory.pma");
+
+  // Write allocator memory to a temporary file.
+  ASSERT_TRUE(WriteFile(file_path, std::string_view(allocator_memory_.get(),
+                                                    kAllocatorMemorySize)));
+
+  // Map the file strictly as READ_ONLY.
+  auto mmfile = std::make_unique<MemoryMappedFile>();
+  ASSERT_TRUE(
+      mmfile->Initialize(File(file_path, File::FLAG_OPEN | File::FLAG_READ),
+                         MemoryMappedFile::READ_ONLY));
+  EXPECT_TRUE(mmfile->IsValid());
+
+  auto readonly_file_allocator =
+      std::make_unique<FilePersistentMemoryAllocator>(
+          std::move(mmfile), 0, 0, "", PersistentMemoryAllocator::kReadOnly);
+  EXPECT_TRUE(readonly_file_allocator->IsReadonly());
+
+  PersistentHistogramAllocator recovery_readonly(
+      std::move(readonly_file_allocator));
+  PersistentHistogramAllocator::Iterator it(&recovery_readonly);
+
+  const char* const kExpectedNames[] = {
+      kHistogramName, kLinearHistogramName, kBooleanHistogramName,
+      kCustomHistogramName, kSparseHistogramName};
+
+  // Verify recovery of all histograms from read-only PMA.
+  std::unique_ptr<base::HistogramBase> recovered;
+  for (const char* expected_name : kExpectedNames) {
+    recovered = it.GetNext();
+    ASSERT_TRUE(recovered);
+    EXPECT_EQ(expected_name, recovered->histogram_name());
+    EXPECT_TRUE(recovered->HasFlags(HistogramBase::kAllFlags));
+    EXPECT_EQ(1, recovered->SnapshotSamples()->TotalCount());
+  }
+
+  EXPECT_FALSE(it.GetNext());
+
+#if !defined(THREAD_SANITIZER)
+  // Verify that attempting to write/add a sample to a read-only histogram
+  // is intercepted by OS page protection and crashes the process with SIGSEGV.
+  // Death tests are notoriously slow/flaky under TSan.
+  EXPECT_DEATH_IF_SUPPORTED(recovered->Add(100), "");
+#endif
 }
 
 TEST_F(PersistentHistogramAllocatorTest, ConstructPaths) {
@@ -254,8 +386,8 @@ TEST_F(PersistentHistogramAllocatorTest, StatisticsRecorderMerge) {
   PersistentSampleVector::ResetMountExistingCountsStorageResultForTesting();
 
   // Create a linear histogram for merge testing.
-  HistogramBase* histogram1 =
-      LinearHistogram::FactoryGet(LinearHistogramName, 1, 10, 10, 0);
+  HistogramBase* histogram1 = LinearHistogram::FactoryGet(
+      LinearHistogramName, 1, 10, 10, HistogramBase::kUmaTargetedHistogramFlag);
   ASSERT_TRUE(histogram1);
   EXPECT_EQ(1U, StatisticsRecorder::GetHistogramCount());
   histogram1->Add(3);
@@ -265,8 +397,8 @@ TEST_F(PersistentHistogramAllocatorTest, StatisticsRecorderMerge) {
   histogram1->Add(6);
 
   // Create a sparse histogram for merge testing.
-  HistogramBase* histogram2 =
-      SparseHistogram::FactoryGet(SparseHistogramName, 0);
+  HistogramBase* histogram2 = SparseHistogram::FactoryGet(
+      SparseHistogramName, HistogramBase::kUmaTargetedHistogramFlag);
   ASSERT_TRUE(histogram2);
   EXPECT_EQ(2U, StatisticsRecorder::GetHistogramCount());
   histogram2->Add(3);
@@ -431,23 +563,27 @@ TEST_F(PersistentHistogramAllocatorTest,
 
   // Create a bunch of histograms, and call SnapshotDelta() on all of them so
   // that their next SnapshotDelta() calls return an empty HistogramSamples.
-  LinearHistogram::FactoryGet("SRTLinearHistogram1", 1, 10, 10, 0);
+  LinearHistogram::FactoryGet("SRTLinearHistogram1", 1, 10, 10,
+                              HistogramBase::kUmaTargetedHistogramFlag);
   HistogramBase* histogram2 =
-      LinearHistogram::FactoryGet("SRTLinearHistogram2", 1, 10, 10, 0);
+      LinearHistogram::FactoryGet("SRTLinearHistogram2", 1, 10, 10,
+                                  HistogramBase::kUmaTargetedHistogramFlag);
   histogram2->Add(3);
   histogram2->SnapshotDelta();
   HistogramBase* histogram3 =
-      LinearHistogram::FactoryGet("SRTLinearHistogram3", 1, 10, 10, 0);
+      LinearHistogram::FactoryGet("SRTLinearHistogram3", 1, 10, 10,
+                                  HistogramBase::kUmaTargetedHistogramFlag);
   histogram3->Add(1);
   histogram3->Add(10);
   histogram3->SnapshotDelta();
-  SparseHistogram::FactoryGet("SRTSparseHistogram1", 0);
-  HistogramBase* sparse_histogram2 =
-      SparseHistogram::FactoryGet("SRTSparseHistogram2", 0);
+  SparseHistogram::FactoryGet("SRTSparseHistogram1",
+                              HistogramBase::kUmaTargetedHistogramFlag);
+  HistogramBase* sparse_histogram2 = SparseHistogram::FactoryGet(
+      "SRTSparseHistogram2", HistogramBase::kUmaTargetedHistogramFlag);
   sparse_histogram2->Add(3);
   sparse_histogram2->SnapshotDelta();
-  HistogramBase* sparse_histogram3 =
-      SparseHistogram::FactoryGet("SRTSparseHistogram3", 0);
+  HistogramBase* sparse_histogram3 = SparseHistogram::FactoryGet(
+      "SRTSparseHistogram3", HistogramBase::kUmaTargetedHistogramFlag);
   sparse_histogram3->Add(1);
   sparse_histogram3->Add(10);
   sparse_histogram3->SnapshotDelta();
@@ -539,7 +675,8 @@ TEST_F(PersistentHistogramAllocatorTest, MultipleSameSparseHistograms) {
       StatisticsRecorder::CreateTemporaryForTesting();
 
   // Create a sparse histogram.
-  HistogramBase* sparse = SparseHistogram::FactoryGet(kSparseHistogramName, 0);
+  HistogramBase* sparse = SparseHistogram::FactoryGet(
+      kSparseHistogramName, HistogramBase::kUmaTargetedHistogramFlag);
 
   // Get the sparse histogram that was created above. We should have two
   // distinct objects, but both representing and pointing to the same data.
@@ -607,7 +744,7 @@ TEST_F(PersistentHistogramAllocatorTest, CustomRangesManager) {
   // Create a linear histogram and verify it is registered with the local SR.
   HistogramBase* histogram = LinearHistogram::FactoryGet(
       LinearHistogramName, /*minimum=*/1, /*maximum=*/10, /*bucket_count=*/10,
-      /*flags=*/0);
+      /*flags=*/HistogramBase::kUmaTargetedHistogramFlag);
   ASSERT_TRUE(histogram);
   EXPECT_EQ(1U, StatisticsRecorder::GetHistogramCount());
   histogram->Add(1);
@@ -658,10 +795,10 @@ TEST_F(PersistentHistogramAllocatorTest, RangesDeDuplication) {
   const int kRangesRefIndex = 5;
 
   // Create two histograms with the same ranges.
-  HistogramBase* histogram1 =
-      Histogram::FactoryGet("TestHistogram1", 1, 1000, 10, 0);
-  HistogramBase* histogram2 =
-      Histogram::FactoryGet("TestHistogram2", 1, 1000, 10, 0);
+  HistogramBase* histogram1 = Histogram::FactoryGet(
+      "TestHistogram1", 1, 1000, 10, HistogramBase::kUmaTargetedHistogramFlag);
+  HistogramBase* histogram2 = Histogram::FactoryGet(
+      "TestHistogram2", 1, 1000, 10, HistogramBase::kUmaTargetedHistogramFlag);
   const uint32_t ranges_ref = static_cast<Histogram*>(histogram1)
                                   ->bucket_ranges()
                                   ->persistent_reference();
@@ -750,6 +887,62 @@ TEST_F(PersistentHistogramAllocatorTest, MovePersistentFile) {
     }
   }
   EXPECT_TRUE(found_histogram);
+}
+
+TEST_F(PersistentHistogramAllocatorTest, CorruptSparseHistogramMetadataId) {
+  using PersistentHistogramData =
+      PersistentHistogramAllocator::PersistentHistogramData;
+
+  const size_t kLocalMemorySize = 64 << 10;
+
+  PersistentHistogramAllocator local_allocator(
+      std::make_unique<LocalPersistentMemoryAllocator>(kLocalMemorySize, 0,
+                                                       "LocalAllocator"));
+
+  const std::string kName = "ManualCorruptSparse";
+  uint64_t name_hash = HashMetricName(kName);
+
+  // Allocate memory for PersistentHistogramData + name.
+  size_t alloc_size =
+      offsetof(PersistentHistogramData, name) + kName.size() + 1;
+  PersistentMemoryAllocator::Reference ref =
+      local_allocator.memory_allocator()->Allocate(
+          alloc_size, PersistentHistogramData::kPersistentTypeId);
+  ASSERT_TRUE(ref);
+
+  uint8_t* ptr = local_allocator.memory_allocator()->GetAsArray<uint8_t>(
+      ref, PersistentHistogramData::kPersistentTypeId, 1);
+  ASSERT_TRUE(ptr);
+
+  auto* histogram_data = reinterpret_cast<PersistentHistogramData*>(ptr);
+
+  // Initialize PersistentHistogramData fields.
+  histogram_data->histogram_type = SPARSE_HISTOGRAM;
+  histogram_data->flags = HistogramBase::kIsPersistent;
+  histogram_data->samples_metadata.id = name_hash;
+
+  // We will set it to name_hash (invalid for sparse) to test the fix.
+  histogram_data->logged_metadata.id = name_hash;
+
+  // SAFETY: We manually serialize a corrupt histogram structure into a raw
+  // memory block for testing. We allocated `alloc_size` bytes which is
+  // guaranteed to be large enough to hold the struct and the name. Copying the
+  // name into the buffer is safe because it is bounded by the allocated size.
+  UNSAFE_BUFFERS(memcpy(histogram_data->name, kName.c_str(), kName.size() + 1));
+
+  // Try to load it.
+  std::unique_ptr<HistogramBase> mutated_histogram =
+      local_allocator.GetHistogram(ref);
+
+  // With the fix, it should detect the corruption and return nullptr.
+  EXPECT_FALSE(mutated_histogram);
+
+  // Now let's test with valid ID to make sure it works when not corrupt.
+  histogram_data->logged_metadata.id = name_hash + 1;  // valid
+
+  std::unique_ptr<HistogramBase> valid_histogram =
+      local_allocator.GetHistogram(ref);
+  EXPECT_TRUE(valid_histogram);
 }
 
 }  // namespace base

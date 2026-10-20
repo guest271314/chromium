@@ -7,8 +7,10 @@
 
 #include <memory>
 
+#include "base/dcheck_is_on.h"
 #include "base/memory/raw_ptr.h"
 #include "base/observer_list.h"
+#include "base/scoped_observation.h"
 #include "base/scoped_observation_traits.h"
 #include "ui/base/accelerators/accelerator_manager.h"
 #include "ui/views/view_observer.h"
@@ -159,6 +161,10 @@ class VIEWS_EXPORT FocusManager : public ViewObserver {
   // further.
   bool OnKeyEvent(const ui::KeyEvent& event);
 
+  // Returns true if the focused view wants to process the key event as is
+  // (and there is no priority handler registered for the accelerator).
+  bool ShouldSkipAcceleratorProcessing(const ui::KeyEvent& event) const;
+
   // Returns true is the specified is part of the hierarchy of the window
   // associated with this FocusManager.
   bool ContainsView(View* view);
@@ -172,7 +178,7 @@ class VIEWS_EXPORT FocusManager : public ViewObserver {
 
   // Low-level methods to force the focus to change (and optionally provide
   // a reason). If the focus change should only happen if the view is
-  // currenty focusable, enabled, and visible, call view->RequestFocus().
+  // currently focusable, enabled, and visible, call view->RequestFocus().
   void SetFocusedViewWithReason(View* view, FocusChangeReason reason);
   void SetFocusedView(View* view);
 
@@ -264,9 +270,16 @@ class VIEWS_EXPORT FocusManager : public ViewObserver {
   // the focused view is about to change.
   void AddFocusChangeListener(FocusChangeListener* listener);
   void RemoveFocusChangeListener(FocusChangeListener* listener);
+  bool HasFocusChangeListener(const FocusChangeListener* listener) const;
 
   // Whether the given |accelerator| is registered.
   bool IsAcceleratorRegistered(const ui::Accelerator& accelerator) const;
+
+#if DCHECK_IS_ON()
+  // Returns the number of accelerators |target| is registered for. This walks
+  // every registered accelerator, so use it only in DCHECKs.
+  size_t GetAcceleratorCountForTarget(ui::AcceleratorTarget* target) const;
+#endif
 
   // Whether the given |accelerator| has a priority handler associated with it.
   bool HasPriorityHandler(const ui::Accelerator& accelerator) const;
@@ -382,6 +395,11 @@ class VIEWS_EXPORT FocusManager : public ViewObserver {
   // This value is ideally 0 or 1, i.e. no nested focus change.
   // See crbug.com/1203960.
   int setting_focused_view_entrance_count_ = 0;
+
+  // Observes `focused_view_`, so the FocusManager is told when the focused
+  // View is destroyed out from under it. Set and cleared only in
+  // SetFocusedViewWithReason().
+  base::ScopedObservation<View, ViewObserver> view_observation_{this};
 };
 
 }  // namespace views

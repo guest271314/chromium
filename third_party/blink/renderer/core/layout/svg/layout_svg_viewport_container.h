@@ -61,7 +61,7 @@ class LayoutSVGViewportContainer final
 
   // Returns true if the viewBox/x/y transform that is post-multiplied into
   // LocalToSVGParentTransform() is not the identity.
-  bool HasViewboxTransform() const {
+  bool HasAdditionalTransform() const override {
     NOT_DESTROYED();
     return local_to_parent_transform_ != local_transform_;
   }
@@ -84,6 +84,7 @@ class LayoutSVGViewportContainer final
 
   void StyleDidChange(StyleDifference,
                       const ComputedStyle* old_style,
+                      const ComputedStyle& new_style,
                       const StyleChangeContext&) override;
 
   gfx::RectF viewport_;

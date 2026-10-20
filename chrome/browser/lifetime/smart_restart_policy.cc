@@ -4,13 +4,18 @@
 
 #include "chrome/browser/lifetime/smart_restart_policy.h"
 
+#include <optional>
 #include <utility>
 
+#include "base/time/time.h"
 #include "build/build_config.h"
+#include "chrome/browser/browser_process.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/profiles/profile_picker.h"
 #include "chrome/browser/ui/startup/startup_browser_creator.h"
+#include "chrome/browser/upgrade_detector/upgrade_detector.h"
 #include "chrome/common/chrome_features.h"
+#include "chrome/common/pref_names.h"
 #include "components/prefs/pref_service.h"
 #include "components/safe_browsing/core/common/safe_browsing_prefs.h"
 
@@ -19,6 +24,35 @@
 #endif
 
 namespace smart_restart {
+
+namespace {
+
+bool IsLockScreenRestartAllowedByPolicy() {
+  std::optional<UpgradeDetector::RelaunchWindow> window =
+      UpgradeDetector::GetRelaunchWindowPolicyValue();
+  if (!window || !window->IsValid()) {
+    return true;
+  }
+
+  base::Time now = base::Time::Now();
+  return UpgradeDetector::AdjustDeadline(now, *window) == now;
+}
+
+#if BUILDFLAG(IS_MAC)
+bool IsZeroWindowRestartAllowedByPolicy() {
+  PrefService* local_state =
+      g_browser_process ? g_browser_process->local_state() : nullptr;
+  if (local_state &&
+      local_state->IsManagedPreference(prefs::kUpdateOnZeroWindowEnabled)) {
+    return local_state->GetBoolean(prefs::kUpdateOnZeroWindowEnabled);
+  }
+
+  // If the policy is unset, default to true (allow relaunch).
+  return true;
+}
+#endif
+
+}  // namespace
 
 // static
 ExecutionOutcome SmartRestartPolicy::ShouldRestart(
@@ -56,6 +90,11 @@ ExtendedExecutionOutcome SmartRestartPolicy::ShouldRestart(
 // static
 ExtendedExecutionOutcome SmartRestartPolicy::CanLockScreenRestartProceed(
     const ExtendedRestartabilityState& state) {
+  // Respect the RelaunchWindow enterprise policy when configured.
+  if (!IsLockScreenRestartAllowedByPolicy()) {
+    return ExtendedExecutionOutcome::kBlockedByPolicy;
+  }
+
   // Ensure the browser isn't in a delicate startup or profile-picking state.
   if (StartupBrowserCreator::InSynchronousProfileLaunch()) {
     return ExtendedExecutionOutcome::kBlockedByPolicy;
@@ -83,6 +122,11 @@ ExtendedExecutionOutcome SmartRestartPolicy::CanLockScreenRestartProceed(
 #if BUILDFLAG(IS_MAC)
 // static
 bool SmartRestartPolicy::CanZeroWindowRestartProceed() {
+  // Respect administrative update controls via enterprise policy.
+  if (!IsZeroWindowRestartAllowedByPolicy()) {
+    return false;
+  }
+
   // 1. Ensure the browser isn't in a delicate startup or profile-picking state.
   if (StartupBrowserCreator::InSynchronousProfileLaunch() ||
       ProfilePicker::IsOpen()) {

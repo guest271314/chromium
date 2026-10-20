@@ -14,6 +14,7 @@
 #include "base/files/scoped_temp_dir.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/metrics/histogram_base.h"
 #include "base/metrics/histogram_samples.h"
 #include "base/metrics/statistics_recorder.h"
@@ -37,8 +38,7 @@
 #include "chrome/browser/os_crypt/test_support.h"
 #include "chrome/browser/policy/chrome_browser_policy_connector.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser.h"
-#include "chrome/browser/win/isolated_browser_support.h"
+#include "chrome/browser/win/isolated_browser/isolated_browser_support.h"
 #include "chrome/common/chrome_paths_internal.h"
 #include "chrome/elevation_service/elevator.h"
 #include "chrome/install_static/test/scoped_install_details.h"
@@ -47,6 +47,7 @@
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/windows_services/service_program/test_support/service_environment.h"
 #include "components/os_crypt/async/browser/os_crypt_async.h"
+#include "components/os_crypt/async/common/encryptor.h"
 #include "components/policy/core/common/mock_configuration_policy_provider.h"
 #include "components/policy/core/common/policy_map.h"
 #include "components/policy/policy_constants.h"
@@ -84,12 +85,10 @@ void WaitForHistogram(const std::string& histogram_name) {
   run_loop.Run();
 }
 
-os_crypt_async::Encryptor GetInstanceSync(
-    os_crypt_async::OSCryptAsync& factory,
-    os_crypt_async::Encryptor::Option option =
-        os_crypt_async::Encryptor::Option::kNone) {
-  base::test::TestFuture<os_crypt_async::Encryptor> future;
-  factory.GetInstance(future.GetCallback(), option);
+scoped_refptr<os_crypt_async::Encryptor> GetInstanceSync(
+    os_crypt_async::OSCryptAsync& factory) {
+  base::test::TestFuture<scoped_refptr<os_crypt_async::Encryptor>> future;
+  factory.GetInstance(future.GetCallback());
   return future.Take();
 }
 
@@ -137,16 +136,16 @@ class AppBoundEncryptionWinTestBase : public InProcessBrowserTest {
   // Used by multi-stage tests to persist data between each part of the test.
   void StoreData(base::span<const uint8_t> data) {
     base::ScopedAllowBlockingForTesting allow_blocking;
-    const auto data_path =
-        browser()->profile()->GetPath().Append(FILE_PATH_LITERAL("TestData"));
+    const auto data_path = browser()->GetProfile()->GetPath().Append(
+        FILE_PATH_LITERAL("TestData"));
     ASSERT_FALSE(base::PathExists(data_path));
     EXPECT_TRUE(base::WriteFile(data_path, data));
   }
 
   std::optional<std::vector<uint8_t>> RetrieveData() {
     base::ScopedAllowBlockingForTesting allow_blocking;
-    return base::ReadFileToBytes(
-        browser()->profile()->GetPath().Append(FILE_PATH_LITERAL("TestData")));
+    return base::ReadFileToBytes(browser()->GetProfile()->GetPath().Append(
+        FILE_PATH_LITERAL("TestData")));
   }
 
   static bool IsPreTest() {
@@ -260,21 +259,6 @@ IN_PROC_BROWSER_TEST_F(AppBoundEncryptionWinTest, MetricsTest) {
 // --gtest_filter=AppBoundEncryptionWinTest.MANUAL_Uninstall --run-manual.
 IN_PROC_BROWSER_TEST_F(AppBoundEncryptionWinTest, MANUAL_Uninstall) {}
 
-using AppBoundEncryptionWinTestNoService = InProcessBrowserTest;
-
-IN_PROC_BROWSER_TEST_F(AppBoundEncryptionWinTestNoService, NoService) {
-  const std::string plaintext("plaintext");
-  std::string ciphertext;
-  DWORD last_error;
-
-  HRESULT hr =
-      EncryptAppBoundString(ProtectionLevel::PROTECTION_PATH_VALIDATION,
-                            plaintext, ciphertext, last_error);
-
-  EXPECT_EQ(REGDB_E_CLASSNOTREG, hr);
-  EXPECT_EQ(DWORD{ERROR_GEN_FAILURE}, last_error);
-}
-
 // This policy test is here and not in chrome/browser/policy/test as it requires
 // a fake system install to correctly show as kSupported, and this testing class
 // already has the scaffolding in place to achieve this.
@@ -340,7 +324,7 @@ IN_PROC_BROWSER_TEST_F(AppBoundEncryptionWinDecryptionNotAvailableTest,
             SupportLevel::kSupported);
   auto encryptor = GetInstanceSync(*g_browser_process->os_crypt_async());
 
-  const auto app_bound_data = encryptor.EncryptString("app-bound secret");
+  const auto app_bound_data = encryptor->EncryptString("app-bound secret");
   ASSERT_TRUE(app_bound_data);
   ASSERT_GT(app_bound_data->size(), 3u);
   EXPECT_THAT(base::span(*app_bound_data).first<3>(),
@@ -360,7 +344,7 @@ IN_PROC_BROWSER_TEST_F(AppBoundEncryptionWinDecryptionNotAvailableTest,
     ASSERT_TRUE(previous_data);
 
     os_crypt_async::Encryptor::DecryptFlags flags;
-    const auto plaintext = encryptor.DecryptData(*previous_data, &flags);
+    const auto plaintext = encryptor->DecryptData(*previous_data, &flags);
     EXPECT_FALSE(plaintext);
     // Decryption is temporarily unavailable, as the service is not present.
     EXPECT_TRUE(flags.temporarily_unavailable);
@@ -369,7 +353,7 @@ IN_PROC_BROWSER_TEST_F(AppBoundEncryptionWinDecryptionNotAvailableTest,
   {
     os_crypt_async::Encryptor::DecryptFlags flags;
     auto plaintext =
-        encryptor.DecryptData(base::as_byte_span("invalid_data"), &flags);
+        encryptor->DecryptData(base::as_byte_span("invalid_data"), &flags);
     EXPECT_FALSE(plaintext);
     // Invalid data is permanently unavailable.
     EXPECT_FALSE(flags.temporarily_unavailable);
@@ -395,7 +379,7 @@ IN_PROC_BROWSER_TEST_F(AppBoundEncryptionWinTestWithVariablePolicy,
 
   auto encryptor = GetInstanceSync(*g_browser_process->os_crypt_async());
 
-  const auto app_bound_data = encryptor.EncryptString("app-bound secret");
+  const auto app_bound_data = encryptor->EncryptString("app-bound secret");
   ASSERT_TRUE(app_bound_data);
   ASSERT_GT(app_bound_data->size(), 3u);
   EXPECT_THAT(base::span(*app_bound_data).first<3>(),
@@ -409,7 +393,7 @@ IN_PROC_BROWSER_TEST_F(AppBoundEncryptionWinTestWithVariablePolicy,
             SupportLevel::kDisabledByPolicy);
   auto encryptor = GetInstanceSync(*g_browser_process->os_crypt_async());
 
-  const auto data = encryptor.EncryptString("secret");
+  const auto data = encryptor->EncryptString("secret");
   ASSERT_TRUE(data);
   ASSERT_GT(data->size(), 3u);
   // kEncryptionVersionPrefix for DPAPI i.e. not App-Bound.
@@ -423,7 +407,7 @@ IN_PROC_BROWSER_TEST_F(AppBoundEncryptionWinTestWithVariablePolicy,
   const auto previous_data = RetrieveData();
   ASSERT_TRUE(previous_data);
   os_crypt_async::Encryptor::DecryptFlags flags;
-  const auto plaintext = encryptor.DecryptData(*previous_data, &flags);
+  const auto plaintext = encryptor->DecryptData(*previous_data, &flags);
   ASSERT_TRUE(plaintext);
   // App-Bound is now disabled, so App-Bound encrypted data should be
   // re-encrypted in order to ensure it's encrypted with the DPAPI key provider.
@@ -764,19 +748,23 @@ class AppBoundEncryptionWinTestMultiProcess : public AppBoundEncryptionWinTest {
         break;
     }
 
-    base::Process process;
+    int exit_code = 0;
     if (launch_isolated) {
-      ASSERT_OK_AND_ASSIGN(process, chrome::LaunchIsolatedBrowser(cmd));
+      ASSERT_OK_AND_ASSIGN(auto isolated_process,
+                           chrome::IsolatedBrowserProcess::Launch(cmd));
+      ASSERT_OK_AND_ASSIGN(exit_code, isolated_process.WaitForExit());
     } else {
       base::LaunchOptions options;
       options.start_hidden = true;
       options.wait = true;
 
-      process = base::LaunchProcess(cmd, options);
+      base::Process process = base::LaunchProcess(cmd, options);
+      ASSERT_TRUE(process.IsValid());
+      EXPECT_TRUE(process.WaitForExit(&exit_code));
+      // This ensures the process has really terminated before this function
+      // returns, as base::Process destructor does not do this by default.
+      process.Terminate(0, /*wait=*/true);
     }
-    ASSERT_TRUE(process.IsValid());
-    int exit_code;
-    EXPECT_TRUE(process.WaitForExit(&exit_code));
     result = static_cast<HRESULT>(exit_code);
     if (SUCCEEDED(result)) {
       EXPECT_TRUE(base::ReadFileToString(output_file_path, &output_data));
@@ -784,9 +772,6 @@ class AppBoundEncryptionWinTestMultiProcess : public AppBoundEncryptionWinTest {
     if (op == Operation::kDecrypt) {
       EXPECT_EQ(base::PathExists(reencrypt_file_path), expect_reencrypt);
     }
-    // This ensures the process has really terminated before this function
-    // returns, as base::Process destructor does not do this by default.
-    process.Terminate(0, /*wait=*/true);
   }
 
  private:
@@ -1061,7 +1046,7 @@ IN_PROC_BROWSER_TEST_P(AppBoundEncryptionWinTestWithUserDataDir,
 
   auto encryptor = GetInstanceSync(*g_browser_process->os_crypt_async());
 
-  const auto encrypted_data = encryptor.EncryptString("super secret");
+  const auto encrypted_data = encryptor->EncryptString("super secret");
   ASSERT_TRUE(encrypted_data);
   if (GetParam().expect_encrypt_with_app_bound) {
     ASSERT_GT(encrypted_data->size(), 3u);
@@ -1082,7 +1067,7 @@ IN_PROC_BROWSER_TEST_P(AppBoundEncryptionWinTestWithUserDataDir,
   ASSERT_TRUE(previous_data);
 
   os_crypt_async::Encryptor::DecryptFlags flags;
-  const auto plaintext = encryptor.DecryptData(*previous_data, &flags);
+  const auto plaintext = encryptor->DecryptData(*previous_data, &flags);
   if (GetParam().expect_decrypt_works) {
     ASSERT_TRUE(plaintext);
     EXPECT_EQ("super secret", *plaintext);

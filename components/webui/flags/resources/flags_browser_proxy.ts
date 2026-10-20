@@ -35,9 +35,15 @@ export interface ExperimentalFeaturesData {
   needsRestart: boolean;
   showBetaChannelPromotion: boolean;
   showDevChannelPromotion: boolean;
+  importExportEnabled?: boolean;
   // <if expr="is_chromeos">
   showOwnerWarning: boolean;
   // </if>
+}
+
+export interface FlagsExportData {
+  enabled_flags: string[];
+  customized_flags: Record<string, string>;
 }
 
 export interface FlagsBrowserProxy {
@@ -45,6 +51,8 @@ export interface FlagsBrowserProxy {
   restartBrowser(): void;
   requestDeprecatedFeatures(): Promise<ExperimentalFeaturesData>;
   // </if>
+  exportFlags(): Promise<FlagsExportData>;
+  importFlags(data: FlagsExportData): Promise<boolean>;
   resetAllFlags(): void;
   requestExperimentalFeatures(): Promise<ExperimentalFeaturesData>;
   enableExperimentalFeature(internalName: string, enable: boolean): void;
@@ -64,6 +72,14 @@ export class FlagsBrowserProxyImpl implements FlagsBrowserProxy {
         'requestDeprecatedFeatures');
   }
   // </if>
+
+  exportFlags() {
+    return sendWithPromise<FlagsExportData>('exportFlags');
+  }
+
+  importFlags(data: FlagsExportData) {
+    return sendWithPromise<boolean>('importFlags', data);
+  }
 
   resetAllFlags() {
     chrome.send('resetAllFlags');

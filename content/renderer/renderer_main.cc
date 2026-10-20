@@ -13,14 +13,18 @@
 #include "base/debug/debugger.h"
 #include "base/debug/leak_annotations.h"
 #include "base/feature_list.h"
-#include "base/i18n/rtl.h"
+#include "base/i18n/icubridge/default_icu_locale.h"
+#include "base/i18n/language_tag.h"
+#include "base/i18n/tag_converters.h"
 #include "base/message_loop/message_pump.h"
 #include "base/message_loop/message_pump_type.h"
+#include "base/message_loop/message_pump_wakeup_counter.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/pending_task.h"
 #include "base/process/current_process.h"
 #include "base/run_loop.h"
 #include "base/strings/string_number_conversions.h"
+#include "base/synchronization/lock_metrics_recorder.h"
 #include "base/system/sys_info.h"
 #include "base/task/sequence_manager/sequence_manager.h"
 #include "base/task/thread_pool.h"
@@ -32,6 +36,7 @@
 #include "base/trace_event/trace_event.h"
 #include "build/build_config.h"
 #include "components/performance_manager/scenario_api/performance_scenario_memory.h"
+#include "components/startup_metric_utils/renderer/startup_metric_utils.h"
 #include "content/child/memory_coordinator/child_memory_coordinator.h"
 #include "content/common/content_constants_internal.h"
 #include "content/common/content_switches_internal.h"
@@ -51,6 +56,7 @@
 #include "mojo/public/cpp/bindings/mojo_buildflags.h"
 #include "sandbox/policy/switches.h"
 #include "services/tracing/public/cpp/trace_startup.h"
+#include "services/webnn/public/cpp/webnn_sandbox_init.h"
 #include "skia/ext/font_utils.h"
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/platform/platform.h"
@@ -58,10 +64,6 @@
 #include "third_party/skia/include/core/SkFontMgr.h"
 #include "third_party/webrtc_overrides/init_webrtc.h"  // nogncheck
 #include "ui/base/ui_base_switches.h"
-
-#if BUILDFLAG(IS_WIN)
-#include "components/startup_metric_utils/renderer/startup_metric_utils.h"
-#endif  // BUILDFLAG(IS_WIN)
 
 #if BUILDFLAG(IS_ANDROID)
 #include "base/android/library_loader/library_loader_hooks.h"
@@ -115,9 +117,7 @@ std::unique_ptr<base::MessagePump> CreateMainThreadMessagePump() {
 
 void LogTimeToStartRunLoop(const base::CommandLine& command_line,
                            base::TimeTicks run_loop_start_time) {
-#if BUILDFLAG(IS_WIN)
   startup_metric_utils::GetRenderer().RecordRunLoopStart(run_loop_start_time);
-#endif
 
   if (!command_line.HasSwitch(switches::kRendererProcessLaunchTimeTicks)) {
     return;
@@ -169,7 +169,11 @@ int RendererMain(MainFunctionParams parameters) {
   if (command_line.HasSwitch(switches::kLang)) {
     const std::string locale =
         command_line.GetSwitchValueASCII(switches::kLang);
-    base::i18n::SetICUDefaultLocale(locale);
+    std::optional<base::i18n::LanguageTag> lang_tag =
+        base::i18n::GetLanguageTagFromString(locale);
+    CHECK(lang_tag.has_value()) << "Invalid language tag: " << locale;
+    base::i18n::SetDefaultIcuLocale(base::i18n::DefaultIcuLocaleSetterKey(),
+                                    *lang_tag);
   }
 
   // When we start the renderer on ChromeOS if the system has core scheduling
@@ -197,6 +201,7 @@ int RendererMain(MainFunctionParams parameters) {
 
   base::PlatformThread::SetName("CrRendererMain");
   mojo::InterfaceEndpointClient::SetThreadNameSuffixForMetrics("RendererMain");
+  base::MessagePumpWakeupCounter::InitializeForCurrentThread("RendererMain");
 
   // Force main thread initialization. When the implementation is based on a
   // better means of determining which is the main thread, remove.
@@ -221,10 +226,12 @@ int RendererMain(MainFunctionParams parameters) {
   // zygote_main_linux.cc.  However, calling multiple times from the same thread
   // is OK.
   InitializeWebRtcModuleBeforeSandbox();
+  webnn::PreSandboxWebNNInitialization(/*is_gpu_process=*/false);
 
   std::optional<LastResortGCPolicy> last_resort_gc_policy;
   if (base::FeatureList::IsEnabled(kMemoryCoordinatorLastResortGC)) {
-    last_resort_gc_policy.emplace(ChildMemoryCoordinator::Get());
+    last_resort_gc_policy.emplace(
+        ChildMemoryCoordinator::Get().policy_manager());
   }
 
   {
@@ -280,12 +287,9 @@ int RendererMain(MainFunctionParams parameters) {
 
 #if BUILDFLAG(IS_WIN)
     // Now that Mojo is initialized, but before the sandbox is enabled, set up
-    // DirectReceiver.
-    if (base::FeatureList::IsEnabled(
-            blink::features::kDirectCompositorThreadIpc)) {
-      // Pre-initialize a transport since a feature that will use it is enabled.
-      mojo::CreateDirectReceiverTransportBeforeSandbox();
-    }
+    // DirectReceiver. Pre-initialize a transport since DirectReceiver is
+    // supported.
+    mojo::CreateDirectReceiverTransportBeforeSandbox();
 #endif  // BUILDFLAG(IS_WIN)
 
     if (need_sandbox) {
@@ -308,6 +312,8 @@ int RendererMain(MainFunctionParams parameters) {
           uncovered_hang_watcher_time);
       base::HangWatcher::GetInstance()->Start();
     }
+
+    base::LockMetricsRecorder::EnableRecordingOnCurrentThread("CrRendererMain");
 
 #if BUILDFLAG(IS_ANDROID)
     base::PlatformThreadPriorityMonitor::Get().RegisterCurrentThread(

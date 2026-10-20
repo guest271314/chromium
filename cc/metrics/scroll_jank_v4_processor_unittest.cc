@@ -4,14 +4,21 @@
 
 #include "cc/metrics/scroll_jank_v4_processor.h"
 
+#include <memory>
 #include <utility>
 
 #include "base/test/metrics/histogram_tester.h"
+#include "base/test/scoped_feature_list.h"
 #include "base/test/tracing/test_trace_processor.h"
 #include "base/time/time.h"
+#include "cc/base/features.h"
 #include "cc/metrics/event_metrics.h"
+#include "cc/metrics/scroll_jank_os_reporter.h"
+#include "cc/metrics/scroll_timing_info.h"
+#include "cc/paint/element_id.h"
 #include "cc/test/event_metrics_test_creator.h"
 #include "components/viz/common/frame_sinks/begin_frame_args.h"
+#include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace cc {
@@ -23,8 +30,10 @@ using TraceId = EventMetrics::TraceId;
 using QueryResult = base::test::TestTraceProcessor::QueryResult;
 using ::testing::ElementsAre;
 using ::testing::ElementsAreArray;
+using ::testing::IsEmpty;
 
 constexpr base::TimeDelta kVsyncInterval = base::Milliseconds(16);
+constexpr ElementId kScroller(101);
 
 constexpr base::TimeTicks MillisSinceEpoch(int64_t millis) {
   return base::TimeTicks() + base::Milliseconds(millis);
@@ -116,7 +125,7 @@ class ScrollJankV4ProcessorTest : public testing::Test {
   base::TimeTicks next_presentation_ts_ = MillisSinceEpoch(32);
   int next_begin_frame_sequence_id_ = 1;
   EventMetricsTestCreator metrics_creator_;
-  ScrollJankV4Processor processor_;
+  ScrollJankV4Processor processor_{/*emit_scroll_timing=*/false};
   base::test::TracingEnvironment tracing_environment_;
   base::test::TestTraceProcessor trace_processor_;
 
@@ -138,6 +147,8 @@ damaging scroll update as janky.
 TEST_F(ScrollJankV4ProcessorTest, ConsistentDamagingFrameProduction) {
   trace_processor_.StartTrace("input");
   ExpectedTraceResults expected_results;
+  const base::TimeTicks scroll_begin_arrival_ts =
+      next_input_generation_ts_ + kVsyncInterval / 4;
 
   // Start a scroll and present frames 1-63.
   {
@@ -148,6 +159,11 @@ TEST_F(ScrollJankV4ProcessorTest, ConsistentDamagingFrameProduction) {
       viz::BeginFrameArgs args = CreateNextBeginFrameArgs();
       EventMetrics::List first_metrics;
       first_metrics.push_back(
+          metrics_creator_.GestureScrollBeginBuilder()
+              .SetTimestamp(next_input_generation_ts_)
+              .SetArrivedInRendererCompositorTimestamp(scroll_begin_arrival_ts)
+              .Build());
+      first_metrics.push_back(
           metrics_creator_.FirstGestureScrollUpdateBuilder()
               .SetTimestamp(next_input_generation_ts_)
               .SetDelta(5.0f)
@@ -155,6 +171,7 @@ TEST_F(ScrollJankV4ProcessorTest, ConsistentDamagingFrameProduction) {
               .SetDidScroll(true)
               .SetTraceId(TraceId(10))
               .SetDispatchArgs(DispatchBeginFrameArgs::From(args))
+              .SetScrollBeginArrivalTimestamp(scroll_begin_arrival_ts)
               .Build());
       first_metrics.push_back(
           metrics_creator_.FirstGestureScrollUpdateBuilder()
@@ -164,6 +181,7 @@ TEST_F(ScrollJankV4ProcessorTest, ConsistentDamagingFrameProduction) {
               .SetDidScroll(true)
               .SetTraceId(TraceId(11))
               .SetDispatchArgs(DispatchBeginFrameArgs::From(args))
+              .SetScrollBeginArrivalTimestamp(scroll_begin_arrival_ts)
               .Build());
       processor_.ProcessEventsMetricsForPresentedFrame(
           first_metrics, next_presentation_ts_, args);
@@ -174,14 +192,16 @@ TEST_F(ScrollJankV4ProcessorTest, ConsistentDamagingFrameProduction) {
       AdvanceByVsyncs(1);
       viz::BeginFrameArgs args = CreateNextBeginFrameArgs();
       EventMetrics::List metrics;
-      metrics.push_back(metrics_creator_.GestureScrollUpdateBuilder()
-                            .SetTimestamp(next_input_generation_ts_)
-                            .SetDelta(5.0f)
-                            .SetCausedFrameUpdate(true)
-                            .SetDidScroll(true)
-                            .SetTraceId(TraceId(i * 10))
-                            .SetDispatchArgs(DispatchBeginFrameArgs::From(args))
-                            .Build());
+      metrics.push_back(
+          metrics_creator_.GestureScrollUpdateBuilder()
+              .SetTimestamp(next_input_generation_ts_)
+              .SetDelta(5.0f)
+              .SetCausedFrameUpdate(true)
+              .SetDidScroll(true)
+              .SetTraceId(TraceId(i * 10))
+              .SetDispatchArgs(DispatchBeginFrameArgs::From(args))
+              .SetScrollBeginArrivalTimestamp(scroll_begin_arrival_ts)
+              .Build());
       metrics.push_back(
           metrics_creator_.GestureScrollUpdateBuilder()
               .SetTimestamp(next_input_generation_ts_ + kVsyncInterval / 2)
@@ -190,6 +210,7 @@ TEST_F(ScrollJankV4ProcessorTest, ConsistentDamagingFrameProduction) {
               .SetDidScroll(true)
               .SetTraceId(TraceId(i * 10 + 1))
               .SetDispatchArgs(DispatchBeginFrameArgs::From(args))
+              .SetScrollBeginArrivalTimestamp(scroll_begin_arrival_ts)
               .Build());
       processor_.ProcessEventsMetricsForPresentedFrame(
           metrics, next_presentation_ts_, args);
@@ -201,14 +222,16 @@ TEST_F(ScrollJankV4ProcessorTest, ConsistentDamagingFrameProduction) {
       AdvanceByVsyncs(1);
       viz::BeginFrameArgs args = CreateNextBeginFrameArgs();
       EventMetrics::List metrics;
-      metrics.push_back(metrics_creator_.InertialGestureScrollUpdateBuilder()
-                            .SetTimestamp(next_input_generation_ts_)
-                            .SetDelta(2.0f)
-                            .SetCausedFrameUpdate(true)
-                            .SetDidScroll(true)
-                            .SetTraceId(TraceId(i * 10))
-                            .SetDispatchArgs(DispatchBeginFrameArgs::From(args))
-                            .Build());
+      metrics.push_back(
+          metrics_creator_.InertialGestureScrollUpdateBuilder()
+              .SetTimestamp(next_input_generation_ts_)
+              .SetDelta(2.0f)
+              .SetCausedFrameUpdate(true)
+              .SetDidScroll(true)
+              .SetTraceId(TraceId(i * 10))
+              .SetDispatchArgs(DispatchBeginFrameArgs::From(args))
+              .SetScrollBeginArrivalTimestamp(scroll_begin_arrival_ts)
+              .Build());
       processor_.ProcessEventsMetricsForPresentedFrame(
           metrics, next_presentation_ts_, args);
       expected_results.ExpectIsNotJanky(i * 10);
@@ -235,6 +258,7 @@ TEST_F(ScrollJankV4ProcessorTest, ConsistentDamagingFrameProduction) {
             .SetDidScroll(true)
             .SetTraceId(TraceId(640))
             .SetDispatchArgs(DispatchBeginFrameArgs::From(args))
+            .SetScrollBeginArrivalTimestamp(scroll_begin_arrival_ts)
             .Build());
     processor_.ProcessEventsMetricsForPresentedFrame(
         last_metrics_in_fixed_window, next_presentation_ts_, args);
@@ -254,14 +278,16 @@ TEST_F(ScrollJankV4ProcessorTest, ConsistentDamagingFrameProduction) {
       AdvanceByVsyncs(1);
       viz::BeginFrameArgs args = CreateNextBeginFrameArgs();
       EventMetrics::List metrics;
-      metrics.push_back(metrics_creator_.InertialGestureScrollUpdateBuilder()
-                            .SetTimestamp(next_input_generation_ts_)
-                            .SetDelta(2.0f)
-                            .SetCausedFrameUpdate(true)
-                            .SetDidScroll(true)
-                            .SetTraceId(TraceId(i * 10))
-                            .SetDispatchArgs(DispatchBeginFrameArgs::From(args))
-                            .Build());
+      metrics.push_back(
+          metrics_creator_.InertialGestureScrollUpdateBuilder()
+              .SetTimestamp(next_input_generation_ts_)
+              .SetDelta(2.0f)
+              .SetCausedFrameUpdate(true)
+              .SetDidScroll(true)
+              .SetTraceId(TraceId(i * 10))
+              .SetDispatchArgs(DispatchBeginFrameArgs::From(args))
+              .SetScrollBeginArrivalTimestamp(scroll_begin_arrival_ts)
+              .Build());
       processor_.ProcessEventsMetricsForPresentedFrame(
           metrics, next_presentation_ts_, args);
       expected_results.ExpectIsNotJanky(i * 10);
@@ -285,6 +311,7 @@ TEST_F(ScrollJankV4ProcessorTest, ConsistentDamagingFrameProduction) {
             .SetTimestamp(next_input_generation_ts_)
             .SetCausedFrameUpdate(false)
             .SetDispatchArgs(DispatchBeginFrameArgs::From(args))
+            .SetScrollBeginArrivalTimestamp(scroll_begin_arrival_ts)
             .Build());
     processor_.ProcessEventsMetricsForPresentedFrame(
         end_metrics, next_presentation_ts_, args);
@@ -309,6 +336,8 @@ each frame contains a damaging scroll update as janky.
 TEST_F(ScrollJankV4ProcessorTest, InconsistentDamagingFrameProduction) {
   trace_processor_.StartTrace("input");
   ExpectedTraceResults expected_results;
+  const base::TimeTicks scroll_begin_arrival_ts =
+      next_input_generation_ts_ + kVsyncInterval / 4;
 
   // Start a scroll and present frames 1-63.
   {
@@ -319,6 +348,11 @@ TEST_F(ScrollJankV4ProcessorTest, InconsistentDamagingFrameProduction) {
       viz::BeginFrameArgs args = CreateNextBeginFrameArgs();
       EventMetrics::List first_metrics;
       first_metrics.push_back(
+          metrics_creator_.GestureScrollBeginBuilder()
+              .SetTimestamp(next_input_generation_ts_)
+              .SetArrivedInRendererCompositorTimestamp(scroll_begin_arrival_ts)
+              .Build());
+      first_metrics.push_back(
           metrics_creator_.FirstGestureScrollUpdateBuilder()
               .SetTimestamp(next_input_generation_ts_)
               .SetDelta(5.0f)
@@ -326,6 +360,7 @@ TEST_F(ScrollJankV4ProcessorTest, InconsistentDamagingFrameProduction) {
               .SetDidScroll(true)
               .SetTraceId(TraceId(10))
               .SetDispatchArgs(DispatchBeginFrameArgs::From(args))
+              .SetScrollBeginArrivalTimestamp(scroll_begin_arrival_ts)
               .Build());
       first_metrics.push_back(
           metrics_creator_.FirstGestureScrollUpdateBuilder()
@@ -335,6 +370,7 @@ TEST_F(ScrollJankV4ProcessorTest, InconsistentDamagingFrameProduction) {
               .SetDidScroll(true)
               .SetTraceId(TraceId(11))
               .SetDispatchArgs(DispatchBeginFrameArgs::From(args))
+              .SetScrollBeginArrivalTimestamp(scroll_begin_arrival_ts)
               .Build());
       processor_.ProcessEventsMetricsForPresentedFrame(
           first_metrics, next_presentation_ts_, args);
@@ -345,14 +381,16 @@ TEST_F(ScrollJankV4ProcessorTest, InconsistentDamagingFrameProduction) {
       AdvanceByVsyncs(1);
       viz::BeginFrameArgs args = CreateNextBeginFrameArgs();
       EventMetrics::List metrics;
-      metrics.push_back(metrics_creator_.GestureScrollUpdateBuilder()
-                            .SetTimestamp(next_input_generation_ts_)
-                            .SetDelta(5.0f)
-                            .SetCausedFrameUpdate(true)
-                            .SetDidScroll(true)
-                            .SetTraceId(TraceId(i * 10))
-                            .SetDispatchArgs(DispatchBeginFrameArgs::From(args))
-                            .Build());
+      metrics.push_back(
+          metrics_creator_.GestureScrollUpdateBuilder()
+              .SetTimestamp(next_input_generation_ts_)
+              .SetDelta(5.0f)
+              .SetCausedFrameUpdate(true)
+              .SetDidScroll(true)
+              .SetTraceId(TraceId(i * 10))
+              .SetDispatchArgs(DispatchBeginFrameArgs::From(args))
+              .SetScrollBeginArrivalTimestamp(scroll_begin_arrival_ts)
+              .Build());
       metrics.push_back(
           metrics_creator_.GestureScrollUpdateBuilder()
               .SetTimestamp(next_input_generation_ts_ + kVsyncInterval / 2)
@@ -361,6 +399,7 @@ TEST_F(ScrollJankV4ProcessorTest, InconsistentDamagingFrameProduction) {
               .SetDidScroll(true)
               .SetTraceId(TraceId(i * 10 + 1))
               .SetDispatchArgs(DispatchBeginFrameArgs::From(args))
+              .SetScrollBeginArrivalTimestamp(scroll_begin_arrival_ts)
               .Build());
       processor_.ProcessEventsMetricsForPresentedFrame(
           metrics, next_presentation_ts_, args);
@@ -386,15 +425,18 @@ TEST_F(ScrollJankV4ProcessorTest, InconsistentDamagingFrameProduction) {
               .SetDidScroll(true)
               .SetTraceId(TraceId(110))
               .SetDispatchArgs(DispatchBeginFrameArgs::From(args))
+              .SetScrollBeginArrivalTimestamp(scroll_begin_arrival_ts)
               .Build());
-      metrics.push_back(metrics_creator_.GestureScrollUpdateBuilder()
-                            .SetTimestamp(next_input_generation_ts_)
-                            .SetDelta(5.0f)
-                            .SetCausedFrameUpdate(true)
-                            .SetDidScroll(true)
-                            .SetTraceId(TraceId(111))
-                            .SetDispatchArgs(DispatchBeginFrameArgs::From(args))
-                            .Build());
+      metrics.push_back(
+          metrics_creator_.GestureScrollUpdateBuilder()
+              .SetTimestamp(next_input_generation_ts_)
+              .SetDelta(5.0f)
+              .SetCausedFrameUpdate(true)
+              .SetDidScroll(true)
+              .SetTraceId(TraceId(111))
+              .SetDispatchArgs(DispatchBeginFrameArgs::From(args))
+              .SetScrollBeginArrivalTimestamp(scroll_begin_arrival_ts)
+              .Build());
       metrics.push_back(
           metrics_creator_.GestureScrollUpdateBuilder()
               .SetTimestamp(next_input_generation_ts_ + kVsyncInterval / 2)
@@ -403,6 +445,7 @@ TEST_F(ScrollJankV4ProcessorTest, InconsistentDamagingFrameProduction) {
               .SetDidScroll(true)
               .SetTraceId(TraceId(112))
               .SetDispatchArgs(DispatchBeginFrameArgs::From(args))
+              .SetScrollBeginArrivalTimestamp(scroll_begin_arrival_ts)
               .Build());
       processor_.ProcessEventsMetricsForPresentedFrame(
           metrics, next_presentation_ts_, args);
@@ -416,14 +459,16 @@ TEST_F(ScrollJankV4ProcessorTest, InconsistentDamagingFrameProduction) {
       AdvanceByVsyncs(1);
       viz::BeginFrameArgs args = CreateNextBeginFrameArgs();
       EventMetrics::List metrics;
-      metrics.push_back(metrics_creator_.GestureScrollUpdateBuilder()
-                            .SetTimestamp(next_input_generation_ts_)
-                            .SetDelta(5.0f)
-                            .SetCausedFrameUpdate(true)
-                            .SetDidScroll(true)
-                            .SetTraceId(TraceId(i * 10))
-                            .SetDispatchArgs(DispatchBeginFrameArgs::From(args))
-                            .Build());
+      metrics.push_back(
+          metrics_creator_.GestureScrollUpdateBuilder()
+              .SetTimestamp(next_input_generation_ts_)
+              .SetDelta(5.0f)
+              .SetCausedFrameUpdate(true)
+              .SetDidScroll(true)
+              .SetTraceId(TraceId(i * 10))
+              .SetDispatchArgs(DispatchBeginFrameArgs::From(args))
+              .SetScrollBeginArrivalTimestamp(scroll_begin_arrival_ts)
+              .Build());
       metrics.push_back(
           metrics_creator_.GestureScrollUpdateBuilder()
               .SetTimestamp(next_input_generation_ts_ + kVsyncInterval / 2)
@@ -432,6 +477,7 @@ TEST_F(ScrollJankV4ProcessorTest, InconsistentDamagingFrameProduction) {
               .SetDidScroll(true)
               .SetTraceId(TraceId(i * 10 + 1))
               .SetDispatchArgs(DispatchBeginFrameArgs::From(args))
+              .SetScrollBeginArrivalTimestamp(scroll_begin_arrival_ts)
               .Build());
       processor_.ProcessEventsMetricsForPresentedFrame(
           metrics, next_presentation_ts_, args);
@@ -446,14 +492,16 @@ TEST_F(ScrollJankV4ProcessorTest, InconsistentDamagingFrameProduction) {
       AdvanceByVsyncs(6);
       viz::BeginFrameArgs args = CreateNextBeginFrameArgs();
       EventMetrics::List metrics;
-      metrics.push_back(metrics_creator_.InertialGestureScrollUpdateBuilder()
-                            .SetTimestamp(next_input_generation_ts_)
-                            .SetDelta(2.0f)
-                            .SetCausedFrameUpdate(true)
-                            .SetDidScroll(true)
-                            .SetTraceId(TraceId(510))
-                            .SetDispatchArgs(DispatchBeginFrameArgs::From(args))
-                            .Build());
+      metrics.push_back(
+          metrics_creator_.InertialGestureScrollUpdateBuilder()
+              .SetTimestamp(next_input_generation_ts_)
+              .SetDelta(2.0f)
+              .SetCausedFrameUpdate(true)
+              .SetDidScroll(true)
+              .SetTraceId(TraceId(510))
+              .SetDispatchArgs(DispatchBeginFrameArgs::From(args))
+              .SetScrollBeginArrivalTimestamp(scroll_begin_arrival_ts)
+              .Build());
       processor_.ProcessEventsMetricsForPresentedFrame(
           metrics, next_presentation_ts_, args);
       expected_results.ExpectIsJanky(510, "MISSED_VSYNC_AT_START_OF_FLING(5)");
@@ -463,14 +511,16 @@ TEST_F(ScrollJankV4ProcessorTest, InconsistentDamagingFrameProduction) {
       AdvanceByVsyncs(1);
       viz::BeginFrameArgs args = CreateNextBeginFrameArgs();
       EventMetrics::List metrics;
-      metrics.push_back(metrics_creator_.InertialGestureScrollUpdateBuilder()
-                            .SetTimestamp(next_input_generation_ts_)
-                            .SetDelta(2.0f)
-                            .SetCausedFrameUpdate(true)
-                            .SetDidScroll(true)
-                            .SetTraceId(TraceId(i * 10))
-                            .SetDispatchArgs(DispatchBeginFrameArgs::From(args))
-                            .Build());
+      metrics.push_back(
+          metrics_creator_.InertialGestureScrollUpdateBuilder()
+              .SetTimestamp(next_input_generation_ts_)
+              .SetDelta(2.0f)
+              .SetCausedFrameUpdate(true)
+              .SetDidScroll(true)
+              .SetTraceId(TraceId(i * 10))
+              .SetDispatchArgs(DispatchBeginFrameArgs::From(args))
+              .SetScrollBeginArrivalTimestamp(scroll_begin_arrival_ts)
+              .Build());
       processor_.ProcessEventsMetricsForPresentedFrame(
           metrics, next_presentation_ts_, args);
       expected_results.ExpectIsNotJanky(i * 10);
@@ -497,6 +547,7 @@ TEST_F(ScrollJankV4ProcessorTest, InconsistentDamagingFrameProduction) {
             .SetDidScroll(true)
             .SetTraceId(TraceId(640))
             .SetDispatchArgs(DispatchBeginFrameArgs::From(args))
+            .SetScrollBeginArrivalTimestamp(scroll_begin_arrival_ts)
             .Build());
     processor_.ProcessEventsMetricsForPresentedFrame(
         last_metrics_in_fixed_window, next_presentation_ts_, args);
@@ -517,14 +568,16 @@ TEST_F(ScrollJankV4ProcessorTest, InconsistentDamagingFrameProduction) {
       AdvanceByVsyncs(1);
       viz::BeginFrameArgs args = CreateNextBeginFrameArgs();
       EventMetrics::List metrics;
-      metrics.push_back(metrics_creator_.InertialGestureScrollUpdateBuilder()
-                            .SetTimestamp(next_input_generation_ts_)
-                            .SetDelta(2.0f)
-                            .SetCausedFrameUpdate(true)
-                            .SetDidScroll(true)
-                            .SetTraceId(TraceId(i * 10))
-                            .SetDispatchArgs(DispatchBeginFrameArgs::From(args))
-                            .Build());
+      metrics.push_back(
+          metrics_creator_.InertialGestureScrollUpdateBuilder()
+              .SetTimestamp(next_input_generation_ts_)
+              .SetDelta(2.0f)
+              .SetCausedFrameUpdate(true)
+              .SetDidScroll(true)
+              .SetTraceId(TraceId(i * 10))
+              .SetDispatchArgs(DispatchBeginFrameArgs::From(args))
+              .SetScrollBeginArrivalTimestamp(scroll_begin_arrival_ts)
+              .Build());
       processor_.ProcessEventsMetricsForPresentedFrame(
           metrics, next_presentation_ts_, args);
       expected_results.ExpectIsNotJanky(i * 10);
@@ -537,14 +590,16 @@ TEST_F(ScrollJankV4ProcessorTest, InconsistentDamagingFrameProduction) {
       AdvanceByVsyncs(10);
       viz::BeginFrameArgs args = CreateNextBeginFrameArgs();
       EventMetrics::List metrics;
-      metrics.push_back(metrics_creator_.InertialGestureScrollUpdateBuilder()
-                            .SetTimestamp(next_input_generation_ts_)
-                            .SetDelta(2.0f)
-                            .SetCausedFrameUpdate(true)
-                            .SetDidScroll(true)
-                            .SetTraceId(TraceId(800))
-                            .SetDispatchArgs(DispatchBeginFrameArgs::From(args))
-                            .Build());
+      metrics.push_back(
+          metrics_creator_.InertialGestureScrollUpdateBuilder()
+              .SetTimestamp(next_input_generation_ts_)
+              .SetDelta(2.0f)
+              .SetCausedFrameUpdate(true)
+              .SetDidScroll(true)
+              .SetTraceId(TraceId(800))
+              .SetDispatchArgs(DispatchBeginFrameArgs::From(args))
+              .SetScrollBeginArrivalTimestamp(scroll_begin_arrival_ts)
+              .Build());
       processor_.ProcessEventsMetricsForPresentedFrame(
           metrics, next_presentation_ts_, args);
       expected_results.ExpectIsJanky(800, "MISSED_VSYNC_DURING_FLING(9)");
@@ -554,14 +609,16 @@ TEST_F(ScrollJankV4ProcessorTest, InconsistentDamagingFrameProduction) {
       AdvanceByVsyncs(1);
       viz::BeginFrameArgs args = CreateNextBeginFrameArgs();
       EventMetrics::List metrics;
-      metrics.push_back(metrics_creator_.InertialGestureScrollUpdateBuilder()
-                            .SetTimestamp(next_input_generation_ts_)
-                            .SetDelta(2.0f)
-                            .SetCausedFrameUpdate(true)
-                            .SetDidScroll(true)
-                            .SetTraceId(TraceId(10 * i))
-                            .SetDispatchArgs(DispatchBeginFrameArgs::From(args))
-                            .Build());
+      metrics.push_back(
+          metrics_creator_.InertialGestureScrollUpdateBuilder()
+              .SetTimestamp(next_input_generation_ts_)
+              .SetDelta(2.0f)
+              .SetCausedFrameUpdate(true)
+              .SetDidScroll(true)
+              .SetTraceId(TraceId(10 * i))
+              .SetDispatchArgs(DispatchBeginFrameArgs::From(args))
+              .SetScrollBeginArrivalTimestamp(scroll_begin_arrival_ts)
+              .Build());
       processor_.ProcessEventsMetricsForPresentedFrame(
           metrics, next_presentation_ts_, args);
       expected_results.ExpectIsNotJanky(10 * i);
@@ -585,6 +642,7 @@ TEST_F(ScrollJankV4ProcessorTest, InconsistentDamagingFrameProduction) {
             .SetTimestamp(next_input_generation_ts_)
             .SetCausedFrameUpdate(false)
             .SetDispatchArgs(DispatchBeginFrameArgs::From(args))
+            .SetScrollBeginArrivalTimestamp(scroll_begin_arrival_ts)
             .Build());
     processor_.ProcessEventsMetricsForPresentedFrame(
         end_metrics, next_presentation_ts_, args);
@@ -608,6 +666,8 @@ with both damaging and non-damaging frames.
 TEST_F(ScrollJankV4ProcessorTest, ConsistentMixedFrameProduction) {
   trace_processor_.StartTrace("input");
   ExpectedTraceResults expected_results;
+  const base::TimeTicks scroll_begin_arrival_ts =
+      next_input_generation_ts_ + kVsyncInterval / 4;
 
   // Start with a regular scroll with two inputs per frame.
   {
@@ -617,6 +677,11 @@ TEST_F(ScrollJankV4ProcessorTest, ConsistentMixedFrameProduction) {
       viz::BeginFrameArgs args = CreateNextBeginFrameArgs();
       EventMetrics::List first_metrics;
       first_metrics.push_back(
+          metrics_creator_.GestureScrollBeginBuilder()
+              .SetTimestamp(next_input_generation_ts_)
+              .SetArrivedInRendererCompositorTimestamp(scroll_begin_arrival_ts)
+              .Build());
+      first_metrics.push_back(
           metrics_creator_.FirstGestureScrollUpdateBuilder()
               .SetTimestamp(next_input_generation_ts_)
               .SetDelta(5.0f)
@@ -624,6 +689,7 @@ TEST_F(ScrollJankV4ProcessorTest, ConsistentMixedFrameProduction) {
               .SetDidScroll(true)
               .SetTraceId(TraceId(10))
               .SetDispatchArgs(DispatchBeginFrameArgs::From(args))
+              .SetScrollBeginArrivalTimestamp(scroll_begin_arrival_ts)
               .Build());
       first_metrics.push_back(
           metrics_creator_.FirstGestureScrollUpdateBuilder()
@@ -633,6 +699,7 @@ TEST_F(ScrollJankV4ProcessorTest, ConsistentMixedFrameProduction) {
               .SetDidScroll(true)
               .SetTraceId(TraceId(11))
               .SetDispatchArgs(DispatchBeginFrameArgs::From(args))
+              .SetScrollBeginArrivalTimestamp(scroll_begin_arrival_ts)
               .Build());
       processor_.ProcessEventsMetricsForPresentedFrame(
           first_metrics, next_presentation_ts_, args);
@@ -656,6 +723,7 @@ TEST_F(ScrollJankV4ProcessorTest, ConsistentMixedFrameProduction) {
               .SetDidScroll(false)
               .SetTraceId(TraceId(damaging_frame * 10))
               .SetDispatchArgs(DispatchBeginFrameArgs::From(non_damaging_args))
+              .SetScrollBeginArrivalTimestamp(scroll_begin_arrival_ts)
               .Build());
       metrics.push_back(
           metrics_creator_.GestureScrollUpdateBuilder()
@@ -665,6 +733,7 @@ TEST_F(ScrollJankV4ProcessorTest, ConsistentMixedFrameProduction) {
               .SetDidScroll(false)
               .SetTraceId(TraceId(damaging_frame * 10 + 1))
               .SetDispatchArgs(DispatchBeginFrameArgs::From(non_damaging_args))
+              .SetScrollBeginArrivalTimestamp(scroll_begin_arrival_ts)
               .Build());
       // Two inputs for a presented damaging frame.
       metrics.push_back(
@@ -675,6 +744,7 @@ TEST_F(ScrollJankV4ProcessorTest, ConsistentMixedFrameProduction) {
               .SetDidScroll(true)
               .SetTraceId(TraceId(damaging_frame * 10 + 2))
               .SetDispatchArgs(DispatchBeginFrameArgs::From(damaging_args))
+              .SetScrollBeginArrivalTimestamp(scroll_begin_arrival_ts)
               .Build());
       metrics.push_back(
           metrics_creator_.GestureScrollUpdateBuilder()
@@ -684,6 +754,7 @@ TEST_F(ScrollJankV4ProcessorTest, ConsistentMixedFrameProduction) {
               .SetDidScroll(true)
               .SetTraceId(TraceId(damaging_frame * 10 + 3))
               .SetDispatchArgs(DispatchBeginFrameArgs::From(damaging_args))
+              .SetScrollBeginArrivalTimestamp(scroll_begin_arrival_ts)
               .Build());
       processor_.ProcessEventsMetricsForPresentedFrame(
           metrics, next_presentation_ts_, damaging_args);
@@ -699,14 +770,16 @@ TEST_F(ScrollJankV4ProcessorTest, ConsistentMixedFrameProduction) {
       AdvanceByVsyncs(1);
       viz::BeginFrameArgs args = CreateNextBeginFrameArgs();
       EventMetrics::List metrics;
-      metrics.push_back(metrics_creator_.GestureScrollUpdateBuilder()
-                            .SetTimestamp(next_input_generation_ts_)
-                            .SetDelta(5.0f)
-                            .SetCausedFrameUpdate(true)
-                            .SetDidScroll(true)
-                            .SetTraceId(TraceId(damaging_frame * 10))
-                            .SetDispatchArgs(DispatchBeginFrameArgs::From(args))
-                            .Build());
+      metrics.push_back(
+          metrics_creator_.GestureScrollUpdateBuilder()
+              .SetTimestamp(next_input_generation_ts_)
+              .SetDelta(5.0f)
+              .SetCausedFrameUpdate(true)
+              .SetDidScroll(true)
+              .SetTraceId(TraceId(damaging_frame * 10))
+              .SetDispatchArgs(DispatchBeginFrameArgs::From(args))
+              .SetScrollBeginArrivalTimestamp(scroll_begin_arrival_ts)
+              .Build());
       metrics.push_back(
           metrics_creator_.GestureScrollUpdateBuilder()
               .SetTimestamp(next_input_generation_ts_ + kVsyncInterval / 2)
@@ -715,6 +788,7 @@ TEST_F(ScrollJankV4ProcessorTest, ConsistentMixedFrameProduction) {
               .SetDidScroll(true)
               .SetTraceId(TraceId(damaging_frame * 10 + 1))
               .SetDispatchArgs(DispatchBeginFrameArgs::From(args))
+              .SetScrollBeginArrivalTimestamp(scroll_begin_arrival_ts)
               .Build());
       processor_.ProcessEventsMetricsForPresentedFrame(
           metrics, next_presentation_ts_, args);
@@ -735,14 +809,16 @@ TEST_F(ScrollJankV4ProcessorTest, ConsistentMixedFrameProduction) {
       AdvanceByVsyncs(1);
       viz::BeginFrameArgs args = CreateNextBeginFrameArgs();
       EventMetrics::List metrics;
-      metrics.push_back(metrics_creator_.GestureScrollUpdateBuilder()
-                            .SetTimestamp(next_input_generation_ts_)
-                            .SetDelta(5.0f)
-                            .SetCausedFrameUpdate(true)
-                            .SetDidScroll(true)
-                            .SetTraceId(TraceId(340))
-                            .SetDispatchArgs(DispatchBeginFrameArgs::From(args))
-                            .Build());
+      metrics.push_back(
+          metrics_creator_.GestureScrollUpdateBuilder()
+              .SetTimestamp(next_input_generation_ts_)
+              .SetDelta(5.0f)
+              .SetCausedFrameUpdate(true)
+              .SetDidScroll(true)
+              .SetTraceId(TraceId(340))
+              .SetDispatchArgs(DispatchBeginFrameArgs::From(args))
+              .SetScrollBeginArrivalTimestamp(scroll_begin_arrival_ts)
+              .Build());
       metrics.push_back(
           metrics_creator_.GestureScrollUpdateBuilder()
               .SetTimestamp(next_input_generation_ts_ + kVsyncInterval / 2)
@@ -751,6 +827,7 @@ TEST_F(ScrollJankV4ProcessorTest, ConsistentMixedFrameProduction) {
               .SetDidScroll(true)
               .SetTraceId(TraceId(341))
               .SetDispatchArgs(DispatchBeginFrameArgs::From(args))
+              .SetScrollBeginArrivalTimestamp(scroll_begin_arrival_ts)
               .Build());
       processor_.ProcessEventsMetricsForPresentedFrame(
           metrics, next_presentation_ts_, args);
@@ -785,6 +862,7 @@ TEST_F(ScrollJankV4ProcessorTest, ConsistentMixedFrameProduction) {
               .SetDidScroll(false)
               .SetTraceId(TraceId(damaging_frame * 10))
               .SetDispatchArgs(DispatchBeginFrameArgs::From(non_damaging_args))
+              .SetScrollBeginArrivalTimestamp(scroll_begin_arrival_ts)
               .Build());
       processor_.ProcessEventsMetricsForPresentedFrame(
           non_damaging_metrics, next_presentation_ts_, non_damaging_args);
@@ -801,6 +879,7 @@ TEST_F(ScrollJankV4ProcessorTest, ConsistentMixedFrameProduction) {
               .SetDidScroll(true)
               .SetTraceId(TraceId(damaging_frame * 10 + 1))
               .SetDispatchArgs(DispatchBeginFrameArgs::From(damaging_args))
+              .SetScrollBeginArrivalTimestamp(scroll_begin_arrival_ts)
               .Build());
       processor_.ProcessEventsMetricsForPresentedFrame(
           damaging_metrics, next_presentation_ts_, damaging_args);
@@ -820,14 +899,16 @@ TEST_F(ScrollJankV4ProcessorTest, ConsistentMixedFrameProduction) {
     AdvanceByVsyncs(1);
     viz::BeginFrameArgs args = CreateNextBeginFrameArgs();
     EventMetrics::List metrics;
-    metrics.push_back(metrics_creator_.InertialGestureScrollUpdateBuilder()
-                          .SetTimestamp(next_input_generation_ts_)
-                          .SetDelta(2.0f)
-                          .SetCausedFrameUpdate(true)
-                          .SetDidScroll(true)
-                          .SetTraceId(TraceId(640))
-                          .SetDispatchArgs(DispatchBeginFrameArgs::From(args))
-                          .Build());
+    metrics.push_back(
+        metrics_creator_.InertialGestureScrollUpdateBuilder()
+            .SetTimestamp(next_input_generation_ts_)
+            .SetDelta(2.0f)
+            .SetCausedFrameUpdate(true)
+            .SetDidScroll(true)
+            .SetTraceId(TraceId(640))
+            .SetDispatchArgs(DispatchBeginFrameArgs::From(args))
+            .SetScrollBeginArrivalTimestamp(scroll_begin_arrival_ts)
+            .Build());
     processor_.ProcessEventsMetricsForPresentedFrame(
         metrics, next_presentation_ts_, args);
     expected_results.ExpectIsNotJanky(640);
@@ -849,14 +930,16 @@ TEST_F(ScrollJankV4ProcessorTest, ConsistentMixedFrameProduction) {
       AdvanceByVsyncs(1);
       viz::BeginFrameArgs args = CreateNextBeginFrameArgs();
       EventMetrics::List metrics;
-      metrics.push_back(metrics_creator_.InertialGestureScrollUpdateBuilder()
-                            .SetTimestamp(next_input_generation_ts_)
-                            .SetDelta(2.0f)
-                            .SetCausedFrameUpdate(true)
-                            .SetDidScroll(true)
-                            .SetTraceId(TraceId(damaging_frame * 10))
-                            .SetDispatchArgs(DispatchBeginFrameArgs::From(args))
-                            .Build());
+      metrics.push_back(
+          metrics_creator_.InertialGestureScrollUpdateBuilder()
+              .SetTimestamp(next_input_generation_ts_)
+              .SetDelta(2.0f)
+              .SetCausedFrameUpdate(true)
+              .SetDidScroll(true)
+              .SetTraceId(TraceId(damaging_frame * 10))
+              .SetDispatchArgs(DispatchBeginFrameArgs::From(args))
+              .SetScrollBeginArrivalTimestamp(scroll_begin_arrival_ts)
+              .Build());
       processor_.ProcessEventsMetricsForPresentedFrame(
           metrics, next_presentation_ts_, args);
       expected_results.ExpectIsNotJanky(damaging_frame * 10);
@@ -881,6 +964,7 @@ TEST_F(ScrollJankV4ProcessorTest, ConsistentMixedFrameProduction) {
             .SetTimestamp(next_input_generation_ts_)
             .SetCausedFrameUpdate(false)
             .SetDispatchArgs(DispatchBeginFrameArgs::From(end_args))
+            .SetScrollBeginArrivalTimestamp(scroll_begin_arrival_ts)
             .Build());
     processor_.ProcessEventsMetricsForPresentedFrame(
         end_metrics, next_presentation_ts_, end_args);
@@ -904,6 +988,8 @@ with both damaging and non-damaging frames.
 TEST_F(ScrollJankV4ProcessorTest, InconsistentMixedFrameProduction) {
   trace_processor_.StartTrace("input");
   ExpectedTraceResults expected_results;
+  const base::TimeTicks scroll_begin_arrival_ts =
+      next_input_generation_ts_ + kVsyncInterval / 4;
 
   // Start with a regular scroll with two inputs per frame.
   {
@@ -913,6 +999,11 @@ TEST_F(ScrollJankV4ProcessorTest, InconsistentMixedFrameProduction) {
       viz::BeginFrameArgs args = CreateNextBeginFrameArgs();
       EventMetrics::List first_metrics;
       first_metrics.push_back(
+          metrics_creator_.GestureScrollBeginBuilder()
+              .SetTimestamp(next_input_generation_ts_)
+              .SetArrivedInRendererCompositorTimestamp(scroll_begin_arrival_ts)
+              .Build());
+      first_metrics.push_back(
           metrics_creator_.FirstGestureScrollUpdateBuilder()
               .SetTimestamp(next_input_generation_ts_)
               .SetDelta(5.0f)
@@ -920,6 +1011,7 @@ TEST_F(ScrollJankV4ProcessorTest, InconsistentMixedFrameProduction) {
               .SetDidScroll(true)
               .SetTraceId(TraceId(10))
               .SetDispatchArgs(DispatchBeginFrameArgs::From(args))
+              .SetScrollBeginArrivalTimestamp(scroll_begin_arrival_ts)
               .Build());
       first_metrics.push_back(
           metrics_creator_.FirstGestureScrollUpdateBuilder()
@@ -929,6 +1021,7 @@ TEST_F(ScrollJankV4ProcessorTest, InconsistentMixedFrameProduction) {
               .SetDidScroll(true)
               .SetTraceId(TraceId(11))
               .SetDispatchArgs(DispatchBeginFrameArgs::From(args))
+              .SetScrollBeginArrivalTimestamp(scroll_begin_arrival_ts)
               .Build());
       processor_.ProcessEventsMetricsForPresentedFrame(
           first_metrics, next_presentation_ts_, args);
@@ -952,6 +1045,7 @@ TEST_F(ScrollJankV4ProcessorTest, InconsistentMixedFrameProduction) {
               .SetDidScroll(false)
               .SetTraceId(TraceId(damaging_frame * 10))
               .SetDispatchArgs(DispatchBeginFrameArgs::From(non_damaging_args))
+              .SetScrollBeginArrivalTimestamp(scroll_begin_arrival_ts)
               .Build());
       metrics.push_back(
           metrics_creator_.GestureScrollUpdateBuilder()
@@ -961,6 +1055,7 @@ TEST_F(ScrollJankV4ProcessorTest, InconsistentMixedFrameProduction) {
               .SetDidScroll(false)
               .SetTraceId(TraceId(damaging_frame * 10 + 1))
               .SetDispatchArgs(DispatchBeginFrameArgs::From(non_damaging_args))
+              .SetScrollBeginArrivalTimestamp(scroll_begin_arrival_ts)
               .Build());
       // Two inputs for a presented damaging frame.
       metrics.push_back(
@@ -971,6 +1066,7 @@ TEST_F(ScrollJankV4ProcessorTest, InconsistentMixedFrameProduction) {
               .SetDidScroll(true)
               .SetTraceId(TraceId(damaging_frame * 10 + 2))
               .SetDispatchArgs(DispatchBeginFrameArgs::From(damaging_args))
+              .SetScrollBeginArrivalTimestamp(scroll_begin_arrival_ts)
               .Build());
       metrics.push_back(
           metrics_creator_.GestureScrollUpdateBuilder()
@@ -980,6 +1076,7 @@ TEST_F(ScrollJankV4ProcessorTest, InconsistentMixedFrameProduction) {
               .SetDidScroll(true)
               .SetTraceId(TraceId(damaging_frame * 10 + 3))
               .SetDispatchArgs(DispatchBeginFrameArgs::From(damaging_args))
+              .SetScrollBeginArrivalTimestamp(scroll_begin_arrival_ts)
               .Build());
       processor_.ProcessEventsMetricsForPresentedFrame(
           metrics, next_presentation_ts_, damaging_args);
@@ -1013,6 +1110,7 @@ TEST_F(ScrollJankV4ProcessorTest, InconsistentMixedFrameProduction) {
               .SetDidScroll(false)
               .SetTraceId(TraceId(110))
               .SetDispatchArgs(DispatchBeginFrameArgs::From(non_damaging_args))
+              .SetScrollBeginArrivalTimestamp(scroll_begin_arrival_ts)
               .Build());
       metrics.push_back(
           metrics_creator_.GestureScrollUpdateBuilder()
@@ -1022,6 +1120,7 @@ TEST_F(ScrollJankV4ProcessorTest, InconsistentMixedFrameProduction) {
               .SetDidScroll(false)
               .SetTraceId(TraceId(111))
               .SetDispatchArgs(DispatchBeginFrameArgs::From(non_damaging_args))
+              .SetScrollBeginArrivalTimestamp(scroll_begin_arrival_ts)
               .Build());
       metrics.push_back(
           metrics_creator_.GestureScrollUpdateBuilder()
@@ -1031,6 +1130,7 @@ TEST_F(ScrollJankV4ProcessorTest, InconsistentMixedFrameProduction) {
               .SetDidScroll(false)
               .SetTraceId(TraceId(112))
               .SetDispatchArgs(DispatchBeginFrameArgs::From(non_damaging_args))
+              .SetScrollBeginArrivalTimestamp(scroll_begin_arrival_ts)
               .Build());
       // Two inputs for a presented damaging frame.
       metrics.push_back(
@@ -1041,6 +1141,7 @@ TEST_F(ScrollJankV4ProcessorTest, InconsistentMixedFrameProduction) {
               .SetDidScroll(true)
               .SetTraceId(TraceId(113))
               .SetDispatchArgs(DispatchBeginFrameArgs::From(damaging_args))
+              .SetScrollBeginArrivalTimestamp(scroll_begin_arrival_ts)
               .Build());
       metrics.push_back(
           metrics_creator_.GestureScrollUpdateBuilder()
@@ -1050,6 +1151,7 @@ TEST_F(ScrollJankV4ProcessorTest, InconsistentMixedFrameProduction) {
               .SetDidScroll(true)
               .SetTraceId(TraceId(114))
               .SetDispatchArgs(DispatchBeginFrameArgs::From(damaging_args))
+              .SetScrollBeginArrivalTimestamp(scroll_begin_arrival_ts)
               .Build());
       processor_.ProcessEventsMetricsForPresentedFrame(
           metrics, next_presentation_ts_, damaging_args);
@@ -1082,6 +1184,7 @@ TEST_F(ScrollJankV4ProcessorTest, InconsistentMixedFrameProduction) {
               .SetDidScroll(false)
               .SetTraceId(TraceId(damaging_frame * 10))
               .SetDispatchArgs(DispatchBeginFrameArgs::From(non_damaging_args))
+              .SetScrollBeginArrivalTimestamp(scroll_begin_arrival_ts)
               .Build());
       metrics.push_back(
           metrics_creator_.GestureScrollUpdateBuilder()
@@ -1091,6 +1194,7 @@ TEST_F(ScrollJankV4ProcessorTest, InconsistentMixedFrameProduction) {
               .SetDidScroll(false)
               .SetTraceId(TraceId(damaging_frame * 10 + 1))
               .SetDispatchArgs(DispatchBeginFrameArgs::From(non_damaging_args))
+              .SetScrollBeginArrivalTimestamp(scroll_begin_arrival_ts)
               .Build());
       // Two inputs for a presented damaging frame.
       metrics.push_back(
@@ -1101,6 +1205,7 @@ TEST_F(ScrollJankV4ProcessorTest, InconsistentMixedFrameProduction) {
               .SetDidScroll(true)
               .SetTraceId(TraceId(damaging_frame * 10 + 2))
               .SetDispatchArgs(DispatchBeginFrameArgs::From(damaging_args))
+              .SetScrollBeginArrivalTimestamp(scroll_begin_arrival_ts)
               .Build());
       metrics.push_back(
           metrics_creator_.GestureScrollUpdateBuilder()
@@ -1110,6 +1215,7 @@ TEST_F(ScrollJankV4ProcessorTest, InconsistentMixedFrameProduction) {
               .SetDidScroll(true)
               .SetTraceId(TraceId(damaging_frame * 10 + 3))
               .SetDispatchArgs(DispatchBeginFrameArgs::From(damaging_args))
+              .SetScrollBeginArrivalTimestamp(scroll_begin_arrival_ts)
               .Build());
       processor_.ProcessEventsMetricsForPresentedFrame(
           metrics, next_presentation_ts_, damaging_args);
@@ -1125,14 +1231,16 @@ TEST_F(ScrollJankV4ProcessorTest, InconsistentMixedFrameProduction) {
       AdvanceByVsyncs(1);
       viz::BeginFrameArgs args = CreateNextBeginFrameArgs();
       EventMetrics::List metrics;
-      metrics.push_back(metrics_creator_.GestureScrollUpdateBuilder()
-                            .SetTimestamp(next_input_generation_ts_)
-                            .SetDelta(5.0f)
-                            .SetCausedFrameUpdate(true)
-                            .SetDidScroll(true)
-                            .SetTraceId(TraceId(damaging_frame * 10))
-                            .SetDispatchArgs(DispatchBeginFrameArgs::From(args))
-                            .Build());
+      metrics.push_back(
+          metrics_creator_.GestureScrollUpdateBuilder()
+              .SetTimestamp(next_input_generation_ts_)
+              .SetDelta(5.0f)
+              .SetCausedFrameUpdate(true)
+              .SetDidScroll(true)
+              .SetTraceId(TraceId(damaging_frame * 10))
+              .SetDispatchArgs(DispatchBeginFrameArgs::From(args))
+              .SetScrollBeginArrivalTimestamp(scroll_begin_arrival_ts)
+              .Build());
       metrics.push_back(
           metrics_creator_.GestureScrollUpdateBuilder()
               .SetTimestamp(next_input_generation_ts_ + kVsyncInterval / 2)
@@ -1141,6 +1249,7 @@ TEST_F(ScrollJankV4ProcessorTest, InconsistentMixedFrameProduction) {
               .SetDidScroll(true)
               .SetTraceId(TraceId(damaging_frame * 10 + 1))
               .SetDispatchArgs(DispatchBeginFrameArgs::From(args))
+              .SetScrollBeginArrivalTimestamp(scroll_begin_arrival_ts)
               .Build());
       processor_.ProcessEventsMetricsForPresentedFrame(
           metrics, next_presentation_ts_, args);
@@ -1161,14 +1270,16 @@ TEST_F(ScrollJankV4ProcessorTest, InconsistentMixedFrameProduction) {
       AdvanceByVsyncs(1);
       viz::BeginFrameArgs args = CreateNextBeginFrameArgs();
       EventMetrics::List metrics;
-      metrics.push_back(metrics_creator_.GestureScrollUpdateBuilder()
-                            .SetTimestamp(next_input_generation_ts_)
-                            .SetDelta(5.0f)
-                            .SetCausedFrameUpdate(true)
-                            .SetDidScroll(true)
-                            .SetTraceId(TraceId(340))
-                            .SetDispatchArgs(DispatchBeginFrameArgs::From(args))
-                            .Build());
+      metrics.push_back(
+          metrics_creator_.GestureScrollUpdateBuilder()
+              .SetTimestamp(next_input_generation_ts_)
+              .SetDelta(5.0f)
+              .SetCausedFrameUpdate(true)
+              .SetDidScroll(true)
+              .SetTraceId(TraceId(340))
+              .SetDispatchArgs(DispatchBeginFrameArgs::From(args))
+              .SetScrollBeginArrivalTimestamp(scroll_begin_arrival_ts)
+              .Build());
       metrics.push_back(
           metrics_creator_.GestureScrollUpdateBuilder()
               .SetTimestamp(next_input_generation_ts_ + kVsyncInterval / 2)
@@ -1177,6 +1288,7 @@ TEST_F(ScrollJankV4ProcessorTest, InconsistentMixedFrameProduction) {
               .SetDidScroll(true)
               .SetTraceId(TraceId(341))
               .SetDispatchArgs(DispatchBeginFrameArgs::From(args))
+              .SetScrollBeginArrivalTimestamp(scroll_begin_arrival_ts)
               .Build());
       processor_.ProcessEventsMetricsForPresentedFrame(
           metrics, next_presentation_ts_, args);
@@ -1214,6 +1326,7 @@ TEST_F(ScrollJankV4ProcessorTest, InconsistentMixedFrameProduction) {
               .SetDidScroll(false)
               .SetTraceId(TraceId(350))
               .SetDispatchArgs(DispatchBeginFrameArgs::From(non_damaging_args))
+              .SetScrollBeginArrivalTimestamp(scroll_begin_arrival_ts)
               .Build());
       processor_.ProcessEventsMetricsForPresentedFrame(
           non_damaging_metrics, next_presentation_ts_, non_damaging_args);
@@ -1230,6 +1343,7 @@ TEST_F(ScrollJankV4ProcessorTest, InconsistentMixedFrameProduction) {
               .SetDidScroll(true)
               .SetTraceId(TraceId(351))
               .SetDispatchArgs(DispatchBeginFrameArgs::From(damaging_args))
+              .SetScrollBeginArrivalTimestamp(scroll_begin_arrival_ts)
               .Build());
       processor_.ProcessEventsMetricsForPresentedFrame(
           damaging_metrics, next_presentation_ts_, damaging_args);
@@ -1250,6 +1364,7 @@ TEST_F(ScrollJankV4ProcessorTest, InconsistentMixedFrameProduction) {
               .SetDidScroll(false)
               .SetTraceId(TraceId(damaging_frame * 10))
               .SetDispatchArgs(DispatchBeginFrameArgs::From(non_damaging_args))
+              .SetScrollBeginArrivalTimestamp(scroll_begin_arrival_ts)
               .Build());
       processor_.ProcessEventsMetricsForPresentedFrame(
           non_damaging_metrics, next_presentation_ts_, non_damaging_args);
@@ -1266,6 +1381,7 @@ TEST_F(ScrollJankV4ProcessorTest, InconsistentMixedFrameProduction) {
               .SetDidScroll(true)
               .SetTraceId(TraceId(damaging_frame * 10 + 1))
               .SetDispatchArgs(DispatchBeginFrameArgs::From(damaging_args))
+              .SetScrollBeginArrivalTimestamp(scroll_begin_arrival_ts)
               .Build());
       processor_.ProcessEventsMetricsForPresentedFrame(
           damaging_metrics, next_presentation_ts_, damaging_args);
@@ -1293,6 +1409,7 @@ TEST_F(ScrollJankV4ProcessorTest, InconsistentMixedFrameProduction) {
             .SetDidScroll(true)
             .SetTraceId(TraceId(640))
             .SetDispatchArgs(DispatchBeginFrameArgs::From(args))
+            .SetScrollBeginArrivalTimestamp(scroll_begin_arrival_ts)
             .Build());
     processor_.ProcessEventsMetricsForPresentedFrame(
         last_metrics_in_fixed_window, next_presentation_ts_, args);
@@ -1325,6 +1442,7 @@ TEST_F(ScrollJankV4ProcessorTest, InconsistentMixedFrameProduction) {
               .SetDidScroll(false)
               .SetTraceId(TraceId(650))
               .SetDispatchArgs(DispatchBeginFrameArgs::From(non_damaging_args))
+              .SetScrollBeginArrivalTimestamp(scroll_begin_arrival_ts)
               .Build());
       processor_.ProcessEventsMetricsForPresentedFrame(
           non_damaging_metrics, next_presentation_ts_, non_damaging_args);
@@ -1341,6 +1459,7 @@ TEST_F(ScrollJankV4ProcessorTest, InconsistentMixedFrameProduction) {
               .SetDidScroll(true)
               .SetTraceId(TraceId(651))
               .SetDispatchArgs(DispatchBeginFrameArgs::From(damaging_args))
+              .SetScrollBeginArrivalTimestamp(scroll_begin_arrival_ts)
               .Build());
       processor_.ProcessEventsMetricsForPresentedFrame(
           damaging_metrics, next_presentation_ts_, damaging_args);
@@ -1353,14 +1472,16 @@ TEST_F(ScrollJankV4ProcessorTest, InconsistentMixedFrameProduction) {
       AdvanceByVsyncs(1);
       viz::BeginFrameArgs args = CreateNextBeginFrameArgs();
       EventMetrics::List metrics;
-      metrics.push_back(metrics_creator_.InertialGestureScrollUpdateBuilder()
-                            .SetTimestamp(next_input_generation_ts_)
-                            .SetDelta(2.0f)
-                            .SetCausedFrameUpdate(true)
-                            .SetDidScroll(true)
-                            .SetTraceId(TraceId(damaging_frame * 10))
-                            .SetDispatchArgs(DispatchBeginFrameArgs::From(args))
-                            .Build());
+      metrics.push_back(
+          metrics_creator_.InertialGestureScrollUpdateBuilder()
+              .SetTimestamp(next_input_generation_ts_)
+              .SetDelta(2.0f)
+              .SetCausedFrameUpdate(true)
+              .SetDidScroll(true)
+              .SetTraceId(TraceId(damaging_frame * 10))
+              .SetDispatchArgs(DispatchBeginFrameArgs::From(args))
+              .SetScrollBeginArrivalTimestamp(scroll_begin_arrival_ts)
+              .Build());
       processor_.ProcessEventsMetricsForPresentedFrame(
           metrics, next_presentation_ts_, args);
       expected_results.ExpectIsNotJanky(damaging_frame * 10);
@@ -1385,6 +1506,7 @@ TEST_F(ScrollJankV4ProcessorTest, InconsistentMixedFrameProduction) {
             .SetTimestamp(next_input_generation_ts_)
             .SetCausedFrameUpdate(false)
             .SetDispatchArgs(DispatchBeginFrameArgs::From(end_args))
+            .SetScrollBeginArrivalTimestamp(scroll_begin_arrival_ts)
             .Build());
     processor_.ProcessEventsMetricsForPresentedFrame(
         end_metrics, next_presentation_ts_, end_args);
@@ -1400,6 +1522,207 @@ TEST_F(ScrollJankV4ProcessorTest, InconsistentMixedFrameProduction) {
   ASSERT_TRUE(status.ok()) << status.message();
   EXPECT_THAT(QueryTraceProcessor(kTraceQuery),
               ElementsAreArray(std::move(expected_results).Take()));
+}
+
+class MockScrollJankOsReporter : public ScrollJankOsReporter {
+ public:
+  MOCK_METHOD(void,
+              ReportScrollJankStats,
+              (uint32_t total_frames, uint32_t janky_frames),
+              (override));
+
+  base::WeakPtr<MockScrollJankOsReporter> GetWeakPtr() {
+    return weak_factory_.GetWeakPtr();
+  }
+
+ private:
+  base::WeakPtrFactory<MockScrollJankOsReporter> weak_factory_{this};
+};
+
+TEST_F(ScrollJankV4ProcessorTest, ReportsScrollJankStatsToOs) {
+  testing::StrictMock<MockScrollJankOsReporter> os_reporter;
+  processor_.SetOsReporter(os_reporter.GetWeakPtr());
+
+  const base::TimeTicks scroll_begin_arrival_ts =
+      next_input_generation_ts_ + kVsyncInterval / 4;
+
+  // Start a scroll and present a frame.
+  {
+    viz::BeginFrameArgs args = CreateNextBeginFrameArgs();
+    EventMetrics::List first_metrics;
+    first_metrics.push_back(
+        metrics_creator_.GestureScrollBeginBuilder()
+            .SetTimestamp(next_input_generation_ts_)
+            .SetArrivedInRendererCompositorTimestamp(scroll_begin_arrival_ts)
+            .Build());
+    first_metrics.push_back(
+        metrics_creator_.FirstGestureScrollUpdateBuilder()
+            .SetTimestamp(next_input_generation_ts_)
+            .SetDelta(5.0f)
+            .SetCausedFrameUpdate(true)
+            .SetDidScroll(true)
+            .SetTraceId(TraceId(10))
+            .SetDispatchArgs(DispatchBeginFrameArgs::From(args))
+            .SetScrollBeginArrivalTimestamp(scroll_begin_arrival_ts)
+            .Build());
+    processor_.ProcessEventsMetricsForPresentedFrame(
+        first_metrics, next_presentation_ts_, args);
+  }
+
+  // End the scroll.
+  {
+    AdvanceByVsyncs(1);
+    viz::BeginFrameArgs args = CreateNextBeginFrameArgs();
+    EventMetrics::List end_metrics;
+    end_metrics.push_back(
+        metrics_creator_.GestureScrollEndBuilder()
+            .SetTimestamp(next_input_generation_ts_)
+            .SetDispatchArgs(DispatchBeginFrameArgs::From(args))
+            .SetScrollBeginArrivalTimestamp(scroll_begin_arrival_ts)
+            .Build());
+
+    EXPECT_CALL(os_reporter, ReportScrollJankStats(1, 0)).Times(1);
+
+    processor_.ProcessEventsMetricsForPresentedFrame(
+        end_metrics, next_presentation_ts_, args);
+  }
+}
+
+struct ProcessorMode {
+  bool emit_scroll_jank_v4;
+  bool emit_scroll_timing;
+};
+
+class ScrollJankV4ProcessorModeTest
+    : public testing::TestWithParam<ProcessorMode> {};
+
+TEST_P(ScrollJankV4ProcessorModeTest, DispatchesToEnabledConsumers) {
+  const ProcessorMode mode = GetParam();
+  base::test::ScopedFeatureList feature_list;
+  if (mode.emit_scroll_jank_v4) {
+    feature_list.InitAndEnableFeature(features::kScrollJankV4Metric);
+  } else {
+    feature_list.InitAndDisableFeature(features::kScrollJankV4Metric);
+  }
+  ScrollJankV4Processor processor(mode.emit_scroll_timing);
+  EventMetricsTestCreator metrics_creator;
+  base::HistogramTester histogram_tester;
+
+  constexpr base::TimeTicks kScrollBeginGenerated = MillisSinceEpoch(4);
+  constexpr base::TimeTicks kScrollId = MillisSinceEpoch(8);
+  constexpr base::TimeTicks kFrameTime = MillisSinceEpoch(16);
+  constexpr base::TimeTicks kPresentationTime = MillisSinceEpoch(32);
+  const viz::BeginFrameArgs args = viz::BeginFrameArgs::Create(
+      BEGINFRAME_FROM_HERE, /*source_id=*/1, /*sequence_number=*/1, kFrameTime,
+      kFrameTime + kVsyncInterval / 3, kVsyncInterval,
+      viz::BeginFrameArgs::BeginFrameArgsType::NORMAL);
+
+  EventMetrics::List events_metrics;
+  events_metrics.push_back(
+      metrics_creator.FirstGestureScrollUpdateBuilder()
+          .SetTimestamp(MillisSinceEpoch(12))
+          .SetDelta(1.0f)
+          .SetDidScroll(true)
+          .SetCausedFrameUpdate(true)
+          .SetScrollInputType(ui::ScrollInputType::kTouchscreen)
+          .SetDispatchArgs(DispatchBeginFrameArgs::From(args))
+          .SetScrollBeginArrivalTimestamp(kScrollId)
+          .SetScrollBeginGeneratedTimestamp(kScrollBeginGenerated)
+          .AddAppliedScrollObservation(kScroller)
+          .Build());
+  const EventMetrics* const update = events_metrics.back().get();
+  events_metrics.push_back(
+      metrics_creator.GestureScrollEndBuilder()
+          .SetTimestamp(MillisSinceEpoch(14))
+          .SetCausedFrameUpdate(false)
+          .SetScrollInputType(ui::ScrollInputType::kTouchscreen)
+          .SetDispatchArgs(DispatchBeginFrameArgs::From(args))
+          .SetScrollBeginArrivalTimestamp(kScrollId)
+          .SetScrollBeginGeneratedTimestamp(kScrollBeginGenerated)
+          .Build());
+  const EventMetrics* const end = events_metrics.back().get();
+
+  processor.ProcessEventsMetricsForPresentedFrame(events_metrics,
+                                                  kPresentationTime, args);
+
+  ASSERT_EQ(events_metrics.size(), 2u);
+  // Processing annotates events in place without replacing or reordering them.
+  ASSERT_EQ(events_metrics[0].get(), update);
+  ASSERT_EQ(events_metrics[1].get(), end);
+  for (const std::unique_ptr<EventMetrics>& event : events_metrics) {
+    EXPECT_EQ(event->AsScroll()->scroll_jank_v4_result_id().has_value(),
+              mode.emit_scroll_jank_v4 || mode.emit_scroll_timing);
+  }
+
+  if (mode.emit_scroll_timing) {
+    EXPECT_THAT(processor.TakeCompletedScrollTimingInfos(),
+                ElementsAre(ScrollTimingInfo{
+                    .start_time = kScrollBeginGenerated,
+                    .end_time = kPresentationTime,
+                    .input_type = ui::ScrollInputType::kTouchscreen,
+                    .element_id = kScroller,
+                }));
+  } else {
+    EXPECT_THAT(processor.TakeCompletedScrollTimingInfos(), IsEmpty());
+  }
+  histogram_tester.ExpectTotalCount(
+      "Event.ScrollJank.DelayedFramesPercentage4.PerScroll",
+      mode.emit_scroll_jank_v4 ? 1 : 0);
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    AllFeatureModes,
+    ScrollJankV4ProcessorModeTest,
+    testing::Values(
+        ProcessorMode{.emit_scroll_jank_v4 = false,
+                      .emit_scroll_timing = false},
+        ProcessorMode{.emit_scroll_jank_v4 = true, .emit_scroll_timing = false},
+        ProcessorMode{.emit_scroll_jank_v4 = false, .emit_scroll_timing = true},
+        ProcessorMode{.emit_scroll_jank_v4 = true,
+                      .emit_scroll_timing = true}));
+
+TEST(ScrollJankV4ProcessorIntegrationTest, CompositorIdleDoesNotEndV4Scroll) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(features::kScrollJankV4Metric);
+  ScrollJankV4Processor processor(/*emit_scroll_timing=*/true);
+  EventMetricsTestCreator metrics_creator;
+  base::HistogramTester histogram_tester;
+
+  constexpr base::TimeTicks kScrollBeginGenerated = MillisSinceEpoch(4);
+  constexpr base::TimeTicks kScrollId = MillisSinceEpoch(8);
+  constexpr base::TimeTicks kFrameTime = MillisSinceEpoch(16);
+  constexpr base::TimeTicks kPresentationTime = MillisSinceEpoch(32);
+  const viz::BeginFrameArgs args = viz::BeginFrameArgs::Create(
+      BEGINFRAME_FROM_HERE, /*source_id=*/1, /*sequence_number=*/1, kFrameTime,
+      kFrameTime + kVsyncInterval / 3, kVsyncInterval,
+      viz::BeginFrameArgs::BeginFrameArgsType::NORMAL);
+  EventMetrics::List events_metrics;
+  events_metrics.push_back(
+      metrics_creator.FirstGestureScrollUpdateBuilder()
+          .SetTimestamp(MillisSinceEpoch(12))
+          .SetDelta(1.0f)
+          .SetDidScroll(true)
+          .SetCausedFrameUpdate(true)
+          .SetScrollInputType(ui::ScrollInputType::kTouchscreen)
+          .SetDispatchArgs(DispatchBeginFrameArgs::From(args))
+          .SetScrollBeginArrivalTimestamp(kScrollId)
+          .SetScrollBeginGeneratedTimestamp(kScrollBeginGenerated)
+          .AddAppliedScrollObservation(kScroller)
+          .Build());
+
+  processor.ProcessEventsMetricsForPresentedFrame(events_metrics,
+                                                  kPresentationTime, args);
+  processor.OnCompositorIdle();
+
+  EXPECT_THAT(processor.TakeCompletedScrollTimingInfos(),
+              ElementsAre(ScrollTimingInfo{
+                  .start_time = kScrollBeginGenerated,
+                  .end_time = kPresentationTime,
+                  .input_type = ui::ScrollInputType::kTouchscreen,
+                  .element_id = kScroller,
+              }));
+  histogram_tester.ExpectTotalCount(
+      "Event.ScrollJank.DelayedFramesPercentage4.PerScroll", 0);
 }
 
 }  // namespace cc

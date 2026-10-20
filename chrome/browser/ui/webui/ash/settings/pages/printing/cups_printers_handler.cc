@@ -22,13 +22,10 @@
 #include "base/memory/ptr_util.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/metrics/histogram_macros.h"
-#include "base/path_service.h"
 #include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
 #include "base/task/thread_pool.h"
 #include "base/values.h"
-#include "chrome/browser/ash/browser_delegate/browser_controller.h"
-#include "chrome/browser/ash/browser_delegate/browser_delegate.h"
 #include "chrome/browser/ash/printing/cups_printers_manager.h"
 #include "chrome/browser/ash/printing/ppd_provider_factory.h"
 #include "chrome/browser/ash/printing/printer_event_tracker.h"
@@ -41,8 +38,9 @@
 #include "chrome/browser/ui/ash/system_web_apps/system_web_app_utils.h"
 #include "chrome/browser/ui/select_file_policy/chrome_select_file_policy.h"
 #include "chrome/browser/ui/webui/ash/settings/pages/printing/server_printer_url_util.h"
-#include "chrome/common/chrome_paths.h"
 #include "chrome/grit/generated_resources.h"
+#include "chromeos/ash/components/browser_delegate/browser_controller.h"
+#include "chromeos/ash/components/browser_delegate/browser_delegate.h"
 #include "chromeos/printing/cups_printer_status.h"
 #include "chromeos/printing/ppd_line_reader.h"
 #include "chromeos/printing/printer_configuration.h"
@@ -60,6 +58,7 @@
 #include "net/base/ip_endpoint.h"
 #include "printing/backend/print_backend.h"
 #include "printing/printer_status.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/shell_dialogs/selected_file_info.h"
 #include "url/gurl.h"
@@ -241,18 +240,21 @@ GURL GenerateHttpCupsServerUrl(const GURL& server_url) {
 
 }  // namespace
 
-CupsPrintersHandler::CupsPrintersHandler(Profile* profile,
-                                         CupsPrintersManager* printers_manager)
-    : CupsPrintersHandler(profile,
-                          CreatePpdProvider(profile),
-                          printers_manager) {}
+CupsPrintersHandler::CupsPrintersHandler(
+    scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
+    Profile* profile,
+    CupsPrintersManager* printers_manager)
+    : CupsPrintersHandler(
+          profile,
+          CreatePpdProvider(std::move(url_loader_factory), profile),
+          printers_manager) {}
 
 CupsPrintersHandler::CupsPrintersHandler(
     Profile* profile,
-    scoped_refptr<PpdProvider> ppd_provider,
+    std::unique_ptr<PpdProvider> ppd_provider,
     CupsPrintersManager* printers_manager)
     : profile_(profile),
-      ppd_provider_(ppd_provider),
+      ppd_provider_(std::move(ppd_provider)),
       printers_manager_(printers_manager),
       endpoint_resolver_(
           std::make_unique<local_discovery::EndpointResolver>()) {}
@@ -260,11 +262,11 @@ CupsPrintersHandler::CupsPrintersHandler(
 // static
 std::unique_ptr<CupsPrintersHandler> CupsPrintersHandler::CreateForTesting(
     Profile* profile,
-    scoped_refptr<PpdProvider> ppd_provider,
+    std::unique_ptr<PpdProvider> ppd_provider,
     CupsPrintersManager* printers_manager) {
   // Using 'new' to access non-public constructor.
-  return base::WrapUnique(
-      new CupsPrintersHandler(profile, ppd_provider, printers_manager));
+  return base::WrapUnique(new CupsPrintersHandler(
+      profile, std::move(ppd_provider), printers_manager));
 }
 
 CupsPrintersHandler::~CupsPrintersHandler() {
@@ -363,9 +365,10 @@ void CupsPrintersHandler::RegisterMessages() {
 }
 
 void CupsPrintersHandler::OnJavascriptAllowed() {
-  DCHECK(!printers_manager_observation_.IsObserving());
+  CHECK(!printers_manager_observation_.IsObserving(),
+        base::NotFatalUntil::M162);
   printers_manager_observation_.Observe(printers_manager_.get());
-  DCHECK(!local_printers_observation_.IsObserving());
+  CHECK(!local_printers_observation_.IsObserving(), base::NotFatalUntil::M162);
   local_printers_observation_.Observe(printers_manager_.get());
 }
 
@@ -571,9 +574,11 @@ void CupsPrintersHandler::WriteAndDisplayPpdFile(
   const base::FilePath downloads_path =
       DownloadPrefs::FromDownloadManager(profile_->GetDownloadManager())
           ->DownloadPath();
-  // To make sure an appropriate filename is created, remove any dir separators.
+  // To make sure an appropriate filename is created, remove any dir separators
+  // and characters that are significant in URL syntax (the path is later turned
+  // into a file:// URL).
   std::string sanitized_name = printer_name;
-  base::ReplaceChars(sanitized_name, "/", "_", &sanitized_name);
+  base::ReplaceChars(sanitized_name, "/\\#?%", "_", &sanitized_name);
   const base::FilePath ppd_file_path_base =
       downloads_path.Append(sanitized_name).AddExtension("ppd");
 
@@ -592,9 +597,14 @@ void CupsPrintersHandler::DisplayPpdFile(const base::FilePath& ppd_file_path) {
   }
 
   PRINTER_LOG(DEBUG) << "PPD saved to " << ppd_file_path;
+  GURL file_url = net::FilePathToFileURL(ppd_file_path);
+  if (!file_url.is_valid()) {
+    PRINTER_LOG(ERROR) << ppd_file_path << " is not a valid file url";
+    return;
+  }
+
   ash::NewWindowDelegate::GetInstance()->OpenUrl(
-      GURL(base::StringPrintf("file://%s", ppd_file_path.value().c_str())),
-      ash::NewWindowDelegate::OpenUrlFrom::kUserInteraction,
+      file_url, ash::NewWindowDelegate::OpenUrlFrom::kUserInteraction,
       ash::NewWindowDelegate::Disposition::kSwitchToTab);
 }
 
@@ -934,11 +944,11 @@ void CupsPrintersHandler::OnAddedOrEditedPrinterCommon(
     const Printer& printer,
     PrinterSetupResult result_code) {
   if (printer.IsZeroconf()) {
-    UMA_HISTOGRAM_ENUMERATION("Printing.CUPS.ZeroconfPrinterSetupResult",
-                              result_code, PrinterSetupResult::kMaxValue);
+    base::UmaHistogramEnumeration("Printing.CUPS.ZeroconfPrinterSetupResult",
+                                  result_code);
   } else {
-    UMA_HISTOGRAM_ENUMERATION("Printing.CUPS.PrinterSetupResult", result_code,
-                              PrinterSetupResult::kMaxValue);
+    base::UmaHistogramEnumeration("Printing.CUPS.PrinterSetupResult",
+                                  result_code);
   }
 
   switch (result_code) {
@@ -1145,7 +1155,7 @@ void CupsPrintersHandler::ResolvePrintersDone(
 
 void CupsPrintersHandler::FileSelected(const ui::SelectedFileInfo& file,
                                        int index) {
-  DCHECK(!webui_callback_id_.empty());
+  CHECK(!webui_callback_id_.empty(), base::NotFatalUntil::M162);
 
   select_file_dialog_ = nullptr;
 
@@ -1549,12 +1559,12 @@ void CupsPrintersHandler::OnQueryPrintServerCompleted(
 
 void CupsPrintersHandler::HandleOpenPrintManagementApp(
     const base::ListValue& args) {
-  DCHECK(args.empty());
+  CHECK(args.empty(), base::NotFatalUntil::M162);
   ash::ShowPrintManagementApp(profile_);
 }
 
 void CupsPrintersHandler::HandleOpenScanningApp(const base::ListValue& args) {
-  DCHECK(args.empty());
+  CHECK(args.empty(), base::NotFatalUntil::M162);
   ash::ShowScanningApp(profile_);
 }
 

@@ -1282,9 +1282,11 @@ TEST_P(AmbientControllerTestForAnyUiSettings, ShowsOnMultipleDisplays) {
   EXPECT_TRUE(GetContainerViews().front()->GetViewByID(expected_child_view_id));
   EXPECT_TRUE(GetContainerViews().back()->GetViewByID(expected_child_view_id));
   // Check that each root controller has an ambient widget.
-  for (auto* ctrl : RootWindowController::root_window_controllers())
+  for (ash::RootWindowController* ctrl :
+       RootWindowController::root_window_controllers()) {
     EXPECT_TRUE(ctrl->ambient_widget_for_testing() &&
                 ctrl->ambient_widget_for_testing()->IsVisible());
+  }
 }
 
 TEST_P(AmbientControllerTestForAnyUiSettings, RespondsToDisplayAdded) {
@@ -1303,9 +1305,11 @@ TEST_P(AmbientControllerTestForAnyUiSettings, RespondsToDisplayAdded) {
   EXPECT_TRUE(ambient_controller()->IsShowing());
   EXPECT_EQ(screen->GetNumDisplays(), 2);
   EXPECT_EQ(GetContainerViews().size(), 2u);
-  for (auto* ctrl : RootWindowController::root_window_controllers())
+  for (ash::RootWindowController* ctrl :
+       RootWindowController::root_window_controllers()) {
     EXPECT_TRUE(ctrl->ambient_widget_for_testing() &&
                 ctrl->ambient_widget_for_testing()->IsVisible());
+  }
 }
 
 TEST_F(AmbientControllerTest, RespondsToDisplayAddedWhileInitializing) {
@@ -1334,7 +1338,8 @@ TEST_F(AmbientControllerTest, RespondsToDisplayAddedWhileInitializing) {
   EXPECT_TRUE(ambient_controller()->IsShowing());
   EXPECT_EQ(display::Screen::Get()->GetNumDisplays(), 2);
   EXPECT_EQ(GetContainerViews().size(), 2u);
-  for (auto* ctrl : RootWindowController::root_window_controllers()) {
+  for (ash::RootWindowController* ctrl :
+       RootWindowController::root_window_controllers()) {
     EXPECT_TRUE(ctrl->ambient_widget_for_testing() &&
                 ctrl->ambient_widget_for_testing()->IsVisible());
   }
@@ -1915,10 +1920,14 @@ TEST_F(AmbientControllerForManagedScreensaverTest,
 class AmbientControllerForManagedScreensaverLoginScreenTest
     : public AmbientControllerForManagedScreensaverTest {
  public:
-  void SetUp() override {
+  void SetUpInitParams(AshTestHelper::InitParams& init_params) override {
+    AmbientControllerForManagedScreensaverTest::SetUpInitParams(init_params);
     // For login screen tests we don't want to start a session rather we want to
     // start on the login screen.
-    set_start_session(false);
+    init_params.start_session = false;
+  }
+
+  void SetUp() override {
     AmbientControllerForManagedScreensaverTest::SetUp();
     SetAmbientModeManagedScreensaverEnabled(/*enabled=*/true);
     managed_policy_handler()->SetImagesForTesting(image_file_paths_);

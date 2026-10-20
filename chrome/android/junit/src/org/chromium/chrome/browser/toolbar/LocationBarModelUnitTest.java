@@ -15,6 +15,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import android.content.Context;
+import android.content.res.Resources;
 import android.view.ContextThemeWrapper;
 
 import androidx.annotation.DrawableRes;
@@ -49,7 +50,10 @@ import org.chromium.chrome.browser.paint_preview.TabbedPaintPreview;
 import org.chromium.chrome.browser.pdf.PdfUtils.PdfPageType;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.tab.Tab;
+import org.chromium.chrome.browser.theme.ThemeUtils;
+import org.chromium.chrome.browser.ui.theme.BrandedColorScheme;
 import org.chromium.components.embedder_support.util.UrlConstants;
+import org.chromium.components.omnibox.OmniboxFeatureList;
 import org.chromium.components.omnibox.OmniboxUrlEmphasizerJni;
 import org.chromium.components.security_state.ConnectionMaliciousContentStatus;
 import org.chromium.components.security_state.ConnectionSecurityLevel;
@@ -93,6 +97,7 @@ public class LocationBarModelUnitTest {
     @Mock private SecurityStateModel.Natives mSecurityStateModelJni;
 
     @Mock private TabbedPaintPreview mTabbedPaintPreview;
+    @Mock private WebContents mWebContentsMock;
 
     private final UserDataHost mUserDataHost = new UserDataHost();
     private static final @ConnectionSecurityLevel int[] SECURITY_LEVELS = {
@@ -161,6 +166,16 @@ public class LocationBarModelUnitTest {
     @After
     public void tearDown() {
         mLocationBarModel.destroy();
+    }
+
+    private void setUpLoadingHttpOrHttpsPage() {
+        mLocationBarModel.initializeWithNative();
+        doReturn(true).when(mRegularTabMock).isInitialized();
+        doReturn(true).when(mRegularTabMock).isLoading();
+        doReturn(mExampleGurl)
+                .when(mLocationBarModelJni)
+                .getUrlOfVisibleNavigationEntry(Mockito.anyLong());
+        mLocationBarModel.setTab(mRegularTabMock, mRegularProfileMock);
     }
 
     @Test
@@ -474,6 +489,76 @@ public class LocationBarModelUnitTest {
     }
 
     @Test
+    public void
+            getSecurityIconResource_connectionNone_nonHttpOrHttps_returnsOmniboxInfoEvenWhenLoading() {
+        mLocationBarModel.initializeWithNative();
+        doReturn(true).when(mRegularTabMock).isInitialized();
+        doReturn(true).when(mRegularTabMock).isLoading();
+
+        // Internal chrome:// scheme.
+        doReturn(new GURL("chrome://flags"))
+                .when(mLocationBarModelJni)
+                .getUrlOfVisibleNavigationEntry(Mockito.anyLong());
+        mLocationBarModel.setTab(mRegularTabMock, mRegularProfileMock);
+
+        assertResourceIdIs(
+                R.drawable.omnibox_info,
+                ConnectionSecurityLevel.NONE,
+                ConnectionMaliciousContentStatus.NONE);
+
+        // file:// scheme.
+        doReturn(new GURL("file:///sdcard/test.html"))
+                .when(mLocationBarModelJni)
+                .getUrlOfVisibleNavigationEntry(Mockito.anyLong());
+        mLocationBarModel.setTab(mRegularTabMock, mRegularProfileMock);
+
+        assertResourceIdIs(
+                R.drawable.omnibox_info,
+                ConnectionSecurityLevel.NONE,
+                ConnectionMaliciousContentStatus.NONE);
+    }
+
+    @Test
+    public void getSecurityIconResource_suppressesIconDuringLoading() {
+        setUpLoadingHttpOrHttpsPage();
+
+        // NONE level -> icon suppressed.
+        assertResourceIdIs(
+                Resources.ID_NULL,
+                ConnectionSecurityLevel.NONE,
+                ConnectionMaliciousContentStatus.NONE);
+        // WARNING level -> icon not suppressed.
+        assertResourceIdIs(
+                R.drawable.omnibox_not_secure_warning,
+                ConnectionSecurityLevel.WARNING,
+                ConnectionMaliciousContentStatus.NONE);
+        // DANGEROUS level -> icon not suppressed.
+        assertResourceIdIs(
+                R.drawable.omnibox_dangerous,
+                ConnectionSecurityLevel.DANGEROUS,
+                ConnectionMaliciousContentStatus.NONE);
+        // SECURE level -> icon not suppressed.
+        assertResourceIdIs(
+                R.drawable.omnibox_https_valid_page_info,
+                ConnectionSecurityLevel.SECURE,
+                ConnectionMaliciousContentStatus.NONE);
+    }
+
+    @Test
+    @DisableFeatures({
+        OmniboxFeatureList.SUPPRESS_STATUS_ICON_DURING_HTTP_NAVIGATION,
+        ChromeFeatureList.ANDROID_BOTTOM_BAR
+    })
+    public void getSecurityIconResource_connectionNone_httpOrHttps_notSuppressedWhenDisabled() {
+        setUpLoadingHttpOrHttpsPage();
+
+        assertResourceIdIs(
+                R.drawable.omnibox_info,
+                ConnectionSecurityLevel.NONE,
+                ConnectionMaliciousContentStatus.NONE);
+    }
+
+    @Test
     public void getSecurityIconResource_connectionWarning_returnsNotSecureWarning() {
         mLocationBarModel.initializeWithNative();
 
@@ -511,6 +596,39 @@ public class LocationBarModelUnitTest {
                 R.drawable.omnibox_dangerous,
                 ConnectionSecurityLevel.DANGEROUS,
                 ConnectionMaliciousContentStatus.NONE);
+    }
+
+    @Test
+    public void
+            getSecurityIconResource_connectionDangerous_warnableSuspiciousSite_returnsGppMaybe() {
+        mLocationBarModel.initializeWithNative();
+        assertResourceIdIs(
+                R.drawable.gpp_maybe,
+                ConnectionSecurityLevel.DANGEROUS,
+                ConnectionMaliciousContentStatus.WARNABLE_SUSPICIOUS_SITE);
+    }
+
+    @Test
+    public void getSecurityIconColor_dangerousWarnableSuspiciousSite_returnsThemedTint() {
+        when(mRegularTabMock.getWebContents()).thenReturn(mWebContentsMock);
+        doReturn(true).when(mRegularTabMock).isInitialized();
+        mLocationBarModel.setTab(mRegularTabMock, mRegularProfileMock);
+        when(mSecurityStateModelJni.getMaliciousContentStatusForWebContents(mWebContentsMock))
+                .thenReturn(ConnectionMaliciousContentStatus.WARNABLE_SUSPICIOUS_SITE);
+
+        assertEquals(
+                ThemeUtils.getThemedToolbarIconTintRes(BrandedColorScheme.APP_DEFAULT),
+                mLocationBarModel.getSecurityIconColorWithSecurityLevel(
+                        ConnectionSecurityLevel.DANGEROUS,
+                        BrandedColorScheme.APP_DEFAULT,
+                        /* isIncognito= */ false));
+
+        assertEquals(
+                ThemeUtils.getThemedToolbarIconTintRes(BrandedColorScheme.INCOGNITO),
+                mLocationBarModel.getSecurityIconColorWithSecurityLevel(
+                        ConnectionSecurityLevel.DANGEROUS,
+                        BrandedColorScheme.INCOGNITO,
+                        /* isIncognito= */ true));
     }
 
     @Test
@@ -701,5 +819,36 @@ public class LocationBarModelUnitTest {
         } finally {
             model.destroy();
         }
+    }
+
+    @Test
+    public void shouldEmphasizeHttpsScheme_DependsOnBrandColorAndIncognito() {
+        doReturn(true).when(mRegularTabMock).isInitialized();
+        doReturn(false).when(mRegularTabMock).isNativePage();
+        mLocationBarModel.setTab(mRegularTabMock, mRegularProfileMock);
+
+        // Default theme color (e.g. tablet or unthemed page) -> emphasize HTTPS scheme.
+        Assert.assertFalse(mLocationBarModel.isUsingBrandColor());
+        Assert.assertTrue(mLocationBarModel.shouldEmphasizeHttpsScheme());
+
+        // Custom brand color on regular web page -> do not emphasize HTTPS scheme.
+        mLocationBarModel.setPrimaryColor(android.graphics.Color.RED);
+        Assert.assertTrue(mLocationBarModel.isUsingBrandColor());
+        Assert.assertFalse(mLocationBarModel.shouldEmphasizeHttpsScheme());
+
+        // Native page ignores brand color -> emphasize HTTPS scheme.
+        doReturn(true).when(mRegularTabMock).isNativePage();
+        mLocationBarModel.setPrimaryColor(android.graphics.Color.RED);
+        Assert.assertFalse(mLocationBarModel.isUsingBrandColor());
+        Assert.assertTrue(mLocationBarModel.shouldEmphasizeHttpsScheme());
+
+        // Incognito tab -> never emphasize HTTPS scheme.
+        doReturn(true).when(mPrimaryOtrProfileMock).isIncognitoBranded();
+        doReturn(true).when(mIncognitoTabMock).isInitialized();
+        doReturn(mUserDataHost).when(mIncognitoTabMock).getUserDataHost();
+        mLocationBarModel.setTab(mIncognitoTabMock, mPrimaryOtrProfileMock);
+        mLocationBarModel.setPrimaryColor(android.graphics.Color.RED);
+        Assert.assertFalse(mLocationBarModel.isUsingBrandColor());
+        Assert.assertFalse(mLocationBarModel.shouldEmphasizeHttpsScheme());
     }
 }

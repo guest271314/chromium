@@ -205,7 +205,8 @@
       },
       {
         "args": [
-          "--test-launcher-jobs=3"
+          "--test-launcher-jobs=3",
+          "--disable-features=WebUIOmniboxPopup,WebUIOmniboxAimPopup"
         ],
         "merge": {
           "script": "//testing/merge_scripts/standard_gtest_merge.py"
@@ -218,7 +219,7 @@
             "os": "Windows-10-19045"
           },
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com",
-          "shards": 120
+          "shards": 140
         },
         "test": "browser_tests",
         "test_id_prefix": "ninja://chrome/test:browser_tests/"
@@ -780,7 +781,8 @@
       },
       {
         "args": [
-          "--test-launcher-jobs=3"
+          "--test-launcher-jobs=3",
+          "--disable-features=WebUIOmniboxPopup,WebUIOmniboxAimPopup"
         ],
         "merge": {
           "script": "//testing/merge_scripts/standard_gtest_merge.py"
@@ -793,7 +795,7 @@
             "os": "Windows-10-19045"
           },
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com",
-          "shards": 18
+          "shards": 24
         },
         "test": "interactive_ui_tests",
         "test_id_prefix": "ninja://chrome/test:interactive_ui_tests/"
@@ -1009,6 +1011,9 @@
         "test_id_prefix": "ninja://pdf:pdf_unittests/"
       },
       {
+        "args": [
+          "--gtest_filter=-ToDouble/BytecodeInterpreterCastTest.Cast/9223372036854775806_Double_9223372036854774784_000000_Gt:ToDouble/BytecodeInterpreterCastTest.Cast/9223372036854775806_Double_9223372036854774784_000000_Le:ToDouble/BytecodeInterpreterCastTest.Cast/9223372036854775806_Double_9223372036854775808_000000_Ge:ToDouble/BytecodeInterpreterCastTest.Cast/9223372036854775806_Double_9223372036854775808_000000_Lt"
+        ],
         "merge": {
           "script": "//testing/merge_scripts/standard_gtest_merge.py"
         },
@@ -1058,7 +1063,6 @@
         "test_id_prefix": "ninja://third_party/pthreadpool:pthreadpool_unittests/"
       },
       {
-        "experiment_percentage": 100,
         "merge": {
           "script": "//testing/merge_scripts/standard_gtest_merge.py"
         },
@@ -1089,6 +1093,22 @@
         },
         "test": "remoting_unittests",
         "test_id_prefix": "ninja://remoting:remoting_unittests/"
+      },
+      {
+        "merge": {
+          "script": "//testing/merge_scripts/standard_gtest_merge.py"
+        },
+        "module_name": "//rlz:rlz_unittests",
+        "module_scheme": "gtest",
+        "name": "rlz_unittests",
+        "swarming": {
+          "dimensions": {
+            "os": "Windows-10-19045"
+          },
+          "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
+        },
+        "test": "rlz_unittests",
+        "test_id_prefix": "ninja://rlz:rlz_unittests/"
       },
       {
         "merge": {
@@ -1254,7 +1274,8 @@
       },
       {
         "args": [
-          "--test-launcher-jobs=3"
+          "--test-launcher-jobs=3",
+          "--disable-features=WebUIOmniboxPopup,WebUIOmniboxAimPopup"
         ],
         "merge": {
           "script": "//testing/merge_scripts/standard_gtest_merge.py"
@@ -1267,7 +1288,7 @@
             "os": "Windows-10-19045"
           },
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com",
-          "shards": 3
+          "shards": 6
         },
         "test": "sync_integration_tests",
         "test_id_prefix": "ninja://chrome/test:sync_integration_tests/"

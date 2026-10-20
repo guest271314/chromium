@@ -19,7 +19,6 @@
 #include "chrome/browser/permissions/permission_manager_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/web_applications/isolated_web_apps/isolated_web_app_features.h"
-#include "chrome/browser/web_applications/isolated_web_apps/policy/isolated_web_app_policy_constants.h"
 #include "chrome/browser/web_applications/policy/web_app_policy_constants.h"
 #include "chrome/browser/web_applications/web_app_filter.h"
 #include "chrome/browser/web_applications/web_app_provider.h"
@@ -39,6 +38,7 @@
 #include "chrome/browser/ash/app_mode/isolated_web_app/kiosk_iwa_manager.h"
 #include "chrome/browser/ash/app_mode/web_app/kiosk_web_app_data.h"
 #include "chrome/browser/ash/app_mode/web_app/kiosk_web_app_manager.h"
+#include "chrome/browser/ash/profiles/profile_helper.h"
 #include "chrome/common/url_constants.h"
 #include "chromeos/components/kiosk/kiosk_utils.h"
 #include "components/user_manager/user_manager.h"
@@ -109,16 +109,16 @@ bool IsDevModeInstalledIwaOrigin(content::RenderFrameHost& host,
   ASSIGN_OR_RETURN(const web_app::WebAppRegistrar& registrar,
                    GetRegistrar(host), [] { return false; });
   return registrar
-      .FindBestAppWithUrlInScope(origin.GetURL(),
-                                 web_app::WebAppFilter::IsDevModeIsolatedApp(),
-                                 {.exclude_scope_extensions = true})
+      .FindBestAppWithUrlInScope(
+          origin.GetURL(), web_app::WebAppFilter::IsDevModeIsolatedApp(),
+          {.scope_score_options = {.exclude_scope_extensions = true}})
       .has_value();
 }
 
-bool IsAffiliatedUser() {
+bool IsAffiliatedUser(Profile* profile) {
 #if BUILDFLAG(IS_CHROMEOS)
   const user_manager::User* user =
-      user_manager::UserManager::Get()->GetPrimaryUser();
+      ash::ProfileHelper::Get()->GetUserByProfile(profile);
   return (user != nullptr) && user->IsAffiliated();
 #else
   return false;
@@ -127,8 +127,8 @@ bool IsAffiliatedUser() {
 
 bool IsTrustedContext(content::RenderFrameHost& host,
                       const url::Origin& origin) {
-  // Do not create the service for the incognito mode.
-  if (GetProfile(host)->IsIncognitoProfile()) {
+  // Do not create the service for incognito or enterprise isolated mode.
+  if (GetProfile(host)->IsPrimaryOTRProfileWithRegularParent()) {
     return false;
   }
 
@@ -153,7 +153,7 @@ bool IsTrustedContext(content::RenderFrameHost& host,
           origin.GetURL(),
           web_app::WebAppFilter::PolicyInstalledIsolatedWebApp() |
               web_app::WebAppFilter::IsDevModeIsolatedApp(),
-          {.exclude_scope_extensions = true})
+          {.scope_score_options = {.exclude_scope_extensions = true}})
       .has_value();
 }
 
@@ -213,7 +213,7 @@ void DeviceServiceImpl::Create(
     mojo::PendingReceiver<blink::mojom::DeviceAPIService> receiver,
     std::unique_ptr<DeviceAttributeApi> device_attribute_api) {
   CHECK(host);
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
 
   if (host->GetParentOrOuterDocumentOrEmbedder()) {
     mojo::ReportBadMessage(
@@ -311,7 +311,7 @@ void DeviceServiceImpl::GetAnnotatedLocation(
 void DeviceServiceImpl::GetDeviceAttribute(
     void (DeviceAttributeApi::*method)(DeviceAttributeCallback callback),
     DeviceAttributeCallback callback) {
-  if (!IsAffiliatedUser() &&
+  if (!IsAffiliatedUser(GetProfile(render_frame_host())) &&
       !IsDevModeInstalledIwaOrigin(render_frame_host(), origin())) {
     device_attribute_api_->ReportNotAffiliatedError(std::move(callback));
     return;

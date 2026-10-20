@@ -138,8 +138,7 @@ public class CustomTabToolbarCoordinator {
     private void updateTitleBarVisibility() {
         if (mToolbarManager == null) return;
 
-        int titleVisibilityState =
-                CustomTabsConnection.getInstance().getTitleVisibilityState(mIntentDataProvider);
+        int titleVisibilityState = mIntentDataProvider.getTitleVisibilityState();
         switch (titleVisibilityState) {
             case TitleVisibility.HIDDEN:
                 mToolbarManager.setShowTitle(false);
@@ -273,6 +272,8 @@ public class CustomTabToolbarCoordinator {
         Intent addedIntent = new Intent();
         addedIntent.setData(Uri.parse(url.getSpec()));
         addedIntent.putExtra(Intent.EXTRA_SUBJECT, title);
+        mIntentDataProvider.maybeAddAdditionalContentExtrasToOutboundIntent(
+                mTabProvider, addedIntent, params.getId());
         try {
             ActivityOptions options = ActivityOptions.makeBasic();
             ApiCompatibilityUtils.setActivityOptionsBackgroundActivityStartAllowAlways(options);
@@ -325,6 +326,9 @@ public class CustomTabToolbarCoordinator {
         } else {
             mBrowserControlsVisibilityManager.releaseAndroidControlsHidingToken(
                     mControlsHidingToken);
+            if (ChromeFeatureList.sBrowserControlsHidingToken.isEnabled()) {
+                mControlsHidingToken = TokenHolder.INVALID_TOKEN;
+            }
         }
     }
 

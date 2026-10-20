@@ -6,7 +6,6 @@
 
 #include "components/autofill/core/common/aliases.h"
 #include "components/autofill/core/common/form_field_data.h"
-#include "ui/gfx/geometry/rect_f.h"
 #include "url/gurl.h"
 #include "url/origin.h"
 
@@ -84,6 +83,11 @@ StubPasswordManagerDriver::GetPasswordAutofillManager() {
   return nullptr;
 }
 
+autofill::PasswordManagerDelegate*
+StubPasswordManagerDriver::GetPasswordManagerDelegate() {
+  return nullptr;
+}
+
 bool StubPasswordManagerDriver::IsDirectChildOfPrimaryMainFrame() const {
   return false;
 }
@@ -104,26 +108,34 @@ int StubPasswordManagerDriver::GetFrameId() const {
   return GetId().GetUnsafeValue();
 }
 
+void StubPasswordManagerDriver::set_last_committed_url(const GURL& url) {
+  last_committed_url_ = url;
+  last_committed_origin_ = url::Origin::Create(url);
+}
+
 const GURL& StubPasswordManagerDriver::GetLastCommittedURL() const {
-  return GURL::EmptyGURL();
+  return last_committed_url_;
 }
 
 const url::Origin& StubPasswordManagerDriver::GetLastCommittedOrigin() const {
-  return opaque_origin_;
+  return last_committed_origin_;
 }
 
 bool StubPasswordManagerDriver::HasCrossOriginAncestor() const {
   return false;
 }
 
-gfx::RectF StubPasswordManagerDriver::TransformToRootCoordinates(
-    const gfx::RectF& bounds_in_frame_coordinates) {
-  return gfx::RectF();
-}
-
 void StubPasswordManagerDriver::CheckViewAreaVisible(
     autofill::FieldRendererId field_id,
     base::OnceCallback<void(bool)>) {}
+
+bool StubPasswordManagerDriver::HasValidURL(bool may_kill_renderer) {
+  return true;
+}
+
+bool StubPasswordManagerDriver::IsRenderFrameHostSupported() {
+  return true;
+}
 
 autofill::AutofillDriver* StubPasswordManagerDriver::GetAutofillDriver() const {
   return nullptr;

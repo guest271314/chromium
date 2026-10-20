@@ -5,7 +5,9 @@
 #import "ios/chrome/browser/authentication/fullscreen_signin_screen/coordinator/fullscreen_signin_screen_mediator.h"
 
 #import <algorithm>
+#import <optional>
 
+#import "base/feature_list.h"
 #import "base/metrics/histogram_functions.h"
 #import "base/metrics/user_metrics.h"
 #import "base/metrics/user_metrics_action.h"
@@ -13,7 +15,9 @@
 #import "components/metrics/metrics_pref_names.h"
 #import "components/metrics/metrics_reporting_choice_service.h"
 #import "components/prefs/pref_service.h"
+#import "components/signin/core/browser/account_preview_data_service.h"
 #import "components/signin/public/base/consent_level.h"
+#import "components/signin/public/base/signin_switches.h"
 #import "components/signin/public/identity_manager/objc/identity_manager_observer_bridge.h"
 #import "components/sync/service/sync_service.h"
 #import "components/web_resource/web_resource_pref_names.h"
@@ -36,6 +40,7 @@
 #import "ios/chrome/browser/signin/model/authentication_service.h"
 #import "ios/chrome/browser/signin/model/authentication_service_observer_bridge.h"
 #import "ios/chrome/browser/signin/model/avatar/avatar_provider.h"
+#import "ios/chrome/browser/signin/model/chrome_account_manager_service.h"
 #import "ios/chrome/browser/signin/model/constants.h"
 #import "ios/chrome/browser/signin/model/system_identity.h"
 #import "ios/chrome/browser/sync/model/enterprise_utils.h"
@@ -47,15 +52,16 @@ enum class SigninScreenState {
   kFirstRunAsFirstScreen,
   // The screen is in the FRE sequence, but is not the first screen.
   kFirstRunAsOtherScreen,
-  // The screen is not in the FRE.
-  kNotFirstRun,
+  // The screen is part of deeplink flow.
+  kDeeplink,
+  // The screen is not part of any of the previous flow.
+  kOther,
 };
 }  // namespace
 
-@interface FullscreenSigninScreenMediator () <
-    AuthenticationFlowDelegate,
-    AuthenticationServiceObserving,
-    IdentityManagerObserverBridgeDelegate> {
+@interface FullscreenSigninScreenMediator () <AuthenticationFlowDelegate,
+                                              AuthenticationServiceObserving,
+                                              IdentityManagerObserving> {
 }
 
 // Application local pref.
@@ -84,6 +90,8 @@ enum class SigninScreenState {
   raw_ptr<AuthenticationService> _authenticationService;
   // Identity manager to retrieve Chrome identities.
   raw_ptr<signin::IdentityManager> _identityManager;
+  // Account preview data service to retrieve account preference.
+  raw_ptr<signin::AccountPreviewDataService> _accountPreviewDataService;
   std::unique_ptr<signin::IdentityManagerObserverBridge>
       _identityManagerObserver;
   // State of the sign-in screen.
@@ -101,9 +109,12 @@ enum class SigninScreenState {
                 authenticationService:
                     (AuthenticationService*)authenticationService
                       identityManager:(signin::IdentityManager*)identityManager
+            accountPreviewDataService:
+                (signin::AccountPreviewDataService*)accountPreviewDataService
                      localPrefService:(PrefService*)localPrefService
                           prefService:(PrefService*)prefService
                           syncService:(syncer::SyncService*)syncService
+                     selectedIdentity:(id<SystemIdentity>)selectedIdentity
                           accessPoint:(signin_metrics::AccessPoint)accessPoint
                           promoAction:(signin_metrics::PromoAction)promoAction
                 profileMetricsService:
@@ -125,6 +136,7 @@ enum class SigninScreenState {
     _accountManagerService = accountManagerService;
     _authenticationService = authenticationService;
     _identityManager = identityManager;
+    _accountPreviewDataService = accountPreviewDataService;
     _authServiceObserverBridge =
         std::make_unique<AuthenticationServiceObserverBridge>(
             authenticationService, self);
@@ -134,6 +146,7 @@ enum class SigninScreenState {
     _localPrefService = localPrefService;
     _prefService = prefService;
     _syncService = syncService;
+    _selectedIdentity = selectedIdentity;
 
     _hadIdentitiesAtStartup = !_identityManager->GetAccountsOnDevice().empty();
 
@@ -143,12 +156,15 @@ enum class SigninScreenState {
       } else {
         _screenState = SigninScreenState::kFirstRunAsOtherScreen;
       }
+    } else if (accessPoint == signin_metrics::AccessPoint::kDeepLinkDefault) {
+      _screenState = SigninScreenState::kDeeplink;
     } else {
-      _screenState = SigninScreenState::kNotFirstRun;
+      _screenState = SigninScreenState::kOther;
     }
 
     switch (_screenState) {
-      case SigninScreenState::kNotFirstRun:
+      case SigninScreenState::kDeeplink:
+      case SigninScreenState::kOther:
         _logger = [[UserSigninLogger alloc]
               initWithAccessPoint:accessPoint
                       promoAction:promoAction
@@ -173,12 +189,13 @@ enum class SigninScreenState {
 }
 
 - (void)dealloc {
-  CHECK(!_accountManagerService, base::NotFatalUntil::M145);
-  CHECK(!_authenticationService, base::NotFatalUntil::M145);
-  CHECK(!_identityManager, base::NotFatalUntil::M145);
-  CHECK(!self.localPrefService, base::NotFatalUntil::M145);
-  CHECK(!self.prefService, base::NotFatalUntil::M145);
-  CHECK(!self.syncService, base::NotFatalUntil::M145);
+  CHECK(!_accountManagerService);
+  CHECK(!_authenticationService);
+  CHECK(!_identityManager);
+  CHECK(!_accountPreviewDataService);
+  CHECK(!self.localPrefService);
+  CHECK(!self.prefService);
+  CHECK(!self.syncService);
 }
 
 - (void)disconnect {
@@ -188,6 +205,7 @@ enum class SigninScreenState {
   _accountManagerService = nullptr;
   _authenticationService = nullptr;
   _identityManager = nullptr;
+  _accountPreviewDataService = nullptr;
   self.localPrefService = nullptr;
   self.prefService = nullptr;
   self.syncService = nullptr;
@@ -196,15 +214,15 @@ enum class SigninScreenState {
 
 - (void)startSignInWithAuthenticationFlow:
     (AuthenticationFlow*)authenticationFlow {
-  CHECK(!self.signinInProgress, base::NotFatalUntil::M145);
+  CHECK(!self.signinInProgress);
   self.signinInProgress = YES;
   [self userAttemptedToSignin];
   RecordMetricsReportingDefaultState();
 
   // The sign-in screen should not be displayed if the user is already
-  // signed-in.
-  CHECK(!_authenticationService->HasPrimaryIdentity(),
-        base::NotFatalUntil::M145);
+  // signed-in for non-deeplink flows.
+  CHECK(_screenState == SigninScreenState::kDeeplink ||
+        !_authenticationService->HasPrimaryIdentity());
   [self.consumer setUIEnabled:NO];
   authenticationFlow.delegate = self;
   [authenticationFlow startSignIn];
@@ -212,9 +230,9 @@ enum class SigninScreenState {
 
 - (void)cancelSignInScreenWithCompletion:(ProceduralBlock)completion {
   // The sign-in screen should not be displayed if the user is already
-  // signed-in.
-  CHECK(!_authenticationService->HasPrimaryIdentity(),
-        base::NotFatalUntil::M140);
+  // signed-in for non-deeplink flows.
+  CHECK(_screenState == SigninScreenState::kDeeplink ||
+        !_authenticationService->HasPrimaryIdentity());
   if (completion) {
     completion();
   }
@@ -234,7 +252,9 @@ enum class SigninScreenState {
   if (self.UMALinkWasTapped) {
     base::RecordAction(base::UserMetricsAction("MobileFreUMALinkTapped"));
   }
-  if (_screenState != SigninScreenState::kNotFirstRun) {
+  BOOL isFirstRun = _screenState == SigninScreenState::kFirstRunAsFirstScreen ||
+                    _screenState == SigninScreenState::kFirstRunAsOtherScreen;
+  if (isFirstRun) {
     first_run::FirstRunStage firstRunStage =
         signIn ? first_run::kWelcomeAndSigninScreenCompletionWithSignIn
                : first_run::kWelcomeAndSigninScreenCompletionWithoutSignIn;
@@ -291,7 +311,8 @@ enum class SigninScreenState {
   self.consumer.hasPlatformPolicies = HasPlatformPolicies();
 
   switch (_screenState) {
-    case SigninScreenState::kNotFirstRun:
+    case SigninScreenState::kDeeplink:
+    case SigninScreenState::kOther:
     case SigninScreenState::kFirstRunAsOtherScreen:
       self.consumer.screenIntent = SigninScreenConsumerScreenIntentSigninOnly;
       break;
@@ -305,9 +326,15 @@ enum class SigninScreenState {
       break;
   }
 
-  if (signinForcedOrAvailable) {
-    self.selectedIdentity = signin::GetDefaultIdentityOnDevice(
-        _identityManager, _accountManagerService);
+  if (_screenState == SigninScreenState::kDeeplink) {
+    DCHECK(_selectedIdentity);
+    _consumer.targetIdentityEmail = _selectedIdentity.userEmail;
+    id<SystemIdentity> signedInIdentity =
+        _authenticationService->GetPrimaryIdentity();
+    _consumer.currentPrimaryIdentityEmail = signedInIdentity.userEmail;
+    [self updateConsumerIdentity];
+  } else if (signinForcedOrAvailable) {
+    self.selectedIdentity = [self calculateSelectedIdentity];
   }
 }
 
@@ -324,29 +351,33 @@ enum class SigninScreenState {
 
 #pragma mark - AuthenticationFlowDelegate
 
-- (void)
-    authenticationFlowDidSignInInSameProfileWithCancelationReason:
-        (signin_ui::CancelationReason)cancelationReason
-                                                         identity:
-                                                             (id<SystemIdentity>)
-                                                                 identity {
+- (void)authenticationFlowDidSignInInSameProfileWithIdentity:
+            (id<SystemIdentity>)identity
+                                           cancelationReason:
+                                               (signin_ui::CancelationReason)
+                                                   cancelationReason
+
+                                                  completion:(ProceduralBlock)
+                                                                 completion {
+  CHECK(completion);
   self.signinInProgress = NO;
   [self.consumer setUIEnabled:YES];
   switch (cancelationReason) {
     case signin_ui::CancelationReason::kAgeMismatchCanceledStaySignedOut:
       [self.delegate fullscreenSigninScreenMediatorWantsToBeDismissed:self];
-      return;
+      break;
     case signin_ui::CancelationReason::kNotCanceled:
-      [self.logger logSigninCompletedWithResult:SigninCoordinatorResultSuccess
+      [self.logger logSigninCompletedWithResult:identity
                                    addedAccount:self.addedAccount];
       [self.delegate fullscreenSigninScreenMediatorDidFinishSignin:self];
-      return;
+      break;
     case signin_ui::CancelationReason::kUserCanceled:
     case signin_ui::CancelationReason::kFailed:
     case signin_ui::CancelationReason::kAgeMismatchCanceled:
     case signin_ui::CancelationReason::kSignInNotAllowed:
-      return;
+      break;
   }
+  completion();
 }
 
 - (void)authenticationFlowWillSwitchProfileWithReadyCompletion:
@@ -356,12 +387,37 @@ enum class SigninScreenState {
 
 #pragma mark - Private
 
+// For non-fre flow selected identity is either:
+// - The preferred account if one exists, or
+// - The default identity on the device.
+// For fre flow it's always the default identity on the device for now. This
+// will change in M158.
+- (id<SystemIdentity>)calculateSelectedIdentity {
+  if (_screenState == SigninScreenState::kOther && _accountPreviewDataService &&
+      base::FeatureList::IsEnabled(
+          switches::kEnableAccountPreviewPreferredAccount)) {
+    // Only use preferred account for non-fre flow.
+    if (std::optional<
+            signin::AccountPreviewDataService::AccountPreviewPreference>
+            preference =
+                _accountPreviewDataService->GetPreferredAccountForSignin()) {
+      id<SystemIdentity> identity =
+          _accountManagerService->GetIdentityWithGaiaID(preference->gaia_id);
+      if (identity) {
+        return identity;
+      }
+    }
+  }
+  return signin::GetDefaultIdentityOnDevice(_identityManager,
+                                            _accountManagerService);
+}
+
 - (bool)selectedIdentityIsValid {
   if (self.selectedIdentity) {
     GaiaId gaia(self.selectedIdentity.gaiaId);
     return std::ranges::contains(
         _identityManager->GetAccountsOnDevice(), gaia,
-        [](const AccountInfo& info) { return info.gaia; });
+        [](const AccountInfo& info) { return info.GetGaiaId(); });
   }
   return false;
 }
@@ -400,7 +456,7 @@ enum class SigninScreenState {
 // asynchronously when the management status if retrieved and the identity is
 // managed.
 - (BOOL)isIdentityKnownToBeManaged:(id<SystemIdentity>)identity {
-  CHECK(identity, base::NotFatalUntil::M147);
+  CHECK(identity);
   if (std::optional<BOOL> managed = IsIdentityManaged(identity);
       managed.has_value()) {
     return managed.value();
@@ -415,22 +471,21 @@ enum class SigninScreenState {
   return NO;
 }
 
-#pragma mark -  IdentityManagerObserverBridgeDelegate
+#pragma mark -  IdentityManagerObserving
 
-- (void)onAccountsOnDeviceChanged {
+- (void)accountsOnDeviceDidChange {
   if (![self selectedIdentityIsValid]) {
-    self.selectedIdentity = signin::GetDefaultIdentityOnDevice(
-        _identityManager, _accountManagerService);
+    self.selectedIdentity = [self calculateSelectedIdentity];
   }
 }
 
-- (void)onExtendedAccountInfoUpdated:(const AccountInfo&)info {
+- (void)extendedAccountInfoDidUpdate:(const AccountInfo&)info {
   id<SystemIdentity> identity =
-      _accountManagerService->GetIdentityOnDeviceWithGaiaID(info.gaia);
+      _accountManagerService->GetIdentityOnDeviceWithGaiaID(info.GetGaiaId());
   [self handleIdentityUpdated:identity];
 }
 
-- (void)onPrimaryAccountChanged:
+- (void)primaryAccountDidChange:
     (const signin::PrimaryAccountChangeEvent&)event {
   if (self.signinInProgress) {
     return;

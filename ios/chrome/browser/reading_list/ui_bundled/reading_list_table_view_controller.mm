@@ -482,7 +482,7 @@ BOOL IsAllSelected(NSUInteger selected_unread_count,
 }
 
 - (void)keyCommand_close {
-  CHECK(self.delegate.canDismiss, base::NotFatalUntil::M145);
+  CHECK(self.delegate.canDismiss);
   base::RecordAction(base::UserMetricsAction(kMobileKeyCommandClose));
   [self.delegate dismissReadingListListViewController:self];
 }
@@ -552,10 +552,6 @@ BOOL IsAllSelected(NSUInteger selected_unread_count,
                                      incognito:YES];
 }
 
-- (void)openItemOffline:(id<ReadingListListItem>)item {
-  [self.delegate readingListListViewController:self
-                       openItemOfflineInNewTab:item];
-}
 
 - (void)markItemRead:(id<ReadingListListItem>)item {
   TableViewModel* model = self.tableViewModel;
@@ -819,6 +815,10 @@ BOOL IsAllSelected(NSUInteger selected_unread_count,
         promoConfigurator:(SigninPromoViewConfigurator*)promoConfigurator
             promoDelegate:(id<SigninPromoViewDelegate>)promoDelegate
                 promoText:(NSString*)promoText {
+  if (self.editing) {
+    [self exitEditingModeAnimated:NO];
+  }
+
   if (promoEnabled) {
     CHECK(![self.tableViewModel
         hasSectionForSectionIdentifier:kSectionIdentifierSignInPromo]);
@@ -843,8 +843,7 @@ BOOL IsAllSelected(NSUInteger selected_unread_count,
 }
 
 - (void)configureSigninPromoWithConfigurator:
-            (SigninPromoViewConfigurator*)promoConfigurator
-                             identityChanged:(BOOL)identityChanged {
+    (SigninPromoViewConfigurator*)promoConfigurator {
   if (![self.tableViewModel
           hasSectionForSectionIdentifier:kSectionIdentifierSignInPromo]) {
     return;
@@ -1040,8 +1039,7 @@ BOOL IsAllSelected(NSUInteger selected_unread_count,
     }
 
     [[self.tableViewModel itemAtIndexPath:indexPath]
-        configureCell:[self.tableView cellForRowAtIndexPath:indexPath]
-           withStyler:self.styler];
+        configureCell:[self.tableView cellForRowAtIndexPath:indexPath]];
   }
 
   NSInteger sectionCreatedIndex = [self initializeTableViewSection:toSection];

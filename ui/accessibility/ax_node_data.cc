@@ -766,6 +766,16 @@ bool AXNodeData::IsClickable() const {
   return ui::IsClickable(role);
 }
 
+bool AXNodeData::IsStructuralElementContainedInActiveLiveRegion() const {
+  if (!HasStringAttribute(ax::mojom::StringAttribute::kContainerLiveStatus)) {
+    return false;
+  }
+  const std::string& aria_container_live_status =
+      GetStringAttribute(ax::mojom::StringAttribute::kContainerLiveStatus);
+
+  return aria_container_live_status != "off";
+}
+
 bool AXNodeData::IsContainedInActiveLiveRegion() const {
   if (!HasStringAttribute(ax::mojom::StringAttribute::kContainerLiveStatus)) {
     return false;
@@ -885,6 +895,18 @@ bool AXNodeData::SupportsExpandCollapse() const {
     return true;
 
   return ui::SupportsExpandCollapse(role);
+}
+
+bool AXNodeData::HasValidAXNodeIDsFromRenderer() const {
+  if (!IsValidAXNodeIDFromRenderer(id)) {
+    return false;
+  }
+  for (AXNodeID child_id : child_ids) {
+    if (!IsValidAXNodeIDFromRenderer(child_id)) {
+      return false;
+    }
+  }
+  return true;
 }
 
 // TODO(accessibility) Consider reusing code from AXTreeFormatterBlink, where
@@ -1418,6 +1440,9 @@ std::string AXNodeData::ToString(bool verbose) const {
       case ax::mojom::StringAttribute::kAriaNotificationIdDeprecated:
         base::StrAppend(&result, {" aria_notification_id=", value});
         break;
+      case ax::mojom::StringAttribute::kCanvasAnnotation:
+        base::StrAppend(&result, {" canvas_annotation=", value});
+        break;
       case ax::mojom::StringAttribute::kCheckedStateDescription:
         base::StrAppend(&result, {" checked_state_description=", value});
         break;
@@ -1480,8 +1505,14 @@ std::string AXNodeData::ToString(bool verbose) const {
       case ax::mojom::StringAttribute::kContainerLiveStatus:
         base::StrAppend(&result, {" container_live=", value});
         break;
+      case ax::mojom::StringAttribute::kMathArg:
+        base::StrAppend(&result, {" math_arg=", value});
+        break;
       case ax::mojom::StringAttribute::kMathContent:
         base::StrAppend(&result, {" math_content=", value});
+        break;
+      case ax::mojom::StringAttribute::kMathIntent:
+        base::StrAppend(&result, {" math_intent=", value});
         break;
       case ax::mojom::StringAttribute::kPlaceholder:
         base::StrAppend(&result, {" placeholder=", value});
@@ -1497,6 +1528,9 @@ std::string AXNodeData::ToString(bool verbose) const {
         break;
       case ax::mojom::StringAttribute::kValue:
         base::StrAppend(&result, {" value=", value});
+        break;
+      case ax::mojom::StringAttribute::kAriaValueText:
+        base::StrAppend(&result, {" aria_valuetext=", value});
         break;
       case ax::mojom::StringAttribute::kVirtualContent:
         base::StrAppend(&result, {" virtual_content=", value});
@@ -1861,7 +1895,7 @@ void AXNodeData::AccumulateSize(
   }
 
   for (const auto& [_, values] : intlist_attributes) {
-    node_data_size.int_list_attribhute_size +=
+    node_data_size.int_list_attribute_size +=
         sizeof(ax::mojom::IntListAttribute) + values.size() * sizeof(int32_t);
   }
 
@@ -1881,7 +1915,7 @@ void AXNodeData::AccumulateSize(
 
 size_t AXNodeData::AXNodeDataSize::ByteSize() const {
   return int_attribute_size + float_attribute_size + bool_attribute_size +
-         string_attribute_size + int_list_attribhute_size +
+         string_attribute_size + int_list_attribute_size +
          string_list_attribute_size + html_attribute_size + child_ids_size;
 }
 

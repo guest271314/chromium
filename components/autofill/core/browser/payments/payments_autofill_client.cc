@@ -58,9 +58,24 @@ const PaymentsDataManager& PaymentsAutofillClient::GetPaymentsDataManager()
   return const_cast<PaymentsAutofillClient*>(this)->GetPaymentsDataManager();
 }
 
-const payments::SaveAndFillManager*
-PaymentsAutofillClient::GetSaveAndFillManager() const {
+const SaveAndFillManager* PaymentsAutofillClient::GetSaveAndFillManager()
+    const {
   return const_cast<PaymentsAutofillClient*>(this)->GetSaveAndFillManager();
+}
+
+WalletReminderNoticeUiDelegate*
+PaymentsAutofillClient::GetWalletReminderNoticeUiDelegate() {
+  return nullptr;
+}
+
+WalletReminderNoticeManager*
+PaymentsAutofillClient::GetWalletReminderNoticeManager() {
+  return nullptr;
+}
+
+PaymentsChurnedUsersUiDelegate*
+PaymentsAutofillClient::GetPaymentsChurnedUsersUiDelegate() {
+  return nullptr;
 }
 
 }  // namespace autofill::payments

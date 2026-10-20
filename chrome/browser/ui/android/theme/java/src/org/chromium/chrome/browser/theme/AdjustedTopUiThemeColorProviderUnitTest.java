@@ -30,7 +30,6 @@ import org.mockito.Captor;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
-import org.robolectric.annotation.Config;
 
 import org.chromium.base.ContextUtils;
 import org.chromium.base.supplier.ObservableSuppliers;
@@ -45,7 +44,6 @@ import org.chromium.chrome.browser.ui.theme.BrandedColorScheme;
 
 /** Unit tests for {@link AdjustedTopUiThemeColorProvider}. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 public class AdjustedTopUiThemeColorProviderUnitTest {
     @Rule public MockitoRule mMockitoJUnit = MockitoJUnit.rule();
 
@@ -126,8 +124,8 @@ public class AdjustedTopUiThemeColorProviderUnitTest {
 
     @Test
     public void testOnCustomBackgroundChanged_nonNtp() {
-        when(mNativePage.useLightIconTint()).thenReturn(true);
-        when(mNativePage.supportsEdgeToEdge()).thenReturn(true);
+        when(mNativePage.useLightIconTint()).thenReturn(false);
+        when(mNativePage.supportsEdgeToEdgeOnBottom()).thenReturn(true);
 
         // 1. Tab is null.
         mTabSupplier.set(null);
@@ -136,15 +134,16 @@ public class AdjustedTopUiThemeColorProviderUnitTest {
         verify(mTintObserver, never()).onTintChanged(any(), any(), anyInt());
 
         // 2. Tab is not native page.
-        mTabSupplier.set(mTab);
         when(mTab.isNativePage()).thenReturn(false);
+        mTabSupplier.set(mTab);
         clearInvocations(mTintObserver);
         mObserverCaptor.getValue().onCustomBackgroundChanged();
         verify(mTintObserver, never()).onTintChanged(any(), any(), anyInt());
 
         // 3. Tab is native page but doesn't support edge-to-edge.
         when(mTab.isNativePage()).thenReturn(true);
-        when(mNativePage.supportsEdgeToEdge()).thenReturn(false);
+        when(mNativePage.supportsEdgeToEdgeOnBottom()).thenReturn(false);
+        mAdjustedTopUiThemeColorProvider.updateColor(mTab, TAB_COLOR, false);
         clearInvocations(mTintObserver);
         mObserverCaptor.getValue().onCustomBackgroundChanged();
         verify(mTintObserver, never()).onTintChanged(any(), any(), anyInt());
@@ -155,7 +154,7 @@ public class AdjustedTopUiThemeColorProviderUnitTest {
         ColorStateList adjustedTint =
                 mContext.getColorStateList(R.color.default_icon_color_white_tint_list);
         @BrandedColorScheme int adjustedBrandedColorScheme = BrandedColorScheme.DARK_BRANDED_THEME;
-        when(mNativePage.supportsEdgeToEdge()).thenReturn(true);
+        when(mNativePage.supportsEdgeToEdgeOnBottom()).thenReturn(true);
 
         // Case NTP uses light tint color.
         when(mNativePage.useLightIconTint()).thenReturn(true);

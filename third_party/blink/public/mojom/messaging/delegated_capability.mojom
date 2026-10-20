@@ -4,10 +4,16 @@
 
 module blink.mojom;
 
-// Capabilities that can be delegated to another frame via TransferableMessage.
+// Capabilities that can be delegated to a frame via TransferableMessage (either
+// from another frame or from a Service Worker).
 enum DelegatedCapability {
     kNone,
     kPaymentRequest,
     kFullscreenRequest,
     kDisplayCaptureRequest,
+    kDigitalCredentialsCreate,
+    kDigitalCredentialsGet,
+    // Can only be delegated from a Service Worker to a WindowClient, not
+    // between frames.
+    kPopup,
 };

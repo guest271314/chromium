@@ -9,13 +9,17 @@ import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import android.content.Context;
 import android.os.Build;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.view.View;
+import android.widget.FrameLayout;
 
 import androidx.annotation.Nullable;
 
@@ -23,19 +27,17 @@ import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
-import org.mockito.ArgumentCaptor;
-import org.mockito.Captor;
 import org.mockito.Mock;
 import org.mockito.Mockito;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
+import org.robolectric.Shadows;
 import org.robolectric.annotation.Config;
-import org.robolectric.shadows.ShadowLooper;
 
+import org.chromium.base.ContextUtils;
 import org.chromium.base.test.BaseRobolectricTestRunner;
-import org.chromium.base.test.util.Features.EnableFeatures;
+import org.chromium.base.test.RobolectricUtil;
 import org.chromium.base.test.util.HistogramWatcher;
-import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.native_page.ContextMenuManager;
 import org.chromium.chrome.browser.native_page.ContextMenuManager.ContextMenuItemId;
 import org.chromium.chrome.browser.offlinepages.OfflinePageBridge;
@@ -46,8 +48,6 @@ import org.chromium.chrome.browser.suggestions.SuggestionsUiDelegate;
 import org.chromium.ui.base.MotionEventTestUtils;
 import org.chromium.ui.mojom.WindowOpenDisposition;
 import org.chromium.url.GURL;
-
-import java.util.concurrent.TimeUnit;
 
 /** Tests for {@link TileInteractionDelegateTest}. */
 @RunWith(BaseRobolectricTestRunner.class)
@@ -86,7 +86,6 @@ public class TileInteractionDelegateTest {
 
     @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
     @Mock private Tile mTile;
-    @Mock private SuggestionsTileView mTileView;
     @Mock private SiteSuggestion mData;
     @Mock private SuggestionsUiDelegate mSuggestionsUiDelegate;
     @Mock private ContextMenuManager mContextMenuManager;
@@ -99,14 +98,15 @@ public class TileInteractionDelegateTest {
     @Mock private AndroidPrerenderManager.Natives mNativeMock;
     @Mock private TileGroup.CustomTileModificationDelegate mCustomTileModificationDelegate;
 
-    @Captor
-    ArgumentCaptor<View.OnTouchListener> mOnTouchListenerCaptor =
-            ArgumentCaptor.forClass(View.OnTouchListener.class);
-
+    private SuggestionsTileView mTileView;
     private TileInteractionDelegateImpl mDelegate;
 
     @Before
     public void setUp() {
+        Context context = ContextUtils.getApplicationContext();
+        mTileView = new SuggestionsTileView(context, null);
+        // View.performLongClick() falls back to showContextMenu(), which needs a parent.
+        new FrameLayout(context).addView(mTileView);
         when(mTile.getUrl()).thenReturn(new GURL("https://example.com"));
         when(mTile.getData()).thenReturn(mData);
         AndroidPrerenderManagerJni.setInstanceForTesting(mNativeMock);
@@ -114,6 +114,7 @@ public class TileInteractionDelegateTest {
 
     private void setupForCustomTileTests() {
         when(mTile.getSource()).thenReturn(TileSource.CUSTOM_LINKS);
+        when(mTile.isCustomLink()).thenReturn(true);
         when(mTile.getSectionType()).thenReturn(TileSectionType.PERSONALIZED);
         mDelegate =
                 new TileInteractionDelegateImpl(
@@ -178,6 +179,32 @@ public class TileInteractionDelegateTest {
     }
 
     @Test
+    public void testOnTouch_ActionDown_StartsDragSession() {
+        setupDelegate();
+        MotionEvent event = MotionEvent.obtain(0, 0, MotionEvent.ACTION_DOWN, 0, 0, 0);
+        mDelegate.onTouch(mTileView, event);
+        verify(mTileDragDelegate).onTileTouchDown(mTileView, event, mDelegate);
+    }
+
+    @Test
+    public void testOnTouch_ActionUp_WhenHasTileDragSession_CallsOnSessionTileTouch() {
+        setupDelegate();
+        when(mTileDragDelegate.hasTileDragSession()).thenReturn(true);
+        MotionEvent event = MotionEvent.obtain(0, 0, MotionEvent.ACTION_UP, 0, 0, 0);
+        mDelegate.onTouch(mTileView, event);
+        verify(mTileDragDelegate).onSessionTileTouch(mTileView, event);
+    }
+
+    @Test
+    public void testOnTouch_ActionUp_WhenNoTileDragSession_DoesNotCallOnSessionTileTouch() {
+        setupDelegate();
+        when(mTileDragDelegate.hasTileDragSession()).thenReturn(false);
+        MotionEvent event = MotionEvent.obtain(0, 0, MotionEvent.ACTION_UP, 0, 0, 0);
+        mDelegate.onTouch(mTileView, event);
+        verify(mTileDragDelegate, never()).onSessionTileTouch(any(), any());
+    }
+
+    @Test
     public void testTileInteractionDelegateTaken() {
         HistogramWatcher.Builder histogramWatcherBuilder = HistogramWatcher.newBuilder();
         HistogramWatcher histogramWatcher = histogramWatcherBuilder.build();
@@ -197,15 +224,15 @@ public class TileInteractionDelegateTest {
                 tileSetupCallback.createInteractionDelegate(mTile, mTileView);
 
         MotionEvent event = MotionEvent.obtain(0, 0, MotionEvent.ACTION_DOWN, 0, 0, 0);
-        verify(mTileView).setOnTouchListener(mOnTouchListenerCaptor.capture());
-        mOnTouchListenerCaptor.getValue().onTouch(mTileView, event);
+        View.OnTouchListener onTouchListener = Shadows.shadowOf(mTileView).getOnTouchListener();
+        onTouchListener.onTouch(mTileView, event);
         tileInteractionDelegate.onClick(mTileView);
 
         histogramWatcher.assertExpected();
     }
 
     @Test
-    @Config(sdk = Build.VERSION_CODES.R, manifest = Config.NONE)
+    @Config(sdk = Build.VERSION_CODES.R)
     public void testTileInteractionDelegate_longClick() {
         TileGroup tileGroup =
                 new TileGroup(
@@ -224,12 +251,10 @@ public class TileInteractionDelegateTest {
         tileInteractionDelegate.onLongClick(mTileView);
         verify(mContextMenuManager).showListContextMenu(eq(mTileView), any());
 
-        // Verify secondary click event is handled as long click.
-        when(mTileView.hasOnLongClickListeners()).thenReturn(true);
+        // Verify secondary click event is handled as long click, showing the menu again.
         MotionEvent secondaryClickEvent = MotionEventTestUtils.getTrackRightClickEvent();
         tileInteractionDelegate.onGenericMotion(mTileView, secondaryClickEvent);
-        verify(mTileView).performLongClick();
-        verify(mContextMenuManager).showListContextMenu(eq(mTileView), any());
+        verify(mContextMenuManager, times(2)).showListContextMenu(eq(mTileView), any());
     }
 
     @Test
@@ -251,9 +276,9 @@ public class TileInteractionDelegateTest {
         tileSetupCallback.createInteractionDelegate(mTile, mTileView);
         MotionEvent event = MotionEvent.obtain(0, 0, MotionEvent.ACTION_DOWN, 0, 0, 0);
         MotionEvent cancelEvent = MotionEvent.obtain(0, 0, MotionEvent.ACTION_CANCEL, 0, 0, 0);
-        verify(mTileView).setOnTouchListener(mOnTouchListenerCaptor.capture());
-        mOnTouchListenerCaptor.getValue().onTouch(mTileView, event);
-        mOnTouchListenerCaptor.getValue().onTouch(mTileView, cancelEvent);
+        View.OnTouchListener onTouchListener = Shadows.shadowOf(mTileView).getOnTouchListener();
+        onTouchListener.onTouch(mTileView, event);
+        onTouchListener.onTouch(mTileView, cancelEvent);
 
         histogramWatcher.assertExpected();
     }
@@ -277,15 +302,15 @@ public class TileInteractionDelegateTest {
 
         MotionEvent event = MotionEvent.obtain(0, 0, MotionEvent.ACTION_DOWN, 0, 0, 0);
         MotionEvent cancelEvent = MotionEvent.obtain(0, 0, MotionEvent.ACTION_CANCEL, 0, 0, 0);
-        verify(mTileView).setOnTouchListener(mOnTouchListenerCaptor.capture());
-        mOnTouchListenerCaptor.getValue().onTouch(mTileView, event);
-        ShadowLooper.idleMainLooper(200, TimeUnit.MILLISECONDS);
+        View.OnTouchListener onTouchListener = Shadows.shadowOf(mTileView).getOnTouchListener();
+        onTouchListener.onTouch(mTileView, event);
+        RobolectricUtil.runAllBackgroundAndUiIncludingDelayed();
         Mockito.verify(mAndroidPrerenderManager, Mockito.timeout(1000)).startPrerendering(any());
         // The second onTouch with the same tile should be considered to be duplicate and should be
         // skipped by maybePrerender, and this should not cause any error.
-        mOnTouchListenerCaptor.getValue().onTouch(mTileView, event);
+        onTouchListener.onTouch(mTileView, event);
 
-        mOnTouchListenerCaptor.getValue().onTouch(mTileView, cancelEvent);
+        onTouchListener.onTouch(mTileView, cancelEvent);
         // mPrerenderStarted in TileInteractionDelegateImpl is true, stopPrerendering should be
         // called.
         Mockito.verify(mAndroidPrerenderManager).stopPrerendering();
@@ -293,7 +318,6 @@ public class TileInteractionDelegateTest {
     }
 
     @Test
-    @EnableFeatures({ChromeFeatureList.MOST_VISITED_TILES_CUSTOMIZATION})
     public void testIsItemSupported_MoveUp_FirstTile() {
         setupForCustomTileTests();
         when(mTileDragDelegate.isFirstDraggableTile(mTileView)).thenReturn(true);
@@ -301,7 +325,6 @@ public class TileInteractionDelegateTest {
     }
 
     @Test
-    @EnableFeatures({ChromeFeatureList.MOST_VISITED_TILES_CUSTOMIZATION})
     public void testIsItemSupported_MoveUp_NotFirstTile() {
         setupForCustomTileTests();
         when(mTileDragDelegate.isFirstDraggableTile(mTileView)).thenReturn(false);
@@ -309,7 +332,6 @@ public class TileInteractionDelegateTest {
     }
 
     @Test
-    @EnableFeatures({ChromeFeatureList.MOST_VISITED_TILES_CUSTOMIZATION})
     public void testIsItemSupported_MoveDown_LastTile() {
         setupForCustomTileTests();
         when(mTileDragDelegate.isLastDraggableTile(mTileView)).thenReturn(true);
@@ -317,7 +339,6 @@ public class TileInteractionDelegateTest {
     }
 
     @Test
-    @EnableFeatures({ChromeFeatureList.MOST_VISITED_TILES_CUSTOMIZATION})
     public void testIsItemSupported_MoveDown_NotLastTile() {
         setupForCustomTileTests();
         when(mTileDragDelegate.isLastDraggableTile(mTileView)).thenReturn(false);
@@ -325,7 +346,6 @@ public class TileInteractionDelegateTest {
     }
 
     @Test
-    @EnableFeatures({ChromeFeatureList.MOST_VISITED_TILES_CUSTOMIZATION})
     public void testMoveItemUp() {
         setupForCustomTileTests();
         mDelegate.moveItemUp();
@@ -333,7 +353,6 @@ public class TileInteractionDelegateTest {
     }
 
     @Test
-    @EnableFeatures({ChromeFeatureList.MOST_VISITED_TILES_CUSTOMIZATION})
     public void testMoveItemDown() {
         setupForCustomTileTests();
         mDelegate.moveItemDown();

@@ -42,16 +42,9 @@
 
 #if BUILDFLAG(IS_WIN)
 #include "base/win/win_util.h"
-#include "chrome/browser/printing/printer_xml_parser_impl.h"
-#include "chrome/services/printing/public/mojom/printer_xml_parser.mojom.h"
-#include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "printing/backend/win_helper.h"
 #include "printing/printed_page_win.h"
 #include "ui/views/win/hwnd_util.h"
-#endif
-
-#if BUILDFLAG(ENABLE_OOP_BASIC_PRINT_DIALOG)
-#include "base/notreached.h"
 #endif
 
 namespace printing {
@@ -188,7 +181,7 @@ PrintBackendServiceManager::RegisterQueryWithUiClient() {
 PrintBackendServiceManager::ClientId
 PrintBackendServiceManager::RegisterPrintDocumentClient(
     const std::string& printer_name) {
-  DCHECK_NE(printer_name, kEmptyPrinterName);
+  CHECK_NE(printer_name, kEmptyPrinterName, base::NotFatalUntil::M162);
   return *RegisterClient(ClientType::kPrintDocument, printer_name);
 }
 
@@ -244,13 +237,6 @@ void PrintBackendServiceManager::UnregisterClient(ClientId id) {
                                                      remote_id.value());
   if (new_timeout.has_value())
     UpdateServiceIdleTimeoutByRemoteId(remote_id.value(), new_timeout.value());
-
-#if BUILDFLAG(IS_WIN)
-  if (base::FeatureList::IsEnabled(features::kReadPrinterCapabilitiesWithXps) &&
-      query_clients_.empty()) {
-    xml_parser_.reset();
-  }
-#endif  // BUILDFLAG(IS_WIN)
 }
 
 void PrintBackendServiceManager::EnumeratePrinters(
@@ -620,7 +606,7 @@ bool PrintBackendServiceManager::PrinterDriverFoundToRequireElevatedPrivilege(
 void PrintBackendServiceManager::
     SetPrinterDriverFoundToRequireElevatedPrivilege(
         const std::string& printer_name) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
   VLOG(1) << "Destination '" << printer_name
           << "' requires elevated privileges.";
   drivers_requiring_elevated_privilege_.emplace(printer_name);
@@ -841,7 +827,7 @@ PrintBackendServiceManager::GetService(const RemoteId& remote_id,
                                        bool sandboxed) {
   // Performance is improved if a service is launched ahead of the time it will
   // be needed by client callers.
-  DCHECK_GT(GetClientsRegisteredCount(), 0u);
+  CHECK_GT(GetClientsRegisteredCount(), 0u, base::NotFatalUntil::M162);
 
   if (sandboxed_service_remote_for_test_) {
     // The presence of a sandboxed remote for testing signals a testing
@@ -911,22 +897,8 @@ PrintBackendServiceManager::GetServiceFromBundle(
     // We may want to have the service terminated when idle.
     SetServiceIdleHandler(service, sandboxed, remote_id,
                           GetClientTypeIdleTimeout(client_type));
-#if BUILDFLAG(IS_WIN)
-    // Initialize the new service for the desired locale. Bind
-    // PrintBackendService with a Remote that allows pass-through requests to an
-    // XML parser.
-    mojo::PendingRemote<mojom::PrinterXmlParser> remote;
-    if (base::FeatureList::IsEnabled(
-            features::kReadPrinterCapabilitiesWithXps)) {
-      if (!xml_parser_)
-        xml_parser_ = std::make_unique<PrinterXmlParserImpl>();
-      remote = xml_parser_->GetRemote();
-    }
-    service->Init(g_browser_process->GetApplicationLocale(), std::move(remote));
-#else
     // Initialize the new service for the desired locale.
     service->Init(g_browser_process->GetApplicationLocale());
-#endif  // BUILDFLAG(IS_WIN)
   }
 
   return service;
@@ -986,7 +958,7 @@ size_t PrintBackendServiceManager::GetPrintDocumentClientsCountForRemoteId(
     const RemoteId& remote_id) const {
   auto iter = print_document_clients_.find(remote_id);
   if (iter != print_document_clients_.end()) {
-    DCHECK(!iter->second.empty());
+    CHECK(!iter->second.empty(), base::NotFatalUntil::M162);
     return iter->second.size();
   }
   return 0;
@@ -998,7 +970,7 @@ PrintBackendServiceManager::DetermineIdleTimeoutUpdateOnRegisteredClient(
     const RemoteId& remote_id) const {
   switch (registered_client_type) {
     case ClientType::kQuery:
-      DCHECK(!query_clients_.empty());
+      CHECK(!query_clients_.empty(), base::NotFatalUntil::M162);
 
       // Other query types have longer timeouts, so no need to update if
       // any of them have clients.
@@ -1021,7 +993,7 @@ PrintBackendServiceManager::DetermineIdleTimeoutUpdateOnRegisteredClient(
 #else
       // A modal system dialog, of which there should only ever be at most one
       // of these.
-      DCHECK_EQ(query_with_ui_clients_.size(), 1u);
+      CHECK_EQ(query_with_ui_clients_.size(), 1u, base::NotFatalUntil::M162);
 #endif
 
       // This is the longest timeout.  No need to update if there is a similarly
@@ -1033,7 +1005,7 @@ PrintBackendServiceManager::DetermineIdleTimeoutUpdateOnRegisteredClient(
 
     case ClientType::kPrintDocument:
       size_t clients_count = GetPrintDocumentClientsCountForRemoteId(remote_id);
-      DCHECK_GT(clients_count, 0u);
+      CHECK_GT(clients_count, 0u, base::NotFatalUntil::M162);
 
       // No need to update if there were other printing clients for same remote
       // ID.
@@ -1079,7 +1051,7 @@ PrintBackendServiceManager::DetermineIdleTimeoutUpdateOnUnregisteredClient(
 #else
       // A modal system dialog, of which there should only ever be at most one
       // of these. If one was dropped, it should now be empty.
-      DCHECK(query_with_ui_clients_.empty());
+      CHECK(query_with_ui_clients_.empty(), base::NotFatalUntil::M162);
 #endif
 
       // This is the longest timeout, so no need to update if there is a

@@ -65,7 +65,6 @@ class CC_EXPORT PictureLayerImpl
   void ReleaseTileResources() override;
   void RecreateTileResources() override;
   Region GetInvalidationRegionForDebugging() override;
-  gfx::ContentColorUsage GetContentColorUsage() const override;
   DamageReasonSet GetDamageReasons() const override;
   void DidDraw(viz::ClientResourceProvider* resource_provider) override;
 
@@ -109,7 +108,7 @@ class CC_EXPORT PictureLayerImpl
   void RegenerateDiscardableImageMap();
   bool UpdateTiles();
   bool HasAnimatedImages() const;
-  void AnnotateAnimatedImages(base::flat_map<PaintImage::Id, bool>&) const;
+  void AnnotateAnimatedImages(AnimatedImageDriverMap&) const;
 
   // Mask-related functions.
 
@@ -175,6 +174,12 @@ class CC_EXPORT PictureLayerImpl
 
   void set_has_non_animated_image_update_rect() {
     has_non_animated_image_update_rect_ = true;
+  }
+  bool has_animated_image_update_rect() const {
+    return has_animated_image_update_rect_;
+  }
+  bool has_non_animated_image_update_rect() const {
+    return has_non_animated_image_update_rect_;
   }
 
   // Returns the set of tiles which have been updated since the last call to
@@ -411,10 +416,9 @@ class CC_EXPORT PictureLayerImpl
   bool ShouldReportTileAsMissing(
       const gfx::Rect& tile_geometry_rect,
       const gfx::Rect& scaled_viewport_for_tile_priority) const override;
-  void DidAppendQuad(viz::DrawQuad* quad,
-                     const TilingSetCoverageIterator<PictureLayerTiling>& iter,
-                     AppendQuadsData* append_quads_data,
-                     bool is_checkerboard) override;
+  void DidAppendQuad(
+      viz::DrawQuad* quad,
+      const TilingSetCoverageIterator<PictureLayerTiling>& iter) override;
 
   gfx::Rect GetScaledViewportForTilePriority(float scale) const override;
 

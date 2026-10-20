@@ -5,12 +5,20 @@
 #ifndef CHROME_BROWSER_GLIC_SUGGESTIONS_GLIC_CUE_TARGET_H_
 #define CHROME_BROWSER_GLIC_SUGGESTIONS_GLIC_CUE_TARGET_H_
 
-#include "base/memory/raw_ref.h"
-#include "chrome/browser/contextual_cueing/cue_target.h"
-#include "components/tabs/public/tab_interface.h"
+#include <optional>
+#include <vector>
 
-class BrowserWindowInterface;
+#include "base/memory/raw_ptr.h"
+#include "base/memory/raw_ref.h"
+#include "base/memory/weak_ptr.h"
+#include "chrome/browser/contextual_cueing/cue_target.h"
+#include "components/page_content_annotations/core/page_content_annotations_common.h"
+
 class OptimizationGuideKeyedService;
+
+namespace tabs {
+class TabInterface;
+}  // namespace tabs
 
 namespace glic {
 
@@ -18,36 +26,51 @@ class GlicKeyedService;
 
 class GlicCueTarget : public contextual_cueing::CueTarget {
  public:
-  static void Register(BrowserWindowInterface& browser_window_interface);
+  static void Register(tabs::TabInterface& tab);
 
   explicit GlicCueTarget(
       GlicKeyedService& glic_keyed_service,
       OptimizationGuideKeyedService* optimization_guide_keyed_service,
-      BrowserWindowInterface& browser_window_interface);
+      tabs::TabInterface& tab);
   ~GlicCueTarget() override;
 
   // contextual_cueing::CueTarget:
+  contextual_cueing::CueTargetType GetType() const override;
+  bool RequiresModelExecution() const override;
   bool IsEligible() const override;
-  void OnClick(contextual_cueing::CueActionData data) override;
+  void CheckEligibility(base::WeakPtr<content::WebContents> web_contents,
+                        contextual_cueing::CueIntrusiveness intrusiveness,
+                        EligibilityCallback callback) override;
+  bool IsPageEligible(
+      const page_content_annotations::PageContentAnnotationsResult& result,
+      content::WebContents* active_web_contents) const override;
+  void OnAnchoredMessageClicked(contextual_cueing::CueActionData data) override;
+  bool SupportsEditPrompt() const override;
   void OnEditPrompt(contextual_cueing::CueActionData data) override;
   ui::ImageModel GetAnchoredMessageIcon() const override;
   ui::ImageModel GetOmniboxChipIcon() const override;
   contextual_cueing::CueActionData CueActionDataFromResponse(
-      const optimization_guide::proto::ContextualCueingResponse& response,
-      contextual_cueing::CueTabMetrics& tab_metrics) const override;
+      const optimization_guide::proto::ContextualCue& cue,
+      std::vector<tabs::TabHandle> tabs_to_show) const override;
   optimization_guide::proto::ContextualCueingSurface GetSurface()
       const override;
 
+  base::WeakPtr<GlicCueTarget> GetWeakPtr() {
+    return weak_ptr_factory_.GetWeakPtr();
+  }
+
  private:
+  friend class GlicCueTargetAsyncTest;
+
   void InvokeGlic(contextual_cueing::CueActionData data,
                   bool should_autosubmit);
-
-  tabs::TabHandle GetActiveTabHandle();
 
   // Unowned and guaranteed to outlive this.
   raw_ref<GlicKeyedService> glic_keyed_service_;
   raw_ptr<OptimizationGuideKeyedService> optimization_guide_keyed_service_;
-  raw_ref<BrowserWindowInterface> browser_window_interface_;
+  raw_ref<tabs::TabInterface> tab_;
+
+  base::WeakPtrFactory<GlicCueTarget> weak_ptr_factory_{this};
 };
 
 }  // namespace glic

@@ -30,9 +30,8 @@
 #include "chrome/browser/supervised_user/supervised_user_extensions_metrics_recorder.h"
 #include "chrome/browser/supervised_user/supervised_user_service_factory.h"
 #include "chrome/browser/supervised_user/supervised_user_test_util.h"
-#include "chrome/browser/ui/extensions/extensions_dialogs.h"
+#include "chrome/browser/ui/supervised_user/extension_install_blocked_by_parent_dialog.h"
 #include "components/supervised_user/core/browser/supervised_user_service.h"
-#include "components/supervised_user/core/common/features.h"
 #include "components/supervised_user/core/common/pref_names.h"
 #include "components/supervised_user/core/common/supervised_user_constants.h"
 #include "content/public/browser/browser_context.h"
@@ -48,6 +47,7 @@
 #include "extensions/browser/extension_registry.h"
 #include "extensions/browser/extension_system.h"
 #include "extensions/browser/management_policy.h"
+#include "extensions/browser/pref_types.h"
 #include "extensions/browser/supervised_user_extensions_delegate.h"
 #include "extensions/browser/test_management_policy.h"
 #include "extensions/browser/uninstall_reason.h"
@@ -56,7 +56,6 @@
 #include "extensions/common/error_utils.h"
 #include "extensions/common/extension.h"
 #include "extensions/common/extension_builder.h"
-#include "extensions/common/extension_features.h"
 #include "extensions/common/extension_id.h"
 #include "extensions/common/extension_set.h"
 #include "extensions/common/extension_urls.h"
@@ -346,6 +345,137 @@ TEST_F(ManagementApiUnitTest, ComponentPolicyEnabling) {
   EXPECT_FALSE(extension_can_enable_extension(internal, policy));
 }
 
+// Test that when an extension disables another extension, it uses the correct
+// disable reason.
+TEST_F(ManagementApiUnitTest, DisabledByAnotherExtension) {
+  scoped_refptr<const Extension> target_extension =
+      ExtensionBuilder("target").Build();
+  registrar()->AddExtension(target_extension.get());
+  scoped_refptr<const Extension> source_extension =
+      ExtensionBuilder("source").Build();
+  registrar()->AddExtension(source_extension.get());
+
+  const ExtensionId& id = target_extension->id();
+  base::ListValue args;
+  args.Append(id);
+  args.Append(false /* disable the extension */);
+
+  auto function = base::MakeRefCounted<ManagementSetEnabledFunction>();
+  function->set_extension(source_extension);
+  EXPECT_TRUE(RunFunction(function, args));
+
+  EXPECT_TRUE(registry()->disabled_extensions().Contains(id));
+  ExtensionPrefs* prefs = ExtensionPrefs::Get(profile());
+  EXPECT_TRUE(prefs->HasDisableReason(
+      id, disable_reason::DISABLE_BY_ANOTHER_EXTENSION));
+  EXPECT_FALSE(
+      prefs->HasDisableReason(id, disable_reason::DISABLE_USER_ACTION));
+
+  std::string disabling_id;
+  EXPECT_TRUE(
+      prefs->ReadPrefAsString(id, kDisableReasonByExtensionId, &disabling_id));
+  EXPECT_EQ(disabling_id, source_extension->id());
+}
+
+// Verifies that when a policy-installed extension disables a user-installed
+// extension via management.setEnabled, the target is disabled with
+// DISABLE_BY_ANOTHER_EXTENSION (rather than DISABLE_BLOCKED_BY_POLICY) so that
+// subsequent management policy re-evaluations do not re-enable it, while
+// disabling a policy-installed target extension continues to use
+// DISABLE_BLOCKED_BY_POLICY.
+TEST_F(ManagementApiUnitTest, PolicyCallerDisabledByAnotherExtensionPersists) {
+  scoped_refptr<const Extension> internal_target =
+      ExtensionBuilder("internal_target")
+          .SetLocation(ManifestLocation::kInternal)
+          .Build();
+  registrar()->AddExtension(internal_target.get());
+  scoped_refptr<const Extension> policy_target =
+      ExtensionBuilder("policy_target")
+          .SetLocation(ManifestLocation::kExternalPolicy)
+          .Build();
+  registrar()->AddExtension(policy_target.get());
+  scoped_refptr<const Extension> policy_caller =
+      ExtensionBuilder("policy_caller")
+          .SetLocation(ManifestLocation::kExternalPolicy)
+          .Build();
+  registrar()->AddExtension(policy_caller.get());
+
+  ExtensionPrefs* prefs = ExtensionPrefs::Get(profile());
+
+  // 1. Disabling a user-installed target extension should use
+  // DISABLE_BY_ANOTHER_EXTENSION and persist across policy re-evaluations.
+  {
+    const ExtensionId& id = internal_target->id();
+    base::ListValue args;
+    args.Append(id);
+    // Pass false for the 'enabled' parameter to disable the extension.
+    args.Append(false);
+
+    auto function = base::MakeRefCounted<ManagementSetEnabledFunction>();
+    function->set_extension(policy_caller);
+    EXPECT_TRUE(RunFunction(function, args));
+
+    EXPECT_TRUE(registry()->disabled_extensions().Contains(id));
+    EXPECT_TRUE(prefs->HasDisableReason(
+        id, disable_reason::DISABLE_BY_ANOTHER_EXTENSION));
+    EXPECT_FALSE(
+        prefs->HasDisableReason(id, disable_reason::DISABLE_BLOCKED_BY_POLICY));
+    std::string disabling_id;
+    EXPECT_TRUE(prefs->ReadPrefAsString(id, kDisableReasonByExtensionId,
+                                        &disabling_id));
+    EXPECT_EQ(disabling_id, policy_caller->id());
+
+    // Re-evaluating management policy (as happens on browser restart, developer
+    // mode toggle, or sync) should preserve the disabled state because the
+    // target is disabled by another extension, not by Chrome's policy
+    // blocklist.
+    service()->CheckManagementPolicy();
+    EXPECT_TRUE(registry()->disabled_extensions().Contains(id));
+    EXPECT_TRUE(prefs->HasDisableReason(
+        id, disable_reason::DISABLE_BY_ANOTHER_EXTENSION));
+
+    // The user can still re-enable the target extension (simulated by running
+    // ManagementSetEnabledFunction without a source extension), which clears
+    // the disable reason and the recorded disabling extension.
+    std::string error;
+    EXPECT_TRUE(RunSetEnabledFunction(/*web_contents=*/nullptr, id,
+                                      /*use_user_gesture=*/true,
+                                      /*accept_dialog=*/true, &error))
+        << error;
+    EXPECT_TRUE(registry()->enabled_extensions().Contains(id));
+    EXPECT_TRUE(prefs->GetDisableReasons(id).empty());
+    EXPECT_FALSE(prefs->ReadPrefAsString(id, kDisableReasonByExtensionId,
+                                         &disabling_id));
+  }
+
+  // 2. Disabling a policy-installed target extension should continue to use
+  // DISABLE_BLOCKED_BY_POLICY so it is re-evaluated on startup/policy refresh.
+  {
+    const ExtensionId& id = policy_target->id();
+    base::ListValue args;
+    args.Append(id);
+    // Pass false for the 'enabled' parameter to disable the extension.
+    args.Append(false);
+
+    auto function = base::MakeRefCounted<ManagementSetEnabledFunction>();
+    function->set_extension(policy_caller);
+    EXPECT_TRUE(RunFunction(function, args));
+
+    EXPECT_TRUE(registry()->disabled_extensions().Contains(id));
+    EXPECT_TRUE(
+        prefs->HasDisableReason(id, disable_reason::DISABLE_BLOCKED_BY_POLICY));
+    EXPECT_FALSE(prefs->HasDisableReason(
+        id, disable_reason::DISABLE_BY_ANOTHER_EXTENSION));
+
+    // Unlike user-installed targets, a policy-installed target disabled by
+    // another extension is re-enabled when management policy is re-evaluated,
+    // since nothing in ManagementPolicy requires it to remain disabled.
+    service()->CheckManagementPolicy();
+    EXPECT_TRUE(registry()->enabled_extensions().Contains(id));
+    EXPECT_TRUE(prefs->GetDisableReasons(id).empty());
+  }
+}
+
 // Tests management.uninstall.
 TEST_F(ManagementApiUnitTest, ManagementUninstall) {
   // Note: uninstall calls must come from an extension, WebUI or the Webstore.
@@ -618,6 +748,44 @@ TEST_F(ManagementApiUnitTest, ManagementEnableOrDisableBlocklisted) {
     EXPECT_FALSE(registry()->disabled_extensions().Contains(id));
   }
 }
+// Tests that calling extensions cannot enable extensions disabled due to
+// being not allowlisted.
+TEST_F(ManagementApiUnitTest, SetEnabled_NotAllowlistedExtension) {
+  scoped_refptr<const Extension> extension = ExtensionBuilder("Target").Build();
+  registrar()->AddExtension(extension.get());
+  scoped_refptr<const Extension> caller_extension =
+      ExtensionBuilder("Caller").AddAPIPermission("management").Build();
+  registrar()->AddExtension(caller_extension.get());
+
+  const ExtensionId& extension_id = extension->id();
+  registrar()->DisableExtension(
+      extension_id,
+      DisableReasonSet({disable_reason::DISABLE_NOT_ALLOWLISTED}));
+
+  base::ListValue enable_args;
+  enable_args.Append(extension_id);
+  enable_args.Append(true);
+
+  // An extension cannot re-enable an extension disabled by allowlist
+  // enforcement.
+  {
+    auto function = base::MakeRefCounted<ManagementSetEnabledFunction>();
+    function->set_extension(caller_extension);
+    EXPECT_FALSE(RunFunction(function, enable_args));
+    EXPECT_EQ(ErrorUtils::FormatErrorMessage(
+                  constants::kCannotReEnableEnhancedSafeBrowsingDisallowedError,
+                  extension_id),
+              function->GetError());
+    EXPECT_TRUE(registry()->disabled_extensions().Contains(extension_id));
+  }
+
+  // Without a calling extension (e.g. WebUI), re-enabling succeeds.
+  {
+    auto function = base::MakeRefCounted<ManagementSetEnabledFunction>();
+    EXPECT_TRUE(RunFunction(function, enable_args)) << function->GetError();
+    EXPECT_TRUE(registry()->enabled_extensions().Contains(extension_id));
+  }
+}
 
 TEST_F(ManagementApiUnitTest, ExtensionInfo_MayEnable) {
   using ExtensionInfo = api::management::ExtensionInfo;
@@ -883,136 +1051,6 @@ TEST_F(ManagementApiUnitTest,
   EXPECT_FALSE(registry()->enabled_extensions().Contains(extension->id()));
 }
 
-#if !BUILDFLAG(IS_ANDROID)
-// Test suite for cases where the user is in the "disable with re-enable"
-// experiment phase. Tests are not run on Android, which only supports MV3 and
-// hence has no "MV2 re-enable" phase.
-class ManagementApiUnitTestMV2DisableWithReEnableUnitTest
-    : public ManagementApiUnitTest {
- public:
-  ManagementApiUnitTestMV2DisableWithReEnableUnitTest() {
-    feature_list_.InitAndDisableFeature(
-        extensions_features::kExtensionManifestV2Unsupported);
-  }
-  ~ManagementApiUnitTestMV2DisableWithReEnableUnitTest() override = default;
-
- private:
-  base::test::ScopedFeatureList feature_list_;
-};
-
-// Tests the extension is enabled when management.setEnabled is called for
-// enabling an extension disabled due to the MV2 deprecation, and user accepted
-// the dialog.
-TEST_F(ManagementApiUnitTestMV2DisableWithReEnableUnitTest,
-       SetEnabled_MV2Deprecation) {
-  std::unique_ptr<content::WebContents> web_contents(
-      content::WebContentsTester::CreateTestWebContents(profile(), nullptr));
-
-  // Install an extension and disable it due to the MV2 deprecation.
-  scoped_refptr<const Extension> extension =
-      ExtensionBuilder("Test").SetManifestVersion(2).Build();
-  const ExtensionId& extension_id = extension->id();
-  registrar()->AddExtension(extension.get());
-  registrar()->DisableExtension(
-      extension_id, {disable_reason::DISABLE_UNSUPPORTED_MANIFEST_VERSION});
-
-  // 1) Deny re-enable prompt without user gesture, expect the extension to
-  // stay disabled.
-  {
-    std::string error;
-    bool success = RunSetEnabledFunction(web_contents.get(), extension_id,
-                                         /*use_user_gesture=*/false,
-                                         /*accept_dialog=*/false, &error);
-    EXPECT_FALSE(success);
-    EXPECT_EQ(error,
-              "Re-enabling an extension disabled due to MV2 deprecation "
-              "requires a user gesture.");
-    EXPECT_FALSE(registry()->enabled_extensions().Contains(extension_id));
-  }
-
-  // 2) Deny re-enable prompt with user gesture, expect the extension to
-  // stay disabled.
-  {
-    std::string error;
-    bool success = RunSetEnabledFunction(web_contents.get(), extension_id,
-                                         /*use_user_gesture=*/true,
-                                         /*accept_dialog=*/false, &error);
-    EXPECT_FALSE(success);
-    EXPECT_EQ(error, "The user did not accept the re-enable dialog.");
-    EXPECT_FALSE(registry()->enabled_extensions().Contains(extension_id));
-  }
-
-  // 3) Accept re-enable prompt without user gesture, expect the extension to
-  // stay disabled.
-  {
-    std::string error;
-    bool success = RunSetEnabledFunction(web_contents.get(), extension_id,
-                                         /*use_user_gesture=*/false,
-                                         /*accept_dialog=*/true, &error);
-    EXPECT_FALSE(success);
-    EXPECT_EQ(error,
-              "Re-enabling an extension disabled due to MV2 deprecation "
-              "requires a user gesture.");
-    EXPECT_FALSE(registry()->enabled_extensions().Contains(extension_id));
-  }
-
-  // 4) Accept re-enable prompt with user gesture, expect the extension to
-  // be enabled.
-  {
-    std::string error;
-    bool success = RunSetEnabledFunction(web_contents.get(), extension_id,
-                                         /*use_user_gesture=*/true,
-                                         /*accept_dialog=*/true, &error);
-    EXPECT_TRUE(success);
-    EXPECT_TRUE(error.empty());
-    EXPECT_TRUE(registry()->enabled_extensions().Contains(extension_id));
-  }
-}
-
-// Tests the extension is enabled when management.setEnabled is called for
-// enabling an extension disabled due to the MV2 deprecation and with
-// permissions increase, and user accepted both dialogs shown.
-TEST_F(ManagementApiUnitTestMV2DisableWithReEnableUnitTest,
-       SetEnabled_PermissionsIncreaseAndMV2Deprecation) {
-  ExtensionPrefs* prefs = ExtensionPrefs::Get(profile());
-  std::unique_ptr<content::WebContents> web_contents(
-      content::WebContentsTester::CreateTestWebContents(profile(), nullptr));
-
-  base::FilePath base_path = data_dir().AppendASCII("permissions_increase");
-  base::FilePath pem_path = base_path.AppendASCII("permissions.pem");
-  base::FilePath path = base_path.AppendASCII("v1");
-  const Extension* extension = PackAndInstallCRX(path, pem_path, INSTALL_NEW);
-
-  // Save the id, as `extension` will be destroyed during updating.
-  ExtensionId extension_id = extension->id();
-
-  // Update extension to a new version with increased permissions.
-  path = base_path.AppendASCII("v2");
-  PackCRXAndUpdateExtension(extension_id, path, pem_path, DISABLED);
-  EXPECT_FALSE(registry()->enabled_extensions().Contains(extension_id));
-  EXPECT_TRUE(prefs->DidExtensionEscalatePermissions(extension_id));
-
-  // Disable extension due to MV2 deprecation. Since extension is already
-  // disabled, this will add another disable reason.
-  registrar()->DisableExtension(
-      extension_id, {disable_reason::DISABLE_UNSUPPORTED_MANIFEST_VERSION});
-
-  // management.setEnabled will trigger two dialogs (permissions increase and
-  // mv2 deprecation). Since we have tested each individually, this test
-  // only verifies extension is enabled when both dialogs are accepted.
-  {
-    std::string error;
-    bool success = RunSetEnabledFunction(web_contents.get(), extension_id,
-                                         /*use_user_gesture=*/true,
-                                         /*accept_dialog=*/true, &error);
-    EXPECT_TRUE(success);
-    EXPECT_TRUE(error.empty());
-    EXPECT_TRUE(registry()->enabled_extensions().Contains(extension_id));
-    EXPECT_FALSE(prefs->DidExtensionEscalatePermissions(extension_id));
-  }
-}
-#endif  // !BUILDFLAG(IS_ANDROID)
-
 // A delegate that senses when extensions are enabled or disabled.
 class TestManagementAPIDelegate : public ManagementAPIDelegate {
  public:
@@ -1094,11 +1132,6 @@ class TestManagementAPIDelegate : public ManagementAPIDelegate {
                              content::BrowserContext* context) const override {
     return GURL();
   }
-  void ShowMv2DeprecationReEnableDialog(
-      content::BrowserContext* context,
-      content::WebContents* web_contents,
-      const extensions::Extension& extension,
-      base::OnceCallback<void(bool)> done_callback) const override {}
 
   // EnableExtension is const, so this is mutable.
   mutable int enable_count_ = 0;
@@ -1212,7 +1245,7 @@ class ManagementApiSupervisedUserTest : public ManagementApiUnitTest {
   }
 
   supervised_user::SupervisedUserService* GetSupervisedUserService() {
-    return SupervisedUserServiceFactory::GetForProfile(profile());
+    return supervised_user::SupervisedUserServiceFactory::GetForProfile(profile());
   }
 
   SupervisedUserExtensionsDelegate* GetSupervisedUserExtensionsDelegate() {
@@ -1253,7 +1286,6 @@ class ManagementApiSupervisedUserTest : public ManagementApiUnitTest {
   raw_ptr<ManagementAPI> management_api_ = nullptr;
   raw_ptr<TestSupervisedUserExtensionsDelegate> supervised_user_delegate_ =
       nullptr;
-  base::test::ScopedFeatureList feature_list_;
 };
 
 // Tests that locally approved extensions (when parental extensions control

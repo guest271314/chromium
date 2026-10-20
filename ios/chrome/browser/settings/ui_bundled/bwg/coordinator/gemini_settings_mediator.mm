@@ -7,17 +7,18 @@
 #import "components/prefs/pref_service.h"
 #import "components/signin/public/identity_manager/identity_manager.h"
 #import "ios/chrome/browser/intelligence/bwg/utils/gemini_feature_availability.h"
-#import "ios/chrome/browser/intelligence/features/features.h"
+#import "ios/chrome/browser/intelligence/contextual_cueing/features.h"
 #import "ios/chrome/browser/settings/ui_bundled/bwg/model/gemini_dynamic_settings_item.h"
 #import "ios/chrome/browser/settings/ui_bundled/bwg/model/gemini_settings_metadata.h"
 #import "ios/chrome/browser/settings/ui_bundled/bwg/ui/gemini_settings_consumer.h"
+#import "ios/chrome/browser/settings/ui_bundled/bwg/ui/gemini_suggestions_consumer.h"
 #import "ios/chrome/browser/shared/model/prefs/pref_backed_boolean.h"
 #import "ios/chrome/browser/shared/model/prefs/pref_names.h"
 #import "ios/chrome/browser/shared/public/commands/open_new_tab_command.h"
 #import "ios/chrome/browser/shared/public/commands/scene_commands.h"
 #import "ios/chrome/browser/signin/model/authentication_service.h"
 #import "ios/chrome/grit/ios_strings.h"
-#import "ios/public/provider/chrome/browser/bwg/bwg_api.h"
+#import "ios/public/provider/chrome/browser/bwg/gemini_api.h"
 #import "ui/base/l10n/l10n_util_mac.h"
 #import "url/gurl.h"
 
@@ -35,6 +36,12 @@ const NSInteger kDynamicSettingsItemTypeOffset = 10000;
   PrefBackedBoolean* _preciseLocationPref;
   // Accessor for the camera permission preference.
   PrefBackedBoolean* _cameraPref;
+  // Accessor for the suggestions preference.
+  PrefBackedBoolean* _suggestionsPref;
+  // Accessor for the closed captioning preference.
+  PrefBackedBoolean* _closedCaptioningPref;
+  // Accessor for the microphone permission preference.
+  PrefBackedBoolean* _microphonePref;
   // Accessor for the page content preference.
   PrefBackedBoolean* _pageContentPref;
   // AuthenticationService
@@ -64,6 +71,21 @@ const NSInteger kDynamicSettingsItemTypeOffset = 10000;
                    prefName:prefs::kIOSGeminiCameraSetting];
     _cameraPref.observer = self;
 
+    _suggestionsPref = [[PrefBackedBoolean alloc]
+        initWithPrefService:prefService
+                   prefName:prefs::kIOSGeminiSuggestionsSetting];
+    _suggestionsPref.observer = self;
+
+    _closedCaptioningPref = [[PrefBackedBoolean alloc]
+        initWithPrefService:prefService
+                   prefName:prefs::kIOSGeminiLiveClosedCaptioningSetting];
+    _closedCaptioningPref.observer = self;
+
+    _microphonePref = [[PrefBackedBoolean alloc]
+        initWithPrefService:prefService
+                   prefName:prefs::kIOSGeminiLiveMicrophoneSetting];
+    _microphonePref.observer = self;
+
     _pageContentPref = [[PrefBackedBoolean alloc]
         initWithPrefService:prefService
                    prefName:prefs::kIOSBWGPageContentSetting];
@@ -82,6 +104,18 @@ const NSInteger kDynamicSettingsItemTypeOffset = 10000;
   _cameraPref.observer = nil;
   _cameraPref = nil;
 
+  [_suggestionsPref stop];
+  _suggestionsPref.observer = nil;
+  _suggestionsPref = nil;
+
+  [_closedCaptioningPref stop];
+  _closedCaptioningPref.observer = nil;
+  _closedCaptioningPref = nil;
+
+  [_microphonePref stop];
+  _microphonePref.observer = nil;
+  _microphonePref = nil;
+
   [_pageContentPref stop];
   _pageContentPref.observer = nil;
   _pageContentPref = nil;
@@ -95,32 +129,44 @@ const NSInteger kDynamicSettingsItemTypeOffset = 10000;
   _consumer = consumer;
   [_consumer setPreciseLocationEnabled:_preciseLocationPref.value];
   [_consumer setCameraPermissionEnabled:_cameraPref.value];
+  if (contextual_cueing::IsGeminiContextualSuggestionsCuesEnabled()) {
+    [_consumer setGeminiSuggestionsEnabled:_suggestionsPref.value];
+  }
+  [_consumer setClosedCaptioningEnabled:_closedCaptioningPref.value];
+  [_consumer setMicrophoneEnabled:_microphonePref.value];
   [_consumer setPageContentSharingEnabled:_pageContentPref.value];
 }
 
-- (void)loadDynamicSettings {
-  if (IsGeminiDynamicSettingsEnabled()) {
-    NSArray<GeminiSettingsMetadata*>* eligibleSettingsMetadata =
-        ios::provider::GetEligibleSettings(_authService);
-
-    NSMutableArray<GeminiDynamicSettingsItem*>* settingsItems =
-        [[NSMutableArray alloc]
-            initWithCapacity:eligibleSettingsMetadata.count];
-
-    for (GeminiSettingsMetadata* setting in eligibleSettingsMetadata) {
-      NSInteger type = kDynamicSettingsItemTypeOffset + setting.context;
-      GeminiSettingsAction* action =
-          ios::provider::ActionForSettingsContext(setting.context);
-
-      GeminiDynamicSettingsItem* item =
-          [[GeminiDynamicSettingsItem alloc] initWithType:type
-                                                 metadata:setting
-                                                   action:action];
-      [settingsItems addObject:item];
-    }
-
-    [self.consumer updateDynamicSettingsItems:settingsItems];
+- (void)setSuggestionsConsumer:
+    (id<GeminiSuggestionsConsumer>)suggestionsConsumer {
+  if (_suggestionsConsumer == suggestionsConsumer) {
+    return;
   }
+
+  _suggestionsConsumer = suggestionsConsumer;
+  [_suggestionsConsumer setSuggestionsEnabled:_suggestionsPref.value];
+}
+
+- (void)loadDynamicSettings {
+  NSArray<GeminiSettingsMetadata*>* eligibleSettingsMetadata =
+      ios::provider::GetEligibleSettings(_authService);
+
+  NSMutableArray<GeminiDynamicSettingsItem*>* settingsItems =
+      [[NSMutableArray alloc] initWithCapacity:eligibleSettingsMetadata.count];
+
+  for (GeminiSettingsMetadata* setting in eligibleSettingsMetadata) {
+    NSInteger type = kDynamicSettingsItemTypeOffset + setting.context;
+    GeminiSettingsAction* action =
+        ios::provider::ActionForSettingsContext(setting.context);
+
+    GeminiDynamicSettingsItem* item =
+        [[GeminiDynamicSettingsItem alloc] initWithType:type
+                                               metadata:setting
+                                                 action:action];
+    [settingsItems addObject:item];
+  }
+
+  [self.consumer updateDynamicSettingsItems:settingsItems];
 }
 
 #pragma mark - GeminiSettingsMutator
@@ -130,12 +176,28 @@ const NSInteger kDynamicSettingsItemTypeOffset = 10000;
   [self.sceneHandler openURLInNewTab:command];
 }
 
+- (void)openSyncSettings {
+  [self.delegate openSyncSettings];
+}
+
 - (void)setPreciseLocationPref:(BOOL)value {
   _prefService->SetBoolean(prefs::kIOSBWGPreciseLocationSetting, value);
 }
 
 - (void)setCameraPermissionPref:(BOOL)value {
   _prefService->SetBoolean(prefs::kIOSGeminiCameraSetting, value);
+}
+
+- (void)setGeminiSuggestionsPref:(BOOL)value {
+  _prefService->SetBoolean(prefs::kIOSGeminiSuggestionsSetting, value);
+}
+
+- (void)setClosedCaptioningPref:(BOOL)value {
+  _prefService->SetBoolean(prefs::kIOSGeminiLiveClosedCaptioningSetting, value);
+}
+
+- (void)setMicrophonePref:(BOOL)value {
+  _prefService->SetBoolean(prefs::kIOSGeminiLiveMicrophoneSetting, value);
 }
 
 - (void)setPageContentSharingPref:(BOOL)value {
@@ -158,6 +220,13 @@ const NSInteger kDynamicSettingsItemTypeOffset = 10000;
     [self.consumer setPreciseLocationEnabled:_preciseLocationPref.value];
   } else if (observableBoolean == _cameraPref) {
     [self.consumer setCameraPermissionEnabled:_cameraPref.value];
+  } else if (observableBoolean == _suggestionsPref) {
+    [self.consumer setGeminiSuggestionsEnabled:_suggestionsPref.value];
+    [self.suggestionsConsumer setSuggestionsEnabled:_suggestionsPref.value];
+  } else if (observableBoolean == _closedCaptioningPref) {
+    [self.consumer setClosedCaptioningEnabled:_closedCaptioningPref.value];
+  } else if (observableBoolean == _microphonePref) {
+    [self.consumer setMicrophoneEnabled:_microphonePref.value];
   } else if (observableBoolean == _pageContentPref) {
     [self.consumer setPageContentSharingEnabled:_pageContentPref.value];
   }

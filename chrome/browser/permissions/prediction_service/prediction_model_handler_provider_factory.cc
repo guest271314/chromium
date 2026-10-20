@@ -4,6 +4,7 @@
 
 #include "chrome/browser/permissions/prediction_service/prediction_model_handler_provider_factory.h"
 
+#include "base/feature_list.h"
 #include "base/logging.h"
 #include "base/no_destructor.h"
 #include "base/task/sequenced_task_runner.h"
@@ -16,7 +17,9 @@
 #include "chrome/browser/passage_embeddings/passage_embedder_model_observer_factory.h"
 #include "chrome/browser/permissions/prediction_service/prediction_model_handler_provider.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/common/chrome_features.h"
 #include "components/passage_embeddings/core/passage_embedder_model_observer.h"
+#include "components/passage_embeddings/core/passage_embeddings_service_controller.h"
 #include "components/permissions/features.h"
 
 // static
@@ -72,7 +75,7 @@ PredictionModelHandlerProviderFactory::BuildServiceInstanceForBrowserContext(
     return nullptr;
   }
   optimization_guide::OptimizationGuideModelProvider* optimization_guide =
-      &global_state_service->GetGlobalState().prediction_manager();
+      &global_state_service->GetGlobalState().model_provider();
   passage_embeddings::Embedder* passage_embedder = nullptr;
   passage_embeddings::EmbedderMetadataProvider* embedder_metadata_provider =
       nullptr;
@@ -83,7 +86,7 @@ PredictionModelHandlerProviderFactory::BuildServiceInstanceForBrowserContext(
                  "passage embedder not setup.";
     } else if (auto* passage_embeddings_service_controller =
                    passage_embeddings::
-                       ChromePassageEmbeddingsServiceController::Get()) {
+                       GetChromePassageEmbeddingsServiceController()) {
       passage_embedder = passage_embeddings_service_controller->GetEmbedder();
       embedder_metadata_provider = passage_embeddings_service_controller;
       VLOG(1)
@@ -106,5 +109,5 @@ PredictionModelHandlerProviderFactory::BuildServiceInstanceForBrowserContext(
 
 bool PredictionModelHandlerProviderFactory::ServiceIsCreatedWithBrowserContext()
     const {
-  return true;
+  return !features::IsLazyOptimizationGuideModelsEnabled();
 }

@@ -76,8 +76,17 @@
   // Mock successful reauth when opening the Password Manager.
   [ReauthenticationAppInterface mockReauthenticationModuleExpectedResult:
                                     ReauthenticationResult::kSuccess];
-  [ChromeEarlGreyUI
-      tapSettingsMenuButton:chrome_test_util::SettingsMenuPasswordsButton()];
+  if ([ChromeEarlGrey isYourSavedInfoSettingsPageIosEnabled]) {
+    [ChromeEarlGreyUI
+        tapSettingsMenuButton:grey_accessibilityID(
+                                  @"kSettingsAutofillAndPasswordsCellId")];
+    [[EarlGrey selectElementWithMatcher:chrome_test_util::
+                                            SettingsMenuPasswordsButton()]
+        performAction:grey_tap()];
+  } else {
+    [ChromeEarlGreyUI
+        tapSettingsMenuButton:chrome_test_util::SettingsMenuPasswordsButton()];
+  }
 
   // Open password settings.
   [[EarlGrey selectElementWithMatcher:grey_accessibilityID(
@@ -114,8 +123,7 @@
 // Tests that string resources are loaded into the ResourceBundle and available
 // for use in tests.
 - (void)testAppResourcesArePresent {
-  NSString* settingsLabel = l10n_util::GetNSString(IDS_IOS_TOOLBAR_SETTINGS);
-  [[EarlGrey selectElementWithMatcher:grey_accessibilityLabel(settingsLabel)]
+  [[EarlGrey selectElementWithMatcher:chrome_test_util::ToolsMenuButton()]
       assertWithMatcher:grey_sufficientlyVisible()];
 }
 
@@ -342,6 +350,94 @@
   [ChromeEarlGrey userBooleanPref:prefs::kIosBookmarkPromoAlreadySeen];
   [ChromeEarlGrey userIntegerPref:prefs::kIosBookmarkCachedTopMostRow];
   [ChromeEarlGrey userStringPref:prefs::kDefaultCharset];
+}
+
+// Exercises posture and orientation states on the iPhone Duo simulator.
+- (void)testDuoHingeAndOrientation {
+  if (![ChromeEarlGrey isDuoSimulator]) {
+    EARL_GREY_TEST_SKIPPED(@"Test only supported on iPhone Duo simulator.");
+  }
+
+  if (@available(iOS 27.1, *)) {
+    const UIHingeStatus kHingeStatuses[] = {
+        UIHingeStatusClosed,         // Cover display, compact width
+        UIHingeStatusPartiallyOpen,  // Book (inner display, regular width)
+        UIHingeStatusFullyOpen,      // Open (inner display, regular width)
+    };
+    const UIDeviceOrientation kOrientations[] = {
+        UIDeviceOrientationPortrait,
+        UIDeviceOrientationLandscapeLeft,
+    };
+
+    for (UIHingeStatus status : kHingeStatuses) {
+      [ChromeEarlGrey setSimulatedDuoHingeStatus:status];
+      BOOL isCoverDisplay = (status == UIHingeStatusClosed);
+      for (UIDeviceOrientation orientation : kOrientations) {
+        [ChromeEarlGrey setSimulatedDuoOrientation:orientation];
+        UIInterfaceOrientation interfaceOrientation =
+            [ChromeEarlGrey interfaceOrientation];
+        BOOL deviceIsPortrait = (orientation == UIDeviceOrientationPortrait);
+        // Unfolding the inner display (951x669) makes the screen wider than
+        // tall when held in portrait, inverting the interface orientation
+        // relative to the device orientation.
+        BOOL expectPortraitInterface =
+            isCoverDisplay ? deviceIsPortrait : !deviceIsPortrait;
+        if (expectPortraitInterface) {
+          GREYAssertTrue(
+              UIInterfaceOrientationIsPortrait(interfaceOrientation),
+              @"Expected portrait interface orientation for status %ld",
+              static_cast<long>(status));
+        } else {
+          GREYAssertTrue(
+              UIInterfaceOrientationIsLandscape(interfaceOrientation),
+              @"Expected landscape interface orientation for status %ld",
+              static_cast<long>(status));
+        }
+        GREYAssertEqual(
+            [ChromeEarlGrey isCompactWidth], isCoverDisplay,
+            @"Unexpected horizontal size class for hinge status %ld",
+            static_cast<long>(status));
+        [ChromeEarlGrey waitForUIElementToAppearWithMatcher:
+                            chrome_test_util::ToolsMenuButton()];
+      }
+    }
+  }
+}
+
+// A test designed to fail, to verify test expectations.
+// TODO(crbug.com/568719330): This test is currently crashing instead of failing.
+- (void)testFailingMethod {
+  GREYAssertTrue(NO, @"This test is expected to fail.");
+}
+
+// A test designed to crash, to verify test expectations.
+- (void)testCrashingMethod {
+  [NSException raise:@"SmokeTestCrashException"
+              format:@"Expected smoke test crash"];
+}
+
+// A test designed to fail (or pass), to verify flaky expectations.
+// TODO(crbug.com/568719330): This test is currently crashing instead of failing.
+- (void)testFlakyFailureMethod {
+  GREYAssertTrue(NO, @"This test is expected to fail flakily.");
+}
+
+// A test designed to crash (or pass), to verify flaky crash expectations.
+- (void)testFlakyCrashMethod {
+  [NSException raise:@"SmokeTestFlakyCrashException"
+              format:@"Expected smoke test flaky crash"];
+}
+
+// A test designed to pass, to verify flaky expectations allow passing runs.
+- (void)testFlakyPassingMethod {
+  GREYAssertTrue(YES, @"This test is expected to pass.");
+}
+
+// A test designed to pass, to verify flaky crash expectations allow passing
+// runs.
+- (void)testFlakyCrashPassingMethod {
+  GREYAssertTrue(
+      YES, @"This test is expected to pass under flaky crash expectations.");
 }
 
 @end

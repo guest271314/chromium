@@ -7,6 +7,8 @@
 #include <jni.h>
 #include <stddef.h>
 
+#include <string>
+
 #include "base/android/jni_android.h"
 #include "base/android/jni_string.h"
 #include "base/android/scoped_java_ref.h"
@@ -20,11 +22,10 @@
 #include "ui/android/window_android.h"
 #include "ui/base/resource/resource_bundle.h"
 
-// Must come after all headers that specialize FromJniType() / ToJniType().
+// Must come after headers that provide symbols used by @JniType.
 #include "chrome/browser/ui/android/autofill/internal/jni_headers/AuthenticatorSelectionDialogBridge_jni.h"
 
-using base::android::ConvertUTF16ToJavaString;
-using base::android::ConvertUTF8ToJavaString;
+using jni_zero::ScopedJavaLocalRef;
 
 namespace autofill {
 
@@ -32,7 +33,7 @@ AuthenticatorSelectionDialogViewAndroid::
     AuthenticatorSelectionDialogViewAndroid(
         CardUnmaskAuthenticationSelectionDialogController* controller)
     : controller_(controller) {
-  DCHECK(controller);
+  CHECK(controller, base::NotFatalUntil::M162);
 }
 
 AuthenticatorSelectionDialogViewAndroid::
@@ -40,63 +41,51 @@ AuthenticatorSelectionDialogViewAndroid::
 
 void AuthenticatorSelectionDialogViewAndroid::Dismiss(bool user_closed_dialog,
                                                       bool server_success) {
-  if (java_object_) {
-    // Multiple calls to `AuthenticatorSelectionDialogViewAndroid::Dismiss`
-    // should result in only 1 call to
-    // `Java_AuthenticatorSelectionDialogBridge_dismiss`.
-    Java_AuthenticatorSelectionDialogBridge_dismiss(
-        base::android::AttachCurrentThread(), java_object_);
-    java_object_.Reset();
-  }
   if (controller_) {
-    // `OnDialogClosed` destroys this view, no member access or method calls
-    // should happen afterwards.
     controller_->OnDialogClosed(user_closed_dialog, server_success);
+    controller_ = nullptr;
+  }
+  JNIEnv* env = base::android::AttachCurrentThread();
+  if (java_object_) {
+    Java_AuthenticatorSelectionDialogBridge_dismiss(env, java_object_);
+  } else {
+    delete this;
   }
 }
 
 void AuthenticatorSelectionDialogViewAndroid::UpdateContent() {}
 
 void AuthenticatorSelectionDialogViewAndroid::OnOptionSelected(
-    JNIEnv* env,
-    const base::android::JavaRef<jstring>& authenticator_option_identifier) {
-  std::string card_unmask_challenge_option_id =
-      base::android::ConvertJavaStringToUTF8(env,
-                                             authenticator_option_identifier);
+    const std::string& authenticator_option_identifier) {
   controller_->SetSelectedChallengeOptionId(
       CardUnmaskChallengeOption::ChallengeOptionId(
-          card_unmask_challenge_option_id));
+          authenticator_option_identifier));
   controller_->OnOkButtonClicked();
 }
 
-void AuthenticatorSelectionDialogViewAndroid::OnDismissed(JNIEnv* env) {
+void AuthenticatorSelectionDialogViewAndroid::OnDismissed() {
+  // If |controller_| is not nullptr, it means the dismissal was triggered by
+  // user cancellation.
   if (controller_) {
-    // `OnDialogClosed` destroys this view, no member access or method calls
-    // should happen afterwards.
     controller_->OnDialogClosed(/*user_closed_dialog=*/true,
                                 /*server_success=*/false);
+    controller_ = nullptr;
   }
+  delete this;
 }
 
 bool AuthenticatorSelectionDialogViewAndroid::ShowDialog(
     ui::WindowAndroid* window_android) {
-  // Don't show the dialog twice. This should be impossible as long as
-  // `ShowDialog` is called only from
-  // `CreateAndShowCardUnmaskAuthenticationSelectionDialog`.
-  CHECK(!java_object_, base::NotFatalUntil::M150);
-  if (java_object_) {
-    return false;
-  }
   JNIEnv* env = base::android::AttachCurrentThread();
-  DCHECK(window_android);
+  CHECK(window_android, base::NotFatalUntil::M162);
 
   std::vector<CardUnmaskChallengeOption> options =
       controller_->GetChallengeOptions();
-  base::android::ScopedJavaLocalRef<jobject> authOptions =
+  ScopedJavaLocalRef<jobject> authOptions =
       CreateJavaAuthenticatorOptions(env, options);
 
   java_object_.Reset(Java_AuthenticatorSelectionDialogBridge_create(
-      env, reinterpret_cast<intptr_t>(this), window_android->GetJavaObject()));
+      env, reinterpret_cast<intptr_t>(this), window_android));
 
   if (java_object_.is_null()) {
     return false;
@@ -106,11 +95,11 @@ bool AuthenticatorSelectionDialogViewAndroid::ShowDialog(
   return true;
 }
 
-base::android::ScopedJavaLocalRef<jobject>
+ScopedJavaLocalRef<jobject>
 AuthenticatorSelectionDialogViewAndroid::CreateJavaAuthenticatorOptions(
     JNIEnv* env,
     const std::vector<CardUnmaskChallengeOption>& options) {
-  base::android::ScopedJavaLocalRef<jobject> jlist =
+  ScopedJavaLocalRef<jobject> jlist =
       Java_AuthenticatorSelectionDialogBridge_createAuthenticatorOptionList(
           env);
 
@@ -124,13 +113,11 @@ AuthenticatorSelectionDialogViewAndroid::CreateJavaAuthenticatorOptions(
 void AuthenticatorSelectionDialogViewAndroid::
     CreateJavaAuthenticatorOptionAndAddToList(
         JNIEnv* env,
-        base::android::ScopedJavaLocalRef<jobject> jlist,
+        ScopedJavaLocalRef<jobject> jlist,
         const CardUnmaskChallengeOption& option) {
   std::u16string title = controller_->GetAuthenticationModeLabel(option);
   Java_AuthenticatorSelectionDialogBridge_createAuthenticatorOptionAndAddToList(
-      env, jlist, ConvertUTF16ToJavaString(env, title),
-      ConvertUTF8ToJavaString(env, option.id.value()),
-      ConvertUTF16ToJavaString(env, option.challenge_info),
+      env, jlist, title, option.id.value(), option.challenge_info,
       static_cast<int>(option.type));
 }
 

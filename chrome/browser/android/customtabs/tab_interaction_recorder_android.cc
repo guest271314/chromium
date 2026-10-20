@@ -8,6 +8,7 @@
 #include <string>
 
 #include "base/android/jni_android.h"
+#include "base/containers/span.h"
 #include "base/functional/bind.h"
 #include "base/memory/raw_ptr.h"
 #include "chrome/browser/android/customtabs/custom_tab_session_state_tracker.h"
@@ -29,7 +30,6 @@
 namespace customtabs {
 
 using autofill::AutofillManager;
-using base::android::JavaRef;
 using base::android::ScopedJavaLocalRef;
 using content::GlobalRenderFrameHostId;
 using content::RenderFrameHost;
@@ -124,7 +124,7 @@ void AutofillObserverImpl::OnAfterFormsSeen(
 
 void AutofillObserverImpl::Invalidate() {
   if (IsInObserverList()) {
-    DCHECK(autofill_manager_);
+    CHECK(autofill_manager_, base::NotFatalUntil::M161);
     autofill_manager_->RemoveObserver(this);
     autofill_manager_ = nullptr;
   }
@@ -282,8 +282,7 @@ void TabInteractionRecorderAndroid::Reset(JNIEnv* env) {
 
 static ScopedJavaLocalRef<jobject> JNI_TabInteractionRecorder_GetFromTab(
     JNIEnv* env,
-    const JavaRef<jobject>& jtab) {
-  TabAndroid* tab = TabAndroid::GetNativeTab(env, jtab);
+    TabAndroid* tab) {
   if (!tab || !tab->web_contents() || tab->web_contents()->IsBeingDestroyed()) {
     return nullptr;
   }
@@ -296,8 +295,7 @@ static ScopedJavaLocalRef<jobject> JNI_TabInteractionRecorder_GetFromTab(
 
 static ScopedJavaLocalRef<jobject> JNI_TabInteractionRecorder_CreateForTab(
     JNIEnv* env,
-    const JavaRef<jobject>& jtab) {
-  TabAndroid* tab = TabAndroid::GetNativeTab(env, jtab);
+    TabAndroid* tab) {
   if (!tab || !tab->web_contents() || tab->web_contents()->IsBeingDestroyed()) {
     return nullptr;
   }

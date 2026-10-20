@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/342213636): Remove this and spanify to fix the errors.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "content/child/dwrite_font_proxy/dwrite_font_proxy_win.h"
 
 #include <stddef.h>
@@ -15,6 +10,7 @@
 #include <utility>
 
 #include "base/check_op.h"
+#include "base/compiler_specific.h"
 #include "base/debug/crash_logging.h"
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
@@ -129,7 +125,7 @@ void DWriteFontCollectionProxy::InitializePrewarmerForTesting(
 inline DWriteFontFamilyProxy* DWriteFontCollectionProxy::GetFamilyLockRequired(
     UINT32 family_index) {
   if (family_index < families_.size())
-    return families_[family_index].Get();
+    return UNSAFE_TODO(families_[family_index]).Get();
   return nullptr;
 }
 
@@ -195,6 +191,7 @@ std::optional<UINT32> DWriteFontCollectionProxy::FindFamilyIndex(
   // the lock protects the main thread in such case. crbug.com/1289576
   uint32_t family_index = 0;
   if (!GetFontProxy().FindFamily(family_name, &family_index)) {
+    SetFontServiceDisconnected();
     if (hresult_out)
       *hresult_out = E_FAIL;
     return std::nullopt;
@@ -259,6 +256,18 @@ void DWriteFontCollectionProxy::PrewarmFamilyOnWorker(
     family->PrewarmFamilyOnWorker();
 }
 
+bool DWriteFontCollectionProxy::IsFontServiceConnected() const {
+  if (!is_font_service_connected_.load(std::memory_order_relaxed)) {
+    return false;
+  }
+  const auto* font_proxy = font_proxy_.GetValuePointer();
+  if (font_proxy && font_proxy->is_bound() && !font_proxy->is_connected()) {
+    is_font_service_connected_.store(false, std::memory_order_relaxed);
+    return false;
+  }
+  return true;
+}
+
 HRESULT DWriteFontCollectionProxy::GetFontFamily(
     UINT32 index,
     IDWriteFontFamily** font_family) {
@@ -293,6 +302,7 @@ UINT32 DWriteFontCollectionProxy::GetFontFamilyCountLockRequired() {
 
   uint32_t family_count = 0;
   if (!GetFontProxy().GetFamilyCount(&family_count)) {
+    SetFontServiceDisconnected();
     return 0;
   }
 
@@ -347,6 +357,7 @@ HRESULT DWriteFontCollectionProxy::CreateEnumeratorFromKey(
     // ThreadPool).
     base::ScopedAllowBaseSyncPrimitives allow_sync;
     if (!GetFontProxy().GetFontFileHandles(*family_index, &file_handles)) {
+      SetFontServiceDisconnected();
       return E_FAIL;
     }
   }
@@ -406,8 +417,14 @@ HRESULT DWriteFontCollectionProxy::RuntimeClassInitialize(
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   factory_ = factory;
-  if (proxy)
-    font_proxy_.GetOrCreateValue().Bind(std::move(proxy));
+  if (proxy) {
+    mojo::Remote<blink::mojom::DWriteFontProxy>& font_proxy =
+        font_proxy_.GetOrCreateValue();
+    font_proxy.Bind(std::move(proxy));
+    font_proxy.set_disconnect_handler(
+        base::BindOnce(&DWriteFontCollectionProxy::SetFontServiceDisconnected,
+                       base::Unretained(this)));
+  }
   main_task_runner_ = base::SingleThreadTaskRunner::GetCurrentDefault();
   // |prewarm_task_runner_| needs to be initialized later because ThreadPool is
   // not setup yet when |this| is instantiated. See |InitializePrewarmer|.
@@ -467,6 +484,7 @@ bool DWriteFontCollectionProxy::LoadFamilyNames(
 
   std::vector<blink::mojom::DWriteStringPairPtr> pairs;
   if (!GetFontProxy().GetFamilyNames(family_index, &pairs)) {
+    SetFontServiceDisconnected();
     return false;
   }
   std::vector<std::pair<std::u16string, std::u16string>> strings;
@@ -485,8 +503,10 @@ DWriteFontFamilyProxy* DWriteFontCollectionProxy::GetOrCreateFamilyLockRequired(
   DCHECK(IsValidFamilyIndex(family_index));
 
   if (family_index < families_.size()) {
-    if (DWriteFontFamilyProxy* family = families_[family_index].Get())
+    if (DWriteFontFamilyProxy* family =
+            UNSAFE_TODO(families_[family_index]).Get()) {
       return family;
+    }
   }
 
   const UINT32 family_count = GetFontFamilyCountLockRequired();
@@ -502,7 +522,7 @@ DWriteFontFamilyProxy* DWriteFontCollectionProxy::GetOrCreateFamilyLockRequired(
   DCHECK(SUCCEEDED(hr));
   DCHECK_LT(family_index, families_.size());
 
-  families_[family_index] = family;
+  UNSAFE_TODO(families_[family_index]) = family;
   return family.Get();
 }
 
@@ -517,6 +537,9 @@ blink::mojom::DWriteFontProxy& DWriteFontCollectionProxy::GetFontProxy() {
           FROM_HERE, base::BindOnce(&BindHostReceiverOnMainThread,
                                     font_proxy.BindNewPipeAndPassReceiver()));
     }
+    font_proxy.set_disconnect_handler(
+        base::BindOnce(&DWriteFontCollectionProxy::SetFontServiceDisconnected,
+                       base::Unretained(this)));
   }
   return *font_proxy;
 }
@@ -527,6 +550,9 @@ void DWriteFontCollectionProxy::BindFontProxyUsingBroker(
       font_proxy_.GetOrCreateValue();
   DCHECK(!font_proxy);
   interface_broker->GetInterface(font_proxy.BindNewPipeAndPassReceiver());
+  font_proxy.set_disconnect_handler(
+      base::BindOnce(&DWriteFontCollectionProxy::SetFontServiceDisconnected,
+                     base::Unretained(this)));
 }
 
 void DWriteFontCollectionProxy::BindFontProxy(
@@ -535,6 +561,9 @@ void DWriteFontCollectionProxy::BindFontProxy(
       font_proxy_.GetOrCreateValue();
   DCHECK(!font_proxy);
   font_proxy.Bind(std::move(remote));
+  font_proxy.set_disconnect_handler(
+      base::BindOnce(&DWriteFontCollectionProxy::SetFontServiceDisconnected,
+                     base::Unretained(this)));
 }
 
 DWriteFontFamilyProxy::DWriteFontFamilyProxy() = default;
@@ -741,7 +770,7 @@ HRESULT FontFileEnumerator::GetCurrentFontFile(IDWriteFontFile** file) {
   // CreateCustomFontFileReference ends up calling
   // DWriteFontCollectionProxy::CreateStreamFromKey.
   HRESULT hr = factory_->CreateCustomFontFileReference(
-      reinterpret_cast<const void*>(&files_[current_file_]),
+      reinterpret_cast<const void*>(&UNSAFE_TODO(files_[current_file_])),
       sizeof(files_[current_file_]), loader_.Get() /*IDWriteFontFileLoader*/,
       file);
   DCHECK(SUCCEEDED(hr));
@@ -796,7 +825,7 @@ HRESULT FontFileStream::ReadFileFragment(const void** fragment_start,
     return E_FAIL;
   if (fragment_offset + fragment_size > data_.length())
     return E_FAIL;
-  *fragment_start = data_.data() + fragment_offset;
+  *fragment_start = UNSAFE_TODO(data_.data() + fragment_offset);
   *fragment_context = nullptr;
   return S_OK;
 }

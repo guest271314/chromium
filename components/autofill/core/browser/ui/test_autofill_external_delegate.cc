@@ -21,10 +21,11 @@ TestAutofillExternalDelegate::TestAutofillExternalDelegate(
 TestAutofillExternalDelegate::~TestAutofillExternalDelegate() = default;
 
 void TestAutofillExternalDelegate::OnSuggestionsShown(
-    base::span<const Suggestion> suggestions) {
+    base::span<const Suggestion> suggestions,
+    const SuggestionUiMetadata& metadata) {
   popup_hidden_ = false;
 
-  AutofillExternalDelegate::OnSuggestionsShown(suggestions);
+  AutofillExternalDelegate::OnSuggestionsShown(suggestions, metadata);
 }
 
 void TestAutofillExternalDelegate::OnSuggestionsHidden(
@@ -38,22 +39,35 @@ void TestAutofillExternalDelegate::OnQuery(
     const FormData& form,
     const FormFieldData& field,
     const gfx::Rect& caret_bounds,
-    AutofillSuggestionTriggerSource trigger_source,
-    bool update_datalist) {
+    AutofillSuggestionTriggerSource trigger_source) {
   on_query_seen_ = true;
   on_suggestions_returned_seen_ = false;
   trigger_source_ = trigger_source;
-  AutofillExternalDelegate::OnQuery(form, field, caret_bounds, trigger_source,
-                                    update_datalist);
+  form_id_ = form.global_id();
+  field_id_ = field.global_id();
+  AutofillExternalDelegate::OnQuery(form, field, caret_bounds, trigger_source);
+}
+
+void TestAutofillExternalDelegate::DidSelectSuggestion(
+    const Suggestion& suggestion) {
+  DidSelectSuggestion(suggestion, form_id_, field_id_);
+}
+
+void TestAutofillExternalDelegate::DidAcceptSuggestion(
+    const Suggestion& suggestion,
+    const SuggestionMetadata& metadata) {
+  DidAcceptSuggestion(suggestion, metadata, form_id_, field_id_);
 }
 
 void TestAutofillExternalDelegate::OnSuggestionsReturned(
-    FieldGlobalId field_id,
-    const std::vector<Suggestion>& suggestions) {
+    const FormFieldData& trigger_field,
+    const std::vector<Suggestion>& suggestions,
+    std::u16string prefilled_query) {
   on_suggestions_returned_seen_ = true;
-  field_id_ = field_id;
+  field_id_ = trigger_field.global_id();
   suggestions_ = suggestions;
-  AutofillExternalDelegate::OnSuggestionsReturned(field_id, suggestions);
+  AutofillExternalDelegate::OnSuggestionsReturned(trigger_field, suggestions,
+                                                  std::move(prefilled_query));
 }
 
 bool TestAutofillExternalDelegate::HasActiveScreenReader() const {

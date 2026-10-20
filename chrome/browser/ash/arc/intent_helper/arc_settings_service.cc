@@ -35,7 +35,6 @@
 #include "chrome/browser/global_features.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profiles_state.h"
-#include "chrome/common/pref_names.h"
 #include "chromeos/ash/components/network/network_handler.h"
 #include "chromeos/ash/components/network/network_state.h"
 #include "chromeos/ash/components/network/network_state_handler.h"
@@ -444,14 +443,14 @@ void ArcSettingsServiceImpl::OnPrefChanged(const std::string& pref_name) const {
     if (pref_name == ::language::prefs::kApplicationLocale) {
       SyncCaptionStyle();
     }
-  } else if (pref_name == ::prefs::kConsumerAutoUpdateToggle) {
+  } else if (pref_name == ash::prefs::kConsumerAutoUpdateToggle) {
     SyncConsumerAutoUpdateToggle();
   } else if (pref_name == ash::prefs::kUse24HourClock) {
     SyncUse24HourClock();
   } else if (pref_name == ash::prefs::kResolveTimezoneByGeolocationMethod) {
     SyncTimeZoneByGeolocation();
   } else if (pref_name == proxy_config::prefs::kProxy ||
-             pref_name == ::prefs::kSystemProxyUserTrafficHostAndPort) {
+             pref_name == ash::prefs::kSystemProxyUserTrafficHostAndPort) {
     SyncProxySettings();
   } else {
     LOG(ERROR) << "Unknown pref changed.";
@@ -535,7 +534,8 @@ void ArcSettingsServiceImpl::DefaultNetworkChanged(
 bool ArcSettingsServiceImpl::IsPrefProxyConfigApplied() const {
   net::ProxyConfigWithAnnotation config;
   return PrefProxyConfigTrackerImpl::PrefPrecedes(
-      PrefProxyConfigTrackerImpl::ReadPrefConfig(GetPrefs(), &config));
+      PrefProxyConfigTrackerImpl::ReadPrefConfig(GetPrefs(), &config,
+                                                 /*policy_service=*/nullptr));
 }
 
 void ArcSettingsServiceImpl::StartObservingSettingsChanges() {
@@ -551,7 +551,7 @@ void ArcSettingsServiceImpl::StartObservingSettingsChanges() {
   AddPrefToObserve(::prefs::kAccessibilityCaptionsTextShadow);
   AddPrefToObserve(::prefs::kAccessibilityCaptionsTextSize);
   AddPrefToObserve(ash::prefs::kResolveTimezoneByGeolocationMethod);
-  AddPrefToObserve(::prefs::kSystemProxyUserTrafficHostAndPort);
+  AddPrefToObserve(ash::prefs::kSystemProxyUserTrafficHostAndPort);
   AddPrefToObserve(ash::prefs::kUse24HourClock);
   AddPrefToObserve(ash::prefs::kAccessibilityFocusHighlightEnabled);
   AddPrefToObserve(ash::prefs::kAccessibilityLargeCursorEnabled);
@@ -568,7 +568,7 @@ void ArcSettingsServiceImpl::StartObservingSettingsChanges() {
   AddPrefToObserve(proxy_config::prefs::kProxy);
 
   // Keep these lines ordered lexicographically.
-  AddLocalStatePrefToObserve(::prefs::kConsumerAutoUpdateToggle);
+  AddLocalStatePrefToObserve(ash::prefs::kConsumerAutoUpdateToggle);
 
   // Note that some preferences, such as kArcBackupRestoreEnabled and
   // kArcLocationServiceEnabled, are not dynamically updated after initial
@@ -657,9 +657,9 @@ void ArcSettingsServiceImpl::SyncBackupEnabled() const {
   if (backup_settings) {
     const PrefService::Preference* pref =
         registrar_.prefs()->FindPreference(prefs::kArcBackupRestoreEnabled);
-    DCHECK(pref);
+    CHECK(pref, base::NotFatalUntil::M160);
     const base::Value* value = pref->GetValue();
-    DCHECK(value->is_bool());
+    CHECK(value->is_bool(), base::NotFatalUntil::M160);
     backup_settings->SetBackupEnabled(value->GetBool(),
                                       !pref->IsUserModifiable());
   }
@@ -809,12 +809,12 @@ void ArcSettingsServiceImpl::SyncProxySettings() const {
 
 bool ArcSettingsServiceImpl::IsSystemProxyActive() const {
   if (!profile_->GetPrefs()->HasPrefPath(
-          ::prefs::kSystemProxyUserTrafficHostAndPort)) {
+          ash::prefs::kSystemProxyUserTrafficHostAndPort)) {
     return false;
   }
 
   const std::string proxy_host_and_port = profile_->GetPrefs()->GetString(
-      ::prefs::kSystemProxyUserTrafficHostAndPort);
+      ash::prefs::kSystemProxyUserTrafficHostAndPort);
   // System-proxy can be active, but the network namespace for the worker
   // process is not yet configured.
   return !proxy_host_and_port.empty();
@@ -822,7 +822,7 @@ bool ArcSettingsServiceImpl::IsSystemProxyActive() const {
 
 void ArcSettingsServiceImpl::SyncProxySettingsForSystemProxy() const {
   const std::string proxy_host_and_port = profile_->GetPrefs()->GetString(
-      ::prefs::kSystemProxyUserTrafficHostAndPort);
+      ash::prefs::kSystemProxyUserTrafficHostAndPort);
   std::string host;
   int port;
   if (!net::ParseHostAndPort(proxy_host_and_port, &host, &port))
@@ -877,11 +877,12 @@ void ArcSettingsServiceImpl::SyncTimeZone() const {
 
 void ArcSettingsServiceImpl::SyncTimeZoneByGeolocation() const {
   base::DictValue extras;
-  extras.Set("autoTimeZone", ash::system::TimeZoneResolverManager::
-                                     GetEffectiveUserTimeZoneResolveMethod(
-                                         registrar_.prefs(), false) !=
-                                 ash::system::TimeZoneResolverManager::
-                                     TimeZoneResolveMethod::DISABLED);
+  extras.Set("autoTimeZone",
+             ash::system::TimeZoneResolverManager::
+                     GetEffectiveUserTimeZoneResolveMethod(
+                         local_state_.get(), registrar_.prefs(), false) !=
+                 ash::system::TimeZoneResolverManager::TimeZoneResolveMethod::
+                     DISABLED);
   SendSettingsBroadcast("org.chromium.arc.intent_helper.SET_AUTO_TIME_ZONE",
                         extras);
 }
@@ -889,8 +890,8 @@ void ArcSettingsServiceImpl::SyncTimeZoneByGeolocation() const {
 void ArcSettingsServiceImpl::SyncUse24HourClock() const {
   const PrefService::Preference* pref =
       registrar_.prefs()->FindPreference(ash::prefs::kUse24HourClock);
-  DCHECK(pref);
-  DCHECK(pref->GetValue()->is_bool());
+  CHECK(pref, base::NotFatalUntil::M160);
+  CHECK(pref->GetValue()->is_bool(), base::NotFatalUntil::M160);
   bool use24HourClock = pref->GetValue()->GetBool();
   base::DictValue extras;
   extras.Set("use24HourClock", use24HourClock);
@@ -906,8 +907,8 @@ void ArcSettingsServiceImpl::SyncUserGeolocation() const {
   // We need to map tri-state of ChromeOS toggle to boolean ARC++ toggle.
   const PrefService::Preference* pref = registrar_.prefs()->FindPreference(
       ash::prefs::kUserGeolocationAccessLevel);
-  DCHECK(pref);
-  DCHECK(pref->GetValue()->is_int());
+  CHECK(pref, base::NotFatalUntil::M160);
+  CHECK(pref->GetValue()->is_int(), base::NotFatalUntil::M160);
 
   bool enabled_for_arc =
       ash::PrivacyHubController::CrosToArcGeolocationPermissionMapping(
@@ -926,7 +927,7 @@ void ArcSettingsServiceImpl::SyncUserGeolocationAccuracy() const {
 
 void ArcSettingsServiceImpl::SyncConsumerAutoUpdateToggle() const {
   SendBoolLocalStatePrefSettingsBroadcast(
-      ::prefs::kConsumerAutoUpdateToggle,
+      ash::prefs::kConsumerAutoUpdateToggle,
       "org.chromium.arc.intent_helper.SET_CONSUMER_AUTO_UPDATE");
 }
 
@@ -958,8 +959,8 @@ void ArcSettingsServiceImpl::AddLocalStatePrefToObserve(
 int ArcSettingsServiceImpl::GetIntegerPref(const std::string& pref_name) const {
   const PrefService::Preference* pref =
       registrar_.prefs()->FindPreference(pref_name);
-  DCHECK(pref);
-  DCHECK(pref->GetValue()->is_int());
+  CHECK(pref, base::NotFatalUntil::M160);
+  CHECK(pref->GetValue()->is_int(), base::NotFatalUntil::M160);
   return pref->GetValue()->GetIfInt().value_or(-1);
 }
 
@@ -967,8 +968,8 @@ bool ArcSettingsServiceImpl::GetBooleanPref(
     const std::string& pref_name) const {
   const PrefService::Preference* pref =
       registrar_.prefs()->FindPreference(pref_name);
-  DCHECK(pref);
-  DCHECK(pref->GetValue()->is_bool());
+  CHECK(pref, base::NotFatalUntil::M160);
+  CHECK(pref->GetValue()->is_bool(), base::NotFatalUntil::M160);
   return pref->GetValue()->GetBool();
 }
 
@@ -976,9 +977,9 @@ bool ArcSettingsServiceImpl::IsBooleanPrefManaged(
     const std::string& pref_name) const {
   const PrefService::Preference* pref =
       registrar_.prefs()->FindPreference(pref_name);
-  DCHECK(pref);
+  CHECK(pref, base::NotFatalUntil::M160);
   bool value_exists = pref->GetValue()->is_bool();
-  DCHECK(value_exists);
+  CHECK(value_exists, base::NotFatalUntil::M160);
   return !pref->IsUserModifiable();
 }
 
@@ -987,7 +988,7 @@ void ArcSettingsServiceImpl::SendBoolLocalStatePrefSettingsBroadcast(
     const std::string& action) const {
   const PrefService::Preference* local_state_pref =
       local_state_->FindPreference(pref_name);
-  DCHECK(local_state_pref);
+  CHECK(local_state_pref, base::NotFatalUntil::M160);
   bool enabled = local_state_->GetBoolean(pref_name);
   SendBoolValueSettingsBroadcast(enabled, !local_state_pref->IsUserModifiable(),
                                  action);
@@ -998,8 +999,8 @@ void ArcSettingsServiceImpl::SendBoolPrefSettingsBroadcast(
     const std::string& action) const {
   const PrefService::Preference* pref =
       registrar_.prefs()->FindPreference(pref_name);
-  DCHECK(pref);
-  DCHECK(pref->GetValue()->is_bool());
+  CHECK(pref, base::NotFatalUntil::M160);
+  CHECK(pref->GetValue()->is_bool(), base::NotFatalUntil::M160);
   bool enabled = pref->GetValue()->GetBool();
   SendBoolValueSettingsBroadcast(enabled, !pref->IsUserModifiable(), action);
 }
@@ -1023,7 +1024,7 @@ void ArcSettingsServiceImpl::SendSettingsBroadcast(
     return;
   std::string extras_json;
   bool write_success = base::JSONWriter::Write(extras, &extras_json);
-  DCHECK(write_success);
+  CHECK(write_success, base::NotFatalUntil::M160);
 
   instance->SendBroadcast(
       action, kArcIntentHelperPackageName,
@@ -1085,7 +1086,7 @@ void ArcSettingsService::OnArcPlayStoreEnabledChanged(bool enabled) {
 }
 
 void ArcSettingsService::OnArcInitialStart() {
-  DCHECK(!IsInitialSettingsPending());
+  CHECK(!IsInitialSettingsPending(), base::NotFatalUntil::M160);
 
   if (!impl_) {
     SetInitialSettingsPending(true);

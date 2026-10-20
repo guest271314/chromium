@@ -76,10 +76,10 @@ static_library("discovery") {
     "//components/version_info",
     "//content/public/browser",
     "//content/public/common",
+    "//services/data_decoder/public/cpp",
     "//services/network/public/cpp",
     "//third_party/openscreen/src/cast/common/channel/proto:channel_proto",
   ]
-  configs += [ "//build/config/compiler:wexit_time_destructors" ]
 
   if (is_linux || is_chromeos) {
     sources += [ "discovery_network_list_wifi_linux.cc" ]

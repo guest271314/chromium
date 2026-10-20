@@ -7,18 +7,19 @@
 #include <algorithm>
 #include <memory>
 #include <optional>
+#include <tuple>
 #include <utility>
 
 #include "base/run_loop.h"
 #include "base/unguessable_token.h"
 #include "base/uuid.h"
-#include "content/browser/fenced_frame/fenced_frame.h"
 #include "content/browser/renderer_host/frame_tree.h"
 #include "content/browser/renderer_host/navigation_request.h"
 #include "content/browser/renderer_host/navigator.h"
 #include "content/browser/renderer_host/page_impl.h"
 #include "content/browser/renderer_host/render_frame_host_delegate.h"
 #include "content/browser/web_contents/web_contents_impl.h"
+#include "content/browser/web_package/prefetched_signed_exchange_cache.h"
 #include "content/common/frame_messages.mojom.h"
 #include "content/common/navigation_params_utils.h"
 #include "content/public/browser/navigation_throttle.h"
@@ -81,7 +82,8 @@ TestRenderFrameHost::TestRenderFrameHost(
     const blink::LocalFrameToken& frame_token,
     const blink::DocumentToken& document_token,
     base::UnguessableToken devtools_frame_token,
-    RenderFrameHostImpl::LifecycleStateImpl lifecycle_state,
+    const blink::InitiatorStateToken& initiator_state_token,
+    RenderFrameHostLifecycleStateImpl lifecycle_state,
     scoped_refptr<BrowsingContextState> browsing_context_state)
     : RenderFrameHostImpl(site_instance,
                           render_view_host,
@@ -93,6 +95,7 @@ TestRenderFrameHost::TestRenderFrameHost(
                           frame_token,
                           document_token,
                           devtools_frame_token,
+                          initiator_state_token,
                           /*renderer_initiated_creation_of_main_frame=*/false,
                           lifecycle_state,
                           browsing_context_state,
@@ -144,6 +147,9 @@ void TestRenderFrameHost::AddMessageToConsole(
 
 void TestRenderFrameHost::ReportInspectorIssue(
     blink::mojom::InspectorIssueInfoPtr issue) {
+  if (report_inspector_issue_callback_) {
+    report_inspector_issue_callback_.Run(issue);
+  }
   if (issue->code == blink::mojom::InspectorIssueCode::kHeavyAdIssue) {
     switch (issue->details->heavy_ad_issue_details->reason) {
       case blink::mojom::HeavyAdReason::kNetworkTotalLimit:
@@ -158,12 +164,15 @@ void TestRenderFrameHost::ReportInspectorIssue(
     }
   } else if (issue->code ==
              blink::mojom::InspectorIssueCode::kFederatedAuthRequestIssue) {
-    ++federated_auth_counts_[issue->details->federated_auth_request_details
-                                 ->status];
+    ++federated_auth_counts_[issue->details->federated_request_details->status];
   } else if (issue->code == blink::mojom::InspectorIssueCode::
                                 kFederatedAuthUserInfoRequestIssue) {
     ++federated_auth_user_info_counts_
         [issue->details->federated_auth_user_info_request_details->status];
+  } else if (issue->code ==
+             blink::mojom::InspectorIssueCode::kEmailVerificationRequestIssue) {
+    ++email_verification_request_counts_
+        [issue->details->email_verification_request_details->status];
   }
   RenderFrameHostImpl::ReportInspectorIssue(std::move(issue));
 }
@@ -201,7 +210,7 @@ TestRenderFrameHost* TestRenderFrameHost::AppendChildWithPolicy(
       CreateStubAssociatedInterfaceProviderReceiver(),
       blink::mojom::TreeScopeType::kDocument, frame_name, frame_unique_name,
       false, blink::LocalFrameToken(), base::UnguessableToken::Create(),
-      blink::DocumentToken(),
+      blink::DocumentToken(), blink::InitiatorStateToken(),
       blink::FramePolicy({network::mojom::WebSandboxFlags::kNone,
                           allow,
                           {},
@@ -268,9 +277,17 @@ void TestRenderFrameHost::SimulateUnloadACK() {
 }
 
 void TestRenderFrameHost::SimulateUserActivation() {
-  frame_tree_node()->UpdateUserActivationState(
+  std::ignore = frame_tree_node()->UpdateUserActivationState(
       blink::mojom::UserActivationUpdateType::kNotifyActivation,
       blink::mojom::UserActivationNotificationType::kTest);
+}
+
+void TestRenderFrameHost::SimulateFocusedElementChanged(
+    bool is_editable_element,
+    bool is_richly_editable_element) {
+  FocusedElementChanged(is_editable_element, is_richly_editable_element,
+                        gfx::Rect(), blink::mojom::FocusType::kNone,
+                        blink::DOMNodeIdType());
 }
 
 const std::vector<std::string>& TestRenderFrameHost::GetConsoleMessages() {
@@ -296,8 +313,8 @@ int TestRenderFrameHost::GetHeavyAdIssueCount(
   }
 }
 
-int TestRenderFrameHost::GetFederatedAuthRequestIssueCount(
-    std::optional<blink::mojom::FederatedAuthRequestResult> status_type) {
+int TestRenderFrameHost::GetFederatedRequestIssueCount(
+    std::optional<blink::mojom::FederatedRequestResult> status_type) {
   if (!status_type) {
     int total = 0;
     for (const auto& [result, count] : federated_auth_counts_)
@@ -311,7 +328,7 @@ int TestRenderFrameHost::GetFederatedAuthRequestIssueCount(
   return it->second;
 }
 
-int TestRenderFrameHost::GetFederatedAuthUserInfoRequestIssueCount(
+int TestRenderFrameHost::GetFederatedUserInfoRequestIssueCount(
     std::optional<blink::mojom::FederatedAuthUserInfoRequestResult>
         status_type) {
   if (!status_type) {
@@ -329,27 +346,29 @@ int TestRenderFrameHost::GetFederatedAuthUserInfoRequestIssueCount(
   return it->second;
 }
 
+int TestRenderFrameHost::GetEmailVerificationRequestIssueCount(
+    std::optional<blink::mojom::EmailVerificationRequestResult> status_type) {
+  if (!status_type) {
+    int total = 0;
+    for (const auto& [result, count] : email_verification_request_counts_) {
+      total += count;
+    }
+    return total;
+  }
+
+  auto it = email_verification_request_counts_.find(*status_type);
+  if (it == email_verification_request_counts_.end()) {
+    return 0;
+  }
+  return it->second;
+}
+
 void TestRenderFrameHost::SimulateManifestURLUpdate(const GURL& manifest_url) {
   GetPage().UpdateManifestUrl(manifest_url);
 }
 
 TestRenderFrameHost* TestRenderFrameHost::AppendFencedFrame() {
-  fenced_frames_.push_back(std::make_unique<FencedFrame>(
-      weak_ptr_factory_.GetSafeRef(), /* was_discarded= */ false));
-  FencedFrame* fenced_frame = fenced_frames_.back().get();
-  // Create stub RemoteFrameInterfaces.
-  auto remote_frame_interfaces =
-      blink::mojom::RemoteFrameInterfacesFromRenderer::New();
-  remote_frame_interfaces->frame_host_receiver =
-      mojo::AssociatedRemote<blink::mojom::RemoteFrameHost>()
-          .BindNewEndpointAndPassDedicatedReceiver();
-  mojo::AssociatedRemote<blink::mojom::RemoteFrame> frame;
-  std::ignore = frame.BindNewEndpointAndPassDedicatedReceiver();
-  remote_frame_interfaces->frame = frame.Unbind();
-  fenced_frame->InitInnerFrameTreeAndReturnProxyToOuterFrameTree(
-      std::move(remote_frame_interfaces), blink::RemoteFrameToken(),
-      base::UnguessableToken::Create());
-  return static_cast<TestRenderFrameHost*>(fenced_frame->GetInnerRoot());
+  return AppendChild("fenced_frame");
 }
 
 void TestRenderFrameHost::SendNavigate(int nav_entry_id,
@@ -453,8 +472,10 @@ void TestRenderFrameHost::SendRendererInitiatedNavigationRequest(
 
   blink::mojom::BeginNavigationParamsPtr begin_params =
       blink::mojom::BeginNavigationParams::New(
-          std::nullopt /* initiator_frame_token */, std::string() /* headers */,
-          net::LOAD_NORMAL, false /* skip_service_worker */,
+          std::nullopt /* initiator_frame_token */,
+          current_initiator_state_token(), GetDocumentToken(),
+          std::string() /* headers */, net::LOAD_NORMAL,
+          false /* skip_service_worker */,
           blink::mojom::RequestContextType::HYPERLINK,
           blink::mojom::MixedContentContextType::kBlockable,
           false /* is_form_submission */,
@@ -463,7 +484,7 @@ void TestRenderFrameHost::SendRendererInitiatedNavigationRequest(
           std::string() /* searchable_form_encoding */,
           GURL() /* client_side_redirect_url */,
           std::nullopt /* devtools_initiator_info */,
-          nullptr /* trust_token_params */, std::nullopt /* impression */,
+          nullptr /* trust_token_params */,
           base::TimeTicks() /* renderer_before_unload_start */,
           base::TimeTicks() /* renderer_before_unload_end */,
           base::TimeTicks() /* before_unload_dialog_opened */,
@@ -471,7 +492,8 @@ void TestRenderFrameHost::SendRendererInitiatedNavigationRequest(
           false /* started_with_transient_activation */,
           false /* started_by_ad */, false /* is_container_initiated */,
           false /* has_rel_opener */,
-          std::nullopt /* script_tool_invocation_id */);
+          std::nullopt /* script_tool_invocation_id */,
+          /*script_injector_host=*/"");
   auto common_params = blink::CreateCommonNavigationParams();
   common_params->url = url;
   common_params->initiator_origin = GetLastCommittedOrigin();
@@ -606,12 +628,23 @@ void TestRenderFrameHost::SimulateCommitProcessed(
       same_document);
 }
 
-#if !BUILDFLAG(IS_ANDROID)
+void TestRenderFrameHost::SimulateOnSameDocumentCommitProcessed(
+    const base::UnguessableToken& navigation_token,
+    bool should_replace_current_entry,
+    blink::mojom::CommitResult result) {
+  OnSameDocumentCommitProcessed(navigation_token, should_replace_current_entry,
+                                result);
+}
+
+void TestRenderFrameHost::SetPrefetchedSignedExchangeCacheForTesting(
+    scoped_refptr<PrefetchedSignedExchangeCache> cache) {
+  prefetched_signed_exchange_cache_ = std::move(cache);
+}
+
 void TestRenderFrameHost::CreateHidServiceForTesting(
     mojo::PendingReceiver<blink::mojom::HidService> receiver) {
   RenderFrameHostImpl::GetHidService(std::move(receiver));
 }
-#endif  // !BUILDFLAG(IS_ANDROID)
 
 void TestRenderFrameHost::CreateWebUsbServiceForTesting(
     mojo::PendingReceiver<blink::mojom::WebUsbService> receiver) {

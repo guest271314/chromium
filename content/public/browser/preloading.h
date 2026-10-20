@@ -134,10 +134,8 @@ inline constexpr PreloadingPredictor kBackGestureNavigation(
     4,
     "BackGestureNavigation");
 
-// Preloading heuristics ML model.
-inline constexpr PreloadingPredictor kPreloadingHeuristicsMLModel(
-    5,
-    "PreloadingHeuristicsMLModel");
+// Value 5 was used by the removed PreloadingHeuristicsMLModel predictor; do
+// not reuse it (it may still appear in historical UKM/UMA data).
 
 // Preloading is triggered by a deterministic viewport-based heuristic for
 // the "moderate" eagerness. Note that this predictor does nothing for the other
@@ -265,6 +263,10 @@ enum class PreloadingEligibility {
   // Even after the initial ServiceWorker support (https://crbug.com/40947546),
   // this will be still used for ServiceWorker-ineligible prefetches.
   kUserHasServiceWorkerNoFetchHandler = 24,
+
+  // The URL is not allowed by connection allowlist.
+  // See https://github.com/WICG/connection-allowlists.
+  kBlockedByConnectionAllowlist = 25,
 
   // ##########################################################################
   // The range 50-99 is reserved for corresponding values in `PrefetchStatus`.

@@ -123,8 +123,9 @@ bool EffectStack::AffectsProperties(const CSSBitset& bitset,
       continue;
     for (const auto& interpolation : sampled_effect->Interpolations()) {
       const PropertyHandle& property = interpolation->GetProperty();
-      if (property.IsCSSCustomProperty() || !property.IsCSSProperty())
+      if (property.IsCSSCustomProperty()) {
         continue;
+      }
       if (bitset.Has(property.GetCSSProperty().PropertyID()))
         return true;
     }
@@ -165,9 +166,9 @@ ActiveInterpolationsMap EffectStack::ActiveInterpolations(
   if (effect_stack) {
     HeapVector<Member<SampledEffect>>& sampled_effects =
         effect_stack->sampled_effects_;
-    effect_stack->RemoveRedundantSampledEffects();
     std::sort(sampled_effects.begin(), sampled_effects.end(),
               CompareSampledEffects);
+    effect_stack->RemoveRedundantSampledEffects();
     bool reached_cuttoff = false;
     for (const auto& sampled_effect : sampled_effects) {
       if (reached_cuttoff)

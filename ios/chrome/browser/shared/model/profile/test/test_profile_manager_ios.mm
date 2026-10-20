@@ -4,11 +4,14 @@
 
 #import "ios/chrome/browser/shared/model/profile/test/test_profile_manager_ios.h"
 
+#import <utility>
 #import <vector>
 
 #import "base/check.h"
+#import "base/check_op.h"
 #import "base/files/file_path.h"
 #import "base/test/test_file_util.h"
+#import "google_apis/gaia/gaia_id.h"
 #import "ios/chrome/browser/shared/model/application_context/application_context.h"
 #import "ios/chrome/browser/shared/model/profile/profile_attributes_ios.h"
 #import "ios/chrome/browser/shared/model/profile/scoped_profile_keep_alive_ios.h"
@@ -39,10 +42,7 @@ TestProfileManagerIOS::TestProfileManagerIOS()
 TestProfileManagerIOS::~TestProfileManagerIOS() {
   CHECK_EQ(GetApplicationContext()->GetProfileManager(), this);
 
-  // Notify observers before unregistering from ApplicationContext.
-  for (auto& observer : observers_) {
-    observer.OnProfileManagerDestroyed(this);
-  }
+  PrepareForDestruction();
 
   // Unload all the profiles. This ensure that all their KeyedServices
   // (which may be using the AccountProfileMapper) are destroyed before
@@ -52,6 +52,17 @@ TestProfileManagerIOS::~TestProfileManagerIOS() {
     for (auto& observer : observers_) {
       observer.OnProfileUnloaded(this, profile.get());
     }
+  }
+  profiles_map.clear();
+
+  // Notify observers before unregistering from ApplicationContext.
+  for (auto& observer : observers_) {
+    observer.OnProfileManagerDestroyed(this);
+  }
+
+  // Notify observers before unregistering from ApplicationContext.
+  for (auto& observer : observers_) {
+    observer.OnProfileManagerDestroyed(this);
   }
 
   TestingApplicationContext* app_context =
@@ -219,6 +230,20 @@ TestProfileIOS* TestProfileManagerIOS::AddProfileWithBuilder(
   }
 
   return iterator->second.get();
+}
+
+TestProfileIOS* TestProfileManagerIOS::AddManagedProfileForGaiaIDWithBuilder(
+    const GaiaId& gaia_id,
+    TestProfileIOS::Builder builder) {
+  CHECK(!profile_attributes_storage_->GetPersonalProfileName().empty());
+  std::optional<std::string> profile_name =
+      account_profile_mapper_->FindProfileNameForGaiaID(gaia_id);
+  CHECK(profile_name.has_value());
+  CHECK(!profile_name->empty());
+  CHECK_NE(*profile_name,
+           profile_attributes_storage_->GetPersonalProfileName());
+  builder.SetName(*profile_name);
+  return AddProfileWithBuilder(std::move(builder));
 }
 
 ScopedProfileKeepAliveIOS TestProfileManagerIOS::CreateScopedProfileKeepAlive(

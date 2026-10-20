@@ -20,8 +20,6 @@
 #include "components/sync_device_info/fake_device_info_tracker.h"
 #include "url/gurl.h"
 
-class PageActionIconView;
-
 class FakeSharingMessageBridge : public SharingMessageBridge {
  public:
   FakeSharingMessageBridge() = default;
@@ -60,8 +58,7 @@ class SharingBrowserTest : public SyncTest {
 
   void SetUpOnMainThread() override;
 
-  void Init(syncer::DeviceInfo::SharingFeature first_device_feature,
-            syncer::DeviceInfo::SharingFeature second_device_feature);
+  void Init(syncer::DeviceInfo::SharingFeature device_feature);
 
   virtual std::string GetTestPageURL() const = 0;
 
@@ -77,8 +74,6 @@ class SharingBrowserTest : public SyncTest {
   SharingService* sharing_service() const;
 
   content::WebContents* web_contents() const;
-
-  PageActionIconView* GetPageActionIconView(PageActionIconType type);
 
  private:
   void SetUpDevices(syncer::DeviceInfo::SharingFeature first_device_feature,

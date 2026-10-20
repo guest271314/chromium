@@ -40,15 +40,15 @@
 namespace blink {
 
 void DeferredTaskHandler::Lock() {
-  context_graph_mutex_.lock();
+  context_graph_mutex_.Acquire();
 }
 
 bool DeferredTaskHandler::TryLock() {
-  return context_graph_mutex_.TryLock();
+  return context_graph_mutex_.Try();
 }
 
 void DeferredTaskHandler::Unlock() {
-  context_graph_mutex_.unlock();
+  context_graph_mutex_.Release();
 }
 
 void DeferredTaskHandler::AssertGraphOwner() const {
@@ -408,6 +408,7 @@ void DeferredTaskHandler::ClearHandlersToBeDeleted() {
   }
 
   tail_processing_handlers_.clear();
+  finished_tail_processing_handlers_.clear();
   rendering_orphan_handlers_.clear();
   deletable_orphan_handlers_.clear();
   automatic_pull_handlers_.clear();

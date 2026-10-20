@@ -90,7 +90,7 @@ const char* help_msg =
     "  --vmodule             enable verbose mode for the specified module.\n";
 
 base::FilePath BuildSourceFilePath(const base::FilePath& filename) {
-  return media::g_source_directory.Append(filename);
+  return media::GetSourceDir().Append(filename);
 }
 
 constexpr char kNV12Image720P[] =
@@ -126,8 +126,9 @@ scoped_refptr<VideoFrame> CreateNV12Frame(
   if (type == VideoFrame::STORAGE_MAPPABLE_SHARED_IMAGE) {
     CHECK(test_sii);
     return CreateMappableSharedImageVideoFrame(
-        VideoPixelFormat::PIXEL_FORMAT_NV12, size, visible_rect, size,
-        kNullTimestamp, gfx::BufferUsage::SCANOUT_CPU_READ_WRITE, test_sii);
+        VideoPixelFormat::PIXEL_FORMAT_NV12, gfx::ColorSpace::CreateREC709(),
+        size, visible_rect, size, kNullTimestamp,
+        gfx::BufferUsage::SCANOUT_CPU_READ_WRITE, test_sii);
   } else if (type == VideoFrame::STORAGE_DMABUFS) {
     return CreatePlatformVideoFrame(VideoPixelFormat::PIXEL_FORMAT_NV12, size,
                                     visible_rect, size, kNullTimestamp,
@@ -141,10 +142,12 @@ scoped_refptr<VideoFrame> CreateNV12Frame(
 
 scoped_refptr<VideoFrame> CreateRandomMM21Frame(const gfx::Size& size,
                                                 VideoFrame::StorageType type) {
-  DCHECK_EQ(size.width(), base::bits::AlignUpDeprecatedDoNotUse(
-                              size.width(), kMM21TileWidth));
-  DCHECK_EQ(size.height(), base::bits::AlignUpDeprecatedDoNotUse(
-                               size.height(), kMM21TileHeight));
+  DCHECK_EQ(base::checked_cast<uint32_t>(size.width()),
+            base::bits::AlignUp(base::checked_cast<uint32_t>(size.width()),
+                                uint32_t{kMM21TileWidth}));
+  DCHECK_EQ(base::checked_cast<uint32_t>(size.height()),
+            base::bits::AlignUp(base::checked_cast<uint32_t>(size.height()),
+                                uint32_t{kMM21TileHeight}));
 
   scoped_refptr<VideoFrame> frame =
       CreateNV12Frame(size, type, /*test_sii=*/nullptr);
@@ -870,15 +873,15 @@ int main(int argc, char** argv) {
   base::CommandLine::SwitchMap switches = cmd_line->GetSwitches();
   for (base::CommandLine::SwitchMap::const_iterator it = switches.begin();
        it != switches.end(); ++it) {
-    if (it->first.find("gtest_") == 0 ||               // Handled by GoogleTest
+    if (it->first.starts_with("gtest_") ||             // Handled by GoogleTest
         it->first == "v" || it->first == "vmodule") {  // Handled by Chrome
       continue;
     }
 
     if (it->first == "source_directory") {
-      media::g_source_directory = base::FilePath(it->second);
+      media::GetSourceDir() = base::FilePath(it->second);
     } else if (it->first == "output_directory") {
-      media::g_output_directory = base::FilePath(it->second);
+      media::GetOutputDir() = base::FilePath(it->second);
     } else {
       std::cout << "unknown option: --" << it->first << "\n"
                 << media::usage_msg;

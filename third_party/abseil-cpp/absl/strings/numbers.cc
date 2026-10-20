@@ -21,6 +21,7 @@
 #include <array>
 #include <cassert>
 #include <cfloat>  // for DBL_DIG and FLT_DIG
+#include <clocale>  // for localeconv
 #include <cmath>   // for HUGE_VAL
 #include <cstdint>
 #include <cstdio>
@@ -255,7 +256,7 @@ inline char* EncodePadded16(uint64_t v, char* absl_nonnull buffer) {
   return buffer + 16;
 }
 
-inline ABSL_ATTRIBUTE_ALWAYS_INLINE char* absl_nonnull EncodeFullU32(
+ABSL_ATTRIBUTE_ALWAYS_INLINE inline char* absl_nonnull EncodeFullU32(
     uint32_t n, char* absl_nonnull out_str) {
   if (n < 10) {
     *out_str = static_cast<char>('0' + n);
@@ -278,7 +279,7 @@ inline ABSL_ATTRIBUTE_ALWAYS_INLINE char* absl_nonnull EncodeFullU32(
   return out_str + sizeof(bottom);
 }
 
-inline ABSL_ATTRIBUTE_ALWAYS_INLINE char* absl_nonnull EncodeFullU64(
+ABSL_ATTRIBUTE_ALWAYS_INLINE inline char* absl_nonnull EncodeFullU64(
     uint64_t i, char* absl_nonnull buffer) {
   if (i <= std::numeric_limits<uint32_t>::max()) {
     return EncodeFullU32(static_cast<uint32_t>(i), buffer);
@@ -303,7 +304,7 @@ inline ABSL_ATTRIBUTE_ALWAYS_INLINE char* absl_nonnull EncodeFullU64(
   return buffer + sizeof(mod_result);
 }
 
-inline ABSL_ATTRIBUTE_ALWAYS_INLINE char* absl_nonnull EncodeFullU128(
+ABSL_ATTRIBUTE_ALWAYS_INLINE inline char* absl_nonnull EncodeFullU128(
     uint128 i, char* absl_nonnull buffer) {
   if (absl::Uint128High64(i) == 0) {
     return EncodeFullU64(absl::Uint128Low64(i), buffer);
@@ -447,6 +448,30 @@ char* absl_nonnull numbers_internal::RoundTripDoubleToBuffer(
     // Should never overflow; see above.
     ABSL_ASSERT(snprintf_result > 0 &&
                 snprintf_result < numbers_internal::kFastToBufferSize);
+  }
+
+  // snprintf() writes the radix character chosen by the global C locale's
+  // LC_NUMERIC category, so a process that has called setlocale() can end up
+  // with a separator other than '.' here. The rest of Abseil's float formatting
+  // (RoundTripFloatToBuffer, SixDigitsToBuffer) is locale- independent and
+  // SimpleAtod() only accepts '.', so rewrite the radix back to '.' to keep
+  // absl::HighPrecision(double) locale-independent and round-trippable through
+  // SimpleAtod().
+  // TODO: b/526633099 - Once all supported compilers ship std::to_chars with
+  // floating-point support, use it here for inherent locale independence.
+  const char* radix = localeconv()->decimal_point;
+  // Skip an empty decimal_point (some minimal environments leave it ""), which
+  // would otherwise match the beginning of the buffer and corrupt it.
+  if (radix[0] != '\0' && std::strcmp(radix, ".") != 0) {
+    if (char* p = std::strstr(buffer, radix)) {
+      const size_t radix_len = std::strlen(radix);
+      *p = '.';
+      // A multibyte radix (rare, but possible in some locales) leaves trailing
+      // bytes behind; collapse them so the output is a single '.'.
+      if (radix_len > 1) {
+        std::memmove(p + 1, p + radix_len, std::strlen(p + radix_len) + 1);
+      }
+    }
   }
   return buffer;
 }
@@ -1099,15 +1124,15 @@ size_t numbers_internal::SixDigitsToBuffer(double d,
     case -4:
       out[2] = '0';
       ++out;
-      ABSL_FALLTHROUGH_INTENDED;
+      [[fallthrough]];
     case -3:
       out[2] = '0';
       ++out;
-      ABSL_FALLTHROUGH_INTENDED;
+      [[fallthrough]];
     case -2:
       out[2] = '0';
       ++out;
-      ABSL_FALLTHROUGH_INTENDED;
+      [[fallthrough]];
     case -1:
       out += 2;
       memcpy(out, &digits[0], 6);

@@ -4,8 +4,6 @@
 
 package org.chromium.chrome.browser.customtabs;
 
-import static org.chromium.build.NullUtil.assertNonNull;
-
 import android.app.Activity;
 import android.content.Intent;
 import android.net.Uri;
@@ -27,7 +25,6 @@ import org.chromium.chrome.browser.browserservices.intents.BrowserServicesIntent
 import org.chromium.chrome.browser.customtabs.features.TabInteractionRecorder;
 import org.chromium.chrome.browser.lifecycle.ActivityLifecycleDispatcher;
 import org.chromium.chrome.browser.lifecycle.PauseResumeWithNativeObserver;
-import org.chromium.chrome.browser.lifecycle.StartStopWithNativeObserver;
 import org.chromium.chrome.browser.preferences.ChromePreferenceKeys;
 import org.chromium.chrome.browser.preferences.ChromeSharedPreferences;
 
@@ -37,8 +34,7 @@ import java.util.function.Supplier;
 
 /** Handles recording User Metrics for Custom Tab Activity. */
 @NullMarked
-public class CustomTabActivityLifecycleUmaTracker
-        implements PauseResumeWithNativeObserver, StartStopWithNativeObserver {
+public class CustomTabActivityLifecycleUmaTracker implements PauseResumeWithNativeObserver {
     /**
      * Identifier used for last CCT client App. Used as suffix for histogram
      * "CustomTabs.RetainableSessionsV2.TimeBetweenLaunch".
@@ -58,7 +54,7 @@ public class CustomTabActivityLifecycleUmaTracker
     }
 
     private final BrowserServicesIntentDataProvider mIntentDataProvider;
-    private final Supplier<Bundle> mSavedInstanceStateSupplier;
+    private final Supplier<@Nullable Bundle> mSavedInstanceStateSupplier;
     private final Activity mActivity;
 
     private boolean mIsInitialResume = true;
@@ -72,29 +68,6 @@ public class CustomTabActivityLifecycleUmaTracker
                 "CustomTabs.IncognitoCctCallerId",
                 incognitoCctCallerId,
                 BrowserServicesIntentDataProvider.IncognitoCctCallerId.NUM_ENTRIES);
-
-        // Record which 1P app launched Incognito CCT.
-        if (incognitoCctCallerId
-                == BrowserServicesIntentDataProvider.IncognitoCctCallerId.GOOGLE_APPS) {
-            String sendersPackageName = mIntentDataProvider.getClientPackageName();
-            @IntentHandler.ExternalAppId
-            int externalId = IntentHandler.mapPackageToExternalAppId(sendersPackageName);
-            if (externalId != IntentHandler.ExternalAppId.OTHER) {
-                RecordHistogram.recordEnumeratedHistogram(
-                        "CustomTabs.ClientAppId.Incognito",
-                        externalId,
-                        IntentHandler.ExternalAppId.NUM_ENTRIES);
-            } else {
-                // Using package name didn't give any meaningful insight on who launched the
-                // Incognito CCT, falling back to check if they provided EXTRA_APPLICATION_ID.
-                var intent = assertNonNull(mIntentDataProvider.getIntent());
-                externalId = IntentHandler.determineExternalIntentSource(intent, mActivity);
-                RecordHistogram.recordEnumeratedHistogram(
-                        "CustomTabs.ClientAppId.Incognito",
-                        externalId,
-                        IntentHandler.ExternalAppId.NUM_ENTRIES);
-            }
-        }
     }
 
     private void recordUserAction() {
@@ -108,19 +81,13 @@ public class CustomTabActivityLifecycleUmaTracker
     private void recordMetrics() {
         if (mIntentDataProvider.isOffTheRecord()) {
             recordIncognitoLaunchReason();
-        } else {
-            var intent = assertNonNull(mIntentDataProvider.getIntent());
-            @IntentHandler.ExternalAppId
-            int externalId = IntentHandler.determineExternalIntentSource(intent, mActivity);
-            RecordHistogram.recordEnumeratedHistogram(
-                    "CustomTabs.ClientAppId", externalId, IntentHandler.ExternalAppId.NUM_ENTRIES);
         }
     }
 
     public CustomTabActivityLifecycleUmaTracker(
             Activity activity,
             BrowserServicesIntentDataProvider intentDataProvider,
-            Supplier<Bundle> savedInstanceStateSupplier,
+            Supplier<@Nullable Bundle> savedInstanceStateSupplier,
             ActivityLifecycleDispatcher lifecycleDispatcher) {
         mIntentDataProvider = intentDataProvider;
         mActivity = activity;
@@ -166,18 +133,6 @@ public class CustomTabActivityLifecycleUmaTracker
 
     @Override
     public void onPauseWithNative() {}
-
-    @Override
-    public void onStartWithNative() {
-        CustomTabsConnection.getInstance()
-                .setCustomTabIsInForeground(mIntentDataProvider.getSession(), true);
-    }
-
-    @Override
-    public void onStopWithNative() {
-        CustomTabsConnection.getInstance()
-                .setCustomTabIsInForeground(mIntentDataProvider.getSession(), false);
-    }
 
     /**
      * Update shared preferences and record histogram when a retainable CCT session is launched back

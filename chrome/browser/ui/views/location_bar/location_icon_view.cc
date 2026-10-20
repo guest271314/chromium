@@ -5,6 +5,8 @@
 #include "chrome/browser/ui/views/location_bar/location_icon_view.h"
 
 #include "base/functional/bind.h"
+#include "base/metrics/histogram_functions.h"
+#include "base/time/time.h"
 #include "base/trace_event/trace_event.h"
 #include "build/branding_buildflags.h"
 #include "build/build_config.h"
@@ -20,36 +22,24 @@
 #include "chrome/browser/ui/views/location_bar/location_bar_util.h"
 #include "chrome/browser/ui/views/location_bar/location_icon_state_helper.h"
 #include "chrome/browser/ui/views/page_info/page_info_bubble_view.h"
-#include "chrome/browser/ui/views/toolbar/lottie_icon_source.h"
-#include "chrome/grit/branded_strings.h"
 #include "chrome/grit/browser_resources.h"
-#include "chrome/grit/generated_resources.h"
-#include "chrome/grit/theme_resources.h"
-#include "components/contextual_tasks/public/features.h"
-#include "components/dom_distiller/core/url_constants.h"
 #include "components/omnibox/browser/location_bar_model.h"
 #include "components/omnibox/browser/vector_icons.h"
 #include "components/security_state/core/security_state.h"
 #include "components/strings/grit/components_strings.h"
 #include "content/public/browser/web_contents.h"
-#include "content/public/common/url_constants.h"
-#include "extensions/common/constants.h"
 #include "third_party/skia/include/core/SkColor.h"
 #include "ui/accessibility/ax_enums.mojom.h"
-#include "ui/base/clipboard/clipboard.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/ui_base_features.h"
 #include "ui/color/color_id.h"
-#include "ui/color/color_provider_utils.h"
-#include "ui/gfx/color_palette.h"
+#include "ui/gfx/animation/tween.h"
 #include "ui/gfx/geometry/insets.h"
 #include "ui/gfx/image/image_skia.h"
-#include "ui/gfx/vector_icon_types.h"
 #include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/animation/flood_fill_ink_drop_ripple.h"
 #include "ui/views/animation/ink_drop.h"
-#include "ui/views/animation/ink_drop_highlight.h"
 #include "ui/views/animation/ink_drop_host.h"
 #include "ui/views/animation/ink_drop_impl.h"
 #include "ui/views/animation/ink_drop_ripple.h"
@@ -59,6 +49,7 @@
 
 #if BUILDFLAG(GOOGLE_CHROME_BRANDING)
 #include "components/vector_icons/vector_icons.h"  // nogncheck
+#include "ui/gfx/vector_icon_types.h"
 #endif
 
 using content::WebContents;
@@ -69,19 +60,12 @@ LocationIconView::Delegate::GetLocationIconBackgroundColorOverride() const {
   return std::nullopt;
 }
 
-namespace {
-
-// Used to animate the page info icon when the bubble shows and hides.
-constexpr base::TimeDelta kAnimationDuration = base::Milliseconds(250);
-
-}  // namespace
-
 LocationIconView::LocationIconView(
     const gfx::FontList& font_list,
     IconLabelBubbleView::Delegate* parent_delegate,
     Delegate* delegate)
     : IconLabelBubbleView(font_list, parent_delegate), delegate_(delegate) {
-  DCHECK(delegate_);
+  CHECK(delegate_, base::NotFatalUntil::M162);
 
   SetID(VIEW_ID_LOCATION_ICON);
   SetUpForAnimation();
@@ -94,13 +78,6 @@ LocationIconView::LocationIconView(
 
   ConfigureInkDropForRefresh2023(this, kColorOmniboxIconHover,
                                  kColorOmniboxIconPressed);
-
-  if (features::IsToolbarGlowUpEnabled()) {
-    slide_animation_ = std::make_unique<gfx::SlideAnimation>(this);
-    slide_animation_->SetSlideDuration(kAnimationDuration);
-    slide_animation_->SetCurrentValue(0.0f);
-
-  }
 
   UpdateBorder();
 }
@@ -150,8 +127,8 @@ bool LocationIconView::ShowBubble(const ui::Event& event) {
 }
 
 bool LocationIconView::IsBubbleShowing() const {
-  return PageInfoBubbleView::GetShownBubbleType() !=
-         PageInfoBubbleView::BUBBLE_NONE;
+  content::WebContents* const web_contents = delegate_->GetWebContents();
+  return web_contents && PageInfoBubbleViewBase::IsShowing(web_contents);
 }
 
 void LocationIconView::OnGestureEvent(ui::GestureEvent* event) {
@@ -164,34 +141,6 @@ bool LocationIconView::OnMousePressed(const ui::MouseEvent& event) {
 
   IconLabelBubbleView::OnMousePressed(event);
   return true;
-}
-
-void LocationIconView::AnimationProgressed(const gfx::Animation* animation) {
-  if (animation == slide_animation_.get()) {
-    SetAnimatedPageInfoIcon(slide_animation_->GetCurrentValue());
-  } else {
-    IconLabelBubbleView::AnimationProgressed(animation);
-  }
-}
-
-void LocationIconView::SetAnimatedPageInfoIcon(float progress_value) {
-  const int icon_size = GetLayoutConstant(LayoutConstant::kLocationBarIconSize);
-
-  if (!page_info_open_animation_) {
-    std::optional<std::vector<uint8_t>> lottie_bytes =
-        ui::ResourceBundle::GetSharedInstance().GetLottieData(
-            IDR_PAGE_INFO_OPEN_LOTTIE);
-    CHECK(lottie_bytes.has_value());
-    scoped_refptr<cc::SkottieWrapper> skottie =
-        cc::SkottieWrapper::UnsafeCreateSerializable(std::move(*lottie_bytes));
-    page_info_open_animation_ = std::make_unique<lottie::Animation>(skottie);
-  }
-
-  ui::ImageModel model = ui::ImageModel::FromImageSkia(
-      gfx::CanvasImageSource::MakeImageSkia<LottieIconSource>(
-          page_info_open_animation_.get(), progress_value, icon_size,
-          GetForegroundColor()));
-  SetImageModel(model);
 }
 
 void LocationIconView::AddedToWidget() {
@@ -249,24 +198,45 @@ bool LocationIconView::GetShowText() const {
       delegate_->IsEditingOrEmpty());
 }
 
-void LocationIconView::MaybeAnimateIcon(bool show) {
+void LocationIconView::MaybeAnimateIcon(bool open) {
   if (features::IsToolbarGlowUpEnabled()) {
     ui::ImageModel icon = delegate_->GetLocationIcon(
         base::DoNothingAs<void(const gfx::Image&)>());
 
     const bool is_page_info_icon =
         icon.IsVectorIcon() &&
-        icon.GetVectorIcon().vector_icon() == &omnibox::kPageInfoIcon;
+        icon.GetVectorIcon().vector_icon() ==
+            (features::IsRoundedIconsEnabled()
+                 ? &omnibox::kPageInfoCustomIcon
+                 : &omnibox::kSecurePageInfoChromeRefreshOldIcon);
 
     if (!is_page_info_icon) {
       return;
     }
 
-    if (show) {
-      slide_animation_->Show();
+    views::SingleAnimatedImageContainer::AnimationDefinition definition;
+    definition.resource_id = IDR_PAGE_INFO_LOTTIE;
+    definition.color = GetForegroundColor();
+
+    views::SingleAnimatedImageContainer::AnimationConfig config;
+    config.tween = gfx::Tween::FAST_OUT_SLOW_IN_3;
+    config.duration = base::Milliseconds(150);
+    config.boundary = views::SingleAnimatedImageContainer::AnimationBoundary{
+        .start_offset = 0.33f, .end_offset = 0.66f};
+
+    if (open) {
+      definition.direction =
+          views::SingleAnimatedImageContainer::AnimationDirection::kForward;
+      definition.end_behavior =
+          views::SingleAnimatedImageContainer::AnimationEndBehavior::kPause;
     } else {
-      slide_animation_->Hide();
+      definition.direction =
+          views::SingleAnimatedImageContainer::AnimationDirection::kBackward;
+      definition.end_behavior =
+          views::SingleAnimatedImageContainer::AnimationEndBehavior::kReset;
     }
+
+    animated_image_container().PlayAnimation(definition, config);
   }
 }
 
@@ -334,12 +304,9 @@ void LocationIconView::UpdateIcon() {
     return;
   }
 
-  if (slide_animation_) {
-    // UpdateIcon() calls are for icon updates not related to the page info
-    // animation. We reset the page info icon animation for the next time
-    // we animate the page info icon.
-    slide_animation_->Reset(0.0f);
-  }
+  // UpdateIcon() calls are for icon updates not related to the page info
+  // animation, so we stop the page info animation if it is playing.
+  animated_image_container().ResetAnimation();
 
 #if BUILDFLAG(GOOGLE_CHROME_BRANDING)
   const bool is_super_g =
@@ -389,13 +356,16 @@ void LocationIconView::UpdateBackground() {
 }
 
 void LocationIconView::OnIconFetched(const gfx::Image& image) {
-  DCHECK(!image.IsEmpty());
+  CHECK(!image.IsEmpty(), base::NotFatalUntil::M162);
   SetImageModel(ui::ImageModel::FromImage(image));
 }
 
 void LocationIconView::Update(bool suppress_animations,
                               bool force_hide_background) {
   TRACE_EVENT("omnibox", "LocationIconView::Update");
+  base::ScopedUmaHistogramTimer timer(
+      "Omnibox.LocationIconView.Update.Time",
+      base::ScopedUmaHistogramTimer::ScopedHistogramTiming::kMicrosecondTimes);
   UpdateTextVisibility(suppress_animations);
   UpdateBorder();
   // Update the background before the icon, since the vector icon

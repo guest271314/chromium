@@ -12,6 +12,7 @@
 #include "third_party/blink/renderer/platform/instrumentation/tracing/trace_event.h"
 #include "third_party/blink/renderer/platform/testing/find_cc_layer.h"
 #include "third_party/blink/renderer/platform/testing/runtime_enabled_features_test_helpers.h"
+#include "third_party/blink/renderer/platform/wtf/text/format.h"
 
 namespace blink {
 
@@ -89,9 +90,12 @@ INSTANTIATE_PAINT_TEST_SUITE_P(PaintAndRasterInvalidationTest);
 class ScopedEnablePaintInvalidationTracing {
  public:
   ScopedEnablePaintInvalidationTracing() {
-    trace_event::EnableTracing(TRACE_DISABLED_BY_DEFAULT("blink.invalidation"));
+    trace_event::EnableTracingForTesting(
+        TRACE_DISABLED_BY_DEFAULT("blink.invalidation"));
   }
-  ~ScopedEnablePaintInvalidationTracing() { trace_event::DisableTracing(); }
+  ~ScopedEnablePaintInvalidationTracing() {
+    trace_event::DisableTracingForTesting();
+  }
 };
 
 TEST_P(PaintAndRasterInvalidationTest, TrackingForTracing) {
@@ -880,6 +884,26 @@ TEST_P(PaintAndRasterInvalidationTest, SVGWithFilterNoOpStyleUpdate) {
   GetDocument().View()->SetTracksRasterInvalidations(false);
 }
 
+TEST_P(PaintAndRasterInvalidationTest, SVGWithMultipleFiltersNoOpStyleUpdate) {
+  SetBodyInnerHTML(R"HTML(
+    <svg>
+      <filter id="f">
+        <feGaussianBlur stdDeviation="5"/>
+      </filter>
+      <rect width="100" height="100" style="filter: url(#f) blur(0px)"/>
+    </svg>
+  )HTML");
+
+  UpdateAllLifecyclePhasesForTest();
+
+  GetDocument().View()->SetTracksRasterInvalidations(true);
+  GetDocument().body()->setAttribute(html_names::kStyleAttr,
+                                     AtomicString("--x: 42"));
+  UpdateAllLifecyclePhasesForTest();
+  EXPECT_FALSE(GetRasterInvalidationTracking()->HasInvalidations());
+  GetDocument().View()->SetTracksRasterInvalidations(false);
+}
+
 TEST_P(PaintAndRasterInvalidationTest, PaintPropertyChange) {
   SetUpHTML(*this);
   Element* target = GetDocument().getElementById(AtomicString("target"));
@@ -1016,8 +1040,8 @@ TEST_P(PaintAndRasterInvalidationTest, NoDamageDueToFloatingPointError) {
     GetDocument().View()->SetTracksRasterInvalidations(true);
     canvas->setAttribute(
         html_names::kStyleAttr,
-        AtomicString(String::Format("transform: translateX(%lfpx) scale(1.8)",
-                                    x / 1.8)));
+        AtomicString(
+            Format("transform: translateX({}px) scale(1.8)", x / 1.8)));
     UpdateAllLifecyclePhasesForTest();
     EXPECT_FALSE(GetRasterInvalidationTracking(0, "tile")->HasInvalidations());
     GetDocument().View()->SetTracksRasterInvalidations(false);
@@ -1057,10 +1081,10 @@ TEST_P(PaintAndRasterInvalidationTest, ResizeElementWhichHasNonCustomResizer) {
                                   ->GetScrollableArea()
                                   ->GetScrollCornerDisplayItemClient();
   invalidations.push_back(RasterInvalidationInfo{
-      scroll_corner.Id(), scroll_corner.DebugName(), gfx::Rect(93, 93, 7, 7),
+      scroll_corner.Id(), scroll_corner.DebugName(), gfx::Rect(85, 85, 15, 15),
       PaintInvalidationReason::kLayout});
   invalidations.push_back(RasterInvalidationInfo{
-      scroll_corner.Id(), scroll_corner.DebugName(), gfx::Rect(193, 93, 7, 7),
+      scroll_corner.Id(), scroll_corner.DebugName(), gfx::Rect(185, 85, 15, 15),
       PaintInvalidationReason::kLayout});
   EXPECT_THAT(GetRasterInvalidationTracking()->Invalidations(),
               UnorderedElementsAreArray(invalidations));
@@ -1128,8 +1152,7 @@ TEST_P(PaintAndRasterInvalidationTest,
   EXPECT_FALSE(target->ShouldDelayFullPaintInvalidation());
 
   // Simulate an image change notification on #target.
-  auto* anim_background_image =
-      target->StyleRef().BackgroundLayers().GetImage();
+  auto* anim_background_image = target->Style().BackgroundLayers().GetImage();
   ASSERT_TRUE(anim_background_image);
   auto* anim_image_resource_content = anim_background_image->CachedImage();
   ASSERT_TRUE(anim_image_resource_content);

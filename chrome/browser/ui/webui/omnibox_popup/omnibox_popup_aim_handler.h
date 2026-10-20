@@ -43,9 +43,14 @@ class OmniboxPopupAimHandler : public omnibox_popup_aim::mojom::PageHandler {
   }
 
   // omnibox_popup_aim::mojom::PageHandler:
-  // Forwards a close event from the page to the browser.
-  void RequestClose() override;
+  // Forwards a close event from the page to the browser with the current input.
+  void RequestClose(const std::string& input) override;
   void ShowContextMenu(const gfx::Point& point) override;
+
+  // Draft text from the most recent `RequestClose()`, drained by
+  // `OmniboxAimPopupWebUIContent::CloseUI()`.
+  const std::string& cached_draft_text() const { return cached_draft_text_; }
+  void clear_cached_draft_text() { cached_draft_text_.clear(); }
 
   // Forwards an `OnPopupShown()` call to the page.
   void OnPopupShown(std::unique_ptr<SearchboxContextData::Context> context);
@@ -55,8 +60,9 @@ class OmniboxPopupAimHandler : public omnibox_popup_aim::mojom::PageHandler {
   void SetPreserveContextOnClose(bool preserve_context_on_close);
 
   // Forwards a `ClearPopup()` call to the page. `callback` is called
-  // with the final input text from the page.
-  void ClearPopup(base::OnceCallback<void(const std::string&)> callback);
+  // with the final input text from the page and whether a query was submitted
+  // from the page since it was last shown.
+  void ClearPopup(base::OnceCallback<void(const std::string&, bool)> callback);
 
   // Forwards an `AddContext()` call to the page. This call is intended to be
   // used to notify the page that searchbox context has been added.
@@ -76,6 +82,7 @@ class OmniboxPopupAimHandler : public omnibox_popup_aim::mojom::PageHandler {
   mojo::Remote<omnibox_popup_aim::mojom::Page> page_;
   raw_ptr<content::WebContents> web_contents_;
   base::WeakPtr<TopChromeWebUIController::Embedder> embedder_;
+  std::string cached_draft_text_;
 };
 
 #endif  // CHROME_BROWSER_UI_WEBUI_OMNIBOX_POPUP_OMNIBOX_POPUP_AIM_HANDLER_H_

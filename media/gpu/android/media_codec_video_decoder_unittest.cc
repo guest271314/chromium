@@ -4,6 +4,7 @@
 
 #include "media/gpu/android/media_codec_video_decoder.h"
 
+#include "base/android/android_info.h"
 #include "base/android/jni_android.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
@@ -12,6 +13,7 @@
 #include "base/task/single_thread_task_runner.h"
 #include "base/test/gmock_callback_support.h"
 #include "base/test/mock_callback.h"
+#include "base/test/run_until.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
 #include "gpu/command_buffer/service/mock_texture_owner.h"
@@ -125,7 +127,11 @@ class MockVideoFrameFactory : public VideoFrameFactory {
                          natural_size, color_space, hdr_metadata,
                          promotion_hint_cb);
     last_output_buffer_ = std::move(output_buffer);
-    std::move(output_cb).Run(VideoFrame::CreateBlackFrame(gfx::Size(10, 10)));
+    gfx::Size frame_size = video_frame_size_override_.value_or(natural_size);
+    if (frame_size.IsEmpty()) {
+      frame_size = gfx::Size(10, 10);
+    }
+    std::move(output_cb).Run(VideoFrame::CreateBlackFrame(frame_size));
   }
 
   void RunAfterPendingVideoFrames(base::OnceClosure closure) override {
@@ -136,11 +142,15 @@ class MockVideoFrameFactory : public VideoFrameFactory {
   std::unique_ptr<CodecOutputBuffer> last_output_buffer_;
   scoped_refptr<gpu::TextureOwner> texture_owner_;
   base::OnceClosure last_closure_;
+  std::optional<gfx::Size> video_frame_size_override_;
 };
 
 class MediaCodecVideoDecoderTest : public testing::TestWithParam<VideoCodec> {
  public:
-  MediaCodecVideoDecoderTest() : codec_(GetParam()) {}
+  MediaCodecVideoDecoderTest() : codec_(GetParam()) {
+    scoped_feature_list_.InitAndDisableFeature(
+        kUseMediaCryptoRequiresSecureDecoderComponent);
+  }
 
   void SetUp() override {
     uint8_t data = 0;
@@ -334,6 +344,7 @@ class MediaCodecVideoDecoderTest : public testing::TestWithParam<VideoCodec> {
   }
 
  protected:
+  base::test::ScopedFeatureList scoped_feature_list_;
   const VideoCodec codec_;
   base::test::SingleThreadTaskEnvironment task_environment_;
   base::android::ScopedJavaGlobalRef<jobject> java_surface_;
@@ -941,6 +952,66 @@ TEST_P(MediaCodecVideoDecoderTest, VideoFramesArePowerEfficient) {
   EXPECT_TRUE(most_recent_frame_->metadata().power_efficient);
 }
 
+TEST_P(MediaCodecVideoDecoderTest, ClearRotationMetadataOnPreRotatedFrame) {
+  // MCVD should set frame transformation to kNoTransformation if pre-rotated by
+  // hardware.
+  VideoDecoderConfig config = TestVideoConfig::Normal(codec_);
+  config.Initialize(config.codec(), config.profile(), config.alpha_mode(),
+                    config.color_space_info(),
+                    VideoTransformation(VIDEO_ROTATION_90), config.coded_size(),
+                    config.visible_rect(), config.natural_size(),
+                    config.extra_data(), config.encryption_scheme());
+
+  auto* codec = InitializeFully_OneDecodePending(config);
+  ASSERT_TRUE(codec);
+
+  // Set the mock video frame factory to return a pre-rotated frame (swapped
+  // dimensions: 240x320)
+  video_frame_factory_->video_frame_size_override_ = gfx::Size(240, 320);
+
+  // Produce one output.
+  codec->AcceptOneInput();
+  codec->ProduceOneOutput();
+  EXPECT_CALL(*video_frame_factory_, MockCreateVideoFrame(_, _, _, _, _, _, _));
+  PumpCodec();
+  ASSERT_TRUE(base::test::RunUntil([&]() { return !!most_recent_frame_; }));
+
+  // The frame's transformation metadata should be explicitly set to
+  // kNoTransformation because its dimensions are swapped (240x320) relative to
+  // the config (320x240) with 90 deg rotation.
+  EXPECT_EQ(most_recent_frame_->metadata().transformation, kNoTransformation);
+}
+
+TEST_P(MediaCodecVideoDecoderTest, KeepRotationMetadataOnNonPreRotatedFrame) {
+  // MCVD should NOT set frame transformation if the hardware did not pre-rotate
+  // the frame.
+  VideoDecoderConfig config = TestVideoConfig::Normal(codec_);
+  config.Initialize(config.codec(), config.profile(), config.alpha_mode(),
+                    config.color_space_info(),
+                    VideoTransformation(VIDEO_ROTATION_90), config.coded_size(),
+                    config.visible_rect(), config.natural_size(),
+                    config.extra_data(), config.encryption_scheme());
+
+  auto* codec = InitializeFully_OneDecodePending(config);
+  ASSERT_TRUE(codec);
+
+  // Set the mock video frame factory to return a non-pre-rotated frame
+  // (original dimensions: 320x240)
+  video_frame_factory_->video_frame_size_override_ = gfx::Size(320, 240);
+
+  // Produce one output.
+  codec->AcceptOneInput();
+  codec->ProduceOneOutput();
+  EXPECT_CALL(*video_frame_factory_, MockCreateVideoFrame(_, _, _, _, _, _, _));
+  PumpCodec();
+  ASSERT_TRUE(base::test::RunUntil([&]() { return !!most_recent_frame_; }));
+
+  // The frame's transformation metadata should NOT be set to kNoTransformation
+  // because its dimensions are NOT swapped (320x240) relative to the config
+  // (320x240).
+  EXPECT_NE(most_recent_frame_->metadata().transformation, kNoTransformation);
+}
+
 TEST_P(MediaCodecVideoDecoderTest, CanReadWithoutStalling) {
   InitializeFully_OneDecodePending(TestVideoConfig::Large(codec_));
   ASSERT_TRUE(mcvd_);
@@ -1050,6 +1121,42 @@ TEST_P(MediaCodecVideoDecoderVp9Test, HdrMetadataIsIncludedInCodecConfig) {
   EXPECT_TRUE(InitializeFully_OneDecodePending(config));
 
   EXPECT_EQ(hdr_metadata, codec_allocator_->most_recent_config->hdr_metadata);
+}
+
+TEST_P(MediaCodecVideoDecoderTest, BlockModelDisabledWhenFeatureDisabled) {
+  base::test::ScopedFeatureList scoped_features;
+  scoped_features.InitAndDisableFeature(kMediaCodecBlockModel);
+  EXPECT_CALL(*device_info_, SdkVersionFull())
+      .WillRepeatedly(
+          Return(base::android::android_info::SDK_VERSION_FULL_CINNAMON_BUN_2));
+
+  VideoDecoderConfig config = TestVideoConfig::Normal(codec_);
+  ASSERT_TRUE(InitializeFully_OneDecodePending(config));
+  EXPECT_FALSE(codec_allocator_->most_recent_config->use_block_model);
+}
+
+TEST_P(MediaCodecVideoDecoderTest, BlockModelDisabledOnEarlierSdkVersion) {
+  base::test::ScopedFeatureList scoped_features;
+  scoped_features.InitAndEnableFeature(kMediaCodecBlockModel);
+  EXPECT_CALL(*device_info_, SdkVersionFull())
+      .WillRepeatedly(
+          Return(base::android::android_info::SDK_VERSION_FULL_CINNAMON_BUN_1));
+
+  VideoDecoderConfig config = TestVideoConfig::Normal(codec_);
+  ASSERT_TRUE(InitializeFully_OneDecodePending(config));
+  EXPECT_FALSE(codec_allocator_->most_recent_config->use_block_model);
+}
+
+TEST_P(MediaCodecVideoDecoderTest, BlockModelEnabledOnSupportedVersion) {
+  base::test::ScopedFeatureList scoped_features;
+  scoped_features.InitAndEnableFeature(kMediaCodecBlockModel);
+  EXPECT_CALL(*device_info_, SdkVersionFull())
+      .WillRepeatedly(
+          Return(base::android::android_info::SDK_VERSION_FULL_CINNAMON_BUN_2));
+
+  VideoDecoderConfig config = TestVideoConfig::Normal(codec_);
+  ASSERT_TRUE(InitializeFully_OneDecodePending(config));
+  EXPECT_TRUE(codec_allocator_->most_recent_config->use_block_model);
 }
 
 static std::vector<VideoCodec> GetTestList() {

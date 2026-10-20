@@ -16,7 +16,6 @@ using passage_embeddings::ComputeEmbeddingsStatus;
 using passage_embeddings::EmbedderMetadata;
 using passage_embeddings::PassagePriority;
 using passage_embeddings::TestEmbedder;
-using TaskId = passage_embeddings::Embedder::TaskId;
 
 // ---------------------------------------------------------------------------
 // --------------------------- PassageEmbedderMock ---------------------------
@@ -25,19 +24,13 @@ using TaskId = passage_embeddings::Embedder::TaskId;
 PassageEmbedderMock::PassageEmbedderMock() = default;
 PassageEmbedderMock::~PassageEmbedderMock() = default;
 
-PassageEmbedderMock::PassageEmbedderMock(const PassageEmbedderMock&) = default;
-PassageEmbedderMock& PassageEmbedderMock::operator=(
-    const PassageEmbedderMock&) = default;
-
-PassageEmbedderMock::PassageEmbedderMock(PassageEmbedderMock&&) = default;
-PassageEmbedderMock& PassageEmbedderMock::operator=(PassageEmbedderMock&&) =
-    default;
-
-TaskId PassageEmbedderMock::ComputePassagesEmbeddings(
+passage_embeddings::Embedder::Job
+PassageEmbedderMock::ComputePassagesEmbeddings(
     PassagePriority priority,
     std::vector<std::string> passages,
     ComputePassagesEmbeddingsCallback callback) {
   last_passages_ = passages;
+  const uint64_t job_id = next_job_id_++;
   if (status_ == ComputeEmbeddingsStatus::kSuccess) {
     std::vector<passage_embeddings::Embedding> embeddings;
     for (size_t i = 0; i < passages.size(); ++i) {
@@ -49,14 +42,13 @@ TaskId PassageEmbedderMock::ComputePassagesEmbeddings(
       embeddings.emplace_back(std::move(data));
     }
     base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
-        FROM_HERE,
-        base::BindOnce(std::move(callback), passages, std::move(embeddings),
-                       /*task_id=*/0, status_));
-    return 0;
+        FROM_HERE, base::BindOnce(std::move(callback), passages,
+                                  std::move(embeddings), job_id, status_));
+    return passage_embeddings::Embedder::Job(GetWeakPtr(), job_id);
   }
 
-  std::move(callback).Run(passages, {}, 0, status_);
-  return 0;
+  std::move(callback).Run(passages, {}, job_id, status_);
+  return passage_embeddings::Embedder::Job(GetWeakPtr(), job_id);
 }
 
 void PassageEmbedderMock::set_status(ComputeEmbeddingsStatus status) {
@@ -79,12 +71,13 @@ void DelayedPassageEmbedderMock::ReleaseCallback() {
 }
 
 void DelayedPassageEmbedderMock::ComputePassageEmbeddingsCallbackWrapper(
+    uint64_t expected_job_id,
     std::vector<std::string> passages,
     std::vector<passage_embeddings::Embedding> embeddings,
-    TaskId task_id,
+    uint64_t job_id,
     passage_embeddings::ComputeEmbeddingsStatus status) {
   std::move(compute_embeddings_callback_)
-      .Run(std::move(passages), std::move(embeddings), task_id, status);
+      .Run(std::move(passages), std::move(embeddings), expected_job_id, status);
   if (model_execute_run_loop_) {
     model_execute_run_loop_->Quit();
   }
@@ -98,23 +91,25 @@ void DelayedPassageEmbedderMock::OnCallbackReleased(
                                                  std::move(callback));
 }
 
-TaskId DelayedPassageEmbedderMock::ComputePassagesEmbeddings(
+passage_embeddings::Embedder::Job
+DelayedPassageEmbedderMock::ComputePassagesEmbeddings(
     PassagePriority priority,
     std::vector<std::string> passages,
     ComputePassagesEmbeddingsCallback callback) {
+  const uint64_t job_id = next_job_id_++;
   compute_embeddings_callback_ = std::move(callback);
   execution_callback_ = base::BindOnce(
       &DelayedPassageEmbedderMock::OnCallbackReleased,
       weak_ptr_factory_.GetWeakPtr(), priority, std::move(passages),
       base::BindOnce(
           &DelayedPassageEmbedderMock::ComputePassageEmbeddingsCallbackWrapper,
-          weak_ptr_factory_.GetWeakPtr()));
+          weak_ptr_factory_.GetWeakPtr(), job_id));
 
   if (on_callback_received_) {
     std::move(on_callback_received_).Run();
   }
 
-  return 0;
+  return passage_embeddings::Embedder::Job(GetWeakPtr(), job_id);
 }
 
 void DelayedPassageEmbedderMock::WaitForEmbedderToBeTriggered() {

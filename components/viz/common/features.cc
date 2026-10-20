@@ -23,9 +23,6 @@
 #include "media/media_buildflags.h"
 #include "ui/gl/gl_switches.h"
 
-#if BUILDFLAG(IS_ANDROID)
-#include "base/android/device_info.h"
-#endif
 
 #if BUILDFLAG(IS_WIN)
 #include "base/win/windows_version.h"
@@ -41,17 +38,30 @@ namespace features {
 BASE_FEATURE(kAndroidDumpForBadCompositedUiState,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
-#endif  // BUILDFLAG(IS_ANDROID)
+// Enables the use of SurfaceControl underlays/overlays for HDR content on
+// Android. When disabled (default), HDR video is composited directly by
+// SkiaRenderer to prevent tone-mapping mismatches between
+// SurfaceFlinger/RenderEngine and Skia when UI controls are shown/hidden.
+BASE_FEATURE(kAndroidSurfaceControlHdrOverlays,
+             base::FEATURE_DISABLED_BY_DEFAULT);
 
-// When there is a screenshot request against a surface, issue the copy request
-// into a shared image.
-BASE_FEATURE(kBackForwardTransitionsSameDocSharedImage,
-             base::FEATURE_ENABLED_BY_DEFAULT);
+// When a window is occluded, whether it should become invisible, and the
+// visibility update should be propagated to viz. This is required to reclaim
+// buffers service-side.
+BASE_FEATURE(kPropagateOcclusionToVizAndroid,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+#endif  // BUILDFLAG(IS_ANDROID)
 
 // If enabled, each render pass eligible for scanout gets its own BufferQueue.
 // This allows for BufferQueue to be used in scenarios like partial delegated
 // compositing, where no root render pass is present.
 BASE_FEATURE(kBufferQueuePerRenderPass, base::FEATURE_DISABLED_BY_DEFAULT);
+
+// When the viz::Display visibility changes, whether to destroy all the buffers
+// in the various BufferQueues associated with it. This saves memory, at the
+// cost of recreating the buffers when becoming visible again.
+BASE_FEATURE(kVizBufferQueueDiscardOnVisibilityChange,
+             base::FEATURE_DISABLED_BY_DEFAULT);
 
 BASE_FEATURE(kUseDrmBlackFullscreenOptimization,
 #if BUILDFLAG(IS_CHROMEOS)
@@ -64,6 +74,39 @@ BASE_FEATURE(kUseDrmBlackFullscreenOptimization,
 #if BUILDFLAG(IS_ANDROID)
 BASE_FEATURE(kUseFrameIntervalDeciderAdaptiveFrameRate,
              base::FEATURE_DISABLED_BY_DEFAULT);
+
+// If enabled, FrameIntervalDecider uses ContinuousRangeSettings bounded by the
+// display's max supported refresh rate, instead of passing matched frame
+// intervals through unbounded.
+BASE_FEATURE(kAndroidFrameIntervalContinuousRange,
+             base::FEATURE_ENABLED_BY_DEFAULT);
+
+// If enabled, `ExternalBeginFrameSourceAndroid::AChoreographerImpl` derives a
+// VSync interval from the frame timelines that the OS provided via the callback
+// registered through `AChoreographer_postVsyncCallback` (as long as the OS
+// provided at least two timelines) and populates
+// `BeginFrameArgs::deadline_derived_interval`. `AChoreographerImpl` might snap
+// this timeline-derived interval to the closest display-supported interval in
+// `Display.getSupportedRefreshRates()` depending on
+// `kCalculateDeadlineDerivedIntervalSnapToleranceParam`.
+BASE_FEATURE(kCalculateDeadlineDerivedInterval,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
+// Specifies how far `ExternalBeginFrameSourceAndroid::AChoreographerImpl` can
+// snap from the timeline-derived VSync interval to a display-supported VSync
+// interval, as a fraction of the timeline-derived VSync interval (e.g. 0.1
+// means 10%). Given a timeline-derived interval TDI, display-supported interval
+// DSI and snap tolerance ST, `AChoreographerImpl` will snap TDI to DSI if:
+//
+// `|TDI - DSI| <= ST * TDI`
+//
+// If this parameter is zero (`ST = 0`), `AChoreographerImpl` won't snap at all.
+const base::FeatureParam<double>
+    kCalculateDeadlineDerivedIntervalSnapToleranceParam = {
+        &kCalculateDeadlineDerivedInterval,
+        "snap_tolerance",
+        0.0,
+};
 #endif
 
 BASE_FEATURE(kUseMultipleOverlays,
@@ -142,15 +185,6 @@ BASE_FEATURE(kWebViewVulkanIntermediateBuffer,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
 #if BUILDFLAG(IS_ANDROID)
-// Hardcoded as disabled for WebView to have a different default for
-// UseSurfaceLayerForVideo from chrome.
-BASE_FEATURE(kUseSurfaceLayerForVideoDefault, base::FEATURE_ENABLED_BY_DEFAULT);
-
-BASE_FEATURE(kWebViewNewInvalidateHeuristic, base::FEATURE_ENABLED_BY_DEFAULT);
-
-BASE_FEATURE(kWebViewNewInvalidateHeuristicForTV,
-             base::FEATURE_ENABLED_BY_DEFAULT);
-
 // If enabled and the device's SOC manufacturer is in the allowlist, WebView
 // reports the set of threads involved in frame production to HWUI, and they're
 // included in the HWUI ADPF session.
@@ -186,12 +220,8 @@ const base::FeatureParam<int> kCALayerNewLimitManyVideos{&kCALayerNewLimit,
 BASE_FEATURE(kVSyncAlignedPresentationForScrolling,
              base::FEATURE_ENABLED_BY_DEFAULT);
 BASE_FEATURE(kVSyncAlignedPresentation, base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kUseDisplayRefreshRateForTimer, base::FEATURE_DISABLED_BY_DEFAULT);
 #endif
-
-// If enabled, other frame sinks are throttled when a frame sink is handling
-// user interaction.
-BASE_FEATURE(kThrottleFrameSinksOnInteraction,
-             base::FEATURE_DISABLED_BY_DEFAULT);
 
 BASE_FEATURE(kAllowUndamagedNonrootRenderPassToSkip,
 #if BUILDFLAG(IS_MAC)
@@ -223,32 +253,6 @@ BASE_FEATURE(kEnableADPFRendererMain, base::FEATURE_ENABLED_BY_DEFAULT);
 BASE_FEATURE(kEnableADPFSeparateRendererMainSession,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
-// If enabled, Chrome uses notifyWorkloadIncrease ADPF(Android Dynamic
-// Performance Framework) method before CrRendererMain starts running a heavy
-// workload during page load.
-// Supported only on Android >= 16.
-BASE_FEATURE(kEnableADPFWorkloadIncreaseOnPageLoad,
-             base::FEATURE_ENABLED_BY_DEFAULT);
-
-// If enabled, Chrome uses ADPF's setPreferPowerEfficiency API to try and save
-// energy at the cost of performance. Supported only on Android >= 16.
-BASE_FEATURE(kEnableAdpfEfficiencyMode, base::FEATURE_DISABLED_BY_DEFAULT);
-constexpr base::FeatureParam<AdpfEfficiencyMode>::Option
-    kAdpfEfficiencyModeOption[] = {
-        // ADPF sessions are always configured for performance.
-        {AdpfEfficiencyMode::kNever, "never"},
-        // ADPF sessions switch between performance and efficiency mode based on
-        // context. TODO(crbug.com/464505581): implement this.
-        {AdpfEfficiencyMode::kAdaptive, "adaptive"},
-        // ADPF sessions are always configured for efficiency.
-        {AdpfEfficiencyMode::kAlwaysEfficient, "always_efficient"}};
-const base::FeatureParam<AdpfEfficiencyMode> kAdpfEfficiencyModeParam{
-    &kEnableAdpfEfficiencyMode,
-    "mode",
-    AdpfEfficiencyMode::kNever,
-    &kAdpfEfficiencyModeOption,
-};
-
 // If enabled, Chrome uses notifyWorkloadReset method on viz wakeup instead of
 // sending a timing report with a fake actual duration > target duration.
 // Supported only on Android >= 16.
@@ -267,6 +271,14 @@ BASE_FEATURE(kEnableADPFScrollNoRendererMain,
 // instead of Viz. The goal is to prevent Viz from blocking on a binder call.
 BASE_FEATURE(kEnableADPFAsyncSetThreads, base::FEATURE_DISABLED_BY_DEFAULT);
 
+// If enabled, Chrome includes the main thread of a main frame Renderer into
+// the ADPF(Android Dynamic Performance Framework) hint session as soon as the
+// Renderer has registered its threads, instead of only after it contributed
+// to a drawn frame. This only affects Renderers whose frame sink has not
+// activated a surface yet, i.e. the Renderer committing a page load until it
+// produces its first frame.
+BASE_FEATURE(kEnableADPFPendingRendererMain, base::FEATURE_DISABLED_BY_DEFAULT);
+
 // If enabled, we immediately send acks to clients when a viz surface
 // activates. This effectively removes back-pressure. This can result in wasted
 // work and contention, but should regularize the timing of client rendering.
@@ -280,6 +292,38 @@ const base::FeatureParam<int>
 // If enabled, DisplayScheduler will attempt to select a future deadline if the
 // preferred deadline is not achievable.
 BASE_FEATURE(kSelectFutureFrameDeadline, base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kAllowMultipleSwapsPerVsync, base::FEATURE_DISABLED_BY_DEFAULT);
+
+#if BUILDFLAG(IS_ANDROID)
+// If enabled, DisplayScheduler will use a custom FrameDeadlineDecider to
+// dynamically select VSync deadlines based on input timestamps.
+BASE_FEATURE(kUseAndroidCustomFrameDeadlines,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
+constexpr base::FeatureParam<FrameDeadlineDeciderSequenceStrategy>::Option
+    kFrameDeadlineDeciderSequenceStrategyOptions[] = {
+        {FrameDeadlineDeciderSequenceStrategy::kPresentationDeltaLocking,
+         "presentation_delta_locking"},
+        {FrameDeadlineDeciderSequenceStrategy::kOsPreferredDeltaLocking,
+         "os_preferred_delta_locking"},
+};
+const base::FeatureParam<FrameDeadlineDeciderSequenceStrategy>
+    kAndroidCustomFrameDeadlineSequenceStrategy{
+        &kUseAndroidCustomFrameDeadlines, "sequence_strategy",
+        FrameDeadlineDeciderSequenceStrategy::kOsPreferredDeltaLocking,
+        &kFrameDeadlineDeciderSequenceStrategyOptions};
+
+const base::FeatureParam<int> kAndroidCustomFrameDeadlinePresentationOffset{
+    &kUseAndroidCustomFrameDeadlines, "presentation_offset", 0};
+const base::FeatureParam<base::TimeDelta>
+    kAndroidCustomFrameDeadlineMaxNonInteractiveIdleDuration{
+        &kUseAndroidCustomFrameDeadlines, "max_non_interactive_idle_duration",
+        base::Milliseconds(50)};
+const base::FeatureParam<base::TimeDelta>
+    kAndroidCustomFrameDeadlineMaxInteractionIdleDuration{
+        &kUseAndroidCustomFrameDeadlines, "max_interaction_idle_duration",
+        base::Seconds(3)};
+#endif
 
 // When enabled, SDR maximum luminance nits of then current display will be used
 // as the HDR metadata NDWL nits for PQ content (if none was specified). This
@@ -297,6 +341,8 @@ BASE_FEATURE(kUseDisplaySDRMaxLuminanceNits, base::FEATURE_DISABLED_BY_DEFAULT);
 // On mac, when the RenderWidgetHostViewMac is hidden, also hide the
 // DelegatedFrameHost. Among other things, it unlocks the compositor frames,
 // which can saves hundreds of MiB of memory with bfcache entries.
+// TODO(crbug.com/538294830): Enable this in Finch alongside
+// OmniboxWebUIPopupMarkAsHidden to fix Mac memory eviction tracking.
 BASE_FEATURE(kHideDelegatedFrameHostMac, base::FEATURE_DISABLED_BY_DEFAULT);
 
 // When enabled, ClientResourceProvider will attempt to unlock and delete
@@ -310,6 +356,15 @@ BASE_FEATURE(kEvictionUnlocksResources, base::FEATURE_DISABLED_BY_DEFAULT);
 // perfect cadence.
 BASE_FEATURE(kSingleVideoFrameRateThrottling,
              base::FEATURE_DISABLED_BY_DEFAULT);
+
+// If enabled, FrameIntervalDecider will attempt to match mixed fixed-rate
+// content intervals (e.g. video coexisting with stepped compositor animations)
+// using a common integer multiple (LCM).
+BASE_FEATURE(kMixedFixedIntervalMatcher, base::FEATURE_DISABLED_BY_DEFAULT);
+
+// If enabled, the FrameEvictionManager scales its limit of max number of saved
+// frames dynamically based on memory pressure.
+BASE_FEATURE(kScalableFrameEviction, base::FEATURE_ENABLED_BY_DEFAULT);
 
 // Remove gpu process reference if gpu context is loss, and gpu channel cannot
 // be established due to said gpu process exiting.
@@ -359,32 +414,43 @@ BASE_FEATURE(kCrosContentAdjustedRefreshRate,
              base::FEATURE_DISABLED_BY_DEFAULT);
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
+// Do not create GLContext on DrDC thread (and Android WebView render thread) if
+// GL is not used by viz (eg when vulkan is used).
+BASE_FEATURE(kSkipDisabledGLContextOnDrDC, base::FEATURE_DISABLED_BY_DEFAULT);
+
 BASE_FEATURE(kNoCompositorFrameAcks, base::FEATURE_DISABLED_BY_DEFAULT);
 const base::FeatureParam<int> kNumberPendingFramesUntilThrottle{
     &kNoCompositorFrameAcks, "pending_frames", 1};
-BASE_FEATURE(kDisplaySchedulerAsClient, base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kDisplaySchedulerAsClient, base::FEATURE_ENABLED_BY_DEFAULT);
 
-// Enables prioritization of the BeginFrame InputClient (like
-// FlingSchedulerAndroid) so it can dispatch events before the renderer
-// receives its BeginFrame.
-BASE_FEATURE(kFlingSchedulingImprovements, base::FEATURE_DISABLED_BY_DEFAULT);
-
-// Enables optimizations in `DirectRenderer` and `OcclusionCuller` that reuses
-// pre-existing loops to access filter data from `AggregatedRenderPassDrawQuad`.
-// This is a temporary flag to work as a kill switch for the optimization and
-// should be removed as soon as we confirm that the optimization is stable.
-BASE_FEATURE(kRpdqFilterLookupOptimizations, base::FEATURE_ENABLED_BY_DEFAULT);
-
-// Use correct default ColorSpace in `SharedMemoryVideoFramePool::WrapBuffer`
-// when creating a VideoFrame instead of when it is used in
-// `FrameSinkVideoCapturerImpl::MaybeCaptureFrame`.
-BASE_FEATURE(kSharedMemoryVFPoolUseCorrectColorSpace,
-             base::FEATURE_ENABLED_BY_DEFAULT);
+// Kill switch for constraining render pass texture sampling to logical content
+// bounds. Remove after the behavior is stable.
+BASE_FEATURE(kRenderPassBackingLogicalBounds, base::FEATURE_ENABLED_BY_DEFAULT);
 
 // When enabled, bypasses deadlocks caused by outdated activation dependency
 // tokens when parent frame submission lags behind child surface execution.
 BASE_FEATURE(kBypassOutdatedSurfaceActivation,
              base::FEATURE_DISABLED_BY_DEFAULT);
+
+// When enabled, a non-mergeable surface's root render pass backing is enlarged
+// to match the scale at which the frame's content was rasterized. This avoids
+// downsampling and then upsampling the content, keeping text sharp
+// (crbug.com/513611535).
+BASE_FEATURE(kRenderNonMergedSurfaceAtBackingScale,
+             base::FEATURE_ENABLED_BY_DEFAULT);
+
+// Kill switch for https://crbug.com/569098933. When enabled, SoftwareRenderer
+// reads an unscaled copy into a client provided SharedImage directly, instead
+// of into an intermediate bitmap that is then drawn into the SharedImage.
+BASE_FEATURE(kSoftwareReadbackIntoBlitDestination,
+             base::FEATURE_ENABLED_BY_DEFAULT);
+
+// Kill switch for https://crbug.com/569098933. When enabled, SoftwareRenderer
+// draws the first quad in a freshly cleared transparent render pass with
+// kSrcOver whenever the quad's blend mode evaluates to the source color onto a
+// transparent destination, allowing Skia to use its fast legacy blitters.
+BASE_FEATURE(kUseSrcOverForFirstQuadInTransparentPass,
+             base::FEATURE_ENABLED_BY_DEFAULT);
 
 #if BUILDFLAG(IS_WIN)
 // Use BufferQueue for the primary plane instead of a DXGI swap chain or DComp
@@ -401,11 +467,6 @@ int DrawQuadSplitLimit() {
       kDrawQuadSplitLimit, kDrawQuadSplit, kDefaultDrawQuadSplitLimit);
   return std::clamp(split_limit, kMinDrawQuadSplitLimit,
                     kMaxDrawQuadSplitLimit);
-}
-
-bool IsBackForwardTransitionsSameDocSharedImageEnabled() {
-  return base::FeatureList::IsEnabled(
-      kBackForwardTransitionsSameDocSharedImage);
 }
 
 bool IsDelegatedCompositingEnabled() {
@@ -429,36 +490,12 @@ bool IsUsingVizFrameSubmissionForWebView() {
   return base::FeatureList::IsEnabled(kVizFrameSubmissionForWebView);
 }
 
+bool IsMixedFixedIntervalMatcherEnabled() {
+  return base::FeatureList::IsEnabled(kMixedFixedIntervalMatcher);
+}
+
 bool ShouldWebRtcLogCapturePipeline() {
   return base::FeatureList::IsEnabled(kWebRtcLogCapturePipeline);
-}
-
-#if BUILDFLAG(IS_ANDROID)
-bool UseWebViewNewInvalidateHeuristic() {
-  // For Android TVs we bundle this with WebViewSurfaceControlForTV.
-  if (base::android::device_info::is_tv()) {
-    return base::FeatureList::IsEnabled(kWebViewNewInvalidateHeuristicForTV);
-  }
-
-  return base::FeatureList::IsEnabled(kWebViewNewInvalidateHeuristic);
-}
-#endif
-
-bool UseSurfaceLayerForVideo() {
-#if BUILDFLAG(IS_ANDROID)
-  // SurfaceLayer video should work fine with new heuristic.
-  if (UseWebViewNewInvalidateHeuristic()) {
-    return true;
-  }
-
-  // Allow enabling UseSurfaceLayerForVideo if webview is using surface control.
-  if (::features::IsAndroidSurfaceControlEnabled()) {
-    return true;
-  }
-  return base::FeatureList::IsEnabled(kUseSurfaceLayerForVideoDefault);
-#else
-  return true;
-#endif
 }
 
 int MaxOverlaysConsidered() {
@@ -472,11 +509,6 @@ int MaxOverlaysConsidered() {
 
 bool ShouldOnBeginFrameThrottleVideo() {
   return base::FeatureList::IsEnabled(features::kOnBeginFrameThrottleVideo);
-}
-
-bool ShouldThrottleWhenInteractiveFrameSinks() {
-  return base::FeatureList::IsEnabled(
-      features::kThrottleFrameSinksOnInteraction);
 }
 
 bool ShouldAckOnSurfaceActivationWhenInteractive() {
@@ -534,12 +566,11 @@ bool ShouldRemoveRedirectionBitmap() {
     return false;
   }
 
-  // Some users set ANGLE backend to D3D9 or OpenGL via chrome://flags and in
+  // Some users set ANGLE backend to OpenGL via chrome://flags and in
   // that case too we would also use an ANGLE EGLSurface.
   const std::string angle_backend =
       command_line->GetSwitchValueASCII(switches::kUseANGLE);
-  if (angle_backend == gl::kANGLEImplementationD3D9Name ||
-      angle_backend == gl::kANGLEImplementationOpenGLName) {
+  if (angle_backend == gl::kANGLEImplementationOpenGLName) {
     return false;
   }
 
@@ -555,5 +586,21 @@ bool ShouldUseAdpfForSoc(std::string_view soc_allowlist,
   return std::ranges::contains(allowlist, soc);
 }
 #endif  // BUILDFLAG(IS_ANDROID)
+
+bool ShouldDiscardVizBufferQueueOnVisibilityChange() {
+  return kAllowVizBufferQueueDiscardOnVisibilityChange &&
+         base::FeatureList::IsEnabled(kVizBufferQueueDiscardOnVisibilityChange);
+}
+
+// When enabled, deadlines are tracked per activation dependency of a
+// CompositorFrame independently. Each dependent surface uses its own specified
+// deadline policy (e.g., from cc::DeadlinePolicy), allowing the frame to
+// activate once all its dependencies have individually resolved or expired,
+// without being bounded by the frame's overall global deadline.
+BASE_FEATURE(kPerDependencyDeadlines, base::FEATURE_DISABLED_BY_DEFAULT);
+
+bool UsePerDependencyDeadlines() {
+  return base::FeatureList::IsEnabled(kPerDependencyDeadlines);
+}
 
 }  // namespace features

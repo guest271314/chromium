@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "ui/base/ime/ash/input_method_util.h"
 
 #include <stddef.h>
@@ -19,6 +14,8 @@
 #include <string_view>
 #include <utility>
 
+#include "base/compiler_specific.h"
+#include "base/i18n/tag_converters.h"
 #include "base/logging.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
@@ -208,7 +205,7 @@ const struct InputMethodNameMap {
   const char* message_name;
   int resource_id;
   bool operator<(const InputMethodNameMap& other) const {
-    return strcmp(message_name, other.message_name) < 0;
+    return UNSAFE_TODO(strcmp(message_name, other.message_name)) < 0;
   }
 } kInputMethodNameMap[] = {
     {"__MSG_INPUTMETHOD_ARRAY__", IDS_IME_NAME_INPUTMETHOD_ARRAY},
@@ -545,8 +542,8 @@ std::string InputMethodUtil::GetLocalizedDisplayName(
     std::string name = base::ToUpperASCII(disp);
     const InputMethodNameMap map_key = {name.c_str(), 0};
     const InputMethodNameMap* p =
-        std::lower_bound(map, map + map_size, map_key);
-    if (p != map + map_size && name == p->message_name) {
+        std::lower_bound(map, UNSAFE_TODO(map + map_size), map_key);
+    if (p != UNSAFE_TODO(map + map_size) && name == p->message_name) {
       return l10n_util::GetStringUTF8(p->resource_id);
     }
   }
@@ -721,10 +718,10 @@ void InputMethodUtil::GetFirstLoginInputMethodIds(
   }
 }
 
-void InputMethodUtil::GetLanguageCodesFromInputMethodIds(
-    const std::vector<std::string>& input_method_ids,
-    std::vector<std::string>* out_language_codes) const {
-  out_language_codes->clear();
+std::vector<base::i18n::LanguageTag>
+InputMethodUtil::GetLanguageCodesFromInputMethodIds(
+    const std::vector<std::string>& input_method_ids) const {
+  std::vector<base::i18n::LanguageTag> language_tags;
 
   for (const auto& i : input_method_ids) {
     const std::string& input_method_id = i;
@@ -735,12 +732,19 @@ void InputMethodUtil::GetLanguageCodesFromInputMethodIds(
       continue;
     }
     DCHECK(!input_method->language_codes().empty());
-    const std::string language_code = input_method->language_codes().at(0);
+    const std::string& language_code = input_method->language_codes().at(0);
+    std::optional<base::i18n::LanguageTag> language_tag =
+        base::i18n::GetLanguageTagFromString(language_code);
+    if (!language_tag) {
+      DVLOG(1) << "Invalid language code: " << language_code;
+      continue;
+    }
     // Add it if it's not already present.
-    if (!std::ranges::contains(*out_language_codes, language_code)) {
-      out_language_codes->push_back(language_code);
+    if (!std::ranges::contains(language_tags, *language_tag)) {
+      language_tags.push_back(*std::move(language_tag));
     }
   }
+  return language_tags;
 }
 
 std::string InputMethodUtil::GetLanguageDefaultInputMethodId(

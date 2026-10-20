@@ -6,8 +6,8 @@ import 'chrome://resources/cr_elements/cr_button/cr_button.js';
 import 'chrome://resources/cr_elements/cr_dialog/cr_dialog.js';
 import 'chrome://resources/cr_elements/cr_link_row/cr_link_row.js';
 import 'chrome://resources/cr_elements/cr_shared_style.css.js';
-import 'chrome://resources/cr_elements/cr_spinner_style.css.js';
 import 'chrome://resources/cr_elements/cr_toast/cr_toast.js';
+import './cr_spinner_style.css.js';
 import './shared_style.css.js';
 
 import type {CrToastElement} from 'chrome://resources/cr_elements/cr_toast/cr_toast.js';
@@ -15,11 +15,8 @@ import {I18nMixin} from 'chrome://resources/cr_elements/i18n_mixin.js';
 import {assert} from 'chrome://resources/js/assert.js';
 import {PolymerElement} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
 
-import type {PasswordsFileExportProgressListener} from './password_manager_proxy.js';
-import {PasswordManagerImpl} from './password_manager_proxy.js';
+import {ExportPasswordsResult, ExportProgressStatus, PasswordManagerImpl} from './password_manager_proxy.js';
 import {getTemplate} from './passwords_exporter.html.js';
-
-const ProgressStatus = chrome.passwordsPrivate.ExportProgressStatus;
 
 export interface PasswordsExporterElement {
   $: {
@@ -60,38 +57,35 @@ export class PasswordsExporterElement extends PasswordsExporterElementBase {
     };
   }
 
-  private onPasswordsFileExportProgressListener_:
-      PasswordsFileExportProgressListener|null = null;
+  private exportListenerId_: number|null = null;
 
   declare private showPasswordsExportErrorDialog_: boolean;
   declare private showExportInProgress_: boolean;
   declare private exportErrorMessage_: string|null;
-  private exportedFilePath_: string|null;
 
 
   override connectedCallback() {
     super.connectedCallback();
 
+    const proxy = PasswordManagerImpl.getInstance();
     // If export started on a different tab and is still in progress, display a
     // busy UI.
-    PasswordManagerImpl.getInstance().requestExportProgressStatus().then(
-        status => {
-          if (status === ProgressStatus.IN_PROGRESS) {
-            this.showExportInProgress_ = true;
-          }
-        });
+    proxy.requestExportProgressStatus().then(status => {
+      if (status === ExportProgressStatus.kInProgress) {
+        this.showExportInProgress_ = true;
+      }
+    });
 
-    this.onPasswordsFileExportProgressListener_ =
-        (progress: chrome.passwordsPrivate.PasswordExportProgress) =>
-            this.onPasswordsFileExportProgress_(progress);
-    PasswordManagerImpl.getInstance().addPasswordsFileExportProgressListener(
-        this.onPasswordsFileExportProgressListener_);
+    this.exportListenerId_ =
+        proxy.callbackRouter.onPasswordsExportProgress.addListener(
+            this.onPasswordsFileExportProgress_.bind(this));
   }
 
   override disconnectedCallback() {
-    assert(this.onPasswordsFileExportProgressListener_);
-    PasswordManagerImpl.getInstance().removePasswordsFileExportProgressListener(
-        this.onPasswordsFileExportProgressListener_);
+    const proxy = PasswordManagerImpl.getInstance();
+    assert(this.exportListenerId_ !== null);
+    proxy.callbackRouter.removeListener(this.exportListenerId_);
+    this.exportListenerId_ = null;
     super.disconnectedCallback();
   }
 
@@ -99,14 +93,15 @@ export class PasswordsExporterElement extends PasswordsExporterElementBase {
    * Tells the PasswordsPrivate API to export saved passwords in a .csv file.
    */
   private onExportClick_() {
-    PasswordManagerImpl.getInstance().exportPasswords().catch((error) => {
-      if (error === 'in-progress') {
-        // Exporting was started by a different call to exportPasswords() and is
-        // is still in progress. This UI needs to be updated to the current
-        // status.
-        this.showExportInProgress_ = true;
-      }
-    });
+    PasswordManagerImpl.getInstance().exportPasswords().then(
+        (result: ExportPasswordsResult) => {
+          if (result === ExportPasswordsResult.kInProgress) {
+            // Exporting was started by a different call to exportPasswords()
+            // and is still in progress. This UI needs to be updated to the
+            // current status.
+            this.showExportInProgress_ = true;
+          }
+        });
   }
 
   /**
@@ -129,24 +124,22 @@ export class PasswordsExporterElement extends PasswordsExporterElementBase {
    * the event for later consumption.
    */
   private onPasswordsFileExportProgress_(
-      progress: chrome.passwordsPrivate.PasswordExportProgress) {
-    if (progress.status === ProgressStatus.IN_PROGRESS) {
+      status: ExportProgressStatus, folderName: string|null) {
+    if (status === ExportProgressStatus.kInProgress) {
       this.showExportInProgress_ = true;
       return;
     }
 
     this.showExportInProgress_ = false;
 
-    switch (progress.status) {
-      case ProgressStatus.SUCCEEDED:
-        assert(progress.filePath);
-        this.exportedFilePath_ = progress.filePath;
+    switch (status) {
+      case ExportProgressStatus.kSucceeded:
         this.$.exportSuccessToast.show();
         break;
-      case ProgressStatus.FAILED_WRITE_FAILED:
-        assert(progress.folderName);
+      case ExportProgressStatus.kFailedWrite:
+        assert(folderName);
         this.exportErrorMessage_ =
-            this.i18n('exportPasswordsFailTitle', progress.folderName);
+            this.i18n('exportPasswordsFailTitle', folderName);
         this.showPasswordsExportErrorDialog_ = true;
         break;
       default:
@@ -155,9 +148,7 @@ export class PasswordsExporterElement extends PasswordsExporterElementBase {
   }
 
   private onOpenInShellButtonClick_() {
-    assert(this.exportedFilePath_);
-    PasswordManagerImpl.getInstance().showExportedFileInShell(
-        this.exportedFilePath_);
+    PasswordManagerImpl.getInstance().showLastExportedFileInShell();
     this.$.exportSuccessToast.hide();
   }
 

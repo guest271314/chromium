@@ -20,6 +20,7 @@
 #include "base/strings/utf_string_conversions.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/ui/chrome_pages.h"
 #include "chrome/browser/ui/views/chrome_typography.h"
 #include "chrome/browser/ui/views/payments/payment_request_dialog_view.h"
@@ -29,6 +30,7 @@
 #include "chrome/common/url_constants.h"
 #include "components/autofill/core/browser/data_manager/personal_data_manager.h"
 #include "components/autofill/core/browser/field_types.h"
+#include "components/payments/content/content_payment_request_delegate.h"
 #include "components/payments/content/payment_app.h"
 #include "components/payments/content/payment_request_spec.h"
 #include "components/payments/content/payment_request_state.h"
@@ -36,8 +38,10 @@
 #include "components/payments/core/payment_prefs.h"
 #include "components/payments/core/strings_util.h"
 #include "components/prefs/pref_service.h"
+#include "components/signin/public/identity_manager/identity_manager.h"
 #include "components/strings/grit/components_strings.h"
 #include "components/vector_icons/vector_icons.h"
+#include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/web_contents.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_header_macros.h"
@@ -59,6 +63,7 @@
 #include "ui/views/controls/image_view.h"
 #include "ui/views/controls/label.h"
 #include "ui/views/controls/styled_label.h"
+#include "ui/views/input_protection/default_input_protection_policy.h"
 #include "ui/views/layout/box_layout.h"
 #include "ui/views/layout/box_layout_view.h"
 #include "ui/views/layout/table_layout.h"
@@ -68,6 +73,25 @@
 
 namespace payments {
 namespace {
+
+std::string GetAuthenticatedEmail(content::RenderFrameHost* rfh) {
+  if (!rfh) {
+    return std::string();
+  }
+
+  // Check if the profile is signed in. Guest profiles or incognito windows may
+  // not have an IdentityManager, and are considered not signed in.
+  signin::IdentityManager* identity_manager =
+      IdentityManagerFactory::GetForProfile(
+          Profile::FromBrowserContext(rfh->GetBrowserContext()));
+  if (!identity_manager) {
+    return std::string();
+  }
+  // If there's no primary account, `GetPrimaryAccountInfo()` will return an
+  // empty result.
+  return identity_manager->GetPrimaryAccountInfo(signin::ConsentLevel::kSignin)
+      .email;
+}
 
 // A class that ensures proper elision of labels in the form
 // "[preview] and N more" where preview might be elided to allow "and N more" to
@@ -199,7 +223,7 @@ std::unique_ptr<views::View> CreateInlineCurrencyAmountItem(
     const std::u16string& amount,
     bool hint_color,
     bool bold) {
-  DCHECK(!bold || !hint_color);
+  CHECK(!bold || !hint_color, base::NotFatalUntil::M162);
   return views::Builder<views::TableLayoutView>()
       .AddColumn(views::LayoutAlignment::kStart, views::LayoutAlignment::kStart,
                  views::TableLayout::kFixedSize,
@@ -265,12 +289,12 @@ class PaymentSheetRowBuilder {
     auto chevron =
         std::make_unique<views::ImageView>(ui::ImageModel::FromVectorIcon(
             features::IsRoundedIconsEnabled()
-                ? vector_icons::kArrowRightIcon
+                ? vector_icons::kArrowRightFlippableIcon
                 : vector_icons::kSubmenuArrowOldIcon,
             ui::kColorIcon,
             gfx::GetDefaultSizeOfVectorIcon(
                 features::IsRoundedIconsEnabled()
-                    ? vector_icons::kArrowRightIcon
+                    ? vector_icons::kArrowRightFlippableIcon
                     : vector_icons::kSubmenuArrowOldIcon)));
     chevron->SetCanProcessEventsWithinSubtree(false);
     std::unique_ptr<PaymentRequestRowView> section = CreatePaymentSheetRow(
@@ -307,7 +331,7 @@ class PaymentSheetRowBuilder {
       int n,
       const std::u16string& button_string,
       bool button_enabled) {
-    DCHECK(accessible_content_.empty());
+    CHECK(accessible_content_.empty(), base::NotFatalUntil::M162);
     std::unique_ptr<PreviewEliderLabel> content_view =
         std::make_unique<PreviewEliderLabel>(preview_text, format_string, n,
                                              views::style::STYLE_HINT);
@@ -356,19 +380,11 @@ PaymentSheetViewController::PaymentSheetViewController(
     base::WeakPtr<PaymentRequestSpec> spec,
     base::WeakPtr<PaymentRequestState> state,
     base::WeakPtr<PaymentRequestDialogView> dialog)
-    : PaymentRequestSheetController(spec, state, dialog),
-      input_protector_(
-          std::make_unique<views::InputEventActivationProtector>()) {
-  DCHECK(spec);
-  DCHECK(state);
+    : PaymentRequestSheetController(spec, state, dialog) {
+  CHECK(spec, base::NotFatalUntil::M162);
+  CHECK(state, base::NotFatalUntil::M162);
   spec->AddObserver(this);
   state->AddObserver(this);
-
-  // This class is constructed as the view is being shown, so we mark it as
-  // visible now. The view may become hidden again in the future (if the user
-  // clicks into a sub-view), but we only need to defend the initial showing
-  // against acccidental clicks on [Continue] and so this location suffices.
-  input_protector_->VisibilityChanged(/*is_visible=*/true);
 }
 
 PaymentSheetViewController::~PaymentSheetViewController() {
@@ -376,7 +392,9 @@ PaymentSheetViewController::~PaymentSheetViewController() {
     spec()->RemoveObserver(this);
   }
 
-  state()->RemoveObserver(this);
+  if (state()) {
+    state()->RemoveObserver(this);
+  }
 }
 
 void PaymentSheetViewController::OnSpecUpdated() {
@@ -426,6 +444,14 @@ std::u16string PaymentSheetViewController::GetSheetTitle() {
 void PaymentSheetViewController::FillContentView(views::View* content_view) {
   if (!spec()) {
     return;
+  }
+  // `primary_button()` is created in
+  // `PaymentRequestSheetController::CreateView()`, after
+  // `PaymentSheetViewController` is constructed.
+  if (!input_protector_) {
+    input_protector_ = std::make_unique<views::InputEventActivationProtector>(
+        std::make_unique<views::DefaultInputProtectionPolicy>(
+            primary_button()));
   }
 
   auto builder = views::Builder<views::View>(content_view)
@@ -609,7 +635,7 @@ PaymentSheetViewController::CreatePaymentSheetSummaryRow() {
 std::unique_ptr<views::View>
 PaymentSheetViewController::CreateShippingSectionContent(
     std::u16string* accessible_content) {
-  DCHECK(accessible_content);
+  CHECK(accessible_content, base::NotFatalUntil::M162);
   autofill::AutofillProfile* profile = state()->selected_shipping_profile();
   if (!profile) {
     return std::make_unique<views::Label>(std::u16string());
@@ -862,7 +888,8 @@ std::unique_ptr<views::View> PaymentSheetViewController::CreateDataSourceRow() {
     data_source =
         l10n_util::GetStringUTF16(IDS_PAYMENTS_CARD_AND_ADDRESS_SETTINGS);
   } else {
-    std::string user_email = state()->GetAuthenticatedEmail();
+    std::string user_email = GetAuthenticatedEmail(
+        state()->GetPaymentRequestDelegate()->GetRenderFrameHost());
     if (!user_email.empty()) {
       // Insert the user's email into the format string.
       data_source = l10n_util::GetStringFUTF16(
@@ -884,10 +911,10 @@ std::unique_ptr<views::View> PaymentSheetViewController::CreateDataSourceRow() {
   std::u16string begin_tag = u"BEGIN_LINK";
   std::u16string end_tag = u"END_LINK";
   size_t link_begin = data_source.find(begin_tag);
-  DCHECK(link_begin != std::u16string::npos);
+  CHECK(link_begin != std::u16string::npos, base::NotFatalUntil::M162);
 
   size_t link_end = data_source.find(end_tag);
-  DCHECK(link_end != std::u16string::npos);
+  CHECK(link_end != std::u16string::npos, base::NotFatalUntil::M162);
 
   size_t link_length = link_end - link_begin - begin_tag.size();
   data_source.erase(link_end, end_tag.size());

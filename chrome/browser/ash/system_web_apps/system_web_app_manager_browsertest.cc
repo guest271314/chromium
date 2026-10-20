@@ -24,7 +24,7 @@
 #include "base/task/thread_pool.h"
 #include "base/test/bind.h"
 #include "base/test/gtest_tags.h"
-#include "chrome/app/chrome_command_ids.h"
+#include "base/threading/thread_restrictions.h"
 #include "chrome/browser/apps/app_service/app_icon/app_icon_factory.h"
 #include "chrome/browser/apps/app_service/app_service_proxy.h"
 #include "chrome/browser/apps/app_service/app_service_proxy_factory.h"
@@ -48,7 +48,8 @@
 #include "chrome/browser/renderer_context_menu/render_view_context_menu_test_util.h"
 #include "chrome/browser/ui/ash/shelf/chrome_shelf_controller_util.h"
 #include "chrome/browser/ui/ash/system_web_apps/system_web_app_ui_utils.h"
-#include "chrome/browser/ui/browser_window.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/web_applications/app_browser_controller.h"
 #include "chrome/browser/web_applications/proto/web_app.pb.h"
 #include "chrome/browser/web_applications/proto/web_app_install_state.pb.h"
@@ -61,7 +62,6 @@
 #include "chrome/browser/web_applications/web_app_registrar.h"
 #include "chrome/browser/web_applications/web_app_registry_update.h"
 #include "chrome/browser/web_applications/web_app_tab_helper.h"
-#include "chrome/common/chrome_features.h"
 #include "chrome/common/chrome_paths.h"
 #include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/ui_test_utils.h"
@@ -89,6 +89,7 @@
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/mojom/context_menu/context_menu.mojom.h"
 #include "ui/accessibility/accessibility_features.h"
+#include "ui/base/base_window.h"
 #include "ui/base/idle/idle.h"
 #include "ui/base/idle/scoped_set_idle_state.h"
 #include "ui/base/mojom/menu_source_type.mojom.h"
@@ -121,14 +122,15 @@ IN_PROC_BROWSER_TEST_P(SystemWebAppManagerBrowserTestBasicInstall, Install) {
 
   // Don't wait for page load because we want to verify AppController identifies
   // the System Web App before when the app loads.
-  Browser* app_browser;
+  BrowserWindowInterface* app_browser = nullptr;
   LaunchAppWithoutWaiting(GetAppType(), &app_browser);
 
-  webapps::AppId app_id = app_browser->app_controller()->app_id();
+  webapps::AppId app_id =
+      web_app::AppBrowserController::From(app_browser)->app_id();
   EXPECT_EQ(GetManager().GetAppIdForSystemApp(GetAppType()), app_id);
   EXPECT_TRUE(GetManager().IsSystemWebApp(app_id));
 
-  Profile* profile = app_browser->profile();
+  Profile* profile = app_browser->GetProfile();
   web_app::WebAppRegistrar& registrar =
       web_app::WebAppProvider::GetForTest(profile)->registrar_unsafe();
 
@@ -141,7 +143,7 @@ IN_PROC_BROWSER_TEST_P(SystemWebAppManagerBrowserTestBasicInstall, Install) {
                 web_app::WebAppFilter::InstalledInOperatingSystemForTesting()),
             app_id);
 
-  GetAppServiceProxy(browser()->profile())
+  GetAppServiceProxy(browser()->GetProfile())
       ->AppRegistryCache()
       .ForOneApp(app_id, [](const apps::AppUpdate& update) {
         EXPECT_TRUE(update.ShowInLauncher().value_or(false));
@@ -159,18 +161,20 @@ IN_PROC_BROWSER_TEST_P(SystemWebAppManagerBrowserTest,
 
   // Don't wait for page load because we want to verify the toolbar is hidden
   // when the window first opens.
-  Browser* app_browser;
+  BrowserWindowInterface* app_browser = nullptr;
   LaunchAppWithoutWaiting(GetAppType(), &app_browser);
 
   // In scope, the toolbar should not be visible.
-  EXPECT_FALSE(app_browser->app_controller()->ShouldShowCustomTabBar());
+  EXPECT_FALSE(web_app::AppBrowserController::From(app_browser)
+                   ->ShouldShowCustomTabBar());
 
   // Out of scope chrome:// URL.
   GURL out_of_scope_chrome_page("chrome://foo");
   content::NavigateToURLBlockUntilNavigationsComplete(
-      app_browser->tab_strip_model()->GetActiveWebContents(),
+      app_browser->GetTabStripModel()->GetActiveWebContents(),
       out_of_scope_chrome_page, 1);
-  EXPECT_TRUE(app_browser->app_controller()->ShouldShowCustomTabBar());
+  EXPECT_TRUE(web_app::AppBrowserController::From(app_browser)
+                  ->ShouldShowCustomTabBar());
 
   // Even though the url is secure it is not being served over chrome:// so a
   // toolbar should be shown.
@@ -178,14 +182,16 @@ IN_PROC_BROWSER_TEST_P(SystemWebAppManagerBrowserTest,
   content::NavigateToURLBlockUntilNavigationsComplete(
       app_browser->tab_strip_model()->GetActiveWebContents(), off_scheme_page,
       1);
-  EXPECT_TRUE(app_browser->app_controller()->ShouldShowCustomTabBar());
+  EXPECT_TRUE(web_app::AppBrowserController::From(app_browser)
+                  ->ShouldShowCustomTabBar());
 
   // URL has been added to be within scope for the SWA.
   GURL in_scope_for_swa_page("https://example.com/in-scope");
   content::NavigateToURLBlockUntilNavigationsComplete(
       app_browser->tab_strip_model()->GetActiveWebContents(),
       in_scope_for_swa_page, 1);
-  EXPECT_FALSE(app_browser->app_controller()->ShouldShowCustomTabBar());
+  EXPECT_FALSE(web_app::AppBrowserController::From(app_browser)
+                   ->ShouldShowCustomTabBar());
 }
 
 IN_PROC_BROWSER_TEST_P(SystemWebAppManagerBrowserTest, LaunchMetricsWork) {
@@ -198,7 +204,7 @@ IN_PROC_BROWSER_TEST_P(SystemWebAppManagerBrowserTest, LaunchMetricsWork) {
 
   ash::SystemAppLaunchParams params;
   params.launch_source = apps::LaunchSource::kFromAppListGrid;
-  LaunchSystemWebAppAsync(browser()->profile(), GetAppType(), params);
+  LaunchSystemWebAppAsync(browser()->GetProfile(), GetAppType(), params);
 
   navigation_observer.Wait();
   histograms.ExpectTotalCount("Apps.DefaultAppLaunch.FromAppListGrid", 1);
@@ -213,7 +219,7 @@ IN_PROC_BROWSER_TEST_P(SystemWebAppManagerBrowserTest,
   content::TestNavigationObserver navigation_observer(GetStartUrl());
   navigation_observer.StartWatchingNewWebContents();
 
-  auto* proxy = GetAppServiceProxy(browser()->profile());
+  auto* proxy = GetAppServiceProxy(browser()->GetProfile());
 
   proxy->Launch(GetManager().GetAppIdForSystemApp(GetAppType()).value(),
                 ui::EF_NONE, apps::LaunchSource::kFromAppListGrid,
@@ -232,7 +238,7 @@ IN_PROC_BROWSER_TEST_P(SystemWebAppManagerBrowserTest,
   content::TestNavigationObserver navigation_observer(GetStartUrl());
   navigation_observer.StartWatchingNewWebContents();
 
-  auto* proxy = GetAppServiceProxy(browser()->profile());
+  auto* proxy = GetAppServiceProxy(browser()->GetProfile());
   auto intent = std::make_unique<apps::Intent>(apps_util::kIntentActionView);
   intent->mime_type = "text/plain";
 
@@ -258,11 +264,11 @@ IN_PROC_BROWSER_TEST_P(SystemWebAppManagerBrowserTest, UpdatesLaunchStats) {
 
   ash::SystemAppLaunchParams params;
   params.launch_source = apps::LaunchSource::kFromAppListGrid;
-  LaunchSystemWebAppAsync(browser()->profile(), GetAppType(), params);
+  LaunchSystemWebAppAsync(browser()->GetProfile(), GetAppType(), params);
 
   navigation_observer.Wait();
 
-  auto* proxy = GetAppServiceProxy(browser()->profile());
+  auto* proxy = GetAppServiceProxy(browser()->GetProfile());
   EXPECT_TRUE(proxy->AppRegistryCache().ForOneApp(
       app_id,
       [&](const apps::AppUpdate& update) {
@@ -289,7 +295,8 @@ IN_PROC_BROWSER_TEST_P(SystemWebAppManagerLaunchWithUrlBrowserTest,
   params.launch_source = apps::LaunchSource::kFromOtherApp;
   params.url = GetStartUrl();
   bool is_called = false;
-  LaunchSystemWebAppAsync(browser()->profile(), GetAppType(), params, nullptr,
+  LaunchSystemWebAppAsync(browser()->GetProfile(), GetAppType(), params,
+                          nullptr,
                           base::BindLambdaForTesting(
                               [&is_called](apps::LaunchResult callback_result) {
                                 is_called = true;
@@ -431,7 +438,7 @@ IN_PROC_BROWSER_TEST_P(SystemWebAppManagerLaunchFilesBrowserTest,
   ash::SystemAppLaunchParams params;
   params.launch_paths = {temp_file_path};
   params.launch_source = apps::LaunchSource::kFromOtherApp;
-  LaunchSystemWebAppAsync(browser()->profile(), GetAppType(), params);
+  LaunchSystemWebAppAsync(browser()->GetProfile(), GetAppType(), params);
 
   navigation_observer.Wait();
   histograms.ExpectTotalCount("Apps.DefaultAppLaunch.FromOtherApp", 1);
@@ -715,7 +722,7 @@ class SystemWebAppManagerLaunchDirectoryFileSystemProviderBrowserTest
 IN_PROC_BROWSER_TEST_P(
     SystemWebAppManagerLaunchDirectoryFileSystemProviderBrowserTest,
     LaunchFromFileSystemProvider_ReadFiles) {
-  Profile* profile = browser()->profile();
+  Profile* profile = browser()->GetProfile();
 
   WaitForTestSystemAppInstall();
   InstallTestFileSystemProvider(profile);
@@ -761,7 +768,7 @@ IN_PROC_BROWSER_TEST_P(
 IN_PROC_BROWSER_TEST_P(
     SystemWebAppManagerLaunchDirectoryFileSystemProviderBrowserTest,
     LaunchFromFileSystemProvider_WriteFileFails) {
-  Profile* profile = browser()->profile();
+  Profile* profile = browser()->GetProfile();
 
   WaitForTestSystemAppInstall();
   InstallTestFileSystemProvider(profile);
@@ -785,7 +792,7 @@ IN_PROC_BROWSER_TEST_P(
 IN_PROC_BROWSER_TEST_P(
     SystemWebAppManagerLaunchDirectoryFileSystemProviderBrowserTest,
     LaunchFromFileSystemProvider_DeleteFileFails) {
-  Profile* profile = browser()->profile();
+  Profile* profile = browser()->GetProfile();
 
   WaitForTestSystemAppInstall();
   InstallTestFileSystemProvider(profile);
@@ -823,7 +830,7 @@ IN_PROC_BROWSER_TEST_P(SystemWebAppManagerNotShownInLauncherTest,
   webapps::AppId app_id =
       GetManager().GetAppIdForSystemApp(GetAppType()).value();
 
-  GetAppServiceProxy(browser()->profile())
+  GetAppServiceProxy(browser()->GetProfile())
       ->AppRegistryCache()
       .ForOneApp(app_id, [](const apps::AppUpdate& update) {
         EXPECT_FALSE(update.ShowInLauncher().value_or(true));
@@ -854,7 +861,7 @@ IN_PROC_BROWSER_TEST_P(SystemWebAppManagerNotShownInSearchTest,
   webapps::AppId app_id =
       GetManager().GetAppIdForSystemApp(GetAppType()).value();
 
-  GetAppServiceProxy(browser()->profile())
+  GetAppServiceProxy(browser()->GetProfile())
       ->AppRegistryCache()
       .ForOneApp(app_id, [](const apps::AppUpdate& update) {
         EXPECT_FALSE(update.ShowInSearch().value_or(true));
@@ -876,7 +883,7 @@ IN_PROC_BROWSER_TEST_P(SystemWebAppManagerHandlesFileOpenIntentsTest,
   webapps::AppId app_id =
       GetManager().GetAppIdForSystemApp(GetAppType()).value();
 
-  GetAppServiceProxy(browser()->profile())
+  GetAppServiceProxy(browser()->GetProfile())
       ->AppRegistryCache()
       .ForOneApp(app_id, [](const apps::AppUpdate& update) {
         EXPECT_TRUE(update.HandlesIntents().value_or(false));
@@ -899,7 +906,7 @@ IN_PROC_BROWSER_TEST_P(SystemWebAppManagerAdditionalSearchTermsTest,
       GetManager().GetAppIdForSystemApp(GetAppType()).value();
 
   // AdditionalSearchTerms is flaky on Windows as it's a Chrome OS feature.
-  GetAppServiceProxy(browser()->profile())
+  GetAppServiceProxy(browser()->GetProfile())
       ->AppRegistryCache()
       .ForOneApp(app_id, [](const apps::AppUpdate& update) {
         EXPECT_EQ(std::vector<std::string>({"Security"}),
@@ -921,10 +928,11 @@ IN_PROC_BROWSER_TEST_P(SystemWebAppManagerHasTabStripWithNewTabButtonTest,
                        ShouldHaveTabStripWithNewTabButton) {
   WaitForTestSystemAppInstall();
 
-  Browser* browser;
+  BrowserWindowInterface* browser = nullptr;
   EXPECT_TRUE(LaunchApp(GetAppType(), &browser));
-  EXPECT_TRUE(browser->app_controller()->has_tab_strip());
-  EXPECT_FALSE(browser->app_controller()->ShouldHideNewTabButton());
+  EXPECT_TRUE(web_app::AppBrowserController::From(browser)->has_tab_strip());
+  EXPECT_FALSE(
+      web_app::AppBrowserController::From(browser)->ShouldHideNewTabButton());
 }
 
 class SystemWebAppManagerHasTabStripWithHiddenNewTabButtonTest
@@ -941,10 +949,11 @@ IN_PROC_BROWSER_TEST_P(SystemWebAppManagerHasTabStripWithHiddenNewTabButtonTest,
                        HasTabStripWithNoNewTabButton) {
   WaitForTestSystemAppInstall();
 
-  Browser* browser;
+  BrowserWindowInterface* browser = nullptr;
   EXPECT_TRUE(LaunchApp(GetAppType(), &browser));
-  EXPECT_TRUE(browser->app_controller()->has_tab_strip());
-  EXPECT_TRUE(browser->app_controller()->ShouldHideNewTabButton());
+  EXPECT_TRUE(web_app::AppBrowserController::From(browser)->has_tab_strip());
+  EXPECT_TRUE(
+      web_app::AppBrowserController::From(browser)->ShouldHideNewTabButton());
 }
 
 class SystemWebAppManagerHasNoTabStripWithNewTabButtonTest
@@ -961,10 +970,11 @@ IN_PROC_BROWSER_TEST_P(SystemWebAppManagerHasNoTabStripWithNewTabButtonTest,
                        HasNoTabStripWithNoNewTabButton) {
   WaitForTestSystemAppInstall();
 
-  Browser* browser;
+  BrowserWindowInterface* browser = nullptr;
   EXPECT_TRUE(LaunchApp(GetAppType(), &browser));
-  EXPECT_FALSE(browser->app_controller()->has_tab_strip());
-  EXPECT_TRUE(browser->app_controller()->ShouldHideNewTabButton());
+  EXPECT_FALSE(web_app::AppBrowserController::From(browser)->has_tab_strip());
+  EXPECT_TRUE(
+      web_app::AppBrowserController::From(browser)->ShouldHideNewTabButton());
 }
 
 class SystemWebAppManagerHasNoTabStripWithHiddenNewTabButtonTest
@@ -982,10 +992,11 @@ IN_PROC_BROWSER_TEST_P(
     HasNoTabStripWithNoNewTabButton) {
   WaitForTestSystemAppInstall();
 
-  Browser* browser;
+  BrowserWindowInterface* browser = nullptr;
   EXPECT_TRUE(LaunchApp(GetAppType(), &browser));
-  EXPECT_FALSE(browser->app_controller()->has_tab_strip());
-  EXPECT_TRUE(browser->app_controller()->ShouldHideNewTabButton());
+  EXPECT_FALSE(web_app::AppBrowserController::From(browser)->has_tab_strip());
+  EXPECT_TRUE(
+      web_app::AppBrowserController::From(browser)->ShouldHideNewTabButton());
 }
 
 // We only support custom bounds on Chrome OS.
@@ -1005,10 +1016,11 @@ class SystemWebAppManagerDefaultBoundsTest
 IN_PROC_BROWSER_TEST_P(SystemWebAppManagerDefaultBoundsTest, HasDefaultBounds) {
   WaitForTestSystemAppInstall();
 
-  Browser* browser;
+  BrowserWindowInterface* browser = nullptr;
   EXPECT_TRUE(LaunchApp(GetAppType(), &browser));
-  EXPECT_EQ(kDefaultBounds, browser->app_controller()->GetDefaultBounds());
-  EXPECT_EQ(kDefaultBounds, browser->window()->GetBounds());
+  EXPECT_EQ(kDefaultBounds,
+            web_app::AppBrowserController::From(browser)->GetDefaultBounds());
+  EXPECT_EQ(kDefaultBounds, browser->GetWindow()->GetBounds());
 }
 
 // Tests that SWA are correctly uninstalled across restarts.
@@ -1040,7 +1052,7 @@ IN_PROC_BROWSER_TEST_P(SystemWebAppManagerUninstallBrowserTest, Uninstall) {
   EXPECT_TRUE(GetManager().GetAppIds().empty());
 
   auto* app_service_proxy =
-      apps::AppServiceProxyFactory::GetForProfile(browser()->profile());
+      apps::AppServiceProxyFactory::GetForProfile(browser()->GetProfile());
 
   bool swa_found = false;
   app_service_proxy->AppRegistryCache().ForEachApp(
@@ -1131,7 +1143,7 @@ IN_PROC_BROWSER_TEST_P(SystemWebAppManagerInstallAllAppsBrowserTest,
     EXPECT_TRUE(app_id);
 
     bool app_found = false;
-    apps::AppServiceProxyFactory::GetForProfile(browser()->profile())
+    apps::AppServiceProxyFactory::GetForProfile(browser()->GetProfile())
         ->AppRegistryCache()
         .ForOneApp(*app_id, [&](const apps::AppUpdate& app) {
           app_found = true;
@@ -1210,15 +1222,15 @@ IN_PROC_BROWSER_TEST_P(SystemWebAppManagerChromeUntrustedTest, Install) {
 
   // Don't wait for page load because we want to verify AppController identifies
   // the System Web App before the app loads.
-  Browser* app_browser;
+  BrowserWindowInterface* app_browser = nullptr;
   LaunchAppWithoutWaiting(GetAppType(), &app_browser);
 
   webapps::AppId app_id =
       GetManager().GetAppIdForSystemApp(GetAppType()).value();
-  EXPECT_EQ(app_id, app_browser->app_controller()->app_id());
+  EXPECT_EQ(app_id, web_app::AppBrowserController::From(app_browser)->app_id());
   EXPECT_TRUE(GetManager().IsSystemWebApp(app_id));
 
-  Profile* profile = app_browser->profile();
+  Profile* profile = app_browser->GetProfile();
   web_app::WebAppRegistrar& registrar =
       web_app::WebAppProvider::GetForTest(profile)->registrar_unsafe();
 
@@ -1246,7 +1258,7 @@ class SystemWebAppManagerOriginTrialsBrowserTest
 
  protected:
   std::unique_ptr<content::WebContents> CreateTestWebContents() {
-    content::WebContents::CreateParams create_params(browser()->profile());
+    content::WebContents::CreateParams create_params(browser()->GetProfile());
     return content::WebContents::Create(create_params);
   }
 
@@ -1403,7 +1415,7 @@ class SystemWebAppManagerAppSuspensionBrowserTest
   apps::Readiness GetAppReadiness(const webapps::AppId& app_id) {
     apps::Readiness readiness;
     bool app_found =
-        GetAppServiceProxy(browser()->profile())
+        GetAppServiceProxy(browser()->GetProfile())
             ->AppRegistryCache()
             .ForOneApp(app_id, [&readiness](const apps::AppUpdate& update) {
               readiness = update.Readiness();
@@ -1415,7 +1427,7 @@ class SystemWebAppManagerAppSuspensionBrowserTest
   std::optional<apps::IconKey> GetAppIconKey(const webapps::AppId& app_id) {
     std::optional<apps::IconKey> icon_key;
     bool app_found =
-        GetAppServiceProxy(browser()->profile())
+        GetAppServiceProxy(browser()->GetProfile())
             ->AppRegistryCache()
             .ForOneApp(app_id, [&icon_key](const apps::AppUpdate& update) {
               icon_key = update.IconKey();
@@ -1453,7 +1465,7 @@ IN_PROC_BROWSER_TEST_P(SystemWebAppManagerAppSuspensionBrowserTest,
         policy::policy_prefs::kSystemFeaturesDisableList);
     update->clear();
   }
-  SystemWebAppManager::GetWebAppProvider(browser()->profile())
+  SystemWebAppManager::GetWebAppProvider(browser()->GetProfile())
       ->command_manager()
       .AwaitAllCommandsCompleteForTesting();
   EXPECT_EQ(apps::Readiness::kReady, GetAppReadiness(*settings_id));
@@ -1480,7 +1492,7 @@ IN_PROC_BROWSER_TEST_P(SystemWebAppManagerAppSuspensionBrowserTest,
         policy::policy_prefs::kSystemFeaturesDisableList);
     update->Append(static_cast<int>(policy::SystemFeature::kOsSettings));
   }
-  SystemWebAppManager::GetWebAppProvider(browser()->profile())
+  SystemWebAppManager::GetWebAppProvider(browser()->GetProfile())
       ->command_manager()
       .AwaitAllCommandsCompleteForTesting();
 
@@ -1494,7 +1506,7 @@ IN_PROC_BROWSER_TEST_P(SystemWebAppManagerAppSuspensionBrowserTest,
         policy::policy_prefs::kSystemFeaturesDisableList);
     update->clear();
   }
-  SystemWebAppManager::GetWebAppProvider(browser()->profile())
+  SystemWebAppManager::GetWebAppProvider(browser()->GetProfile())
       ->command_manager()
       .AwaitAllCommandsCompleteForTesting();
   EXPECT_EQ(apps::Readiness::kReady, GetAppReadiness(*settings_id));
@@ -1519,7 +1531,7 @@ IN_PROC_BROWSER_TEST_P(SystemWebAppManagerShortcutTest, ShortcutUrl) {
       GetManager()
           .GetAppIdForSystemApp(SystemWebAppType::SHORTCUT_CUSTOMIZATION)
           .value();
-  Browser* browser;
+  BrowserWindowInterface* browser = nullptr;
   content::WebContents* web_contents =
       LaunchApp(SystemWebAppType::SHORTCUT_CUSTOMIZATION, &browser);
   EXPECT_TRUE(web_contents);
@@ -1572,7 +1584,7 @@ class SystemWebAppManagerBackgroundTaskTest
 
   void WaitForSystemAppsBackgroundTasksStart() {
     base::RunLoop run_loop;
-    SystemWebAppManager::Get(browser()->profile())
+    SystemWebAppManager::Get(browser()->GetProfile())
         ->on_tasks_started()
         .Post(FROM_HERE, run_loop.QuitClosure());
 
@@ -1797,12 +1809,12 @@ IN_PROC_BROWSER_TEST_P(SystemWebAppAccessibilityTest,
   WaitForTestSystemAppInstall();
 
   // Launch the app so it shows up in shelf.
-  Browser* app_browser;
+  BrowserWindowInterface* app_browser = nullptr;
   gfx::NativeWindow app_window;
 
   chromevox_test_utils.sm()->Call([&]() {
     LaunchApp(GetAppType(), &app_browser);
-    app_window = app_browser->window()->GetNativeWindow();
+    app_window = app_browser->GetWindow()->GetNativeWindow();
     // F6 to switch pane.
     ui::test::EventGenerator generator(app_window->GetRootWindow(), app_window);
     generator.PressAndReleaseKey(ui::VKEY_F6, ui::EF_FINAL);
@@ -1837,7 +1849,7 @@ class SystemWebAppAbortsLaunchTest
 IN_PROC_BROWSER_TEST_P(SystemWebAppAbortsLaunchTest, LaunchAborted) {
   WaitForTestSystemAppInstall();
 
-  LaunchSystemWebAppAsync(browser()->profile(), GetAppType());
+  LaunchSystemWebAppAsync(browser()->GetProfile(), GetAppType());
 
   EXPECT_EQ(0U, GetSystemWebAppBrowserCount(GetAppType()));
 }
@@ -1865,7 +1877,7 @@ class SystemWebAppIconHealthMetricsTest
     WaitForTestSystemAppInstall();
 
     base::RunLoop run_loop;
-    SystemWebAppManager::Get(browser()->profile())
+    SystemWebAppManager::Get(browser()->GetProfile())
         ->on_icon_check_completed()
         .Post(FROM_HERE, run_loop.QuitClosure());
     run_loop.Run();
@@ -1877,7 +1889,7 @@ IN_PROC_BROWSER_TEST_P(SystemWebAppIconHealthMetricsTest, ReportsMetrics) {
 
   tester_.ExpectBucketCount(kIconsAreHealthyHistogramName, true, 1);
   // Given SWA install with no broken icon, pref should report no broken icons.
-  EXPECT_FALSE(browser()->profile()->GetPrefs()->GetBoolean(
+  EXPECT_FALSE(browser()->GetProfile()->GetPrefs()->GetBoolean(
       SystemWebAppManager::kSystemWebAppSessionHasBrokenIconsPrefName));
 }
 
@@ -1888,13 +1900,13 @@ IN_PROC_BROWSER_TEST_P(SystemWebAppIconHealthMetricsTest,
   // Given SWA install with no broken icon, pref should report no broken icons.
   CHECK_EQ(
       false,
-      browser()->profile()->GetPrefs()->GetBoolean(
+      browser()->GetProfile()->GetPrefs()->GetBoolean(
           SystemWebAppManager::kSystemWebAppSessionHasBrokenIconsPrefName));
 
   // Intentionally break icons by corrupting the on-disk icon file.
   auto app_id = GetManager().GetAppIdForSystemApp(GetAppType()).value();
   base::FilePath icon_path =
-      SystemWebAppManager::GetWebAppProvider(browser()->profile())
+      SystemWebAppManager::GetWebAppProvider(browser()->GetProfile())
           ->icon_manager()
           .GetIconFilePathForTesting(app_id, web_app::IconPurpose::ANY, 32);
   CHECK(!icon_path.empty());
@@ -1918,7 +1930,7 @@ IN_PROC_BROWSER_TEST_P(SystemWebAppIconHealthMetricsTest,
   // Icon check should update pref to report broken icons.
   CHECK_EQ(
       true,
-      browser()->profile()->GetPrefs()->GetBoolean(
+      browser()->GetProfile()->GetPrefs()->GetBoolean(
           SystemWebAppManager::kSystemWebAppSessionHasBrokenIconsPrefName));
 }
 

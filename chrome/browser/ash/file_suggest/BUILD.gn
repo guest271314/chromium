@@ -2,14 +2,10 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-import("//build/config/chromeos/ui_mode.gni")
-
 assert(is_chromeos)
 
 static_library("file_suggest") {
   sources = [
-    "drive_file_suggestion_provider.cc",
-    "drive_file_suggestion_provider.h",
     "drive_recent_file_suggestion_provider.cc",
     "drive_recent_file_suggestion_provider.h",
     "file_suggest_keyed_service.cc",
@@ -20,13 +16,9 @@ static_library("file_suggest") {
     "file_suggest_util.h",
     "file_suggestion_provider.cc",
     "file_suggestion_provider.h",
-    "item_suggest_cache.cc",
-    "item_suggest_cache.h",
     "local_file_suggestion_provider.cc",
     "local_file_suggestion_provider.h",
   ]
-
-  public_deps = [ "//chrome/browser:browser_public_dependencies" ]
 
   deps = [
     "//ash",
@@ -34,7 +26,6 @@ static_library("file_suggest") {
     "//ash/public/cpp",
     "//base",
     "//chrome/browser:browser_process",
-    "//chrome/browser:global_features",
     "//chrome/browser/ash/app_list",
     "//chrome/browser/ash/app_list/search/files",
     "//chrome/browser/ash/app_list/search/ranking",
@@ -43,15 +34,12 @@ static_library("file_suggest") {
     "//chrome/browser/ash/drive",
     "//chrome/browser/ash/file_manager",
     "//chrome/browser/profiles:profile",
-    "//chrome/browser/signin",
     "//chromeos/ash/components/drivefs",
     "//chromeos/ash/components/drivefs/mojom",
-    "//components/application_locale_storage",
     "//components/drive",
     "//components/google/core/common",
     "//components/prefs",
     "//content/public/browser",
-    "//services/data_decoder/public/cpp",
     "//storage/browser",
   ]
 
@@ -77,6 +65,7 @@ static_library("test_support") {
   deps = [
     ":file_suggest",
     "//base",
+    "//chrome/browser:browser_process",
     "//chrome/browser/profiles:profile",
     "//testing/gmock",
   ]
@@ -88,7 +77,6 @@ source_set("unit_tests") {
   sources = [
     "drive_recent_file_suggestion_provider_unittest.cc",
     "file_suggest_keyed_service_unittest.cc",
-    "item_suggest_cache_unittest.cc",
     "local_file_suggestion_provider_unittest.cc",
   ]
 
@@ -101,16 +89,15 @@ source_set("unit_tests") {
     "//chrome/browser/ash/drive:test_support",
     "//chrome/browser/ash/file_manager:test_support",
     "//chrome/browser/ash/login/users:test_support",
-    "//chrome/browser/ui",
     "//chrome/browser/ui/ash/holding_space:test_support",
     "//chrome/test:test_support",
+    "//chrome/test/base:testing_browser_process",
     "//chromeos/ash/components/disks:test_support",
     "//components/drive",
     "//components/prefs",
     "//components/sync_preferences:test_support",
     "//content/test:test_support",
     "//net",
-    "//services/data_decoder/public/cpp",
     "//services/network/public/cpp",
     "//services/network/public/mojom",
     "//testing/gmock",
@@ -132,7 +119,6 @@ source_set("browser_tests") {
     "//base/test:test_support",
     "//chrome/browser/ash/drive:test_support",
     "//chrome/browser/profiles:profile",
-    "//chrome/browser/ui",
     "//chromeos/ash/components/disks:test_support",
     "//chromeos/ash/components/drivefs",
     "//content/test:test_support",

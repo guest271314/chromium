@@ -5,6 +5,8 @@
 #ifndef CHROME_BROWSER_DEFAULT_BROWSER_SETTERS_DEFAULT_BROWSER_VISUAL_GUIDED_SETTER_H_
 #define CHROME_BROWSER_DEFAULT_BROWSER_SETTERS_DEFAULT_BROWSER_VISUAL_GUIDED_SETTER_H_
 
+#include <memory>
+
 #include "base/memory/raw_ref.h"
 #include "chrome/browser/default_browser/default_browser_setter.h"
 
@@ -27,10 +29,14 @@ class DefaultBrowserVisualGuidedSetter : public DefaultBrowserSetter {
 
   // DefaultBrowserSetter:
   DefaultBrowserSetterType GetType() const override;
-  void Execute(DefaultBrowserSetterCompletionCallback on_complete) override;
+  void Execute(DefaultBrowserSetterCompletionCallback on_complete,
+               const ExecuteParams& params) override;
 
  private:
+  class ExecutionRunner;
+
   const raw_ref<Profile> profile_;
+  std::unique_ptr<ExecutionRunner> runner_;
 };
 
 }  // namespace default_browser

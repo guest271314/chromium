@@ -82,11 +82,15 @@ bool ImageInputType::SupportsValidation() const {
 }
 
 static gfx::Point ExtractClickLocation(const Event& event) {
-  const auto* mouse_event = DynamicTo<MouseEvent>(event.UnderlyingEvent());
-  if (!event.UnderlyingEvent() || !mouse_event)
+  const MouseEvent* mouse_event = DynamicTo<MouseEvent>(event);
+  if ((!mouse_event ||
+       !RuntimeEnabledFeatures::CleanUpActivationBehaviorEnabled()) &&
+      event.UnderlyingEvent()) {
+    mouse_event = DynamicTo<MouseEvent>(event.UnderlyingEvent());
+  }
+  if (!mouse_event || !mouse_event->HasPosition()) {
     return gfx::Point();
-  if (!mouse_event->HasPosition())
-    return gfx::Point();
+  }
   return gfx::Point(mouse_event->offsetX(), mouse_event->offsetY());
 }
 
@@ -167,6 +171,9 @@ bool ImageInputType::ShouldRespectHeightAndWidthAttributes() {
 }
 
 unsigned ImageInputType::Height() const {
+  GetElement().GetDocument().UpdateStyleAndLayoutForNode(
+      &GetElement(), DocumentUpdateReason::kJavaScript);
+
   if (!GetElement().GetLayoutObject()) {
     // Check the attribute first for an explicit pixel value.
     unsigned height;
@@ -177,20 +184,20 @@ unsigned ImageInputType::Height() const {
     // If the image is available, use its height.
     HTMLImageLoader* image_loader = GetElement().ImageLoader();
     if (image_loader && image_loader->GetContent()) {
-      return image_loader->AccessNaturalSize().height();
+      return image_loader->DensityCorrectedNaturalSize(1).height();
     }
   }
 
-  GetElement().GetDocument().UpdateStyleAndLayoutForNode(
-      &GetElement(), DocumentUpdateReason::kJavaScript);
-
   LayoutBox* box = GetElement().GetLayoutBox();
-  return box ? AdjustForAbsoluteZoom::AdjustInt(box->ContentHeight().ToInt(),
-                                                box)
+  return box ? AdjustForAbsoluteZoom::AdjustInt(
+                   box->PhysicalContentBoxRect().Height().ToInt(), box)
              : 0;
 }
 
 unsigned ImageInputType::Width() const {
+  GetElement().GetDocument().UpdateStyleAndLayoutForNode(
+      &GetElement(), DocumentUpdateReason::kJavaScript);
+
   if (!GetElement().GetLayoutObject()) {
     // Check the attribute first for an explicit pixel value.
     unsigned width;
@@ -201,16 +208,13 @@ unsigned ImageInputType::Width() const {
     // If the image is available, use its width.
     HTMLImageLoader* image_loader = GetElement().ImageLoader();
     if (image_loader && image_loader->GetContent()) {
-      return image_loader->AccessNaturalSize().width();
+      return image_loader->DensityCorrectedNaturalSize(1).width();
     }
   }
 
-  GetElement().GetDocument().UpdateStyleAndLayoutForNode(
-      &GetElement(), DocumentUpdateReason::kJavaScript);
-
   LayoutBox* box = GetElement().GetLayoutBox();
-  return box ? AdjustForAbsoluteZoom::AdjustInt(box->ContentWidth().ToInt(),
-                                                box)
+  return box ? AdjustForAbsoluteZoom::AdjustInt(
+                   box->PhysicalContentBoxRect().Width().ToInt(), box)
              : 0;
 }
 

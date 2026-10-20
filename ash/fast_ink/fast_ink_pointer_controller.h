@@ -5,10 +5,11 @@
 #ifndef ASH_FAST_INK_FAST_INK_POINTER_CONTROLLER_H_
 #define ASH_FAST_INK_FAST_INK_POINTER_CONTROLLER_H_
 
+#include <memory>
+#include <optional>
 #include <set>
 
 #include "base/time/time.h"
-#include "ui/aura/window_tracker.h"
 #include "ui/events/event_handler.h"
 
 class PrefChangeRegistrar;
@@ -44,9 +45,6 @@ class FastInkPointerController : public ui::EventHandler {
   // the pointer.
   virtual void SetEnabled(bool enabled);
 
-  // Add window that should be excluded from handling events.
-  void AddExcludedWindow(aura::Window* window);
-
  protected:
   // Returns the pointer view.
   virtual views::View* GetPointerView() const = 0;
@@ -62,8 +60,9 @@ class FastInkPointerController : public ui::EventHandler {
   // Destroys the pointer view if it exists.
   virtual void DestroyPointerView();
 
-  // Whether the controller is ready to start handling a new gesture.
-  virtual bool CanStartNewGesture(ui::LocatedEvent* event);
+  // Resets the pointer view to its initial state when reused.
+  virtual void ResetPointerView();
+
   // Whether the event should be processed and stop propagation.
   // Default implementation will catch basic mouse events (e.g. mouse clicking)
   // and touch events (e.g. touch pressing) and stop them from being further
@@ -71,16 +70,23 @@ class FastInkPointerController : public ui::EventHandler {
   // not as expected. See b/191044469 as an example.
   virtual bool ShouldProcessEvent(ui::LocatedEvent* event);
 
+  // Whether `event` is over a region the pointer must stay out of, e.g. UI
+  // that controls the pointer itself. Events in such a region end any ongoing
+  // gesture and are never consumed, so that UI stays usable while the pointer
+  // is enabled. The default implementation excludes nothing.
+  virtual bool IsPointerInExcludedRegion(ui::LocatedEvent* event) const;
+
   bool IsEnabledForMouseEvent() const;
 
-  // Return true if the location of the event is in one of the excluded windows.
-  bool IsPointerInExcludedWindows(ui::LocatedEvent* event);
-
  private:
-  // Creates new pointer view if `can_start_new_gesture` is true. Otherwise, try
-  // to re-use existing one. Ends the current pointer session if the pointer
-  // widget is no longer valid. Returns true if there is a pointer view
-  // available.
+  // Whether the controller is ready to start handling a new gesture.
+  bool CanStartNewGesture(ui::LocatedEvent* event);
+
+  // When `can_start_new_gesture` is true, it creates a new view if one doesn't
+  // exist, or resets the state of the existing one to be reused for a new
+  // gesture. If `can_start_new_gesture` is false, it ends the session if the
+  // existing view is no longer valid.
+  // Returns true if a valid pointer view is available.
   bool MaybeCreatePointerView(ui::LocatedEvent* event,
                               bool can_start_new_gesture);
 
@@ -100,10 +106,6 @@ class FastInkPointerController : public ui::EventHandler {
 
   // Set of touch ids.
   std::set<int> touch_ids_;
-
-  // If the pointer event is in the bound of any of the |excluded_windows_|.
-  // Skip processing the event.
-  aura::WindowTracker excluded_windows_;
 
   std::unique_ptr<PrefChangeRegistrar> pref_change_registrar_local_;
 };

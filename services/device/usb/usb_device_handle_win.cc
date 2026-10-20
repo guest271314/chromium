@@ -40,6 +40,12 @@
 
 namespace device {
 
+base::win::ScopedHandle CreateUsbRequestEvent() {
+  // Use a manual-reset event for overlapped I/O. Each request owns a fresh
+  // event, so it never needs to be reset for reuse.
+  return base::win::ScopedHandle(CreateEvent(nullptr, true, false, nullptr));
+}
+
 using mojom::UsbControlTransferRecipient;
 using mojom::UsbControlTransferType;
 using mojom::UsbTransferDirection;
@@ -48,6 +54,10 @@ using mojom::UsbTransferStatus;
 namespace {
 
 const std::wstring_view kWinUsbDriverName = L"winusb";
+
+// Bits 6:5 of the bmRequestType byte in the USB specification define the
+// request type: 0=Standard, 1=Class, 2=Vendor, 3=Reserved.
+constexpr uint8_t kBmRequestReserved = 3;
 
 uint8_t BuildRequestFlags(UsbTransferDirection direction,
                           UsbControlTransferType request_type,
@@ -74,7 +84,8 @@ uint8_t BuildRequestFlags(UsbTransferDirection direction,
       flags |= BMREQUEST_VENDOR << 5;
       break;
     case UsbControlTransferType::RESERVED:
-      flags |= 4 << 5;  // Not defined by usbspec.h.
+      flags |= kBmRequestReserved
+               << 5;  // USB Spec reserved type (0x60 on the wire).
       break;
   }
 
@@ -143,7 +154,7 @@ class UsbDeviceHandleWin::Request : public base::win::ObjectWatcher::Delegate {
       : handle_(handle),
         interface_number_(interface_number),
         overlapped_{},
-        event_(CreateEvent(nullptr, false, false, nullptr)) {
+        event_(CreateUsbRequestEvent()) {
     overlapped_.hEvent = event_.Get();
   }
 
@@ -199,9 +210,11 @@ class UsbDeviceHandleWin::Request : public base::win::ObjectWatcher::Delegate {
       return;
     }
 
+    // The operation completed synchronously, or ObjectWatcher observed its
+    // completion event, so no further wait is needed to retrieve the result.
     DWORD size;
-    BOOL result =
-        WinUsb_GetOverlappedResult(handle_, &overlapped_, &size, true);
+    BOOL result = WinUsb_GetOverlappedResult(handle_, &overlapped_, &size,
+                                             /*bWait=*/false);
     DWORD last_error = GetLastError();
 
     // Request holds a reference to the buffer to ensure the kernel has a valid

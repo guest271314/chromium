@@ -85,28 +85,6 @@ dictionary Certificate {
   ArrayBuffer encodedCertificate;
 };
 
-// Captures the type of event so it can be associated with user or device in
-// Chrome for reporting purposes
-enum EventType {
-  "DEVICE",
-  "USER"
-};
-
-// Composite object that captures the information we need to report events.
-// Some fields like the record and priority are serialized to avoid any
-// dependency on proto definitions here, given the fact that they will likely
-// change in the future. These will be deserialized and validated in Chrome.
-dictionary EnqueueRecordRequest {
-  // Serialized record data binary based on the proto definition in
-  // //components/reporting/proto/synced/record.proto.
-  required Uint8Array recordData;
-  // Serialized priority based on the proto definition in
-  // //components/reporting/proto/synced/record_constants.proto. Used to
-  // determine which records are shed first.
-  required long priority;
-  required EventType eventType;
-};
-
 // Context object containing the content-area user's ID for whom the signals
 // collection request is for. This will be used to identify the organization
 // in which the user is, and can then be used to determine their affiliation
@@ -307,6 +285,23 @@ dictionary DataMaskingEvent {
   required sequence<TriggeredRuleInfo> triggeredRuleInfo;
 };
 
+// Event outcome status reported by the extension after handling Force Save to
+// Cloud event.
+enum ForceSaveToCloudEventType {
+  "savedToCloud"
+};
+
+// Event representing that a Force Save to Cloud operation was handled
+// by an enterprise companion extension.
+dictionary ForceSaveToCloudEvent {
+  // The unique identifier for the download operation matching chrome.downloads
+  // ID.
+  required DOMString downloadId;
+
+  // The event type.
+  required ForceSaveToCloudEventType event;
+};
+
 dictionary DataMaskingRules {
   // The URL being navigated to that triggered the rules.
   required DOMString url;
@@ -383,13 +378,6 @@ interface ReportingPrivate {
   // |PromiseValue|: certificate
   static Promise<Certificate> getCertificate(DOMString url);
 
-  // Enqueues a record for upload to the reporting service
-  // |request|: Composite object that captures everything we need for uploading
-  // records.
-  // |Returns|: Callback that is triggered upon completion
-  [platforms=("chromeos")]
-  static Promise<undefined> enqueueRecord(EnqueueRecordRequest request);
-
   // Gets information about file system resources, specified by the contents
   // of <code>request</code>, on the current device. <code>request</code> must
   // hold a user context to be used to verify the affiliation between the
@@ -440,6 +428,11 @@ interface ReportingPrivate {
   // upload is finished. Also Invoked by <code>setDeviceData</code> when data is
   // stored.
   static Promise<undefined> reportDataMaskingEvent(DataMaskingEvent event);
+
+  // Reports that a Force Save to Cloud download operation has been handled
+  // by the enterprise extension.
+  static Promise<undefined> reportForceSaveToCloudEventHandled(
+      ForceSaveToCloudEvent event);
 
   static attribute OnDataMaskingRulesTriggeredEvent onDataMaskingRulesTriggered;
 };

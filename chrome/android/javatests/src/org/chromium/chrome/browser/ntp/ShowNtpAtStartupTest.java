@@ -12,10 +12,9 @@ import static com.google.common.truth.Truth.assertThat;
 import static org.hamcrest.Matchers.allOf;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertTrue;
-import static org.junit.Assume.assumeTrue;
 
+import static org.chromium.base.test.transit.ViewElement.displayingAtLeastOption;
 import static org.chromium.base.test.transit.ViewFinder.waitForView;
 import static org.chromium.chrome.browser.flags.ChromeFeatureList.NEW_TAB_PAGE_CUSTOMIZATION_V2;
 import static org.chromium.chrome.browser.ntp.HomeSurfaceTestUtils.START_SURFACE_RETURN_TIME_IMMEDIATE;
@@ -23,20 +22,19 @@ import static org.chromium.chrome.browser.tasks.ReturnToChromeUtil.HOME_SURFACE_
 import static org.chromium.chrome.browser.tasks.ReturnToChromeUtil.HOME_SURFACE_SHOWN_UMA;
 import static org.chromium.chrome.browser.url_constants.UrlConstantResolver.getOriginalNativeNtpUrl;
 
-import android.content.pm.ActivityInfo;
+import android.content.res.Configuration;
 import android.content.res.Resources;
 import android.graphics.Bitmap;
 import android.graphics.Bitmap.Config;
-import android.os.Build;
 import android.text.TextUtils;
 import android.view.View;
 import android.view.ViewGroup.MarginLayoutParams;
 
-import androidx.annotation.RequiresApi;
 import androidx.test.filters.LargeTest;
 import androidx.test.filters.MediumTest;
 
 import org.hamcrest.Matchers;
+import org.junit.After;
 import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Rule;
@@ -49,8 +47,6 @@ import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.Criteria;
 import org.chromium.base.test.util.CriteriaHelper;
-import org.chromium.base.test.util.CriteriaNotSatisfiedException;
-import org.chromium.base.test.util.DisableIf;
 import org.chromium.base.test.util.DisabledTest;
 import org.chromium.base.test.util.DoNotBatch;
 import org.chromium.base.test.util.Feature;
@@ -66,14 +62,9 @@ import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.incognito.IncognitoUtils;
 import org.chromium.chrome.browser.layouts.LayoutTestUtils;
 import org.chromium.chrome.browser.layouts.LayoutType;
-import org.chromium.chrome.browser.logo.LegacyLogoView;
 import org.chromium.chrome.browser.logo.LogoBridge.Logo;
 import org.chromium.chrome.browser.logo.LogoContainerView;
 import org.chromium.chrome.browser.logo.LogoUtils;
-import org.chromium.chrome.browser.ntp_customization.NtpCustomizationConfigManager;
-import org.chromium.chrome.browser.ntp_customization.NtpCustomizationUtils;
-import org.chromium.chrome.browser.ntp_customization.NtpCustomizationUtils.NtpBackgroundType;
-import org.chromium.chrome.browser.ntp_customization.theme.chrome_colors.NtpThemeColorInfo;
 import org.chromium.chrome.browser.setup_list.SetupListManager;
 import org.chromium.chrome.browser.suggestions.tile.TilesLinearLayout;
 import org.chromium.chrome.browser.tab.Tab;
@@ -81,15 +72,14 @@ import org.chromium.chrome.browser.tabmodel.TabClosureParams;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.chrome.test.transit.ChromeTransitTestRules;
 import org.chromium.chrome.test.transit.FreshCtaTransitTestRule;
+import org.chromium.chrome.test.util.ActivityTestUtils;
 import org.chromium.chrome.test.util.ChromeRenderTestRule;
 import org.chromium.chrome.test.util.NewTabPageTestUtils;
 import org.chromium.components.embedder_support.util.UrlUtilities;
 import org.chromium.components.signin.SigninFeatures;
-import org.chromium.content_public.browser.test.util.JavaScriptUtils;
 import org.chromium.ui.base.DeviceFormFactor;
 
 import java.io.IOException;
-import java.util.concurrent.TimeoutException;
 
 /** Integration tests of showing a NTP with Start surface UI at startup. */
 @RunWith(ChromeJUnit4ClassRunner.class)
@@ -99,7 +89,7 @@ import java.util.concurrent.TimeoutException;
 @CommandLineFlags.Add(ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE)
 @DoNotBatch(reason = "This test suite tests startup behaviors.")
 public class ShowNtpAtStartupTest {
-    private static final int RENDER_TEST_REVISION = 1;
+    private static final int RENDER_TEST_REVISION = 2;
 
     @Rule
     public FreshCtaTransitTestRule mActivityTestRule =
@@ -114,6 +104,7 @@ public class ShowNtpAtStartupTest {
 
     private static final String TAB_URL = "https://foo.com/";
     private static final String TAB_URL_1 = "https://bar.com/";
+    private static final int MIN_DISPLAYED_PERCENTAGE = 10;
 
     @Before
     public void setUp() {
@@ -124,6 +115,13 @@ public class ShowNtpAtStartupTest {
         EducationalTipModuleUtils.setEducationalTipActiveForTesting(false);
         // TODO(https://crbug.com/454091341): Enable incognito mode on this test suite.
         IncognitoUtils.setEnabledForTesting(false);
+    }
+
+    @After
+    public void tearDown() {
+        if (mActivityTestRule.getActivity() != null) {
+            ActivityTestUtils.clearActivityOrientation(mActivityTestRule.getActivity());
+        }
     }
 
     @Test
@@ -288,8 +286,10 @@ public class ShowNtpAtStartupTest {
         Assert.assertTrue(ntp.isMagicStackVisibleForTesting());
 
         waitForView(
+                View.class,
                 cta,
-                allOf(withId(R.id.tab_thumbnail), isDescendantOfA(withId(R.id.single_tab_view))));
+                allOf(withId(R.id.tab_thumbnail), isDescendantOfA(withId(R.id.single_tab_view))),
+                displayingAtLeastOption(MIN_DISPLAYED_PERCENTAGE));
     }
 
     @Test
@@ -310,47 +310,30 @@ public class ShowNtpAtStartupTest {
 
         waitForView(cta, withId(R.id.home_modules_recycler_view));
         waitForView(
+                View.class,
                 cta,
-                allOf(withId(R.id.tab_thumbnail), isDescendantOfA(withId(R.id.single_tab_view))));
+                allOf(withId(R.id.tab_thumbnail), isDescendantOfA(withId(R.id.single_tab_view))),
+                displayingAtLeastOption(MIN_DISPLAYED_PERCENTAGE));
     }
 
     @Test
     @MediumTest
     @Feature({"StartSurface"})
-    @EnableFeatures({ChromeFeatureList.LOGO_VIEW_REFACTOR})
-    public void testNtpLogoSize_logoViewRefactorFlagEnabled() {
+    public void testNtpLogoSize() {
         mActivityTestRule.startOnNtp();
         Resources res = mActivityTestRule.getActivity().getResources();
         int expectedLogoHeight = res.getDimensionPixelSize(R.dimen.ntp_logo_height);
-        int expectedTopMargin = res.getDimensionPixelSize(R.dimen.ntp_logo_margin_top);
+        int expectedTopMargin = LogoUtils.getTopMarginForLogo(res);
         int expectedBottomMargin = res.getDimensionPixelSize(R.dimen.ntp_logo_margin_bottom);
 
         // Verifies the logo size is decreased, and top bottom margins are updated.
-        testLogoSizeImpl_logoViewRefactorEnabled(
-                expectedLogoHeight, expectedTopMargin, expectedBottomMargin);
+        testLogoSizeImpl(expectedLogoHeight, expectedTopMargin, expectedBottomMargin);
     }
 
     @Test
     @MediumTest
     @Feature({"StartSurface"})
-    @DisableFeatures({ChromeFeatureList.LOGO_VIEW_REFACTOR})
-    public void testNtpLogoSize_logoViewRefactorFlagDisabled() {
-        mActivityTestRule.startOnNtp();
-        Resources res = mActivityTestRule.getActivity().getResources();
-        int expectedLogoHeight = res.getDimensionPixelSize(R.dimen.ntp_logo_height);
-        int expectedTopMargin = res.getDimensionPixelSize(R.dimen.ntp_logo_margin_top);
-        int expectedBottomMargin = res.getDimensionPixelSize(R.dimen.ntp_logo_margin_bottom);
-
-        // Verifies the logo size is decreased, and top bottom margins are updated.
-        testLogoSizeImpl_logoViewRefactorDisabled(
-                expectedLogoHeight, expectedTopMargin, expectedBottomMargin);
-    }
-
-    @Test
-    @MediumTest
-    @Feature({"StartSurface"})
-    @EnableFeatures({ChromeFeatureList.LOGO_VIEW_REFACTOR})
-    public void testNtpDoodleSize_logoViewRefactorFlagEnabled() {
+    public void testNtpDoodleSize() {
         mActivityTestRule.startOnNtp();
 
         ChromeTabbedActivity cta = mActivityTestRule.getActivity();
@@ -362,7 +345,17 @@ public class ShowNtpAtStartupTest {
                             (LogoContainerView)
                                     ntp.getView().findViewById(R.id.logo_container_view);
                     Logo logo =
-                            new Logo(Bitmap.createBitmap(1, 1, Config.ALPHA_8), null, null, null);
+                            new Logo(
+                                    /* image= */ Bitmap.createBitmap(1, 1, Config.ALPHA_8),
+                                    /* darkImage= */ Bitmap.createBitmap(1, 1, Config.ARGB_8888),
+                                    /* onClickUrl= */ null,
+                                    /* altText= */ null,
+                                    /* animatedLogoUrl= */ null,
+                                    /* darkAnimatedLogoUrl= */ null,
+                                    /* logUrl= */ null,
+                                    /* darkLogUrl= */ null,
+                                    /* ctaLogUrl= */ null,
+                                    /* darkCtaLogUrl= */ null);
                     logoView.updateLogo(logo);
                     logoView.endAnimationsForTesting();
 
@@ -377,42 +370,7 @@ public class ShowNtpAtStartupTest {
         int expectedBottomMargin = expectedValues[2];
 
         // Verifies the logo size is decreased, and top bottom margins are updated.
-        testLogoSizeImpl_logoViewRefactorEnabled(
-                expectedLogoHeight, expectedTopMargin, expectedBottomMargin);
-    }
-
-    @Test
-    @MediumTest
-    @Feature({"StartSurface"})
-    @DisableFeatures({ChromeFeatureList.LOGO_VIEW_REFACTOR})
-    public void testNtpDoodleSize_logoViewRefactorFlagDisabled() {
-        mActivityTestRule.startOnNtp();
-
-        ChromeTabbedActivity cta = mActivityTestRule.getActivity();
-        NewTabPage ntp = (NewTabPage) mActivityTestRule.getActivityTab().getNativePage();
-        final int[] expectedValues = new int[3];
-        ThreadUtils.runOnUiThreadBlocking(
-                () -> {
-                    LegacyLogoView logoView =
-                            (LegacyLogoView) ntp.getView().findViewById(R.id.search_provider_logo);
-                    Logo logo =
-                            new Logo(Bitmap.createBitmap(1, 1, Config.ALPHA_8), null, null, null);
-                    logoView.updateLogo(logo);
-                    logoView.endAnimationsForTesting();
-
-                    Resources res = cta.getResources();
-                    expectedValues[0] = LogoUtils.getDoodleHeight(res);
-                    expectedValues[1] = LogoUtils.getTopMarginForDoodle(res);
-                    expectedValues[2] = res.getDimensionPixelSize(R.dimen.ntp_logo_margin_bottom);
-                });
-
-        int expectedLogoHeight = expectedValues[0];
-        int expectedTopMargin = expectedValues[1];
-        int expectedBottomMargin = expectedValues[2];
-
-        // Verifies the logo size is decreased, and top bottom margins are updated.
-        testLogoSizeImpl_logoViewRefactorDisabled(
-                expectedLogoHeight, expectedTopMargin, expectedBottomMargin);
+        testLogoSizeImpl(expectedLogoHeight, expectedTopMargin, expectedBottomMargin);
     }
 
     @Test
@@ -459,7 +417,7 @@ public class ShowNtpAtStartupTest {
         verifyTabCountAndActiveTabUrl(cta, 1, TAB_URL, /* expectHomeSurfaceUiShown= */ null);
     }
 
-    private void testLogoSizeImpl_logoViewRefactorEnabled(
+    private void testLogoSizeImpl(
             int expectedLogoHeight, int expectedTopMargin, int expectedBottomMargin) {
         ChromeTabbedActivity cta = mActivityTestRule.getActivity();
         HomeSurfaceTestUtils.waitForTabModel(cta);
@@ -476,22 +434,6 @@ public class ShowNtpAtStartupTest {
         Assert.assertEquals(expectedLogoHeight, logoViewLayoutParams.height);
         Assert.assertEquals(expectedTopMargin, logoViewLayoutParams.topMargin);
         Assert.assertEquals(expectedBottomMargin, logoContainerLayoutParams.bottomMargin);
-    }
-
-    private void testLogoSizeImpl_logoViewRefactorDisabled(
-            int expectedLogoHeight, int expectedTopMargin, int expectedBottomMargin) {
-        ChromeTabbedActivity cta = mActivityTestRule.getActivity();
-        HomeSurfaceTestUtils.waitForTabModel(cta);
-        waitForNtpLoaded(mActivityTestRule.getActivityTab());
-
-        NewTabPage ntp = (NewTabPage) mActivityTestRule.getActivityTab().getNativePage();
-        View logoView = ntp.getView().findViewById(R.id.search_provider_logo);
-
-        // Verifies the logo size and margins.
-        MarginLayoutParams marginLayoutParams = (MarginLayoutParams) logoView.getLayoutParams();
-        Assert.assertEquals(expectedLogoHeight, marginLayoutParams.height);
-        Assert.assertEquals(expectedTopMargin, marginLayoutParams.topMargin);
-        Assert.assertEquals(expectedBottomMargin, marginLayoutParams.bottomMargin);
     }
 
     /**
@@ -528,7 +470,7 @@ public class ShowNtpAtStartupTest {
 
         ThreadUtils.runOnUiThreadBlocking(
                 () -> cta.findViewById(R.id.tab_switcher_button).performClick());
-        LayoutTestUtils.waitForLayout(cta.getLayoutManager(), LayoutType.TAB_SWITCHER);
+        LayoutTestUtils.waitForLayout(cta.getLayoutManager(), LayoutType.HUB);
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
                     cta.getTabModelSelector()
@@ -548,14 +490,18 @@ public class ShowNtpAtStartupTest {
         ThreadUtils.runOnUiThreadBlocking(() -> cta.onBackPressed());
         NewTabPageTestUtils.waitForNtpLoaded(ntpTab);
         ThreadUtils.runOnUiThreadBlocking(
-                () -> cta.getLayoutManager().showLayout(LayoutType.TAB_SWITCHER, false));
-        LayoutTestUtils.waitForLayout(cta.getLayoutManager(), LayoutType.TAB_SWITCHER);
+                () -> cta.getLayoutManager().showLayout(LayoutType.HUB, false));
+        LayoutTestUtils.waitForLayout(cta.getLayoutManager(), LayoutType.HUB);
         ThreadUtils.runOnUiThreadBlocking(() -> cta.onBackPressed());
         NewTabPageTestUtils.waitForNtpLoaded(ntpTab);
         assertFalse(
                 "There is no extra snapshot for the NTP to cache the change "
                         + "of the single tab card.",
                 ntp.getSnapshotSingleTabCardChangedForTesting());
+    }
+
+    private View getNtpLayout() {
+        return ((NewTabPage) mActivityTestRule.getActivityTab().getNativePage()).getLayout();
     }
 
     @Test
@@ -570,58 +516,48 @@ public class ShowNtpAtStartupTest {
 
         waitForNtpLoaded(mActivityTestRule.getActivityTab());
 
-        NewTabPage ntp = (NewTabPage) mActivityTestRule.getActivityTab().getNativePage();
-        View ntpLayout = ntp.getLayout();
-        View searchBoxLayout = ntpLayout.findViewById(R.id.search_box);
+        View searchBoxLayout = getNtpLayout().findViewById(R.id.search_box);
 
         // Orientation changes are not supported on automotive.
         if (DeviceInfo.isAutomotive()) {
-            mRenderTestRule.render(searchBoxLayout, "ntp_search_box_automotive");
+            mRenderTestRule.render(searchBoxLayout, "ntp_search_box_automotive_v2");
             return;
         }
 
         // Start off in landscape screen orientation.
-        mActivityTestRule
-                .getActivity()
-                .setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE);
-        waitForScreenOrientation("\"landscape\"");
-        mRenderTestRule.render(searchBoxLayout, "ntp_search_box_landscape");
+        ActivityTestUtils.rotateActivityToOrientation(
+                mActivityTestRule.getActivity(), Configuration.ORIENTATION_LANDSCAPE);
 
-        // Start off in portrait screen orientation.
-        mActivityTestRule
-                .getActivity()
-                .setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_PORTRAIT);
-        waitForScreenOrientation("\"portrait\"");
-        // Verifies there is additional margins added for the fake search box.
-        mRenderTestRule.render(searchBoxLayout, "ntp_search_box_portrait");
+        // Re-fetch view to avoid potential staleness after orientation change.
+        mRenderTestRule.render(
+                getNtpLayout().findViewById(R.id.search_box), "ntp_search_box_landscape_v4");
+
+        // Switch to portrait screen orientation.
+        ActivityTestUtils.rotateActivityToOrientation(
+                mActivityTestRule.getActivity(), Configuration.ORIENTATION_PORTRAIT);
+
+        // Re-fetch view to avoid potential staleness after orientation change.
+        mRenderTestRule.render(
+                getNtpLayout().findViewById(R.id.search_box), "ntp_search_box_portrait_v4");
     }
 
     @Test
     @MediumTest
     @Feature({"StartSurface"})
     @Restriction(DeviceFormFactor.TABLET_OR_DESKTOP)
-    @DisableIf.Device(DeviceFormFactor.DESKTOP) // https://crbug.com/442027285
     public void testFakeSearchBoxWidth() {
         mActivityTestRule.startOnNtp();
         ChromeTabbedActivity cta = mActivityTestRule.getActivity();
         HomeSurfaceTestUtils.waitForTabModel(cta);
         waitForNtpLoaded(mActivityTestRule.getActivityTab());
 
-        NewTabPage ntp = (NewTabPage) mActivityTestRule.getActivityTab().getNativePage();
-
-        Resources res = cta.getResources();
-        int expectedTwoSideMargin =
-                2 * res.getDimensionPixelSize(R.dimen.ntp_search_box_lateral_margin_tablet);
-
-        // Verifies there is additional margin added for the fake search box.
-        verifyFakeSearchBoxWidth(expectedTwoSideMargin, expectedTwoSideMargin, ntp);
+        verifyFakeSearchBoxWidth();
     }
 
     @Test
     @MediumTest
     @Feature({"StartSurface"})
     @Restriction(DeviceFormFactor.TABLET_OR_DESKTOP)
-    @DisableIf.Device(DeviceFormFactor.DESKTOP) // https://crbug.com/442027285
     @EnableFeatures(START_SURFACE_RETURN_TIME_IMMEDIATE)
     public void testMvtLayoutHorizontalMargin() {
         mActivityTestRule.startOnNtp();
@@ -629,20 +565,7 @@ public class ShowNtpAtStartupTest {
         HomeSurfaceTestUtils.waitForTabModel(cta);
         waitForNtpLoaded(mActivityTestRule.getActivityTab());
 
-        NewTabPage ntp = (NewTabPage) mActivityTestRule.getActivityTab().getNativePage();
-
-        Resources res = cta.getResources();
-        int expectedContainerTwoSideMargin = 0;
-        int expectedMvtLayoutEdgeMargin =
-                res.getDimensionPixelSize(R.dimen.tile_view_padding_edge_tablet);
-        int expectedMvtLayoutIntervalMargin =
-                res.getDimensionPixelSize(R.dimen.tile_view_padding_interval_tablet);
-
-        verifyMostVisitedTileMargin(
-                expectedContainerTwoSideMargin,
-                expectedMvtLayoutEdgeMargin,
-                expectedMvtLayoutIntervalMargin,
-                ntp);
+        verifyMostVisitedTileMargin();
     }
 
     @Test
@@ -651,7 +574,10 @@ public class ShowNtpAtStartupTest {
     @Restriction(DeviceFormFactor.PHONE)
     @EnableFeatures({START_SURFACE_RETURN_TIME_IMMEDIATE, NEW_TAB_PAGE_CUSTOMIZATION_V2})
     // TODO(crbug.com/475816843): Remove this and update goldens once migration is complete.
-    @DisableFeatures({SigninFeatures.SIGNIN_LEVEL_UP_BUTTON})
+    @DisableFeatures({
+        SigninFeatures.SIGNIN_LEVEL_UP_BUTTON,
+        SigninFeatures.ENABLE_AI_SUBSCRIPTION_AVATAR_RING
+    })
     public void testToolbar_defaultBackground() throws IOException {
         mActivityTestRule.startFromLauncherAtNtp();
         ChromeTabbedActivity cta = mActivityTestRule.getActivity();
@@ -662,45 +588,6 @@ public class ShowNtpAtStartupTest {
         View toolbar = mActivityTestRule.getActivity().findViewById(R.id.toolbar);
         assertEquals(0, toolbar.getPaddingTop());
         mRenderTestRule.render(toolbar, "ntp_toolbar_default_background");
-    }
-
-    @Test
-    @MediumTest
-    @Feature({"StartSurface", "RenderTest"})
-    @RequiresApi(Build.VERSION_CODES.R)
-    @Restriction(DeviceFormFactor.PHONE)
-    @EnableFeatures({START_SURFACE_RETURN_TIME_IMMEDIATE, NEW_TAB_PAGE_CUSTOMIZATION_V2})
-    // TODO(crbug.com/475816843): Remove this and update goldens once migration is complete.
-    @DisableFeatures({SigninFeatures.SIGNIN_LEVEL_UP_BUTTON})
-    public void testToolbar_customizedColorBackground() throws IOException {
-        assumeTrue(
-                NtpCustomizationUtils.canEnableEdgeToEdgeForCustomizedTheme(/* isTablet= */ false));
-
-        NtpCustomizationUtils.setNtpBackgroundTypeToSharedPreference(
-                NtpBackgroundType.CHROME_COLOR);
-        NtpCustomizationUtils.setNtpThemeColorIdToSharedPreference(
-                NtpThemeColorInfo.NtpThemeColorId.NTP_COLORS_VIOLET);
-        ThreadUtils.runOnUiThreadBlocking(
-                () -> {
-                    assertEquals(
-                            NtpBackgroundType.CHROME_COLOR,
-                            NtpCustomizationConfigManager.getInstance().getBackgroundType());
-                });
-
-        mActivityTestRule.startFromLauncherAtNtp();
-        ChromeTabbedActivity cta = mActivityTestRule.getActivity();
-        HomeSurfaceTestUtils.waitForTabModel(cta);
-        waitForNtpLoaded(mActivityTestRule.getActivityTab());
-
-        View toolbar = mActivityTestRule.getActivity().findViewById(R.id.toolbar);
-        assertNotEquals(0, toolbar.getPaddingTop());
-        mRenderTestRule.render(toolbar, "ntp_toolbar_customized_background_color");
-
-        NtpCustomizationUtils.resetSharedPreferenceForTesting();
-        ThreadUtils.runOnUiThreadBlocking(
-                () -> {
-                    NtpCustomizationConfigManager.getInstance().resetForTesting();
-                });
     }
 
     /**
@@ -782,144 +669,123 @@ public class ShowNtpAtStartupTest {
                 });
     }
 
-    private void verifyFakeSearchBoxWidth(
-            int expectedLandScapeWidth, int expectedPortraitWidth, NewTabPage ntp) {
-        View ntpLayout = ntp.getLayout();
-        View searchBoxLayout = ntpLayout.findViewById(R.id.search_box);
-
+    private void verifyFakeSearchBoxWidth() {
         // Orientation changes are not supported on automotive.
         if (DeviceInfo.isAutomotive()) {
-            verifyFakeSearchBoxWidthForCurrentOrientation(
-                    expectedLandScapeWidth, expectedPortraitWidth, ntpLayout, searchBoxLayout);
+            verifyFakeSearchBoxWidthForCurrentOrientation();
             return;
         }
 
         // Start off in landscape screen orientation.
-        mActivityTestRule
-                .getActivity()
-                .setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE);
-        waitForScreenOrientation("\"landscape\"");
-        // Verifies there is additional margins added for the fake search box.
-        Assert.assertEquals(
-                expectedLandScapeWidth, ntpLayout.getWidth() - searchBoxLayout.getWidth());
+        ActivityTestUtils.rotateActivityToOrientation(
+                mActivityTestRule.getActivity(), Configuration.ORIENTATION_LANDSCAPE);
+        verifyFakeSearchBoxWidthForCurrentOrientation();
 
-        // Start off in portrait screen orientation.
-        mActivityTestRule
-                .getActivity()
-                .setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_PORTRAIT);
-        waitForScreenOrientation("\"portrait\"");
-        // Verifies there is additional margins added for the fake search box.
-        Assert.assertEquals(
-                expectedPortraitWidth, ntpLayout.getWidth() - searchBoxLayout.getWidth());
+        // Switch to portrait screen orientation.
+        ActivityTestUtils.rotateActivityToOrientation(
+                mActivityTestRule.getActivity(), Configuration.ORIENTATION_PORTRAIT);
+        verifyFakeSearchBoxWidthForCurrentOrientation();
     }
 
-    private void verifyFakeSearchBoxWidthForCurrentOrientation(
-            int expectedLandScapeWidth,
-            int expectedPortraitWidth,
-            View ntpLayout,
-            View searchBoxLayout) {
-        int expectedWidth;
-        try {
-            String orientation = screenOrientation();
-            if ("\"landscape\"".equals(orientation)) {
-                expectedWidth = expectedLandScapeWidth;
-            } else if ("\"portrait\"".equals(orientation)) {
-                expectedWidth = expectedPortraitWidth;
-            } else {
-                throw new IllegalStateException(
-                        "The device should either be in portrait or landscape mode.");
-            }
-        } catch (TimeoutException ex) {
-            throw new CriteriaNotSatisfiedException(ex);
-        }
-
-        Assert.assertEquals(expectedWidth, ntpLayout.getWidth() - searchBoxLayout.getWidth());
+    private int calculateExpectedWidthSlack(int currentWidth, Resources res) {
+        int contentTwoSideMarginConstant =
+                2 * res.getDimensionPixelSize(R.dimen.ntp_search_box_lateral_margin_tablet);
+        int maxContentWidth = res.getDimensionPixelSize(R.dimen.ntp_search_box_max_width);
+        return Math.max(contentTwoSideMarginConstant, currentWidth - maxContentWidth);
     }
 
-    private void verifyMostVisitedTileMargin(
-            int expectedContainerWidth,
-            int expectedEdgeMargin,
-            int expectedIntervalMargin,
-            NewTabPage ntp) {
-        View ntpLayout = ntp.getLayout();
-        View mvtContainer = ntpLayout.findViewById(R.id.mv_tiles_container);
-        TilesLinearLayout mvTilesLayout = ntpLayout.findViewById(R.id.mv_tiles_layout);
-        int mvt1LeftMargin =
-                ((MarginLayoutParams) mvTilesLayout.getTileAt(0).getLayoutParams()).leftMargin;
-        int mvt2LeftMargin =
-                ((MarginLayoutParams) mvTilesLayout.getTileAt(1).getLayoutParams()).leftMargin;
-
-        // Orientation changes are not supported on automotive.
-        if (DeviceInfo.isAutomotive()) {
-            verifyTileMargin(
-                    expectedContainerWidth,
-                    expectedEdgeMargin,
-                    expectedIntervalMargin,
-                    ntpLayout,
-                    mvtContainer,
-                    mvt1LeftMargin,
-                    mvt2LeftMargin);
-            return;
-        }
-
-        // Start off in landscape screen orientation.
-        mActivityTestRule
-                .getActivity()
-                .setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE);
-        waitForScreenOrientation("\"landscape\"");
-        verifyTileMargin(
-                expectedContainerWidth,
-                expectedEdgeMargin,
-                expectedIntervalMargin,
-                ntpLayout,
-                mvtContainer,
-                mvt1LeftMargin,
-                mvt2LeftMargin);
-
-        // Start off in portrait screen orientation.
-        mActivityTestRule
-                .getActivity()
-                .setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_PORTRAIT);
-        waitForScreenOrientation("\"portrait\"");
-        verifyTileMargin(
-                expectedContainerWidth,
-                expectedEdgeMargin,
-                expectedIntervalMargin,
-                ntpLayout,
-                mvtContainer,
-                mvt1LeftMargin,
-                mvt2LeftMargin);
-    }
-
-    private void verifyTileMargin(
-            int expectedContainerWidth,
-            int expectedEdgeMargin,
-            int expectedIntervalMargin,
-            View ntpLayout,
-            View mvtContainer,
-            int mvt1LeftMargin,
-            int mvt2LeftMargin) {
-        // Verifies there is no additional margins added for the mv tiles container.
-        Assert.assertEquals(expectedContainerWidth, ntpLayout.getWidth() - mvtContainer.getWidth());
-        // Verifies the inner margins of the mv tiles module.
-        assertTrue(mvt1LeftMargin >= expectedEdgeMargin);
-        Assert.assertEquals(expectedIntervalMargin, mvt2LeftMargin);
-    }
-
-    private void waitForScreenOrientation(String orientationValue) {
-        CriteriaHelper.pollInstrumentationThread(
+    private void verifyFakeSearchBoxWidthForCurrentOrientation() {
+        CriteriaHelper.pollUiThread(
                 () -> {
-                    try {
-                        Criteria.checkThat(screenOrientation(), Matchers.is(orientationValue));
-                    } catch (TimeoutException ex) {
-                        throw new CriteriaNotSatisfiedException(ex);
-                    }
+                    // Re-fetch NTP to avoid potential staleness after orientation change.
+                    NewTabPage ntp =
+                            (NewTabPage) mActivityTestRule.getActivityTab().getNativePage();
+                    Resources res = ntp.getView().getResources();
+
+                    View ntpLayout = ntp.getLayout();
+                    View searchBoxLayout = ntpLayout.findViewById(R.id.search_box);
+                    int width = ntpLayout.getWidth();
+
+                    // Expected: Calculate the expected slack mathematically from constants.
+                    int expectedSlack = calculateExpectedWidthSlack(width, res);
+
+                    // Actual: Assert the actual search box matches the expected slack.
+                    Criteria.checkThat(
+                            "Fake search box width is inconsistent with screen width.",
+                            width - searchBoxLayout.getWidth(),
+                            Matchers.is(expectedSlack));
                 });
     }
 
-    private String screenOrientation() throws TimeoutException {
-        // Returns "\"portrait\"" or "\"landscape\"" (strips the "-primary" or "-secondary" suffix).
-        return JavaScriptUtils.executeJavaScriptAndWaitForResult(
-                mActivityTestRule.getWebContents(), "screen.orientation.type.split('-')[0]");
+    private void verifyMostVisitedTileMargin() {
+        // Orientation changes are not supported on automotive.
+        if (DeviceInfo.isAutomotive()) {
+            verifyTileMargin();
+            return;
+        }
+
+        // Start off in landscape screen orientation.
+        ActivityTestUtils.rotateActivityToOrientation(
+                mActivityTestRule.getActivity(), Configuration.ORIENTATION_LANDSCAPE);
+        verifyTileMargin();
+
+        // Switch to portrait screen orientation.
+        ActivityTestUtils.rotateActivityToOrientation(
+                mActivityTestRule.getActivity(), Configuration.ORIENTATION_PORTRAIT);
+        verifyTileMargin();
+    }
+
+    private void verifyTileMargin() {
+        CriteriaHelper.pollUiThread(
+                () -> {
+                    // Re-fetch NTP to avoid potential staleness after orientation change.
+                    NewTabPage ntp =
+                            (NewTabPage) mActivityTestRule.getActivityTab().getNativePage();
+                    Resources res = ntp.getView().getResources();
+                    int expectedEdgeMargin =
+                            res.getDimensionPixelSize(R.dimen.tile_view_padding_edge_tablet);
+                    int expectedIntervalMargin =
+                            res.getDimensionPixelSize(R.dimen.tile_view_padding_interval_tablet);
+
+                    View ntpLayout = ntp.getLayout();
+                    int width = ntpLayout.getWidth();
+
+                    View mvtContainer = ntpLayout.findViewById(R.id.mv_tiles_container);
+                    TilesLinearLayout mvTilesLayout = ntpLayout.findViewById(R.id.mv_tiles_layout);
+
+                    Criteria.checkThat(
+                            "Not enough tiles to verify margins",
+                            mvTilesLayout.getChildCount(),
+                            Matchers.greaterThan(1));
+
+                    int expectedMvtLateralMargin =
+                            ntp.getNewTabPageCoordinator().getLateralMarginToMatchFeeds();
+
+                    if (mvtContainer.getLayoutParams().width
+                            == android.view.ViewGroup.LayoutParams.WRAP_CONTENT) {
+                        // On tablets, if the content fits, WRAP_CONTENT is used to center MVT.
+                        Criteria.checkThat(
+                                mvtContainer.getLayoutParams().width,
+                                Matchers.is(android.view.ViewGroup.LayoutParams.WRAP_CONTENT));
+                    } else {
+                        // If it doesn't fit, it scales to match the Feed width.
+                        int expectedContainerWidthSlack = expectedMvtLateralMargin * 2;
+                        Criteria.checkThat(
+                                "MVT container width is inconsistent with screen width.",
+                                width - mvtContainer.getWidth(),
+                                Matchers.is(expectedContainerWidthSlack));
+                    }
+
+                    int mvt1LeftMargin =
+                            ((MarginLayoutParams) mvTilesLayout.getTileAt(0).getLayoutParams())
+                                    .leftMargin;
+                    int mvt2LeftMargin =
+                            ((MarginLayoutParams) mvTilesLayout.getTileAt(1).getLayoutParams())
+                                    .leftMargin;
+
+                    Criteria.checkThat(
+                            mvt1LeftMargin, Matchers.greaterThanOrEqualTo(expectedEdgeMargin));
+                    Criteria.checkThat(mvt2LeftMargin, Matchers.is(expectedIntervalMargin));
+                });
     }
 }

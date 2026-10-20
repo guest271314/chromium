@@ -2,12 +2,13 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "content/browser/devtools/protocol/devtools_network_resource_loader.h"
+
 #include "base/files/file_util.h"
 #include "base/path_service.h"
 #include "base/run_loop.h"
 #include "base/test/bind.h"
 #include "base/test/scoped_feature_list.h"
-#include "content/browser/devtools/protocol/devtools_network_resource_loader.h"
 #include "content/browser/loader/url_loader_factory_utils.h"
 #include "content/browser/renderer_host/render_frame_host_impl.h"
 #include "content/browser/url_loader_factory_params_helper.h"
@@ -31,6 +32,7 @@
 #include "net/cookies/site_for_cookies.h"
 #include "net/dns/mock_host_resolver.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
+#include "services/network/public/cpp/constants.h"
 #include "services/network/public/cpp/resource_request.h"
 #include "testing/gmock/include/gmock/gmock-matchers.h"
 #include "testing/gmock/include/gmock/gmock.h"
@@ -79,8 +81,8 @@ class DevtoolsNetworkResourceLoaderTest : public ContentBrowserTest {
         /*dip_reporter=*/mojo::NullRemote(), frame->GetProcess(),
         network::mojom::TrustTokenOperationPolicyVerdict::kForbid,
         network::mojom::TrustTokenOperationPolicyVerdict::kForbid,
-        net::CookieSettingOverrides(),
-        /*network_restrictions_id=*/std::nullopt,
+        net::CookieSettingOverrides(), network::GetTestNetworkRestrictionsId(),
+        /*renderer_accessible_http_cache_write_enabled=*/false,
         "DevtoolsNetworkResourceLoaderTest");
     // Let DevTools fetch resources without CORS and ORB. Source maps are valid
     // JSON and would otherwise require a CORS fetch + correct response headers.
@@ -135,13 +137,16 @@ class DevtoolsNetworkResourceLoaderTest : public ContentBrowserTest {
   std::unique_ptr<protocol::DevToolsNetworkResourceLoader> CreateLoader(
       GURL url,
       protocol::DevToolsNetworkResourceLoader::Caching caching,
-      protocol::DevToolsNetworkResourceLoader::CompletionCallback callback) {
+      protocol::DevToolsNetworkResourceLoader::CompletionCallback callback,
+      protocol::DevToolsNetworkResourceLoader::RedirectCheckCallback
+          redirect_check_callback = {}) {
     return protocol::DevToolsNetworkResourceLoader::Create(
         CreateURLLoaderFactory(), std::move(url),
         current_frame_host()->GetLastCommittedOrigin(),
         current_frame_host()->ComputeSiteForCookies(), caching,
         protocol::DevToolsNetworkResourceLoader::Credentials::kInclude,
-        std::move(callback));
+        std::move(callback), current_frame_host()->IsOutermostMainFrame(),
+        std::move(redirect_check_callback));
   }
 
  protected:
@@ -299,6 +304,49 @@ IN_PROC_BROWSER_TEST_F(DevtoolsNetworkResourceLoaderTest,
       frame->ComputeSiteForCookies().IsEquivalent(request->site_for_cookies));
   EXPECT_EQ(frame->GetLastCommittedOrigin(), request->request_initiator);
   EXPECT_FALSE(request->load_flags & net::LOAD_BYPASS_CACHE);
+}
+
+IN_PROC_BROWSER_TEST_F(DevtoolsNetworkResourceLoaderTest, RedirectAllowed) {
+  base::RunLoop run_loop;
+  const GURL source_map_url(
+      embedded_test_server()->GetURL("a.com", "/devtools/source.map"));
+  const GURL redirect_url(embedded_test_server()->GetURL(
+      "a.com", "/server-redirect?" + source_map_url.spec()));
+
+  auto loader = CreateLoader(
+      redirect_url, protocol::DevToolsNetworkResourceLoader::Caching::kDefault,
+      base::BindOnce(CheckSuccess, this, &run_loop),
+      base::BindRepeating([](const net::RedirectInfo&) { return true; }));
+  run_loop.Run();
+}
+
+IN_PROC_BROWSER_TEST_F(DevtoolsNetworkResourceLoaderTest,
+                       RedirectBlockedByCallback) {
+  base::RunLoop run_loop;
+  const GURL source_map_url(
+      embedded_test_server()->GetURL("a.com", "/devtools/source.map"));
+  const GURL redirect_url(embedded_test_server()->GetURL(
+      "a.com", "/server-redirect?" + source_map_url.spec()));
+
+  auto complete_callback = base::BindOnce(
+      [](base::RunLoop* run_loop,
+         protocol::DevToolsNetworkResourceLoader* loader,
+         const net::HttpResponseHeaders* rh, bool success, int net_error,
+         std::string content) {
+        EXPECT_FALSE(success);
+        EXPECT_EQ(net_error, net::ERR_BLOCKED_BY_CSP);
+        EXPECT_EQ(content, "");
+        EXPECT_TRUE(rh);
+        EXPECT_EQ(rh->response_code(), 301);
+        run_loop->Quit();
+      },
+      &run_loop);
+
+  auto loader = CreateLoader(
+      redirect_url, protocol::DevToolsNetworkResourceLoader::Caching::kDefault,
+      std::move(complete_callback),
+      base::BindRepeating([](const net::RedirectInfo&) { return false; }));
+  run_loop.Run();
 }
 
 }  // namespace content

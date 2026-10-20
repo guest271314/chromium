@@ -46,12 +46,13 @@ import org.chromium.ui.test.util.RenderTestRule;
 @RunWith(ChromeJUnit4ClassRunner.class)
 @Batch(Batch.PER_CLASS)
 @CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
+@DisableFeatures(ChromeFeatureList.ANDROID_BOTTOM_BAR)
 public class TabSwitcherDrawableRenderTest {
     @Rule
     public final ChromeRenderTestRule mRenderTestRule =
             ChromeRenderTestRule.Builder.withPublicCorpus()
                     .setBugComponent(RenderTestRule.Component.UI_BROWSER_MOBILE_TAB_GROUPS)
-                    .setRevision(6)
+                    .setRevision(7)
                     .build();
 
     @Rule
@@ -77,13 +78,34 @@ public class TabSwitcherDrawableRenderTest {
     @MediumTest
     @Feature("RenderTest")
     @EnableFeatures(ChromeFeatureList.DATA_SHARING)
+    @DisableFeatures(ChromeFeatureList.HOME_BUTTON_REMOVAL)
     public void testTabSwitcherDrawable_toggleNotificationRegular() throws Exception {
+        testTabSwitcherDrawable_toggleNotificationRegularImpl(
+                "tab_page_toolbar_view_regular_off", "tab_page_toolbar_view_regular_on");
+    }
+
+    @Test
+    @MediumTest
+    @Feature("RenderTest")
+    @EnableFeatures({
+        ChromeFeatureList.DATA_SHARING,
+        ChromeFeatureList.HOME_BUTTON_REMOVAL + ":keep_home_button_on_ntp/true"
+    })
+    public void testTabSwitcherDrawable_toggleNotificationRegular_withHomeButtonRemovalKeepOnNtp()
+            throws Exception {
+        testTabSwitcherDrawable_toggleNotificationRegularImpl(
+                "tab_page_toolbar_view_regular_off_with_home_button_removal_v1",
+                "tab_page_toolbar_view_regular_on_with_home_button_removal_v1");
+    }
+
+    private void testTabSwitcherDrawable_toggleNotificationRegularImpl(
+            String offGoldenId, String onGoldenId) throws Exception {
         ChromeTabbedActivity activity = mActivityTestRule.getActivity();
         mActivityTestRule.loadUrlInNewTab("about:blank", /* incognito= */ false);
 
         int tabCount = 2;
         View toolbarView = activity.findViewById(R.id.toolbar);
-        mRenderTestRule.render(toolbarView, "tab_page_toolbar_view_regular_off");
+        mRenderTestRule.render(toolbarView, offGoldenId);
 
         String contentDesc =
                 activity.getResources()
@@ -106,7 +128,7 @@ public class TabSwitcherDrawableRenderTest {
                                 tabCount,
                                 tabCount);
         assertEquals(notificationContentDesc, mToggleTabStackButton.getContentDescription());
-        mRenderTestRule.render(toolbarView, "tab_page_toolbar_view_regular_on");
+        mRenderTestRule.render(toolbarView, onGoldenId);
     }
 
     @Test

@@ -11,13 +11,18 @@ namespace autofill::payments {
 
 BnplStrategy::~BnplStrategy() = default;
 
-BnplStrategy::SuggestionShownNextAction
-BnplStrategy::GetNextActionOnSuggestionShown() {
+BnplStrategy::SuggestionsShownNextAction
+BnplStrategy::GetNextActionOnSuggestionsShown() {
   NOTREACHED();
 }
 
 BnplStrategy::UserDecisionToUseBnplNextAction
 BnplStrategy::GetNextActionOnUserDecisionToUseBnpl() {
+  NOTREACHED();
+}
+
+BnplStrategy::UserDecisionToUseBnplAgainNextAction
+BnplStrategy::GetNextActionOnUserDecisionToUseBnplAgain() {
   NOTREACHED();
 }
 
@@ -28,6 +33,20 @@ BnplStrategy::GetNextActionOnAmountExtractionReturned() {
 
 BnplStrategy::BeforeSwitchingViewAction
 BnplStrategy::GetBeforeViewSwitchAction() {
+  NOTREACHED();
+}
+
+BnplStrategy::BnplAiBasedAmountExtractionReturnedNextAction
+BnplStrategy::GetNextActionOnAiBasedAmountExtractionReturned() {
+  NOTREACHED();
+}
+
+BnplStrategy::UserDecisionToUseSavedCardsNextAction
+BnplStrategy::GetNextActionOnUserDecisionToUseSavedCards() {
+  NOTREACHED();
+}
+
+BnplStrategy::UiDismissalAction BnplStrategy::GetUiDismissalAction() {
   NOTREACHED();
 }
 

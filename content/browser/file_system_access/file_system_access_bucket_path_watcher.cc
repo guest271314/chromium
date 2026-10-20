@@ -13,6 +13,7 @@
 #include "base/threading/sequence_bound.h"
 #include "content/browser/file_system_access/file_system_access_error.h"
 #include "content/browser/file_system_access/file_system_access_watcher_manager.h"
+#include "content/public/browser/browser_thread.h"
 #include "storage/browser/file_system/file_observers.h"
 #include "storage/browser/file_system/file_system_url.h"
 #include "storage/browser/file_system/sandbox_file_system_backend_delegate.h"
@@ -24,17 +25,20 @@ FileSystemAccessBucketPathWatcher::FileSystemAccessBucketPathWatcher(
     base::PassKey<FileSystemAccessWatcherManager> /*pass_key*/)
     : FileSystemAccessChangeSource(
           FileSystemAccessWatchScope::GetScopeForAllBucketFileSystems(),
-          std::move(file_system_context)) {}
+          std::move(file_system_context)),
+      base::RefCountedDeleteOnSequence<FileSystemAccessBucketPathWatcher>(
+          base::SequencedTaskRunner::GetCurrentDefault()) {}
 
 FileSystemAccessBucketPathWatcher::~FileSystemAccessBucketPathWatcher() =
     default;
 
 void FileSystemAccessBucketPathWatcher::AddRef() const {
-  base::RefCountedThreadSafe<FileSystemAccessBucketPathWatcher>::AddRef();
+  base::RefCountedDeleteOnSequence<FileSystemAccessBucketPathWatcher>::AddRef();
 }
 
 void FileSystemAccessBucketPathWatcher::Release() const {
-  base::RefCountedThreadSafe<FileSystemAccessBucketPathWatcher>::Release();
+  base::RefCountedDeleteOnSequence<
+      FileSystemAccessBucketPathWatcher>::Release();
 }
 
 void FileSystemAccessBucketPathWatcher::Disable() {
@@ -62,11 +66,20 @@ void FileSystemAccessBucketPathWatcher::Initialize(
     return;
   }
 
-  sandbox_delegate->AddFileChangeObserver(
-      storage::FileSystemType::kFileSystemTypeTemporary, this,
-      base::SequencedTaskRunner::GetCurrentDefault().get());
-
-  std::move(on_source_initialized).Run(file_system_access_error::Ok());
+  // Observer registration must happen on the IO thread to avoid a data race
+  // with concurrent file operations reading the observer list.
+  // The callback `on_source_initialized` is run as a reply on the UI thread
+  // once registration is complete.
+  content::GetIOThreadTaskRunner({})->PostTaskAndReply(
+      FROM_HERE,
+      base::BindOnce(
+          &storage::SandboxFileSystemBackendDelegate::AddFileChangeObserver,
+          base::Unretained(sandbox_delegate),
+          storage::FileSystemType::kFileSystemTypeTemporary,
+          base::WrapRefCounted(this),
+          base::RetainedRef(base::SequencedTaskRunner::GetCurrentDefault())),
+      base::BindOnce(std::move(on_source_initialized),
+                     file_system_access_error::Ok()));
 }
 
 void FileSystemAccessBucketPathWatcher::OnCreateFile(

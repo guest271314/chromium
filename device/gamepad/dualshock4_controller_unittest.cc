@@ -275,6 +275,29 @@ TEST_F(Dualshock4ControllerTest, ResetVibrationBluetooth) {
   EXPECT_EQ(task_environment_.GetPendingMainThreadTaskCount(), 0u);
 }
 
+TEST_F(Dualshock4ControllerTest, ProcessInputReportUsbTouch) {
+  // 63-byte report payload (64-byte USB report excluding 1-byte report ID
+  // 0x01).
+  std::array<uint8_t, 63> report_data;
+  std::ranges::fill(report_data, 0);
+
+  // Set touches_count = 1 at offset 32.
+  report_data[32] = 1;
+  // Set first touch packet (offset 33) timestamp = 100.
+  report_data[33] = 100;
+  // Set first finger touch data valid (is_invalid bit = 0, id = 1).
+  report_data[34] = 1;
+
+  Gamepad pad;
+  bool result = ds4_usb_->ProcessInputReport(0x01, report_data, &pad,
+                                             /*ignore_button_axis=*/false,
+                                             /*is_multitouch_enabled=*/true);
+
+  EXPECT_TRUE(result);
+  EXPECT_TRUE(pad.supports_touch_events_);
+  EXPECT_EQ(pad.touch_events_length, 2u);
+}
+
 }  // namespace
 
 }  // namespace device

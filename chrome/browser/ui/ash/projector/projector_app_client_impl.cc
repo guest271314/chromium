@@ -7,30 +7,24 @@
 #include <optional>
 #include <string>
 
-#include "ash/constants/ash_features.h"
 #include "ash/constants/ash_pref_names.h"
-#include "ash/webui/annotator/untrusted_annotator_page_handler_impl.h"
 #include "ash/webui/projector_app/public/cpp/projector_app_constants.h"
 #include "base/check.h"
 #include "base/check_deref.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/memory/raw_ref.h"
-#include "chrome/browser/ash/profiles/profile_helper.h"
 #include "chrome/browser/feedback/show_feedback_page.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_manager.h"
-#include "chrome/browser/signin/identity_manager_factory.h"
+#include "chrome/browser/ui/ash/account_manager/account_manager_dialog_coordinator.h"
+#include "chrome/browser/ui/ash/account_manager/account_manager_dialog_coordinator_factory.h"
 #include "chrome/browser/ui/ash/projector/projector_soda_installation_controller.h"
-#include "chromeos/ash/components/account_manager/account_manager_factory.h"
 #include "components/account_manager_core/account_manager_metrics.h"
-#include "components/account_manager_core/chromeos/account_manager_mojo_service.h"
 #include "components/application_locale_storage/application_locale_storage.h"
 #include "components/pref_registry/pref_registry_syncable.h"
-#include "components/signin/public/identity_manager/identity_manager.h"
 #include "components/soda/constants.h"
 #include "content/public/browser/browser_context.h"
-#include "content/public/browser/browser_thread.h"
 #include "content/public/browser/storage_partition.h"
 
 namespace {
@@ -44,16 +38,11 @@ void ShowProjectorAccountReauthDialog(content::BrowserContext* browser_context,
                                       const std::string& email) {
   CHECK(browser_context);
 
-  account_manager::RecordAccountAdditionSource(
-      account_manager::AccountAdditionSource::kChromeOSProjectorAppReauth);
-
-  crosapi::AccountManagerMojoService* account_manager_mojo_service =
-      ash::AccountManagerFactory::Get()->GetAccountManagerMojoService(
-          browser_context->GetPath().value());
-  CHECK(account_manager_mojo_service);
-
-  account_manager_mojo_service->ShowReauthAccountDialog(email,
-                                                        base::DoNothing());
+  ash::AccountManagerDialogCoordinatorFactory::GetForProfile(
+      Profile::FromBrowserContext(browser_context))
+      ->ShowReauthAccountDialog(
+          account_manager::AccountAdditionSource::kChromeOSProjectorAppReauth,
+          email, base::DoNothing());
 }
 
 }  // namespace
@@ -106,11 +95,6 @@ void ProjectorAppClientImpl::RemoveObserver(Observer* observer) {
   observers_.RemoveObserver(observer);
 }
 
-signin::IdentityManager* ProjectorAppClientImpl::GetIdentityManager() {
-  Profile* profile = ProfileManager::GetActiveUserProfile();
-  return IdentityManagerFactory::GetForProfile(profile);
-}
-
 network::mojom::URLLoaderFactory*
 ProjectorAppClientImpl::GetUrlLoaderFactory() {
   Profile* profile = ProfileManager::GetActiveUserProfile();
@@ -140,12 +124,14 @@ void ProjectorAppClientImpl::NotifyScreencastsPendingStatusChanged(
 
 bool ProjectorAppClientImpl::ShouldDownloadSoda() const {
   return ProjectorSodaInstallationController::ShouldDownloadSoda(
-      speech::GetLanguageCode(application_locale_storage_->Get()));
+      speech::GetLanguageCode(
+          application_locale_storage_->GetTag().tag_string()));
 }
 
 void ProjectorAppClientImpl::InstallSoda() {
   return ProjectorSodaInstallationController::InstallSoda(
-      *local_state_, application_locale_storage_->Get());
+      *local_state_,
+      std::string(application_locale_storage_->GetTag().tag_string()));
 }
 
 void ProjectorAppClientImpl::OnSodaInstallProgress(int combined_progress) {
@@ -183,7 +169,8 @@ void ProjectorAppClientImpl::GetVideo(
     const std::string& video_file_id,
     const std::optional<std::string>& resource_key,
     ash::ProjectorAppClient::OnGetVideoCallback callback) const {
-  screencast_manager_.GetVideo(video_file_id, resource_key,
+  screencast_manager_.GetVideo(pending_screencast_manager_.account_id(),
+                               video_file_id, resource_key,
                                std::move(callback));
 }
 

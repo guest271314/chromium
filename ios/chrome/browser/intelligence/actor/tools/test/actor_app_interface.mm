@@ -5,25 +5,80 @@
 #import "ios/chrome/browser/intelligence/actor/tools/test/actor_app_interface.h"
 
 #import "base/functional/bind.h"
-#import "base/functional/callback_helpers.h"
-#import "base/strings/stringprintf.h"
 #import "base/strings/sys_string_conversions.h"
 #import "base/test/ios/wait_util.h"
 #import "base/time/time.h"
+#import "components/actor/core/task_source_info.h"
+#import "components/autofill/core/browser/foundations/autofill_manager.h"
+#import "components/autofill/core/common/unique_ids.h"
+#import "components/autofill/ios/browser/autofill_driver_ios.h"
+#import "components/autofill/ios/browser/autofill_java_script_feature.h"
 #import "components/optimization_guide/proto/features/actions_data.pb.h"
+#import "ios/chrome/browser/intelligence/actor/model/actor_browser_agent.h"
 #import "ios/chrome/browser/intelligence/actor/model/actor_service.h"
 #import "ios/chrome/browser/intelligence/actor/model/actor_service_factory.h"
-#import "ios/chrome/browser/intelligence/actor/tools/model/actor_tool.h"
+#import "ios/chrome/browser/intelligence/actor/model/actor_tab_helper.h"
+#import "ios/chrome/browser/intelligence/actor/public/actor_control_state.h"
+#import "ios/chrome/browser/intelligence/actor/public/actor_task_intervention_delegate.h"
+#import "ios/chrome/browser/intelligence/actor/test/fake_actor_task_intervention_delegate.h"
+#import "ios/chrome/browser/intelligence/actor/tools/model/actor_tool_request.h"
+#import "ios/chrome/browser/intelligence/actor/tools/model/page_stability_java_script_feature.h"
 #import "ios/chrome/browser/intelligence/actor/tools/public/actor_tool_types.h"
 #import "ios/chrome/browser/intelligence/proto_wrappers/page_context_wrapper.h"
 #import "ios/chrome/browser/intelligence/proto_wrappers/page_context_wrapper_config.h"
+#import "ios/chrome/browser/shared/model/browser/browser.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
+#import "ios/chrome/browser/shared/model/web_state_list/web_state_list.h"
 #import "ios/chrome/test/app/chrome_test_util.h"
 #import "ios/chrome/test/app/tab_test_util.h"
+#import "ios/web/public/js_messaging/web_frame.h"
+#import "ios/web/public/js_messaging/web_frames_manager.h"
+#import "ios/web/public/web_state.h"
 
 NSString* const kActorAppInterfaceErrorDomain = @"ActorAppInterfaceErrorDomain";
 
-const base::TimeDelta kApcFetchingTimeout = base::Seconds(10);
+namespace {
+
+constexpr base::TimeDelta kApcFetchingTimeout = base::Seconds(10);
+
+constexpr autofill::FormRendererId kSimulatedFormRendererId(12345);
+
+// Returns the intervention delegate for tests. Retained statically because
+// both `ActorTask` and `ActorTaskFormFillingHandler` hold a weak reference
+// to the delegate.
+id<ActorTaskInterventionDelegate> GetTestInterventionDelegate() {
+  static FakeActorTaskInterventionDelegate* delegate = []() {
+    FakeActorTaskInterventionDelegate* d =
+        [[FakeActorTaskInterventionDelegate alloc] init];
+    d.autoConfirmInterventions = YES;
+    d.autoSelectFirstSuggestion = YES;
+    return d;
+  }();
+  return delegate;
+}
+
+// Returns the active WebState's main frame AutofillDriverIOS, or nullptr if
+// unavailable.
+autofill::AutofillDriverIOS* GetMainFrameAutofillDriver() {
+  web::WebState* web_state = chrome_test_util::GetCurrentWebState();
+  if (!web_state) {
+    return nullptr;
+  }
+  web::WebFramesManager* frames_manager =
+      autofill::AutofillJavaScriptFeature::GetInstance()->GetWebFramesManager(
+          web_state);
+  if (!frames_manager) {
+    return nullptr;
+  }
+  web::WebFrame* main_frame = frames_manager->GetMainWebFrame();
+  if (!main_frame) {
+    return nullptr;
+  }
+  return autofill::AutofillDriverIOS::FromWebStateAndWebFrame(web_state,
+                                                              main_frame);
+}
+
+}  // namespace
 
 @implementation ActorAppInterface
 
@@ -57,23 +112,67 @@ const base::TimeDelta kApcFetchingTimeout = base::Seconds(10);
     return;
   }
 
-  actor::ActorTaskId task_id =
-      service->CreateTask("EG Test Task", /*allow_incognito_web_states=*/false);
+  actor::ActorTaskId task_id = service->CreateTask(
+      "EG Test Task",
+      actor::TaskSourceInfo(actor::TaskSourceInfo::Client::kTest,
+                            /*id=*/std::nullopt),
+      /*allow_incognito_web_states=*/false);
+  service->SetTaskInterventionDelegate(task_id, GetTestInterventionDelegate());
 
   std::vector<optimization_guide::proto::Action> actions = {action};
-  actor::CreateActorToolsResult tools_result =
-      service->CreateActorTools(actions, task_id);
 
-  if (!tools_result.has_value()) {
-    NSString* errorMsg = base::SysUTF8ToNSString(base::StringPrintf(
-        "Failed to create tools: %s",
-        actor::GetToolExecutionResultMessage(tools_result.error()).c_str()));
-    NSError* error =
-        [NSError errorWithDomain:@"mojom::ActionResultCode"
-                            code:(NSInteger)tools_result.error().code()
-                        userInfo:@{NSLocalizedDescriptionKey : errorMsg}];
-    completion(error);
+  auto action_performed_callback =
+      base::BindOnce(^(actor::PerformActionsResult result) {
+        [ActorAppInterface handleActionResults:std::move(result.action_results)
+                                    completion:completion];
+      });
+
+  service->PerformActions(task_id, actions, "Executing EG Test action",
+                          std::move(action_performed_callback));
+}
+
++ (void)executeActionsWithProto:(NSData*)actionsProto
+                     completion:(void (^)(NSError* error))completion {
+  ProfileIOS* profile = chrome_test_util::GetOriginalProfile();
+  if (!profile) {
+    completion([NSError
+        errorWithDomain:kActorAppInterfaceErrorDomain
+                   code:ActorToolExecutionResultNoProfile
+               userInfo:@{NSLocalizedDescriptionKey : @"No profile"}]);
     return;
+  }
+
+  actor::ActorService* service =
+      actor::ActorServiceFactory::GetForProfile(profile);
+  if (!service) {
+    completion([NSError
+        errorWithDomain:kActorAppInterfaceErrorDomain
+                   code:ActorToolExecutionResultNoService
+               userInfo:@{NSLocalizedDescriptionKey : @"No service"}]);
+    return;
+  }
+
+  optimization_guide::proto::Actions actions_proto;
+  if (!actions_proto.ParseFromArray([actionsProto bytes],
+                                    [actionsProto length])) {
+    completion([NSError
+        errorWithDomain:kActorAppInterfaceErrorDomain
+                   code:ActorToolExecutionResultInvalidProto
+               userInfo:@{NSLocalizedDescriptionKey : @"Invalid proto"}]);
+    return;
+  }
+
+  actor::ActorTaskId task_id = service->CreateTask(
+      "EG Test Tasks",
+      actor::TaskSourceInfo(actor::TaskSourceInfo::Client::kTest,
+                            /*id=*/std::nullopt),
+      /*allow_incognito_web_states=*/false);
+  service->SetTaskInterventionDelegate(task_id, GetTestInterventionDelegate());
+
+  std::vector<optimization_guide::proto::Action> actions;
+  actions.reserve(actions_proto.actions_size());
+  for (const auto& action : actions_proto.actions()) {
+    actions.push_back(action);
   }
 
   auto action_performed_callback =
@@ -82,8 +181,7 @@ const base::TimeDelta kApcFetchingTimeout = base::Seconds(10);
                                     completion:completion];
       });
 
-  service->PerformActions(task_id, std::move(tools_result.value()),
-                          "Executing EG Test action",
+  service->PerformActions(task_id, actions, "Executing EG Test actions",
                           std::move(action_performed_callback));
 }
 
@@ -100,18 +198,19 @@ const base::TimeDelta kApcFetchingTimeout = base::Seconds(10);
     return;
   }
 
-  const actor::ActionResult& result = results[0];
-  if (result.tool_result.IsOk()) {
-    completion(nil);
-  } else {
-    NSString* errorMsg = base::SysUTF8ToNSString(
-        GetToolExecutionResultMessage(result.tool_result));
-    NSError* error =
-        [NSError errorWithDomain:@"mojom::ActionResultCode"
-                            code:(NSInteger)result.tool_result.code()
-                        userInfo:@{NSLocalizedDescriptionKey : errorMsg}];
-    completion(error);
+  for (const actor::ActionResult& result : results) {
+    if (!result.tool_result.IsOk()) {
+      NSString* errorMsg = base::SysUTF8ToNSString(
+          GetToolExecutionResultMessage(result.tool_result));
+      NSError* error =
+          [NSError errorWithDomain:@"mojom::ActionResultCode"
+                              code:(NSInteger)result.tool_result.code()
+                          userInfo:@{NSLocalizedDescriptionKey : errorMsg}];
+      completion(error);
+      return;
+    }
   }
+  completion(nil);
 }
 
 + (NSData*)fetchLatestAPC {
@@ -155,4 +254,110 @@ const base::TimeDelta kApcFetchingTimeout = base::Seconds(10);
   return resultData;
 }
 
++ (void)waitForPageStabilityWithCompletion:
+    (void (^)(NSError* error))completion {
+  web::WebState* web_state = chrome_test_util::GetCurrentWebState();
+  if (!web_state) {
+    completion([NSError
+        errorWithDomain:kActorAppInterfaceErrorDomain
+                   code:ActorToolExecutionResultNoWebState
+               userInfo:@{NSLocalizedDescriptionKey : @"No web state"}]);
+    return;
+  }
+
+  web::WebFramesManager* frames_manager =
+      actor::PageStabilityJavaScriptFeature::GetInstance()->GetWebFramesManager(
+          web_state);
+  if (!frames_manager || !frames_manager->GetMainWebFrame()) {
+    completion([NSError
+        errorWithDomain:kActorAppInterfaceErrorDomain
+                   code:ActorToolExecutionResultNoMainFrame
+               userInfo:@{NSLocalizedDescriptionKey : @"No main frame"}]);
+    return;
+  }
+  web::WebFrame* main_frame = frames_manager->GetMainWebFrame();
+
+  auto callback = base::BindOnce(^(actor::ToolExecutionResult result) {
+    if (result.IsOk()) {
+      completion(nil);
+    } else {
+      NSString* errorMsg =
+          base::SysUTF8ToNSString(GetToolExecutionResultMessage(result));
+      NSError* error =
+          [NSError errorWithDomain:@"mojom::ActionResultCode"
+                              code:(NSInteger)result.code()
+                          userInfo:@{NSLocalizedDescriptionKey : errorMsg}];
+      completion(error);
+    }
+  });
+
+  actor::PageStabilityJavaScriptFeature::GetInstance()->WaitForStability(
+      main_frame->AsWeakPtr(), std::move(callback));
+}
+
++ (void)setControlState:(actor::ActorControlState)controlState
+     forWebStateAtIndex:(int)index {
+  Browser* browser = chrome_test_util::GetMainBrowser();
+  if (!browser || !browser->GetWebStateList()) {
+    return;
+  }
+  WebStateList* webStateList = browser->GetWebStateList();
+  if (index < 0 || index >= webStateList->count()) {
+    return;
+  }
+  web::WebState* webState = webStateList->GetWebStateAt(index);
+  if (!webState) {
+    return;
+  }
+  if (ActorTabHelper* tabHelper = ActorTabHelper::FromWebState(webState)) {
+    tabHelper->SetControlState(controlState);
+  }
+}
+
++ (void)simulateInFlightAutofillPredictions {
+  autofill::AutofillDriverIOS* driver = GetMainFrameAutofillDriver();
+  if (!driver) {
+    return;
+  }
+  const autofill::FormGlobalId forms[] = {autofill::FormGlobalId(
+      driver->GetFrameToken(), kSimulatedFormRendererId)};
+  driver->GetAutofillManager().NotifyObservers(
+      &autofill::AutofillManager::Observer::OnBeforeLoadedServerPredictions,
+      forms);
+}
+
++ (void)resolveInFlightAutofillPredictions {
+  autofill::AutofillDriverIOS* driver = GetMainFrameAutofillDriver();
+  if (!driver) {
+    return;
+  }
+  const autofill::FormGlobalId forms[] = {autofill::FormGlobalId(
+      driver->GetFrameToken(), kSimulatedFormRendererId)};
+  driver->GetAutofillManager().NotifyObservers(
+      &autofill::AutofillManager::Observer::OnAfterLoadedServerPredictions,
+      forms);
+}
+
++ (void)stopAllTasks {
+  ProfileIOS* profile = chrome_test_util::GetOriginalProfile();
+  if (!profile) {
+    return;
+  }
+  if (actor::ActorService* service =
+          actor::ActorServiceFactory::GetForProfile(profile)) {
+    service->StopAllTasks();
+  }
+}
+
++ (int32_t)currentWindowID {
+  Browser* browser = chrome_test_util::GetCurrentBrowser();
+  if (!browser) {
+    return -1;
+  }
+  ActorBrowserAgent* agent = ActorBrowserAgent::FromBrowser(browser);
+  if (!agent) {
+    return -1;
+  }
+  return agent->browser_id().id();
+}
 @end

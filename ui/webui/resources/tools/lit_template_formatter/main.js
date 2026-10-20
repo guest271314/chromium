@@ -6,14 +6,15 @@ import assert from 'node:assert';
 // Disable no-restricted-syntax to allow NodeJS imports which are extensionless.
 // eslint-disable-next-line no-restricted-syntax
 import {readFile, unlink, writeFile} from 'node:fs/promises';
+import os from 'node:os';
 import {dirname, join} from 'node:path';
-import {argv, exit} from 'node:process';
+import {argv, exit, stdout} from 'node:process';
 import {fileURLToPath} from 'node:url';
 import {parseArgs} from 'node:util';
 
 import {formatTsExpressions} from './format_expressions.js';
 import {prepareHtmlAst} from './format_html.js';
-import {execAsync, getClangFormatPath, WRAPPED_LINE_INDENT_SIZE} from './html_utils.js';
+import {execAsync, getClangFormatPath, runClangFormat, WRAPPED_LINE_INDENT_SIZE} from './html_utils.js';
 import {processTemplate} from './process_lit_template_ts.js';
 import {serializeHtmlAst, serializeNode} from './serialize_html.js';
 
@@ -22,10 +23,16 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const workspaceRoot = join(__dirname, '../../../../../');
 const clangFormatPath = getClangFormatPath(workspaceRoot);
+const diffHelperPath = join(__dirname, 'diff_helper.py');
+
+// Concurrency limit for parallel file formatting.
+// Defaults to available parallelism capped at 8 to avoid overloading the
+// machine with too many concurrent processes.
+const MAX_CONCURRENCY = Math.max(1, Math.min(os.availableParallelism(), 8));
 
 // Returns the formatted file contents, or null if a Lit HTML template cannot
 // be extracted from |filePath|.
-async function formatFile(filePath, sortAttributes) {
+async function formatFile(filePath, sortAttributes, quiet = false) {
   const tempFilePath = `${filePath}.tmp.ts`;
 
   // Step 1: Extract and process template content
@@ -37,7 +44,9 @@ async function formatFile(filePath, sortAttributes) {
   } = processTemplate(filePath);
 
   if (!replacedTemplate) {
-    console.info(`Could not extract template from ${filePath}, skipping`);
+    if (!quiet) {
+      console.info(`Could not extract template from ${filePath}, skipping`);
+    }
     return null;
   }
 
@@ -79,8 +88,10 @@ async function formatFile(filePath, sortAttributes) {
 
   // Step 5: Write rest of file to temp file, run clang-format.
   await writeFile(tempFilePath, restOfFile, 'utf-8');
-  console.info(`Running clang-format on temporary file...`);
-  await execAsync(`python3 "${clangFormatPath}" -i "${tempFilePath}"`);
+  if (!quiet) {
+    console.info(`Running clang-format on temporary file...`);
+  }
+  await runClangFormat(clangFormatPath, ['-i', tempFilePath]);
 
   // Step 6: Reconstruction
   // Read formatted temp file
@@ -92,12 +103,76 @@ async function formatFile(filePath, sortAttributes) {
       parts.length === 2,
       'Placeholder not found or found multiple times after formatting');
 
-  const finalContent = parts[0] + formattedHtml + '\n' + parts[1];
+  let templateHtml = formattedHtml;
+  // If the entire formatted template is on a single line, check if it can fit
+  // on the same line as the surrounding TypeScript code (e.g. `return
+  // html\`...\`;`). If the line length including the prefix and suffix is <= 80
+  // characters, keep the whole template and return statement on a single line.
+  const singleLineHtml = formattedHtml.trim();
+  if (!singleLineHtml.includes('\n')) {
+    const lastLineOfPart0 = parts[0].split('\n').at(-1) || '';
+    const firstLineOfPart1 = parts[1].split('\n')[0] || '';
+    if (lastLineOfPart0.length + singleLineHtml.length +
+            firstLineOfPart1.length <=
+        80) {
+      templateHtml = singleLineHtml;
+    }
+  }
+
+  const finalContent = parts[0] + templateHtml + parts[1];
 
   // Clean up temp file if it exists
   await unlink(tempFilePath);
 
   return finalContent;
+}
+
+/**
+ * Formats a single file and handles writing output or generating diffs.
+ * @param {string} f Path to the file to process.
+ * @param {boolean} sortAttributes Whether to sort attributes alphabetically.
+ * @param {boolean} isDryRun Whether running in dry-run mode.
+ * @param {boolean} isDiff Whether running in diff mode.
+ * @return {Promise<{file: string, hasDiff: boolean, diffOutput?: string,
+ *     skipped?: boolean}>} An object tracking the file path, whether diffs were
+ *     detected, any generated diff output, and whether the file was skipped.
+ */
+async function processOneFile(f, sortAttributes, isDryRun, isDiff) {
+  const formattedContent = await formatFile(f, sortAttributes, isDiff);
+  if (formattedContent === null) {
+    return {file: f, hasDiff: false, skipped: true};
+  }
+
+  const originalContent = await readFile(f, 'utf-8');
+  const hasDiff = originalContent !== formattedContent;
+
+  if (!hasDiff) {
+    if (!isDiff) {
+      console.info(`${f} is already formatted.`);
+    }
+    return {file: f, hasDiff: false};
+  }
+
+  if (isDryRun && !isDiff) {
+    console.error(`Error: ${f} is not formatted.`);
+    return {file: f, hasDiff: true};
+  }
+
+  const writePath = isDiff ? `${f}.formatted.tmp.ts` : f;
+  await writeFile(writePath, formattedContent, 'utf-8');
+
+  if (isDiff) {
+    try {
+      const diffOutput =
+          await execAsync(`python3 "${diffHelperPath}" "${f}" "${writePath}"`);
+      return {file: f, hasDiff: true, diffOutput};
+    } finally {
+      await unlink(writePath);
+    }
+  }
+
+  console.info(`Successfully formatted and updated ${f}`);
+  return {file: f, hasDiff: true};
 }
 
 async function main() {
@@ -106,40 +181,38 @@ async function main() {
     options: {
       'sort-attributes': {type: 'boolean', default: false},
       'dry-run': {type: 'boolean', default: false},
+      'diff': {type: 'boolean', default: false},
     },
   });
   const inFiles = parsed.positionals;
 
-  let hasDiffAny = false;
+  const isDryRun = parsed.values['dry-run'];
+  const isDiff = parsed.values['diff'];
+  const sortAttributes = parsed.values['sort-attributes'];
 
-  for (const f of inFiles) {
-    const formattedContent =
-        await formatFile(f, parsed.values['sort-attributes']);
-    if (formattedContent === null) {
-      continue;
+  const results = new Array(inFiles.length);
+  let currentIndex = 0;
+  async function worker() {
+    while (currentIndex < inFiles.length) {
+      const index = currentIndex++;
+      results[index] = await processOneFile(
+          inFiles[index], sortAttributes, isDryRun, isDiff);
     }
-
-    const originalContent = await readFile(f, 'utf-8');
-    const hasDiff = originalContent !== formattedContent;
-
-    if (parsed.values['dry-run']) {
-      hasDiffAny ||= hasDiff;
-      hasDiff ? console.error(`Error: ${f} is not formatted.`) :
-                console.info(`${f} is formatted.`);
-      continue;
-    }
-
-    if (hasDiff) {
-      await writeFile(f, formattedContent, 'utf-8');
-      console.info(`Successfully formatted and updated ${f}`);
-      continue;
-    }
-
-    console.info(`${f} is already formatted.`);
   }
 
-  if (hasDiffAny) {
-    assert.ok(parsed.values['dry-run']);
+  const numWorkers = Math.min(MAX_CONCURRENCY, inFiles.length);
+  await Promise.all(Array.from({length: numWorkers}, worker));
+
+  if (isDiff) {
+    for (const result of results) {
+      if (result.diffOutput) {
+        stdout.write(result.diffOutput);
+      }
+    }
+  }
+
+  const hasDiffAny = results.some(r => r.hasDiff);
+  if (hasDiffAny && isDryRun) {
     exit(2);
   }
 }

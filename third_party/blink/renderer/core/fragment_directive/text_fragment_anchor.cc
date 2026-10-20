@@ -76,7 +76,7 @@ bool CheckSecurityRestrictions(LocalFrame& frame) {
   // cross origin iframes or window.open.
   if (!frame.Loader()
            .GetDocumentLoader()
-           ->LastNavigationHadTrustedInitiator()) {
+           ->TextFragmentTokenHadTrustedInitiator()) {
     if (frame.Tree().Parent()) {
       TRACE_EVENT_INSTANT("blink", "CheckSecurityRestrictions", "Result",
                           "Cross-Origin Subframe");
@@ -141,9 +141,12 @@ bool TextFragmentAnchor::GenerateNewTokenForSameDocument(
     mojom::blink::SameDocumentNavigationType same_document_navigation_type) {
   if ((load_type != WebFrameLoadType::kStandard &&
        load_type != WebFrameLoadType::kReplaceCurrentItem) ||
-      same_document_navigation_type !=
-          mojom::blink::SameDocumentNavigationType::kFragment)
+      (same_document_navigation_type !=
+           mojom::blink::SameDocumentNavigationType::kFragment &&
+       same_document_navigation_type !=
+           mojom::blink::SameDocumentNavigationType::kNavigationApiIntercept)) {
     return false;
+  }
 
   // Same-document text fragment navigations are allowed only when initiated
   // from the browser process (e.g. typing in the omnibox) or a same-origin

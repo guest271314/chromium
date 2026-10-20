@@ -10,6 +10,7 @@
 #include "components/strings/grit/components_strings.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "url/gurl.h"
+#include "url/url_constants.h"
 
 #if BUILDFLAG(IS_ANDROID)
 #include "base/android/jni_android.h"
@@ -131,7 +132,52 @@ constexpr bool AllowAsActionButton(
   return action.action_type() ==
          omnibox::SuggestTemplateInfo_TemplateAction_ActionType_CHROME_AIM;
 }
+
+// Validates that the scheme of the provided action URI matches the expected
+// scheme of its action type.
+bool IsValidActionURIForType(
+    const std::string& action_uri_str,
+    omnibox::SuggestTemplateInfo_TemplateAction_ActionType action_type) {
+  GURL action_url(action_uri_str);
+  if (!action_url.is_valid()) {
+    return false;
+  }
+
+  // Block javascript: schemes unconditionally to prevent XSS in the active tab
+  // context.
+  if (action_url.SchemeIs(url::kJavaScriptScheme)) {
+    return false;
+  }
+
+  switch (action_type) {
+    case omnibox::SuggestTemplateInfo_TemplateAction_ActionType_CALL:
+      return action_url.SchemeIs(url::kTelScheme);
+    case omnibox::SuggestTemplateInfo_TemplateAction_ActionType_DIRECTIONS:
+    case omnibox::SuggestTemplateInfo_TemplateAction_ActionType_REVIEWS:
+    case omnibox::SuggestTemplateInfo_TemplateAction_ActionType_CHROME_AIM:
+    case omnibox::SuggestTemplateInfo_TemplateAction_ActionType_CHROME_LENS:
+    case omnibox::
+        SuggestTemplateInfo_TemplateAction_ActionType_CHROME_TAB_SWITCH:
+      return action_url.SchemeIsHTTPOrHTTPS();
+    default:
+      return false;
+  }
+}
 }  // namespace
+
+// static
+scoped_refptr<OmniboxActionInSuggest> OmniboxActionInSuggest::Create(
+    omnibox::SuggestTemplateInfo::TemplateAction template_action,
+    std::optional<TemplateURLRef::SearchTermsArgs> search_terms_args) {
+  if (!template_action.action_uri().empty() &&
+      !IsValidActionURIForType(template_action.action_uri(),
+                               template_action.action_type())) {
+    return nullptr;
+  }
+
+  return base::MakeRefCounted<OmniboxActionInSuggest>(
+      std::move(template_action), std::move(search_terms_args));
+}
 
 OmniboxActionInSuggest::OmniboxActionInSuggest(
     omnibox::SuggestTemplateInfo::TemplateAction template_action,
@@ -154,13 +200,10 @@ OmniboxActionInSuggest::OmniboxActionInSuggest(
       omnibox::
           SuggestTemplateInfo_TemplateAction_ActionType_CHROME_TAB_SWITCH) {
     auto form_factor = ui::GetDeviceFormFactor();
-    bool show_as_button =
-        !(base::FeatureList::IsEnabled(omnibox::kOmniboxImprovementForLFF) &&
-          OmniboxFieldTrial::kOmniboxImprovementForLFFSwitchToTabChip.Get() &&
-          (form_factor != ui::DEVICE_FORM_FACTOR_PHONE &&
-           form_factor != ui::DEVICE_FORM_FACTOR_FOLDABLE));
-    presentation_mode_ = show_as_button ? ActionPresentationMode::BUTTON
-                                        : ActionPresentationMode::CHIP;
+    bool is_large_form_factor = form_factor != ui::DEVICE_FORM_FACTOR_PHONE &&
+                                form_factor != ui::DEVICE_FORM_FACTOR_FOLDABLE;
+    presentation_mode_ = is_large_form_factor ? ActionPresentationMode::CHIP
+                                              : ActionPresentationMode::BUTTON;
   }
 #endif
 }

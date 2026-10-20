@@ -23,11 +23,9 @@
 #include "device/fido/discoverable_credential_metadata.h"
 #include "device/fido/fido_discovery_base.h"
 #include "device/fido/fido_request_handler_base.h"
-#include "device/fido/public/cable_discovery_data.h"
 #include "device/fido/public/fido_transport_protocol.h"
 #include "device/fido/public/fido_types.h"
 #include "device/fido/public/public_key_credential_descriptor.h"
-#include "url/gurl.h"
 
 namespace device {
 class FidoAuthenticator;
@@ -173,6 +171,14 @@ class CONTENT_EXPORT AuthenticatorRequestClientDelegate
       device::FidoRequestType request_type,
       device::AuthenticatorType authenticator_type);
 
+  // Called when the request fails for `reason`, right before
+  // `DoesBlockRequestOnFailure`. `authenticator_type` is the type of the
+  // authenticator whose response caused the failure, or `std::nullopt` if the
+  // failure is not attributable to a specific authenticator (e.g. a timeout).
+  virtual void OnTransactionFailed(
+      std::optional<device::AuthenticatorType> authenticator_type,
+      InterestingFailureReason reason);
+
   // Supplies callbacks that the embedder can invoke to initiate certain
   // actions, namely: cancel the request, report no immediate mechanisms, start
   // the request over, preselect an account, dispatch request to connected
@@ -201,12 +207,12 @@ class CONTENT_EXPORT AuthenticatorRequestClientDelegate
   // For a create() request, |user_name| contains the contents of the
   // |user.name| field, which is set by the site.
   //
-  // caBLE (also called the "hybrid" transport) must be configured in order to
-  // be functional and |pairings_from_extension| contains any caBLEv1 pairings
-  // that have been provided in an extension to the WebAuthn get() call.
-  //
   // When `is_enclave_authenticator_available` is true, the embedder will
   // provide a cloud enclave authenticator option.
+  //
+  // When `cmtg_key_requested` is true, the embedder will prepare to service the
+  // Credential Manager Trust Group (CMTG) extension, e.g. by attempting to
+  // acquire device-specific keys.
   //
   // Other FidoDiscoveryFactory fields (e.g. the `LAContextDropbox`) can also be
   // configured by this function.
@@ -217,8 +223,8 @@ class CONTENT_EXPORT AuthenticatorRequestClientDelegate
       device::FidoRequestType request_type,
       std::optional<device::ResidentKeyRequirement> resident_key_requirement,
       device::UserVerificationRequirement user_verification_requirement,
+      bool cmtg_key_requested,
       std::optional<std::string_view> user_name,
-      base::span<const device::CableDiscoveryData> pairings_from_extension,
       bool is_enclave_authenticator_available,
       device::FidoDiscoveryFactory* fido_discovery_factory);
 

@@ -14,7 +14,7 @@
 #include "components/permissions/android/permission_prompt/permission_dialog_delegate.h"
 #include "components/permissions/embedded_permission_prompt_flow_model.h"
 #include "components/permissions/permission_prompt.h"
-#include "components/permissions/permission_uma_util.h"
+#include "components/permissions/permission_uma_constants.h"
 #include "components/permissions/permissions_client.h"
 #include "components/permissions/resolvers/permission_prompt_options.h"
 #include "ui/gfx/geometry/rect.h"
@@ -46,7 +46,6 @@ class PermissionPromptAndroid : public PermissionPrompt {
   bool UpdateAnchor() override;
   TabSwitchingBehavior GetTabSwitchingBehavior() override;
   std::optional<gfx::Rect> GetViewBoundsInScreen() const override;
-  bool ShouldFinalizeRequestAfterDecided() const override;
   std::vector<permissions::ElementAnchoredBubbleVariant> GetPromptVariants()
       const override;
   bool IsAskPrompt() const override;
@@ -82,7 +81,7 @@ class PermissionPromptAndroid : public PermissionPrompt {
   virtual PermissionRequest::AnnotatedMessageText GetAnnotatedMessageText()
       const;
   virtual bool ShouldUseRequestingOriginFavicon() const;
-  virtual const std::vector<base::WeakPtr<permissions::PermissionRequest>>&
+  virtual const std::vector<std::unique_ptr<permissions::PermissionRequest>>&
   Requests() const;
   GURL GetRequestingOrigin() const;
   content::WebContents* web_contents() const { return web_contents_; }
@@ -112,7 +111,7 @@ class PermissionPromptAndroid : public PermissionPrompt {
 
   // Check if grouped permission requests can only be Mic+Camera, Camera+Mic.
   void CheckValidRequestGroup(
-      const std::vector<base::WeakPtr<PermissionRequest>>& requests) const;
+      const std::vector<std::unique_ptr<PermissionRequest>>& requests) const;
 
  private:
   // PermissionPromptAndroid is owned by PermissionRequestManager, so it should
@@ -122,8 +121,6 @@ class PermissionPromptAndroid : public PermissionPrompt {
 
   // |delegate_| is the PermissionRequestManager, which owns this object.
   const raw_ptr<Delegate> delegate_;
-
-  std::vector<base::WeakPtr<PermissionRequest>> requests_;
 
   // Owns a `PermissionDialogDelegate` object.
   std::unique_ptr<PermissionDialogDelegate> permission_dialog_delegate_;

@@ -32,10 +32,12 @@
 #import "ios/chrome/browser/omnibox/model/suggestions/autocomplete_match_formatter.h"
 #import "ios/chrome/browser/omnibox/model/suggestions/omnibox_pedal_swift.h"
 #import "ios/chrome/browser/omnibox/model/suggestions/suggest_action.h"
+#import "ios/chrome/browser/omnibox/public/omnibox_ui_features.h"
 #import "ios/chrome/browser/omnibox/ui/popup/carousel/carousel_item.h"
 #import "ios/chrome/browser/omnibox/ui/popup/carousel/carousel_item_menu_provider.h"
 #import "ios/chrome/browser/omnibox/ui/popup/omnibox_popup_consumer.h"
 #import "ios/chrome/browser/omnibox/ui/popup/omnibox_popup_presenter.h"
+#import "ios/chrome/browser/shared/coordinator/scene/scene_state.h"
 #import "ios/chrome/browser/shared/public/commands/activity_service_commands.h"
 #import "ios/chrome/browser/shared/public/commands/browser_coordinator_commands.h"
 #import "ios/chrome/browser/shared/public/commands/omnibox_commands.h"
@@ -180,16 +182,16 @@ const NSUInteger kMaxSuggestTileTypePosition = 15;
 
     // A search using clipboard link or text is activity that should indicate a
     // user that would be interested in setting the browser as the default.
-    if (match.type == AutocompleteMatchType::CLIPBOARD_URL) {
+    if (match.type == omnibox::AutocompleteMatchType::kClipboardUrl) {
       default_browser::NotifyOmniboxURLCopyPasteAndNavigate(
           self.incognito, self.tracker, self.sceneState);
     }
-    if (match.type == AutocompleteMatchType::CLIPBOARD_TEXT) {
+    if (match.type == omnibox::AutocompleteMatchType::kClipboardText) {
       default_browser::NotifyOmniboxTextCopyPasteAndNavigate(self.tracker);
     }
 
     if (!self.incognito &&
-        match.type == AutocompleteMatchType::TILE_NAVSUGGEST) {
+        match.type == omnibox::AutocompleteMatchType::kTileNavsuggest) {
       [self logSelectedAutocompleteTile:match];
     }
     [self.omniboxAutocompleteController
@@ -200,6 +202,24 @@ const NSUInteger kMaxSuggestTileTypePosition = 15;
     DUMP_WILL_BE_NOTREACHED()
         << "Suggestion type " << NSStringFromClass(suggestion.class)
         << " not handled for selection.";
+  }
+}
+
+- (void)prerenderSuggestion:(id<AutocompleteSuggestion>)suggestion
+                      inRow:(NSUInteger)row {
+  if (!IsOmniboxPrerenderOnTouchDownEnabled()) {
+    return;
+  }
+  if (suggestion.pedal) {
+    return;
+  }
+  if ([suggestion isKindOfClass:[AutocompleteMatchFormatter class]]) {
+    AutocompleteMatchFormatter* autocompleteMatchFormatter =
+        static_cast<AutocompleteMatchFormatter*>(suggestion);
+    const AutocompleteMatch& match =
+        autocompleteMatchFormatter.autocompleteMatch;
+    [self.omniboxAutocompleteController prerenderMatchForOpening:match
+                                                           inRow:row];
   }
 }
 
@@ -254,14 +274,6 @@ const NSUInteger kMaxSuggestTileTypePosition = 15;
         (AutocompleteMatchFormatter*)suggestion;
     const AutocompleteMatch& match =
         autocompleteMatchFormatter.autocompleteMatch;
-    if (suggestion.isShareable) {
-      base::UmaHistogramEnumeration(
-          "Mobile.ShareThisPage.Used",
-          ShareThisPageLocation::kOmniboxVerbatimMatch);
-      [self.browserCoordinatorCommandsHandler hideComposeboxAndShowShareSheet];
-      [self.omniboxAutocompleteController closeOmniboxPopup];
-      return;
-    }
 
     if (match.has_tab_match.value_or(false)) {
       [self.omniboxAutocompleteController
@@ -324,7 +336,7 @@ const NSUInteger kMaxSuggestTileTypePosition = 15;
 
 /// Logs selected tile index and type.
 - (void)logSelectedAutocompleteTile:(const AutocompleteMatch&)match {
-  DCHECK(match.type == AutocompleteMatchType::TILE_NAVSUGGEST);
+  DCHECK(match.type == omnibox::AutocompleteMatchType::kTileNavsuggest);
   for (size_t i = 0; i < match.suggest_tiles.size(); ++i) {
     const AutocompleteMatch::SuggestTile& tile = match.suggest_tiles[i];
     // AutocompleteMatch contains all tiles, find the tile corresponding to the
@@ -508,7 +520,7 @@ const NSUInteger kMaxSuggestTileTypePosition = 15;
             actionHandler:openInNewIncognitoTabBlock];
     [actions addObject:openInIncognitoNewTab];
   }
-  if (base::ios::IsMultipleScenesSupported()) {  // Open in new window
+  if (self.sceneState.multipleScenesAvailable) {  // Open in new window
     UIAccessibilityCustomActionHandler openInNewWindowBlock = ^BOOL(
         UIAccessibilityCustomAction*) {
       NSUserActivity* activity =

@@ -35,7 +35,7 @@ struct FillingValueAndType {
   // `select_text` is only specified for <select> fields to disambiguate
   // multiple options that have the same `SelectOption::value`.
   std::optional<std::u16string> select_text = std::nullopt;
-  FieldType filling_type = NO_SERVER_DATA;
+  FieldType filling_type = UNKNOWN_TYPE;
 };
 
 // This file contains functions that are generically usefull for filling or
@@ -67,13 +67,10 @@ std::optional<SelectOption> GetNumericSelectControlOption(
     base::span<const SelectOption> field_options,
     std::string* failure_to_fill);
 
-// Returns an obfuscated version of `value`.
-// `visible_suffix_length` defines how many of the last n characters should
-// not be obfuscated.
-// TODO(crbug.com/394011769): Remove visible_suffix_length once
-// kAutofillAiWalletPrivatePasses is rolled out and replace it with an
-// 'obfuscate_all' bool.
-std::u16string GetObfuscatedValue(const std::u16string& value,
+// Returns an obfuscated version of `value` with a fixed total length of 8
+// slots. `visible_suffix_length` defines how many trailing characters (up to 4)
+// remain unmasked.
+std::u16string GetObfuscatedValue(std::u16string_view value,
                                   size_t visible_suffix_length = 0);
 
 // Gets the country option to fill in a select control.

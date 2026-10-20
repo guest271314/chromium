@@ -4,11 +4,11 @@
 
 #include "content/browser/service_worker/service_worker_client.h"
 
+#include <ranges>
 #include <set>
 #include <variant>
 
 #include "base/check_is_test.h"
-#include "base/containers/adapters.h"
 #include "base/debug/alias.h"
 #include "base/debug/crash_logging.h"
 #include "base/metrics/histogram_functions.h"
@@ -16,14 +16,16 @@
 #include "base/task/single_thread_task_runner.h"
 #include "base/types/optional_util.h"
 #include "base/uuid.h"
-#include "content/browser/child_process_security_policy_impl.h"
 #include "content/browser/loader/navigation_url_loader_impl.h"
 #include "content/browser/preloading/prefetch/prefetch_features.h"
 #include "content/browser/renderer_host/frame_tree_node.h"
+#include "content/browser/renderer_host/navigation_request.h"
 #include "content/browser/renderer_host/render_frame_host_impl.h"
+#include "content/browser/security/cpsp/child_process_security_policy_impl.h"
 #include "content/browser/service_worker/service_worker_container_host.h"
 #include "content/browser/service_worker/service_worker_context_core.h"
 #include "content/browser/service_worker/service_worker_security_utils.h"
+#include "content/browser/web_contents/web_contents_impl.h"
 #include "content/browser/worker_host/dedicated_worker_host.h"
 #include "content/browser/worker_host/dedicated_worker_service_impl.h"
 #include "content/browser/worker_host/shared_worker_host.h"
@@ -34,6 +36,7 @@
 #include "content/public/common/origin_util.h"
 #include "mojo/public/cpp/bindings/remote_set.h"
 #include "net/base/url_util.h"
+#include "services/network/public/cpp/constants.h"
 #include "services/network/public/cpp/single_request_url_loader_factory.h"
 #include "services/network/public/cpp/url_loader_factory_builder.h"
 #include "services/network/public/cpp/wrapper_shared_url_loader_factory.h"
@@ -51,6 +54,17 @@ void RunCallbacks(
   for (auto& callback : callbacks) {
     std::move(callback).Run();
   }
+}
+
+std::optional<int64_t> GetOngoingNavigationId(
+    FrameTreeNodeId frame_tree_node_id) {
+  if (auto* frame_tree_node =
+          FrameTreeNode::GloballyFindByID(frame_tree_node_id)) {
+    if (auto* navigation_request = frame_tree_node->navigation_request()) {
+      return navigation_request->GetNavigationId();
+    }
+  }
+  return std::nullopt;
 }
 
 }  // namespace
@@ -357,7 +371,8 @@ void ServiceWorkerClient::RemoveMatchingRegistration(
 
 ServiceWorkerRegistration* ServiceWorkerClient::MatchRegistration() const {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  for (const auto& registration : base::Reversed(matching_registrations_)) {
+  for (const auto& registration :
+       std::views::reverse(matching_registrations_)) {
     if (registration.second->is_uninstalled()) {
       continue;
     }
@@ -490,8 +505,35 @@ ServiceWorkerClient::CommitResponse(
     auto* rfh = RenderFrameHostImpl::FromID(*rfh_id);
     // `rfh` may be null in tests (but it should not happen in production).
     if (rfh) {
+      // Cache the ancestor frame type (whether the frame is nested within a
+      // fenced frame) at commit time while the RenderFrameHost is still alive.
+      // This caches it on the ServiceWorkerClient, so it remains accessible
+      // even if the RenderFrameHost is later destroyed before a service
+      // worker registration IPC is processed.
+      if (rfh->IsNestedWithinFencedFrame()) {
+        ancestor_frame_type_ = blink::mojom::AncestorFrameType::kFencedFrame;
+      }
       rfh->AddServiceWorkerClient(client_uuid(),
                                   weak_ptr_factory_.GetWeakPtr());
+      // A window client hosted by a privileged WebContents (see //chrome's
+      // PrivilegedWebContents) that forbids service worker control is
+      // permanently ineligible to be controlled by a service worker. This is
+      // determined here, at response commit, because that is the first point
+      // where the client's RenderFrameHost (and thus its WebContents) is known.
+      // Interception of the navigation itself is prevented separately, at
+      // navigation start (NavigationRequest sets skip_service_worker); this bit
+      // additionally blocks the non-interception control paths (ClaimClients,
+      // registration/controller inheritance), so a privileged client can never
+      // become controlled.
+      if (WebContentsImpl* web_contents =
+              WebContentsImpl::FromRenderFrameHostImpl(rfh)) {
+        const std::optional<WebContents::PrivilegedParams>& privileged_params =
+            web_contents->privileged_params();
+        if (privileged_params &&
+            privileged_params->disallow_service_worker_control) {
+          SetDisallowsServiceWorkerControl();
+        }
+      }
     }
   }
 
@@ -503,6 +545,14 @@ ServiceWorkerClient::CommitResponse(
       base::PassKey<ServiceWorkerClient>(), AsWeakPtr(), container_info,
       policy_container_policies, std::move(coep_reporter),
       std::move(dip_reporter), std::move(ukm_source_id));
+
+  // Pre-commit request interception may attach a controller before the real
+  // response arrive. If the final policies make the client ineligible, shed any
+  // attached controller and matching registrations.
+  if (!IsEligibleForServiceWorkerController()) {
+    SetControllerRegistration(nullptr, /*notify_controllerchange=*/false);
+    RemoveAllMatchingRegistrations();
+  }
 
   // `network_url_loader_factory_for_prefetch_` is no longer used after commit.
   network_url_loader_factory_for_prefetch_.reset();
@@ -713,7 +763,7 @@ void ServiceWorkerClient::SetControllerRegistration(
   if (controller_registration) {
     CHECK(IsEligibleForServiceWorkerController());
     CHECK(controller_registration->active_version());
-    // TODO(https://crbug.com/497761255): CHECK-exclusion: Convert to CHECK once
+    // TODO(https://crbug.com/526540644): CHECK-exclusion: Convert to CHECK once
     // we are sure this isn't hit.
     DCHECK(IsMatchingRegistration(controller_registration.get()));
   }
@@ -724,6 +774,16 @@ void ServiceWorkerClient::SetControllerRegistration(
 
 bool ServiceWorkerClient::IsEligibleForServiceWorkerController() const {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+
+  // A client hosted by a privileged WebContents that forbids service worker
+  // control is permanently ineligible; this dominates every other check.
+  if (disallows_service_worker_control_) {
+    return false;
+  }
+
+  if (container_host_ && !container_host_->HasValidSandboxFlags()) {
+    return false;
+  }
 
   if (!url_.is_valid()) {
     return false;
@@ -1178,6 +1238,14 @@ void ServiceWorkerClient::InheritControllerFrom(
                                                      creator_host.key());
   }
 
+  // Inherit the creator's hard service-worker ineligibility. When set, the
+  // creator is itself uncontrolled, so the controller-inheritance below is a
+  // no-op (there is no controller to inherit), and the new client stays
+  // permanently ineligible.
+  if (creator_host.disallows_service_worker_control()) {
+    SetDisallowsServiceWorkerControl();
+  }
+
   // Let `scope_match_url_for_client_` be the creator's url for scope match
   // because a client should be handled by the service worker of its creator.
   // Update it before UpdateUrls so that CheckOnUpdateUrls inside UpdateUrls
@@ -1251,11 +1319,17 @@ ServiceWorkerClient::TakeInterceptingPreloadHandler(
     return std::nullopt;
   }
 
+  std::optional<int64_t> navigation_id =
+      GetOngoingNavigationId(ongoing_navigation_frame_tree_node_id_);
+  CHECK(navigation_id);
   if (ContentBrowserClient::URLLoaderRequestHandler embedder_url_loader_handler =
           GetContentClient()
               ->browser()
               ->CreateURLLoaderHandlerForServiceWorkerInitiatedNavigationRequest(
-                  ongoing_navigation_frame_tree_node_id_, resource_request)) {
+                  ongoing_navigation_frame_tree_node_id_, resource_request,
+                  *navigation_id,
+                  GetUIThreadTaskRunner(
+                      {BrowserTaskType::kNavigationNetworkResponse}))) {
     return std::move(embedder_url_loader_handler);
   }
 
@@ -1266,7 +1340,8 @@ scoped_refptr<network::SharedURLLoaderFactory>
 ServiceWorkerClient::CreateNetworkURLLoaderFactory(
     CreateNetworkURLLoaderFactoryType type,
     StoragePartitionImpl* storage_partition,
-    const network::ResourceRequest& resource_request) {
+    const network::ResourceRequest& resource_request,
+    const base::UnguessableToken& network_restrictions_id) {
   CHECK(!is_response_committed());
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
 
@@ -1288,22 +1363,36 @@ ServiceWorkerClient::CreateNetworkURLLoaderFactory(
   }
 
   switch (type) {
-    case CreateNetworkURLLoaderFactoryType::kNavigationPreload:
+    case CreateNetworkURLLoaderFactoryType::kNavigationPreload: {
       // Allow the embedder to intercept the URLLoader request if necessary.
       // This must be a synchronous decision by the embedder. In the future, we
       // may wish to support asynchronous decisions using
       // |URLLoaderRequestInterceptor| in the same fashion that they are used
       // for navigation requests.
+      //
+      // Note: Currently we skip passing `network_restrictions_id` here because
+      // intercepted requests (such as Search Prefetch) are normally served
+      // locally by the embedder or are only relevant to behavior triggered
+      // outside the frame, like the omnibox. In the future, if an intercepted
+      // request may trigger a new request on behalf of a specific context, we
+      // need to ensure that the `network_restrictions_id` of that context is
+      // provided.
+      std::optional<int64_t> navigation_id =
+          GetOngoingNavigationId(ongoing_navigation_frame_tree_node_id_);
+      CHECK(navigation_id);
       if (ContentBrowserClient::URLLoaderRequestHandler embedder_url_loader_handler =
               GetContentClient()
                   ->browser()
                   ->CreateURLLoaderHandlerForServiceWorkerInitiatedNavigationRequest(
-                      ongoing_navigation_frame_tree_node_id_,
-                      resource_request)) {
+                      ongoing_navigation_frame_tree_node_id_, resource_request,
+                      *navigation_id,
+                      GetUIThreadTaskRunner(
+                          {BrowserTaskType::kNavigationNetworkResponse}))) {
         return base::MakeRefCounted<network::SingleRequestURLLoaderFactory>(
             std::move(embedder_url_loader_handler));
       }
       break;
+    }
     case CreateNetworkURLLoaderFactoryType::kRaceNetworkRequest:
     case CreateNetworkURLLoaderFactoryType::kSyntheticNetworkRequest:
       break;
@@ -1346,7 +1435,8 @@ ServiceWorkerClient::CreateNetworkURLLoaderFactory(
           frame_tree_node->navigation_request()->GetNextPageUkmSourceId()),
       factory_builder, &header_client, &bypass_redirect_checks_,
       /*disable_secure_dns=*/nullptr, /*factory_override=*/nullptr,
-      GetUIThreadTaskRunner({BrowserTaskType::kNavigationNetworkResponse}));
+      GetUIThreadTaskRunner({BrowserTaskType::kNavigationNetworkResponse}),
+      /*is_for_network_service=*/true);
 
   // Record the number of interceptors for metrics.
   factory_interceptor_count_ = factory_builder.num_interceptors();
@@ -1362,7 +1452,7 @@ ServiceWorkerClient::CreateNetworkURLLoaderFactory(
           // TODO(crbug.com/390003764): Consider whether/how to apply devtools
           // cookies setting overrides for a service worker.
           /*devtools_cookie_overrides=*/std::nullopt,
-          /*cookie_overrides=*/std::nullopt));
+          /*cookie_overrides=*/std::nullopt, network_restrictions_id));
 }
 
 // If a blob URL is used for a SharedWorker script's URL, a controller will be

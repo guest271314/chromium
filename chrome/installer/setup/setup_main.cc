@@ -75,6 +75,7 @@
 #include "chrome/installer/setup/configure_app_container_sandbox.h"
 #include "chrome/installer/setup/downgrade_cleanup.h"
 #include "chrome/installer/setup/install.h"
+#include "chrome/installer/setup/install_component.h"
 #include "chrome/installer/setup/install_params.h"
 #include "chrome/installer/setup/install_worker.h"
 #include "chrome/installer/setup/installer_crash_reporting.h"
@@ -138,6 +139,7 @@ namespace {
 constexpr wchar_t kSystemPrincipalSid[] = L"S-1-5-18";
 constexpr wchar_t kDisplayVersion[] = L"DisplayVersion";
 constexpr wchar_t kEstimatedSize[] = L"EstimatedSize";
+constexpr wchar_t kInstallDate[] = L"InstallDate";
 
 base::ByteSize ComputeInstallationSize(const base::FilePath& src_path,
                                        const base::FilePath& setup_exe,
@@ -213,6 +215,28 @@ LONG OverwriteEstimatedSize(base::win::RegKey& key,
   return ERROR_SUCCESS;
 }
 
+// Overwrite an existing InstallDate as written by the MSI installer with the
+// current date.
+LONG OverwriteInstallDate(base::win::RegKey& key,
+                          const std::wstring& path,
+                          const std::wstring& value) {
+  LONG result = 0;
+  std::wstring existing;
+  if ((result = key.ReadValue(kInstallDate, &existing)) != ERROR_SUCCESS) {
+    LOG(ERROR) << "Failed to set InstallDate: " << kInstallDate
+               << " not found under " << path;
+    return result;
+  }
+  if ((result = key.WriteValue(kInstallDate, value.c_str())) != ERROR_SUCCESS) {
+    LOG(ERROR) << "Failed to set InstallDate: " << kInstallDate
+               << " could not be written under " << path;
+    return result;
+  }
+  VLOG(1) << "Set InstallDate at " << path << " to " << value << " from "
+          << existing;
+  return ERROR_SUCCESS;
+}
+
 LONG OverwriteWindowsInstallerPropertiesInKey(
     const std::wstring& path,
     REGSAM wowkey,
@@ -230,8 +254,11 @@ LONG OverwriteWindowsInstallerPropertiesInKey(
 
   LONG result1 = OverwriteDisplayVersion(key, path, display_version);
   LONG result2 = OverwriteEstimatedSize(key, path, estimated_size);
+  LONG result3 = OverwriteInstallDate(key, path, InstallUtil::GetCurrentDate());
 
-  return result1 != ERROR_SUCCESS ? result1 : result2;
+  return result1 != ERROR_SUCCESS
+             ? result1
+             : (result2 != ERROR_SUCCESS ? result2 : result3);
 }
 
 LONG OverwriteWindowsInstallerProperties(const std::wstring& product,
@@ -576,8 +603,6 @@ installer::InstallStatus RenameChromeExecutables(
       reg_root, clients_key, KEY_WOW64_32KEY,
       google_update::kRegCriticalVersionField);
   installer::AppCommand(installer::kCmdRenameChromeExe, {})
-      .AddDeleteAppCommandWorkItems(reg_root, install_list.get());
-  installer::AppCommand(installer::kCmdAlternateRenameChromeExe, {})
       .AddDeleteAppCommandWorkItems(reg_root, install_list.get());
 
   if (!installer_state->system_install()) {
@@ -971,7 +996,8 @@ int EnableSystemTracing(const installer::InstallerState& installer_state,
       base::CommandLine(base::CommandLine::NO_PROGRAM),
       install_static::GetClientStateKeyPath(),
       {install_static::GetTracingServiceClsid()},
-      {install_static::GetTracingServiceIid()});
+      {install_static::GetTracingServiceIid()},
+      install_static::GetOldTracingServiceIids());
   if (work_item.Do()) {
     return installer::INSTALL_REPAIRED;
   }
@@ -1228,6 +1254,20 @@ bool HandleNonInstallCmdLineOptions(installer::ModifyParams& modify_params,
         break;
     }
 #endif
+  } else if (cmd_line.HasSwitch(installer::switches::kInstallComponent)) {
+    // Hold the singleton so that component installation cannot race with an
+    // update or uninstall or with another component installation.
+    std::unique_ptr<installer::SetupSingleton> setup_singleton(
+        installer::SetupSingleton::Acquire(cmd_line, prefs, original_state,
+                                           installer_state));
+    if (!setup_singleton) {
+      *exit_code = installer::SETUP_SINGLETON_ACQUISITION_FAILED;
+    } else {
+      const base::FilePath source_file =
+          cmd_line.GetSwitchValuePath(installer::switches::kInstallComponent);
+      *exit_code =
+          installer::InstallComponent(source_file, *installer_state, cmd_line);
+    }
   } else if (cmd_line.HasSwitch(installer::switches::kCreateShortcuts)) {
     std::string install_op_arg =
         cmd_line.GetSwitchValueASCII(installer::switches::kCreateShortcuts);
@@ -1305,8 +1345,8 @@ InstallStatus InstallProductsHelper(InstallationState& original_state,
     return TEMP_DIR_FAILED;
   }
 
-  RETURN_IF_ERROR(UnpackChromeArchive(unpack_path, original_state, setup_exe,
-                                      cmd_line, installer_state));
+  RETURN_IF_ERROR(
+      UnpackChromeArchive(unpack_path, setup_exe, cmd_line, installer_state));
 
   VLOG(1) << "unpacked to " << unpack_path.value();
 

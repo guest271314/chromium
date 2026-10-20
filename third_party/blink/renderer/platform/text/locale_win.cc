@@ -38,6 +38,7 @@
 
 #include "base/check_op.h"
 #include "base/memory/ptr_util.h"
+#include "base/numerics/safe_conversions.h"
 #include "base/strings/string_util.h"
 #include "third_party/blink/public/platform/platform.h"
 #include "third_party/blink/public/platform/win/web_sandbox_support.h"
@@ -72,7 +73,7 @@ String GetLocaleInfoString(LCID lcid, LCTYPE type, bool defaults_for_locale) {
   StringBuffer<UChar> buffer(buffer_size_with_nul);
   auto span = buffer.Span();
   ::GetLocaleInfo(lcid, type, base::as_writable_wcstr(span.data()),
-                  span.size());
+                  base::checked_cast<int>(span.size()));
   buffer.Shrink(buffer_size_with_nul - 1);
   return String::Adopt(buffer);
 }
@@ -85,7 +86,7 @@ Vector<String> GetLocaleInfoStrings(LCID lcid,
                                     bool defaults_for_locale,
                                     bool allow_empty) {
   Vector<String> result;
-  result.reserve(types.size());
+  result.reserve(base::checked_cast<wtf_size_t>(types.size()));
   for (const auto& type : types) {
     result.push_back(GetLocaleInfoString(lcid, type, defaults_for_locale));
     if (result.back().empty() && !allow_empty) {
@@ -104,7 +105,7 @@ DWORD CallGetLocaleInfoDWORD(LCID lcid, LCTYPE type, DWORD on_failure = 0) {
 }
 
 // First day of week in blink's reckoning.
-unsigned GetFirstDayOfWeek(LCID lcid, bool defaults_for_locale) {
+wtf_size_t GetFirstDayOfWeek(LCID lcid, bool defaults_for_locale) {
   DWORD value = CallGetLocaleInfoDWORD(
       lcid, LOCALE_IFIRSTDAYOFWEEK |
                 (defaults_for_locale ? LOCALE_NOUSEROVERRIDE : 0));
@@ -124,8 +125,11 @@ LCID LCIDFromLocaleInternal(LCID user_default_lcid,
   if (DeprecatedEqualIgnoringCase(locale_language_code,
                                   user_default_language_code))
     return user_default_lcid;
-  if (locale.length() >= LOCALE_NAME_MAX_LENGTH)
+  // `locale` is null when the embedder reports an empty default locale; treat
+  // it like any other name that does not resolve.
+  if (locale.empty() || locale.length() >= LOCALE_NAME_MAX_LENGTH) {
     return 0;
+  }
   std::array<UChar, LOCALE_NAME_MAX_LENGTH> buffer;
   auto buffer_slice = base::span(buffer).first(locale.length());
   if (locale.Is8Bit())
@@ -148,8 +152,8 @@ LCID LCIDFromLocale(const String& locale, bool defaults_for_locale) {
   return lcid;
 }
 
-std::pair<LCID, unsigned> GetLcidAndFirstDayOfWeek(const String& locale,
-                                                   bool defaults_for_locale) {
+std::pair<LCID, wtf_size_t> GetLcidAndFirstDayOfWeek(const String& locale,
+                                                     bool defaults_for_locale) {
   WebSandboxSupport* proxy = Platform::Current()->GetSandboxSupport();
   if (proxy && proxy->IsLocaleProxyEnabled()) {
     return proxy->LcidAndFirstDayOfWeek(locale, DefaultLanguage(),
@@ -268,7 +272,7 @@ void CommitLiteralToken(StringBuilder& literal_buffer,
                         StringBuilder& converted) {
   if (literal_buffer.length() <= 0)
     return;
-  DateTimeFormat::QuoteAndAppend(StringView(literal_buffer), converted);
+  date_time_format::QuoteAndAppend(StringView(literal_buffer), converted);
   literal_buffer.Clear();
 }
 
@@ -367,14 +371,14 @@ std::unique_ptr<Locale> Locale::Create(const String& locale) {
 }
 
 inline LocaleWin::LocaleWin(LCID lcid,
-                            unsigned first_day_of_week,
+                            wtf_size_t first_day_of_week,
                             bool defaults_for_locale)
     : lcid_(lcid),
       first_day_of_week_(first_day_of_week),
       defaults_for_locale_(defaults_for_locale) {}
 
 std::unique_ptr<LocaleWin> LocaleWin::Create(LCID lcid,
-                                             unsigned first_day_of_week,
+                                             wtf_size_t first_day_of_week,
                                              bool defaults_for_locale) {
   return base::WrapUnique(
       new LocaleWin(lcid, first_day_of_week, defaults_for_locale));
@@ -411,7 +415,7 @@ const Vector<String>& LocaleWin::WeekDayShortLabels() {
   return week_day_short_labels_;
 }
 
-unsigned LocaleWin::FirstDayOfWeek() {
+wtf_size_t LocaleWin::FirstDayOfWeek() {
   return first_day_of_week_;
 }
 

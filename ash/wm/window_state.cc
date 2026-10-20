@@ -7,6 +7,7 @@
 #include <absl/cleanup/cleanup.h>
 
 #include <optional>
+#include <ranges>
 #include <utility>
 
 #include "ash/accessibility/accessibility_controller.h"
@@ -41,12 +42,11 @@
 #include "ash/wm/wm_metrics.h"
 #include "base/check_is_test.h"
 #include "base/check_op.h"
-#include "base/containers/adapters.h"
 #include "base/containers/fixed_flat_map.h"
-#include "base/debug/crash_logging.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/notimplemented.h"
+#include "cc/base/math_util.h"
 #include "chromeos/constants/chromeos_features.h"
 #include "chromeos/ui/base/chromeos_ui_constants.h"
 #include "chromeos/ui/base/window_properties.h"
@@ -440,13 +440,12 @@ bool WindowState::IsSnapped() const {
 }
 
 bool WindowState::IsPinned() const {
-  // Locked fullscreen is considered a pinned state.
   return GetStateType() == WindowStateType::kPinned ||
-         GetStateType() == WindowStateType::kLockedFullscreen;
+         GetStateType() == WindowStateType::kTrustedPinned;
 }
 
-bool WindowState::IsLockedFullscreen() const {
-  return GetStateType() == WindowStateType::kLockedFullscreen;
+bool WindowState::IsTrustedPinned() const {
+  return GetStateType() == WindowStateType::kTrustedPinned;
 }
 
 bool WindowState::IsPip() const {
@@ -574,6 +573,7 @@ bool WindowState::IsRestoring(WindowStateType previous_state) const {
 void WindowState::DisableZOrdering(aura::Window* window_on_top) {
   ui::ZOrderLevel z_order = GetZOrdering();
   if (z_order != ui::ZOrderLevel::kNormal && !IsPip()) {
+    aura::Window::ScopedDeleteBlocker blocker(window_);
     // |window_| is hidden first to avoid canceling fullscreen mode when it is
     // no longer always on top and gets added to default container. This avoids
     // sending redundant OnFullscreenStateChanged to the layout manager. The
@@ -1018,7 +1018,8 @@ void WindowState::UpdateWindowPropertiesFromStateType() {
                          should_round_window);
   }
 
-  if (window_->GetProperty(ash::kWindowManagerManagesOpacityKey)) {
+  if (!window_->is_destroying() &&
+      window_->GetProperty(ash::kWindowManagerManagesOpacityKey)) {
     const gfx::Size& size = window_->bounds().size();
     if (ShouldSetExplicitOpaqueRegionsForOcclusion(this)) {
       window_->SetTransparent(true);
@@ -1032,16 +1033,24 @@ void WindowState::UpdateWindowPropertiesFromStateType() {
 
 void WindowState::NotifyPreStateTypeChange(
     WindowStateType old_window_state_type) {
-  for (auto& observer : observer_list_)
-    observer.OnPreWindowStateTypeChange(this, old_window_state_type);
+  // Allow reentrancy here. If there are any ongoing drag events when tablet
+  // mode is exited (which triggers the first state change), the drag events are
+  // forced to complete. This could potentially trigger a second state change,
+  // such as window snapping or maximizing.
+  observer_list_.NotifyAllowReentrancy(
+      &WindowStateObserver::OnPreWindowStateTypeChange, this,
+      old_window_state_type);
+
   OnPrePipStateChange(old_window_state_type);
 }
 
 void WindowState::NotifyPostStateTypeChange(
     ExtendedWindowStateType old_window_state_type) {
   WindowStateType old_plain_type = IgnoreGrouping(old_window_state_type);
-  for (auto& observer : observer_list_)
-    observer.OnPostWindowStateTypeChange(this, old_plain_type);
+  // Allow reentrancy here since a call that triggers
+  // `NotifyPreStateTypeChange()` will also trigger this function.
+  observer_list_.NotifyAllowReentrancy(
+      &WindowStateObserver::OnPostWindowStateTypeChange, this, old_plain_type);
   OnPostPipStateChange(old_plain_type);
   UpdateWindowStateRestoreHistoryStack(old_window_state_type);
   SaveWindowForWindowRestore(this);
@@ -1178,9 +1187,6 @@ void WindowState::SetBoundsDirectCrossFade(const gfx::Rect& bounds_in_parent,
     return;
   }
 
-  SCOPED_CRASH_KEY_NUMBER("333095196", "state_type",
-                          std::to_underlying(GetStateType()));
-
   CrossFadeAnimation(window_, std::move(old_layer_owner));
 }
 
@@ -1292,7 +1298,7 @@ void WindowState::RestoreHistoryStack::Clear() {
 
 void WindowState::RestoreHistoryStack::PopIncompatible(
     WindowStateType current_state_type) {
-  for (auto state_type : base::Reversed(window_states_)) {
+  for (auto state_type : std::views::reverse(window_states_)) {
     if (CanRestoreState(current_state_type, IgnoreGrouping(state_type))) {
       break;
     }
@@ -1506,7 +1512,7 @@ void WindowState::OnWindowBoundsChanged(aura::Window* window,
                                         const gfx::Rect& new_bounds,
                                         ui::PropertyChangeReason reason) {
   CHECK_EQ(window_, window);
-  if (window_->GetTransparent() &&
+  if (!window->is_destroying() && window_->GetTransparent() &&
       ShouldSetExplicitOpaqueRegionsForOcclusion(this)) {
     window_->SetOpaqueRegionsForOcclusion({gfx::Rect(new_bounds.size())});
   }

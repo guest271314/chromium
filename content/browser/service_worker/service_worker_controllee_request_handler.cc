@@ -39,6 +39,7 @@
 #include "services/network/public/cpp/resource_request_body.h"
 #include "third_party/blink/public/common/loader/resource_type_util.h"
 #include "third_party/blink/public/common/service_worker/service_worker_loader_helpers.h"
+#include "third_party/perfetto/include/perfetto/tracing/track.h"
 
 #if BUILDFLAG(ENABLE_OFFLINE_PAGES)
 #include "components/offline_pages/core/request_header/offline_page_header.h"
@@ -184,6 +185,15 @@ void ServiceWorkerControlleeRequestHandler::MaybeCreateLoader(
       CompleteWithoutLoader();
       return;
     }
+    // Back/forward history navigations and tab restores set
+    // `net::LOAD_SKIP_CACHE_VALIDATION` to prefer cached content without
+    // revalidation. Do not inject the synthetic service worker registration so
+    // the request can be served from the HTTP cache or embedder cache.
+    if (tentative_resource_request.load_flags &
+        net::LOAD_SKIP_CACHE_VALIDATION) {
+      CompleteWithoutLoader();
+      return;
+    }
     // Only accepts GET.
     if (tentative_resource_request.method !=
         net::HttpRequestHeaders::kGetMethod) {
@@ -194,6 +204,11 @@ void ServiceWorkerControlleeRequestHandler::MaybeCreateLoader(
     if (!service_worker_client_->key().IsFirstPartyContext()) {
       CompleteWithoutLoader();
       return;
+    }
+    // Prefetches and subframes do not use the synthetic response loader.
+    if (!service_worker_client_->is_initiated_by_prefetch() &&
+        tentative_resource_request.is_outermost_main_frame) {
+      needs_interception_for_synthetic_response_ = true;
     }
   }
 
@@ -236,7 +251,7 @@ void ServiceWorkerControlleeRequestHandler::ContinueWithRegistration(
     blink::ServiceWorkerStatusCode status,
     scoped_refptr<ServiceWorkerRegistration> registration) {
   if (is_for_navigation) {
-    DCHECK(!find_registration_start_time.is_null());
+    CHECK(!find_registration_start_time.is_null(), base::NotFatalUntil::M159);
     auto now = base::TimeTicks::Now();
 
     ServiceWorkerMetrics::RecordFindRegistrationForClientUrlTime(
@@ -246,11 +261,13 @@ void ServiceWorkerControlleeRequestHandler::ContinueWithRegistration(
         "ServiceWorker.FoundServiceWorkerRegistrationOnNavigation",
         status == blink::ServiceWorkerStatusCode::kOk);
 
+    auto track = perfetto::NamedTrack::FromPointer(
+        "ServiceWorker.MaybeCreateLoaderToContinueWithRegistration", this);
     TRACE_EVENT_BEGIN(
         "ServiceWorker",
-        "ServiceWorker.MaybeCreateLoaderToContinueWithRegistration",
-        perfetto::Track::FromPointer(this), find_registration_start_time);
-    TRACE_EVENT_END("ServiceWorker", perfetto::Track::FromPointer(this), now);
+        "ServiceWorker.MaybeCreateLoaderToContinueWithRegistration", track,
+        find_registration_start_time);
+    TRACE_EVENT_END("ServiceWorker", track, now);
   }
 
   if (status != blink::ServiceWorkerStatusCode::kOk) {
@@ -262,7 +279,7 @@ void ServiceWorkerControlleeRequestHandler::ContinueWithRegistration(
     CompleteWithoutLoader();
     return;
   }
-  DCHECK(registration);
+  CHECK(registration, base::NotFatalUntil::M159);
 
   if (!service_worker_client_) {
     TRACE_EVENT(
@@ -272,7 +289,6 @@ void ServiceWorkerControlleeRequestHandler::ContinueWithRegistration(
     CompleteWithoutLoader();
     return;
   }
-  service_worker_client_->AddMatchingRegistration(registration.get());
 
   if (!context_) {
     TRACE_EVENT(
@@ -303,6 +319,10 @@ void ServiceWorkerControlleeRequestHandler::ContinueWithRegistration(
     CompleteWithoutLoader();
     return;
   }
+
+  // Only expose the registration to the client (e.g. for .ready and claim())
+  // once the embedder has allowed the service worker for this client.
+  service_worker_client_->AddMatchingRegistration(registration.get());
 
   if (!service_worker_client_->IsEligibleForServiceWorkerController()) {
     // TODO(falken): Figure out a way to surface in the page's DevTools
@@ -438,10 +458,13 @@ void ServiceWorkerControlleeRequestHandler::ContinueWithActivatedVersion(
   service_worker_client_->SetControllerRegistration(
       registration, false /* notify_controllerchange */);
 
-  DCHECK_EQ(active_version, registration->active_version());
-  DCHECK_EQ(active_version, service_worker_client_->controller());
-  DCHECK_NE(active_version->fetch_handler_existence(),
-            ServiceWorkerVersion::FetchHandlerExistence::UNKNOWN);
+  CHECK_EQ(active_version, registration->active_version(),
+           base::NotFatalUntil::M159);
+  CHECK_EQ(active_version, service_worker_client_->controller(),
+           base::NotFatalUntil::M159);
+  CHECK_NE(active_version->fetch_handler_existence(),
+           ServiceWorkerVersion::FetchHandlerExistence::UNKNOWN,
+           base::NotFatalUntil::M159);
 
   base::UmaHistogramEnumeration(
       "ServiceWorker.FetchHandler."
@@ -452,9 +475,11 @@ void ServiceWorkerControlleeRequestHandler::ContinueWithActivatedVersion(
     service_worker_client_->AddServiceWorkerToUpdate(active_version);
   }
 
-  // If the router evaluation is needed, always forward to the service worker.
-  // Because the router evaluation is done in ServiceWorkerMainResourceLoader.
-  if (active_version->NeedRouterEvaluate()) {
+  // If the router evaluation or synthetic response is needed, always forward to
+  // the service worker, because they are handled in
+  // ServiceWorkerMainResourceLoader.
+  if (active_version->NeedRouterEvaluate() ||
+      needs_interception_for_synthetic_response_) {
     CreateLoaderAndStartRequest(std::move(find_registration_start_time));
     return;
   }
@@ -538,7 +563,7 @@ void ServiceWorkerControlleeRequestHandler::DidUpdateRegistration(
     blink::ServiceWorkerStatusCode status,
     const std::string& status_message,
     int64_t registration_id) {
-  DCHECK(force_update_started_);
+  CHECK(force_update_started_, base::NotFatalUntil::M159);
 
   if (!context_ || !service_worker_client_) {
     TRACE_EVENT("ServiceWorker",
@@ -570,7 +595,8 @@ void ServiceWorkerControlleeRequestHandler::DidUpdateRegistration(
               "ServiceWorkerControlleeRequestHandler::DidUpdateRegistration",
               perfetto::Flow::FromPointer(this));
 
-  DCHECK_EQ(original_registration->id(), registration_id);
+  CHECK_EQ(original_registration->id(), registration_id,
+           base::NotFatalUntil::M159);
   ServiceWorkerVersion* new_version =
       original_registration->installing_version();
   new_version->ReportForceUpdateToDevTools();

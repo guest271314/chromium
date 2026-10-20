@@ -41,7 +41,6 @@ class Resource;
 class ResourceFetcher;
 class ScriptElementBase;
 class Script;
-class ScriptResource;
 class ScriptWebBundle;
 class Modulator;
 
@@ -61,7 +60,6 @@ class CORE_EXPORT ScriptLoader final : public ResourceFinishObserver,
     kClassic,
     kModule,
     kImportMap,
-    kRouteMap,
     kSpeculationRules,
     kWebBundle,
     kInvalid
@@ -98,6 +96,7 @@ class CORE_EXPORT ScriptLoader final : public ResourceFinishObserver,
 
   bool IsParserInserted() const { return parser_inserted_; }
   bool AlreadyStarted() const { return already_started_; }
+  void SetAlreadyStarted() { already_started_ = true; }
   bool IsForceAsync() const { return force_async_; }
   ScriptTypeAtPrepare GetScriptType() const { return script_type_; }
 

@@ -62,6 +62,9 @@ void TestSyncService::SetSignedIn(signin::ConsentLevel consent_level) {
 
 void TestSyncService::SetSignedIn(signin::ConsentLevel consent_level,
                                   const CoreAccountInfo& account_info) {
+  CHECK(!local_sync_enabled_)
+      << "Cannot set signed in while local sync is enabled.";
+
   disable_reasons_.Remove(DISABLE_REASON_NOT_SIGNED_IN);
   account_info_ = account_info;
   if (consent_level == signin::ConsentLevel::kSync) {
@@ -111,7 +114,20 @@ void TestSyncService::SetMaxTransportState(TransportState max_transport_state) {
 }
 
 void TestSyncService::SetLocalSyncEnabled(bool local_sync_enabled) {
+  if (local_sync_enabled == local_sync_enabled_) {
+    return;
+  }
+
   local_sync_enabled_ = local_sync_enabled;
+  if (local_sync_enabled_) {
+    SetSignedOut();
+    disable_reasons_.Remove(DISABLE_REASON_NOT_SIGNED_IN);
+    disable_reasons_.Remove(DISABLE_REASON_ENTERPRISE_POLICY);
+  } else {
+    SetSignedIn(IsReplaceSyncPromosWithSignInPromosEnabled()
+                    ? signin::ConsentLevel::kSignin
+                    : signin::ConsentLevel::kSync);
+  }
 }
 
 void TestSyncService::SetPersistentAuthError() {
@@ -365,6 +381,16 @@ void TestSyncService::TriggerRefresh(TriggerRefreshSource source,
 
 void TestSyncService::DataTypePreconditionChanged(DataType type) {}
 
+base::flat_set<std::string>
+TestSyncService::GetCurrentDeviceCacheGuidsForAllGaiaIds() const {
+  return current_device_cache_guids_for_all_gaia_ids_;
+}
+
+void TestSyncService::SetCurrentDeviceCacheGuidsForAllGaiaIds(
+    base::flat_set<std::string> guids) {
+  current_device_cache_guids_for_all_gaia_ids_ = std::move(guids);
+}
+
 void TestSyncService::AddObserver(SyncServiceObserver* observer) {
   observers_.AddObserver(observer);
 }
@@ -407,6 +433,10 @@ const GURL& TestSyncService::GetSyncServiceUrlForDebugging() const {
   return sync_service_url_;
 }
 
+base::FilePath TestSyncService::GetLocalSyncBackendFolderForDebugging() const {
+  return base::FilePath();
+}
+
 std::string TestSyncService::GetUnrecoverableErrorMessageForDebugging() const {
   return std::string();
 }
@@ -433,7 +463,9 @@ SyncService::DataTypeDownloadStatus TestSyncService::GetDownloadStatusFor(
   return DataTypeDownloadStatus::kUpToDate;
 }
 
+#if BUILDFLAG(IS_ANDROID)
 void TestSyncService::SetInvalidationsForSessionsEnabled(bool enabled) {}
+#endif  // BUILDFLAG(IS_ANDROID)
 
 void TestSyncService::SendExplicitPassphraseToPlatformClient() {
   if (send_passphrase_to_platform_client_cb_) {

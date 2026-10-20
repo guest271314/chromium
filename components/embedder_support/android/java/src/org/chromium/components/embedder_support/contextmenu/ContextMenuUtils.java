@@ -204,7 +204,8 @@ public final class ContextMenuUtils {
 
     /**
      * Get the suffix for the context menu type determined by the params. Histogram values should
-     * match with the values defined in histogram_suffixes_list.xml under ContextMenuTypeAndroid
+     * match with the values defined in tools/metrics/histograms/metadata/ui/histograms.xml under
+     * ContextMenuAndroidTypes.
      *
      * @param params The list of params for the opened context menu.
      * @return A string value for the histogram suffix.
@@ -283,7 +284,7 @@ public final class ContextMenuUtils {
             Window window,
             WebContents webContents,
             ContextMenuParams params,
-            float topContentOffsetPx,
+            int topContentOffsetPx,
             boolean usePopupWindow,
             View containerView) {
         Point touchPoint =
@@ -317,7 +318,7 @@ public final class ContextMenuUtils {
             Context context,
             Window window,
             ContextMenuParams params,
-            float topContentOffsetPx,
+            int topContentOffsetPx,
             boolean usePopupWindow,
             View containerView) {
         final float density = context.getResources().getDisplayMetrics().density;

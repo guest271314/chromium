@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "chrome/credential_provider/test/gcp_fakes.h"
 
 #include <windows.h>
@@ -21,6 +16,7 @@
 #include <string>
 
 #include "base/command_line.h"
+#include "base/compiler_specific.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/functional/bind.h"
@@ -197,7 +193,8 @@ HRESULT FakeOSUserManager::GenerateRandomPassword(wchar_t* password,
   // Make sure to generate a different password each time.  Actually randomness
   // is not important for tests.
   static int nonce = 0;
-  EXPECT_NE(-1, swprintf_s(password, length, L"bad-password-%d", ++nonce));
+  EXPECT_NE(-1, UNSAFE_TODO(
+                    swprintf_s(password, length, L"bad-password-%d", ++nonce)));
   return S_OK;
 }
 
@@ -220,7 +217,6 @@ HRESULT FakeOSUserManager::AddUser(const wchar_t* username,
                                    const wchar_t* domain,
                                    BSTR* sid,
                                    DWORD* error) {
-  USES_CONVERSION;
 
   DCHECK(sid);
 
@@ -241,7 +237,7 @@ HRESULT FakeOSUserManager::AddUser(const wchar_t* username,
 
   if (auto it = username_to_info_.find(username);
       it != username_to_info_.end()) {
-    *sid = ::SysAllocString(W2COLE(it->second.sid.c_str()));
+    *sid = ::SysAllocString(it->second.sid.c_str());
     return HRESULT_FROM_WIN32(NERR_UserExists);
   }
 
@@ -259,7 +255,7 @@ HRESULT FakeOSUserManager::AddUser(const wchar_t* username,
     return HRESULT_FROM_WIN32(NERR_ProgNeedsExtraMem);
   }
 
-  *sid = ::SysAllocString(W2COLE(sidstr));
+  *sid = ::SysAllocString(sidstr);
   username_to_info_.emplace(
       username, UserInfo(domain, password, fullname, comment, sidstr));
   ::LocalFree(sidstr);
@@ -430,10 +426,10 @@ HRESULT FakeOSUserManager::FindUserBySID(const wchar_t* sid,
   for (auto& kv : username_to_info_) {
     if (kv.second.sid == sid) {
       if (username) {
-        wcscpy_s(username, username_size, kv.first.c_str());
+        UNSAFE_TODO(wcscpy_s(username, username_size, kv.first.c_str()));
       }
       if (domain) {
-        wcscpy_s(domain, domain_size, kv.second.domain.c_str());
+        UNSAFE_TODO(wcscpy_s(domain, domain_size, kv.second.domain.c_str()));
       }
       return S_OK;
     }
@@ -484,10 +480,39 @@ HRESULT FakeOSUserManager::ModifyUserAccessWithLogonHours(
   return S_OK;
 }
 
-HRESULT FakeOSUserManager::SetDefaultPasswordChangePolicies(
-    const wchar_t* domain,
-    const wchar_t* username) {
-  return S_OK;
+HRESULT FakeOSUserManager::GetUserFlagsFake(const wchar_t* domain,
+                                            const wchar_t* username,
+                                            DWORD* flags) {
+  return GetUserFlags(domain, username, flags);
+}
+
+HRESULT FakeOSUserManager::SetUserFlagsFake(const wchar_t* domain,
+                                            const wchar_t* username,
+                                            DWORD flags) {
+  return SetUserFlags(domain, username, flags);
+}
+
+HRESULT FakeOSUserManager::GetUserFlags(const wchar_t* domain,
+                                        const wchar_t* username,
+                                        DWORD* flags) {
+  DCHECK(flags);
+  if (auto it = username_to_info_.find(username);
+      it != username_to_info_.end()) {
+    *flags = it->second.flags;
+    return S_OK;
+  }
+  return HRESULT_FROM_WIN32(NERR_UserNotFound);
+}
+
+HRESULT FakeOSUserManager::SetUserFlags(const wchar_t* domain,
+                                        const wchar_t* username,
+                                        DWORD flags) {
+  if (auto it = username_to_info_.find(username);
+      it != username_to_info_.end()) {
+    it->second.flags = flags;
+    return S_OK;
+  }
+  return HRESULT_FROM_WIN32(NERR_UserNotFound);
 }
 
 FakeOSUserManager::UserInfo::UserInfo(const wchar_t* domain,
@@ -499,7 +524,9 @@ FakeOSUserManager::UserInfo::UserInfo(const wchar_t* domain,
       password(password),
       fullname(fullname),
       comment(comment),
-      sid(sid) {}
+      sid(sid),
+      flags(UF_PASSWD_CANT_CHANGE | UF_DONT_EXPIRE_PASSWD | UF_NORMAL_ACCOUNT) {
+}
 
 FakeOSUserManager::UserInfo::UserInfo() = default;
 
@@ -554,20 +581,19 @@ HRESULT FakeOSUserManager::CreateTestOSUser(const std::wstring& username,
   }
 
   if (!gaia_id.empty()) {
-    hr = SetUserProperty(OLE2CW(*sid), kUserId,
-                         base::UTF8ToWide(gaia_id.ToString()));
+    hr = SetUserProperty(*sid, kUserId, base::UTF8ToWide(gaia_id.ToString()));
     if (FAILED(hr)) {
       return hr;
     }
 
-    hr = SetUserProperty(OLE2CW(*sid), kUserTokenHandle, L"token_handle");
+    hr = SetUserProperty(*sid, kUserTokenHandle, L"token_handle");
     if (FAILED(hr)) {
       return hr;
     }
   }
 
   if (!email.empty()) {
-    hr = SetUserProperty(OLE2CW(*sid), kUserEmail, email);
+    hr = SetUserProperty(*sid, kUserEmail, email);
     if (FAILED(hr)) {
       return hr;
     }
@@ -633,14 +659,14 @@ HRESULT FakeScopedLsaPolicy::RetrievePrivateData(const wchar_t* key,
                                                  size_t length) {
   auto it = private_data().find(key);
   if (it == private_data().end()) {
-    if (wcscmp(key, kLsaKeyGaiaSid) == 0) {
+    if (UNSAFE_TODO(wcscmp(key, kLsaKeyGaiaSid)) == 0) {
       return HRESULT_FROM_NT(STATUS_OBJECT_NAME_NOT_FOUND);
     } else {
       return E_INVALIDARG;
     }
   }
 
-  errno_t err = wcscpy_s(value, length, it->second.c_str());
+  errno_t err = UNSAFE_TODO(wcscpy_s(value, length, it->second.c_str()));
   if (err != 0) {
     return E_FAIL;
   }
@@ -869,7 +895,7 @@ HRESULT FakeWinHttpUrlFetcher::Fetch(std::vector<char>* response) {
   }
 
   response->resize(response_.size());
-  memcpy(response->data(), response_.c_str(), response->size());
+  UNSAFE_TODO(memcpy(response->data(), response_.c_str(), response->size()));
   return S_OK;
 }
 
@@ -1047,7 +1073,7 @@ EVT_HANDLE FakeEventLoggingApiManager::EvtCreateRenderContext(
   DCHECK(value_paths);
   EXPECT_TRUE(std::wstring(value_paths[0]).find(L"EventRecordID") !=
               std::wstring::npos);
-  EXPECT_TRUE(std::wstring(value_paths[1]).find(L"TimeCreated") !=
+  EXPECT_TRUE(std::wstring(UNSAFE_TODO(value_paths[1])).find(L"TimeCreated") !=
               std::wstring::npos);
   EXPECT_EQ(flags, EvtRenderContextValues);
 
@@ -1078,7 +1104,7 @@ BOOL FakeEventLoggingApiManager::EvtNext(EVT_HANDLE result_set,
     size_t last_idx = event_handles_.size() - 1;
     event_handles_[last_idx] = &event_handles_[last_idx];
 
-    events[*num_returned] = event_handles_[last_idx];
+    UNSAFE_TODO(events[*num_returned] = event_handles_[last_idx]);
     handle_to_index_map_[event_handles_[last_idx]] = next_event_idx_;
 
     (*num_returned)++;
@@ -1109,14 +1135,16 @@ BOOL FakeEventLoggingApiManager::EvtGetQueryInfo(
 
   EXPECT_TRUE(value_buffer_size >= mem_size);
   value_buffer->Count = 1;
-  char* addr = reinterpret_cast<char*>(value_buffer) + sizeof(EVT_VARIANT);
+  char* addr =
+      UNSAFE_TODO(reinterpret_cast<char*>(value_buffer) + sizeof(EVT_VARIANT));
 
   if (property_id == EvtQueryStatuses) {
     value_buffer->UInt32Arr = reinterpret_cast<UINT32*>(addr);
     value_buffer->UInt32Arr[0] = ERROR_SUCCESS;
   } else if (property_id == EvtQueryNames) {
     value_buffer->StringArr = reinterpret_cast<LPWSTR*>(addr);
-    memcpy(value_buffer->StringArr, channel_name, sizeof(channel_name));
+    UNSAFE_TODO(
+        memcpy(value_buffer->StringArr, channel_name, sizeof(channel_name)));
   }
   last_error_ = ERROR_SUCCESS;
   return TRUE;
@@ -1152,7 +1180,7 @@ BOOL FakeEventLoggingApiManager::EvtRender(EVT_HANDLE context,
       ((*logs_)[idx].created_ts.seconds + 11644473600LL) * 10000000;
   timestamp_ticks += ((*logs_)[idx].created_ts.nanos / 100);
 
-  data[1].FileTimeVal = timestamp_ticks;
+  UNSAFE_TODO(data[1].FileTimeVal = timestamp_ticks);
   *property_count = num_properties;
   last_error_ = ERROR_SUCCESS;
   return TRUE;
@@ -1213,8 +1241,8 @@ BOOL FakeEventLoggingApiManager::EvtFormatMessage(EVT_HANDLE publisher_metadata,
   }
 
   DCHECK(buffer);
-  ::memcpy(buffer, data.c_str(),
-           data.size() * sizeof(std::wstring::value_type));
+  UNSAFE_TODO(::memcpy(buffer, data.c_str(),
+                       data.size() * sizeof(std::wstring::value_type)));
   last_error_ = ERROR_SUCCESS;
 
   return TRUE;

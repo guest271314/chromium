@@ -6,7 +6,7 @@
 
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/skills/skills_service_factory.h"
-#include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/common/chrome_features.h"
 #include "components/skills/features.h"
 #include "content/public/test/browser_test_utils.h"
@@ -39,7 +39,8 @@ base::expected<int, std::string> GetIntValue(const base::DictValue& dict,
 
 SkillsFunctionalBrowserTestBase::SkillsFunctionalBrowserTestBase() {
   scoped_feature_list_.InitWithFeatures(
-      {features::kSkillsEnabled, features::kGlic, features::kGlicRollout}, {});
+      {features::kSkillsEnabled, features::kGlic, features::kGlicRollout},
+      {features::kSkillsWebViewV2Enabled});
 }
 
 SkillsFunctionalBrowserTestBase::~SkillsFunctionalBrowserTestBase() = default;
@@ -51,7 +52,7 @@ void SkillsFunctionalBrowserTestBase::SetUpOnMainThread() {
 }
 
 skills::SkillsService* SkillsFunctionalBrowserTestBase::GetSkillsService() {
-  return skills::SkillsServiceFactory::GetForProfile(browser()->profile());
+  return skills::SkillsServiceFactory::GetForProfile(browser()->GetProfile());
 }
 
 void SkillsFunctionalBrowserTestBase::CreateSkill(
@@ -115,9 +116,8 @@ SkillsFunctionalBrowserTestBase::ToMojoSkill(const base::Value& value) {
                    GetStringValue(*preview_dict, "name", "SkillPreview"));
   ASSIGN_OR_RETURN(preview->icon,
                    GetStringValue(*preview_dict, "icon", "SkillPreview"));
-  ASSIGN_OR_RETURN(
-      preview->description,
-      GetStringValue(*preview_dict, "description", "SkillPreview"));
+  const std::string* description = preview_dict->FindString("description");
+  preview->description = description ? *description : "";
 
   ASSIGN_OR_RETURN(int source,
                    GetIntValue(*preview_dict, "source", "SkillPreview"));

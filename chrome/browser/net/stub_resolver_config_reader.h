@@ -115,10 +115,10 @@ class StubResolverConfigReader {
   virtual bool ShouldDisableDohForParentalControls();
 
 #if BUILDFLAG(IS_ANDROID)
-  // Updates the android owned state and network service if the device/prfile is
+  // Updates the android owned state and network service if the device/profile is
   // owned.
-  void OnAndroidOwnedStateCheckComplete(bool has_profile_owner,
-                                        bool has_device_owner);
+  void OnAndroidOwnedStateCheckComplete(bool has_device_owner,
+                                        bool has_profile_owner);
 #endif
 
   void OverrideParentalControlsForTesting(bool parental_controls_override) {
@@ -141,6 +141,14 @@ class StubResolverConfigReader {
     return is_ztdns_enabled_for_testing_;
   }
 #endif
+
+  // Informs StubResolverConfigReader that DNS has been overridden for testing
+  // (e.g. by a mock host resolver or test DNS configuration). When overridden,
+  // platform DNS will be avoided in favor of the built-in DNS client so that
+  // test rules can intercept queries.
+  static void SetDnsOverriddenForTesting(bool overridden) {
+    dns_overridden_for_testing_ = overridden;
+  }
 
   static std::vector<net::IPEndPoint> GetFallbackDohNameservers();
 
@@ -188,13 +196,16 @@ class StubResolverConfigReader {
 #if BUILDFLAG(IS_ANDROID)
   // Whether or not an Android device or profile is owned.
   // A nullopt indicates this value has not been determined yet.
-  std::optional<bool> android_has_owner_ = std::nullopt;
+  std::optional<bool> android_has_owner_;
 #endif
 
 #if BUILDFLAG(IS_WIN)
   // Flag used for testing Zero Trust DNS scenario.
   static bool is_ztdns_enabled_for_testing_;
 #endif
+
+  // Flag used to indicate DNS is overridden in tests.
+  static bool dns_overridden_for_testing_;
 
   base::WeakPtrFactory<StubResolverConfigReader> weak_factory_{this};
 };

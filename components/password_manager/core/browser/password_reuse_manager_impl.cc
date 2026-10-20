@@ -32,6 +32,8 @@
 #if BUILDFLAG(IS_ANDROID)
 #include "base/json/json_reader.h"
 #include "base/json/json_writer.h"
+#include "base/memory/scoped_refptr.h"
+#include "components/os_crypt/async/common/encryptor.h"
 #include "google_apis/gaia/gaia_auth_util.h"
 #endif
 
@@ -123,8 +125,7 @@ PasswordReuseManagerImpl::PasswordReuseManagerImpl(
     os_crypt_async::OSCryptAsync* os_crypt_async) {
   os_crypt_async->GetInstance(
       base::BindOnce(&PasswordReuseManagerImpl::OnOsCryptAsyncReady,
-                     weak_ptr_factory_.GetWeakPtr()),
-      os_crypt_async::Encryptor::Option::kEncryptSyncCompat);
+                     weak_ptr_factory_.GetWeakPtr()));
 }
 
 PasswordReuseManagerImpl::~PasswordReuseManagerImpl() = default;
@@ -402,7 +403,7 @@ void PasswordReuseManagerImpl::InitHashPasswordManager(
 }
 
 void PasswordReuseManagerImpl::OnOsCryptAsyncReady(
-    os_crypt_async::Encryptor encryptor) {
+    scoped_refptr<os_crypt_async::Encryptor> encryptor) {
   hash_password_manager_ =
       std::make_unique<HashPasswordManager>(std::move(encryptor));
   state_callback_list_subscription_ =
@@ -495,9 +496,10 @@ void PasswordReuseManagerImpl::RequestLoginsFromStores() {
 
 void PasswordReuseManagerImpl::OnGetPasswordStoreResultsOrErrorFrom(
     PasswordStoreInterface* store,
-    LoginsResultOrError results_or_error) {
+    base::expected<std::vector<StoredCredential>, PasswordStoreBackendError>
+        results_or_error) {
   DCHECK(main_task_runner_->RunsTasksInCurrentSequence());
-  if (std::holds_alternative<PasswordStoreBackendError>(results_or_error)) {
+  if (!results_or_error) {
     return;
   }
 
@@ -511,7 +513,7 @@ void PasswordReuseManagerImpl::OnGetPasswordStoreResultsOrErrorFrom(
   if (!reuse_detector_) {
     return;
   }
-  auto results = std::get<LoginsResult>(std::move(results_or_error));
+  std::vector<StoredCredential> results = std::move(*results_or_error);
   ScheduleTask(base::BindOnce(&PasswordReuseDetector::OnGetPasswordStoreResults,
                               base::Unretained(reuse_detector_.get()),
                               std::move(results)));
@@ -655,7 +657,8 @@ void PasswordReuseManagerImpl::OnPrimaryAccountChanged(
 
 void PasswordReuseManagerImpl::MaybeSavePasswordHash(
     const PasswordForm* submitted_form,
-    PasswordManagerClient* client) {
+    PasswordManagerClient* client,
+    std::optional<metrics_util::GaiaPasswordHashChange> event) {
   // This method doesn't use DelayUntilReady since it isn't safe to store
   // `submitted_form` or `client` in a task. That's okay since this method
   // doesn't (and should never) use any member variables. It does call into
@@ -692,30 +695,30 @@ void PasswordReuseManagerImpl::MaybeSavePasswordHash(
     username = gaia::CanonicalizeEmail(username);
   }
   bool is_password_change = !submitted_form->new_password_element.empty();
-  const std::u16string password = is_password_change
+  const PasswordString password = is_password_change
                                       ? submitted_form->new_password_value
                                       : submitted_form->password_value;
 
   if (should_save_enterprise_pw) {
-    SaveEnterprisePasswordHash(username, password);
+    SaveEnterprisePasswordHash(username, password.value());
     return;
   }
 
   CHECK(should_save_gaia_pw);
   bool is_sync_account_email =
       client->GetStoreResultFilter()->IsSyncAccountEmail(username);
-  metrics_util::GaiaPasswordHashChange event =
+  metrics_util::GaiaPasswordHashChange gaia_event = event.value_or(
       is_sync_account_email
           ? (is_password_change
                  ? metrics_util::GaiaPasswordHashChange::CHANGED_IN_CONTENT_AREA
                  : metrics_util::GaiaPasswordHashChange::SAVED_IN_CONTENT_AREA)
-          : (is_password_change
-                 ? metrics_util::GaiaPasswordHashChange::
-                       NOT_SYNC_PASSWORD_CHANGE
-                 : metrics_util::GaiaPasswordHashChange::SAVED_IN_CONTENT_AREA);
-  SaveGaiaPasswordHash(username, password,
+          : (is_password_change ? metrics_util::GaiaPasswordHashChange::
+                                      NOT_SYNC_PASSWORD_CHANGE
+                                : metrics_util::GaiaPasswordHashChange::
+                                      SAVED_IN_CONTENT_AREA));
+  SaveGaiaPasswordHash(username, password.value(),
                        /*is_sync_password_for_metrics=*/is_sync_account_email,
-                       event);
+                       gaia_event);
 }
 
 HashPasswordManager* PasswordReuseManagerImpl::GetHashPasswordManager() {

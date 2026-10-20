@@ -40,17 +40,20 @@ public interface BackPressHandler {
         Type.CLOSE_WATCHER,
         Type.FIND_TOOLBAR,
         Type.LOCATION_BAR,
+        Type.REALBOX,
         Type.ACTOR_OVERLAY,
         Type.BOTTOM_CONTROLS,
         Type.TAB_HISTORY,
         Type.BOTTOM_SHEET,
         Type.SHOW_READING_LIST,
+        Type.SEND_TAB_TO_SELF,
         Type.MINIMIZE_APP_AND_CLOSE_TAB,
         Type.ARCHIVED_TABS_DIALOG,
         Type.NATIVE_PAGE,
         Type.CANCEL_TAB_STRIP_DRAG,
         Type.CANCEL_TAB_SWITCHER_DRAG,
-        Type.FUSEBOX_POPUP
+        Type.FUSEBOX_POPUP,
+        Type.TAB_SEARCH_OVERLAY
     })
     @Retention(RetentionPolicy.SOURCE)
     @interface Type {
@@ -69,15 +72,20 @@ public interface BackPressHandler {
         int MANUAL_FILLING = 10;
         int CANCEL_TAB_STRIP_DRAG = 11;
         int LOCATION_BAR = 12;
-        int ACTOR_OVERLAY = 13;
-        int TAB_MODAL_HANDLER = 14;
-        int CLOSE_WATCHER = 15;
-        int FIND_TOOLBAR = 16;
-        int BOTTOM_CONTROLS = 17;
-        int TAB_HISTORY = 18;
-        int NATIVE_PAGE = 19;
-        int SHOW_READING_LIST = 20;
-        int MINIMIZE_APP_AND_CLOSE_TAB = 21;
+        int REALBOX = 13;
+        int ACTOR_OVERLAY = 14;
+        int TAB_MODAL_HANDLER = 15;
+        int TAB_SEARCH_OVERLAY = 16;
+        int CLOSE_WATCHER = 17;
+        int FIND_TOOLBAR = 18;
+        int BOTTOM_CONTROLS = 19;
+        int TAB_HISTORY = 20;
+        int NATIVE_PAGE = 21;
+        int SHOW_READING_LIST = 22;
+        // Send tab to self must take precedence over minimize app and close tab
+        // to switch back to the parent tab instead of closing or minimizing.
+        int SEND_TAB_TO_SELF = 23;
+        int MINIMIZE_APP_AND_CLOSE_TAB = 24;
         int NUM_TYPES = MINIMIZE_APP_AND_CLOSE_TAB + 1;
     }
 

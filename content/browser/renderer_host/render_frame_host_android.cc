@@ -125,6 +125,10 @@ ScopedJavaLocalRef<jobject> RenderFrameHostAndroid::GetMainFrame(JNIEnv* env) {
   return render_frame_host_->GetMainFrame()->GetJavaRenderFrameHost();
 }
 
+bool RenderFrameHostAndroid::IsOutermostMainFrame(JNIEnv* env) const {
+  return render_frame_host_->IsOutermostMainFrame();
+}
+
 void RenderFrameHostAndroid::GetCanonicalUrlForSharing(
     base::OnceCallback<void(const std::optional<GURL>&)> callback) const {
   render_frame_host_->GetCanonicalUrl(std::move(callback));
@@ -156,6 +160,10 @@ void RenderFrameHostAndroid::NotifyUserActivation(JNIEnv* env) {
       blink::mojom::UserActivationNotificationType::kVoiceSearch);
 }
 
+bool RenderFrameHostAndroid::ConsumeTransientUserActivation(JNIEnv* env) {
+  return render_frame_host_->ConsumeTransientUserActivation();
+}
+
 void RenderFrameHostAndroid::NotifyWebAuthnAssertionRequestSucceeded(
     JNIEnv* env) {
   render_frame_host_->WebAuthnAssertionRequestSucceeded();
@@ -181,7 +189,7 @@ void RenderFrameHostAndroid::GetInterfaceToRendererFrame(
     JNIEnv* env,
     const base::android::JavaRef<jstring>& interface_name,
     int64_t message_pipe_raw_handle) const {
-  // TODO(https://crbug.com/497761255): CHECK-exclusion: Convert to CHECK once
+  // TODO(https://crbug.com/526542746): CHECK-exclusion: Convert to CHECK once
   // we are sure this isn't hit.
   DCHECK(render_frame_host_->IsRenderFrameLive());
   render_frame_host_->GetRemoteInterfaces()->GetInterfaceByName(
@@ -306,8 +314,8 @@ void RenderFrameHostAndroid::ExecuteJavaScriptInIsolatedWorld(
         ConvertJavaStringToUTF16(env, jscript), base::DoNothing(), jworldId);
     return;
   }
-  // Secure the Java callback in a scoped object and give ownership of it to the
-  // base::OnceCallback below.
+  // Secure the Java callback in a scoped object and give ownership of it to
+  // the base::OnceCallback below.
   base::android::ScopedJavaGlobalRef<jobject> java_callback;
   java_callback.Reset(env, jcallback);
 
@@ -348,6 +356,11 @@ bool RenderFrameHostAndroid::HasHitTestDataForTesting(JNIEnv* env) {
 
 void RenderFrameHostAndroid::ViewSource(JNIEnv* env) {
   render_frame_host()->ViewSource();
+}
+
+bool RenderFrameHostAndroid::IsCrossOriginIsolated(JNIEnv* env) const {
+  return render_frame_host_->GetWebExposedIsolationLevel() !=
+         WebExposedIsolationLevel::kNotIsolated;
 }
 
 }  // namespace content

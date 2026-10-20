@@ -367,6 +367,10 @@ typedef void(GL_BINDING_CALL* glDrawRangeElementsProc)(GLenum mode,
 typedef void(GL_BINDING_CALL* glEGLImageTargetRenderbufferStorageOESProc)(
     GLenum target,
     GLeglImageOES image);
+typedef void(GL_BINDING_CALL* glEGLImageTargetTexStorageEXTProc)(
+    GLenum target,
+    GLeglImageOES image,
+    const GLint* attrib_list);
 typedef void(GL_BINDING_CALL* glEGLImageTargetTexture2DOESProc)(
     GLenum target,
     GLeglImageOES image);
@@ -1317,6 +1321,7 @@ typedef void(GL_BINDING_CALL* glTransformFeedbackVaryingsProc)(
     GLsizei count,
     const char* const* varyings,
     GLenum bufferMode);
+typedef void(GL_BINDING_CALL* glTrimMemoryANGLEProc)(GLenum trimLevel);
 typedef void(GL_BINDING_CALL* glUniform1fProc)(GLint location, GLfloat x);
 typedef void(GL_BINDING_CALL* glUniform1fvProc)(GLint location,
                                                 GLsizei count,
@@ -1521,12 +1526,15 @@ struct ExtensionsGL {
   bool b_GL_ANGLE_shader_pixel_local_storage;
   bool b_GL_ANGLE_texture_external_update;
   bool b_GL_ANGLE_translated_shader_source;
+  bool b_GL_ANGLE_trim_memory;
   bool b_GL_ANGLE_vulkan_image;
   bool b_GL_ANGLE_webgl_compatibility;
   bool b_GL_CHROMIUM_bind_uniform_location;
   bool b_GL_CHROMIUM_copy_texture;
   bool b_GL_CHROMIUM_gles_depth_binding_hack;
   bool b_GL_CHROMIUM_glgetstringi_hack;
+  bool b_GL_EXT_EGL_image_array;
+  bool b_GL_EXT_EGL_image_storage;
   bool b_GL_EXT_base_instance;
   bool b_GL_EXT_blend_func_extended;
   bool b_GL_EXT_clear_texture;
@@ -1565,6 +1573,7 @@ struct ExtensionsGL {
   bool b_GL_NV_fence;
   bool b_GL_NV_framebuffer_blit;
   bool b_GL_NV_internalformat_sample_query;
+  bool b_GL_NV_pack_subimage;
   bool b_GL_OES_EGL_image;
   bool b_GL_OES_draw_buffers_indexed;
   bool b_GL_OES_get_program_binary;
@@ -1681,6 +1690,7 @@ struct ProcsGL {
   glDrawRangeElementsProc glDrawRangeElementsFn;
   glEGLImageTargetRenderbufferStorageOESProc
       glEGLImageTargetRenderbufferStorageOESFn;
+  glEGLImageTargetTexStorageEXTProc glEGLImageTargetTexStorageEXTFn;
   glEGLImageTargetTexture2DOESProc glEGLImageTargetTexture2DOESFn;
   glEnableProc glEnableFn;
   glEnableiOESProc glEnableiOESFn;
@@ -1946,6 +1956,7 @@ struct ProcsGL {
   glTexSubImage3DProc glTexSubImage3DFn;
   glTexSubImage3DRobustANGLEProc glTexSubImage3DRobustANGLEFn;
   glTransformFeedbackVaryingsProc glTransformFeedbackVaryingsFn;
+  glTrimMemoryANGLEProc glTrimMemoryANGLEFn;
   glUniform1fProc glUniform1fFn;
   glUniform1fvProc glUniform1fvFn;
   glUniform1iProc glUniform1iFn;
@@ -2321,6 +2332,9 @@ class GL_EXPORT GLApi {
   virtual void glEGLImageTargetRenderbufferStorageOESFn(
       GLenum target,
       GLeglImageOES image) = 0;
+  virtual void glEGLImageTargetTexStorageEXTFn(GLenum target,
+                                               GLeglImageOES image,
+                                               const GLint* attrib_list) = 0;
   virtual void glEGLImageTargetTexture2DOESFn(GLenum target,
                                               GLeglImageOES image) = 0;
   virtual void glEnableFn(GLenum cap) = 0;
@@ -3162,6 +3176,7 @@ class GL_EXPORT GLApi {
                                              GLsizei count,
                                              const char* const* varyings,
                                              GLenum bufferMode) = 0;
+  virtual void glTrimMemoryANGLEFn(GLenum trimLevel) = 0;
   virtual void glUniform1fFn(GLint location, GLfloat x) = 0;
   virtual void glUniform1fvFn(GLint location,
                               GLsizei count,
@@ -3467,6 +3482,8 @@ class GL_EXPORT GLApi {
 #define glDrawRangeElements ::gl::g_current_gl_context->glDrawRangeElementsFn
 #define glEGLImageTargetRenderbufferStorageOES \
   ::gl::g_current_gl_context->glEGLImageTargetRenderbufferStorageOESFn
+#define glEGLImageTargetTexStorageEXT \
+  ::gl::g_current_gl_context->glEGLImageTargetTexStorageEXTFn
 #define glEGLImageTargetTexture2DOES \
   ::gl::g_current_gl_context->glEGLImageTargetTexture2DOESFn
 #define glEnable ::gl::g_current_gl_context->glEnableFn
@@ -3843,6 +3860,7 @@ class GL_EXPORT GLApi {
   ::gl::g_current_gl_context->glTexSubImage3DRobustANGLEFn
 #define glTransformFeedbackVaryings \
   ::gl::g_current_gl_context->glTransformFeedbackVaryingsFn
+#define glTrimMemoryANGLE ::gl::g_current_gl_context->glTrimMemoryANGLEFn
 #define glUniform1f ::gl::g_current_gl_context->glUniform1fFn
 #define glUniform1fv ::gl::g_current_gl_context->glUniform1fvFn
 #define glUniform1i ::gl::g_current_gl_context->glUniform1iFn

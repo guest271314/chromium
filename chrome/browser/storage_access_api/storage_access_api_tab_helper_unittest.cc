@@ -13,6 +13,8 @@
 #include "testing/gtest/include/gtest/gtest.h"
 #include "url/origin.h"
 
+using testing::_;
+
 class MockStorageAccessAPIService : public StorageAccessAPIService {
  public:
   MOCK_METHOD(std::optional<base::TimeDelta>,
@@ -26,7 +28,13 @@ class StorageAccessAPITabHelperTest : public ChromeRenderViewHostTestHarness {
  public:
   void SetUp() override {
     ChromeRenderViewHostTestHarness::SetUp();
-    StorageAccessAPITabHelper::CreateForWebContents(web_contents(), &service_);
+    tab_helper_ =
+        std::make_unique<StorageAccessAPITabHelper>(web_contents(), &service_);
+  }
+
+  void TearDown() override {
+    tab_helper_.reset();
+    ChromeRenderViewHostTestHarness::TearDown();
   }
 
   content::RenderFrameHost* SimulateNavigateAndCommit(
@@ -41,19 +49,18 @@ class StorageAccessAPITabHelperTest : public ChromeRenderViewHostTestHarness {
                : nullptr;
   }
 
-  StorageAccessAPITabHelper* tab_helper() {
-    return StorageAccessAPITabHelper::FromWebContents(web_contents());
-  }
+  StorageAccessAPITabHelper* tab_helper() { return tab_helper_.get(); }
 
   MockStorageAccessAPIService& service() { return service_; }
 
  private:
   testing::StrictMock<MockStorageAccessAPIService> service_;
+  std::unique_ptr<StorageAccessAPITabHelper> tab_helper_;
 };
 
 TEST_F(StorageAccessAPITabHelperTest, OnFrameReceivedUserActivation_MainFrame) {
   // The service should not be invoked.
-  EXPECT_CALL(service(), RenewPermissionGrant(testing::_, testing::_)).Times(0);
+  EXPECT_CALL(service(), RenewPermissionGrant(_, _)).Times(0);
 
   NavigateAndCommit(GURL("https://example.test/"));
 
@@ -85,7 +92,7 @@ TEST_F(StorageAccessAPITabHelperTest, OnFrameReceivedUserActivation_Subframe) {
 
 TEST_F(StorageAccessAPITabHelperTest,
        OnFrameReceivedUserActivation_SubframeOpaque) {
-  EXPECT_CALL(service(), RenewPermissionGrant(testing::_, testing::_)).Times(0);
+  EXPECT_CALL(service(), RenewPermissionGrant(_, _)).Times(0);
 
   NavigateAndCommit(GURL("https://example.test/"));
 
@@ -97,5 +104,22 @@ TEST_F(StorageAccessAPITabHelperTest,
   ASSERT_NE(nullptr, subframe);
 
   // User activations in iframes with opaque origins are ignored.
+  tab_helper()->FrameReceivedUserActivation(subframe);
+}
+
+TEST_F(StorageAccessAPITabHelperTest,
+       OnFrameReceivedUserActivation_SubframeCredentialless) {
+  EXPECT_CALL(service(), RenewPermissionGrant(_, _)).Times(0);
+
+  NavigateAndCommit(GURL("https://example.test/"));
+
+  content::RenderFrameHost* subframe =
+      content::RenderFrameHostTester::For(main_rfh())
+          ->AppendCredentiallessChild("subframe");
+
+  subframe = SimulateNavigateAndCommit(GURL("https://bar.test/foo"), subframe);
+  ASSERT_NE(nullptr, subframe);
+
+  // User activations in credentialless iframes are ignored.
   tab_helper()->FrameReceivedUserActivation(subframe);
 }

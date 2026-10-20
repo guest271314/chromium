@@ -68,7 +68,7 @@ enum class AccessibilityPanelState {
   FULLSCREEN
 };
 
-// These values are persisted to logs and should not be renumbered or re-used.
+// These values are persisted to logs and should not be renumbered or reused.
 // See tools/metrics/histograms/enums.xml.
 enum class DictationToggleSource {
   // Toggled by the keyboard command (Search + D).
@@ -293,6 +293,15 @@ enum class DisableTouchpadMode {
   kAlways = 1,
   kOnExternalMouseConnected = 2,
   kMaxValue = kOnExternalMouseConnected,
+};
+
+// Font style used in the Hover Text bubble.
+// These values are written to prefs so should not be changed.
+enum class HoverTextFontStyle {
+  kSystemSans = 0,
+  kSerif = 1,
+  kMonospace = 2,
+  kMaxValue = kMonospace,
 };
 
 }  // namespace ash

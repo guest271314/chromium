@@ -14,17 +14,17 @@
 #include "chrome/app/chrome_main_delegate.h"
 #include "chrome/browser/chrome_content_browser_client.h"
 #include "chrome/browser/digital_credentials/digital_identity_provider_desktop.h"
-#include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/digital_credentials/digital_identity_safety_interstitial_controller_desktop.h"
 #include "chrome/grit/generated_resources.h"
-#include "chrome/test/base/chrome_test_utils.h"
+#include "chrome/test/base/chrome_test_path_utils.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "content/public/browser/digital_identity_provider.h"
 #include "content/public/common/content_features.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
-#include "testing/gtest/include/gtest/gtest-spi.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/views/widget/any_widget_observer.h"
 #include "ui/views/widget/widget.h"
@@ -167,7 +167,7 @@ class DigitalIdentityIntegrationTest : public InProcessBrowserTest {
 IN_PROC_BROWSER_TEST_F(DigitalIdentityIntegrationTest,
                        InterstitialShownMoreThanJustAge) {
   content::WebContents* web_contents =
-      browser()->tab_strip_model()->GetActiveWebContents();
+      browser()->GetTabStripModel()->GetActiveWebContents();
 
   std::u16string kExpectedDialogTitle = l10n_util::GetStringUTF16(
       IDS_WEB_DIGITAL_CREDENTIALS_INTERSTITIAL_DIALOG_TITLE);
@@ -195,7 +195,7 @@ IN_PROC_BROWSER_TEST_F(DigitalIdentityIntegrationTest,
  */
 IN_PROC_BROWSER_TEST_F(DigitalIdentityIntegrationTest, InterstitialNotShown) {
   content::WebContents* web_contents =
-      browser()->tab_strip_model()->GetActiveWebContents();
+      browser()->GetTabStripModel()->GetActiveWebContents();
 
   std::u16string kExpectedDialogTitle = l10n_util::GetStringUTF16(
       IDS_WEB_DIGITAL_CREDENTIALS_INTERSTITIAL_DIALOG_TITLE);
@@ -289,7 +289,7 @@ class DigitalIdentityIntegrationQrCodeTest : public InProcessBrowserTest {
 IN_PROC_BROWSER_TEST_F(DigitalIdentityIntegrationQrCodeTest,
                        QrCodeDialogCancelledReturnsNotAllowedError) {
   content::WebContents* web_contents =
-      browser()->tab_strip_model()->GetActiveWebContents();
+      browser()->GetTabStripModel()->GetActiveWebContents();
 
   std::u16string kExpectedQrTitle =
       l10n_util::GetStringUTF16(IDS_WEB_DIGITAL_CREDENTIALS_QR_TITLE);

@@ -99,6 +99,10 @@ MATCHER_P(HasKeySystemDataBool1, expected_value, "") {
   return arg.key_system_data_bool1 == expected_value;
 }
 
+MATCHER_P(HasSessionInitDataType, expected_value, "") {
+  return arg.session_init_data_type == expected_value;
+}
+
 // TODO(jrummell): These tests are a subset of those in aes_decryptor_unittest.
 // Refactor aes_decryptor_unittest.cc to handle AesDecryptor directly and
 // via CdmAdapter once CdmAdapter supports decrypting functionality. There
@@ -300,13 +304,9 @@ class CdmAdapterTestWithClearKeyCdm : public CdmAdapterTestBase {
     }
 
     // The ClearKeyCdm records the LicenseSdkVersion in CreateSession.
-    if (GetCdmInterfaceVersion() > 10) {
-      EXPECT_CALL(*cdm_helper_,
-                  RecordUkm(HasLicenseSdkVersion(kExpectedLicenseSdkVersion)))
-          .Times(1);
-    } else {
-      EXPECT_CALL(*cdm_helper_, RecordUkm(_)).Times(0);
-    }
+    EXPECT_CALL(*cdm_helper_,
+                RecordUkm(HasLicenseSdkVersion(kExpectedLicenseSdkVersion)))
+        .Times(1);
 
     cdm_->CreateSessionAndGenerateRequest(
         CdmSessionType::kTemporary, data_type, key_id,
@@ -440,11 +440,9 @@ class CdmAdapterTestWithMockCdm : public CdmAdapterTestBase {
 
 // Instantiate test cases
 
-INSTANTIATE_TEST_SUITE_P(CDM_10, CdmAdapterTestWithClearKeyCdm, Values(10));
 INSTANTIATE_TEST_SUITE_P(CDM_11, CdmAdapterTestWithClearKeyCdm, Values(11));
 INSTANTIATE_TEST_SUITE_P(CDM_12, CdmAdapterTestWithClearKeyCdm, Values(12));
 
-INSTANTIATE_TEST_SUITE_P(CDM_10, CdmAdapterTestWithMockCdm, Values(10));
 INSTANTIATE_TEST_SUITE_P(CDM_11, CdmAdapterTestWithMockCdm, Values(11));
 INSTANTIATE_TEST_SUITE_P(CDM_12, CdmAdapterTestWithMockCdm, Values(12));
 
@@ -655,14 +653,9 @@ TEST_P(CdmAdapterTestWithMockCdm, RecordUkmCalled) {
   CdmConfig cdm_config = GetCdmConfig();
   InitializeWithCdmConfig(cdm_config);
 
-  // UKM should be recorded when CdmAdapter destructed, only if supported by the
-  // CDM interface.
-  if (GetCdmInterfaceVersion() > 10) {
-    EXPECT_CALL(*cdm_helper_,
-                RecordUkm(HasLicenseSdkVersion(kExpectedLicenseSdkVersion)));
-  } else {
-    EXPECT_CALL(*cdm_helper_, RecordUkm(_)).Times(0);
-  }
+  // UKM should be recorded when CdmAdapter destructed.
+  EXPECT_CALL(*cdm_helper_,
+              RecordUkm(HasLicenseSdkVersion(kExpectedLicenseSdkVersion)));
 
   cdm_host_proxy_->ReportMetrics(cdm::kSdkVersion, kExpectedLicenseSdkVersion);
 }
@@ -670,10 +663,6 @@ TEST_P(CdmAdapterTestWithMockCdm, RecordUkmCalled) {
 TEST_P(CdmAdapterTestWithMockCdm, RecordUMA) {
   CdmConfig cdm_config = GetCdmConfig();
   InitializeWithCdmConfig(cdm_config);
-
-  if (GetCdmInterfaceVersion() < 11) {
-    GTEST_SKIP() << "ReportMetrics not supported";
-  }
 
   // bypass_count = 0, should record 0
   {
@@ -726,6 +715,11 @@ TEST_P(CdmAdapterTestWithMockCdm, RecordUMA) {
     cdm_host_proxy_->ReportMetrics(cdm::kKeySystemDataBool1, 1);
   }
 
+  // Key system session metrics
+  {
+    cdm_host_proxy_->ReportMetrics(cdm::kSessionInitDataType, 4);
+  }
+
   // On destruction UKM should be logged containing the sum of all the reported
   // kDecoderBypassBlockCount values (and no license SDK version as one is not
   // set).
@@ -736,7 +730,7 @@ TEST_P(CdmAdapterTestWithMockCdm, RecordUMA) {
                 HasDecoderCheck1WarningCount(2), HasDecoderCheck1ErrorCount(3),
                 HasKeySystemDataTime1(1000), HasKeySystemDataTime2(2000),
                 HasKeySystemDataTime3(3000), HasKeySystemDataBool1(true),
-                HasNoLicenseSdkVersion())));
+                HasSessionInitDataType(4), HasNoLicenseSdkVersion())));
 }
 
 // When CDM reports an unexpected value (e.g. new value added in the future),

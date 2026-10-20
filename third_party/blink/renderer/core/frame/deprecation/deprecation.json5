@@ -179,6 +179,16 @@
       milestone: 119,
     },
     {
+      name: "DigitalCredentialsUnknownProtocol",
+      message: "An unknown Digital Credentials protocol was requested in navigator.credentials.get() or create(). In a future release, unrecognized protocols will be blocked.",
+      translation_note: "Warning displayed to developers when an unknown protocol string is used in a call to navigator.credentials.get() or create() with the 'digital' option.",
+      web_features: [
+        "kDigitalCredentialsProtocolUnknown",
+      ],
+      chrome_status_feature: 6492906882990080,
+      milestone: 160,
+    },
+    {
       name: "DocumentCreateEventKeyboardEvents",
       message: "document.createEvent('KeyboardEvents') is deprecated and will be removed. Use `new KeyboardEvent()` instead.",
       translation_note: "Warning displayed to developers when document.createEvent() is called with 'KeyboardEvents', which is a non-standard event interface that will be removed.",
@@ -202,6 +212,16 @@
       name: "ExampleBrowserProcessDeprecation",
       message: "This is an example for showing the code required for a browser process reported deprecation.",
       translation_note: "Translation is not needed, this will never be exposed in production code.",
+    },
+    {
+      name: "FencedFrame",
+      message: "Fenced Frame API is deprecated and scheduled for removal.",
+      translation_note: "Warning displayed to developers that they are using the Fenced Frame API which has been deprecated and is scheduled to be removed.",
+      web_features: [
+        "kHTMLFencedFrameElement",
+      ],
+      chrome_status_feature: 6366274495053824,
+      milestone: 156,
     },
     {
       name: "Fledge",
@@ -575,6 +595,16 @@
       milestone: 97,
     },
     {
+      name: "RTCPeerConnectionCreateDTMFSender",
+      message: "RTCPeerConnection.createDTMFSender() is deprecated and will be removed. Please use RTCRtpSender.dtmf instead.",
+      translation_note: "Warning displayed to developers when the non-standard RTCPeerConnection.createDTMFSender() method is used. Developers should use the standard RTCRtpSender.dtmf attribute instead.",
+      web_features: [
+        "kV8RTCPeerConnection_CreateDTMFSender_Method",
+      ],
+      chrome_status_feature: 5160724576993280,
+      milestone: 160,
+    },
+    {
       name: "RTCPeerConnectionGetStatsLegacyNonCompliant",
       message: "The callback-based getStats() is deprecated and will be removed. Use the spec-compliant getStats() instead.",
       translation_note: "WebRTC is set of JavaScript APIs for sending and receiving data, audio and video. getStats() is a method used to obtain network and quality metrics. There are two versions of this method, one is being deprecated because it is non-standard.",
@@ -602,24 +632,6 @@
         "kV8SharedArrayBufferConstructedWithoutIsolation",
       ],
       milestone: 106,
-    },
-    {
-      name: "SharedStorage",
-      message: "The Shared Storage API is deprecated and will be removed in a future release.",
-      translation_note: "A deprecation warning shown in the DevTools Issues tab. It's shown when one of the Shared Storage APIs like `sharedStorage.set()`, `sharedStorage.worklet.addModule()`, `sharedStorage.selectURL()`, etc., along with `<img sharedstoragewritable>`, `<iframe sharedstoragewritable>`, or `fetch(url, {sharedStorageWritable: true})` are used.",
-      web_features: [
-        "kSharedStorageAPIAll",
-      ],
-      chrome_status_feature: 5076349064708096,
-    },
-    {
-      name: "StorageAccessAPI_requestStorageAccessFor_Method",
-      message: "`document.requestStorageAccessFor` is deprecated and will be removed. See https://privacysandbox.com/news/update-on-plans-for-privacy-sandbox-technologies/ for more details.",
-      translation_note: "A deprecation warning shown in the DevTools Issues tab. It's shown when the `document.requestStorageAccessFor` API is called. The placeholder will always be the string `document.requestStorageAccessFor`.",
-      web_features: [
-        "kStorageAccessAPI_requestStorageAccessFor_Method",
-      ],
-      chrome_status_feature: 5162221567082496,
     },
     {
       name: "TextToSpeech_DisallowedByAutoplay",
@@ -658,6 +670,14 @@
       milestone: 96,
     },
     {
+      name: "ViewTransitionPreventSvgFilterPaint",
+      message: "SVG filters cannot be applied to view transition content, such as `::view-transition-old()` and `::view-transition-new()`, as it may contain cross-origin iframes or plugins.",
+      translation_note: "Warning displayed to developers when an SVG filter is applied to view transition content, which is disallowed because the content may contain cross-origin iframes or plugins. `::view-transition-old()` and `::view-transition-new()` are CSS pseudo-element names and should not be translated.",
+      web_features: [
+        "kViewTransitionPreventSvgFilterPaint",
+      ],
+    },
+    {
       name: "WebBluetoothRemoteCharacteristicWriteValue",
       message: "`BluetoothRemoteGATTCharacteristic.writeValue()` is deprecated. Use `writeValueWithResponse()` or `writeValueWithoutResponse()` instead.",
       translation_note: "This warning occurs when the deprecated `BluetoothRemoteGATTCharacteristic.writeValue()` method is used. Developers should use `writeValueWithResponse()` or `writeValueWithoutResponse()` instead.",
@@ -665,6 +685,26 @@
         "kWebBluetoothRemoteCharacteristicWriteValue",
       ],
       chrome_status_feature: 5088568590598144,
+    },
+    {
+      name: "WebTransportDatagramDuplexStreamIncomingHighWaterMark",
+      message: "WebTransportDatagramDuplexStream.incomingHighWaterMark has been renamed to incomingMaxBufferedDatagrams. incomingHighWaterMark will be removed in a future version of Chrome.",
+      translation_note: "Warning for using the deprecated 'incomingHighWaterMark' attribute on WebTransportDatagramDuplexStream. Developers should use 'incomingMaxBufferedDatagrams' instead.",
+      web_features: [
+        "kWebTransportDatagramDuplexStreamIncomingHighWaterMark",
+      ],
+      chrome_status_feature: 5143839699501056,
+      milestone: 156,
+    },
+    {
+      name: "WebTransportDatagramDuplexStreamOutgoingHighWaterMark",
+      message: "WebTransportDatagramDuplexStream.outgoingHighWaterMark has been renamed to outgoingMaxBufferedDatagrams. outgoingHighWaterMark will be removed in a future version of Chrome.",
+      translation_note: "Warning for using the deprecated 'outgoingHighWaterMark' attribute on WebTransportDatagramDuplexStream. Developers should use 'outgoingMaxBufferedDatagrams' instead.",
+      web_features: [
+        "kWebTransportDatagramDuplexStreamOutgoingHighWaterMark",
+      ],
+      chrome_status_feature: 5143839699501056,
+      milestone: 156,
     },
     {
       name: "XHRJSONEncodingDetection",

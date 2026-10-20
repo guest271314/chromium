@@ -5,6 +5,7 @@
 #include "components/sessions/core/tab_restore_types.h"
 
 #include "base/trace_event/memory_usage_estimator.h"
+#include "ui/base/mojom/window_show_state.mojom.h"
 
 namespace sessions::tab_restore {
 
@@ -30,7 +31,27 @@ size_t Tab::EstimateMemoryUsage() const {
          user_agent_override.EstimateMemoryUsage();
 }
 
-Window::Window() : Entry(WINDOW) {}
+Split::Split() : Entry(SPLIT) {}
+Split::~Split() = default;
+
+size_t Split::EstimateMemoryUsage() const {
+  using base::trace_event::EstimateMemoryUsage;
+  return EstimateMemoryUsage(tabs);
+}
+
+// static
+std::unique_ptr<Split> Split::FromTab(const Tab& tab) {
+  auto split = std::make_unique<Split>();
+  CHECK(tab.split_id.has_value());
+  split->split_id = tab.split_id.value();
+  split->visual_data =
+      tab.split_visual_data.value_or(split_tabs::SplitTabVisualData());
+  split->timestamp = tab.timestamp;
+  return split;
+}
+
+Window::Window()
+    : Entry(WINDOW), show_state(ui::mojom::WindowShowState::kDefault) {}
 Window::~Window() = default;
 
 size_t Window::EstimateMemoryUsage() const {
@@ -45,14 +66,6 @@ size_t Group::EstimateMemoryUsage() const {
   using base::trace_event::EstimateMemoryUsage;
   return EstimateMemoryUsage(tabs) + EstimateMemoryUsage(visual_data.title()) +
          EstimateMemoryUsage(split_tabs);
-}
-
-Split::Split() : Entry(SPLIT) {}
-Split::~Split() = default;
-
-size_t Split::EstimateMemoryUsage() const {
-  using base::trace_event::EstimateMemoryUsage;
-  return EstimateMemoryUsage(tabs);
 }
 
 // static

@@ -9,6 +9,7 @@
 
 #include "base/functional/callback.h"
 #include "base/notreached.h"
+#include "gin/public/cppgc.h"
 #include "gin/public/v8_platform.h"
 #include "third_party/blink/renderer/platform/bindings/active_script_wrappable_manager.h"
 #include "third_party/blink/renderer/platform/bindings/dom_data_store.h"
@@ -79,8 +80,10 @@ ThreadState* ThreadState::AttachMainThread(
 }
 
 // static
-ThreadState* ThreadState::AttachMainThreadForTesting(v8::Platform* platform) {
-  auto* thread_state = new ThreadState(platform);
+ThreadState* ThreadState::AttachMainThreadForTesting(
+    v8::Platform* platform,
+    std::optional<cppgc::StackStartMarker> stack_start_marker) {
+  auto* thread_state = new ThreadState(platform, stack_start_marker);
   ThreadStateStorage::AttachMainThread(
       *thread_state, thread_state->cpp_heap().GetAllocationHandle(),
       thread_state->cpp_heap().GetHeapHandle());
@@ -89,8 +92,10 @@ ThreadState* ThreadState::AttachMainThreadForTesting(v8::Platform* platform) {
 }
 
 // static
-ThreadState* ThreadState::AttachCurrentThread() {
-  auto* thread_state = new ThreadState(gin::V8Platform::Get());
+ThreadState* ThreadState::AttachCurrentThread(
+    std::optional<cppgc::StackStartMarker> stack_start_marker) {
+  auto* thread_state =
+      new ThreadState(gin::V8Platform::Get(), stack_start_marker);
   ThreadStateStorage::AttachNonMainThread(
       *thread_state, thread_state->cpp_heap().GetAllocationHandle(),
       thread_state->cpp_heap().GetHeapHandle());
@@ -99,8 +104,9 @@ ThreadState* ThreadState::AttachCurrentThread() {
 
 // static
 ThreadState* ThreadState::AttachCurrentThreadForTesting(
-    v8::Platform* platform) {
-  ThreadState* thread_state = new ThreadState(platform);
+    v8::Platform* platform,
+    std::optional<cppgc::StackStartMarker> stack_start_marker) {
+  ThreadState* thread_state = new ThreadState(platform, stack_start_marker);
   ThreadStateStorage::AttachNonMainThread(
       *thread_state, thread_state->cpp_heap().GetAllocationHandle(),
       thread_state->cpp_heap().GetHeapHandle());
@@ -177,6 +183,7 @@ std::unique_ptr<v8::CppHeap> CreateCppHeap(
     std::optional<cppgc::StackStartMarker> stack_start_marker) {
   v8::CppHeapCreateParams params(CustomSpaces::CreateCustomSpaces());
   params.stack_start_marker = std::move(stack_start_marker);
+  params.allocation_sampler = gin::GetCppGCAllocationSampler();
   return v8::CppHeap::Create(platform, params);
 }
 
@@ -229,13 +236,16 @@ class CustomSpaceStatisticsReceiverImpl final
 
   ~CustomSpaceStatisticsReceiverImpl() final {
     DCHECK(node_bytes_.has_value());
+    DCHECK(element_bytes_.has_value());
     DCHECK(css_bytes_.has_value());
-    std::move(callback_).Run(*node_bytes_, *css_bytes_);
+    std::move(callback_).Run(*node_bytes_ + *element_bytes_, *css_bytes_);
   }
 
   void AllocatedBytes(cppgc::CustomSpaceIndex space_index, size_t bytes) final {
     if (space_index.value == NodeSpace::kSpaceIndex.value) {
       node_bytes_ = bytes;
+    } else if (space_index.value == ElementSpace::kSpaceIndex.value) {
+      element_bytes_ = bytes;
     } else {
       DCHECK_EQ(space_index.value, CSSValueSpace::kSpaceIndex.value);
       css_bytes_ = bytes;
@@ -247,6 +257,7 @@ class CustomSpaceStatisticsReceiverImpl final
                           size_t allocated_css_bytes)>
       callback_;
   std::optional<size_t> node_bytes_;
+  std::optional<size_t> element_bytes_;
   std::optional<size_t> css_bytes_;
 };
 
@@ -256,6 +267,7 @@ void ThreadState::CollectNodeAndCssStatistics(
     base::OnceCallback<void(size_t allocated_node_bytes,
                             size_t allocated_css_bytes)> callback) {
   std::vector<cppgc::CustomSpaceIndex> spaces{NodeSpace::kSpaceIndex,
+                                              ElementSpace::kSpaceIndex,
                                               CSSValueSpace::kSpaceIndex};
   cpp_heap().CollectCustomSpaceStatisticsAtLastGC(
       std::move(spaces),

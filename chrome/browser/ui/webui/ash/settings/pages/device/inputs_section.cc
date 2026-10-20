@@ -289,10 +289,6 @@ void AddInputMethodOptionsLoadTimeData(
       "isPhysicalKeyboardPredictiveWritingAllowed",
       base::FeatureList::IsEnabled(features::kAssistMultiWord) &&
           is_physical_keyboard_predictive_writing_allowed);
-  html_source->AddBoolean(
-      "autocorrectEnableByDefault",
-      base::FeatureList::IsEnabled(features::kAutocorrectByDefault));
-  html_source->AddBoolean("allowFirstPartyVietnameseInput", true);
 }
 
 }  // namespace
@@ -567,7 +563,7 @@ void InputsSection::UpdateSpellCheckSearchTags() {
 
 void InputsSection::UpdateAutocorrectTags(
     input_method::InputMethodManager* manager) {
-  DCHECK(manager);
+  CHECK(manager, base::NotFatalUntil::M162);
   const std::string engine_id =
       extension_ime_util::GetComponentIDByInputMethodID(
           manager->GetActiveIMEState()->GetCurrentInputMethod().id());

@@ -5,6 +5,7 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_PLATFORM_GRAPHICS_ACCELERATED_STATIC_BITMAP_IMAGE_H_
 #define THIRD_PARTY_BLINK_RENDERER_PLATFORM_GRAPHICS_ACCELERATED_STATIC_BITMAP_IMAGE_H_
 
+#include "base/functional/function_ref.h"
 #include "base/memory/weak_ptr.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/threading/thread_checker.h"
@@ -18,6 +19,7 @@
 namespace gpu {
 class ClientSharedImage;
 struct ExportedSharedImage;
+class SharedImageExportResult;
 }  // namespace gpu
 
 namespace blink {
@@ -50,6 +52,7 @@ class PLATFORM_EXPORT AcceleratedStaticBitmapImage final
       scoped_refptr<gpu::ClientSharedImage>,
       const gpu::SyncToken&,
       SkAlphaType alpha_type,
+      const gfx::HDRMetadata&,
       base::WeakPtr<WebGraphicsContext3DProviderWrapper>,
       base::PlatformThreadRef context_thread_ref,
       scoped_refptr<base::SingleThreadTaskRunner> context_task_runner,
@@ -64,7 +67,33 @@ class PLATFORM_EXPORT AcceleratedStaticBitmapImage final
       gpu::ExportedSharedImage exported_shared_image,
       const gpu::SyncToken& sync_token,
       SkAlphaType alpha_type,
-      base::OnceCallback<void(const gpu::SyncToken&)> release_callback);
+      const gfx::HDRMetadata&,
+      base::OnceCallback<void(gpu::SharedImageExportResult)> release_callback);
+
+  // The set of read/display SharedImage usages that callers may pass to
+  // CreateFromRaster().
+  static constexpr gpu::SharedImageUsageSet kAllowedReadUsages =
+      gpu::SHARED_IMAGE_USAGE_RASTER_READ | gpu::SHARED_IMAGE_USAGE_GLES2_READ |
+      gpu::SHARED_IMAGE_USAGE_WEBGPU_READ |
+      gpu::SHARED_IMAGE_USAGE_DISPLAY_READ | gpu::SHARED_IMAGE_USAGE_SCANOUT;
+
+  // Creates an image initialized by rasterizing the commands recorded by
+  // `draw_callback`. `shared_image_usage_flags` specifies the read/display
+  // usages required by the caller (which must be a subset of
+  // `kAllowedReadUsages`); `SHARED_IMAGE_USAGE_RASTER_WRITE` is added
+  // internally.
+  static scoped_refptr<StaticBitmapImage> CreateFromRaster(
+      const gfx::Size& size,
+      viz::SharedImageFormat format,
+      SkAlphaType alpha_type,
+      const gfx::ColorSpace& color_space,
+      const gfx::HDRMetadata& hdr_metadata,
+      base::WeakPtr<WebGraphicsContext3DProviderWrapper>
+          context_provider_wrapper,
+      gpu::SharedImageUsageSet shared_image_usage_flags,
+      base::FunctionRef<void(cc::PaintCanvas&)> draw_callback,
+      scoped_refptr<const cc::AnimatedImageFrameIndexMap>
+          animated_image_frame_index_map = nullptr);
 
   bool IsOpaque() override;
   bool IsTextureBacked() const override { return true; }
@@ -103,6 +132,8 @@ class PLATFORM_EXPORT AcceleratedStaticBitmapImage final
   void UpdateSyncToken(const gpu::SyncToken& sync_token) final {
     mailbox_ref_->set_sync_token(sync_token);
   }
+  void UpdateSyncTokenFromExportResult(
+      gpu::SharedImageExportResult export_result) final;
 
   // Provides the mailbox backing for this image. The caller must wait on the
   // sync token before accessing this mailbox.
@@ -120,11 +151,16 @@ class PLATFORM_EXPORT AcceleratedStaticBitmapImage final
     return shared_image_->format();
   }
 
+  const gfx::HDRMetadata& GetHdrMetadata() const override {
+    return hdr_metadata_;
+  }
+
  private:
   AcceleratedStaticBitmapImage(
       scoped_refptr<gpu::ClientSharedImage>,
       const gpu::SyncToken&,
       SkAlphaType alpha_type,
+      const gfx::HDRMetadata&,
       const ImageOrientation& orientation,
       base::WeakPtr<WebGraphicsContext3DProviderWrapper>,
       base::PlatformThreadRef context_thread_ref,
@@ -147,6 +183,7 @@ class PLATFORM_EXPORT AcceleratedStaticBitmapImage final
   sk_sp<MailboxTextureBacking> texture_backing_;
 
   PaintImage::ContentId paint_image_content_id_;
+  gfx::HDRMetadata hdr_metadata_;
   THREAD_CHECKER(thread_checker_);
 };
 

@@ -375,6 +375,8 @@ void DriverGL::InitializeDynamicBindings(GLGetProcAddressProc get_proc_address,
       gfx::HasExtension(extensions, "GL_ANGLE_texture_external_update");
   ext.b_GL_ANGLE_translated_shader_source =
       gfx::HasExtension(extensions, "GL_ANGLE_translated_shader_source");
+  ext.b_GL_ANGLE_trim_memory =
+      gfx::HasExtension(extensions, "GL_ANGLE_trim_memory");
   ext.b_GL_ANGLE_vulkan_image =
       gfx::HasExtension(extensions, "GL_ANGLE_vulkan_image");
   ext.b_GL_ANGLE_webgl_compatibility =
@@ -387,6 +389,10 @@ void DriverGL::InitializeDynamicBindings(GLGetProcAddressProc get_proc_address,
       gfx::HasExtension(extensions, "GL_CHROMIUM_gles_depth_binding_hack");
   ext.b_GL_CHROMIUM_glgetstringi_hack =
       gfx::HasExtension(extensions, "GL_CHROMIUM_glgetstringi_hack");
+  ext.b_GL_EXT_EGL_image_array =
+      gfx::HasExtension(extensions, "GL_EXT_EGL_image_array");
+  ext.b_GL_EXT_EGL_image_storage =
+      gfx::HasExtension(extensions, "GL_EXT_EGL_image_storage");
   ext.b_GL_EXT_base_instance =
       gfx::HasExtension(extensions, "GL_EXT_base_instance");
   ext.b_GL_EXT_blend_func_extended =
@@ -458,6 +464,8 @@ void DriverGL::InitializeDynamicBindings(GLGetProcAddressProc get_proc_address,
       gfx::HasExtension(extensions, "GL_NV_framebuffer_blit");
   ext.b_GL_NV_internalformat_sample_query =
       gfx::HasExtension(extensions, "GL_NV_internalformat_sample_query");
+  ext.b_GL_NV_pack_subimage =
+      gfx::HasExtension(extensions, "GL_NV_pack_subimage");
   ext.b_GL_OES_EGL_image = gfx::HasExtension(extensions, "GL_OES_EGL_image");
   ext.b_GL_OES_draw_buffers_indexed =
       gfx::HasExtension(extensions, "GL_OES_draw_buffers_indexed");
@@ -817,6 +825,12 @@ void DriverGL::InitializeDynamicBindings(GLGetProcAddressProc get_proc_address,
     fn.glEGLImageTargetRenderbufferStorageOESFn =
         reinterpret_cast<glEGLImageTargetRenderbufferStorageOESProc>(
             get_proc_address("glEGLImageTargetRenderbufferStorageOES"));
+  }
+
+  if (ext.b_GL_EXT_EGL_image_storage || ext.b_GL_OES_EGL_image) {
+    fn.glEGLImageTargetTexStorageEXTFn =
+        reinterpret_cast<glEGLImageTargetTexStorageEXTProc>(
+            get_proc_address("glEGLImageTargetTexStorageEXT"));
   }
 
   if (ext.b_GL_OES_EGL_image) {
@@ -1862,6 +1876,11 @@ void DriverGL::InitializeDynamicBindings(GLGetProcAddressProc get_proc_address,
             get_proc_address("glTransformFeedbackVaryings"));
   }
 
+  if (ext.b_GL_ANGLE_trim_memory) {
+    fn.glTrimMemoryANGLEFn = reinterpret_cast<glTrimMemoryANGLEProc>(
+        get_proc_address("glTrimMemoryANGLE"));
+  }
+
   if (ver->IsAtLeastGLES(3u, 0u)) {
     fn.glUniform1uiFn =
         reinterpret_cast<glUniform1uiProc>(get_proc_address("glUniform1ui"));
@@ -2629,6 +2648,12 @@ void GLApiBase::glDrawRangeElementsFn(GLenum mode,
 void GLApiBase::glEGLImageTargetRenderbufferStorageOESFn(GLenum target,
                                                          GLeglImageOES image) {
   driver_->fn.glEGLImageTargetRenderbufferStorageOESFn(target, image);
+}
+
+void GLApiBase::glEGLImageTargetTexStorageEXTFn(GLenum target,
+                                                GLeglImageOES image,
+                                                const GLint* attrib_list) {
+  driver_->fn.glEGLImageTargetTexStorageEXTFn(target, image, attrib_list);
 }
 
 void GLApiBase::glEGLImageTargetTexture2DOESFn(GLenum target,
@@ -4291,6 +4316,10 @@ void GLApiBase::glTransformFeedbackVaryingsFn(GLuint program,
                                             bufferMode);
 }
 
+void GLApiBase::glTrimMemoryANGLEFn(GLenum trimLevel) {
+  driver_->fn.glTrimMemoryANGLEFn(trimLevel);
+}
+
 void GLApiBase::glUniform1fFn(GLint location, GLfloat x) {
   driver_->fn.glUniform1fFn(location, x);
 }
@@ -5345,6 +5374,14 @@ void TraceGLApi::glEGLImageTargetRenderbufferStorageOESFn(GLenum target,
   TRACE_EVENT_BINARY_EFFICIENT0(
       "gpu", "TraceGLAPI::glEGLImageTargetRenderbufferStorageOES");
   gl_api_->glEGLImageTargetRenderbufferStorageOESFn(target, image);
+}
+
+void TraceGLApi::glEGLImageTargetTexStorageEXTFn(GLenum target,
+                                                 GLeglImageOES image,
+                                                 const GLint* attrib_list) {
+  TRACE_EVENT_BINARY_EFFICIENT0("gpu",
+                                "TraceGLAPI::glEGLImageTargetTexStorageEXT");
+  gl_api_->glEGLImageTargetTexStorageEXTFn(target, image, attrib_list);
 }
 
 void TraceGLApi::glEGLImageTargetTexture2DOESFn(GLenum target,
@@ -7323,6 +7360,11 @@ void TraceGLApi::glTransformFeedbackVaryingsFn(GLuint program,
   gl_api_->glTransformFeedbackVaryingsFn(program, count, varyings, bufferMode);
 }
 
+void TraceGLApi::glTrimMemoryANGLEFn(GLenum trimLevel) {
+  TRACE_EVENT_BINARY_EFFICIENT0("gpu", "TraceGLAPI::glTrimMemoryANGLE");
+  gl_api_->glTrimMemoryANGLEFn(trimLevel);
+}
+
 void TraceGLApi::glUniform1fFn(GLint location, GLfloat x) {
   TRACE_EVENT_BINARY_EFFICIENT0("gpu", "TraceGLAPI::glUniform1f");
   gl_api_->glUniform1fFn(location, x);
@@ -8619,6 +8661,15 @@ void LogGLApi::glEGLImageTargetRenderbufferStorageOESFn(GLenum target,
                  << "(" << GLEnums::GetStringEnum(target) << ", " << image
                  << ")");
   gl_api_->glEGLImageTargetRenderbufferStorageOESFn(target, image);
+}
+
+void LogGLApi::glEGLImageTargetTexStorageEXTFn(GLenum target,
+                                               GLeglImageOES image,
+                                               const GLint* attrib_list) {
+  GL_SERVICE_LOG("glEGLImageTargetTexStorageEXT"
+                 << "(" << GLEnums::GetStringEnum(target) << ", " << image
+                 << ", " << static_cast<const void*>(attrib_list) << ")");
+  gl_api_->glEGLImageTargetTexStorageEXTFn(target, image, attrib_list);
 }
 
 void LogGLApi::glEGLImageTargetTexture2DOESFn(GLenum target,
@@ -11128,6 +11179,12 @@ void LogGLApi::glTransformFeedbackVaryingsFn(GLuint program,
   gl_api_->glTransformFeedbackVaryingsFn(program, count, varyings, bufferMode);
 }
 
+void LogGLApi::glTrimMemoryANGLEFn(GLenum trimLevel) {
+  GL_SERVICE_LOG("glTrimMemoryANGLE" << "(" << GLEnums::GetStringEnum(trimLevel)
+                                     << ")");
+  gl_api_->glTrimMemoryANGLEFn(trimLevel);
+}
+
 void LogGLApi::glUniform1fFn(GLint location, GLfloat x) {
   GL_SERVICE_LOG("glUniform1f" << "(" << location << ", " << x << ")");
   gl_api_->glUniform1fFn(location, x);
@@ -12197,6 +12254,12 @@ void NoContextGLApi::glEGLImageTargetRenderbufferStorageOESFn(
     GLenum target,
     GLeglImageOES image) {
   NoContextHelper("glEGLImageTargetRenderbufferStorageOES");
+}
+
+void NoContextGLApi::glEGLImageTargetTexStorageEXTFn(GLenum target,
+                                                     GLeglImageOES image,
+                                                     const GLint* attrib_list) {
+  NoContextHelper("glEGLImageTargetTexStorageEXT");
 }
 
 void NoContextGLApi::glEGLImageTargetTexture2DOESFn(GLenum target,
@@ -13826,6 +13889,10 @@ void NoContextGLApi::glTransformFeedbackVaryingsFn(GLuint program,
                                                    const char* const* varyings,
                                                    GLenum bufferMode) {
   NoContextHelper("glTransformFeedbackVaryings");
+}
+
+void NoContextGLApi::glTrimMemoryANGLEFn(GLenum trimLevel) {
+  NoContextHelper("glTrimMemoryANGLE");
 }
 
 void NoContextGLApi::glUniform1fFn(GLint location, GLfloat x) {

@@ -7,18 +7,21 @@
 #include <optional>
 #include <set>
 
+#include "base/check_deref.h"
 #include "base/command_line.h"
 #include "base/run_loop.h"
-#include "base/test/gmock_callback_support.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/time/time.h"
 #include "chrome/browser/ash/login/test/scoped_policy_update.h"
 #include "chrome/browser/ash/policy/affiliation/affiliation_mixin.h"
 #include "chrome/browser/ash/policy/affiliation/affiliation_test_helper.h"
+#include "chrome/browser/ash/policy/core/browser_policy_connector_ash.h"
 #include "chrome/browser/ash/policy/core/device_policy_cros_browser_test.h"
 #include "chrome/browser/ash/policy/core/device_policy_cros_test_helper.h"
 #include "chrome/browser/ash/policy/reporting/event_based_logs/event_based_log_uploader.h"
 #include "chrome/browser/ash/policy/reporting/metrics_reporting/metric_reporting_manager.h"
+#include "chrome/browser/browser_process.h"
+#include "chrome/browser/browser_process_platform_part_ash.h"
 #include "chrome/browser/policy/dm_token_utils.h"
 #include "chrome/browser/policy/messaging_layer/proto/synced/log_upload_event.pb.h"
 #include "chrome/browser/support_tool/data_collection_module.pb.h"
@@ -119,21 +122,31 @@ IN_PROC_BROWSER_TEST_F(FatalCrashEventLogObserverBrowserTest,
   base::RunLoop run_loop;
   std::unique_ptr<MockLogUploaderStrict> mock_uploader =
       std::make_unique<MockLogUploaderStrict>();
-  EXPECT_CALL(*mock_uploader,
-              UploadEventBasedLogs(
-                  _, ash::reporting::TriggerEventType::FATAL_CRASH, _, _))
-      .WillOnce(
-          DoAll(WithArg<2>([&](std::optional<std::string> upload_id) {
-                  // The triggered upload must have an upload ID attached.
-                  ASSERT_TRUE(upload_id.has_value());
-                  EXPECT_FALSE(upload_id.value().empty());
-                }),
-                base::test::RunOnceCallback<3>(reporting::Status::StatusOK())));
+  EXPECT_CALL(*mock_uploader, UploadEventBasedLogs(_, _, _, _))
+      .WillOnce(DoAll(
+          WithArg<1>([](ash::reporting::TriggerEventType event_type) {
+            EXPECT_EQ(event_type,
+                      ash::reporting::TriggerEventType::FATAL_CRASH);
+          }),
+          WithArg<2>([&](std::optional<std::string> upload_id) {
+            // The triggered upload must have an upload ID attached.
+            ASSERT_TRUE(upload_id.has_value());
+            EXPECT_FALSE(upload_id.value().empty());
+          }),
+          WithArg<3>([&](policy::EventBasedLogUploader::UploadCallback
+                             on_upload_completed) {
+            std::move(on_upload_completed).Run(reporting::Status::StatusOK());
+            run_loop.Quit();
+          })));
 
-  policy::FatalCrashEventLogObserver event_observer;
+  policy::FatalCrashEventLogObserver event_observer(
+      g_browser_process->local_state(),
+      CHECK_DEREF(g_browser_process->platform_part()
+                      ->browser_policy_connector_ash()
+                      ->GetDeviceCloudPolicyManager()));
   event_observer.SetLogUploaderForTesting(std::move(mock_uploader));
 
   EmitFakeCrashEvent();
-  // Wait for all tasks to be completed.
-  run_loop.RunUntilIdle();
+  // Wait for the fatal-crash upload callback before ending the test.
+  run_loop.Run();
 }

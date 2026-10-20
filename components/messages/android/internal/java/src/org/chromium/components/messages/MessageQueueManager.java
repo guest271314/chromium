@@ -8,7 +8,6 @@ import static org.chromium.build.NullUtil.assumeNonNull;
 
 import androidx.annotation.VisibleForTesting;
 
-import org.chromium.base.Log;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.components.messages.MessageScopeChange.ChangeType;
@@ -27,8 +26,6 @@ import java.util.Objects;
  */
 @NullMarked
 class MessageQueueManager implements ScopeChangeController.Delegate {
-    static final String TAG = "MessageQueueManager";
-
     // TokenHolder tracking whether the queue should be suspended.
     private final TokenHolder mSuppressionTokenHolder =
             new TokenHolder(this::onSuspendedStateChange);
@@ -90,33 +87,20 @@ class MessageQueueManager implements ScopeChangeController.Delegate {
             mScopeChangeController.firstMessageEnqueued(scopeKey);
         }
 
-        if (mAreExtraHistogramsEnabled) {
-            MessagesMetrics.recordMessageEnqueuedScopeActive(
-                    message.getMessageIdentifier(), mScopeChangeController.isActive(scopeKey));
-
-            MessagesMetrics.recordMessageEnqueuedQueueSuspended(
-                    message.getMessageIdentifier(), isQueueSuspended());
-        }
-
         MessageState messageState = new MessageState(scopeKey, messageKey, message, highPriority);
         messageQueue.add(messageState);
         mMessages.put(messageKey, messageState);
 
         MessagesMetrics.recordMessageEnqueued(message.getMessageIdentifier());
         // The candidate which will be fully visible. Null if no message will be displayed.
-        List<MessageState> candidates = updateCurrentDisplayed();
+        List<@Nullable MessageState> candidates = updateCurrentDisplayed();
         assert candidates.size() == 2 : "There must be 2 candidates when stacking is enabled.";
         MessageState primaryCandidate = candidates.get(0);
 
         if (primaryCandidate == messageState) {
             MessagesMetrics.recordMessageEnqueuedVisible(message.getMessageIdentifier());
         } else if (mAreExtraHistogramsEnabled) {
-            @MessageIdentifier int visibleMessageId = MessageIdentifier.INVALID_MESSAGE;
-            if (primaryCandidate != null) {
-                visibleMessageId = primaryCandidate.handler.getMessageIdentifier();
-            }
-            MessagesMetrics.recordMessageEnqueuedHidden(
-                    message.getMessageIdentifier(), visibleMessageId);
+            MessagesMetrics.recordMessageEnqueuedHidden(message.getMessageIdentifier());
         }
     }
 
@@ -147,12 +131,6 @@ class MessageQueueManager implements ScopeChangeController.Delegate {
         List<MessageState> messageQueue = mMessageQueues.get(scopeKey);
         assumeNonNull(messageQueue);
         messageQueue.remove(messageState);
-        Log.w(
-                TAG,
-                "Removed message with ID %s and key %s from queue because of reason %s.",
-                message.getMessageIdentifier(),
-                messageState.messageKey,
-                dismissReason);
         if (messageQueue.isEmpty()) {
             mMessageQueues.remove(scopeKey);
             mScopeChangeController.lastMessageDismissed(scopeKey);
@@ -216,7 +194,7 @@ class MessageQueueManager implements ScopeChangeController.Delegate {
      *
      * @return The candidates supposed to be displayed.
      */
-    private List<MessageState> updateCurrentDisplayed() {
+    private List<@Nullable MessageState> updateCurrentDisplayed() {
         var candidates = getNextMessages();
         mAnimationCoordinator.updateWithStacking(
                 candidates, isQueueSuspended(), this::updateCurrentDisplayed);
@@ -260,7 +238,7 @@ class MessageQueueManager implements ScopeChangeController.Delegate {
      * be displayed at that position.
      */
     @VisibleForTesting
-    List<MessageState> getNextMessages() {
+    List<@Nullable MessageState> getNextMessages() {
         if (isQueueSuspended()) {
             return Arrays.asList(null, null);
         }

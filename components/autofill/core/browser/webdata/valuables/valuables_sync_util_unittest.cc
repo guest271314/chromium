@@ -4,10 +4,11 @@
 
 #include "components/autofill/core/browser/webdata/valuables/valuables_sync_util.h"
 
+#include <ranges>
+
 #include "base/strings/utf_string_conversions.h"
-#include "base/types/zip.h"
-#include "components/autofill/core/browser/test_utils/entity_data_test_utils.h"
-#include "components/autofill/core/browser/webdata/valuables/valuables_sync_test_utils.h"
+#include "components/autofill/core/browser/test_utils/entity_data_test_util.h"
+#include "components/autofill/core/browser/webdata/valuables/valuables_sync_test_util.h"
 #include "components/sync/protocol/autofill_valuable_specifics.pb.h"
 #include "components/sync/protocol/entity_data.h"
 #include "components/sync/test/unknown_field_util.h"
@@ -41,8 +42,8 @@ TEST(LoyaltyCardSyncUtilTest, CreateEntityDataFromLoyaltyCard) {
   ASSERT_EQ(card.merchant_domains().size(),
             (size_t)specifics.loyalty_card().merchant_domains().size());
   for (auto [merchant_domain, loyalty_card_domain] :
-       base::zip(card.merchant_domains(),
-                 specifics.loyalty_card().merchant_domains())) {
+       std::views::zip(card.merchant_domains(),
+                       specifics.loyalty_card().merchant_domains())) {
     EXPECT_EQ(merchant_domain, loyalty_card_domain);
   }
 }
@@ -137,6 +138,72 @@ TEST(FlightReservationSyncUtilTest,
   EXPECT_EQ(
       TrimAutofillValuableSpecificsDataForCaching(specifics).ByteSizeLong(),
       0u);
+}
+
+TEST(OfferSyncUtilTest, TrimAutofillValuableSpecificsDataForCaching) {
+  sync_pb::AutofillValuableSpecifics specifics;
+  specifics.set_id("some_id");
+  specifics.set_is_editable(true);
+  specifics.mutable_offer()->set_issuer_name("Safeway");
+  specifics.mutable_offer()->set_provider_name("coupon.com");
+  specifics.mutable_offer()->set_offer_short_title("50% off");
+  specifics.mutable_offer()->set_expiration_time_unix_epoch_micros(123456789);
+  specifics.mutable_offer()->set_offer_code("12345");
+  specifics.mutable_offer()->set_offer_title_image_url(
+      "https://image.com/logo.png");
+  specifics.mutable_offer()->add_issuer_domains("safeway.com");
+  specifics.mutable_offer()->set_description("50% off your next purchase");
+  specifics.mutable_offer()->set_issue_time_unix_epoch_micros(12345678);
+  specifics.set_pass_view_url("https://safeway.com/offer-details");
+
+  EXPECT_EQ(
+      TrimAutofillValuableSpecificsDataForCaching(specifics).ByteSizeLong(),
+      0u);
+}
+
+TEST(OfferSyncUtilTest, CreateOfferDataFromValuableSpecifics) {
+  sync_pb::AutofillValuableSpecifics specifics;
+  specifics.set_id("999");
+  specifics.set_is_editable(true);
+  specifics.mutable_offer()->set_issuer_name("Safeway");
+  specifics.mutable_offer()->set_provider_name("coupon.com");
+  specifics.mutable_offer()->set_offer_short_title("50% off");
+  specifics.mutable_offer()->set_expiration_time_unix_epoch_micros(123456789);
+  specifics.mutable_offer()->set_offer_code("SAFEWAY50");
+  specifics.mutable_offer()->set_offer_title_image_url(
+      "https://image.com/logo.png");
+  specifics.mutable_offer()->add_issuer_domains("https://safeway.com");
+  specifics.mutable_offer()->set_description("50% off your next purchase");
+  specifics.mutable_offer()->set_issue_time_unix_epoch_micros(12345678);
+  specifics.set_pass_view_url("https://safeway.com/offer-details");
+
+  AutofillOfferData offer = CreateOfferDataFromValuableSpecifics(specifics);
+  EXPECT_EQ("999", offer.GetOfferId());
+  EXPECT_EQ(base::Time::UnixEpoch() + base::Microseconds(123456789),
+            offer.GetExpiry());
+  EXPECT_EQ(base::Time::UnixEpoch() + base::Microseconds(12345678),
+            offer.GetIssueTime());
+  EXPECT_EQ("SAFEWAY50", offer.GetPromoCode());
+  EXPECT_EQ("50% off your next purchase",
+            offer.GetDisplayStrings().value_prop_text);
+  EXPECT_EQ("50% off", offer.GetOfferRewardAmount());
+  EXPECT_EQ(GURL("https://safeway.com/offer-details"),
+            offer.GetOfferDetailsUrl());
+  EXPECT_THAT(offer.GetMerchantOrigins(),
+              testing::ElementsAre(GURL("https://safeway.com")));
+}
+
+// The issue time is optional. If it is missing or not positive, the offer's
+// issue time is left null, i.e. unknown.
+TEST(OfferSyncUtilTest, CreateOfferDataFromValuableSpecifics_NoIssueTime) {
+  sync_pb::AutofillValuableSpecifics specifics = TestOfferSpecifics("999");
+  specifics.mutable_offer()->clear_issue_time_unix_epoch_micros();
+  EXPECT_TRUE(
+      CreateOfferDataFromValuableSpecifics(specifics).GetIssueTime().is_null());
+
+  specifics.mutable_offer()->set_issue_time_unix_epoch_micros(-1);
+  EXPECT_TRUE(
+      CreateOfferDataFromValuableSpecifics(specifics).GetIssueTime().is_null());
 }
 
 TEST(ValuableMetadataSyncUtilTest, CreateEntityDataFromValuableMetadata) {

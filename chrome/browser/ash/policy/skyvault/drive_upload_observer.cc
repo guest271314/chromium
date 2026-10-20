@@ -21,7 +21,7 @@ namespace {
 const int kNoSyncUpdatesTimeOutMs = 60000;  // 1 Minute.
 
 file_manager::io_task::IOTaskController* GetIOTaskController(Profile* profile) {
-  DCHECK(profile);
+  CHECK(profile, base::NotFatalUntil::M160);
 
   file_manager::VolumeManager* volume_manager =
       file_manager::VolumeManager::Get(profile);
@@ -100,7 +100,7 @@ void DriveUploadObserver::Run(base::OnceCallback<void(bool)> upload_callback) {
   }
 
   // Observe Drive updates.
-  drive::DriveIntegrationService::Observer::Observe(drive_integration_service_);
+  drive_observation_.Observe(drive_integration_service_);
   drivefs::DriveFsHost::Observer::Observe(
       drive_integration_service_->GetDriveFsHost());
 
@@ -124,8 +124,9 @@ void DriveUploadObserver::Cancel() {
   if (!observed_delete_task_id_.has_value()) {
     auto* io_task_controller = GetIOTaskController(profile_);
 
-    DCHECK(io_task_controller);
-    DCHECK(!io_task_controller_observer_.IsObserving());
+    CHECK(io_task_controller, base::NotFatalUntil::M160);
+    CHECK(!io_task_controller_observer_.IsObserving(),
+          base::NotFatalUntil::M160);
 
     io_task_controller_observer_.Observe(io_task_controller);
     storage::FileSystemURL file_url = FilePathToFileSystemURL(
@@ -214,6 +215,10 @@ void DriveUploadObserver::OnDriveConnectionStatusChanged(
     LOG(ERROR) << "Lost connection to Drive during upload";
     OnEndUpload(/*success=*/false);
   }
+}
+
+void DriveUploadObserver::OnDriveIntegrationServiceDestroyed() {
+  drive_observation_.Reset();
 }
 
 void DriveUploadObserver::OnIOTaskStatus(

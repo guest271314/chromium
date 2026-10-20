@@ -82,11 +82,6 @@ void WaitOnceForEvents(int device_fd,
   // At least Qualcomm Venus likes to bundle events.
   const auto pollin_or_pollpri_event = events_from_device & (POLLIN | POLLPRI);
   if (pollin_or_pollpri_event) {
-    // "POLLIN There is data to read."
-    //  https://man7.org/linux/man-pages/man2/poll.2.html
-    if (events_from_device & POLLIN) {
-      std::move(dequeue_callback).Run();
-    }
     // "If an event occurred (see ioctl VIDIOC_DQEVENT) then POLLPRI will be set
     //  in the revents field and poll() will return."
     // https://www.kernel.org/doc/html/v5.15/userspace-api/media/v4l/func-poll.html
@@ -107,6 +102,13 @@ void WaitOnceForEvents(int device_fd,
 
       std::move(resolution_change_callback).Run();
     }
+
+    // "POLLIN There is data to read."
+    //  https://man7.org/linux/man-pages/man2/poll.2.html
+    if (events_from_device & POLLIN) {
+      std::move(dequeue_callback).Run();
+    }
+
     return;
   }
   if (other_events & POLLIN) {
@@ -283,15 +285,21 @@ void V4L2StatefulVideoDecoder::Initialize(const VideoDecoderConfig& config,
   // Verify there's still room for more decoders before querying whether
   // |config| is supported because some drivers (e.g. Qualcomm Venus on SC7180)
   // would not allow for opening the device fd and we'd think it an error.
-  static const auto decoder_instances_limit =
-      V4L2StatefulVideoDecoder::GetMaxNumDecoderInstances();
-  const bool can_create_decoder =
-      num_decoder_instances_.Increment() < decoder_instances_limit;
-  if (!can_create_decoder) {
-    num_decoder_instances_.Decrement();
-    LOG(ERROR) << "Too many decoder instances, max=" << decoder_instances_limit;
-    std::move(init_cb).Run(DecoderStatus::Codes::kTooManyDecoders);
-    return;
+  // Only take a slot if this instance doesn't already hold one, e.g. when
+  // re-Initialize()d to change configuration.
+  if (!holds_decoder_instance_slot_) {
+    static const auto decoder_instances_limit =
+        V4L2StatefulVideoDecoder::GetMaxNumDecoderInstances();
+    const bool can_create_decoder =
+        num_decoder_instances_.Increment() < decoder_instances_limit;
+    if (!can_create_decoder) {
+      num_decoder_instances_.Decrement();
+      LOG(ERROR) << "Too many decoder instances, max="
+                 << decoder_instances_limit;
+      std::move(init_cb).Run(DecoderStatus::Codes::kTooManyDecoders);
+      return;
+    }
+    holds_decoder_instance_slot_ = true;
   }
 
   if (supported_configs_.empty()) {
@@ -580,7 +588,7 @@ void V4L2StatefulVideoDecoder::Reset(base::OnceClosure closure) {
   device_fd_.reset();
 
   event_task_runner_.reset();
-  num_decoder_instances_.Decrement();
+  ReleaseDecoderInstanceSlot();
   encoding_timestamps_.clear();
 
   if (flush_cb_) {
@@ -666,7 +674,7 @@ V4L2StatefulVideoDecoder::~V4L2StatefulVideoDecoder() {
 
   CAPTURE_queue_.reset();
   OUTPUT_queue_.reset();
-  num_decoder_instances_.Decrement();
+  ReleaseDecoderInstanceSlot();
 
   if (event_task_runner_) {
     // Destroy the two ScopedFDs (hence the PostTask business ISO DeleteSoon) on
@@ -722,13 +730,12 @@ bool V4L2StatefulVideoDecoder::InitializeCAPTUREQueue() {
 
   // Ask the pipeline to pick the output format from |CAPTURE_queue_|'s
   // |candidates|. If needed, it will try to instantiate an ImageProcessor.
-  CroStatus::Or<ImageProcessor::PixelLayoutCandidate> status_or_output_format =
-      client_->PickDecoderOutputFormat(
-          candidates, *visible_rect,
-          config_.aspect_ratio().GetNaturalSize(*visible_rect),
-          /*output_size=*/std::nullopt, num_codec_reference_frames,
-          /*use_protected=*/false, /*need_aux_frame_pool=*/false,
-          /*allocator=*/std::nullopt);
+  auto status_or_output_format = client_->PickDecoderOutputFormat(
+      candidates, *visible_rect,
+      config_.aspect_ratio().GetNaturalSize(*visible_rect),
+      /*output_size=*/std::nullopt, num_codec_reference_frames,
+      /*use_protected=*/false, /*need_aux_frame_pool=*/false,
+      /*allocator=*/std::nullopt);
   if (!status_or_output_format.has_value()) {
     return false;
   }
@@ -774,6 +781,21 @@ bool V4L2StatefulVideoDecoder::InitializeCAPTUREQueue() {
           << " " << chosen_size.ToString() << " (modifier: 0x" << std::hex
           << chosen_modifier << std::dec << "). Using " << v4l2_num_buffers
           << " |CAPTURE_queue_| slots.";
+
+  // We successfully picked the output format. Now setup output format again.
+  std::optional<struct v4l2_format> format =
+      CAPTURE_queue_->SetFormat(chosen_fourcc.ToV4L2PixFmt(), chosen_size, 0);
+  if (!format) {
+    LOGF(ERROR) << "Failed to set output format.";
+    return false;
+  }
+  gfx::Size adjusted_size(format->fmt.pix_mp.width, format->fmt.pix_mp.height);
+  if (!gfx::Rect(adjusted_size).Contains(gfx::Rect(chosen_size))) {
+    LOGF(ERROR) << "The adjusted coded size (" << adjusted_size.ToString()
+                << ") should contain the original coded size("
+                << chosen_size.ToString() << ").";
+    return false;
+  }
 
   const auto allocated_buffers = CAPTURE_queue_->AllocateBuffers(
       v4l2_num_buffers, buffer_type, /*incoherent=*/false);
@@ -861,8 +883,6 @@ size_t V4L2StatefulVideoDecoder::GetNumberOfReferenceFrames() {
 
 void V4L2StatefulVideoDecoder::RearmCAPTUREQueueMonitoring() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-
-  cancelable_task_tracker_.TryCancelAll();
 
   auto dequeue_callback = base::BindPostTaskToCurrentDefault(base::BindOnce(
       &V4L2StatefulVideoDecoder::TryAndDequeueCAPTUREQueueBuffers,
@@ -1187,6 +1207,15 @@ void V4L2StatefulVideoDecoder::PrintAndTraceQueueStates(
                     (CAPTURE_queue_ ? base::checked_cast<int32_t>(
                                           CAPTURE_queue_->QueuedBuffersCount())
                                     : 0));
+}
+
+void V4L2StatefulVideoDecoder::ReleaseDecoderInstanceSlot() {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  if (!holds_decoder_instance_slot_) {
+    return;
+  }
+  num_decoder_instances_.Decrement();
+  holds_decoder_instance_slot_ = false;
 }
 
 bool V4L2StatefulVideoDecoder::IsInitialized() const {

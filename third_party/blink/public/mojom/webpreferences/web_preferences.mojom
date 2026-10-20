@@ -138,6 +138,7 @@ struct WebPreferences {
   bool text_areas_are_resizable;
   bool allow_scripts_to_close_windows;
   bool allow_unrestricted_window_focus;
+  bool clipboard_focus_exempt;
   bool remote_fonts_enabled;
   bool javascript_can_access_clipboard;
   // We don't use dns_prefetching_enabled to disable DNS prefetching.  Instead,
@@ -282,6 +283,9 @@ struct WebPreferences {
   // Representation of the Web App Manifest scope if any.
   url.mojom.Url web_app_scope;
 
+  // Custom Web App Manifest URL if specified by embedder (e.g. for IWAs).
+  url.mojom.Url web_app_custom_manifest_url;
+
   // Whether this renderer is associated with the browser's initial ("Default")
   // profile.
   bool is_initial_profile;
@@ -422,10 +426,6 @@ struct WebPreferences {
   // policy.
   bool require_transient_activation_for_show_file_or_directory_picker;
 
-  // `navigator.subApps.{add|remove|list}()`'s user gesture and authorization
-  // can be bypassed via
-  // `SubAppsAPIsAllowedWithoutGestureAndAuthorizationForOrigins` policy.
-  bool require_transient_activation_and_user_confirmation_for_subapps_api;
 
   // The forced colors state for the web content. The forced colors state
   // is used to evaluate the forced-colors media query, as well as determining
@@ -494,7 +494,7 @@ struct WebPreferences {
 
   // Whether the end of a drag fires a contextmenu event and possibly shows a
   // context-menu (depends on how the event is handled). Follows
-  // `touch_drag_drop_enabled` in Windows.
+  // `touch_drag_drop_enabled` on Linux and Windows.
   bool touch_dragend_context_menu = false;
 
   // Controls whether WebXR's immersive-ar is allowed.
@@ -524,14 +524,6 @@ struct WebPreferences {
   // devtools extension panels.
   bool ai_ot_apis_enabled = false;
 
-  // Whether IgnoreDuplicateNavs is enabled. Controlled by WebView settings on
-  // WebView and by `kIgnoreDuplicateNavs` feature flag everywhere.
-  bool ignore_duplicate_nav_enabled = false;
-
-  // Threshold in ms for IgnoreDuplicateNavs. Controlled by WebView settings on
-  // WebView and by `kDuplicateNavThreshold` feature param everywhere.
-  mojo_base.mojom.TimeDelta duplicate_nav_threshold = default;
-
   [EnableIf=is_android]
   bool should_screenshot_on_mainframe_same_doc_navigation = true;
 
@@ -548,4 +540,13 @@ struct WebPreferences {
   // should be able to set the onboarding result. Note that this is separately
   // verified when it sets the result.
   bool is_indigo_onboarding = false;
+
+  // True if the user dismissed the XSLT deprecation warning banner with the
+  // "Never show this warning" checkbox checked. Suppression is global: it applies
+  // to every site, not just the one the banner was dismissed on.
+  // TODO(crbug.com/560233256): This preference is temporary, and is only
+  // required before XSLT is disabled by default in M158. It can be removed in
+  // M158, or whenever XSLT is disabled by default (other than for origin
+  // trials and enterprise policy).
+  bool is_xslt_deprecation_banner_suppressed = false;
 };

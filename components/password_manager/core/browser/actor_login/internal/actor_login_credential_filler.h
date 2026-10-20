@@ -18,7 +18,6 @@
 #include "components/password_manager/core/browser/password_manager_driver.h"
 #include "components/password_manager/core/browser/password_manager_interface.h"
 #include "third_party/abseil-cpp/absl/container/flat_hash_map.h"
-#include "url/gurl.h"
 
 namespace affiliations {
 struct Facet;
@@ -43,9 +42,10 @@ class ActorLoginCredentialFiller {
       const Credential& credential,
       bool should_store_permission,
       password_manager::PasswordManagerClient* client,
-      base::WeakPtr<ActorLoginQualityLoggerInterface> mqls_logger,
+      scoped_refptr<ActorLoginQualityLoggerInterface> mqls_logger,
       base::TimeTicks attempt_login_start_time,
       IsTaskInFocus is_task_in_focus,
+      FrameFillingStartedCallback frame_filling_started_cb,
       LoginStatusResultOrErrorReply callback);
   virtual ~ActorLoginCredentialFiller();
 
@@ -68,9 +68,9 @@ class ActorLoginCredentialFiller {
   enum class FieldType { kUsername, kPassword };
 
   // Retrieves the full data of a saved credential for the form managed
-  // by `signin_form_manager` corresponding to `credential_`.
+  // by `reference_form_manager` corresponding to `credential_`.
   virtual const password_manager::StoredCredential* GetMatchingStoredCredential(
-      const password_manager::PasswordFormManager& signin_form_manager);
+      const password_manager::PasswordFormManager& reference_form_manager);
 
   virtual bool DoesStoredCredentialBelongToManager(
       const password_manager::PasswordFormManager* manager,
@@ -87,12 +87,22 @@ class ActorLoginCredentialFiller {
 
   void FetchEligibleForms(
       base::OnceCallback<
-          void(std::vector<password_manager::PasswordFormManager*>)>
+          void(std::vector<raw_ptr<password_manager::PasswordFormManager>>)>
           on_forms_retrieved_cb);
 
   // Should always be called synchronously.
   void ProcessRetrievedForms(
-      std::vector<password_manager::PasswordFormManager*> eligible_managers);
+      std::vector<raw_ptr<password_manager::PasswordFormManager>>
+          eligible_managers);
+
+  // If there are multiple forms on the page, one will be chosen as
+  // reference based on whether it's in the primary main frame, or whether
+  // the provided credential is a strong match for the form.
+  std::pair<password_manager::PasswordFormManager*,
+            const password_manager::StoredCredential*>
+  FindReferenceFormAndCredential(
+      const std::vector<raw_ptr<password_manager::PasswordFormManager>>&
+          eligible_managers);
 
   // Checks if device reauthentication is required before filling.
   // If required, triggers reauthentication and, upon success, re-fetches
@@ -100,8 +110,10 @@ class ActorLoginCredentialFiller {
   // If not required, proceeds directly to filling all eligible fields in
   // `eligible_managers`.
   void MaybeReauthAndFillAllEligibleFields(
-      std::vector<password_manager::PasswordFormManager*> eligible_managers,
-      password_manager::StoredCredential stored_credential);
+      std::vector<raw_ptr<password_manager::PasswordFormManager>>
+          eligible_managers,
+      password_manager::StoredCredential stored_credential,
+      bool is_primary_main_frame);
 
   // Triggers the device reauthentication flow.
   // `on_reauth_cb` is executed only if reauthentication is successful.
@@ -122,7 +134,8 @@ class ActorLoginCredentialFiller {
   void FillAllEligibleFields(
       password_manager::StoredCredential stored_credential,
       bool should_skip_iframes,
-      std::vector<password_manager::PasswordFormManager*> eligible_managers);
+      std::vector<raw_ptr<password_manager::PasswordFormManager>>
+          eligible_managers);
 
   // Fills the field of `type` identified by `field_renderer_id` within the
   // `driver`'s frame with `value`. `closure` will be called to signal
@@ -174,9 +187,9 @@ class ActorLoginCredentialFiller {
   raw_ptr<password_manager::PasswordManagerClient> client_ = nullptr;
 
   // Helper class that sends MQLS logs about full actor login attempt
-  // (GetCredentials + AttemptLogin). Owned by AttemptLoginTool.
-  // TODO(crbug.com/460025687): Use raw_ptr instead.
-  base::WeakPtr<ActorLoginQualityLoggerInterface> mqls_logger_;
+  // (GetCredentials + AttemptLogin). Shared with the other participants of the
+  // login flow, the log is uploaded once the last of them is gone.
+  scoped_refptr<ActorLoginQualityLoggerInterface> mqls_logger_;
 
   // Logs entry to be given to `mqls_logger` when the request ends.
   optimization_guide::proto::ActorLoginQuality_AttemptLoginDetails
@@ -198,6 +211,14 @@ class ActorLoginCredentialFiller {
 
   // Checks whether the UI relevant to the actor login task is in focus.
   IsTaskInFocus is_task_in_focus_;
+
+  // Callback invoked once credential filling into target frames starts.
+  // When executed, it notifies `ActorOneTimeTokenFillingService` to observe
+  // navigations across the specified `global_frame_ids`.
+  // This navigation state is subsequently used by `AttemptOtpFillingTool`
+  // to verify whether an OTP field observed later belongs to this same login
+  // flow.
+  FrameFillingStartedCallback on_frame_filling_started_cb_;
 
   // The callback to call with the result of the login attempt.
   LoginStatusResultOrErrorReply callback_;

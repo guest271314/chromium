@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <memory>
+#include <ranges>
 #include <tuple>
 
 #include "ash/constants/ash_features.h"
@@ -39,7 +40,6 @@
 #include "ash/wm/window_state.h"
 #include "ash/wm/wm_constants.h"
 #include "ash/wm/wm_event.h"
-#include "base/containers/adapters.h"
 #include "base/functional/bind.h"
 #include "base/memory/raw_ptr.h"
 #include "chromeos/ui/base/app_types.h"
@@ -47,6 +47,7 @@
 #include "chromeos/ui/base/window_properties.h"
 #include "chromeos/ui/base/window_state_type.h"
 #include "chromeos/ui/frame/caption_buttons/snap_controller.h"
+#include "chromeos/ui/frame/immersive/immersive_fullscreen_controller.h"
 #include "components/prefs/pref_registry_simple.h"
 #include "components/prefs/pref_service.h"
 #include "ui/aura/client/aura_constants.h"
@@ -136,7 +137,7 @@ aura::Window* FindLowestCommonParent(const aura::Window::Windows& windows) {
 // window found will be the topmost one.
 aura::Window* FindTopMostChild(aura::Window* parent,
                                const aura::Window::Windows& windows) {
-  for (aura::Window* child : base::Reversed(parent->children())) {
+  for (aura::Window* child : std::views::reverse(parent->children())) {
     for (aura::Window* window : windows) {
       if (child == window && !window->is_destroying()) {
         return window;
@@ -266,7 +267,7 @@ std::vector<aura::Window*> SortWindowsBottomToTop(
     }
 
     // Push so bottom-most is on the top of the stack.
-    for (aura::Window* child : base::Reversed(window->children())) {
+    for (aura::Window* child : std::views::reverse(window->children())) {
       stack.push(child);
     }
   }
@@ -303,7 +304,7 @@ bool IsWindowUserPositionable(aura::Window* window) {
 }
 
 void PinWindow(aura::Window* window, bool trusted) {
-  WMEvent event(trusted ? WM_EVENT_LOCKED_FULLSCREEN : WM_EVENT_PIN);
+  WMEvent event(trusted ? WM_EVENT_TRUSTED_PIN : WM_EVENT_PIN);
   WindowState::Get(window)->OnWMEvent(&event);
 }
 
@@ -312,6 +313,20 @@ void SetAutoHideShelf(aura::Window* window, bool autohide) {
       autohide);
   for (aura::Window* root_window : Shell::GetAllRootWindows())
     Shelf::ForWindow(root_window)->UpdateVisibilityState();
+}
+
+void UpdateUiForImmersiveFullscreen(
+    chromeos::ImmersiveFullscreenController* controller,
+    bool entering) {
+  aura::Window* window = controller->widget()->GetNativeWindow();
+  WindowState* window_state = WindowState::Get(window);
+
+  // Auto hide the shelf in immersive fullscreen instead of hiding it.
+  window_state->SetHideShelfWhenFullscreen(!entering);
+
+  for (aura::Window* root_window : Shell::GetAllRootWindows()) {
+    Shelf::ForWindow(root_window)->UpdateVisibilityState();
+  }
 }
 
 bool MoveWindowToDisplay(aura::Window* window, int64_t display_id) {

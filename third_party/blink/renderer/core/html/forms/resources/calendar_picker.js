@@ -3300,6 +3300,8 @@ class MonthPopupButton extends View {
      */
     this.labelElement = createElement(
         'span', MonthPopupButton.ClassNameMonthPopupButtonLabel, '-----');
+    this.labelElement.setAttribute('aria-live', 'polite');
+    this.labelElement.setAttribute('aria-atomic', 'true');
     this.element.appendChild(this.labelElement);
 
     /**
@@ -4321,6 +4323,7 @@ class CalendarTableView extends ListView {
 class CalendarPicker extends dateRangeManagerMixin(View) {
   // clang-format on
   /**
+   * @param {!string} type
    * @param {!Object} config
    */
   constructor(type, config) {
@@ -4334,6 +4337,12 @@ class CalendarPicker extends dateRangeManagerMixin(View) {
      * @const
      */
     this.type = type;
+    /**
+     * Set `skipWindowResize: true` in `config` when embedded in a parent
+     * picker that owns the popup size (e.g. DateTimeLocalPicker).
+     * @type {!boolean}
+     */
+    this._skipWindowResize = config.skipWindowResize === true;
     if (this.type === 'week')
       this._dateTypeConstructor = Week;
     else if (this.type === 'month')
@@ -4928,7 +4937,9 @@ class CalendarPicker extends dateRangeManagerMixin(View) {
     if (this._height === height)
       return;
     this._height = height;
-    resizeWindow(this.width(), this._height);
+    if (!this._skipWindowResize) {
+      resizeWindow(this.width(), this._height);
+    }
     this.calendarTableView.setHeight(
         this._height - CalendarHeaderView.Height -
         CalendarHeaderView.BottomMargin - CalendarPicker.Padding * 2 -

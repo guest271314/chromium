@@ -7,13 +7,17 @@
 #include "ash/constants/webui_url_constants.h"
 #include "ash/public/cpp/shelf_types.h"
 #include "ash/public/cpp/window_properties.h"
+#include "ash/strings/grit/ash_strings.h"
+#include "base/check_deref.h"
 #include "base/functional/callback_helpers.h"
+#include "base/metrics/histogram_functions.h"
 #include "base/strings/utf_string_conversions.h"
 #include "chrome/browser/ash/crostini/crostini_features.h"
+#include "chrome/browser/ash/crostini/crostini_installer.h"
 #include "chrome/browser/ash/crostini/crostini_manager.h"
 #include "chrome/browser/ui/webui/ash/crostini_installer/crostini_installer_ui.h"
 #include "chrome/grit/chrome_unscaled_resources.h"
-#include "chrome/grit/generated_resources.h"
+#include "content/public/browser/navigation_controller.h"
 #include "ui/aura/client/aura_constants.h"
 #include "ui/aura/window.h"
 #include "ui/base/l10n/l10n_util.h"
@@ -34,10 +38,18 @@ GURL GetUrl() {
 
 namespace ash {
 
-void CrostiniInstallerDialog::Show(Profile* profile,
-                                   OnLoadedCallback on_loaded_callback) {
+void CrostiniInstallerDialog::Show(
+    Profile* profile,
+    std::optional<crostini::CrostiniUISurface> ui_surface,
+    OnLoadedCallback on_loaded_callback) {
   if (!crostini::CrostiniFeatures::Get()->IsAllowedNow(profile)) {
     return;
+  }
+
+  if (ui_surface) {
+    base::UmaHistogramEnumeration(crostini::kCrostiniSetupSourceHistogram,
+                                  *ui_surface,
+                                  crostini::CrostiniUISurface::kCount);
   }
 
   auto* instance = SystemWebDialogDelegate::FindInstance(GetUrl().spec());
@@ -47,10 +59,11 @@ void CrostiniInstallerDialog::Show(Profile* profile,
   }
 
   // TODO(lxj): Move installer status tracking into the CrostiniInstaller.
-  DCHECK(!crostini::CrostiniManager::GetForProfile(profile)
-              ->GetCrostiniDialogStatus(crostini::DialogType::INSTALLER));
-  crostini::CrostiniManager::GetForProfile(profile)->SetCrostiniDialogStatus(
-      crostini::DialogType::INSTALLER, true);
+  CHECK(!crostini::CrostiniManager::GetForProfile(profile)
+             ->IsCrostiniInstallerOpen(),
+        base::NotFatalUntil::M162);
+  crostini::CrostiniManager::GetForProfile(profile)->SetCrostiniInstallerOpen(
+      true);
 
   instance =
       new CrostiniInstallerDialog(profile, std::move(on_loaded_callback));
@@ -65,8 +78,8 @@ CrostiniInstallerDialog::CrostiniInstallerDialog(
       on_loaded_callback_(std::move(on_loaded_callback)) {}
 
 CrostiniInstallerDialog::~CrostiniInstallerDialog() {
-  crostini::CrostiniManager::GetForProfile(profile_)->SetCrostiniDialogStatus(
-      crostini::DialogType::INSTALLER, false);
+  crostini::CrostiniManager::GetForProfile(profile_)->SetCrostiniInstallerOpen(
+      false);
 }
 
 void CrostiniInstallerDialog::GetDialogSize(gfx::Size* size) const {
@@ -109,17 +122,18 @@ bool CrostiniInstallerDialog::OnDialogCloseRequested() {
 }
 
 void CrostiniInstallerDialog::OnDialogShown(content::WebUI* webui) {
-  installer_ui_ =
-      static_cast<CrostiniInstallerUI*>(webui->GetController())->GetWeakPtr();
+  auto* controller =
+      &CHECK_DEREF(webui->GetController()->GetAs<CrostiniInstallerUI>());
+  installer_ui_ = controller->GetWeakPtr();
   return SystemWebDialogDelegate::OnDialogShown(webui);
 }
 
 void CrostiniInstallerDialog::OnWebContentsFinishedLoad() {
-  DCHECK(dialog_window());
+  CHECK(dialog_window(), base::NotFatalUntil::M162);
   dialog_window()->SetTitle(
       l10n_util::GetStringUTF16(IDS_CROSTINI_INSTALLER_TITLE));
   if (!on_loaded_callback_.is_null()) {
-    DCHECK(installer_ui_);
+    CHECK(installer_ui_, base::NotFatalUntil::M162);
     std::move(on_loaded_callback_).Run(installer_ui_);
   }
 }

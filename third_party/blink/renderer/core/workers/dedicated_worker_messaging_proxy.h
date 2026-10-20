@@ -33,6 +33,7 @@ class FetchClientSettingsObjectSnapshot;
 class WorkerOptions;
 struct WorkerMainScriptLoadParameters;
 struct JavaScriptFrameworkDetectionResult;
+struct WebPolicyContainer;
 
 // A proxy class to talk to the DedicatedWorkerGlobalScope on a worker thread
 // via the DedicatedWorkerMessagingProxy from the main thread. See class
@@ -67,7 +68,8 @@ class CORE_EXPORT DedicatedWorkerMessagingProxy
       mojo::PendingRemote<mojom::blink::DedicatedWorkerHost>
           dedicated_worker_host,
       mojo::PendingRemote<mojom::blink::BackForwardCacheControllerHost>
-          back_forward_cache_controller_host);
+          back_forward_cache_controller_host,
+      std::unique_ptr<WebPolicyContainer> policy_container);
   void PostMessageToWorkerGlobalScope(BlinkTransferableMessage);
   void PostCustomEventToWorkerGlobalScope(
       TaskType task_type,
@@ -89,8 +91,9 @@ class CORE_EXPORT DedicatedWorkerMessagingProxy
                          const JavaScriptFrameworkDetectionResult& result);
   void PostMessageToWorkerObject(BlinkTransferableMessage);
   void DispatchErrorEvent(const String& error_message,
-                          const CrossThreadSourceLocation& cross_location,
-                          int exception_id);
+                          const CrossThreadSourceLocation&,
+                          int exception_id,
+                          SanitizeScriptErrors);
 
   // Freezes the WorkerThread. `is_in_back_forward_cache` is true only when the
   // page goes to back/forward cache.
@@ -152,6 +155,9 @@ class CORE_EXPORT DedicatedWorkerMessagingProxy
 
   // Pauses virtual time in parent context until the worker is initialized.
   WebScopedVirtualTimePauser virtual_time_pauser_;
+
+  // Tracks the freeze state when the worker thread is not yet created.
+  std::optional<bool> pending_freeze_is_in_back_forward_cache_;
 };
 
 }  // namespace blink

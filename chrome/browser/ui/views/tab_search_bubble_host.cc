@@ -11,7 +11,6 @@
 #include "base/trace_event/named_trigger.h"
 #include "base/trace_event/trace_event.h"
 #include "chrome/browser/feature_engagement/tracker_factory.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
@@ -33,6 +32,8 @@
 #include "components/feature_engagement/public/feature_constants.h"
 #include "components/feature_engagement/public/tracker.h"
 #include "components/prefs/pref_service.h"
+#include "components/saved_tab_groups/public/features.h"
+#include "content/public/browser/navigation_controller.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/compositor/compositor.h"
 #include "ui/gfx/paint_vector_icon.h"
@@ -67,7 +68,6 @@ TabSearchBubbleHost::TabSearchBubbleHost(
       profile_(browser_window_interface->GetProfile()),
       browser_window_interface_(browser_window_interface),
       webui_bubble_manager_(WebUIBubbleManager::Create<TabSearchUI>(
-          button,
           browser_window_interface,
           GURL(chrome::kChromeUITabSearchURL),
           IDS_ACCNAME_TAB_SEARCH)),
@@ -128,9 +128,11 @@ void TabSearchBubbleHost::OnWidgetVisibilityChanged(views::Widget* widget,
 }
 
 void TabSearchBubbleHost::OnWidgetDestroying(views::Widget* widget) {
-  DCHECK_EQ(webui_bubble_manager_->GetBubbleWidget(), widget);
-  DCHECK(bubble_widget_observation_.IsObservingSource(
-      webui_bubble_manager_->GetBubbleWidget()));
+  CHECK_EQ(webui_bubble_manager_->GetBubbleWidget(), widget,
+           base::NotFatalUntil::M162);
+  CHECK(bubble_widget_observation_.IsObservingSource(
+            webui_bubble_manager_->GetBubbleWidget()),
+        base::NotFatalUntil::M162);
   bubble_widget_observation_.Reset();
   pressed_lock_.reset();
 
@@ -143,7 +145,7 @@ void TabSearchBubbleHost::BeforeBubbleWidgetShowed(views::Widget* widget) {
   CHECK_EQ(widget, webui_bubble_manager_->GetBubbleWidget());
   // There should only ever be a single bubble widget active for the
   // TabSearchBubbleHost.
-  DCHECK(!bubble_widget_observation_.IsObserving());
+  CHECK(!bubble_widget_observation_.IsObserving(), base::NotFatalUntil::M162);
   bubble_widget_observation_.Observe(widget);
   widget_open_timer_.Reset(widget);
 
@@ -202,7 +204,7 @@ bool TabSearchBubbleHost::ShowTabSearchBubble(
   const tabs::TabSearchPosition position =
       tabs::GetTabSearchPosition(browser_window_interface_);
   webui_bubble_manager_->ShowBubble(
-      std::nullopt,
+      button_,
       (position == tabs::TabSearchPosition::kLeadingHorizontalTabstrip ||
        position == tabs::TabSearchPosition::kVerticalTabstrip)
           ? views::BubbleBorder::TOP_LEFT

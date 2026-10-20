@@ -171,24 +171,14 @@ public class CrashesListFragment extends DevUiBaseFragment {
 
         if (isTV()) {
             View navBarButton = activity.findViewById(R.id.navigation_crash_ui);
-            setupTvFocusOnCreated(crashesSummaryView, mCrashListView, navBarButton);
+            if (shouldRequestFocus()) {
+                crashesSummaryView.requestFocus();
+            }
+            mCrashListView.setItemsCanFocus(true);
+            registerBackPressToNavBarCallback(navBarButton);
+
+            registerDownPressToFocusOnFirstItem(crashesSummaryView, mCrashListView);
         }
-    }
-
-    private void setupTvFocusOnCreated(
-            View crashesSummaryView, ExpandableListView crashListView, View navBarButton) {
-        crashesSummaryView.setFocusable(true);
-        if (shouldRequestFocus()) {
-            crashesSummaryView.requestFocus();
-        }
-
-        crashesSummaryView.setBackgroundResource(getSelectableItemBackgroundResId());
-        crashesSummaryView.setNextFocusUpId(crashesSummaryView.getId());
-        crashesSummaryView.setNextFocusDownId(crashListView.getId());
-
-        crashListView.setItemsCanFocus(true);
-
-        registerBackPressToNavBarCallback(navBarButton);
     }
 
     @Override
@@ -275,9 +265,9 @@ public class CrashesListFragment extends DevUiBaseFragment {
         }
 
         private void setupTvFocusForGroupView(View view, int position, boolean isExpanded) {
-            view.setFocusable(true);
-            view.setBackgroundResource(getSelectableItemBackgroundResId());
-
+            if (position == 0) {
+                view.setNextFocusUpId(R.id.crashes_summary_textview);
+            }
             view.setOnKeyListener(
                     (v, keyCode, event) -> {
                         if (event.getAction() == MotionEvent.ACTION_DOWN) {
@@ -401,30 +391,13 @@ public class CrashesListFragment extends DevUiBaseFragment {
                     });
 
             if (isTV()) {
-                setupTvFocusForChildView(view, bugButton, uploadButton, hideButton);
+                preventFocusEscapeFromLastItem(
+                        view,
+                        groupPosition == getGroupCount() - 1
+                                && childPosition == getChildrenCount(groupPosition) - 1);
             }
 
             return view;
-        }
-
-        private void setupTvFocusForChildView(
-                View view, Button bugButton, Button uploadButton, ImageButton hideButton) {
-            view.setFocusable(false);
-
-            uploadButton.setFocusable(true);
-            uploadButton.setClickable(true);
-            uploadButton.setNextFocusRightId(hideButton.getId());
-            uploadButton.setNextFocusLeftId(uploadButton.getId());
-
-            bugButton.setFocusable(true);
-            bugButton.setClickable(true);
-            bugButton.setNextFocusRightId(hideButton.getId());
-            bugButton.setNextFocusLeftId(bugButton.getId());
-
-            hideButton.setFocusable(true);
-            hideButton.setClickable(true);
-            hideButton.setNextFocusLeftId(hideButton.getId());
-            hideButton.setNextFocusRightId(hideButton.getId());
         }
 
         private void attemptUploadCrash(String crashLocalId) {

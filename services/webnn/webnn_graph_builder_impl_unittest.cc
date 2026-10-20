@@ -12,17 +12,18 @@
 #include "base/memory/weak_ptr.h"
 #include "base/notimplemented.h"
 #include "base/task/sequenced_task_runner.h"
+#include "base/test/run_until.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
 #include "base/test/test_future.h"
 #include "mojo/public/cpp/test_support/test_utils.h"
 #include "services/webnn/error.h"
+#include "services/webnn/gpu_task_scheduler.h"
 #include "services/webnn/public/cpp/operand_descriptor.h"
 #include "services/webnn/public/cpp/webnn_types.h"
 #include "services/webnn/public/mojom/features.mojom-features.h"
 #include "services/webnn/public/mojom/webnn_service_introspection.mojom.h"
 #include "services/webnn/public/mojom/webnn_tensor.mojom.h"
-#include "services/webnn/scoped_gpu_sequence.h"
 #include "services/webnn/webnn_constant_operand.h"
 #include "services/webnn/webnn_context_impl.h"
 #include "services/webnn/webnn_context_provider_impl.h"
@@ -51,15 +52,12 @@ mojom::GraphInfoPtr BuildSimpleGraphInfo(
   return builder.TakeGraphInfo();
 }
 
-// A fake WebNNGraph Mojo interface implementation that binds a pipe for
-// computing graph message.
+// A fake WebNNGraph implementation for testing.
 class FakeWebNNGraphImpl final : public WebNNGraphImpl {
  public:
-  FakeWebNNGraphImpl(mojo::PendingReceiver<mojom::WebNNGraph> receiver,
-                     WebNNContextImpl& context,
+  FakeWebNNGraphImpl(WebNNContextImpl& context,
                      ComputeResourceInfo compute_resource_info)
-      : WebNNGraphImpl(std::move(receiver),
-                       context,
+      : WebNNGraphImpl(context,
                        std::move(compute_resource_info),
                        /*devices=*/{}) {}
 
@@ -81,7 +79,7 @@ class FakeWebNNContextImpl final : public WebNNContextImpl {
   FakeWebNNContextImpl(
       mojo::PendingReceiver<mojom::WebNNContext> receiver,
       base::WeakPtr<WebNNContextProviderImpl> context_provider,
-      std::unique_ptr<ScopedGpuSequence> gpu_sequence,
+      std::unique_ptr<GpuTaskScheduler> gpu_task_scheduler,
       scoped_refptr<gpu::MemoryTracker> memory_tracker,
       scoped_refptr<base::SingleThreadTaskRunner> owning_task_runner,
       gpu::SharedImageManager* shared_image_manager,
@@ -96,7 +94,7 @@ class FakeWebNNContextImpl final : public WebNNContextImpl {
                          mojom::CreateContextOptions::New(),
                          mojo::ScopedDataPipeConsumerHandle(),
                          mojo::ScopedDataPipeProducerHandle(),
-                         std::move(gpu_sequence),
+                         std::move(gpu_task_scheduler),
                          std::move(memory_tracker),
                          std::move(owning_task_runner),
                          shared_image_manager,
@@ -113,13 +111,10 @@ class FakeWebNNContextImpl final : public WebNNContextImpl {
   ~FakeWebNNContextImpl() override = default;
 
   void CreateGraphImpl(
-      mojo::PendingReceiver<mojom::WebNNGraph> receiver,
       mojom::GraphInfoPtr graph_info,
       WebNNGraphImpl::ComputeResourceInfo compute_resource_info,
       base::flat_map<OperandId, std::unique_ptr<WebNNConstantOperand>>
           constant_operands,
-      base::flat_map<OperandId, scoped_refptr<WebNNTensorImpl>>
-      /*constant_tensor_operands*/,
       CreateGraphImplCallback callback) override {
     if (captured_constant_operands_) {
       *captured_constant_operands_ = std::move(constant_operands);
@@ -128,19 +123,15 @@ class FakeWebNNContextImpl final : public WebNNContextImpl {
     // Asynchronously resolve `callback` so there's an opportunity for
     // subsequent messages to be (illegally) sent from the `WebNNGraphBuilder`
     // remote before it's disconnected.
-    RunOrScheduleTask(
-        base::BindOnce(
-            [](mojo::PendingReceiver<mojom::WebNNGraph> receiver,
-               base::WeakPtr<WebNNContextImpl> context,
-               WebNNGraphImpl::ComputeResourceInfo compute_resource_info,
-               CreateGraphImplCallback callback) {
-              CHECK(context);
-              std::move(callback).Run(base::MakeRefCounted<FakeWebNNGraphImpl>(
-                  std::move(receiver), *context,
-                  std::move(compute_resource_info)));
-            },
-            std::move(receiver), AsWeakPtr(), std::move(compute_resource_info),
-            std::move(callback)));
+    RunOrScheduleTask(base::BindOnce(
+        [](base::WeakPtr<WebNNContextImpl> context,
+           WebNNGraphImpl::ComputeResourceInfo compute_resource_info,
+           CreateGraphImplCallback callback) {
+          CHECK(context);
+          std::move(callback).Run(base::MakeRefCounted<FakeWebNNGraphImpl>(
+              *context, std::move(compute_resource_info)));
+        },
+        AsWeakPtr(), std::move(compute_resource_info), std::move(callback)));
   }
 
   base::expected<scoped_refptr<WebNNTensorImpl>, mojom::ErrorPtr>
@@ -184,7 +175,7 @@ class FakeWebNNBackend : public WebNNContextProviderImpl::BackendForTesting {
   std::unique_ptr<WebNNContextImpl, OnTaskRunnerDeleter> CreateWebNNContext(
       base::WeakPtr<WebNNContextProviderImpl> context_provider_impl,
       mojom::CreateContextOptionsPtr options,
-      std::unique_ptr<ScopedGpuSequence> gpu_sequence,
+      std::unique_ptr<GpuTaskScheduler> gpu_task_scheduler,
       scoped_refptr<gpu::MemoryTracker> memory_tracker,
       scoped_refptr<base::SingleThreadTaskRunner> owning_task_runner,
       gpu::SharedImageManager* shared_image_manager,
@@ -196,7 +187,7 @@ class FakeWebNNBackend : public WebNNContextProviderImpl::BackendForTesting {
     std::unique_ptr<WebNNContextImpl, OnTaskRunnerDeleter> context_impl(
         new FakeWebNNContextImpl(
             remote.InitWithNewPipeAndPassReceiver(),
-            std::move(context_provider_impl), std::move(gpu_sequence),
+            std::move(context_provider_impl), std::move(gpu_task_scheduler),
             std::move(memory_tracker), std::move(owning_task_runner),
             shared_image_manager, std::move(main_task_runner),
             &captured_constant_operands_),
@@ -245,10 +236,12 @@ class WebNNGraphBuilderImplTest : public testing::Test {
         graph_builder_remote_.BindNewPipeAndPassReceiver());
   }
   void TearDown() override {
-    // Give WebNNContext a chance to disconnect.
+    graph_builder_remote_.reset();
     webnn_context_.reset();
-    webnn_test_environment_.RunUntilIdle();
+    webnn_test_environment_.WaitForAllContextsToBeDestroyed();
 
+    provider_remote_.reset();
+    webnn_test_environment_.TearDown();
     WebNNContextProviderImpl::SetBackendForTesting(nullptr);
   }
 
@@ -295,8 +288,8 @@ TEST_F(WebNNGraphBuilderImplTest, CreateGraph) {
   // The remote should disconnect shortly after the future resolves since the
   // `WebNNGraphBuilder` is destroyed shortly after firing its `CreateGraph()`
   // callback.
-  test_environment().RunUntilIdle();
-  EXPECT_FALSE(graph_builder_remote().is_connected());
+  EXPECT_TRUE(base::test::RunUntil(
+      [&]() { return !graph_builder_remote().is_connected(); }));
 }
 
 TEST_F(WebNNGraphBuilderImplTest, CreateGraphTwice) {

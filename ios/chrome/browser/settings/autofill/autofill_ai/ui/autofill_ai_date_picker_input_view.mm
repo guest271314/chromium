@@ -4,6 +4,7 @@
 
 #import "ios/chrome/browser/settings/autofill/autofill_ai/ui/autofill_ai_date_picker_input_view.h"
 
+#import "ios/chrome/browser/settings/autofill/autofill_ai/utils/autofill_ai_date_util.h"
 #import "ios/chrome/browser/shared/ui/util/uikit_ui_util.h"
 #import "ios/chrome/common/ui/colors/semantic_color_names.h"
 #import "ios/chrome/common/ui/util/constraints_ui_util.h"
@@ -16,6 +17,11 @@ const CGFloat kNavigationBarTopPadding = 21;
 const CGFloat kIOS26NavigationBarTopVerticalPadding = 0;
 const CGFloat kNavigationBarHeight = 44;
 const CGFloat kDatePickerTopVerticalPadding = -8;
+
+// Symmetrical top visual margin padding inside iPad popover (visual padding
+// matches natural navigation bar horizontal layout margins).
+const CGFloat kDatePickerPopoverNavigationBarPortraitTopPadding = 10;
+const CGFloat kDatePickerPopoverNavigationBarLandscapeTopPadding = 24;
 
 // Returns the constant to apply to the navigation bar top constraint.
 CGFloat NavigationBarTopConstraintConstant() {
@@ -83,6 +89,13 @@ CGFloat NavigationBarTopConstraintConstant() {
     return;
   }
 
+  if (ShouldUsePopoverForDatePicker(self)) {
+    _topConstraint.constant =
+        IsLandscape(window) ? kDatePickerPopoverNavigationBarLandscapeTopPadding
+                            : kDatePickerPopoverNavigationBarPortraitTopPadding;
+    return;
+  }
+
   _topConstraint.constant = IsLandscape(window)
                                 ? kNavigationBarTopPadding
                                 : NavigationBarTopConstraintConstant();
@@ -106,9 +119,8 @@ CGFloat NavigationBarTopConstraintConstant() {
 
   [self addSubview:datePicker];
 
-  AddSameConstraintsToSides(
-      datePicker, self,
-      LayoutSides::kLeading | LayoutSides::kTrailing | LayoutSides::kBottom);
+  AddSameConstraintsToSides(datePicker, self,
+                            LayoutSides::kBottom | LayoutSides::kHorizontal);
 
   return datePicker;
 }
@@ -153,8 +165,7 @@ CGFloat NavigationBarTopConstraintConstant() {
 
   [self addSubview:navigationBar];
 
-  AddSameConstraintsToSides(navigationBar, self,
-                            LayoutSides::kLeading | LayoutSides::kTrailing);
+  AddSameConstraintsToSides(navigationBar, self, LayoutSides::kHorizontal);
 
   NSLayoutConstraint* topConstraint = [navigationBar.topAnchor
       constraintEqualToAnchor:self.topAnchor

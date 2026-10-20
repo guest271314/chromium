@@ -28,6 +28,7 @@
 #include "third_party/blink/renderer/core/dom/flat_tree_traversal.h"
 #include "third_party/blink/renderer/core/dom/pseudo_element.h"
 #include "third_party/blink/renderer/core/dom/shadow_root.h"
+#include "third_party/blink/renderer/core/dom/slot_assignment_recalc_forbidden_scope.h"
 #include "third_party/blink/renderer/core/editing/editing_utilities.h"
 #include "third_party/blink/renderer/core/editing/frame_selection.h"
 #include "third_party/blink/renderer/core/editing/position_with_affinity.h"
@@ -90,6 +91,25 @@ bool HasImageSourceURL(const Node& node) {
     return true;
   }
   return false;
+}
+
+// Returns the position to use instead of mapping a point inside
+// |layout_object| when |layout_object| is display locked, or std::nullopt if it
+// is not. Contents of a locked subtree are not painted and the layout state
+// inside the lock can be dirty, so positions in it must not be used. A hit test
+// result can point into a subtree that got locked after the hit test, e.g. by a
+// focus change during the same mouse press.
+std::optional<PositionWithAffinity> PositionForDisplayLock(
+    const LayoutObject& layout_object) {
+  SlotAssignmentRecalcForbiddenScope forbid_slot_recalc(
+      layout_object.GetDocument());
+  const Element* locked =
+      DisplayLockUtilities::LockedInclusiveAncestorPreventingPaint(
+          layout_object);
+  if (!locked) {
+    return std::nullopt;
+  }
+  return PositionWithAffinity(Position(*locked, 0), TextAffinity::kDefault);
 }
 
 }  // namespace
@@ -211,15 +231,9 @@ PositionWithAffinity HitTestResult::GetPosition() const {
   if (!layout_object)
     return PositionWithAffinity();
 
-  // We should never have a layout object that is within a locked subtree.
-  CHECK(!DisplayLockUtilities::LockedAncestorPreventingPaint(*layout_object));
-
-  // If the layout object is blocked by display lock, we return the beginning of
-  // the node as the position. This is because we don't paint contents of the
-  // element. Furthermore, any caret adjustments below can access layout-dirty
-  // state in the subtree of this object.
-  if (layout_object->ChildPaintBlockedByDisplayLock())
-    return PositionWithAffinity(Position(*node, 0), TextAffinity::kDefault);
+  if (auto position = PositionForDisplayLock(*layout_object)) {
+    return *position;
+  }
 
   if (node->IsPseudoElement()) {
     // Pseudo-elements can't serve as caret anchors.
@@ -263,15 +277,9 @@ PositionWithAffinity HitTestResult::GetPositionForInnerNodeOrImageMapImage()
   LayoutObject* layout_object = node->GetLayoutObject();
   if (!layout_object)
     return PositionWithAffinity();
-  // We should never have a layout object that is within a locked subtree.
-  CHECK(!DisplayLockUtilities::LockedAncestorPreventingPaint(*layout_object));
-
-  // If the layout object is blocked by display lock, we return the beginning of
-  // the node as the position. This is because we don't paint contents of the
-  // element. Furthermore, any caret adjustments below can access layout-dirty
-  // state in the subtree of this object.
-  if (layout_object->ChildPaintBlockedByDisplayLock())
-    return PositionWithAffinity(Position(*node, 0), TextAffinity::kDefault);
+  if (auto position = PositionForDisplayLock(*layout_object)) {
+    return *position;
+  }
 
   PositionWithAffinity position = layout_object->PositionForPoint(LocalPoint());
   if (position.IsNull())
@@ -322,16 +330,13 @@ HTMLAreaElement* HitTestResult::ImageAreaForImage() const {
           DynamicTo<HTMLImageElement>(inner_node_->OwnerShadowHost());
     }
   }
-
-  if (!image_element || !image_element->GetLayoutObject() ||
-      !image_element->GetLayoutObject()->IsBox())
+  if (!image_element || !IsA<LayoutBox>(image_element->GetLayoutObject())) {
     return nullptr;
-
-  HTMLMapElement* map = image_element->GetTreeScope().GetImageMap(
-      image_element->FastGetAttribute(html_names::kUsemapAttr));
-  if (!map)
+  }
+  HTMLMapElement* map = image_element->GetImageMap();
+  if (!map) {
     return nullptr;
-
+  }
   return map->AreaForPoint(LocalPoint(), image_element->GetLayoutObject());
 }
 
@@ -415,7 +420,7 @@ String HitTestResult::Title(TextDirection& dir) const {
       String title = element->title();
       if (!title.IsNull()) {
         if (LayoutObject* layout_object = title_node->GetLayoutObject())
-          dir = layout_object->StyleRef().Direction();
+          dir = layout_object->Style().Direction();
         return title;
       }
     }
@@ -562,7 +567,10 @@ bool HitTestResult::IsContentEditable() const {
 std::tuple<bool, ListBasedHitTestBehavior>
 HitTestResult::AddNodeToListBasedTestResultInternal(
     Node* node,
-    const HitTestLocation& location) {
+    const HitTestLocation& location,
+    const PhysicalRect* physical_rect,
+    const gfx::QuadF* quad,
+    const cc::Region* region) {
   // If not a list-based test, stop testing because the hit has been found.
   if (!GetHitTestRequest().ListBased())
     return std::make_tuple(false, kStopHitTesting);
@@ -576,7 +584,8 @@ HitTestResult::AddNodeToListBasedTestResultInternal(
     if (GetHitTestRequest().UseHitNodeCb()) {
       LocalFrameView::InvalidationDisallowedScope invalidation_disallowed(
           *node->GetDocument().View());
-      behavior = GetHitTestRequest().RunHitNodeCb(*node);
+      behavior =
+          GetHitTestRequest().RunHitNodeCb(*node, physical_rect, quad, region);
     }
     return std::make_tuple(false, behavior);
   }
@@ -611,7 +620,8 @@ ListBasedHitTestBehavior HitTestResult::AddNodeToListBasedTestResult(
   bool should_check_containment;
   ListBasedHitTestBehavior behavior;
   std::tie(should_check_containment, behavior) =
-      AddNodeToListBasedTestResultInternal(node, location);
+      AddNodeToListBasedTestResultInternal(node, location, &rect, nullptr,
+                                           nullptr);
   if (!should_check_containment)
     return behavior;
   return rect.Contains(location.BoundingBox()) ? kStopHitTesting
@@ -625,7 +635,8 @@ ListBasedHitTestBehavior HitTestResult::AddNodeToListBasedTestResult(
   bool should_check_containment;
   ListBasedHitTestBehavior behavior;
   std::tie(should_check_containment, behavior) =
-      AddNodeToListBasedTestResultInternal(node, location);
+      AddNodeToListBasedTestResultInternal(node, location, nullptr, &quad,
+                                           nullptr);
   if (!should_check_containment)
     return behavior;
   return quad.ContainsQuad(gfx::QuadF(gfx::RectF(location.BoundingBox())))
@@ -640,7 +651,8 @@ ListBasedHitTestBehavior HitTestResult::AddNodeToListBasedTestResult(
   bool should_check_containment;
   ListBasedHitTestBehavior behavior;
   std::tie(should_check_containment, behavior) =
-      AddNodeToListBasedTestResultInternal(node, location);
+      AddNodeToListBasedTestResultInternal(node, location, nullptr, nullptr,
+                                           &region);
   if (!should_check_containment)
     return behavior;
   return region.Contains(location.ToEnclosingRect()) ? kStopHitTesting

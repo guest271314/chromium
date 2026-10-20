@@ -11,7 +11,6 @@
 <translation id="1253734725326687145">Түрту аумағы жоғарғы оң жаққа жылжытылды. Осы жерді түртіңіз.</translation>
 <translation id="1266864766717917324"><ph name="CONTENT_TYPE" /> бөлісу мүмкін болмады.</translation>
 <translation id="1269641567813814718">Win</translation>
-<translation id="1291104554099683393">Мәтін тым үлкен, аз-аздан бөлісіп көріңіз.</translation>
 <translation id="1293699935367580298">Esc</translation>
 <translation id="1368832886055348810">Солдан оңға</translation>
 <translation id="1383876407941801731">Іздеу</translation>
@@ -38,13 +37,11 @@
 <translation id="1901303067676059328">Барлығын &amp;таңдау</translation>
 <translation id="19085484004813472">Бұл – жаңа функция.</translation>
 <translation id="2006524834898217237">Бұл құрылғы интернетке қосулы екеніне көз жеткізіңіз.</translation>
-<translation id="208586643495776849">Қайталап көріңіз</translation>
 <translation id="2111134541987263231"><ph name="BEGIN_BOLD" />Инкогнито режимінде рұқсат беру<ph name="END_BOLD" /> мүмкіндігін қосу</translation>
 <translation id="2141853158323869627">{DAYS,plural, =1{1 күн}other{# күн}}</translation>
 <translation id="2148716181193084225">Бүгін</translation>
 <translation id="2168039046890040389">Жоғарғы бетке өту</translation>
 <translation id="2190355936436201913">(бос)</translation>
-<translation id="2192232475740621500">Төмен тығыздықты пайдалану</translation>
 <translation id="2267918077332197517">Бұл сайттан келетін барлық хабарландыруларды бөгеу</translation>
 <translation id="2283117145434822734">F6</translation>
 <translation id="2289052229480071835">Экрандағы сенсорлық нысандарды түртіңіз.</translation>
@@ -56,7 +53,6 @@
 <translation id="2388990488038464401">Осы нөмірге телефоныңыздан қоңырау шалынсын ба?</translation>
 <translation id="2435457462613246316">Құпия сөзді көрсету</translation>
 <translation id="24452542372838207">Хабарландыруды жаю</translation>
-<translation id="2445449901874883781">Жоғары тығыздықты пайдалану</translation>
 <translation id="2448407890032181691">Түрту аумағы төменгі оң жаққа жылжытылды. Осы жерді түртіңіз.</translation>
 <translation id="2482878487686419369">Хабарландырулар</translation>
 <translation id="2497284189126895209">Барлық файлдар</translation>
@@ -87,7 +83,6 @@
 <translation id="3306688585798492231">Енді­рілген дисплей</translation>
 <translation id="335581015389089642">Сөйлеу</translation>
 <translation id="3372635229069101468"><ph name="BEGIN_BOLD" />Мәліметтер<ph name="END_BOLD" /> түймесін басыңыз</translation>
-<translation id="3389286852084373014">Мәтін өте үлкен</translation>
 <translation id="3406306243914553062">HTML контенті</translation>
 <translation id="3600566671520689681">{DAYS,plural, =1{1 күн қалды}other{# күн қалды}}</translation>
 <translation id="3600969208114796418"><ph name="SAVEAS_EXTENSION_TYPE" /> файлы</translation>
@@ -130,7 +125,6 @@
 <translation id="5046499563572181734">Осы жерді түртіңіз</translation>
 <translation id="5076340679995252485">&amp;Қою</translation>
 <translation id="520299402983819650"><ph name="QUANTITY" /> ПБ</translation>
-<translation id="5278860589123563674">Жіберілмеді</translation>
 <translation id="5283101102242354279">Инкогнито режимінде кеңейтімді қосу:</translation>
 <translation id="528468243742722775">Соңы</translation>
 <translation id="5329858601952122676">&amp;Жою</translation>
@@ -190,7 +184,6 @@
 <translation id="6965382102122355670">Жарайды</translation>
 <translation id="6974053822202609517">Оңнан солға</translation>
 <translation id="7052633198403197513">F1</translation>
-<translation id="7170202025028120564">Қолданбаңыз келесі рет іске қосылғанда, оның дисплей параметрлері күшіне енеді.</translation>
 <translation id="7222373446505536781">F11</translation>
 <translation id="7238427729722629793">{MINUTES,plural, =1{1 мин қалды}other{# мин қалды}}</translation>
 <translation id="7252604552361840748">Жоғарыдағы кеңейтімді табу</translation>

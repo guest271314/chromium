@@ -27,7 +27,6 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/ash/shelf/arc_app_shelf_id.h"
 #include "chrome/browser/ui/ash/shelf/chrome_shelf_controller_util.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/extensions/app_launch_params.h"
 #include "chrome/browser/ui/extensions/application_launch.h"
 #include "chrome/browser/ui/extensions/extension_enable_flow.h"
@@ -46,6 +45,8 @@
 #include "extensions/browser/extension_util.h"
 #include "net/base/url_util.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/base/window_open_disposition.h"
+#include "ui/display/types/display_constants.h"
 
 namespace {
 
@@ -123,7 +124,7 @@ std::u16string ShelfControllerHelper::GetAppTitle(Profile* profile,
     std::unique_ptr<ArcAppListPrefs::AppInfo> app_info =
         ArcAppListPrefs::Get(profile)->GetApp(
             arc::ArcAppShelfId::FromString(app_id).app_id());
-    DCHECK(app_info.get());
+    CHECK(app_info.get(), base::NotFatalUntil::M162);
     return base::UTF8ToUTF16(app_info->name);
   }
 
@@ -253,7 +254,7 @@ bool ShelfControllerHelper::IsAppDefaultInstalled(Profile* profile,
 }
 
 std::string ShelfControllerHelper::GetAppID(content::WebContents* tab) {
-  DCHECK(tab);
+  CHECK(tab, base::NotFatalUntil::M162);
   return apps::GetInstanceAppIdForWebContents(tab).value_or(std::string());
 }
 
@@ -448,7 +449,7 @@ bool ShelfControllerHelper::IsValidIDForArcApp(
     }
     const arc::ArcSessionManager* arc_session_manager =
         arc::ArcSessionManager::Get();
-    DCHECK(arc_session_manager);
+    CHECK(arc_session_manager, base::NotFatalUntil::M162);
     if (!arc_session_manager->IsAllowed()) {
       return false;
     }

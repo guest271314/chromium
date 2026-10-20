@@ -26,7 +26,6 @@ import org.chromium.base.task.PostTask;
 import org.chromium.base.task.TaskTraits;
 import org.chromium.base.test.util.CallbackHelper;
 import org.chromium.base.test.util.CommandLineFlags;
-import org.chromium.base.test.util.DisableLeakChecks;
 import org.chromium.base.test.util.DisabledTest;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.download.DownloadTestRule;
@@ -46,7 +45,6 @@ import java.util.concurrent.atomic.AtomicBoolean;
 /** Tests that toasts don't trigger HW acceleration. */
 @RunWith(ChromeJUnit4ClassRunner.class)
 @CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
-@DisableLeakChecks("crbug.com/512492353 (OfflineContentAggregatorBridge)")
 public class ToastHWATest {
     public final FreshCtaTransitTestRule mActivityTestRule =
             ChromeTransitTestRules.freshChromeTabbedActivityRule();
@@ -172,23 +170,20 @@ public class ToastHWATest {
 
         PostTask.postTask(
                 TaskTraits.UI_DEFAULT,
-                new Runnable() {
-                    @Override
-                    public void run() {
-                        // We are using Toast.makeText(context, ...) instead of new Toast(context)
-                        // because that Toast constructor is unused and is deleted by proguard.
-                        Toast toast = Toast.makeText(context, "Test", Toast.LENGTH_SHORT);
-                        toast.setView(
-                                new View(context) {
-                                    @Override
-                                    public void onAttachedToWindow() {
-                                        super.onAttachedToWindow();
-                                        accelerated.set(isHardwareAccelerated());
-                                        listenerCalled.notifyCalled();
-                                    }
-                                });
-                        toast.show();
-                    }
+                () -> {
+                    // We are using Toast.makeText(context, ...) instead of new Toast(context)
+                    // because that Toast constructor is unused and is deleted by proguard.
+                    Toast toast = Toast.makeText(context, "Test", Toast.LENGTH_SHORT);
+                    toast.setView(
+                            new View(context) {
+                                @Override
+                                public void onAttachedToWindow() {
+                                    super.onAttachedToWindow();
+                                    accelerated.set(isHardwareAccelerated());
+                                    listenerCalled.notifyCalled();
+                                }
+                            });
+                    toast.show();
                 });
 
         listenerCalled.waitForCallback(0);

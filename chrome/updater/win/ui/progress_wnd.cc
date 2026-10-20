@@ -7,14 +7,17 @@
 #include <windows.h>
 
 #include <commctrl.h>
+#include <stddef.h>
 
 #include <algorithm>
 #include <array>
 #include <memory>
 #include <string>
+#include <tuple>
 #include <typeinfo>
 #include <utility>
 
+#include "base/check.h"
 #include "base/check_op.h"
 #include "base/containers/span.h"
 #include "base/debug/dump_without_crashing.h"
@@ -27,7 +30,11 @@
 #include "base/strings/utf_string_conversions.h"
 #include "base/time/time.h"
 #include "base/version.h"
+#include "base/win/current_module.h"
+#include "base/win/scoped_gdi_object.h"
+#include "base/win/scoped_hdc.h"
 #include "base/win/scoped_localalloc.h"
+#include "base/win/scoped_select_object.h"
 #include "chrome/updater/app/app_install_progress.h"
 #include "chrome/updater/app/app_install_util_win.h"
 #include "chrome/updater/util/util.h"
@@ -37,6 +44,7 @@
 #include "chrome/updater/win/ui/ui_constants.h"
 #include "chrome/updater/win/ui/ui_ctls.h"
 #include "chrome/updater/win/ui/ui_util.h"
+#include "chrome/updater/win/ui/window_impl.h"
 
 namespace updater::ui {
 
@@ -54,8 +62,8 @@ bool AreAllAppsCanceled(const std::vector<AppCompletionInfo>& apps_info) {
 // `SS_BITMAP` controls, so the dialog's dark-mode background brush cannot
 // reach them through the usual mechanism. The defaults from the `STATIC`
 // window class paint `COLOR_3DFACE` for both `WM_ERASEBKGND` and the
-// no-image case in `WM_PAINT`, which shows up as a small light-gray
-// rectangle on dark / high-contrast backgrounds.
+// no-image case in `WM_PAINT`, which shows up as an unwanted rectangle
+// on themed / high-contrast backgrounds.
 //
 // In dark / high-contrast mode this subclass:
 //   * Returns 1 from `WM_ERASEBKGND` so the parent's already-painted
@@ -75,8 +83,16 @@ LRESULT CALLBACK BitmapStaticSubclassProc(HWND hwnd,
                                           WPARAM wparam,
                                           LPARAM lparam,
                                           UINT_PTR id,
-                                          DWORD_PTR /*ref_data*/) {
-  const bool themed_bg = IsHighContrastOn() || IsDarkModeOn();
+                                          DWORD_PTR ref_data) {
+  if (msg == WM_THEMECHANGED || msg == WM_SYSCOLORCHANGE ||
+      msg == WM_SETTINGCHANGE) {
+    const bool themed_bg = IsHighContrastOn() || IsDarkModeOn();
+    ::SetWindowSubclass(hwnd, BitmapStaticSubclassProc, id,
+                        static_cast<DWORD_PTR>(themed_bg));
+    return ::DefSubclassProc(hwnd, msg, wparam, lparam);
+  }
+
+  const bool themed_bg = static_cast<bool>(ref_data);
   if (msg == WM_ERASEBKGND && themed_bg) {
     return 1;
   }
@@ -102,8 +118,10 @@ LRESULT CALLBACK BitmapStaticSubclassProc(HWND hwnd,
 void InstallBitmapStaticSubclass(HWND parent, int control_id) {
   HWND child = ::GetDlgItem(parent, control_id);
   if (child && ::IsWindow(child)) {
+    const bool themed_bg = IsHighContrastOn() || IsDarkModeOn();
     ::SetWindowSubclass(child, BitmapStaticSubclassProc,
-                        kBitmapStaticSubclassId, 0);
+                        kBitmapStaticSubclassId,
+                        static_cast<DWORD_PTR>(themed_bg));
   }
 }
 
@@ -130,10 +148,212 @@ void ProgressWnd::SetEventSink(ProgressWndEvents* events) {
   CompleteWnd::SetEventSink(events_sink_);
 }
 
+LRESULT ProgressWnd::OnSetAppLogo(UINT, WPARAM wparam, LPARAM lparam) {
+  // Extract the `HBITMAP` handles passed in `WPARAM` (light) and `LPARAM`
+  // (dark) and transfer ownership to ScopedGDIObject. If both parameters refer
+  // to the same handle, set `dark` to null so two ScopedGDIObjects are never
+  // created for the same physical handle.
+  HBITMAP light = reinterpret_cast<HBITMAP>(wparam);
+  HBITMAP dark = reinterpret_cast<HBITMAP>(lparam);
+  if (light && light == dark) {
+    dark = nullptr;
+  }
+  SetAppLogo(base::win::ScopedGDIObject<HBITMAP>(light),
+             base::win::ScopedGDIObject<HBITMAP>(dark));
+  return 0;
+}
+
+RECT ProgressWnd::GetControlClientRect(HWND control) const {
+  RECT rect = {};
+  ::GetWindowRect(control, &rect);
+  // Convert screen coordinates to parent client coordinates using an explicit
+  // `POINT` array to avoid strict aliasing violations and support RTL layouts.
+  POINT pts[] = {{rect.left, rect.top}, {rect.right, rect.bottom}};
+  ::MapWindowPoints(HWND_DESKTOP, hwnd(), pts, 2);
+  rect = {pts[0].x, pts[0].y, pts[1].x, pts[1].y};
+  if (rect.left > rect.right) {
+    std::swap(rect.left, rect.right);
+  }
+  return rect;
+}
+
+HBITMAP ProgressWnd::SelectLogoForTheme(bool is_dark) const {
+  if (is_dark) {
+    return dark_app_logo_bmp_.is_valid() ? dark_app_logo_bmp_.get()
+                                         : light_app_logo_bmp_.get();
+  }
+  return light_app_logo_bmp_.is_valid() ? light_app_logo_bmp_.get()
+                                        : dark_app_logo_bmp_.get();
+}
+
+HBITMAP ProgressWnd::GetCurrentAppLogoBitmap() const {
+  return SelectLogoForTheme(is_dark_mode());
+}
+
+void ProgressWnd::SetAppLogo(base::win::ScopedGDIObject<HBITMAP> light_bitmap,
+                             base::win::ScopedGDIObject<HBITMAP> dark_bitmap) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  CHECK(!light_bitmap.is_valid() || light_bitmap.get() != dark_bitmap.get());
+
+  // Take ownership of existing bitmaps into temporaries to avoid self-reset
+  // abort() in ScopedGeneric or cross-aliasing use-after-free.
+  base::win::ScopedGDIObject<HBITMAP> old_light =
+      std::move(light_app_logo_bmp_);
+  base::win::ScopedGDIObject<HBITMAP> old_dark =
+      std::move(dark_app_logo_bmp_);
+
+  // If the caller passed a handle already held by `old_light` or `old_dark`,
+  // release the old holder so the incoming ScopedGDIObject retains unique
+  // ownership without double deletion when `old_light`/`old_dark` destructs.
+  // The `is_valid()` guard keeps null handles from matching each other.
+  auto release_if_aliased = [&](base::win::ScopedGDIObject<HBITMAP>& old) {
+    if (old.is_valid() && (old.get() == light_bitmap.get() ||
+                           old.get() == dark_bitmap.get())) {
+      std::ignore = old.release();
+    }
+  };
+  release_if_aliased(old_light);
+  release_if_aliased(old_dark);
+
+  ResetWindowIconCache();
+
+  light_app_logo_bmp_ = std::move(light_bitmap);
+  dark_app_logo_bmp_ = std::move(dark_bitmap);
+
+  UpdateAppLogo();
+}
+
+void ProgressWnd::UpdateAppLogo(UINT target_dpi) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  if (!IsWindow()) {
+    return;
+  }
+
+  const UINT effective_dpi =
+      target_dpi ? target_dpi : ::GetDpiForWindow(hwnd());
+
+  const HWND app_bitmap_ctl = ::GetDlgItem(hwnd(), IDC_APP_BITMAP);
+  if (!app_bitmap_ctl) {
+    UpdateWindowIcon(/*big_bitmap=*/nullptr, /*small_bitmap=*/nullptr,
+                     effective_dpi);
+    return;
+  }
+
+  // Clears the logo image control and resets the window icon back to the
+  // unbadged default application icon (`IDI_APP`).
+  auto clear_logo = [this, app_bitmap_ctl, effective_dpi]() {
+    const RECT ctl_rect = GetControlClientRect(app_bitmap_ctl);
+    ::SendMessage(app_bitmap_ctl, STM_SETIMAGE, IMAGE_BITMAP, 0);
+    scaled_app_logo_bmp_.reset();
+    ::InvalidateRect(hwnd(), &ctl_rect, TRUE);
+    UpdateWindowIcon(/*big_bitmap=*/nullptr, /*small_bitmap=*/nullptr,
+                     effective_dpi);
+  };
+
+  HBITMAP current_logo = GetCurrentAppLogoBitmap();
+  if (!current_logo) {
+    clear_logo();
+    return;
+  }
+
+  // Obtain the original dimensions of the cached bitmap.
+  BITMAP bm = {};
+  if (::GetObject(current_logo, sizeof(bm), &bm) == 0) {
+    VLOG(1) << __func__ << " ::GetObject failed";
+    clear_logo();
+    return;
+  }
+
+  // Scale the bitmap dimensions based on the window's effective DPI.
+  const int dpi_val = effective_dpi ? effective_dpi : USER_DEFAULT_SCREEN_DPI;
+  const int width_pixels =
+      ::MulDiv(bm.bmWidth, dpi_val, USER_DEFAULT_SCREEN_DPI);
+  const int height_pixels =
+      ::MulDiv(bm.bmHeight, dpi_val, USER_DEFAULT_SCREEN_DPI);
+
+  if (width_pixels <= 0 || height_pixels <= 0) {
+    VLOG(1) << __func__ << " Invalid logo dimensions: " << width_pixels << "x"
+            << height_pixels;
+    clear_logo();
+    return;
+  }
+
+  base::win::ScopedGDIObject<HBITMAP> scaled_bitmap(reinterpret_cast<HBITMAP>(
+      ::CopyImage(current_logo, IMAGE_BITMAP, width_pixels, height_pixels, 0)));
+  if (!scaled_bitmap.is_valid()) {
+    VLOG(1) << __func__ << " ::CopyImage failed to scale logo";
+    clear_logo();
+    return;
+  }
+
+  // Support Windows hybrid theme mode ("Custom" mode in Windows Settings):
+  // ICON_BIG is used by the Windows taskbar and Alt-Tab switcher, which follows
+  // the Windows system theme (`SystemUsesLightTheme`).
+  // ICON_SMALL is used by the window titlebar and top-left system menu, which
+  // follows the application theme (`AppsUseLightTheme`).
+  // When the user sets the app theme to Dark but the taskbar to Light (or vice
+  // versa), using the corresponding theme logo for each target prevents dark
+  // logos on light taskbars or vice versa.
+  const bool is_titlebar_dark = is_dark_mode();
+  const bool is_taskbar_dark = is_system_dark_mode();
+
+  const HBITMAP small_logo = SelectLogoForTheme(is_titlebar_dark);
+  const HBITMAP big_logo = SelectLogoForTheme(is_taskbar_dark);
+
+  UpdateWindowIcon(big_logo, small_logo, effective_dpi, IDI_INSTALLER_BADGE);
+
+  RECT client_rect = {};
+  ::GetClientRect(hwnd(), &client_rect);
+  const int dialog_width = client_rect.right - client_rect.left;
+
+  const RECT ctl_rect = GetControlClientRect(app_bitmap_ctl);
+
+  // Lock the bottom edge of the control to the original design-time bottom
+  // baseline. Taller square logos (e.g. 48x48) expand upward into the open
+  // area below the progress bar without overlapping the dialog buttons below.
+  if (initial_app_logo_base_bottom_y_ < 0) {
+    initial_app_logo_base_bottom_y_ =
+        ::MulDiv(ctl_rect.bottom, USER_DEFAULT_SCREEN_DPI, effective_dpi);
+  }
+  const int bottom_y = ::MulDiv(initial_app_logo_base_bottom_y_, effective_dpi,
+                                USER_DEFAULT_SCREEN_DPI);
+  const int x = (dialog_width - width_pixels) / 2;
+  const int y = bottom_y - height_pixels;
+
+  // Calculate the bounding box covering both the old and new control rects to
+  // ensure complete repainting without leaving visual artifacts.
+  const RECT old_rect = ctl_rect;
+  const RECT new_rect = {x, y, x + width_pixels, bottom_y};
+  RECT update_rect = {};
+  ::UnionRect(&update_rect, &old_rect, &new_rect);
+
+  ::SetWindowPos(app_bitmap_ctl, nullptr, x, y, width_pixels, height_pixels,
+                 SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOCOPYBITS);
+  ::InvalidateRect(hwnd(), &update_rect, TRUE);
+
+  // Pass the scaled `HBITMAP` handle as `LPARAM` to `STM_SETIMAGE`.
+  ::SendMessage(app_bitmap_ctl, STM_SETIMAGE, IMAGE_BITMAP,
+                reinterpret_cast<LPARAM>(scaled_bitmap.get()));
+  scaled_app_logo_bmp_ = std::move(scaled_bitmap);
+}
+
 LRESULT ProgressWnd::OnInitDialog(UINT, WPARAM, LPARAM) {
   HideWindowChildren(hwnd());
 
   InitializeDialog();
+
+  const HWND app_bitmap_ctl = ::GetDlgItem(hwnd(), IDC_APP_BITMAP);
+  if (app_bitmap_ctl) {
+    const RECT ctl_rect = GetControlClientRect(app_bitmap_ctl);
+    const int dpi = ::GetDpiForWindow(hwnd());
+    const int effective_dpi = dpi ? dpi : USER_DEFAULT_SCREEN_DPI;
+    // Record the design-time baseline bottom coordinate in 96-DPI space if not
+    // already captured.
+    if (initial_app_logo_base_bottom_y_ < 0) {
+      initial_app_logo_base_bottom_y_ =
+          ::MulDiv(ctl_rect.bottom, USER_DEFAULT_SCREEN_DPI, effective_dpi);
+    }
+  }
 
   SetMarqueeMode(true);
 
@@ -146,7 +366,22 @@ LRESULT ProgressWnd::OnInitDialog(UINT, WPARAM, LPARAM) {
   InstallBitmapStaticSubclass(hwnd(), IDC_APP_BITMAP);
   InstallBitmapStaticSubclass(hwnd(), IDC_ERROR_ILLUSTRATION);
 
+  btn1_.SetIsPrimary(true);
+  btn1_.SubclassWindow(::GetDlgItem(hwnd(), IDC_BUTTON1));
+
+  btn2_.SetIsPrimary(false);
+  btn2_.SubclassWindow(::GetDlgItem(hwnd(), IDC_BUTTON2));
+
+  close_btn_.SetIsPrimary(true);
+  close_btn_.SubclassWindow(::GetDlgItem(hwnd(), IDC_CLOSE));
+
+  get_help_btn_.SetIsPrimary(false);
+  get_help_btn_.SubclassWindow(::GetDlgItem(hwnd(), IDC_GET_HELP));
+
   ChangeControlState();
+
+  // Apply rounded corners on initialization.
+  UpdateWindowRgn();
 
   // Force a full redraw of the dialog and all its children so the static
   // controls re-erase through the dark/gradient background painted by
@@ -158,153 +393,266 @@ LRESULT ProgressWnd::OnInitDialog(UINT, WPARAM, LPARAM) {
   return 1;  // Let the system set the focus.
 }
 
+LRESULT ProgressWnd::OnSize(UINT /*msg*/,
+                            WPARAM /*wparam*/,
+                            LPARAM /*lparam*/) {
+  UpdateWindowRgn();
+  SetMsgHandled(FALSE);  // Let other handlers process `WM_SIZE` if needed.
+  return 0;
+}
+
+void ProgressWnd::UpdateWindowRgn() {
+  // The window has a non-client area (e.g., system shadow, margins, or standard
+  // borders). To ensure that the rounded window clipping region exactly aligns
+  // with the custom border drawn in `OnEraseBkgnd` (which draws relative to the
+  // client area bounds), we must calculate the client area coordinates relative
+  // to the window coordinates. Using the window coordinates directly would
+  // leave margins showing standard OS borders and un-clipped corners.
+  RECT client_rect = {};
+  ::GetClientRect(hwnd(), &client_rect);
+
+  // Defensive check to prevent region creation with invalid or zero
+  // coordinates.
+  if (client_rect.right <= 0 || client_rect.bottom <= 0) {
+    return;
+  }
+
+  // MapWindowPoints handles RTL window mirroring correctly by swapping
+  // left/right coordinates when mapping a RECT to screen space (null dest HDC).
+  ::MapWindowPoints(hwnd(), nullptr, reinterpret_cast<LPPOINT>(&client_rect),
+                    2);
+
+  RECT window_rect = {};
+  ::GetWindowRect(hwnd(), &window_rect);
+
+  const int left = client_rect.left - window_rect.left;
+  const int top = client_rect.top - window_rect.top;
+  const int right = client_rect.right - window_rect.left;
+  const int bottom = client_rect.bottom - window_rect.top;
+
+  // Scale the 11px corner radius based on the current DPI of the window to
+  // ensure proportional rounded corners on high-DPI displays.
+  const int scaled_radius = GetScaledCornerRadius();
+
+  HRGN rgn = ::CreateRoundRectRgn(left, top, right, bottom, scaled_radius * 2,
+                                  scaled_radius * 2);
+  if (rgn) {
+    // SetWindowRgn takes ownership of the HRGN object.
+    ::SetWindowRgn(hwnd(), rgn, TRUE);
+  }
+}
+
+int ProgressWnd::GetScaledCornerRadius() const {
+  return ::MulDiv(11, ::GetDpiForWindow(hwnd()), USER_DEFAULT_SCREEN_DPI);
+}
+
+void ProgressWnd::ApplyDpiScaling(UINT dpi) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  OmahaWnd::ApplyDpiScaling(dpi);
+  UpdateAppLogo(dpi);
+}
+
 LRESULT ProgressWnd::OnEraseBkgnd(UINT, WPARAM wparam, LPARAM) {
   const HDC hdc = reinterpret_cast<HDC>(wparam);
   RECT rect = {};
   ::GetClientRect(hwnd(), &rect);
 
-  if (IsHighContrastOn()) {
-    ::FillRect(hdc, &rect, ::GetSysColorBrush(COLOR_WINDOW));
-    return 1;
-  }
-
-  if (IsDarkModeOn()) {
-    base::win::ScopedGDIObject<HBRUSH> fill_brush(
-        ::CreateSolidBrush(RGB(0x20, 0x20, 0x20)));
-    ::FillRect(hdc, &rect, fill_brush.get());
-    return 1;
-  }
-
-  // Fill the entire client area with solid white first to clear any previous
-  // artifacts.
-  ::FillRect(hdc, &rect, static_cast<HBRUSH>(::GetStockObject(WHITE_BRUSH)));
-
   const int width = rect.right - rect.left;
   const int height = rect.bottom - rect.top;
-
-  // Configuration for the rainbow geometry.
-  static constexpr size_t kNumStops = 7;
-  static constexpr size_t kNumSegments = kNumStops - 1;
-  static constexpr size_t kNumVertices = kNumStops * 2;  // Top + bottom row
-  static constexpr size_t kNumTriangles = kNumSegments * 2;
-
-  // Layout ratios.
-  static constexpr double kYEdgeRatio = 0.69;
-  static constexpr double kYCenterRatio = 0.98;
-
-  // Static data for stops and colors.
-  static constexpr std::array<double, kNumStops> kStops = {
-      0.0, 0.17, 0.32, 0.50, 0.66, 0.81, 1.0};
-
-  static constexpr std::array<COLORREF, kNumStops> kColors = {
-      RGB(255, 255, 220),  // Light Yellow
-      RGB(255, 240, 210),  // Light Orange
-      RGB(255, 225, 225),  // Light Red
-      RGB(255, 235, 245),  // Light Pink
-      RGB(250, 230, 255),  // Light Magenta
-      RGB(240, 230, 255),  // Light Violet
-      RGB(220, 255, 255)   // Light Aqua
-  };
-
-  // Define the curve parameters:
-  // y_edge: The height where the rainbow starts at the left/right edges.
-  // y_center: The height where the rainbow is thinnest at the center.
-  const int y_edge = static_cast<int>(height * kYEdgeRatio);
-  const int y_center = static_cast<int>(height * kYCenterRatio);
-
-  // Define the rainbow mesh vertices.
-  std::array<TRIVERTEX, kNumVertices> vertices;
-  auto v_span = base::span(vertices);
-
-  auto set_vertex = [](base::span<TRIVERTEX> vertices, size_t index, int x,
-                       int y, COLORREF color) {
-    TRIVERTEX& vertex = vertices[index];
-    vertex.x = x;
-    vertex.y = y;
-    vertex.Red = static_cast<COLOR16>(GetRValue(color) << 8);
-    vertex.Green = static_cast<COLOR16>(GetGValue(color) << 8);
-    vertex.Blue = static_cast<COLOR16>(GetBValue(color) << 8);
-    vertex.Alpha = 0;
-  };
-
-  for (size_t i = 0; i < kNumStops; ++i) {
-    const double stop = kStops[i];
-
-    // Use the width of the rect to ensure we hit the right edge perfectly.
-    const int x =
-        (i == kNumStops - 1) ? rect.right : static_cast<int>(width * stop);
-
-    // Calculate the concave (U-shaped) boundary using a parabola.
-    const double factor = (2.0 * stop - 1.0);
-    const int y_boundary =
-        static_cast<int>(y_center - (y_center - y_edge) * (factor * factor));
-
-    // Top row of the mesh (White boundary following the curve).
-    set_vertex(v_span, i, x, y_boundary, RGB(255, 255, 255));
-
-    // Bottom row of the mesh (Light rainbow colors). Stretch to the very
-    // bottom.
-    set_vertex(v_span, i + kNumStops, x, rect.bottom, kColors[i]);
+  if (width <= 0 || height <= 0) {
+    return 1;
   }
 
-  // Create the triangles, 2 triangles per segment.
-  std::array<GRADIENT_TRIANGLE, kNumTriangles> mesh;
-  for (size_t i = 0; i < kNumSegments; ++i) {
-    // Triangle 1.
-    GRADIENT_TRIANGLE& tri1 = mesh[i * 2];
-    tri1.Vertex1 = static_cast<ULONG>(i);
-    tri1.Vertex2 = static_cast<ULONG>(i + 1);
-    tri1.Vertex3 = static_cast<ULONG>(i + kNumStops);
+  // Create an off-screen memory DC and bitmap (the primary buffer).
+  base::win::ScopedCreateDC hdc_mem(::CreateCompatibleDC(hdc));
+  if (!hdc_mem.is_valid()) {
+    return 1;
+  }
+  base::win::ScopedGDIObject<HBITMAP> hbmp_mem(
+      ::CreateCompatibleBitmap(hdc, width, height));
+  if (!hbmp_mem.is_valid()) {
+    return 1;
+  }
+  base::win::ScopedSelectObject select_mem_bmp(hdc_mem.get(), hbmp_mem.get());
 
-    // Triangle 2.
-    GRADIENT_TRIANGLE& tri2 = mesh[i * 2 + 1];
-    tri2.Vertex1 = static_cast<ULONG>(i + 1);
-    tri2.Vertex2 = static_cast<ULONG>(i + kNumStops + 1);
-    tri2.Vertex3 = static_cast<ULONG>(i + kNumStops);
+  // Paint the background into the off-screen buffer.
+  bool painted = false;
+
+  // Background image is not loaded in High Contrast Mode.
+  HBITMAP bg_bmp =
+      is_high_contrast() ? nullptr : GetBackgroundBitmap(is_dark_mode());
+  if (bg_bmp) {
+    BITMAP bm = {};
+    ::GetObject(bg_bmp, sizeof(bm), &bm);
+
+    base::win::ScopedCreateDC hdc_src(::CreateCompatibleDC(hdc));
+    if (hdc_src.is_valid()) {
+      base::win::ScopedSelectObject select_src_bmp(hdc_src.get(), bg_bmp);
+
+      // Set high-quality HALFTONE scaling mode on the memory DC.
+      const int old_stretch_mode = ::SetStretchBltMode(hdc_mem.get(), HALFTONE);
+      ::SetBrushOrgEx(hdc_mem.get(), 0, 0, nullptr);
+
+      // Paint and stretch the background image over the off-screen client area.
+      ::StretchBlt(hdc_mem.get(), 0, 0, width, height, hdc_src.get(), 0, 0,
+                   bm.bmWidth, bm.bmHeight, SRCCOPY);
+
+      // Restore DC state.
+      ::SetStretchBltMode(hdc_mem.get(), old_stretch_mode);
+      painted = true;
+    }
   }
 
-  ::GradientFill(hdc, v_span.data(), static_cast<ULONG>(v_span.size()),
-                 mesh.data(), static_cast<ULONG>(mesh.size()),
-                 GRADIENT_FILL_TRIANGLE);
+  if (!painted) {
+    // Fallback to safe solid background color if loading fails.
+    const COLORREF fallback_color =
+        is_high_contrast() ? ::GetSysColor(COLOR_WINDOW)
+                           : (is_dark_mode() ? kBgColorDark : kBgColorLight);
+    base::win::ScopedGDIObject<HBRUSH> fill_brush(
+        ::CreateSolidBrush(fallback_color));
+    ::FillRect(hdc_mem.get(), &rect, fill_brush.get());
+  }
+
+  // Draw a 1px border at 30% opacity (or 100% system theme color in High
+  // Contrast Mode) using RAII objects.
+  const int scaled_radius = GetScaledCornerRadius();
+  const int scaled_border = std::max(
+      1, ::MulDiv(1, ::GetDpiForWindow(hwnd()), USER_DEFAULT_SCREEN_DPI));
+  base::win::ScopedCreateDC hdc_blend(::CreateCompatibleDC(hdc));
+  if (hdc_blend.is_valid()) {
+    base::win::ScopedGDIObject<HBITMAP> hbmp_blend(
+        ::CreateCompatibleBitmap(hdc, width, height));
+    base::win::ScopedGDIObject<HRGN> border_rgn(::CreateRoundRectRgn(
+        0, 0, width, height, scaled_radius * 2, scaled_radius * 2));
+
+    const COLORREF border_color = is_high_contrast()
+                                      ? ::GetSysColor(COLOR_WINDOWTEXT)
+                                      : kWindowBorderColor;
+    base::win::ScopedGDIObject<HBRUSH> border_brush(
+        ::CreateSolidBrush(border_color));
+
+    if (hbmp_blend.is_valid() && border_rgn.is_valid() &&
+        border_brush.is_valid()) {
+      base::win::ScopedSelectObject select_blend_bmp(hdc_blend.get(),
+                                                     hbmp_blend.get());
+      // Copy the background from hdc_mem to hdc_blend (NOT from display hdc)
+      if (::BitBlt(hdc_blend.get(), 0, 0, width, height, hdc_mem.get(), 0, 0,
+                   SRCCOPY)) {
+        ::FrameRgn(hdc_blend.get(), border_rgn.get(), border_brush.get(),
+                   scaled_border, scaled_border);
+
+        BLENDFUNCTION bf = {
+            .BlendOp = AC_SRC_OVER,
+            .BlendFlags = 0,
+            .SourceConstantAlpha =
+                static_cast<BYTE>(is_high_contrast() ? 255 : 77),
+            .AlphaFormat = 0,
+        };
+
+        // AlphaBlend hdc_blend back onto hdc_mem
+        ::AlphaBlend(hdc_mem.get(), 0, 0, width, height, hdc_blend.get(), 0, 0,
+                     width, height, bf);
+      }
+    }
+  }
+
+  // Blit the completed primary buffer (hdc_mem) to the screen window hdc.
+  ::BitBlt(hdc, 0, 0, width, height, hdc_mem.get(), 0, 0, SRCCOPY);
 
   return 1;
 }
 
-LRESULT ProgressWnd::OnSysColorChange(UINT, WPARAM, LPARAM) {
-  SetMsgHandled(FALSE);
-  dark_static_brush_.reset();
-  ::RedrawWindow(hwnd(), nullptr, nullptr,
-                 RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_UPDATENOW);
-  return 0;
-}
-
-LRESULT ProgressWnd::OnSettingChange(UINT, WPARAM, LPARAM lparam) {
-  SetMsgHandled(FALSE);
-  if (lparam && std::wstring_view(reinterpret_cast<LPCWSTR>(lparam)) ==
-                    L"ImmersiveColorSet") {
-    dark_static_brush_.reset();
-    ::RedrawWindow(
-        hwnd(), nullptr, nullptr,
-        RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_UPDATENOW);
+HBITMAP ProgressWnd::GetBackgroundBitmap(bool is_dark_mode) {
+  if (is_dark_mode) {
+    if (!dark_bg_bmp_.is_valid()) {
+      dark_bg_bmp_.reset(static_cast<HBITMAP>(
+          ::LoadImage(CURRENT_MODULE(), MAKEINTRESOURCE(IDB_BACKGROUND_DARK),
+                      IMAGE_BITMAP, 0, 0, LR_CREATEDIBSECTION)));
+    }
+    return dark_bg_bmp_.get();
+  } else {
+    if (!light_bg_bmp_.is_valid()) {
+      light_bg_bmp_.reset(static_cast<HBITMAP>(
+          ::LoadImage(CURRENT_MODULE(), MAKEINTRESOURCE(IDB_BACKGROUND_LIGHT),
+                      IMAGE_BITMAP, 0, 0, LR_CREATEDIBSECTION)));
+    }
+    return light_bg_bmp_.get();
   }
-  return 0;
 }
 
-HBRUSH ProgressWnd::OnCtlColorStatic(HDC dc, HWND ctl_hwnd) {
-  if (IsHighContrastOn()) {
+HBITMAP ProgressWnd::GetErrorIllustrationBitmap(bool is_dark_mode) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  if (is_dark_mode) {
+    if (!dark_error_illustration_bmp_.is_valid()) {
+      dark_error_illustration_bmp_.reset(static_cast<HBITMAP>(::LoadImage(
+          CURRENT_MODULE(), MAKEINTRESOURCE(IDB_ERROR_ILLUSTRATION_DARK),
+          IMAGE_BITMAP, 0, 0, LR_CREATEDIBSECTION)));
+    }
+    return dark_error_illustration_bmp_.get();
+  }
+
+  if (!light_error_illustration_bmp_.is_valid()) {
+    light_error_illustration_bmp_.reset(static_cast<HBITMAP>(
+        ::LoadImage(CURRENT_MODULE(), MAKEINTRESOURCE(IDB_ERROR_ILLUSTRATION),
+                    IMAGE_BITMAP, 0, 0, LR_CREATEDIBSECTION)));
+  }
+  return light_error_illustration_bmp_.get();
+}
+
+void ProgressWnd::UpdateErrorIllustration() {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  if (!IsWindow()) {
+    return;
+  }
+
+  const HWND error_ctl = ::GetDlgItem(hwnd(), IDC_ERROR_ILLUSTRATION);
+  if (!error_ctl || !(::GetWindowLongPtr(error_ctl, GWL_STYLE) & WS_VISIBLE)) {
+    return;
+  }
+
+  HBITMAP current_illustration = GetErrorIllustrationBitmap(is_dark_mode());
+  if (!current_illustration) {
+    return;
+  }
+
+  if (reinterpret_cast<HBITMAP>(::SendMessage(
+          error_ctl, STM_GETIMAGE, IMAGE_BITMAP, 0)) == current_illustration) {
+    return;
+  }
+
+  ::SendMessage(error_ctl, STM_SETIMAGE, IMAGE_BITMAP,
+                reinterpret_cast<LPARAM>(current_illustration));
+  const RECT ctl_rect = GetControlClientRect(error_ctl);
+  ::InvalidateRect(hwnd(), &ctl_rect, TRUE);
+  ::InvalidateRect(error_ctl, nullptr, TRUE);
+}
+
+void ProgressWnd::OnThemeStateChanged() {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  // Theme-derived resources only. Fonts and system metrics are rebuilt from
+  // `ApplyDpiScaling()` on WM_DPICHANGED, not here.
+  ++theme_refresh_count_for_testing_;
+  light_bg_bmp_.reset();
+  dark_bg_bmp_.reset();
+  if (HWND error_ctl = ::GetDlgItem(hwnd(), IDC_ERROR_ILLUSTRATION)) {
+    ::SendMessage(error_ctl, STM_SETIMAGE, IMAGE_BITMAP, 0);
+  }
+  light_error_illustration_bmp_.reset();
+  dark_error_illustration_bmp_.reset();
+  // Dynamic theme change notifications (e.g. WM_SETTINGCHANGE) are broadcast
+  // after registry keys (e.g. `SystemUsesLightTheme`) have been synchronously
+  // committed by Windows Settings. Re-evaluating the logo updates taskbar and
+  // titlebar icons to match the new theme.
+  UpdateAppLogo();
+  UpdateErrorIllustration();
+}
+
+HBRUSH ProgressWnd::OnCtlColorStatic(HDC dc, HWND) {
+  if (is_high_contrast()) {
     ::SetTextColor(dc, ::GetSysColor(COLOR_WINDOWTEXT));
     ::SetBkColor(dc, ::GetSysColor(COLOR_WINDOW));
-    ::SetBkMode(dc, TRANSPARENT);
-    return ::GetSysColorBrush(COLOR_WINDOW);
-  }
-  if (IsDarkModeOn()) {
-    ::SetTextColor(dc, RGB(0xFF, 0xFF, 0xFF));
-    ::SetBkColor(dc, RGB(0x20, 0x20, 0x20));
-    ::SetBkMode(dc, TRANSPARENT);
-    if (!dark_static_brush_.is_valid()) {
-      dark_static_brush_.reset(::CreateSolidBrush(RGB(0x20, 0x20, 0x20)));
-    }
-    return dark_static_brush_.get();
+  } else if (is_dark_mode()) {
+    ::SetTextColor(dc, kTextColorDark);
   }
   ::SetBkMode(dc, TRANSPARENT);
   return static_cast<HBRUSH>(::GetStockObject(NULL_BRUSH));
@@ -473,30 +821,19 @@ void ProgressWnd::OnDownloading(
 
   CHECK(0 <= pos && pos <= 100);
 
-  cur_state_ = States::STATE_DOWNLOADING;
+  if (States::STATE_DOWNLOADING != cur_state_) {
+    cur_state_ = States::STATE_DOWNLOADING;
+    ChangeControlState();
+  }
 
   std::wstring s;
 
   if (is_canceled_) {
     s = GetLocalizedString(IDS_CANCELING_BASE, lang());
-  } else if (!time_remaining) {
-    s = GetLocalizedString(IDS_DOWNLOADING_BASE, lang());
-  } else if (!time_remaining->InSeconds()) {
+  } else if (time_remaining && time_remaining->InSeconds() == 0) {
     s = GetLocalizedString(IDS_DOWNLOADING_COMPLETED_BASE, lang());
-  } else if (!time_remaining->InMinutes()) {
-    // Less than one minute remaining.
-    s = GetLocalizedStringF(IDS_DOWNLOADING_SHORT_BASE,
-                            base::NumberToWString(time_remaining->InSeconds()),
-                            lang());
-  } else if (!time_remaining->InHours()) {
-    // Less than one hour remaining.
-    s = GetLocalizedStringF(IDS_DOWNLOADING_LONG_BASE,
-                            base::NumberToWString(time_remaining->InMinutes()),
-                            lang());
   } else {
-    s = GetLocalizedStringF(IDS_DOWNLOADING_VERY_LONG_BASE,
-                            base::NumberToWString(time_remaining->InHours()),
-                            lang());
+    s = GetLocalizedString(IDS_DOWNLOADING_BASE, lang());
   }
 
   SetControlText(IDC_INSTALLER_STATE_TEXT, s.c_str());
@@ -505,8 +842,6 @@ void ProgressWnd::OnDownloading(
   if (pos > 0) {
     ::SendDlgItemMessageW(hwnd(), IDC_PROGRESS, PBM_SETPOS, pos, 0);
   }
-
-  ChangeControlState();
 }
 
 void ProgressWnd::OnWaitingRetryDownload(const std::string& app_id,
@@ -754,7 +1089,17 @@ HRESULT ProgressWnd::ChangeControlState() {
 }
 
 HRESULT ProgressWnd::SetMarqueeMode(bool is_marquee) {
+  if (is_marquee == is_marquee_) {
+    return S_OK;
+  }
+
   HWND progress_bar = ::GetDlgItem(hwnd(), IDC_PROGRESS);
+  if (!progress_bar) {
+    return E_FAIL;
+  }
+
+  is_marquee_ = is_marquee;
+
   LONG_PTR style = ::GetWindowLongPtrW(progress_bar, GWL_STYLE);
   if (is_marquee) {
     style |= PBS_MARQUEE;
@@ -762,7 +1107,8 @@ HRESULT ProgressWnd::SetMarqueeMode(bool is_marquee) {
     style &= ~PBS_MARQUEE;
   }
   ::SetWindowLongPtrW(progress_bar, GWL_STYLE, style);
-  ::SendMessageW(progress_bar, PBM_SETMARQUEE, is_marquee, 0);
+  ::SendMessageW(progress_bar, PBM_SETMARQUEE, is_marquee,
+                 kMarqueeModeUpdatesMs);
 
   return S_OK;
 }

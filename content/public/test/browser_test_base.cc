@@ -9,6 +9,7 @@
 
 #include <iostream>
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <variant>
@@ -33,6 +34,7 @@
 #include "base/strings/stringprintf.h"
 #include "base/system/sys_info.h"
 #include "base/task/current_thread.h"
+#include "base/task/execution_fence.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/task/thread_pool/thread_pool_instance.h"
 #include "base/test/bind.h"
@@ -114,7 +116,7 @@
 #include "content/app/content_main_runner_impl.h"
 #include "content/app/mojo/mojo_init.h"
 #include "content/app/mojo_ipc_support.h"
-#include "content/browser/memory_coordinator/browser_memory_coordinator.h"
+#include "content/browser/memory_coordinator/browser_memory_coordinator_impl.h"
 #include "content/public/app/content_main_delegate.h"
 #include "content/public/common/content_paths.h"
 #include "testing/android/native_test/native_browser_test_support.h"
@@ -123,6 +125,7 @@
 
 #if BUILDFLAG(IS_MAC)
 #include "content/browser/sandbox_parameters_mac.h"
+#include "content/test/run_inside_nsapplication_run_mac.h"
 #include "net/test/test_data_directory.h"
 #include "ui/events/test/event_generator.h"
 #include "ui/views/test/event_generator_delegate_mac.h"
@@ -165,11 +168,14 @@ bool g_instance_already_created = false;
 // See http://crbug.com/141302.
 int g_browser_process_pid;
 
-// A shutdown function set on signal callback registration.
-base::OnceCallback<void(int)> ShutdownHandler;
+// The test to notify from SignalHandler(), set on signal callback
+// registration.
+BrowserTestBase* g_signal_test = nullptr;
 
 void SignalHandler(int signal) {
-  std::move(ShutdownHandler).Run(signal);
+  if (BrowserTestBase* test = std::exchange(g_signal_test, nullptr)) {
+    test->SignalRunTestOnMainThread(signal);
+  }
 
   if (!base::CommandLine::ForCurrentProcess()->HasSwitch(
           switches::kDisableInProcessStackTraces) &&
@@ -226,8 +232,7 @@ std::string GetDefaultTraceBasename(TraceBasenameType type) {
   // stream the results (to avoid losing them if test crashes).
   // - the second time, if test execution finishes normally, to calculate the
   // resulting name of the file, including test result.
-  static std::string random_seed =
-      base::NumberToString(base::RandIntInclusive(1e7, 1e8 - 1));
+  static const int random_seed = base::RandIntInclusive(1e7, 1e8 - 1);
   std::string status;
   if (type == TraceBasenameType::kWithTestStatus) {
     if (test_info) {
@@ -239,8 +244,8 @@ std::string GetDefaultTraceBasename(TraceBasenameType type) {
     // In order to be able to stream the test to the file,
     status = "NOT_FINISHED";
   }
-  return "trace_test_" + test_suite_name + "_" + test_name + "_" + random_seed +
-         "_" + status;
+  return "trace_test_" + test_suite_name + "_" + test_name + "_" +
+         base::NumberToString(random_seed) + "_" + status;
 }
 
 // See SetInitialWebContents comment for more information.
@@ -603,6 +608,14 @@ void BrowserTestBase::SetUp() {
       std::move(created_main_parts_closure);
   content_main_params.ui_task = base::BindOnce(
       &BrowserTestBase::ProxyRunTestOnMainThreadLoop, base::Unretained(this));
+#if BUILDFLAG(IS_MAC)
+  // In production, all UI code runs inside -[NSApplication run], and AppKit
+  // behaves differently when NSApp is not running (e.g. it doesn't pick a new
+  // key window when the key window is ordered out). Run the test inside
+  // -[NSApplication run] too. See https://crbug.com/570104905.
+  content_main_params.ui_task = base::BindOnce(
+      &RunInsideNSApplicationRun, std::move(content_main_params.ui_task));
+#endif
 
   ContentMainDelegate* overridden_delegate =
       GetOptionalContentMainDelegateOverride();
@@ -619,7 +632,7 @@ void BrowserTestBase::SetUp() {
   // follows.
 
   base::MemoryPressureListenerRegistry memory_pressure_listener_registry;
-  BrowserMemoryCoordinator memory_coordinator;
+  BrowserMemoryCoordinatorImpl memory_coordinator;
 
   // Unlike other platforms, android_browsertests can reuse the same process for
   // multiple tests. Need to reset startup metrics to allow recording them
@@ -636,6 +649,10 @@ void BrowserTestBase::SetUp() {
 
   std::optional<int> startup_error = delegate->BasicStartupComplete();
   ASSERT_FALSE(startup_error.has_value());
+
+  // Disables BEST_EFFORT tasks until shutdown if the command-line includes
+  // --disable-best-effort-tasks.
+  std::optional<base::ScopedBestEffortExecutionFence> best_effort_fence;
 
   {
     ContentClient::SetBrowserClientAlwaysAllowForTesting(
@@ -673,6 +690,16 @@ void BrowserTestBase::SetUp() {
         delegate->PostEarlyInitialization(invoked_in_browser);
     ASSERT_FALSE(post_early_initialization_exit_code.has_value());
 
+    // The memory coordinator policies are feature-gated, so they must be
+    // initialized after the FeatureList.
+    memory_coordinator.InitializePolicies();
+
+    // Must be called after PostEarlyInitialization because
+    // ScopedBestEffortExecutionFence requires the FeatureList.
+    if (command_line->HasSwitch(switches::kDisableBestEffortTasks)) {
+      best_effort_fence.emplace();
+    }
+
     // We can only setup startup tracing after feature list is initialized
     // above.
     tracing::InitTracingPostFeatureList(/*enable_consumer=*/true,
@@ -701,6 +728,8 @@ void BrowserTestBase::SetUp() {
       std::make_unique<MojoIpcSupport>(BrowserTaskExecutor::CreateIOThread());
   std::unique_ptr<StartupDataImpl> startup_data =
       ipc_support->CreateBrowserStartupData();
+  startup_data->background_tracing_manager =
+      CreateBackgroundTracingManagerAndInitializeScenarios();
 
   // ContentMain would normally call RunProcess() on the delegate and fallback
   // to BrowserMain() if it did not run it (or equivalent) itself. On Android,
@@ -742,6 +771,8 @@ void BrowserTestBase::SetUp() {
     // running inside tests.
     std::move(content_main_params.ui_task).Run();
   }
+
+  best_effort_fence.reset();
 
   {
     // We need to finish the Activity before this function returns because
@@ -923,6 +954,7 @@ void BrowserTestBase::ProxyRunTestOnMainThreadLoop() {
 
   absl::Cleanup restore_signal_handlers = [&old_sigsegv_action,
                                            &old_sigterm_action] {
+    g_signal_test = nullptr;
     if (old_sigsegv_action) {
       sigaction(SIGSEGV, &*old_sigsegv_action, nullptr);
     }
@@ -931,8 +963,7 @@ void BrowserTestBase::ProxyRunTestOnMainThreadLoop() {
     }
   };
 
-  ShutdownHandler = base::BindOnce(&BrowserTestBase::SignalRunTestOnMainThread,
-                                   base::Unretained(this));
+  g_signal_test = this;
 #endif  // BUILDFLAG(IS_POSIX)
 
   {

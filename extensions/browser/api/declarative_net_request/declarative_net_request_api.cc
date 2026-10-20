@@ -17,6 +17,7 @@
 #include "base/time/time.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
+#include "extensions/browser/api/constants.h"
 #include "extensions/browser/api/declarative_net_request/action_tracker.h"
 #include "extensions/browser/api/declarative_net_request/composite_matcher.h"
 #include "extensions/browser/api/declarative_net_request/constants.h"
@@ -184,7 +185,7 @@ DeclarativeNetRequestGetDynamicRulesFunction::Run() {
 
   auto read_dynamic_rules = base::BindOnce(
       [](const declarative_net_request::FileBackedRulesetSource& source) {
-        return source.ReadJSONRulesUnsafe();
+        return source.ReadJSONRules();
       },
       std::move(source));
 
@@ -208,7 +209,8 @@ void DeclarativeNetRequestGetDynamicRulesFunction::OnDynamicRulesFetched(
   // Unlike errors such as kJSONParseError, which normally denote corruption, a
   // read error is probably a transient error.  Hence raise an error instead of
   // returning an empty list.
-  if (read_json_result.status == Status::kFileReadError) {
+  if (read_json_result.status == Status::kFileReadError ||
+      read_json_result.status == Status::kRulesetFileSizeLimitExceeded) {
     Respond(Error(declarative_net_request::kInternalErrorGettingDynamicRules));
     return;
   }
@@ -551,8 +553,7 @@ DeclarativeNetRequestGetMatchedRulesFunction::Run() {
                                                     /*include_incognito=*/true,
                                                     /*web_contents=*/nullptr)) {
     return RespondNow(Error(ErrorUtils::FormatErrorMessage(
-        declarative_net_request::kTabNotFoundError,
-        base::NumberToString(*tab_id))));
+        kTabNotFoundError, base::NumberToString(*tab_id))));
   }
 
   std::string permission_error;
@@ -651,8 +652,7 @@ DeclarativeNetRequestSetExtensionActionOptionsFunction::Run() {
             browser_context(), tab_id, /*include_incognito=*/true,
             /*web_contents=*/nullptr)) {
       return RespondNow(Error(ErrorUtils::FormatErrorMessage(
-          declarative_net_request::kTabNotFoundError,
-          base::NumberToString(tab_id))));
+          kTabNotFoundError, base::NumberToString(tab_id))));
     }
 
     action_tracker.IncrementActionCountForTab(extension_id(), tab_id,

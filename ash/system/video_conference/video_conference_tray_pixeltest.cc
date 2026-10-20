@@ -37,9 +37,8 @@ class VideoConferenceTrayPixelTest
 
   // AshTestBase:
   void SetUp() override {
-    scoped_feature_list_.InitWithFeatures(
-        /*enabled_features=*/{features::kFeatureManagementVideoConference},
-        /*disabled_features=*/{features::kVcBackgroundReplace});
+    scoped_feature_list_.InitAndEnableFeature(
+        features::kFeatureManagementVideoConference);
 
     // Instantiates a fake controller (the real one is created in
     // ChromeBrowserMainExtraPartsAsh::PreProfileInit() which is not called in
@@ -101,7 +100,7 @@ TEST_P(VideoConferenceTrayPixelTest, BasicPixelTest) {
 
   EXPECT_TRUE(GetPixelDiffer()->CompareUiComponentsOnPrimaryScreen(
       GenerateScreenshotName("video_conference_tray_no_focus_not_toggled"),
-      /*revision_number=*/pixel_test_helper()->IsSystemBlurEnabled() ? 4 : 1,
+      /*revision_number=*/pixel_test_helper()->IsSystemBlurEnabled() ? 5 : 1,
       video_conference_tray()));
 
   Shell::Get()->focus_cycler()->FocusWidget(
@@ -115,14 +114,14 @@ TEST_P(VideoConferenceTrayPixelTest, BasicPixelTest) {
 
   EXPECT_TRUE(GetPixelDiffer()->CompareUiComponentsOnPrimaryScreen(
       GenerateScreenshotName("video_conference_tray_audio_focused_not_toggled"),
-      /*revision_number=*/pixel_test_helper()->IsSystemBlurEnabled() ? 4 : 1,
+      /*revision_number=*/pixel_test_helper()->IsSystemBlurEnabled() ? 5 : 1,
       video_conference_tray()));
 
   PressAndReleaseKey(ui::VKEY_RETURN);
 
   EXPECT_TRUE(GetPixelDiffer()->CompareUiComponentsOnPrimaryScreen(
       GenerateScreenshotName("video_conference_tray_audio_focused_and_toggled"),
-      /*revision_number=*/pixel_test_helper()->IsSystemBlurEnabled() ? 6 : 1,
+      /*revision_number=*/pixel_test_helper()->IsSystemBlurEnabled() ? 7 : 1,
       video_conference_tray()));
 
   // Un-toggle the audio icon, then focus the video icon.

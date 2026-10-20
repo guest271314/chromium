@@ -137,6 +137,8 @@ struct EnumTraits<network::mojom::DeviceBoundSessionDeletionReason,
             kRefreshFatalError;
       case kDevTools:
         return network::mojom::DeviceBoundSessionDeletionReason::kDevTools;
+      case kReplaced:
+        return network::mojom::DeviceBoundSessionDeletionReason::kReplaced;
     }
   }
 
@@ -165,6 +167,8 @@ struct EnumTraits<network::mojom::DeviceBoundSessionDeletionReason,
         return kRefreshFatalError;
       case network::mojom::DeviceBoundSessionDeletionReason::kDevTools:
         return kDevTools;
+      case network::mojom::DeviceBoundSessionDeletionReason::kReplaced:
+        return kReplaced;
     }
     NOTREACHED();
   }
@@ -212,8 +216,9 @@ struct EnumTraits<network::mojom::DeviceBoundSessionError,
     switch (type) {
       case kSuccess:
         return network::mojom::DeviceBoundSessionError::kSuccess;
-      case kKeyError:
-        return network::mojom::DeviceBoundSessionError::kKeyError;
+      case kSigningKeyGenerationError:
+        return network::mojom::DeviceBoundSessionError::
+            kSigningKeyGenerationError;
       case kSigningError:
         return network::mojom::DeviceBoundSessionError::kSigningError;
       case kServerRequestedTermination:
@@ -393,6 +398,27 @@ struct EnumTraits<network::mojom::DeviceBoundSessionError,
             kSessionDeletedDuringRefresh;
       case kTransientSigningError:
         return network::mojom::DeviceBoundSessionError::kTransientSigningError;
+      case kCrossOriginRegistrationSiteNotIncluded:
+        return network::mojom::DeviceBoundSessionError::
+            kCrossOriginRegistrationSiteNotIncluded;
+      case kAttestationKeyGenerationError:
+        return network::mojom::DeviceBoundSessionError::
+            kAttestationKeyGenerationError;
+      case kInvalidPreProvisionedKeyInitiatorMissing:
+        return network::mojom::DeviceBoundSessionError::
+            kInvalidPreProvisionedKeyInitiatorMissing;
+      case kPreProvisionedKeyAccessNotGranted:
+        return network::mojom::DeviceBoundSessionError::
+            kPreProvisionedKeyAccessNotGranted;
+      case kPreProvisionedKeyNotFound:
+        return network::mojom::DeviceBoundSessionError::
+            kPreProvisionedKeyNotFound;
+      case kAttestationCertificationError:
+        return network::mojom::DeviceBoundSessionError::
+            kAttestationCertificationError;
+      case kAttestationSigningError:
+        return network::mojom::DeviceBoundSessionError::
+            kAttestationSigningError;
     }
   }
 
@@ -402,8 +428,8 @@ struct EnumTraits<network::mojom::DeviceBoundSessionError,
     switch (input) {
       case network::mojom::DeviceBoundSessionError::kSuccess:
         return kSuccess;
-      case network::mojom::DeviceBoundSessionError::kKeyError:
-        return kKeyError;
+      case network::mojom::DeviceBoundSessionError::kSigningKeyGenerationError:
+        return kSigningKeyGenerationError;
       case network::mojom::DeviceBoundSessionError::kSigningError:
         return kSigningError;
       case network::mojom::DeviceBoundSessionError::kServerRequestedTermination:
@@ -571,6 +597,25 @@ struct EnumTraits<network::mojom::DeviceBoundSessionError,
         return kSessionDeletedDuringRefresh;
       case network::mojom::DeviceBoundSessionError::kTransientSigningError:
         return kTransientSigningError;
+      case network::mojom::DeviceBoundSessionError::
+          kCrossOriginRegistrationSiteNotIncluded:
+        return kCrossOriginRegistrationSiteNotIncluded;
+      case network::mojom::DeviceBoundSessionError::
+          kAttestationKeyGenerationError:
+        return kAttestationKeyGenerationError;
+      case network::mojom::DeviceBoundSessionError::
+          kInvalidPreProvisionedKeyInitiatorMissing:
+        return kInvalidPreProvisionedKeyInitiatorMissing;
+      case network::mojom::DeviceBoundSessionError::
+          kPreProvisionedKeyAccessNotGranted:
+        return kPreProvisionedKeyAccessNotGranted;
+      case network::mojom::DeviceBoundSessionError::kPreProvisionedKeyNotFound:
+        return kPreProvisionedKeyNotFound;
+      case network::mojom::DeviceBoundSessionError::
+          kAttestationCertificationError:
+        return kAttestationCertificationError;
+      case network::mojom::DeviceBoundSessionError::kAttestationSigningError:
+        return kAttestationSigningError;
     }
     NOTREACHED();
   }

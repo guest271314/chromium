@@ -10,7 +10,9 @@
 #import "ios/chrome/browser/toolbar/legacy/ui_bundled/banner_promo_view.h"
 #import "ios/chrome/browser/toolbar/ui/toolbar_mutator.h"
 
+class FullscreenBrowserAgent;
 @class BrowserActionFactory;
+@class BrowserLayoutState;
 @class DefaultBrowserBannerPromoAppAgent;
 @protocol FullscreenCommands;
 class FullscreenController;
@@ -19,32 +21,51 @@ class FullscreenController;
 @class UIViewController;
 @protocol ToolbarConsumer;
 @protocol ToolbarHeightDelegate;
+@class ToolbarMediator;
+
+/// Delegate for events in `ToolbarMediator`.
+@protocol ToolbarMediatorDelegate <NSObject>
+
+/// Notifies the delegate that the assistant button was tapped in Incognito
+/// mode.
+- (void)toolbarMediatorDidTapAssistantInIncognito:(ToolbarMediator*)mediator;
+
+@end
+
 class PrefService;
 class WebNavigationBrowserAgent;
 namespace web {
 class WebState;
 }  // namespace web
 class WebStateList;
+class TabBasedIPHBrowserAgent;
 
 class AuthenticationService;
-@protocol BWGCommands;
 class GeminiBrowserAgent;
+@protocol GeminiCommands;
 class GeminiService;
+class ProfileIOS;
 
 // Mediator for the toolbar.
 @interface ToolbarMediator : NSObject <BannerPromoViewDelegate, ToolbarMutator>
 
+// Browser layout state.
+@property(nonatomic, weak) BrowserLayoutState* browserLayoutState;
+
 // The consumer for this mediator.
 @property(nonatomic, weak) id<ToolbarConsumer> consumer;
+
+// Delegate for events in `ToolbarMediator`.
+@property(nonatomic, weak) id<ToolbarMediatorDelegate> delegate;
 
 // Helper for web navigation.
 @property(nonatomic, assign) WebNavigationBrowserAgent* navigationBrowserAgent;
 
+// Helper for tab-based IPH.
+@property(nonatomic, assign) TabBasedIPHBrowserAgent* tabBasedIPHAgent;
+
 // Delegate that handles the toolbars height.
 @property(nonatomic, weak) id<ToolbarHeightDelegate> toolbarHeightDelegate;
-
-// Whether the toolbar is being shown in incognito or not.
-@property(nonatomic, assign, getter=isIncognito) BOOL incognito;
 
 // Commands handler for fullscreen.
 @property(nonatomic, weak) id<FullscreenCommands> fullscreenCommands;
@@ -53,7 +74,7 @@ class GeminiService;
 @property(nonatomic, weak) id<SettingsCommands> settingsHandler;
 
 // Dispatcher for Gemini commands.
-@property(nonatomic, weak) id<BWGCommands> geminiHandler;
+@property(nonatomic, weak) id<GeminiCommands> geminiHandler;
 
 // Base view controller for presenting UI sheets.
 @property(nonatomic, weak) UIViewController* baseViewController;
@@ -62,17 +83,20 @@ class GeminiService;
 @property(nonatomic, weak) id<SceneCommands> sceneHandler;
 
 // Initializer.
-- (instancetype)initWithWebStateList:(WebStateList*)webStateList
-                       actionFactory:(BrowserActionFactory*)actionFactory
-                         prefService:(PrefService*)prefService
-                fullscreenController:(FullscreenController*)fullscreenController
-                         topPosition:(BOOL)topPosition
-        defaultBrowserBannerAppAgent:
-            (DefaultBrowserBannerPromoAppAgent*)defaultBrowserBannerAppAgent
-               authenticationService:
-                   (AuthenticationService*)authenticationService
-                       geminiService:(GeminiService*)geminiService
-                  geminiBrowserAgent:(GeminiBrowserAgent*)geminiBrowserAgent
+- (instancetype)initWithIncognito:(BOOL)incognito
+                     webStateList:(WebStateList*)webStateList
+                    actionFactory:(BrowserActionFactory*)actionFactory
+                          profile:(ProfileIOS*)profile
+                      prefService:(PrefService*)prefService
+             fullscreenController:(FullscreenController*)fullscreenController
+           fullscreenBrowserAgent:
+               (FullscreenBrowserAgent*)fullscreenBrowserAgent
+                      topPosition:(BOOL)topPosition
+     defaultBrowserBannerAppAgent:
+         (DefaultBrowserBannerPromoAppAgent*)defaultBrowserBannerAppAgent
+            authenticationService:(AuthenticationService*)authenticationService
+                    geminiService:(GeminiService*)geminiService
+               geminiBrowserAgent:(GeminiBrowserAgent*)geminiBrowserAgent
     NS_DESIGNATED_INITIALIZER;
 
 - (instancetype)init NS_UNAVAILABLE;

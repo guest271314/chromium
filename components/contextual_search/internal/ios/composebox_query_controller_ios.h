@@ -24,6 +24,8 @@ class ComposeboxQueryControllerIOS : public ComposeboxQueryController {
       std::optional<GURL> page_url,
       std::optional<std::string> page_title,
       std::optional<std::string> file_name,
+      UploadImageType image_type,
+      std::optional<std::string> mime_type_string,
       RequestBodyProtoCreatedCallback callback) override;
 };
 

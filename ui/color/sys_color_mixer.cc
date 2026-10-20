@@ -4,7 +4,9 @@
 
 #include "ui/color/sys_color_mixer.h"
 
+#include "base/feature_list.h"
 #include "third_party/skia/include/core/SkColor.h"
+#include "ui/base/ui_base_features.h"
 #include "ui/color/color_id.h"
 #include "ui/color/color_mixer.h"
 #include "ui/color/color_provider.h"
@@ -181,16 +183,37 @@ void AddSysColorMixer(ColorProvider* provider, const ColorProviderKey& key) {
   mixer[kColorSysSurfaceNumberedForeground] = {
       dark_mode ? SkColorSetRGB(0xD1, 0xE1, 0xFF)
                 : SkColorSetRGB(0x69, 0x91, 0xD6)};
-  mixer[kColorSysSurface1] = AlphaBlend({kColorSysSurfaceNumberedForeground},
-                                        {kColorSysSurface}, 0x0C);
-  mixer[kColorSysSurface2] = AlphaBlend({kColorSysSurfaceNumberedForeground},
-                                        {kColorSysSurface}, 0x14);
-  mixer[kColorSysSurface3] = AlphaBlend({kColorSysSurfaceNumberedForeground},
-                                        {kColorSysSurface}, 0x1C);
-  mixer[kColorSysSurface4] = AlphaBlend({kColorSysSurfaceNumberedForeground},
-                                        {kColorSysSurface}, 0x1E);
-  mixer[kColorSysSurface5] = AlphaBlend({kColorSysSurfaceNumberedForeground},
-                                        {kColorSysSurface}, 0x23);
+
+  if (dark_mode &&
+      base::FeatureList::IsEnabled(features::kDarkModeSurfaceTokens)) {
+    mixer[kColorSysSurface1] = {kColorRefNeutral12};
+    mixer[kColorSysSurface2] = {kColorRefNeutral15};
+    mixer[kColorSysSurface3] = {kColorRefNeutral20};
+    mixer[kColorSysSurface4] = {kColorRefNeutral25};
+    mixer[kColorSysSurface5] = {kColorRefNeutral30};
+  } else {
+    mixer[kColorSysSurface1] = AlphaBlend({kColorSysSurfaceNumberedForeground},
+                                          {kColorSysSurface}, 0x0C);
+    mixer[kColorSysSurface2] = AlphaBlend({kColorSysSurfaceNumberedForeground},
+                                          {kColorSysSurface}, 0x14);
+    mixer[kColorSysSurface3] = AlphaBlend({kColorSysSurfaceNumberedForeground},
+                                          {kColorSysSurface}, 0x1C);
+    mixer[kColorSysSurface4] = AlphaBlend({kColorSysSurfaceNumberedForeground},
+                                          {kColorSysSurface}, 0x1E);
+    mixer[kColorSysSurface5] = AlphaBlend({kColorSysSurfaceNumberedForeground},
+                                          {kColorSysSurface}, 0x23);
+  }
+
+  mixer[kColorSysSurfaceContainerLowest] = {dark_mode ? kColorRefNeutral4
+                                                      : kColorRefNeutral100};
+  mixer[kColorSysSurfaceContainerLow] = {dark_mode ? kColorRefNeutral10
+                                                   : kColorRefNeutral96};
+  mixer[kColorSysSurfaceContainer] = {dark_mode ? kColorRefNeutral12
+                                                : kColorRefNeutral94};
+  mixer[kColorSysSurfaceContainerHigh] = {dark_mode ? kColorRefNeutral17
+                                                    : kColorRefNeutral92};
+  mixer[kColorSysSurfaceContainerHighest] = {dark_mode ? kColorRefNeutral22
+                                                       : kColorRefNeutral90};
 
   // General.
   mixer[kColorSysOnSurfaceSecondary] = {dark_mode ? kColorRefNeutral80
@@ -368,6 +391,15 @@ void AddSysColorMixer(ColorProvider* provider, const ColorProviderKey& key) {
   // Experimentation.
   mixer[kColorSysOmniboxContainer] = {dark_mode ? kColorRefNeutral15
                                                 : kColorSysSurface4};
+
+  // TODO(crbug.com/517162116): Reconcile color token dark-mode swapping
+  // These tokens are temporarily added to solve a missing need. They need
+  // further work with UX to work these cases into the design system.
+  // Please DO NOT add additional usages of these tokens.
+  mixer[kColorSysSurfaceSection] = {dark_mode ? kColorSysSurface1
+                                              : kColorSysSurface};
+  mixer[kColorSysBaseContainerOnSurface] = {dark_mode ? kColorRefSecondary25
+                                                      : kColorSysSurface4};
 
   // Deprecated.
   // TODO(crbug.com/350783235): Remove remaining uses of these deprecated sys

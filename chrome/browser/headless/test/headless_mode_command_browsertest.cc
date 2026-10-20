@@ -16,14 +16,15 @@
 #include "base/functional/bind.h"
 #include "base/logging.h"
 #include "base/run_loop.h"
+#include "base/scoped_observation.h"
 #include "base/strings/string_util.h"
 #include "base/strings/to_string.h"
 #include "base/test/test_timeouts.h"
 #include "base/test/values_test_util.h"
 #include "base/threading/platform_thread.h"
+#include "base/threading/thread_restrictions.h"
 #include "base/values.h"
 #include "build/build_config.h"
-#include "base/scoped_observation.h"
 #include "chrome/browser/headless/test/headless_mode_browsertest.h"
 #include "chrome/browser/ui/browser_window/public/browser_collection_observer.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
@@ -36,6 +37,7 @@
 #include "net/test/embedded_test_server/embedded_test_server.h"
 #include "pdf/pdf.h"
 #include "printing/buildflags/buildflags.h"
+#include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/skia/include/core/SkBitmap.h"
 #include "third_party/skia/include/core/SkColor.h"
@@ -200,6 +202,32 @@ IN_PROC_BROWSER_TEST_P(HeadlessModeDumpDomCommandBrowserTest,
       "<html><head></head><body><h1>Hello headless world!</h1>\n"
       "</body></html>\n";
   EXPECT_THAT(captured_stdout, testing::HasSubstr(kDomDump));
+}
+
+class HeadlessModeDumpDomNonExistingPageCommandBrowserTest
+    : public HeadlessModeCommandBrowserTest {
+ public:
+  HeadlessModeDumpDomNonExistingPageCommandBrowserTest() = default;
+
+  void SetUpCommandLine(base::CommandLine* command_line) override {
+    HeadlessModeCommandBrowserTest::SetUpCommandLine(command_line);
+    command_line->AppendSwitch(switches::kDumpDom);
+    command_line->AppendArg("http://does-not-exist.test/hello.html");
+
+    capture_stdout_.StartCapture();
+  }
+
+ protected:
+  CaptureStdOut capture_stdout_;
+};
+
+IN_PROC_BROWSER_TEST_F(HeadlessModeDumpDomNonExistingPageCommandBrowserTest,
+                       HeadlessDumpDomNonExistingPage) {
+  EXPECT_THAT(ProcessCommands(),
+              testing::Eq(HeadlessCommandHandler::Result::kPageLoadError));
+
+  capture_stdout_.StopCapture();
+  EXPECT_THAT(capture_stdout_.TakeCapturedData(), testing::IsEmpty());
 }
 
 class HeadlessModeDumpDomCommandBrowserTestWithTimeoutBase
@@ -410,8 +438,14 @@ class HeadlessModeScreenshotCommandBrowserTest
   base::FilePath screenshot_filename_;
 };
 
+// TODO(crbug.com/517342172): Re-enable this test on Linux MSAN.
+#if BUILDFLAG(IS_LINUX) && defined(MEMORY_SANITIZER)
+#define MAYBE_HeadlessScreenshot DISABLED_HeadlessScreenshot
+#else
+#define MAYBE_HeadlessScreenshot HeadlessScreenshot
+#endif
 IN_PROC_BROWSER_TEST_F(HeadlessModeScreenshotCommandBrowserTest,
-                       HeadlessScreenshot) {
+                       MAYBE_HeadlessScreenshot) {
   ASSERT_THAT(ProcessCommands(),
               testing::Eq(HeadlessCommandHandler::Result::kSuccess));
 
@@ -475,8 +509,15 @@ class HeadlessModeScreenshotCommandWithBackgroundBrowserTest
   }
 };
 
+// TODO(crbug.com/517342172): Re-enable this test on Linux MSAN.
+#if BUILDFLAG(IS_LINUX) && defined(MEMORY_SANITIZER)
+#define MAYBE_HeadlessScreenshotWithBackground \
+  DISABLED_HeadlessScreenshotWithBackground
+#else
+#define MAYBE_HeadlessScreenshotWithBackground HeadlessScreenshotWithBackground
+#endif
 IN_PROC_BROWSER_TEST_F(HeadlessModeScreenshotCommandWithBackgroundBrowserTest,
-                       HeadlessScreenshotWithBackground) {
+                       MAYBE_HeadlessScreenshotWithBackground) {
   ASSERT_THAT(ProcessCommands(),
               testing::Eq(HeadlessCommandHandler::Result::kSuccess));
 
@@ -550,9 +591,15 @@ IN_PROC_BROWSER_TEST_F(HeadlessModePrintToPdfCommandBrowserTest,
                                            SkColorSetRGB(0xff, 0xff, 0xff)));
 }
 
+// TODO(crbug.com/517342172): Flaky on MSan Linux bots
+#if defined(MEMORY_SANITIZER) && BUILDFLAG(IS_LINUX)
+#define MAYBE_PrintToPdfWithLazyLoading DISABLED_PrintToPdfWithLazyLoading
+#else
+#define MAYBE_PrintToPdfWithLazyLoading PrintToPdfWithLazyLoading
+#endif
 HEADLESS_MODE_COMMAND_BROWSER_TEST_WITH_TARGET_URL(
     HeadlessModePrintToPdfCommandBrowserTestBase,
-    PrintToPdfWithLazyLoading,
+    MAYBE_PrintToPdfWithLazyLoading,
     "/page_with_lazy_image.html") {
   ASSERT_THAT(ProcessCommands(),
               testing::Eq(HeadlessCommandHandler::Result::kSuccess));
@@ -606,8 +653,16 @@ INSTANTIATE_TEST_SUITE_P(/* no prefix */,
                          HeadlessModeTaggedPrintToPdfCommandBrowserTest,
                          ::testing::Bool());
 
+// TODO(crbug.com/504964930): Reenable once deflaked.
+// TODO(crbug.com/514143472): Reenable once deflaked.
+#if BUILDFLAG(IS_LINUX) && \
+    (defined(MEMORY_SANITIZER) || defined(USE_JAVASCRIPT_COVERAGE))
+#define MAYBE_HeadlessTaggedPrintToPdf DISABLED_HeadlessTaggedPrintToPdf
+#else
+#define MAYBE_HeadlessTaggedPrintToPdf HeadlessTaggedPrintToPdf
+#endif
 IN_PROC_BROWSER_TEST_P(HeadlessModeTaggedPrintToPdfCommandBrowserTest,
-                       HeadlessTaggedPrintToPdf) {
+                       MAYBE_HeadlessTaggedPrintToPdf) {
   ASSERT_THAT(ProcessCommands(),
               testing::Eq(HeadlessCommandHandler::Result::kSuccess));
 
@@ -633,6 +688,47 @@ IN_PROC_BROWSER_TEST_P(HeadlessModeTaggedPrintToPdfCommandBrowserTest,
         chrome_pdf::GetPDFStructTreeForPage(pdf_span, /*page_index=*/0);
     EXPECT_THAT(kExpectedStructTreeJSON, base::test::IsJson((struct_tree)));
   }
+}
+
+class HeadlessModePrintToPdfPdfCommandBrowserTest
+    : public HeadlessModePrintToPdfCommandBrowserTestBase {
+ public:
+  HeadlessModePrintToPdfPdfCommandBrowserTest() = default;
+
+  void SetUp() override {
+    embedded_test_server()->RegisterRequestHandler(base::BindRepeating(
+        &HeadlessModePrintToPdfPdfCommandBrowserTest::RequestHandler,
+        base::Unretained(this)));
+
+    HeadlessModePrintToPdfCommandBrowserTestBase::SetUp();
+  }
+
+ private:
+  std::string GetTargetPage() override { return "/test.pdf"; }
+
+  std::unique_ptr<net::test_server::HttpResponse> RequestHandler(
+      const net::test_server::HttpRequest& request) {
+    if (request.relative_url == "/test.pdf") {
+      auto response = std::make_unique<net::test_server::BasicHttpResponse>();
+      response->set_code(net::HTTP_OK);
+      response->set_content_type("application/pdf");
+      response->set_content("%PDF-1.4");
+      return response;
+    }
+
+    return nullptr;
+  }
+};
+
+IN_PROC_BROWSER_TEST_F(HeadlessModePrintToPdfPdfCommandBrowserTest,
+                       PrintToPdfPdf) {
+  // Navigation to a PDF file is handled by the PDF viewer extension in
+  // headless mode (unlike headless shell where it is aborted).
+  EXPECT_THAT(ProcessCommands(),
+              testing::Eq(HeadlessCommandHandler::Result::kSuccess));
+
+  base::ScopedAllowBlockingForTesting allow_blocking;
+  EXPECT_TRUE(base::PathExists(print_to_pdf_filename_));
 }
 
 }  // namespace headless

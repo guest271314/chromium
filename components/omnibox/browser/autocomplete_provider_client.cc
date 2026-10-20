@@ -27,6 +27,16 @@ AutocompleteProviderClient::GetDocumentSuggestionsService() const {
   return nullptr;
 }
 
+sessions::TabRestoreService* AutocompleteProviderClient::GetTabRestoreService()
+    const {
+  return nullptr;
+}
+
+AiModeButtonService* AutocompleteProviderClient::GetAiModeButtonService()
+    const {
+  return nullptr;
+}
+
 bool AutocompleteProviderClient::AllowDeletingBrowserHistory() const {
   return true;
 }
@@ -75,7 +85,8 @@ bool AutocompleteProviderClient::in_background_state() const {
   return false;
 }
 
-bool AutocompleteProviderClient::IsOmniboxNextLensSearchChipEnabled() const {
+
+bool AutocompleteProviderClient::IsAskGShowChipEnabled() const {
   return false;
 }
 
@@ -91,3 +102,19 @@ base::WeakPtr<AutocompleteProviderClient>
 AutocompleteProviderClient::GetWeakPtr() {
   return nullptr;
 }
+
+bool AutocompleteProviderClient::IsWebUiNtpEnabledForDesktopAndroid() const {
+  return false;
+}
+
+bool AutocompleteProviderClient::ShouldOpenCoBrowsePanel() const {
+  return false;
+}
+
+void AutocompleteProviderClient::OpenCoBrowsePanel() {}
+
+bool AutocompleteProviderClient::ShouldOpenComposeboxForAskG() const {
+  return false;
+}
+
+void AutocompleteProviderClient::OpenComposeboxForAskG() {}

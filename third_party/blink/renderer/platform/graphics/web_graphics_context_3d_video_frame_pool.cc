@@ -22,9 +22,9 @@
 #include "gpu/command_buffer/common/shared_image_usage.h"
 #include "media/base/simple_sync_token_client.h"
 #include "media/base/video_frame.h"
-#include "media/renderers/video_frame_rgba_to_yuva_converter.h"
+#include "media/gfx/renderable_mappable_shared_image_video_frame_pool.h"
+#include "media/gfx/video_frame_rgba_to_yuva_converter.h"
 #include "media/video/gpu_video_accelerator_factories.h"
-#include "media/video/renderable_mappable_shared_image_video_frame_pool.h"
 #include "perfetto/tracing/track_event_args.h"
 #include "third_party/blink/public/common/switches.h"
 #include "third_party/blink/public/platform/platform.h"
@@ -63,7 +63,9 @@ class Context
     if (!client_shared_image) {
       return nullptr;
     }
-    sync_token = sii->GenVerifiedSyncToken();
+    sync_token = client_shared_image->creation_sync_token();
+    sii->VerifySyncToken(sync_token);
+
     return client_shared_image;
   }
 
@@ -93,10 +95,12 @@ class Context
 
 WebGraphicsContext3DVideoFramePool::WebGraphicsContext3DVideoFramePool(
     base::WeakPtr<blink::WebGraphicsContext3DProviderWrapper>
-        weak_context_provider)
+        weak_context_provider,
+    media::VideoPixelFormat output_format)
     : weak_context_provider_(weak_context_provider),
       pool_(media::RenderableMappableSharedImageVideoFramePool::Create(
-          std::make_unique<Context>(weak_context_provider))) {}
+          std::make_unique<Context>(weak_context_provider),
+          output_format)) {}
 
 WebGraphicsContext3DVideoFramePool::~WebGraphicsContext3DVideoFramePool() =
     default;
@@ -169,7 +173,6 @@ void CopyToGpuMemoryBuffer(
 
   const bool use_async_copy =
       base::FeatureList::IsEnabled(kUseCopyToGpuMemoryBufferAsync);
-  const auto mailbox = dst_frame->shared_image()->mailbox();
   if (use_async_copy) {
     auto copy_to_gmb_done_lambda = [](base::OnceClosure callback,
                                       bool success) {
@@ -180,12 +183,12 @@ void CopyToGpuMemoryBuffer(
       std::move(callback).Run();
     };
 
-    sii->CopyToGpuMemoryBufferAsync(
-        blit_done_sync_token, mailbox,
-        base::BindOnce(std::move(copy_to_gmb_done_lambda),
-                       std::move(callback)));
+    dst_frame->shared_image()->CopyToGpuMemoryBufferAsync(
+        blit_done_sync_token, base::BindOnce(std::move(copy_to_gmb_done_lambda),
+                                             std::move(callback)));
   } else {
-    sii->CopyToGpuMemoryBuffer(blit_done_sync_token, mailbox);
+    sii->CopyToGpuMemoryBuffer(blit_done_sync_token,
+                               dst_frame->shared_image()->mailbox());
   }
 
   // Synchronize RasterInterface with SharedImageInterface.
@@ -198,8 +201,7 @@ void CopyToGpuMemoryBuffer(
   // since we'll set the empty sync token on the video frame on GPU completion.
   // But if we ever refactor this code to have a "don't wait for GMB" mode, the
   // correct sync token on the video frame will be needed.
-  gpu::SyncToken completion_sync_token;
-  ri->GenUnverifiedSyncTokenCHROMIUM(completion_sync_token.GetData());
+  gpu::SyncToken completion_sync_token = copy_to_gmb_done_sync_token;
   media::SimpleSyncTokenClient simple_client(completion_sync_token);
   dst_frame->UpdateAcquireSyncToken(completion_sync_token);
   dst_frame->UpdateReleaseSyncToken(&simple_client);

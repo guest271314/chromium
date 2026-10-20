@@ -5,6 +5,7 @@
 #import "ios/chrome/browser/content_suggestions/most_visited_tiles/coordinator/most_visited_tiles_mediator.h"
 
 #import "base/apple/foundation_util.h"
+#import "base/callback_list.h"
 #import "base/check.h"
 #import "base/ios/ios_util.h"
 #import "base/memory/raw_ptr.h"
@@ -17,12 +18,14 @@
 #import "components/feature_engagement/public/feature_constants.h"
 #import "components/feature_engagement/public/tracker.h"
 #import "components/history/core/browser/history_service.h"
+#import "components/ntp_tiles/constants.h"
 #import "components/ntp_tiles/features.h"
 #import "components/ntp_tiles/metrics.h"
 #import "components/ntp_tiles/most_visited_sites.h"
 #import "components/ntp_tiles/ntp_tile.h"
 #import "components/ntp_tiles/pref_names.h"
 #import "components/ntp_tiles/tile_source.h"
+#import "components/omnibox/browser/aim_eligibility_service.h"
 #import "components/prefs/pref_change_registrar.h"
 #import "components/prefs/pref_service.h"
 #import "components/strings/grit/components_strings.h"
@@ -67,8 +70,6 @@ namespace {
 // Maximum number of most visited tiles fetched that are not pinned sites.
 const NSInteger kMaxNumNonCustomMostVisitedTiles = 4;
 
-// Maximum number of most visited tiles fetched.
-const NSInteger kMaxNumMostVisitedTiles = 8;
 
 // Size below which the provider returns a colored tile instead of an image.
 const CGFloat kMagicStackMostVisitedFaviconMinimalSize = 18;
@@ -126,6 +127,12 @@ GURL GetValidUrl(NSString* urlString) {
   NSString* _lastSnackbarMessage;
   // Tracker for cancellable tasks initiated by the mediator.
   base::CancelableTaskTracker _cancelableTaskTracker;
+  // Service to check AIM eligibility.
+  raw_ptr<AimEligibilityService> _aimEligibilityService;
+  // Subscription for eligibility changes.
+  base::CallbackListSubscription _aimEligibilitySubscription;
+  // Whether AI Mode is allowed.
+  BOOL _isAIMAllowed;
 }
 
 - (instancetype)
@@ -138,7 +145,8 @@ GURL GetValidUrl(NSString* urlString) {
      URLLoadingBrowserAgent:(UrlLoadingBrowserAgent*)URLLoadingBrowserAgent
       accountManagerService:(ChromeAccountManagerService*)accountManagerService
           engagementTracker:(feature_engagement::Tracker*)engagementTracker
-          layoutGuideCenter:(LayoutGuideCenter*)layoutGuideCenter {
+          layoutGuideCenter:(LayoutGuideCenter*)layoutGuideCenter
+      aimEligibilityService:(AimEligibilityService*)aimEligibilityService {
   self = [super init];
   if (self) {
     CHECK(historyService);
@@ -164,15 +172,27 @@ GURL GetValidUrl(NSString* urlString) {
     _mostVisitedBridge =
         std::make_unique<ntp_tiles::MostVisitedSitesObserverBridge>(
             self, _mostVisitedSites.get());
-    if (IsContentSuggestionsCustomizable()) {
-      _mostVisitedSites->EnableTileTypes(
-          ntp_tiles::MostVisitedSites::EnableTileTypesOptions()
-              .with_top_sites(true)
-              .with_custom_links(true));
-    }
+    _mostVisitedSites->EnableTileTypes(
+        ntp_tiles::MostVisitedSites::EnableTileTypesOptions()
+            .with_top_sites(true)
+            .with_custom_links(true));
     _mostVisitedSites->AddMostVisitedURLsObserver(
-        _mostVisitedBridge.get(), [MostVisitedTilesMediator maxSitesShown],
+        _mostVisitedBridge.get(), MaximumMostVisitedTilesCount(),
         kMaxNumNonCustomMostVisitedTiles);
+
+    if (ntp_tiles::GetAimButtonRefactorArm() ==
+        ntp_tiles::AimButtonRefactorArm::kAimAsMvt) {
+      _aimEligibilityService = aimEligibilityService;
+      if (_aimEligibilityService) {
+        __weak __typeof(self) weakSelf = self;
+        _aimEligibilitySubscription =
+            _aimEligibilityService->RegisterEligibilityChangedCallback(
+                base::BindRepeating(^(void) {
+                  [weakSelf updateAIMAvailability];
+                }));
+      }
+      [self updateAIMAvailability];
+    }
   }
   return self;
 }
@@ -181,6 +201,11 @@ GURL GetValidUrl(NSString* urlString) {
   if (_lastSnackbarMessage) {
     [self.snackbarHandler dismissSnackbarWithMessage:_lastSnackbarMessage
                                             animated:YES];
+  }
+  if (ntp_tiles::GetAimButtonRefactorArm() ==
+      ntp_tiles::AimButtonRefactorArm::kAimAsMvt) {
+    _aimEligibilitySubscription = {};
+    _aimEligibilityService = nullptr;
   }
   _cancelableTaskTracker.TryCancelAll();
   _mostVisitedBridge.reset();
@@ -194,10 +219,6 @@ GURL GetValidUrl(NSString* urlString) {
   _prefService = nullptr;
 }
 
-+ (NSUInteger)maxSitesShown {
-  return IsContentSuggestionsCustomizable() ? kMaxNumMostVisitedTiles
-                                            : kMaxNumNonCustomMostVisitedTiles;
-}
 
 - (void)refreshMostVisitedTiles {
   // Refresh in case there are new MVT to show.
@@ -213,18 +234,46 @@ GURL GetValidUrl(NSString* urlString) {
   return _mostVisitedConfig;
 }
 
+- (void)setConsumer:(id<ContentSuggestionsConsumer>)consumer {
+  _consumer = consumer;
+  if (IsNTPRedesignEnabled() && _consumer && _mostVisitedConfig) {
+    [_consumer setMostVisitedTilesConfig:_mostVisitedConfig];
+  }
+}
+
 #pragma mark - MostVisitedSitesObserving
 
 - (void)mostVisitedSites:(ntp_tiles::MostVisitedSites*)mostVisitedSites
           didUpdateTiles:(const ntp_tiles::NTPTilesVector&)tiles {
-  // This is used by the shortcuts widget.
-  content_suggestions_tile_saver::SaveMostVisitedToDisk(
-      tiles, _mostVisitedAttributesProvider,
-      app_group::ShortcutsWidgetFaviconsFolder(), _accountManagerService);
+  if (ntp_tiles::GetAimButtonRefactorArm() ==
+          ntp_tiles::AimButtonRefactorArm::kAimAsMvt &&
+      IsAimEnabledInNtp()) {
+    ntp_tiles::NTPTilesVector shortcuts_widget_tiles;
+    const GURL aimURL(ntp_tiles::kAiModeTileUrl);
+    for (const ntp_tiles::NTPTile& tile : tiles) {
+      if (tile.url != aimURL) {
+        shortcuts_widget_tiles.push_back(tile);
+      }
+    }
+    // This saves tiles displayed in the shortcuts widget. The AI Mode tile is
+    // not eligible.
+    content_suggestions_tile_saver::SaveMostVisitedToDisk(
+        shortcuts_widget_tiles, _mostVisitedAttributesProvider,
+        app_group::ShortcutsWidgetFaviconsFolder(), _accountManagerService);
+  } else {
+    // This saves tiles displayed in the shortcuts widget.
+    content_suggestions_tile_saver::SaveMostVisitedToDisk(
+        tiles, _mostVisitedAttributesProvider,
+        app_group::ShortcutsWidgetFaviconsFolder(), _accountManagerService);
+  }
 
   _freshMostVisitedItems = [NSMutableArray array];
   int index = 0;
+  const GURL aimURL(ntp_tiles::kAiModeTileUrl);
   for (const ntp_tiles::NTPTile& tile : tiles) {
+    if (tile.url == aimURL && !_isAIMAllowed) {
+      continue;
+    }
     MostVisitedItem* item = [self convertNTPTile:tile];
     item.commandHandler = self;
     item.incognitoAvailable = _incognitoAvailable;
@@ -292,6 +341,12 @@ GURL GetValidUrl(NSString* urlString) {
 - (void)moveMostVisitedItem:(MostVisitedItem*)item toIndex:(NSUInteger)index {
   _mostVisitedSites->ReorderCustomLink(item.URL, index);
   RecordReorderUserAction();
+  if (ntp_tiles::GetAimButtonRefactorArm() ==
+      ntp_tiles::AimButtonRefactorArm::kAimAsMvt) {
+    if ([item isAIMTile]) {
+      RecordAimTileMovedToIndex(static_cast<int>(index));
+    }
+  }
 
   // VoiceOver announcement.
   NSString* announcement = l10n_util::GetNSStringF(
@@ -339,7 +394,6 @@ GURL GetValidUrl(NSString* urlString) {
   }
   // Add reorder custom actions.
   if (item.isPinned) {
-    CHECK(IsContentSuggestionsCustomizable());
     __weak MostVisitedTilesMediator* weakSelf = self;
     NSUInteger index = static_cast<NSUInteger>(item.index);
     NSString* moveLeftTitle =
@@ -450,12 +504,26 @@ GURL GetValidUrl(NSString* urlString) {
   if (_mostVisitedSites->HasCustomLink(url)) {
     // Remove the custom link.
     if (_mostVisitedSites->DeleteCustomLink(url)) {
+      ntp_tiles::AimButtonRefactorArm arm =
+          ntp_tiles::GetAimButtonRefactorArm();
+      BOOL isAIMTile = [item isAIMTile];
+      if (arm == ntp_tiles::AimButtonRefactorArm::kAimAsMvt) {
+        if (isAIMTile) {
+          RecordAimTileUnpinnedUserAction();
+        }
+      }
       [self showSnackbarWithMessage:
                 l10n_util::GetNSString(
                     IDS_IOS_CONTENT_SUGGESTIONS_PIN_SITE_SNACKBAR_UNPINNED)
                          undoAction:^{
                            [weakSelf undoLastPinAction];
                            RecordSnackbarUndoUserAction(/*undo_pin=*/NO);
+                           if (arm ==
+                               ntp_tiles::AimButtonRefactorArm::kAimAsMvt) {
+                             if (isAIMTile) {
+                               RecordAimTileUndoUnpinUserAction();
+                             }
+                           }
                          }];
     }
     return;
@@ -478,7 +546,7 @@ GURL GetValidUrl(NSString* urlString) {
 
 // Removes the most visited `item`.
 - (void)removeMostVisited:(MostVisitedItem*)item {
-  [self.contentSuggestionsMetricsRecorder recordMostVisitedTileRemoved];
+  [ContentSuggestionsMetricsRecorder recordMostVisitedTileRemoved];
   [self blockMostVisitedURL:item.URL];
   __weak MostVisitedTilesMediator* weakSelf = self;
   [self showSnackbarWithMessage:l10n_util::GetNSString(
@@ -497,6 +565,7 @@ GURL GetValidUrl(NSString* urlString) {
 - (NSArray<UIAction*>*)actionsForItem:(MostVisitedItem*)item
                              fromView:(UIView*)view {
   CHECK(self.actionFactory);
+
   NSMutableArray<UIAction*>* actions = [[NSMutableArray alloc] init];
 
   CGPoint centerPoint = [view.superview convertPoint:view.center toView:nil];
@@ -541,22 +610,21 @@ GURL GetValidUrl(NSString* urlString) {
                                                   fromView:view];
            }]];
   if (item.isPinned) {
-    CHECK(IsContentSuggestionsCustomizable(), base::NotFatalUntil::M148);
-    [actions addObject:[self.actionFactory
-                           actionToEditPinnedSiteOnMostVisitedTileWithBlock:^{
-                             [weakSelf openModalToEditPinnedSite:item];
-                           }]];
+    if (![item isAIMTile]) {
+      [actions addObject:[self.actionFactory
+                             actionToEditPinnedSiteOnMostVisitedTileWithBlock:^{
+                               [weakSelf openModalToEditPinnedSite:item];
+                             }]];
+    }
     [actions addObject:[self.actionFactory
                            actionToUnpinSiteFromMostVisitedTileWithBlock:^{
                              [weakSelf pinOrUnpinMostVisited:item];
                            }]];
   } else {
-    if (IsContentSuggestionsCustomizable()) {
-      [actions addObject:[self.actionFactory
-                             actionToPinSiteToMostVisitedTileWithBlock:^{
-                               [weakSelf pinOrUnpinMostVisited:item];
-                             }]];
-    }
+    [actions addObject:[self.actionFactory
+                           actionToPinSiteToMostVisitedTileWithBlock:^{
+                             [weakSelf pinOrUnpinMostVisited:item];
+                           }]];
     [actions addObject:[self.actionFactory actionToRemoveWithBlock:^{
                [weakSelf removeMostVisited:item];
              }]];
@@ -593,18 +661,24 @@ GURL GetValidUrl(NSString* urlString) {
 
   [self.consumer setMostVisitedTilesConfig:_mostVisitedConfig];
   [self.contentSuggestionsDelegate contentSuggestionsWasUpdated];
-  if (IsContentSuggestionsCustomizable()) {
-    [self maybeDisplayIPH];
-  }
+  [self maybeDisplayIPH];
 }
 
 // Logs a histogram due to a Most Visited item being opened.
 - (void)logMostVisitedOpening:(MostVisitedItem*)item
                       atIndex:(NSInteger)mostVisitedIndex {
-  [self.NTPActionsDelegate mostVisitedTileOpened];
-  [self.contentSuggestionsMetricsRecorder
+  [ContentSuggestionsMetricsRecorder
       recordMostVisitedTileOpened:item
                           atIndex:mostVisitedIndex];
+  if (ntp_tiles::GetAimButtonRefactorArm() ==
+      ntp_tiles::AimButtonRefactorArm::kAimAsMvt) {
+    if ([item isAIMTile]) {
+      RecordAimTileTappedAtIndex(static_cast<int>(mostVisitedIndex));
+      [self.NTPActionsDelegate aimInMostVisitedOpened];
+      return;
+    }
+  }
+  [self.NTPActionsDelegate mostVisitedTileOpened];
 }
 
 // Opens the `URL` in a new tab `incognito` or not. `originPoint` is the origin
@@ -669,7 +743,6 @@ GURL GetValidUrl(NSString* urlString) {
 
 // Undo the last action that adds/removes/edits a pinned site.
 - (void)undoLastPinAction {
-  CHECK(IsContentSuggestionsCustomizable());
   _mostVisitedSites->UndoCustomLinkAction();
 }
 
@@ -678,7 +751,15 @@ GURL GetValidUrl(NSString* urlString) {
 - (MostVisitedItem*)convertNTPTile:(const ntp_tiles::NTPTile&)tile {
   MostVisitedItem* suggestion = [[MostVisitedItem alloc] init];
 
-  suggestion.title = base::SysUTF16ToNSString(tile.title);
+  const GURL aimURL(ntp_tiles::kAiModeTileUrl);
+  if (tile.url == aimURL) {
+    CHECK(IsAimEnabledInNtp());
+    CHECK_EQ(ntp_tiles::GetAimButtonRefactorArm(),
+             ntp_tiles::AimButtonRefactorArm::kAimAsMvt);
+    suggestion.title = l10n_util::GetNSString(IDS_NTP_TILES_AI_MODE_TITLE);
+  } else {
+    suggestion.title = base::SysUTF16ToNSString(tile.title);
+  }
   suggestion.URL = tile.url;
   suggestion.source = tile.source;
   suggestion.titleSource = tile.title_source;
@@ -733,6 +814,17 @@ GURL GetValidUrl(NSString* urlString) {
           base::BindOnce(presentIPHForRepeatingVisits),
           &_cancelableTaskTracker);
     }
+  }
+}
+
+// Updates for changes to AI Mode eligibility on the NTP.
+- (void)updateAIMAvailability {
+  CHECK_EQ(ntp_tiles::GetAimButtonRefactorArm(),
+           ntp_tiles::AimButtonRefactorArm::kAimAsMvt);
+  _isAIMAllowed = IsAimEnabledInNtp() && _aimEligibilityService &&
+                  _aimEligibilityService->IsAimEligible();
+  if (_mostVisitedSites) {
+    _mostVisitedSites->RefreshTiles();
   }
 }
 

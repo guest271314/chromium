@@ -4,11 +4,11 @@
 
 #include "chrome/common/net/x509_certificate_model.h"
 
+#include <ranges>
 #include <string_view>
 #include <variant>
 
 #include "base/check.h"
-#include "base/containers/adapters.h"
 #include "base/containers/fixed_flat_map.h"
 #include "base/i18n/number_formatting.h"
 #include "base/strings/strcat.h"
@@ -16,6 +16,7 @@
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "chrome/grit/generated_resources.h"
+#include "components/certificate_model/x509_certificate_constants.h"
 #include "components/strings/grit/components_strings.h"
 #include "components/url_formatter/url_formatter.h"
 #include "net/base/ip_address.h"
@@ -41,48 +42,6 @@
 namespace x509_certificate_model {
 
 namespace {
-
-// 2.5.4.46 NAME 'dnQualifier'
-constexpr uint8_t kTypeDnQualifierOid[] = {0x55, 0x04, 0x2e};
-// 2.5.4.15 NAME 'businessCategory'
-constexpr uint8_t kTypeBusinessCategory[] = {0x55, 0x04, 0x0f};
-// 2.5.4.17 NAME 'postalCode'
-constexpr uint8_t kTypePostalCode[] = {0x55, 0x04, 0x11};
-
-// TODO(mattm): we can probably just remove these RFC 1274 OIDs.
-//
-// ccitt is {0} but not explicitly defined in the RFC 1274.
-// RFC 1274:
-// data OBJECT IDENTIFIER ::= {ccitt 9}
-// pss OBJECT IDENTIFIER ::= {data 2342}
-// ucl OBJECT IDENTIFIER ::= {pss 19200300}
-// pilot OBJECT IDENTIFIER ::= {ucl 100}
-// pilotAttributeType OBJECT IDENTIFIER ::= {pilot 1}
-// userid ::= {pilotAttributeType 1}
-constexpr uint8_t kRFC1274UidOid[] = {0x09, 0x92, 0x26, 0x89, 0x93,
-                                      0xf2, 0x2c, 0x64, 0x01, 0x01};
-// rfc822Mailbox :: = {pilotAttributeType 3}
-constexpr uint8_t kRFC1274MailOid[] = {0x09, 0x92, 0x26, 0x89, 0x93,
-                                       0xf2, 0x2c, 0x64, 0x01, 0x03};
-
-// jurisdictionLocalityName (OID: 1.3.6.1.4.1.311.60.2.1.1)
-constexpr uint8_t kEVJurisdictionLocalityName[] = {
-    0x2b, 0x06, 0x01, 0x04, 0x01, 0x82, 0x37, 0x3c, 0x02, 0x01, 0x01};
-// jurisdictionStateOrProvinceName (OID: 1.3.6.1.4.1.311.60.2.1.2)
-constexpr uint8_t kEVJurisdictionStateOrProvinceName[] = {
-    0x2b, 0x06, 0x01, 0x04, 0x01, 0x82, 0x37, 0x3c, 0x02, 0x01, 0x02};
-// jurisdictionCountryName (OID: 1.3.6.1.4.1.311.60.2.1.3)
-constexpr uint8_t kEVJurisdictionCountryName[] = {
-    0x2b, 0x06, 0x01, 0x04, 0x01, 0x82, 0x37, 0x3c, 0x02, 0x01, 0x03};
-
-// From RFC 5280:
-//     id-ce-issuerAltName OBJECT IDENTIFIER ::=  { id-ce 18 }
-// In dotted notation: 2.5.29.18
-constexpr uint8_t kIssuerAltNameOid[] = {0x55, 0x1d, 0x12};
-// From RFC 5280:
-//     id-ce-subjectDirectoryAttributes OBJECT IDENTIFIER ::=  { id-ce 9 }
-// In dotted notation: 2.5.29.9
-constexpr uint8_t kSubjectDirectoryAttributesOid[] = {0x55, 0x1d, 0x09};
 
 // Old Netscape OIDs. Do we still need all these?
 // #define NETSCAPE_OID 0x60, 0x86, 0x48, 0x01, 0x86, 0xf8, 0x42
@@ -390,7 +349,7 @@ OptionalStringOrError RDNSequenceToStringMultiLine(
   // this one is multi-line, and prints in reverse order, and has a different
   // set of oids that it has printable names for, and different handling of
   // unprintable values, and IDN processing...
-  for (const bssl::RelativeDistinguishedName& rdn : base::Reversed(rdns)) {
+  for (const bssl::RelativeDistinguishedName& rdn : std::views::reverse(rdns)) {
     std::string rdn_value = ProcessRDN(rdn);
     if (rdn_value.empty())
       return Error();
@@ -557,19 +516,6 @@ std::string FormatGeneralName(std::u16string key, std::string_view value) {
 
 std::string FormatGeneralName(int key_string_id, std::string_view value) {
   return FormatGeneralName(l10n_util::GetStringUTF16(key_string_id), value);
-}
-
-bool ParseOtherName(bssl::der::Input other_name,
-                    bssl::der::Input* type,
-                    bssl::der::Input* value) {
-  // OtherName ::= SEQUENCE {
-  //      type-id    OBJECT IDENTIFIER,
-  //      value      [0] EXPLICIT ANY DEFINED BY type-id }
-  bssl::der::Parser sequence_parser(other_name);
-  return sequence_parser.ReadTag(CBS_ASN1_OBJECT, type) &&
-         sequence_parser.ReadTag(
-             CBS_ASN1_CONTEXT_SPECIFIC | CBS_ASN1_CONSTRUCTED | 0, value) &&
-         !sequence_parser.HasMore();
 }
 
 std::optional<std::string> ProcessGeneralNames(

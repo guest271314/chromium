@@ -6,8 +6,11 @@
 
 #include <stdint.h>
 
+#include <optional>
+
 #include "base/command_line.h"
 #include "base/files/file_enumerator.h"
+#include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/files/scoped_temp_dir.h"
 #include "base/no_destructor.h"
@@ -20,12 +23,15 @@
 #include "content/public/test/test_content_browser_client.h"
 #include "mojo/public/cpp/bindings/remote.h"
 #include "net/http/http_cache.h"
+#include "net/log/file_net_log_observer.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
 #include "services/cert_verifier/public/mojom/cert_verifier_service_factory.mojom.h"
+#include "services/network/public/cpp/features.h"
 #include "services/network/public/cpp/originating_process_id.h"
 #include "services/network/public/cpp/resource_request.h"
 #include "services/network/public/cpp/simple_url_loader.h"
 #include "services/network/public/cpp/transferable_directory.h"
+#include "services/network/public/mojom/net_log.mojom.h"
 #include "services/network/public/mojom/network_context.mojom.h"
 #include "services/network/public/mojom/url_loader_factory.mojom.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -50,9 +56,17 @@ class EarlyShutdownTestContentBrowserClient : public TestContentBrowserClient {
 }  // namespace
 
 // This test exists as a regression test for https://crbug.com/1369808.
-class NetworkServiceShutdownRaceTest : public testing::Test {
+class NetworkServiceShutdownRaceTest : public testing::TestWithParam<bool> {
  public:
-  NetworkServiceShutdownRaceTest() = default;
+  NetworkServiceShutdownRaceTest() {
+    if (GetParam()) {
+      feature_list_.InitAndEnableFeature(
+          network::features::kCreateNetworkContextNonBlocking);
+    } else {
+      feature_list_.InitAndDisableFeature(
+          network::features::kCreateNetworkContextNonBlocking);
+    }
+  }
 
   NetworkServiceShutdownRaceTest(const NetworkServiceShutdownRaceTest&) =
       delete;
@@ -76,10 +90,11 @@ class NetworkServiceShutdownRaceTest : public testing::Test {
 
  private:
   BrowserTaskEnvironment task_environment_{BrowserTaskEnvironment::IO_MAINLOOP};
+  base::test::ScopedFeatureList feature_list_;
 };
 
 // This should not crash.
-TEST_F(NetworkServiceShutdownRaceTest, CreateNetworkContextDuringShutdown) {
+TEST_P(NetworkServiceShutdownRaceTest, CreateNetworkContextDuringShutdown) {
   // Set browser as shutting down. Note: this never gets reset back to the old
   // client and will intentionally leak, because the pending UI tasks that cause
   // issue 1369808 are run after the test fixture has been completely torn down,
@@ -90,6 +105,8 @@ TEST_F(NetworkServiceShutdownRaceTest, CreateNetworkContextDuringShutdown) {
   // Trigger the network context creation.
   CreateNetworkContext();
 }
+
+INSTANTIATE_TEST_SUITE_P(All, NetworkServiceShutdownRaceTest, testing::Bool());
 
 TEST(NetworkServiceInstanceImplParseCommandLineTest,
      ParseNetLogMaximumFileNoSwitch) {
@@ -153,6 +170,138 @@ TEST(NetworkServiceInstanceImplParseCommandLineTest,
     EXPECT_EQ(GetNetLogMaximumFileSizeFromCommandLineForTesting(command_line),
               std::numeric_limits<uint64_t>::max());
   }
+}
+
+TEST(NetworkServiceInstanceImplParseCommandLineTest,
+     ParseNetLogFileFormatNoSwitch) {
+  base::CommandLine command_line{base::CommandLine::NO_PROGRAM};
+  EXPECT_EQ(GetNetLogFileFormatFromCommandLineForTesting(command_line),
+            net::NetLogFileFormat::kJson);
+}
+
+TEST(NetworkServiceInstanceImplParseCommandLineTest,
+     ParseNetLogFileFormatJson) {
+  base::CommandLine command_line{base::CommandLine::NO_PROGRAM};
+  command_line.AppendSwitchASCII("net-log-file-format", "json");
+  EXPECT_EQ(GetNetLogFileFormatFromCommandLineForTesting(command_line),
+            net::NetLogFileFormat::kJson);
+}
+
+TEST(NetworkServiceInstanceImplParseCommandLineTest,
+     ParseNetLogFileFormatNdjson) {
+  base::CommandLine command_line{base::CommandLine::NO_PROGRAM};
+  command_line.AppendSwitchASCII("net-log-file-format", "ndjson");
+  EXPECT_EQ(GetNetLogFileFormatFromCommandLineForTesting(command_line),
+            net::NetLogFileFormat::kNdjson);
+}
+
+TEST(NetworkServiceInstanceImplParseCommandLineTest,
+     ParseNetLogFileFormatInvalid) {
+  base::CommandLine command_line{base::CommandLine::NO_PROGRAM};
+  command_line.AppendSwitchASCII("net-log-file-format", "invalid");
+  EXPECT_EQ(GetNetLogFileFormatFromCommandLineForTesting(command_line),
+            net::NetLogFileFormat::kJson);
+}
+
+class NetworkServiceCacheDirectoriesTest : public testing::Test {
+ protected:
+  network::mojom::NetworkContextParamsPtr MakeCacheParams() {
+    auto params = network::mojom::NetworkContextParams::New();
+    params->http_cache_enabled = true;
+    params->file_paths = network::mojom::NetworkContextFilePaths::New();
+    params->file_paths->http_cache_directory =
+        network::TransferableDirectory(cache_dir_);
+    return params;
+  }
+
+  const base::FilePath cache_dir_{FILE_PATH_LITERAL("Cache")};
+};
+
+TEST_F(NetworkServiceCacheDirectoriesTest, PopulatesUnsetDirectories) {
+  network::mojom::NetworkContextParamsPtr params = MakeCacheParams();
+
+  PopulateHttpCacheDirectories(params.get());
+
+  EXPECT_EQ(cache_dir_.Append(kCacheDataDirectoryName),
+            params->file_paths->http_cache_directory->path());
+  ASSERT_TRUE(params->file_paths->no_vary_search_directory.has_value());
+  EXPECT_EQ(cache_dir_.Append(kNoVarySearchDirectoryName),
+            params->file_paths->no_vary_search_directory->path());
+  ASSERT_TRUE(params->file_paths->logical_invalidation_directory.has_value());
+  EXPECT_EQ(cache_dir_.Append(kLogicalInvalidationDirectoryName),
+            params->file_paths->logical_invalidation_directory->path());
+}
+
+TEST_F(NetworkServiceCacheDirectoriesTest, PopulatedDirectoriesAreSiblings) {
+  network::mojom::NetworkContextParamsPtr params = MakeCacheParams();
+
+  PopulateHttpCacheDirectories(params.get());
+
+  const base::FilePath parent =
+      params->file_paths->http_cache_directory->path().DirName();
+  EXPECT_EQ(parent,
+            params->file_paths->no_vary_search_directory->path().DirName());
+  EXPECT_EQ(
+      parent,
+      params->file_paths->logical_invalidation_directory->path().DirName());
+}
+
+TEST_F(NetworkServiceCacheDirectoriesTest, KeepsDirectoriesSetByEmbedder) {
+  // Siblings of the cache directory: network_sandbox.cc CHECK_EQs that
+  // relationship, so an embedder cannot legally supply anything else.
+  const base::FilePath custom_no_vary_search =
+      cache_dir_.Append(FILE_PATH_LITERAL("custom_no_vary_search"));
+  const base::FilePath custom_logical_invalidation =
+      cache_dir_.Append(FILE_PATH_LITERAL("custom_logical_invalidation"));
+
+  network::mojom::NetworkContextParamsPtr params = MakeCacheParams();
+  params->file_paths->no_vary_search_directory =
+      network::TransferableDirectory(custom_no_vary_search);
+  params->file_paths->logical_invalidation_directory =
+      network::TransferableDirectory(custom_logical_invalidation);
+
+  PopulateHttpCacheDirectories(params.get());
+
+  EXPECT_EQ(custom_no_vary_search,
+            params->file_paths->no_vary_search_directory->path());
+  EXPECT_EQ(custom_logical_invalidation,
+            params->file_paths->logical_invalidation_directory->path());
+}
+
+TEST_F(NetworkServiceCacheDirectoriesTest, NoDirectoriesWhenCacheDisabled) {
+  network::mojom::NetworkContextParamsPtr params = MakeCacheParams();
+  params->http_cache_enabled = false;
+
+  PopulateHttpCacheDirectories(params.get());
+
+  EXPECT_EQ(cache_dir_, params->file_paths->http_cache_directory->path());
+  EXPECT_EQ(params->file_paths->no_vary_search_directory, std::nullopt);
+  EXPECT_EQ(params->file_paths->logical_invalidation_directory, std::nullopt);
+}
+
+TEST_F(NetworkServiceCacheDirectoriesTest, NoDirectoriesWhenCacheInMemory) {
+  network::mojom::NetworkContextParamsPtr params = MakeCacheParams();
+  params->file_paths->http_cache_directory.reset();
+
+  PopulateHttpCacheDirectories(params.get());
+
+  EXPECT_EQ(params->file_paths->no_vary_search_directory, std::nullopt);
+  EXPECT_EQ(params->file_paths->logical_invalidation_directory, std::nullopt);
+}
+
+// An empty path must stay empty. Appending to it would hand the network
+// service CWD-relative directories, and would flip the caller's own
+// `!http_cache_directory->path().empty()` validity check from false to true.
+TEST_F(NetworkServiceCacheDirectoriesTest, NoDirectoriesWhenCachePathEmpty) {
+  network::mojom::NetworkContextParamsPtr params = MakeCacheParams();
+  params->file_paths->http_cache_directory =
+      network::TransferableDirectory(base::FilePath());
+
+  PopulateHttpCacheDirectories(params.get());
+
+  EXPECT_TRUE(params->file_paths->http_cache_directory->path().empty());
+  EXPECT_EQ(params->file_paths->no_vary_search_directory, std::nullopt);
+  EXPECT_EQ(params->file_paths->logical_invalidation_directory, std::nullopt);
 }
 
 class NetworkServiceHttpCacheEarlyInitTest : public testing::Test {

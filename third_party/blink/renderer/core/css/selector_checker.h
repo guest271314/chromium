@@ -394,7 +394,6 @@ class CORE_EXPORT SelectorChecker {
                                       PseudoId matching_for_pseudo_element);
   static bool MatchesFocusVisiblePseudoClass(const Element&);
   static bool MatchesActiveViewTransitionPseudoClass(const Element&);
-  static bool MatchesOverscrollTarget(const Element&);
 
  private:
   // Does the work of checking whether the simple selector and element pointed
@@ -454,6 +453,7 @@ class CORE_EXPORT SelectorChecker {
   bool MatchesAnyInList(const SelectorCheckingContext& context,
                         const CSSSelector* selector_list,
                         MatchResult& result) const;
+  bool MatchAllHighlightRules(const SelectorCheckingContext& context) const;
 
   enum FeaturelessMatch {
     // Matches a selector which is allowed to match the featureless element.
@@ -539,7 +539,7 @@ class CORE_EXPORT SelectorChecker {
 //
 //  - Tag matches (e.g. div), possibly negated (e.g. :not(div)).
 //  - ID matches (e.g. #id).
-//  - Class matches (e.g. .c).
+//  - Class matches (e.g. .c), possibly negated (e.g. :not(.c)).
 //  - Case-sensitive attribute is-set and exact matches ([foo] and [foo="bar"]).
 //  - Subselector and descendant combinators.
 //  - Certain non-nested pseudo-element selectors (::before, ::after, ::marker,
@@ -586,6 +586,8 @@ class CORE_EXPORT EasySelectorChecker {
                                      PseudoId& dynamic_pseudo);
   ALWAYS_INLINE static bool MatchesTagName(const QualifiedName& tag_q_name,
                                            const Element* element);
+  ALWAYS_INLINE static bool MatchesClassName(const AtomicString& class_name,
+                                             const Element* element);
   ALWAYS_INLINE static bool AttributeIsSet(const Element& element,
                                            const QualifiedName& attr);
   ALWAYS_INLINE static bool AttributeMatches(const Element& element,

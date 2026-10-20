@@ -14,17 +14,19 @@
 #import "components/password_manager/core/browser/features/password_features.h"
 #import "components/password_manager/core/browser/ui/credential_ui_entry.h"
 #import "components/password_manager/ios/shared_password_controller.h"
-#import "components/url_formatter/elide_url.h"
 #import "components/webauthn/ios/features.h"
 #import "ios/chrome/browser/passwords/bottom_sheet/ui/credential_suggestion_bottom_sheet_delegate.h"
 #import "ios/chrome/browser/passwords/bottom_sheet/ui/credential_suggestion_bottom_sheet_handler.h"
 #import "ios/chrome/browser/settings/ui_bundled/password/create_password_manager_title_view.h"
+#import "ios/chrome/browser/shared/ui/bottom_sheet/bottom_sheet_util.h"
 #import "ios/chrome/browser/shared/ui/bottom_sheet/table_view_bottom_sheet_view_controller+subclassing.h"
 #import "ios/chrome/browser/shared/ui/symbols/symbols.h"
 #import "ios/chrome/browser/shared/ui/table_view/cells/table_view_url_item.h"
 #import "ios/chrome/browser/shared/ui/table_view/content_configuration/favicon_content_configuration.h"
 #import "ios/chrome/browser/shared/ui/table_view/content_configuration/image_content_configuration.h"
 #import "ios/chrome/browser/shared/ui/table_view/content_configuration/table_view_cell_content_configuration.h"
+#import "ios/chrome/browser/shared/ui/util/uikit_ui_util.h"
+#import "ios/chrome/common/credential_provider/net_util.h"
 #import "ios/chrome/common/string_util.h"
 #import "ios/chrome/common/ui/button_stack/button_stack_configuration.h"
 #import "ios/chrome/common/ui/colors/semantic_color_names.h"
@@ -33,7 +35,6 @@
 #import "ios/chrome/common/ui/favicon/favicon_view.h"
 #import "ios/chrome/grit/ios_branded_strings.h"
 #import "ios/chrome/grit/ios_strings.h"
-#import "ui/base/l10n/l10n_util_mac.h"
 #import "url/gurl.h"
 
 using autofill::SuggestionType;
@@ -139,14 +140,11 @@ void LogSuggestionAcceptedMetrics(BOOL is_backup_suggestion,
     self.subtitleString = _subtitle;
   } else {
     self.subtitleTextStyle = UIFontTextStyleFootnote;
-    std::u16string formattedURL =
-        url_formatter::FormatUrlForDisplayOmitSchemePathAndTrivialSubdomains(
-            _URL);
     self.subtitleString = l10n_util::GetNSStringF(
         IsConditionalPasskeyLoginEnabled()
             ? IDS_IOS_CREDENTIAL_BOTTOM_SHEET_SUBTITLE_WITH_PASSKEYS
             : IDS_IOS_CREDENTIAL_BOTTOM_SHEET_SUBTITLE,
-        formattedURL);
+        FormatUrlForBottomSheetDisplay(_URL));
   }
 
   [super viewDidLoad];
@@ -302,6 +300,11 @@ void LogSuggestionAcceptedMetrics(BOOL is_backup_suggestion,
     // Setting `attributedText` overrides `textColor` set in the parent class,
     // which does not render visibly in dark mode.
     subtitle.textColor = [UIColor colorNamed:kTextSecondaryColor];
+  } else {
+    // When `_subtitle` is nil, the parent class default subtitle text is used.
+    // Apply semibold styling to the entire default header subtitle.
+    subtitle.font = PreferredFontForTextStyle(UIFontTextStyleFootnote,
+                                              UIFontWeightSemibold);
   }
 }
 
@@ -421,7 +424,7 @@ void LogSuggestionAcceptedMetrics(BOOL is_backup_suggestion,
     [weakSelf.handler displayPasswordManager];
   };
   UIImage* keyIcon =
-      CustomSymbolWithPointSize(kPasswordSymbol, kSymbolActionPointSize);
+      SymbolWithPointSize(SymbolPassword, kSymbolActionPointSize);
   return [UIAction
       actionWithTitle:l10n_util::GetNSString(
                           IDS_IOS_CREDENTIAL_BOTTOM_SHEET_PASSWORD_MANAGER)
@@ -441,7 +444,7 @@ void LogSuggestionAcceptedMetrics(BOOL is_backup_suggestion,
   };
 
   UIImage* infoIcon =
-      DefaultSymbolWithPointSize(kInfoCircleSymbol, kSymbolActionPointSize);
+      SymbolWithPointSize(SymbolInfoCircle, kSymbolActionPointSize);
   return [UIAction
       actionWithTitle:l10n_util::GetNSString(
                           IDS_IOS_CREDENTIAL_BOTTOM_SHEET_SHOW_DETAILS)
@@ -470,7 +473,9 @@ void LogSuggestionAcceptedMetrics(BOOL is_backup_suggestion,
   configuration.title = GetSuggestionDisplayUsername(formSuggestion);
   configuration.titleNumberOfLines = 1;
   configuration.titleLineBreakMode = NSLineBreakByTruncatingMiddle;
-  configuration.subtitle = [self cellSubtitleForSuggestion:formSuggestion];
+  configuration.subtitle = IsConditionalPasskeyLoginEnabled()
+                               ? formSuggestion.displayDescription
+                               : _domain;
   configuration.subtitleNumberOfLines = 1;
   configuration.subtitleLineBreakMode = NSLineBreakByTruncatingMiddle;
   // Note that both the credentials and URLs will use middle truncation, as it
@@ -480,6 +485,14 @@ void LogSuggestionAcceptedMetrics(BOOL is_backup_suggestion,
   if (formSuggestion.type == SuggestionType::kBackupPasswordEntry) {
     configuration.secondSubtitle = l10n_util::GetNSString(
         IDS_IOS_CREDENTIAL_BOTTOM_SHEET_RECOVERY_PASSWORD_LABEL);
+  }
+
+  if (formSuggestion.type == SuggestionType::kWebauthnCredential) {
+    NSString* rpId = formSuggestion.minorValue;
+    if (!credential_provider::SecureHostsMatch(_domain, rpId)) {
+      configuration.secondSubtitle = rpId;
+      configuration.secondSubtitleNumberOfLines = 1;
+    }
   }
 
   [self loadFaviconForConfiguration:configuration
@@ -497,29 +510,6 @@ void LogSuggestionAcceptedMetrics(BOOL is_backup_suggestion,
   cell.backgroundColor = [UIColor colorNamed:kSecondaryBackgroundColor];
 
   return cell;
-}
-
-// Returns the subtitle to display for the given suggestion.
-- (NSString*)cellSubtitleForSuggestion:(FormSuggestion*)formSuggestion {
-  if (!IsConditionalPasskeyLoginEnabled()) {
-    return _domain;
-  }
-
-  if (formSuggestion.type == SuggestionType::kWebauthnCredential) {
-    return formSuggestion.displayDescription;
-  }
-
-  NSString* credentialType =
-      l10n_util::GetNSString(IDS_IOS_MANUAL_FALLBACK_PASSWORD_SUBTEXT);
-
-  NSString* suggestionHost = formSuggestion.displayDescription;
-  if (suggestionHost && suggestionHost.length > 0 &&
-      ![suggestionHost isEqualToString:_domain]) {
-    return
-        [NSString stringWithFormat:@"%@ • %@", credentialType, suggestionHost];
-  }
-
-  return credentialType;
 }
 
 @end

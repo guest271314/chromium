@@ -56,13 +56,13 @@ constexpr char kMdocAgeInYearsDataElement[] = "age_in_years";
 constexpr char kMdocAgeBirthYearDataElement[] = "age_birth_year";
 constexpr char kMdocBirthDateDataElement[] = "birth_date";
 
-constexpr char kSubscriptionHint[] = "subscription_hint";
-constexpr char kCarrierHint[] = "carrier_hint";
-constexpr char kAndroidCarrierHint[] = "android_carrier_hint";
-
 constexpr char kGetPhoneNumberVctValue[] =
     "number-verification/device-phone-number/ts43";
 constexpr char kVerifyPhoneNumberVctValue[] = "number-verification/verify/ts43";
+constexpr char kGetPhoneNumberTestSingleSimVctValue[] =
+    "number-verification/device-phone-number/test-ts43-single-sim";
+constexpr char kGetPhoneNumberTestMultiSimVctValue[] =
+    "number-verification/device-phone-number/test-ts43-multi-sim";
 
 constexpr char kDpcVctValue[] = "com.emvco.dpc";
 constexpr char kDpcCredCardVctValue[] = "dpc.cred.card";
@@ -90,9 +90,6 @@ bool CanClaimBypassInterstitial(const std::string& claim) {
       kMdocAgeInYearsDataElement,
       kMdocAgeBirthYearDataElement,
       kMdocBirthDateDataElement,
-      kSubscriptionHint,
-      kCarrierHint,
-      kAndroidCarrierHint,
   };
   return std::find(std::begin(kClaimsCanBypassInterstitial),
                    std::end(kClaimsCanBypassInterstitial),
@@ -111,10 +108,10 @@ bool IsDpcDocTypeValue(const std::string& doctype_value) {
 
 bool CanVctValueBypassInterstitial(const std::string& vct_value) {
   return vct_value == kGetPhoneNumberVctValue ||
-         vct_value == kVerifyPhoneNumberVctValue;
+         vct_value == kVerifyPhoneNumberVctValue ||
+         vct_value == kGetPhoneNumberTestSingleSimVctValue ||
+         vct_value == kGetPhoneNumberTestMultiSimVctValue;
 }
-
-
 
 bool CanRequestCredentialBypassInterstitialForOpenid4vpProtocolWithDCQL(
     const base::DictValue& request) {
@@ -190,9 +187,10 @@ bool CanRequestCredentialBypassInterstitialForOpenid4vpProtocolWithDCQL(
     }
     std::vector<std::string> vct_values;
     for (const base::Value& vct_value : *vct_values_list) {
-      if (vct_value.is_string()) {
-        vct_values.push_back(vct_value.GetString());
+      if (!vct_value.is_string()) {
+        return {};
       }
+      vct_values.push_back(vct_value.GetString());
     }
     return vct_values;
   };
@@ -203,7 +201,9 @@ bool CanRequestCredentialBypassInterstitialForOpenid4vpProtocolWithDCQL(
   };
 
   const base::ListValue* credentials = query_dict->FindList("credentials");
-  if (!credentials) {
+  // Default-deny / fail-closed: A query with an empty credentials list requests
+  // no recognizable credential and must not bypass the safety interstitial.
+  if (!credentials || credentials->empty()) {
     return false;
   }
 
@@ -213,18 +213,37 @@ bool CanRequestCredentialBypassInterstitialForOpenid4vpProtocolWithDCQL(
       return false;
     }
 
-    std::vector<std::string> claims = credential_to_claims(*credential_dict);
-    if (!std::ranges::all_of(claims, CanClaimBypassInterstitial)) {
-      return false;
-    }
-
-    const std::string* format = credential_dict->FindString("format");
     const base::DictValue* meta_dict = credential_dict->FindDict(kMeta);
     std::vector<std::string> vct_values;
     std::string doctype_value;
     if (meta_dict) {
       vct_values = meta_to_vct_values(*meta_dict);
       doctype_value = meta_to_doctype_value(*meta_dict);
+    }
+
+    const std::string* format = credential_dict->FindString("format");
+    bool is_sdjwt = format && (*format == "dc+sd-jwt" ||
+                               *format == "dc-authorization+sd-jwt");
+
+    // Phone Number Verification (PNV) requests via Digital Credentials API do
+    // not return user PII in response to requested claims; claims serve solely
+    // as operational hints/parameters (e.g. `disallowed_carriers`). Therefore,
+    // PNV credentials bypass the safety interstitial based on their VCT values
+    // without inspecting the requested claims.
+    //
+    // Requiring `doctype_value.empty()` and `is_sdjwt` ensures that mDL or
+    // hybrid cross-format requests cannot evade claim inspection by attaching
+    // PNV VCT values.
+    bool is_phone =
+        is_sdjwt && doctype_value.empty() && !vct_values.empty() &&
+        std::ranges::all_of(vct_values, CanVctValueBypassInterstitial);
+    if (is_phone) {
+      continue;
+    }
+
+    std::vector<std::string> claims = credential_to_claims(*credential_dict);
+    if (!std::ranges::all_of(claims, CanClaimBypassInterstitial)) {
+      return false;
     }
 
     bool is_dpc = std::ranges::any_of(vct_values, IsDpcVctValue) ||
@@ -236,18 +255,16 @@ bool CanRequestCredentialBypassInterstitialForOpenid4vpProtocolWithDCQL(
     bool is_mdl =
         format && *format == kMdocFormat && doctype_value == kMdlDocumentType;
     if (is_mdl) {
+      if (claims.empty()) {
+        return false;
+      }
       continue;
     }
 
-    bool is_sdjwt = format && (*format == "dc+sd-jwt" ||
-                               *format == "dc-authorization+sd-jwt");
     if (is_sdjwt) {
-      continue;
-    }
-
-    bool is_phone =
-        std::ranges::all_of(vct_values, CanVctValueBypassInterstitial);
-    if (is_phone && !vct_values.empty()) {
+      if (claims.empty()) {
+        return false;
+      }
       continue;
     }
 
@@ -433,20 +450,20 @@ DigitalIdentityRequestImpl::DigitalIdentityRequestImpl(
 
 DigitalIdentityRequestImpl::~DigitalIdentityRequestImpl() = default;
 
-std::optional<VirtualWallet::Behavior>
-DigitalIdentityRequestImpl::GetVirtualWalletBehavior() {
+std::optional<VirtualWallet::Action>
+DigitalIdentityRequestImpl::GetVirtualWalletAction() {
   VirtualWallet* wallet =
       DigitalCredentialEnvironment::GetInstance()->MaybeGetVirtualWallet(
           FrameTreeNode::From(&render_frame_host()));
   if (!wallet) {
     return std::nullopt;
   }
-  return wallet->behavior();
+  return wallet->action();
 }
 
-bool DigitalIdentityRequestImpl::HandleVirtualWalletBehavior() {
-  std::optional<VirtualWallet::Behavior> behavior = GetVirtualWalletBehavior();
-  if (!behavior) {
+bool DigitalIdentityRequestImpl::HandleVirtualWalletAction() {
+  std::optional<VirtualWallet::Action> action = GetVirtualWalletAction();
+  if (!action) {
     return false;
   }
 
@@ -457,16 +474,16 @@ bool DigitalIdentityRequestImpl::HandleVirtualWalletBehavior() {
   RequestDigitalIdentityStatus status;
   std::optional<DigitalIdentityProvider::DigitalCredential> credential;
 
-  switch (*behavior) {
-    case VirtualWallet::Behavior::kRespond:
+  switch (*action) {
+    case VirtualWallet::Action::kRespond:
       credential = wallet->GetCredential();
       status = credential ? RequestDigitalIdentityStatus::kSuccess
                           : RequestDigitalIdentityStatus::kError;
       break;
-    case VirtualWallet::Behavior::kDecline:
+    case VirtualWallet::Action::kDecline:
       status = RequestDigitalIdentityStatus::kErrorUserDeclined;
       break;
-    case VirtualWallet::Behavior::kWait:
+    case VirtualWallet::Action::kWait:
       // Leave the request's promise pending.
       return true;
   }
@@ -565,8 +582,14 @@ void DigitalIdentityRequestImpl::Get(
     return;
   }
 
+  if (origin().opaque()) {
+    ReportBadMessageAndDeleteThis(
+        "DigitalIdentityRequest is not allowed in opaque origins.");
+    return;
+  }
+
   if (render_frame_host().IsNestedWithinFencedFrame()) {
-    mojo::ReportBadMessage(
+    ReportBadMessageAndDeleteThis(
         "DigitalIdentityRequest should not be allowed in fenced frame "
         "trees.");
     return;
@@ -606,13 +629,13 @@ void DigitalIdentityRequestImpl::Get(
     return;
   }
 
-  if (HandleVirtualWalletBehavior()) {
+  if (HandleVirtualWalletAction()) {
     return;
   }
 
   if (base::CommandLine::ForCurrentProcess()->HasSwitch(
           switches::kUseFakeUIForDigitalIdentity)) {
-    // Post delayed task to enable testing abort.
+    // Post delayed task to simulate successful user resolution.
     std::string fake_protocol = digital_credential_requests[0]->protocol;
     GetUIThreadTaskRunner()->PostDelayedTask(
         FROM_HERE,
@@ -648,13 +671,24 @@ void DigitalIdentityRequestImpl::Get(
     return;
   }
 
-  update_interstitial_on_abort_callback_ =
-      provider_->ShowDigitalIdentityInterstitial(
-          *WebContents::FromRenderFrameHost(&render_frame_host()), origin(),
-          *interstitial_type,
-          base::BindOnce(&DigitalIdentityRequestImpl::OnInterstitialDone,
-                         weak_ptr_factory_.GetWeakPtr(),
-                         std::move(request_to_send)));
+  // ShowDigitalIdentityInterstitial can synchronously exit fullscreen on
+  // Windows, which can spin the message loop and destroy the WebContents and
+  // `this`. We use a WeakPtr to guard against this potential UAF.
+  base::WeakPtr<DigitalIdentityRequestImpl> weak_this =
+      weak_ptr_factory_.GetWeakPtr();
+
+  auto abort_callback = provider_->ShowDigitalIdentityInterstitial(
+      *WebContents::FromRenderFrameHost(&render_frame_host()), origin(),
+      *interstitial_type,
+      base::BindOnce(&DigitalIdentityRequestImpl::OnInterstitialDone,
+                     weak_ptr_factory_.GetWeakPtr(),
+                     std::move(request_to_send)));
+
+  if (!weak_this) {
+    return;
+  }
+
+  update_interstitial_on_abort_callback_ = std::move(abort_callback);
 }
 
 void DigitalIdentityRequestImpl::Create(
@@ -670,8 +704,14 @@ void DigitalIdentityRequestImpl::Create(
     return;
   }
 
+  if (origin().opaque()) {
+    ReportBadMessageAndDeleteThis(
+        "DigitalIdentityRequest is not allowed in opaque origins.");
+    return;
+  }
+
   if (render_frame_host().IsNestedWithinFencedFrame()) {
-    mojo::ReportBadMessage(
+    ReportBadMessageAndDeleteThis(
         "DigitalIdentityRequest should not be allowed in fenced frame "
         "trees.");
     return;
@@ -707,7 +747,7 @@ void DigitalIdentityRequestImpl::Create(
     return;
   }
 
-  if (HandleVirtualWalletBehavior()) {
+  if (HandleVirtualWalletAction()) {
     return;
   }
 
@@ -721,7 +761,7 @@ void DigitalIdentityRequestImpl::Create(
 
   if (base::CommandLine::ForCurrentProcess()->HasSwitch(
           switches::kUseFakeUIForDigitalIdentity)) {
-    // Post delayed task to enable testing abort+.
+    // Post delayed task to simulate successful user resolution.
     GetUIThreadTaskRunner()->PostDelayedTask(
         FROM_HERE,
         base::BindOnce(&DigitalIdentityRequestImpl::CompleteRequest,
@@ -758,8 +798,14 @@ void DigitalIdentityRequestImpl::Abort() {
     return;
   }
 
+  base::WeakPtr<DigitalIdentityRequestImpl> weak_this =
+      weak_ptr_factory_.GetWeakPtr();
   if (update_interstitial_on_abort_callback_) {
     std::move(update_interstitial_on_abort_callback_).Run();
+  }
+
+  if (!weak_this) {
+    return;
   }
 
   CompleteRequestWithError(RequestStatusForMetrics::kErrorAborted);

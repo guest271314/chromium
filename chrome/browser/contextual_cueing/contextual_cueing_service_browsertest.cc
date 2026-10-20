@@ -9,7 +9,6 @@
 #include "chrome/browser/contextual_cueing/test_cue_target.h"
 #include "chrome/browser/extensions/keyed_services/browser_context_keyed_service_factories.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/common/buildflags.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
@@ -39,7 +38,7 @@ class ContextualCueingServiceV2BrowserTestCCFlag
 IN_PROC_BROWSER_TEST_F(ContextualCueingServiceV2BrowserTestCCFlag,
                        ServiceSpawnsWithCCFlag) {
   EXPECT_NE(nullptr, ContextualCueingServiceFactory::GetForProfile(
-                         browser()->profile()));
+                         browser()->GetProfile()));
 }
 
 class ContextualCueingServiceV2BrowserTestDisabledFeatures
@@ -57,7 +56,7 @@ class ContextualCueingServiceV2BrowserTestDisabledFeatures
 IN_PROC_BROWSER_TEST_F(ContextualCueingServiceV2BrowserTestDisabledFeatures,
                        NullServiceWithDisabledFeatures) {
   EXPECT_EQ(nullptr, ContextualCueingServiceFactory::GetForProfile(
-                         browser()->profile()));
+                         browser()->GetProfile()));
 }
 
 }  // namespace contextual_cueing

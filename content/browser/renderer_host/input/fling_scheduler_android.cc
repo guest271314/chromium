@@ -4,8 +4,8 @@
 
 #include "content/browser/renderer_host/input/fling_scheduler_android.h"
 
-#include "base/feature_list.h"
 #include "build/build_config.h"
+#include "components/input/utils.h"
 #include "content/browser/renderer_host/render_widget_host_impl.h"
 #include "content/browser/renderer_host/render_widget_host_view_android.h"
 #include "content/public/common/content_features.h"
@@ -15,7 +15,7 @@ namespace content {
 
 FlingSchedulerAndroid::FlingSchedulerAndroid(RenderWidgetHostImpl* host)
     : host_(host) {
-  DCHECK(host);
+  CHECK(host, base::NotFatalUntil::M152);
 }
 
 FlingSchedulerAndroid::~FlingSchedulerAndroid() {
@@ -24,7 +24,7 @@ FlingSchedulerAndroid::~FlingSchedulerAndroid() {
 
 void FlingSchedulerAndroid::ScheduleFlingProgress(
     base::WeakPtr<input::FlingController> fling_controller) {
-  DCHECK(fling_controller);
+  CHECK(fling_controller, base::NotFatalUntil::M152);
   fling_controller_ = fling_controller;
   if (observed_compositor_)
     return;
@@ -50,7 +50,7 @@ void FlingSchedulerAndroid::ScheduleFlingProgress(
 
 void FlingSchedulerAndroid::DidStopFlingingOnBrowser(
     base::WeakPtr<input::FlingController> fling_controller) {
-  DCHECK(fling_controller);
+  CHECK(fling_controller, base::NotFatalUntil::M152);
   RemoveCompositorTick();
   fling_controller_ = nullptr;
   host_->GetRenderInputRouter()->DidStopFlinging();
@@ -65,8 +65,9 @@ bool FlingSchedulerAndroid::ProgressFlingOnFlingStart() {
 }
 
 bool FlingSchedulerAndroid::ShouldUseMobileFlingCurve() {
-  return true;
+  return input::InputUtils::ShouldUseMobileFlingCurve();
 }
+
 gfx::Vector2dF FlingSchedulerAndroid::GetPixelsPerInch(
     const gfx::PointF& position_in_screen) {
   return gfx::Vector2dF(input::kDefaultPixelsPerInch,
@@ -163,7 +164,7 @@ void FlingSchedulerAndroid::OnBeginFrame(
     base::TimeTicks frame_begin_time,
     base::TimeDelta frame_interval,
     std::optional<base::TimeTicks> first_coalesced_frame_begin_time) {
-  DCHECK(observed_compositor_);
+  CHECK(observed_compositor_, base::NotFatalUntil::M152);
   if (fling_controller_)
     fling_controller_->ProgressFling(frame_begin_time,
                                      first_coalesced_frame_begin_time);

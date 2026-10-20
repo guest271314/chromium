@@ -82,14 +82,17 @@ class ProtocolHandlerRegistry : public KeyedService {
     virtual void OnProtocolHandlerRegistryChanged() = 0;
   };
 
-  // Intended for testing use only.
+  // Intended for testing use only. `is_off_the_record` defaults to false so
+  // tests that don't care about the OTR/incognito invariant can omit it.
   ProtocolHandlerRegistry(PrefService* prefs,
-                          std::unique_ptr<Delegate> delegate);
+                          std::unique_ptr<Delegate> delegate,
+                          bool is_off_the_record = false);
 
   // Creates a new instance and performs initialization.
   static std::unique_ptr<ProtocolHandlerRegistry> Create(
       PrefService* prefs,
-      std::unique_ptr<Delegate> delegate);
+      std::unique_ptr<Delegate> delegate,
+      bool is_off_the_record = false);
 
   ProtocolHandlerRegistry(const ProtocolHandlerRegistry&) = delete;
   ProtocolHandlerRegistry& operator=(const ProtocolHandlerRegistry&) = delete;
@@ -107,14 +110,27 @@ class ProtocolHandlerRegistry : public KeyedService {
   // function returns false the user needs to be prompted for confirmation.
   bool SilentlyHandleRegisterHandlerRequest(const ProtocolHandler& handler);
 
-  // Called when the user accepts the registration of a given protocol handler.
+  // Called when the user accepts the registration of a given protocol handler,
+  // which becomes the default one for its protocol.
+  // TODO(crbug.com/553146562): Revoke an earlier refusal here
+  // (RemoveIgnoredHandler()) once the registration succeeded, instead of
+  // leaving that to the content setting bubble; "Set as default" in
+  // chrome://settings/handlers reaches this too.
   void OnAcceptRegisterProtocolHandler(const ProtocolHandler& handler);
 
-  // Called when the user denies the registration of a given protocol handler.
+  // Registers the given protocol handler without making it the default: the
+  // user allowed it as an option to pick later in settings. Despite its name
+  // this is a grant, not a refusal; the refusal is
+  // OnIgnoreRegisterProtocolHandler().
+  // TODO(crbug.com/553146562): Rename it after what it does, e.g.
+  // OnAcceptRegisterProtocolHandlerAsCandidate(), and stop content shell from
+  // calling it for requests made without a user gesture, which nobody granted;
+  // those should be refused.
   void OnDenyRegisterProtocolHandler(const ProtocolHandler& handler);
 
-  // Called when the user indicates that they don't want to be asked about the
-  // given protocol handler again.
+  // Called when the user refuses the registration of a given protocol handler
+  // and doesn't want to be asked about it again. A registration the handler
+  // already had, e.g. from an earlier choice in the same bubble, is removed.
   void OnIgnoreRegisterProtocolHandler(const ProtocolHandler& handler);
 
   // Removes all handlers that have the same origin and protocol as the given
@@ -159,7 +175,12 @@ class ProtocolHandlerRegistry : public KeyedService {
   ProtocolHandlerList GetIgnoredHandlers();
 
   // Get all the handlers registered by extensions, or if passed as argument,
-  // the ones associated to an ExtendionId
+  // the ones associated to an ExtensionId. In OTR registries the result is
+  // already restricted to handlers usable in incognito because the insertion
+  // guard in RegisterProtocolHandler rejects disallowed ones; no per-call
+  // filtering is needed. ProtocolHandlersSanityCheck() relies on this view of
+  // the registry's actual storage to clean up handlers for extensions that
+  // are no longer enabled in this context.
   ProtocolHandlerList GetExtensionProtocolHandlers(
       std::optional<std::string> extension_id = std::nullopt);
 
@@ -217,8 +238,9 @@ class ProtocolHandlerRegistry : public KeyedService {
   // Remove the default handler for the given protocol.
   void RemoveDefaultHandler(std::string_view scheme);
 
-  // Returns the default handler for this protocol, or an empty handler if none
-  // exists.
+  // Returns the default handler for this protocol, or an empty handler if the
+  // registry is disabled, none exists or if users is using an "off-the-record"
+  // profile and the handler is not allowed to operate under incognito mode
   const ProtocolHandler& GetHandlerFor(std::string_view scheme) const;
 
   // Returns a translated URL if |url| is handled by a protocol handler,
@@ -261,6 +283,12 @@ class ProtocolHandlerRegistry : public KeyedService {
       content::BrowserThread::IO>;
 
   friend class ProtocolHandlerRegistryTest;
+
+  // Returns whether `handler` may be stored in this registry's context.
+  // Always true for a regular-profile registry; for an OTR registry the
+  // handler must be marked as allowed in incognito. Used by the insertion
+  // guard in RegisterProtocolHandler.
+  bool IsHandlerAccessible(const ProtocolHandler& handler) const;
 
   // Returns the default handler for this protocol, or an empty handler if none
   // exists.
@@ -406,6 +434,12 @@ class ProtocolHandlerRegistry : public KeyedService {
   // When the table gets loaded this flag will be set and any further calls to
   // AddPredefinedHandler will be rejected.
   bool is_loaded_;
+
+  // Indicates whether the BrowserContext associated to this service is
+  // off-the-record. Fixed at construction; the OTR invariant in
+  // RegisterProtocolHandler depends on this flag never changing during the
+  // registry's lifetime.
+  const bool is_off_the_record_;
 
   base::ObserverList<Observer> observers_;
 

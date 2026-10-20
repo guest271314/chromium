@@ -83,9 +83,6 @@ TEST_F(PermissionDialogDelegateTest, PropagateGeolocationAccuracy) {
       std::optional<GeolocationPromptType>(
           GeolocationPromptType::kApproximateOrPrecise)));
 
-  std::vector<base::WeakPtr<PermissionRequest>> requests;
-  requests.push_back(owned_requests[0]->GetWeakPtr());
-
   ON_CALL(mock_delegate, Requests())
       .WillByDefault(testing::ReturnRef(owned_requests));
 

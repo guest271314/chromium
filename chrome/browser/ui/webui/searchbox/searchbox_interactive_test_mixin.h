@@ -43,7 +43,8 @@ class SearchboxInteractiveTestMixin : public T {
     return T::Do([this, query]() {
       history::HistoryService* history_service =
           HistoryServiceFactory::GetForProfile(
-              this->browser()->profile(), ServiceAccessType::EXPLICIT_ACCESS);
+              this->browser()->GetProfile(),
+              ServiceAccessType::EXPLICIT_ACCESS);
       GURL search_url("https://www.google.com/search?q=" + query);
       history_service->AddPage(search_url, base::Time::Now(),
                                history::SOURCE_BROWSED);
@@ -51,39 +52,68 @@ class SearchboxInteractiveTestMixin : public T {
     });
   }
 
-  // Waits for navigation to a Google search results page for `expected_params`.
+  // Waits for the tab to commit a Google search results page for
+  // `expected_params`.
   auto WaitForGoogleSearch(
       const ui::ElementIdentifier& tab_id,
       const std::map<std::string, std::string>& expected_params) {
-    return T::Steps(T::InAnyContext(
-        T::WaitForWebContentsNavigation(tab_id),
-        T::CheckElement(
-            tab_id,
-            [](ui::TrackedElement* el) {
-              GURL url = el->AsA<TrackedElementWebContents>()
-                             ->owner()
-                             ->web_contents()
-                             ->GetLastCommittedURL();
-              std::map<std::string, std::string> actual_params;
-              if (!google_util::IsGoogleSearchUrl(url)) {
-                return actual_params;
-              }
-              static constexpr base::UnescapeRule::Type kUnescapeRules =
-                  base::UnescapeRule::SPACES |
-                  base::UnescapeRule::REPLACE_PLUS_WITH_SPACE |
-                  base::UnescapeRule::URL_SPECIAL_CHARS_EXCEPT_PATH_SEPARATORS |
-                  base::UnescapeRule::PATH_SEPARATORS;
-
-              for (net::QueryIterator it(url); !it.IsAtEnd(); it.Advance()) {
-                std::string key =
-                    base::UnescapeURLComponent(it.GetKey(), kUnescapeRules);
-                std::string value =
-                    base::UnescapeURLComponent(it.GetValue(), kUnescapeRules);
-                actual_params[key] = value;
-              }
-              return actual_params;
-            },
-            testing::IsSupersetOf(expected_params))));
+    // Submitting can fire a synchronous same-WebContents OpenURL before
+    // WaitForWebContentsNavigation is armed, so poll the committed URL instead
+    // of relying on a one-shot navigation event.
+    DEFINE_LOCAL_STATE_IDENTIFIER_VALUE(
+        ui::test::PollingElementStateObserver<bool>, kGoogleSearchNavigated);
+    const ui::ElementContext browser_context =
+        this->private_test_impl().default_context();
+    return T::Steps(
+        this->InContext(
+            browser_context,
+            T::PollElement(
+                kGoogleSearchNavigated, tab_id,
+                [expected_params](const ui::TrackedElement* el) {
+                  if (!el) {
+                    return false;
+                  }
+                  const auto* const tracked_wc =
+                      el->AsA<TrackedElementWebContents>();
+                  if (!tracked_wc || !tracked_wc->owner() ||
+                      !tracked_wc->owner()->web_contents()) {
+                    return false;
+                  }
+                  const GURL url = tracked_wc->owner()
+                                       ->web_contents()
+                                       ->GetLastCommittedURL();
+                  if (!google_util::IsGoogleSearchUrl(url)) {
+                    return false;
+                  }
+                  static constexpr base::UnescapeRule::Type kUnescapeRules =
+                      base::UnescapeRule::SPACES |
+                      base::UnescapeRule::REPLACE_PLUS_WITH_SPACE |
+                      base::UnescapeRule::
+                          URL_SPECIAL_CHARS_EXCEPT_PATH_SEPARATORS |
+                      base::UnescapeRule::PATH_SEPARATORS;
+                  std::map<std::string, std::string> actual_params;
+                  for (net::QueryIterator it(url); !it.IsAtEnd();
+                       it.Advance()) {
+                    std::string key =
+                        base::UnescapeURLComponent(it.GetKey(), kUnescapeRules);
+                    std::string value = base::UnescapeURLComponent(
+                        it.GetValue(), kUnescapeRules);
+                    actual_params[key] = value;
+                  }
+                  for (const auto& [key, value] : expected_params) {
+                    const auto found = actual_params.find(key);
+                    if (found == actual_params.end() ||
+                        found->second != value) {
+                      return false;
+                    }
+                  }
+                  return true;
+                })),
+        this->InContext(
+            browser_context,
+            T::WaitForState(kGoogleSearchNavigated, testing::Optional(true))),
+        this->InContext(browser_context,
+                        T::StopObservingState(kGoogleSearchNavigated)));
   }
 
   // Waits for match to render and verifies its text equals `expected_text`.
@@ -142,6 +172,24 @@ class SearchboxInteractiveTestMixin : public T {
                            result.c_str()))));
   }
 
+  // Waits for AIM contextual entrypoint state to be eligible and ready.
+  auto WaitForOmniboxAimStateReady(
+      const ui::ElementIdentifier& omnibox_context_entrypoint_contents_id,
+      const WebContentsInteractionTestUtil::DeepQuery& where) {
+    DEFINE_LOCAL_CUSTOM_ELEMENT_EVENT_TYPE(kAimStateReady);
+    WebContentsInteractionTestUtil::StateChange state_ready;
+    state_ready.event = kAimStateReady;
+    state_ready.where = where;
+    state_ready.test_function =
+        "(el) => { const ep = "
+        "el?.shadowRoot?.querySelector('omnibox-popup-contextual-entrypoint'); "
+        "return ep && ep.isAimPopupEligible && ep.inputState && "
+        "ep.inputState.allowedTools.length > 0; }";
+    state_ready.continue_across_navigation = true;
+    return T::Steps(T::InAnyContext(T::WaitForStateChange(
+        omnibox_context_entrypoint_contents_id, state_ready)));
+  }
+
   void SetUpOnMainThread() override {
     T::SetUpOnMainThread();
     SetUpUrlLoaderInterceptor();
@@ -157,7 +205,8 @@ class SearchboxInteractiveTestMixin : public T {
     url_loader_interceptor_ =
         std::make_unique<content::URLLoaderInterceptor>(base::BindRepeating(
             [](content::URLLoaderInterceptor::RequestParams* params) {
-              if (params->url_request.url.path() != "/complete/search") {
+              if (params->url_request.url.path() != "/complete/s" &&
+                  params->url_request.url.path() != "/complete/search") {
                 return false;
               }
 

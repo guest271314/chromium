@@ -151,10 +151,6 @@ But, the tests are built by {}.\
                 ),
             ),
             "content_browsertests": targets.mixin(
-                # Only retry the individual failed tests instead of rerunning
-                # entire shards.
-                # crbug.com/1475852
-                retry_only_failed_tests = True,
                 swarming = targets.swarming(
                     shards = 12,
                 ),
@@ -180,6 +176,7 @@ But, the tests are built by {}.\
             ),
         },
     ),
+    ssd = None,
     console_view_entry = consoles.console_view_entry(
         category = "mac",
         short_name = "test",
@@ -195,7 +192,26 @@ ci.builder(
         linkify("https://source.chromium.org/chromium/chromium/src/+/main:build/config/siso/denylist.star", "denylist.star") +
         " remains exhaustive."
     ),
-    builder_spec = builder_config.copy_from("ci/Linux Builder"),
+    builder_spec = builder_config.builder_spec(
+        gclient_config = builder_config.gclient_config(
+            config = "chromium",
+            apply_configs = [
+                "use_clang_coverage",
+                "chromium_with_telemetry_dependencies",
+            ],
+        ),
+        chromium_config = builder_config.chromium_config(
+            config = "chromium",
+            apply_configs = [
+                # Do clobber builds to reliably detect missing inputs and accurately track action counts in a clean build environment.
+                "clobber",
+                "mb",
+            ],
+            build_config = builder_config.build_config.RELEASE,
+            target_bits = 64,
+            target_platform = builder_config.target_platform.LINUX,
+        ),
+    ),
     gn_args = "ci/Linux Builder",
     targets = targets.bundle(
         additional_compile_targets = [
@@ -205,12 +221,14 @@ ci.builder(
     cores = 8,
     os = os.LINUX_DEFAULT,
     cpu = cpu.X86_64,
+    ssd = None,
     console_view_entry = consoles.console_view_entry(
         category = "linux",
         short_name = "remote",
     ),
     contact_team_email = "chrome-build-team@google.com",
+    execution_timeout = 2 * time.hour,
+    notifies = ["Linux Builder Default Remote Build"],
     siso_configs = ["builder", "remote-link", "default-remote"],
-    siso_experiments = ["no-fallback"],
     siso_keep_going = 0,
 )

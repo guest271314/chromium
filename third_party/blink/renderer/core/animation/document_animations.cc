@@ -46,6 +46,8 @@
 #include "third_party/blink/renderer/core/dom/document.h"
 #include "third_party/blink/renderer/core/dom/element.h"
 #include "third_party/blink/renderer/core/dom/named_animation_trigger_map.h"
+#include "third_party/blink/renderer/core/dom/scripted_animation_controller.h"
+#include "third_party/blink/renderer/core/dom/tree_scope.h"
 #include "third_party/blink/renderer/core/execution_context/agent.h"
 #include "third_party/blink/renderer/core/frame/local_frame.h"
 #include "third_party/blink/renderer/core/frame/local_frame_view.h"
@@ -103,12 +105,11 @@ void DocumentAnimations::FindRelevantTriggerAttachments(
       for (const auto& named_trigger : element_named_triggers->Keys()) {
         TriggerScopedName* trigger_scoped_name =
             ToTriggerScopedName(*named_trigger, *element);
-        auto it = ancestor_trigger_map->find(trigger_scoped_name);
-        // Within the ancestry, the nearest ancestor with the name is selected.
-        // So, if a name has already been found, skip the update.
-        if (it == ancestor_trigger_map->end()) {
-          ancestor_trigger_map->Set(trigger_scoped_name, element);
-        }
+        // Within the ancestry, the nearest ancestor with the name is selected,
+        // so keep the first entry found. insert() no-ops when the key is
+        // already present, matching that "skip if already found" semantics in a
+        // single lookup.
+        ancestor_trigger_map->insert(trigger_scoped_name, element);
       }
     }
 
@@ -189,10 +190,14 @@ void DocumentAnimations::AddTimeline(AnimationTimeline& timeline) {
 
 void DocumentAnimations::UpdateAnimationTimingForAnimationFrame() {
   // https://w3.org/TR/web-animations-1/#timelines
+  ScriptedAnimationController& controller =
+      document_->GetScriptedAnimationController();
 
   // 1. Update the current time of all timelines associated with doc passing now
   //    as the timestamp.
+  wtf_size_t start_index = controller.EventQueueSize();
   UpdateAnimationTiming(*document_, timelines_, kTimingUpdateForAnimationFrame);
+  controller.SortAnimationEvents(start_index);
 
   // 2. Remove replaced animations for doc.
   ReplaceableAnimationsMap replaceable_animations_map;
@@ -204,7 +209,9 @@ void DocumentAnimations::UpdateAnimationTimingForAnimationFrame() {
   // This is to ensure that any microtasks queued up as a result of resolving or
   // rejecting Promise objects as part of updating timelines run their callbacks
   // prior to dispatching animation events and generating the next main frame.
+  start_index = controller.EventQueueSize();
   document_->GetAgent().event_loop()->PerformMicrotaskCheckpoint();
+  controller.SortAnimationEvents(start_index);
 }
 
 bool DocumentAnimations::NeedsAnimationTimingUpdate() {
@@ -232,7 +239,7 @@ void DocumentAnimations::UpdateAnimations(
 
   if (document_->GetPendingAnimations().Update(paint_artifact_compositor)) {
     DCHECK(document_->View());
-    document_->View()->ScheduleAnimation();
+    document_->View()->ScheduleAnimation(cc::BeginMainFrameReason::kAnimation);
   }
 
   UpdateCompositorAnimationTriggers(paint_artifact_compositor);
@@ -290,6 +297,69 @@ HeapVector<Member<Animation>> DocumentAnimations::getAnimations(
   return animations;
 }
 
+void SVGImageAnimationsToReset::Trace(Visitor* visitor) const {
+  visitor->Trace(animations_to_resume_);
+}
+
+void SVGImageAnimationsToReset::Clear() {
+  animations_to_resume_.clear();
+}
+
+void SVGImageAnimationsToReset::Add(CSSAnimation& animation) {
+  animations_to_resume_.push_back(animation);
+}
+
+void SVGImageAnimationsToReset::Resume() {
+  HeapVector<Member<CSSAnimation>> animations_to_resume;
+  animations_to_resume.swap(animations_to_resume_);
+  for (CSSAnimation* animation : animations_to_resume) {
+    if (!animation || animation->ReplaceStateRemoved() ||
+        !animation->effect()) {
+      continue;
+    }
+    animation->Unpause();
+  }
+}
+
+bool SVGImageAnimationsToReset::HasAnimationForTesting(
+    const CSSAnimation& animation) const {
+  for (const CSSAnimation* animation_to_resume : animations_to_resume_) {
+    if (animation_to_resume == &animation) {
+      return true;
+    }
+  }
+  return false;
+}
+
+void DocumentAnimations::PrepareAnimationsForSVGImageReset(
+    SVGImageAnimationsToReset& animations_to_reset) {
+  DCHECK(document_);
+  DCHECK(document_->View());
+  DCHECK(document_->GetFrame());
+  DCHECK(document_->GetFrame()->GetChromeClient().IsIsolatedSVGChromeClient());
+
+  // Called only from the isolated SVG image reset path. Rewind CSS animations
+  // to time=0 and collect the ones that were running so the caller can resume
+  // them later. Explicitly paused animations keep their paused state and are
+  // not collected for resuming.
+  animations_to_reset.Clear();
+  for (auto& timeline : timelines_) {
+    for (const auto& animation : timeline->GetAnimations()) {
+      auto* css_animation = DynamicTo<CSSAnimation>(animation.Get());
+      if (!css_animation || css_animation->ReplaceStateRemoved() ||
+          !css_animation->effect()) {
+        continue;
+      }
+      const bool should_resume_after_paint = !css_animation->Paused();
+      css_animation->SetCurrentTimeInternal(AnimationTimeDelta());
+      if (should_resume_after_paint) {
+        css_animation->pause();
+        animations_to_reset.Add(*css_animation);
+      }
+    }
+  }
+}
+
 void DocumentAnimations::DetachCompositorTimelines() {
   if (!Platform::Current()->IsThreadedAnimationEnabled() ||
       !document_->GetSettings()->GetAcceleratedCompositingEnabled() ||
@@ -334,8 +404,30 @@ void DocumentAnimations::Trace(Visitor* visitor) const {
   visitor->Trace(document_);
   visitor->Trace(timelines_);
   visitor->Trace(triggers_);
-  visitor->Trace(triggered_animations_);
-  visitor->Trace(global_deferred_timelines_);
+  visitor->Trace(css_animations_needing_trigger_attachment_);
+  visitor->Trace(global_deferred_timelines_by_scope_);
+}
+
+DeferredTimeline& DocumentAnimations::GetGlobalDeferredTimeline(
+    const TreeScope& tree_scope,
+    const AtomicString& name) {
+  auto result =
+      global_deferred_timelines_by_scope_.insert(&tree_scope, nullptr);
+  if (result.is_new_entry) {
+    result.stored_value->value =
+        MakeGarbageCollected<TreeScopeDeferredTimelineMap>();
+  }
+  return *result.stored_value->value->Map().Find(*document_, name);
+}
+
+DeferredTimeline* DocumentAnimations::FindExistingGlobalDeferredTimeline(
+    const TreeScope& tree_scope,
+    const AtomicString& name) const {
+  auto it = global_deferred_timelines_by_scope_.find(&tree_scope);
+  if (it == global_deferred_timelines_by_scope_.end() || !it->value) {
+    return nullptr;
+  }
+  return it->value->Map().FindExisting(name);
 }
 
 void DocumentAnimations::GetAnimationsTargetingTreeScope(
@@ -403,8 +495,7 @@ void DocumentAnimations::RemoveReplacedAnimations(
         animations_to_remove.push_back(*anim_it);
     }
   }
-  scoped_refptr<scheduler::EventLoop> event_loop =
-      document_->GetAgent().event_loop();
+  scheduler::EventLoop* event_loop = document_->GetAgent().event_loop();
 
   // The list of animations for removal is constructed in reverse composite
   // ordering for efficiency. Flip the ordering to ensure that events are
@@ -439,8 +530,10 @@ void DocumentAnimations::UpdateAnimationTriggerAttachments() {
     return;
   }
 
-  HeapHashSet<WeakMember<CSSAnimation>> triggered_animations;
-  triggered_animations.swap(triggered_animations_);
+  HeapHashSet<WeakMember<CSSAnimation>>
+      css_animations_needing_trigger_attachment;
+  css_animations_needing_trigger_attachment.swap(
+      css_animations_needing_trigger_attachment_);
 
   TriggerScopedNameMap* global_trigger_map =
       MakeGarbageCollected<TriggerScopedNameMap>();
@@ -453,12 +546,12 @@ void DocumentAnimations::UpdateAnimationTriggerAttachments() {
     }
   }
 
-  for (CSSAnimation* animation : triggered_animations) {
+  for (CSSAnimation* animation : css_animations_needing_trigger_attachment) {
     const Member<const StyleTriggerAttachmentVector>&
         animation_trigger_attachments = animation->GetTriggerAttachments();
     TriggerAttachmentMap relevant_attachments;
     if (animation_trigger_attachments) {
-      AddTriggeredAnimation(animation);
+      AddCSSAnimationNeedingTriggerAttachment(animation);
       FindRelevantTriggerAttachments(*animation, *global_trigger_map,
                                      relevant_attachments);
     }
@@ -468,8 +561,9 @@ void DocumentAnimations::UpdateAnimationTriggerAttachments() {
   }
 }
 
-void DocumentAnimations::AddTriggeredAnimation(CSSAnimation* animation) {
-  triggered_animations_.insert(animation);
+void DocumentAnimations::AddCSSAnimationNeedingTriggerAttachment(
+    CSSAnimation* animation) {
+  css_animations_needing_trigger_attachment_.insert(animation);
 }
 
 void DocumentAnimations::RetargetAnimationsForPseudoElement(

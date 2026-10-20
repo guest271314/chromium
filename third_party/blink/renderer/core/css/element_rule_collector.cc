@@ -71,6 +71,7 @@
 #include "third_party/blink/renderer/core/page/scrolling/fragment_anchor.h"
 #include "third_party/blink/renderer/core/probe/core_probes.h"
 #include "third_party/blink/renderer/core/style/computed_style.h"
+#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 
 namespace blink {
 namespace {
@@ -130,11 +131,20 @@ struct ContextWithStyleScopeFrame {
     }
 
     bool force_starting_style = false;
-    Element* originating_element =
-        context.element->IsPseudoElement()
-            ? &To<PseudoElement>(context.element)->UltimateOriginatingElement()
-            : context.element;
-    probe::ForceStartingStyle(originating_element, &force_starting_style);
+    Element* originating_element = context.element;
+    Element* pseudo_element = context.pseudo_element;
+
+    if (!pseudo_element && context.pseudo_id != kPseudoIdNone && originating_element) {
+      pseudo_element = originating_element->GetPseudoElement(
+          context.pseudo_id, *context.pseudo_argument);
+    }
+
+    if (pseudo_element) {
+      probe::ForceStartingStyle(pseudo_element, &force_starting_style);
+    }
+    if (!force_starting_style && originating_element) {
+      probe::ForceStartingStyle(originating_element, &force_starting_style);
+    }
 
     reject_starting_styles = (style_recalc_context.is_ensuring_style ||
                               style_recalc_context.old_style ||
@@ -483,7 +493,11 @@ void ElementRuleCollector::AddElementStyleProperties(
       {.link_match_type = static_cast<uint8_t>(
            AdjustLinkMatchType(inside_link_, link_match_type)),
        .is_inline_style = is_inline_style,
-       .origin = origin});
+       .origin = origin,
+       .is_svg_presentation_hint =
+           origin == CascadeOrigin::kAuthorPresentationalHint &&
+           context_.GetElement().IsSVGElement() &&
+           RuntimeEnabledFeatures::SvgIncrementalStyleEnabled()});
   if (!is_cacheable) {
     result_.SetIsCacheable(false);
   }
@@ -814,7 +828,7 @@ DISABLE_CFI_PERF bool ElementRuleCollector::CollectMatchingRulesInternal(
       style_recalc_context_.style_scope_frame, matching_ua_rules_,
       matching_rules_from_no_style_sheet_, style_recalc_context_, mode_);
   Element& element = *context.context.element;
-  const AtomicString& pseudo_id = element.ShadowPseudoId();
+  const AtomicString pseudo_id = element.ShadowPseudoId();
   if (!pseudo_id.empty()) {
     DCHECK(element.IsStyledElement());
     for (const auto bundle : match_request.AllRuleSets()) {
@@ -1017,10 +1031,11 @@ DISABLE_CFI_PERF bool ElementRuleCollector::CollectMatchingRulesInternal(
     }
   }
 
-  if (SelectorChecker::MatchesOverscrollTarget(element)) {
+  if (auto* html_element = DynamicTo<HTMLElement>(element);
+      html_element && html_element->IsUnboundedElementActive()) {
     for (const auto bundle : match_request.AllRuleSets()) {
       if (CollectMatchingRulesForList<stop_at_first_match>(
-              bundle.rule_set->OverscrollTargetRules(), match_request,
+              bundle.rule_set->UnboundedPseudoClassRules(), match_request,
               bundle.rule_set, bundle.style_sheet_index, checker, context) &&
           stop_at_first_match) {
         return true;
@@ -1276,7 +1291,8 @@ void ElementRuleCollector::SortAndTransferMatchedRules(
              matched_rule.GetValidPropertyFilter(matching_ua_rules_)),
          .is_inline_style = static_cast<uint8_t>(is_vtt_embedded_style),
          .origin = origin,
-         .layer_order = matched_rule.LayerOrder()});
+         .layer_order = matched_rule.LayerOrder(),
+         .precompute_hover = matched_rule.PrecomputeHover()});
   }
 
   if (tracker) {
@@ -1308,6 +1324,10 @@ void CountPseudoElementUsage(const Element& element, PseudoId id) {
     }
     case kPseudoIdPickerIcon: {
       element.GetDocument().CountUse(WebFeature::kPickerIconPseudoElement);
+      break;
+    }
+    case kPseudoIdInterestButton: {
+      element.GetDocument().CountUse(WebFeature::kInterestButtonPseudoElement);
       break;
     }
     case kPseudoIdMarker: {
@@ -1421,14 +1441,39 @@ void ElementRuleCollector::DidMatchRule(
       }
 
       if (dynamic_pseudo == kPseudoIdHighlight) {
-        DCHECK(result.custom_highlight_name);
-        result_.AddCustomHighlightName(
-            AtomicString(result.custom_highlight_name));
+        if (result.custom_highlight_name ==
+            CSSSelector::UniversalSelectorAtom().Impl()) {
+          result_.SetHasCustomHighlightUniversalSelector();
+        } else {
+          DCHECK(result.custom_highlight_name);
+          result_.AddCustomHighlightName(
+              AtomicString(result.custom_highlight_name));
+        }
       }
     } else if (dynamic_pseudo == kPseudoIdFirstLine && container_query_set) {
       result_.SetFirstLineDependsOnSizeContainerQueries();
     }
   } else {
+    bool precompute_hover =
+        (result.flags & kPrecomputedHoverMask) ==
+        static_cast<MatchFlags>(MatchFlag::kPrecomputedHoverMatch);
+#if defined DUMP_PRECOMPUTED_HOVER
+    if (result.HasFlag(MatchFlag::kCancelPrecomputedHoverMatch)) {
+      LOG(ERROR) << "Unsupported pre-computed hover selector: "
+                 << rule_data->Rule()->SelectorsText();
+    }
+#endif
+    if (precompute_hover && !rule_data->Rule()
+                                 ->Properties()
+                                 .ContainsPrecomputableHoverStyleOnly()) {
+      result_.AddFlags(
+          static_cast<MatchFlags>(MatchFlag::kCancelPrecomputedHoverMatch));
+#if defined DUMP_PRECOMPUTED_HOVER
+      LOG(ERROR) << "Unsupported pre-computed hover properties: "
+                 << rule_data->Rule()->Properties().AsText();
+#endif
+      return;
+    }
     if (rule_data->Rule()->Properties().ContainsCursorHand()) {
       context_.GetElement().GetDocument().CountUse(
           WebFeature::kQuirksModeCursorHandApplied);
@@ -1438,7 +1483,7 @@ void ElementRuleCollector::DidMatchRule(
           static_cast<MatchFlags>(MatchFlag::kAffectedByStartingStyle));
     }
     matched_rules_.emplace_back(rule_data, layer_order, proximity,
-                                style_sheet_index);
+                                style_sheet_index, precompute_hover);
   }
 }
 

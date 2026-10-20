@@ -10,6 +10,19 @@ assert(enable_extensions_core)
 
 grit("extensions_renderer_resources") {
   source = "extensions_renderer_resources.grd"
+  inputs = [
+    "//ui/webui/resources/images/check.png",
+    "//ui/webui/resources/images/disabled_select.png",
+    "//ui/webui/resources/images/select.png",
+    "extension.css",
+  ]
+  if (!is_android) {
+    inputs += [
+      "//ui/webui/resources/images/2x/check.png",
+      "//ui/webui/resources/images/2x/disabled_select.png",
+      "//ui/webui/resources/images/2x/select.png",
+    ]
+  }
   outputs = [
     "grit/extensions_renderer_resources.h",
     "extensions_renderer_resources.pak",
@@ -60,7 +73,6 @@ generate_grd("build_grdp") {
     "guest_view/web_view/web_view_deny.js",
     "guest_view/web_view/web_view_element.js",
     "guest_view/web_view/web_view_events.js",
-    "guest_view/web_view/web_view_internal.js",
     "guest_view/web_view/web_view.js",
     "guest_view/web_view/web_view_request_custom_bindings.js",
     "image_util.js",
@@ -75,7 +87,6 @@ generate_grd("build_grdp") {
     "test_custom_bindings.js",
     "uncaught_exception_handler.js",
     "utils.js",
-    "web_request_custom_bindings.js",
     "web_request_event.js",
   ]
 

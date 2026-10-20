@@ -4,6 +4,9 @@
 
 import("//extensions/buildflags/buildflags.gni")
 import("//ui/webui/resources/tools/build_webui.gni")
+import("//ui/webui/webui_features.gni")
+
+assert(enable_webui_history)
 
 build_webui("build") {
   grd_prefix = "history"
@@ -17,6 +20,7 @@ build_webui("build") {
     "images/history_embeddings_promo.svg",
     "images/history_embeddings_promo_dark.svg",
     "images/list.svg",
+    "images/list_old.svg",
     "images/sign_in_promo.svg",
     "images/sign_in_promo_dark.svg",
     "images/sync_history_promo.svg",
@@ -26,9 +30,8 @@ build_webui("build") {
   ts_files = [
     "app.html.ts",
     "app.ts",
-    "browser_service.ts",
+    "browser_proxy.ts",
     "constants.ts",
-    "externs.ts",
     "history_filter_chips.html.ts",
     "history_filter_chips.ts",
     "history.ts",
@@ -53,6 +56,9 @@ build_webui("build") {
   ]
   if (!is_chromeos) {
     ts_files += [
+      "history_cross_device_signin_promo.html.ts",
+      "history_cross_device_signin_promo.ts",
+      "history_cross_device_signin_promo_browser_proxy.ts",
       "history_sync_promo.html.ts",
       "history_sync_promo.ts",
     ]
@@ -73,7 +79,10 @@ build_webui("build") {
     "synced_device_manager.css",
   ]
   if (!is_chromeos) {
-    css_files += [ "history_sync_promo.css" ]
+    css_files += [
+      "history_cross_device_signin_promo.css",
+      "history_sync_promo.css",
+    ]
   }
 
   icons_html_files = [ "shared_icons.html" ]

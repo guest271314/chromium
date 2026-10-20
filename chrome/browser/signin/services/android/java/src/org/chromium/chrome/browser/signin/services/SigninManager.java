@@ -7,6 +7,7 @@ package org.chromium.chrome.browser.signin.services;
 import androidx.annotation.MainThread;
 
 import org.chromium.base.Callback;
+import org.chromium.base.CallbackUtils;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.components.signin.base.CoreAccountInfo;
 import org.chromium.components.signin.identitymanager.IdentityManager;
@@ -83,6 +84,15 @@ public interface SigninManager {
     boolean isSigninSupported(boolean requireUpdatedPlayServices);
 
     /**
+     * Returns true if switching to the given account is allowed, meaning that:
+     *
+     * <p>1. No sign-in is in progress; 2. Sign-in is not disabled manually via the settings toggle;
+     * 3. Sign-in is not disabled by policy; 4. Google Play Services are available; 5. Sign out is
+     * allowed.
+     */
+    boolean isSwitchAccountAllowed();
+
+    /**
      * Adds a {@link SignInStateObserver} to be notified when the user signs in or out of Chrome.
      */
     void addSignInStateObserver(SignInStateObserver observer);
@@ -133,9 +143,18 @@ public interface SigninManager {
      */
     boolean isSignOutAllowed();
 
+    /**
+     * Sets whether extensions associated with the account will be uninstalled during the next
+     * sign-out event.
+     */
+    void setUninstallAccountExtensionsOnSignout(boolean uninstall);
+
+    /** Returns true if there are extensions associated with the signed-in account. */
+    boolean hasSignedInAccountExtensions();
+
     /** Invokes signOut with no callback. */
     default void signOut(@SignoutReason int signoutSource) {
-        signOut(signoutSource, () -> {});
+        signOut(signoutSource, CallbackUtils.emptyRunnable());
     }
 
     /**

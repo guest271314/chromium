@@ -20,8 +20,11 @@ import org.junit.runner.RunWith;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.CommandLineFlags;
+import org.chromium.base.test.util.DisabledTest;
+import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.base.test.util.Restriction;
 import org.chromium.chrome.R;
+import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
@@ -32,11 +35,12 @@ import org.chromium.chrome.test.transit.page.WebPageStation;
 import org.chromium.ui.base.DeviceFormFactor;
 import org.chromium.ui.base.DeviceInput;
 
-/** Tests for the History page on large form factors device. */
+/** Tests for the History page on large form factor device. */
 @RunWith(ChromeJUnit4ClassRunner.class)
 @CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
 @Batch(Batch.PER_CLASS)
 @Restriction({DeviceFormFactor.TABLET_OR_DESKTOP})
+@DisableFeatures(ChromeFeatureList.ANDROID_DESKTOP_WEB_UI_HISTORY)
 public class HistoryPageOnLffTest {
     @Rule
     public AutoResetCtaTransitTestRule mCtaTestRule =
@@ -76,6 +80,7 @@ public class HistoryPageOnLffTest {
 
     @Test
     @MediumTest
+    @DisabledTest(message = "https://crbug.com/570738449")
     public void testAutoFocusOnHistoryPageByTabSwitching() {
         DeviceInput.setSupportsKeyboardForTesting(true);
 

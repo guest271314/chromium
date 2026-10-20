@@ -6,9 +6,13 @@
 
 #include <memory>
 #include <optional>
+#include <ranges>
+#include <set>
 #include <vector>
 
+#include "base/containers/span.h"
 #include "base/memory/weak_ptr.h"
+#include "base/task/sequenced_task_runner.h"
 #include "content/public/browser/document_user_data.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_contents_user_data.h"
@@ -21,30 +25,48 @@ namespace ui {
 
 namespace {
 
+using ContextGetter = TrackedElementHandlerDocumentSingleton::ContextGetter;
+
+void PostResult(
+    base::OnceCallback<void(base::WeakPtr<TrackedElementHandler>)> callback,
+    base::WeakPtr<TrackedElementHandler> result) {
+  auto task_runner = base::SequencedTaskRunner::GetCurrentDefault();
+
+  task_runner->PostTask(FROM_HERE,
+                        base::BindOnce(std::move(callback), std::move(result)));
+}
+
 // Holds the configuration for TrackedElementHandlers in a WebContents.
 class TrackedElementHandlerConfig
     : public content::WebContentsUserData<TrackedElementHandlerConfig> {
  public:
   ~TrackedElementHandlerConfig() override = default;
 
-  ui::ElementContext context() const { return context_; }
-  const std::vector<ui::ElementIdentifier>& identifiers() const {
-    return identifiers_;
+  ui::ElementContext context() const { return context_getter_.Run(); }
+  const auto& identifiers() const { return identifiers_; }
+
+  template <typename T>
+    requires std::ranges::input_range<T>
+  void AddIdentifiers(const T& identifiers) {
+    std::ranges::copy(identifiers,
+                      std::inserter(identifiers_, identifiers_.end()));
   }
 
  private:
   friend class content::WebContentsUserData<TrackedElementHandlerConfig>;
-  TrackedElementHandlerConfig(content::WebContents* web_contents,
-                              ui::ElementContext context,
-                              std::vector<ui::ElementIdentifier> identifiers)
+  TrackedElementHandlerConfig(
+      content::WebContents* web_contents,
+      ContextGetter context_getter,
+      base::span<const ui::ElementIdentifier> identifiers)
       : content::WebContentsUserData<TrackedElementHandlerConfig>(
             *web_contents),
-        context_(context),
-        identifiers_(std::move(identifiers)) {}
+        context_getter_(std::move(context_getter)) {
+    AddIdentifiers(identifiers);
+  }
   WEB_CONTENTS_USER_DATA_KEY_DECL();
 
-  const ui::ElementContext context_;
-  const std::vector<ui::ElementIdentifier> identifiers_;
+  ContextGetter context_getter_;
+  std::set<ui::ElementIdentifier> identifiers_;
 };
 
 WEB_CONTENTS_USER_DATA_KEY_IMPL(TrackedElementHandlerConfig);
@@ -57,21 +79,46 @@ class TrackedElementHandlerUserData
 
   TrackedElementHandler* handler() { return handler_.get(); }
 
+  void SetOrUpdateConfig(content::WebContents* web_contents,
+                         const TrackedElementHandlerConfig* config) {
+    CHECK(config);
+    CHECK(web_contents);
+    if (!handler_) {
+      handler_ = std::make_unique<TrackedElementHandler>(web_contents,
+                                                         config->context());
+    }
+
+    // This is called also when re-registering the config, to make sure the
+    // identifier list is current. If this is not done then adding a second
+    // component which uses identifier could be ignored if another component got
+    // here first.
+    handler_->RegisterIdentifiers(config->identifiers());
+  }
+
+  void AddCallback(
+      base::OnceCallback<void(base::WeakPtr<TrackedElementHandler>)> callback) {
+    callbacks_.push_back(std::move(callback));
+  }
+
+  void RunPendingCallbacks() {
+    auto result = handler_->GetWeakPtr();
+
+    for (auto& callback : callbacks_) {
+      PostResult(std::move(callback), result);
+    }
+    callbacks_.clear();
+  }
+
  private:
   friend class content::DocumentUserData<TrackedElementHandlerUserData>;
-  explicit TrackedElementHandlerUserData(content::RenderFrameHost* rfh,
-                                         TrackedElementHandlerConfig* config)
-      : content::DocumentUserData<TrackedElementHandlerUserData>(rfh) {
-    CHECK(config);
-    auto* web_contents = content::WebContents::FromRenderFrameHost(rfh);
-    CHECK(web_contents);
-    handler_ = std::make_unique<TrackedElementHandler>(
-        web_contents, config->context(), config->identifiers());
-  }
+  explicit TrackedElementHandlerUserData(content::RenderFrameHost* rfh)
+      : content::DocumentUserData<TrackedElementHandlerUserData>(rfh) {}
 
   DOCUMENT_USER_DATA_KEY_DECL();
 
   std::unique_ptr<TrackedElementHandler> handler_;
+  std::vector<base::OnceCallback<void(base::WeakPtr<TrackedElementHandler>)>>
+      callbacks_;
 };
 
 DOCUMENT_USER_DATA_KEY_IMPL(TrackedElementHandlerUserData);
@@ -81,8 +128,8 @@ DOCUMENT_USER_DATA_KEY_IMPL(TrackedElementHandlerUserData);
 // static
 void TrackedElementHandlerDocumentSingleton::Register(
     content::WebUIController* controller,
-    std::vector<ui::ElementIdentifier> identifiers,
-    std::optional<ui::ElementContext> context) {
+    base::span<const ui::ElementIdentifier> identifiers,
+    ContextGetter maybe_context_getter) {
   if (!controller || !controller->web_ui()) {
     return;
   }
@@ -92,12 +139,35 @@ void TrackedElementHandlerDocumentSingleton::Register(
     return;
   }
 
-  if (!context) {
-    context = ui::ElementContext(
-        controller, base::PassKey<TrackedElementHandlerDocumentSingleton>());
+  // If the config already exists, add the identifiers. This avoids a case where
+  // multiple components register different identifiers they want to use as
+  // anchors. If this isn't done, different components could overwrite each
+  // others' identifier lists.
+  if (auto* const config =
+          TrackedElementHandlerConfig::FromWebContents(web_contents)) {
+    config->AddIdentifiers(identifiers);
+    return;
   }
-  TrackedElementHandlerConfig::CreateForWebContents(web_contents, *context,
-                                                    std::move(identifiers));
+
+  if (!maybe_context_getter) {
+    ui::ElementContext context = ui::ElementContext(
+        controller, base::PassKey<TrackedElementHandlerDocumentSingleton>());
+    maybe_context_getter = base::BindRepeating(
+        [](ui::ElementContext context) { return context; }, std::move(context));
+  }
+  TrackedElementHandlerConfig::CreateForWebContents(
+      web_contents, std::move(maybe_context_getter), identifiers);
+  const TrackedElementHandlerConfig* const config =
+      TrackedElementHandlerConfig::FromWebContents(web_contents);
+
+  // Activate any pending GetOrCreateAsync() callbacks, now we have the config.
+  web_contents->ForEachRenderFrameHost([&](content::RenderFrameHost* rfh) {
+    auto* user_data = TrackedElementHandlerUserData::GetForCurrentDocument(rfh);
+    if (user_data) {
+      user_data->SetOrUpdateConfig(web_contents, config);
+      user_data->RunPendingCallbacks();
+    }
+  });
 }
 
 // static
@@ -108,25 +178,54 @@ TrackedElementHandlerDocumentSingleton::GetOrCreate(
     return nullptr;
   }
 
-  auto* user_data = TrackedElementHandlerUserData::GetForCurrentDocument(rfh);
-  if (!user_data) {
-    content::WebContents* web_contents =
-        content::WebContents::FromRenderFrameHost(rfh);
-    if (!web_contents) {
-      return nullptr;
-    }
-
-    TrackedElementHandlerConfig* config =
-        TrackedElementHandlerConfig::FromWebContents(web_contents);
-    if (!config) {
-      return nullptr;
-    }
-
-    TrackedElementHandlerUserData::CreateForCurrentDocument(rfh, config);
-    user_data = TrackedElementHandlerUserData::GetForCurrentDocument(rfh);
+  content::WebContents* const web_contents =
+      content::WebContents::FromRenderFrameHost(rfh);
+  if (!web_contents) {
+    return nullptr;
   }
-  CHECK(user_data);
-  return user_data->handler() ? user_data->handler()->GetWeakPtr() : nullptr;
+
+  const TrackedElementHandlerConfig* const config =
+      TrackedElementHandlerConfig::FromWebContents(web_contents);
+  if (!config) {
+    return nullptr;
+  }
+
+  auto* user_data =
+      TrackedElementHandlerUserData::GetOrCreateForCurrentDocument(rfh);
+  user_data->SetOrUpdateConfig(web_contents, config);
+
+  return user_data->handler()->GetWeakPtr();
+}
+
+// static
+void TrackedElementHandlerDocumentSingleton::GetOrCreateAsync(
+    content::RenderFrameHost* rfh,
+    base::OnceCallback<void(base::WeakPtr<TrackedElementHandler>)> callback) {
+  if (!rfh) {
+    PostResult(std::move(callback), nullptr);
+    return;
+  }
+
+  content::WebContents* const web_contents =
+      content::WebContents::FromRenderFrameHost(rfh);
+  if (!web_contents) {
+    PostResult(std::move(callback), nullptr);
+    return;
+  }
+
+  auto* user_data =
+      TrackedElementHandlerUserData::GetOrCreateForCurrentDocument(rfh);
+
+  const TrackedElementHandlerConfig* const config =
+      TrackedElementHandlerConfig::FromWebContents(web_contents);
+  if (!config) {
+    // Defer until ::Register is called.
+    user_data->AddCallback(std::move(callback));
+    return;
+  }
+
+  user_data->SetOrUpdateConfig(web_contents, config);
+  PostResult(std::move(callback), user_data->handler()->GetWeakPtr());
 }
 
 }  // namespace ui

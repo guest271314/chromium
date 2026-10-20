@@ -34,7 +34,7 @@ import org.chromium.chrome.browser.dom_distiller.ReaderModeToolbarButtonControll
 import org.chromium.chrome.browser.identity_disc.IdentityDiscController;
 import org.chromium.chrome.browser.lifecycle.ActivityLifecycleDispatcher;
 import org.chromium.chrome.browser.omnibox.voice.VoiceRecognitionHandler;
-import org.chromium.chrome.browser.omnibox.voice.VoiceRecognitionHandler.VoiceInteractionSource;
+import org.chromium.chrome.browser.omnibox.voice.VoiceRecognitionIntentHandler.VoiceInteractionSource;
 import org.chromium.chrome.browser.price_history.PriceHistoryBottomSheetContentCoordinator;
 import org.chromium.chrome.browser.price_insights.PriceInsightsButtonController;
 import org.chromium.chrome.browser.price_tracking.CurrentTabPriceTrackingStateSupplier;
@@ -129,6 +129,7 @@ public class AdaptiveToolbarUiCoordinator {
             Supplier<@Nullable ReadAloudController> readAloudControllerSupplier,
             MonotonicObservableSupplier<ShareDelegate> shareDelegateSupplier,
             Runnable onShareRunnable,
+            Runnable onSigninTapped,
             WindowAndroid windowAndroid,
             ActivityResultTracker activityResultTracker,
             DeviceLockActivityLauncher deviceLockActivityLauncher,
@@ -136,8 +137,6 @@ public class AdaptiveToolbarUiCoordinator {
             Supplier<ScrimManager> scrimSupplier,
             Supplier<@Nullable ReaderModeIphController> readerModeIphControllerSupplier,
             View toolbarContainer) {
-        if (!toolbarBehavior.shouldInitialize()) return;
-
         mBottomSheetController = bottomSheetController;
         mProfileSupplier = profileSupplier;
         mScrimSupplier = scrimSupplier;
@@ -257,7 +256,8 @@ public class AdaptiveToolbarUiCoordinator {
                             profileSupplier,
                             bottomSheetController,
                             mModalDialogManagerSupplier.get(),
-                            snackbarManagerSupplier.get());
+                            snackbarManagerSupplier.get(),
+                            onSigninTapped);
             mButtonDataProviders = List.of(identityDiscController, adaptiveToolbarButtonController);
         }
     }

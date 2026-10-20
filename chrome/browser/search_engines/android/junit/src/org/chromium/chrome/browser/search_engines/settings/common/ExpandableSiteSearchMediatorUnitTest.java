@@ -28,10 +28,13 @@ import org.mockito.junit.MockitoRule;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.chrome.browser.profiles.Profile;
+import org.chromium.chrome.browser.search_engines.AimEligibilityServiceFactory;
+import org.chromium.chrome.browser.search_engines.AimEligibilityServiceFactoryJni;
 import org.chromium.chrome.browser.search_engines.R;
 import org.chromium.chrome.browser.search_engines.TemplateUrlServiceFactory;
 import org.chromium.components.favicon.LargeIconBridgeJni;
 import org.chromium.components.search_engines.FakeTemplateUrl;
+import org.chromium.components.search_engines.SearchEngineSettingsDataProvider;
 import org.chromium.components.search_engines.TemplateUrl;
 import org.chromium.components.search_engines.TemplateUrlService;
 import org.chromium.ui.modelutil.MVCListAdapter.ListItem;
@@ -50,6 +53,8 @@ public class ExpandableSiteSearchMediatorUnitTest {
     @Mock private Profile mProfile;
     @Mock private TemplateUrlService mTemplateUrlService;
     @Mock private LargeIconBridgeJni mLargeIconBridgeJni;
+    @Mock private AimEligibilityServiceFactory.Natives mAimEligibilityNativesMock;
+    @Mock private SearchEngineSettingsDataProvider mSettingsDataProvider;
 
     private Context mContext;
     private ModelList mModelList;
@@ -64,6 +69,7 @@ public class ExpandableSiteSearchMediatorUnitTest {
                         R.style.Theme_BrowserUI_DayNight);
 
         TemplateUrlServiceFactory.setInstanceForTesting(mTemplateUrlService);
+        AimEligibilityServiceFactoryJni.setInstanceForTesting(mAimEligibilityNativesMock);
         LargeIconBridgeJni.setInstanceForTesting(mLargeIconBridgeJni);
         mModelList = new ModelList();
 
@@ -71,7 +77,8 @@ public class ExpandableSiteSearchMediatorUnitTest {
                 mock(
                         ExpandableSiteSearchMediator.class,
                         withSettings()
-                                .useConstructor(mContext, mModelList, mProfile)
+                                .useConstructor(
+                                        mContext, mModelList, mProfile, mSettingsDataProvider)
                                 .defaultAnswer(Mockito.CALLS_REAL_METHODS));
 
         mListItem =

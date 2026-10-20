@@ -4,21 +4,26 @@
 
 package org.chromium.chrome.browser.permissions;
 
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertTrue;
 import static org.mockito.Mockito.any;
 import static org.mockito.Mockito.doReturn;
 
 import static org.chromium.components.permissions.PermissionUtil.getGeolocationType;
 
 import android.Manifest;
-import android.text.TextUtils;
+import android.view.View;
+import android.view.ViewGroup;
 
 import androidx.test.filters.MediumTest;
 
 import org.hamcrest.Matchers;
-import org.junit.Assert;
+import org.junit.After;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
+import org.junit.rules.RuleChain;
 import org.junit.runner.RunWith;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
@@ -29,11 +34,10 @@ import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.Criteria;
 import org.chromium.base.test.util.CriteriaHelper;
-import org.chromium.base.test.util.DisableIf;
-import org.chromium.base.test.util.DisabledTest;
 import org.chromium.base.test.util.Features;
 import org.chromium.base.test.util.Restriction;
 import org.chromium.build.BuildConfig;
+import org.chromium.chrome.R;
 import org.chromium.chrome.browser.app.ChromeActivity;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.permissions.PermissionTestRule.PermissionUpdateWaiter;
@@ -44,36 +48,44 @@ import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.ui.hats.SurveyClient;
 import org.chromium.chrome.browser.ui.hats.SurveyClientFactory;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
+import org.chromium.chrome.test.transit.AutoResetCtaTransitTestRule;
+import org.chromium.chrome.test.transit.ChromeTransitTestRules;
+import org.chromium.chrome.test.util.browser.LocationSettingsTestUtil;
+import org.chromium.components.browser_ui.site_settings.GeolocationSetting;
+import org.chromium.components.browser_ui.site_settings.WebsitePreferenceBridge;
 import org.chromium.components.browser_ui.site_settings.WebsitePreferenceBridgeJni;
 import org.chromium.components.content_settings.ContentSetting;
 import org.chromium.components.content_settings.ContentSettingsType;
 import org.chromium.components.permissions.EmbeddedPermissionDialogMediator;
 import org.chromium.components.permissions.PermissionDialogController;
+import org.chromium.components.permissions.PermissionDialogDelegate;
 import org.chromium.components.permissions.PermissionsAndroidFeatureList;
 import org.chromium.content_public.browser.test.util.DOMUtils;
-import org.chromium.ui.base.DeviceFormFactor;
+import org.chromium.content_public.browser.test.util.JavaScriptUtils;
+import org.chromium.content_public.common.ContentSwitches;
 import org.chromium.ui.modaldialog.DialogDismissalCause;
 import org.chromium.ui.modaldialog.ModalDialogManager;
 import org.chromium.ui.modaldialog.ModalDialogManager.ModalDialogType;
 import org.chromium.ui.modaldialog.ModalDialogProperties;
+import org.chromium.ui.modelutil.PropertyModel;
 import org.chromium.ui.test.util.DeviceRestriction;
 
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
 @RunWith(ChromeJUnit4ClassRunner.class)
-@CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
-@Features.EnableFeatures(PermissionsAndroidFeatureList.BYPASS_PEPC_SECURITY_FOR_TESTING)
+@CommandLineFlags.Add({
+    ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE,
+    ContentSwitches.USE_FAKE_DEVICE_FOR_MEDIA_STREAM
+})
+@Features.EnableFeatures({
+    PermissionsAndroidFeatureList.BYPASS_PEPC_SECURITY_FOR_TESTING,
+    PermissionsAndroidFeatureList.USER_MEDIA_ELEMENT,
+    PermissionsAndroidFeatureList.CAMERA_AND_MICROPHONE_ELEMENTS
+})
 @Batch(Batch.PER_CLASS)
 @Restriction({DeviceRestriction.RESTRICTION_TYPE_NON_AUTO}) // crbug.com/394097674
-@DisableIf.Device(DeviceFormFactor.DESKTOP_FREEFORM) // crbug.com/511288462
 public class EmbeddedPermissionPromptTest {
-    public enum EmbeddedPermissiontResponse {
-        NEGATIVE,
-        POSITIVE,
-        POSITIVE_EPHEMERAL,
-        DISMISS_OUTSIDE,
-    }
 
     private static final String TEST_PAGE = "/content/test/data/android/permission_element.html";
     private static final String LOOPBACK_ADDRESS = "http://127.0.0.1:12345";
@@ -85,15 +97,42 @@ public class EmbeddedPermissionPromptTest {
     @Mock SurveyClient mSurveyClient;
     @Mock SurveyClientFactory mSurveyClientFactory;
 
-    @Rule public PermissionTestRule mActivityTestRule = new PermissionTestRule();
+    public AutoResetCtaTransitTestRule mActivityTestRule =
+            ChromeTransitTestRules.autoResetCtaActivityRule();
+    public PermissionTestRule mPermissionRule =
+            new PermissionTestRule(mActivityTestRule.getActivityTestRule());
+
+    @Rule
+    public RuleChain mRuleChain = RuleChain.outerRule(mActivityTestRule).around(mPermissionRule);
+
     private TestAndroidPermissionDelegate mTestAndroidPermissionDelegate;
 
     @Before
     public void setUp() throws Exception {
         SurveyClientFactory.setInstanceForTesting(mSurveyClientFactory);
         doReturn(mSurveyClient).when(mSurveyClientFactory).createClient(any(), any(), any(), any());
-        mActivityTestRule.getEmbeddedTestServerRule().setServerPort(12345);
-        mActivityTestRule.setUpActivity();
+        mPermissionRule.getEmbeddedTestServerRule().setServerPort(12345);
+        mPermissionRule.setUpActivity();
+        RuntimePermissionTestUtils.setupGeolocationSystemMock();
+        LocationSettingsTestUtil.setSystemAndAndroidLocationSettings(true, true, true);
+
+        // Default Android permission delegate setup used by most tests
+        String[] requestablePermission =
+                new String[] {
+                    Manifest.permission.ACCESS_COARSE_LOCATION,
+                    Manifest.permission.ACCESS_FINE_LOCATION,
+                    Manifest.permission.CAMERA,
+                    Manifest.permission.RECORD_AUDIO
+                };
+        mTestAndroidPermissionDelegate =
+                new TestAndroidPermissionDelegate(
+                        requestablePermission, RuntimePromptResponse.GRANT);
+    }
+
+    @After
+    public void tearDown() throws Exception {
+        setPermission(ContentSetting.DEFAULT);
+        setMediaPermissions(ContentSetting.DEFAULT, ContentSetting.DEFAULT);
     }
 
     /**
@@ -130,23 +169,73 @@ public class EmbeddedPermissionPromptTest {
                 });
     }
 
-    private void checkPermission(
-            @ContentSettingsType.EnumType int type, String title, ChromeActivity activity)
-            throws Exception {
-        final Tab tab = ThreadUtils.runOnUiThreadBlocking(() -> activity.getActivityTab());
-        final PermissionUpdateWaiter permissionUpdateWaiter =
-                new PermissionUpdateWaiter(title, activity);
-        ThreadUtils.runOnUiThreadBlocking(() -> tab.addObserver(permissionUpdateWaiter));
-        switch (type) {
-            case ContentSettingsType.GEOLOCATION, ContentSettingsType.GEOLOCATION_WITH_OPTIONS -> {
-                mActivityTestRule.runJavaScriptCodeInCurrentTab("checkGeolocation();");
-            }
-            default -> {
-                throw new AssertionError("Unreached");
-            }
-        }
-        permissionUpdateWaiter.waitForNumUpdates(0);
-        ThreadUtils.runOnUiThreadBlocking(() -> tab.removeObserver(permissionUpdateWaiter));
+    private void setPermission(@ContentSetting int value) {
+        setNativeContentSetting(getGeolocationType(), mPermissionRule.getURL(TEST_PAGE), value);
+    }
+
+    private void setPreviouslyGrantedGeolocationPermission() {
+        mTestAndroidPermissionDelegate =
+                new TestAndroidPermissionDelegate(
+                        new String[] {
+                            Manifest.permission.ACCESS_COARSE_LOCATION,
+                            Manifest.permission.ACCESS_FINE_LOCATION
+                        },
+                        RuntimePromptResponse.ALREADY_GRANTED);
+        mActivityTestRule
+                .getActivity()
+                .getWindowAndroid()
+                .setAndroidPermissionDelegate(mTestAndroidPermissionDelegate);
+        final String origin = mPermissionRule.getURL(TEST_PAGE);
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    if (getGeolocationType() == ContentSettingsType.GEOLOCATION_WITH_OPTIONS) {
+                        WebsitePreferenceBridgeJni.get()
+                                .setGeolocationSettingForOrigin(
+                                        ProfileManager.getLastUsedRegularProfile(),
+                                        ContentSettingsType.GEOLOCATION_WITH_OPTIONS,
+                                        origin,
+                                        origin,
+                                        ContentSetting.ALLOW,
+                                        ContentSetting.ASK);
+                    } else {
+                        WebsitePreferenceBridgeJni.get()
+                                .setPermissionSettingForOrigin(
+                                        ProfileManager.getLastUsedRegularProfile(),
+                                        ContentSettingsType.GEOLOCATION,
+                                        origin,
+                                        origin,
+                                        ContentSetting.ALLOW);
+                    }
+                });
+    }
+
+    private void setMediaPermissions(
+            @ContentSetting int cameraValue, @ContentSetting int micValue) {
+        String url = mPermissionRule.getURL(TEST_PAGE);
+        setNativeContentSetting(ContentSettingsType.MEDIASTREAM_CAMERA, url, cameraValue);
+        setNativeContentSetting(ContentSettingsType.MEDIASTREAM_MIC, url, micValue);
+    }
+
+    private String getGeolocationPermissionStateFromJS() throws Exception {
+        return JavaScriptUtils.runJavascriptWithAsyncResult(
+                mActivityTestRule.getWebContents(), "getGeolocationPermissionState();");
+    }
+
+    private String waitForGeolocationResultFromJS() throws Exception {
+        return JavaScriptUtils.runJavascriptWithAsyncResult(
+                mActivityTestRule.getWebContents(), "waitForGeolocationResult();");
+    }
+
+    private String waitForGeolocationWatchCountFromJS(int minCount) throws Exception {
+        return JavaScriptUtils.runJavascriptWithAsyncResult(
+                mActivityTestRule.getWebContents(),
+                "waitForGeolocationWatchCount(" + minCount + ");");
+    }
+
+    private String waitForMediaCaptureResultFromJS(String elementId) throws Exception {
+        return JavaScriptUtils.runJavascriptWithAsyncResult(
+                mActivityTestRule.getWebContents(),
+                "waitForMediaCaptureResult('" + elementId + "');");
     }
 
     private void waitForTitleUpdate(String title, ChromeActivity activity) throws Exception {
@@ -163,437 +252,716 @@ public class EmbeddedPermissionPromptTest {
         latch.await(seconds, TimeUnit.SECONDS);
     }
 
-    private void runTest(
-            final TestAndroidPermissionDelegate testAndroidPermissionDelegate,
-            final String page,
-            final String nodeId,
-            @ContentSettingsType.EnumType int type,
-            @ContentSetting int value,
-            final String expectedPromptText,
-            final String expectedPositiveButtonText,
-            final String expectedPositiveEphemeralButtonText,
-            final String expectedNegativeButtonText)
-            throws Exception {
-        runTest(
-                testAndroidPermissionDelegate,
-                page,
-                nodeId,
-                type,
-                value,
-                EmbeddedPermissiontResponse.DISMISS_OUTSIDE,
-                expectedPromptText,
-                expectedPositiveButtonText,
-                expectedPositiveEphemeralButtonText,
-                expectedNegativeButtonText,
-                /* expectedPermission= */ "",
-                "promptdismiss");
-    }
-
-    /**
-     * Run a test related to the embedded permission prompt, based on the specified parameters.
-     *
-     * @param testAndroidPermissionDelegate The TestAndroidPermissionDelegate to be used for this
-     *     test.
-     * @param page the test page to load in order to run the text.
-     * @param nodeId ID of the permission element to click on during the test.
-     * @param type content setting type for the permission element.
-     * @param value value for the `type` content setting setup before running the test.
-     * @param response What to respond on the permission prompt.
-     * @param expectedPromptText The string that matches the text of the embedded permission prompt
-     *     dialog url.
-     * @param expectedPositiveButtonText The string that matches the button text of the positive
-     *     button on the dialog.
-     * @param expectedPositiveEphemeralButtonText The string that matches the button text of the
-     *     positive ephemeral button on the dialog url.
-     * @param expectedNegativeButtonText The string that matches the button text of the negative
-     *     button on the dialog url.
-     * @param expectedPermission The string that matches the text title on the page when checking
-     *     permission.
-     * @param expectedTitle The string that matches the text title in the permission element test
-     *     page.
-     * @param response The string that matches the text title in the permission element test page.
-     */
-    private void runTest(
-            final TestAndroidPermissionDelegate testAndroidPermissionDelegate,
-            final String page,
-            final String nodeId,
-            @ContentSettingsType.EnumType int type,
-            @ContentSetting int value,
-            final EmbeddedPermissiontResponse response,
-            final String expectedPromptText,
-            final String expectedPositiveButtonText,
-            final String expectedPositiveEphemeralButtonText,
-            final String expectedNegativeButtonText,
-            final String expectedPermission,
-            final String expectedTitle)
-            throws Exception {
-
-        final String url = mActivityTestRule.getURL(TEST_PAGE);
-        try {
-            setNativeContentSetting(type, url, value);
-            final ChromeActivity activity = mActivityTestRule.getActivity();
-            activity.getWindowAndroid().setAndroidPermissionDelegate(testAndroidPermissionDelegate);
-
-            mActivityTestRule.setUpUrl(TEST_PAGE);
-            waitOnLatch(2);
-
-            // Click on a permission element with ID and wait for dialog
-            clickNodeWithId(nodeId);
-            CriteriaHelper.pollUiThread(
-                    () -> {
-                        boolean isDialogShownForTest =
-                                PermissionDialogController.getInstance().isDialogShownForTest();
-                        Criteria.checkThat(isDialogShownForTest, Matchers.is(true));
-                    },
-                    TEST_TIMEOUT,
-                    TEST_POLLING);
-
-            final ModalDialogManager manager =
-                    ThreadUtils.runOnUiThreadBlocking(activity::getModalDialogManager);
-
-            // Verify the correct string resources are displayed.
-            EmbeddedPermissionDialogMediator dialogMediator =
-                    (EmbeddedPermissionDialogMediator)
-                            manager.getCurrentDialogForTest().get(ModalDialogProperties.CONTROLLER);
-            Assert.assertEquals(
-                    expectedPromptText, dialogMediator.getDelegateForTest().getMessageText());
-            Assert.assertEquals(
-                    expectedPositiveButtonText,
-                    dialogMediator.getDelegateForTest().getPositiveButtonText());
-            Assert.assertEquals(
-                    expectedPositiveEphemeralButtonText,
-                    dialogMediator.getDelegateForTest().getPositiveEphemeralButtonText());
-            Assert.assertEquals(
-                    expectedNegativeButtonText,
-                    dialogMediator.getDelegateForTest().getNegativeButtonText());
-
-            int dialogType = activity.getModalDialogManager().getCurrentType();
-            switch (response) {
-                case DISMISS_OUTSIDE -> {
-                    ThreadUtils.runOnUiThreadBlocking(
-                            () -> {
-                                manager.getCurrentPresenterForTest()
-                                        .dismissCurrentDialog(
-                                                dialogType == ModalDialogType.APP
-                                                        ? DialogDismissalCause
-                                                                .NAVIGATE_BACK_OR_TOUCH_OUTSIDE
-                                                        : DialogDismissalCause.NAVIGATE_BACK);
-                            });
-                }
-                case NEGATIVE -> {
-                    PermissionTestRule.replyToDialog(
-                            PermissionTestRule.PromptDecision.DENY, activity);
-                }
-                case POSITIVE -> {
-                    PermissionTestRule.replyToDialog(
-                            PermissionTestRule.PromptDecision.ALLOW, activity);
-                }
-                case POSITIVE_EPHEMERAL -> {
-                    PermissionTestRule.replyToDialog(
-                            PermissionTestRule.PromptDecision.ALLOW_ONCE, activity);
-                }
-                default -> {
-                    throw new AssertionError("Unexpected response ");
-                }
-            }
-            waitForTitleUpdate(expectedTitle, activity);
-            if (!TextUtils.isEmpty(expectedPermission)) {
-                checkPermission(type, expectedPermission, activity);
-            }
-        } finally {
-            setNativeContentSetting(type, url, ContentSetting.DEFAULT);
-        }
-    }
-
-    private void testAskPromptInteraction(final EmbeddedPermissiontResponse response)
-            throws Exception {
-        RuntimePermissionTestUtils.setupGeolocationSystemMock();
-        String[] requestablePermission =
-                new String[] {
-                    Manifest.permission.ACCESS_COARSE_LOCATION,
-                    Manifest.permission.ACCESS_FINE_LOCATION
-                };
-        mTestAndroidPermissionDelegate =
-                new TestAndroidPermissionDelegate(
-                        requestablePermission, RuntimePromptResponse.GRANT);
-        final String expectedTitle =
-                (response == EmbeddedPermissiontResponse.NEGATIVE)
-                        ? "promptdismiss"
-                        : "promptaction";
-        final String expectedPermission =
-                (response == EmbeddedPermissiontResponse.NEGATIVE) ? "prompt" : "granted";
-        runTest(
-                mTestAndroidPermissionDelegate,
-                TEST_PAGE,
-                "geolocation",
-                stringToContentSettingsType("geolocation"),
-                ContentSetting.ASK,
-                response,
-                LOOPBACK_ADDRESS + " wants to use your device's location",
-                "Allow while visiting the site",
-                "Allow this time",
-                "Don't allow",
-                expectedPermission,
-                expectedTitle);
-    }
-
-    private void testPreviousDeniedInteraction(final EmbeddedPermissiontResponse response)
-            throws Exception {
-        RuntimePermissionTestUtils.setupGeolocationSystemMock();
-        String[] requestablePermission =
-                new String[] {
-                    Manifest.permission.ACCESS_COARSE_LOCATION,
-                    Manifest.permission.ACCESS_FINE_LOCATION
-                };
-        mTestAndroidPermissionDelegate =
-                new TestAndroidPermissionDelegate(
-                        requestablePermission, RuntimePromptResponse.GRANT);
-        final String expectedTitle =
-                (response == EmbeddedPermissiontResponse.NEGATIVE)
-                        ? "promptaction"
-                        : "promptdismiss";
-        final String expectedPermission =
-                (response == EmbeddedPermissiontResponse.NEGATIVE) ? "granted" : "denied";
-        runTest(
-                mTestAndroidPermissionDelegate,
-                TEST_PAGE,
-                "geolocation",
-                stringToContentSettingsType("geolocation"),
-                ContentSetting.BLOCK,
-                response,
-                "You previously didn't allow location for this site",
-                "Continue not allowing",
-                /* expectedPositiveEphemeralButtonText= */ "",
-                "Allow this time",
-                expectedPermission,
-                expectedTitle);
-    }
-
-    private void testPreviousGrantedInteraction(final EmbeddedPermissiontResponse response)
-            throws Exception {
-        RuntimePermissionTestUtils.setupGeolocationSystemMock();
-        String[] requestablePermission =
-                new String[] {
-                    Manifest.permission.ACCESS_COARSE_LOCATION,
-                    Manifest.permission.ACCESS_FINE_LOCATION
-                };
-        mTestAndroidPermissionDelegate =
-                new TestAndroidPermissionDelegate(
-                        requestablePermission, RuntimePromptResponse.GRANT);
-        final String expectedTitle =
-                (response == EmbeddedPermissiontResponse.NEGATIVE)
-                        ? "promptaction"
-                        : "promptdismiss";
-        final String expectedPermission =
-                (response == EmbeddedPermissiontResponse.NEGATIVE) ? "denied" : "granted";
-        runTest(
-                mTestAndroidPermissionDelegate,
-                TEST_PAGE,
-                "geolocation",
-                stringToContentSettingsType("geolocation"),
-                ContentSetting.ALLOW,
-                response,
-                "You have allowed location on " + LOOPBACK_ADDRESS,
-                "Continue allowing",
-                /* expectedPositiveEphemeralButtonText= */ "",
-                "Stop allowing",
-                expectedPermission,
-                expectedTitle);
-    }
-
     private void clickNodeWithId(String id) throws Exception {
         DOMUtils.clickNode(mActivityTestRule.getWebContents(), id);
     }
 
-    public @ContentSettingsType.EnumType int stringToContentSettingsType(
-            String contentSettingsType) {
-        switch (contentSettingsType) {
-            case "camera":
-                return ContentSettingsType.MEDIASTREAM_CAMERA;
-            case "microphone":
-                return ContentSettingsType.MEDIASTREAM_MIC;
-            case "geolocation":
-                return getGeolocationType();
-            default:
-                throw new AssertionError("Unreached");
+    private PropertyModel getCurrentDialogModel(ChromeActivity activity) {
+        return ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    return activity.getModalDialogManager().getCurrentDialogForTest();
+                });
+    }
+
+    private PermissionDialogDelegate getPermissionDialogDelegate(PropertyModel dialogModel) {
+        return ((EmbeddedPermissionDialogMediator)
+                        dialogModel.get(ModalDialogProperties.CONTROLLER))
+                .getDelegateForTest();
+    }
+
+    private void dismissDialog(ChromeActivity activity) {
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    ModalDialogManager manager = activity.getModalDialogManager();
+                    int dialogType = manager.getCurrentType();
+                    manager.getCurrentPresenterForTest()
+                            .dismissCurrentDialog(
+                                    dialogType == ModalDialogType.APP
+                                            ? DialogDismissalCause.NAVIGATE_BACK_OR_TOUCH_OUTSIDE
+                                            : DialogDismissalCause.NAVIGATE_BACK);
+                });
+    }
+
+    private View getChooserContainer(PropertyModel dialogModel) {
+        View customView = dialogModel.get(ModalDialogProperties.CUSTOM_VIEW);
+        return customView != null ? customView.findViewById(R.id.custom_view_container) : null;
+    }
+
+    private void assertLocationChooserVisible(PropertyModel dialogModel, boolean visible) {
+        View chooserContainer = getChooserContainer(dialogModel);
+        if (visible) {
+            assertNotNull(chooserContainer);
+            assertEquals(View.VISIBLE, chooserContainer.getVisibility());
+            assertTrue(chooserContainer instanceof ViewGroup);
+            assertTrue(((ViewGroup) chooserContainer).getChildCount() > 0);
+        } else {
+            if (chooserContainer != null) {
+                assertEquals(View.GONE, chooserContainer.getVisibility());
+            }
         }
     }
 
+    private ChromeActivity prepareActivity() throws Exception {
+        ChromeActivity activity = mActivityTestRule.getActivity();
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    activity.getSnackbarManager().dismissAllSnackbars();
+                });
+        activity.getWindowAndroid().setAndroidPermissionDelegate(mTestAndroidPermissionDelegate);
+
+        mPermissionRule.setUpUrl(TEST_PAGE);
+        waitOnLatch(2);
+
+        return activity;
+    }
+
+    private void triggerPrompt(String nodeId) throws Exception {
+        clickNodeWithId(nodeId);
+        CriteriaHelper.pollUiThread(
+                () -> {
+                    boolean isDialogShownForTest =
+                            PermissionDialogController.getInstance().isDialogShownForTest();
+                    Criteria.checkThat(isDialogShownForTest, Matchers.is(true));
+                },
+                TEST_TIMEOUT,
+                TEST_POLLING);
+    }
+
     @Test
     @MediumTest
-    @Features.EnableFeatures({PermissionsAndroidFeatureList.GEOLOCATION_ELEMENT})
-    @DisabledTest(message = "crbug.com/394097674")
     public void testAskPromptTextWithOneTime() throws Exception {
-        String[] requestablePermission =
-                new String[] {
-                    Manifest.permission.ACCESS_COARSE_LOCATION,
-                    Manifest.permission.ACCESS_FINE_LOCATION
-                };
-        mTestAndroidPermissionDelegate =
-                new TestAndroidPermissionDelegate(
-                        requestablePermission, RuntimePromptResponse.GRANT);
-        runTest(
-                mTestAndroidPermissionDelegate,
-                TEST_PAGE,
-                "geolocation",
-                stringToContentSettingsType("geolocation"),
-                ContentSetting.ASK,
+        setPermission(ContentSetting.ASK);
+        final ChromeActivity activity = prepareActivity();
+
+        triggerPrompt("geolocation");
+
+        PropertyModel dialogModel = getCurrentDialogModel(activity);
+        PermissionDialogDelegate delegate = getPermissionDialogDelegate(dialogModel);
+
+        assertEquals(
                 LOOPBACK_ADDRESS + " wants to use your device's location",
-                "Allow while visiting the site",
-                "Allow this time",
-                "Don't allow");
+                delegate.getMessageText());
+        assertEquals("Allow while visiting the site", delegate.getPositiveButtonText());
+        assertEquals("Allow this time", delegate.getPositiveEphemeralButtonText());
+        assertEquals("Don't allow", delegate.getNegativeButtonText());
+
+        assertLocationChooserVisible(dialogModel, true);
+
+        dismissDialog(activity);
+        waitForTitleUpdate("promptdismiss", activity);
     }
 
     @Test
     @MediumTest
-    @Features.EnableFeatures({PermissionsAndroidFeatureList.GEOLOCATION_ELEMENT})
-    @DisabledTest(message = "crbug.com/394097674")
     public void testPreviouslyDeniedPromptTextWithOneTime() throws Exception {
-        String[] requestablePermission =
-                new String[] {
-                    Manifest.permission.ACCESS_COARSE_LOCATION,
-                    Manifest.permission.ACCESS_FINE_LOCATION
-                };
-        mTestAndroidPermissionDelegate =
-                new TestAndroidPermissionDelegate(
-                        requestablePermission, RuntimePromptResponse.GRANT);
-        runTest(
-                mTestAndroidPermissionDelegate,
-                TEST_PAGE,
-                "geolocation",
-                stringToContentSettingsType("geolocation"),
-                ContentSetting.BLOCK,
-                "You previously didn't allow location for this site",
-                "Continue not allowing",
-                /* expectedPositiveEphemeralButtonText= */ "",
-                "Allow this time");
+        setPermission(ContentSetting.BLOCK);
+        final ChromeActivity activity = prepareActivity();
+
+        triggerPrompt("geolocation");
+
+        PropertyModel dialogModel = getCurrentDialogModel(activity);
+        PermissionDialogDelegate delegate = getPermissionDialogDelegate(dialogModel);
+
+        assertEquals(
+                "You previously didn't allow location for this site", delegate.getMessageText());
+        assertEquals("Continue not allowing", delegate.getPositiveButtonText());
+        assertEquals("", delegate.getPositiveEphemeralButtonText());
+        assertEquals("Allow this time", delegate.getNegativeButtonText());
+
+        assertLocationChooserVisible(dialogModel, true);
+
+        dismissDialog(activity);
+        waitForTitleUpdate("promptdismiss", activity);
     }
 
     @Test
     @MediumTest
-    @Features.EnableFeatures({PermissionsAndroidFeatureList.GEOLOCATION_ELEMENT})
-    @DisabledTest(message = "crbug.com/392083174")
     public void testPreviouslyGrantedPromptText() throws Exception {
-        String[] requestablePermission =
-                new String[] {
-                    Manifest.permission.ACCESS_COARSE_LOCATION,
-                    Manifest.permission.ACCESS_FINE_LOCATION
-                };
-        mTestAndroidPermissionDelegate =
-                new TestAndroidPermissionDelegate(
-                        requestablePermission, RuntimePromptResponse.GRANT);
-        runTest(
-                mTestAndroidPermissionDelegate,
-                TEST_PAGE,
-                "geolocation",
-                stringToContentSettingsType("geolocation"),
-                ContentSetting.ALLOW,
-                "You have allowed location on " + LOOPBACK_ADDRESS,
-                "Continue allowing",
-                /* expectedPositiveEphemeralButtonText= */ "",
-                "Stop allowing");
+        setPreviouslyGrantedGeolocationPermission();
+        final ChromeActivity activity = prepareActivity();
+
+        triggerPrompt("geolocation");
+
+        PropertyModel dialogModel = getCurrentDialogModel(activity);
+        PermissionDialogDelegate delegate = getPermissionDialogDelegate(dialogModel);
+
+        assertEquals("You have allowed location for this site", delegate.getMessageText());
+        assertEquals("Continue allowing", delegate.getPositiveButtonText());
+        assertEquals("", delegate.getPositiveEphemeralButtonText());
+        assertEquals("Stop allowing", delegate.getNegativeButtonText());
+
+        assertLocationChooserVisible(dialogModel, true);
+
+        dismissDialog(activity);
+        waitForTitleUpdate("promptdismiss", activity);
     }
 
     @Test
     @MediumTest
-    @Features.EnableFeatures({PermissionsAndroidFeatureList.GEOLOCATION_ELEMENT})
     public void testDisableLocationSettingsPromptText() throws Exception {
         String productName = "Chromium";
         if (BuildConfig.IS_CHROME_BRANDED) {
             productName = "Chrome";
         }
         RuntimePermissionTestUtils.setupGeolocationSystemMock(false);
-        String[] requestablePermission =
-                new String[] {
-                    Manifest.permission.ACCESS_COARSE_LOCATION,
-                    Manifest.permission.ACCESS_FINE_LOCATION
-                };
-        mTestAndroidPermissionDelegate =
-                new TestAndroidPermissionDelegate(
-                        requestablePermission, RuntimePromptResponse.GRANT);
-        runTest(
-                mTestAndroidPermissionDelegate,
-                TEST_PAGE,
-                "geolocation",
-                stringToContentSettingsType("geolocation"),
-                ContentSetting.BLOCK,
+        LocationSettingsTestUtil.setSystemAndAndroidLocationSettings(false, true, true);
+
+        setPermission(ContentSetting.BLOCK);
+        final ChromeActivity activity = prepareActivity();
+
+        triggerPrompt("geolocation");
+
+        PropertyModel dialogModel = getCurrentDialogModel(activity);
+        PermissionDialogDelegate delegate = getPermissionDialogDelegate(dialogModel);
+
+        assertEquals(
                 "To use your location on this site, give " + productName + " access",
-                "Android settings",
-                /* expectedPositiveEphemeralButtonText= */ "",
-                "Cancel");
+                delegate.getMessageText());
+        assertEquals("Android settings", delegate.getPositiveButtonText());
+        assertEquals("", delegate.getPositiveEphemeralButtonText());
+        assertEquals("Cancel", delegate.getNegativeButtonText());
+
+        assertLocationChooserVisible(dialogModel, false);
+
+        dismissDialog(activity);
+        waitForTitleUpdate("promptdismiss", activity);
     }
 
     @Test
     @MediumTest
-    @Features.EnableFeatures({PermissionsAndroidFeatureList.GEOLOCATION_ELEMENT})
-    @DisabledTest(message = "crbug.com/456384544")
     public void testOsSettingsPromptText() throws Exception {
         String productName = "Chromium";
         if (BuildConfig.IS_CHROME_BRANDED) {
             productName = "Chrome";
         }
+        LocationSettingsTestUtil.setSystemAndAndroidLocationSettings(true, false, false);
+        // Override the default delegate setup for this specific test
         mTestAndroidPermissionDelegate =
                 new TestAndroidPermissionDelegate(new String[] {}, RuntimePromptResponse.DENY);
-        runTest(
-                mTestAndroidPermissionDelegate,
-                TEST_PAGE,
-                "geolocation",
-                stringToContentSettingsType("geolocation"),
-                ContentSetting.ALLOW,
+
+        setPermission(ContentSetting.ASK);
+        final ChromeActivity activity = prepareActivity();
+
+        triggerPrompt("geolocation");
+
+        PropertyModel dialogModel = getCurrentDialogModel(activity);
+        PermissionDialogDelegate delegate = getPermissionDialogDelegate(dialogModel);
+
+        assertEquals(
                 "To use your location on this site, give " + productName + " access",
-                "Android settings",
-                /* expectedPositiveEphemeralButtonText= */ "",
-                "Cancel");
+                delegate.getMessageText());
+        assertEquals("Android settings", delegate.getPositiveButtonText());
+        assertEquals("", delegate.getPositiveEphemeralButtonText());
+        assertEquals("Cancel", delegate.getNegativeButtonText());
+
+        assertLocationChooserVisible(dialogModel, false);
+
+        dismissDialog(activity);
+        waitForTitleUpdate("promptdismiss", activity);
     }
 
     @Test
     @MediumTest
-    @Features.EnableFeatures({PermissionsAndroidFeatureList.GEOLOCATION_ELEMENT})
     public void testAskPromptInteractionAllow() throws Exception {
-        testAskPromptInteraction(EmbeddedPermissiontResponse.POSITIVE);
+        RuntimePermissionTestUtils.setupGeolocationSystemMock();
+
+        setPermission(ContentSetting.ASK);
+        final ChromeActivity activity = prepareActivity();
+
+        triggerPrompt("geolocation");
+
+        PropertyModel dialogModel = getCurrentDialogModel(activity);
+        PermissionDialogDelegate delegate = getPermissionDialogDelegate(dialogModel);
+
+        assertEquals(
+                LOOPBACK_ADDRESS + " wants to use your device's location",
+                delegate.getMessageText());
+        assertEquals("Allow while visiting the site", delegate.getPositiveButtonText());
+        assertEquals("Allow this time", delegate.getPositiveEphemeralButtonText());
+        assertEquals("Don't allow", delegate.getNegativeButtonText());
+
+        assertLocationChooserVisible(dialogModel, true);
+
+        PermissionTestRule.replyToDialog(PermissionTestRule.PromptDecision.ALLOW, activity);
+
+        waitForTitleUpdate("promptaction", activity);
+        assertEquals("\"granted\"", getGeolocationPermissionStateFromJS());
+        assertEquals(
+                "\"location:lat=0,lng=0,hasAcc=true,err=false\"", waitForGeolocationResultFromJS());
     }
 
     @Test
     @MediumTest
-    @Features.EnableFeatures({PermissionsAndroidFeatureList.GEOLOCATION_ELEMENT})
     public void testAskPromptInteractionAllowEphemeral() throws Exception {
-        testAskPromptInteraction(EmbeddedPermissiontResponse.POSITIVE_EPHEMERAL);
+        RuntimePermissionTestUtils.setupGeolocationSystemMock();
+
+        setPermission(ContentSetting.ASK);
+        final ChromeActivity activity = prepareActivity();
+
+        triggerPrompt("geolocation");
+
+        PropertyModel dialogModel = getCurrentDialogModel(activity);
+        PermissionDialogDelegate delegate = getPermissionDialogDelegate(dialogModel);
+
+        assertEquals(
+                LOOPBACK_ADDRESS + " wants to use your device's location",
+                delegate.getMessageText());
+        assertEquals("Allow while visiting the site", delegate.getPositiveButtonText());
+        assertEquals("Allow this time", delegate.getPositiveEphemeralButtonText());
+        assertEquals("Don't allow", delegate.getNegativeButtonText());
+
+        assertLocationChooserVisible(dialogModel, true);
+
+        PermissionTestRule.replyToDialog(PermissionTestRule.PromptDecision.ALLOW_ONCE, activity);
+
+        waitForTitleUpdate("promptaction", activity);
+        assertEquals("\"granted\"", getGeolocationPermissionStateFromJS());
+        assertEquals(
+                "\"location:lat=0,lng=0,hasAcc=true,err=false\"", waitForGeolocationResultFromJS());
     }
 
     @Test
     @MediumTest
-    @Features.EnableFeatures({PermissionsAndroidFeatureList.GEOLOCATION_ELEMENT})
     public void testAskPromptInteractionDeny() throws Exception {
-        testAskPromptInteraction(EmbeddedPermissiontResponse.NEGATIVE);
+        RuntimePermissionTestUtils.setupGeolocationSystemMock();
+
+        setPermission(ContentSetting.ASK);
+        final ChromeActivity activity = prepareActivity();
+
+        triggerPrompt("geolocation");
+
+        PropertyModel dialogModel = getCurrentDialogModel(activity);
+        PermissionDialogDelegate delegate = getPermissionDialogDelegate(dialogModel);
+
+        assertEquals(
+                LOOPBACK_ADDRESS + " wants to use your device's location",
+                delegate.getMessageText());
+        assertEquals("Allow while visiting the site", delegate.getPositiveButtonText());
+        assertEquals("Allow this time", delegate.getPositiveEphemeralButtonText());
+        assertEquals("Don't allow", delegate.getNegativeButtonText());
+
+        assertLocationChooserVisible(dialogModel, true);
+
+        // TODO(crbug.com/531793849): See if we want to keep using ForgivingClickAction.
+        PermissionTestRule.replyToDialogForgiving(PermissionTestRule.PromptDecision.DENY, activity);
+
+        waitForTitleUpdate("promptdismiss", activity);
+        assertEquals("\"prompt\"", getGeolocationPermissionStateFromJS());
     }
 
     @Test
     @MediumTest
-    @Features.EnableFeatures({PermissionsAndroidFeatureList.GEOLOCATION_ELEMENT})
     public void testPreviousDeniedInteractionContinue() throws Exception {
-        testPreviousDeniedInteraction(EmbeddedPermissiontResponse.POSITIVE);
+        RuntimePermissionTestUtils.setupGeolocationSystemMock();
+
+        setPermission(ContentSetting.BLOCK);
+        final ChromeActivity activity = prepareActivity();
+
+        triggerPrompt("geolocation");
+
+        PropertyModel dialogModel = getCurrentDialogModel(activity);
+        PermissionDialogDelegate delegate = getPermissionDialogDelegate(dialogModel);
+
+        assertEquals(
+                "You previously didn't allow location for this site", delegate.getMessageText());
+        assertEquals("Continue not allowing", delegate.getPositiveButtonText());
+        assertEquals("", delegate.getPositiveEphemeralButtonText());
+        assertEquals("Allow this time", delegate.getNegativeButtonText());
+
+        assertLocationChooserVisible(dialogModel, true);
+
+        PermissionTestRule.replyToDialog(PermissionTestRule.PromptDecision.ALLOW, activity);
+
+        waitForTitleUpdate("promptdismiss", activity);
+        assertEquals("\"denied\"", getGeolocationPermissionStateFromJS());
     }
 
     @Test
     @MediumTest
-    @Features.EnableFeatures({PermissionsAndroidFeatureList.GEOLOCATION_ELEMENT})
     public void testPreviousDeniedInteractionAllow() throws Exception {
-        testPreviousDeniedInteraction(EmbeddedPermissiontResponse.NEGATIVE);
+        RuntimePermissionTestUtils.setupGeolocationSystemMock();
+
+        setPermission(ContentSetting.BLOCK);
+        final ChromeActivity activity = prepareActivity();
+
+        triggerPrompt("geolocation");
+
+        PropertyModel dialogModel = getCurrentDialogModel(activity);
+        PermissionDialogDelegate delegate = getPermissionDialogDelegate(dialogModel);
+
+        assertEquals(
+                "You previously didn't allow location for this site", delegate.getMessageText());
+        assertEquals("Continue not allowing", delegate.getPositiveButtonText());
+        assertEquals("", delegate.getPositiveEphemeralButtonText());
+        assertEquals("Allow this time", delegate.getNegativeButtonText());
+
+        assertLocationChooserVisible(dialogModel, true);
+
+        // TODO(crbug.com/531793849): See if we want to keep using ForgivingClickAction.
+        PermissionTestRule.replyToDialogForgiving(PermissionTestRule.PromptDecision.DENY, activity);
+
+        waitForTitleUpdate("promptaction", activity);
+        assertEquals("\"granted\"", getGeolocationPermissionStateFromJS());
+        assertEquals(
+                "\"location:lat=0,lng=0,hasAcc=true,err=false\"", waitForGeolocationResultFromJS());
     }
 
     @Test
     @MediumTest
-    @Features.EnableFeatures({PermissionsAndroidFeatureList.GEOLOCATION_ELEMENT})
-    @DisabledTest(message = "crbug.com/392083174")
+    public void testGeolocationAlreadyGrantedSkipsPromptAndDeliversPosition() throws Exception {
+        RuntimePermissionTestUtils.setupGeolocationSystemMock();
+        LocationSettingsTestUtil.setSystemAndAndroidLocationSettings(true, true, true);
+        mTestAndroidPermissionDelegate =
+                new TestAndroidPermissionDelegate(
+                        new String[] {
+                            Manifest.permission.ACCESS_COARSE_LOCATION,
+                            Manifest.permission.ACCESS_FINE_LOCATION
+                        },
+                        RuntimePromptResponse.ALREADY_GRANTED);
+
+        setPermission(ContentSetting.ALLOW);
+        prepareActivity();
+
+        clickNodeWithId("geolocation");
+        assertEquals(
+                "\"location:lat=0,lng=0,hasAcc=true,err=false\"", waitForGeolocationResultFromJS());
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    assertEquals(
+                            false, PermissionDialogController.getInstance().isDialogShownForTest());
+                });
+    }
+
+    @Test
+    @MediumTest
+    public void testGeolocationPreciseAccuracyAndWatchCuj() throws Exception {
+        RuntimePermissionTestUtils.setupGeolocationSystemMock();
+        LocationSettingsTestUtil.setSystemAndAndroidLocationSettings(true, true, true);
+
+        setPermission(ContentSetting.ASK);
+        final ChromeActivity activity = prepareActivity();
+
+        JavaScriptUtils.executeJavaScriptAndWaitForResult(
+                mActivityTestRule.getWebContents(),
+                "const g = document.getElementById('geolocation');"
+                        + "g.setAttribute('accuracymode', 'precise');"
+                        + "g.setAttribute('watch', '');");
+
+        triggerPrompt("geolocation");
+        PermissionTestRule.replyToDialog(PermissionTestRule.PromptDecision.ALLOW, activity);
+
+        waitForTitleUpdate("promptaction", activity);
+        assertEquals("\"granted\"", getGeolocationPermissionStateFromJS());
+        assertEquals(
+                "\"watch:lat=0,lng=0,acc=0.5,err=false\"", waitForGeolocationWatchCountFromJS(2));
+    }
+
+    @Test
+    @MediumTest
+    public void testGeolocationAutolocateWhenGrantedCuj() throws Exception {
+        RuntimePermissionTestUtils.setupGeolocationSystemMock();
+        LocationSettingsTestUtil.setSystemAndAndroidLocationSettings(true, true, true);
+        mTestAndroidPermissionDelegate =
+                new TestAndroidPermissionDelegate(
+                        new String[] {
+                            Manifest.permission.ACCESS_COARSE_LOCATION,
+                            Manifest.permission.ACCESS_FINE_LOCATION
+                        },
+                        RuntimePromptResponse.ALREADY_GRANTED);
+
+        setPermission(ContentSetting.ALLOW);
+        prepareActivity();
+
+        JavaScriptUtils.executeJavaScriptAndWaitForResult(
+                mActivityTestRule.getWebContents(),
+                "document.getElementById('geolocation').setAttribute('autolocate', '');");
+        assertEquals(
+                "\"location:lat=0,lng=0,hasAcc=true,err=false\"", waitForGeolocationResultFromJS());
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    assertEquals(
+                            false, PermissionDialogController.getInstance().isDialogShownForTest());
+                });
+    }
+
+    @Test
+    @MediumTest
     public void testPreviousGrantedInteractionContinue() throws Exception {
-        testPreviousGrantedInteraction(EmbeddedPermissiontResponse.POSITIVE);
+        RuntimePermissionTestUtils.setupGeolocationSystemMock();
+        LocationSettingsTestUtil.setSystemAndAndroidLocationSettings(true, true, true);
+
+        setPreviouslyGrantedGeolocationPermission();
+        final ChromeActivity activity = prepareActivity();
+
+        triggerPrompt("geolocation");
+
+        PropertyModel dialogModel = getCurrentDialogModel(activity);
+        PermissionDialogDelegate delegate = getPermissionDialogDelegate(dialogModel);
+
+        assertEquals("You have allowed location for this site", delegate.getMessageText());
+        assertEquals("Continue allowing", delegate.getPositiveButtonText());
+        assertEquals("", delegate.getPositiveEphemeralButtonText());
+        assertEquals("Stop allowing", delegate.getNegativeButtonText());
+
+        assertLocationChooserVisible(dialogModel, true);
+
+        PermissionTestRule.replyToDialog(PermissionTestRule.PromptDecision.ALLOW, activity);
+
+        waitForTitleUpdate("promptdismiss", activity);
+        final String origin = mPermissionRule.getURL(TEST_PAGE);
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    if (getGeolocationType() == ContentSettingsType.GEOLOCATION_WITH_OPTIONS) {
+                        GeolocationSetting setting =
+                                WebsitePreferenceBridge.getGeolocationSettingForOrigin(
+                                        ProfileManager.getLastUsedRegularProfile(), origin, origin);
+                        assertEquals(ContentSetting.ALLOW, setting.mApproximate);
+                        assertEquals(ContentSetting.ASK, setting.mPrecise);
+                    }
+                });
     }
 
     @Test
     @MediumTest
-    @Features.EnableFeatures({PermissionsAndroidFeatureList.GEOLOCATION_ELEMENT})
-    @DisabledTest(message = "crbug.com/392083174")
     public void testPreviousGrantedInteractionStop() throws Exception {
-        testPreviousGrantedInteraction(EmbeddedPermissiontResponse.NEGATIVE);
+        RuntimePermissionTestUtils.setupGeolocationSystemMock();
+        LocationSettingsTestUtil.setSystemAndAndroidLocationSettings(true, true, true);
+
+        setPreviouslyGrantedGeolocationPermission();
+        final ChromeActivity activity = prepareActivity();
+
+        triggerPrompt("geolocation");
+
+        PropertyModel dialogModel = getCurrentDialogModel(activity);
+        PermissionDialogDelegate delegate = getPermissionDialogDelegate(dialogModel);
+
+        assertEquals("You have allowed location for this site", delegate.getMessageText());
+        assertEquals("Continue allowing", delegate.getPositiveButtonText());
+        assertEquals("", delegate.getPositiveEphemeralButtonText());
+        assertEquals("Stop allowing", delegate.getNegativeButtonText());
+
+        assertLocationChooserVisible(dialogModel, true);
+
+        // TODO(crbug.com/531793849): See if we want to keep using ForgivingClickAction.
+        PermissionTestRule.replyToDialogForgiving(PermissionTestRule.PromptDecision.DENY, activity);
+
+        waitForTitleUpdate("promptaction", activity);
+        assertEquals("\"denied\"", getGeolocationPermissionStateFromJS());
+    }
+
+    private void assertMediaDialogTexts(
+            ChromeActivity activity,
+            String expectedMessage,
+            String expectedPositive,
+            String expectedEphemeral,
+            String expectedNegative) {
+        PropertyModel dialogModel = getCurrentDialogModel(activity);
+        PermissionDialogDelegate delegate = getPermissionDialogDelegate(dialogModel);
+        assertEquals(expectedMessage, delegate.getMessageText());
+        assertEquals(expectedPositive, delegate.getPositiveButtonText());
+        assertEquals(expectedEphemeral, delegate.getPositiveEphemeralButtonText());
+        assertEquals(expectedNegative, delegate.getNegativeButtonText());
+        assertLocationChooserVisible(dialogModel, false);
+    }
+
+    private void runSingleTrackElementAskAndPreviouslyDeniedFlows(
+            String elementId, String permissionLabel, String trackKind, boolean isCamera)
+            throws Exception {
+        setMediaPermissions(ContentSetting.ASK, ContentSetting.ASK);
+        final ChromeActivity activity = prepareActivity();
+        final String expectedLiveTrack = "\"track:kind=" + trackKind + ",state=live\"";
+
+        // 1. Ask flow -> Allow delivers live track via ontrack.
+        triggerPrompt(elementId);
+        assertMediaDialogTexts(
+                activity,
+                LOOPBACK_ADDRESS + " wants to use your " + permissionLabel,
+                "Allow while visiting the site",
+                "Allow this time",
+                "Don't allow");
+        PermissionTestRule.replyToDialog(PermissionTestRule.PromptDecision.ALLOW, activity);
+        waitForTitleUpdate("promptaction", activity);
+        assertEquals(expectedLiveTrack, waitForMediaCaptureResultFromJS(elementId));
+
+        // 2. Previously denied flow -> Allow this time delivers live track.
+        JavaScriptUtils.runJavascriptWithAsyncResult(
+                mActivityTestRule.getWebContents(),
+                "resetMediaCaptureElement('" + elementId + "');");
+        setMediaPermissions(
+                isCamera ? ContentSetting.BLOCK : ContentSetting.ASK,
+                isCamera ? ContentSetting.ASK : ContentSetting.BLOCK);
+
+        triggerPrompt(elementId);
+        assertMediaDialogTexts(
+                activity,
+                "You previously didn't allow " + permissionLabel + " for this site",
+                "Continue not allowing",
+                "",
+                "Allow this time");
+        PermissionTestRule.replyToDialogForgiving(PermissionTestRule.PromptDecision.DENY, activity);
+        waitForTitleUpdate("promptaction", activity);
+        assertEquals(expectedLiveTrack, waitForMediaCaptureResultFromJS(elementId));
+    }
+
+    @Test
+    @MediumTest
+    public void testUserMediaAskPromptInteractionAllow() throws Exception {
+        setMediaPermissions(ContentSetting.ASK, ContentSetting.ASK);
+        final ChromeActivity activity = prepareActivity();
+
+        triggerPrompt("usermedia");
+        assertMediaDialogTexts(
+                activity,
+                LOOPBACK_ADDRESS + " wants to use your camera and microphone",
+                "Allow while visiting the site",
+                "Allow this time",
+                "Don't allow");
+
+        PermissionTestRule.replyToDialog(PermissionTestRule.PromptDecision.ALLOW, activity);
+        waitForTitleUpdate("promptaction", activity);
+        assertEquals(
+                "\"stream:active=true,video=1,audio=1\"",
+                waitForMediaCaptureResultFromJS("usermedia"));
+    }
+
+    @Test
+    @MediumTest
+    public void testUserMediaAskPromptInteractionAllowEphemeral() throws Exception {
+        setMediaPermissions(ContentSetting.ASK, ContentSetting.ASK);
+        final ChromeActivity activity = prepareActivity();
+
+        triggerPrompt("usermedia");
+        assertMediaDialogTexts(
+                activity,
+                LOOPBACK_ADDRESS + " wants to use your camera and microphone",
+                "Allow while visiting the site",
+                "Allow this time",
+                "Don't allow");
+
+        PermissionTestRule.replyToDialog(PermissionTestRule.PromptDecision.ALLOW_ONCE, activity);
+        waitForTitleUpdate("promptaction", activity);
+        assertEquals(
+                "\"stream:active=true,video=1,audio=1\"",
+                waitForMediaCaptureResultFromJS("usermedia"));
+    }
+
+    @Test
+    @MediumTest
+    public void testUserMediaAskPromptInteractionDeny() throws Exception {
+        setMediaPermissions(ContentSetting.ASK, ContentSetting.ASK);
+        final ChromeActivity activity = prepareActivity();
+
+        triggerPrompt("usermedia");
+        assertMediaDialogTexts(
+                activity,
+                LOOPBACK_ADDRESS + " wants to use your camera and microphone",
+                "Allow while visiting the site",
+                "Allow this time",
+                "Don't allow");
+
+        PermissionTestRule.replyToDialogForgiving(PermissionTestRule.PromptDecision.DENY, activity);
+        waitForTitleUpdate("promptdismiss", activity);
+        assertEquals(
+                "\"cancel:error=NotAllowedError\"", waitForMediaCaptureResultFromJS("usermedia"));
+    }
+
+    @Test
+    @MediumTest
+    public void testUserMediaPreviousDeniedInteractionAllowThisTime() throws Exception {
+        setMediaPermissions(ContentSetting.BLOCK, ContentSetting.BLOCK);
+        final ChromeActivity activity = prepareActivity();
+
+        triggerPrompt("usermedia");
+        assertMediaDialogTexts(
+                activity,
+                "You previously didn't allow camera and microphone for this site",
+                "Continue not allowing",
+                "",
+                "Allow this time");
+
+        PermissionTestRule.replyToDialogForgiving(PermissionTestRule.PromptDecision.DENY, activity);
+        waitForTitleUpdate("promptaction", activity);
+        assertEquals(
+                "\"stream:active=true,video=1,audio=1\"",
+                waitForMediaCaptureResultFromJS("usermedia"));
+    }
+
+    @Test
+    @MediumTest
+    public void testUserMediaPreviousDeniedInteractionContinue() throws Exception {
+        setMediaPermissions(ContentSetting.BLOCK, ContentSetting.BLOCK);
+        final ChromeActivity activity = prepareActivity();
+
+        triggerPrompt("usermedia");
+        assertMediaDialogTexts(
+                activity,
+                "You previously didn't allow camera and microphone for this site",
+                "Continue not allowing",
+                "",
+                "Allow this time");
+
+        PermissionTestRule.replyToDialog(PermissionTestRule.PromptDecision.ALLOW, activity);
+        waitForTitleUpdate("promptdismiss", activity);
+        assertEquals(
+                "\"cancel:error=NotAllowedError\"", waitForMediaCaptureResultFromJS("usermedia"));
+    }
+
+    @Test
+    @MediumTest
+    public void testUserMediaOsSettingsPromptTextAndCancel() throws Exception {
+        String productName = BuildConfig.IS_CHROME_BRANDED ? "Chrome" : "Chromium";
+        mTestAndroidPermissionDelegate =
+                new TestAndroidPermissionDelegate(new String[] {}, RuntimePromptResponse.DENY);
+
+        setMediaPermissions(ContentSetting.ASK, ContentSetting.ASK);
+        final ChromeActivity activity = prepareActivity();
+
+        triggerPrompt("usermedia");
+        assertMediaDialogTexts(
+                activity,
+                "To use your camera and microphone on this site, give " + productName + " access",
+                "Android settings",
+                "",
+                "Cancel");
+
+        dismissDialog(activity);
+        waitForTitleUpdate("promptdismiss", activity);
+        assertEquals(
+                "\"cancel:error=NotAllowedError\"", waitForMediaCaptureResultFromJS("usermedia"));
+    }
+
+    @Test
+    @MediumTest
+    public void testUserMediaAlreadyGrantedSkipsPromptAndDeliversStream() throws Exception {
+        String[] grantedPermissions =
+                new String[] {Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO};
+        mTestAndroidPermissionDelegate =
+                new TestAndroidPermissionDelegate(
+                        grantedPermissions, RuntimePromptResponse.ALREADY_GRANTED);
+
+        setMediaPermissions(ContentSetting.ALLOW, ContentSetting.ALLOW);
+        prepareActivity();
+
+        clickNodeWithId("usermedia");
+        assertEquals(
+                "\"stream:active=true,video=1,audio=1\"",
+                waitForMediaCaptureResultFromJS("usermedia"));
+        boolean isDialogShown =
+                ThreadUtils.runOnUiThreadBlocking(
+                        () -> PermissionDialogController.getInstance().isDialogShownForTest());
+        assertEquals(false, isDialogShown);
+    }
+
+    @Test
+    @MediumTest
+    public void testCameraElementAskAndPreviouslyDeniedFlows() throws Exception {
+        runSingleTrackElementAskAndPreviouslyDeniedFlows("camera", "camera", "video", true);
+    }
+
+    @Test
+    @MediumTest
+    public void testMicrophoneElementAskAndPreviouslyDeniedFlows() throws Exception {
+        runSingleTrackElementAskAndPreviouslyDeniedFlows(
+                "microphone", "microphone", "audio", false);
     }
 }

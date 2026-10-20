@@ -27,13 +27,21 @@
 #include "components/captive_portal/content/captive_portal_tab_helper.h"
 #endif
 
+#if BUILDFLAG(IS_ANDROID)
+#include "chrome/browser/android/tab_android.h"
+#endif
+
 content::NavigationController::LoadURLParams LoadURLParamsFromNavigateParams(
     NavigateParams* params) {
   content::NavigationController::LoadURLParams load_url_params(params->url);
   load_url_params.initiator_frame_token = params->initiator_frame_token;
-  load_url_params.initiator_process_id = params->initiator_process_id;
+  // TODO(crbug.com/379869738): Remove FromUnsafeValue.
+  load_url_params.initiator_process_id =
+      content::ChildProcessId::FromUnsafeValue(params->initiator_process_id);
   load_url_params.initiator_origin = params->initiator_origin;
   load_url_params.initiator_base_url = params->initiator_base_url;
+  load_url_params.initiator_navigation_state =
+      params->initiator_navigation_state;
   load_url_params.source_site_instance = params->source_site_instance;
   load_url_params.referrer = params->referrer;
   load_url_params.frame_name = params->frame_name;
@@ -51,7 +59,6 @@ content::NavigationController::LoadURLParams LoadURLParamsFromNavigateParams(
   load_url_params.was_activated = params->was_activated;
   load_url_params.href_translate = params->href_translate;
   load_url_params.reload_type = params->reload_type;
-  load_url_params.impression = params->impression;
   load_url_params.internal_scroll_to_text_fragment =
       params->internal_scroll_to_text_fragment;
   load_url_params.started_by_ad = params->started_by_ad;
@@ -70,7 +77,7 @@ content::NavigationController::LoadURLParams LoadURLParamsFromNavigateParams(
   auto load_url_params = LoadURLParamsFromNavigateParams(params);
 
   // |frame_tree_node_id| is invalid for main frame navigations.
-  if (params->frame_tree_node_id.is_null()) {
+  if (params->frame_tree_node_id.is_null() && target_contents) {
     bool force_no_https_upgrade =
         params->url_typed_with_http_scheme ||
         params->captive_portal_window_type !=
@@ -85,6 +92,14 @@ content::NavigationController::LoadURLParams LoadURLParamsFromNavigateParams(
         params->navigation_initiated_from_sync);
 #endif
     load_url_params.navigation_ui_data = std::move(navigation_ui_data);
+
+#if BUILDFLAG(IS_ANDROID)
+    TabAndroid* tab_android = TabAndroid::FromWebContents(target_contents);
+    if (tab_android) {
+      load_url_params.override_user_agent =
+          tab_android->CalculateUserAgentOverrideOption(params->url);
+    }
+#endif
   }
 
   return load_url_params;

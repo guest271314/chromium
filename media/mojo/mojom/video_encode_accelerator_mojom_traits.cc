@@ -4,6 +4,7 @@
 
 #include "media/mojo/mojom/video_encode_accelerator_mojom_traits.h"
 
+#include <cmath>
 #include <optional>
 
 #include "base/notreached.h"
@@ -93,6 +94,10 @@ bool StructTraits<media::mojom::VideoEncodeAcceleratorSupportedProfileDataView,
   }
   out->gpu_supported_pixel_formats = std::move(gpu_supported_pixel_formats);
   out->supports_gpu_shared_images = data.supports_gpu_shared_images();
+  if (!data.ReadChromaSampling(&out->chroma_sampling)) {
+    return false;
+  }
+  out->bit_depth = data.bit_depth();
   return true;
 }
 
@@ -208,6 +213,30 @@ bool UnionTraits<media::mojom::OptionalMetadataDataView,
   NOTREACHED();
 }
 
+bool StructTraits<media::mojom::YuvPsnrDataView, media::YuvPsnr>::Read(
+    media::mojom::YuvPsnrDataView data,
+    media::YuvPsnr* out_psnr) {
+  double y = data.y();
+  if (std::isnan(y) || y < 0.0) {
+    return false;
+  }
+
+  double u = data.u();
+  if (std::isnan(u) || u < 0.0) {
+    return false;
+  }
+
+  double v = data.v();
+  if (std::isnan(v) || v < 0.0) {
+    return false;
+  }
+
+  out_psnr->y = y;
+  out_psnr->u = u;
+  out_psnr->v = v;
+  return true;
+}
+
 // static
 bool StructTraits<media::mojom::BitstreamBufferMetadataDataView,
                   media::BitstreamBufferMetadata>::
@@ -226,6 +255,9 @@ bool StructTraits<media::mojom::BitstreamBufferMetadataDataView,
     return false;
   }
   if (!data.ReadSvcGeneric(&metadata->svc_generic)) {
+    return false;
+  }
+  if (!data.ReadYuvPsnr(&metadata->yuv_psnr)) {
     return false;
   }
 
@@ -512,6 +544,9 @@ bool StructTraits<media::mojom::VideoEncodeAcceleratorConfigDataView,
       spatial_layers;
   if (!input.ReadSpatialLayers(&spatial_layers))
     return false;
+  if (spatial_layers.size() > media::VideoEncoderInfo::kMaxSpatialLayers) {
+    return false;
+  }
 
   media::SVCInterLayerPredMode inter_layer_pred;
   if (!input.ReadInterLayerPred(&inter_layer_pred))

@@ -6,22 +6,24 @@
 
 #include <optional>
 
+#include "content/browser/webid/request_handler.h"
 #include "content/browser/webid/request_page_data.h"
-#include "content/browser/webid/request_service.h"
 
 namespace content::webid {
 
-// static
-AutofillSource* AutofillSource::FromPage(content::Page& page) {
-  auto* request = webid::RequestPageData::GetOrCreateForPage(page)
-                      ->PendingWebIdentityRequest();
+using MediationRequirement = ::password_manager::CredentialMediationRequirement;
 
-  if (!request || request->GetMediationRequirement() !=
-                      webid::MediationRequirement::kConditional) {
+// static
+AutofillSource* AutofillSource::FromPage(Page& page) {
+  auto* request_handler =
+      RequestPageData::GetOrCreateForPage(page)->PendingRequestHandler();
+
+  if (!request_handler || request_handler->GetMediationRequirement() !=
+                              MediationRequirement::kConditional) {
     return nullptr;
   }
 
-  return request;
+  return request_handler;
 }
 
 }  // namespace content::webid

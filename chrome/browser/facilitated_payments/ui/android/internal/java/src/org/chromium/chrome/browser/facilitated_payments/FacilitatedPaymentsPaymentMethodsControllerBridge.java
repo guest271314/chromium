@@ -6,9 +6,12 @@ package org.chromium.chrome.browser.facilitated_payments;
 
 import org.jni_zero.CalledByNative;
 import org.jni_zero.JNINamespace;
+import org.jni_zero.JniType;
 import org.jni_zero.NativeMethods;
 
 import org.chromium.build.annotations.NullMarked;
+import org.chromium.components.facilitated_payments.core.metrics.AccountLinkingPromptUserAction;
+import org.chromium.components.facilitated_payments.core.metrics.FacilitatedPaymentsType;
 import org.chromium.components.facilitated_payments.core.ui_utils.UiEvent;
 
 /** JNI wrapper for C++ FacilitatedPaymentsController. */
@@ -70,18 +73,20 @@ class FacilitatedPaymentsPaymentMethodsControllerBridge
     }
 
     @Override
-    public void onPixAccountLinkingPromptAccepted() {
+    public void onAccountLinkingPromptShown(@FacilitatedPaymentsType int type) {
         if (mNativeFacilitatedPaymentsController != 0) {
             FacilitatedPaymentsPaymentMethodsControllerBridgeJni.get()
-                    .onPixAccountLinkingPromptAccepted(mNativeFacilitatedPaymentsController);
+                    .onAccountLinkingPromptShown(mNativeFacilitatedPaymentsController, type);
         }
     }
 
     @Override
-    public void onPixAccountLinkingPromptDeclined() {
+    public void onAccountLinkingPromptAction(
+            @FacilitatedPaymentsType int type, @AccountLinkingPromptUserAction int action) {
         if (mNativeFacilitatedPaymentsController != 0) {
             FacilitatedPaymentsPaymentMethodsControllerBridgeJni.get()
-                    .onPixAccountLinkingPromptDeclined(mNativeFacilitatedPaymentsController);
+                    .onAccountLinkingPromptAction(
+                            mNativeFacilitatedPaymentsController, type, action);
         }
     }
 
@@ -93,11 +98,17 @@ class FacilitatedPaymentsPaymentMethodsControllerBridge
 
         void onEwalletSelected(long nativeFacilitatedPaymentsController, long instrumentId);
 
-        void onPixAccountLinkingPromptAccepted(long nativeFacilitatedPaymentsController);
+        void onAccountLinkingPromptShown(
+                long nativeFacilitatedPaymentsController, @FacilitatedPaymentsType int type);
 
-        void onPixAccountLinkingPromptDeclined(long nativeFacilitatedPaymentsController);
+        void onAccountLinkingPromptAction(
+                long nativeFacilitatedPaymentsController,
+                @FacilitatedPaymentsType int type,
+                @AccountLinkingPromptUserAction int action);
 
         void onPaymentAppSelected(
-                long nativeFacilitatedPaymentsController, String packageName, String activityName);
+                long nativeFacilitatedPaymentsController,
+                @JniType("std::string") String packageName,
+                @JniType("std::string") String activityName);
     }
 }

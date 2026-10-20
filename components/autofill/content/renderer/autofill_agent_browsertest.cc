@@ -14,15 +14,15 @@
 #include <utility>
 #include <vector>
 
-#include "base/containers/extend.h"
 #include "base/containers/to_vector.h"
 #include "base/feature_list.h"
 #include "base/run_loop.h"
+#include "base/strings/string_number_conversions.h"
 #include "base/strings/stringprintf.h"
-#include "base/task/current_thread.h"
 #include "base/test/gmock_callback_support.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/mock_callback.h"
+#include "base/test/run_until.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
@@ -30,7 +30,7 @@
 #include "components/autofill/content/renderer/autofill_agent_test_api.h"
 #include "components/autofill/content/renderer/autofill_renderer_test.h"
 #include "components/autofill/content/renderer/form_autofill_util.h"
-#include "components/autofill/content/renderer/test_utils.h"
+#include "components/autofill/content/renderer/test_util.h"
 #include "components/autofill/core/common/aliases.h"
 #include "components/autofill/core/common/autofill_features.h"
 #include "components/autofill/core/common/field_data_manager.h"
@@ -38,23 +38,29 @@
 #include "components/autofill/core/common/form_data_test_api.h"
 #include "components/autofill/core/common/form_field_data.h"
 #include "components/autofill/core/common/mojom/autofill_types.mojom-shared.h"
+#include "components/autofill/core/common/test_utils/autofill_form_test_util.h"
 #include "components/autofill/core/common/unique_ids.h"
 #include "content/public/renderer/render_frame.h"
 #include "content/public/test/navigation_simulator.h"
 #include "content/public/test/test_utils.h"
+#include "mojo/public/cpp/bindings/pending_remote.h"
+#include "mojo/public/cpp/bindings/receiver.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "third_party/blink/public/common/features.h"
-#include "third_party/blink/public/common/features_generated.h"
 #include "third_party/blink/public/common/metrics/document_update_reason.h"
+#include "third_party/blink/public/mojom/scroll/scroll_enums.mojom-shared.h"
 #include "third_party/blink/public/web/web_autofill_state.h"
+#include "third_party/blink/public/web/web_ax_context.h"
+#include "third_party/blink/public/web/web_ax_object.h"
 #include "third_party/blink/public/web/web_form_control_element.h"
 #include "third_party/blink/public/web/web_frame_widget.h"
-#include "third_party/blink/public/web/web_input_method_controller.h"
-#include "third_party/blink/public/web/web_navigation_type.h"
 #include "third_party/blink/public/web/web_option_element.h"
 #include "third_party/blink/public/web/web_select_element.h"
+#include "third_party/blink/public/web/web_testing_support.h"
 #include "third_party/blink/public/web/web_view.h"
+#include "ui/accessibility/ax_mode.h"
+#include "ui/accessibility/ax_node_data.h"
+#include "v8/include/v8.h"
 
 namespace autofill {
 
@@ -65,6 +71,7 @@ using ::blink::WebAutofillState;
 using ::blink::WebElement;
 using ::blink::WebFormControlElement;
 using ::blink::WebFormElement;
+using ::blink::WebInputElement;
 using ::blink::WebOptionElement;
 using ::blink::WebSelectElement;
 using ::testing::_;
@@ -72,24 +79,18 @@ using ::testing::AllOf;
 using ::testing::AtMost;
 using ::testing::DoAll;
 using ::testing::ElementsAre;
-using ::testing::ElementsAreArray;
 using ::testing::Eq;
 using ::testing::Field;
+using ::testing::InSequence;
 using ::testing::IsEmpty;
-using ::testing::IsNull;
-using ::testing::Matcher;
-using ::testing::Ne;
-using ::testing::NiceMock;
+using ::testing::MockFunction;
 using ::testing::Optional;
 using ::testing::Property;
 using ::testing::SaveArg;
 using ::testing::SizeIs;
-
-constexpr CallTimerState kCallTimerStateDummy = {
-    .call_site = CallTimerState::CallSite::kUpdateFormCache,
-    .last_autofill_agent_reset = {},
-    .last_dom_content_loaded = {},
-};
+using ::testing::TestParamInfo;
+using ::testing::ValuesIn;
+using ::testing::WithParamInterface;
 
 class MockAutofillAgent : public AutofillAgent {
  public:
@@ -178,20 +179,11 @@ class AutofillAgentTest : public test::AutofillRendererTest {
 
   size_t num_extracted_forms() {
     return std::ranges::count_if(
-        test_api(autofill_agent()).form_cache().extracted_forms(),
+        test_api(autofill_agent()).form_cache().extracted_forms_unsafe(),
         [](const auto& id_and_form) {
           const auto& [id, form] = id_and_form;
           return form != nullptr;
         });
-  }
-
-  void Focus(const char* id) {
-    ExecuteJavaScriptForTests(base::StringPrintf(R"(
-      document.getElementById('%s').focus();
-    )",
-                                                 id));
-    task_environment_.FastForwardBy(base::Milliseconds(500));
-    task_environment_.RunUntilIdle();
   }
 
   void Click(std::string_view target) {
@@ -214,32 +206,19 @@ class AutofillAgentTest : public test::AutofillRendererTest {
   }
 };
 
-class AutofillAgentTestWithFeatures : public AutofillAgentTest {
- public:
-  AutofillAgentTestWithFeatures() {
-    scoped_features_.InitWithFeatures(
-        /*enabled_features=*/
-        {features::kAutofillReplaceCachedWebElementsByRendererIds},
-        /*disabled_features=*/{});
-  }
-
- private:
-  base::test::ScopedFeatureList scoped_features_;
-};
-
-TEST_F(AutofillAgentTestWithFeatures, FormsSeen_Empty) {
+TEST_F(AutofillAgentTest, FormsSeen_Empty) {
   EXPECT_CALL(autofill_driver(), FormsSeen).Times(0);
   LoadHTML(R"(<body> </body>)");
   WaitForFormsSeen();
 }
 
-TEST_F(AutofillAgentTestWithFeatures, FormsSeen_NoEmpty) {
+TEST_F(AutofillAgentTest, FormsSeen_NoEmpty) {
   EXPECT_CALL(autofill_driver(), FormsSeen).Times(0);
   LoadHTML(R"(<body> <form></form> </body>)");
   WaitForFormsSeen();
 }
 
-TEST_F(AutofillAgentTestWithFeatures, FormsSeen_NewFormUnowned) {
+TEST_F(AutofillAgentTest, FormsSeen_NewFormUnowned) {
   EXPECT_CALL(
       autofill_driver(),
       FormsSeen(HasSingleElementWhich(HasFormId(FormRendererId(0)),
@@ -249,7 +228,7 @@ TEST_F(AutofillAgentTestWithFeatures, FormsSeen_NewFormUnowned) {
   WaitForFormsSeen();
 }
 
-TEST_F(AutofillAgentTestWithFeatures, FormsSeen_NewForm) {
+TEST_F(AutofillAgentTest, FormsSeen_NewForm) {
   EXPECT_CALL(
       autofill_driver(),
       FormsSeen(HasSingleElementWhich(HasNumFields(1), HasNumChildFrames(0)),
@@ -258,7 +237,7 @@ TEST_F(AutofillAgentTestWithFeatures, FormsSeen_NewForm) {
   WaitForFormsSeen();
 }
 
-TEST_F(AutofillAgentTestWithFeatures, FormsSeen_NewIframe) {
+TEST_F(AutofillAgentTest, FormsSeen_NewIframe) {
   EXPECT_CALL(
       autofill_driver(),
       FormsSeen(HasSingleElementWhich(HasNumFields(0), HasNumChildFrames(1)),
@@ -267,7 +246,7 @@ TEST_F(AutofillAgentTestWithFeatures, FormsSeen_NewIframe) {
   WaitForFormsSeen();
 }
 
-TEST_F(AutofillAgentTestWithFeatures, FormsSeen_UpdatedForm) {
+TEST_F(AutofillAgentTest, FormsSeen_UpdatedForm) {
   {
     EXPECT_CALL(
         autofill_driver(),
@@ -287,7 +266,7 @@ TEST_F(AutofillAgentTestWithFeatures, FormsSeen_UpdatedForm) {
   }
 }
 
-TEST_F(AutofillAgentTestWithFeatures, TriggerFormExtractionWithResponse) {
+TEST_F(AutofillAgentTest, TriggerFormExtractionWithResponse) {
   EXPECT_CALL(autofill_driver(), FormsSeen);
   LoadHTML(R"(<body> <input> </body>)");
   WaitForFormsSeen();
@@ -299,8 +278,18 @@ TEST_F(AutofillAgentTestWithFeatures, TriggerFormExtractionWithResponse) {
   task_environment_.FastForwardBy(AutofillAgent::kFormsSeenThrottle / 2);
 }
 
+TEST_F(AutofillAgentTest, ClearFormCache) {
+  EXPECT_CALL(autofill_driver(), FormsSeen(SizeIs(1), _)).Times(2);
+  LoadHTML(R"(<body> <input> </body>)");
+  WaitForFormsSeen();
+  autofill_agent().ClearFormCache();
+  base::MockOnceCallback<void(bool)> mock_callback;
+  autofill_agent().TriggerFormExtractionWithResponse(mock_callback.Get());
+  task_environment_.FastForwardBy(AutofillAgent::kFormsSeenThrottle);
+}
+
 // Tests that button titles are extracted and reported to the browser.
-TEST_F(AutofillAgentTestWithFeatures, ButtonTitlesExtractedForForm) {
+TEST_F(AutofillAgentTest, ButtonTitlesExtractedForForm) {
   ButtonTitleInfo expected_button = {
       u"Submit", mojom::ButtonTitleType::INPUT_ELEMENT_SUBMIT_TYPE};
   EXPECT_CALL(
@@ -322,8 +311,7 @@ TEST_F(AutofillAgentTestWithFeatures, ButtonTitlesExtractedForForm) {
 
 // Tests that button titles are not extracted for fields that are not under a
 // <form> tag.
-TEST_F(AutofillAgentTestWithFeatures,
-       ButtonTitlesNotExtractedForFormlessFields) {
+TEST_F(AutofillAgentTest, ButtonTitlesNotExtractedForFormlessFields) {
   EXPECT_CALL(
       autofill_driver(),
       FormsSeen(HasSingleElementWhich(HasFormIdAttribute(u""),
@@ -339,7 +327,7 @@ TEST_F(AutofillAgentTestWithFeatures,
   WaitForFormsSeen();
 }
 
-using AutofillAgentShadowDomTest = AutofillAgentTestWithFeatures;
+using AutofillAgentShadowDomTest = AutofillAgentTest;
 
 // Tests that unassociated form control elements in a Shadow DOM tree that do
 // not have a form ancestor are extracted correctly.
@@ -549,8 +537,7 @@ TEST_F(AutofillAgentShadowDomTest, DeepNestedForms) {
   WaitForFormsSeen();
 }
 
-class AutofillAgentTestExtractLabeledTextNodeValue
-    : public AutofillAgentTestWithFeatures {
+class AutofillAgentTestExtractLabeledTextNodeValue : public AutofillAgentTest {
  public:
   using Callback =
       base::MockCallback<base::OnceCallback<void(const std::string&)>>;
@@ -643,8 +630,7 @@ TEST_F(AutofillAgentTestExtractLabeledTextNodeValue,
       "Autofill.RendererLabeledAmountExtractionLatency.Failure", 0);
 }
 
-class AutofillAgentTestExtractFormWithField
-    : public AutofillAgentTestWithFeatures {
+class AutofillAgentTestExtractFormWithField : public AutofillAgentTest {
  public:
   using Callback = base::MockCallback<
       base::OnceCallback<void(const std::optional<FormData>&)>>;
@@ -653,7 +639,7 @@ class AutofillAgentTestExtractFormWithField
     if (wait_for_forms_seen) {
       EXPECT_CALL(autofill_driver(), FormsSeen);
     }
-    AutofillAgentTestWithFeatures::LoadHTML(html);
+    AutofillAgentTest::LoadHTML(html);
     WaitForFormsSeen();
   }
 };
@@ -704,8 +690,7 @@ TEST_F(AutofillAgentTestExtractFormWithField,
                                         callback.Get());
 }
 
-TEST_F(AutofillAgentTestWithFeatures,
-       TriggerFormExtractionWithResponse_CalledTwice) {
+TEST_F(AutofillAgentTest, TriggerFormExtractionWithResponse_CalledTwice) {
   EXPECT_CALL(autofill_driver(), FormsSeen);
   LoadHTML(R"(<body> <input> </body>)");
   WaitForFormsSeen();
@@ -715,21 +700,26 @@ TEST_F(AutofillAgentTestWithFeatures,
   autofill_agent().TriggerFormExtractionWithResponse(mock_callback.Get());
 }
 
-// Tests that `AutofillDriver::TriggerSuggestions()` triggers
-// `AutofillAgent::AskForValuesToFill()` (which will ultimately trigger
+// Tests that `AutofillAgent::TriggerSuggestions()` triggers
+// `AutofillDriver::AskForValuesToFill()` (which will ultimately trigger
 // suggestions).
-TEST_F(AutofillAgentTestWithFeatures, TriggerSuggestions) {
+TEST_F(AutofillAgentTest, TriggerSuggestions) {
   EXPECT_CALL(autofill_driver(), FormsSeen);
-  LoadHTML("<body><input></body>");
+  LoadHTML(R"(<body><input id="input"></body>)");
   WaitForFormsSeen();
-  EXPECT_CALL(autofill_driver(), AskForValuesToFill);
+  EXPECT_CALL(
+      autofill_driver(),
+      AskForValuesToFill(
+          _, GetFieldRendererIdById("input"), _,
+          AutofillSuggestionTriggerSource::kFormControlElementClicked, _));
   autofill_agent().TriggerSuggestions(
-      FieldRendererId(2),
+      GetFieldRendererIdById("input"),
       AutofillSuggestionTriggerSource::kFormControlElementClicked);
 }
 
-TEST_F(AutofillAgentTestWithFeatures,
-       TriggerSuggestionsForElementWithDatalist) {
+// Tests that `AutofillAgent::TriggerSuggestions()` works for elements with a
+// datalist and extracts datalist options.
+TEST_F(AutofillAgentTest, TriggerSuggestionsForElementWithDatalist) {
   EXPECT_CALL(autofill_driver(), FormsSeen);
   LoadHTML(R"(<body><form>
     <input id="ff" list="fruits">
@@ -741,33 +731,407 @@ TEST_F(AutofillAgentTestWithFeatures,
   WaitForFormsSeen();
 
   FormData form;
-  EXPECT_CALL(autofill_driver(),
-              AskForValuesToFill(
-                  Property(&FormData::fields,
-                           ElementsAre(Property(
-                               &FormFieldData::datalist_options,
-                               ElementsAre(SelectOption{.value = u"Strawberry"},
-                                           SelectOption{.value = u"Apple"})))),
-                  _, _, _, Eq(std::nullopt)));
+  EXPECT_CALL(
+      autofill_driver(),
+      AskForValuesToFill(
+          Property(&FormData::fields,
+                   ElementsAre(Property(
+                       &FormFieldData::datalist_options,
+                       ElementsAre(SelectOption{.value = u"Strawberry"},
+                                   SelectOption{.value = u"Apple"})))),
+          GetFieldRendererIdById("ff"), _,
+          AutofillSuggestionTriggerSource::kFormControlElementClicked, _));
   autofill_agent().TriggerSuggestions(
       GetFieldRendererIdById("ff"),
       AutofillSuggestionTriggerSource::kFormControlElementClicked);
   task_environment_.RunUntilIdle();
 }
 
-// Tests that `AutofillDriver::TriggerSuggestions()` works for contenteditables.
-TEST_F(AutofillAgentTestWithFeatures, TriggerSuggestionsForContenteditable) {
-  LoadHTML("<body><div id=ce contenteditable></div></body>");
-  FormRendererId form_id = GetFormRendererIdById("ce");
-  EXPECT_CALL(autofill_driver(), AskForValuesToFill);
+struct AutofillAgentAcceptDataListSuggestionTestParams {
+  std::string field_id;
+  std::string expected_value_after_accept;
+};
+
+class AutofillAgentAcceptDataListSuggestionTest
+    : public AutofillAgentTest,
+      public WithParamInterface<
+          AutofillAgentAcceptDataListSuggestionTestParams> {
+ protected:
+  void SetUp() override {
+    AutofillAgentTest::SetUp();
+    LoadHTML(Html());
+  }
+
+  static constexpr std::string_view Html() {
+    return "<html>"
+           "<input id='empty' type='email' multiple />"
+           "<input id='multi_one' type='email' multiple "
+           "value='one@example.com'/>"
+           "<input id='multi_two' type='email' multiple"
+           "  value='one@example.com,two@example.com'/>"
+           "<input id='multi_trailing' type='email' multiple"
+           "  value='one@example.com,two@example.com,'/>"
+           "<input id='not_multi' type='email'"
+           "  value='one@example.com,two@example.com,'/>"
+           "<input id='not_email' type='text' multiple"
+           "  value='one@example.com,two@example.com,'/>"
+           "</html>";
+  }
+  static constexpr std::u16string_view DataListSuggestion() {
+    return u"suggestion@example.com";
+  }
+};
+
+INSTANTIATE_TEST_SUITE_P(
+    ,
+    AutofillAgentAcceptDataListSuggestionTest,
+    ValuesIn(std::to_array<AutofillAgentAcceptDataListSuggestionTestParams>({
+        // Empty text field; expect to populate with suggestion.
+        {.field_id = "empty",
+         .expected_value_after_accept = "suggestion@example.com"},
+        // Single entry; expect to replace with suggestion.
+        {.field_id = "multi_one",
+         .expected_value_after_accept = "suggestion@example.com"},
+        // Two comma-separated entries; expect to replace second with
+        // suggestion.
+        {.field_id = "multi_two",
+         .expected_value_after_accept =
+             "one@example.com,suggestion@example.com"},
+        // Two comma-separated entries with trailing comma; expect to append
+        // suggestion.
+        {.field_id = "multi_trailing",
+         .expected_value_after_accept =
+             "one@example.com,two@example.com,suggestion@example.com"},
+        // Do not apply this logic for a non-multiple or non-email field.
+        {.field_id = "not_multi",
+         .expected_value_after_accept = "suggestion@example.com"},
+        {.field_id = "not_email",
+         .expected_value_after_accept = "suggestion@example.com"},
+    })),
+    [](const TestParamInfo<
+        AutofillAgentAcceptDataListSuggestionTest::ParamType>& info) {
+      return info.param.field_id;
+    });
+
+// Tests that `AutofillAgent::AcceptDataListSuggestion` sets the field value
+// correctly when accepting a datalist suggestion.
+TEST_P(AutofillAgentAcceptDataListSuggestionTest, AcceptDataListSuggestion) {
+  ASSERT_TRUE(SimulateElementClick(GetParam().field_id));
+
+  WebInputElement input_element = GetInputElementById(GetParam().field_id);
+  autofill_agent().AcceptDataListSuggestion(
+      form_util::GetFieldRendererId(input_element),
+      std::u16string{DataListSuggestion()});
+
+  EXPECT_THAT(input_element,
+              test::WebInputElementEq(
+                  {.value = GetParam().expected_value_after_accept}));
+}
+
+// Tests that clicking on a select element triggers
+// `mojom::AutofillDriver::SelectControlSelectionChanged` for that element.
+TEST_F(AutofillAgentTest, SelectControlChanged) {
+  LoadHTML(
+      "<html>"
+      "<form>"
+      "<select id='color'><option value='red'>red</option><option "
+      "value='blue'>blue</option></select>"
+      "</form>"
+      "</html>");
+
+  std::string change_value =
+      "var color = document.getElementById('color');"
+      "color.selectedIndex = 1;";
+
+  base::RunLoop run_loop;
+  EXPECT_CALL(autofill_driver(),
+              SelectControlSelectionChanged(
+                  Property(&FormData::fields,
+                           ElementsAre(test::FormFieldDescriptionEq(
+                               {.name = u"color", .value = u"blue"}))),
+                  _))
+      .WillOnce(RunOnceClosure(run_loop.QuitClosure()));
+  // The click simulation is necessary to give the frame transient user
+  // activation, otherwise the select value-change event will be ignored by the
+  // agent.
+  ASSERT_TRUE(SimulateElementClick("color"));
+  ExecuteJavaScriptForTests(change_value.c_str());
+  std::move(run_loop).Run();
+}
+
+// A test fixture that sets the autofill agent's `focus_requires_scroll` config
+// option to false, which allows `DidChangeScrollOffset` to notify the driver.
+class AutofillAgentTestWithoutFocusRequiresScroll : public AutofillAgentTest {
+ public:
+  void SetUp() override {
+    AutofillAgentTest::SetUp();
+    test_api(autofill_agent()).set_focus_requires_scroll(false);
+  }
+};
+
+// Tests that scroll handling accepts a focused field even when suggestions were
+// last requested for another field.
+TEST_F(AutofillAgentTestWithoutFocusRequiresScroll,
+       DidChangeScrollOffsetUsesFocusedElement) {
+  LoadHTML("<form><input id=ff><input id=other></form>");
+
+  WebFormControlElement focused_field =
+      GetWebElementById("ff").DynamicTo<WebFormControlElement>();
+  ASSERT_TRUE(focused_field);
+  WebFormControlElement other_field =
+      GetWebElementById("other").DynamicTo<WebFormControlElement>();
+  ASSERT_TRUE(other_field);
+  FieldRendererId focused_field_id =
+      form_util::GetFieldRendererId(focused_field);
+  FieldRendererId other_field_id = form_util::GetFieldRendererId(other_field);
+  Focus("ff");
+
+  EXPECT_CALL(autofill_driver(),
+              AskForValuesToFill(_, focused_field_id, _, _, _));
+  test_api(autofill_agent())
+      .ShowSuggestions(
+          focused_field,
+          AutofillSuggestionTriggerSource::kFormControlElementClicked,
+          /*form_cache=*/{}, /*password_request=*/std::nullopt);
+  ASSERT_TRUE(focused_field.Focused());
+
+  EXPECT_CALL(autofill_driver(),
+              AskForValuesToFill(_, other_field_id, _, _, _));
+  test_api(autofill_agent())
+      .ShowSuggestions(
+          other_field,
+          AutofillSuggestionTriggerSource::kFormControlElementClicked,
+          /*form_cache=*/{}, /*password_request=*/std::nullopt);
+  ASSERT_TRUE(focused_field.Focused());
+
+  base::RunLoop run_loop;
+  EXPECT_CALL(autofill_driver(), TextFieldDidScroll(_, focused_field_id))
+      .WillOnce(RunOnceClosure(run_loop.QuitClosure()));
+  test_api(autofill_agent())
+      .DidChangeScrollOffset(blink::mojom::ScrollType::kUser);
+  run_loop.Run();
+}
+
+// Tests that scrolling with no focused form control does not notify the driver.
+TEST_F(AutofillAgentTestWithoutFocusRequiresScroll,
+       DidChangeScrollOffsetIgnoresNonFormControlFocus) {
+  LoadHTML("<form><input id=ff></form><div id=ce contenteditable></div>");
+
+  WebFormControlElement field =
+      GetWebElementById("ff").DynamicTo<WebFormControlElement>();
+  ASSERT_TRUE(field);
+  WebElement contenteditable = GetWebElementById("ce");
+  ASSERT_TRUE(contenteditable);
+  test_api(autofill_agent())
+      .ShowSuggestions(
+          field, AutofillSuggestionTriggerSource::kFormControlElementClicked,
+          /*form_cache=*/{}, /*password_request=*/std::nullopt);
+
+  Focus("ce");
+  ASSERT_TRUE(contenteditable.Focused());
+
+  EXPECT_CALL(autofill_driver(), TextFieldDidScroll).Times(0);
+  test_api(autofill_agent())
+      .DidChangeScrollOffset(blink::mojom::ScrollType::kUser);
+}
+
+class AutofillAgentTestHidePopupOnScroll : public AutofillAgentTest {
+ public:
+  void SetUp() override {
+    AutofillAgentTest::SetUp();
+    test_api(autofill_agent()).set_focus_requires_scroll(true);
+    test_api(autofill_agent())
+        .set_uses_keyboard_accessory_for_suggestions(false);
+  }
+};
+
+// Tests that a scroll clamping event keeps the popup open.
+TEST_F(AutofillAgentTestHidePopupOnScroll, ClampingScrollDoesNotHidePopup) {
+  base::test::ScopedFeatureList feature_list{
+      features::kAutofillIgnoreLayoutInducedScrollEvents};
+  LoadHTML("<input id=ff>");
+  Focus("ff");
+  test_api(autofill_agent())
+      .ShowSuggestions(
+          GetFormControlElementById("ff"),
+          AutofillSuggestionTriggerSource::kFormControlElementClicked,
+          /*form_cache=*/{}, /*password_request=*/std::nullopt);
+  ASSERT_TRUE(test_api(autofill_agent()).is_popup_possibly_visible());
+
+  EXPECT_CALL(autofill_driver(), HidePopup).Times(0);
+  test_api(autofill_agent())
+      .DidChangeScrollOffset(blink::mojom::ScrollType::kClamping);
+
+  EXPECT_TRUE(test_api(autofill_agent()).is_popup_possibly_visible());
+}
+
+// Tests that a scroll anchoring event keeps the popup open.
+TEST_F(AutofillAgentTestHidePopupOnScroll, AnchoringScrollDoesNotHidePopup) {
+  base::test::ScopedFeatureList feature_list{
+      features::kAutofillIgnoreLayoutInducedScrollEvents};
+  LoadHTML("<input id=ff>");
+  Focus("ff");
+  test_api(autofill_agent())
+      .ShowSuggestions(
+          GetFormControlElementById("ff"),
+          AutofillSuggestionTriggerSource::kFormControlElementClicked,
+          /*form_cache=*/{}, /*password_request=*/std::nullopt);
+  ASSERT_TRUE(test_api(autofill_agent()).is_popup_possibly_visible());
+
+  EXPECT_CALL(autofill_driver(), HidePopup).Times(0);
+  test_api(autofill_agent())
+      .DidChangeScrollOffset(blink::mojom::ScrollType::kAnchoring);
+
+  EXPECT_TRUE(test_api(autofill_agent()).is_popup_possibly_visible());
+}
+
+// Tests that when the feature is disabled, popup is hidden on a clamping
+// scroll.
+TEST_F(AutofillAgentTestHidePopupOnScroll,
+       ClampingScrollHidesPopupWhenFeatureDisabled) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndDisableFeature(
+      features::kAutofillIgnoreLayoutInducedScrollEvents);
+
+  LoadHTML("<input id=ff>");
+  Focus("ff");
+  test_api(autofill_agent())
+      .ShowSuggestions(
+          GetFormControlElementById("ff"),
+          AutofillSuggestionTriggerSource::kFormControlElementClicked,
+          /*form_cache=*/{}, /*password_request=*/std::nullopt);
+  ASSERT_TRUE(test_api(autofill_agent()).is_popup_possibly_visible());
+
+  EXPECT_CALL(autofill_driver(), HidePopup);
+  test_api(autofill_agent())
+      .DidChangeScrollOffset(blink::mojom::ScrollType::kClamping);
+  EXPECT_FALSE(test_api(autofill_agent()).is_popup_possibly_visible());
+}
+
+// Tests that a user scroll dismisses the popup.
+TEST_F(AutofillAgentTestHidePopupOnScroll, UserScrollHidesPopup) {
+  base::test::ScopedFeatureList feature_list{
+      features::kAutofillIgnoreLayoutInducedScrollEvents};
+  LoadHTML("<input id=ff>");
+  Focus("ff");
+  test_api(autofill_agent())
+      .ShowSuggestions(
+          GetFormControlElementById("ff"),
+          AutofillSuggestionTriggerSource::kFormControlElementClicked,
+          /*form_cache=*/{}, /*password_request=*/std::nullopt);
+  ASSERT_TRUE(test_api(autofill_agent()).is_popup_possibly_visible());
+
+  EXPECT_CALL(autofill_driver(), HidePopup);
+  test_api(autofill_agent())
+      .DidChangeScrollOffset(blink::mojom::ScrollType::kUser);
+
+  EXPECT_FALSE(test_api(autofill_agent()).is_popup_possibly_visible());
+}
+
+// Tests that suggestion availability updates the field identified by
+// `field_id`.
+TEST_F(AutofillAgentTest, SetSuggestionAvailabilityUsesFieldId) {
+  LoadHTML("<body><input id=ff></body>");
+
+  auto ax_context = std::make_unique<blink::WebAXContext>(
+      GetDocument(), ui::kAXModeDefaultForTests);
+  ax_context->UpdateAXForAllDocuments();
+
+  blink::WebAXObject element_ax_object =
+      blink::WebAXObject::FromWebNode(GetWebElementById("ff"));
+  ui::AXNodeData node_data;
+  element_ax_object.Serialize(&node_data, ui::AXMode::kExtendedProperties);
+  ASSERT_FALSE(node_data.HasState(ax::mojom::State::kAutofillAvailable));
+
+  autofill_agent().SetSuggestionAvailability(
+      GetFieldRendererIdById("ff"),
+      mojom::AutofillSuggestionAvailability::kAutofillAvailable);
+  ax_context->UpdateAXForAllDocuments();
+
+  node_data = ui::AXNodeData();
+  element_ax_object.Serialize(&node_data, ui::AXMode::kExtendedProperties);
+  EXPECT_TRUE(node_data.HasState(ax::mojom::State::kAutofillAvailable));
+}
+
+// Tests that accepting a datalist suggestion fills the field identified by
+// `field_id`.
+TEST_F(AutofillAgentTest, AcceptDataListSuggestionUsesFieldId) {
+  LoadHTML("<body><input id=ff><input id=other></body>");
+
+  autofill_agent().AcceptDataListSuggestion(GetFieldRendererIdById("ff"),
+                                            u"Strawberry");
+
+  WebFormControlElement field =
+      GetWebElementById("ff").DynamicTo<WebFormControlElement>();
+  WebFormControlElement other =
+      GetWebElementById("other").DynamicTo<WebFormControlElement>();
+  EXPECT_EQ(field.Value().Utf16(), u"Strawberry");
+  EXPECT_TRUE(other.Value().IsEmpty());
+}
+
+// Tests that select option changes are ignored before Autofill fills a field.
+TEST_F(AutofillAgentTest, SelectFieldOptionsChangedIgnoredWithoutFill) {
+  LoadHTML("<form><select id=select_id><option>One</option></select></form>");
+
+  EXPECT_CALL(autofill_driver(), SelectFieldOptionsDidChange).Times(0);
+  test_api(autofill_agent())
+      .SelectFieldOptionsChanged(
+          GetWebElementById("select_id").DynamicTo<WebSelectElement>());
+  task_environment_.FastForwardBy(base::Milliseconds(100));
+}
+
+// Tests that select option changes after filling use the changed select field.
+TEST_F(AutofillAgentTest, SelectFieldOptionsChangedAfterFillUsesFieldId) {
+  LoadHTML(
+      "<form><select id=select_id><option value=one>One</option><option "
+      "value=two>Two</option></select></form>");
+
+  std::vector<WebFormElement> forms = GetDocument().GetOutermostForms();
+  ASSERT_EQ(forms.size(), 1u);
+
+  std::optional<FormData> form = ExtractFormData(forms.front());
+  ASSERT_TRUE(form);
+  ASSERT_EQ(form->fields().size(), 1u);
+
+  test_api(*form).field(0).set_value(u"two");
+  test_api(*form).field(0).set_selected_option_text(u"Two");
+  test_api(*form).field(0).set_is_autofilled_according_to_renderer(true);
+  autofill_agent().ApplyFieldsAction(
+      mojom::FormActionType::kFill, mojom::ActionPersistence::kFill,
+      GetFillData(form->fields()), FillId::Create(),
+      /*supports_refill=*/false);
+
+  ExecuteJavaScriptForTests(R"(
+    const option = document.createElement('option');
+    option.value = 'three';
+    option.text = 'Three';
+    document.getElementById('select_id').appendChild(option);
+  )");
+
+  WebSelectElement select =
+      GetWebElementById("select_id").DynamicTo<WebSelectElement>();
+  ASSERT_TRUE(select);
+  FieldRendererId select_id = form_util::GetFieldRendererId(select);
+  EXPECT_CALL(autofill_driver(), SelectFieldOptionsDidChange(_, select_id));
+  test_api(autofill_agent()).SelectFieldOptionsChanged(select);
+  task_environment_.FastForwardBy(base::Milliseconds(100));
+}
+
+// Tests that `AutofillAgent::TriggerSuggestions()` works for contenteditables.
+TEST_F(AutofillAgentTest, TriggerSuggestionsForContenteditable) {
+  LoadHTML(R"(<body><div id="ce" contenteditable></div></body>)");
+  EXPECT_CALL(autofill_driver(),
+              AskForValuesToFill(
+                  _, GetFieldRendererIdById("ce"), _,
+                  AutofillSuggestionTriggerSource::kComposeDialogLostFocus, _));
   autofill_agent().TriggerSuggestions(
-      FieldRendererId(form_id.value()),
+      GetFieldRendererIdById("ce"),
       AutofillSuggestionTriggerSource::kComposeDialogLostFocus);
 }
 
-// Tests that AutofillAgent::ApplyFormAction(kFill, kPreview) and
-// AutofillAgent::ClearPreviewedForm correctly set/reset the autofill state of a
-// field.
+// Tests that `AutofillAgent::ApplyFormAction(kFill, kPreview)` and
+// `AutofillAgent::ClearPreviewedForm()` correctly set/reset the autofill state
+// of a field.
 TEST_F(AutofillAgentTest, PreviewThenClear) {
   LoadHTML(R"(
     <form id="form_id">
@@ -775,25 +1139,22 @@ TEST_F(AutofillAgentTest, PreviewThenClear) {
     </form>
   )");
 
-  std::vector<blink::WebFormElement> forms = GetDocument().GetTopLevelForms();
+  std::vector<blink::WebFormElement> forms = GetDocument().GetOutermostForms();
   ASSERT_EQ(1U, forms.size());
-  FormData form = *form_util::ExtractFormData(
-      forms[0].GetDocument(), forms[0],
-      *base::MakeRefCounted<FieldDataManager>(), kCallTimerStateDummy,
-      /*button_titles_cache=*/nullptr);
-  ASSERT_EQ(form.fields().size(), 1u);
+  std::optional<FormData> form = ExtractFormData(forms.front());
+  ASSERT_TRUE(form);
+  ASSERT_EQ(form->fields().size(), 1u);
   blink::WebFormControlElement field =
       GetWebElementById("text_id").DynamicTo<blink::WebFormControlElement>();
   ASSERT_TRUE(field);
 
-  std::u16string prior_value = form.fields()[0].value();
-  test_api(form).field(0).set_value(form.fields()[0].value() + u"AUTOFILLED");
-  test_api(form).field(0).set_is_autofilled_according_to_renderer(true);
+  test_api(*form).field(0).set_value(form->fields()[0].value() + u"AUTOFILLED");
+  test_api(*form).field(0).set_is_autofilled_according_to_renderer(true);
 
   ASSERT_EQ(field.GetAutofillState(), blink::WebAutofillState::kNotFilled);
   autofill_agent().ApplyFieldsAction(
       mojom::FormActionType::kFill, mojom::ActionPersistence::kPreview,
-      GetFillData(form.fields()), FillId::Create(),
+      GetFillData(form->fields()), FillId::Create(),
       /*supports_refill=*/false);
   EXPECT_EQ(field.GetAutofillState(), blink::WebAutofillState::kPreviewed);
   autofill_agent().ClearPreviewedForm();
@@ -806,7 +1167,7 @@ TEST_F(AutofillAgentTest,
        DynamicElementNotificationFiltering_AddNonAutofillableElement) {
   LoadHTML(R"(<form id="form_id"> <input id="name"></form>)");
   const auto& extracted_forms =
-      test_api(autofill_agent()).form_cache().extracted_forms();
+      test_api(autofill_agent()).form_cache().extracted_forms_unsafe();
   ASSERT_EQ(num_extracted_forms(), 1u);
   ASSERT_EQ(extracted_forms.rbegin()->second->fields().size(), 1u);
 
@@ -821,18 +1182,17 @@ TEST_F(AutofillAgentTest,
     first_input = form.querySelectorAll('input')[0];
     first_input.id = 'new_name'
   )");
-  base::test::RunUntil([&] {
+  EXPECT_TRUE(base::test::RunUntil([&] {
     return !test_api(autofill_agent())
                 .process_forms_after_dynamic_change_timer()
                 .IsRunning();
-  });
+  }));
 
   ASSERT_EQ(num_extracted_forms(), 1u);
-  ASSERT_EQ(extracted_forms.rbegin()->second->fields().size(), 1u);
   // The JS changes to the ID are not reflected in the cache, meaning that the
   // cache was not updated as a result of executing the prior JS script.
-  EXPECT_EQ(extracted_forms.rbegin()->second->fields().front().id_attribute(),
-            u"name");
+  EXPECT_THAT(extracted_forms.rbegin()->second->fields(),
+              ElementsAre(Property(&FormFieldData::id_attribute, u"name")));
 }
 
 // Tests that when JS adds an autofillable element to the DOM, we trigger a DOM
@@ -841,7 +1201,7 @@ TEST_F(AutofillAgentTest,
        DynamicElementNotificationFiltering_AddAutofillableElement) {
   LoadHTML(R"(<form id="form_id"> <input id="name"></form>)");
   const auto& extracted_forms =
-      test_api(autofill_agent()).form_cache().extracted_forms();
+      test_api(autofill_agent()).form_cache().extracted_forms_unsafe();
   ASSERT_EQ(num_extracted_forms(), 1u);
   ASSERT_EQ(extracted_forms.rbegin()->second->fields().size(), 1u);
 
@@ -854,11 +1214,11 @@ TEST_F(AutofillAgentTest,
     second_input.id = 'new_field';
     form.appendChild(second_input);
   )");
-  base::test::RunUntil([&] {
+  EXPECT_TRUE(base::test::RunUntil([&] {
     return !test_api(autofill_agent())
                 .process_forms_after_dynamic_change_timer()
                 .IsRunning();
-  });
+  }));
 
   ASSERT_EQ(num_extracted_forms(), 1u);
   // The added input should be visible in the cache now.
@@ -882,11 +1242,11 @@ TEST_F(AutofillAgentTest, DynamicElementNotificationFiltering_AddForm) {
     second_form.appendChild(input);
     document.body.appendChild(second_form);
   )");
-  base::test::RunUntil([&] {
+  EXPECT_TRUE(base::test::RunUntil([&] {
     return !test_api(autofill_agent())
                 .process_forms_after_dynamic_change_timer()
                 .IsRunning();
-  });
+  }));
 
   ASSERT_EQ(num_extracted_forms(), 2u);
 }
@@ -910,7 +1270,7 @@ struct SelectFillingTestCase {
 
 class AutofillAgentSelectFillingTest
     : public AutofillAgentTest,
-      public ::testing::WithParamInterface<SelectFillingTestCase> {};
+      public WithParamInterface<SelectFillingTestCase> {};
 
 // Tests that select elements are correctly filled upon instructions by
 // Autofill. Various examples are described in details below.
@@ -918,22 +1278,20 @@ TEST_P(AutofillAgentSelectFillingTest, FillingSelectElements) {
   const auto& param = GetParam();
   LoadHTML(("<form>" + param.html_select + "</form>").c_str());
 
-  std::vector<WebFormElement> forms = GetDocument().GetTopLevelForms();
+  std::vector<WebFormElement> forms = GetDocument().GetOutermostForms();
   ASSERT_EQ(forms.size(), 1u);
 
-  FormData form = *form_util::ExtractFormData(
-      forms[0].GetDocument(), forms[0],
-      *base::MakeRefCounted<FieldDataManager>(), kCallTimerStateDummy,
-      /*button_titles_cache=*/nullptr);
+  std::optional<FormData> form = ExtractFormData(forms.front());
+  ASSERT_TRUE(form);
 
   // Set the filling data.
-  test_api(form).field(0).set_value(param.fill_value);
-  test_api(form).field(0).set_selected_option_text(param.fill_text);
-  test_api(form).field(0).set_is_autofilled_according_to_renderer(true);
+  test_api(*form).field(0).set_value(param.fill_value);
+  test_api(*form).field(0).set_selected_option_text(param.fill_text);
+  test_api(*form).field(0).set_is_autofilled_according_to_renderer(true);
 
   autofill_agent().ApplyFieldsAction(
       mojom::FormActionType::kFill, mojom::ActionPersistence::kFill,
-      GetFillData(form.fields()), FillId::Create(),
+      GetFillData(form->fields()), FillId::Create(),
       /*supports_refill=*/false);
 
   // Verification Logic
@@ -1035,8 +1393,7 @@ INSTANTIATE_TEST_SUITE_P(
                               .expected_option_id = std::nullopt,
                               .expected_value = std::nullopt,
                               .expected_text = std::nullopt}),
-    [](const ::testing::TestParamInfo<
-        AutofillAgentSelectFillingTest::ParamType>& info) {
+    [](const TestParamInfo<AutofillAgentSelectFillingTest::ParamType>& info) {
       // Makes test output readable in the console
       return info.param.test_name;
     });
@@ -1188,6 +1545,63 @@ TEST_F(AutofillAgentTestFocus, FireFocusEventsForNullElement) {
   FocusedElementChanged(blink::WebElement());
 }
 
+// Tests that focusing an input element, removing it from the DOM, and then
+// shifting focus away allows the input element to be garbage collected (i.e.,
+// it doesn't leak memory via C++ persistent roots in AutofillAgent).
+// Times out on asan: https://issues.chromium.org/issues/524395187
+#if defined(ADDRESS_SANITIZER)
+#define MAYBE_InputElementIsGarbageCollectedAfterRemoval \
+  DISABLED_InputElementIsGarbageCollectedAfterRemoval
+#else
+#define MAYBE_InputElementIsGarbageCollectedAfterRemoval \
+  InputElementIsGarbageCollectedAfterRemoval
+#endif
+TEST_F(AutofillAgentTestFocus,
+       MAYBE_InputElementIsGarbageCollectedAfterRemoval) {
+  // Setup FinalizationRegistry in JS to track the element.
+  ExecuteJavaScriptForTests(R"(
+    window.element_collected = false;
+    window.registry = new FinalizationRegistry(() => {
+      window.element_collected = true;
+    });
+
+    // Create and append input.
+    window.input_element = document.createElement("input");
+    window.input_element.id = "test_leak_input";
+    document.body.appendChild(window.input_element);
+
+    // Register it.
+    window.registry.register(window.input_element, "token");
+  )");
+
+  // Focus the element using JS focus.
+  Focus("test_leak_input");
+  EXPECT_EQ(autofill_agent().last_queried_element(),
+            GetWebElementById("test_leak_input"));
+
+  // Remove the element and release JS reference.
+  ExecuteJavaScriptForTests(R"(
+    {
+      let el = document.getElementById("test_leak_input");
+      el.remove();
+    }
+    window.input_element = null; // Release JS reference.
+  )");
+
+  // Focus uneditable to trigger focus loss in AutofillAgent.
+  Focus("uneditable");
+
+  // Trigger GC and wait until the element is collected.
+  EXPECT_TRUE(base::test::RunUntil([&]() {
+    Isolate()->RequestGarbageCollectionForTesting(
+        v8::Isolate::kFullGarbageCollection);
+    int collected = 0;
+    return ExecuteJavaScriptAndReturnIntValue(
+               u"window.element_collected ? 1 : 0", &collected) &&
+           collected == 1;
+  }));
+}
+
 // This test fixture initializes the agent to use platform autofill. The agent
 // expects the client counterpart to forward requests to the platform instead of
 // using an embedder-specific implementation. This behavior matches Android
@@ -1236,9 +1650,8 @@ TEST_F(AutofillAgentTestUsingPlatformAutofill,
 }
 
 // Test fixture for caret position extraction and movement detection.
-class AutofillAgentTestCaret
-    : public AutofillAgentTest,
-      public ::testing::WithParamInterface<FormControlType> {
+class AutofillAgentTestCaret : public AutofillAgentTest,
+                               public WithParamInterface<FormControlType> {
  public:
   FormControlType form_control_type() const { return GetParam(); }
 
@@ -1418,9 +1831,8 @@ TEST_P(AutofillAgentTestCaret, SelectionFiresEvent) {
 }
 
 // Tests fixture for click handling.
-class AutofillAgentTestClick
-    : public AutofillAgentTest,
-      public ::testing::WithParamInterface<const char*> {
+class AutofillAgentTestClick : public AutofillAgentTest,
+                               public WithParamInterface<const char*> {
  public:
   const char* field_html() const { return GetParam(); }
 
@@ -1523,7 +1935,7 @@ TEST_F(AutofillAgentTest, DOMContentLoadedEmitsMetric) {
 
 // Tests that AutofillAgent::RequestRefill() registers a callback that is called
 // when the corresponding ApplyFieldsAction() message is received.
-TEST_F(AutofillAgentTestWithFeatures, RequestRefill) {
+TEST_F(AutofillAgentTest, RequestRefill) {
   const FillId fill_id = FillId::Create();
   std::vector<FormData> forms;
   base::MockOnceCallback<void(bool)> on_refill;
@@ -1551,7 +1963,7 @@ TEST_F(AutofillAgentTestWithFeatures, RequestRefill) {
 
 // Tests that AutofillAgent::RequestRefill() registers a callback that is called
 // after a timeout if no refill happens.
-TEST_F(AutofillAgentTestWithFeatures, RequestRefillTimesOut) {
+TEST_F(AutofillAgentTest, RequestRefillTimesOut) {
   const FillId fill_id = FillId::Create();
   std::vector<FormData> forms;
   base::MockOnceCallback<void(bool)> on_refill;
@@ -1588,611 +2000,326 @@ TEST_F(AutofillAgentTestWithFeatures, RequestRefillTimesOut) {
   std::move(run_loop).Run();
 }
 
-class AutofillAgentAtMemoryTest : public AutofillAgentTest {
- public:
-  AutofillAgentAtMemoryTest() {
-    scoped_feature_list_.InitAndEnableFeature(features::kAutofillAtMemory);
-  }
+// Test that calling `ShouldThrottleAskForValuesToFill()` twice returns `true`
+// in the second case if the first `trigger_source` is not throttleable but the
+// second is.
+TEST_F(AutofillAgentTest,
+       ThrottleAskForValuesToFill_UnthrottlableThenThrottlable) {
+  base::test::ScopedFeatureList scoped_feature_list{
+      features::kAutofillThrottleAskForValuesToFillByTriggerSource};
+  EXPECT_FALSE(
+      test_api(autofill_agent())
+          .ShouldThrottleAskForValuesToFill(
+              FieldRendererId(1),
+              AutofillSuggestionTriggerSource::kManualFallbackPasswords));
+  EXPECT_TRUE(
+      test_api(autofill_agent())
+          .ShouldThrottleAskForValuesToFill(
+              FieldRendererId(1),
+              AutofillSuggestionTriggerSource::kFormControlElementClicked));
+}
 
-  void SimulateTyping(const std::string& value) {
-    for (char c : value) {
-      SimulateUserTypingASCIICharacter(c, true);
-      task_environment_.FastForwardBy(base::Milliseconds(200));
+// Malicious web pages can attempt to steal saved autofill data via a
+// side-channel brute-force attack by rapidly cycling input prefixes and
+// monitoring :autofill state changes.
+// These tests ensure integrity of the threshold mechanisms.
+class AutofillAgentBruteForceProbingTest : public AutofillAgentTest {
+ public:
+  void Init(bool enabled,
+            int max_tokens = 15,
+            base::TimeDelta replenish_rate = base::Milliseconds(750)) {
+    if (enabled) {
+      feature_list_.InitAndEnableFeatureWithParameters(
+          features::kAutofillThrottleBruteForceProbing,
+          {{features::kAutofillThrottleBruteForceProbingMaxTokens.name,
+            base::NumberToString(max_tokens)},
+           {features::kAutofillThrottleBruteForceProbingReplenishRate.name,
+            base::NumberToString(replenish_rate.InMilliseconds()) + "ms"}});
+    } else {
+      feature_list_.InitAndDisableFeature(
+          features::kAutofillThrottleBruteForceProbing);
     }
-    task_environment_.RunUntilIdle();
   }
 
- private:
-  base::test::ScopedFeatureList scoped_feature_list_;
-};
-
-TEST_F(AutofillAgentAtMemoryTest, AtMemorySearchTrigger) {
-  LoadHTML(R"(<input id="f">)");
-
-  WaitForFormsSeen();
-  Focus("f");
-
-  testing::MockFunction<void(int)> check_point;
-  {
-    testing::InSequence s;
-    // 1. "a" -> No @memory trigger.
-    EXPECT_CALL(autofill_driver(),
-                AskForValuesToFill(
-                    _, _, _, Eq(AutofillSuggestionTriggerSource::kAtMemory), _))
-        .Times(0);
-    EXPECT_CALL(check_point, Call(1));
-
-    // 2. "a@" -> No @memory trigger.
-    EXPECT_CALL(autofill_driver(),
-                AskForValuesToFill(
-                    _, _, _, Eq(AutofillSuggestionTriggerSource::kAtMemory), _))
-        .Times(0);
-    EXPECT_CALL(check_point, Call(2));
-
-    // 3. "a@@" -> @memory has triggered.
-    EXPECT_CALL(autofill_driver(),
-                AskForValuesToFill(
-                    _, _, _, Eq(AutofillSuggestionTriggerSource::kAtMemory), _))
-        .Times(1);
-    EXPECT_CALL(check_point, Call(3));
-
-    // 4. "a@@b" -> No @memory trigger.
-    EXPECT_CALL(autofill_driver(),
-                AskForValuesToFill(
-                    _, _, _, Eq(AutofillSuggestionTriggerSource::kAtMemory), _))
-        .Times(0);
-    EXPECT_CALL(check_point, Call(4));
-  }
-
-  // Ignore standard Autofill calls for this test.
-  EXPECT_CALL(autofill_driver(),
-              AskForValuesToFill(
-                  _, _, _, Ne(AutofillSuggestionTriggerSource::kAtMemory), _))
-      .Times(testing::AnyNumber());
-
-  // Typing sequence: "a", "a@", "a@@", "a@@b"
-  SimulateTyping("a");
-  check_point.Call(1);
-  SimulateTyping("@");
-  check_point.Call(2);
-  SimulateTyping("@");
-  check_point.Call(3);
-  SimulateTyping("b");
-  check_point.Call(4);
-}
-
-// Tests that typing "@@" into an empty field triggers the @memory search popup.
-TEST_F(AutofillAgentTest, MemorySearchTriggerTypedIntoEmptyField) {
-  base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitAndEnableFeature(features::kAutofillAtMemory);
-
-  // 1. Setup Expectations:
-  // Ignore standard Autofill noise during setup.
-  EXPECT_CALL(autofill_driver(),
-              AskForValuesToFill(
-                  _, _, _, Ne(AutofillSuggestionTriggerSource::kAtMemory), _))
-      .Times(testing::AnyNumber());
-  // Expect the specific @memory trigger.
-  EXPECT_CALL(autofill_driver(),
-              AskForValuesToFill(
-                  _, _, _, AutofillSuggestionTriggerSource::kAtMemory, _));
-
-  // 2. Act:
-  LoadHTML(R"(<input id="f">)");
-  WaitForFormsSeen();
-  Focus("f");
-  SimulateUserInputChangeForElementById("f", "@@");
-}
-
-// Tests that typing "@@" in the middle of a string also triggers @memory.
-TEST_F(AutofillAgentTest, MemorySearchTriggerInMiddle) {
-  base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitAndEnableFeature(features::kAutofillAtMemory);
-
-  // 1. Setup Expectations:
-  // Ignore standard Autofill noise during setup.
-  EXPECT_CALL(autofill_driver(),
-              AskForValuesToFill(
-                  _, _, _, Ne(AutofillSuggestionTriggerSource::kAtMemory), _))
-      .Times(testing::AnyNumber());
-  // Expect the specific @memory trigger.
-  EXPECT_CALL(autofill_driver(),
-              AskForValuesToFill(
-                  _, _, _, AutofillSuggestionTriggerSource::kAtMemory, _));
-
-  // 2. Act:
-  LoadHTML(R"(<input id="f">)");
-  WaitForFormsSeen();
-  Focus("f");
-  SimulateUserInputChangeForElementById("f", "a@@");
-}
-
-// Tests that typing "@@" in the password field doesn't trigger @memory.
-TEST_F(AutofillAgentTest, MemorySearchNotTriggeredOnPasswordField) {
-  base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitAndEnableFeature(features::kAutofillAtMemory);
-
-  // 1. Setup Expectations:
-  // Ignore standard Autofill noise during setup.
-  EXPECT_CALL(autofill_driver(),
-              AskForValuesToFill(
-                  _, _, _, Ne(AutofillSuggestionTriggerSource::kAtMemory), _))
-      .Times(testing::AnyNumber());
-  // Expect no @memory trigger.
-  EXPECT_CALL(autofill_driver(),
-              AskForValuesToFill(_, _, _,
-                                 AutofillSuggestionTriggerSource::kAtMemory, _))
-      .Times(0);
-
-  // 2. Act:
-  LoadHTML(R"(<input id="f" type="password">)");
-  WaitForFormsSeen();
-  Focus("f");
-  SimulateUserInputChangeForElementById("f", "a@@");
-}
-
-// Tests that ApplyFieldAction correctly handles targeted replacement of "@@"
-// in standard text inputs during the filling phase.
-TEST_F(AutofillAgentAtMemoryTest,
-       AtMemorySearchResult_ApplyFieldAction_StandardInput_Fill) {
-  LoadHTML(R"(<input id="f">)");
-  WaitForFormsSeen();
-  blink::WebInputElement input = GetInputElementById("f");
-  FieldRendererId field_id = form_util::GetFieldRendererId(input);
-  Focus("f");
-
-  // 1. Targeted replacement of the "@@" trigger: "hello @@" -> "hello result"
-  input.SetValue(blink::WebString::FromUtf16(u"hello @@"));
-  input.SetSelectionRange(8, 8);
-  autofill_agent().ApplyFieldAction(
-      mojom::FieldActionType::kReplaceAtMemoryTrigger,
-      mojom::ActionPersistence::kFill, field_id, u"result");
-  EXPECT_EQ(input.Value().Utf16(), u"hello result");
-  EXPECT_EQ(input.SelectionStart(), 12u);
-
-  // 2. Replacement of a non-empty selection: "hello [selection] world"
-  input.SetValue(blink::WebString::FromUtf16(u"hello selection world"));
-  input.SetSelectionRange(6, 15);
-  autofill_agent().ApplyFieldAction(
-      mojom::FieldActionType::kReplaceAtMemoryTrigger,
-      mojom::ActionPersistence::kFill, field_id, u"result");
-  EXPECT_EQ(input.Value().Utf16(), u"hello result world");
-  EXPECT_EQ(input.SelectionStart(), 12u);
-
-  // 3. Fallback insertion (no @@, no selection): "hello result" -> "hello
-  // result extra"
-  input.SetValue(blink::WebString::FromUtf16(u"hello result"));
-  input.SetSelectionRange(12, 12);
-  autofill_agent().ApplyFieldAction(
-      mojom::FieldActionType::kReplaceAtMemoryTrigger,
-      mojom::ActionPersistence::kFill, field_id, u"extra");
-  // Blink's `PasteText` (used by `kFill`) performs "Smart Paste", which
-  // automatically appends a leading space if the insertion point follows a
-  // word.
-  EXPECT_EQ(input.Value().Utf16(), u"hello result extra");
-  EXPECT_EQ(input.SelectionStart(), 18u);
-}
-
-// Tests that ApplyFieldAction correctly handles targeted preview
-// (suggested value) of "@@" in standard text inputs.
-TEST_F(AutofillAgentAtMemoryTest,
-       AtMemorySearchResult_ApplyFieldAction_StandardInput_Preview) {
-  LoadHTML(R"(<input id="f">)");
-  WaitForFormsSeen();
-  blink::WebInputElement input = GetInputElementById("f");
-  FieldRendererId field_id = form_util::GetFieldRendererId(input);
-  Focus("f");
-
-  // 1. Targeted replacement: "hello @@" -> "hello result"
-  input.SetValue(blink::WebString::FromUtf16(u"hello @@"));
-  input.SetSelectionRange(8, 8);
-  autofill_agent().ApplyFieldAction(
-      mojom::FieldActionType::kReplaceAtMemoryTrigger,
-      mojom::ActionPersistence::kPreview, field_id, u"result");
-  // The actual value is NOT mutated during preview.
-  EXPECT_EQ(input.Value().Utf16(), u"hello @@");
-  // The suggested value (ghost text) should be targeted.
-  EXPECT_EQ(input.SuggestedValue().Utf16(), u"hello result");
-
-  // 2. Fallback insertion (no @@): "hello result" -> "hello result extra"
-  input.SetValue(blink::WebString::FromUtf16(u"hello result"));
-  input.SetSelectionRange(12, 12);
-  // Note: Unlike `kFill`, `kPreview` uses literal string insertion and does
-  // not trigger Blink's "Smart Paste". Thus, we manually include the space
-  // in the test value here to match the desired user-visible outcome.
-  autofill_agent().ApplyFieldAction(
-      mojom::FieldActionType::kReplaceAtMemoryTrigger,
-      mojom::ActionPersistence::kPreview, field_id, u" extra");
-  EXPECT_EQ(input.SuggestedValue().Utf16(), u"hello result extra");
-}
-
-// TODO(crbug.com/479492562): Make a parametrized test with a parameter to test
-// an <input>, <textarea>, or contenteditable.
-class AutofillAgentMemoryContentEditableTriggerTest
-    : public test::AutofillRendererTest {
- public:
-  void SetUp() override {
-    test::AutofillRendererTest::SetUp();
-    LoadHTML(R"(<div id="ce" contenteditable="true"
-                     style="width:100px; height:100px;"></div>)");
+  void SetupHtmlAndGetElements(blink::WebFormControlElement& f1,
+                               blink::WebFormControlElement& f2) {
+    EXPECT_CALL(autofill_driver(), FormsSeen);
+    LoadHTML(R"(
+      <form>
+        <input id=f1>
+        <input id=f2>
+      </form>
+    )");
     WaitForFormsSeen();
-    ExecuteJavaScriptForTests("document.getElementById('ce').focus();");
+    f1 = GetFormControlElementById("f1");
+    f2 = GetFormControlElementById("f2");
   }
 
-  void SimulateTyping(const std::string& text) {
-    for (char c : text) {
-      SimulateUserTypingASCIICharacter(c, /*flush_message_loop=*/true);
-      task_environment_.FastForwardBy(base::Milliseconds(100));
-    }
-    task_environment_.RunUntilIdle();
-  }
-
-  // Sets text via innerText and moves the caret to the end. Manually notifies
-  // the agent because programmatic changes bypass Blink's editing events.
-  void SimulateComplexTyping(const std::string& text) {
-    ExecuteJavaScriptForTests(base::StringPrintf(R"(
-      const el = document.getElementById('ce');
-      el.focus();
-      el.innerText = '%s';
-      const range = document.createRange();
-      range.selectNodeContents(el);
-      range.collapse(false);
-      const sel = window.getSelection();
-      sel.removeAllRanges();
-      sel.addRange(range);
-    )",
-                                                 text.c_str()));
+  void ShowSuggestion(const blink::WebFormControlElement& element) {
     test_api(autofill_agent())
-        .ContentEditableDidChange(GetWebElementById("ce"));
-  }
-
- private:
-  base::test::ScopedFeatureList scoped_feature_list_{
-      features::kAutofillAtMemory};
-};
-
-// Tests that @memory popup is triggered if we type just the "@@".
-TEST_F(AutofillAgentMemoryContentEditableTriggerTest, TriggerViaTyping) {
-  EXPECT_CALL(autofill_driver(),
-              AskForValuesToFill(_, _, _,
-                                 AutofillSuggestionTriggerSource::kAtMemory, _))
-      .Times(1);
-
-  SimulateTyping("@@");
-}
-
-// Tests that @memory popup triggers if we type the "@@" one symbol at a
-// time, and is not triggered when the subsequent characters are typed.
-TEST_F(AutofillAgentMemoryContentEditableTriggerTest, TriggerSequence) {
-  testing::MockFunction<void(int)> check_point;
-  {
-    testing::InSequence s;
-
-    // 1. Typing first "@" -> No @memory trigger.
-    EXPECT_CALL(autofill_driver(),
-                AskForValuesToFill(
-                    _, _, _, Eq(AutofillSuggestionTriggerSource::kAtMemory), _))
-        .Times(0);
-    EXPECT_CALL(check_point, Call(1));
-
-    // 2. Typing second "@" -> @memory triggers.
-    EXPECT_CALL(autofill_driver(),
-                AskForValuesToFill(
-                    _, _, _, Eq(AutofillSuggestionTriggerSource::kAtMemory), _))
-        .Times(1);
-    EXPECT_CALL(check_point, Call(2));
-
-    // 3. Typing something else -> No @memory trigger.
-    EXPECT_CALL(autofill_driver(),
-                AskForValuesToFill(
-                    _, _, _, Eq(AutofillSuggestionTriggerSource::kAtMemory), _))
-        .Times(0);
-    EXPECT_CALL(check_point, Call(3));
-  }
-
-  // Ignore standard Autofill calls for this test.
-  EXPECT_CALL(
-      autofill_driver(),
-      AskForValuesToFill(
-          _, _, _, testing::Ne(AutofillSuggestionTriggerSource::kAtMemory), _))
-      .Times(testing::AnyNumber());
-
-  SimulateTyping("@");
-  check_point.Call(1);
-  SimulateTyping("@");
-  check_point.Call(2);
-  SimulateTyping("b");
-  check_point.Call(3);
-}
-
-// Tests that @memory popup triggers in the presence of non-trivial symbols.
-TEST_F(AutofillAgentMemoryContentEditableTriggerTest,
-       TriggerWithComplexPrecedingText) {
-  EXPECT_CALL(autofill_driver(),
-              AskForValuesToFill(
-                  _, _, _, Eq(AutofillSuggestionTriggerSource::kAtMemory), _))
-      .Times(1);
-  // SimulateUserTypingASCIICharacter doesn't support characters like '#', '(',
-  // ')', ':', so we test them separately with SimulateComplexTyping.
-  SimulateComplexTyping("Memory log #123 (Feb 2026): @@");
-}
-
-// Tests that @memory popup doesn't trigger on a single "@".
-TEST_F(AutofillAgentMemoryContentEditableTriggerTest, NoTriggerOnSingleAt) {
-  EXPECT_CALL(autofill_driver(),
-              AskForValuesToFill(
-                  _, _, _, Eq(AutofillSuggestionTriggerSource::kAtMemory), _))
-      .Times(0);
-  SimulateTyping("@");
-}
-
-// Tests that @memory popup doesn't trigger on selection.
-TEST_F(AutofillAgentMemoryContentEditableTriggerTest, NoTriggerOnSelection) {
-  EXPECT_CALL(autofill_driver(),
-              AskForValuesToFill(
-                  _, _, _, Eq(AutofillSuggestionTriggerSource::kAtMemory), _))
-      .Times(0);
-
-  // Manually set text and select it all.
-  ExecuteJavaScriptForTests(R"(
-    const el = document.getElementById('ce');
-    el.innerText = '@@';
-    const range = document.createRange();
-    range.selectNodeContents(el);
-    const sel = window.getSelection();
-    sel.removeAllRanges();
-    sel.addRange(range);
-  )");
-  test_api(autofill_agent()).ContentEditableDidChange(GetWebElementById("ce"));
-}
-
-// Tests that @memory popup triggers each time the new trigger is typed.
-TEST_F(AutofillAgentMemoryContentEditableTriggerTest, MultipleTriggers) {
-  // Verify that it triggers every time @@ is completed.
-  EXPECT_CALL(autofill_driver(),
-              AskForValuesToFill(
-                  _, _, _, Eq(AutofillSuggestionTriggerSource::kAtMemory), _))
-      .Times(2);
-
-  SimulateTyping("@@");
-  SimulateTyping("abc@@");
-}
-
-// Tests that kReplaceAtMemoryTrigger correctly replaces the "@@" trigger in a
-// contenteditable element and places the cursor after the filled value.
-TEST_F(AutofillAgentMemoryContentEditableTriggerTest,
-       ReplaceAtMemoryTriggerInContentEditable) {
-  blink::WebElement ce = GetWebElementById("ce");
-
-  // 1. Set initial text with the trigger and position cursor at the end.
-  SimulateComplexTyping("Prefix@@");
-
-  // 2. Trigger the fill action.
-  autofill_agent().ApplyFieldAction(
-      mojom::FieldActionType::kReplaceAtMemoryTrigger,
-      mojom::ActionPersistence::kFill, form_util::GetFieldRendererId(ce),
-      u"Suffix");
-
-  // 3. Verify the trigger was replaced.
-  EXPECT_EQ(u"PrefixSuffix", ce.TextContent().Utf16());
-
-  // 4. Verify the cursor position (at the end of "PrefixSuffix").
-  blink::WebRange selection =
-      GetMainFrame()->GetInputMethodController()->GetSelectionOffsets();
-  EXPECT_EQ(12, selection.StartOffset());
-  EXPECT_EQ(12, selection.EndOffset());
-}
-
-// Tests that kReplaceAtMemoryTrigger inserts a value at the current cursor
-// position if "@@" is not found immediately before the cursor (for example,
-// during context menu invocation).
-TEST_F(AutofillAgentMemoryContentEditableTriggerTest,
-       ReplaceAtMemoryTriggerForContextMenu) {
-  blink::WebElement ce = GetWebElementById("ce");
-
-  // 1. Set initial text without the trigger and position cursor at the end.
-  SimulateComplexTyping("PrefixSuffix");
-
-  // 2. Put cursor position between "Prefix" and "Suffix".
-  GetMainFrame()->SetEditableSelectionOffsets(6, 6);
-  test_api(autofill_agent()).ContentEditableDidChange(ce);
-
-  // Verify the cursor position before triggering the fill action.
-  EXPECT_EQ(6, GetMainFrame()
-                   ->GetInputMethodController()
-                   ->GetSelectionOffsets()
-                   .StartOffset());
-
-  // 3. Trigger the fill action.
-  autofill_agent().ApplyFieldAction(
-      mojom::FieldActionType::kReplaceAtMemoryTrigger,
-      mojom::ActionPersistence::kFill, form_util::GetFieldRendererId(ce),
-      u"Result");
-
-  // 4. Verify the text was inserted.
-  EXPECT_EQ(u"PrefixResultSuffix", ce.TextContent().Utf16());
-
-  // 5. Verify the cursor position (at the end of "Result").
-  // "Prefix" (6) + "Result" (6) = 12.
-  blink::WebRange selection =
-      GetMainFrame()->GetInputMethodController()->GetSelectionOffsets();
-  EXPECT_EQ(12, selection.StartOffset());
-}
-
-// Tests that kReplaceAtMemoryTrigger replaces a pre-existing selection.
-TEST_F(AutofillAgentMemoryContentEditableTriggerTest,
-       ReplaceAtMemoryTriggerWithSelection) {
-  blink::WebElement ce = GetWebElementById("ce");
-
-  // 1. Set initial text and select a middle portion.
-  ExecuteJavaScriptForTests(R"(
-    const el = document.getElementById('ce');
-    el.focus();
-    el.innerText = 'PrefixSelectedSuffix';
-    const range = document.createRange();
-    // Select "Selected" (offsets 6 to 14).
-    range.setStart(el.childNodes[0], 6);
-    range.setEnd(el.childNodes[0], 14);
-    const sel = window.getSelection();
-    sel.removeAllRanges();
-    sel.addRange(range);
-  )");
-  test_api(autofill_agent()).ContentEditableDidChange(ce);
-
-  // 2. Trigger the fill action.
-  autofill_agent().ApplyFieldAction(
-      mojom::FieldActionType::kReplaceAtMemoryTrigger,
-      mojom::ActionPersistence::kFill, form_util::GetFieldRendererId(ce),
-      u"Result");
-
-  // 3. Verify "Selected" was replaced by "Result".
-  EXPECT_EQ(u"PrefixResultSuffix", ce.TextContent().Utf16());
-
-  // 4. Verify the cursor position (at the end of "Result").
-  // "Prefix" (6) + "Result" (6) = 12.
-  blink::WebRange selection =
-      GetMainFrame()->GetInputMethodController()->GetSelectionOffsets();
-  EXPECT_EQ(12, selection.StartOffset());
-}
-
-class AutofillAgentAtMemoryInactivityNudgeTest : public AutofillAgentTest {
- public:
-  AutofillAgentAtMemoryInactivityNudgeTest() {
-    feature_list_.InitWithFeatures({features::kAutofillAtMemoryInactivityNudge,
-                                    features::kAutofillAtMemory},
-                                   {});
+        .ShowSuggestions(
+            element,
+            AutofillSuggestionTriggerSource::kFormControlElementClicked,
+            /*form_cache=*/{},
+            /*password_request=*/std::nullopt);
   }
 
  private:
   base::test::ScopedFeatureList feature_list_;
 };
 
-TEST_F(AutofillAgentAtMemoryInactivityNudgeTest, InactivityTriggersNudge) {
-  EXPECT_CALL(autofill_driver(), FormsSeen);
-  LoadHTML(R"(<body><input id="input"></body>)");
-  WaitForFormsSeen();
+TEST_F(AutofillAgentBruteForceProbingTest, NormalUsageIsNotThrottled) {
+  Init(/*enabled=*/true, /*max_tokens=*/5,
+       /*replenish_rate=*/base::Milliseconds(500));
+  blink::WebFormControlElement f1;
+  blink::WebFormControlElement f2;
+  SetupHtmlAndGetElements(f1, f2);
 
-  SimulateElementClickAndWait("input");
-
-  blink::WebFormControlElement element = GetFormControlElementById("input");
-  element.SetValue(blink::WebString::FromUtf16(u"Elvis"));
-  test_api(autofill_agent()).TextFieldValueChanged(element);
-
-  EXPECT_CALL(
-      autofill_driver(),
-      AskForValuesToFill(
-          _, _, _, AutofillSuggestionTriggerSource::kAtMemoryInactivityNudge,
-          _));
-
-  task_environment_.FastForwardBy(base::Seconds(5));
+  // 3 calls (under the 5 token limit) should be permitted.
+  EXPECT_CALL(autofill_driver(), AskForValuesToFill).Times(3);
+  for (int i = 0; i < 3; ++i) {
+    ShowSuggestion(i % 2 == 0 ? f1 : f2);
+  }
+  task_environment_.FastForwardBy(base::Milliseconds(0));
 }
 
-class EmailVerificationObserverTest : public AutofillAgentTest {
+// Verify that `ShowSuggestion` calls do not trigger lookups for
+// data once a burst exceeds the number of permitted calls.
+TEST_F(AutofillAgentBruteForceProbingTest, BurstExceedsMaxTokens) {
+  Init(/*enabled=*/true, /*max_tokens=*/3,
+       /*replenish_rate=*/base::Milliseconds(500));
+  blink::WebFormControlElement f1;
+  blink::WebFormControlElement f2;
+  SetupHtmlAndGetElements(f1, f2);
+
+  MockFunction<void(std::string_view)> check;
+  {
+    InSequence s;
+    // Phase 1: 3 calls permitted by burst budget.
+    EXPECT_CALL(check, Call("Phase 1"));
+    EXPECT_CALL(autofill_driver(), AskForValuesToFill).Times(3);
+    // Phase 2: 4th call should be throttled.
+    EXPECT_CALL(check, Call("Phase 2"));
+    EXPECT_CALL(autofill_driver(), AskForValuesToFill).Times(0);
+  }
+
+  // Phase 1: 3 calls permitted by burst budget.
+  check.Call("Phase 1");
+  for (int i = 0; i < 3; ++i) {
+    ShowSuggestion(i % 2 == 0 ? f1 : f2);
+  }
+  task_environment_.FastForwardBy(base::Milliseconds(0));
+
+  // Phase 2: 4th call should be throttled.
+  check.Call("Phase 2");
+  ShowSuggestion(f2);
+  task_environment_.FastForwardBy(base::Milliseconds(0));
+}
+
+TEST_F(AutofillAgentBruteForceProbingTest, TokenReplenishing) {
+  Init(/*enabled=*/true, /*max_tokens=*/2,
+       /*replenish_rate=*/base::Milliseconds(500));
+  blink::WebFormControlElement f1;
+  blink::WebFormControlElement f2;
+  SetupHtmlAndGetElements(f1, f2);
+
+  MockFunction<void(std::string_view)> check;
+  {
+    InSequence s;
+    // Exhaust tokens (2 calls).
+    EXPECT_CALL(check, Call("Phase 1"));
+    EXPECT_CALL(autofill_driver(), AskForValuesToFill).Times(2);
+
+    // Verify currently empty bucket throttles.
+    EXPECT_CALL(check, Call("Phase 2"));
+    EXPECT_CALL(autofill_driver(), AskForValuesToFill).Times(0);
+
+    // Exactly 1 new call should be permitted.
+    EXPECT_CALL(check, Call("Phase 3"));
+    EXPECT_CALL(autofill_driver(), AskForValuesToFill).Times(1);
+
+    // Next call immediately after should be throttled again.
+    EXPECT_CALL(check, Call("Phase 4"));
+    EXPECT_CALL(autofill_driver(), AskForValuesToFill).Times(0);
+  }
+
+  // Exhaust tokens (2 calls).
+  check.Call("Phase 1");
+  ShowSuggestion(f1);
+  ShowSuggestion(f2);
+  task_environment_.FastForwardBy(base::Milliseconds(0));
+
+  // Verify currently empty bucket throttles.
+  check.Call("Phase 2");
+  ShowSuggestion(f1);
+  task_environment_.FastForwardBy(base::Milliseconds(0));
+
+  // Advance time by 500ms to earn exactly 1 token.
+  task_environment_.FastForwardBy(base::Milliseconds(500));
+
+  // Exactly 1 new call should be permitted.
+  check.Call("Phase 3");
+  ShowSuggestion(f2);
+  task_environment_.FastForwardBy(base::Milliseconds(0));
+
+  // Next call immediately after should be throttled again.
+  check.Call("Phase 4");
+  ShowSuggestion(f1);
+  task_environment_.FastForwardBy(base::Milliseconds(0));
+}
+
+TEST_F(AutofillAgentBruteForceProbingTest, FeatureDisabled) {
+  Init(/*enabled=*/false, /*max_tokens=*/2,
+       /*replenish_rate=*/base::Milliseconds(500));
+  blink::WebFormControlElement f1;
+  blink::WebFormControlElement f2;
+  SetupHtmlAndGetElements(f1, f2);
+
+  // When disabled, calls beyond max_tokens (2) should be permitted.
+  EXPECT_CALL(autofill_driver(), AskForValuesToFill).Times(4);
+  for (int i = 0; i < 4; ++i) {
+    ShowSuggestion(i % 2 == 0 ? f1 : f2);
+  }
+  task_environment_.FastForwardBy(base::Milliseconds(0));
+}
+
+class TestAutofillVisibilityObserver
+    : public mojom::AutofillVisibilityObserver {
  public:
-  EmailVerificationObserverTest() = default;
+  explicit TestAutofillVisibilityObserver(
+      mojo::PendingReceiver<mojom::AutofillVisibilityObserver> receiver)
+      : receiver_(this, std::move(receiver)) {
+    receiver_.set_disconnect_handler(base::BindOnce(
+        &TestAutofillVisibilityObserver::OnDisconnect, base::Unretained(this)));
+  }
+
+  void OnFieldBecameVisible() override {
+    became_visible_ = true;
+    if (run_loop_) {
+      run_loop_->Quit();
+    }
+  }
+
+  void OnDisconnect() {
+    disconnected_ = true;
+    if (run_loop_) {
+      run_loop_->Quit();
+    }
+  }
+
+  bool became_visible() const { return became_visible_; }
+  bool disconnected() const { return disconnected_; }
+
+  void WaitForEvent() {
+    if (became_visible_ || disconnected_) {
+      return;
+    }
+    run_loop_ = std::make_unique<base::RunLoop>();
+    run_loop_->Run();
+  }
+
+ private:
+  mojo::Receiver<mojom::AutofillVisibilityObserver> receiver_;
+  bool became_visible_ = false;
+  bool disconnected_ = false;
+  std::unique_ptr<base::RunLoop> run_loop_;
 };
 
-// Tests that the verification token is injected into the token field if the
-// email field's current value still matches the verified email address.
-TEST_F(EmailVerificationObserverTest,
-       EmailVerificationObserverSharesTokenIfEmailMatches) {
-  EXPECT_CALL(autofill_driver(), FormsSeen);
-  LoadHTML(R"(<body>
-    <form id="form">
-      <input type="email" id="email" value="a@example.com">
-      <input type="hidden" id="verification" autocomplete="email-verification-token">
-    </form>
-  </body>)");
+class AutofillAgentTestObserveFieldVisibility : public AutofillAgentTest {};
+
+// Tests that ObserveFieldVisibility triggers OnFieldBecameVisible for a visible
+// element after the minimum visible duration (800ms) has passed.
+TEST_F(AutofillAgentTestObserveFieldVisibility,
+       VisibleElementForMinimumVisibleDuration) {
+  LoadHTML(
+      R"(<body><input id="target" style="width: 10px; height: 10px;"></body>)");
   WaitForFormsSeen();
 
-  blink::WebFormElement form_element =
-      GetWebElementById("form").DynamicTo<blink::WebFormElement>();
-  blink::WebFormControlElement email_element =
-      GetFormControlElementById("email");
-  blink::WebFormControlElement verification_element =
-      GetFormControlElementById("verification");
+  blink::WebTestingSupport::InjectInternalsObject(GetMainFrame());
 
-  autofill_agent().SendEmailVerificationToken(
-      form_util::GetFieldRendererId(email_element), "a@example.com",
-      form_util::GetFieldRendererId(verification_element), "evt_token_123");
+  mojo::PendingRemote<mojom::AutofillVisibilityObserver> remote;
+  TestAutofillVisibilityObserver observer(
+      remote.InitWithNewPipeAndPassReceiver());
+  autofill_agent().ObserveFieldVisibility(GetFieldRendererIdById("target"),
+                                          std::move(remote));
 
-  EXPECT_CALL(autofill_driver(), OnEmailVerificationTokenShared());
+  ExecuteJavaScriptForTests(
+      "window.internals.forceCompositingUpdate(document);");
+  // Fast forward by the minimum visible duration (800ms) plus some margin.
+  task_environment_.FastForwardBy(base::Milliseconds(900));
 
-  test_api(autofill_agent())
-      .email_verification_observer()
-      .WillSendSubmitEvent(form_element);
-
-  EXPECT_EQ(u"evt_token_123", verification_element.Value().Utf16());
+  observer.WaitForEvent();
+  EXPECT_TRUE(observer.became_visible());
 }
 
-// Tests that the verification token is NOT injected if the email field's
-// current value has changed since verification.
-TEST_F(EmailVerificationObserverTest,
-       EmailVerificationObserverDoesNotShareTokenIfEmailChanges) {
-  EXPECT_CALL(autofill_driver(), FormsSeen);
-  LoadHTML(R"(<body>
-    <form id="form">
-      <input type="email" id="email" value="a@example.com">
-      <input type="hidden" id="verification" autocomplete="email-verification-token">
-    </form>
-  </body>)");
+// Tests that ObserveFieldVisibility does not trigger OnFieldBecameVisible if
+// the element has been visible for less than the minimum visible duration
+// (800ms).
+TEST_F(AutofillAgentTestObserveFieldVisibility,
+       VisibleElementNotForMinimumVisibleDuration) {
+  LoadHTML(
+      R"(<body><input id="target" style="width: 10px; height: 10px;"></body>)");
   WaitForFormsSeen();
 
-  blink::WebFormElement form_element =
-      GetWebElementById("form").DynamicTo<blink::WebFormElement>();
-  blink::WebFormControlElement email_element =
-      GetFormControlElementById("email");
-  blink::WebFormControlElement verification_element =
-      GetFormControlElementById("verification");
+  blink::WebTestingSupport::InjectInternalsObject(GetMainFrame());
 
-  autofill_agent().SendEmailVerificationToken(
-      form_util::GetFieldRendererId(email_element), "a@example.com",
-      form_util::GetFieldRendererId(verification_element), "evt_token_123");
+  mojo::PendingRemote<mojom::AutofillVisibilityObserver> remote;
+  TestAutofillVisibilityObserver observer(
+      remote.InitWithNewPipeAndPassReceiver());
+  autofill_agent().ObserveFieldVisibility(GetFieldRendererIdById("target"),
+                                          std::move(remote));
 
-  email_element.SetValue(blink::WebString::FromUtf16(u"b@example.com"));
+  ExecuteJavaScriptForTests(
+      "window.internals.forceCompositingUpdate(document);");
+  // Fast forward by less than the minimum visible duration (800ms).
+  task_environment_.FastForwardBy(base::Milliseconds(500));
 
-  EXPECT_CALL(autofill_driver(), OnEmailVerificationTokenShared()).Times(0);
-
-  test_api(autofill_agent())
-      .email_verification_observer()
-      .WillSendSubmitEvent(form_element);
-
-  EXPECT_EQ(u"", verification_element.Value().Utf16());
+  EXPECT_FALSE(observer.became_visible());
+  EXPECT_FALSE(observer.disconnected());
 }
 
-// Tests that the verification token is NOT injected if the email field has
-// been cleared since verification.
-TEST_F(EmailVerificationObserverTest,
-       EmailVerificationObserverDoesNotShareTokenIfEmailIsCleared) {
-  EXPECT_CALL(autofill_driver(), FormsSeen);
+// Tests that ObserveFieldVisibility does not trigger OnFieldBecameVisible for
+// an invisible element (e.g. opacity: 0) even after the minimum visible
+// duration has passed.
+TEST_F(AutofillAgentTestObserveFieldVisibility,
+       InvisibleElementForMinimumVisibleDuration) {
   LoadHTML(R"(<body>
-    <form id="form">
-      <input type="email" id="email" value="a@example.com">
-      <input type="hidden" id="verification" autocomplete="email-verification-token">
-    </form>
+    <input id="target" style="width: 10px; height: 10px; opacity: 0;">
   </body>)");
   WaitForFormsSeen();
 
-  blink::WebFormElement form_element =
-      GetWebElementById("form").DynamicTo<blink::WebFormElement>();
-  blink::WebFormControlElement email_element =
-      GetFormControlElementById("email");
-  blink::WebFormControlElement verification_element =
-      GetFormControlElementById("verification");
+  blink::WebTestingSupport::InjectInternalsObject(GetMainFrame());
 
-  autofill_agent().SendEmailVerificationToken(
-      form_util::GetFieldRendererId(email_element), "a@example.com",
-      form_util::GetFieldRendererId(verification_element), "evt_token_123");
+  mojo::PendingRemote<mojom::AutofillVisibilityObserver> remote;
+  TestAutofillVisibilityObserver observer(
+      remote.InitWithNewPipeAndPassReceiver());
+  autofill_agent().ObserveFieldVisibility(GetFieldRendererIdById("target"),
+                                          std::move(remote));
 
-  email_element.SetValue(blink::WebString::FromUtf16(u""));
+  ExecuteJavaScriptForTests(
+      "window.internals.forceCompositingUpdate(document);");
+  // Fast forward by the minimum visible duration (800ms) plus some margin.
+  task_environment_.FastForwardBy(base::Milliseconds(900));
 
-  EXPECT_CALL(autofill_driver(), OnEmailVerificationTokenShared()).Times(0);
+  EXPECT_FALSE(observer.became_visible());
+  EXPECT_FALSE(observer.disconnected());
+}
 
-  test_api(autofill_agent())
-      .email_verification_observer()
-      .WillSendSubmitEvent(form_element);
+// Tests that ObserveFieldVisibility disconnects the observer immediately for a
+// non-existent element.
+TEST_F(AutofillAgentTestObserveFieldVisibility, NonExistentElement) {
+  LoadHTML(R"(<body><input></body>)");
+  WaitForFormsSeen();
 
-  EXPECT_EQ(u"", verification_element.Value().Utf16());
+  mojo::PendingRemote<mojom::AutofillVisibilityObserver> remote;
+  TestAutofillVisibilityObserver observer(
+      remote.InitWithNewPipeAndPassReceiver());
+  autofill_agent().ObserveFieldVisibility(FieldRendererId(123),
+                                          std::move(remote));
+
+  observer.WaitForEvent();
+  EXPECT_TRUE(observer.disconnected());
+  EXPECT_FALSE(observer.became_visible());
 }
 
 }  // namespace

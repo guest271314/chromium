@@ -10,7 +10,6 @@
 #include "base/i18n/rtl.h"
 #include "build/build_config.h"
 #include "chrome/browser/enterprise/data_protection/data_protection_clipboard_utils.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/find_bar/find_bar_controller.h"
 #include "chrome/browser/ui/view_ids.h"
 #include "chrome/browser/ui/views/find_bar_view.h"
@@ -38,11 +37,6 @@
 
 #if BUILDFLAG(IS_WIN)
 #include <windows.h>
-#endif
-
-#if defined(IS_AURA)
-#include "ui/aura/window.h"
-#include "ui/views/view_constants_aura.h"
 #endif
 
 using input::NativeWebKeyboardEvent;
@@ -101,6 +95,7 @@ gfx::Rect GetLocationForFindBarView(gfx::Rect view_location,
   } else {
     view_location.set_x(std::max(view_location.x(), clipping_box.x()));
   }
+  view_location.set_y(std::max(view_location.y(), clipping_box.y()));
 
   gfx::Rect new_pos = view_location;
 
@@ -189,10 +184,6 @@ FindBarHost::FindBarHost(FindBarOwner* find_bar_owner)
   params.activatable = views::Widget::InitParams::Activatable::kNo;
   host_->Init(std::move(params));
   host_->SetContentsView(std::move(clip_view));
-#if defined(IS_AURA)
-  host_->GetNativeView()->SetProperty(views::kHostViewKey,
-                                      browser_view->find_bar_host_view());
-#endif
 
   // Start listening to focus changes, so we can register and unregister our
   // own handler for Escape.
@@ -284,7 +275,7 @@ void FindBarHost::SetFindBarController(FindBarController* find_bar_controller) {
 
 void FindBarHost::Show(bool animate, bool focus) {
   RestoreOrCreateFocusTracker();
-  DCHECK(host_);
+  CHECK(host_, base::NotFatalUntil::M162);
 
   SetDialogPosition(GetDialogPosition(gfx::Rect()));
 
@@ -569,10 +560,6 @@ void FindBarHost::MoveWindowIfNecessaryWithRect(
 
   gfx::Rect new_pos = GetDialogPosition(selection_rect);
   SetDialogPosition(new_pos);
-
-  // May need to redraw our frame to accommodate bookmark bar styles.
-  view_->DeprecatedLayoutImmediately();  // Bounds may have changed.
-  view_->SchedulePaint();
 }
 
 void FindBarHost::SaveFocusTracker() {
@@ -623,7 +610,7 @@ void FindBarHost::OnVisibilityChanged() {
 }
 
 void FindBarHost::RegisterAccelerators() {
-  DCHECK(!esc_accel_target_registered_);
+  CHECK(!esc_accel_target_registered_, base::NotFatalUntil::M162);
   ui::Accelerator escape(ui::VKEY_ESCAPE, ui::EF_NONE);
   focus_manager_->RegisterAccelerator(
       escape, ui::AcceleratorManager::kNormalPriority, this);
@@ -639,7 +626,7 @@ void FindBarHost::UnregisterAccelerators() {
   ui::Accelerator ctrl_ret(ui::VKEY_RETURN, ui::EF_CONTROL_DOWN);
   focus_manager_->UnregisterAccelerator(ctrl_ret, this);
 
-  DCHECK(esc_accel_target_registered_);
+  CHECK(esc_accel_target_registered_, base::NotFatalUntil::M162);
   ui::Accelerator escape(ui::VKEY_ESCAPE, ui::EF_NONE);
   focus_manager_->UnregisterAccelerator(escape, this);
   esc_accel_target_registered_ = false;
@@ -748,7 +735,7 @@ void FindBarHost::AnimationEnded(const gfx::Animation* animation) {
 
   if (!animation_->IsShowing()) {
     // Animation has finished closing.
-    DCHECK(host_);
+    CHECK(host_, base::NotFatalUntil::M162);
     host_->Hide();
     is_visible_ = false;
     OnVisibilityChanged();

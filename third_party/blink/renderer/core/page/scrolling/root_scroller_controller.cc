@@ -4,6 +4,8 @@
 
 #include "third_party/blink/renderer/core/page/scrolling/root_scroller_controller.h"
 
+#include <cmath>
+
 #include "third_party/blink/renderer/core/css/style_change_reason.h"
 #include "third_party/blink/renderer/core/dom/document.h"
 #include "third_party/blink/renderer/core/dom/element.h"
@@ -59,19 +61,39 @@ bool FillsViewport(const Element& element) {
   if (!quad.IsRectilinear())
     return false;
 
-  gfx::Rect bounding_box = gfx::ToEnclosingRect(quad.BoundingBox());
+  const gfx::Rect bounding_box = gfx::ToEnclosingRect(quad.BoundingBox());
+  if (bounding_box.IsEmpty()) {
+    return false;
+  }
 
-  gfx::Size icb_size = top_document.GetLayoutView()->GetLayoutSize();
+  gfx::Size icb_size =
+      top_document.GetLayoutView()->GetLayoutSize(kExcludeScrollbars);
 
   float zoom = top_document.GetFrame()->LayoutZoomFactor();
   gfx::Size controls_hidden_size = gfx::ToCeiledSize(gfx::ScaleSize(
       top_document.View()->LargeViewportSizeForViewportUnits(), zoom));
 
-  if (bounding_box.size() != icb_size &&
-      bounding_box.size() != controls_hidden_size)
-    return false;
+  // When fractional zoom/DPR is present, subpixel layout unit quantization
+  // can cause the enclosing bounding box and ceiled viewport size to differ
+  // by up to 1px, or produce subpixel origin offsets that floor to -1.
+  // On integer scales, require an exact match.
+  constexpr float kFractionalScaleEpsilon = 0.001f;
+  const bool is_fractional_scale =
+      std::abs(zoom - std::round(zoom)) > kFractionalScaleEpsilon;
+  const int tolerance = is_fractional_scale ? 1 : 0;
+  auto matches_size = [tolerance](const gfx::Size& actual,
+                                  const gfx::Size& target) {
+    return std::abs(actual.width() - target.width()) <= tolerance &&
+           std::abs(actual.height() - target.height()) <= tolerance;
+  };
 
-  return bounding_box.origin().IsOrigin();
+  if (!matches_size(bounding_box.size(), icb_size) &&
+      !matches_size(bounding_box.size(), controls_hidden_size)) {
+    return false;
+  }
+
+  return std::abs(bounding_box.x()) <= tolerance &&
+         std::abs(bounding_box.y()) <= tolerance;
 }
 
 // If the element is an iframe this grabs the ScrollableArea for the owned
@@ -285,12 +307,9 @@ bool RootScrollerController::IsValidImplicit(const Element& element) const {
   if (!IsValidRootScroller(element))
     return false;
 
-  const ComputedStyle* style = element.GetLayoutObject()->Style();
-  if (!style)
-    return false;
-
   // Do not implicitly promote things that are partially or fully invisible.
-  if (style->HasOpacity() || !style->VisibleToHitTesting()) {
+  const ComputedStyle& style = element.GetLayoutObject()->Style();
+  if (style.HasOpacity() || !style.VisibleToHitTesting()) {
     return false;
   }
 
@@ -310,17 +329,16 @@ bool RootScrollerController::IsValidImplicit(const Element& element) const {
     // the URL bar movement). Test it for scrolling so that we only promote if
     // we know we won't block scrolling the main document.
     if (IsA<LayoutView>(ancestor)) {
-      const ComputedStyle* ancestor_style = ancestor->Style();
-      DCHECK(ancestor_style);
-
+      const ComputedStyle& ancestor_style = ancestor->Style();
       PaintLayerScrollableArea* area = ancestor->GetScrollableArea();
       DCHECK(area);
 
-      if (ancestor_style->ScrollsOverflowY() && area->HasVerticalOverflow())
+      if (ancestor_style.ScrollsOverflowY() && area->HasVerticalOverflow()) {
         return false;
+      }
     } else {
       if (ancestor->ShouldClipOverflowAlongEitherAxis() ||
-          ancestor->HasMask() || ancestor->HasClip() ||
+          ancestor->HasMask() || ancestor->HasCSSClip() ||
           ancestor->HasClipPath()) {
         return false;
       }

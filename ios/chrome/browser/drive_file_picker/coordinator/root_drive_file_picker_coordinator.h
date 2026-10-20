@@ -7,6 +7,8 @@
 
 #import "ios/chrome/browser/shared/coordinator/chrome_coordinator/chrome_coordinator.h"
 
+@class ComposeboxSnackbarPresenter;
+@protocol DriveFilePickerResponseCommands;
 @protocol SystemIdentity;
 namespace web {
 class WebState;
@@ -15,10 +17,20 @@ class WebState;
 // Coordinator of the Drive file picker.
 @interface RootDriveFilePickerCoordinator : ChromeCoordinator
 
+// Commands handler to forward Drive file picker results or cancellation to.
+@property(nonatomic, weak) id<DriveFilePickerResponseCommands> responseHandler;
+
+// Maximum number of attachments allowed when presented for composebox.
+@property(nonatomic, assign) NSUInteger maxAttachmentCount;
+
+// Snackbar presenter to show limit notifications.
+@property(nonatomic, weak) ComposeboxSnackbarPresenter* snackbarPresenter;
+
 // Creates a coordinator that uses `viewController`, `browser` and `webState`.
 - (instancetype)initWithBaseViewController:(UIViewController*)viewController
                                    browser:(Browser*)browser
                                   webState:(web::WebState*)webState
+                             forComposebox:(BOOL)forComposebox
     NS_DESIGNATED_INITIALIZER;
 - (instancetype)initWithBaseViewController:(UIViewController*)viewController
                                    browser:(Browser*)browser NS_UNAVAILABLE;

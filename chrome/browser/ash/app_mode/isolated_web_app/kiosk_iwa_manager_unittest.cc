@@ -15,7 +15,6 @@
 #include "chrome/browser/ash/app_mode/isolated_web_app/kiosk_iwa_data.h"
 #include "chrome/browser/ash/app_mode/kiosk_app_manager_observer.h"
 #include "chrome/browser/ash/app_mode/kiosk_cryptohome_remover.h"
-#include "chrome/browser/ash/login/users/fake_chrome_user_manager.h"
 #include "chrome/browser/ash/settings/scoped_testing_cros_settings.h"
 #include "chrome/browser/ash/settings/stub_cros_settings_provider.h"
 #include "chrome/test/base/testing_browser_process.h"
@@ -24,9 +23,10 @@
 #include "chromeos/ash/components/settings/cros_settings.h"
 #include "chromeos/ash/components/settings/cros_settings_names.h"
 #include "components/account_id/account_id.h"
+#include "components/account_id/account_id_literal.h"
 #include "components/prefs/pref_registry_simple.h"
 #include "components/prefs/testing_pref_service.h"
-#include "components/user_manager/scoped_user_manager.h"
+#include "components/session_manager/test/user_session_test_environment.h"
 #include "content/public/test/browser_task_environment.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -39,13 +39,13 @@ constexpr char kTestWebBundleId[] =
     "aerugqztij5biqquuk3mfwpsaibuegaqcitgfchwuosuofdjabzqaaic";
 constexpr char kTestUpdateUrl[] = "https://example.com/update.json";
 
-AccountId CreateAccountIdFromPolicy(const std::string& account_id) {
-  return AccountId::FromUserEmail(policy::GenerateDeviceLocalAccountUserId(
-      account_id, policy::DeviceLocalAccountType::kKioskIsolatedWebApp));
-}
-
-const AccountId kExpectedIwaKioskAccountId =
-    CreateAccountIdFromPolicy(kTestIwaKioskAccountIdSetting);
+// The account id `KioskIwaManager` derives from the policy setting above.
+// `policy::GenerateDeviceLocalAccountUserId()` hex encodes the setting name
+// and appends the domain for `DeviceLocalAccountType::kKioskIsolatedWebApp`.
+constexpr AccountId::Literal kExpectedIwaKioskAccountId =
+    AccountId::Literal::FromUserEmail(
+        "6977615f6b696f736b5f6163636f756e74@"
+        "isolated-kiosk-apps.device-local.localhost");
 
 // Creates an IWA device local account.
 // Create a valid account with default params.
@@ -120,7 +120,9 @@ class MockKioskAppManagerObserver : public KioskAppManagerObserver {
 class KioskIwaManagerTest : public testing::Test {
  public:
   KioskIwaManagerTest()
-      : fake_user_manager_(std::make_unique<ash::FakeChromeUserManager>()),
+      : user_session_test_environment_(
+            std::make_unique<ash::test::UserSessionTestEnvironment>(
+                TestingBrowserProcess::GetGlobal()->local_state())),
         kiosk_cryptohome_remover_(
             TestingBrowserProcess::GetGlobal()->local_state()),
         iwa_manager_(
@@ -163,8 +165,8 @@ class KioskIwaManagerTest : public testing::Test {
       base::test::TaskEnvironment::TimeSource::MOCK_TIME};
   base::test::ScopedFeatureList scoped_feature_list_;
   ash::ScopedTestingCrosSettings scoped_testing_cros_settings_;
-  user_manager::TypedScopedUserManager<ash::FakeChromeUserManager>
-      fake_user_manager_;
+  std::unique_ptr<ash::test::UserSessionTestEnvironment>
+      user_session_test_environment_;
 
   MockKioskAppManagerObserver observer_;
   KioskCryptohomeRemover kiosk_cryptohome_remover_;

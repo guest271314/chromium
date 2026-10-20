@@ -126,12 +126,6 @@ CodeCacheHost* ExecutionContext::GetCodeCacheHostFromContext(
 
   DCHECK(execution_context->IsWorkletGlobalScope());
 
-  if (execution_context->IsSharedStorageWorkletGlobalScope()) {
-    auto* global_scope =
-        DynamicTo<WorkerOrWorkletGlobalScope>(execution_context);
-    return global_scope->GetCodeCacheHost();
-  }
-
   return nullptr;
 }
 
@@ -284,18 +278,19 @@ void ExecutionContext::DispatchErrorEvent(
     ErrorEvent* error_event,
     SanitizeScriptErrors sanitize_script_errors) {
   if (in_dispatch_error_event_) {
-    pending_exceptions_.push_back(error_event);
+    pending_exceptions_.emplace_back(error_event, sanitize_script_errors);
     return;
   }
 
   // First report the original exception and only then all the nested ones.
   if (!DispatchErrorEventInternal(error_event, sanitize_script_errors))
-    ExceptionThrown(error_event);
+    ExceptionThrown(error_event, sanitize_script_errors);
 
   if (pending_exceptions_.empty())
     return;
-  for (ErrorEvent* e : pending_exceptions_)
-    ExceptionThrown(e);
+  for (const auto& [pending_event, pending_sanitize] : pending_exceptions_) {
+    ExceptionThrown(pending_event, pending_sanitize);
+  }
   pending_exceptions_.clear();
 }
 
@@ -307,8 +302,7 @@ bool ExecutionContext::DispatchErrorEventInternal(
     return false;
 
   if (sanitize_script_errors == SanitizeScriptErrors::kSanitize) {
-    error_event = ErrorEvent::CreateSanitizedError(
-        ToScriptState(this, *error_event->World()));
+    error_event = ErrorEvent::CreateSanitizedError(error_event->World());
   }
 
   DCHECK(!in_dispatch_error_event_);
@@ -449,11 +443,16 @@ bool ExecutionContext::IsSecureContext(String& error_message) const {
 
 // https://w3c.github.io/webappsec-referrer-policy/#determine-requests-referrer
 String ExecutionContext::OutgoingReferrer() const {
+  return OutgoingReferrerUrl().GetString();
+}
+
+KURL ExecutionContext::OutgoingReferrerUrl() const {
   // Step 3.1: "If environment's global object is a Window object, then"
-  // This case is implemented in Document::OutgoingReferrer().
+  // This case is overridden and implemented in
+  // LocalDOMWindow::OutgoingReferrerUrl().
 
   // Step 3.2: "Otherwise, let referrerSource be environment's creation URL."
-  return Url().StrippedForUseAsReferrer();
+  return Url().UrlStrippedForUseAsReferrer();
 }
 
 void ExecutionContext::ParseAndSetReferrerPolicy(
@@ -512,7 +511,10 @@ void ExecutionContext::SetReferrerPolicy(
   if (GetReferrerPolicy() != network::mojom::ReferrerPolicy::kDefault)
     UseCounter::Count(this, WebFeature::kResetReferrerPolicy);
 
-  policy_container_->UpdateReferrerPolicy(referrer_policy);
+  InitiatorStateToken new_initiator_state_token;
+  policy_container_->UpdateReferrerPolicy(referrer_policy,
+                                          new_initiator_state_token);
+  SetInitiatorStateToken(new_initiator_state_token);
 }
 
 void ExecutionContext::SetPolicyContainer(
@@ -609,6 +611,11 @@ bool ExecutionContext::IsFeatureEnabled(
     mojom::blink::DocumentPolicyFeature feature,
     PolicyValue threshold_value) const {
   return security_context_.IsFeatureEnabled(feature, threshold_value).enabled;
+}
+
+PolicyValue ExecutionContext::GetDocumentPolicyValue(
+    mojom::blink::DocumentPolicyFeature feature) const {
+  return security_context_.GetDocumentPolicyValue(feature);
 }
 
 bool ExecutionContext::IsFeatureEnabled(

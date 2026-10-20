@@ -53,7 +53,6 @@ const wchar_t kRegLastRunTimeField[] = L"lastrun";
 const wchar_t kRegMetricsId[] = L"metricsid";
 const wchar_t kRegMetricsIdEnabledDate[] = L"metricsid_enableddate";
 const wchar_t kRegMetricsIdInstallDate[] = L"metricsid_installdate";
-const wchar_t kRegMetricsReportingLevel[] = L"MetricsReportingLevel";
 const wchar_t kRegMSIField[] = L"msi";
 const wchar_t kRegNameField[] = L"name";
 const wchar_t kRegOemInstallField[] = L"oeminstall";
@@ -62,11 +61,8 @@ const wchar_t kRegPathField[] = L"path";
 const wchar_t kRegRLZBrandField[] = L"brand";
 const wchar_t kRegRLZReactivationBrandField[] = L"reactivationbrand";
 const wchar_t kRegReferralField[] = L"referral";
-const wchar_t kRegRunAsUserField[] = L"RunAsUser";
-const wchar_t kRegSendsPingsField[] = L"SendsPings";
 const wchar_t kRegUninstallCmdLine[] = L"UninstallCmdLine";
 const wchar_t kRegUsageStatsField[] = L"usagestats";
 const wchar_t kRegVersionField[] = L"pv";
-const wchar_t kRegWebAccessibleField[] = L"WebAccessible";
 
 }  // namespace google_update

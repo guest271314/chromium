@@ -122,7 +122,7 @@ class CalculationValueHandleMap
 };
 
 static CalculationValueHandleMap& CalcHandles() {
-  DCHECK(IsMainThread());
+  CHECK(IsMainThread());
   DEFINE_STATIC_LOCAL(Persistent<CalculationValueHandleMap>, handle_map,
                       (MakeGarbageCollected<CalculationValueHandleMap>()));
   return *handle_map;
@@ -236,6 +236,26 @@ void Length::DecrementCalculatedCount() const {
   CalcHandles().DecrementCount(CalculationHandle());
 }
 
+Length& Length::AssignSlow(const Length& length) {
+  if (this == &length) {
+    return *this;
+  }
+  if (length.IsCalculated()) {
+    length.IncrementCalculatedCount();
+  }
+  if (IsCalculated()) {
+    DecrementCalculatedCount();
+  }
+  type_ = length.type_;
+  quirk_ = length.quirk_;
+  if (length.IsCalculated()) {
+    calculation_handle_ = length.calculation_handle_;
+  } else {
+    value_ = length.value_;
+  }
+  return *this;
+}
+
 unsigned Length::GetCalculatedCountForTest() const {
   DCHECK(IsCalculated());
   return CalcHandles().GetCount(CalculationHandle());
@@ -248,10 +268,7 @@ wtf_size_t Length::GetCalcHandleMapSizeForTest() {
 float Length::NonNanCalculatedValue(float max_value,
                                     const EvaluationInput& input) const {
   DCHECK(IsCalculated());
-  float result = GetCalculationValue().Evaluate(max_value, input);
-  if (std::isnan(result))
-    return 0;
-  return result;
+  return GetCalculationValue().Evaluate(max_value, input);
 }
 
 bool Length::HasOnlyFixedAndPercent() const {
@@ -358,8 +375,8 @@ String Length::ToString() const {
   return builder.ToString();
 }
 
-unsigned Length::GetHash() const {
-  unsigned hash = 0;
+uint32_t Length::GetHash() const {
+  uint32_t hash = 0;
   AddFloatToHash(hash, value_);
   AddIntToHash(hash, type_);
   AddIntToHash(hash, quirk_);

@@ -17,6 +17,14 @@ namespace content {
 class BrowserContext;
 }  // namespace content
 
+namespace autofill {
+class RegionDataLoader;
+}  // namespace autofill
+
+namespace gfx {
+class Size;
+}  // namespace gfx
+
 namespace payments {
 
 class PaymentRequestDialog;
@@ -40,14 +48,12 @@ class ChromePaymentRequestDelegate : public ContentPaymentRequestDelegate {
   void CloseDialog() override;
   void ShowErrorMessage() override;
   void ShowProcessingSpinner() override;
+  void ShowLoadingView() override;
   autofill::PersonalDataManager* GetPersonalDataManager() override;
   const std::string& GetApplicationLocale() const override;
   bool IsOffTheRecord() const override;
   const GURL& GetLastCommittedURL() const override;
   autofill::AddressNormalizer* GetAddressNormalizer() override;
-  autofill::RegionDataLoader* GetRegionDataLoader() override;
-  ukm::UkmRecorder* GetUkmRecorder() override;
-  std::string GetAuthenticatedEmail() const override;
   PrefService* GetPrefService() override;
   bool IsBrowserWindowActive() const override;
 
@@ -60,6 +66,7 @@ class ChromePaymentRequestDelegate : public ContentPaymentRequestDelegate {
   PaymentRequestDisplayManager* GetDisplayManager() override;
   void EmbedPaymentHandlerWindow(
       const GURL& url,
+      const std::optional<gfx::Size>& preferred_web_contents_size,
       PaymentHandlerOpenWindowCallback callback) override;
   bool IsInteractive() const override;
   std::string GetInvalidSslCertificateErrorMessage() override;
@@ -67,9 +74,10 @@ class ChromePaymentRequestDelegate : public ContentPaymentRequestDelegate {
   PaymentRequestDialog* GetDialogForTesting() override;
 
   const base::WeakPtr<PaymentUIObserver> GetPaymentUIObserver() const override;
-  std::optional<base::UnguessableToken> GetChromeOSTWAInstanceId()
-      const override;
   std::string GetSecurePaymentConfirmationKeychainAccessGroup() const override;
+
+  // Creates a new region data loader that will self delete, or a test mock.
+  virtual autofill::RegionDataLoader* GetRegionDataLoader();
 
  protected:
   // Reference to the dialog so that we can satisfy calls to CloseDialog(). This

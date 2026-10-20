@@ -10,6 +10,7 @@
 #include "base/json/json_reader.h"
 #include "base/path_service.h"
 #include "base/threading/scoped_blocking_call.h"
+#include "base/threading/thread_restrictions.h"
 #include "build/build_config.h"
 #include "chrome/common/chrome_paths.h"
 #include "chrome/test/base/in_process_browser_test.h"
@@ -145,7 +146,14 @@ INSTANTIATE_TEST_SUITE_P(All,
                          LogNetLogExplicitFileTest,
                          ::testing::Values(nullptr, "IncludeSensitive"));
 
-IN_PROC_BROWSER_TEST_P(LogNetLogExplicitFileTest, Basic) {
+// TODO(crbug.com/521183804): Flaky on Chrome OS ASAN/LSAN.
+#if BUILDFLAG(IS_CHROMEOS) && \
+    (defined(ADDRESS_SANITIZER) || defined(LEAK_SANITIZER))
+#define MAYBE_Basic DISABLED_Basic
+#else
+#define MAYBE_Basic Basic
+#endif
+IN_PROC_BROWSER_TEST_P(LogNetLogExplicitFileTest, MAYBE_Basic) {
   ASSERT_TRUE(embedded_test_server()->Start());
   GURL url(embedded_test_server()->GetURL("/set_cookie_header.html"));
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), url));

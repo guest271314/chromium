@@ -17,7 +17,6 @@
 #include "net/reporting/reporting_header_parser.h"
 #include "net/url_request/clear_site_data.h"
 #include "services/network/public/cpp/avail_language_header_parser.h"
-#include "services/network/public/cpp/browsing_topics_parser.h"
 #include "services/network/public/cpp/client_hints.h"
 #include "services/network/public/cpp/connection_allowlist.h"
 #include "services/network/public/cpp/connection_allowlist_parser.h"
@@ -64,6 +63,8 @@ mojom::ParsedHeadersPtr PopulateParsedHeaders(
   if (base::FeatureList::IsEnabled(network::features::kConnectionAllowlists)) {
     parsed_headers->connection_allowlists =
         ParseConnectionAllowlistsFromHeaders(*headers, url);
+    parsed_headers->allow_connection_allowlist_from =
+        ParseAllowConnectionAllowlistFromHeader(*headers);
   }
 
   if (base::FeatureList::IsEnabled(network::features::kIntegrityPolicyScript)) {
@@ -74,9 +75,8 @@ mojom::ParsedHeadersPtr PopulateParsedHeaders(
                                         IntegrityPolicyHeaderType::kReportOnly);
   }
 
-  std::string origin_agent_cluster =
-      headers->GetNormalizedHeader("Origin-Agent-Cluster")
-          .value_or(std::string());
+  const std::optional<std::string> origin_agent_cluster =
+      headers->GetNormalizedHeader("Origin-Agent-Cluster");
   parsed_headers->origin_agent_cluster =
       ParseOriginAgentCluster(origin_agent_cluster);
 
@@ -96,8 +96,7 @@ mojom::ParsedHeadersPtr PopulateParsedHeaders(
       clear_site_data_set.contains(net::kDatatypeWildcard)) {
     parsed_headers->client_hints_ignored_due_to_clear_site_data_header = true;
   }
-  if (!features::ShouldBlockAcceptClientHintsFor(url::Origin::Create(url)) &&
-      !parsed_headers->client_hints_ignored_due_to_clear_site_data_header) {
+  if (!parsed_headers->client_hints_ignored_due_to_clear_site_data_header) {
     if (std::optional<std::string> accept_ch =
             headers->GetNormalizedHeader("Accept-CH")) {
       parsed_headers->accept_ch = ParseClientHintsHeader(*accept_ch);
@@ -166,20 +165,13 @@ mojom::ParsedHeadersPtr PopulateParsedHeaders(
   // The code here only parses the No-Vary-Search header if it is present.
   parsed_headers->no_vary_search_with_parse_error = ParseNoVarySearch(*headers);
 
-  parsed_headers->observe_browsing_topics =
-      ParseObserveBrowsingTopicsFromHeader(*headers);
-
   parsed_headers->allow_cross_origin_event_reporting =
       ParseAllowCrossOriginEventReportingFromHeader(*headers);
 
-  if (base::FeatureList::IsEnabled(
-          network::features::kDeclarativePerformanceObserver)) {
-    if (std::optional<std::string> performance_observer_header =
-            headers->GetNormalizedHeader("Performance-Observer")) {
-      parsed_headers->declarative_performance_observer_policy =
-          ParseDeclarativePerformanceObserverPolicy(
-              *performance_observer_header);
-    }
+  if (std::optional<std::string> performance_observer_header =
+          headers->GetNormalizedHeader("Performance-Observer")) {
+    parsed_headers->declarative_performance_observer_policy =
+        ParseDeclarativePerformanceObserverPolicy(*performance_observer_header);
   }
 
   if (std::optional<std::string> prefetch_activation_beacon =

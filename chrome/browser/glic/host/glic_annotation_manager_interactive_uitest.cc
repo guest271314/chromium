@@ -2,6 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "chrome/browser/glic/host/glic_annotation_manager.h"
+
 #include <memory>
 
 #include "base/callback_list.h"
@@ -15,11 +17,11 @@
 #include "chrome/browser/glic/glic_metrics.h"
 #include "chrome/browser/glic/host/context/glic_page_context_fetcher.h"
 #include "chrome/browser/glic/host/glic.mojom-shared.h"
-#include "chrome/browser/glic/host/glic_annotation_manager.h"
 #include "chrome/browser/glic/public/glic_instance_metrics_backwards_compatibility.h"
 #include "chrome/browser/glic/test_support/interactive_glic_test.h"
 #include "chrome/browser/glic/test_support/interactive_test_util.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/common/chrome_features.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "chrome/test/interaction/interactive_browser_test.h"
@@ -201,10 +203,11 @@ class GlicAnnotationManagerUiTestBase : public InteractiveGlicTest {
 
       base::RunLoop run_loop(base::RunLoop::Type::kNestableTasksAllowed);
 
-      auto options = mojom::GetTabContextOptions::New();
-      options->include_annotated_page_content = true;
+      auto options = mojom::TabContextOptions::New();
+      options->annotated_page_content = true;
 
-      FocusedTabData data = GetHost()->sharing_manager().GetFocusedTabData();
+      FocusedTabData data =
+          GetHost()->GetSharingManagerInternal().GetFocusedTabData();
       CHECK(data.focus());
       FetchPageContext(
           data.focus(), *options,
@@ -428,7 +431,8 @@ class GlicAnnotationManagerUiTestBase : public InteractiveGlicTest {
                 ->web_contents();
       }
       CHECK(GetHost());
-      GlicSharingManager* sharing_manager = &GetHost()->sharing_manager();
+      GlicSharingManagerInternal* sharing_manager =
+          &GetHost()->GetSharingManagerInternal();
       FocusedTabData focused_tab_data = sharing_manager->GetFocusedTabData();
       content::WebContents* focused_web_contents =
           focused_tab_data.focus() ? focused_tab_data.focus()->GetContents()
@@ -467,7 +471,7 @@ class GlicAnnotationManagerUiTestBase : public InteractiveGlicTest {
   auto UserSwitchesConversation() {
     const DeepQuery kOnActiveThreadChanged{{"#dropScrollToHighlightBtn"}};
     static constexpr char kClickFn[] = "el => el.click()";
-    return ExecuteJsAt(test::kGlicContentsElementId, kOnActiveThreadChanged,
+    return ExecuteJsAt(kGlicContentsElementId, kOnActiveThreadChanged,
                        kClickFn);
   }
 
@@ -707,23 +711,24 @@ class MAYBE_GlicAnnotationManagerUiTest
   }
   ~MAYBE_GlicAnnotationManagerUiTest() override = default;
 
-#define FORWARD_METRICS_CALL(method, ...)                               \
-  GlicKeyedServiceFactory::GetGlicKeyedService(browser()->GetProfile()) \
-      ->metrics()                                                       \
-      ->method(__VA_ARGS__);                                            \
-  GetGlicInstanceImpl()->instance_metrics().method(__VA_ARGS__);
-
-  void OnUserInputSubmitted(mojom::WebClientMode mode) {
-    FORWARD_METRICS_CALL(OnUserInputSubmitted, mode);
+  // Mirrors the metrics calls made by GlicWebClientHandler.
+  void OnUserInputSubmitted(
+      mojom::WebClientMode mode,
+      mojom::PromptType prompt_type = mojom::PromptType::kUnspecified) {
+    GlicKeyedServiceFactory::GetGlicKeyedService(browser()->GetProfile())
+        ->metrics()
+        ->OnUserInputSubmitted();
+    GetGlicInstanceImpl()->instance_metrics().OnUserInputSubmitted(mode,
+                                                                   prompt_type);
   }
 
-  void OnResponseStarted() { FORWARD_METRICS_CALL(OnResponseStarted); }
+  void OnResponseStarted() {
+    GetGlicInstanceImpl()->instance_metrics().OnResponseStarted();
+  }
 
   void OnResponseStopped(mojom::ResponseStopCause cause) {
-    FORWARD_METRICS_CALL(OnResponseStopped, cause);
+    GetGlicInstanceImpl()->instance_metrics().OnResponseStopped(cause);
   }
-
-#undef FORWARD_METRICS_CALL
 
  private:
   base::test::ScopedFeatureList feature_list_;
@@ -853,7 +858,7 @@ IN_PROC_BROWSER_TEST_F(
           mojom::ScrollToErrorReason::kFocusedTabChangedOrNavigated));
 }
 
-// This tests a state where GlicSharingManager has no focused tab. It
+// This tests a state where GlicSharingManagerInternal has no focused tab. It
 // relies on chrome://settings not being considered as a valid URL by the class.
 IN_PROC_BROWSER_TEST_F(MAYBE_GlicAnnotationManagerUiTest, NoFocusedTab) {
   RunTestSequence(InstrumentTab(kActiveTabId),
@@ -1280,10 +1285,16 @@ IN_PROC_BROWSER_TEST_F(
       // contents isn't visible.
       CheckResult(
           [&]() {
-            return content::EvalJs(GetGlicInstance()
-                                       ->host()
-                                       .webui_contents()
-                                       ->GetInnerWebContents()[0],
+            content::RenderFrameHost* frame = FindGlicGuestMainFrame();
+            if (!frame && GetHost() && GetHost()->webui_contents() &&
+                !GetHost()->webui_contents()->GetInnerWebContents().empty()) {
+              frame = GetHost()
+                          ->webui_contents()
+                          ->GetInnerWebContents()[0]
+                          ->GetPrimaryMainFrame();
+            }
+            CHECK(frame);
+            return content::EvalJs(frame,
                                    R"js(
               new Promise(resolve => {
                 window.scrollToPromise.catch(e => {
@@ -1404,7 +1415,7 @@ IN_PROC_BROWSER_TEST_F(MAYBE_GlicAnnotationManagerUiTest, RecordsSessionCount) {
 //  - not recorded if scrolling fails
 //  - recorded after scrolling starts
 //
-// This test manually calls `GlicMetrics` methods like `OnUserInputSubmitted`,
+// This test manually calls metrics methods like `OnUserInputSubmitted`,
 // `OnResponseStarted` and `OnResponseStopped` instead of doing it through
 // the test client for convenience and better control of timing. The order of
 // the method calls reflect the order of expected calls in practice.
@@ -1488,7 +1499,7 @@ class MAYBE_GlicAnnotationManagerTabContextPermissionUiTest
       // When GlicDefaultTabContextSetting is disabled, we rely on a pref to
       // determine if tab context permission is enabled.
       return Steps(Do([this, enabled]() {
-        browser()->profile()->GetPrefs()->SetBoolean(
+        browser()->GetProfile()->GetPrefs()->SetBoolean(
             glic::prefs::kGlicTabContextEnabled, enabled);
       }));
     }

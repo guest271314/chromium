@@ -4,20 +4,28 @@
 
 #include "chrome/browser/ui/views/bubble_anchor_util_views.h"
 
+#include "base/feature_list.h"
 #include "build/build_config.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
+#include "chrome/browser/ui/browser_window.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/bubble_anchor_util.h"
+#include "chrome/browser/ui/location_bar/location_bar_override_data.h"
 #include "chrome/browser/ui/views/frame/app_menu_button.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/frame/picture_in_picture_browser_frame_view.h"
 #include "chrome/browser/ui/views/location_bar/location_bar_view.h"
+#include "chrome/browser/ui/views/payments/payment_handler_web_flow_view_controller.h"
 #include "chrome/browser/ui/views/permissions/chip/permission_chip_view.h"
 #include "chrome/browser/ui/views/permissions/chip/permission_dashboard_view.h"
+#include "chrome/browser/ui/views/picture_in_picture/document_pip_host.h"
 #include "chrome/browser/ui/views/toolbar/app_menu_control.h"
 #include "chrome/browser/ui/views/toolbar/toolbar_view.h"
-#include "components/content_settings/core/common/features.h"
+#include "chrome/browser/ui/webui/webui_embedding_context.h"
+#include "components/payments/core/features.h"
 #include "ui/base/interaction/element_highlighter.h"
 #include "ui/views/bubble/bubble_border.h"
+#include "ui/views/interaction/element_tracker_views.h"
 
 // This file contains the bubble_anchor_util implementation for a Views
 // browser window (BrowserView).
@@ -31,9 +39,7 @@ AnchorConfiguration GetPageInfoAnchorConfiguration(
   auto* location_bar_view =
       browser_view ? browser_view->GetLocationBarView() : nullptr;
 
-  if (base::FeatureList::IsEnabled(
-          content_settings::features::kLeftHandSideActivityIndicators) &&
-      location_bar_view) {
+  if (location_bar_view) {
     auto* permission_dashboard_view =
         location_bar_view->permission_dashboard_view();
 
@@ -51,10 +57,8 @@ AnchorConfiguration GetPageInfoAnchorConfiguration(
               views::BubbleBorder::TOP_LEFT};
     }
   } else {
-    auto chip_anchor = browser->GetBrowserForMigrationOnly()
-                           ->window()
-                           ->GetLocationBar()
-                           ->GetChipAnchor();
+    auto chip_anchor =
+        BrowserWindow::FromBrowser(browser)->GetLocationBar()->GetChipAnchor();
     if (anchor == Anchor::kLocationBar && chip_anchor) {
       return *chip_anchor;
     }
@@ -71,8 +75,7 @@ AnchorConfiguration GetPageInfoAnchorConfiguration(
     }
   }
 
-  if (anchor == Anchor::kLocationBar &&
-      browser_view->GetIsPictureInPictureType()) {
+  if (anchor == Anchor::kLocationBar && browser_view->GetIsFloatingType()) {
     auto* frame_view = static_cast<PictureInPictureBrowserFrameView*>(
         browser_view->browser_widget()->GetFrameView());
     return {views::BubbleAnchor(frame_view->GetLocationIconView()),
@@ -116,27 +119,76 @@ AnchorConfiguration GetPageInfoAnchorConfiguration(
 }
 
 AnchorConfiguration GetPermissionPromptBubbleAnchorConfiguration(
-    Browser* browser) {
-  BrowserView* browser_view = BrowserView::GetBrowserViewForBrowser(browser);
-  if (browser_view && browser_view->GetLocationBar()->GetChipController() &&
-      browser_view->GetLocationBar()
-          ->GetChipController()
-          ->IsPermissionPromptChipVisible()) {
-    if (auto chip_anchor = browser_view->GetLocationBar()->GetChipAnchor()) {
-      return *chip_anchor;
+    content::WebContents* web_contents) {
+  tabs::TabInterface* tab =
+      tabs::TabInterface::MaybeGetFromContents(web_contents);
+  BrowserWindowInterface* browser =
+      tab ? tab->GetBrowserWindowInterface()
+          : webui::GetBrowserWindowInterface(web_contents);
+  if (browser) {
+    LocationBar* location_bar =
+        location_bar::GetLocationBarForWebContents(web_contents);
+    ChipController* chip_controller =
+        location_bar ? location_bar->GetChipController() : nullptr;
+    if (chip_controller && chip_controller->IsPermissionPromptChipVisible()) {
+      if (auto chip_anchor = location_bar->GetChipAnchor()) {
+        return *chip_anchor;
+      }
+    }
+    if (location_bar && location_bar->IsDrawn() &&
+        location_bar::LocationBarOverrideData::FromWebContents(web_contents)) {
+      if (ui::TrackedElement* element = location_bar->GetAnchorOrNull()) {
+        return {views::BubbleAnchor(element), std::nullopt,
+                views::BubbleBorder::TOP_LEFT};
+      }
+    }
+    // TODO(crbug.com/565828687): Clean up location bar anchor resolution so
+    // there is a single source of truth between this and
+    // `GetPageInfoAnchorConfiguration()`.
+    return GetPageInfoAnchorConfiguration(browser);
+  }
+
+  // For for non-Browser hosted PiP windows anchor to the location icon.
+  auto* pip_host = DocumentPipHost::FromChildWebContents(web_contents);
+  if (pip_host && pip_host->GetWidget()) {
+    views::View* location_icon =
+        views::ElementTrackerViews::GetInstance()->GetFirstMatchingView(
+            kLocationIconElementId,
+            views::ElementTrackerViews::GetContextForWidget(
+                pip_host->GetWidget()));
+    return {views::BubbleAnchor(location_icon), kLocationIconElementId,
+            views::BubbleBorder::TOP_LEFT};
+  }
+
+  // For Payment Handler windows anchor to the header PageInfo icon.
+  if (base::FeatureList::IsEnabled(
+          payments::features::kPaymentHandlerCameraAccessUx)) {
+    if (auto* payment_handler =
+            payments::PaymentHandlerWebFlowViewController::FromWebContents(
+                web_contents)) {
+      if (views::View* page_info_icon =
+              payment_handler->GetPageInfoIconView()) {
+        return {
+            views::BubbleAnchor(page_info_icon),
+            payments::PaymentHandlerWebFlowViewController::kAppIconElementId,
+            views::BubbleBorder::TOP_LEFT};
+      }
     }
   }
-  return GetPageInfoAnchorConfiguration(browser);
+
+  return {};
 }
 
-AnchorConfiguration GetAppMenuAnchorConfiguration(Browser* browser) {
+AnchorConfiguration GetAppMenuAnchorConfiguration(
+    BrowserWindowInterface* browser) {
   return GetPageInfoAnchorConfiguration(browser, Anchor::kAppMenuButton);
 }
 
 gfx::Rect GetPageInfoAnchorRect(BrowserWindowInterface* browser) {
   // GetPageInfoAnchorConfiguration()'s anchor should be preferred if
   // available.
-  DCHECK(GetPageInfoAnchorConfiguration(browser).anchor.IsNull());
+  CHECK(GetPageInfoAnchorConfiguration(browser).anchor.IsNull(),
+        base::NotFatalUntil::M162);
 
   BrowserView* browser_view = BrowserView::GetBrowserViewForBrowser(browser);
   // Get position in view (taking RTL UI into account).

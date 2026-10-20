@@ -9,6 +9,7 @@
 
 #include "base/functional/bind.h"
 #include "base/logging.h"
+#include "base/memory/raw_ptr.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/task/bind_post_task.h"
@@ -111,7 +112,7 @@ hls::RenditionManager::CodecSupportType GetSupportedTypes(
   return hls::RenditionManager::CodecSupportType::kUnsupported;
 }
 
-HlsDemuxerStatus::Or<RelaxedParserSupportedType> CheckMP4Bytes(
+base::expected<RelaxedParserSupportedType, HlsDemuxerStatus> CheckMP4Bytes(
     base::span<const uint8_t> data) {
   NullMediaLog null;
   std::unique_ptr<mp4::BoxReader> reader;
@@ -119,36 +120,58 @@ HlsDemuxerStatus::Or<RelaxedParserSupportedType> CheckMP4Bytes(
   if (result == mp4::ParseResult::kOk) {
     return RelaxedParserSupportedType::kMP4;
   }
-  return HlsDemuxerStatus::Codes::kUnsupportedContainer;
+  return base::unexpected(HlsDemuxerStatus::Codes::kUnsupportedContainer);
 }
 
-HlsDemuxerStatus::Or<RelaxedParserSupportedType>
-CheckBitstreamForContainerMagic(base::span<const uint8_t> data) {
-  CHECK(!data.empty());
+base::expected<RelaxedParserSupportedType, HlsDemuxerStatus>
+CheckBitstreamForContainerMagic(base::span<const uint8_t> data,
+                                std::string_view path) {
+  if (!data.empty()) {
+    constexpr uint8_t kMP4FirstByte = 0x66;
+    constexpr uint8_t kMPEGTSFirstByte = 0x47;
+    constexpr uint8_t kFMP4FirstByte = 0x00;
+    constexpr uint8_t kAACFirstByte = 0xFF;
+    constexpr uint8_t kID3FirstByte = 0x49;
 
-  constexpr uint8_t kMP4FirstByte = 0x66;
-  constexpr uint8_t kMPEGTSFirstByte = 0x47;
-  constexpr uint8_t kFMP4FirstByte = 0x00;
-  constexpr uint8_t kAACFirstByte = 0xFF;
-  constexpr uint8_t kID3FirstByte = 0x49;
-
-  switch (data[0]) {
-    case kMP4FirstByte:
-    case kFMP4FirstByte: {
-      return CheckMP4Bytes(data);
-    }
-    case kID3FirstByte:
-    case kAACFirstByte: {
-      // TODO(crbug.com/40253609): Check further bytes in the header.
-      return RelaxedParserSupportedType::kAAC;
-    }
-    case kMPEGTSFirstByte: {
-      return RelaxedParserSupportedType::kMP2T;
-    }
-    default: {
-      return HlsDemuxerStatus::Codes::kUnsupportedContainer;
+    switch (data[0]) {
+      case kMP4FirstByte:
+      case kFMP4FirstByte: {
+        return CheckMP4Bytes(data);
+      }
+      case kID3FirstByte:
+      case kAACFirstByte: {
+        // TODO(crbug.com/40253609): Check further bytes in the header.
+        return RelaxedParserSupportedType::kAAC;
+      }
+      case kMPEGTSFirstByte: {
+        return RelaxedParserSupportedType::kMP2T;
+      }
+      default: {
+        // Fallback to file extension.
+        break;
+      }
     }
   }
+
+  // As a fallback, we can try to guess based on the file extension. There's
+  // a good possibility that we're missing other magic bytes, or multi-byte
+  // headers. We can always try to demux it and parse the data, and fail
+  // if that doesn't work.
+  if (path.ends_with(".ts")) {
+    return RelaxedParserSupportedType::kMP2T;
+  } else if (path.ends_with(".mp4")) {
+    return RelaxedParserSupportedType::kMP4;
+  } else if (path.ends_with(".m4v")) {
+    return RelaxedParserSupportedType::kMP4;
+  } else if (path.ends_with(".m4s")) {
+    return RelaxedParserSupportedType::kMP4;
+  } else if (path.ends_with(".m4a")) {
+    return RelaxedParserSupportedType::kMP4;
+  } else if (path.ends_with(".aac")) {
+    return RelaxedParserSupportedType::kAAC;
+  }
+
+  return base::unexpected(HlsDemuxerStatus::Codes::kUnsupportedContainer);
 }
 
 PipelineStatus ConvertToPiplineStatus(HlsDemuxerStatus&& status) {
@@ -214,10 +237,12 @@ HlsManifestDemuxerEngine::HlsManifestDemuxerEngine(
     scoped_refptr<base::SequencedTaskRunner> media_task_runner,
     std::unique_ptr<TrackManager> track_manager,
     bool was_already_tainted,
+    url::Origin security_origin,
     GURL root_playlist_uri,
     MediaLog* media_log)
     : media_task_runner_(std::move(media_task_runner)),
       track_manager_(std::move(track_manager)),
+      security_origin_(std::move(security_origin)),
       root_playlist_uri_(std::move(root_playlist_uri)),
       media_log_(media_log->Clone()),
       network_access_(std::make_unique<HlsNetworkAccessImpl>(std::move(dsp))),
@@ -333,19 +358,20 @@ void HlsManifestDemuxerEngine::SelectAudioTrack(const MediaTrack::Id& track) {
   }
 }
 
-std::vector<DemuxerStream*> HlsManifestDemuxerEngine::FilterDemuxerStreams(
-    std::vector<DemuxerStream*>&& all_streams) {
+std::vector<raw_ptr<DemuxerStream>>
+HlsManifestDemuxerEngine::FilterDemuxerStreams(
+    std::vector<raw_ptr<DemuxerStream>>&& all_streams) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(media_sequence_checker_);
   if (rendition_manager_) {
     switch (rendition_manager_->GetSupportedStreamTypes()) {
       case hls::RenditionManager::CodecSupportType::kSupportedAudioOnly: {
-        std::erase_if(all_streams, [](DemuxerStream* stream) {
+        std::erase_if(all_streams, [](raw_ptr<DemuxerStream> stream) {
           return stream->type() != DemuxerStream::AUDIO;
         });
         break;
       }
       case hls::RenditionManager::CodecSupportType::kSupportedVideoOnly: {
-        std::erase_if(all_streams, [](DemuxerStream* stream) {
+        std::erase_if(all_streams, [](raw_ptr<DemuxerStream> stream) {
           return stream->type() != DemuxerStream::VIDEO;
         });
         break;
@@ -364,7 +390,7 @@ void HlsManifestDemuxerEngine::Seek(base::TimeDelta time,
     // The pipeline can call Seek just after an error was surfaced. The error
     // handler resets |network_access_|, so we should just reply with
     // another error here.
-    std::move(cb).Run(PIPELINE_ERROR_ABORT);
+    std::move(cb).Run(base::unexpected(PIPELINE_ERROR_ABORT));
     return;
   }
 
@@ -389,7 +415,8 @@ void HlsManifestDemuxerEngine::ContinueSeekInternal(
   for (auto& [_, rendition] : renditions_) {
     auto response = rendition->Seek(time);
     if (!response.has_value()) {
-      std::move(cb).Run(std::move(response).error().AddHere());
+      std::move(cb).Run(
+          base::unexpected(std::move(response).error().AddHere()));
       return;
     }
     buffers_needed |=
@@ -400,17 +427,17 @@ void HlsManifestDemuxerEngine::ContinueSeekInternal(
 }
 
 void HlsManifestDemuxerEngine::Initialize(ManifestDemuxerEngineHost* host,
-                                          PipelineStatusCallback status_cb) {
+                                          HlsDemuxerStatusCallback status_cb) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(media_sequence_checker_);
 
   host_ = host;
-  ProcessAsyncAction<PipelineStatus>(
+  ProcessAsyncAction<HlsDemuxerStatus>(
       std::move(status_cb),
       base::BindOnce(&HlsManifestDemuxerEngine::InitAction,
                      weak_factory_.GetWeakPtr()));
 }
 
-void HlsManifestDemuxerEngine::InitAction(PipelineStatusCallback status_cb) {
+void HlsManifestDemuxerEngine::InitAction(HlsDemuxerStatusCallback status_cb) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(media_sequence_checker_);
   PlaylistParseInfo parse_info(root_playlist_uri_, {}, kPrimary,
                                /*allow_multivariant_playlist=*/true);
@@ -420,14 +447,14 @@ void HlsManifestDemuxerEngine::InitAction(PipelineStatusCallback status_cb) {
                      weak_factory_.GetWeakPtr(), std::move(status_cb)));
 }
 
-void HlsManifestDemuxerEngine::FinishInitialization(PipelineStatusCallback cb,
+void HlsManifestDemuxerEngine::FinishInitialization(HlsDemuxerStatusCallback cb,
                                                     HlsDemuxerStatus status) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(media_sequence_checker_);
   if (!status.is_ok()) {
     base::UmaHistogramEnumeration("Media.HLS.InitializationError",
                                   status.code());
   }
-  std::move(cb).Run(ConvertToPiplineStatus(std::move(status)));
+  std::move(cb).Run(std::move(status));
 }
 
 void HlsManifestDemuxerEngine::RecordMidStreamError(HlsDemuxerStatus::Codes c) {
@@ -544,26 +571,43 @@ void HlsManifestDemuxerEngine::UpdateRenditionManifestUri(
     GURL uri,
     HlsDemuxerStatusCallback cb) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(media_sequence_checker_);
-  GURL uri_copy = uri;
-  ReadManifest(
-      std::move(uri_copy),
-      base::BindOnce(&HlsManifestDemuxerEngine::UpdateMediaPlaylistForRole,
-                     weak_factory_.GetWeakPtr(), std::move(role),
-                     std::move(uri), std::move(cb)));
+  ReadManifest(std::move(uri),
+               base::BindOnce(
+                   &HlsManifestDemuxerEngine::UpdateMediaPlaylistForRole,
+                   weak_factory_.GetWeakPtr(), std::move(role), std::move(cb)));
 }
 
 void HlsManifestDemuxerEngine::UpdateMediaPlaylistForRole(
     std::string role,
-    GURL uri,
     HlsDemuxerStatusCallback cb,
     HlsDataSourceProvider::ReadResult maybe_stream) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(media_sequence_checker_);
   if (!maybe_stream.has_value()) {
-    std::move(cb).Run(HlsDemuxerStatusTraits::FromReadStatus(
-        std::move(maybe_stream).error()));
+    std::move(cb).Run(std::move(maybe_stream).error());
     return;
   }
   auto stream = std::move(maybe_stream).value();
+  std::optional<url::Origin> manifest_origin = std::nullopt;
+
+  switch (stream->SecurityInfo().response_origins.size()) {
+    // A single security origin is the norm, and acceptable.
+    case 1: {
+      manifest_origin = *stream->SecurityInfo().response_origins.begin();
+      break;
+    }
+    case 0: {
+      if (stream->uri().has_value() && stream->uri()->SchemeIs("data")) {
+        // Data URIs have no security origin. Any other url should have one.
+        break;
+      }
+      [[fallthrough]];
+    }
+    default: {
+      std::move(cb).Run({HlsDemuxerStatus::Codes::kInvalidManifest,
+                         "Manifest origin was insecurely indeterminate"});
+      return;
+    }
+  }
 
   auto maybe_info = hls::Playlist::IdentifyPlaylist(stream->AsString());
   if (!maybe_info.has_value()) {
@@ -579,8 +623,15 @@ void HlsManifestDemuxerEngine::UpdateMediaPlaylistForRole(
     return;
   }
 
+  if (!manifest_origin && multivariant_root_) {
+    // Media playlists can be loaded from data urls - in which case we just
+    // use the multivariant origin.
+    manifest_origin = multivariant_root_->SecurityOrigin();
+  }
+
   auto maybe_playlist = ParseMediaPlaylistFromStringSource(
-      stream->AsString(), std::move(uri), (*maybe_info).version);
+      stream->AsString(), stream->uri().value(),
+      manifest_origin.value_or(security_origin_), (*maybe_info).version);
   if (!maybe_playlist.has_value()) {
     auto error = std::move(maybe_playlist).error();
     RecordParserFailure(error.code());
@@ -620,24 +671,16 @@ void HlsManifestDemuxerEngine::AdaptationAction(
 
 void HlsManifestDemuxerEngine::UpdateHlsDataSourceStats(
     HlsDataSourceProvider::ReadCb cb,
-    HlsDataSourceProvider::ReadStatus::Or<std::unique_ptr<HlsDataSourceStream>>
-        result) {
+    HlsDataSourceProvider::ReadResult result) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(media_sequence_checker_);
   if (!result.has_value()) {
-    std::move(cb).Run(std::move(result).error().AddHere());
+    std::move(cb).Run(base::unexpected(std::move(result).error().AddHere()));
     return;
   }
   auto stream = std::move(result).value();
-  origin_tainted_ |= stream->would_taint_origin();
+  origin_tainted_ |= stream->SecurityInfo().would_taint_origin;
   total_stream_memory_ = stream->memory_usage();
   std::move(cb).Run(std::move(stream));
-}
-
-void HlsManifestDemuxerEngine::ReadKey(
-    const hls::MediaSegment::EncryptionData& data,
-    HlsDataSourceProvider::ReadCb cb) {
-  DCHECK_CALLED_ON_VALID_SEQUENCE(media_sequence_checker_);
-  network_access_->ReadKey(std::move(data), BindStatsUpdate(std::move(cb)));
 }
 
 HlsDataSourceProvider::ReadCb HlsManifestDemuxerEngine::BindStatsUpdate(
@@ -663,14 +706,6 @@ void HlsManifestDemuxerEngine::ReadMediaSegment(
                                     BindStatsUpdate(std::move(cb)));
 }
 
-void HlsManifestDemuxerEngine::ReadStream(
-    std::unique_ptr<HlsDataSourceStream> stream,
-    HlsDataSourceProvider::ReadCb cb) {
-  DCHECK_CALLED_ON_VALID_SEQUENCE(media_sequence_checker_);
-  network_access_->ReadStream(std::move(stream),
-                              BindStatsUpdate(std::move(cb)));
-}
-
 void HlsManifestDemuxerEngine::UpdateNetworkSpeed(uint64_t bps) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(media_sequence_checker_);
   if (rendition_manager_) {
@@ -684,12 +719,32 @@ void HlsManifestDemuxerEngine::ParsePlaylist(
     HlsDataSourceProvider::ReadResult m_stream) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(media_sequence_checker_);
   if (!m_stream.has_value()) {
-    std::move(parse_complete_cb)
-        .Run(HlsDemuxerStatusTraits::FromReadStatus(
-            std::move(m_stream).error().AddHere()));
+    std::move(parse_complete_cb).Run(std::move(m_stream).error().AddHere());
     return;
   }
   auto stream = std::move(m_stream).value();
+  std::optional<url::Origin> manifest_origin = std::nullopt;
+
+  switch (stream->SecurityInfo().response_origins.size()) {
+    // A single security origin is the norm, and acceptable.
+    case 1: {
+      manifest_origin = *stream->SecurityInfo().response_origins.begin();
+      break;
+    }
+    case 0: {
+      if (stream->uri().has_value() && stream->uri()->SchemeIs("data")) {
+        // Data URIs have no security origin. Any other url should have one.
+        break;
+      }
+      [[fallthrough]];
+    }
+    default: {
+      std::move(parse_complete_cb)
+          .Run({HlsDemuxerStatus::Codes::kInvalidManifest,
+                "Manifest origin was insecurely indeterminate"});
+      return;
+    }
+  }
 
   // A four hour movie manifest is ~100Kb.
   if (stream->buffer_size() > 102400) {
@@ -715,7 +770,8 @@ void HlsManifestDemuxerEngine::ParsePlaylist(
         return;
       }
       auto playlist = hls::MultivariantPlaylist::Parse(
-          stream->AsString(), parse_info.uri, (*m_info).version);
+          stream->AsString(), stream->uri().value(),
+          manifest_origin.value_or(security_origin_), (*m_info).version);
       if (!playlist.has_value()) {
         auto error = std::move(playlist).error();
         RecordParserFailure(error.code());
@@ -728,13 +784,15 @@ void HlsManifestDemuxerEngine::ParsePlaylist(
                                     std::move(playlist).value());
     }
     case hls::Playlist::Kind::kMediaPlaylist: {
-      if (parse_info.allow_multivariant_playlist) {
-        // Only a root playlist is allowed to be multivariant, so if the root
-        // is only a media playlist, then this entire playback is not
-        // multivariant.
+      if (!manifest_origin && multivariant_root_) {
+        // Media playlists can be loaded from data urls - in which case we just
+        // use the multivariant origin.
+        manifest_origin = multivariant_root_->SecurityOrigin();
       }
+
       auto playlist = ParseMediaPlaylistFromStringSource(
-          stream->AsString(), parse_info.uri, (*m_info).version);
+          stream->AsString(), stream->uri().value(),
+          manifest_origin.value_or(security_origin_), (*m_info).version);
       if (!playlist.has_value()) {
         auto error = std::move(playlist).error();
         RecordParserFailure(error.code());
@@ -750,13 +808,14 @@ void HlsManifestDemuxerEngine::ParsePlaylist(
   }
 }
 
-hls::ParseStatus::Or<scoped_refptr<hls::MediaPlaylist>>
+base::expected<scoped_refptr<hls::MediaPlaylist>, hls::ParseStatus>
 HlsManifestDemuxerEngine::ParseMediaPlaylistFromStringSource(
     std::string_view source,
     GURL uri,
+    const url::Origin& manifest_origin,
     hls::types::DecimalInteger version) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(media_sequence_checker_);
-  return hls::MediaPlaylist::Parse(source, uri, version,
+  return hls::MediaPlaylist::Parse(source, uri, manifest_origin, version,
                                    multivariant_root_.get());
 }
 
@@ -808,10 +867,12 @@ void HlsManifestDemuxerEngine::OnMultivariantPlaylist(
 
 HlsDemuxerStatusCallback HlsManifestDemuxerEngine::BindPlaylistLoader(
     hls::RenditionGroup::RenditionTrack rendition,
+    const hls::VariantStream& variant,
     std::string rendition_role,
     HlsDemuxerStatusCallback do_next) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(media_sequence_checker_);
-  const GURL& rendition_uri = std::get<1>(rendition)->GetUri().value();
+  const GURL& rendition_uri = std::get<1>(rendition)->GetUri().value_or(
+      variant.GetPrimaryRenditionUri());
   auto existing = renditions_.find(rendition_role);
   if (existing != renditions_.end() &&
       existing->second->MediaPlaylistUri() == rendition_uri) {
@@ -847,14 +908,14 @@ void HlsManifestDemuxerEngine::OnRenditionsSelected(
   selected_variant_codecs_ = variant->GetCodecs().value_or(no_codecs);
 
   if (extra.has_value()) {
-    on_complete = BindPlaylistLoader(extra.value(), kAudioOverride,
+    on_complete = BindPlaylistLoader(extra.value(), *variant, kAudioOverride,
                                      std::move(on_complete));
     track_manager_->SetTrackState(std::get<0>(extra.value()),
                                   MediaTrack::State::kActive);
   }
   if (primary.has_value()) {
-    on_complete =
-        BindPlaylistLoader(primary.value(), kPrimary, std::move(on_complete));
+    on_complete = BindPlaylistLoader(primary.value(), *variant, kPrimary,
+                                     std::move(on_complete));
     track_manager_->SetTrackState(std::get<0>(primary.value()),
                                   MediaTrack::State::kActive);
   }
@@ -936,7 +997,7 @@ void HlsManifestDemuxerEngine::OnStreamContainerDetermined(
     HlsDemuxerStatusCallback parse_complete_cb,
     PlaylistParseInfo parse_info,
     scoped_refptr<hls::MediaPlaylist> playlist,
-    HlsDemuxerStatus::Or<RelaxedParserSupportedType> maybe_mime) {
+    base::expected<RelaxedParserSupportedType, HlsDemuxerStatus> maybe_mime) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(media_sequence_checker_);
   CHECK(!renditions_.contains(parse_info.role));
   if (!maybe_mime.has_value()) {
@@ -980,51 +1041,29 @@ void HlsManifestDemuxerEngine::DetermineStreamContainer(
   DCHECK_CALLED_ON_VALID_SEQUENCE(media_sequence_checker_);
   const auto& segments = playlist->GetSegments();
   if (segments.empty()) {
-    std::move(container_cb).Run(HlsDemuxerStatus::Codes::kUnsupportedContainer);
+    std::move(container_cb)
+        .Run(base::unexpected(HlsDemuxerStatus::Codes::kUnsupportedContainer));
     return;
   }
 
-  // In the best case, we can just assert the mime type based on extension,
-  // but if it's unrecognized, we have to fetch and parse it.
-  const auto first_segment_path = segments[0]->GetUri().path();
-
-  std::optional<RelaxedParserSupportedType> mime = std::nullopt;
-  if (first_segment_path.ends_with(".ts")) {
-    mime = RelaxedParserSupportedType::kMP2T;
-  } else if (first_segment_path.ends_with(".mp4")) {
-    mime = RelaxedParserSupportedType::kMP4;
-  } else if (first_segment_path.ends_with(".m4v")) {
-    mime = RelaxedParserSupportedType::kMP4;
-  } else if (first_segment_path.ends_with(".m4s")) {
-    mime = RelaxedParserSupportedType::kMP4;
-  } else if (first_segment_path.ends_with(".m4a")) {
-    mime = RelaxedParserSupportedType::kMP4;
-  } else if (first_segment_path.ends_with(".aac")) {
-    mime = RelaxedParserSupportedType::kAAC;
-  }
-
-  if (mime.has_value()) {
-    std::move(container_cb).Run(mime.value());
-  } else {
-    bool read_chunked = true;
-    if (auto enc_data = segments[0]->GetEncryptionData()) {
-      switch (enc_data->GetMethod()) {
-        case hls::XKeyTagMethod::kAES128:
-        case hls::XKeyTagMethod::kAES256: {
-          read_chunked = false;
-          break;
-        }
-        default:
-          break;
+  bool read_chunked = true;
+  if (auto enc_data = segments[0]->GetEncryptionData()) {
+    switch (enc_data->GetMethod()) {
+      case hls::XKeyTagMethod::kAES128:
+      case hls::XKeyTagMethod::kAES256: {
+        read_chunked = false;
+        break;
       }
+      default:
+        break;
     }
-
-    ReadMediaSegment(
-        *segments[0], read_chunked, /*include_init=*/true,
-        base::BindOnce(&HlsManifestDemuxerEngine::DetermineBitstreamContainer,
-                       weak_factory_.GetWeakPtr(), segments[0],
-                       std::move(container_cb)));
   }
+
+  ReadMediaSegment(
+      *segments[0], read_chunked, /*include_init=*/true,
+      base::BindOnce(&HlsManifestDemuxerEngine::DetermineBitstreamContainer,
+                     weak_factory_.GetWeakPtr(), segments[0],
+                     std::move(container_cb)));
 }
 
 void HlsManifestDemuxerEngine::DetermineBitstreamContainer(
@@ -1034,24 +1073,27 @@ void HlsManifestDemuxerEngine::DetermineBitstreamContainer(
   DCHECK_CALLED_ON_VALID_SEQUENCE(media_sequence_checker_);
 
   if (!maybe_stream.has_value()) {
-    std::move(cb).Run(HlsDemuxerStatusTraits::FromReadStatus(
-        std::move(maybe_stream).error()));
+    std::move(cb).Run(base::unexpected(std::move(maybe_stream).error()));
     return;
   }
 
   auto stream = std::move(maybe_stream).value();
   if (!stream->buffer_size()) {
-    std::move(cb).Run(HlsDemuxerStatus::Codes::kNoSegmentData);
+    std::move(cb).Run(
+        base::unexpected(HlsDemuxerStatus::Codes::kNoSegmentData));
     return;
   }
 
   std::vector<uint8_t> mem;
   base::span<const uint8_t> plaintext;
   if (!segment->GetPlaintextStreamSource(stream->data(), &plaintext, &mem)) {
-    std::move(cb).Run(HlsDemuxerStatus::Codes::kUnsupportedCryptoMethod);
+    std::move(cb).Run(
+        base::unexpected(HlsDemuxerStatus::Codes::kUnsupportedCryptoMethod));
     return;
   }
-  std::move(cb).Run(CheckBitstreamForContainerMagic(plaintext));
+
+  const auto& path = segment->GetUri().path();
+  std::move(cb).Run(CheckBitstreamForContainerMagic(plaintext, path));
 }
 
 void HlsManifestDemuxerEngine::OnChunkDemuxerParseWarning(

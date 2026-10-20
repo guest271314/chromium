@@ -12,6 +12,8 @@
 #include "ui/color/color_recipe.h"
 #include "ui/color/color_transform.h"
 #include "ui/gfx/color_palette.h"
+#include "ui/gfx/color_utils.h"
+#include "ui/gtk/gtk_compat.h"
 #include "ui/gtk/gtk_util.h"
 
 namespace gtk {
@@ -47,9 +49,7 @@ void AddGtkNativeColorMixer(ui::ColorProvider* provider,
   const SkColor accent_fg = GetFgColor(
       "treeview.view "
       "treeview.view.cell:selected:focus label");
-  const SkColor accent_bg =
-      accent_color.value_or(GetBgColor("treeview.view "
-                                       "treeview.view.cell:selected:focus"));
+  const SkColor accent_bg = accent_color.value_or(GetThemeAccentColor());
 
   static constexpr char kTextFocused[] =
       "textview.view:focus:focus-within text:focus:focus-within";
@@ -72,15 +72,23 @@ void AddGtkNativeColorMixer(ui::ColorProvider* provider,
   mixer[ui::kColorAlertMediumSeverityText] = {
       SelectBasedOnDarkInput(ui::kColorPrimaryBackground, gfx::kGoogleYellow300,
                              gfx::kGoogleOrange900)};
-  mixer[ui::kColorDisabledForeground] = {label_fg_disabled};
+  // Some themes provide label colors with little or no contrast against their
+  // own window background (e.g. a white disabled label on a light window).
+  // Nudge them just enough to stay legible: readable for regular and secondary
+  // text, and visible for disabled text.
+  mixer[ui::kColorDisabledForeground] = ui::BlendForMinContrast(
+      label_fg_disabled, ui::kColorPrimaryBackground, std::nullopt,
+      color_utils::kMinimumVisibleContrastRatio);
   mixer[ui::kColorItemHighlight] = {GetBorderColor("entry:focus")};
   mixer[ui::kColorItemSelectionBackground] = {ui::kColorAccent};
   mixer[ui::kColorMenuSelectionBackground] = {GetBgColor(
       base::StrCat({GtkCssMenu(), " ", GtkCssMenuItem(), ":hover"}))};
   mixer[ui::kColorMidground] = {GetSeparatorColor("separator.horizontal")};
   mixer[ui::kColorPrimaryBackground] = {primary_bg};
-  mixer[ui::kColorPrimaryForeground] = {label_fg};
-  mixer[ui::kColorSecondaryForeground] = {label_fg_disabled};
+  mixer[ui::kColorPrimaryForeground] =
+      ui::BlendForMinContrast(label_fg, ui::kColorPrimaryBackground);
+  mixer[ui::kColorSecondaryForeground] =
+      ui::BlendForMinContrast(label_fg_disabled, ui::kColorPrimaryBackground);
   mixer[ui::kColorTextSelectionBackground] = {kSelectedTextBackground};
   mixer[ui::kColorTextSelectionForeground] = {kSelectedTextForeground};
 
@@ -118,10 +126,26 @@ void AddGtkNativeColorMixer(ui::ColorProvider* provider,
   mixer[ui::kColorFrameActive] = {frame_color};
   mixer[ui::kColorFrameCaptionForegroundActive] = {
       GetFgColor(header_selector + " label.title")};
-  // TODO: The :backdrop foreground color query does not work on GTK4. Replace
-  // this approximation with the actual query once a solution is found.
-  mixer[ui::kColorFrameCaptionForegroundInactive] = ui::AlphaBlend(
-      ui::kColorFrameCaptionForegroundActive, ui::kColorFrameInactive, 0x80);
+  mixer[ui::kColorFrameCaptionForegroundInactive] = [&] {
+    // Apply :backdrop to every node so themes that cascade the title color
+    // from .background:backdrop apply.
+    auto window = AppendCssNodeToStyleContext({}, "window.background:backdrop");
+    auto header =
+        AppendCssNodeToStyleContext(window, header_selector + ":backdrop");
+    auto label = AppendCssNodeToStyleContext(header, "label.title:backdrop");
+    SkColor fg = GtkStyleContextGetColor(label);
+    if (SkColorGetA(fg) != SK_AlphaOPAQUE) {
+      fg = color_utils::GetResultingPaintColor(
+          fg, GetBgColorFromStyleContext(label));
+    }
+    // Some GTK4 themes apply transparency using CSS filters instead of
+    // overriding the color. If the query returns the active color, blend
+    // against the inactive frame to produce a similar effect.
+    return fg == GetFgColor(header_selector + " label.title")
+               ? ui::AlphaBlend(ui::kColorFrameCaptionForegroundActive,
+                                ui::kColorFrameInactive, 0x80)
+               : ui::ColorTransform(fg);
+  }();
   mixer[ui::kColorFrameInactive] = {frame_color_inactive};
   mixer[ui::kColorFocusableBorderUnfocused] = {entry_border};
   mixer[ui::kColorHelpIconActive] = {GetFgColor("button.image-button:hover")};
@@ -194,7 +218,14 @@ void AddGtkNativeColorMixer(ui::ColorProvider* provider,
   mixer[ui::kColorTextfieldForeground] = {GetFgColor("textview.view text")};
   mixer[ui::kColorTextfieldForegroundDisabled] = {
       GetFgColor("textview.view:disabled text")};
-  mixer[ui::kColorTextfieldForegroundPlaceholder] = {GtkCheckVersion(4)};
+  mixer[ui::kColorTextfieldForegroundPlaceholder] = {
+      GtkCheckVersion(4)
+          ? GetFgColor("entry text placeholder")
+          : GtkStyleContextLookupColor(GetStyleContextFromCss("entry"),
+                                       "placeholder_text_color")
+                // This is copied from gtkentry.c. GTK uses a fallback of 50%
+                // gray when the theme doesn't provide a placeholder color.
+                .value_or(SkColorSetRGB(127, 127, 127))};
   mixer[ui::kColorTextfieldSelectionBackground] = {kSelectedTextBackground};
   mixer[ui::kColorTextfieldSelectionForeground] = {kSelectedTextForeground};
   mixer[ui::kColorThrobber] = {GetFgColor("spinner")};

@@ -15,14 +15,13 @@ static_library("kerberos") {
   public_deps = [
     "//ash/webui/common:chrome_os_webui_config",
     "//base",
-    "//chrome/browser:browser_public_dependencies",
     "//chrome/browser/ui/webui/ash/system_web_dialog",
-    "//chrome/common",
     "//content/public/common",
     "//ui/web_dialogs",
   ]
 
   deps = [
+    "//ash/constants",
     "//ash/public/cpp",
     "//build:branding_buildflags",
     "//chrome/app:generated_resources",
@@ -31,6 +30,7 @@ static_library("kerberos") {
     "//chrome/browser/resources/chromeos/kerberos:resources",
     "//chromeos/ash/experiences/settings_ui",
     "//components/session_manager/core",
+    "//components/user_manager",
     "//content/public/browser",
     "//net",
     "//ui/aura",
@@ -56,7 +56,6 @@ source_set("browser_tests") {
     "//chrome/browser:browser_process",
     "//chrome/browser/ash/login/test:test_support",
     "//chrome/browser/ash/system_web_apps",
-    "//chrome/browser/ui",
     "//chrome/browser/ui/ash/system_web_apps",
     "//chrome/test:test_support",
     "//content/test:test_support",

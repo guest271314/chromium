@@ -6,15 +6,16 @@
 
 #include <errno.h>
 #include <linux/videodev2.h>
-#include <string.h>
 #include <sys/mman.h>
 
 #include <algorithm>
+#include <array>
 #include <memory>
 #include <tuple>
 #include <utility>
 
 #include "base/compiler_specific.h"
+#include "base/containers/span.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/notimplemented.h"
@@ -534,6 +535,14 @@ size_t V4L2JpegEncodeAccelerator::EncodedInstanceDmaBuf::FinalizeJpegImage(
     size_t max_buffer_capacity,
     base::WritableSharedMemoryMapping exif_mapping) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(parent_->encoder_sequence_);
+
+  if (buffer_size > max_buffer_capacity) {
+    LOG(ERROR) << "buffer_size (" << buffer_size
+               << ") exceeds max_buffer_capacity (" << max_buffer_capacity
+               << ")";
+    return 0;
+  }
+
   size_t idx = 0;
 
   auto output_gmb_handle = CreateGpuMemoryBufferHandle(output_frame.get());
@@ -561,16 +570,15 @@ size_t V4L2JpegEncodeAccelerator::EncodedInstanceDmaBuf::FinalizeJpegImage(
     VLOGF(1) << "Failed to map native pixmap";
     return 0;
   }
-  uint8_t* dst_ptr = static_cast<uint8_t*>(native_pixmap->GetMemoryAddress(0));
 
   // Fill SOI and EXIF markers.
   static const uint8_t kJpegStart[] = {0xFF, JPEG_SOI};
 
   if (exif_mapping.IsValid()) {
-    uint8_t* exif_buffer = exif_mapping.GetMemoryAs<uint8_t>();
-    size_t exif_buffer_size = exif_mapping.size();
+    const base::span<const uint8_t> exif_buffer =
+        exif_mapping.GetMemoryAsSpan<uint8_t>();
     // Application Segment for Exif data.
-    uint16_t exif_segment_size = static_cast<uint16_t>(exif_buffer_size + 2);
+    uint16_t exif_segment_size = static_cast<uint16_t>(exif_buffer.size() + 2);
     const uint8_t kAppSegment[] = {
         0xFF, JPEG_APP1, static_cast<uint8_t>(exif_segment_size / 256),
         static_cast<uint8_t>(exif_segment_size % 256)};
@@ -584,33 +592,47 @@ size_t V4L2JpegEncodeAccelerator::EncodedInstanceDmaBuf::FinalizeJpegImage(
     // SOI-marker1-marker2-...-SOS-compressed stream-EOI
     // |......| <- src_data_offset = len(SOI) + len(APP0) (if APP0 found)
     // |...................| <- data_offset = len(SOI) + len(APP1)
+    if (buffer_size < sizeof(kJpegStart)) {
+      LOG(WARNING) << "JPEG buffer is too small";
+      return 0;
+    }
+
+    auto dst_span =
+        native_pixmap->GetMemoryAsSpan(0).first(max_buffer_capacity);
+
     size_t data_offset =
-        sizeof(kJpegStart) + sizeof(kAppSegment) + exif_buffer_size;
+        sizeof(kJpegStart) + sizeof(kAppSegment) + exif_buffer.size();
     size_t src_data_offset = sizeof(kJpegStart);
+
+    // Avoid parsing headers directly in memory shared with another process.
+    // Copy the first few bytes to a local buffer to avoid TOCTOU.
+    std::array<uint8_t, 6> header = {};
+    const size_t copy_size = std::min(buffer_size, header.size());
+    base::span(header).first(copy_size).copy_from(dst_span.first(copy_size));
+
     // Check for APP0 segment following SOI marker and skip over it if found
-    if (UNSAFE_TODO(dst_ptr[2]) == JPEG_MARKER_PREFIX &&
-        UNSAFE_TODO(dst_ptr[3]) == JPEG_APP0) {
-      src_data_offset +=
-          2 + ((UNSAFE_TODO(dst_ptr[4]) << 8) | UNSAFE_TODO(dst_ptr[5]));
+    if (copy_size >= header.size() && header[2] == JPEG_MARKER_PREFIX &&
+        header[3] == JPEG_APP0) {
+      src_data_offset += 2 + ((header[4] << 8) | header[5]);
       if (src_data_offset >= buffer_size) {
         LOG(WARNING) << "APP0 segment from encoder extends beyond JPEG buffer";
         return 0;
       }
     }
     buffer_size -= src_data_offset;
-    if (buffer_size + data_offset > max_buffer_capacity) {
+    if (data_offset > dst_span.size() ||
+        buffer_size > dst_span.size() - data_offset) {
       LOG(WARNING) << "JPEG buffer is too small for the EXIF metadata";
       return 0;
     }
-    UNSAFE_TODO(
-        memmove(dst_ptr + data_offset, dst_ptr + src_data_offset, buffer_size));
+    dst_span.subspan(data_offset, buffer_size)
+        .copy_from(dst_span.subspan(src_data_offset, buffer_size));
 
-    UNSAFE_TODO(memcpy(dst_ptr, kJpegStart, sizeof(kJpegStart)));
-    idx += sizeof(kJpegStart);
-    UNSAFE_TODO(memcpy(dst_ptr + idx, kAppSegment, sizeof(kAppSegment)));
-    idx += sizeof(kAppSegment);
-    UNSAFE_TODO(memcpy(dst_ptr + idx, exif_buffer, exif_buffer_size));
-    idx += exif_buffer_size;
+    auto header_output = dst_span.first(data_offset);
+    header_output.take_first<sizeof(kJpegStart)>().copy_from(kJpegStart);
+    header_output.take_first<sizeof(kAppSegment)>().copy_from(kAppSegment);
+    header_output.take_first(exif_buffer.size()).copy_from(exif_buffer);
+    idx = data_offset;
   }
 
   switch (output_buffer_pixelformat_) {
@@ -694,7 +716,14 @@ void V4L2JpegEncodeAccelerator::EncodedInstanceDmaBuf::Dequeue() {
     }
 
     const size_t buffer_size = planes[0].bytesused;
-    const size_t max_buffer_capacity = planes[0].length;
+    // SECURITY: planes[0].length is the kernel-reported *dmabuf* size, but
+    // FinalizeJpegImage() only mmap()s output_frame->layout().planes()[0].size
+    // bytes (the caller-supplied plane.size). Bounds-check against the smaller
+    // of the two so we never write past the mapped region.
+    const size_t mapped_size =
+        job_record->output_frame->layout().planes()[0].size;
+    const size_t max_buffer_capacity =
+        std::min(static_cast<size_t>(planes[0].length), mapped_size);
     const size_t jpeg_size = FinalizeJpegImage(
         job_record->output_frame, buffer_size, max_buffer_capacity,
         std::move(job_record->exif_mapping));

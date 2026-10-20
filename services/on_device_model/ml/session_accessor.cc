@@ -4,15 +4,21 @@
 
 #include "services/on_device_model/ml/session_accessor.h"
 
+#include <optional>
 #include <thread>
+#include <vector>
 
 #include "base/compiler_specific.h"
+#include "base/json/json_writer.h"
+#include "base/logging.h"
 #include "base/memory/ref_counted_delete_on_sequence.h"
 #include "base/trace_event/trace_event.h"
+#include "base/values.h"
 #include "components/optimization_guide/core/optimization_guide_features.h"
 #include "services/on_device_model/ml/chrome_ml.h"
 #include "services/on_device_model/ml/chrome_ml_types.h"
 #include "services/on_device_model/ml/constraint_factory.h"
+#include "services/on_device_model/public/cpp/features.h"
 
 namespace ml {
 
@@ -33,6 +39,91 @@ uint32_t GetTopK(std::optional<uint32_t> top_k) {
   return std::min(static_cast<uint32_t>(
                       optimization_guide::features::GetOnDeviceModelMaxTopK()),
                   std::max(kMinTopK, top_k.value_or(kMinTopK)));
+}
+
+std::optional<ml::InputPiece> ConvertMojomInputPieceToMlInputPiece(
+    odmm::InputPiecePtr piece) {
+  switch (piece->which()) {
+    case odmm::InputPiece::Tag::kToken:
+      return piece->get_token();
+    case odmm::InputPiece::Tag::kText:
+      return std::move(piece->get_text());
+    case odmm::InputPiece::Tag::kBitmap:
+      return std::move(piece->get_bitmap());
+    case odmm::InputPiece::Tag::kAudio: {
+      auto& audio = piece->get_audio();
+      ml::AudioBuffer audio_buffer;
+      audio_buffer.sample_rate_hz = audio->sample_rate;
+      audio_buffer.num_channels = audio->channel_count;
+      audio_buffer.num_frames = audio->frame_count;
+      audio_buffer.data = std::move(audio->data);
+      return audio_buffer;
+    }
+    case odmm::InputPiece::Tag::kToolDeclaration: {
+      auto& input = piece->get_tool_declaration();
+      ml::ToolDeclaration output;
+      output.name = std::move(input->name);
+      output.description = std::move(input->description);
+      if (!base::JSONWriter::Write(input->input_schema,
+                                   &output.input_schema_json)) {
+        LOG(WARNING) << "Failed to serialize tool declaration input_schema.";
+        return std::nullopt;
+      }
+      return output;
+    }
+    case odmm::InputPiece::Tag::kToolCall: {
+      auto& input = piece->get_tool_call();
+      ml::ToolCall output;
+      output.call_id = std::move(input->call_id);
+      output.name = std::move(input->name);
+      if (!base::JSONWriter::Write(input->arguments, &output.arguments_json)) {
+        LOG(WARNING) << "Failed to serialize tool call arguments.";
+        return std::nullopt;
+      }
+      return output;
+    }
+    case odmm::InputPiece::Tag::kToolResponse: {
+      auto& input = piece->get_tool_response();
+      bool has_error =
+          input->error_message.has_value() && !input->error_message->empty();
+      bool has_result = input->result.has_value() && !input->result->is_none();
+      if ((has_error && has_result) || (!has_error && !has_result)) {
+        LOG(WARNING) << "Tool response must have exactly one of result or "
+                        "error_message.";
+        return std::nullopt;
+      }
+
+      ml::ToolResponse output;
+      output.call_id = std::move(input->call_id);
+      output.name = std::move(input->name);
+      if (has_error) {
+        output.error_message = std::move(*input->error_message);
+      } else if (!base::JSONWriter::Write(*input->result,
+                                          &output.result_json)) {
+        LOG(WARNING) << "Failed to serialize tool response result.";
+        return std::nullopt;
+      }
+      return output;
+    }
+    case odmm::InputPiece::Tag::kUnknownType:
+      return piece->get_unknown_type();
+  }
+  NOTREACHED();
+}
+
+std::optional<std::vector<ml::InputPiece>> ConvertMojomInputToMlInputPieces(
+    odmm::InputPtr input) {
+  std::vector<ml::InputPiece> pieces;
+  pieces.reserve(input->pieces.size());
+  for (auto& piece : input->pieces) {
+    std::optional<ml::InputPiece> converted =
+        ConvertMojomInputPieceToMlInputPiece(std::move(piece));
+    if (!converted) {
+      return std::nullopt;
+    }
+    pieces.push_back(std::move(*converted));
+  }
+  return pieces;
 }
 
 }  // namespace
@@ -95,9 +186,11 @@ SessionAccessor::Ptr SessionAccessor::Create(
     ChromeMLModel model,
     on_device_model::mojom::SessionParamsPtr params,
     on_device_model::mojom::LoadAdaptationParamsPtr adaptation_params,
-    std::optional<uint32_t> adaptation_id) {
-  Ptr handle(new SessionAccessor(chrome_ml, task_runner, model),
-             base::OnTaskRunnerDeleter(task_runner));
+    std::optional<uint32_t> adaptation_id,
+    ChromeMLModel postprocessor_model) {
+  Ptr handle(
+      new SessionAccessor(chrome_ml, task_runner, model, postprocessor_model),
+      base::OnTaskRunnerDeleter(task_runner));
   // SessionAccessor is deleted on `task_runner_` so base::Unretained is safe.
   task_runner->PostTask(
       FROM_HERE,
@@ -109,20 +202,26 @@ SessionAccessor::Ptr SessionAccessor::Create(
 
 SessionAccessor::~SessionAccessor() {
   DCHECK(task_runner_->RunsTasksInCurrentSequence());
+  if (asr_stream_ != 0) {
+    chrome_ml_->ASRDestroyStream(asr_stream_);
+  }
   chrome_ml_->DestroySession(session_);
 }
 
 SessionAccessor::SessionAccessor(
     const ChromeML& chrome_ml,
     scoped_refptr<base::SequencedTaskRunner> task_runner,
-    ChromeMLModel model)
+    ChromeMLModel model,
+    ChromeMLModel postprocessor_model)
     : chrome_ml_(chrome_ml),
       task_runner_(std::move(task_runner)),
-      model_(model) {}
+      model_(model),
+      postprocessor_model_(postprocessor_model) {}
 
 SessionAccessor::Ptr SessionAccessor::Clone() {
   TRACE_EVENT("optimization_guide", "SessionAccessor::Clone");
-  Ptr handle(new SessionAccessor(chrome_ml_.get(), task_runner_, model_),
+  Ptr handle(new SessionAccessor(chrome_ml_.get(), task_runner_, model_,
+                                 postprocessor_model_),
              base::OnTaskRunnerDeleter(task_runner_));
   // SessionAccessor is deleted on `task_runner_` so base::Unretained is safe.
   task_runner_->PostTask(
@@ -135,6 +234,7 @@ SessionAccessor::Ptr SessionAccessor::Clone() {
 ChromeMLCancelFn SessionAccessor::Append(
     const perfetto::Track& perfetto_id,
     on_device_model::mojom::AppendOptionsPtr options,
+    mojo::ReportBadMessageCallback bad_message_callback,
     ChromeMLContextSavedFn context_saved_fn) {
   TRACE_EVENT("optimization_guide", "SessionAccessor::Append");
   DCHECK(context_saved_fn);
@@ -146,6 +246,7 @@ ChromeMLCancelFn SessionAccessor::Append(
       FROM_HERE,
       base::BindOnce(&SessionAccessor::AppendInternal, base::Unretained(this),
                      perfetto_id, std::move(options),
+                     std::move(bad_message_callback),
                      std::move(context_saved_fn), canceler));
   return [canceler] { canceler->Cancel(); };
 }
@@ -201,12 +302,15 @@ void SessionAccessor::Hint(on_device_model::mojom::HintOptionsPtr options,
                      std::move(options), base::Unretained(constraint_factory)));
 }
 
-void SessionAccessor::SizeInTokens(on_device_model::mojom::InputPtr input,
-                                   ChromeMLSizeInTokensFn size_in_tokens_fn) {
+void SessionAccessor::SizeInTokens(
+    on_device_model::mojom::InputPtr input,
+    mojo::ReportBadMessageCallback bad_message_callback,
+    ChromeMLSizeInTokensFn size_in_tokens_fn) {
   TRACE_EVENT("optimization_guide", "SessionAccessor::SizeInTokens");
   task_runner_->PostTask(
       FROM_HERE, base::BindOnce(&SessionAccessor::SizeInTokensInternal,
                                 base::Unretained(this), std::move(input),
+                                std::move(bad_message_callback),
                                 std::move(size_in_tokens_fn)));
 }
 
@@ -262,7 +366,17 @@ void SessionAccessor::CreateInternal(
           on_device_model::CapabilityFlags::kImageInput),
       .enable_audio_input = params->capabilities.Has(
           on_device_model::CapabilityFlags::kAudioInput),
+      .allow_speculative_decoding = base::FeatureList::IsEnabled(
+          on_device_model::features::kOnDeviceModelSpeculativeDecoding),
   };
+  VLOG(1) << __func__ << " starting session with: "
+          << "max_tokens=" << descriptor.max_tokens << ", "
+          << "top_k=" << descriptor.top_k << ", "
+          << "temperature=" << descriptor.temperature << ", "
+          << "allow_speculative_decoding="
+          << descriptor.allow_speculative_decoding << ", "
+          << "enable_image_input=" << descriptor.enable_image_input << ", "
+          << "enable_audio_input=" << descriptor.enable_audio_input;
   ChromeMLModelData data;
   std::string weights_path_str;
   if (adaptation_params) {
@@ -285,6 +399,7 @@ void SessionAccessor::CreateInternal(
 void SessionAccessor::AppendInternal(
     perfetto::Track perfetto_id,
     on_device_model::mojom::AppendOptionsPtr append_options,
+    mojo::ReportBadMessageCallback bad_message_callback,
     ChromeMLContextSavedFn context_saved_fn,
     scoped_refptr<Canceler> canceler) {
   // Ends the `Queued` trace.
@@ -302,13 +417,25 @@ void SessionAccessor::AppendInternal(
       break;
     case on_device_model::mojom::InputSource::kUnknown:
       source = InputSource::kUnknown;
-      ABSL_LOG(WARNING) << "AppendOptions called with kUnknown InputSource";
+      LOG(WARNING) << "AppendOptions called with kUnknown InputSource";
       break;
   }
 
+  std::optional<std::vector<ml::InputPiece>> input =
+      ConvertMojomInputToMlInputPieces(std::move(append_options->input));
+  if (!input) {
+    std::move(bad_message_callback)
+        .Run("SessionAccessor::AppendInternal: failed to convert input");
+    // Complete local request bookkeeping so the pending request queue is not
+    // blocked after reporting the bad message.
+    LOG(WARNING) << "AppendInternal: failed to convert input pieces; "
+                    "completing with 0 tokens appended.";
+    context_saved_fn(0);
+    return;
+  }
   ChromeMLAppendOptions options{
-      .input = append_options->input->pieces.data(),
-      .input_size = append_options->input->pieces.size(),
+      .input = input->data(),
+      .input_size = input->size(),
       .max_tokens = append_options->max_tokens,
       .context_saved_fn = &context_saved_fn,
       .input_source = source,
@@ -342,6 +469,8 @@ void SessionAccessor::GenerateInternal(
       .max_output_tokens = generate_options->max_output_tokens,
       .constraint = constraint,
       .output_fn = &output_fn,
+      .enable_thinking = generate_options->enable_thinking,
+      .thinking_token_budget = generate_options->thinking_token_budget,
   };
   chrome_ml_->SessionGenerate(session_, &options, canceler->get());
 }
@@ -374,11 +503,24 @@ void SessionAccessor::GetProbabilitiesBlockingInternal(
 
 void SessionAccessor::SizeInTokensInternal(
     on_device_model::mojom::InputPtr input,
+    mojo::ReportBadMessageCallback bad_message_callback,
     ChromeMLSizeInTokensFn size_in_tokens_fn) {
   TRACE_EVENT("optimization_guide", "SessionAccessor::SizeInTokensInternal");
   DCHECK(task_runner_->RunsTasksInCurrentSequence());
+  std::optional<std::vector<ml::InputPiece>> converted_input =
+      ConvertMojomInputToMlInputPieces(std::move(input));
+  if (!converted_input) {
+    std::move(bad_message_callback)
+        .Run("SessionAccessor::SizeInTokensInternal: failed to convert input");
+    // Complete local request bookkeeping so the pending request queue is not
+    // blocked after reporting the bad message.
+    LOG(WARNING) << "SizeInTokensInternal: failed to convert input pieces; "
+                    "reporting size 0.";
+    size_in_tokens_fn(0);
+    return;
+  }
   chrome_ml_->SessionSizeInTokensInputPiece(
-      session_, model_, input->pieces.data(), input->pieces.size(),
+      session_, model_, converted_input->data(), converted_input->size(),
       size_in_tokens_fn);
 }
 
@@ -391,7 +533,16 @@ std::optional<odmm::AsrError> SessionAccessor::CreateAsrStreamInternal(
   ChromeMLASRStreamOptions options{
       .sample_rate_hz = asr_options->sample_rate_hz,
       .output_fn = &output_fn,
+      .decoder_prefill_backoff = -1,
+      .language =
+          asr_options->language ? asr_options->language->c_str() : nullptr,
+      .polisher_model = postprocessor_model_,
   };
+  if (base::FeatureList::IsEnabled(
+          on_device_model::features::kOnDeviceModelAsrDecoderPrefill)) {
+    options.decoder_prefill_backoff =
+        on_device_model::features::kOnDeviceModelAsrDecoderPrefillBackoff.Get();
+  }
   asr_stream_ = chrome_ml_->ASRCreateStream(session_, &options);
   if (asr_stream_ == 0) {
     return odmm::AsrError::kInitializationFailed;
@@ -403,7 +554,9 @@ void SessionAccessor::AsrAddAudioChunkInternal(odmm::AudioDataPtr data) {
   TRACE_EVENT("optimization_guide.debug",
               "SessionAccessor::AsrAddAudioChunkInternal");
   DCHECK(task_runner_->RunsTasksInCurrentSequence());
-  CHECK_NE(asr_stream_, 0u) << "ASR stream must be created first.";
+  if (asr_stream_ == 0) {
+    return;
+  }
   ml::AudioBuffer audio;
   audio.sample_rate_hz = data->sample_rate;
   audio.num_channels = data->channel_count;

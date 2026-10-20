@@ -35,6 +35,7 @@
 
 #include "base/files/file_util.h"
 #include "base/files/scoped_temp_dir.h"
+#include "base/memory/raw_ptr.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
 #include "build/build_config.h"
@@ -109,6 +110,7 @@ class DummyFrameOwner final : public GarbageCollected<DummyFrameOwner>,
   void DispatchLoad() override {}
   void NaturalSizingInfoChanged() override {}
   void ClearLastNaturalSizingInfo() override {}
+  void ClearAllNaturalSizingInfo() override {}
   void SetNeedsOcclusionTracking(bool) override {}
   AtomicString BrowsingContextContainerName() const override {
     return AtomicString();
@@ -121,6 +123,9 @@ class DummyFrameOwner final : public GarbageCollected<DummyFrameOwner>,
   bool AllowFullscreen() const override { return false; }
   bool AllowPaymentRequest() const override { return false; }
   bool IsDisplayNone() const override { return false; }
+  mojom::blink::FrameResponsiveSizing GetResponsiveSizing() const override {
+    return mojom::blink::FrameResponsiveSizing::kNone;
+  }
   mojom::blink::ColorScheme GetColorScheme() const override {
     return mojom::blink::ColorScheme::kLight;
   }
@@ -135,6 +140,8 @@ class DummyFrameOwner final : public GarbageCollected<DummyFrameOwner>,
   bool IsLocal() const override { return false; }
   bool IsRemote() const override { return false; }
 };
+
+constexpr char kEmptyQuotedHeader[] = "\"\"";
 
 }  // namespace
 
@@ -191,7 +198,7 @@ class FixedPolicySubresourceFilter : public WebDocumentSubresourceFilter {
 
  private:
   const LoadPolicy policy_;
-  int* filtered_load_counter_;
+  raw_ptr<int, UnprotectedInRelease | DanglingUntriaged> filtered_load_counter_;
 };
 
 class TestResourceRequestContext : public ResourceRequestContext {
@@ -317,10 +324,11 @@ class FrameFetchContextSubresourceFilterTest
     FetchInitiatorInfo initiator_info;
 
     std::optional<AdProvenance> ad_provenance =
-        GetFetchContext()->CalculateIfAdSubresource(
-            request, std::nullopt /* alias_url */, ResourceType::kMock,
-            initiator_info,
-            /*scan_stack_for_ads=*/false);
+        GetFetchContext()
+            ->CalculateResourceAnnotations(
+                request, std::nullopt /* alias_url */, ResourceType::kMock,
+                initiator_info, /*scan_javascript_stack=*/false)
+            .ad_provenance;
 
     if (expect_is_ad) {
       EXPECT_TRUE(std::holds_alternative<subresource_filter::ScopedRule>(
@@ -684,21 +692,10 @@ TEST_P(FrameFetchContextModifyRequestTest, SendUpgradeInsecureRequestHeader) {
 
 class FrameFetchContextHintsTest
     : public FrameFetchContextTestBase,
-      public testing::WithParamInterface<std::tuple<bool, bool>> {
+      public testing::WithParamInterface<bool> {
  public:
   FrameFetchContextHintsTest()
-      : preload_link_rel_data_urls_(std::get<1>(GetParam())) {
-    std::vector<base::test::FeatureRef> enabled_features = {};
-    std::vector<base::test::FeatureRef> disabled_features = {};
-    if (std::get<0>(GetParam())) {
-      enabled_features.push_back(
-          blink::features::kQuoteEmptySecChUaStringHeadersConsistently);
-    } else {
-      disabled_features.push_back(
-          blink::features::kQuoteEmptySecChUaStringHeadersConsistently);
-    }
-    scoped_feature_list_.InitWithFeatures(enabled_features, disabled_features);
-  }
+      : preload_link_rel_data_urls_(GetParam()) {}
 
   void SetUp() override {
     // Set the document URL to a secure document.
@@ -731,18 +728,6 @@ class FrameFetchContextHintsTest
               resource_request.HttpHeaderField(AtomicString(header_name)));
   }
 
-  // Returns the expected value for a header containing an empty string. This
-  // should be `""`, but if !kQuoteEmptySecChUaStringHeadersConsistently then
-  // it is instead an empty string.
-  const char* EmptyString() {
-    if (base::FeatureList::IsEnabled(
-            blink::features::kQuoteEmptySecChUaStringHeadersConsistently)) {
-      return "\"\"";
-    } else {
-      return "";
-    }
-  }
-
   String GetHeaderValue(const char* input, const char* header_name) {
     const KURL input_url(input);
     ResourceRequest resource_request(input_url);
@@ -752,14 +737,12 @@ class FrameFetchContextHintsTest
   }
 
  private:
-  base::test::ScopedFeatureList scoped_feature_list_;
   ScopedPreloadLinkRelDataUrlsForTest preload_link_rel_data_urls_;
 };
 
 INSTANTIATE_TEST_SUITE_P(All,
                          FrameFetchContextHintsTest,
-                         testing::Combine(testing::ValuesIn({false, true}),
-                                          testing::Bool()));
+                         testing::Bool());
 // Verify that the client hints should be attached for subresources fetched
 // over secure transport. Tests when the persistent client hint feature is
 // enabled.
@@ -833,49 +816,8 @@ TEST_P(FrameFetchContextHintsTest, MonitorDeviceMemoryHintsLocalContext) {
   ExpectHeader("http://localhost/1.gif", "Sec-CH-Viewport-Width", false, "");
 }
 
-TEST_P(FrameFetchContextHintsTest, MonitorDeviceMemoryHintsOld) {
-  // Test with old limits. See https://crbug.com/454354290
-  // TODO: remove this whole section when feature flag is retired.
-  base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitAndDisableFeature(
-      features::kUpdatedDeviceMemoryLimitsFor2026);
-  ExpectHeader("https://www.example.com/1.gif", "Device-Memory", false, "");
-  ClientHintsPreferences preferences;
-  preferences.SetShouldSend(
-      network::mojom::WebClientHintsType::kDeviceMemory_DEPRECATED);
-  preferences.SetShouldSend(network::mojom::WebClientHintsType::kDeviceMemory);
-  document->GetFrame()->GetClientHintsPreferences().UpdateFrom(preferences);
-  ApproximatedDeviceMemory::SetPhysicalMemoryMBForTesting(4096);
-  ExpectHeader("https://www.example.com/1.gif", "Device-Memory", true, "4");
-  ExpectHeader("https://www.example.com/1.gif", "Sec-CH-Device-Memory", true,
-               "4");
-  ApproximatedDeviceMemory::SetPhysicalMemoryMBForTesting(2048);
-  ExpectHeader("https://www.example.com/1.gif", "Device-Memory", true, "2");
-  ExpectHeader("https://www.example.com/1.gif", "Sec-CH-Device-Memory", true,
-               "2");
-  ApproximatedDeviceMemory::SetPhysicalMemoryMBForTesting(64385);
-  ExpectHeader("https://www.example.com/1.gif", "Device-Memory", true, "8");
-  ExpectHeader("https://www.example.com/1.gif", "Sec-CH-Device-Memory", true,
-               "8");
-  ApproximatedDeviceMemory::SetPhysicalMemoryMBForTesting(768);
-  ExpectHeader("https://www.example.com/1.gif", "Device-Memory", true, "0.5");
-  ExpectHeader("https://www.example.com/1.gif", "Sec-CH-Device-Memory", true,
-               "0.5");
-  ExpectHeader("https://www.example.com/1.gif", "DPR", false, "");
-  ExpectHeader("https://www.example.com/1.gif", "Sec-CH-DPR", false, "");
-  ExpectHeader("https://www.example.com/1.gif", "Width", false, "");
-  ExpectHeader("https://www.example.com/1.gif", "Sec-CH-Width", false, "");
-  ExpectHeader("https://www.example.com/1.gif", "Viewport-Width", false, "");
-  ExpectHeader("https://www.example.com/1.gif", "Sec-CH-Viewport-Width", false,
-               "");
-}
-
 TEST_P(FrameFetchContextHintsTest, MonitorDeviceMemoryHints) {
   // Test with new, 2026 limits - see https://crbug.com/454354290
-  // TODO Remove next two lines when ready to retire feature flag.
-  base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitAndEnableFeature(
-      features::kUpdatedDeviceMemoryLimitsFor2026);
   ExpectHeader("https://www.example.com/1.gif", "Device-Memory", false, "");
   ClientHintsPreferences preferences;
   preferences.SetShouldSend(
@@ -1025,7 +967,7 @@ TEST_P(FrameFetchContextHintsTest, MonitorUAHints) {
     document->GetFrame()->GetClientHintsPreferences().UpdateFrom(preferences);
 
     ExpectHeader("https://www.example.com/1.gif", "Sec-CH-UA-Arch", true,
-                 EmptyString());
+                 kEmptyQuotedHeader);
     ExpectHeader("https://www.example.com/1.gif", "Sec-CH-UA-Platform-Version",
                  false, "");
     ExpectHeader("https://www.example.com/1.gif", "Sec-CH-UA-Model", false, "");
@@ -1046,7 +988,7 @@ TEST_P(FrameFetchContextHintsTest, MonitorUAHints) {
 
     ExpectHeader("https://www.example.com/1.gif", "Sec-CH-UA-Arch", false, "");
     ExpectHeader("https://www.example.com/1.gif", "Sec-CH-UA-Platform", true,
-                 EmptyString());
+                 kEmptyQuotedHeader);
     ExpectHeader("https://www.example.com/1.gif", "Sec-CH-UA-Platform-Version",
                  false, "");
     ExpectHeader("https://www.example.com/1.gif", "Sec-CH-UA-Model", false, "");
@@ -1069,7 +1011,7 @@ TEST_P(FrameFetchContextHintsTest, MonitorUAHints) {
 
     ExpectHeader("https://www.example.com/1.gif", "Sec-CH-UA-Arch", false, "");
     ExpectHeader("https://www.example.com/1.gif", "Sec-CH-UA-Platform-Version",
-                 true, EmptyString());
+                 true, kEmptyQuotedHeader);
     ExpectHeader("https://www.example.com/1.gif", "Sec-CH-UA-Model", false, "");
     ExpectHeader("https://www.example.com/1.gif", "Sec-CH-UA-Form-Factors",
                  false, "");
@@ -1091,7 +1033,7 @@ TEST_P(FrameFetchContextHintsTest, MonitorUAHints) {
     ExpectHeader("https://www.example.com/1.gif", "Sec-CH-UA-Platform-Version",
                  false, "");
     ExpectHeader("https://www.example.com/1.gif", "Sec-CH-UA-Model", true,
-                 EmptyString());
+                 kEmptyQuotedHeader);
     ExpectHeader("https://www.example.com/1.gif", "Sec-CH-UA-Form-Factors",
                  false, "");
 
@@ -1266,13 +1208,13 @@ TEST_P(FrameFetchContextHintsTest, MonitorAllHints) {
 
   ExpectHeader("https://www.example.com/1.gif", "Sec-CH-UA", true, "");
   ExpectHeader("https://www.example.com/1.gif", "Sec-CH-UA-Arch", true,
-               EmptyString());
+               kEmptyQuotedHeader);
   ExpectHeader("https://www.example.com/1.gif", "Sec-CH-UA-Platform", true,
-               EmptyString());
+               kEmptyQuotedHeader);
   ExpectHeader("https://www.example.com/1.gif", "Sec-CH-UA-Platform-Version",
-               true, EmptyString());
+               true, kEmptyQuotedHeader);
   ExpectHeader("https://www.example.com/1.gif", "Sec-CH-UA-Model", true,
-               EmptyString());
+               kEmptyQuotedHeader);
   ExpectHeader("https://www.example.com/1.gif", "Sec-CH-UA-Form-Factors", true,
                "");
   ExpectHeader("https://www.example.com/1.gif", "Sec-CH-Prefers-Color-Scheme",
@@ -1353,13 +1295,13 @@ TEST_P(FrameFetchContextHintsTest, MonitorAllHintsPermissionsPolicy) {
 
   ExpectHeader("https://www.example.net/1.gif", "Sec-CH-UA", true, "");
   ExpectHeader("https://www.example.net/1.gif", "Sec-CH-UA-Arch", true,
-               EmptyString());
+               kEmptyQuotedHeader);
   ExpectHeader("https://www.example.net/1.gif", "Sec-CH-UA-Platform", true,
-               EmptyString());
+               kEmptyQuotedHeader);
   ExpectHeader("https://www.example.net/1.gif", "Sec-CH-UA-Platform-Version",
-               true, EmptyString());
+               true, kEmptyQuotedHeader);
   ExpectHeader("https://www.example.net/1.gif", "Sec-CH-UA-Model", true,
-               EmptyString());
+               kEmptyQuotedHeader);
   ExpectHeader("https://www.example.net/1.gif", "Width", true, "400", 400);
   ExpectHeader("https://www.example.net/1.gif", "Sec-CH-Width", true, "400",
                400);
@@ -1810,10 +1752,10 @@ TEST_P(FrameFetchContextSubresourceFilterTest,
   }
 }
 
-// Tests that CalculateIfAdSubresource with an alias URL will tag ads
+// Tests that CalculateResourceAnnotations with an alias URL will tag ads
 // correctly according to the SubresourceFilter mode.
 TEST_P(FrameFetchContextSubresourceFilterTest,
-       CalculateIfAdSubresourceWithAliasURL) {
+       CalculateResourceAnnotationsWithAliasURL) {
   const struct {
     WebDocumentSubresourceFilter::LoadPolicy policy;
     bool expected_to_be_tagged_ad;
@@ -1834,10 +1776,11 @@ TEST_P(FrameFetchContextSubresourceFilterTest,
     ResourceLoaderOptions options(nullptr /* world */);
 
     std::optional<AdProvenance> ad_provenance =
-        GetFetchContext()->CalculateIfAdSubresource(
-            resource_request, alias_url, ResourceType::kScript,
-            options.initiator_info,
-            /*scan_stack_for_ads=*/false);
+        GetFetchContext()
+            ->CalculateResourceAnnotations(
+                resource_request, alias_url, ResourceType::kScript,
+                options.initiator_info, /*scan_javascript_stack=*/false)
+            .ad_provenance;
 
     if (test.expected_to_be_tagged_ad) {
       EXPECT_TRUE(std::holds_alternative<subresource_filter::ScopedRule>(
@@ -2085,7 +2028,7 @@ class FrameFetchContextNetworkGuardrailsTest
 
     ASSERT_TRUE(image_size >= base_png.size());
     Vector<char> image_data(base_png);
-    image_data.resize(image_size);
+    image_data.resize(static_cast<wtf_size_t>(image_size));
 
     base::ScopedTempDir temp_dir;
     ASSERT_TRUE(temp_dir.CreateUniqueTempDir());

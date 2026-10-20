@@ -13,6 +13,7 @@
 #include "cc/input/main_thread_scrolling_reason.h"
 #include "cc/input/overscroll_behavior.h"
 #include "cc/input/scroll_snap_data.h"
+#include "third_party/blink/renderer/platform/geometry/infinite_int_rect.h"
 #include "third_party/blink/renderer/platform/graphics/compositor_element_id.h"
 #include "third_party/blink/renderer/platform/graphics/paint/paint_property_node.h"
 #include "third_party/blink/renderer/platform/platform_export.h"
@@ -23,8 +24,6 @@
 namespace blink {
 
 class ClipPaintPropertyNode;
-
-using MainThreadScrollingReasons = uint32_t;
 
 enum class CompositedScrollingPreference : uint8_t {
   kDefault,
@@ -59,6 +58,7 @@ class PLATFORM_EXPORT ScrollPaintPropertyNode final
     Member<const ClipPaintPropertyNode> overflow_clip_node;
     bool user_scrollable_horizontal = false;
     bool user_scrollable_vertical = false;
+    bool prevent_scroll_axis_locking = false;
 
     // This bit tells the compositor whether the inner viewport should be
     // scrolled using the full viewport mechanism (overscroll, top control
@@ -71,14 +71,15 @@ class PLATFORM_EXPORT ScrollPaintPropertyNode final
     bool max_scroll_offset_affected_by_page_scale = false;
     CompositedScrollingPreference composited_scrolling_preference =
         CompositedScrollingPreference::kDefault;
-    MainThreadScrollingReasons main_thread_repaint_reasons =
-        cc::MainThreadScrollingReason::kNotScrollingOnMain;
+    cc::MainThreadRepaintReasons main_thread_repaint_reasons;
     // The scrolling element id is stored directly on the scroll node and not
     // on the associated TransformPaintPropertyNode used for scroll offset.
     CompositorElementId compositor_element_id;
     cc::OverscrollBehavior overscroll_behavior =
         cc::OverscrollBehavior(cc::OverscrollBehavior::Type::kAuto);
     std::optional<cc::SnapContainerData> snap_container_data;
+    // Updated by CullRectUpdater.
+    gfx::Rect scrolling_contents_cull_rect = InfiniteIntRect();
 
     PaintPropertyChangeType ComputeChange(const State& other) const;
 
@@ -147,6 +148,11 @@ class PLATFORM_EXPORT ScrollPaintPropertyNode final
                      state_.contents_rect.size());
   }
 
+  // The overflow clip node which clips the scrolling contents. It's not null
+  // in most cases, except for
+  // - the root scroll node,
+  // - the inner viewport scroll node,
+  // - scrollers that don't clip contents (see LocalFrame::ClipsContent()).
   const ClipPaintPropertyNode* OverflowClipNode() const {
     return state_.overflow_clip_node.Get();
   }
@@ -167,23 +173,34 @@ class PLATFORM_EXPORT ScrollPaintPropertyNode final
   bool MaxScrollOffsetAffectedByPageScale() const {
     return state_.max_scroll_offset_affected_by_page_scale;
   }
+  bool PreventScrollAxisLocking() const {
+    return state_.prevent_scroll_axis_locking;
+  }
   CompositedScrollingPreference GetCompositedScrollingPreference() const {
     return state_.composited_scrolling_preference;
   }
 
   // Note that this doesn't include main-thread repaint reasons computed
   // after paint.
-  MainThreadScrollingReasons GetMainThreadRepaintReasons() const {
+  cc::MainThreadRepaintReasons GetMainThreadRepaintReasons() const {
     return state_.main_thread_repaint_reasons;
   }
 
   bool RequiresMainThreadForBackgroundAttachmentFixed() const {
-    return state_.main_thread_repaint_reasons &
-           cc::MainThreadScrollingReason::kHasBackgroundAttachmentFixedObjects;
+    return state_.main_thread_repaint_reasons.Has(
+        cc::MainThreadRepaintReason::kHasBackgroundAttachmentFixedObjects);
   }
 
   const CompositorElementId& GetCompositorElementId() const {
     return state_.compositor_element_id;
+  }
+
+  void SetScrollingContentsCullRect(const gfx::Rect& rect) {
+    AddChanged(PaintPropertyChangeType::kChangedOnlySimpleValues);
+    state_.scrolling_contents_cull_rect = rect;
+  }
+  const gfx::Rect& ScrollingContentsCullRect() const {
+    return state_.scrolling_contents_cull_rect;
   }
 
   std::unique_ptr<JSONObject> ToJSON() const final;
@@ -205,8 +222,6 @@ class PLATFORM_EXPORT ScrollPaintPropertyNode final
     DCHECK(!state_.compositor_element_id ||
            NamespaceFromCompositorElementId(state_.compositor_element_id) ==
                CompositorElementIdNamespace::kScroll);
-    DCHECK(cc::MainThreadScrollingReason::AreRepaintReasons(
-        state_.main_thread_repaint_reasons));
 #endif
   }
 

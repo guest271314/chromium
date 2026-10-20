@@ -223,13 +223,13 @@ class GpuRasterPixelTest : public testing::Test,
                                           : gpu::raster::kNoMSAA;
 
     if (options.preclear) {
-      ri->BeginRasterCHROMIUM(
-          options.preclear_color,
-          /*needs_clear=*/options.preclear, options.msaa_sample_count,
-          msaa_mode, options.use_lcd_text,
-          /*visible=*/true, options.target_color_params.color_space,
-          options.target_color_params.GetHdrHeadroom(),
-          client_shared_image->mailbox().name);
+      ri->BeginRasterCHROMIUM(options.preclear_color,
+                              /*needs_clear=*/options.preclear,
+                              options.msaa_sample_count, msaa_mode,
+                              options.use_lcd_text,
+                              options.target_color_params.color_space,
+                              options.target_color_params.GetHdrHeadroom(),
+                              client_shared_image->mailbox().name);
       ri->EndRasterCHROMIUM();
     }
 
@@ -240,8 +240,7 @@ class GpuRasterPixelTest : public testing::Test,
     ri->BeginRasterCHROMIUM(
         options.background_color,
         /*needs_clear=*/!options.preclear, options.msaa_sample_count, msaa_mode,
-        options.use_lcd_text,
-        /*visible=*/true, options.target_color_params.color_space,
+        options.use_lcd_text, options.target_color_params.color_space,
         options.target_color_params.GetHdrHeadroom(),
         client_shared_image->mailbox().name);
     size_t max_op_size_limit =
@@ -251,7 +250,8 @@ class GpuRasterPixelTest : public testing::Test,
         options.full_raster_rect, options.playback_rect, options.post_translate,
         gfx::Vector2dF(options.post_scale, options.post_scale),
         options.requires_clear, /*raster_inducing_scroll_offsets=*/nullptr,
-        &max_op_size_limit);
+        &max_op_size_limit,
+        base::RepeatingCallback<void(SkCanvas*, uint32_t)>());
     for (const auto& list : options.additional_lists) {
       ri->RasterCHROMIUM(list.get(), &image_provider, options.content_size,
                          options.full_raster_rect, options.playback_rect,
@@ -259,7 +259,8 @@ class GpuRasterPixelTest : public testing::Test,
                          gfx::Vector2dF(options.post_scale, options.post_scale),
                          options.requires_clear,
                          /*raster_inducing_scroll_offsets=*/nullptr,
-                         &max_op_size_limit);
+                         &max_op_size_limit,
+                         base::RepeatingCallback<void(SkCanvas*, uint32_t)>());
     }
     ri->EndRasterCHROMIUM();
 
@@ -281,7 +282,8 @@ class GpuRasterPixelTest : public testing::Test,
         image_size.width(), image_size.height(), color_space);
     SkBitmap result;
     result.allocPixels(image_info);
-    ri->ReadbackImagePixels(mailbox, image_info, image_info.minRowBytes(), 0, 0,
+    ri->ReadbackImagePixels(mailbox, image_size, image_info,
+                            image_info.minRowBytes(), 0, 0,
                             /*plane_index=*/0, result.getPixels());
     return result;
   }
@@ -825,7 +827,7 @@ TEST_F(GpuRasterPixelTest, DrawGainmapImage) {
   {
     RasterOptions options(kSize);
     options.target_color_params.color_space =
-        gfx::ColorSpace(*dest_color_space);
+        gfx::ColorSpace(dest_color_space.get());
     options.target_color_params.hdr_headroom = 0.f;
     auto result = Raster(display_item_list, options);
     auto out_color = result.getColor4f(0, 0);
@@ -839,7 +841,7 @@ TEST_F(GpuRasterPixelTest, DrawGainmapImage) {
   {
     RasterOptions options(kSize);
     options.target_color_params.color_space =
-        gfx::ColorSpace(*dest_color_space);
+        gfx::ColorSpace(dest_color_space.get());
     options.target_color_params.hdr_headroom = std::log2(kDestScale);
     auto result = Raster(display_item_list, options);
     auto out_color = result.getColor4f(0, 0);
@@ -913,7 +915,7 @@ TEST_F(GpuRasterPixelTest, DrawGainmapImageCubic) {
   {
     auto dest_color_space = SkColorSpace::MakeSRGBLinear();
     options.target_color_params.color_space =
-        gfx::ColorSpace(*dest_color_space);
+        gfx::ColorSpace(dest_color_space.get());
     options.target_color_params.hdr_headroom = std::log2(kRatioMax);
   }
   auto result = Raster(display_item_list, options);
@@ -1016,7 +1018,7 @@ TEST_F(GpuRasterPixelTest, DrawGainmapImageFiltering) {
   {
     auto dest_color_space = SkColorSpace::MakeSRGBLinear();
     options.target_color_params.color_space =
-        gfx::ColorSpace(*dest_color_space);
+        gfx::ColorSpace(dest_color_space.get());
     options.target_color_params.hdr_headroom = std::log2(kRatioMax);
   }
   auto result = Raster(display_item_list, options);
@@ -1062,27 +1064,26 @@ TEST_F(GpuRasterPixelTest, DrawHdrImageWithMetadata) {
   };
   sk_sp<SkImage> image_500_nits = make_image(0.6765848107833876f);
   sk_sp<SkImage> image_250_nits = make_image(0.6025591549907524f);
+  sk_sp<SkImage> image_100_nits = make_image(0.508078421517399f);
 
   const auto make_display_item_list =
       [&](sk_sp<SkImage> image,
           std::optional<float> peak_luminance = std::nullopt,
           std::optional<float> white_luminance = std::nullopt,
           PaintFlags* paint_flags = nullptr) {
-        auto image_generator =
-            sk_make_sp<FakePaintImageGenerator>(image->imageInfo());
-        {
-          ImageHeaderMetadata image_metadata;
-          if (peak_luminance.has_value()) {
-            image_metadata.hdr_metadata.SetCLLI(
-                skhdr::ContentLightLevelInformation{peak_luminance.value(),
-                                                    kContentAvgNits});
-          }
-          if (white_luminance.has_value()) {
-            image_metadata.hdr_metadata.SetNDWL(white_luminance.value());
-          }
-          image_generator->SetImageHeaderMetadata(image_metadata);
-          EXPECT_TRUE(image->peekPixels(&image_generator->GetPixmap()));
+        gfx::HDRMetadata hdr_metadata;
+        if (peak_luminance.has_value()) {
+          hdr_metadata.SetCLLI(skhdr::ContentLightLevelInformation{
+              peak_luminance.value(), kContentAvgNits});
         }
+        if (white_luminance.has_value()) {
+          hdr_metadata.SetHdrReferenceWhite(white_luminance.value());
+        }
+
+        auto image_generator = sk_make_sp<FakePaintImageGenerator>(
+            image->imageInfo(), std::vector<FrameMetadata>{FrameMetadata()},
+            true, std::vector<SkISize>{}, hdr_metadata);
+        EXPECT_TRUE(image->peekPixels(&image_generator->GetPixmap()));
 
         static int id_counter = 0;
         const PaintImage::Id kSomeId = 32 + id_counter++;
@@ -1173,6 +1174,21 @@ TEST_F(GpuRasterPixelTest, DrawHdrImageWithMetadata) {
     EXPECT_NEAR(color.fR, kExpected10kToSdr, kEpsilon);
     EXPECT_NEAR(color.fG, kExpected10kToSdr, kEpsilon);
     EXPECT_NEAR(color.fB, kExpected10kToSdr, kEpsilon);
+  }
+
+  // Draw with PaintFlags ignoring all HDR metadata.
+  {
+    constexpr float kExpected = 100.f / 203.f;
+    PaintFlags flags;
+    flags.setTargetedHdrHeadroom(
+        PaintFlags::TargetedHdrHeadroom::kDisableEverything);
+    scoped_refptr<DisplayItemList> display_item_list_10k_nits_sdr =
+        make_display_item_list(image_100_nits, 1000.f, 50.f, &flags);
+    auto actual = Raster(display_item_list_10k_nits_sdr, options);
+    auto color = actual.getColor4f(0, 0);
+    EXPECT_NEAR(color.fR, kExpected, kEpsilon);
+    EXPECT_NEAR(color.fG, kExpected, kEpsilon);
+    EXPECT_NEAR(color.fB, kExpected, kEpsilon);
   }
 }
 
@@ -1331,6 +1347,8 @@ class TestMailboxBacking : public TextureBacking {
 
   const SkImageInfo& GetSkImageInfo() override { return info_; }
   gpu::Mailbox GetMailbox() const override { return mailbox_; }
+  void Bind(scoped_refptr<TextureBackingContext>) override {}
+  void Unbind() override {}
   sk_sp<SkImage> GetSkImageViaReadback() override { return nullptr; }
   bool readPixels(const SkImageInfo& dstInfo,
                   void* dstPixels,
@@ -2756,9 +2774,10 @@ TEST_F(GpuRasterPixelTest, CopySharedImage) {
     readback_bitmap.allocPixels(SkImageInfo::MakeN32Premul(
         size.width(), size.height(), dest_color_space.ToSkColorSpace()));
 
-    ri->ReadbackImagePixels(dest_client_si->mailbox(), readback_bitmap.info(),
-                            readback_bitmap.rowBytes(), 0, 0,
-                            /*plane_index=*/0, readback_bitmap.getPixels());
+    ri->ReadbackImagePixels(dest_client_si->mailbox(), size,
+                            readback_bitmap.info(), readback_bitmap.rowBytes(),
+                            0, 0, /*plane_index=*/0,
+                            readback_bitmap.getPixels());
   }
 
   // The pixel value should be unchanged, even though the source and dest are

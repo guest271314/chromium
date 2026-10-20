@@ -38,13 +38,13 @@
 #include "content/public/browser/commit_deferring_condition.h"
 #include "content/public/browser/devtools_agent_host.h"
 #include "content/public/browser/global_routing_id.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/render_frame_metadata_provider.h"
 #include "content/public/browser/render_process_host.h"
 #include "content/public/browser/render_process_host_observer.h"
 #include "content/public/browser/render_widget_host.h"
 #include "content/public/browser/render_widget_host_observer.h"
 #include "content/public/browser/spare_render_process_host_manager.h"
-#include "content/public/browser/web_contents_delegate.h"
 #include "content/public/browser/web_contents_media_capture_id.h"
 #include "content/public/browser/web_contents_observer.h"
 #include "content/public/common/isolated_world_ids.h"
@@ -52,7 +52,6 @@
 #include "content/public/test/test_utils.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
 #include "mojo/public/cpp/bindings/receiver_set.h"
-#include "mojo/public/cpp/bindings/self_owned_associated_receiver.h"
 #include "mojo/public/cpp/test_support/test_utils.h"
 #include "net/base/load_flags.h"
 #include "net/cookies/cookie_options.h"
@@ -63,11 +62,10 @@
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/common/blob/blob_utils.h"
 #include "third_party/blink/public/common/context_menu_data/untrustworthy_context_menu_params.h"
+#include "third_party/blink/public/common/input/web_gesture_device.h"
 #include "third_party/blink/public/common/input/web_input_event.h"
 #include "third_party/blink/public/common/input/web_mouse_event.h"
 #include "third_party/blink/public/common/input/web_mouse_wheel_event.h"
-#include "third_party/blink/public/mojom/blob/blob_url_store.mojom-test-utils.h"
-#include "third_party/blink/public/mojom/blob/blob_url_store.mojom.h"
 #include "third_party/blink/public/mojom/frame/frame.mojom-test-utils.h"
 #include "third_party/blink/public/mojom/frame/user_activation_update_types.mojom.h"
 #include "third_party/blink/public/mojom/keyboard_lock/keyboard_lock.mojom-shared.h"
@@ -132,6 +130,7 @@ typedef int PROPERTYID;
 
 namespace blink {
 class StorageKey;
+class WebTouchEvent;
 struct TransferableMessage;
 
 namespace mojom {
@@ -139,10 +138,6 @@ class FrameWidget;
 }  // namespace mojom
 
 }  // namespace blink
-
-namespace storage {
-class BlobUrlRegistry;
-}
 
 namespace content {
 
@@ -350,6 +345,10 @@ void CrashTab(WebContents* web_contents);
 void SimulateUnresponsivePrimaryMainFrameAndWaitForExit(
     WebContents* web_contents);
 
+// Causes the specified web_contents to crash due to out-of-memory. Blocks until
+// it is crashed.
+void SimulateOOMPrimaryMainFrameAndWaitForExit(WebContents* web_contents);
+
 // Sets up a commit interceptor to alter commits for |target_url| to change
 // their commit URL to |new_url| and origin to |new_origin|. This will happen
 // for all commits in |web_contents|.
@@ -377,9 +376,6 @@ void SimulateUnresponsiveRenderer(WebContents* web_contents,
 // Notes:
 // - Input events to a page may not work right after a page load, see
 // `SimulateEndOfPaintHoldingOnPrimaryMainFrame` for a workaround.
-// - For simulating clicks inside a fenced frame tree, this function does not
-// work. Use `SimulateClickInFencedFrameTree` in
-// `content/public/test/fenced_frame_test_util.cc`
 void SimulateMouseClick(WebContents* web_contents,
                         int modifiers,
                         blink::WebMouseEvent::Button button);
@@ -393,9 +389,6 @@ void SimulateMouseClick(WebContents* web_contents,
 // Notes:
 // - Input events to a page may not work right after a page load, see
 // `SimulateEndOfPaintHoldingOnPrimaryMainFrame` for a workaround.
-// - For simulating clicks inside a fenced frame tree, this function does not
-// work. Use `SimulateClickInFencedFrameTree` in
-// `content/public/test/fenced_frame_test_util.cc`
 void SimulateMouseClickAt(WebContents* web_contents,
                           int modifiers,
                           blink::WebMouseEvent::Button button,
@@ -489,6 +482,16 @@ void SimulateGestureEvent(RenderWidgetHost* render_widget_host,
 void SimulateGestureEvent(WebContents* web_contents,
                           const blink::WebGestureEvent& gesture_event,
                           const ui::LatencyInfo& latency);
+
+// Routes a gesture event asynchronously through the WebContents' input event
+// router. Events targeting the viewport bypass hit testing.
+void SimulateRoutedGestureEvent(WebContents* web_contents,
+                                const blink::WebGestureEvent& gesture_event);
+
+// Routes a touch event asynchronously through the WebContents' input event
+// router.
+void SimulateRoutedTouchEvent(WebContents* web_contents,
+                              const blink::WebTouchEvent& touch_event);
 
 // Taps the screen at |point|, using gesture Tap or TapDown.
 //
@@ -914,6 +917,10 @@ class EvalJsResult {
   }
   [[nodiscard]] bool is_bool() const { return is_ok() && value()->is_bool(); }
   [[nodiscard]] bool is_int() const { return is_ok() && value()->is_int(); }
+  [[nodiscard]] bool is_double() const {
+    return is_ok() && value()->is_double();
+  }
+  [[nodiscard]] bool is_none() const { return is_ok() && value()->is_none(); }
   [[nodiscard]] bool is_list() const { return is_ok() && value()->is_list(); }
   [[nodiscard]] bool is_dict() const { return is_ok() && value()->is_dict(); }
 
@@ -1087,6 +1094,17 @@ RenderFrameHost* ChildFrameAt(const ToRenderFrameHost& adapter, size_t index);
 // Returns true if |frame| has origin-keyed process isolation due to the
 // OriginAgentCluster header.
 bool HasOriginKeyedProcess(RenderFrameHost* frame);
+
+// Returns true when both frames' SiteInstances carry the same unique-instance
+// embedder isolation (equal per-instance id). Two frames that share a unique
+// instance are guaranteed to share a process.
+bool HaveEmbedderIsolationWithSameUniqueInstance(RenderFrameHost* a,
+                                                 RenderFrameHost* b);
+
+// Returns true if `frame`'s process is locked to a unique-instance
+// `EmbedderIsolationInfo` (one per-document isolated instance; today's
+// sole producer is the MIME handler stream manager).
+bool HasUniqueInstanceIsolation(RenderFrameHost* frame);
 
 // Returns the frames visited by |RenderFrameHost::ForEachRenderFrameHost| in
 // the same order.
@@ -1351,7 +1369,7 @@ class RenderProcessHostWatcher : public RenderProcessHostObserver {
 
  private:
   // Register the event and clean up.
-  void OnEvent();
+  void OnEvent(bool success);
 
   // Overridden RenderProcessHost::LifecycleObserver methods.
   void RenderProcessReady(RenderProcessHost* host) override;
@@ -1361,12 +1379,13 @@ class RenderProcessHostWatcher : public RenderProcessHostObserver {
 
   base::ScopedObservation<RenderProcessHost, RenderProcessHostObserver>
       observation_{this};
-  WatchType type_;
+  const WatchType type_;
   bool did_exit_normally_;
 
   std::unique_ptr<ScopedAllowRendererCrashes> allow_renderer_crashes_;
 
   WaiterHelper waiter_helper_;
+  bool success_ = false;
 };
 
 // Implementation helper for:
@@ -2323,34 +2342,17 @@ void VerifyStaleContentOnFrameEviction(
 
 #endif  // defined(USE_AURA)
 
-// Helper class to interpose on Blob URL registrations, replacing the URL
-// contained in incoming registration requests with the specified URL.
-class BlobURLStoreInterceptor
-    : public blink::mojom::BlobURLStoreInterceptorForTesting {
- public:
-  static void InterceptDeprecated(
-      GURL target_url,
-      mojo::SelfOwnedAssociatedReceiverRef<blink::mojom::BlobURLStore>
-          receiver);
+// Sets the maximum number of saved frames in FrameEvictionManager for testing.
+void SetMaxUnlockedCompositorFramesForTesting(size_t max);
 
-  static void Intercept(GURL target_url,
-                        storage::BlobUrlRegistry* registry,
-                        mojo::ReceiverId receiver_id);
+// Returns the number of unlocked frames in the FrameEvictionManager.
+size_t GetUnlockedCompositorFrameCount();
 
-  ~BlobURLStoreInterceptor() override;
+// Returns the number of locked frames in the FrameEvictionManager.
+size_t GetLockedCompositorFrameCount();
 
-  blink::mojom::BlobURLStore* GetForwardingInterface() override;
-
-  void Register(mojo::PendingRemote<blink::mojom::Blob> blob,
-                const GURL& url,
-                RegisterCallback callback) override;
-
- private:
-  explicit BlobURLStoreInterceptor(GURL target_url);
-
-  std::unique_ptr<blink::mojom::BlobURLStore> url_store_;
-  GURL target_url_;
-};
+// Purges all unlocked frames in the FrameEvictionManager.
+void PurgeUnlockedCompositorFrames();
 
 // Load the given |url| with |network_context| and return the |net::Error| code.
 //
@@ -2676,10 +2678,13 @@ RegisterWebContentsCreationCallback(
 // is a standalone executable without an Info.plist.
 bool EnableNativeWindowActivation();
 
-// Ensures that if no key window is set (can happen in apps that are not
-// frontmost), we simulate the frontmost window becoming key, which triggers
-// any logic that would normally run in this case.
-void HandleMissingKeyWindow();
+// Returns true if the most recent drag enter on `web_contents` was rejected
+// (e.g. by `WebContentsDelegate::CanDragEnter` or an invalid target view).
+bool IsDragCanceledForTesting(WebContents* web_contents);
+
+// Resets internal `WebDragDest` state on `web_contents` after a simulated
+// rejected drag exits.
+void CleanupDragStateForTesting(WebContents* web_contents);
 #endif  // BUILDFLAG(IS_MAC)
 
 #if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
@@ -2700,6 +2705,8 @@ void InitAndEnableRenderDocumentForAllFrames(
 // or std::nullopt if no node matches.
 // Note: This method makes multiple renderer IPC calls (via the devtools
 // protocol) and waits for a result (an IPC back from the renderer) each time.
+// TODO(bokan): Update the return value to be a blink::DOMNodeIdType which is a
+// base::IdType32
 std::optional<int> GetDOMNodeId(content::RenderFrameHost& rfh,
                                 std::string_view query_selector);
 
@@ -2844,6 +2851,11 @@ class RequestCloseWidgetInterceptor
 // Crash the process associated with `adapter`. Waits for the crash to be seen
 // by the browser process. Returns `false` if the test times out before that.
 [[nodiscard]] bool CrashFrameProcess(const ToRenderFrameHost& adapter);
+
+// Simulates the browser-side drag-start path for `source_rfh`, assigning
+// `drop_data->drag_id` and notifying `WebContentsObserver::DidStartDrag`.
+void SimulateDragStartForTesting(RenderFrameHost* source_rfh,
+                                 DropData* drop_data);
 
 }  // namespace content
 

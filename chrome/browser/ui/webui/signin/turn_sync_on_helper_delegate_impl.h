@@ -12,11 +12,10 @@
 #include "chrome/browser/ui/webui/signin/login_ui_service.h"
 #include "chrome/browser/ui/webui/signin/turn_sync_on_helper.h"
 
-class Browser;
+class AccountInfo;
+class BrowserWindowInterface;
 class Profile;
 class SigninUIError;
-class BrowserWindowInterface;
-struct AccountInfo;
 
 namespace policy {
 class ProfileSeparationPolicies;
@@ -27,7 +26,7 @@ class UserCloudSigninRestrictionPolicyFetcher;
 class TurnSyncOnHelperDelegateImpl : public TurnSyncOnHelper::Delegate,
                                      public LoginUIService::Observer {
  public:
-  explicit TurnSyncOnHelperDelegateImpl(Browser* browser,
+  explicit TurnSyncOnHelperDelegateImpl(BrowserWindowInterface* browser,
                                         bool is_sync_promo,
                                         bool user_already_signed_in = false);
 

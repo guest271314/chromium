@@ -21,6 +21,7 @@
 #include "base/task/sequenced_task_runner.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/task/thread_pool.h"
+#include "base/threading/scoped_thread_priority.h"
 #include "base/win/core_winrt_util.h"
 #include "base/win/post_async_results.h"
 #include "services/device/public/cpp/device_features.h"
@@ -100,6 +101,9 @@ ComPtr<IAppCapability> CreateAppCapability(std::string_view name) {
     return GetFactoryStorage().Run(name);
   }
 
+  // COM calls can load DLLs, use background priority to avoid I/O inversion.
+  SCOPED_MAY_LOAD_LIBRARY_AT_BACKGROUND_PRIORITY();
+
   using ::ABI::Windows::Security::Authorization::AppCapabilityAccess::
       IAppCapabilityStatics;
   ComPtr<IAppCapabilityStatics> app_capability_statics;
@@ -171,13 +175,8 @@ class SystemGeolocationSourceWin::AccessListenerHelper {
 
  private:
   void OnAccessChanged();
-
-  // Minimum and maximum polling intervals (in milliseconds). Any value fetched
-  // from Finch config (features::kWinSystemLocationPermissionPollingParam) will
-  // be clamped within this range to ensure reasonable polling frequency
-  static constexpr int kMinPollingIntervalMs = 500;
-  static constexpr int kMaxPollingIntervalMs = 3000;
   // The interval (in milliseconds) at which to poll for permission changes.
+  static constexpr int kDefaultPollingIntervalMs = 500;
   const int polling_interval_;
   // COM interface to check the app's capability to access location.
   ComPtr<IAppCapability> location_capability_;
@@ -191,10 +190,7 @@ class SystemGeolocationSourceWin::AccessListenerHelper {
 SystemGeolocationSourceWin::AccessListenerHelper::AccessListenerHelper(
     base::WeakPtr<SystemGeolocationSourceWin> source,
     scoped_refptr<base::SequencedTaskRunner> source_task_runner)
-    : polling_interval_(
-          std::clamp(features::kWinSystemLocationPermissionPollingParam.Get(),
-                     kMinPollingIntervalMs,
-                     kMaxPollingIntervalMs)),
+    : polling_interval_(kDefaultPollingIntervalMs),
       location_capability_(CreateAppCapability("location")),
       source_(source),
       source_task_runner_(source_task_runner) {
@@ -294,6 +290,9 @@ SystemGeolocationSourceWin::~SystemGeolocationSourceWin() = default;
 // static
 std::unique_ptr<GeolocationSystemPermissionManager>
 SystemGeolocationSourceWin::CreateGeolocationSystemPermissionManager() {
+  if (!features::IsOsLevelGeolocationPermissionSupportEnabled()) {
+    return nullptr;
+  }
   return std::make_unique<GeolocationSystemPermissionManager>(
       std::make_unique<SystemGeolocationSourceWin>());
 }

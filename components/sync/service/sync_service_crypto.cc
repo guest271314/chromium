@@ -10,6 +10,7 @@
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/logging.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/strings/to_string.h"
 #include "base/task/sequenced_task_runner.h"
@@ -139,15 +140,16 @@ SyncServiceCrypto::SyncServiceCrypto(
 SyncServiceCrypto::~SyncServiceCrypto() = default;
 
 void SyncServiceCrypto::SetEncryptor(
-    std::unique_ptr<os_crypt_async::Encryptor> encryptor) {
+    scoped_refptr<os_crypt_async::Encryptor> encryptor) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   encryptor_ = std::move(encryptor);
   CHECK(encryptor_);
 }
 
-const os_crypt_async::Encryptor* SyncServiceCrypto::GetEncryptor() const {
+const scoped_refptr<os_crypt_async::Encryptor>&
+SyncServiceCrypto::GetEncryptor() const {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  return encryptor_.get();
+  return encryptor_;
 }
 
 void SyncServiceCrypto::Reset() {
@@ -228,11 +230,10 @@ void SyncServiceCrypto::SetEncryptionPassphrase(const std::string& passphrase) {
     case RequiredUserAction::kTrustedVaultKeyRequiredButFetching:
     case RequiredUserAction::kKeystoreKeysRequired:
       // Cryptographer has pending keys.
-      // TODO(crbug.com/40904402): verify this is not reachable anymore and
-      // remove NotFatalUntil.
-      NOTREACHED(base::NotFatalUntil::M140)
+      // TODO(crbug.com/40904402): This still fails at a low crash rate (1-5
+      // crashes per milestone): http://shortn/_07INk7Gzht
+      NOTREACHED()
           << "Can not set explicit passphrase when decryption is needed.";
-      return;
   }
 
   DVLOG(1) << "Setting explicit passphrase for encryption.";
@@ -474,16 +475,18 @@ void SyncServiceCrypto::OnKeystoreKeysAccepted() {
   switch (state_.required_user_action) {
     case RequiredUserAction::kUnknownDuringInitialization:
     case RequiredUserAction::kNone:
+      break;
     case RequiredUserAction::kTrustedVaultRecoverabilityDegraded:
     case RequiredUserAction::kFetchingTrustedVaultKeys:
     case RequiredUserAction::kTrustedVaultKeyRequired:
     case RequiredUserAction::kTrustedVaultKeyRequiredButFetching:
+    case RequiredUserAction::kKeystoreKeysRequired:
+      // A remote transition to KEYSTORE_PASSPHRASE may race with
+      // AddTrustedVaultDecryptionKeys(), leaving a stale state.
+      ResolvePendingKeysRequiredState();
       break;
     case RequiredUserAction::kPassphraseRequired:
-    case RequiredUserAction::kKeystoreKeysRequired:
-      // kPassphraseRequired is handled for the hypothetical case where a
-      // half-migrated keystore user's state (or at least a scenario that
-      // appeared to be the case) resolves automatically.
+      // Half-migrated keystore state resolved by keystore keys.
       ResolvePendingKeysRequiredState();
       break;
   }

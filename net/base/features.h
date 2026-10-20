@@ -12,6 +12,7 @@
 
 #include "base/feature_list.h"
 #include "base/metrics/field_trial_params.h"
+#include "base/task/task_traits.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
 #include "crypto/crypto_buildflags.h"
@@ -31,15 +32,31 @@ NET_EXPORT BASE_DECLARE_FEATURE(kAlpsForHttp2);
 // asynchronous (yielding to the message loop) after many attempts.
 NET_EXPORT BASE_DECLARE_FEATURE(kAsyncRetryOnTooManyConnectionErrors);
 
-// Disable H2 reprioritization, in order to measure its impact.
-NET_EXPORT BASE_DECLARE_FEATURE(kAvoidH2Reprioritization);
-
-// When kCapReferrerToOriginOnCrossOrigin is enabled, HTTP referrers on cross-
-// origin requests are restricted to contain at most the source origin.
-NET_EXPORT BASE_DECLARE_FEATURE(kCapReferrerToOriginOnCrossOrigin);
+// Derives Android connection type from NetworkCapabilities inside
+// NetworkCallbacks instead of calling synchronous ConnectivityManager methods.
+NET_EXPORT BASE_DECLARE_FEATURE(kDeriveConnectionTypeFromCapabilities);
 
 // Enables the built-in DNS resolver.
 NET_EXPORT BASE_DECLARE_FEATURE(kAsyncDns);
+
+// Enables optimistic DNS for TCP.
+NET_EXPORT BASE_DECLARE_FEATURE(kOptimisticDnsForTcp);
+NET_EXPORT extern const base::FeatureParam<bool>
+    kUseStaleConnectorsForOptimisticDns;
+
+// Enables optimistic DNS for QUIC.
+NET_EXPORT BASE_DECLARE_FEATURE(kOptimisticDnsForQuic);
+
+// Caches UDP connect() results in AddressSorterPosix.
+NET_EXPORT BASE_DECLARE_FEATURE(kAddressSorterConnectCache);
+NET_EXPORT BASE_DECLARE_FEATURE_PARAM(size_t,
+                                      kAddressSorterConnectCacheMaxNetworks);
+NET_EXPORT BASE_DECLARE_FEATURE_PARAM(
+    size_t,
+    kAddressSorterConnectCacheMaxNaksPerNetwork);
+NET_EXPORT BASE_DECLARE_FEATURE_PARAM(
+    size_t,
+    kAddressSorterConnectCacheMaxPredictionsPerPartition);
 
 // Support for altering the parameters used for DNS transaction timeout. See
 // ResolveContext::SecureTransactionTimeout().
@@ -51,10 +68,20 @@ NET_EXPORT extern const base::FeatureParam<double>
 NET_EXPORT extern const base::FeatureParam<base::TimeDelta>
     kDnsMinTransactionTimeout;
 
+// Enables fail-fast and retry behavior for DNS_PLATFORM queries.
+NET_EXPORT BASE_DECLARE_FEATURE(kDnsPlatformFailFastAndRetry);
+NET_EXPORT extern const base::FeatureParam<bool>
+    kDnsPlatformCancelPreviousAttemptOnRetry;
+
 // Enables querying HTTPS DNS records that will affect results from HostResolver
 // and may be used to affect connection behavior. Whether or not those results
 // are used (e.g. to connect via ECH) may be controlled by separate features.
 NET_EXPORT BASE_DECLARE_FEATURE(kUseDnsHttpsSvcb);
+
+// If enabled, HostResolver carries address hints (ipv4hint/ipv6hint) from
+// HTTPS DNS records in its results for consumption by the
+// ServiceEndpointRequest path.
+NET_EXPORT BASE_DECLARE_FEATURE(kUseDnsHttpsSvcbAddressHints);
 
 // Enables partial support for Structured DNS Errors
 // (draft-ietf-dnsop-structured-dns-error). When enabled, the Chrome DNS
@@ -122,11 +149,58 @@ NET_EXPORT BASE_DECLARE_FEATURE(kHappyEyeballsV2);
 // results to make connection attempts as soon as possible.
 NET_EXPORT BASE_DECLARE_FEATURE(kHappyEyeballsV3);
 
+// Enables HostResolverManager::Job to report intermediate DNS resolution
+// results to ServiceEndpointRequest delegates.
+// Note: If kHappyEyeballsV3 is enabled, this behavior is automatically active
+// regardless of this flag's state.
+NET_EXPORT BASE_DECLARE_FEATURE(kEnableIntermediateDnsResults);
+NET_EXPORT BASE_DECLARE_FEATURE_PARAM(
+    bool,
+    kEnableIntermediateDnsResultsSortTransactionsIndividually);
+
+// Feature to control the Happy Eyeballs slow timer (IPv6 fallback time).
+NET_EXPORT BASE_DECLARE_FEATURE(kAdjustIPv6FallbackTime);
+
+// The duration to use for the slow timer if the feature is enabled.
+NET_EXPORT BASE_DECLARE_FEATURE_PARAM(base::TimeDelta, kIPv6FallbackTime);
+
+// Feature to base the Happy Eyeballs slow timer on the network RTT.
+NET_EXPORT BASE_DECLARE_FEATURE(kIPv6FallbackBasedOnRTT);
+
+// The multiplier for the RTT if the RTT based fallback feature is enabled.
+NET_EXPORT BASE_DECLARE_FEATURE_PARAM(double, kIPv6FallbackRTTMultiplier);
+
+// The minimum value to use for the fallback time if the RTT based fallback
+// feature is enabled.
+NET_EXPORT BASE_DECLARE_FEATURE_PARAM(base::TimeDelta, kIPv6FallbackMin);
+
+// The maximum value to use for the fallback time if the RTT based fallback
+// feature is enabled.
+NET_EXPORT BASE_DECLARE_FEATURE_PARAM(base::TimeDelta, kIPv6FallbackMax);
+
+// Allows Cache-Control: immutable to override Pragma: no-cache.
+NET_EXPORT BASE_DECLARE_FEATURE(kCacheControlImmutable);
+
 // Enables transparent zstd decompression of cached HTTP response bodies
 // written by the CDT (Compression Dictionary Transport) cache compression
 // feature. When disabled, compressed cache entries are doomed and the
 // request falls back to the network.
 NET_EXPORT BASE_DECLARE_FEATURE(kHttpCacheZstdDecompression);
+
+// Enables transparent zstd compression of cacheable HTTP response bodies
+// at cache-write time by the CDT (Compression Dictionary Transport) cache
+// compression feature. When disabled, bodies are stored uncompressed as
+// before. Requires kHttpCacheZstdDecompression to be enabled for the
+// resulting cache entries to be served on subsequent reads.
+NET_EXPORT BASE_DECLARE_FEATURE(kHttpCacheZstdCompression);
+
+// Enables the Renderer-Accessible HTTP Cache (crbug.com/473666511), an
+// experimental feature allowing renderers direct access to the HTTP cache.
+NET_EXPORT BASE_DECLARE_FEATURE(kRendererAccessibleHttpCache);
+// Enables Write-Ahead Logging (WAL) mode for the Renderer-Accessible HTTP
+// Cache.
+NET_EXPORT BASE_DECLARE_FEATURE_PARAM(bool,
+                                      kRendererAccessibleHttpCacheWalMode);
 
 // If the `kUseAlternativePortForGloballyReachableCheck` flag is enabled, the
 // globally reachable check will use the port number specified by
@@ -286,27 +360,6 @@ NET_EXPORT extern const base::FeatureParam<base::TimeDelta>
 // See spec changes in https://github.com/httpwg/http-extensions/pull/1348
 NET_EXPORT BASE_DECLARE_FEATURE(kCookieSameSiteConsidersRedirectChain);
 
-// When this feature is enabled, servers can include an
-// allow-same-site-none-cookies value that notifies the browser that same-site
-// SameSite=None cookies should be allowed in sandboxed contexts with 3PC
-// restrictions.
-NET_EXPORT BASE_DECLARE_FEATURE(kAllowSameSiteNoneCookiesInSandbox);
-
-// When this feature is enabled, the network service will wait until First-Party
-// Sets are initialized before issuing requests that use the HTTP cache or
-// cookies.
-NET_EXPORT BASE_DECLARE_FEATURE(kWaitForFirstPartySetsInit);
-
-// Controls the maximum time duration an outermost frame navigation should be
-// deferred by RWS initialization.
-NET_EXPORT extern const base::FeatureParam<base::TimeDelta>
-    kWaitForFirstPartySetsInitNavigationThrottleTimeout;
-
-// When enabled, requestStorageAccessFor will require storage access permissions
-// granted by StorageAccessApi or StorageAccessHeaders to send cookies on
-// requests allowed because of requestStorageAccessFor instead of cors.
-NET_EXPORT BASE_DECLARE_FEATURE(kRequestStorageAccessNoCorsRequired);
-
 // Controls whether static key pinning is enforced.
 NET_EXPORT BASE_DECLARE_FEATURE(kStaticKeyPinningEnforcement);
 
@@ -358,8 +411,11 @@ NET_EXPORT BASE_DECLARE_FEATURE(kDeferConnectionTypeAtStartup);
 NET_EXPORT BASE_DECLARE_FEATURE(kTcpPortRandomizationMac);
 // How long (in seconds) to avoid reusing a recently-used ephemeral port for
 // the same peer. Defaults to 120 to match common NAT timeout values.
-NET_EXPORT extern const base::FeatureParam<int>
-    kTcpPortRandomizationReuseDelaySec;
+NET_EXPORT BASE_DECLARE_FEATURE_PARAM(int, kTcpPortRandomizationReuseDelaySec);
+// If enabled, port randomization applies even where the remote address is
+// the loopback address. See https://crbug.com/546919930 for context.
+NET_EXPORT BASE_DECLARE_FEATURE_PARAM(bool,
+                                      kTcpPortRandomizationMacForLoopback);
 #endif
 
 // Avoid creating cache entries for transactions that are most likely no-store.
@@ -369,6 +425,29 @@ NET_EXPORT extern const base::FeatureParam<int>
 
 // A flag to use asynchronous session creation for new QUIC sessions.
 NET_EXPORT BASE_DECLARE_FEATURE(kAsyncQuicSession);
+
+// A flag to use QuicSessionPool::AsyncDnsJob, which resolves hostnames with
+// HostResolver::ServiceEndpointRequest, for direct QUIC sessions.
+NET_EXPORT BASE_DECLARE_FEATURE(kAsyncDnsQuicJob);
+
+// Whether HttpStreamFactory::JobController resumes the main job without delay
+// when a QUIC job reports a connection initialization failure.
+NET_EXPORT BASE_DECLARE_FEATURE_PARAM(bool, kAsyncDnsQuicJobFastFail);
+NET_EXPORT BASE_DECLARE_FEATURE_PARAM(
+    bool,
+    kAsyncDnsQuicJobSortTransactionsIndividually);
+
+// Makes the QUIC slow timer delay configurable.
+// How long to wait before starting a second connection attempt
+// if one is already in flight.
+NET_EXPORT BASE_DECLARE_FEATURE(kAdjustQuicSlowTimerDelay);
+NET_EXPORT BASE_DECLARE_FEATURE_PARAM(base::TimeDelta, kQuicSlowTimerDelay);
+
+// Feature to base the QUIC slow timer on the network RTT.
+NET_EXPORT BASE_DECLARE_FEATURE(kQuicSlowTimerBasedOnRTT);
+NET_EXPORT BASE_DECLARE_FEATURE_PARAM(double, kQuicSlowTimerRTTMultiplier);
+NET_EXPORT BASE_DECLARE_FEATURE_PARAM(base::TimeDelta, kQuicSlowTimerMin);
+NET_EXPORT BASE_DECLARE_FEATURE_PARAM(base::TimeDelta, kQuicSlowTimerMax);
 
 // A flag to make multiport context creation asynchronous.
 NET_EXPORT BASE_DECLARE_FEATURE(kAsyncMultiPortPath);
@@ -383,13 +462,6 @@ NET_EXPORT BASE_DECLARE_FEATURE_PARAM(size_t, kMaxReportBodySizeKB);
 // false. This is needed as a workaround to set this value to true on Android
 // but not on WebView (until crbug.com/1430082 has been fixed).
 NET_EXPORT BASE_DECLARE_FEATURE(kMigrateSessionsOnNetworkChangeV2);
-
-#if BUILDFLAG(IS_LINUX)
-// AddressTrackerLinux will not run inside the network service in this
-// configuration, which will improve the Linux network service sandbox.
-// TODO(crbug.com/40220507): remove this.
-NET_EXPORT BASE_DECLARE_FEATURE(kAddressTrackerLinuxIsProxied);
-#endif  // BUILDFLAG(IS_LINUX)
 
 // Enables binding of cookies to the port that originally set them by default.
 NET_EXPORT BASE_DECLARE_FEATURE(kEnablePortBoundCookies);
@@ -416,8 +488,6 @@ NET_EXPORT BASE_DECLARE_FEATURE(kEnableWebTransportDraft07);
 
 // Enables a smarter throttling strategy based in the server's IP.
 NET_EXPORT BASE_DECLARE_FEATURE(kWebTransportFineGrainedThrottling);
-
-NET_EXPORT BASE_DECLARE_FEATURE(kThirdPartyPartitionedStorageAllowedByDefault);
 
 // Enables a more efficient implementation of SpdyHeadersToHttpResponse().
 NET_EXPORT BASE_DECLARE_FEATURE(kSpdyHeadersToHttpResponseUseBuilder);
@@ -447,10 +517,14 @@ NET_EXPORT BASE_DECLARE_FEATURE(kDeviceBoundSessions);
 // requests.
 NET_EXPORT BASE_DECLARE_FEATURE(
     kDeviceBoundSessionsBypassDeferralsForRefreshRequests);
-// This feature enables the Device Bound Session Credentials refresh quota.
+// This feature controls whether DBSC retry mechanism is enabled for transient
+// refresh errors (network and proxy errors).
+NET_EXPORT BASE_DECLARE_FEATURE(
+    kDeviceBoundSessionsRetryTransientRefreshErrors);
+// This feature enables the Device Bound Session Credentials signing quota.
 // This behavior is expected by default; disabling it should only be for
 // testing purposes.
-NET_EXPORT BASE_DECLARE_FEATURE_PARAM(bool, kDeviceBoundSessionsRefreshQuota);
+NET_EXPORT BASE_DECLARE_FEATURE_PARAM(bool, kDeviceBoundSessionsSigningQuota);
 // This feature controls whether DBSC checks the .well-known for subdomain
 // registration.
 NET_EXPORT BASE_DECLARE_FEATURE_PARAM(
@@ -467,28 +541,36 @@ NET_EXPORT BASE_DECLARE_FEATURE_PARAM(
     bool,
     kDeviceBoundSessionsFederatedRegistrationCheckWellKnown);
 
-// This feature controls whether to proactively trigger Device
-// Bound Session refreshes when a cookie is soon to expire.
-NET_EXPORT BASE_DECLARE_FEATURE(kDeviceBoundSessionProactiveRefresh);
-// This controls the threshold for proactive refrehshes.
-NET_EXPORT BASE_DECLARE_FEATURE_PARAM(
-    base::TimeDelta,
-    kDeviceBoundSessionProactiveRefreshThreshold);
-
-// This feature controls whether DBSC has a signing quota instead of a refresh
-// quota, and has associated signing caching for refreshes.
-NET_EXPORT BASE_DECLARE_FEATURE(kDeviceBoundSessionSigningQuotaAndCaching);
-
 // This feature controls whether DBSC is allowed to register sessions on
 // a certain list of sites, as specified in
 // `device_bound_sessions_restricted_sites` in the
 // `NetworkContextParams`.
 NET_EXPORT BASE_DECLARE_FEATURE(kDeviceBoundSessionsForRestrictedSites);
 
+// This feature controls whether DBSC allows mTLS / client certificate
+// selection for background registration and refresh requests.
+NET_EXPORT BASE_DECLARE_FEATURE(kDeviceBoundSessionsClientCertSelection);
+
 // This feature will enable the browser to use Device Bound Session Credentials
 // for Single Sign On. This feature is only valid if `kDeviceBoundSessions` is
 // enabled.
 NET_EXPORT BASE_DECLARE_FEATURE(kDeviceBoundSessionsForSingleSignOn);
+
+// Controls whether a session's expiry timestamp is updated in memory and
+// persisted to disk when a network refresh finishes with NoSessionConfigChange.
+NET_EXPORT BASE_DECLARE_FEATURE(kDeviceBoundSessionsPersistExpiryOnRefresh);
+
+// Controls whether DBSC includes the 'aud' (audience) claim in registration
+// and refresh JWT payloads.
+NET_EXPORT BASE_DECLARE_FEATURE(kDeviceBoundSessionsIncludeAudienceClaim);
+
+// Kill switch for draining a session's deferred requests queue when every
+// request in it is destroyed while the session's binding key is being restored.
+// Without this, the abandoned queue entry looks like an in-flight refresh, so
+// later requests and pre-warms for the session wait on it until the session is
+// deleted, and proactive refreshes do not start.
+// TODO(crbug.com/509885112): Remove once this has shipped to stable.
+NET_EXPORT BASE_DECLARE_FEATURE(kDeviceBoundSessionsDrainDeferredOnAllCanceled);
 
 // Enables more checks when creating a SpdySession for proxy. These checks are
 // already applied to non-proxy SpdySession creations.
@@ -526,10 +608,6 @@ NET_EXPORT BASE_DECLARE_FEATURE(kNoVarySearchIgnoreUnrecognizedKeys);
 // disabled, Chrome does not distinguish between SCTs based on log type.
 NET_EXPORT BASE_DECLARE_FEATURE(kEnforceOneRfc6962CtPolicy);
 
-// If enabled, Signed Certificate Timestamps (SCTs) delivered via OCSP
-// responses are ignored.
-NET_EXPORT BASE_DECLARE_FEATURE(kCertificateTransparencyIgnoreOcspScts);
-
 // Finch experiment to select a disk cache backend.
 enum class DiskCacheBackend {
   kDefault,
@@ -542,6 +620,15 @@ enum class DiskCacheBackend {
 NET_EXPORT BASE_DECLARE_FEATURE(kDiskCacheBackendExperiment);
 NET_EXPORT extern const base::FeatureParam<DiskCacheBackend>
     kDiskCacheBackendParam;
+
+// When true, the disk cache backend experiment group name is included in cache
+// reset logic (GetHttpCacheBackendResetParam() and
+// CheckFakeIndexFileInternal()) so that changing experiment groups resets the
+// HTTP cache for clean A/B comparison. When false (default), cache resets on
+// group changes are bypassed to prevent widespread cache clearing during
+// gradual feature rollouts.
+NET_EXPORT BASE_DECLARE_FEATURE_PARAM(bool,
+                                      kDiskCacheBackendResetCacheOnGroupChange);
 
 #if BUILDFLAG(ENABLE_DISK_CACHE_SQL_BACKEND)
 // If the number of pages recorded in the WAL file of the SQL disk cache's DB
@@ -561,12 +648,12 @@ NET_EXPORT BASE_DECLARE_FEATURE_PARAM(bool, kSqlDiskCacheWalMode);
 // Disables synchronous writes in the SQL disk cache's DB.
 // This is faster but less safe.
 NET_EXPORT BASE_DECLARE_FEATURE_PARAM(bool, kSqlDiskCacheSynchronousOff);
-// Enables the database preloading for the SQL disk cache backend.
-NET_EXPORT BASE_DECLARE_FEATURE_PARAM(bool, kSqlDiskCachePreloadDatabase);
 // The number of shards for the SQL disk cache.
 NET_EXPORT BASE_DECLARE_FEATURE_PARAM(int, kSqlDiskCacheShardCount);
 // Loads the in-memory index on initialization.
 NET_EXPORT BASE_DECLARE_FEATURE_PARAM(bool, kSqlDiskCacheLoadIndexOnInit);
+// Reduces UMA metrics recorded by the SQL disk cache.
+NET_EXPORT BASE_DECLARE_FEATURE_PARAM(bool, kSqlDiskCacheReduceUma);
 // The maximum size of the write buffer for all entries.
 NET_EXPORT BASE_DECLARE_FEATURE_PARAM(int,
                                       kSqlDiskCacheMaxWriteBufferTotalSize);
@@ -575,6 +662,12 @@ NET_EXPORT BASE_DECLARE_FEATURE_PARAM(int,
                                       kSqlDiskCacheMaxWriteBufferSizePerEntry);
 // The maximum size of the read buffer for all entries.
 NET_EXPORT BASE_DECLARE_FEATURE_PARAM(int, kSqlDiskCacheMaxReadBufferTotalSize);
+// The maximum body size (in bytes) for an entry to be copied to shared cache.
+NET_EXPORT BASE_DECLARE_FEATURE_PARAM(int,
+                                      kSqlDiskCacheMaxSharedCacheCopyEntrySize);
+// The read buffer size (in bytes) when copying entries to shared cache.
+NET_EXPORT BASE_DECLARE_FEATURE_PARAM(int,
+                                      kSqlDiskCacheSharedCacheReadBufferSize);
 // Execute the checkpoint serially.
 NET_EXPORT BASE_DECLARE_FEATURE_PARAM(bool, kSqlDiskCacheSerialCheckpoint);
 // Execute the initialization serially.
@@ -592,6 +685,11 @@ NET_EXPORT BASE_DECLARE_FEATURE_PARAM(int, kSqlDiskCacheCacheSize);
 // Whether to use consolidated in memory index.
 NET_EXPORT BASE_DECLARE_FEATURE_PARAM(bool,
                                       kSqlDiskCacheConsolidatedInMemoryIndex);
+// Whether to enable incremental vacuum for the SQL disk cache backend.
+NET_EXPORT BASE_DECLARE_FEATURE_PARAM(bool, kSqlDiskCacheIncrementalVacuum);
+// The number of pages to vacuum per step during incremental vacuum.
+NET_EXPORT BASE_DECLARE_FEATURE_PARAM(int,
+                                      kSqlDiskCacheIncrementalVacuumPageCount);
 #endif  // ENABLE_DISK_CACHE_SQL_BACKEND
 
 // If enabled, ignore Strict-Transport-Security for [*.]localhost hosts.
@@ -623,6 +721,13 @@ NET_EXPORT BASE_DECLARE_FEATURE(kHttpCacheNoVarySearch);
 
 NET_EXPORT BASE_DECLARE_FEATURE_PARAM(size_t,
                                       kHttpCacheNoVarySearchCacheMaxEntries);
+
+NET_EXPORT BASE_DECLARE_FEATURE_PARAM(
+    size_t,
+    kHttpCacheNoVarySearchCacheMaxPartitionEntries);
+
+NET_EXPORT BASE_DECLARE_FEATURE_PARAM(size_t,
+                                      kHttpCacheNoVarySearchCacheMaxPartitions);
 
 // Whether persistence is enabled in on-the-record profiles. True by default.
 NET_EXPORT BASE_DECLARE_FEATURE_PARAM(bool,
@@ -682,8 +787,8 @@ NET_EXPORT BASE_DECLARE_FEATURE(kRestrictAbusePortsOnLocalhost);
 // trust.
 NET_EXPORT BASE_DECLARE_FEATURE(kTLSTrustAnchorIDs);
 
-// Enables ML-DSA signature support in TLS (draft-ietf-tls-mldsa-02).
-NET_EXPORT BASE_DECLARE_FEATURE(kTlsMldsaSignatures);
+// Controls whether TLS Trust Anchor IDs that are not for MTCs are sent.
+NET_EXPORT BASE_DECLARE_FEATURE(kNonMtcTrustAnchorIDs);
 
 #if BUILDFLAG(CHROME_ROOT_STORE_SUPPORTED)
 // Enables support for Merkle Tree Certificates. `kTLSTrustAnchorIDs` must also
@@ -705,13 +810,23 @@ NET_EXPORT BASE_DECLARE_FEATURE_PARAM(double,
 // The percentage of noise to add/subtract from the probability.
 NET_EXPORT BASE_DECLARE_FEATURE_PARAM(double,
                                       kTcpSocketPoolLimitRandomizationNoise);
-// Whether or not the randomization is enabled for proxy socket pools. This has
-// no impact if `kTcpSocketPoolLimitRandomization` is disabled.
-NET_EXPORT BASE_DECLARE_FEATURE(kTcpSocketPoolLimitRandomizationForProxy);
 
-// These parameters control whether the Network Service Task Scheduler is used
-// for specific classes.
+// When enabled, Net Task Scheduler is enabled on the network thread.
 NET_EXPORT BASE_DECLARE_FEATURE(kNetTaskScheduler);
+
+// When enabled, HostResolver and its subtasks use the Net Task Scheduler.
+NET_EXPORT BASE_DECLARE_FEATURE(kNetTaskSchedulerHostResolver);
+
+// When enabled, Net Task Scheduler supports per-net::RequestPriority task
+// queues for each RequestPriority variant.
+//
+// TODO(crbug.com/450428442): Rename this to kNetPerPriorityTaskQueues once the
+// active Finch study referencing "NetworkServicePerPriorityTaskQueues"
+// finishes.
+NET_EXPORT BASE_DECLARE_FEATURE(kNetworkServicePerPriorityTaskQueues);
+
+// These parameters control whether the Net Task Scheduler is used
+// for specific classes.
 NET_EXPORT BASE_DECLARE_FEATURE_PARAM(bool,
                                       kNetTaskSchedulerHttpProxyConnectJob);
 NET_EXPORT BASE_DECLARE_FEATURE_PARAM(bool,
@@ -731,6 +846,8 @@ NET_EXPORT BASE_DECLARE_FEATURE_PARAM(bool, kNetTaskSchedulerHttpCache);
 NET_EXPORT BASE_DECLARE_FEATURE_PARAM(bool,
                                       kNetTaskSchedulerHttpCacheTransaction);
 
+
+
 // If enabled, we will add an additional delay to the main job in
 // HttpStreamFactoryJobController.
 NET_EXPORT BASE_DECLARE_FEATURE(kAdditionalDelayMainJob);
@@ -744,12 +861,32 @@ NET_EXPORT BASE_DECLARE_FEATURE_PARAM(base::TimeDelta, kQuicHandshakeTimeout);
 NET_EXPORT BASE_DECLARE_FEATURE_PARAM(base::TimeDelta,
                                       kMaxIdleTimeBeforeCryptoHandshake);
 
+// If enabled, we will ignore redundant OnNetworkMadeDefault notifications.
+NET_EXPORT BASE_DECLARE_FEATURE(kQuicIgnoreRedundantOnNetworkMadeDefault);
+
 // If enabled, we will use a longer idle timeout.
 NET_EXPORT BASE_DECLARE_FEATURE(kQuicLongerIdleConnectionTimeout);
+
+// If enabled, always cancel pre-existing probing when migrating immediately or
+// committing a migration.
+NET_EXPORT BASE_DECLARE_FEATURE(
+    kQuicAlwaysCancelPreExistingProbingOnMigration);
+
+// Controls the timeout for waiting for a new network to connect before giving
+// up on connection migration.
+NET_EXPORT BASE_DECLARE_FEATURE(kQuicWaitForNewNetworkTimeout);
+NET_EXPORT BASE_DECLARE_FEATURE_PARAM(base::TimeDelta,
+                                      kQuicWaitForNewNetworkTimeoutParam);
 
 // If enabled, we will use QUIC with a smaller MTU.
 NET_EXPORT BASE_DECLARE_FEATURE(kLowerQuicMaxPacketSize);
 NET_EXPORT BASE_DECLARE_FEATURE_PARAM(size_t, kQuicMaxPacketSize);
+
+// If enabled, QuicChromiumPacketReader will use ReadMultiple API.
+NET_EXPORT BASE_DECLARE_FEATURE(kQuicUseReadMultiple);
+
+// If enabled, UDPSocketPosix will enable UDP Generic Receive Offload (UDP_GRO).
+NET_EXPORT BASE_DECLARE_FEATURE(kEnableUdpGro);
 
 // When enabled, races QUIC connection attempts for the specified hostnames
 // even when there is no available ALPN information.
@@ -768,6 +905,10 @@ NET_EXPORT BASE_DECLARE_FEATURE_PARAM(size_t, kRecentlyAccessedOriginCacheSize);
 // When enabled, the browser tries QUIC by default.
 NET_EXPORT BASE_DECLARE_FEATURE(kTryQuicByDefault);
 
+// If enabled, close all QUIC sessions when the app is about to be frozen
+// (Android only).
+NET_EXPORT BASE_DECLARE_FEATURE(kCloseQuicSessionsOnPreFreeze);
+
 // The QUIC connection options which will be sent to the server in order to
 // enable certain QUIC features. This should be set using `QuicTag`s (32-bit
 // value represented in ASCII equivalent e.g. EXMP). To set multiple features,
@@ -782,8 +923,6 @@ NET_EXPORT BASE_DECLARE_FEATURE_PARAM(std::string, kNoIPQuicOption);
 NET_EXPORT BASE_DECLARE_FEATURE_PARAM(
     bool,
     kIgnoreIpMatchingWhenFindingExistingSessions);
-
-NET_EXPORT BASE_DECLARE_FEATURE(kDnsResponseDiscardPartialQuestions);
 
 // When enabled, allows DoH upgrade even if there are local nameservers.
 NET_EXPORT BASE_DECLARE_FEATURE(kDohFallbackAllowedWithLocalNameservers);
@@ -800,28 +939,24 @@ NET_EXPORT BASE_DECLARE_FEATURE(
 // be randomized for better load balancing of the initial DoH URL lookups.
 NET_EXPORT BASE_DECLARE_FEATURE(kEnableBootstrapIPRandomizationForDoh);
 
-// Controls whether X509Util on Android (Cronet, and WebView only) should use
-// lock-free certificate verification mechanism.
-NET_EXPORT BASE_DECLARE_FEATURE(kUseLockFreeX509Verification);
-
-// When enabled, and when Secure DNS Automatic mode is selected *with DoH
-// fallback*, then a canary domain will be probed to check whether DoH fallback
-// is allowed by the network. This will happen at the same time that DoH probes
-// are started. When disabled, the canary domain check is entirely inactive
-// (killswitch).
-NET_EXPORT BASE_DECLARE_FEATURE(kProbeSecureDnsCanaryDomain);
-NET_EXPORT BASE_DECLARE_FEATURE_PARAM(std::string, kSecureDnsCanaryDomainHost);
-
 #if BUILDFLAG(IS_APPLE)
 // If enabled, the GURL conversion for NSURLs will use the data representation
 // of the URL if it differs from the absolute string.
 NET_EXPORT BASE_DECLARE_FEATURE(kUseNSURLDataForGURLConversion);
+
+// Enables asynchronous PAC resolution and request cancellation in
+// ProxyResolverApple on a shared CFRunLoop thread instead of per-resolver
+// worker threads.
+NET_EXPORT BASE_DECLARE_FEATURE(kAsyncProxyResolverApple);
 #endif  // BUILDFLAG(IS_APPLE)
 
 // Enables logical HTTP cache clearing, which adds a filter to the cache
 // to immediately treat entries as invalid, while they are physically deleted
 // in the background.
 NET_EXPORT BASE_DECLARE_FEATURE(kLogicalClearHttpCache);
+NET_EXPORT extern const base::FeatureParam<bool>
+    kLogicalClearHttpCacheUserVisiblePriority;
+NET_EXPORT BASE_DECLARE_FEATURE_PARAM(int, kLogicalClearHttpCacheMaxFilters);
 
 // If enabled, SPDY sessions will be synchronously drained when the underlying
 // transport socket is detected to be disconnected in GetRemoteEndpoint().
@@ -834,6 +969,9 @@ NET_EXPORT BASE_DECLARE_FEATURE(kSQLitePersistentCookieStoreEarlyInit);
 NET_EXPORT extern const base::FeatureParam<bool>
     kSQLitePersistentCookieStoreEarlyInitCheckDisk;
 
+// If enabled, cookies are loaded early on preconnect requests.
+NET_EXPORT BASE_DECLARE_FEATURE(kEarlyCookieLoadOnPreconnect);
+
 // If enabled, the error code will be propagated for preconnect attempts.
 NET_EXPORT BASE_DECLARE_FEATURE(kEnableErrorCodePropagationForPreconnect);
 
@@ -844,13 +982,6 @@ NET_EXPORT BASE_DECLARE_FEATURE(kPermitTcpSocketPoolConnectBackupJobs);
 // If enabled, examine why a network operation was blocked due to local network
 // permission.
 NET_EXPORT BASE_DECLARE_FEATURE(kLocalNetworkPermissionCheck);
-
-// Whether or not this client is participating in the TCP connection pool proxy
-// limit and, if so, what the limit should be.
-// See crbug.com/467278609 to track efforts to raise defaults.
-NET_EXPORT BASE_DECLARE_FEATURE(kTcpSocketPoolProxyLimit);
-NET_EXPORT BASE_DECLARE_FEATURE_PARAM(int, kTcpSocketPoolProxyLimitNormal);
-NET_EXPORT BASE_DECLARE_FEATURE_PARAM(int, kTcpSocketPoolProxyLimitWebSocket);
 
 // If enabled, QuicCryptoClientConfigOwner will ignore memory pressure events
 // for all network isolation partitions.
@@ -870,9 +1001,97 @@ NET_EXPORT BASE_DECLARE_FEATURE(kIgnoreMemoryPressureForSslClientSessionCache);
 NET_EXPORT BASE_DECLARE_FEATURE(kCookieParseRejectEmptyNameAmbiguous);
 
 NET_EXPORT BASE_DECLARE_FEATURE(kEnablePrivateVerificationTokens);
+NET_EXPORT BASE_DECLARE_FEATURE_PARAM(std::string,
+                                      kPrivateVerificationTokensCustomIssuer);
+
+// If enabled, request servers to add additional padding to TLS handshakes. The
+// amount requested is configurable by the parameter
+// kAddTLSServerHandshakePaddingBytes, with a maximum of 16k bytes.
+NET_EXPORT BASE_DECLARE_FEATURE(kAddTLSServerHandshakePadding);
+NET_EXPORT BASE_DECLARE_FEATURE_PARAM(int, kAddTLSServerHandshakePaddingBytes);
 
 NET_EXPORT bool IsDnsPlatformSupported();
+
+// If enabled, load the NoVarySearchCache persisted data on a different
+// threadpool sequence than used for journalling.
+NET_EXPORT BASE_DECLARE_FEATURE(kNoVarySearchCacheLoadOnSeparateTaskRunner);
+
+// The priority to load the persisted data with. 0 => BEST_EFFORT,
+// 1 => USER_VISIBLE, 2 => USER_BLOCKING.
+NET_EXPORT BASE_DECLARE_FEATURE_PARAM(base::TaskPriority,
+                                      kNoVarySearchCacheLoadTaskRunnerPriority);
+
+// Enable MTC certificate verification based on test-only roots. This is unsafe
+// and may permit an attacker to intercept or modify your HTTPS connections. Do
+// not use this flag on an instance containing personal data. Recommended for
+// developer use only in isolated testing environments.
+NET_EXPORT BASE_DECLARE_FEATURE(kTestRootStore);
+
+// If enabled, cache certificate verification results will be put into the
+// certificate verification cache. All other cache interactions (creation,
+// clear, get) are performed regardless of this feature.
+NET_EXPORT BASE_DECLARE_FEATURE(kCacheCertVerification);
+
+// The TTL in seconds for entries put into the certificate verification cache.
+// If set to 0, entries will still technically be put into the cache, but will
+// already be expired.
+NET_EXPORT BASE_DECLARE_FEATURE_PARAM(int, kCacheCertVerificationTtlSecs);
+
+// Enables the BackendCleanupTracker for HTTP cache backends (net::DISK_CACHE)
+// to prevent conflicts when multiple backends are created for the same path.
+NET_EXPORT BASE_DECLARE_FEATURE(kEnableBackendCleanupTrackerOnHttpCache);
+
+// If enabled, WebSocketEndpointLockManager partitions locks by
+// NetworkAnonymizationKey.
+// TODO(crbug.com/533028862): Remove the base::Feature after August 2026
+// once it has been verified safe.
+NET_EXPORT BASE_DECLARE_FEATURE(
+    kPartitionWebSocketEndpointLocksByNetworkAnonymizationKey);
+
+// Controls initial delay for broken alternative services.
+NET_EXPORT BASE_DECLARE_FEATURE(kInitialDelayForBrokenAlternativeService);
+NET_EXPORT BASE_DECLARE_FEATURE_PARAM(
+    base::TimeDelta,
+    kInitialDelayForBrokenAlternativeServiceParam);
+
+// Controls whether broken alternative services should be persisted to disk
+// cache.
+NET_EXPORT BASE_DECLARE_FEATURE(kPersistBrokenAlternativeServices);
+
+// Controls maximum delay for broken alternative services.
+NET_EXPORT BASE_DECLARE_FEATURE(kMaxDelayForBrokenAlternativeService);
+NET_EXPORT BASE_DECLARE_FEATURE_PARAM(
+    base::TimeDelta,
+    kMaxDelayForBrokenAlternativeServiceParam);
+
+#if BUILDFLAG(IS_WIN)
+// Disables SYN retransmissions for TCP loopback connections on Windows.
+NET_EXPORT BASE_DECLARE_FEATURE(kEnableWindowsTcpLoopbackFastFail);
+#endif
+
+// Controls the socket send buffer size for QUIC client sockets.
+// If the feature is enabled:
+// - If the parameter is -1, SetSendBufferSize() is not called at all.
+// - If the parameter is > 0, SetSendBufferSize() is called with this value.
+// If the feature is disabled, the default behavior (20 packets) is used.
+NET_EXPORT BASE_DECLARE_FEATURE(kQuicSocketSendBufferSize);
+NET_EXPORT BASE_DECLARE_FEATURE_PARAM(int, kQuicSocketSendBufferSizeParam);
+
+// Controls the disk cache backend experiment for the GPU shader cache
+// (`net::SHADER_CACHE`). When enabled, each shader cache directory is wiped
+// once on first open (tracked in the cache index header) and recreated using
+// the backend specified by `kShaderDiskCacheBackendType`.
+NET_EXPORT BASE_DECLARE_FEATURE(kShaderDiskCacheBackendExperiment);
+NET_EXPORT BASE_DECLARE_FEATURE_PARAM(DiskCacheBackend,
+                                      kShaderDiskCacheBackendType);
+
+// Enables per-key (eTLD+1) task queueing for single-domain cookie deletions
+// (`DeleteCanonicalCookieAsync` and single-domain `DeleteAllMatchingInfoAsync`)
+// so they do not set `seen_global_task_` and block concurrent navigations on
+// the full SQLite cookie store load.
+NET_EXPORT BASE_DECLARE_FEATURE(kCookieMonsterPerKeyDelete);
 
 }  // namespace net::features
 
 #endif  // NET_BASE_FEATURES_H_
+

@@ -28,6 +28,7 @@
 #include "ui/base/interaction/element_identifier.h"
 #include "ui/base/interaction/element_tracker.h"
 #include "ui/base/interaction/interaction_test_util.h"
+#include "ui/webui/resources/js/tracked_element/tracked_element.mojom-forward.h"
 #include "ui/webui/resources/js/tracked_element/tracked_element.mojom.h"
 #include "ui/webui/tracked_element/tracked_element_handler.h"
 #include "ui/webui/tracked_element/tracked_element_web_ui.h"
@@ -47,50 +48,55 @@ class MockTrackedElementManager
     receiver_.Bind(std::move(pending_receiver));
   }
 
-  void OnElementHighlightChanged(const std::string& native_identifier,
-                                 bool highlighted) override {}
+  void OnElementHighlightChanged(
+      tracked_element::mojom::TrackedElementIdentifierPtr id,
+      bool highlighted) override {}
 
-  void ClickElement(const std::string& native_identifier,
+  void ClickElement(tracked_element::mojom::TrackedElementIdentifierPtr id,
+                    tracked_element::mojom::InputType input_type,
                     ClickElementCallback callback) override {
-    interaction_events_.push_back("Click:" + native_identifier);
+    interaction_events_.push_back(
+        base::StringPrintf("Click:%s:%d", id->native_identifier.c_str(),
+                           static_cast<int>(input_type)));
     std::move(callback).Run(true);
   }
 
-  void FocusElement(const std::string& native_identifier,
+  void FocusElement(tracked_element::mojom::TrackedElementIdentifierPtr id,
                     FocusElementCallback callback) override {
-    interaction_events_.push_back("Focus:" + native_identifier);
+    interaction_events_.push_back("Focus:" + id->native_identifier);
     std::move(callback).Run(true);
   }
 
-  void SelectTab(const std::string& native_identifier,
+  void SelectTab(tracked_element::mojom::TrackedElementIdentifierPtr id,
                  uint32_t index,
                  SelectTabCallback callback) override {
     interaction_events_.push_back(base::StringPrintf(
-        "SelectTab:%s:%u", native_identifier.c_str(), index));
+        "SelectTab:%s:%u", id->native_identifier.c_str(), index));
     std::move(callback).Run(true);
   }
 
-  void SelectDropdownItem(const std::string& native_identifier,
-                          uint32_t index,
-                          SelectDropdownItemCallback callback) override {
+  void SelectDropdownItem(
+      tracked_element::mojom::TrackedElementIdentifierPtr id,
+      uint32_t index,
+      SelectDropdownItemCallback callback) override {
     interaction_events_.push_back(base::StringPrintf(
-        "SelectDropdownItem:%s:%u", native_identifier.c_str(), index));
+        "SelectDropdownItem:%s:%u", id->native_identifier.c_str(), index));
     std::move(callback).Run(true);
   }
 
-  void EnterText(const std::string& native_identifier,
+  void EnterText(tracked_element::mojom::TrackedElementIdentifierPtr id,
                  const std::u16string& text,
                  tracked_element::mojom::TextEntryMode mode,
                  EnterTextCallback callback) override {
     interaction_events_.push_back(base::StringPrintf(
-        "EnterText:%s:%s:%d", native_identifier.c_str(),
+        "EnterText:%s:%s:%d", id->native_identifier.c_str(),
         base::UTF16ToUTF8(text).c_str(), static_cast<int>(mode)));
     std::move(callback).Run(true);
   }
 
-  void Confirm(const std::string& native_identifier,
+  void Confirm(tracked_element::mojom::TrackedElementIdentifierPtr id,
                ConfirmCallback callback) override {
-    interaction_events_.push_back("Confirm:" + native_identifier);
+    interaction_events_.push_back("Confirm:" + id->native_identifier);
     std::move(callback).Run(true);
   }
 
@@ -130,7 +136,9 @@ class InteractionTestUtilSimulatorWebUITest
 
     // Make the element visible.
     tracked_element_handler_remote_->TrackedElementVisibilityChanged(
-        kTestElementIdentifier.GetName(), true, gfx::RectF(0, 0, 10, 10));
+        tracked_element::mojom::TrackedElementIdentifier::New(
+            kTestElementIdentifier.GetName(), "1"),
+        true, gfx::RectF(0, 0, 10, 10));
     tracked_element_handler_remote_.FlushForTesting();
 
     simulator_ = std::make_unique<InteractionTestUtilSimulatorWebUI>();
@@ -168,7 +176,22 @@ TEST_F(InteractionTestUtilSimulatorWebUITest, PressButton) {
                 element, ui::test::InteractionTestUtil::InputType::kDontCare));
   EXPECT_THAT(
       manager_->interaction_events(),
-      testing::ElementsAre("Click:" + kTestElementIdentifier.GetName()));
+      testing::ElementsAre(base::StringPrintf(
+          "Click:%s:%d", kTestElementIdentifier.GetName().c_str(),
+          static_cast<int>(tracked_element::mojom::InputType::kDontCare))));
+
+  EXPECT_EQ(ui::test::ActionResult::kSucceeded,
+            simulator_->PressButton(
+                element, ui::test::InteractionTestUtil::InputType::kKeyboard));
+  EXPECT_THAT(
+      manager_->interaction_events(),
+      testing::ElementsAre(
+          base::StringPrintf(
+              "Click:%s:%d", kTestElementIdentifier.GetName().c_str(),
+              static_cast<int>(tracked_element::mojom::InputType::kDontCare)),
+          base::StringPrintf(
+              "Click:%s:%d", kTestElementIdentifier.GetName().c_str(),
+              static_cast<int>(tracked_element::mojom::InputType::kKeyboard))));
 }
 
 TEST_F(InteractionTestUtilSimulatorWebUITest, SelectMenuItem) {
@@ -179,7 +202,9 @@ TEST_F(InteractionTestUtilSimulatorWebUITest, SelectMenuItem) {
                 element, ui::test::InteractionTestUtil::InputType::kDontCare));
   EXPECT_THAT(
       manager_->interaction_events(),
-      testing::ElementsAre("Click:" + kTestElementIdentifier.GetName()));
+      testing::ElementsAre(base::StringPrintf(
+          "Click:%s:%d", kTestElementIdentifier.GetName().c_str(),
+          static_cast<int>(tracked_element::mojom::InputType::kDontCare))));
 }
 
 TEST_F(InteractionTestUtilSimulatorWebUITest, DoDefaultAction) {
@@ -190,7 +215,9 @@ TEST_F(InteractionTestUtilSimulatorWebUITest, DoDefaultAction) {
                 element, ui::test::InteractionTestUtil::InputType::kDontCare));
   EXPECT_THAT(
       manager_->interaction_events(),
-      testing::ElementsAre("Click:" + kTestElementIdentifier.GetName()));
+      testing::ElementsAre(base::StringPrintf(
+          "Click:%s:%d", kTestElementIdentifier.GetName().c_str(),
+          static_cast<int>(tracked_element::mojom::InputType::kDontCare))));
 }
 
 TEST_F(InteractionTestUtilSimulatorWebUITest, SelectTab) {

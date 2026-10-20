@@ -15,7 +15,6 @@
 #include "chrome/browser/download/android/download_dialog_utils.h"
 #include "chrome/browser/download/android/duplicate_download_dialog_bridge.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/grit/generated_resources.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/download_item_utils.h"
 #include "content/public/browser/web_contents.h"
@@ -46,7 +45,7 @@ void DuplicateDownloadDialogBridgeDelegate::CreateDialog(
     content::WebContents* web_contents,
     DownloadTargetDeterminerDelegate::ConfirmationCallback
         file_selected_callback) {
-  DCHECK(web_contents);
+  CHECK(web_contents, base::NotFatalUntil::M161);
   // Don't shown duplicate dialog again if it is already showing.
   if (std::ranges::contains(download_items_, download_item)) {
     return;

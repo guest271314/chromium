@@ -12,6 +12,7 @@
 #include "base/numerics/checked_math.h"
 #include "base/numerics/safe_conversions.h"
 #include "media/base/audio_buffer.h"
+#include "media/base/channel_layout.h"
 #include "media/base/decoder_buffer.h"
 #include "media/base/decrypt_config.h"
 #include "media/base/limits.h"
@@ -54,6 +55,11 @@ TypeConverter<std::unique_ptr<media::DecryptConfig>,
       input->encryption_pattern) {
     return nullptr;
   }
+  // Enforce a hard upper bound on the number of subsamples to prevent
+  // unbounded allocations or HAL vulnerabilities.
+  if (input->subsamples.size() > media::limits::kMaxSubsamplesPerBuffer) {
+    return nullptr;
+  }
   return std::make_unique<media::DecryptConfig>(
       input->encryption_scheme, input->key_id, input->iv, input->subsamples,
       input->encryption_pattern);
@@ -71,6 +77,7 @@ media::mojom::DecoderBufferSideDataPtr TypeConverter<
                                       input.alpha_data.end());
   }
   mojo_side_data->spatial_layers = input.spatial_layers;
+  mojo_side_data->hdr_metadata = input.hdr_metadata;
   mojo_side_data->secure_handle = input.secure_handle;
   mojo_side_data->front_discard = input.discard_padding.first;
   mojo_side_data->back_discard = input.discard_padding.second;
@@ -96,6 +103,7 @@ TypeConverter<std::unique_ptr<media::DecoderBufferSideData>,
     side_data->alpha_data =
         base::HeapArray<uint8_t>::CopiedFrom(input->alpha_data);
   }
+  side_data->hdr_metadata = input->hdr_metadata;
   side_data->secure_handle = input->secure_handle;
   side_data->discard_padding.first = input->front_discard;
   side_data->discard_padding.second = input->back_discard;
@@ -210,8 +218,8 @@ TypeConverter<media::mojom::AudioBufferPtr, media::AudioBuffer>::Convert(
     const media::AudioBuffer& input) {
   media::mojom::AudioBufferPtr buffer(media::mojom::AudioBuffer::New());
   buffer->sample_format = input.sample_format_;
-  buffer->channel_layout = input.channel_layout();
-  buffer->channel_count = input.channel_count();
+  buffer->channel_layout_config =
+      media::ChannelLayoutConfig(input.channel_layout(), input.channel_count());
   buffer->sample_rate = input.sample_rate();
   buffer->frame_count = input.frame_count();
   buffer->end_of_stream = input.end_of_stream();
@@ -241,22 +249,27 @@ TypeConverter<scoped_refptr<media::AudioBuffer>, media::mojom::AudioBufferPtr>::
   if (input->end_of_stream)
     return media::AudioBuffer::CreateEOSBuffer();
 
+  const media::ChannelLayout channel_layout =
+      input->channel_layout_config.channel_layout();
+  const int channel_count = input->channel_layout_config.channels();
+
   if (input->frame_count <= 0 ||
       static_cast<size_t>(input->sample_format) >
           media::SampleFormat::kMaxValue ||
-      static_cast<size_t>(input->channel_layout) > media::CHANNEL_LAYOUT_MAX ||
-      input->channel_count > media::limits::kMaxChannels ||
-      (input->channel_layout != media::CHANNEL_LAYOUT_DISCRETE &&
-       ChannelLayoutToChannelCount(input->channel_layout) !=
-           input->channel_count)) {
+      channel_count > media::limits::kMaxChannels) {
     DLOG(ERROR) << "Receive an invalid audio buffer, replace it with EOS.";
     return media::AudioBuffer::CreateEOSBuffer();
   }
 
   if (IsBitstream(input->sample_format)) {
+    if (input->data.empty()) {
+      DLOG(ERROR)
+          << "Received invalid bitstream AudioBuffer, replace it with EOS.";
+      return media::AudioBuffer::CreateEOSBuffer();
+    }
     return media::AudioBuffer::CopyBitstreamFrom(
-        input->sample_format, input->channel_layout, input->channel_count,
-        input->sample_rate, input->frame_count, input->data, input->timestamp);
+        input->sample_format, channel_layout, channel_count, input->sample_rate,
+        input->frame_count, input->data, input->timestamp);
   }
 
   // Safe to cast, since we already checked `sample_format` doesn't exceed
@@ -273,11 +286,10 @@ TypeConverter<scoped_refptr<media::AudioBuffer>, media::mojom::AudioBufferPtr>::
   // case, and in the case of a overflow below, `min_data_size` will be 0,
   // and we will return an EOS below.
   const size_t min_data_size =
-      base::CheckMul(input->channel_count, copy_size_per_channel)
-          .ValueOrDefault(0u);
+      base::CheckMul(channel_count, copy_size_per_channel).ValueOrDefault(0u);
   if (!copy_size_per_channel || !min_data_size ||
       input->data.size() < min_data_size ||
-      input->data.size() % input->channel_count != 0) {
+      input->data.size() % channel_count != 0) {
     DLOG(ERROR) << "Received invalid AudioBuffer, replace it with EOS.";
     return media::AudioBuffer::CreateEOSBuffer();
   }
@@ -291,19 +303,18 @@ TypeConverter<scoped_refptr<media::AudioBuffer>, media::mojom::AudioBufferPtr>::
   } else {
     // `source_size_per_channel` is the stride in the
     // serialized buffer, which may include alignment padding.
-    const size_t source_size_per_channel =
-        input->data.size() / input->channel_count;
-    channel_spans.resize(input->channel_count);
+    const size_t source_size_per_channel = input->data.size() / channel_count;
+    channel_spans.resize(channel_count);
 
-    for (int i = 0; i < input->channel_count; ++i) {
+    for (int i = 0; i < channel_count; ++i) {
       channel_spans[i] =
           base::as_byte_span(input->data)
               .subspan(i * source_size_per_channel, copy_size_per_channel);
     }
   }
   return media::AudioBuffer::CopyFrom(
-      input->sample_format, input->channel_layout, input->channel_count,
-      input->sample_rate, input->frame_count, channel_spans, input->timestamp);
+      input->sample_format, channel_layout, channel_count, input->sample_rate,
+      input->frame_count, channel_spans, input->timestamp);
 }
 
 }  // namespace mojo

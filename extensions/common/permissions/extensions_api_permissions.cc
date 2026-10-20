@@ -53,6 +53,7 @@ constexpr APIPermissionInfo::InitInfo permissions_to_register[] = {
     {APIPermissionID::kClipboardWrite, "clipboardWrite",
      APIPermissionInfo::kFlagSupportsContentCapabilities |
          APIPermissionInfo::kFlagDoesNotRequireManagedSessionFullLoginWarning},
+    {APIPermissionID::kCookie, "cookies"},
     {APIPermissionID::kCrashReportPrivate, "crashReportPrivate"},
     {APIPermissionID::kDeclarativeNetRequest,
      declarative_net_request::kDeclarativeNetRequestPermission,
@@ -104,7 +105,6 @@ constexpr APIPermissionInfo::InitInfo permissions_to_register[] = {
      "lockWindowFullscreenPrivate", APIPermissionInfo::kFlagCannotBeOptional},
     {APIPermissionID::kLogin, "login"},
     {APIPermissionID::kLoginScreenStorage, "loginScreenStorage"},
-    {APIPermissionID::kLoginScreenUi, "loginScreenUi"},
     {APIPermissionID::kLoginState, "loginState",
      APIPermissionInfo::kFlagDoesNotRequireManagedSessionFullLoginWarning},
     {APIPermissionID::kMediaPerceptionPrivate, "mediaPerceptionPrivate"},
@@ -131,14 +131,17 @@ constexpr APIPermissionInfo::InitInfo permissions_to_register[] = {
      APIPermissionInfo::kFlagRequiresManagementUIWarning},
     {APIPermissionID::kPrintingMetrics, "printingMetrics",
      APIPermissionInfo::kFlagRequiresManagementUIWarning},
+    {APIPermissionID::kProxy, "proxy",
+     APIPermissionInfo::kFlagImpliesFullURLAccess |
+         APIPermissionInfo::kFlagCannotBeOptional},
+    {APIPermissionID::kPublicSuffix, "publicSuffix",
+     APIPermissionInfo::kFlagDoesNotRequireManagedSessionFullLoginWarning},
     {APIPermissionID::kSerial, "serial",
      APIPermissionInfo::kFlagDoesNotRequireManagedSessionFullLoginWarning},
     {APIPermissionID::kSocket, "socket",
      APIPermissionInfo::kFlagCannotBeOptional |
          APIPermissionInfo::kFlagDoesNotRequireManagedSessionFullLoginWarning,
      &CreateAPIPermission<SocketPermission>},
-    {APIPermissionID::kSpeechRecognitionPrivate, "speechRecognitionPrivate",
-     APIPermissionInfo::kFlagDoesNotRequireManagedSessionFullLoginWarning},
     {APIPermissionID::kStorage, "storage",
      APIPermissionInfo::kFlagDoesNotRequireManagedSessionFullLoginWarning},
     {APIPermissionID::kSystemCpu, "system.cpu",
@@ -175,7 +178,6 @@ constexpr APIPermissionInfo::InitInfo permissions_to_register[] = {
     {APIPermissionID::kWebView, "webview",
      APIPermissionInfo::kFlagCannotBeOptional},
     {APIPermissionID::kWindowShape, "app.window.shape"},
-    {APIPermissionID::kWmDesksPrivate, "wmDesksPrivate"},
 };
 
 }  // namespace
@@ -197,4 +199,3 @@ base::span<const Alias> GetPermissionAliases() {
 }
 
 } // namespace extensions::api_permissions
-

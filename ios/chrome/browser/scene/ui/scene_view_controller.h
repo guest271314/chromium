@@ -12,13 +12,13 @@
 #import "ios/chrome/browser/scene/ui/scene_consumer.h"
 #import "ios/chrome/browser/shared/ui/util/ui_view_controller_with_display_tracing.h"
 
-@class AssistantContainerViewController;
-@protocol BWGCommands;
-@protocol SceneViewControllerDelegate;
-@class LayoutGuideCenter;
-@class LayoutState;
-@protocol SceneMutator;
 @protocol AppBarCommands;
+@class AssistantContainerViewController;
+@protocol GeminiCommands;
+@class LayoutGuideCenter;
+@class SceneLayoutState;
+@protocol SceneMutator;
+@protocol SceneViewControllerDelegate;
 
 // A view controller that can act as the `rootViewController` for a scene's
 // window.
@@ -28,10 +28,8 @@
                                           SceneConsumer>
 
 // The layout state to observe.
-@property(nonatomic, weak) LayoutState* layoutState;
+@property(nonatomic, weak) SceneLayoutState* layoutState;
 
-// A view to contain the TabGrid and BVC.
-@property(nonatomic, readonly) UIView* appContainer;
 // This view controller's LayoutGuideCenter.
 @property(nonatomic, strong) LayoutGuideCenter* layoutGuideCenter;
 // Delegate for this view controller.
@@ -42,8 +40,14 @@
 // Handler for App Bar commands.
 @property(nonatomic, weak) id<AppBarCommands> appBarHandler;
 
+// Handler for Gemini commands.
+@property(nonatomic, weak) id<GeminiCommands> geminiHandler;
+
 // Sets the app bar.
 - (void)setAppBar:(UIViewController*)appBar;
+
+// Sets the TabGrid view controller.
+- (void)setTabGrid:(UIViewController*)tabGridViewController;
 
 @end
 

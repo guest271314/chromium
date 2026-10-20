@@ -5,12 +5,15 @@
 #import "ios/chrome/browser/intelligence/zero_state_suggestions/model/model_led_suggestions_service_impl.h"
 
 #import "base/functional/bind.h"
-#import "components/optimization_guide/core/model_execution/feature_keys.h"
+#import "components/application_locale_storage/application_locale_storage.h"
+#import "components/optimization_guide/core/feature_registry/feature_keys.h"
+#import "components/optimization_guide/core/model_quality/model_quality_log_entry.h"
 #import "components/optimization_guide/core/optimization_guide_util.h"
 #import "components/optimization_guide/proto/features/zero_state_suggestions.pb.h"
 #import "ios/chrome/browser/intelligence/proto_wrappers/page_context_wrapper.h"
 #import "ios/chrome/browser/optimization_guide/model/optimization_guide_service.h"
 #import "ios/chrome/browser/optimization_guide/model/optimization_guide_service_factory.h"
+#import "ios/chrome/browser/shared/model/application_context/application_context.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
 #import "ios/web/public/web_state.h"
 
@@ -124,6 +127,10 @@ void ModelLedSuggestionsServiceImpl::OnPageContextGenerated(
   }
 
   request.set_allocated_page_context(response.value().release());
+  request.set_locale(GetApplicationContext()
+                         ->GetApplicationLocaleStorage()
+                         ->GetTag()
+                         .tag_string());
 
   optimization_guide::OptimizationGuideModelExecutionResultCallback
       result_callback = base::BindOnce(

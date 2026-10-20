@@ -7,8 +7,11 @@
 #include <stddef.h>
 
 #include <algorithm>
+#include <memory>
+#include <utility>
 #include <vector>
 
+#include "base/check_op.h"
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/metrics/histogram_functions.h"
@@ -32,11 +35,10 @@
 #include "chrome/browser/ui/toasts/api/toast_id.h"
 #include "chrome/browser/ui/toasts/toast_controller.h"
 #include "chrome/browser/ui/toasts/toast_features.h"
-#include "chrome/browser/ui/views/frame/browser_view.h"
+#include "chrome/browser/ui/webui/settings/settings_element_ids.h"
+#include "chrome/browser/ui/webui/settings/settings_utils.h"
 #include "chrome/common/channel_info.h"
 #include "chrome/common/url_constants.h"
-#include "chrome/grit/branded_strings.h"
-#include "chrome/grit/generated_resources.h"
 #include "components/browsing_data/content/browsing_data_helper.h"
 #include "components/browsing_data/core/browsing_data_utils.h"
 #include "components/browsing_data/core/cookie_or_cache_deletion_choice.h"
@@ -50,6 +52,7 @@
 #include "components/search_engines/template_url_service.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "components/strings/grit/components_strings.h"
+#include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/browsing_data_filter_builder.h"
 #include "content/public/browser/storage_partition.h"
 #include "content/public/browser/web_contents.h"
@@ -65,9 +68,7 @@ namespace {
 const int kMaxTimesHistoryNoticeShown = 1;
 
 // TODO(msramek): Get the list of deletion preferences from the JS side.
-// TODO(crbug.com/502885275): Refactor when removing the basic/advanced tabs
-// logic.
-const char* kCounterPrefsAdvanced[] = {
+const char* kCounterPrefs[] = {
     browsing_data::prefs::kDeleteBrowsingHistory,
     browsing_data::prefs::kDeleteCache,
     browsing_data::prefs::kDeleteCookies,
@@ -76,6 +77,21 @@ const char* kCounterPrefsAdvanced[] = {
     browsing_data::prefs::kDeleteHostedAppsData,
     browsing_data::prefs::kDeleteSiteSettings,
 };
+
+void NotifyBrowserViewCustomEvent(tabs::TabInterface* tab,
+                                  ui::CustomElementEventType event_type) {
+  if (!tab) {
+    return;
+  }
+  ui::ElementContext context =
+      BrowserElements::From(tab->GetBrowserWindowInterface())->GetContext();
+  ui::TrackedElement* const browser_element =
+      ui::ElementTracker::GetElementTracker()->GetUniqueElement(
+          kBrowserViewElementId, context);
+  CHECK(browser_element);
+  ui::ElementTracker::GetFrameworkDelegate()->NotifyCustomEvent(browser_element,
+                                                                event_type);
+}
 
 }  // namespace
 
@@ -109,6 +125,11 @@ void ClearBrowsingDataHandler::RegisterMessages() {
       "restartClearBrowsingDataCounters",
       base::BindRepeating(&ClearBrowsingDataHandler::HandleRestartCounters,
                           base::Unretained(this)));
+  web_ui()->RegisterMessageCallback(
+      "recordClearBrowsingDataCancelled",
+      base::BindRepeating(
+          &ClearBrowsingDataHandler::HandleClearBrowsingDataCancelled,
+          base::Unretained(this)));
 }
 
 void ClearBrowsingDataHandler::OnJavascriptAllowed() {
@@ -119,12 +140,19 @@ void ClearBrowsingDataHandler::OnJavascriptAllowed() {
   dse_service_observation_.Observe(
       TemplateURLServiceFactory::GetForProfile(profile_));
 
-  DCHECK(counters_basic_.empty());
-  DCHECK(counters_advanced_.empty());
+  CHECK(counters_.empty(), base::NotFatalUntil::M162);
 
-  for (const std::string& pref : kCounterPrefsAdvanced) {
-    AddCounter(BrowsingDataCounterFactory::GetForProfileAndPref(profile_, pref),
-               browsing_data::ClearBrowsingDataTab::ADVANCED);
+  for (const std::string& pref : kCounterPrefs) {
+    AddCounter(
+        BrowsingDataCounterFactory::GetForProfileAndPref(profile_, pref));
+  }
+
+  // The skills counter is only available if the Skills feature is enabled for
+  // this profile.
+  if (std::unique_ptr<browsing_data::BrowsingDataCounter> skills_counter =
+          BrowsingDataCounterFactory::GetForProfileAndPref(
+              profile_, browsing_data::prefs::kDeleteSkills)) {
+    AddCounter(std::move(skills_counter));
   }
 }
 
@@ -132,8 +160,7 @@ void ClearBrowsingDataHandler::OnJavascriptDisallowed() {
   dse_service_observation_.Reset();
   sync_service_observation_.Reset();
   weak_ptr_factory_.InvalidateWeakPtrs();
-  counters_basic_.clear();
-  counters_advanced_.clear();
+  counters_.clear();
 }
 
 void ClearBrowsingDataHandler::HandleClearBrowsingDataForTest() {
@@ -210,6 +237,9 @@ void ClearBrowsingDataHandler::HandleClearBrowsingData(
         // Tab closure is not implemented yet.
         NOTIMPLEMENTED();
         break;
+      case BrowsingDataType::SKILLS:
+        remove_mask |= chrome_browsing_data_remover::DATA_TYPE_SKILLS;
+        break;
     }
 
     // Inform the T&S sentiment service that this datatype was cleared.
@@ -237,6 +267,8 @@ void ClearBrowsingDataHandler::HandleClearBrowsingData(
 
   browsing_data::RecordDeleteBrowsingDataAction(
       browsing_data::DeleteBrowsingDataAction::kClearBrowsingDataDialog);
+  settings_utils::MaybeNotifySettingsElementActivated(
+      web_ui(), settings::kClearBrowsingDataDialogOkButtonElementId);
 
   int period_selected = args_list[2].GetInt();
 
@@ -293,7 +325,7 @@ void ClearBrowsingDataHandler::OnClearingTaskFinished(
     if (tab && tab->IsActivated()) {
       CHECK(tab->GetBrowserWindowInterface());
       ToastController* const toast_controller =
-          tab->GetBrowserWindowInterface()->GetFeatures().toast_controller();
+          ToastController::From(tab->GetBrowserWindowInterface());
       if (toast_controller) {
         toast_controller->MaybeShowToast(
             ToastParams(ToastId::kClearBrowsingData));
@@ -301,15 +333,9 @@ void ClearBrowsingDataHandler::OnClearingTaskFinished(
     }
   }
 
-  if (tab && data_types.find(BrowsingDataType::HISTORY) != data_types.end()) {
-    ui::ElementContext context =
-        BrowserElements::From(tab->GetBrowserWindowInterface())->GetContext();
-    ui::TrackedElement* const browser_element =
-        ui::ElementTracker::GetElementTracker()->GetUniqueElement(
-            kBrowserViewElementId, context);
-    CHECK(browser_element);
-    ui::ElementTracker::GetFrameworkDelegate()->NotifyCustomEvent(
-        browser_element,
+  if (data_types.find(BrowsingDataType::HISTORY) != data_types.end()) {
+    NotifyBrowserViewCustomEvent(
+        tab,
         browsing_data_important_sites_util::kClearBrowsingDataHistoryEventId);
   }
 
@@ -334,12 +360,9 @@ void ClearBrowsingDataHandler::HandleInitialize(const base::ListValue& args) {
   // However, it would be safer if the "initializeClearBrowsingData" delivered
   // the actual initial selection from the UI.
   PrefService* prefs = profile_->GetPrefs();
-  auto initial_period_basic = static_cast<browsing_data::TimePeriod>(
-      prefs->GetInteger(browsing_data::prefs::kDeleteTimePeriodBasic));
-  auto initial_period_advanced = static_cast<browsing_data::TimePeriod>(
+  auto initial_period = static_cast<browsing_data::TimePeriod>(
       prefs->GetInteger(browsing_data::prefs::kDeleteTimePeriod));
-  RestartCounters(true /* basic */, initial_period_basic);
-  RestartCounters(false /* basic */, initial_period_advanced);
+  RestartCounters(initial_period);
 
   ResolveJavascriptCallback(callback_id, base::Value() /* Promise<void> */);
 }
@@ -353,9 +376,17 @@ void ClearBrowsingDataHandler::HandleGetSyncState(const base::ListValue& args) {
 void ClearBrowsingDataHandler::HandleRestartCounters(
     const base::ListValue& args) {
   AllowJavascript();
-  CHECK_EQ(2U, args.size());
-  RestartCounters(args[0].GetBool() /* basic */,
-                  static_cast<browsing_data::TimePeriod>(args[1].GetInt()));
+  CHECK_EQ(1U, args.size());
+  RestartCounters(static_cast<browsing_data::TimePeriod>(args[0].GetInt()));
+}
+
+void ClearBrowsingDataHandler::HandleClearBrowsingDataCancelled(
+    const base::ListValue& args) {
+  CHECK_EQ(0U, args.size());
+  NotifyBrowserViewCustomEvent(
+      tabs::TabInterface::MaybeGetFromContents(web_ui()->GetWebContents()),
+      browsing_data_important_sites_util::
+          kDismissClearBrowsingDataDialogEventId);
 }
 
 void ClearBrowsingDataHandler::OnStateChanged(syncer::SyncService* sync) {
@@ -378,12 +409,6 @@ base::DictValue ClearBrowsingDataHandler::CreateSyncStateEvent() {
   base::DictValue event;
   event.Set("signedIn", identity_manager && identity_manager->HasPrimaryAccount(
                                                 signin::ConsentLevel::kSignin));
-  event.Set("syncingHistory", sync_service_ &&
-                                  sync_service_->IsSyncFeatureActive() &&
-                                  sync_service_->GetActiveDataTypes().Has(
-                                      syncer::HISTORY_DELETE_DIRECTIVES));
-  event.Set("shouldShowCookieException",
-            browsing_data_counter_utils::ShouldShowCookieException(profile_));
 
   event.Set("isNonGoogleDse", false);
   const TemplateURLService* template_url_service =
@@ -427,17 +452,14 @@ void ClearBrowsingDataHandler::UpdateHistoryDeletionDialog(bool show) {
 }
 
 void ClearBrowsingDataHandler::AddCounter(
-    std::unique_ptr<browsing_data::BrowsingDataCounter> counter,
-    browsing_data::ClearBrowsingDataTab tab) {
-  DCHECK(counter);
+    std::unique_ptr<browsing_data::BrowsingDataCounter> counter) {
+  CHECK(counter, base::NotFatalUntil::M162);
   counter->InitWithoutPeriodPref(
-      profile_->GetPrefs(), tab, base::Time(),
+      profile_->GetPrefs(), base::Time(),
       base::BindRepeating(&ClearBrowsingDataHandler::UpdateCounterText,
                           base::Unretained(this)));
 
-  ((tab == browsing_data::ClearBrowsingDataTab::BASIC) ? counters_basic_
-                                                       : counters_advanced_)
-      .push_back(std::move(counter));
+  counters_.push_back(std::move(counter));
 }
 
 void ClearBrowsingDataHandler::UpdateCounterText(
@@ -450,10 +472,9 @@ void ClearBrowsingDataHandler::UpdateCounterText(
 }
 
 void ClearBrowsingDataHandler::RestartCounters(
-    bool basic,
     browsing_data::TimePeriod time_period) {
   // Updating the begin time of a counter automatically forces a restart.
-  for (const auto& counter : (basic ? counters_basic_ : counters_advanced_)) {
+  for (const auto& counter : counters_) {
     counter->SetBeginTime(browsing_data::CalculateBeginDeleteTime(time_period));
   }
 }

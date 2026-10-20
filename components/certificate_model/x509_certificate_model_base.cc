@@ -4,16 +4,17 @@
 
 #include "components/certificate_model/x509_certificate_model_base.h"
 
+#include <ranges>
 #include <variant>
 
 #include "base/check.h"
-#include "base/containers/adapters.h"
 #include "base/containers/fixed_flat_map.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
 #include "base/strings/string_view_util.h"
+#include "components/certificate_model/x509_certificate_constants.h"
 #include "components/strings/grit/components_strings.h"
-#include "crypto/sha2.h"
+#include "crypto/hash.h"
 #include "net/cert/qwac.h"
 #include "net/cert/time_conversions.h"
 #include "net/cert/x509_util.h"
@@ -59,6 +60,23 @@ bool ParseSubjectPublicKeyInfo(bssl::der::Input spki_tlv,
   }
 
   return true;
+}
+
+std::string GetAlgorithmOidTextOrNumeric(bssl::der::Input oid) {
+  std::optional<int> common_id = GetCommonOidStringId(oid);
+  if (common_id.has_value()) {
+    return l10n_util::GetStringUTF8(*common_id);
+  }
+  return OidToNumericString(oid);
+}
+
+std::string ProcessAlgorithmIdentifier(bssl::der::Input algorithm_tlv) {
+  bssl::der::Input oid;
+  bssl::der::Input params;
+  if (!bssl::ParseAlgorithmIdentifier(algorithm_tlv, &oid, &params)) {
+    return std::string();
+  }
+  return GetAlgorithmOidTextOrNumeric(oid);
 }
 
 }  // namespace
@@ -135,7 +153,7 @@ OptionalStringOrError FindFirstNameOfType(bssl::der::Input oid,
 // Distinguished Names are specified in least to most specific.
 OptionalStringOrError FindLastNameOfType(bssl::der::Input oid,
                                          const bssl::RDNSequence& rdns) {
-  for (const bssl::RelativeDistinguishedName& rdn : base::Reversed(rdns)) {
+  for (const bssl::RelativeDistinguishedName& rdn : std::views::reverse(rdns)) {
     OptionalStringOrError r = FindAttributeOfType(oid, rdn);
     if (!std::holds_alternative<NotPresent>(r)) {
       return r;
@@ -226,6 +244,7 @@ std::optional<int> GetCommonOidStringId(bssl::der::Input oid) {
           {bssl::der::Input(kOidAlgMldsa44), IDS_CERT_OID_ML_DSA_44},
           {bssl::der::Input(kOidAlgMldsa65), IDS_CERT_OID_ML_DSA_65},
           {bssl::der::Input(kOidAlgMldsa87), IDS_CERT_OID_ML_DSA_87},
+          {bssl::der::Input(kOidAlgMtcProofDraft), IDS_CERT_OID_MTC_PROOF},
 
           // Extended Key Usage fields:
           {bssl::der::Input(bssl::kAnyEKU), IDS_CERT_EKU_ANY_EKU},
@@ -260,26 +279,18 @@ std::optional<int> GetCommonOidStringId(bssl::der::Input oid) {
   return std::nullopt;
 }
 
-namespace {
-
-std::string GetAlgorithmOidTextOrNumeric(bssl::der::Input oid) {
-  std::optional<int> common_id = GetCommonOidStringId(oid);
-  if (common_id.has_value()) {
-    return l10n_util::GetStringUTF8(*common_id);
-  }
-  return OidToNumericString(oid);
+bool ParseOtherName(bssl::der::Input other_name,
+                    bssl::der::Input* type,
+                    bssl::der::Input* value) {
+  // OtherName ::= SEQUENCE {
+  //      type-id    OBJECT IDENTIFIER,
+  //      value      [0] EXPLICIT ANY DEFINED BY type-id }
+  bssl::der::Parser sequence_parser(other_name);
+  return sequence_parser.ReadTag(CBS_ASN1_OBJECT, type) &&
+         sequence_parser.ReadTag(
+             CBS_ASN1_CONTEXT_SPECIFIC | CBS_ASN1_CONSTRUCTED | 0, value) &&
+         !sequence_parser.HasMore();
 }
-
-std::string ProcessAlgorithmIdentifier(bssl::der::Input algorithm_tlv) {
-  bssl::der::Input oid;
-  bssl::der::Input params;
-  if (!bssl::ParseAlgorithmIdentifier(algorithm_tlv, &oid, &params)) {
-    return std::string();
-  }
-  return GetAlgorithmOidTextOrNumeric(oid);
-}
-
-}  // namespace
 
 // ---------------------------------------------------------------------------
 // X509CertificateModelBase implementation.
@@ -288,16 +299,15 @@ X509CertificateModelBase::X509CertificateModelBase(
     bssl::UniquePtr<CRYPTO_BUFFER> cert_data)
     : cert_data_(std::move(cert_data)) {
   CHECK(cert_data_);
-  bssl::ParseCertificateOptions options;
-  options.allow_invalid_serial_numbers = true;
   bssl::CertErrors unused_errors;
   if (!bssl::ParseCertificate(
           bssl::der::Input(
               net::x509_util::CryptoBufferAsSpan(cert_data_.get())),
           &tbs_certificate_tlv_, &signature_algorithm_tlv_, &signature_value_,
           &unused_errors) ||
-      !ParseTbsCertificate(tbs_certificate_tlv_, options, &tbs_,
-                           &unused_errors) ||
+      !ParseTbsCertificate(tbs_certificate_tlv_,
+                           net::x509_util::DefaultParseCertificateOptions(),
+                           &tbs_, &unused_errors) ||
       !bssl::ParseName(tbs_.subject_tlv, &subject_rdns_) ||
       !bssl::ParseName(tbs_.issuer_tlv, &issuer_rdns_)) {
     return;
@@ -367,8 +377,8 @@ OptionalStringOrError X509CertificateModelBase::GetSubjectOrgUnitName() const {
 }
 
 std::string X509CertificateModelBase::HashCertSHA256() const {
-  auto hash =
-      crypto::SHA256Hash(net::x509_util::CryptoBufferAsSpan(cert_data_.get()));
+  auto hash = crypto::hash::Sha256(
+      net::x509_util::CryptoBufferAsSpan(cert_data_.get()));
   return base::HexEncodeLower(hash);
 }
 
@@ -408,7 +418,7 @@ std::string X509CertificateModelBase::GetTitle() const {
 
 std::string X509CertificateModelBase::HashSpkiSHA256() const {
   CHECK(is_valid());
-  auto hash = crypto::SHA256Hash(tbs_.spki_tlv);
+  auto hash = crypto::hash::Sha256(tbs_.spki_tlv);
   return base::HexEncodeLower(hash);
 }
 

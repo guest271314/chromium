@@ -26,17 +26,13 @@
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
 #include "mojo/public/cpp/bindings/receiver.h"
-#include "services/data_decoder/public/cpp/data_decoder.h"
+#include "mojo/public/cpp/bindings/remote.h"
 #include "services/network/public/cpp/simple_url_loader.h"
 #include "third_party/skia/include/core/SkBitmap.h"
 
 class Profile;
 class WallpaperSearchBackgroundManager;
 class WallpaperSearchStringMap;
-
-namespace data_decoder {
-class DataDecoder;
-}  // namespace data_decoder
 
 namespace gfx {
 class Image;
@@ -46,6 +42,11 @@ namespace image_fetcher {
 class ImageDecoder;
 using ImageDecodedCallback = base::OnceCallback<void(const gfx::Image&)>;
 }  // namespace image_fetcher
+
+namespace optimization_guide::proto {
+class WallpaperSearchImageQuality;
+class WallpaperSearchLoggingData;
+}  // namespace optimization_guide::proto
 
 // This matches to the enum of the same name that is used by
 // the histogram "NewTabPage.WallpaperSearch.SessionSetTheme"
@@ -119,8 +120,6 @@ class WallpaperSearchHandler
                           std::string image);
   void OnDescriptorsRetrieved(GetDescriptorsCallback callback,
                               std::optional<std::string> response_body);
-  void OnDescriptorsJsonParsed(GetDescriptorsCallback callback,
-                               data_decoder::DataDecoder::ValueOrError result);
   void OnHistoryDecoded(std::vector<HistoryEntry> history,
                         std::vector<std::pair<SkBitmap, base::Token>> results);
   void OnInspirationImageDownloaded(const base::Token& id,
@@ -131,8 +130,6 @@ class WallpaperSearchHandler
                                  const gfx::Image& image);
   void OnInspirationsRetrieved(GetInspirationsCallback callback,
                                std::optional<std::string> response_body);
-  void OnInspirationsJsonParsed(GetInspirationsCallback callback,
-                                data_decoder::DataDecoder::ValueOrError result);
   void OnWallpaperSearchResultsRetrieved(
       GetWallpaperSearchResultsCallback callback,
       base::ElapsedTimer request_timer,
@@ -154,7 +151,6 @@ class WallpaperSearchHandler
 
   raw_ptr<Profile> profile_;
   std::unique_ptr<network::SimpleURLLoader> descriptors_simple_url_loader_;
-  std::unique_ptr<data_decoder::DataDecoder> data_decoder_;
   const raw_ref<image_fetcher::ImageDecoder> image_decoder_;
   std::unique_ptr<network::SimpleURLLoader> inspirations_simple_url_loader_;
   std::unique_ptr<network::SimpleURLLoader> image_download_simple_url_loader_;

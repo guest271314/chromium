@@ -16,12 +16,8 @@ struct PasswordFormFillData;
 struct PasswordFormGenerationData;
 }  // namespace autofill
 
-class GURL;
-
 // C++ to ObjC bridge for methods of PasswordManagerDriver.
 @protocol PasswordManagerDriverBridge
-
-@property(readonly, nonatomic) const GURL& lastCommittedURL;
 
 // Prepares fill data with given password form data.
 // This method calls suggestions helper's processWithPasswordFormFillData.
@@ -43,6 +39,18 @@ class GURL;
 - (void)attachListenersForPasswordGenerationFields:
             (const autofill::PasswordFormGenerationData&)form
                                         forFrameId:(const std::string&)frameId;
+
+// Scrolls the field into view and checks if its view area is visible in the
+// frame.
+- (void)scrollAndCheckViewAreaVisible:(autofill::FieldRendererId)fieldId
+                           forFrameId:(const std::string&)frameId
+                    completionHandler:(void (^)(BOOL visible))completionHandler;
+
+// Fills the triggering field with the given value in the specified frame.
+- (void)fillField:(autofill::FieldRendererId)fieldId
+            withValue:(const std::u16string&)value
+           forFrameId:(const std::string&)frameId
+    completionHandler:(void (^)(BOOL success))completionHandler;
 
 @end
 

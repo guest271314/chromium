@@ -7,8 +7,8 @@ package org.chromium.chrome.browser.omnibox;
 import android.content.Context;
 import android.content.res.ColorStateList;
 import android.content.res.Resources;
-import android.text.TextUtils;
 import android.util.AttributeSet;
+import android.view.Gravity;
 import android.view.View;
 import android.view.ViewStub;
 import android.widget.FrameLayout;
@@ -22,9 +22,10 @@ import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.omnibox.fusebox.FuseboxCoordinator.FuseboxState;
 import org.chromium.chrome.browser.omnibox.status.StatusCoordinator;
+import org.chromium.chrome.browser.omnibox.styles.OmniboxResourceProvider;
 import org.chromium.chrome.browser.omnibox.suggestions.AutocompleteCoordinator;
 import org.chromium.chrome.browser.toolbar.ToolbarVariationUtils;
-import org.chromium.components.embedder_support.util.UrlUtilities;
+import org.chromium.components.metrics.OmniboxEventProtosIntDef.PageClassification;
 import org.chromium.ui.base.ViewUtils;
 import org.chromium.ui.base.WindowAndroid;
 
@@ -76,6 +77,7 @@ class LocationBarPhone extends LocationBarLayout {
         if (isToolbarUiRefactorEnabled()) {
             setClickable(true);
             setLongClickable(true);
+            setUrlAndStatusGroupVisibility(false);
         }
     }
 
@@ -85,13 +87,15 @@ class LocationBarPhone extends LocationBarLayout {
             UrlBarCoordinator urlCoordinator,
             StatusCoordinator statusCoordinator,
             LocationBarDataProvider locationBarDataProvider,
-            WindowAndroid windowAndroid) {
+            WindowAndroid windowAndroid,
+            OmniboxResourceProvider resourceProvider) {
         super.initialize(
                 autocompleteCoordinator,
                 urlCoordinator,
                 statusCoordinator,
                 locationBarDataProvider,
-                windowAndroid);
+                windowAndroid,
+                resourceProvider);
 
         if (isToolbarUiRefactorEnabled()) {
             mUrlObserver =
@@ -156,6 +160,10 @@ class LocationBarPhone extends LocationBarLayout {
     @Override
     public boolean performClick() {
         if (mIsCenteringApplied) {
+            // performClick() only triggers click listeners and doesn't request focus
+            // when called programmatically (bypassing onTouchEvent). We need to
+            // explicitly request focus to bring up the keyboard.
+            mUrlBar.requestFocus();
             return mUrlBar.performClick();
         }
         return super.performClick();
@@ -249,46 +257,157 @@ class LocationBarPhone extends LocationBarLayout {
         ConstraintLayout.LayoutParams urlBarLayoutParams =
                 (ConstraintLayout.LayoutParams) mUrlBar.getLayoutParams();
         if (mIsCenteringApplied) {
-            int maxComponentWidth = totalWidth - 2 * mCenteringSpacePx;
+            int backButtonWidth = getMeasuredWidthWithMargins(mBackButton, heightMeasureSpec);
+            int optButtonWidth =
+                    mOptionalButton != null
+                            ? getMeasuredWidthWithMargins(mOptionalButton, heightMeasureSpec)
+                            : 0;
+
+            int buttonSpace = Math.max(backButtonWidth, optButtonWidth);
+            // Ensure we have at least some minimum spacing.
+            buttonSpace = Math.max(buttonSpace, mCenteringSpacePx);
+
+            int maxComponentWidth = totalWidth - 2 * buttonSpace;
             int maxUrlWidth =
                     getMaxUrlWidth(mLocationBarStatusView, maxComponentWidth, heightMeasureSpec);
             maxUrlWidth = Math.max(mMinUrlWidthPx, maxUrlWidth);
 
-            CharSequence text = mUrlBar.getText();
-            if (TextUtils.isEmpty(text)) {
-                text = mUrlBar.getHint();
-            }
-
             int desiredUrlWidth =
-                    getUrlTextWidth(text)
+                    getUrlBarTextWidth()
                             + mUrlBar.getPaddingStart()
                             + mUrlBar.getPaddingEnd()
                             + mUrlCenteringSafetyMarginPx;
 
-            int finalUrlWidth = Math.min(maxUrlWidth, Math.max(mMinUrlWidthPx, desiredUrlWidth));
-            if (urlBarLayoutParams.width != finalUrlWidth) {
-                urlBarLayoutParams.width = finalUrlWidth;
-                mUrlBar.setLayoutParams(urlBarLayoutParams);
-            }
-        } else if (mUrlBar.getMaxWidth() != Integer.MAX_VALUE
-                || urlBarLayoutParams.width != ConstraintLayout.LayoutParams.MATCH_CONSTRAINT) {
-            // Reset the UrlBar to its default expandable behavior when not centering
-            // (e.g. when focused or on NTP), otherwise the restricted dimensions
-            // from centering will stick.
-            mUrlBar.setMaxWidth(Integer.MAX_VALUE);
-            urlBarLayoutParams.width = ConstraintLayout.LayoutParams.MATCH_CONSTRAINT;
-            mUrlBar.setLayoutParams(urlBarLayoutParams);
+            boolean fitsInCenteringSpace = desiredUrlWidth <= maxUrlWidth;
+            int finalUrlWidth =
+                    fitsInCenteringSpace
+                            ? desiredUrlWidth
+                            : Math.min(maxUrlWidth, Math.max(mMinUrlWidthPx, desiredUrlWidth));
+
+            updateUrlBarCenteringProperties(
+                    /* centeringApplied= */ true,
+                    fitsInCenteringSpace,
+                    finalUrlWidth,
+                    urlBarLayoutParams);
+        } else {
+            updateUrlBarCenteringProperties(
+                    /* centeringApplied= */ false,
+                    /* fitsInCenteringSpace= */ false,
+                    /* finalUrlWidth= */ 0,
+                    urlBarLayoutParams);
         }
     }
 
-    /** Returns the measured width of the given text. */
-    private int getUrlTextWidth(CharSequence text) {
-        if (TextUtils.isEmpty(text)) return 0;
-        return (int) Math.ceil(mUrlBar.getPaint().measureText(text, 0, text.length()));
+    /**
+     * Returns the measured width of the view including its margins. If the view has not been
+     * measured yet (measured width is 0), it forces a measurement pass with UNSPECIFIED specs.
+     */
+    private int getMeasuredWidthWithMargins(View view, int heightMeasureSpec) {
+        if (view.getVisibility() == View.GONE) {
+            return 0;
+        }
+        MarginLayoutParams params = (MarginLayoutParams) view.getLayoutParams();
+        int width = view.getMeasuredWidth();
+        if (width == 0) {
+            if (params.width > 0) {
+                width = params.width;
+            } else {
+                int widthSpec = View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED);
+                view.measure(widthSpec, heightMeasureSpec);
+                width = view.getMeasuredWidth();
+            }
+        }
+        return width + params.getMarginStart() + params.getMarginEnd();
+    }
+
+    /**
+     * Updates the UrlBar's gravity, alignment, scrollability, and layout parameters based on
+     * whether the URL fits in the centering space.
+     *
+     * <p>If the URL fits, horizontal scrolling is disabled to prevent visual misalignment, and its
+     * scroll is reset to (0, 0).
+     *
+     * <p>If the URL does not fit, it is start-aligned, horizontal scrolling is enabled to allow
+     * navigating the full text, and its layout width is capped.
+     *
+     * @param centeringApplied Whether the location bar layout is centered on screen.
+     * @param fitsInCenteringSpace True if the URL fits within the maximum allowed centering width.
+     * @param finalUrlWidth The target width to set on the UrlBar's layout parameters.
+     * @param urlBarLayoutParams The ConstraintLayout LayoutParams for the UrlBar.
+     */
+    private void updateUrlBarCenteringProperties(
+            boolean centeringApplied,
+            boolean fitsInCenteringSpace,
+            int finalUrlWidth,
+            ConstraintLayout.LayoutParams urlBarLayoutParams) {
+        updateUrlBarAlignmentAndGravity(centeringApplied, fitsInCenteringSpace);
+
+        // Horizontal scrolling must be disabled when centering to ensure layout-gravity centering
+        // behaves correctly and doesn't get offset by residual scroll ranges. It is restored to
+        // true when not centering to allow horizontal scrolling/editing of long text.
+        mUrlBar.setHorizontallyScrolling(!centeringApplied || !fitsInCenteringSpace);
+
+        // Reset scroll position to 0 when centering. Otherwise, if the previous URL was long
+        // and scrolled, the short centered URL might remain scrolled out of view.
+        if (centeringApplied && fitsInCenteringSpace && mUrlBar.getScrollX() != 0) {
+            mUrlBar.scrollTo(0, 0);
+        }
+
+        if (centeringApplied) {
+            if (urlBarLayoutParams.width != finalUrlWidth
+                    || urlBarLayoutParams.matchConstraintMinWidth != 0) {
+                urlBarLayoutParams.width = finalUrlWidth;
+                urlBarLayoutParams.matchConstraintMinWidth = 0;
+                mUrlBar.setLayoutParams(urlBarLayoutParams);
+            }
+        } else {
+            if (mUrlBar.getMaxWidth() != Integer.MAX_VALUE
+                    || urlBarLayoutParams.width != ConstraintLayout.LayoutParams.MATCH_CONSTRAINT
+                    || urlBarLayoutParams.matchConstraintMinWidth != mMinUrlWidthPx) {
+                mUrlBar.setMaxWidth(Integer.MAX_VALUE);
+                urlBarLayoutParams.width = ConstraintLayout.LayoutParams.MATCH_CONSTRAINT;
+                urlBarLayoutParams.matchConstraintMinWidth = mMinUrlWidthPx;
+                mUrlBar.setLayoutParams(urlBarLayoutParams);
+            }
+        }
+    }
+
+    /**
+     * Updates the UrlBar's text alignment and gravity based on whether centering is applied and
+     * whether the URL fits within the centering space.
+     *
+     * @param centeringApplied True if the URL and status centering is currently applied.
+     * @param fitsInCenteringSpace True if the URL fits in the available centering space.
+     */
+    private void updateUrlBarAlignmentAndGravity(
+            boolean centeringApplied, boolean fitsInCenteringSpace) {
+        int targetGravity;
+        int targetAlignment;
+
+        if (centeringApplied) {
+            targetGravity =
+                    fitsInCenteringSpace
+                            ? Gravity.CENTER_HORIZONTAL | Gravity.CENTER_VERTICAL
+                            : Gravity.START | Gravity.CENTER_VERTICAL;
+            targetAlignment = View.TEXT_ALIGNMENT_GRAVITY;
+        } else {
+            targetGravity = Gravity.START | Gravity.CENTER_VERTICAL;
+            targetAlignment = View.TEXT_ALIGNMENT_VIEW_START;
+        }
+
+        if (mUrlBar.getGravity() != targetGravity
+                || mUrlBar.getTextAlignment() != targetAlignment) {
+            mUrlBar.setGravity(targetGravity);
+            mUrlBar.setTextAlignment(targetAlignment);
+        }
     }
 
     /** Calculates the maximum allowed width for the UrlBar. */
     private int getMaxUrlWidth(View statusView, int maxComponentWidth, int heightMeasureSpec) {
+        if (statusView.getVisibility() == View.GONE) {
+            return maxComponentWidth;
+        }
+
         statusView.measure(
                 MeasureSpec.makeMeasureSpec(maxComponentWidth, MeasureSpec.AT_MOST),
                 heightMeasureSpec);
@@ -302,8 +421,8 @@ class LocationBarPhone extends LocationBarLayout {
             return false;
         }
 
-        // Do not center when the URL bar is focused or in transition.
-        if (mUrlBar == null || mUrlBarLaidOutAtFocusedWidth) {
+        // Do not center when the URL bar is focused.
+        if (mUrlBar == null || mUrlBar.hasFocus()) {
             return false;
         }
         if (mLocationBarDataProvider == null) {
@@ -311,12 +430,13 @@ class LocationBarPhone extends LocationBarLayout {
         }
 
         // Do not center in Android Hub or Custom Tabs.
+        @PageClassification
         int pageClassification = mLocationBarDataProvider.getPageClassification(false);
         if (!OmniboxViewUtil.isRegularTabContext(pageClassification)) {
             return false;
         }
 
-        return !UrlUtilities.isNtpUrl(mLocationBarDataProvider.getCurrentGurl());
+        return !OmniboxUrlUtils.isNtpUrl(mLocationBarDataProvider.getCurrentGurl());
     }
 
     private boolean isToolbarUiRefactorEnabled() {

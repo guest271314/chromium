@@ -11,11 +11,11 @@
 #include <vector>
 
 #include "base/check.h"
+#include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
 #include "base/task/sequenced_task_runner.h"
 #include "build/build_config.h"
 #include "build/buildflag.h"
-#include "components/contextual_tasks/public/ai_thread_data_type_controller.h"
 #include "components/supervised_user/core/common/buildflags.h"
 #include "components/sync/base/data_type.h"
 
@@ -25,7 +25,6 @@ class PrefService;
 class SharingMessageBridge;
 class TemplateURLService;
 
-
 namespace account_settings {
 class AccountSettingService;
 }  // namespace account_settings
@@ -33,6 +32,7 @@ class AccountSettingService;
 namespace autofill {
 class AddressDataManager;
 class AutofillWebDataService;
+class EntitySuppressionManager;
 }  // namespace autofill
 
 namespace bookmarks {
@@ -67,16 +67,15 @@ namespace history {
 class HistoryService;
 }  // namespace history
 
+namespace notebooks {
+class NotebooksService;
+}  // namespace notebooks
+
 namespace password_manager {
 class PasswordReceiverService;
 class PasswordSenderService;
 class PasswordStoreInterface;
 }  // namespace password_manager
-
-namespace plus_addresses {
-class PlusAddressSettingService;
-class PlusAddressWebDataService;
-}  // namespace plus_addresses
 
 namespace reading_list {
 class DualReadingListModel;
@@ -109,6 +108,10 @@ class PrefServiceSyncable;
 namespace sync_sessions {
 class SessionSyncService;
 }  // namespace sync_sessions
+
+namespace sync_tab_context {
+class TabContextSyncService;
+}  // namespace sync_tab_context
 
 namespace syncer {
 class DeviceInfoSyncService;
@@ -154,6 +157,8 @@ class CommonControllerBuilder {
           web_data_service_on_disk,
       const scoped_refptr<autofill::AutofillWebDataService>&
           web_data_service_in_memory);
+  void SetEntitySuppressionManager(
+      autofill::EntitySuppressionManager* entity_suppression_manager);
   void SetAimEligibilityService(AimEligibilityService* aim_eligibility_service);
   void SetBookmarkModel(bookmarks::BookmarkModel* bookmark_model);
   void SetBookmarkSyncService(
@@ -163,8 +168,9 @@ class CommonControllerBuilder {
   void SetConsentAuditor(consent_auditor::ConsentAuditor* consent_auditor);
   void SetCollaborationService(
       collaboration::CollaborationService* collaboration_service);
-  void SetContextualTasksService(
-      contextual_tasks::ContextualTasksService* contextual_tasks_service);
+  void SetContextualTasksServiceGetter(
+      base::RepeatingCallback<contextual_tasks::ContextualTasksService*()>
+          contextual_tasks_service_getter);
   void SetPersonalCollaborationDataService(
       data_sharing::personal_collaboration_data::
           PersonalCollaborationDataService*
@@ -180,6 +186,7 @@ class CommonControllerBuilder {
   void SetDataTypeStoreService(
       syncer::DataTypeStoreService* data_type_store_service);
   void SetSkillsService(skills::SkillsService* skills_service);
+  void SetNotebooksService(notebooks::NotebooksService* notebooks_service);
 
 #if !BUILDFLAG(IS_ANDROID)
   void SetPasskeyModel(webauthn::PasskeyModel* passkey_model);
@@ -194,10 +201,6 @@ class CommonControllerBuilder {
           profile_password_store,
       const scoped_refptr<password_manager::PasswordStoreInterface>&
           account_password_store);
-  void SetPlusAddressServices(
-      plus_addresses::PlusAddressSettingService* plus_address_setting_service,
-      const scoped_refptr<plus_addresses::PlusAddressWebDataService>&
-          plus_address_webdata_service);
   void SetPrefService(PrefService* pref_service);
   void SetPrefServiceSyncable(
       sync_preferences::PrefServiceSyncable* pref_service_syncable);
@@ -207,6 +210,8 @@ class CommonControllerBuilder {
                                        send_tab_to_self_sync_service);
   void SetSessionSyncService(
       sync_sessions::SessionSyncService* session_sync_service);
+  void SetTabContextSyncService(
+      sync_tab_context::TabContextSyncService* tab_context_sync_service);
   void SetSharingMessageBridge(SharingMessageBridge* sharing_message_bridge);
 
 #if BUILDFLAG(ENABLE_SUPERVISED_USERS)
@@ -240,9 +245,6 @@ class CommonControllerBuilder {
   std::unique_ptr<syncer::DataTypeController>
   CreateAutofillWalletMetadataDataTypeController(
       syncer::SyncService* sync_service);
-  std::unique_ptr<syncer::DataTypeController>
-  CreateAutofillWalletOfferDataTypeController(
-      syncer::SyncService* sync_service);
 #if !BUILDFLAG(IS_IOS)
   std::unique_ptr<syncer::DataTypeController>
   CreateAutofillWalletUsageDataTypeController(
@@ -270,10 +272,6 @@ class CommonControllerBuilder {
   CreateOutgoingPasswordSharingInvitationDataTypeController(
       syncer::SyncService* sync_service);
   std::unique_ptr<syncer::DataTypeController>
-  CreatePlusAddressDataTypeController();
-  std::unique_ptr<syncer::DataTypeController>
-  CreatePlusAddressSettingDataTypeController();
-  std::unique_ptr<syncer::DataTypeController>
   CreatePreferencesDataTypeController(version_info::Channel channel);
   std::unique_ptr<syncer::DataTypeController>
   CreatePriorityPreferencesDataTypeController(version_info::Channel channel);
@@ -281,6 +279,11 @@ class CommonControllerBuilder {
   CreateSavedTabGroupDataTypeController();
   std::unique_ptr<syncer::DataTypeController>
   CreateSharedTabGroupDataTypeController(syncer::SyncService* sync_service);
+  std::unique_ptr<syncer::DataTypeController>
+  CreateEncryptedTabContextContainerDataTypeController(
+      syncer::SyncService* sync_service);
+  std::unique_ptr<syncer::DataTypeController>
+  CreateEncryptedTabContextItemDataTypeController();
   std::unique_ptr<syncer::DataTypeController>
   CreateSharingMessageDataTypeController();
   std::unique_ptr<syncer::DataTypeController>
@@ -310,8 +313,15 @@ class CommonControllerBuilder {
   CreateGeminiThreadDataTypeController();
   std::unique_ptr<syncer::DataTypeController>
   CreateContextualTaskDataTypeController();
+  std::unique_ptr<syncer::DataTypeController>
+  CreateNotebookDataTypeController();
+  std::unique_ptr<syncer::DataTypeController> CreateJourneyDataTypeController(
+      syncer::SyncService* sync_service);
+  std::unique_ptr<syncer::DataTypeController>
+  CreateAutofillEntitySuppressionDataTypeController();
 #if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
-  std::unique_ptr<syncer::DataTypeController> CreateSkillDataTypeController();
+  std::unique_ptr<syncer::DataTypeController> CreateSkillDataTypeController(
+      syncer::SyncService* sync_service);
 #endif
 #if !BUILDFLAG(IS_ANDROID)
   std::unique_ptr<syncer::DataTypeController>
@@ -319,7 +329,8 @@ class CommonControllerBuilder {
 #endif
 #if BUILDFLAG(ENABLE_SUPERVISED_USERS)
   std::unique_ptr<syncer::DataTypeController>
-  CreateFamilyLinkSettingsDataTypeController(version_info::Channel channel);
+  CreateFamilyLinkSettingsDataTypeController(syncer::SyncService* sync_service,
+                                             version_info::Channel channel);
 #endif
   std::unique_ptr<syncer::DataTypeController>
   CreateCollaborationGroupDataTypeController(syncer::SyncService* sync_service);
@@ -408,14 +419,10 @@ class CommonControllerBuilder {
   SafeOptional<raw_ptr<bookmarks::BookmarkModel>> bookmark_model_;
   SafeOptional<raw_ptr<supervised_user::FamilyLinkSettingsService>>
       family_link_settings_service_;
-  SafeOptional<raw_ptr<plus_addresses::PlusAddressSettingService>>
-      plus_address_setting_service_;
-  SafeOptional<scoped_refptr<plus_addresses::PlusAddressWebDataService>>
-      plus_address_webdata_service_;
   SafeOptional<raw_ptr<collaboration::CollaborationService>>
       collaboration_service_;
-  SafeOptional<raw_ptr<contextual_tasks::ContextualTasksService>>
-      contextual_tasks_service_;
+  base::RepeatingCallback<contextual_tasks::ContextualTasksService*()>
+      contextual_tasks_service_getter_;
   SafeOptional<raw_ptr<data_sharing::personal_collaboration_data::
                            PersonalCollaborationDataService>>
       personal_collaboration_data_service_;
@@ -423,8 +430,13 @@ class CommonControllerBuilder {
   SafeOptional<raw_ptr<SharingMessageBridge>> sharing_message_bridge_;
   SafeOptional<raw_ptr<tab_groups::TabGroupSyncService>>
       tab_group_sync_service_;
+  SafeOptional<raw_ptr<sync_tab_context::TabContextSyncService>>
+      tab_context_sync_service_;
   SafeOptional<raw_ptr<TemplateURLService>> template_url_service_;
   SafeOptional<raw_ptr<skills::SkillsService>> skills_service_;
+  SafeOptional<raw_ptr<notebooks::NotebooksService>> notebooks_service_;
+  SafeOptional<raw_ptr<autofill::EntitySuppressionManager>>
+      entity_suppression_manager_;
 };
 
 }  // namespace browser_sync

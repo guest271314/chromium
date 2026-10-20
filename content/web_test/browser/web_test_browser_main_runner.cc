@@ -267,7 +267,7 @@ void WebTestBrowserMainRunner::Initialize() {
   if (!command_line.HasSwitch(switches::kEnableGpuRasterization))
     command_line.AppendSwitch(switches::kDisableGpuRasterization);
 
-#if BUILDFLAG(IS_MAC) && defined(ARCH_CPU_ARM64)
+#if BUILDFLAG(IS_MAC)
   // If Graphite is not explicitly disabled, enable it. This is to use
   // Graphite as the renderer for web tests on all bots for this platform
   // except those explicitly testing Ganesh.
@@ -308,9 +308,6 @@ void WebTestBrowserMainRunner::Initialize() {
 
   // Always run with fake FedCM UI.
   command_line.AppendSwitch(switches::kUseFakeUIForFedCM);
-
-  // Always run with fake digital identity credential UI.
-  command_line.AppendSwitch(switches::kUseFakeUIForDigitalIdentity);
 
   // Disable the backgrounding of renderers to make running tests faster.
   command_line.AppendSwitch(switches::kDisableRendererBackgrounding);

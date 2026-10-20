@@ -11,6 +11,7 @@
 #include "base/strings/utf_string_conversions.h"
 #include "base/time/time.h"
 #include "base/values.h"
+#include "build/build_config.h"
 #include "chrome/browser/apps/app_service/app_service_proxy.h"
 #include "chrome/browser/apps/app_service/app_service_proxy_factory.h"
 #include "chrome/browser/apps/app_service/app_service_test.h"
@@ -26,7 +27,6 @@
 #include "components/account_id/account_id.h"
 #include "components/app_constants/constants.h"
 #include "components/services/app_service/public/cpp/app_types.h"
-#include "components/services/app_service/public/cpp/features.h"
 #include "components/services/app_service/public/cpp/icon_types.h"
 #include "components/services/app_service/public/cpp/intent_util.h"
 #include "components/services/app_service/public/cpp/permission.h"
@@ -39,11 +39,10 @@
 #include "ash/constants/ash_features.h"
 #include "chrome/browser/ash/app_list/arc/arc_app_list_prefs.h"
 #include "chrome/browser/ash/app_list/arc/arc_app_test.h"
-#include "chrome/browser/ash/arc/privacy_items/arc_privacy_items_bridge.h"
 #include "chrome/browser/ash/borealis/borealis_util.h"
 #include "chrome/browser/ash/login/users/fake_chrome_user_manager.h"
-#include "chrome/grit/branded_strings.h"
 #include "chromeos/ash/components/login/login_state/login_state.h"
+#include "chromeos/ash/experiences/arc/privacy_items/arc_privacy_items_bridge.h"
 #include "chromeos/ash/experiences/arc/test/fake_app_instance.h"
 #include "components/services/app_service/public/cpp/app_capability_access_cache.h"
 #include "components/services/app_service/public/cpp/capability_access_update.h"
@@ -231,7 +230,6 @@ class PublisherTest : public extensions::ExtensionServiceTestBase {
 
   void TearDown() override {
     extensions::ExtensionServiceTestBase::TearDown();
-    DeleteProfile();
 #if BUILDFLAG(IS_CHROMEOS)
     ash::LoginState::Shutdown();
 #endif  // BUILDFLAG(IS_CHROMEOS)
@@ -410,7 +408,13 @@ class PublisherTest : public extensions::ExtensionServiceTestBase {
   }
 };
 
-TEST_F(PublisherTest, ExtensionAppsOnApps) {
+// TODO(crbug.com/572330901): Hangs on process teardown on ChromeOS ASan.
+#if BUILDFLAG(IS_CHROMEOS) && defined(ADDRESS_SANITIZER)
+#define MAYBE_ExtensionAppsOnApps DISABLED_ExtensionAppsOnApps
+#else
+#define MAYBE_ExtensionAppsOnApps ExtensionAppsOnApps
+#endif
+TEST_F(PublisherTest, MAYBE_ExtensionAppsOnApps) {
   // Re-init AppService to verify the init process.
   AppServiceTest app_service_test;
   app_service_test.SetUp(profile());

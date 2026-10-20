@@ -37,6 +37,8 @@ class GlicInstanceHelper {
     virtual const InstanceId& id() const = 0;
     virtual std::optional<std::string> conversation_id() const = 0;
     virtual std::string conversation_title() const = 0;
+    virtual std::optional<int> task_id() const = 0;
+    virtual bool IsShowing() const = 0;
   };
 
   explicit GlicInstanceHelper(tabs::TabInterface* tab);
@@ -47,9 +49,11 @@ class GlicInstanceHelper {
 
   std::optional<std::string> GetConversationId() const;
   std::string GetConversationTitle() const;
+  std::optional<int> GetTaskId() const;
 
   void OnPinnedByInstance(Instance* instance);
   void OnUnpinnedByInstance(Instance* instance);
+  void OnPinnedInstanceVisibilityChanged(Instance* instance);
 
   std::vector<Instance*> GetPinnedInstances() const;
 
@@ -61,10 +65,17 @@ class GlicInstanceHelper {
 
 #if BUILDFLAG(IS_ANDROID)
   base::android::ScopedJavaLocalRef<jobject> GetJavaObject();
-  void OnConversationTitleChanged();
+  void OnInstanceChanged();
 #endif
 
  private:
+  void UpdateGlicPinnedToVisibleInstanceProperty();
+
+#if BUILDFLAG(IS_ANDROID)
+  void InitJavaObject();
+  void NotifyJavaInstanceChanged();
+#endif
+
   raw_ptr<Instance> bound_instance_ = nullptr;
   base::flat_set<raw_ptr<Instance>> pinned_instances_;
   raw_ptr<tabs::TabInterface> tab_;
@@ -74,9 +85,6 @@ class GlicInstanceHelper {
       on_destroy_callback_list_;
 
 #if BUILDFLAG(IS_ANDROID)
-  void InitJavaObject();
-  void NotifyJavaInstanceTitleChanged();
-
   base::android::ScopedJavaGlobalRef<jobject> java_ref_;
 #endif
 };

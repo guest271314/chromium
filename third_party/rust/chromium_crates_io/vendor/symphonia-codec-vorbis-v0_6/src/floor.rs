@@ -1,5 +1,5 @@
 // Symphonia
-// Copyright (c) 2019-2022 The Project Symphonia Developers.
+// Copyright (c) 2019-2026 The Project Symphonia Developers.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
 // License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -18,7 +18,7 @@ use super::common::*;
 #[allow(clippy::unreadable_literal)]
 #[allow(clippy::excessive_precision)]
 #[rustfmt::skip]
-const FLOOR1_INVERSE_DB_TABLE: [f32; 256] = [
+static FLOOR1_INVERSE_DB_TABLE: [f32; 256] = [
     1.0649863e-07, 1.1341951e-07, 1.2079015e-07, 1.2863978e-07,
     1.3699951e-07, 1.4590251e-07, 1.5538408e-07, 1.6548181e-07,
     1.7623575e-07, 1.8768855e-07, 1.9988561e-07, 2.1287530e-07,

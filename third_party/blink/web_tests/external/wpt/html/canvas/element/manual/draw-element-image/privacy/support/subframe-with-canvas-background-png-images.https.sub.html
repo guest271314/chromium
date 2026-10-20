@@ -3,7 +3,6 @@
 <head>
   <title>subframe loading background images</title>
   <script src='/resources/testharness.js'></script>
-  <script src='/resources/testharnessreport.js'></script>
   <script src='/html/canvas/resources/canvas-tests.js'></script>
   <script src="/html/canvas/resources/wait-for-canvas-paint.js"></script>
   <style>
@@ -31,8 +30,8 @@
   </style>
 </head>
 <body>
-  <canvas id=canvas width="10" height="20" layoutsubtree>
-    <div id=child>
+  <canvas id=canvas width="10" height="20" content=drawable>
+    <div drawable id=child>
       <div id=sameOrigin></div>
       <div id=crossOrigin></div>
     </div>

@@ -6,23 +6,31 @@
 #include <string_view>
 
 #include "base/feature_list.h"
+#include "base/functional/callback_helpers.h"
 #include "base/json/json_reader.h"
+#include "base/location.h"
 #include "base/memory/raw_ptr.h"
 #include "base/run_loop.h"
 #include "base/strings/stringprintf.h"
+#include "base/task/single_thread_task_runner.h"
+#include "base/task/thread_pool/thread_pool_instance.h"
 #include "base/test/bind.h"
+#include "base/test/scoped_feature_list.h"
 #include "base/test/simple_test_tick_clock.h"
 #include "base/test/values_test_util.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
 #include "chrome/browser/devtools/devtools_window_testing.h"
 #include "chrome/browser/extensions/api/runtime/chrome_runtime_api_delegate.h"
+#include "chrome/browser/extensions/chrome_extensions_browser_client.h"
 #include "chrome/browser/extensions/extension_apitest.h"
 #include "chrome/browser/extensions/extension_service.h"
 #include "chrome/browser/extensions/extension_tab_util.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/tab_list/tab_list_interface.h"
 #include "chrome/browser/ui/extensions/extension_action_test_helper.h"
 #include "chrome/common/url_constants.h"
+#include "components/prefs/pref_service.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
@@ -33,6 +41,7 @@
 #include "extensions/browser/background_script_executor.h"
 #include "extensions/browser/blocklist_extension_prefs.h"
 #include "extensions/browser/blocklist_state.h"
+#include "extensions/browser/events/listener_registration_phase_map.h"
 #include "extensions/browser/extension_api_frame_id_map.h"
 #include "extensions/browser/extension_dialog_auto_confirm.h"
 #include "extensions/browser/extension_function.h"
@@ -43,24 +52,42 @@
 #include "extensions/browser/offscreen_document_host.h"
 #include "extensions/browser/process_manager.h"
 #include "extensions/browser/script_executor.h"
+#include "extensions/browser/service_worker/service_worker_test_utils.h"
 #include "extensions/browser/test_extension_registry_observer.h"
 #include "extensions/buildflags/buildflags.h"
 #include "extensions/common/extension_features.h"
 #include "extensions/common/extension_id.h"
+#include "extensions/common/manifest.h"
 #include "extensions/test/extension_test_message_listener.h"
 #include "extensions/test/result_catcher.h"
 #include "extensions/test/test_extension_dir.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
+#include "partition_alloc/buildflags.h"
 #include "url/url_constants.h"
 
 #if !BUILDFLAG(IS_ANDROID)
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_window.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/test/base/ui_test_utils.h"
 #endif
 
 #if BUILDFLAG(ENABLE_PLATFORM_APPS)
 #include "chrome/browser/apps/platform_apps/app_browsertest_util.h"
+#endif
+
+// Includes used only by the dangling-pointer regression test below.
+#if !BUILDFLAG(IS_ANDROID) && PA_BUILDFLAG(ENABLE_DANGLING_RAW_PTR_CHECKS) && \
+    !BUILDFLAG(IS_CHROMEOS)
+#include "base/allocator/partition_alloc_features.h"
+#include "base/scoped_observation.h"
+#include "chrome/browser/browser_process.h"
+#include "chrome/browser/profiles/delete_profile_helper.h"
+#include "chrome/browser/profiles/profile_manager.h"
+#include "chrome/browser/profiles/profile_metrics.h"
+#include "chrome/browser/profiles/profile_observer.h"
+#include "chrome/browser/profiles/profile_test_util.h"
+#include "chrome/test/base/profile_destruction_waiter.h"
+#include "extensions/common/extension_builder.h"
 #endif
 
 static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
@@ -242,10 +269,17 @@ IN_PROC_BROWSER_TEST_F(ExtensionApiTest,
 
 // Tests that an extension calling chrome.runtime.reload() repeatedly
 // will eventually be terminated.
-// TODO(https://crbug.com/493409291): Fix the failure.
-// TODO(https://crbug.com/494351936): Fix test failing on Android.
-IN_PROC_BROWSER_TEST_F(ExtensionApiTest,
-                       DISABLED_ExtensionTerminatedForRapidReloads) {
+IN_PROC_BROWSER_TEST_F(ExtensionApiTest, ExtensionTerminatedForRapidReloads) {
+  // This tests an extension repeatedly calling reload and assumes that it will
+  // trigger a "rapid reload" threshold. Use a test clock for deterministic
+  // timing. Otherwise, it's possible that a reload legitimately takes long
+  // enough that it resets the count and the threshold.
+  base::SimpleTestTickClock clock;
+  ChromeRuntimeAPIDelegate::set_tick_clock_for_tests(&clock);
+  // Clean up test clock pointer when the test exits.
+  base::ScopedClosureRunner cleanup_clock(base::BindOnce(
+      []() { ChromeRuntimeAPIDelegate::set_tick_clock_for_tests(nullptr); }));
+
   ExtensionRegistry* registry = ExtensionRegistry::Get(profile());
   static constexpr char kManifest[] = R"(
       {
@@ -274,6 +308,7 @@ IN_PROC_BROWSER_TEST_F(ExtensionApiTest,
   // reload itself that often without being terminated, the test fails
   // anyway.
   for (int i = 0; i < RuntimeAPI::kFastReloadCount + 1; i++) {
+    clock.Advance(base::Milliseconds(10));
     ExtensionTestMessageListener ready_listener_reload("ready");
     TestExtensionRegistryObserver unload_observer(registry, extension_id);
     BackgroundScriptExecutor::ExecuteScriptAsync(profile(), extension_id,
@@ -572,6 +607,103 @@ IN_PROC_BROWSER_TEST_F(RuntimeAPIUpdateTest,
   }
 }
 
+// The bug this test reproduces can only be detected when dangling-pointer
+// checks are compiled in, so the test is built only in that case.
+// Also exclude from ChromeOS because multiple profiles aren't supported there,
+// so the test can't be set up properly.
+#if !BUILDFLAG(IS_ANDROID) && PA_BUILDFLAG(ENABLE_DANGLING_RAW_PTR_CHECKS) && \
+    !BUILDFLAG(IS_CHROMEOS)
+namespace {
+
+// Test helper. When the observed profile is about to be destroyed, it fires the
+// extension install+load notifications. RuntimeAPI observes those and responds
+// by posting a `DispatchOnInstalledEvent` task that captures the profile's
+// BrowserContext -- leaving that task queued just as the profile is torn down.
+class OnInstalledDuringShutdownPoster : public ProfileObserver {
+ public:
+  OnInstalledDuringShutdownPoster(Profile* profile,
+                                  scoped_refptr<const Extension> extension)
+      : extension_(std::move(extension)) {
+    observation_.Observe(profile);
+  }
+
+  bool posted() const { return posted_; }
+
+  // ProfileObserver:
+  void OnProfileWillBeDestroyed(Profile* profile) override {
+    observation_.Reset();
+    // This fires before the profile's keyed services are destroyed, so
+    // RuntimeAPI and EventRouter are still alive and will post the onInstalled
+    // task that captures the now-doomed BrowserContext.
+    ExtensionRegistry* registry = ExtensionRegistry::Get(profile);
+    registry->TriggerOnWillBeInstalled(extension_.get(), /*is_update=*/false,
+                                       /*old_name=*/std::string());
+    registry->AddEnabled(extension_);
+    registry->TriggerOnLoaded(extension_.get());
+    posted_ = true;
+  }
+
+ private:
+  scoped_refptr<const Extension> extension_;
+  bool posted_ = false;
+  base::ScopedObservation<Profile, ProfileObserver> observation_{this};
+};
+
+}  // namespace
+
+// Enables crash mode for the unretained dangling-pointer check, so a dangling
+// pointer reaching the posted task fails the test instead of passing silently.
+class RuntimeOnInstalledShutdownTest : public RuntimeApiTest {
+ public:
+  RuntimeOnInstalledShutdownTest() {
+    feature_list_.InitAndEnableFeatureWithParameters(
+        base::features::kPartitionAllocUnretainedDanglingPtr,
+        {{"mode", "crash"}});
+  }
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
+};
+
+// Regression test for crbug.com/360903464.
+//
+// During profile shutdown, RuntimeAPI's posted `DispatchOnInstalledEvent` task
+// can run after its BrowserContext has been freed. The context is therefore
+// passed as `MayBeDangling<void>` (`base::UnsafeDangling`) and re-checked with
+// `IsValidContext()` before any dereference.
+//
+// The test queues that task, destroys the profile, then runs the task; it must
+// not crash.
+IN_PROC_BROWSER_TEST_F(RuntimeOnInstalledShutdownTest,
+                       DispatchOnInstalledSurvivesProfileShutdown) {
+  ProfileManager* profile_manager = g_browser_process->profile_manager();
+  const base::FilePath profile_path =
+      profile_manager->GenerateNextProfileDirectoryPath();
+  Profile& secondary_profile =
+      profiles::testing::CreateProfileSync(profile_manager, profile_path);
+
+  // Create RuntimeAPI so it starts observing this profile's ExtensionRegistry.
+  ASSERT_TRUE(RuntimeAPI::GetFactoryInstance()->Get(&secondary_profile));
+
+  scoped_refptr<const Extension> extension = ExtensionBuilder("Test").Build();
+  OnInstalledDuringShutdownPoster poster(&secondary_profile, extension);
+
+  // Destroying the profile makes `poster` queue the onInstalled task during
+  // teardown; the task then runs below, after the profile is gone.
+  ProfileDestructionWaiter destruction_waiter(&secondary_profile);
+  profile_manager->GetDeleteProfileHelper().MaybeScheduleProfileForDeletion(
+      profile_path, base::DoNothing(),
+      ProfileMetrics::DELETE_PROFILE_USER_MANAGER);
+  destruction_waiter.Wait();
+  EXPECT_TRUE(poster.posted());
+
+  // Run the queued task; it must not crash.
+  base::RunLoop().RunUntilIdle();
+}
+#endif  // !BUILDFLAG(IS_ANDROID) &&
+        // PA_BUILDFLAG(ENABLE_DANGLING_RAW_PTR_CHECKS) &&
+        // !BUILDFLAG(IS_CHROMEOS)
+
 #if BUILDFLAG(ENABLE_EXTENSIONS)
 // TODO(crbug.com/423725749): Port to desktop Android when a cross-platform
 // browser abstraction is available.
@@ -600,9 +732,9 @@ IN_PROC_BROWSER_TEST_F(
   ASSERT_TRUE(extension.get());
   extension_registrar()->AddExtension(extension.get());
   ASSERT_TRUE(extension_registrar()->IsExtensionEnabled(extension->id()));
-  TabStripModel* tabs = browser()->tab_strip_model();
+  TabListInterface* tab_list = TabListInterface::From(browser());
 
-  ASSERT_EQ(1, tabs->count());
+  ASSERT_EQ(1, tab_list->GetTabCount());
   ASSERT_EQ("about:blank", GetActiveUrl());
 
   // Navigate to an extension page.
@@ -611,20 +743,20 @@ IN_PROC_BROWSER_TEST_F(
       ui_test_utils::NavigateToURL(browser(), extension_page_url);
   ASSERT_TRUE(new_host);
 
-  EXPECT_EQ(1, tabs->count());
+  EXPECT_EQ(1, tab_list->GetTabCount());
   EXPECT_EQ(extension_page_url.spec(), GetActiveUrl());
   // Uninstall the extension and expect its uninstall url to open in a new tab.
   extension_registrar()->UninstallExtension(
       extension->id(), UNINSTALL_REASON_USER_INITIATED, nullptr);
-  content::WaitForLoadStop(tabs->GetActiveWebContents());
-  EXPECT_EQ(2, tabs->count());
+  content::WaitForLoadStop(tab_list->GetActiveTab()->GetContents());
+  EXPECT_EQ(2, tab_list->GetTabCount());
 
   // The current tab should be pointing to the uninstall url of the extension.
   EXPECT_EQ(kUninstallUrl, GetActiveUrl());
 
   // The tab at index 0 should now be overwritten with the default NTP.
   EXPECT_EQ(chrome::kChromeUINewTabURL,
-            tabs->GetWebContentsAt(0)->GetLastCommittedURL().spec());
+            tab_list->GetTab(0)->GetContents()->GetLastCommittedURL().spec());
 }
 
 // Tests that when a blocklisted extension with a set uninstall url is
@@ -645,16 +777,16 @@ IN_PROC_BROWSER_TEST_F(RuntimeApiTest,
   // Uninstall the extension and expect its uninstall url to open.
   extension_registrar()->UninstallExtension(
       extension->id(), UNINSTALL_REASON_USER_INITIATED, nullptr);
-  TabStripModel* tabs = browser()->tab_strip_model();
+  TabListInterface* tab_list = TabListInterface::From(browser());
 
-  EXPECT_EQ(2, tabs->count());
-  content::WaitForLoadStop(tabs->GetActiveWebContents());
+  EXPECT_EQ(2, tab_list->GetTabCount());
+  content::WaitForLoadStop(tab_list->GetActiveTab()->GetContents());
   // Verify the uninstall url
   EXPECT_EQ(kUninstallUrl, GetActiveUrl());
 
   // Close the tab pointing to the uninstall url.
-  tabs->CloseWebContentsAt(tabs->active_index(), 0);
-  EXPECT_EQ(1, tabs->count());
+  tab_list->CloseTab(tab_list->GetActiveTab()->GetHandle());
+  EXPECT_EQ(1, tab_list->GetTabCount());
   EXPECT_EQ("about:blank", GetActiveUrl());
 
   // Load the same extension again, except blocklist it after installation.
@@ -678,10 +810,69 @@ IN_PROC_BROWSER_TEST_F(RuntimeApiTest,
       extension->id(), UNINSTALL_REASON_USER_INITIATED, nullptr);
   observer.WaitForExtensionUninstalled();
 
-  EXPECT_EQ(1, tabs->count());
-  EXPECT_TRUE(content::WaitForLoadStop(tabs->GetActiveWebContents()));
+  EXPECT_EQ(1, tab_list->GetTabCount());
+  EXPECT_TRUE(content::WaitForLoadStop(tab_list->GetActiveTab()->GetContents()));
   EXPECT_EQ(url::kAboutBlankURL, GetActiveUrl());
 }
+
+// TODO(crbug.com/510816360): Remove this histogram test around M155,
+// once we've gathered enough data to analyze usage.
+class ChromeRuntimeUninstallURLHistogramTest : public ExtensionApiTest {
+ public:
+  void SetUp() override {
+    histogram_tester_ = std::make_unique<base::HistogramTester>();
+    ExtensionApiTest::SetUp();
+  }
+
+  void TearDown() override {
+    histogram_tester_ = nullptr;
+    ExtensionApiTest::TearDown();
+  }
+
+ protected:
+  std::string GetUninstallURL() {
+    const Extension* extension = GetSingleLoadedExtension();
+    EXPECT_TRUE(extension) << "Exactly one extension should be loaded.";
+    EXPECT_EQ("Uninstall URL Histogram", extension->name());
+    ExtensionPrefs* extension_prefs = ExtensionPrefs::Get(profile());
+    std::string url_string;
+    extension_prefs->ReadPrefAsString(extension->id(), "uninstall_url",
+                                      &url_string);
+    return url_string;
+  }
+
+  std::unique_ptr<base::HistogramTester> histogram_tester_;
+};
+
+// Test that the histogram for counting secure and insecure uninstall URLs
+// counts URLs on extension load.
+IN_PROC_BROWSER_TEST_F(ChromeRuntimeUninstallURLHistogramTest,
+                       PRE_UninstallURL) {
+  // Write the uninstall URL into persistent storage to be read in the main
+  // part of the test.
+  EXPECT_TRUE(RunExtensionTest("runtime/uninstall_url_histogram")) << message_;
+
+  // The last URL is used.
+  EXPECT_EQ("https://example.com", GetUninstallURL());
+
+  // Nothing is counted yet.
+  histogram_tester_->ExpectTotalCount("Extensions.RuntimeUninstallURL.Host",
+                                      /*expected_count=*/0);
+}
+
+// Confirm the uninstall URL is loaded from and histogram is emitted on
+// extension load.
+IN_PROC_BROWSER_TEST_F(ChromeRuntimeUninstallURLHistogramTest, UninstallURL) {
+  // The last URL is used.
+  EXPECT_EQ("https://example.com", GetUninstallURL());
+
+  // After the extension is loaded, the histogram counts should have
+  // been incremented. Only the last set uninstall URL is counted.
+  histogram_tester_->ExpectUniqueSample("Extensions.RuntimeUninstallURL.Host",
+                                        /*sample=kHTTPS*/ 0,
+                                        /*expected_bucket_count=*/1);
+}
+
 #endif  // BUILDFLAG(ENABLE_EXTENSIONS)
 
 #if !BUILDFLAG(IS_ANDROID)
@@ -1210,6 +1401,70 @@ IN_PROC_BROWSER_TEST_F(RuntimeGetContextsSidePanelTest, GetSidePanelContext) {
                          expected_frame_url.c_str(), expected_origin.c_str());
   EXPECT_THAT(side_panel_contexts, base::test::IsJson(expected));
 }
+
+// Tests that the side panel extension context is fully loaded and registered
+// before the chrome.sidePanel.onOpened event is dispatched. This ensures
+// chrome.runtime.getContexts() correctly returns the side panel context when
+// called immediately inside the onOpened listener.
+IN_PROC_BROWSER_TEST_F(RuntimeGetContextsSidePanelTest,
+                       GetContextsFromOnOpenedEvent) {
+  TestExtensionDir test_dir;
+
+  test_dir.WriteManifest(R"({
+    "name": "Side Panel Context Test",
+    "version": "1",
+    "manifest_version": 3,
+    "permissions": ["sidePanel"],
+    "background": {"service_worker": "background.js"},
+    "action": {},
+    "side_panel": {"default_path": "sidepanel.html"}
+  })");
+
+  test_dir.WriteFile(FILE_PATH_LITERAL("sidepanel.html"), R"(
+    <!DOCTYPE html>
+    <html>
+    <body>Side Panel</body>
+    </html>
+  )");
+
+  test_dir.WriteFile(FILE_PATH_LITERAL("background.js"), R"(
+    // Explicitly open the side panel when the extension action is clicked
+    chrome.action.onClicked.addListener(async (tab) => {
+      await chrome.sidePanel.open({ windowId: tab.windowId });
+    });
+
+    chrome.sidePanel.onOpened.addListener(async () => {
+      const contexts = await chrome.runtime.getContexts({
+        contextTypes: [chrome.runtime.ContextType.SIDE_PANEL]
+      });
+
+      // Using succeed/fail prevents the C++ test from hanging if the count is
+      // wrong.
+      if (contexts.length === 1) {
+        chrome.test.succeed();
+      } else {
+        chrome.test.fail(`Expected 1 context, but got ${contexts.length}`);
+      }
+    });
+  )");
+
+  // ResultCatcher listens for chrome.test.succeed() or chrome.test.fail().
+  extensions::ResultCatcher catcher;
+
+  const Extension* extension = LoadExtension(test_dir.UnpackedPath());
+  ASSERT_TRUE(extension);
+
+  auto helper = ExtensionActionTestHelper::Create(browser());
+  ASSERT_TRUE(helper);
+
+  // Trigger the action.onClicked listener.
+  helper->Press(extension->id());
+
+  // Wait for the result. If it fails (e.g. the bug is present and returns 0),
+  // GetNextResult() returns false and prints the JS error message.
+  EXPECT_TRUE(catcher.GetNextResult()) << catcher.message();
+}
+
 #endif  // !BUILDFLAG(IS_ANDROID)
 
 // Tests the behavior of `runtime.getContexts()` with a split-mode incognito
@@ -1445,8 +1700,9 @@ class GetContextsWithDeveloperToolsOpened
       const GetContextsWithDeveloperToolsOpened&) = delete;
 };
 
-// TODO(crbug.com/357845909): flaky on ChromeOS and Linux MSAN.
-#if defined(MEMORY_SANITIZER) && (BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS))
+// TODO(crbug.com/556930566): flaky on Linux.
+// TODO(crbug.com/357845909): also flaky on ChromeOS MSAN.
+#if BUILDFLAG(IS_LINUX) || (defined(MEMORY_SANITIZER) && BUILDFLAG(IS_CHROMEOS))
 #define MAYBE_ReturnsDevToolsContext DISABLED_ReturnsDevToolsContext
 #else
 #define MAYBE_ReturnsDevToolsContext ReturnsDevToolsContext
@@ -1467,7 +1723,7 @@ IN_PROC_BROWSER_TEST_P(GetContextsWithDeveloperToolsOpened,
   content::WebContents* devtools_web_contents =
       DevToolsWindowTesting::Get(devtools_window)->main_web_contents();
   bool is_docked = devtools_web_contents->GetTopLevelNativeWindow() ==
-                   browser()->window()->GetNativeWindow();
+                   browser()->GetWindow()->GetNativeWindow();
   ASSERT_EQ(open_docked, is_docked);
 
   // Extract the extension host from the devtools web contents.
@@ -1525,5 +1781,818 @@ INSTANTIATE_TEST_SUITE_P(DockedDevTools,
                          GetContextsWithDeveloperToolsOpened,
                          ::testing::Values(true) /* open_docked */);
 #endif  // !BUILDFLAG(IS_ANDROID)
+
+// Tests for `chrome.runtime.onEnabled` and `chrome.runtime.onExtensionLoaded`
+// lifecycle events across all lifecycle transitions.
+//
+// The table below enumerates the lifecycle scenarios tested across this test
+// suite and their expected event dispatch outcomes:
+// +----------------------------+-------------+-------------------+-----------+
+// | Lifecycle Scenario         | onInstalled | onExtensionLoaded | onEnabled |
+// +----------------------------+-------------+-------------------+-----------+
+// | Initial Install            | "install"   | "install"         | (none)    |
+// | Extension Update           | "update"    | "update"          | (none)    |
+// | Enable Disabled Extension  | (none)      | "enable"          | fired     |
+// | Extension Reload           | (none)      | "reload"          | (none)    |
+// | Browser Startup            | (none)      | "startup"         | (none)    |
+// | Browser Update             | "chrome_    | "browser_         | (none)    |
+// |                            |  update"    |  update"          |           |
+// +----------------------------+-------------+-------------------+-----------+
+// Browser tests for `chrome.runtime.onEnabled` and
+// `chrome.runtime.onExtensionLoaded` lifecycle events verifying the W3C
+// WebExtensions proposal:
+// https://github.com/w3c/webextensions/blob/main/proposals/runtime_on_load_on_enabled_events.md
+//
+// Quoting the proposal:
+// "If multiple reasons apply at the same time, only one event should be fired.
+// The precedence of reasons is as follows, with the first item having the
+// highest precedence:
+// update > install > reload > enable > browser_update > startup"
+class RuntimeLifecycleEventsApiTest : public RuntimeApiTest {
+ public:
+  RuntimeLifecycleEventsApiTest() = default;
+  ~RuntimeLifecycleEventsApiTest() override = default;
+
+  RuntimeLifecycleEventsApiTest(const RuntimeLifecycleEventsApiTest&) = delete;
+  RuntimeLifecycleEventsApiTest& operator=(
+      const RuntimeLifecycleEventsApiTest&) = delete;
+
+ protected:
+  // Starts observing service worker registration before installing an extension
+  // in a `PRE_` test so `WaitForExtensionPersistedBeforeRestartOnAndroid()` can
+  // wait for the registration to be stored to disk on Android.
+  void ObserveServiceWorkerRegistrationBeforeInstallOnAndroid() {
+#if BUILDFLAG(IS_ANDROID)
+    registration_observer_ = std::make_unique<
+        service_worker_test_utils::TestServiceWorkerContextObserver>(profile());
+#endif  // BUILDFLAG(IS_ANDROID)
+  }
+
+  // Waits for the background service worker registration, extension
+  // preferences, and background `base::ThreadPoolInstance` file tasks to be
+  // committed to disk on Android where `PRE_` browser tests do not perform a
+  // graceful shutdown.
+  void WaitForExtensionPersistedBeforeRestartOnAndroid() {
+#if BUILDFLAG(IS_ANDROID)
+    // Wait for the background service worker registration to be stored to disk
+    // so that it persists across browser restart.
+    ASSERT_TRUE(registration_observer_);
+    {
+      SCOPED_TRACE("Waiting for service worker registration to be stored");
+      registration_observer_->WaitForRegistrationStored();
+    }
+
+    // Android does not perform a graceful shutdown in browser tests. Commit
+    // preferences to disk and flush background ThreadPool file tasks (e.g. from
+    // `CrxInstaller` and `StateStore`) so the extension registration and
+    // unpacked files are fully persisted across browser restart.
+    base::RunLoop commit_pending_write_run_loop;
+    profile()->GetPrefs()->CommitPendingWrite(
+        commit_pending_write_run_loop.QuitClosure());
+    {
+      SCOPED_TRACE("Waiting for preferences to be committed to disk");
+      commit_pending_write_run_loop.Run();
+    }
+    {
+      SCOPED_TRACE("Waiting for background ThreadPool tasks to flush");
+      base::ThreadPoolInstance::Get()->FlushForTesting();
+    }
+#endif  // BUILDFLAG(IS_ANDROID)
+  }
+
+ private:
+#if BUILDFLAG(IS_ANDROID)
+  std::unique_ptr<service_worker_test_utils::TestServiceWorkerContextObserver>
+      registration_observer_;
+#endif  // BUILDFLAG(IS_ANDROID)
+};
+
+// Test that `chrome.runtime.onExtensionLoaded` and `chrome.runtime.onInstalled`
+// are fired on initial extension install with reason `"install"`, and
+// `chrome.runtime.onEnabled` is not fired.
+IN_PROC_BROWSER_TEST_F(RuntimeLifecycleEventsApiTest,
+                       OnExtensionLoadedAndInstalledOnInstall) {
+  static constexpr char kManifest[] = R"(
+    {
+      "name": "Lifecycle Events Install Test",
+      "version": "1.0",
+      "manifest_version": 3,
+      "background": {
+        "service_worker": "worker.js"
+      }
+    }
+  )";
+
+  static constexpr char kWorker[] = R"(
+    chrome.runtime.onInstalled.addListener((details) => {
+      chrome.test.sendMessage(`installed:${details.reason}`);
+    });
+
+    chrome.runtime.onExtensionLoaded.addListener((details) => {
+      const prev = details.previousVersion || '';
+      chrome.test.sendMessage(`loaded:${details.reason}:${prev}`, () => {
+        chrome.test.succeed();
+      });
+    });
+
+    chrome.runtime.onEnabled.addListener(() => {
+      chrome.test.sendMessage('enabled');
+    });
+  )";
+
+  TestExtensionDir dir;
+  dir.WriteManifest(kManifest);
+  dir.WriteFile(FILE_PATH_LITERAL("worker.js"), kWorker);
+
+  // Install the extension and verify that `onInstalled` and `onExtensionLoaded`
+  // are received with reason `"install"`, and `onEnabled` is not fired.
+  // Verify precedence `install > enable`: `runtime.onExtensionLoaded` must not
+  // receive `"enable"` on install.
+  ResultCatcher catcher;
+  ExtensionTestMessageListener install_listener("installed:install");
+  install_listener.set_failure_message("enabled");
+  ExtensionTestMessageListener loaded_listener("loaded:install:",
+                                               ReplyBehavior::kWillReply);
+  ExtensionTestMessageListener loaded_enable_failure_listener("loaded:enable:");
+  const Extension* extension =
+      InstallExtension(dir.UnpackedPath(), /*expected_change=*/1);
+  ASSERT_TRUE(extension);
+  {
+    SCOPED_TRACE("Waiting for install event message");
+    ASSERT_TRUE(install_listener.WaitUntilSatisfied());
+  }
+  {
+    SCOPED_TRACE("Waiting for extension loaded event message");
+    ASSERT_TRUE(loaded_listener.WaitUntilSatisfied());
+  }
+  EXPECT_FALSE(loaded_enable_failure_listener.was_satisfied());
+  loaded_listener.Reply(/*message=*/"");
+  ASSERT_TRUE(catcher.GetNextResult());
+}
+
+// Test that `chrome.runtime.onExtensionLoaded` and `chrome.runtime.onInstalled`
+// are fired on extension update with reason `"update"` and `previousVersion`,
+// and `chrome.runtime.onEnabled` is not fired.
+IN_PROC_BROWSER_TEST_F(RuntimeLifecycleEventsApiTest,
+                       OnExtensionLoadedAndInstalledOnUpdate) {
+  TestExtensionDir dir;
+  dir.WriteManifest(R"(
+    {
+      "name": "Lifecycle Events Update Test",
+      "version": "1.0",
+      "manifest_version": 3,
+      "background": {
+        "service_worker": "worker.js"
+      }
+    }
+  )");
+  dir.WriteFile(FILE_PATH_LITERAL("worker.js"), R"(
+    chrome.runtime.onInstalled.addListener((details) => {
+      chrome.test.sendMessage(`v1_installed:${details.reason}`, () => {
+        chrome.test.succeed();
+      });
+    });
+  )");
+
+  base::FilePath crx_v1 = dir.Pack("v1.crx");
+  ASSERT_FALSE(crx_v1.empty());
+
+  // Install initial version 1.0 of the extension.
+  ResultCatcher catcher;
+  ExtensionTestMessageListener v1_listener("v1_installed:install",
+                                           ReplyBehavior::kWillReply);
+  const Extension* extension = InstallExtension(crx_v1, /*expected_change=*/1);
+  ASSERT_TRUE(extension);
+  {
+    SCOPED_TRACE("Waiting for version 1.0 install event message");
+    ASSERT_TRUE(v1_listener.WaitUntilSatisfied());
+  }
+  v1_listener.Reply(/*message=*/"");
+  ASSERT_TRUE(catcher.GetNextResult());
+  const ExtensionId extension_id = extension->id();
+
+  // Prepare updated version 2.0 of the extension with listeners.
+  dir.WriteManifest(R"(
+    {
+      "name": "Lifecycle Events Update Test",
+      "version": "2.0",
+      "manifest_version": 3,
+      "background": {
+        "service_worker": "worker.js"
+      }
+    }
+  )");
+  dir.WriteFile(FILE_PATH_LITERAL("worker.js"), R"(
+    chrome.runtime.onInstalled.addListener((details) => {
+      const prev = details.previousVersion || '';
+      chrome.test.sendMessage(`installed:${details.reason}:${prev}`);
+    });
+
+    chrome.runtime.onExtensionLoaded.addListener((details) => {
+      const prev = details.previousVersion || '';
+      chrome.test.sendMessage(`loaded:${details.reason}:${prev}`, () => {
+        chrome.test.succeed();
+      });
+    });
+
+    chrome.runtime.onEnabled.addListener(() => {
+      chrome.test.sendMessage('enabled');
+    });
+  )");
+
+  base::FilePath crx_v2 = dir.Pack("v2.crx");
+  ASSERT_FALSE(crx_v2.empty());
+
+  // Update extension to version 2.0 and verify `onInstalled` and
+  // `onExtensionLoaded` have reason `"update"` and `previousVersion` `"1.0"`,
+  // and `onEnabled` is not fired.
+  // Verify precedence `update > install` and `update > enable`:
+  // `runtime.onExtensionLoaded` must not receive `"install"` or `"enable"` on
+  // update.
+  ExtensionTestMessageListener update_install_listener("installed:update:1.0");
+  update_install_listener.set_failure_message("enabled");
+  ExtensionTestMessageListener update_loaded_listener(
+      "loaded:update:1.0", ReplyBehavior::kWillReply);
+  ExtensionTestMessageListener loaded_install_failure_listener(
+      "loaded:install:");
+  ExtensionTestMessageListener loaded_enable_failure_listener("loaded:enable:");
+  const Extension* updated_extension =
+      UpdateExtension(extension_id, crx_v2, /*expected_change=*/0);
+  ASSERT_TRUE(updated_extension);
+  {
+    SCOPED_TRACE("Waiting for update install event message");
+    ASSERT_TRUE(update_install_listener.WaitUntilSatisfied());
+  }
+  {
+    SCOPED_TRACE("Waiting for update extension loaded event message");
+    ASSERT_TRUE(update_loaded_listener.WaitUntilSatisfied());
+  }
+  EXPECT_FALSE(loaded_install_failure_listener.was_satisfied());
+  EXPECT_FALSE(loaded_enable_failure_listener.was_satisfied());
+  update_loaded_listener.Reply(/*message=*/"");
+  ASSERT_TRUE(catcher.GetNextResult());
+}
+
+// Test that `chrome.runtime.onEnabled` and `chrome.runtime.onExtensionLoaded`
+// are fired when enabling a disabled extension, with reason `"enable"`, and
+// `chrome.runtime.onInstalled` is not fired.
+IN_PROC_BROWSER_TEST_F(RuntimeLifecycleEventsApiTest,
+                       OnEnabledAndOnExtensionLoadedOnEnable) {
+  static constexpr char kManifest[] = R"(
+    {
+      "name": "Lifecycle Events Enable Test",
+      "version": "1.0",
+      "manifest_version": 3,
+      "background": {
+        "service_worker": "worker.js"
+      }
+    }
+  )";
+
+  static constexpr char kWorker[] = R"(
+    chrome.runtime.onInstalled.addListener(() => {
+      chrome.test.sendMessage('installed');
+    });
+
+    chrome.runtime.onEnabled.addListener(() => {
+      chrome.test.sendMessage('enabled', () => {
+        chrome.test.succeed();
+      });
+    });
+
+    chrome.runtime.onExtensionLoaded.addListener((details) => {
+      const prev = details.previousVersion || '';
+      chrome.test.sendMessage(`loaded:${details.reason}:${prev}`);
+    });
+  )";
+
+  TestExtensionDir dir;
+  dir.WriteManifest(kManifest);
+  dir.WriteFile(FILE_PATH_LITERAL("worker.js"), kWorker);
+
+  // Install the extension and verify initial install events.
+  ExtensionTestMessageListener install_listener("installed");
+  install_listener.set_failure_message("enabled");
+  ExtensionTestMessageListener initial_loaded_listener("loaded:install:");
+  const Extension* extension =
+      InstallExtension(dir.UnpackedPath(), /*expected_change=*/1);
+  ASSERT_TRUE(extension);
+  {
+    SCOPED_TRACE("Waiting for install event message");
+    ASSERT_TRUE(install_listener.WaitUntilSatisfied());
+  }
+  {
+    SCOPED_TRACE("Waiting for initial extension loaded event message");
+    ASSERT_TRUE(initial_loaded_listener.WaitUntilSatisfied());
+  }
+  const ExtensionId extension_id = extension->id();
+
+  // Disable the extension.
+  DisableExtension(extension_id);
+
+  // Enable the extension and verify `onEnabled` and `onExtensionLoaded`
+  // (`"enable"`), and verify `onInstalled` is not dispatched.
+  // Verify that `runtime.onExtensionLoaded` does not receive `"install"`.
+  ResultCatcher catcher;
+  ExtensionTestMessageListener enabled_listener("enabled",
+                                                ReplyBehavior::kWillReply);
+  enabled_listener.set_failure_message("installed");
+  ExtensionTestMessageListener loaded_listener("loaded:enable:");
+  ExtensionTestMessageListener loaded_install_failure_listener(
+      "loaded:install:");
+  EnableExtension(extension_id);
+
+  {
+    SCOPED_TRACE("Waiting for enabled event message");
+    ASSERT_TRUE(enabled_listener.WaitUntilSatisfied());
+  }
+  {
+    SCOPED_TRACE("Waiting for extension loaded event message");
+    ASSERT_TRUE(loaded_listener.WaitUntilSatisfied());
+  }
+  EXPECT_FALSE(loaded_install_failure_listener.was_satisfied());
+  enabled_listener.Reply(/*message=*/"");
+  ASSERT_TRUE(catcher.GetNextResult());
+}
+
+// Test fixture for reload lifecycle events. Reload is where packed and
+// unpacked extensions notably differ:
+// `ChromeExtensionRegistrarDelegate::DoLoadExtensionForReload()` reloads packed
+// extensions from their install record via `InstalledLoader`, while unpacked
+// extensions are reloaded from their directory on disk via `UnpackedInstaller`,
+// which goes through the install path.
+class RuntimeReloadLifecycleEventsApiTest
+    : public RuntimeLifecycleEventsApiTest {
+ public:
+  RuntimeReloadLifecycleEventsApiTest() = default;
+  ~RuntimeReloadLifecycleEventsApiTest() override = default;
+
+  RuntimeReloadLifecycleEventsApiTest(
+      const RuntimeReloadLifecycleEventsApiTest&) = delete;
+  RuntimeReloadLifecycleEventsApiTest& operator=(
+      const RuntimeReloadLifecycleEventsApiTest&) = delete;
+
+ protected:
+  // Writes an extension to `dir` whose service worker sends a test message for
+  // each `chrome.runtime.onInstalled`, `chrome.runtime.onEnabled`, and
+  // `chrome.runtime.onExtensionLoaded` event it receives. The
+  // `onExtensionLoaded` message is `"loaded:<reason>"`.
+  void WriteReloadTestExtension(TestExtensionDir& dir) {
+    dir.WriteManifest(R"(
+      {
+        "name": "Lifecycle Events Reload Test",
+        "version": "1.0",
+        "manifest_version": 3,
+        "background": {
+          "service_worker": "worker.js"
+        }
+      }
+    )");
+    dir.WriteFile(FILE_PATH_LITERAL("worker.js"), R"(
+      chrome.runtime.onInstalled.addListener(() => {
+        chrome.test.sendMessage('installed');
+      });
+
+      chrome.runtime.onEnabled.addListener(() => {
+        chrome.test.sendMessage('enabled');
+      });
+
+      chrome.runtime.onExtensionLoaded.addListener((details) => {
+        chrome.test.sendMessage(`loaded:${details.reason}`);
+      });
+    )");
+  }
+};
+
+// Test that `chrome.runtime.onExtensionLoaded` is fired with reason `"reload"`
+// when a packed extension is reloaded, and neither `chrome.runtime.onInstalled`
+// nor `chrome.runtime.onEnabled` is fired.
+IN_PROC_BROWSER_TEST_F(RuntimeReloadLifecycleEventsApiTest,
+                       OnExtensionLoadedOnPackedReload) {
+  TestExtensionDir dir;
+  WriteReloadTestExtension(dir);
+
+  // Install the extension as packed and verify initial install events.
+  // `ExtensionBrowserTest::InstallExtension()` packs `dir` into a `.crx` file
+  // before installing it.
+  ExtensionTestMessageListener install_listener("installed");
+  install_listener.set_failure_message("enabled");
+  ExtensionTestMessageListener initial_loaded_listener("loaded:install");
+  const Extension* extension =
+      InstallExtension(dir.UnpackedPath(), /*expected_change=*/1);
+  ASSERT_TRUE(extension);
+  ASSERT_FALSE(Manifest::IsUnpackedLocation(extension->location()));
+  {
+    SCOPED_TRACE("Waiting for install event message");
+    ASSERT_TRUE(install_listener.WaitUntilSatisfied());
+  }
+  {
+    SCOPED_TRACE("Waiting for initial extension loaded event message");
+    ASSERT_TRUE(initial_loaded_listener.WaitUntilSatisfied());
+  }
+  const ExtensionId extension_id = extension->id();
+
+  // Reload the extension via `chrome.runtime.reload()`. Packed extensions are
+  // reloaded from their install record, so verify that `onExtensionLoaded` is
+  // fired with `"loaded:reload"`, and neither `onInstalled` nor `onEnabled` is
+  // dispatched.
+  // Verify precedence `reload > enable`: `runtime.onExtensionLoaded` must not
+  // receive `"enable"` on reload.
+  ExtensionTestMessageListener reloaded_listener("loaded:reload");
+  reloaded_listener.set_failure_message("installed");
+  ExtensionTestMessageListener enabled_failure_listener("enabled");
+  ExtensionTestMessageListener loaded_enable_failure_listener("loaded:enable");
+  ASSERT_TRUE(ExecuteScriptInBackgroundPageNoWait(extension_id,
+                                                  "chrome.runtime.reload();"));
+  {
+    SCOPED_TRACE("Waiting for reloaded event message");
+    ASSERT_TRUE(reloaded_listener.WaitUntilSatisfied());
+  }
+  EXPECT_FALSE(enabled_failure_listener.was_satisfied());
+  EXPECT_FALSE(loaded_enable_failure_listener.was_satisfied());
+}
+
+// Test that `chrome.runtime.onInstalled` and `chrome.runtime.onExtensionLoaded`
+// are fired with reason `"update"` when an unpacked extension is reloaded,
+// because unpacked reloads go through the install path, and
+// `chrome.runtime.onEnabled` is not fired.
+IN_PROC_BROWSER_TEST_F(RuntimeReloadLifecycleEventsApiTest,
+                       OnExtensionLoadedOnUnpackedReload) {
+  TestExtensionDir dir;
+  WriteReloadTestExtension(dir);
+
+  // Load the extension as unpacked and verify initial install events.
+  ExtensionTestMessageListener install_listener("installed");
+  install_listener.set_failure_message("enabled");
+  ExtensionTestMessageListener initial_loaded_listener("loaded:install");
+  const Extension* extension = LoadExtension(dir.UnpackedPath());
+  ASSERT_TRUE(extension);
+  ASSERT_TRUE(Manifest::IsUnpackedLocation(extension->location()));
+  {
+    SCOPED_TRACE("Waiting for install event message");
+    ASSERT_TRUE(install_listener.WaitUntilSatisfied());
+  }
+  {
+    SCOPED_TRACE("Waiting for initial extension loaded event message");
+    ASSERT_TRUE(initial_loaded_listener.WaitUntilSatisfied());
+  }
+  const ExtensionId extension_id = extension->id();
+
+  // Reload the extension via `chrome.runtime.reload()`. Unpacked extensions
+  // are reloaded through the install path (`UnpackedInstaller`), which treats
+  // the reload as an update. Verify that `onInstalled` and `onExtensionLoaded`
+  // are fired with reason `"update"`, and by precedence `update > reload` so
+  // `onExtensionLoaded` must not also receive `"reload"`. Also verify that
+  // `onEnabled` is not dispatched and `onExtensionLoaded` does not receive
+  // `"enable"`.
+  ExtensionTestMessageListener update_install_listener("installed");
+  ExtensionTestMessageListener update_loaded_listener("loaded:update");
+  ExtensionTestMessageListener loaded_reload_failure_listener("loaded:reload");
+  ExtensionTestMessageListener enabled_failure_listener("enabled");
+  ExtensionTestMessageListener loaded_enable_failure_listener("loaded:enable");
+  ASSERT_TRUE(ExecuteScriptInBackgroundPageNoWait(extension_id,
+                                                  "chrome.runtime.reload();"));
+  {
+    SCOPED_TRACE("Waiting for update install event message");
+    ASSERT_TRUE(update_install_listener.WaitUntilSatisfied());
+  }
+  {
+    SCOPED_TRACE("Waiting for update extension loaded event message");
+    ASSERT_TRUE(update_loaded_listener.WaitUntilSatisfied());
+  }
+  EXPECT_FALSE(loaded_reload_failure_listener.was_satisfied());
+  EXPECT_FALSE(enabled_failure_listener.was_satisfied());
+  EXPECT_FALSE(loaded_enable_failure_listener.was_satisfied());
+}
+
+// Test fixture for startup lifecycle events. Listens for worker messages early
+// in `CreatedBrowserMainParts` before profile and extension initialization.
+class RuntimeStartupLifecycleEventsApiTest
+    : public RuntimeLifecycleEventsApiTest {
+ public:
+  RuntimeStartupLifecycleEventsApiTest() = default;
+  ~RuntimeStartupLifecycleEventsApiTest() override = default;
+
+  void CreatedBrowserMainParts(content::BrowserMainParts* main_parts) override {
+    const std::string_view test_name =
+        ::testing::UnitTest::GetInstance()->current_test_info()->name();
+    if (!test_name.starts_with("PRE_")) {
+      startup_listener_ = std::make_unique<ExtensionTestMessageListener>(
+          "loaded:startup", ReplyBehavior::kWillReply);
+      startup_listener_->set_failure_message("installed");
+      enabled_failure_listener_ =
+          std::make_unique<ExtensionTestMessageListener>("enabled");
+    }
+    RuntimeLifecycleEventsApiTest::CreatedBrowserMainParts(main_parts);
+  }
+
+ protected:
+  ExtensionTestMessageListener* startup_listener() {
+    return startup_listener_.get();
+  }
+  const ExtensionTestMessageListener* enabled_failure_listener() const {
+    return enabled_failure_listener_.get();
+  }
+
+ private:
+  std::unique_ptr<ExtensionTestMessageListener> startup_listener_;
+  std::unique_ptr<ExtensionTestMessageListener> enabled_failure_listener_;
+};
+
+// Test that `chrome.runtime.onExtensionLoaded` is fired with reason `"startup"`
+// when the browser starts up with an installed extension, and neither
+// `onInstalled` nor `onEnabled` is fired.
+IN_PROC_BROWSER_TEST_F(RuntimeStartupLifecycleEventsApiTest,
+                       PRE_OnExtensionLoadedOnStartup) {
+  TestExtensionDir dir;
+  dir.WriteManifest(R"(
+    {
+      "name": "Lifecycle Events Startup Test",
+      "version": "1.0",
+      "manifest_version": 3,
+      "permissions": ["storage"],
+      "background": {
+        "service_worker": "worker.js"
+      }
+    }
+  )");
+  dir.WriteFile(FILE_PATH_LITERAL("worker.js"), R"(
+    chrome.runtime.onInstalled.addListener((details) => {
+      chrome.test.sendMessage('installed');
+    });
+    chrome.runtime.onExtensionLoaded.addListener(async (details) => {
+      await chrome.storage.local.set({loadedReason: details.reason});
+      chrome.test.sendMessage(`loaded:${details.reason}`, () => {
+        chrome.test.succeed();
+      });
+    });
+    chrome.runtime.onEnabled.addListener(() => {
+      chrome.test.sendMessage('enabled');
+    });
+  )");
+
+  base::FilePath crx = dir.Pack("startup.crx");
+  ASSERT_FALSE(crx.empty());
+
+  ObserveServiceWorkerRegistrationBeforeInstallOnAndroid();
+
+  // Install extension prior to browser restart.
+  ResultCatcher catcher;
+  ExtensionTestMessageListener install_listener("installed");
+  ExtensionTestMessageListener loaded_listener("loaded:install",
+                                               ReplyBehavior::kWillReply);
+  const Extension* extension = InstallExtension(crx, /*expected_change=*/1);
+  ASSERT_TRUE(extension);
+
+  {
+    SCOPED_TRACE("Waiting for install event message");
+    ASSERT_TRUE(install_listener.WaitUntilSatisfied());
+  }
+  {
+    SCOPED_TRACE("Waiting for extension loaded event message");
+    ASSERT_TRUE(loaded_listener.WaitUntilSatisfied());
+  }
+  loaded_listener.Reply(/*message=*/"");
+  ASSERT_TRUE(catcher.GetNextResult());
+
+  WaitForExtensionPersistedBeforeRestartOnAndroid();
+}
+
+// Test that `chrome.runtime.onExtensionLoaded` was received with reason
+// `"startup"` following browser restart, and verify the reason recorded in
+// extension storage.
+IN_PROC_BROWSER_TEST_F(RuntimeStartupLifecycleEventsApiTest,
+                       OnExtensionLoadedOnStartup) {
+  ResultCatcher catcher;
+
+  // Wait for the service worker to receive `onExtensionLoaded` and write to
+  // storage.
+  {
+    SCOPED_TRACE("Waiting for startup extension loaded event message");
+    ASSERT_TRUE(startup_listener()->WaitUntilSatisfied());
+  }
+  EXPECT_FALSE(enabled_failure_listener()->was_satisfied());
+
+  // Find installed extension across browser restart.
+  const Extension* extension = nullptr;
+  for (const auto& ext :
+       ExtensionRegistry::Get(profile())->enabled_extensions()) {
+    if (ext->name() == "Lifecycle Events Startup Test") {
+      extension = ext.get();
+      break;
+    }
+  }
+  ASSERT_TRUE(extension);
+
+  // Retrieve stored load reason and verify it is `"startup"`.
+  static constexpr char kGetReasonScript[] = R"(
+    (async () => {
+      let data = await chrome.storage.local.get('loadedReason');
+      chrome.test.sendScriptResult(data.loadedReason || '');
+    })();
+  )";
+  base::Value result = BackgroundScriptExecutor::ExecuteScript(
+      profile(), extension->id(), kGetReasonScript,
+      BackgroundScriptExecutor::ResultCapture::kSendScriptResult);
+  EXPECT_EQ("startup", result);
+
+  startup_listener()->Reply(/*message=*/"");
+  ASSERT_TRUE(catcher.GetNextResult());
+}
+
+// Test fixture for browser update lifecycle events where Chrome indicates
+// a version update occurred across browser restart.
+class RuntimeBrowserUpdateLifecycleEventsApiTest
+    : public RuntimeLifecycleEventsApiTest {
+ public:
+  RuntimeBrowserUpdateLifecycleEventsApiTest() {
+    const std::string_view test_name =
+        ::testing::UnitTest::GetInstance()->current_test_info()->name();
+    if (!test_name.starts_with("PRE_")) {
+      ChromeExtensionsBrowserClient::set_did_chrome_update_for_testing(
+          /*did_update=*/true);
+    }
+  }
+
+  RuntimeBrowserUpdateLifecycleEventsApiTest(
+      const RuntimeBrowserUpdateLifecycleEventsApiTest&) = delete;
+  RuntimeBrowserUpdateLifecycleEventsApiTest& operator=(
+      const RuntimeBrowserUpdateLifecycleEventsApiTest&) = delete;
+
+  void TearDownOnMainThread() override {
+    ChromeExtensionsBrowserClient::set_did_chrome_update_for_testing(
+        /*did_update=*/false);
+    RuntimeLifecycleEventsApiTest::TearDownOnMainThread();
+  }
+
+  void CreatedBrowserMainParts(content::BrowserMainParts* main_parts) override {
+    const std::string_view test_name =
+        ::testing::UnitTest::GetInstance()->current_test_info()->name();
+    if (!test_name.starts_with("PRE_")) {
+      install_listener_ = std::make_unique<ExtensionTestMessageListener>(
+          "installed:chrome_update");
+      loaded_listener_ = std::make_unique<ExtensionTestMessageListener>(
+          "loaded:browser_update", ReplyBehavior::kWillReply);
+      install_listener_->set_failure_message("installed:install");
+      loaded_listener_->set_failure_message("loaded:startup");
+      enabled_failure_listener_ =
+          std::make_unique<ExtensionTestMessageListener>("enabled");
+    }
+    RuntimeLifecycleEventsApiTest::CreatedBrowserMainParts(main_parts);
+  }
+
+ protected:
+  ExtensionTestMessageListener* install_listener() {
+    return install_listener_.get();
+  }
+  ExtensionTestMessageListener* loaded_listener() {
+    return loaded_listener_.get();
+  }
+  const ExtensionTestMessageListener* enabled_failure_listener() const {
+    return enabled_failure_listener_.get();
+  }
+
+ private:
+  std::unique_ptr<ExtensionTestMessageListener> install_listener_;
+  std::unique_ptr<ExtensionTestMessageListener> loaded_listener_;
+  std::unique_ptr<ExtensionTestMessageListener> enabled_failure_listener_;
+};
+
+// Test that `chrome.runtime.onExtensionLoaded` is fired with reason
+// `"browser_update"` when the browser starts up after a browser update, and
+// `chrome.runtime.onInstalled` is fired with reason `"chrome_update"`.
+IN_PROC_BROWSER_TEST_F(RuntimeBrowserUpdateLifecycleEventsApiTest,
+                       PRE_OnExtensionLoadedOnBrowserUpdate) {
+  TestExtensionDir dir;
+  dir.WriteManifest(R"(
+    {
+      "name": "Lifecycle Events Browser Update Test",
+      "version": "1.0",
+      "manifest_version": 3,
+      "background": {
+        "service_worker": "worker.js"
+      }
+    }
+  )");
+  dir.WriteFile(FILE_PATH_LITERAL("worker.js"), R"(
+    chrome.runtime.onInstalled.addListener((details) => {
+      chrome.test.sendMessage(`installed:${details.reason}`);
+    });
+    chrome.runtime.onExtensionLoaded.addListener((details) => {
+      chrome.test.sendMessage(`loaded:${details.reason}`, () => {
+        chrome.test.succeed();
+      });
+    });
+    chrome.runtime.onEnabled.addListener(() => {
+      chrome.test.sendMessage('enabled');
+    });
+  )");
+
+  base::FilePath crx = dir.Pack("browser_update.crx");
+  ASSERT_FALSE(crx.empty());
+
+  ObserveServiceWorkerRegistrationBeforeInstallOnAndroid();
+
+  // Install extension prior to browser restart.
+  ResultCatcher catcher;
+  ExtensionTestMessageListener install_listener("installed:install");
+  ExtensionTestMessageListener loaded_listener("loaded:install",
+                                               ReplyBehavior::kWillReply);
+  const Extension* extension = InstallExtension(crx, /*expected_change=*/1);
+  ASSERT_TRUE(extension);
+  {
+    SCOPED_TRACE("Waiting for install event message");
+    ASSERT_TRUE(install_listener.WaitUntilSatisfied());
+  }
+  {
+    SCOPED_TRACE("Waiting for extension loaded event message");
+    ASSERT_TRUE(loaded_listener.WaitUntilSatisfied());
+  }
+  loaded_listener.Reply(/*message=*/"");
+  ASSERT_TRUE(catcher.GetNextResult());
+
+  WaitForExtensionPersistedBeforeRestartOnAndroid();
+}
+
+// Test that `chrome.runtime.onExtensionLoaded` is fired with reason
+// `"browser_update"` and `chrome.runtime.onInstalled` with `"chrome_update"`
+// following browser restart with Chrome version update.
+IN_PROC_BROWSER_TEST_F(RuntimeBrowserUpdateLifecycleEventsApiTest,
+                       OnExtensionLoadedOnBrowserUpdate) {
+  ResultCatcher catcher;
+
+  // Verify that `onInstalled` received `"chrome_update"` and
+  // `onExtensionLoaded` received `"browser_update"`.
+  {
+    SCOPED_TRACE("Waiting for browser update install event message");
+    ASSERT_TRUE(install_listener()->WaitUntilSatisfied());
+  }
+  {
+    SCOPED_TRACE("Waiting for browser update extension loaded event message");
+    ASSERT_TRUE(loaded_listener()->WaitUntilSatisfied());
+  }
+  EXPECT_FALSE(enabled_failure_listener()->was_satisfied());
+  loaded_listener()->Reply(/*message=*/"");
+  ASSERT_TRUE(catcher.GetNextResult());
+}
+
+class RuntimeAsyncListenerRegistrationApiTest : public ExtensionApiTest {
+ private:
+  base::test::ScopedFeatureList feature_list_{
+      extensions_features::kExtensionAsyncListenerRegistration};
+};
+
+// Tests that runtime.markListenerRegistrationComplete() succeeds for an
+// opted-in extension, that the browser commits its listener registration
+// phase only once the extension calls it, and that a second call rejects.
+IN_PROC_BROWSER_TEST_F(RuntimeAsyncListenerRegistrationApiTest,
+                       MarkCompleteCommitsPhase) {
+  static constexpr char kManifest[] =
+      R"({
+           "name": "async listener registration",
+           "version": "1.0",
+           "manifest_version": 3,
+           "background": {
+             "service_worker": "background.js",
+             "async_listener_registration": true
+           }
+         })";
+  static constexpr char kBackgroundJs[] =
+      R"(chrome.test.runTests([
+           async function markCompleteSucceeds() {
+             await chrome.test.sendMessage('started');
+             await chrome.runtime.markListenerRegistrationComplete();
+             chrome.test.succeed();
+           },
+           async function secondCallRejects() {
+             await chrome.test.assertPromiseRejects(
+                 chrome.runtime.markListenerRegistrationComplete(),
+                 'Error: No listener registration is in progress.');
+             chrome.test.succeed();
+           },
+         ]);)";
+  TestExtensionDir test_dir;
+  test_dir.WriteManifest(kManifest);
+  test_dir.WriteFile(FILE_PATH_LITERAL("background.js"), kBackgroundJs);
+
+  ExtensionTestMessageListener started_listener("started",
+                                                ReplyBehavior::kWillReply);
+  ResultCatcher result_catcher;
+  const Extension* extension = LoadExtension(test_dir.UnpackedPath());
+  ASSERT_TRUE(extension);
+
+  // The phase stays started until the extension calls the API.
+  ASSERT_TRUE(started_listener.WaitUntilSatisfied());
+  EXPECT_EQ(ListenerRegistrationPhaseMap::State::kStarted,
+            service_worker_test_utils::GetListenerRegistrationPhaseState(
+                *profile(), extension->id()));
+
+  // Replying triggers the API call.
+  started_listener.Reply("");
+  ASSERT_TRUE(result_catcher.GetNextResult()) << result_catcher.message();
+  EXPECT_EQ(ListenerRegistrationPhaseMap::State::kCommitted,
+            service_worker_test_utils::GetListenerRegistrationPhaseState(
+                *profile(), extension->id()));
+}
 
 }  // namespace extensions

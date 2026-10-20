@@ -29,7 +29,7 @@ enum class PageActionIconType {
   kAutofillAddress = 14,
   kSaveCard = 15,
   // DEPRECATED: kSendTabToSelf = 16,
-  kSharingHub = 17,
+  // DEPRECATED: kSharingHub = 17,
   // DEPRECATED: kSideSearch = 18,
   // DEPRECATED: kSmsRemoteFetcher = 19,
   kTranslate = 20,
@@ -56,15 +56,15 @@ enum class PageActionIconType {
   kFederation = 41,
   kGlic = 42,
   kAnchoredContextualCue = 43,
-  kWebAuthnAmbientSignin = 44,
+  // DEPRECATED: kWebAuthnAmbientSignin = 44,
   kAutofillPayment = 45,
-  kMaxValue = kAutofillPayment,
+  kMultistepFilter = 46,
+  kPaymentsChurnedUsers = 47,
+  kFakePageActionForDebug = 48,
+  kWalletReminderNotice = 49,
+  kGmailOtpOptIn = 50,
+  kMaxValue = kGmailOtpOptIn,
 };
 // LINT.ThenChange(//tools/metrics/histograms/metadata/page/enums.xml:PageActionIconType)
-
-// Returns a bool indicating whether the given page action type has been
-// migrated to the new framework, which is based on ActionItems instead of
-// PageActionIconType.
-bool IsPageActionMigrated(PageActionIconType page_action);
 
 #endif  // CHROME_BROWSER_UI_PAGE_ACTION_PAGE_ACTION_ICON_TYPE_H_

@@ -16,6 +16,7 @@
 #include "base/containers/flat_map.h"
 #include "base/containers/flat_set.h"
 #include "base/gtest_prod_util.h"
+#include "base/memory/memory_pressure_level.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/rand_util.h"
@@ -84,8 +85,19 @@ class FreezingPolicy : public PageNodeObserver,
     freezer_ = std::move(freezer);
   }
 
+  bool IsPeriodicUnfreezeTimerRunningForTesting(
+      const PageNode* page_node) const;
+
+  // Updates the memory pressure level for testing.
+  void SetIsUnderMemoryPressureForTesting(bool is_under_memory_pressure);
+  void SetMemoryPressureLevelForTesting(
+      base::MemoryPressureLevel memory_pressure_level);
+
   // Invoked freezing on battery saver is enabled or disabled.
   void ToggleFreezingOnBatterySaverMode(bool is_enabled);
+
+  // Invoked when tab freezing is enabled or disabled by user settings.
+  void SetFreezingEnabledByUser(bool enabled);
 
   // Add or remove a freezing vote for `page_node`. A browsing instance is
   // frozen if all its pages have a freezing vote and none have a
@@ -120,7 +132,7 @@ class FreezingPolicy : public PageNodeObserver,
     // Pages that have frames in this browsing instance (typically only 1 page,
     // but may contain an unbounded amount of pages connected via opener
     // relationship).
-    base::flat_set<const PageNode*> pages;
+    base::flat_set<raw_ptr<const PageNode>> pages;
     // Highest CPU measurement for a group of same-origin frames/workers
     // associated with this browsing instance, over the last measurement period.
     // (1.0 = 100% of 1 core)
@@ -190,7 +202,8 @@ class FreezingPolicy : public PageNodeObserver,
   void OnPageNotificationPermissionStatusChange(
       const PageNode* page_node,
       std::optional<blink::mojom::PermissionStatus> previous_status) override;
-  void OnMainFrameUrlChanged(const PageNode* page_node) override;
+  void OnMainFrameUrlChanged(const PageNode* page_node,
+                             const GURL& previous_url) override;
   void OnLoadingStateChanged(const PageNode* page_node,
                              PageNode::LoadingState previous_state) override;
 
@@ -235,7 +248,7 @@ class FreezingPolicy : public PageNodeObserver,
 
   // Invoked by the OptOutChecker when the opt-out policy for
   // `browser_context_id` changes.
-  void OnOptOutPolicyChanged(std::string_view browser_context_id);
+  void OnOptOutPolicyChanged(const base::UnguessableToken& browser_context_id);
 
   // Removes the last page from the most recently used list if needed, to keep
   // its size below the limit.
@@ -243,6 +256,17 @@ class FreezingPolicy : public PageNodeObserver,
 
   // Checks that the size of the most recently used list respects the limit.
   void CheckMostRecentlyUsedListSize();
+
+  // Returns true if a policy that uses periodic unfreezing is active.
+  bool IsPeriodicUnfreezingActive() const;
+
+  // Starts or stops the periodic unfreeze timer for `page_node` based on its
+  // eligibility and the active policies.
+  void UpdatePeriodicUnfreezeTimer(const PageNode* page_node,
+                                   base::LiveTicks now);
+
+  // Updates periodic unfreeze timers for all pages in the graph.
+  void UpdateAllPeriodicUnfreezeTimers(base::LiveTicks now);
 
   // Starts a timer to manage periodic unfreezing of a tab frozen for
   // `FreezingContext::kInfiniteTabs`. The timer is scheduled to invoke
@@ -285,8 +309,12 @@ class FreezingPolicy : public PageNodeObserver,
   // policy-wide re-evaluation of page freezing.
   void CheckMemoryPressureForFreezing();
 
+  // Updates the cached memory pressure state and reconciles policy state.
+  void OnMemoryPressureStateChanged(
+      base::MemoryPressureLevel memory_pressure_level);
+
   // Triggers a re-evaluation of the frozen state for all pages in the graph.
-  void UpdateAllPagesFrozenState();
+  void UpdateAllPagesFrozenState(base::LiveTicks now);
 
   // Used to freeze pages.
   std::unique_ptr<Freezer> freezer_;
@@ -303,6 +331,9 @@ class FreezingPolicy : public PageNodeObserver,
 
   // Whether Battery Saver is currently active.
   bool is_battery_saver_active_ = false;
+
+  // Whether Tab Freezing is enabled by the user in settings.
+  bool is_freezing_enabled_by_user_ = true;
 
   // Measures cumulative CPU usage per group of frames/workers that belong to
   // the same [browsing instance, origin]. Engaged when the
@@ -330,9 +361,9 @@ class FreezingPolicy : public PageNodeObserver,
   // Timer to periodically check system memory.
   base::RepeatingTimer memory_check_timer_;
 
-  // True if the system is considered to be under memory pressure by our
-  // internal check.
-  bool is_under_memory_pressure_ = false;
+  // Current memory pressure level of the system.
+  base::MemoryPressureLevel memory_pressure_level_ =
+      base::MemoryPressureLevel::MEMORY_PRESSURE_LEVEL_NONE;
 
   base::WeakPtrFactory<FreezingPolicy> weak_factory_{this};
 };

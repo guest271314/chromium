@@ -8,7 +8,7 @@ import android.view.ViewGroup;
 import android.view.Window;
 
 import org.chromium.base.Callback;
-import org.chromium.build.annotations.NullUnmarked;
+import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.components.browser_ui.desktop_windowing.DesktopWindowStateManager;
 import org.chromium.components.browser_ui.widget.scrim.ScrimManager;
@@ -19,26 +19,30 @@ import org.chromium.ui.insets.InsetObserver;
 import java.util.function.Supplier;
 
 /** A factory for producing a {@link BottomSheetController}. */
-// @Nullable annotations inside generic types are not supported. See https://crbug.com/433562519.
-@NullUnmarked
+@NullMarked
 public class BottomSheetControllerFactory {
     /**
-     * @param scrimManagerSupplier Suppliers the {@ScrimManager}, used show scrims behind the sheet.
+     * @param scrimManagerSupplier Suppliers the {@link ScrimManager}, used to show scrims behind
+     *     the sheet.
      * @param window The activity's window.
      * @param keyboardDelegate A means of hiding the keyboard.
      * @param root The view that should contain the sheet.
      * @param edgeToEdgeBottomInsetSupplier Supplier of bottom inset when e2e is on.
      * @param desktopWindowStateManager The {@link DesktopWindowStateManager} for the app header.
      * @param insetObserver The {@link InsetObserver} for inset changes.
+     * @param enableLargeFormFactorUi Whether to use a different UI explicitly designed for bottom
+     *     sheets when operating in a desktop or large form factor environment. Some implementations
+     *     may want to opt out of this behavior.
      */
     public static ManagedBottomSheetController createBottomSheetController(
-            final Supplier</* @Nullable */ ScrimManager> scrimManagerSupplier,
+            final Supplier<@Nullable ScrimManager> scrimManagerSupplier,
             Window window,
             KeyboardVisibilityDelegate keyboardDelegate,
             Supplier<ViewGroup> root,
             Supplier<Integer> edgeToEdgeBottomInsetSupplier,
             @Nullable DesktopWindowStateManager desktopWindowStateManager,
-            InsetObserver insetObserver) {
+            InsetObserver insetObserver,
+            boolean enableLargeFormFactorUi) {
         return new BottomSheetControllerImpl(
                 scrimManagerSupplier,
                 window,
@@ -47,7 +51,8 @@ public class BottomSheetControllerFactory {
                 /* alwaysFullWidth= */ false,
                 edgeToEdgeBottomInsetSupplier,
                 desktopWindowStateManager,
-                insetObserver);
+                insetObserver,
+                enableLargeFormFactorUi);
     }
 
     /**
@@ -60,7 +65,7 @@ public class BottomSheetControllerFactory {
      * @param insetObserver The {@link InsetObserver} for inset changes.
      */
     public static ManagedBottomSheetController createFullWidthBottomSheetController(
-            final Supplier</* @Nullable */ ScrimManager> scrimManagerSupplier,
+            final Supplier<@Nullable ScrimManager> scrimManagerSupplier,
             Window window,
             KeyboardVisibilityDelegate keyboardDelegate,
             Supplier<ViewGroup> root,
@@ -73,7 +78,8 @@ public class BottomSheetControllerFactory {
                 /* alwaysFullWidth= */ true,
                 () -> 0,
                 /* desktopWindowStateManager= */ null,
-                insetObserver);
+                insetObserver,
+                /* enableLargeFormFactorUi= */ false);
     }
 
     // Redirect methods to provider to make them only accessible to classes that have access to the
@@ -99,8 +105,10 @@ public class BottomSheetControllerFactory {
         BottomSheetControllerProvider.detach(controller);
     }
 
-    /** @param reporter A means of reporting an exception without crashing. */
+    /**
+     * @param reporter A means of reporting an exception without crashing.
+     */
     public static void setExceptionReporter(Callback<Throwable> reporter) {
-        BottomSheet.setExceptionReporter(reporter);
+        BottomSheetCoordinator.setExceptionReporter(reporter);
     }
 }

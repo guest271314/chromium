@@ -12,6 +12,8 @@
 #include "chrome/browser/ui/webui_browser/bookmark_bar.mojom.h"
 #include "chrome/browser/ui/webui_browser/browser.mojom.h"
 #include "chrome/browser/ui/webui_browser/webui_browser_window.h"
+#include "components/browser_apis/bookmarks/bookmarks_service.h"
+#include "components/browser_apis/tab_drag/tab_drag_api.mojom.h"
 #include "components/browser_apis/tab_strip/tab_strip_api.mojom.h"
 #include "components/browser_apis/tab_strip/tab_strip_experiment_api.mojom.h"
 #include "components/browser_apis/tab_strip/tab_strip_ui_controller.mojom.h"
@@ -26,7 +28,7 @@
 #include "ui/webui/mojo_web_ui_controller.h"
 #include "ui/webui/resources/js/tracked_element/tracked_element.mojom.h"
 
-class Browser;
+class BrowserWindowInterface;
 
 namespace content {
 class BrowserContext;
@@ -68,6 +70,8 @@ class WebUIBrowserUI : public ui::MojoWebUIController,
   void BindInterface(
       mojo::PendingReceiver<bookmark_bar::mojom::PageHandlerFactory> receiver);
   void BindInterface(
+      mojo::PendingReceiver<bookmarks_api::mojom::BookmarksService> receiver);
+  void BindInterface(
       mojo::PendingReceiver<extensions_bar::mojom::PageHandlerFactory>
           receiver);
   void BindInterface(
@@ -81,18 +85,17 @@ class WebUIBrowserUI : public ui::MojoWebUIController,
       mojo::PendingReceiver<tabs_api::mojom::TabStripExperimentService>
           receiver);
   void BindInterface(
-      mojo::PendingReceiver<tabs_api::mojom::TabStripUIController> receiver);
+      mojo::PendingReceiver<tabs_api::mojom::TabDragService> receiver);
   void BindInterface(
-      mojo::PendingReceiver<tracked_element::mojom::TrackedElementHandler>
-          receiver);
+      mojo::PendingReceiver<tabs_api::mojom::TabStripUIController> receiver);
 
   void BookmarkBarStateChanged(BookmarkBar::AnimateChangeType change_type);
   void ShowSidePanel(SidePanelEntryKey side_panel_entry_key);
   void CloseSidePanel();
 
-  Browser* browser() { return browser_; }
+  BrowserWindowInterface* browser() { return browser_; }
   WebUIBrowserWindow* browser_window() {
-    return static_cast<WebUIBrowserWindow*>(browser_->window());
+    return WebUIBrowserWindow::FromBrowser(browser_);
   }
 
   webui_browser::mojom::Page* page() {
@@ -134,7 +137,7 @@ class WebUIBrowserUI : public ui::MojoWebUIController,
   // Returns the list of known element identifiers. These elements are HTML
   // elements tracked by ui/webui/tracked_element. Used for anchoring secondary
   // UIs.
-  const std::vector<ui::ElementIdentifier>& GetKnownElementIdentifiers() const;
+  std::vector<ui::ElementIdentifier> GetKnownElementIdentifiers() const;
 
   // Lazily creates and returns a reference to the owned contextual search
   // session handle for `realbox_handler_`.
@@ -161,7 +164,7 @@ class WebUIBrowserUI : public ui::MojoWebUIController,
   mojo::Receiver<searchbox::mojom::PageHandlerFactory>
       searchbox_page_factory_receiver_{this};
 
-  raw_ptr<Browser> browser_;
+  raw_ptr<BrowserWindowInterface> browser_;
 
   base::WeakPtrFactory<WebUIBrowserUI> weak_factory_{this};
 };

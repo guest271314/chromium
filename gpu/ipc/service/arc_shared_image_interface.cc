@@ -36,6 +36,16 @@ bool MakeContextCurrentOnGpuThread(SharedContextState* context_state,
   return context_state->MakeCurrent(/*surface=*/nullptr, needs_gl);
 }
 
+void DestroyFactoryOnGpuThread(
+    std::unique_ptr<gpu::SharedImageFactory> shared_image_factory) {
+  if (shared_image_factory && shared_image_factory->HasImages()) {
+    // Some of the backings might require a current GL context to be destroyed.
+    bool have_context = MakeContextCurrentOnGpuThread(
+        shared_image_factory->shared_context_state(), /*needs_gl=*/true);
+    shared_image_factory->DestroyAllSharedImages(have_context);
+  }
+}
+
 }  // namespace
 
 // static
@@ -72,13 +82,13 @@ ArcSharedImageInterface::ArcSharedImageInterface(
       gpu_task_runner_(std::move(gpu_task_runner)) {}
 
 ArcSharedImageInterface::~ArcSharedImageInterface() {
-  CHECK(gpu_task_runner_->BelongsToCurrentThread());
-  if (shared_image_factory_->HasImages()) {
-    // Some of the backings might require a current GL context to be destroyed.
-    bool have_context = MakeContextCurrentOnGpuThread(/*needs_gl=*/true);
-    shared_image_factory_->DestroyAllSharedImages(have_context);
+  if (gpu_task_runner_->BelongsToCurrentThread()) {
+    DestroyFactoryOnGpuThread(std::move(shared_image_factory_));
+  } else {
+    gpu_task_runner_->PostTask(
+        FROM_HERE, base::BindOnce(&DestroyFactoryOnGpuThread,
+                                  std::move(shared_image_factory_)));
   }
-  shared_image_factory_.reset();
 }
 
 scoped_refptr<ClientSharedImage> ArcSharedImageInterface::CreateSharedImage(
@@ -100,7 +110,7 @@ scoped_refptr<ClientSharedImage> ArcSharedImageInterface::CreateSharedImage(
   gpu_task_runner_->PostTask(
       FROM_HERE,
       base::BindOnce(&ArcSharedImageInterface::CreateSharedImageOnGpuThread,
-                     base::Unretained(this), mailbox, si_info_copy,
+                     base::WrapRefCounted(this), mailbox, si_info_copy,
                      buffer_usage, std::move(buffer_handle)));
 
   return base::MakeRefCounted<ClientSharedImage>(
@@ -125,12 +135,6 @@ void ArcSharedImageInterface::CreateSharedImageOnGpuThread(
     encountered_error_.store(true, std::memory_order_relaxed);
     return;
   }
-}
-
-void ArcSharedImageInterface::DestroySharedImage(
-    const SyncToken& sync_token,
-    scoped_refptr<ClientSharedImage> client_shared_image) {
-  NOTREACHED();
 }
 
 scoped_refptr<ClientSharedImage> ArcSharedImageInterface::CreateSharedImage(
@@ -179,12 +183,13 @@ void ArcSharedImageInterface::UpdateSharedImage(
     const Mailbox& mailbox) {
   NOTREACHED();
 }
-void ArcSharedImageInterface::DestroySharedImage(const SyncToken& sync_token,
-                                                 const Mailbox& mailbox) {
+void ArcSharedImageInterface::DestroySharedImage(
+    std::vector<SyncToken> sync_tokens,
+    const Mailbox& mailbox) {
   gpu_task_runner_->PostTask(
       FROM_HERE,
       base::BindOnce(&ArcSharedImageInterface::DestroySharedImageOnGpuThread,
-                     base::Unretained(this), mailbox));
+                     base::WrapRefCounted(this), mailbox));
 }
 
 void ArcSharedImageInterface::DestroySharedImageOnGpuThread(

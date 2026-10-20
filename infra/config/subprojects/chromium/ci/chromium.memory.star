@@ -78,6 +78,7 @@ def linux_memory_builder(*, name, **kwargs):
 linux_memory_builder(
     name = "Linux ASan LSan Builder",
     branch_selector = branches.selector.LINUX_BRANCHES,
+    description_html = "Compiles a Linux x64 release build with AddressSanitizer and LeakSanitizer.",
     builder_spec = builder_config.builder_spec(
         gclient_config = builder_config.gclient_config(
             config = "chromium",
@@ -98,7 +99,8 @@ linux_memory_builder(
             "asan",
             "lsan",
             "fail_on_san_warnings",
-            "release_try_builder",
+            "release_builder",
+            "dcheck_always_on",
             "minimal_symbols",
             "remoteexec",
             "linux",
@@ -121,6 +123,7 @@ linux_memory_builder(
 linux_memory_builder(
     name = "Linux ASan LSan Tests (1)",
     branch_selector = branches.selector.LINUX_BRANCHES,
+    description_html = "Runs tests against a Linux x64 AddressSanitizer and LeakSanitizer build.",
     parent = "ci/Linux ASan LSan Builder",
     builder_spec = builder_config.builder_spec(
         execution_mode = builder_config.execution_mode.TEST,
@@ -149,7 +152,6 @@ linux_memory_builder(
                 ],
             ),
             "linux-jammy",
-            "retry_only_failed_tests",
         ],
         per_test_modifications = {
             "accessibility_unittests": targets.mixin(
@@ -168,6 +170,8 @@ linux_memory_builder(
             "browser_tests": targets.mixin(
                 args = [
                     "--test-launcher-filter-file=../../testing/buildbot/filters/linux.asan.browser_tests.filter",
+                    # TODO(crbug.com/542347163): Re-enable when the runtime regression is fixed.
+                    "--disable-features=WebUIOmniboxPopup,WebUIOmniboxAimPopup",
                 ],
                 ci_only = True,
                 # These are very slow on the ASAN trybot for some reason.
@@ -181,6 +185,7 @@ linux_memory_builder(
                 ci_only = True,
             ),
             "components_unittests": targets.mixin(
+                enable_rts_filtering = True,
                 # These are very slow on the ASAN trybot for some reason.
                 # crbug.com/1257927
                 swarming = targets.swarming(
@@ -188,6 +193,7 @@ linux_memory_builder(
                 ),
             ),
             "content_browsertests": targets.mixin(
+                enable_rts_filtering = True,
                 swarming = targets.swarming(
                     shards = 24,
                 ),
@@ -210,15 +216,26 @@ linux_memory_builder(
                         "--use-gpu-in-tests",
                         "--no-xvfb",
                     ],
+                    ci_only = True,
+                    experiment_percentage = 100,
                 ),
                 "linux_nvidia_gtx_1660_stable",
             ],
             "interactive_ui_tests": targets.mixin(
-                # Only retry the individual failed tests instead of rerunning entire
-                # shards.
-                retry_only_failed_tests = True,
+                args = [
+                    # TODO(crbug.com/542347163): Re-enable when the runtime regression is fixed.
+                    "--disable-features=WebUIOmniboxPopup,WebUIOmniboxAimPopup",
+                ],
                 # These are slow on the ASan trybot for some reason, crbug.com/1257927
                 swarming = targets.swarming(
+                    # Move to faster machine types to reduce capacity impact.
+                    # TODO(crbug.com/541675870): Can remove this if/when
+                    # everything's been migrated.
+                    optional_dimensions = {
+                        30: {
+                            "cpu": "x86-64-e4",
+                        },
+                    },
                     shards = 12,
                 ),
             ),
@@ -229,15 +246,24 @@ linux_memory_builder(
                     shards = 16,
                 ),
             ),
+            "perfetto_unittests": targets.mixin(
+                # TODO(crbug.com/574123811): Re-enable once the int64 to double
+                # filter cast no longer relies on undefined behavior.
+                args = [
+                    "--gtest_filter=-ToDouble/BytecodeInterpreterCastTest.Cast/9223372036854775806_Double_9223372036854774784_000000_Gt:ToDouble/BytecodeInterpreterCastTest.Cast/9223372036854775806_Double_9223372036854774784_000000_Le:ToDouble/BytecodeInterpreterCastTest.Cast/9223372036854775806_Double_9223372036854775808_000000_Ge:ToDouble/BytecodeInterpreterCastTest.Cast/9223372036854775806_Double_9223372036854775808_000000_Lt",
+                ],
+            ),
             "sync_integration_tests": targets.mixin(
+                args = [
+                    # TODO(crbug.com/542347163): Re-enable when the runtime regression is fixed.
+                    "--disable-features=WebUIOmniboxPopup,WebUIOmniboxAimPopup",
+                ],
+                enable_rts_filtering = True,
                 swarming = targets.swarming(
-                    shards = 4,
+                    shards = 8,
                 ),
             ),
             "unit_tests": targets.mixin(
-                # Only retry the individual failed tests instead of rerunning entire
-                # shards.
-                retry_only_failed_tests = True,
                 # These are slow on the ASAN trybot for some reason.
                 # crbug.com/1257927
                 swarming = targets.swarming(
@@ -246,6 +272,9 @@ linux_memory_builder(
             ),
         },
     ),
+    ssd = None,
+    # TODO(crbug.com/564535071): Revert once the bug is fixed.
+    gardener_rotations = args.ignore_default(None),
     console_view_entry = consoles.console_view_entry(
         category = "linux|asan lsan",
         short_name = "tst",
@@ -257,6 +286,7 @@ linux_memory_builder(
 linux_memory_builder(
     name = "Linux TSan Builder",
     branch_selector = branches.selector.LINUX_BRANCHES,
+    description_html = "Compiles a Linux x64 release build with ThreadSanitizer.",
     builder_spec = builder_config.builder_spec(
         gclient_config = builder_config.gclient_config(
             config = "chromium",
@@ -283,6 +313,7 @@ linux_memory_builder(
             "x64",
         ],
     ),
+    ssd = None,
     console_view_entry = consoles.console_view_entry(
         category = "linux|TSan v2",
         short_name = "bld",
@@ -292,6 +323,7 @@ linux_memory_builder(
 
 linux_memory_builder(
     name = "Linux CFI",
+    description_html = "Builds and runs tests on Linux x64 release builds with Control Flow Integrity (CFI) enabled.",
     builder_spec = builder_config.builder_spec(
         gclient_config = builder_config.gclient_config(
             config = "chromium",
@@ -329,8 +361,12 @@ linux_memory_builder(
         ],
         per_test_modifications = {
             "browser_tests": targets.mixin(
+                args = [
+                    # TODO(crbug.com/542347163): Re-enable when the runtime regression is fixed.
+                    "--disable-features=WebUIOmniboxPopup,WebUIOmniboxAimPopup",
+                ],
                 swarming = targets.swarming(
-                    shards = 45,
+                    shards = 94,
                 ),
             ),
             "crashpad_tests": targets.remove(
@@ -342,13 +378,28 @@ linux_memory_builder(
                         "--use-gpu-in-tests",
                         "--no-xvfb",
                     ],
+                    ci_only = True,
+                    experiment_percentage = 100,
                 ),
                 "linux_nvidia_gtx_1660_stable",
             ],
             "interactive_ui_tests": targets.mixin(
+                args = [
+                    # TODO(crbug.com/542347163): Re-enable when the runtime regression is fixed.
+                    "--disable-features=WebUIOmniboxPopup,WebUIOmniboxAimPopup",
+                ],
                 # Slow on certain debug builders, see crbug.com/1513713.
                 swarming = targets.swarming(
-                    shards = 15,
+                    shards = 26,
+                ),
+            ),
+            "sync_integration_tests": targets.mixin(
+                args = [
+                    # TODO(crbug.com/542347163): Re-enable when the runtime regression is fixed.
+                    "--disable-features=WebUIOmniboxPopup,WebUIOmniboxAimPopup",
+                ],
+                swarming = targets.swarming(
+                    shards = 6,
                 ),
             ),
         },
@@ -365,6 +416,7 @@ linux_memory_builder(
 
 linux_memory_builder(
     name = "Linux Chromium OS ASan LSan Builder",
+    description_html = "Compiles an Ash Chrome (linux-chromeos) x64 release build with AddressSanitizer and LeakSanitizer.",
     builder_spec = builder_config.builder_spec(
         gclient_config = builder_config.gclient_config(
             config = "chromium",
@@ -388,7 +440,8 @@ linux_memory_builder(
             "asan",
             "lsan",
             "chromeos",
-            "release_try_builder",
+            "release_builder",
+            "dcheck_always_on",
             "minimal_symbols",
             "remoteexec",
             "x64",
@@ -408,6 +461,7 @@ linux_memory_builder(
 
 linux_memory_builder(
     name = "Linux Chromium OS ASan LSan Tests (1)",
+    description_html = "Runs tests against an Ash Chrome (linux-chromeos) x64 AddressSanitizer and LeakSanitizer build.",
     parent = "Linux Chromium OS ASan LSan Builder",
     builder_spec = builder_config.builder_spec(
         execution_mode = builder_config.execution_mode.TEST,
@@ -485,9 +539,16 @@ linux_memory_builder(
                     shards = 8,
                 ),
             ),
+            "perfetto_unittests": targets.mixin(
+                # TODO(crbug.com/574123811): Re-enable once the int64 to double
+                # filter cast no longer relies on undefined behavior.
+                args = [
+                    "--gtest_filter=-ToDouble/BytecodeInterpreterCastTest.Cast/9223372036854775806_Double_9223372036854774784_000000_Gt:ToDouble/BytecodeInterpreterCastTest.Cast/9223372036854775806_Double_9223372036854774784_000000_Le:ToDouble/BytecodeInterpreterCastTest.Cast/9223372036854775806_Double_9223372036854775808_000000_Ge:ToDouble/BytecodeInterpreterCastTest.Cast/9223372036854775806_Double_9223372036854775808_000000_Lt",
+                ],
+            ),
             "sync_integration_tests": targets.mixin(
                 swarming = targets.swarming(
-                    shards = 6,
+                    shards = 12,
                 ),
             ),
             "unit_tests": targets.mixin(
@@ -499,6 +560,7 @@ linux_memory_builder(
             ),
         },
     ),
+    ssd = None,
     console_view_entry = consoles.console_view_entry(
         category = "cros|asan",
         short_name = "tst",
@@ -508,11 +570,13 @@ linux_memory_builder(
 
 linux_memory_builder(
     name = "Linux ChromiumOS MSan Builder",
+    description_html = "Compiles an Ash Chrome (linux-chromeos) x64 release build with MemorySanitizer.",
     builder_spec = builder_config.builder_spec(
         gclient_config = builder_config.gclient_config(
             config = "chromium",
             apply_configs = [
                 "chromeos",
+                "checkout_instrumented_libraries",
             ],
         ),
         chromium_config = builder_config.chromium_config(
@@ -546,6 +610,7 @@ linux_memory_builder(
 
 linux_memory_builder(
     name = "Linux ChromiumOS MSan Tests",
+    description_html = "Runs tests against an Ash Chrome (linux-chromeos) x64 MemorySanitizer build.",
     parent = "Linux ChromiumOS MSan Builder",
     builder_spec = builder_config.builder_spec(
         execution_mode = builder_config.execution_mode.TEST,
@@ -584,6 +649,8 @@ linux_memory_builder(
             "browser_tests": targets.mixin(
                 args = [
                     "--test-launcher-filter-file=../../testing/buildbot/filters/chromeos.msan.browser_tests.oobe_negative.filter",
+                    # TODO(crbug.com/542347163): Re-enable when the runtime regression is fixed.
+                    "--disable-features=WebUIOmniboxPopup,WebUIOmniboxAimPopup",
                 ],
                 # These are very slow on the Chrome OS MSAN trybot, most likely because browser_tests on cros has ~40% more tests. Also, these tests
                 # run on ash, which means every test starts and shuts down ash, which most likely explains why it takes longer than on other platforms.
@@ -603,6 +670,10 @@ linux_memory_builder(
                 reason = "Can't run on MSAN because gl_unittests_ozone uses the hardware driver, which isn't instrumented.",
             ),
             "interactive_ui_tests": targets.mixin(
+                args = [
+                    # TODO(crbug.com/542347163): Re-enable when the runtime regression is fixed.
+                    "--disable-features=WebUIOmniboxPopup,WebUIOmniboxAimPopup",
+                ],
                 # These are very slow on the Chrome OS MSAN trybot for some reason.
                 # crbug.com/865455
                 swarming = targets.swarming(
@@ -619,6 +690,11 @@ linux_memory_builder(
             "services_unittests": targets.remove(
                 reason = "https://crbug.com/831676",
             ),
+            "sync_integration_tests": targets.mixin(
+                swarming = targets.swarming(
+                    shards = 6,
+                ),
+            ),
             "unit_tests": targets.mixin(
                 # These are very slow on the Chrome OS MSAN trybot for some reason.
                 # crbug.com/865455
@@ -628,6 +704,7 @@ linux_memory_builder(
             ),
         },
     ),
+    ssd = None,
     console_view_entry = consoles.console_view_entry(
         category = "cros|msan",
         short_name = "tst",
@@ -638,10 +715,12 @@ linux_memory_builder(
 
 linux_memory_builder(
     name = "Linux MSan Builder",
+    description_html = "Compiles a Linux x64 release build with MemorySanitizer.",
     builder_spec = builder_config.builder_spec(
         gclient_config = builder_config.gclient_config(
             config = "chromium",
             apply_configs = [
+                "checkout_instrumented_libraries",
             ],
         ),
         chromium_config = builder_config.chromium_config(
@@ -675,6 +754,7 @@ linux_memory_builder(
 
 linux_memory_builder(
     name = "Linux MSan Tests",
+    description_html = "Runs tests against a Linux x64 MemorySanitizer build.",
     parent = "Linux MSan Builder",
     builder_spec = builder_config.builder_spec(
         execution_mode = builder_config.execution_mode.TEST,
@@ -708,8 +788,12 @@ linux_memory_builder(
         ],
         per_test_modifications = {
             "browser_tests": targets.mixin(
+                args = [
+                    # TODO(crbug.com/542347163): Re-enable when the runtime regression is fixed.
+                    "--disable-features=WebUIOmniboxPopup,WebUIOmniboxAimPopup",
+                ],
                 swarming = targets.swarming(
-                    shards = 70,
+                    shards = 119,
                 ),
             ),
             "content_browsertests": targets.mixin(
@@ -725,15 +809,29 @@ linux_memory_builder(
                 reason = "Can't run on MSAN because gl_unittests uses the hardware driver, which isn't instrumented.",
             ),
             "interactive_ui_tests": targets.mixin(
+                args = [
+                    # TODO(crbug.com/542347163): Re-enable when the runtime regression is fixed.
+                    "--disable-features=WebUIOmniboxPopup,WebUIOmniboxAimPopup",
+                ],
                 swarming = targets.swarming(
-                    shards = 20,
+                    shards = 43,
                 ),
             ),
             "services_unittests": targets.remove(
                 reason = "https://crbug.com/831676",
             ),
+            "sync_integration_tests": targets.mixin(
+                args = [
+                    # TODO(crbug.com/542347163): Re-enable when the runtime regression is fixed.
+                    "--disable-features=WebUIOmniboxPopup,WebUIOmniboxAimPopup",
+                ],
+                swarming = targets.swarming(
+                    shards = 6,
+                ),
+            ),
         },
     ),
+    ssd = None,
     console_view_entry = consoles.console_view_entry(
         category = "linux|msan",
         short_name = "tst",
@@ -743,6 +841,7 @@ linux_memory_builder(
 
 ci.builder(
     name = "Mac ASan 64 Builder",
+    description_html = "Compiles a Mac x64 release build with AddressSanitizer.",
     triggering_policy = scheduler.greedy_batching(
         max_concurrent_invocations = 2,
     ),
@@ -773,7 +872,8 @@ ci.builder(
     ),
     builderless = False,
     cores = None,  # Swapping between 8 and 24
-    os = os.MAC_DEFAULT,
+    # TODO(crbug.com/543006750): Revert to MAC_DEFAULT after arm migration.
+    os = os.MAC_15,
     console_view_entry = consoles.console_view_entry(
         category = "mac",
         short_name = "bld",
@@ -783,6 +883,7 @@ ci.builder(
 linux_memory_builder(
     name = "Linux TSan Tests",
     branch_selector = branches.selector.LINUX_BRANCHES,
+    description_html = "Runs tests against a Linux x64 ThreadSanitizer build.",
     parent = "ci/Linux TSan Builder",
     builder_spec = builder_config.builder_spec(
         execution_mode = builder_config.execution_mode.TEST,
@@ -812,7 +913,6 @@ linux_memory_builder(
                 ],
             ),
             "linux-jammy",
-            "retry_only_failed_tests",
         ],
         per_test_modifications = {
             "blink_unittests": targets.mixin(
@@ -857,11 +957,12 @@ linux_memory_builder(
                 ),
             ],
             "interactive_ui_tests": targets.mixin(
+                args = [
+                    # TODO(crbug.com/542347163): Re-enable when the runtime regression is fixed.
+                    "--disable-features=WebUIOmniboxPopup,WebUIOmniboxAimPopup",
+                ],
                 # https://crbug.com/1498240
                 ci_only = True,
-                # Only retry the individual failed tests instead of rerunning entire
-                # shards.
-                retry_only_failed_tests = True,
                 # These are slow on the TSan bots for some reason, crbug.com/1257927
                 swarming = targets.swarming(
                     # Adjusted for testing, see https://crbug.com/1179567
@@ -873,7 +974,18 @@ linux_memory_builder(
                     shards = 4,
                 ),
             ),
+            "perfetto_unittests": targets.mixin(
+                # TODO(crbug.com/574123811): Re-enable once the int64 to double
+                # filter cast no longer relies on undefined behavior.
+                args = [
+                    "--gtest_filter=-ToDouble/BytecodeInterpreterCastTest.Cast/9223372036854775806_Double_9223372036854774784_000000_Gt:ToDouble/BytecodeInterpreterCastTest.Cast/9223372036854775806_Double_9223372036854774784_000000_Le:ToDouble/BytecodeInterpreterCastTest.Cast/9223372036854775806_Double_9223372036854775808_000000_Ge:ToDouble/BytecodeInterpreterCastTest.Cast/9223372036854775806_Double_9223372036854775808_000000_Lt",
+                ],
+            ),
             "sync_integration_tests": targets.mixin(
+                args = [
+                    # TODO(crbug.com/542347163): Re-enable when the runtime regression is fixed.
+                    "--disable-features=WebUIOmniboxPopup,WebUIOmniboxAimPopup",
+                ],
                 # https://crbug.com/1498240
                 ci_only = True,
                 swarming = targets.swarming(
@@ -887,6 +999,7 @@ linux_memory_builder(
             ),
         },
     ),
+    ssd = None,
     console_view_entry = consoles.console_view_entry(
         category = "linux|TSan v2",
         short_name = "tst",
@@ -926,6 +1039,7 @@ linux_memory_builder(
     ),
     builderless = True,
     cores = 32,
+    ssd = None,
     console_view_entry = consoles.console_view_entry(
         category = "linux|ubsan",
         short_name = "bld",
@@ -968,8 +1082,12 @@ linux_memory_builder(
                 ),
             ),
             "browser_tests": targets.mixin(
+                args = [
+                    # TODO(crbug.com/542347163): Re-enable when the runtime regression is fixed.
+                    "--disable-features=WebUIOmniboxPopup,WebUIOmniboxAimPopup",
+                ],
                 swarming = targets.swarming(
-                    shards = 20,
+                    shards = 34,
                 ),
             ),
             "content_browsertests": targets.mixin(
@@ -978,8 +1096,12 @@ linux_memory_builder(
                 ),
             ),
             "interactive_ui_tests": targets.mixin(
+                args = [
+                    # TODO(crbug.com/542347163): Re-enable when the runtime regression is fixed.
+                    "--disable-features=WebUIOmniboxPopup,WebUIOmniboxAimPopup",
+                ],
                 swarming = targets.swarming(
-                    shards = 6,
+                    shards = 12,
                 ),
             ),
             "unit_tests": targets.mixin(
@@ -989,6 +1111,7 @@ linux_memory_builder(
             ),
         },
     ),
+    ssd = None,
     console_view_entry = consoles.console_view_entry(
         category = "linux|ubsan",
         short_name = "tst",
@@ -999,6 +1122,7 @@ linux_memory_builder(
 
 ci.builder(
     name = "Mac ASan 64 Tests (1)",
+    description_html = "Runs tests against a Mac x64 AddressSanitizer build.",
     parent = "Mac ASan 64 Builder",
     builder_spec = builder_config.builder_spec(
         execution_mode = builder_config.execution_mode.TEST,
@@ -1025,7 +1149,7 @@ ci.builder(
                     "--test-launcher-print-test-stdio=always",
                 ],
             ),
-            "mac_default_x64",
+            "mac_15_x64",
         ],
         per_test_modifications = {
             "browser_tests": targets.mixin(
@@ -1047,9 +1171,16 @@ ci.builder(
                 # https://crbug.com/1251656
                 experiment_percentage = 100,
             ),
+            "perfetto_unittests": targets.mixin(
+                # TODO(crbug.com/574123811): Re-enable once the int64 to double
+                # filter cast no longer relies on undefined behavior.
+                args = [
+                    "--gtest_filter=-ToDouble/BytecodeInterpreterCastTest.Cast/9223372036854775806_Double_9223372036854774784_000000_Gt:ToDouble/BytecodeInterpreterCastTest.Cast/9223372036854775806_Double_9223372036854774784_000000_Le:ToDouble/BytecodeInterpreterCastTest.Cast/9223372036854775806_Double_9223372036854775808_000000_Ge:ToDouble/BytecodeInterpreterCastTest.Cast/9223372036854775806_Double_9223372036854775808_000000_Lt",
+                ],
+            ),
             "sync_integration_tests": targets.mixin(
                 swarming = targets.swarming(
-                    shards = 3,
+                    shards = 8,
                 ),
             ),
             "unit_tests": targets.mixin(
@@ -1061,7 +1192,8 @@ ci.builder(
     ),
     builderless = False,
     cores = 12,
-    os = os.MAC_DEFAULT,
+    # TODO(crbug.com/543006750): Revert to MAC_DEFAULT after arm migration.
+    os = os.MAC_15,
     console_view_entry = consoles.console_view_entry(
         category = "mac",
         short_name = "tst",
@@ -1144,6 +1276,7 @@ ci.builder(
             ),
         },
     ),
+    ssd = None,
     console_view_entry = consoles.console_view_entry(
         category = "linux|blink",
         short_name = "asn",
@@ -1227,6 +1360,7 @@ ci.builder(
             ),
         },
     ),
+    ssd = None,
     console_view_entry = consoles.console_view_entry(
         category = "linux|blink",
         short_name = "lk",
@@ -1245,6 +1379,7 @@ ci.builder(
         gclient_config = builder_config.gclient_config(
             config = "chromium",
             apply_configs = [
+                "checkout_instrumented_libraries",
             ],
         ),
         chromium_config = builder_config.chromium_config(
@@ -1311,6 +1446,7 @@ ci.builder(
             ),
         },
     ),
+    ssd = None,
     console_view_entry = consoles.console_view_entry(
         category = "linux|blink",
         short_name = "msn",
@@ -1319,6 +1455,7 @@ ci.builder(
 
 ci.builder(
     name = "win-asan",
+    description_html = "Builds and runs tests on Windows x64 release builds with AddressSanitizer.",
     builder_spec = builder_config.builder_spec(
         gclient_config = builder_config.gclient_config(
             config = "chromium",
@@ -1366,11 +1503,13 @@ ci.builder(
                 # Tests shows tests run faster with fewer retries by using fewer jobs crbug.com/1411912
                 args = [
                     "--test-launcher-jobs=3",
+                    # TODO(crbug.com/542347163): Re-enable when the runtime regression is fixed.
+                    "--disable-features=WebUIOmniboxPopup,WebUIOmniboxAimPopup",
                 ],
                 # These are very slow on the ASAN trybot for some reason.
                 # crbug.com/1257927
                 swarming = targets.swarming(
-                    shards = 120,
+                    shards = 140,
                 ),
             ),
             "components_unittests": targets.mixin(
@@ -1399,9 +1538,11 @@ ci.builder(
                 # Tests shows tests run faster with fewer retries by using fewer jobs crbug.com/1411912
                 args = [
                     "--test-launcher-jobs=3",
+                    # TODO(crbug.com/542347163): Re-enable when the runtime regression is fixed.
+                    "--disable-features=WebUIOmniboxPopup,WebUIOmniboxAimPopup",
                 ],
                 swarming = targets.swarming(
-                    shards = 18,
+                    shards = 24,
                 ),
             ),
             "net_unittests": targets.mixin(
@@ -1410,13 +1551,22 @@ ci.builder(
                     shards = 16,
                 ),
             ),
+            "perfetto_unittests": targets.mixin(
+                # TODO(crbug.com/574123811): Re-enable once the int64 to double
+                # filter cast no longer relies on undefined behavior.
+                args = [
+                    "--gtest_filter=-ToDouble/BytecodeInterpreterCastTest.Cast/9223372036854775806_Double_9223372036854774784_000000_Gt:ToDouble/BytecodeInterpreterCastTest.Cast/9223372036854775806_Double_9223372036854774784_000000_Le:ToDouble/BytecodeInterpreterCastTest.Cast/9223372036854775806_Double_9223372036854775808_000000_Ge:ToDouble/BytecodeInterpreterCastTest.Cast/9223372036854775806_Double_9223372036854775808_000000_Lt",
+                ],
+            ),
             "sync_integration_tests": targets.mixin(
                 # Tests shows tests run faster with fewer retries by using fewer jobs crbug.com/1411912
                 args = [
                     "--test-launcher-jobs=3",
+                    # TODO(crbug.com/542347163): Re-enable when the runtime regression is fixed.
+                    "--disable-features=WebUIOmniboxPopup,WebUIOmniboxAimPopup",
                 ],
                 swarming = targets.swarming(
-                    shards = 3,
+                    shards = 6,
                 ),
             ),
             "unit_tests": targets.mixin(
@@ -1474,8 +1624,7 @@ ci.builder(
             target_platform = builder_config.target_platform.IOS,
         ),
         clusterfuzz_archive = builder_config.clusterfuzz_archive(
-            archive_name_prefix = "ios-asan",
-            archive_subdir = "ios-asan",
+            archive_path = "mac-release-ios-asan/ios-asan-mac-release",
             gs_acl = "public-read",
             gs_bucket = "chromium-browser-asan",
         ),
@@ -1500,10 +1649,10 @@ ci.builder(
         mixins = [
             "expand-as-isolated-script",
             "has_native_resultdb_integration",
-            "mac_beta_arm64",
+            "mac_default_arm64",
             "mac_toolchain",
             "out_dir_arg",
-            "xcode_26_main",
+            "xcode_27_main",
             "xctest",
         ],
     ),

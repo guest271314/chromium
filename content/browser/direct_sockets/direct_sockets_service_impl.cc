@@ -39,6 +39,7 @@
 #include "net/base/net_errors.h"
 #include "net/base/network_anonymization_key.h"
 #include "net/traffic_annotation/network_traffic_annotation.h"
+#include "services/network/public/cpp/features.h"
 #include "services/network/public/cpp/ip_address_space_util.h"
 #include "services/network/public/cpp/simple_host_resolver.h"
 #include "services/network/public/mojom/network_context.mojom.h"
@@ -248,13 +249,6 @@ void RequestPrivateNetworkAccess(
               return;
             }
 
-            if (!rfh->IsFeatureEnabled(
-                    network::mojom::PermissionsPolicyFeature::
-                        kDirectSocketsPrivate)) {
-              std::move(callback).Run(/*access_allowed=*/false);
-              return;
-            }
-
               rfh->GetBrowserContext()
                   ->GetPermissionController()
                   ->RequestPermissionsFromCurrentDocument(
@@ -400,7 +394,7 @@ DirectSocketsServiceImpl::~DirectSocketsServiceImpl() = default;
 void DirectSocketsServiceImpl::CreateForFrame(
     RenderFrameHost* render_frame_host,
     mojo::PendingReceiver<blink::mojom::DirectSocketsService> receiver) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
   if (!base::FeatureList::IsEnabled(blink::features::kDirectSockets)) {
     mojo::ReportBadMessage(
         "features::kDirectSockets is disabled by command line parameters or a "
@@ -429,7 +423,7 @@ void DirectSocketsServiceImpl::CreateForFrame(
 void DirectSocketsServiceImpl::CreateForSharedWorker(
     SharedWorkerHost& shared_worker,
     mojo::PendingReceiver<blink::mojom::DirectSocketsService> receiver) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
   if (!base::FeatureList::IsEnabled(blink::features::kDirectSockets)) {
     mojo::ReportBadMessage(
         "features::kDirectSockets is disabled by command line parameters or a "
@@ -460,7 +454,7 @@ void DirectSocketsServiceImpl::CreateForSharedWorker(
 void DirectSocketsServiceImpl::CreateForServiceWorker(
     ServiceWorkerVersion& service_worker,
     mojo::PendingReceiver<blink::mojom::DirectSocketsService> receiver) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
   if (!base::FeatureList::IsEnabled(blink::features::kDirectSockets)) {
     mojo::ReportBadMessage(
         "features::kDirectSockets is disabled by command line parameters or a "
@@ -706,7 +700,7 @@ void DirectSocketsServiceImpl::OnResolveCompleteForTCPSocket(
     return;
   }
 
-  DCHECK(!resolved_addresses.empty());
+  CHECK(!resolved_addresses.empty(), base::NotFatalUntil::M160);
 
   auto socket_options = network::mojom::TCPConnectedSocketOptions::New();
   if (options->send_buffer_size.has_value()) {
@@ -774,7 +768,16 @@ void DirectSocketsServiceImpl::OnResolveCompleteForUDPSocket(
     return;
   }
 
-  DCHECK(!resolved_addresses.empty());
+  CHECK(!resolved_addresses.empty(), base::NotFatalUntil::M160);
+
+  const auto& peer_addr = resolved_addresses.front();
+  if (base::FeatureList::IsEnabled(
+          network::features::
+              kDirectSocketsUdpSendRequireMulticastPermissionPolicy) &&
+      !IsMulticastAllowed(context_) && peer_addr.address().IsMulticast()) {
+    FulfillWithError(std::move(callback), net::ERR_MULTICAST_NOT_ALLOWED);
+    return;
+  }
 
   auto socket_options = network::mojom::UDPSocketOptions::New();
   if (options->send_buffer_size.has_value()) {
@@ -796,7 +799,6 @@ void DirectSocketsServiceImpl::OnResolveCompleteForUDPSocket(
   auto params = network::mojom::RestrictedUDPSocketParams::New();
   params->socket_options = std::move(socket_options);
 
-  const auto& peer_addr = resolved_addresses.front();
   auto finish_callback = base::BindOnce(
       [](OpenConnectedUDPSocketCallback callback, net::IPEndPoint peer_addr,
          int result, const std::optional<net::IPEndPoint>& local_addr) {
@@ -845,7 +847,9 @@ void DirectSocketsServiceImpl::CreateRestrictedUDPSocketImpl(
       net::MutableNetworkTrafficAnnotationTag(kDirectSocketsTrafficAnnotation),
       std::move(options), std::move(socket), std::move(listener),
       IsMulticastAllowed(context_),
-      /*allow_source_specific_multicast=*/false, std::move(callback));
+      base::FeatureList::IsEnabled(
+          blink::features::kSourceSpecificMulticastInDirectSockets),
+      std::move(callback));
 }
 
 }  // namespace content

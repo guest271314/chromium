@@ -13,10 +13,9 @@
 #include "chrome/browser/ui/views/frame/contents_web_view.h"
 #include "chrome/browser/ui/views/frame/multi_contents_view.h"
 #include "chrome/browser/ui/views/frame/toolbar_button_provider.h"
-#include "chrome/browser/ui/views/frame/top_container_view.h"
-#include "chrome/browser/ui/views/infobars/infobar_container_view.h"
-#include "chrome/browser/ui/views/location_bar/location_bar_view.h"
-#include "chrome/browser/ui/views/toolbar/toolbar_view.h"
+#include "chrome/browser/ui/views/toolbar/app_menu_control.h"
+#include "chrome/browser/ui/views/toolbar/avatar_toolbar_button_interface.h"
+#include "chrome/browser/ui/views/toolbar/toolbar_button.h"
 #include "chrome/browser/user_education/user_education_service.h"
 #include "chrome/browser/user_education/user_education_service_factory.h"
 #include "components/feature_engagement/public/event_constants.h"
@@ -24,6 +23,9 @@
 #include "components/user_education/common/help_bubble/help_bubble_factory_registry.h"
 #include "components/user_education/views/help_bubble_view.h"
 #include "ui/views/accessible_pane_view.h"
+#include "ui/views/bubble/bubble_anchor.h"
+#include "ui/views/bubble/bubble_dialog_delegate_view.h"
+#include "ui/views/controls/button/md_text_button.h"
 #include "ui/views/interaction/element_tracker_views.h"
 #include "ui/views/view.h"
 #include "ui/views/view_class_properties.h"
@@ -95,16 +97,23 @@ bool BrowserFocusControllerViews::
         bubble = dialog;
       }
     }
-    for (auto* view : std::initializer_list<views::View*>{
-             GetViewForId(kLocationBarElementId),
-             toolbar_button_provider_->GetDownloadButton(),
-             GetViewForId(kTopContainerElementId)}) {
-      if (view) {
-        if (auto* dialog = view->GetProperty(views::kAnchoredDialogKey);
-            dialog && !user_education::HelpBubbleView::IsHelpBubble(dialog)) {
-          bubble = dialog;
-          break;
-        }
+    auto* multi_contents_view = views::AsViewClass<MultiContentsView>(
+        GetViewForId(kMultiContentsViewElementId));
+    for (const views::BubbleAnchor& anchor : std::to_array<views::BubbleAnchor>(
+             {views::BubbleAnchor(
+                  browser_elements_->GetElement(kLocationBarElementId)),
+              views::BubbleAnchor(
+                  toolbar_button_provider_->GetDownloadButton()),
+              views::BubbleAnchor(GetViewForId(kTopContainerElementId)),
+              views::BubbleAnchor(
+                  multi_contents_view
+                      ? multi_contents_view->GetActiveContentsContainerView()
+                            ->GetToastAnchorView()
+                      : nullptr)})) {
+      if (auto* dialog = views::BubbleDialogDelegate::GetAnchoredDialog(anchor);
+          dialog && !user_education::HelpBubbleView::IsHelpBubble(dialog)) {
+        bubble = dialog;
+        break;
       }
     }
   }

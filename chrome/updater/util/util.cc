@@ -4,7 +4,9 @@
 
 #include "chrome/updater/util/util.h"
 
-#include <cstdint>
+#include <stddef.h>
+#include <stdint.h>
+
 #include <optional>
 #include <string>
 #include <string_view>
@@ -15,6 +17,9 @@
 #include <initguid.h>
 #include <windows.h>
 
+#include <shlobj.h>
+
+#include "base/base_paths_win.h"
 #include "base/logging_win.h"
 #endif  // BUILDFLAG(IS_WIN)
 
@@ -70,6 +75,16 @@ namespace {
 
 constexpr int64_t kLogRotateAtSize = 1024 * 1024;  // 1 MiB.
 
+template <typename CharT>
+bool IsValidAppIdImpl(std::basic_string_view<CharT> app_id) {
+  static constexpr size_t kMaxAppIdLength = 256;
+  return !app_id.empty() && app_id.length() <= kMaxAppIdLength &&
+         std::ranges::all_of(app_id, &base::IsAsciiPrintable<CharT>) &&
+         app_id.find(CharT{'/'}) == std::basic_string_view<CharT>::npos &&
+         app_id.find(CharT{'\\'}) == std::basic_string_view<CharT>::npos &&
+         app_id[0] != CharT{'.'};
+}
+
 }  // namespace
 
 std::optional<base::FilePath> GetVersionedInstallDirectory(
@@ -97,6 +112,26 @@ std::optional<base::FilePath> GetUpdaterExecutablePath(
 std::optional<base::FilePath> GetCrxCacheDirectory(UpdaterScope scope) {
   return GetInstallDirectory(scope).transform(
       [](const base::FilePath& path) { return path.AppendUTF8("crx_cache"); });
+}
+
+std::optional<base::FilePath> GetUpdaterTempDir() {
+  base::FilePath temp_dir;
+#if BUILDFLAG(IS_WIN)
+  if (::IsUserAnAdmin()) {
+    if (!base::PathService::Get(base::DIR_SYSTEM_TEMP, &temp_dir)) {
+      return std::nullopt;
+    }
+  } else {
+    if (!base::GetTempDir(&temp_dir)) {
+      return std::nullopt;
+    }
+  }
+#else
+  if (!base::GetTempDir(&temp_dir)) {
+    return std::nullopt;
+  }
+#endif
+  return temp_dir;
 }
 
 std::optional<base::FilePath> GetUpdaterExecutablePath(UpdaterScope scope) {
@@ -386,6 +421,14 @@ void EnumerateUpdateClientTempDirectories(
                              base::StrCat({"*", kProdId, matcher, "*"})))
         .ForEach([&callback](const base::FilePath& dir) { callback(dir); });
   }
+}
+
+bool IsValidAppId(std::string_view app_id) {
+  return IsValidAppIdImpl(app_id);
+}
+
+bool IsValidAppId(std::wstring_view app_id) {
+  return IsValidAppIdImpl(app_id);
 }
 
 }  // namespace updater

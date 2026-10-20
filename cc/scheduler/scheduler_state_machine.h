@@ -208,6 +208,9 @@ class CC_EXPORT SchedulerStateMachine {
   // Returns the main frame throttle interval computed based on the
   // static throttle feature and the renderer settings.
   base::TimeDelta MainFrameThrottledInterval() const;
+  static base::TimeDelta GetMainFrameThrottledInterval(
+      base::TimeDelta frame_interval,
+      bool is_webview);
 
   // Indicates whether the LayerTreeHostImpl is visible.
   void SetVisible(bool visible);
@@ -260,6 +263,10 @@ class CC_EXPORT SchedulerStateMachine {
   // SetCriticalBeginMainFrameToActivateIsFast.
   bool ImplLatencyTakesPriority() const;
 
+  // Notifies that we have received an input event. This is used for
+  // unthrottling.
+  void NotifyInputEvent();
+
   // Indicates that a new begin main frame flow needs to be performed, either
   // to pull updates from the main thread to the impl, or to push deltas from
   // the impl thread to main.
@@ -269,7 +276,7 @@ class CC_EXPORT SchedulerStateMachine {
   // of the interval since the last one. This is to be used in cases where
   // `SetThrottleMainFrames()` has been called, and we have an "urgent" update
   // that should not wait more than necessary.
-  void SetNeedsBeginMainFrame(bool now);
+  void SetNeedsBeginMainFrame(bool now, bool unthrottled = false);
   void SetUrgentBeginMainFramePending();
   bool needs_begin_main_frame() const { return needs_begin_main_frame_; }
 
@@ -380,8 +387,11 @@ class CC_EXPORT SchedulerStateMachine {
     waiting_for_scroll_event_ = waiting_for_scroll_event;
   }
 
-  void SetShouldThrottleFrameRate(bool flag);
   void SetRequestHighFramerate(bool flag);
+
+  int consecutive_no_damage_main_frames() const {
+    return consecutive_no_damage_main_frames_;
+  }
 
  protected:
   bool BeginFrameRequiredForAction() const;
@@ -424,6 +434,8 @@ class CC_EXPORT SchedulerStateMachine {
   void WillDrawInternal();
   void WillPerformImplSideInvalidationInternal();
   void DidDrawInternal(DrawResult draw_result);
+  void UpdateConsecutiveNoDamageThrottlingInterval();
+  bool DisableThrottlingDueToHighFramerateRequests() const;
 
   const SchedulerSettings settings_;
 
@@ -452,6 +464,7 @@ class CC_EXPORT SchedulerStateMachine {
   base::TimeTicks last_sent_begin_main_frame_time_;
   base::TimeDelta main_frame_throttled_interval_;
   base::TimeDelta unthrottled_frame_interval_;
+  base::TimeDelta main_frame_consecutive_no_damage_throttled_interval_;
 
   // Inputs from the last impl frame that are required for decisions made in
   // this impl frame. The values from the last frame are cached before being
@@ -473,6 +486,8 @@ class CC_EXPORT SchedulerStateMachine {
   bool did_prepare_tiles_ = false;
 
   int consecutive_checkerboard_animations_ = 0;
+  int consecutive_no_damage_main_frames_ = 0;
+  const bool throttle_repeated_no_damage_frames_ = false;
   int pending_submit_frames_ = 0;
   int submit_frames_with_current_layer_tree_frame_sink_ = 0;
   bool needs_redraw_ = false;
@@ -539,7 +554,6 @@ class CC_EXPORT SchedulerStateMachine {
   // scroll events to arrive.
   bool waiting_for_scroll_event_ = false;
 
-  bool throttle_frame_rate_ = false;
   uint64_t high_framerate_requests_count_ = 0;
 };
 

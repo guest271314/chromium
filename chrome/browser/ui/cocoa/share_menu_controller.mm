@@ -16,18 +16,18 @@
 #include "chrome/app/chrome_command_ids.h"
 #include "chrome/browser/global_keyboard_shortcuts_mac.h"
 #include "chrome/browser/platform_util.h"
-#include "chrome/browser/ui/browser.h"
-#include "chrome/browser/ui/browser_commands.h"
-#include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #import "chrome/browser/ui/cocoa/accelerators_cocoa.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/grit/generated_resources.h"
 #include "components/omnibox/browser/location_bar_model.h"
 #include "net/base/apple/url_conversions.h"
 #include "ui/base/accelerators/platform_accelerator_cocoa.h"
+#include "ui/base/base_window.h"
+#import "ui/base/cocoa/macos27_sdk.h"
 #include "ui/base/l10n/l10n_util_mac.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/image/image.h"
@@ -52,9 +52,7 @@ bool CanShare() {
   BrowserWindowInterface* last_active_browser =
       GlobalBrowserCollection::GetInstance()->GetLastActiveBrowser();
   return last_active_browser &&
-         last_active_browser->GetFeatures()
-             .location_bar_model()
-             ->ShouldDisplayURL() &&
+         LocationBarModel::From(last_active_browser)->ShouldDisplayURL() &&
          last_active_browser->GetTabStripModel()->GetActiveWebContents() &&
          last_active_browser->GetTabStripModel()
              ->GetActiveWebContents()
@@ -113,11 +111,20 @@ bool CanShare() {
   // when the next task is pumped. See https://crbug.com/40829755.
   base::HangWatcher::InvalidateActiveExpectations();
 
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
   // Using a real URL instead of empty string to avoid system log about relative
   // URLs in the pasteboard. This URL will not actually be shared to, just used
   // to fetch sharing services that can handle the NSURL type.
+  //
+  // +[NSSharingService sharingServicesForItems:] is deprecated in macOS 13, but
+  // the replacement is not adequate for our usage. It creates a menu item that
+  // shows a picker that we're not in control of, and conflicts with existing
+  // menu items. See https://crbug.com/40846334 for the investigation into the
+  // replacement API and why it can't be used.
   NSArray* services = [NSSharingService
       sharingServicesForItems:@[ [NSURL URLWithString:@"https://google.com"] ]];
+#pragma clang diagnostic pop
   NSMenuItem* email = [[NSMenuItem alloc]
       initWithTitle:l10n_util::GetNSString(IDS_EMAIL_LINK_MAC)
              action:@selector(emailLink:)
@@ -144,6 +151,9 @@ bool CanShare() {
       keyEquivalent:@""];
   moreItem.target = self;
   moreItem.image = [self moreImage];
+  if (@available(macOS 27, *)) {
+    moreItem.preferredImageVisibility = NSMenuItemImageVisibilityVisible;
+  }
   [menu addItem:moreItem];
 }
 
@@ -315,6 +325,9 @@ bool CanShare() {
                                          keyEquivalent:@""];
   item.target = self;
   item.image = service.image;
+  if (@available(macOS 27, *)) {
+    item.preferredImageVisibility = NSMenuItemImageVisibilityVisible;
+  }
   item.representedObject = service;
   return item;
 }
@@ -323,7 +336,7 @@ bool CanShare() {
   ui::Accelerator accelerator;
   bool found = GetDefaultMacAcceleratorForCommandId(IDC_EMAIL_PAGE_LOCATION,
                                                     &accelerator);
-  DCHECK(found);
+  CHECK(found, base::NotFatalUntil::M162);
   return GetKeyEquivalentAndModifierMaskFromAccelerator(accelerator)
       .keyEquivalent;
 }

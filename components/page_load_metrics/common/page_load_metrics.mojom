@@ -4,7 +4,7 @@
 
 module page_load_metrics.mojom;
 
-import "mojo/public/mojom/base/byte_count.mojom";
+import "mojo/public/mojom/base/byte_size.mojom";
 import "mojo/public/mojom/base/shared_memory.mojom";
 import "mojo/public/mojom/base/time.mojom";
 import "mojo/public/mojom/base/unguessable_token.mojom";
@@ -67,9 +67,9 @@ struct LargestContentfulPaintTiming {
   bool image_request_priority_valid = false;
   network.mojom.RequestPriority image_request_priority_value;
 
-  // The offset of the corresponding soft navigation; 0 otherwise.
-  // See SoftNavigationMetrics.soft_navigation_offset.
-  uint64 soft_navigation_offset;
+  // The monotonic ordinal navigation ID of the corresponding soft navigation;
+  // 1 for initial navigation.
+  uint64 performance_timeline_navigation_id;
 };
 
 // TimeDeltas below relative to navigation start.
@@ -116,6 +116,9 @@ struct MonotonicPaintTiming {
 
   // Time when the first contentful thing (image, text, etc.) is painted.
   mojo_base.mojom.TimeTicks? first_contentful_paint;
+
+  // Time when the first contentful paint was submitted to compositor.
+  mojo_base.mojom.TimeTicks? first_contentful_paint_submitted;
 };
 
 // TimeDeltas below represent durations of time during the page load.
@@ -185,6 +188,65 @@ struct DomainLookupTiming {
 
   // Time that the domain lookup ended relative to navigation start time.
   mojo_base.mojom.TimeDelta? domain_lookup_end;
+};
+
+// Represents Unicode scripts (and Emojis) that we track for font fallback.
+// This is a curated subset of ICU's UScriptCode (plus kEmoji) designed
+// specifically for tracking high-impact font fallback categories in UMA.
+// LINT.IfChange(ScriptType)
+enum ScriptType {
+  // Catch-all for scripts not explicitly listed below.
+  kOther = 0,
+  // Latin script (USCRIPT_LATIN).
+  kLatin = 1,
+  // Han (CJK Ideographs) script (USCRIPT_HAN).
+  kHan = 2,
+  // Hangul script (USCRIPT_HANGUL).
+  kHangul = 3,
+  // Hiragana script (USCRIPT_HIRAGANA).
+  kHiragana = 4,
+  // Katakana script (USCRIPT_KATAKANA).
+  kKatakana = 5,
+  // Arabic script (USCRIPT_ARABIC).
+  kArabic = 6,
+  // Bengali script (USCRIPT_BENGALI).
+  kBengali = 7,
+  // Devanagari script (USCRIPT_DEVANAGARI).
+  kDevanagari = 8,
+  // Cyrillic script (USCRIPT_CYRILLIC).
+  kCyrillic = 9,
+  // Common script (USCRIPT_COMMON), used for math, symbols, etc.
+  kCommon = 10,
+  // Emojis (detected via fallback priority instead of script code).
+  kEmoji = 11,
+};
+// LINT.ThenChange(//tools/metrics/histograms/metadata/page/histograms.xml:GWSFontFallbackScript)
+
+struct ScriptFallbackInfo {
+  // The script type (or Emoji) of the fallback character.
+  ScriptType script_type;
+  // The number of fallback events for this script/Emoji.
+  uint32 fallback_count;
+};
+
+struct FontLoadingMetrics {
+  // Total cumulative time spent in character fallback.
+  mojo_base.mojom.TimeDelta? fallback_duration;
+
+  // Total number of character fallback events.
+  uint32 fallback_count;
+
+  // Duration of the first fallback event in the process.
+  mojo_base.mojom.TimeDelta? fallback_initial_duration;
+
+  // NGShapeCache hits.
+  uint32 shape_cache_hit_count;
+
+  // NGShapeCache misses.
+  uint32 shape_cache_miss_count;
+
+  // Detailed fallback metrics per script.
+  array<ScriptFallbackInfo> script_fallback_metrics;
 };
 
 // PageLoadTiming contains timing metrics associated with a page load. Many of
@@ -277,6 +339,10 @@ struct SubresourceLoadMetrics {
   // Number of subresources loads that is responded by the service worker.
   // i.e. `respondWith` was called.
   uint32 number_of_subresource_loads_handled_by_service_worker;
+
+  // Number of subresource loads resolved from the local font cache in the
+  // frame (via @font-face src: local() or FontFace API).
+  uint32 number_of_subresource_loads_from_local_font_cache;
 
   // Metrics for service workers.
   ServiceWorkerSubresourceLoadMetrics? service_worker_subresource_load_metrics;
@@ -496,19 +562,19 @@ struct ResourceDataUpdate {
 
   // Network bytes received for the resource since the last timing update
   // from renderer to browser.
-  mojo_base.mojom.ByteCount delta_bytes;
+  mojo_base.mojom.ByteSize delta_bytes;
 
   // Total network bytes received for the resource across timing updates. This
   // is the aggregate of the |delta_bytes| from each timing update.
-  mojo_base.mojom.ByteCount received_data_length;
+  mojo_base.mojom.ByteSize received_data_length;
 
   // The length of the response body for the resource before removing any
   // content encodings. Only set for complete resources.
-  mojo_base.mojom.ByteCount encoded_body_length;
+  mojo_base.mojom.ByteSize encoded_body_length;
 
   // The length of the response body in bytes for the resource after decoding.
   // Only set for complete resources.
-  mojo_base.mojom.ByteCount decoded_body_length;
+  mojo_base.mojom.ByteSize decoded_body_length;
 
   // Whether this resource load has completed.
   bool is_complete;
@@ -546,6 +612,10 @@ struct LayoutShift {
   double layout_shift_score;
   // Whether this layout shift occurred after a user input or document scroll.
   bool after_input_or_scroll;
+  // The performance timeline navigation ID to which this layout shift is
+  // attributed. 1 for the initial/hard navigation, 2, 3, ... for subsequent
+  // soft navigations.
+  uint64 performance_timeline_navigation_id;
 };
 
 // Metrics about how a RenderFrame rendered since the last UpdateTiming call.
@@ -568,9 +638,12 @@ struct EventTiming {
   uint64 interaction_id;
   // The time the interaction occurred.
   mojo_base.mojom.TimeTicks start_time;
-  // The time the processing on the main thread started; used for
-  // determining to which soft navigation this measurement should be attributed.
+  // The time the event processing on the main thread started.
   mojo_base.mojom.TimeTicks processing_start;
+  // The performance timeline navigation ID to which this interaction is
+  // attributed. 1 for the initial/hard navigation, 2, 3, ... for subsequent
+  // soft navigations.
+  uint64 performance_timeline_navigation_id;
 };
 
 // Sent from renderer to browser process when the PageLoadTiming for the
@@ -593,7 +666,8 @@ interface PageLoadMetrics {
                SubresourceLoadMetrics? subresource_load_metrics,
                array<SoftNavigationMetrics> soft_navigation_metrics,
                array<LargestContentfulPaintTiming> soft_largest_contentful_paint,
-               array<CustomUserTimingMark> custom_user_timings);
+               array<CustomUserTimingMark> custom_user_timings,
+               FontLoadingMetrics? font_loading_metrics);
 
   // Called when performance entries are added via `performance.mark()` from the
   // outermost main frame in renderer, except for the case when standard
@@ -626,27 +700,19 @@ struct BackForwardCacheTiming {
 
 // Metrics about soft navigation. See soft navigation at
 // https://github.com/WICG/soft-navigations.
-// The metrics are to be added in a SoftNavigation Event which is parallel to
-// a PageLoad event.
-struct SoftNavigationMetrics {
-  // A unique number assigned to this soft navigation from the start of the
-  // page load, 1, 2, 3, ... n. For the last soft navigation, it is synonymous
-  // with a count of the soft navigations for the page load.
-  uint64 soft_navigation_offset;
-
+//
+// Immutable initial commit metadata for a soft navigation, sent once upon
+// commit.
+struct SoftNavigationCommit {
   // The start time of a soft navigation. It is the time the user initializes
   // the soft navigation. It is relative to navigation start, and is the time
   // origin for calculating the loading performance of the soft navigation,
   // e.g. LCP.
   mojo_base.mojom.TimeDelta start_time;
 
-  // The timestamp that we use for slicing the performance timeline;
-  // specifically, for layout shifts (LayoutShift) and interactions
-  // (EventTiming) in a PageLoadMetrics.UpdateTiming call, we distinguish
-  // measurements belonging before or after this soft navigation by comparing
-  // with this timestamp. This is only a Chrome-internal mechanism and never
-  // recorded to UKM. Note: For our web exposed (experimental) API,
-  // PerformanceEntry.navigationId serves the same purpose.
+  // Monotonically increasing TimeTicks timestamp recorded at the time of
+  // the soft navigation commit in the renderer. Used to validate monotonic
+  // ordering of incoming soft navigation commits.
   mojo_base.mojom.TimeTicks soft_navigation_slicing_time;
 
   // The type of the soft navigation.
@@ -657,4 +723,23 @@ struct SoftNavigationMetrics {
   // and therefore attribute the metrics to the correct URL
   // when any corresponding soft navigation completes.
   mojo_base.mojom.UnguessableToken same_document_metrics_token;
+};
+
+// Sent in `PageLoadMetrics.UpdateTiming` to report soft navigation lifecycle
+// updates. This represents either the initial soft navigation commit
+// (with `commit` set, and optional `first_contentful_paint` if already
+// presented), or a subsequent update (such as late `first_contentful_paint`).
+struct SoftNavigationMetrics {
+  // A unique monotonic ordinal number assigned to this soft navigation from
+  // the start of the page load (2, 3, ... n). 1 is reserved for the initial
+  // page load.
+  uint64 performance_timeline_navigation_id;
+
+  // Initial commit metadata. Present when this message conveys the soft
+  // navigation commit.
+  SoftNavigationCommit? commit;
+
+  // Presentation time of the soft navigation's First Contentful Paint relative
+  // to navigation start, if available.
+  mojo_base.mojom.TimeDelta? first_contentful_paint;
 };

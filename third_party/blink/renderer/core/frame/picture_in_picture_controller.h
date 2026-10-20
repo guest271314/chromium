@@ -80,9 +80,8 @@ class CORE_EXPORT PictureInPictureController
       HTMLVideoElement*,
       ScriptPromiseResolver<PictureInPictureWindow>*) = 0;
 
-  // Requests confirmation to start an immersive Picture-in-Picture session
-  // for the given video element.
-  virtual void RequestImmersivePlaybackConfirmation(
+  // Enters an immersive Picture-in-Picture session for the given video element.
+  virtual void EnterPictureInPictureImmersive(
       HTMLVideoElement& video_element) = 0;
 
   // Exit Picture-in-Picture for a video element and resolve promise if any.
@@ -113,6 +112,14 @@ class CORE_EXPORT PictureInPictureController
   // Returns whether system allows Picture-in-Picture feature or not for
   // the associated document.
   virtual bool PictureInPictureEnabled() const = 0;
+
+  // Manages a transient request token that authorizes entering
+  // Picture-in-Picture when triggered by a browser action (such as
+  // the `MediaSession` `enterpictureinpicture` action) without granting broad
+  // user activation to the frame.
+  virtual bool IsPictureInPictureRequestTokenActive() const = 0;
+  virtual void ActivatePictureInPictureRequestToken() = 0;
+  virtual bool ConsumePictureInPictureRequestToken() = 0;
 
   void Trace(Visitor*) const override;
 

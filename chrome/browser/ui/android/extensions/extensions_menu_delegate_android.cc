@@ -11,9 +11,13 @@
 #include "chrome/browser/ui/extensions/extensions_menu_view_model.h"
 #include "content/public/browser/web_contents.h"
 #include "extensions/browser/permissions_manager.h"
+#include "ui/display/display.h"
+#include "ui/display/screen.h"
 #include "ui/gfx/android/java_bitmap.h"
 #include "ui/gfx/image/image_skia.h"
 #include "ui/gfx/image/image_skia_rep.h"
+#include "url/gurl.h"
+#include "url/origin.h"
 
 // Must come after all headers that specialize FromJniType() / ToJniType().
 #include "chrome/browser/ui/android/extensions/jni_headers/ExtensionsMenuBridge_jni.h"
@@ -23,7 +27,7 @@ namespace {
 
 using base::android::ScopedJavaLocalRef;
 
-constexpr gfx::Size kActionIconSize = gfx::Size(24, 24);
+constexpr gfx::Size kActionIconSize = gfx::Size(20, 20);
 
 ScopedJavaLocalRef<jobject> ConvertToJavaBitmap(
     const ui::ImageModel& image_model) {
@@ -34,6 +38,11 @@ ScopedJavaLocalRef<jobject> ConvertToJavaBitmap(
   gfx::ImageSkia image_skia = image_model.GetImage().AsImageSkia();
 
   float icon_scale_factor = 1.0f;
+  display::Screen* screen = display::Screen::Get();
+  if (screen) {
+    icon_scale_factor = screen->GetPrimaryDisplay().device_scale_factor();
+  }
+
   const gfx::ImageSkiaRep& rep =
       image_skia.GetRepresentation(icon_scale_factor);
   const SkBitmap& bitmap = rep.GetBitmap();
@@ -97,6 +106,9 @@ ScopedJavaLocalRef<jobject>
 ExtensionsMenuDelegateAndroid::GetExtensionSitePermissionsState(
     JNIEnv* env,
     const std::string& extension_id) {
+  if (!menu_model_->CanShowSitePermissionsPage(extension_id)) {
+    return nullptr;
+  }
   ExtensionsMenuViewModel::ExtensionSitePermissionsState state =
       menu_model_->GetExtensionSitePermissionsState(extension_id,
                                                     kActionIconSize);
@@ -113,7 +125,7 @@ ExtensionsMenuDelegateAndroid::GetExtensionSitePermissionsState(
   return extensions::Java_ExtensionSitePermissionsState_Constructor(
       env, state.extension_name, ConvertToJavaBitmap(state.extension_icon),
       j_on_click_option, j_on_site_option, j_on_all_sites_option,
-      j_show_requests_toggle);
+      j_show_requests_toggle, state.origin.Serialize());
 }
 
 ScopedJavaLocalRef<jobject> ExtensionsMenuDelegateAndroid::GetMenuEntry(
@@ -133,7 +145,7 @@ ScopedJavaLocalRef<jobject> ExtensionsMenuDelegateAndroid::GetMenuEntry(
       CreateJavaControlState(env, state.context_menu_button),
       CreateJavaControlState(env, state.site_access_toggle),
       CreateJavaControlState(env, state.site_permissions_button),
-      state.is_enterprise);
+      state.is_enterprise, state.origin.Serialize());
 }
 
 int ExtensionsMenuDelegateAndroid::GetOptionalSection(JNIEnv* env) {
@@ -301,11 +313,12 @@ void ExtensionsMenuDelegateAndroid::OnDismissExtensionClicked(
 
 void ExtensionsMenuDelegateAndroid::OnExtensionToggleSelected(
     const extensions::ExtensionId& extension_id,
+    const url::Origin& origin,
     bool is_on) {
   if (is_on) {
-    menu_model_->GrantSiteAccess(extension_id);
+    menu_model_->GrantSiteAccess(extension_id, origin);
   } else {
-    menu_model_->RevokeSiteAccess(extension_id);
+    menu_model_->RevokeSiteAccess(extension_id, origin);
   }
 }
 
@@ -317,8 +330,9 @@ void ExtensionsMenuDelegateAndroid::OnShowRequestsTogglePressed(
 
 void ExtensionsMenuDelegateAndroid::OnSiteAccessSelected(
     const extensions::ExtensionId& extension_id,
+    const url::Origin& origin,
     extensions::PermissionsManager::UserSiteAccess site_access) {
-  menu_model_->UpdateSiteAccess(extension_id, site_access);
+  menu_model_->UpdateSiteAccess(extension_id, origin, site_access);
 }
 
 void ExtensionsMenuDelegateAndroid::OnSiteSettingsToggleButtonPressed(
@@ -335,6 +349,24 @@ void ExtensionsMenuDelegateAndroid::OnReloadPageButtonClicked() {
 
 void ExtensionsMenuDelegateAndroid::OnReloadPageButtonClicked(JNIEnv* env) {
   OnReloadPageButtonClicked();
+}
+
+void ExtensionsMenuDelegateAndroid::OnExtensionToggleSelected(
+    JNIEnv* env,
+    const std::string& extension_id,
+    const std::string& origin,
+    bool is_on) {
+  OnExtensionToggleSelected(extension_id, url::Origin::Create(GURL(origin)),
+                            is_on);
+}
+
+void ExtensionsMenuDelegateAndroid::OnSiteAccessSelected(
+    JNIEnv* env,
+    const std::string& extension_id,
+    const std::string& origin,
+    extensions::PermissionsManager::UserSiteAccess site_access) {
+  OnSiteAccessSelected(extension_id, url::Origin::Create(GURL(origin)),
+                       site_access);
 }
 
 void ExtensionsMenuDelegateAndroid::OpenMainPage() {

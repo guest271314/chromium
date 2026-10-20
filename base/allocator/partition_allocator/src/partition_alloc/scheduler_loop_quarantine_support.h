@@ -5,6 +5,7 @@
 #ifndef PARTITION_ALLOC_SCHEDULER_LOOP_QUARANTINE_SUPPORT_H_
 #define PARTITION_ALLOC_SCHEDULER_LOOP_QUARANTINE_SUPPORT_H_
 
+#include <array>
 #include <optional>
 #include <variant>
 
@@ -32,9 +33,10 @@ class PA_COMPONENT_EXPORT(PARTITION_ALLOC)
   ~ScopedSchedulerLoopQuarantineExclusion();
 
  private:
-  std::optional<internal::ThreadBoundSchedulerLoopQuarantineBranch::
-                    ScopedQuarantineExclusion>
-      instances_[kNumPartitions];
+  std::array<std::optional<internal::ThreadBoundSchedulerLoopQuarantineBranch::
+                               ScopedQuarantineExclusion>,
+             kNumPartitions>
+      instances_;
 };
 
 // An utility class to update Scheduler-Loop Quarantine's purging strategy for
@@ -81,17 +83,19 @@ class PA_COMPONENT_EXPORT(PARTITION_ALLOC)
   uintptr_t tcache_address_ = 0;
 };
 
-// This is a lightweight version of `SchedulerLoopQuarantineScanPolicyUpdater`.
-// It calls `DisallowScanlessPurge` in the constructor and `AllowScanlessPurge`
+// This class manages the quarantine state during a task execution.
+// It calls `OnTaskStart` in the constructor and `OnTaskFinish`
 // in the destructor.
 class PA_COMPONENT_EXPORT(PARTITION_ALLOC)
-    ScopedSchedulerLoopQuarantineDisallowScanlessPurge {
+    ScopedSchedulerLoopQuarantineTaskScope {
   // This is `PA_STACK_ALLOCATED()` to ensure that those two calls are made on
   // the same thread, allowing us to omit thread-safety analysis.
   PA_STACK_ALLOCATED();
 
  public:
-  PA_ALWAYS_INLINE ScopedSchedulerLoopQuarantineDisallowScanlessPurge() {
+  PA_ALWAYS_INLINE explicit ScopedSchedulerLoopQuarantineTaskScope(
+      QuarantineTaskType task_type = QuarantineTaskType::kNormal)
+      : task_type_(task_type) {
     active_ = internal::ThreadCache::IsInitialized();
     if (!active_) {
       return;
@@ -101,10 +105,10 @@ class PA_COMPONENT_EXPORT(PARTITION_ALLOC)
         internal::ThreadCache::EnsureAndGetForQuarantine();
     PA_CHECK(internal::ThreadCache::IsValid(tcache));
 
-    tcache->GetSchedulerLoopQuarantineBranch().DisallowScanlessPurge();
+    tcache->GetSchedulerLoopQuarantineBranch().OnTaskStart(task_type_);
   }
 
-  PA_ALWAYS_INLINE ~ScopedSchedulerLoopQuarantineDisallowScanlessPurge() {
+  PA_ALWAYS_INLINE ~ScopedSchedulerLoopQuarantineTaskScope() {
     if (!active_) {
       return;
     }
@@ -113,10 +117,11 @@ class PA_COMPONENT_EXPORT(PARTITION_ALLOC)
         internal::ThreadCache::EnsureAndGetForQuarantine();
     PA_CHECK(internal::ThreadCache::IsValid(tcache));
 
-    tcache->GetSchedulerLoopQuarantineBranch().AllowScanlessPurge();
+    tcache->GetSchedulerLoopQuarantineBranch().OnTaskFinish(task_type_);
   }
 
   bool active_ = false;
+  const QuarantineTaskType task_type_;
 };
 
 namespace internal {

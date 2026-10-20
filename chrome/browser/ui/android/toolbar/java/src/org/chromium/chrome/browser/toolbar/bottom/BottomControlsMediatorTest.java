@@ -12,12 +12,17 @@ import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
+import static org.mockito.Mockito.clearInvocations;
 import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-import static org.chromium.chrome.browser.toolbar.bottom.BottomControlsProperties.ANDROID_VIEW_HEIGHT;
+import static org.chromium.chrome.browser.toolbar.bottom.BottomControlsProperties.ANDROID_VIEW_HEIGHT_NO_PADDING;
 import static org.chromium.chrome.browser.toolbar.bottom.BottomControlsProperties.ANDROID_VIEW_VISIBLE;
+import static org.chromium.chrome.browser.toolbar.bottom.BottomControlsProperties.BOTTOM_PADDING;
 import static org.chromium.chrome.browser.toolbar.bottom.BottomControlsProperties.COMPOSITED_VIEW_VISIBLE;
 
 import android.app.Activity;
@@ -29,11 +34,13 @@ import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
+import org.mockito.Mockito;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 import org.robolectric.Robolectric;
-import org.robolectric.annotation.Config;
+import org.robolectric.shadows.ShadowLooper;
 
 import org.chromium.base.supplier.ObservableSuppliers;
 import org.chromium.base.supplier.OneshotSupplierImpl;
@@ -46,11 +53,13 @@ import org.chromium.cc.input.BrowserControlsState;
 import org.chromium.cc.input.OffsetTag;
 import org.chromium.chrome.browser.browser_controls.BottomControlsStacker;
 import org.chromium.chrome.browser.browser_controls.BottomControlsStacker.LayerType;
+import org.chromium.chrome.browser.browser_controls.BottomControlsStacker.LayerVisibility;
 import org.chromium.chrome.browser.browser_controls.BrowserControlsOffsetTagsInfo;
-import org.chromium.chrome.browser.browser_controls.BrowserControlsStateProvider;
+import org.chromium.chrome.browser.browser_controls.BrowserControlsVisibilityManager;
 import org.chromium.chrome.browser.browser_controls.BrowserStateBrowserControlsVisibilityDelegate;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.fullscreen.FullscreenManager;
+import org.chromium.chrome.browser.fullscreen.FullscreenOptions;
 import org.chromium.chrome.browser.layouts.LayoutManager;
 import org.chromium.chrome.browser.layouts.LayoutType;
 import org.chromium.chrome.browser.overlay_panel.PanelState;
@@ -58,6 +67,7 @@ import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabObscuringHandler;
 import org.chromium.chrome.browser.ui.edge_to_edge.EdgeToEdgeController;
 import org.chromium.chrome.browser.ui.edge_to_edge.EdgeToEdgeControllerImpl;
+import org.chromium.chrome.browser.ui.native_page.NativePage;
 import org.chromium.ui.KeyboardVisibilityDelegate;
 import org.chromium.ui.base.TestActivity;
 import org.chromium.ui.base.WindowAndroid;
@@ -67,11 +77,11 @@ import org.chromium.ui.edge_to_edge.EdgeToEdgeSupplier.ChangeObserver;
 import org.chromium.ui.insets.InsetObserver;
 import org.chromium.ui.modelutil.PropertyModel;
 
+import java.lang.ref.WeakReference;
 import java.util.function.Supplier;
 
 /** Unit tests for {@link BottomControlsMediator}. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 public class BottomControlsMediatorTest {
 
     private static final int DEFAULT_HEIGHT = 80;
@@ -89,7 +99,7 @@ public class BottomControlsMediatorTest {
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
 
     @Mock BottomControlsStacker mBottomControlsStacker;
-    @Mock BrowserControlsStateProvider mBrowserControlsStateProvider;
+    @Mock BrowserControlsVisibilityManager mBrowserControlsVisibilityManager;
     @Mock LayoutManager mLayoutManager;
     @Mock WindowAndroid mWindowAndroid;
     @Mock TabObscuringHandler mTabObscuringHandler;
@@ -100,6 +110,7 @@ public class BottomControlsMediatorTest {
     @Mock InsetObserver mInsetObserver;
     @Mock EdgeToEdgeStateProvider mEdgeToEdgeStateProvider;
     @Mock EdgeToEdgeManager mEdgeToEdgeManager;
+    @Mock Runnable mRequestRenderRunnable;
 
     private BrowserStateBrowserControlsVisibilityDelegate mBrowserControlsVisibilityDelegate;
     private SettableMonotonicObservableSupplier<EdgeToEdgeController> mEdgeToEdgeControllerSupplier;
@@ -118,7 +129,9 @@ public class BottomControlsMediatorTest {
         doReturn(mKeyboardDelegate).when(mWindowAndroid).getKeyboardDelegate();
         doReturn(SYSTEM_BARS_WINDOW_INSETS).when(mInsetObserver).getLastRawWindowInsets();
         doReturn(mInsetObserver).when(mWindowAndroid).getInsetObserver();
-        doReturn(mBrowserControlsStateProvider).when(mBottomControlsStacker).getBrowserControls();
+        doReturn(mBrowserControlsVisibilityManager)
+                .when(mBottomControlsStacker)
+                .getBrowserControls();
         doReturn(mEdgeToEdgeStateProvider).when(mEdgeToEdgeManager).getEdgeToEdgeStateProvider();
         mBrowserControlsVisibilityDelegate =
                 new BrowserStateBrowserControlsVisibilityDelegate(
@@ -143,7 +156,9 @@ public class BottomControlsMediatorTest {
                         DEFAULT_SHADOW_HEIGHT,
                         mOverlayPanelStateSupplier,
                         mEdgeToEdgeControllerSupplier,
-                        mReadAloudRestoringSupplier);
+                        mTabObservableSupplier,
+                        mReadAloudRestoringSupplier,
+                        mRequestRenderRunnable);
     }
 
     @Test
@@ -162,8 +177,9 @@ public class BottomControlsMediatorTest {
                         DEFAULT_SHADOW_HEIGHT,
                         mOverlayPanelStateSupplier,
                         ObservableSuppliers.alwaysNull(),
-                        mReadAloudRestoringSupplier);
-        assertNull(plainMediator.getEdgeToEdgeChangeObserverForTesting());
+                        mTabObservableSupplier,
+                        mReadAloudRestoringSupplier,
+                        mRequestRenderRunnable);
     }
 
     @Test
@@ -177,7 +193,112 @@ public class BottomControlsMediatorTest {
         ChangeObserver changeObserver = mMediator.getEdgeToEdgeChangeObserverForTesting();
         changeObserver.onToEdgeChange(
                 DEFAULT_INSET, /* isDrawingToEdge= */ false, /* isPageOptInToEdge= */ false);
-        assertEquals(DEFAULT_HEIGHT, mModel.get(ANDROID_VIEW_HEIGHT));
+        assertEquals(DEFAULT_HEIGHT, mModel.get(ANDROID_VIEW_HEIGHT_NO_PADDING));
+        assertEquals(0, mModel.get(BOTTOM_PADDING));
+    }
+
+    @Test
+    @EnableFeatures({ChromeFeatureList.ANDROID_BOTTOM_BAR})
+    public void testEdgeToEdge_NtpOnly() {
+        Tab tab = Mockito.mock(Tab.class);
+        Activity activity = Robolectric.buildActivity(TestActivity.class).setup().get();
+        when(mWindowAndroid.getContext()).thenReturn(new java.lang.ref.WeakReference<>(activity));
+
+        when(tab.isIncognito()).thenReturn(false);
+        NativePage ntp = Mockito.mock(NativePage.class);
+        when(ntp.getHost()).thenReturn("newtab");
+        when(tab.getNativePage()).thenReturn(ntp);
+
+        mTabObservableSupplier.set(tab);
+
+        when(mEdgeToEdgeController.isDrawingToEdge()).thenReturn(true);
+        when(mEdgeToEdgeController.getBottomInsetPx()).thenReturn(DEFAULT_INSET);
+
+        ChangeObserver changeObserver = mMediator.getEdgeToEdgeChangeObserverForTesting();
+        changeObserver.onToEdgeChange(
+                DEFAULT_INSET, /* isDrawingToEdge= */ true, /* isPageOptInToEdge= */ false);
+
+        assertEquals(DEFAULT_HEIGHT, mModel.get(ANDROID_VIEW_HEIGHT_NO_PADDING));
+        assertEquals(0, mModel.get(BOTTOM_PADDING));
+
+        // Transition to standard web page
+        Tab webTab = Mockito.mock(Tab.class);
+        when(webTab.isIncognito()).thenReturn(false);
+        when(webTab.getNativePage()).thenReturn(null);
+        mTabObservableSupplier.set(webTab);
+
+        assertEquals(DEFAULT_HEIGHT, mModel.get(ANDROID_VIEW_HEIGHT_NO_PADDING));
+        assertEquals(0, mModel.get(BOTTOM_PADDING));
+
+        // Transition to Incognito NTP
+        Tab incognitoNtpTab = Mockito.mock(Tab.class);
+        when(incognitoNtpTab.isIncognito()).thenReturn(true);
+        when(incognitoNtpTab.getNativePage()).thenReturn(ntp);
+        mTabObservableSupplier.set(incognitoNtpTab);
+
+        assertEquals(DEFAULT_HEIGHT, mModel.get(ANDROID_VIEW_HEIGHT_NO_PADDING));
+        assertEquals(0, mModel.get(BOTTOM_PADDING));
+    }
+
+    @Test
+    @EnableFeatures({ChromeFeatureList.ANDROID_BOTTOM_BAR})
+    public void testEdgeToEdge_NtpYTranslation() {
+        Tab tab = Mockito.mock(Tab.class);
+        Activity activity = Robolectric.buildActivity(TestActivity.class).setup().get();
+        when(mWindowAndroid.getContext()).thenReturn(new java.lang.ref.WeakReference<>(activity));
+
+        when(tab.isIncognito()).thenReturn(false);
+        NativePage ntp = Mockito.mock(NativePage.class);
+        when(ntp.getHost()).thenReturn("newtab");
+        when(tab.getNativePage()).thenReturn(ntp);
+
+        mTabObservableSupplier.set(tab);
+
+        when(mEdgeToEdgeController.isDrawingToEdge()).thenReturn(true);
+        when(mEdgeToEdgeController.getBottomInsetPx()).thenReturn(DEFAULT_INSET);
+
+        // 1. Test TABSTRIP_TOOLBAR (default mMediator in setUp)
+        mMediator.setBottomControlsVisible(true);
+        mMediator.onBrowserControlsOffsetUpdate(-DEFAULT_INSET); // Y_OFFSET = -56
+        // At rest (bottomControlOffset = 0), it should translate to Y_OFFSET + 0 = -56
+        assertEquals(-DEFAULT_INSET, mModel.get(BottomControlsProperties.ANDROID_VIEW_TRANSLATE_Y));
+
+        // 2. Test BOTTOM_APP_BAR
+        BottomControlsMediator bottomAppBarMediator =
+                new BottomControlsMediator(
+                        mWindowAndroid,
+                        mModel,
+                        mBottomControlsStacker,
+                        mBrowserControlsVisibilityDelegate,
+                        mFullscreenManager,
+                        LayerType.BOTTOM_APP_BAR,
+                        mContentDelegateSupplier,
+                        mTabObscuringHandler,
+                        DEFAULT_HEIGHT,
+                        DEFAULT_SHADOW_HEIGHT,
+                        mOverlayPanelStateSupplier,
+                        mEdgeToEdgeControllerSupplier,
+                        mTabObservableSupplier,
+                        mReadAloudRestoringSupplier,
+                        mRequestRenderRunnable);
+
+        bottomAppBarMediator.setBottomControlsVisible(true);
+        // At rest (bottomControlOffset = 0), it should translate to 0 (padding handles shift)
+        bottomAppBarMediator.onBrowserControlsOffsetUpdate(-DEFAULT_INSET);
+        assertEquals(0, mModel.get(BottomControlsProperties.ANDROID_VIEW_TRANSLATE_Y));
+        assertEquals(DEFAULT_INSET, mModel.get(BottomControlsProperties.BOTTOM_PADDING));
+
+        // When entering split screen (top-half app), isDrawingToEdge becomes false
+        when(mEdgeToEdgeController.isDrawingToEdge()).thenReturn(false);
+        bottomAppBarMediator.onBrowserControlsOffsetUpdate(0);
+        assertEquals(0, mModel.get(BottomControlsProperties.BOTTOM_PADDING));
+        assertEquals(0, mModel.get(BottomControlsProperties.ANDROID_VIEW_TRANSLATE_Y));
+
+        // During scroll-off (bottomControlOffset = 30), it should translate to 30
+        doReturn(30).when(mBrowserControlsVisibilityManager).getBottomControlOffset();
+        doReturn(true).when(mBrowserControlsVisibilityManager).offsetOverridden();
+        bottomAppBarMediator.onBrowserControlsOffsetUpdate(0);
+        assertEquals(30, mModel.get(BottomControlsProperties.ANDROID_VIEW_TRANSLATE_Y));
     }
 
     @Test
@@ -191,7 +312,7 @@ public class BottomControlsMediatorTest {
                         mTabObservableSupplier,
                         null,
                         mEdgeToEdgeManager,
-                        mBrowserControlsStateProvider,
+                        mBrowserControlsVisibilityManager,
                         ObservableSuppliers.createNonNull(mLayoutManager),
                         mFullscreenManager);
         BottomControlsMediator plainMediator =
@@ -208,7 +329,9 @@ public class BottomControlsMediatorTest {
                         DEFAULT_SHADOW_HEIGHT,
                         mOverlayPanelStateSupplier,
                         ObservableSuppliers.createNonNull(liveEdgeToEdgeController),
-                        mReadAloudRestoringSupplier);
+                        mTabObservableSupplier,
+                        mReadAloudRestoringSupplier,
+                        mRequestRenderRunnable);
         assertNotNull(liveEdgeToEdgeController.getAnyChangeObserverForTesting());
         plainMediator.destroy();
         assertNull(liveEdgeToEdgeController.getAnyChangeObserverForTesting());
@@ -225,7 +348,7 @@ public class BottomControlsMediatorTest {
                         mTabObservableSupplier,
                         null,
                         mEdgeToEdgeManager,
-                        mBrowserControlsStateProvider,
+                        mBrowserControlsVisibilityManager,
                         ObservableSuppliers.createNonNull(mLayoutManager),
                         mFullscreenManager);
         new BottomControlsMediator(
@@ -241,13 +364,15 @@ public class BottomControlsMediatorTest {
                 DEFAULT_SHADOW_HEIGHT,
                 mOverlayPanelStateSupplier,
                 ObservableSuppliers.createNonNull(liveEdgeToEdgeController),
-                mReadAloudRestoringSupplier);
+                mTabObservableSupplier,
+                mReadAloudRestoringSupplier,
+                mRequestRenderRunnable);
         assertNotNull(liveEdgeToEdgeController.getAnyChangeObserverForTesting());
-        liveEdgeToEdgeController.setIsOptedIntoEdgeToEdgeForTesting(false);
-        int toNormalHeight = mModel.get(ANDROID_VIEW_HEIGHT);
+        liveEdgeToEdgeController.setIsOptedIntoBottomEdgeToEdgeForTesting(false);
+        int toNormalHeight = mModel.get(ANDROID_VIEW_HEIGHT_NO_PADDING);
         // Go to a native page which will go ToEdge due to our enabled Feature for this test case.
         mTabObservableSupplier.set(null);
-        assertEquals(toNormalHeight, mModel.get(ANDROID_VIEW_HEIGHT));
+        assertEquals(toNormalHeight, mModel.get(ANDROID_VIEW_HEIGHT_NO_PADDING));
     }
 
     @Test
@@ -301,6 +426,48 @@ public class BottomControlsMediatorTest {
                 "Android view should be visible during overlay panel peek.",
                 mModel.get(ANDROID_VIEW_VISIBLE));
         assertThat(mBrowserControlsVisibilityDelegate.get()).isEqualTo(BrowserControlsState.SHOWN);
+    }
+
+    @Test
+    public void testFullscreen() {
+        ArgumentCaptor<FullscreenManager.Observer> fullscreenObserverCaptor =
+                ArgumentCaptor.forClass(FullscreenManager.Observer.class);
+        verify(mFullscreenManager).addObserver(fullscreenObserverCaptor.capture());
+        FullscreenManager.Observer observer = fullscreenObserverCaptor.getValue();
+
+        Tab tab = Mockito.mock(Tab.class);
+        FullscreenOptions options = Mockito.mock(FullscreenOptions.class);
+
+        mMediator.setBottomControlsVisible(true);
+        assertTrue("Compositor view should be visible.", mModel.get(COMPOSITED_VIEW_VISIBLE));
+        assertTrue("Android view should be visible.", mModel.get(ANDROID_VIEW_VISIBLE));
+        assertEquals(LayerVisibility.VISIBLE, mMediator.getLayerVisibility());
+        clearInvocations(mBottomControlsStacker);
+
+        doReturn(true).when(mFullscreenManager).getPersistentFullscreenMode();
+        observer.onEnterFullscreen(tab, options);
+        assertFalse(
+                "Compositor view should be hidden in fullscreen.",
+                mModel.get(COMPOSITED_VIEW_VISIBLE));
+        assertFalse(
+                "Android view should be hidden in fullscreen.", mModel.get(ANDROID_VIEW_VISIBLE));
+        assertEquals(LayerVisibility.HIDDEN, mMediator.getLayerVisibility());
+        verify(mBottomControlsStacker).requestLayerUpdate(false);
+        clearInvocations(mBottomControlsStacker);
+
+        doReturn(false).when(mFullscreenManager).getPersistentFullscreenMode();
+        observer.onExitFullscreen(tab);
+        assertTrue(
+                "Compositor view should be visible after exiting fullscreen.",
+                mModel.get(COMPOSITED_VIEW_VISIBLE));
+        assertTrue(
+                "Android view should be visible after exiting fullscreen.",
+                mModel.get(ANDROID_VIEW_VISIBLE));
+        assertEquals(LayerVisibility.VISIBLE, mMediator.getLayerVisibility());
+        verify(mBottomControlsStacker).requestLayerUpdate(false);
+
+        mMediator.destroy();
+        verify(mFullscreenManager).removeObserver(observer);
     }
 
     @Test
@@ -358,5 +525,243 @@ public class BottomControlsMediatorTest {
         BrowserControlsOffsetTagsInfo offsetTagsInfo =
                 new BrowserControlsOffsetTagsInfo(null, null, null);
         assertEquals(0, mMediator.updateOffsetTag(offsetTagsInfo));
+    }
+
+    @Test
+    @EnableFeatures({ChromeFeatureList.ANDROID_BOTTOM_BAR})
+    public void testEdgeToEdge_BottomPadding() {
+        BottomControlsMediator bottomAppBarMediator =
+                new BottomControlsMediator(
+                        mWindowAndroid,
+                        mModel,
+                        mBottomControlsStacker,
+                        mBrowserControlsVisibilityDelegate,
+                        mFullscreenManager,
+                        LayerType.BOTTOM_APP_BAR,
+                        mContentDelegateSupplier,
+                        mTabObscuringHandler,
+                        DEFAULT_HEIGHT,
+                        DEFAULT_SHADOW_HEIGHT,
+                        mOverlayPanelStateSupplier,
+                        mEdgeToEdgeControllerSupplier,
+                        mTabObservableSupplier,
+                        mReadAloudRestoringSupplier,
+                        mRequestRenderRunnable);
+
+        Activity activity = Robolectric.buildActivity(TestActivity.class).setup().get();
+        when(mWindowAndroid.getContext()).thenReturn(new WeakReference<>(activity));
+
+        Tab tab = Mockito.mock(Tab.class);
+        when(tab.isIncognito()).thenReturn(false);
+        NativePage ntp = Mockito.mock(NativePage.class);
+        when(ntp.getHost()).thenReturn("newtab");
+        when(tab.getNativePage()).thenReturn(ntp);
+        mTabObservableSupplier.set(tab);
+
+        when(mEdgeToEdgeController.isDrawingToEdge()).thenReturn(true);
+        when(mEdgeToEdgeController.getBottomInsetPx()).thenReturn(DEFAULT_INSET);
+
+        ChangeObserver changeObserver =
+                bottomAppBarMediator.getEdgeToEdgeChangeObserverForTesting();
+        changeObserver.onToEdgeChange(
+                DEFAULT_INSET, /* isDrawingToEdge= */ true, /* isPageOptInToEdge= */ false);
+
+        assertEquals(DEFAULT_INSET, mModel.get(BottomControlsProperties.BOTTOM_PADDING));
+
+        when(mEdgeToEdgeController.isDrawingToEdge()).thenReturn(false);
+
+        changeObserver.onToEdgeChange(
+                DEFAULT_INSET, /* isDrawingToEdge= */ false, /* isPageOptInToEdge= */ false);
+
+        assertEquals(0, mModel.get(BottomControlsProperties.BOTTOM_PADDING));
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.BOTTOM_CONTROLS_JANK_IMPROVEMENT)
+    public void testAndroidViewVisibility_DeferredWhileScrolling() {
+        mMediator.setBottomControlsVisible(true);
+        // setBottomControlsVisible(true) shows the controls transiently; flush the delayed
+        // release so the browser constraints are back to BOTH (controls can scroll).
+        ShadowLooper.runUiThreadTasksIncludingDelayedTasks();
+        assertThat(mBrowserControlsVisibilityDelegate.get()).isEqualTo(BrowserControlsState.BOTH);
+        assertTrue(mModel.get(ANDROID_VIEW_VISIBLE));
+
+        // Scroll controls off so Android view becomes invisible.
+        doReturn(DEFAULT_HEIGHT).when(mBrowserControlsVisibilityManager).getBottomControlOffset();
+        mMediator.onBrowserControlsOffsetUpdate(DEFAULT_HEIGHT);
+        assertFalse(mModel.get(ANDROID_VIEW_VISIBLE));
+
+        // Start scrolling and bring offset back to 0 mid-scroll.
+        mMediator.onContentViewScrollingStateChanged(true);
+        doReturn(0).when(mBrowserControlsVisibilityManager).getBottomControlOffset();
+        mMediator.onBrowserControlsOffsetUpdate(0);
+
+        // Android view should remain invisible mid-scroll.
+        assertFalse(mModel.get(ANDROID_VIEW_VISIBLE));
+
+        // When scrolling stops, Android view visibility should be restored.
+        mMediator.onContentViewScrollingStateChanged(false);
+        assertTrue(mModel.get(ANDROID_VIEW_VISIBLE));
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.BOTTOM_CONTROLS_JANK_IMPROVEMENT)
+    public void testAndroidViewVisibility_NotDeferredWhenControlsForcedShown() {
+        mMediator.setBottomControlsVisible(true);
+        ShadowLooper.runUiThreadTasksIncludingDelayedTasks();
+        assertTrue(mModel.get(ANDROID_VIEW_VISIBLE));
+
+        // Scroll controls off so Android view becomes invisible.
+        doReturn(DEFAULT_HEIGHT).when(mBrowserControlsVisibilityManager).getBottomControlOffset();
+        mMediator.onBrowserControlsOffsetUpdate(DEFAULT_HEIGHT);
+        assertFalse(mModel.get(ANDROID_VIEW_VISIBLE));
+
+        // Mid-scroll, a browser-level override (e.g. a Message or bottom sheet) forces the
+        // controls SHOWN and they animate back to offset 0.
+        mMediator.onContentViewScrollingStateChanged(true);
+        int token = mBrowserControlsVisibilityDelegate.showControlsPersistent();
+        assertThat(mBrowserControlsVisibilityDelegate.get()).isEqualTo(BrowserControlsState.SHOWN);
+        doReturn(0).when(mBrowserControlsVisibilityManager).getBottomControlOffset();
+        mMediator.onBrowserControlsOffsetUpdate(0);
+
+        // The controls can no longer scroll, so the Android view must become interactive
+        // immediately rather than waiting for the scroll/fling to end.
+        assertTrue(mModel.get(ANDROID_VIEW_VISIBLE));
+
+        // Once the override is released the constraints return to BOTH and deferral kicks back
+        // in: scrolling off and back on while still scrolling leaves the view hidden.
+        mBrowserControlsVisibilityDelegate.releasePersistentShowingToken(token);
+        assertThat(mBrowserControlsVisibilityDelegate.get()).isEqualTo(BrowserControlsState.BOTH);
+        doReturn(DEFAULT_HEIGHT).when(mBrowserControlsVisibilityManager).getBottomControlOffset();
+        mMediator.onBrowserControlsOffsetUpdate(DEFAULT_HEIGHT);
+        assertFalse(mModel.get(ANDROID_VIEW_VISIBLE));
+        doReturn(0).when(mBrowserControlsVisibilityManager).getBottomControlOffset();
+        mMediator.onBrowserControlsOffsetUpdate(0);
+        assertFalse(mModel.get(ANDROID_VIEW_VISIBLE));
+
+        // The deferred show lands when scrolling ends.
+        mMediator.onContentViewScrollingStateChanged(false);
+        assertTrue(mModel.get(ANDROID_VIEW_VISIBLE));
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.BOTTOM_CONTROLS_JANK_IMPROVEMENT)
+    public void testAndroidViewVisibility_ShownWhenConstraintsLockAfterOffsetSettled() {
+        mMediator.setBottomControlsVisible(true);
+        ShadowLooper.runUiThreadTasksIncludingDelayedTasks();
+        assertThat(mBrowserControlsVisibilityDelegate.get()).isEqualTo(BrowserControlsState.BOTH);
+        assertTrue(mModel.get(ANDROID_VIEW_VISIBLE));
+
+        // Scroll controls off so Android view becomes invisible.
+        doReturn(DEFAULT_HEIGHT).when(mBrowserControlsVisibilityManager).getBottomControlOffset();
+        mMediator.onBrowserControlsOffsetUpdate(DEFAULT_HEIGHT);
+        assertFalse(mModel.get(ANDROID_VIEW_VISIBLE));
+
+        // Mid-scroll the offset settles back at 0 while constraints are still BOTH, so the show
+        // is deferred.
+        mMediator.onContentViewScrollingStateChanged(true);
+        doReturn(0).when(mBrowserControlsVisibilityManager).getBottomControlOffset();
+        mMediator.onBrowserControlsOffsetUpdate(0);
+        assertFalse(mModel.get(ANDROID_VIEW_VISIBLE));
+
+        // The controls are then locked SHOWN while the fling is still active. Since the offset
+        // is already 0, no further offset update arrives; the constraints observer must flush the
+        // deferred show without waiting for the scroll to end.
+        int token = mBrowserControlsVisibilityDelegate.showControlsPersistent();
+        assertThat(mBrowserControlsVisibilityDelegate.get()).isEqualTo(BrowserControlsState.SHOWN);
+        assertTrue(mModel.get(ANDROID_VIEW_VISIBLE));
+
+        // Releasing the lock (back to BOTH) does not hide the view.
+        mBrowserControlsVisibilityDelegate.releasePersistentShowingToken(token);
+        assertThat(mBrowserControlsVisibilityDelegate.get()).isEqualTo(BrowserControlsState.BOTH);
+        assertTrue(mModel.get(ANDROID_VIEW_VISIBLE));
+
+        // After destroy() the mediator no longer reacts to constraint changes.
+        doReturn(DEFAULT_HEIGHT).when(mBrowserControlsVisibilityManager).getBottomControlOffset();
+        mMediator.onBrowserControlsOffsetUpdate(DEFAULT_HEIGHT);
+        assertFalse(mModel.get(ANDROID_VIEW_VISIBLE));
+        doReturn(0).when(mBrowserControlsVisibilityManager).getBottomControlOffset();
+        mMediator.onBrowserControlsOffsetUpdate(0);
+        assertFalse(mModel.get(ANDROID_VIEW_VISIBLE));
+        mMediator.destroy();
+        mBrowserControlsVisibilityDelegate.showControlsPersistent();
+        assertFalse(mModel.get(ANDROID_VIEW_VISIBLE));
+    }
+
+    /**
+     * Drives a browser-applied offset stream: the bar's Y_OFFSET changes every frame (0 -> H in
+     * steps of 10) while no other bar property changes.
+     */
+    private void driveBrowserOffsetStream() {
+        mMediator.setBottomControlsVisible(true);
+        ShadowLooper.idleMainLooper();
+        doReturn(0).when(mBrowserControlsVisibilityManager).getBottomControlOffset();
+        mMediator.onBrowserControlsOffsetUpdate(0);
+        clearInvocations(mRequestRenderRunnable);
+
+        for (int offset = 10; offset <= DEFAULT_HEIGHT; offset += 10) {
+            doReturn(offset).when(mBrowserControlsVisibilityManager).getBottomControlOffset();
+            mMediator.onBrowserControlsOffsetUpdate(offset);
+        }
+        assertEquals(DEFAULT_HEIGHT, mModel.get(BottomControlsProperties.Y_OFFSET));
+    }
+
+    @Test
+    @EnableFeatures({
+        ChromeFeatureList.ANDROID_BOTTOM_BAR,
+        ChromeFeatureList.BOTTOM_CONTROLS_JANK_IMPROVEMENT
+    })
+    public void testYOffsetChange_RequestsRenderWithoutOffsetTag() {
+        mModel.set(BottomControlsProperties.OFFSET_TAG, null);
+        driveBrowserOffsetStream();
+        // Y_OFFSET is excluded from the compositor MCP under the jank improvement, so the
+        // mediator must request a frame for each browser-driven offset change.
+        verify(mRequestRenderRunnable, times(DEFAULT_HEIGHT / 10)).run();
+    }
+
+    @Test
+    @EnableFeatures({
+        ChromeFeatureList.ANDROID_BOTTOM_BAR,
+        ChromeFeatureList.BOTTOM_CONTROLS_JANK_IMPROVEMENT
+    })
+    public void testYOffsetChange_NoRenderRequestWithOffsetTag() {
+        mModel.set(BottomControlsProperties.OFFSET_TAG, OffsetTag.createRandom());
+        driveBrowserOffsetStream();
+        // Viz moves the bar via the OffsetTag; the browser must not request frames.
+        verify(mRequestRenderRunnable, never()).run();
+    }
+
+    @Test
+    @EnableFeatures({
+        ChromeFeatureList.ANDROID_BOTTOM_BAR,
+        ChromeFeatureList.BOTTOM_CONTROLS_JANK_IMPROVEMENT
+    })
+    public void testYOffsetUnchanged_NoRenderRequest() {
+        mModel.set(BottomControlsProperties.OFFSET_TAG, null);
+        mMediator.setBottomControlsVisible(true);
+        ShadowLooper.idleMainLooper();
+        doReturn(DEFAULT_HEIGHT).when(mBrowserControlsVisibilityManager).getBottomControlOffset();
+        mMediator.onBrowserControlsOffsetUpdate(DEFAULT_HEIGHT);
+        clearInvocations(mRequestRenderRunnable);
+
+        mMediator.onBrowserControlsOffsetUpdate(DEFAULT_HEIGHT);
+        mMediator.onBrowserControlsOffsetUpdate(DEFAULT_HEIGHT);
+        verify(mRequestRenderRunnable, never()).run();
+    }
+
+    @Test
+    public void testSetBottomControlsHeight() {
+        assertEquals(DEFAULT_HEIGHT, mMediator.getHeight());
+        clearInvocations(mBottomControlsStacker);
+
+        mMediator.setBottomControlsHeight(50);
+        assertEquals(50, mMediator.getHeight());
+        assertEquals(50, mModel.get(ANDROID_VIEW_HEIGHT_NO_PADDING));
+        verify(mBottomControlsStacker).requestLayerUpdate(false);
+
+        // Setting the same height again should be a no-op.
+        clearInvocations(mBottomControlsStacker);
+        mMediator.setBottomControlsHeight(50);
+        verify(mBottomControlsStacker, never()).requestLayerUpdate(anyBoolean());
     }
 }

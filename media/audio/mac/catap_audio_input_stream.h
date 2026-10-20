@@ -12,8 +12,8 @@
 #include <string>
 
 #include "base/feature_list.h"
-#include "base/memory/advanced_memory_safety_checks.h"
 #include "base/memory/raw_ptr.h"
+#include "base/memory/sanitized_object.h"
 #include "base/memory/weak_ptr.h"
 #include "base/sequence_checker.h"
 #include "base/time/time.h"
@@ -53,9 +53,11 @@ struct MEDIA_EXPORT AudioDeviceIdentity {
 // The current implementation supports mono and stereo capture.
 class MEDIA_EXPORT API_AVAILABLE(macos(14.2)) CatapAudioInputStreamSource {
   // TODO(b/495779613): Remove once the underlying UaF issue is fixed.
-  ADVANCED_MEMORY_SAFETY_CHECKS();
+  SANITIZED_OBJECT();
 
  public:
+  using Error = AudioInputStream::AudioInputCallback::Error;
+
   // Interface for listening to audio property changes. It's safe to call delete
   // on the `CatapAudioInputStreamSource` in the callbacks.
   class AudioPropertyChangeCallback {
@@ -166,7 +168,7 @@ class MEDIA_EXPORT API_AVAILABLE(macos(14.2)) CatapAudioInputStreamSource {
 
   void OnCatapSample(const AudioBuffer* input_buffer,
                      const AudioTimeStamp* input_time);
-  void OnError();
+  void OnError(Error error_code);
 
  private:
   void Close();
@@ -325,6 +327,8 @@ class API_AVAILABLE(macos(14.2)) CatapAudioInputStream
     : public AgcAudioStream<AudioInputStream>,
       public CatapAudioInputStreamSource::AudioPropertyChangeCallback {
  public:
+  using Error = AudioInputStream::AudioInputCallback::Error;
+
   using NotifyOnCloseCallback = base::OnceCallback<void(AudioInputStream*)>;
   using GetDefaultDeviceIdsCallback =
       base::RepeatingCallback<std::optional<AudioDeviceIdentity>()>;
@@ -356,7 +360,7 @@ class API_AVAILABLE(macos(14.2)) CatapAudioInputStream
 
  private:
   // Logs an error message and call OnError() on the `AudioInputCallback`.
-  void OnError();
+  void OnError(Error error_code);
 
   // Restarts the `CatapAudioInputStreamSource`, and make sure the new Source
   // is put in the correct state.

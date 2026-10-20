@@ -24,7 +24,6 @@ std::optional<DeletionReason> SessionError::GetDeletionReason() const {
       return std::nullopt;
     case kServerRequestedTermination:
       return DeletionReason::kServerRequested;
-    case kKeyError:
     case kSigningError:
     case kPersistentHttpError:
     case kInvalidChallenge:
@@ -74,6 +73,8 @@ std::optional<DeletionReason> SessionError::GetDeletionReason() const {
     case kTransientSigningError:
       return std::nullopt;
     // Registration-only errors never trigger session deletion.
+    case kSigningKeyGenerationError:
+    case kAttestationKeyGenerationError:
     case kSubdomainRegistrationWellKnownUnavailable:
     case kSubdomainRegistrationUnauthorized:
     case kSubdomainRegistrationWellKnownMalformed:
@@ -95,6 +96,12 @@ std::optional<DeletionReason> SessionError::GetDeletionReason() const {
     case kRegistrationAttemptedChallenge:
     case kInvalidFederatedSessionProviderFailedToRestoreKey:
     case kFailedToUnwrapKey:
+    case kCrossOriginRegistrationSiteNotIncluded:
+    case kInvalidPreProvisionedKeyInitiatorMissing:
+    case kPreProvisionedKeyAccessNotGranted:
+    case kPreProvisionedKeyNotFound:
+    case kAttestationCertificationError:
+    case kAttestationSigningError:
       NOTREACHED();
   }
 }
@@ -102,7 +109,6 @@ std::optional<DeletionReason> SessionError::GetDeletionReason() const {
 bool SessionError::IsServerError() const {
   switch (type) {
     case kSuccess:
-    case kKeyError:
     case kSigningError:
     case kNetError:
     case kProxyError:
@@ -152,6 +158,8 @@ bool SessionError::IsServerError() const {
     case kBoundCookieSetForbidden:
       return true;
     // Registration-only errors never get reported to the server.
+    case kSigningKeyGenerationError:
+    case kAttestationKeyGenerationError:
     case kSubdomainRegistrationWellKnownUnavailable:
     case kSubdomainRegistrationUnauthorized:
     case kSubdomainRegistrationWellKnownMalformed:
@@ -173,6 +181,12 @@ bool SessionError::IsServerError() const {
     case kRegistrationAttemptedChallenge:
     case kInvalidFederatedSessionProviderFailedToRestoreKey:
     case kFailedToUnwrapKey:
+    case kCrossOriginRegistrationSiteNotIncluded:
+    case kInvalidPreProvisionedKeyInitiatorMissing:
+    case kPreProvisionedKeyAccessNotGranted:
+    case kPreProvisionedKeyNotFound:
+    case kAttestationCertificationError:
+    case kAttestationSigningError:
       NOTREACHED();
   }
 }
@@ -183,7 +197,6 @@ std::optional<RefreshResult> SessionError::GetRefreshResult() const {
       return std::nullopt;
     // Fatal cases
     case kServerRequestedTermination:
-    case kKeyError:
     case kSigningError:
     case kPersistentHttpError:
     case kInvalidChallenge:
@@ -242,6 +255,8 @@ std::optional<RefreshResult> SessionError::GetRefreshResult() const {
       return RefreshResult::kUnreachable;
 
     // Registration-only errors
+    case kSigningKeyGenerationError:
+    case kAttestationKeyGenerationError:
     case kSubdomainRegistrationWellKnownUnavailable:
     case kSubdomainRegistrationUnauthorized:
     case kSubdomainRegistrationWellKnownMalformed:
@@ -263,6 +278,12 @@ std::optional<RefreshResult> SessionError::GetRefreshResult() const {
     case kRegistrationAttemptedChallenge:
     case kInvalidFederatedSessionProviderFailedToRestoreKey:
     case kFailedToUnwrapKey:
+    case kCrossOriginRegistrationSiteNotIncluded:
+    case kInvalidPreProvisionedKeyInitiatorMissing:
+    case kPreProvisionedKeyAccessNotGranted:
+    case kPreProvisionedKeyNotFound:
+    case kAttestationCertificationError:
+    case kAttestationSigningError:
       NOTREACHED();
   }
 }

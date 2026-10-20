@@ -49,6 +49,7 @@ targets.tests.isolated_script_test(
         "always",
         "--test-type",
         "wdspec",
+        "--timeout-multiplier=4",
     ],
     binary = "chrome_public_wpt",
 )
@@ -83,7 +84,10 @@ targets.tests.gpu_telemetry_test(
     telemetry_test_name = "pixel",
     mixins = [
         "skia_gold_test",
+        "skia_gold_bypass",
         "has_native_resultdb_integration",
+        "gpu_integration_test_common_args",
+        "gpu_integration_test_pixel_args",
     ],
     module_scheme = "flat",
 )
@@ -197,7 +201,10 @@ targets.tests.gtest_test(
 targets.tests.gtest_test(
     name = "angle_unittests",
     mixins = [
+        "android_extra_verbosity",
         "gpu_gtest_common_args",
+        "no_xvfb_for_real_hardware",
+        "use_isolated_scripts_api",
     ],
 )
 
@@ -224,6 +231,7 @@ targets.tests.gtest_test(
     name = "ash_pixeltests",
     mixins = [
         "skia_gold_test",
+        "skia_gold_bypass",
         "skia_gold_test_on_linux_gce",
     ],
     args = [
@@ -551,6 +559,10 @@ targets.tests.gtest_test(
 )
 
 targets.tests.gtest_test(
+    name = "chrome_flaky_tast_tests",
+)
+
+targets.tests.gtest_test(
     name = "chrome_elf_unittests",
 )
 
@@ -587,6 +599,7 @@ targets.tests.gtest_test(
     name = "chrome_public_test_apk",
     mixins = [
         "skia_gold_test",
+        "skia_gold_bypass",
     ],
 )
 
@@ -594,6 +607,7 @@ targets.tests.gtest_test(
     name = "chrome_public_test_apk_tablet",
     mixins = [
         "skia_gold_test",
+        "skia_gold_bypass",
     ],
     args = [
         "--annotation=Restriction=Tablet,Restriction=TabletOrDesktop,ImportantFormFactors=Tablet,ImportantFormFactors=TabletOrDesktop",
@@ -605,6 +619,7 @@ targets.tests.gtest_test(
     name = "chrome_public_test_apk_desktop",
     mixins = [
         "skia_gold_test",
+        "skia_gold_bypass",
     ],
     args = [
         "--annotation=Restriction=Desktop,Restriction=TabletOrDesktop,ImportantFormFactors=Desktop,ImportantFormFactors=TabletOrDesktop",
@@ -616,6 +631,7 @@ targets.tests.gtest_test(
     name = "chrome_public_test_apk_automotive",
     mixins = [
         "skia_gold_test",
+        "skia_gold_bypass",
     ],
     args = [
         "--annotation=Restriction=Auto,ImportantFormFactors=Auto",
@@ -631,6 +647,7 @@ targets.tests.gtest_test(
     name = "chrome_public_unit_test_apk",
     mixins = [
         "skia_gold_test",
+        "skia_gold_bypass",
     ],
 )
 
@@ -833,6 +850,18 @@ targets.tests.gtest_test(
     binary = "content_browsertests",
 )
 
+# WebRtc browser tests contend for the audio/video capture device; under
+# parallel load capture-start can starve and getUserMedia times out. Run them
+# serially, like content_browsertests_sequential.
+targets.tests.gtest_test(
+    name = "content_browsertests_webrtc_sequential",
+    args = [
+        "--gtest_filter=WebRtc*",
+        "--test-launcher-jobs=1",
+    ],
+    binary = "content_browsertests",
+)
+
 targets.tests.gtest_test(
     name = "content_browsertests_no_field_trial",
     args = [
@@ -872,32 +901,6 @@ targets.tests.gtest_test(
 
 targets.tests.gtest_test(
     name = "content_unittests",
-)
-
-targets.tests.gpu_telemetry_test(
-    name = "context_lost_gl_passthrough_ganesh_tests",
-    telemetry_test_name = "context_lost",
-    mixins = [
-        "has_native_resultdb_integration",
-        "gpu_force_command_decoder_passthrough",
-        "gpu_force_angle_gl",
-        "gpu_force_skia_ganesh",
-        "gpu_integration_test_common_args",
-    ],
-    module_scheme = "flat",
-)
-
-targets.tests.gpu_telemetry_test(
-    name = "context_lost_metal_passthrough_ganesh_tests",
-    telemetry_test_name = "context_lost",
-    mixins = [
-        "has_native_resultdb_integration",
-        "gpu_force_command_decoder_passthrough",
-        "gpu_force_angle_metal",
-        "gpu_force_skia_ganesh",
-        "gpu_integration_test_common_args",
-    ],
-    module_scheme = "flat",
 )
 
 targets.tests.gpu_telemetry_test(
@@ -1074,40 +1077,11 @@ targets.tests.gtest_test(
 )
 
 targets.tests.gpu_telemetry_test(
-    name = "expected_color_pixel_gl_passthrough_ganesh_test",
-    telemetry_test_name = "expected_color",
-    mixins = [
-        "skia_gold_test",
-        "has_native_resultdb_integration",
-        "gpu_force_command_decoder_passthrough",
-        "gpu_force_angle_gl",
-        "gpu_force_skia_ganesh",
-        "gpu_integration_test_expected_color_args",
-        "gpu_integration_test_common_args",
-    ],
-    module_scheme = "flat",
-)
-
-targets.tests.gpu_telemetry_test(
-    name = "expected_color_pixel_metal_passthrough_ganesh_test",
-    telemetry_test_name = "expected_color",
-    mixins = [
-        "skia_gold_test",
-        "has_native_resultdb_integration",
-        "gpu_force_command_decoder_passthrough",
-        "gpu_force_angle_metal",
-        "gpu_force_skia_ganesh",
-        "gpu_integration_test_expected_color_args",
-        "gpu_integration_test_common_args",
-    ],
-    module_scheme = "flat",
-)
-
-targets.tests.gpu_telemetry_test(
     name = "expected_color_pixel_metal_passthrough_graphite_test",
     telemetry_test_name = "expected_color",
     mixins = [
         "skia_gold_test",
+        "skia_gold_bypass",
         "has_native_resultdb_integration",
         "gpu_force_command_decoder_passthrough",
         "gpu_force_angle_metal",
@@ -1123,6 +1097,7 @@ targets.tests.gpu_telemetry_test(
     telemetry_test_name = "expected_color",
     mixins = [
         "skia_gold_test",
+        "skia_gold_bypass",
         "has_native_resultdb_integration",
         "gpu_force_command_decoder_passthrough",
         "gpu_force_skia_ganesh",
@@ -1137,6 +1112,7 @@ targets.tests.gpu_telemetry_test(
     telemetry_test_name = "expected_color",
     mixins = [
         "skia_gold_test",
+        "skia_gold_bypass",
         "has_native_resultdb_integration",
         "gpu_force_command_decoder_passthrough",
         "gpu_force_skia_graphite",
@@ -1151,6 +1127,7 @@ targets.tests.gpu_telemetry_test(
     telemetry_test_name = "expected_color",
     mixins = [
         "skia_gold_test",
+        "skia_gold_bypass",
         "has_native_resultdb_integration",
         "gpu_force_command_decoder_passthrough",
         "gpu_integration_test_expected_color_args",
@@ -1164,6 +1141,7 @@ targets.tests.gpu_telemetry_test(
     telemetry_test_name = "expected_color",
     mixins = [
         "skia_gold_test",
+        "skia_gold_bypass",
         "has_native_resultdb_integration",
         "gpu_force_command_decoder_validating",
         "gpu_integration_test_expected_color_args",
@@ -1436,6 +1414,7 @@ targets.tests.gpu_telemetry_test(
     telemetry_test_name = "gpu_process",
     mixins = [
         "has_native_resultdb_integration",
+        "gpu_integration_test_common_args",
     ],
     module_scheme = "flat",
 )
@@ -1467,6 +1446,7 @@ targets.tests.gpu_telemetry_test(
     telemetry_test_name = "hardware_accelerated_feature",
     mixins = [
         "has_native_resultdb_integration",
+        "gpu_integration_test_common_args",
     ],
     module_scheme = "flat",
 )
@@ -1532,7 +1512,14 @@ targets.tests.gpu_telemetry_test(
     name = "info_collection_tests",
     telemetry_test_name = "info_collection",
     mixins = [
+        "gpu_integration_test_common_args",
         "has_native_resultdb_integration",
+    ],
+    args = [
+        targets.magic_args.GPU_EXPECTED_VENDOR_ID,
+        targets.magic_args.GPU_EXPECTED_DEVICE_ID,
+        # On dual-GPU devices we want the high-performance GPU to be active
+        "--extra-browser-args=--force_high_performance_gpu",
     ],
     module_scheme = "flat",
 )
@@ -1570,6 +1557,10 @@ targets.tests.isolated_script_test(
 )
 
 targets.tests.isolated_script_test(
+    name = "ios_chrome_all_eg2tests_module",
+)
+
+targets.tests.isolated_script_test(
     name = "ios_chrome_bookmarks_eg2tests_module",
 )
 
@@ -1579,6 +1570,10 @@ targets.tests.isolated_script_test(
 
 targets.tests.isolated_script_test(
     name = "ios_chrome_settings_eg2tests_module",
+)
+
+targets.tests.isolated_script_test(
+    name = "ios_chrome_perf_benchmarks_eg2tests_module",
 )
 
 targets.tests.isolated_script_test(
@@ -1614,11 +1609,11 @@ targets.tests.isolated_script_test(
 )
 
 targets.tests.isolated_script_test(
-    name = "ios_swift_interop_xcuitests_module",
+    name = "ios_testing_unittests",
 )
 
 targets.tests.isolated_script_test(
-    name = "ios_testing_unittests",
+    name = "ios_web_content_unittests",
 )
 
 targets.tests.isolated_script_test(
@@ -1767,6 +1762,14 @@ targets.tests.isolated_script_test(
     name = "module_installer_junit_tests",
 )
 
+targets.tests.gtest_test(
+    name = "mojo_legacy_unittests",
+)
+
+targets.tests.gtest_test(
+    name = "mojo_proxy_unittests",
+)
+
 targets.tests.isolated_script_test(
     name = "mojo_python_unittests",
 )
@@ -1869,6 +1872,10 @@ targets.tests.gtest_test(
 )
 
 targets.tests.isolated_script_test(
+    name = "ondevice_api_scrape_tests",
+)
+
+targets.tests.isolated_script_test(
     name = "ondevice_stability_tests",
 )
 
@@ -1877,20 +1884,7 @@ targets.tests.isolated_script_test(
 )
 
 targets.tests.isolated_script_test(
-    name = "ondevice_model_benchmark_tests_gpu_submodel",
-    mixins = [
-        "has_native_resultdb_integration",
-    ],
-    args = [
-        "--benchmark_binary_dir=./",
-        "--backends=gpu",
-        "--use_submodel",
-    ],
-    binary = "ondevice_model_benchmark_tests",
-)
-
-targets.tests.isolated_script_test(
-    name = "ondevice_model_benchmark_tests_gpu_no_submodel",
+    name = "litert_e2e_tests_gpu",
     mixins = [
         "has_native_resultdb_integration",
     ],
@@ -1898,33 +1892,8 @@ targets.tests.isolated_script_test(
         "--benchmark_binary_dir=./",
         "--backends=gpu",
     ],
-    binary = "ondevice_model_benchmark_tests",
+    binary = "litert_e2e_tests",
 )
-
-targets.tests.isolated_script_test(
-    name = "ondevice_model_benchmark_tests_cpu_no_submodel",
-    mixins = [
-        "has_native_resultdb_integration",
-    ],
-    args = [
-        "--benchmark_binary_dir=./",
-        "--backends=cpu",
-    ],
-    binary = "ondevice_model_benchmark_tests",
-)
-
-# TODO(b:484388901): Enable GPU backedn testing when the issue is fixed.
-# targets.tests.isolated_script_test(
-#     name = "litert_e2e_tests_gpu",
-#     mixins = [
-#         "has_native_resultdb_integration",
-#     ],
-#     args = [
-#         "--benchmark_binary_dir=./",
-#         "--backends=gpu",
-#     ],
-#     binary = "litert_e2e_tests",
-# )
 
 targets.tests.isolated_script_test(
     name = "litert_e2e_tests_cpu",
@@ -1950,63 +1919,62 @@ targets.tests.isolated_script_test(
     binary = "litert_lm_advanced_main_legacy_tests",
 )
 
-# TODO(b:484388901): Enable GPU backedn testing when the issue is fixed.
-# targets.tests.isolated_script_test(
-#     name = "litert_lm_advanced_main_legacy_tests_gpu",
-#     mixins = [
-#         "has_native_resultdb_integration",
-#     ],
-#     args = [
-#         "--benchmark_binary_dir=./",
-#         "--backends=gpu",
-#     ],
-#     binary = "litert_lm_advanced_main_legacy_tests",
-# )
-
 targets.tests.isolated_script_test(
-    name = "opt_target_coverage_test",
+    name = "litert_lm_advanced_main_legacy_tests_gpu",
+    mixins = [
+        "has_native_resultdb_integration",
+    ],
+    args = [
+        "--benchmark_binary_dir=./",
+        "--backends=gpu_artisan",
+    ],
+    binary = "litert_lm_advanced_main_legacy_tests",
 )
 
 targets.tests.isolated_script_test(
-    name = "chrome_ai_wpt_tests_gpu",
+    name = "chrome_ai_wpt_tests_manifest_gpu_high_tier",
     args = [
-        "--framework=llm-inference-engine",
-        "--backend=gpu",
-        "--performance-hint=ON_DEVICE_MODEL_PERFORMANCE_HINT_FASTEST_INFERENCE",
-        "--expectations-file=AIExpectations_GPU",
+        "--manifest-test-config=../../components/optimization_guide/internal/testing/configs/manifest_test_config_gpu_high_tier.json",
     ],
     binary = "chrome_ai_wpt_tests",
 )
 
 targets.tests.isolated_script_test(
-    name = "chrome_ai_wpt_tests_cpu",
+    name = "chrome_ai_wpt_tests_manifest_gpu_high_tier_gemma4",
     args = [
-        "--framework=llm-inference-engine",
-        "--backend=cpu",
-        "--performance-hint=ON_DEVICE_MODEL_PERFORMANCE_HINT_CPU",
-        "--expectations-file=AIExpectations_CPU",
+        "--manifest-test-config=../../components/optimization_guide/internal/testing/configs/manifest_test_config_gpu_high_tier_gemma4.json",
     ],
     binary = "chrome_ai_wpt_tests",
 )
 
 targets.tests.isolated_script_test(
-    name = "chrome_ai_wpt_tests_litert_cpu",
+    name = "chrome_ai_wpt_tests_manifest_gpu_low_tier",
     args = [
-        "--framework=litert-lm",
-        "--backend=cpu",
-        "--performance-hint=ON_DEVICE_MODEL_PERFORMANCE_HINT_CPU",
-        "--expectations-file=AIExpectations_LiteRTCPU",
+        "--manifest-test-config=../../components/optimization_guide/internal/testing/configs/manifest_test_config_gpu_low_tier.json",
     ],
     binary = "chrome_ai_wpt_tests",
 )
 
 targets.tests.isolated_script_test(
-    name = "chrome_ai_wpt_tests_litert_gpu",
+    name = "chrome_ai_wpt_tests_manifest_gpu_low_tier_gemma4",
     args = [
-        "--framework=litert-lm",
-        "--backend=gpu",
-        "--performance-hint=ON_DEVICE_MODEL_PERFORMANCE_HINT_FASTEST_INFERENCE",
-        "--expectations-file=AIExpectations_LiteRTGPU",
+        "--manifest-test-config=../../components/optimization_guide/internal/testing/configs/manifest_test_config_gpu_low_tier_gemma4.json",
+    ],
+    binary = "chrome_ai_wpt_tests",
+)
+
+targets.tests.isolated_script_test(
+    name = "chrome_ai_wpt_tests_manifest_cpu",
+    args = [
+        "--manifest-test-config=../../components/optimization_guide/internal/testing/configs/manifest_test_config_cpu.json",
+    ],
+    binary = "chrome_ai_wpt_tests",
+)
+
+targets.tests.isolated_script_test(
+    name = "chrome_ai_wpt_tests_manifest_cpu_gemma4",
+    args = [
+        "--manifest-test-config=../../components/optimization_guide/internal/testing/configs/manifest_test_config_cpu_gemma4.json",
     ],
     binary = "chrome_ai_wpt_tests",
 )
@@ -2093,6 +2061,7 @@ targets.tests.gtest_test(
     name = "pixel_browser_tests",
     mixins = [
         "skia_gold_test",
+        "skia_gold_bypass",
     ],
     args = [
         "--browser-ui-tests-verify-pixels",
@@ -2107,6 +2076,7 @@ targets.tests.gtest_test(
     name = "pixel_interactive_ui_tests",
     mixins = [
         "skia_gold_test",
+        "skia_gold_bypass",
     ],
     args = [
         "--browser-ui-tests-verify-pixels",
@@ -2117,40 +2087,11 @@ targets.tests.gtest_test(
 )
 
 targets.tests.gpu_telemetry_test(
-    name = "pixel_skia_gold_gl_passthrough_ganesh_test",
-    telemetry_test_name = "pixel",
-    mixins = [
-        "skia_gold_test",
-        "has_native_resultdb_integration",
-        "gpu_force_command_decoder_passthrough",
-        "gpu_force_angle_gl",
-        "gpu_force_skia_ganesh",
-        "gpu_integration_test_pixel_args",
-        "gpu_integration_test_common_args",
-    ],
-    module_scheme = "flat",
-)
-
-targets.tests.gpu_telemetry_test(
-    name = "pixel_skia_gold_metal_passthrough_ganesh_test",
-    telemetry_test_name = "pixel",
-    mixins = [
-        "skia_gold_test",
-        "has_native_resultdb_integration",
-        "gpu_force_command_decoder_passthrough",
-        "gpu_force_angle_metal",
-        "gpu_force_skia_ganesh",
-        "gpu_integration_test_pixel_args",
-        "gpu_integration_test_common_args",
-    ],
-    module_scheme = "flat",
-)
-
-targets.tests.gpu_telemetry_test(
     name = "pixel_skia_gold_metal_passthrough_graphite_test",
     telemetry_test_name = "pixel",
     mixins = [
         "skia_gold_test",
+        "skia_gold_bypass",
         "has_native_resultdb_integration",
         "gpu_force_command_decoder_passthrough",
         "gpu_force_angle_metal",
@@ -2166,6 +2107,7 @@ targets.tests.gpu_telemetry_test(
     telemetry_test_name = "pixel",
     mixins = [
         "skia_gold_test",
+        "skia_gold_bypass",
         "has_native_resultdb_integration",
         "gpu_force_command_decoder_passthrough",
         "gpu_force_skia_ganesh",
@@ -2180,6 +2122,7 @@ targets.tests.gpu_telemetry_test(
     telemetry_test_name = "pixel",
     mixins = [
         "skia_gold_test",
+        "skia_gold_bypass",
         "has_native_resultdb_integration",
         "gpu_force_command_decoder_passthrough",
         "gpu_force_skia_graphite",
@@ -2194,6 +2137,7 @@ targets.tests.gpu_telemetry_test(
     telemetry_test_name = "pixel",
     mixins = [
         "skia_gold_test",
+        "skia_gold_bypass",
         "has_native_resultdb_integration",
         "gpu_force_command_decoder_passthrough",
         "gpu_integration_test_pixel_args",
@@ -2207,6 +2151,7 @@ targets.tests.gpu_telemetry_test(
     telemetry_test_name = "pixel",
     mixins = [
         "skia_gold_test",
+        "skia_gold_bypass",
         "has_native_resultdb_integration",
         "gpu_force_command_decoder_validating",
         "gpu_integration_test_pixel_args",
@@ -2272,7 +2217,7 @@ targets.tests.isolated_script_test(
 )
 
 targets.tests.gtest_test(
-    name = "rust_gtest_interop_unittests",
+    name = "rlz_unittests",
 )
 
 targets.tests.gtest_test(
@@ -2295,32 +2240,14 @@ targets.tests.gtest_test(
     name = "sbox_validation_tests",
 )
 
-targets.tests.gpu_telemetry_test(
-    name = "screenshot_sync_gl_passthrough_ganesh_tests",
-    telemetry_test_name = "screenshot_sync",
-    mixins = [
-        "has_native_resultdb_integration",
-        "gpu_force_command_decoder_passthrough",
-        "gpu_force_angle_gl",
-        "gpu_force_skia_ganesh",
-        "gpu_integration_test_screenshot_sync_args",
-        "gpu_integration_test_common_args",
+targets.tests.gtest_test(
+    name = "screen_capture_kit_mac_tests",
+    binary = "content_browsertests",
+    args = [
+        "--use-gpu-in-tests",
+        "--gtest_filter=*ScreenCaptureKitRealCaptureTest.*",
+        "--test-launcher-jobs=1",
     ],
-    module_scheme = "flat",
-)
-
-targets.tests.gpu_telemetry_test(
-    name = "screenshot_sync_metal_passthrough_ganesh_tests",
-    telemetry_test_name = "screenshot_sync",
-    mixins = [
-        "has_native_resultdb_integration",
-        "gpu_force_command_decoder_passthrough",
-        "gpu_force_angle_metal",
-        "gpu_force_skia_ganesh",
-        "gpu_integration_test_screenshot_sync_args",
-        "gpu_integration_test_common_args",
-    ],
-    module_scheme = "flat",
 )
 
 targets.tests.gpu_telemetry_test(
@@ -2427,6 +2354,7 @@ targets.tests.gtest_test(
     name = "site_per_process_chrome_public_test_apk",
     mixins = [
         "skia_gold_test",
+        "skia_gold_bypass",
         "has_native_resultdb_integration",
     ],
     args = [
@@ -2439,6 +2367,7 @@ targets.tests.gtest_test(
     name = "site_per_process_chrome_public_unit_test_apk",
     mixins = [
         "skia_gold_test",
+        "skia_gold_bypass",
     ],
     args = [
         "--site-per-process",
@@ -2596,20 +2525,12 @@ targets.tests.gtest_test(
     binary = "cc_unittests",
 )
 
-targets.tests.gtest_test(
-    name = "test_cpp_including_rust_unittests",
-)
-
 targets.tests.isolated_script_test(
     name = "test_env_py_unittests",
 )
 
 targets.tests.gtest_test(
     name = "jni_zero_sample_apk_test",
-)
-
-targets.tests.gtest_test(
-    name = "test_serde_json_lenient",
 )
 
 targets.tests.script_test(
@@ -2635,6 +2556,7 @@ targets.tests.isolated_script_test(
 targets.tests.gpu_telemetry_test(
     name = "trace_test",
     mixins = [
+        "gpu_integration_test_common_args",
         "has_native_resultdb_integration",
     ],
     module_scheme = "flat",
@@ -2737,6 +2659,10 @@ targets.tests.isolated_script_test(
     binary = "variations_desktop_smoke_tests",
 )
 
+targets.tests.isolated_script_test(
+    name = "views_examples_mac_signing_tests",
+)
+
 targets.tests.gtest_test(
     name = "views_examples_unittests",
 )
@@ -2745,8 +2671,16 @@ targets.tests.isolated_script_test(
     name = "views_perftests",
 )
 
+targets.tests.isolated_script_test(
+    name = "views_perftests_fuchsia",
+)
+
 targets.tests.gtest_test(
     name = "views_unittests",
+)
+
+targets.tests.gtest_test(
+    name = "gtk_unittests",
 )
 
 targets.tests.gtest_test(
@@ -2774,27 +2708,15 @@ targets.tests.gpu_telemetry_test(
     name = "vulkan_pixel_skia_gold_test",
     telemetry_test_name = "pixel",
     mixins = [
-        "skia_gold_test",
+        "ci_only",
+        "gpu_integration_test_common_args",
+        "gpu_integration_test_pixel_args",
         "has_native_resultdb_integration",
+        "legacy_gpu_vulkan_pixel_skia_gold_test_args",
+        "skia_gold_test",
+        "skia_gold_bypass",
     ],
     module_scheme = "flat",
-)
-
-targets.tests.isolated_script_test(
-    name = "vulkan_swiftshader_blink_web_tests",
-    mixins = [
-        "has_native_resultdb_integration",
-        "blink_tests_write_run_histories",
-    ],
-    args = [
-        # layout test failures are retried 3 times when '--test-list' is not
-        # passed, but 0 times when '--test-list' is passed. We want to always
-        # retry 3 times, so we explicitly specify it.
-        "--num-retries=3",
-        "--skipped=always",
-        "--flag-specific=skia-vulkan-swiftshader",
-    ],
-    binary = "blink_web_tests",
 )
 
 targets.tests.gtest_test(
@@ -2839,32 +2761,6 @@ targets.tests.isolated_script_test(
 )
 
 targets.tests.gpu_telemetry_test(
-    name = "webcodecs_gl_passthrough_ganesh_tests",
-    telemetry_test_name = "webcodecs",
-    mixins = [
-        "has_native_resultdb_integration",
-        "gpu_force_command_decoder_passthrough",
-        "gpu_force_angle_gl",
-        "gpu_force_skia_ganesh",
-        "gpu_integration_test_common_args",
-    ],
-    module_scheme = "flat",
-)
-
-targets.tests.gpu_telemetry_test(
-    name = "webcodecs_metal_passthrough_ganesh_tests",
-    telemetry_test_name = "webcodecs",
-    mixins = [
-        "has_native_resultdb_integration",
-        "gpu_force_command_decoder_passthrough",
-        "gpu_force_angle_metal",
-        "gpu_force_skia_ganesh",
-        "gpu_integration_test_common_args",
-    ],
-    module_scheme = "flat",
-)
-
-targets.tests.gpu_telemetry_test(
     name = "webcodecs_metal_passthrough_graphite_tests",
     telemetry_test_name = "webcodecs",
     mixins = [
@@ -2900,25 +2796,11 @@ targets.tests.gpu_telemetry_test(
 )
 
 targets.tests.gpu_telemetry_test(
-    name = "webrtc_gl_passthrough_ganesh_tests",
-    telemetry_test_name = "webrtc",
+    name = "webcodecs_validating_ganesh_tests",
+    telemetry_test_name = "webcodecs",
     mixins = [
         "has_native_resultdb_integration",
-        "gpu_force_command_decoder_passthrough",
-        "gpu_force_angle_gl",
-        "gpu_force_skia_ganesh",
-        "gpu_integration_test_common_args",
-    ],
-    module_scheme = "flat",
-)
-
-targets.tests.gpu_telemetry_test(
-    name = "webrtc_metal_passthrough_ganesh_tests",
-    telemetry_test_name = "webrtc",
-    mixins = [
-        "has_native_resultdb_integration",
-        "gpu_force_command_decoder_passthrough",
-        "gpu_force_angle_metal",
+        "gpu_force_command_decoder_validating",
         "gpu_force_skia_ganesh",
         "gpu_integration_test_common_args",
     ],
@@ -2960,6 +2842,18 @@ targets.tests.gpu_telemetry_test(
     module_scheme = "flat",
 )
 
+targets.tests.gpu_telemetry_test(
+    name = "webrtc_validating_ganesh_tests",
+    telemetry_test_name = "webrtc",
+    mixins = [
+        "has_native_resultdb_integration",
+        "gpu_force_command_decoder_validating",
+        "gpu_force_skia_ganesh",
+        "gpu_integration_test_common_args",
+    ],
+    module_scheme = "flat",
+)
+
 targets.tests.isolated_script_test(
     name = "webdriver_wpt_tests",
     mixins = [
@@ -2986,21 +2880,6 @@ targets.tests.gpu_telemetry_test(
 )
 
 targets.tests.gpu_telemetry_test(
-    name = "webgl2_conformance_gl_passthrough_ganesh_tests",
-    telemetry_test_name = "webgl2_conformance",
-    mixins = [
-        "has_native_resultdb_integration",
-        "gpu_force_command_decoder_passthrough",
-        "gpu_force_angle_gl",
-        "gpu_force_skia_ganesh",
-        "gpu_force_high_performance_gpu",
-        "gpu_integration_test_webgl2_args",
-        "gpu_integration_test_common_args",
-    ],
-    module_scheme = "flat",
-)
-
-targets.tests.gpu_telemetry_test(
     name = "webgl2_conformance_gl_passthrough_tests",
     telemetry_test_name = "webgl2_conformance",
     mixins = [
@@ -3010,6 +2889,7 @@ targets.tests.gpu_telemetry_test(
         "gpu_force_high_performance_gpu",
         "gpu_integration_test_webgl2_args",
         "gpu_integration_test_common_args",
+        "legacy_gpu_webgl2_conformance_shards",
     ],
     module_scheme = "flat",
 )
@@ -3024,6 +2904,22 @@ targets.tests.gpu_telemetry_test(
         "gpu_force_high_performance_gpu",
         "gpu_integration_test_webgl2_args",
         "gpu_integration_test_common_args",
+        targets.mixin(
+            swarming = targets.swarming(
+                shards = 5,
+            ),
+            android_swarming = targets.swarming(
+                # These tests currently take about an hour and fifteen minutes
+                # to run. Split them into roughly 5-minute shards.
+                shards = 20,
+            ),
+            chromeos_swarming = targets.swarming(
+                shards = 20,
+            ),
+            skylab = targets.skylab(
+                shards = 20,
+            ),
+        ),
     ],
     module_scheme = "flat",
 )
@@ -3053,6 +2949,13 @@ targets.tests.gpu_telemetry_test(
         "gpu_force_high_performance_gpu",
         "gpu_integration_test_webgl2_args",
         "gpu_integration_test_common_args",
+        targets.mixin(
+            swarming = targets.swarming(
+                # These tests currently take about an hour and fifteen minutes
+                # to run. Split them into roughly 5-minute shards.
+                shards = 20,
+            ),
+        ),
     ],
     module_scheme = "flat",
 )
@@ -3064,35 +2967,6 @@ targets.tests.gpu_telemetry_test(
         "has_native_resultdb_integration",
         "gpu_force_command_decoder_passthrough",
         "gpu_force_angle_d3d11",
-        "gpu_force_high_performance_gpu",
-        "gpu_integration_test_webgl1_args",
-        "gpu_integration_test_common_args",
-    ],
-    module_scheme = "flat",
-)
-
-targets.tests.gpu_telemetry_test(
-    name = "webgl_conformance_d3d9_passthrough_tests",
-    telemetry_test_name = "webgl1_conformance",
-    mixins = [
-        "has_native_resultdb_integration",
-        "gpu_force_command_decoder_passthrough",
-        "gpu_force_angle_d3d9",
-        "gpu_force_high_performance_gpu",
-        "gpu_integration_test_webgl1_args",
-        "gpu_integration_test_common_args",
-    ],
-    module_scheme = "flat",
-)
-
-targets.tests.gpu_telemetry_test(
-    name = "webgl_conformance_gl_passthrough_ganesh_tests",
-    telemetry_test_name = "webgl1_conformance",
-    mixins = [
-        "has_native_resultdb_integration",
-        "gpu_force_command_decoder_passthrough",
-        "gpu_force_angle_gl",
-        "gpu_force_skia_ganesh",
         "gpu_force_high_performance_gpu",
         "gpu_integration_test_webgl1_args",
         "gpu_integration_test_common_args",
@@ -3124,6 +2998,7 @@ targets.tests.gpu_telemetry_test(
         "gpu_force_high_performance_gpu",
         "gpu_integration_test_webgl1_args",
         "gpu_integration_test_common_args",
+        "legacy_gpu_webgl_conformance_shards",
     ],
     module_scheme = "flat",
 )
@@ -3139,6 +3014,11 @@ targets.tests.gpu_telemetry_test(
         "gpu_force_high_performance_gpu",
         "gpu_integration_test_webgl1_args",
         "gpu_integration_test_common_args",
+        targets.mixin(
+            swarming = targets.swarming(
+                shards = 6,
+            ),
+        ),
     ],
     module_scheme = "flat",
 )
@@ -3154,22 +3034,11 @@ targets.tests.gpu_telemetry_test(
         "gpu_force_high_performance_gpu",
         "gpu_integration_test_webgl1_args",
         "gpu_integration_test_common_args",
-    ],
-    module_scheme = "flat",
-)
-
-targets.tests.gpu_telemetry_test(
-    name = "webgl_conformance_metal_passthrough_ganesh_tests",
-    telemetry_test_name = "webgl1_conformance",
-    mixins = [
-        "has_native_resultdb_integration",
-        "gpu_force_command_decoder_passthrough",
-        "gpu_force_angle_metal",
-        "gpu_force_skia_ganesh",
-        "gpu_force_high_performance_gpu_for_webgl_metal",
-        "gpu_enable_metal_debug_layers",
-        "gpu_integration_test_webgl1_args",
-        "gpu_integration_test_common_args",
+        targets.mixin(
+            swarming = targets.swarming(
+                shards = 3,
+            ),
+        ),
     ],
     module_scheme = "flat",
 )
@@ -3211,6 +3080,7 @@ targets.tests.gpu_telemetry_test(
         "gpu_force_high_performance_gpu",
         "gpu_integration_test_webgl1_args",
         "gpu_integration_test_common_args",
+        "legacy_gpu_webgl_conformance_shards",
     ],
     module_scheme = "flat",
 )
@@ -3225,6 +3095,14 @@ targets.tests.gpu_telemetry_test(
         "gpu_force_high_performance_gpu",
         "gpu_integration_test_webgl1_args",
         "gpu_integration_test_common_args",
+        targets.mixin(
+            swarming = targets.swarming(
+                shards = 2,
+            ),
+            android_swarming = targets.swarming(
+                shards = 6,
+            ),
+        ),
     ],
     module_scheme = "flat",
 )
@@ -3239,6 +3117,14 @@ targets.tests.gpu_telemetry_test(
         "gpu_force_high_performance_gpu",
         "gpu_integration_test_webgl1_args",
         "gpu_integration_test_common_args",
+        targets.mixin(
+            swarming = targets.swarming(
+                shards = 2,
+            ),
+            android_swarming = targets.swarming(
+                shards = 6,
+            ),
+        ),
     ],
     module_scheme = "flat",
 )
@@ -3252,6 +3138,7 @@ targets.tests.gpu_telemetry_test(
         "gpu_force_high_performance_gpu",
         "gpu_integration_test_webgl1_args",
         "gpu_integration_test_common_args",
+        "legacy_gpu_webgl_conformance_shards",
     ],
     module_scheme = "flat",
 )
@@ -3268,6 +3155,20 @@ targets.tests.gpu_telemetry_test(
         "gpu_integration_test_common_args",
     ],
     module_scheme = "flat",
+)
+
+targets.tests.isolated_script_test(
+    name = "webdriver_bidi_unittests",
+    mixins = [
+        "has_native_resultdb_integration",
+    ],
+)
+
+targets.tests.isolated_script_test(
+    name = "webdriver_bidi_e2e_tests",
+    mixins = [
+        "has_native_resultdb_integration",
+    ],
 )
 
 targets.tests.isolated_script_test(
@@ -3433,7 +3334,7 @@ targets.tests.isolated_script_test(
         "--skipped",
         "always",
     ],
-    binary = "trichrome_webview_wpt_64",
+    binary = "system_webview_wpt_64",
 )
 
 targets.tests.gtest_test(

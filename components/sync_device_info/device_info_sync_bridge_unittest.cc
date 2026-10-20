@@ -6,9 +6,11 @@
 
 #include <algorithm>
 #include <map>
+#include <optional>
 #include <set>
 #include <utility>
 
+#include "base/containers/flat_set.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/logging.h"
@@ -16,17 +18,16 @@
 #include "base/notimplemented.h"
 #include "base/run_loop.h"
 #include "base/strings/stringprintf.h"
+#include "base/system/sys_info.h"
 #include "base/test/bind.h"
 #include "base/test/mock_callback.h"
 #include "base/test/protobuf_matchers.h"
-#include "base/test/scoped_feature_list.h"
 #include "base/test/simple_test_clock.h"
 #include "base/test/task_environment.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
 #include "components/prefs/testing_pref_service.h"
 #include "components/sync/base/data_type.h"
-#include "components/sync/base/features.h"
 #include "components/sync/base/time.h"
 #include "components/sync/model/data_batch.h"
 #include "components/sync/model/data_type_activation_request.h"
@@ -62,15 +63,18 @@ using sync_pb::EntitySpecifics;
 using testing::_;
 using testing::AllOf;
 using testing::Contains;
+using testing::Field;
 using testing::InvokeWithoutArgs;
 using testing::IsEmpty;
 using testing::IsNull;
 using testing::Matcher;
+using testing::Mock;
 using testing::NiceMock;
 using testing::Not;
 using testing::NotNull;
 using testing::Pair;
 using testing::Pointee;
+using testing::Property;
 using testing::Return;
 using testing::SizeIs;
 using testing::UnorderedElementsAre;
@@ -150,9 +154,6 @@ MATCHER_P(ModelEqualsSpecifics, expected_specifics, "") {
              arg.signin_scoped_device_id() &&
          expected_specifics.model() == arg.model_name() &&
          expected_specifics.manufacturer() == arg.manufacturer_name() &&
-         expected_specifics.feature_fields()
-                 .send_tab_to_self_receiving_enabled() ==
-             arg.send_tab_to_self_receiving_enabled() &&
          ToDeviceInfoSendTabReceivingType(
              expected_specifics.feature_fields()
                  .send_tab_to_self_receiving_type()) ==
@@ -167,12 +168,44 @@ MATCHER_P(ModelEqualsSpecifics, expected_specifics, "") {
          expected_specifics.feature_fields()
                  .glic_experimental_triggering_state() ==
              ToGlicExperimentalTriggeringStateProto(
-                 arg.glic_experimental_triggering_state());
+                 arg.glic_experimental_triggering_state()) &&
+         expected_specifics.feature_fields()
+                 .has_glic_experimental_triggering_version() ==
+             arg.glic_experimental_triggering_version().has_value() &&
+         (!arg.glic_experimental_triggering_version().has_value() ||
+          expected_specifics.feature_fields()
+                  .glic_experimental_triggering_version() ==
+              *arg.glic_experimental_triggering_version()) &&
+         base::flat_set<std::string>(
+             expected_specifics.feature_fields()
+                 .glic_experimental_triggering_capabilities()
+                 .begin(),
+             expected_specifics.feature_fields()
+                 .glic_experimental_triggering_capabilities()
+                 .end()) == arg.glic_experimental_triggering_capabilities() &&
+         expected_specifics.has_android_os_build_fingerprint_prefix() ==
+             arg.android_os_build_fingerprint_prefix().has_value() &&
+         (!arg.android_os_build_fingerprint_prefix().has_value() ||
+          expected_specifics.android_os_build_fingerprint_prefix() ==
+              *arg.android_os_build_fingerprint_prefix()) &&
+         expected_specifics.has_server_determined_model_name() ==
+             arg.server_determined_model_name().has_value() &&
+         (!arg.server_determined_model_name().has_value() ||
+          expected_specifics.server_determined_model_name() ==
+              *arg.server_determined_model_name()) &&
+         expected_specifics.personal_context_fields()
+                 .serialized_tink_keyset() ==
+             (arg.personal_context_info().has_value()
+                  ? std::string(arg.personal_context_info()
+                                    ->serialized_tink_keyset.begin(),
+                                arg.personal_context_info()
+                                    ->serialized_tink_keyset.end())
+                  : "");
 }
 
 Matcher<std::unique_ptr<EntityData>> HasSpecifics(
     const Matcher<sync_pb::EntitySpecifics>& m) {
-  return testing::Pointee(testing::Field(&EntityData::specifics, m));
+  return Pointee(Field(&EntityData::specifics, m));
 }
 
 MATCHER_P(HasCacheGuid, cache_guid, "") {
@@ -277,8 +310,8 @@ std::string SharingSenderIdAuthSecretForSuffix(int suffix) {
 
 sync_pb::SharingSpecificFields::EnabledFeatures SharingEnabledFeaturesForSuffix(
     int suffix) {
-  return suffix % 2 ? sync_pb::SharingSpecificFields::CLICK_TO_CALL_V2
-                    : sync_pb::SharingSpecificFields::SHARED_CLIPBOARD_V2;
+  return suffix % 2 ? sync_pb::SharingSpecificFields::REMOTE_COPY
+                    : sync_pb::SharingSpecificFields::SMS_FETCHER;
 }
 
 std::string SyncInvalidationsInstanceIdTokenForSuffix(int suffix) {
@@ -405,17 +438,21 @@ class TestLocalDeviceInfoProvider : public MutableLocalDeviceInfoProvider {
   ~TestLocalDeviceInfoProvider() override = default;
 
   // MutableLocalDeviceInfoProvider implementation.
-  void Initialize(const std::string& cache_guid,
-                  const std::string& session_name,
-                  const std::string& manufacturer_name,
-                  const std::string& model_name,
-                  const std::string& full_hardware_class,
-                  const DeviceInfo* device_info_restored_from_store) override {
+  void Initialize(
+      const std::string& cache_guid,
+      const std::string& session_name,
+      const std::string& manufacturer_name,
+      const std::string& model_name,
+      const std::string& full_hardware_class,
+      std::optional<std::string> android_os_build_fingerprint_prefix,
+      const DeviceInfo* device_info_restored_from_store) override {
     std::string last_fcm_registration_token;
     DataTypeSet last_interested_data_types;
     DeviceInfo::GlicExperimentalTriggeringState
         glic_experimental_triggering_state =
             DeviceInfo::GlicExperimentalTriggeringState::kUnavailable;
+    std::optional<int> glic_experimental_triggering_version = std::nullopt;
+    std::optional<std::string> server_determined_model_name;
     if (device_info_restored_from_store) {
       last_fcm_registration_token =
           device_info_restored_from_store->fcm_registration_token();
@@ -423,6 +460,11 @@ class TestLocalDeviceInfoProvider : public MutableLocalDeviceInfoProvider {
           device_info_restored_from_store->interested_data_types();
       glic_experimental_triggering_state =
           device_info_restored_from_store->glic_experimental_triggering_state();
+      glic_experimental_triggering_version =
+          device_info_restored_from_store
+              ->glic_experimental_triggering_version();
+      server_determined_model_name =
+          device_info_restored_from_store->server_determined_model_name();
     }
 
     std::set<DeviceInfo::SharingFeature> sharing_enabled_features{
@@ -432,10 +474,8 @@ class TestLocalDeviceInfoProvider : public MutableLocalDeviceInfoProvider {
         cache_guid, session_name, ChromeVersionForSuffix(kLocalSuffix),
         SyncUserAgentForSuffix(kLocalSuffix), kLocalDeviceType, kLocalDeviceOS,
         kLocalDeviceFormFactor, SigninScopedDeviceIdForSuffix(kLocalSuffix),
-        manufacturer_name, model_name, full_hardware_class, base::Time(),
-        DeviceInfoUtil::GetPulseInterval(),
-        /*send_tab_to_self_receiving_enabled=*/
-        true,
+        manufacturer_name, model_name, server_determined_model_name,
+        full_hardware_class, base::Time(), DeviceInfoUtil::GetPulseInterval(),
         /*send_tab_to_self_receiving_type=*/
         DeviceInfo::SendTabReceivingType::kChromeOrUnspecified,
         DeviceInfo::SharingInfo(
@@ -451,7 +491,12 @@ class TestLocalDeviceInfoProvider : public MutableLocalDeviceInfoProvider {
         /*desktop_to_ios_promo_receiving_types=*/
         MobilePromoOnDesktopPromoTypeSet{},
         /*glic_experimental_triggering_state=*/
-        glic_experimental_triggering_state);
+        glic_experimental_triggering_state,
+        /*glic_experimental_triggering_version=*/
+        glic_experimental_triggering_version,
+        /*glic_experimental_triggering_capabilities=*/
+        base::flat_set<std::string>(), android_os_build_fingerprint_prefix,
+        personal_context_info_);
   }
 
   void Clear() override { local_device_info_.reset(); }
@@ -489,6 +534,9 @@ class TestLocalDeviceInfoProvider : public MutableLocalDeviceInfoProvider {
         local_device_info_->set_desktop_to_ios_promo_receiving_types(
             *promo_types_);
       }
+      if (personal_context_info_) {
+        local_device_info_->set_personal_context_info(*personal_context_info_);
+      }
     }
     return local_device_info_.get();
   }
@@ -517,12 +565,18 @@ class TestLocalDeviceInfoProvider : public MutableLocalDeviceInfoProvider {
     promo_types_ = promo_types;
   }
 
+  void UpdatePersonalContextInfo(
+      const DeviceInfo::PersonalContextInfo& personal_context_info) {
+    personal_context_info_ = personal_context_info;
+  }
+
  private:
   std::unique_ptr<DeviceInfo> local_device_info_;
   std::optional<std::string> fcm_registration_token_;
   std::optional<DataTypeSet> interested_data_types_;
   std::optional<DeviceInfo::PhoneAsASecurityKeyInfo> paask_info_;
   std::optional<MobilePromoOnDesktopPromoTypeSet> promo_types_;
+  std::optional<DeviceInfo::PersonalContextInfo> personal_context_info_;
 };  // namespace
 
 class DeviceInfoSyncBridgeTest : public testing::Test,
@@ -722,10 +776,6 @@ class DeviceInfoSyncBridgeTest : public testing::Test,
     return local_device_name_info_.personalizable_name;
   }
 
-  const std::string& local_device_model_name() const {
-    return local_device_name_info_.model_name;
-  }
-
  private:
   base::SimpleTestClock clock_;
 
@@ -813,7 +863,7 @@ TEST_F(DeviceInfoSyncBridgeTest, TestWithLocalDataAndMetadata) {
   InitializeAndPump();
 
   EXPECT_EQ(1u, bridge()->GetAllDeviceInfo().size());
-  EXPECT_THAT(*bridge()->GetDeviceInfo(local_specifics.cache_guid()),
+  EXPECT_THAT(*bridge()->GetChromeDeviceInfo(local_specifics.cache_guid()),
               ModelEqualsSpecifics(local_specifics));
   EXPECT_TRUE(bridge()->IsPulseTimerRunningForTest());
 }
@@ -830,9 +880,9 @@ TEST_F(DeviceInfoSyncBridgeTest, TestWithMultipleLocalDataAndMetadata) {
   InitializeAndPump();
 
   EXPECT_EQ(2u, bridge()->GetAllDeviceInfo().size());
-  EXPECT_THAT(*bridge()->GetDeviceInfo(local_specifics.cache_guid()),
+  EXPECT_THAT(*bridge()->GetChromeDeviceInfo(local_specifics.cache_guid()),
               ModelEqualsSpecifics(local_specifics));
-  EXPECT_THAT(*bridge()->GetDeviceInfo(remote_specifics.cache_guid()),
+  EXPECT_THAT(*bridge()->GetChromeDeviceInfo(remote_specifics.cache_guid()),
               ModelEqualsSpecifics(remote_specifics));
 }
 
@@ -947,7 +997,8 @@ TEST_F(DeviceInfoSyncBridgeTest, ApplyIncrementalSyncChangesInMemory) {
       bridge()->CreateMetadataChangeList(), EntityAddList({specifics}));
 
   EXPECT_FALSE(error_on_add);
-  const DeviceInfo* info = bridge()->GetDeviceInfo(specifics.cache_guid());
+  const DeviceInfo* info =
+      bridge()->GetChromeDeviceInfo(specifics.cache_guid());
   ASSERT_TRUE(info);
   EXPECT_THAT(*info, ModelEqualsSpecifics(specifics));
   EXPECT_EQ(2, change_count());
@@ -959,7 +1010,7 @@ TEST_F(DeviceInfoSyncBridgeTest, ApplyIncrementalSyncChangesInMemory) {
       bridge()->CreateMetadataChangeList(), std::move(entity_change_list));
 
   EXPECT_FALSE(error_on_delete);
-  EXPECT_FALSE(bridge()->GetDeviceInfo(specifics.cache_guid()));
+  EXPECT_FALSE(bridge()->GetChromeDeviceInfo(specifics.cache_guid()));
   EXPECT_EQ(3, change_count());
 }
 
@@ -983,7 +1034,8 @@ TEST_F(DeviceInfoSyncBridgeTest, ApplyIncrementalSyncChangesStore) {
                                 /*entities=*/IsEmpty())));
   RestartBridge();
 
-  const DeviceInfo* info = bridge()->GetDeviceInfo(specifics.cache_guid());
+  const DeviceInfo* info =
+      bridge()->GetChromeDeviceInfo(specifics.cache_guid());
   ASSERT_TRUE(info);
   EXPECT_THAT(*info, ModelEqualsSpecifics(specifics));
 }
@@ -992,8 +1044,8 @@ TEST_F(DeviceInfoSyncBridgeTest, ApplyIncrementalSyncChangesWithLocalGuid) {
   InitializeAndMergeInitialData(SyncMode::kFull);
   ASSERT_EQ(1, change_count());
 
-  ASSERT_TRUE(
-      bridge()->GetDeviceInfo(local_device()->GetLocalDeviceInfo()->guid()));
+  ASSERT_TRUE(bridge()->GetChromeDeviceInfo(
+      local_device()->GetLocalDeviceInfo()->guid()));
   ASSERT_EQ(1, change_count());
 
   // The bridge should ignore updates using this specifics because its guid will
@@ -1277,7 +1329,7 @@ TEST_F(DeviceInfoSyncBridgeTest,
   ASSERT_THAT(bridge()->GetAllDeviceInfo(), SizeIs(2));
   ASSERT_EQ(DeviceCountMap({{kLocalDeviceFormFactor, 2}}),
             bridge()->CountActiveDevicesByType());
-  ASSERT_THAT(bridge()->GetDeviceInfo(CacheGuidForSuffix(1)), NotNull());
+  ASSERT_THAT(bridge()->GetChromeDeviceInfo(CacheGuidForSuffix(1)), NotNull());
 
   // If the Chrome version is not present, it should not be exposed as Chrome
   // device.
@@ -1292,7 +1344,7 @@ TEST_F(DeviceInfoSyncBridgeTest,
               Not(Contains(Pointee(HasCacheGuid(CacheGuidForSuffix(2))))));
   EXPECT_EQ(DeviceCountMap({{kLocalDeviceFormFactor, 2}}),
             bridge()->CountActiveDevicesByType());
-  EXPECT_THAT(bridge()->GetDeviceInfo(CacheGuidForSuffix(2)), IsNull());
+  EXPECT_THAT(bridge()->GetChromeDeviceInfo(CacheGuidForSuffix(2)), IsNull());
 
   // If only the non-legacy field is present, the device should still be exposed
   // in DeviceInfoTracker.
@@ -1306,15 +1358,16 @@ TEST_F(DeviceInfoSyncBridgeTest,
   EXPECT_THAT(bridge()->GetAllChromeDeviceInfo(), SizeIs(3));
   EXPECT_EQ(DeviceCountMap({{kLocalDeviceFormFactor, 3}}),
             bridge()->CountActiveDevicesByType());
-  EXPECT_THAT(bridge()->GetDeviceInfo(CacheGuidForSuffix(3)), NotNull());
+  EXPECT_THAT(bridge()->GetChromeDeviceInfo(CacheGuidForSuffix(3)), NotNull());
 }
 
+// Tests that local device info is pulsed when requested in full sync mode.
 TEST_F(DeviceInfoSyncBridgeTest, SendLocalData) {
   // Ensure |last_updated| is about now, plus or minus a little bit.
   EXPECT_CALL(*processor(), Put(_, HasSpecifics(HasLastUpdatedAboutNow()), _));
   InitializeAndMergeInitialData(SyncMode::kFull);
   EXPECT_EQ(1, change_count());
-  testing::Mock::VerifyAndClearExpectations(processor());
+  Mock::VerifyAndClearExpectations(processor());
 
   // Ensure |last_updated| is about now, plus or minus a little bit.
   EXPECT_CALL(*processor(), Put(_, HasSpecifics(HasLastUpdatedAboutNow()), _));
@@ -1393,7 +1446,7 @@ TEST_F(DeviceInfoSyncBridgeTest, RefreshLocalDeviceInfo) {
   EXPECT_CALL(*processor(), Put(_, HasSpecifics(HasLastUpdatedAboutNow()), _));
   InitializeAndMergeInitialData(SyncMode::kFull);
   EXPECT_EQ(1, change_count());
-  testing::Mock::VerifyAndClearExpectations(processor());
+  Mock::VerifyAndClearExpectations(processor());
 
   // Check that the device is not updated if nothing has been changed.
   RefreshLocalDeviceInfo();
@@ -1780,11 +1833,13 @@ TEST_F(DeviceInfoSyncBridgeTest, ShouldDeriveOsFromDeviceType) {
   InitializeAndPump();
 
   // Test LINUX desktop device info.
-  EXPECT_EQ(bridge()->GetDeviceInfo(local_specifics.cache_guid())->os_type(),
-            kLocalDeviceOS);
-  EXPECT_THAT(
-      bridge()->GetDeviceInfo(local_specifics.cache_guid())->form_factor(),
-      kLocalDeviceFormFactor);
+  EXPECT_EQ(
+      bridge()->GetChromeDeviceInfo(local_specifics.cache_guid())->os_type(),
+      kLocalDeviceOS);
+  EXPECT_THAT(bridge()
+                  ->GetChromeDeviceInfo(local_specifics.cache_guid())
+                  ->form_factor(),
+              kLocalDeviceFormFactor);
 
   // Test Android phone device info.
   {
@@ -1793,11 +1848,12 @@ TEST_F(DeviceInfoSyncBridgeTest, ShouldDeriveOsFromDeviceType) {
     bridge()->ApplyIncrementalSyncChanges(bridge()->CreateMetadataChangeList(),
                                           EntityAddList({remote_specifics}));
     EXPECT_THAT(
-        bridge()->GetDeviceInfo(remote_specifics.cache_guid())->os_type(),
+        bridge()->GetChromeDeviceInfo(remote_specifics.cache_guid())->os_type(),
         DeviceInfo::OsType::kAndroid);
-    EXPECT_THAT(
-        bridge()->GetDeviceInfo(remote_specifics.cache_guid())->form_factor(),
-        DeviceInfo::FormFactor::kPhone);
+    EXPECT_THAT(bridge()
+                    ->GetChromeDeviceInfo(remote_specifics.cache_guid())
+                    ->form_factor(),
+                DeviceInfo::FormFactor::kPhone);
   }
 
   // Test IOS phone device info specifying the manufacturer.
@@ -1808,44 +1864,160 @@ TEST_F(DeviceInfoSyncBridgeTest, ShouldDeriveOsFromDeviceType) {
     bridge()->ApplyIncrementalSyncChanges(bridge()->CreateMetadataChangeList(),
                                           EntityAddList({remote_specifics}));
     EXPECT_THAT(
-        bridge()->GetDeviceInfo(remote_specifics.cache_guid())->os_type(),
+        bridge()->GetChromeDeviceInfo(remote_specifics.cache_guid())->os_type(),
         DeviceInfo::OsType::kIOS);
-    EXPECT_THAT(
-        bridge()->GetDeviceInfo(remote_specifics.cache_guid())->form_factor(),
-        DeviceInfo::FormFactor::kPhone);
+    EXPECT_THAT(bridge()
+                    ->GetChromeDeviceInfo(remote_specifics.cache_guid())
+                    ->form_factor(),
+                DeviceInfo::FormFactor::kPhone);
   }
 }
 
-TEST_F(DeviceInfoSyncBridgeTest, PulseWithWallClockTimer) {
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndEnableFeature(kSyncDeviceInfoUseWallClockTimer);
-
-  // Ensure `last_updated` is about now, plus or minus a little bit.
-  EXPECT_CALL(*processor(), Put(_, HasSpecifics(HasLastUpdatedAboutNow()), _));
-  InitializeAndMergeInitialData(SyncMode::kFull);
-  EXPECT_EQ(1, change_count());
-  testing::Mock::VerifyAndClearExpectations(processor());
-
-  // Ensure `last_updated` is about now, plus or minus a little bit.
-  EXPECT_CALL(*processor(), Put(_, HasSpecifics(HasLastUpdatedAboutNow()), _));
-  ForcePulse();
-  EXPECT_EQ(2, change_count());
-}
-
-TEST_F(DeviceInfoSyncBridgeTest, PulseWithWallClockTimerTransportOnly) {
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndEnableFeature(kSyncDeviceInfoUseWallClockTimer);
-
+// Tests that local device info is pulsed when requested in transport-only mode.
+TEST_F(DeviceInfoSyncBridgeTest, SendLocalDataTransportOnly) {
   // Ensure `last_updated` is about now, plus or minus a little bit.
   EXPECT_CALL(*processor(), Put(_, HasSpecifics(HasLastUpdatedAboutNow()), _));
   InitializeAndMergeInitialData(SyncMode::kTransportOnly);
   EXPECT_EQ(1, change_count());
-  testing::Mock::VerifyAndClearExpectations(processor());
+  Mock::VerifyAndClearExpectations(processor());
 
   // Ensure `last_updated` is about now, plus or minus a little bit.
   EXPECT_CALL(*processor(), Put(_, HasSpecifics(HasLastUpdatedAboutNow()), _));
   ForcePulse();
   EXPECT_EQ(2, change_count());
+}
+
+// Tests that on Android, the local device's build fingerprint prefix is derived
+// and persisted to `DeviceInfoSpecifics`, whereas on other platforms it remains
+// unset.
+TEST_F(DeviceInfoSyncBridgeTest, ShouldDeriveAndroidBuildFingerprintPrefix) {
+  InitializeAndMergeInitialData(SyncMode::kFull);
+
+  const DeviceInfo* local_device_info =
+      bridge()->GetLocalDeviceInfoProvider()->GetLocalDeviceInfo();
+  ASSERT_TRUE(local_device_info);
+#if BUILDFLAG(IS_ANDROID)
+  std::string real_fingerprint = base::SysInfo::GetAndroidBuildFingerprint();
+  std::string expected_prefix =
+      DeriveAndroidBuildFingerprintPrefixForTesting(real_fingerprint);
+  EXPECT_EQ(local_device_info->android_os_build_fingerprint_prefix(),
+            expected_prefix);
+  EXPECT_EQ(ReadAllFromStore()[local_device_info->guid()]
+                .android_os_build_fingerprint_prefix(),
+            expected_prefix);
+#else
+  EXPECT_EQ(local_device_info->android_os_build_fingerprint_prefix(),
+            std::nullopt);
+  EXPECT_FALSE(ReadAllFromStore()[local_device_info->guid()]
+                   .has_android_os_build_fingerprint_prefix());
+#endif
+}
+
+TEST(DeriveAndroidBuildFingerprintPrefixTest,
+     DeriveAndroidBuildFingerprintPrefix) {
+  EXPECT_EQ(DeriveAndroidBuildFingerprintPrefixForTesting(
+                "google/redfin/redfin:11/RQ3A.210805.001.A1/7478541:user/"
+                "release-keys"),
+            "google/redfin/redfin");
+  EXPECT_EQ(
+      DeriveAndroidBuildFingerprintPrefixForTesting("google/redfin/redfin"),
+      "google/redfin/redfin");
+  EXPECT_EQ(DeriveAndroidBuildFingerprintPrefixForTesting(""), "");
+}
+
+TEST_F(DeviceInfoSyncBridgeTest,
+       ApplyIncrementalSyncChangesWithServerDeterminedModelName) {
+  InitializeAndMergeInitialData(SyncMode::kFull);
+
+  const std::string kServerDeterminedModelName = "Server Determined Model Name";
+  DeviceInfoSpecifics specifics = CreateSpecifics(1);
+  specifics.set_server_determined_model_name(kServerDeterminedModelName);
+
+  auto error_on_add = bridge()->ApplyIncrementalSyncChanges(
+      bridge()->CreateMetadataChangeList(), EntityAddList({specifics}));
+
+  EXPECT_FALSE(error_on_add);
+  const DeviceInfo* info =
+      bridge()->GetChromeDeviceInfo(specifics.cache_guid());
+  ASSERT_TRUE(info);
+  EXPECT_THAT(*info, ModelEqualsSpecifics(specifics));
+  EXPECT_EQ(kServerDeterminedModelName,
+            info->server_determined_model_name().value_or(""));
+}
+
+TEST_F(DeviceInfoSyncBridgeTest,
+       ApplyIncrementalSyncChangesWithPersonalContextFields) {
+  InitializeAndMergeInitialData(SyncMode::kFull);
+
+  DeviceInfoSpecifics specifics = CreateSpecifics(1);
+  const std::vector<uint8_t> kSerializedKeyset = {1, 2, 3, 4, 5};
+  specifics.mutable_personal_context_fields()->set_serialized_tink_keyset(
+      kSerializedKeyset.data(), kSerializedKeyset.size());
+
+  std::optional<ModelError> error_on_add =
+      bridge()->ApplyIncrementalSyncChanges(
+          bridge()->CreateMetadataChangeList(), EntityAddList({specifics}));
+
+  ASSERT_FALSE(error_on_add);
+  const DeviceInfo* info =
+      bridge()->GetChromeDeviceInfo(specifics.cache_guid());
+  ASSERT_TRUE(info);
+  EXPECT_THAT(*info, ModelEqualsSpecifics(specifics));
+  ASSERT_TRUE(info->personal_context_info().has_value());
+  EXPECT_EQ(info->personal_context_info()->serialized_tink_keyset,
+            kSerializedKeyset);
+}
+
+TEST_F(DeviceInfoSyncBridgeTest, CommitLocalPersonalContextInfo) {
+  const std::string kLocalGuid = CacheGuidForSuffix(kLocalSuffix);
+  const std::vector<uint8_t> kSerializedKeyset = {1, 2, 3, 4, 5};
+
+  InitializeAndPump();
+  local_device()->UpdatePersonalContextInfo(
+      DeviceInfo::PersonalContextInfo{
+          .serialized_tink_keyset = kSerializedKeyset});
+
+  EXPECT_CALL(
+      *processor(),
+      Put(kLocalGuid,
+          HasSpecifics(Property(
+              &sync_pb::EntitySpecifics::device_info,
+              Property(
+                  &DeviceInfoSpecifics::personal_context_fields,
+                  Property(
+                      &sync_pb::PersonalContextSpecificFields::
+                          serialized_tink_keyset,
+                      std::string(kSerializedKeyset.begin(),
+                                  kSerializedKeyset.end()))))),
+          _));
+
+  EnableSyncAndMergeInitialData(SyncMode::kFull);
+
+  ASSERT_TRUE(local_device()->GetLocalDeviceInfo());
+  EXPECT_EQ(local_device()->GetLocalDeviceInfo()->guid(), kLocalGuid);
+  ASSERT_TRUE(
+      local_device()->GetLocalDeviceInfo()->personal_context_info().has_value());
+  EXPECT_EQ(local_device()
+                ->GetLocalDeviceInfo()
+                ->personal_context_info()
+                ->serialized_tink_keyset,
+            kSerializedKeyset);
+}
+
+TEST_F(DeviceInfoSyncBridgeTest, GetDataForCommitWithPersonalContextFields) {
+  const DeviceInfoSpecifics local_specifics = CreateLocalDeviceSpecifics();
+  const std::vector<uint8_t> kSerializedKeyset = {1, 2, 3, 4, 5};
+  DeviceInfoSpecifics specifics = CreateSpecifics(1);
+  specifics.mutable_personal_context_fields()->set_serialized_tink_keyset(
+      kSerializedKeyset.data(), kSerializedKeyset.size());
+
+  WriteToStoreWithMetadata({local_specifics, specifics},
+                           StateWithEncryption("ekn"));
+  InitializeAndPump();
+
+  EXPECT_THAT(GetDataForCommit({specifics.cache_guid()}),
+              UnorderedElementsAre(
+                  Pair(specifics.cache_guid(), HasDeviceInfo(specifics))));
 }
 
 }  // namespace

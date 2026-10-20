@@ -25,7 +25,7 @@
 #include "chrome/browser/ui/exclusive_access/exclusive_access_context.h"
 #include "chrome/browser/ui/exclusive_access/exclusive_access_manager.h"
 #include "chrome/browser/ui/exclusive_access/fullscreen_controller.h"
-#include "chrome/browser/ui/views/frame/immersive_mode_controller.h"
+#include "chrome/browser/ui/immersive/immersive_mode_controller.h"
 #include "components/download/public/common/download_danger_type.h"
 #include "components/offline_items_collection/core/offline_item.h"
 #include "components/offline_items_collection/core/offline_item_state.h"
@@ -37,7 +37,7 @@ namespace {
 // //chrome/browser/ui/fullscreen_util_mac.h. Kept local to avoid a circular
 // dependency with //chrome/browser/ui.
 bool IsInContentFullscreen(BrowserWindowInterface* browser) {
-  ExclusiveAccessManager* const manager = browser->GetExclusiveAccessManager();
+  ExclusiveAccessManager* const manager = ExclusiveAccessManager::From(browser);
   if (!manager) {
     return false;
   }
@@ -137,8 +137,7 @@ void DownloadDisplayController::OnNewItem(bool show_animation) {
   if (display_->ShouldShowExclusiveAccessBubble()) {
     fullscreen_notification_shown_ = true;
     // ExclusiveAccessContext can be null in tests.
-    if (auto* context =
-            browser_->GetFeatures().exclusive_access_manager()->context()) {
+    if (auto* context = ExclusiveAccessManager::From(browser_)->context()) {
       context->UpdateExclusiveAccessBubble(
           {.has_download = true, .force_update = true}, base::NullCallback());
     }
@@ -193,6 +192,12 @@ void DownloadDisplayController::OnRemovedItem(const ContentId& id) {
   UpdateButtonStateFromUpdateService();
 }
 
+void DownloadDisplayController::OnOfflineItemsInitialized() {
+  if (display_) {
+    display_->OnOfflineItemsInitialized();
+  }
+}
+
 void DownloadDisplayController::OnButtonPressed() {
   DownloadUIController* download_ui_controller =
       DownloadCoreServiceFactory::GetForBrowserContext(
@@ -235,8 +240,7 @@ void DownloadDisplayController::HideBubble() {
 
 void DownloadDisplayController::ListenToFullScreenChanges() {
   fullscreen_subscription_ =
-      browser_->GetFeatures()
-          .exclusive_access_manager()
+      ExclusiveAccessManager::From(browser_)
           ->fullscreen_controller()
           ->RegisterOnFullscreenStateChanged(base::BindRepeating(
               &DownloadDisplayController::OnFullscreenStateChanged,

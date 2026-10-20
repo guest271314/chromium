@@ -105,13 +105,13 @@ Vector<TextOffsetMap::Length> TextOffsetMap::CreateLengthMap(
     return map;
   }
   map.reserve(new_length);
-  unsigned old_offset = 0;
-  unsigned new_offset = 0;
+  wtf_size_t old_offset = 0;
+  wtf_size_t new_offset = 0;
   for (const auto& entry : Entries()) {
-    unsigned old_chunk_length = entry.source - old_offset;
-    unsigned new_chunk_length = entry.target - new_offset;
+    wtf_size_t old_chunk_length = entry.source - old_offset;
+    wtf_size_t new_chunk_length = entry.target - new_offset;
     if (old_chunk_length < new_chunk_length) {
-      unsigned i = 0;
+      wtf_size_t i = 0;
       for (; i < old_chunk_length; ++i) {
         map.push_back(1u);
       }
@@ -120,13 +120,13 @@ Vector<TextOffsetMap::Length> TextOffsetMap::CreateLengthMap(
       }
     } else if (old_chunk_length > new_chunk_length) {
       CHECK_GE(new_chunk_length, 1u);
-      for (unsigned i = 0; i < new_chunk_length - 1; ++i) {
+      for (wtf_size_t i = 0; i < new_chunk_length - 1; ++i) {
         map.push_back(1u);
       }
-      unsigned length = 1u + (old_chunk_length - new_chunk_length);
+      wtf_size_t length = 1u + (old_chunk_length - new_chunk_length);
       map.push_back(length);
     } else {
-      for (unsigned i = 0; i < new_chunk_length; ++i) {
+      for (wtf_size_t i = 0; i < new_chunk_length; ++i) {
         map.push_back(1u);
       }
     }
@@ -154,6 +154,20 @@ wtf_size_t TextOffsetMap::MapOffset(wtf_size_t offset) const {
     last_entry = &entry;
   }
   return last_entry ? offset + last_entry->target - last_entry->source : offset;
+}
+
+wtf_size_t TextOffsetMap::InverseMapOffset(wtf_size_t offset) const {
+  if (IsEmpty()) {
+    return offset;
+  }
+  const Entry* last_entry = nullptr;
+  for (const Entry& entry : entries_) {
+    if (entry.target > offset) {
+      break;
+    }
+    last_entry = &entry;
+  }
+  return last_entry ? offset + last_entry->source - last_entry->target : offset;
 }
 
 }  // namespace blink

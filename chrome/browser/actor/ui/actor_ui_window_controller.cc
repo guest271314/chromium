@@ -11,7 +11,6 @@
 #include "chrome/browser/actor/ui/handoff_button_controller.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_command_controller.h"
-#include "chrome/browser/ui/browser_window/public/browser_window_features.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/common/chrome_features.h"
@@ -237,7 +236,7 @@ void ActorUiContentsContainerController::ApplyOverlayState(
     // If we have a mouse target, we should not ALSO have a mouse_down state.
     // This DCHECK ensures that the ActorOverlayState will only request a mouse
     // movement OR a click, never both.
-    DCHECK(!state.mouse_down);
+    CHECK(!state.mouse_down, base::NotFatalUntil::M161);
     overlay_->MoveCursorTo(state.mouse_target.value(), runner.Release());
     return;
   } else if (state.mouse_down) {
@@ -277,6 +276,9 @@ ActorUiWindowController::~ActorUiWindowController() = default;
 // static
 ActorUiWindowController* ActorUiWindowController::From(
     BrowserWindowInterface* browser_window_interface) {
+  if (!browser_window_interface) {
+    return nullptr;
+  }
   return Get(browser_window_interface->GetUnownedUserDataHost());
 }
 
@@ -416,5 +418,5 @@ void ActorUiWindowController::TearDown() {
 
 chrome::BrowserCommandController*
 ActorUiWindowController::GetCommandController() {
-  return browser_window_interface_->GetFeatures().browser_command_controller();
+  return chrome::BrowserCommandController::From(browser_window_interface_);
 }

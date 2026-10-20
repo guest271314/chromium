@@ -32,8 +32,10 @@
 #include "third_party/blink/renderer/core/execution_context/security_context.h"
 #include "third_party/blink/renderer/core/svg/animation/smil_animation_effect_parameters.h"
 #include "third_party/blink/renderer/core/svg/svg_length_context.h"
+#include "third_party/blink/renderer/core/svg/svg_zoom_migration.h"
 #include "third_party/blink/renderer/core/svg_names.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
+#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/blink/renderer/platform/wtf/math_extras.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
 
@@ -220,7 +222,8 @@ SVGParsingError SVGLength::SetValueAsString(
   // TODO(fs): Preferably we wouldn't need to special-case the null
   // string (which we'll get for example for removeAttribute.)
   // Hopefully work on crbug.com/225807 can help here.
-  if (string.IsNull()) {
+  if (!RuntimeEnabledFeatures::SvgEmptyAttributeStringParsingFixEnabled() &&
+      string.IsNull()) {
     value_ = CSSNumericLiteralValue::Create(
         0, CSSPrimitiveValue::UnitType::kUserUnits);
     return SVGParseStatus::kNoError;
@@ -314,7 +317,7 @@ bool SVGLength::Add(const SVGPropertyBase* other,
   const float sum =
       Value(length_context) + To<SVGLength>(other)->Value(length_context);
   if (IsCalculated()) {
-    SetValueAsNumber(sum);
+    SetValueAsNumber(NoopWillBeInvScaleScalar(sum, length_context.GetZoom()));
     return true;
   }
   SetValueInSpecifiedUnits(length_context.ConvertValueFromUserUnits(
@@ -362,8 +365,9 @@ float SVGLength::CalculateDistance(const SVGPropertyBase* to_value,
                                    const SVGElement* context_element) const {
   SVGLengthContext length_context(context_element);
   auto* to_length = To<SVGLength>(to_value);
-
-  return fabsf(to_length->Value(length_context) - Value(length_context));
+  const float distance =
+      std::fabsf(to_length->Value(length_context) - Value(length_context));
+  return NoopWillBeInvScaleScalar(distance, length_context.GetZoom());
 }
 
 void SVGLength::SetInitial(unsigned initial_value) {

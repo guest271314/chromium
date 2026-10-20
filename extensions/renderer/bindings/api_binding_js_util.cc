@@ -38,25 +38,27 @@ APIBindingJSUtil::~APIBindingJSUtil() = default;
 gin::ObjectTemplateBuilder APIBindingJSUtil::GetObjectTemplateBuilder(
     v8::Isolate* isolate) {
   return Wrappable<APIBindingJSUtil>::GetObjectTemplateBuilder(isolate)
-      .SetMethod("sendRequest", &APIBindingJSUtil::SendRequest)
-      .SetMethod("registerEventArgumentMassager",
-                 &APIBindingJSUtil::RegisterEventArgumentMassager)
-      .SetMethod("createCustomEvent", &APIBindingJSUtil::CreateCustomEvent)
-      .SetMethod("createCustomDeclarativeEvent",
-                 &APIBindingJSUtil::CreateCustomDeclarativeEvent)
-      .SetMethod("invalidateEvent", &APIBindingJSUtil::InvalidateEvent)
-      .SetMethod("setLastError", &APIBindingJSUtil::SetLastError)
-      .SetMethod("clearLastError", &APIBindingJSUtil::ClearLastError)
-      .SetMethod("hasLastError", &APIBindingJSUtil::HasLastError)
-      .SetMethod("getLastErrorMessage", &APIBindingJSUtil::GetLastErrorMessage)
-      .SetMethod("runCallbackWithLastError",
-                 &APIBindingJSUtil::RunCallbackWithLastError)
-      .SetMethod("handleException", &APIBindingJSUtil::HandleException)
-      .SetMethod("setExceptionHandler", &APIBindingJSUtil::SetExceptionHandler)
-      .SetMethod("validateType", &APIBindingJSUtil::ValidateType)
-      .SetMethod("validateCustomSignature",
-                 &APIBindingJSUtil::ValidateCustomSignature)
-      .SetMethod("addCustomSignature", &APIBindingJSUtil::AddCustomSignature);
+      .SetMethod<&APIBindingJSUtil::SendRequest>("sendRequest")
+      .SetMethod<&APIBindingJSUtil::RegisterEventArgumentMassager>(
+          "registerEventArgumentMassager")
+      .SetMethod<&APIBindingJSUtil::RegisterEventDispatchHandler>(
+          "registerEventDispatchHandler")
+      .SetMethod<&APIBindingJSUtil::CreateCustomEvent>("createCustomEvent")
+      .SetMethod<&APIBindingJSUtil::CreateCustomDeclarativeEvent>(
+          "createCustomDeclarativeEvent")
+      .SetMethod<&APIBindingJSUtil::InvalidateEvent>("invalidateEvent")
+      .SetMethod<&APIBindingJSUtil::SetLastError>("setLastError")
+      .SetMethod<&APIBindingJSUtil::ClearLastError>("clearLastError")
+      .SetMethod<&APIBindingJSUtil::HasLastError>("hasLastError")
+      .SetMethod<&APIBindingJSUtil::GetLastErrorMessage>("getLastErrorMessage")
+      .SetMethod<&APIBindingJSUtil::RunCallbackWithLastError>(
+          "runCallbackWithLastError")
+      .SetMethod<&APIBindingJSUtil::HandleException>("handleException")
+      .SetMethod<&APIBindingJSUtil::SetExceptionHandler>("setExceptionHandler")
+      .SetMethod<&APIBindingJSUtil::ValidateType>("validateType")
+      .SetMethod<&APIBindingJSUtil::ValidateCustomSignature>(
+          "validateCustomSignature")
+      .SetMethod<&APIBindingJSUtil::AddCustomSignature>("addCustomSignature");
 }
 
 const gin::WrapperInfo* APIBindingJSUtil::wrapper_info() const {
@@ -123,6 +125,18 @@ void APIBindingJSUtil::RegisterEventArgumentMassager(
   v8::Local<v8::Context> context = arguments->GetHolderCreationContext();
 
   event_handler_->RegisterArgumentMassager(context, event_name, massager);
+}
+
+void APIBindingJSUtil::RegisterEventDispatchHandler(
+    gin::Arguments* arguments,
+    const std::string& event_name,
+    v8::Local<v8::Function> dispatch_handler) {
+  v8::Isolate* isolate = arguments->isolate();
+  v8::HandleScope handle_scope(isolate);
+  v8::Local<v8::Context> context = arguments->GetHolderCreationContext();
+
+  event_handler_->RegisterEventDispatchHandler(context, event_name,
+                                               dispatch_handler);
 }
 
 void APIBindingJSUtil::CreateCustomEvent(gin::Arguments* arguments,

@@ -12,6 +12,8 @@ import org.chromium.base.Log;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 
+import java.io.ByteArrayOutputStream;
+import java.io.DataOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
@@ -75,7 +77,7 @@ public class WebappAuthenticator {
     }
 
     /**
-     * Calculates a MAC for the concatenation of a URL and an encoded icon.
+     * Calculates a MAC for a URL and an encoded icon using length-prefixed encoding.
      *
      * @param url A URL for which to calculate a MAC.
      * @param encodedIcon The base64 encoded icon, or null.
@@ -86,11 +88,26 @@ public class WebappAuthenticator {
         if (mac == null) {
             return null;
         }
-        mac.update(ApiCompatibilityUtils.getBytesUtf8(url));
-        if (encodedIcon != null) {
-            mac.update(ApiCompatibilityUtils.getBytesUtf8(encodedIcon));
+        if (encodedIcon == null) {
+            mac.update(ApiCompatibilityUtils.getBytesUtf8(url));
+            return mac.doFinal();
         }
-        return mac.doFinal();
+        try {
+            ByteArrayOutputStream byteStream = new ByteArrayOutputStream();
+            DataOutputStream dataStream = new DataOutputStream(byteStream);
+            byte[] urlBytes = ApiCompatibilityUtils.getBytesUtf8(url);
+            dataStream.writeInt(urlBytes.length);
+            dataStream.write(urlBytes);
+            byte[] iconBytes = ApiCompatibilityUtils.getBytesUtf8(encodedIcon);
+            dataStream.writeInt(iconBytes.length);
+            dataStream.write(iconBytes);
+            dataStream.flush();
+            mac.update(byteStream.toByteArray());
+            return mac.doFinal();
+        } catch (IOException e) {
+            Log.w(TAG, "Error serializing MAC data", e);
+            return null;
+        }
     }
 
     /**
@@ -103,6 +120,7 @@ public class WebappAuthenticator {
      *     MAC_INVALID (0) otherwise.
      */
     public static int verifyMac(String url, @Nullable String encodedIcon, byte[] mac) {
+        assert mac != null;
         if (encodedIcon != null) {
             byte[] goodMacWithIcon = getMacForUrlAndIcon(url, encodedIcon);
             if (goodMacWithIcon != null && constantTimeAreArraysEqual(goodMacWithIcon, mac)) {
@@ -118,6 +136,8 @@ public class WebappAuthenticator {
 
     // TODO(palmer): Put this method, and as much of this class as possible, in a utility class.
     private static boolean constantTimeAreArraysEqual(byte[] a, byte[] b) {
+        assert a != null;
+        assert b != null;
         if (a.length != b.length) {
             return false;
         }

@@ -2,19 +2,20 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "chrome/browser/ui/tabs/vertical_tab_strip_state_controller.h"
-
 #include <optional>
 
 #include "base/test/metrics/user_action_tester.h"
-#include "base/test/scoped_feature_list.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_features.h"
 #include "chrome/browser/ui/browser_window/test/mock_browser_window_interface.h"
-#include "chrome/browser/ui/tabs/features.h"
 #include "chrome/browser/ui/tabs/tab_strip_prefs.h"
 #include "chrome/browser/ui/tabs/test_vertical_tab_strip_state_controller_delegate.h"
 #include "chrome/browser/ui/tabs/vertical_tab_strip_state.h"
+#include "chrome/browser/ui/tabs/vertical_tab_strip_state_controller_impl.h"
+#include "chrome/browser/ui/toasts/api/toast_id.h"
+#include "chrome/browser/ui/toasts/toast_controller.h"
 #include "chrome/common/pref_names.h"
 #include "components/pref_registry/pref_registry_syncable.h"
+#include "components/sessions/core/session_id.h"
 #include "components/sync_preferences/testing_pref_service_syncable.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -25,6 +26,20 @@ namespace tabs {
 namespace {
 constexpr int kUncollapsedWidth1 = 100;
 constexpr int kSessionIDValue = 123;
+
+class MockToastController : public ToastController {
+ public:
+  explicit MockToastController(
+      BrowserWindowInterface* browser_window_interface = nullptr,
+      const ToastRegistry* toast_registry = nullptr)
+      : ToastController(browser_window_interface, toast_registry) {}
+  ~MockToastController() override = default;
+
+  bool MaybeShowToast(ToastParams params) override {
+    return MaybeShowToastMock(params.toast_id);
+  }
+  MOCK_METHOD(bool, MaybeShowToastMock, (ToastId toast_id));
+};
 }  // namespace
 
 class VerticalTabStripStateControllerTest : public testing::Test {
@@ -34,19 +49,17 @@ class VerticalTabStripStateControllerTest : public testing::Test {
 
   void SetUp() override {
     testing::Test::SetUp();
-    feature_list_.InitWithFeatures(
-        /* enabled_features */ {tabs::kVerticalTabs,
-                                tabs::kVerticalTabsExpandOnHover},
-        /* disabled_features */ {});
     tabs::RegisterProfilePrefs(pref_service_.registry());
     SessionID test_session_id = SessionID::FromSerializedValue(kSessionIDValue);
 
     EXPECT_CALL(mock_browser_window_interface_, GetUnownedUserDataHost)
         .WillRepeatedly(testing::ReturnRef(unowned_user_data_host_));
+    EXPECT_CALL(mock_browser_window_interface_, GetFeatures())
+        .WillRepeatedly(testing::ReturnRef(browser_window_features_));
 
     // Action items like CollapseActionItem are tested in interactive ui tests.
-    controller_ = std::make_unique<VerticalTabStripStateController>(
-        &mock_browser_window_interface_, &pref_service_,
+    controller_ = std::make_unique<VerticalTabStripStateControllerImpl>(
+        mock_browser_window_interface_, &pref_service_,
         /*root_action_item=*/nullptr,
         /*session_service=*/nullptr, test_session_id,
         /*restored_state_collapsed=*/std::nullopt,
@@ -66,12 +79,12 @@ class VerticalTabStripStateControllerTest : public testing::Test {
     return &pref_service_;
   }
 
- private:
-  base::test::ScopedFeatureList feature_list_;
+ protected:
   std::unique_ptr<TestVerticalTabStripStateControllerDelegate> delegate_;
   std::unique_ptr<VerticalTabStripStateController> controller_;
   sync_preferences::TestingPrefServiceSyncable pref_service_;
   ui::UnownedUserDataHost unowned_user_data_host_;
+  BrowserWindowFeatures browser_window_features_;
   MockBrowserWindowInterface mock_browser_window_interface_;
 };
 
@@ -107,16 +120,6 @@ TEST_F(VerticalTabStripStateControllerTest, VerticalTabsEnabled) {
   EXPECT_FALSE(pref_service()->GetBoolean(prefs::kVerticalTabsEnabled));
 }
 
-TEST_F(VerticalTabStripStateControllerTest, FeatureDisabled) {
-  base::test::ScopedFeatureList local_feature_list;
-  local_feature_list.InitAndDisableFeature(tabs::kVerticalTabs);
-
-  controller()->SetVerticalTabsEnabled(true);
-  EXPECT_TRUE(pref_service()->GetBoolean(prefs::kVerticalTabsEnabled));
-  // Even if pref is true, ShouldDisplayVerticalTabs should be false if feature
-  // is disabled.
-  EXPECT_FALSE(controller()->ShouldDisplayVerticalTabs());
-}
 
 TEST_F(VerticalTabStripStateControllerTest, VerticalTabsEnabledFirstTime) {
   base::UserActionTester user_action_tester;
@@ -183,6 +186,34 @@ TEST_F(VerticalTabStripStateControllerTest, UncollapsedWidth) {
   // Setting to same value should not trigger a notification.
   controller()->SetUncollapsedWidth(kUncollapsedWidth1);
   EXPECT_EQ(1, call_count);
+}
+
+TEST_F(VerticalTabStripStateControllerTest, Resizing) {
+  int call_count = 0;
+  bool is_resizing = false;
+  auto subscription =
+      controller()->RegisterOnResizingChanged(base::BindRepeating(
+          [](int* call_count, bool* is_resizing, bool resizing) {
+            (*call_count)++;
+            *is_resizing = resizing;
+          },
+          &call_count, &is_resizing));
+
+  EXPECT_FALSE(controller()->IsResizing());
+
+  controller()->SetIsResizing(true);
+  EXPECT_TRUE(controller()->IsResizing());
+  EXPECT_TRUE(is_resizing);
+  EXPECT_EQ(1, call_count);
+
+  // Setting the same value should not trigger notifications.
+  controller()->SetIsResizing(true);
+  EXPECT_EQ(1, call_count);
+
+  controller()->SetIsResizing(false);
+  EXPECT_FALSE(controller()->IsResizing());
+  EXPECT_FALSE(is_resizing);
+  EXPECT_EQ(2, call_count);
 }
 
 TEST_F(VerticalTabStripStateControllerTest, ExpandOnHover) {
@@ -284,6 +315,120 @@ TEST_F(VerticalTabStripStateControllerTest, VerifyRecentlyUsedPrefs) {
   EXPECT_TRUE(pref_service()->GetBoolean(prefs::kVerticalTabsCollapsedState));
   EXPECT_EQ(kUncollapsedWidth1,
             pref_service()->GetInteger(prefs::kVerticalTabsUncollapsedWidth));
+}
+
+TEST_F(VerticalTabStripStateControllerTest,
+       ImmersiveModeLockShowsToastWhenEnabling) {
+  MockToastController mock_toast_controller(&mock_browser_window_interface_);
+
+  // Initially disabled.
+  ASSERT_FALSE(controller()->ShouldDisplayVerticalTabs());
+
+  // Take a lock to simulate immersive fullscreen.
+  std::unique_ptr<VerticalTabStripStateController::ScopedEnableStateLock> lock =
+      controller()->GetEnableStateLock();
+
+  // Expect that enabling vertical tabs will try to show the delayed vertical
+  // toast.
+  EXPECT_CALL(mock_toast_controller,
+              MaybeShowToastMock(ToastId::kTabStripSwitchDelayedVertical))
+      .Times(1)
+      .WillOnce(testing::Return(true));
+
+  // Enable vertical tabs via preference.
+  pref_service()->SetBoolean(prefs::kVerticalTabsEnabled, true);
+
+  // Verify that the state has NOT changed (locked).
+  EXPECT_FALSE(controller()->ShouldDisplayVerticalTabs());
+}
+
+TEST_F(VerticalTabStripStateControllerTest,
+       ImmersiveModeLockShowsToastWhenDisabling) {
+  // Start with vertical tabs enabled.
+  controller()->SetVerticalTabsEnabled(true);
+  ASSERT_TRUE(controller()->ShouldDisplayVerticalTabs());
+
+  MockToastController mock_toast_controller(&mock_browser_window_interface_);
+
+  // Take a lock to simulate immersive fullscreen.
+  std::unique_ptr<VerticalTabStripStateController::ScopedEnableStateLock> lock =
+      controller()->GetEnableStateLock();
+
+  // Expect that disabling vertical tabs will try to show the delayed horizontal
+  // toast.
+  EXPECT_CALL(mock_toast_controller,
+              MaybeShowToastMock(ToastId::kTabStripSwitchDelayedHorizontal))
+      .Times(1)
+      .WillOnce(testing::Return(true));
+
+  // Disable vertical tabs via preference.
+  pref_service()->SetBoolean(prefs::kVerticalTabsEnabled, false);
+
+  // Verify that the state has NOT changed (locked, still vertical).
+  EXPECT_TRUE(controller()->ShouldDisplayVerticalTabs());
+}
+
+TEST_F(VerticalTabStripStateControllerTest,
+       ImmersiveModeLockShowsToastRepeatedlyWhenDisabling) {
+  // Start with vertical tabs enabled.
+  controller()->SetVerticalTabsEnabled(true);
+  ASSERT_TRUE(controller()->ShouldDisplayVerticalTabs());
+
+  MockToastController mock_toast_controller(&mock_browser_window_interface_);
+
+  // Take a lock to simulate immersive fullscreen.
+  std::unique_ptr<VerticalTabStripStateController::ScopedEnableStateLock> lock =
+      controller()->GetEnableStateLock();
+
+  // Expect that disabling vertical tabs will show the toast twice when called
+  // twice via SetVerticalTabsEnabled.
+  EXPECT_CALL(mock_toast_controller,
+              MaybeShowToastMock(ToastId::kTabStripSwitchDelayedHorizontal))
+      .Times(2)
+      .WillRepeatedly(testing::Return(true));
+
+  // Disable vertical tabs via controller first time.
+  controller()->SetVerticalTabsEnabled(false);
+
+  // Verify that the state has NOT changed (locked, still vertical).
+  EXPECT_TRUE(controller()->ShouldDisplayVerticalTabs());
+
+  // Disable vertical tabs via controller second time.
+  controller()->SetVerticalTabsEnabled(false);
+
+  // Verify that the state has still NOT changed.
+  EXPECT_TRUE(controller()->ShouldDisplayVerticalTabs());
+}
+
+TEST_F(VerticalTabStripStateControllerTest,
+       ImmersiveModeLockShowsToastRepeatedlyWhenEnabling) {
+  // Start with vertical tabs disabled.
+  ASSERT_FALSE(controller()->ShouldDisplayVerticalTabs());
+
+  MockToastController mock_toast_controller(&mock_browser_window_interface_);
+
+  // Take a lock to simulate immersive fullscreen.
+  std::unique_ptr<VerticalTabStripStateController::ScopedEnableStateLock> lock =
+      controller()->GetEnableStateLock();
+
+  // Expect that enabling vertical tabs will show the toast twice when called
+  // twice via SetVerticalTabsEnabled.
+  EXPECT_CALL(mock_toast_controller,
+              MaybeShowToastMock(ToastId::kTabStripSwitchDelayedVertical))
+      .Times(2)
+      .WillRepeatedly(testing::Return(true));
+
+  // Enable vertical tabs via controller first time.
+  controller()->SetVerticalTabsEnabled(true);
+
+  // Verify that the state has NOT changed (locked, still horizontal).
+  EXPECT_FALSE(controller()->ShouldDisplayVerticalTabs());
+
+  // Enable vertical tabs via controller second time.
+  controller()->SetVerticalTabsEnabled(true);
+
+  // Verify that the state has still NOT changed.
+  EXPECT_FALSE(controller()->ShouldDisplayVerticalTabs());
 }
 
 }  // namespace tabs

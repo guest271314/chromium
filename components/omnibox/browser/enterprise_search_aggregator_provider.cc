@@ -46,12 +46,12 @@
 #include "components/search_engines/template_url_service.h"
 #include "components/strings/grit/components_strings.h"
 #include "components/url_formatter/url_formatter.h"
-#include "services/data_decoder/public/cpp/data_decoder.h"
 #include "services/network/public/cpp/simple_url_loader.h"
 #include "third_party/re2/src/re2/re2.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/page_transition_types.h"
 #include "url/gurl.h"
+#include "url/url_constants.h"
 
 namespace {
 
@@ -649,7 +649,7 @@ EnterpriseSearchAggregatorProvider::EnterpriseSearchAggregatorProvider(
     AutocompleteProviderClient* client,
     AutocompleteProviderListener* listener)
     : AutocompleteProvider(
-          AutocompleteProvider::TYPE_ENTERPRISE_SEARCH_AGGREGATOR),
+          AutocompleteProvider::Type::kEnterpriseSearchAggregator),
       client_(client),
       debouncer_(std::make_unique<AutocompleteProviderDebouncer>(true, 300)),
       template_url_service_(client_->GetTemplateURLService()) {
@@ -839,34 +839,14 @@ void EnterpriseSearchAggregatorProvider::RequestCompleted(
   DCHECK_GE(requests_.size(), static_cast<size_t>(request_index));
 
   if (response_code == 200) {
-    // Parse `response_body` in utility process if feature param is true.
     std::string json_data = SearchSuggestionParser::ExtractJsonData(
         source, std::move(response_body));
-    if (omnibox_feature_configs::SearchAggregatorProvider::Get()
-            .parse_response_in_utility_process) {
-      data_decoder::DataDecoder::ParseJsonIsolated(
-          json_data,
-          base::BindOnce(
-              &EnterpriseSearchAggregatorProvider::OnJsonParsedIsolated,
-              base::Unretained(this), request_index));
-    } else {
-      std::optional<base::DictValue> value = base::JSONReader::ReadDict(
-          json_data, base::JSON_ALLOW_TRAILING_COMMAS);
-      HandleParsedJson(request_index, value);
-    }
+    std::optional<base::DictValue> value =
+        base::JSONReader::ReadDict(json_data, base::JSON_ALLOW_TRAILING_COMMAS);
+    HandleParsedJson(request_index, value);
   } else {
     HandleParsedJson(request_index, std::nullopt);
   }
-}
-
-void EnterpriseSearchAggregatorProvider::OnJsonParsedIsolated(
-    int request_index,
-    base::expected<base::Value, std::string> result) {
-  std::optional<base::DictValue> value = std::nullopt;
-  if (result.has_value() && result.value().is_dict()) {
-    value = std::move(result.value().GetDict());
-  }
-  HandleParsedJson(request_index, value);
 }
 
 void EnterpriseSearchAggregatorProvider::HandleParsedJson(
@@ -942,7 +922,8 @@ EnterpriseSearchAggregatorProvider::ParseResultList(
       continue;
     }
 
-    // Some matches are supplied with an associated icon or image URL.
+    // Some matches are supplied with an associated icon or image URL. These are
+    // fetched from the browser process so only HTTPS URLs are accepted.
     std::string image_url;
     std::string icon_url;
     if (suggestion_type == SuggestionType::PEOPLE) {
@@ -951,6 +932,9 @@ EnterpriseSearchAggregatorProvider::ParseResultList(
       // used for the match icon, falling back to the favicon if not present.
       image_url = ptr_to_string(result.FindStringByDottedPath(
           "document.derivedStructData.displayPhoto.url"));
+      if (!GURL(image_url).SchemeIs(url::kHttpsScheme)) {
+        image_url.clear();
+      }
       // Ensure that image URLs from lh3.googleusercontent.com include an image
       // size parameter.
       if (base::StartsWith(image_url, "https://lh3.googleusercontent.com")) {
@@ -963,6 +947,9 @@ EnterpriseSearchAggregatorProvider::ParseResultList(
       icon_url = template_url_->favicon_url().spec();
     } else if (suggestion_type == SuggestionType::CONTENT) {
       icon_url = ptr_to_string(result.FindString("iconUri"));
+      if (!GURL(icon_url).SchemeIs(url::kHttpsScheme)) {
+        icon_url.clear();
+      }
     } else if (suggestion_type == SuggestionType::QUERY &&
                !adjusted_input_.in_keyword_mode()) {
       icon_url = template_url_->favicon_url().spec();
@@ -1190,8 +1177,8 @@ AutocompleteMatch EnterpriseSearchAggregatorProvider::CreateMatch(
     const std::u16string& description,
     const std::u16string& contents,
     const std::u16string& fill_into_edit) {
-  auto type = is_navigation ? AutocompleteMatchType::NAVSUGGEST
-                            : AutocompleteMatchType::SEARCH_SUGGEST;
+  auto type = is_navigation ? omnibox::AutocompleteMatchType::kNavsuggest
+                            : omnibox::AutocompleteMatchType::kSearchSuggest;
   AutocompleteMatch match(this, relevance_data.relevance, false, type);
 
   match.destination_url = GURL(url);

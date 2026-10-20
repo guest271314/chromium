@@ -6,6 +6,7 @@
 #define BASE_SEQUENCE_TOKEN_H_
 
 #include "base/base_export.h"
+#include "build/build_config.h"
 
 namespace base {
 namespace internal {
@@ -24,14 +25,20 @@ class BASE_EXPORT SequenceToken {
 
   // An invalid SequenceToken is not equal to any other SequenceToken, including
   // other invalid SequenceTokens.
-  bool operator==(const SequenceToken& other) const;
+  bool operator==(const SequenceToken& other) const {
+    return token_ == other.token_ && IsValid();
+  }
 
   // Returns true if this is a valid SequenceToken.
-  bool IsValid() const;
+  bool IsValid() const { return token_ != kInvalidSequenceToken; }
 
   // Returns the integer uniquely representing this SequenceToken. This method
   // should only be used for tracing and debugging.
-  int ToInternalValue() const;
+  int ToInternalValue() const { return token_; }
+
+  // Sets the `SequenceToken` as itself for the thread currently running this
+  // code.
+  void SetForCurrentThread();
 
   // Returns a valid SequenceToken which isn't equal to any previously returned
   // SequenceToken.
@@ -39,7 +46,8 @@ class BASE_EXPORT SequenceToken {
 
   // Returns the `SequenceToken` for the work item currently running on this
   // thread. A valid and unique `SequenceToken` is assigned to each thread. It
-  // can be overridden in a scope with `TaskScope`.
+  // can be overridden in a scope with `TaskScope` or by calling
+  // SetForCurrentThread().
   static SequenceToken GetForCurrentThread();
 
  private:
@@ -66,11 +74,13 @@ class BASE_EXPORT TaskToken {
 
   // An invalid TaskToken is not equal to any other TaskToken, including
   // other invalid TaskTokens.
-  bool operator==(const TaskToken& other) const;
-  bool operator!=(const TaskToken& other) const;
+  bool operator==(const TaskToken& other) const {
+    return token_ == other.token_ && IsValid();
+  }
+  bool operator!=(const TaskToken& other) const { return !(*this == other); }
 
   // Returns true if this is a valid TaskToken.
-  bool IsValid() const;
+  bool IsValid() const { return token_ != kInvalidTaskToken; }
 
   // In the scope of a `TaskScope`, returns a valid `TaskToken` which isn't
   // equal to any `TaskToken` returned in the scope of a different `TaskScope`.
@@ -123,6 +133,11 @@ class BASE_EXPORT [[maybe_unused, nodiscard]] TaskScope {
 // Returns true if the current task is run synchronously by `RunOrPostTask()`.
 bool BASE_EXPORT CurrentTaskIsRunningSynchronously();
 
+#if BUILDFLAG(IS_ANDROID)
+namespace subtle {
+using SequenceToken = ::base::internal::SequenceToken;
+}  // namespace subtle
+#endif
 }  // namespace base
 
 #endif  // BASE_SEQUENCE_TOKEN_H_

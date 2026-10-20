@@ -7,6 +7,7 @@
 #include <array>
 
 #include "base/compiler_specific.h"
+#include "base/numerics/safe_conversions.h"
 #include "build/build_config.h"
 #include "third_party/blink/renderer/platform/audio/delay.h"
 
@@ -66,7 +67,8 @@ std::tuple<size_t, size_t> Delay::ProcessARateVector(
   // The buffer length as a float and as an int so we don't need to constant
   // convert from one to the other.
   const float32x4_t v_buffer_length_float = vdupq_n_f32(buffer_length);
-  const int32x4_t v_buffer_length_int = vdupq_n_s32(buffer_length);
+  const int32x4_t v_buffer_length_int =
+      vdupq_n_s32(base::checked_cast<int32_t>(buffer_length));
 
   // How much to increment the write index each time through the loop.
   const int32x4_t v_incr = vdupq_n_s32(4);
@@ -86,7 +88,7 @@ std::tuple<size_t, size_t> Delay::ProcessARateVector(
       static_cast<int32_t>(w_index + 2), static_cast<int32_t>(w_index + 3)};
   v_write_index = WrapIndexVector(v_write_index, v_buffer_length_int);
 
-  int number_of_loops = frames_to_process / 4;
+  int number_of_loops = base::checked_cast<int>(frames_to_process / 4);
   size_t k = 0;
 
   for (int n = 0; n < number_of_loops; ++n, k += 4) {
@@ -145,51 +147,6 @@ std::tuple<size_t, size_t> Delay::ProcessARateVector(
   return std::make_tuple(k, w_index);
 }
 
-void Delay::HandleNaN(base::span<float> delay_times,
-                      size_t frames_to_process,
-                      float max_time) {
-  unsigned k = 0;
-  int number_of_loops = frames_to_process / 4;
-
-  float32x4_t v_max_time = vdupq_n_f32(max_time);
-
-  // This is approximately 4 times faster than the scalar version.
-  for (int loop = 0; loop < number_of_loops; ++loop, k += 4) {
-    float32x4_t x = vld1q_f32(delay_times.subspan(k, 4u).data());
-    // x == x only fails when x is NaN.  Then cmp is set to 0. Otherwise
-    // 0xffffffff
-    uint32x4_t cmp = vceqq_f32(x, x);
-
-    // Use cmp as a mask to set a component of x to 0 if x is NaN.
-    // Otherwise, preserve x.  We pun the types here so we can apply
-    // the  mask to the floating point numbers.  A integer value of
-    // 0 corresponds to a floating-point +0.0, which is what we want.
-    uint32x4_t xint = vandq_u32(cmp, reinterpret_cast<uint32x4_t>(x));
-
-    // Invert the mask.
-    cmp = vmvnq_u32(cmp);
-
-    // More punning of the types so we can apply the complement mask
-    // to set cmp to either max_time (if NaN) or 0 (otherwise)
-    cmp = vandq_u32(cmp, reinterpret_cast<uint32x4_t>(v_max_time));
-
-    // Merge i (bitwise or) x and cmp.  This makes x = max_time if x was NaN and
-    // preserves x if not.  More type punning to do bitwise or the results
-    // together.
-    xint = vorrq_u32(xint, cmp);
-
-    // Finally, save the float result.
-    vst1q_f32(delay_times.subspan(k, 4u).data(),
-              reinterpret_cast<float32x4_t>(xint));
-  }
-
-  // Handle any frames not done in the loop above.
-  for (; k < frames_to_process; ++k) {
-    if (std::isnan(delay_times[k])) {
-      delay_times[k] = max_time;
-    }
-  }
-}
 #endif
 
 }  // namespace blink

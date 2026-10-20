@@ -33,6 +33,8 @@ dictionary AuthenticationExtensionsClientInputsJSON {
   boolean getCredBlob;
   [RuntimeEnabled=SecurePaymentConfirmation] AuthenticationExtensionsPaymentInputs payment;
   [RuntimeEnabled=WebAuthenticationRemoteDesktopSupport] RemoteDesktopClientOverride remoteDesktopClientOverride;
-  [RuntimeEnabled=WebAuthenticationSupplementalPubKeys] AuthenticationExtensionsSupplementalPubKeysInputs supplementalPubKeys;
+  [RuntimeEnabled=WebAuthenticationRemoteClientDataJson] DOMString remoteClientDataJSON;
   AuthenticationExtensionsPRFInputsJSON prf;
+  [RuntimeEnabled=WebAuthenticationCmtgKey] boolean cmtgKey;
+  [RuntimeEnabled=WebAuthenticationCrossDeviceFallbackUrl] USVString crossDeviceFallbackUrl;
 };

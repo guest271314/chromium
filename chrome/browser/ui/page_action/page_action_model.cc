@@ -134,6 +134,10 @@ bool PageActionModel::GetShouldAnimateChipIn() const {
   return should_animate_ && !did_show_chip_;
 }
 
+bool PageActionModel::GetShouldAnimateImage() const {
+  return image_animation_parameters_.has_value() && !did_animate_image_;
+}
+
 bool PageActionModel::GetShouldAnnounceChip() const {
   return should_announce_chip_;
 }
@@ -143,14 +147,22 @@ const ui::ImageModel& PageActionModel::GetImage() const {
                                      : action_item_image_;
 }
 
+std::optional<PageActionAnimationParams>
+PageActionModel::GetImageAnimationParameters() const {
+  return image_animation_parameters_;
+}
+
 const std::u16string& PageActionModel::GetText() const {
   return override_text_.has_value() ? override_text_.value() : text_;
 }
 
 const std::u16string& PageActionModel::GetAccessibleName() const {
-  return override_accessible_name_.has_value()
-             ? override_accessible_name_.value()
-             : text_;
+  const std::u16string& from_name_or_text =
+      override_accessible_name_.has_value() ? override_accessible_name_.value()
+                                            : text_;
+  // If nothing useful is in explicitly set accessible name or the text,
+  // match Button::GetAlternativeAccessibleName() and use the tooltip.
+  return from_name_or_text.empty() ? GetTooltipText() : from_name_or_text;
 }
 
 const std::u16string& PageActionModel::GetTooltipText() const {
@@ -193,12 +205,16 @@ void PageActionModel::SetOverrideAccessibleName(
 void PageActionModel::SetOverrideImage(
     PageActionPassKey,
     const std::optional<ui::ImageModel>& override_image,
-    PageActionColorSource color_source) {
-  if (override_image_ == override_image && color_source == color_source_) {
+    PageActionColorSource color_source,
+    std::optional<PageActionAnimationParams> animation_parameters) {
+  if (override_image_ == override_image && color_source == color_source_ &&
+      image_animation_parameters_ == animation_parameters) {
     return;
   }
   override_image_ = override_image;
   color_source_ = color_source;
+  image_animation_parameters_ = animation_parameters;
+  did_animate_image_ = false;
   NotifyChange(Property::kOverrideImage);
 }
 
@@ -230,6 +246,10 @@ void PageActionModel::SetExemptFromOmniboxSuppression(PageActionPassKey,
   NotifyChange(Property::kExemptFromOmniboxSuppression);
 }
 
+bool PageActionModel::IsAffectedByOmniboxSuppression() const {
+  return is_suppressed_by_omnibox_ && !is_exempt_from_omnibox_suppression_;
+}
+
 void PageActionModel::SetIsChipShowing(PageActionPassKey,
                                        bool is_chip_showing) {
   did_show_chip_ |= is_chip_showing;
@@ -248,6 +268,33 @@ void PageActionModel::SetActionActive(PageActionPassKey, bool is_active) {
 
   action_active_ = is_active;
   NotifyChange(Property::kActionActive);
+}
+
+void PageActionModel::SetAnimationStyle(PageActionPassKey,
+                                        PageActionAnimationStyle style) {
+  if (animation_style_ == style) {
+    return;
+  }
+  animation_style_ = style;
+  NotifyChange(Property::kAnimationStyle);
+}
+
+void PageActionModel::SetTrailingImage(
+    PageActionPassKey,
+    const std::optional<ui::ImageModel>& image) {
+  if (trailing_image_ == image) {
+    return;
+  }
+  trailing_image_ = image;
+  NotifyChange(Property::kTrailingImage);
+}
+
+void PageActionModel::SetShowTrailingIcon(PageActionPassKey, bool show) {
+  if (show_trailing_icon_ == show) {
+    return;
+  }
+  show_trailing_icon_ = show;
+  NotifyChange(Property::kShowTrailingIcon);
 }
 
 void PageActionModel::AddObserver(PageActionModelObserver* observer) {
@@ -318,6 +365,16 @@ void PageActionModel::SetAnchoredMessageIcon(
   NotifyChange(Property::kAnchoredMessageIcon);
 }
 
+void PageActionModel::SetAnchoredMessageExpandableContent(
+    PageActionPassKey,
+    std::optional<AnchoredMessageExpandableContent> expandable_content) {
+  if (expandable_content_ == expandable_content) {
+    return;
+  }
+  expandable_content_ = std::move(expandable_content);
+  NotifyChange(Property::kAnchoredMessageExpandableContent);
+}
+
 bool PageActionModel::ShouldShowAnchoredMessage() const {
   return should_show_anchored_message_;
 }
@@ -336,6 +393,10 @@ void PageActionModel::SetIsAnchoredMessageShowing(
   NotifyChange(Property::kIsAnchoredMessageShowing);
 }
 
+void PageActionModel::SetDidAnimateImage(PageActionPassKey pass_key) {
+  did_animate_image_ = true;
+}
+
 const std::u16string& PageActionModel::GetAnchoredMessageText() const {
   return anchored_message_text_;
 }
@@ -352,6 +413,53 @@ ui::SimpleMenuModel* PageActionModel::GetAnchoredMessageMenuModel() const {
 const std::optional<ui::ImageModel>& PageActionModel::GetAnchoredMessageIcon()
     const {
   return anchored_message_icon_;
+}
+
+const std::optional<AnchoredMessageExpandableContent>&
+PageActionModel::GetAnchoredMessageExpandableContent() const {
+  return expandable_content_;
+}
+
+PageActionAnimationStyle PageActionModel::GetAnimationStyle() const {
+  return animation_style_;
+}
+
+std::optional<ui::ImageModel> PageActionModel::GetTrailingImage() const {
+  return trailing_image_;
+}
+
+bool PageActionModel::GetShowTrailingIcon() const {
+  return show_trailing_icon_;
+}
+
+void PageActionModel::SetOverrideBackgroundColorId(
+    PageActionPassKey,
+    std::optional<ui::ColorId> override_background_color_id) {
+  if (override_background_color_id_ == override_background_color_id) {
+    return;
+  }
+  override_background_color_id_ = override_background_color_id;
+  NotifyChange(Property::kOverrideBackgroundColor);
+}
+
+std::optional<ui::ColorId> PageActionModel::GetOverrideBackgroundColorId()
+    const {
+  return override_background_color_id_;
+}
+
+void PageActionModel::SetOverrideForegroundColorId(
+    PageActionPassKey,
+    std::optional<ui::ColorId> override_foreground_color_id) {
+  if (override_foreground_color_id_ == override_foreground_color_id) {
+    return;
+  }
+  override_foreground_color_id_ = override_foreground_color_id;
+  NotifyChange(Property::kOverrideForegroundColor);
+}
+
+std::optional<ui::ColorId> PageActionModel::GetOverrideForegroundColorId()
+    const {
+  return override_foreground_color_id_;
 }
 
 }  // namespace page_actions

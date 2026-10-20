@@ -7,28 +7,24 @@
 #include <vector>
 
 #include "base/i18n/message_formatter.h"
-#include "base/i18n/unicodestring.h"
 #include "base/memory/raw_ptr.h"
 #include "base/metrics/user_metrics.h"
-#include "chrome/app/vector_icons/vector_icons.h"
 #include "chrome/browser/file_system_access/chrome_file_system_access_permission_context.h"
 #include "chrome/browser/file_system_access/file_system_access_permission_context_factory.h"
 #include "chrome/browser/ui/actions/chrome_action_id.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_actions.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/file_system_access/file_system_access_ui_helpers.h"
-#include "chrome/browser/ui/page_action/page_action_icon_type.h"
 #include "chrome/browser/ui/views/chrome_layout_provider.h"
 #include "chrome/browser/ui/views/chrome_typography.h"
 #include "chrome/browser/ui/views/file_system_access/file_system_access_views_helpers.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/frame/toolbar_button_provider.h"
-#include "chrome/browser/ui/views/page_action/page_action_icon_view.h"
-#include "chrome/browser/ui/views/page_action/page_action_view.h"
+#include "chrome/browser/ui/views/location_bar/location_bar_bubble_delegate_view.h"
+#include "chrome/browser/ui/views/page_action/page_action_view_interface.h"
 #include "chrome/grit/generated_resources.h"
 #include "components/strings/grit/components_strings.h"
 #include "components/vector_icons/vector_icons.h"
@@ -36,9 +32,6 @@
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_process_host.h"
 #include "content/public/browser/web_contents.h"
-#include "third_party/icu/source/common/unicode/unistr.h"
-#include "third_party/icu/source/common/unicode/utypes.h"
-#include "third_party/icu/source/i18n/unicode/listformatter.h"
 #include "ui/actions/actions.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_header_macros.h"
@@ -46,10 +39,9 @@
 #include "ui/base/mojom/dialog_button.mojom.h"
 #include "ui/base/ui_base_features.h"
 #include "ui/color/color_id.h"
-#include "ui/color/color_provider.h"
-#include "ui/gfx/paint_vector_icon.h"
 #include "ui/gfx/text_elider.h"
 #include "ui/gfx/text_utils.h"
+#include "ui/views/bubble/bubble_dialog_delegate_view.h"
 #include "ui/views/controls/button/image_button.h"
 #include "ui/views/controls/button/image_button_factory.h"
 #include "ui/views/controls/button/label_button.h"
@@ -76,7 +68,7 @@ int ComputeHeadingMessageFromUsage(
       usage.readable_directories.empty()) {
     // Only writable files.
     if (usage.readable_files.empty()) {
-      DCHECK(!usage.writable_files.empty());
+      CHECK(!usage.writable_files.empty(), base::NotFatalUntil::M162);
       if (usage.writable_files.size() == 1) {
         *embedded_path = usage.writable_files.front();
         return IDS_FILE_SYSTEM_ACCESS_USAGE_BUBBLE_SINGLE_WRITABLE_FILE_TEXT;
@@ -86,7 +78,7 @@ int ComputeHeadingMessageFromUsage(
 
     // Only readable files.
     if (usage.writable_files.empty()) {
-      DCHECK(!usage.readable_files.empty());
+      CHECK(!usage.readable_files.empty(), base::NotFatalUntil::M162);
       if (usage.readable_files.size() == 1) {
         *embedded_path = usage.readable_files.front();
         return IDS_FILE_SYSTEM_ACCESS_USAGE_BUBBLE_SINGLE_READABLE_FILE_TEXT;
@@ -99,7 +91,7 @@ int ComputeHeadingMessageFromUsage(
   if (usage.writable_files.empty() && usage.readable_files.empty()) {
     // Only writable directories.
     if (usage.readable_directories.empty()) {
-      DCHECK(!usage.writable_directories.empty());
+      CHECK(!usage.writable_directories.empty(), base::NotFatalUntil::M162);
       if (usage.writable_directories.size() == 1) {
         *embedded_path = usage.writable_directories.front();
         return IDS_FILE_SYSTEM_ACCESS_USAGE_BUBBLE_SINGLE_WRITABLE_DIRECTORY_TEXT;
@@ -109,7 +101,7 @@ int ComputeHeadingMessageFromUsage(
 
     // Only readable directories.
     if (usage.writable_directories.empty()) {
-      DCHECK(!usage.readable_directories.empty());
+      CHECK(!usage.readable_directories.empty(), base::NotFatalUntil::M162);
       if (usage.readable_directories.size() == 1) {
         *embedded_path = usage.readable_directories.front();
         return IDS_FILE_SYSTEM_ACCESS_USAGE_BUBBLE_SINGLE_READABLE_DIRECTORY_TEXT;
@@ -120,15 +112,15 @@ int ComputeHeadingMessageFromUsage(
 
   // Only readable files and directories.
   if (usage.writable_files.empty() && usage.writable_directories.empty()) {
-    DCHECK(!usage.readable_files.empty());
-    DCHECK(!usage.readable_directories.empty());
+    CHECK(!usage.readable_files.empty(), base::NotFatalUntil::M162);
+    CHECK(!usage.readable_directories.empty(), base::NotFatalUntil::M162);
     return IDS_FILE_SYSTEM_ACCESS_USAGE_BUBBLE_READABLE_FILES_AND_DIRECTORIES_TEXT;
   }
 
   // Only writable files and directories.
   if (usage.readable_files.empty() && usage.readable_directories.empty()) {
-    DCHECK(!usage.writable_files.empty());
-    DCHECK(!usage.writable_directories.empty());
+    CHECK(!usage.writable_files.empty(), base::NotFatalUntil::M162);
+    CHECK(!usage.writable_directories.empty(), base::NotFatalUntil::M162);
     return IDS_FILE_SYSTEM_ACCESS_USAGE_BUBBLE_WRITABLE_FILES_AND_DIRECTORIES_TEXT;
   }
 
@@ -389,13 +381,13 @@ FileSystemAccessUsageBubbleView::FilePathListModel::FilePathListModel(
 FileSystemAccessUsageBubbleView::FilePathListModel::~FilePathListModel() =
     default;
 
-size_t FileSystemAccessUsageBubbleView::FilePathListModel::RowCount() {
+size_t FileSystemAccessUsageBubbleView::FilePathListModel::RowCount() const {
   return files_.size() + directories_.size();
 }
 
 std::u16string FileSystemAccessUsageBubbleView::FilePathListModel::GetText(
     size_t row,
-    int column_id) {
+    int column_id) const {
   // Use the non-eliding version of GetPathForDisplay since these are files the
   // user has already granted the site access to.
   if (row < files_.size()) {
@@ -407,7 +399,7 @@ std::u16string FileSystemAccessUsageBubbleView::FilePathListModel::GetText(
 }
 
 ui::ImageModel FileSystemAccessUsageBubbleView::FilePathListModel::GetIcon(
-    size_t row) {
+    size_t row) const {
   return ui::ImageModel::FromVectorIcon(
       row < files_.size()                 ? features::IsRoundedIconsEnabled()
                                                 ? vector_icons::kDraftIcon
@@ -418,7 +410,7 @@ ui::ImageModel FileSystemAccessUsageBubbleView::FilePathListModel::GetIcon(
 }
 
 std::u16string FileSystemAccessUsageBubbleView::FilePathListModel::GetTooltip(
-    size_t row) {
+    size_t row) const {
   if (row < files_.size()) {
     return files_[row].LossyDisplayName();
   }
@@ -441,7 +433,8 @@ void FileSystemAccessUsageBubbleView::UpdateBubbleVisibilityState(
     return;
   }
   auto* action_item = actions::ActionManager::Get().FindAction(
-      kActionShowFileSystemAccess, browser->GetActions()->root_action_item());
+      kActionShowFileSystemAccess,
+      BrowserActions::From(browser)->root_action_item());
   CHECK(action_item);
   action_item->SetIsShowingBubble(is_bubble_visible);
 }
@@ -551,9 +544,10 @@ std::u16string FileSystemAccessUsageBubbleView::GetAccessibleWindowTitle()
     return {};
   }
 
-  auto* page_action_view = BrowserView::GetBrowserViewForBrowser(browser)
-                               ->toolbar_button_provider()
-                               ->GetPageActionView(kActionShowFileSystemAccess);
+  auto* page_action_view =
+      BrowserView::GetBrowserViewForBrowser(browser)
+          ->toolbar_button_provider()
+          ->GetPageActionViewInterface(kActionShowFileSystemAccess);
   if (!page_action_view) {
     return {};
   }

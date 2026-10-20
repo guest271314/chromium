@@ -15,7 +15,6 @@
 #include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
 #include "components/account_id/account_id.h"
 #include "components/viz/common/frame_sinks/copy_output_result.h"
-#include "content/public/browser/browser_context.h"
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/render_view_host.h"
 #include "content/public/browser/render_widget_host.h"
@@ -50,10 +49,7 @@ content::BrowserContext* GetBrowserContextByAccountId(
       ash::BrowserContextHelper::Get()->GetBrowserContextByAccountId(
           account_id);
   CHECK(browser_context);
-  // Use OTR browser context to avoid giving access to the user's persistent
-  // cookies or HTTP Authentication cache.
-  return ash::BrowserContextHelper::Get()->GetOTRBrowserContext(
-      browser_context, /*create_if_needed=*/true);
+  return browser_context;
 }
 
 }  // namespace
@@ -130,7 +126,7 @@ ClipboardImageModelRequest::ClipboardImageModelRequest(
       on_request_finished_callback_(std::move(on_request_finished_callback)),
       request_creation_time_(base::TimeTicks::Now()) {
   views::Widget::InitParams widget_params(
-      views::Widget::InitParams::WIDGET_OWNS_NATIVE_WIDGET,
+      views::Widget::InitParams::CLIENT_OWNS_WIDGET,
       views::Widget::InitParams::TYPE_WINDOW_FRAMELESS);
   widget_params.name = "ClipboardImageModelRequest";
   widget_->Init(std::move(widget_params));

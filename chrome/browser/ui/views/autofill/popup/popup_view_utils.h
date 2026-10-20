@@ -5,13 +5,21 @@
 #ifndef CHROME_BROWSER_UI_VIEWS_AUTOFILL_POPUP_POPUP_VIEW_UTILS_H_
 #define CHROME_BROWSER_UI_VIEWS_AUTOFILL_POPUP_POPUP_VIEW_UTILS_H_
 
+#include <functional>
+#include <optional>
+
+#include "base/check.h"
 #include "base/containers/span.h"
+#include "base/feature_list.h"
 #include "components/autofill/core/browser/suggestions/suggestion_type.h"
 #include "components/autofill/core/browser/ui/popup_open_enums.h"
+#include "components/autofill/core/common/aliases.h"
+#include "ui/base/interaction/element_identifier.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/views/bubble/bubble_border.h"
 #include "ui/views/bubble/bubble_border_arrow_utils.h"
 #include "ui/views/style/typography.h"
+#include "ui/views/view_tracker.h"
 
 namespace content {
 class WebContents;
@@ -164,14 +172,68 @@ bool PopupMayExceedContentAreaBounds(content::WebContents* web_contents);
 // suggestions.
 bool IsExpandableSuggestionType(SuggestionType type);
 
-// Returns bounds of a display that has most intersection with element_bounds.
-// If no display data is available (e.g display::Screen::Get() == nullptr)
+// Returns the element identifier associated with the given `feature` if it is
+// an IPH feature target. Returns an invalid element identifier if not.
+ui::ElementIdentifier GetAutofillPopupCellElementIdentifier(
+    const base::Feature* feature);
+
+// Returns the bounds of the display that contains the native window hosting
+// the WebContents, or the display matching `element_bounds`. For environments
+// without global screen coordinates (e.g., Wayland), the origin is shifted
+// to match the local surface coordinate space. If no display data is available,
 // returns std::nullopt.
-std::optional<gfx::Rect> GetDisplayBounds(const gfx::Rect& element_bounds);
+std::optional<gfx::Rect> GetDisplayBounds(content::WebContents* web_contents,
+                                          const gfx::Rect& element_bounds);
 
 // Returns the intersection between the given element and its display.
 // If no display data is available, returns provided element bounds.
-gfx::Rect IntersectWithDisplayBounds(const gfx::Rect& element_bounds);
+gfx::Rect IntersectWithDisplayBounds(content::WebContents* web_contents,
+                                     const gfx::Rect& element_bounds);
+
+// Tracks the lifetime of `view` and runs a sequence of `callbacks` in order.
+// Aborts the sequence early and returns `false` if `view` is destroyed
+// during any of the calls. Returns `true` if the view survived the entire
+// sequence.
+//
+// This is typically used to prevent Use-After-Free (UAF) vulnerabilities on
+// Windows when firing platform accessibility events (e.g., focus or selection
+// changes).
+// Note that when `view` is `this`, the return value must be handled and must be
+// propagated:
+//
+// [[nodiscard]] bool PopupBaseView::Foo() {
+//   if (!TrackAndRun(this, callable)) {
+//     return false;
+//   }
+//   DoSomethingElse();
+// }
+//
+// // You may only drop the return value if you can guarantee that nothing
+// // accesses `this` or members of `this` after calling `Bar();`.
+// [[nodiscard]] bool PopupBaseView::Bar() {
+//   if (!Foo()) { return false; }
+//   DoSomethingElse();
+//   return true;
+// }
+//
+// TODO(crbug.com/524084900): Migrate to a more robust pattern.
+template <typename... Callables>
+[[nodiscard]] bool TrackAndRun(views::View* view, Callables&&... callbacks) {
+  CHECK(view);
+  views::ViewTracker tracker(view);
+  bool alive = true;
+
+  auto run_one = [&](auto&& cb) {
+    if (alive) {
+      std::invoke(std::forward<decltype(cb)>(cb));
+      alive = (tracker.view() != nullptr);
+    }
+  };
+
+  (run_one(std::forward<Callables>(callbacks)), ...);
+
+  return alive;
+}
 
 }  // namespace autofill
 

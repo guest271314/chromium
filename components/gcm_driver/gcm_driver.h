@@ -9,6 +9,8 @@
 #include <string>
 #include <vector>
 
+#include "base/containers/circular_deque.h"
+#include "base/containers/flat_map.h"
 #include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/scoped_refptr.h"
@@ -24,11 +26,14 @@ class FilePath;
 class SequencedTaskRunner;
 }  // namespace base
 
+namespace fcm {
+enum class FcmDecryptionResult;
+}  // namespace fcm
+
 namespace gcm {
 
 class GCMAppHandler;
 class GCMConnectionObserver;
-enum class GCMDecryptionResult;
 enum class GCMEncryptionResult;
 struct AccountMapping;
 
@@ -99,7 +104,8 @@ class GCMDriver {
   using EncryptMessageCallback =
       base::OnceCallback<void(GCMEncryptionResult result, std::string message)>;
   using DecryptMessageCallback =
-      base::OnceCallback<void(GCMDecryptionResult result, std::string message)>;
+      base::OnceCallback<void(fcm::FcmDecryptionResult result,
+                              std::string message)>;
 
   using GetGCMStatisticsCallback =
       base::OnceCallback<void(const GCMClient::GCMStatistics& stats)>;
@@ -223,6 +229,14 @@ class GCMDriver {
   // For testing purpose. Always NULL on Android.
   virtual GCMClient* GetGCMClientForTesting() const = 0;
 
+  // Simulates incoming message dispatch for testing message routing and
+  // buffering.
+  void DispatchMessageForTesting(const std::string& app_id,
+                                 const IncomingMessage& message);
+
+  // Returns the number of unhandled messages currently buffered for `app_id`.
+  size_t GetBufferedMessagesCountForTesting(const std::string& app_id) const;
+
   // Returns true if the service was started.
   virtual bool IsStarted() const = 0;
 
@@ -308,7 +322,10 @@ class GCMDriver {
 
   // Platform-specific implementation of recording message decryption failures.
   virtual void RecordDecryptionFailure(const std::string& app_id,
-                                       GCMDecryptionResult result) = 0;
+                                       fcm::FcmDecryptionResult result) = 0;
+
+  static void LogDeliveredToAppHandler(const std::string& app_id,
+                                       bool has_app_handler);
 
   // Runs the Register callback.
   void RegisterFinished(const std::string& app_id,
@@ -341,6 +358,25 @@ class GCMDriver {
                        const IncomingMessage& message);
 
  private:
+  // Stores unhandled incoming messages and receipt timestamps for TTL pruning.
+  struct BufferedMessage {
+    IncomingMessage message;
+    base::TimeTicks receive_time;
+  };
+
+  // Prunes unhandled messages whose age exceeds `GetGCMMessageBufferingTTL()`
+  // across all buffered apps.
+  void PruneExpiredBufferedMessages();
+
+  // Logs drop telemetry for `count` unhandled messages.
+  void LogMessagesDropped(const std::string& app_id, size_t count);
+
+  // Clears all buffered messages across all apps and logs drop telemetry.
+  void ClearBufferedMessages();
+
+  // Delivers matching buffered messages to `handler` upon registration.
+  void DeliverBufferedMessagesForHandler(GCMAppHandler* handler);
+
   // Common code shared by Unregister and UnregisterWithSenderId.
   void UnregisterInternal(const std::string& app_id,
                           const std::string* sender_id,
@@ -350,8 +386,13 @@ class GCMDriver {
   // if |result| indicates that it is safe to do so, or will report a decryption
   // failure for the |app_id| otherwise.
   void DispatchMessageInternal(const std::string& app_id,
-                               GCMDecryptionResult result,
+                               fcm::FcmDecryptionResult result,
                                IncomingMessage message);
+
+  // Buffers an unhandled message when no app handler is registered for
+  // `app_id`.
+  void BufferUnhandledMessage(const std::string& app_id,
+                              IncomingMessage message);
 
   // Called after unregistration completes in order to trigger the pending
   // registration.
@@ -366,7 +407,7 @@ class GCMDriver {
                           std::string message);
 
   void OnMessageDecrypted(DecryptMessageCallback callback,
-                          GCMDecryptionResult result,
+                          fcm::FcmDecryptionResult result,
                           IncomingMessage message);
 
   // Callback map (from app_id to callback) for Register.
@@ -384,6 +425,8 @@ class GCMDriver {
 
   // App handler map (from app_id to handler pointer). The handler is not owned.
   GCMAppHandlerMap app_handlers_;
+  base::flat_map<std::string, base::circular_deque<BufferedMessage>>
+      buffered_messages_;
 
   base::WeakPtrFactory<GCMDriver> weak_ptr_factory_{this};
 };

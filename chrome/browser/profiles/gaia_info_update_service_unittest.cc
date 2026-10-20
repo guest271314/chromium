@@ -8,6 +8,7 @@
 
 #include <memory>
 #include <string>
+#include <utility>
 
 #include "base/functional/bind.h"
 #include "base/memory/raw_ptr.h"
@@ -29,19 +30,21 @@
 #include "chrome/browser/signin/test_signin_client_builder.h"
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/common/chrome_features.h"
-#include "chrome/common/pref_names.h"
 #include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile.h"
 #include "chrome/test/base/testing_profile_manager.h"
+#include "components/optimization_guide/core/feature_registry/feature_registration.h"
 #include "components/prefs/pref_service.h"
 #include "components/profile_metrics/state.h"
 #include "components/signin/public/base/consent_level.h"
+#include "components/signin/public/base/signin_metrics.h"
 #include "components/signin/public/base/signin_pref_names.h"
 #include "components/signin/public/base/signin_prefs.h"
 #include "components/signin/public/identity_manager/account_capabilities_test_mutator.h"
 #include "components/signin/public/identity_manager/account_info.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "components/signin/public/identity_manager/identity_test_utils.h"
+#include "components/signin/public/identity_manager/primary_account_mutator.h"
 #include "components/signin/public/identity_manager/signin_constants.h"
 #include "components/sync/base/features.h"
 #include "components/sync_preferences/pref_service_syncable.h"
@@ -54,21 +57,21 @@
 #include "ui/gfx/image/image_unittest_util.h"
 
 #if !BUILDFLAG(IS_ANDROID)
-#include "chrome/browser/glic/glic_pref_names.h"
-#include "chrome/browser/glic/public/glic_enabling.h"
-#include "chrome/browser/glic/test_support/glic_test_environment.h"
-#include "chrome/browser/glic/test_support/glic_test_util.h"
+#include "chrome/browser/glic/glic_pref_names.h"       // nogncheck
+#include "chrome/browser/glic/public/glic_enabling.h"  // nogncheck
+#include "chrome/browser/glic/test_support/glic_test_environment.h"  // nogncheck
+#include "chrome/browser/glic/test_support/glic_test_util.h"  // nogncheck
 #endif
 
 using ::testing::Return;
 
 namespace {
 
-AccountInfo GetValidAccountInfo(std::string email,
-                                GaiaId gaia_id,
-                                std::string given_name,
-                                std::string full_name,
-                                std::string hosted_domain) {
+AccountInfo GetValidAccountInfo(std::string_view email,
+                                const GaiaId& gaia_id,
+                                std::string_view given_name,
+                                std::string_view full_name,
+                                std::string_view hosted_domain) {
   AccountInfo account_info =
       AccountInfo::Builder(gaia_id, email)
           .SetAccountId(CoreAccountId::FromGaiaId(gaia_id))
@@ -77,7 +80,7 @@ AccountInfo GetValidAccountInfo(std::string email,
           .SetHostedDomain(hosted_domain)
           .SetAvatarUrl("https://example.com")
           .Build();
-  AccountCapabilitiesTestMutator(&account_info.capabilities)
+  AccountCapabilitiesTestMutator(&account_info)
       .set_is_subject_to_enterprise_features(!hosted_domain.empty());
   return account_info;
 }
@@ -194,10 +197,10 @@ TEST_F(GAIAInfoUpdateServiceTest, SyncOnSyncOff) {
   AccountInfo info =
       signin::MakeAccountAvailable(identity_manager(), "pat@example.com");
   base::RunLoop().RunUntilIdle();
-  signin::SetPrimaryAccount(identity_manager(), info.email,
+  signin::SetPrimaryAccount(identity_manager(), info.GetEmail(),
                             signin::ConsentLevel::kSync);
-  info = GetValidAccountInfo(info.email, info.gaia, "Pat", "Pat Foo",
-                             std::string());
+  info = GetValidAccountInfo(info.GetEmail(), info.GetGaiaId(), "Pat",
+                             "Pat Foo", "");
   signin::UpdateAccountInfoForAccount(identity_manager(), info);
   base::RunLoop().RunUntilIdle();
 
@@ -209,7 +212,7 @@ TEST_F(GAIAInfoUpdateServiceTest, SyncOnSyncOff) {
   EXPECT_EQ(entry->GetIsManaged(), signin::Tribool::kFalse);
 
   gfx::Image gaia_picture = gfx::test::CreateImage(256, 256);
-  signin::SimulateAccountImageFetch(identity_manager(), info.account_id,
+  signin::SimulateAccountImageFetch(identity_manager(), info.GetAccountId(),
                                     "GAIA_IMAGE_URL_WITH_SIZE", gaia_picture);
   // Set a fake picture URL.
   EXPECT_TRUE(gfx::test::AreImagesEqual(gaia_picture, entry->GetAvatarIcon()));
@@ -232,17 +235,17 @@ TEST_F(GAIAInfoUpdateServiceTest, RevokeSyncConsent) {
   AccountInfo info =
       signin::MakeAccountAvailable(identity_manager(), "pat@example.com");
   base::RunLoop().RunUntilIdle();
-  signin::SetPrimaryAccount(identity_manager(), info.email,
+  signin::SetPrimaryAccount(identity_manager(), info.GetEmail(),
                             signin::ConsentLevel::kSync);
-  info = GetValidAccountInfo(info.email, info.gaia, "Pat", "Pat Foo",
-                             std::string());
+  info = GetValidAccountInfo(info.GetEmail(), info.GetGaiaId(), "Pat",
+                             "Pat Foo", "");
   signin::UpdateAccountInfoForAccount(identity_manager(), info);
   base::RunLoop().RunUntilIdle();
 
   ASSERT_EQ(1u, storage()->GetNumberOfProfiles());
   ProfileAttributesEntry* entry = storage()->GetAllProfilesAttributes().front();
   gfx::Image gaia_picture = gfx::test::CreateImage(256, 256);
-  signin::SimulateAccountImageFetch(identity_manager(), info.account_id,
+  signin::SimulateAccountImageFetch(identity_manager(), info.GetAccountId(),
                                     "GAIA_IMAGE_URL_WITH_SIZE", gaia_picture);
   // Revoke sync consent (stay signed in with the primary account).
   signin::RevokeSyncConsent(identity_manager());
@@ -299,7 +302,7 @@ TEST_F(GAIAInfoUpdateServiceTest,
           .WithGaiaId(primary_gaia_id)
           .WithCookie()
           .Build("primary@example.com"));
-  ASSERT_EQ(primary_gaia_id, primary_info.gaia);
+  ASSERT_EQ(primary_gaia_id, primary_info.GetGaiaId());
   InitializeAccountPref(primary_gaia_id);
   EXPECT_TRUE(HasAccountPrefs(primary_gaia_id));
 
@@ -312,15 +315,17 @@ TEST_F(GAIAInfoUpdateServiceTest,
           .WithGaiaId(secondary_gaia_id)
           .WithCookie()
           .Build("secondary@gmail.com"));
-  ASSERT_EQ(secondary_gaia_id, secondary_info.gaia);
+  ASSERT_EQ(secondary_gaia_id, secondary_info.GetGaiaId());
   InitializeAccountPref(secondary_gaia_id);
   EXPECT_TRUE(HasAccountPrefs(secondary_gaia_id));
 
   // Set the accounts as signed out.
   signin::SetCookieAccounts(
       identity_manager(), test_url_loader_factory(),
-      {{primary_info.email, primary_info.gaia, /*signed_out=*/true},
-       {secondary_info.email, secondary_info.gaia, /*signed_out=*/true}});
+      {{std::string(primary_info.GetEmail()), primary_info.GetGaiaId(),
+        /*signed_out=*/true},
+       {std::string(secondary_info.GetEmail()), secondary_info.GetGaiaId(),
+        /*signed_out=*/true}});
   // Prefs should remain as the cookies are not cleared yet.
   EXPECT_TRUE(HasAccountPrefs(primary_gaia_id));
   EXPECT_TRUE(HasAccountPrefs(secondary_gaia_id));
@@ -331,6 +336,11 @@ TEST_F(GAIAInfoUpdateServiceTest,
       identity_manager()->HasPrimaryAccount(signin::ConsentLevel::kSignin));
   // Primary account prefs should remain since the account is still signed in.
   EXPECT_TRUE(HasAccountPrefs(primary_gaia_id));
+  // The secondary account still has a refresh token, so its prefs are kept
+  // until its refresh token is removed.
+  EXPECT_TRUE(HasAccountPrefs(secondary_gaia_id));
+  signin::RemoveRefreshTokenForAccount(identity_manager(),
+                                       secondary_info.GetAccountId());
   // Secondary account prefs should be cleared.
   EXPECT_FALSE(HasAccountPrefs(secondary_gaia_id));
 
@@ -371,19 +381,25 @@ TEST_F(GAIAInfoUpdateServiceTest, SigninPrefsWithSignedInWebOnly) {
           .WithGaiaId(gaia_id)
           .WithCookie()
           .Build("test@gmail.com"));
-  ASSERT_EQ(gaia_id, info.gaia);
+  ASSERT_EQ(gaia_id, info.GetGaiaId());
   ASSERT_FALSE(
       identity_manager()->HasPrimaryAccount(signin::ConsentLevel::kSignin));
   InitializeAccountPref(gaia_id);
   EXPECT_TRUE(HasAccountPrefs(gaia_id));
 
   // Web sign out keeps the prefs.
-  signin::SetCookieAccounts(identity_manager(), test_url_loader_factory(),
-                            {{info.email, info.gaia, /*signed_out=*/true}});
+  signin::SetCookieAccounts(
+      identity_manager(), test_url_loader_factory(),
+      {{std::string(info.GetEmail()), info.GetGaiaId(), /*signed_out=*/true}});
   EXPECT_TRUE(HasAccountPrefs(gaia_id));
 
-  // Clearing the cookie removes the prefs.
+  // Clearing the cookie keeps the prefs, since the account still has a refresh
+  // token.
   signin::SetCookieAccounts(identity_manager(), test_url_loader_factory(), {});
+  EXPECT_TRUE(HasAccountPrefs(gaia_id));
+
+  // Removing the refresh token removes the prefs.
+  signin::RemoveRefreshTokenForAccount(identity_manager(), info.GetAccountId());
   EXPECT_FALSE(HasAccountPrefs(gaia_id));
 }
 
@@ -397,7 +413,7 @@ TEST_F(GAIAInfoUpdateServiceTest, SigninPrefsWithGaiaIdNotInChrome) {
           .WithGaiaId(gaia_id)
           .WithCookie()
           .Build("test@gmail.com"));
-  ASSERT_EQ(gaia_id, info.gaia);
+  ASSERT_EQ(gaia_id, info.GetGaiaId());
   ASSERT_FALSE(
       identity_manager()->HasPrimaryAccount(signin::ConsentLevel::kSignin));
   InitializeAccountPref(gaia_id);
@@ -417,6 +433,71 @@ TEST_F(GAIAInfoUpdateServiceTest, SigninPrefsWithGaiaIdNotInChrome) {
   // Prefs for the Account in Chrome remains, not for the account not in Chrome.
   EXPECT_TRUE(HasAccountPrefs(gaia_id));
   EXPECT_FALSE(HasAccountPrefs(gaia_id_not_in_chrome));
+}
+
+// Signing out while keeping the tokens (e.g. on Android, the accounts on the
+// device are kept) keeps the prefs of accounts with refresh tokens until their
+// refresh tokens are removed.
+TEST_F(GAIAInfoUpdateServiceTest, SigninPrefsKeptOnSignoutForAccountWithToken) {
+  base::HistogramTester histogram_tester;
+  const GaiaId gaia_id("gaia_id");
+  AccountInfo info = signin::MakeAccountAvailable(
+      identity_manager(),
+      signin::AccountAvailabilityOptionsBuilder(test_url_loader_factory())
+          .AsPrimary(signin::ConsentLevel::kSignin)
+          .WithGaiaId(gaia_id)
+          .WithCookie()
+          .Build("test@gmail.com"));
+  ASSERT_EQ(gaia_id, info.GetGaiaId());
+  InitializeAccountPref(gaia_id);
+  ASSERT_TRUE(HasAccountPrefs(gaia_id));
+
+  // Sign out but keep the tokens (like on Android), and clear the cookies.
+  ASSERT_TRUE(identity_manager()
+                  ->GetPrimaryAccountMutator()
+                  ->RemovePrimaryAccountButKeepTokens(
+                      signin_metrics::ProfileSignout::kTest));
+  signin::SetCookieAccounts(identity_manager(), test_url_loader_factory(), {});
+  ASSERT_FALSE(
+      identity_manager()->HasPrimaryAccount(signin::ConsentLevel::kSignin));
+  ASSERT_TRUE(
+      identity_manager()->HasAccountWithRefreshToken(info.GetAccountId()));
+
+  // The prefs are kept since the account still has a refresh token.
+  EXPECT_TRUE(HasAccountPrefs(gaia_id));
+  histogram_tester.ExpectTotalCount("Signin.AccountPref.RemovedCount",
+                                    /*expected_count=*/0);
+
+  // Removing the refresh token removes the prefs.
+  signin::RemoveRefreshTokenForAccount(identity_manager(), info.GetAccountId());
+  EXPECT_FALSE(HasAccountPrefs(gaia_id));
+  histogram_tester.ExpectUniqueSample(
+      "Signin.AccountPref.RemovedCount.SignedOut",
+      /*sample=*/1,
+      /*expected_bucket_count=*/1);
+}
+
+// Prefs should not be removed until the refresh tokens are loaded.
+TEST_F(GAIAInfoUpdateServiceTest,
+       SigninPrefsNotRemovedBeforeRefreshTokensLoaded) {
+  IdentityTestEnvironmentProfileAdaptor adaptor(profile());
+  adaptor.identity_test_env()->ResetToAccountsNotYetLoadedFromDiskState();
+  ASSERT_FALSE(identity_manager()->AreRefreshTokensLoaded());
+
+  const GaiaId gaia_id("gaia_id");
+  InitializeAccountPref(gaia_id);
+  ASSERT_TRUE(HasAccountPrefs(gaia_id));
+
+  // A fresh cookie jar without the account does not remove the prefs, since the
+  // account may still have a refresh token.
+  signin::SetCookieAccounts(identity_manager(), test_url_loader_factory(), {});
+  EXPECT_TRUE(HasAccountPrefs(gaia_id));
+
+  // Once the refresh tokens are loaded, the prefs are removed since the account
+  // has no refresh token.
+  adaptor.identity_test_env()->ReloadAccountsFromDisk();
+  ASSERT_TRUE(identity_manager()->AreRefreshTokensLoaded());
+  EXPECT_FALSE(HasAccountPrefs(gaia_id));
 }
 
 #if !BUILDFLAG(IS_ANDROID)
@@ -443,7 +524,7 @@ class GAIAInfoUpdateServiceWithGlicEnablingTest
                 signin::ConsentLevel::kSignin));
     CHECK(!primary_account_info.IsEmpty());
 
-    AccountCapabilitiesTestMutator mutator(&primary_account_info.capabilities);
+    AccountCapabilitiesTestMutator mutator(&primary_account_info);
     glic::SetGlicCapability(mutator, true);
 
     signin::UpdateAccountInfoForAccount(identity_manager(),
@@ -451,8 +532,9 @@ class GAIAInfoUpdateServiceWithGlicEnablingTest
 
     // Enable enterprise policy for glic control
     pref_service_.SetInteger(
-        ::prefs::kGeminiSettings,
-        static_cast<int>(glic::prefs::SettingsPolicyState::kEnabled));
+        optimization_guide::prefs::kGeminiSettings,
+        std::to_underlying(
+            optimization_guide::prefs::GeminiSettingsPolicyState::kEnabled));
   }
 
  private:
@@ -473,8 +555,8 @@ TEST_F(GAIAInfoUpdateServiceWithGlicEnablingTest, LogInLogOut) {
         identity_manager()->HasPrimaryAccount(signin::ConsentLevel::kSync));
   }
 
-  info = GetValidAccountInfo(info.email, info.gaia, "Pat", "Pat Foo",
-                             std::string());
+  info = GetValidAccountInfo(info.GetEmail(), info.GetGaiaId(), "Pat",
+                             "Pat Foo", "");
   MakeProfileGlicEligible();
   signin::UpdateAccountInfoForAccount(identity_manager(), info);
   base::RunLoop().RunUntilIdle();
@@ -488,7 +570,7 @@ TEST_F(GAIAInfoUpdateServiceWithGlicEnablingTest, LogInLogOut) {
   EXPECT_TRUE(entry->IsGlicEligible());
 
   gfx::Image gaia_picture = gfx::test::CreateImage(256, 256);
-  signin::SimulateAccountImageFetch(identity_manager(), info.account_id,
+  signin::SimulateAccountImageFetch(identity_manager(), info.GetAccountId(),
                                     "GAIA_IMAGE_URL_WITH_SIZE", gaia_picture);
   // Set a fake picture URL.
   EXPECT_TRUE(gfx::test::AreImagesEqual(gaia_picture, entry->GetAvatarIcon()));

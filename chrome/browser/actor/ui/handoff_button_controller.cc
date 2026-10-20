@@ -16,7 +16,6 @@
 #include "chrome/browser/glic/public/glic_keyed_service_factory.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/color/chrome_color_id.h"
-#include "chrome/browser/ui/views/interaction/browser_elements_views.h"
 #include "chrome/common/chrome_features.h"
 #include "chrome/grit/generated_resources.h"
 #include "components/tabs/public/tab_interface.h"
@@ -160,7 +159,7 @@ class GradientBubbleFrameView : public views::BubbleFrameView {
     background_flags.setAntiAlias(true);
     background_flags.setStyle(cc::PaintFlags::kFill_Style);
     background_flags.setColor(
-        GetColorProvider()->GetColor(ui::kColorTextfieldBackground));
+        GetColorProvider()->GetColor(kColorActorUiHandoffButtonBackground));
     paint_canvas->drawRRect(background_rrect, background_flags);
   }
 
@@ -178,7 +177,7 @@ std::unique_ptr<views::FrameView> CreateHandoffButtonFrameView(
   const gfx::RoundedCornersF corners(kHandoffButtonCornerRadius);
   auto frame_view = std::make_unique<GradientBubbleFrameView>(
       total_insets, views::BubbleBorder::Arrow::NONE, corners);
-  frame_view->SetBackgroundColor(ui::kColorTextfieldBackground);
+  frame_view->SetBackgroundColor(kColorActorUiHandoffButtonBackground);
   return frame_view;
 }
 
@@ -264,16 +263,17 @@ void HandoffButtonController::UpdateState(HandoffButtonState state,
       icon = ImageModel::FromVectorIcon(
           features::IsRoundedIconsEnabled() ? vector_icons::kPauseFilledIcon
                                             : vector_icons::kPauseOldIcon,
-          ::ui::kColorLabelForeground, kHandoffButtonIconSize);
+          kColorActorUiHandoffButtonForeground, kHandoffButtonIconSize);
       break;
     case kClient:
       text = l10n_util::GetStringUTF16(IDS_HANDOFF_GIVE_TASK_BACK_LABEL);
       a11y_text =
           l10n_util::GetStringUTF16(IDS_HANDOFF_GIVE_TASK_BACK_A11Y_LABEL);
       icon = ImageModel::FromVectorIcon(
-          features::IsRoundedIconsEnabled() ? vector_icons::kPlayArrowFilledIcon
-                                            : vector_icons::kPlayArrowOldIcon,
-          ::ui::kColorLabelForeground, kHandoffButtonIconSize);
+          features::IsRoundedIconsEnabled()
+              ? vector_icons::kPlayArrowFilledFlippableIcon
+              : vector_icons::kPlayArrowOldIcon,
+          kColorActorUiHandoffButtonForeground, kHandoffButtonIconSize);
       break;
   }
 
@@ -315,9 +315,9 @@ void HandoffButtonController::CreateAndShowButton(
       text);
   button_view_ = button_view.get();
   button_view_->SetAccessibleDescription(a11y_text);
-  button_view_->SetEnabledTextColors(::ui::kColorLabelForeground);
+  button_view_->SetEnabledTextColors(kColorActorUiHandoffButtonForeground);
   button_view_->SetTextColor(views::Button::STATE_DISABLED,
-                             ::ui::kColorLabelForeground);
+                             kColorActorUiHandoffButtonForeground);
   button_view_->SetImageModel(views::Button::STATE_NORMAL, icon);
   button_view_->SetProperty(views::kElementIdentifierKey,
                             kHandoffButtonElementId);
@@ -373,10 +373,9 @@ gfx::Rect HandoffButtonController::GetHandoffButtonBounds() {
       anchor_bounds.x() + (anchor_bounds.width() - preferred_size.width()) / 2;
 
   // Calculate the Y coordinate based on tab strip visibility.
-  bool is_tab_strip_visible =
-      tab_interface_
-          ? tab_interface_->GetBrowserWindowInterface()->IsTabStripVisible()
-          : false;
+  BrowserWindowInterface* bwi =
+      tab_interface_ ? tab_interface_->GetBrowserWindowInterface() : nullptr;
+  bool is_tab_strip_visible = bwi && bwi->IsTabStripVisible();
 
   const int y =
       is_tab_strip_visible
@@ -423,11 +422,13 @@ void HandoffButtonController::OnButtonPressed() {
     if (ownership_ == kActor) {
       tab_controller->SetActorTaskPaused();
       BrowserWindowInterface* bwi = tab_interface_->GetBrowserWindowInterface();
-      auto* glic_service =
-          glic::GlicKeyedServiceFactory::GetGlicKeyedService(bwi->GetProfile());
-      if (glic_service) {
-        glic_service->ToggleUI(bwi, /*prevent_close=*/true,
+      if (bwi) {
+        auto* glic_service = glic::GlicKeyedServiceFactory::GetGlicKeyedService(
+            bwi->GetProfile());
+        if (glic_service) {
+          glic_service->ShowUI(bwi,
                                glic::mojom::InvocationSource::kHandoffButton);
+        }
       }
     } else {
       tab_controller->SetActorTaskResume();

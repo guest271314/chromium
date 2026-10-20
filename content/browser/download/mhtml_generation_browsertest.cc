@@ -173,7 +173,8 @@ struct CompareResult {
 };
 
 // A dummy WebContentsDelegate which tracks the results of a find operation.
-class FindTrackingDelegate : public WebContentsDelegate {
+class FindTrackingDelegate : public WebContentsDelegate,
+                             public WebContentsObserver {
  public:
   explicit FindTrackingDelegate(const std::string& search) : search_(search) {}
 
@@ -184,13 +185,14 @@ class FindTrackingDelegate : public WebContentsDelegate {
   int Wait(WebContents* web_contents) {
     WebContentsDelegate* old_delegate = web_contents->GetDelegate();
     web_contents->SetDelegate(this);
+    Observe(web_contents);
 
     auto options = blink::mojom::FindOptions::New();
     options->run_synchronously_for_testing = true;
     options->match_case = false;
 
-    web_contents->Find(global_request_id++, base::UTF8ToUTF16(search_),
-                       std::move(options), /*skip_delay=*/false);
+    web_contents->Find(base::UTF8ToUTF16(search_), std::move(options),
+                       /*skip_delay=*/false, [](int request_id) {});
     run_loop_.Run();
 
     web_contents->SetDelegate(old_delegate);
@@ -198,28 +200,22 @@ class FindTrackingDelegate : public WebContentsDelegate {
     return matches_;
   }
 
-  void FindReply(WebContents* web_contents,
-                 int request_id,
-                 int number_of_matches,
-                 const gfx::Rect& selection_rect,
-                 int active_match_ordinal,
-                 bool final_update) override {
+  void DidReceiveFindReply(int request_id,
+                           int number_of_matches,
+                           const gfx::Rect& selection_rect,
+                           int active_match_ordinal,
+                           bool final_update) override {
     if (final_update) {
       matches_ = number_of_matches;
       run_loop_.Quit();
     }
   }
 
-  static int global_request_id;
-
  private:
   std::string search_;
   int matches_ = -1;
   base::RunLoop run_loop_;
 };
-
-// static
-int FindTrackingDelegate::global_request_id = 0;
 
 const std::string_view kTestData =
     "Sample Text to write on a generated MHTML "
@@ -280,57 +276,60 @@ class RespondAndDisconnectMockWriter
   void SerializeAsMHTML(mojom::SerializeAsMHTMLParamsPtr params,
                         SerializeAsMHTMLCallback callback) override {
     // Upon using the overridden mock interface implementation, this will be
-    // handled by the product code as illustrated below.  (1), (2), (3) depict
-    // points in time when product code runs on UI thread and download sequence.
-    // For the repro, the message pipe disconnection needs to happen between (1)
-    // and (3).
+    // handled by the product code as illustrated below. (1), (2), (3), (4)
+    // depict points in time when product code runs on UI thread and download
+    // sequence. For the repro, the message pipe disconnection needs to happen
+    // after the browser has completed writing to disk (2) and before the job is
+    // destroyed in OnFinished (4).
     //
-    //   Test instance     UI thread         download sequence
-    //     ---------       ---------           -----------
-    //        |                |                     |
-    //    WE ARE HERE          |                     |
-    //        |                |                     |
-    //        |                |                     |
-    //        +--------------->+                     |
-    //        |                |                     |
-    //        |                |                     |
-    //        |                |                     |
-    //        |                |                     |
-    //        |                |                     |
-    //        |                |                     |
-    // (1)    |      MHTMLGenerationManager::Job     |
-    //        |      ::SerializeAsMHTMLResponse      |
-    //        |                +-------------------->+
-    //        |                |                     |
-    //        |                |                     |
-    //        |                |                     |
-    // (2)    |                |          MHTMLGenerationManager::Job
-    //        |                |          ::CloseFileOnFileThread
-    //        |                |                     |
-    //        |                |                     |
-    //        |           test needs to              |
-    //        |       disconnect message pipe        |
-    //        |      HERE - between (1) and (3)      |
-    //        |                |                     |
-    //        |                |                     |
-    //        |                +<--------------------+
-    //        |                |                     |
-    // (3)    |      MHTMLGenerationManager          |
-    //        |      Job::OnFinished                 |
-    //        |                |                     |
+    //   Test instance      UI thread          download sequence
+    //     ---------        ---------            -----------
+    //        |                 |                      |
+    //    WE ARE HERE           |                      |
+    //        |                 |                      |
+    //        +---------------->+                      |
+    //        |                 |                      |
+    //        |                 |                      |
+    // (1)    |       MHTMLGenerationManager::Job      |
+    //        |       ::SerializeAsMHTMLResponse       |
+    //        |                 |                      |
+    //        |                 |                      |
+    //        |                 |               [Streams MHTML data]
+    //        |                 |                      +
+    // (2)    |                 +<---------------------+
+    //        |       MHTMLGenerationManager::Job      |
+    //        |       ::DoneWritingToDisk              |
+    //        |                 +-------------------->+
+    //        |                 |                      |
+    // (3)    |                 |           MHTMLGenerationManager::Job
+    //        |                 |           ::FinalizeOnFileThread
+    //        |                 |                      |
+    //        |                 |                      |
+    //        |            test needs to               |
+    //        |       disconnect message pipe          |
+    //        |       HERE - between (2) and (4)       |
+    //        |                 |                      |
+    //        |                 |                      |
+    //        |                 +<---------------------+
+    //        |                 |                      |
+    // (4)    |       MHTMLGenerationManager           |
+    //        |       Job::OnFinished                  |
+    //        |                 |                      |
     //
-    // We hope that the error handler is invoked between (1) and (3) by doing
+    // We ensure the disconnect handler is invoked between (2) and (4) by doing
     // the following:
     // - From here, run the callback response to the UI thread. This queues
     //   the response message onto the bound message pipe.
-    // - After running the callback response, immediately unbind the message
-    //   pipe in order to queue a message onto the bound message pipe to notify
-    //   the Browser the connection was closed and invoke the error handler.
-    // - Upon resuming operation, the FIFO ordering property of associated
-    //   interfaces guarantees the execution of (1) before the error handler.
-    //   (1) posts (2) to the download sequence and terminates. The client end
-    //   then accepts the error notification and invokes the connection error
-    //   handler, guaranteeing its execution before (3).
+    // - After running the callback response, we post a sequence of tasks to
+    //   the download thread (DelayDisconnectionStep1 -> Step2 -> Step3 ->
+    //   DisconnectMojoReceiver) to delay resetting the Mojo connection until
+    //   after the data pipe streaming has completed and DoneWritingToDisk (2)
+    //   has run on the UI thread.
+    // - Upon resuming operation, the FIFO ordering property of Mojo interfaces
+    //   guarantees that (1) executes before the error handler. In parallel,
+    //   the data pipe is drained, posting (2) which then posts (3). The client
+    //   end then accepts the error notification and invokes the connection
+    //   error handler, guaranteeing its execution before (4).
 
     bool compute_contents_hash = params->output_handle->is_producer_handle();
 
@@ -359,31 +358,39 @@ class RespondAndDisconnectMockWriter
     // we must ensure the write complete notification arrives before the
     // connection error notification, otherwise the Browser will report
     // an MhtmlSaveStatus != kSuccess. We can guarantee this by potentially
-    // running tasks after each watcher invocation to send notifications that
-    // it has been completed. We need at least two tasks to guarantee this,
-    // as there can be at most two watcher invocations to write a block of
-    // data smaller than the data pipe buffer to file.
+    // running tasks sequentially on the download thread to delay the Mojo
+    // connection reset. We need three task hops on the download sequence to
+    // ensure that the reader has completed reading the EOF, and the completion
+    // task has been posted to the UI thread (DoneWritingToDisk) before the
+    // receiver is reset.
     download::GetDownloadTaskRunner()->PostTask(
         FROM_HERE,
-        base::BindOnce(&RespondAndDisconnectMockWriter::TaskX,
+        base::BindOnce(&RespondAndDisconnectMockWriter::DelayDisconnectionStep1,
                        scoped_refptr<RespondAndDisconnectMockWriter>(this)));
   }
 
-  void TaskX() {
+  void DelayDisconnectionStep1() {
     download::GetDownloadTaskRunner()->PostTask(
         FROM_HERE,
-        base::BindOnce(&RespondAndDisconnectMockWriter::TaskY,
+        base::BindOnce(&RespondAndDisconnectMockWriter::DelayDisconnectionStep2,
                        scoped_refptr<RespondAndDisconnectMockWriter>(this)));
   }
 
-  void TaskY() {
+  void DelayDisconnectionStep2() {
+    download::GetDownloadTaskRunner()->PostTask(
+        FROM_HERE,
+        base::BindOnce(&RespondAndDisconnectMockWriter::DelayDisconnectionStep3,
+                       scoped_refptr<RespondAndDisconnectMockWriter>(this)));
+  }
+
+  void DelayDisconnectionStep3() {
     GetUIThreadTaskRunner({})->PostTask(
         FROM_HERE,
-        base::BindOnce(&RespondAndDisconnectMockWriter::TaskZ,
+        base::BindOnce(&RespondAndDisconnectMockWriter::DisconnectMojoReceiver,
                        scoped_refptr<RespondAndDisconnectMockWriter>(this)));
   }
 
-  void TaskZ() { receiver_.reset(); }
+  void DisconnectMojoReceiver() { receiver_.reset(); }
 
  private:
   friend base::RefCountedThreadSafe<RespondAndDisconnectMockWriter>;
@@ -822,6 +829,54 @@ IN_PROC_BROWSER_TEST_F(MHTMLGenerationSitePerProcessTest, GenerateMHTML) {
                              EndsWith("/title1.html")}));
 }
 
+IN_PROC_BROWSER_TEST_F(MHTMLGenerationSitePerProcessTest,
+                       GenerateMHTMLWithFrameFilter) {
+  base::FilePath path =
+      temp_dir_.GetPath().Append(FILE_PATH_LITERAL("test.mht"));
+
+  GURL url(embedded_test_server()->GetURL(
+      "a.com", "/frame_tree/page_with_one_frame.html"));
+  MHTMLGenerationParams params(path);
+  params.frame_filter =
+      base::BindRepeating([](RenderFrameHost* rfh) { return false; });
+
+  MHTMLFileInfo info = GenerateMHTML(params, url);
+
+  // Make sure the main frame is present, but the filtered subframe is omitted.
+  EXPECT_THAT(info.content(), HasSubstr("This page has one cross-site iframe"));
+  EXPECT_THAT(info.content(), Not(HasSubstr("This page has no title")));
+
+  EXPECT_THAT(
+      info.ContentLocations(),
+      testing::ElementsAre(EndsWith("/frame_tree/page_with_one_frame.html")));
+}
+
+IN_PROC_BROWSER_TEST_F(MHTMLGenerationSitePerProcessTest,
+                       GenerateMHTMLWithFrameFilterSubtree) {
+  base::FilePath path =
+      temp_dir_.GetPath().Append(FILE_PATH_LITERAL("test.mht"));
+
+  GURL url(embedded_test_server()->GetURL(
+      "a.com", "/cross_site_iframe_factory.html?a(b(c),d(e))"));
+  MHTMLGenerationParams params(path);
+  // Filter out b.com, allowing only other frames. Because c.com is a child
+  // of b.com, it should also be excluded from the generated archive, while
+  // sibling branch d(e) should be preserved.
+  params.frame_filter = base::BindRepeating([](RenderFrameHost* rfh) {
+    return rfh->GetLastCommittedOrigin().host() != "b.com";
+  });
+
+  MHTMLFileInfo info = GenerateMHTML(params, url);
+
+  EXPECT_THAT(
+      info.ContentLocations(),
+      Contains(EndsWith("/cross_site_iframe_factory.html?a(b(c),d(e))")));
+  EXPECT_THAT(info.ContentLocations(), Not(Contains(HasSubstr("b.com"))));
+  EXPECT_THAT(info.ContentLocations(), Not(Contains(HasSubstr("c.com"))));
+  EXPECT_THAT(info.ContentLocations(), Contains(HasSubstr("d.com")));
+  EXPECT_THAT(info.ContentLocations(), Contains(HasSubstr("e.com")));
+}
+
 IN_PROC_BROWSER_TEST_F(MHTMLGenerationTest, RemovePopupOverlay) {
   base::FilePath path(temp_dir_.GetPath());
   path = path.Append(FILE_PATH_LITERAL("test.mht"));
@@ -866,7 +921,6 @@ IN_PROC_BROWSER_TEST_F(MHTMLGenerationTest, GenerateMHTMLWithExtraData) {
   MHTMLFileInfo info = GenerateMHTML(path, url);
 
   EXPECT_TRUE(has_mhtml_callback_run());
-
 
   // Make sure that both extra data parts made it into the mhtml.
   EXPECT_THAT(info.content(), HasSubstr(kFakeSignalData1));

@@ -6,6 +6,7 @@
 #define THIRD_PARTY_BLINK_RENDERER_CORE_FRAGMENT_DIRECTIVE_TEXT_FRAGMENT_FINDER_H_
 
 #include "base/gtest_prod_util.h"
+#include "base/memory/raw_ref.h"
 #include "third_party/blink/renderer/core/core_export.h"
 #include "third_party/blink/renderer/core/editing/ephemeral_range.h"
 #include "third_party/blink/renderer/core/editing/finder/find_buffer_runner.h"
@@ -15,6 +16,7 @@
 #include "third_party/blink/renderer/core/editing/relocatable_position.h"
 #include "third_party/blink/renderer/core/fragment_directive/text_fragment_anchor_metrics.h"
 #include "third_party/blink/renderer/core/fragment_directive/text_fragment_selector.h"
+#include "third_party/blink/renderer/platform/heap/garbage_collected.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
 
 namespace blink {
@@ -27,7 +29,7 @@ class Document;
 class CORE_EXPORT TextFragmentFinder
     : public GarbageCollected<TextFragmentFinder> {
  public:
-  class Client {
+  class Client : public GarbageCollectedMixin {
    public:
     virtual void DidFindMatch(const RangeInFlatTree& range, bool is_unique) = 0;
     virtual void NoMatchFound() = 0;
@@ -97,8 +99,6 @@ class CORE_EXPORT TextFragmentFinder
 
   void OnFindMatchInRangeComplete(String search_text,
                                   RangeInFlatTree* range,
-                                  bool word_start_bounded,
-                                  bool word_end_bounded,
                                   const EphemeralRangeInFlatTree& match);
 
   void FindMatchInRange(String search_text,
@@ -120,7 +120,10 @@ class CORE_EXPORT TextFragmentFinder
 
   bool HasValidRanges();
 
-  Client& client_;
+  // Runs the match steps in a loop, advancing one step per iteration.
+  void DriveStateMachine();
+
+  Member<Client> client_;
   const TextFragmentSelector selector_;
   Member<Range> range_;
 
@@ -149,6 +152,10 @@ class CORE_EXPORT TextFragmentFinder
   Member<RangeInFlatTree> match_range_;
   // Used for running FindBuffer tasks.
   Member<FindBufferRunner> find_buffer_runner_;
+  // Set by GoToStep. Stays false if a step awaits its async callback.
+  bool drive_next_step_ = false;
+  // Re-entrance guard for DriveStateMachine.
+  bool in_drive_loop_ = false;
 };
 
 }  // namespace blink

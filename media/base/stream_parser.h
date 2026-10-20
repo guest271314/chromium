@@ -42,8 +42,6 @@ class MEDIA_EXPORT StreamParser {
   // With incremental parsing, parse can succeed yet also still indicate there
   // is more uninspected data to parse. This enum identifies the possible
   // results of incremental parsing by a StreamParser.
-  // TODO:(crbug.com/1378678): Investigate usage of TypeStatus<T>::Or<U> where
-  // this is used.
   enum class ParseStatus {
     kFailed,
     kSuccess,
@@ -143,6 +141,10 @@ class MEDIA_EXPORT StreamParser {
   // method does not need to invoke the EndMediaSegmentCB since the parser reset
   // algorithm already resets the segment parsing state.
   virtual void Flush() = 0;
+
+  // Called when the source buffer is marked as end-of-stream.
+  // Allows the parser to drain/emit any remaining delayed frames.
+  virtual void MarkEndOfStream() {}
 
   // Returns the MSE byte stream format registry's "Generate Timestamps Flag"
   // for the byte stream corresponding to this parser.

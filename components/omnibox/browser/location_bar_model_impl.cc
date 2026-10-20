@@ -46,34 +46,30 @@ LocationBarModelImpl::LocationBarModelImpl(LocationBarModelDelegate* delegate,
   DCHECK(delegate_);
 }
 
+LocationBarModelImpl::LocationBarModelImpl(ui::UnownedUserDataHost& host,
+                                           LocationBarModelDelegate* delegate,
+                                           size_t max_url_display_chars)
+    : LocationBarModel(host),
+      delegate_(delegate),
+      max_url_display_chars_(max_url_display_chars) {
+  DCHECK(delegate_);
+}
+
 LocationBarModelImpl::~LocationBarModelImpl() = default;
 
 // LocationBarModelImpl Implementation.
 std::u16string LocationBarModelImpl::GetFormattedFullURL() const {
+  if (IsContextualTasksPage()) {
+    return GetContextualTasksDisplayURL();
+  }
   return GetFormattedURL(url_formatter::kFormatUrlOmitDefaults);
 }
 
 std::u16string LocationBarModelImpl::GetURLForDisplay() const {
   // For the contextual tasks page, apply "origin-swapping" logic in order to
   // display the proper URL in the Omnibox.
-  const auto inner_frame_url = delegate_->GetContextualTasksInnerFrameURL();
-  if (inner_frame_url.is_valid()) {
-    GURL::Replacements replacements;
-
-    std::string display_url_scheme =
-        contextual_tasks::GetContextualTasksDisplayUrlScheme();
-    replacements.SetSchemeStr(display_url_scheme);
-
-    std::string display_url_host =
-        contextual_tasks::GetContextualTasksDisplayUrlHost();
-    replacements.SetHostStr(display_url_host);
-
-    std::string display_url_path =
-        contextual_tasks::GetContextualTasksDisplayUrlPath();
-    replacements.SetPathStr(display_url_path);
-
-    const auto display_url = inner_frame_url.ReplaceComponents(replacements);
-    return display_url.is_valid() ? base::UTF8ToUTF16(display_url.spec()) : u"";
+  if (IsContextualTasksPage()) {
+    return GetContextualTasksDisplayURL();
   }
 
   url_formatter::FormatUrlTypes format_types =
@@ -302,6 +298,11 @@ std::u16string LocationBarModelImpl::GetSecureDisplayText() const {
         return std::u16string();
       }
 
+      if (visible_security_state->malicious_content_status ==
+          security_state::MALICIOUS_CONTENT_STATUS_WARNABLE_SUSPICIOUS_SITE) {
+        return l10n_util::GetStringUTF16(IDS_SUSPICIOUS_VERBOSE_STATE);
+      }
+
       bool fails_malware_check =
           visible_security_state->malicious_content_status !=
           security_state::MALICIOUS_CONTENT_STATUS_NONE;
@@ -325,6 +326,13 @@ std::u16string LocationBarModelImpl::GetSecureAccessibilityText() const {
     default:
       return std::u16string();
   }
+}
+
+std::u16string LocationBarModelImpl::GetContextualTasksDisplayURL() const {
+  const auto inner_frame_url = delegate_->GetContextualTasksInnerFrameURL();
+  GURL display_url =
+      location_bar_model::GetContextualTasksDisplayURL(inner_frame_url);
+  return display_url.is_valid() ? base::UTF8ToUTF16(display_url.spec()) : u"";
 }
 
 bool LocationBarModelImpl::ShouldDisplayURL() const {

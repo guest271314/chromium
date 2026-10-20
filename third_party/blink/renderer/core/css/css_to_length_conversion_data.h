@@ -37,13 +37,13 @@
 #include "third_party/blink/renderer/core/css/css_length_resolver.h"
 #include "third_party/blink/renderer/core/css/css_primitive_value.h"
 #include "third_party/blink/renderer/core/layout/geometry/axis.h"
-#include "third_party/blink/renderer/core/style/position_area.h"
-#include "third_party/blink/renderer/core/style/style_position_anchor.h"
+#include "third_party/blink/renderer/core/style/default_anchor_data.h"
 #include "third_party/blink/renderer/platform/fonts/font.h"
 #include "third_party/blink/renderer/platform/text/writing_mode.h"
 #include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
 #include "third_party/blink/renderer/platform/wtf/gc_plugin.h"
 #include "third_party/blink/renderer/platform/wtf/math_extras.h"
+#include "third_party/blink/renderer/platform/wtf/text/format.h"
 
 namespace blink {
 
@@ -202,9 +202,9 @@ class CORE_EXPORT CSSToLengthConversionData : public CSSLengthResolver {
     double DynamicHeight() const { return dynamic_height_; }
 
     String ToString() const {
-      return String::Format(
-          "large_width: %f, large_height: %f, small_width: %f, small_height: "
-          "%f, dynamic_width: %f, dynamic_height: %f",
+      return Format(
+          "large_width: {:f}, large_height: {:f}, small_width: {:f}, "
+          "small_height: {:f}, dynamic_width: {:f}, dynamic_height: {:f}",
           large_width_, large_height_, small_width_, small_height_,
           dynamic_width_, dynamic_height_);
     }
@@ -273,11 +273,11 @@ class CORE_EXPORT CSSToLengthConversionData : public CSSLengthResolver {
    public:
     AnchorData() = default;
     AnchorData(AnchorEvaluator*,
-               const StylePositionAnchor& position_anchor,
+               const DefaultAnchorData& default_anchor_data,
                const std::optional<PositionAreaOffsets>&);
     AnchorEvaluator* GetEvaluator() const { return evaluator_; }
-    const StylePositionAnchor& GetPositionAnchor() const {
-      return position_anchor_;
+    const DefaultAnchorData& GetDefaultAnchorData() const {
+      return default_anchor_data_;
     }
     const std::optional<PositionAreaOffsets>& GetPositionAreaOffsets() const {
       return position_area_offsets_;
@@ -285,7 +285,7 @@ class CORE_EXPORT CSSToLengthConversionData : public CSSLengthResolver {
 
    private:
     AnchorEvaluator* evaluator_ = nullptr;
-    StylePositionAnchor position_anchor_ = StylePositionAnchor::Initial();
+    DefaultAnchorData default_anchor_data_;
     std::optional<PositionAreaOffsets> position_area_offsets_;
   };
 
@@ -339,6 +339,8 @@ class CORE_EXPORT CSSToLengthConversionData : public CSSLengthResolver {
     kSiblingRelative = 1u << 19,
     // random() without element-shared
     kElementDependentRandom = 1u << 20,
+    // anchor(), anchor-size() referencing default anchor
+    kDefaultAnchorRelative = 1u << 21,
     // Adjust the Flags type above if adding more bits below.
   };
 
@@ -412,6 +414,7 @@ class CORE_EXPORT CSSToLengthConversionData : public CSSLengthResolver {
   }
 
   void ReferenceAnchor() const override;
+  void ReferenceDefaultAnchor() const override;
   void ReferenceSibling() const override;
 
   void ReferenceElementDependentRandom() const override;
@@ -419,8 +422,8 @@ class CORE_EXPORT CSSToLengthConversionData : public CSSLengthResolver {
   AnchorEvaluator* GetAnchorEvaluator() const override {
     return anchor_data_.GetEvaluator();
   }
-  const StylePositionAnchor& GetPositionAnchor() const override {
-    return anchor_data_.GetPositionAnchor();
+  DefaultAnchorData GetDefaultAnchorData() const override {
+    return anchor_data_.GetDefaultAnchorData();
   }
   std::optional<PositionAreaOffsets> GetPositionAreaOffsets() const override {
     return anchor_data_.GetPositionAreaOffsets();
@@ -443,6 +446,17 @@ class CORE_EXPORT CSSToLengthConversionData : public CSSLengthResolver {
   CSSToLengthConversionData Unzoomed() const {
     return CopyWithAdjustedZoom(1.0f);
   }
+
+  // Returns the viewport sizes, recording the viewport-unit dependencies
+  // present in `types` so that the resulting style is invalidated when the
+  // viewport is resized.
+  //
+  // This is for values that are not resolved during style resolution (e.g.
+  // gradient color stops), and which therefore never reach the
+  // ViewportWidth()/ViewportHeight()/etc. accessors that record the
+  // dependency themselves.
+  const ViewportSize& ViewportSizes(
+      const CSSPrimitiveValue::LengthTypeFlags& types) const;
 
  private:
   void SetFlag(Flag flag) const {

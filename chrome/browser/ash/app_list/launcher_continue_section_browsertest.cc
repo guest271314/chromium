@@ -17,6 +17,7 @@
 #include "base/task/single_thread_task_runner.h"
 #include "base/test/bind.h"
 #include "base/test/scoped_feature_list.h"
+#include "base/threading/thread_restrictions.h"
 #include "base/time/time.h"
 #include "base/time/time_override.h"
 #include "chrome/browser/ash/app_list/app_list_client_impl.h"
@@ -34,7 +35,7 @@
 #include "chrome/browser/ash/system_web_apps/system_web_app_manager.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/platform_util.h"
-#include "chrome/browser/ui/browser.h"
+#include "chrome/browser/signin/identity_manager_factory.h"
 #include "chromeos/ash/components/drivefs/fake_drivefs.h"
 #include "chromeos/ash/components/drivefs/mojom/drivefs.mojom.h"
 #include "components/drive/file_errors.h"
@@ -116,16 +117,12 @@ class FakeSearchQuery : public drivefs::mojom::SearchQuery {
 
 }  // namespace
 
-class LauncherContinueSectionTest
-    : public InProcessBrowserTest,
-      public ::testing::WithParamInterface<std::tuple<bool, bool>> {
+class LauncherContinueSectionTest : public InProcessBrowserTest,
+                                    public ::testing::WithParamInterface<bool> {
  public:
   LauncherContinueSectionTest() {
-    scoped_feature_list_.InitWithFeaturesAndParameters(
-        {{ash::features::kLauncherContinueSectionWithRecentsRollout,
-          {{"mix_local_and_drive", base::ToString(MixLocalAndDriveFiles())}}},
-         {ash::features::kShowSharingUserInLauncherContinueSection, {}}},
-        {});
+    scoped_feature_list_.InitAndEnableFeature(
+        ash::features::kShowSharingUserInLauncherContinueSection);
   }
   ~LauncherContinueSectionTest() override = default;
   LauncherContinueSectionTest(const LauncherContinueSectionTest&) = delete;
@@ -151,7 +148,7 @@ class LauncherContinueSectionTest
 
     ash::ShellTestApi().SetTabletModeEnabledForTest(IsTabletMode());
 
-    Profile* const profile = browser()->profile();
+    Profile* const profile = browser()->GetProfile();
 
     ash::SystemWebAppManager::GetForTest(profile)
         ->InstallSystemAppsForTesting();
@@ -161,15 +158,14 @@ class LauncherContinueSectionTest
             profile));
   }
 
-  bool IsTabletMode() const { return std::get<0>(GetParam()); }
-
-  bool MixLocalAndDriveFiles() const { return std::get<1>(GetParam()); }
+  bool IsTabletMode() const { return GetParam(); }
 
   base::FilePath AddTestLocalFile(const std::string& file_name,
                                   const base::Time& last_access_time,
                                   const base::Time& last_modified_time) {
     const base::FilePath mount_path =
-        file_manager::util::GetDownloadsFolderForProfile(browser()->profile());
+        file_manager::util::GetDownloadsFolderForProfile(
+            browser()->GetProfile());
     base::FilePath absolute_path = mount_path.AppendASCII(file_name);
     {
       base::ScopedAllowBlockingForTesting allow_blocking;
@@ -190,7 +186,7 @@ class LauncherContinueSectionTest
     open_events.push_back(std::move(e));
 
     ash::FileSuggestKeyedServiceFactory::GetInstance()
-        ->GetService(browser()->profile())
+        ->GetService(browser()->GetProfile())
         ->local_file_suggestion_provider_for_test()
         ->OnFilesOpened(open_events);
 
@@ -203,7 +199,7 @@ class LauncherContinueSectionTest
 
     drive::DriveIntegrationService* drive_service =
         drive::DriveIntegrationServiceFactory::FindForProfile(
-            browser()->profile());
+            browser()->GetProfile());
     EXPECT_TRUE(drive_service->IsMounted());
     base::FilePath mount_path = drive_service->GetMountPointPath();
 
@@ -218,7 +214,7 @@ class LauncherContinueSectionTest
     metadata.alternate_url = alternate_url;
 
     drivefs::FakeDriveFs* drive_fs =
-        GetFakeDriveFsForProfile(browser()->profile());
+        GetFakeDriveFsForProfile(browser()->GetProfile());
     drive_fs->SetMetadata(std::move(metadata));
 
     std::vector<drivefs::mojom::FileChangePtr> changes;
@@ -300,7 +296,9 @@ class LauncherContinueSectionTest
     fake_drivefs_helpers_[profile] =
         std::make_unique<drive::FakeDriveFsHelper>(profile, mount_path);
     auto* integration_service = new drive::DriveIntegrationService(
-        g_browser_process->local_state(), profile, std::string(), mount_path,
+        g_browser_process->local_state(), profile,
+        IdentityManagerFactory::GetForProfile(profile), std::string(),
+        mount_path,
         fake_drivefs_helpers_[profile]->CreateFakeDriveFsListenerFactory());
     return integration_service;
   }
@@ -319,9 +317,7 @@ class LauncherContinueSectionTest
   base::test::ScopedFeatureList scoped_feature_list_;
 };
 
-INSTANTIATE_TEST_SUITE_P(All,
-                         LauncherContinueSectionTest,
-                         testing::Combine(testing::Bool(), testing::Bool()));
+INSTANTIATE_TEST_SUITE_P(All, LauncherContinueSectionTest, testing::Bool());
 
 IN_PROC_BROWSER_TEST_P(LauncherContinueSectionTest, ShowDriveFiles) {
   base::FilePath file_1 =
@@ -333,7 +329,7 @@ IN_PROC_BROWSER_TEST_P(LauncherContinueSectionTest, ShowDriveFiles) {
   base::FilePath file_4 =
       AddTestDriveFile("Test File 4.gdoc", "http://fake/test_file_4");
 
-  auto* fake_drivefs = GetFakeDriveFsForProfile(browser()->profile());
+  auto* fake_drivefs = GetFakeDriveFsForProfile(browser()->GetProfile());
   EXPECT_CALL(
       *fake_drivefs,
       StartSearchQuery(
@@ -429,7 +425,7 @@ IN_PROC_BROWSER_TEST_P(LauncherContinueSectionTest, ShowDriveAndLocalFiles) {
       "Test Local File.txt", GetReferenceTime() - base::Days(4),
       GetReferenceTime() - base::Days(5));
 
-  auto* fake_drivefs = GetFakeDriveFsForProfile(browser()->profile());
+  auto* fake_drivefs = GetFakeDriveFsForProfile(browser()->GetProfile());
   EXPECT_CALL(
       *fake_drivefs,
       StartSearchQuery(
@@ -494,26 +490,13 @@ IN_PROC_BROWSER_TEST_P(LauncherContinueSectionTest, ShowDriveAndLocalFiles) {
       ash::AppListTestApi().GetContinueTaskViews();
   EXPECT_EQ(4u, continue_tasks.size());
 
-  std::vector<std::u16string> expected_titles;
-  if (MixLocalAndDriveFiles()) {
-    expected_titles = {u"Test File 1", u"Test Local File.txt", u"Test File 2",
-                       u"Test File 3"};
-  } else {
-    expected_titles = {u"Test File 1", u"Test File 2", u"Test File 3",
-                       u"Test Local File.txt"};
-  }
+  const std::vector<std::u16string> expected_titles = {
+      u"Test File 1", u"Test File 2", u"Test File 3", u"Test Local File.txt"};
   EXPECT_EQ(expected_titles, GetContinueTaskTitles(continue_tasks));
 
-  std::vector<std::u16string> expected_descriptions;
-  if (MixLocalAndDriveFiles()) {
-    expected_descriptions = {u"You opened · just now", u"You opened · Feb 24",
-                             u"Test User 2 edited · just now",
-                             u"Test User 3 shared · 10:00 AM"};
-  } else {
-    expected_descriptions = {
-        u"You opened · just now", u"Test User 2 edited · just now",
-        u"Test User 3 shared · 10:00 AM", u"You opened · Feb 24"};
-  }
+  const std::vector<std::u16string> expected_descriptions = {
+      u"You opened · just now", u"Test User 2 edited · just now",
+      u"Test User 3 shared · 10:00 AM", u"You opened · Feb 24"};
   EXPECT_EQ(expected_descriptions, GetContinueTaskDescriptions(continue_tasks));
 
   ASSERT_GT(continue_tasks.size(), 1u);

@@ -9,6 +9,7 @@
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/metrics/histogram_functions.h"
+#include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
 #include "chrome/browser/favicon/favicon_service_factory.h"
 #include "chrome/browser/favicon/favicon_utils.h"
@@ -33,10 +34,14 @@
 #include "ui/gfx/codec/png_codec.h"
 #include "ui/native_theme/native_theme.h"
 #include "ui/resources/grit/ui_resources.h"
+#include "ui/webui/buildflags.h"
 #include "url/gurl.h"
 
-#if !BUILDFLAG(IS_ANDROID)
+#if BUILDFLAG(ENABLE_WEBUI_NTP)
 #include "chrome/browser/search/instant_service.h"
+#endif  // BUILDFLAG(ENABLE_WEBUI_NTP)
+
+#if !BUILDFLAG(IS_ANDROID)
 #include "chrome/browser/ui/webui/util/webui_util_desktop.h"
 #endif  // !BUILDFLAG(IS_ANDROID)
 
@@ -62,8 +67,8 @@ GURL GetUnsafeRequestOrigin(const content::WebContents::Getter& wc_getter) {
 
 bool IsOriginAllowedServerFallback(const GURL& url) {
   // Allow chrome-untrusted://data-sharing to use Google server fallback.
-  if (url.GetScheme() == content::kChromeUIUntrustedScheme &&
-      url.GetHost() == chrome::kChromeUIUntrustedDataSharingHost) {
+  if (url.scheme() == content::kChromeUIUntrustedScheme &&
+      url.host() == chrome::kChromeUIUntrustedDataSharingHost) {
     return true;
   }
   GURL history_url(chrome::kChromeUIHistoryURL);
@@ -107,7 +112,7 @@ void FaviconSource::StartDataRequest(
     const GURL& url,
     const content::WebContents::Getter& wc_getter,
     content::URLDataSource::GotDataCallback callback) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
   const std::string path = content::URLDataSource::URLToRequestPath(url);
   favicon::FaviconService* favicon_service =
       FaviconServiceFactory::GetForProfile(profile_,
@@ -232,14 +237,25 @@ bool FaviconSource::ShouldServiceRequest(
     const GURL& url,
     content::BrowserContext* browser_context,
     int render_process_id) {
-#if !BUILDFLAG(IS_ANDROID)
+#if BUILDFLAG(ENABLE_WEBUI_NTP)
   if (url.SchemeIs(chrome::kChromeSearchScheme)) {
     return InstantService::ShouldServiceRequest(url, browser_context,
                                                 render_process_id);
   }
-#endif
+#endif  // BUILDFLAG(ENABLE_WEBUI_NTP)
   return URLDataSource::ShouldServiceRequest(url, browser_context,
                                              render_process_id);
+}
+
+std::string FaviconSource::GetAccessControlAllowOriginForOrigin(
+    const std::string& origin) {
+  // chrome-untrusted://favicon2 serves the favicons that the Data Sharing
+  // page renders for the tabs of a shared tab group.
+  if (serve_untrusted_ &&
+      base::StrCat({origin, "/"}) == chrome::kChromeUIUntrustedDataSharingURL) {
+    return origin;
+  }
+  return content::URLDataSource::GetAccessControlAllowOriginForOrigin(origin);
 }
 
 ui::NativeTheme* FaviconSource::GetNativeTheme(
@@ -285,7 +301,7 @@ void FaviconSource::SendDefaultResponse(
                                                      icon_size, icon_size);
   std::optional<std::vector<uint8_t>> bitmap_data =
       gfx::PNGCodec::EncodeBGRASkBitmap(bitmap, /*discard_transparency=*/false);
-  DCHECK(bitmap_data);
+  CHECK(bitmap_data, base::NotFatalUntil::M162);
   std::move(callback).Run(base::MakeRefCounted<base::RefCountedBytes>(
       std::move(bitmap_data).value()));
 }
@@ -317,6 +333,7 @@ void FaviconSource::SendDefaultResponse(
 
   int resource_id;
   switch (size_in_dip) {
+#if !BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_DESKTOP_ANDROID)
     case 64:
       resource_id =
           dark_mode ? IDR_DEFAULT_FAVICON_DARK_64 : IDR_DEFAULT_FAVICON_64;
@@ -325,6 +342,7 @@ void FaviconSource::SendDefaultResponse(
       resource_id =
           dark_mode ? IDR_DEFAULT_FAVICON_DARK_32 : IDR_DEFAULT_FAVICON_32;
       break;
+#endif
     default:
       resource_id = dark_mode ? IDR_DEFAULT_FAVICON_DARK : IDR_DEFAULT_FAVICON;
       break;
@@ -332,8 +350,9 @@ void FaviconSource::SendDefaultResponse(
   std::move(callback).Run(LoadIconBytes(scale_factor, resource_id));
 }
 
-base::RefCountedMemory* FaviconSource::LoadIconBytes(float scale_factor,
-                                                     int resource_id) {
+scoped_refptr<base::RefCountedMemory> FaviconSource::LoadIconBytes(
+    float scale_factor,
+    int resource_id) {
   return ui::ResourceBundle::GetSharedInstance().LoadDataResourceBytesForScale(
       resource_id, ui::GetSupportedResourceScaleFactor(scale_factor));
 }
@@ -358,8 +377,9 @@ void FaviconSource::LogFaviconResult(
 
   constexpr char kGoogleLogoURL[] =
       "https://www.gstatic.com/images/branding/searchlogo/ico/favicon.ico";
+  GURL parsed_page_url(parsed.page_url);
   if (bitmap_result.icon_url != GURL(kGoogleLogoURL) ||
-      google_util::IsGoogleAssociatedDomainUrl(GURL(parsed.page_url))) {
+      google_util::IsGoogleAssociatedDomainUrl(parsed_page_url)) {
     return;
   }
 
@@ -369,9 +389,8 @@ void FaviconSource::LogFaviconResult(
   if (template_url_service && template_url_service->loaded()) {
     const TemplateURL* default_provider =
         template_url_service->GetDefaultSearchProvider();
-    if (default_provider &&
-        default_provider->url_ref().GetHost(SearchTermsData()) ==
-            GURL(parsed.page_url).host()) {
+    if (default_provider && default_provider->url_ref().GetHost(
+                                SearchTermsData()) == parsed_page_url.host()) {
       is_dse = true;
     }
   }

@@ -41,7 +41,7 @@ class LocalStorageSqlite : public DomStorageDatabase,
   using PassKey = base::PassKey<DomStorageDatabaseFactory>;
 
  public:
-  // Use `DomStorageDatabaseFactory::Create()` to construct a
+  // Use `DomStorageDatabaseFactory::Open()` to construct a
   // base::SequenceBound<DomStorageDatabase>.
   explicit LocalStorageSqlite(PassKey);
   ~LocalStorageSqlite() override;
@@ -67,6 +67,8 @@ class LocalStorageSqlite : public DomStorageDatabase,
                           std::vector<MapLocator> maps_to_delete) override;
   DbStatus PurgeOrigins(std::set<url::Origin> origins) override;
   DbStatus CleanUpStaleData() override;
+  void Close() override;
+  void DetachFromSequence() override;
   void MakeAllCommitsFailForTesting() override;
   void SetDestructionCallbackForTesting(base::OnceClosure callback) override;
   DbStatus PutVersionForTesting(int64_t version) override;

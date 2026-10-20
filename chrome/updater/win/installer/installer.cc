@@ -15,6 +15,7 @@
 
 #include <shellapi.h>
 #include <shlobj.h>
+#include <stddef.h>
 
 #include <optional>
 #include <string>
@@ -32,6 +33,7 @@
 #include "base/memory/ref_counted.h"
 #include "base/path_service.h"
 #include "base/strings/strcat.h"
+#include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/synchronization/waitable_event.h"
 #include "base/task/single_thread_task_runner.h"
@@ -87,11 +89,13 @@ std::string ExtractTag() {
 
 // Shows a splash screen "Initializing...".
 base::ScopedClosureRunner CreateSplashScreen() {
-  HWND splash_hwnd = nullptr;
+  DismissAppStartingCursor();
+
   if (GetCommandLineLegacyCompatible().HasSwitch(kSilentSwitch)) {
     return base::ScopedClosureRunner(base::DoNothing());
   }
 
+  HWND splash_hwnd = nullptr;
   base::WaitableEvent ui_initialized_event;
   base::ThreadPool::CreateSingleThreadTaskRunner(
       {base::TaskPriority::USER_VISIBLE,
@@ -239,7 +243,12 @@ BOOL CALLBACK OnResourceFound(HMODULE module,
     return FALSE;
   }
 
-  if (!StrStartsWith(name, kUpdaterArchivePrefix)) {
+  // `name` may be an integer resource ID rather than a string pointer (this
+  // also covers nullptr), so it must be checked before being treated as a
+  // string.
+  if (IS_INTRESOURCE(name) ||
+      !base::StartsWith(name, kUpdaterArchivePrefix,
+                        base::CompareCase::INSENSITIVE_ASCII)) {
     return FALSE;
   }
 
@@ -315,7 +324,7 @@ ProcessExitResult BuildInstallerCommandLineArgumentsInternal(
   if (args.GetSwitchValueUTF8(kInstallSwitch).empty()) {
     const std::string tag = ExtractTag();
     if (!tag.empty()) {
-      args.AppendSwitchUTF8(kInstallSwitch, tag.c_str());
+      args.AppendSwitchUTF8(kInstallSwitch, tag);
     }
   }
 
@@ -383,7 +392,9 @@ ProcessExitResult HandleRunElevated(const base::CommandLine& command_line) {
     return ProcessExitResult(UNEXPECTED_ELEVATION_LOOP);
   }
 
-  if (command_line.HasSwitch(kSilentSwitch)) {
+  if (command_line.HasSwitch(kSilentSwitch) &&
+      command_line.GetSwitchValueASCII(kSilentSwitch) !=
+          kSilentSwitchValueAllowUAC) {
     VLOG(1) << __func__ << ": cannot show an elevation prompt with `/silent`: "
             << command_line.GetCommandLineString();
     return ProcessExitResult(UNEXPECTED_ELEVATION_LOOP_SILENT);
@@ -439,7 +450,6 @@ ProcessExitResult InstallerMain(HMODULE module,
                                 bool& usage_stats_enable,
                                 std::wstring& lang,
                                 std::u16string& bundle_name) {
-  CHECK(EnableSecureDllLoading());
   EnableProcessHeapMetadataProtection();
 
   if (base::win::GetVersion() < base::win::Version::WIN10) {
@@ -604,6 +614,7 @@ ProcessExitResult InstallerMain(HMODULE module,
 }
 
 int WMain(HMODULE module) {
+  CHECK(EnableSecureDllLoading());
   InitializeThreadPool("windows-installer");
   bool usage_stats_enable = false;
   std::wstring lang;

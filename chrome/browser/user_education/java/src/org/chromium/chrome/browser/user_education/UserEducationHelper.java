@@ -9,26 +9,35 @@ import static org.chromium.build.NullUtil.assumeNonNull;
 
 import android.app.Activity;
 import android.os.Handler;
+import android.os.SystemClock;
 import android.view.View;
 
+import org.chromium.base.Callback;
 import org.chromium.base.TraceEvent;
+import org.chromium.base.metrics.RecordHistogram;
 import org.chromium.base.supplier.SupplierUtils;
 import org.chromium.build.annotations.Initializer;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.feature_engagement.TrackerFactory;
+import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.components.browser_ui.widget.highlight.ViewHighlighter;
 import org.chromium.components.browser_ui.widget.highlight.ViewHighlighter.HighlightParams;
 import org.chromium.components.browser_ui.widget.textbubble.TextBubble;
+import org.chromium.components.feature_engagement.FeatureConstants;
+import org.chromium.components.feature_engagement.FeatureProperties;
 import org.chromium.components.feature_engagement.SnoozeAction;
 import org.chromium.components.feature_engagement.Tracker;
 import org.chromium.components.feature_engagement.TriggerDetails;
+import org.chromium.components.feature_engagement.UiFormat;
+import org.chromium.components.user_education.FeaturePromoClosedReason;
 import org.chromium.ui.widget.RectProvider;
 import org.chromium.ui.widget.ViewRectProvider;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 import java.util.function.Supplier;
 
 /**
@@ -46,12 +55,24 @@ import java.util.function.Supplier;
  */
 @NullMarked
 public class UserEducationHelper {
+    // LINT.IfChange(BlueBubbleCooldownFeatures)
+    private static final Set<String> BLUE_BUBBLE_COOLDOWN_FEATURES =
+            Set.of(
+                    FeatureConstants.BOTTOM_TOOLBAR_FEATURE,
+                    FeatureConstants.CCT_MINIMIZED_FEATURE,
+                    FeatureConstants.READ_LATER_APP_MENU_BOOKMARK_THIS_PAGE_FEATURE,
+                    FeatureConstants.SITE_CONTROLS_FEATURE,
+                    FeatureConstants.TAB_SWITCHER_BUTTON_FEATURE);
+    // LINT.ThenChange(//chrome/browser/feature_engagement/android_blue_bubble_configuration_provider.cc:BlueBubbleCooldownFeatures)
+
     private final Activity mActivity;
     private final Handler mHandler;
 
     private Profile mProfile;
     private @Nullable List<IphCommand> mPendingIphCommands;
     private @Nullable TextBubble mTextBubble;
+    private @Nullable Callback<Boolean> mDismissCallback;
+    private long mShowStartTimeMs;
 
     /**
      * Constructs a {@link UserEducationHelper} that is immediately available to process inbound
@@ -140,9 +161,21 @@ public class UserEducationHelper {
 
         HighlightParams highlightParams = iphCommand.highlightParams;
         mTextBubble = null;
+        final boolean shouldTrigger;
+        if (BLUE_BUBBLE_COOLDOWN_FEATURES.contains(featureName)) {
+            boolean isCooldownEnabled = ChromeFeatureList.sBlueBubbleIphCooldownGroup.isEnabled();
+            FeatureProperties featureProperties =
+                    new FeatureProperties(
+                            UiFormat.BLUE_BUBBLE,
+                            /* isBlockedByEnterprisePolicy= */ true,
+                            /* isBlockedByCooldownGroup= */ isCooldownEnabled,
+                            /* blocksCooldownGroup= */ isCooldownEnabled);
+            shouldTrigger = tracker.shouldTriggerHelpUi(featureName, featureProperties);
+        } else {
+            shouldTrigger = tracker.shouldTriggerHelpUi(featureName);
+        }
         TriggerDetails triggerDetails =
-                new TriggerDetails(
-                        tracker.shouldTriggerHelpUi(featureName), /* shouldShowSnooze= */ false);
+                new TriggerDetails(shouldTrigger, /* shouldShowSnooze= */ false);
 
         assert (triggerDetails != null);
         if (!triggerDetails.shouldTriggerIph) {
@@ -160,6 +193,8 @@ public class UserEducationHelper {
             assert !contentString.isEmpty();
             assert !accessibilityString.isEmpty();
 
+            mShowStartTimeMs = SystemClock.uptimeMillis();
+
             mTextBubble =
                     new TextBubble.Builder(
                                     mActivity,
@@ -176,16 +211,34 @@ public class UserEducationHelper {
                     iphCommand.preferredHorizontalOrientation);
             mTextBubble.setHorizontalOverlapAnchor(iphCommand.horizontalOverlapAnchor);
             mTextBubble.setDismissOnTouchInteraction(iphCommand.dismissOnTouch);
-            mTextBubble.addOnDismissListener(
-                    () -> {
+            mDismissCallback =
+                    (dismissedProgrammatically) -> {
+                        long elapsed = SystemClock.uptimeMillis() - mShowStartTimeMs;
+                        final int closedReason;
+                        if (dismissedProgrammatically) {
+                            closedReason = FeaturePromoClosedReason.ABORT_PROMO;
+                        } else if (iphCommand.autoDismissTimeout > 0
+                                && elapsed >= iphCommand.autoDismissTimeout) {
+                            closedReason = FeaturePromoClosedReason.TIMEOUT;
+                        } else if (mTextBubble != null && mTextBubble.wasDismissedByInsideTouch()) {
+                            closedReason = FeaturePromoClosedReason.DISMISS;
+                        } else {
+                            closedReason = FeaturePromoClosedReason.CANCEL;
+                        }
+
                         mHandler.postDelayed(
                                 () -> {
                                     if (featureName != null) {
+                                        RecordHistogram.recordEnumeratedHistogram(
+                                                "UserEducation.MessageAction." + featureName,
+                                                closedReason,
+                                                FeaturePromoClosedReason.MAX_VALUE + 1);
+
                                         if (iphCommand.enableSnoozeMode) {
                                             final int snoozeAction =
-                                                    mTextBubble != null
-                                                                    && mTextBubble
-                                                                            .wasDismissedByInsideTouch()
+                                                    (closedReason
+                                                                    == FeaturePromoClosedReason
+                                                                            .DISMISS)
                                                             ? SnoozeAction.DISMISSED
                                                             : SnoozeAction.SNOOZED;
                                             tracker.dismissedWithSnooze(featureName, snoozeAction);
@@ -200,7 +253,9 @@ public class UserEducationHelper {
                                     mTextBubble = null;
                                 },
                                 ViewHighlighter.IPH_MIN_DELAY_BETWEEN_TWO_HIGHLIGHTS);
-                    });
+                    };
+            mTextBubble.addOnDismissListener(
+                    () -> handleDismissal(/* dismissedProgrammatically= */ false));
             mTextBubble.setAutoDismissTimeout(iphCommand.autoDismissTimeout);
             if (iphCommand.dismissOnTouchTimeout != TextBubble.NO_TIMEOUT) {
                 TextBubble textBubbleForLambda = mTextBubble;
@@ -226,8 +281,16 @@ public class UserEducationHelper {
     /** Dismisses the currently showing text bubble, if any. */
     public void dismissTextBubble() {
         if (mTextBubble != null) {
+            handleDismissal(/* dismissedProgrammatically= */ true);
             mTextBubble.dismiss();
         }
+    }
+
+    private void handleDismissal(boolean dismissedProgrammatically) {
+        if (mDismissCallback == null) return;
+        Callback<Boolean> callback = mDismissCallback;
+        mDismissCallback = null;
+        callback.onResult(dismissedProgrammatically);
     }
 
     public @Nullable TextBubble getTextBubbleForTesting() {

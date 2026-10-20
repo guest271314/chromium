@@ -60,22 +60,27 @@ class BLINK_EXPORT WebFormControlElement : public WebElement {
     uint16_t glyph;
     gfx::Vector2dF offset;
     float total_advance;
+    unsigned character_index;
   };
 
   struct TypefaceRunInfo {
     sk_sp<SkTypeface> typeface;
     std::vector<GlyphInfo> glyphs;
     bool is_horizontal;
+    bool is_synthetic_bold;
+    bool is_synthetic_italic;
   };
 
   struct TextRunInfo {
     std::vector<TypefaceRunInfo> typeface_runs;
     gfx::RectF location;
+    WebString text;
   };
 
   struct TextInfo {
     std::vector<TextRunInfo> text_runs;
     float effective_zoom;
+    float primary_ascent;
   };
 
   explicit WebFormControlElement(

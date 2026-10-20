@@ -68,11 +68,11 @@
 #include "third_party/blink/renderer/modules/webaudio/oscillator_node.h"
 #include "third_party/blink/renderer/modules/webaudio/panner_node.h"
 #include "third_party/blink/renderer/modules/webaudio/periodic_wave.h"
+#include "third_party/blink/renderer/modules/webaudio/realtime_audio_destination_handler.h"
 #include "third_party/blink/renderer/modules/webaudio/realtime_audio_destination_node.h"
 #include "third_party/blink/renderer/modules/webaudio/script_processor_node.h"
 #include "third_party/blink/renderer/modules/webaudio/stereo_panner_node.h"
 #include "third_party/blink/renderer/modules/webaudio/wave_shaper_node.h"
-#include "third_party/blink/renderer/platform/audio/fft_frame.h"
 #include "third_party/blink/renderer/platform/audio/hrtf_database_loader.h"
 #include "third_party/blink/renderer/platform/audio/iir_filter.h"
 #include "third_party/blink/renderer/platform/audio/vector_math.h"
@@ -181,8 +181,6 @@ void BaseAudioContext::Initialize() {
     // only create the listener if the destination node exists.
     listener_ = MakeGarbageCollected<AudioListener>(*this);
 
-    FFTFrame::Initialize(sampleRate());
-
     // Report the context construction to the inspector.
     ReportDidCreate();
   }
@@ -222,15 +220,31 @@ void BaseAudioContext::Uninitialize() {
   listener_->Handler().WaitForHRTFDatabaseLoaderThreadCompletion();
 
   Clear();
-
-  DCHECK(!is_resolving_resume_promises_);
-  DCHECK_EQ(pending_promises_resolvers_.size(), 0u);
 }
 
 void BaseAudioContext::Dispose() {
   // BaseAudioContext is going away, so remove the context from the orphan
   // handlers.
   GetDeferredTaskHandler().ClearContextFromOrphanHandlers();
+
+  // Clear any pending resolvers without allocating DOMExceptions (which is
+  // forbidden during GC).
+  DetachPendingResolvers();
+}
+
+void BaseAudioContext::DetachPendingResolvers() {
+  for (auto& resolver : decode_audio_resolvers_) {
+    resolver->SuppressDetachCheck();
+  }
+  decode_audio_resolvers_.clear();
+
+  {
+    DeferredTaskHandler::GraphAutoLocker locker(GetDeferredTaskHandler());
+    for (auto& resolver : pending_promise_resolvers_) {
+      resolver->SuppressDetachCheck();
+    }
+    pending_promise_resolvers_.clear();
+  }
 }
 
 void BaseAudioContext::ContextLifecycleStateChanged(
@@ -241,14 +255,14 @@ void BaseAudioContext::ContextLifecycleStateChanged(
   }
 
   if (state == mojom::blink::FrameLifecycleState::kRunning) {
-    destination()->GetAudioDestinationHandler().Resume();
+    destinationNode()->GetAudioDestinationHandler().Resume();
   } else if (state == mojom::blink::FrameLifecycleState::kFrozen) {
-    destination()->GetAudioDestinationHandler().Pause();
+    destinationNode()->GetAudioDestinationHandler().Pause();
   }
 }
 
 void BaseAudioContext::ContextDestroyed() {
-  destination()->GetAudioDestinationHandler().ContextDestroyed();
+  destinationNode()->GetAudioDestinationHandler().ContextDestroyed();
   Uninitialize();
 }
 
@@ -263,7 +277,7 @@ bool BaseAudioContext::HasPendingActivity() const {
   return !is_cleared_;
 }
 
-AudioDestinationNode* BaseAudioContext::destination() const {
+AudioDestinationNode* BaseAudioContext::destinationNode() const {
   // Cannot be called from the audio thread because this method touches objects
   // managed by Oilpan, and the audio thread is not managed by Oilpan.
   DCHECK(!IsAudioThread());
@@ -399,6 +413,7 @@ ScriptPromise<AudioBuffer> BaseAudioContext::decodeAudioData(
 
     auto* resolver = MakeGarbageCollected<ScriptPromiseResolver<AudioBuffer>>(
         script_state, exception_state.GetContext());
+    resolver->SuppressDetachCheck();
     auto promise = resolver->Promise();
     decode_audio_resolvers_.insert(resolver);
 
@@ -823,45 +838,57 @@ void BaseAudioContext::HandleStoppableSourceNodes() {
   }
 }
 
-void BaseAudioContext::PerformCleanupOnMainThread() {
+void BaseAudioContext::AddPendingPromiseResolver(
+    ScriptPromiseResolver<IDLUndefined>* resolver) {
   DCHECK(IsMainThread());
 
-  // When a posted task is performed, the execution context might be gone.
-  if (!GetExecutionContext()) {
-    return;
-  }
-
+  resolver->SuppressDetachCheck();
   DeferredTaskHandler::GraphAutoLocker locker(GetDeferredTaskHandler());
-
-  if (is_resolving_resume_promises_) {
-    for (auto& resolver : pending_promises_resolvers_) {
-      if (control_thread_state_ == V8AudioContextState::Enum::kClosed) {
-        resolver->Reject(MakeGarbageCollected<DOMException>(
-            DOMExceptionCode::kInvalidStateError,
-            "Cannot resume a context that has been closed"));
-      } else {
-        SetContextState(V8AudioContextState::Enum::kRunning);
-        resolver->Resolve();
-      }
-    }
-    pending_promises_resolvers_.clear();
-    is_resolving_resume_promises_ = false;
-  }
-
-  has_posted_cleanup_task_ = false;
+  pending_promise_resolvers_.push_back(resolver);
 }
 
-void BaseAudioContext::ScheduleMainThreadCleanup() {
-  DCHECK(IsAudioThread());
+void BaseAudioContext::ResolvePendingPromiseResolver(
+    ScriptPromiseResolver<IDLUndefined>* resolver) {
+  DCHECK(IsMainThread());
 
-  if (has_posted_cleanup_task_) {
+  if (!resolver) {
     return;
   }
-  PostCrossThreadTask(
-      *task_runner_, FROM_HERE,
-      CrossThreadBindOnce(&BaseAudioContext::PerformCleanupOnMainThread,
-                          WrapCrossThreadPersistent(this)));
-  has_posted_cleanup_task_ = true;
+
+  {
+    DeferredTaskHandler::GraphAutoLocker locker(GetDeferredTaskHandler());
+    if (Erase(pending_promise_resolvers_, resolver) == 0) {
+      return;
+    }
+  }
+
+  resolver->Resolve();
+}
+
+void BaseAudioContext::RejectPendingPromiseResolversWithException(
+    const String& message) {
+  DCHECK(IsMainThread());
+
+  HeapVector<Member<ScriptPromiseResolver<IDLUndefined>>> resolvers;
+  {
+    DeferredTaskHandler::GraphAutoLocker locker(GetDeferredTaskHandler());
+    resolvers.swap(pending_promise_resolvers_);
+  }
+
+  for (auto& resolver : resolvers) {
+    resolver->Reject(MakeGarbageCollected<DOMException>(
+        DOMExceptionCode::kInvalidStateError, message));
+  }
+}
+
+void BaseAudioContext::RemovePendingPromiseResolvers(
+    const HeapVector<Member<ScriptPromiseResolver<IDLUndefined>>>& resolvers) {
+  DCHECK(IsMainThread());
+
+  DeferredTaskHandler::GraphAutoLocker locker(GetDeferredTaskHandler());
+  EraseIf(pending_promise_resolvers_, [&resolvers](const auto& resolver) {
+    return resolvers.Contains(resolver);
+  });
 }
 
 void BaseAudioContext::RejectPendingDecodeAudioDataResolvers() {
@@ -876,16 +903,7 @@ void BaseAudioContext::RejectPendingDecodeAudioDataResolvers() {
 void BaseAudioContext::RejectPendingResolvers() {
   DCHECK(IsMainThread());
 
-  // Audio context is closing down so reject any resume promises that are still
-  // pending.
-
-  for (auto& resolver : pending_promises_resolvers_) {
-    resolver->Reject(MakeGarbageCollected<DOMException>(
-        DOMExceptionCode::kInvalidStateError, "Audio context is going away"));
-  }
-  pending_promises_resolvers_.clear();
-  is_resolving_resume_promises_ = false;
-
+  RejectPendingPromiseResolversWithException("Audio context is going away");
   RejectPendingDecodeAudioDataResolvers();
 }
 
@@ -906,14 +924,14 @@ void BaseAudioContext::StartRendering() {
   DCHECK(destination_node_);
 
   if (control_thread_state_ == V8AudioContextState::Enum::kSuspended) {
-    destination()->GetAudioDestinationHandler().StartRendering();
+    destinationNode()->GetAudioDestinationHandler().StartRendering();
   }
 }
 
 void BaseAudioContext::Trace(Visitor* visitor) const {
   visitor->Trace(destination_node_);
   visitor->Trace(listener_);
-  visitor->Trace(pending_promises_resolvers_);
+  visitor->Trace(pending_promise_resolvers_);
   visitor->Trace(decode_audio_resolvers_);
   visitor->Trace(periodic_wave_sine_);
   visitor->Trace(periodic_wave_square_);
@@ -956,7 +974,7 @@ void BaseAudioContext::NotifyWorkletIsReady() {
     case V8AudioContextState::Enum::kRunning:
       // If the context is running, restart the destination to switch the render
       // thread with the worklet thread right away.
-      destination()->GetAudioDestinationHandler().RestartRendering();
+      destinationNode()->GetAudioDestinationHandler().RestartRendering();
       break;
     case V8AudioContextState::Enum::kSuspended:
     case V8AudioContextState::Enum::kInterrupted:
@@ -965,7 +983,9 @@ void BaseAudioContext::NotifyWorkletIsReady() {
       // thread from touching worklet-related objects by blocking an invalid
       // transitory state where the context state is suspended or interrupted
       // and the destination state is running. See: crbug.com/1403515
-      destination()->GetAudioDestinationHandler().PrepareTaskRunnerForWorklet();
+      destinationNode()
+          ->GetAudioDestinationHandler()
+          .PrepareTaskRunnerForWorklet();
       break;
     case V8AudioContextState::Enum::kClosed:
       // When the context is closed, no preparation for the worklet operations
@@ -994,7 +1014,7 @@ void BaseAudioContext::UpdateWorkletGlobalScopeOnRenderingThread() {
 int32_t BaseAudioContext::MaxChannelCount() {
   DCHECK(IsMainThread());
 
-  AudioDestinationNode* destination_node = destination();
+  AudioDestinationNode* destination_node = destinationNode();
   if (!destination_node ||
       !destination_node->GetAudioDestinationHandler().IsInitialized()) {
     return -1;
@@ -1006,7 +1026,7 @@ int32_t BaseAudioContext::MaxChannelCount() {
 int32_t BaseAudioContext::CallbackBufferSize() {
   DCHECK(IsMainThread());
 
-  AudioDestinationNode* destination_node = destination();
+  AudioDestinationNode* destination_node = destinationNode();
   if (!destination_node ||
       !destination_node->GetAudioDestinationHandler().IsInitialized() ||
       !HasRealtimeConstraint()) {

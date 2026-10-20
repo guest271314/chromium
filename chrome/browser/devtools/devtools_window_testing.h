@@ -8,6 +8,7 @@
 #include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
 #include "chrome/browser/devtools/devtools_window.h"
+#include "components/policy/core/common/mock_configuration_policy_provider.h"
 #include "ui/gfx/geometry/rect.h"
 
 class BrowserWindowInterface;
@@ -68,9 +69,32 @@ class DevToolsWindowTesting {
   base::OnceClosure close_callback_;
 };
 
+// A class which allows DevTools to be disabled. This is useful for testing code
+// that uses `DevToolsWindow::AllowDevToolsFor()` to gate access to DevTools.
+//
+// Due to implementation restrictions, this must be created as a member variable
+// of the test in question.
+class DevToolsDisabler {
+ public:
+  DevToolsDisabler();
+  ~DevToolsDisabler();
+
+  void SetUp();
+
+  void DisableDevTools();
+
+ private:
+  testing::NiceMock<policy::MockConfigurationPolicyProvider> provider_;
+};
+
 class DevToolsWindowCreationObserver {
  public:
   DevToolsWindowCreationObserver();
+
+  // Allows the caller to provide a custom callback that will be invoked on
+  // window creation.
+  explicit DevToolsWindowCreationObserver(
+      base::RepeatingCallback<void(DevToolsWindow*)> on_creation_callback);
 
   DevToolsWindowCreationObserver(const DevToolsWindowCreationObserver&) =
       delete;
@@ -94,6 +118,7 @@ class DevToolsWindowCreationObserver {
   void DevToolsWindowCreated(DevToolsWindow* devtools_window);
 
   base::RepeatingCallback<void(DevToolsWindow*)> creation_callback_;
+  base::RepeatingCallback<void(DevToolsWindow*)> on_creation_callback_;
   DevToolsWindows devtools_windows_;
   scoped_refptr<content::MessageLoopRunner> runner_;
 };

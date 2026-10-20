@@ -39,11 +39,19 @@ class InterestEvent final : public Event {
   void Trace(Visitor*) const override;
 
   Element* source() const;
-  Element* SourceElement() const override { return source_.Get(); }
-  void SetSource(Element* source) { source_ = source; }
+
+  EventTarget* relatedTarget() const override { return related_target_.Get(); }
+  void SetRelatedTarget(EventTarget* related_target) override {
+    related_target_ = related_target;
+  }
+
+  DispatchEventResult DispatchEvent(EventDispatcher&) override;
 
  private:
   Member<Element> source_;
+  // This event only uses related_target_ to shape the event path for cross-tree
+  // dispatches. It's not returned by any script-accessible getters.
+  Member<EventTarget> related_target_;
 };
 
 }  // namespace blink

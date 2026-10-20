@@ -56,6 +56,7 @@
 #include "third_party/blink/renderer/core/frame/local_frame_client.h"
 #include "third_party/blink/renderer/core/frame/local_frame_view.h"
 #include "third_party/blink/renderer/core/frame/settings.h"
+#include "third_party/blink/renderer/core/html/forms/text_control_element.h"
 #include "third_party/blink/renderer/core/html_names.h"
 #include "third_party/blink/renderer/core/input/event_handler.h"
 #include "third_party/blink/renderer/core/layout/layout_view.h"
@@ -111,8 +112,8 @@ SelectionInFlatTree ExpandSelectionToRespectUserSelectAll(
       .Build();
 }
 
-static int TextDistance(const PositionInFlatTree& start,
-                        const PositionInFlatTree& end) {
+static wtf_size_t TextDistance(const PositionInFlatTree& start,
+                               const PositionInFlatTree& end) {
   return TextIteratorInFlatTree::RangeLength(
       start, end,
       TextIteratorBehavior::AllVisiblePositionsRangeLengthBehavior());
@@ -130,7 +131,7 @@ bool CanMouseDownStartSelect(Node* node) {
 
 PositionInFlatTreeWithAffinity PositionWithAffinityOfHitTestResult(
     const HitTestResult& hit_test_result) {
-  return FromPositionInDOMTree<EditingInFlatTreeStrategy>(
+  return FromPositionInDomTree<EditingInFlatTreeStrategy>(
       hit_test_result.GetPosition());
 }
 
@@ -166,6 +167,19 @@ bool IsNonSelectable(const Node* node) {
 inline bool ShouldIgnoreNodeForCheckSelectable(const Node* enclosing_block,
                                                const Node* node) {
   return node == enclosing_block || (node && node->IsTextNode());
+}
+
+bool IsEditableBoxEmpty(const Node* node) {
+  if (!node) {
+    return true;
+  }
+  if (auto* text_control = EnclosingTextControl(node)) {
+    // We don't use `HasChildren()` for text controls because text controls
+    // may have placeholder break elements even for empty values.
+    return text_control->InnerEditorValue().empty();
+  }
+  Element* root = RootEditableElement(*node);
+  return !root || !root->HasChildren();
 }
 
 }  // namespace
@@ -216,7 +230,15 @@ SelectionInFlatTree AdjustSelectionByUserSelect(
 
     if (!ShouldIgnoreNodeForCheckSelectable(enclosing_block, iter.GetNode()) &&
         IsNonSelectable(iter.GetNode())) {
-      new_start_pos = current_pos;
+      // A position inside content which is both non-selectable and
+      // non-editable has no canonical position, so clamping to it collapses
+      // the whole selection. Keeping the wider boundary is safe: readers of
+      // the range skip non-selectable content. See crbug.com/553831659.
+      const bool can_clamp_to_current_pos =
+          !RuntimeEnabledFeatures::
+              AvoidNonSelectableSelectionBoundaryEnabled() ||
+          CreateVisiblePosition(current_pos).IsNotNull();
+      new_start_pos = can_clamp_to_current_pos ? current_pos : anchor;
       break;
     }
   }
@@ -235,7 +257,11 @@ SelectionInFlatTree AdjustSelectionByUserSelect(
 
     if (!ShouldIgnoreNodeForCheckSelectable(enclosing_block, iter.GetNode()) &&
         IsNonSelectable(iter.GetNode())) {
-      new_end_pos = current_pos;
+      const bool can_clamp_to_current_pos =
+          !RuntimeEnabledFeatures::
+              AvoidNonSelectableSelectionBoundaryEnabled() ||
+          CreateVisiblePosition(current_pos).IsNotNull();
+      new_end_pos = can_clamp_to_current_pos ? current_pos : focus;
       break;
     }
   }
@@ -379,8 +405,8 @@ static SelectionInFlatTree ExtendSelectionAsNonDirectional(
                 start, PositionInFlatTreeWithAffinity(position), granularity))
         .Build();
   }
-  const int distance_to_start = TextDistance(start, position);
-  const int distance_to_end = TextDistance(position, end);
+  const wtf_size_t distance_to_start = TextDistance(start, position);
+  const wtf_size_t distance_to_end = TextDistance(position, end);
   if (distance_to_start <= distance_to_end) {
     return SelectionInFlatTree::Builder()
         .SetBaseAndExtent(
@@ -503,8 +529,7 @@ bool SelectionController::HandleSingleClick(
 
   bool is_handle_visible = false;
   if (is_editable) {
-    const bool is_text_box_empty =
-        !RootEditableElement(*inner_node)->HasChildren();
+    const bool is_text_box_empty = IsEditableBoxEmpty(inner_node);
     const bool not_left_click =
         event.Event().button != WebPointerProperties::Button::kLeft;
     if (!is_text_box_empty || not_left_click)
@@ -548,8 +573,7 @@ void SelectionController::HandleTapOnCaret(
     const MouseEventWithHitTestResults& event,
     const SelectionInFlatTree& selection) {
   Node* inner_node = event.InnerNode();
-  const bool is_text_box_empty =
-      !RootEditableElement(*inner_node)->HasChildren();
+  const bool is_text_box_empty = IsEditableBoxEmpty(inner_node);
 
   // If the textbox is empty, tapping the caret should toggle showing/hiding the
   // handle. Otherwise, always show the handle.
@@ -620,12 +644,12 @@ WebInputEventResult SelectionController::UpdateSelectionForMouseDrag(
   const PositionWithAffinity& raw_target_position =
       Selection().SelectionHasFocus()
           ? PositionRespectingEditingBoundary(
-                Selection().ComputeVisibleSelectionInDOMTree().Start(),
+                Selection().ComputeVisibleSelectionInDomTree().Start(),
                 hit_test_result)
           : PositionWithAffinity();
   const PositionInFlatTreeWithAffinity target_position =
       CreateVisiblePosition(
-          FromPositionInDOMTree<EditingInFlatTreeStrategy>(raw_target_position))
+          FromPositionInDomTree<EditingInFlatTreeStrategy>(raw_target_position))
           .ToPositionWithAffinity();
 
   // Don't modify the selection if we're not on a node.
@@ -699,6 +723,13 @@ bool SelectionController::UpdateSelectionForMouseDownDispatchingSelectStart(
     Node* target_node,
     const SelectionInFlatTree& selection,
     const SetSelectionOptions& set_selection_options) {
+  if (RuntimeEnabledFeatures::LongPressHitTestInFrameEnabled()) {
+    if ((target_node && target_node->GetDocument() != GetDocument()) ||
+        !selection.Anchor().IsValidFor(GetDocument()) ||
+        !selection.Focus().IsValidFor(GetDocument())) {
+      return false;
+    }
+  }
   if (target_node && target_node->GetLayoutObject() &&
       !target_node->GetLayoutObject()->IsSelectable())
     return false;
@@ -712,6 +743,11 @@ bool SelectionController::UpdateSelectionForMouseDownDispatchingSelectStart(
   // |DispatchSelectStart()| can change document hosted by |frame_|.
   if (!Selection().IsAvailable())
     return false;
+  if (RuntimeEnabledFeatures::LongPressHitTestInFrameEnabled() &&
+      (!selection.Anchor().IsValidFor(GetDocument()) ||
+       !selection.Focus().IsValidFor(GetDocument()))) {
+    return false;
+  }
 
   // TODO(editing-dev): Use of UpdateStyleAndLayout
   // needs to be audited.  See http://crbug.com/590369 for more details.
@@ -1000,7 +1036,7 @@ void SelectionController::SetNonDirectionalSelectionIfNeeded(
   if (selection_remains_the_same)
     return;
   Selection().SetSelection(
-      ConvertToSelectionInDOMTree(selection_in_flat_tree),
+      ConvertToSelectionInDomTree(selection_in_flat_tree),
       SetSelectionOptions::Builder(set_selection_options)
           .SetShouldCloseTyping(true)
           .SetShouldClearTypingStyle(true)
@@ -1052,7 +1088,7 @@ bool SelectionController::HandleDoubleClick(
   if (event.Event().button != WebPointerProperties::Button::kLeft)
     return false;
 
-  if (Selection().ComputeVisibleSelectionInDOMTreeDeprecated().IsRange()) {
+  if (Selection().ComputeVisibleSelectionInDomTreeDeprecated().IsRange()) {
     // A double-click when range is already selected
     // should not change the selection.  So, do not call
     // SelectClosestWordFromMouseEvent, but do set
@@ -1156,7 +1192,7 @@ bool SelectionController::HandleMousePressEvent(
     mouse_down_allows_multi_click_ =
         !event.Event().FromTouch() ||
         IsEditablePosition(
-            Selection().ComputeVisibleSelectionInDOMTreeDeprecated().Start());
+            Selection().ComputeVisibleSelectionInDomTreeDeprecated().Start());
   }
 
   if (event.Event().click_count >= 3)
@@ -1223,7 +1259,7 @@ bool SelectionController::HandleMouseReleaseEvent(
       selection_state_ != SelectionState::kExtendedSelection &&
       drag_start_pos == PhysicalOffset(gfx::ToFlooredPoint(
                             event.Event().PositionInRootFrame())) &&
-      Selection().ComputeVisibleSelectionInDOMTreeDeprecated().IsRange() &&
+      Selection().ComputeVisibleSelectionInDomTreeDeprecated().IsRange() &&
       event.Event().button != WebPointerProperties::Button::kRight) {
     // TODO(editing-dev): Use of UpdateStyleAndLayout
     // needs to be audited.  See http://crbug.com/590369 for more details.
@@ -1245,7 +1281,7 @@ bool SelectionController::HandleMouseReleaseEvent(
     if (Selection().ComputeVisibleSelectionInFlatTree() !=
         CreateVisibleSelection(new_selection)) {
       Selection().SetSelectionAndEndTyping(
-          ConvertToSelectionInDOMTree(new_selection));
+          ConvertToSelectionInDomTree(new_selection));
     }
 
     handled = true;
@@ -1362,15 +1398,14 @@ void SelectionController::UpdateSelectionForContextMenuEvent(
     const PhysicalOffset& position) {
   if (!Selection().IsAvailable())
     return;
-  if (mouse_down_was_single_click_on_caret_ || Selection().Contains(position) ||
-      hit_test_result.GetScrollbar() ||
+  if (Selection().Contains(position) || hit_test_result.GetScrollbar() ||
       // FIXME: In the editable case, word selection sometimes selects content
       // that isn't underneath the mouse.
       // If the selection is non-editable, we do word selection to make it
       // easier to use the contextual menu items available for text selections.
       // But only if we're above text.
       !(Selection()
-            .ComputeVisibleSelectionInDOMTreeDeprecated()
+            .ComputeVisibleSelectionInDomTreeDeprecated()
             .IsContentEditable() ||
         (hit_test_result.InnerNode() &&
          hit_test_result.InnerNode()->IsTextNode()))) {
@@ -1385,6 +1420,10 @@ void SelectionController::UpdateSelectionForContextMenuEvent(
           ui::mojom::blink::MenuSourceType::kTouchHandle &&
       HitTestResultIsMisspelled(hit_test_result)) {
     return SelectClosestMisspellingFromMouseEvent(mouse_event, hit_test_result);
+  }
+
+  if (mouse_down_was_single_click_on_caret_) {
+    return;
   }
 
   if (!frame_->GetEditor().Behavior().ShouldSelectOnContextualMenuClick())
@@ -1428,10 +1467,10 @@ void SelectionController::PassMousePressEventToSubframe(
           PositionWithAffinityOfHitTestResult(mev.GetHitTestResult()))
           .ToPositionWithAffinity();
   if (visible_pos.IsNull()) {
-    Selection().SetSelectionAndEndTyping(SelectionInDOMTree());
+    Selection().SetSelectionAndEndTyping(SelectionInDomTree());
     return;
   }
-  Selection().SetSelectionAndEndTyping(ConvertToSelectionInDOMTree(
+  Selection().SetSelectionAndEndTyping(ConvertToSelectionInDomTree(
       SelectionInFlatTree::Builder().Collapse(visible_pos).Build()));
 }
 
@@ -1458,7 +1497,7 @@ void SelectionController::NotifySelectionChanged() {
   DocumentLifecycle::DisallowTransitionScope disallow_transition(
       frame_->GetDocument()->Lifecycle());
 
-  const SelectionInDOMTree& selection = Selection().GetSelectionInDOMTree();
+  const SelectionInDomTree& selection = Selection().GetSelectionInDomTree();
   if (selection.IsNone()) {
     selection_state_ = SelectionState::kHaveNotStartedSelection;
     return;

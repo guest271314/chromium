@@ -45,10 +45,7 @@ import org.chromium.base.test.BaseActivityTestRule;
 import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.CriteriaHelper;
 import org.chromium.base.test.util.DisableIf;
-import org.chromium.base.test.util.DisableLeakChecks;
 import org.chromium.base.test.util.DoNotBatch;
-import org.chromium.base.test.util.Features.DisableFeatures;
-import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.base.test.util.HistogramWatcher;
 import org.chromium.base.test.util.Restriction;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
@@ -58,7 +55,6 @@ import org.chromium.chrome.browser.ui.signin.MinorModeHelper;
 import org.chromium.chrome.browser.ui.signin.R;
 import org.chromium.chrome.test.util.ActivityTestUtils;
 import org.chromium.chrome.test.util.browser.signin.SigninTestRule;
-import org.chromium.components.signin.SigninFeatures;
 import org.chromium.components.signin.metrics.SigninAccessPoint;
 import org.chromium.components.signin.metrics.SyncButtonsType;
 import org.chromium.components.signin.test.util.TestAccounts;
@@ -73,7 +69,6 @@ import org.chromium.ui.test.util.ViewUtils;
 @RunWith(ContentJUnit4ClassRunner.class)
 @CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
 @DoNotBatch(reason = "This test relies on native initialization")
-@DisableLeakChecks("crbug.com/512492471 (IdentityManagerImpl)")
 public class HistorySyncTest {
     @Rule
     public final MockitoRule mMockitoRule = MockitoJUnit.rule().strictness(Strictness.STRICT_STUBS);
@@ -104,7 +99,15 @@ public class HistorySyncTest {
 
     @After
     public void tearDown() {
+        if (mHistorySyncCoordinator != null) {
+            ThreadUtils.runOnUiThreadBlocking(
+                    () -> {
+                        mHistorySyncCoordinator.destroy();
+                        mHistorySyncCoordinator = null;
+                    });
+        }
         mSigninTestRule.forceSignOut();
+        ActivityTestUtils.clearActivityOrientation(mActivityTestRule.getActivity());
     }
 
     @Test
@@ -133,8 +136,7 @@ public class HistorySyncTest {
 
     @Test
     @MediumTest
-    @DisableFeatures(SigninFeatures.ENABLE_SEAMLESS_SIGNIN)
-    public void testDeclineButtonAndFooterStringWithEmail_NoSeamlessSignin() {
+    public void testDeclineButtonAndFooterStringWithEmail_NoRecentTabs() {
         mSigninTestRule.addAccountThenSignin(TestAccounts.AADC_ADULT_ACCOUNT);
         String expectedFooter =
                 mActivityTestRule
@@ -161,36 +163,7 @@ public class HistorySyncTest {
 
     @Test
     @MediumTest
-    @EnableFeatures(SigninFeatures.ENABLE_SEAMLESS_SIGNIN)
-    public void testDeclineButtonAndFooterStringWithEmail_SeamlessSignin_NoRecentTabs() {
-        mSigninTestRule.addAccountThenSignin(TestAccounts.AADC_ADULT_ACCOUNT);
-        String expectedFooter =
-                mActivityTestRule
-                        .getActivity()
-                        .getString(
-                                R.string.history_sync_footer_with_email,
-                                mSigninTestRule.getPrimaryAccount().getEmail());
-
-        String expectedDeclineText =
-                mActivityTestRule
-                        .getActivity()
-                        .getString(
-                                R.string.history_sync_secondary_action,
-                                mSigninTestRule.getPrimaryAccount().getEmail());
-
-        buildHistorySyncCoordinator(
-                /* showEmailInFooter= */ true, /* shouldSignOutOnDecline= */ false);
-
-        onView(allOf(withId(R.id.history_sync_footer), withText(expectedFooter)))
-                .check(matches(isDisplayed()));
-        onView(allOf(withId(R.id.button_secondary), withText(expectedDeclineText)))
-                .check(matches(isDisplayed()));
-    }
-
-    @Test
-    @MediumTest
-    @EnableFeatures(SigninFeatures.ENABLE_SEAMLESS_SIGNIN)
-    public void testDeclineButtonAndFooterStrings_SeamlessSignin_RecentTabs() {
+    public void testDeclineButtonAndFooterStrings_RecentTabs() {
         mSigninTestRule.addAccountThenSignin(TestAccounts.AADC_ADULT_ACCOUNT);
         Activity activity = mActivityTestRule.getActivity();
 
@@ -559,6 +532,7 @@ public class HistorySyncTest {
                                     SIGNIN_ACCESS_POINT,
                                     false,
                                     false,
+                                    /* isFre= */ false,
                                     null);
                 });
 
@@ -611,6 +585,7 @@ public class HistorySyncTest {
                                     SIGNIN_ACCESS_POINT,
                                     false,
                                     false,
+                                    /* isFre= */ false,
                                     null);
                 });
 
@@ -695,6 +670,7 @@ public class HistorySyncTest {
                                     accessPoint,
                                     showEmailInFooter,
                                     shouldSignOutOnDecline,
+                                    /* isFre= */ false,
                                     null);
                     mActivityTestRule
                             .getActivity()

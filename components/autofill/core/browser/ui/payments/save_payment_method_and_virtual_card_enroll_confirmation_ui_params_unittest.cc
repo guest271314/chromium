@@ -1,12 +1,13 @@
 // Copyright 2024 The Chromium Authors
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
+
 #include "components/autofill/core/browser/ui/payments/save_payment_method_and_virtual_card_enroll_confirmation_ui_params.h"
 
 #include <string>
 
 #include "base/test/scoped_feature_list.h"
-#include "components/autofill/core/browser/ui/payments/save_payment_method_and_virtual_card_enroll_confirmation_ui_params.h"
+#include "build/build_config.h"
 #include "components/autofill/core/common/autofill_payments_features.h"
 #include "components/strings/grit/components_strings.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -38,7 +39,6 @@ TEST(SavePaymentMethodAndVirtualCardEnrollConfirmationUiParamsTest,
       l10n_util::GetStringUTF16(
           IDS_AUTOFILL_SAVE_CARD_TO_WALLET_CONFIRMATION_SUCCESS_DESCRIPTION_TEXT_V2));
   EXPECT_TRUE(ui_params.failure_ok_button_text.empty());
-  EXPECT_TRUE(ui_params.failure_ok_button_accessible_name.empty());
 }
 
 // Verify that SavePaymentMethodAndVirtualCardEnrollConfirmationUiParams
@@ -65,7 +65,6 @@ TEST(SavePaymentMethodAndVirtualCardEnrollConfirmationUiParamsTest,
       l10n_util::GetStringUTF16(
           IDS_AUTOFILL_SAVE_CARD_TO_WALLET_CONFIRMATION_SUCCESS_DESCRIPTION_TEXT_V2));
   EXPECT_TRUE(ui_params.failure_ok_button_text.empty());
-  EXPECT_TRUE(ui_params.failure_ok_button_accessible_name.empty());
 }
 
 // Verify that SavePaymentMethodAndVirtualCardEnrollConfirmationUiParams
@@ -92,7 +91,6 @@ TEST(SavePaymentMethodAndVirtualCardEnrollConfirmationUiParamsTest,
       l10n_util::GetStringUTF16(
           IDS_AUTOFILL_SAVE_CARD_TO_WALLET_CONFIRMATION_SUCCESS_DESCRIPTION_TEXT));
   EXPECT_TRUE(ui_params.failure_ok_button_text.empty());
-  EXPECT_TRUE(ui_params.failure_ok_button_accessible_name.empty());
 }
 
 // Verify that SavePaymentMethodAndVirtualCardEnrollConfirmationUiParams
@@ -119,7 +117,6 @@ TEST(SavePaymentMethodAndVirtualCardEnrollConfirmationUiParamsTest,
       l10n_util::GetStringUTF16(
           IDS_AUTOFILL_SAVE_CARD_TO_WALLET_CONFIRMATION_SUCCESS_DESCRIPTION_TEXT));
   EXPECT_TRUE(ui_params.failure_ok_button_text.empty());
-  EXPECT_TRUE(ui_params.failure_ok_button_accessible_name.empty());
 }
 
 // Verify that SavePaymentMethodAndVirtualCardEnrollConfirmationUiParams
@@ -142,7 +139,6 @@ TEST(SavePaymentMethodAndVirtualCardEnrollConfirmationUiParamsTest,
             l10n_util::GetStringUTF16(
                 IDS_AUTOFILL_SAVE_CARD_CONFIRMATION_SUCCESS_DESCRIPTION_TEXT));
   EXPECT_TRUE(ui_params.failure_ok_button_text.empty());
-  EXPECT_TRUE(ui_params.failure_ok_button_accessible_name.empty());
 }
 
 // Verify that SavePaymentMethodAndVirtualCardEnrollConfirmationUiParams
@@ -165,8 +161,54 @@ TEST(SavePaymentMethodAndVirtualCardEnrollConfirmationUiParamsTest,
             l10n_util::GetStringUTF16(
                 IDS_AUTOFILL_SAVE_CARD_CONFIRMATION_SUCCESS_DESCRIPTION_TEXT));
   EXPECT_TRUE(ui_params.failure_ok_button_text.empty());
-  EXPECT_TRUE(ui_params.failure_ok_button_accessible_name.empty());
 }
+
+#if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
+// Verify that SavePaymentMethodAndVirtualCardEnrollConfirmationUiParams
+// attributes are correctly set for cardholder name update upload success.
+TEST(SavePaymentMethodAndVirtualCardEnrollConfirmationUiParamsTest,
+     VerifyAttributesForSaveCardholderNameSuccess) {
+  SavePaymentMethodAndVirtualCardEnrollConfirmationUiParams ui_params =
+      SavePaymentMethodAndVirtualCardEnrollConfirmationUiParams::
+          CreateForSaveCardholderNameSuccess();
+
+  EXPECT_TRUE(ui_params.is_success);
+  EXPECT_TRUE(ui_params.should_display_wallet_logo);
+  EXPECT_EQ(
+      ui_params.title_text,
+      l10n_util::GetStringUTF16(
+          IDS_AUTOFILL_SAVE_CARDHOLDER_NAME_CONFIRMATION_SUCCESS_TITLE_TEXT));
+  EXPECT_EQ(
+      ui_params.description_text,
+      l10n_util::GetStringUTF16(
+          IDS_AUTOFILL_SAVE_CARDHOLDER_NAME_CONFIRMATION_SUCCESS_DESCRIPTION_TEXT));
+  EXPECT_TRUE(ui_params.failure_ok_button_text.empty());
+}
+
+// Verify that SavePaymentMethodAndVirtualCardEnrollConfirmationUiParams
+// attributes are correctly set for cardholder name update upload failure.
+TEST(SavePaymentMethodAndVirtualCardEnrollConfirmationUiParamsTest,
+     VerifyAttributesForSaveCardholderNameFailure) {
+  SavePaymentMethodAndVirtualCardEnrollConfirmationUiParams ui_params =
+      SavePaymentMethodAndVirtualCardEnrollConfirmationUiParams::
+          CreateForSaveCardholderNameFailure();
+
+  EXPECT_FALSE(ui_params.is_success);
+  EXPECT_TRUE(ui_params.should_display_wallet_logo);
+  EXPECT_EQ(
+      ui_params.title_text,
+      l10n_util::GetStringUTF16(
+          IDS_AUTOFILL_SAVE_CARDHOLDER_NAME_CONFIRMATION_FAILURE_TITLE_TEXT));
+  EXPECT_EQ(
+      ui_params.description_text,
+      l10n_util::GetStringUTF16(
+          IDS_AUTOFILL_SAVE_CARDHOLDER_NAME_CONFIRMATION_FAILURE_DESCRIPTION_TEXT));
+  EXPECT_EQ(
+      ui_params.failure_ok_button_text,
+      l10n_util::GetStringUTF16(
+          IDS_AUTOFILL_SAVE_CARD_AND_VIRTUAL_CARD_ENROLL_CONFIRMATION_BUTTON_TEXT));
+}
+#endif  // !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
 
 // Verify that SavePaymentMethodAndVirtualCardEnrollConfirmationUiParams
 // attributes are correctly set for virtual card enrollment success.
@@ -190,7 +232,6 @@ TEST(SavePaymentMethodAndVirtualCardEnrollConfirmationUiParamsTest,
       l10n_util::GetStringUTF16(
           IDS_AUTOFILL_VIRTUAL_CARD_ENROLL_CONFIRMATION_SUCCESS_DESCRIPTION_TEXT));
   EXPECT_TRUE(ui_params.failure_ok_button_text.empty());
-  EXPECT_TRUE(ui_params.failure_ok_button_accessible_name.empty());
 }
 
 // Verify that SavePaymentMethodAndVirtualCardEnrollConfirmationUiParams
@@ -216,7 +257,6 @@ TEST(SavePaymentMethodAndVirtualCardEnrollConfirmationUiParamsTest,
       l10n_util::GetStringUTF16(
           IDS_AUTOFILL_VIRTUAL_CARD_ENROLL_CONFIRMATION_SUCCESS_DESCRIPTION_TEXT));
   EXPECT_TRUE(ui_params.failure_ok_button_text.empty());
-  EXPECT_TRUE(ui_params.failure_ok_button_accessible_name.empty());
 }
 
 // Verify that SavePaymentMethodAndVirtualCardEnrollConfirmationUiParams
@@ -239,7 +279,6 @@ TEST(SavePaymentMethodAndVirtualCardEnrollConfirmationUiParamsTest,
       l10n_util::GetStringUTF16(
           IDS_AUTOFILL_SAVE_IBAN_TO_WALLET_CONFIRMATION_SUCCESS_DESCRIPTION_TEXT));
   EXPECT_TRUE(ui_params.failure_ok_button_text.empty());
-  EXPECT_TRUE(ui_params.failure_ok_button_accessible_name.empty());
 }
 
 // Verify that SavePaymentMethodAndVirtualCardEnrollConfirmationUiParams
@@ -262,7 +301,6 @@ TEST(SavePaymentMethodAndVirtualCardEnrollConfirmationUiParamsTest,
             l10n_util::GetStringUTF16(
                 IDS_AUTOFILL_SAVE_IBAN_CONFIRMATION_SUCCESS_DESCRIPTION_TEXT));
   EXPECT_TRUE(ui_params.failure_ok_button_text.empty());
-  EXPECT_TRUE(ui_params.failure_ok_button_accessible_name.empty());
 }
 
 // Verify that SavePaymentMethodAndVirtualCardEnrollConfirmationUiParams
@@ -289,10 +327,6 @@ TEST(SavePaymentMethodAndVirtualCardEnrollConfirmationUiParamsTest,
       ui_params.failure_ok_button_text,
       l10n_util::GetStringUTF16(
           IDS_AUTOFILL_SAVE_CARD_AND_VIRTUAL_CARD_ENROLL_CONFIRMATION_BUTTON_TEXT));
-  EXPECT_EQ(
-      ui_params.failure_ok_button_accessible_name,
-      l10n_util::GetStringUTF16(
-          IDS_AUTOFILL_SAVE_CARD_CONFIRMATION_FAILURE_OK_BUTTON_ACCESSIBLE_NAME));
 }
 
 // Verify that SavePaymentMethodAndVirtualCardEnrollConfirmationUiParams
@@ -319,10 +353,6 @@ TEST(SavePaymentMethodAndVirtualCardEnrollConfirmationUiParamsTest,
       ui_params.failure_ok_button_text,
       l10n_util::GetStringUTF16(
           IDS_AUTOFILL_SAVE_CARD_AND_VIRTUAL_CARD_ENROLL_CONFIRMATION_BUTTON_TEXT));
-  EXPECT_EQ(
-      ui_params.failure_ok_button_accessible_name,
-      l10n_util::GetStringUTF16(
-          IDS_AUTOFILL_SAVE_CARD_CONFIRMATION_FAILURE_OK_BUTTON_ACCESSIBLE_NAME));
 }
 
 // Verify that SavePaymentMethodAndVirtualCardEnrollConfirmationUiParams
@@ -349,10 +379,6 @@ TEST(SavePaymentMethodAndVirtualCardEnrollConfirmationUiParamsTest,
       ui_params.failure_ok_button_text,
       l10n_util::GetStringUTF16(
           IDS_AUTOFILL_SAVE_CARD_AND_VIRTUAL_CARD_ENROLL_CONFIRMATION_BUTTON_TEXT));
-  EXPECT_EQ(
-      ui_params.failure_ok_button_accessible_name,
-      l10n_util::GetStringUTF16(
-          IDS_AUTOFILL_SAVE_CARD_CONFIRMATION_FAILURE_OK_BUTTON_ACCESSIBLE_NAME));
 }
 
 // Verify that SavePaymentMethodAndVirtualCardEnrollConfirmationUiParams
@@ -379,10 +405,6 @@ TEST(SavePaymentMethodAndVirtualCardEnrollConfirmationUiParamsTest,
       ui_params.failure_ok_button_text,
       l10n_util::GetStringUTF16(
           IDS_AUTOFILL_SAVE_CARD_AND_VIRTUAL_CARD_ENROLL_CONFIRMATION_BUTTON_TEXT));
-  EXPECT_EQ(
-      ui_params.failure_ok_button_accessible_name,
-      l10n_util::GetStringUTF16(
-          IDS_AUTOFILL_SAVE_CARD_CONFIRMATION_FAILURE_OK_BUTTON_ACCESSIBLE_NAME));
 }
 
 // Verify that SavePaymentMethodAndVirtualCardEnrollConfirmationUiParams
@@ -409,10 +431,6 @@ TEST(SavePaymentMethodAndVirtualCardEnrollConfirmationUiParamsTest,
       ui_params.failure_ok_button_text,
       l10n_util::GetStringUTF16(
           IDS_AUTOFILL_SAVE_CARD_AND_VIRTUAL_CARD_ENROLL_CONFIRMATION_BUTTON_TEXT));
-  EXPECT_EQ(
-      ui_params.failure_ok_button_accessible_name,
-      l10n_util::GetStringUTF16(
-          IDS_AUTOFILL_VIRTUAL_CARD_ENROLL_CONFIRMATION_FAILURE_OK_BUTTON_ACCESSIBLE_NAME));
 }
 
 // Verify that SavePaymentMethodAndVirtualCardEnrollConfirmationUiParams
@@ -439,10 +457,6 @@ TEST(SavePaymentMethodAndVirtualCardEnrollConfirmationUiParamsTest,
       ui_params.failure_ok_button_text,
       l10n_util::GetStringUTF16(
           IDS_AUTOFILL_SAVE_CARD_AND_VIRTUAL_CARD_ENROLL_CONFIRMATION_BUTTON_TEXT));
-  EXPECT_EQ(
-      ui_params.failure_ok_button_accessible_name,
-      l10n_util::GetStringUTF16(
-          IDS_AUTOFILL_SAVE_CARD_CONFIRMATION_FAILURE_OK_BUTTON_ACCESSIBLE_NAME));
 }
 
 // Verify that SavePaymentMethodAndVirtualCardEnrollConfirmationUiParams
@@ -470,10 +484,6 @@ TEST(SavePaymentMethodAndVirtualCardEnrollConfirmationUiParamsTest,
       ui_params.failure_ok_button_text,
       l10n_util::GetStringUTF16(
           IDS_AUTOFILL_SAVE_CARD_AND_VIRTUAL_CARD_ENROLL_CONFIRMATION_BUTTON_TEXT));
-  EXPECT_EQ(
-      ui_params.failure_ok_button_accessible_name,
-      l10n_util::GetStringUTF16(
-          IDS_AUTOFILL_SAVE_CARD_CONFIRMATION_FAILURE_OK_BUTTON_ACCESSIBLE_NAME));
 }
 
 // Verify that SavePaymentMethodAndVirtualCardEnrollConfirmationUiParams
@@ -501,10 +511,6 @@ TEST(SavePaymentMethodAndVirtualCardEnrollConfirmationUiParamsTest,
       ui_params.failure_ok_button_text,
       l10n_util::GetStringUTF16(
           IDS_AUTOFILL_SAVE_CARD_AND_VIRTUAL_CARD_ENROLL_CONFIRMATION_BUTTON_TEXT));
-  EXPECT_EQ(
-      ui_params.failure_ok_button_accessible_name,
-      l10n_util::GetStringUTF16(
-          IDS_AUTOFILL_SAVE_CARD_CONFIRMATION_FAILURE_OK_BUTTON_ACCESSIBLE_NAME));
 }
 
 // Verify that SavePaymentMethodAndVirtualCardEnrollConfirmationUiParams
@@ -532,10 +538,6 @@ TEST(SavePaymentMethodAndVirtualCardEnrollConfirmationUiParamsTest,
       ui_params.failure_ok_button_text,
       l10n_util::GetStringUTF16(
           IDS_AUTOFILL_SAVE_CARD_AND_VIRTUAL_CARD_ENROLL_CONFIRMATION_BUTTON_TEXT));
-  EXPECT_EQ(
-      ui_params.failure_ok_button_accessible_name,
-      l10n_util::GetStringUTF16(
-          IDS_AUTOFILL_SAVE_CARD_CONFIRMATION_FAILURE_OK_BUTTON_ACCESSIBLE_NAME));
 }
 
 }  // namespace autofill

@@ -27,11 +27,17 @@ GL_EXPORT bool UseCompositorClockVSyncInterval();
 GL_EXPORT BASE_DECLARE_FEATURE(kDefaultPassthroughCommandDecoder);
 #endif
 
-GL_EXPORT BASE_DECLARE_FEATURE(kFallbackToSWIfGLES3NotSupported);
 
 #if BUILDFLAG(IS_WIN)
 GL_EXPORT BASE_DECLARE_FEATURE(kUseCompositorClockVSyncInterval);
 #endif  // BUILDFLAG(IS_WIN)
+
+#if BUILDFLAG(IS_ANDROID)
+// Controls whether 2-pixel even boundary alignment is enforced for YUV 4:2:0
+// and 4:2:2 SurfaceControl overlays to prevent odd-coordinate hardware scaler
+// rejections.
+GL_EXPORT BASE_DECLARE_FEATURE(kAndroidYuvOverlayEvenAlignment);
+#endif  // BUILDFLAG(IS_ANDROID)
 
 GL_EXPORT bool IsAndroidFrameDeadlineEnabled();
 
@@ -44,7 +50,9 @@ GL_EXPORT void GetANGLEFeaturesFromCommandLineAndFinch(
     std::vector<std::string>& enabled_angle_features,
     std::vector<std::string>& disabled_angle_features);
 
-GL_EXPORT bool ShouldFallbackToSWIfGLES3NotSupported();
+#if BUILDFLAG(IS_APPLE)
+GL_EXPORT BASE_DECLARE_FEATURE(kANGLEPurgeableBufferPool);
+#endif  // BUILDFLAG(IS_APPLE)
 
 #if BUILDFLAG(ENABLE_SWIFTSHADER)
 GL_EXPORT BASE_DECLARE_FEATURE(kAllowSwiftShaderFallback);
@@ -64,6 +72,11 @@ GL_EXPORT bool IsSwiftShaderAllowedByFeature();
 // IsSwiftShaderAllowedByFeature.
 GL_EXPORT bool IsSwiftShaderAllowed(const base::CommandLine* command_line);
 
+// If SwiftShader is explicitly requested for WebGL via
+// --use-angle=swiftshader-webgl.
+GL_EXPORT bool IsSwiftShaderUsedForWebGLByCommandLine(
+    const base::CommandLine* command_line);
+
 #if BUILDFLAG(IS_WIN)
 GL_EXPORT BASE_DECLARE_FEATURE(kAllowD3D11WarpFallback);
 
@@ -80,12 +93,9 @@ GL_EXPORT bool IsAnySoftwareGLAllowed(const base::CommandLine* command_line);
 GL_EXPORT bool IsSoftwareGLFallbackDueToCrashesAllowed(
     const base::CommandLine* command_line);
 
-// Check if ANGLE's D3D9 backend is a valid fallback if D3D11 does not
-// initialize or is disabled.
-GL_EXPORT bool IsANGLED3D9FallbackAllowed();
-
 #if BUILDFLAG(IS_ANDROID)
 GL_EXPORT BASE_DECLARE_FEATURE(kAndroidLimitRgb565DisplayToApi32);
+GL_EXPORT BASE_DECLARE_FEATURE(kAndroidSurfaceControlPartialDamage);
 
 GL_EXPORT bool PreferRGB565ResourcesForDisplay();
 #endif

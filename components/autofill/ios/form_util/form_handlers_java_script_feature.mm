@@ -18,6 +18,8 @@
 #import "ios/web/public/js_messaging/java_script_feature_util.h"
 #import "ios/web/public/js_messaging/script_message.h"
 
+namespace autofill {
+
 namespace {
 
 using FeatureScript = web::JavaScriptFeature::FeatureScript;
@@ -41,11 +43,12 @@ std::vector<web::JavaScriptFeature::FeatureScript> GetFeatureScripts() {
                   use_capture ? @"true" : @"false",
           @"window.gCrWebPlaceholderAutofillOptimizationFormSearch" :
                   base::FeatureList::IsEnabled(
-                      autofill::features::kAutofillOptimizationFormSearchIos)
+                      features::kAutofillOptimizationFormSearchIos)
               ? @"true"
               : @"false",
-          @"window.gCrWebPlaceholderAutofillTrackPasswordFieldsIos" :
-                  base::FeatureList::IsEnabled(kAutofillTrackPasswordFieldsIos)
+          @"window.gCrWebPlaceholderTrackFormMutationsOptimization" :
+                  base::FeatureList::IsEnabled(
+                      features::kAutofillTrackFormMutationsOptimizationIos)
               ? @"true"
               : @"false",
         };
@@ -68,8 +71,6 @@ std::vector<web::JavaScriptFeature::FeatureScript> GetFeatureScripts() {
 
 }  // namespace
 
-namespace autofill {
-
 // static
 FormHandlersJavaScriptFeature* FormHandlersJavaScriptFeature::GetInstance() {
   static base::NoDestructor<FormHandlersJavaScriptFeature> instance;
@@ -81,7 +82,7 @@ FormHandlersJavaScriptFeature::FormHandlersJavaScriptFeature()
           ContentWorldForAutofillJavascriptFeatures(),
           GetFeatureScripts(),
           {
-              autofill::AutofillFormFeaturesJavaScriptFeature::GetInstance(),
+              AutofillFormFeaturesJavaScriptFeature::GetInstance(),
               RemoteFrameRegistrationJavaScriptFeature::GetInstance(),
           }) {}
 

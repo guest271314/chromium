@@ -21,6 +21,9 @@ class RegionalCapabilitiesService;
 namespace signin {
 class IdentityManager;
 }  // namespace signin
+namespace subscription_eligibility {
+class SubscriptionEligibilityService;
+}  // namespace subscription_eligibility
 namespace syncer {
 class SyncService;
 }  // namespace syncer
@@ -29,6 +32,7 @@ class WebState;
 }  // namespace web
 
 class AimEligibilityService;
+class AIModeButtonServiceIOS;
 class AuthenticationService;
 class BrowserViewVisibilityNotifierBrowserAgent;
 class ChromeAccountManagerService;
@@ -37,13 +41,15 @@ class DiscoverFeedVisibilityBrowserAgent;
 @protocol DiscoverFeedVisibilityObserver;
 @protocol FeedControlDelegate;
 @class FeedMetricsRecorder;
+class FullscreenBrowserAgent;
 class HomeBackgroundCustomizationService;
 @protocol NewTabPageConsumer;
 @protocol NewTabPageContentDelegate;
 @protocol NewTabPageHeaderConsumer;
-class NTPBackgroundImageCacheService;
+@protocol NewTabPageScrollConsumer;
 class PlaceholderService;
 class PrefService;
+@class SearchEngineLogoMediator;
 class TemplateURLService;
 class UrlLoadingBrowserAgent;
 class UserUploadedImageManager;
@@ -64,14 +70,15 @@ class UserUploadedImageManager;
                   (id<UserAccountImageUpdateDelegate>)imageUpdater
                    discoverFeedService:(DiscoverFeedService*)discoverFeedService
                            prefService:(PrefService*)prefService
+        subscriptionEligibilityService:
+            (subscription_eligibility::SubscriptionEligibilityService*)
+                subscriptionEligibilityService
                            syncService:(syncer::SyncService*)syncService
            regionalCapabilitiesService:
                (regional_capabilities::RegionalCapabilitiesService*)
                    regionalCapabilitiesService
         backgroundCustomizationService:
             (HomeBackgroundCustomizationService*)backgroundCustomizationService
-           backgroundImageCacheService:
-               (NTPBackgroundImageCacheService*)backgroundImageCacheService
                    imageFetcherService:
                        (image_fetcher::ImageFetcherService*)imageFetcherService
               userUploadedImageManager:
@@ -84,6 +91,10 @@ class UserUploadedImageManager;
               featureEngagementTracker:(feature_engagement::Tracker*)tracker
                  aimEligibilityService:
                      (AimEligibilityService*)aimEligibilityService
+                aiModeButtonServiceIOS:
+                    (AIModeButtonServiceIOS*)aiModeButtonServiceIOS
+                fullscreenBrowserAgent:
+                    (FullscreenBrowserAgent*)fullscreenBrowserAgent
     NS_DESIGNATED_INITIALIZER;
 
 - (instancetype)init NS_UNAVAILABLE;
@@ -92,8 +103,12 @@ class UserUploadedImageManager;
 @property(nonatomic, weak) FeedMetricsRecorder* feedMetricsRecorder;
 // Consumer for this mediator.
 @property(nonatomic, weak) id<NewTabPageConsumer> consumer;
+// Consumer for scroll and feed inset handling.
+@property(nonatomic, weak) id<NewTabPageScrollConsumer> scrollConsumer;
 // Consumer for NTP header model updates.
 @property(nonatomic, weak) id<NewTabPageHeaderConsumer> headerConsumer;
+// Delegate to update the identity disc image.
+@property(nonatomic, weak) id<UserAccountImageUpdateDelegate> imageUpdater;
 // Observer for feed visibility changes.
 @property(nonatomic, weak) id<DiscoverFeedVisibilityObserver>
     feedVisibilityObserver;
@@ -113,6 +128,9 @@ class UserUploadedImageManager;
 // The screen size of the scene displaying this NTP, used for downsampling
 // user-uploaded background images. Set by the coordinator.
 @property(nonatomic, assign) CGSize screenSize;
+
+// Mediator for the search engine logo.
+@property(nonatomic, weak) SearchEngineLogoMediator* logoMediator;
 
 // Indicates whether the feed header should be visible.
 - (BOOL)isFeedHeaderVisible;

@@ -51,8 +51,9 @@ class SidePanelRegistry final : public SidePanelEntryObserver,
   SidePanelEntry* GetEntryForKey(const SidePanelEntry::Key& entry_key);
   void ResetActiveEntry();
 
-  // Clear cached view for all owned entries, except for the active entry.
-  void ClearCachedEntryViews();
+  // Clear cached view for owned entries. If `include_active_entry` is false,
+  // the active entry's cached view is preserved.
+  void ClearCachedEntryViews(bool include_active_entry = false);
 
   // Registers a SidePanelEntry. Returns true if the entry is successfully
   // registered and false if a SidePanelEntry already exists in the registry for
@@ -81,13 +82,15 @@ class SidePanelRegistry final : public SidePanelEntryObserver,
   // should be visible. This is reset by the coordinator when the panel is
   // closed. When there are multiple registries, this may not be the entry
   // currently visible in the side panel.
-  std::optional<SidePanelEntry*> active_entry_ = std::nullopt;
+  std::optional<SidePanelEntry*> active_entry_;
 
   std::vector<std::unique_ptr<SidePanelEntry>> entries_;
 
-  const std::variant<tabs::TabInterface*, BrowserWindowInterface*> owner_;
+  const std::variant<raw_ptr<tabs::TabInterface>,
+                     raw_ptr<BrowserWindowInterface>>
+      owner_;
 
-  std::optional<SidePanelEntryKey> deregistering_entry_key_ = std::nullopt;
+  std::optional<SidePanelEntryKey> deregistering_entry_key_;
 
   ui::ScopedUnownedUserData<SidePanelRegistry> scoped_unowned_user_data_;
 };

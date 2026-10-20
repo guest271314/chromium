@@ -6,10 +6,10 @@
 
 #import <AuthenticationServices/AuthenticationServices.h>
 
-#import "base/strings/sys_string_conversions.h"
 #import "base/time/time.h"
 #import "ios/chrome/common/app_group/app_group_constants.h"
 #import "ios/chrome/common/credential_provider/archivable_credential.h"
+#import "ios/chrome/common/credential_provider/archivable_credential_test_util.h"
 #import "ios/chrome/common/credential_provider/constants.h"
 #import "ios/chrome/credential_provider_extension/passkey_request_details+Testing.h"
 #import "testing/platform_test.h"
@@ -29,12 +29,6 @@ NSString* const user1 = @"user1";
 NSString* const user2 = @"user2";
 NSString* const user3 = @"user3";
 
-NSData* StringToData(std::string str) {
-  return [NSData dataWithBytes:str.data() length:str.length()];
-}
-
-constexpr int64_t kJan1st2024 = 1704085200;
-
 ArchivableCredential* TestPasswordCredential(NSString* username,
                                              NSString* url,
                                              NSString* domain,
@@ -50,27 +44,6 @@ ArchivableCredential* TestPasswordCredential(NSString* username,
                                               username:username
                                                   note:@"note"
                                           lastUsedTime:lastUsedTime];
-}
-
-ArchivableCredential* TestPasskeyCredential(NSString* username,
-                                            NSString* rpId) {
-  return [[ArchivableCredential alloc]
-       initWithFavicon:@"favicon"
-                  gaia:nil
-      recordIdentifier:@"recordIdentifier"
-                syncId:StringToData("syncId")
-              username:username
-       userDisplayName:@"userDisplayName"
-                userId:StringToData("userId")
-          credentialId:StringToData(base::SysNSStringToUTF8(username))
-                  rpId:rpId
-            privateKey:StringToData("privateKey")
-             encrypted:StringToData("encrypted")
-          creationTime:kJan1st2024
-          lastUsedTime:kJan1st2024
-                hidden:NO
-            hiddenTime:kJan1st2024
-          editedByUser:NO];
 }
 
 }  // namespace
@@ -98,7 +71,8 @@ TEST_F(PasskeyRequestDetailsTest, MatchingPassword) {
       TestPasswordCredential(user2, url2, domain2, recentTime);
   id<Credential> credential3 =
       TestPasswordCredential(user1, url2, domain2, recentTime);
-  id<Credential> credential4 = TestPasskeyCredential(user3, url1);
+  id<Credential> credential4 = TestPasskeyCredential(
+      TestPasskeyCredentialOverrides{.username = user3, .rp_id = url1});
   NSArray<id<Credential>>* credentials =
       @[ credential1, credential2, credential3, credential4 ];
 
@@ -114,6 +88,31 @@ TEST_F(PasskeyRequestDetailsTest, MatchingPassword) {
                                               username:user2
                                    excludedCredentials:nil];
   EXPECT_TRUE([details hasMatchingPassword:credentials]);
+
+  // Private Registry boundary and hijack checks.
+  id<Credential> credentialRailway = TestPasswordCredential(
+      user1, @"https://railway.app/", @"railway.app", recentTime);
+  NSArray<id<Credential>>* credentialsWithRailway =
+      [credentials arrayByAddingObject:credentialRailway];
+
+  // Standard subdomain should match.
+  details = [[PasskeyRequestDetails alloc] initWithURL:@"www.login.railway.app"
+                                              username:user1
+                                   excludedCredentials:nil];
+  EXPECT_TRUE([details hasMatchingPassword:credentialsWithRailway]);
+
+  // Rogue subdomain crossing private suffix boundary should NOT match!
+  details =
+      [[PasskeyRequestDetails alloc] initWithURL:@"attacker.up.railway.app"
+                                        username:user1
+                             excludedCredentials:nil];
+  EXPECT_FALSE([details hasMatchingPassword:credentialsWithRailway]);
+
+  // False suffix match should NOT match!
+  details = [[PasskeyRequestDetails alloc] initWithURL:@"evil-railway.app"
+                                              username:user1
+                                   excludedCredentials:nil];
+  EXPECT_FALSE([details hasMatchingPassword:credentialsWithRailway]);
 
   // Empty credentials list.
   EXPECT_FALSE([details hasMatchingPassword:@[]]);
@@ -135,8 +134,18 @@ TEST_F(PasskeyRequestDetailsTest, MatchingPassword) {
 TEST_F(PasskeyRequestDetailsTest, ExcludedPasskey) {
   id<Credential> credential1 =
       TestPasswordCredential(user1, url1, domain1, /*lastUsedTime=*/0);
-  id<Credential> credential2 = TestPasskeyCredential(user2, url2);
-  id<Credential> credential3 = TestPasskeyCredential(user3, url3);
+  id<Credential> credential2 =
+      TestPasskeyCredential(TestPasskeyCredentialOverrides{
+          .username = user2,
+          .credential_id = TestDataFromString("credentialId2"),
+          .rp_id = url2,
+      });
+  id<Credential> credential3 =
+      TestPasskeyCredential(TestPasskeyCredentialOverrides{
+          .username = user3,
+          .credential_id = TestDataFromString("credentialId3"),
+          .rp_id = url3,
+      });
   NSData* id2 = credential2.credentialId;
   NSData* id3 = credential3.credentialId;
   NSArray<id<Credential>>* credentials =
@@ -231,21 +240,21 @@ TEST_F(PasskeyRequestDetailsTest, MatchingPasswordTimeConstraints) {
 
   // Recent credential should match.
   PasskeyRequestDetails* detailsValid =
-      [[PasskeyRequestDetails alloc] initWithURL:url1
+      [[PasskeyRequestDetails alloc] initWithURL:domain1
                                         username:user1
                              excludedCredentials:nil];
   EXPECT_TRUE([detailsValid hasMatchingPassword:@[ validCred ]]);
 
   // Expired credential should not match.
   PasskeyRequestDetails* detailsExpired =
-      [[PasskeyRequestDetails alloc] initWithURL:url2
+      [[PasskeyRequestDetails alloc] initWithURL:domain2
                                         username:user2
                              excludedCredentials:nil];
   EXPECT_FALSE([detailsExpired hasMatchingPassword:@[ expiredCred ]]);
 
   // Never used credential should not match.
   PasskeyRequestDetails* detailsNeverUsed =
-      [[PasskeyRequestDetails alloc] initWithURL:url3
+      [[PasskeyRequestDetails alloc] initWithURL:domain3
                                         username:user3
                              excludedCredentials:nil];
   EXPECT_FALSE([detailsNeverUsed hasMatchingPassword:@[ neverUsedCred ]]);

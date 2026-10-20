@@ -2,21 +2,19 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "chrome/browser/ui/views/location_bar/location_icon_view.h"
+
 #include "base/test/run_until.h"
+#include "base/test/scoped_feature_list.h"
 #include "build/build_config.h"
-#include "chrome/browser/ui/actions/chrome_action_id.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
 #include "chrome/browser/ui/exclusive_access/exclusive_access_manager.h"
-#include "chrome/browser/ui/page_action/page_action_icon_type.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
-#include "chrome/browser/ui/views/location_bar/icon_label_bubble_view.h"
 #include "chrome/browser/ui/views/location_bar/location_bar_view.h"
-#include "chrome/browser/ui/views/location_bar/location_icon_view.h"
-#include "chrome/browser/ui/views/page_action/page_action_icon_view.h"
-#include "chrome/browser/ui/views/page_action/page_action_view.h"
 #include "chrome/browser/ui/views/page_info/page_info_bubble_view.h"
 #include "chrome/browser/ui/views/toolbar/toolbar_view.h"
 #include "chrome/browser/ui/views/translate/translate_bubble_controller.h"
+#include "chrome/common/chrome_features.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/interactive_test_utils.h"
 #include "chrome/test/base/ui_test_utils.h"
@@ -27,7 +25,9 @@ namespace {
 
 class LocationIconViewTest : public InProcessBrowserTest {
  public:
-  LocationIconViewTest() = default;
+  LocationIconViewTest() {
+    scoped_feature_list_.InitAndDisableFeature(features::kWebUILocationBar);
+  }
 
   LocationIconViewTest(const LocationIconViewTest&) = delete;
   LocationIconViewTest& operator=(const LocationIconViewTest&) = delete;
@@ -49,16 +49,16 @@ class LocationIconViewTest : public InProcessBrowserTest {
 
 #if BUILDFLAG(IS_MAC)
   void EnterFullscreenMode() {
-    bool initial_fullscreen = browser()->window()->IsFullscreen();
+    bool initial_fullscreen = browser()->GetWindow()->IsFullscreen();
     EXPECT_FALSE(initial_fullscreen);
 
     auto* fullscreen_controller =
-        browser()->GetExclusiveAccessManager()->fullscreen_controller();
+        ExclusiveAccessManager::From(browser())->fullscreen_controller();
     fullscreen_controller->ToggleBrowserFullscreenMode(/*user_initiated=*/true);
 
     // Wait for fullscreen transition.
     ASSERT_TRUE(base::test::RunUntil([&]() -> bool {
-      return browser()->window()->IsFullscreen();
+      return browser()->GetWindow()->IsFullscreen();
     })) << "Failed to enter fullscreen mode";
   }
 
@@ -76,19 +76,22 @@ class LocationIconViewTest : public InProcessBrowserTest {
   }
 
   void ExitFullscreenMode() {
-    bool initial_fullscreen = browser()->window()->IsFullscreen();
+    bool initial_fullscreen = browser()->GetWindow()->IsFullscreen();
     EXPECT_TRUE(initial_fullscreen);
 
     auto* fullscreen_controller =
-        browser()->GetExclusiveAccessManager()->fullscreen_controller();
+        ExclusiveAccessManager::From(browser())->fullscreen_controller();
     fullscreen_controller->ToggleBrowserFullscreenMode(/*user_initiated=*/true);
 
     // Wait for fullscreen exit.
     ASSERT_TRUE(base::test::RunUntil([&]() -> bool {
-      return !browser()->window()->IsFullscreen();
+      return !browser()->GetWindow()->IsFullscreen();
     })) << "Failed to exit fullscreen mode";
   }
 #endif  // BUILDFLAG(IS_MAC)
+
+ private:
+  base::test::ScopedFeatureList scoped_feature_list_;
 };
 
 // Verify that clicking the location icon a second time hides the bubble.
@@ -99,6 +102,8 @@ IN_PROC_BROWSER_TEST_F(LocationIconViewTest, HideOnSecondClick) {
   views::View* location_icon_view =
       browser_view->toolbar()->location_bar_view()->location_icon_view();
   ASSERT_TRUE(location_icon_view);
+  content::WebContents* contents =
+      browser()->GetTabStripModel()->GetActiveWebContents();
 
   // Verify that clicking once shows the location icon bubble.
   scoped_refptr<content::MessageLoopRunner> runner1 =
@@ -108,8 +113,7 @@ IN_PROC_BROWSER_TEST_F(LocationIconViewTest, HideOnSecondClick) {
       ui_controls::DOWN | ui_controls::UP, runner1->QuitClosure());
   runner1->Run();
 
-  EXPECT_EQ(PageInfoBubbleView::BUBBLE_PAGE_INFO,
-            PageInfoBubbleView::GetShownBubbleType());
+  EXPECT_TRUE(PageInfoBubbleView::IsShowing(contents));
 
   // Verify that clicking again doesn't reshow it.
   scoped_refptr<content::MessageLoopRunner> runner2 =
@@ -119,8 +123,7 @@ IN_PROC_BROWSER_TEST_F(LocationIconViewTest, HideOnSecondClick) {
       ui_controls::DOWN | ui_controls::UP, runner2->QuitClosure());
   runner2->Run();
 
-  EXPECT_EQ(PageInfoBubbleView::BUBBLE_NONE,
-            PageInfoBubbleView::GetShownBubbleType());
+  EXPECT_FALSE(PageInfoBubbleView::IsShowing(contents));
 }
 
 #if BUILDFLAG(IS_MAC)
@@ -154,7 +157,7 @@ IN_PROC_BROWSER_TEST_F(LocationIconViewTest,
   ExitFullscreenMode();
 
   // Expect no crash and fullscreen to be exited.
-  EXPECT_FALSE(browser()->window()->IsFullscreen());
+  EXPECT_FALSE(browser()->GetWindow()->IsFullscreen());
 }
 #endif  // BUILDFLAG(IS_MAC)
 

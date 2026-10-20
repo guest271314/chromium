@@ -9,12 +9,12 @@
 #include "base/logging.h"
 #include "base/notreached.h"
 #include "build/build_config.h"
-#include "components/viz/common/gpu/vulkan_context_provider.h"
 #include "components/viz/common/resources/shared_image_format.h"
 #include "gpu/command_buffer/common/shared_image_usage.h"
 #include "gpu/command_buffer/service/shared_image/external_vk_image_backing.h"
 #include "gpu/command_buffer/service/shared_image/shared_image_format_service_utils.h"
 #include "gpu/command_buffer/service/shared_image/shared_image_representation.h"
+#include "gpu/command_buffer/service/vulkan_context_provider.h"
 #include "gpu/config/gpu_finch_features.h"
 #include "gpu/vulkan/vulkan_command_buffer.h"
 #include "gpu/vulkan/vulkan_command_pool.h"
@@ -42,10 +42,14 @@ VkImageUsageFlags GetMaximalImageUsageFlags(
   // support is required when SAMPLED_IMAGE is supported. In Vulkan 1.0 all
   // formats support these features implicitly. See discussion in
   // https://github.com/KhronosGroup/Vulkan-Docs/issues/1223
-  if (feature_flags & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT)
+  // FILTER_LINEAR is additionally required to match ANGLE as the
+  // image may be exported to it.
+  if ((feature_flags & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT) &&
+      (feature_flags & VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT)) {
     usage_flags |= VK_IMAGE_USAGE_SAMPLED_BIT |
                    VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
                    VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+  }
 
   // VUID-VkImageViewCreateInfo-usage-02652: support for INPUT_ATTACHMENT is
   // implied by both of COLOR_ATTACHNENT and DEPTH_STENCIL_ATTACHMENT
@@ -114,6 +118,12 @@ bool IsFormatSupported(viz::SharedImageFormat format,
       return false;
     }
   }
+
+  // Don't allow creating for a client provided GMB outside of Fuchsia. That is
+  // handled by OzoneImageBacking instead.
+  if (gmb_type != gfx::GpuMemoryBufferType::EMPTY_BUFFER) {
+    return false;
+  }
 #endif
 
   if (format.is_multi_plane()) {
@@ -136,11 +146,6 @@ bool IsFormatSupported(viz::SharedImageFormat format,
         }
       }
     }
-  }
-
-  // ALPHA_8 is only used by UI and should never need GL/Vulkan interop.
-  if (format == viz::SinglePlaneFormat::kALPHA_8) {
-    return false;
   }
 
   return true;
@@ -198,6 +203,9 @@ ExternalVkImageBackingFactory::CreateSharedImage(const Mailbox& mailbox,
                                                  const SharedImageInfo& si_info,
                                                  SurfaceHandle surface_handle,
                                                  bool is_thread_safe) {
+  if (si_info.array_layers > 1) {
+    return nullptr;
+  }
   CHECK(!is_thread_safe);
   return ExternalVkImageBacking::Create(
       context_state_, enable_webgpu_on_vk_via_gl_interop_, command_pool_.get(),
@@ -210,6 +218,9 @@ ExternalVkImageBackingFactory::CreateSharedImage(
     const SharedImageInfo& si_info,
     bool is_thread_safe,
     base::span<const uint8_t> pixel_data) {
+  if (si_info.array_layers > 1) {
+    return nullptr;
+  }
   CHECK(!is_thread_safe);
   return ExternalVkImageBacking::Create(
       context_state_, enable_webgpu_on_vk_via_gl_interop_, command_pool_.get(),
@@ -222,6 +233,9 @@ ExternalVkImageBackingFactory::CreateSharedImage(
     const SharedImageInfo& si_info,
     bool is_thread_safe,
     gfx::GpuMemoryBufferHandle handle) {
+  if (si_info.array_layers > 1) {
+    return nullptr;
+  }
   DCHECK(!is_thread_safe);
   CHECK(CanImportGpuMemoryBuffer(handle.type));
   return ExternalVkImageBacking::CreateFromGMB(
@@ -236,6 +250,9 @@ ExternalVkImageBackingFactory::CreateSharedImage(
     SurfaceHandle surface_handle,
     bool is_thread_safe,
     gfx::BufferUsage buffer_usage) {
+  if (si_info.array_layers > 1) {
+    return nullptr;
+  }
   DCHECK(!is_thread_safe);
 #if BUILDFLAG(IS_OZONE)
   // Creating the backing with a native pixmap so that it can be CPU mappable.
@@ -288,6 +305,22 @@ bool ExternalVkImageBackingFactory::IsSupported(
   if (enable_webgpu_on_vk_via_gl_interop_) {
     if (!usage.HasAny(kWebGPUUsages)) {
       // Only support GL vulkan webgpu interop.
+      return false;
+    }
+
+    // WebGPU interop requires a single allocation aliased into both APIs. When
+    // ExternalVkImageBacking cannot do that it falls back to allocating an
+    // independent GL texture next to the VkImage and keeping the two in sync
+    // by reading back and re-uploading pixels on access. Nothing in this
+    // configuration is supposed to reach that fallback: the drivers it is
+    // enabled on all support external objects, and Blink always allocates the
+    // WebGPU swap texture with the preferred canvas format, which is RGBA on
+    // Linux (see GPU::GetPreferredCanvasFormat()). The format is
+    // renderer-controlled though, so enforce the invariant rather than relying
+    // on a well-behaved client - the fallback is untested here and exposes
+    // uninitialized memory when a copy fails.
+    if (ExternalVkImageBacking::UseSeparateGLTexture(context_state_.get(),
+                                                     format)) {
       return false;
     }
   }

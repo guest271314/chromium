@@ -32,6 +32,7 @@ android_resources("cardboard_java_resources") {
     "//components/strings:components_strings_grd",
   ]
 }
+
 source_set("android") {
   # TODO(crbug.com/40899237): Investigate why this cannot simply be an
   # assert(enable_vr).
@@ -99,7 +100,6 @@ source_set("android") {
 
     if (enable_openxr) {
       deps += [
-        "//components/webxr:test_support",
         "//device/vr",
         "//third_party/openxr",
       ]
@@ -123,10 +123,10 @@ android_library("xr_java") {
   ]
 
   deps = [
+    ":features_java",
     "//base:base_java",
     "//build/android:build_java",
     "//components/browser_ui/widget/android:java",
-    "//device/vr/public:java",
   ]
 
   public_deps = []
@@ -148,7 +148,9 @@ android_library("xr_java") {
       "//components/webxr/android/java/src/org/chromium/components/webxr/XrActivityListener.java",
       "//components/webxr/android/java/src/org/chromium/components/webxr/XrDelegateImpl.java",
       "//components/webxr/android/java/src/org/chromium/components/webxr/XrHostActivity.java",
+      "//components/webxr/android/java/src/org/chromium/components/webxr/XrHostProxyInputView.java",
       "//components/webxr/android/java/src/org/chromium/components/webxr/XrImmersiveOverlay.java",
+      "//components/webxr/android/java/src/org/chromium/components/webxr/XrInputMethodManagerWrapper.java",
       "//components/webxr/android/java/src/org/chromium/components/webxr/XrSessionCoordinator.java",
     ]
 

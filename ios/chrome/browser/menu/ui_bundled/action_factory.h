@@ -12,7 +12,7 @@
 #endif
 
 #import "base/ios/block_types.h"
-#import "ios/chrome/browser/menu/ui_bundled/menu_histograms.h"
+#import "ios/chrome/browser/menu/public/menu_histograms.h"
 
 @class CrURL;
 @protocol SystemIdentity;
@@ -243,10 +243,6 @@ class TabGroup;
 // Creates a UIAction instance to add an account to choose drive files from.
 - (UIAction*)actionToAddAccountForDriveWithBlock:(ProceduralBlock)block;
 
-// Creates a UIAction instance whose title and icon are configured for showing
-// manage in a new tab, which will invoke the given `block` when executed.
-- (UIAction*)actionToManageLinkInNewTabWithBlock:(ProceduralBlock)block;
-
 // Creates a UIAction instance to show the recent activity in a shared tab
 // group.
 - (UIAction*)actionToShowRecentActivity:(ProceduralBlock)block;
@@ -265,6 +261,9 @@ class TabGroup;
 // Creates a UIAction instance to edit a pined site on the most visited tile.
 - (UIAction*)actionToEditPinnedSiteOnMostVisitedTileWithBlock:
     (ProceduralBlock)block;
+
+// Creates a UIAction instance for sending tab to another device.
+- (UIAction*)actionToSendTabToSelfWithBlock:(ProceduralBlock)block;
 
 @end
 

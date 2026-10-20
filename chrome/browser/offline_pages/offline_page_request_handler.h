@@ -175,6 +175,7 @@ class OfflinePageRequestHandler {
   bool IsProcessingFileUrlIntent() const;
   bool IsProcessingContentUrlIntent() const;
   bool IsProcessingFileOrContentUrlIntent() const;
+  base::FilePath GetIntentFilePath() const;
 
   void OnTrustedOfflinePageFound();
   void VisitTrustedOfflinePage();
@@ -182,10 +183,9 @@ class OfflinePageRequestHandler {
 
   void OpenFile(const base::FilePath& file_path,
                 const base::RepeatingCallback<void(int)>& callback);
-  void UpdateDigestOnBackground(
-      scoped_refptr<net::IOBuffer> buffer,
-      size_t len,
-      base::OnceCallback<void(void)> digest_updated_callback);
+  void UpdateDigestOnBackground(scoped_refptr<net::IOBuffer> buffer,
+                                size_t len,
+                                base::OnceClosure digest_updated_callback);
   void FinalizeDigestOnBackground(
       base::OnceCallback<void(const std::string&)> digest_finalized_callback);
 
@@ -204,9 +204,6 @@ class OfflinePageRequestHandler {
   void DidSeekForServing(base::expected<int64_t, net::Error> result);
   void DidReadForServing(scoped_refptr<net::IOBuffer> buf,
                          base::expected<base::ByteSize, net::Error> result);
-  void NotifyReadRawDataComplete(int result);
-  void DidComputeActualDigestForServing(int result,
-                                        const std::string& actual_digest);
 
   GURL url_;
   raw_ptr<Delegate> delegate_;

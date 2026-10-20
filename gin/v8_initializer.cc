@@ -78,8 +78,8 @@ bool GenerateEntropy(unsigned char* buffer, size_t amount) {
 void GetMappedFileData(base::MemoryMappedFile* mapped_file,
                        v8::StartupData* data) {
   if (mapped_file) {
-    data->data = reinterpret_cast<const char*>(mapped_file->data());
-    data->raw_size = static_cast<int>(mapped_file->length());
+    data->data = reinterpret_cast<const char*>(mapped_file->bytes().data());
+    data->raw_size = static_cast<int>(mapped_file->bytes().size());
   } else {
     data->data = nullptr;
     data->raw_size = 0;
@@ -298,11 +298,7 @@ void SetFlags(IsolateHolder::ScriptMode mode,
 // However, some features must be shipped from the blink side because they add
 // new globals, which requires updating web tests that cannot be skipped (to
 // safeguard against accidentally breaking the web).
-void SetDefaultEnabledFeatureFlags() {
-  SetV8Flags("--js-float16array");
-  SetV8Flags("--js-explicit-resource-management");
-  SetV8Flags("--js-regexp-escape");
-}
+void SetDefaultEnabledFeatureFlags() {}
 
 // Sets feature controlled V8 flags.
 void SetFeatureFlags() {
@@ -485,9 +481,7 @@ void SetFeatureFlags() {
       base::FeatureList::IsEnabled(
           features::kV8SlowHistogramsCodeMemoryWriteProtection) ||
       base::FeatureList::IsEnabled(features::kV8SlowHistogramsSparkplug) ||
-      base::FeatureList::IsEnabled(
-          features::kV8SlowHistogramsSparkplugAndroid) ||
-      base::FeatureList::IsEnabled(features::kV8SlowHistogramsNoTurbofan);
+      base::FeatureList::IsEnabled(features::kV8SlowHistogramsSparkplugAndroid);
   if (any_slow_histograms_alias) {
     SetV8Flags("--slow-histograms");
   } else {
@@ -499,25 +493,14 @@ void SetFeatureFlags() {
                          "--ignition-elide-redundant-tdz-checks",
                          "--no-ignition-elide-redundant-tdz-checks");
 
-  SetV8FlagsIfOverridden(features::kV8UseLibmTrigFunctions,
-                         "--use-libm-trig-functions",
-                         "--no-use-libm-trig-functions");
-
   SetV8FlagsIfOverridden(features::kV8UseOriginalMessageForStackTrace,
                          "--use-original-message-for-stack-trace",
                          "--no-use-original-message-for-stack-trace");
 
   // JavaScript language features.
-  SetV8FlagsIfOverridden(features::kJavaScriptRegExpModifiers,
-                         "--js-regexp-modifiers", "--no-js-regexp-modifiers");
   SetV8FlagsIfOverridden(features::kJavaScriptImportAttributes,
                          "--harmony-import-attributes",
                          "--no-harmony-import-attributes");
-  SetV8FlagsIfOverridden(features::kJavaScriptRegExpDuplicateNamedGroups,
-                         "--js-regexp-duplicate-named-groups",
-                         "--no-js-duplicate-named-groups");
-  SetV8FlagsIfOverridden(features::kJavaScriptPromiseTry, "--js-promise-try",
-                         "--no-js-promise-try");
 
   // WebAssembly features (currently none).
 }

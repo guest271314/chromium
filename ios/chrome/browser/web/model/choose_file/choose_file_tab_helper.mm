@@ -16,7 +16,6 @@
 #import "base/task/thread_pool.h"
 #import "base/time/time.h"
 #import "ios/chrome/browser/shared/public/commands/file_upload_panel_commands.h"
-#import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/web/model/choose_file/choose_file_controller_impl.h"
 #import "ios/chrome/browser/web/model/choose_file/choose_file_event.h"
 #import "ios/chrome/browser/web/model/choose_file/choose_file_file_utils.h"
@@ -88,12 +87,12 @@ void ChooseFileTabHelper::RunOpenPanel(
     WKFrameInfo* frame,
     base::OnceCallback<void(NSArray<NSURL*>*)> completion)
     API_AVAILABLE(ios(18.4)) {
-  CHECK(base::FeatureList::IsEnabled(kIOSCustomFileUploadMenu));
-
   web::WebState* web_state = observation_.GetSource();
-  if (!web_state || web_state->IsBeingDestroyed() || !web_state->IsVisible()) {
+  if (!web_state || web_state->IsBeingDestroyed() || !web_state->IsVisible() ||
+      is_pending_navigation_) {
     // If there is no WebState anymore, or it is being destroyed or not shown,
-    // then call the completion with no selection and return.
+    // or a navigation is pending, then call the completion with no selection
+    // and return.
     std::move(completion).Run(nil);
     return;
   }
@@ -157,6 +156,9 @@ void ChooseFileTabHelper::RunOpenPanel(
 }
 
 void ChooseFileTabHelper::SetLastChooseFileEvent(ChooseFileEvent event) {
+  if (is_pending_navigation_) {
+    return;
+  }
   last_choose_file_event_ = std::move(event);
 }
 
@@ -230,7 +232,23 @@ void ChooseFileTabHelper::DidStartNavigation(
     web::WebState* web_state,
     web::NavigationContext* navigation_context) {
   if (!navigation_context->IsSameDocument()) {
+    is_pending_navigation_ = true;
     AbortSelection();
+    ResetLastChooseFileEvent();
+  }
+}
+
+void ChooseFileTabHelper::DidFinishNavigation(
+    web::WebState* web_state,
+    web::NavigationContext* navigation_context) {
+  if (navigation_context->IsSameDocument()) {
+    return;
+  }
+  is_pending_navigation_ = false;
+  if (navigation_context->HasCommitted()) {
+    // The outgoing document can keep running script after `DidStartNavigation`
+    // and may set a new event before this navigation commits. Reset the event
+    // again so it is not associated with the newly committed document.
     ResetLastChooseFileEvent();
   }
 }

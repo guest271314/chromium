@@ -49,8 +49,7 @@ void ClientControlledState::HandleTransitionEvents(WindowState* window_state,
     return;
 
   const WMEventType event_type = event->type();
-  bool pin_transition = window_state->IsLockedFullscreen() ||
-                        window_state->IsPinned() || event->IsPinEvent();
+  bool pin_transition = window_state->IsPinned() || event->IsPinEvent();
   // Pinned State transition is handled on server side.
   if (pin_transition) {
     // Only one window can be pinned.
@@ -86,6 +85,15 @@ void ClientControlledState::HandleTransitionEvents(WindowState* window_state,
     default:
       NOTREACHED() << "Unknown event :" << event->type();
   }
+}
+
+void ClientControlledState::OnWMEvent(WindowState* window_state,
+                                      const WMEvent* event) {
+  // A window state change should not lead to the window destruction.
+  // It is the caller's responsibility to delete the window in a safe way
+  // after the transition is completed if necessary. (crbug.com/513489429)
+  aura::Window::ScopedDeleteBlocker blocker(window_state->window());
+  BaseState::OnWMEvent(window_state, event);
 }
 
 void ClientControlledState::AttachState(

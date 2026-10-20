@@ -5,7 +5,7 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_MODULES_ML_ML_H_
 #define THIRD_PARTY_BLINK_RENDERER_MODULES_ML_ML_H_
 
-#include "services/webnn/public/cpp/webnn_buildflags.h"
+#include "services/webnn/public/cpp/webgpu_context_properties.h"
 #include "services/webnn/public/mojom/webnn_context_provider.mojom-blink.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_promise.h"
 #include "third_party/blink/renderer/core/execution_context/execution_context.h"
@@ -52,36 +52,34 @@ class MODULES_EXPORT ML final : public ScriptWrappable,
   // mojo interface.
   void EnsureWebNNServiceConnection();
 
-#if BUILDFLAG(WEBNN_TFLITE_IN_RENDERER)
-  // Creates an in-process TFLite context provider for CPU inference that
+  // Creates an in-renderer WebNN context provider for CPU inference that
   // bypasses the GPU process entirely. The provider is created in the renderer
   // process and bound to a local Mojo self-pipe.
-  void EnsureInProcessTFLiteConnection();
+  void EnsureInProcessServiceConnection();
 
-  // Reset the remote of in-process TFLite `WebNNContextProvider` if the
+  // Reset the remote of the in-renderer `WebNNContextProvider` if the
   // remote is cut off from its receiver.
-  void OnTFLiteServiceConnectionError();
+  void OnInProcessServiceConnectionError();
 
-  // Creates a WebNN context using the in-process TFLite backend. Called
-  // directly for CPU device requests and as a fallback when the GPU process
-  // backend fails.
-  void CreateInProcessTFLiteContext(ScriptPromiseResolver<MLContext>* resolver,
-                                    MLContextOptions* options,
-                                    webnn::ScopedTrace scoped_trace);
+  // Creates a WebNN context using the in-renderer backend. Called as a
+  // fallback when the GPU-process backend signals via
+  // `Error::Code::kFallbackToInProcess`.
+  void CreateInProcessContext(ScriptPromiseResolver<MLContext>* resolver,
+                              MLContextOptions* options,
+                              webnn::ScopedTrace scoped_trace);
 
-  // In-process TFLite context provider for CPU device, bypassing the GPU
-  // process. Uses a cross-variant Mojo pipe: the blink-variant remote is
-  // connected to a non-blink receiver hosting ContextProviderTflite.
-  // The wire format is identical across variants.
+  // In-renderer context provider for CPU device, bypassing the GPU process.
+  // Uses a cross-variant Mojo pipe: the blink-variant remote is connected to
+  // a non-blink receiver hosting WebNNContextProviderInRenderer. The wire
+  // format is identical across variants.
   HeapMojoRemote<webnn::mojom::blink::WebNNContextProvider>
-      tflite_context_provider_;
+      in_process_context_provider_;
 
-  // Resolvers for requests currently in-flight on the in-process TFLite path.
+  // Resolvers for requests currently in-flight on the in-renderer path.
   // Kept separate from `pending_resolvers_` so that a GPU-process disconnect
-  // does not incorrectly reject TFLite requests (and vice-versa).
+  // does not incorrectly reject in-renderer requests (and vice-versa).
   HeapHashSet<Member<ScriptPromiseResolver<MLContext>>>
-      tflite_pending_resolvers_;
-#endif  // BUILDFLAG(WEBNN_TFLITE_IN_RENDERER)
+      in_process_pending_resolvers_;
 
   // WebNN support multiple types of neural network inference hardware
   // acceleration such as CPU, GPU and ML specialized accelerator, the context
@@ -89,6 +87,12 @@ class MODULES_EXPORT ML final : public ScriptWrappable,
   // of graph execution processes.
   HeapMojoRemote<webnn::mojom::blink::WebNNContextProvider>
       webnn_context_provider_;
+
+  // Initiates asynchronous setup of the WebGPU device for the dedicated context
+  // worker task runner.
+  void GetWebGpuContextHelper(
+      scoped_refptr<base::SingleThreadTaskRunner> context_task_runner,
+      webnn::WebGpuContextHelperOnceCallback callback);
 
   // Resolvers for requests currently in-flight on the GPU-process
   // WebNN backend. Rejected when that Mojo pipe disconnects.

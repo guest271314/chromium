@@ -7,11 +7,9 @@
 #include <string_view>
 
 #include "base/time/time.h"
-#include "chrome/browser/download/bubble/download_bubble_prefs.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/color/chrome_color_id.h"
-#include "chrome/browser/ui/download/download_bubble_info.h"
 #include "chrome/browser/ui/layout_constants.h"
 #include "chrome/browser/ui/views/chrome_layout_provider.h"
 #include "chrome/browser/ui/views/download/bubble/download_bubble_row_list_view.h"
@@ -20,7 +18,6 @@
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/ui_base_features.h"
-#include "ui/color/color_provider.h"
 #include "ui/views/background.h"
 #include "ui/views/border.h"
 #include "ui/views/controls/image_view.h"
@@ -36,11 +33,11 @@ namespace {
 // 7.5 rows * 60 px per row = 450;
 constexpr int kMaxHeightForRowList = 450;
 
-bool IsOtrInfoRowEnabled(Browser* browser) {
-  if (!browser || !browser->profile()) {
+bool IsOtrInfoRowEnabled(BrowserWindowInterface* browser) {
+  if (!browser || !browser->GetProfile()) {
     return false;
   }
-  return browser->profile()->IsOffTheRecord();
+  return browser->GetProfile()->IsOffTheRecord();
 }
 
 }  // namespace
@@ -54,13 +51,16 @@ DownloadBubblePrimaryView::DownloadBubblePrimaryView()
 DownloadBubblePrimaryView::~DownloadBubblePrimaryView() = default;
 
 void DownloadBubblePrimaryView::BuildAndAddScrollView(
-    base::WeakPtr<Browser> browser,
+    BrowserWindowInterface* browser,
     base::WeakPtr<DownloadBubbleUIController> bubble_controller,
     base::WeakPtr<DownloadBubbleNavigationHandler> navigation_handler,
     const DownloadBubbleRowListViewInfo& info,
     int fixed_width) {
+  base::WeakPtr<BrowserWindowInterface> row_view_browser =
+      browser ? browser->GetWeakPtr() : nullptr;
   auto row_list_view = std::make_unique<DownloadBubbleRowListView>(
-      browser, bubble_controller, navigation_handler, fixed_width, info);
+      row_view_browser, bubble_controller, navigation_handler, fixed_width,
+      info);
   row_list_view_ = row_list_view.get();
   scroll_view_ = AddChildView(std::make_unique<views::ScrollView>());
   scroll_view_->SetContents(std::move(row_list_view));
@@ -69,7 +69,8 @@ void DownloadBubblePrimaryView::BuildAndAddScrollView(
       views::ScrollView::ScrollBarMode::kDisabled);
 }
 
-void DownloadBubblePrimaryView::MaybeAddOtrInfoRow(Browser* browser) {
+void DownloadBubblePrimaryView::MaybeAddOtrInfoRow(
+    BrowserWindowInterface* browser) {
   if (!IsOtrInfoRowEnabled(browser)) {
     return;
   }

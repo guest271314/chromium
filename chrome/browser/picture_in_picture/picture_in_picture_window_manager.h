@@ -10,6 +10,7 @@
 
 #include "base/memory/raw_ptr.h"
 #include "base/memory/singleton.h"
+#include "base/memory/weak_ptr.h"
 #include "base/observer_list.h"
 #include "base/observer_list_types.h"
 #include "build/build_config.h"
@@ -36,6 +37,7 @@ class Display;
 
 #if !BUILDFLAG(IS_ANDROID)
 class AutoPipSettingOverlayView;
+class DocumentPipHost;
 class PictureInPictureOcclusionTracker;
 class PictureInPictureWindow;
 class ScopedDisallowPictureInPicture;
@@ -58,6 +60,7 @@ class PictureInPictureWindowManager {
   class Observer : public base::CheckedObserver {
    public:
     virtual void OnEnterPictureInPicture() {}
+    virtual void OnExitPictureInPicture() {}
   };
 
   // Returns the singleton instance.
@@ -71,8 +74,9 @@ class PictureInPictureWindowManager {
   //
   // This mode is triggered through WebContentsDelegate::EnterPictureInPicture,
   // and the default implementation of that fails with a kNotSupported
-  // result. For compatibility, this method must also return a
-  // content::PictureInPictureResult even though it doesn't fail.
+  // result. This method also returns kNotSupported if `web_contents` is a
+  // Document Picture-in-Picture child WebContents or is destroyed while closing
+  // an existing Picture-in-Picture window.
   content::PictureInPictureResult EnterVideoPictureInPicture(
       content::WebContents*);
 
@@ -114,10 +118,28 @@ class PictureInPictureWindowManager {
   // Closes any existing picture-in-picture windows (video or document pip).
   // Returns true if a picture-in-picture window was closed, and false if there
   // were no picture-in-picture windows to close.
+  //
+  // NOTE: This synchronously closes the window and destroys associated objects
+  // (such as TabFeatures). Calling this synchronously from callbacks or
+  // observers (e.g. during widget show or visibility changes) can cause
+  // re-entrancy issues and use-after-free crashes. Use
+  // `ExitPictureInPictureSoon()` unless you know that synchronous closure will
+  // not be a problem.
   bool ExitPictureInPicture();
+
+  // Exits picture in picture soon, but not before this call returns.  If
+  // picture in picture closes between now and then, that's okay.  Intended as a
+  // helper for callbacks and observers to avoid re-entrant calls during pip
+  // set-up or in observer notifications (e.g. when an occluded dialog is being
+  // shown).
+  static void ExitPictureInPictureSoon();
 
   // Called to notify that the initiator web contents should be focused.
   void FocusInitiator();
+
+  // Returns whether a picture-in-picture window (video or document pip) is
+  // currently open.
+  bool IsInPictureInPicture() const;
 
   // Gets the web contents in the opener browser window.
   content::WebContents* GetWebContents() const;
@@ -196,8 +218,22 @@ class PictureInPictureWindowManager {
 
   // Notify observers that picture-in-picture window is created.
   void NotifyObserversOnEnterPictureInPicture();
+  void NotifyObserversOnExitPictureInPicture();
 
 #if !BUILDFLAG(IS_ANDROID)
+  // Shows a standalone Document Picture-in-Picture window using a
+  // `DocumentPipHost` instead of a `Browser`. Used when the
+  // `kDocumentPipStandaloneWindow` feature is enabled. Takes ownership of the
+  // child WebContents (handing it to the host's widget) and registers the
+  // content-layer controller so the renderer stays in sync. The manager keeps a
+  // `WeakPtr` to the host so it can close the window later. `focus_contents`
+  // matches the Browser-backed user-gesture focus behavior.
+  void EnterStandaloneDocumentPictureInPicture(
+      content::WebContents* parent_web_contents,
+      std::unique_ptr<content::WebContents> child_web_contents,
+      blink::mojom::PictureInPictureWindowOptions pip_options,
+      bool focus_contents);
+
   std::unique_ptr<AutoPipSettingOverlayView> GetOverlayView(
       views::View* anchor_view,
       views::BubbleBorder::Arrow arrow);
@@ -331,10 +367,6 @@ class PictureInPictureWindowManager {
   // Called when the document PiP parent web contents is being destroyed.
   void DocumentWebContentsDestroyed();
 
-  // Exits picture in picture soon, but not before this call returns.  If
-  // picture in picture closes between now and then, that's okay.  Intended as a
-  // helper class for callbacks, to avoid re-entrant calls during pip set-up.
-  static void ExitPictureInPictureSoon();
 
 #if !BUILDFLAG(IS_ANDROID)
   // Creates the `occlusion_tracker_` if it does not already exist and should
@@ -398,6 +430,11 @@ class PictureInPictureWindowManager {
   raw_ptr<PictureInPictureWindow> picture_in_picture_window_ = nullptr;
 
   std::unique_ptr<PictureInPictureWindowManagerUmaHelper> uma_helper_;
+
+  // The standalone Document PiP host for the current window, if the
+  // `kDocumentPipStandaloneWindow` path is active. Non-owning: the host is
+  // owned by the opener WebContents as user data.
+  base::WeakPtr<DocumentPipHost> document_pip_host_;
 #endif  //! BUILDFLAG(IS_ANDROID)
 
   // The display of the opener window, cached during

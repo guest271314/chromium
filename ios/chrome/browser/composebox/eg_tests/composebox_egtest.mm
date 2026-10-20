@@ -13,9 +13,12 @@
 #import "base/strings/utf_string_conversions.h"
 #import "base/test/ios/wait_util.h"
 #import "components/omnibox/browser/aim_eligibility_service_features.h"
+#import "ios/chrome/browser/assistant/ui/assistant_container_constants.h"
 #import "ios/chrome/browser/composebox/coordinator/composebox_constants.h"
 #import "ios/chrome/browser/composebox/eg_tests/composebox_app_interface.h"
+#import "ios/chrome/browser/composebox/shared/metrics/composebox_metrics_constants.h"
 #import "ios/chrome/browser/composebox/shared/ui/composebox_ui_constants.h"
+#import "ios/chrome/browser/metrics/model/metrics_app_interface.h"
 #import "ios/chrome/browser/omnibox/public/omnibox_constants.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/tab_picker/ui/tab_picker_ui_constants.h"
@@ -26,6 +29,7 @@
 #import "ios/chrome/test/earl_grey/chrome_earl_grey_ui.h"
 #import "ios/chrome/test/earl_grey/chrome_matchers.h"
 #import "ios/chrome/test/earl_grey/chrome_test_case.h"
+#import "ios/testing/earl_grey/app_launch_manager.h"
 #import "ios/testing/earl_grey/earl_grey_test.h"
 #import "net/test/embedded_test_server/embedded_test_server.h"
 #import "ui/base/l10n/l10n_util.h"
@@ -48,6 +52,10 @@ id<GREYMatcher> ComposeboxClearButtonMatcher() {
       grey_accessibilityID(kOmniboxClearButtonAccessibilityIdentifier),
       grey_sufficientlyVisible(), nil);
 }
+
+// A short prefix that completes autocomplete synchronously to populate the
+// initial match before typing a longer query.
+NSString* const kShortPrefix = @"foo:bar";
 
 // A long text used to ensure the composebox is expanded when it is on a compact
 // mode.
@@ -100,10 +108,12 @@ void OpenTabPicker() {
       performAction:grey_tap()];
 
   // Tap the select tabs button.
-  id<GREYMatcher> selectTabsMatcher =
-      grey_allOf(chrome_test_util::ContextMenuItemWithAccessibilityLabelId(
-                     IDS_IOS_COMPOSEBOX_SELECT_TAB_ACTION),
-                 grey_sufficientlyVisible(), nil);
+  id<GREYMatcher> selectTabsMatcher = grey_allOf(
+      grey_accessibilityID(kComposeboxSelectTabsActionAccessibilityIdentifier),
+      grey_sufficientlyVisible(), nil);
+  [ChromeEarlGrey waitForUIElementToAppearWithMatcher:selectTabsMatcher];
+  [[EarlGrey selectElementWithMatcher:selectTabsMatcher]
+      assertWithMatcher:grey_enabled()];
   [[EarlGrey selectElementWithMatcher:selectTabsMatcher]
       performAction:grey_tap()];
 }
@@ -199,9 +209,8 @@ void RemoveAttachmentWithTitle(NSString* title) {
 
 - (AppLaunchConfiguration)appConfigurationForTestCase {
   AppLaunchConfiguration config = [super appConfigurationForTestCase];
-  config.features_enabled.push_back(kComposeboxIOS);
-  config.features_enabled.push_back(kComposeboxIpad);
-  config.features_disabled.push_back(kComposeboxAIMDisabled);
+  config.features_enabled.push_back(kAssistantContainer);
+  config.features_enabled.push_back(kAimCobrowse);
   // Only rely on local conditions for AIM eligibility, so disable the
   // server-side checks.
   config.features_disabled.push_back(omnibox::kAimServerEligibilityEnabled);
@@ -285,6 +294,53 @@ void RemoveAttachmentWithTitle(NSString* title) {
       assertWithMatcher:grey_notVisible()];
 }
 
+// Tests that empty text with attached tab and AI mode launches Assistant.
+- (void)testComposeboxAIModeEmptyTextStartsCobrowse {
+  [ComposeboxAppInterface setFuseboxEligible:YES];
+  [ComposeboxAppInterface setTabUploadAutoSucceed:YES];
+
+  [ChromeEarlGrey
+      loadURL:self.testServer->GetURL(base::StringPrintf(kPageURL, 1))];
+  [ChromeEarlGreyUI focusOmnibox];
+
+  // Wait for the composebox to be visible.
+  [ChromeEarlGrey waitForUIElementToAppearWithMatcher:ComposeboxMatcher()];
+
+  // Tap the plus button.
+  [[EarlGrey
+      selectElementWithMatcher:
+          grey_accessibilityID(kComposeboxPlusButtonAccessibilityIdentifier)]
+      performAction:grey_tap()];
+
+  // Tap the "Add Current Tab" action.
+  [[EarlGrey selectElementWithMatcher:
+                 grey_accessibilityID(
+                     kComposeboxAttachCurrentTabActionAccessibilityIdentifier)]
+      performAction:grey_tap()];
+
+  // Verify that the AI mode button is visible.
+  [ChromeEarlGrey
+      waitForUIElementToAppearWithMatcher:
+          grey_accessibilityID(kComposeboxAIMButtonAccessibilityIdentifier)];
+
+  VerifyTabIsAttachedWithTitle(
+      base::SysUTF8ToNSString(base::StringPrintf(kPageTitle, 1)));
+
+  // Wait for the Send button to be enabled (which implies tab upload finished)
+  // and tap it.
+  id<GREYMatcher> sendButtonMatcher = grey_allOf(
+      grey_accessibilityID(kComposeboxSendButtonAccessibilityIdentifier),
+      grey_enabled(), grey_sufficientlyVisible(), nil);
+  [ChromeEarlGrey waitForUIElementToAppearWithMatcher:sendButtonMatcher];
+  [[EarlGrey selectElementWithMatcher:sendButtonMatcher]
+      performAction:grey_tap()];
+
+  // Verify that the Assistant container is shown.
+  [ChromeEarlGrey
+      waitForUIElementToAppearWithMatcher:
+          grey_accessibilityID(kAssistantContainerAccessibilityIdentifier)];
+}
+
 // Tests that the AI mode action works as expected.
 - (void)testComposeboxAIModeAction {
   [ComposeboxAppInterface setFuseboxEligible:YES];
@@ -323,6 +379,58 @@ void RemoveAttachmentWithTitle(NSString* title) {
       selectElementWithMatcher:grey_accessibilityID(
                                    kComposeboxAIMButtonAccessibilityIdentifier)]
       assertWithMatcher:grey_notVisible()];
+}
+
+// Tests that typing a long text and tapping the Send button in AI mode accepts
+// the full text without truncation.
+- (void)testComposeboxAIModeSendLongText {
+  [ComposeboxAppInterface setFuseboxEligible:YES];
+
+  [ChromeEarlGrey
+      loadURL:self.testServer->GetURL(base::StringPrintf(kPageURL, 1))];
+  [ChromeEarlGreyUI focusOmnibox];
+
+  // Wait for the composebox to be visible and clear the omnibox.
+  [ChromeEarlGrey waitForUIElementToAppearWithMatcher:ComposeboxMatcher()];
+  [[EarlGrey selectElementWithMatcher:ComposeboxClearButtonMatcher()]
+      performAction:grey_tap()];
+
+  // Enable AI mode from the plus menu.
+  [[EarlGrey
+      selectElementWithMatcher:
+          grey_accessibilityID(kComposeboxPlusButtonAccessibilityIdentifier)]
+      performAction:grey_tap()];
+  [[EarlGrey
+      selectElementWithMatcher:grey_accessibilityID(
+                                   kComposeboxAIMActionAccessibilityIdentifier)]
+      performAction:grey_tap()];
+  [ChromeEarlGrey
+      waitForUIElementToAppearWithMatcher:
+          grey_accessibilityID(kComposeboxAIMButtonAccessibilityIdentifier)];
+
+  // Enter a short prefix that completes synchronously to populate
+  // `current_match`, then update to a long query while `SearchProvider` is
+  // pending.
+  [ChromeEarlGreyUI replaceTextInOmnibox:kShortPrefix];
+  [ChromeEarlGreyUI replaceTextInOmnibox:kLongText];
+
+  // Tap the Send button.
+  id<GREYMatcher> sendButtonMatcher = grey_allOf(
+      grey_accessibilityID(kComposeboxSendButtonAccessibilityIdentifier),
+      grey_enabled(), grey_sufficientlyVisible(), nil);
+  [ChromeEarlGrey waitForUIElementToAppearWithMatcher:sendButtonMatcher];
+  [[EarlGrey selectElementWithMatcher:sendButtonMatcher]
+      performAction:grey_tap()];
+
+  // Verify that the full long text was accepted and sent for the AIM query.
+  ConditionBlock querySentCondition = ^{
+    return [[ComposeboxAppInterface lastSentAIMQueryText]
+        isEqualToString:kLongText];
+  };
+  GREYAssert(base::test::ios::WaitUntilConditionOrTimeout(
+                 base::test::ios::kWaitForUIElementTimeout, querySentCondition),
+             @"Expected full long text '%@' to be sent, but got '%@'.",
+             kLongText, [ComposeboxAppInterface lastSentAIMQueryText]);
 }
 
 // Tests that all buttons in the plus menu are enabled.
@@ -585,6 +693,107 @@ void RemoveAttachmentWithTitle(NSString* title) {
       assertWithMatcher:grey_nil()];
 }
 
+// Tests that an unrealized tab (e.g., after an app restart) can be successfully
+// attached without timing out. (Regression test for crbug.com/525358986).
+- (void)testAttachUnrealizedTab {
+  if ([ComposeboxAppInterface isServerSideStateEnabled]) {
+    EARL_GREY_TEST_SKIPPED(
+        @"Skipped when kComposeboxServerSideState is enabled.");
+  }
+
+  [ComposeboxAppInterface setFuseboxEligible:YES];
+  [ComposeboxAppInterface setTabUploadAutoSucceed:YES];
+
+  [ChromeEarlGrey closeAllNormalTabs];
+
+  // Open the first tab and load a page.
+  [ChromeEarlGrey openNewTab];
+  GURL firstURL = self.testServer->GetURL(base::StringPrintf(kPageURL, 1));
+  [ChromeEarlGrey loadURL:firstURL];
+  [ChromeEarlGrey
+      waitForWebStateContainingText:base::StringPrintf(kPageContent, 1)];
+
+  // Open a second tab and load a page. The first tab will be in the background.
+  GURL secondURL = self.testServer->GetURL(base::StringPrintf(kPageURL, 2));
+  [ChromeEarlGrey openNewTab];
+  [ChromeEarlGrey loadURL:secondURL];
+  [ChromeEarlGrey
+      waitForWebStateContainingText:base::StringPrintf(kPageContent, 2)];
+
+  // Restart the application to trigger session restoration.
+  // After restart, the first tab will be restored in an unrealized state.
+  // Note: Using ForceRelaunchByKilling instead of
+  // triggerRestoreByRestartingApplication to prevent the test from crashing
+  // during graceful termination on iOS 18. See crbug.com/527964556.
+  [ChromeEarlGrey saveSessionImmediately];
+
+  AppLaunchConfiguration config = [self appConfigurationForTestCase];
+  config.relaunch_policy = ForceRelaunchByKilling;
+  [[AppLaunchManager sharedManager] ensureAppLaunchedWithConfiguration:config];
+
+  // Re-enable tools after restart since they are reset.
+  [ComposeboxAppInterface enableAllTools];
+  [ComposeboxAppInterface setFuseboxEligible:YES];
+  [ComposeboxAppInterface setTabUploadAutoSucceed:YES];
+
+  // Ensure the second tab is fully loaded after restart.
+  [ChromeEarlGrey
+      waitForWebStateContainingText:base::StringPrintf(kPageContent, 2)];
+
+  // Open the Tab Picker from the Composebox.
+  OpenTabPicker();
+
+  // Select the first tab (which is currently unrealized).
+  NSString* firstPageTitle =
+      base::SysUTF8ToNSString(base::StringPrintf(kPageTitle, 1));
+  SelectTabWithTitle(firstPageTitle);
+
+  // Attach the selected tab.
+  [[EarlGrey
+      selectElementWithMatcher:chrome_test_util::NavigationBarDoneButton()]
+      performAction:grey_tap()];
+
+  // Verify that the tab was successfully attached.
+  // If the bug is present, this will fail/timeout because the tab never loads.
+  VerifyTabIsAttachedWithTitle(firstPageTitle);
+}
+
+// Tests that cancelling the tab picker records the manual user exit outcome
+// metric.
+- (void)testTabPickerCancelOutcomeMetric {
+  if ([ComposeboxAppInterface isServerSideStateEnabled]) {
+    EARL_GREY_TEST_SKIPPED(
+        @"Skipped when kComposeboxServerSideState is enabled.");
+  }
+
+  GREYAssertNil([MetricsAppInterface setupHistogramTester],
+                @"Failed to setup histogram tester.");
+
+  [ComposeboxAppInterface setFuseboxEligible:YES];
+  [ChromeEarlGrey loadURL:self.testServer->GetURL("/")];
+  OpenTabPicker();
+
+  // Tap the cancel button in the navigation bar.
+  [[EarlGrey
+      selectElementWithMatcher:chrome_test_util::NavigationBarCancelButton()]
+      performAction:grey_tap()];
+
+  [ChromeEarlGrey waitForUIElementToAppearWithMatcher:ComposeboxMatcher()];
+
+  GREYAssertNil(
+      [MetricsAppInterface
+          expectUniqueSampleWithCount:1
+                            forBucket:
+                                static_cast<int>(
+                                    MobileFuseboxPickerOutcome::kManualUserExit)
+                         forHistogram:
+                             @"Omnibox.MobileFusebox.PickerOutcome.Tabs"],
+      @"Failed to record manual user exit metric for tab picker cancellation.");
+
+  GREYAssertNil([MetricsAppInterface releaseHistogramTester],
+                @"Failed to release histogram tester.");
+}
+
 @end
 
 #pragma mark - ComposeboxEligiblityTestCase
@@ -603,9 +812,8 @@ void RemoveAttachmentWithTitle(NSString* title) {
 
 - (AppLaunchConfiguration)appConfigurationForTestCase {
   AppLaunchConfiguration config = [super appConfigurationForTestCase];
-  config.features_enabled.push_back(kComposeboxIOS);
-  config.features_enabled.push_back(kComposeboxIpad);
-  config.features_disabled.push_back(kComposeboxAIMDisabled);
+  config.features_enabled.push_back(kAssistantContainer);
+  config.features_enabled.push_back(kAimCobrowse);
   // Only rely on local conditions for AIM eligibility, so disable the
   // server-side checks.
   config.features_disabled.push_back(omnibox::kAimServerEligibilityEnabled);
@@ -761,6 +969,60 @@ void RemoveAttachmentWithTitle(NSString* title) {
       waitForUIElementToAppearWithMatcher:
           grey_accessibilityID(
               kComposeboxImageGenerationButtonAccessibilityIdentifier)];
+}
+
+// Tests that the tab picker scrolls to the active tab when opened with many
+// tabs.
+- (void)testTabPickerScrollsToActiveTab {
+  if ([ComposeboxAppInterface isServerSideStateEnabled]) {
+    EARL_GREY_TEST_SKIPPED(
+        @"Skipped when kComposeboxServerSideState is enabled.");
+  }
+
+  [ComposeboxAppInterface setFuseboxEligible:YES];
+  [ComposeboxAppInterface enableAllTools];
+
+  // Close all normal tabs and open 10 tabs.
+  [ChromeEarlGrey closeAllNormalTabs];
+  NSUInteger totalNumberOfTabs = 10;
+  std::vector<GURL> URLS;
+
+  for (NSUInteger i = 0; i < totalNumberOfTabs; ++i) {
+    URLS.push_back(
+        self.testServer->GetURL(base::StringPrintf(kPageURL, i + 1)));
+    [ChromeEarlGrey openNewTab];
+    [ChromeEarlGrey loadURL:URLS[i]];
+    [ChromeEarlGrey waitForPageToFinishLoading];
+  }
+
+  // Wait for the last tab to load to ensure it has the correct title and the
+  // grid is populated.
+  [ChromeEarlGrey
+      waitForWebStateContainingText:base::StringPrintf(kPageContent,
+                                                       totalNumberOfTabs)];
+  ConditionBlock titleCondition = ^{
+    return [[ChromeEarlGrey currentTabTitle]
+        containsString:base::SysUTF8ToNSString(
+                           base::StringPrintf(kPageTitle, totalNumberOfTabs))];
+  };
+  GREYAssert(base::test::ios::WaitUntilConditionOrTimeout(
+                 base::test::ios::kWaitForPageLoadTimeout, titleCondition),
+             @"Page title failed to update.");
+
+  [ChromeEarlGrey waitForMainTabCount:totalNumberOfTabs];
+
+  OpenTabPicker();
+
+  // The last tab opened is the active one.
+  NSString* currentPageTitle = base::SysUTF8ToNSString(
+      base::StringPrintf(kPageTitle, totalNumberOfTabs));
+
+  // Check that the last tab is visible.
+  [ChromeEarlGrey
+      waitForUIElementToAppearWithMatcher:grey_allOf(
+                                              TabWithTitle(currentPageTitle),
+                                              grey_sufficientlyVisible(), nil)
+                                  timeout:base::Seconds(10)];
 }
 
 @end

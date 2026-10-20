@@ -32,6 +32,7 @@ import androidx.recyclerview.widget.RecyclerView.OnScrollListener;
 
 import org.chromium.base.Callback;
 import org.chromium.base.CommandLine;
+import org.chromium.base.DeviceInfo;
 import org.chromium.base.ObserverList;
 import org.chromium.base.ResettersForTesting;
 import org.chromium.base.TraceEvent;
@@ -46,8 +47,8 @@ import org.chromium.chrome.browser.feature_engagement.TrackerFactory;
 import org.chromium.chrome.browser.feed.componentinterfaces.SurfaceCoordinator;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.magic_stack.ModuleRegistry;
-import org.chromium.chrome.browser.ntp.NewTabPageLaunchOrigin;
 import org.chromium.chrome.browser.ntp.NewTabPageLayout;
+import org.chromium.chrome.browser.ntp.NewTabPageUtils;
 import org.chromium.chrome.browser.ntp_customization.NtpCustomizationConfigManager;
 import org.chromium.chrome.browser.ntp_customization.NtpCustomizationConfigManager.HomepageStateListener;
 import org.chromium.chrome.browser.ntp_customization.NtpCustomizationCoordinator;
@@ -58,6 +59,8 @@ import org.chromium.chrome.browser.ntp_customization.NtpCustomizationUtils.NtpBa
 import org.chromium.chrome.browser.ntp_customization.theme.NtpBackgroundImageCoordinator;
 import org.chromium.chrome.browser.ntp_customization.theme.chrome_colors.NtpThemeColorInfo;
 import org.chromium.chrome.browser.ntp_customization.theme.upload_image.BackgroundImageInfo;
+import org.chromium.chrome.browser.preferences.ChromePreferenceKeys;
+import org.chromium.chrome.browser.preferences.ChromeSharedPreferences;
 import org.chromium.chrome.browser.privacy.settings.PrivacyPreferencesManagerImpl;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.share.ShareDelegate;
@@ -66,7 +69,6 @@ import org.chromium.chrome.browser.ui.edge_to_edge.EdgeToEdgeController;
 import org.chromium.chrome.browser.ui.edge_to_edge.EdgeToEdgeControllerFactory;
 import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager;
 import org.chromium.chrome.browser.ui.native_page.TouchEnabledDelegate;
-import org.chromium.chrome.browser.ui.signin.PersonalizedSigninPromoView;
 import org.chromium.chrome.browser.ui.theme.ChromeSemanticColorUtils;
 import org.chromium.chrome.browser.user_education.UserEducationHelper;
 import org.chromium.chrome.browser.xsurface.HybridListRenderer;
@@ -83,6 +85,7 @@ import org.chromium.components.feature_engagement.EventConstants;
 import org.chromium.components.feature_engagement.Tracker;
 import org.chromium.third_party.android.swiperefresh.SwipeRefreshLayout;
 import org.chromium.ui.base.DeviceFormFactor;
+import org.chromium.ui.base.DeviceInput;
 import org.chromium.ui.base.ViewUtils;
 import org.chromium.ui.base.WindowAndroid;
 import org.chromium.ui.edge_to_edge.EdgeToEdgePadAdjuster;
@@ -97,9 +100,7 @@ public class FeedSurfaceCoordinator
         implements FeedSurfaceProvider,
                 FeedBubbleDelegate,
                 SwipeRefreshLayout.OnRefreshListener,
-                SurfaceCoordinator,
-                FeedContentFirstLoadWatcher {
-
+                SurfaceCoordinator {
     protected final Activity mActivity;
     private final SnackbarManager mSnackbarManager;
     private final @Nullable View mNtpHeader;
@@ -136,7 +137,6 @@ public class FeedSurfaceCoordinator
     // Used when Feed is enabled.
     private final Profile mProfile;
     private @Nullable FeedSurfaceLifecycleManager mFeedSurfaceLifecycleManager;
-    private @Nullable View mSigninPromoView;
     // Feed RecyclerView/xSurface fields.
     private FeedListContentManager mContentManager;
     private final RecyclerView mRecyclerView;
@@ -177,6 +177,8 @@ public class FeedSurfaceCoordinator
          */
         RootView(Context context) {
             super(context);
+            setFocusable(true);
+            setFocusableInTouchMode(true);
         }
 
         @Override
@@ -207,6 +209,11 @@ public class FeedSurfaceCoordinator
             // event. Placing this call later in the method would mean at least a subset of events
             // would be missed.
             mDelegate.sendMotionEventForInputTracking(ev);
+            // Defocus any other view (such as the Omnibox / UrlBar) when tapping on the empty
+            // background surface.
+            if (ev.getActionMasked() == MotionEvent.ACTION_DOWN) {
+                requestFocus();
+            }
 
             if (super.onInterceptTouchEvent(ev)) return true;
             if (mMediator != null && !mMediator.getTouchEnabled()) return true;
@@ -372,7 +379,6 @@ public class FeedSurfaceCoordinator
      * @param profile The current user profile.
      * @param bottomSheetController The bottom sheet controller.
      * @param shareDelegateSupplier The supplier for the share delegate used to share articles.
-     * @param launchOrigin The origin of what launched the feed.
      * @param privacyPreferencesManager Manages the privacy preferences.
      * @param toolbarSupplier Supplies the {@link Toolbar}.
      * @param embeddingSurfaceCreatedTimeNs Timestamp of creation of the UI surface.
@@ -396,7 +402,6 @@ public class FeedSurfaceCoordinator
             BottomSheetController bottomSheetController,
             Supplier<@Nullable ShareDelegate> shareDelegateSupplier,
             @Nullable ScrollableContainerDelegate externalScrollableContainerDelegate,
-            @NewTabPageLaunchOrigin int launchOrigin,
             PrivacyPreferencesManagerImpl privacyPreferencesManager,
             Supplier<Toolbar> toolbarSupplier,
             long embeddingSurfaceCreatedTimeNs,
@@ -521,8 +526,7 @@ public class FeedSurfaceCoordinator
         mHeaderView.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
 
         if (mNtpHeader != null && ChromeFeatureList.isEnabled(ChromeFeatureList.FEED_CONTAINMENT)) {
-            int bottomPadding =
-                    mActivity.getResources().getDimensionPixelSize(R.dimen.ntp_section_top_margin);
+            int bottomPadding = NewTabPageUtils.getNtpSectionPaddingPx(activity.getResources());
             mNtpHeader.setPadding(
                     mNtpHeader.getPaddingLeft(),
                     mNtpHeader.getPaddingTop(),
@@ -617,7 +621,8 @@ public class FeedSurfaceCoordinator
                         () -> mProfile,
                         NtpCustomizationCoordinator.BottomSheetType.MAIN,
                         mWindowAndroid,
-                        moduleRegistry)
+                        moduleRegistry,
+                        mSnackbarManager)
                 .showBottomSheet();
         NtpCustomizationMetricsUtils.recordOpenBottomSheetEntry(
                 NtpCustomizationCoordinator.EntryPointType.NEW_TAB_PAGE);
@@ -632,10 +637,6 @@ public class FeedSurfaceCoordinator
             mScrollableContainerDelegate = null;
         }
     }
-
-    // TODO(crbug.com/407797637): Removes the FeedContentFirstLoadWatcher interface.
-    @Override
-    public void nonNativeContentLoaded(@StreamKind int kind) {}
 
     @Override
     @SuppressWarnings("NullAway")
@@ -834,6 +835,15 @@ public class FeedSurfaceCoordinator
             observer.surfaceOpened();
         }
         mMediator.onSurfaceOpened();
+
+        // Reload the feed for the first time when a user enrolls into the widescreen experiment
+        // (or unenrolled from the experiment). If the cache is not invalidated upon enrollment, the
+        // user will see cached non-widescreen cards forced into a single column layout, resulting
+        // in disproportionately large, square-shaped cards being displayed, until the feed is
+        // refreshed.
+        if (hasWideScreenChanged()) {
+            manualRefresh();
+        }
     }
 
     /** Hides the feed. */
@@ -949,6 +959,29 @@ public class FeedSurfaceCoordinator
     }
 
     /**
+     * Checks if the widescreen experiment flag state has changed since the last feed load. Updates
+     * the shared preference to the current state if a change is detected.
+     */
+    private boolean hasWideScreenChanged() {
+        boolean currWideScreenValue =
+                DeviceInfo.isFoldable()
+                        && ChromeFeatureList.isEnabled(
+                                ChromeFeatureList.WIDE_SCREEN_FEED_FOR_FOLDABLES);
+        boolean prevWideScreenValue =
+                ChromeSharedPreferences.getInstance()
+                        .readBoolean(ChromePreferenceKeys.FEED_PREVIOUS_WIDESCREEN_STATE, false);
+
+        if (currWideScreenValue != prevWideScreenValue) {
+            ChromeSharedPreferences.getInstance()
+                    .writeBoolean(
+                            ChromePreferenceKeys.FEED_PREVIOUS_WIDESCREEN_STATE,
+                            currWideScreenValue);
+            return true;
+        }
+        return false;
+    }
+
+    /**
      * @return The {@link RecyclerView} associated with this feed.
      */
     public RecyclerView getRecyclerView() {
@@ -1015,12 +1048,13 @@ public class FeedSurfaceCoordinator
         setHeaders(headerList);
 
         // Explicitly request focus on the scroll container to avoid UrlBar being focused after
-        // mRootView containers are refreshed.
-        mRecyclerView.requestFocus();
+        // mRootView containers are refreshed, unless a physical keyboard is attached and UrlBar
+        // is expected to remain focused.
+        if (!DeviceInput.supportsAlphabeticKeyboard()) mRecyclerView.requestFocus();
     }
 
     /**
-     * Creates a flavor {@Link FeedStream} without any other side-effects.
+     * Creates a flavor {@link FeedStream} without any other side-effects.
      *
      * @param kind Kind of stream being created.
      * @return The FeedStream created.
@@ -1035,7 +1069,6 @@ public class FeedSurfaceCoordinator
                 mShareSupplier,
                 kind,
                 mActionDelegate,
-                /* feedContentFirstLoadWatcher= */ this,
                 streamsMediator,
                 new FeedSurfaceRendererBridge.Factory() {});
     }
@@ -1043,7 +1076,6 @@ public class FeedSurfaceCoordinator
     private void setHeaders(List<View> headerViews) {
         // Build the list of headers we want, and then replace existing headers.
         List<FeedListContentManager.FeedContent> headerList = new ArrayList<>();
-        boolean hasSigninPromoView = false;
         for (View header : headerViews) {
             // Feed header view in multi does not need padding added.
             int lateralPaddingsPx = getLateralPaddingsPx();
@@ -1055,32 +1087,6 @@ public class FeedSurfaceCoordinator
                 if (!ChromeFeatureList.isEnabled(ChromeFeatureList.FEED_CONTAINMENT)) {
                     mHeaderView.setBackgroundColor(mDefaultBackgroundColor);
                 }
-            } else if (header == mSigninPromoView) {
-                hasSigninPromoView = true;
-                lateralPaddingsPx =
-                        mActivity
-                                .getResources()
-                                .getDimensionPixelSize(
-                                        ChromeFeatureList.isEnabled(
-                                                        ChromeFeatureList.FEED_CONTAINMENT)
-                                                ? R.dimen
-                                                        .feed_containment_signin_promo_lateral_paddings
-                                                : R.dimen.signin_promo_lateral_paddings);
-                ((PersonalizedSigninPromoView) mSigninPromoView)
-                        .setCardBackgroundResource(
-                                ChromeFeatureList.isEnabled(ChromeFeatureList.FEED_CONTAINMENT)
-                                        ? R.drawable.home_surface_background_rounded
-                                        : R.drawable.home_surface_ui_background);
-
-                int topPadding =
-                        mActivity
-                                .getResources()
-                                .getDimensionPixelSize(R.dimen.feed_header_top_padding);
-                mSigninPromoView.setPadding(
-                        mSigninPromoView.getPaddingLeft(),
-                        topPadding,
-                        mSigninPromoView.getPaddingRight(),
-                        mSigninPromoView.getPaddingBottom());
             }
 
             FeedListContentManager.NativeViewContent content =
@@ -1092,13 +1098,12 @@ public class FeedSurfaceCoordinator
             mHeaderCount = headerList.size();
             mMediator.notifyHeadersChanged(mHeaderCount);
         }
-        // The section header is the last header to be added, excluding sign-in promo, save its
-        // index.
-        mHeaderIndex = headerViews.size() - (hasSigninPromoView ? 2 : 1);
+        // The section header is the last header to be added, save its index.
+        mHeaderIndex = headerViews.size() - 1;
     }
 
     /** Update header views in the Feed. */
-    void updateHeaderViews(@Nullable View signinPromoView) {
+    void updateHeaderViews() {
         if (!mMediator.hasStreams()) return;
 
         List<View> headers = new ArrayList<>();
@@ -1108,11 +1113,6 @@ public class FeedSurfaceCoordinator
 
         if (mMediator.isFeedEnabled()) {
             headers.add(mHeaderView);
-
-            if (signinPromoView != null) {
-                mSigninPromoView = signinPromoView;
-                headers.add(signinPromoView);
-            }
         }
 
         setHeaders(headers);

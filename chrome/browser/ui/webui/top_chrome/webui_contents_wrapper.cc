@@ -13,6 +13,8 @@
 #include "chrome/browser/ui/webui/top_chrome/webui_contents_preload_manager.h"
 #include "chrome/common/chrome_render_frame.mojom.h"
 #include "components/input/native_web_keyboard_event.h"
+#include "components/performance_manager/embedder/performance_manager_registry.h"
+#include "components/performance_manager/public/graph/page_node.h"
 #include "components/site_engagement/content/site_engagement_helper.h"
 #include "components/site_engagement/content/site_engagement_service.h"
 #include "components/web_modal/web_contents_modal_dialog_manager.h"
@@ -21,6 +23,7 @@
 #include "content/public/browser/render_widget_host_view.h"
 #include "third_party/blink/public/common/associated_interfaces/associated_interface_provider.h"
 #include "ui/base/models/menu_model.h"
+#include "ui/base/window_open_disposition.h"
 #include "ui/events/keycodes/keyboard_codes.h"
 #include "ui/gfx/geometry/rounded_corners_f.h"
 #include "ui/gfx/geometry/size.h"
@@ -101,7 +104,7 @@ WebUIContentsWrapper::WebUIContentsWrapper(const GURL& webui_url,
     : webui_resizes_host_(webui_resizes_host),
       esc_closes_ui_(esc_closes_ui),
       supports_draggable_regions_(supports_draggable_regions) {
-  DCHECK_GE(task_manager_string_id, 0);
+  CHECK_GE(task_manager_string_id, 0, base::NotFatalUntil::M162);
   RequestResult make_contents_result = Request(webui_url, profile);
   web_contents_ = std::move(make_contents_result.web_contents);
   is_ready_to_show_ = make_contents_result.is_ready_to_show;
@@ -109,6 +112,15 @@ WebUIContentsWrapper::WebUIContentsWrapper(const GURL& webui_url,
   web_contents_->SetIgnoreZoomGestures(true);
   web_contents_->SetDelegate(this);
   WebContentsObserver::Observe(web_contents_.get());
+
+  if (auto* pm_registry =
+          performance_manager::PerformanceManagerRegistry::GetInstance()) {
+    // Flagging this web contents as a Non Tab WebUI allows the
+    // PerformanceManager to opt it out of aggressive resource management
+    // strategies (such as freezing).
+    pm_registry->SetPageType(web_contents_.get(),
+                             performance_manager::PageType::kNonTabWebUI);
+  }
 
   web_modal::WebContentsModalDialogManager::CreateForWebContents(
       web_contents_.get());
@@ -120,8 +132,9 @@ WebUIContentsWrapper::WebUIContentsWrapper(const GURL& webui_url,
   task_manager::WebContentsTags::CreateForToolContents(web_contents_.get(),
                                                        task_manager_string_id);
   if (site_engagement::SiteEngagementService::IsEnabled()) {
-    site_engagement::SiteEngagementService::Helper::CreateForWebContents(
-        web_contents_.get());
+    site_engagement_helper_ =
+        std::make_unique<site_engagement::SiteEngagementService::Helper>(
+            web_contents_.get());
   }
 
   if (webui_resizes_host_) {
@@ -140,7 +153,7 @@ WebUIContentsWrapper::~WebUIContentsWrapper() {
 
 void WebUIContentsWrapper::ResizeDueToAutoResize(content::WebContents* source,
                                                  const gfx::Size& new_size) {
-  DCHECK_EQ(web_contents(), source);
+  CHECK_EQ(web_contents(), source, base::NotFatalUntil::M162);
   if (host_) {
     host_->ResizeDueToAutoResize(source, new_size);
   }
@@ -150,12 +163,15 @@ content::KeyboardEventProcessingResult
 WebUIContentsWrapper::PreHandleKeyboardEvent(
     content::WebContents* source,
     const input::NativeWebKeyboardEvent& event) {
-  DCHECK_EQ(web_contents(), source);
+  CHECK_EQ(web_contents(), source, base::NotFatalUntil::M162);
   // Close the bubble if an escape event is detected. Handle this here to
   // prevent the renderer from capturing the event and not propagating it up.
-  if (host_ && IsEscapeEvent(event) && esc_closes_ui_) {
-    host_->CloseUI();
-    return content::KeyboardEventProcessingResult::HANDLED;
+  if (host_ && IsEscapeEvent(event)) {
+    host_->OnPreHandleEscapeKey();
+    if (esc_closes_ui_) {
+      host_->CloseUI();
+      return content::KeyboardEventProcessingResult::HANDLED;
+    }
   }
   return content::KeyboardEventProcessingResult::NOT_HANDLED;
 }
@@ -163,7 +179,7 @@ WebUIContentsWrapper::PreHandleKeyboardEvent(
 bool WebUIContentsWrapper::HandleKeyboardEvent(
     content::WebContents* source,
     const input::NativeWebKeyboardEvent& event) {
-  DCHECK_EQ(web_contents(), source);
+  CHECK_EQ(web_contents(), source, base::NotFatalUntil::M162);
   return host_ ? host_->HandleKeyboardEvent(source, event) : false;
 }
 
@@ -230,18 +246,6 @@ void WebUIContentsWrapper::SetContentsBounds(content::WebContents* source,
   }
 }
 
-void WebUIContentsWrapper::FindReply(content::WebContents* web_contents,
-                                     int request_id,
-                                     int number_of_matches,
-                                     const gfx::Rect& selection_rect,
-                                     int active_match_ordinal,
-                                     bool final_update) {
-  if (host_) {
-    host_->FindReply(web_contents, request_id, number_of_matches,
-                     selection_rect, active_match_ordinal, final_update);
-  }
-}
-
 content::WebContents* WebUIContentsWrapper::AddNewContents(
     content::WebContents* source,
     std::unique_ptr<content::WebContents> new_contents,
@@ -276,7 +280,19 @@ void WebUIContentsWrapper::PrimaryMainFrameRenderProcessGone(
   CloseUI();
 }
 
+void WebUIContentsWrapper::DidReceiveFindReply(int request_id,
+                                               int number_of_matches,
+                                               const gfx::Rect& selection_rect,
+                                               int active_match_ordinal,
+                                               bool final_update) {
+  if (host_) {
+    host_->FindReply(web_contents(), request_id, number_of_matches,
+                     selection_rect, active_match_ordinal, final_update);
+  }
+}
+
 void WebUIContentsWrapper::OnProfileWillBeDestroyed(Profile* profile) {
+  site_engagement_helper_.reset();
   web_contents_.reset();
   profile_observation_.Reset();
 }
@@ -359,6 +375,7 @@ void WebUIContentsWrapper::SetHost(
 
 void WebUIContentsWrapper::SetWebContentsForTesting(
     std::unique_ptr<content::WebContents> web_contents) {
+  site_engagement_helper_.reset();
   web_contents_->SetDelegate(nullptr);
   web_contents_ = std::move(web_contents);
   web_contents_->SetDelegate(this);

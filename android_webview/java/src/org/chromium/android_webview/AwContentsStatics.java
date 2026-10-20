@@ -22,7 +22,6 @@ import org.chromium.base.Callback;
 import org.chromium.base.CallbackUtils;
 import org.chromium.base.SelectionActionMenuClientWrapper;
 import org.chromium.base.ThreadUtils;
-import org.chromium.base.metrics.RecordHistogram;
 import org.chromium.base.task.PostTask;
 import org.chromium.base.task.TaskTraits;
 import org.chromium.build.annotations.Nullable;
@@ -176,10 +175,7 @@ public class AwContentsStatics {
 
     /** Returns the variations header used with the X-Client-Data header. */
     public static String getVariationsHeader() {
-        String header = AwContentsStaticsJni.get().getVariationsHeader();
-        RecordHistogram.recordCount100Histogram(
-                "Android.WebView.VariationsHeaderLength", header.length());
-        return header;
+        return AwContentsStaticsJni.get().getVariationsHeader();
     }
 
     // Note that this can be called before browser process initialization.
@@ -191,7 +187,6 @@ public class AwContentsStatics {
     public static void setDefaultTrafficStatsUid(int uid) {
         sDefaultTrafficStatsUid = uid;
     }
-
 
     public static void setSelectionActionMenuClient(
             @Nullable SelectionActionMenuClientWrapper client) {
@@ -222,7 +217,9 @@ public class AwContentsStatics {
     interface Natives {
         void logCommandLineForDebugging();
 
-        void logFlagMetrics(String[] switches, String[] features);
+        void logFlagMetrics(
+                @JniType("std::set<std::string>") String[] switches,
+                @JniType("std::set<std::string>") String[] features);
 
         @JniType("std::string")
         String getSafeBrowsingPrivacyPolicyUrl();
@@ -232,9 +229,11 @@ public class AwContentsStatics {
         @JniType("std::string")
         String getUnreachableWebDataUrl();
 
+        @JniType("std::string")
         String getProductVersion();
 
-        void setSafeBrowsingAllowlist(String[] urls, Callback<Boolean> callback);
+        void setSafeBrowsingAllowlist(
+                @JniType("std::vector<std::string>") String[] urls, Callback<Boolean> callback);
 
         void setCheckClearTextPermitted(boolean permitted);
 
@@ -242,7 +241,6 @@ public class AwContentsStatics {
 
         @JniType("std::string")
         String getVariationsHeader();
-
 
         void forceVariationIdsForTesting( // IN-TEST
                 @JniType("std::vector<std::string>") List<String> variationIds,

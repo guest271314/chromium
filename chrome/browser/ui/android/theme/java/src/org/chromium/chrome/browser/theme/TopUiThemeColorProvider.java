@@ -13,8 +13,8 @@ import org.chromium.base.supplier.NullableObservableSupplier;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.tab.CurrentTabObserver;
-import org.chromium.chrome.browser.tab.EmptyTabObserver;
 import org.chromium.chrome.browser.tab.Tab;
+import org.chromium.chrome.browser.tab.TabObserver;
 import org.chromium.chrome.browser.tab.TabState;
 import org.chromium.chrome.browser.ui.native_page.NativePage;
 import org.chromium.chrome.browser.ui.theme.BrandedColorScheme;
@@ -72,10 +72,15 @@ public class TopUiThemeColorProvider extends ThemeColorProvider {
         mTabObserver =
                 new CurrentTabObserver(
                         tabSupplier,
-                        new EmptyTabObserver() {
+                        new TabObserver() {
                             @Override
                             public void onDidChangeThemeColor(Tab tab, @ColorInt int themeColor) {
                                 updateColor(tab, themeColor, true);
+                            }
+
+                            @Override
+                            public void onSSLStateUpdated(Tab tab) {
+                                updateColor(tab, tab.getThemeColor(), false);
                             }
 
                             @Override
@@ -114,14 +119,24 @@ public class TopUiThemeColorProvider extends ThemeColorProvider {
 
     /**
      * @param tab The {@link Tab} on which the toolbar background color is used.
+     * @param themeColor The theme color to use. Prefer the version without this method for external
+     *     callers unless the theme color of the tab needs to be overridden.
      * @return Returns the toolbar background color.
      */
-    public @ColorInt int getToolbarBackgroundColor(Tab tab) {
+    public @ColorInt int getToolbarBackgroundColor(Tab tab, @ColorInt int themeColor) {
         NativePage nativePage = tab.getNativePage();
-        @ColorInt int defaultColor = calculateColor(tab, tab.getThemeColor());
+        @ColorInt int defaultColor = calculateColor(tab, themeColor);
         return nativePage != null
                 ? nativePage.getToolbarSceneLayerBackground(defaultColor)
                 : defaultColor;
+    }
+
+    /**
+     * @param tab The {@link Tab} on which the toolbar background color is used.
+     * @return Returns the toolbar background color.
+     */
+    public @ColorInt int getToolbarBackgroundColor(Tab tab) {
+        return getToolbarBackgroundColor(tab, tab.getThemeColor());
     }
 
     /**
@@ -150,7 +165,7 @@ public class TopUiThemeColorProvider extends ThemeColorProvider {
     }
 
     protected void updateColor(Tab tab, @ColorInt int themeColor, boolean shouldAnimate) {
-        updatePrimaryColor(calculateColor(tab, themeColor), shouldAnimate);
+        updatePrimaryColor(getToolbarBackgroundColor(tab, themeColor), shouldAnimate);
         mIsDefaultColorUsed = isUsingDefaultColor(tab, themeColor);
         final @BrandedColorScheme int brandedColorScheme =
                 calculateBrandedColorScheme(tab.isIncognito(), mIsDefaultColorUsed);

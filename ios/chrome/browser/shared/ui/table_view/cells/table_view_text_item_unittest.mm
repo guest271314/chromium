@@ -6,7 +6,6 @@
 
 #import "base/apple/foundation_util.h"
 #import "ios/chrome/browser/shared/ui/table_view/content_configuration/table_view_cell_content_configuration.h"
-#import "ios/chrome/browser/shared/ui/table_view/legacy_chrome_table_view_styler.h"
 #import "ios/chrome/browser/shared/ui/util/uikit_ui_util.h"
 #import "ios/chrome/common/ui/colors/semantic_color_names.h"
 #import "ios/chrome/common/ui/table_view/table_view_cells_constants.h"
@@ -29,9 +28,7 @@ TEST_F(TableViewTextItemTest, TextLabels) {
 
   LegacyTableViewCell* cell = [[[item cellClass] alloc] init];
   ASSERT_TRUE([cell isMemberOfClass:[LegacyTableViewCell class]]);
-
-  ChromeTableViewStyler* styler = [[ChromeTableViewStyler alloc] init];
-  [item configureCell:cell withStyler:styler];
+  [item configureCell:cell];
 
   ASSERT_TRUE([cell.contentConfiguration
       isMemberOfClass:TableViewCellContentConfiguration.class]);
@@ -53,9 +50,7 @@ TEST_F(TableViewTextItemTest, MaskedTextLabels) {
 
   LegacyTableViewCell* cell = [[[item cellClass] alloc] init];
   ASSERT_TRUE([cell isMemberOfClass:[LegacyTableViewCell class]]);
-
-  ChromeTableViewStyler* styler = [[ChromeTableViewStyler alloc] init];
-  [item configureCell:cell withStyler:styler];
+  [item configureCell:cell];
 
   ASSERT_TRUE([cell.contentConfiguration
       isMemberOfClass:TableViewCellContentConfiguration.class]);
@@ -79,9 +74,7 @@ TEST_F(TableViewTextItemTest, HeadlineFont) {
 
   LegacyTableViewCell* cell = [[[item cellClass] alloc] init];
   ASSERT_TRUE([cell isMemberOfClass:[LegacyTableViewCell class]]);
-
-  ChromeTableViewStyler* styler = [[ChromeTableViewStyler alloc] init];
-  [item configureCell:cell withStyler:styler];
+  [item configureCell:cell];
 
   ASSERT_TRUE([cell.contentConfiguration
       isMemberOfClass:TableViewCellContentConfiguration.class]);
@@ -94,4 +87,19 @@ TEST_F(TableViewTextItemTest, HeadlineFont) {
                                                   atIndex:0
                                            effectiveRange:nil];
   EXPECT_NSEQ([UIFont preferredFontForTextStyle:UIFontTextStyleHeadline], font);
+}
+
+// Tests that reservesLeadingSpace is passed to contentConfiguration.
+TEST_F(TableViewTextItemTest, TestReservesLeadingSpace) {
+  TableViewTextItem* item = [[TableViewTextItem alloc] initWithType:0];
+  item.text = @"Cell text";
+  item.reservesLeadingSpace = YES;
+
+  LegacyTableViewCell* cell = [[[item cellClass] alloc] init];
+  [item configureCell:cell];
+
+  TableViewCellContentConfiguration* configuration =
+      base::apple::ObjCCastStrict<TableViewCellContentConfiguration>(
+          cell.contentConfiguration);
+  EXPECT_TRUE(configuration.reservesLeadingSpace);
 }

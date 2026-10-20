@@ -36,14 +36,15 @@ class LayerTreeViewDelegate {
   virtual void UpdateCompositorScrollState(
       const cc::CompositorCommitData& commit_data) = 0;
 
+  virtual void UpdateAnimatedImageState(
+      const cc::CompositorCommitData& commit_data) = 0;
+
   // Notifies that the compositor has issued a BeginMainFrame.
   virtual void BeginMainFrame(const viz::BeginFrameArgs& args) = 0;
 
   virtual void OnDeferMainFrameUpdatesChanged(bool) = 0;
-  virtual void OnDeferCommitsChanged(
-      bool defer_status,
-      cc::PaintHoldingReason reason,
-      std::optional<cc::PaintHoldingCommitTrigger> trigger) = 0;
+  virtual void OnDeferCommitsChanged(bool defer_status,
+                                     cc::PaintHoldingReason reason) = 0;
   virtual void OnCommitRequested() = 0;
 
   // Notifies that the layer tree host has completed a call to

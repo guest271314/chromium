@@ -184,7 +184,13 @@ TouchDispositionGestureFilter::TouchDispositionGestureFilter(
   }
 }
 
-TouchDispositionGestureFilter::~TouchDispositionGestureFilter() {
+TouchDispositionGestureFilter::~TouchDispositionGestureFilter() = default;
+void TouchDispositionGestureFilter::Shutdown() {
+  client_ = nullptr;
+}
+
+void TouchDispositionGestureFilter::DisableScrollUpdateCompensation() {
+  scroll_update_compensator_.reset();
 }
 
 TouchDispositionGestureFilter::PacketResult
@@ -267,7 +273,7 @@ void TouchDispositionGestureFilter::SendAckedEvents(
   // Dispatch all packets corresponding to ack'ed touches, as well as
   // any pending timeout-based packets.
   bool touch_packet_for_current_ack_handled = false;
-  while (!IsEmpty() && (!Head().empty() || sequences_.size() != 1)) {
+  while (!IsEmpty() && client_ && (!Head().empty() || sequences_.size() != 1)) {
     if (Head().empty())
       PopGestureSequence();
     GestureSequence& sequence = Head();
@@ -312,7 +318,7 @@ void TouchDispositionGestureFilter::SendAckedEvents(
 
     FilterAndSendPacket(packet);
   }
-  DCHECK(touch_packet_for_current_ack_handled);
+  DCHECK(touch_packet_for_current_ack_handled || !client_);
 }
 
 bool TouchDispositionGestureFilter::IsEmpty() const {
@@ -514,6 +520,9 @@ void TouchDispositionGestureFilter::SendGesture(
     default:
       break;
   }
+  if (!client_) {
+    return;
+  }
   client_->ForwardGestureEvent(event);
 }
 
@@ -669,11 +678,17 @@ GestureEventData TouchDispositionGestureFilter::ScrollUpdateCompensator::
       gfx::Vector2dF(gesture.details.scroll_x() * (1.f - compensation),
                      gesture.details.scroll_y() * (1.f - compensation));
 
-  return CreateGesture(
-      GestureEventDetails(EventType::kGestureScrollUpdate,
-                          gesture.details.scroll_x() * compensation,
-                          gesture.details.scroll_y() * compensation),
-      packet.unique_touch_event_id(), packet.tool_type(), packet);
+  GestureEventData compensated_gesture(gesture);
+  compensated_gesture.details.set_scroll_x(gesture.details.scroll_x() *
+                                           compensation);
+  compensated_gesture.details.set_scroll_y(gesture.details.scroll_y() *
+                                           compensation);
+  compensated_gesture.details.set_scroll_x_unconstrained(
+      gesture.details.scroll_x_unconstrained() * compensation);
+  compensated_gesture.details.set_scroll_y_unconstrained(
+      gesture.details.scroll_y_unconstrained() * compensation);
+
+  return compensated_gesture;
 }
 
 GestureEventData TouchDispositionGestureFilter::ScrollUpdateCompensator::

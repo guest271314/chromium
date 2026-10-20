@@ -5,7 +5,6 @@
 #include "ui/ozone/platform/x11/native_pixmap_egl_x11_binding.h"
 
 #include <GL/gl.h>
-
 #include <unistd.h>
 
 #include "base/logging.h"
@@ -16,6 +15,8 @@
 #include "ui/gfx/x/dri3.h"
 #include "ui/gfx/x/future.h"
 #include "ui/gl/gl_bindings.h"
+#include "ui/gl/gl_display.h"
+#include "ui/gl/gl_surface_egl.h"
 #include "ui/gl/scoped_binders.h"
 
 namespace gl {
@@ -103,11 +104,6 @@ x11::Pixmap XPixmapFromNativePixmap(const gfx::NativePixmap& native_pixmap) {
   return pixmap_id;
 }
 
-inline EGLDisplay FromXDisplay() {
-  auto* x_display = x11::Connection::Get()->GetXlibDisplay().display();
-  return eglGetDisplay(reinterpret_cast<EGLNativeDisplayType>(x_display));
-}
-
 }  // namespace
 
 }  // namespace gl
@@ -115,7 +111,7 @@ inline EGLDisplay FromXDisplay() {
 namespace ui {
 
 NativePixmapEGLX11Binding::NativePixmapEGLX11Binding()
-    : display_(gl::FromXDisplay()) {}
+    : display_(gl::GLSurfaceEGL::GetGLDisplayEGL()->GetDisplay()) {}
 
 NativePixmapEGLX11Binding::~NativePixmapEGLX11Binding() {
   if (surface_) {
@@ -136,10 +132,6 @@ bool NativePixmapEGLX11Binding::IsSharedImageFormatSupported(
 bool NativePixmapEGLX11Binding::Initialize(x11::Pixmap pixmap) {
   CHECK_NE(pixmap, x11::Pixmap::None);
   pixmap_ = pixmap;
-
-  if (eglInitialize(display_, nullptr, nullptr) != EGL_TRUE) {
-    return false;
-  }
 
   EGLint attribs[] = {EGL_BUFFER_SIZE,
                       32,
@@ -177,23 +169,22 @@ bool NativePixmapEGLX11Binding::Initialize(x11::Pixmap pixmap) {
 // static
 std::unique_ptr<NativePixmapGLBinding> NativePixmapEGLX11Binding::Create(
     scoped_refptr<gfx::NativePixmap> native_pixmap,
-    viz::SharedImageFormat plane_format,
-    gfx::Size plane_size,
+    viz::SharedImageFormat format,
+    gfx::Size size,
     GLenum target,
     GLuint texture_id) {
-  if (native_pixmap->GetSharedImageFormat() != plane_format ||
-      !gl::IsFormatSupported(plane_format)) {
-    VLOG(1) << "Format " << plane_format.ToString()
+  if (native_pixmap->GetSharedImageFormat() != format ||
+      !gl::IsFormatSupported(format)) {
+    VLOG(1) << "Format " << format.ToString()
             << " is unsupported or does not match the NativePixmap's format ("
             << native_pixmap->GetSharedImageFormat().ToString() << ")";
     return nullptr;
   }
 
-  if (native_pixmap->GetBufferSize() != plane_size) {
+  if (native_pixmap->GetBufferSize() != size) {
     VLOG(1) << "The native pixmap size ("
             << native_pixmap->GetBufferSize().ToString()
-            << ") does not match |plane_size| (" << plane_size.ToString()
-            << ")";
+            << ") does not match |size| (" << size.ToString() << ")";
     return nullptr;
   }
 

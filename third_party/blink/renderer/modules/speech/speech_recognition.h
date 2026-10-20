@@ -26,6 +26,7 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_MODULES_SPEECH_SPEECH_RECOGNITION_H_
 #define THIRD_PARTY_BLINK_RENDERER_MODULES_SPEECH_SPEECH_RECOGNITION_H_
 
+#include "base/time/time.h"
 #include "media/base/audio_parameters.h"
 #include "media/mojo/mojom/speech_recognizer.mojom-blink.h"
 #include "third_party/blink/public/platform/web_private_ptr.h"
@@ -33,8 +34,8 @@
 #include "third_party/blink/renderer/bindings/core/v8/idl_types.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_promise.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_promise_resolver.h"
-#include "third_party/blink/renderer/bindings/modules/v8/v8_availability_status.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_observable_array_speech_recognition_phrase.h"
+#include "third_party/blink/renderer/bindings/modules/v8/v8_speech_recognition_availability_status.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_speech_recognition_quality.h"
 #include "third_party/blink/renderer/core/execution_context/execution_context_lifecycle_observer.h"
 #include "third_party/blink/renderer/core/page/page_visibility_observer.h"
@@ -89,6 +90,10 @@ class MODULES_EXPORT SpeechRecognition final
   void setInterimResults(bool interim_results) {
     interim_results_ = interim_results;
   }
+  bool unspokenPunctuation() const { return unspoken_punctuation_; }
+  void setUnspokenPunctuation(bool unspoken_punctuation) {
+    unspoken_punctuation_ = unspoken_punctuation;
+  }
   unsigned maxAlternatives() const { return max_alternatives_; }
   void setMaxAlternatives(unsigned max_alternatives) {
     max_alternatives_ = max_alternatives;
@@ -106,7 +111,7 @@ class MODULES_EXPORT SpeechRecognition final
   void start(MediaStreamTrack*, ExceptionState&);
   void stopFunction();
   void abort();
-  static ScriptPromise<V8AvailabilityStatus> available(
+  static ScriptPromise<V8SpeechRecognitionAvailabilityStatus> available(
       ScriptState*,
       const blink::SpeechRecognitionOptions* options,
       ExceptionState&);
@@ -170,8 +175,9 @@ class MODULES_EXPORT SpeechRecognition final
 
   void OnConnectionError();
   void SchedulePhrasesUpdate();
-  void CheckAvailabilityAndStart(ExceptionState* exception_state);
-  void StartInternal();
+  void CheckAvailabilityAndStart(ExceptionState* exception_state,
+                                 MediaStreamTrack* media_stream_track);
+  void StartInternal(MediaStreamTrack* media_stream_track);
   void ResetAudioSink();
   void StartController(
       mojo::PendingReceiver<media::mojom::blink::SpeechRecognitionSession>
@@ -188,6 +194,7 @@ class MODULES_EXPORT SpeechRecognition final
   String lang_;
   bool continuous_ = false;
   bool interim_results_ = false;
+  bool unspoken_punctuation_ = false;
   uint32_t max_alternatives_ = 1;
   bool process_locally_ = false;
   V8SpeechRecognitionQuality quality_{
@@ -198,6 +205,16 @@ class MODULES_EXPORT SpeechRecognition final
   bool started_ = false;
   bool stopping_ = false;
   HeapVector<Member<SpeechRecognitionResult>> final_results_;
+  // Time at which the audio stream began, i.e. the time origin that the
+  // per-result `audio_start_time`/`audio_end_time` offsets are relative to.
+  // Null until `AudioStarted()` fires.
+  //
+  // TODO(crbug.com/564526939): This reconstructs the time origin in the
+  // renderer, so it carries the recognizer's start-up delay plus the Mojo hop
+  // from the browser. Plumb the `base::TimeTicks` captured when audio was
+  // submitted to the recognizer through `media::mojom::TimingInformation`
+  // instead, and stamp events with that directly rather than deriving it here.
+  base::TimeTicks audio_start_ticks_;
   HeapMojoReceiver<media::mojom::blink::SpeechRecognitionSessionClient,
                    SpeechRecognition>
       receiver_;

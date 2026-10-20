@@ -21,6 +21,7 @@
 #include "base/task/thread_pool.h"
 #include "components/prefs/pref_service.h"
 #include "components/sync/base/data_type_histogram.h"
+#include "components/sync/base/features.h"
 #include "components/sync/base/pref_names.h"
 #include "components/sync/base/storage_type.h"
 #include "components/sync/model/blocking_data_type_store_impl.h"
@@ -40,7 +41,8 @@ constexpr base::FilePath::CharType kLevelDBFolderName[] =
 std::optional<ModelError> InitOnBackendSequence(
     const base::FilePath& level_db_path,
     scoped_refptr<DataTypeStoreBackend> store_backend,
-    bool migrate_rl_from_local_to_account) {
+    bool migrate_rl_from_local_to_account,
+    bool wipe_apps_and_app_settings) {
   base::flat_map<std::string, std::optional<std::string>>
       prefixes_to_update_or_delete;
   if (migrate_rl_from_local_to_account) {
@@ -51,6 +53,20 @@ std::optional<ModelError> InitOnBackendSequence(
             READING_LIST, StorageType::kAccount));
     RecordSyncToSigninMigrationReadingListStep(
         ReadingListMigrationStep::kMigrationStarted);
+  }
+  if (wipe_apps_and_app_settings) {
+    // Wipe legacy APPS and APP_SETTINGS data and metadata from DataTypeStore.
+    // This won't uninstall any apps or clear extension storage, as
+    // DataTypeStore only holds Sync's mirror of the data and metadata for
+    // SyncableServiceBasedBridge.
+    // std::nullopt in the map below means a deletion.
+    // TODO(crbug.com/40267153): Remove migration after enough time.
+    for (DataType data_type : {APPS, APP_SETTINGS}) {
+      prefixes_to_update_or_delete.emplace(
+          BlockingDataTypeStoreImpl::FormatPrefixForDataTypeAndStorageType(
+              data_type, StorageType::kUnspecified),
+          std::nullopt);
+    }
   }
   return store_backend->Init(level_db_path, prefixes_to_update_or_delete);
 }
@@ -122,16 +138,29 @@ DataTypeStoreServiceImpl::DataTypeStoreServiceImpl(
     : sync_path_(base_path.Append(base::FilePath(kSyncDataFolderName))),
       leveldb_path_(sync_path_.Append(base::FilePath(kLevelDBFolderName))),
       pref_service_(pref_service),
+      // The backend opens the sync LevelDB on disk during startup, but sync
+      // data is not needed to show the first tab. Use USER_VISIBLE rather than
+      // the default USER_BLOCKING so it does not contend with user-blocking
+      // startup work.
       backend_task_runner_(base::ThreadPool::CreateSequencedTaskRunner(
-          {base::MayBlock(), base::TaskShutdownBehavior::SKIP_ON_SHUTDOWN})),
+          {base::MayBlock(), base::TaskPriority::USER_VISIBLE,
+           base::TaskShutdownBehavior::SKIP_ON_SHUTDOWN})),
       store_backend_(DataTypeStoreBackend::CreateUninitialized()) {
   DCHECK(backend_task_runner_);
   bool migrate_rl_from_local_to_account = pref_service_->GetBoolean(
       prefs::internal::kMigrateReadingListFromLocalToAccount);
+  bool wipe_apps_and_app_settings =
+#if !BUILDFLAG(IS_CHROMEOS)
+      base::FeatureList::IsEnabled(kSyncWipeAppsAndAppSettingsData) &&
+      !pref_service_->GetBoolean(prefs::internal::kWipedAppsAndAppSettingsData);
+#else
+      false;
+#endif  // !BUILDFLAG(IS_CHROMEOS)
   backend_task_runner_->PostTaskAndReplyWithResult(
       FROM_HERE,
       base::BindOnce(&InitOnBackendSequence, leveldb_path_, store_backend_,
-                     migrate_rl_from_local_to_account),
+                     migrate_rl_from_local_to_account,
+                     wipe_apps_and_app_settings),
       base::BindOnce(&DataTypeStoreServiceImpl::BackendInitializationDone,
                      weak_ptr_factory_.GetWeakPtr()));
 }
@@ -156,6 +185,12 @@ void DataTypeStoreServiceImpl::BackendInitializationDone(
         error ? ReadingListMigrationStep::kMigrationFailed
               : ReadingListMigrationStep::kMigrationFinishedAndPrefCleared);
   }
+#if !BUILDFLAG(IS_CHROMEOS)
+  if (!error && base::FeatureList::IsEnabled(kSyncWipeAppsAndAppSettingsData)) {
+    pref_service_->SetBoolean(prefs::internal::kWipedAppsAndAppSettingsData,
+                              true);
+  }
+#endif  // !BUILDFLAG(IS_CHROMEOS)
 
   base::UmaHistogramBoolean("Sync.DataTypeStoreBackendInitializationSuccess",
                             !error.has_value());

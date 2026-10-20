@@ -62,15 +62,20 @@ export class SettingsPinSettingsElement extends SettingsPinSettingsElementBase {
         type: Boolean,
         value: loadTimeData.getBoolean('quickUnlockDisabledByPolicy'),
       },
+
+      hasPassword_: {
+        type: Boolean,
+        value: false,
+      },
     };
   }
 
-  authToken: string|null;
-  private hasPin_: boolean;
-  private showSetPinDialog_: boolean;
-  private showPinAutosubmitDialog_: boolean;
-  private quickUnlockDisabledByPolicy_: boolean;
-  private hasPassword_: boolean;
+  declare authToken: string|null;
+  declare private hasPin_: boolean;
+  declare private showSetPinDialog_: boolean;
+  declare private showPinAutosubmitDialog_: boolean;
+  declare private quickUnlockDisabledByPolicy_: boolean;
+  declare private hasPassword_: boolean;
 
   override ready(): void {
     super.ready();
@@ -95,7 +100,7 @@ export class SettingsPinSettingsElement extends SettingsPinSettingsElementBase {
     chrome.send('RequestQuickUnlockDisabledByPolicy');
   }
 
-  onFactorChanged(factor: AuthFactor): void {
+  onFactorChanged(factor: AuthFactor, _result: ConfigureResult): void {
     switch (factor) {
       case AuthFactor.kPrefBasedPin:
       case AuthFactor.kCryptohomePin:

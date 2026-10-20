@@ -11,6 +11,7 @@
 #include "base/callback_list.h"
 #include "base/functional/callback_forward.h"
 #include "base/memory/raw_ptr.h"
+#include "base/memory/weak_ptr.h"
 #include "components/tab_groups/tab_group_id.h"
 #include "components/tab_groups/tab_group_visual_data.h"
 #include "components/tabs/public/tab_collection.h"
@@ -50,6 +51,11 @@ class TabGroup {
   };
   virtual ~TabGroup();
 
+  base::WeakPtr<TabGroup> AsWeakPtr() { return weak_ptr_factory_.GetWeakPtr(); }
+  base::WeakPtr<const TabGroup> AsWeakPtr() const {
+    return weak_ptr_factory_.GetWeakPtr();
+  }
+
   const tab_groups::TabGroupId& id() const { return id_; }
   const tab_groups::TabGroupVisualData* visual_data() const {
     return visual_data_.get();
@@ -63,6 +69,9 @@ class TabGroup {
                      bool is_customized = false);
   void SetGroupIsClosing(bool is_closing);
   bool IsGroupClosing() { return is_closing_; }
+
+  void SetIsEphemeral(bool is_ephemeral);
+  bool is_ephemeral() const { return is_ephemeral_; }
 
   // Updates internal bookkeeping for group contents.
   void AddTab();
@@ -137,6 +146,9 @@ class TabGroup {
 
   bool is_closing_ = false;
   bool is_customized_ = false;
+  bool is_ephemeral_ = false;
+
+  mutable base::WeakPtrFactory<TabGroup> weak_ptr_factory_{this};
 };
 
 #endif  // COMPONENTS_TABS_PUBLIC_TAB_GROUP_H_

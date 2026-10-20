@@ -9,12 +9,9 @@
 #include "base/containers/flat_map.h"
 #include "base/feature_list.h"
 #include "base/metrics/histogram_functions.h"
-#include "base/metrics/user_metrics.h"
-#include "base/metrics/user_metrics_action.h"
 #include "base/task/bind_post_task.h"
 #include "chrome/browser/apps/link_capturing/apps_intent_picker_delegate.h"
 #include "chrome/browser/apps/link_capturing/enable_link_capturing_infobar_delegate.h"
-#include "chrome/browser/apps/link_capturing/intent_picker_info.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/web_applications/link_capturing_features.h"
 #include "chrome/browser/web_applications/model/web_app_icon_types.h"
@@ -24,6 +21,7 @@
 #include "chrome/browser/web_applications/web_app_ui_manager.h"
 #include "chrome/browser/web_applications/web_app_utils.h"
 #include "chrome/common/chrome_features.h"
+#include "components/apps/link_capturing/intent_picker_info.h"
 #include "components/webapps/common/web_app_id.h"
 #include "content/public/browser/web_contents.h"
 #include "third_party/skia/include/core/SkBitmap.h"
@@ -116,6 +114,20 @@ void WebAppsIntentPickerDelegate::FindAllAppsForUrl(
 #endif  // BUILDFLAG(IS_MAC)
 }
 
+std::optional<apps::IntentPickerAppInfo>
+WebAppsIntentPickerDelegate::GetAppInfoForId(const std::string& app_id) {
+  CHECK(ShouldShowIntentPickerWithApps());
+  CHECK(provider_);
+  const web_app::WebAppRegistrar& registrar = provider_->registrar_unsafe();
+  if (!registrar.AppMatches(
+          app_id, web_app::WebAppFilter::LaunchableFromInstallApi())) {
+    return std::nullopt;
+  }
+  // Leave the icon empty; it will be loaded when the picker is displayed.
+  return apps::IntentPickerAppInfo(PickerEntryType::kWeb, ui::ImageModel(),
+                                   app_id, registrar.GetAppShortName(app_id));
+}
+
 bool WebAppsIntentPickerDelegate::IsPreferredAppForSupportedLinks(
     const webapps::AppId& app_id) {
   CHECK(ShouldShowIntentPickerWithApps());
@@ -182,9 +194,6 @@ void WebAppsIntentPickerDelegate::RecordIntentPickerIconEvent(
     apps::IntentPickerIconEvent event) {
   base::UmaHistogramEnumeration("Webapp.Site.Intents.IntentPickerIconEvent",
                                 event);
-  if (event == apps::IntentPickerIconEvent::kIconClicked) {
-    base::RecordAction(base::UserMetricsAction("IntentPickerIconClicked"));
-  }
 }
 
 bool WebAppsIntentPickerDelegate::ShouldLaunchAppDirectly(
@@ -217,25 +226,6 @@ void WebAppsIntentPickerDelegate::RecordOutputMetrics(
   // supported by the intent filters are PWAs, and the persistence checkbox does
   // not show up on the intent picker bubble for desktop platforms.
   CHECK_EQ(should_persist, false);
-  switch (close_reason) {
-    case IntentPickerCloseReason::OPEN_APP:
-      base::RecordAction(
-          base::UserMetricsAction("IntentPickerViewAcceptLaunchApp"));
-      break;
-    case apps::IntentPickerCloseReason::DIALOG_DEACTIVATED:
-      base::RecordAction(base::UserMetricsAction("IntentPickerViewIgnored"));
-      break;
-    case apps::IntentPickerCloseReason::STAY_IN_CHROME:
-      base::RecordAction(
-          base::UserMetricsAction("IntentPickerViewClosedStayInChrome"));
-      break;
-    case apps::IntentPickerCloseReason::ERROR_BEFORE_PICKER:
-    case apps::IntentPickerCloseReason::ERROR_AFTER_PICKER:
-    case apps::IntentPickerCloseReason::PREFERRED_APP_FOUND:
-      break;
-    default:
-      NOTREACHED();
-  }
 }
 
 // Persisting intent preferences for an app is a no-op, since the checkbox in

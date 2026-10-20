@@ -23,6 +23,7 @@ import "services/webnn/public/mojom/webnn_service_introspection.mojom";
 import "ui/gfx/geometry/mojom/geometry.mojom";
 import "ui/gfx/mojom/buffer_types.mojom";
 import "ui/gl/mojom/gpu_preference.mojom";
+import "services/viz/privileged/mojom/gl/gpu_client_type.mojom";
 
 [EnableIf=is_chromeos]
 import "chromeos/ash/experiences/arc/mojom/protected_buffer_manager.mojom";
@@ -54,6 +55,14 @@ import "ui/gfx/mojom/dxgi_info.mojom";
 [EnableIf=enable_vrp_flags]
 import "components/vrp_flags/vrp_flags.mojom";
 
+// Used by InduceMemoryInvalidAccess to specify the invalid access type.
+enum MemoryInvalidAccessType {
+  kHeapOverflow,
+  kHeapUnderflow,
+  kUseAfterFree,
+  kMemberDereferenceAfterFree,
+};
+
 interface GpuService {
   // Tells the GPU service to connect `channel_handle` for communication with a
   // client. The GPU service responds with `success` to indicate whether the
@@ -65,8 +74,7 @@ interface GpuService {
   EstablishGpuChannel(
       int32 client_id,
       uint64 client_tracing_id,
-      bool is_gpu_host,
-      bool enable_extra_handles_validation,
+      GpuClientType client_type,
       handle<message_pipe> channel_handle)  => (
           bool success,
           gpu.mojom.GpuInfo gpu_info,
@@ -171,10 +179,6 @@ interface GpuService {
   // Tells GPU to wake up the GPU because we're about to draw.
   WakeUpGpu();
 
-  // Tells GPU that host has seen a GPU switch. This can happen when the display
-  // is reconfigured, for example.
-  GpuSwitched();
-
   // Tells GPU that host has seen a monitor being plugged in.
   DisplayAdded();
 
@@ -221,6 +225,11 @@ interface GpuService {
   Hang();
 
   ThrowJavaException();
+
+  // Induces invalid memory access of the specified `action` (e.g.
+  // heap-overflow, heap-underflow, use-after-free) in the GPU process.
+  // This is used for verifying ASan/HWASan crash reporting.
+  InduceMemoryInvalidAccess(MemoryInvalidAccessType action);
 
   // Returns a connection to the VrpFlags if the GPU process was
   // launched with --vrp-flags, otherwise returns a null remote.

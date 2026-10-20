@@ -16,6 +16,7 @@ namespace password_manager {
 //
 // A Java counterpart will be generated for this enum.
 // GENERATED_JAVA_ENUM_PACKAGE: org.chromium.chrome.browser.password_manager
+// LINT.IfChange(ManagePasswordsReferrer)
 enum class ManagePasswordsReferrer {
   // Corresponds to Chrome's settings page.
   kChromeSettings = 0,
@@ -121,7 +122,7 @@ enum class ManagePasswordsReferrer {
   // clicking on the omnibox icon while the password change is running).
   kPasswordChangeInfoBubble = 29,
 
-  // Corresponds to the Autofill and passwords settings page on Android.
+  // Corresponds to the Autofill and passwords settings page on mobile.
   kChromeSettingsAutofillAndPasswords = 30,
 
   // NOTE: When adding a new value to this enum that applies or could apply to
@@ -129,6 +130,10 @@ enum class ManagePasswordsReferrer {
   // manager launcher java implementation.
   kMaxValue = kChromeSettingsAutofillAndPasswords,
 };
+// LINT.ThenChange(
+//     //chrome/browser/resources/settings/autofill_page/passwords/password_manager_proxy.ts:ManagePasswordsReferrer,
+//     //tools/metrics/histograms/metadata/password/enums.xml:ManagePasswordsReferrer
+// )
 
 }  // namespace password_manager
 

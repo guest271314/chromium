@@ -22,16 +22,28 @@ export function getHtml(this: NtpSearchboxElement) {
         @model-click="${this.onModelClick_}"
         @get-tab-preview="${this.onGetTabPreview_}"
         @context-menu-entrypoint-click="${this.onContextMenuEntrypointClick_}"
+        @context-menu-entrypoint-hover="${this.onContextMenuEntrypointHover_}"
         @context-menu-closed="${this.onContextMenuClosed_}"
         @context-menu-opened="${this.onContextMenuOpened_}"
         @open-drive-upload="${this.onOpenDriveUpload_}"
+        @request-tab-suggestions-load="${this.onRequestTabSuggestionsLoad}"
         .inputState="${this.inputState_}"
         .searchboxLayoutMode="${this.searchboxLayoutMode}"
         .tabSuggestions="${this.tabSuggestions_}"
+        .tabSuggestionsState="${this.tabSuggestionsState_}"
         .recentTabId="${this.recentTabId_}"
+        .contextManagementInComposeboxEnabled="${this.contextManagementInComposeboxEnabled}"
+        .composeboxContextMenuTooltipsEnabled="${
+            this.composeboxContextMenuTooltipsEnabled}"
         ?show-context-menu-description="${!this.useCompactLayout_()}"
-        glif-animation-state="${this.contextMenuGlifAnimationState}"
-        .energyEffectAnimationEnabled="${this.energyEffectAnimationEnabled}">
+        .glifAnimationState="${this.contextMenuGlifAnimationState}"
+        .energyEffectAnimationEnabled="${this.energyEffectAnimationEnabled}"
+        .smartTabSharingVisible="${this.smartTabSharingVisible}"
+        .smartTabSharingActive="${this.smartTabSharingActive}"
+        .shareTabsFlyoutOpen="${this.shareTabsFlyoutOpen}"
+        @smart-tab-sharing-active-changed="${this.onSmartTabSharingActiveChanged_}"
+        @share-tabs-flyout-open-changed="${this.onShareTabsFlyoutOpenChanged_}"
+      >
     </cr-composebox-contextual-entrypoint-and-menu>
   </div>
 </cr-composebox-file-inputs>

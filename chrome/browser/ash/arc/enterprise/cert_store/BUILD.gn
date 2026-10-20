@@ -2,8 +2,6 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-import("//build/config/chromeos/ui_mode.gni")
-
 assert(is_chromeos)
 
 static_library("cert_store") {
@@ -17,8 +15,6 @@ static_library("cert_store") {
     "cert_store_service_factory.cc",
     "cert_store_service_factory.h",
   ]
-
-  public_deps = [ "//chrome/browser:browser_public_dependencies" ]
 
   deps = [
     "//base",
@@ -86,10 +82,11 @@ source_set("browser_tests") {
     "//chrome/browser/ash/platform_keys/key_permissions",
     "//chrome/browser/ash/policy/affiliation:test_support",
     "//chrome/browser/chromeos/platform_keys",
+    "//chrome/browser/net",
     "//chrome/browser/profiles:profile",
-    "//chrome/browser/ui",
     "//chrome/common",
     "//chrome/test:test_support",
+    "//chromeos/ash/components/browser_context_helper",
     "//chromeos/ash/components/platform_keys",
     "//chromeos/ash/experiences/arc",
     "//chromeos/ash/experiences/arc:arc_test_support",

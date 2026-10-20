@@ -7,6 +7,7 @@
 
 #include <string_view>
 
+#include "base/time/time.h"
 #include "build/build_config.h"
 
 class PrefRegistrySimple;
@@ -35,15 +36,7 @@ inline constexpr char kAutofillAiIdentityEntitiesEnabled[] =
 // Otherwise, filling of these entities is disabled.
 inline constexpr char kAutofillAiShoppingEntitiesEnabled[] =
     "autofill.autofill_ai.shopping_entities_enabled";
-// Boolean that is true if Autofill AI synced pref is enabled.
-// This pref supersedes the non-synced pref `kAutofillAiOptInStatus`, which is
-// in the process of being deprecated. Users who have previously interacted with
-// `kAutofillAiOptInStatus` will have its current value migrated to
-// `kAutofillAiSyncedOptInStatus` at start-up time, this way users will not need
-// to opt-in into the feature twice.
-// TODO(crbug.com/459767753): Delete this pref as feature is obsolete.
-inline constexpr char kAutofillAiSyncedOptInStatus[] =
-    "autofill.autofill_ai.synced_opt_in_status";
+
 // A dictionary that contains (hashed) GAIA ids and their opt-in status for
 // Autofill AI.
 // Note that the feature AutofillAiAvailableByDefault is currently in the
@@ -52,6 +45,17 @@ inline constexpr char kAutofillAiSyncedOptInStatus[] =
 // logging (Enhanced Autofill) are.
 inline constexpr char kAutofillAiOptInStatus[] =
     "autofill.autofill_ai.opt_in_status";
+// Timestamp when the user acknowledged the private inference notice UI by
+// clicking Ok/Got it.
+inline constexpr char kAutofillAiPrivateInferenceNoticeAcknowledgedTimestamp[] =
+    "autofill.autofill_ai.private_inference_notice_acknowledged_timestamp";
+// Timestamp when the user last saw the private inference notice UI.
+inline constexpr char kAutofillAiPrivateInferenceNoticeShownTimestamp[] =
+    "autofill.autofill_ai.private_inference_notice_shown_timestamp";
+// Boolean that is true if the user is opted-in to private inference in Autofill
+// AI.
+inline constexpr char kAutofillAiPrivateInferenceOptInStatus[] =
+    "autofill.autofill_ai.private_inference_opt_in_status";
 #if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN) || BUILDFLAG(IS_ANDROID) || \
     BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_IOS)
 // Boolean that is true if re-authentication is required before viewing Autofill
@@ -78,6 +82,17 @@ inline constexpr char kAutofillHasSeenBnpl[] = "autofill.has_seen_bnpl";
 // terms.
 inline constexpr char kAutofillAmountExtractionAiTermsSeen[] =
     "autofill.amount_extraction_ai_terms_seen";
+// Boolean that is true if the Double Ctrl / Double Command trigger for
+// AtMemory is enabled.
+inline constexpr char kAutofillAtMemoryDoubleCtrlTriggerEnabled[] =
+    "autofill.at_memory.double_ctrl_trigger_enabled";
+// String representing the keyboard shortcut configured for AtMemory.
+inline constexpr char kAutofillAtMemoryShortcut[] =
+    "autofill.at_memory.shortcut";
+// Integer tracking the number of times the AtMemory keyboard shortcut
+// educational promo has been shown.
+inline constexpr char kAutofillAtMemoryShortcutPromoImpressionCount[] =
+    "autofill.at_memory.shortcut_promo_impression_count";
 // Boolean that is true if Autofill is enabled and allowed to save credit card
 // data.
 inline constexpr char kAutofillCreditCardEnabled[] =
@@ -90,6 +105,18 @@ inline constexpr char kAutofillCreditCardFidoAuthEnabled[] =
 inline constexpr char kAutofillCreditCardFidoAuthOfferCheckboxState[] =
     "autofill.credit_card_fido_auth_offer_checkbox_state";
 #endif  // BUILDFLAG(IS_ANDROID)
+// Boolean that is true if email verification is enabled.
+inline constexpr char kAutofillEmailVerificationEnabled[] =
+    "autofill.email_verification_enabled";
+
+// Dictionary that contains email addresses and their verification status.
+// The value is a dictionary mapping email addresses to a dictionary containing:
+// - `allowed`: boolean indicating if the user allowed it.
+// - `issuer_site`: string indicating the site that issued the token.
+// - `timestamp`: timestamp when the decision was made.
+inline constexpr char kAutofillEmailVerificationState[] =
+    "autofill.email_verification_state";
+
 // Boolean that is true if a form with an IBAN field has ever been submitted, or
 // an IBAN has ever been saved via Chrome payments settings page. This helps to
 // enable IBAN functionality for those users who are not in a country where IBAN
@@ -99,6 +126,18 @@ inline constexpr char kAutofillHasSeenIban[] = "autofill.has_seen_iban";
 // was run. This routine will be run once per version.
 inline constexpr char kAutofillLastVersionDeduped[] =
     "autofill.last_version_deduped";
+
+// Boolean that is true if the user enabled fetching OTPs from the signed in
+// Gmail account.
+// LINT.IfChange(AutofillGmailOtpFillingPref)
+inline constexpr char kAutofillGmailOtpFillingEnabled[] =
+    "autofill.gmail_otp_filling.enabled";
+// LINT.ThenChange(//chrome/browser/resources/settings/autofill_page/contact_info/contact_info_page.ts:AutofillGmailOtpFillingPref)
+// Timestamp the user dismissed the activation dialog to enable fetching Gmail
+// OTPs the last time.
+inline constexpr char kAutofillGmailOtpFillingActivationDismissalTimestamp[] =
+    "autofill.gmail_otp_filling.activation_dismissal_timestamp";
+
 // Boolean that is true, when users can save their CVCs.
 inline constexpr char kAutofillPaymentCvcStorage[] =
     "autofill.payment_cvc_storage";
@@ -111,6 +150,21 @@ inline constexpr char kAutofillProfileEnabled[] = "autofill.profile_enabled";
 // The opt-ins for Sync Transport features for each client.
 inline constexpr char kAutofillSyncTransportOptIn[] =
     "autofill.sync_transport_opt_ins";
+// A list of GURL wildcard patterns and data categories that are blocked
+// from Autofill by enterprise policy.
+inline constexpr char kAutofillTypesBlocked[] = "autofill.types_blocked";
+
+// Keys and values used in `kAutofillTypesBlocked` preference.
+inline constexpr char kAutofillBlockedTypesAllValue[] = "all";
+inline constexpr char kAutofillBlockedTypesUrlPatternKey[] = "url_pattern";
+inline constexpr char kAutofillBlockedTypesBlockedTypesKey[] = "blocked_types";
+
+inline constexpr char kAutofillBlockedTypesContactInfoValue[] = "contact_info";
+inline constexpr char kAutofillBlockedTypesPaymentsValue[] = "payments";
+inline constexpr char kAutofillBlockedTypesIdentityDocsValue[] =
+    "identity_docs";
+inline constexpr char kAutofillBlockedTypesTravelValue[] = "travel";
+inline constexpr char kAutofillBlockedTypesShoppingValue[] = "shopping";
 // The file path where the autofill states data is downloaded to.
 inline constexpr char kAutofillStatesDataDir[] = "autofill.states_data_dir";
 // The (randomly inititialied) seed value to use when encoding form/field
@@ -198,6 +252,8 @@ inline constexpr char kAutofillThirdPartyPackageUsedForPlatformAutofill[] =
     "autofill.third_party_package_used_for_platform_autofill";
 inline constexpr char kFacilitatedPaymentsEwallet[] =
     "facilitated_payments.ewallet";
+inline constexpr char kFacilitatedPaymentsEwalletAccountLinking[] =
+    "facilitated_payments.ewallet_account_linking_enabled";
 inline constexpr char kFacilitatedPaymentsPix[] = "facilitated_payments.pix";
 inline constexpr char kFacilitatedPaymentsPixAccountLinking[] =
     "facilitated_payments.pix_account_linking_enabled";
@@ -218,10 +274,23 @@ inline constexpr char kAutofillSilentUpdatesToHomeAddress[] =
 inline constexpr char kAutofillSilentUpdatesToWorkAddress[] =
     "autofill.silent_updates.work";
 
+// The generation of the label-sensitive Autocomplete table migration.
+// If this is less than the expected migration generation
+// (features::kAutofillLabelSensitiveAutocompleteMigrationGeneration), the
+// migration logic should be run.
+inline constexpr char kAutofillAutocompleteLabelSensitiveMigrationGeneration[] =
+    "autofill.autocomplete.label_sensitive_migration_generation";
+
 // The maximum value for the
 // `kAutofillPaymentMethodsMandatoryReauthPromoShownCounter` pref. If this
 // value is reached, we should not show a mandatory re-auth promo.
 const int kMaxValueForMandatoryReauthPromoShownCounter = 2;
+
+// Boolean indicating whether the user has been shown the Wallet reminder
+// notice. This pref is synced and is written only to the account store, so is
+// effectively tied to a GAIA id.
+inline constexpr char kAutofillWalletReminderNoticeShown[] =
+    "autofill.wallet_reminder_notice_shown";
 
 namespace sync_transport_opt_in {
 enum Flags {
@@ -258,9 +327,15 @@ bool IsAutofillProfileEnabled(const PrefService* prefs);
 
 void SetAutofillProfileEnabled(PrefService* prefs, bool enabled);
 
-bool IsAutofillAiSyncedOptInStatusEnabled(const PrefService* prefs);
+bool IsAutofillGmailOtpFillingEnabled(const PrefService* prefs);
+void SetAutofillGmailOtpFillingEnabled(PrefService* prefs, bool enabled);
 
-void SetAutofillAiSyncedOptInStatus(PrefService* prefs, bool enabled);
+base::Time GetAutofillGmailOtpFillingActivationDismissalTimestamp(
+    const PrefService* prefs);
+void SetAutofillGmailOtpFillingActivationDismissalTimestamp(PrefService* prefs,
+                                                            base::Time time);
+void ClearAutofillGmailOtpFillingActivationDismissalTimestamp(
+    PrefService* prefs);
 
 bool IsAutofillAiReauthBeforeFillingEnabled(const PrefService* prefs);
 
@@ -291,9 +366,23 @@ void SetPaymentCardBenefits(PrefService* prefs, bool value);
 
 void ClearSyncTransportOptIns(PrefService* prefs);
 
+void ClearEmailVerificationState(PrefService* prefs,
+                                 const base::Time& delete_begin,
+                                 const base::Time& delete_end);
+
+// Migrates email verification preferences to lowercase and deduplicates
+// existing entries.
+void DeduplicateEmailVerificationState(PrefService* prefs);
+
 void SetFacilitatedPaymentsEwallet(PrefService* prefs, bool value);
 
 bool IsFacilitatedPaymentsEwalletEnabled(const PrefService* prefs);
+
+void SetFacilitatedPaymentsEwalletAccountLinking(PrefService* prefs,
+                                                 bool value);
+
+bool IsFacilitatedPaymentsEwalletAccountLinkingEnabled(
+    const PrefService* prefs);
 
 void SetFacilitatedPaymentsPix(PrefService* prefs, bool value);
 
@@ -318,6 +407,14 @@ bool HasSeenBnpl(const PrefService* prefs);
 void SetAutofillAmountExtractionAiTermsSeen(PrefService* prefs);
 
 bool AmountExtractionAiTermsSeen(const PrefService* prefs);
+
+// Records that the user has been shown the Wallet reminder notice in `prefs`.
+void SetHasShownWalletReminderNotice(PrefService* prefs);
+
+// Returns `true` if the user has already been shown the Wallet reminder notice
+// according to `prefs`, `false` otherwise.
+bool HasShownWalletReminderNotice(const PrefService* prefs);
+
 }  // namespace autofill::prefs
 
 #endif  // COMPONENTS_AUTOFILL_CORE_COMMON_AUTOFILL_PREFS_H_

@@ -122,6 +122,14 @@ class SearchEngineChoiceService : public KeyedService {
   // changes.
   void Init();
 
+  // Additional call context for evaluating dynamic choice screen conditions.
+  struct DynamicConditionsCheckContext {
+    // Whether an unknown or invalid current location (variations latest
+    // country) should cause the evaluation to emit an ineligible
+    // condition, for cases where location filtering is enabled.
+    bool allow_unknown_current_location;
+  };
+
   // Returns the choice screen eligibility condition most relevant for the
   // profile associated with `profile_prefs` and `template_url_service`. Only
   // checks dynamic conditions, that can change from one call to the other
@@ -129,7 +137,8 @@ class SearchEngineChoiceService : public KeyedService {
   // choice screen.
   regional_capabilities::SearchEngineChoiceScreenConditions
   GetDynamicChoiceScreenConditions(
-      const TemplateURLService& template_url_service) const;
+      const TemplateURLService& template_url_service,
+      DynamicConditionsCheckContext context) const;
 
   // Returns the choice screen eligibility condition most relevant for the
   // profile described by `profile_properties`. Only checks static conditions,
@@ -233,8 +242,10 @@ class SearchEngineChoiceService : public KeyedService {
     // The current default search engine is not in the list of engines to be
     // offered on the choice screen, so it cannot be highlighted.
     kCurrentCannotBeHighlighted = 12,
+    // The choice was made on another device, but we decided to preserve it.
+    kValidAndImported = 13,
 
-    kMaxValue = kCurrentCannotBeHighlighted
+    kMaxValue = kValidAndImported
   };
   // LINT.ThenChange(/tools/metrics/histograms/metadata/search/enums.xml:SearchEngineChoiceStatus)
 

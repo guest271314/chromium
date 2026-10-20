@@ -24,16 +24,19 @@
 #include "chrome/browser/sync/sync_service_factory.h"
 #include "chrome/browser/ui/passwords/manage_passwords_ui_controller.h"
 #include "chrome/browser/ui/tab_dialogs.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "components/autofill/core/common/autofill_debug_features.h"
 #include "components/autofill/core/common/autofill_features.h"
 #include "components/autofill/core/common/autofill_switches.h"
 #include "components/optimization_guide/core/optimization_guide_features.h"
+#include "components/password_manager/core/browser/leak_detection_dialog_utils.h"
 #include "components/password_manager/core/browser/password_form.h"
 #include "components/password_manager/core/browser/password_manager_switches.h"
 #include "components/password_manager/core/browser/password_manager_test_utils.h"
 #include "components/password_manager/core/browser/password_store/fake_password_store_backend.h"
 #include "components/password_manager/core/browser/password_store/password_form_converters.h"
 #include "components/password_manager/core/browser/password_store/test_password_store.h"
+#include "components/password_manager/core/browser/password_string.h"
 #include "components/password_manager/core/common/password_manager_features.h"
 #include "components/safe_browsing/core/common/safe_browsing_prefs.h"
 #include "components/sync/test/test_sync_service.h"
@@ -78,12 +81,12 @@ std::unique_ptr<KeyedService> BuildTestSyncService(
 password_manager::PasswordForm CreatePasswordForm(
     const GURL& url,
     const std::u16string& username,
-    const std::u16string& password) {
+    std::u16string password) {
   password_manager::PasswordForm form;
   form.url = GURL(url);
   form.signon_realm = url.GetWithEmptyPath().spec();
   form.username_value = username;
-  form.password_value = password;
+  form.password_value = password_manager::PasswordString(std::move(password));
   return form;
 }
 
@@ -130,11 +133,12 @@ class CapturedSitesPasswordManagerBrowserTest
                      const std::string& username,
                      const std::string& password) override {
     scoped_refptr<password_manager::TestPasswordStore> password_store =
-        GetDefaultPasswordStore(browser()->profile());
+        GetDefaultPasswordStore(browser()->GetProfile());
     password_manager::PasswordForm signin_form;
     signin_form.url = GURL(origin);
     signin_form.signon_realm = origin;
-    signin_form.password_value = base::ASCIIToUTF16(password);
+    signin_form.password_value =
+        password_manager::PasswordString(base::ASCIIToUTF16(password));
     signin_form.username_value = base::ASCIIToUTF16(username);
     password_store->AddLogin(password_manager::FromPasswordForm(signin_form));
     return true;
@@ -197,7 +201,7 @@ class CapturedSitesPasswordManagerBrowserTest
                                  const std::string& username,
                                  const std::string& password) override {
     scoped_refptr<password_manager::TestPasswordStore> password_store =
-        GetDefaultPasswordStore(browser()->profile());
+        GetDefaultPasswordStore(browser()->GetProfile());
     auto passwords_map = GetAllLoginsSync(password_store.get());
     auto found = passwords_map.find(origin);
     if (passwords_map.end() == found) {
@@ -264,8 +268,8 @@ class CapturedSitesPasswordManagerBrowserTest
         ChromePasswordManagerClient::FromWebContents(WebContents());
     client->SetTestObserver(&observer_);
 
-    browser()->profile()->GetPrefs()->SetBoolean(::prefs::kSafeBrowsingEnabled,
-                                                 false);
+    browser()->GetProfile()->GetPrefs()->SetBoolean(
+        ::prefs::kSafeBrowsingEnabled, false);
 
     // Disable the caret blinking to not generate any compositor frames from
     // just a blinking cursor.
@@ -364,10 +368,13 @@ class CapturedSitesAutomatedPasswordChangeBrowserTest
                                     url.spec());
 
     auto* password_change_service =
-        PasswordChangeServiceFactory::GetForProfile(browser()->profile());
+        PasswordChangeServiceFactory::GetForProfile(browser()->GetProfile());
     password_change_service->OfferPasswordChangeUi(
-        CreatePasswordForm(WebContents()->GetLastCommittedURL(), u"test",
-                           u"pa$$word"),
+        password_manager::LeakedPasswordDetails(
+            password_manager::CredentialLeakFlags::kHasChangePasswordUrl,
+            CreatePasswordForm(WebContents()->GetLastCommittedURL(), u"test",
+                               u"pa$$word"),
+            /*in_account_store=*/false),
         WebContents());
     PasswordChangeDelegate* delegate =
         password_change_service->GetPasswordChangeDelegate(WebContents());
@@ -378,7 +385,7 @@ class CapturedSitesAutomatedPasswordChangeBrowserTest
 
   bool WaitForPasswordChangeState(int state) override {
     ChromePasswordChangeService* password_change_service =
-        PasswordChangeServiceFactory::GetForProfile(browser()->profile());
+        PasswordChangeServiceFactory::GetForProfile(browser()->GetProfile());
     PasswordChangeDelegate* delegate =
         password_change_service->GetPasswordChangeDelegate(WebContents());
 

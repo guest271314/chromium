@@ -232,6 +232,16 @@ ui::AXMode FilterAccessibilityModeInvariants(ui::AXMode mode) {
     mode.set_mode(ui::AXMode::kLabelImages, false);
   }
 
+  // If the native adapted mode is requested, and native platform APIs are
+  // active, automatically upgrade it to include kWebContents. This ensures
+  // adapted views (like Webium's toolbar) are accessible to any native client
+  // querying the UI, while keeping accessibility off (zero performance cost)
+  // when no client is active.
+  if (mode.has_mode(ui::AXMode::kNativeAdaptedWebContents) &&
+      mode.has_mode(ui::AXMode::kNativeAPIs)) {
+    mode.set_mode(ui::AXMode::kWebContents, true);
+  }
+
   // Modes above kNativeAPIs and kWebContents require kWebContents. Some
   // components may enable higher bits, but those should only be given to a
   // WebContents if that WebContents also has the kWebContents mode enabled;
@@ -314,7 +324,7 @@ base::TimeDelta BrowserAccessibilityStateImpl::GetMaxDisableDelay() {
 
 BrowserAccessibilityStateImpl::BrowserAccessibilityStateImpl()
     : platform_ax_mode_(CreateScopedModeForProcess(ui::AXMode())) {
-  DCHECK_EQ(g_instance, nullptr);
+  CHECK_EQ(g_instance, nullptr, base::NotFatalUntil::M159);
   g_instance = this;
 
   bool disallow_changes = false;
@@ -387,7 +397,7 @@ BrowserAccessibilityStateImpl::BrowserAccessibilityStateImpl()
 }
 
 BrowserAccessibilityStateImpl::~BrowserAccessibilityStateImpl() {
-  DCHECK_EQ(g_instance, this);
+  CHECK_EQ(g_instance, this, base::NotFatalUntil::M159);
   g_instance = nullptr;
 
   CHECK(last_hidden_.empty());
@@ -499,15 +509,16 @@ ui::AXMode BrowserAccessibilityStateImpl::GetAccessibilityMode() {
 ui::AXMode BrowserAccessibilityStateImpl::GetAccessibilityModeForBrowserContext(
     BrowserContext* browser_context) {
   return FilterAccessibilityModeInvariants(
-      GetAccessibilityMode() |
+      scoped_modes_for_process_.accessibility_mode() |
       ModeCollectionForTarget::GetAccessibilityMode(browser_context));
 }
 
-
-
 void BrowserAccessibilityStateImpl::SetAXModeChangeAllowed(bool allowed) {
+  if (allow_ax_mode_changes_ == allowed) {
+    return;
+  }
   allow_ax_mode_changes_ = allowed;
-  ui::AXPlatformNode::SetAXModeChangeAllowed(allowed);
+  scoped_modes_for_process_.Recompute(MakePassKey());
 }
 
 bool BrowserAccessibilityStateImpl::IsAXModeChangeAllowed() const {
@@ -547,10 +558,6 @@ BrowserAccessibilityStateImpl::RegisterFocusChangedCallback(
 
 void BrowserAccessibilityStateImpl::EnableAXModeFromPlatform(
     ui::AXMode modes_to_add) {
-  if (!allow_ax_mode_changes_) {
-    return;
-  }
-
   ui::AXMode old_mode = platform_ax_mode_->mode();
   ui::AXMode new_mode = old_mode | modes_to_add;
   if (old_mode != new_mode) {
@@ -616,7 +623,12 @@ void BrowserAccessibilityStateImpl::OnActionFromAssistiveTech() {
   }
 }
 
-void BrowserAccessibilityStateImpl::OnPageNavigationComplete() {
+void BrowserAccessibilityStateImpl::OnPageNavigationComplete(
+    WebContents* web_contents) {
+  if (web_contents && web_contents->GetAccessibilityMode().has_mode(
+                          ui::AXMode::kNativeAdaptedWebContents)) {
+    return;
+  }
   ++num_page_navs_before_first_use_;
   has_recently_checked_for_screen_reader_ = false;
 }
@@ -624,7 +636,7 @@ void BrowserAccessibilityStateImpl::OnPageNavigationComplete() {
 void BrowserAccessibilityStateImpl::OnWebContentsInitialized(
     WebContentsImpl* web_contents) {
   const ui::AXMode effective_mode = FilterAccessibilityModeInvariants(
-      GetAccessibilityMode() |
+      scoped_modes_for_process_.accessibility_mode() |
       ModeCollectionForTarget::GetAccessibilityMode(
           web_contents->GetBrowserContext()) |
       ui::AXMode());
@@ -656,7 +668,7 @@ void BrowserAccessibilityStateImpl::OnWebContentsRevealed(
   AccessibilityDisabler::Remove(web_contents);
 
   const ui::AXMode effective_mode = FilterAccessibilityModeInvariants(
-      GetAccessibilityMode() |
+      scoped_modes_for_process_.accessibility_mode() |
       ModeCollectionForTarget::GetAccessibilityMode(
           web_contents->GetBrowserContext()) |
       ModeCollectionForTarget::GetAccessibilityMode(web_contents));
@@ -769,11 +781,12 @@ void BrowserAccessibilityStateImpl::ApplyAccessibilityModeToWebContents(
   }  // else the WebContents will be updated when it is revealed.
 }
 
-// This ScopedModeCollection::Delegate override is called by
-// scoped_modes_for_process_ when the effective mode for the collection of
-// scopers targeting the process changes.
-void BrowserAccessibilityStateImpl::OnModeChanged(ui::AXMode old_mode,
-                                                  ui::AXMode new_mode) {
+void BrowserAccessibilityStateImpl::OnAnyModeChanged(ui::AXMode old_mode,
+                                                     ui::AXMode new_mode) {
+  // Strip kNativeAdaptedWebContents so it never pollutes process-wide UMA.
+  old_mode.set_mode(ui::AXMode::kNativeAdaptedWebContents, false);
+  new_mode.set_mode(ui::AXMode::kNativeAdaptedWebContents, false);
+
   ui::RecordAccessibilityModeHistograms(ui::AXHistogramPrefix::kNone, new_mode,
                                         old_mode);
   RecordPlatformClientHistograms(old_mode, new_mode);
@@ -800,6 +813,18 @@ void BrowserAccessibilityStateImpl::OnModeChanged(ui::AXMode old_mode,
     base::debug::SetCrashKeyString(ax_mode_crash_key, new_mode.ToString());
   }
 
+  // Handle additions to the mode flags.
+  if (const auto additions = new_mode & ~old_mode; !additions.is_mode_off()) {
+    // Broadcast the new mode flags, if any, to the AXModeObservers.
+    ax_platform_.NotifyModeAdded(additions);
+  }
+}
+
+// This ScopedModeCollection::Delegate override is called by
+// scoped_modes_for_process_ when the effective mode for the collection of
+// scopers targeting the process changes.
+void BrowserAccessibilityStateImpl::OnModeChanged(ui::AXMode old_mode,
+                                                  ui::AXMode new_mode) {
   // Combine the new mode for the process with the effective mode for each
   // WebContents and its associated BrowserContext.
   std::ranges::for_each(
@@ -815,19 +840,15 @@ void BrowserAccessibilityStateImpl::OnModeChanged(ui::AXMode old_mode,
         }
       });
 
-  // Handle additions to the process's mode flags.
-  if (const auto additions = new_mode & ~old_mode; !additions.is_mode_off()) {
-    // Broadcast the new mode flags, if any, to the AXModeObservers.
-    ax_platform_.NotifyModeAdded(additions);
-  }
+  OnAnyModeChanged(old_mode, GetAccessibilityMode());
 }
 
 // This ScopedModeCollection::Delegate override is called by
 // scoped_modes_for_process_ when recomputing the effective mode for the
 // collection of scopers targeting the process.
 ui::AXMode BrowserAccessibilityStateImpl::FilterModeFlags(ui::AXMode mode) {
-  if (activation_from_platform_enabled_) {
-    // Allow mode changes with `kFromPlatform`, but filter out that one bit.
+  if (activation_from_platform_enabled_ && allow_ax_mode_changes_) {
+    // Allow mode changes with kFromPlatform, but filter out that one bit.
     // It need not be sent to renderers.
     return mode & ~ui::AXMode(ui::AXMode::kFromPlatform);
   }
@@ -870,7 +891,8 @@ void BrowserAccessibilityStateImpl::OnModeChangedForBrowserContext(
   // `browser_context`.
   std::ranges::for_each(
       WebContentsImpl::GetAllWebContents(),
-      [this, browser_context, process_mode = GetAccessibilityMode(),
+      [this, browser_context,
+       process_mode = scoped_modes_for_process_.accessibility_mode(),
        new_mode](WebContentsImpl* web_contents) {
         if (!web_contents->IsBeingDestroyed() &&
             !web_contents->IsNeverComposited() &&
@@ -914,17 +936,23 @@ void BrowserAccessibilityStateImpl::OnModeChangedForWebContents(
     WebContents* web_contents,
     ui::AXMode old_mode,
     ui::AXMode new_mode) {
-  if (web_contents->IsBeingDestroyed()) {
-    return;
+  const ui::AXMode effective_old_mode = GetAccessibilityMode();
+  if (!web_contents->IsBeingDestroyed()) {
+    // Combine the effective modes for the process, `web_contents`'s
+    // BrowserContext, and for `web_contents`.
+    ApplyAccessibilityModeToWebContents(
+        static_cast<WebContentsImpl*>(web_contents),
+        scoped_modes_for_process_.accessibility_mode(),
+        ModeCollectionForTarget::GetAccessibilityMode(
+            web_contents->GetBrowserContext()),
+        new_mode);
   }
 
-  // Combine the effective modes for the process, `web_contents`'s
-  // BrowserContext, and for `web_contents.
-  ApplyAccessibilityModeToWebContents(
-      static_cast<WebContentsImpl*>(web_contents), GetAccessibilityMode(),
-      ModeCollectionForTarget::GetAccessibilityMode(
-          web_contents->GetBrowserContext()),
-      new_mode);
+  // On Android, `GetAccessibilityMode()` includes per-`WebContents` modes
+  // (whereas on other platforms this call is a no-op). Notify even if
+  // `web_contents` is being destroyed so closing the last active tab resets
+  // state.
+  OnAnyModeChanged(effective_old_mode, GetAccessibilityMode());
 }
 
 void BrowserAccessibilityStateImpl::OnFocusChangedInPage(

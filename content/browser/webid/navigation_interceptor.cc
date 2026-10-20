@@ -4,6 +4,8 @@
 
 #include "content/browser/webid/navigation_interceptor.h"
 
+#include "base/auto_reset.h"
+#include "base/compiler_specific.h"
 #include "base/functional/callback.h"
 #include "base/logging.h"
 #include "base/strings/string_split.h"
@@ -28,10 +30,38 @@
 #include "services/data_decoder/public/cpp/data_decoder.h"
 #include "services/network/public/cpp/resource_request_body.h"
 #include "services/service_manager/public/cpp/interface_provider.h"
-#include "third_party/blink/public/mojom/webid/federated_auth_request.mojom.h"
+#include "third_party/blink/public/mojom/webid/federated_request.mojom.h"
 #include "url/gurl.h"
 
 namespace content::webid {
+
+namespace {
+
+std::string* GetIfString(net::structured_headers::Dictionary& dict
+                             LIFETIME_BOUND,
+                         std::string_view key) {
+  auto it = dict.find(key);
+  if (it == dict.end()) {
+    return nullptr;
+  }
+  net::structured_headers::ParameterizedItem* item = it->second.GetIfItem();
+  if (!item) {
+    return nullptr;
+  }
+  return item->item.GetIfString();
+}
+
+std::optional<std::string> TakeIfString(
+    net::structured_headers::Dictionary& dict,
+    std::string_view key) {
+  std::string* str = GetIfString(dict, key);
+  return str ? std::make_optional(std::move(*str)) : std::nullopt;
+}
+
+}  // namespace
+
+using MediationRequirement = ::password_manager::CredentialMediationRequirement;
+using RequestTokenCallback = RequestHandler::RequestTokenCallback;
 
 // static
 void NavigationInterceptor::MaybeCreateAndAdd(
@@ -48,16 +78,25 @@ NavigationInterceptor::NavigationInterceptor(
     : NavigationInterceptor(
           registry,
           base::BindRepeating(
-              [](content::RenderFrameHost* rfh) -> RequestService* {
-                return webid::RequestService::GetOrCreateForCurrentDocument(
-                    rfh);
+              [](RenderFrameHost* rfh,
+                 std::vector<blink::mojom::IdentityProviderGetParametersPtr>
+                     idp_get_params,
+                 MediationRequirement requirement,
+                 NavigationHandle* navigation_handle,
+                 const GURL& intercepted_url,
+                 RequestTokenCallback callback) -> bool {
+                return RequestService::GetOrCreateForCurrentDocument(rfh)
+                    ->StartTokenRequestFromNavigation(
+                        std::move(idp_get_params), requirement,
+                        navigation_handle, intercepted_url,
+                        std::move(callback));
               })) {}
 
 NavigationInterceptor::NavigationInterceptor(
     NavigationThrottleRegistry& registry,
-    RequestServiceBuilder service_builder)
-    : content::NavigationThrottle(registry),
-      service_builder_(std::move(service_builder)) {}
+    RequestInitiator request_initiator)
+    : NavigationThrottle(registry),
+      request_initiator_(std::move(request_initiator)) {}
 
 NavigationInterceptor::~NavigationInterceptor() = default;
 
@@ -67,7 +106,7 @@ NavigationInterceptor::WillStartRequest() {
   // navigation would commit to, but we will abort that navigation, so we want
   // to initiate the request in the current RFH for the target frame, so we look
   // that up here.
-  content::RenderFrameHost* rfh = RenderFrameHost::FromID(
+  RenderFrameHost* rfh = RenderFrameHost::FromID(
       navigation_handle()->GetPreviousRenderFrameHostId());
   document_ = rfh->GetWeakDocumentPtr();
   return PROCEED;
@@ -75,16 +114,22 @@ NavigationInterceptor::WillStartRequest() {
 
 NavigationThrottle::ThrottleCheckResult
 NavigationInterceptor::WillRedirectRequest() {
-  return ProcessRequest();
+  // Despite the name of this method, the request was already redirected when
+  // this invoked. This implies that the headers we're about to process came
+  // from the 2nd to last URL on the redirect chain.
+  const std::vector<GURL>& redirect_chain =
+      navigation_handle()->GetRedirectChain();
+  CHECK_GE(redirect_chain.size(), 2u);
+  return ProcessRequest(redirect_chain[redirect_chain.size() - 2]);
 }
 
 NavigationThrottle::ThrottleCheckResult
 NavigationInterceptor::WillProcessResponse() {
-  return ProcessRequest();
+  return ProcessRequest(navigation_handle()->GetURL());
 }
 
-NavigationThrottle::ThrottleCheckResult
-NavigationInterceptor::ProcessRequest() {
+NavigationThrottle::ThrottleCheckResult NavigationInterceptor::ProcessRequest(
+    const GURL& intercepted_url) {
   if (!document_.AsRenderFrameHostIfValid()) {
     // Some other navigation has happened in the meantime.
     return PROCEED;
@@ -123,7 +168,7 @@ NavigationInterceptor::ProcessRequest() {
     return PROCEED;
   }
 
-  content::RenderFrameHost* rfh = document_.AsRenderFrameHostIfValid();
+  RenderFrameHost* rfh = document_.AsRenderFrameHostIfValid();
 
   if (!rfh) {
     return PROCEED;
@@ -165,7 +210,7 @@ NavigationInterceptor::ProcessRequest() {
       data_decoder::DataDecoder::ParseStructuredHeaderDictionaryIsolated(
           *connection_status_header,
           base::BindOnce(&NavigationInterceptor::OnConnectionStatusHeaderParsed,
-                         weak_ptr_factory_.GetWeakPtr()));
+                         weak_ptr_factory_.GetWeakPtr(), intercepted_url));
     } else {
       return PROCEED;
     }
@@ -173,7 +218,7 @@ NavigationInterceptor::ProcessRequest() {
     data_decoder::DataDecoder::ParseStructuredHeaderDictionaryIsolated(
         *intercept_header,
         base::BindOnce(&NavigationInterceptor::OnHeaderParsed,
-                       weak_ptr_factory_.GetWeakPtr()));
+                       weak_ptr_factory_.GetWeakPtr(), intercepted_url));
   } else {
     return PROCEED;
   }
@@ -187,8 +232,9 @@ NavigationInterceptor::ProcessRequest() {
 }
 
 void NavigationInterceptor::OnConnectionStatusHeaderParsed(
+    const GURL& intercepted_url,
     base::expected<net::structured_headers::Dictionary, std::string> result) {
-  content::RenderFrameHost* rfh = document_.AsRenderFrameHostIfValid();
+  RenderFrameHost* rfh = document_.AsRenderFrameHostIfValid();
   if (!rfh) {
     // The document is no longer valid, likely because the target frame has
     // navigated in the meantime.
@@ -211,23 +257,14 @@ void NavigationInterceptor::OnConnectionStatusHeaderParsed(
     return;
   }
 
-  auto it = result->find("status");
-  if (it != result->end() && it->second.member.size() == 1 &&
-      it->second.member[0].item.is_string() &&
-      it->second.member[0].item.GetString() == "connected") {
-    std::optional<std::string> account_id;
-    auto account_id_it = result->find("account_id");
-    if (account_id_it != result->end() &&
-        account_id_it->second.member.size() == 1 &&
-        account_id_it->second.member[0].item.is_string()) {
-      account_id = account_id_it->second.member[0].item.GetString();
-    }
-
+  if (const std::string* status = GetIfString(*result, "status");
+      status && *status == "connected") {
     // The server can send this header without embedder login request.
-    if (net::SchemefulSite::IsSameSite(
-            embedder_login_request->idp_origin(),
-            url::Origin::Create(navigation_handle()->GetURL()))) {
-      if (account_id == embedder_login_request->account_id()) {
+    if (net::SchemefulSite::IsSameSite(embedder_login_request->idp_origin(),
+                                       url::Origin::Create(intercepted_url))) {
+      const std::string* account_id = GetIfString(*result, "account_id");
+
+      if (account_id && *account_id == embedder_login_request->account_id()) {
         embedder_login_request->OnFederatedResultReceived(
             FederatedLoginResult::kSuccess);
       } else {
@@ -242,8 +279,9 @@ void NavigationInterceptor::OnConnectionStatusHeaderParsed(
 }
 
 void NavigationInterceptor::OnHeaderParsed(
+    const GURL& intercepted_url,
     base::expected<net::structured_headers::Dictionary, std::string> result) {
-  content::RenderFrameHost* rfh = document_.AsRenderFrameHostIfValid();
+  RenderFrameHost* rfh = document_.AsRenderFrameHostIfValid();
   if (!rfh) {
     // The document is no longer valid, likely because the target frame has
     // navigated in the meantime.
@@ -261,7 +299,7 @@ void NavigationInterceptor::OnHeaderParsed(
 
   RequestBuilder request_builder;
   auto idp_get_params_vector =
-      request_builder.Build(navigation_handle()->GetURL(), *result);
+      request_builder.Build(intercepted_url, *std::move(result));
 
   if (!idp_get_params_vector) {
     // The header was available, parsed, but contained an invalid set of
@@ -271,12 +309,25 @@ void NavigationInterceptor::OnHeaderParsed(
     return;
   }
 
-  service_builder_.Run(rfh)->RequestToken(
-      std::move(*idp_get_params_vector),
-      password_manager::CredentialMediationRequirement::kOptional,
-      navigation_handle(),
-      base::BindOnce(&NavigationInterceptor::OnTokenResponse,
-                     weak_ptr_factory_.GetWeakPtr()));
+  should_cancel_ = false;
+
+  bool started = false;
+  {
+    base::AutoReset<bool> inside_guard(&is_inside_onheaderparsed_, true);
+    started = request_initiator_.Run(
+        rfh, std::move(*idp_get_params_vector),
+        password_manager::CredentialMediationRequirement::kOptional,
+        navigation_handle(), intercepted_url,
+        base::BindOnce(&NavigationInterceptor::OnTokenResponse,
+                       weak_ptr_factory_.GetWeakPtr()));
+  }
+
+  // If the synchronous callback requested a cancellation, perform it now.
+  if (should_cancel_) {
+    CancelDeferredNavigation(CANCEL);
+  } else if (!started) {
+    Resume();
+  }
 }
 
 void NavigationInterceptor::OnTokenResponse(
@@ -285,10 +336,27 @@ void NavigationInterceptor::OnTokenResponse(
     std::optional<base::Value> token,
     blink::mojom::TokenErrorPtr error,
     bool is_auto_selected) {
+  if (status == blink::mojom::RequestTokenStatus::kErrorTooManyRequests) {
+    // A token request was not actually started, so we shouldn't cancel the
+    // original navigation. Let it proceed.
+    return;
+  }
+
+  if (is_inside_onheaderparsed_) {
+    // If the callback evaluates synchronously inside `Run()`, we cannot call
+    // `CancelDeferredNavigation(CANCEL)` immediately because that would
+    // synchronously destroy this `NavigationInterceptor` instance while
+    // `OnHeaderParsed` is still using the instance to continue its execution,
+    // leading to a UAF. Instead, signal an intent to cancel and let
+    // `OnHeaderParsed` perform the cancellation after `Run()` finishes.
+    should_cancel_ = true;
+    return;
+  }
+
   // The token response is not used in the navigation interception flow because
   // the IdP is expected to respond with a "redirect_to" field which is handled
-  // in RequestService.
-  // We cancel this specific navigation, assuming that the RequestService
+  // in RequestHandler.
+  // We cancel this specific navigation, assuming that the RequestHandler
   // will have already started a new navigation.
   CancelDeferredNavigation(CANCEL);
 }
@@ -300,18 +368,8 @@ const char* NavigationInterceptor::GetNameForLogging() {
 std::optional<std::vector<blink::mojom::IdentityProviderGetParametersPtr>>
 NavigationInterceptor::RequestBuilder::Build(
     const GURL& base_url,
-    const net::structured_headers::Dictionary& dictionary) {
-  auto get_string =
-      [&dictionary](const std::string& key) -> std::optional<std::string> {
-    auto it = dictionary.find(key);
-    if (it == dictionary.end() || it->second.member.size() != 1 ||
-        !it->second.member[0].item.is_string()) {
-      return std::nullopt;
-    }
-    return it->second.member[0].item.GetString();
-  };
-
-  auto config_url_str = get_string("config_url");
+    net::structured_headers::Dictionary dict) {
+  const std::string* config_url_str = GetIfString(dict, "config_url");
   if (!config_url_str) {
     return std::nullopt;
   }
@@ -323,33 +381,34 @@ NavigationInterceptor::RequestBuilder::Build(
     return std::nullopt;
   }
 
-  auto client_id = get_string("client_id");
+  std::string* client_id = GetIfString(dict, "client_id");
   if (!client_id) {
     return std::nullopt;
   }
 
   auto idp_options = blink::mojom::IdentityProviderRequestOptions::New();
 
-  idp_options->login_hint = get_string("login_hint").value_or("");
-  idp_options->domain_hint = get_string("domain_hint").value_or("");
-  idp_options->params_json = get_string("params");
+  idp_options->login_hint = TakeIfString(dict, "login_hint").value_or("");
+  idp_options->domain_hint = TakeIfString(dict, "domain_hint").value_or("");
+  idp_options->params_json = TakeIfString(dict, "params");
 
-  auto fields_it = dictionary.find("fields");
-  if (fields_it != dictionary.end()) {
-    std::vector<std::string> fields;
-    for (const auto& member_item : fields_it->second.member) {
-      if (!member_item.item.is_string()) {
-        return std::nullopt;
+  if (auto it = dict.find("fields"); it != dict.end()) {
+    if (net::structured_headers::InnerList* inner_list =
+            it->second.GetIfInnerList()) {
+      std::vector<std::string> fields;
+      for (auto& member_item : inner_list->items) {
+        std::string* field_str = member_item.item.GetIfString();
+        if (!field_str) {
+          return std::nullopt;
+        }
+        fields.emplace_back(std::move(*field_str));
       }
-      const std::string& field_str = member_item.item.GetString();
-      fields.push_back(field_str);
+      idp_options->fields = std::move(fields);
     }
-    idp_options->fields = fields;
   }
 
   blink::mojom::RpContext context = blink::mojom::RpContext::kSignIn;
-  auto context_string = get_string("context");
-  if (context_string) {
+  if (const std::string* context_string = GetIfString(dict, "context")) {
     if (*context_string == "signin") {
       context = blink::mojom::RpContext::kSignIn;
     } else if (*context_string == "signup") {
@@ -365,9 +424,9 @@ NavigationInterceptor::RequestBuilder::Build(
   }
 
   auto idp_config = blink::mojom::IdentityProviderConfig::New();
-  idp_config->config_url = config_url;
+  idp_config->config_url = std::move(config_url);
 
-  idp_config->client_id = *client_id;
+  idp_config->client_id = std::move(*client_id);
 
   idp_options->config = std::move(idp_config);
 
@@ -389,7 +448,7 @@ NavigationInterceptor::RequestBuilder::Build(
   return idp_get_params_vector;
 }
 
-std::optional<content::NavigationController::LoadURLParams>
+std::optional<NavigationController::LoadURLParams>
 NavigationInterceptor::ResponseBuilder::Build(const base::Value& response) {
   if (!response.is_dict()) {
     return std::nullopt;
@@ -412,7 +471,7 @@ NavigationInterceptor::ResponseBuilder::Build(const base::Value& response) {
       return std::nullopt;
     }
 
-    content::NavigationController::LoadURLParams navigation(url);
+    NavigationController::LoadURLParams navigation(url);
     navigation.transition_type = ui::PAGE_TRANSITION_LINK;
     return navigation;
   }
@@ -444,7 +503,7 @@ NavigationInterceptor::ResponseBuilder::Build(const base::Value& response) {
     return std::nullopt;
   }
 
-  content::NavigationController::LoadURLParams submission(url);
+  NavigationController::LoadURLParams submission(url);
   submission.transition_type = ui::PAGE_TRANSITION_FORM_SUBMIT;
 
   if (method == "POST") {

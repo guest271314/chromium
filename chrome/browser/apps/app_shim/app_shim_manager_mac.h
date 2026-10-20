@@ -18,6 +18,7 @@
 #include "base/functional/callback_forward.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
+#include "base/scoped_multi_source_observation.h"
 #include "base/scoped_observation.h"
 #include "chrome/browser/apps/app_shim/app_shim_host_bootstrap_mac.h"
 #include "chrome/browser/apps/app_shim/app_shim_host_mac.h"
@@ -26,8 +27,8 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_manager_observer.h"
 #include "chrome/browser/profiles/profile_observer.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_window/public/browser_collection_observer.h"
+#include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/common/mac/app_shim.mojom.h"
 #include "chrome/services/mac_notifications/public/mojom/mac_notifications.mojom.h"
 #include "components/webapps/common/web_app_id.h"
@@ -157,12 +158,12 @@ class AppShimManager
   // it. If an AppShimHost had to be created (e.g, because the app process is
   // still launching), create one, which will bind to the app process when it
   // finishes launching.
-  AppShimHost* GetHostForRemoteCocoaBrowser(Browser* browser);
+  AppShimHost* GetHostForRemoteCocoaBrowser(BrowserWindowInterface* browser);
 
   // Returns true if the specified `browser` should be using RemoteCocoa. This
   // is equivalent to `GetHostForRemoteCocoaBrowser` return a non-null value,
   // except that this method does not cause an AppShimHost to be created.
-  bool BrowserUsesRemoteCocoa(Browser* browser);
+  bool BrowserUsesRemoteCocoa(BrowserWindowInterface* browser);
 
   // Return true if any non-bookmark app windows open.
   bool HasNonBookmarkAppWindowsOpen();
@@ -170,21 +171,33 @@ class AppShimManager
   // Called when the launch of the app was cancelled by the user. For example,
   // if the user clicks cancel during a protocol launch.
   void OnAppLaunchCancelled(content::BrowserContext* context,
-                            const std::string& app_id);
+                            const webapps::AppId& app_id);
 
   void UpdateAppBadge(
       Profile* profile,
       const webapps::AppId& app_id,
       const std::optional<badging::BadgeManager::BadgeValue>& badge);
 
+  // LINT.IfChange(AppShimNotificationProviderOutcome)
+  // These values are persisted to logs. Entries should not be renumbered and
+  // numeric values should never be reused.
+  enum class NotificationProviderOutcome {
+    kBoundToExistingHost = 0,
+    kLaunchedNewShim = 1,
+    kNoProfileForBackgroundLaunch = 2,
+    kShuttingDown = 3,
+    kMaxValue = kShuttingDown,
+  };
+  // LINT.ThenChange(//tools/metrics/histograms/metadata/apps/enums.xml:AppShimNotificationProviderOutcome)
+
   // Called to connect to a MacNotificationProvider instance in the app shim
   // process for the given app_id. This is only supported for multi-profile
   // app shims; but only legacy platform apps would use single-profile shims
   // anyway.
-  // If there is no running app shim matching `app_id`, currently this method
-  // instead returns a remote connected to a dummy notification provider. In
-  // the future this will instead launch an app shim for `app_id` and connect
-  // to that.
+  // If there is no running app shim matching `app_id`, this method will
+  // launch an app shim in the background for `app_id` and connect to that, or
+  // return a remote connected to a dummy notification provider if no profile
+  // with `app_id` installed is available.
   mojo::Remote<mac_notifications::mojom::MacNotificationProvider>
   LaunchNotificationProvider(const webapps::AppId& app_id);
 
@@ -237,6 +250,7 @@ class AppShimManager
   void OnShimWillTerminate(AppShimHost* host) override;
   void OnNotificationPermissionStatusChanged(
       AppShimHost* host,
+      std::optional<mac_notifications::mojom::PermissionStatus> previous_status,
       mac_notifications::mojom::PermissionStatus status) override;
 
   // AppLifetimeMonitor::Observer overrides:
@@ -289,8 +303,6 @@ class AppShimManager
   void LoadAndLaunchAppForTesting(const webapps::AppId& app_id);
 
  protected:
-  typedef std::set<Browser*> BrowserSet;
-
   // Virtual for tests.
   virtual void IsAcceptablyCodeSigned(
       audit_token_t audit_token,

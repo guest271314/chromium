@@ -13,7 +13,7 @@
 import {assert} from 'chrome://resources/js/assert.js';
 import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
 
-import {androidAppsVisible, isAppParentalControlsFeatureAvailable, isArcVmEnabled, isCrostiniSupported, isGuest, isKerberosEnabled, isPluginVmAvailable} from './common/load_time_booleans.js';
+import {androidAppsVisible, isAppParentalControlsFeatureAvailable, isArcVmEnabled, isCrostiniSupported, isGuest, isKerberosEnabled} from './common/load_time_booleans.js';
 import * as routesMojom from './mojom-webui/routes.mojom-webui.js';
 
 /**
@@ -148,8 +148,6 @@ export interface OsSettingsRoutes extends MinimumRoutes {
   APP_NOTIFICATIONS_MANAGER: Route;
   APP_MANAGEMENT: Route;
   APP_MANAGEMENT_DETAIL: Route;
-  APP_MANAGEMENT_PLUGIN_VM_SHARED_PATHS: Route;
-  APP_MANAGEMENT_PLUGIN_VM_SHARED_USB_DEVICES: Route;
   APP_PARENTAL_CONTROLS: Route;
   APPS: Route;
   ANDROID_APPS_DETAILS: Route;
@@ -373,22 +371,20 @@ export function createRoutes(): OsSettingsRoutes {
       r.PER_DEVICE_KEYBOARD,
       routesMojom.PER_DEVICE_KEYBOARD_REMAP_KEYS_SUBPAGE_PATH,
       Subpage.kPerDeviceKeyboardRemapKeys);
-  if (loadTimeData.getBoolean('enablePeripheralCustomization')) {
-    r.GRAPHICS_TABLET = createSubpage(
-        r.DEVICE, routesMojom.GRAPHICS_TABLET_SUBPAGE_PATH,
-        Subpage.kGraphicsTablet);
-    if (r.PER_DEVICE_MOUSE) {
-      r.CUSTOMIZE_MOUSE_BUTTONS = createSubpage(
-          r.PER_DEVICE_MOUSE, routesMojom.CUSTOMIZE_MOUSE_BUTTONS_SUBPAGE_PATH,
-          Subpage.kCustomizeMouseButtons);
-    }
-    r.CUSTOMIZE_TABLET_BUTTONS = createSubpage(
-        r.GRAPHICS_TABLET, routesMojom.CUSTOMIZE_TABLET_BUTTONS_SUBPAGE_PATH,
-        Subpage.kCustomizeTabletButtons);
-    r.CUSTOMIZE_PEN_BUTTONS = createSubpage(
-        r.GRAPHICS_TABLET, routesMojom.CUSTOMIZE_PEN_BUTTONS_SUBPAGE_PATH,
-        Subpage.kCustomizePenButtons);
+  r.GRAPHICS_TABLET = createSubpage(
+      r.DEVICE, routesMojom.GRAPHICS_TABLET_SUBPAGE_PATH,
+      Subpage.kGraphicsTablet);
+  if (r.PER_DEVICE_MOUSE) {
+    r.CUSTOMIZE_MOUSE_BUTTONS = createSubpage(
+        r.PER_DEVICE_MOUSE, routesMojom.CUSTOMIZE_MOUSE_BUTTONS_SUBPAGE_PATH,
+        Subpage.kCustomizeMouseButtons);
   }
+  r.CUSTOMIZE_TABLET_BUTTONS = createSubpage(
+      r.GRAPHICS_TABLET, routesMojom.CUSTOMIZE_TABLET_BUTTONS_SUBPAGE_PATH,
+      Subpage.kCustomizeTabletButtons);
+  r.CUSTOMIZE_PEN_BUTTONS = createSubpage(
+      r.GRAPHICS_TABLET, routesMojom.CUSTOMIZE_PEN_BUTTONS_SUBPAGE_PATH,
+      Subpage.kCustomizePenButtons);
 
   // Personalization section.
   r.PERSONALIZATION = createSection(
@@ -418,14 +414,6 @@ export function createRoutes(): OsSettingsRoutes {
           routesMojom.ARC_VM_USB_PREFERENCES_SUBPAGE_PATH,
           Subpage.kArcVmUsbPreferences);
     }
-  }
-  if (isPluginVmAvailable()) {
-    r.APP_MANAGEMENT_PLUGIN_VM_SHARED_PATHS = createSubpage(
-        r.APP_MANAGEMENT, routesMojom.PLUGIN_VM_SHARED_PATHS_SUBPAGE_PATH,
-        Subpage.kPluginVmSharedPaths);
-    r.APP_MANAGEMENT_PLUGIN_VM_SHARED_USB_DEVICES = createSubpage(
-        r.APP_MANAGEMENT, routesMojom.PLUGIN_VM_USB_PREFERENCES_SUBPAGE_PATH,
-        Subpage.kPluginVmUsbPreferences);
   }
 
   if (isAppParentalControlsFeatureAvailable()) {

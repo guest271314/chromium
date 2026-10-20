@@ -2,7 +2,6 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-import("//build/config/chromeos/ui_mode.gni")
 import("//build/config/rust.gni")
 import("//build/symlink.gni")
 import("//build/toolchain/toolchain.gni")
@@ -105,9 +104,8 @@ template("copy_exe") {
     # TODO(danakj): The fuzzer_test() template sometimes doesn't generate
     # anything, but we can't tell from here whether it did or not. We can only
     # depend on the target when it will build something. It should provide some
-    # way to know if it builds. For now we know that the fuzzer_test in this
-    # file is not built with `high_end_fuzzer_targets`.
-    if ((!use_libfuzzer && !use_centipede) || high_end_fuzzer_targets) {
+    # way to know if it builds.
+    if (!use_libfuzzer && !use_centipede) {
       _build = false
     }
   }
@@ -163,7 +161,7 @@ config("client_config") {
   if (is_android) {
     include_dirs += [ "breakpad/src/common/android/include" ]
   }
-  if (is_chromeos_ash) {
+  if (is_chromeos) {
     defines = [ "__CHROMEOS__" ]
   }
 }
@@ -425,14 +423,17 @@ if (!is_win) {
       has_exe_suffix = _tests_launcher_toolchain_has_exe_suffix
       target = ":$target_name($_tests_launcher_toolchain)"
     }
+
     copy_exe("minidump_stackwalk") {
       has_exe_suffix = _tests_launcher_toolchain_has_exe_suffix
       target = ":$target_name($_tests_launcher_toolchain)"
     }
+
     copy_exe("minidump_dump") {
       has_exe_suffix = _tests_launcher_toolchain_has_exe_suffix
       target = ":$target_name($_tests_launcher_toolchain)"
     }
+
     copy_exe("minidump_fuzzer") {
       testonly = true
       fuzzer = true
@@ -500,6 +501,7 @@ if (is_mac) {
       include_dirs += [ "//third_party/rust/chromium_crates_io/vendor/rustc-demangle-capi-v0_1/include" ]
       sources += [ "//third_party/rust/chromium_crates_io/vendor/rustc-demangle-capi-v0_1/include/rustc_demangle.h" ]
     }
+
     test("breakpad_unittests") {
       sources = [ "breakpad/src/common/module_unittest.cc" ]
       deps = [
@@ -566,10 +568,12 @@ if (is_mac) {
         has_exe_suffix = _tests_launcher_toolchain_has_exe_suffix
         target = ":$target_name($_tests_launcher_toolchain)"
       }
+
       copy_exe("minidump-2-core") {
         has_exe_suffix = _tests_launcher_toolchain_has_exe_suffix
         target = ":$target_name($_tests_launcher_toolchain)"
       }
+
       copy_exe("core-2-minidump") {
         has_exe_suffix = _tests_launcher_toolchain_has_exe_suffix
         target = ":$target_name($_tests_launcher_toolchain)"
@@ -582,10 +586,12 @@ if (is_mac) {
       has_exe_suffix = _tests_launcher_toolchain_has_exe_suffix
       target = ":$target_name($_tests_launcher_toolchain)"
     }
+
     copy_exe("symupload") {
       has_exe_suffix = _symupload_toolchain_has_exe_suffix
       target = ":$target_name($_symupload_toolchain)"
     }
+
     copy_exe("breakpad_unittests") {
       testonly = true
       has_exe_suffix = _tests_launcher_toolchain_has_exe_suffix
@@ -645,6 +651,7 @@ if (is_ios) {
       has_exe_suffix = _tests_launcher_toolchain_has_exe_suffix
       target = ":$target_name($_tests_launcher_toolchain)"
     }
+
     copy_exe("symupload") {
       has_exe_suffix = _symupload_toolchain_has_exe_suffix
       target = ":$target_name($_symupload_toolchain)"
@@ -761,6 +768,7 @@ if (is_linux || is_chromeos || is_android) {
       has_exe_suffix = _tests_launcher_toolchain_has_exe_suffix
       target = ":$target_name($_tests_launcher_toolchain)"
     }
+
     copy_exe("symupload") {
       has_exe_suffix = _symupload_toolchain_has_exe_suffix
       target = ":$target_name($_symupload_toolchain)"
@@ -836,7 +844,7 @@ if (is_linux || is_chromeos || is_android) {
     configs += [ "//build/config/compiler:no_chromium_code" ]
     public_configs = [ ":client_config" ]
 
-    if (current_cpu == "arm" && is_chromeos_ash) {
+    if (current_cpu == "arm" && is_chromeos) {
       # Avoid running out of registers in
       # linux_syscall_support.h:sys_clone()'s inline assembly.
       cflags = [ "-marm" ]
@@ -1028,10 +1036,12 @@ if (is_linux || is_chromeos || is_android) {
       has_exe_suffix = _tests_launcher_toolchain_has_exe_suffix
       target = ":$target_name($_tests_launcher_toolchain)"
     }
+
     copy_exe("minidump-2-core") {
       has_exe_suffix = _tests_launcher_toolchain_has_exe_suffix
       target = ":$target_name($_tests_launcher_toolchain)"
     }
+
     copy_exe("core-2-minidump") {
       has_exe_suffix = _tests_launcher_toolchain_has_exe_suffix
       target = ":$target_name($_tests_launcher_toolchain)"
@@ -1202,10 +1212,12 @@ if (is_win) {
         target = ":$target_name($_tests_launcher_toolchain)"
       }
     }
+
     copy_exe("symupload") {
       has_exe_suffix = _symupload_toolchain_has_exe_suffix
       target = ":$target_name($_symupload_toolchain)"
     }
+
     copy_exe("dump_syms") {
       has_exe_suffix = _tests_launcher_toolchain_has_exe_suffix
       target = ":$target_name($_tests_launcher_toolchain)"

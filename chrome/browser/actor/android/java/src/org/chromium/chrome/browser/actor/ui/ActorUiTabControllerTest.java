@@ -15,6 +15,7 @@ import static org.mockito.Mockito.verify;
 
 import android.app.Activity;
 
+import org.junit.After;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
@@ -25,8 +26,9 @@ import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 import org.robolectric.Robolectric;
-import org.robolectric.annotation.Config;
 
+import org.chromium.base.Callback;
+import org.chromium.base.JniOnceCallback;
 import org.chromium.base.UserDataHost;
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.util.Features.EnableFeatures;
@@ -37,6 +39,7 @@ import org.chromium.chrome.browser.actor.ui.ActorUiTabController.ActorOverlaySta
 import org.chromium.chrome.browser.actor.ui.ActorUiTabController.HandoffButtonState;
 import org.chromium.chrome.browser.actor.ui.ActorUiTabController.UiTabState;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
+import org.chromium.chrome.browser.glic.GlicEnabling;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.ui.base.WindowAndroid;
@@ -44,10 +47,10 @@ import org.chromium.ui.modaldialog.ModalDialogManager;
 import org.chromium.ui.modaldialog.ModalDialogManager.ModalDialogType;
 import org.chromium.ui.modaldialog.ModalDialogProperties;
 import org.chromium.ui.modelutil.PropertyModel;
+import org.chromium.url.GURL;
 
 /** Tests for {@link ActorUiTabController}. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 @EnableFeatures(ChromeFeatureList.GLIC)
 public class ActorUiTabControllerTest {
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
@@ -57,7 +60,8 @@ public class ActorUiTabControllerTest {
     @Mock private ModalDialogManager mModalDialogManager;
     @Mock private Profile mProfile;
     @Mock private ActorKeyedService mActorKeyedService;
-    @Mock private Runnable mRunnable;
+    @Mock private Callback<Boolean> mCallback;
+    @Mock private JniOnceCallback<Boolean> mNavigationConfirmedCallback;
 
     @Captor private ArgumentCaptor<PropertyModel> mPropertyModelCaptor;
 
@@ -75,14 +79,20 @@ public class ActorUiTabControllerTest {
         doReturn(mActivity).when(mTab).getContext();
         doReturn(mProfile).when(mTab).getProfile();
         ActorKeyedServiceFactory.setForTesting(mActorKeyedService);
+        GlicEnabling.setEnabledForTesting(true);
 
         mController = ActorUiTabController.from(mTab);
+    }
+
+    @After
+    public void tearDown() {
+        GlicEnabling.setEnabledForTesting(false);
     }
 
     @Test
     public void testShowTaskAbortConfirmationDialog_actorInactive() {
         // Actor is inactive by default.
-        assertFalse(mController.showTaskAbortConfirmationDialog(mRunnable));
+        assertFalse(mController.showTaskAbortConfirmationDialog(mCallback));
         verify(mModalDialogManager, never()).showDialog(any(), anyInt());
     }
 
@@ -99,7 +109,7 @@ public class ActorUiTabControllerTest {
         UiTabState activeState = new UiTabState(1, activeOverlayState, handoffState, 0, false);
         mController.onUiTabStateChange(activeState);
 
-        assertTrue(mController.showTaskAbortConfirmationDialog(mRunnable));
+        assertTrue(mController.showTaskAbortConfirmationDialog(mCallback));
         verify(mModalDialogManager)
                 .showDialog(mPropertyModelCaptor.capture(), eq(ModalDialogType.APP));
 
@@ -112,8 +122,65 @@ public class ActorUiTabControllerTest {
         // Verify Glic task was stopped.
         verify(mActorKeyedService).stopTask(taskId, StoppedReason.USER_NAVIGATED_AWAY);
 
-        // Verify navigation Runnable was executed.
-        verify(mRunnable).run();
+        // Verify callback was executed with true.
+        verify(mCallback).onResult(true);
+    }
+
+    @Test
+    public void testShowTaskAbortConfirmationDialog_callback_cancelled() {
+        int taskId = 123;
+        int tabId = 456;
+        doReturn(tabId).when(mTab).getId();
+        doReturn(taskId).when(mActorKeyedService).getActiveTaskIdOnTab(tabId);
+
+        // Set Actor active.
+        ActorOverlayState activeOverlayState = new ActorOverlayState(true, false, false);
+        HandoffButtonState handoffState = new HandoffButtonState(false, 0);
+        UiTabState activeState = new UiTabState(1, activeOverlayState, handoffState, 0, false);
+        mController.onUiTabStateChange(activeState);
+
+        assertTrue(mController.showTaskAbortConfirmationDialog(mCallback));
+        verify(mModalDialogManager)
+                .showDialog(mPropertyModelCaptor.capture(), eq(ModalDialogType.APP));
+
+        PropertyModel model = mPropertyModelCaptor.getValue();
+        ModalDialogProperties.Controller controller = model.get(ModalDialogProperties.CONTROLLER);
+
+        // Simulate negative button click (cancel/stay on site)
+        controller.onClick(model, ModalDialogProperties.ButtonType.NEGATIVE);
+
+        // Verify Glic task was NOT stopped.
+        verify(mActorKeyedService, never()).stopTask(anyInt(), anyInt());
+
+        // Verify callback was executed with false.
+        verify(mCallback).onResult(false);
+    }
+
+    @Test
+    public void testMaybeDeferNavigation_showsDialog() {
+        assertTrue(
+                ActorUiTabController.maybeDeferNavigation(
+                        mTab, GURL.emptyGURL(), mNavigationConfirmedCallback));
+        verify(mModalDialogManager)
+                .showDialog(mPropertyModelCaptor.capture(), eq(ModalDialogType.APP));
+        verify(mNavigationConfirmedCallback, never()).destroy();
+
+        PropertyModel model = mPropertyModelCaptor.getValue();
+        model.get(ModalDialogProperties.CONTROLLER)
+                .onClick(model, ModalDialogProperties.ButtonType.POSITIVE);
+        verify(mNavigationConfirmedCallback).onResult(true);
+    }
+
+    @Test
+    public void testMaybeDeferNavigation_noWindow_destroysCallback() {
+        doReturn(null).when(mTab).getWindowAndroid();
+
+        assertFalse(
+                ActorUiTabController.maybeDeferNavigation(
+                        mTab, GURL.emptyGURL(), mNavigationConfirmedCallback));
+        verify(mModalDialogManager, never()).showDialog(any(), anyInt());
+        verify(mNavigationConfirmedCallback, never()).onResult(any());
+        verify(mNavigationConfirmedCallback).destroy();
     }
 
     @Test

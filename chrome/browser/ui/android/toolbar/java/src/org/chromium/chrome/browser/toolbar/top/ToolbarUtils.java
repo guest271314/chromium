@@ -40,14 +40,18 @@ public class ToolbarUtils {
                 ToolbarComponentId.POPPED_EXTENSION_ACTION,
                 ToolbarComponentId.BACK,
                 ToolbarComponentId.INCOGNITO_INDICATOR,
-                ToolbarComponentId.SIGNIN_BUTTON,
                 ToolbarComponentId.ADAPTIVE_BUTTON,
+                ToolbarComponentId.SIGNIN_BUTTON,
+                ToolbarComponentId.DOWNLOAD_BUTTON,
                 ToolbarComponentId.RELOAD,
                 ToolbarComponentId.FORWARD,
                 ToolbarComponentId.HOME,
                 ToolbarComponentId.EXTENSIONS_MENU_BUTTON,
                 ToolbarComponentId.EXTENSIONS_REQUEST_ACCESS_BUTTON,
                 ToolbarComponentId.EXTENSION_ACTION_LIST,
+                ToolbarComponentId.GLIC_ICON,
+                ToolbarComponentId.GLIC_TEXT,
+                ToolbarComponentId.AI_OVERLAY_MICROPHONE_BUTTON,
                 ToolbarComponentId.OMNIBOX_BOOKMARK,
                 ToolbarComponentId.OMNIBOX_CHIP_COLLAPSED,
                 ToolbarComponentId.OMNIBOX_ZOOM,
@@ -87,10 +91,14 @@ public class ToolbarUtils {
         ToolbarComponentId.EXTENSIONS_MENU_BUTTON,
         ToolbarComponentId.EXTENSIONS_REQUEST_ACCESS_BUTTON,
         ToolbarComponentId.EXTENSION_ACTION_LIST,
+        ToolbarComponentId.GLIC_ICON,
+        ToolbarComponentId.GLIC_TEXT,
         ToolbarComponentId.TAB_SWITCHER,
         ToolbarComponentId.MENU,
         ToolbarComponentId.PADDING,
         ToolbarComponentId.SIGNIN_BUTTON,
+        ToolbarComponentId.DOWNLOAD_BUTTON,
+        ToolbarComponentId.AI_OVERLAY_MICROPHONE_BUTTON,
         ToolbarComponentId.COUNT
     })
     @Retention(RetentionPolicy.SOURCE)
@@ -117,7 +125,11 @@ public class ToolbarUtils {
         int PADDING = 19;
         int SIGNIN_BUTTON = 20;
         int EXTENSIONS_REQUEST_ACCESS_BUTTON = 21;
-        int COUNT = 22;
+        int GLIC_ICON = 22;
+        int GLIC_TEXT = 23;
+        int AI_OVERLAY_MICROPHONE_BUTTON = 24;
+        int DOWNLOAD_BUTTON = 25;
+        int COUNT = 26;
     }
 
     // LINT.ThenChange(//chrome/browser/ui/android/toolbar/java/res/layout/toolbar_tablet.xml:toolbar_tablet_components|//chrome/browser/ui/android/omnibox/java/res/layout/url_action_container.xml:toolbar_tablet_components)

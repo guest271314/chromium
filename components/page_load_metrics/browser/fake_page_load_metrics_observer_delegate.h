@@ -9,6 +9,7 @@
 
 #include "base/memory/raw_ptr.h"
 #include "base/time/time.h"
+#include "components/page_load_metrics/browser/navigation_scenario.h"
 #include "components/page_load_metrics/browser/page_load_metrics_observer.h"
 #include "components/page_load_metrics/browser/page_load_metrics_observer_delegate.h"
 #include "components/page_load_metrics/common/page_end_reason.h"
@@ -64,14 +65,11 @@ class FakePageLoadMetricsObserverDelegate
   // returned.
   const NormalizedCLSData& GetNormalizedCLSData(
       BfcacheStrategy bfcache_strategy) const override;
-  const NormalizedCLSData& GetSoftNavigationIntervalNormalizedCLSData()
-      const override;
   const InteractionToNextPaintCalculator& GetInteractionToNextPaintCalculator()
       const override;
-  const InteractionToNextPaintCalculator&
-  GetSoftNavigationIntervalInteractionToNextPaintCalculator() const override;
   const std::optional<blink::SubresourceLoadMetrics>&
   GetSubresourceLoadMetrics() const override;
+  const mojom::FontLoadingMetricsPtr& GetFontLoadingMetrics() const override;
   const PageRenderData& GetMainFrameRenderData() const override;
   const ui::ScopedVisibilityTracker& GetVisibilityTracker() const override;
   const ResourceTracker& GetResourceTracker() const override;
@@ -79,14 +77,11 @@ class FakePageLoadMetricsObserverDelegate
       const override;
   const LargestContentfulPaintHandler&
   GetExperimentalLargestContentfulPaintHandler() const override;
-  const ContentfulPaintTimingInfo& GetSoftNavigationLargestContentfulPaint()
-      const override;
   ukm::SourceId GetPageUkmSourceId() const override;
-  mojom::SoftNavigationMetrics& GetSoftNavigationMetrics() const override;
-  uint64_t GetSoftNavigationCount() const override;
   ukm::SourceId GetUkmSourceIdForSameDocumentNavigation(
       base::UnguessableToken same_document_metrics_token) const override;
   bool IsFirstNavigationInWebContents() const override;
+  NavigationScenario GetNavigationScenario() const override;
   bool IsOriginVisit() const override;
   bool IsTerminalVisit() const override;
   bool ShouldObserveScheme(std::string_view scheme) const override;
@@ -96,6 +91,10 @@ class FakePageLoadMetricsObserverDelegate
   void AddBackForwardCacheRestore(BackForwardCacheRestore bfcache_restore);
   // Clears all the store BackForwardCacheRestores.
   void ClearBackForwardCacheRestores();
+
+  void set_navigation_scenario(NavigationScenario scenario) {
+    navigation_scenario_ = scenario;
+  }
 
   // These instance variables will be returned by calls to the method with the
   // corresponding name. Tests should set these variables appropriately.
@@ -112,6 +111,7 @@ class FakePageLoadMetricsObserverDelegate
   NormalizedCLSData normalized_cls_data_;
   InteractionToNextPaintCalculator interaction_to_next_paint_calculator_;
   std::optional<blink::SubresourceLoadMetrics> subresource_load_metrics_;
+  mojom::FontLoadingMetricsPtr font_loading_metrics_;
   PageRenderData main_frame_render_data_;
   ui::ScopedVisibilityTracker visibility_tracker_;
   ResourceTracker resource_tracker_;
@@ -126,6 +126,7 @@ class FakePageLoadMetricsObserverDelegate
   PrerenderingState prerendering_state_ = PrerenderingState::kNoPrerendering;
   PageVisibility visibility_at_activation_ = PageVisibility::kNotInitialized;
   std::optional<base::TimeDelta> activation_start_ = std::nullopt;
+  NavigationScenario navigation_scenario_ = NavigationScenario::kUnknown;
 
   // This vector backs the |GetBackForwardCacheRestore| and
   // |GetMostRecentBackForwardCacheRestore| methods.

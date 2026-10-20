@@ -26,6 +26,7 @@
 #include "components/viz/common/surfaces/surface_info.h"
 #include "components/viz/host/host_frame_sink_client.h"
 #include "content/browser/compositor/image_transport_factory.h"
+#include "content/browser/renderer_host/input/mouse_wheel_phase_handler.h"
 #include "content/browser/renderer_host/render_widget_host_view_base.h"
 #include "content/common/content_export.h"
 #include "content/public/browser/touch_selection_controller_client_manager.h"
@@ -36,6 +37,7 @@
 #include "third_party/blink/public/mojom/frame/viewport_intersection_state.mojom-forward.h"
 #include "third_party/blink/public/mojom/input/input_event_result.mojom-shared.h"
 #include "ui/gfx/geometry/rect.h"
+#include "ui/gfx/geometry/vector2d_f.h"
 #include "ui/gfx/native_ui_types.h"
 
 #if BUILDFLAG(IS_MAC)
@@ -89,18 +91,11 @@ class CONTENT_EXPORT RenderWidgetHostViewChildFrame
   void Focus() override;
   bool HasFocus() override;
   bool IsSurfaceAvailableForCopy() override;
-  void CopyFromSurface(
-      const gfx::Rect& src_rect,
-      const gfx::Size& output_size,
-      base::TimeDelta timeout,
-      base::OnceCallback<void(const content::CopyFromSurfaceResult&)> callback)
-      override;
-  void EnsureSurfaceSynchronizedForWebTest() override;
   void Hide() override;
   bool IsShowing() override;
-  void WasUnOccluded() override;
   void WasOccluded() override;
   gfx::Rect GetViewBounds() override;
+  gfx::Rect GetViewBoundsWithoutTransform() override;
   gfx::Size GetVisibleViewportSize() override;
   gfx::Size GetVisibleViewportSizeDevicePx() override;
   void SetInsets(const gfx::Insets& insets) override;
@@ -111,6 +106,13 @@ class CONTENT_EXPORT RenderWidgetHostViewChildFrame
   ui::Compositor* GetCompositor() override;
 
   // RenderWidgetHostViewBase implementation.
+  void CopyFromSurfaceImpl(
+      const gfx::Rect& src_rect,
+      const gfx::Size& output_size,
+      bool is_copy_request_secure,
+      base::TimeDelta timeout,
+      base::OnceCallback<void(const content::CopyFromSurfaceResult&)> callback)
+      override;
 #if BUILDFLAG(IS_ANDROID)
   bool IsTouchSequencePotentiallyActiveOnViz() override;
   void RequestInputBackForDragAndDrop(
@@ -121,15 +123,18 @@ class CONTENT_EXPORT RenderWidgetHostViewChildFrame
       gfx::Vector2d cursor_offset_in_dip,
       gfx::Rect drag_obj_rect_in_dip,
       blink::mojom::DragEventSourceInfoPtr event_info) override;
+  void ReportScrollJankStats(uint32_t total_frames,
+                             uint32_t janky_frames) override;
 #endif
   RenderWidgetHostViewBase* GetRootView() override;
+  input::RenderWidgetHostViewInput* GetPinchZoomTarget() override;
 #if BUILDFLAG(IS_WIN)
   bool ShouldInitiateStylusWriting() override;
+  std::optional<gfx::Vector2dF> GetStylusHandwritingPixelsPerInch() override;
   void OnStartStylusWriting() override;
   void OnEditElementFocusedForStylusWriting(
       blink::mojom::StylusWritingFocusResultPtr focus_result) override;
 #endif  // BUILDFLAG(IS_WIN)
-  uint32_t GetCaptureSequenceNumber() const override;
   gfx::Size GetCompositorViewportPixelSize() override;
   void InitAsPopup(RenderWidgetHostView* parent_host_view,
                    const gfx::Rect& bounds,
@@ -140,7 +145,8 @@ class CONTENT_EXPORT RenderWidgetHostViewChildFrame
   void SetIsLoading(bool is_loading) override;
   void RenderProcessGone() override;
   void ShowWithVisibility(PageVisibilityState page_visibility) override;
-  void Destroy() override;
+  void DestroyImpl() override;
+  void OnDestroyOrDefer() override;
   void UpdateTooltipUnderCursor(const std::u16string& tooltip_text) override;
   void UpdateTooltipFromKeyboard(const std::u16string& tooltip_text,
                                  const gfx::Rect& bounds) override;
@@ -154,8 +160,10 @@ class CONTENT_EXPORT RenderWidgetHostViewChildFrame
   void OnUnconfirmedTapConvertedToTap() override;
 
   void TransformPointToRootSurface(gfx::PointF* point) override;
-  gfx::Rect GetBoundsInRootWindow() override;
+  gfx::Rect GetBoundsInScreen() override;
+  gfx::Rect GetBoundsInScreenWithoutTransform() override;
   void DidStopFlinging() override;
+  MouseWheelPhaseHandler* GetMouseWheelPhaseHandler() override;
   blink::mojom::PointerLockResult LockPointer(
       bool request_unadjusted_movement) override;
   blink::mojom::PointerLockResult ChangePointerLock(
@@ -223,6 +231,10 @@ class CONTENT_EXPORT RenderWidgetHostViewChildFrame
   void OnRenderFrameSubmission() override {}
   void OnLocalSurfaceIdChanged(
       const cc::RenderFrameMetadata& metadata) override {}
+#if BUILDFLAG(IS_ANDROID)
+  void OnReportScrollJankStats(uint32_t total_frames,
+                               uint32_t janky_frames) override;
+#endif
 
   // viz::HostFrameSinkClient implementation.
   void OnFirstSurfaceActivation(const viz::SurfaceInfo& surface_info) override;
@@ -253,6 +265,9 @@ class CONTENT_EXPORT RenderWidgetHostViewChildFrame
   bool GetTextRange(gfx::Range* range) const;
 
   RenderWidgetHostViewBase* GetRootRenderWidgetHostView() const;
+
+  // Shows the view.
+  void Show();
 
  protected:
   friend class RenderWidgetHostView;
@@ -297,6 +312,7 @@ class CONTENT_EXPORT RenderWidgetHostViewChildFrame
   // Surface-related state.
   viz::SurfaceInfo last_activated_surface_info_;
   gfx::Rect last_screen_rect_;
+  gfx::Size initial_size_;
 
   // frame_connector_ provides a platform abstraction. Messages
   // sent through it are routed to the embedding renderer process.
@@ -331,6 +347,10 @@ class CONTENT_EXPORT RenderWidgetHostViewChildFrame
   virtual void FirstSurfaceActivation(const viz::SurfaceInfo& surface_info);
 
   void DetachFromTouchSelectionClientManagerIfNecessary();
+  void CleanUpHostObservers() override;
+  void ShutdownAndDisconnect();
+
+  gfx::Rect GetViewBoundsHelper(bool without_transform);
 
   // Returns false if the view cannot be shown. This is the case where the frame
   // associated with this view or a cross process ancestor frame has been hidden
@@ -362,10 +382,19 @@ class CONTENT_EXPORT RenderWidgetHostViewChildFrame
   // The surface client ID of the parent RenderWidgetHostView.  0 if none.
   viz::FrameSinkId parent_frame_sink_id_;
 
+  // True if there is an active frame sink hierarchy registration for
+  // `parent_frame_sink_id_` and `frame_sink_id_`.
+  bool has_frame_sink_hierarchy_registered_ = false;
+
   gfx::Insets insets_;
 
   std::unique_ptr<TouchSelectionControllerClientChildFrame>
       selection_controller_client_;
+
+  // Weak pointer to the view which owns the
+  // TouchSelectionControllerClientManager that this object is registered with.
+  base::WeakPtr<RenderWidgetHostViewBase>
+      view_for_touch_selection_client_manager_;
 
   // If a new RWHVCF is created for a cross-origin navigation, the parent
   // will typically not notice and will not transmit a full complement of
@@ -380,6 +409,17 @@ class CONTENT_EXPORT RenderWidgetHostViewChildFrame
       const gfx::Rect& focus_screen_rect_in_dips,
       const gfx::Size& tolerance_screen_distance_in_dips);
 #endif  // BUILDFLAG(IS_WIN)
+
+  // A queue for `IntrinsicSizingInfo` sent from the child renderer before the
+  // frame connector is set.
+  blink::mojom::IntrinsicSizingInfoPtr pending_sizing_info_;
+
+  // The display feature set for emulation, if any.
+  std::optional<DisplayFeature> display_feature_;
+
+  bool disconnected_ = false;
+
+  MouseWheelPhaseHandler mouse_wheel_phase_handler_;
 
   base::WeakPtrFactory<RenderWidgetHostViewChildFrame> weak_factory_{this};
 };

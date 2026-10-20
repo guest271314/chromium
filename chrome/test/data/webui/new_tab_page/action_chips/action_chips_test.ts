@@ -4,28 +4,27 @@
 
 import 'chrome://new-tab-page/lazy_load.js';
 
-import {ActionChipsHandlerRemote, IconType, PageCallbackRouter, ToolMode} from 'chrome://new-tab-page/action_chips.mojom-webui.js';
-import type {ActionChip, PageRemote, TabInfo} from 'chrome://new-tab-page/action_chips.mojom-webui.js';
 import {ActionChipsApiProxyImpl, ActionChipsRetrievalState} from 'chrome://new-tab-page/lazy_load.js';
-import type {ActionChipsElement} from 'chrome://new-tab-page/lazy_load.js';
+import type {ActionChipClickDetail, ActionChipsElement} from 'chrome://new-tab-page/lazy_load.js';
+import {ActionChipsHandlerRemote, ActionChipsPageCallbackRouter as PageCallbackRouter, IconType, InputSource, QueryActionOverride, SearchboxOverride, SuggestInventory} from 'chrome://new-tab-page/new_tab_page.js';
+import type {ActionChip, ActionChipsPageRemote as PageRemote, TabInfo} from 'chrome://new-tab-page/new_tab_page.js';
 import {WindowProxy} from 'chrome://new-tab-page/new_tab_page.js';
 import type {TabUpload} from 'chrome://resources/cr_components/composebox/common.js';
-import {TabUploadOrigin} from 'chrome://resources/cr_components/composebox/common.js';
+import {ModelMode, ToolMode} from 'chrome://resources/cr_components/composebox/composebox_query.mojom-webui.js';
 import type {CrActionMenuElement} from 'chrome://resources/cr_elements/cr_action_menu/cr_action_menu.js';
 import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
+import {TabAttachmentSource} from 'chrome://resources/mojo/components/omnibox/browser/searchbox.mojom-webui.js';
 import {assertDeepEquals, assertEquals, assertFalse, assertTrue} from 'chrome://webui-test/chai_assert.js';
+import {createSuggestTemplateInfo} from 'chrome://webui-test/cr_components/searchbox/searchbox_test_utils.js';
+import type {SuggestTemplateInfoModifiers} from 'chrome://webui-test/cr_components/searchbox/searchbox_test_utils.js';
 import type {MetricsTracker} from 'chrome://webui-test/metrics_test_support.js';
 import {fakeMetricsPrivate} from 'chrome://webui-test/metrics_test_support.js';
 import type {TestMock} from 'chrome://webui-test/test_mock.js';
 import {eventToPromise, microtasksFinished} from 'chrome://webui-test/test_util.js';
 
-import {installMock} from '../test_support.js';
+import {createFuseboxAction, installMock} from '../test_support.js';
 
-type ActionChipClickEvent = CustomEvent<{
-  text: string,
-  files: TabUpload[],
-  mode?: ToolMode,
-}>;
+type ActionChipClickEvent = CustomEvent<ActionChipClickDetail>;
 
 suite('NewTabPageActionChipsTest', () => {
   let chips: ActionChipsElement;
@@ -36,9 +35,15 @@ suite('NewTabPageActionChipsTest', () => {
     {
       suggestTemplateInfo: {
         typeIcon: IconType.kFavicon,
-        primaryText: {text: 'Example Tab', a11yText: null},
-        secondaryText: {text: 'Subtitle for recent tab', a11yText: null},
+        primaryText: 'Example Tab',
+        secondaryText: 'Subtitle for recent tab',
+      },
+      fuseboxAction: {
         preselectedTool: ToolMode.kUnspecified,
+        preferredInventory: null,
+        preselectedModel: ModelMode.kUnspecified,
+        queryActionOverride: null,
+        searchboxOverride: null,
       },
       suggestion: 'Suggestion for recent tab',
       tab: {
@@ -51,9 +56,15 @@ suite('NewTabPageActionChipsTest', () => {
     {
       suggestTemplateInfo: {
         typeIcon: IconType.kBanana,
-        primaryText: {text: 'Nano Banana', a11yText: null},
-        secondaryText: {text: 'Subtitle for image', a11yText: null},
+        primaryText: 'Nano Banana',
+        secondaryText: 'Subtitle for image',
+      },
+      fuseboxAction: {
         preselectedTool: ToolMode.kImageGen,
+        preferredInventory: null,
+        preselectedModel: ModelMode.kUnspecified,
+        queryActionOverride: null,
+        searchboxOverride: null,
       },
       suggestion: 'Suggestion for image',
       tab: null,
@@ -61,21 +72,38 @@ suite('NewTabPageActionChipsTest', () => {
     {
       suggestTemplateInfo: {
         typeIcon: IconType.kGlobeWithSearchLoop,
-        primaryText: {text: 'Deep Search', a11yText: null},
-        secondaryText: {text: 'Subtitle for deep search', a11yText: null},
+        primaryText: 'Deep Search',
+        secondaryText: 'Subtitle for deep search',
+      },
+      fuseboxAction: {
         preselectedTool: ToolMode.kDeepSearch,
+        preferredInventory: null,
+        preselectedModel: ModelMode.kUnspecified,
+        queryActionOverride: null,
+        searchboxOverride: null,
       },
       suggestion: 'Suggestion for deep search',
       tab: null,
     },
   ];
 
+  // A helper type for test definitions: the template text can be plain strings,
+  // and fuseboxAction is optional and partial. initializeChips() moves it into
+  // the template.
+  type TestFuseboxAction =
+      Partial<ActionChip['suggestTemplateInfo']['fuseboxAction']>;
+  type TestActionChip = Omit<ActionChip, 'suggestTemplateInfo'>&{
+    suggestTemplateInfo: SuggestTemplateInfoModifiers,
+    fuseboxAction?: TestFuseboxAction,
+  };
+
   interface InitializeChipsOptions {
-    actionChips: ActionChip[];
+    actionChips: TestActionChip[];
     windowTimestampStart: number;
     windowTimestampEnd: number;
     prefersReducedMotion: boolean;
     disablementContextMenuEnabled: boolean;
+    ntpSmallActionChipsEnabled: boolean;
   }
 
   async function initializeChips(
@@ -86,10 +114,24 @@ suite('NewTabPageActionChipsTest', () => {
       windowTimestampEnd: Date.now().valueOf() + 1,
       prefersReducedMotion: false,
       disablementContextMenuEnabled: true,
+      ntpSmallActionChipsEnabled: false,
     };
     const options = {...defaultOptions, ...providedOptions};
+    const actionChips: ActionChip[] = options.actionChips.map(
+        ({fuseboxAction, ...chip}) => ({
+          ...chip,
+          suggestTemplateInfo: createSuggestTemplateInfo({
+            ...chip.suggestTemplateInfo,
+            fuseboxAction: fuseboxAction ? createFuseboxAction({
+              preselectedTool: ToolMode.kUnspecified,
+              preselectedModel: ModelMode.kUnspecified,
+              ...fuseboxAction,
+            }) :
+                                           null,
+          }),
+        }));
     handler.setResultMapperFor('startActionChipsRetrieval', () => {
-      pageRemote.onActionChipsChanged(options.actionChips);
+      pageRemote.onActionChipsChanged(actionChips);
       pageRemote.$.flushForTesting();
     });
 
@@ -100,6 +142,7 @@ suite('NewTabPageActionChipsTest', () => {
       addTabUploadDelayOnActionChipClick: true,
       ntpNextDisablementContextMenuEnabled:
           options.disablementContextMenuEnabled,
+      ntpSmallActionChipsEnabled: options.ntpSmallActionChipsEnabled,
     });
     document.body.innerHTML = window.trustedTypes!.emptyHTML;
     if (options.prefersReducedMotion) {
@@ -148,9 +191,8 @@ suite('NewTabPageActionChipsTest', () => {
         {
           suggestTemplateInfo: {
             typeIcon: IconType.kFavicon,
-            primaryText: {text: 'Example Tab', a11yText: null},
-            secondaryText: {text: 'Subtitle for recent tab', a11yText: null},
-            preselectedTool: ToolMode.kUnspecified,
+            primaryText: 'Example Tab',
+            secondaryText: 'Subtitle for recent tab',
           },
           suggestion: 'Suggestion for recent tab',
           tab: fakeTab,
@@ -170,13 +212,14 @@ suite('NewTabPageActionChipsTest', () => {
       url: fakeTab.url,
       title: fakeTab.title,
       delayUpload: true,
-      origin: TabUploadOrigin.ACTION_CHIP,
+      origin: TabAttachmentSource.kActionChip,
     };
 
-    assertEquals('Suggestion for recent tab', event.detail.text);
+    assertEquals('Suggestion for recent tab', event.detail.suggestion);
     assertTrue(!!event.detail.files);
     assertEquals(1, event.detail.files.length);
     assertDeepEquals(expectedTab, event.detail.files[0]);
+    assertEquals(undefined, event.detail.fuseboxAction);
   });
 
   test('recent tab chip renders favicon', async () => {
@@ -184,9 +227,12 @@ suite('NewTabPageActionChipsTest', () => {
       actionChips: [{
         suggestTemplateInfo: {
           typeIcon: IconType.kFavicon,
-          primaryText: {text: 'Example Tab', a11yText: null},
-          secondaryText: {text: 'Subtitle for recent tab', a11yText: null},
+          primaryText: 'Example Tab',
+          secondaryText: 'Subtitle for recent tab',
+        },
+        fuseboxAction: {
           preselectedTool: ToolMode.kUnspecified,
+          preferredInventory: null,
         },
         suggestion: 'Suggestion for recent tab',
         tab: {
@@ -208,9 +254,11 @@ suite('NewTabPageActionChipsTest', () => {
         suggestTemplateInfo: {
           typeIcon: IconType.kSubArrowRight,
           // No primary text for deep dive chip
-          primaryText: null,
-          secondaryText: {text: 'Subtitle for deep dive', a11yText: null},
+          secondaryText: 'Subtitle for deep dive',
+        },
+        fuseboxAction: {
           preselectedTool: ToolMode.kUnspecified,
+          preferredInventory: null,
         },
         suggestion: 'Suggestion for deep dive',
         tab: {
@@ -233,140 +281,211 @@ suite('NewTabPageActionChipsTest', () => {
     assertEquals(null, deepDiveChipTitle);
   });
 
+  test('click routing based on queryActionOverride', async () => {
+    const chipsData = [
+      {
+        suggestTemplateInfo: {
+          typeIcon: IconType.kBanana,
+          primaryText: 'Click fulfillment',
+          secondaryText: '',
+        },
+        fuseboxAction: {
+          queryActionOverride: QueryActionOverride.kDefault,
+        },
+        suggestion: 'click-direct',
+        tab: null,
+      },
+      {
+        suggestTemplateInfo: {
+          typeIcon: IconType.kBanana,
+          primaryText: 'Click paste',
+          secondaryText: '',
+        },
+        fuseboxAction: {
+          queryActionOverride: QueryActionOverride.kPaste,
+        },
+        suggestion: 'click-paste',
+        tab: null,
+      },
+    ];
+
+    await initializeChips({actionChips: chipsData});
+    const chipElements =
+        chips.shadowRoot.querySelectorAll<HTMLDivElement>('.icon-type-banana');
+    assertEquals(2, chipElements.length);
+
+    const chip0 = chipElements[0] as HTMLDivElement;
+    const chip1 = chipElements[1] as HTMLDivElement;
+
+    chip0.click();
+    assertEquals(
+        'click-direct', (await handler.whenCalled('navigateToAim'))[0]);
+
+    const whenActionChipClicked = eventToPromise<ActionChipClickEvent>(
+        'action-chip-click', document.body);
+    chip1.click();
+    const event = await whenActionChipClicked;
+    assertEquals('click-paste', event.detail.suggestion);
+  });
+
   suite('metrics collection', () => {
     let metrics: MetricsTracker;
     setup(async () => {
       metrics = fakeMetricsPrivate();
       await initializeChips({});
     });
-    test('nano banana chip triggers chip click event', async () => {
-      // Setup.
+    test('chip auxclick triggers chip click event', async () => {
       const nanoBananaChip =
           chips.shadowRoot.querySelector<HTMLDivElement>('.icon-type-banana');
       assertTrue(!!nanoBananaChip);
       const whenActionChipClicked = eventToPromise<ActionChipClickEvent>(
           'action-chip-click', document.body);
-      nanoBananaChip.click();
+      nanoBananaChip.dispatchEvent(new MouseEvent(
+          'auxclick', {button: 1, bubbles: true, composed: true}));
 
-      // Assert.
       const event = await whenActionChipClicked;
-
-      assertEquals('Suggestion for image', event.detail.text);
-      assertEquals(1, metrics.count('NewTabPage.ActionChips.Click2'));
-      assertEquals(
-          1, metrics.count('NewTabPage.ActionChips.Click2', IconType.kBanana));
+      assertEquals('Suggestion for image', event.detail.suggestion);
     });
 
-    test('deep search chip triggers chip click event', async () => {
-      // Setup.
-      const deepSearchChip = chips.shadowRoot.querySelector<HTMLDivElement>(
-          '.icon-type-globe-with-search-loop');
-      assertTrue(!!deepSearchChip);
-      const whenActionChipClicked = eventToPromise<ActionChipClickEvent>(
-          'action-chip-click', document.body);
-      deepSearchChip.click();
+    test('chip auxclick ignores right clicks', async () => {
+      const nanoBananaChip =
+          chips.shadowRoot.querySelector<HTMLDivElement>('.icon-type-banana');
+      assertTrue(!!nanoBananaChip);
+      let actionChipClicked = false;
+      document.body.addEventListener('action-chip-click', () => {
+        actionChipClicked = true;
+      }, {once: true});
+      nanoBananaChip.dispatchEvent(new MouseEvent(
+          'auxclick', {button: 2, bubbles: true, composed: true}));
+      await microtasksFinished();
 
-      // Assert.
-      const event = await whenActionChipClicked;
-
-      assertEquals('Suggestion for deep search', event.detail.text);
-      assertEquals(1, metrics.count('NewTabPage.ActionChips.Click2'));
-      assertEquals(
-          1,
-          metrics.count(
-              'NewTabPage.ActionChips.Click2', IconType.kGlobeWithSearchLoop));
+      assertFalse(actionChipClicked);
     });
 
-    test('tab context chip triggers chip click event', async () => {
-      // Setup.
-      const recentTabChip =
-          chips.shadowRoot.querySelector<HTMLDivElement>('.icon-type-favicon');
-      assertTrue(!!recentTabChip);
-      const whenActionChipClicked = eventToPromise<ActionChipClickEvent>(
-          'action-chip-click', document.body);
-      recentTabChip.click();
+    [{
+      name: 'nano banana',
+      iconType: IconType.kBanana,
+      iconClass: '.icon-type-banana',
+      fuseboxAction: {
+        preselectedTool: ToolMode.kImageGen,
+      },
+      suggestion: 'Suggestion for image',
+    },
+     {
+       name: 'deep search',
+       iconType: IconType.kGlobeWithSearchLoop,
+       iconClass: '.icon-type-globe-with-search-loop',
+       fuseboxAction: {
+         preselectedTool: ToolMode.kDeepSearch,
+       },
+       suggestion: 'Suggestion for deep search',
+     },
+     {
+       name: 'tab context',
+       iconType: IconType.kFavicon,
+       iconClass: '.icon-type-favicon',
+       fuseboxAction: {},
+       suggestion: 'Suggestion for recent tab',
+     },
+     {
+       name: 'deep dive',
+       iconType: IconType.kSubArrowRight,
+       iconClass: '.icon-type-sub-arrow-right',
+       fuseboxAction: {},
+       suggestion: 'Suggestion for deep dive',
+     },
+     {
+       name: 'canvas',
+       iconType: IconType.kDraftSpark,
+       iconClass: '.icon-type-draft-spark',
+       fuseboxAction: {
+         preselectedTool: ToolMode.kCanvas,
+       },
+       suggestion: 'Suggestion for canvas',
+     },
+     {
+       name: 'conversation starter',
+       iconType: IconType.kSearchLoopWithSparkle,
+       iconClass: '.icon-type-search-spark',
+       fuseboxAction: {
+         preferredInventory: SuggestInventory.kConversationStarters,
+         queryActionOverride: QueryActionOverride.kPaste,
+         searchboxOverride: SearchboxOverride.kComposebox,
+       },
+       suggestion: '',
+     },
+     {
+       name: 'brainstorm',
+       iconType: IconType.kLightbulb,
+       iconClass: '.icon-type-lightbulb',
+       fuseboxAction: {
+         preferredInventory: SuggestInventory.kBrainstorm,
+       },
+       suggestion: '',
+     },
+     {
+       name: 'attach file',
+       iconType: IconType.kAttachFile,
+       iconClass: '.icon-type-attach-file',
+       fuseboxAction: {
+         preselectedInputSource: InputSource.kInputSourceGallery,
+       },
+       suggestion: '',
+     },
+     {
+       name: 'help me learn',
+       iconType: IconType.kSchool,
+       iconClass: '.icon-type-school',
+       fuseboxAction: {
+         preferredInventory: SuggestInventory.kHelpMeLearn,
+       },
+       suggestion: '',
+     },
+     {
+       name: 'write or edit',
+       iconType: IconType.kInkPen,
+       iconClass: '.icon-type-ink-pen',
+       fuseboxAction: {
+         preferredInventory: SuggestInventory.kWriteOrEdit,
+       },
+       suggestion: '',
+     },
+    ].forEach(({name, iconType, iconClass, fuseboxAction, suggestion}) => {
+      test(`${name} chip triggers chip click event`, async () => {
+        const expectedFuseboxAction = fuseboxAction ? createFuseboxAction({
+          preselectedTool: ToolMode.kUnspecified,
+          preselectedModel: ModelMode.kUnspecified,
+          ...fuseboxAction,
+        }) :
+                                                      null;
+        await initializeChips({
+          actionChips: [{
+            suggestTemplateInfo: {
+              typeIcon: iconType,
+              primaryText: name,
+              secondaryText: `Subtitle for ${name}`,
+            },
+            fuseboxAction: expectedFuseboxAction,
+            suggestion,
+            tab: null,
+          }],
+        });
+        const chip = chips.shadowRoot.querySelector<HTMLDivElement>(iconClass);
+        assertTrue(!!chip);
 
-      // Assert.
-      const event = await whenActionChipClicked;
+        const whenActionChipClicked = eventToPromise<ActionChipClickEvent>(
+            'action-chip-click', document.body);
+        chip.click();
 
-      assertEquals('Suggestion for recent tab', event.detail.text);
-      assertEquals(1, metrics.count('NewTabPage.ActionChips.Click2'));
-      assertEquals(
-          1, metrics.count('NewTabPage.ActionChips.Click2', IconType.kFavicon));
-    });
-
-    test('deep dive chip triggers chip click event', async () => {
-      // Setup.
-      await initializeChips({
-        actionChips: [{
-          suggestTemplateInfo: {
-            typeIcon: IconType.kSubArrowRight,
-            primaryText: {text: 'Example Tab', a11yText: null},
-            secondaryText: {text: 'Subtitle for deep dive', a11yText: null},
-            preselectedTool: ToolMode.kUnspecified,
-          },
-          suggestion: 'Suggestion for deep dive',
-          tab: {
-            url: 'https://example.com',
-            tabId: 0,
-            title: 'Example Tab',
-            lastActiveTime: {internalValue: BigInt(0)},
-          },
-        }],
+        const event = await whenActionChipClicked;
+        assertEquals(suggestion, event.detail.suggestion);
+        if (expectedFuseboxAction) {
+          assertDeepEquals(expectedFuseboxAction, event.detail.fuseboxAction);
+        }
+        assertEquals(1, metrics.count('NewTabPage.ActionChips.Click2'));
+        assertEquals(
+            1, metrics.count('NewTabPage.ActionChips.Click2', iconType));
       });
-      const deepDiveChip = chips.shadowRoot.querySelector<HTMLDivElement>(
-          '.icon-type-sub-arrow-right');
-      assertTrue(!!deepDiveChip);
-
-      const whenActionChipClicked = eventToPromise<ActionChipClickEvent>(
-          'action-chip-click', document.body);
-
-      // Act.
-      deepDiveChip.click();
-
-      // Assert.
-      const event = await whenActionChipClicked;
-
-      assertEquals('Suggestion for deep dive', event.detail.text);
-      assertEquals(1, metrics.count('NewTabPage.ActionChips.Click2'));
-      assertEquals(
-          1,
-          metrics.count(
-              'NewTabPage.ActionChips.Click2', IconType.kSubArrowRight));
-    });
-
-    test('canvas chip triggers chip click event', async () => {
-      // Setup.
-      await initializeChips({
-        actionChips: [{
-          suggestTemplateInfo: {
-            typeIcon: IconType.kDraftSpark,
-            primaryText: {text: 'Canvas', a11yText: null},
-            secondaryText: {text: 'Subtitle for canvas', a11yText: null},
-            preselectedTool: ToolMode.kCanvas,
-          },
-          suggestion: 'Suggestion for canvas',
-          tab: null,
-        }],
-      });
-      const canvasChip = chips.shadowRoot.querySelector<HTMLDivElement>(
-          '.icon-type-draft-spark');
-      assertTrue(!!canvasChip);
-
-      const whenActionChipClicked = eventToPromise<ActionChipClickEvent>(
-          'action-chip-click', document.body);
-
-      // Act.
-      canvasChip.click();
-
-      // Assert.
-      const event = await whenActionChipClicked;
-
-      assertEquals('Suggestion for canvas', event.detail.text);
-      assertEquals(1, metrics.count('NewTabPage.ActionChips.Click2'));
-      assertEquals(
-          1,
-          metrics.count('NewTabPage.ActionChips.Click2', IconType.kDraftSpark));
     });
   });
 
@@ -534,10 +653,12 @@ suite('NewTabPageActionChipsTest', () => {
             actionChips: [{
               suggestTemplateInfo: {
                 typeIcon: IconType.kGlobeWithSearchLoop,
-                primaryText: {text: 'Deep Search', a11yText: null},
-                secondaryText:
-                    {text: 'Subtitle for deep search', a11yText: null},
+                primaryText: 'Deep Search',
+                secondaryText: 'Subtitle for deep search',
+              },
+              fuseboxAction: {
                 preselectedTool: ToolMode.kDeepSearch,
+                preferredInventory: null,
               },
               suggestion: '',
               tab: null,
@@ -553,7 +674,7 @@ suite('NewTabPageActionChipsTest', () => {
         });
 
     test(
-        'Returns empty string when both suggestion and subtitle are empty',
+        'Does not render subtitle when both suggestion and subtitle are empty',
         async () => {
           loadTimeData.overrideValues({
             ntpNextShowSimplificationUIEnabled: true,
@@ -562,9 +683,12 @@ suite('NewTabPageActionChipsTest', () => {
             actionChips: [{
               suggestTemplateInfo: {
                 typeIcon: IconType.kGlobeWithSearchLoop,
-                primaryText: {text: 'Deep Search', a11yText: null},
-                secondaryText: {text: '', a11yText: null},
+                primaryText: 'Deep Search',
+                secondaryText: '',
+              },
+              fuseboxAction: {
                 preselectedTool: ToolMode.kDeepSearch,
+                preferredInventory: null,
               },
               suggestion: '',
               tab: null,
@@ -574,9 +698,7 @@ suite('NewTabPageActionChipsTest', () => {
               chips.shadowRoot.querySelector<HTMLButtonElement>('button');
           assertTrue(!!chip);
           const bodyElement = chip.querySelector('.chip-body');
-          assertTrue(!!bodyElement);
-          const body = bodyElement.textContent?.trim();
-          assertEquals('', body);
+          assertEquals(null, bodyElement);
         });
 
     test('should dismiss a chip when remove button is clicked', async () => {
@@ -686,9 +808,12 @@ suite('NewTabPageActionChipsTest', () => {
               {
                 suggestTemplateInfo: {
                   typeIcon: IconType.kBanana,
-                  primaryText: {text: 'Nano Banana', a11yText: null},
-                  secondaryText: {text: 'Subtitle for image', a11yText: null},
+                  primaryText: 'Nano Banana',
+                  secondaryText: 'Subtitle for image',
+                },
+                fuseboxAction: {
                   preselectedTool: ToolMode.kImageGen,
+                  preferredInventory: null,
                 },
                 suggestion: 'Suggestion for image',
                 tab: null,
@@ -720,9 +845,14 @@ suite('NewTabPageActionChipsTest', () => {
         actionChips: [{
           suggestTemplateInfo: {
             typeIcon: IconType.kFavicon,
-            primaryText: {text: 'Example Tab', a11yText: 'A11y Title'},
-            secondaryText: {text: 'Subtitle', a11yText: 'A11y Subtitle'},
+            primaryText:
+                {text: 'Example Tab', fragments: [], a11yText: 'A11y Title'},
+            secondaryText:
+                {text: 'Subtitle', fragments: [], a11yText: 'A11y Subtitle'},
+          },
+          fuseboxAction: {
             preselectedTool: ToolMode.kUnspecified,
+            preferredInventory: null,
           },
           suggestion: 'Suggestion',
           tab: null,
@@ -741,9 +871,12 @@ suite('NewTabPageActionChipsTest', () => {
             actionChips: [{
               suggestTemplateInfo: {
                 typeIcon: IconType.kFavicon,
-                primaryText: {text: 'Example Tab', a11yText: null},
-                secondaryText: {text: 'Subtitle', a11yText: null},
+                primaryText: 'Example Tab',
+                secondaryText: 'Subtitle',
+              },
+              fuseboxAction: {
                 preselectedTool: ToolMode.kUnspecified,
+                preferredInventory: null,
               },
               suggestion: 'Suggestion',
               tab: null,
@@ -762,9 +895,16 @@ suite('NewTabPageActionChipsTest', () => {
             actionChips: [{
               suggestTemplateInfo: {
                 typeIcon: IconType.kFavicon,
-                primaryText: {text: 'Example Tab', a11yText: null},
-                secondaryText: {text: 'Subtitle', a11yText: 'A11y Subtitle'},
+                primaryText: 'Example Tab',
+                secondaryText: {
+                  text: 'Subtitle',
+                  fragments: [],
+                  a11yText: 'A11y Subtitle',
+                },
+              },
+              fuseboxAction: {
                 preselectedTool: ToolMode.kUnspecified,
+                preferredInventory: null,
               },
               suggestion: 'Suggestion',
               tab: null,
@@ -774,6 +914,92 @@ suite('NewTabPageActionChipsTest', () => {
               chips.shadowRoot.querySelector<HTMLButtonElement>('.action-chip');
           assertTrue(!!chip);
           assertEquals('Example Tab A11y Subtitle', chip.getAttribute('title'));
+        });
+  });
+
+  suite('SmallActionChips', () => {
+    test('renders small chips attribute when enabled', async () => {
+      await initializeChips({
+        ntpSmallActionChipsEnabled: true,
+      });
+      assertTrue(chips.hasAttribute('small-chips-enabled'));
+    });
+
+    test('does not render small chips attribute when disabled', async () => {
+      await initializeChips({
+        ntpSmallActionChipsEnabled: false,
+      });
+      assertFalse(chips.hasAttribute('small-chips-enabled'));
+    });
+
+    test(
+        'renders has-chips attribute when action chips are present',
+        async () => {
+          await initializeChips({
+            actionChips: defaultActionChips,
+          });
+          assertTrue(chips.hasAttribute('has-chips'));
+        });
+
+    test(
+        'does not render has-chips attribute when action chips are empty',
+        async () => {
+          await initializeChips({
+            actionChips: [],
+          });
+          assertFalse(chips.hasAttribute('has-chips'));
+        });
+
+    test(
+        'does not render subtitle span when small chips are enabled even if ' +
+            'chip has secondary text',
+        async () => {
+          await initializeChips({
+            ntpSmallActionChipsEnabled: true,
+            actionChips: [{
+              suggestTemplateInfo: {
+                typeIcon: IconType.kFavicon,
+                primaryText: 'Example Tab',
+                secondaryText: 'Subtitle for recent tab',
+              },
+              fuseboxAction: {
+                preselectedTool: ToolMode.kUnspecified,
+                preferredInventory: null,
+              },
+              suggestion: 'Suggestion for recent tab',
+              tab: null,
+            }],
+          });
+          const chip =
+              chips.shadowRoot.querySelector<HTMLButtonElement>('.action-chip');
+          assertTrue(!!chip);
+          const bodyElement = chip.querySelector('.chip-body');
+          assertEquals(null, bodyElement);
+        });
+
+    test(
+        'does not render subtitle span when chip has no secondary text',
+        async () => {
+          await initializeChips({
+            ntpSmallActionChipsEnabled: true,
+            actionChips: [{
+              suggestTemplateInfo: {
+                typeIcon: IconType.kFavicon,
+                primaryText: 'Example Tab',
+              },
+              fuseboxAction: {
+                preselectedTool: ToolMode.kUnspecified,
+                preferredInventory: null,
+              },
+              suggestion: 'Suggestion for recent tab',
+              tab: null,
+            }],
+          });
+          const chip =
+              chips.shadowRoot.querySelector<HTMLButtonElement>('.action-chip');
+          assertTrue(!!chip);
+          const bodyElement = chip.querySelector('.chip-body');
+          assertEquals(null, bodyElement);
         });
   });
 });

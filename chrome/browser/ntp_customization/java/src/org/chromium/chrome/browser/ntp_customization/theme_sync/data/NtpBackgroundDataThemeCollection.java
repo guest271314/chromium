@@ -4,7 +4,9 @@
 
 package org.chromium.chrome.browser.ntp_customization.theme_sync.data;
 
-import android.graphics.Matrix;
+import static org.chromium.chrome.browser.ntp_customization.NtpCustomizationUtils.NTP_THEME_COLLECTION_IMAGES_DIR;
+
+import android.graphics.Bitmap;
 
 import androidx.annotation.ColorInt;
 import androidx.annotation.VisibleForTesting;
@@ -16,60 +18,96 @@ import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.ntp_customization.NtpCustomizationUtils.NtpBackgroundType;
 import org.chromium.chrome.browser.ntp_customization.theme.theme_collections.CustomBackgroundInfo;
+import org.chromium.chrome.browser.ntp_customization.theme.upload_image.BackgroundImageInfo;
 import org.chromium.url.GURL;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Objects;
 
 /** Data class for NTP theme collection background image. */
 @NullMarked
-public class NtpBackgroundDataThemeCollection extends NtpBackgroundDataBase {
+public class NtpBackgroundDataThemeCollection extends NtpBackgroundDataImageBase {
     @VisibleForTesting static final String CUSTOM_BACKGROUND_INFO_KEY = "customBackgroundInfo";
     @VisibleForTesting static final String BACKGROUND_URL_KEY = "backgroundUrl";
     @VisibleForTesting static final String COLLECTION_ID_KEY = "collectionId";
     @VisibleForTesting static final String IS_UPLOADED_IMAGE_KEY = "isUploadedImage";
     @VisibleForTesting static final String IS_DAILY_REFRESH_ENABLED_KEY = "isDailyRefreshEnabled";
+    @VisibleForTesting static final String ATTRIBUTION_LINE_1_KEY = "attributionLine1";
+    @VisibleForTesting static final String ATTRIBUTION_LINE_2_KEY = "attributionLine2";
+    @VisibleForTesting static final String ATTRIBUTION_ACTION_URL_KEY = "attributionActionUrl";
 
     private final CustomBackgroundInfo mCustomBackgroundInfo;
-    private final @ColorInt int mPrimaryColor;
-    private final @Nullable Matrix mPortraitMatrix;
-    private final @Nullable Matrix mLandscapeMatrix;
 
+    private @Nullable Bitmap mPreviewBitmap;
+
+    /**
+     * Constructor.
+     *
+     * @param platformType The platform type of the device.
+     * @param customBackgroundInfo The custom background info.
+     * @param backgroundImageInfo The background image info containing matrices and window sizes.
+     * @param bitmap The local bitmap, not synced.
+     * @param primaryColor The primary color of the background image.
+     * @param fileIdHash The hash of the background image file ID.
+     */
     public NtpBackgroundDataThemeCollection(
             @PlatformType int platformType,
             CustomBackgroundInfo customBackgroundInfo,
-            @ColorInt int primaryColor,
-            @Nullable Matrix portraitMatrix,
-            @Nullable Matrix landscapeMatrix) {
-        super(platformType);
+            @Nullable BackgroundImageInfo backgroundImageInfo,
+            @Nullable Bitmap bitmap,
+            @Nullable @ColorInt Integer primaryColor,
+            @Nullable String fileIdHash) {
+        super(platformType, backgroundImageInfo, bitmap, primaryColor, fileIdHash);
         mCustomBackgroundInfo = customBackgroundInfo;
-        mPrimaryColor = primaryColor;
-        mPortraitMatrix = portraitMatrix;
-        mLandscapeMatrix = landscapeMatrix;
+        // Set even when empty, which clears a stale description from a recycled view.
+        setContentDescription(
+                joinAttributionLines(
+                        customBackgroundInfo.attributionLine1,
+                        customBackgroundInfo.attributionLine2));
+    }
+
+    /**
+     * Constructor.
+     *
+     * @param platformType The platform type of the device.
+     * @param customBackgroundInfo The custom background info.
+     * @param previewBitmap The bitmap for preview, not synced.
+     */
+    public NtpBackgroundDataThemeCollection(
+            @PlatformType int platformType,
+            CustomBackgroundInfo customBackgroundInfo,
+            @Nullable Bitmap previewBitmap) {
+        this(
+                platformType,
+                customBackgroundInfo,
+                /* backgroundImageInfo= */ null,
+                /* bitmap= */ null,
+                /* primaryColor= */ null,
+                /* fileIdHash= */ null);
+        mPreviewBitmap = previewBitmap;
+    }
+
+    // NtpBackgroundDataImageBase implementations.
+    @Override
+    public String getImageDirName() {
+        return NTP_THEME_COLLECTION_IMAGES_DIR;
+    }
+
+    @Override
+    public @Nullable Bitmap getPreviewBitmap() {
+        return mPreviewBitmap;
     }
 
     /** Returns the {@link CustomBackgroundInfo}. */
+    @Override
     public CustomBackgroundInfo getCustomBackgroundInfo() {
         return mCustomBackgroundInfo;
     }
 
-    /** Returns the primary color of the background image. */
-    public @ColorInt int getPrimaryColor() {
-        return mPrimaryColor;
-    }
-
-    /** Returns the portrait transformation matrix. */
-    public @Nullable Matrix getPortraitMatrix() {
-        return mPortraitMatrix;
-    }
-
-    /** Returns the landscape transformation matrix. */
-    public @Nullable Matrix getLandscapeMatrix() {
-        return mLandscapeMatrix;
-    }
-
     // NtpBackgroundDataBase implementations.
     @Override
-    protected @NtpBackgroundType int getBackgroundType() {
+    public @NtpBackgroundType int getBackgroundType() {
         return NtpBackgroundType.THEME_COLLECTION;
     }
 
@@ -77,58 +115,86 @@ public class NtpBackgroundDataThemeCollection extends NtpBackgroundDataBase {
     public JSONObject toJson() throws JSONException {
         JSONObject json = super.toJson();
         json.put(CUSTOM_BACKGROUND_INFO_KEY, customBackgroundInfoToJson());
-        json.put(PRIMARY_COLOR_KEY, mPrimaryColor);
-        if (mPortraitMatrix != null && mLandscapeMatrix != null) {
-            json.put(
-                    PORTRAIT_MATRIX_KEY, NtpBackgroundDataUtils.matrixToJsonArray(mPortraitMatrix));
-            json.put(
-                    LANDSCAPE_MATRIX_KEY,
-                    NtpBackgroundDataUtils.matrixToJsonArray(mLandscapeMatrix));
-        }
         return json;
     }
 
     @Override
-    public boolean equals(Object obj) {
+    public boolean equals(@Nullable Object obj) {
         if (obj instanceof NtpBackgroundDataThemeCollection other) {
             return super.equals(obj)
-                    && Objects.equals(mCustomBackgroundInfo, other.mCustomBackgroundInfo)
-                    && mPrimaryColor == other.mPrimaryColor;
+                    && Objects.equals(mCustomBackgroundInfo, other.mCustomBackgroundInfo);
         }
         return false;
     }
 
     @Override
+    public boolean hasSameThemeAndColor(@Nullable Object obj) {
+        return obj instanceof NtpBackgroundDataThemeCollection other
+                && equals(obj)
+                && Objects.equals(getPrimaryColor(), other.getPrimaryColor());
+    }
+
+    @Override
+    public boolean hasSameThemeAndCompatibleColor(@Nullable Object obj) {
+        if (!(obj instanceof NtpBackgroundDataThemeCollection other) || !equals(obj)) {
+            return false;
+        }
+
+        @Nullable
+        @ColorInt
+        Integer color = getPrimaryColor();
+        @Nullable
+        @ColorInt
+        Integer otherColor = other.getPrimaryColor();
+        return color == null || otherColor == null || color.equals(otherColor);
+    }
+
+    @Override
     public int hashCode() {
-        return Objects.hash(super.hashCode(), mCustomBackgroundInfo, mPrimaryColor);
+        return Objects.hash(super.hashCode(), mCustomBackgroundInfo);
     }
 
     /** Returns the NtpBackgroundDataThemeCollection object from the given JSON. */
     public static NtpBackgroundDataThemeCollection fromJson(JSONObject json) throws JSONException {
-        return new NtpBackgroundDataThemeCollection(
-                json.getInt(PLATFORM_TYPE_KEY),
-                jsonObjectToCustomBackgroundInfo(json.getJSONObject(CUSTOM_BACKGROUND_INFO_KEY)),
-                json.getInt(PRIMARY_COLOR_KEY),
-                json.has(PORTRAIT_MATRIX_KEY)
-                        ? NtpBackgroundDataUtils.jsonArrayToMatrix(
-                                json.getJSONArray(PORTRAIT_MATRIX_KEY))
-                        : null,
-                json.has(LANDSCAPE_MATRIX_KEY)
-                        ? NtpBackgroundDataUtils.jsonArrayToMatrix(
-                                json.getJSONArray(LANDSCAPE_MATRIX_KEY))
-                        : null);
+        BackgroundImageInfo backgroundImageInfo = null;
+        if (json.has(BACKGROUND_IMAGE_INFO_KEY)) {
+            backgroundImageInfo =
+                    BackgroundImageInfo.fromJson(json.getJSONObject(BACKGROUND_IMAGE_INFO_KEY));
+        }
+
+        NtpBackgroundDataThemeCollection data =
+                new NtpBackgroundDataThemeCollection(
+                        json.getInt(PLATFORM_TYPE_KEY),
+                        jsonObjectToCustomBackgroundInfo(
+                                json.getJSONObject(CUSTOM_BACKGROUND_INFO_KEY)),
+                        backgroundImageInfo,
+                        /* bitmap= */ null,
+                        json.has(PRIMARY_COLOR_KEY) ? json.getInt(PRIMARY_COLOR_KEY) : null,
+                        json.has(FILE_ID_HASH_KEY) ? json.getString(FILE_ID_HASH_KEY) : null);
+        data.setIsBitmapSavedFromJson(json);
+        return data;
     }
 
     private static CustomBackgroundInfo jsonObjectToCustomBackgroundInfo(JSONObject json)
             throws JSONException {
-        String urlSpec = json.optString(BACKGROUND_URL_KEY, null);
-        GURL backgroundUrl =
-                (urlSpec == null || urlSpec.isEmpty()) ? GURL.emptyGURL() : new GURL(urlSpec);
+        String attributionLine1 =
+                json.has(ATTRIBUTION_LINE_1_KEY) ? json.getString(ATTRIBUTION_LINE_1_KEY) : null;
+        String attributionLine2 =
+                json.has(ATTRIBUTION_LINE_2_KEY) ? json.getString(ATTRIBUTION_LINE_2_KEY) : null;
         return new CustomBackgroundInfo(
-                backgroundUrl,
+                getGurlFromJson(json, BACKGROUND_URL_KEY),
                 json.getString(COLLECTION_ID_KEY),
                 json.getBoolean(IS_UPLOADED_IMAGE_KEY),
-                json.getBoolean(IS_DAILY_REFRESH_ENABLED_KEY));
+                json.getBoolean(IS_DAILY_REFRESH_ENABLED_KEY),
+                attributionLine1,
+                attributionLine2,
+                getGurlFromJson(json, ATTRIBUTION_ACTION_URL_KEY));
+    }
+
+    /** Returns the GURL stored under the key, or {@link GURL#emptyGURL()} if missing or empty. */
+    private static GURL getGurlFromJson(JSONObject json, String key) {
+        String spec = json.optString(key);
+        return spec.isEmpty() ? GURL.emptyGURL() : new GURL(spec);
     }
 
     private JSONObject customBackgroundInfoToJson() throws JSONException {
@@ -141,6 +207,30 @@ public class NtpBackgroundDataThemeCollection extends NtpBackgroundDataBase {
         json.put(COLLECTION_ID_KEY, mCustomBackgroundInfo.collectionId);
         json.put(IS_UPLOADED_IMAGE_KEY, mCustomBackgroundInfo.isUploadedImage);
         json.put(IS_DAILY_REFRESH_ENABLED_KEY, mCustomBackgroundInfo.isDailyRefreshEnabled);
+        if (mCustomBackgroundInfo.attributionLine1 != null) {
+            json.put(ATTRIBUTION_LINE_1_KEY, mCustomBackgroundInfo.attributionLine1);
+        }
+        if (mCustomBackgroundInfo.attributionLine2 != null) {
+            json.put(ATTRIBUTION_LINE_2_KEY, mCustomBackgroundInfo.attributionLine2);
+        }
+        if (!mCustomBackgroundInfo.attributionActionUrl.isEmpty()) {
+            json.put(
+                    ATTRIBUTION_ACTION_URL_KEY,
+                    mCustomBackgroundInfo.attributionActionUrl.getPossiblyInvalidSpec());
+        }
         return json;
+    }
+
+    /** Joins the non-empty attribution lines with a comma and a space. */
+    private static String joinAttributionLines(
+            @Nullable String attributionLine1, @Nullable String attributionLine2) {
+        List<String> lines = new ArrayList<>();
+        if (attributionLine1 != null && !attributionLine1.isEmpty()) {
+            lines.add(attributionLine1);
+        }
+        if (attributionLine2 != null && !attributionLine2.isEmpty()) {
+            lines.add(attributionLine2);
+        }
+        return String.join(", ", lines);
     }
 }

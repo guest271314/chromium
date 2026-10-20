@@ -14,7 +14,6 @@ import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.clearInvocations;
 import static org.mockito.Mockito.spy;
-import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 
 import static org.chromium.chrome.browser.ntp_customization.NtpCustomizationCoordinator.BottomSheetType.CHROME_COLORS;
@@ -41,11 +40,9 @@ import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.ArgumentCaptor;
-import org.mockito.Captor;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
-import org.robolectric.annotation.Config;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.util.Features;
@@ -60,12 +57,15 @@ import org.chromium.chrome.browser.ntp_customization.R;
 import org.chromium.chrome.browser.ntp_customization.theme.chrome_colors.NtpThemeColorInfo.NtpThemeColorId;
 import org.chromium.chrome.browser.ntp_customization.theme.theme_collections.CustomBackgroundInfo;
 import org.chromium.chrome.browser.ntp_customization.theme.upload_image.BackgroundImageInfo;
+import org.chromium.chrome.browser.ntp_customization.theme_sync.data.NtpBackgroundDataColor;
+import org.chromium.chrome.browser.ntp_customization.theme_sync.data.NtpBackgroundDataThemeCollection;
+import org.chromium.chrome.browser.ntp_customization.theme_sync.data.NtpBackgroundDataUploadImage;
+import org.chromium.chrome.browser.ntp_customization.theme_sync.data.PlatformType;
 import org.chromium.ui.modelutil.PropertyModel;
 import org.chromium.url.JUnitTestGURLs;
 
 /** Unit tests for {@link NtpChromeColorsCoordinator}. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 @Features.EnableFeatures({ChromeFeatureList.NEW_TAB_PAGE_CUSTOMIZATION_V2})
 public class NtpChromeColorsCoordinatorUnitTest {
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
@@ -74,7 +74,8 @@ public class NtpChromeColorsCoordinatorUnitTest {
     @Mock private Runnable mOnChromeColorSelectedCallback;
     @Mock private View.OnClickListener mOnClickListener;
     @Mock private TextWatcher mTextWatcher;
-    @Captor private ArgumentCaptor<TextWatcher> mTextWatcherCaptor;
+
+    private static final String FILE_ID_HASH = "fileIdHash";
 
     private NtpChromeColorsCoordinator mCoordinator;
     private NtpCustomizationConfigManager mNtpCustomizationConfigManager;
@@ -348,7 +349,12 @@ public class NtpChromeColorsCoordinatorUnitTest {
         NtpThemeColorInfo colorInfo1 =
                 NtpThemeColorUtils.createNtpThemeColorInfo(mContext, colorId1);
 
-        mNtpCustomizationConfigManager.onBackgroundColorChanged(mContext, colorInfo);
+        NtpBackgroundDataColor backgroundData =
+                new NtpBackgroundDataColor(
+                        PlatformType.ANDROID,
+                        /* isChromeColorDailyRefreshEnabled= */ false,
+                        colorInfo);
+        mNtpCustomizationConfigManager.onBackgroundDataChanged(mContext, backgroundData);
 
         createCoordinator();
         assertEquals(
@@ -362,9 +368,10 @@ public class NtpChromeColorsCoordinatorUnitTest {
         verify(mOnChromeColorSelectedCallback).run();
         assertEquals(colorId, NtpCustomizationUtils.getNtpThemeColorIdFromSharedPreference());
 
+        clearInvocations(mOnChromeColorSelectedCallback);
         mCoordinator.onItemClicked(colorInfo1);
         verify(mBottomSheetDelegate).onNewColorSelected(eq(true));
-        verify(mOnChromeColorSelectedCallback, times(2)).run();
+        verify(mOnChromeColorSelectedCallback).run();
         assertEquals(colorId1, NtpCustomizationUtils.getNtpThemeColorIdFromSharedPreference());
     }
 
@@ -388,6 +395,13 @@ public class NtpChromeColorsCoordinatorUnitTest {
                 NtpCustomizationUtils.getPrimaryColorFromCustomizedThemeColor(
                                 mContext, /* checkDailyRefresh= */ false)
                         .intValue());
+
+        HistogramWatcher watcher =
+                HistogramWatcher.newBuilder()
+                        .expectNoRecords("NewTabPage.Customization.Theme.ChromeColor.Click")
+                        .build();
+        mCoordinator.destroy();
+        watcher.assertExpected();
     }
 
     @Test
@@ -450,7 +464,12 @@ public class NtpChromeColorsCoordinatorUnitTest {
         NtpThemeColorInfo colorInfo =
                 NtpThemeColorUtils.createNtpThemeColorInfo(
                         mContext, NtpThemeColorInfo.NtpThemeColorId.NTP_COLORS_BLUE);
-        mNtpCustomizationConfigManager.onBackgroundColorChanged(mContext, colorInfo);
+        NtpBackgroundDataColor backgroundData =
+                new NtpBackgroundDataColor(
+                        PlatformType.ANDROID,
+                        /* isChromeColorDailyRefreshEnabled= */ false,
+                        colorInfo);
+        mNtpCustomizationConfigManager.onBackgroundDataChanged(mContext, backgroundData);
 
         createCoordinator();
         // Verifies the primary color of the chrome color bottom sheet matches the current color
@@ -469,7 +488,14 @@ public class NtpChromeColorsCoordinatorUnitTest {
         Bitmap bitmap = Bitmap.createBitmap(100, 100, Bitmap.Config.ARGB_8888);
         BackgroundImageInfo backgroundImageInfo =
                 new BackgroundImageInfo(new Matrix(), new Matrix(), null, null);
-        mNtpCustomizationConfigManager.onUploadedImageSelected(bitmap, backgroundImageInfo);
+        NtpBackgroundDataUploadImage uploadImageData =
+                new NtpBackgroundDataUploadImage(
+                        PlatformType.ANDROID,
+                        backgroundImageInfo,
+                        bitmap,
+                        /* primaryColor= */ null,
+                        FILE_ID_HASH);
+        mNtpCustomizationConfigManager.onBackgroundDataChanged(mContext, uploadImageData);
 
         // Reshows the chrome color bottom sheet and chooses the original color info.
         mCoordinator.prepareToShow();
@@ -495,7 +521,12 @@ public class NtpChromeColorsCoordinatorUnitTest {
                 NtpThemeColorUtils.createNtpThemeColorInfo(
                         mContext, NtpThemeColorInfo.NtpThemeColorId.NTP_COLORS_BLUE);
         int expectedPosition = NtpThemeColorId.NTP_COLORS_BLUE - 1;
-        mNtpCustomizationConfigManager.onBackgroundColorChanged(mContext, colorInfo);
+        NtpBackgroundDataColor backgroundData =
+                new NtpBackgroundDataColor(
+                        PlatformType.ANDROID,
+                        /* isChromeColorDailyRefreshEnabled= */ false,
+                        colorInfo);
+        mNtpCustomizationConfigManager.onBackgroundDataChanged(mContext, backgroundData);
 
         // Verifies that the Chrome color bottom sheet is opened with highlighted item.
         verifyIsDailyRefreshCheckedState(
@@ -514,7 +545,14 @@ public class NtpChromeColorsCoordinatorUnitTest {
         Bitmap bitmap = Bitmap.createBitmap(100, 100, Bitmap.Config.ARGB_8888);
         BackgroundImageInfo backgroundImageInfo =
                 new BackgroundImageInfo(new Matrix(), new Matrix(), null, null);
-        mNtpCustomizationConfigManager.onUploadedImageSelected(bitmap, backgroundImageInfo);
+        NtpBackgroundDataUploadImage uploadImageData =
+                new NtpBackgroundDataUploadImage(
+                        PlatformType.ANDROID,
+                        backgroundImageInfo,
+                        bitmap,
+                        /* primaryColor= */ null,
+                        FILE_ID_HASH);
+        mNtpCustomizationConfigManager.onBackgroundDataChanged(mContext, uploadImageData);
 
         // Verifies that the Chrome color bottom sheet is opened without any highlighted item, and
         // the daily refresh toggle turned off.
@@ -539,7 +577,14 @@ public class NtpChromeColorsCoordinatorUnitTest {
         Bitmap bitmap = Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888);
         BackgroundImageInfo backgroundImageInfo =
                 new BackgroundImageInfo(new Matrix(), new Matrix(), null, null);
-        mNtpCustomizationConfigManager.onUploadedImageSelected(bitmap, backgroundImageInfo);
+        NtpBackgroundDataUploadImage uploadImageData =
+                new NtpBackgroundDataUploadImage(
+                        PlatformType.ANDROID,
+                        backgroundImageInfo,
+                        bitmap,
+                        /* primaryColor= */ null,
+                        FILE_ID_HASH);
+        mNtpCustomizationConfigManager.onBackgroundDataChanged(mContext, uploadImageData);
 
         mCoordinator.onBackgroundTypeChanged();
 
@@ -551,7 +596,8 @@ public class NtpChromeColorsCoordinatorUnitTest {
         setupChromeColorSelectionState();
 
         // Changes the NTP background to the default background
-        mNtpCustomizationConfigManager.onBackgroundReset();
+        mNtpCustomizationConfigManager.onBackgroundDataChanged(
+                mContext, /* backgroundData= */ null);
         mCoordinator.onBackgroundTypeChanged();
 
         verifyChromeColorSelectionCleared();
@@ -568,11 +614,18 @@ public class NtpChromeColorsCoordinatorUnitTest {
         CustomBackgroundInfo customBackgroundInfo =
                 new CustomBackgroundInfo(
                         JUnitTestGURLs.EXAMPLE_URL,
-                        "test",
+                        /* collectionId= */ "test",
                         /* isUploadedImage= */ false,
                         /* isDailyRefreshEnabled= */ false);
-        mNtpCustomizationConfigManager.onThemeCollectionImageSelected(
-                bitmap, customBackgroundInfo, backgroundImageInfo);
+        NtpBackgroundDataThemeCollection backgroundData =
+                new NtpBackgroundDataThemeCollection(
+                        PlatformType.ANDROID,
+                        customBackgroundInfo,
+                        backgroundImageInfo,
+                        bitmap,
+                        /* primaryColor= */ null,
+                        /* fileIdHash= */ null);
+        mNtpCustomizationConfigManager.onBackgroundDataChanged(mContext, backgroundData);
 
         mCoordinator.onBackgroundTypeChanged();
 
@@ -627,7 +680,12 @@ public class NtpChromeColorsCoordinatorUnitTest {
         NtpThemeColorInfo colorInfo =
                 NtpThemeColorUtils.createNtpThemeColorInfo(
                         mContext, NtpThemeColorInfo.NtpThemeColorId.NTP_COLORS_BLUE);
-        mNtpCustomizationConfigManager.onBackgroundColorChanged(mContext, colorInfo);
+        NtpBackgroundDataColor backgroundData =
+                new NtpBackgroundDataColor(
+                        PlatformType.ANDROID,
+                        /* isChromeColorDailyRefreshEnabled= */ false,
+                        colorInfo);
+        mNtpCustomizationConfigManager.onBackgroundDataChanged(mContext, backgroundData);
         mPropertyModel.set(NtpChromeColorsProperties.HIGHLIGHTED_ITEM_INDEX, 5);
         mPropertyModel.set(NtpChromeColorsProperties.IS_DAILY_REFRESH_SWITCH_CHECKED, true);
         NtpCustomizationUtils.setIsChromeColorDailyRefreshEnabledToSharedPreference(true);

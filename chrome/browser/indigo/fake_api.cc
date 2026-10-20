@@ -38,6 +38,12 @@ void FakeApi::StartAcceptingConnections(int num_generate_requests,
   test_server_.StartAcceptingConnections();
 }
 
+void FakeApi::StartAcceptingConnectionsAutomatic() {
+  test_server_.RegisterRequestHandler(base::BindRepeating(
+      &FakeApi::HandleDefaultRequest, base::Unretained(this)));
+  test_server_.StartAcceptingConnections();
+}
+
 GURL FakeApi::GetGenerateUrl() const {
   return test_server_.GetURL("/generate");
 }
@@ -80,10 +86,24 @@ void FakeApi::WaitForDeleteRequest(size_t index) {
   delete_responses_[index]->WaitForRequest();
 }
 
+bool FakeApi::HasReceivedDeleteRequest(size_t index) const {
+  CHECK_LT(index, delete_responses_.size());
+  return delete_responses_[index]->has_received_request();
+}
+
 void FakeApi::SendDeleteSuccessResponse(size_t index) {
   CHECK_LT(index, delete_responses_.size());
   auto& controllable_response = delete_responses_[index];
   controllable_response->Send(net::HTTP_OK, "application/json", "{}");
+  controllable_response->Done();
+}
+
+void FakeApi::SendDeleteErrorResponse(size_t index) {
+  CHECK_LT(index, delete_responses_.size());
+  auto& controllable_response = delete_responses_[index];
+  std::string response_body =
+      R"({"error": {"code": "INTERNAL", "message": "Deletion failed"}})";
+  controllable_response->Send(net::HTTP_OK, "application/json", response_body);
   controllable_response->Done();
 }
 
@@ -140,6 +160,32 @@ testing::AssertionResult FakeApi::RequestHasValidProductImage(
   }
 
   return testing::AssertionSuccess();
+}
+
+std::unique_ptr<net::test_server::HttpResponse> FakeApi::HandleDefaultRequest(
+    const net::test_server::HttpRequest& request) {
+  if (request.relative_url == "/generate") {
+    auto response = std::make_unique<net::test_server::BasicHttpResponse>();
+    response->set_code(net::HTTP_OK);
+    response->set_content(
+        "{\n"
+        "  \"result\": {\n"
+        "    \"generatedImageUrl\": \"data:image/png;base64,"
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhg"
+        "GAWjR9awAAAABJRU5ErkJggg==\"\n"
+        "  }\n"
+        "}");
+    response->set_content_type("application/json");
+    return response;
+  }
+  if (request.relative_url == "/delete") {
+    auto response = std::make_unique<net::test_server::BasicHttpResponse>();
+    response->set_code(net::HTTP_OK);
+    response->set_content("{}");
+    response->set_content_type("application/json");
+    return response;
+  }
+  return nullptr;
 }
 
 }  // namespace indigo

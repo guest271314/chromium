@@ -5,9 +5,12 @@
 #include <optional>
 
 #include "base/allocator/partition_alloc_support.h"
+#include "base/base_switches.h"
 #include "base/command_line.h"
 #include "base/debug/alias.h"
+#include "base/debug/debugger.h"
 #include "base/debug/leak_annotations.h"
+#include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/immediate_crash.h"
 #include "base/message_loop/message_pump_type.h"
@@ -21,9 +24,11 @@
 #include "base/timer/hi_res_timer_manager.h"
 #include "build/build_config.h"
 #include "components/on_device_translation/buildflags/buildflags.h"
+#include "components/webrtc/features.h"
 #include "content/child/child_process.h"
 #include "content/common/content_switches_internal.h"
 #include "content/common/features.h"
+#include "content/common/skia_utils.h"
 #include "content/public/common/content_client.h"
 #include "content/public/common/content_features.h"
 #include "content/public/common/content_switches.h"
@@ -31,12 +36,14 @@
 #include "content/public/utility/content_utility_client.h"
 #include "content/utility/on_device_model/on_device_model_sandbox_init.h"
 #include "content/utility/utility_thread_impl.h"
+#include "device/vr/buildflags/buildflags.h"
 #include "printing/buildflags/buildflags.h"
 #include "sandbox/policy/mojom/sandbox.mojom.h"
 #include "sandbox/policy/sandbox.h"
 #include "sandbox/policy/sandbox_type.h"
 #include "services/on_device_model/public/mojom/on_device_model_service.mojom.h"
 #include "services/tracing/public/cpp/trace_startup.h"
+#include "services/video_capture/public/mojom/video_capture_service.mojom.h"
 
 #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
 #include "base/file_descriptor_store.h"
@@ -63,14 +70,16 @@
 
 #if BUILDFLAG(USE_VAAPI)
 #include "media/gpu/vaapi/vaapi_wrapper.h"
+#if BUILDFLAG(ENABLE_OOP_VIDEO_DECODER)
 #include "media/mojo/mojom/video_decoder_factory_process.mojom.h"
+#endif  // BUILDFLAG(ENABLE_OOP_VIDEO_DECODER)
 #endif  // BUILDFLAG(USE_VAAPI)
 
 #endif  // BUILDFLAG(USE_LINUX_VIDEO_ACCELERATION)
 
-#if BUILDFLAG(ALLOW_OOP_VIDEO_DECODER)
+#if BUILDFLAG(ENABLE_OOP_VIDEO_DECODER)
 #include "media/gpu/sandbox/hardware_video_decoding_sandbox_hook_linux.h"
-#endif  // BUILDFLAG(ALLOW_OOP_VIDEO_DECODER)
+#endif  // BUILDFLAG(ENABLE_OOP_VIDEO_DECODER)
 
 #if BUILDFLAG(ENABLE_PRINTING)
 #include "printing/sandbox/print_backend_sandbox_hook_linux.h"
@@ -82,6 +91,10 @@
 #endif
 
 #endif  // BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
+
+#if BUILDFLAG(IS_LINUX) && BUILDFLAG(ENABLE_VR)
+#include "content/services/isolated_xr_device/xr_sandbox_hook_linux.h"
+#endif  // BUILDFLAG(IS_LINUX) && BUILDFLAG(ENABLE_VR)
 
 #if BUILDFLAG(IS_CHROMEOS)
 #include "chromeos/ash/services/ime/ime_sandbox_hook.h"
@@ -103,8 +116,10 @@
 #include "base/win/windows_handle_util.h"
 #include "base/win/windows_version.h"
 #include "content/utility/sandbox_delegate_data.mojom.h"
+#include "content/utility/webnn/webnn_sandbox_init.h"
 #include "sandbox/policy/win/sandbox_warmup.h"
 #include "sandbox/win/src/sandbox.h"
+#include "services/webnn/public/mojom/webnn_compiler_service.mojom.h"
 #endif  // BUILDFLAG(IS_WIN)
 
 #if BUILDFLAG(IS_WIN)
@@ -148,11 +163,13 @@ std::vector<std::string> GetNetworkContextsParentDirectories() {
 }
 
 bool ShouldUseAmdGpuPolicy(sandbox::mojom::Sandbox sandbox_type) {
-#if BUILDFLAG(USE_LINUX_VIDEO_ACCELERATION) || \
-    BUILDFLAG(ALLOW_OOP_VIDEO_DECODER)
-  const bool obtain_gpu_info =
-      sandbox_type == sandbox::mojom::Sandbox::kHardwareVideoDecoding ||
+#if BUILDFLAG(USE_LINUX_VIDEO_ACCELERATION)
+  bool obtain_gpu_info =
       sandbox_type == sandbox::mojom::Sandbox::kHardwareVideoEncoding;
+#if BUILDFLAG(ENABLE_OOP_VIDEO_DECODER)
+  obtain_gpu_info |=
+      sandbox_type == sandbox::mojom::Sandbox::kHardwareVideoDecoding;
+#endif  // BUILDFLAG(ENABLE_OOP_VIDEO_DECODER)
 
   if (obtain_gpu_info) {
     // The kHardwareVideoDecoding and kHardwareVideoEncoding sandboxes need to
@@ -161,8 +178,7 @@ bool ShouldUseAmdGpuPolicy(sandbox::mojom::Sandbox sandbox_type) {
     gpu::CollectBasicGraphicsInfo(&gpu_info);
     return angle::IsAMD(gpu_info.active_gpu().vendor_id);
   }
-#endif  // BUILDFLAG(USE_LINUX_VIDEO_ACCELERATION) ||
-        // BUILDFLAG(ALLOW_OOP_VIDEO_DECODER)
+#endif  // BUILDFLAG(USE_LINUX_VIDEO_ACCELERATION)
   return false;
 }
 #endif  // BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
@@ -264,6 +280,15 @@ int UtilityMain(MainFunctionParams parameters) {
       parameters.command_line->GetSwitchValueASCII(switches::kUtilitySubType);
   SetUtilityThreadName(utility_sub_type);
 
+  // Some utility services (e.g. data_decoder, print_compositor,
+  // paint_preview_compositor) decode images via Skia and need the same codec
+  // configuration as the browser/renderer/GPU processes.
+  InitializeSkiaLite();
+
+  if (parameters.command_line->HasSwitch(switches::kWaitForDebugger)) {
+    base::debug::WaitForDebugger(/*wait_seconds=*/60, /*silent=*/true);
+  }
+
   if (parameters.command_line->HasSwitch(switches::kUtilityStartupDialog)) {
     auto dialog_match = parameters.command_line->GetSwitchValueASCII(
         switches::kUtilityStartupDialog);
@@ -278,14 +303,14 @@ int UtilityMain(MainFunctionParams parameters) {
 
 #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
 
-#if BUILDFLAG(USE_LINUX_VIDEO_ACCELERATION) && BUILDFLAG(USE_VAAPI)
+#if BUILDFLAG(ENABLE_OOP_VIDEO_DECODER) && BUILDFLAG(USE_VAAPI)
   // Regardless of the sandbox status, the VaapiWrapper needs to be initialized
   // for decoder utility processes on devices that use VA-API.
   if (utility_sub_type == media::mojom::VideoDecoderFactoryProcess::Name_) {
     media::VaapiWrapper::PreSandboxInitialization(
         /*allow_disabling_global_lock=*/true);
   }
-#endif  // BUILDFLAG(USE_LINUX_VIDEO_ACCELERATION) && BUILDFLAG(USE_VAAPI)
+#endif  // BUILDFLAG(ENABLE_OOP_VIDEO_DECODER) && BUILDFLAG(USE_VAAPI)
 
   // Thread type delegate of the process should be registered before first
   // thread type change in ChildProcess constructor. It also needs to be
@@ -321,8 +346,15 @@ int UtilityMain(MainFunctionParams parameters) {
       break;
     case sandbox::mojom::Sandbox::kSpeechRecognition:
       pre_sandbox_hook =
-          base::BindOnce(&speech::SpeechRecognitionPreSandboxHook);
+          base::BindOnce(&speech::SpeechRecognitionPreSandboxHook,
+                         parameters.command_line->GetSwitchValuePath(
+                             speech::GetSodaBinaryPathSwitch()));
       break;
+#if BUILDFLAG(IS_LINUX) && BUILDFLAG(ENABLE_VR)
+    case sandbox::mojom::Sandbox::kXrCompositing:
+      pre_sandbox_hook = base::BindOnce(&vr::XrPreSandboxHook);
+      break;
+#endif  // BUILDFLAG(IS_LINUX) && BUILDFLAG(ENABLE_VR)
 #if BUILDFLAG(ENABLE_ON_DEVICE_TRANSLATION) && \
     (BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS))
     case sandbox::mojom::Sandbox::kOnDeviceTranslation:
@@ -346,12 +378,12 @@ int UtilityMain(MainFunctionParams parameters) {
       pre_sandbox_hook =
           base::BindOnce(&shape_detection::ShapeDetectionPreSandboxHook);
       break;
-#if BUILDFLAG(ALLOW_OOP_VIDEO_DECODER)
+#if BUILDFLAG(ENABLE_OOP_VIDEO_DECODER)
     case sandbox::mojom::Sandbox::kHardwareVideoDecoding:
       pre_sandbox_hook =
           base::BindOnce(&media::HardwareVideoDecodingPreSandboxHook);
       break;
-#endif  // BUILDFLAG(ALLOW_OOP_VIDEO_DECODER)
+#endif  // BUILDFLAG(ENABLE_OOP_VIDEO_DECODER)
 #if BUILDFLAG(USE_LINUX_VIDEO_ACCELERATION)
     case sandbox::mojom::Sandbox::kHardwareVideoEncoding:
       pre_sandbox_hook =
@@ -444,6 +476,19 @@ int UtilityMain(MainFunctionParams parameters) {
     base::win::EnableHighDPISupport();
   }
 
+  // WebNN model compilation needs to load the third-party
+  // execution-provider preload helper before LowerToken() below drops
+  // the token to USER_LOCKDOWN. See content/utility/webnn/
+  // webnn_sandbox_init.h for the preload helper and
+  // content/browser/service_host/utility_sandbox_delegate_win.cc for
+  // the broker-side sandbox policy.
+  //
+  // Regardless of the sandbox status, the ORT environment needs to be
+  // initialized for WebNN Compiler Utility processes.
+  if (utility_sub_type == webnn::mojom::WebNNCompilerService::Name_) {
+    CHECK(webnn::PreSandboxInit());
+  }
+
   if (!sandbox::policy::IsUnsandboxedSandboxType(sandbox_type) &&
       sandbox_type != sandbox::mojom::Sandbox::kCdm &&
       sandbox_type != sandbox::mojom::Sandbox::kMediaFoundationCdm) {
@@ -456,7 +501,15 @@ int UtilityMain(MainFunctionParams parameters) {
   }
 #endif
 
-  ChildProcess utility_process(base::ThreadType::kDefault);
+  base::ThreadType io_thread_type = base::ThreadType::kDefault;
+  // The video capture service's IO thread carries time-sensitive video frame
+  // deliveries over mojo channels.
+  if (utility_sub_type == video_capture::mojom::VideoCaptureService::Name_ &&
+      base::FeatureList::IsEnabled(
+          webrtc::features::kWebRTCBoostMediaIOThreads)) {
+    io_thread_type = base::ThreadType::kPresentation;
+  }
+  ChildProcess utility_process(io_thread_type);
   GetContentClient()->utility()->PostIOThreadCreated(
       utility_process.io_task_runner());
   base::RunLoop run_loop;

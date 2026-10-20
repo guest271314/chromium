@@ -6,6 +6,9 @@
 
 #include <set>
 
+#include "android_webview/common/aw_cached_flags.h"
+#include "android_webview/common/aw_features.h"
+#include "base/feature_list.h"
 #include "base/no_destructor.h"
 #include "components/metrics/entropy_state.h"
 
@@ -15,13 +18,14 @@ AwEntropyProviders::AwEntropyProviders(
     std::unique_ptr<const variations::EntropyProviders> standard_providers,
     uint32_t nonembedded_low_entropy_source,
     std::unique_ptr<const std::set<std::string_view>>
-        nonembedded_low_entropy_source_allowlist)
+        nonembedded_low_entropy_source_allowlist,
+    std::string_view limited_entropy_randomization_source)
     : variations::EntropyProviders(
           /*high_entropy_source=*/"",
           /*low_entropy_source=*/
           {static_cast<uint32_t>(standard_providers->low_entropy_source()),
            static_cast<uint32_t>(standard_providers->low_entropy_domain())},
-          /*limited_entropy_source=*/"",
+          limited_entropy_randomization_source,
           standard_providers->benchmarking_enabled()),
       delegating_provider_(
           std::move(standard_providers),
@@ -58,7 +62,9 @@ AwEntropyProviders::DelegatingEntropyProvider::~DelegatingEntropyProvider() =
 double AwEntropyProviders::DelegatingEntropyProvider::GetEntropyForTrial(
     std::string_view trial_name,
     uint32_t randomization_seed) const {
-  if (nonembedded_low_entropy_source_allowlist_->contains(trial_name)) {
+  if (nonembedded_low_entropy_source_allowlist_->contains(trial_name) ||
+      (trial_name.empty() && android_webview::CachedFlags::IsEnabled(
+                                 features::kWebViewUseWVLESForLayeredStudy))) {
     return nonembedded_low_entropy_source_provider_.GetEntropyForTrial(
         trial_name, randomization_seed);
   }

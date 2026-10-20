@@ -4,18 +4,16 @@
 
 package org.chromium.chrome.browser.customtabs;
 
-import static org.chromium.build.NullUtil.assumeNonNull;
 import static org.chromium.chrome.browser.flags.CustomTabProfileType.INCOGNITO;
 
 import android.app.Activity;
 
-import org.chromium.base.CommandLine;
 import org.chromium.base.supplier.OneshotSupplier;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.browserservices.intents.BrowserServicesIntentDataProvider;
 import org.chromium.chrome.browser.customtabs.content.CustomTabActivityNavigationController;
-import org.chromium.chrome.browser.flags.ChromeSwitches;
+import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.lifecycle.ActivityLifecycleDispatcher;
 import org.chromium.chrome.browser.lifecycle.DestroyObserver;
 import org.chromium.chrome.browser.lifecycle.NativeInitObserver;
@@ -24,6 +22,7 @@ import org.chromium.chrome.browser.profiles.ProfileManager;
 import org.chromium.chrome.browser.profiles.ProfileProvider;
 import org.chromium.chrome.browser.tabmodel.IncognitoTabHost;
 import org.chromium.chrome.browser.tabmodel.IncognitoTabHostRegistry;
+import org.chromium.chrome.browser.tabmodel.IncognitoTabHostUtils;
 
 /**
  * Implements incognito tab host for the given instance of Custom Tab activity. This class exists
@@ -66,24 +65,42 @@ public class CustomTabIncognitoManager implements NativeInitObserver, DestroyObs
             IncognitoTabHostRegistry.getInstance().unregister(mIncognitoTabHost);
         }
 
-        Profile otrProfile = assumeNonNull(mProfileProviderSupplier.get()).getOffTheRecordProfile();
-        if (otrProfile != null) {
+        // Do not destroy the profile if the activity is just being recreated (e.g. on
+        // configuration change), because the tab and its profile will be reused.
+        if (!mActivity.isFinishing()) {
+            return;
+        }
+
+        ProfileProvider profileProvider = mProfileProviderSupplier.get();
+        if (profileProvider == null) return;
+        Profile otrProfile = profileProvider.getOffTheRecordProfile();
+        if (otrProfile != null
+                && (!otrProfile.isPrimaryOtrProfile()
+                        || (!IncognitoTabHostUtils.doIncognitoTabsExist()
+                                && !IncognitoTabHostUtils.isIncognitoTabModelActive()))) {
             ProfileManager.destroyWhenAppropriate(otrProfile);
         }
     }
 
     private void initializeIncognito() {
+        // Only register in IncognitoTabHostRegistry if this CCT shares Chrome's primary_otr
+        // profile. Isolated CCT:Incognito profiles must not register as they would prevent
+        // Chrome's primary incognito profile from being cleaned up when main incognito tabs close.
         if (mIntentDataProvider.isOpenedByChrome()) {
-            mIncognitoTabHost = new IncognitoCustomTabHost();
-            IncognitoTabHostRegistry.getInstance().register(mIncognitoTabHost);
+            ProfileProvider profileProvider = mProfileProviderSupplier.get();
+            Profile otrProfile =
+                    profileProvider != null ? profileProvider.getOffTheRecordProfile() : null;
+            if (otrProfile == null || otrProfile.isPrimaryOtrProfile()) {
+                mIncognitoTabHost = new IncognitoCustomTabHost();
+                IncognitoTabHostRegistry.getInstance().register(mIncognitoTabHost);
+            }
         }
 
         maybeCreateIncognitoTabSnapshotController();
     }
 
     private void maybeCreateIncognitoTabSnapshotController() {
-        if (!CommandLine.getInstance()
-                .hasSwitch(ChromeSwitches.ENABLE_INCOGNITO_SNAPSHOTS_IN_ANDROID_RECENTS)) {
+        if (!ChromeFeatureList.sEnableAndroidEnterpriseScreenshotProtection.isEnabled()) {
             new IncognitoCustomTabSnapshotController(
                     mActivity, () -> mIntentDataProvider.getCustomTabMode() == INCOGNITO);
         }

@@ -17,7 +17,8 @@
 #include "base/test/scoped_feature_list.h"
 #include "build/build_config.h"
 #include "chrome/browser/shortcuts/shortcut_icon_generator.h"
-#include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/test/test_browser_dialog.h"
 #include "chrome/browser/ui/views/web_apps/progress_delay.h"
 #include "chrome/browser/ui/views/web_apps/web_app_install_dialog_delegate.h"
@@ -27,25 +28,46 @@
 #include "chrome/browser/web_applications/web_app_install_info.h"
 #include "chrome/browser/web_applications/web_app_screenshot_fetcher.h"
 #include "chrome/common/chrome_features.h"
+#include "chrome/common/url_constants.h"
+#include "chrome/grit/generated_resources.h"
 #include "chrome/test/base/ui_test_utils.h"
+#include "components/strings/grit/components_strings.h"
 #include "components/vector_icons/vector_icons.h"
 #include "components/webapps/browser/installable/ml_install_operation_tracker.h"
 #include "components/webapps/browser/installable/ml_installability_promoter.h"
+#include "content/public/browser/web_contents.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/skia/include/core/SkBitmap.h"
+#include "ui/accessibility/ax_enums.mojom.h"
 #include "ui/base/interaction/element_tracker.h"
+#include "ui/base/l10n/l10n_util.h"
 #include "ui/base/models/image_model.h"
 #include "ui/color/color_id.h"
+#include "ui/events/event.h"
+#include "ui/events/event_constants.h"
+#include "ui/events/keycodes/keyboard_codes.h"
+#include "ui/events/types/event_type.h"
 #include "ui/gfx/geometry/size.h"
+#include "ui/views/accessibility/ax_update_notifier.h"
+#include "ui/views/accessibility/view_accessibility.h"
+#include "ui/views/controls/button/button.h"
+#include "ui/views/controls/button/md_text_button.h"
+#include "ui/views/controls/textfield/textfield.h"
+#include "ui/views/focus/focus_manager.h"
 #include "ui/views/interaction/element_tracker_views.h"
+#include "ui/views/test/ax_event_counter.h"
+#include "ui/views/test/button_test_api.h"
 #include "ui/views/test/dialog_test.h"
+#include "ui/views/test/mock_activation_controller.h"
 #include "ui/views/test/widget_test.h"
+#include "ui/views/view_utils.h"
 #include "ui/views/widget/any_widget_observer.h"
 #include "ui/views/widget/widget.h"
 #include "ui/views/widget/widget_delegate.h"
 #include "ui/views/window/dialog_delegate.h"
+#include "url/gurl.h"
 
 namespace web_app {
 
@@ -111,12 +133,29 @@ class WebAppInstallDialogBrowserTest
  public:
   WebAppInstallDialogBrowserTest() {
     // TODO(b/492657940): Remove this once the feature is launched.
-    feature_list_.InitAndEnableFeature(features::kWebAppInstallDialog);
+    feature_list_.InitWithFeatures(
+        {features::kWebAppInstallDialog, features::kWebAppInstallDialogWinPin},
+        {});
   }
   WebAppInstallDialogBrowserTest(const WebAppInstallDialogBrowserTest&) =
       delete;
   WebAppInstallDialogBrowserTest& operator=(
       const WebAppInstallDialogBrowserTest&) = delete;
+
+  void SetUp() override {
+#if defined(USE_MOCK_ACTIVATION_CONTROLLER)
+    activation_controller_ =
+        std::make_unique<views::test::MockActivationController>();
+#endif
+    DialogBrowserTest::SetUp();
+  }
+
+  void TearDownOnMainThread() override {
+#if defined(USE_MOCK_ACTIVATION_CONTROLLER)
+    activation_controller_.reset();
+#endif
+    DialogBrowserTest::TearDownOnMainThread();
+  }
 
   // DialogBrowserTest:
   void ShowUi(const std::string& name) override {
@@ -134,7 +173,7 @@ class WebAppInstallDialogBrowserTest
                                          "WebAppInstallFlowDialog");
 
     auto* promoter = webapps::MLInstallabilityPromoter::FromWebContents(
-        browser()->tab_strip_model()->GetActiveWebContents());
+        browser()->GetTabStripModel()->GetActiveWebContents());
     auto install_tracker = promoter->RegisterCurrentInstallForWebContents(
         webapps::WebappInstallSource::MENU_BROWSER_TAB);
 
@@ -152,7 +191,7 @@ class WebAppInstallDialogBrowserTest
     }
 
     delegate_ = WebAppInstallFlowDialogDelegate::Show(
-        browser()->tab_strip_model()->GetActiveWebContents(),
+        browser()->GetTabStripModel()->GetActiveWebContents(),
         std::move(install_info), std::move(install_tracker),
         base::BindOnce(&WebAppInstallDialogBrowserTest::OnDialogCompleted,
                        weak_ptr_factory_.GetWeakPtr()),
@@ -211,35 +250,71 @@ class WebAppInstallDialogBrowserTest
     dialog_accepted_ = accepted;
     dialog_install_info_ = std::move(install_info);
     install_result_callback_ = std::move(result_callback);
+    tab_count_at_dialog_completion_ = browser()->GetTabStripModel()->count();
   }
 
   void CompleteInstall(bool success) {
     std::move(install_result_callback_).Run(success, base::DoNothing());
   }
 
+  // Presses the "Learn more" button of the currently shown dialog and verifies
+  // that the installation was declined before the help page was opened in a
+  // new foreground tab, and that the dialog was closed.
+  void PressLearnMoreAndExpectDeclineBeforeHelpPage() {
+    ASSERT_TRUE(widget_);
+    ASSERT_EQ(browser()->GetTabStripModel()->count(), 1);
+    views::test::WidgetDestroyedWaiter destruction_waiter(widget_.get());
+
+    views::View* learn_more_view =
+        views::ElementTrackerViews::GetInstance()->GetFirstMatchingView(
+            WebAppInstallFlowDialogDelegate::kLearnMoreButtonId,
+            views::ElementTrackerViews::GetContextForWidget(widget_.get()));
+    ASSERT_TRUE(learn_more_view);
+
+    ui_test_utils::TabAddedWaiter tab_added_waiter(browser());
+    // Key events are not subject to the dialog's input event activation
+    // protection, unlike mouse events dispatched right after the dialog is
+    // shown.
+    ui::KeyEvent key_event(ui::EventType::kKeyPressed, ui::VKEY_RETURN,
+                           ui::EF_NONE);
+    views::test::ButtonTestApi(
+        views::AsViewClass<views::Button>(learn_more_view))
+        .NotifyClick(key_event);
+
+    // The installation is declined synchronously, while the installing tab
+    // was still the only tab, i.e. before the help page was opened.
+    EXPECT_EQ(dialog_accepted_, false);
+    EXPECT_EQ(tab_count_at_dialog_completion_, 1);
+
+    content::WebContents* help_page = tab_added_waiter.Wait();
+    ASSERT_TRUE(help_page);
+    EXPECT_EQ(help_page->GetVisibleURL(),
+              GURL(chrome::kInstallDialogFlowLearnMoreURL));
+    EXPECT_EQ(help_page, browser()->GetTabStripModel()->GetActiveWebContents());
+    destruction_waiter.Wait();
+  }
+
  protected:
   InstallOsType GetOsType() { return std::get<0>(GetParam()); }
+  InstallDialogType GetDialogType() { return std::get<1>(GetParam()); }
   std::optional<bool> dialog_accepted_;
   std::unique_ptr<WebAppInstallInfo> dialog_install_info_;
   WebAppInstallationAcceptanceResultCallback install_result_callback_;
+  // The number of tabs in `browser()` at the time `OnDialogCompleted()` ran.
+  std::optional<int> tab_count_at_dialog_completion_;
   TestWebAppScreenshotFetcher screenshot_fetcher_;
   base::WeakPtr<views::Widget> widget_ = nullptr;
   base::WeakPtr<WebAppInstallFlowDialogDelegate> delegate_ = nullptr;
 
  private:
-  InstallDialogType GetDialogType() { return std::get<1>(GetParam()); }
-
   base::test::ScopedFeatureList feature_list_;
+#if defined(USE_MOCK_ACTIVATION_CONTROLLER)
+  std::unique_ptr<views::test::MockActivationController> activation_controller_;
+#endif
   base::WeakPtrFactory<WebAppInstallDialogBrowserTest> weak_ptr_factory_{this};
 };
 
-// TODO(crbug.com/510455863): Re-enable the test
-#if BUILDFLAG(IS_WIN)
-#define MAYBE_InvokeUi_Intro DISABLED_InvokeUi_Intro
-#else
-#define MAYBE_InvokeUi_Intro InvokeUi_Intro
-#endif
-IN_PROC_BROWSER_TEST_P(WebAppInstallDialogBrowserTest, MAYBE_InvokeUi_Intro) {
+IN_PROC_BROWSER_TEST_P(WebAppInstallDialogBrowserTest, InvokeUi_Intro) {
   ShowAndVerifyUi();
 }
 
@@ -307,10 +382,164 @@ IN_PROC_BROWSER_TEST_P(WebAppInstallDialogClosedTest, Success) {
   EXPECT_TRUE(dialog_install_info_);
 }
 
+// Regression tests for crbug.com/570729142. "Learn more" opens the help page in
+// a new foreground tab, which hides the installing tab and closes this
+// tab-modal dialog. The dialog must decline the installation *before* that tab
+// is opened, otherwise the pending install command aborts itself on the tab
+// switch and the decline never reaches it.
+IN_PROC_BROWSER_TEST_P(WebAppInstallDialogClosedTest, LearnMoreInIntro) {
+  ShowUi("Intro");
+  PressLearnMoreAndExpectDeclineBeforeHelpPage();
+}
+
+IN_PROC_BROWSER_TEST_P(WebAppInstallDialogClosedTest,
+                       LearnMoreInInstallOptions) {
+  if (GetOsType() == InstallOsType::kOther) {
+    GTEST_SKIP() << "InstallOptions step does not exist for kOther";
+  }
+  ShowUi("InstallOptions");
+  PressLearnMoreAndExpectDeclineBeforeHelpPage();
+}
+
+IN_PROC_BROWSER_TEST_P(WebAppInstallDialogClosedTest,
+                       FocusAndAccessibilityAcrossSteps) {
+  ShowUi("Intro");
+  ASSERT_TRUE(widget_);
+  ASSERT_TRUE(delegate_);
+  auto* dialog_delegate = widget_->widget_delegate()->AsDialogDelegate();
+  ASSERT_TRUE(dialog_delegate);
+  views::FocusManager* focus_manager = widget_->GetFocusManager();
+  ASSERT_TRUE(focus_manager);
+
+  EXPECT_EQ(delegate_->GetCurrentStepForTesting(),
+            InstallDialogStep::kInstallDialog);
+  if (GetDialogType() == InstallDialogType::kDiy) {
+    EXPECT_TRUE(
+        views::IsViewClass<views::Textfield>(focus_manager->GetFocusedView()));
+  } else {
+    EXPECT_EQ(focus_manager->GetFocusedView(),
+              dialog_delegate->GetCancelButton());
+  }
+
+  EXPECT_EQ(
+      dialog_delegate->GetOkButton()->GetViewAccessibility().GetCachedName(),
+      l10n_util::GetStringUTF16(GetOsType() == InstallOsType::kOther
+                                    ? IDS_INSTALL
+                                    : IDS_WEB_APP_INSTALL_FLOW_NEXT));
+
+  views::test::AXEventCounter ax_counter(views::AXUpdateNotifier::Get());
+
+  // For OS types that show the installer options step, accepting the intro step
+  // transitions to `kInstallerOptions`, politely announces the step title,
+  // relabels the primary button to "Install", and focuses the Cancel button.
+  if (GetOsType() != InstallOsType::kOther) {
+    dialog_delegate->AcceptDialog();
+    EXPECT_EQ(delegate_->GetCurrentStepForTesting(),
+              InstallDialogStep::kInstallerOptions);
+    EXPECT_EQ(focus_manager->GetFocusedView(),
+              dialog_delegate->GetCancelButton());
+    EXPECT_EQ(
+        dialog_delegate->GetOkButton()->GetViewAccessibility().GetCachedName(),
+        l10n_util::GetStringUTF16(IDS_INSTALL));
+    EXPECT_EQ(ax_counter.GetCount(ax::mojom::Event::kFocus,
+                                  dialog_delegate->GetCancelButton()),
+              1);
+    EXPECT_EQ(ax_counter.GetCount(ax::mojom::Event::kFocus), 1);
+#if !BUILDFLAG(IS_MAC)
+    EXPECT_GE(ax_counter.GetCount(ax::mojom::Event::kLiveRegionChanged), 1);
+#endif
+
+    ax_counter.ResetAllCounts();
+  }
+
+  // Accepting the dialog now transitions to `kProgress`. Because all dialog
+  // buttons are hidden during installation progress, focus inside the dialog is
+  // cleared (no `kFocus` event is fired) and the "Installing app..." status is
+  // announced politely via a live region.
+  dialog_delegate->AcceptDialog();
+  EXPECT_EQ(delegate_->GetCurrentStepForTesting(),
+            InstallDialogStep::kProgress);
+  EXPECT_EQ(focus_manager->GetFocusedView(), nullptr);
+  EXPECT_EQ(ax_counter.GetCount(ax::mojom::Event::kFocus), 0);
+  // On macOS, `RootView::AnnounceTextAs` posts a native NSAccessibility
+  // announcement notification directly instead of updating the polite live
+  // region view, so `kLiveRegionChanged` is only emitted on non-Mac platforms.
+#if !BUILDFLAG(IS_MAC)
+  EXPECT_GE(ax_counter.GetCount(ax::mojom::Event::kLiveRegionChanged), 1);
+#endif
+
+  // Once installation finishes and the progress animation completes, the dialog
+  // transitions to `kSuccessful`, politely announces the success title, and
+  // focuses the primary ("Open tab in app") button.
+  ax_counter.ResetAllCounts();
+  CompleteInstall(true);
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return delegate_ && delegate_->GetCurrentStepForTesting() ==
+                            InstallDialogStep::kSuccessful;
+  }));
+
+  EXPECT_EQ(focus_manager->GetFocusedView(), dialog_delegate->GetOkButton());
+  EXPECT_EQ(
+      dialog_delegate->GetOkButton()->GetViewAccessibility().GetCachedName(),
+      l10n_util::GetStringUTF16(IDS_WEB_APP_INSTALL_SUCCESS_OPEN_APP));
+  EXPECT_EQ(ax_counter.GetCount(ax::mojom::Event::kFocus,
+                                dialog_delegate->GetOkButton()),
+            1);
+  EXPECT_EQ(ax_counter.GetCount(ax::mojom::Event::kFocus), 1);
+#if !BUILDFLAG(IS_MAC)
+  EXPECT_GE(ax_counter.GetCount(ax::mojom::Event::kLiveRegionChanged), 1);
+#endif
+}
+
+IN_PROC_BROWSER_TEST_P(WebAppInstallDialogClosedTest,
+                       InactiveBrowserStaysInactiveOnSuccess) {
+  ShowUi("Progress");
+  ASSERT_TRUE(widget_);
+  ASSERT_TRUE(delegate_);
+  EXPECT_EQ(delegate_->GetCurrentStepForTesting(),
+            InstallDialogStep::kProgress);
+
+  views::Widget* top_level_widget = widget_->GetTopLevelWidget();
+  ASSERT_TRUE(top_level_widget);
+  views::FocusManager* focus_manager = widget_->GetFocusManager();
+  ASSERT_TRUE(focus_manager);
+  auto* dialog_delegate = widget_->widget_delegate()->AsDialogDelegate();
+  ASSERT_TRUE(dialog_delegate);
+
+  // Show another top-level widget to deactivate `top_level_widget`
+  // (`Widget::Deactivate()` is not implemented on macOS).
+  views::Widget other_widget;
+  views::Widget::InitParams params(
+      views::Widget::InitParams::CLIENT_OWNS_WIDGET,
+      views::Widget::InitParams::TYPE_WINDOW);
+  params.bounds = gfx::Rect(0, 0, 200, 200);
+#if BUILDFLAG(IS_CHROMEOS)
+  params.context = top_level_widget->GetNativeWindow();
+#endif
+  other_widget.Init(std::move(params));
+  other_widget.Show();
+  ASSERT_FALSE(top_level_widget->IsActive());
+
+  CompleteInstall(true);
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return delegate_ && delegate_->GetCurrentStepForTesting() ==
+                            InstallDialogStep::kSuccessful;
+  }));
+
+  EXPECT_FALSE(top_level_widget->IsActive());
+  EXPECT_EQ(focus_manager->GetFocusedView(), nullptr);
+  EXPECT_EQ(focus_manager->GetStoredFocusView(),
+            dialog_delegate->GetOkButton());
+  other_widget.CloseNow();
+}
+
 INSTANTIATE_TEST_SUITE_P(
     /** prefix */,
     WebAppInstallDialogClosedTest,
-    testing::Combine(testing::Values(InstallOsType::kOther),
+    testing::Combine(testing::Values(InstallOsType::kOther,
+                                     InstallOsType::kMac,
+                                     InstallOsType::kCros,
+                                     InstallOsType::kWin),
                      testing::Values(InstallDialogType::kSimple,
                                      InstallDialogType::kDetailed,
                                      InstallDialogType::kDiy)),
@@ -321,6 +550,12 @@ INSTANTIATE_TEST_SUITE_P(
     });
 
 class WebAppInstallDialogCheckboxTest : public WebAppInstallDialogBrowserTest {
+ public:
+  WebAppInstallDialogCheckboxTest() {
+    checkbox_feature_list_.InitAndDisableFeature(
+        features::kWebAppInstallDialogWinPin);
+  }
+
  protected:
   WebAppInstallOptionsView* NavigateToAndGetOptionsView() {
     ShowUi("InstallOptions");
@@ -354,6 +589,9 @@ class WebAppInstallDialogCheckboxTest : public WebAppInstallDialogBrowserTest {
 
   bool IsWin() { return GetOsType() == InstallOsType::kWin; }
   bool IsCros() { return GetOsType() == InstallOsType::kCros; }
+
+ private:
+  base::test::ScopedFeatureList checkbox_feature_list_;
 };
 
 IN_PROC_BROWSER_TEST_P(WebAppInstallDialogCheckboxTest,
@@ -381,6 +619,49 @@ IN_PROC_BROWSER_TEST_P(WebAppInstallDialogCheckboxTest,
 }
 
 IN_PROC_BROWSER_TEST_P(WebAppInstallDialogCheckboxTest,
+                       VerifyWinCheckboxNotPresent) {
+  if (!IsWin()) {
+    GTEST_SKIP() << "Creating desktop shortcut and pinning to task bar only "
+                    "works for Windows";
+  }
+  WebAppInstallOptionsView* options_view = NavigateToAndGetOptionsView();
+  ASSERT_TRUE(options_view);
+
+  views::View* checkbox =
+      views::ElementTrackerViews::GetInstance()->GetFirstMatchingView(
+          WebAppInstallOptionsView::kPinToTaskbarCheckboxId,
+          views::ElementTrackerViews::GetContextForWidget(widget_.get()));
+  EXPECT_FALSE(checkbox);
+
+  CompleteInstallationAndVerifyDialogAccepted();
+  EXPECT_EQ(dialog_install_info_->add_to_quick_launch_bar, false);
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    /* prefix */,
+    WebAppInstallDialogCheckboxTest,
+    testing::Combine(testing::Values(InstallOsType::kCros, InstallOsType::kWin),
+                     testing::Values(InstallDialogType::kSimple,
+                                     InstallDialogType::kDetailed,
+                                     InstallDialogType::kDiy)),
+    [](const testing::TestParamInfo<WebAppInstallDialogTestParams>& info) {
+      std::string os_type = base::ToString(std::get<0>(info.param));
+      std::string dialog_type = base::ToString(std::get<1>(info.param));
+      return os_type + "_" + dialog_type;
+    });
+
+class WebAppInstallDialogCheckboxEnabledTest
+    : public WebAppInstallDialogCheckboxTest {
+ public:
+  WebAppInstallDialogCheckboxEnabledTest() {
+    feature_list_.InitAndEnableFeature(features::kWebAppInstallDialogWinPin);
+  }
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
+};
+
+IN_PROC_BROWSER_TEST_P(WebAppInstallDialogCheckboxEnabledTest,
                        VerifyWinCheckboxUnchecked) {
   if (!IsWin()) {
     GTEST_SKIP() << "Creating desktop shortcut and pinning to task bar only "
@@ -395,7 +676,7 @@ IN_PROC_BROWSER_TEST_P(WebAppInstallDialogCheckboxTest,
   EXPECT_EQ(dialog_install_info_->add_to_quick_launch_bar, false);
 }
 
-IN_PROC_BROWSER_TEST_P(WebAppInstallDialogCheckboxTest,
+IN_PROC_BROWSER_TEST_P(WebAppInstallDialogCheckboxEnabledTest,
                        VerifyWinCheckboxChecked) {
   if (!IsWin()) {
     GTEST_SKIP() << "Creating desktop shortcut and pinning to task bar only "
@@ -412,8 +693,8 @@ IN_PROC_BROWSER_TEST_P(WebAppInstallDialogCheckboxTest,
 
 INSTANTIATE_TEST_SUITE_P(
     /* prefix */,
-    WebAppInstallDialogCheckboxTest,
-    testing::Combine(testing::Values(InstallOsType::kCros, InstallOsType::kWin),
+    WebAppInstallDialogCheckboxEnabledTest,
+    testing::Combine(testing::Values(InstallOsType::kWin),
                      testing::Values(InstallDialogType::kSimple,
                                      InstallDialogType::kDetailed,
                                      InstallDialogType::kDiy)),

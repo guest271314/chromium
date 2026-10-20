@@ -2,16 +2,12 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "ui/accessibility/platform/ax_platform_node_textrangeprovider_win.h"
 
 #include <memory>
 #include <utility>
 
+#include "base/compiler_specific.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/win/scoped_bstr.h"
 #include "base/win/scoped_safearray.h"
@@ -60,54 +56,54 @@ namespace ui {
     EXPECT_STREQ(expectedVariant.ptr()->bstrVal, actual.ptr()->bstrVal); \
   }
 
-#define EXPECT_UIA_ELEMENT_ARRAY_BSTR_EQ(array, element_test_property_id,     \
-                                         expected_property_values)            \
-  {                                                                           \
-    ASSERT_EQ(1u, SafeArrayGetDim(array));                                    \
-    LONG array_lower_bound;                                                   \
-    ASSERT_HRESULT_SUCCEEDED(                                                 \
-        SafeArrayGetLBound(array, 1, &array_lower_bound));                    \
-    LONG array_upper_bound;                                                   \
-    ASSERT_HRESULT_SUCCEEDED(                                                 \
-        SafeArrayGetUBound(array, 1, &array_upper_bound));                    \
-    IUnknown** array_data;                                                    \
-    ASSERT_HRESULT_SUCCEEDED(                                                 \
-        ::SafeArrayAccessData(array, reinterpret_cast<void**>(&array_data))); \
-    size_t count = array_upper_bound - array_lower_bound + 1;                 \
-    ASSERT_EQ(expected_property_values.size(), count);                        \
-    for (size_t i = 0; i < count; ++i) {                                      \
-      ComPtr<IRawElementProviderSimple> element;                              \
-      ASSERT_HRESULT_SUCCEEDED(                                               \
-          array_data[i]->QueryInterface(IID_PPV_ARGS(&element)));             \
-      EXPECT_UIA_GETPROPERTYVALUE_EQ(element, element_test_property_id,       \
-                                     expected_property_values[i].c_str());    \
-    }                                                                         \
-    ASSERT_HRESULT_SUCCEEDED(::SafeArrayUnaccessData(array));                 \
+#define EXPECT_UIA_ELEMENT_ARRAY_BSTR_EQ(array, element_test_property_id,      \
+                                         expected_property_values)             \
+  {                                                                            \
+    ASSERT_EQ(1u, SafeArrayGetDim(array));                                     \
+    LONG array_lower_bound;                                                    \
+    ASSERT_HRESULT_SUCCEEDED(                                                  \
+        SafeArrayGetLBound(array, 1, &array_lower_bound));                     \
+    LONG array_upper_bound;                                                    \
+    ASSERT_HRESULT_SUCCEEDED(                                                  \
+        SafeArrayGetUBound(array, 1, &array_upper_bound));                     \
+    IUnknown** array_data;                                                     \
+    ASSERT_HRESULT_SUCCEEDED(                                                  \
+        ::SafeArrayAccessData(array, reinterpret_cast<void**>(&array_data)));  \
+    size_t count = array_upper_bound - array_lower_bound + 1;                  \
+    ASSERT_EQ(expected_property_values.size(), count);                         \
+    for (size_t i = 0; i < count; ++i) {                                       \
+      ComPtr<IRawElementProviderSimple> element;                               \
+      ASSERT_HRESULT_SUCCEEDED(                                                \
+          UNSAFE_TODO(array_data[i])->QueryInterface(IID_PPV_ARGS(&element))); \
+      EXPECT_UIA_GETPROPERTYVALUE_EQ(element, element_test_property_id,        \
+                                     expected_property_values[i].c_str());     \
+    }                                                                          \
+    ASSERT_HRESULT_SUCCEEDED(::SafeArrayUnaccessData(array));                  \
   }
 
-#define EXPECT_UIA_SAFEARRAY_EQ(safearray, expected_property_values)   \
-  {                                                                    \
-    using T = typename decltype(expected_property_values)::value_type; \
-    EXPECT_EQ(sizeof(T), ::SafeArrayGetElemsize(safearray));           \
-    EXPECT_EQ(1u, SafeArrayGetDim(safearray));                         \
-    LONG array_lower_bound;                                            \
-    EXPECT_HRESULT_SUCCEEDED(                                          \
-        SafeArrayGetLBound(safearray, 1, &array_lower_bound));         \
-    LONG array_upper_bound;                                            \
-    EXPECT_HRESULT_SUCCEEDED(                                          \
-        SafeArrayGetUBound(safearray, 1, &array_upper_bound));         \
-    const size_t count = array_upper_bound - array_lower_bound + 1;    \
-    EXPECT_EQ(expected_property_values.size(), count);                 \
-    if (sizeof(T) == ::SafeArrayGetElemsize(safearray) &&              \
-        count == expected_property_values.size()) {                    \
-      T* array_data;                                                   \
-      EXPECT_HRESULT_SUCCEEDED(::SafeArrayAccessData(                  \
-          safearray, reinterpret_cast<void**>(&array_data)));          \
-      for (size_t i = 0; i < count; ++i) {                             \
-        EXPECT_EQ(array_data[i], expected_property_values[i]);         \
-      }                                                                \
-      EXPECT_HRESULT_SUCCEEDED(::SafeArrayUnaccessData(safearray));    \
-    }                                                                  \
+#define EXPECT_UIA_SAFEARRAY_EQ(safearray, expected_property_values)        \
+  {                                                                         \
+    using T = typename decltype(expected_property_values)::value_type;      \
+    EXPECT_EQ(sizeof(T), ::SafeArrayGetElemsize(safearray));                \
+    EXPECT_EQ(1u, SafeArrayGetDim(safearray));                              \
+    LONG array_lower_bound;                                                 \
+    EXPECT_HRESULT_SUCCEEDED(                                               \
+        SafeArrayGetLBound(safearray, 1, &array_lower_bound));              \
+    LONG array_upper_bound;                                                 \
+    EXPECT_HRESULT_SUCCEEDED(                                               \
+        SafeArrayGetUBound(safearray, 1, &array_upper_bound));              \
+    const size_t count = array_upper_bound - array_lower_bound + 1;         \
+    EXPECT_EQ(expected_property_values.size(), count);                      \
+    if (sizeof(T) == ::SafeArrayGetElemsize(safearray) &&                   \
+        count == expected_property_values.size()) {                         \
+      T* array_data;                                                        \
+      EXPECT_HRESULT_SUCCEEDED(::SafeArrayAccessData(                       \
+          safearray, reinterpret_cast<void**>(&array_data)));               \
+      for (size_t i = 0; i < count; ++i) {                                  \
+        EXPECT_EQ(UNSAFE_TODO(array_data[i]), expected_property_values[i]); \
+      }                                                                     \
+      EXPECT_HRESULT_SUCCEEDED(::SafeArrayUnaccessData(safearray));         \
+    }                                                                       \
   }
 
 #define EXPECT_UIA_TEXTATTRIBUTE_EQ(provider, attribute, variant)          \
@@ -150,21 +146,22 @@ namespace ui {
     EXPECT_STREQ(expected_content, provider_content.Get()); \
   }
 
-#define EXPECT_UIA_FIND_TEXT(text_range_provider, search_term, ignore_case,  \
-                             owner)                                          \
-  {                                                                          \
-    base::win::ScopedBstr find_string(search_term);                          \
-    ComPtr<ITextRangeProvider> text_range_provider_found;                    \
-    EXPECT_HRESULT_SUCCEEDED(text_range_provider->FindText(                  \
-        find_string.Get(), false, ignore_case, &text_range_provider_found)); \
-    SetOwner(owner, text_range_provider_found.Get());                        \
-    base::win::ScopedBstr found_content;                                     \
-    EXPECT_HRESULT_SUCCEEDED(                                                \
-        text_range_provider_found->GetText(-1, found_content.Receive()));    \
-    if (ignore_case)                                                         \
-      EXPECT_EQ(0, _wcsicmp(found_content.Get(), find_string.Get()));        \
-    else                                                                     \
-      EXPECT_EQ(0, wcscmp(found_content.Get(), find_string.Get()));          \
+#define EXPECT_UIA_FIND_TEXT(text_range_provider, search_term, ignore_case,   \
+                             owner)                                           \
+  {                                                                           \
+    base::win::ScopedBstr find_string(search_term);                           \
+    ComPtr<ITextRangeProvider> text_range_provider_found;                     \
+    EXPECT_HRESULT_SUCCEEDED(text_range_provider->FindText(                   \
+        find_string.Get(), false, ignore_case, &text_range_provider_found));  \
+    SetOwner(owner, text_range_provider_found.Get());                         \
+    base::win::ScopedBstr found_content;                                      \
+    EXPECT_HRESULT_SUCCEEDED(                                                 \
+        text_range_provider_found->GetText(-1, found_content.Receive()));     \
+    if (ignore_case)                                                          \
+      EXPECT_EQ(0, _wcsicmp(found_content.Get(), find_string.Get()));         \
+    else                                                                      \
+      EXPECT_EQ(0,                                                            \
+                UNSAFE_TODO(wcscmp(found_content.Get(), find_string.Get()))); \
   }
 
 #define EXPECT_UIA_FIND_TEXT_NO_MATCH(text_range_provider, search_term,      \
@@ -1221,6 +1218,123 @@ TEST_F(AXPlatformNodeTextRangeProviderTest,
       TextPatternRangeEndpoint_End, document_text_range_provider.Get(),
       TextPatternRangeEndpoint_End, &result));
   EXPECT_EQ(0, result);
+}
+
+TEST_F(AXPlatformNodeTextRangeProviderTest,
+       TestITextRangeProviderCompareEndpointsAcrossHyperlinkBoundary) {
+  // RootWebArea
+  // ├── StaticText "I am "
+  // │   └── InlineTextBox "I am "
+  // ├── Link
+  // │   └── StaticText "ironman"
+  // │       └── InlineTextBox "ironman"
+  // └── StaticText " two"
+  //     └── InlineTextBox " two"
+  AXNodeData root_data;
+  root_data.id = 1;
+  root_data.role = ax::mojom::Role::kRootWebArea;
+  root_data.child_ids = {2, 4, 7};
+
+  AXNodeData before_link_data;
+  before_link_data.id = 2;
+  before_link_data.role = ax::mojom::Role::kStaticText;
+  before_link_data.SetName("I am ");
+  before_link_data.child_ids = {3};
+
+  AXNodeData before_link_inline_data;
+  before_link_inline_data.id = 3;
+  before_link_inline_data.role = ax::mojom::Role::kInlineTextBox;
+  before_link_inline_data.SetName("I am ");
+
+  AXNodeData link_data;
+  link_data.id = 4;
+  link_data.role = ax::mojom::Role::kLink;
+  link_data.child_ids = {5};
+
+  AXNodeData link_text_data;
+  link_text_data.id = 5;
+  link_text_data.role = ax::mojom::Role::kStaticText;
+  link_text_data.SetName("ironman");
+  link_text_data.child_ids = {6};
+
+  AXNodeData link_inline_data;
+  link_inline_data.id = 6;
+  link_inline_data.role = ax::mojom::Role::kInlineTextBox;
+  link_inline_data.SetName("ironman");
+
+  AXNodeData after_link_data;
+  after_link_data.id = 7;
+  after_link_data.role = ax::mojom::Role::kStaticText;
+  after_link_data.SetName(" two");
+  after_link_data.child_ids = {8};
+
+  AXNodeData after_link_inline_data;
+  after_link_inline_data.id = 8;
+  after_link_inline_data.role = ax::mojom::Role::kInlineTextBox;
+  after_link_inline_data.SetName(" two");
+
+  AXTreeUpdate update;
+  update.root_id = root_data.id;
+  update.has_tree_data = true;
+  update.tree_data.tree_id = AXTreeID::CreateNewAXTreeID();
+  update.nodes = {
+      root_data,       before_link_data,      before_link_inline_data,
+      link_data,       link_text_data,        link_inline_data,
+      after_link_data, after_link_inline_data};
+  Init(update);
+
+  AXNode* root_node = GetRoot();
+  AXNode* before_link_text_node = root_node->children()[0];
+  AXNode* link_text_node = root_node->children()[1]->children()[0];
+
+  auto* before_link_owner = static_cast<AXPlatformNodeWin*>(
+      AXPlatformNodeFromNode(before_link_text_node));
+  auto* link_text_owner =
+      static_cast<AXPlatformNodeWin*>(AXPlatformNodeFromNode(link_text_node));
+
+  ComPtr<ITextRangeProvider> before_link_range;
+  CreateTextRangeProviderWin(
+      before_link_range, before_link_owner, before_link_text_node,
+      /*start_offset=*/5, ax::mojom::TextAffinity::kDownstream,
+      before_link_text_node, /*end_offset=*/5,
+      ax::mojom::TextAffinity::kDownstream);
+
+  ComPtr<ITextRangeProvider> link_start_range;
+  CreateTextRangeProviderWin(
+      link_start_range, link_text_owner, link_text_node,
+      /*start_offset=*/0, ax::mojom::TextAffinity::kDownstream, link_text_node,
+      /*end_offset=*/0, ax::mojom::TextAffinity::kDownstream);
+
+  ComPtr<ITextRangeProvider> link_after_first_character_range;
+  CreateTextRangeProviderWin(
+      link_after_first_character_range, link_text_owner, link_text_node,
+      /*start_offset=*/1, ax::mojom::TextAffinity::kDownstream, link_text_node,
+      /*end_offset=*/1, ax::mojom::TextAffinity::kDownstream);
+
+  ComPtr<ITextRangeProvider> link_after_second_character_range;
+  CreateTextRangeProviderWin(
+      link_after_second_character_range, link_text_owner, link_text_node,
+      /*start_offset=*/2, ax::mojom::TextAffinity::kDownstream, link_text_node,
+      /*end_offset=*/2, ax::mojom::TextAffinity::kDownstream);
+
+  auto compare_starts = [](ITextRangeProvider* left,
+                           ITextRangeProvider* right) {
+    int result = 0;
+    EXPECT_HRESULT_SUCCEEDED(
+        left->CompareEndpoints(TextPatternRangeEndpoint_Start, right,
+                               TextPatternRangeEndpoint_Start, &result));
+    return result;
+  };
+
+  // Cross-boundary: "I am " end (flat offset 5) vs after first char of
+  // "ironman" (flat offset 6) — must be strictly before. Without the
+  // embedded-object behavior override this incorrectly returned 0.
+  EXPECT_EQ(-1, compare_starts(before_link_range.Get(),
+                               link_after_first_character_range.Get()));
+
+  // Same-anchor: offsets 1 vs 2 inside "ironman".
+  EXPECT_EQ(-1, compare_starts(link_after_first_character_range.Get(),
+                               link_after_second_character_range.Get()));
 }
 
 TEST_F(AXPlatformNodeTextRangeProviderTest,
@@ -9302,6 +9416,91 @@ TEST_F(AXPlatformNodeTextRangeProviderTest,
                   /*expected_text*/
                   L"Paragraph one.\nParagraph two.\nParagraph three.",
                   /*expected_count*/ 0);
+}
+
+TEST_F(AXPlatformNodeTextRangeProviderTest,
+       GetTextPreservesBackwardMovementInNamedEmptyTextField) {
+  ScopedAXEmbeddedObjectBehaviorSetter ax_embedded_object_behavior(
+      AXEmbeddedObjectBehavior::kUIAExposeCharacterForTextContent);
+
+  // ++1 RootWebArea
+  // ++++2 GenericContainer "ab" (editable, non-atomic field, empty content)
+  // UIA exposes the name as text: 0 a 1 b 2.
+  AXNodeData root;
+  root.id = 1;
+  root.role = ax::mojom::Role::kRootWebArea;
+  root.child_ids = {2};
+
+  AXNodeData field_data;
+  field_data.id = 2;
+  field_data.role = ax::mojom::Role::kGenericContainer;
+  field_data.AddState(ax::mojom::State::kEditable);
+  field_data.AddBoolAttribute(ax::mojom::BoolAttribute::kNonAtomicTextFieldRoot,
+                              true);
+  field_data.SetName("ab");
+  field_data.SetNameFrom(ax::mojom::NameFrom::kAttribute);
+
+  AXTreeUpdate update;
+  update.has_tree_data = true;
+  update.tree_data.tree_id = AXTreeID::CreateNewAXTreeID();
+  update.root_id = root.id;
+  update.nodes = {root, field_data};
+  AXNode* field = Init(update)->GetFromId(field_data.id);
+  auto* owner = static_cast<AXPlatformNodeWin*>(AXPlatformNodeFromNode(field));
+  ComPtr<ITextRangeProvider> range;
+  CreateTextRangeProviderWin(range, owner, field, 2,
+                             ax::mojom::TextAffinity::kDownstream, field, 2,
+                             ax::mojom::TextAffinity::kDownstream);
+  ComPtr<ITextRangeProvider> full_field_range;
+  CreateTextRangeProviderWin(full_field_range, owner, field, 0,
+                             ax::mojom::TextAffinity::kDownstream, field, 2,
+                             ax::mojom::TextAffinity::kDownstream);
+
+  // Move the start back one character: [2,2] -> [1,2].
+  int moved = 0;
+  ASSERT_HRESULT_SUCCEEDED(range->MoveEndpointByUnit(
+      TextPatternRangeEndpoint_Start, TextUnit_Character, -1, &moved));
+  ASSERT_EQ(-1, moved);
+  ASSERT_EQ(1, GetStart(range.Get())->text_offset());
+  ASSERT_EQ(2, GetEnd(range.Get())->text_offset());
+
+  // GetText must return "b" without undoing the move.
+  base::win::ScopedBstr text;
+  ASSERT_HRESULT_SUCCEEDED(range->GetText(-1, text.Receive()));
+  EXPECT_STREQ(L"b", text.Get());
+  ASSERT_EQ(field->id(), GetStart(range.Get())->anchor_id());
+  ASSERT_EQ(1, GetStart(range.Get())->text_offset());
+  ASSERT_EQ(2, GetEnd(range.Get())->text_offset());
+
+  int comparison = 0;
+  ASSERT_HRESULT_SUCCEEDED(range->CompareEndpoints(
+      TextPatternRangeEndpoint_Start, full_field_range.Get(),
+      TextPatternRangeEndpoint_Start, &comparison));
+  EXPECT_GT(comparison, 0);
+  ASSERT_EQ(1, GetStart(range.Get())->text_offset());
+
+  // The next move reaches [0,2], rather than revisiting [1,2].
+  ASSERT_HRESULT_SUCCEEDED(range->MoveEndpointByUnit(
+      TextPatternRangeEndpoint_Start, TextUnit_Character, -1, &moved));
+  ASSERT_EQ(-1, moved);
+  ASSERT_EQ(0, GetStart(range.Get())->text_offset());
+  text.Reset();
+  ASSERT_HRESULT_SUCCEEDED(range->GetText(-1, text.Receive()));
+  EXPECT_STREQ(L"ab", text.Get());
+  ASSERT_EQ(0, GetStart(range.Get())->text_offset());
+  ASSERT_EQ(2, GetEnd(range.Get())->text_offset());
+  ASSERT_HRESULT_SUCCEEDED(range->CompareEndpoints(
+      TextPatternRangeEndpoint_Start, full_field_range.Get(),
+      TextPatternRangeEndpoint_Start, &comparison));
+  EXPECT_EQ(0, comparison);
+  ASSERT_EQ(0, GetStart(range.Get())->text_offset());
+
+  // At the start, further backward movement returns zero.
+  ASSERT_HRESULT_SUCCEEDED(range->MoveEndpointByUnit(
+      TextPatternRangeEndpoint_Start, TextUnit_Character, -1, &moved));
+  EXPECT_EQ(0, moved);
+  EXPECT_EQ(0, GetStart(range.Get())->text_offset());
+  EXPECT_EQ(2, GetEnd(range.Get())->text_offset());
 }
 
 // Moving by character should land on generated paragraph-break newlines,

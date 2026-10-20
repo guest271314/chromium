@@ -9,6 +9,7 @@
 #include <string>
 
 #include "base/memory/raw_ptr.h"
+#include "base/memory/weak_ptr.h"
 #include "base/scoped_observation.h"
 #include "chrome/browser/tab_list/tab_list_interface.h"
 #include "chrome/browser/tab_list/tab_list_interface_observer.h"
@@ -20,6 +21,7 @@
 #include "extensions/common/extension.h"
 #include "extensions/common/extension_id.h"
 #include "ui/base/models/image_model.h"
+#include "url/origin.h"
 
 static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
 
@@ -47,6 +49,10 @@ class ExtensionsMenuViewModel : public extensions::PermissionsManager::Observer,
     // platform dependencies.
     virtual std::unique_ptr<ExtensionActionViewModel> CreateActionViewModel(
         const extensions::ExtensionId& extension_id) = 0;
+
+    // Returns the active WebContents for the extensions menu, or nullptr if
+    // the caller should fall back to the browser's active tab.
+    virtual content::WebContents* GetActiveWebContents() const;
   };
 
   // Observer used to notify platforms about changes to the model.
@@ -185,6 +191,8 @@ class ExtensionsMenuViewModel : public extensions::PermissionsManager::Observer,
     std::u16string extension_name;
     // THe display icon for the extension.
     ui::ImageModel extension_icon;
+    // The origin that site permissions are for.
+    url::Origin origin;
     // The state for the 'on click' site access option.
     ControlState on_click_option;
     // The state for the 'on site' site access option.
@@ -228,6 +236,8 @@ class ExtensionsMenuViewModel : public extensions::PermissionsManager::Observer,
     ControlState site_permissions_button;
     // Whether the extension is installed from an enterprise policy.
     bool is_enterprise;
+    // The origin that was active when this state was computed.
+    url::Origin origin;
   };
 
   ExtensionsMenuViewModel(BrowserWindowInterface* browser, Delegate* delegate);
@@ -236,12 +246,15 @@ class ExtensionsMenuViewModel : public extensions::PermissionsManager::Observer,
       delete;
   ~ExtensionsMenuViewModel() override;
 
+  content::WebContents* GetActiveWebContents();
+
   void AddObserver(Observer* observer);
   void RemoveObserver(Observer* observer);
 
   // Updates the extension's site access for the current site.
   void UpdateSiteAccess(
       const extensions::ExtensionId& extension_id,
+      const url::Origin& target_origin,
       extensions::PermissionsManager::UserSiteAccess site_access);
 
   // Allows the extension's host access request to the current site.
@@ -256,10 +269,12 @@ class ExtensionsMenuViewModel : public extensions::PermissionsManager::Observer,
       bool show);
 
   // Grants the extension site access to the current site.
-  void GrantSiteAccess(const extensions::ExtensionId& extension_id);
+  void GrantSiteAccess(const extensions::ExtensionId& extension_id,
+                       const url::Origin& target_origin);
 
   // Revokes the extension's site access from the current site.
-  void RevokeSiteAccess(const extensions::ExtensionId& extension_id);
+  void RevokeSiteAccess(const extensions::ExtensionId& extension_id,
+                        const url::Origin& target_origin);
 
   // Update the site setting's for the current site.
   void UpdateSiteSetting(
@@ -407,8 +422,6 @@ class ExtensionsMenuViewModel : public extensions::PermissionsManager::Observer,
 
   // Updates the model when web contents changed, and notifies observers.
   void OnWebContentsChanged(content::WebContents* web_contents);
-
-  content::WebContents* GetActiveWebContents();
 
   // The browser window that the extensions menu is in.
   raw_ptr<BrowserWindowInterface> browser_;

@@ -16,6 +16,7 @@
 #include "chrome/common/pref_names.h"
 #include "components/content_settings/core/common/content_settings_pattern.h"
 #include "components/prefs/pref_service.h"
+#include "components/safe_browsing/core/common/safe_browsing_prefs.h"
 #include "components/security_interstitials/content/stateful_ssl_host_state_delegate.h"
 #include "components/security_interstitials/core/https_only_mode_metrics.h"
 #include "content/public/browser/web_contents.h"
@@ -76,9 +77,12 @@ ComputeInterstitialState(content::WebContents* web_contents, const GURL& url) {
   interstitial_state.enabled_by_pref =
       prefs && prefs->GetBoolean(prefs::kHttpsOnlyModeEnabled);
 
-  if (base::FeatureList::IsEnabled(features::kHttpsFirstModeIncognito)) {
-    if (profile->IsIncognitoProfile() && prefs &&
-        prefs->GetBoolean(prefs::kHttpsFirstModeIncognito)) {
+  if (base::FeatureList::IsEnabled(features::kHttpsFirstModeIncognito) &&
+      profile->IsPrimaryOTRProfileWithRegularParent() && prefs &&
+      prefs->GetBoolean(prefs::kHttpsFirstModeIncognito)) {
+    if (profile->IsEnterpriseIsolatedModeProfile()) {
+      interstitial_state.enabled_by_isolated_mode = true;
+    } else {
       interstitial_state.enabled_by_incognito = true;
     }
   }
@@ -90,6 +94,17 @@ ComputeInterstitialState(content::WebContents* web_contents, const GURL& url) {
   if (IsBalancedModeEnabled(prefs) && state &&
       !state->HttpsFirstBalancedModeSuppressedForTesting()) {
     interstitial_state.enabled_in_balanced_mode = true;
+
+    // Determine if Balanced Mode was enabled specifically due to ESB pairing.
+    bool user_has_modified_settings =
+        prefs->HasPrefPath(prefs::kHttpsOnlyModeEnabled) ||
+        prefs->HasPrefPath(prefs::kHttpsFirstBalancedMode);
+    if (!user_has_modified_settings &&
+        base::FeatureList::IsEnabled(
+            features::kHttpsFirstModeDefaultSettingPairsWithEsb) &&
+        safe_browsing::IsEnhancedProtectionEnabled(*prefs)) {
+      interstitial_state.enabled_by_esb_pairing = true;
+    }
   }
 
   auto* storage_partition =
@@ -133,6 +148,11 @@ bool IsBalancedModeEnabled(PrefService* prefs) {
       prefs->HasPrefPath(prefs::kHttpsOnlyModeEnabled) ||
       prefs->HasPrefPath(prefs::kHttpsFirstBalancedMode);
   if (!user_has_modified_settings) {
+    if (base::FeatureList::IsEnabled(
+            features::kHttpsFirstModeDefaultSettingPairsWithEsb) &&
+        safe_browsing::IsEnhancedProtectionEnabled(*prefs)) {
+      return true;
+    }
     return base::FeatureList::IsEnabled(
         features::kHttpsFirstBalancedModeAutoEnable);
   }
@@ -151,7 +171,7 @@ bool IsInterstitialEnabled(const HttpInterstitialState& state) {
   if (IsStrictInterstitialEnabled(state)) {
     return true;
   }
-  if (state.enabled_by_incognito) {
+  if (state.enabled_by_incognito || state.enabled_by_isolated_mode) {
     return true;
   }
   if (IsBalancedModeAvailable() && state.enabled_in_balanced_mode) {

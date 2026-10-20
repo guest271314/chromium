@@ -7,8 +7,8 @@
 
 #include "base/functional/callback_forward.h"
 #include "components/safe_browsing/core/browser/db/database_manager.h"
+#include "components/safe_browsing/core/browser/db/sb_protocol_manager_util.h"
 #include "components/safe_browsing/core/browser/db/util.h"
-#include "components/safe_browsing/core/browser/db/v4_protocol_manager_util.h"
 #include "components/safe_browsing/core/common/proto/realtimeapi.pb.h"
 #include "url/gurl.h"
 
@@ -47,13 +47,11 @@ class SafeBrowsingLookupMechanism {
     CompleteCheckResult(
         const GURL& url,
         SBThreatType threat_type,
-        const ThreatMetadata& metadata,
         std::optional<ThreatSource> threat_source,
         std::unique_ptr<RTLookupResponse> url_real_time_lookup_response);
     ~CompleteCheckResult();
     GURL url;
     SBThreatType threat_type;
-    ThreatMetadata metadata;
     // Specifies the threat source associated with the mechanism that provided
     // the threat type. In cases where a real-time mechanism falls back to the
     // hash database mechanism, the threat source will correspond to the hash

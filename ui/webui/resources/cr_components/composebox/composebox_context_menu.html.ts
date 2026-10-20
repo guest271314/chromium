@@ -8,6 +8,8 @@ import {hasAllowedInputs} from './common.js';
 import type {ComposeboxElement} from './composebox.js';
 
 export function getHtml(this: ComposeboxElement) {
+  // Show `contextual-entrypoint-and-menu` if should show menu; otherwise
+  // just show button.
   // clang-format off
   return html`
 <div class="context-menu-container" id="contextMenuContainer"
@@ -25,6 +27,7 @@ export function getHtml(this: ComposeboxElement) {
         @tool-click="${this.onToolClick}"
         @model-click="${this.onModelClick}"
         @get-tab-preview="${this.onGetTabPreview}"
+        @wait-for-tab-load="${this.onWaitForTabLoad}"
         @context-menu-closed="${this.onContextMenuClosed}"
         @context-menu-opened="${this.onContextMenuOpened}"
         @open-image-upload="${this.onOpenImageUpload}"
@@ -32,40 +35,55 @@ export function getHtml(this: ComposeboxElement) {
         @open-drive-upload="${this.onOpenDriveUpload}"
         @smart-tab-sharing-active-changed="${
             this.onSmartTabSharingActiveChanged}"
+        @share-tabs-flyout-open-changed="${this.onShareTabsFlyoutOpenChanged}"
+        @request-tab-suggestions-load="${this.onRequestTabSuggestionsLoad}"
         .inputState="${this.inputState}"
         .usePecApi="${this.usePecApi}"
         .smartTabSharingActive="${this.smartTabSharingActive}"
+        .smartTabSharingVisible="${this.smartTabSharingVisible}"
+        .shareTabsFlyoutOpen="${this.shareTabsFlyoutOpen}"
+        .contextManagementInComposeboxEnabled="${this.contextManagementInComposeboxEnabled}"
+        .composeboxContextMenuTooltipsEnabled="${
+            this.composeboxContextMenuTooltipsEnabled}"
         .searchboxLayoutMode="${this.searchboxLayoutMode}"
         .tabSuggestions="${this.tabSuggestions}"
+        .tabSuggestionsState="${this.tabSuggestionsState}"
         .recentTabId="${this.recentTabId}"
         .hasImageFiles="${this.hasImageFiles()}"
-        .disabledTabIds="${this.addedTabsIds}"
-        .restoredTabIds="${this.restoredTabIds}"
-        .fileNum="${this.files.size}"
+        .selectedTabIds="${this.addedTabsIds}"
+        .aimThreadRestoredTabs="${this.aimThreadRestoredTabs}"
+        .fileNum="${this.attachedContext.size}"
+        .nonTabFileNum="${this.getNonTabFileNum()}"
         .sharedTabs="${this.getSharedTabs()}"
-        ?upload-button-disabled="${this.uploadButtonDisabled}"
+        .isSidePanel="${this.isSidePanel}"
         ?show-context-menu-description="${this.showContextMenuDescription}"
-        .energyEffectAnimationEnabled="${this.energyEffectAnimationEnabled}">
+        .glifAnimationState="${this.glifAnimationState}"
+        .energyEffectAnimationEnabled="${this.energyEffectAnimationEnabled}"
+        .disableFallbackGlifAnimation="${this.disableFallbackGlifAnimation}">
     </cr-composebox-contextual-entrypoint-and-menu>
-  ` : (hasAllowedInputs(this.inputState, this.usePecApi) ? html`
-    <cr-composebox-contextual-entrypoint-button
-        id="contextEntrypoint"
-        part="composebox-entrypoint"
-        exportparts="context-menu-entrypoint-icon, entrypoint-button"
-        class="upload-button no-overlap"
-        .inputState="${this.inputState}"
-        .isOblongShape="${this.isOblongShape}"
-        .applyContextButtonBackground="${this.applyContextButtonBackground}"
-        .sharedTabs="${this.getSharedTabs()}"
-        .restoredTabs="${this.getRestoredTabs()}"
-        ?upload-button-disabled="${this.uploadButtonDisabled}"
-        ?show-context-menu-description="${this.showContextMenuDescription}"
-        .energyEffectAnimationEnabled="${this.energyEffectAnimationEnabled}">
-    </cr-composebox-contextual-entrypoint-button>
-  ` : '')}
+  ` : html`
+    ${hasAllowedInputs(this.inputState, this.usePecApi) ? html`
+      <cr-composebox-contextual-entrypoint-button
+          id="contextEntrypoint"
+          part="composebox-entrypoint"
+          exportparts="context-menu-entrypoint-icon, entrypoint-button"
+          class="upload-button no-overlap"
+          @wait-for-tab-load="${this.onWaitForTabLoad}"
+          .inputState="${this.inputState}"
+          .isOblongShape="${this.isOblongShape}"
+          .applyContextButtonBackground="${this.applyContextButtonBackground}"
+          .sharedTabs="${this.getSharedTabs()}"
+          .restoredTabs="${this.aimThreadRestoredTabs}"
+          ?show-context-menu-description="${this.showContextMenuDescription}"
+          .glifAnimationState="${this.glifAnimationState}"
+          .energyEffectAnimationEnabled="${this.energyEffectAnimationEnabled}"
+          .disableFallbackGlifAnimation="${this.disableFallbackGlifAnimation}">
+      </cr-composebox-contextual-entrypoint-button>
+    ` : ''}
+  `}
   ${this.searchboxLayoutMode === 'Compact' && this.shouldShowVoiceSearch() ? html`
     <cr-icon-button id="voiceSearchButton" class="voice-icon"
-        part="voice-icon" iron-icon="cr:mic"
+        part="voice-icon" iron-icon="cr:mic-filled"
         @click="${this.onVoiceSearchButtonClick}"
         title="${this.i18n('voiceSearchButtonLabel')}">
     </cr-icon-button>

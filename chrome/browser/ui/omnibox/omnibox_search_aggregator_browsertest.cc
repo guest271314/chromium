@@ -13,8 +13,8 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/search_engines/template_url_service_factory.h"
 #include "chrome/browser/signin/identity_test_environment_profile_adaptor.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_window.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/location_bar/location_bar.h"
 #include "chrome/browser/ui/omnibox/omnibox_controller.h"
 #include "chrome/browser/ui/omnibox/omnibox_edit_model.h"
@@ -56,9 +56,9 @@ const char kSearchAggregatorPolicySuggestUrl[] =
     "https://www.aggregator.com/suggest";
 
 const char kSearchAggregatorPolicySuggestPath[] = "/suggest";
-const std::u16string kSearchInput = u"@aggregator john d";
+const char16_t kSearchInput[] = u"@aggregator john d";
 
-const std::string kGoodJsonResponse = base::StringPrintf(
+const char kGoodJsonResponse[] =
     R"({
         "querySuggestions": [
           {
@@ -120,7 +120,7 @@ const std::string kGoodJsonResponse = base::StringPrintf(
             "dataStore": "project2"
           }
         ]
-      })");
+      })";
 
 }  // namespace
 
@@ -145,7 +145,7 @@ class OmniboxSearchAggregatorTest : public InProcessBrowserTest {
     // loaded. Make sure it is loaded so that the autocomplete results are
     // consistent.
     search_test_utils::WaitForTemplateURLServiceToLoad(
-        TemplateURLServiceFactory::GetForProfile(browser()->profile()));
+        TemplateURLServiceFactory::GetForProfile(browser()->GetProfile()));
 
     // Prevent the stop timer from killing the hints fetch early, which might
     // cause test flakiness due to timeout.
@@ -154,7 +154,7 @@ class OmniboxSearchAggregatorTest : public InProcessBrowserTest {
     // Setup an identity profile.
     identity_test_env_adaptor_ =
         std::make_unique<IdentityTestEnvironmentProfileAdaptor>(
-            browser()->profile());
+            browser()->GetProfile());
     identity_test_env()->SetPrimaryAccount("test@mail.com",
                                            signin::ConsentLevel::kSignin);
     identity_test_env()->SetRefreshTokenForPrimaryAccount();
@@ -214,8 +214,7 @@ class OmniboxSearchAggregatorTest : public InProcessBrowserTest {
   }
 
   AutocompleteController* controller() {
-    return browser()
-        ->window()
+    return BrowserWindow::FromBrowser(browser())
         ->GetLocationBar()
         ->GetOmniboxController()
         ->autocomplete_controller();
@@ -275,7 +274,7 @@ IN_PROC_BROWSER_TEST_F(OmniboxSearchAggregatorSingleRequestTest,
 
   AutocompleteInput input(
       kSearchInput, metrics::OmniboxEventProto::NTP,
-      ChromeAutocompleteSchemeClassifier(browser()->profile()));
+      ChromeAutocompleteSchemeClassifier(browser()->GetProfile()));
   input.set_in_keyword_mode(true);
   controller()->Start(input);
 
@@ -304,21 +303,21 @@ IN_PROC_BROWSER_TEST_F(OmniboxSearchAggregatorSingleRequestTest,
       testing::ElementsAreArray(std::vector<
                                 testing::Matcher<AutocompleteMatch>>({
           AllOf(Field(&AutocompleteMatch::type,
-                      AutocompleteMatchType::SEARCH_OTHER_ENGINE),
+                      omnibox::AutocompleteMatchType::kSearchOtherEngine),
                 Field(&AutocompleteMatch::contents, u"john d"),
                 Field(&AutocompleteMatch::description, u"Aggregator Search"),
                 Field(&AutocompleteMatch::destination_url,
                       GURL("https://www.aggregator.com/search?q=john+d"))),
           AllOf(
               Field(&AutocompleteMatch::type,
-                    AutocompleteMatchType::SEARCH_SUGGEST),
+                    omnibox::AutocompleteMatchType::kSearchSuggest),
               Field(&AutocompleteMatch::contents, u"John's Demise"),
               Field(&AutocompleteMatch::description, u""),
               Field(
                   &AutocompleteMatch::destination_url,
                   GURL("https://www.aggregator.com/search?q=John%27s+Demise"))),
           AllOf(Field(&AutocompleteMatch::type,
-                      AutocompleteMatchType::NAVSUGGEST),
+                      omnibox::AutocompleteMatchType::kNavsuggest),
                 Field(&AutocompleteMatch::contents, u"Aggregator People"),
                 Field(&AutocompleteMatch::description, u"John Doe"),
                 Field(&AutocompleteMatch::destination_url,
@@ -326,7 +325,7 @@ IN_PROC_BROWSER_TEST_F(OmniboxSearchAggregatorSingleRequestTest,
                 Field(&AutocompleteMatch::image_url,
                       GURL("https://example.com/image.png"))),
           AllOf(Field(&AutocompleteMatch::type,
-                      AutocompleteMatchType::NAVSUGGEST),
+                      omnibox::AutocompleteMatchType::kNavsuggest),
                 Field(&AutocompleteMatch::contents, u"Jira Issue"),
                 Field(&AutocompleteMatch::description, u"John's Document"),
                 Field(&AutocompleteMatch::destination_url,
@@ -358,7 +357,7 @@ IN_PROC_BROWSER_TEST_F(OmniboxSearchAggregatorTest,
 
   AutocompleteInput input(
       kSearchInput, metrics::OmniboxEventProto::NTP,
-      ChromeAutocompleteSchemeClassifier(browser()->profile()));
+      ChromeAutocompleteSchemeClassifier(browser()->GetProfile()));
   input.set_in_keyword_mode(true);
   controller()->Start(input);
 
@@ -400,7 +399,7 @@ IN_PROC_BROWSER_TEST_F(OmniboxSearchAggregatorTest,
           std::vector<testing::Matcher<AutocompleteMatch>>({
               AllOf(
                   Field(&AutocompleteMatch::type,
-                        AutocompleteMatchType::SEARCH_OTHER_ENGINE),
+                        omnibox::AutocompleteMatchType::kSearchOtherEngine),
                   Field(&AutocompleteMatch::contents, u"john d"),
                   Field(&AutocompleteMatch::description, u"Aggregator Search"),
                   Field(&AutocompleteMatch::destination_url,
@@ -431,7 +430,7 @@ IN_PROC_BROWSER_TEST_F(OmniboxSearchAggregatorSingleRequestTest,
   // 2. Trigger autocomplete.
   AutocompleteInput input(
       kSearchInput, metrics::OmniboxEventProto::NTP,
-      ChromeAutocompleteSchemeClassifier(browser()->profile()));
+      ChromeAutocompleteSchemeClassifier(browser()->GetProfile()));
   input.set_in_keyword_mode(true);
   controller()->Start(input);
 
@@ -487,7 +486,7 @@ IN_PROC_BROWSER_TEST_F(OmniboxSearchAggregatorSingleRequestTest,
 
   AutocompleteInput input(
       kSearchInput, metrics::OmniboxEventProto::NTP,
-      ChromeAutocompleteSchemeClassifier(browser()->profile()));
+      ChromeAutocompleteSchemeClassifier(browser()->GetProfile()));
   input.set_in_keyword_mode(true);
   controller()->Start(input);
 
@@ -579,7 +578,7 @@ IN_PROC_BROWSER_TEST_P(OmniboxSearchAggregatorHTTPErrorTest,
                        DISABLED_HTTPErrorResponse) {
   AutocompleteInput input(
       kSearchInput, metrics::OmniboxEventProto::NTP,
-      ChromeAutocompleteSchemeClassifier(browser()->profile()));
+      ChromeAutocompleteSchemeClassifier(browser()->GetProfile()));
   input.set_in_keyword_mode(true);
   controller()->Start(input);
 
@@ -626,7 +625,7 @@ IN_PROC_BROWSER_TEST_P(OmniboxSearchAggregatorHTTPErrorTest,
   EXPECT_THAT(
       result.default_match(),
       AllOf(Field(&AutocompleteMatch::type,
-                  AutocompleteMatchType::SEARCH_OTHER_ENGINE),
+                  omnibox::AutocompleteMatchType::kSearchOtherEngine),
             Field(&AutocompleteMatch::contents, u"john d"),
             Field(&AutocompleteMatch::description, u"Aggregator Search"),
             Field(&AutocompleteMatch::destination_url,

@@ -5,6 +5,7 @@
 #include "components/payments/content/android/payment_manifest_downloader_android.h"
 
 #include <memory>
+#include <utility>
 
 #include "base/android/jni_string.h"
 #include "base/android/scoped_java_ref.h"
@@ -14,10 +15,9 @@
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/storage_partition.h"
+#include "content/public/browser/weak_document_ptr.h"
 #include "content/public/browser/web_contents.h"
-#include "mojo/public/cpp/bindings/remote.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
-#include "services/network/public/mojom/url_loader_factory.mojom.h"
 #include "url/android/gurl_android.h"
 #include "url/gurl.h"
 #include "url/origin.h"
@@ -82,11 +82,11 @@ PaymentManifestDownloaderAndroid::PaymentManifestDownloaderAndroid(
     std::unique_ptr<ErrorLogger> log,
     base::WeakPtr<CSPChecker> csp_checker,
     scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
-    mojo::Remote<network::mojom::URLLoaderFactory> url_loader_factory_rfh)
+    content::WeakDocumentPtr initiator_document)
     : downloader_(std::move(log),
                   csp_checker,
                   url_loader_factory,
-                  std::move(url_loader_factory_rfh)) {}
+                  std::move(initiator_document)) {}
 
 PaymentManifestDownloaderAndroid::~PaymentManifestDownloaderAndroid() = default;
 
@@ -141,16 +141,13 @@ static int64_t JNI_PaymentManifestDownloader_Init(
     return 0;
   }
 
-  mojo::Remote<network::mojom::URLLoaderFactory> url_loader_factory_rfh;
-  render_frame_host->CreateNetworkServiceDefaultFactory(
-      url_loader_factory_rfh.BindNewPipeAndPassReceiver());
   return reinterpret_cast<int64_t>(new PaymentManifestDownloaderAndroid(
       std::make_unique<DeveloperConsoleLogger>(web_contents),
       payments::CSPCheckerAndroid::GetWeakPtr(native_csp_checker_android),
       web_contents->GetBrowserContext()
           ->GetDefaultStoragePartition()
           ->GetURLLoaderFactoryForBrowserProcess(),
-      std::move(url_loader_factory_rfh)));
+      render_frame_host->GetWeakDocumentPtr()));
 }
 
 // Static free function declared and called directly from java.

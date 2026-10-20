@@ -11,6 +11,7 @@
 #include <optional>
 #include <vector>
 
+#include "base/feature_list.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
@@ -49,6 +50,9 @@ namespace blink {
 class MediaStreamDescriptor;
 class WebMediaPlayerMS;
 
+MODULES_EXPORT BASE_DECLARE_FEATURE(
+    kWebRtcUseRtpTimestampForPreferredRenderInterval);
+
 // This class is designed to handle the work load on compositor thread for
 // WebMediaPlayerMS. It will be instantiated on the main thread, but destroyed
 // on the thread holding the last reference.
@@ -75,7 +79,6 @@ class MODULES_EXPORT WebMediaPlayerMSCompositor
       scoped_refptr<base::SequencedTaskRunner> video_task_runner,
       MediaStreamDescriptor* media_stream_descriptor,
       std::unique_ptr<WebVideoFrameSubmitter> submitter,
-      bool use_surface_layer,
       const base::WeakPtr<WebMediaPlayerMS>& player);
   ~WebMediaPlayerMSCompositor() override;
 
@@ -115,6 +118,8 @@ class MODULES_EXPORT WebMediaPlayerMSCompositor
   scoped_refptr<media::VideoFrame> GetCurrentFrame() override;
   void PutCurrentFrame() override;
   base::TimeDelta GetPreferredRenderInterval() override;
+  base::TimeDelta GetPreferredRenderIntervalInternal()
+      EXCLUSIVE_LOCKS_REQUIRED(current_frame_lock_);
   void OnFramePresented(base::TimeTicks display_time,
                         std::optional<base::TimeTicks> capture_begin_time,
                         std::optional<uint32_t> rtp_timestamp) override;
@@ -214,6 +219,9 @@ class MODULES_EXPORT WebMediaPlayerMSCompositor
     size_t sample_count_ = 0;
   };
 
+  // Estimates the render interval from RTP timestamps. Defined in the .cc file.
+  class RtpRenderIntervalEstimator;
+
   // Ran on the |video_frame_compositor_task_runner_| to initialize
   // |submitter_|
   void InitializeSubmitter();
@@ -260,16 +268,15 @@ class MODULES_EXPORT WebMediaPlayerMSCompositor
   void StartRenderingInternal();
   void StopRenderingInternal();
 
-  void RecordFrameDisplayedStats(base::TimeTicks frame_displayed_time);
-  void RecordFrameDecodedStats(
-      std::optional<base::TimeTicks> frame_received_time,
-      std::optional<base::TimeDelta> frame_processing_time,
-      std::optional<uint32_t> frame_rtp_timestamp);
-
   void SetMetadata();
 
   void OnHasSeenScreencastContentType();
   void MaybeEmitHarmonicFramerateAndReproductionJitter();
+
+  // Returns true if the preferred render interval is estimated by
+  // |rtp_render_interval_estimator_|.
+  bool UseRtpRenderInterval() const
+      EXCLUSIVE_LOCKS_REQUIRED(current_frame_lock_);
 
   // Used for DCHECKs to ensure method calls executed in the correct thread,
   // which is renderer main thread in this class.
@@ -309,7 +316,8 @@ class MODULES_EXPORT WebMediaPlayerMSCompositor
 
   // |rendering_frame_buffer_| stores the incoming frames, and provides a frame
   // selection method which returns the best frame for the render interval.
-  std::unique_ptr<VideoRendererAlgorithmWrapper> rendering_frame_buffer_;
+  std::unique_ptr<VideoRendererAlgorithmWrapper> rendering_frame_buffer_
+      GUARDED_BY(current_frame_lock_);
 
   // |current_frame_rendered_| is updated on compositor thread only.
   // It's used to track whether |current_frame_| was painted for detecting
@@ -320,9 +328,9 @@ class MODULES_EXPORT WebMediaPlayerMSCompositor
   // Historical data about last rendering. These are for detecting whether
   // rendering is paused (one reason is that the tab is not in the front), in
   // which case we need to do background rendering.
-  base::TimeTicks last_deadline_max_;
-  base::TimeDelta last_render_length_;
-  base::TimeTicks last_deadline_min_;
+  base::TimeTicks last_deadline_max_ GUARDED_BY(current_frame_lock_);
+  base::TimeDelta last_render_length_ GUARDED_BY(current_frame_lock_);
+  base::TimeTicks last_deadline_min_ GUARDED_BY(current_frame_lock_);
 
   size_t total_frame_count_;
   size_t dropped_frame_count_;
@@ -342,6 +350,11 @@ class MODULES_EXPORT WebMediaPlayerMSCompositor
   // FPS for these as they can contain variable-fps content and thus harmonic
   // FPS is uninterpretable.
   bool is_screencast_;
+  // Used by GetPreferredRenderInterval() for frames without reference time.
+  // Only created if kWebRtcUseRtpTimestampForPreferredRenderInterval is
+  // enabled.
+  std::unique_ptr<RtpRenderIntervalEstimator> rtp_render_interval_estimator_
+      GUARDED_BY(current_frame_lock_);
   // Used for emitting data points for harmonic FPS and reproduction jitter.
   base::RepeatingTimer metrics_timer_;
 
@@ -363,16 +376,6 @@ class MODULES_EXPORT WebMediaPlayerMSCompositor
 
   bool stopped_;
   bool render_started_;
-
-  std::optional<base::TimeTicks> last_enqueued_frame_receive_time_;
-  std::optional<base::TimeTicks> last_enqueued_frame_decoded_time_;
-  std::optional<base::TimeTicks> last_presented_frame_display_time_;
-  std::optional<uint32_t> last_enqueued_frame_rtp_timestamp_;
-  std::optional<base::TimeTicks> current_frame_receive_time_;
-  std::optional<uint32_t> last_presented_frame_rtp_timestamp_;
-  std::optional<uint32_t> current_frame_rtp_timestamp_;
-  std::optional<base::TimeTicks> last_presented_frame_capture_time_;
-  int frame_enqueued_since_last_vsync_ GUARDED_BY(current_frame_lock_) = 0;
 
   // Called when a new frame is enqueued, either in RenderWithoutAlgorithm() or
   // in RenderUsingAlgorithm(). Used to fulfill video.requestAnimationFrame()

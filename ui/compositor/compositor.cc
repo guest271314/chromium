@@ -17,6 +17,7 @@
 #include "base/dcheck_is_on.h"
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
+#include "base/numerics/ranges.h"
 #include "base/observer_list.h"
 #include "base/power_monitor/power_monitor.h"
 #include "base/strings/string_number_conversions.h"
@@ -62,18 +63,17 @@
 #include "ui/compositor/layer.h"
 #include "ui/compositor/layer_animator_collection.h"
 #include "ui/compositor/overscroll/scroll_input_handler.h"
+#include "ui/display/display.h"
 #include "ui/display/display_switches.h"
+#include "ui/display/screen.h"
 #include "ui/gfx/geometry/rect_f.h"
 #include "ui/gfx/geometry/skia_conversions.h"
-#include "ui/gfx/icc_profile.h"
 #include "ui/gfx/presentation_feedback.h"
 #include "ui/gfx/scoped_animation_duration_scale_mode.h"
 #include "ui/gfx/switches.h"
-#include "ui/gl/gl_switches.h"
 
 #if BUILDFLAG(IS_WIN)
 #include "base/time/time.h"
-#include "mojo/public/cpp/bindings/sync_call_restrictions.h"
 #endif
 
 namespace ui {
@@ -81,9 +81,8 @@ namespace ui {
 #if !BUILDFLAG(IS_IOS)
 Compositor::PendingBeginFrameArgs::PendingBeginFrameArgs(
     const viz::BeginFrameArgs& args,
-    bool force,
     base::OnceCallback<void(const viz::BeginFrameAck&)> callback)
-    : args(args), force(force), callback(std::move(callback)) {}
+    : args(args), callback(std::move(callback)) {}
 
 Compositor::PendingBeginFrameArgs::~PendingBeginFrameArgs() = default;
 #endif
@@ -176,15 +175,13 @@ Compositor::Compositor(const viz::FrameSinkId& frame_sink_id,
   settings.initial_debug_state.SetRecordRenderingStats(
       command_line->HasSwitch(switches::kEnableGpuBenchmarking));
 
-  settings.use_zero_copy = IsUIZeroCopyEnabled() && !features::IsUsingRawDraw();
+  settings.use_zero_copy = IsUIZeroCopyEnabled();
 
   // UI compositor always uses partial raster if not using zero-copy. Zero copy
   // doesn't currently support partial raster.
-  // RawDraw doesn't support partial raster.
-  settings.use_partial_raster =
-      !(settings.use_zero_copy || features::IsUsingRawDraw());
+  settings.use_partial_raster = !settings.use_zero_copy;
 
-  settings.use_rgba_4444 =
+  settings.prefer_rgba_4444 =
       command_line->HasSwitch(switches::kUIEnableRGBA4444Textures);
 
 #if BUILDFLAG(IS_APPLE)
@@ -203,12 +200,6 @@ Compositor::Compositor(const viz::FrameSinkId& frame_sink_id,
   settings.use_gpu_memory_buffer_resources =
       features::IsDelegatedCompositingEnabled();
 #endif
-
-  // Set use_gpu_memory_buffer_resources to false to disable delegated
-  // compositing, if RawDraw is enabled.
-  if (settings.use_gpu_memory_buffer_resources && features::IsUsingRawDraw()) {
-    settings.use_gpu_memory_buffer_resources = false;
-  }
 
   settings.memory_policy.bytes_limit_when_visible =
       (memory_limit_when_visible_mb > 0 ? memory_limit_when_visible_mb : 512) *
@@ -367,9 +358,10 @@ void Compositor::SetLayerTreeFrameSink(
   // Display properties are reset when the output surface is lost, so update it
   // to match the Compositor's.
   if (display_private_) {
-    disabled_swap_until_resize_ = false;
     display_private_->Resize(size());
-    display_private_->SetDisplayVisible(host_->IsVisible());
+    display_private_->SetDisplayVisible(
+        host_->IsVisible() ? viz::mojom::DisplayVisibility::kVisible
+                           : viz::mojom::DisplayVisibility::kInvisible);
     display_private_->SetDisplayColorSpaces(display_color_spaces_);
     display_private_->SetDisplayColorMatrix(
         gfx::SkM44ToTransform(display_color_matrix_));
@@ -401,7 +393,7 @@ void Compositor::SetExternalBeginFrameController(
         *pending_begin_frame_args_);
 #else
     external_begin_frame_controller_->IssueExternalBeginFrame(
-        pending_begin_frame_args_->args, pending_begin_frame_args_->force,
+        pending_begin_frame_args_->args,
         std::move(pending_begin_frame_args_->callback));
 #endif
     pending_begin_frame_args_.reset();
@@ -473,31 +465,6 @@ void Compositor::ScheduleRedrawRect(const gfx::Rect& damage_rect) {
   host_->SetNeedsCommit();
 }
 
-#if BUILDFLAG(IS_WIN)
-void Compositor::SetShouldDisableSwapUntilResize(bool should) {
-  should_disable_swap_until_resize_ = should;
-}
-
-void Compositor::DisableSwapUntilResize() {
-  if (should_disable_swap_until_resize_ && display_private_) {
-    // Browser needs to block for Viz to receive and process this message.
-    // Otherwise when we return from WM_WINDOWPOSCHANGING message handler and
-    // receive a WM_WINDOWPOSCHANGED the resize is finalized and any swaps of
-    // wrong size by Viz can cause the swapped content to get scaled.
-    // TODO(crbug.com/40583169): Investigate nonblocking ways for solving.
-    TRACE_EVENT0("viz", "Blocked UI for DisableSwapUntilResize");
-    mojo::SyncCallRestrictions::ScopedAllowSyncCall scoped_allow_sync_call;
-    display_private_->DisableSwapUntilResize();
-    disabled_swap_until_resize_ = true;
-  }
-}
-
-void Compositor::ReenableSwap() {
-  if (should_disable_swap_until_resize_ && display_private_)
-    display_private_->Resize(size_);
-}
-#endif
-
 void Compositor::SetScaleAndSize(float scale,
                                  const gfx::Size& size_in_pixel,
                                  const viz::LocalSurfaceId& local_surface_id) {
@@ -529,9 +496,8 @@ void Compositor::SetScaleAndSize(float scale,
     }
 
     root_cc_layer_->SetBounds(size_in_pixel);
-    if (display_private_ && (size_changed || disabled_swap_until_resize_)) {
+    if (display_private_ && size_changed) {
       display_private_->Resize(size_in_pixel);
-      disabled_swap_until_resize_ = false;
     }
   }
   if (device_scale_factor_changed) {
@@ -588,9 +554,17 @@ int64_t Compositor::display_id() const {
   return display_id_;
 }
 
-void Compositor::RefreshRateChangedOnSameDisplay() {
+void Compositor::UpdateRefreshRate(float refresh_rate) {
+  if (refresh_rate <= 0 ||
+      base::IsApproximatelyEqual(refresh_rate_, refresh_rate,
+                                 display::Display::kRefreshRateEpsilon)) {
+    return;
+  }
+
+  refresh_rate_ = refresh_rate;
+
   if (display_private_) {
-    display_private_->RefreshRateChangedOnSameDisplay();
+    display_private_->UpdateRefreshRate(refresh_rate);
   }
 }
 
@@ -626,8 +600,11 @@ void Compositor::SetVisible(bool visible) {
   // Visibility is reset when the output surface is lost, so this must also be
   // updated then. We need to call this even if the visibility hasn't changed,
   // for the same reason.
-  if (display_private_)
-    display_private_->SetDisplayVisible(visible);
+  if (display_private_) {
+    display_private_->SetDisplayVisible(
+        visible ? viz::mojom::DisplayVisibility::kVisible
+                : viz::mojom::DisplayVisibility::kInvisible);
+  }
 
   if (changed) {
     observer_list_.Notify(&CompositorObserver::OnCompositorVisibilityChanged,
@@ -788,17 +765,17 @@ void Compositor::IssueExternalBeginFrameNoAck(const viz::BeginFrameArgs& args) {
 #else
 void Compositor::IssueExternalBeginFrame(
     const viz::BeginFrameArgs& args,
-    bool force,
     base::OnceCallback<void(const viz::BeginFrameAck&)> callback) {
   if (!external_begin_frame_controller_) {
-    // IssueExternalBeginFrame() shouldn't be called again before the previous
-    // begin frame is acknowledged.
-    DCHECK(!pending_begin_frame_args_);
-    pending_begin_frame_args_.emplace(args, force, std::move(callback));
+    // When wait_for_all_frame_sinks() is false, IssueExternalBeginFrame()
+    // shouldn't be called again before the previous begin frame is
+    // acknowledged.
+    DCHECK(!pending_begin_frame_args_ || !wait_for_all_frame_sinks());
+    pending_begin_frame_args_.emplace(args, std::move(callback));
     return;
   }
   external_begin_frame_controller_->IssueExternalBeginFrame(
-      args, force, std::move(callback));
+      args, std::move(callback));
 }
 #endif
 
@@ -868,6 +845,7 @@ void Compositor::UpdateLayerTreeHost() {
 void Compositor::RequestNewLayerTreeFrameSink() {
   DCHECK(!layer_tree_frame_sink_requested_);
   layer_tree_frame_sink_requested_ = true;
+  external_begin_frame_controller_.reset();
   if (widget_valid_) {
     context_factory_->CreateLayerTreeFrameSink(
         context_creation_weak_ptr_factory_.GetWeakPtr());

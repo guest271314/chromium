@@ -53,17 +53,12 @@ class COMPONENTS_DOWNLOAD_EXPORT SimpleDownloadManager {
   virtual bool CanDownload(DownloadUrlParameters* parameters) = 0;
 
   using DownloadVector = std::vector<raw_ptr<DownloadItem, VectorExperimental>>;
-  using GetDownloadCallback = base::OnceCallback<void(DownloadItem*)>;
-  using GetAllDownloadsCallback = base::OnceCallback<void(DownloadVector)>;
   // Add all initialized download items to |downloads|, no matter the type or
   // state, without clearing |downloads| first. If active downloads are not
   // initialized, this call will not return them. Caller should call
   // GetUninitializedActiveDownloadsIfAny() below to retrieve uninitialized
   // active downloads.
   virtual void GetAllDownloads(DownloadVector* downloads) = 0;
-
-  // Asynchronously gets all downloads using a callback.
-  virtual void GetAllDownloadsAsync(GetAllDownloadsCallback callback) = 0;
 
   // Gets all the active downloads that are initialized yet.
   virtual void GetUninitializedActiveDownloadsIfAny(DownloadVector* downloads) {
@@ -72,17 +67,16 @@ class COMPONENTS_DOWNLOAD_EXPORT SimpleDownloadManager {
   // Get the download item for |guid|.
   virtual DownloadItem* GetDownloadByGuid(const std::string& guid) = 0;
 
-  // Asynchronously gets the download item for |guid| using a callback.
-  virtual void GetDownloadByGuidAsync(const std::string& guid,
-                                      GetDownloadCallback callback) = 0;
-
   // Checks whether downloaded files still exist. Updates state of downloads
   // that refer to removed files. The check runs in the background and may
   // finish asynchronously after this method returns.
   virtual void CheckForHistoryFilesRemoval() {}
 
+  // Calls `callback` when active/in-progress downloads are initialized.
+  virtual void WaitForActiveDownloadsInitialization(base::OnceClosure callback);
+
  protected:
-  // Called when the manager is initailized.
+  // Called when the manager is initialized.
   void OnInitialized();
 
   // Called when a new download is created.
@@ -96,6 +90,10 @@ class COMPONENTS_DOWNLOAD_EXPORT SimpleDownloadManager {
 
   // Observers that want to be notified of changes to the set of downloads.
   base::ObserverList<Observer> simple_download_manager_observers_;
+
+ private:
+  // Callbacks waiting for active downloads to be initialized.
+  std::vector<base::OnceClosure> active_downloads_initialized_callbacks_;
 };
 
 }  // namespace download

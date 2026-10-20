@@ -6,6 +6,7 @@
 
 #include "ash/constants/ash_pref_names.h"
 #include "ash/resources/vector_icons/vector_icons.h"
+#include "ash/strings/grit/ash_strings.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/utf_string_conversions.h"
 #include "chrome/browser/apps/app_service/app_service_proxy.h"
@@ -14,7 +15,6 @@
 #include "chrome/browser/chromeos/printing/printer_error_codes.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/grit/branded_strings.h"
-#include "chrome/grit/generated_resources.h"
 #include "components/prefs/pref_service.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/chromeos/styles/cros_tokens_color_mappings.h"
@@ -44,7 +44,8 @@ std::u16string GetAppShortNameUTF16(Profile* profile,
 }
 
 std::u16string GetNotificationTitleForFailure(const CupsPrintJob& job) {
-  DCHECK_EQ(CupsPrintJob::State::STATE_FAILED, job.state());
+  CHECK_EQ(CupsPrintJob::State::STATE_FAILED, job.state(),
+           base::NotFatalUntil::M160);
 
   switch (job.error_code()) {
     case PrinterErrorCode::CLIENT_UNAUTHORIZED:
@@ -59,7 +60,8 @@ std::u16string GetNotificationTitleForFailure(const CupsPrintJob& job) {
 }
 
 std::u16string GetNotificationTitleForError(const CupsPrintJob& job) {
-  DCHECK_EQ(CupsPrintJob::State::STATE_ERROR, job.state());
+  CHECK_EQ(CupsPrintJob::State::STATE_ERROR, job.state(),
+           base::NotFatalUntil::M160);
 
   switch (job.error_code()) {
     case PrinterErrorCode::PAPER_JAM:

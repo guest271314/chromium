@@ -5,21 +5,17 @@
 import './omnibox_popup_searchbox.js';
 import '/strings.m.js';
 
-import {assert} from '//resources/js/assert.js';
+import {ColorChangeUpdater} from '//resources/cr_components/color_change_listener/colors_css_updater.js';
 import {EventTracker} from '//resources/js/event_tracker.js';
 import {loadTimeData} from '//resources/js/load_time_data.js';
+import type {PropertyValues} from '//resources/lit/v3_0/lit.rollup.js';
 import {CrLitElement} from '//resources/lit/v3_0/lit.rollup.js';
 
-import {getCss} from './full_app.css.js';
 import {getHtml} from './full_app.html.js';
 
 export class OmniboxFullAppElement extends CrLitElement {
   static get is() {
     return 'omnibox-full-app';
-  }
-
-  static override get styles() {
-    return getCss();
   }
 
   override render() {
@@ -28,32 +24,44 @@ export class OmniboxFullAppElement extends CrLitElement {
 
   static override get properties() {
     return {
-      omniboxPopupDebugEnabled_: {
+      webuiShadowEnabled_: {
         type: Boolean,
         reflect: true,
       },
     };
   }
 
-  protected accessor omniboxPopupDebugEnabled_ =
-      loadTimeData.getBoolean('omniboxPopupDebugEnabled');
+  // When true, this page paints the popup's background, rounded corners and
+  // drop shadow instead of the Views frame.
+  protected accessor webuiShadowEnabled_: boolean =
+      loadTimeData.getBoolean('omniboxFullWebUIShadowEnabled');
 
-  private isDebug_: boolean =
-      new URLSearchParams(window.location.search).has('debug');
   private eventTracker_ = new EventTracker();
+
+  constructor() {
+    super();
+    ColorChangeUpdater.forDocument().start();
+  }
 
   override connectedCallback() {
     super.connectedCallback();
-    this.eventTracker_.add(
-        document.documentElement, 'visibilitychange',
-        this.onVisibilitychange_.bind(this));
-    this.onVisibilitychange_();
-    if (!this.isDebug_) {
-      this.eventTracker_.add(
-          document.documentElement, 'contextmenu', (e: Event) => {
-            e.preventDefault();
-          });
-    }
+    // Force an initial refresh to avoid the race condition where the profile
+    // theme loads after the page, but before the listener is ready.
+    ColorChangeUpdater.forDocument().refreshColorsCss();
+
+    // On mousedown, Blink focuses the nearest mouse-focusable ancestor of the
+    // target, or clears focus if there is none. Only intervene in the latter
+    // case, so clicks on the transparent shadow margin, the focus ring, or the
+    // searchbox padding don't blur the input.
+    this.eventTracker_.add(document, 'mousedown', (e: MouseEvent) => {
+      const hitsFocusable = e.composedPath().some(
+          el => el instanceof HTMLElement &&
+              (el.tabIndex >= 0 || el.hasAttribute('tabindex') ||
+               el.isContentEditable));
+      if (!hitsFocusable) {
+        e.preventDefault();
+      }
+    }, true /* capture */);
   }
 
   override disconnectedCallback() {
@@ -61,14 +69,9 @@ export class OmniboxFullAppElement extends CrLitElement {
     this.eventTracker_.removeAll();
   }
 
-  private onVisibilitychange_() {
-    if (document.visibilityState !== 'visible') {
-      return;
-    }
-
-    const searchbox = this.shadowRoot.querySelector('omnibox-popup-searchbox');
-    assert(searchbox);
-    searchbox.focusInput();
+  override firstUpdated(changedProperties: PropertyValues<this>) {
+    super.firstUpdated(changedProperties);
+    performance.mark('OmniboxFullAppElement::firstUpdated');
   }
 }
 

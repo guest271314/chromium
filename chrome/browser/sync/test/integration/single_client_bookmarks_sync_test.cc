@@ -66,6 +66,7 @@
 #include "components/version_info/version_info.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/test_launcher.h"
+#include "net/http/http_status_code.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/base/l10n/l10n_util.h"
@@ -188,8 +189,10 @@ class SingleClientParameterizedBookmarksSyncTestBase
  public:
   SingleClientParameterizedBookmarksSyncTestBase() : SyncTest(SINGLE_CLIENT) {
     if (GetSetupSyncMode() == SetupSyncMode::kSyncTransportOnly) {
-      feature_overrides_.InitAndEnableFeature(
-          syncer::kReplaceSyncPromosWithSignInPromos);
+      feature_overrides_.InitWithFeatures(
+          {syncer::kReplaceSyncPromosWithSignInPromos,
+           switches::kSyncEnableBookmarksInTransportMode},
+          {});
     } else {
       // Skip sync-to-signin migration for sync-the-feature tests. This is to
       // avoid the sync state changing between the PRE_ tests.
@@ -807,6 +810,114 @@ IN_PROC_BROWSER_TEST_P(SingleClientBookmarksSyncTest, OneFolderRemovedEvent) {
 }
 
 IN_PROC_BROWSER_TEST_P(SingleClientBookmarksSyncTest,
+                       ShouldResolveConflictWhenRemoteUpdateIsNoOp) {
+  ASSERT_TRUE(SetupSync());
+
+  // 1. Create a bookmark locally and let it sync.
+  const std::u16string kTitle = u"Original Title";
+  const GURL kUrl("http://foo.com");
+  const BookmarkNode* const bar =
+      GetBookmarkBarNode(kSingleProfileIndex, GetStoreType());
+  const BookmarkNode* const bookmark =
+      AddURL(kSingleProfileIndex, bar, 0, kTitle, kUrl);
+
+  ASSERT_TRUE(BookmarkModelMatchesFakeServerChecker(
+                  GetBookmarkModel(kSingleProfileIndex),
+                  GetSyncService(kSingleProfileIndex), GetFakeServer(),
+                  GetStoreType())
+                  .Wait());
+
+  // Get the server ID of the created bookmark.
+  const std::vector<sync_pb::SyncEntity> server_bookmarks =
+      GetFakeServer()->GetSyncEntitiesByDataType(syncer::BOOKMARKS);
+  ASSERT_EQ(1u, server_bookmarks.size());
+  const std::string server_id = server_bookmarks[0].id_string();
+  const std::string parent_id = server_bookmarks[0].parent_id_string();
+  const sync_pb::EntitySpecifics original_specifics =
+      server_bookmarks[0].specifics();
+
+  // 2. Set HTTP error on fake server to block sync.
+  GetFakeServer()->SetHttpError(net::HTTP_INTERNAL_SERVER_ERROR);
+
+  // 3. Modify the bookmark locally.
+  const std::u16string kLocalTitle = u"New Local Title";
+  SetTitle(kSingleProfileIndex, bookmark, kLocalTitle);
+
+  // 4. Modify the bookmark on the server to simulate a no-op remote update.
+  // We use the original specifics (which matches the base of the local change).
+  ASSERT_TRUE(GetFakeServer()->ModifyBookmarkEntity(server_id, parent_id,
+                                                    original_specifics));
+
+  // 5. Clear HTTP error on fake server.
+  GetFakeServer()->ClearHttpError();
+
+  // 6. Wait for sync to resolve conflict and match.
+  // Since local wins, the final state should have the local title.
+  ASSERT_TRUE(BookmarkModelMatchesFakeServerChecker(
+                  GetBookmarkModel(kSingleProfileIndex),
+                  GetSyncService(kSingleProfileIndex), GetFakeServer(),
+                  GetStoreType())
+                  .Wait());
+
+  // Verify that the local title is still the modified one.
+  EXPECT_EQ(bookmark->GetTitle(), kLocalTitle);
+}
+
+IN_PROC_BROWSER_TEST_P(
+    SingleClientBookmarksSyncTest,
+    ShouldResolveConflictWhenRemoteUpdateIsNoOpAndLocalDelete) {
+  ASSERT_TRUE(SetupSync());
+
+  // 1. Create a bookmark locally and let it sync.
+  const std::u16string kTitle = u"Original Title";
+  const GURL kUrl("http://foo.com");
+  const BookmarkNode* const bar =
+      GetBookmarkBarNode(kSingleProfileIndex, GetStoreType());
+  AddURL(kSingleProfileIndex, bar, 0, kTitle, kUrl);
+
+  ASSERT_TRUE(BookmarkModelMatchesFakeServerChecker(
+                  GetBookmarkModel(kSingleProfileIndex),
+                  GetSyncService(kSingleProfileIndex), GetFakeServer(),
+                  GetStoreType())
+                  .Wait());
+
+  // Get the server ID of the created bookmark.
+  const std::vector<sync_pb::SyncEntity> server_bookmarks =
+      GetFakeServer()->GetSyncEntitiesByDataType(syncer::BOOKMARKS);
+  ASSERT_EQ(1u, server_bookmarks.size());
+  const std::string server_id = server_bookmarks[0].id_string();
+  const std::string parent_id = server_bookmarks[0].parent_id_string();
+  const sync_pb::EntitySpecifics original_specifics =
+      server_bookmarks[0].specifics();
+
+  // 2. Set HTTP error on fake server to block sync.
+  GetFakeServer()->SetHttpError(net::HTTP_INTERNAL_SERVER_ERROR);
+
+  // 3. Delete the bookmark locally.
+  Remove(kSingleProfileIndex, bar, 0);
+
+  // 4. Modify the bookmark on the server to simulate a no-op remote update.
+  // We use the original specifics.
+  ASSERT_TRUE(GetFakeServer()->ModifyBookmarkEntity(server_id, parent_id,
+                                                    original_specifics));
+
+  // 5. Clear HTTP error on fake server.
+  GetFakeServer()->ClearHttpError();
+
+  // 6. Wait for sync to resolve conflict and match.
+  // Since local wins (deletion), the final state should be deleted on both
+  // sides.
+  ASSERT_TRUE(BookmarkModelMatchesFakeServerChecker(
+                  GetBookmarkModel(kSingleProfileIndex),
+                  GetSyncService(kSingleProfileIndex), GetFakeServer(),
+                  GetStoreType())
+                  .Wait());
+
+  // Verify that the bookmark is gone locally.
+  EXPECT_EQ(bar->children().size(), 0u);
+}
+
+IN_PROC_BROWSER_TEST_P(SingleClientBookmarksSyncTest,
                        BookmarkAllNodesRemovedEvent) {
   ASSERT_TRUE(SetupSync());
   // Starting state:
@@ -1224,12 +1335,11 @@ IN_PROC_BROWSER_TEST_P(SingleClientBookmarksSyncTest,
                        PRE_PersistProgressMarkerOnRestart) {
   const std::u16string title = u"Title1";
   fake_server::EntityBuilderFactory entity_builder_factory;
-  fake_server::BookmarkEntityBuilder bookmark_builder =
-      entity_builder_factory.NewBookmarkEntityBuilder(
-          title, base::Uuid::ParseLowercase(kBookmarkGuid));
-  bookmark_builder.SetId(
-      syncer::LoopbackServerEntity::CreateId(syncer::BOOKMARKS, kBookmarkGuid));
-  fake_server_->InjectEntity(bookmark_builder.BuildFolder());
+  fake_server_->InjectEntity(
+      entity_builder_factory
+          .NewBookmarkEntityBuilder(title,
+                                    base::Uuid::ParseLowercase(kBookmarkGuid))
+          .BuildFolder());
 
   base::HistogramTester histogram_tester;
   ASSERT_TRUE(SetupSync());
@@ -1246,12 +1356,11 @@ IN_PROC_BROWSER_TEST_P(SingleClientBookmarksSyncTest,
                        PersistProgressMarkerOnRestart) {
   const std::u16string title = u"Title1";
   fake_server::EntityBuilderFactory entity_builder_factory;
-  fake_server::BookmarkEntityBuilder bookmark_builder =
-      entity_builder_factory.NewBookmarkEntityBuilder(
-          title, base::Uuid::ParseLowercase(kBookmarkGuid));
-  bookmark_builder.SetId(
-      syncer::LoopbackServerEntity::CreateId(syncer::BOOKMARKS, kBookmarkGuid));
-  fake_server_->InjectEntity(bookmark_builder.BuildFolder());
+  fake_server_->InjectEntity(
+      entity_builder_factory
+          .NewBookmarkEntityBuilder(title,
+                                    base::Uuid::ParseLowercase(kBookmarkGuid))
+          .BuildFolder());
 
   base::HistogramTester histogram_tester;
   ASSERT_TRUE(SetupClients());

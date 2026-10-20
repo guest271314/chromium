@@ -102,7 +102,6 @@ void ChromeBrowserPolicyConnector::OnResourceBundleCreated() {
 void ChromeBrowserPolicyConnector::Init(
     PrefService* local_state,
     scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory) {
-  PolicyLogger::GetInstance()->EnableLogDeletion();
   auto configuration = std::make_unique<DeviceManagementServiceConfiguration>(
       GetDeviceManagementUrl(), GetRealtimeReportingUrl(),
       GetEncryptedReportingUrl());
@@ -115,6 +114,11 @@ void ChromeBrowserPolicyConnector::Init(
   policy_cache_updater_ = std::make_unique<android::PolicyCacheUpdater>(
       GetPolicyService(), GetHandlerList());
 #endif
+
+  PolicyLogger::GetInstance()->EnableLogCompression(
+      base::ThreadPool::CreateSequencedTaskRunner(
+          {base::TaskPriority::USER_VISIBLE,
+           base::TaskShutdownBehavior::SKIP_ON_SHUTDOWN}));
 
   InitInternal(local_state, std::move(device_management_service));
 }
@@ -366,6 +370,10 @@ ChromeBrowserPolicyConnector::CreatePlatformProvider() {
 #if !BUILDFLAG(IS_CHROMEOS)
 void ChromeBrowserPolicyConnector::MaybeCreateCloudPolicyManager(
     std::vector<std::unique_ptr<ConfigurationPolicyProvider>>* providers) {
+  if (!chrome_browser_cloud_management_controller_->IsEnabled()) {
+    return;
+  }
+
   std::unique_ptr<ProxyPolicyProvider> proxy_policy_provider =
       std::make_unique<ProxyPolicyProvider>();
   proxy_policy_provider_ = proxy_policy_provider.get();
@@ -385,9 +393,14 @@ void ChromeBrowserPolicyConnector::OnMachineLevelCloudPolicyManagerCreated(
       machine_level_user_cloud_policy_manager.get();
   if (machine_level_user_cloud_policy_manager_) {
     machine_level_user_cloud_policy_manager_->Init(GetSchemaRegistry());
+    proxy_policy_provider_->SetOwnedDelegate(
+        std::move(machine_level_user_cloud_policy_manager));
+  } else {
+    // Explicitly transition out of ProxyPolicyProvider's Unspecified state
+    // when no manager is created to unblock IsFirstPolicyLoadComplete() and
+    // the startup policy snapshot.
+    proxy_policy_provider_->SetUnownedDelegate(nullptr);
   }
-  proxy_policy_provider_->SetOwnedDelegate(
-      std::move(machine_level_user_cloud_policy_manager));
 }
 #endif  // !BUILDFLAG(IS_CHROMEOS)
 

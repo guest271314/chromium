@@ -217,7 +217,6 @@ TEST_F(ExtensionActionRunnerUnitTest, GrantTabPermissions) {
   EXPECT_TRUE(runner()->WantsToRun(extension));
 
   runner()->GrantTabPermissions({extension});
-  EXPECT_TRUE(content::WaitForLoadStop(web_contents()));
   task_environment()->RunUntilIdle();
 
   EXPECT_EQ(1u, GetExecutionCountForExtension(extension->id()));
@@ -322,6 +321,49 @@ TEST_F(ExtensionActionRunnerUnitTest, PendingInjectionsRemovedAtNavigation) {
   // of two executions were requested.
   EXPECT_EQ(1u, GetExecutionCountForExtension(extension->id()));
   EXPECT_FALSE(runner()->WantsToRun(extension));
+}
+
+// Tests that a pending (uncommitted) navigation does not affect whether the
+// extension requires user consent for the currently committed page.
+TEST_F(ExtensionActionRunnerUnitTest,
+       PendingNavigationDoesNotAffectUserConsent) {
+  const Extension* extension = AddExtension();
+  ASSERT_TRUE(extension);
+
+  const GURL withheld_url("https://www.withheld.com");
+  const GURL granted_url("https://www.granted.com");
+
+  // Grant the extension permission to always run on `granted_url`. It still
+  // requires user consent on `withheld_url`.
+  ScriptingPermissionsModifier(profile(), extension)
+      .GrantHostPermission(granted_url);
+
+  NavigateAndCommit(withheld_url);
+  EXPECT_TRUE(RequiresUserConsent(extension));
+
+  // Start (but don't commit) a browser-initiated navigation to `granted_url`.
+  // The committed page is still `withheld_url`, so user consent should still
+  // be required to inject into it.
+  std::unique_ptr<content::NavigationSimulator> navigation =
+      content::NavigationSimulator::CreateBrowserInitiated(granted_url,
+                                                           web_contents());
+  navigation->Start();
+  ASSERT_EQ(granted_url, web_contents()->GetVisibleURL());
+  ASSERT_EQ(withheld_url, web_contents()->GetLastCommittedURL());
+  EXPECT_TRUE(RequiresUserConsent(extension));
+
+  // The reverse: committed page is `granted_url`, with a pending navigation
+  // to `withheld_url`. The extension should not require user consent.
+  navigation->Commit();
+  ASSERT_EQ(granted_url, web_contents()->GetLastCommittedURL());
+  EXPECT_FALSE(RequiresUserConsent(extension));
+
+  navigation = content::NavigationSimulator::CreateBrowserInitiated(
+      withheld_url, web_contents());
+  navigation->Start();
+  ASSERT_EQ(withheld_url, web_contents()->GetVisibleURL());
+  ASSERT_EQ(granted_url, web_contents()->GetLastCommittedURL());
+  EXPECT_FALSE(RequiresUserConsent(extension));
 }
 
 // Test that queueing multiple pending injections, and then accepting, triggers
@@ -541,6 +583,36 @@ TEST_F(ExtensionActionRunnerUnitTest, TestWebRequestBlocked) {
   NavigateAndCommit(GURL("https://www.bar.com"));
   EXPECT_EQ(BLOCKED_ACTION_NONE, runner()->GetBlockedActions(extension->id()));
   EXPECT_FALSE(runner()->WantsToRun(extension));
+}
+
+// Tests that `ExtensionActionRunner::RequiresUserConsentForScriptInjection()`
+// gates `mojom::InjectionType::kDeclarativeScript` injections (from the
+// `RequestContentScript` action of the `chrome.declarativeContent` API) on the
+// extension's host permissions (`PermissionsData::GetPageAccess()`), the same
+// as `mojom::InjectionType::kProgrammaticScript`, rather than on its manifest
+// content script matches (`PermissionsData::GetContentScriptAccess()`).
+TEST_F(ExtensionActionRunnerUnitTest, DeclarativeScriptsUseHostPermissions) {
+  // Add an extension with withheld all hosts permissions and no manifest
+  // content scripts, then navigate to a page it has requested host permissions
+  // for.
+  const Extension* extension = AddExtension();
+  ASSERT_TRUE(extension);
+  NavigateAndCommit(GURL("https://www.google.com"));
+
+  // Content script injections are denied since the extension has no manifest
+  // content scripts matching the page.
+  EXPECT_EQ(PermissionsData::PageAccess::kDenied,
+            runner()->RequiresUserConsentForScriptInjectionForTesting(
+                extension, mojom::InjectionType::kContentScript));
+
+  // Declarative and programmatic script injections are withheld because they
+  // use the extension's withheld host permissions.
+  EXPECT_EQ(PermissionsData::PageAccess::kWithheld,
+            runner()->RequiresUserConsentForScriptInjectionForTesting(
+                extension, mojom::InjectionType::kDeclarativeScript));
+  EXPECT_EQ(PermissionsData::PageAccess::kWithheld,
+            runner()->RequiresUserConsentForScriptInjectionForTesting(
+                extension, mojom::InjectionType::kProgrammaticScript));
 }
 
 }  // namespace extensions

@@ -16,11 +16,8 @@
 #include "third_party/inspector_protocol/crdtp/json.h"
 
 namespace blink {
-InspectorWebMCPAgent::InspectorWebMCPAgent(
-    InspectedFrames* inspected_frames,
-    v8_inspector::V8InspectorSession* v8_session)
+InspectorWebMCPAgent::InspectorWebMCPAgent(InspectedFrames* inspected_frames)
     : inspected_frames_(inspected_frames),
-      v8_session_(v8_session),
       enabled_(&agent_state_, /*default_value=*/false) {}
 InspectorWebMCPAgent::~InspectorWebMCPAgent() = default;
 
@@ -39,15 +36,11 @@ ModelContext* InspectorWebMCPAgent::GetModelContext(LocalFrame* frame) {
   if (!frame) {
     return nullptr;
   }
-  auto* window = frame->DomWindow();
-  if (!window) {
+  auto* document = frame->GetDocument();
+  if (!document) {
     return nullptr;
   }
-  auto* navigator = window->navigator();
-  if (!navigator) {
-    return nullptr;
-  }
-  return ModelContextSupplement::GetIfExists(*navigator);
+  return ModelContextSupplement::GetIfExists(*document);
 }
 
 namespace {
@@ -78,6 +71,8 @@ std::unique_ptr<protocol::WebMCP::Annotation> BuildAnnotations(
   if (annotations) {
     builder.setReadOnly(annotations->read_only);
     builder.setUntrustedContent(annotations->untrusted_content);
+    builder.setConsequential(annotations->consequential);
+    builder.setDebugging(annotations->debugging);
     has_annotations = true;
   }
   if (element && element->FastHasAttribute(html_names::kToolautosubmitAttr)) {
@@ -144,9 +139,12 @@ protocol::Response InspectorWebMCPAgent::disable() {
 
 protocol::Response InspectorWebMCPAgent::cancelInvocation(
     const String& invocationId) {
-  auto invocation_token =
-      base::UnguessableToken::DeserializeFromString(invocationId.Ascii());
-  if (!invocation_token) {
+  std::optional<ToolInvocationToken> invocation_id =
+      base::UnguessableToken::DeserializeFromString(invocationId.Ascii())
+          .transform([](const base::UnguessableToken& token) {
+            return ToolInvocationToken(token);
+          });
+  if (!invocation_id) {
     return protocol::Response::InvalidParams("Invalid invocation id");
   }
 
@@ -155,7 +153,7 @@ protocol::Response InspectorWebMCPAgent::cancelInvocation(
   bool cancelled = false;
   for (LocalFrame* frame : *inspected_frames_) {
     if (auto* model_context = GetModelContext(frame)) {
-      if (model_context->CancelTool(*invocation_token)) {
+      if (model_context->CancelTool(*invocation_id)) {
         cancelled = true;
         break;
       }
@@ -200,7 +198,7 @@ void InspectorWebMCPAgent::WebMCPToolExecuted(
     Document* document,
     const String& name,
     const String& input_arguments,
-    const base::UnguessableToken& invocation_id) {
+    const ToolInvocationToken& invocation_id) {
   if (!enabled_.Get()) {
     return;
   }
@@ -214,7 +212,7 @@ void InspectorWebMCPAgent::WebMCPToolExecuted(
 void InspectorWebMCPAgent::WebMCPToolResponded(
     Document* document,
     const String& result,
-    const base::UnguessableToken& invocation_id) {
+    const ToolInvocationToken& invocation_id) {
   if (!enabled_.Get()) {
     return;
   }
@@ -226,7 +224,7 @@ void InspectorWebMCPAgent::WebMCPToolResponded(
 void InspectorWebMCPAgent::WebMCPToolFailed(
     Document* document,
     const ScriptToolError& error,
-    const base::UnguessableToken& invocation_id,
+    const ToolInvocationToken& invocation_id,
     std::optional<std::pair<ScriptValue, ScriptState*>> exception) {
   if (!enabled_.Get()) {
     return;
@@ -239,7 +237,7 @@ void InspectorWebMCPAgent::WebMCPToolFailed(
   if (exception && !exception->first.IsEmpty()) {
     ScriptState* script_state = exception->second;
     ScriptState::Scope scope(script_state);
-    remote_object = v8_session_->wrapObject(script_state->GetContext(),
+    remote_object = V8Session()->wrapObject(script_state->GetContext(),
                                             exception->first.V8Value(),
                                             v8_inspector::StringView(), false);
   }

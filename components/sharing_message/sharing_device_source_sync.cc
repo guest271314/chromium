@@ -63,13 +63,13 @@ std::optional<SharingTargetDeviceInfo> SharingDeviceSourceSync::GetDeviceByGuid(
   }
 
   const syncer::DeviceInfo* device_info =
-      device_info_tracker_->GetDeviceInfo(guid);
+      device_info_tracker_->GetChromeDeviceInfo(guid);
   if (!device_info) {
     return std::nullopt;
   }
 
   return SharingTargetDeviceInfo(
-      device_info->guid(), syncer::GetDeviceDisplayNames(device_info).full_name,
+      device_info->guid(), syncer::GetDeviceDisplayName(device_info),
       GetDevicePlatform(*device_info), device_info->pulse_interval(),
       device_info->form_factor(), device_info->last_updated_timestamp());
 }
@@ -81,7 +81,7 @@ SharingDeviceSourceSync::GetDeviceCandidates(
     return {};
   }
 
-  return ConvertAndDeduplicateDevices(FilterDeviceCandidates(
+  return ConvertDevices(FilterDeviceCandidates(
       device_info_tracker_->GetAllDeviceInfo(), required_feature));
 }
 
@@ -122,9 +122,16 @@ SharingDeviceSourceSync::FilterDeviceCandidates(
   std::set<syncer::DeviceInfo::SharingFeature> accepted_features{
       required_feature};
   bool can_send_via_sender_id = CanSendViaSenderID(sync_service_);
+  const syncer::DeviceInfo* local_device =
+      local_device_info_provider_->GetLocalDeviceInfo();
 
-  std::erase_if(devices, [accepted_features, can_send_via_sender_id](
-                             const syncer::DeviceInfo* device) {
+  std::erase_if(devices, [accepted_features, can_send_via_sender_id,
+                          local_device](const syncer::DeviceInfo* device) {
+    // Filter out local device.
+    if (local_device && device->guid() == local_device->guid()) {
+      return true;
+    }
+
     // Checks if |last_updated_timestamp| is not too old.
     if (IsStale(*device)) {
       return true;
@@ -154,8 +161,7 @@ SharingDeviceSourceSync::FilterDeviceCandidates(
   return devices;
 }
 
-std::vector<SharingTargetDeviceInfo>
-SharingDeviceSourceSync::ConvertAndDeduplicateDevices(
+std::vector<SharingTargetDeviceInfo> SharingDeviceSourceSync::ConvertDevices(
     std::vector<const syncer::DeviceInfo*> devices) const {
   // Sort the devices so the most recently modified devices are first.
   std::sort(devices.begin(), devices.end(),
@@ -164,24 +170,10 @@ SharingDeviceSourceSync::ConvertAndDeduplicateDevices(
                      device2->last_updated_timestamp();
             });
 
-  const syncer::DeviceInfo* local_device =
-      local_device_info_provider_->GetLocalDeviceInfo();
-  std::optional<std::string> local_full_name;
-  if (local_device) {
-    local_full_name = syncer::GetDeviceDisplayNames(local_device).full_name;
-  }
-
-  // Resolve display names for the filtered list. This handles de-duplication
-  // by name and chooses between short/full names based on collisions.
-  std::vector<syncer::DeviceInfoWithName> device_names =
-      syncer::DetermineDisplayNamesAndDeduplicate(devices, local_full_name);
-
-  // Convert to SharingTargetDeviceInfo, filtering out any devices that were
-  // de-duplicated by the naming utility.
-  return base::ToVector(device_names, [](const auto& info) {
+  return base::ToVector(devices, [](const auto& device) {
     return SharingTargetDeviceInfo(
-        info.device->guid(), info.display_name, GetDevicePlatform(*info.device),
-        info.device->pulse_interval(), info.device->form_factor(),
-        info.device->last_updated_timestamp());
+        device->guid(), syncer::GetDeviceDisplayName(device),
+        GetDevicePlatform(*device), device->pulse_interval(),
+        device->form_factor(), device->last_updated_timestamp());
   });
 }

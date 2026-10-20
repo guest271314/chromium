@@ -5,15 +5,15 @@
 import 'chrome://history/history.js';
 
 import type {HistoryAppElement, HistorySideBarElement} from 'chrome://history/history.js';
-import {BrowserProxyImpl, BrowserServiceImpl, CrRouter, HistoryEmbeddingsBrowserProxyImpl, HistoryEmbeddingsPageHandlerRemote, MetricsProxyImpl} from 'chrome://history/history.js';
+import {BrowserProxyImpl, CrRouter, historyClustersBrowserProxyFactory, historyEmbeddingsBrowserProxyFactory, HistoryEmbeddingsPageHandlerRemote, MetricsProxyImpl, PageHandlerRemote as HistoryClustersPageHandlerRemote} from 'chrome://history/history.js';
 import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
 import {assertEquals, assertTrue} from 'chrome://webui-test/chai_assert.js';
 import {keyDownOn} from 'chrome://webui-test/keyboard_mock_interactions.js';
 import {TestMock} from 'chrome://webui-test/test_mock.js';
 import {eventToPromise, isVisible, microtasksFinished} from 'chrome://webui-test/test_util.js';
 
-import {TestBrowserProxy, TestMetricsProxy} from './history_clusters/utils.js';
-import {TestBrowserService} from './test_browser_service.js';
+import {TestMetricsProxy} from './history_clusters/utils.js';
+import {TestHistoryBrowserProxy} from './test_browser_proxy.js';
 import {navigateTo} from './test_util.js';
 
 [true, false].forEach(isHistoryClustersEnabled => {
@@ -21,7 +21,7 @@ import {navigateTo} from './test_util.js';
   suite(`routing-test-with-history-clusters-${suitSuffix}`, function() {
     let app: HistoryAppElement;
     let sidebar: HistorySideBarElement;
-    let testBrowserProxy: TestBrowserProxy;
+    let testProxy: TestHistoryBrowserProxy;
     let testMetricsProxy: TestMetricsProxy;
 
     suiteSetup(() => {
@@ -40,9 +40,13 @@ import {navigateTo} from './test_util.js';
       window.history.replaceState({}, '', '/');
       document.body.innerHTML = window.trustedTypes!.emptyHTML;
       CrRouter.resetForTesting();
-      BrowserServiceImpl.setInstance(new TestBrowserService());
-      testBrowserProxy = new TestBrowserProxy();
-      BrowserProxyImpl.setInstance(testBrowserProxy);
+      const clustersHandler =
+          TestMock.fromClass(HistoryClustersPageHandlerRemote);
+      const {instance} =
+          historyClustersBrowserProxyFactory.createForTest(clustersHandler);
+      historyClustersBrowserProxyFactory.setInstance(instance);
+      testProxy = new TestHistoryBrowserProxy();
+      BrowserProxyImpl.setInstance(testProxy);
       testMetricsProxy = new TestMetricsProxy();
       MetricsProxyImpl.setInstance(testMetricsProxy);
       app = document.createElement('history-app');
@@ -71,9 +75,7 @@ import {navigateTo} from './test_util.js';
 
     test('routing to /grouped may change active view', async () => {
       assertEquals('history', app.$.content.selected);
-      assertEquals(
-          app.shadowRoot.querySelector('#history'),
-          app.$.tabsContent.selectedItem);
+      assertEquals(app.$.history, app.$.tabsContent.selectedItem);
 
       navigateTo('/grouped', app);
       await microtasksFinished();
@@ -87,7 +89,7 @@ import {navigateTo} from './test_util.js';
       assertEquals(
           isHistoryClustersEnabled ?
               app.shadowRoot.querySelector('#history-clusters') :
-              app.shadowRoot.querySelector('#history'),
+              app.$.history,
           app.$.tabsContent.selectedItem);
     });
 
@@ -166,9 +168,7 @@ import {navigateTo} from './test_util.js';
     test('route updates from search', async function() {
       const searchTerm = 'McCree';
       assertEquals('history', app.$.content.selected);
-      app.dispatchEvent(new CustomEvent(
-          'change-query',
-          {bubbles: true, composed: true, detail: {search: searchTerm}}));
+      app.fire('change-query', {search: searchTerm});
       await microtasksFinished();
       assertEquals('chrome://history/?q=' + searchTerm, window.location.href);
     });
@@ -221,16 +221,15 @@ import {navigateTo} from './test_util.js';
             historyTabs.selected = -1;
             await microtasksFinished();
           }
-          assertEquals(`chrome://history/syncedTabs`, window.location.href);
+          assertEquals('chrome://history/syncedTabs', window.location.href);
         });
   });
 });
 
-suite(`routing-test-with-history-clusters-pref-set`, () => {
+suite('routing-test-with-history-clusters-pref-set', () => {
   let app: HistoryAppElement;
-  let testBrowserProxy: TestBrowserProxy;
+  let testProxy: TestHistoryBrowserProxy;
   let testMetricsProxy: TestMetricsProxy;
-  let testBrowserService: TestBrowserService;
 
   suiteSetup(() => {
     loadTimeData.overrideValues({
@@ -244,10 +243,8 @@ suite(`routing-test-with-history-clusters-pref-set`, () => {
     window.history.replaceState({}, '', '/');
     document.body.innerHTML = window.trustedTypes!.emptyHTML;
     CrRouter.resetForTesting();
-    testBrowserService = new TestBrowserService();
-    BrowserServiceImpl.setInstance(testBrowserService);
-    testBrowserProxy = new TestBrowserProxy();
-    BrowserProxyImpl.setInstance(testBrowserProxy);
+    testProxy = new TestHistoryBrowserProxy();
+    BrowserProxyImpl.setInstance(testProxy);
     testMetricsProxy = new TestMetricsProxy();
     MetricsProxyImpl.setInstance(testMetricsProxy);
 
@@ -260,37 +257,37 @@ suite(`routing-test-with-history-clusters-pref-set`, () => {
   }
 
   test(
-      `route to non default last selected tab when no url params set `,
+      'route to non default last selected tab when no url params set ',
       async () => {
         initialize();
         await microtasksFinished();
-        assertEquals(`chrome://history/grouped`, window.location.href);
+        assertEquals('chrome://history/grouped', window.location.href);
       });
 
-  test(`route to grouped url when last tab is grouped`, async () => {
+  test('route to grouped url when last tab is grouped', async () => {
     loadTimeData.overrideValues({lastSelectedTab: 0});
     initialize();
     await microtasksFinished();
-    assertEquals(`chrome://history/`, window.location.href);
-    testBrowserService.handler.reset();
+    assertEquals('chrome://history/', window.location.href);
+    testProxy.handler.reset();
 
     navigateTo('/grouped', app);
     await microtasksFinished();
-    assertEquals(`chrome://history/grouped`, window.location.href);
+    assertEquals('chrome://history/grouped', window.location.href);
     const lastSelectedTab =
-        await testBrowserService.handler.whenCalled('setLastSelectedTab');
+        await testProxy.handler.whenCalled('setLastSelectedTab');
     assertEquals(lastSelectedTab, 1);
   });
 
-  test(`route to list url when last tab is list`, async () => {
+  test('route to list url when last tab is list', async () => {
     loadTimeData.overrideValues({lastSelectedTab: 0});
     initialize();
     await microtasksFinished();
-    assertEquals(`chrome://history/`, window.location.href);
+    assertEquals('chrome://history/', window.location.href);
   });
 });
 
-suite(`routing-test-with-history-embeddings-enabled`, () => {
+suite('routing-test-with-history-embeddings-enabled', () => {
   let app: HistoryAppElement;
 
   suiteSetup(() => {
@@ -310,13 +307,18 @@ suite(`routing-test-with-history-embeddings-enabled`, () => {
     CrRouter.resetForTesting();
 
     // Some extra setup of mocking proxies to get the history-app to work.
-    BrowserServiceImpl.setInstance(new TestBrowserService());
-    BrowserProxyImpl.setInstance(new TestBrowserProxy());
+    const clustersHandler =
+        TestMock.fromClass(HistoryClustersPageHandlerRemote);
+    const {instance: clustersProxy} =
+        historyClustersBrowserProxyFactory.createForTest(clustersHandler);
+    historyClustersBrowserProxyFactory.setInstance(clustersProxy);
+    BrowserProxyImpl.setInstance(new TestHistoryBrowserProxy());
     MetricsProxyImpl.setInstance(new TestMetricsProxy());
     const handler = TestMock.fromClass(HistoryEmbeddingsPageHandlerRemote);
     handler.setResultFor('search', new Promise(() => {}));
-    HistoryEmbeddingsBrowserProxyImpl.setInstance(
-        new HistoryEmbeddingsBrowserProxyImpl(handler));
+    const {instance: embeddingsProxy} =
+        historyEmbeddingsBrowserProxyFactory.createForTest(handler);
+    historyEmbeddingsBrowserProxyFactory.setInstance(embeddingsProxy);
 
     app = document.createElement('history-app');
     document.body.appendChild(app);
@@ -353,15 +355,11 @@ suite(`routing-test-with-history-embeddings-enabled`, () => {
     assertTrue(!!filterChips);
 
     // Changing the "By group" chip to should change the URL.
-    filterChips.dispatchEvent(new CustomEvent('selected-suggestion-changed', {
-      detail: {
-        value: {
-          timeRangeStart: new Date('2011-01-01T00:00:00'),
-        },
+    filterChips.fire('selected-suggestion-changed', {
+      value: {
+        timeRangeStart: new Date('2011-01-01T00:00:00'),
       },
-      composed: true,
-      bubbles: true,
-    }));
+    });
     await microtasksFinished();
 
     assertEquals(

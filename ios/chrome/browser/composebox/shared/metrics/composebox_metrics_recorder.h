@@ -12,71 +12,7 @@
 #import "ios/chrome/browser/composebox/public/composebox_entrypoint.h"
 #import "ios/chrome/browser/composebox/public/composebox_mode.h"
 #import "ios/chrome/browser/composebox/public/composebox_model_option.h"
-
-// LINT.IfChange(AiModeActivationSource)
-enum class AiModeActivationSource {
-  kToolMenu = 0,
-  kDedicatedButton = 1,
-  kNTPButton = 2,
-  kImplicit = 3,
-  kMaxValue = kImplicit,
-};
-// LINT.ThenChange(//tools/metrics/histograms/metadata/omnibox/enums.xml:AiModeActivationSource)
-
-// LINT.IfChange(FuseboxAttachmentButtonType)
-enum class FuseboxAttachmentButtonType {
-  kCurrentTab = 0,
-  kTabPicker = 1,
-  kCamera = 2,
-  kGallery = 3,
-  kFiles = 4,
-  kClipboard = 5,
-  kSuggestedTab = 6,
-  kRecentTab = 7,
-  kMaxValue = kRecentTab
-};
-// LINT.ThenChange(//tools/metrics/histograms/metadata/omnibox/enums.xml:FuseboxAttachmentButtonType)
-
-// LINT.IfChange(AutocompleteRequestType)
-enum class AutocompleteRequestType {
-  kSearch = 0,
-  kSearchPrefetch = 1,
-  kAIMode = 2,
-  kImageGeneration = 3,
-  kCanvas = 4,
-  kDeepSearch = 5,
-  kMaxValue = kDeepSearch
-};
-// LINT.ThenChange(//tools/metrics/histograms/metadata/omnibox/enums.xml:AutocompleteRequestType)
-
-// LINT.IfChange(FocusResultedInNavigationType)
-enum class FocusResultedInNavigationType {
-  kNoNavigationNoAttachments = 0,
-  kNavigationNoAttachments = 1,
-  kNoNavigationWithAttachments = 2,
-  kNavigationWithAttachments = 3,
-  kMaxValue = kNavigationWithAttachments
-};
-// LINT.ThenChange(//tools/metrics/histograms/metadata/omnibox/enums.xml:FocusResultedInNavigationTypes)
-
-// LINT.IfChange(ComposeboxDragAndDropType)
-enum class ComposeboxDragAndDropType {
-  kText = 0,
-  kImage = 1,
-  kTab = 2,
-  kPDF = 3,
-  kUnknown = 4,
-  kRawFile = 5,
-  kMaxValue = kRawFile,
-};
-// LINT.ThenChange(//tools/metrics/histograms/metadata/omnibox/enums.xml:ComposeboxDragAndDropType)
-
-// Represents the possible attachment types for metrics recording.
-enum class ComposeboxMetricsAttachmentType {
-  kImage,
-  kTab,
-  kRawFile,
-};
+#import "ios/chrome/browser/composebox/shared/metrics/composebox_metrics_constants.h"
 
 namespace contextual_search {
 class ContextualSearchMetricsRecorder;
@@ -142,6 +78,8 @@ enum class ComposeboxEntrypoint;
 // Records the number of files attached.
 - (void)recordFilesAttached:(NSUInteger)count;
 
+- (void)recordDriveFilesAttached:(NSUInteger)count;
+
 - (void)recordVoiceSearchButtonUsed;
 - (void)recordLensSearchButtonUsed;
 - (void)recordQRScannerButtonUsed;
@@ -164,6 +102,10 @@ enum class ComposeboxEntrypoint;
 
 // Records the model explicitly selected in the menu.
 - (void)recordModelSelected:(ComposeboxModelOption)model;
+
+// Records the outcome of a picker session.
+- (void)recordPickerOutcome:(MobileFuseboxPickerOutcome)outcome
+          forAttachmentType:(MobileFuseboxPickerAttachmentType)attachmentType;
 
 @end
 

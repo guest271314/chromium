@@ -37,23 +37,25 @@ void SendTabToSelfPageHandler::SendTabToDevice(
     const std::string& target_device_guid,
     const GURL& url,
     const std::string& title,
-    base::OnceCallback<void(SendTabToSelfResult)> commit_confirmation) {
+    base::OnceCallback<void(SendTabToSelfResult)> commit_confirmation,
+    ShareEntryPoint entry_point) {
   PendingRequest request(target_device_guid, url, title,
-                         std::move(commit_confirmation));
+                         std::move(commit_confirmation), entry_point);
 
-  MaybeExtractFormFields(request);
-  MaybeExtractNavigationHistory(request);
-
-  // If the URL has changed or the scroll position feature is not enabled, send
-  // the request without the scroll position information.
-  if (request.url != web_contents()->GetLastCommittedURL() ||
-      !base::FeatureList::IsEnabled(kSendTabToSelfPropagateScrollPosition)) {
+  // If the shared URL does not match the last committed URL (e.g. sharing a
+  // link from the context menu), send the request immediately without
+  // capturing current page context or navigation history.
+  if (request.url != web_contents()->GetLastCommittedURL()) {
     SendFinalizedRequest(std::move(request), std::nullopt);
     return;
   }
 
-  // Otherwise, generate a token for the request and request the scroll
-  // position selector from the renderer.
+  request.page_context.form_field_info =
+      ExtractFormFieldsFromWebContents(web_contents());
+  MaybeExtractNavigationHistory(request);
+
+  // Generate a token for the request and request the scroll position selector
+  // from the renderer.
   base::Token request_token = base::Token::CreateRandom();
   RequestScrollPositionSelectorAndSendRequest(request_token,
                                               std::move(request));
@@ -91,11 +93,13 @@ SendTabToSelfPageHandler::PendingRequest::PendingRequest(
     const std::string& target_device_guid,
     const GURL& url,
     const std::string& title,
-    base::OnceCallback<void(SendTabToSelfResult)> commit_confirmation)
+    base::OnceCallback<void(SendTabToSelfResult)> commit_confirmation,
+    ShareEntryPoint entry_point)
     : target_device_guid(target_device_guid),
       url(url),
       title(title),
       start_time(base::TimeTicks::Now()),
+      entry_point(entry_point),
       commit_confirmation(std::move(commit_confirmation)) {}
 
 SendTabToSelfPageHandler::PendingRequest::PendingRequest(PendingRequest&&) =
@@ -155,7 +159,7 @@ void SendTabToSelfPageHandler::RequestScrollPositionSelectorAndSendRequest(
     base::Token request_token,
     PendingRequest request) {
   content::RenderFrameHost* main_frame = web_contents()->GetPrimaryMainFrame();
-  if (!main_frame) {
+  if (!main_frame || !main_frame->IsRenderFrameLive()) {
     SendFinalizedRequest(
         std::move(request),
         ScrollPositionGenerationOutcome::kMainFrameUnavailable);
@@ -205,6 +209,10 @@ SendTabToSelfPageHandler::ProcessSelectorGenerationResult(
     return {ScrollPositionGenerationOutcome::kRendererTimeout, {}};
   }
 
+  if (error == shared_highlighting::LinkGenerationError::kNotScrolled) {
+    return {ScrollPositionGenerationOutcome::kPageNotScrolled, {}};
+  }
+
   if (error != shared_highlighting::LinkGenerationError::kNone) {
     return {ScrollPositionGenerationOutcome::kLinkGenerationError, {}};
   }
@@ -224,14 +232,6 @@ SendTabToSelfPageHandler::ProcessSelectorGenerationResult(
   scroll_position.text_fragment = TextFragmentData(*fragment);
   return {ScrollPositionGenerationOutcome::kSuccess,
           std::move(scroll_position)};
-}
-
-void SendTabToSelfPageHandler::MaybeExtractFormFields(PendingRequest& request) {
-  if (request.url == web_contents()->GetLastCommittedURL() &&
-      base::FeatureList::IsEnabled(kSendTabToSelfPropagateFormFields)) {
-    request.page_context.form_field_info =
-        ExtractFormFieldsFromWebContents(web_contents());
-  }
 }
 
 void SendTabToSelfPageHandler::MaybeExtractNavigationHistory(
@@ -266,7 +266,7 @@ void SendTabToSelfPageHandler::SendFinalizedRequest(
   model->SendEntry(request.url, request.title, request.target_device_guid,
                    std::move(request.page_context),
                    std::move(request.navigation_history),
-                   std::move(request.commit_confirmation));
+                   std::move(request.commit_confirmation), request.entry_point);
 }
 
 base::TimeDelta SendTabToSelfPageHandler::GetSelectorGenerationTimeout() const {

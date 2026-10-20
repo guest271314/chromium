@@ -10,14 +10,22 @@
 #include "chrome/test/base/testing_profile.h"
 #include "chrome/test/views/chrome_views_test_base.h"
 #include "components/omnibox/common/omnibox_features.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_ui.h"
 #include "content/public/test/navigation_simulator.h"
 #include "content/public/test/scoped_web_ui_controller_factory_registration.h"
 #include "content/public/test/test_renderer_host.h"
 #include "testing/gmock/include/gmock/gmock.h"
+#include "third_party/blink/public/mojom/window_features/window_features.mojom.h"
+#include "ui/base/accelerators/accelerator.h"
+#include "ui/base/page_transition_types.h"
+#include "ui/base/window_open_disposition.h"
+#include "ui/compositor/layer.h"
+#include "ui/gfx/geometry/rounded_corners_f.h"
 #include "ui/views/controls/webview/webview.h"
 #include "ui/views/view_utils.h"
+#include "ui/views/widget/widget.h"
 #include "url/gurl.h"
 
 namespace {
@@ -83,8 +91,9 @@ class DrivePickerHostViewTest : public ChromeViewsTestBase {
 };
 
 TEST_F(DrivePickerHostViewTest, Initialization) {
-  auto view = std::make_unique<DrivePickerHostView>(profile(),
-                                                    browser_window_interface());
+  auto view = std::make_unique<DrivePickerHostView>(
+      profile(), browser_window_interface(),
+      drive_picker_host::DrivePickerHostRequest::RequestType::kPickerUi);
 
   EXPECT_EQ(view->children().size(), 1u);
   EXPECT_FALSE(view->GetBackground());
@@ -97,8 +106,9 @@ TEST_F(DrivePickerHostViewTest, TriggerDrivePickerHostUi) {
   content::ScopedWebUIConfigRegistration registration(
       std::make_unique<MockDrivePickerHostUIConfig>());
 
-  auto view = std::make_unique<DrivePickerHostView>(profile(),
-                                                    browser_window_interface());
+  auto view = std::make_unique<DrivePickerHostView>(
+      profile(), browser_window_interface(),
+      drive_picker_host::DrivePickerHostRequest::RequestType::kPickerUi);
 
   content::WebContents* contents =
       views::AsViewClass<views::WebView>(view->view_tracker_.view())
@@ -120,4 +130,119 @@ TEST_F(DrivePickerHostViewTest, TriggerDrivePickerHostUi) {
 
   // Clean up the view to avoid dangling references.
   view.reset();
+}
+
+TEST_F(DrivePickerHostViewTest, SetsCornerRadiusOnAddedToWidget) {
+  auto view = std::make_unique<DrivePickerHostView>(
+      profile(), browser_window_interface(),
+      drive_picker_host::DrivePickerHostRequest::RequestType::kPickerUi);
+
+  auto widget = std::make_unique<views::Widget>();
+  views::Widget::InitParams params(
+      views::Widget::InitParams::CLIENT_OWNS_WIDGET,
+      views::Widget::InitParams::TYPE_WINDOW_FRAMELESS);
+  params.context = GetContext();
+  widget->Init(std::move(params));
+
+  DrivePickerHostView* view_ptr = view.get();
+  widget->SetContentsView(std::move(view));
+
+  views::WebView* web_view =
+      views::AsViewClass<views::WebView>(view_ptr->view_tracker_.view());
+  ASSERT_TRUE(web_view);
+
+  // Verify that the corner radii were set to 0 (rectangular) on the WebView
+  // holder.
+  EXPECT_TRUE(web_view->holder()->GetNativeViewCornerRadii().IsEmpty());
+
+  // Verify that the corner radii were set to 0 on the view's layer.
+  gfx::RoundedCornersF view_radii = view_ptr->layer()->rounded_corner_radii();
+  EXPECT_TRUE(view_radii.IsEmpty());
+}
+
+TEST_F(DrivePickerHostViewTest, EscapeAcceleratorClosesWidget) {
+  auto view = std::make_unique<DrivePickerHostView>(
+      profile(), browser_window_interface(),
+      drive_picker_host::DrivePickerHostRequest::RequestType::kPickerUi);
+
+  auto widget = std::make_unique<views::Widget>();
+  views::Widget::InitParams params(
+      views::Widget::InitParams::CLIENT_OWNS_WIDGET,
+      views::Widget::InitParams::TYPE_WINDOW_FRAMELESS);
+  params.context = GetContext();
+  widget->Init(std::move(params));
+  views::View* view_ptr = widget->SetContentsView(std::move(view));
+  widget->Show();
+
+  EXPECT_FALSE(widget->IsClosed());
+
+  ui::Accelerator escape_accelerator(ui::VKEY_ESCAPE, ui::EF_NONE);
+  view_ptr->AcceleratorPressed(escape_accelerator);
+
+  EXPECT_TRUE(widget->IsClosed());
+}
+
+TEST_F(DrivePickerHostViewTest, OpenURLFromTab_ForwardsToBrowserWindow) {
+  auto view = std::make_unique<DrivePickerHostView>(
+      profile(), browser_window_interface(),
+      drive_picker_host::DrivePickerHostRequest::RequestType::kConsentDialog);
+
+  const GURL test_url("https://policies.google.com/terms");
+  content::OpenURLParams params =
+      content::OpenURLParams::CreateBrowserInitiated(
+          test_url, WindowOpenDisposition::CURRENT_TAB,
+          ui::PAGE_TRANSITION_LINK);
+
+  EXPECT_CALL(*browser_window_interface(),
+              OpenURL(testing::Field(&content::OpenURLParams::disposition,
+                                     WindowOpenDisposition::NEW_WINDOW),
+                      testing::_));
+
+  view->OpenURLFromTab(view->GetWebContents(), params, base::NullCallback());
+}
+
+TEST_F(DrivePickerHostViewTest, OpenURLFromTab_RejectsPrivilegedSchemes) {
+  auto view = std::make_unique<DrivePickerHostView>(
+      profile(), browser_window_interface(),
+      drive_picker_host::DrivePickerHostRequest::RequestType::kConsentDialog);
+
+  // Privileged schemes like chrome:// and file:// should be blocked.
+  for (const std::string& url_str :
+       {"chrome://settings", "file:///etc/passwd"}) {
+    const GURL privileged_url(url_str);
+    content::OpenURLParams params =
+        content::OpenURLParams::CreateBrowserInitiated(
+            privileged_url, WindowOpenDisposition::CURRENT_TAB,
+            ui::PAGE_TRANSITION_LINK);
+
+    EXPECT_CALL(*browser_window_interface(), OpenURL(testing::_, testing::_))
+        .Times(0);
+
+    content::WebContents* result = view->OpenURLFromTab(
+        view->GetWebContents(), params, base::NullCallback());
+    EXPECT_EQ(result, nullptr);
+
+    // Clear expectations for the next iteration of the loop.
+    testing::Mock::VerifyAndClearExpectations(browser_window_interface());
+  }
+}
+
+TEST_F(DrivePickerHostViewTest, AddNewContents_RejectsPrivilegedSchemes) {
+  auto view = std::make_unique<DrivePickerHostView>(
+      profile(), browser_window_interface(),
+      drive_picker_host::DrivePickerHostRequest::RequestType::kConsentDialog);
+
+  // Privileged schemes like chrome:// and file:// should be blocked.
+  for (const std::string& url_str :
+       {"chrome://settings", "file:///etc/passwd"}) {
+    const GURL privileged_url(url_str);
+    bool was_blocked = false;
+    content::WebContents* result = view->AddNewContents(
+        view->GetWebContents(), nullptr, privileged_url,
+        WindowOpenDisposition::NEW_FOREGROUND_TAB,
+        blink::mojom::WindowFeatures(), /*user_gesture=*/true, &was_blocked);
+
+    EXPECT_EQ(result, nullptr);
+    EXPECT_TRUE(was_blocked);
+  }
 }

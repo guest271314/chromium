@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "base/command_line.h"
+#include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/metrics/field_trial.h"
 #include "base/metrics/histogram_functions.h"
@@ -28,6 +29,7 @@
 #include "components/signin/internal/identity_manager/profile_oauth2_token_service.h"
 #include "components/signin/public/base/avatar_icon_util.h"
 #include "components/signin/public/base/signin_client.h"
+#include "components/signin/public/base/signin_switches.h"
 #include "components/signin/public/identity_manager/account_capabilities.h"
 #include "components/signin/public/identity_manager/account_info.h"
 #include "net/http/http_status_code.h"
@@ -47,6 +49,14 @@ const char kImageFetcherUmaClient[] = "AccountFetcherService";
 // This pref used to be in the AccountTrackerService, hence its string value.
 const char AccountFetcherService::kLastUpdatePref[] =
     "account_tracker_service_last_update";
+
+AccountFetcherService::AccountFetchState::AccountFetchState() = default;
+AccountFetcherService::AccountFetchState::AccountFetchState(
+    AccountFetchState&&) = default;
+AccountFetcherService::AccountFetchState&
+AccountFetcherService::AccountFetchState::operator=(AccountFetchState&&) =
+    default;
+AccountFetcherService::AccountFetchState::~AccountFetchState() = default;
 
 // AccountFetcherService implementation
 AccountFetcherService::AccountFetcherService() = default;
@@ -85,13 +95,6 @@ void AccountFetcherService::Initialize(
   DCHECK(account_fetcher_factory);
   account_fetcher_factory_ = std::move(account_fetcher_factory);
 
-  repeating_timer_ = std::make_unique<signin::PersistentRepeatingTimer>(
-      signin_client_->GetPrefs(), AccountFetcherService::kLastUpdatePref,
-      kRefreshFromTokenServiceDelay,
-      base::BindRepeating(&AccountFetcherService::RefreshAllAccountInfo,
-                          base::Unretained(this),
-                          /*only_fetch_if_invalid=*/false));
-
   // Tokens may have already been loaded and we will not receive a
   // notification-on-registration for |token_service_->AddObserver(this)| few
   // lines above.
@@ -101,11 +104,21 @@ void AccountFetcherService::Initialize(
 }
 
 bool AccountFetcherService::IsAllUserInfoFetched() const {
-  return user_info_requests_.empty();
+  for (const auto& [_, state] : account_fetches_) {
+    if (state.user_info_request) {
+      return false;
+    }
+  }
+  return true;
 }
 
 bool AccountFetcherService::AreAllAccountCapabilitiesFetched() const {
-  return account_capabilities_requests_.empty();
+  for (const auto& [_, state] : account_fetches_) {
+    if (state.capabilities_request) {
+      return false;
+    }
+  }
+  return true;
 }
 
 void AccountFetcherService::OnNetworkInitialized() {
@@ -153,16 +166,44 @@ void AccountFetcherService::RefreshAccountInfoIfStale(
 }
 #endif
 
+void AccountFetcherService::RefreshAllAccountCapabilities() {
+  for (const auto& account : token_service_->GetAccounts()) {
+    // No-op if a capabilities fetch is already in progress for `account`.
+    StartFetchingAccountCapabilities(
+        account_tracker_service_->GetAccountInfo(account).GetCoreAccountInfo());
+  }
+}
+
 void AccountFetcherService::MaybeEnableNetworkFetches() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   if (!network_initialized_ || !refresh_tokens_loaded_) {
     return;
   }
+
   if (!network_fetches_enabled_) {
     network_fetches_enabled_ = true;
-    repeating_timer_->Start();
+    CHECK(!persistent_repeating_timer_);
+    // Schedule a fetch kRefreshFromTokenServiceDelay from the last fetch
+    // time.
+    persistent_repeating_timer_ =
+        std::make_unique<signin::PersistentRepeatingTimer>(
+            signin_client_->GetPrefs(), AccountFetcherService::kLastUpdatePref,
+            kRefreshFromTokenServiceDelay,
+            base::BindRepeating(&AccountFetcherService::RefreshAllAccountInfo,
+                                base::Unretained(this),
+                                /*only_fetch_if_invalid=*/false));
+    persistent_repeating_timer_->Start();
   }
+
   RefreshAllAccountInfo(/*only_fetch_if_invalid=*/true);
+
+  // If kFetchAccountCapabilitiesOnRestart is enabled, fetch account
+  // capabilities unconditionally. UserInfo is intentionally not refreshed here
+  // to avoid increasing the load on the UserInfo endpoint.
+  if (base::FeatureList::IsEnabled(
+          switches::kFetchAccountCapabilitiesOnRestart)) {
+    RefreshAllAccountCapabilities();
+  }
 }
 
 // Starts fetching user information. This is called periodically to refresh.
@@ -171,21 +212,21 @@ void AccountFetcherService::StartFetchingUserInfo(
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   DCHECK(network_fetches_enabled_);
 
-  if (!user_info_requests_.contains(account_id)) {
+  AccountFetchState& state = account_fetches_[account_id];
+  if (!state.user_info_request) {
     DVLOG(1) << "StartFetching " << account_id;
-    user_info_fetch_start_times_[account_id] = base::TimeTicks::Now();
-    user_info_requests_.emplace(
-        account_id,
+    state.user_info_fetch_start_time = base::TimeTicks::Now();
+    state.user_info_request =
         account_fetcher_factory_->CreateAccountInfoFetcher(
             account_id,
             base::BindOnce(&AccountFetcherService::OnUserInfoFetchCompleted,
-                           base::Unretained(this), account_id)));
+                           base::Unretained(this), account_id));
+    state.user_info_request->Start();
   }
 }
 
 void AccountFetcherService::DestroyFetchers(const CoreAccountId& account_id) {
-  user_info_requests_.erase(account_id);
-  account_capabilities_requests_.erase(account_id);
+  account_fetches_.erase(account_id);
 }
 
 void AccountFetcherService::PrepareForFetchingAccountCapabilities() {
@@ -198,16 +239,19 @@ void AccountFetcherService::StartFetchingAccountCapabilities(
   DCHECK(network_fetches_enabled_);
 
   std::unique_ptr<AccountCapabilitiesFetcher>& request =
-      account_capabilities_requests_[core_account_info.account_id];
+      account_fetches_[core_account_info.account_id].capabilities_request;
   if (!request) {
     AccountInfo account_info =
         account_tracker_service_->GetAccountInfo(core_account_info.account_id);
 
     request = account_fetcher_factory_->CreateAccountCapabilitiesFetcher(
         core_account_info,
-        account_info.capabilities.AreAnyCapabilitiesKnown()
+        account_info.GetAccountCapabilities().AreAnyCapabilitiesKnown()
             ? AccountCapabilitiesFetcher::FetchPriority::kBackground
             : AccountCapabilitiesFetcher::FetchPriority::kForeground,
+        base::BindRepeating(
+            &AccountFetcherService::OnSomeAccountCapabilitiesFetched,
+            base::Unretained(this)),
         base::BindOnce(
             &AccountFetcherService::OnAccountCapabilitiesFetchComplete,
             base::Unretained(this)));
@@ -230,8 +274,9 @@ void AccountFetcherService::RefreshAccountInfo(const CoreAccountId& account_id,
 
   AccountInfo info = account_tracker_service_->GetAccountInfo(account_id);
 
-  if (!only_fetch_if_invalid || !info.capabilities.AreAllCapabilitiesKnown()) {
-    StartFetchingAccountCapabilities(info);
+  if (!only_fetch_if_invalid ||
+      !info.GetAccountCapabilities().AreAllCapabilitiesKnown()) {
+    StartFetchingAccountCapabilities(info.GetCoreAccountInfo());
   }
 
   // |only_fetch_if_invalid| is false when the service is due for a timed
@@ -254,25 +299,31 @@ void AccountFetcherService::RefreshAccountInfo(const CoreAccountId& account_id,
 void AccountFetcherService::OnUserInfoFetchCompleted(
     const CoreAccountId& account_id,
     std::optional<AccountInfo> fetched_account_info) {
+  base::UmaHistogramBoolean("Signin.AccountFetcher.AccountInfoFetchSuccess",
+                            fetched_account_info.has_value());
   if (!fetched_account_info) {
     LOG(WARNING) << "Failed to get UserInfo for " << account_id;
-    user_info_fetch_start_times_.erase(account_id);
-    // |account_id| is owned by the request. Cannot be used after this line.
-    user_info_requests_.erase(account_id);
+    if (auto it = account_fetches_.find(account_id);
+        it != account_fetches_.end()) {
+      it->second.user_info_fetch_start_time = base::TimeTicks();
+      it->second.user_info_request.reset();
+    }
     return;
   }
 
   account_tracker_service_->SetAccountInfoFromUserInfo(account_id,
                                                        *fetched_account_info);
-  auto it = user_info_fetch_start_times_.find(account_id);
-  if (it != user_info_fetch_start_times_.end()) {
-    base::UmaHistogramMediumTimes(
-        "Signin.AccountFetcher.AccountUserInfoFetchTime",
-        base::TimeTicks::Now() - it->second);
-    user_info_fetch_start_times_.erase(it);
+  if (auto it = account_fetches_.find(account_id);
+      it != account_fetches_.end()) {
+    if (!it->second.user_info_fetch_start_time.is_null()) {
+      base::UmaHistogramMediumTimes(
+          "Signin.AccountFetcher.AccountUserInfoFetchTime",
+          base::TimeTicks::Now() - it->second.user_info_fetch_start_time);
+      it->second.user_info_fetch_start_time = base::TimeTicks();
+    }
+    it->second.user_info_request.reset();
   }
   FetchAccountImage(account_id);
-  user_info_requests_.erase(account_id);
 }
 
 image_fetcher::ImageFetcherImpl*
@@ -340,15 +391,20 @@ void AccountFetcherService::FetchAccountImage(const CoreAccountId& account_id) {
                                         std::move(callback), std::move(params));
 }
 
-void AccountFetcherService::OnAccountCapabilitiesFetchComplete(
+void AccountFetcherService::OnSomeAccountCapabilitiesFetched(
     const CoreAccountId& account_id,
-    const std::optional<AccountCapabilities>& account_capabilities) {
-  if (account_capabilities.has_value()) {
-    account_tracker_service_->SetAccountCapabilities(account_id,
-                                                     *account_capabilities);
+    const AccountCapabilities& account_capabilities) {
+  account_tracker_service_->SetAccountCapabilities(account_id,
+                                                   account_capabilities);
+}
+
+void AccountFetcherService::OnAccountCapabilitiesFetchComplete(
+    const CoreAccountId& account_id) {
+  if (auto it = account_fetches_.find(account_id);
+      it != account_fetches_.end()) {
+    // |account_id| is owned by the request. Cannot be used after this line.
+    it->second.capabilities_request.reset();
   }
-  // |account_id| is owned by the request. Cannot be used after this line.
-  account_capabilities_requests_.erase(account_id);
 }
 
 void AccountFetcherService::OnRefreshTokenAvailable(

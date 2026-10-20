@@ -32,6 +32,8 @@
 
 #include "third_party/blink/renderer/core/dom/events/event_listener_map.h"
 
+#include <utility>
+
 #include "base/bits.h"
 #include "base/compiler_specific.h"
 #include "base/debug/crash_logging.h"
@@ -109,10 +111,10 @@ Vector<AtomicString> EventListenerMap::EventTypes() const {
 
 static bool AddListenerToVector(EventListenerVector* listener_vector,
                                 EventListener* listener,
-                                const AddEventListenerOptionsResolved* options,
+                                const AddEventListenerOptionsResolved& options,
                                 RegisteredEventListener** registered_listener) {
   for (auto& item : *listener_vector) {
-    if (item->Matches(listener, {options->capture()})) {
+    if (item->Matches(listener, {options.Capture()})) {
       // Duplicate listener.
       return false;
     }
@@ -126,7 +128,7 @@ static bool AddListenerToVector(EventListenerVector* listener_vector,
 
 bool EventListenerMap::Add(const AtomicString& event_type,
                            EventListener* listener,
-                           const AddEventListenerOptionsResolved* options,
+                           const AddEventListenerOptionsResolved& options,
                            RegisteredEventListener** registered_listener) {
   for (const auto& entry : entries_) {
     if (entry.first == event_type) {
@@ -189,6 +191,12 @@ bool EventListenerMap::Remove(
 }
 
 EventListenerVector* EventListenerMap::Find(const AtomicString& event_type) {
+  return const_cast<EventListenerVector*>(
+      std::as_const(*this).Find(event_type));
+}
+
+const EventListenerVector* EventListenerMap::Find(
+    const AtomicString& event_type) const {
   for (const auto& entry : entries_) {
     if (entry.first == event_type)
       return entry.second.Get();
@@ -205,7 +213,7 @@ static void CopyListenersNotCreatedFromMarkupToTarget(
     if (event_listener->Callback()->IsEventHandlerForContentAttribute()) {
       continue;
     }
-    AddEventListenerOptionsResolved* options = event_listener->Options();
+    AddEventListenerOptionsResolved options = event_listener->Options();
     target->addEventListener(event_type, event_listener->Callback(), options);
   }
 }

@@ -12,10 +12,8 @@
 #include <optional>
 #include <vector>
 
-#include "base/atomic_sequence_num.h"
 #include "base/containers/span.h"
 #include "base/memory/raw_ptr.h"
-#include "cc/paint/tone_map_util.h"
 #include "cc/paint/transfer_cache_entry.h"
 #include "third_party/skia/include/core/SkImageInfo.h"
 #include "third_party/skia/include/core/SkRefCnt.h"
@@ -23,7 +21,6 @@
 #include "third_party/skia/include/gpu/ganesh/GrTypes.h"
 #include "third_party/skia/include/private/SkGainmapInfo.h"
 #include "ui/gfx/color_space.h"
-#include "ui/gfx/hdr_metadata.h"
 
 class GrDirectContext;
 class SkColorSpace;
@@ -84,7 +81,6 @@ class CC_PAINT_EXPORT ClientImageTransferCacheEntry final
   ClientImageTransferCacheEntry(
       const Image& image,
       bool needs_mips,
-      const gfx::HDRMetadata& hdr_metadata,
       sk_sp<SkColorSpace> target_color_space = nullptr);
   ClientImageTransferCacheEntry(const Image& image,
                                 const Image& gainmap_image,
@@ -98,7 +94,6 @@ class CC_PAINT_EXPORT ClientImageTransferCacheEntry final
   uint32_t SerializedSize() const final;
   bool Serialize(base::span<uint8_t> data) const final;
 
-  static uint32_t GetNextId() { return s_next_id_.GetNext(); }
   bool IsYuv() const {
     return image_.yuv_plane_config != SkYUVAInfo::PlaneConfig::kUnknown;
   }
@@ -111,7 +106,6 @@ class CC_PAINT_EXPORT ClientImageTransferCacheEntry final
   sk_sp<SkColorSpace> target_color_space_;
   const uint32_t id_;
   uint32_t size_ = 0;
-  static base::AtomicSequenceNumber s_next_id_;
 
   Image image_;
 
@@ -119,9 +113,6 @@ class CC_PAINT_EXPORT ClientImageTransferCacheEntry final
   // be specified.
   std::optional<Image> gainmap_image_;
   std::optional<SkGainmapInfo> gainmap_info_;
-
-  // The HDR metadata for non-gainmap HDR metadata.
-  gfx::HDRMetadata hdr_metadata_;
 };
 
 class CC_PAINT_EXPORT ServiceImageTransferCacheEntry final
@@ -162,8 +153,6 @@ class CC_PAINT_EXPORT ServiceImageTransferCacheEntry final
   size_t num_planes() const { return plane_images_.size(); }
   bool fits_on_gpu() const;
 
-  const gfx::HDRMetadata& hdr_metadata() const { return hdr_metadata_; }
-
  private:
   raw_ptr<GrDirectContext> gr_context_ = nullptr;
   raw_ptr<skgpu::graphite::Recorder> graphite_recorder_ = nullptr;
@@ -173,10 +162,6 @@ class CC_PAINT_EXPORT ServiceImageTransferCacheEntry final
   bool has_gainmap_ = false;
   sk_sp<SkImage> gainmap_image_;
   SkGainmapInfo gainmap_info_;
-
-  // HDR metadata used by global tone map application and (potentially but not
-  // yet) gain map application.
-  gfx::HDRMetadata hdr_metadata_;
 
   // The value of `size_` is computed during deserialization and never updated
   // (even if the size of the image changes due to mipmaps being requested).

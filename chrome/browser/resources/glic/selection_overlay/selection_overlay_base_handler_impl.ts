@@ -1,13 +1,20 @@
 // Copyright 2026 The Chromium Authors
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
+import type {GenericPendingAssociatedReceiver} from '//resources/mojo/mojo/public/mojom/base/generic_pending_associated_receiver.mojom-webui.js';
+import type {UnguessableToken} from '//resources/mojo/mojo/public/mojom/base/unguessable_token.mojom-webui.js';
 import type {BitmapMappedFromTrustedProcess} from '//resources/mojo/skia/public/mojom/bitmap.mojom-webui.js';
 import type {PointF, RectF} from '//resources/mojo/ui/gfx/geometry/mojom/geometry.mojom-webui.js';
 import type {SelectedRegion} from '/lens/selection_overlay_base_handler.js';
 import {RegionSource, SelectionOverlayBaseHandler} from '/lens/selection_overlay_base_handler.js';
+import {calculateCenterRotatedBox} from '/lens/selection_utils.js';
 
 import {BrowserProxyImpl} from './browser_proxy.js';
-import type {SelectedRegionMojoType} from './selection_overlay.mojom-webui.js';
+import type {                                //
+             InteractionOptions,             //
+             SelectedRegionMojoType,         //
+             SuggestedActionsListenerRemote, //
+} from './selection_overlay.mojom-webui.js';
 
 function generateRandomHexId(): string {
   return Array
@@ -62,6 +69,12 @@ export class SelectionOverlayBaseHandlerImpl extends
             });
   }
 
+  addSetInteractionOptionsListener(
+      callback: (options: InteractionOptions) => void): number {
+    return BrowserProxyImpl.getInstance()
+        .callbackRouter.setInteractionOptions.addListener(callback);
+  }
+
   addClearRegionSelectionListener(callback: () => void): number {
     return BrowserProxyImpl.getInstance()
         .callbackRouter.setPostRegionSelections.addListener(
@@ -105,9 +118,13 @@ export class SelectionOverlayBaseHandlerImpl extends
         .callbackRouter.setPostRegionSelections.addListener(
             (regions: SelectedRegionMojoType[]) => {
               callback(regions.map(r => {
+                let rect = r.shape.rect;
+                if (!rect && r.shape.polyline) {
+                  rect = calculateCenterRotatedBox(r.shape.polyline).box;
+                }
                 const tsRegion: SelectedRegion = {
                   id: r.id,
-                  region: r.shape.rect || {x: 0, y: 0, width: 0, height: 0},
+                  region: rect || {x: 0, y: 0, width: 0, height: 0},
                 };
                 if (r.shape.polyline) {
                   tsRegion.polyline = r.shape.polyline;
@@ -144,5 +161,26 @@ export class SelectionOverlayBaseHandlerImpl extends
   deleteRegion(id: string, source: RegionSource): void {
     const proxy = BrowserProxyImpl.getInstance();
     proxy.handler.deleteRegion(id, source === RegionSource.KEYBOARD);
+  }
+
+  submitPrompt(prompt: string): void {
+    const proxy = BrowserProxyImpl.getInstance();
+    proxy.handler.submitPrompt(prompt);
+  }
+
+  getSuggestedActions(listener: SuggestedActionsListenerRemote): void {
+    BrowserProxyImpl.getInstance().handler.getSuggestedActions(listener);
+  }
+
+  executeSuggestedAction(
+      actionId: UnguessableToken,
+      channel: GenericPendingAssociatedReceiver|null): void {
+    const proxy = BrowserProxyImpl.getInstance();
+    proxy.handler.executeSuggestedAction(actionId, channel);
+  }
+
+  dismissOverlay(reason: number): void {
+    const proxy = BrowserProxyImpl.getInstance();
+    proxy.handler.dismissOverlay(reason);
   }
 }

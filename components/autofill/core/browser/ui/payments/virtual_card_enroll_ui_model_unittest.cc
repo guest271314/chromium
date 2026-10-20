@@ -5,7 +5,7 @@
 #include "components/autofill/core/browser/ui/payments/virtual_card_enroll_ui_model.h"
 
 #include "components/autofill/core/browser/payments/test_legal_message_line.h"
-#include "components/autofill/core/browser/test_utils/autofill_test_utils.h"
+#include "components/autofill/core/browser/test_utils/autofill_test_util.h"
 #include "components/strings/grit/components_strings.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -117,7 +117,7 @@ INSTANTIATE_TEST_SUITE_P(
 // Ensures Create() copies the passed-in enrollment fields to the model.
 TEST(VirtualCardEnrollUiModelEnrollmentFieldsTest, CopiesEnrollmentFields) {
   VirtualCardEnrollmentFields enrollment_fields;
-  enrollment_fields.credit_card = autofill::test::GetCreditCard();
+  enrollment_fields.credit_card = test::GetCreditCard();
   enrollment_fields.google_legal_message =
       LegalMessageLines({TestLegalMessageLine("google_legal_message")});
   enrollment_fields.issuer_legal_message =

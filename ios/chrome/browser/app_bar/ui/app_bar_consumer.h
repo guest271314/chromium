@@ -7,18 +7,15 @@
 
 #import <UIKit/UIKit.h>
 
+#import "ios/chrome/browser/app_bar/ui/app_bar_constants.h"
+
 // The types of button for which a menu can be provided.
 typedef NS_ENUM(NSUInteger, AppBarButtonType) {
   AppBarButtonTypeAssistant,
   AppBarButtonTypeNewTab,
   AppBarButtonTypeTabGrid,
-};
-
-// The states for the assistant button.
-enum class AppBarAssistantButtonState {
-  kAsk,
-  kAIM,
-  kAccount,
+  AppBarButtonTypeBack,
+  AppBarButtonTypeForward,
 };
 
 // Consumer of the app bar.
@@ -55,6 +52,14 @@ enum class AppBarAssistantButtonState {
 
 // Sets whether the incognito mode is active.
 - (void)setIncognito:(BOOL)incognito;
+
+// Sets whether the current page is the NTP and if it is the Start Surface.
+- (void)setNTPVisible:(BOOL)ntpVisible isStartSurface:(BOOL)isStartSurface;
+
+// Sets whether forward and back navigations are allowed on the current web
+// page.
+- (void)setCanNavigateBack:(BOOL)canNavigateBack
+                   forward:(BOOL)canNavigateForward;
 
 @end
 

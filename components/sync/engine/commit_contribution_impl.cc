@@ -41,6 +41,10 @@ CommitResponseData BuildCommitResponseData(
   response_data.client_tag_hash = commit_request.entity->client_tag_hash;
   response_data.sequence_number = commit_request.sequence_number;
   response_data.specifics_hash = commit_request.specifics_hash;
+  if (entry_response.has_attachment_modification_time_unix_epoch_millis()) {
+    response_data.attachment_modification_time = ProtoTimeToTime(
+        entry_response.attachment_modification_time_unix_epoch_millis());
+  }
   return response_data;
 }
 
@@ -185,7 +189,6 @@ SyncerError CommitContributionImpl::ProcessCommitResponse(
         has_conflicting_commits = true;
         break;
       case sync_pb::CommitResponse::OVER_QUOTA:
-      case sync_pb::CommitResponse::RETRY:
       case sync_pb::CommitResponse::TRANSIENT_ERROR:
         DLOG(WARNING) << "Entity commit blocked by transient error.";
         has_transient_error_commits = true;
@@ -279,6 +282,10 @@ void CommitContributionImpl::PopulateCommitProto(
     }
     commit_proto->set_ctime(TimeToProtoTime(entity_data.creation_time));
     commit_proto->mutable_specifics()->CopyFrom(entity_data.specifics);
+    if (entity_data.attachment_metadata.has_value()) {
+      *commit_proto->mutable_attachment() =
+          entity_data.attachment_metadata->ToProto();
+    }
   }
 }
 

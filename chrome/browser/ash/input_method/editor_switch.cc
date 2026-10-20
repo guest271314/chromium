@@ -6,6 +6,7 @@
 
 #include <utility>
 
+#include "ash/constants/ash_extension_constants.h"
 #include "ash/constants/ash_features.h"
 #include "ash/constants/ash_pref_names.h"
 #include "ash/constants/generative_ai_country_restrictions.h"
@@ -18,11 +19,7 @@
 #include "chrome/browser/ash/input_method/input_methods_by_language.h"
 #include "chrome/browser/ash/input_method/url_utils.h"
 #include "chrome/browser/ash/profiles/profile_helper.h"
-#include "chrome/browser/browser_process.h"
-#include "chrome/browser/manta/manta_service_factory.h"
-#include "chrome/browser/policy/profile_policy_connector.h"
-#include "chrome/browser/signin/identity_manager_factory.h"
-#include "chrome/common/extensions/extension_constants.h"
+#include "chromeos/ash/components/browser_context_helper/annotated_account_id.h"
 #include "chromeos/ash/components/demo_mode/utils/demo_session_utils.h"
 #include "chromeos/ash/components/editor_menu/public/cpp/editor_consent_status.h"
 #include "chromeos/ash/components/editor_menu/public/cpp/editor_enterprise_policy_enums.h"
@@ -32,7 +29,7 @@
 #include "chromeos/components/kiosk/kiosk_utils.h"
 #include "chromeos/constants/chromeos_features.h"
 #include "chromeos/ui/base/window_properties.h"
-#include "components/language/core/common/locale_util.h"
+#include "components/account_id/account_id.h"
 #include "components/manta/manta_service.h"
 #include "extensions/common/constants.h"
 #include "google_apis/gaia/gaia_auth_util.h"
@@ -103,13 +100,9 @@ std::vector<std::string> AllowedInputMethods() {
 }
 
 manta::FeatureSupportStatus FetchOrcaAccountCapabilityFromMantaService(
-    Profile* profile) {
-  if (manta::MantaService* service =
-          manta::MantaServiceFactory::GetForProfile(profile)) {
-    return service->SupportsOrca();
-  }
-
-  return manta::FeatureSupportStatus::kUnknown;
+    manta::MantaService* service) {
+  return service ? service->SupportsOrca()
+                 : manta::FeatureSupportStatus::kUnknown;
 }
 
 bool IsInputTypeAllowed(ui::TextInputType type) {
@@ -238,21 +231,20 @@ std::vector<std::string> GetAllowedInputMethodEngines() {
 }  // namespace
 
 bool IsAllowedForUseInDemoMode(std::string_view country_code) {
-  return base::FeatureList::IsEnabled(chromeos::features::kOrca) &&
-         base::FeatureList::IsEnabled(
+  return base::FeatureList::IsEnabled(
              chromeos::features::kFeatureManagementOrca) &&
          IsGenerativeAiAllowedForCountry(country_code);
 }
 
 bool IsAllowedForUseInNonDemoMode(Profile* profile,
+                                  manta::MantaService* manta_service,
                                   std::string_view country_code) {
-  if (!base::FeatureList::IsEnabled(chromeos::features::kOrca) ||
-      !base::FeatureList::IsEnabled(
+  if (!base::FeatureList::IsEnabled(
           chromeos::features::kFeatureManagementOrca) ||
       !IsGenerativeAiAllowedForCountry(country_code) ||
       (base::FeatureList::IsEnabled(
            ash::features::kOrcaUseAccountCapabilities) &&
-       FetchOrcaAccountCapabilityFromMantaService(profile) !=
+       FetchOrcaAccountCapabilityFromMantaService(manta_service) !=
            manta::FeatureSupportStatus::kSupported)) {
     return false;
   }
@@ -266,17 +258,13 @@ bool IsAllowedForUseInNonDemoMode(Profile* profile,
          base::FeatureList::IsEnabled(features::kOrcaForManagedUsers);
 }
 
-bool IsSystemInEnglishLanguage() {
-  return g_browser_process != nullptr &&
-         language::ExtractBaseLanguage(
-             g_browser_process->GetApplicationLocale()) == "en";
-}
-
 EditorSwitch::EditorSwitch(Observer* observer,
                            Profile* profile,
+                           manta::MantaService* manta_service,
                            EditorContext* context)
     : observer_(observer),
       profile_(profile),
+      manta_service_(manta_service),
       context_(context),
       ime_allowlist_(GetAllowedInputMethodEngines()),
       last_known_editor_mode_(GetEditorMode()) {}
@@ -298,10 +286,17 @@ bool EditorSwitch::IsAllowedForUse() const {
     return false;
   }
 
+  const AccountId* account_id =
+      ash::AnnotatedAccountId::Get(profile_->GetOriginalProfile());
+  if (account_id &&
+      gaia::IsGoogleInternalAccountEmail(account_id->GetUserEmail())) {
+    return true;
+  }
+
   return base::FeatureList::IsEnabled(ash::features::kOrcaSupportDemoMode) &&
                  ash::demo_mode::IsDeviceInDemoMode()
              ? IsAllowedForUseInDemoMode(context_->active_country_code())
-             : IsAllowedForUseInNonDemoMode(profile_,
+             : IsAllowedForUseInNonDemoMode(profile_, manta_service_,
                                             context_->active_country_code());
 }
 
@@ -345,31 +340,28 @@ EditorOpportunityMode EditorSwitch::GetEditorOpportunityMode() const {
 std::vector<EditorBlockedReason> EditorSwitch::GetBlockedReasons() const {
   std::vector<EditorBlockedReason> blocked_reasons;
 
-  if (base::FeatureList::IsEnabled(chromeos::features::kOrca)) {
-    if (!IsGenerativeAiAllowedForCountry(context_->active_country_code())) {
-      blocked_reasons.push_back(
-          EditorBlockedReason::kBlockedByUnsupportedRegion);
-    }
+  if (!IsGenerativeAiAllowedForCountry(context_->active_country_code())) {
+    blocked_reasons.push_back(EditorBlockedReason::kBlockedByUnsupportedRegion);
+  }
 
-    if (profile_->GetPrefs()->IsManagedPreference(prefs::kOrcaEnabled) &&
-        !profile_->GetPrefs()->GetBoolean(prefs::kOrcaEnabled)) {
-      blocked_reasons.push_back(EditorBlockedReason::kBlockedByPolicy);
-    }
+  if (profile_->GetPrefs()->IsManagedPreference(prefs::kOrcaEnabled) &&
+      !profile_->GetPrefs()->GetBoolean(prefs::kOrcaEnabled)) {
+    blocked_reasons.push_back(EditorBlockedReason::kBlockedByPolicy);
+  }
 
-    if (base::FeatureList::IsEnabled(
-            ash::features::kOrcaUseAccountCapabilities)) {
-      switch (FetchOrcaAccountCapabilityFromMantaService(profile_)) {
-        case manta::FeatureSupportStatus::kUnsupported:
-          blocked_reasons.push_back(
-              EditorBlockedReason::kBlockedByUnsupportedCapability);
-          break;
-        case manta::FeatureSupportStatus::kUnknown:
-          blocked_reasons.push_back(
-              EditorBlockedReason::kBlockedByUnknownCapability);
-          break;
-        case manta::FeatureSupportStatus::kSupported:
-          break;
-      }
+  if (base::FeatureList::IsEnabled(
+          ash::features::kOrcaUseAccountCapabilities)) {
+    switch (FetchOrcaAccountCapabilityFromMantaService(manta_service_)) {
+      case manta::FeatureSupportStatus::kUnsupported:
+        blocked_reasons.push_back(
+            EditorBlockedReason::kBlockedByUnsupportedCapability);
+        break;
+      case manta::FeatureSupportStatus::kUnknown:
+        blocked_reasons.push_back(
+            EditorBlockedReason::kBlockedByUnknownCapability);
+        break;
+      case manta::FeatureSupportStatus::kSupported:
+        break;
     }
   }
 
@@ -448,9 +440,7 @@ bool EditorSwitch::CanBeTriggered() const {
          // user pref value
          profile_->GetPrefs()->GetBoolean(prefs::kOrcaEnabled) &&
          context_->is_selection_valid() &&
-         context_->selected_text_length() <= kTextLengthMaxLimit &&
-         (!base::FeatureList::IsEnabled(features::kOrcaOnlyInEnglishLocales) ||
-          IsSystemInEnglishLanguage());
+         context_->selected_text_length() <= kTextLengthMaxLimit;
 }
 
 chromeos::editor_menu::EditorMode EditorSwitch::GetEditorMode() const {

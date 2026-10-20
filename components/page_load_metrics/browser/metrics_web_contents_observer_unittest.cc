@@ -7,7 +7,7 @@
 #include <memory>
 #include <utility>
 
-#include "base/byte_count.h"
+#include "base/byte_size.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/process/kill.h"
@@ -71,7 +71,7 @@ blink::mojom::ResourceLoadInfoPtr CreateResourceLoadInfo(
   resource_load_info->original_url = url;
   resource_load_info->request_destination = request_destination;
   resource_load_info->was_cached = false;
-  resource_load_info->raw_body_bytes = base::ByteCount(0);
+  resource_load_info->raw_body_bytes = base::ByteSize(0);
   resource_load_info->net_error = net::OK;
   resource_load_info->network_info = blink::mojom::CommonNetworkInfo::New();
   resource_load_info->network_info->remote_endpoint = net::IPEndPoint();
@@ -135,7 +135,8 @@ class MetricsWebContentsObserverTest
         std::vector<mojom::EventTimingPtr>(), std::nullopt,
         std::vector<mojom::SoftNavigationMetricsPtr>(),
         std::vector<mojom::LargestContentfulPaintTimingPtr>(),
-        std::vector<mojom::CustomUserTimingMarkPtr>());
+        std::vector<mojom::CustomUserTimingMarkPtr>(),
+        mojom::FontLoadingMetricsPtr());
   }
 
   void SimulateTimingUpdate(const mojom::PageLoadTiming& timing,
@@ -163,7 +164,8 @@ class MetricsWebContentsObserverTest
         std::vector<mojom::EventTimingPtr>(), std::nullopt,
         std::vector<mojom::SoftNavigationMetricsPtr>(),
         std::vector<mojom::LargestContentfulPaintTimingPtr>(),
-        std::vector<mojom::CustomUserTimingMarkPtr>());
+        std::vector<mojom::CustomUserTimingMarkPtr>(),
+        mojom::FontLoadingMetricsPtr());
   }
 
   void SimulateCustomUserTimingUpdate(
@@ -269,6 +271,10 @@ class MetricsWebContentsObserverTest
 
   const std::vector<ExtraRequestCompleteInfo>& loaded_resources() const {
     return embedder_interface_->loaded_resources();
+  }
+
+  const std::vector<MemoryResourceLoadInfo>& memory_cached_resources() const {
+    return embedder_interface_->memory_cached_resources();
   }
 
  protected:
@@ -1017,7 +1023,7 @@ TEST_P(MetricsWebContentsObserverTest, OnLoadedResource_MainFrame) {
   const auto request_id = navigation_simulator->GetGlobalRequestID();
 
   observer()->ResourceLoadComplete(
-      web_contents()->GetPrimaryMainFrame(), request_id,
+      web_contents()->GetPrimaryMainFrame(), request_id, main_resource_url,
       *CreateResourceLoadInfo(main_resource_url,
                               network::mojom::RequestDestination::kFrame));
   EXPECT_EQ(1u, loaded_resources().size());
@@ -1029,7 +1035,7 @@ TEST_P(MetricsWebContentsObserverTest, OnLoadedResource_MainFrame) {
   // Deliver a second main frame resource. This one should be ignored, since the
   // specified |request_id| is no longer associated with any tracked page loads.
   observer()->ResourceLoadComplete(
-      web_contents()->GetPrimaryMainFrame(), request_id,
+      web_contents()->GetPrimaryMainFrame(), request_id, main_resource_url,
       *CreateResourceLoadInfo(main_resource_url,
                               network::mojom::RequestDestination::kFrame));
   EXPECT_EQ(1u, loaded_resources().size());
@@ -1043,6 +1049,7 @@ TEST_P(MetricsWebContentsObserverTest, OnLoadedResource_Subresource) {
   GURL loaded_resource_url("http://www.other.com/");
   observer()->ResourceLoadComplete(
       web_contents()->GetPrimaryMainFrame(), content::GlobalRequestID(),
+      loaded_resource_url,
       *CreateResourceLoadInfo(loaded_resource_url,
                               network::mojom::RequestDestination::kScript));
 
@@ -1063,12 +1070,150 @@ TEST_P(MetricsWebContentsObserverTest,
       web_contents(), GURL(kDefaultTestUrl2));
 
   DCHECK(!old_rfh->IsActive());
+  GURL other_url("http://www.other.com/");
   observer()->ResourceLoadComplete(
-      old_rfh, content::GlobalRequestID(),
-      *CreateResourceLoadInfo(GURL("http://www.other.com/"),
+      old_rfh, content::GlobalRequestID(), other_url,
+      *CreateResourceLoadInfo(other_url,
                               network::mojom::RequestDestination::kScript));
 
   EXPECT_TRUE(loaded_resources().empty());
+}
+
+TEST_P(MetricsWebContentsObserverTest, DidLoadResourceFromMemoryCache) {
+  content::NavigationSimulator::NavigateAndCommitFromBrowser(
+      web_contents(), GURL(kDefaultTestUrl));
+  GURL memory_cached_url("https://www.google.com/test.js");
+  observer()->DidLoadResourceFromMemoryCache(
+      web_contents()->GetPrimaryMainFrame(), memory_cached_url,
+      "application/javascript", network::mojom::RequestDestination::kScript);
+
+  ASSERT_EQ(1u, memory_cached_resources().size());
+  EXPECT_EQ(url::SchemeHostPort(memory_cached_url),
+            memory_cached_resources().back().url);
+  EXPECT_EQ(network::mojom::RequestDestination::kScript,
+            memory_cached_resources().back().request_destination);
+  EXPECT_EQ(web_contents()->GetPrimaryMainFrame()->GetFrameTreeNodeId(),
+            memory_cached_resources().back().frame_tree_node_id);
+}
+
+TEST_P(MetricsWebContentsObserverTest,
+       DidLoadResourceFromMemoryCache_ResourceFromOtherRFHIgnored) {
+  content::NavigationSimulator::NavigateAndCommitFromBrowser(
+      web_contents(), GURL(kDefaultTestUrl));
+
+  content::RenderFrameHost* old_rfh = web_contents()->GetPrimaryMainFrame();
+  content::LeaveInPendingDeletionState(old_rfh);
+
+  content::NavigationSimulator::NavigateAndCommitFromBrowser(
+      web_contents(), GURL(kDefaultTestUrl2));
+
+  ASSERT_FALSE(old_rfh->IsActive());
+  GURL other_url("https://www.google.com/test.js");
+  observer()->DidLoadResourceFromMemoryCache(
+      old_rfh, other_url, "application/javascript",
+      network::mojom::RequestDestination::kScript);
+
+  EXPECT_TRUE(memory_cached_resources().empty());
+}
+
+TEST_P(MetricsWebContentsObserverTest,
+       DidLoadResourceFromMemoryCache_Subframe) {
+  content::NavigationSimulator::NavigateAndCommitFromBrowser(
+      web_contents(), GURL(kDefaultTestUrl));
+
+  content::RenderFrameHostTester* rfh_tester =
+      content::RenderFrameHostTester::For(main_rfh());
+  content::RenderFrameHost* subframe = rfh_tester->AppendChild("subframe");
+  subframe = content::NavigationSimulator::NavigateAndCommitFromDocument(
+      GURL(kDefaultTestUrl2), subframe);
+
+  GURL memory_cached_url("https://www.google.com/subframe_script.js");
+  observer()->DidLoadResourceFromMemoryCache(
+      subframe, memory_cached_url, "application/javascript",
+      network::mojom::RequestDestination::kScript);
+
+  ASSERT_EQ(1u, memory_cached_resources().size());
+  EXPECT_EQ(url::SchemeHostPort(memory_cached_url),
+            memory_cached_resources().back().url);
+  EXPECT_EQ(network::mojom::RequestDestination::kScript,
+            memory_cached_resources().back().request_destination);
+  EXPECT_EQ(subframe->GetFrameTreeNodeId(),
+            memory_cached_resources().back().frame_tree_node_id);
+}
+
+TEST_P(MetricsWebContentsObserverTest,
+       DidLoadResourceFromMemoryCache_UntrackedSchemeIgnored) {
+  content::NavigationSimulator::NavigateAndCommitFromBrowser(
+      web_contents(), GURL(kDefaultTestUrl));
+
+  GURL untracked_url("custom://www.example.com/script.js");
+  observer()->DidLoadResourceFromMemoryCache(
+      web_contents()->GetPrimaryMainFrame(), untracked_url,
+      "application/javascript", network::mojom::RequestDestination::kScript);
+
+  EXPECT_TRUE(memory_cached_resources().empty());
+}
+
+TEST_P(MetricsWebContentsObserverTest,
+       DidLoadResourceFromMemoryCache_InvalidUrlIgnored) {
+  content::NavigationSimulator::NavigateAndCommitFromBrowser(
+      web_contents(), GURL(kDefaultTestUrl));
+
+  // Empty GURL.
+  GURL empty_url;
+  ASSERT_FALSE(empty_url.is_valid());
+  observer()->DidLoadResourceFromMemoryCache(
+      web_contents()->GetPrimaryMainFrame(), empty_url,
+      "application/javascript", network::mojom::RequestDestination::kScript);
+
+  // Invalid GURL.
+  GURL invalid_url("http://google.com:12three45");
+  ASSERT_FALSE(invalid_url.is_valid());
+  observer()->DidLoadResourceFromMemoryCache(
+      web_contents()->GetPrimaryMainFrame(), invalid_url,
+      "application/javascript", network::mojom::RequestDestination::kScript);
+
+  EXPECT_TRUE(memory_cached_resources().empty());
+}
+
+TEST_P(MetricsWebContentsObserverTest,
+       DidLoadResourceFromMemoryCache_MultipleSequentialResources) {
+  content::NavigationSimulator::NavigateAndCommitFromBrowser(
+      web_contents(), GURL(kDefaultTestUrl));
+
+  GURL script_url("https://www.google.com/test.js");
+  observer()->DidLoadResourceFromMemoryCache(
+      web_contents()->GetPrimaryMainFrame(), script_url,
+      "application/javascript", network::mojom::RequestDestination::kScript);
+
+  GURL style_url("https://www.google.com/test.css");
+  observer()->DidLoadResourceFromMemoryCache(
+      web_contents()->GetPrimaryMainFrame(), style_url, "text/css",
+      network::mojom::RequestDestination::kStyle);
+
+  GURL image_url("https://www.google.com/test.png");
+  observer()->DidLoadResourceFromMemoryCache(
+      web_contents()->GetPrimaryMainFrame(), image_url, "image/png",
+      network::mojom::RequestDestination::kImage);
+
+  GURL font_url("https://www.google.com/test.woff2");
+  observer()->DidLoadResourceFromMemoryCache(
+      web_contents()->GetPrimaryMainFrame(), font_url, "font/woff2",
+      network::mojom::RequestDestination::kFont);
+
+  ASSERT_EQ(4u, memory_cached_resources().size());
+  EXPECT_EQ(url::SchemeHostPort(script_url), memory_cached_resources()[0].url);
+  EXPECT_EQ(network::mojom::RequestDestination::kScript,
+            memory_cached_resources()[0].request_destination);
+  EXPECT_EQ(url::SchemeHostPort(style_url), memory_cached_resources()[1].url);
+  EXPECT_EQ(network::mojom::RequestDestination::kStyle,
+            memory_cached_resources()[1].request_destination);
+  EXPECT_EQ(url::SchemeHostPort(image_url), memory_cached_resources()[2].url);
+  EXPECT_EQ(network::mojom::RequestDestination::kImage,
+            memory_cached_resources()[2].request_destination);
+  EXPECT_EQ(url::SchemeHostPort(font_url), memory_cached_resources()[3].url);
+  EXPECT_EQ(network::mojom::RequestDestination::kFont,
+            memory_cached_resources()[3].request_destination);
 }
 
 TEST_P(MetricsWebContentsObserverTest, RecordFeatureUsage) {
@@ -1119,6 +1264,25 @@ TEST_P(MetricsWebContentsObserverTest, CustomUserTiming) {
   ASSERT_EQ(1, CountUpdatedCustomUserTimingReported());
   EXPECT_TRUE(custom_timing.Equals(*updated_custom_user_timings().back()));
   CheckNoErrorEvents();
+}
+
+TEST_P(MetricsWebContentsObserverTest, CustomUserTimingNoTracker) {
+  NavigateToUntrackedUrl();
+  content::RenderFrameHost* rfh = web_contents()->GetPrimaryMainFrame();
+  mojom::CustomUserTimingMark custom_timing;
+  custom_timing.mark_name = "fake_custom_mark";
+  custom_timing.start_time = base::Milliseconds(1000);
+
+  // When there is no tracker, updates should be dropped immediately rather than
+  // buffered.
+  SimulateCustomUserTimingUpdate(custom_timing, rfh);
+  EXPECT_EQ(0, CountUpdatedCustomUserTimingReported());
+
+  // Navigate to a tracked URL and verify that the dropped timing is NOT
+  // flushed.
+  content::NavigationSimulator::NavigateAndCommitFromBrowser(
+      web_contents(), GURL(kDefaultTestUrl));
+  EXPECT_EQ(0, CountUpdatedCustomUserTimingReported());
 }
 
 class MetricsWebContentsObserverBackForwardCacheTest

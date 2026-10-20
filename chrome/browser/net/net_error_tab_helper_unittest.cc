@@ -7,8 +7,13 @@
 #include <memory>
 
 #include "base/memory/raw_ptr.h"
+#include "base/test/bind.h"
+#include "chrome/common/pref_names.h"
 #include "chrome/test/base/chrome_render_view_host_test_harness.h"
+#include "chrome/test/base/testing_profile.h"
 #include "components/error_page/common/net_error_info.h"
+#include "components/prefs/pref_service.h"
+#include "components/tabs/public/mock_tab_interface.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/test/mock_navigation_handle.h"
 #include "content/public/test/navigation_simulator.h"
@@ -25,8 +30,9 @@ using error_page::DnsProbeStatus;
 
 class TestNetErrorTabHelper : public NetErrorTabHelper {
  public:
-  explicit TestNetErrorTabHelper(content::WebContents* web_contents)
-      : NetErrorTabHelper(web_contents),
+  TestNetErrorTabHelper(tabs::TabInterface& tab,
+                        content::WebContents* web_contents)
+      : NetErrorTabHelper(tab, web_contents),
         mock_probe_running_(false),
         last_status_sent_(error_page::DNS_PROBE_MAX),
         mock_sent_count_(0),
@@ -69,11 +75,17 @@ class TestNetErrorTabHelper : public NetErrorTabHelper {
   void SetCurrentTargetFrame(content::RenderFrameHost* render_frame_host) {
     network_diagnostics_receivers_for_testing().SetCurrentTargetFrameForTesting(
         render_frame_host);
+    network_easter_egg_receivers_for_testing().SetCurrentTargetFrameForTesting(
+        render_frame_host);
     net_error_page_support_for_testing().SetCurrentTargetFrameForTesting(
         render_frame_host);
   }
 
   chrome::mojom::NetworkDiagnostics* network_diagnostics_interface() {
+    return this;
+  }
+
+  chrome::mojom::NetworkEasterEgg* network_easter_egg_interface() {
     return this;
   }
 
@@ -130,7 +142,7 @@ class NetErrorTabHelperTest : public ChromeRenderViewHostTestHarness {
     subframe_ = content::RenderFrameHostTester::For(main_rfh())
                     ->AppendChild("subframe");
 
-    tab_helper_ = std::make_unique<TestNetErrorTabHelper>(web_contents());
+    tab_helper_ = std::make_unique<TestNetErrorTabHelper>(tab_, web_contents());
     NetErrorTabHelper::set_state_for_testing(
         NetErrorTabHelper::TESTING_FORCE_ENABLED);
   }
@@ -188,6 +200,7 @@ class NetErrorTabHelperTest : public ChromeRenderViewHostTestHarness {
 
  private:
   raw_ptr<content::RenderFrameHost, DanglingUntriaged> subframe_;
+  tabs::MockTabInterface tab_;
   std::unique_ptr<TestNetErrorTabHelper> tab_helper_;
   GURL bogus_url_;
 };
@@ -372,10 +385,48 @@ TEST_F(NetErrorTabHelperTest, NoDiagnosticsForNonHttpSchemes) {
   }
 }
 
+TEST_F(NetErrorTabHelperTest, EasterEggHighScoreOnErrorPage) {
+  PrefService* prefs = profile()->GetPrefs();
+  EXPECT_EQ(0, prefs->GetInteger(prefs::kNetworkEasterEggHighScore));
+
+  LoadURL(GURL("http://somewhere:123/"), /*succeeded=*/false);
+  tab_helper()->SetCurrentTargetFrame(web_contents()->GetPrimaryMainFrame());
+
+  tab_helper()->network_easter_egg_interface()->UpdateHighScore(1000);
+  EXPECT_EQ(1000, prefs->GetInteger(prefs::kNetworkEasterEggHighScore));
+
+  uint32_t high_score = 0;
+  tab_helper()->network_easter_egg_interface()->GetHighScore(
+      base::BindLambdaForTesting([&](uint32_t score) { high_score = score; }));
+  EXPECT_EQ(1000u, high_score);
+
+  tab_helper()->network_easter_egg_interface()->ResetHighScore();
+  EXPECT_EQ(0, prefs->GetInteger(prefs::kNetworkEasterEggHighScore));
+}
+
+TEST_F(NetErrorTabHelperTest, NoEasterEggHighScoreOnNonErrorPage) {
+  PrefService* prefs = profile()->GetPrefs();
+  prefs->SetInteger(prefs::kNetworkEasterEggHighScore, 500);
+
+  LoadURL(GURL("http://somewhere:123/"), /*succeeded=*/true);
+  tab_helper()->SetCurrentTargetFrame(web_contents()->GetPrimaryMainFrame());
+
+  tab_helper()->network_easter_egg_interface()->UpdateHighScore(1000);
+  EXPECT_EQ(500, prefs->GetInteger(prefs::kNetworkEasterEggHighScore));
+
+  uint32_t high_score = 1;
+  tab_helper()->network_easter_egg_interface()->GetHighScore(
+      base::BindLambdaForTesting([&](uint32_t score) { high_score = score; }));
+  EXPECT_EQ(0u, high_score);
+
+  tab_helper()->network_easter_egg_interface()->ResetHighScore();
+  EXPECT_EQ(500, prefs->GetInteger(prefs::kNetworkEasterEggHighScore));
+}
+
 #if BUILDFLAG(ENABLE_OFFLINE_PAGES)
 TEST_F(NetErrorTabHelperTest, DownloadPageLater) {
   GURL url("http://somewhere:123/");
-  LoadURL(url, false /*succeeded*/);
+  LoadURL(url, /*succeeded=*/false);
   tab_helper()->SetCurrentTargetFrame(web_contents()->GetPrimaryMainFrame());
   tab_helper()->DownloadPageLater();
   EXPECT_EQ(url, tab_helper()->download_page_later_url());
@@ -384,7 +435,7 @@ TEST_F(NetErrorTabHelperTest, DownloadPageLater) {
 
 TEST_F(NetErrorTabHelperTest, NoDownloadPageLaterOnNonErrorPage) {
   GURL url("http://somewhere:123/");
-  LoadURL(url, true /*succeeded*/);
+  LoadURL(url, /*succeeded=*/true);
   tab_helper()->SetCurrentTargetFrame(web_contents()->GetPrimaryMainFrame());
   tab_helper()->DownloadPageLater();
   EXPECT_EQ(0, tab_helper()->times_download_page_later_invoked());

@@ -13,9 +13,6 @@
 #include "chrome/browser/ui/webui_browser/webui_browser.h"
 #include "chrome/browser/ui/webui_browser/webui_browser_window.h"
 #include "chrome/browser/ui/window_feature_controller/window_feature_controller.h"
-#include "chrome/grit/branded_strings.h"
-#include "components/safe_browsing/core/browser/password_protection/metrics_util.h"
-#include "ui/base/l10n/l10n_util.h"
 #include "ui/views/widget/widget.h"
 
 #if defined(USE_AURA)
@@ -26,15 +23,17 @@
 
 #if BUILDFLAG(IS_CHROMEOS)
 #include "chrome/browser/ui/views/frame/browser_view_ash.h"
+#include "chrome/browser/ui/window_feature_controller/window_feature_controller.h"
 #include "chromeos/components/kiosk/kiosk_utils.h"
 #endif
 
 // static
 std::unique_ptr<BrowserWindow, BrowserWindowDeleter>
-BrowserWindow::CreateBrowserWindow(Browser* browser,
+BrowserWindow::CreateBrowserWindow(BrowserWindowInterface* browser,
                                    bool user_gesture,
                                    bool in_tab_dragging) {
-  if (webui_browser::IsWebUIBrowserEnabled() && browser->is_type_normal()) {
+  if (webui_browser::IsWebUIBrowserEnabled() &&
+      browser->GetType() == BrowserWindowInterface::Type::TYPE_NORMAL) {
     return std::unique_ptr<BrowserWindow, BrowserWindowDeleter>(
         new WebUIBrowserWindow(browser));
   }
@@ -83,4 +82,39 @@ BrowserWindow::CreateBrowserWindow(Browser* browser,
 #endif
 
   return std::unique_ptr<BrowserWindow, BrowserWindowDeleter>(view);
+}
+
+// static
+const BrowserWindow* BrowserWindow::FromBrowser(
+    const BrowserWindowInterface* browser) {
+  // See https://crbug.com/496674143 for the umbrella effort to remove
+  // Browser::window() in favor of this helper.
+  if (!browser) {
+    return nullptr;
+  }
+  // The two production subclasses (BrowserView, WebUIBrowserWindow) each
+  // register themselves under the BrowserWidget's NativeWindow properties, so
+  // for any given Browser at most one of these lookups will succeed.
+  if (auto* view = BrowserView::GetBrowserViewForBrowser(browser)) {
+    return view;
+  }
+  if (auto* webui = WebUIBrowserWindow::FromBrowser(browser)) {
+    return webui;
+  }
+  // Fallback for BrowserWindow implementations that are not reachable through
+  // the NativeWindow property table (notably TestBrowserWindow in unit tests,
+  // and during window teardown, when the NativeWindow lookups above no longer
+  // resolve but callers may still need the window - e.g. to save workspace
+  // state or update commands as tabs close). The window returned by
+  // GetWindow() is always a BrowserWindow, so the downcast is safe.
+  return static_cast<const BrowserWindow*>(browser->GetWindow());
+}
+
+// static
+BrowserWindow* BrowserWindow::FromBrowser(BrowserWindowInterface* browser) {
+  // Implement the non-const overload in terms of the const one and cast the
+  // constness back off. Safe because the caller supplied a non-const browser.
+  // See //styleguide/c++/const.md#classes-of-const-in_correctness.
+  return const_cast<BrowserWindow*>(
+      FromBrowser(static_cast<const BrowserWindowInterface*>(browser)));
 }

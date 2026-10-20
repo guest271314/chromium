@@ -82,7 +82,8 @@ StoredCredential GetForm(const std::string& domain,
   StoredCredential cred;
   cred.signon_realm = domain;
   cred.url = GURL(domain);
-  cred.password_value = ASCIIToUTF16(password);
+  cred.password_value =
+      password_manager::PasswordString(ASCIIToUTF16(password));
   cred.username_value = ASCIIToUTF16(username);
   cred.in_store = store;
   return cred;
@@ -228,6 +229,36 @@ TEST_F(PasswordReuseDetectorTest, NoPSLMatchReuseEvent) {
                        Matches(NO_GAIA_OR_ENTERPRISE_REUSE),
                        UnorderedElementsAreArray(credentials), 6, _, _));
   reuse_detector.CheckReuse(u"abcdefghi", "https://b.appspot.com",
+                            &mockConsumer);
+}
+
+TEST_F(PasswordReuseDetectorTest, EmptyRegistryControlledDomainReuseEvent) {
+  PasswordReuseDetectorImpl reuse_detector;
+  // Store a credential for a local IP address.
+  std::vector<StoredCredential> credentials_with_empty_registry = GetForms({
+      {"http://192.168.1.1/", "routerAdmin", "router_secret_password"},
+  });
+  reuse_detector.OnGetPasswordStoreResults(
+      std::move(credentials_with_empty_registry));
+  MockPasswordReuseDetectorConsumer mockConsumer;
+
+  // Typing the password on the same IP address should not raise a reuse event.
+  EXPECT_CALL(mockConsumer, OnReuseCheckDone(false, _, _, _, _, _, _));
+  reuse_detector.CheckReuse(u"router_secret_password", "http://192.168.1.1/",
+                            &mockConsumer);
+  testing::Mock::VerifyAndClearExpectations(&mockConsumer);
+
+  // Typing the password on a different IP address or intranet host should raise
+  // a reuse event.
+  const std::vector<MatchingReusedCredential> expected_credentials = {
+      {"http://192.168.1.1/", GURL("http://192.168.1.1/"), u"routerAdmin",
+       PasswordForm::Store::kProfileStore}};
+  EXPECT_CALL(mockConsumer,
+              OnReuseCheckDone(true, strlen("router_secret_password"),
+                               Matches(NO_GAIA_OR_ENTERPRISE_REUSE),
+                               UnorderedElementsAreArray(expected_credentials),
+                               1, _, _));
+  reuse_detector.CheckReuse(u"router_secret_password", "http://192.168.1.100/",
                             &mockConsumer);
 }
 
@@ -624,7 +655,8 @@ TEST_F(PasswordReuseDetectorTest,
   account_store_form.signon_realm = "https://twitter.com";
   account_store_form.url = GURL(account_store_form.signon_realm);
   account_store_form.username_value = u"twitterUsername";
-  account_store_form.password_value = u"saved_password";
+  account_store_form.password_value =
+      password_manager::PasswordString(u"saved_password");
   account_store_form.in_store = PasswordForm::Store::kAccountStore;
   std::vector<StoredCredential> account_store_forms;
   account_store_forms.push_back(std::move(account_store_form));

@@ -1,10 +1,18 @@
-#include "build/build_config.h"
+// Copyright 2026 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
 #include "third_party/blink/renderer/platform/audio/audio_array.h"
-#include "third_party/blink/renderer/platform/audio/audio_bus.h"
-#include "third_party/blink/public/platform/web_audio_bus.h"
-#include "base/memory/aligned_memory.h"
-#include "testing/gtest/include/gtest/gtest.h"
+
 #include <limits>
+
+#include "base/memory/aligned_memory.h"
+#include "base/test/gtest_util.h"
+#include "build/build_config.h"
+#include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/blink/public/platform/web_audio_bus.h"
+#include "third_party/blink/renderer/platform/audio/audio_bus.h"
+#include "third_party/blink/renderer/platform/audio/audio_utilities.h"
 
 namespace blink {
 
@@ -57,6 +65,38 @@ TEST(AudioBusTest, HandleOOM) {
   // TryCreate should return nullptr instead of crashing.
   scoped_refptr<AudioBus> bus = AudioBus::TryCreate(2, 1ULL << 31);
   EXPECT_EQ(bus, nullptr);
+}
+
+TEST(AudioBusTest, TryCreateTooManyChannels) {
+  scoped_refptr<AudioBus> bus = AudioBus::TryCreate(33, 128);
+  EXPECT_EQ(bus, nullptr);
+}
+
+TEST(AudioBusDeathTest, CreateTooManyChannels) {
+  EXPECT_CHECK_DEATH(AudioBus::Create(33, 128, /*allocate=*/true));
+  EXPECT_CHECK_DEATH(AudioBus::Create(33, 128, /*allocate=*/false));
+}
+
+TEST(AudioBusTest, TryCreateBySampleRateConvertingInvalidSampleRate) {
+  scoped_refptr<AudioBus> bus = AudioBus::Create(1, 100);
+
+  // Set an invalid sample rate (too low). This should fail with nullptr.
+  bus->SetSampleRate(audio_utilities::MinAudioBufferSampleRate() - 1);
+  EXPECT_EQ(
+      AudioBus::TryCreateBySampleRateConverting(bus.get(), false, 48000),
+      nullptr);
+
+  // Set an invalid sample rate (too high). This should fail with nullptr.
+  bus->SetSampleRate(audio_utilities::MaxAudioBufferSampleRate() + 1);
+  EXPECT_EQ(
+      AudioBus::TryCreateBySampleRateConverting(bus.get(), false, 48000),
+      nullptr);
+
+  // Set a valid sample rate. This should succeed and return a valid pointer.
+  bus->SetSampleRate(44100);
+  EXPECT_NE(
+      AudioBus::TryCreateBySampleRateConverting(bus.get(), false, 48000),
+      nullptr);
 }
 
 TEST(WebAudioBusTest, SafeCast) {

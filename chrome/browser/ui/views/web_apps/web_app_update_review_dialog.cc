@@ -6,6 +6,7 @@
 
 #include <optional>
 
+#include "base/check_deref.h"
 #include "base/functional/callback_helpers.h"
 #include "base/memory/weak_ptr.h"
 #include "base/metrics/histogram_functions.h"
@@ -17,8 +18,8 @@
 #include "chrome/browser/picture_in_picture/picture_in_picture_window_manager.h"
 #include "chrome/browser/picture_in_picture/scoped_picture_in_picture_occlusion_observation.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_window.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/views/chrome_layout_provider.h"
 #include "chrome/browser/ui/views/extensions/security_dialog_tracker.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
@@ -134,16 +135,18 @@ class UpdateDialogDelegate : public ui::DialogModelDelegate,
  public:
   UpdateDialogDelegate(const webapps::AppId& app_id,
                        UpdateReviewDialogCallback callback,
-                       Browser& browser)
+                       BrowserWindowInterface& browser)
       : app_id_(app_id), callback_(std::move(callback)), browser_(browser) {
     install_manager_observation_.Observe(
-        &WebAppProvider::GetForWebApps(browser_->profile())->install_manager());
-    browser_->GetBrowserView().SetProperty(kIsPwaUpdateDialogShowingKey, true);
+        &WebAppProvider::GetForWebApps(browser_->GetProfile())
+             ->install_manager());
+    CHECK_DEREF(BrowserView::GetBrowserViewForBrowser(&browser_.get()))
+        .SetProperty(kIsPwaUpdateDialogShowingKey, true);
   }
   ~UpdateDialogDelegate() override {
-    if (browser_->window()) {
-      browser_->GetBrowserView().SetProperty(kIsPwaUpdateDialogShowingKey,
-                                             false);
+    if (browser_->GetWindow()) {
+      CHECK_DEREF(BrowserView::GetBrowserViewForBrowser(&browser_.get()))
+          .SetProperty(kIsPwaUpdateDialogShowingKey, false);
     }
   }
 
@@ -199,7 +202,7 @@ class UpdateDialogDelegate : public ui::DialogModelDelegate,
     // If a picture-in-picture window is occluding the dialog, force it to close
     // to prevent spoofing.
     if (occluded) {
-      PictureInPictureWindowManager::GetInstance()->ExitPictureInPicture();
+      PictureInPictureWindowManager::ExitPictureInPictureSoon();
     }
   }
 
@@ -231,7 +234,7 @@ class UpdateDialogDelegate : public ui::DialogModelDelegate,
  private:
   const webapps::AppId app_id_;
   UpdateReviewDialogCallback callback_;
-  raw_ref<Browser> browser_;
+  raw_ref<BrowserWindowInterface> browser_;
   base::ScopedObservation<views::Widget, views::WidgetObserver>
       widget_observation_{this};
   base::ScopedObservation<WebAppInstallManager, WebAppInstallManagerObserver>
@@ -250,13 +253,14 @@ DEFINE_ELEMENT_IDENTIFIER_VALUE(kWebAppUpdateReviewIgnoreButton);
 
 void ShowWebAppReviewUpdateDialog(const webapps::AppId& app_id,
                                   const WebAppIdentityUpdate& update,
-                                  Browser* browser,
+                                  BrowserWindowInterface* browser,
                                   base::TimeTicks start_time,
                                   UpdateReviewDialogCallback callback) {
   CHECK(!callback.is_null());
 
   // Abort if a review update dialog is already being shown in this browser.
-  if (browser->GetBrowserView().GetProperty(kIsPwaUpdateDialogShowingKey)) {
+  if (CHECK_DEREF(BrowserView::GetBrowserViewForBrowser(browser))
+          .GetProperty(kIsPwaUpdateDialogShowingKey)) {
     std::move(callback).Run(WebAppIdentityUpdateResult::kUnexpectedError);
     return;
   }
@@ -264,7 +268,7 @@ void ShowWebAppReviewUpdateDialog(const webapps::AppId& app_id,
   // Some combination of changes should be existing if the update dialog needs
   // to be triggered.
   CHECK_GT(update.GetCombinationChangeIndex(), 0);
-  CHECK(AreWebAppsEnabled(browser->profile()));
+  CHECK(AreWebAppsEnabled(browser->GetProfile()));
   bool url_migration_only =
       (update.GetCombinationChangeIndex() == WebAppIdentityUpdate::kUrlChange);
 
@@ -384,7 +388,7 @@ void ShowWebAppReviewUpdateDialog(const webapps::AppId& app_id,
   }
 
   views::Widget* widget = constrained_window::ShowBrowserModal(
-      dialog_model_builder.Build(), browser->window()->GetNativeWindow());
+      dialog_model_builder.Build(), browser->GetWindow()->GetNativeWindow());
   delegate_weak_ptr->OnWidgetShownStartTracking(widget);
 
   base::UmaHistogramTimes("WebApp.UpdateReviewDialog.TriggerToShowTime",

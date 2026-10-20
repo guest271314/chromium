@@ -75,8 +75,8 @@ GetBundleCachePathResult GetBundleCachePathImpl(
   base::FileEnumerator bundle_files_iter(bundle_dir, /*recursive=*/true,
                                          base::FileEnumerator::FILES);
 
-  std::optional<base::FilePath> newest_version_path = std::nullopt;
-  std::optional<IwaVersion> newest_version = std::nullopt;
+  std::optional<base::FilePath> newest_version_path;
+  std::optional<IwaVersion> newest_version;
   bundle_files_iter.ForEach([&newest_version_path, &newest_version](
                                 const base::FilePath& current_path) {
     std::optional<IwaVersion> current_version =
@@ -135,6 +135,11 @@ GetBundleCachePathCommand::~GetBundleCachePathCommand() = default;
 void GetBundleCachePathCommand::StartWithLock(std::unique_ptr<AppLock> lock) {
   CHECK(lock);
   lock_ = std::move(lock);
+  GetMutableDebugValue().Set("app_id", url_info_.app_id());
+  GetMutableDebugValue().Set("web_bundle_id", url_info_.web_bundle_id().id());
+  if (version_) {
+    GetMutableDebugValue().Set("requested_version", version_->GetString());
+  }
 
   base::ThreadPool::PostTaskAndReplyWithResult(
       FROM_HERE,
@@ -147,6 +152,15 @@ void GetBundleCachePathCommand::StartWithLock(std::unique_ptr<AppLock> lock) {
 
 void GetBundleCachePathCommand::CommandComplete(
     const GetBundleCachePathResult& result) {
+  if (result.has_value()) {
+    GetMutableDebugValue().Set("cached_version",
+                               result->cached_version().GetString());
+    GetMutableDebugValue().Set("cached_bundle_path",
+                               result->cached_bundle_path().LossyDisplayName());
+  } else {
+    GetMutableDebugValue().Set("error",
+                               GetBundleCachePathErrorToString(result.error()));
+  }
   CompleteAndSelfDestruct(
       result.has_value() ? CommandResult::kSuccess : CommandResult::kFailure,
       result);

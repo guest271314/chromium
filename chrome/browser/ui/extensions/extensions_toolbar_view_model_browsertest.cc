@@ -4,6 +4,9 @@
 
 #include "chrome/browser/ui/extensions/extensions_toolbar_view_model.h"
 
+#include <optional>
+
+#include "base/auto_reset.h"
 #include "base/memory/raw_ptr.h"
 #include "chrome/browser/extensions/extension_browsertest.h"
 #include "chrome/browser/extensions/extension_tab_util.h"
@@ -19,6 +22,7 @@
 #include "content/public/test/browser_test.h"
 #include "extensions/browser/extension_prefs.h"
 #include "extensions/browser/extension_registrar.h"
+#include "extensions/browser/host_access_request_helper.h"
 #include "extensions/browser/permissions_manager.h"
 #include "extensions/browser/pref_names.h"
 #include "extensions/buildflags/buildflags.h"
@@ -143,6 +147,7 @@ class ExtensionsToolbarViewModelBrowserTest
   std::unique_ptr<ExtensionsToolbarViewModel> toolbar_model_;
 
   testing::NiceMock<MockExtensionsToolbarObserver> mock_observer_;
+  std::optional<base::AutoReset<base::TimeDelta>> cooldown_reset_;
 };
 
 scoped_refptr<const extensions::Extension>
@@ -158,7 +163,6 @@ ExtensionsToolbarViewModelBrowserTest::AddExtension(
     bool withhold_permissions) {
   scoped_refptr<const extensions::Extension> extension =
       extensions::ExtensionBuilder(name)
-          .SetManifestVersion(3)
           .AddAPIPermissions(permissions)
           .AddHostPermissions(host_permissions)
           .SetAction(extensions::ActionInfo::Type::kBrowser)
@@ -182,6 +186,10 @@ void ExtensionsToolbarViewModelBrowserTest::SetUpOnMainThread() {
   ExtensionBrowserTest::SetUpOnMainThread();
   host_resolver()->AddRule("*", "127.0.0.1");
   ASSERT_TRUE(embedded_test_server()->Start());
+
+  cooldown_reset_.emplace(
+      extensions::HostAccessRequestsHelper::SetCooldownForTesting(
+          base::TimeDelta()));
 
   toolbar_delegate_ = std::make_unique<TestExtensionsToolbarDelegate>(
       browser_window_interface());
@@ -343,6 +351,7 @@ IN_PROC_BROWSER_TEST_F(ExtensionsToolbarViewModelBrowserTest,
       toolbar_model()->GetRequestAccessButtonParams(GetActiveWebContents());
   EXPECT_TRUE(params.extension_ids.empty());
   EXPECT_TRUE(params.tooltip_text.empty());
+  EXPECT_TRUE(params.origin.opaque());
 }
 
 IN_PROC_BROWSER_TEST_F(ExtensionsToolbarViewModelBrowserTest,
@@ -364,6 +373,8 @@ IN_PROC_BROWSER_TEST_F(ExtensionsToolbarViewModelBrowserTest,
   EXPECT_THAT(params.extension_ids, testing::ElementsAre(extension_a->id()));
   EXPECT_NE(params.tooltip_text.find(u"Extension A"), std::u16string::npos);
   EXPECT_NE(params.tooltip_text.find(u"example.com"), std::u16string::npos);
+  EXPECT_EQ(params.origin,
+            web_contents->GetPrimaryMainFrame()->GetLastCommittedOrigin());
 
   // Add a second request
   const std::string extension_b_id =
@@ -377,6 +388,8 @@ IN_PROC_BROWSER_TEST_F(ExtensionsToolbarViewModelBrowserTest,
                                         extension_a->id(), extension_b->id()));
   EXPECT_NE(params.tooltip_text.find(u"Extension A"), std::u16string::npos);
   EXPECT_NE(params.tooltip_text.find(u"Extension B"), std::u16string::npos);
+  EXPECT_EQ(params.origin,
+            web_contents->GetPrimaryMainFrame()->GetLastCommittedOrigin());
 
   // Remove the request for extension A
   permissions_manager->RemoveHostAccessRequest(tab_id, extension_a->id());
@@ -384,12 +397,15 @@ IN_PROC_BROWSER_TEST_F(ExtensionsToolbarViewModelBrowserTest,
   EXPECT_THAT(params.extension_ids, testing::ElementsAre(extension_b->id()));
   EXPECT_EQ(params.tooltip_text.find(u"Extension A"), std::u16string::npos);
   EXPECT_NE(params.tooltip_text.find(u"Extension B"), std::u16string::npos);
+  EXPECT_EQ(params.origin,
+            web_contents->GetPrimaryMainFrame()->GetLastCommittedOrigin());
 
   // Remove the second request to return to the initial state
   permissions_manager->RemoveHostAccessRequest(tab_id, extension_b->id());
   params = toolbar_model()->GetRequestAccessButtonParams(web_contents);
   EXPECT_TRUE(params.extension_ids.empty());
   EXPECT_TRUE(params.tooltip_text.empty());
+  EXPECT_TRUE(params.origin.opaque());
 }
 
 // Tests that GetRequestAccessButtonParams returns empty when an extension has
@@ -404,6 +420,62 @@ IN_PROC_BROWSER_TEST_F(
       toolbar_model()->GetRequestAccessButtonParams(GetActiveWebContents());
   EXPECT_TRUE(params.extension_ids.empty());
   EXPECT_TRUE(params.tooltip_text.empty());
+  EXPECT_TRUE(params.origin.opaque());
+}
+
+// Tests that GrantSiteAccess succeeds when the expected origin matches the
+// current web contents origin.
+IN_PROC_BROWSER_TEST_F(ExtensionsToolbarViewModelBrowserTest,
+                       GrantSiteAccess_SucceedsIfOriginMatches) {
+  auto extension = AddExtension("Test Extension", {}, {"*://example.com/*"},
+                                /*withhold_permissions=*/true);
+
+  NavigateTo("example.com");
+  auto* web_contents = GetActiveWebContents();
+  auto origin = web_contents->GetPrimaryMainFrame()->GetLastCommittedOrigin();
+
+  auto* permissions_manager = extensions::PermissionsManager::Get(profile());
+  EXPECT_EQ(permissions_manager->GetUserSiteAccess(
+                *extension, web_contents->GetLastCommittedURL()),
+            extensions::PermissionsManager::UserSiteAccess::kOnClick);
+
+  toolbar_model()->GrantSiteAccess(web_contents, {extension->id()}, origin);
+
+  EXPECT_EQ(permissions_manager->GetUserSiteAccess(
+                *extension, web_contents->GetLastCommittedURL()),
+            extensions::PermissionsManager::UserSiteAccess::kOnSite);
+}
+
+// Tests that GrantSiteAccess fails to grant site access if the expected origin
+// does not match the current web contents origin.
+IN_PROC_BROWSER_TEST_F(ExtensionsToolbarViewModelBrowserTest,
+                       GrantSiteAccess_FailsIfOriginChanges) {
+  auto extension = AddExtension("Test Extension", {}, {"*://example.com/*"},
+                                /*withhold_permissions=*/true);
+
+  NavigateTo("example.com");
+  auto* web_contents = GetActiveWebContents();
+  auto origin_a = web_contents->GetPrimaryMainFrame()->GetLastCommittedOrigin();
+
+  auto* permissions_manager = extensions::PermissionsManager::Get(profile());
+  EXPECT_EQ(permissions_manager->GetUserSiteAccess(
+                *extension, web_contents->GetLastCommittedURL()),
+            extensions::PermissionsManager::UserSiteAccess::kOnClick);
+
+  // Navigate to a different site before the action is executed.
+  NavigateTo("other.com");
+
+  // Attempt to grant site access using the origin of the previous site.
+  toolbar_model()->GrantSiteAccess(web_contents, {extension->id()}, origin_a);
+
+  // Site access should NOT be granted for either the previous site or the new
+  // site.
+  EXPECT_EQ(permissions_manager->GetUserSiteAccess(*extension,
+                                                   GURL("http://example.com/")),
+            extensions::PermissionsManager::UserSiteAccess::kOnClick);
+  EXPECT_EQ(permissions_manager->GetUserSiteAccess(*extension,
+                                                   GURL("http://other.com/")),
+            extensions::PermissionsManager::UserSiteAccess::kOnClick);
 }
 
 // Tests that a pinned action is draggable.
@@ -465,4 +537,28 @@ IN_PROC_BROWSER_TEST_F(ExtensionsToolbarViewModelBrowserTest,
 
   // Verify the action is not draggable.
   EXPECT_FALSE(toolbar_model()->IsActionDraggable(id));
+}
+
+// Tests that OnWebContentsReplaced updates the observed WebContents and
+// notifies observers.
+IN_PROC_BROWSER_TEST_F(ExtensionsToolbarViewModelBrowserTest,
+                       OnWebContentsReplaced_NotifiesObservers) {
+  MockExtensionsToolbarObserver observer;
+  toolbar_model()->AddObserver(&observer);
+
+  auto* tab_list = TabListInterface::From(browser_window_interface());
+  tabs::TabInterface* active_tab = tab_list->GetActiveTab();
+  content::WebContents* old_contents = active_tab->GetContents();
+
+  // Create a new WebContents to simulate replacing the tab's WebContents.
+  std::unique_ptr<content::WebContents> new_contents =
+      content::WebContents::Create(
+          content::WebContents::CreateParams(profile()));
+
+  EXPECT_CALL(observer, OnActiveWebContentsChanged(false, new_contents.get()));
+
+  toolbar_model()->OnWebContentsReplaced(*tab_list, active_tab, old_contents,
+                                         new_contents.get());
+
+  toolbar_model()->RemoveObserver(&observer);
 }

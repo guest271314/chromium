@@ -5,12 +5,10 @@
 #include "chrome/browser/ui/lens/lens_search_feature_flag_utils.h"
 
 #include "base/feature_list.h"
+#include "base/i18n/language_tag.h"
 #include "chrome/browser/autocomplete/aim_eligibility_service_factory.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/global_features.h"
-#include "chrome/browser/ui/lens/lens_keyed_service.h"
-#include "chrome/browser/ui/lens/lens_keyed_service_factory.h"
-#include "chrome/browser/ui/lens/lens_session_metrics_logger.h"
 #include "components/application_locale_storage/application_locale_storage.h"
 #include "components/lens/lens_features.h"
 #include "components/lens/lens_overlay_permission_utils.h"
@@ -20,10 +18,6 @@
 
 namespace {
 constexpr char kUnitedStatesCountryCode[] = "us";
-constexpr char kEnglishUSLocale[] = "en-US";
-constexpr char kEnglishLanguageCode[] = "en";
-constexpr std::string kEnglishExpansionCountryCodes[] = {"au", "ca", "gb",
-                                                         "nz", "us", "za"};
 
 bool IsEnUs() {
   // Safety check since this is a CP'd change.
@@ -45,41 +39,20 @@ bool IsEnUs() {
   return variations_service->GetStoredPermanentCountry() ==
              kUnitedStatesCountryCode &&
          features->application_locale_storage() &&
-         features->application_locale_storage()->Get() == kEnglishUSLocale;
+         features->application_locale_storage()->GetTag() ==
+             base::i18n::GetKnownLanguageTag("en-US");
 }
 
-bool IsEnExpansion() {
-  if (!g_browser_process) {
-    DCHECK(g_browser_process) << "g_browser_process is null";
-    return false;
-  }
-
-  // VariationsService and Features should exist.
-  auto* variations_service = g_browser_process->variations_service();
-  auto* features = g_browser_process->GetFeatures();
-
-  if (!variations_service || !features) {
-    return false;
-  }
-
-  // Otherwise, enable it in the expansion countries to en locales via
-  // client-side code.
-  return std::ranges::contains(
-             kEnglishExpansionCountryCodes,
-             variations_service->GetStoredPermanentCountry()) &&
-         features->application_locale_storage() &&
-         features->application_locale_storage()->Get().starts_with(
-             kEnglishLanguageCode);
-}
 }  // namespace
 
 namespace lens {
 
 bool IsLensOverlayContextualSearchboxEnabled(Profile* profile) {
-  // If not AIM eligible, return false.
+  // If not AIM eligible or CSB eligible, return false.
   auto* aim_eligibility_service =
       AimEligibilityServiceFactory::GetForProfile(profile);
-  if (!aim_eligibility_service || !aim_eligibility_service->IsAimEligible()) {
+  if (!aim_eligibility_service || !aim_eligibility_service->IsAimEligible() ||
+      !aim_eligibility_service->IsCsbEligible()) {
     return false;
   }
 
@@ -97,14 +70,15 @@ bool IsLensOverlayContextualSearchboxEnabled(Profile* profile) {
         lens::features::kLensOverlayContextualSearchbox);
   }
 
-  // Otherwise, enable it to en-* users.
-  return IsEnExpansion();
+  // Otherwise, return true.
+  return true;
 }
 
 bool IsAimM3Enabled(Profile* profile) {
   auto* aim_eligibility_service =
       AimEligibilityServiceFactory::GetForProfile(profile);
-  if (!aim_eligibility_service || !aim_eligibility_service->IsAimEligible()) {
+  if (!aim_eligibility_service || !aim_eligibility_service->IsAimEligible() ||
+      !aim_eligibility_service->IsCsbEligible()) {
     return false;
   }
 
@@ -114,42 +88,6 @@ bool IsAimM3Enabled(Profile* profile) {
   }
 
   return base::FeatureList::IsEnabled(lens::features::kLensSearchAimM3);
-}
-
-bool ShouldShowLensOverlayEduActionChip(Profile* profile) {
-  if (!lens::features::IsLensOverlayEduActionChipEnabled()) {
-    return false;
-  }
-
-  LensKeyedService* service = LensKeyedServiceFactory::GetForProfile(
-      profile, /*create_if_necessary=*/true);
-  if (service == nullptr) {
-    return false;
-  }
-
-  if (service->GetActionChipShownCount() >
-      lens::features::GetLensOverlayEduActionChipMaxShownCount()) {
-    return false;
-  }
-
-  base::TimeDelta time_delta =
-      base::Time::Now() - service->GetActionChipLastShownTime();
-  // This function may be called multiple times for a single show. Check that
-  // the debounce interval has passed before considering the current call a
-  // second show attempt.
-  if (time_delta >=
-          lens::features::GetLensOverlayEduActionChipShowDebounceInterval() &&
-      time_delta < lens::features::GetLensOverlayEduActionChipShowInterval()) {
-    return false;
-  }
-  return true;
-}
-
-void RecordLensOverlayEduActionChipShown(Profile* profile) {
-  LensKeyedService* service = LensKeyedServiceFactory::GetForProfile(
-      profile, /*create_if_necessary=*/true);
-  service->IncrementActionChipShownCount();
-  service->ResetActionChipLastShownTime();
 }
 
 bool DidUserGrantLensOverlayNeededPermissions(Profile* profile) {

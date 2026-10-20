@@ -10,6 +10,7 @@
 #include <string>
 #include <string_view>
 
+#include "base/containers/flat_map.h"
 #include "base/memory/ref_counted_memory.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_util.h"
@@ -51,17 +52,18 @@ constexpr char kIsGooglePhotosKey[] = "isGooglePhotos";
 constexpr char kStaticEncodeKey[] = "staticEncode";
 constexpr char kUrlKey[] = "url";
 
-std::map<std::string, std::string> ParseParams(std::string_view param_string) {
+base::flat_map<std::string_view, std::string> ParseParams(
+    std::string_view param_string) {
   url::Component query(param_string);
   url::Component key;
   url::Component value;
   constexpr int kMaxUriDecodeLen = 2048;
-  std::map<std::string, std::string> params;
+  base::flat_map<std::string_view, std::string> params;
   while (url::ExtractQueryKeyValue(param_string, &query, &key, &value)) {
     url::UrlEscapeDecoder<kMaxUriDecodeLen> output(
         value.AsViewOn(param_string), url::DecodeUrlMode::kUtf8OrIsomorphic);
-    params.insert({std::string(key.AsViewOn(param_string)),
-                   base::UTF16ToUTF8(output.view())});
+    params.insert(
+        {key.AsViewOn(param_string), base::UTF16ToUTF8(output.view())});
   }
   return params;
 }
@@ -129,7 +131,7 @@ void SanitizedImageSource::StartDataRequest(
     content::URLDataSource::GotDataCallback callback) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
-  std::string image_url_or_params = url.GetQuery();
+  std::string_view image_url_or_params = url.query();
   if (url != GURL(base::StrCat(
                  {chrome::kChromeUIImageURL, "?", image_url_or_params}))) {
     std::move(callback).Run(nullptr);
@@ -224,39 +226,69 @@ SanitizedImageSource::RequestAttributes::~RequestAttributes() = default;
 void SanitizedImageSource::StartImageDownload(
     RequestAttributes request_attributes,
     content::URLDataSource::GotDataCallback callback) {
-  net::NetworkTrafficAnnotationTag traffic_annotation =
-      net::DefineNetworkTrafficAnnotation("sanitized_image_source", R"(
+  auto request = std::make_unique<network::ResourceRequest>();
+  request->url = request_attributes.image_url;
+  if (request_attributes.image_url.host() == "drive.google.com") {
+    request->credentials_mode = network::mojom::CredentialsMode::kInclude;
+  } else {
+    request->credentials_mode = network::mojom::CredentialsMode::kOmit;
+  }
+  if (request_attributes.access_token_info) {
+    request->headers.SetHeader(
+        net::HttpRequestHeaders::kAuthorization,
+        base::StrCat({"Bearer ", request_attributes.access_token_info->token}));
+  }
+
+  std::unique_ptr<network::SimpleURLLoader> loader;
+  if (request_attributes.image_url.host() == "drive.google.com") {
+    loader = network::SimpleURLLoader::Create(
+        std::move(request),
+        net::DefineNetworkTrafficAnnotation("drive_thumbnail_source", R"(
+        semantics {
+          sender: "Drive Thumbnail Source"
+          description:
+            "This request fetches a Google Drive thumbnail image to be "
+            "displayed in a Chrome internal page or dialog."
+          trigger:
+            "When the user opens the Drive File Picker and uploads image/video "
+            "files."
+          data: "Cookies are sent to authenticate the user to Google Drive."
+          destination: WEBSITE
+        }
+        policy {
+          cookies_allowed: YES
+          cookies_store: "user"
+          setting: "This feature cannot be disabled by settings."
+          policy_exception_justification:
+            "This is a helper request that can be indirectly disabled by "
+            "controlling the calling feature (e.g., by disabling Drive File "
+            "Picker)."
+        })"));
+  } else {
+    loader = network::SimpleURLLoader::Create(
+        std::move(request),
+        net::DefineNetworkTrafficAnnotation("sanitized_image_source", R"(
         semantics {
           sender: "WebUI Sanitized Image Source"
           description:
-            "This data source fetches an arbitrary image to be displayed in a "
-            "WebUI."
+            "This request fetches an image from an external source to be "
+            "displayed in a Chrome internal page or dialog."
           trigger:
-            "When a WebUI triggers the download of chrome://image?<URL> or "
-            "chrome://image?url=<URL>&isGooglePhotos=<bool> by e.g. setting "
-            "that URL as a src on an img tag."
+            "When the user opens a Chrome page or dialog that displays an "
+            "image, such as a Google Photos image on the New Tab Page."
           data: "OAuth credentials for the user's Google Photos account when "
-                "isGooglePhotos is true."
+                "fetching Google Photos images."
           destination: WEBSITE
         }
         policy {
           cookies_allowed: NO
           setting: "This feature cannot be disabled by settings."
           policy_exception_justification:
-            "This is a helper data source. It can be indirectly disabled by "
-            "disabling the requester WebUI."
-        })");
-  auto request = std::make_unique<network::ResourceRequest>();
-  request->url = request_attributes.image_url;
-  request->credentials_mode = network::mojom::CredentialsMode::kOmit;
-  if (request_attributes.access_token_info) {
-    request->headers.SetHeader(
-        net::HttpRequestHeaders::kAuthorization,
-        "Bearer " + request_attributes.access_token_info->token);
+            "This is a helper request that can be indirectly disabled by "
+            "controlling the calling feature (e.g., by disabling New Tab Page "
+            "customization via policy)."
+        })"));
   }
-
-  auto loader =
-      network::SimpleURLLoader::Create(std::move(request), traffic_annotation);
   auto* loader_ptr = loader.get();
   loader_ptr->DownloadToString(
       url_loader_factory_.get(),

@@ -12,7 +12,6 @@
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/status_icons/status_tray.h"
 #include "chrome/browser/ui/chrome_pages.h"
-#include "chrome/grit/branded_strings.h"
 #include "chrome/grit/generated_resources.h"
 #include "extensions/buildflags/buildflags.h"
 #include "ui/base/l10n/l10n_util.h"
@@ -25,6 +24,10 @@
 #endif  // BUILDFLAG(ENABLE_EXTENSIONS)
 
 namespace {
+
+constexpr int kMaxDeviceStatusTrayIcons = 40;
+constexpr int IDC_DEVICE_SYSTEM_TRAY_ICON_LAST =
+    IDC_DEVICE_SYSTEM_TRAY_ICON_FIRST + kMaxDeviceStatusTrayIcons - 1;
 
 // Returns profile username.
 std::u16string GetProfileUserName(Profile* profile) {
@@ -67,7 +70,7 @@ DeviceStatusIconRenderer::DeviceStatusIconRenderer(
 DeviceStatusIconRenderer::~DeviceStatusIconRenderer() {
   if (status_icon_) {
     auto* status_tray = g_browser_process->status_tray();
-    DCHECK(status_tray);
+    CHECK(status_tray, base::NotFatalUntil::M161);
     std::unique_ptr<StatusIcon> removed_icon =
         status_tray->RemoveStatusIcon(status_icon_);
     status_icon_ = nullptr;
@@ -83,7 +86,8 @@ void DeviceStatusIconRenderer::AddProfile(Profile* profile) {
   if (device_system_tray_icon_->profiles().size() == 1) {
     auto* profile_manager = g_browser_process->profile_manager();
     CHECK(profile_manager);
-    profile_manager->GetProfileAttributesStorage().AddObserver(this);
+    profile_attributes_storage_observation_.Observe(
+        &profile_manager->GetProfileAttributesStorage());
   }
   RefreshIcon();
 }
@@ -91,9 +95,7 @@ void DeviceStatusIconRenderer::AddProfile(Profile* profile) {
 void DeviceStatusIconRenderer::RemoveProfile(Profile* profile) {
   RefreshIcon();
   if (device_system_tray_icon_->profiles().empty()) {
-    auto* profile_manager = g_browser_process->profile_manager();
-    CHECK(profile_manager);
-    profile_manager->GetProfileAttributesStorage().RemoveObserver(this);
+    profile_attributes_storage_observation_.Reset();
   }
 }
 
@@ -137,7 +139,7 @@ void DeviceStatusIconRenderer::ShowSiteSettings(base::WeakPtr<Profile> profile,
 void DeviceStatusIconRenderer::RefreshIcon() {
   command_id_callbacks_.clear();
   auto* status_tray = g_browser_process->status_tray();
-  DCHECK(status_tray);
+  CHECK(status_tray, base::NotFatalUntil::M161);
   if (device_system_tray_icon_->profiles().empty()) {
     if (status_icon_) {
       std::unique_ptr<StatusIcon> removed_icon =

@@ -2,21 +2,18 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "ui/base/ime/win/input_method_win_base.h"
 
 #include <stddef.h>
 #include <stdint.h>
 
+#include <array>
 #include <memory>
 #include <vector>
 
 #include "base/auto_reset.h"
 #include "base/command_line.h"
+#include "base/compiler_specific.h"
 #include "base/containers/heap_array.h"
 #include "base/functional/bind.h"
 #include "base/memory/ptr_util.h"
@@ -107,9 +104,10 @@ bool IsRTLKeyboardLayoutInstalled() {
 // Returns true if only a Ctrl key and a Shift key are down. The desired text
 // direction will be stored in |*direction|.
 bool IsCtrlShiftPressed(base::i18n::TextDirection* direction) {
-  uint8_t keystate[256];
-  if (!::GetKeyboardState(&keystate[0]))
+  std::array<uint8_t, 256> keystate;
+  if (!::GetKeyboardState(keystate.data())) {
     return false;
+  }
 
   // To check if a user is pressing only a control key and a right-shift key
   // (or a left-shift key), we use the steps below:
@@ -120,8 +118,9 @@ bool IsCtrlShiftPressed(base::i18n::TextDirection* direction) {
   //    To ignore the keys checked in 1, we set their status to 0 before
   //    checking the key status.
   const int kKeyDownMask = 0x80;
-  if ((keystate[VK_CONTROL] & kKeyDownMask) == 0)
+  if ((keystate[VK_CONTROL] & kKeyDownMask) == 0) {
     return false;
+  }
 
   if (keystate[VK_RSHIFT] & kKeyDownMask) {
     keystate[VK_RSHIFT] = 0;
@@ -148,8 +147,9 @@ bool IsCtrlShiftPressed(base::i18n::TextDirection* direction) {
   // defect is limited to my keyboard driver, but ignoring F22 should be okay.
   keystate[VK_F22] = 0;
   for (int i = 0; i <= VK_PACKET; ++i) {
-    if (keystate[i] & kKeyDownMask)
+    if (keystate[i] & kKeyDownMask) {
       return false;
+    }
   }
   return true;
 }
@@ -391,8 +391,8 @@ LRESULT InputMethodWinBase::OnDocumentFeed(RECONVERTSTRING* reconv) {
   reconv->dwTargetStrLen = target_range.length();
   reconv->dwTargetStrOffset = reconv->dwCompStrOffset;
 
-  memcpy((char*)reconv + sizeof(RECONVERTSTRING), text.c_str(),
-         len * sizeof(WCHAR));
+  UNSAFE_TODO(memcpy((char*)reconv + sizeof(RECONVERTSTRING), text.c_str(),
+                     len * sizeof(WCHAR)));
 
   // According to Microsoft API document, IMR_RECONVERTSTRING and
   // IMR_DOCUMENTFEED should return reconv, but some applications return
@@ -445,8 +445,8 @@ LRESULT InputMethodWinBase::OnReconvertString(RECONVERTSTRING* reconv) {
   reconv->dwTargetStrLen = len;
   reconv->dwTargetStrOffset = 0;
 
-  memcpy(reinterpret_cast<char*>(reconv) + sizeof(RECONVERTSTRING),
-         text.c_str(), len * sizeof(WCHAR));
+  UNSAFE_TODO(memcpy(reinterpret_cast<char*>(reconv) + sizeof(RECONVERTSTRING),
+                     text.c_str(), len * sizeof(WCHAR)));
 
   // According to Microsoft API document, IMR_RECONVERTSTRING and
   // IMR_DOCUMENTFEED should return reconv, but some applications return

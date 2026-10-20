@@ -20,6 +20,7 @@
 #include "base/memory/raw_ptr.h"
 #include "base/memory/raw_ptr_exclusion.h"
 #include "base/task/single_thread_task_runner.h"
+#include "base/thread_annotations.h"
 #include "base/time/time.h"
 #include "base/timer/timer.h"
 #include "base/unguessable_token.h"
@@ -71,7 +72,7 @@ class OutputController : public media::AudioOutputStream::AudioSourceCallback,
     virtual void OnLog(std::string_view message) = 0;
 
    protected:
-    virtual ~EventHandler() {}
+    virtual ~EventHandler() = default;
   };
 
   // A synchronous reader interface used by OutputController for synchronous
@@ -80,7 +81,7 @@ class OutputController : public media::AudioOutputStream::AudioSourceCallback,
   // now that it can handle synchronized I/O.
   class SyncReader {
    public:
-    virtual ~SyncReader() {}
+    virtual ~SyncReader() = default;
 
     // This is used by SyncReader to prepare more data and perform
     // synchronization. Also inform about output delay at a certain moment and
@@ -242,7 +243,13 @@ class OutputController : public media::AudioOutputStream::AudioSourceCallback,
    private:
     void WedgeCheck();
 
-    void LogGlitchStats(const std::string& call_name, base::TimeTicks now);
+    void LogGlitchStats(const char* call_name,
+                        base::TimeTicks now,
+                        bool post_to_task_runner);
+    void DoLogGlitchStats(const char* call_name,
+                          base::TimeDelta total_duration,
+                          media::AudioGlitchInfo glitch_info,
+                          double glitch_percentage);
 
     // RAW_PTR_EXCLUSION: OutputController object will outlive the
     // ErrorStatisticsTracker object.
@@ -261,6 +268,11 @@ class OutputController : public media::AudioOutputStream::AudioSourceCallback,
     // Flags when we've asked for a stream to start but it never did.
     base::AtomicRefCount on_more_io_data_called_;
     base::OneShotTimer wedge_timer_;
+
+    const scoped_refptr<base::SingleThreadTaskRunner> task_runner_;
+
+    base::WeakPtr<ErrorStatisticsTracker> weak_this_;
+    base::WeakPtrFactory<ErrorStatisticsTracker> weak_ptr_factory_{this};
   };
 
   // Reports UMA statistics for stream creation.
@@ -339,7 +351,7 @@ class OutputController : public media::AudioOutputStream::AudioSourceCallback,
   // The snoopers examining or grabbing a copy of the audio data from the
   // OnMoreData() calls.
   base::Lock snooper_lock_;
-  std::vector<raw_ptr<Snooper>> snoopers_;
+  std::vector<raw_ptr<Snooper>> snoopers_ GUARDED_BY(snooper_lock_);
 
   // The current volume of the audio stream.
   double volume_;

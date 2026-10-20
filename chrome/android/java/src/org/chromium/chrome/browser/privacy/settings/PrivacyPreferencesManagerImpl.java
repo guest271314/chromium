@@ -9,6 +9,7 @@ import android.content.Context;
 import android.net.ConnectivityManager;
 import android.net.NetworkInfo;
 
+import org.jni_zero.JniType;
 import org.jni_zero.NativeMethods;
 
 import org.chromium.base.CommandLine;
@@ -25,6 +26,7 @@ import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.policy.PolicyServiceFactory;
 import org.chromium.chrome.browser.preferences.ChromePreferenceKeys;
 import org.chromium.chrome.browser.preferences.ChromeSharedPreferences;
+import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.components.minidump_uploader.util.NetworkPermissionUtil;
 import org.chromium.components.policy.PolicyMap;
 import org.chromium.components.policy.PolicyService;
@@ -45,7 +47,7 @@ public class PrivacyPreferencesManagerImpl implements PrivacyPreferencesManager 
     // Supplier for other class to observe. Null until the supplier is requested.
     private @Nullable SettableNonNullObservableSupplier<Boolean> mCrashUploadPermittedSupplier;
 
-    private boolean mNativeInitialized;
+    private volatile boolean mNativeInitialized;
 
     PrivacyPreferencesManagerImpl(Context context) {
         mContext = context;
@@ -70,6 +72,10 @@ public class PrivacyPreferencesManagerImpl implements PrivacyPreferencesManager 
         if (mNativeInitialized) return;
 
         mNativeInitialized = true;
+
+        // Cache the metrics restructurization state in SharedPreferences immediately when
+        // native is initialized so that it is safe to access pre-native in future sessions.
+        shouldUseMetricsChoiceRestructure();
 
         createPolicyServiceObserver();
     }
@@ -97,7 +103,6 @@ public class PrivacyPreferencesManagerImpl implements PrivacyPreferencesManager 
         if (mPolicyService.isInitializationComplete()) {
             syncUsageAndCrashReportingPermittedByPolicy();
         }
-
         mPolicyService.addObserver(mPolicyServiceObserver);
     }
 
@@ -230,8 +235,32 @@ public class PrivacyPreferencesManagerImpl implements PrivacyPreferencesManager 
         return getCrashUploadPermittedSupplier();
     }
 
-    public boolean shouldUseMetricsConsentRestructure() {
-        return PrivacyPreferencesManagerImplJni.get().shouldUseMetricsConsentRestructure();
+    public boolean shouldUseMetricsChoiceRestructure() {
+        if (!mNativeInitialized) {
+            // This method can be called before the native library is loaded/initialized (e.g.,
+            // in background services or binder threads checking crash uploading permission).
+            // To avoid UnsatisfiedLinkError, we read the value cached in SharedPreferences.
+            return mPrefs.readBoolean(
+                    ChromePreferenceKeys.PRIVACY_SHOULD_USE_METRICS_CHOICE_RESTRUCTURE, false);
+        }
+        boolean value = PrivacyPreferencesManagerImplJni.get().shouldUseMetricsChoiceRestructure();
+        mPrefs.writeBoolean(
+                ChromePreferenceKeys.PRIVACY_SHOULD_USE_METRICS_CHOICE_RESTRUCTURE, value);
+        return value;
+    }
+
+    void setNativeInitializedForTesting(boolean initialized) {
+        mNativeInitialized = initialized;
+    }
+
+    /**
+     * Returns whether {@code profile} is eligible for Universal Opt-Out, as determined by the
+     * native {@code UniversalOptOutService}. For signed-in users this uses the account capability
+     * signal (falling back to location history if the capability is unknown); for signed-out users
+     * this is based on recorded location history. Returns false if the service is unavailable.
+     */
+    public boolean isUniversalOptOutEligible(Profile profile) {
+        return PrivacyPreferencesManagerImplJni.get().isUniversalOptOutEligible(profile);
     }
 
     @NativeMethods
@@ -242,6 +271,8 @@ public class PrivacyPreferencesManagerImpl implements PrivacyPreferencesManager 
 
         boolean isMetricsReportingDisabledByPolicy();
 
-        boolean shouldUseMetricsConsentRestructure();
+        boolean shouldUseMetricsChoiceRestructure();
+
+        boolean isUniversalOptOutEligible(@JniType("Profile*") Profile profile);
     }
 }

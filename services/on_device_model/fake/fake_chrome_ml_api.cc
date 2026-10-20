@@ -4,6 +4,7 @@
 
 #include "services/on_device_model/fake/fake_chrome_ml_api.h"
 
+#include "base/check.h"
 #include "base/files/file.h"
 #include "base/files/file_util.h"
 #include "base/logging.h"
@@ -40,6 +41,8 @@ std::string PieceToString(const ml::InputPiece& piece) {
                 return "ToolCall: ";
               case ml::Token::kToolResponse:
                 return "ToolResponse: ";
+              case ml::Token::kThought:
+                return "Thought: ";
             }
           },
           [](const SkBitmap& bitmap) -> std::string {
@@ -49,6 +52,10 @@ std::string PieceToString(const ml::InputPiece& piece) {
           [](const ml::AudioBuffer&) -> std::string { return "<audio>"; },
           [](const ml::ToolDeclaration& decl) -> std::string {
             return base::StrCat({kToolDeclPrefix, decl.name, "]"});
+          },
+          [](const ml::ToolCall& call) -> std::string {
+            return base::StrCat({kToolCallPrefix, call.call_id, ":", call.name,
+                                 "=", call.arguments_json, "]"});
           },
           [](const ml::ToolResponse& resp) -> std::string {
             return base::StrCat(
@@ -128,6 +135,10 @@ size_t TokenizeBytes(const void* user_data,
   return bytes_len;
 }
 
+// TODO(crbug.com/540118700): Remove once the legacy engine has been removed and
+// all of these unittests use context_usage by default.
+bool g_calculate_tokens_decoded = false;
+
 }  // namespace
 
 void InitDawnProcs(const DawnProcTable& procs) {}
@@ -172,14 +183,11 @@ struct FakeSessionInstance {
   bool enable_audio_input;
   uint32_t top_k;
   float temperature;
+  bool allow_speculative_decoding = false;
   // Whether tool declarations have been appended in a system prompt.
   bool has_tool_declarations = false;
   // Whether tool calls have been emitted and tool responses are expected.
   bool awaiting_tool_responses = false;
-};
-
-struct FakeTsModelInstance {
-  std::string model_data;
 };
 
 struct FakeCancelInstance {
@@ -189,22 +197,27 @@ struct FakeCancelInstance {
 ChromeMLModel SessionCreateModel(const ChromeMLModelDescriptor* descriptor,
                                  uintptr_t context,
                                  ChromeMLScheduleFn schedule) {
+  std::string model_data;
+  if (descriptor->model_data) {
+    if (descriptor->model_data->weights_file != base::kInvalidPlatformFile) {
+      model_data = ReadFile(descriptor->model_data->weights_file);
+    } else if (descriptor->model_data->model_path &&
+               descriptor->model_data->model_path[0] != '\0') {
+      base::ReadFileToString(
+          base::FilePath::FromUTF8Unsafe(descriptor->model_data->model_path),
+          &model_data);
+    }
+  }
   return reinterpret_cast<ChromeMLModel>(new FakeModelInstance{
       .backend_type = descriptor->backend_type,
       .performance_hint = descriptor->performance_hint,
+      .model_data = std::move(model_data),
   });
 }
 
 void DestroyModel(ChromeMLModel model) {
   auto* instance = reinterpret_cast<FakeModelInstance*>(model);
   delete instance;
-}
-
-ChromeMLSafetyResult ClassifyTextSafety(ChromeMLModel model,
-                                        const char* text,
-                                        float* scores,
-                                        size_t* num_scores) {
-  return ChromeMLSafetyResult::kNoClassifier;
 }
 
 ChromeMLSession CreateSession(ChromeMLModel model,
@@ -217,6 +230,8 @@ ChromeMLSession CreateSession(ChromeMLModel model,
     instance->enable_audio_input = descriptor->enable_audio_input;
     instance->top_k = descriptor->top_k;
     instance->temperature = descriptor->temperature;
+    instance->allow_speculative_decoding =
+        descriptor->allow_speculative_decoding;
     if (descriptor->model_data) {
       instance->adaptation_file_id = descriptor->model_data->file_id;
       if (model_instance->backend_type == ml::ModelBackendType::kGpuBackend) {
@@ -245,6 +260,7 @@ ChromeMLSession CloneSession(ChromeMLSession session) {
       .enable_audio_input = instance->enable_audio_input,
       .top_k = instance->top_k,
       .temperature = instance->temperature,
+      .allow_speculative_decoding = instance->allow_speculative_decoding,
       .has_tool_declarations = instance->has_tool_declarations,
       .awaiting_tool_responses = instance->awaiting_tool_responses,
   });
@@ -267,13 +283,7 @@ bool SessionAppend(ChromeMLSession session,
     std::visit(
         absl::Overload{
             [&](ml::Token token) {
-              if (token == ml::Token::kSystem) {
-                in_system_prompt = true;
-              } else if (token == ml::Token::kUser ||
-                         token == ml::Token::kModel ||
-                         token == ml::Token::kEnd) {
-                in_system_prompt = false;
-              }
+              in_system_prompt = token == ml::Token::kSystem;
             },
             [&](const SkBitmap&) { CHECK(instance->enable_image_input); },
             [&](const ml::AudioBuffer&) {
@@ -287,6 +297,7 @@ bool SessionAppend(ChromeMLSession session,
                     << "Tool declaration ignored outside system prompt.";
               }
             },
+            [](const ml::ToolCall&) {},
             [&](const ml::ToolResponse&) {
               instance->awaiting_tool_responses = false;
             },
@@ -313,17 +324,22 @@ bool SessionGenerate(ChromeMLSession session,
                      const ChromeMLGenerateOptions* options,
                      ChromeMLCancel cancel) {
   auto* instance = reinterpret_cast<FakeSessionInstance*>(session);
-  auto OutputChunk = [output_fn =
-                          *options->output_fn](const std::string& chunk) {
+  int output_chunks = 0;
+  auto OutputChunk = [&](const std::string& chunk) {
     ChromeMLExecutionOutput output = {};
     if (chunk.empty()) {
       output.status = ChromeMLExecutionStatus::kComplete;
-      output_fn(&output);
+      if (g_calculate_tokens_decoded) {
+        constexpr int kEosTokenCount = 1;
+        output.tokens_decoded = output_chunks + kEosTokenCount;
+      }
+      (*options->output_fn)(&output);
       return;
     }
     output.status = ChromeMLExecutionStatus::kInProgress;
     output.text = chunk.c_str();
-    output_fn(&output);
+    output_chunks++;
+    (*options->output_fn)(&output);
   };
 
   if (instance->model_instance->backend_type ==
@@ -348,6 +364,20 @@ bool SessionGenerate(ChromeMLSession session,
     OutputChunk(base::StrCat(
         {"TopK: ", base::NumberToString(instance->top_k),
          ", Temp: ", base::NumberToString(instance->temperature)}));
+  }
+
+  if (instance->allow_speculative_decoding) {
+    OutputChunk("SpeculativeDecodingAllowed");
+  }
+
+  if (options->enable_thinking) {
+    std::string thought_str =
+        "Thinking (budget=" +
+        base::NumberToString(options->thinking_token_budget) + ")";
+    ChromeMLExecutionOutput thought_output = {};
+    thought_output.status = ChromeMLExecutionStatus::kInProgress;
+    thought_output.thought = thought_str.c_str();
+    (*options->output_fn)(&thought_output);
   }
 
   if (!instance->context.empty()) {
@@ -401,6 +431,8 @@ bool SessionExecuteModel(ChromeMLSession session,
       .max_output_tokens = options->max_output_tokens,
       .constraint = options->constraint,
       .output_fn = options->execution_output_fn,
+      .enable_thinking = options->enable_thinking,
+      .thinking_token_budget = options->thinking_token_budget,
   };
   return SessionGenerate(session, &gen_opts, cancel);
 }
@@ -415,7 +447,10 @@ void SessionSizeInTokensInputPiece(ChromeMLSession session,
     // SAFETY: `input_size` describes how big `input` is.
     const ml::InputPiece& piece = UNSAFE_BUFFERS(input[i]);
     if (!std::holds_alternative<std::string>(piece) &&
-        !std::holds_alternative<ml::Token>(piece)) {
+        !std::holds_alternative<ml::Token>(piece) &&
+        !std::holds_alternative<ml::ToolDeclaration>(piece) &&
+        !std::holds_alternative<ml::ToolCall>(piece) &&
+        !std::holds_alternative<ml::ToolResponse>(piece)) {
       continue;
     }
 
@@ -447,6 +482,8 @@ void SetConstraintFns(const ChromeMLConstraintFns* fns) {
   g_constraint_fns = *fns;
 }
 
+// TODO(crbug.com/500473306): Remove this once we switch over to
+// GetTokenizerParamsV3.
 bool GetTokenizerParams(ChromeMLModel model,
                         ChromeMLSession session,
                         const ChromeMLGetTokenizerParamsFn& fn,
@@ -471,38 +508,35 @@ bool GetTokenizerParams(ChromeMLModel model,
   return true;
 }
 
+// TODO(crbug.com/500473306): Remove this once we switch over to
+// GetTokenizerParamsV3. This was a temporary transition function to test out an
+// optimization, but is now abandoned since the optimization is unlikely to have
+// much of an impact.
 bool GetTokenizerParamsV2(ChromeMLModel model,
                           ChromeMLSession session,
                           const ChromeMLGetTokenizerParamsFn& fn) {
   return GetTokenizerParams(session, model, fn, /*use_optimization=*/true);
 }
 
-ChromeMLTSModel CreateTSModel(const ChromeMLTSModelDescriptor* descriptor) {
-  auto* instance = new FakeTsModelInstance{};
-  return reinterpret_cast<ChromeMLTSModel>(instance);
-}
-
-void DestroyTSModel(ChromeMLTSModel model) {
-  auto* instance = reinterpret_cast<FakeTsModelInstance*>(model);
-  delete instance;
-}
-
-ChromeMLSafetyResult TSModelClassifyTextSafety(ChromeMLTSModel model,
-                                               const char* text,
-                                               float* scores,
-                                               size_t* num_scores) {
-  if (*num_scores != 2) {
-    *num_scores = 2;
-    return ChromeMLSafetyResult::kInsufficientStorage;
-  }
-  bool has_unsafe = std::string(text).find("unsafe") != std::string::npos;
-  // SAFETY: Follows a C-API, num_scores checked above, test-only code.
-  UNSAFE_BUFFERS(scores[0]) = has_unsafe ? 0.8 : 0.2;
-  bool has_reasonable =
-      std::string(text).find("reasonable") != std::string::npos;
-  // SAFETY: Follows a C-API, num_scores checked above, test-only code.
-  UNSAFE_BUFFERS(scores[1]) = has_reasonable ? 0.2 : 0.8;
-  return ChromeMLSafetyResult::kOk;
+// TODO(crbug.com/500473306): Rename this to `GetTokenizerParams` once the other
+// versions of this function have been removed.
+bool GetTokenizerParamsV3(ChromeMLModel model,
+                          ChromeMLSession session,
+                          const ChromeMLGetTokenizerParamsV3Fn& fn) {
+  return GetTokenizerParamsV2(
+      model, session, [fn](const ChromeMLTokenizerParams& params) {
+        ChromeMLTokenizerParamsV3 paramsV3{
+            // TODO(crbug.com/531814326): Support multiple tokens.
+            .vocab_size = params.vocab_size,
+            .eos_token_ids_size = 1u,
+            .eos_token_ids = &params.eos_token_id,
+            .token_lens = params.token_lens,
+            .token_bytes = params.token_bytes,
+            .tokenize_fn = params.tokenize_fn,
+            .tokenize_user_data = params.tokenize_user_data,
+        };
+        fn(paramsV3);
+      });
 }
 
 TfLiteDelegate* CreateGpuDelegate() {
@@ -515,30 +549,61 @@ TfLiteDelegate* CreateGpuDelegateWithPrecision(GpuDelegatePrecision precision) {
 
 void DestroyGpuDelegate(TfLiteDelegate* delegate) {}
 
+struct FakeASRStream {
+  ChromeMLASRStreamOutputFn output_fn;
+  std::string polisher_data;
+};
+
 ChromeMLASRStream ASRCreateStream(ChromeMLSession session,
                                   const ChromeMLASRStreamOptions* options) {
   if (options->sample_rate_hz == 0) {
     return 0;
   }
-  return 1;
+  auto* stream = new FakeASRStream();
+  if (options->output_fn) {
+    stream->output_fn = *options->output_fn;
+  }
+  if (options->polisher_model != 0) {
+    auto* polisher_instance =
+        reinterpret_cast<FakeModelInstance*>(options->polisher_model);
+    stream->polisher_data = polisher_instance->model_data;
+  }
+  return reinterpret_cast<ChromeMLASRStream>(stream);
 }
 
 void ASRAddAudioChunk(ChromeMLASRStream stream, ml::AudioBuffer* audio_buffer) {
+  auto* fake_stream = reinterpret_cast<FakeASRStream*>(stream);
+  CHECK(fake_stream);
+  if (fake_stream->output_fn) {
+    std::string transcript_str(kFakeAsrTranscript);
+    if (!fake_stream->polisher_data.empty()) {
+      transcript_str += " (Polisher: " + fake_stream->polisher_data + ")";
+    }
+    ChromeMLASRStreamOutput output;
+    ChromeMLASRStreamOutputTranscript transcript{
+        .transcript = transcript_str.c_str(),
+        .is_final = true,
+        .from_timestamp_micros = kFakeAsrStartTimeMicros,
+        .to_timestamp_micros = kFakeAsrEndTimeMicros,
+    };
+    output.push_back(transcript);
+    fake_stream->output_fn(output);
+  }
 }
 
-void ASRDestroyStream(ChromeMLASRStream stream) {}
+void ASRDestroyStream(ChromeMLASRStream stream) {
+  delete reinterpret_cast<FakeASRStream*>(stream);
+}
 
 const ChromeMLAPI g_api = {
     .InitDawnProcs = &InitDawnProcs,
     .SetMetricsFns = &SetMetricsFns,
     .SetFatalErrorFn = &SetFatalErrorFn,
-    .ClassifyTextSafety = &ClassifyTextSafety,
     .DestroyModel = &DestroyModel,
     .GetEstimatedPerformance = &GetEstimatedPerformance,
     .QueryGPUAdapter = &QueryGPUAdapter,
     .GetCapabilities = &GetCapabilities,
     .SetFatalErrorNonGpuFn = &SetFatalErrorNonGpuFn,
-
     .SessionCreateModel = &SessionCreateModel,
     .SessionAppend = &SessionAppend,
     .SessionGenerate = &SessionGenerate,
@@ -554,15 +619,10 @@ const ChromeMLAPI g_api = {
     .SetConstraintFns = &SetConstraintFns,
     .GetTokenizerParams = &GetTokenizerParams,
     .GetTokenizerParamsV2 = &GetTokenizerParamsV2,
+    .GetTokenizerParamsV3 = &GetTokenizerParamsV3,
     .CreateGpuDelegate = &CreateGpuDelegate,
     .CreateGpuDelegateWithPrecision = &CreateGpuDelegateWithPrecision,
     .DestroyGpuDelegate = &DestroyGpuDelegate,
-    .ts_api =
-        {
-            .CreateModel = &CreateTSModel,
-            .DestroyModel = &DestroyTSModel,
-            .ClassifyTextSafety = &TSModelClassifyTextSafety,
-        },
     .asr_api =
         {
             .CreateStream = &ASRCreateStream,
@@ -574,6 +634,10 @@ const ChromeMLAPI g_api = {
 const ChromeMLAPI* GetFakeMlApi() {
   g_api.SetConstraintFns(ml::GetConstraintFns());
   return &g_api;
+}
+
+base::AutoReset<bool> EnableCalculateTokensDecodedForTesting() {
+  return {&g_calculate_tokens_decoded, true};
 }
 
 }  // namespace fake_ml

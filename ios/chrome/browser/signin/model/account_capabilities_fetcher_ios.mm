@@ -17,8 +17,8 @@ namespace ios {
 namespace {
 
 // Converts the value returned by SystemIdentityManager::FetchCapabilities()
-// to the format expected from CompleteFetchAndMaybeDestroySelf().
-std::optional<AccountCapabilities> AccountCapabilitiesFromCapabilitiesMap(
+// to the format expected from the fetch callbacks.
+AccountCapabilities AccountCapabilitiesFromCapabilitiesMap(
     std::map<std::string, SystemIdentityCapabilityResult> capabilities_map) {
   base::flat_map<std::string, bool> capabilities;
   for (const auto& pair : capabilities_map) {
@@ -46,10 +46,15 @@ AccountCapabilitiesFetcherIOS::AccountCapabilitiesFetcherIOS(
     const CoreAccountInfo& account_info,
     AccountCapabilitiesFetcher::FetchPriority fetch_priority,
     ChromeAccountManagerService* account_manager_service,
-    AccountCapabilitiesFetcher::OnCompleteCallback on_complete_callback)
-    : AccountCapabilitiesFetcher(account_info,
-                                 fetch_priority,
-                                 std::move(on_complete_callback)),
+    AccountCapabilitiesFetcher::OnSomeCapabilitiesFetchedCallback
+        on_some_capabilities_fetched_callback,
+    AccountCapabilitiesFetcher::OnAllFetchesCompleteCallback
+        on_all_fetches_complete_callback)
+    : AccountCapabilitiesFetcher(
+          account_info,
+          fetch_priority,
+          std::move(on_some_capabilities_fetched_callback),
+          std::move(on_all_fetches_complete_callback)),
       account_manager_service_(account_manager_service) {}
 
 void AccountCapabilitiesFetcherIOS::StartImpl() {
@@ -64,17 +69,23 @@ void AccountCapabilitiesFetcherIOS::StartImpl() {
     return;
   }
 
-  auto callback =
-      base::BindOnce(&AccountCapabilitiesFromCapabilitiesMap)
-          .Then(base::BindOnce(
-              &AccountCapabilitiesFetcherIOS::CompleteFetchAndMaybeDestroySelf,
+  std::vector<std::string> capability_names =
+      base::ToVector(AccountCapabilities::GetSupportedAccountCapabilityNames(),
+                     [](std::string_view sv) { return std::string(sv); });
+
+  auto partial_callback =
+      base::BindRepeating(&AccountCapabilitiesFromCapabilitiesMap)
+          .Then(base::BindRepeating(
+              &AccountCapabilitiesFetcherIOS::UpdateFetchedCapabilities,
               weak_ptr_factory_.GetWeakPtr()));
 
+  auto completion_callback = base::BindOnce(
+      &AccountCapabilitiesFetcherIOS::CompleteFetchAndMaybeDestroySelf,
+      weak_ptr_factory_.GetWeakPtr());
+
   GetApplicationContext()->GetSystemIdentityManager()->FetchCapabilities(
-      identity,
-      base::ToVector(AccountCapabilities::GetSupportedAccountCapabilityNames(),
-                     [](std::string_view sv) { return std::string(sv); }),
-      std::move(callback));
+      identity, capability_names, std::move(partial_callback),
+      std::move(completion_callback));
 }
 
 }  // namespace ios

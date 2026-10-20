@@ -4,8 +4,9 @@
 
 #include "chrome/updater/update_service_impl_impl.h"
 
+#include <stdint.h>
+
 #include <algorithm>
-#include <cstdint>
 #include <map>
 #include <memory>
 #include <optional>
@@ -33,7 +34,6 @@
 #include "base/run_loop.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_util.h"
-#include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/task/bind_post_task.h"
 #include "base/task/sequenced_task_runner.h"
@@ -74,6 +74,7 @@
 #include "components/update_client/update_client.h"
 #include "components/update_client/update_client_errors.h"
 #include "components/update_client/utils.h"
+#include "third_party/abseil-cpp/absl/strings/str_format.h"
 
 #if BUILDFLAG(IS_MAC)
 #include <sys/mount.h>
@@ -107,6 +108,7 @@ UpdateService::Result ToResult(update_client::Error error) {
     case update_client::Error::RETRY_LATER:
       return UpdateService::Result::kRetryLater;
     case update_client::Error::SERVICE_ERROR:
+    case update_client::Error::UPDATE_DISABLED:
       return UpdateService::Result::kServiceFailed;
     case update_client::Error::UPDATE_CHECK_ERROR:
       return UpdateService::Result::kUpdateCheckFailed;
@@ -221,6 +223,7 @@ std::wstring GetTextForUpdateClientInstallError(int error_code,
         update_client::InstallError::INSTALL_VERIFICATION_FAILED);
     INSTALL_SWITCH_ENTRY(update_client::InstallError::MISSING_INSTALL_PARAMS);
     INSTALL_SWITCH_ENTRY(update_client::InstallError::LAUNCH_PROCESS_FAILED);
+    INSTALL_SWITCH_ENTRY(update_client::InstallError::INSTALL_PATH_ERROR);
     INSTALL_SWITCH_ENTRY(update_client::InstallError::CUSTOM_ERROR_BASE);
     default:
       return GetLocalizedStringF(IDS_GENERIC_INSTALL_ERROR_BASE,
@@ -240,6 +243,8 @@ std::wstring GetTextForDownloadError(int error, const std::wstring& language) {
     DOWNLOAD_SWITCH_ENTRY(update_client::CrxDownloaderError::NO_HASH);
     DOWNLOAD_SWITCH_ENTRY(
         update_client::CrxDownloaderError::BITS_TOO_MANY_JOBS);
+    DOWNLOAD_SWITCH_ENTRY(
+        update_client::CrxDownloaderError::DO_TOO_MANY_DOWNLOADS);
     DOWNLOAD_SWITCH_ENTRY(update_client::CrxDownloaderError::GENERIC_ERROR);
 
     case std::to_underlying(update_client::CrxDownloaderError::BAD_HASH):
@@ -380,7 +385,7 @@ std::wstring GetTextForUpdateCheckError(int error,
       return GetLocalizedStringF(
           IDS_GENERIC_UPDATE_CHECK_ERROR_BASE,
           error >= 400 && error < 600
-              ? base::UTF8ToWide(base::StringPrintf("HTTP %d", error))
+              ? base::UTF8ToWide(absl::StrFormat("HTTP %d", error))
               : GetTextForSystemError(error),
           language);
   }
@@ -462,10 +467,10 @@ std::string GetInstallerText(UpdateService::ErrorCategory error_category,
            return std::wstring();
          }
          return base::StrCat(
-             {L"\n", GetLocalizedStringF(IDS_EXTRA_CODE_BASE,
-                                         base::UTF8ToWide(base::StringPrintf(
-                                             "%#x", extra_code)),
-                                         language_w)});
+             {L"\n", GetLocalizedStringF(
+                         IDS_EXTRA_CODE_BASE,
+                         base::UTF8ToWide(absl::StrFormat("%#x", extra_code)),
+                         language_w)});
        }()}));
 }
 #endif  // BUILDFLAG(IS_WIN)
@@ -768,8 +773,8 @@ void UpdateServiceImplImpl::RegisterApp(
     return;
   }
 
-  if (request.app_id.empty()) {
-    VLOG(1) << "Refusing to register an empty app ID.";
+  if (!IsValidAppId(request.app_id)) {
+    VLOG(1) << "Refusing to register an invalid app ID: " << request.app_id;
     base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
         FROM_HERE, base::BindOnce(std::move(callback), kRegistrationError));
     return;
@@ -1002,6 +1007,14 @@ void UpdateServiceImplImpl::CheckForUpdate(
   VLOG(1) << __func__ << ": " << app_id;
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
+  if (!IsValidAppId(app_id)) {
+    VLOG(1) << "Refusing to check update for an invalid app ID: " << app_id;
+    base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+        FROM_HERE,
+        base::BindOnce(std::move(callback), Result::kInvalidArgument));
+    return;
+  }
+
   base::MakeRefCounted<HandleInconsistentAppsTask>(config_, GetUpdaterScope())
       ->Run(base::BindOnce(
           &UpdateServiceImplImpl::FetchPolicies, this,
@@ -1056,6 +1069,14 @@ void UpdateServiceImplImpl::Update(
     base::OnceCallback<void(Result)> callback) {
   VLOG(1) << __func__;
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+
+  if (!IsValidAppId(app_id)) {
+    VLOG(1) << "Refusing to update an invalid app ID: " << app_id;
+    base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+        FROM_HERE,
+        base::BindOnce(std::move(callback), Result::kInvalidArgument));
+    return;
+  }
 
   std::unique_ptr<UpdateEndEvent> event =
       std::make_unique<UpdateEndEvent>(UpdateStartEvent()
@@ -1147,14 +1168,14 @@ void UpdateServiceImplImpl::UpdateAll(
       app_ids, base::ToLowerASCII(kUpdaterAppId),
       static_cast<std::string (*)(std::string_view)>(&base::ToLowerASCII)));
 
-  const Priority priority = Priority::kBackground;
+  constexpr Priority kPriority = Priority::kBackground;
 
   auto events_by_app_id =
       std::make_unique<base::flat_map<std::string, UpdateEndEvent>>();
   for (const std::string& app_id : app_ids) {
     (*events_by_app_id)[app_id] = UpdateStartEvent()
                                       .SetAppId(app_id)
-                                      .SetPriority(priority)
+                                      .SetPriority(kPriority)
                                       .WriteAsyncAndReturnEndEvent();
   }
   state_update =
@@ -1192,10 +1213,10 @@ void UpdateServiceImplImpl::UpdateAll(
                  .Then(std::move(callback));
 
   ShouldBlockUpdateForMeteredNetwork(
-      priority,
+      kPriority,
       base::BindOnce(
           &UpdateServiceImplImpl::OnShouldBlockUpdateForMeteredNetwork, this,
-          app_ids, kEmptyFlatMap, kEmptyFlatMap, priority,
+          app_ids, kEmptyFlatMap, kEmptyFlatMap, kPriority,
           UpdateService::PolicySameVersionUpdate::kNotAllowed,
           /*language=*/"", state_update,
           base::BindOnce(
@@ -1221,6 +1242,14 @@ void UpdateServiceImplImpl::Install(
     base::OnceCallback<void(Result)> callback) {
   VLOG(1) << __func__;
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+
+  if (!IsValidAppId(registration.app_id)) {
+    VLOG(1) << "Refusing to install an invalid app ID: " << registration.app_id;
+    base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+        FROM_HERE,
+        base::BindOnce(std::move(callback), Result::kInvalidArgument));
+    return;
+  }
 
   std::unique_ptr<InstallEndEvent> event =
       std::make_unique<InstallEndEvent>(InstallStartEvent()
@@ -1337,6 +1366,11 @@ void UpdateServiceImplImpl::InstallImpl(
 void UpdateServiceImplImpl::CancelInstalls(const std::string& app_id) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   VLOG(1) << __func__;
+
+  if (!IsValidAppId(app_id)) {
+    VLOG(1) << "Refusing to cancel installs for an invalid app ID: " << app_id;
+    return;
+  }
   auto [first, last] = cancellation_callbacks_.equal_range(app_id);
   std::ranges::for_each(first, last, [](const auto& i) { i.second.Run(); });
 }
@@ -1353,6 +1387,14 @@ void UpdateServiceImplImpl::RunInstaller(
   VLOG(1) << __func__ << ": " << app_id << ": " << installer_path << ": "
           << install_args << ": " << install_data << ": " << install_settings;
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+
+  if (!IsValidAppId(app_id)) {
+    VLOG(1) << "Refusing to run installer for an invalid app ID: " << app_id;
+    base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+        FROM_HERE,
+        base::BindOnce(std::move(callback), Result::kInvalidArgument));
+    return;
+  }
 
   base::MakeRefCounted<HandleInconsistentAppsTask>(config_, GetUpdaterScope())
       ->Run(base::BindOnce(

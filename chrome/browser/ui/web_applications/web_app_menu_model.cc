@@ -13,9 +13,9 @@
 #include "chrome/app/vector_icons/vector_icons.h"
 #include "chrome/browser/media/router/media_router_feature.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/extensions/extensions_container.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/toolbar/app_menu_model.h"
@@ -30,7 +30,6 @@
 #include "components/vector_icons/vector_icons.h"
 #include "components/webapps/browser/installable/installable_metrics.h"
 #include "content/public/common/content_features.h"
-#include "third_party/blink/public/common/features.h"
 #include "ui/base/accelerators/menu_label_accelerator_util.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/models/image_model.h"
@@ -46,14 +45,14 @@
 
 namespace {
 
-bool ShouldAllowOpenInChrome(Browser* browser) {
+bool ShouldAllowOpenInChrome(BrowserWindowInterface* browser) {
   // Isolated Web Apps shouldn't be opened in Chrome.
   const bool is_isolated_web_app =
       web_app::AppBrowserController::IsIsolatedWebApp(browser);
   // Web Apps with enabled prevent close shouldn't be opened in Chrome.
+  auto* const app_controller = web_app::AppBrowserController::From(browser);
   const bool prevent_close_enabled =
-      browser->app_controller() &&
-      browser->app_controller()->IsPreventCloseEnabled();
+      app_controller && app_controller->IsPreventCloseEnabled();
   return !is_isolated_web_app && !prevent_close_enabled;
 }
 
@@ -69,11 +68,13 @@ void AddItemWithStringIdAndVectorIcon(ui::SimpleMenuModel* model,
 
 }  // namespace
 
+DEFINE_CLASS_ELEMENT_IDENTIFIER_VALUE(WebAppMenuModel, kAppInfoMenuItem);
+
 constexpr int WebAppMenuModel::kUninstallAppCommandId;
 constexpr int WebAppMenuModel::kExtensionsMenuCommandId;
 
 WebAppMenuModel::WebAppMenuModel(ui::AcceleratorProvider* provider,
-                                 Browser* browser)
+                                 BrowserWindowInterface* browser)
     : AppMenuModel(provider, browser) {}
 
 WebAppMenuModel::~WebAppMenuModel() = default;
@@ -81,7 +82,7 @@ WebAppMenuModel::~WebAppMenuModel() = default;
 bool WebAppMenuModel::IsCommandIdEnabled(int command_id) const {
   switch (command_id) {
     case kUninstallAppCommandId:
-      return browser()->app_controller()->CanUserUninstall();
+      return web_app::AppBrowserController::From(browser())->CanUserUninstall();
     case kExtensionsMenuCommandId:
     case IDC_OPEN_IN_CHROME:
     case IDC_WEB_APP_UPGRADE_DIALOG:
@@ -100,7 +101,7 @@ void WebAppMenuModel::ExecuteCommand(int command_id, int event_flags) {
   switch (command_id) {
     case kUninstallAppCommandId:
       LogMenuAction(MENU_ACTION_UNINSTALL_APP);
-      browser()->app_controller()->Uninstall(
+      web_app::AppBrowserController::From(browser())->Uninstall(
           webapps::WebappUninstallSource::kAppMenu);
       break;
     case kExtensionsMenuCommandId:
@@ -113,8 +114,8 @@ void WebAppMenuModel::ExecuteCommand(int command_id, int event_flags) {
       break;
     case IDC_WEB_APP_UPGRADE_DIALOG:
       LogMenuAction(MENU_ACTION_TRIGGER_APP_UPDATE_DIALOG);
-      browser()->app_controller()->TriggerAppUpdateOrMigrationDialog(
-          base::TimeTicks::Now());
+      web_app::AppBrowserController::From(browser())
+          ->TriggerAppUpdateOrMigrationDialog(base::TimeTicks::Now());
       break;
     default:
       AppMenuModel::ExecuteCommand(command_id, event_flags);
@@ -123,14 +124,13 @@ void WebAppMenuModel::ExecuteCommand(int command_id, int event_flags) {
 }
 
 void WebAppMenuModel::Build() {
-  CHECK(browser()->app_controller());
+  auto* const app_browser_controller =
+      web_app::AppBrowserController::From(browser());
+  CHECK(app_browser_controller);
   web_app::WebAppBrowserController* app_controller =
-      browser()->app_controller()->AsWebAppBrowserController();
+      app_browser_controller->AsWebAppBrowserController();
   if (app_controller && (app_controller->HasPendingUpdate() ||
                          app_controller->HasPendingMigration())) {
-    if (app_controller->HasPendingMigration()) {
-      CHECK(base::FeatureList::IsEnabled(blink::features::kWebAppMigrationApi));
-    }
     AddSeparator(ui::SPACING_SEPARATOR);
     gfx::ImageSkia icon = app_controller->GetAppMenuIcon();
     ui::ImageModel update_icon;
@@ -151,8 +151,9 @@ void WebAppMenuModel::Build() {
 
   AddItemWithStringIdAndVectorIcon(
       this, IDC_WEB_APP_MENU_APP_INFO, IDS_APP_CONTEXT_MENU_SHOW_INFO,
-      browser()->GetFeatures().location_bar_model()->GetVectorIcon());
+      LocationBarModel::From(browser())->GetVectorIcon());
   size_t app_info_index = GetItemCount() - 1;
+  SetElementIdentifierAt(app_info_index, kAppInfoMenuItem);
 
   CHECK(browser());
   content::WebContents* web_contents =
@@ -170,8 +171,7 @@ void WebAppMenuModel::Build() {
     // string of characters, so instead of displaying the origin, the short name
     // of the app will be displayed.
     if (is_isolated_web_app) {
-      std::u16string short_name =
-          browser()->app_controller()->GetAppShortName();
+      std::u16string short_name = app_browser_controller->GetAppShortName();
       // For Isolated Web Apps, |GetAppShortName()| must be non-empty.
       display_text = short_name;
     } else {
@@ -196,16 +196,15 @@ void WebAppMenuModel::Build() {
     AddSeparator(ui::NORMAL_SEPARATOR);
   }
 
-  if (browser()->app_controller() &&
-      browser()->app_controller()->has_tab_strip() &&
-      !browser()->app_controller()->ShouldHideNewTabButton()) {
+  if (app_browser_controller && app_browser_controller->has_tab_strip() &&
+      !app_browser_controller->ShouldHideNewTabButton()) {
     AddItemWithStringIdAndVectorIcon(
         this, IDC_NEW_TAB, IDS_NEW_TAB,
         features::IsRoundedIconsEnabled() ? kTabIcon : kNewTabRefreshOldIcon);
   }
   AddItemWithStringIdAndVectorIcon(this, IDC_COPY_URL, IDS_COPY_URL,
                                    features::IsRoundedIconsEnabled()
-                                       ? kLinkIcon
+                                       ? vector_icons::kLinkIcon
                                        : kLinkChromeRefreshOldIcon);
 
   if (ShouldAllowOpenInChrome(browser())) {
@@ -221,7 +220,7 @@ void WebAppMenuModel::Build() {
     move_to_desks_submenu_ = std::make_unique<chromeos::MoveToDesksMenuModel>(
         std::make_unique<chromeos::MoveToDesksMenuDelegate>(
             views::Widget::GetWidgetForNativeWindow(
-                browser()->window()->GetNativeWindow())));
+                browser()->GetWindow()->GetNativeWindow())));
     AddSubMenuWithStringId(chromeos::MoveToDesksMenuModel::kMenuCommandId,
                            IDS_MOVE_TO_DESKS_MENU,
                            move_to_desks_submenu_.get());
@@ -231,15 +230,15 @@ void WebAppMenuModel::Build() {
 // Chrome OS's app list is prominent enough to not need a separate uninstall
 // option in the app menu.
 #if !BUILDFLAG(IS_CHROMEOS)
-  DCHECK(browser()->app_controller());
-  if (browser()->app_controller()->IsInstalled()) {
+  DCHECK(app_browser_controller);
+  if (app_browser_controller->IsInstalled()) {
     AddSeparator(ui::NORMAL_SEPARATOR);
     AddItemWithIcon(
         kUninstallAppCommandId,
         l10n_util::GetStringFUTF16(
             IDS_UNINSTALL_FROM_OS_LAUNCH_SURFACE,
             ui::EscapeMenuLabelAmpersands(
-                browser()->app_controller()->GetAppShortName())),
+                app_browser_controller->GetAppShortName())),
         ui::ImageModel::FromVectorIcon(features::IsRoundedIconsEnabled()
                                            ? kDeleteIcon
                                            : kTrashCanRefreshOldIcon));
@@ -253,7 +252,7 @@ void WebAppMenuModel::Build() {
       features::IsRoundedIconsEnabled() ? kPrintIcon : kPrintMenuOldIcon);
   CreateFindAndEditSubMenu();
 
-  if (media_router::MediaRouterEnabled(browser()->profile())) {
+  if (media_router::MediaRouterEnabled(browser()->GetProfile())) {
     AddItemWithStringIdAndVectorIcon(
         this, IDC_ROUTE_MEDIA, IDS_MEDIA_ROUTER_MENU_ITEM_TITLE,
         features::IsRoundedIconsEnabled() ? kCastIcon

@@ -67,7 +67,8 @@ BaseSafeBrowsingErrorUI::SBErrorDisplayOptions GetDefaultDisplayOptions(
             SECURITY_SENSITIVE_SAFE_BROWSING_INTERSTITIAL);
   }
   return BaseSafeBrowsingErrorUI::SBErrorDisplayOptions(
-      UnsafeResource::IsMainPageLoadPendingWithSyncCheck(resource.threat_type),
+      UnsafeResource::IsMainPageLoadPendingWithSyncCheck(
+          resource.threat_type, resource.threat_source),
       /*is_extended_reporting_opt_in_allowed=*/false,
       /*is_off_the_record=*/false,
       /*is_extended_reporting=*/false,
@@ -86,17 +87,18 @@ void ReportOnSecurityInterstitialProceeded(
     ProfileIOS* profile,
     GURL url,
     safe_browsing::SBThreatType threat_type) {
-    enterprise_connectors::ReportingEventRouter* router =
-        enterprise_connectors::IOSReportingEventRouterFactory::GetForProfile(
-            profile);
-    if (!router) {
-      return;
-    }
-    google::protobuf::RepeatedPtrField<safe_browsing::ReferrerChainEntry>
-        referrer_chain;
-    router->OnSecurityInterstitialProceeded(
-        url, safe_browsing::GetThreatTypeStringForInterstitial(threat_type),
-        /*net_error_code=*/0, referrer_chain);
+  enterprise_connectors::ReportingEventRouter* router =
+      enterprise_connectors::IOSReportingEventRouterFactory::GetForProfile(
+          profile);
+  if (!router) {
+    return;
+  }
+  google::protobuf::RepeatedPtrField<safe_browsing::ReferrerChainEntry>
+      referrer_chain;
+  // TODO(crbug.com/558721044): Plumb tab title on iOS.
+  router->OnSecurityInterstitialProceeded(
+      url, safe_browsing::GetThreatTypeStringForInterstitial(threat_type),
+      /*net_error_code=*/0, referrer_chain, /*tab_title=*/"");
 }
 
 }  // namespace
@@ -122,7 +124,8 @@ SafeBrowsingBlockingPage::SafeBrowsingBlockingPage(
                                   client),
       is_main_page_load_blocked_(
           UnsafeResource::IsMainPageLoadPendingWithSyncCheck(
-              resource.threat_type)),
+              resource.threat_type,
+              resource.threat_source)),
       error_ui_(std::make_unique<SafeBrowsingLoudErrorUI>(
           resource.url,
           GetUnsafeResourceInterstitialReason(resource),
@@ -198,7 +201,10 @@ SafeBrowsingBlockingPage::SafeBrowsingControllerClient::
     : IOSBlockingPageControllerClient(
           resource.weak_web_state.get(),
           CreateMetricsHelper(resource),
-          GetApplicationContext()->GetApplicationLocaleStorage()->Get()),
+          std::string(GetApplicationContext()
+                          ->GetApplicationLocaleStorage()
+                          ->GetTag()
+                          .tag_string())),
       url_(SafeBrowsingUrlAllowList::GetDecisionUrl(resource)),
       threat_type_(resource.threat_type),
       threat_source_(resource.threat_source) {}

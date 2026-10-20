@@ -65,15 +65,12 @@ bool CSSAnimationData::NamesMatch(const CSSAnimationData& other) const {
                             });
 }
 
-const StyleTimeline& CSSAnimationData::InitialTimeline() {
-  DEFINE_STATIC_LOCAL(const StyleTimeline, timeline, (CSSValueID::kAuto));
-  return timeline;
+StyleTimeline CSSAnimationData::InitialTimeline() {
+  return StyleTimeline(CSSValueID::kAuto);
 }
 
-const StyleTimeline& CSSAnimationData::InitialTimelineTriggerSource() {
-  DEFINE_STATIC_LOCAL(const StyleTimeline, timeline_trigger_source,
-                      (CSSValueID::kAuto));
-  return timeline_trigger_source;
+StyleTimeline CSSAnimationData::InitialTimelineTriggerSource() {
+  return StyleTimeline(CSSValueID::kAuto);
 }
 
 bool CSSAnimationData::AnimationsMatchForStyleRecalc(
@@ -112,8 +109,10 @@ const StyleTimeline& CSSAnimationData::GetTimelineTriggerSource(
 const Member<const StyleTriggerAttachmentVector>
 CSSAnimationData::GetTriggerAttachments(size_t index) const {
   DCHECK_LT(index, name_list_.size());
+  // `index` is less than `trigger_attachments_list_.size()`, which
+  // is wtf_size_t.
   return (index < trigger_attachments_list_.size())
-             ? trigger_attachments_list_.at(index)
+             ? trigger_attachments_list_.at(static_cast<wtf_size_t>(index))
              : nullptr;
 }
 

@@ -4,6 +4,7 @@
 
 #include "services/network/local_network_access_url_loader_interceptor.h"
 
+#include "base/strings/string_util.h"
 #include "net/base/transport_info.h"
 #include "net/log/net_log_event_type.h"
 #include "net/log/net_log_with_source.h"
@@ -11,6 +12,7 @@
 #include "services/network/public/cpp/local_network_access_check_result.h"
 #include "services/network/public/mojom/devtools_observer.mojom.h"
 #include "services/network/public/mojom/url_loader_network_service_observer.mojom.h"
+#include "url/gurl.h"
 
 namespace network {
 
@@ -44,7 +46,7 @@ net::Error LocalNetworkAccessUrlLoaderInterceptor::OnConnected(
               url_loader_network_observer);
   std::optional<mojom::CorsError> cors_error =
       LocalNetworkAccessCheckResultToCorsError(result);
-  // If there's no PNA-related CORS error, the connection is allowed (from PNA's
+  // If there's no LNA-related CORS error, the connection is allowed (from LNA's
   // perspective).
   if (!cors_error.has_value()) {
     return net::OK;
@@ -193,6 +195,11 @@ LocalNetworkAccessCheckResult LocalNetworkAccessUrlLoaderInterceptor::DoCheck(
 
   net_log.AddEvent(net::NetLogEventType::LOCAL_NETWORK_ACCESS_CHECK, [&] {
     return base::DictValue()
+        .Set("transport_info", transport_info.ToString())
+        .Set("address_space_overrides",
+             base::JoinString(
+                 IPAddressSpaceOverrides::GetInstance().GetCurrentOverrides(),
+                 ","))
         .Set("client_address_space",
              IPAddressSpaceToStringPiece(client_address_space))
         .Set("resource_address_space",

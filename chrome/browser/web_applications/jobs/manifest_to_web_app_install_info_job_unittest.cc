@@ -12,6 +12,10 @@
 #include <utility>
 #include <vector>
 
+#include "base/check.h"
+#include "base/feature_list.h"
+#include "base/i18n/language_tag.h"
+#include "base/i18n/tag_converters.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/bind.h"
@@ -22,7 +26,6 @@
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/global_features.h"
 #include "chrome/browser/web_applications/model/display_override.h"
-#include "chrome/browser/web_applications/os_integration/web_app_file_handler_manager.h"
 #include "chrome/browser/web_applications/test/fake_web_contents_manager.h"
 #include "chrome/browser/web_applications/test/web_app_install_test_utils.h"
 #include "chrome/browser/web_applications/test/web_app_test.h"
@@ -166,8 +169,8 @@ class ManifestToWebAppInstallInfoJobTest : public WebAppTest {
 
 TEST_F(ManifestToWebAppInstallInfoJobTest, BasicFieldsPopulated) {
   base::test::ScopedFeatureList feature_list;
-  feature_list.InitWithFeatures({blink::features::kFileHandlingIcons,
-                                 blink::features::kWebAppManifestLockScreen},
+  feature_list.InitWithFeatures({blink::features::kWebAppManifestLockScreen,
+                                 blink::features::kUnframedIwa},
                                 /*disabled_features=*/{});
 
   SetupBasicPageState();
@@ -183,12 +186,6 @@ TEST_F(ManifestToWebAppInstallInfoJobTest, BasicFieldsPopulated) {
     handler->action = GURL("http://example.com/open-files");
     handler->accept[u"image/png"].push_back(u".png");
     handler->name = u"Images";
-    {
-      blink::Manifest::ImageResource icon;
-      icon.src = GURL("fav1.png");
-      icon.purpose = {Purpose::ANY, Purpose::MONOCHROME};
-      handler->icons.push_back(icon);
-    }
     manifest->file_handlers.push_back(std::move(handler));
   }
 
@@ -529,18 +526,12 @@ TEST_F(ManifestToWebAppInstallInfoJobTest, TabStripMetadata) {
             GURL("https://www.example.com/"));
 }
 
-TEST_F(ManifestToWebAppInstallInfoJobTest, HomeTabAndFileHandlingIcons) {
-  base::test::ScopedFeatureList feature_list(
-      blink::features::kFileHandlingIcons);
-  WebAppFileHandlerManager::SetIconsSupportedByOsForTesting(true);
+TEST_F(ManifestToWebAppInstallInfoJobTest, HomeTabIcons) {
   SetupBasicPageState();
   auto& manifest = GetPageManifest();
   GURL tab_strip_icon_url("http://www.foo.bar/tab_strip/icon.png");
   int tab_strip_size = 16;
-  GURL file_handler_icon_url("http://www.foo.bar/file_handler/icon.png");
-  int file_handler_size = 32;
 
-  // Set up tabstrip metadata with icons.
   TabStrip tab_strip;
   tab_strip.home_tab = web_app::TabStrip::Visibility::kAuto;
   blink::Manifest::HomeTabParams home_tab_params;
@@ -549,45 +540,19 @@ TEST_F(ManifestToWebAppInstallInfoJobTest, HomeTabAndFileHandlingIcons) {
   icon.purpose.push_back(web_app::Purpose::ANY);
   icon.sizes.emplace_back(tab_strip_size, tab_strip_size);
   home_tab_params.icons.push_back(std::move(icon));
-
   tab_strip.home_tab = home_tab_params;
   manifest->tab_strip = std::move(tab_strip);
 
-  // Set up file handler metadata with icons.
-  {
-    auto handler = blink::mojom::ManifestFileHandler::New();
-    handler->action = GURL("http://www.foo.bar/open-files");
-    handler->accept[u"image/png"].push_back(u".png");
-    handler->name = u"Images";
-    {
-      blink::Manifest::ImageResource file_icon;
-      file_icon.src = file_handler_icon_url;
-      file_icon.purpose = {Purpose::ANY, Purpose::MONOCHROME};
-      file_icon.sizes.emplace_back(file_handler_size, file_handler_size);
-      handler->icons.push_back(file_icon);
-    }
-    manifest->file_handlers.push_back(std::move(handler));
-  }
-
-  // Ensure icons are set up correctly in the web_contents.
   SkBitmap tab_strip_icon =
       gfx::test::CreateBitmap(tab_strip_size, SK_ColorBLUE);
   web_contents_manager().GetOrCreateIconState(tab_strip_icon_url).bitmaps = {
       tab_strip_icon};
-  SkBitmap file_handler_icon =
-      gfx::test::CreateBitmap(file_handler_size, SK_ColorRED);
-  web_contents_manager().GetOrCreateIconState(file_handler_icon_url).bitmaps = {
-      file_handler_icon};
 
-  // Verify bitmaps are populated correctly.
   auto web_app_info = GetWebAppInstallInfoFromJob(*manifest);
-  EXPECT_EQ(2u, web_app_info->other_icon_bitmaps.size());
-  EXPECT_TRUE(web_app_info->other_icon_bitmaps.contains(tab_strip_icon_url));
-  EXPECT_TRUE(web_app_info->other_icon_bitmaps.contains(file_handler_icon_url));
+  ASSERT_EQ(1u, web_app_info->other_icon_bitmaps.size());
+  ASSERT_TRUE(web_app_info->other_icon_bitmaps.contains(tab_strip_icon_url));
   EXPECT_THAT(web_app_info->other_icon_bitmaps[tab_strip_icon_url][0],
               gfx::test::EqualsBitmap(tab_strip_icon));
-  EXPECT_THAT(web_app_info->other_icon_bitmaps[file_handler_icon_url][0],
-              gfx::test::EqualsBitmap(file_handler_icon));
 }
 
 TEST_F(ManifestToWebAppInstallInfoJobTest, TabIconsLargeSizeIgnored) {
@@ -750,6 +715,38 @@ TEST_F(ManifestToWebAppInstallInfoJobTest, MigrateFromDropsCrossSiteData) {
             web_app_info->migration_sources[0].manifest_id().spec());
 }
 
+TEST_F(ManifestToWebAppInstallInfoJobTest,
+       ScopeExtensionsDropsNonHttpsAndOpaqueData) {
+  SetupBasicPageState();
+  auto& manifest = GetPageManifest();
+
+  {
+    auto scope_ext_http = blink::mojom::ManifestScopeExtension::New();
+    scope_ext_http->origin =
+        url::Origin::Create(GURL("http://insecure.example.com/"));
+    scope_ext_http->has_origin_wildcard = false;
+    manifest->scope_extensions.push_back(std::move(scope_ext_http));
+  }
+  {
+    auto scope_ext_opaque = blink::mojom::ManifestScopeExtension::New();
+    scope_ext_opaque->origin = url::Origin();
+    scope_ext_opaque->has_origin_wildcard = false;
+    manifest->scope_extensions.push_back(std::move(scope_ext_opaque));
+  }
+  {
+    auto scope_ext_valid = blink::mojom::ManifestScopeExtension::New();
+    scope_ext_valid->origin =
+        url::Origin::Create(GURL("https://secure.example.com/"));
+    scope_ext_valid->has_origin_wildcard = false;
+    manifest->scope_extensions.push_back(std::move(scope_ext_valid));
+  }
+
+  auto web_app_info = GetWebAppInstallInfoFromJob(*manifest);
+  ASSERT_EQ(1u, web_app_info->scope_extensions.size());
+  EXPECT_EQ(url::Origin::Create(GURL("https://secure.example.com/")),
+            web_app_info->scope_extensions.begin()->origin);
+}
+
 TEST_F(ManifestToWebAppInstallInfoJobTest, InvalidManifestUrl) {
   SetupBasicPageState();
   auto& manifest = GetPageManifest();
@@ -763,9 +760,6 @@ TEST_F(ManifestToWebAppInstallInfoJobTest, InvalidManifestUrl) {
 // |icons_with_size_any| based on the absence of a size parameter.
 TEST_F(ManifestToWebAppInstallInfoJobTest,
        PopulateAnyIconsCorrectlyManifestParsingSVGOnly) {
-  WebAppFileHandlerManager::SetIconsSupportedByOsForTesting(/*value=*/true);
-  base::test::ScopedFeatureList feature_list(
-      blink::features::kFileHandlingIcons);
   SetupBasicPageState();
   auto& manifest = GetPageManifest();
 
@@ -776,10 +770,6 @@ TEST_F(ManifestToWebAppInstallInfoJobTest,
       "https://www.example.com/manifest_image_no_size.svg");
   const GURL manifest_icon_size_url(
       "https://www.example.com/manifest_image_size.svg");
-  const GURL file_handling_no_size_url(
-      "https://www.example.com/file_handling_no_size.svg");
-  const GURL file_handling_size_url(
-      "https://www.example.com/file_handling_size.png");
   const GURL shortcut_icon_no_size_url(
       "https://www.example.com/shortcut_menu_icon_no_size.svg");
   const GURL shortcut_icon_size_url(
@@ -812,32 +802,6 @@ TEST_F(ManifestToWebAppInstallInfoJobTest,
       blink::mojom::ManifestImageResource_Purpose::ANY};
   manifest->icons.push_back(std::move(manifest_icon_size));
   expected_icon_metadata.manifest_icon_provided_sizes.emplace(24, 24);
-
-  // Sample file handler with no size specified for icons.
-  auto file_handler = blink::mojom::ManifestFileHandler::New();
-  file_handler->action = GURL("https://www.action.com/");
-  file_handler->name = u"Random File";
-  file_handler->accept[u"text/html"] = {u".html"};
-
-  blink::Manifest::ImageResource file_handling_icon_no_size;
-  file_handling_icon_no_size.src = file_handling_no_size_url;
-  file_handling_icon_no_size.sizes = {{0, 0}};
-  file_handling_icon_no_size.purpose = {
-      blink::mojom::ManifestImageResource_Purpose::MASKABLE};
-  file_handler->icons.push_back(std::move(file_handling_icon_no_size));
-
-  // Set up the expected icon metadata for file handling icons.
-  expected_icon_metadata.file_handling_icons[IconPurpose::MASKABLE] =
-      file_handling_no_size_url;
-
-  blink::Manifest::ImageResource file_handling_icon_size;
-  file_handling_icon_size.src = file_handling_size_url;
-  file_handling_icon_size.sizes = {{64, 64}};
-  file_handling_icon_size.purpose = {
-      blink::mojom::ManifestImageResource_Purpose::MONOCHROME};
-  file_handler->icons.push_back(std::move(file_handling_icon_size));
-  manifest->file_handlers.push_back(std::move(file_handler));
-  expected_icon_metadata.file_handling_icon_provided_sizes.emplace(64, 64);
 
   // Sample shortcut menu item info with no size specified for icons.
   blink::Manifest::ShortcutItem shortcut_item;
@@ -895,10 +859,6 @@ TEST_F(ManifestToWebAppInstallInfoJobTest,
 }
 
 TEST_F(ManifestToWebAppInstallInfoJobTest, DeferIconFetching) {
-  base::test::ScopedFeatureList feature_list(
-      blink::features::kFileHandlingIcons);
-  WebAppFileHandlerManager::SetIconsSupportedByOsForTesting(true);
-
   // This manifest already has a default icon of size 64 populated that is blue
   // in color.
   SetupBasicPageState();
@@ -1367,13 +1327,17 @@ TEST_F(ManifestToWebAppInstallInfoTrustedIconTest,
 class ManifestToWebAppInstallInfoLocalizationTest
     : public ManifestToWebAppInstallInfoJobTest {
  protected:
-  void SetUp() override {
-    ManifestToWebAppInstallInfoJobTest::SetUp();
-    feature_list_.InitAndEnableFeature(
-        blink::features::kWebAppManifestLocalization);
+  // Converts `locale` into a `base::i18n::LanguageTag`, failing the test if it
+  // is not a valid BCP47 language tag.
+  static base::i18n::LanguageTag ToLanguageTag(const std::string& locale) {
+    std::optional<base::i18n::LanguageTag> tag =
+        base::i18n::GetLanguageTagFromString(locale);
+    CHECK(tag.has_value()) << "Not a valid language tag: " << locale;
+    return *tag;
   }
 
-  std::pair<icu::Locale, blink::mojom::ManifestLocalizedTextObjectPtr>
+  std::pair<base::i18n::LanguageTag,
+            blink::mojom::ManifestLocalizedTextObjectPtr>
   AddLocalizedText(const std::string& locale,
                    const std::u16string& value,
                    const std::optional<std::u16string>& lang = std::nullopt,
@@ -1383,14 +1347,16 @@ class ManifestToWebAppInstallInfoLocalizationTest
     localized_text->value = value;
     localized_text->lang = lang;
     localized_text->dir = dir;
-    return {icu::Locale(locale.c_str()), std::move(localized_text)};
+    return {ToLanguageTag(locale), std::move(localized_text)};
   }
 
   // Saves the current application locale and returns a ScopedClosureRunner
   // that restores it when destroyed.
   base::ScopedClosureRunner SaveAndRestoreLocale() {
-    std::string original_locale =
-        g_browser_process->GetFeatures()->application_locale_storage()->Get();
+    std::string original_locale(g_browser_process->GetFeatures()
+                                    ->application_locale_storage()
+                                    ->GetTag()
+                                    .tag_string());
     return base::ScopedClosureRunner(base::BindOnce(
         [](std::string locale) {
           g_browser_process->GetFeatures()->application_locale_storage()->Set(
@@ -1419,7 +1385,7 @@ class ManifestToWebAppInstallInfoLocalizationTest
         localized_text.lang = lang;
         localized_text.dir = dir;
         shortcut_item.name_localized->insert(
-            {icu::Locale(locale.c_str()), std::move(localized_text)});
+            {ToLanguageTag(locale), std::move(localized_text)});
       }
     }
     return shortcut_item;
@@ -1451,16 +1417,13 @@ class ManifestToWebAppInstallInfoLocalizationTest
         icon.sizes = {gfx::Size(kIconSize, kIconSize)};
         icon.purpose = {Purpose::ANY};
         icons.push_back(icon);
-        shortcut_item.icons_localized->insert(
-            {icu::Locale(locale.c_str()), icons});
+        shortcut_item.icons_localized->insert({ToLanguageTag(locale), icons});
         web_contents_manager().GetOrCreateIconState(icon_url).bitmaps = {
             GetBasicIconBitmap()};
       }
     }
     return shortcut_item;
   }
-
-  base::test::ScopedFeatureList feature_list_;
 };
 
 TEST_F(ManifestToWebAppInstallInfoLocalizationTest, ExactLocaleMatchFound) {
@@ -1783,7 +1746,8 @@ TEST_F(ManifestToWebAppInstallInfoLocalizationTest,
   manifest->icons_localized.emplace();
 
   std::vector<blink::Manifest::ImageResource> empty_icons;
-  manifest->icons_localized->insert({icu::Locale("en-US"), empty_icons});
+  manifest->icons_localized->insert(
+      {base::i18n::GetKnownLanguageTag("en-US"), empty_icons});
 
   g_browser_process->GetFeatures()->application_locale_storage()->Set("en-US");
 
@@ -1813,7 +1777,8 @@ TEST_F(ManifestToWebAppInstallInfoLocalizationTest,
   en_us_icon.sizes = {gfx::Size(kIconSize, kIconSize)};
   en_us_icon.purpose = {Purpose::ANY};
   en_us_icons.push_back(en_us_icon);
-  manifest->icons_localized->insert({icu::Locale("en-US"), en_us_icons});
+  manifest->icons_localized->insert(
+      {base::i18n::GetKnownLanguageTag("en-US"), en_us_icons});
   web_contents_manager().GetOrCreateIconState(en_us_icon_url).bitmaps = {
       GetBasicIconBitmap()};
 
@@ -1824,7 +1789,8 @@ TEST_F(ManifestToWebAppInstallInfoLocalizationTest,
   fr_fr_icon.sizes = {gfx::Size(kIconSize, kIconSize)};
   fr_fr_icon.purpose = {Purpose::ANY};
   fr_fr_icons.push_back(fr_fr_icon);
-  manifest->icons_localized->insert({icu::Locale("fr-FR"), fr_fr_icons});
+  manifest->icons_localized->insert(
+      {base::i18n::GetKnownLanguageTag("fr-FR"), fr_fr_icons});
   web_contents_manager().GetOrCreateIconState(fr_fr_icon_url).bitmaps = {
       GetBasicIconBitmap()};
 
@@ -1853,7 +1819,8 @@ TEST_F(ManifestToWebAppInstallInfoLocalizationTest,
   en_icon.sizes = {gfx::Size(kIconSize, kIconSize)};
   en_icon.purpose = {Purpose::ANY};
   en_icons.push_back(en_icon);
-  manifest->icons_localized->insert({icu::Locale("en"), en_icons});
+  manifest->icons_localized->insert(
+      {base::i18n::GetKnownLanguageTag("en"), en_icons});
   web_contents_manager().GetOrCreateIconState(en_icon_url).bitmaps = {
       GetBasicIconBitmap()};
 
@@ -1883,7 +1850,8 @@ TEST_F(ManifestToWebAppInstallInfoLocalizationTest,
   de_de_icon.sizes = {gfx::Size(kIconSize, kIconSize)};
   de_de_icon.purpose = {Purpose::ANY};
   de_de_icons.push_back(de_de_icon);
-  manifest->icons_localized->insert({icu::Locale("de-DE"), de_de_icons});
+  manifest->icons_localized->insert(
+      {base::i18n::GetKnownLanguageTag("de-DE"), de_de_icons});
   web_contents_manager().GetOrCreateIconState(de_de_icon_url).bitmaps = {
       GetBasicIconBitmap()};
 
@@ -1931,7 +1899,8 @@ TEST_F(ManifestToWebAppInstallInfoLocalizationTest,
   web_contents_manager().GetOrCreateIconState(en_us_icon_128_url).bitmaps = {
       icon_128_bitmap};
 
-  manifest->icons_localized->insert({icu::Locale("en-US"), en_us_icons});
+  manifest->icons_localized->insert(
+      {base::i18n::GetKnownLanguageTag("en-US"), en_us_icons});
 
   g_browser_process->GetFeatures()->application_locale_storage()->Set("en-US");
 
@@ -2211,6 +2180,63 @@ TEST_F(ManifestToWebAppInstallInfoLocalizationTest,
   auto icons = shortcut_info.GetShortcutIconInfosForPurpose(IconPurpose::ANY);
   ASSERT_EQ(1u, icons.size());
   EXPECT_EQ(default_icon_url, icons[0].url);
+}
+
+TEST_F(ManifestToWebAppInstallInfoJobTest,
+       AcceptsUnframedDisplayOverrideWhenTheFeatureIsEnabled) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndEnableFeature(blink::features::kUnframedIwa);
+
+  ASSERT_TRUE(base::FeatureList::IsEnabled(blink::features::kUnframedIwa));
+
+  SetupBasicPageState();
+  blink::mojom::ManifestPtr& manifest = GetPageManifest();
+  manifest->display_override.push_back(
+      blink::Manifest::DisplayOverride::CreateUnframed({FooUrlPattern()}));
+
+  auto web_app_info = GetWebAppInstallInfoFromJob(*manifest);
+  EXPECT_THAT(
+      web_app_info->display_override,
+      testing::ElementsAre(DisplayOverride::CreateUnframed({FooUrlPattern()})));
+}
+
+TEST_F(ManifestToWebAppInstallInfoJobTest,
+       IgnoresUnframedDisplayOverrideWhenTheFeatureIsDisabled) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndDisableFeature(blink::features::kUnframedIwa);
+
+  ASSERT_FALSE(base::FeatureList::IsEnabled(blink::features::kUnframedIwa));
+
+  SetupBasicPageState();
+  blink::mojom::ManifestPtr& manifest = GetPageManifest();
+  manifest->display_override.push_back(
+      blink::Manifest::DisplayOverride::CreateUnframed());
+
+  auto web_app_info = GetWebAppInstallInfoFromJob(*manifest);
+  EXPECT_THAT(web_app_info->display_override, testing::IsEmpty());
+}
+
+TEST_F(ManifestToWebAppInstallInfoJobTest,
+       NonSquareDownloadedIconBitmapsResizedToSquare) {
+  SetupBasicPageState();
+  auto& manifest = GetPageManifest();
+
+  SkBitmap non_square_bitmap;
+  non_square_bitmap.allocN32Pixels(128, 64);
+  non_square_bitmap.eraseColor(SK_ColorGREEN);
+  web_contents_manager().GetOrCreateIconState(icon_url_).bitmaps = {
+      non_square_bitmap};
+
+  auto web_app_info = GetWebAppInstallInfoFromJob(*manifest);
+  EXPECT_FALSE(web_app_info->is_generated_icon);
+  ASSERT_TRUE(web_app_info->icon_bitmaps.any.contains(kIconSize));
+  EXPECT_EQ(kIconSize, web_app_info->icon_bitmaps.any[kIconSize].width());
+  EXPECT_EQ(kIconSize, web_app_info->icon_bitmaps.any[kIconSize].height());
+  ASSERT_TRUE(web_app_info->trusted_icon_bitmaps.any.contains(kIconSize));
+  EXPECT_EQ(kIconSize,
+            web_app_info->trusted_icon_bitmaps.any[kIconSize].width());
+  EXPECT_EQ(kIconSize,
+            web_app_info->trusted_icon_bitmaps.any[kIconSize].height());
 }
 
 }  // namespace

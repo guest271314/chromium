@@ -11,13 +11,23 @@
 
 #include "base/byte_size.h"
 #include "base/files/file_path.h"
+#include "base/files/file_util.h"
+#include "base/files/scoped_temp_dir.h"
+#include "base/task/bind_post_task.h"
 #include "base/test/gmock_expected_support.h"
 #include "base/test/task_environment.h"
+#include "base/test/test_future.h"
+#include "base/threading/sequence_bound.h"
+#include "components/services/storage/dom_storage/dom_storage_constants.h"
+#include "components/services/storage/dom_storage/leveldb/dom_storage_database_leveldb.h"
 #include "components/services/storage/dom_storage/leveldb/local_storage_leveldb.h"
 #include "components/services/storage/dom_storage/leveldb/session_storage_leveldb.h"
 #include "components/services/storage/dom_storage/sqlite/local_storage_sqlite.h"
 #include "components/services/storage/dom_storage/sqlite/session_storage_sqlite.h"
 #include "components/services/storage/dom_storage/test_support/dom_storage_database_testing.h"
+#include "components/services/storage/filesystem_proxy_factory.h"
+#include "components/services/storage/public/cpp/filesystem/filesystem_proxy.h"
+#include "sql/database.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/common/storage_key/storage_key.h"
 
@@ -33,7 +43,6 @@ constexpr const char kSecondSessionId[] =
 
 constexpr int64_t kFirstMapId = 10;
 constexpr int64_t kSecondMapId = 11;
-constexpr int64_t kNextMapId = 12;
 
 constexpr base::ByteSize kMapTotalSize{312};
 
@@ -54,7 +63,8 @@ class DomStorageDatabaseTest : public testing::Test {
   }
 
   void OpenLocalStorageLevelDB(std::unique_ptr<LocalStorageLevelDB>* result) {
-    auto instance = std::make_unique<LocalStorageLevelDB>(GetPassKey());
+    auto instance = std::make_unique<LocalStorageLevelDB>(
+        GetPassKey(), /*write_exp_tag=*/false);
     DbStatus status = instance->Open(/*directory=*/base::FilePath(),
                                      /*memory_dump_id=*/std::nullopt);
     ASSERT_TRUE(status.ok()) << status.ToString();
@@ -72,12 +82,43 @@ class DomStorageDatabaseTest : public testing::Test {
 
   void OpenSessionStorageLevelDB(
       std::unique_ptr<SessionStorageLevelDB>* result) {
-    auto instance = std::make_unique<SessionStorageLevelDB>(GetPassKey());
+    auto instance = std::make_unique<SessionStorageLevelDB>(
+        GetPassKey(), /*write_exp_tag=*/false);
     DbStatus status = instance->Open(
         /*directory=*/base::FilePath(),
         /*memory_dump_id=*/std::nullopt);
     ASSERT_TRUE(status.ok()) << status.ToString();
     *result = std::move(instance);
+  }
+
+  // Expose private `DomStorageDatabaseFactory` migration helpers for testing.
+  DbStatus MigrateDatabase(DomStorageDatabase& source,
+                           DomStorageDatabase& destination) {
+    return DomStorageDatabaseFactory::MigrateDatabase(source, destination);
+  }
+
+  StatusOr<std::unique_ptr<DomStorageDatabase>>
+  CreateAndPopulateSqliteDatabaseForMigration(
+      StorageType storage_type,
+      DomStorageDatabase& source,
+      const base::FilePath& destination_path) {
+    return DomStorageDatabaseFactory::
+        CreateAndPopulateSqliteDatabaseForMigration(storage_type, source,
+                                                    destination_path);
+  }
+
+  DbStatus MoveTempSqliteToFinalLocation(
+      const base::FilePath& sqlite_staging_path,
+      const base::FilePath& sqlite_path) {
+    return DomStorageDatabaseFactory::MoveTempSqliteToFinalLocation(
+        sqlite_staging_path, sqlite_path);
+  }
+
+  DbStatus VerifyMigration(StorageType storage_type,
+                           DomStorageDatabase& source,
+                           DomStorageDatabase& destination) {
+    return DomStorageDatabaseFactory::VerifyMigration(storage_type, source,
+                                                      destination);
   }
 
   void OpenSessionStorageSqlite(std::unique_ptr<SessionStorageSqlite>* result) {
@@ -114,7 +155,6 @@ TEST_F(DomStorageDatabaseTest, MigrateLocalStorageWithEmptyDatabase) {
   ASSERT_OK_AND_ASSIGN(DomStorageDatabase::Metadata metadata,
                        destination->ReadAllMetadata());
   EXPECT_TRUE(metadata.map_metadata.empty());
-  EXPECT_EQ(metadata.next_map_id, std::nullopt);
 }
 
 TEST_F(DomStorageDatabaseTest, MigrateLocalStorageWithSingleMap) {
@@ -162,7 +202,6 @@ TEST_F(DomStorageDatabaseTest, MigrateLocalStorageWithSingleMap) {
       },
   };
   ExpectEqualsMapMetadataSpan(metadata.map_metadata, kExpectedMapMetadata);
-  EXPECT_EQ(metadata.next_map_id, std::nullopt);
 }
 
 TEST_F(DomStorageDatabaseTest, MigrateLocalStorageWithMultipleMaps) {
@@ -219,8 +258,6 @@ TEST_F(DomStorageDatabaseTest, MigrateLocalStorageWithMultipleMaps) {
   // Verify metadata for both maps.
   ASSERT_OK_AND_ASSIGN(DomStorageDatabase::Metadata metadata,
                        destination->ReadAllMetadata());
-
-  EXPECT_EQ(metadata.next_map_id, std::nullopt);
   ASSERT_EQ(metadata.map_metadata.size(), 2u);
 
   // Each map must have a unique ID.
@@ -296,7 +333,6 @@ TEST_F(DomStorageDatabaseTest, MigrateSessionStorageWithSingleMap) {
   };
 
   DomStorageDatabase::Metadata metadata;
-  metadata.next_map_id = kNextMapId;
   metadata.map_metadata = CloneMapMetadataVector(kExpectedMapMetadata);
 
   DbStatus status = source->PutMetadata(std::move(metadata));
@@ -326,8 +362,6 @@ TEST_F(DomStorageDatabaseTest, MigrateSessionStorageWithSingleMap) {
   // Verify metadata was migrated.
   ASSERT_OK_AND_ASSIGN(DomStorageDatabase::Metadata dest_metadata,
                        destination->ReadAllMetadata());
-
-  EXPECT_EQ(dest_metadata.next_map_id, kNextMapId);
   ExpectEqualsMapMetadataSpan(dest_metadata.map_metadata, kExpectedMapMetadata);
 }
 
@@ -343,7 +377,6 @@ TEST_F(DomStorageDatabaseTest, MigrateSessionStorageWithClonedMap) {
   expected_map_metadata[0].map_locator.AddSession(kSecondSessionId);
 
   DomStorageDatabase::Metadata metadata;
-  metadata.next_map_id = kNextMapId;
   metadata.map_metadata = CloneMapMetadataVector(expected_map_metadata);
 
   DbStatus status = source->PutMetadata(std::move(metadata));
@@ -374,8 +407,6 @@ TEST_F(DomStorageDatabaseTest, MigrateSessionStorageWithClonedMap) {
   // Verify the cloned map's metadata migrated.
   ASSERT_OK_AND_ASSIGN(DomStorageDatabase::Metadata dest_metadata,
                        destination->ReadAllMetadata());
-
-  EXPECT_EQ(dest_metadata.next_map_id, kNextMapId);
   ExpectEqualsMapMetadataSpan(dest_metadata.map_metadata,
                               expected_map_metadata);
 }
@@ -397,7 +428,6 @@ TEST_F(DomStorageDatabaseTest, MigrateSessionStorageWithMultipleMaps) {
   };
 
   DomStorageDatabase::Metadata metadata;
-  metadata.next_map_id = kNextMapId;
   metadata.map_metadata = CloneMapMetadataVector(kExpectedMapMetadata);
 
   DbStatus status = source->PutMetadata(std::move(metadata));
@@ -442,9 +472,237 @@ TEST_F(DomStorageDatabaseTest, MigrateSessionStorageWithMultipleMaps) {
   // Verify metadata for both maps.
   ASSERT_OK_AND_ASSIGN(DomStorageDatabase::Metadata dest_metadata,
                        destination->ReadAllMetadata());
-
-  EXPECT_EQ(dest_metadata.next_map_id, kNextMapId);
   ExpectEqualsMapMetadataSpan(dest_metadata.map_metadata, kExpectedMapMetadata);
+}
+
+TEST_F(DomStorageDatabaseTest, CreateAndPopulateSqliteDatabaseForMigration) {
+  std::unique_ptr<SessionStorageLevelDB> source;
+  ASSERT_NO_FATAL_FAILURE(OpenSessionStorageLevelDB(&source));
+
+  // Write a key/value pair to the database.
+  const DomStorageDatabase::MapLocator kMapLocator{
+      kFirstSessionId, kFirstStorageKey, kFirstMapId};
+  const std::map<DomStorageDatabase::Key, DomStorageDatabase::Value>
+      kExpectedEntries = {
+          {ToBytes("key"), ToBytes("value")},
+      };
+  ASSERT_NO_FATAL_FAILURE(
+      InsertMapEntries(*source, kMapLocator, kExpectedEntries));
+
+  // Migrate to a SQLite database.
+  base::ScopedTempDir temp_dir;
+  ASSERT_TRUE(temp_dir.CreateUniqueTempDir());
+  const base::FilePath destination_path =
+      temp_dir.GetPath().AppendASCII("migration.sqlite");
+
+  ASSERT_OK_AND_ASSIGN(
+      std::unique_ptr<DomStorageDatabase> destination,
+      CreateAndPopulateSqliteDatabaseForMigration(StorageType::kSessionStorage,
+                                                  *source, destination_path));
+
+  // Verify the key/value pairs in the SQLite database.
+  ASSERT_OK_AND_ASSIGN((std::map<DomStorageDatabase::Key,
+                                 DomStorageDatabase::Value> actual_entries),
+                       destination->ReadMapKeyValues(kMapLocator.Clone()));
+  EXPECT_EQ(actual_entries, kExpectedEntries);
+}
+
+TEST_F(DomStorageDatabaseTest, MoveTempSqliteToFinalLocation) {
+  base::ScopedTempDir temp_dir;
+  ASSERT_TRUE(temp_dir.CreateUniqueTempDir());
+
+  // Create a file.
+  const base::FilePath sqlite_temp_path =
+      temp_dir.GetPath().AppendASCII("migration.sqlite");
+  ASSERT_TRUE(base::WriteFile(sqlite_temp_path, "migrated-main"));
+
+  // Move the file.
+  const base::FilePath sqlite_path =
+      temp_dir.GetPath().AppendASCII("LocalStorage");
+  DbStatus status =
+      MoveTempSqliteToFinalLocation(sqlite_temp_path, sqlite_path);
+  EXPECT_TRUE(status.ok()) << status.ToString();
+
+  // Verify the contents of the moved file.
+  std::string contents;
+  ASSERT_TRUE(base::ReadFileToString(sqlite_path, &contents));
+  EXPECT_EQ(contents, "migrated-main");
+  EXPECT_FALSE(base::PathExists(sqlite_temp_path));
+}
+
+TEST_F(DomStorageDatabaseTest,
+       MoveTempSqliteToFinalLocationReplacesExistingDatabase) {
+  base::ScopedTempDir temp_dir;
+  ASSERT_TRUE(temp_dir.CreateUniqueTempDir());
+
+  // Write two files.
+  const base::FilePath sqlite_path =
+      temp_dir.GetPath().AppendASCII("LocalStorage");
+  ASSERT_TRUE(base::WriteFile(sqlite_path, "stale-existing"));
+
+  const base::FilePath sqlite_temp_path =
+      temp_dir.GetPath().AppendASCII("migration.sqlite");
+  ASSERT_TRUE(base::WriteFile(sqlite_temp_path, "migrated-main"));
+
+  // Move one file to replace the other file.
+  DbStatus status =
+      MoveTempSqliteToFinalLocation(sqlite_temp_path, sqlite_path);
+  ASSERT_TRUE(status.ok()) << status.ToString();
+
+  // Verify the contents of the removed file.
+  std::string contents;
+  ASSERT_TRUE(base::ReadFileToString(sqlite_path, &contents));
+  EXPECT_EQ(contents, "migrated-main");
+  EXPECT_FALSE(base::PathExists(sqlite_temp_path));
+}
+
+TEST_F(DomStorageDatabaseTest,
+       MoveTempSqliteToFinalLocationFailsWithoutTempFile) {
+  base::ScopedTempDir temp_dir;
+  ASSERT_TRUE(temp_dir.CreateUniqueTempDir());
+
+  std::unique_ptr<FilesystemProxy> filesystem = CreateFilesystemProxy();
+  DbStatus status = MoveTempSqliteToFinalLocation(
+      temp_dir.GetPath().AppendASCII("migration.sqlite"),
+      temp_dir.GetPath().AppendASCII("LocalStorage"));
+  EXPECT_FALSE(status.ok());
+}
+
+TEST_F(DomStorageDatabaseTest, MigrationFailsOnMetadataMismatch) {
+  // Use local storage because session storage does not persist usage metadata.
+  std::unique_ptr<LocalStorageLevelDB> source;
+  ASSERT_NO_FATAL_FAILURE(OpenLocalStorageLevelDB(&source));
+
+  std::unique_ptr<LocalStorageSqlite> destination;
+  ASSERT_NO_FATAL_FAILURE(OpenLocalStorageSqlite(&destination));
+
+  // Write a key/value pair while updating the last accessed metadata.
+  const DomStorageDatabase::MapLocator kMapLocator{kFirstStorageKey};
+  const std::map<DomStorageDatabase::Key, DomStorageDatabase::Value> kEntries =
+      {{ToBytes("key"), ToBytes("value")}};
+
+  DomStorageDatabase::MapBatchUpdate::Usage source_usage;
+  source_usage.SetLastAccessed(kMapLastAccessed);
+  ASSERT_NO_FATAL_FAILURE(InsertMapEntries(*source, kMapLocator, kEntries,
+                                           std::move(source_usage)));
+
+  // Write the same key/value pair without the last accessed metadata.
+  DomStorageDatabase::MapBatchUpdate::Usage destination_usage;
+  destination_usage.SetLastAccessed(kMapLastAccessed - base::Days(1));
+  ASSERT_NO_FATAL_FAILURE(InsertMapEntries(*destination, kMapLocator, kEntries,
+                                           std::move(destination_usage)));
+
+  // Verification must fail with missing metadata.
+  DbStatus status =
+      VerifyMigration(StorageType::kLocalStorage, *source, *destination);
+  EXPECT_FALSE(status.ok());
+}
+
+TEST_F(DomStorageDatabaseTest, VerifyMigrationFailsOnMapCountMismatch) {
+  std::unique_ptr<SessionStorageLevelDB> source;
+  ASSERT_NO_FATAL_FAILURE(OpenSessionStorageLevelDB(&source));
+
+  std::unique_ptr<SessionStorageSqlite> destination;
+  ASSERT_NO_FATAL_FAILURE(OpenSessionStorageSqlite(&destination));
+
+  // Add a key/value pair to the `source` database but not the `destination`.
+  DomStorageDatabase::Metadata metadata;
+  metadata.map_metadata.push_back({
+      .map_locator = DomStorageDatabase::MapLocator(
+          kFirstSessionId, kFirstStorageKey, kFirstMapId),
+  });
+  DbStatus status = source->PutMetadata(std::move(metadata));
+  ASSERT_TRUE(status.ok()) << status.ToString();
+
+  // Migration must fail with missing key/value pairs.
+  status = VerifyMigration(StorageType::kLocalStorage, *source, *destination);
+  EXPECT_FALSE(status.ok());
+}
+
+TEST_F(DomStorageDatabaseTest, VerifyMigrationIgnoresSessionIdOrder) {
+  std::unique_ptr<SessionStorageLevelDB> source;
+  ASSERT_NO_FATAL_FAILURE(OpenSessionStorageLevelDB(&source));
+
+  std::unique_ptr<SessionStorageSqlite> destination;
+  ASSERT_NO_FATAL_FAILURE(OpenSessionStorageSqlite(&destination));
+
+  // Write the metadata for a map in both `source` and `destination`.  However,
+  // put the session IDs in a different order.
+  DomStorageDatabase::MapLocator source_locator{kFirstSessionId,
+                                                kFirstStorageKey, kFirstMapId};
+  source_locator.AddSession(kSecondSessionId);
+
+  DomStorageDatabase::Metadata source_metadata;
+  source_metadata.map_metadata.push_back(
+      {.map_locator = source_locator.Clone()});
+  DbStatus status = source->PutMetadata(std::move(source_metadata));
+  ASSERT_TRUE(status.ok()) << status.ToString();
+
+  // Add metadata to `destination` using a different order for the session IDs.
+  DomStorageDatabase::MapLocator destination_locator{
+      kSecondSessionId, kFirstStorageKey, kFirstMapId};
+  destination_locator.AddSession(kFirstSessionId);
+
+  DomStorageDatabase::Metadata destination_metadata;
+  destination_metadata.map_metadata.push_back(
+      {.map_locator = destination_locator.Clone()});
+  status = destination->PutMetadata(std::move(destination_metadata));
+  ASSERT_TRUE(status.ok()) << status.ToString();
+
+  // Write the same key/value pairs to both databases.
+  const std::map<DomStorageDatabase::Key, DomStorageDatabase::Value> kEntries =
+      {{ToBytes("key"), ToBytes("value")}};
+  ASSERT_NO_FATAL_FAILURE(InsertMapEntries(*source, source_locator, kEntries));
+  ASSERT_NO_FATAL_FAILURE(
+      InsertMapEntries(*destination, destination_locator, kEntries));
+
+  // Migration must succeed when the metadata contains the same session IDs in a
+  // different order.
+  status = VerifyMigration(StorageType::kSessionStorage, *source, *destination);
+  EXPECT_TRUE(status.ok()) << status.ToString();
+}
+
+TEST_F(DomStorageDatabaseTest, VerifyMigrationFailsOnMapContentsMismatch) {
+  std::unique_ptr<SessionStorageLevelDB> source;
+  ASSERT_NO_FATAL_FAILURE(OpenSessionStorageLevelDB(&source));
+
+  std::unique_ptr<SessionStorageSqlite> destination;
+  ASSERT_NO_FATAL_FAILURE(OpenSessionStorageSqlite(&destination));
+
+  // Write different key/value pairs to each database.
+  const DomStorageDatabase::MapLocator kMapLocator{
+      kFirstSessionId, kFirstStorageKey, kFirstMapId};
+  ASSERT_NO_FATAL_FAILURE(InsertMapEntries(
+      *source, kMapLocator, {{ToBytes("key"), ToBytes("source-value")}}));
+  ASSERT_NO_FATAL_FAILURE(
+      InsertMapEntries(*destination, kMapLocator,
+                       {{ToBytes("key"), ToBytes("destination-value")}}));
+
+  // Verification must fail when key/value pairs differ.
+  DbStatus status =
+      VerifyMigration(StorageType::kSessionStorage, *source, *destination);
+  EXPECT_FALSE(status.ok());
+}
+
+TEST_F(DomStorageDatabaseTest, CloseDbDropsLevelDbLock) {
+  // Create and open a new LevelDB.
+  base::ScopedTempDir temp_dir;
+  ASSERT_TRUE(temp_dir.CreateUniqueTempDir());
+  const base::FilePath leveldb_path = DomStorageDatabase::GetLevelDbPath(
+      StorageType::kLocalStorage, temp_dir.GetPath());
+
+  auto instance =
+      std::make_unique<LocalStorageLevelDB>(GetPassKey(),
+                                            /*write_exp_tag=*/false);
+  DbStatus status =
+      instance->Open(leveldb_path, /*memory_dump_id=*/std::nullopt);
+  ASSERT_TRUE(status.ok()) << status.ToString();
+  ASSERT_TRUE(base::PathExists(leveldb_path));
+
+  // Close the database, which must release its file locks.
+  instance->Close();
+  EXPECT_TRUE(DomStorageDatabaseLevelDB::Destroy(leveldb_path).ok());
+  EXPECT_FALSE(base::PathExists(leveldb_path));
 }
 
 }  // namespace storage

@@ -22,6 +22,7 @@
 #import "components/enterprise/browser/identifiers/profile_id_service.h"
 #import "components/enterprise/browser/reporting/common_pref_names.h"
 #import "components/enterprise/browser/reporting/report_scheduler.h"
+#import "components/enterprise/browser/reporting/saas_usage/saas_usage_report_scheduler.h"
 #import "components/policy/core/browser/policy_conversions.h"
 #import "components/policy/core/browser/webui/json_generation.h"
 #import "components/policy/core/browser/webui/machine_level_user_cloud_policy_status_provider.h"
@@ -64,13 +65,7 @@
 #import "ui/base/webui/web_ui_util.h"
 
 PolicyUIHandler::PolicyUIHandler(ProfileIOS* profile)
-    : PolicyUIHandler(mojo::NullReceiver(), mojo::NullRemote(), profile) {
-  // TODO: crbug.com/40897784 - the mojo version does not yet support
-  // SendStatus, SendSchema and SendPolicies so the observers are added only for
-  // the legacy WebUI.
-  GetPolicyService()->AddObserver(policy::POLICY_DOMAIN_CHROME, this);
-  profile_->GetPolicyConnector()->GetSchemaRegistry()->AddObserver(this);
-}
+    : PolicyUIHandler(mojo::NullReceiver(), mojo::NullRemote(), profile) {}
 
 PolicyUIHandler::PolicyUIHandler(
     mojo::PendingReceiver<policy::mojom::PolicyPageHandler> receiver,
@@ -79,6 +74,9 @@ PolicyUIHandler::PolicyUIHandler(
     : receiver_(this, std::move(receiver)),
       client_(std::move(client)),
       profile_(*profile) {
+  GetPolicyService()->AddObserver(policy::POLICY_DOMAIN_CHROME, this);
+  profile_->GetPolicyConnector()->GetSchemaRegistry()->AddObserver(this);
+
   policy::MachineLevelUserCloudPolicyManager* manager =
       GetApplicationContext()
           ->GetBrowserPolicyConnector()
@@ -119,14 +117,10 @@ PolicyUIHandler::PolicyUIHandler(
 }
 
 PolicyUIHandler::~PolicyUIHandler() {
-  // TODO: crbug.com/40897784 - Make this unconditional once mojo version also
-  // adds observers.
-  if (!receiver_.is_bound()) {
-    GetPolicyService()->RemoveObserver(policy::POLICY_DOMAIN_CHROME, this);
-    policy::SchemaRegistry* registry =
-        profile_->GetPolicyConnector()->GetSchemaRegistry();
-    registry->RemoveObserver(this);
-  }
+  GetPolicyService()->RemoveObserver(policy::POLICY_DOMAIN_CHROME, this);
+  policy::SchemaRegistry* registry =
+      profile_->GetPolicyConnector()->GetSchemaRegistry();
+  registry->RemoveObserver(this);
   policy::RecordPolicyUIButtonUsage(reload_policies_count_,
                                     /*export_to_json_count=*/0,
                                     copy_to_json_count_, upload_report_count_);
@@ -155,6 +149,7 @@ void PolicyUIHandler::AddCommonLocalizedStringsToSource(
       {"ignored", IDS_POLICY_LABEL_IGNORED},
       {"notSpecified", IDS_POLICY_NOT_SPECIFIED},
       {"ok", IDS_POLICY_OK},
+      {"restartRequired", IDS_POLICY_RESTART_REQUIRED},
       {"scopeDevice", IDS_POLICY_SCOPE_DEVICE},
       {"scopeUser", IDS_POLICY_SCOPE_USER},
       {"title", IDS_POLICY_TITLE},
@@ -227,12 +222,32 @@ void PolicyUIHandler::HandleUploadReport(const base::ListValue& args) {
   upload_report_count_ += 1;
   DCHECK_EQ(1u, args.size());
   const std::string& callback_id = args[0].GetString();
-  auto* report_scheduler = GetApplicationContext()
-                               ->GetBrowserPolicyConnector()
-                               ->chrome_browser_cloud_management_controller()
-                               ->report_scheduler();
+
+  auto* browser_controller = GetApplicationContext()
+                                 ->GetBrowserPolicyConnector()
+                                 ->chrome_browser_cloud_management_controller();
   auto* profile_reporting_service = enterprise_reporting::
       CloudProfileReportingServiceFactoryIOS::GetForProfile(&profile_.get());
+
+  // Upload SaaS usage reports.
+  auto* browser_saas_scheduler =
+      browser_controller ? browser_controller->saas_usage_report_scheduler()
+                         : nullptr;
+  auto* profile_saas_scheduler =
+      profile_reporting_service
+          ? profile_reporting_service->saas_usage_report_scheduler()
+          : nullptr;
+
+  if (browser_saas_scheduler) {
+    browser_saas_scheduler->TriggerReport();
+  }
+  if (profile_saas_scheduler) {
+    profile_saas_scheduler->TriggerReport();
+  }
+
+  // Upload browser and profile reports.
+  auto* report_scheduler =
+      browser_controller ? browser_controller->report_scheduler() : nullptr;
   auto* profile_report_scheduler =
       profile_reporting_service ? profile_reporting_service->report_scheduler()
                                 : nullptr;
@@ -256,10 +271,10 @@ void PolicyUIHandler::HandleUploadReport(const base::ListValue& args) {
       report_count, base::BindOnce(&PolicyUIHandler::OnReportUploaded,
                                    weak_factory_.GetWeakPtr(), callback_id));
   if (report_scheduler) {
-    report_scheduler->UploadFullReport(on_report_uploaded);
+    report_scheduler->UploadReport(on_report_uploaded);
   }
   if (profile_report_scheduler) {
-    profile_report_scheduler->UploadFullReport(on_report_uploaded);
+    profile_report_scheduler->UploadReport(on_report_uploaded);
   }
 }
 
@@ -366,12 +381,19 @@ const std::string& PolicyUIHandler::GetAppliedTestPoliciesImpl() {
 }
 
 void PolicyUIHandler::HandleGetPolicyLogs(const base::ListValue& args) {
-  web_ui()->ResolveJavascriptCallback(
-      args[0], policy::PolicyLogger::GetInstance()->GetAsList());
+  CHECK_EQ(args.size(), 1u);
+  policy::PolicyLogger::GetInstance()->GetAsList(
+      base::BindOnce(&PolicyUIHandler::OnGetPolicyLogs,
+                     weak_factory_.GetWeakPtr(), args[0].Clone()));
+}
+
+void PolicyUIHandler::OnGetPolicyLogs(base::Value callback_id,
+                                      base::ListValue logs) {
+  web_ui()->ResolveJavascriptCallback(callback_id, logs);
 }
 
 void PolicyUIHandler::GetPolicyLogs(GetPolicyLogsCallback callback) {
-  std::move(callback).Run(policy::PolicyLogger::GetInstance()->GetAsMojoList());
+  policy::PolicyLogger::GetInstance()->GetAsMojoList(std::move(callback));
 }
 
 void PolicyUIHandler::OnSchemaRegistryUpdated(bool has_new_schemas) {
@@ -386,6 +408,7 @@ void PolicyUIHandler::OnPolicyUpdated(const policy::PolicyNamespace& ns,
                                       const policy::PolicyMap& previous,
                                       const policy::PolicyMap& current) {
   SendPolicies();
+  SendStatus();
 }
 
 void PolicyUIHandler::OnPolicyStatusChanged() {
@@ -445,6 +468,12 @@ base::DictValue PolicyUIHandler::GetPolicyNames() const {
   return names;
 }
 
+base::flat_map<std::string, policy::mojom::PolicyGroupNamesPtr>
+PolicyUIHandler::GetPolicyNamesMojo() const {
+  // TODO(crbug.com/40897784): Implement.
+  return {};
+}
+
 base::DictValue PolicyUIHandler::GetPolicyValues() const {
   base::ListValue policy_ids;
   policy_ids.Append(policy::kChromePoliciesId);
@@ -462,6 +491,12 @@ base::DictValue PolicyUIHandler::GetPolicyValues() const {
   return dict;
 }
 
+policy::mojom::PolicyGroupsResponsePtr PolicyUIHandler::GetPolicyValuesMojo()
+    const {
+  // TODO(crbug.com/40897784): Implement.
+  return policy::mojom::PolicyGroupsResponse::New();
+}
+
 void PolicyUIHandler::HandleListenPoliciesUpdates(const base::ListValue& args) {
   OnRefreshPoliciesDone();
 }
@@ -475,9 +510,13 @@ void PolicyUIHandler::HandleReloadPolicies(const base::ListValue& args) {
 }
 
 void PolicyUIHandler::SendPolicies() {
-  base::DictValue names = GetPolicyNames();
-  base::DictValue values = GetPolicyValues();
-  web_ui()->FireWebUIListener("policies-updated", names, values);
+  if (IsMojoEnabled()) {
+    client_->PoliciesUpdated(GetPolicyNamesMojo(), GetPolicyValuesMojo());
+  } else {
+    base::DictValue names = GetPolicyNames();
+    base::DictValue values = GetPolicyValues();
+    web_ui()->FireWebUIListener("policies-updated", names, values);
+  }
 }
 
 void PolicyUIHandler::SendSchema() {
@@ -505,13 +544,17 @@ base::DictValue PolicyUIHandler::GetStatusValue() const {
 
 base::flat_map<std::string, policy::mojom::StatusPtr>
 PolicyUIHandler::GetStatus() {
-  policy::mojom::StatusPtr machine_status =
-      machine_status_provider_->GetStatusMojo();
-  machine_status->machine.reset();
-
   base::flat_map<std::string, policy::mojom::StatusPtr> result;
-  result.emplace("machine", std::move(machine_status));
-  result.emplace("user", user_policy_status_provider_->GetStatusMojo());
+  CHECK(machine_status_provider_);
+  if (auto machine_status = machine_status_provider_->GetStatusMojo()) {
+    machine_status->machine.reset();
+    result.emplace("machine", std::move(machine_status));
+  }
+
+  CHECK(user_policy_status_provider_);
+  if (auto user_status = user_policy_status_provider_->GetStatusMojo()) {
+    result.emplace("user", std::move(user_status));
+  }
   return result;
 }
 

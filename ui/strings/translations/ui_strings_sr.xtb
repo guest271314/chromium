@@ -11,7 +11,6 @@
 <translation id="1253734725326687145">Мета за додир је премештена у горњи десни угао. Додирните овде.</translation>
 <translation id="1266864766717917324">Није успело дељење: <ph name="CONTENT_TYPE" /></translation>
 <translation id="1269641567813814718">Win</translation>
-<translation id="1291104554099683393">Пробајте да делите текст у мањим деловима.</translation>
 <translation id="1293699935367580298">Esc</translation>
 <translation id="1368832886055348810">Слева надесно</translation>
 <translation id="1383876407941801731">Претражи</translation>
@@ -38,13 +37,11 @@
 <translation id="1901303067676059328">Изабери &amp;све</translation>
 <translation id="19085484004813472">Ово је нова функција</translation>
 <translation id="2006524834898217237">Уверите се да је овај уређај повезан на интернет.</translation>
-<translation id="208586643495776849">Пробајте поново</translation>
 <translation id="2111134541987263231">Укључите <ph name="BEGIN_BOLD" />Дозволи у режиму без архивирања<ph name="END_BOLD" /></translation>
 <translation id="2141853158323869627">{DAYS,plural, =1{1 д}one{# д}few{# д}other{# д}}</translation>
 <translation id="2148716181193084225">Данас</translation>
 <translation id="2168039046890040389">Страница нагоре</translation>
 <translation id="2190355936436201913">(празно)</translation>
-<translation id="2192232475740621500">Користи ниску густину</translation>
 <translation id="2267918077332197517">Блокирај сва обавештења са овог сајта</translation>
 <translation id="2283117145434822734">F6</translation>
 <translation id="2289052229480071835">Додирните циљна поља за додир на екрану.</translation>
@@ -56,7 +53,6 @@
 <translation id="2388990488038464401">Желите ли да позовете овај број са телефона?</translation>
 <translation id="2435457462613246316">Прикажи лозинку</translation>
 <translation id="24452542372838207">Прошири обавештење</translation>
-<translation id="2445449901874883781">Користи високу густину</translation>
 <translation id="2448407890032181691">Мета за додир је премештена у доњи десни угао. Додирните овде.</translation>
 <translation id="2482878487686419369">Обавештења</translation>
 <translation id="2497284189126895209">Све датотеке</translation>
@@ -87,7 +83,6 @@
 <translation id="3306688585798492231">Уграђени екран</translation>
 <translation id="335581015389089642">Говор</translation>
 <translation id="3372635229069101468">Кликните на <ph name="BEGIN_BOLD" />Детаљи<ph name="END_BOLD" /></translation>
-<translation id="3389286852084373014">Текст је превелик</translation>
 <translation id="3406306243914553062">HTML садржај</translation>
 <translation id="3600566671520689681">{DAYS,plural, =1{Још 1 дан}one{Још # дан}few{Још # дана}other{Још # дана}}</translation>
 <translation id="3600969208114796418"><ph name="SAVEAS_EXTENSION_TYPE" /> датотека</translation>
@@ -130,7 +125,6 @@
 <translation id="5046499563572181734">Додирните овде</translation>
 <translation id="5076340679995252485">&amp;Налепи</translation>
 <translation id="520299402983819650"><ph name="QUANTITY" /> PB</translation>
-<translation id="5278860589123563674">Слање није успело</translation>
 <translation id="5283101102242354279">Укључите додатак у режиму без архивирања:</translation>
 <translation id="528468243742722775">Заврши</translation>
 <translation id="5329858601952122676">&amp;Избриши</translation>
@@ -190,7 +184,6 @@
 <translation id="6965382102122355670">Потврди</translation>
 <translation id="6974053822202609517">Здесна налево</translation>
 <translation id="7052633198403197513">F1</translation>
-<translation id="7170202025028120564">Подешавања приказа апликације ће ступити на снагу када се она следећи пут рестартује.</translation>
 <translation id="7222373446505536781">F11</translation>
 <translation id="7238427729722629793">{MINUTES,plural, =1{Још 1 мин}one{Још # мин}few{Још # мин}other{Још # мин}}</translation>
 <translation id="7252604552361840748">Пронађите додатак изнад</translation>

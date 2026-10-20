@@ -14,14 +14,11 @@
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/interaction/browser_elements.h"
 #include "chrome/browser/ui/user_education/browser_user_education_interface.h"
-#include "chrome/browser/ui/views/frame/browser_view.h"
-#include "chrome/browser/ui/views/frame/toolbar_button_provider.h"
 #include "chrome/browser/ui/views/profiles/incognito_menu_view.h"
+#include "chrome/browser/ui/views/profiles/isolated_mode_menu_view.h"
 #include "chrome/browser/ui/views/profiles/profile_menu_view_base.h"
-#include "chrome/browser/ui/views/toolbar/toolbar_view.h"
+#include "chrome/browser/ui/views/toolbar/avatar_toolbar_button_interface.h"
 #include "components/feature_engagement/public/feature_constants.h"
-#include "components/signin/public/identity_manager/identity_manager.h"
-#include "components/user_education/common/feature_promo/feature_promo_controller.h"
 #include "ui/views/bubble/bubble_anchor.h"
 #include "ui/views/bubble/bubble_dialog_delegate_view.h"
 #include "ui/views/view_class_properties.h"
@@ -51,11 +48,18 @@ void ProfileMenuCoordinator::Show(bool is_source_accelerator,
   }
 
 #if BUILDFLAG(ENABLE_DICE_SUPPORT)
+  // Batch upload promos in the profile menu identity header are only shown
+  // if the user opened the menu via the avatar promo pill. Outside of pill
+  // expansions, batch upload promos are suppressed so they don't overshadow
+  // other promos (such as History Sync), while still fetching local data count
+  // to show the batch upload row item in the menu.
+  const bool allow_batch_upload_promos = from_avatar_promo;
   signin::ComputeProfileMenuAvatarButtonPromoInfo(
       *GetProfile(),
       base::BindOnce(&ProfileMenuCoordinator::ShowWithPromoResults,
                      weak_pointer_factory_.GetWeakPtr(), is_source_accelerator,
-                     from_avatar_promo));
+                     from_avatar_promo),
+      allow_batch_upload_promos);
 #else
   ShowWithPromoResults(is_source_accelerator, from_avatar_promo);
 #endif
@@ -89,27 +93,29 @@ void ProfileMenuCoordinator::ShowWithPromoResults(
           FeaturePromoFeatureUsedAction::kClosePromoIfPresent);
 #endif
 
-  Browser* const browser = browser_->GetBrowserForMigrationOnly();
   auto avatar_toolbar_button = GetAvatarToolbarButton();
   std::unique_ptr<ProfileMenuViewBase> bubble;
   const bool is_incognito = GetProfile()->IsIncognitoProfile();
   if (is_incognito) {
-    bubble =
-        std::make_unique<IncognitoMenuView>(avatar_toolbar_button, browser);
+    bubble = std::make_unique<IncognitoMenuView>(avatar_toolbar_button,
+                                                 &browser_.get());
+  } else if (GetProfile()->IsEnterpriseIsolatedModeProfile()) {
+    bubble = std::make_unique<IsolatedModeMenuView>(avatar_toolbar_button,
+                                                    &browser_.get());
   } else {
 #if BUILDFLAG(IS_CHROMEOS)
     // Note: on Ash, only incognito windows have a profile menu.
     NOTREACHED() << "The profile menu is not implemented on Ash.";
 #else
-    bubble = std::make_unique<ProfileMenuView>(avatar_toolbar_button, browser,
-                                               promo_info, from_avatar_promo);
+    bubble = std::make_unique<ProfileMenuView>(
+        avatar_toolbar_button, &browser_.get(), promo_info, from_avatar_promo);
 #endif  // BUILDFLAG(IS_CHROMEOS)
   }
   bubble->SetProperty(views::kElementIdentifierKey,
                       kToolbarAvatarBubbleElementId);
 
   auto* bubble_ptr = bubble.get();
-  DCHECK_EQ(nullptr, bubble_tracker_.view());
+  CHECK_EQ(nullptr, bubble_tracker_.view(), base::NotFatalUntil::M162);
   bubble_tracker_.SetView(bubble_ptr);
 
   views::Widget* widget =
@@ -141,17 +147,19 @@ Profile* ProfileMenuCoordinator::GetProfile() {
 }
 
 views::BubbleAnchor ProfileMenuCoordinator::GetAvatarToolbarButton() {
-  if (auto* avatar_toolbar_button =
-          BrowserElements::From(GetBrowser())
-              ->GetElement(kToolbarAvatarButtonElementId)) {
-    return views::BubbleAnchor(avatar_toolbar_button);
-  }
+  return AvatarToolbarButtonInterface::GetBubbleAnchor(*GetBrowser());
+}
 
-  return views::BubbleAnchor(BrowserView::GetBrowserViewForBrowser(GetBrowser())
-                                 ->toolbar()
-                                 ->avatar_toolbar_button());
+DEFINE_USER_DATA(ProfileMenuCoordinator);
+
+// static
+ProfileMenuCoordinator* ProfileMenuCoordinator::From(
+    BrowserWindowInterface* browser) {
+  return Get(browser->GetUnownedUserDataHost());
 }
 
 ProfileMenuCoordinator::ProfileMenuCoordinator(BrowserWindowInterface* browser,
                                                Profile* profile)
-    : browser_(CHECK_DEREF(browser)), profile_(CHECK_DEREF(profile)) {}
+    : scoped_unowned_user_data_(browser->GetUnownedUserDataHost(), *this),
+      browser_(CHECK_DEREF(browser)),
+      profile_(CHECK_DEREF(profile)) {}

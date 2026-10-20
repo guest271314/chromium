@@ -22,7 +22,6 @@
 #include "chrome/browser/ash/arc/input_overlay/ui/name_tag.h"
 #include "chrome/browser/ash/arc/input_overlay/ui/ui_utils.h"
 #include "chrome/browser/ash/arc/input_overlay/util.h"
-#include "chrome/grit/generated_resources.h"
 #include "chromeos/strings/grit/chromeos_strings.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
@@ -165,7 +164,7 @@ ButtonOptionsMenu::~ButtonOptionsMenu() {
 
 void ButtonOptionsMenu::UpdateWidget() {
   auto* widget = GetWidget();
-  DCHECK(widget);
+  CHECK(widget, base::NotFatalUntil::M160);
 
   controller_->UpdateWidgetBoundsInRootWindow(
       widget,
@@ -309,7 +308,7 @@ void ButtonOptionsMenu::OnActionRemoved(const Action& action) {
 
 void ButtonOptionsMenu::OnActionTypeChanged(Action* action,
                                             Action* new_action) {
-  DCHECK_EQ(action_, action);
+  CHECK_EQ(action_, action, base::NotFatalUntil::M160);
   action_ = new_action;
   button_group_->set_action(new_action);
   auto index = GetIndexOf(action_edit_);

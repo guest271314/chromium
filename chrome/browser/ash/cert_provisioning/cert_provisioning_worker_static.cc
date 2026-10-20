@@ -279,7 +279,7 @@ std::string CertProvisioningWorkerStatic::GetFailureMessageWithPii() const {
 void CertProvisioningWorkerStatic::Stop(CertProvisioningWorkerState state) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
-  DCHECK(IsFinalState(state));
+  CHECK(IsFinalState(state), base::NotFatalUntil::M160);
 
   CancelScheduledTasks();
   UpdateState(FROM_HERE, state);
@@ -326,7 +326,7 @@ void CertProvisioningWorkerStatic::DoStep() {
     case CertProvisioningWorkerState::kInconsistentDataError:
     case CertProvisioningWorkerState::kFailed:
     case CertProvisioningWorkerState::kCanceled:
-      DCHECK(false);
+      CHECK(false, base::NotFatalUntil::M160);
       return;
     case CertProvisioningWorkerState::kReadyForNextOperation:
     case CertProvisioningWorkerState::kAuthorizeInstructionReceived:
@@ -349,7 +349,8 @@ void CertProvisioningWorkerStatic::UpdateState(
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   DCHECK(kStaticWorkerStates.Has(new_state)) << static_cast<int>(new_state);
-  DCHECK(GetStateOrderedIndex(state_) < GetStateOrderedIndex(new_state));
+  CHECK(GetStateOrderedIndex(state_) < GetStateOrderedIndex(new_state),
+        base::NotFatalUntil::M160);
 
   prev_state_ = state_;
   state_ = new_state;
@@ -924,7 +925,7 @@ void CertProvisioningWorkerStatic::CancelScheduledTasks() {
 // worker is asked to cleanup and shutdown while a key is being generated for
 // it. In that case this cleanup will miss that key and it's important to make
 // sure that there is another mechanism that will eventually clean up the key.
-// VA and PKS keys both are covered and the mechanism is described in seperate
+// VA and PKS keys both are covered and the mechanism is described in separate
 // comments.
 void CertProvisioningWorkerStatic::CleanUpAndRunCallback() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
@@ -1017,23 +1018,18 @@ void CertProvisioningWorkerStatic::HandleSerialization() {
 
   switch (state_) {
     case CertProvisioningWorkerState::kInitState:
-      break;
     case CertProvisioningWorkerState::kKeypairGenerated:
-      CertProvisioningSerializer::SerializeWorkerToPrefs(pref_service_, *this);
-      break;
     case CertProvisioningWorkerState::kStartCsrResponseReceived:
-      // StartCSR response contains VA challenge and data to sign. It is allowed
-      // to build only one VA challenge response and sign only one data with the
-      // same key. To make sure that the key is not used again after
-      // deserialization, the serialized state should be deleted here. Also
-      // lifetime of the VA challenge is very short and most likely it would not
-      // survive long enough anyway.
-      CertProvisioningSerializer::DeleteWorkerFromPrefs(pref_service_, *this);
-      break;
     case CertProvisioningWorkerState::kVaChallengeFinished:
     case CertProvisioningWorkerState::kKeyRegistered:
     case CertProvisioningWorkerState::kKeypairMarked:
     case CertProvisioningWorkerState::kSignCsrFinished:
+      // Do not serialize in the early states, it's easier to retry from the
+      // beginning. Notably, the worker registers for invalidations both after
+      // deserialization and after calling the StartCSR RPC, but it should only
+      // register once. Also StartCSR response contains VA challenge and data to
+      // sign. It is allowed to build only one VA challenge response and sign
+      // only one data with the same key.
       break;
     case CertProvisioningWorkerState::kFinishCsrResponseReceived:
       CertProvisioningSerializer::SerializeWorkerToPrefs(pref_service_, *this);
@@ -1069,7 +1065,7 @@ void CertProvisioningWorkerStatic::InitAfterDeserialization() {
 void CertProvisioningWorkerStatic::RegisterForInvalidations() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
-  DCHECK(invalidator_);
+  CHECK(invalidator_, base::NotFatalUntil::M160);
 
   // Registering the callback with base::Unretained is OK because this class
   // owns |invalidator_|, and the callback will never be called after
@@ -1086,7 +1082,7 @@ void CertProvisioningWorkerStatic::RegisterForInvalidations() {
 void CertProvisioningWorkerStatic::UnregisterFromInvalidations() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
-  DCHECK(invalidator_);
+  CHECK(invalidator_, base::NotFatalUntil::M160);
 
   invalidator_->Unregister();
 }

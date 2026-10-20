@@ -8,6 +8,7 @@ import static org.junit.Assume.assumeTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -15,6 +16,7 @@ import android.app.Activity;
 import android.content.Context;
 import android.content.Intent;
 
+import androidx.appcompat.app.AppCompatDelegate;
 import androidx.test.filters.MediumTest;
 import androidx.test.platform.app.InstrumentationRegistry;
 
@@ -31,21 +33,23 @@ import org.mockito.junit.MockitoRule;
 import org.chromium.base.ContextUtils;
 import org.chromium.base.DeviceInfo;
 import org.chromium.base.ThreadUtils;
+import org.chromium.base.TriState;
 import org.chromium.base.UnguessableToken;
 import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.Criteria;
 import org.chromium.base.test.util.CriteriaHelper;
-import org.chromium.blink.mojom.ImmersiveProjectionType;
-import org.chromium.blink.mojom.ImmersiveStereoMode;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.media.VideoOverlayActivity;
 import org.chromium.chrome.browser.media.VideoOverlayActivityJni;
+import org.chromium.chrome.browser.night_mode.NightModeStateProvider;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.chrome.test.transit.ChromeTransitTestRules;
 import org.chromium.chrome.test.transit.FreshCtaTransitTestRule;
 import org.chromium.chrome.test.util.ActivityTestUtils;
+import org.chromium.content_public.browser.ImmersiveProjectionType;
+import org.chromium.content_public.browser.ImmersiveStereoMode;
 import org.chromium.content_public.browser.overlay_window.PlaybackState;
 
 import java.util.concurrent.Callable;
@@ -74,8 +78,8 @@ public class ImmersiveVideoPlaybackActivityTest {
     private static final float PLAYBACK_RATE = 1.0f;
     private static final int VIDEO_WIDTH = 640;
     private static final int VIDEO_HEIGHT = 360;
-    private static final @ImmersiveStereoMode.EnumType int STEREO_MODE = ImmersiveStereoMode.MONO;
-    private static final @ImmersiveProjectionType.EnumType int PROJECTION_TYPE =
+    private static final @ImmersiveStereoMode int STEREO_MODE = ImmersiveStereoMode.MONO;
+    private static final @ImmersiveProjectionType int PROJECTION_TYPE =
             ImmersiveProjectionType.QUAD;
 
     private final UnguessableToken mNativeWindowToken = UnguessableToken.createForTesting();
@@ -141,7 +145,7 @@ public class ImmersiveVideoPlaybackActivityTest {
                     ImmersiveVideoPlaybackActivity activity = new ImmersiveVideoPlaybackActivity();
                     activity.setPlaybackState(PlaybackState.PLAYING);
                     activity.updateVideoSize(VIDEO_WIDTH, VIDEO_HEIGHT);
-                    activity.setImmersiveVideoOptions(STEREO_MODE, PROJECTION_TYPE);
+                    activity.setImmersiveVideoOptions(STEREO_MODE, PROJECTION_TYPE, true);
                     activity.setMediaPosition(DURATION_MS, POSITION_MS, PLAYBACK_RATE);
 
                     ImmersiveVideoPlaybackActivity.PendingState pendingState =
@@ -167,6 +171,8 @@ public class ImmersiveVideoPlaybackActivityTest {
                             PROJECTION_TYPE,
                             pendingState.mProjectionType.intValue());
                     Assert.assertEquals(
+                            "Is recommended mismatch", TriState.TRUE, pendingState.mIsRecommended);
+                    Assert.assertEquals(
                             "Duration mismatch", DURATION_MS, pendingState.mDurationMs.longValue());
                     Assert.assertEquals(
                             "Position mismatch", POSITION_MS, pendingState.mPositionMs.longValue());
@@ -184,8 +190,8 @@ public class ImmersiveVideoPlaybackActivityTest {
     public void testSetImmersiveVideoOptionsForwardsToCoordinatorMock() throws Throwable {
         ImmersiveVideoPlaybackActivity activity = startImmersiveVideoPlaybackActivity();
 
-        activity.setImmersiveVideoOptions(STEREO_MODE, PROJECTION_TYPE);
-        verify(mCoordinatorMock).updateVideoLayout(STEREO_MODE, PROJECTION_TYPE);
+        activity.setImmersiveVideoOptions(STEREO_MODE, PROJECTION_TYPE, true);
+        verify(mCoordinatorMock).setImmersiveVideoOptions(STEREO_MODE, PROJECTION_TYPE, true);
 
         testExitOn(activity, () -> activity.close());
     }
@@ -226,6 +232,67 @@ public class ImmersiveVideoPlaybackActivityTest {
         activity.updateVideoSize(VIDEO_WIDTH, VIDEO_HEIGHT);
         verify(mCoordinatorMock).updatePlayerSize(VIDEO_WIDTH, VIDEO_HEIGHT);
 
+        testExitOn(activity, () -> activity.close());
+    }
+
+    /** Tests that onPauseWithNative pauses playback when native handle is initialized. */
+    @Test
+    @MediumTest
+    public void testPausePausesPlayback() throws Throwable {
+        ImmersiveVideoPlaybackActivity activity = startImmersiveVideoPlaybackActivity();
+
+        ThreadUtils.runOnUiThreadBlocking(() -> activity.onPauseWithNative());
+        verify(mNativeMock).togglePlayPause(NATIVE_OVERLAY, false);
+
+        testExitOn(activity, () -> activity.close());
+    }
+
+    /** Tests that onResumeWithNative shows the control panel. */
+    @Test
+    @MediumTest
+    public void testResumeShowsControlPanel() throws Throwable {
+        ImmersiveVideoPlaybackActivity activity = startImmersiveVideoPlaybackActivity();
+
+        ThreadUtils.runOnUiThreadBlocking(() -> activity.onResumeWithNative());
+        verify(mCoordinatorMock).showControlPanel();
+
+        testExitOn(activity, () -> activity.close());
+    }
+
+    /** Tests that subsequent onStart calls do not re-initialize the native handle. */
+    @Test
+    @MediumTest
+    public void testSubsequentStartDoesNotReinitializeNativeHandle() throws Throwable {
+        ImmersiveVideoPlaybackActivity activity = startImmersiveVideoPlaybackActivity();
+
+        verify(mNativeMock, times(1)).onActivityStart(eq(mNativeWindowToken), any(), any());
+
+        ThreadUtils.runOnUiThreadBlocking(() -> activity.onStart());
+        verify(mNativeMock, times(1)).onActivityStart(eq(mNativeWindowToken), any(), any());
+
+        testExitOn(activity, () -> activity.close());
+    }
+
+    /** Tests that the activity is in night mode by default. */
+    @Test
+    @MediumTest
+    public void testNightModeByDefault() throws Throwable {
+        ImmersiveVideoPlaybackActivity activity = startImmersiveVideoPlaybackActivity();
+        Assert.assertNotNull(activity);
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    NightModeStateProvider provider = activity.createNightModeStateProvider();
+                    Assert.assertTrue(
+                            provider
+                                    instanceof
+                                    ImmersiveVideoPlaybackActivity
+                                            .ImmersiveVideoPlaybackNightModeStateProvider);
+                    Assert.assertTrue(provider.isInNightMode());
+                    Assert.assertEquals(
+                            "AppCompatDelegate should be set to local night mode",
+                            AppCompatDelegate.MODE_NIGHT_YES,
+                            activity.getDelegate().getLocalNightMode());
+                });
         testExitOn(activity, () -> activity.close());
     }
 

@@ -35,6 +35,7 @@ class MockDataProvider : public GlicInstanceCoordinatorMetrics::DataProvider {
               GetRecentlyActiveConversations,
               (size_t),
               (override));
+  MOCK_METHOD(std::vector<GlicInstanceImpl*>, GetInstances, (), (override));
 };
 
 class GlicInstanceCoordinatorMetricsTest : public testing::Test {

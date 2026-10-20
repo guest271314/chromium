@@ -9,7 +9,9 @@
           "--avd-config=../../tools/android/avd/proto/android_30_google_apis_x86.textpb",
           "--git-revision=${got_revision}"
         ],
+        "ci_only": true,
         "description": "Run with android_30_google_apis_x86",
+        "experiment_percentage": 100,
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
@@ -55,7 +57,9 @@
           "--avd-config=../../tools/android/avd/proto/android_30_google_apis_x86.textpb",
           "--git-revision=${got_revision}"
         ],
+        "ci_only": true,
         "description": "Run with android_30_google_apis_x86",
+        "experiment_percentage": 100,
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
@@ -103,6 +107,8 @@
         "args": [
           "--git-revision=${got_revision}"
         ],
+        "ci_only": true,
+        "experiment_percentage": 100,
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
@@ -136,6 +142,8 @@
         "args": [
           "--git-revision=${got_revision}"
         ],
+        "ci_only": true,
+        "experiment_percentage": 100,
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
@@ -154,7 +162,7 @@
         "swarming": {
           "dimensions": {
             "cpu": "arm64",
-            "os": "Mac-15|Mac-26",
+            "os": "Mac-26",
             "pool": "chrome.tests.finch"
           },
           "service_account": "chrome-tester@chops-service-accounts.iam.gserviceaccount.com"
@@ -170,6 +178,8 @@
         "args": [
           "--git-revision=${got_revision}"
         ],
+        "ci_only": true,
+        "experiment_percentage": 100,
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },

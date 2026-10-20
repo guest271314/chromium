@@ -2,8 +2,6 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-import("//build/config/chromeos/ui_mode.gni")
-
 assert(is_chromeos)
 
 static_library("system_info") {
@@ -20,10 +18,7 @@ static_library("system_info") {
     "system_info_card_provider.h",
   ]
 
-  public_deps = [
-    "//chrome/browser:browser_public_dependencies",
-    "//chrome/browser/ui/webui/ash/settings/calculator",
-  ]
+  public_deps = [ "//chrome/browser/ui/webui/ash/settings/calculator" ]
 
   deps = [
     "//ash/app_list/vector_icons",
@@ -31,7 +26,6 @@ static_library("system_info") {
     "//ash/strings",
     "//ash/webui/diagnostics_ui:url_constants",
     "//ash/webui/settings/public/constants:mojom",
-    "//chrome/app:generated_resources",
     "//chrome/browser/apps/app_service",
     "//chrome/browser/ash/app_list/search",
     "//chrome/browser/ash/app_list/search/common",
@@ -76,7 +70,6 @@ source_set("unit_tests") {
     "//chrome/browser/ash/app_list/search/common",
     "//chrome/browser/ash/app_list/search/test:test_support",
     "//chrome/browser/profiles:profile",
-    "//chrome/browser/ui",
     "//chrome/browser/ui/webui/ash/settings/pages/storage",
     "//chrome/common:channel_info",
     "//chrome/test:test_support",

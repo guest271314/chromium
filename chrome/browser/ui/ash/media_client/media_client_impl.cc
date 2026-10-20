@@ -30,19 +30,18 @@
 #include "base/system/sys_info.h"
 #include "base/task/current_thread.h"
 #include "base/task/single_thread_task_runner.h"
-#include "chrome/browser/ash/browser_delegate/browser_controller.h"
-#include "chrome/browser/ash/browser_delegate/browser_delegate.h"
 #include "chrome/browser/ash/camera_mic/vm_camera_mic_manager.h"
 #include "chrome/browser/ash/extensions/media_player_api.h"
 #include "chrome/browser/ash/extensions/media_player_event_router.h"
-#include "chrome/browser/ash/profiles/profile_helper.h"
 #include "chrome/browser/media/webrtc/media_stream_capture_indicator.h"
-#include "chrome/browser/notifications/system_notification_helper.h"
 #include "chrome/browser/picture_in_picture/picture_in_picture_window_manager.h"
 #include "chrome/browser/profiles/profile_manager.h"
-#include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/tab_contents/tab_contents_iterator.h"
 #include "chrome/grit/generated_resources.h"
+#include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
+#include "chromeos/ash/components/browser_delegate/browser_controller.h"
+#include "chromeos/ash/components/browser_delegate/browser_delegate.h"
 #include "components/account_id/account_id.h"
 #include "components/services/app_service/public/cpp/app_capability_access_cache.h"
 #include "components/services/app_service/public/cpp/app_capability_access_cache_wrapper.h"
@@ -61,6 +60,7 @@
 #include "services/media_session/public/mojom/media_session.mojom.h"
 #include "services/video_capture/public/mojom/video_capture_service.mojom.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/message_center/message_center.h"
 #include "ui/message_center/public/cpp/notification.h"
 #include "ui/message_center/public/cpp/notification_types.h"
 
@@ -247,7 +247,7 @@ MediaClientImpl::MediaClientImpl()
   notification_.builder().SetNotifierId(
       notification_.builder().GetNotifierId());
 
-  DCHECK(!g_media_client);
+  CHECK(!g_media_client, base::NotFatalUntil::M162);
   g_media_client = this;
 }
 
@@ -277,14 +277,14 @@ MediaClientImpl* MediaClientImpl::Get() {
 }
 
 void MediaClientImpl::Init() {
-  DCHECK(!media_controller_);
+  CHECK(!media_controller_, base::NotFatalUntil::M162);
 
   media_controller_ = ash::MediaController::Get();
   media_controller_->SetClient(this);
 }
 
 void MediaClientImpl::InitForTesting(ash::MediaController* controller) {
-  DCHECK(!media_controller_);
+  CHECK(!media_controller_, base::NotFatalUntil::M162);
 
   media_controller_ = controller;
   media_controller_->SetClient(this);
@@ -327,7 +327,7 @@ void MediaClientImpl::RequestCaptureState() {
   auto* manager = user_manager::UserManager::Get();
   for (user_manager::User* user : manager->GetLRULoggedInUsers()) {
     capture_states[user->GetAccountId()] = GetMediaCaptureStateOfAllWebContents(
-        ash::ProfileHelper::Get()->GetProfileByUser(user));
+        ash::BrowserContextHelper::Get()->GetBrowserContextByUser(user));
   }
 
   const user_manager::User* primary_user = manager->GetPrimaryUser();
@@ -350,7 +350,7 @@ void MediaClientImpl::OnRequestUpdate(int render_process_id,
                                       int render_frame_id,
                                       blink::mojom::MediaStreamType stream_type,
                                       const content::MediaRequestState state) {
-  DCHECK(base::CurrentUIThread::IsSet());
+  CHECK(base::CurrentUIThread::IsSet(), base::NotFatalUntil::M162);
   // The PostTask is necessary because the state of MediaStreamCaptureIndicator
   // gets updated after this.
   base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
@@ -359,7 +359,7 @@ void MediaClientImpl::OnRequestUpdate(int render_process_id,
 }
 
 void MediaClientImpl::OnBrowserActivated(ash::BrowserDelegate* browser) {
-  active_context_ = browser->GetBrowser().profile();
+  active_context_ = browser->GetBrowser().GetProfile();
   UpdateForceMediaClientKeyHandling();
 }
 
@@ -416,7 +416,7 @@ void MediaClientImpl::OnActiveClientChange(
   if (is_new_active_client) {
     active_camera_client_count_++;
   } else if (active_device_ids.empty()) {
-    DCHECK(active_camera_client_count_ > 0);
+    CHECK(active_camera_client_count_ > 0, base::NotFatalUntil::M162);
     active_camera_client_count_--;
   }
 
@@ -455,7 +455,8 @@ void MediaClientImpl::EnableCustomMediaKeyHandler(
     ui::MediaKeysListener::Delegate* delegate) {
   auto it = media_key_delegates_.find(context);
 
-  DCHECK(!media_key_delegates_.contains(context) || it->second == delegate);
+  CHECK(it == media_key_delegates_.end() || it->second == delegate,
+        base::NotFatalUntil::M162);
 
   media_key_delegates_.emplace(context, delegate);
 
@@ -470,7 +471,7 @@ void MediaClientImpl::DisableCustomMediaKeyHandler(
   }
 
   auto it = media_key_delegates_.find(context);
-  DCHECK_EQ(it->second, delegate);
+  CHECK_EQ(it->second, delegate, base::NotFatalUntil::M162);
 
   media_key_delegates_.erase(it);
 
@@ -569,14 +570,14 @@ void MediaClientImpl::ShowCameraOffNotification(const std::string& device_id,
   }
 
   // Creating/updating the notification.
-  SystemNotificationHelper::GetInstance()->Display(
+  message_center::MessageCenter::Get()->AddNotification(
       notification_.builder()
           .SetId(PrivacySwitchOnNotificationIdForDevice(device_id))
           .SetTitleWithArgs(IDS_CAMERA_PRIVACY_SWITCH_ON_NOTIFICATION_TITLE,
                             {device_name_u16})
           .SetMessageWithArgs(IDS_CAMERA_PRIVACY_SWITCH_ON_NOTIFICATION_MESSAGE,
                               {device_name_u16})
-          .Build(false));
+          .BuildPtr(false));
   devices_having_visible_notification_.insert(device_id);
 }
 
@@ -585,8 +586,9 @@ MediaClientImpl::RemoveCameraOffNotificationForDevice(
     const std::string& device_id) {
   auto it = devices_having_visible_notification_.find(device_id);
   if (it != devices_having_visible_notification_.end()) {
-    SystemNotificationHelper::GetInstance()->Close(
-        PrivacySwitchOnNotificationIdForDevice(device_id));
+    message_center::MessageCenter::Get()->RemoveNotification(
+        PrivacySwitchOnNotificationIdForDevice(device_id),
+        /*by_user=*/false);
     return devices_having_visible_notification_.erase(it);
   }
   return it;

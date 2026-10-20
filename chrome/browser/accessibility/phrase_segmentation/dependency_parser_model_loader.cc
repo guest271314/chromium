@@ -113,7 +113,7 @@ void DependencyParserModelLoader::OnModelUpdated(
     return;
   }
   background_task_runner_->PostTaskAndReplyWithResult(
-      FROM_HERE, base::BindOnce(&LoadModelFile, model_info->GetModelFilePath()),
+      FROM_HERE, base::BindOnce(&LoadModelFile, model_info->model_file_path),
       base::BindOnce(&DependencyParserModelLoader::OnModelFileLoaded,
                      weak_ptr_factory_.GetWeakPtr()));
 }
@@ -132,18 +132,18 @@ void DependencyParserModelLoader::OnModelFileLoaded(base::File model_file) {
 }
 
 base::File DependencyParserModelLoader::GetDependencyParserModelFile() {
-  DCHECK(IsModelAvailable());
+  CHECK(IsModelAvailable(), base::NotFatalUntil::M161);
   if (!dependency_parser_model_file_) {
     return base::File();
   }
   // The model must be valid at this point.
-  DCHECK(dependency_parser_model_file_->IsValid());
+  CHECK(dependency_parser_model_file_->IsValid(), base::NotFatalUntil::M161);
   return dependency_parser_model_file_->Duplicate();
 }
 
 void DependencyParserModelLoader::NotifyOnModelFileAvailable(
     NotifyModelAvailableCallback callback) {
-  DCHECK(!IsModelAvailable());
+  CHECK(!IsModelAvailable(), base::NotFatalUntil::M161);
   if (pending_model_requests_.size() < kMaxPendingRequestsAllowed) {
     pending_model_requests_.emplace_back(std::move(callback));
     return;

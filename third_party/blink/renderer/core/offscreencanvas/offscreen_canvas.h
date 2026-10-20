@@ -19,16 +19,20 @@
 #include "third_party/blink/renderer/platform/bindings/script_wrappable.h"
 #include "third_party/blink/renderer/platform/graphics/canvas_resource_dispatcher.h"
 #include "third_party/blink/renderer/platform/graphics/dom_node_id.h"
+#include "third_party/blink/renderer/platform/graphics/paint/float_clip_rect.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
 #include "third_party/blink/renderer/platform/heap/prefinalizer.h"
 #include "third_party/blink/renderer/platform/text/layout_locale.h"
 #include "ui/gfx/geometry/rect.h"
+#include "ui/gfx/geometry/rect_f.h"
 #include "ui/gfx/geometry/size.h"
+#include "ui/gfx/geometry/transform.h"
 
 namespace blink {
 
 class CanvasContextCreationAttributesCore;
-class DOMMatrix;
+class ElementImageDefaultSize;
+class UpdateElementGeometryOptions;
 class ImageBitmap;
 class ImageEncodeOptions;
 class
@@ -46,9 +50,19 @@ class CORE_EXPORT OffscreenCanvas final
   USING_PRE_FINALIZER(OffscreenCanvas, Dispose);
 
  public:
-  static OffscreenCanvas* Create(ScriptState*, unsigned width, unsigned height);
+  static OffscreenCanvas* Create(ScriptState*,
+                                 unsigned width,
+                                 unsigned height,
+                                 uint32_t client_id = 0,
+                                 uint32_t sink_id = 0,
+                                 DOMNodeId canvas_id = kInvalidDOMNodeId);
 
-  OffscreenCanvas(ExecutionContext*, gfx::Size);
+  OffscreenCanvas(ExecutionContext*,
+                  gfx::Size,
+                  uint32_t client_id,
+                  uint32_t sink_id,
+                  DOMNodeId canvas_id);
+
   void Dispose();
 
   bool IsOffscreenCanvas() const override { return true; }
@@ -70,9 +84,13 @@ class CORE_EXPORT OffscreenCanvas final
                                     const ImageEncodeOptions* options,
                                     ExceptionState& exception_state);
 
-  DOMMatrix* getElementTransform(const V8UnionElementOrElementImage* element,
-                                 DOMMatrix* draw_transform,
-                                 ExceptionState&);
+  ElementImageDefaultSize* getElementImageDefaultSize(
+      const V8UnionElementOrElementImage* element,
+      ExceptionState&) const;
+  void updateElementGeometry(const V8UnionElementOrElementImage*,
+                             const UpdateElementGeometryOptions*,
+                             ExceptionState&);
+  void clearElementGeometry(const V8UnionElementOrElementImage*);
 
   void SetSize(gfx::Size);
   void RecordTransfer();
@@ -80,7 +98,6 @@ class CORE_EXPORT OffscreenCanvas final
   static OffscreenCanvas* FromPlaceholderId(ExecutionContext* context,
                                             DOMNodeId canvas_id);
 
-  void SetPlaceholderCanvasId(DOMNodeId canvas_id);
   void DeregisterFromAnimationFrameProvider();
   DOMNodeId PlaceholderCanvasId() const { return placeholder_canvas_id_; }
   bool HasPlaceholderCanvas() const;
@@ -103,10 +120,11 @@ class CORE_EXPORT OffscreenCanvas final
     disable_reading_from_canvas_ = true;
   }
 
-  void SetFrameSinkId(uint32_t client_id, uint32_t sink_id) {
+  void SetFrameSinkIdForTesting(uint32_t client_id, uint32_t sink_id) {
     client_id_ = client_id;
     sink_id_ = sink_id;
   }
+
   uint32_t ClientId() const { return client_id_; }
   uint32_t SinkId() const { return sink_id_; }
 
@@ -126,20 +144,53 @@ class CORE_EXPORT OffscreenCanvas final
   bool IsPageVisible() const override;
   void SetParentVisibility(bool visible) override;
   void DiscardResources() override;
+  void RecordRenderedText(const String& text,
+                          const gfx::RectF& bounds,
+                          float font_height) override;
+  void ClearRenderedText(const gfx::RectF& rect) override;
+  void ClearRenderedText() override;
+  bool ShouldCaptureRenderedText() override {
+    return should_capture_rendered_text_ && HasPlaceholderCanvas();
+  }
+  void UpdateDrawnElementGeometry(Element&,
+                                  const gfx::Transform*,
+                                  const FloatClipRect*,
+                                  bool update_hit_test_order) override;
+  void UpdateDrawnElementGeometry(ElementImage&,
+                                  const gfx::Transform*,
+                                  const FloatClipRect*,
+                                  bool update_hit_test_order) override;
+  void ClearDrawnElementGeometry(Element&) override;
+  void ClearDrawnElementGeometry(ElementImage&) override;
+
+  // A pending update created by a call to either updateElementGeometry or
+  // clearElementGeometry.
+  struct ElementGeometryUpdate {
+    DOMNodeId element_id;
+
+    // Fields populated by updateElementGeometry.
+    std::optional<gfx::Transform> transform;
+    std::optional<FloatClipRect> clip;
+    bool update_hit_test_order = false;
+
+    // Set to `true` by clearElementGeometry.
+    bool clear_element_geometry = false;
+  };
 
   bool PushFrameIfNeeded();
-  bool PushFrame(scoped_refptr<CanvasResource>&& frame) override;
+  bool PushFrame(scoped_refptr<CanvasResource>&& frame);
   void DidDraw(const gfx::Rect&) override;
   using CanvasRenderingContextHost::DidDraw;
   bool ShouldAccelerate2dContext() const override;
   CanvasResourceDispatcher* GetOrCreateResourceDispatcher() override;
-  void DiscardResourceDispatcher() override { frame_dispatcher_ = nullptr; }
+  void DiscardResourceDispatcher() override {
+    placeholder_client_ = nullptr;
+    frame_dispatcher_ = nullptr;
+  }
   UkmParameters GetUkmParameters() override;
   bool IsWebGL1Enabled() const override { return true; }
   bool IsWebGL2Enabled() const override { return true; }
   bool IsWebGLBlocked() const override { return false; }
-
-  // CanvasResourceProvider::Delegate implementation
   void NotifyGpuContextLost() override;
   void SetNeedsCompositingUpdate() override {}
 
@@ -243,10 +294,18 @@ class CORE_EXPORT OffscreenCanvas final
   static ContextFactoryVector& RenderingContextFactories();
   static CanvasRenderingContextFactory* GetRenderingContextFactory(int);
 
+  void QueueUpdate(ElementGeometryUpdate update);
+  void QueueElementGeometryUpdate(DOMNodeId element_id,
+                                  const gfx::Transform* transform,
+                                  const FloatClipRect* clip,
+                                  bool update_hit_test_order);
+  void QueueClearElementGeometry(DOMNodeId element_id);
+  void ProcessPendingElementGeometryUpdates();
+
   Member<CanvasRenderingContext> context_;
   WeakMember<ExecutionContext> execution_context_;
 
-  DOMNodeId placeholder_canvas_id_ = kInvalidDOMNodeId;
+  const DOMNodeId placeholder_canvas_id_;
   bool is_parent_visible_ = true;
   std::optional<TextDirection> text_direction_;
 
@@ -260,6 +319,7 @@ class CORE_EXPORT OffscreenCanvas final
   bool disable_reading_from_canvas_ = false;
 
   std::unique_ptr<CanvasResourceDispatcher> frame_dispatcher_;
+  std::unique_ptr<OffscreenCanvasPlaceholder::Client> placeholder_client_;
 
   // Rect is in a canvas's space (i.e Size() is a full rect and not in a
   // CanvasResource space).
@@ -281,6 +341,9 @@ class CORE_EXPORT OffscreenCanvas final
   uint32_t client_id_ = 0;
   uint32_t sink_id_ = 0;
 
+  bool should_capture_rendered_text_ = false;
+
+  Vector<ElementGeometryUpdate> pending_element_geometry_updates_;
 };
 
 }  // namespace blink

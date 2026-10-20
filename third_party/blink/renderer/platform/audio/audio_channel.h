@@ -29,8 +29,6 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_PLATFORM_AUDIO_AUDIO_CHANNEL_H_
 #define THIRD_PARTY_BLINK_RENDERER_PLATFORM_AUDIO_AUDIO_CHANNEL_H_
 
-#include <memory>
-
 #include "base/compiler_specific.h"
 #include "base/containers/span.h"
 #include "base/memory/raw_span.h"
@@ -49,37 +47,28 @@ class PLATFORM_EXPORT AudioChannel final {
   // AudioFloatArray.
 
   // Manage storage for us.
-  explicit AudioChannel(uint32_t length) : silent_(true) {
-    CHECK(TryAllocate(length));
-  }
+  explicit AudioChannel(uint32_t length) { CHECK(TryAllocate(length)); }
 
   // A "blank" audio channel -- must call Set() before it's useful...
-  AudioChannel() : silent_(true) {}
+  AudioChannel() = default;
 
   // Methods for internal allocation.
   bool TryAllocate(uint32_t length);
 
   void Set(base::span<float> storage) {
-    mem_buffer_.reset();  // cleanup managed storage
+    mem_buffer_ = AudioFloatArray();  // cleanup managed storage
     data_span_ = storage;
     silent_ = false;
   }
 
   // How many sample-frames do we contain?
-  uint32_t length() const { return data_span_.size(); }
+  uint32_t length() const { return static_cast<uint32_t>(data_span_.size()); }
 
   // ResizeSmaller() can only be called with a new length <= the current length.
   // The data stored in the bus will remain undisturbed.
   void ResizeSmaller(uint32_t new_length);
 
   // Direct access to PCM sample data. Non-const accessor clears silent flag.
-  float* MutableData() {
-    ClearSilentFlag();
-    return data_span_.data();
-  }
-
-  const float* Data() const { return data_span_.data(); }
-
   base::span<float> MutableSpan() {
     ClearSilentFlag();
     return data_span_;
@@ -120,9 +109,9 @@ class PLATFORM_EXPORT AudioChannel final {
   float MaxAbsValue() const;
 
  private:
-  std::unique_ptr<AudioFloatArray> mem_buffer_;
+  AudioFloatArray mem_buffer_;
   base::raw_span<float> data_span_;
-  bool silent_;
+  bool silent_ = true;
 };
 
 }  // namespace blink

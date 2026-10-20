@@ -8,7 +8,6 @@
 #include "third_party/blink/renderer/core/layout/block_layout_algorithm.h"
 #include "third_party/blink/renderer/core/layout/length_utils.h"
 #include "third_party/blink/renderer/core/layout/physical_box_fragment.h"
-#include "third_party/blink/renderer/platform/testing/runtime_enabled_features_test_helpers.h"
 
 namespace blink {
 namespace {
@@ -2761,33 +2760,33 @@ TEST_F(ColumnLayoutAlgorithmTest, MinMax) {
   // (which is the only thing resembling spec that we currently have); in
   // particular, if column-width is non-auto, we ignore column-count for min
   // inline-size, and also clamp it down to the specified column-width.
-  ComputedStyleBuilder builder(layout_object->StyleRef());
+  ComputedStyleBuilder builder(layout_object->Style());
   builder.SetColumnCount(3);
   builder.SetColumnWidth(80);
-  layout_object->SetStyle(builder.TakeStyle(),
+  layout_object->SetStyle(*builder.TakeStyle(),
                           LayoutObject::ApplyStyleChanges::kNo);
-  sizes = algorithm.ComputeMinMaxSizes(MinMaxSizesFloatInput()).sizes;
+  sizes = algorithm.ComputeMinMaxSizes(MinMaxSizesInput::Unconstrained()).sizes;
   ASSERT_TRUE(sizes.has_value());
   EXPECT_EQ(LayoutUnit(50), sizes->min_size);
   EXPECT_EQ(LayoutUnit(320), sizes->max_size);
 
   // Only column-count set.
-  builder = ComputedStyleBuilder(layout_object->StyleRef());
+  builder = ComputedStyleBuilder(layout_object->Style());
   builder.SetHasAutoColumnWidth();
-  layout_object->SetStyle(builder.TakeStyle(),
+  layout_object->SetStyle(*builder.TakeStyle(),
                           LayoutObject::ApplyStyleChanges::kNo);
-  sizes = algorithm.ComputeMinMaxSizes(MinMaxSizesFloatInput()).sizes;
+  sizes = algorithm.ComputeMinMaxSizes(MinMaxSizesInput::Unconstrained()).sizes;
   ASSERT_TRUE(sizes.has_value());
   EXPECT_EQ(LayoutUnit(170), sizes->min_size);
   EXPECT_EQ(LayoutUnit(320), sizes->max_size);
 
   // Only column-width set.
-  builder = ComputedStyleBuilder(layout_object->StyleRef());
+  builder = ComputedStyleBuilder(layout_object->Style());
   builder.SetColumnWidth(80);
   builder.SetHasAutoColumnCount();
-  layout_object->SetStyle(builder.TakeStyle(),
+  layout_object->SetStyle(*builder.TakeStyle(),
                           LayoutObject::ApplyStyleChanges::kNo);
-  sizes = algorithm.ComputeMinMaxSizes(MinMaxSizesFloatInput()).sizes;
+  sizes = algorithm.ComputeMinMaxSizes(MinMaxSizesInput::Unconstrained()).sizes;
   ASSERT_TRUE(sizes.has_value());
   EXPECT_EQ(LayoutUnit(50), sizes->min_size);
   EXPECT_EQ(LayoutUnit(100), sizes->max_size);
@@ -6474,7 +6473,6 @@ TEST_F(ColumnLayoutAlgorithmTest, TallReplacedContent) {
 }
 
 TEST_F(ColumnLayoutAlgorithmTest, GapDecorationBasic) {
-  ScopedCSSGapDecorationForTest scoped_gap_decoration(true);
   SetBodyInnerHTML(R"HTML(
     <style>
  body {
@@ -6549,7 +6547,6 @@ TEST_F(ColumnLayoutAlgorithmTest, GapDecorationBasic) {
 
 TEST_F(ColumnLayoutAlgorithmTest,
        GapDecorationContentEndPastContainer) {
-  ScopedCSSGapDecorationForTest scoped_gap_decoration(true);
   SetBodyInnerHTML(R"HTML(
     <style>
  body {
@@ -6616,8 +6613,6 @@ TEST_F(ColumnLayoutAlgorithmTest,
 
 TEST_F(ColumnLayoutAlgorithmTest,
        GapDecorationColumnWrapOneColumn) {
-  ScopedMulticolColumnWrappingForTest multicol_column_wrapping(true);
-  ScopedCSSGapDecorationForTest scoped_gap_decoration(true);
   SetBodyInnerHTML(R"HTML(
  <style>
   body {
@@ -6709,8 +6704,6 @@ TEST_F(ColumnLayoutAlgorithmTest,
 }
 
 TEST_F(ColumnLayoutAlgorithmTest, GapDecorationColumnWrapBasic) {
-  ScopedMulticolColumnWrappingForTest multicol_column_wrapping(true);
-  ScopedCSSGapDecorationForTest scoped_gap_decoration(true);
   SetBodyInnerHTML(R"HTML(
     <style>
   body {
@@ -6799,8 +6792,6 @@ TEST_F(ColumnLayoutAlgorithmTest, GapDecorationColumnWrapBasic) {
 
 TEST_F(ColumnLayoutAlgorithmTest,
        GapDecorationColumnWrapAndSpanner) {
-  ScopedMulticolColumnWrappingForTest multicol_column_wrapping(true);
-  ScopedCSSGapDecorationForTest scoped_gap_decoration(true);
   SetBodyInnerHTML(R"HTML(
 <style>
   #container {
@@ -6883,7 +6874,7 @@ TEST_F(ColumnLayoutAlgorithmTest,
   EXPECT_EQ(gap_geometry->GetContentInlineStart(), LayoutUnit(2));
   EXPECT_EQ(gap_geometry->GetContentBlockStart(), LayoutUnit(2));
   EXPECT_EQ(gap_geometry->GetContentInlineEnd(), LayoutUnit(202));
-  EXPECT_EQ(gap_geometry->GetContentBlockEnd(), LayoutUnit(202));
+  EXPECT_EQ(gap_geometry->GetContentBlockEnd(), LayoutUnit(172));
 
   EXPECT_TRUE(main_gaps[0].IsSpannerMainGap());
   EXPECT_TRUE(main_gaps[0].IsStartSpannerMainGap());
@@ -6896,8 +6887,6 @@ TEST_F(ColumnLayoutAlgorithmTest,
 
 TEST_F(ColumnLayoutAlgorithmTest,
        GapDecorationColumnWrapLastRowNotFilled) {
-  ScopedMulticolColumnWrappingForTest multicol_column_wrapping(true);
-  ScopedCSSGapDecorationForTest scoped_gap_decoration(true);
   SetBodyInnerHTML(R"HTML(
  <style>
   #container {
@@ -6955,7 +6944,6 @@ TEST_F(ColumnLayoutAlgorithmTest,
 }
 
 TEST_F(ColumnLayoutAlgorithmTest, GapDecorationTwoSpanners) {
-  ScopedCSSGapDecorationForTest scoped_gap_decoration(true);
   SetBodyInnerHTML(R"HTML(
  <style>
   body {

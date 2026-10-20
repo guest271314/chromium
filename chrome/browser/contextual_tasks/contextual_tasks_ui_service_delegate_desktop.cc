@@ -16,7 +16,7 @@ namespace contextual_tasks {
 
 ContextualTasksUiServiceDelegateDesktop::
     ContextualTasksUiServiceDelegateDesktop(Profile* profile)
-    : ContextualTasksUiServiceDelegate() {}
+    : ContextualTasksUiServiceDelegate(), profile_(profile) {}
 
 ContextualTasksUiServiceDelegateDesktop::
     ~ContextualTasksUiServiceDelegateDesktop() = default;
@@ -35,18 +35,7 @@ void ContextualTasksUiServiceDelegateDesktop::OpenFeedbackUi(
 void ContextualTasksUiServiceDelegateDesktop::ShowUndoSnackbar(
     BrowserWindowInterface* browser_window_interface) {}
 
-void ContextualTasksUiServiceDelegateDesktop::OnWebUIReady(
-    BrowserWindowInterface* browser_window_interface,
-    const base::Uuid& task_id,
-    content::WebContents* web_contents) {}
-
-void ContextualTasksUiServiceDelegateDesktop::OnWebUIDestroyed(
-    BrowserWindowInterface* browser_window_interface,
-    const std::optional<base::Uuid>& task_id) {}
-
-void ContextualTasksUiServiceDelegateDesktop::OnTaskChanged(
-    BrowserWindowInterface* browser_window_interface,
-    const std::optional<base::Uuid>& old_task_id,
-    const std::optional<base::Uuid>& new_task_id) {}
+void ContextualTasksUiServiceDelegateDesktop::StartPlatformVoiceRecognition(
+    BrowserWindowInterface* browser_window_interface) {}
 
 }  // namespace contextual_tasks

@@ -11,31 +11,36 @@ import android.accounts.AccountManager;
 import android.app.Activity;
 import android.content.Context;
 import android.content.Intent;
+import android.text.TextUtils;
 
 import androidx.annotation.VisibleForTesting;
 
 import org.jni_zero.CalledByNative;
 import org.jni_zero.JniType;
 
+import org.chromium.base.DeviceInfo;
 import org.chromium.base.ThreadUtils;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.device_lock.DeviceLockActivityLauncherImpl;
 import org.chromium.chrome.browser.profiles.Profile;
+import org.chromium.chrome.browser.signin.services.AccountPreviewDataService;
 import org.chromium.chrome.browser.signin.services.IdentityServicesProvider;
 import org.chromium.chrome.browser.signin.services.SigninManager;
 import org.chromium.chrome.browser.signin.services.SigninMetricsUtils;
 import org.chromium.chrome.browser.signin.services.SigninPreferencesManager;
-import org.chromium.chrome.browser.signin.services.WebSigninBridge;
+import org.chromium.chrome.browser.signin.services.WebSigninTrackerBridge;
 import org.chromium.chrome.browser.sync.settings.AccountManagementFragment;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.ui.signin.BottomSheetSigninAndHistorySyncConfig;
 import org.chromium.chrome.browser.ui.signin.BottomSheetSigninAndHistorySyncConfig.NoAccountSigninMode;
 import org.chromium.chrome.browser.ui.signin.BottomSheetSigninAndHistorySyncConfig.WithAccountSigninMode;
 import org.chromium.chrome.browser.ui.signin.BottomSheetSigninAndHistorySyncCoordinator;
+import org.chromium.chrome.browser.ui.signin.BottomSheetSigninAndHistorySyncCoordinatorSupplier;
+import org.chromium.chrome.browser.ui.signin.BottomSheetSigninAndHistorySyncCoordinatorSupplier.SupplierFlow;
+import org.chromium.chrome.browser.ui.signin.FullscreenSigninAndHistorySyncConfig;
 import org.chromium.chrome.browser.ui.signin.SigninUtils;
-import org.chromium.chrome.browser.ui.signin.WebSigninAndHistorySyncCoordinatorSupplier;
 import org.chromium.chrome.browser.ui.signin.account_picker.AccountPickerBottomSheetCoordinator;
 import org.chromium.chrome.browser.ui.signin.account_picker.AccountPickerBottomSheetStrings;
 import org.chromium.chrome.browser.ui.signin.account_picker.AccountPickerDelegate;
@@ -53,11 +58,16 @@ import org.chromium.components.signin.GAIAServiceType;
 import org.chromium.components.signin.SigninFeatureMap;
 import org.chromium.components.signin.SigninFeatures;
 import org.chromium.components.signin.base.AccountInfo;
+import org.chromium.components.signin.base.ExternalEntryPoint;
+import org.chromium.components.signin.base.SigninDeepLinkPayload;
 import org.chromium.components.signin.identitymanager.IdentityManager;
 import org.chromium.components.signin.metrics.AccountConsistencyPromoAction;
+import org.chromium.components.signin.metrics.CrossDeviceInitialState;
 import org.chromium.components.signin.metrics.SigninAccessPoint;
 import org.chromium.google_apis.gaia.CoreAccountId;
 import org.chromium.ui.base.WindowAndroid;
+import org.chromium.ui.modaldialog.ModalDialogManager;
+import org.chromium.ui.widget.Toast;
 import org.chromium.url.GURL;
 
 import java.util.List;
@@ -65,6 +75,9 @@ import java.util.List;
 /** The bridge regroups methods invoked by native code to interact with Android Signin UI. */
 @NullMarked
 final class SigninBridge {
+
+    private static final String TAG = "SigninBridge";
+
     /** Used for dependency injection in unit tests. */
     @VisibleForTesting
     static class AccountPickerBottomSheetCoordinatorFactory {
@@ -72,23 +85,29 @@ final class SigninBridge {
                 WindowAndroid windowAndroid,
                 IdentityManager identityManager,
                 SigninManager signinManager,
+                @Nullable AccountPreviewDataService accountPreviewDataService,
+                ModalDialogManager modalDialogManager,
                 BottomSheetController bottomSheetController,
                 AccountPickerDelegate accountPickerDelegate,
                 AccountPickerBottomSheetStrings accountPickerBottomSheetStrings,
                 DeviceLockActivityLauncher deviceLockActivityLauncher,
                 @AccountPickerLaunchMode int accountPickerLaunchMode,
+                boolean isWebSignin,
+                @SigninAccessPoint int accessPoint,
                 @Nullable CoreAccountId selectedAccountId) {
             return new AccountPickerBottomSheetCoordinator(
                     windowAndroid,
                     identityManager,
                     signinManager,
+                    accountPreviewDataService,
+                    modalDialogManager,
                     bottomSheetController,
                     accountPickerDelegate,
                     accountPickerBottomSheetStrings,
                     deviceLockActivityLauncher,
                     accountPickerLaunchMode,
-                    /* isWebSignin= */ true,
-                    SigninAccessPoint.WEB_SIGNIN,
+                    isWebSignin,
+                    accessPoint,
                     selectedAccountId);
         }
     }
@@ -103,14 +122,21 @@ final class SigninBridge {
      * @param prefilledEmail The email address to prefill in the add account flow, or null if no
      *     email should be prefilled.
      * @param continueUrl The URL to navigate to after the account is added.
+     * @param extensionName The name of the extension requesting the account. Can be empty if the
+     *     flow is not started by an extension.
      */
     @CalledByNative
     private static void startAddAccountFlow(
             Tab tab,
             @Nullable @JniType("std::string") String prefilledEmail,
-            @JniType("GURL") GURL continueUrl) {
+            @JniType("GURL") GURL continueUrl,
+            @JniType("std::string") String extensionName) {
         startAddAccountFlow(
-                tab, prefilledEmail, continueUrl, new AccountPickerBottomSheetCoordinatorFactory());
+                tab,
+                prefilledEmail,
+                continueUrl,
+                new AccountPickerBottomSheetCoordinatorFactory(),
+                extensionName);
     }
 
     /** See {@link SigninBridge#startAddAccountFlow()} above. */
@@ -119,7 +145,8 @@ final class SigninBridge {
             Tab tab,
             @Nullable String prefilledEmail,
             GURL continueUrl,
-            AccountPickerBottomSheetCoordinatorFactory factory) {
+            AccountPickerBottomSheetCoordinatorFactory factory,
+            String extensionName) {
         ThreadUtils.assertOnUiThread();
         WindowAndroid windowAndroid = tab.getWindowAndroid();
         if (windowAndroid == null || !tab.isUserInteractable()) {
@@ -144,7 +171,12 @@ final class SigninBridge {
                     windowAndroid.showIntent(
                             intent,
                             getIntentCallback(
-                                    tab, prefilledEmail, continueUrl, factory, initialTabURL),
+                                    tab,
+                                    prefilledEmail,
+                                    continueUrl,
+                                    factory,
+                                    initialTabURL,
+                                    extensionName),
                             null);
                 });
     }
@@ -154,7 +186,8 @@ final class SigninBridge {
             @Nullable String prefilledEmail,
             GURL continueUrl,
             AccountPickerBottomSheetCoordinatorFactory factory,
-            GURL initialTabURL) {
+            GURL initialTabURL,
+            String extensionName) {
         return (int resultCode, @Nullable Intent data) -> {
             @Nullable String addedAccountEmail =
                     data == null
@@ -178,7 +211,8 @@ final class SigninBridge {
                             assumeNonNull(
                                             identityManager.findExtendedAccountInfoByEmailAddress(
                                                     assumeNonNull(addedAccountEmail)))
-                                    .getId());
+                                    .getId(),
+                            extensionName);
                     return;
                 }
 
@@ -229,9 +263,20 @@ final class SigninBridge {
 
     /** Opens account management screen. */
     @CalledByNative
-    private static void openAccountManagementScreen(
+    static void openAccountManagementScreen(
             WindowAndroid windowAndroid, @GAIAServiceType int gaiaServiceType) {
         ThreadUtils.assertOnUiThread();
+        // TODO(crbug.com/8225307): Allowlist DeviceInfo.isDesktop() for this use case or branch
+        // in native code for desktop.
+        if (DeviceInfo.isDesktop()
+                && SigninFeatureMap.isEnabled(
+                        SigninFeatures.OPEN_SYSTEM_ACCOUNT_SETTINGS_DIRECTLY)) {
+            Activity activity = windowAndroid.getActivity().get();
+            if (activity != null) {
+                SigninUtils.openSettingsForAllAccounts(activity);
+            }
+            return;
+        }
         final Context context = windowAndroid.getContext().get();
         if (context != null) {
             AccountManagementFragment.openAccountManagementScreen(context, gaiaServiceType);
@@ -240,7 +285,7 @@ final class SigninBridge {
 
     /** Opens account picker bottom sheet. */
     @CalledByNative
-    private static void openAccountPickerBottomSheet(
+    private static void openAccountPickerBottomSheetForWebSignin(
             Tab tab,
             @JniType("GURL") GURL continueUrl,
             @Nullable @JniType("std::optional<CoreAccountId>") CoreAccountId selectedAccountId) {
@@ -248,7 +293,23 @@ final class SigninBridge {
                 tab,
                 continueUrl,
                 new AccountPickerBottomSheetCoordinatorFactory(),
-                selectedAccountId);
+                selectedAccountId,
+                /* extensionName= */ "");
+    }
+
+    /** Opens account picker bottom sheet for the extensions API. */
+    @CalledByNative
+    private static void openAccountPickerBottomSheetForExtensions(
+            Tab tab,
+            @JniType("GURL") GURL continueUrl,
+            @Nullable @JniType("std::optional<CoreAccountId>") CoreAccountId selectedAccountId,
+            @JniType("std::string") String extensionName) {
+        openAccountPickerBottomSheet(
+                tab,
+                continueUrl,
+                new AccountPickerBottomSheetCoordinatorFactory(),
+                selectedAccountId,
+                assertNonNull(extensionName));
     }
 
     /** Opens account picker bottom sheet. */
@@ -257,7 +318,8 @@ final class SigninBridge {
             Tab tab,
             GURL continueUrl,
             AccountPickerBottomSheetCoordinatorFactory factory,
-            @Nullable CoreAccountId selectedAccountId) {
+            @Nullable CoreAccountId selectedAccountId,
+            String extensionName) {
         ThreadUtils.assertOnUiThread();
         WindowAndroid windowAndroid = tab.getWindowAndroid();
         if (windowAndroid == null || !tab.isUserInteractable()) {
@@ -268,10 +330,15 @@ final class SigninBridge {
         Profile profile = tab.getProfile().getOriginalProfile();
         SigninManager signinManager = IdentityServicesProvider.get().getSigninManager(profile);
         assumeNonNull(signinManager);
+
+        // The signin bridge bottom sheet is only used for web signin or extensions.
+        final @SigninAccessPoint int accessPoint =
+                extensionName.isEmpty()
+                        ? SigninAccessPoint.WEB_SIGNIN
+                        : SigninAccessPoint.EXTENSIONS;
         if (!signinManager.isSigninAllowed()) {
             SigninMetricsUtils.logAccountConsistencyPromoAction(
-                    AccountConsistencyPromoAction.SUPPRESSED_SIGNIN_NOT_ALLOWED,
-                    SigninAccessPoint.WEB_SIGNIN);
+                    AccountConsistencyPromoAction.SUPPRESSED_SIGNIN_NOT_ALLOWED, accessPoint);
             return;
         }
         List<AccountInfo> accounts =
@@ -279,14 +346,15 @@ final class SigninBridge {
                         AccountManagerFacadeProvider.getInstance().getAccounts());
         if (accounts.isEmpty()) {
             SigninMetricsUtils.logAccountConsistencyPromoAction(
-                    AccountConsistencyPromoAction.SUPPRESSED_NO_ACCOUNTS,
-                    SigninAccessPoint.WEB_SIGNIN);
+                    AccountConsistencyPromoAction.SUPPRESSED_NO_ACCOUNTS, accessPoint);
             return;
         }
 
+        final boolean isWebSignin = extensionName.isEmpty();
         // If the web requests a sign-in with a specific account that is present on the device the
         // impression limit is ignored.
-        if (selectedAccountId == null
+        if (isWebSignin
+                && selectedAccountId == null
                 && SigninPreferencesManager.getInstance()
                                 .getWebSigninAccountPickerActiveDismissalCount()
                         >= ACCOUNT_PICKER_BOTTOM_SHEET_DISMISS_LIMIT) {
@@ -309,16 +377,7 @@ final class SigninBridge {
         }
 
         AccountPickerBottomSheetStrings strings =
-                new AccountPickerBottomSheetStrings.Builder(
-                                context.getString(
-                                        R.string.signin_account_picker_bottom_sheet_title))
-                        .setSubtitleString(
-                                context.getString(
-                                        R.string
-                                                .signin_account_picker_bottom_sheet_subtitle_for_web_signin))
-                        .setDismissButtonString(
-                                context.getString(R.string.signin_account_picker_dismiss_button))
-                        .build();
+                buildAccountPickerBottomSheetStrings(context, extensionName);
 
         if (SigninFeatureMap.getInstance().isActivitylessSigninAllEntryPointEnabled()) {
             BottomSheetSigninAndHistorySyncConfig.Builder builder =
@@ -335,23 +394,59 @@ final class SigninBridge {
             BottomSheetSigninAndHistorySyncConfig config = builder.build();
             BottomSheetSigninAndHistorySyncCoordinator coordinator =
                     assertNonNull(
-                            WebSigninAndHistorySyncCoordinatorSupplier.getValueOrNullFrom(
-                                    windowAndroid));
-            coordinator.startSigninFlow(
-                    config, new SigninDelegateContext(tab.getId(), continueUrl));
+                            BottomSheetSigninAndHistorySyncCoordinatorSupplier.getValueForFlow(
+                                    windowAndroid,
+                                    isWebSignin
+                                            ? SupplierFlow.WEB_SIGNIN
+                                            : SupplierFlow.EXTENSIONS));
+            if (isWebSignin) {
+                coordinator.startSigninFlow(
+                        config, new SigninDelegateContext(tab.getId(), continueUrl));
+            } else {
+                coordinator.startSigninFlow(config);
+            }
             return;
         }
 
+        AccountPreviewDataService accountPreviewDataService =
+                IdentityServicesProvider.get().getAccountPreviewDataService(profile);
         factory.create(
                 windowAndroid,
                 signinManager.getIdentityManager(),
                 signinManager,
+                accountPreviewDataService,
+                assertNonNull(windowAndroid.getModalDialogManager()),
                 bottomSheetController,
-                new WebSigninAccountPickerDelegate(tab, new WebSigninBridge.Factory(), continueUrl),
+                new WebSigninAccountPickerDelegate(
+                        tab, new WebSigninTrackerBridge.Factory(), continueUrl),
                 strings,
                 DeviceLockActivityLauncherImpl.get(),
                 AccountPickerLaunchMode.DEFAULT,
+                /* isWebSignin= */ true,
+                SigninAccessPoint.WEB_SIGNIN,
                 selectedAccountId);
+    }
+
+    private static AccountPickerBottomSheetStrings buildAccountPickerBottomSheetStrings(
+            Context context, String extensionName) {
+        String titleString =
+                extensionName.isEmpty()
+                        ? context.getString(R.string.signin_account_picker_bottom_sheet_title)
+                        : context.getString(
+                                R.string.signin_account_picker_bottom_sheet_title_for_extensions,
+                                assertNonNull(extensionName));
+        String subtitleString =
+                extensionName.isEmpty()
+                        ? context.getString(
+                                R.string.signin_account_picker_bottom_sheet_subtitle_for_web_signin)
+                        : context.getString(
+                                R.string
+                                        .signin_account_picker_bottom_sheet_subtitle_for_extensions);
+        return new AccountPickerBottomSheetStrings.Builder(titleString)
+                .setSubtitleString(subtitleString)
+                .setDismissButtonString(
+                        context.getString(R.string.signin_account_picker_dismiss_button))
+                .build();
     }
 
     /**
@@ -377,13 +472,8 @@ final class SigninBridge {
         }
         GURL initialTabURL = tab.getUrl();
         AccountManagerFacade accountManagerFacade = AccountManagerFacadeProvider.getInstance();
-        Profile profile = tab.getProfile().getOriginalProfile();
-        IdentityManager identityManager =
-                assertNonNull(IdentityServicesProvider.get().getIdentityManager(profile));
-
         accountManagerFacade.updateCredentials(
-                assertNonNull(
-                        identityManager.findExtendedAccountInfoByAccountId(selectedAccountId)),
+                selectedAccountId,
                 assumeNonNull(windowAndroid.getActivity().get()),
                 (success) -> {
                     if (success && !tab.isDestroyed() && tab.getUrl().equals(initialTabURL)) {
@@ -393,5 +483,144 @@ final class SigninBridge {
                 });
     }
 
+    /**
+     * Start the deep link sign-in flow based on the given payload.
+     *
+     * @param windowAndroid The window where the flow was initiated.
+     * @param profile The profile where the flow was initiated.
+     * @param payload The deep link payload.
+     */
+    @CalledByNative
+    static void startSigninDeepLinkFlow(
+            WindowAndroid windowAndroid,
+            Profile profile,
+            @JniType("signin::SigninDeepLinkPayload") SigninDeepLinkPayload payload) {
+        @Nullable Context context = windowAndroid.getContext().get();
+        @Nullable IdentityManager identityManager =
+                IdentityServicesProvider.get().getIdentityManager(profile);
+        if (context == null || identityManager == null) {
+            return;
+        }
+        startSigninDeepLinkFlow(context, profile, identityManager, payload);
+    }
+
+    private static void startSigninDeepLinkFlow(
+            Context context,
+            Profile profile,
+            IdentityManager identityManager,
+            SigninDeepLinkPayload payload) {
+        ThreadUtils.assertOnUiThread();
+
+        final AccountInfo primaryAccountInfo = identityManager.getPrimaryAccountInfo();
+
+        final @Nullable AccountInfo targetAccountInfo =
+                identityManager.findExtendedAccountInfoByEmailAddress(payload.getEmail());
+
+        boolean isTargetAccountSignedIn =
+                primaryAccountInfo != null
+                        && targetAccountInfo != null
+                        && primaryAccountInfo.getId().equals(targetAccountInfo.getId());
+
+        if (isTargetAccountSignedIn) {
+            SigninMetricsUtils.recordCrossDeviceInitialState(
+                    payload.getExternalEntryPoint(),
+                    CrossDeviceInitialState.SIGNED_IN_WITH_TARGET_ACCOUNT);
+            String message =
+                    SigninDeepLinkFlowStrings.alreadySignedInMessage(
+                            context, assumeNonNull(targetAccountInfo), payload);
+            Toast.makeText(context, message, Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        FullscreenSigninAndHistorySyncConfig config =
+                primaryAccountInfo == null
+                        ? SigninDeepLinkFlowStrings.signinConfig(
+                                /* context= */ context, /* targetEmail= */ payload.getEmail())
+                        : SigninDeepLinkFlowStrings.switchAccountConfig(
+                                /* context= */ context,
+                                /* signedInEmail= */ primaryAccountInfo.getEmail(),
+                                /* targetEmail= */ payload.getEmail());
+
+        @Nullable Intent intent =
+                SigninAndHistorySyncActivityLauncherImpl.get()
+                        .createFullscreenSigninIntentOrShowError(
+                                context, profile, config, SigninAccessPoint.DEEP_LINK_DEFAULT);
+        if (intent == null) {
+            SigninMetricsUtils.recordCrossDeviceInitialState(
+                    payload.getExternalEntryPoint(), CrossDeviceInitialState.FLOW_FORBIDDEN);
+            return;
+        }
+
+        recordCrossDeviceFlowStart(
+                payload.getExternalEntryPoint(), primaryAccountInfo, targetAccountInfo);
+        context.startActivity(intent);
+    }
+
+    private static void recordCrossDeviceFlowStart(
+            @ExternalEntryPoint int entryPoint,
+            @Nullable AccountInfo primaryAccountInfo,
+            @Nullable AccountInfo targetAccountInfo) {
+        @CrossDeviceInitialState int initialState;
+        if (primaryAccountInfo != null) {
+            initialState =
+                    targetAccountInfo != null
+                            ? CrossDeviceInitialState
+                                    .SIGNED_IN_WITH_DIFFERENT_ACCOUNT_TARGET_ACCOUNT_ON_DEVICE
+                            : CrossDeviceInitialState
+                                    .SIGNED_IN_WITH_DIFFERENT_ACCOUNT_TARGET_ACCOUNT_NOT_ON_DEVICE;
+        } else {
+            initialState =
+                    targetAccountInfo != null
+                            ? CrossDeviceInitialState.SIGNED_OUT_TARGET_ACCOUNT_ON_DEVICE
+                            : CrossDeviceInitialState.SIGNED_OUT_TARGET_ACCOUNT_NOT_ON_DEVICE;
+        }
+        SigninMetricsUtils.recordCrossDeviceInitialState(entryPoint, initialState);
+    }
+
     private SigninBridge() {}
+
+    private static final class SigninDeepLinkFlowStrings {
+
+        static String alreadySignedInMessage(
+                Context context, AccountInfo account, SigninDeepLinkPayload payload) {
+            var name =
+                    !TextUtils.isEmpty(account.getGivenName())
+                            ? account.getGivenName()
+                            : payload.getEmail();
+            return context.getString(
+                    R.string.signin_deep_link_flow_already_signed_in_toast_message, name);
+        }
+
+        static FullscreenSigninAndHistorySyncConfig signinConfig(
+                Context context, String targetEmail) {
+            return FullscreenSigninAndHistorySyncConfig.builder(
+                            context.getString(R.string.signin_deep_link_flow_signin_title),
+                            context.getString(R.string.signin_deep_link_flow_signin_subtitle),
+                            context.getString(R.string.signin_deep_link_flow_signin_dismiss_button),
+                            context.getString(R.string.history_sync_title),
+                            context.getString(R.string.history_sync_subtitle))
+                    .historyOptInMode(HistorySyncConfig.OptInMode.NONE)
+                    .selectedAccountEmail(targetEmail)
+                    .build();
+        }
+
+        static FullscreenSigninAndHistorySyncConfig switchAccountConfig(
+                Context context, String signedInEmail, String targetEmail) {
+            return FullscreenSigninAndHistorySyncConfig.builderForSwitchAccountFlow(
+                            context.getString(R.string.signin_deep_link_flow_switch_account_title),
+                            context.getString(
+                                    R.string.signin_deep_link_flow_switch_account_subtitle,
+                                    signedInEmail,
+                                    targetEmail),
+                            context.getString(
+                                    R.string.signin_deep_link_flow_switch_account_dismiss_button),
+                            context.getString(R.string.history_sync_title),
+                            context.getString(R.string.history_sync_subtitle),
+                            targetEmail)
+                    .historyOptInMode(HistorySyncConfig.OptInMode.NONE)
+                    .build();
+        }
+
+        private SigninDeepLinkFlowStrings() {}
+    }
 }

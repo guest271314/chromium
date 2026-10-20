@@ -7,6 +7,7 @@
 #include <set>
 #include <utility>
 
+#include "base/memory/weak_ptr.h"
 #include "components/viz/common/surfaces/surface_id.h"
 #include "content/browser/media/media_web_contents_observer.h"
 #include "content/browser/media/session/media_session_impl.h"
@@ -14,6 +15,7 @@
 #include "content/browser/picture_in_picture/picture_in_picture_session.h"
 #include "content/browser/web_contents/web_contents_impl.h"
 #include "content/public/browser/content_browser_client.h"
+#include "content/public/browser/immersive_playback_options.h"
 #include "content/public/browser/overlay_window.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/web_contents.h"
@@ -48,8 +50,8 @@ VideoPictureInPictureWindowControllerImpl::
 }
 
 void VideoPictureInPictureWindowControllerImpl::Show() {
-  DCHECK(window_);
-  DCHECK(surface_id_.is_valid());
+  CHECK(window_, base::NotFatalUntil::M159);
+  CHECK(surface_id_.is_valid(), base::NotFatalUntil::M159);
 
   MediaSessionImpl* media_session = MediaSessionImpl::Get(web_contents());
   media_session_action_play_handled_ = media_session->ShouldRouteAction(
@@ -135,8 +137,8 @@ void VideoPictureInPictureWindowControllerImpl::EmbedSurface(
   if (!window_)
     return;
 
-  DCHECK(active_session_);
-  DCHECK(surface_id.is_valid());
+  CHECK(active_session_, base::NotFatalUntil::M159);
+  CHECK(surface_id.is_valid(), base::NotFatalUntil::M159);
 
   surface_id_ = surface_id;
 
@@ -224,7 +226,9 @@ void VideoPictureInPictureWindowControllerImpl::UpdateMediaPosition() {
 bool VideoPictureInPictureWindowControllerImpl::TogglePlayPause() {
   // This comes from the window, rather than the renderer, so we must actually
   // have a window at this point.
-  DCHECK(window_);
+  CHECK(window_, base::NotFatalUntil::M159);
+  // TODO(crbug.com/563908053): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
   DCHECK(active_session_);
 
   if (IsPlayerActive()) {
@@ -236,7 +240,9 @@ bool VideoPictureInPictureWindowControllerImpl::TogglePlayPause() {
 void VideoPictureInPictureWindowControllerImpl::Play() {
   // This comes from the window, rather than the renderer, so we must actually
   // have a window at this point.
-  DCHECK(window_);
+  CHECK(window_, base::NotFatalUntil::M159);
+  // TODO(crbug.com/572378290): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
   DCHECK(active_session_);
 
   PlayInternal();
@@ -245,7 +251,9 @@ void VideoPictureInPictureWindowControllerImpl::Play() {
 void VideoPictureInPictureWindowControllerImpl::Pause() {
   // This comes from the window, rather than the renderer, so we must actually
   // have a window at this point.
-  DCHECK(window_);
+  CHECK(window_, base::NotFatalUntil::M159);
+  // TODO(crbug.com/561460780): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
   DCHECK(active_session_);
 
   PauseInternal();
@@ -292,7 +300,7 @@ PictureInPictureResult VideoPictureInPictureWindowControllerImpl::StartSession(
     bool show_play_pause_button,
     mojo::PendingRemote<blink::mojom::PictureInPictureSessionObserver> observer,
     const gfx::Rect& source_bounds,
-    blink::mojom::ImmersiveOptionsPtr immersive_options,
+    std::optional<content::ImmersiveOptions> immersive_options,
     mojo::PendingRemote<blink::mojom::PictureInPictureSession>* session_remote,
     gfx::Size* window_size) {
   if (window_) {
@@ -301,19 +309,23 @@ PictureInPictureResult VideoPictureInPictureWindowControllerImpl::StartSession(
     // currently only supported on Android XR, where Picture-in-Picture is
     // disabled. Furthermore, the window types for these modes are different and
     // cannot be reused.
-    if (IsImmersive() != !immersive_options.is_null()) {
+    if (IsImmersive() != immersive_options.has_value()) {
       mojo::ReportBadMessage("Inconsistent immersive state in StartSession");
       return PictureInPictureResult::kNotSupported;
     }
   }
 
-  is_immersive_ = !immersive_options.is_null();
+  is_immersive_ = immersive_options.has_value();
 
   PictureInPictureResult result = PictureInPictureResult::kNotSupported;
   WebContentsDelegate* delegate = web_contents()->GetDelegate();
   if (delegate && (IsImmersive() ? delegate->IsImmersivePlaybackEnabled()
                                  : delegate->IsPictureInPictureEnabled())) {
+    base::WeakPtr<WebContents> weak_web_contents = web_contents()->GetWeakPtr();
     result = GetWebContentsImpl()->EnterPictureInPicture();
+    if (!weak_web_contents) {
+      return PictureInPictureResult::kNotSupported;
+    }
   }
 
   // Picture-in-Picture may not be supported by all embedders, so we should only
@@ -346,7 +358,7 @@ PictureInPictureResult VideoPictureInPictureWindowControllerImpl::StartSession(
   // If this is an immersive Picture-in-Picture session, set the immersive
   // options on the window.
   if (immersive_options) {
-    window_->SetImmersiveVideoOptions(std::move(immersive_options));
+    window_->SetImmersiveVideoOptions(immersive_options.value());
   }
 
   // If the window is closed by the system, then the picture in picture session
@@ -367,16 +379,18 @@ PictureInPictureResult VideoPictureInPictureWindowControllerImpl::StartSession(
 
 void VideoPictureInPictureWindowControllerImpl::
     RequestImmersivePlaybackConfirmation(
+        const content::ImmersiveOptions& default_options,
         RequestImmersivePlaybackConfirmationCallback callback) {
   WebContentsDelegate* delegate = web_contents()->GetDelegate();
   if (!delegate || !delegate->IsImmersivePlaybackEnabled()) {
-    auto result = blink::mojom::ImmersivePlaybackConfirmationResult::New();
-    result->status = blink::mojom::ImmersivePlaybackConfirmationStatus::kFailed;
+    content::ImmersivePlaybackConfirmationResult result;
+    result.status = content::ImmersivePlaybackConfirmationStatus::kFailed;
     std::move(callback).Run(std::move(result));
     return;
   }
 
-  delegate->RequestImmersivePlaybackConfirmation(std::move(callback));
+  delegate->RequestImmersivePlaybackConfirmation(default_options,
+                                                 std::move(callback));
 }
 
 void VideoPictureInPictureWindowControllerImpl::OnServiceDeleted(
@@ -415,6 +429,15 @@ void VideoPictureInPictureWindowControllerImpl::SetPlaybackControlsVisibility(
 
   if (window_) {
     window_->SetPlaybackControlsVisibility(is_visible);
+  }
+}
+
+void VideoPictureInPictureWindowControllerImpl::OnPictureInPictureStateChanged(
+    const MediaPlayerId& player_id,
+    bool is_picture_in_picture) {
+  if (WebContentsImpl* web_contents = GetWebContentsImpl()) {
+    web_contents->media_web_contents_observer()->OnPictureInPictureStateChanged(
+        player_id, is_picture_in_picture);
   }
 }
 
@@ -463,7 +486,7 @@ void VideoPictureInPictureWindowControllerImpl::HangUp() {
 }
 
 void VideoPictureInPictureWindowControllerImpl::RequestMute(bool mute) {
-  DCHECK(active_session_);
+  CHECK(active_session_, base::NotFatalUntil::M159);
   active_session_->GetMediaPlayerRemote()->RequestMute(mute);
 }
 
@@ -663,7 +686,7 @@ void VideoPictureInPictureWindowControllerImpl::WebContentsDestroyed() {
 
 void VideoPictureInPictureWindowControllerImpl::OnLeavingPictureInPicture(
     bool should_pause_video) {
-  DCHECK(active_session_);
+  CHECK(active_session_, base::NotFatalUntil::M159);
 
   if (IsPlayerActive() && should_pause_video) {
     // Pause the current video so there is only one video playing at a time.
@@ -679,13 +702,21 @@ void VideoPictureInPictureWindowControllerImpl::OnLeavingPictureInPicture(
 
 void VideoPictureInPictureWindowControllerImpl::CloseInternal(
     bool should_pause_video) {
+  // `web_contents()` can be null during `WebContents` destruction. If this
+  // controller is notified of destruction first, it clears its pointer via
+  // `Observe(nullptr)`. If `PictureInPictureWindowManager` tries to close the
+  // window later in the teardown sequence, it can crash when accessing
+  // `web_contents()`.
+  //
   // We shouldn't have an empty active_session_ in this case but (at least for
   // there tests), extensions seem to be closing the window before the
   // WebContents is marked as being destroyed. It leads to `CloseInternal()`
   // being called twice. This early check avoids the rest of the code having to
   // be aware of this oddity.
-  if (web_contents()->IsBeingDestroyed() || !active_session_)
+  if (!web_contents() || web_contents()->IsBeingDestroyed() ||
+      !active_session_) {
     return;
+  }
 
   GetWebContentsImpl()->SetHasPictureInPictureVideo(false);
   OnLeavingPictureInPicture(should_pause_video);

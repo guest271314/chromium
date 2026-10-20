@@ -5,15 +5,11 @@
 #ifndef CHROME_BROWSER_UI_VIEWS_PROFILES_AVATAR_TOOLBAR_BUTTON_H_
 #define CHROME_BROWSER_UI_VIEWS_PROFILES_AVATAR_TOOLBAR_BUTTON_H_
 
-#include "base/auto_reset.h"
 #include "base/callback_list.h"
 #include "base/functional/callback.h"
 #include "base/gtest_prod_util.h"
-#include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
-#include "base/observer_list.h"
-#include "base/observer_list_types.h"
-#include "base/time/time.h"
+#include "chrome/browser/ui/views/profiles/avatar_toolbar_button_state_manager.h"
 #include "chrome/browser/ui/views/profiles/avatar_toolbar_button_types.h"
 #include "chrome/browser/ui/views/toolbar/avatar_toolbar_button_interface.h"
 #include "chrome/browser/ui/views/toolbar/toolbar_button.h"
@@ -22,9 +18,9 @@
 #include "ui/base/metadata/metadata_header_macros.h"
 #include "ui/events/event.h"
 
-class AvatarToolbarButtonStateManager;
-class BrowserView;
-struct AccountInfo;
+class AccountInfo;
+class AvatarToolbarButtonTestAccessor;
+class BrowserWindowInterface;
 class StateProvider;
 
 // This class takes care the Profile Avatar Button.
@@ -38,7 +34,7 @@ class AvatarToolbarButton : public ToolbarButton,
  public:
   using Observer = AvatarToolbarButtonInterface::Observer;
 
-  explicit AvatarToolbarButton(BrowserView* browser);
+  explicit AvatarToolbarButton(BrowserWindowInterface* browser);
   AvatarToolbarButton(const AvatarToolbarButton&) = delete;
   AvatarToolbarButton& operator=(const AvatarToolbarButton&) = delete;
   ~AvatarToolbarButton() override;
@@ -63,21 +59,16 @@ class AvatarToolbarButton : public ToolbarButton,
           explicit_action,
       bool should_announce) override;
   bool HasExplicitButtonState() const override;
+  bool IsReadyForIPH() const override;
   void AddObserver(Observer* observer) override;
   void RemoveObserver(Observer* observer) override;
   // void UpdateIcon() also overrides ToolbarButton
   void UpdateText() override;
   void SetAnnounceCallbackForTesting(
       base::OnceCallback<void(std::u16string)> callback) override;
-  void MaybeShowProfileSwitchIPH() override;
-#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
-  void MaybeShowSupervisedUserSignInIPH() override;
-  void MaybeShowSignInBenefitsIPH() override;
-#endif
   void ClearActiveStateForTesting() override;
 #if BUILDFLAG(ENABLE_DICE_SUPPORT)
   void ForceShowingPromoForTesting() override;
-  bool GetStateAndFireSignedOutTriggerDelayTimerForTesting() override;
 #endif
 
   // ToolbarButton:
@@ -95,6 +86,8 @@ class AvatarToolbarButton : public ToolbarButton,
   void OnBoundsChanged(const gfx::Rect& previous_bounds) override;
 
  private:
+  // Used by tests to access the private state_manager_ for verification.
+  friend class ::AvatarToolbarButtonTestAccessor;
   FRIEND_TEST_ALL_PREFIXES(AvatarToolbarButtonTest,
                            HighlightMeetsMinimumContrast);
 
@@ -128,7 +121,7 @@ class AvatarToolbarButton : public ToolbarButton,
   void AnimationProgressed(const gfx::Animation* animation) override;
   void AnimationEnded(const gfx::Animation* animation) override;
 
-  std::unique_ptr<AvatarToolbarButtonStateManager> state_manager_;
+  AvatarToolbarButtonStateManager state_manager_;
 
   // Cached icons for the placeholder avatar in forced-colors mode, to avoid
   // recomputing on every ink drop highlight change. Empty when not in

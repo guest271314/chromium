@@ -13,6 +13,7 @@
 
 #include "base/check_deref.h"
 #include "base/check_is_test.h"
+#include "base/containers/map_util.h"
 #include "base/containers/span.h"
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
@@ -356,6 +357,12 @@ MutableProfileOAuth2TokenServiceDelegate::
   DCHECK(account_tracker_service_);
   DCHECK(network_connection_tracker_);
   network_connection_tracker_->AddNetworkConnectionObserver(this);
+  if (token_binding_helper_) {
+    // `base::Unretained()` is safe because `this` owns `token_binding_helper`.
+    token_binding_helper_->SetSaveBindingKeyCallback(base::BindRepeating(
+        &MutableProfileOAuth2TokenServiceDelegate::UpdateRefreshTokenBindingKey,
+        base::Unretained(this)));
+  }
 }
 
 MutableProfileOAuth2TokenServiceDelegate::
@@ -387,7 +394,7 @@ MutableProfileOAuth2TokenServiceDelegate::CreateAccessTokenFetcher(
         consumer, BackOffError());
   }
   std::string refresh_token = GetRefreshToken(account_id);
-  bool mtls_token_binding = ShouldUseMtlsForAccessTokenFetches(account_id);
+  bool mtls_token_binding = IsRefreshTokenBoundToMtls(account_id);
   DCHECK(!refresh_token.empty());
   bool is_refresh_token_bound = IsRefreshTokenBoundToKey(account_id);
   if (is_refresh_token_bound || ShouldUseIssueTokenForUnboundTokens()) {
@@ -396,14 +403,24 @@ MutableProfileOAuth2TokenServiceDelegate::CreateAccessTokenFetcher(
     // unknown and the only way of getting it requires an access token, which
     // requires a known Gaia ID (see https://crbug.com/386841916).
     const GaiaId gaia_id(account_id.ToString());
+    const std::string device_id =
+        signin::GetSigninScopedDeviceId(client_->GetPrefs());
     // `GaiaAccessTokenFetcher` doesn't support bound refresh tokens.
     auto fetcher = std::make_unique<OAuth2MintAccessTokenFetcherAdapter>(
         consumer, url_loader_factory, gaia_id, refresh_token,
-        mtls_token_binding, is_refresh_token_bound,
-        signin::GetSigninScopedDeviceId(client_->GetPrefs()),
+        mtls_token_binding, is_refresh_token_bound, device_id,
         std::string(version_info::GetVersionNumber()),
         std::string(
             version_info::GetChannelString(client_->GetClientChannel())));
+    if (token_binding_helper_ &&
+        token_binding_helper_->IsRegistrationKeyReady() &&
+        base::FeatureList::IsEnabled(
+            switches::kEnableChromeRefreshTokenBindingUpgrade)) {
+      fetcher->EnableTokenUpgradeEligibility(
+          base::BindOnce(&TokenBindingHelper::PerformTokenBindingUpgrade,
+                         token_binding_helper_->GetWeakPtr(), account_id,
+                         refresh_token, url_loader_factory, device_id));
+    }
     if (token_binding_challenge.empty() || !is_refresh_token_bound) {
       return fetcher;
     }
@@ -457,15 +474,8 @@ std::string MutableProfileOAuth2TokenServiceDelegate::GetRefreshToken(
 }
 
 bool MutableProfileOAuth2TokenServiceDelegate::
-    ShouldUseMtlsForAccessTokenFetches(const CoreAccountId& account_id) const {
-  auto iter = refresh_tokens_.find(account_id);
-  return iter != refresh_tokens_.end() && iter->second.mtls_token_binding &&
-         base::FeatureList::IsEnabled(switches::kEnableMtlsTokenBinding);
-}
-
-bool MutableProfileOAuth2TokenServiceDelegate::
     GenerateBindingKeyRegistrationToken(
-        std::string_view supported_algorithms,
+        base::span<const crypto::sign::SignatureKind> supported_algorithms,
         std::string_view auth_code,
         base::OnceCallback<
             void(std::optional<signin::BindingKeyRegistrationTokenResult>)>
@@ -474,7 +484,9 @@ bool MutableProfileOAuth2TokenServiceDelegate::
     return false;
   }
   token_binding_helper_->GenerateBindingKeyRegistrationToken(
-      supported_algorithms, auth_code, std::move(callback));
+      supported_algorithms,
+      signin::TokenBindingAuthCode(std::string(auth_code)),
+      std::move(callback));
   return true;
 }
 
@@ -492,6 +504,13 @@ MutableProfileOAuth2TokenServiceDelegate::GetWrappedBindingKey(
   }
 
   return token_binding_helper_->GetWrappedBindingKey(account_id);
+}
+
+bool MutableProfileOAuth2TokenServiceDelegate::IsRefreshTokenBoundToMtls(
+    const CoreAccountId& account_id) const {
+  const auto* token_data = base::FindOrNull(refresh_tokens_, account_id);
+  return token_data && token_data->mtls_token_binding &&
+         base::FeatureList::IsEnabled(switches::kEnableMtlsTokenBinding);
 }
 
 bool MutableProfileOAuth2TokenServiceDelegate::
@@ -536,6 +555,30 @@ void MutableProfileOAuth2TokenServiceDelegate::AddBindingKeyToService(
     token_binding_helper_->CopyBindingKeyFromAnotherTokenService(
         wrapped_binding_key);
   }
+}
+
+TokenBindingHelper::SaveBindingKeyResult
+MutableProfileOAuth2TokenServiceDelegate::UpdateRefreshTokenBindingKey(
+    const CoreAccountId& account_id,
+    std::string_view refresh_token,
+    std::vector<uint8_t> wrapped_binding_key) {
+  DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
+  auto iter = refresh_tokens_.find(account_id);
+  if (iter == refresh_tokens_.end() ||
+      iter->second.refresh_token.value() != refresh_token) {
+    return TokenBindingHelper::SaveBindingKeyResult::kRefreshTokenNotFound;
+  }
+
+  CHECK(token_binding_helper_);
+
+  token_binding_helper_->SetBindingKey(account_id, wrapped_binding_key);
+  signin::TokenBindingInfo token_binding_info(std::move(wrapped_binding_key),
+                                              iter->second.mtls_token_binding);
+  // TODO(crbug.com/514242898): Wait until `PersistCredentials()` completes
+  // successfully before resuming the upgrade flow.
+  PersistCredentials(account_id, iter->second.refresh_token.value(),
+                     token_binding_info);
+  return TokenBindingHelper::SaveBindingKeyResult::kSuccess;
 }
 
 std::vector<CoreAccountId>
@@ -676,7 +719,6 @@ void MutableProfileOAuth2TokenServiceDelegate::LoadAllCredentialsIntoMemory(
     bool should_reencrypt) {
   VLOG(1) << "MutablePO2TS::LoadAllCredentialsIntoMemory; " << db_tokens.size()
           << " credential(s).";
-  bool did_reencrypt = false;
   ScopedBatchChange batch(this);
   for (const auto& [prefixed_account_id, token_with_binding_info] : db_tokens) {
     LoadTokenFromDBStatus load_token_status =
@@ -753,7 +795,6 @@ void MutableProfileOAuth2TokenServiceDelegate::LoadAllCredentialsIntoMemory(
     }
 
     if (!revoke_token && should_reencrypt) {
-      did_reencrypt = true;
       PersistCredentials(account_id, refresh_token, token_binding_info);
     }
 
@@ -767,7 +808,6 @@ void MutableProfileOAuth2TokenServiceDelegate::LoadAllCredentialsIntoMemory(
         return kv_pair.second.refresh_token.value() !=
                GaiaConstants::kInvalidRefreshToken;
       }));
-  base::UmaHistogramBoolean("Signin.ReencryptTokensInDb", did_reencrypt);
 }
 
 void MutableProfileOAuth2TokenServiceDelegate::UpdateCredentialsInternal(
@@ -1006,7 +1046,7 @@ void MutableProfileOAuth2TokenServiceDelegate::ExtractCredentialsInternal(
     const CoreAccountId& account_id) {
   bool should_update_credentials = true;
   std::string refresh_token = GetRefreshToken(account_id);
-  bool mtls_token_binding = ShouldUseMtlsForAccessTokenFetches(account_id);
+  bool mtls_token_binding = IsRefreshTokenBoundToMtls(account_id);
   AccountMoveDecision move_decision =
       AccountMoveDecision::kCanMoveWithRefreshToken;
   signin::TokenBindingInfo token_binding_info(GetWrappedBindingKey(account_id),
@@ -1066,6 +1106,9 @@ bool MutableProfileOAuth2TokenServiceDelegate::FixAccountErrorIfPossible() {
 }
 
 void MutableProfileOAuth2TokenServiceDelegate::FinishLoadingCredentials() {
+  if (token_binding_helper_) {
+    token_binding_helper_->OnAllCredentialsLoaded(!refresh_tokens_.empty());
+  }
   FireRefreshTokensLoaded();
 }
 

@@ -9,17 +9,62 @@
 #include "base/memory/ptr_util.h"
 #include "chrome/browser/predictors/loading_predictor.h"
 #include "chrome/browser/predictors/loading_predictor_factory.h"
-#include "chrome/browser/predictors/predictors_traffic_annotations.h"
 #include "chrome/browser/profiles/profile.h"
 #include "content/public/browser/preconnect_manager.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_process_host.h"
+#include "content/public/browser/storage_partition.h"
 #include "mojo/public/cpp/bindings/self_owned_receiver.h"
 #include "net/base/isolation_info.h"
+#include "net/traffic_annotation/network_traffic_annotation.h"
 
 namespace predictors {
 
 namespace {
+
+constexpr net::NetworkTrafficAnnotationTag kNetworkHintsTrafficAnnotation =
+    net::DefineNetworkTrafficAnnotation("network_hints_preconnect",
+                                        R"(
+    semantics {
+      sender: "Linkrel preconnector"
+      description:
+        "This request is issued near the start of a navigation to "
+        "speculatively fetch resources that resulting page is predicted to "
+        "request."
+      trigger:
+        "Navigating Chrome (by clicking on a link, bookmark, history item, "
+        "using session restore, etc)."
+      data:
+        "Arbitrary site-controlled data can be included in the URL."
+        "Requests may include cookies."
+      destination: WEBSITE
+      internal {
+        contacts {
+          owners: "//chrome/browser/predictors/OWNERS"
+        }
+      }
+      user_data {
+        type: SENSITIVE_URL
+        type: WEB_CONTENT
+      }
+      last_reviewed: "2026-09-23"
+    }
+    policy {
+      cookies_allowed: YES
+      cookies_store: "user"
+      setting:
+        "Disable predictive operations under Settings > Performance "
+        "> Preload pages for faster browsing and searching."
+      chrome_policy {
+        NetworkPredictionOptions {
+          NetworkPredictionOptions: 2
+        }
+      }
+    }
+    comments:
+      "This feature can be safely disabled, but enabling it may result in "
+      "faster page loads."
+)");
 
 // Preconnects can be received from the renderer before commit messages, so
 // need to use the key from the pending navigation, and not the committed
@@ -51,7 +96,7 @@ void NetworkHintsHandlerImpl::PrefetchDNS(
     return;
 
   content::RenderFrameHost* render_frame_host =
-      content::RenderFrameHost::FromID(render_process_id_, render_frame_id_);
+      content::RenderFrameHost::FromID(render_frame_host_id_);
   if (!render_frame_host)
     return;
 
@@ -59,11 +104,13 @@ void NetworkHintsHandlerImpl::PrefetchDNS(
   for (const auto& url : urls) {
     gurls.emplace_back(url.GetURL());
   }
-  std::optional<base::UnguessableToken> network_restrictions_id =
+  base::UnguessableToken network_restrictions_id =
       render_frame_host->GetNetworkRestrictionsID();
+  const content::StoragePartitionConfig& storage_partition_config =
+      render_frame_host->GetStoragePartition()->GetConfig();
   preconnect_manager_->StartPreresolveHosts(
       gurls, GetPendingNetworkAnonymizationKey(render_frame_host),
-      kNetworkHintsTrafficAnnotation, /*storage_partition_config=*/nullptr,
+      kNetworkHintsTrafficAnnotation, &storage_partition_config,
       network_restrictions_id);
 }
 
@@ -80,24 +127,25 @@ void NetworkHintsHandlerImpl::Preconnect(const url::SchemeHostPort& url,
   // will result in at least some cross-site information leakage.
 
   content::RenderFrameHost* render_frame_host =
-      content::RenderFrameHost::FromID(render_process_id_, render_frame_id_);
+      content::RenderFrameHost::FromID(render_frame_host_id_);
   if (!render_frame_host)
     return;
 
-  std::optional<base::UnguessableToken> network_restrictions_id =
+  base::UnguessableToken network_restrictions_id =
       render_frame_host->GetNetworkRestrictionsID();
+  const content::StoragePartitionConfig& storage_partition_config =
+      render_frame_host->GetStoragePartition()->GetConfig();
   preconnect_manager_->StartPreconnectUrl(
       url.GetURL(), allow_credentials,
       GetPendingNetworkAnonymizationKey(render_frame_host),
-      kNetworkHintsTrafficAnnotation, /*storage_partition_config=*/nullptr,
+      kNetworkHintsTrafficAnnotation, &storage_partition_config,
       network_restrictions_id,
       /*keepalive_config=*/std::nullopt, mojo::NullRemote());
 }
 
 NetworkHintsHandlerImpl::NetworkHintsHandlerImpl(
     content::RenderFrameHost* frame_host)
-    : render_process_id_(frame_host->GetProcess()->GetDeprecatedID()),
-      render_frame_id_(frame_host->GetRoutingID()) {
+    : render_frame_host_id_(frame_host->GetGlobalId()) {
   // Get the PreconnectManager for this process.
   auto* render_process_host = frame_host->GetProcess();
   auto* profile =

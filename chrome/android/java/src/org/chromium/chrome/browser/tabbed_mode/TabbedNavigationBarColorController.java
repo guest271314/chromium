@@ -21,6 +21,8 @@ import androidx.annotation.VisibleForTesting;
 import org.chromium.base.Callback;
 import org.chromium.base.CallbackController;
 import org.chromium.base.ObserverList;
+import org.chromium.base.TriState;
+import org.chromium.base.TriStateUtils;
 import org.chromium.base.supplier.MonotonicObservableSupplier;
 import org.chromium.base.supplier.NullableObservableSupplier;
 import org.chromium.build.annotations.EnsuresNonNullIf;
@@ -39,12 +41,10 @@ import org.chromium.chrome.browser.layouts.LayoutStateProvider;
 import org.chromium.chrome.browser.layouts.LayoutStateProvider.LayoutStateObserver;
 import org.chromium.chrome.browser.layouts.LayoutType;
 import org.chromium.chrome.browser.omnibox.suggestions.OmniboxSuggestionsVisualState;
-import org.chromium.chrome.browser.tab.EmptyTabObserver;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabObserver;
 import org.chromium.chrome.browser.tabmodel.TabModel;
 import org.chromium.chrome.browser.tabmodel.TabModelSelector;
-import org.chromium.chrome.browser.tabmodel.TabModelSelectorObserver;
 import org.chromium.chrome.browser.ui.edge_to_edge.EdgeToEdgeController;
 import org.chromium.chrome.browser.ui.edge_to_edge.EdgeToEdgeUtils;
 import org.chromium.chrome.browser.ui.edge_to_edge.NavigationBarColorProvider;
@@ -68,12 +68,12 @@ class TabbedNavigationBarColorController
 
     // May be null if we return from the constructor early. Otherwise will be set.
     private final @Nullable TabModelSelector mTabModelSelector;
-    private final @Nullable TabModelSelectorObserver mTabModelSelectorObserver;
+    private final Callback<@Nullable Tab> mCurrentTabObserver;
     private final Callback<TabModel> mCurrentTabModelObserver;
     private final FullscreenManager.@Nullable Observer mFullscreenObserver;
     private final MonotonicObservableSupplier<EdgeToEdgeController> mEdgeToEdgeControllerSupplier;
     private final MonotonicObservableSupplier<Integer> mOverviewColorSupplier;
-    private final Callback<Integer> mOnOverviewColorChanged = color -> updateNavigationBarColor();
+    private final Callback<Integer> mOnOverviewColorChanged = this::onOverviewColorChanged;
     private final Callback<EdgeToEdgeController> mEdgeToEdgeRegisterChangeObserverCallback;
     private EdgeToEdgeSystemBarColorHelper mEdgeToEdgeSystemBarColorHelper;
     private final BottomAttachedUiObserver mBottomAttachedUiObserver;
@@ -91,6 +91,9 @@ class TabbedNavigationBarColorController
      */
     private @ColorInt int mNavigationBarColor;
 
+    private @ColorInt int mNavigationBarDividerColor;
+    private boolean mHasInitializedNavigationBarColor;
+
     /**
      * The target color for the {@link Window}'s navigation bar. This will have a value set during
      * animations, and will be null otherwise.
@@ -107,7 +110,7 @@ class TabbedNavigationBarColorController
     private boolean mForceShowDivider;
     private boolean mOverviewMode;
     private @Nullable ValueAnimator mNavbarColorTransitionAnimation;
-    private @Nullable Boolean mEnabledBottomChinForTesting;
+    private @TriState int mEnabledBottomChinForTesting;
 
     /**
      * Creates a new {@link TabbedNavigationBarColorController} instance.
@@ -115,8 +118,8 @@ class TabbedNavigationBarColorController
      * @param context Used to load resources.
      * @param tabModelSelector The {@link TabModelSelector} used to determine which tab model is
      *     selected.
-     * @param layoutManagerSupplier An {@link MonotonicObservableSupplier} for the {@link LayoutManager}
-     *     associated with the containing activity.
+     * @param layoutManagerSupplier An {@link MonotonicObservableSupplier} for the {@link
+     *     LayoutManager} associated with the containing activity.
      * @param fullscreenManager The {@link FullscreenManager} used to determine if fullscreen is
      *     enabled.
      * @param edgeToEdgeControllerSupplier Supplies an {@link EdgeToEdgeController} to detect when
@@ -190,20 +193,14 @@ class TabbedNavigationBarColorController
         mBottomAttachedUiObserver.addObserver(this);
 
         mTabModelSelector = tabModelSelector;
-        mTabModelSelectorObserver =
-                new TabModelSelectorObserver() {
-                    @Override
-                    public void onChange() {
-                        updateActiveTab();
-                    }
-                };
-        mTabModelSelector.addObserver(mTabModelSelectorObserver);
+        mCurrentTabObserver = (tab) -> updateActiveTab();
+        mTabModelSelector.getCurrentTabSupplier().addSyncObserver(mCurrentTabObserver);
         mCurrentTabModelObserver = (tabModel) -> updateNavigationBarColor();
         mTabModelSelector
                 .getCurrentTabModelSupplier()
                 .addSyncObserverAndPostIfNonNull(mCurrentTabModelObserver);
         mTabObserver =
-                new EmptyTabObserver() {
+                new TabObserver() {
                     @Override
                     public void onBackgroundColorChanged(Tab tab, int color) {
                         updateNavigationBarColor(
@@ -261,14 +258,14 @@ class TabbedNavigationBarColorController
     @SuppressWarnings("NullAway")
     public void destroy() {
         if (mTabModelSelector != null) {
-            mTabModelSelector.removeObserver(mTabModelSelectorObserver);
+            mTabModelSelector.getCurrentTabSupplier().removeObserver(mCurrentTabObserver);
             mTabModelSelector.getCurrentTabModelSupplier().removeObserver(mCurrentTabModelObserver);
         }
         if (mActiveTab != null) mActiveTab.removeObserver(mTabObserver);
         if (mLayoutManager != null) {
             mLayoutManager.removeObserver(mLayoutStateObserver);
-            mOverviewColorSupplier.removeObserver(mOnOverviewColorChanged);
         }
+        mOverviewColorSupplier.removeObserver(mOnOverviewColorChanged);
         if (mCallbackController != null) {
             mCallbackController.destroy();
             mCallbackController = null;
@@ -294,6 +291,18 @@ class TabbedNavigationBarColorController
         updateNavigationBarColor(forceShowDivider, disableAnimation);
     }
 
+    private void onOverviewColorChanged(@ColorInt @Nullable Integer color) {
+        // Only react while the Hub layout is active. mOverviewMode is cleared at the start of
+        // hiding, but the Hub keeps emitting colors during its fade-out (per-frame alpha updates,
+        // plus a final TRANSPARENT at done-hiding). Since these updates pass disableAnimation=true,
+        // they skip the no-op early return in updateNavigationBarColor() and would end() the
+        // nav bar color transition started by onStartedHiding(), snapping it to its final color.
+        // Skipping is safe: outside overview mode the nav bar color never reads this supplier.
+        if (!mOverviewMode) return;
+
+        updateNavigationBarColor(/* forceShowDivider= */ false, /* disableAnimation= */ true);
+    }
+
     /**
      * @param layoutManager The {@link LayoutStateProvider} used to determine whether overview mode
      *     is showing.
@@ -308,14 +317,16 @@ class TabbedNavigationBarColorController
                 new LayoutStateObserver() {
                     @Override
                     public void onStartedShowing(@LayoutType int layoutType) {
-                        if (layoutType == LayoutType.TAB_SWITCHER) {
+                        if (layoutType == LayoutType.HUB) {
                             enableOverviewMode();
                             updateNavigationBarColor();
                         } else if (layoutType == LayoutType.TOOLBAR_SWIPE
-                                && ChromeFeatureList.sNavBarColorAnimation.isEnabled()
-                                && isBottomChinEnabled()) {
-                            // Hide the nav bar during omnibox swipes.
+                                && isBottomChinEnabled()
+                                && !useBottomAttachedUiColor()) {
+                            // Hide the nav bar during omnibox swipes when no bottom UI is attached.
                             mNavigationBarColor = Color.TRANSPARENT;
+                            mNavigationBarDividerColor = Color.TRANSPARENT;
+                            endNavigationBarColorAnimationIfRunning();
                             mEdgeToEdgeSystemBarColorHelper.setNavigationBarColor(
                                     Color.TRANSPARENT);
                             mEdgeToEdgeSystemBarColorHelper.setNavigationBarDividerColor(
@@ -325,7 +336,7 @@ class TabbedNavigationBarColorController
 
                     @Override
                     public void onStartedHiding(@LayoutType int layoutType) {
-                        if (layoutType != LayoutType.TAB_SWITCHER) return;
+                        if (layoutType != LayoutType.HUB) return;
                         disableOverviewMode();
                         updateNavigationBarColor();
                     }
@@ -361,6 +372,7 @@ class TabbedNavigationBarColorController
     @SuppressLint("NewApi")
     private void updateNavigationBarColor(boolean forceShowDivider, boolean disableAnimation) {
         assumeNonNull(mTabModelSelector);
+        boolean previousForceDarkNavigationBarColor = mForceDarkNavigationBarColor;
         mForceDarkNavigationBarColor = mTabModelSelector.isIncognitoSelected() || mIsInFullscreen;
 
         final @ColorInt int newNavigationBarColor =
@@ -378,11 +390,28 @@ class TabbedNavigationBarColorController
                         getNavigationBarDividerColor(
                                 mForceDarkNavigationBarColor, forceShowDivider));
 
+        final boolean jankImprovement =
+                ChromeFeatureList.sBottomControlsJankImprovement.isEnabled();
+        if (jankImprovement
+                && mHasInitializedNavigationBarColor
+                && currentNavigationBarColor == newNavigationBarColor
+                && mNavigationBarDividerColor == newNavigationBarDividerColor
+                && previousForceDarkNavigationBarColor == mForceDarkNavigationBarColor
+                && mForceShowDivider == forceShowDivider
+                && (mNavbarColorTransitionAnimation == null
+                        || !mNavbarColorTransitionAnimation.isRunning())) {
+            return;
+        }
+
+        mHasInitializedNavigationBarColor = true;
         mNavigationBarColor = newNavigationBarColor;
+        mNavigationBarDividerColor = newNavigationBarDividerColor;
         mForceShowDivider = forceShowDivider;
 
         endNavigationBarColorAnimationIfRunning();
-        if (shouldEnableNavBarBottomChinColorAnimations() && !disableAnimation) {
+        if (shouldEnableNavBarBottomChinColorAnimations()
+                && !disableAnimation
+                && (!jankImprovement || currentNavigationBarColor != newNavigationBarColor)) {
             animateNavigationBarColor(currentNavigationBarColor, newNavigationBarColor);
         } else {
             mEdgeToEdgeSystemBarColorHelper.setNavigationBarColor(newNavigationBarColor);
@@ -528,35 +557,29 @@ class TabbedNavigationBarColorController
     }
 
     public void setIsBottomChinEnabledForTesting(boolean isEnabled) {
-        mEnabledBottomChinForTesting = isEnabled;
+        mEnabledBottomChinForTesting = TriStateUtils.from(isEnabled);
     }
 
     private boolean shouldEnableNavBarBottomChinColorAnimations() {
-        // First check the dedicated feature flag.
-        if (!ChromeFeatureList.sNavBarColorAnimation.isEnabled()) {
-            return false;
-        }
-        // Next check whether the bottom chin is enabled.
+        // First check whether the bottom chin is enabled.
         if (isBottomChinEnabled() && mEdgeToEdgeControllerSupplier.get() != null) {
-            return !ChromeFeatureList.sNavBarColorAnimationDisableBottomChinColorAnimation
-                    .getValue();
+            return true;
         }
         // Then check whether e2e everywhere is enabled.
         if (EdgeToEdgeUtils.isEdgeToEdgeEverywhereEnabled()) {
-            return !ChromeFeatureList.sNavBarColorAnimationDisableEdgeToEdgeLayoutColorAnimation
-                    .getValue();
+            return true;
         }
         // Disable animations.
         return false;
     }
 
     private boolean isBottomChinEnabled() {
-        if (mEnabledBottomChinForTesting != null) {
-            return mEnabledBottomChinForTesting;
+        if (mEnabledBottomChinForTesting != TriState.NOT_SET) {
+            return mEnabledBottomChinForTesting == TriState.TRUE;
         }
 
         return mContext instanceof Activity
-                && EdgeToEdgeUtils.isEdgeToEdgeBottomChinEnabled((Activity) mContext);
+                && EdgeToEdgeUtils.isEdgeToEdgeBottomChinSupportedByDevice((Activity) mContext);
     }
 
     @Override

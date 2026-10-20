@@ -6,10 +6,13 @@
 #define CHROME_BROWSER_GLIC_HOST_GLIC_SKILLS_MANAGER_H_
 
 #include <optional>
+#include <vector>
 
 #include "base/functional/callback_forward.h"
-#include "chrome/browser/glic/host/glic.mojom.h"
+#include "chrome/browser/glic/host/glic.mojom-forward.h"
 #include "components/skills/public/skill.mojom-forward.h"
+#include "mojo/public/cpp/bindings/pending_receiver.h"
+#include "mojo/public/cpp/bindings/pending_remote.h"
 
 namespace tabs {
 class TabInterface;
@@ -29,6 +32,9 @@ class GlicSkillsManager {
   virtual ~GlicSkillsManager() = default;
   GlicSkillsManager(const GlicSkillsManager&) = delete;
   GlicSkillsManager& operator=(const GlicSkillsManager&) = delete;
+
+  virtual void Bind(mojo::PendingReceiver<mojom::SkillsHandler> receiver,
+                    mojo::PendingRemote<mojom::SkillsClient> client) = 0;
 
   // Triggers sending skills previews to the web client. The |updated_tab|
   // is used when the preview update is due to a change at the tab level.
@@ -52,6 +58,9 @@ class GlicSkillsManager {
 
   // Notify that a glic panel associated with the skill manager is being opened.
   virtual void NotifyPanelOpenedOrActivated() = 0;
+
+  virtual void NotifyContextualSkillsChanged(
+      std::vector<mojom::SkillPreviewPtr> contextual_skill_previews) = 0;
 };
 
 }  // namespace glic

@@ -15,12 +15,13 @@
 #include "base/logging.h"
 #include "base/no_destructor.h"
 #include "base/process/launch.h"
+#include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
 #include "base/task/task_traits.h"
 #include "base/task/thread_pool.h"
 #include "chromeos/ash/experiences/arc/arc_browser_context_keyed_service_factory_base.h"
 #include "chromeos/ash/experiences/arc/session/arc_bridge_service.h"
-#include "mojo/public/cpp/system/platform_handle.h"
+#include "mojo/public/cpp/platform/platform_handle.h"
 
 namespace {
 
@@ -86,6 +87,22 @@ void RunKernelCrashReporter(base::ScopedFD ramoops_fd,
   }
 }
 
+// Only allow visible ASCII characters as parameters for crash reporter.
+const char kValidCharacters[] =
+    "!\"#$%&'()*+,-./"
+    "0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`"
+    "abcdefghijklmnopqrstuvwxyz{|}~";
+const size_t kMaxValidLength = 255;
+bool ValidateString(const std::string& str) {
+  if (str.empty() || str.length() > kMaxValidLength) {
+    return false;
+  }
+  if (!base::ContainsOnlyChars(str, kValidCharacters)) {
+    return false;
+  }
+  return true;
+}
+
 }  // namespace
 
 namespace arc {
@@ -139,35 +156,39 @@ ArcCrashCollectorBridge::~ArcCrashCollectorBridge() {
 }
 
 void ArcCrashCollectorBridge::DumpCrash(const std::string& type,
-                                        mojo::ScopedHandle pipe,
+                                        mojo::PlatformHandle pipe,
                                         std::optional<base::TimeDelta> uptime) {
+  if (!ValidateString(type)) {
+    LOG(ERROR) << "Invalid type " << type;
+    return;
+  }
   base::ThreadPool::PostTask(
       FROM_HERE, {base::WithBaseSyncPrimitives()},
-      base::BindOnce(&RunJavaCrashReporter, type,
-                     mojo::UnwrapPlatformHandle(std::move(pipe)).TakeFD(),
+      base::BindOnce(&RunJavaCrashReporter, type, pipe.TakeFD(),
                      CreateCrashReporterArgs(), uptime));
 }
 
-void ArcCrashCollectorBridge::DumpNativeCrash(const std::string& exec_name,
-                                              int32_t pid,
-                                              int64_t timestamp,
-                                              mojo::ScopedHandle minidump_fd) {
+void ArcCrashCollectorBridge::DumpNativeCrash(
+    const std::string& exec_name,
+    int32_t pid,
+    int64_t timestamp,
+    mojo::PlatformHandle minidump_fd) {
+  if (!ValidateString(exec_name)) {
+    LOG(ERROR) << "Invalid exec_name " << exec_name;
+    return;
+  }
   base::ThreadPool::PostTask(
       FROM_HERE, {base::WithBaseSyncPrimitives()},
-      base::BindOnce(
-          &RunNativeCrashReporter, exec_name, pid, timestamp,
-          mojo::UnwrapPlatformHandle(std::move(minidump_fd)).TakeFD(),
-          CreateCrashReporterArgs()));
+      base::BindOnce(&RunNativeCrashReporter, exec_name, pid, timestamp,
+                     minidump_fd.TakeFD(), CreateCrashReporterArgs()));
 }
 
 void ArcCrashCollectorBridge::DumpKernelCrash(
-    mojo::ScopedHandle ramoops_handle) {
+    mojo::PlatformHandle ramoops_handle) {
   base::ThreadPool::PostTask(
       FROM_HERE, {base::WithBaseSyncPrimitives()},
-      base::BindOnce(
-          &RunKernelCrashReporter,
-          mojo::UnwrapPlatformHandle(std::move(ramoops_handle)).TakeFD(),
-          CreateCrashReporterArgs()));
+      base::BindOnce(&RunKernelCrashReporter, ramoops_handle.TakeFD(),
+                     CreateCrashReporterArgs()));
 }
 
 void ArcCrashCollectorBridge::SetBuildProperties(
@@ -175,10 +196,26 @@ void ArcCrashCollectorBridge::SetBuildProperties(
     const std::string& board,
     const std::string& cpu_abi,
     const std::optional<std::string>& fingerprint) {
-  device_ = device;
-  board_ = board;
-  cpu_abi_ = cpu_abi;
-  fingerprint_ = fingerprint;
+  if (ValidateString(device)) {
+    device_ = device;
+  } else {
+    LOG(ERROR) << "Invalid device " << device;
+  }
+  if (ValidateString(board)) {
+    board_ = board;
+  } else {
+    LOG(ERROR) << "Invalid board " << board;
+  }
+  if (ValidateString(cpu_abi)) {
+    cpu_abi_ = cpu_abi;
+  } else {
+    LOG(ERROR) << "Invalid cpu_abi " << cpu_abi;
+  }
+  if (!fingerprint || ValidateString(fingerprint.value())) {
+    fingerprint_ = fingerprint;
+  } else {
+    LOG(ERROR) << "Invalid fingerprint " << fingerprint.value();
+  }
 }
 
 std::vector<std::string> ArcCrashCollectorBridge::CreateCrashReporterArgs() {

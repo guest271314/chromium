@@ -47,11 +47,14 @@
 #include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
 #include "third_party/blink/renderer/platform/wtf/forward.h"
 #include "third_party/blink/renderer/platform/wtf/hash_map.h"
+#include "third_party/blink/renderer/platform/wtf/hash_set.h"
 #include "third_party/blink/renderer/platform/wtf/std_lib_extras.h"
+#include "third_party/blink/renderer/platform/wtf/text/case_folding_hash.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_uchar.h"
 #include "third_party/skia/include/core/SkFontMgr.h"
 #include "third_party/skia/include/core/SkRefCnt.h"
+#include "third_party/skia/include/core/SkTypeface.h"
 
 #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
 #include "ui/gfx/font_fallback_linux.h"
@@ -135,7 +138,7 @@ class PLATFORM_EXPORT FontCache final {
 
   void Invalidate();
 
-#if BUILDFLAG(IS_WIN)
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_ANDROID)
   static WebFontPrewarmer* GetFontPrewarmer() { return prewarmer_; }
   static void SetFontPrewarmer(WebFontPrewarmer* prewarmer) {
     prewarmer_ = prewarmer;
@@ -161,6 +164,8 @@ class PLATFORM_EXPORT FontCache final {
 #else
   static const AtomicString& LegacySystemFontFamily();
   static void InvalidateFromAnyThread();
+  bool IsFontFamilyUnavailable(const AtomicString& family_name) const;
+  void MarkFontFamilyAsUnavailable(const AtomicString& family_name);
 #endif
 
 #if !BUILDFLAG(IS_MAC)
@@ -252,6 +257,9 @@ class PLATFORM_EXPORT FontCache final {
       UChar32,
       const SimpleFontData* font_data_to_substitute,
       FontFallbackPriority = FontFallbackPriority::kText);
+  // Returns the typeface matching `creation_params.Family()` as a font unique
+  // name (Postscript name or full font name), memoizing the result in
+  // `unique_name_typeface_cache_`.
   sk_sp<SkTypeface> CreateTypefaceFromUniqueName(
       const FontFaceCreationParams& creation_params);
 
@@ -292,11 +300,23 @@ class PLATFORM_EXPORT FontCache final {
       FontFallbackPriority);
 #endif
 
+  static sk_sp<SkTypeface> MatchFamilyStyle(const char* family_name,
+                                            const SkFontStyle&);
+
+  static sk_sp<SkTypeface> MatchFamilyStyleCharacter(const char* family_name,
+                                                     const SkFontStyle&,
+                                                     const char* bcp47[],
+                                                     int bcp47_count,
+                                                     UChar32 character);
+
   const SimpleFontData* FallbackOnStandardFontStyle(const FontDescription&,
                                                     UChar32);
 
-#if BUILDFLAG(IS_WIN)
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_ANDROID)
   static WebFontPrewarmer* prewarmer_;
+#endif
+
+#if BUILDFLAG(IS_WIN)
   static bool antialiased_text_enabled_;
   static bool lcd_text_enabled_;
   // The system font metrics cache.
@@ -317,10 +337,27 @@ class PLATFORM_EXPORT FontCache final {
 
   FontDataCache font_data_cache_;
 
+  // Typefaces matched by font unique name, i.e. through
+  // `AlternateFontName::kLocalUniqueFace` for @font-face src: local().
+  // `font_platform_data_cache_` cannot serve this purpose: its key is a full
+  // `FontCacheKey`, so the same local font requested at two font sizes (or
+  // with different variation settings, orientation, ...) misses the cache and
+  // instantiates a second `SkTypeface`, which maps the underlying font file
+  // again. For large font collections that is hundreds of megabytes of
+  // duplicated mapping per distinct size. See crbug.com/325826179.
+  //
+  // Keyed case-insensitively to match `FontFaceCreationParams`, which compares
+  // family names with `DeprecatedEqualIgnoringCase()`.
+  HashMap<AtomicString,
+          sk_sp<SkTypeface>,
+          DeprecatedCaseFoldingHashTraits<AtomicString>>
+      unique_name_typeface_cache_;
+
   Member<FontFallbackMap> font_fallback_map_;
 
 #if BUILDFLAG(IS_MAC)
   CharacterFallbackCache character_fallback_cache_;
+  HashSet<AtomicString> unavailable_font_families_;
 #endif
 
   friend class SimpleFontData;  // For fontDataFromFontPlatformData

@@ -32,16 +32,24 @@ dictionary ProfileState {
   required boolean liveAllowed;
   required boolean shareImageAllowed;
   required boolean actuationAllowed;
+  required boolean userEnableActuationOnWeb;
+  required boolean invocationSourceEnabled;
 };
 
 enum InvocationSource {
   "unknown",
-  "universal-cart"
+  "universal-cart",
+  "promotion-page",
+  "web-continuity"
+};
+
+dictionary GetStateParams {
+  InvocationSource invocationSource;
 };
 
 dictionary InvokeDetails {
-  // The prompt ID to lookup from Chrome.
-  required DOMString promptId;
+  // The prompt ID to lookup from Chrome, required unless called from the promotion page.
+  DOMString promptId;
 
   // The source of the invocation.
   required InvocationSource invocationSource;
@@ -54,6 +62,12 @@ dictionary InvokeDetails {
 
   // Whether should invoke the task in a new tab. Default to false.
   boolean inNewTab;
+
+  // The conversation ID to focus in Glic, optional.
+  DOMString conversationId;
+
+  // The turn ID to focus within the conversation in Glic, optional.
+  DOMString turnId;
 };
 
 enum ErrorCode {
@@ -68,10 +82,12 @@ enum ErrorCode {
   "local-glic-actuation-not-allowed",
   "local-glic-not-enabled-and-consented",
   "local-account-mismatch",
-  "local-invalid-document-id"
+  "local-invalid-document-id",
+  "local-conversation-not-found",
+  "local-no-bound-tabs",
+  "local-tab-not-in-window",
+  "local-glic-access-from-page-disabled"
 };
-
-
 
 // Private API for Gemini (Glic) synchronization.
 [implemented_in="chrome/browser/extensions/api/glic_private/glic_private_api.h"]
@@ -79,7 +95,8 @@ interface GlicPrivate {
   // Retrieves the current Glic state for the profile.
   // |Returns|: Promise that resolves to the current Glic state.
   // |PromiseValue|: state: The current Glic state.
-  static Promise<ProfileState> getState(DOMString documentId);
+  static Promise<ProfileState> getState(DOMString documentId,
+      optional GetStateParams params);
 
   // Invokes glic with details.
   // |Returns|: Promise that resolves when invocation is successful.
@@ -89,6 +106,12 @@ interface GlicPrivate {
   // |Returns|: Promise that resolves to true if the conversation is present.
   // |PromiseValue|: isPresent: True if conversation is present, false otherwise.
   static Promise<boolean> hasConversation(DOMString conversationId);
+
+  // Activates a tab with a specific conversation open in the side panel.
+  // |Returns|: Promise that resolves when the activation operation is
+  // successful.
+  static Promise<undefined> activateTabWithConversation(
+      DOMString conversationId);
 };
 
 partial interface Browser {

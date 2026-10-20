@@ -12,7 +12,9 @@
 #include "base/hash/sha1.h"
 #include "base/logging.h"
 #include "base/metrics/histogram_functions.h"
+#include "base/strings/strcat.h"
 #include "base/strings/string_util.h"
+#include "base/task/bind_post_task.h"
 #include "base/task/task_traits.h"
 #include "base/task/thread_pool.h"
 #include "components/base32/base32.h"
@@ -20,6 +22,7 @@
 #include "components/persistent_cache/backend_type.h"
 #include "components/persistent_cache/client.h"
 #include "components/persistent_cache/pending_backend.h"
+#include "gpu/ipc/host/shader_cache_metrics.h"
 
 namespace viz {
 
@@ -27,7 +30,7 @@ namespace {
 
 PersistentCacheSandboxedFileFactory* g_instance = nullptr;
 
-std::string GetVersionSuffix(const std::string& product) {
+std::string GetVersionSuffix(std::string_view product) {
   // The product's version string can be arbitrary long. So use SHA1 to reduce
   // the length to avoid path length limit (260 on Windows and 4096 on Linux).
   // The SHA1 is then encoded using a path-safe base32 (final length = 32
@@ -46,7 +49,7 @@ std::string GetVersionSuffix(const std::string& product) {
 base::FilePath GetPersistentCacheDirectory(
     const base::FilePath& cache_root_dir,
     const base::FilePath::StringType& cache_id,
-    const std::string& product) {
+    std::string_view product) {
   return cache_root_dir.Append(cache_id).AppendASCII(GetVersionSuffix(product));
 }
 
@@ -117,6 +120,8 @@ PersistentCacheSandboxedFileFactory::PersistentCacheSandboxedFileFactory(
     scoped_refptr<base::SequencedTaskRunner> background_task_runner)
     : cache_root_dir_(cache_root_dir),
       background_task_runner_(std::move(background_task_runner)) {
+  // This may be constructed on a sequence other than background_task_runner_.
+  DETACH_FROM_SEQUENCE(background_sequence_checker_);
   CHECK(!cache_root_dir_.empty());
   // TODO(crbug.com/399642827): We don't support relative path yet. The flags
   // that are added by AddFlagsForPassingToUntrustedProcess() don't work with
@@ -132,7 +137,8 @@ PersistentCacheSandboxedFileFactory::PersistentCacheSandboxedFileFactory(
 PersistentCacheSandboxedFileFactory::~PersistentCacheSandboxedFileFactory() =
     default;
 
-std::optional<persistent_cache::PendingBackend>
+base::expected<persistent_cache::PendingBackend,
+               persistent_cache::TransactionError>
 PersistentCacheSandboxedFileFactory::CreateFiles(const CacheIdString& cache_id,
                                                  const std::string& product) {
   background_task_runner_->PostTask(
@@ -147,11 +153,11 @@ PersistentCacheSandboxedFileFactory::CreateFiles(const CacheIdString& cache_id,
   auto backend = cache_storage.MakePendingBackend(
       base::FilePath(FILE_PATH_LITERAL("cache")), /*single_connection=*/true,
       /*journal_mode_wal=*/true);
-  if (!backend) {
+  if (!backend.has_value()) {
     PLOG(ERROR) << "Failed to open persistent cache files in directory \""
-                << cache_dir << "\"";
+                << cache_dir
+                << "\", error: " << static_cast<int>(backend.error());
   }
-
   return backend;
 }
 
@@ -159,12 +165,105 @@ void PersistentCacheSandboxedFileFactory::CreateFilesAsync(
     const CacheIdString& cache_id,
     const std::string& product,
     CreateFilesCallback callback) {
-  // The reply will be posted to the current SequencedTaskRunner.
-  background_task_runner_->PostTaskAndReplyWithResult(
+  CreateFilesAsync(cache_id, product, std::move(callback),
+                   CreateFilesAsyncOpts());
+}
+
+void PersistentCacheSandboxedFileFactory::CreateFilesAsync(
+    const CacheIdString& cache_id,
+    const std::string& product,
+    CreateFilesCallback callback,
+    CreateFilesAsyncOpts extra_opts) {
+  background_task_runner_->PostTask(
       FROM_HERE,
-      base::BindOnce(&PersistentCacheSandboxedFileFactory::CreateFiles, this,
-                     cache_id, product),
-      std::move(callback));
+      base::BindOnce(
+          &PersistentCacheSandboxedFileFactory::CreateFilesAsyncAttempt, this,
+          cache_id, product,
+          base::BindPostTaskToCurrentDefault(std::move(callback)),
+          std::move(extra_opts)));
+}
+
+void PersistentCacheSandboxedFileFactory::CreateFilesAsyncAttempt(
+    const CacheIdString& cache_id,
+    const std::string& product,
+    CreateFilesCallback callback,
+    CreateFilesAsyncOpts extra_opts) {
+  DCHECK(background_task_runner_->RunsTasksInCurrentSequence());
+
+  auto backend = CreateFiles(cache_id, product);
+
+  if (backend.has_value()) {
+    InitializeDiskSizeRecordingState(cache_id, product, *backend);
+    std::move(callback).Run(*std::move(backend));
+  } else if (backend.error() ==
+                 persistent_cache::TransactionError::kTransient &&
+             extra_opts.retries > 0) {
+    const base::TimeDelta delay = extra_opts.retry_delay;
+    --extra_opts.retries;
+
+    background_task_runner_->PostDelayedTask(
+        FROM_HERE,
+        base::BindOnce(
+            &PersistentCacheSandboxedFileFactory::CreateFilesAsyncAttempt, this,
+            cache_id, product, std::move(callback), std::move(extra_opts)),
+        delay);
+  } else {
+    std::move(callback).Run(std::nullopt);
+  }
+}
+
+void PersistentCacheSandboxedFileFactory::RecordDiskSizeAsync(
+    const CacheIdString& cache_id) {
+  if (!gpu::kRecordShaderCacheDiskSize) {
+    return;
+  }
+  background_task_runner_->PostTask(
+      FROM_HERE,
+      base::BindOnce(
+          &PersistentCacheSandboxedFileFactory::MaybeScheduleDiskSizeRecording,
+          this, cache_id));
+}
+
+void PersistentCacheSandboxedFileFactory::InitializeDiskSizeRecordingState(
+    const CacheIdString& cache_id,
+    std::string_view product,
+    const persistent_cache::PendingBackend& backend) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(background_sequence_checker_);
+  if (!gpu::kRecordShaderCacheDiskSize) {
+    return;
+  }
+  if (!cache_ids_checked_for_size_recording_.insert(cache_id).second) {
+    return;
+  }
+  if (!backend.IsNewDatabase()) {
+    cache_dirs_pending_size_recording_.emplace(
+        cache_id,
+        GetPersistentCacheDirectory(cache_root_dir_, cache_id, product));
+  }
+}
+
+void PersistentCacheSandboxedFileFactory::MaybeScheduleDiskSizeRecording(
+    const CacheIdString& cache_id) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(background_sequence_checker_);
+  auto it = cache_dirs_pending_size_recording_.find(cache_id);
+  if (it == cache_dirs_pending_size_recording_.end()) {
+    return;
+  }
+  base::FilePath cache_dir = std::move(it->second);
+  cache_dirs_pending_size_recording_.erase(it);
+
+  // Computing the size of a large cache can be slow, so use BEST_EFFORT to
+  // avoid competing with startup. The histogram variants (e.g.
+  // "PersistentGPUCache") are listed in
+  // tools/metrics/histograms/metadata/gpu/histograms.xml.
+  base::ThreadPool::PostTask(
+      FROM_HERE,
+      {base::MayBlock(), base::TaskPriority::BEST_EFFORT,
+       base::TaskShutdownBehavior::CONTINUE_ON_SHUTDOWN},
+      base::BindOnce(
+          &gpu::RecordShaderCacheDiskSize,
+          base::StrCat({"Persistent", base::FilePath(cache_id).AsUTF8Unsafe()}),
+          std::move(cache_dir)));
 }
 
 bool PersistentCacheSandboxedFileFactory::ClearFiles(

@@ -7,6 +7,8 @@ package org.chromium.components.browser_ui.site_settings;
 import android.app.Activity;
 import android.graphics.drawable.Drawable;
 
+import androidx.annotation.StringRes;
+
 import org.chromium.base.Callback;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
@@ -107,6 +109,13 @@ public interface SiteSettingsDelegate {
     boolean isHelpAndFeedbackEnabled();
 
     /**
+     * @return The resource ID of the help string that is valid for the current policy.
+     */
+    default @StringRes int getHelpMenuStringRes() {
+        return R.string.menu_help;
+    }
+
+    /**
      * Launches a support page relevant to settings UI pages.
      *
      * @see org.chromium.chrome.browser.feedback.HelpAndFeedbackLauncher#show
@@ -148,15 +157,6 @@ public interface SiteSettingsDelegate {
     void revokeFileSystemAccessGrant(String origin, String file);
 
     /**
-     * Displays a snackbar, informing the user about the Privacy Sandbox settings page, when the
-     * corresponding flag is enabled.
-     */
-    void maybeDisplayPrivacySandboxSnackbar();
-
-    /** Dismisses the Privacy Sandbox snackbar, if active. */
-    void dismissPrivacySandboxSnackbar();
-
-    /**
      * @return true if Related Website Sets data access is enabled.
      */
     boolean isRelatedWebsiteSetsDataAccessEnabled();
@@ -181,7 +181,7 @@ public interface SiteSettingsDelegate {
      * @param memberOrigin RWS member origin.
      * @return A string containing the owner hostname, null if it doesn't exist.
      */
-    String getRelatedWebsiteSetOwner(String memberOrigin);
+    @Nullable String getRelatedWebsiteSetOwner(String memberOrigin);
 
     /**
      * Returns whether the current implementation of the delegate is able to launch the Clear
@@ -214,11 +214,6 @@ public interface SiteSettingsDelegate {
      * @return whether the related website sets UI is enabled.
      */
     boolean isRelatedWebsiteSetsUiEnabled();
-
-    /**
-     * @return whether the settings containment feature is enabled.
-     */
-    boolean isSettingsContainmentEnabled();
 
     /** Enable/Disable unused site permission autorevocation. */
     void setPermissionAutorevocationEnabled(boolean isEnabled);

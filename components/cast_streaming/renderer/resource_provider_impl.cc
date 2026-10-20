@@ -70,7 +70,7 @@ std::unique_ptr<media::Demuxer> ResourceProviderImpl::MaybeGetDemuxerOverride(
   if (per_frame_resources_ && IsCastStreamingMediaSourceUrl(url) &&
       per_frame_resources_->demuxer_connector().IsBound()) {
     return std::make_unique<FrameInjectingDemuxer>(
-        &per_frame_resources_->demuxer_connector(),
+        per_frame_resources_->demuxer_connector().config_buffer(),
         std::move(media_task_runner));
   }
 
@@ -79,7 +79,9 @@ std::unique_ptr<media::Demuxer> ResourceProviderImpl::MaybeGetDemuxerOverride(
 
 mojo::PendingReceiver<media::mojom::Renderer>
 ResourceProviderImpl::GetRendererCommandReceiver() {
-  DCHECK(per_frame_resources_);
+  if (!per_frame_resources_) {
+    return mojo::NullReceiver();
+  }
   return per_frame_resources_->renderer_controller_proxy().GetReceiver();
 }
 

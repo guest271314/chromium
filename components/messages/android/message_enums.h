@@ -46,11 +46,7 @@ enum class DismissReason {
   DISMISSED_BY_FEATURE = 9,
   // A message was dismissed by a close button click.
   CLOSE_BUTTON = 10,
-
-  // Insert new values before this line.
-  COUNT,
-
-  kMaxValue = COUNT,
+  kMaxValue = CLOSE_BUTTON,
 };
 // LINT.ThenChange(//tools/metrics/histograms/enums.xml:MessageDismissReason)
 
@@ -150,7 +146,7 @@ enum class MessageIdentifier {
   OS_ADVANCED_PROTECTION_SETTING_CHANGED_MESSAGE = 60,
   // Removed: MULTI_INSTANCE_RESTORATION_ON_DOWNGRADED_LIMIT = 61,
   UPDATE_CHROME_FOR_TAB_GROUP_SHARE = 62,
-  MODE_B_ROLLBACK_MESSAGE = 63,
+  // Removed: MODE_B_ROLLBACK_MESSAGE = 63,
   RELOAD_PAGE = 64,
   MULTI_INSTANCE_CREATION_LIMIT = 65,
   PERMISSION_PROMPT_LOUD = 66,
@@ -158,10 +154,24 @@ enum class MessageIdentifier {
   SIGNIN_SURVEY = 68,
   EXTENSIONS_REQUEST_ACCESS = 69,
   KNOWN_INTERCEPTION_DISCLOSURE = 70,
+  SEND_TAB_TO_SELF = 71,
+  GLIC_WINDOW_RESIZED = 72,
+  EXTENSION_DEV_TOOLS = 73,
+  PERSONAL_CONTEXT_FETCHING_FAILURE = 74,
+  PRIVATE_INFERENCE_NOTICE = 75,
+  CONTEXTUAL_TASKS_WINDOW_RESIZED = 76,
+  IMMERSIVE_PLAYBACK_CONFIRMATION = 77,
+  INTRANET_REDIRECT = 78,
+  PASSWORD_SAVED_CONFIRMATION = 79,
+  EMAIL_VERIFIED = 80,
+  RESURRECT_CHURNED_USERS = 81,
+  EMAIL_VERIFICATION_ERROR = 82,
+  EMAIL_VERIFICATION_LOADING = 83,
   // Insert new values before this line.
   COUNT
 };
-// LINT.ThenChange(//tools/metrics/histograms/metadata/android/histograms.xml:MessageIdentifier)
+// LINT.ThenChange(//tools/metrics/histograms/metadata/android/histograms.xml:MessageIdentifier,
+// //components/messages/android/java/src/org/chromium/components/messages/MessagesMetrics.java:MessageIdentifierToHistogramSuffix)
 
 // The behavior the message should follow when the primary button is clicked,
 // after running the primary action callback.

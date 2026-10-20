@@ -36,6 +36,7 @@
 #import "testing/platform_test.h"
 #import "third_party/ocmock/OCMock/OCMock.h"
 #import "third_party/ocmock/gtest_support.h"
+#import "url/gurl.h"
 
 class SaveCardBottomSheetCoordinatorTest : public PlatformTest {
  public:
@@ -59,6 +60,8 @@ class SaveCardBottomSheetCoordinatorTest : public PlatformTest {
     autofill::AutofillSaveCardUiInfo ui_info =
         autofill::AutofillSaveCardUiInfo();
     ui_info.logo_icon_id = IDR_AUTOFILL_GOOGLE_PAY;
+    // Coordinator tests simulate a server upload save flow.
+    ui_info.is_for_upload = true;
     ui_info.card_label = std::u16string(u"CardName ****2345");
     ui_info.card_sub_label = std::u16string(u"01/29");
 
@@ -135,6 +138,31 @@ TEST_F(SaveCardBottomSheetCoordinatorTest, OpensNewTabForLinkClicked) {
       "NoFixFlow.SavingWithoutCvc",
       autofill::autofill_metrics::SaveCreditCardPromptResultIOS::kLinkClicked,
       /*expected_count=*/1);
+}
+
+// Test that tapping a link with a non-HTTP(S) scheme or an invalid HTTP(S) URL
+// does not open a new tab or record metrics.
+TEST_F(SaveCardBottomSheetCoordinatorTest,
+       DoesNotOpenNewTabForNonHttpOrHttpsOrInvalidURL) {
+  base::HistogramTester histogram_tester;
+
+  [coordinator_ start];
+
+  CrURL* non_http_url = [[CrURL alloc] initWithGURL:GURL("chrome://version")];
+  CrURL* invalid_http_url =
+      [[CrURL alloc] initWithGURL:GURL("http://example.com:9999999")];
+
+  OCMReject([scene_handler_ openURLInNewTab:[OCMArg any]]);
+
+  [coordinator_ didTapLinkURL:non_http_url];
+  [coordinator_ didTapLinkURL:invalid_http_url];
+  [coordinator_ stop];
+
+  histogram_tester.ExpectBucketCount(
+      "Autofill.SaveCreditCardPromptResult.IOS.Server.BottomSheet.NumStrikes.0."
+      "NoFixFlow.SavingWithoutCvc",
+      autofill::autofill_metrics::SaveCreditCardPromptResultIOS::kLinkClicked,
+      /*expected_count=*/0);
 }
 
 // Test `OnViewDisappeared` dismisses bottomsheet and bottomsheet result

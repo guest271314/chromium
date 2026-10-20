@@ -9,7 +9,9 @@
     "container",
     "element",
     "event",
+    "first-contentful-paint",
     "first-input",
+    "first-paint",
     "interaction-contentful-paint",
     "largest-contentful-paint",
     "layout-shift",
@@ -27,5 +29,7 @@
     "unknown",
     "visibility-state",
     "window",
+    "mark-conditional",
+    "measure-conditional",
   ],
 }

@@ -12,19 +12,16 @@
 
 #include "ash/constants/ash_features.h"
 #include "base/containers/flat_map.h"
-#include "base/i18n/time_formatting.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
-#include "base/strings/utf_string_conversions.h"
 #include "base/types/optional_util.h"
 #include "base/values.h"
 #include "chromeos/ash/components/carrier_lock/carrier_lock_manager.h"
 #include "chromeos/ash/components/dbus/hermes/hermes_euicc_client.h"
 #include "chromeos/ash/components/dbus/hermes/hermes_manager_client.h"
 #include "chromeos/ash/components/dbus/shill/shill_manager_client.h"
-#include "chromeos/ash/components/login/login_state/login_state.h"
 #include "chromeos/ash/components/network/cellular_esim_profile_handler.h"
 #include "chromeos/ash/components/network/cellular_utils.h"
 #include "chromeos/ash/components/network/device_state.h"
@@ -47,7 +44,6 @@
 #include "chromeos/ash/components/network/proxy/ui_proxy_config_service.h"
 #include "chromeos/ash/components/network/technology_state_controller.h"
 #include "chromeos/ash/components/network/text_message_suppression_state.h"
-#include "chromeos/ash/components/network/traffic_counters_handler.h"
 #include "chromeos/ash/components/sync_wifi/network_eligibility_checker.h"
 #include "chromeos/ash/components/system/statistics_provider.h"
 #include "chromeos/components/onc/onc_utils.h"
@@ -56,6 +52,8 @@
 #include "components/captive_portal/core/captive_portal_detector.h"
 #include "components/device_event_log/device_event_log.h"
 #include "components/onc/onc_constants.h"
+#include "components/session_manager/core/session.h"
+#include "components/session_manager/core/session_manager.h"
 #include "components/user_manager/user_manager.h"
 #include "mojo/public/cpp/bindings/message.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
@@ -81,12 +79,6 @@ using ::chromeos::network_config::ManagedDictionary;
 using ::chromeos::network_config::OncApnTypesToMojo;
 using ::user_manager::UserManager;
 
-// Since the TrafficCounterResetTime property in Shill is a uint64, when
-// Chrome receives this property via D-Bus, the last reset time is stored as 0.
-// Setting the value to 1 allows us to avoid comparing doubles using equals,
-// which might encounter precision issues.
-constexpr double kMinThreshold = 1;
-
 // Error strings from networking_private_api.cc. TODO(1004434): Enumerate
 // these in mojo.
 const char kErrorAccessToSharedConfig[] = "Error.CannotChangeSharedConfig";
@@ -105,6 +97,17 @@ const char kModifyCustomApnPolicyHistogram[] =
     "Network.Ash.Cellular.Apn.ModifyCustomApn.AllowApnModification";
 const char kRemoveCustomApnPolicyHistogram[] =
     "Network.Ash.Cellular.Apn.RemoveCustomApn.AllowApnModification";
+
+std::string GetPrimaryUserHash() {
+  const auto* primary_session =
+      session_manager::SessionManager::Get()->GetPrimarySession();
+  if (!primary_session) {
+    return std::string();
+  }
+  return UserManager::Get()
+      ->FindUser(primary_session->account_id())
+      ->username_hash();
+}
 
 std::string ShillToOnc(const std::string& shill_string,
                        const onc::StringTranslationEntry table[]) {
@@ -1496,30 +1499,6 @@ mojom::ManagedWireGuardPropertiesPtr GetManagedWireGuardProperties(
   return wg;
 }
 
-mojom::TrafficCounterPropertiesPtr CreateTrafficCounterProperties(
-    const base::DictValue* properties,
-    const std::string& guid) {
-  auto traffic_counter_properties = mojom::TrafficCounterProperties::New();
-  const std::optional<double> last_reset_time =
-      properties->FindDouble(::onc::network_config::kTrafficCounterResetTime);
-
-  if (last_reset_time && (last_reset_time.value() >= kMinThreshold)) {
-    traffic_counter_properties->last_reset_time =
-        base::Time::FromDeltaSinceWindowsEpoch(
-            base::Milliseconds(last_reset_time.value()));
-    traffic_counter_properties->friendly_date =
-        base::UTF16ToUTF8(base::TimeFormatFriendlyDate(
-            traffic_counter_properties->last_reset_time.value()));
-  } else {
-    traffic_counter_properties->last_reset_time = std::nullopt;
-    traffic_counter_properties->friendly_date = std::nullopt;
-  }
-  traffic_counter_properties->user_specified_reset_day =
-      traffic_counters::TrafficCountersHandler::Get()->GetUserSpecifiedResetDay(
-          guid);
-  return traffic_counter_properties;
-}
-
 mojom::ManagedPropertiesPtr ManagedPropertiesToMojo(
     NetworkStateHandler* network_state_handler,
     CellularESimProfileHandler* cellular_esim_profile_handler,
@@ -1732,11 +1711,6 @@ mojom::ManagedPropertiesPtr ManagedPropertiesToMojo(
       result->type_properties =
           mojom::NetworkTypeManagedProperties::NewCellular(std::move(cellular));
 
-      if (features::IsTrafficCountersEnabled()) {
-        result->traffic_counter_properties =
-            CreateTrafficCounterProperties(properties, result->guid);
-      }
-
       break;
     }
     case mojom::NetworkType::kEthernet: {
@@ -1870,10 +1844,6 @@ mojom::ManagedPropertiesPtr ManagedPropertiesToMojo(
       result->type_properties =
           mojom::NetworkTypeManagedProperties::NewWifi(std::move(wifi));
 
-      if (features::IsTrafficCountersForWiFiTestingEnabled()) {
-        result->traffic_counter_properties =
-            CreateTrafficCounterProperties(properties, result->guid);
-      }
       break;
     }
     case mojom::NetworkType::kAll:
@@ -2211,59 +2181,6 @@ mojom::NetworkCertificatePtr GetMojoCert(
   return result;
 }
 
-mojom::TrafficCounterSource ConvertToTrafficCounterSourceEnum(
-    const std::string& source) {
-  if (source == shill::kTrafficCounterSourceUnknown) {
-    return mojom::TrafficCounterSource::kUnknown;
-  }
-  if (source == shill::kTrafficCounterSourceChrome) {
-    return mojom::TrafficCounterSource::kChrome;
-  }
-  if (source == shill::kTrafficCounterSourceUser) {
-    return mojom::TrafficCounterSource::kUser;
-  }
-  if (source == shill::kTrafficCounterSourceArc) {
-    return mojom::TrafficCounterSource::kArc;
-  }
-  if (source == shill::kTrafficCounterSourceCrosvm) {
-    return mojom::TrafficCounterSource::kCrosvm;
-  }
-  if (source == shill::kTrafficCounterSourcePluginvm) {
-    return mojom::TrafficCounterSource::kPluginvm;
-  }
-  if (source == shill::kTrafficCounterSourceUpdateEngine) {
-    return mojom::TrafficCounterSource::kUpdateEngine;
-  }
-  if (source == shill::kTrafficCounterSourceVpn) {
-    return mojom::TrafficCounterSource::kVpn;
-  }
-  if (source == shill::kTrafficCounterSourceSystem) {
-    return mojom::TrafficCounterSource::kSystem;
-  }
-  if (source == shill::kTrafficCounterSourceBorealisVM) {
-    return mojom::TrafficCounterSource::kPluginvm;
-  }
-  if (source == shill::kTrafficCounterSourceBruschettaVM) {
-    return mojom::TrafficCounterSource::kPluginvm;
-  }
-  if (source == shill::kTrafficCounterSourceCrostiniVM) {
-    return mojom::TrafficCounterSource::kPluginvm;
-  }
-  if (source == shill::kTrafficCounterSourceParallelsVM) {
-    return mojom::TrafficCounterSource::kPluginvm;
-  }
-  if (source == shill::kTrafficCounterSourceTethering) {
-    return mojom::TrafficCounterSource::kChrome;
-  }
-  if (source == shill::kTrafficCounterSourceWiFiDirect) {
-    return mojom::TrafficCounterSource::kChrome;
-  }
-  if (source == shill::kTrafficCounterSourceWiFiLOHS) {
-    return mojom::TrafficCounterSource::kChrome;
-  }
-  NOTREACHED() << "Unknown traffic counter source: " << source;
-}
-
 bool GetDnsQueriesMonitoredValue() {
   if (!NetworkHandler::IsInitialized() ||
       !NetworkHandler::Get()->network_metadata_store()) {
@@ -2540,7 +2457,7 @@ void CrosNetworkConfig::GetManagedProperties(
   }
 
   network_configuration_handler_->GetManagedProperties(
-      LoginState::Get()->primary_user_hash(), network->path(),
+      GetPrimaryUserHash(), network->path(),
       base::BindOnce(&CrosNetworkConfig::OnGetManagedProperties,
                      weak_factory_.GetWeakPtr(), std::move(callback), guid));
 }
@@ -2601,7 +2518,7 @@ void CrosNetworkConfig::OnGetManagedProperties(
   NET_LOG(DEBUG) << "Requesting EAP state for: " + service_path
                  << " from: " << eap_state->path();
   network_configuration_handler_->GetManagedProperties(
-      LoginState::Get()->primary_user_hash(), eap_state->path(),
+      GetPrimaryUserHash(), eap_state->path(),
       base::BindOnce(&CrosNetworkConfig::OnGetManagedPropertiesEap,
                      weak_factory_.GetWeakPtr(), std::move(callback),
                      std::move(managed_properties)));
@@ -2728,10 +2645,8 @@ void CrosNetworkConfig::SetPropertiesInternal(const std::string& guid,
   if (network.profile_path().empty()) {
     NET_LOG(USER) << "Configuring properties for " << guid
                   << " (no profile entry set)";
-    std::string user_id_hash = LoginState::Get()->primary_user_hash();
-
     network_configuration_handler_->CreateConfiguration(
-        user_id_hash, onc,
+        GetPrimaryUserHash(), onc,
         base::BindOnce(&CrosNetworkConfig::SetPropertiesConfigureSuccess,
                        weak_factory_.GetWeakPtr(), callback_id),
         base::BindOnce(&CrosNetworkConfig::SetPropertiesFailure,
@@ -2784,8 +2699,9 @@ void CrosNetworkConfig::ConfigureNetwork(mojom::ConfigPropertiesPtr properties,
     return;
   }
 
-  if (!shared && UserManager::Get()->GetPrimaryUser() !=
-                     UserManager::Get()->GetActiveUser()) {
+  if (!shared &&
+      session_manager::SessionManager::Get()->GetPrimarySession() !=
+          session_manager::SessionManager::Get()->GetActiveSession()) {
     NET_LOG(ERROR)
         << "Attempt to set unshared configuration from non primary user";
     std::move(callback).Run(/*guid=*/std::nullopt, kErrorAccessToSharedConfig);
@@ -2807,14 +2723,11 @@ void CrosNetworkConfig::ConfigureNetwork(mojom::ConfigPropertiesPtr properties,
     return;
   }
 
-  std::string user_id_hash =
-      shared ? "" : LoginState::Get()->primary_user_hash();
-
   int callback_id = callback_id_++;
   configure_network_callbacks_[callback_id] = std::move(callback);
 
   network_configuration_handler_->CreateConfiguration(
-      user_id_hash, onc.value(),
+      shared ? "" : GetPrimaryUserHash(), onc.value(),
       base::BindOnce(&CrosNetworkConfig::ConfigureNetworkSuccess,
                      weak_factory_.GetWeakPtr(), callback_id),
       base::BindOnce(&CrosNetworkConfig::ConfigureNetworkFailure,
@@ -2858,9 +2771,8 @@ void CrosNetworkConfig::ForgetNetwork(const std::string& guid,
 
   bool allow_forget_shared_config = true;
   ::onc::ONCSource onc_source = ::onc::ONC_SOURCE_UNKNOWN;
-  std::string user_id_hash = LoginState::Get()->primary_user_hash();
-  if (network_configuration_handler_->FindPolicyByGUID(user_id_hash, guid,
-                                                       &onc_source)) {
+  if (network_configuration_handler_->FindPolicyByGUID(GetPrimaryUserHash(),
+                                                       guid, &onc_source)) {
     if (onc_source == ::onc::ONC_SOURCE_USER_POLICY) {
       // Prevent a policy controlled configuration removal.
       std::move(callback).Run(/*success=*/false);
@@ -3457,124 +3369,6 @@ void CrosNetworkConfig::OnGetSupportedVpnTypes(
   std::move(callback).Run(result);
 }
 
-void CrosNetworkConfig::RequestTrafficCounters(
-    const std::string& guid,
-    RequestTrafficCountersCallback callback) {
-  if (!traffic_counters::TrafficCountersHandler::IsInitialized()) {
-    NET_LOG(ERROR)
-        << "RequestTrafficCounters failure: traffic counters handler not "
-        << "initialized while requesting traffic counters for network guid "
-        << guid;
-    std::move(callback).Run({});
-    return;
-  }
-  std::string service_path = GetServicePathFromGuid(guid);
-  if (service_path.empty()) {
-    NET_LOG(ERROR) << "RequestTrafficCounters: service path for guid " << guid
-                   << " not found";
-    std::move(callback).Run({});
-    return;
-  }
-  traffic_counters::TrafficCountersHandler::Get()->RequestTrafficCounters(
-      service_path,
-      base::BindOnce(&CrosNetworkConfig::PopulateTrafficCounters,
-                     weak_factory_.GetWeakPtr(), std::move(callback)));
-}
-
-void CrosNetworkConfig::PopulateTrafficCounters(
-    RequestTrafficCountersCallback callback,
-    std::optional<base::Value> traffic_counters) {
-  if (!traffic_counters || !traffic_counters->is_list() ||
-      !traffic_counters->GetList().size()) {
-    std::move(callback).Run({});
-    return;
-  }
-  std::vector<mojom::TrafficCounterPtr> counters;
-  for (const base::Value& tc : traffic_counters->GetList()) {
-    DCHECK(tc.is_dict());
-    const base::DictValue& tc_dict = tc.GetDict();
-    const std::string* source = tc_dict.FindString("source");
-    DCHECK(source);
-
-    // Since rx_bytes may be larger than the maximum value representable by
-    // uint32_t, we must check whether it was implicitly converted to a double
-    // during D-Bus deserialization.
-    uint64_t rx_bytes = 0;
-    if (const base::Value* const rb = tc_dict.Find("rx_bytes")) {
-      if (rb->is_int()) {
-        rx_bytes = rb->GetInt();
-      } else if (rb->is_double()) {
-        rx_bytes = std::floor(rb->GetDouble());
-      } else {
-        LOG(ERROR) << "Unexpected type " << rb->type() << " for rx_bytes";
-      }
-    } else {
-      LOG(ERROR) << "Missing field: rx_bytes";
-    }
-
-    // Since tx_bytes may be larger than the maximum value representable by
-    // uint32_t, we must check whether it was implicitly converted to a double
-    // during D-Bus deserialization.
-    uint64_t tx_bytes = 0;
-    if (const base::Value* const tb = tc_dict.Find("tx_bytes")) {
-      if (tb->is_int()) {
-        tx_bytes = tb->GetInt();
-      } else if (tb->is_double()) {
-        tx_bytes = std::floor(tb->GetDouble());
-      } else {
-        LOG(ERROR) << "Unexpected type " << tb->type() << " for tx_bytes";
-      }
-    } else {
-      LOG(ERROR) << "Missing field: tx_bytes";
-    }
-
-    counters.push_back(mojom::TrafficCounter::New(
-        ConvertToTrafficCounterSourceEnum(*source), rx_bytes, tx_bytes));
-  }
-  std::move(callback).Run(std::move(counters));
-}
-
-void CrosNetworkConfig::ResetTrafficCounters(const std::string& guid) {
-  if (!traffic_counters::TrafficCountersHandler::IsInitialized()) {
-    NET_LOG(ERROR)
-        << "ResetTrafficCounters failure: traffic counters handler not "
-        << "initialized while resetting traffic counters for network guid "
-        << guid;
-    return;
-  }
-  std::string service_path = GetServicePathFromGuid(guid);
-  if (service_path.empty()) {
-    NET_LOG(ERROR) << "ResetTrafficCounters: service path for guid " << guid
-                   << " not found";
-    return;
-  }
-  traffic_counters::TrafficCountersHandler::Get()->ResetTrafficCounters(
-      service_path);
-}
-
-void CrosNetworkConfig::SetTrafficCountersResetDay(
-    const std::string& guid,
-    mojom::UInt32ValuePtr day,
-    SetTrafficCountersResetDayCallback callback) {
-  if (!traffic_counters::TrafficCountersHandler::IsInitialized()) {
-    NET_LOG(ERROR)
-        << "SetTrafficCountersResetDay failure: traffic counters handler not "
-        << "initialized while setting reset day for network guid " << guid;
-    std::move(callback).Run(/*success=*/false);
-    return;
-  }
-  std::string service_path = GetServicePathFromGuid(guid);
-  if (service_path.empty()) {
-    NET_LOG(ERROR) << "SetTrafficCountersResetDay failure: service path not "
-                      "found for guid "
-                   << guid;
-    std::move(callback).Run(/*success=*/false);
-    return;
-  }
-  traffic_counters::TrafficCountersHandler::Get()->SetTrafficCountersResetDay(
-      guid, day->value, std::move(callback));
-}
-
 void CrosNetworkConfig::CreateCustomApn(const std::string& network_guid,
                                         mojom::ApnPropertiesPtr apn,
                                         CreateCustomApnCallback callback) {
@@ -3928,12 +3722,6 @@ void CrosNetworkConfig::ModifyCustomApn(const std::string& network_guid,
           network_guid, new_custom_apns.Clone(),
           std::move(modified_apn_old_apn_types), apn->state,
           modified_apn_old_apn_state));
-}
-
-// static
-mojom::TrafficCounterSource CrosNetworkConfig::GetTrafficCounterEnumForTesting(
-    const std::string& source) {
-  return ConvertToTrafficCounterSourceEnum(source);
 }
 
 // NetworkStateHandlerObserver

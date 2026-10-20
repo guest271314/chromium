@@ -40,6 +40,9 @@ BASE_FEATURE(kPermissionsAIv4, base::FEATURE_DISABLED_BY_DEFAULT);
 
 BASE_FEATURE(kPermissionsAIP92, base::FEATURE_ENABLED_BY_DEFAULT);
 
+BASE_FEATURE(kPermissionsAILikelihoodOrRelevance,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
 BASE_FEATURE(kPermissionOnDeviceNotificationPredictions,
              base::FEATURE_ENABLED_BY_DEFAULT);
 
@@ -116,6 +119,14 @@ BASE_FEATURE(kPermissionPredictionsGeolocationAccuracy,
 // are not accompanied by a user gesture will be shown as quiet prompts.
 BASE_FEATURE(kPermissionsGestureGatedPrompts,
              base::FEATURE_DISABLED_BY_DEFAULT);
+
+#if BUILDFLAG(IS_ANDROID)
+// When enabled, a notification entry in page info will be displayed
+// persistently (until the tab is navigated away) if a document requests
+// notification permission.
+BASE_FEATURE(kPermanentNotificationSubscribeInPageInfo,
+             base::FEATURE_ENABLED_BY_DEFAULT);
+#endif  // BUILDFLAG(IS_ANDROID)
 
 }  // namespace features
 
@@ -305,6 +316,11 @@ const base::FeatureParam<bool> kPermissionsGestureGatedPromptsMuteNotifications{
 const base::FeatureParam<bool> kPermissionsGestureGatedPromptsMuteGeolocation{
     &permissions::features::kPermissionsGestureGatedPrompts, "mute_geolocation",
     false};
+
+const base::FeatureParam<bool>
+    kPermissionsGestureGatedPromptsExcludeSameOriginNavigations{
+        &permissions::features::kPermissionsGestureGatedPrompts,
+        "exclude_same_origin_navigations", false};
 
 #if !BUILDFLAG(IS_ANDROID)
 const base::FeatureParam<bool> kKeyboardLockPromptUIStyle{

@@ -6,8 +6,6 @@ package org.chromium.content.browser;
 
 import android.content.ComponentName;
 
-import androidx.test.filters.SmallTest;
-
 import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Test;
@@ -25,7 +23,7 @@ import java.util.ArrayList;
 
 /** Unit test for {@link ChildProcessConnectionMetrics}. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE, sdk = BaseRobolectricTestRunner.MIN_SDK)
+@Config(sdk = BaseRobolectricTestRunner.MIN_SDK)
 public class ChildProcessConnectionMetricsUnitTest {
     private ArrayList<ChildProcessConnection> mRanking;
     private BindingManager mBindingManager;
@@ -37,16 +35,12 @@ public class ChildProcessConnectionMetricsUnitTest {
         mRanking = new ArrayList<ChildProcessConnection>();
         mBindingManager =
                 new BindingManager(
-                        RuntimeEnvironment.application,
-                        BindingManager.NO_MAX_SIZE,
-                        mRanking,
-                        /* onChangedImplicitly= */ null);
+                        RuntimeEnvironment.application, mRanking, /* onChangedImplicitly= */ null);
         mConnectionMetrics = new ChildProcessConnectionMetrics();
         mConnectionMetrics.setBindingManager(mBindingManager);
     }
 
     @Test
-    @SmallTest
     public void testEmitMetricsNoConnections() {
         ChildProcessConnection connection = createMockConnection(ChildBindingState.STRONG);
         mConnectionMetrics.addConnection(connection);
@@ -90,7 +84,6 @@ public class ChildProcessConnectionMetricsUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testEmitMetrics_BindingManagerUsesNotPerceptible() {
         mConnectionMetrics.addConnection(createMockConnection(ChildBindingState.STRONG));
         mConnectionMetrics.addConnection(createMockConnection(ChildBindingState.VISIBLE));
@@ -140,7 +133,6 @@ public class ChildProcessConnectionMetricsUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testEmitMetricsWithUpdate() {
         ChildProcessConnection lowestRankingConnection =
                 createMockConnection(ChildBindingState.VISIBLE);

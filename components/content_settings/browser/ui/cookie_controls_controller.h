@@ -5,6 +5,7 @@
 #ifndef COMPONENTS_CONTENT_SETTINGS_BROWSER_UI_COOKIE_CONTROLS_CONTROLLER_H_
 #define COMPONENTS_CONTENT_SETTINGS_BROWSER_UI_COOKIE_CONTROLS_CONTROLLER_H_
 
+#include <optional>
 #include <set>
 
 #include "base/containers/lru_cache.h"
@@ -19,6 +20,7 @@
 #include "components/content_settings/core/common/cookie_controls_enforcement.h"
 #include "components/content_settings/core/common/cookie_controls_state.h"
 #include "content/public/browser/web_contents_observer.h"
+#include "ui/base/unowned_user_data/scoped_unowned_user_data.h"
 
 namespace content {
 class WebContents;
@@ -33,7 +35,18 @@ class CookieControlsObserver;
 class CookieControlsController final
     : content_settings::CookieSettings::Observer {
  public:
+  DECLARE_USER_DATA(CookieControlsController);
+
   CookieControlsController(
+      scoped_refptr<content_settings::CookieSettings> cookie_settings,
+      scoped_refptr<content_settings::CookieSettings> original_cookie_settings,
+      HostContentSettingsMap* settings_map,
+      bool is_incognito_profile);
+  // Constructs a controller registered on `host`, so that owners which have an
+  // UnownedUserDataHost - such as a browser window - can expose it through
+  // Get() rather than through an accessor of their own.
+  CookieControlsController(
+      ui::UnownedUserDataHost& host,
       scoped_refptr<content_settings::CookieSettings> cookie_settings,
       scoped_refptr<content_settings::CookieSettings> original_cookie_settings,
       HostContentSettingsMap* settings_map,
@@ -43,11 +56,19 @@ class CookieControlsController final
       delete;
   ~CookieControlsController() override;
 
-  // Called when the web_contents has changed.
+  // Called when the web_contents has changed. Status is computed for the last
+  // committed URL of `web_contents`.
   void Update(content::WebContents* web_contents);
 
-  // Updates user bypass visibility and/or highlighting.
-  void UpdateUserBypass();
+  // Called when the web_contents has changed. Status is computed for
+  // `site_url`, which is also used for any setting changes made via this
+  // controller. Callers that show a specific URL to the user (e.g. Page Info)
+  // should pass that URL so the displayed state and the modified setting
+  // remain consistent even if a navigation is pending.
+  void Update(content::WebContents* web_contents, const GURL& site_url);
+
+  // Updates the cookie controls icon.
+  void UpdateCookieControlsIcon();
 
   // Called when the UI is closing.
   void OnUiClosing();
@@ -58,9 +79,6 @@ class CookieControlsController final
   // Called when the user clicks on the toggle to enable/disable cookie
   // blocking.
   void OnCookieBlockingEnabledForSite(bool block_third_party_cookies);
-
-  // Called when the entry point for cookie controls was animated.
-  void OnEntryPointAnimated();
 
   // Returns whether the user has changed their protections state via user
   // bypass.
@@ -132,7 +150,7 @@ class CookieControlsController final
       bool block_third_party_cookies) override;
   void OnCookieSettingChanged() override;
 
-  Status GetStatus(content::WebContents* web_contents);
+  Status GetStatus();
 
   CookieControlsEnforcement GetEnforcementForThirdPartyCookieBlocking(
       const GURL url,
@@ -140,8 +158,6 @@ class CookieControlsController final
       bool cookies_allowed);
 
   bool HasOriginSandboxedTopLevelDocument() const;
-
-  void UpdateLastVisitedSitesMap();
 
   void UpdatePageReloadStatus(int recent_reloads_count);
 
@@ -156,16 +172,14 @@ class CookieControlsController final
   // Returns the number of blocked third-party sites with cookies.
   int GetBlockedThirdPartyCookiesSitesCount() const;
 
-  double GetSiteEngagementScore();
-
   // Record metrics when third-party cookies are allowed.
   void RecordActivationMetrics();
 
   bool SiteDataAccessed(int third_party_allowed_sites,
                         int third_party_blocked_sites);
 
-  bool ShouldHighlightUserBypass(CookieControlsState controls_state);
-  bool ShouldUserBypassIconBeVisible(CookieControlsState controls_state);
+  CookieControlsState GetCookieControlsIconState(
+      CookieControlsState controls_state);
   bool SiteDataAccessAttempted();
   content::WebContents* GetWebContents() const;
 
@@ -178,6 +192,11 @@ class CookieControlsController final
   scoped_refptr<content_settings::CookieSettings> original_cookie_settings_;
   raw_ptr<HostContentSettingsMap> settings_map_;
 
+  // The URL the controller is currently anchored to. Set in `Update()` and
+  // refreshed on primary page changes; used for status queries and setting
+  // modifications so they always agree with what the UI is showing.
+  GURL site_url_;
+
   base::ScopedObservation<content_settings::CookieSettings,
                           content_settings::CookieSettings::Observer>
       cookie_observation_{this};
@@ -188,8 +207,6 @@ class CookieControlsController final
   // The number of page reloads in last 30 seconds.
   int recent_reloads_count_ = 0;
 
-  bool has_exception_expired_since_last_visit_ = false;
-
   bool waiting_for_page_load_finish_ = false;
 
   // If we should show the UB icon as confirmation of a change in the user's
@@ -197,6 +214,10 @@ class CookieControlsController final
   bool show_icon_as_confirmation_ = false;
 
   base::ObserverList<CookieControlsObserver> observers_;
+
+  // Only set when constructed with an UnownedUserDataHost.
+  std::optional<ui::ScopedUnownedUserData<CookieControlsController>>
+      scoped_unowned_user_data_;
 
   base::WeakPtrFactory<CookieControlsController> weak_ptr_factory_{this};
 };

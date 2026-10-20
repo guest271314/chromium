@@ -97,7 +97,18 @@ void AccessibilityStateProvider::ProvideSystemProfileMetrics(
   // ui::AXMode::kFromPlatform is unconditionally filtered out and is therefore
   // never present in `mode`.
   CHECK(!mode.has_mode(ui::AXMode::kFromPlatform));
+  // ui::AXMode::kNativeAdaptedWebContents is dynamically stripped from
+  // process-wide collections and is therefore never present in 'mode'.
+  CHECK(!mode.has_mode(ui::AXMode::kNativeAdaptedWebContents));
   MaybeAddAccessibilityModeFlags(mode, ui::AXMode::kScreenReader, state);
+  if (mode.HasFilterFlags(ui::AXMode::kFormsAndLabelsOnly)) {
+    state->add_enabled_modes(
+        metrics::SystemProfileProto::AccessibilityState::FORMS_AND_LABELS_ONLY);
+  }
+  if (mode.HasFilterFlags(ui::AXMode::kOnScreenOnly)) {
+    state->add_enabled_modes(
+        metrics::SystemProfileProto::AccessibilityState::ON_SCREEN_ONLY);
+  }
 
 #if BUILDFLAG(IS_WIN)
   if (mode.has_mode(ui::AXMode::kNativeAPIs)) {

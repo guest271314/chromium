@@ -73,8 +73,7 @@ const char kGreenPDFPath[] = "/green.pdf";
 // Enter and leave the tab grid. Swipe back and forth repeatedly between
 // the two tabs in the toolbar. The regressiom is a crash anywhere in this
 // process.
-// TODO(crbug.com/447146436): Re-enable when fixed.
-- (void)DISABLED_testSwitchBetweenPDFs {
+- (void)testSwitchBetweenPDFs {
   // Compact width only.
   if (![ChromeEarlGrey isCompactWidth]) {
     EARL_GREY_TEST_DISABLED(@"Disabled on iPad -- depends on swiping in the "
@@ -92,8 +91,7 @@ const char kGreenPDFPath[] = "/green.pdf";
   [ChromeEarlGreyUI openTabGrid];
 
   // Leave the tab grid.
-  [[EarlGrey selectElementWithMatcher:chrome_test_util::TabGridDoneButton()]
-      performAction:grey_tap()];
+  [ChromeEarlGrey hideTabSwitcher];
 
   id<GREYMatcher> toolbar = chrome_test_util::PrimaryToolbar();
   // Swipe back and forth a few times. If this crashes, there may be a new
@@ -123,8 +121,7 @@ const char kGreenPDFPath[] = "/green.pdf";
   base::test::ios::SpinRunLoopWithMinDelay(base::Seconds(5));
 
   // Leave the tab grid.
-  [[EarlGrey selectElementWithMatcher:chrome_test_util::TabGridDoneButton()]
-      performAction:grey_tap()];
+  [ChromeEarlGrey hideTabSwitcher];
 }
 
 // Tests the center color of the grid tab showing a PDF. (physical device only)

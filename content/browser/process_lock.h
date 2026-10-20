@@ -18,6 +18,12 @@
 namespace content {
 
 class IsolationContext;
+class ProcessLock;
+
+namespace rust::process_lock {
+// C++ function defined in process_lock_shim.cc. See friend declaration below.
+void SetIsUsed(ProcessLock& lock);
+}  // namespace rust::process_lock
 
 // ProcessLock is a core part of Site Isolation, which is used to determine
 // which documents are allowed to load in a process and which site data the
@@ -156,6 +162,15 @@ class CONTENT_EXPORT ProcessLock {
     return site_info_.has_value() && site_info_->IsGuest();
   }
 
+  // Returns whether this ProcessLock is used for a privileged process (e.g.,
+  // for a WebContents created with PrivilegedParams). Privileged content always
+  // requires a dedicated process, so such a process hosts only privileged
+  // content.
+  bool is_privileged() const {
+    return site_info_.has_value() &&
+           site_info_->embedder_isolation_info().is_privileged();
+  }
+
   // Returns whether this ProcessLock is used for a process that exclusively
   // hosts content inside a <fencedframe>.
   bool is_fenced() const {
@@ -209,16 +224,52 @@ class CONTENT_EXPORT ProcessLock {
   // Defined to allow this object to act as a key for std::map.
   bool operator<(const ProcessLock& rhs) const;
 
+  // Indicates whether the process associated with this ProcessLock is
+  // "unused".  This starts out as true for new processes and becomes false
+  // after one of the following:
+  // (1) The process commits any page.
+  // (2) The process is given to a SiteInstance that already has a site
+  //     assigned.
+  // Note that a process hosting ServiceWorkers will be implicitly handled by
+  // (2) during ServiceWorker initialization, and SharedWorkers will be handled
+  // by (1) since a page needs to commit before it can create a SharedWorker.
+  //
+  // While a process is unused, it is still suitable to host a URL that
+  // requires a dedicated process. ChildProcessSecurityPolicyImpl relies on
+  // this to reject attempts to lock an already used process to a site; note
+  // that this class does not enforce that itself.
+  bool is_unused() const { return is_unused_; }
+
   std::string ToString() const;
 
  private:
+  // Only ChildProcessSecurityPolicyImpl may mark a ProcessLock as used. Both
+  // its C++ and Rust implementations call set_is_used() through this function
+  // so that CPSP does not need to be a friend of this class.
+  //
+  // Note: despite the `rust::process_lock` namespace, this is a C++ function
+  // (defined in process_lock_shim.cc alongside the other C++ shims exposed to
+  // Rust via FFI). The C++-only CPSP path calls it directly and does not go
+  // through any Rust code.
+  friend void rust::process_lock::SetIsUsed(ProcessLock& lock);
+
   explicit ProcessLock(const SiteInfo& site_info);
+
+  // Marks the process associated with this ProcessLock as used. Note that this
+  // only mutates this instance, so it has no effect when called on a copy
+  // returned by ChildProcessSecurityPolicyImpl::GetProcessLock().
+  void set_is_used() { is_unused_ = false; }
 
   // TODO(creis): Consider tracking multiple compatible SiteInfos in ProcessLock
   // (e.g., multiple sites when Site Isolation is disabled). This can better
   // restrict what the process has access to in cases that we currently use an
   // allows-any-site ProcessLock.
   std::optional<SiteInfo> site_info_;
+
+  // Indicates whether the process associated with this ProcessLock is
+  // "unused", meaning that it has not committed any page and it has not been
+  // given to a SiteInstance that already has a site assigned. See is_unused().
+  bool is_unused_ = true;
 };
 
 CONTENT_EXPORT std::ostream& operator<<(std::ostream& out,

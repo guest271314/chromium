@@ -5,7 +5,6 @@
 package org.chromium.chrome.browser.tasks.tab_management;
 
 import static androidx.test.espresso.Espresso.onView;
-import static androidx.test.espresso.assertion.ViewAssertions.doesNotExist;
 import static androidx.test.espresso.assertion.ViewAssertions.matches;
 import static androidx.test.espresso.matcher.ViewMatchers.Visibility.GONE;
 import static androidx.test.espresso.matcher.ViewMatchers.Visibility.VISIBLE;
@@ -22,9 +21,7 @@ import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
 import static org.chromium.chrome.test.util.ChromeTabUtils.getTabCountOnUiThread;
-import static org.chromium.ui.test.util.ViewUtils.onViewWaiting;
 
-import android.os.Build;
 import android.view.ViewGroup;
 import android.view.ViewStub;
 
@@ -45,7 +42,6 @@ import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.CallbackHelper;
 import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.CriteriaHelper;
-import org.chromium.base.test.util.DisableIf;
 import org.chromium.base.test.util.DisabledTest;
 import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.base.test.util.RequiresRestart;
@@ -89,9 +85,7 @@ import java.util.concurrent.TimeoutException;
 @CommandLineFlags.Add(ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE)
 @Restriction(DeviceFormFactor.TABLET_OR_DESKTOP)
 @DisableFeatures({
-    ChromeFeatureList.ANDROID_SURFACE_COLOR_UPDATE,
-    ChromeFeatureList.GRID_TAB_SWITCHER_SURFACE_COLOR_UPDATE,
-    ChromeFeatureList.ANDROID_THEME_MODULE
+    ChromeFeatureList.ANDROID_THEME_MODULE,
 })
 @Batch(Batch.PER_CLASS)
 public class TabSwitcherTabletTest {
@@ -114,8 +108,8 @@ public class TabSwitcherTabletTest {
         ChromeTabbedActivity cta = mActivityTestRule.getActivity();
 
         LayoutManagerChrome layoutManager = cta.getLayoutManager();
-        if (layoutManager.isLayoutVisible(LayoutType.TAB_SWITCHER)
-                && !layoutManager.isLayoutStartingToHide(LayoutType.TAB_SWITCHER)) {
+        if (layoutManager.isLayoutVisible(LayoutType.HUB)
+                && !layoutManager.isLayoutStartingToHide(LayoutType.HUB)) {
             TabModelSelector selector = cta.getTabModelSelectorSupplier().get();
             if (getTabCountOnUiThread(selector.getModel(false)) == 0) {
                 ThreadUtils.runOnUiThreadBlocking(
@@ -159,7 +153,7 @@ public class TabSwitcherTabletTest {
         checkTabSwitcherViewHolder(cta, true);
 
         exitSwitcherWithTabClick(0);
-        assertFalse(cta.getLayoutManager().isLayoutVisible(LayoutType.TAB_SWITCHER));
+        assertFalse(cta.getLayoutManager().isLayoutVisible(LayoutType.HUB));
     }
 
     @Test
@@ -222,7 +216,7 @@ public class TabSwitcherTabletTest {
         ChromeTabUtils.closeAllTabs(
                 InstrumentationRegistry.getInstrumentation(), cta.getTabModelSelectorSupplier());
 
-        LayoutTestUtils.waitForLayout(cta.getLayoutManager(), LayoutType.TAB_SWITCHER);
+        LayoutTestUtils.waitForLayout(cta.getLayoutManager(), LayoutType.HUB);
 
         // Assert the grid tab switcher is shown automatically, since there is no next tab.
         checkTabSwitcherViewHolderVisibility(true);
@@ -310,63 +304,11 @@ public class TabSwitcherTabletTest {
         // Close the last tab.
         closeTab(false, cta.getCurrentTabModel().getTabAt(0).getId());
 
-        LayoutTestUtils.waitForLayout(cta.getLayoutManager(), LayoutType.TAB_SWITCHER);
+        LayoutTestUtils.waitForLayout(cta.getLayoutManager(), LayoutType.HUB);
 
         // Check whether empty view show up.
         @IdRes int tabSwitcherAncestorId = TabUiTestHelper.getTabSwitcherAncestorId(cta);
         onView(
-                        allOf(
-                                withId(R.id.empty_state_container),
-                                isDescendantOfA(withId(tabSwitcherAncestorId))))
-                .check(matches(isDisplayed()));
-    }
-
-    @Test
-    @MediumTest
-    @DisableIf.Build(sdk_equals = Build.VERSION_CODES.S_V2, message = "crbug.com/41484831")
-    // TODO(crbug.com/435241931): Remove this test once desktop-like incognito window feature is
-    // launched.
-    @DisableFeatures(ChromeFeatureList.ANDROID_OPEN_INCOGNITO_AS_WINDOW)
-    public void testEmptyStateView_ToggleIncognito() {
-        ChromeTabbedActivity cta = mActivityTestRule.getActivity();
-        prepareTabs(1, 1);
-        TabUiTestHelper.enterTabSwitcher(mActivityTestRule.getActivity());
-
-        // Close the last normal tab.
-        ThreadUtils.runOnUiThreadBlocking(
-                () -> {
-                    TabModel model = cta.getTabModelSelector().getModel(false);
-                    model.getTabRemover()
-                            .closeTabs(
-                                    TabClosureParams.closeTab(model.getTabAt(0))
-                                            .allowUndo(false)
-                                            .build(),
-                                    /* allowDialog= */ false);
-                });
-
-        // Check empty view should never show up in incognito tab switcher.
-        @IdRes int tabSwitcherAncestorId = TabUiTestHelper.getTabSwitcherAncestorId(cta);
-        onView(
-                        allOf(
-                                withId(R.id.empty_state_container),
-                                isDescendantOfA(withId(tabSwitcherAncestorId))))
-                .check(doesNotExist());
-
-        // Close the last incognito tab.
-        ThreadUtils.runOnUiThreadBlocking(
-                () -> {
-                    TabModel model = cta.getTabModelSelector().getModel(true);
-                    model.getTabRemover()
-                            .closeTabs(
-                                    TabClosureParams.closeTab(model.getTabAt(0))
-                                            .allowUndo(false)
-                                            .build(),
-                                    /* allowDialog= */ false);
-                });
-
-        // Incognito tab switcher should exit to go to normal tab switcher and we should see empty
-        // view.
-        onViewWaiting(
                         allOf(
                                 withId(R.id.empty_state_container),
                                 isDescendantOfA(withId(tabSwitcherAncestorId))))

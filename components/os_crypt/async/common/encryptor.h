@@ -13,6 +13,8 @@
 #include "base/component_export.h"
 #include "base/containers/span.h"
 #include "base/gtest_prod_util.h"
+#include "base/memory/ref_counted.h"
+#include "base/memory/scoped_refptr.h"
 #include "mojo/public/cpp/bindings/default_construct_tag.h"
 
 namespace mojo {
@@ -34,8 +36,11 @@ class OSCryptAsync;
 class TestOSCryptAsync;
 
 // This class is used for data encryption. A thread-safe instance can be
-// obtained by calling `os_crypt_async::OSCryptAsync::GetInstance`.
-class COMPONENT_EXPORT(OS_CRYPT_ASYNC) Encryptor {
+// obtained by calling `os_crypt_async::OSCryptAsync::GetInstance`. Instances
+// are reference counted and immutable from the perspective of callers; share
+// a single instance across consumers via `scoped_refptr<Encryptor>`.
+class COMPONENT_EXPORT(OS_CRYPT_ASYNC) Encryptor
+    : public base::RefCountedThreadSafe<Encryptor> {
  public:
   // A class used by the Encryptor to hold an encryption key and carry out
   // encryption and decryption operations using the specified Algorithm and
@@ -92,17 +97,6 @@ class COMPONENT_EXPORT(OS_CRYPT_ASYNC) Encryptor {
 #endif
   };
 
-  enum class Option {
-    // No Encryptor options.
-    kNone = 0,
-    // Indicates that the Encryptor returned should be data-compatible with
-    // OSCrypt Sync for both Encrypt and Decrypt operations. Note that Decrypt
-    // operations are always backwards compatible with previous Encrypt
-    // operations from OSCrypt Sync even if no option is specified: this option
-    // only affects the behavior of Encrypt operations.
-    kEncryptSyncCompat = 1,
-  };
-
   // Flags that can be set by the Encryptor during a Decrypt call. Pass to a
   // Decrypt operation to obtain these flags.
   struct DecryptFlags {
@@ -129,11 +123,9 @@ class COMPONENT_EXPORT(OS_CRYPT_ASYNC) Encryptor {
   // Mojo uses this public constructor for serialization.
   explicit Encryptor(mojo::DefaultConstruct::Tag);
 
-  virtual ~Encryptor();
-
-  // Moveable, not copyable.
-  Encryptor(Encryptor&& other);
-  Encryptor& operator=(Encryptor&& other);
+  // Not moveable, not copyable. Share via scoped_refptr.
+  Encryptor(Encryptor&& other) = delete;
+  Encryptor& operator=(Encryptor&& other) = delete;
   Encryptor(const Encryptor&) = delete;
   Encryptor& operator=(const Encryptor&) = delete;
 
@@ -174,31 +166,23 @@ class COMPONENT_EXPORT(OS_CRYPT_ASYNC) Encryptor {
   virtual bool IsDecryptionAvailable() const;
 
  protected:
-  // Create an encryptor with a set of `keys`. This is used by the Clone()
-  // function and internally by tests. The `provider_for_encryption` specifies
-  // which provider is used for encryption, and must have a corresponding key in
-  // `keys`. The `provider_for_os_crypt_sync_compatible_encryption` is the
-  // filtered version of `provider_for_encryption` that only contains the
-  // encryption provider if it's marked itself as being compatible with OSCrypt
-  // Sync.
-  Encryptor(
-      KeyRing keys,
-      const std::string& provider_for_encryption,
-      const std::string& provider_for_os_crypt_sync_compatible_encryption);
+  // Create an encryptor with a set of `keys`. This is used internally by tests.
+  // The `provider_for_encryption` specifies which provider is used for
+  // encryption, and must have a corresponding key in `keys`.
+  Encryptor(KeyRing keys, const std::string& provider_for_encryption);
 
-  // Clone is used internally by the factory to vend instances.
-  Encryptor Clone(Option option) const;
+  virtual ~Encryptor();
 
  private:
+  friend class base::RefCountedThreadSafe<Encryptor>;
   friend class EncryptorTest;
   friend class EncryptorParamTest;
   friend class OSCryptAsync;
   friend class TestEncryptor;
   friend struct mojo::StructTraits<os_crypt_async::mojom::EncryptorDataView,
-                                   os_crypt_async::Encryptor>;
+                                   scoped_refptr<os_crypt_async::Encryptor>>;
 
   FRIEND_TEST_ALL_PREFIXES(EncryptorTraitsTest, TraitsRoundTrip);
-  FRIEND_TEST_ALL_PREFIXES(EncryptorTest, Clone);
 
   // Create an encryptor with no keys or encryption provider. In this case, all
   // encryption operations will fail.
@@ -220,12 +204,6 @@ class COMPONENT_EXPORT(OS_CRYPT_ASYNC) Encryptor {
   // be empty string, which means that providers are registered for decryption
   // only, but encryption will fail.
   std::string provider_for_encryption_;
-
-  // Provider for OSCrypt Sync compatible encryption. This could be the same as
-  // the `provider_for_encryption_` if all keys are OSCrypt compatible, and/or
-  // if this Encryptor has been cloned from an Encryptor using the
-  // `kEncryptSyncCompat` `Option`.
-  std::string provider_for_os_crypt_sync_compatible_encryption_;
 };
 
 }  // namespace os_crypt_async

@@ -30,6 +30,7 @@ import org.chromium.chrome.browser.profiles.ProfileProvider;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabBuilder;
 import org.chromium.chrome.browser.tab.TabDelegateFactory;
+import org.chromium.chrome.browser.tab.TabDestroyStatus;
 import org.chromium.chrome.browser.tab.TabLaunchType;
 import org.chromium.chrome.browser.tabmodel.ChromeTabCreator;
 import org.chromium.chrome.browser.tabmodel.TabCreatorManager;
@@ -53,7 +54,7 @@ public class CustomTabActivityTabFactory {
     private final CustomTabDelegateFactory mCustomTabDelegateFactory;
     private final BrowserServicesIntentDataProvider mIntentDataProvider;
     private final TabCreatorManager mTabCreatorManager;
-    private final Supplier<TabModelSelector> mTabModelSelectorSupplier;
+    private final Supplier<@Nullable TabModelSelector> mTabModelSelectorSupplier;
     private final Supplier<@Nullable CompositorViewHolder> mCompositorViewHolderSupplier;
     private final CipherFactory mCipherFactory;
 
@@ -68,7 +69,7 @@ public class CustomTabActivityTabFactory {
             CustomTabDelegateFactory customTabDelegateFactory,
             BrowserServicesIntentDataProvider intentDataProvider,
             TabCreatorManager tabCreatorManager,
-            Supplier<TabModelSelector> tabModelSelectorSupplier,
+            Supplier<@Nullable TabModelSelector> tabModelSelectorSupplier,
             Supplier<@Nullable CompositorViewHolder> compositorViewHolderSupplier,
             CipherFactory cipherFactory) {
         mActivity = activity;
@@ -93,10 +94,11 @@ public class CustomTabActivityTabFactory {
         return mTabModelOrchestrator;
     }
 
-    public void destroyTabModelOrchestrator() {
+    public @TabDestroyStatus int destroyTabModelOrchestrator() {
         if (mTabModelOrchestrator != null) {
-            mTabModelOrchestrator.destroy();
+            return mTabModelOrchestrator.destroy();
         }
+        return TabDestroyStatus.NO_SHUTDOWN;
     }
 
     /** Calls the {@link TabModelOrchestrator} to create TabModels and TabPersistentStore. */

@@ -6,9 +6,9 @@
 #define CHROME_BROWSER_ASH_FILEAPI_EXTERNAL_FILE_URL_LOADER_FACTORY_H_
 
 #include "base/memory/raw_ptr.h"
+#include "base/memory/self_deleting.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
-#include "mojo/public/cpp/bindings/receiver_set.h"
 #include "services/network/public/cpp/self_deleting_url_loader_factory.h"
 #include "services/network/public/mojom/url_loader_factory.mojom.h"
 
@@ -32,16 +32,17 @@ class ExternalFileURLLoaderFactory
       void* profile_id,
       int render_process_host_id);
 
+  ExternalFileURLLoaderFactory(
+      void* profile_id,
+      int render_process_host_id,
+      mojo::PendingReceiver<network::mojom::URLLoaderFactory> factory_receiver,
+      base::SelfDeletingPassKey key);
+
   ExternalFileURLLoaderFactory(const ExternalFileURLLoaderFactory&) = delete;
   ExternalFileURLLoaderFactory& operator=(const ExternalFileURLLoaderFactory&) =
       delete;
 
  private:
-  ExternalFileURLLoaderFactory(
-      void* profile_id,
-      int render_process_host_id,
-      mojo::PendingReceiver<network::mojom::URLLoaderFactory> factory_receiver);
-
   ~ExternalFileURLLoaderFactory() override;
 
   friend class ExternalFileURLLoaderFactoryTest;

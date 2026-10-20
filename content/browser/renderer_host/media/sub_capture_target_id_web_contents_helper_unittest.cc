@@ -12,6 +12,7 @@
 
 #include "base/uuid.h"
 #include "build/build_config.h"
+#include "content/public/test/test_renderer_host.h"
 #include "content/test/test_render_view_host.h"
 #include "content/test/test_web_contents.h"
 #include "testing/gmock/include/gmock/gmock-matchers.h"

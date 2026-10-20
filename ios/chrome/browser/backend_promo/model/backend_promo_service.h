@@ -6,8 +6,13 @@
 #define IOS_CHROME_BROWSER_BACKEND_PROMO_MODEL_BACKEND_PROMO_SERVICE_H_
 
 #import <memory>
+#import <string_view>
 
 #import "components/keyed_service/core/keyed_service.h"
+
+namespace feature_engagement {
+class Tracker;
+}  // namespace feature_engagement
 
 // BackendPromoService is responsible for backend promo features.
 class BackendPromoService : public KeyedService {
@@ -18,6 +23,13 @@ class BackendPromoService : public KeyedService {
   BackendPromoService& operator=(const BackendPromoService&) = delete;
 
   ~BackendPromoService() override = default;
+
+  // Notifies the service that the app became active in the foreground.
+  virtual void NotifyBackendAppForegroundActive() {}
+
+  // Registers a synthetic field trial for backend promo campaigns.
+  static bool RegisterSyntheticFieldTrial(std::string_view trial_name,
+                                          std::string_view group_name);
 };
 
 class BrowserList;
@@ -30,7 +42,8 @@ namespace ios::provider {
 // Creates a new instance of BackendPromoService.
 std::unique_ptr<BackendPromoService> CreateBackendPromoService(
     signin::IdentityManager* identity_manager,
-    BrowserList* browser_list);
+    BrowserList* browser_list,
+    feature_engagement::Tracker* tracker);
 
 // Shows the backend promo debug tools.
 void ShowBackendPromoDebugTools();

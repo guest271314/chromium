@@ -36,9 +36,12 @@ extern const CGFloat kLocationBarHeight;
 extern const CGFloat kTopLocationBarIPhonePortraitHeight;
 // The padding in the toolbar.
 extern const CGFloat kToolbarPadding;
-// The padding in the toolbar when at the top on iPhone portrait..
-extern const CGFloat kTopToolbarIPhonePortraitPadding;
+// The padding in the toolbar above and below the location bar on iPhone
+// portrait.
+extern const CGFloat kToolbarCompactLocationBarPadding;
 
+// The height of the toolbar when in fullscreen on iPad.
+extern const CGFloat kTopToolbarIPadHeightFullscreen;
 // The height of the toolbar when in fullscreen.
 extern const CGFloat kToolbarHeightFullscreen;
 // The height of the toolbar when at the top in fullscreen on iPhone portrait.
@@ -47,8 +50,20 @@ extern const CGFloat kTopToolbarIPhonePortraitHeightFullscreen;
 extern const CGFloat kLocationBarHeightFullscreen;
 // The padding in the toolbar when in fullscreen.
 extern const CGFloat kToolbarPaddingFullscreen;
+// Vertical offset of the outer separator.
+extern const CGFloat kOuterSeparatorVerticalOffset;
 // Additional height added to the bottom omnibox when attached above the
 // keyboard.
 extern const CGFloat kKeyboardAttachedOmniboxBottomPadding;
+// Additional height added to the bottom omnibox when attached above the
+// keyboard in landscape orientation.
+extern const CGFloat kKeyboardAttachedOmniboxBottomPaddingLandscape;
+
+// Margin for the glass effect background.
+extern const CGFloat kGlassToolbarMargin;
+extern const CGFloat kGlassFullscreenMargin;
+// Height of the glass effect background.
+extern const CGFloat kGlassExpandedHeight;
+extern const CGFloat kGlassCollapsedHeight;
 
 #endif  // IOS_CHROME_BROWSER_TOOLBAR_UI_TOOLBAR_CONSTANTS_H_

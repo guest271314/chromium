@@ -20,6 +20,7 @@
 #include "base/functional/callback_helpers.h"
 #include "chrome/browser/ui/webui/ash/system_web_dialog/system_web_dialog_delegate.h"
 #include "content/public/browser/browser_context.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_ui_controller.h"
 #include "ui/gfx/geometry/size.h"
@@ -45,12 +46,11 @@ void ScannerFeedbackDialog::OnDialogShown(content::WebUI* webui) {
   // This is called from `ui::WebDialogUI::HandleRenderFrameCreated`, right
   // after the `content::RenderFrameHost` is created - before any JavaScript is
   // run.
-  SystemWebDialogDelegate::OnDialogShown(webui);
 
   auto* controller =
-      CHECK_DEREF(webui->GetController()).GetAs<ScannerFeedbackUntrustedUI>();
+      &CHECK_DEREF(webui->GetController()->GetAs<ScannerFeedbackUntrustedUI>());
 
-  CHECK(controller);
+  SystemWebDialogDelegate::OnDialogShown(webui);
 
   auto* feedback_info = std::get_if<ScannerFeedbackInfo>(&feedback_info_);
   // `OnDialogShown` should never be called multiple times. If it was previously

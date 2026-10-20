@@ -11,7 +11,6 @@
 
 #include "ash/public/cpp/ash_typography.h"
 #include "ash/public/cpp/resources/grit/ash_public_unscaled_resources.h"
-#include "ash/style/ash_color_provider.h"
 #include "ash/style/typography.h"
 #include "base/check_op.h"
 #include "base/i18n/rtl.h"
@@ -340,7 +339,7 @@ void SharesheetBubbleView::PopulateLayoutsWithTargets(
       // When we've reached kMaxRowsForDefaultView switch to populating
       // |expanded_layout|.
       if (row_count == kMaxRowsForDefaultView) {
-        DCHECK(expanded_view);
+        CHECK(expanded_view, base::NotFatalUntil::M162);
         view_for_target = expanded_view;
       }
       ++row_count;
@@ -452,7 +451,7 @@ bool SharesheetBubbleView::AcceleratorPressed(
   // We override this because when this is handled by the base class,
   // OnKeyPressed is not invoked when a user presses |VKEY_ESCAPE| if they have
   // not pressed |VKEY_TAB| first to focus the SharesheetBubbleView.
-  DCHECK_EQ(accelerator.key_code(), ui::VKEY_ESCAPE);
+  CHECK_EQ(accelerator.key_code(), ui::VKEY_ESCAPE, base::NotFatalUntil::M162);
   if (share_action_view_->GetVisible() &&
       active_share_action_type_.has_value() &&
       delegator_->OnAcceleratorPressed(accelerator,
@@ -524,7 +523,7 @@ std::unique_ptr<views::FrameView> SharesheetBubbleView::CreateFrameView(
   // TODO(crbug.com/40136695) Replace this with layer->SetRoundedCornerRadius.
   auto bubble_border =
       std::make_unique<views::BubbleBorder>(arrow(), GetShadow());
-  bubble_border->SetColor(background_color());
+  bubble_border->set_background_color(background_color());
   bubble_border->set_rounded_corners(gfx::RoundedCornersF(kCornerRadius));
   auto frame = views::BubbleDialogDelegateView::CreateFrameView(widget);
   static_cast<views::BubbleFrameView*>(frame.get())

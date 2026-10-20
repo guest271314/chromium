@@ -99,8 +99,8 @@
 
     _baseNavigationController.navigationBarHidden = NO;
     UIBarButtonItem* backButton = [[UIBarButtonItem alloc]
-        initWithImage:DefaultSymbolWithPointSize(kChevronBackwardSymbol,
-                                                 kSymbolActionPointSize)
+        initWithImage:SymbolWithPointSize(SymbolChevronBackward,
+                                          kSymbolActionPointSize)
                 style:UIBarButtonItemStylePlain
                target:self
                action:@selector(dismiss)];
@@ -177,7 +177,7 @@
   base::UmaHistogramEnumeration(
       first_run::kFirstRunStageHistogram,
       first_run::kBestFeaturesExperienceCompletionThroughDetailScreen);
-  [self.delegate screenWillFinishPresenting];
+  [self.delegate firstRunScreenCoordinatorWantsToBeStopped:self];
 }
 
 @end

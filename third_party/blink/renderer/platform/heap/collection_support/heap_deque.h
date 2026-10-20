@@ -73,7 +73,9 @@ template <typename T>
 using HeapDeque = BasicHeapDeque<internal::HeapCollectionType::kDisallowNew, T>;
 
 static_assert(IsDisallowNew<HeapDeque<int>>);
-#if !BUILDFLAG(ENABLE_HEAP_VECTOR_ACTIVE_ITERATOR_CHECKS)
+#if DCHECK_IS_ON() ||                                     \
+    BUILDFLAG(ENABLE_HEAP_VECTOR_MODIFICATION_CHECKS) == \
+        BUILDFLAG(ENABLE_VECTOR_MODIFICATION_CHECKS)
 ASSERT_SIZE(Deque<int>, HeapDeque<int>);
 #endif
 
@@ -83,7 +85,9 @@ template <typename T>
 using GCedHeapDeque = BasicHeapDeque<internal::HeapCollectionType::kGCed, T>;
 
 static_assert(!IsDisallowNew<GCedHeapDeque<int>>);
-#if !BUILDFLAG(ENABLE_HEAP_VECTOR_ACTIVE_ITERATOR_CHECKS)
+#if DCHECK_IS_ON() ||                                     \
+    BUILDFLAG(ENABLE_HEAP_VECTOR_MODIFICATION_CHECKS) == \
+        BUILDFLAG(ENABLE_VECTOR_MODIFICATION_CHECKS)
 ASSERT_SIZE(Deque<int>, GCedHeapDeque<int>);
 #endif
 

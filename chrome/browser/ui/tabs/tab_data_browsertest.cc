@@ -6,6 +6,7 @@
 
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "base/byte_size.h"
 #include "base/functional/callback_helpers.h"
@@ -13,27 +14,38 @@
 #include "base/run_loop.h"
 #include "base/test/scoped_feature_list.h"
 #include "chrome/browser/favicon/favicon_utils.h"
+#include "chrome/browser/media/webrtc/media_capture_devices_dispatcher.h"
+#include "chrome/browser/media/webrtc/media_stream_capture_indicator.h"
 #include "chrome/browser/performance_manager/public/user_tuning/user_performance_tuning_manager.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/performance_controls/tab_resource_usage_tab_helper.h"
 #include "chrome/browser/ui/tab_ui_helper.h"
 #include "chrome/browser/ui/tabs/public/tab_features.h"
 #include "chrome/browser/ui/tabs/saved_tab_groups/collaboration_messaging_tab_data.h"
+#include "chrome/browser/ui/tabs/tab_enums.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/thumbnails/thumbnail_image.h"
 #include "chrome/browser/ui/thumbnails/thumbnail_tab_helper.h"
+#include "chrome/browser/ui/views/frame/browser_view.h"
+#include "chrome/browser/ui/views/tabs/tab.h"
+#include "chrome/browser/ui/views/tabs/tab_strip.h"
 #include "chrome/common/webui_url_constants.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "components/data_sharing/public/features.h"
+#include "components/javascript_dialogs/app_modal_dialog_controller.h"
+#include "components/javascript_dialogs/app_modal_dialog_view.h"
 #include "components/tabs/public/tab_alert.h"
 #include "components/tabs/public/tab_interface.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_entry.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/content_features.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/blink/public/common/mediastream/media_stream_request.h"
+#include "third_party/blink/public/mojom/mediastream/media_stream.mojom.h"
+#include "ui/base/window_open_disposition.h"
 #include "ui/gfx/image/image_skia.h"
 #include "url/url_constants.h"
 
@@ -42,9 +54,8 @@ namespace tabs {
 class TabDataObserverBrowserTest : public InProcessBrowserTest {
  public:
   TabDataObserverBrowserTest() {
-    scoped_feature_list_.InitWithFeatures(
-        {data_sharing::features::kDataSharingFeature},
-        {features::kWebContentsDiscard});
+    scoped_feature_list_.InitAndEnableFeature(
+        data_sharing::features::kDataSharingFeature);
   }
 
   void SetUpOnMainThread() override {
@@ -351,8 +362,7 @@ IN_PROC_BROWSER_TEST_F(TabDataObserverBrowserTest, Thumbnail) {
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP));
   tabs::TabInterface* const tab_interface =
       browser()->GetTabStripModel()->GetTabAtIndex(0);
-  content::WebContents* wc = tab_interface->GetContents();
-  auto* thumbnail_tab_helper = ThumbnailTabHelper::FromWebContents(wc);
+  auto* thumbnail_tab_helper = ThumbnailTabHelper::From(tab_interface);
   ASSERT_NE(nullptr, thumbnail_tab_helper);
 
   // Initial data should reference the helper's thumbnail and have no data.
@@ -452,6 +462,90 @@ IN_PROC_BROWSER_TEST_F(TabDataObserverBrowserTest,
 }
 
 IN_PROC_BROWSER_TEST_F(TabDataObserverBrowserTest,
+                       AlertStateUpdatesAfterCancelledBeforeUnload) {
+  ASSERT_TRUE(ui_test_utils::NavigateToURLWithDisposition(
+      browser(), embedded_test_server()->GetURL("/title1.html"),
+      WindowOpenDisposition::CURRENT_TAB,
+      ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP));
+  TabStripModel* const tab_strip_model = browser()->GetTabStripModel();
+  TabInterface* const tab_interface = tab_strip_model->GetTabAtIndex(0);
+  content::WebContents* const wc = tab_interface->GetContents();
+
+  ASSERT_TRUE(content::ExecJs(wc,
+                              "window.onbeforeunload = e => {"
+                              "  e.preventDefault();"
+                              "  e.returnValue = '';"
+                              "};"));
+  content::PrepContentsForBeforeUnloadTest(wc);
+
+  Tab* const tab = BrowserView::GetBrowserViewForBrowser(browser())
+                       ->horizontal_tab_strip_for_testing()
+                       ->tab_at(0);
+  auto tab_data_observer = std::make_unique<TabDataObserver>(tab_interface);
+  scoped_refptr<MediaStreamCaptureIndicator> indicator =
+      MediaCaptureDevicesDispatcher::GetInstance()
+          ->GetMediaStreamCaptureIndicator();
+  blink::mojom::StreamDevices devices;
+  devices.video_device = blink::MediaStreamDevice(
+      blink::mojom::MediaStreamType::GUM_TAB_VIDEO_CAPTURE, "fake_media_device",
+      "fake_media_device");
+  std::unique_ptr<content::MediaStreamUI> video_stream_ui =
+      indicator->RegisterMediaStream(wc, devices);
+  video_stream_ui->OnStarted(base::RepeatingClosure(),
+                             content::MediaStreamUI::SourceCallback(),
+                             /*label=*/std::string(), /*screen_capture_ids=*/{},
+                             content::MediaStreamUI::StateChangeCallback());
+  EXPECT_EQ(tab_data_observer->tab_data().alert_state,
+            tabs::TabAlert::kTabCapturing);
+  EXPECT_EQ(tab->data().alert_state, tabs::TabAlert::kTabCapturing);
+
+  // Attempt to close the tab and cancel the beforeunload confirmation dialog.
+  tab_strip_model->CloseWebContentsAt(0, TabCloseTypes::CLOSE_USER_GESTURE);
+  javascript_dialogs::AppModalDialogController* dialog =
+      ui_test_utils::WaitForAppModalDialog();
+  ASSERT_NE(dialog, nullptr);
+  ASSERT_TRUE(dialog->is_before_unload_dialog());
+  dialog->view()->CancelAppModalDialog();
+
+  // Stopping tab capture after cancelling beforeunload should clear the alert
+  // state in both TabDataObserver and the Tab view.
+  video_stream_ui.reset();
+  EXPECT_EQ(tab_data_observer->tab_data().alert_state, std::nullopt);
+  EXPECT_EQ(tab->data().alert_state, std::nullopt);
+
+  ASSERT_TRUE(content::ExecJs(wc, "window.onbeforeunload = null;"));
+}
+
+class TabDataObserverDiscardBrowserTest
+    : public InProcessBrowserTest,
+      public ::testing::WithParamInterface<bool> {
+ public:
+  TabDataObserverDiscardBrowserTest() {
+    std::vector<base::test::FeatureRef> enabled_features{
+        data_sharing::features::kDataSharingFeature};
+    std::vector<base::test::FeatureRef> disabled_features;
+    if (GetParam()) {
+      enabled_features.push_back(features::kWebContentsDiscard);
+    } else {
+      disabled_features.push_back(features::kWebContentsDiscard);
+    }
+    scoped_feature_list_.InitWithFeatures(enabled_features, disabled_features);
+  }
+
+  void SetUpOnMainThread() override {
+    InProcessBrowserTest::SetUpOnMainThread();
+    ASSERT_TRUE(embedded_test_server()->Start());
+  }
+
+ private:
+  base::test::ScopedFeatureList scoped_feature_list_;
+};
+
+INSTANTIATE_TEST_SUITE_P(WebContentsDiscard,
+                         TabDataObserverDiscardBrowserTest,
+                         ::testing::Bool());
+
+IN_PROC_BROWSER_TEST_P(TabDataObserverDiscardBrowserTest,
                        ThumbnailRefreshesOnTabDiscard) {
   ASSERT_TRUE(ui_test_utils::NavigateToURLWithDisposition(
       browser(), embedded_test_server()->GetURL("example.com", "/title1.html"),
@@ -472,9 +566,11 @@ IN_PROC_BROWSER_TEST_F(TabDataObserverBrowserTest,
       UserPerformanceTuningManager::GetInstance();
   user_performance_tuning_manager->DiscardPageForTesting(
       tab_interface->GetContents());
-  // The thumbnail should be updated after discard because the original
-  // ThumbnailTabHelper is destroyed and a new one is created.
-  EXPECT_NE(original_thumbnail, tab_data_observer->tab_data().thumbnail);
+  // When WebContentsDiscard is disabled, the thumbnail should be updated after
+  // discard because the original ThumbnailTabHelper is destroyed and a new one
+  // is created.
+  EXPECT_EQ(original_thumbnail == tab_data_observer->tab_data().thumbnail,
+            base::FeatureList::IsEnabled(features::kWebContentsDiscard));
 }
 
 }  // namespace tabs

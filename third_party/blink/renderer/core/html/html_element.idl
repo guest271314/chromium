@@ -38,6 +38,7 @@
     [RuntimeEnabled=AccessKeyLabel] readonly attribute DOMString accessKeyLabel;
     [CEReactions] attribute boolean draggable;
     [CEReactions] attribute boolean spellcheck;
+    [RuntimeEnabled=WebAutocorrectByDefault, CEReactions] attribute boolean autocorrect;
     [Measure] attribute DOMString autocapitalize;
 
     [RaisesException] ElementInternals attachInternals(optional AttachInternalsOptions options);
@@ -74,12 +75,13 @@
     [CEReactions,Reflect,ReflectOnly=("auto","hint","manual"),ReflectEmpty="auto",ReflectInvalid="manual"] attribute DOMString? popover;
 
     // Overscroll API
-    [RuntimeEnabled=OverscrollGestures,CEReactions,Reflect,ReflectOnly=("auto", "overlay"),ReflectEmpty="auto",ReflectInvalid="auto"] attribute DOMString? overscrollcontainer;
-    [RuntimeEnabled=OverscrollGestures,CEReactions,Reflect,ReflectOnly=("auto"),ReflectEmpty="auto",ReflectInvalid="auto"] attribute DOMString? overscrollarea;
+    [RuntimeEnabled=OverscrollAreas,CEReactions,Reflect,ReflectOnly=("auto"),ReflectEmpty="auto",ReflectInvalid="auto"] attribute DOMString? overscrollcontainer;
+    [RuntimeEnabled=OverscrollAreas,CEReactions,Reflect,ReflectOnly=("auto"),ReflectEmpty="auto",ReflectInvalid="auto"] attribute DOMString? overscrollarea;
 
     // Unbounded Element API
-    [RuntimeEnabled=UnboundedElement,CEReactions,Reflect] attribute boolean unbounded;
-    [RuntimeEnabled=UnboundedElement,CallWith=ScriptState] Promise<undefined> showUnboundedElement();
+    [ContextEnabled=UnboundedElement,CEReactions,Reflect] attribute boolean unbounded;
+    [ContextEnabled=UnboundedElement,CallWith=ScriptState] Promise<undefined> showUnboundedElement();
+    [ContextEnabled=UnboundedElement,CallWith=ScriptState] Promise<undefined> hideUnboundedElement();
 
     // Non-standard APIs
     [CEReactions, RaisesException=Setter, MeasureAs=HTMLElementInnerText, ImplementedAs=innerTextForBinding] attribute ([LegacyNullToEmptyString] DOMString or TrustedScript) innerText;

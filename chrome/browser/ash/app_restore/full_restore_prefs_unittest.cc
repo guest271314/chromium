@@ -7,12 +7,12 @@
 #include <memory>
 
 #include "ash/constants/ash_pref_names.h"
+#include "ash/constants/chrome_pref_names.h"
 #include "ash/wm/window_restore/window_restore_util.h"
 #include "chrome/browser/prefs/session_startup_pref.h"
-#include "chrome/common/pref_names.h"
 #include "chrome/test/base/testing_browser_process.h"
 #include "components/pref_registry/pref_registry_syncable.h"
-#include "components/session_manager/test/test_user_session_manager.h"
+#include "components/session_manager/test/user_session_test_environment.h"
 #include "components/sync_preferences/testing_pref_service_syncable.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -24,8 +24,8 @@ class FullRestorePrefsTest : public testing::Test {
   FullRestorePrefsTest() = default;
 
   void SetUp() override {
-    test_user_session_manager_ =
-        std::make_unique<ash::test::TestUserSessionManager>(
+    user_session_test_environment_ =
+        std::make_unique<ash::test::UserSessionTestEnvironment>(
             TestingBrowserProcess::GetGlobal()->local_state());
     pref_service_ =
         std::make_unique<sync_preferences::TestingPrefServiceSyncable>();
@@ -33,7 +33,7 @@ class FullRestorePrefsTest : public testing::Test {
 
   void TearDown() override {
     pref_service_.reset();
-    test_user_session_manager_.reset();
+    user_session_test_environment_.reset();
   }
 
   user_prefs::PrefRegistrySyncable* registry() {
@@ -50,7 +50,8 @@ class FullRestorePrefsTest : public testing::Test {
   }
 
  private:
-  std::unique_ptr<ash::test::TestUserSessionManager> test_user_session_manager_;
+  std::unique_ptr<ash::test::UserSessionTestEnvironment>
+      user_session_test_environment_;
   std::unique_ptr<sync_preferences::TestingPrefServiceSyncable> pref_service_;
 };
 
@@ -69,7 +70,7 @@ TEST_F(FullRestorePrefsTest, NewUser) {
 TEST_F(FullRestorePrefsTest, UpgradingFromRestore) {
   SessionStartupPref::RegisterProfilePrefs(registry());
   pref_service()->SetInteger(
-      ::prefs::kRestoreOnStartup,
+      ash::chrome_prefs::kRestoreOnStartup,
       static_cast<int>(SessionStartupPref::kPrefValueLast));
 
   RegisterProfilePrefsFullRestore(registry());
@@ -83,7 +84,7 @@ TEST_F(FullRestorePrefsTest, UpgradingFromRestore) {
 TEST_F(FullRestorePrefsTest, UpgradingFromNotRestore) {
   SessionStartupPref::RegisterProfilePrefs(registry());
   pref_service()->SetInteger(
-      ::prefs::kRestoreOnStartup,
+      ash::chrome_prefs::kRestoreOnStartup,
       static_cast<int>(SessionStartupPref::kPrefValueNewTab));
 
   RegisterProfilePrefsFullRestore(registry());
@@ -104,7 +105,7 @@ TEST_F(FullRestorePrefsTest, NewChromeOSUserFromRestore) {
 
   SessionStartupPref::RegisterProfilePrefs(registry());
   pref_service()->SetInteger(
-      ::prefs::kRestoreOnStartup,
+      ash::chrome_prefs::kRestoreOnStartup,
       static_cast<int>(SessionStartupPref::kPrefValueLast));
 
   UpdateRestorePrefIfNecessary(pref_service());
@@ -124,7 +125,7 @@ TEST_F(FullRestorePrefsTest, NewChromeOSUserFromNotRestore) {
 
   SessionStartupPref::RegisterProfilePrefs(registry());
   pref_service()->SetInteger(
-      ::prefs::kRestoreOnStartup,
+      ash::chrome_prefs::kRestoreOnStartup,
       static_cast<int>(SessionStartupPref::kPrefValueNewTab));
 
   UpdateRestorePrefIfNecessary(pref_service());

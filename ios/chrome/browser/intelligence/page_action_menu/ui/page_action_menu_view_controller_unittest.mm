@@ -7,21 +7,25 @@
 #import "base/test/metrics/histogram_tester.h"
 #import "base/test/scoped_feature_list.h"
 #import "components/dom_distiller/core/mojom/distilled_page_prefs.mojom.h"
+#import "ios/chrome/browser/intelligence/features/features.h"
 #import "ios/chrome/browser/intelligence/page_action_menu/ui/page_action_menu_content_entry_point.h"
+#import "ios/chrome/browser/intelligence/page_action_menu/ui/page_action_menu_feature.h"
 #import "ios/chrome/browser/intelligence/page_action_menu/ui/page_action_menu_mutator.h"
 #import "ios/chrome/browser/intelligence/page_action_menu/ui/page_action_menu_view_controller_delegate.h"
 #import "ios/chrome/browser/intelligence/page_action_menu/utils/ai_hub_constants.h"
 #import "ios/chrome/browser/intelligence/page_action_menu/utils/ai_hub_metrics.h"
 #import "ios/chrome/browser/shared/model/browser/test/test_browser.h"
 #import "ios/chrome/browser/shared/model/profile/test/test_profile_ios.h"
-#import "ios/chrome/browser/shared/public/commands/bwg_commands.h"
 #import "ios/chrome/browser/shared/public/commands/lens_overlay_commands.h"
 #import "ios/chrome/browser/shared/public/commands/page_action_menu_commands.h"
 #import "ios/chrome/browser/shared/public/commands/reader_mode_commands.h"
+#import "ios/chrome/browser/shared/public/commands/reader_mode_options_commands.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/grit/ios_strings.h"
+#import "ios/chrome/test/app/uikit_test_util.h"
 #import "ios/web/public/test/web_task_environment.h"
 #import "testing/gtest/include/gtest/gtest.h"
+#import "testing/gtest_mac.h"
 #import "testing/platform_test.h"
 #import "third_party/ocmock/OCMock/OCMock.h"
 #import "ui/base/l10n/l10n_util.h"
@@ -34,29 +38,13 @@
 - (void)handleLensEntryPointTapped:(UIButton*)button;
 - (void)handleReaderModeTapped:(UIButton*)button;
 - (void)handleReaderModeOptionsTapped:(UIButton*)button;
+- (void)didSelectPermissionSetting:(PageActionMenuPermissionSetting)setting
+                        forFeature:(PageActionMenuFeatureType)featureType;
 - (void)dismissPageActionMenu;
 - (void)updateFooterContent;
 @end
 
-namespace {
-// Performs a depth-first traversal of the view hierarchy to find a view with
-// the given accessibility identifier.
-UIView* FindViewByAccessibilityIdentifier(UIView* view, NSString* identifier) {
-  if (!identifier) {
-    return nil;
-  }
-  if ([view.accessibilityIdentifier isEqualToString:identifier]) {
-    return view;
-  }
-  for (UIView* subview in view.subviews) {
-    UIView* found = FindViewByAccessibilityIdentifier(subview, identifier);
-    if (found) {
-      return found;
-    }
-  }
-  return nil;
-}
-}  // namespace
+using chrome_test_util::FindViewById;
 
 // Test fixture for PageActionMenuViewController.
 class PageActionMenuViewControllerTest : public PlatformTest {
@@ -73,21 +61,23 @@ class PageActionMenuViewControllerTest : public PlatformTest {
     mock_mutator_ = OCMProtocolMock(@protocol(PageActionMenuMutator));
     mock_delegate_ =
         OCMProtocolMock(@protocol(PageActionMenuViewControllerDelegate));
-    mock_bwg_handler_ = OCMProtocolMock(@protocol(BWGCommands));
     mock_page_action_menu_handler_ =
         OCMProtocolMock(@protocol(PageActionMenuCommands));
     mock_lens_overlay_handler_ =
         OCMProtocolMock(@protocol(LensOverlayCommands));
     mock_reader_mode_handler_ = OCMProtocolMock(@protocol(ReaderModeCommands));
+    mock_reader_mode_options_handler_ =
+        OCMProtocolMock(@protocol(ReaderModeOptionsCommands));
 
     // Initialize the view controller and inject mocks.
     view_controller_ = [[PageActionMenuViewController alloc] init];
     view_controller_.mutator = mock_mutator_;
     view_controller_.delegate = mock_delegate_;
-    view_controller_.BWGHandler = mock_bwg_handler_;
     view_controller_.pageActionMenuHandler = mock_page_action_menu_handler_;
     view_controller_.lensOverlayHandler = mock_lens_overlay_handler_;
     view_controller_.readerModeHandler = mock_reader_mode_handler_;
+    view_controller_.readerModeOptionsHandler =
+        mock_reader_mode_options_handler_;
 
     // Stub mutator methods with defaults to avoid fragile tests.
     StubMutatorWithDefaults();
@@ -97,17 +87,16 @@ class PageActionMenuViewControllerTest : public PlatformTest {
     view_controller_ = nil;
     mock_mutator_ = nil;
     mock_delegate_ = nil;
-    mock_bwg_handler_ = nil;
     mock_page_action_menu_handler_ = nil;
     mock_lens_overlay_handler_ = nil;
     mock_reader_mode_handler_ = nil;
+    mock_reader_mode_options_handler_ = nil;
     browser_.reset();
     profile_.reset();
     PlatformTest::TearDown();
   }
 
   void StubMutatorWithDefaults() {
-    OCMStub([mock_mutator_ isReaderModeAvailable]).andReturn(YES);
     OCMStub([mock_mutator_ shouldShowFeatureEntryPoints]).andReturn(YES);
 
     PageActionMenuContentEntryPoint* enabledEntryPoint =
@@ -124,10 +113,10 @@ class PageActionMenuViewControllerTest : public PlatformTest {
 
   id mock_mutator_;
   id mock_delegate_;
-  id mock_bwg_handler_;
   id mock_page_action_menu_handler_;
   id mock_lens_overlay_handler_;
   id mock_reader_mode_handler_;
+  id mock_reader_mode_options_handler_;
 };
 
 // Tests that the view controller correctly stores its injected dependencies.
@@ -135,11 +124,12 @@ TEST_F(PageActionMenuViewControllerTest, Initialization) {
   EXPECT_NE(view_controller_, nil);
   EXPECT_EQ(view_controller_.mutator, mock_mutator_);
   EXPECT_EQ(view_controller_.delegate, mock_delegate_);
-  EXPECT_EQ(view_controller_.BWGHandler, mock_bwg_handler_);
   EXPECT_EQ(view_controller_.pageActionMenuHandler,
             mock_page_action_menu_handler_);
   EXPECT_EQ(view_controller_.lensOverlayHandler, mock_lens_overlay_handler_);
   EXPECT_EQ(view_controller_.readerModeHandler, mock_reader_mode_handler_);
+  EXPECT_EQ(view_controller_.readerModeOptionsHandler,
+            mock_reader_mode_options_handler_);
 }
 
 // Tests that the view loads successfully.
@@ -160,15 +150,15 @@ TEST_F(PageActionMenuViewControllerTest,
   [view_controller_ loadViewIfNeeded];
 
   // Access the private button via accessibility identifier.
-  UIButton* bwgButton = (UIButton*)FindViewByAccessibilityIdentifier(
+  UIButton* geminiButton = FindViewById<UIButton>(
       view_controller_.view, kAIHubAskGeminiButtonAccessibilityIdentifier);
-  EXPECT_NE(bwgButton, nil);
+  EXPECT_NE(geminiButton, nil);
 
   [view_controller_ pageLoadStatusChanged];
 
-  EXPECT_TRUE(bwgButton.enabled);
-  EXPECT_TRUE(bwgButton.userInteractionEnabled);
-  EXPECT_NEAR(bwgButton.alpha, 1.0, 0.001);
+  EXPECT_TRUE(geminiButton.enabled);
+  EXPECT_TRUE(geminiButton.userInteractionEnabled);
+  EXPECT_NEAR(geminiButton.alpha, 1.0, 0.001);
 }
 
 // Tests that the Gemini button is disabled and semi-transparent when Gemini is
@@ -182,15 +172,15 @@ TEST_F(PageActionMenuViewControllerTest,
 
   [view_controller_ loadViewIfNeeded];
 
-  UIButton* bwgButton = (UIButton*)FindViewByAccessibilityIdentifier(
+  UIButton* geminiButton = FindViewById<UIButton>(
       view_controller_.view, kAIHubAskGeminiButtonAccessibilityIdentifier);
-  EXPECT_NE(bwgButton, nil);
+  EXPECT_NE(geminiButton, nil);
 
   [view_controller_ pageLoadStatusChanged];
 
-  EXPECT_FALSE(bwgButton.enabled);
-  EXPECT_FALSE(bwgButton.userInteractionEnabled);
-  EXPECT_NEAR(bwgButton.alpha, 0.5, 0.001);
+  EXPECT_FALSE(geminiButton.enabled);
+  EXPECT_FALSE(geminiButton.userInteractionEnabled);
+  EXPECT_NEAR(geminiButton.alpha, 0.5, 0.001);
 }
 
 // Tests that setting the selected font family updates the Reader Mode options
@@ -229,18 +219,17 @@ TEST_F(PageActionMenuViewControllerTest, DismissButtonTapped) {
   OCMVerifyAll(mock_page_action_menu_handler_);
 }
 
-// Tests that tapping the Reader Mode options button notifies the delegate.
+// Tests that tapping the Reader Mode options button calls the handler.
 TEST_F(PageActionMenuViewControllerTest, ReaderModeOptionsButtonTapped) {
   OCMStub([mock_mutator_ isReaderModeActive]).andReturn(YES);
   [view_controller_ loadViewIfNeeded];
 
-  OCMExpect([mock_delegate_
-      viewControllerDidTapReaderModeOptionsButton:view_controller_]);
+  OCMExpect([mock_reader_mode_options_handler_ showReaderModeOptions]);
   [view_controller_ handleReaderModeOptionsTapped:nil];
 
   // `self` is needed by OCMVerifyAll macro in C++ tests.
   id self = nil;
-  OCMVerifyAll(mock_delegate_);
+  OCMVerifyAll(mock_reader_mode_options_handler_);
 }
 
 // Tests that tapping the button to hide Reader Mode dismisses the menu and
@@ -324,7 +313,7 @@ TEST_F(PageActionMenuViewControllerTest, LensButtonTapped) {
                entrypoint:LensOverlayEntrypoint::kAIHub
                completion:nil]);
 
-  UIButton* lensButton = (UIButton*)FindViewByAccessibilityIdentifier(
+  UIButton* lensButton = FindViewById<UIButton>(
       view_controller_.view, kAIHubLensButtonAccessibilityIdentifier);
   [view_controller_ handleLensEntryPointTapped:lensButton];
 
@@ -334,8 +323,8 @@ TEST_F(PageActionMenuViewControllerTest, LensButtonTapped) {
   OCMVerifyAll(mock_lens_overlay_handler_);
 }
 
-// Tests that tapping the Gemini button dismisses the menu and calls the BWG
-// handler to start the Gemini flow.
+// Tests that tapping the Gemini button notifies the delegate to handle Gemini
+// tap.
 TEST_F(PageActionMenuViewControllerTest, GeminiButtonTapped) {
   PageActionMenuContentEntryPoint* entryPoint =
       [[PageActionMenuContentEntryPoint alloc] initWithEnabled:YES];
@@ -343,25 +332,15 @@ TEST_F(PageActionMenuViewControllerTest, GeminiButtonTapped) {
   OCMStub([mock_mutator_ shouldShowFeatureEntryPoints]).andReturn(YES);
   [view_controller_ loadViewIfNeeded];
 
-  OCMExpect([mock_page_action_menu_handler_
-                dismissPageActionMenuWithCompletion:[OCMArg any]])
-      .andDo(^(NSInvocation* invocation) {
-        void (^completion)(void);
-        [invocation getArgument:&completion atIndex:2];
-        if (completion) {
-          completion();
-        }
-      });
-  OCMExpect([mock_bwg_handler_ startGeminiFlowWithStartupState:[OCMArg any]]);
+  OCMExpect([mock_delegate_ viewControllerDidTapGemini:view_controller_]);
 
-  UIButton* bwgButton = (UIButton*)FindViewByAccessibilityIdentifier(
+  UIButton* geminiButton = FindViewById<UIButton>(
       view_controller_.view, kAIHubAskGeminiButtonAccessibilityIdentifier);
-  [view_controller_ handleGeminiTapped:bwgButton];
+  [view_controller_ handleGeminiTapped:geminiButton];
 
   // `self` is needed by OCMVerifyAll macro in C++ tests.
   id self = nil;
-  OCMVerifyAll(mock_page_action_menu_handler_);
-  OCMVerifyAll(mock_bwg_handler_);
+  OCMVerifyAll(mock_delegate_);
 }
 
 // Tests that loading the view with ineligibility reasons logs impressions.
@@ -394,4 +373,114 @@ TEST_F(PageActionMenuViewControllerTest, FooterRowNotShownMetric) {
   [view_controller_ loadViewIfNeeded];
   [view_controller_ updateFooterContent];
   histogram_tester.ExpectTotalCount("IOS.PageActionMenu.Footer.RowShown", 0);
+}
+
+// Tests that selecting a permission setting in the dropdown updates the mutator
+// and refreshes the dropdown title and disclaimer label.
+TEST_F(PageActionMenuViewControllerTest,
+       PermissionDropdownSelectionUpdatesMutatorAndUI) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitWithFeatures(
+      {kPageActionMenu, kProactiveSuggestionsFramework,
+       kDomainLevelSitePermissions},
+      {});
+
+  PageActionMenuFeature* cameraFeature = [[PageActionMenuFeature alloc]
+      initWithFeatureType:PageActionMenuCameraPermission
+                    title:@"Camera"
+                     icon:[[UIImage alloc] init]
+               actionType:PageActionMenuDropdownAction];
+  cameraFeature.permissionSetting = PageActionMenuPermissionSetting::kAllowOnce;
+
+  OCMStub([mock_mutator_ activeFeatures]).andReturn(@[ cameraFeature ]);
+  OCMStub([mock_mutator_ currentSiteDomain]).andReturn(@"example.com");
+
+  [view_controller_ loadViewIfNeeded];
+
+  NSDictionary<NSNumber*, UIButton*>* dropdowns =
+      [view_controller_ valueForKey:@"permissionDropdowns"];
+  UIButton* dropdownButton = dropdowns[@(PageActionMenuCameraPermission)];
+  ASSERT_TRUE(dropdownButton);
+
+  NSString* allowedTitle =
+      l10n_util::GetNSString(IDS_IOS_PERMISSIONS_SETTING_ALLOWED);
+  NSString* allowedOnceTitle =
+      l10n_util::GetNSString(IDS_IOS_PERMISSIONS_SETTING_ALLOWED_ONCE);
+  NSString* notAllowedTitle =
+      l10n_util::GetNSString(IDS_IOS_PERMISSIONS_SETTING_NOT_ALLOWED);
+
+  EXPECT_NSEQ(dropdownButton.accessibilityValue, allowedOnceTitle);
+  // "Allowed once" is offered, between the other options, while selected.
+  NSArray<NSString*>* expectedInitialTitles =
+      @[ allowedTitle, allowedOnceTitle, notAllowedTitle ];
+  EXPECT_NSEQ([dropdownButton.menu.children valueForKey:@"title"],
+              expectedInitialTitles);
+
+  NSDictionary<NSNumber*, UILabel*>* disclaimers =
+      [view_controller_ valueForKey:@"permissionDisclaimers"];
+  UILabel* disclaimerLabel = disclaimers[@(PageActionMenuCameraPermission)];
+  ASSERT_TRUE(disclaimerLabel);
+  EXPECT_TRUE([disclaimerLabel.text
+      containsString:l10n_util::GetNSStringF(
+                         IDS_IOS_AI_HUB_PERMISSION_SITE_EXPLANATION,
+                         u"example.com")]);
+
+  OCMExpect([mock_mutator_
+      updatePermissionSetting:PageActionMenuPermissionSetting::kAlwaysAllow
+                   forFeature:PageActionMenuCameraPermission]);
+
+  [view_controller_
+      didSelectPermissionSetting:PageActionMenuPermissionSetting::kAlwaysAllow
+                      forFeature:PageActionMenuCameraPermission];
+
+  // `self` is needed by OCMVerifyAll macro in C++ tests.
+  id self = nil;
+  OCMVerifyAll(mock_mutator_);
+
+  EXPECT_NSEQ(dropdownButton.accessibilityValue, allowedTitle);
+  // "Allowed once" is no longer offered after switching away from it.
+  NSArray<NSString*>* expectedUpdatedTitles =
+      @[ allowedTitle, notAllowedTitle ];
+  EXPECT_NSEQ([dropdownButton.menu.children valueForKey:@"title"],
+              expectedUpdatedTitles);
+  EXPECT_TRUE([disclaimerLabel.text
+      containsString:
+          l10n_util::GetNSStringF(
+              IDS_IOS_AI_HUB_CAMERA_PERMISSION_ALWAYS_ALLOWED_EXPLANATION,
+              u"example.com")]);
+}
+
+// Tests that permissionStateChanged updates existing permission dropdowns in
+// place when the underlying permission state changes.
+TEST_F(PageActionMenuViewControllerTest, PermissionStateChangedUpdatesUI) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitWithFeatures(
+      {kPageActionMenu, kProactiveSuggestionsFramework,
+       kDomainLevelSitePermissions},
+      {});
+
+  PageActionMenuFeature* cameraFeature = [[PageActionMenuFeature alloc]
+      initWithFeatureType:PageActionMenuCameraPermission
+                    title:@"Camera"
+                     icon:[[UIImage alloc] init]
+               actionType:PageActionMenuDropdownAction];
+  cameraFeature.permissionSetting = PageActionMenuPermissionSetting::kAllowOnce;
+
+  OCMStub([mock_mutator_ activeFeatures]).andReturn(@[ cameraFeature ]);
+  OCMStub([mock_mutator_ currentSiteDomain]).andReturn(@"example.com");
+
+  [view_controller_ loadViewIfNeeded];
+
+  NSDictionary<NSNumber*, UIButton*>* dropdowns =
+      [view_controller_ valueForKey:@"permissionDropdowns"];
+  UIButton* dropdownButton = dropdowns[@(PageActionMenuCameraPermission)];
+  ASSERT_TRUE(dropdownButton);
+
+  cameraFeature.permissionSetting =
+      PageActionMenuPermissionSetting::kNeverAllow;
+  [view_controller_ permissionStateChanged];
+
+  NSString* expectedSettingTitle =
+      l10n_util::GetNSString(IDS_IOS_PERMISSIONS_SETTING_NOT_ALLOWED);
+  EXPECT_NSEQ(dropdownButton.accessibilityValue, expectedSettingTitle);
 }

@@ -15,6 +15,7 @@
 #include "ash/constants/ash_features.h"
 #include "ash/constants/ash_login_pref_names.h"
 #include "ash/constants/ash_pref_names.h"
+#include "ash/login/resources/grit/ash_login_strings.h"
 #include "ash/public/cpp/login_accelerators.h"
 #include "ash/public/cpp/wallpaper/wallpaper_controller.h"
 #include "base/check_deref.h"
@@ -57,7 +58,6 @@
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_manager.h"
-#include "chrome/browser/signin/chrome_device_id_helper.h"
 #include "chrome/browser/ui/ash/login/login_feedback.h"
 #include "chrome/browser/ui/ash/login/signin_ui.h"
 #include "chrome/browser/ui/ash/system/system_tray_client_impl.h"
@@ -84,8 +84,10 @@
 #include "chromeos/ash/components/osauth/public/auth_session_storage.h"
 #include "components/application_locale_storage/application_locale_storage.h"
 #include "components/keep_alive_registry/keep_alive_types.h"
+#include "components/signin/public/base/device_id_helper.h"
 #include "components/strings/grit/components_strings.h"
 #include "extensions/common/features/feature_session_type.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "ui/base/ime/ash/input_method_manager.h"
 #include "ui/base/ime/ash/input_method_util.h"
 #include "ui/base/l10n/l10n_util.h"
@@ -111,7 +113,7 @@ void PushFrontImIfNotExists(const std::string& input_method_id,
 }
 
 void SetGaiaInputMethods(PrefService& local_state,
-                         const std::string& application_locale,
+                         const base::i18n::LanguageTag& application_locale,
                          const AccountId& account_id) {
   input_method::InputMethodManager* imm =
       input_method::InputMethodManager::Get();
@@ -219,7 +221,7 @@ CreateSecondDeviceAuthBroker() {
 
   // TODO(b:286850431) - Fix device id generation.
   const std::string device_id =
-      GenerateSigninScopedDeviceId(/*for_ephemeral=*/false);
+      signin::GenerateSigninScopedDeviceId(/*for_ephemeral=*/false);
   auto* signin_profile = ProfileHelper::GetSigninProfile();
   return std::make_unique<quick_start::SecondDeviceAuthBroker>(
       device_id, signin_profile->GetURLLoaderFactory(),
@@ -628,7 +630,7 @@ void LoginDisplayHostCommon::StartEncryptionMigration(
   EncryptionMigrationScreen* migration_screen =
       GetWizardController()->GetScreen<EncryptionMigrationScreen>();
 
-  DCHECK(migration_screen);
+  CHECK(migration_screen, base::NotFatalUntil::M162);
   migration_screen->SetUserContext(std::move(user_context));
   migration_screen->SetMode(migration_mode);
   migration_screen->SetSkipMigrationCallback(std::move(on_skip_migration));
@@ -762,7 +764,7 @@ void LoginDisplayHostCommon::ShowGaiaDialogCommon(
   if (GetExistingUserController()->IsSigninInProgress()) {
     return;
   }
-  SetGaiaInputMethods(local_state_.get(), application_locale_storage_->Get(),
+  SetGaiaInputMethods(local_state_.get(), application_locale_storage_->GetTag(),
                       prefilled_account);
 
   if (!prefilled_account.is_valid()) {
@@ -775,7 +777,7 @@ void LoginDisplayHostCommon::ShowGaiaDialogCommon(
 
 void LoginDisplayHostCommon::AddWizardCreatedObserverForTests(
     base::RepeatingClosure on_created) {
-  DCHECK(!on_wizard_controller_created_for_tests_);
+  CHECK(!on_wizard_controller_created_for_tests_, base::NotFatalUntil::M162);
   on_wizard_controller_created_for_tests_ = std::move(on_created);
 }
 

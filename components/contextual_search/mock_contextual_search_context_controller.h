@@ -9,6 +9,7 @@
 #include <optional>
 
 #include "base/functional/callback.h"
+#include "base/memory/raw_ptr.h"
 #include "base/unguessable_token.h"
 #include "components/contextual_search/contextual_search_context_controller.h"
 #include "components/lens/contextual_input.h"
@@ -66,10 +67,20 @@ class MockContextualSearchContextController
               GetFileInfo,
               (const base::UnguessableToken& file_token),
               (override));
-  MOCK_METHOD(std::vector<const FileInfo*>, GetFileInfoList, (), (override));
+  MOCK_METHOD(std::vector<raw_ptr<const FileInfo>>,
+              GetFileInfoList,
+              (),
+              (override));
+  MOCK_METHOD(void, SetAuthUserIndex, (size_t auth_user_index), (override));
   MOCK_METHOD(base::WeakPtr<ContextualSearchContextController>,
               AsWeakPtr,
               (),
+              (override));
+  MOCK_METHOD(std::string, search_session_id, (), (const, override));
+  MOCK_METHOD((std::optional<lens::LensOverlayVisualSearchInteractionData>),
+              GetVisualSearchInteractionData,
+              (const base::UnguessableToken&,
+               const std::optional<std::string>&),
               (override));
 };
 

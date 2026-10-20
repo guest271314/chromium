@@ -385,10 +385,7 @@ void UDPSocketWin::Close() {
   recv_from_address_ = nullptr;
   write_callback_.Reset();
 
-  base::TimeTicks start_time = base::TimeTicks::Now();
   closesocket(socket_);
-  UMA_HISTOGRAM_TIMES("Net.UDPSocketWinClose",
-                      base::TimeTicks::Now() - start_time);
   socket_ = INVALID_SOCKET;
   addr_family_ = 0;
   is_connected_ = false;
@@ -464,6 +461,15 @@ int UDPSocketWin::Read(IOBuffer* buf,
                        int buf_len,
                        CompletionOnceCallback callback) {
   return RecvFrom(buf, buf_len, nullptr, std::move(callback));
+}
+
+base::expected<DatagramsMetadata, Error> UDPSocketWin::ReadMultiple(
+    IOBuffer* buffer,
+    size_t buf_len,
+    size_t maximum_packet_size,
+    base::OnceCallback<void(base::expected<DatagramsMetadata, Error>)>
+        callback) {
+  NOTREACHED();
 }
 
 int UDPSocketWin::RecvFrom(IOBuffer* buf,

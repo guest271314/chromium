@@ -15,28 +15,19 @@ namespace gemini {
 
 #pragma mark - Features
 
+namespace {
+
+// Returns whether the specified feature is available for the given account.
 bool IsFeatureAvailable(Feature feature, const AccountInfo& account_info) {
   switch (feature) {
-    case Feature::kImageRemix: {
-      // With the new availability logic enabled, feature enablement is no
-      // longer sufficient; instead, we rely an additional capability check.
-      if (!IsGeminiImageRemixToolEnabled()) {
-        return false;
-      }
-      if (!IsGeminiUpdatedEligibilityEnabled()) {
-        return true;
-      }
-      if (account_info.IsEmpty()) {
-        return false;
-      }
-
-      const AccountCapabilities capabilities =
-          account_info.GetAccountCapabilities();
-      return signin::TriboolToBoolOr(
-          capabilities.can_use_model_execution_features(), false);
-    }
+    case Feature::kImageRemix:
+      return HasModelExecutionCapability(account_info);
+    case Feature::kLive:
+      return IsGeminiLiveEnabled() && HasModelExecutionCapability(account_info);
   }
 }
+
+}  // namespace
 
 bool IsFeatureAvailable(Feature feature, ProfileIOS* profile) {
   if (!profile) {
@@ -70,13 +61,8 @@ bool HasGeminiInChromeCapability(const AccountInfo& account_info) {
   const AccountCapabilities capabilities =
       account_info.GetAccountCapabilities();
 
-  if (IsGeminiUpdatedEligibilityEnabled()) {
-    return signin::TriboolToBoolOr(capabilities.can_use_gemini_in_chrome(),
-                                   false);
-  }
-
-  return signin::TriboolToBoolOr(
-      capabilities.can_use_model_execution_features(), false);
+  return signin::TriboolToBoolOr(capabilities.can_use_gemini_in_chrome(),
+                                 false);
 }
 
 bool HasModelExecutionCapability(const AccountInfo& account_info) {

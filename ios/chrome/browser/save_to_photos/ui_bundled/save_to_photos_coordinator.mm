@@ -6,6 +6,9 @@
 
 #import <StoreKit/StoreKit.h>
 
+#import <utility>
+
+#import "base/metrics/histogram_functions.h"
 #import "base/metrics/user_metrics.h"
 #import "components/signin/public/identity_manager/account_info.h"
 #import "components/signin/public/identity_manager/identity_manager.h"
@@ -15,8 +18,10 @@
 #import "ios/chrome/browser/account_picker/ui_bundled/account_picker_logger.h"
 #import "ios/chrome/browser/authentication/signin/reauth/coordinator/signin_reauth_coordinator.h"
 #import "ios/chrome/browser/authentication/ui_bundled/continuation.h"
+#import "ios/chrome/browser/authentication/ui_bundled/signin/signin_constants.h"
 #import "ios/chrome/browser/authentication/ui_bundled/signin/signin_coordinator.h"
 #import "ios/chrome/browser/authentication/ui_bundled/signin/signin_utils.h"
+#import "ios/chrome/browser/photos/model/photos_metrics.h"
 #import "ios/chrome/browser/photos/model/photos_service_factory.h"
 #import "ios/chrome/browser/save_to_photos/ui_bundled/save_to_photos_mediator.h"
 #import "ios/chrome/browser/save_to_photos/ui_bundled/save_to_photos_mediator_delegate.h"
@@ -50,12 +55,41 @@
                                        SigninReauthCoordinatorDelegate,
                                        StoreKitCoordinatorDelegate>
 
+- (void)confirmChangeProfileWithCompletion:(void (^)(BOOL))completion;
+- (void)handleConfirmChangeProfile:(BOOL)proceed
+                        completion:(void (^)(BOOL))completion;
+
 @end
+
+namespace {
+
+void HandleConfirmChangeProfile(SaveToPhotosCoordinator* coordinator,
+                                void (^completion)(BOOL),
+                                bool confirmed) {
+  if (completion && !coordinator) {
+    completion(NO);
+    return;
+  }
+  [coordinator handleConfirmChangeProfile:confirmed completion:completion];
+}
+
+void ConfirmChangeProfileWithCompletion(SaveToPhotosCoordinator* coordinator,
+                                        void (^completion)(BOOL)) {
+  if (completion && !coordinator) {
+    completion(NO);
+    return;
+  }
+  [coordinator confirmChangeProfileWithCompletion:completion];
+}
+
+}  // namespace
 
 @implementation SaveToPhotosCoordinator {
   GURL _imageURL;
   web::Referrer _referrer;
   base::WeakPtr<web::WebState> _webState;
+  std::string _frameID;
+  url::Origin _frameOrigin;
   SaveToPhotosMediator* _mediator;
   UIAlertController* _alertController;
   StoreKitCoordinator* _storeKitCoordinator;
@@ -68,13 +102,17 @@
                                    browser:(Browser*)browser
                                   imageURL:(const GURL&)imageURL
                                   referrer:(const web::Referrer&)referrer
-                                  webState:(web::WebState*)webState {
+                                  webState:(web::WebState*)webState
+                                   frameID:(const std::string&)frameID
+                               frameOrigin:(const url::Origin&)frameOrigin {
   self = [super initWithBaseViewController:viewController browser:browser];
   if (self) {
     _imageURL = imageURL;
     _referrer = referrer;
     CHECK(webState);
     _webState = webState->GetWeakPtr();
+    _frameID = frameID;
+    _frameOrigin = frameOrigin;
   }
   return self;
 }
@@ -111,7 +149,9 @@
   _mediator.delegate = self;
   [_mediator startWithImageURL:_imageURL
                       referrer:_referrer
-                      webState:_webState.get()];
+                      webState:_webState.get()
+                       frameID:_frameID
+                   frameOrigin:_frameOrigin];
 }
 
 - (void)stop {
@@ -355,7 +395,7 @@
 - (void)showReauthForIdentity:(id<SystemIdentity>)identity {
   signin::IdentityManager* identityManager =
       IdentityManagerFactory::GetForProfile(self.profile);
-  CoreAccountInfo account =
+  AccountInfo account =
       identityManager->FindExtendedAccountInfoByGaiaId(identity.gaiaId);
   if (account.IsEmpty()) {
     // In case the account has been removed asynchronously.
@@ -365,7 +405,7 @@
   _reauthCoordinator = [[SigninReauthCoordinator alloc]
       initWithBaseViewController:self.baseViewController
                          browser:self.browser
-                         account:account
+                         account:account.GetCoreAccountInfo()
                reauthAccessPoint:signin_metrics::ReauthAccessPoint::
                                      kAccountSettings];
   _reauthCoordinator.delegate = self;
@@ -398,6 +438,11 @@
     return;
   }
   [_signinCoordinator stop];
+  __weak __typeof(self) weakSelf = self;
+  SigninChangeProfileConfirmationBlock confirmChangeProfile =
+      ^(void (^completion)(BOOL)) {
+        ConfirmChangeProfileWithCompletion(weakSelf, completion);
+      };
   _signinCoordinator = [SigninCoordinator
       consistencyPromoSigninCoordinatorWithBaseViewController:
           self.baseViewController
@@ -409,26 +454,76 @@
                                                       signin_metrics::
                                                           AccessPoint::
                                                               kSaveToPhotosIos
+                                         confirmChangeProfile:
+                                             confirmChangeProfile
                                          prepareChangeProfile:nil
                                          continuationProvider:
                                              // TODO(crbug.com/484919846):
                                              // Handle profile switching.
                                              DoNothingContinuationProvider()];
-  __weak __typeof(self) weakSelf = self;
   _signinCoordinator.signinCompletion =
-      ^(SigninCoordinator* coordinator, SigninCoordinatorResult result,
-        id<SystemIdentity> identity) {
-        [weakSelf handleSigninResult:result identity:identity];
+      ^(SigninCoordinator* coordinator,
+        SigninCoordinatorResultOrIdentity result) {
+        [weakSelf handleSigninResult:std::move(result)];
       };
   [_signinCoordinator start];
 }
 
-- (void)handleSigninResult:(SigninCoordinatorResult)result
-                  identity:(id<SystemIdentity>)identity {
+// Shows an alert letting the user know that switching profiles will cancel the
+// current save operation and asking them to confirm.
+- (void)confirmChangeProfileWithCompletion:(void (^)(BOOL))completion {
+  // TODO(crbug.com/484919846): Replace placeholders with the localized string.
+  _alertController =
+      [UIAlertController alertControllerWithTitle:@"THIS_IS_A_PLACEHOLDER"
+                                          message:@"THIS_IS_A_PLACEHOLDER"
+                                   preferredStyle:UIAlertControllerStyleAlert];
+  __weak __typeof(self) weakSelf = self;
+  UIAlertAction* cancelAction = [UIAlertAction
+      actionWithTitle:l10n_util::GetNSString(IDS_CANCEL)
+                style:UIAlertActionStyleCancel
+              handler:^(UIAlertAction* action) {
+                HandleConfirmChangeProfile(weakSelf, completion, NO);
+              }];
+  UIAlertAction* confirmChangeProfileAction = [UIAlertAction
+      // TODO(crbug.com/484919846): Replace placeholder with the localized
+      // string.
+      actionWithTitle:@"THIS_IS_A_PLACEHOLDER"
+                style:UIAlertActionStyleDestructive
+              handler:^(UIAlertAction* action) {
+                HandleConfirmChangeProfile(weakSelf, completion, YES);
+              }];
+  [_alertController addAction:cancelAction];
+  [_alertController addAction:confirmChangeProfileAction];
+  [self.baseViewController.presentedViewController
+      presentViewController:_alertController
+                   animated:YES
+                 completion:nil];
+}
+
+// Handles the user's response to the confirm change profile alert.
+- (void)handleConfirmChangeProfile:(BOOL)proceed
+                        completion:(void (^)(BOOL))completion {
+  CHECK(completion);
+  [_alertController dismissViewControllerAnimated:YES
+                                       completion:^{
+                                         completion(proceed);
+                                       }];
+  _alertController = nil;
+}
+
+- (void)handleSigninResult:(SigninCoordinatorResultOrIdentity)result {
   [_signinCoordinator stop];
   _signinCoordinator = nil;
-  if (result == SigninCoordinatorResultSuccess) {
-    [_mediator userSignedInToSaveImageWithIdentity:identity];
+  if (result.has_value()) {
+    [_mediator userSignedInToSaveImageWithIdentity:result.value()];
+    base::UmaHistogramEnumeration(kSaveToPhotosSignInResultHistogram,
+                                  SaveToPhotosSignInResult::kSignInSuccess);
+  } else if (result.error() == SigninCoordinatorResultCanceledByUser) {
+    base::UmaHistogramEnumeration(kSaveToPhotosSignInResultHistogram,
+                                  SaveToPhotosSignInResult::kSignInCanceled);
+  } else {
+    base::UmaHistogramEnumeration(kSaveToPhotosSignInResultHistogram,
+                                  SaveToPhotosSignInResult::kSignInFailed);
   }
 }
 

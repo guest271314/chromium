@@ -50,14 +50,18 @@ void PasteAllowedRequest::StartPasteAllowedRequest(
     const ui::ClipboardMetadata& metadata,
     content::ClipboardPasteData clipboard_paste_data,
     IsClipboardPasteAllowedCallback callback) {
-  DCHECK(destination.web_contents());
-  DCHECK(destination.web_contents()->GetPrimaryMainFrame());
+  CHECK(destination.web_contents(), base::NotFatalUntil::M161);
+  CHECK(destination.web_contents()->GetPrimaryMainFrame(),
+        base::NotFatalUntil::M161);
 
   CleanupObsoleteRequests();
 
   ui::ClipboardSequenceNumberToken seqno = metadata.seqno;
+  content::RenderFrameHost* destination_rfh = destination.render_frame_host();
   content::GlobalRenderFrameHostId rfh_id =
-      destination.web_contents()->GetPrimaryMainFrame()->GetGlobalId();
+      destination_rfh
+          ? destination_rfh->GetGlobalId()
+          : destination.web_contents()->GetPrimaryMainFrame()->GetGlobalId();
 
   // Add |callback| to the callbacks associated to the sequence number, adding
   // an entry to the map if one does not exist.
@@ -138,7 +142,7 @@ void PasteAllowedRequest::AddData(content::ClipboardPasteData data) {
 void PasteAllowedRequest::InvokeCallback(
     content::ClipboardPasteData data,
     IsClipboardPasteAllowedCallback callback) {
-  DCHECK(is_complete());
+  CHECK(is_complete(), base::NotFatalUntil::M161);
 
   if (*data_allowed_) {
     // It's possible the completed request had its `data_` replaced, so merging
@@ -168,12 +172,12 @@ bool PasteAllowedRequest::IsObsolete(base::Time now) {
 }
 
 base::Time PasteAllowedRequest::completed_time() const {
-  DCHECK(is_complete());
+  CHECK(is_complete(), base::NotFatalUntil::M161);
   return completed_time_;
 }
 
 void PasteAllowedRequest::InvokeCallbacks() {
-  DCHECK(data_allowed_.has_value());
+  CHECK(data_allowed_.has_value(), base::NotFatalUntil::M161);
 
   auto callbacks = std::move(callbacks_);
   for (auto& callback : callbacks) {

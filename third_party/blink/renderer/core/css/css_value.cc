@@ -70,6 +70,7 @@
 #include "third_party/blink/renderer/core/css/css_numeric_literal_value.h"
 #include "third_party/blink/renderer/core/css/css_paint_value.h"
 #include "third_party/blink/renderer/core/css/css_palette_mix_value.h"
+#include "third_party/blink/renderer/core/css/css_param_value_pair.h"
 #include "third_party/blink/renderer/core/css/css_path_value.h"
 #include "third_party/blink/renderer/core/css/css_pending_substitution_value.h"
 #include "third_party/blink/renderer/core/css/css_pending_system_font_value.h"
@@ -92,6 +93,7 @@
 #include "third_party/blink/renderer/core/css/css_shape_value.h"
 #include "third_party/blink/renderer/core/css/css_string_value.h"
 #include "third_party/blink/renderer/core/css/css_superellipse_value.h"
+#include "third_party/blink/renderer/core/css/css_symbols_value.h"
 #include "third_party/blink/renderer/core/css/css_timing_function_value.h"
 #include "third_party/blink/renderer/core/css/css_trigger_attachment_value.h"
 #include "third_party/blink/renderer/core/css/css_unicode_range_value.h"
@@ -135,22 +137,23 @@ CSSValue* CSSValue::Create(const Length& value, float zoom) {
   }
 }
 
-bool CSSValue::HasFailedOrCanceledSubresources() const {
+bool CSSValue::HasFailedOrCanceledSubresources(ResourceFetcher* fetcher) const {
   if (IsValueList()) {
-    return To<CSSValueList>(this)->HasFailedOrCanceledSubresources();
+    return To<CSSValueList>(this)->HasFailedOrCanceledSubresources(fetcher);
   }
   if (GetClassType() == kFontFaceSrcClass) {
-    return To<CSSFontFaceSrcValue>(this)->HasFailedOrCanceledSubresources();
+    return To<CSSFontFaceSrcValue>(this)->HasFailedOrCanceledSubresources(
+        fetcher);
   }
   if (GetClassType() == kImageClass) {
-    return To<CSSImageValue>(this)->HasFailedOrCanceledSubresources();
+    return To<CSSImageValue>(this)->HasFailedOrCanceledSubresources(fetcher);
   }
   if (GetClassType() == kCrossfadeClass) {
     return To<cssvalue::CSSCrossfadeValue>(this)
-        ->HasFailedOrCanceledSubresources();
+        ->HasFailedOrCanceledSubresources(fetcher);
   }
   if (GetClassType() == kImageSetClass) {
-    return To<CSSImageSetValue>(this)->HasFailedOrCanceledSubresources();
+    return To<CSSImageSetValue>(this)->HasFailedOrCanceledSubresources(fetcher);
   }
 
   return false;
@@ -315,6 +318,8 @@ bool CSSValue::operator==(const CSSValue& other) const {
         return CompareCSSValues<CSSShadowValue>(*this, other);
       case kStringClass:
         return CompareCSSValues<CSSStringValue>(*this, other);
+      case kSymbolsClass:
+        return CompareCSSValues<cssvalue::CSSSymbolsValue>(*this, other);
       case kProgressClass:
         return CompareCSSValues<cssvalue::CSSProgressValue>(*this, other);
       case kLinearTimingFunctionClass:
@@ -361,6 +366,8 @@ bool CSSValue::operator==(const CSSValue& other) const {
         return CompareCSSValues<cssvalue::CSSFlipRevertValue>(*this, other);
       case kLightDarkValuePairClass:
         return CompareCSSValues<CSSLightDarkValuePair>(*this, other);
+      case kParamValuePairClass:
+        return CompareCSSValues<CSSParamValuePair>(*this, other);
       case kScrollClass:
         return CompareCSSValues<cssvalue::CSSScrollValue>(*this, other);
       case kTriggerAttachmentClass:
@@ -502,6 +509,8 @@ String CSSValue::CssText() const {
       return To<CSSShadowValue>(this)->CustomCSSText();
     case kStringClass:
       return To<CSSStringValue>(this)->CustomCSSText();
+    case kSymbolsClass:
+      return To<cssvalue::CSSSymbolsValue>(this)->CustomCSSText();
     case kProgressClass:
       return To<cssvalue::CSSProgressValue>(this)->CustomCSSText();
     case kLinearTimingFunctionClass:
@@ -543,6 +552,8 @@ String CSSValue::CssText() const {
       return To<cssvalue::CSSFlipRevertValue>(this)->CustomCSSText();
     case kLightDarkValuePairClass:
       return To<CSSLightDarkValuePair>(this)->CustomCSSText();
+    case kParamValuePairClass:
+      return To<CSSParamValuePair>(this)->CustomCSSText();
     case kScrollClass:
       return To<cssvalue::CSSScrollValue>(this)->CustomCSSText();
     case kViewClass:
@@ -563,7 +574,12 @@ String CSSValue::CssText() const {
   NOTREACHED();
 }
 
-unsigned CSSValue::Hash() const {
+// static
+String CSSValue::CssTextOrEmptyString(const CSSValue* value) {
+  return value ? value->CssText() : String();
+}
+
+uint32_t CSSValue::Hash() const {
   switch (GetClassType()) {
     case kColorClass:
       return HashInts(GetClassType(),
@@ -611,10 +627,12 @@ unsigned CSSValue::Hash() const {
     case kContrastColorClass:
     case kCounterClass:
     case kCounterContentClass:
+    case kSymbolsClass:
     case kQuadClass:
     case kURIClass:
     case kURLPatternClass:
     case kLightDarkValuePairClass:
+    case kParamValuePairClass:
     case kScrollClass:
     case kViewClass:
     case kRatioClass:
@@ -885,6 +903,9 @@ void CSSValue::Trace(Visitor* visitor) const {
     case kStringClass:
       To<CSSStringValue>(this)->TraceAfterDispatch(visitor);
       return;
+    case kSymbolsClass:
+      To<cssvalue::CSSSymbolsValue>(this)->TraceAfterDispatch(visitor);
+      return;
     case kProgressClass:
       To<cssvalue::CSSProgressValue>(this)->TraceAfterDispatch(visitor);
       return;
@@ -951,6 +972,9 @@ void CSSValue::Trace(Visitor* visitor) const {
     case kLightDarkValuePairClass:
       To<CSSLightDarkValuePair>(this)->TraceAfterDispatch(visitor);
       return;
+    case kParamValuePairClass:
+      To<CSSParamValuePair>(this)->TraceAfterDispatch(visitor);
+      return;
     case kScrollClass:
       To<cssvalue::CSSScrollValue>(this)->TraceAfterDispatch(visitor);
       return;
@@ -1011,6 +1035,8 @@ String CSSValue::ClassTypeToString() const {
       return "CustomIdentClass";
     case kStringClass:
       return "StringClass";
+    case kSymbolsClass:
+      return "SymbolsClass";
     case kURIClass:
       return "URIClass";
     case kURLPatternClass:
@@ -1019,6 +1045,8 @@ String CSSValue::ClassTypeToString() const {
       return "ValuePairClass";
     case kLightDarkValuePairClass:
       return "LightDarkValuePairClass";
+    case kParamValuePairClass:
+      return "ParamValuePairClass";
     case kScrollClass:
       return "ScrollClass";
     case kViewClass:
@@ -1160,6 +1188,47 @@ String CSSValue::ClassTypeToString() const {
 }
 #endif
 
+bool CSSValue::IsComputationallyIndependent() const {
+  DCHECK(!IsCSSWideKeyword());
+
+  if (const auto* variable_reference_value =
+          DynamicTo<CSSUnparsedDeclarationValue>(this)) {
+    return !variable_reference_value->VariableDataValue()
+                ->NeedsVariableResolution();
+  }
+
+  if (const auto* value_list = DynamicTo<CSSValueList>(this)) {
+    for (const CSSValue* inner_value : *value_list) {
+      if (!inner_value->IsComputationallyIndependent()) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  if (const auto* primitive_value = DynamicTo<CSSPrimitiveValue>(this)) {
+    return primitive_value->IsComputationallyIndependent();
+  }
+
+  switch (GetClassType()) {
+    case kAlphaColorClass:
+      return To<cssvalue::CSSAlphaColorValue>(this)
+          ->IsComputationallyIndependent();
+    case kColorMixClass:
+      return To<cssvalue::CSSColorMixValue>(this)
+          ->IsComputationallyIndependent();
+    case kRelativeColorClass:
+      return To<cssvalue::CSSRelativeColorValue>(this)
+          ->IsComputationallyIndependent();
+    case kUnresolvedColorClass:
+      return To<cssvalue::CSSUnresolvedColorValue>(this)
+          ->IsComputationallyIndependent();
+    default:
+      // TODO(timloh): Image values can also contain lengths.
+      return true;
+  }
+}
+
 bool CSSValue::HasRandomFunctions() const {
   switch (GetClassType()) {
     case kMathFunctionClass:
@@ -1187,6 +1256,7 @@ bool CSSValue::HasRandomFunctions() const {
       return To<cssvalue::CSSRepeatValue>(this)->HasRandomFunctions();
     case kValuePairClass:
     case kLightDarkValuePairClass:
+    case kParamValuePairClass:
       return To<CSSValuePair>(this)->HasRandomFunctions();
     case kGridIntegerRepeatClass:
       return To<cssvalue::CSSGridIntegerRepeatValue>(this)
@@ -1268,6 +1338,8 @@ bool CSSValue::HasRandomFunctions() const {
       return To<CSSShadowValue>(this)->HasRandomFunctions();
     case kRayClass:
       return To<cssvalue::CSSRayValue>(this)->HasRandomFunctions();
+    case kUnparsedDeclarationClass:
+      return To<CSSUnparsedDeclarationValue>(this)->HasRandomFunctions();
 
     case kInheritedClass:
     case kInitialClass:
@@ -1281,7 +1353,6 @@ bool CSSValue::HasRandomFunctions() const {
     case kStringClass:
     case kBasicShapePathClass:
     case kCSSContentDistributionClass:
-    case kUnparsedDeclarationClass:
     case kImageClass:
     case kCursorImageClass:
     case kProgressClass:
@@ -1302,6 +1373,7 @@ bool CSSValue::HasRandomFunctions() const {
     case kGridAutoRepeatClass:
     case kScopedKeywordClass:
     case kNumericLiteralClass:
+    case kSymbolsClass:
     case kIdentifierClass:
       return false;
   }

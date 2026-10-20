@@ -16,10 +16,16 @@ import {Debouncer} from './debouncer.js';
 import type {BookmarksFolderNodeElement} from './folder_node.js';
 import {Store} from './store.js';
 import type {BookmarkElement, BookmarkNode, DragData, DropDestination, NodeMap, ObjectMap, TimerProxy} from './types.js';
-import {canEditNode, canReorderChildren, getDisplayedList, hasChildFolders, isRootOrChildOfRoot, isShowingSearch, normalizeNode} from './util.js';
+import {canEditNode, canReorderChildren, findIdByLegacyId, getDisplayedList, getLegacyId, hasChildFolders, isRootOrChildOfRoot, isShowingSearch} from './util.js';
+
+interface DragNode {
+  id: string;
+  parentId?: string;
+  url?: string;
+}
 
 interface NormalizedDragData {
-  elements: BookmarkNode[];
+  elements: DragNode[];
   sameProfile: boolean;
 }
 
@@ -82,9 +88,31 @@ export class DragInfo {
   dragData: NormalizedDragData|null = null;
 
   setNativeDragData(newDragData: DragData) {
+    // The bookmarkManagerPrivate API identifies nodes by their legacy numeric
+    // id, whereas the store is keyed by the UUID-based id. Translate the ids so
+    // that they can be compared against store ids. Nodes from another profile
+    // do not exist in the store, so there is nothing to translate.
+    const nodes = Store.getInstance().data.nodes;
+
+    function toStoreId(legacyId: string): string {
+      if (!newDragData.sameProfile) {
+        return legacyId;
+      }
+
+      const uuid = findIdByLegacyId(nodes, legacyId);
+      return uuid == null ? legacyId : uuid;
+    }
+
     this.dragData = {
       sameProfile: newDragData.sameProfile,
-      elements: newDragData.elements!.map((x) => normalizeNode(x)),
+      elements:
+          (newDragData.elements ||
+           []).map(x => ({
+                     id: toStoreId(x.id),
+                     parentId: x.parentId === undefined ? undefined :
+                                                          toStoreId(x.parentId),
+                     url: x.url,
+                   })),
     };
   }
 
@@ -285,6 +313,7 @@ export class DndManager {
   private autoExpander_: AutoExpander|null;
   private timerProxy_: TimerProxy;
   private lastPointerWasTouch_: boolean;
+  private dragStarted_: boolean = false;
 
   constructor() {
     this.dragInfo_ = null;
@@ -327,6 +356,11 @@ export class DndManager {
   // DragEvent handlers:
 
   private onDragStart_(e: Event) {
+    if (this.dragStarted_) {
+      e.preventDefault();
+      return;
+    }
+
     const dragElement = getDragElement(e.composedPath());
     if (!dragElement) {
       return;
@@ -365,8 +399,12 @@ export class DndManager {
     const dragNodeIndex = draggedNodes.indexOf(dragElement.itemId);
     assert(dragNodeIndex !== -1);
 
+    this.dragStarted_ = true;
+
+    const legacyDraggedNodes =
+        draggedNodes.map(id => getLegacyId(state.nodes[id]));
     BookmarkManagerApiProxyImpl.getInstance().startDrag(
-        draggedNodes, dragNodeIndex, this.lastPointerWasTouch_,
+        legacyDraggedNodes, dragNodeIndex, this.lastPointerWasTouch_,
         (e as DragEvent).clientX, (e as DragEvent).clientY);
   }
 
@@ -391,8 +429,11 @@ export class DndManager {
         trackUpdatedItems();
       }
 
+      const state = Store.getInstance().data;
+      const legacyParentId = getLegacyId(state.nodes[dropInfo.parentId]);
+
       BookmarkManagerApiProxyImpl.getInstance()
-          .drop(dropInfo.parentId, index)
+          .drop(legacyParentId, index)
           .then(shouldHighlight ? highlightUpdatedItems : undefined);
     }
     this.clearDragData_();
@@ -441,10 +482,12 @@ export class DndManager {
 
   private onMouseDown_() {
     this.lastPointerWasTouch_ = false;
+    this.dragStarted_ = false;
   }
 
   private onTouchStart_() {
     this.lastPointerWasTouch_ = true;
+    this.dragStarted_ = false;
   }
 
   private handleChromeDragEnter_(dragData: DragData) {
@@ -455,6 +498,7 @@ export class DndManager {
   // Helper methods:
 
   private clearDragData_() {
+    this.dragStarted_ = false;
     this.autoExpander_!.reset();
 
     // Defer the clearing of the data so that the bookmark manager API's drop

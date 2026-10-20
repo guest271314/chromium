@@ -1,13 +1,14 @@
-// Copyright 2024 The Chromium Authors
+// Copyright 2026 The Chromium Authors
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
 /**
  * @fileoverview Definitions for chrome.fileManagerPrivate API
- * Generated from: chrome/common/extensions/api/file_manager_private.idl
- * run `tools/json_schema_compiler/compiler.py
- * chrome/common/extensions/api/file_manager_private.idl -g ts_definitions` to
- * regenerate.
+ * Generated from:
+ * chromeos/ash/experiences/extensions/common/api/file_manager_private.idl run
+ * `tools/json_schema_compiler/compiler.py
+ * chromeos/ash/experiences/extensions/common/api/file_manager_private.idl -g
+ * ts_definitions` to regenerate.
  */
 
 import type {ChromeEvent} from './chrome_event.js';
@@ -105,12 +106,6 @@ declare global {
         FAILED = 'failed',
       }
 
-      export enum InstallLinuxPackageStatus {
-        STARTED = 'started',
-        FAILED = 'failed',
-        INSTALL_ALREADY_ACTIVE = 'install_already_active',
-      }
-
       export enum FileWatchEventType {
         CHANGED = 'changed',
         ERROR = 'error',
@@ -151,9 +146,6 @@ declare global {
         RENAME_START = 'rename_start',
         RENAME_SUCCESS = 'rename_success',
         RENAME_FAIL = 'rename_fail',
-        PARTITION_START = 'partition_start',
-        PARTITION_SUCCESS = 'partition_success',
-        PARTITION_FAIL = 'partition_fail',
       }
 
       export enum DriveSyncErrorType {
@@ -182,8 +174,6 @@ declare global {
         MESSAGE_SENT = 'message_sent',
         FAILED = 'failed',
         EMPTY = 'empty',
-        FAILED_PLUGIN_VM_DIRECTORY_NOT_SHARED =
-            'failed_plugin_vm_directory_not_shared',
       }
 
       export enum DriveShareType {
@@ -255,8 +245,6 @@ declare global {
         DISABLE = 'disable',
         SHARE = 'share',
         UNSHARE = 'unshare',
-        DROP_FAILED_PLUGIN_VM_DIRECTORY_NOT_SHARED =
-            'drop_failed_plugin_vm_directory_not_shared',
       }
 
       export enum ProviderSource {
@@ -621,13 +609,6 @@ declare global {
         title?: string;
       }
 
-      export interface LinuxPackageInfo {
-        name: string;
-        version: string;
-        summary?: string;
-        description?: string;
-      }
-
       export interface CrostiniEvent {
         eventType: CrostiniEventType;
         vmName: string;
@@ -796,13 +777,20 @@ declare global {
         emptiedQueue: boolean;
       }
 
-      export interface MaterializedView {
-        viewId: number;
+      export interface FileSystemData {
         name: string;
+        rootUrl: string;
       }
 
       export interface EntryData {
         entryUrl: string;
+        isDirectory: boolean;
+        name: string;
+        filesystem: FileSystemData;
+      }
+
+      export interface GrantAccessOptions {
+        forThumbnailing?: boolean;
       }
 
       export function cancelDialog(): void;
@@ -840,8 +828,9 @@ declare global {
 
       export function enableExternalFileScheme(): void;
 
-      export function grantAccess(entryUrls: string[], callback: () => void):
-          void;
+      export function grantAccess(
+          entryUrls: string[], options?: GrantAccessOptions,
+          callback: () => void): void;
 
       export function selectFiles(
           selectedPaths: string[], shouldReturnLocalPath: boolean,
@@ -903,10 +892,6 @@ declare global {
 
       export function formatVolume(
           volumeId: string, filesystem: FormatFileSystemType,
-          volumeLabel: string): void;
-
-      export function singlePartitionFormat(
-          deviceStoragePath: string, filesystem: FormatFileSystemType,
           volumeLabel: string): void;
 
       export function renameVolume(volumeId: string, newName: string): void;
@@ -1051,11 +1036,6 @@ declare global {
           callback: (progress: BulkPinProgress) => void): void;
 
       export function calculateBulkPinRequiredSpace(callback: () => void): void;
-
-      export function getMaterializedViews(): Promise<MaterializedView[]>;
-
-      export function readMaterializedView(viewId: number):
-          Promise<EntryData[]>;
 
       export const onMountCompleted:
           ChromeEvent<(event: MountCompletedEvent) => void>;

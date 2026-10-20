@@ -6,8 +6,8 @@
 
 #include "base/strings/string_number_conversions.h"
 #include "base/test/task_environment.h"
-#include "components/optimization_guide/core/model_execution/feature_keys.h"
-#include "components/optimization_guide/core/model_execution/model_execution_prefs.h"
+#include "components/optimization_guide/core/feature_registry/feature_keys.h"
+#include "components/optimization_guide/core/model_quality/model_quality_prefs.h"
 #include "components/optimization_guide/core/model_quality/model_quality_util.h"
 #include "components/optimization_guide/proto/model_quality_service.pb.h"
 #include "components/prefs/testing_pref_service.h"
@@ -18,7 +18,7 @@ namespace optimization_guide {
 class ModelQualityUtilTest : public testing::Test {
  public:
   void SetUp() override {
-    model_execution::prefs::RegisterLocalStatePrefs(pref_service_.registry());
+    RegisterModelQualityLocalStatePrefs(pref_service_.registry());
   }
 
  protected:
@@ -33,11 +33,11 @@ TEST_F(ModelQualityUtilTest, GetModelQualityClientId) {
       proto::LogAiDataRequest::FeatureCase::kCompose, &pref_service_);
   int64_t wallpaper_search_client_id = GetOrCreateModelQualityClientId(
       proto::LogAiDataRequest::kWallpaperSearch, &pref_service_);
-  int64_t tab_organization_client_id = GetOrCreateModelQualityClientId(
-      proto::LogAiDataRequest::kTabOrganization, &pref_service_);
+  int64_t history_answer_client_id = GetOrCreateModelQualityClientId(
+      proto::LogAiDataRequest::kHistoryAnswer, &pref_service_);
   EXPECT_NE(compose_client_id, wallpaper_search_client_id);
-  EXPECT_NE(wallpaper_search_client_id, tab_organization_client_id);
-  EXPECT_NE(tab_organization_client_id, compose_client_id);
+  EXPECT_NE(wallpaper_search_client_id, history_answer_client_id);
+  EXPECT_NE(history_answer_client_id, compose_client_id);
 
   // Advance clock by more than one day to check that the client ids are
   // different.

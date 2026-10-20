@@ -2,6 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -36,6 +38,8 @@
 #include "base/values.h"
 #include "build/build_config.h"
 #include "chrome/app/chrome_command_ids.h"
+#include "chrome/browser/content_settings/host_content_settings_map_factory.h"
+#include "chrome/browser/devtools/devtools_contents_resizing_strategy.h"
 #include "chrome/browser/download/bubble/download_bubble_ui_controller.h"
 #include "chrome/browser/extensions/chrome_test_extension_loader.h"
 #include "chrome/browser/extensions/scoped_test_mv2_enabler.h"
@@ -44,9 +48,11 @@
 #include "chrome/browser/themes/theme_properties.h"
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
+#include "chrome/browser/ui/browser_window.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/download/download_display.h"
+#include "chrome/browser/ui/omnibox/omnibox_next_features.h"
 #include "chrome/browser/ui/page_action/page_action_icon_type.h"
-#include "chrome/browser/ui/page_action/page_action_properties_provider.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/view_ids.h"
@@ -56,12 +62,15 @@
 #include "chrome/browser/ui/views/frame/app_menu_button.h"
 #include "chrome/browser/ui/views/frame/browser_frame_view.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
+#include "chrome/browser/ui/views/frame/contents_container_view.h"
 #include "chrome/browser/ui/views/frame/layout/browser_view_layout.h"
 #include "chrome/browser/ui/views/frame/toolbar_button_provider.h"
 #include "chrome/browser/ui/views/frame/top_container_view.h"
 #include "chrome/browser/ui/views/infobars/infobar_view.h"
-#include "chrome/browser/ui/views/page_action/page_action_icon_controller.h"
+#include "chrome/browser/ui/views/page_action/test_support/page_action_test_accessor.h"
+#include "chrome/browser/ui/views/toolbar/pinned_action_test_accessor.h"
 #include "chrome/browser/ui/views/toolbar/pinned_toolbar_actions_container.h"
+#include "chrome/browser/ui/views/web_apps/frame_toolbar/web_app_content_settings_container.h"
 #include "chrome/browser/ui/views/web_apps/frame_toolbar/web_app_frame_toolbar_test_helper.h"
 #include "chrome/browser/ui/views/web_apps/frame_toolbar/web_app_frame_toolbar_view.h"
 #include "chrome/browser/ui/views/web_apps/frame_toolbar/web_app_menu_button.h"
@@ -69,11 +78,13 @@
 #include "chrome/browser/ui/views/web_apps/frame_toolbar/web_app_origin_text.h"
 #include "chrome/browser/ui/views/web_apps/frame_toolbar/web_app_toolbar_button_container.h"
 #include "chrome/browser/ui/views/web_apps/frame_toolbar/window_controls_overlay_toggle_button.h"
+#include "chrome/browser/ui/views/web_apps/web_app_integration_test_driver.h"
 #include "chrome/browser/ui/web_applications/app_browser_controller.h"
 #include "chrome/browser/ui/web_applications/test/isolated_web_app_test_utils.h"
 #include "chrome/browser/ui/web_applications/test/web_app_browsertest_util.h"
 #include "chrome/browser/ui/web_applications/web_app_browsertest_base.h"
 #include "chrome/browser/ui/web_applications/web_app_menu_model.h"
+#include "chrome/browser/ui/window_feature_controller/window_feature_controller.h"
 #include "chrome/browser/web_applications/isolated_web_apps/isolated_web_app_url_info.h"
 #include "chrome/browser/web_applications/isolated_web_apps/test/isolated_web_app_builder.h"
 #include "chrome/browser/web_applications/model/display_override.h"
@@ -89,17 +100,17 @@
 #include "chrome/browser/web_applications/web_app_install_info.h"
 #include "chrome/browser/web_applications/web_app_origin_association_manager.h"
 #include "chrome/browser/web_applications/web_app_provider.h"
+#include "chrome/browser/web_applications/web_app_registrar.h"
 #include "chrome/browser/web_applications/web_app_registry_update.h"
 #include "chrome/browser/web_applications/web_app_sync_bridge.h"
 #include "chrome/common/chrome_features.h"
-#include "content/public/common/content_features.h"
-#include "chrome/test/base/chrome_test_utils.h"
+#include "chrome/test/base/chrome_test_path_utils.h"
 #include "chrome/test/base/in_process_browser_test.h"
-#include "chrome/test/base/interactive_test_utils.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "chromeos/constants/chromeos_features.h"
 #include "chromeos/ui/base/chromeos_ui_constants.h"
 #include "chromeos/ui/frame/caption_buttons/frame_caption_button_container_view.h"
+#include "components/blocked_content/popup_blocker_tab_helper.h"
 #include "components/infobars/content/content_infobar_manager.h"
 #include "components/infobars/core/infobar_delegate.h"
 #include "components/input/native_web_keyboard_event.h"
@@ -107,13 +118,15 @@
 #include "components/webapps/browser/installable/installable_metrics.h"
 #include "components/webapps/common/web_app_id.h"
 #include "components/webapps/services/web_app_origin_association/test/test_web_app_origin_association_fetcher.h"
+#include "content/public/browser/navigation_controller.h"
+#include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_view_host.h"
+#include "content/public/browser/render_widget_host_view.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/content_features.h"
 #include "content/public/common/page_zoom.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
-#include "content/public/test/fenced_frame_test_util.h"
 #include "content/public/test/test_navigation_observer.h"
 #include "content/public/test/test_utils.h"
 #include "content/public/test/theme_change_waiter.h"
@@ -127,15 +140,18 @@
 #include "third_party/blink/public/common/input/web_keyboard_event.h"
 #include "third_party/blink/public/common/widget/constants.h"
 #include "third_party/blink/public/mojom/manifest/display_mode.mojom.h"
+#include "third_party/blink/public/mojom/page/draggable_region.mojom.h"
 #include "third_party/skia/include/core/SkColor.h"
 #include "third_party/skia/include/core/SkRegion.h"
 #include "ui/accessibility/ax_enums.mojom.h"
+#include "ui/actions/action_id.h"
 #include "ui/base/hit_test.h"
 #include "ui/base/models/menu_model.h"
 #include "ui/base/ozone_buildflags.h"
 #include "ui/events/event.h"
 #include "ui/events/event_constants.h"
 #include "ui/events/keycodes/keyboard_codes.h"
+#include "ui/events/test/event_generator.h"
 #include "ui/events/types/event_type.h"
 #include "ui/gfx/geometry/size.h"
 #include "ui/gfx/scoped_animation_duration_scale_mode.h"
@@ -152,9 +168,14 @@
 #include "ui/views/view_observer.h"
 #include "ui/views/view_utils.h"
 #include "ui/views/widget/any_widget_observer.h"
+#include "ui/views/widget/unique_widget_ptr.h"
 #include "ui/views/window/frame_view.h"
 #include "url/gurl.h"
 #include "url/origin.h"
+
+#if BUILDFLAG(IS_OZONE)
+#include "ui/ozone/public/ozone_platform.h"
+#endif
 
 #if BUILDFLAG(IS_CHROMEOS)
 #include "chrome/browser/ui/views/frame/browser_frame_view_chromeos.h"
@@ -166,20 +187,19 @@
 
 #if defined(USE_AURA)
 #include "ui/aura/client/aura_constants.h"
+#include "ui/aura/window.h"
 #endif
 
 namespace {
 
-template <typename T>
-T* GetLastVisible(const std::vector<T*>& views) {
-  T* visible = nullptr;
-  for (auto* view : views) {
-    if (view->GetVisible()) {
-      visible = view;
-    }
-  }
-  return visible;
+gfx::NativeWindow GetWindowForEventGenerator(BrowserWindowInterface* browser) {
+#if defined(USE_AURA)
+  return browser->GetWindow()->GetNativeWindow()->GetRootWindow();
+#else
+  return browser->GetWindow()->GetNativeWindow();
+#endif
 }
+
 
 void LoadTestPopUpExtension(Profile* profile) {
   extensions::TestExtensionDir test_extension_dir;
@@ -197,8 +217,9 @@ void LoadTestPopUpExtension(Profile* profile) {
       test_extension_dir.UnpackedPath());
 }
 
-SkColor GetFrameColor(Browser* browser) {
-  CustomThemeSupplier* theme = browser->app_controller()->GetThemeSupplier();
+SkColor GetFrameColor(BrowserWindowInterface* browser) {
+  CustomThemeSupplier* theme =
+      web_app::AppBrowserController::From(browser)->GetThemeSupplier();
   SkColor result;
   EXPECT_TRUE(theme->GetColor(ThemeProperties::COLOR_FRAME_ACTIVE, &result));
   return result;
@@ -207,7 +228,8 @@ SkColor GetFrameColor(Browser* browser) {
 content::EvalJsResult EvalDisplayStateChange(
     const content::ToRenderFrameHost& execution_target,
     std::string window_method,
-    std::string expected_state) {
+    std::string expected_state,
+    int execute_script_options = content::EXECUTE_SCRIPT_DEFAULT_OPTIONS) {
   static constexpr char script[] =
       R"(new Promise((resolve, reject) => {
         window.$1().then(() => {
@@ -223,7 +245,8 @@ content::EvalJsResult EvalDisplayStateChange(
       execution_target,
       base::ReplaceStringPlaceholders(
           script, {std::move(window_method), std::move(expected_state)},
-          nullptr));
+          nullptr),
+      execute_script_options);
 }
 
 content::EvalJsResult EvalSetResizable(
@@ -265,15 +288,6 @@ content::EvalJsResult EvalFullscreenRequest(
 
 class WebAppFrameToolbarBrowserTest : public web_app::WebAppBrowserTestBase {
  public:
-  WebAppFrameToolbarBrowserTest() {
-    scoped_feature_list_.InitWithFeaturesAndParameters(
-        /*enabled_features=*/
-        {{features::kPageActionsMigration,
-          {{features::kPageActionsMigrationZoom.name, "true"}}},
-         {blink::features::kWebAppMigrationApi, {}}},
-        /*disabled_features=*/{});
-  }
-
   WebAppFrameToolbarTestHelper* helper() {
     return &web_app_frame_toolbar_helper_;
   }
@@ -289,30 +303,55 @@ class WebAppFrameToolbarBrowserTest : public web_app::WebAppBrowserTestBase {
            model->IsEnabledAt(index);
   }
 
- protected:
-  // Previously, the page action icon was added as a direct child of the
-  // toolbar. With the new page action framework, the `PageActionContainer` is
-  // added as the toolbar child. As a result, the positioning should be
-  // offsetted.
-  int GetPageActionViewOffset() {
-    if (base::FeatureList::IsEnabled(features::kPageActionsMigration)) {
-      return helper()
-          ->web_app_frame_toolbar()
-          ->get_right_container_for_testing()
-          ->page_action_container()
-          ->x();
-    }
-
-    return 0;
-  }
 
  private:
-  base::test::ScopedFeatureList scoped_feature_list_;
   WebAppFrameToolbarTestHelper web_app_frame_toolbar_helper_;
 
   // TODO(https://crbug.com/40804030): Remove this when updated to use MV3.
   extensions::ScopedTestMV2Enabler mv2_enabler_;
 };
+
+IN_PROC_BROWSER_TEST_F(WebAppFrameToolbarBrowserTest,
+                       BlockedPopupIconVisibleInPwaTitlebar) {
+  WebAppToolbarButtonContainer::DisableAnimationForTesting(true);
+  const GURL app_url("https://test.org");
+  helper()->InstallAndLaunchWebApp(browser(), app_url);
+
+  content::WebContents* web_contents =
+      helper()->browser_view()->GetActiveWebContents();
+
+  // Execute ungestured window.open call to trigger popup blocker.
+  EXPECT_TRUE(content::ExecJs(web_contents, "window.open('about:blank');",
+                              content::EXECUTE_SCRIPT_NO_USER_GESTURE));
+
+  auto* popup_blocker =
+      blocked_content::PopupBlockerTabHelper::FromWebContents(web_contents);
+  ASSERT_TRUE(popup_blocker);
+  EXPECT_EQ(1u, popup_blocker->GetBlockedPopupsCount());
+
+  WebAppToolbarButtonContainer* toolbar_right_container =
+      helper()->web_app_frame_toolbar()->get_right_container_for_testing();
+  WebAppContentSettingsContainer* content_settings =
+      toolbar_right_container->content_settings_container();
+  ASSERT_TRUE(content_settings);
+  EXPECT_TRUE(
+      base::test::RunUntil([&]() { return content_settings->GetVisible(); }));
+  EXPECT_GT(content_settings->width(), 0);
+
+  // The content setting icons should match the height of the other titlebar
+  // buttons rather than filling the full titlebar height.
+  views::test::RunScheduledLayout(helper()->browser_view());
+  const int button_height =
+      helper()->web_app_frame_toolbar()->GetToolbarButtonSize().height();
+  EXPECT_LT(button_height, toolbar_right_container->height());
+  EXPECT_EQ(content_settings->height(), button_height);
+  for (ContentSettingImageView* view :
+       content_settings->get_content_setting_views()) {
+    if (view->GetVisible()) {
+      EXPECT_EQ(view->height(), button_height);
+    }
+  }
+}
 
 IN_PROC_BROWSER_TEST_F(WebAppFrameToolbarBrowserTest, SpaceConstrained) {
   const GURL app_url("https://test.org");
@@ -325,45 +364,24 @@ IN_PROC_BROWSER_TEST_F(WebAppFrameToolbarBrowserTest, SpaceConstrained) {
 
   views::View* const window_title =
       helper()->frame_view()->GetViewByID(VIEW_ID_WINDOW_TITLE);
-#if BUILDFLAG(IS_CHROMEOS)
-  EXPECT_FALSE(window_title);
-#else
+  EXPECT_TRUE(window_title);
   EXPECT_EQ(window_title->parent(), helper()->browser_view());
-#endif
 
   WebAppToolbarButtonContainer* const toolbar_right_container =
       helper()->web_app_frame_toolbar()->get_right_container_for_testing();
   EXPECT_EQ(toolbar_right_container->parent(),
             helper()->web_app_frame_toolbar());
 
-  std::vector<const views::View*> page_action_views = {};
-  const auto& properties_provider =
-      page_actions::PageActionPropertiesProvider();
-  for (auto action_id :
-       helper()->app_browser()->app_controller()->GetTitleBarPageActions()) {
-    const auto& properties = properties_provider.GetProperties(action_id);
-
-    // When the page action migration is not enabled, the view should not be
-    // created to avoid conflicting with the old framework version identifier.
-    if (!IsPageActionMigrated(properties.type)) {
-      continue;
-    }
-
-    auto* page_action_view =
-        helper()->web_app_frame_toolbar()->GetPageActionView(action_id);
-    ASSERT_NE(nullptr, page_action_view);
-    EXPECT_EQ(page_action_view->parent(),
-              toolbar_right_container->page_action_container());
-    page_action_views.push_back(page_action_view);
+  std::vector<page_actions::PageActionTestAccessor> page_actions;
+  for (actions::ActionId action_id :
+       web_app::AppBrowserController::From(helper()->app_browser())
+           ->GetTitleBarPageActions()) {
+    page_actions.emplace_back(helper()->app_browser(), action_id);
   }
-  for (const PageActionIconView* action :
-       helper()
-           ->web_app_frame_toolbar()
-           ->GetPageActionIconControllerForTesting()
-           ->GetPageActionIconViewsForTesting()) {
-    EXPECT_EQ(action->parent(), toolbar_right_container);
-    page_action_views.emplace_back(action);
-  }
+  auto has_visible_page_action = [&page_actions]() {
+    return std::ranges::any_of(
+        page_actions, &page_actions::PageActionTestAccessor::GetVisible);
+  };
 
   views::View* const menu_button =
       views::ElementTrackerViews::GetInstance()->GetFirstMatchingView(
@@ -386,7 +404,7 @@ IN_PROC_BROWSER_TEST_F(WebAppFrameToolbarBrowserTest, SpaceConstrained) {
 #endif
 
   // Initially the page action icons are not visible.
-  EXPECT_EQ(GetLastVisible(page_action_views), nullptr);
+  EXPECT_FALSE(has_visible_page_action());
   const int original_menu_button_width = menu_button->width();
   EXPECT_GT(original_menu_button_width, 0);
 
@@ -409,7 +427,7 @@ IN_PROC_BROWSER_TEST_F(WebAppFrameToolbarBrowserTest, SpaceConstrained) {
   EXPECT_LT(window_title->width(), original_window_title_width);
 #endif
 
-  EXPECT_NE(GetLastVisible(page_action_views), nullptr);
+  EXPECT_TRUE(has_visible_page_action());
   EXPECT_EQ(menu_button->width(), original_menu_button_width);
 
   // Resize the WebAppFrameToolbarView just enough to clip out the page action
@@ -417,8 +435,7 @@ IN_PROC_BROWSER_TEST_F(WebAppFrameToolbarBrowserTest, SpaceConstrained) {
   const int original_toolbar_width = helper()->web_app_frame_toolbar()->width();
   const int new_toolbar_width =
       toolbar_right_container->width() -
-      (GetPageActionViewOffset() +
-       GetLastVisible(page_action_views)->bounds().right());
+      toolbar_right_container->page_action_container()->bounds().right();
   const int new_frame_width = helper()->frame_view()->width() -
                               original_toolbar_width + new_toolbar_width;
 
@@ -438,7 +455,7 @@ IN_PROC_BROWSER_TEST_F(WebAppFrameToolbarBrowserTest, SpaceConstrained) {
 
   // The page action icons should be hidden while the app menu button retains
   // its full width.
-  EXPECT_EQ(GetLastVisible(page_action_views), nullptr);
+  EXPECT_FALSE(has_visible_page_action());
   EXPECT_EQ(menu_button->width(), original_menu_button_width);
 }
 
@@ -449,7 +466,7 @@ IN_PROC_BROWSER_TEST_F(WebAppFrameToolbarBrowserTest, ThemeChange) {
   helper()->InstallAndLaunchWebApp(browser(), app_url);
 
   content::WebContents* web_contents =
-      helper()->app_browser()->tab_strip_model()->GetActiveWebContents();
+      helper()->app_browser()->GetTabStripModel()->GetActiveWebContents();
   content::AwaitDocumentOnLoadCompleted(web_contents);
 
 #if !BUILDFLAG(IS_LINUX)
@@ -499,8 +516,6 @@ IN_PROC_BROWSER_TEST_F(WebAppFrameToolbarBrowserTest,
   const GURL app_url("https://test.org");
   helper()->InstallAndLaunchWebApp(browser(), app_url);
 
-  CHECK(!features::IsWebUIPinnedToolbarActionsEnabled())
-      << "Test needs modification to support WebUIPinnedToolbarActions";
   int button_count = 0;
   for (views::View* child :
        static_cast<PinnedToolbarActionsContainer*>(
@@ -520,11 +535,6 @@ IN_PROC_BROWSER_TEST_F(WebAppFrameToolbarBrowserTest, TitleHover) {
 
   auto* const window_title = static_cast<views::Label*>(
       helper()->frame_view()->GetViewByID(VIEW_ID_WINDOW_TITLE));
-#if BUILDFLAG(IS_CHROMEOS)
-  // Chrome OS PWA windows do not display app titles.
-  EXPECT_EQ(nullptr, window_title);
-  return;
-#else
 
   EXPECT_EQ(window_title->parent(), helper()->browser_view());
   window_title->SetText(std::u16string(30, 't'));
@@ -560,7 +570,6 @@ IN_PROC_BROWSER_TEST_F(WebAppFrameToolbarBrowserTest, TitleHover) {
   EXPECT_EQ(
       helper()->frame_view()->GetTooltipHandlerForPoint(origin_in_frame_view),
       window_title);
-#endif
 }
 
 IN_PROC_BROWSER_TEST_F(WebAppFrameToolbarBrowserTest,
@@ -644,7 +653,7 @@ IN_PROC_BROWSER_TEST_F(WebAppFrameToolbarBrowserTest,
   const GURL app_url = embedded_https_test_server().GetURL(
       "/web_apps/migration/migrate_from/no_migration_info.html");
   webapps::AppId app_id = web_app::InstallWebAppFromPage(browser(), app_url);
-  helper()->LaunchWebAppBrowserAndWait(browser()->profile(), app_id);
+  helper()->LaunchWebAppBrowserAndWait(browser()->GetProfile(), app_id);
   WebAppMenuButton* const menu_button = views::AsViewClass<WebAppMenuButton>(
       views::ElementTrackerViews::GetInstance()->GetFirstMatchingView(
           kToolbarAppMenuButtonElementId,
@@ -658,7 +667,7 @@ IN_PROC_BROWSER_TEST_F(WebAppFrameToolbarBrowserTest,
       browser(), embedded_https_test_server().GetURL(
                      "/web_apps/migration/migrate_to/suggest.html")));
   web_app::test::WaitForLoadCompleteAndMaybeManifestSeen(
-      *browser()->tab_strip_model()->GetActiveWebContents());
+      *browser()->GetTabStripModel()->GetActiveWebContents());
   provider().command_manager().AwaitAllCommandsCompleteForTesting();
 
   menu_button->UpdateStateForTesting();
@@ -680,8 +689,8 @@ IN_PROC_BROWSER_TEST_F(WebAppFrameToolbarBrowserTest,
   const GURL app_url = embedded_https_test_server().GetURL(
       "/web_apps/migration/migrate_from/suggest.html");
   webapps::AppId app_id =
-      web_app::ForceInstallWebApp(browser()->profile(), app_url).value();
-  helper()->LaunchWebAppBrowserAndWait(browser()->profile(), app_id);
+      web_app::ForceInstallWebApp(browser()->GetProfile(), app_url).value();
+  helper()->LaunchWebAppBrowserAndWait(browser()->GetProfile(), app_id);
   provider().command_manager().AwaitAllCommandsCompleteForTesting();
   WebAppMenuButton* const menu_button = views::AsViewClass<WebAppMenuButton>(
       views::ElementTrackerViews::GetInstance()->GetFirstMatchingView(
@@ -710,7 +719,7 @@ IN_PROC_BROWSER_TEST_F(WebAppFrameToolbarBrowserTest_ElidedExtensionsMenu,
   EXPECT_FALSE(IsMenuCommandEnabled(WebAppMenuModel::kExtensionsMenuCommandId));
 
   // Install test Extension.
-  LoadTestPopUpExtension(browser()->profile());
+  LoadTestPopUpExtension(browser()->GetProfile());
 
   // There should be no visible Extensions icon.
   WebAppToolbarButtonContainer* toolbar_button_container =
@@ -748,7 +757,7 @@ IN_PROC_BROWSER_TEST_F(IsolatedWebAppFrameToolbarBrowserTest,
   std::unique_ptr iwa =
       web_app::IsolatedWebAppBuilder(web_app::ManifestBuilder()).BuildBundle();
 
-  auto* profile = browser()->profile();
+  auto* profile = browser()->GetProfile();
   web_app::IsolatedWebAppUrlInfo url_info =
       helper()->InstallAndLaunchIsolatedWebApp(profile, iwa.get());
 
@@ -802,7 +811,7 @@ IN_PROC_BROWSER_TEST_F(WebAppFrameToolbarBrowserTest_NoElidedExtensionsMenu,
   base::RunLoop run_loop;
   ExtensionsToolbarDesktop::SetOnVisibleCallbackForTesting(
       run_loop.QuitClosure());
-  LoadTestPopUpExtension(browser()->profile());
+  LoadTestPopUpExtension(browser()->GetProfile());
   run_loop.Run();
   EXPECT_TRUE(toolbar_button_container->extensions_container()->GetVisible());
 
@@ -894,7 +903,7 @@ class UnframedIsolatedWebAppBrowserTest
   BrowserView* OpenPopup(const std::string& window_open_script) {
     content::ExecuteScriptAsync(browser_view_->GetActiveWebContents(),
                                 window_open_script);
-    Browser* popup = ui_test_utils::WaitForBrowserToOpen();
+    BrowserWindowInterface* popup = ui_test_utils::WaitForBrowserToOpen();
     EXPECT_NE(browser_, popup);
     EXPECT_TRUE(popup);
 
@@ -1250,7 +1259,14 @@ class WebAppFrameToolbarBrowserTest_WindowControlsOverlay
     }
   };
 
-  WebAppFrameToolbarBrowserTest_WindowControlsOverlay() = default;
+  WebAppFrameToolbarBrowserTest_WindowControlsOverlay() {
+    // These tests exercise WCO with the toggle button. The no-toggle
+    // feature removes that button entirely and auto-enables WCO, so it must
+    // be disabled here. Tests for the no-toggle behavior live in
+    // WebAppFrameToolbarBrowserTest_WindowControlsOverlayNoToggle below.
+    no_toggle_feature_list_.InitAndDisableFeature(
+        features::kDesktopPWAsWindowControlsOverlayWithNoToggle);
+  }
 
   void SetUp() override {
     ASSERT_TRUE(temp_dir_.CreateUniqueTempDir());
@@ -1299,12 +1315,21 @@ class WebAppFrameToolbarBrowserTest_WindowControlsOverlay
   void ToggleWindowControlsOverlayAndWaitHelper(
       content::WebContents* web_contents,
       BrowserView* browser_view) {
+    const bool initial_visibility =
+        GetWindowControlOverlayVisibility(web_contents);
     helper()->SetupGeometryChangeCallback(web_contents);
     content::TitleWatcher title_watcher(web_contents, u"ongeometrychange");
     base::test::TestFuture<void> future;
     browser_view->ToggleWindowControlsOverlayEnabled(future.GetCallback());
     EXPECT_TRUE(future.Wait());
     std::ignore = title_watcher.WaitAndGetTitle();
+
+    ASSERT_TRUE(base::test::RunUntil([&]() {
+      return GetWindowControlOverlayBoundingClientRectFromEvent(web_contents) ==
+                 GetWindowControlOverlayBoundingClientRect(web_contents) &&
+             GetWindowControlOverlayVisibility(web_contents) !=
+                 initial_visibility;
+    })) << "Timeout waiting for WCO toggle to settle.";
   }
 
   // When toggling the WCO app initialized by the helper class.
@@ -1314,16 +1339,28 @@ class WebAppFrameToolbarBrowserTest_WindowControlsOverlay
         helper()->browser_view());
   }
 
-  bool GetWindowControlOverlayVisibility() {
-    auto* web_contents = helper()->browser_view()->GetActiveWebContents();
+  bool GetWindowControlOverlayVisibility(
+      content::WebContents* web_contents = nullptr) {
+    if (!web_contents) {
+      web_contents = helper()->browser_view()->GetActiveWebContents();
+    }
     return EvalJs(web_contents,
                   "window.navigator.windowControlsOverlay.visible")
         .ExtractBool();
   }
 
-  bool GetWindowControlOverlayVisibilityFromEvent() {
-    auto* web_contents = helper()->browser_view()->GetActiveWebContents();
-    return EvalJs(web_contents, "overlay_visible_from_event").ExtractBool();
+  bool GetWindowControlOverlayVisibilityFromEvent(
+      content::WebContents* web_contents = nullptr) {
+    if (!web_contents) {
+      web_contents = helper()->browser_view()->GetActiveWebContents();
+    }
+    auto result = EvalJs(web_contents, "window.overlay_visible_from_event");
+    if (!result.is_ok() || !result.is_bool()) {
+      ADD_FAILURE() << "Failed to get overlay visibility from event: "
+                    << result;
+      return false;
+    }
+    return result.ExtractBool();
   }
 
   void ShowInfoBarAndWait() {
@@ -1334,21 +1371,23 @@ class WebAppFrameToolbarBrowserTest_WindowControlsOverlay
         infobars::ContentInfoBarManager::FromWebContents(
             helper()
                 ->app_browser()
-                ->tab_strip_model()
+                ->GetTabStripModel()
                 ->GetActiveWebContents()));
     std::ignore = title_watcher.WaitAndGetTitle();
   }
 
-  gfx::Rect GetWindowControlOverlayBoundingClientRect() {
+  gfx::Rect GetWindowControlOverlayBoundingClientRect(
+      content::WebContents* web_contents = nullptr) {
+    if (!web_contents) {
+      web_contents = helper()->browser_view()->GetActiveWebContents();
+    }
     const std::string kRectValueList =
         "var rect = "
         "[navigator.windowControlsOverlay.getTitlebarAreaRect().x, "
         "navigator.windowControlsOverlay.getTitlebarAreaRect().y, "
         "navigator.windowControlsOverlay.getTitlebarAreaRect().width, "
         "navigator.windowControlsOverlay.getTitlebarAreaRect().height];";
-    return helper()->GetXYWidthHeightRect(
-        helper()->browser_view()->GetActiveWebContents(), kRectValueList,
-        "rect");
+    return helper()->GetXYWidthHeightRect(web_contents, kRectValueList, "rect");
   }
 
   std::string GetCSSTitlebarRect() {
@@ -1375,27 +1414,45 @@ class WebAppFrameToolbarBrowserTest_WindowControlsOverlay
               helper()->browser_view()->GetLocalBounds().width());
 
     auto* web_contents = helper()->browser_view()->GetActiveWebContents();
+    const gfx::Rect initial_js_bounds =
+        GetWindowControlOverlayBoundingClientRect(web_contents);
+
     helper()->SetupGeometryChangeCallback(web_contents);
     content::TitleWatcher title_watcher(web_contents, u"ongeometrychange");
     helper()->browser_view()->GetWidget()->SetBounds(new_bounds);
     std::ignore = title_watcher.WaitAndGetTitle();
+
+    ASSERT_TRUE(base::test::RunUntil([&]() {
+      const gfx::Rect event_bounds =
+          GetWindowControlOverlayBoundingClientRectFromEvent(web_contents);
+      const gfx::Rect dom_bounds =
+          GetWindowControlOverlayBoundingClientRect(web_contents);
+      return event_bounds == dom_bounds && dom_bounds != initial_js_bounds;
+    })) << "Event bounds: "
+        << GetWindowControlOverlayBoundingClientRectFromEvent(web_contents)
+               .ToString()
+        << ", DOM bounds: "
+        << GetWindowControlOverlayBoundingClientRect(web_contents).ToString();
   }
 
-  gfx::Rect GetWindowControlOverlayBoundingClientRectFromEvent() {
+  gfx::Rect GetWindowControlOverlayBoundingClientRectFromEvent(
+      content::WebContents* web_contents = nullptr) {
+    if (!web_contents) {
+      web_contents = helper()->browser_view()->GetActiveWebContents();
+    }
     const std::string kRectValueList =
-        "var rect = [overlay_rect_from_event.x, overlay_rect_from_event.y, "
-        "overlay_rect_from_event.width, overlay_rect_from_event.height];";
+        "var rect = window.overlay_rect_from_event ? "
+        "[window.overlay_rect_from_event.x, "
+        "window.overlay_rect_from_event.y, "
+        "window.overlay_rect_from_event.width, "
+        "window.overlay_rect_from_event.height] : [0, 0, 0, 0];";
 
-    return helper()->GetXYWidthHeightRect(
-        helper()->browser_view()->GetActiveWebContents(), kRectValueList,
-        "rect");
+    return helper()->GetXYWidthHeightRect(web_contents, kRectValueList, "rect");
   }
-
- protected:
-  content::test::FencedFrameTestHelper fenced_frame_helper_;
 
  private:
   base::ScopedTempDir temp_dir_;
+  base::test::ScopedFeatureList no_toggle_feature_list_;
 };
 
 IN_PROC_BROWSER_TEST_F(WebAppFrameToolbarBrowserTest_WindowControlsOverlay,
@@ -1443,8 +1500,10 @@ IN_PROC_BROWSER_TEST_F(WebAppFrameToolbarBrowserTest_WindowControlsOverlay,
       GetWindowControlOverlayBoundingClientRect();
   const gfx::Rect resized_js_overlay_event_bounds =
       GetWindowControlOverlayBoundingClientRectFromEvent();
-  EXPECT_EQ(1, EvalJs(helper()->browser_view()->GetActiveWebContents(),
-                      "geometrychangeCount"));
+  EXPECT_GE(EvalJs(helper()->browser_view()->GetActiveWebContents(),
+                   "geometrychangeCount")
+                .ExtractInt(),
+            1);
   EXPECT_TRUE(GetWindowControlOverlayVisibility());
   EXPECT_TRUE(GetWindowControlOverlayVisibilityFromEvent());
   EXPECT_EQ(resized_js_overlay_bounds, resized_js_overlay_event_bounds);
@@ -1789,9 +1848,8 @@ IN_PROC_BROWSER_TEST_F(WebAppFrameToolbarBrowserTest_WindowControlsOverlay,
   auto widget_in_screen_bounds = widget->GetWindowBoundsInScreen();
   gfx::Point point_in_widget = widget_in_screen_bounds.CenterPoint();
   views::View::ConvertPointToTarget(
-      browser_view, browser_view->contents_web_view(), &point_in_widget);
-  EXPECT_TRUE(browser_view->browser()
-                  ->app_controller()
+      browser_view, browser_view->GetContentsView(), &point_in_widget);
+  EXPECT_TRUE(web_app::AppBrowserController::From(browser_view->browser())
                   ->draggable_region()
                   .has_value());
   EXPECT_TRUE(browser_view->ShouldDescendIntoChildForEventHandling(
@@ -1808,6 +1866,100 @@ IN_PROC_BROWSER_TEST_F(WebAppFrameToolbarBrowserTest_WindowControlsOverlay,
   EXPECT_FALSE(browser_view->ShouldDescendIntoChildForEventHandling(
       browser_view->GetWidget()->GetNativeView(), point_below_widget));
   EXPECT_EQ(frame_view->NonClientHitTest(point_below_widget), HTCAPTION);
+}
+
+// Similar to DraggableRegionsIgnoredForOwnedWidgets above, but exercises the
+// case where the active contents view does not start at the BrowserView
+// origin (for example when left insets are created by side-docked DevTools,
+// or top insets are created by toolbars, infobars, or the find bar). The
+// owned-widget hit test in ShouldDescendIntoChildForEventHandling must use
+// BrowserView coordinates so that clicks on owned widgets are still routed into
+// them.
+IN_PROC_BROWSER_TEST_F(
+    WebAppFrameToolbarBrowserTest_WindowControlsOverlay,
+    DraggableRegionsIgnoredForOwnedWidgetsWithContentsOffset) {
+  if (views::test::IsOzoneBubblesUsingPlatformWidgets()) {
+    GTEST_SKIP();
+  }
+  auto app_id = InstallAndLaunchFullyDraggableWebApp();
+  ToggleWindowControlsOverlayAndWait();
+  BrowserView* browser_view = helper()->browser_view();
+  auto* app_controller =
+      web_app::AppBrowserController::From(browser_view->browser());
+  ASSERT_TRUE(app_controller->draggable_region().has_value());
+
+  // Ensure the window is large enough to host both an offset contents view and
+  // an overlapping owned widget.
+  browser_view->GetWidget()->SetBounds(gfx::Rect(0, 0, 800, 600));
+  views::test::RunScheduledLayout(browser_view);
+
+  // Give the active contents view a non-zero origin (X and Y offset) within
+  // the BrowserView, matching what happens when DevTools is docked on the left
+  // and UI elements like toolbars or infobars create top insets.
+  constexpr int kContentsTopInset = 150;
+  constexpr int kContentsLeftInset = 100;
+  const gfx::Size container_size =
+      browser_view->GetActiveContentsContainerView()->size();
+  ASSERT_GT(container_size.height(), kContentsTopInset);
+  ASSERT_GT(container_size.width(), kContentsLeftInset);
+  browser_view->GetActiveContentsContainerView()->SetContentsResizingStrategy(
+      DevToolsContentsResizingStrategy(
+          devtools::DockSide::kLeft,
+          gfx::Rect(kContentsLeftInset, kContentsTopInset,
+                    container_size.width() - kContentsLeftInset,
+                    container_size.height() - kContentsTopInset)));
+  views::test::RunScheduledLayout(browser_view);
+  gfx::Point contents_origin_in_browser_view;
+  views::View::ConvertPointToTarget(browser_view->GetContentsView(),
+                                    browser_view,
+                                    &contents_origin_in_browser_view);
+  ASSERT_GT(contents_origin_in_browser_view.x(), 0);
+  ASSERT_GT(contents_origin_in_browser_view.y(), 0);
+
+  // Extend the renderer-supplied draggable region so it covers any point that
+  // can map into the (now offset) contents view, ensuring the owned-widget
+  // branch of ShouldDescendIntoChildForEventHandling is exercised below.
+  std::vector<blink::mojom::DraggableRegionPtr> regions;
+  regions.push_back(blink::mojom::DraggableRegion::New(
+      gfx::Rect(-5000, -5000, 10000, 10000), /*draggable=*/true));
+  app_controller->DraggableRegionsChanged(regions,
+                                          browser_view->GetActiveWebContents());
+
+  // Show a child widget owned by the browser widget, positioned just below the
+  // top of the BrowserView (above the offset contents view), standing in for a
+  // permission prompt or similar bubble.
+  views::Widget::InitParams params(
+      views::Widget::InitParams::CLIENT_OWNS_WIDGET,
+      views::Widget::InitParams::TYPE_POPUP);
+  params.parent = browser_view->GetWidgetForAnchoring()->GetNativeView();
+  gfx::Rect widget_in_screen_bounds(0, 5, 200, 100);
+  views::View::ConvertRectToScreen(browser_view, &widget_in_screen_bounds);
+  params.bounds = widget_in_screen_bounds;
+  views::UniqueWidgetPtr owned_widget =
+      std::make_unique<views::Widget>(std::move(params));
+  owned_widget->Show();
+  ASSERT_TRUE(
+      base::test::RunUntil([&]() { return owned_widget->IsVisible(); }));
+  widget_in_screen_bounds = owned_widget->GetWindowBoundsInScreen();
+
+  // Pick a point near the top-left of the owned widget so that any incorrect
+  // vertical or horizontal offset applied during the owned-widget hit test
+  // would move the tested point outside the widget bounds.
+  const gfx::Point click_in_screen(widget_in_screen_bounds.x() + 5,
+                                   widget_in_screen_bounds.y() + 5);
+  ASSERT_TRUE(widget_in_screen_bounds.Contains(click_in_screen));
+  gfx::Point click_in_browser_view = click_in_screen;
+  views::View::ConvertPointFromScreen(browser_view, &click_in_browser_view);
+  ASSERT_TRUE(
+      browser_view->WidgetOwnedByAnchorContainsPoint(click_in_browser_view));
+
+  // ShouldDescendIntoChildForEventHandling receives the point in the widget
+  // root view's coordinate space.
+  gfx::Point click_in_root_view = click_in_screen;
+  views::View::ConvertPointFromScreen(browser_view->GetWidget()->GetRootView(),
+                                      &click_in_root_view);
+  EXPECT_TRUE(browser_view->ShouldDescendIntoChildForEventHandling(
+      browser_view->GetWidget()->GetNativeView(), click_in_root_view));
 }
 
 IN_PROC_BROWSER_TEST_F(WebAppFrameToolbarBrowserTest_WindowControlsOverlay,
@@ -1829,6 +1981,51 @@ IN_PROC_BROWSER_TEST_F(WebAppFrameToolbarBrowserTest_WindowControlsOverlay,
   EXPECT_TRUE(helper()->browser_view()->AppUsesWindowControlsOverlay());
 }
 
+// ChromeOS (immersive) and macOS (https://crbug.com/41431787) disable WCO in
+// fullscreen.
+#if !BUILDFLAG(IS_CHROMEOS) && !BUILDFLAG(IS_MAC)
+IN_PROC_BROWSER_TEST_F(WebAppFrameToolbarBrowserTest_WindowControlsOverlay,
+                       EnabledAndClickableInFullscreen) {
+  InstallAndLaunchWebApp();
+
+  // Toggle WCO on.
+  ToggleWindowControlsOverlayAndWait();
+  BrowserView* const browser_view = helper()->browser_view();
+  EXPECT_TRUE(browser_view->IsWindowControlsOverlayEnabled());
+
+  // Enter fullscreen.
+  ui_test_utils::FullscreenWaiter waiter(
+      browser_view->browser(),
+      {.browser_fullscreen = true, .tab_fullscreen = false});
+  chrome::ToggleFullscreenMode(browser_view->browser(),
+                               /*user_initiated=*/false);
+  waiter.Wait();
+  ASSERT_TRUE(browser_view->IsFullscreen());
+
+  // WCO stays enabled in fullscreen.
+  EXPECT_TRUE(browser_view->IsWindowControlsOverlayEnabled());
+
+#if BUILDFLAG(IS_WIN)
+  // The top-right overlay area must not hit-test as caption, which would
+  // swallow clicks meant for app UI (https://crbug.com/518849412).
+  gfx::Point top_right(browser_view->width() - 1, 0);
+  views::View::ConvertPointToTarget(browser_view, browser_view->parent(),
+                                    &top_right);
+  EXPECT_NE(browser_view->NonClientHitTest(top_right), HTCAPTION);
+#endif  // BUILDFLAG(IS_WIN)
+
+  // Exiting fullscreen keeps WCO enabled.
+  ui_test_utils::FullscreenWaiter exit_waiter(
+      browser_view->browser(),
+      {.browser_fullscreen = false, .tab_fullscreen = false});
+  chrome::ToggleFullscreenMode(browser_view->browser(),
+                               /*user_initiated=*/false);
+  exit_waiter.Wait();
+  ASSERT_FALSE(browser_view->IsFullscreen());
+  EXPECT_TRUE(browser_view->IsWindowControlsOverlayEnabled());
+}
+#endif  // !BUILDFLAG(IS_CHROMEOS) && !BUILDFLAG(IS_MAC)
+
 IN_PROC_BROWSER_TEST_F(WebAppFrameToolbarBrowserTest_WindowControlsOverlay,
                        OpenInChrome) {
   InstallAndLaunchWebApp();
@@ -1843,7 +2040,7 @@ IN_PROC_BROWSER_TEST_F(WebAppFrameToolbarBrowserTest_WindowControlsOverlay,
                          IDC_OPEN_IN_CHROME);
 
   // Validate bounds are cleared.
-  EXPECT_EQ(false, EvalJs(browser()->tab_strip_model()->GetActiveWebContents(),
+  EXPECT_EQ(false, EvalJs(browser()->GetTabStripModel()->GetActiveWebContents(),
                           "window.navigator.windowControlsOverlay.visible"));
 }
 
@@ -1917,86 +2114,12 @@ IN_PROC_BROWSER_TEST_F(WebAppFrameToolbarBrowserTest_WindowControlsOverlay,
                        OpenWithOverlayEnabled) {
   webapps::AppId app_id = InstallAndLaunchWebApp();
   base::test::TestFuture<void> future;
-  helper()
-      ->browser_view()
-      ->browser()
-      ->app_controller()
-      ->ToggleWindowControlsOverlayEnabled(future.GetCallback());
+  auto* app_controller =
+      web_app::AppBrowserController::From(helper()->browser_view()->browser());
+  app_controller->ToggleWindowControlsOverlayEnabled(future.GetCallback());
   EXPECT_TRUE(future.Wait());
-  web_app::LaunchWebAppBrowserAndWait(browser()->profile(), app_id);
+  web_app::LaunchWebAppBrowserAndWait(browser()->GetProfile(), app_id);
   // If there's no crash, the test has passed.
-}
-
-IN_PROC_BROWSER_TEST_F(WebAppFrameToolbarBrowserTest_WindowControlsOverlay,
-                       DraggableRegionNotResetByFencedFrameNavigation) {
-  InstallAndLaunchWebApp();
-  ToggleWindowControlsOverlayAndWait();
-
-  BrowserView* browser_view = helper()->browser_view();
-  views::FrameView* frame_view =
-      browser_view->GetWidget()->non_client_view()->frame_view();
-
-  gfx::Point draggable_point(100, 100);
-  views::View::ConvertPointToTarget(browser_view->contents_web_view(),
-                                    frame_view, &draggable_point);
-
-  // Create a fenced frame and ensure that draggable region doesn't clear after
-  // the fenced frame navigation.
-  const GURL fenced_frame_url =
-      embedded_test_server()->GetURL("/fenced_frames/title1.html");
-  content::RenderFrameHost* fenced_frame_rfh =
-      fenced_frame_helper_.CreateFencedFrame(
-          browser_view->GetActiveWebContents()->GetPrimaryMainFrame(),
-          fenced_frame_url);
-  ASSERT_NE(nullptr, fenced_frame_rfh);
-  EXPECT_FALSE(browser_view->ShouldDescendIntoChildForEventHandling(
-      browser_view->GetWidget()->GetNativeView(), draggable_point));
-}
-
-// TODO(crbug.com/405233966): Re-enable this test
-#if BUILDFLAG(IS_MAC)
-#define MAYBE_FencedFrame DISABLED_FencedFrame
-#else
-#define MAYBE_FencedFrame FencedFrame
-#endif
-IN_PROC_BROWSER_TEST_F(WebAppFrameToolbarBrowserTest_WindowControlsOverlay,
-                       MAYBE_FencedFrame) {
-  InstallAndLaunchWebApp();
-  ToggleWindowControlsOverlayAndWait();
-
-  BrowserView* browser_view = helper()->browser_view();
-  gfx::Rect bounds = GetWindowControlOverlayBoundingClientRect();
-  EXPECT_TRUE(GetWindowControlOverlayVisibility());
-  EXPECT_FALSE(bounds.IsEmpty());
-  EXPECT_NE(0, bounds.width());
-  EXPECT_NE(0, bounds.height());
-
-  // Ensure window controls overlay values are not sent to a fenced frame.
-  const GURL fenced_frame_url =
-      embedded_test_server()->GetURL("/fenced_frames/title1.html");
-
-  content::RenderFrameHost* fenced_frame_rfh =
-      fenced_frame_helper_.CreateFencedFrame(
-          browser_view->GetActiveWebContents()->GetPrimaryMainFrame(),
-          fenced_frame_url);
-  ASSERT_NE(nullptr, fenced_frame_rfh);
-
-  EXPECT_EQ(false, EvalJs(fenced_frame_rfh,
-                          "window.navigator.windowControlsOverlay.visible"));
-  EXPECT_EQ(
-      0,
-      EvalJs(fenced_frame_rfh,
-             "window.navigator.windowControlsOverlay.getTitlebarAreaRect().x"));
-  EXPECT_EQ(
-      0,
-      EvalJs(fenced_frame_rfh,
-             "window.navigator.windowControlsOverlay.getTitlebarAreaRect().y"));
-  EXPECT_EQ(0, EvalJs(fenced_frame_rfh,
-                      "window.navigator.windowControlsOverlay."
-                      "getTitlebarAreaRect().width"));
-  EXPECT_EQ(0, EvalJs(fenced_frame_rfh,
-                      "window.navigator.windowControlsOverlay."
-                      "getTitlebarAreaRect().height"));
 }
 
 // Extensions in  ChromeOS are not in the titlebar.
@@ -2012,7 +2135,7 @@ IN_PROC_BROWSER_TEST_F(WebAppFrameToolbarBrowserTest_WindowControlsOverlay,
       helper()->web_app_frame_toolbar()->get_right_container_for_testing();
   EXPECT_FALSE(toolbar_button_container->extensions_container()->GetVisible());
 
-  LoadTestPopUpExtension(browser()->profile());
+  LoadTestPopUpExtension(browser()->GetProfile());
 
   EXPECT_TRUE(toolbar_button_container->extensions_container()->GetVisible());
 
@@ -2020,8 +2143,8 @@ IN_PROC_BROWSER_TEST_F(WebAppFrameToolbarBrowserTest_WindowControlsOverlay,
   // launch it stays toggled on.
   CloseBrowserSynchronously(helper()->app_browser());
 
-  Browser* app_browser =
-      web_app::LaunchWebAppBrowserAndWait(browser()->profile(), app_id);
+  BrowserWindowInterface* app_browser =
+      web_app::LaunchWebAppBrowserAndWait(browser()->GetProfile(), app_id);
 
   BrowserView* browser_view =
       BrowserView::GetBrowserViewForBrowser(app_browser);
@@ -2043,14 +2166,14 @@ IN_PROC_BROWSER_TEST_F(WebAppFrameToolbarBrowserTest_WindowControlsOverlay,
   webapps::AppId app_id = InstallAndLaunchWebApp();
   ToggleWindowControlsOverlayAndWait();
 
-  Browser* non_app_browser = CreateBrowser(profile());
+  BrowserWindowInterface* non_app_browser = CreateBrowser(profile());
 
   // There should be no visible Downloads icon prior to the download, in either
   // the app browser or the non-app browser.
   WebAppToolbarButtonContainer* toolbar_button_container =
       helper()->web_app_frame_toolbar()->get_right_container_for_testing();
   EXPECT_EQ(toolbar_button_container->GetDownloadButton(), nullptr);
-  EXPECT_FALSE(non_app_browser->window()
+  EXPECT_FALSE(BrowserWindow::FromBrowser(non_app_browser)
                    ->GetDownloadBubbleUIController()
                    ->GetDownloadDisplayController()
                    ->download_display_for_testing()
@@ -2062,19 +2185,13 @@ IN_PROC_BROWSER_TEST_F(WebAppFrameToolbarBrowserTest_WindowControlsOverlay,
       chrome_test_utils::GetTestUrl(
           base::FilePath().AppendASCII("downloads"),
           base::FilePath().AppendASCII("a_zip_file.zip")));
-  CHECK(!features::IsWebUIPinnedToolbarActionsEnabled())
-      << "Test needs modification to support WebUIPinnedToolbarActions";
-  views::test::WaitForAnimatingLayoutManager(
-      static_cast<PinnedToolbarActionsContainer*>(
-          BrowserView::GetBrowserViewForBrowser(helper()->app_browser())
-              ->toolbar_button_provider()
-              ->GetPinnedToolbarActions()));
+  PinnedActionTestAccessor::WaitForAnimation(helper()->app_browser());
 
   // The download button is visible in the app browser.
   EXPECT_TRUE(toolbar_button_container->GetDownloadButton()->GetVisible());
 
   // The download button is not visible in the non-app browser.
-  EXPECT_FALSE(non_app_browser->window()
+  EXPECT_FALSE(BrowserWindow::FromBrowser(non_app_browser)
                    ->GetDownloadBubbleUIController()
                    ->GetDownloadDisplayController()
                    ->download_display_for_testing()
@@ -2088,14 +2205,14 @@ IN_PROC_BROWSER_TEST_F(WebAppFrameToolbarBrowserTest_WindowControlsOverlay,
   webapps::AppId app_id = InstallAndLaunchWebApp();
   ToggleWindowControlsOverlayAndWait();
 
-  Browser* non_app_browser = CreateBrowser(profile());
+  BrowserWindowInterface* non_app_browser = CreateBrowser(profile());
 
   // There should be no visible Downloads icon prior to the download, in either
   // the app browser or the non-app browser.
   WebAppToolbarButtonContainer* toolbar_button_container =
       helper()->web_app_frame_toolbar()->get_right_container_for_testing();
   EXPECT_EQ(toolbar_button_container->GetDownloadButton(), nullptr);
-  EXPECT_FALSE(non_app_browser->window()
+  EXPECT_FALSE(BrowserWindow::FromBrowser(non_app_browser)
                    ->GetDownloadBubbleUIController()
                    ->GetDownloadDisplayController()
                    ->download_display_for_testing()
@@ -2111,7 +2228,7 @@ IN_PROC_BROWSER_TEST_F(WebAppFrameToolbarBrowserTest_WindowControlsOverlay,
   EXPECT_EQ(toolbar_button_container->GetDownloadButton(), nullptr);
 
   // The download button is visible in the non-app browser.
-  EXPECT_TRUE(non_app_browser->window()
+  EXPECT_TRUE(BrowserWindow::FromBrowser(non_app_browser)
                   ->GetDownloadBubbleUIController()
                   ->GetDownloadDisplayController()
                   ->download_display_for_testing()
@@ -2164,7 +2281,8 @@ IN_PROC_BROWSER_TEST_F(WebAppFrameToolbarBrowserTest_WindowControlsOverlay,
   ToggleWindowControlsOverlayAndWait();
 
   std::optional<SkRegion> draggable_region =
-      helper()->browser_view()->browser()->app_controller()->draggable_region();
+      web_app::AppBrowserController::From(helper()->app_browser())
+          ->draggable_region();
 
   EXPECT_TRUE(draggable_region.has_value());
   EXPECT_FALSE(draggable_region.value().isEmpty());
@@ -2183,7 +2301,8 @@ IN_PROC_BROWSER_TEST_F(WebAppFrameToolbarBrowserTest_WindowControlsOverlay,
   content::WaitForLoadStop(helper()->browser_view()->GetActiveWebContents());
 
   std::optional<SkRegion> draggable_region =
-      helper()->browser_view()->browser()->app_controller()->draggable_region();
+      web_app::AppBrowserController::From(helper()->app_browser())
+          ->draggable_region();
 
   EXPECT_TRUE(draggable_region.has_value());
   EXPECT_FALSE(draggable_region.value().isEmpty());
@@ -2196,7 +2315,7 @@ IN_PROC_BROWSER_TEST_F(WebAppFrameToolbarBrowserTest_WindowControlsOverlay,
   // Install and launch the web app, verify WCO is disabled by default.
   webapps::AppId app_id = InstallAndLaunchWebApp();
   web_app::AppBrowserController* app_controller_window1 =
-      helper()->app_browser()->app_controller();
+      web_app::AppBrowserController::From(helper()->app_browser());
   EXPECT_FALSE(app_controller_window1->IsWindowControlsOverlayEnabled());
 
   ToggleWindowControlsOverlayAndWait();
@@ -2204,9 +2323,9 @@ IN_PROC_BROWSER_TEST_F(WebAppFrameToolbarBrowserTest_WindowControlsOverlay,
 
   // Launch new window of same app and verify that WCO is enabled at launch
   BrowserView* browser_view_window2 = BrowserView::GetBrowserViewForBrowser(
-      web_app::LaunchWebAppBrowserAndWait(browser()->profile(), app_id));
+      web_app::LaunchWebAppBrowserAndWait(browser()->GetProfile(), app_id));
   web_app::AppBrowserController* app_controller_window2 =
-      browser_view_window2->browser()->app_controller();
+      web_app::AppBrowserController::From(browser_view_window2->browser());
   EXPECT_TRUE(app_controller_window2->IsWindowControlsOverlayEnabled());
 
   // Verify window 1 still has WCO enabled (independent per-window state).
@@ -2219,6 +2338,304 @@ IN_PROC_BROWSER_TEST_F(WebAppFrameToolbarBrowserTest_WindowControlsOverlay,
   // Verify window 1 still has WCO enabled (independent per-window state).
   EXPECT_TRUE(app_controller_window1->IsWindowControlsOverlayEnabled());
 }
+
+// Tests for the kDesktopPWAsWindowControlsOverlayWithNoToggle feature. With the
+// feature enabled, WCO is auto-enabled at launch for any PWA whose manifest
+// declares support and the toggle button is not created.
+// Conditions like custom tab bar, infobar, immersive mode, and Mac fullscreen
+// still disable WCO while the toggle remains absent.
+class WebAppFrameToolbarBrowserTest_WindowControlsOverlayNoToggle
+    : public WebAppFrameToolbarBrowserTest_WindowControlsOverlay {
+ private:
+  base::test::ScopedFeatureList no_toggle_feature_list_{
+      features::kDesktopPWAsWindowControlsOverlayWithNoToggle};
+};
+
+// Verifies that launching a PWA whose manifest declares WCO support
+// auto-enables WCO and does not create the toggle button.
+IN_PROC_BROWSER_TEST_F(
+    WebAppFrameToolbarBrowserTest_WindowControlsOverlayNoToggle,
+    AutoEnabledAtLaunchAndNoToggleButton) {
+  InstallAndLaunchWebApp();
+
+  BrowserView* browser_view = helper()->browser_view();
+  EXPECT_TRUE(browser_view->AppUsesWindowControlsOverlay());
+  EXPECT_TRUE(browser_view->IsWindowControlsOverlayEnabled());
+
+  // The toggle button should not have been created.
+  WebAppToolbarButtonContainer* toolbar_button_container =
+      helper()->web_app_frame_toolbar()->get_right_container_for_testing();
+  EXPECT_EQ(nullptr,
+            toolbar_button_container->window_controls_overlay_toggle_button());
+}
+
+// Verifies WCO is automatically disabled when the custom tab bar (CCT) is
+// shown, and re-enabled when CCT is hidden.
+IN_PROC_BROWSER_TEST_F(
+    WebAppFrameToolbarBrowserTest_WindowControlsOverlayNoToggle,
+    WCODisabledWhenCCTIsVisible) {
+  InstallAndLaunchWebApp();
+
+  BrowserView* browser_view = helper()->browser_view();
+  EXPECT_TRUE(browser_view->IsWindowControlsOverlayEnabled());
+
+  // Show CCT; WCO must be disabled.
+  browser_view->UpdateCustomTabBarVisibility(/*visible=*/true,
+                                             /*animate=*/false);
+  EXPECT_FALSE(browser_view->IsWindowControlsOverlayEnabled());
+
+  // Hide CCT; WCO must be re-enabled automatically.
+  browser_view->UpdateCustomTabBarVisibility(/*visible=*/false,
+                                             /*animate=*/false);
+  EXPECT_TRUE(browser_view->IsWindowControlsOverlayEnabled());
+
+  // The toggle button must still not exist.
+  WebAppToolbarButtonContainer* toolbar_button_container =
+      helper()->web_app_frame_toolbar()->get_right_container_for_testing();
+  EXPECT_EQ(nullptr,
+            toolbar_button_container->window_controls_overlay_toggle_button());
+}
+
+// Verifies WCO is automatically disabled when an infobar is shown.
+IN_PROC_BROWSER_TEST_F(
+    WebAppFrameToolbarBrowserTest_WindowControlsOverlayNoToggle,
+    WCODisabledWhenInfoBarIsVisible) {
+  InstallAndLaunchWebApp();
+
+  BrowserView* browser_view = helper()->browser_view();
+  EXPECT_TRUE(browser_view->IsWindowControlsOverlayEnabled());
+
+  ShowInfoBarAndWait();
+  ASSERT_TRUE(base::test::RunUntil(
+      [&]() { return !browser_view->IsWindowControlsOverlayEnabled(); }));
+
+  // The toggle button must still not exist.
+  WebAppToolbarButtonContainer* toolbar_button_container =
+      helper()->web_app_frame_toolbar()->get_right_container_for_testing();
+  EXPECT_EQ(nullptr,
+            toolbar_button_container->window_controls_overlay_toggle_button());
+}
+
+#if BUILDFLAG(IS_MAC)
+// On macOS the fullscreen menu/title bar is hosted in a separate NSView that
+// slides over the WebContents, making the WCO area unreachable. Verify that
+// entering browser fullscreen disables WCO and exiting re-enables it.
+IN_PROC_BROWSER_TEST_F(
+    WebAppFrameToolbarBrowserTest_WindowControlsOverlayNoToggle,
+    WCODisabledInMacFullscreen) {
+  InstallAndLaunchWebApp();
+
+  BrowserView* browser_view = helper()->browser_view();
+  ASSERT_TRUE(browser_view->IsWindowControlsOverlayEnabled());
+  ASSERT_FALSE(browser_view->IsFullscreen());
+
+  ui_test_utils::ToggleFullscreenModeAndWait(helper()->app_browser());
+  EXPECT_TRUE(browser_view->IsFullscreen());
+  EXPECT_FALSE(browser_view->IsWindowControlsOverlayEnabled());
+
+  ui_test_utils::ToggleFullscreenModeAndWait(helper()->app_browser());
+  EXPECT_FALSE(browser_view->IsFullscreen());
+  EXPECT_TRUE(browser_view->IsWindowControlsOverlayEnabled());
+
+  // The toggle button must still not exist.
+  WebAppToolbarButtonContainer* toolbar_button_container =
+      helper()->web_app_frame_toolbar()->get_right_container_for_testing();
+  EXPECT_EQ(nullptr,
+            toolbar_button_container->window_controls_overlay_toggle_button());
+}
+#endif  // BUILDFLAG(IS_MAC)
+
+// Verifies the windowControlsOverlay JS API reports the expected visibility
+// and bounds when WCO is auto-enabled at launch.
+IN_PROC_BROWSER_TEST_F(
+    WebAppFrameToolbarBrowserTest_WindowControlsOverlayNoToggle,
+    WindowControlsOverlay) {
+  InstallAndLaunchWebApp();
+  ASSERT_TRUE(helper()->browser_view()->IsWindowControlsOverlayEnabled());
+
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return !GetWindowControlOverlayBoundingClientRect().IsEmpty();
+  }));
+
+  EXPECT_TRUE(GetWindowControlOverlayVisibility());
+
+  gfx::Rect bounds = GetWindowControlOverlayBoundingClientRect();
+#if BUILDFLAG(IS_MAC)
+  EXPECT_NE(0, bounds.x());
+  EXPECT_EQ(0, bounds.y());
+#else
+  EXPECT_EQ(gfx::Point(), bounds.origin());
+#endif
+  EXPECT_FALSE(bounds.IsEmpty());
+}
+
+// Verifies the geometrychange event fires and reports correct bounds when
+// the window is resized while WCO is auto-enabled.
+IN_PROC_BROWSER_TEST_F(
+    WebAppFrameToolbarBrowserTest_WindowControlsOverlayNoToggle,
+    GeometryChangeEvent) {
+  InstallAndLaunchWebApp();
+  ASSERT_TRUE(helper()->browser_view()->IsWindowControlsOverlayEnabled());
+
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return !GetWindowControlOverlayBoundingClientRect().IsEmpty();
+  }));
+
+  const gfx::Rect initial_js_overlay_bounds =
+      GetWindowControlOverlayBoundingClientRect();
+  gfx::Rect new_bounds = helper()->browser_view()->GetLocalBounds();
+  new_bounds.set_width(new_bounds.width() - 1);
+  ResizeWindowBoundsAndWait(new_bounds);
+
+  const gfx::Rect resized_js_overlay_bounds =
+      GetWindowControlOverlayBoundingClientRect();
+  const gfx::Rect resized_js_overlay_event_bounds =
+      GetWindowControlOverlayBoundingClientRectFromEvent();
+  EXPECT_GE(EvalJs(helper()->browser_view()->GetActiveWebContents(),
+                   "geometrychangeCount")
+                .ExtractInt(),
+            1);
+  EXPECT_TRUE(GetWindowControlOverlayVisibility());
+  EXPECT_TRUE(GetWindowControlOverlayVisibilityFromEvent());
+  EXPECT_EQ(resized_js_overlay_bounds, resized_js_overlay_event_bounds);
+  EXPECT_EQ(initial_js_overlay_bounds.origin(),
+            resized_js_overlay_bounds.origin());
+  EXPECT_NE(initial_js_overlay_bounds.width(),
+            resized_js_overlay_bounds.width());
+  EXPECT_EQ(initial_js_overlay_bounds.height(),
+            resized_js_overlay_bounds.height());
+}
+
+IN_PROC_BROWSER_TEST_F(
+    WebAppFrameToolbarBrowserTest_WindowControlsOverlayNoToggle,
+    OpenInChrome) {
+  InstallAndLaunchWebApp();
+  ASSERT_TRUE(helper()->browser_view()->IsWindowControlsOverlayEnabled());
+
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return !GetWindowControlOverlayBoundingClientRect().IsEmpty();
+  }));
+
+  ASSERT_TRUE(GetWindowControlOverlayVisibility());
+
+  chrome::ExecuteCommand(helper()->browser_view()->browser(),
+                         IDC_OPEN_IN_CHROME);
+
+  // The page now lives in a regular Chrome tab; WCO must not be visible.
+  EXPECT_EQ(false, EvalJs(browser()->GetTabStripModel()->GetActiveWebContents(),
+                          "window.navigator.windowControlsOverlay.visible"));
+}
+
+// Verifies that the media query matches and the corresponding CSS is applied at
+// launch. Adapted from
+// WebAppFrameToolbarBrowserTest_WindowControlsOverlay.DisplayModeMediaCSS.
+IN_PROC_BROWSER_TEST_F(
+    WebAppFrameToolbarBrowserTest_WindowControlsOverlayNoToggle,
+    DisplayModeMediaCSS) {
+  InstallAndLaunchWebApp();
+  ASSERT_TRUE(helper()->browser_view()->IsWindowControlsOverlayEnabled());
+
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return !GetWindowControlOverlayBoundingClientRect().IsEmpty();
+  }));
+
+  auto* web_contents = helper()->browser_view()->GetActiveWebContents();
+
+  std::string get_background_color = R"(
+    window.getComputedStyle(document.body, null)
+      .getPropertyValue('background-color');
+  )";
+  std::string match_media_wco =
+      "window.matchMedia('(display-mode: window-controls-overlay)').matches;";
+  std::string red = "rgb(255, 0, 0)";
+
+  EXPECT_TRUE(GetWindowControlOverlayVisibility());
+  EXPECT_TRUE(EvalJs(web_contents, match_media_wco).ExtractBool());
+  EXPECT_EQ(red, EvalJs(web_contents, get_background_color));
+}
+
+namespace web_app::integration_tests {
+namespace {
+
+class WebAppIntegration_WindowControlsOverlayNoToggle
+    : public WebAppIntegrationTest {
+ private:
+  base::test::ScopedFeatureList no_toggle_feature_list_{
+      features::kDesktopPWAsWindowControlsOverlayWithNoToggle};
+};
+
+IN_PROC_BROWSER_TEST_F(WebAppIntegration_WindowControlsOverlayNoToggle,
+                       WindowControlsOverlayEnabledByDefaultWithoutToggle) {
+  helper_.InstallMenuOption(Site::kWco);
+  helper_.CheckWindowCreated();
+  helper_.CheckWindowControlsOverlayToggle(Site::kWco, IsShown::kNotShown);
+  helper_.CheckWindowControlsOverlay(Site::kWco, IsOn::kOn);
+}
+
+IN_PROC_BROWSER_TEST_F(WebAppIntegration_WindowControlsOverlayNoToggle,
+                       WindowControlsOverlayNotEnabledWithoutWCOManifest) {
+  helper_.InstallMenuOption(Site::kStandalone);
+  helper_.CheckWindowCreated();
+  helper_.CheckWindowControlsOverlayToggle(Site::kStandalone,
+                                           IsShown::kNotShown);
+  helper_.CheckWindowControlsOverlay(Site::kStandalone, IsOn::kOff);
+}
+
+IN_PROC_BROWSER_TEST_F(
+    WebAppIntegration_WindowControlsOverlayNoToggle,
+    ManifestUpdateDisplayOverrideWindowControlsOverlayNoToggle) {
+  helper_.InstallMenuOption(Site::kStandalone);
+  helper_.CheckWindowCreated();
+  helper_.CheckWindowControlsOverlayToggle(Site::kStandalone,
+                                           IsShown::kNotShown);
+  helper_.CheckWindowControlsOverlay(Site::kStandalone, IsOn::kOff);
+  helper_.ManifestUpdateDisplay(Site::kStandalone, Display::kWco);
+  helper_.LaunchFromChromeApps(Site::kStandalone);
+  helper_.CheckWindowCreated();
+  helper_.CheckWindowControlsOverlayToggle(Site::kStandalone,
+                                           IsShown::kNotShown);
+  helper_.CheckWindowControlsOverlay(Site::kStandalone, IsOn::kOn);
+}
+
+IN_PROC_BROWSER_TEST_F(WebAppIntegration_WindowControlsOverlayNoToggle,
+                       WindowControlsOverlayPreservedAcrossLaunchesNoToggle) {
+  helper_.InstallMenuOption(Site::kWco);
+  helper_.CheckWindowCreated();
+  helper_.CheckWindowControlsOverlayToggle(Site::kWco, IsShown::kNotShown);
+  helper_.CheckWindowControlsOverlay(Site::kWco, IsOn::kOn);
+  helper_.ClosePwa();
+  helper_.LaunchFromChromeApps(Site::kWco);
+  helper_.CheckWindowControlsOverlayToggle(Site::kWco, IsShown::kNotShown);
+  helper_.CheckWindowControlsOverlay(Site::kWco, IsOn::kOn);
+}
+
+IN_PROC_BROWSER_TEST_F(
+    WebAppIntegration_WindowControlsOverlayNoToggle,
+    ManifestUpdateDisplayOverrideRemoveWindowControlsOverlayNoToggle) {
+  helper_.InstallMenuOption(Site::kWco);
+  helper_.CheckWindowCreated();
+  helper_.CheckWindowControlsOverlayToggle(Site::kWco, IsShown::kNotShown);
+  helper_.CheckWindowControlsOverlay(Site::kWco, IsOn::kOn);
+  helper_.ManifestUpdateDisplay(Site::kWco, Display::kStandalone);
+  helper_.LaunchFromChromeApps(Site::kWco);
+  helper_.CheckWindowCreated();
+  helper_.CheckWindowControlsOverlayToggle(Site::kWco, IsShown::kNotShown);
+  helper_.CheckWindowControlsOverlay(Site::kWco, IsOn::kOff);
+}
+
+IN_PROC_BROWSER_TEST_F(
+    WebAppIntegration_WindowControlsOverlayNoToggle,
+    PolicyInstalledWindowControlsOverlayAutoEnabledNoToggle) {
+  helper_.InstallPolicyApp(Site::kWco, ShortcutOptions::kNoShortcut,
+                           WindowOptions::kWindowed, InstallMode::kWebApp);
+  helper_.LaunchFromChromeApps(Site::kWco);
+  helper_.CheckWindowCreated();
+  helper_.CheckWindowControlsOverlayToggle(Site::kWco, IsShown::kNotShown);
+  helper_.CheckWindowControlsOverlay(Site::kWco, IsOn::kOn);
+}
+
+}  // namespace
+}  // namespace web_app::integration_tests
 
 // Tests for Additional Windowing Controls on web app windows.
 // https://chromestatus.com/feature/5201832664629248
@@ -2306,10 +2723,12 @@ class WebAppFrameToolbarBrowserTest_AdditionalWindowingControls
   }
 
   void EnterTabFullscreenThroughWebAPI() {
+    auto* web_contents = helper()->browser_view()->GetActiveWebContents();
+    web_contents->GetRenderWidgetHostView()->SetHasFocusForTesting(true);
     ui_test_utils::FullscreenWaiter waiter(helper()->app_browser(),
                                            {.tab_fullscreen = true});
-    EXPECT_TRUE(ExecJs(helper()->browser_view()->GetActiveWebContents(),
-                       "document.documentElement.requestFullscreen();"));
+    EXPECT_TRUE(
+        ExecJs(web_contents, "document.documentElement.requestFullscreen();"));
     waiter.Wait();
   }
 
@@ -2339,8 +2758,10 @@ class WebAppFrameToolbarBrowserTest_AdditionalWindowingControls
               "window.maximize() succeeded.");
     EXPECT_TRUE(helper()->browser_view()->IsMaximized());
     EXPECT_FALSE(helper()->browser_view()->IsFullscreen());
-    EXPECT_TRUE(helper()->browser_view()->browser()->SupportsWindowFeature(
-        Browser::WindowFeature::kFeatureTitleBar));
+    EXPECT_TRUE(
+        WindowFeatureController::From(helper()->browser_view()->browser())
+            ->SupportsWindowFeature(
+                WindowFeatureController::WindowFeature::kFeatureTitleBar));
   }
 
   void MinimizeAndVerify(content::WebContents* web_contents) {
@@ -2354,12 +2775,16 @@ class WebAppFrameToolbarBrowserTest_AdditionalWindowingControls
               "document.documentElement.requestFullscreen() succeeded.");
     EXPECT_TRUE(helper()->browser_view()->IsFullscreen());
 #if !BUILDFLAG(IS_MAC)
-    EXPECT_FALSE(helper()->browser_view()->browser()->SupportsWindowFeature(
-        Browser::WindowFeature::kFeatureTitleBar));
+    EXPECT_FALSE(
+        WindowFeatureController::From(helper()->browser_view()->browser())
+            ->SupportsWindowFeature(
+                WindowFeatureController::WindowFeature::kFeatureTitleBar));
 #else
     // On Mac the top bar is displayed for web apps even in fullscreen mode
-    EXPECT_TRUE(helper()->browser_view()->browser()->SupportsWindowFeature(
-        Browser::WindowFeature::kFeatureTitleBar));
+    EXPECT_TRUE(
+        WindowFeatureController::From(helper()->browser_view()->browser())
+            ->SupportsWindowFeature(
+                WindowFeatureController::WindowFeature::kFeatureTitleBar));
 #endif
   }
 
@@ -2368,8 +2793,10 @@ class WebAppFrameToolbarBrowserTest_AdditionalWindowingControls
     EXPECT_EQ(
         EvalDisplayStateChange(web_contents, "restore", expected_js_state),
         "window.restore() succeeded.");
-    EXPECT_TRUE(helper()->browser_view()->browser()->SupportsWindowFeature(
-        Browser::WindowFeature::kFeatureTitleBar));
+    EXPECT_TRUE(
+        WindowFeatureController::From(helper()->browser_view()->browser())
+            ->SupportsWindowFeature(
+                WindowFeatureController::WindowFeature::kFeatureTitleBar));
     EXPECT_FALSE(helper()->browser_view()->IsFullscreen());
     EXPECT_EQ(helper()->browser_view()->IsMaximized(),
               expected_js_state == "maximized");
@@ -2414,7 +2841,7 @@ IN_PROC_BROWSER_TEST_F(
   chrome::ExecuteCommand(app_browser, IDC_OPEN_IN_CHROME);
   observer.Wait();
 
-  auto* web_contents = browser()->tab_strip_model()->GetActiveWebContents();
+  auto* web_contents = browser()->GetTabStripModel()->GetActiveWebContents();
 
   EXPECT_THAT(EvalDisplayStateChange(web_contents, "maximize", "maximized"),
               content::EvalJsResult::ErrorIs(testing::AllOf(
@@ -2435,12 +2862,26 @@ IN_PROC_BROWSER_TEST_F(
 
   // Defaults to `std::nullopt` -> Returns "fallback".
   CheckCanResize(true, std::nullopt);
+  // Verify resizable boolean evaluation.
+  EXPECT_EQ(content::EvalJs(web_contents,
+                            "window.matchMedia('(resizable)').matches;"),
+            true);
+  EXPECT_EQ(content::EvalJs(web_contents,
+                            "window.matchMedia('not (resizable)').matches;"),
+            false);
 
   // Explicitly set to false -> Returns false.
   EXPECT_EQ(EvalSetResizable(web_contents, /*resizable_passed=*/false,
                              /*resizable_expected=*/false),
             "window.setResizable(false) succeeded.");
   CheckCanResize(false, false);
+  // Verify resizable boolean evaluation.
+  EXPECT_EQ(content::EvalJs(web_contents,
+                            "window.matchMedia('(resizable)').matches;"),
+            false);
+  EXPECT_EQ(content::EvalJs(web_contents,
+                            "window.matchMedia('not (resizable)').matches;"),
+            true);
 
   // Explicitly set to true -> Returns true.
   EXPECT_EQ(EvalSetResizable(web_contents, /*resizable_passed=*/true,
@@ -2558,8 +2999,8 @@ IN_PROC_BROWSER_TEST_F(
   helper()->GrantWindowManagementPermission();
 
   // Add second tab.
-  chrome::NewTab(helper()->app_browser());
-  ASSERT_EQ(helper()->app_browser()->tab_strip_model()->count(), 2);
+  chrome::NewTab(helper()->app_browser(), NewTabTypes::kNoUserAction);
+  ASSERT_EQ(helper()->app_browser()->GetTabStripModel()->count(), 2);
   ASSERT_TRUE(
       ui_test_utils::NavigateToURL(helper()->app_browser(), second_page_url()));
 
@@ -2596,8 +3037,7 @@ IN_PROC_BROWSER_TEST_F(
 
 // TODO(https://crbug.com/498907676) This test is flaky on Mac.
 // TODO(https://crbug.com/498769559) This test is flaky on Wayland.
-#if BUILDFLAG(IS_MAC) || \
-    (BUILDFLAG(IS_LINUX) && BUILDFLAG(SUPPORTS_OZONE_WAYLAND))
+#if BUILDFLAG(IS_MAC)
 #define MAYBE_MinimizeAndRestoreWindowWithApi \
   DISABLED_MinimizeAndRestoreWindowWithApi
 #else
@@ -2606,6 +3046,11 @@ IN_PROC_BROWSER_TEST_F(
 IN_PROC_BROWSER_TEST_F(
     WebAppFrameToolbarBrowserTest_AdditionalWindowingControls,
     MAYBE_MinimizeAndRestoreWindowWithApi) {
+#if BUILDFLAG(IS_OZONE)
+  if (::ui::OzonePlatform::RunningOnWaylandForTest()) {
+    GTEST_SKIP() << "Flaky on Wayland";
+  }
+#endif
   InstallAndLaunchWebApp();
   helper()->GrantWindowManagementPermission();
   auto* web_contents = helper()->browser_view()->GetActiveWebContents();
@@ -2688,8 +3133,7 @@ IN_PROC_BROWSER_TEST_F(
 // TODO(https://crbug.com/458599317) Maximizing fullscreen window doesn't work
 // correctly on Mac
 // TODO(https://crbug.com/498769559) This test is flaky on Wayland.
-#if BUILDFLAG(IS_MAC) || \
-    (BUILDFLAG(IS_LINUX) && BUILDFLAG(SUPPORTS_OZONE_WAYLAND))
+#if BUILDFLAG(IS_MAC)
 #define MAYBE_FullscreenMaximizeAndRestoreWindowWithApi \
   DISABLED_FullscreenMaximizeAndRestoreWindowWithApi
 #else
@@ -2699,6 +3143,11 @@ IN_PROC_BROWSER_TEST_F(
 IN_PROC_BROWSER_TEST_F(
     WebAppFrameToolbarBrowserTest_AdditionalWindowingControls,
     MAYBE_FullscreenMaximizeAndRestoreWindowWithApi) {
+#if BUILDFLAG(IS_OZONE)
+  if (::ui::OzonePlatform::RunningOnWaylandForTest()) {
+    GTEST_SKIP() << "Flaky on Wayland";
+  }
+#endif
   InstallAndLaunchWebApp();
   helper()->GrantWindowManagementPermission();
   auto* web_contents = helper()->browser_view()->GetActiveWebContents();
@@ -2789,6 +3238,26 @@ IN_PROC_BROWSER_TEST_F(
 
 IN_PROC_BROWSER_TEST_F(
     WebAppFrameToolbarBrowserTest_AdditionalWindowingControls,
+    RejectWithoutUserActivation) {
+  InstallAndLaunchWebApp();
+  auto* web_contents = helper()->browser_view()->GetActiveWebContents();
+  const GURL url = web_contents->GetLastCommittedURL();
+  // Grant window-management permission without transient user activation.
+  HostContentSettingsMapFactory::GetForProfile(browser()->GetProfile())
+      ->SetContentSettingDefaultScope(url, url,
+                                      ContentSettingsType::WINDOW_MANAGEMENT,
+                                      CONTENT_SETTING_ALLOW);
+
+  EXPECT_THAT(
+      EvalDisplayStateChange(web_contents, "maximize", "maximized",
+                             content::EXECUTE_SCRIPT_NO_USER_GESTURE),
+      content::EvalJsResult::ErrorIs(testing::AllOf(
+          testing::HasSubstr("window.maximize() rejected"),
+          testing::HasSubstr("API requires transient user activation."))));
+}
+
+IN_PROC_BROWSER_TEST_F(
+    WebAppFrameToolbarBrowserTest_AdditionalWindowingControls,
     RejectSimultaneousWindowChanges) {
   InstallAndLaunchWebApp();
   helper()->GrantWindowManagementPermission();
@@ -2808,17 +3277,17 @@ IN_PROC_BROWSER_TEST_F(
 }
 
 // TODO(https://crbug.com/498769559) This test is flaky on Wayland.
-#if BUILDFLAG(IS_LINUX) && BUILDFLAG(SUPPORTS_OZONE_WAYLAND)
-#define MAYBE_WindowSetResizableDoNotBlockResizingWebApis \
-  DISABLED_WindowSetResizableDoNotBlockResizingWebApis
-#else
 #define MAYBE_WindowSetResizableDoNotBlockResizingWebApis \
   WindowSetResizableDoNotBlockResizingWebApis
-#endif
 // windows.setResizable API should block only user-initiated requests
 IN_PROC_BROWSER_TEST_F(
     WebAppFrameToolbarBrowserTest_AdditionalWindowingControls,
     MAYBE_WindowSetResizableDoNotBlockResizingWebApis) {
+#if BUILDFLAG(IS_OZONE)
+  if (::ui::OzonePlatform::RunningOnWaylandForTest()) {
+    GTEST_SKIP() << "Flaky on Wayland";
+  }
+#endif
   InstallAndLaunchWebApp();
   helper()->GrantWindowManagementPermission();
 
@@ -2891,16 +3360,16 @@ IN_PROC_BROWSER_TEST_F(
 }
 
 // TODO(https://crbug.com/498769559) This test is flaky on Wayland.
-#if BUILDFLAG(IS_LINUX) && BUILDFLAG(SUPPORTS_OZONE_WAYLAND)
-#define MAYBE_WindowSetResizableDoNotBlockFullscreenWebAPI \
-  DISABLED_WindowSetResizableDoNotBlockFullscreenWebAPI
-#else
 #define MAYBE_WindowSetResizableDoNotBlockFullscreenWebAPI \
   WindowSetResizableDoNotBlockFullscreenWebAPI
-#endif
 IN_PROC_BROWSER_TEST_F(
     WebAppFrameToolbarBrowserTest_AdditionalWindowingControls,
     MAYBE_WindowSetResizableDoNotBlockFullscreenWebAPI) {
+#if BUILDFLAG(IS_OZONE)
+  if (::ui::OzonePlatform::RunningOnWaylandForTest()) {
+    GTEST_SKIP() << "Flaky on Wayland";
+  }
+#endif
   InstallAndLaunchWebApp();
   helper()->GrantWindowManagementPermission();
   auto* browser_view = helper()->browser_view();
@@ -2920,8 +3389,7 @@ IN_PROC_BROWSER_TEST_F(
 
 // TODO(https://crbug.com/498907676) This test is flaky on Mac.
 // TODO(https://crbug.com/498769559) This test is flaky on Wayland.
-#if BUILDFLAG(IS_MAC) || \
-    (BUILDFLAG(IS_LINUX) && BUILDFLAG(SUPPORTS_OZONE_WAYLAND))
+#if BUILDFLAG(IS_MAC)
 #define MAYBE_WindowSetResizableDoNotBlockExitingFullscreen \
   DISABLED_WindowSetResizableDoNotBlockExitingFullscreen
 #else
@@ -2932,6 +3400,11 @@ IN_PROC_BROWSER_TEST_F(
 IN_PROC_BROWSER_TEST_F(
     WebAppFrameToolbarBrowserTest_AdditionalWindowingControls,
     MAYBE_WindowSetResizableDoNotBlockExitingFullscreen) {
+#if BUILDFLAG(IS_OZONE)
+  if (::ui::OzonePlatform::RunningOnWaylandForTest()) {
+    GTEST_SKIP() << "Flaky on Wayland";
+  }
+#endif
   InstallAndLaunchWebApp();
   helper()->GrantWindowManagementPermission();
   auto* browser_view = helper()->browser_view();
@@ -2966,18 +3439,23 @@ IN_PROC_BROWSER_TEST_F(
             "window.setResizable(false) succeeded.");
   EXPECT_FALSE(helper()->browser_view()->IsFullscreen());
 
-  // Most accelerators (e.g., F11, ⛶, Fn+F) maps to IDC_FULLSCREEN command
-  ASSERT_TRUE(chrome::ExecuteCommand(helper()->app_browser(), IDC_FULLSCREEN));
-  base::RunLoop().RunUntilIdle();
-  EXPECT_FALSE(helper()->browser_view()->IsFullscreen());
-
-  // Exception: VKEY_ZOOM maps to ash::AcceleratorAction::kToggleFullscreen
+  // Test the fullscreen shortcut key.
 #if BUILDFLAG(IS_CHROMEOS)
-  ASSERT_TRUE(ui_test_utils::SendKeyPressSync(
-      helper()->app_browser(), ui::VKEY_ZOOM, false, false, false, false));
+  // On ChromeOS VKEY_ZOOM maps to ash::AcceleratorAction::kToggleFullscreen
+  ui::KeyboardCode fullscreen_key = ui::VKEY_ZOOM;
+  int fullscreen_modifiers = ui::EF_NONE;
+#elif BUILDFLAG(IS_MAC)
+  ui::KeyboardCode fullscreen_key = ui::VKEY_F;
+  int fullscreen_modifiers = ui::EF_COMMAND_DOWN | ui::EF_CONTROL_DOWN;
+#else
+  ui::KeyboardCode fullscreen_key = ui::VKEY_F11;
+  int fullscreen_modifiers = ui::EF_NONE;
+#endif
+
+  ui::test::EventGenerator(GetWindowForEventGenerator(helper()->app_browser()))
+      .PressAndReleaseKey(fullscreen_key, fullscreen_modifiers);
   base::RunLoop().RunUntilIdle();
   EXPECT_FALSE(helper()->browser_view()->IsFullscreen());
-#endif
 }
 
 IN_PROC_BROWSER_TEST_F(
@@ -3013,14 +3491,54 @@ IN_PROC_BROWSER_TEST_F(
     std::string script =
         base::StringPrintf(script_template, move_command, move_command);
 
-    gfx::Rect bounds_before = helper()->app_browser()->window()->GetBounds();
+    gfx::Rect bounds_before = helper()->app_browser()->GetWindow()->GetBounds();
     SCOPED_TRACE(testing::Message()
                  << " move-command: " << move_command
                  << " popup-before: " << bounds_before.ToString());
     EXPECT_EQ(content::EvalJs(web_contents, script), "move fired");
-    gfx::Rect bounds_after = helper()->app_browser()->window()->GetBounds();
+    gfx::Rect bounds_after = helper()->app_browser()->GetWindow()->GetBounds();
     EXPECT_NE(bounds_before.ToString(), bounds_after.ToString());
   }
+}
+
+class IsolatedWebAppFrameToolbarBrowserTest_AdditionalWindowingControls
+    : public WebAppFrameToolbarBrowserTest {
+ public:
+  IsolatedWebAppFrameToolbarBrowserTest_AdditionalWindowingControls() {
+    scoped_feature_list_.InitWithFeatures(
+        {blink::features::kDesktopPWAsAdditionalWindowingControls,
+         features::kIsolatedWebApps},
+        {});
+  }
+
+ private:
+  base::test::ScopedFeatureList scoped_feature_list_;
+};
+
+IN_PROC_BROWSER_TEST_F(
+    IsolatedWebAppFrameToolbarBrowserTest_AdditionalWindowingControls,
+    UserActivationNotRequiredForIwa) {
+  std::unique_ptr iwa =
+      web_app::IsolatedWebAppBuilder(
+          web_app::ManifestBuilder().AddPermissionsPolicy(
+              network::mojom::PermissionsPolicyFeature::kWindowManagement, true,
+              {}))
+          .BuildBundle();
+  auto* profile = browser()->GetProfile();
+  web_app::IsolatedWebAppUrlInfo url_info =
+      helper()->InstallAndLaunchIsolatedWebApp(profile, iwa.get());
+
+  auto* web_contents = helper()->browser_view()->GetActiveWebContents();
+  const GURL url = web_contents->GetLastCommittedURL();
+  // Grant window-management permission without transient user activation.
+  HostContentSettingsMapFactory::GetForProfile(browser()->GetProfile())
+      ->SetContentSettingDefaultScope(url, url,
+                                      ContentSettingsType::WINDOW_MANAGEMENT,
+                                      CONTENT_SETTING_ALLOW);
+
+  EXPECT_THAT(EvalDisplayStateChange(web_contents, "maximize", "maximized",
+                                     content::EXECUTE_SCRIPT_NO_USER_GESTURE),
+              "window.maximize() succeeded.");
 }
 
 #endif  // !BUILDFLAG(IS_ANDROID)
@@ -3105,11 +3623,11 @@ class WebAppFrameToolbarBrowserTest_OriginText
 
   void InstallAndLaunchWebApp() {
     webapps::AppId app_id =
-        helper()->InstallWebApp(browser()->profile(), app_url());
+        helper()->InstallWebApp(browser()->GetProfile(), app_url());
     content::TestNavigationObserver navigation_observer(app_url());
     navigation_observer.StartWatchingNewWebContents();
-    Browser* app_browser =
-        web_app::LaunchWebAppBrowser(browser()->profile(), app_id);
+    BrowserWindowInterface* app_browser =
+        web_app::LaunchWebAppBrowser(browser()->GetProfile(), app_id);
     helper()->SetViewFromAppBrowser(app_browser);
 
     OriginTextVisibilityWaiter origin_text_waiter(
@@ -3121,7 +3639,7 @@ class WebAppFrameToolbarBrowserTest_OriginText
   void ExpectLastCommittedUrl(const GURL& url) {
     EXPECT_EQ(url, helper()
                        ->app_browser()
-                       ->tab_strip_model()
+                       ->GetTabStripModel()
                        ->GetActiveWebContents()
                        ->GetLastCommittedURL());
   }
@@ -3147,9 +3665,86 @@ IN_PROC_BROWSER_TEST_F(WebAppFrameToolbarBrowserTest_OriginText,
   ASSERT_TRUE(ui_test_utils::NavigateToURL(helper()->app_browser(), nav_url));
   ui_test_utils::WaitForViewVisibility(helper()->app_browser(),
                                        VIEW_ID_WEB_APP_ORIGIN_TEXT, false);
-  EXPECT_FALSE(
-      helper()->app_browser()->app_controller()->ShouldShowCustomTabBar());
+  EXPECT_FALSE(web_app::AppBrowserController::From(helper()->app_browser())
+                   ->ShouldShowCustomTabBar());
   ExpectLastCommittedUrl(nav_url);
+}
+
+IN_PROC_BROWSER_TEST_F(WebAppFrameToolbarBrowserTest_OriginText,
+                       AboutBlankPopup) {
+  InstallAndLaunchWebApp();
+  const GURL about_blank_url("about:blank?popup#fragment");
+  BrowserWindowInterface* const popup_browser = OpenPopupAndWait(
+      helper()->app_browser(), about_blank_url, gfx::Size(500, 500));
+  ASSERT_EQ(popup_browser->GetType(),
+            BrowserWindowInterface::Type::TYPE_APP_POPUP);
+  content::WebContents* const contents =
+      popup_browser->GetTabStripModel()->GetActiveWebContents();
+  EXPECT_EQ(about_blank_url, contents->GetLastCommittedURL());
+  ASSERT_TRUE(contents->GetPrimaryMainFrame()
+                  ->GetLastCommittedOrigin()
+                  .IsSameOriginWith(app_url()));
+  const web_app::AppBrowserController* const controller =
+      web_app::AppBrowserController::From(popup_browser);
+  ASSERT_TRUE(controller);
+  EXPECT_TRUE(provider()
+                  .registrar_unsafe()
+                  .GetScopeExtensions(controller->app_id())
+                  .empty());
+  EXPECT_FALSE(controller->ShouldShowCustomTabBar());
+  const std::u16string expected_origin_text =
+      GetExpectedOriginText(in_scope_host_);
+  EXPECT_EQ(expected_origin_text, controller->GetLaunchFlashText());
+  {
+    WebAppOriginText* origin_text = views::AsViewClass<WebAppOriginText>(
+        BrowserView::GetBrowserViewForBrowser(popup_browser)
+            ->GetViewByID(VIEW_ID_WEB_APP_ORIGIN_TEXT));
+    ASSERT_TRUE(origin_text);
+    OriginTextVisibilityWaiter origin_text_waiter(origin_text,
+                                                  expected_origin_text);
+    origin_text_waiter.WaitForOriginTextAnimation();
+  }
+  web_app::CloseAndWait(popup_browser);
+}
+
+IN_PROC_BROWSER_TEST_F(WebAppFrameToolbarBrowserTest_OriginText,
+                       AboutBlankPopupAfterHttpToHttpsUpgrade) {
+  GURL::Replacements replacements;
+  replacements.SetSchemeStr("http");
+  const GURL http_app_url =
+      url::Origin::Create(app_url()).GetURL().ReplaceComponents(replacements);
+  const webapps::AppId app_id =
+      helper()->InstallWebApp(browser()->GetProfile(), http_app_url);
+  ASSERT_TRUE(provider().registrar_unsafe().GetScopeExtensions(app_id).empty());
+
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), app_url()));
+  helper()->ReparentWebContentsIntoAppBrowserAndWait(
+      browser()->GetTabStripModel()->GetActiveWebContents(), app_id);
+  BrowserWindowInterface* const app_browser = helper()->app_browser();
+  const web_app::AppBrowserController* const app_controller =
+      web_app::AppBrowserController::From(app_browser);
+  ASSERT_TRUE(app_controller);
+  ASSERT_TRUE(app_controller->IsUrlInAppScope(app_url()));
+  ASSERT_FALSE(app_controller->ShouldShowCustomTabBar());
+
+  const GURL about_blank_url("about:blank?popup#fragment");
+  BrowserWindowInterface* const popup_browser =
+      OpenPopupAndWait(app_browser, about_blank_url, gfx::Size(500, 500));
+  ASSERT_EQ(popup_browser->GetType(),
+            BrowserWindowInterface::Type::TYPE_APP_POPUP);
+  content::WebContents* const contents =
+      popup_browser->GetTabStripModel()->GetActiveWebContents();
+  EXPECT_EQ(about_blank_url, contents->GetLastCommittedURL());
+  const url::Origin& origin =
+      contents->GetPrimaryMainFrame()->GetLastCommittedOrigin();
+  ASSERT_TRUE(origin.IsSameOriginWith(app_url()));
+  ASSERT_FALSE(origin.IsSameOriginWith(http_app_url));
+  const web_app::AppBrowserController* const popup_controller =
+      web_app::AppBrowserController::From(popup_browser);
+  ASSERT_TRUE(popup_controller);
+  EXPECT_FALSE(popup_controller->ShouldShowCustomTabBar());
+  web_app::CloseAndWait(popup_browser);
+  web_app::CloseAndWait(app_browser);
 }
 
 IN_PROC_BROWSER_TEST_F(WebAppFrameToolbarBrowserTest_OriginText,
@@ -3162,32 +3757,25 @@ IN_PROC_BROWSER_TEST_F(WebAppFrameToolbarBrowserTest_OriginText,
   ASSERT_TRUE(ui_test_utils::NavigateToURL(helper()->app_browser(), nav_url));
   ui_test_utils::WaitForViewVisibility(helper()->app_browser(),
                                        VIEW_ID_WEB_APP_ORIGIN_TEXT, false);
-  EXPECT_TRUE(
-      helper()->app_browser()->app_controller()->ShouldShowCustomTabBar());
+  EXPECT_TRUE(web_app::AppBrowserController::From(helper()->app_browser())
+                  ->ShouldShowCustomTabBar());
   ExpectLastCommittedUrl(nav_url);
 
   // Origin text should not show if navigating back to the start url.
   ASSERT_TRUE(ui_test_utils::NavigateToURL(helper()->app_browser(), app_url()));
   ui_test_utils::WaitForViewVisibility(helper()->app_browser(),
                                        VIEW_ID_WEB_APP_ORIGIN_TEXT, false);
-  EXPECT_FALSE(
-      helper()->app_browser()->app_controller()->ShouldShowCustomTabBar());
+  EXPECT_FALSE(web_app::AppBrowserController::From(helper()->app_browser())
+                   ->ShouldShowCustomTabBar());
   ExpectLastCommittedUrl(app_url());
 }
 
 IN_PROC_BROWSER_TEST_F(WebAppFrameToolbarBrowserTest_OriginText,
                        ThemeColorChange) {
-#if defined(MEMORY_SANITIZER)
-  if (base::FeatureList::IsEnabled(features::kInitialWebUI)) {
-    GTEST_SKIP() << "Skipping test on MSAN with InitialWebUI enabled. "
-                    "See crbug.com/477426026.";
-  }
-#endif
-
   ASSERT_TRUE(embedded_https_test_server().Started());
   InstallAndLaunchWebApp();
   content::WebContents* web_contents =
-      helper()->app_browser()->tab_strip_model()->GetActiveWebContents();
+      helper()->app_browser()->GetTabStripModel()->GetActiveWebContents();
   content::AwaitDocumentOnLoadCompleted(web_contents);
 
   // Origin text should appear if theme color changes. This could happen when
@@ -3200,24 +3788,17 @@ IN_PROC_BROWSER_TEST_F(WebAppFrameToolbarBrowserTest_OriginText,
   content::AwaitDocumentOnLoadCompleted(web_contents);
   EXPECT_EQ(GetFrameColor(helper()->app_browser()), SK_ColorYELLOW);
   origin_text_waiter.WaitForOriginTextAnimation();
-  EXPECT_FALSE(
-      helper()->app_browser()->app_controller()->ShouldShowCustomTabBar());
+  EXPECT_FALSE(web_app::AppBrowserController::From(helper()->app_browser())
+                   ->ShouldShowCustomTabBar());
   ExpectLastCommittedUrl(nav_url);
 }
 
 IN_PROC_BROWSER_TEST_F(WebAppFrameToolbarBrowserTest_OriginText,
                        OutOfScopeBarWithThemeColorChange) {
-#if defined(MEMORY_SANITIZER)
-  if (base::FeatureList::IsEnabled(features::kInitialWebUI)) {
-    GTEST_SKIP() << "Skipping test on MSAN with InitialWebUI enabled. "
-                    "See crbug.com/477426026.";
-  }
-#endif
-
   ASSERT_TRUE(embedded_https_test_server().Started());
   InstallAndLaunchWebApp();
   content::WebContents* web_contents =
-      helper()->app_browser()->tab_strip_model()->GetActiveWebContents();
+      helper()->app_browser()->GetTabStripModel()->GetActiveWebContents();
   content::AwaitDocumentOnLoadCompleted(web_contents);
 
   // Origin text should show if theme color changes even though out-of-scope bar
@@ -3235,8 +3816,8 @@ IN_PROC_BROWSER_TEST_F(WebAppFrameToolbarBrowserTest_OriginText,
     // out-of-scope bar is shown. Behavior with scope_extensions: origin text
     // should be created with the URL of the page.
     origin_text_waiter.WaitForOriginTextAnimation();
-    EXPECT_TRUE(
-        helper()->app_browser()->app_controller()->ShouldShowCustomTabBar());
+    EXPECT_TRUE(web_app::AppBrowserController::From(helper()->app_browser())
+                    ->ShouldShowCustomTabBar());
     ExpectLastCommittedUrl(nav_url);
   }
 
@@ -3245,20 +3826,13 @@ IN_PROC_BROWSER_TEST_F(WebAppFrameToolbarBrowserTest_OriginText,
   content::AwaitDocumentOnLoadCompleted(web_contents);
   ui_test_utils::WaitForViewVisibility(helper()->app_browser(),
                                        VIEW_ID_WEB_APP_ORIGIN_TEXT, false);
-  EXPECT_FALSE(
-      helper()->app_browser()->app_controller()->ShouldShowCustomTabBar());
+  EXPECT_FALSE(web_app::AppBrowserController::From(helper()->app_browser())
+                   ->ShouldShowCustomTabBar());
   ExpectLastCommittedUrl(app_url());
 }
 
 IN_PROC_BROWSER_TEST_F(WebAppFrameToolbarBrowserTest_OriginText,
                        WebAppOriginTextAccessibleProperties) {
-#if defined(MEMORY_SANITIZER)
-  if (base::FeatureList::IsEnabled(features::kInitialWebUI)) {
-    GTEST_SKIP() << "Skipping test on MSAN with InitialWebUI enabled. "
-                    "See crbug.com/477426026.";
-  }
-#endif
-
   InstallAndLaunchWebApp();
   auto* origin_text = helper()->origin_text_view();
   ui::AXNodeData data;
@@ -3287,6 +3861,12 @@ class WebAppFrameToolbarBrowserTest_ScopeExtensionsOriginText
   static constexpr char in_scope_host_[] = "test.org";
   static constexpr char in_extended_scope_host_[] = "test.com";
   static constexpr char out_of_extended_scope_host_[] = "test.biz";
+  static constexpr auto kAboutBlankUrls = std::to_array<std::string_view>({
+      "about:blank",
+      "about:blank?minHeight=360&minWidth=360",
+      "about:blank#popup",
+      "about:blank?minHeight=360&minWidth=360#popup",
+  });
 
   std::u16string GetExpectedOriginText(const std::string& hostname) const {
     return base::StrCat(
@@ -3301,7 +3881,7 @@ class WebAppFrameToolbarBrowserTest_ScopeExtensionsOriginText
 
   void SetUpOnMainThread() override {
     web_app::WebAppProvider* provider =
-        web_app::WebAppProvider::GetForTest(browser()->profile());
+        web_app::WebAppProvider::GetForTest(browser()->GetProfile());
     web_app::test::WaitUntilWebAppProviderAndSubsystemsReady(provider);
 
     auto origin_association_fetcher =
@@ -3318,21 +3898,23 @@ class WebAppFrameToolbarBrowserTest_ScopeExtensionsOriginText
     web_app::WebAppBrowserTestBase::TearDownOnMainThread();
   }
 
-  std::string OriginAssociationFileFromAppIdentity(const GURL& app_identity) {
+  std::string OriginAssociationFileFromAppIdentity(const GURL& app_identity,
+                                                   std::string_view scope) {
     constexpr char kOriginAssociationTemplate[] = R"(
     {
       "$1": {
-        "scope": "/"
+        "scope": "$2"
       }
     })";
-    return base::ReplaceStringPlaceholders(kOriginAssociationTemplate,
-                                           {app_identity.spec()}, nullptr);
+    return base::ReplaceStringPlaceholders(
+        kOriginAssociationTemplate, {app_identity.spec(), std::string(scope)},
+        nullptr);
   }
 
   void ExpectLastCommittedUrl(const GURL& url) {
     EXPECT_EQ(url, helper()
                        ->app_browser()
-                       ->tab_strip_model()
+                       ->GetTabStripModel()
                        ->GetActiveWebContents()
                        ->GetLastCommittedURL());
   }
@@ -3349,10 +3931,17 @@ class WebAppFrameToolbarBrowserTest_ScopeExtensionsOriginText
                                                "/ssl/blank_page.html");
   }
 
-  void InstallAndLaunchWebApp() {
-    test_origin_association_fetcher_->SetData(
-        {{url::Origin::Create(extension_url()),
-          OriginAssociationFileFromAppIdentity(app_url())}});
+  void InstallAndLaunchWebApp(
+      std::optional<std::string_view> association_scope = "/",
+      bool has_origin_wildcard = false) {
+    if (association_scope) {
+      test_origin_association_fetcher_->SetData(
+          {{url::Origin::Create(extension_url()),
+            OriginAssociationFileFromAppIdentity(app_url(),
+                                                 *association_scope)}});
+    } else {
+      test_origin_association_fetcher_->SetData({});
+    }
 
     auto web_app_info =
         web_app::WebAppInstallInfo::CreateWithStartUrlForTesting(app_url());
@@ -3362,22 +3951,74 @@ class WebAppFrameToolbarBrowserTest_ScopeExtensionsOriginText
     web_app_info->user_display_mode =
         web_app::mojom::UserDisplayMode::kStandalone;
     auto scope_extension = web_app::ScopeExtensionInfo::CreateForOrigin(
-        url::Origin::Create(extension_url()),
-        /*has_origin_wildcard*/ false);
+        url::Origin::Create(extension_url()), has_origin_wildcard);
     web_app_info->scope_extensions = {std::move(scope_extension)};
 
     webapps::AppId app_id = web_app::test::InstallWebApp(
-        browser()->profile(), std::move(web_app_info));
+        browser()->GetProfile(), std::move(web_app_info));
     content::TestNavigationObserver navigation_observer(app_url());
     navigation_observer.StartWatchingNewWebContents();
-    Browser* app_browser =
-        web_app::LaunchWebAppBrowser(browser()->profile(), app_id);
+    BrowserWindowInterface* app_browser =
+        web_app::LaunchWebAppBrowser(browser()->GetProfile(), app_id);
     helper()->SetViewFromAppBrowser(app_browser);
 
     OriginTextVisibilityWaiter origin_text_waiter(
         helper()->origin_text_view(), GetExpectedOriginText(in_scope_host_));
     navigation_observer.WaitForNavigationFinished();
     origin_text_waiter.WaitForOriginTextAnimation();
+  }
+
+  void CheckAboutBlankPopups(const GURL& opener_url, bool should_show_toolbar) {
+    BrowserWindowInterface* const app_browser = helper()->app_browser();
+    ASSERT_TRUE(ui_test_utils::NavigateToURL(app_browser, opener_url));
+    const gfx::Size size(500, 500);
+    for (std::string_view url : kAboutBlankUrls) {
+      SCOPED_TRACE(url);
+      BrowserWindowInterface* const popup_browser =
+          OpenPopupAndWait(app_browser, GURL(url), size);
+      ASSERT_EQ(popup_browser->GetType(),
+                BrowserWindowInterface::Type::TYPE_APP_POPUP);
+      content::WebContents* const contents =
+          popup_browser->GetTabStripModel()->GetActiveWebContents();
+      ASSERT_TRUE(contents->GetPrimaryMainFrame()
+                      ->GetLastCommittedOrigin()
+                      .IsSameOriginWith(opener_url));
+      web_app::AppBrowserController* const controller =
+          web_app::AppBrowserController::From(popup_browser);
+      ASSERT_TRUE(controller);
+      EXPECT_EQ(should_show_toolbar, controller->ShouldShowCustomTabBar());
+      EXPECT_EQ(u"about:blank", controller->GetFormattedUrlOrigin());
+      const std::u16string expected_origin_text =
+          should_show_toolbar ? u"about:blank"
+                              : GetExpectedOriginText(opener_url.GetHost());
+      EXPECT_EQ(expected_origin_text, controller->GetLaunchFlashText());
+      // Wait for only one of the animations to reduce timeout risk on slow
+      // bots. The expected text is still checked for every URL above.
+      if (!should_show_toolbar && url == kAboutBlankUrls.front()) {
+        WebAppOriginText* origin_text = views::AsViewClass<WebAppOriginText>(
+            BrowserView::GetBrowserViewForBrowser(popup_browser)
+                ->GetViewByID(VIEW_ID_WEB_APP_ORIGIN_TEXT));
+        ASSERT_TRUE(origin_text);
+        OriginTextVisibilityWaiter origin_text_waiter(origin_text,
+                                                      expected_origin_text);
+        origin_text_waiter.WaitForOriginTextAnimation();
+      }
+#if !BUILDFLAG(IS_LINUX)
+      // Match the platform restriction on InScopePWAPopupsHaveCorrectSize.
+      controller->UpdateCustomTabBarVisibility(false);
+      const gfx::Size actual_size =
+          BrowserWindow::FromBrowser(popup_browser)->GetContentsSize();
+      EXPECT_EQ(size.width(), actual_size.width());
+      if (should_show_toolbar) {
+        // Record the current content-height loss without depending on a
+        // platform-specific toolbar height.
+        EXPECT_LT(actual_size.height(), size.height());
+      } else {
+        EXPECT_EQ(size.height(), actual_size.height());
+      }
+#endif
+      web_app::CloseAndWait(popup_browser);
+    }
   }
 
  private:
@@ -3389,11 +4030,196 @@ class WebAppFrameToolbarBrowserTest_ScopeExtensionsOriginText
 };
 
 IN_PROC_BROWSER_TEST_F(WebAppFrameToolbarBrowserTest_ScopeExtensionsOriginText,
+                       AboutBlankPopupInPrimaryScope) {
+  InstallAndLaunchWebApp();
+  CheckAboutBlankPopups(app_url(), /*should_show_toolbar=*/false);
+}
+
+IN_PROC_BROWSER_TEST_F(WebAppFrameToolbarBrowserTest_ScopeExtensionsOriginText,
+                       AboutBlankPopupInExtendedScope) {
+  InstallAndLaunchWebApp();
+  ASSERT_TRUE(web_app::AppBrowserController::From(helper()->app_browser())
+                  ->IsUrlInAppScope(extension_url()));
+  CheckAboutBlankPopups(extension_url(), /*should_show_toolbar=*/false);
+}
+
+IN_PROC_BROWSER_TEST_F(WebAppFrameToolbarBrowserTest_ScopeExtensionsOriginText,
+                       AboutBlankPopupOutsideExtendedScope) {
+  InstallAndLaunchWebApp();
+  const GURL out_of_scope_url = embedded_https_test_server().GetURL(
+      out_of_extended_scope_host_, "/ssl/blank_page.html");
+  ASSERT_FALSE(web_app::AppBrowserController::From(helper()->app_browser())
+                   ->IsUrlInAppScope(out_of_scope_url));
+  CheckAboutBlankPopups(out_of_scope_url, /*should_show_toolbar=*/true);
+}
+
+IN_PROC_BROWSER_TEST_F(WebAppFrameToolbarBrowserTest_ScopeExtensionsOriginText,
+                       AboutBlankPopupWithUnvalidatedExtension) {
+  InstallAndLaunchWebApp(/*association_scope=*/std::nullopt);
+  const web_app::AppBrowserController* const controller =
+      web_app::AppBrowserController::From(helper()->app_browser());
+  ASSERT_TRUE(provider()
+                  .registrar_unsafe()
+                  .GetValidatedScopeExtensions(controller->app_id())
+                  .empty());
+  ASSERT_FALSE(controller->IsUrlInAppScope(extension_url()));
+  CheckAboutBlankPopups(extension_url(), /*should_show_toolbar=*/true);
+}
+
+IN_PROC_BROWSER_TEST_F(WebAppFrameToolbarBrowserTest_ScopeExtensionsOriginText,
+                       AboutBlankPopupWithPathRestrictedExtension) {
+  InstallAndLaunchWebApp(/*association_scope=*/"/ssl/");
+  const web_app::AppBrowserController* const controller =
+      web_app::AppBrowserController::From(helper()->app_browser());
+  ASSERT_TRUE(controller->IsUrlInAppScope(extension_url()));
+  ASSERT_FALSE(controller->IsUrlInAppScope(
+      url::Origin::Create(extension_url()).GetURL()));
+  CheckAboutBlankPopups(extension_url(), /*should_show_toolbar=*/true);
+}
+
+IN_PROC_BROWSER_TEST_F(WebAppFrameToolbarBrowserTest_ScopeExtensionsOriginText,
+                       AboutBlankPopupInWildcardExtendedScope) {
+  InstallAndLaunchWebApp(/*association_scope=*/"/",
+                         /*has_origin_wildcard=*/true);
+  const GURL subdomain_url = embedded_https_test_server().GetURL(
+      "sub.test.com", "/ssl/blank_page.html");
+  const GURL lookalike_url = embedded_https_test_server().GetURL(
+      "not-test.com", "/ssl/blank_page.html");
+  const web_app::AppBrowserController* const controller =
+      web_app::AppBrowserController::From(helper()->app_browser());
+  ASSERT_TRUE(controller->IsUrlInAppScope(subdomain_url));
+  ASSERT_FALSE(controller->IsUrlInAppScope(lookalike_url));
+  CheckAboutBlankPopups(subdomain_url, /*should_show_toolbar=*/false);
+  CheckAboutBlankPopups(lookalike_url, /*should_show_toolbar=*/true);
+}
+
+IN_PROC_BROWSER_TEST_F(WebAppFrameToolbarBrowserTest_ScopeExtensionsOriginText,
+                       AboutBlankPopupWithWildcardAssociationPath) {
+  InstallAndLaunchWebApp(/*association_scope=*/"/ssl/",
+                         /*has_origin_wildcard=*/true);
+  const GURL subdomain_url = embedded_https_test_server().GetURL(
+      "sub.test.com", "/ssl/blank_page.html");
+  const web_app::AppBrowserController* const controller =
+      web_app::AppBrowserController::From(helper()->app_browser());
+  // Existing scope matching restricts the exact host's path, but matches
+  // wildcard subdomains by origin.
+  ASSERT_FALSE(controller->IsUrlInAppScope(
+      url::Origin::Create(extension_url()).GetURL()));
+  ASSERT_TRUE(
+      controller->IsUrlInAppScope(url::Origin::Create(subdomain_url).GetURL()));
+  CheckAboutBlankPopups(extension_url(), /*should_show_toolbar=*/true);
+  CheckAboutBlankPopups(subdomain_url, /*should_show_toolbar=*/false);
+}
+
+IN_PROC_BROWSER_TEST_F(WebAppFrameToolbarBrowserTest_ScopeExtensionsOriginText,
+                       AboutBlankAppWindowInExtendedScope) {
+  InstallAndLaunchWebApp();
+  BrowserWindowInterface* const app_browser = helper()->app_browser();
+  ASSERT_EQ(app_browser->GetType(), BrowserWindowInterface::Type::TYPE_APP);
+  content::WebContents* const contents =
+      app_browser->GetTabStripModel()->GetActiveWebContents();
+  const web_app::AppBrowserController* const controller =
+      web_app::AppBrowserController::From(app_browser);
+  for (std::string_view url : kAboutBlankUrls) {
+    SCOPED_TRACE(url);
+    ASSERT_TRUE(ui_test_utils::NavigateToURL(app_browser, extension_url()));
+    ASSERT_TRUE(content::NavigateToURLFromRenderer(contents, GURL(url)));
+    ASSERT_TRUE(contents->GetPrimaryMainFrame()
+                    ->GetLastCommittedOrigin()
+                    .IsSameOriginWith(extension_url()));
+    EXPECT_TRUE(controller->ShouldShowCustomTabBar());
+    EXPECT_EQ(u"about:blank", controller->GetFormattedUrlOrigin());
+    EXPECT_EQ(u"about:blank", controller->GetLaunchFlashText());
+  }
+}
+
+IN_PROC_BROWSER_TEST_F(WebAppFrameToolbarBrowserTest_ScopeExtensionsOriginText,
+                       AboutBlankPopupWithOpaqueOrigin) {
+  InstallAndLaunchWebApp();
+  const GURL about_blank_url("about:blank?opaque#popup");
+  BrowserWindowInterface* const popup_browser = OpenPopupAndWait(
+      helper()->app_browser(), GURL("about:blank"), gfx::Size(500, 500));
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(popup_browser, about_blank_url));
+  content::WebContents* const contents =
+      popup_browser->GetTabStripModel()->GetActiveWebContents();
+  ASSERT_TRUE(
+      contents->GetPrimaryMainFrame()->GetLastCommittedOrigin().opaque());
+  const web_app::AppBrowserController* const controller =
+      web_app::AppBrowserController::From(popup_browser);
+  EXPECT_TRUE(controller->ShouldShowCustomTabBar());
+  EXPECT_EQ(web_app::AppBrowserController::FormatUrlOrigin(about_blank_url),
+            controller->GetFormattedUrlOrigin());
+  EXPECT_EQ(u"about:blank", controller->GetLaunchFlashText());
+  web_app::CloseAndWait(popup_browser);
+}
+
+IN_PROC_BROWSER_TEST_F(WebAppFrameToolbarBrowserTest_ScopeExtensionsOriginText,
+                       AboutBlankPopupAfterOpenerNavigation) {
+  InstallAndLaunchWebApp();
+  BrowserWindowInterface* const app_browser = helper()->app_browser();
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(app_browser, extension_url()));
+  BrowserWindowInterface* const popup_browser = OpenPopupAndWait(
+      app_browser, GURL("about:blank?popup"), gfx::Size(500, 500));
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(app_browser, app_url()));
+  content::WebContents* const contents =
+      popup_browser->GetTabStripModel()->GetActiveWebContents();
+  ASSERT_TRUE(contents->GetPrimaryMainFrame()
+                  ->GetLastCommittedOrigin()
+                  .IsSameOriginWith(extension_url()));
+  const web_app::AppBrowserController* const controller =
+      web_app::AppBrowserController::From(popup_browser);
+  EXPECT_FALSE(controller->ShouldShowCustomTabBar());
+  EXPECT_EQ(u"about:blank", controller->GetFormattedUrlOrigin());
+  EXPECT_EQ(GetExpectedOriginText(in_extended_scope_host_),
+            controller->GetLaunchFlashText());
+  web_app::CloseAndWait(popup_browser);
+}
+
+IN_PROC_BROWSER_TEST_F(WebAppFrameToolbarBrowserTest_ScopeExtensionsOriginText,
+                       AboutBlankPopupPendingOutOfScopeNavigation) {
+  InstallAndLaunchWebApp();
+  BrowserWindowInterface* const app_browser = helper()->app_browser();
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(app_browser, extension_url()));
+  const GURL about_blank_url("about:blank?popup#fragment");
+  BrowserWindowInterface* const popup_browser =
+      OpenPopupAndWait(app_browser, about_blank_url, gfx::Size(500, 500));
+  const web_app::AppBrowserController* const controller =
+      web_app::AppBrowserController::From(popup_browser);
+  EXPECT_FALSE(controller->ShouldShowCustomTabBar());
+  EXPECT_EQ(GetExpectedOriginText(in_extended_scope_host_),
+            controller->GetLaunchFlashText());
+
+  content::WebContents* const contents =
+      popup_browser->GetTabStripModel()->GetActiveWebContents();
+  const GURL out_of_scope_url = embedded_https_test_server().GetURL(
+      out_of_extended_scope_host_, "/ssl/blank_page.html");
+  content::TestNavigationManager navigation_manager(contents, out_of_scope_url);
+  ui_test_utils::NavigateToURLWithDisposition(
+      popup_browser, out_of_scope_url, WindowOpenDisposition::CURRENT_TAB,
+      ui_test_utils::BROWSER_TEST_NO_WAIT);
+  ASSERT_TRUE(navigation_manager.WaitForRequestStart());
+  ASSERT_EQ(about_blank_url, contents->GetLastCommittedURL());
+  ASSERT_EQ(out_of_scope_url, contents->GetVisibleURL());
+  ASSERT_TRUE(contents->GetPrimaryMainFrame()
+                  ->GetLastCommittedOrigin()
+                  .IsSameOriginWith(extension_url()));
+  EXPECT_TRUE(controller->ShouldShowCustomTabBar());
+  EXPECT_EQ(u"about:blank", controller->GetLaunchFlashText());
+
+  ASSERT_TRUE(navigation_manager.WaitForNavigationFinished());
+  ASSERT_TRUE(navigation_manager.was_successful());
+  EXPECT_TRUE(controller->ShouldShowCustomTabBar());
+  EXPECT_EQ(GetExpectedOriginText(out_of_extended_scope_host_),
+            controller->GetFormattedUrlOrigin());
+  web_app::CloseAndWait(popup_browser);
+}
+
+IN_PROC_BROWSER_TEST_F(WebAppFrameToolbarBrowserTest_ScopeExtensionsOriginText,
                        ExtendedScope) {
   ASSERT_TRUE(embedded_https_test_server().Started());
   InstallAndLaunchWebApp();
   content::WebContents* web_contents =
-      helper()->app_browser()->tab_strip_model()->GetActiveWebContents();
+      helper()->app_browser()->GetTabStripModel()->GetActiveWebContents();
   content::AwaitDocumentOnLoadCompleted(web_contents);
   {
     // Navigate to another origin that is within extended scope. Origin text
@@ -3405,8 +4231,8 @@ IN_PROC_BROWSER_TEST_F(WebAppFrameToolbarBrowserTest_ScopeExtensionsOriginText,
         ui_test_utils::NavigateToURL(helper()->app_browser(), extension_url()));
     content::AwaitDocumentOnLoadCompleted(web_contents);
     origin_text_waiter.WaitForOriginTextAnimation();
-    EXPECT_FALSE(
-        helper()->app_browser()->app_controller()->ShouldShowCustomTabBar());
+    EXPECT_FALSE(web_app::AppBrowserController::From(helper()->app_browser())
+                     ->ShouldShowCustomTabBar());
     ExpectLastCommittedUrl(extension_url());
   }
   {
@@ -3418,8 +4244,8 @@ IN_PROC_BROWSER_TEST_F(WebAppFrameToolbarBrowserTest_ScopeExtensionsOriginText,
         ui_test_utils::NavigateToURL(helper()->app_browser(), app_url()));
     content::AwaitDocumentOnLoadCompleted(web_contents);
     origin_text_waiter.WaitForOriginTextAnimation();
-    EXPECT_FALSE(
-        helper()->app_browser()->app_controller()->ShouldShowCustomTabBar());
+    EXPECT_FALSE(web_app::AppBrowserController::From(helper()->app_browser())
+                     ->ShouldShowCustomTabBar());
     ExpectLastCommittedUrl(app_url());
   }
 }
@@ -3429,7 +4255,7 @@ IN_PROC_BROWSER_TEST_F(WebAppFrameToolbarBrowserTest_ScopeExtensionsOriginText,
   ASSERT_TRUE(embedded_https_test_server().Started());
   InstallAndLaunchWebApp();
   content::WebContents* web_contents =
-      helper()->app_browser()->tab_strip_model()->GetActiveWebContents();
+      helper()->app_browser()->GetTabStripModel()->GetActiveWebContents();
   content::AwaitDocumentOnLoadCompleted(web_contents);
   {
     // Navigate to another origin that is within extended scope.
@@ -3440,8 +4266,8 @@ IN_PROC_BROWSER_TEST_F(WebAppFrameToolbarBrowserTest_ScopeExtensionsOriginText,
         ui_test_utils::NavigateToURL(helper()->app_browser(), extension_url()));
     content::AwaitDocumentOnLoadCompleted(web_contents);
     origin_text_waiter.WaitForOriginTextAnimation();
-    EXPECT_FALSE(
-        helper()->app_browser()->app_controller()->ShouldShowCustomTabBar());
+    EXPECT_FALSE(web_app::AppBrowserController::From(helper()->app_browser())
+                     ->ShouldShowCustomTabBar());
     ExpectLastCommittedUrl(extension_url());
   }
   // From extended scope, navigate to another origin out of scope. Origin text
@@ -3452,8 +4278,8 @@ IN_PROC_BROWSER_TEST_F(WebAppFrameToolbarBrowserTest_ScopeExtensionsOriginText,
   content::AwaitDocumentOnLoadCompleted(web_contents);
   ui_test_utils::WaitForViewVisibility(helper()->app_browser(),
                                        VIEW_ID_WEB_APP_ORIGIN_TEXT, false);
-  EXPECT_TRUE(
-      helper()->app_browser()->app_controller()->ShouldShowCustomTabBar());
+  EXPECT_TRUE(web_app::AppBrowserController::From(helper()->app_browser())
+                  ->ShouldShowCustomTabBar());
   ExpectLastCommittedUrl(nav_url);
 }
 
@@ -3462,7 +4288,7 @@ IN_PROC_BROWSER_TEST_F(WebAppFrameToolbarBrowserTest_ScopeExtensionsOriginText,
   ASSERT_TRUE(embedded_https_test_server().Started());
   InstallAndLaunchWebApp();
   content::WebContents* web_contents =
-      helper()->app_browser()->tab_strip_model()->GetActiveWebContents();
+      helper()->app_browser()->GetTabStripModel()->GetActiveWebContents();
   content::AwaitDocumentOnLoadCompleted(web_contents);
   {
     // Navigate to another origin that is within extended scope.
@@ -3473,8 +4299,8 @@ IN_PROC_BROWSER_TEST_F(WebAppFrameToolbarBrowserTest_ScopeExtensionsOriginText,
         ui_test_utils::NavigateToURL(helper()->app_browser(), extension_url()));
     content::AwaitDocumentOnLoadCompleted(web_contents);
     origin_text_waiter.WaitForOriginTextAnimation();
-    EXPECT_FALSE(
-        helper()->app_browser()->app_controller()->ShouldShowCustomTabBar());
+    EXPECT_FALSE(web_app::AppBrowserController::From(helper()->app_browser())
+                     ->ShouldShowCustomTabBar());
     ExpectLastCommittedUrl(extension_url());
   }
   {
@@ -3490,16 +4316,28 @@ IN_PROC_BROWSER_TEST_F(WebAppFrameToolbarBrowserTest_ScopeExtensionsOriginText,
     content::AwaitDocumentOnLoadCompleted(web_contents);
     origin_text_waiter.WaitForOriginTextAnimation();
     EXPECT_EQ(GetFrameColor(helper()->app_browser()), SK_ColorYELLOW);
-    EXPECT_TRUE(
-        helper()->app_browser()->app_controller()->ShouldShowCustomTabBar());
+    EXPECT_TRUE(web_app::AppBrowserController::From(helper()->app_browser())
+                    ->ShouldShowCustomTabBar());
     ExpectLastCommittedUrl(nav_url);
   }
 }
 
 class WebAppFrameToolbarUninstallButtonTest
-    : public WebAppFrameToolbarBrowserTest {
+    : public WebAppFrameToolbarBrowserTest_WindowControlsOverlay {
+ public:
+  WebAppFrameToolbarUninstallButtonTest() {
+    feature_list_.InitWithFeatures(
+        /*enabled_features=*/
+        {features::kWebAppInstallDialog},
+        /*disabled_features=*/
+        // TODO(crbug.com/452061489): Fix tests that fail when the WebUI Omnibox
+        // is enabled and then remove these two Features.
+        {omnibox::internal::kWebUIOmniboxPopup,
+         omnibox::internal::kWebUIOmniboxAimPopup});
+  }
+
  private:
-  base::test::ScopedFeatureList feature_list_{features::kWebAppInstallDialog};
+  base::test::ScopedFeatureList feature_list_;
 };
 
 IN_PROC_BROWSER_TEST_F(WebAppFrameToolbarUninstallButtonTest, ButtonExists) {
@@ -3527,13 +4365,13 @@ IN_PROC_BROWSER_TEST_F(WebAppFrameToolbarUninstallButtonTest,
   EXPECT_TRUE(toolbar_right_container->uninstall_button()->GetVisible());
 
   // Close the app and launch it again.
-  Browser* app_browser = helper()->app_browser();
+  BrowserWindowInterface* app_browser = helper()->app_browser();
   ui_test_utils::BrowserDestroyedObserver browser_destroyed_observer(
       app_browser);
-  app_browser->window()->Close();
+  app_browser->GetWindow()->Close();
   browser_destroyed_observer.Wait();
 
-  helper()->LaunchWebAppBrowserAndWait(browser()->profile(), app_id);
+  helper()->LaunchWebAppBrowserAndWait(browser()->GetProfile(), app_id);
   toolbar_right_container =
       helper()->web_app_frame_toolbar()->get_right_container_for_testing();
 
@@ -3557,7 +4395,7 @@ IN_PROC_BROWSER_TEST_F(WebAppFrameToolbarUninstallButtonTest, AppRemoved) {
       std::make_unique<views::NamedWidgetShownWaiter>(
           views::test::AnyWidgetTestPasskey{},
           "WebAppUninstallDialogDelegateView");
-  Browser* app_browser = helper()->app_browser();
+  BrowserWindowInterface* app_browser = helper()->app_browser();
   ui_test_utils::BrowserDestroyedObserver browser_destroyed_observer(
       app_browser);
 
@@ -3576,7 +4414,7 @@ IN_PROC_BROWSER_TEST_F(WebAppFrameToolbarUninstallButtonTest, AppRemoved) {
 
   // Verify the app has been removed from the web app registry.
   EXPECT_FALSE(
-      web_app::WebAppProvider::GetForWebApps(browser()->profile())
+      web_app::WebAppProvider::GetForWebApps(browser()->GetProfile())
           ->registrar_unsafe()
           .AppMatches(app_id,
                       web_app::WebAppFilter::IsAppEligibleForManifestUpdate()));
@@ -3593,10 +4431,10 @@ IN_PROC_BROWSER_TEST_F(WebAppFrameToolbarUninstallButtonTest,
   web_app_info->scope = app_url;
   web_app_info->title = u"preinstalled app";
   webapps::AppId app_id = web_app::test::InstallWebApp(
-      browser()->profile(), std::move(web_app_info),
+      browser()->GetProfile(), std::move(web_app_info),
       /*overwrite_existing_manifest_fields=*/false,
       webapps::WebappInstallSource::INTERNAL_DEFAULT);
-  helper()->LaunchWebAppBrowserAndWait(browser()->profile(), app_id);
+  helper()->LaunchWebAppBrowserAndWait(browser()->GetProfile(), app_id);
 
   WebAppToolbarButtonContainer* toolbar_right_container =
       helper()->web_app_frame_toolbar()->get_right_container_for_testing();
@@ -3610,12 +4448,12 @@ IN_PROC_BROWSER_TEST_F(WebAppFrameToolbarUninstallButtonTest,
 
   // Install the app without launching it.
   content::WebContents* contents =
-      browser()->tab_strip_model()->GetActiveWebContents();
+      browser()->GetTabStripModel()->GetActiveWebContents();
   auto web_app_info =
       web_app::WebAppInstallInfo::CreateWithStartUrlForTesting(app_url);
   web_app_info->scope = app_url;
   web_app_info->title = u"test app";
-  webapps::AppId app_id = web_app::test::InstallWebApp(browser()->profile(),
+  webapps::AppId app_id = web_app::test::InstallWebApp(browser()->GetProfile(),
                                                        std::move(web_app_info));
 
   // Reparent the web contents into an app window, so that it gets treated as
@@ -3626,4 +4464,22 @@ IN_PROC_BROWSER_TEST_F(WebAppFrameToolbarUninstallButtonTest,
       helper()->web_app_frame_toolbar()->get_right_container_for_testing();
   EXPECT_NE(toolbar_right_container->uninstall_button(), nullptr);
   EXPECT_TRUE(toolbar_right_container->uninstall_button()->GetVisible());
+}
+
+IN_PROC_BROWSER_TEST_F(WebAppFrameToolbarUninstallButtonTest,
+                       RemovedWhenWindowControlsOverlayToggled) {
+  InstallAndLaunchWebApp();
+
+  WebAppToolbarButtonContainer* toolbar_right_container =
+      helper()->web_app_frame_toolbar()->get_right_container_for_testing();
+
+  // First launch: uninstall button should be visible before WCO mode is
+  // enabled.
+  EXPECT_NE(toolbar_right_container->uninstall_button(), nullptr);
+  EXPECT_TRUE(toolbar_right_container->uninstall_button()->GetVisible());
+
+  // Toggle WCO mode on. Once enabled, the ephemeral uninstall button is
+  // removed.
+  ToggleWindowControlsOverlayAndWait();
+  EXPECT_EQ(toolbar_right_container->uninstall_button(), nullptr);
 }

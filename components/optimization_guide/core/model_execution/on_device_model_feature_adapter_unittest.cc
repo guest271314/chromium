@@ -8,16 +8,16 @@
 
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
+#include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
 #include "base/test/test.pb.h"
 #include "base/test/test_future.h"
 #include "components/optimization_guide/core/model_execution/multimodal_message.h"
 #include "components/optimization_guide/core/model_execution/response_parser.h"
-#include "components/optimization_guide/core/optimization_guide_enums.h"
+#include "components/optimization_guide/core/optimization_guide_features.h"
 #include "components/optimization_guide/core/optimization_guide_util.h"
 #include "components/optimization_guide/proto/features/compose.pb.h"
 #include "components/optimization_guide/proto/parser_kind.pb.h"
-#include "services/data_decoder/public/cpp/test_support/in_process_data_decoder.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -34,8 +34,8 @@ class MockResponseParser : public ResponseParser {
               ParseAsync,
               (const std::string& redacted_output,
                ResultCallback result_callback),
-              (const override));
-  MOCK_METHOD(bool, SuppressParsingIncompleteResponse, (), (const override));
+              (const, override));
+  MOCK_METHOD(bool, SuppressParsingIncompleteResponse, (), (const, override));
 };
 
 OnDeviceModelFeatureAdapter::ResponseParserFactory
@@ -55,69 +55,6 @@ CreateMockResponseParserFactory(
 using testing::Return;
 
 }  // namespace
-
-TEST(OnDeviceModelFeatureAdapterTest,
-     ConstructTextSafetyRequestNoSafetyFallbackConfig) {
-  proto::OnDeviceModelExecutionFeatureConfig config;
-  auto adapter =
-      base::MakeRefCounted<OnDeviceModelFeatureAdapter>(std::move(config));
-
-  proto::ComposeRequest request;
-  request.mutable_generate_params()->set_user_input("whatever");
-  EXPECT_EQ(std::nullopt, adapter->ConstructTextSafetyRequest(
-                              MultimodalMessageReadView(request), "text"));
-}
-
-TEST(OnDeviceModelFeatureAdapterTest, ConstructTextSafetyRequestNoUrlField) {
-  proto::OnDeviceModelExecutionFeatureConfig config;
-  config.mutable_text_safety_fallback_config();
-  auto adapter =
-      base::MakeRefCounted<OnDeviceModelFeatureAdapter>(std::move(config));
-
-  proto::ComposeRequest request;
-  request.mutable_generate_params()->set_user_input("whatever");
-  auto safety_request = adapter->ConstructTextSafetyRequest(
-      MultimodalMessageReadView(request), "text");
-
-  ASSERT_TRUE(safety_request);
-  EXPECT_EQ("text", safety_request->text());
-  EXPECT_TRUE(safety_request->url().empty());
-}
-
-TEST(OnDeviceModelFeatureAdapterTest, ConstructTextSafetyRequestWithUrlField) {
-  proto::OnDeviceModelExecutionFeatureConfig config;
-  auto* ts_config = config.mutable_text_safety_fallback_config();
-  auto* input_url_proto_field = ts_config->mutable_input_url_proto_field();
-  input_url_proto_field->add_proto_descriptors()->set_tag_number(3);
-  input_url_proto_field->add_proto_descriptors()->set_tag_number(1);
-  auto adapter =
-      base::MakeRefCounted<OnDeviceModelFeatureAdapter>(std::move(config));
-
-  proto::ComposeRequest request;
-  request.mutable_page_metadata()->set_page_url("url");
-  auto safety_request = adapter->ConstructTextSafetyRequest(
-      MultimodalMessageReadView(request), "text");
-
-  ASSERT_TRUE(safety_request);
-  EXPECT_EQ("text", safety_request->text());
-  EXPECT_EQ("url", safety_request->url());
-}
-
-TEST(OnDeviceModelFeatureAdapterTest,
-     ConstructTextSafetyRequestWithBadUrlField) {
-  proto::OnDeviceModelExecutionFeatureConfig config;
-  auto* ts_config = config.mutable_text_safety_fallback_config();
-  auto* input_url_proto_field = ts_config->mutable_input_url_proto_field();
-  input_url_proto_field->add_proto_descriptors()->set_tag_number(100);
-  input_url_proto_field->add_proto_descriptors()->set_tag_number(100);
-  auto adapter =
-      base::MakeRefCounted<OnDeviceModelFeatureAdapter>(std::move(config));
-
-  proto::ComposeRequest request;
-  request.mutable_page_metadata()->set_page_url("url");
-  EXPECT_EQ(std::nullopt, adapter->ConstructTextSafetyRequest(
-                              MultimodalMessageReadView(request), "text"));
-}
 
 TEST(OnDeviceModelFeatureAdapterTest, ConstructInputString_NoInputConfig) {
   proto::OnDeviceModelExecutionFeatureConfig config;
@@ -257,6 +194,49 @@ TEST(OnDeviceModelFeatureAdapterTest, ShouldParseResponseAlways) {
 
   EXPECT_TRUE(adapter->ShouldParseResponse(ResponseCompleteness::kPartial));
   EXPECT_TRUE(adapter->ShouldParseResponse(ResponseCompleteness::kComplete));
+}
+
+TEST(OnDeviceModelFeatureAdapterTest, GetSamplingParamsConfig_AllMissing) {
+  proto::OnDeviceModelExecutionFeatureConfig config;
+  auto adapter = base::MakeRefCounted<OnDeviceModelFeatureAdapter>(config);
+
+  SamplingParamsConfig params = adapter->GetSamplingParamsConfig();
+  EXPECT_EQ(params.default_top_k, 64u);
+  EXPECT_EQ(params.default_temperature, 1.0f);
+}
+
+TEST(OnDeviceModelFeatureAdapterTest, GetSamplingParamsConfig_MissingTopK) {
+  proto::OnDeviceModelExecutionFeatureConfig config;
+  auto* sampling_params = config.mutable_sampling_params();
+  sampling_params->set_temperature(0.7f);
+  auto adapter = base::MakeRefCounted<OnDeviceModelFeatureAdapter>(config);
+
+  SamplingParamsConfig params = adapter->GetSamplingParamsConfig();
+  EXPECT_EQ(params.default_top_k, 0u);
+  EXPECT_EQ(params.default_temperature, 0.7f);
+}
+
+TEST(OnDeviceModelFeatureAdapterTest, GetSamplingParamsConfig_MissingTemp) {
+  proto::OnDeviceModelExecutionFeatureConfig config;
+  auto* sampling_params = config.mutable_sampling_params();
+  sampling_params->set_top_k(8);
+  auto adapter = base::MakeRefCounted<OnDeviceModelFeatureAdapter>(config);
+
+  SamplingParamsConfig params = adapter->GetSamplingParamsConfig();
+  EXPECT_EQ(params.default_top_k, 8u);
+  EXPECT_EQ(params.default_temperature, 0.0f);
+}
+
+TEST(OnDeviceModelFeatureAdapterTest, GetSamplingParamsConfig_AllSpecified) {
+  proto::OnDeviceModelExecutionFeatureConfig config;
+  auto* sampling_params = config.mutable_sampling_params();
+  sampling_params->set_top_k(8);
+  sampling_params->set_temperature(0.7f);
+  auto adapter = base::MakeRefCounted<OnDeviceModelFeatureAdapter>(config);
+
+  SamplingParamsConfig params = adapter->GetSamplingParamsConfig();
+  EXPECT_EQ(params.default_top_k, 8u);
+  EXPECT_EQ(params.default_temperature, 0.7f);
 }
 
 }  // namespace optimization_guide

@@ -6,6 +6,7 @@ import 'chrome://print/print_preview.js';
 
 import type {PrintPreviewDestinationSelectElement} from 'chrome://print/print_preview.js';
 import {Destination, DestinationOrigin, getSelectDropdownBackground, IconsetMap} from 'chrome://print/print_preview.js';
+import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
 import {assertEquals, assertTrue} from 'chrome://webui-test/chai_assert.js';
 import {microtasksFinished} from 'chrome://webui-test/test_util.js';
 
@@ -52,11 +53,16 @@ suite('DestinationSelectTest', function() {
     const selectEl =
         destinationSelect.shadowRoot.querySelector<HTMLSelectElement>(
             '.md-select')!;
-    compareIcon(selectEl, 'print');
+    const printIcon = loadTimeData.getBoolean('webuiRoundedIconsEnabled') ?
+        'print-filled' :
+        'print-old';
+    compareIcon(selectEl, printIcon);
 
     // Select a destination with the enterprise printer icon.
-    await selectOption(destinationSelect, `ID4/local/`);
-    const enterpriseIcon = 'business';
+    await selectOption(destinationSelect, 'ID4/local/');
+    const enterpriseIcon = loadTimeData.getBoolean('webuiRoundedIconsEnabled') ?
+        'domain' :
+        'business-old';
     compareIcon(selectEl, enterpriseIcon);
 
     // Update destination.
@@ -87,5 +93,34 @@ suite('DestinationSelectTest', function() {
 
     assertEquals(newDestination.key, select.value);
     assertEquals(newDestination.key, destinationSelect.selectedValue);
+  });
+
+  test('UpdateDestinationSelectValue', async function() {
+    destinationSelect.loaded = true;
+    destinationSelect.destination = recentDestinationList[1]!;
+    destinationSelect.updateDestination();
+    await microtasksFinished();
+
+    const select = destinationSelect.$.select;
+    assertEquals(recentDestinationList[1]!.key, select.value);
+
+    // Select the first and second destinations from the dropdown.
+    await selectOption(destinationSelect, recentDestinationList[0]!.key);
+    assertEquals(recentDestinationList[0]!.key, select.value);
+    await selectOption(destinationSelect, recentDestinationList[1]!.key);
+    assertEquals(recentDestinationList[1]!.key, select.value);
+
+    // Pick a destination that is not in `recentDestinationList` and update
+    // `recentDestinationList` to reflect the new destination.
+    const newDestination =
+        new Destination('ID2', DestinationOrigin.LOCAL, 'Two');
+    destinationSelect.destination = newDestination;
+    destinationSelect.recentDestinationList = [
+      newDestination,
+      ...recentDestinationList,
+    ];
+    destinationSelect.updateDestination();
+    await microtasksFinished();
+    assertEquals(newDestination.key, select.value);
   });
 });

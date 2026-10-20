@@ -35,6 +35,7 @@
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/web_applications/commands/manifest_silent_update_command.h"
 #include "chrome/browser/web_applications/isolated_web_apps/isolated_web_app_url_info.h"
+#include "chrome/browser/web_applications/link_capturing_features.h"
 #include "chrome/browser/web_applications/mojom/user_display_mode.mojom.h"
 #include "chrome/browser/web_applications/policy/web_app_policy_manager.h"
 #include "chrome/browser/web_applications/proto/web_app.pb.h"
@@ -111,7 +112,7 @@ bool IsNavigationCapturingSettingOffByDefault(
     return false;
   }
 
-  switch (features::kNavigationCapturingDefaultState.Get()) {
+  switch (apps::features::GetNavigationCapturingDefaultState()) {
     case features::CapturingState::kReimplDefaultOff:
       return true;
     case features::CapturingState::kReimplDefaultOn:
@@ -261,11 +262,6 @@ bool WebAppRegistrar::IsSupportedDisplayModeForNavigationCapture(
   }
 }
 
-FindBestAppInScopeOptions::FindBestAppInScopeOptions(WebAppFilter filter)
-    : filter(std::move(filter)) {}
-
-FindBestAppInScopeOptions::~FindBestAppInScopeOptions() = default;
-
 WebAppRegistrar::WebAppRegistrar(Profile* profile) : profile_(profile) {}
 
 WebAppRegistrar::~WebAppRegistrar() {
@@ -344,7 +340,7 @@ void WebAppRegistrar::NotifyWebAppFileHandlerApprovalStateChanged(
 }
 
 void WebAppRegistrar::NotifyWebAppsWillBeUpdatedFromSync(
-    const std::vector<const WebApp*>& new_apps_state) {
+    base::span<const WebApp* const> new_apps_state) {
   DVLOG(1) << "NotifyWebAppsWillBeUpdatedFromSync";
   for (WebAppRegistrarObserver& observer : observers_) {
     observer.OnWebAppsWillBeUpdatedFromSync(new_apps_state);
@@ -1047,14 +1043,6 @@ bool WebAppRegistrar::AppMatches(const webapps::AppId& app_id,
 std::optional<webapps::AppId> WebAppRegistrar::FindBestAppWithUrlInScope(
     const GURL& url,
     const WebAppFilter& filter,
-    WebAppScopeScoreOptions scope_score_options) const {
-  FindBestAppInScopeOptions options(filter);
-  options.scope_score_options = std::move(scope_score_options);
-  return FindBestAppWithUrlInScope(url, options);
-}
-
-std::optional<webapps::AppId> WebAppRegistrar::FindBestAppWithUrlInScope(
-    const GURL& url,
     const FindBestAppInScopeOptions& options) const {
   if (!url.is_valid()) {
     return std::nullopt;
@@ -1062,6 +1050,8 @@ std::optional<webapps::AppId> WebAppRegistrar::FindBestAppWithUrlInScope(
 
   std::optional<webapps::AppId> best_app_id;
   int best_score = 0;
+  const WebAppFilter is_isolated =
+      WebAppFilter::IsIsolatedApp() | WebAppFilter::IsIsolatedSubApp();
 
   for (const webapps::AppId& app_id : GetAppIds(options.eligibility_filter)) {
     std::optional<WebAppScope> scope = GetEffectiveScope(app_id);
@@ -1069,15 +1059,25 @@ std::optional<webapps::AppId> WebAppRegistrar::FindBestAppWithUrlInScope(
       continue;
     }
 
-    int score = scope->GetScopeScore(url, options.scope_score_options);
+    WebAppScopeScoreOptions scope_score_options = options.scope_score_options;
+    if (!options.include_isolated_web_app_scope_extensions &&
+        !scope_score_options.exclude_scope_extensions &&
+        !scope->validated_scope_extensions().empty() &&
+        AppMatches(app_id, is_isolated)) {
+      if (scope_score_options.only_consider_scope_extensions) {
+        continue;
+      }
+      scope_score_options.exclude_scope_extensions = true;
+    }
+
+    int score = scope->GetScopeScore(url, scope_score_options);
     if (score > 0 && score > best_score) {
       best_app_id = app_id;
       best_score = score;
     }
   }
 
-  if (best_app_id.has_value() &&
-      AppMatches(best_app_id.value(), options.filter)) {
+  if (best_app_id.has_value() && AppMatches(best_app_id.value(), filter)) {
     return best_app_id;
   }
 
@@ -1295,6 +1295,24 @@ bool WebAppRegistrar::CanCaptureLinksInScope(
   return true;
 }
 
+bool WebAppRegistrar::AppScopesMatchForUserLinkCapturing(
+    const webapps::AppId& app_id1,
+    const webapps::AppId& app_id2) const {
+  if (!AppMatches(app_id1, WebAppFilter::InstalledInChrome()) ||
+      !AppMatches(app_id2, WebAppFilter::InstalledInChrome())) {
+    return false;
+  }
+
+  const GURL& app_scope1 = GetAppScope(app_id1);
+  const GURL& app_scope2 = GetAppScope(app_id2);
+  if (!IsValidScopeForLinkCapturing(app_scope1) ||
+      !IsValidScopeForLinkCapturing(app_scope2)) {
+    return false;
+  }
+
+  return app_scope1 == app_scope2;
+}
+
 #if !BUILDFLAG(IS_CHROMEOS)
 bool WebAppRegistrar::CapturesLinksInScope(const webapps::AppId& app_id) const {
   if (!CanCaptureLinksInScope(app_id)) {
@@ -1447,24 +1465,6 @@ std::vector<webapps::AppId> WebAppRegistrar::GetOverlappingAppsMatchingScope(
     all_apps_with_supported_links.push_back(id);
   }
   return all_apps_with_supported_links;
-}
-
-bool WebAppRegistrar::AppScopesMatchForUserLinkCapturing(
-    const webapps::AppId& app_id1,
-    const webapps::AppId& app_id2) const {
-  if (!AppMatches(app_id1, WebAppFilter::InstalledInChrome()) ||
-      !AppMatches(app_id2, WebAppFilter::InstalledInChrome())) {
-    return false;
-  }
-
-  const GURL& app_scope1 = GetAppScope(app_id1);
-  const GURL& app_scope2 = GetAppScope(app_id2);
-  if (!IsValidScopeForLinkCapturing(app_scope1) ||
-      !IsValidScopeForLinkCapturing(app_scope2)) {
-    return false;
-  }
-
-  return app_scope1 == app_scope2;
 }
 #endif
 
@@ -2040,6 +2040,25 @@ WebAppRegistrar::AppSet WebAppRegistrarMutable::GetAppsMutable() {
     return !web_app.is_from_sync_and_pending_installation() &&
            !web_app.is_uninstalling();
   });
+}
+
+std::optional<std::string> WebAppRegistrar::GetParentAppShortName(
+    const webapps::AppId& app_id) const {
+  auto* sub_app = GetAppById(app_id, WebAppFilter::IsIsolatedSubApp());
+  if (!sub_app) {
+    return std::nullopt;
+  }
+
+  return GetAppShortName(sub_app->parent_app_id().value());
+}
+
+std::optional<webapps::AppId> WebAppRegistrar::GetParentAppId(
+    const webapps::AppId& app_id) const {
+  const WebApp* web_app = GetAppById(app_id, WebAppFilter::IsIsolatedSubApp());
+  if (!web_app) {
+    return std::nullopt;
+  }
+  return *web_app->parent_app_id();
 }
 
 bool IsRegistryEqual(const Registry& registry,

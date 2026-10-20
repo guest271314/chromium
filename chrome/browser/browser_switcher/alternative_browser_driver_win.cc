@@ -26,7 +26,7 @@
 #include "base/win/registry.h"
 #include "base/win/win_util.h"
 #include "chrome/browser/browser_switcher/browser_switcher_prefs.h"
-#include "chrome/grit/generated_resources.h"
+#include "chrome/browser/win/isolated_browser/isolated_browser_support.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
 #include "url/gurl.h"
@@ -116,7 +116,7 @@ void PercentUnencodeQuotes(std::wstring* url) {
 }
 
 std::wstring GetBrowserLocation(const wchar_t* regkey_name) {
-  DCHECK(regkey_name);
+  CHECK(regkey_name, base::NotFatalUntil::M161);
   base::win::RegKey key;
   if (ERROR_SUCCESS != key.Open(HKEY_LOCAL_MACHINE, regkey_name, KEY_READ) &&
       ERROR_SUCCESS != key.Open(HKEY_CURRENT_USER, regkey_name, KEY_READ)) {
@@ -280,6 +280,15 @@ bool TryLaunchWithExec(const GURL& url,
   auto cmd_line = CreateCommandLine(url, path, args);
 
   base::LaunchOptions options;
+
+  const auto unisolated_token = chrome::GetUnisolatedAccessToken();
+  if (!unisolated_token) {
+    return false;
+  }
+
+  // Always run alternative browsers unisolated.
+  options.using_token = unisolated_token->get();
+
   if (!base::LaunchProcess(cmd_line, options).IsValid()) {
     LOG(ERROR) << "Could not start the alternative browser! Error: "
                << GetLastError();
@@ -313,7 +322,7 @@ AlternativeBrowserDriverImpl::~AlternativeBrowserDriverImpl() = default;
 
 void AlternativeBrowserDriverImpl::TryLaunch(const GURL& url,
                                              LaunchCallback cb) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
   VLOG(2) << "Launching alternative browser...";
   VLOG(2) << "  path = " << prefs_->GetAlternativeBrowserPath();
   VLOG(2) << "  url = " << url.spec();

@@ -9,8 +9,10 @@
 #include "third_party/blink/renderer/bindings/core/v8/v8_create_script_callback.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_create_url_callback.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_set_html_unsafe_options.h"
+#include "third_party/blink/renderer/bindings/core/v8/v8_union_sanitizer_sanitizerconfig_sanitizerpresets.h"
+#include "third_party/blink/renderer/core/sanitizer/sanitizer.h"
 #include "third_party/blink/renderer/core/trustedtypes/trusted_html.h"
-#include "third_party/blink/renderer/core/trustedtypes/trusted_parser_options.h"
+#include "third_party/blink/renderer/core/trustedtypes/trusted_html_parser_options.h"
 #include "third_party/blink/renderer/core/trustedtypes/trusted_script.h"
 #include "third_party/blink/renderer/core/trustedtypes/trusted_script_url.h"
 #include "third_party/blink/renderer/platform/bindings/exception_state.h"
@@ -157,8 +159,26 @@ TrustedScriptURL* TrustedTypePolicy::createScriptURLInternal(
   return MakeGarbageCollected<TrustedScriptURL>(script_url);
 }
 
-TrustedParserOptions* TrustedTypePolicy::createParserOptions(
+TrustedHTMLParserOptions* TrustedTypePolicy::createParserOptions(
+    v8::Isolate* isolate,
     const SetHTMLUnsafeOptions* options,
+    const HeapVector<ScriptValue>& args,
+    ExceptionState& exception_state) {
+  TrustedHTMLParserOptions* parser_options =
+      createParserOptionsInternal(isolate, options, args, exception_state);
+  if (exception_state.HadException()) {
+    return nullptr;
+  }
+  if (!parser_options) {
+    return MakeGarbageCollected<TrustedHTMLParserOptions>(nullptr, false);
+  }
+  return parser_options;
+}
+
+TrustedHTMLParserOptions* TrustedTypePolicy::createParserOptionsInternal(
+    v8::Isolate* isolate,
+    const SetHTMLUnsafeOptions* options,
+    const HeapVector<ScriptValue>& args,
     ExceptionState& exception_state) {
   if (!policy_options_->hasCreateParserOptions()) {
     exception_state.ThrowTypeError(
@@ -167,10 +187,56 @@ TrustedParserOptions* TrustedTypePolicy::createParserOptions(
                 "'createParserOptions' member."}));
     return nullptr;
   }
+
+  Sanitizer* sanitizer_obj = nullptr;
+  if (options && options->hasSanitizer()) {
+    auto* sanitizer_union = options->sanitizer();
+    if (sanitizer_union) {
+      switch (sanitizer_union->GetContentType()) {
+        case V8UnionSanitizerOrSanitizerConfigOrSanitizerPresets::ContentType::
+            kSanitizer:
+          sanitizer_obj = sanitizer_union->GetAsSanitizer()->Clone();
+          break;
+        case V8UnionSanitizerOrSanitizerConfigOrSanitizerPresets::ContentType::
+            kSanitizerConfig:
+          sanitizer_obj =
+              Sanitizer::Create(sanitizer_union->GetAsSanitizerConfig(),
+                                Sanitizer::Mode::kUnsafe, exception_state);
+          break;
+        case V8UnionSanitizerOrSanitizerConfigOrSanitizerPresets::ContentType::
+            kSanitizerPresets:
+          sanitizer_obj = Sanitizer::Create(
+              sanitizer_union->GetAsSanitizerPresets().AsEnum(),
+              exception_state);
+          break;
+      }
+    }
+  }
+  if (exception_state.HadException()) {
+    return nullptr;
+  }
+
+  SetHTMLUnsafeOptions* callback_options =
+      SetHTMLUnsafeOptions::Create(isolate);
+  callback_options->setRunScripts(options ? options->runScripts() : false);
+  if (sanitizer_obj) {
+    callback_options->setSanitizer(
+        MakeGarbageCollected<
+            V8UnionSanitizerOrSanitizerConfigOrSanitizerPresets>(
+            sanitizer_obj));
+  }
+
   ScriptValue out;
-  auto result =
-      policy_options_->createParserOptions()->Invoke(nullptr, options);
-  if (!result.To(&out) || out.IsNull() || out.IsUndefined()) {
+  {
+    TryRethrowScope rethrow_scope(isolate, exception_state);
+    if (!policy_options_->createParserOptions()
+             ->Invoke(nullptr, callback_options, args)
+             .To(&out)) {
+      DCHECK(rethrow_scope.HasCaught());
+      return nullptr;
+    }
+  }
+  if (out.IsNull() || out.IsUndefined()) {
     return nullptr;
   }
 
@@ -179,9 +245,37 @@ TrustedParserOptions* TrustedTypePolicy::createParserOptions(
   if (!new_options || exception_state.HadException()) {
     return nullptr;
   }
-  return MakeGarbageCollected<TrustedParserOptions>(
-      new_options->sanitizer(),
-      new_options->runScripts() && options->runScripts());
+
+  Sanitizer* final_sanitizer = nullptr;
+  if (new_options->hasSanitizer()) {
+    auto* sanitizer_union = new_options->sanitizer();
+    if (sanitizer_union) {
+      switch (sanitizer_union->GetContentType()) {
+        case V8UnionSanitizerOrSanitizerConfigOrSanitizerPresets::ContentType::
+            kSanitizer:
+          final_sanitizer = sanitizer_union->GetAsSanitizer();
+          break;
+        case V8UnionSanitizerOrSanitizerConfigOrSanitizerPresets::ContentType::
+            kSanitizerConfig:
+          final_sanitizer =
+              Sanitizer::Create(sanitizer_union->GetAsSanitizerConfig(),
+                                Sanitizer::Mode::kUnsafe, exception_state);
+          break;
+        case V8UnionSanitizerOrSanitizerConfigOrSanitizerPresets::ContentType::
+            kSanitizerPresets:
+          final_sanitizer = Sanitizer::Create(
+              sanitizer_union->GetAsSanitizerPresets().AsEnum(),
+              exception_state);
+          break;
+      }
+    }
+  }
+  if (exception_state.HadException()) {
+    return nullptr;
+  }
+
+  return MakeGarbageCollected<TrustedHTMLParserOptions>(
+      final_sanitizer, new_options->runScripts());
 }
 
 bool TrustedTypePolicy::HasCreateHTML() const {

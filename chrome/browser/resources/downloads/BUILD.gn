@@ -12,11 +12,11 @@ build_webui("build") {
   static_files = [
     "downloads.html",
     "images/incognito_marker.svg",
+    "images/incognito_marker_old.svg",
     "images/no_downloads.svg",
   ]
 
   ts_files = [
-    "browser_proxy.ts",
     "bypass_warning_confirmation_dialog.html.ts",
     "bypass_warning_confirmation_dialog.ts",
     "data.ts",

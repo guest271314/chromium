@@ -23,7 +23,6 @@
 #include "components/user_manager/user_names.h"
 #include "content/public/test/browser_test.h"
 #include "ui/accessibility/accessibility_features.h"
-#include "ui/base/ui_base_features.h"
 
 namespace ash::settings {
 
@@ -98,36 +97,12 @@ class OSSettingsCrostiniTest : public OSSettingsMochaTest {
   crostini::FakeCrostiniFeatures fake_crostini_features_;
 };
 
-class OSSettingsMochaTestReducedAnimationsEnabled : public OSSettingsMochaTest {
- private:
-  base::test::ScopedFeatureList scoped_feature_list_{
-      ::features::kAccessibilityReducedAnimations};
-};
-
-class OSSettingsMochaTestMagnifierFollowsChromeVoxEnabled
-    : public OSSettingsMochaTest {
- private:
-  base::test::ScopedFeatureList scoped_feature_list_{
-      ::features::kAccessibilityMagnifierFollowsChromeVox};
-};
-
-class OSSettingsMochaTestMouseKeysEnabled : public OSSettingsMochaTest {
- private:
-  base::test::ScopedFeatureList scoped_feature_list_{
-      ::features::kAccessibilityMouseKeys};
-};
-
 class OSSettingsMochaTestGraduationEnabled : public OSSettingsMochaTest {
  private:
   base::test::ScopedFeatureList scoped_feature_list_{features::kGraduation};
 };
 
-class OSSettingsMochaTestFlashNotificationsEnabled
-    : public OSSettingsMochaTest {
- private:
-  base::test::ScopedFeatureList scoped_feature_list_{
-      ::features::kAccessibilityFlashScreenFeature};
-};
+using OSSettingsMochaTestFlashNotificationsEnabled = OSSettingsMochaTest;
 
 class OSSettingsMochaTestAppParentalControlsEnabled
     : public OSSettingsMochaTest {
@@ -143,58 +118,16 @@ class OSSettingsMochaTestAppParentalControlsEnabled
   base::test::ScopedFeatureList scoped_feature_list_;
 };
 
-class OSSettingsDeviceTestPeripheralAndSplitEnabled
-    : public OSSettingsMochaTest {
- protected:
-  OSSettingsDeviceTestPeripheralAndSplitEnabled() {
-    scoped_feature_list_.InitWithFeatures(
-        /*enabled=*/
-        {
-            ash::features::kPeripheralCustomization,
-        },
-        /*disabled=*/{});
-  }
+using OSSettingsDeviceTestPeripheralAndSplitEnabled = OSSettingsMochaTest;
 
- private:
-  base::test::ScopedFeatureList scoped_feature_list_;
-};
-
-class OSSettingsDeviceTestSplitAndAltAndFKeyEnabled
-    : public OSSettingsMochaTest {
- protected:
-  OSSettingsDeviceTestSplitAndAltAndFKeyEnabled() {
-    scoped_feature_list_.InitWithFeatures(
-        /*enabled=*/
-        {
-            ash::features::kAltClickAndSixPackCustomization,
-            ::features::kSupportF11AndF12KeyShortcuts,
-        },
-        /*disabled=*/{});
-  }
-
- private:
-  base::test::ScopedFeatureList scoped_feature_list_;
-};
+using OSSettingsDeviceTestSplitAndAltAndFKeyEnabled = OSSettingsMochaTest;
 
 class OSSettingsDeviceTestBacklightEnabled : public OSSettingsMochaTest {
  protected:
   OSSettingsDeviceTestBacklightEnabled() = default;
 };
 
-class OSSettingsDeviceTestAltAndBacklightEnabled : public OSSettingsMochaTest {
- protected:
-  OSSettingsDeviceTestAltAndBacklightEnabled() {
-    scoped_feature_list_.InitWithFeatures(
-        /*enabled=*/
-        {
-            ash::features::kAltClickAndSixPackCustomization,
-        },
-        /*disabled=*/{});
-  }
-
- private:
-  base::test::ScopedFeatureList scoped_feature_list_;
-};
+using OSSettingsDeviceTestAltAndBacklightEnabled = OSSettingsMochaTest;
 
 using OSSettingsNearbyShareTestSharingEnabled = OSSettingsMochaTest;
 
@@ -696,11 +629,6 @@ IN_PROC_BROWSER_TEST_F(OSSettingsMochaTest, InternetPagePasspointRemoveDialog) {
 }
 
 IN_PROC_BROWSER_TEST_F(OSSettingsMochaTest,
-                       InternetPageSettingsTrafficCounters) {
-  RunSettingsTest("internet_page/settings_traffic_counters_test.js");
-}
-
-IN_PROC_BROWSER_TEST_F(OSSettingsMochaTest,
                        InternetPageTetherConnectionDialog) {
   RunSettingsTest("internet_page/tether_connection_dialog_test.js");
 }
@@ -725,6 +653,10 @@ IN_PROC_BROWSER_TEST_F(OSSettingsMochaTest, KeyboardShortcutBanner) {
 
 IN_PROC_BROWSER_TEST_F(OSSettingsMochaTest, LockScreenSubpage) {
   RunSettingsTest("lock_screen_subpage_test.js");
+}
+
+IN_PROC_BROWSER_TEST_F(OSSettingsMochaTest, LockStateMixin) {
+  RunSettingsTest("lock_state_mixin_test.js");
 }
 
 IN_PROC_BROWSER_TEST_F(OSSettingsMochaTest, MainPageContainer) {
@@ -857,13 +789,7 @@ IN_PROC_BROWSER_TEST_F(OSSettingsMochaTest, OsA11yPageCursorAndTouchpadPage) {
   RunSettingsTest("os_a11y_page/cursor_and_touchpad_page_test.js");
 }
 
-IN_PROC_BROWSER_TEST_F(OSSettingsMochaTestMouseKeysEnabled,
-                       OsA11yPageCursorAndTouchpadPage) {
-  RunSettingsTest("os_a11y_page/cursor_and_touchpad_page_test.js");
-}
-
-IN_PROC_BROWSER_TEST_F(OSSettingsMochaTestMouseKeysEnabled,
-                       OsA11yPageMouseKeysSubpage) {
+IN_PROC_BROWSER_TEST_F(OSSettingsMochaTest, OsA11yPageMouseKeysSubpage) {
   RunSettingsTest("os_a11y_page/mouse_keys_subpage_test.js");
 }
 
@@ -890,16 +816,6 @@ IN_PROC_BROWSER_TEST_F(OSSettingsMochaTest,
 }
 
 IN_PROC_BROWSER_TEST_F(OSSettingsMochaTest,
-                       OsA11yPageDisplayAndMagnificationSubpage) {
-  RunSettingsTest("os_a11y_page/display_and_magnification_subpage_test.js");
-}
-
-IN_PROC_BROWSER_TEST_F(OSSettingsMochaTestReducedAnimationsEnabled,
-                       OsA11yPageDisplayAndMagnificationSubpage) {
-  RunSettingsTest("os_a11y_page/display_and_magnification_subpage_test.js");
-}
-
-IN_PROC_BROWSER_TEST_F(OSSettingsMochaTestMagnifierFollowsChromeVoxEnabled,
                        OsA11yPageDisplayAndMagnificationSubpage) {
   RunSettingsTest("os_a11y_page/display_and_magnification_subpage_test.js");
 }
@@ -1039,12 +955,6 @@ IN_PROC_BROWSER_TEST_F(OSSettingsMochaTest,
 IN_PROC_BROWSER_TEST_F(OSSettingsMochaTest,
                        OsAppsPageAppManagementPagePinToShelfItem) {
   RunSettingsTest("os_apps_page/app_management_page/pin_to_shelf_item_test.js");
-}
-
-IN_PROC_BROWSER_TEST_F(OSSettingsMochaTest,
-                       OsAppsPageAppManagementPagePluginVmDetailView) {
-  RunSettingsTest(
-      "os_apps_page/app_management_page/plugin_vm_detail_view_test.js");
 }
 
 IN_PROC_BROWSER_TEST_F(OSSettingsMochaTest,
@@ -1428,10 +1338,6 @@ IN_PROC_BROWSER_TEST_F(OSSettingsMochaTest, OsSettingsSubpage) {
 
 IN_PROC_BROWSER_TEST_F(OSSettingsMochaTest, OsSettingsUi) {
   RunSettingsTest("os_settings_ui/os_settings_ui_test.js");
-}
-
-IN_PROC_BROWSER_TEST_F(OSSettingsMochaTest, OsSettingsUiHats) {
-  RunSettingsTest("os_settings_ui/os_settings_ui_hats_test.js");
 }
 
 IN_PROC_BROWSER_TEST_F(OSSettingsMochaTest, OsSettingsUiMenu) {

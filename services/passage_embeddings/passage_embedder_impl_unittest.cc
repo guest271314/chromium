@@ -7,6 +7,7 @@
 #include "base/path_service.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/task_environment.h"
+#include "base/timer/elapsed_timer.h"
 #include "services/passage_embeddings/public/mojom/passage_embeddings.mojom.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -32,8 +33,10 @@ class PassageEmbedderImplTest : public testing::Test {
     sp_path_ = test_data_dir.AppendASCII("sentencepiece.model");
   }
 
-  mojom::PassageEmbedderParamsPtr MakeEmbedderParams() {
+  mojom::PassageEmbedderParamsPtr MakeEmbedderParams(
+      bool execute_for_gemma = false) {
     auto params = mojom::PassageEmbedderParams::New();
+    params->execute_for_gemma = execute_for_gemma;
     params->user_initiated_priority_num_threads = 4;
     params->passive_priority_num_threads = 1;
     params->embedder_cache_size = 1000;
@@ -58,23 +61,43 @@ TEST_F(PassageEmbedderImplTest, LoadValidModels) {
       kInputWindowSize));
 }
 
-TEST_F(PassageEmbedderImplTest, LoadModelsWithInvalidEmbeddingsModel) {
+TEST_F(PassageEmbedderImplTest, LoadModelsWithInvalidEmbeddingsModelFile) {
   PassageEmbedderImpl embedder(MakeEmbedderParams());
-  // LoadModels succeeds since it only validates the SentencePiece model and
-  // defers loading the embeddings model until the first execution.
+  // LoadModels fails immediately when given an invalid embeddings model file
+  // handle.
+  EXPECT_FALSE(embedder.LoadModels(
+      base::File(),
+      base::File(sp_path_, base::File::FLAG_OPEN | base::File::FLAG_READ),
+      kInputWindowSize));
+}
+
+TEST_F(PassageEmbedderImplTest, LoadModelsWithCorruptedEmbeddingsModel) {
+  PassageEmbedderImpl embedder(MakeEmbedderParams());
+  // LoadModels succeeds when file handles are valid, deferring flatbuffer
+  // verification until the first execution.
   EXPECT_TRUE(embedder.LoadModels(
       base::File(sp_path_, base::File::FLAG_OPEN | base::File::FLAG_READ),
       base::File(sp_path_, base::File::FLAG_OPEN | base::File::FLAG_READ),
       kInputWindowSize));
 
-  // Execution fails since the embeddings model is invalid.
+  // Execution fails since the embeddings model flatbuffer is invalid.
   std::vector<mojom::PassageEmbeddingsResultPtr> results =
       embedder.GenerateEmbeddings({"foo"},
                                   mojom::PassagePriority::kUserInitiated);
   EXPECT_EQ(results.size(), 0u);
 }
 
-TEST_F(PassageEmbedderImplTest, LoadModelsWithInvalidSpModel) {
+TEST_F(PassageEmbedderImplTest, LoadModelsWithInvalidSpModelFile) {
+  PassageEmbedderImpl embedder(MakeEmbedderParams());
+  // LoadModels fails immediately when given an invalid SentencePiece file
+  // handle.
+  EXPECT_FALSE(embedder.LoadModels(
+      base::File(embeddings_path_,
+                 base::File::FLAG_OPEN | base::File::FLAG_READ),
+      base::File(), kInputWindowSize));
+}
+
+TEST_F(PassageEmbedderImplTest, LoadModelsWithCorruptedSpModel) {
   PassageEmbedderImpl embedder(MakeEmbedderParams());
   EXPECT_FALSE(embedder.LoadModels(
       base::File(embeddings_path_,
@@ -151,6 +174,60 @@ TEST_F(PassageEmbedderImplTest, RecordsDurationHistogramsWithPriority) {
       "History.Embeddings.Embedder.QueryEmbeddingsGenerationDuration", 1);
   histogram_tester_.ExpectTotalCount(
       "History.Embeddings.Embedder.QueryEmbeddingsGenerationThreadDuration", 1);
+}
+
+TEST_F(PassageEmbedderImplTest, RecordsGemmaHistograms) {
+  PassageEmbedderImpl embedder(MakeEmbedderParams(/*execute_for_gemma=*/true));
+  ASSERT_TRUE(embedder.LoadModels(
+      base::File(embeddings_path_,
+                 base::File::FLAG_OPEN | base::File::FLAG_READ),
+      base::File(sp_path_, base::File::FLAG_OPEN | base::File::FLAG_READ),
+      kInputWindowSize));
+
+  std::ignore = embedder.GenerateEmbeddings({"hello", "world"},
+                                            mojom::PassagePriority::kPassive);
+
+  std::ignore = embedder.GenerateEmbeddings(
+      {"foo"}, mojom::PassagePriority::kUserInitiated);
+
+  histogram_tester_.ExpectTotalCount(
+      "AI.SemanticEmbedder.SentencePieceModelLoadDuration", 1);
+  histogram_tester_.ExpectTotalCount(
+      "AI.SemanticEmbedder.SentencePieceModelLoadSucceeded", 1);
+  histogram_tester_.ExpectTotalCount(
+      "AI.SemanticEmbedder.EmbeddingsModelLoadDuration", 2);
+  histogram_tester_.ExpectTotalCount(
+      "AI.SemanticEmbedder.EmbeddingsModelLoadSucceeded", 2);
+  histogram_tester_.ExpectTotalCount("AI.SemanticEmbedder.TokenizationDuration",
+                                     3);
+  histogram_tester_.ExpectTotalCount(
+      "AI.SemanticEmbedder.TokenizationSucceeded", 3);
+  histogram_tester_.ExpectTotalCount("AI.SemanticEmbedder.PassageTokenCount",
+                                     3);
+  histogram_tester_.ExpectTotalCount(
+      "AI.SemanticEmbedder.EmbeddingsGenerationSucceeded", 3);
+  histogram_tester_.ExpectTotalCount(
+      "AI.SemanticEmbedder.PassageEmbeddingsGenerationDuration.256", 3);
+  base::ElapsedThreadTimer execute_thread_timer;
+  if (execute_thread_timer.is_supported()) {
+    histogram_tester_.ExpectTotalCount(
+        "AI.SemanticEmbedder.PassageEmbeddingsGenerationThreadDuration.256", 3);
+  }
+
+  // Gemma metrics should be emitted instead of History embeddings metrics.
+  histogram_tester_.ExpectTotalCount(
+      "History.Embeddings.Embedder.PassageEmbeddingsGenerationDuration", 0);
+  histogram_tester_.ExpectTotalCount(
+      "History.Embeddings.Embedder.PassageEmbeddingsGenerationThreadDuration",
+      0);
+  histogram_tester_.ExpectTotalCount(
+      "History.Embeddings.Embedder.QueryEmbeddingsGenerationDuration", 0);
+  histogram_tester_.ExpectTotalCount(
+      "History.Embeddings.Embedder.QueryEmbeddingsGenerationThreadDuration", 0);
+  histogram_tester_.ExpectTotalCount(
+      "History.Embeddings.Embedder.SentencePieceModelLoadDuration", 0);
+  histogram_tester_.ExpectTotalCount(
+      "History.Embeddings.Embedder.EmbeddingsModelLoadDuration", 0);
 }
 
 }  // namespace

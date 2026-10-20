@@ -15,6 +15,7 @@
 #include "chrome/browser/android/tab_android.h"
 #include "chrome/browser/picture_in_picture/auto_picture_in_picture_tab_helper.h"
 #include "components/thin_webview/compositor_view.h"
+#include "content/public/browser/immersive_playback_options.h"
 #include "content/public/browser/overlay_window.h"
 #include "content/public/browser/video_picture_in_picture_window_controller.h"
 #include "content/public/browser/web_contents.h"
@@ -190,7 +191,7 @@ void OverlayWindowAndroid::CompositorViewCreated(
     const base::android::JavaRef<jobject>& compositor_view) {
   compositor_view_ =
       thin_webview::android::CompositorView::FromJavaObject(compositor_view);
-  DCHECK(compositor_view_);
+  CHECK(compositor_view_, base::NotFatalUntil::M162);
   compositor_view_->SetRootLayer(surface_layer_);
 }
 
@@ -337,18 +338,16 @@ void OverlayWindowAndroid::SetMediaPositionJava(
 }
 
 void OverlayWindowAndroid::SetImmersiveVideoOptionsJava(
-    const blink::mojom::ImmersiveOptionsPtr& immersive_options) {
-  if (!immersive_options) {
-    return;
-  }
+    const content::ImmersiveOptions& immersive_options) {
   JNIEnv* env = base::android::AttachCurrentThread();
   base::android::ScopedJavaLocalRef<jobject> obj = java_ref_.get(env);
   if (obj.is_null()) {
     return;
   }
   Java_VideoOverlayActivity_setImmersiveVideoOptions(
-      env, obj, static_cast<int>(immersive_options->stereo_mode),
-      static_cast<int>(immersive_options->projection_type));
+      env, obj, static_cast<int>(immersive_options.stereo_mode),
+      static_cast<int>(immersive_options.projection_type),
+      immersive_options.is_recommended);
 }
 
 void OverlayWindowAndroid::Close() {
@@ -372,7 +371,7 @@ void OverlayWindowAndroid::CloseInternal() {
     return;
   }
 
-  DCHECK(window_android_);
+  CHECK(window_android_, base::NotFatalUntil::M162);
   window_android_->RemoveObserver(this);
   window_android_ = nullptr;
   CloseJava();

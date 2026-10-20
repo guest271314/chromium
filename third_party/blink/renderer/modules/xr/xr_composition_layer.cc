@@ -17,10 +17,13 @@
 
 namespace blink {
 
-XRCompositionLayer::XRCompositionLayer(XRGraphicsBinding* binding,
-                                       XRLayerDrawingContext* drawing_context)
-    : XRLayer(binding->session()),
+XRCompositionLayer::XRCompositionLayer(XRSession* session,
+                                       XRGraphicsBinding* binding,
+                                       XRLayerDrawingContext* drawing_context,
+                                       V8XRTextureType::Enum texture_type)
+    : XRLayer(session),
       binding_(binding),
+      texture_type_(texture_type),
       drawing_context_(drawing_context) {
   CHECK(drawing_context_);
   drawing_context_->SetCompositionLayer(this);
@@ -117,7 +120,13 @@ XRCompositionLayer::CreateLayerData() const {
   layer_data->read_only_data->texture_width = textureWidth();
   layer_data->read_only_data->texture_height = textureHeight();
   layer_data->read_only_data->is_static = isStatic();
-  if (layout_ == V8XRLayerLayout::Enum::kStereo) {
+  layer_data->read_only_data->flip_y = drawing_context_->ShouldFlipY();
+  layer_data->read_only_data->needs_raster_access =
+      drawing_context_->NeedsRasterAccess();
+  layer_data->read_only_data->texture_type =
+      V8ToMojomTextureType(texture_type_);
+  if (layout_ == V8XRLayerLayout::Enum::kStereo &&
+      texture_type_ != V8XRTextureType::Enum::kTextureArray) {
     // We put the layers into a single texture. So the other side should treat
     // it as left-right. See XRWebGLTextureArraySwapChain.
     layer_data->read_only_data->layout =

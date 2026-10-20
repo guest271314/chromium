@@ -20,12 +20,19 @@ class AndroidBnplStrategy : public BnplStrategy {
   ~AndroidBnplStrategy() override;
 
   // BnplStrategy:
-  SuggestionShownNextAction GetNextActionOnSuggestionShown() override;
+  SuggestionsShownNextAction GetNextActionOnSuggestionsShown() override;
   UserDecisionToUseBnplNextAction GetNextActionOnUserDecisionToUseBnpl()
       override;
+  UserDecisionToUseBnplAgainNextAction
+  GetNextActionOnUserDecisionToUseBnplAgain() override;
   BnplAmountExtractionReturnedNextAction
   GetNextActionOnAmountExtractionReturned() override;
   BeforeSwitchingViewAction GetBeforeViewSwitchAction() override;
+  BnplAiBasedAmountExtractionReturnedNextAction
+  GetNextActionOnAiBasedAmountExtractionReturned() override;
+  UserDecisionToUseSavedCardsNextAction
+  GetNextActionOnUserDecisionToUseSavedCards() override;
+  UiDismissalAction GetUiDismissalAction() override;
   bool ShouldRemoveExistingUiOnServerReturn(
       PaymentsAutofillClient::PaymentsRpcResult result) override;
 };

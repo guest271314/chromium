@@ -11,6 +11,7 @@
 #include "chrome/browser/profiles/incognito_helpers.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/safe_browsing/chrome_client_side_detection_service_delegate.h"
+#include "chrome/common/chrome_features.h"
 #include "chrome/common/chrome_switches.h"
 #include "components/keyed_service/content/browser_context_dependency_manager.h"
 #include "components/safe_browsing/content/browser/client_side_detection_service.h"
@@ -63,7 +64,7 @@ ClientSideDetectionServiceFactory::BuildServiceInstanceForBrowserContext(
   if (!holder_service) {
     return nullptr;
   }
-  auto& opt_guide = holder_service->GetGlobalState().prediction_manager();
+  auto& opt_guide = holder_service->GetGlobalState().model_provider();
 
   return std::make_unique<ClientSideDetectionService>(
       std::make_unique<ChromeClientSideDetectionServiceDelegate>(profile),
@@ -72,6 +73,11 @@ ClientSideDetectionServiceFactory::BuildServiceInstanceForBrowserContext(
 
 bool ClientSideDetectionServiceFactory::ServiceIsCreatedWithBrowserContext()
     const {
+  if (base::FeatureList::IsEnabled(
+          ::features::kLazyKeyedServiceInstantiation) &&
+      ::features::kLazyKeyedServiceInstantiationSafeBrowsing.Get()) {
+    return false;
+  }
   return true;
 }
 

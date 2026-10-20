@@ -4,6 +4,7 @@
 
 #include "chrome/browser/ui/ash/quick_answers/ui/quick_answers_util.h"
 
+#include "base/i18n/legacy_language_tag_helpers.h"
 #include "base/strings/escape.h"
 #include "chrome/browser/ui/ash/quick_answers/ui/quick_answers_text_label.h"
 #include "chromeos/components/quick_answers/public/cpp/quick_answers_state.h"
@@ -213,8 +214,8 @@ GURL GetDetailsUrlForQuery(const std::string& query) {
                 base::EscapeUrlEncodedData(query, /*use_plus=*/true));
   }
   auto query_text = base::EscapeUrlEncodedData(*remainder, /*use_plus=*/true);
-  auto device_language =
-      l10n_util::GetLanguage(QuickAnswersState::Get()->application_locale());
+  auto device_language = base::i18n::GetLanguageSubtagUsingLanguageTag(
+      QuickAnswersState::Get()->application_locale());
   auto translate_url = base::StringPrintf(kGoogleTranslateUrlTemplate,
                                           device_language, query_text);
   return GURL(translate_url);
@@ -241,41 +242,24 @@ void GenerateTTSAudio(content::BrowserContext* browser_context,
   tts_controller->SpeakOrEnqueue(std::move(tts_utterance));
 }
 
-const gfx::Insets GetMainViewInsets(Design design) {
-  switch (design) {
-    case Design::kCurrent:
-      return kMainViewInsets;
-    case Design::kRefresh:
-    case Design::kMagicBoost:
-      return gfx::Insets::TLBR(12, 16, 16, 16);
-  }
-
-  NOTREACHED() << "Invalid design enum value provided";
+const gfx::Insets GetMainViewInsets() {
+  return gfx::Insets::TLBR(12, 16, 16, 16);
 }
 
-const gfx::Insets GetButtonsViewInsets(Design design) {
-  switch (design) {
-    case Design::kCurrent:
-      return gfx::Insets(kButtonsViewMarginDip);
-    case Design::kRefresh:
-    case Design::kMagicBoost:
-      // Buttons view is rendered as a layer on top of main view. For `kRefresh`
-      // and `kMagicBoost`, they share the same insets.
-      return GetMainViewInsets(design);
-  }
-
-  NOTREACHED() << "Invalid design enum value provided";
+const gfx::Insets GetButtonsViewInsets() {
+  // Buttons view is rendered as a layer on top of main view.
+  return GetMainViewInsets();
 }
 
 // TODO: crbug.com/340629098 - A temporary solution until buttons view is merged
 // into headers. See another comment for buttons view in
 // `QuickAnswersView::QuickAnswersView` about details.
-int GetButtonsViewOcclusion(Design design) {
+int GetButtonsViewOcclusion() {
   gfx::Insets insets_icon_button =
       views::LayoutProvider::Get()->GetInsetsMetric(
           views::InsetsMetric::INSETS_ICON_BUTTON);
   return insets_icon_button.left() + kGoogleIconSizeDip +
-         insets_icon_button.right() + GetButtonsViewInsets(design).right();
+         insets_icon_button.right() + GetButtonsViewInsets().right();
 }
 
 }  // namespace quick_answers

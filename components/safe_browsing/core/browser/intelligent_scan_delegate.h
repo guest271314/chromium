@@ -33,10 +33,12 @@ class IntelligentScanDelegate : public KeyedService {
     static constexpr int kModelVersionUnavailable = -1;
     // Magic number for the default server model version.
     static constexpr int kDefaultServerModelVersion = 1000;
-    static IntelligentScanResult Success(std::string brand,
-                                         std::string intent,
-                                         int model_version,
-                                         ModelType model_type);
+    static IntelligentScanResult Success(
+        std::string brand,
+        std::string intent,
+        int model_version,
+        ModelType model_type,
+        std::optional<float> scam_score = std::nullopt);
     static IntelligentScanResult Failure(
         int model_version,
         ModelType model_type,
@@ -48,6 +50,7 @@ class IntelligentScanDelegate : public KeyedService {
 
     std::string brand;
     std::string intent;
+    std::optional<float> scam_score;
     int model_version;
     bool execution_success;
     ModelType model_type;
@@ -75,6 +78,7 @@ class IntelligentScanDelegate : public KeyedService {
   // std::nullopt in case the inquiry fails immediately without start.
   virtual std::optional<base::UnguessableToken> StartIntelligentScan(
       std::string rendered_texts,
+      std::string url,
       IntelligentScanDoneCallback callback) = 0;
   // Cancels a specific intelligent scan request. If the |scan_id| is
   // ongoing, it will return true, and false otherwise.

@@ -11,19 +11,18 @@ include_rules = [
   # refactor //chrome/browser/ash to break these dependencies; see b/332804822.
   # Whenever possible, avoid adding new //chrome dependencies to this list.
   "+chrome/browser/ash/login/users",
-  "+chrome/browser/ash/profiles",
   "+chrome/browser/profiles",
-  "+chrome/browser/signin",
   "+chrome/common",
   "+chrome/test/base",
 ]
 
 specific_include_rules = {
-  "ambient_client_impl_unittest\.cc": [
+  "ambient_client_impl_unittest\\.cc": [
     "+chrome/browser/ash/settings/scoped_testing_cros_settings.h",
+    "+chrome/browser/signin",
   ],
 
-  "managed_screensaver_browsertest\.cc": [
+  "managed_screensaver_browsertest\\.cc": [
     "+chrome/browser/ash/login",
     "+chrome/browser/ash/login/lock",
     "+chrome/browser/ash/login/test",

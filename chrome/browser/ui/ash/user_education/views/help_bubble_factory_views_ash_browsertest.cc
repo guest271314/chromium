@@ -11,8 +11,6 @@
 #include "ash/user_education/user_education_types.h"
 #include "ash/user_education/user_education_util.h"
 #include "ash/user_education/views/help_bubble_view_ash.h"
-#include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/user_education/user_education_service.h"
 #include "chrome/browser/user_education/user_education_service_factory.h"
 #include "chrome/test/base/in_process_browser_test.h"
@@ -64,7 +62,7 @@ class HelpBubbleFactoryViewsAshBrowserTest
   // Returns the help bubble factory registry for the active browser profile.
   user_education::HelpBubbleFactoryRegistry& GetHelpBubbleFactoryRegistry() {
     return UserEducationServiceFactory::GetForBrowserContext(
-               browser()->profile())
+               browser()->GetProfile())
         ->help_bubble_factory_registry();
   }
 };

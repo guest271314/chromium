@@ -10,6 +10,7 @@
 #include <utility>
 #include <vector>
 
+#include "base/containers/span.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
 #include "base/functional/callback_helpers.h"
@@ -215,8 +216,8 @@ CertificateProviderService::~CertificateProviderService() {
 void CertificateProviderService::SetDelegate(
     std::unique_ptr<Delegate> delegate) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  DCHECK(!delegate_);
-  DCHECK(delegate);
+  CHECK(!delegate_, base::NotFatalUntil::M160);
+  CHECK(delegate, base::NotFatalUntil::M160);
 
   delegate_ = std::move(delegate);
 }

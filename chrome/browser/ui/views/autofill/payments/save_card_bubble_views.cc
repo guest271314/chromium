@@ -11,29 +11,19 @@
 #include "chrome/browser/ui/views/autofill/payments/dialog_view_ids.h"
 #include "chrome/browser/ui/views/autofill/payments/payments_view_util.h"
 #include "chrome/browser/ui/views/chrome_layout_provider.h"
-#include "chrome/browser/ui/views/chrome_typography.h"
 #include "components/autofill/core/browser/data_model/payments/credit_card.h"
-#include "components/autofill/core/browser/metrics/autofill_metrics.h"
 #include "components/autofill/core/browser/payments/legal_message_line.h"
-#include "components/autofill/core/browser/ui/payments/payments_ui_closed_reasons.h"
-#include "components/autofill/core/common/autofill_features.h"
 #include "components/autofill/core/common/autofill_payments_features.h"
 #include "components/grit/components_scaled_resources.h"
-#include "components/strings/grit/components_strings.h"
-#include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/mojom/dialog_button.mojom.h"
 #include "ui/base/resource/resource_bundle.h"
-#include "ui/gfx/color_palette.h"
 #include "ui/gfx/geometry/insets.h"
 #include "ui/views/border.h"
-#include "ui/views/bubble/bubble_border.h"
 #include "ui/views/bubble/bubble_frame_view.h"
-#include "ui/views/bubble/tooltip_icon.h"
-#include "ui/views/controls/button/label_button.h"
+#include "ui/views/controls/button/md_text_button.h"
 #include "ui/views/controls/label.h"
 #include "ui/views/controls/styled_label.h"
-#include "ui/views/controls/textfield/textfield.h"
 #include "ui/views/layout/box_layout.h"
 #include "ui/views/layout/box_layout_view.h"
 #include "ui/views/layout/flex_layout.h"
@@ -52,7 +42,7 @@ SaveCardBubbleViews::SaveCardBubbleViews(views::BubbleAnchor anchor_view,
                                          SaveCardBubbleController* controller)
     : AutofillLocationBarBubble(anchor_view, web_contents),
       controller_(controller) {
-  DCHECK(controller);
+  CHECK(controller, base::NotFatalUntil::M162);
   SetButtonLabel(ui::mojom::DialogButton::kOk,
                  controller->GetAcceptButtonText());
   SetButtonLabel(ui::mojom::DialogButton::kCancel,
@@ -199,7 +189,7 @@ std::unique_ptr<views::View> SaveCardBubbleViews::CreateMainContentView() {
 }
 
 void SaveCardBubbleViews::InitFootnoteView(views::View* footnote_view) {
-  DCHECK(!footnote_view_);
+  CHECK(!footnote_view_, base::NotFatalUntil::M162);
   footnote_view_ = footnote_view;
   footnote_view_->SetID(DialogViewId::FOOTNOTE_VIEW);
 }
@@ -274,7 +264,10 @@ std::unique_ptr<views::View> SaveCardBubbleViews::GetCardIdentifierView() {
           views::Builder<views::ImageView>()
               .SetImage(ui::ImageModel::FromImage(
                   ui::ResourceBundle::GetSharedInstance().GetImageNamed(
-                      IDR_AUTOFILL_GOOGLE_PAY_PILL)))
+                      base::FeatureList::IsEnabled(
+                          features::kAutofillEnableGradientGoogleLogos)
+                          ? IDR_AUTOFILL_GOOGLE_PAY_PILL_WITH_GRADIENT
+                          : IDR_AUTOFILL_GOOGLE_PAY_PILL)))
               .SetProperty(views::kFlexBehaviorKey,
                            views::FlexSpecification(
                                views::LayoutOrientation::kHorizontal,

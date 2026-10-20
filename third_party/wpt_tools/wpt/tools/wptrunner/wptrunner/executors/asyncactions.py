@@ -270,6 +270,31 @@ class BidiEmulationSetTouchOverrideAction:
             max_touch_points, contexts)
 
 
+class BidiEmulationSetViewportMetaOverrideAction:
+    name = "bidi.emulation.set_viewport_meta_override"
+
+    def __init__(self, logger, protocol):
+        do_delayed_imports()
+        self.logger = logger
+        self.protocol = protocol
+
+    async def __call__(self, payload):
+        viewport_meta = payload['viewportMeta'] \
+            if 'viewportMeta' in payload \
+            else None
+
+        if "contexts" not in payload:
+            raise ValueError("Missing required parameter: contexts")
+        contexts = []
+        for context in payload["contexts"]:
+            contexts.append(get_browsing_context_id(context))
+        if len(contexts) == 0:
+            raise ValueError("At least one context must be provided")
+
+        return await self.protocol.bidi_emulation.set_viewport_meta_override(
+            viewport_meta, contexts)
+
+
 class BidiSessionSubscribeAction:
     name = "bidi.session.subscribe"
 
@@ -342,6 +367,26 @@ class BidiPermissionsSetPermissionAction:
                                                                    embedded_origin)
 
 
+class BidiDigitalCredentialsSetVirtualWalletBehaviorAction:
+    name = "set_virtual_wallet_behavior"
+
+    def __init__(self, logger, protocol):
+        do_delayed_imports()
+        self.logger = logger
+        self.protocol = protocol
+
+    async def __call__(self, payload):
+        context = get_browsing_context_id(payload["context"])
+        return await self.execute(context, payload)
+
+    async def execute(self, context: str, payload: Mapping[str, Any]) -> Any:
+        action = payload["action"]
+        protocol = payload.get("protocol")
+        response = payload.get("response")
+        self.logger.debug("Setting virtual wallet behavior to %s" % action)
+        return await self.protocol.digital_credentials.set_virtual_wallet_behavior(action, protocol, response, context)
+
+
 async_actions = [
     BidiBluetoothHandleRequestDevicePrompt,
     BidiBluetoothSimulateAdapterAction,
@@ -358,8 +403,10 @@ async_actions = [
     BidiEmulationSetLocaleOverrideAction,
     BidiEmulationSetScreenOrientationOverrideAction,
     BidiEmulationSetTouchOverrideAction,
+    BidiEmulationSetViewportMetaOverrideAction,
     BidiUserAgentClientHintsSetClientHintsOverrideAction,
     BidiPermissionsSetPermissionAction,
     BidiSessionSubscribeAction,
     BidiSessionUnsubscribeAction,
-    BidiPermissionsSetPermissionAction]
+    BidiPermissionsSetPermissionAction,
+    BidiDigitalCredentialsSetVirtualWalletBehaviorAction]

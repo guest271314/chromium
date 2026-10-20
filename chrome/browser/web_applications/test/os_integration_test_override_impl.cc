@@ -132,7 +132,7 @@ std::optional<SkBitmap> IconManagerReadIconForSize(
   if (!icon_manager.HasIcons(app_id, IconPurpose::ANY, {size_px})) {
     return std::nullopt;
   }
-  std::optional<SkBitmap> result = std::nullopt;
+  std::optional<SkBitmap> result;
   base::RunLoop run_loop;
   icon_manager.ReadTrustedIconsWithFallbackToManifestIcons(
       app_id, {size_px}, IconPurpose::ANY,
@@ -526,6 +526,7 @@ base::FilePath OsIntegrationTestOverrideImpl::GetShortcutPath(
     }
   }
 #elif BUILDFLAG(IS_MAC)
+  base::ScopedAllowBlockingForTesting allow_blocking;
   AppShimRegistry* registry = AppShimRegistry::Get();
   std::set<base::FilePath> app_installed_profiles =
       registry->GetInstalledProfilesForApp(app_id);

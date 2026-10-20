@@ -87,7 +87,10 @@ PrefService* AutocompleteProviderClientImpl::GetLocalState() {
 }
 
 std::string AutocompleteProviderClientImpl::GetApplicationLocale() const {
-  return GetApplicationContext()->GetApplicationLocaleStorage()->Get();
+  return std::string(GetApplicationContext()
+                         ->GetApplicationLocaleStorage()
+                         ->GetTag()
+                         .tag_string());
 }
 
 const AutocompleteSchemeClassifier&
@@ -136,8 +139,11 @@ AutocompleteProviderClientImpl::GetTemplateURLService() const {
 RemoteSuggestionsService*
 AutocompleteProviderClientImpl::GetRemoteSuggestionsService(
     bool create_if_necessary) const {
-  return RemoteSuggestionsServiceFactory::GetForProfile(profile_,
-                                                        create_if_necessary);
+  if (create_if_necessary) {
+    return RemoteSuggestionsServiceFactory::GetForProfile(profile_);
+  }
+
+  return RemoteSuggestionsServiceFactory::GetForProfileIfExists(profile_);
 }
 
 ZeroSuggestCacheService*
@@ -257,6 +263,11 @@ bool AutocompleteProviderClientImpl::IsOffTheRecord() const {
   return profile_->IsOffTheRecord();
 }
 
+bool AutocompleteProviderClientImpl::IsPrimaryOTRProfileWithRegularParent()
+    const {
+  return profile_->IsOffTheRecord();
+}
+
 bool AutocompleteProviderClientImpl::IsIncognitoProfile() const {
   return profile_->IsOffTheRecord();
 }
@@ -287,13 +298,13 @@ bool AutocompleteProviderClientImpl::IsAuthenticated() const {
 
 void AutocompleteProviderClientImpl::Classify(
     const std::u16string& text,
-    bool prefer_keyword,
+    bool in_keyword_mode,
     bool allow_exact_keyword_match,
     metrics::OmniboxEventProto::PageClassification page_classification,
     AutocompleteMatch* match,
     GURL* alternate_nav_url) {
   AutocompleteClassifier* classifier = GetAutocompleteClassifier();
-  classifier->Classify(text, prefer_keyword, allow_exact_keyword_match,
+  classifier->Classify(text, in_keyword_mode, allow_exact_keyword_match,
                        page_classification, match, alternate_nav_url);
 }
 

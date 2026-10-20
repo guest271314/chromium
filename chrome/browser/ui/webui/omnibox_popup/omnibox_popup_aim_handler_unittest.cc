@@ -105,8 +105,10 @@ TEST_F(OmniboxPopupAimHandlerTest, ShowContextMenu) {
 
 TEST_F(OmniboxPopupAimHandlerTest, RequestClose) {
   EXPECT_FALSE(embedder_->ui_closed());
-  handler_->RequestClose();
+  EXPECT_EQ("", handler_->cached_draft_text());
+  handler_->RequestClose("live search query");
   EXPECT_TRUE(embedder_->ui_closed());
+  EXPECT_EQ("live search query", handler_->cached_draft_text());
 }
 
 TEST_F(OmniboxPopupAimHandlerTest, OnPopupShown) {
@@ -137,13 +139,15 @@ TEST_F(OmniboxPopupAimHandlerTest, AddContext) {
 
 TEST_F(OmniboxPopupAimHandlerTest, ClearPopup) {
   EXPECT_CALL(page_, ClearPopup(testing::_))
-      .WillOnce([](omnibox_popup_aim::mojom::Page::ClearPopupCallback callback) {
-        std::move(callback).Run("final input");
-      });
+      .WillOnce(
+          [](omnibox_popup_aim::mojom::Page::ClearPopupCallback callback) {
+            std::move(callback).Run("final input", /*query_submitted=*/true);
+          });
 
-  base::test::TestFuture<const std::string&> future;
+  base::test::TestFuture<const std::string&, bool> future;
   handler_->ClearPopup(future.GetCallback());
-  EXPECT_EQ("final input", future.Get());
+  EXPECT_EQ("final input", future.Get<0>());
+  EXPECT_TRUE(future.Get<1>());
 }
 
 TEST_F(OmniboxPopupAimHandlerTest, OnContextMenuClosed) {

@@ -20,16 +20,20 @@
 #include "chrome/browser/resource_coordinator/tab_manager.h"
 #include "chrome/browser/sync/sessions/sync_sessions_web_contents_router.h"
 #include "chrome/browser/sync/sessions/sync_sessions_web_contents_router_factory.h"
-#include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/sync/browser_synced_tab_delegate.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "components/sessions/content/session_tab_helper.h"
+#include "components/sessions/core/session_id.h"
 #include "components/sync_sessions/synced_tab_delegate.h"
 #include "content/public/common/content_features.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
+#include "testing/gmock/include/gmock/gmock.h"
+#include "testing/gtest/include/gtest/gtest.h"
+#include "ui/base/window_open_disposition.h"
 
 #if BUILDFLAG(IS_CHROMEOS)
 #include "ash/constants/ash_switches.h"
@@ -57,10 +61,13 @@ class MockLocalSessionEventHandler : public LocalSessionEventHandler {
   std::vector<SessionID> seen_ids_;
 };
 
-class BrowserListRouterHelperBrowserTest : public InProcessBrowserTest {
+class BrowserListRouterHelperBrowserTest
+    : public InProcessBrowserTest,
+      public ::testing::WithParamInterface<bool> {
  public:
   BrowserListRouterHelperBrowserTest() {
-    scoped_feature_list_.InitAndDisableFeature(features::kWebContentsDiscard);
+    scoped_feature_list_.InitWithFeatureState(features::kWebContentsDiscard,
+                                              GetParam());
   }
 
   void SetUpCommandLine(base::CommandLine* command_line) override {
@@ -81,10 +88,14 @@ class BrowserListRouterHelperBrowserTest : public InProcessBrowserTest {
   MockLocalSessionEventHandler handler_2_;
 };
 
-IN_PROC_BROWSER_TEST_F(BrowserListRouterHelperBrowserTest,
+INSTANTIATE_TEST_SUITE_P(WebContentsDiscard,
+                         BrowserListRouterHelperBrowserTest,
+                         ::testing::Bool());
+
+IN_PROC_BROWSER_TEST_P(BrowserListRouterHelperBrowserTest,
                        ObservationScopedToSingleProfile) {
   ASSERT_TRUE(embedded_test_server()->Start());
-  Profile* profile_1 = browser()->profile();
+  Profile* profile_1 = browser()->GetProfile();
 
   // Create a second profile and browser.
   ProfileManager* profile_manager = g_browser_process->profile_manager();
@@ -92,7 +103,7 @@ IN_PROC_BROWSER_TEST_F(BrowserListRouterHelperBrowserTest,
       profile_manager, profile_manager->GenerateNextProfileDirectoryPath());
   ASSERT_TRUE(profile_2);
 
-  Browser* browser_2 = CreateBrowser(profile_2);
+  BrowserWindowInterface* browser_2 = CreateBrowser(profile_2);
 
   SyncSessionsWebContentsRouterFactory::GetInstance()
       ->GetForProfile(profile_1)
@@ -115,8 +126,10 @@ IN_PROC_BROWSER_TEST_F(BrowserListRouterHelperBrowserTest,
   EXPECT_FALSE(std::ranges::contains(*handler_2_urls, gurl_1));
 
   // Add a browser for each profile.
-  Browser* new_browser_in_first_profile = CreateBrowser(profile_1);
-  Browser* new_browser_in_second_profile = CreateBrowser(profile_2);
+  BrowserWindowInterface* new_browser_in_first_profile =
+      CreateBrowser(profile_1);
+  BrowserWindowInterface* new_browser_in_second_profile =
+      CreateBrowser(profile_2);
 
   GURL gurl_3 = embedded_test_server()->GetURL("/title3.html");
   GURL gurl_4 = embedded_test_server()->GetURL("/empty.html");
@@ -136,9 +149,9 @@ IN_PROC_BROWSER_TEST_F(BrowserListRouterHelperBrowserTest,
 
 // Added when fixing https://crbug.com/40546261, ensure tab discards are
 // observed.
-IN_PROC_BROWSER_TEST_F(BrowserListRouterHelperBrowserTest, NotifyOnDiscardTab) {
+IN_PROC_BROWSER_TEST_P(BrowserListRouterHelperBrowserTest, NotifyOnDiscardTab) {
   ASSERT_TRUE(embedded_test_server()->Start());
-  Profile* profile_1 = browser()->profile();
+  Profile* profile_1 = browser()->GetProfile();
 
   ProfileManager* profile_manager = g_browser_process->profile_manager();
   Profile* profile_2 = &profiles::testing::CreateProfileSync(
@@ -183,25 +196,35 @@ IN_PROC_BROWSER_TEST_F(BrowserListRouterHelperBrowserTest, NotifyOnDiscardTab) {
   content::WebContents* discarded =
       g_browser_process->GetTabManager()->DiscardTabByExtension(old_contents);
   ASSERT_TRUE(discarded);
-  EXPECT_NE(old_contents, discarded);
 
-  // The replacement and new SessionID generation occur synchronously during
-  // DiscardTabByExtension. We don't need to reload or NavigateToURL here.
+  // If WebContentsDiscard is enabled, the WebContents is modified on discard so
+  // the SessionId should not change.
+  if (base::FeatureList::IsEnabled(::features::kWebContentsDiscard)) {
+    EXPECT_EQ(old_contents, discarded);
+    EXPECT_THAT(*handler_1().seen_ids(), ::testing::IsEmpty());
+    EXPECT_THAT(*handler_1().seen_urls(), ::testing::IsEmpty());
+  } else {
+    EXPECT_NE(old_contents, discarded);
 
-  // We're typically notified twice while discarding tabs. Once for the
-  // destruction of the old web contents, and once for the new. This test case
-  // is really trying to make sure the TabReplacedAt() method is called, which
-  // is going to be invoked for the new web contents. We can tell it is the new
-  // one by finding |gurl_1| for an id that is not |old_id|.
-  bool found_new_id = false;
-  for (size_t i = 0; i < handler_1().seen_ids()->size(); ++i) {
-    if (handler_1().seen_ids()->at(i) != old_id &&
-        handler_1().seen_urls()->at(i) == gurl_1) {
-      found_new_id = true;
-      break;
+    // The replacement and new SessionID generation occur synchronously during
+    // DiscardTabByExtension. We don't need to reload or NavigateToURL here.
+
+    // We're typically notified twice while discarding tabs. Once for the
+    // destruction of the old web contents, and once for the new. This test case
+    // is really trying to make sure the TabReplacedAt() method is called, which
+    // is going to be invoked for the new web contents. We can tell it is the
+    // new one by finding |gurl_1| for an id that is not |old_id|.
+    bool found_new_id = false;
+    for (size_t i = 0; i < handler_1().seen_ids()->size(); ++i) {
+      if (handler_1().seen_ids()->at(i) != old_id &&
+          handler_1().seen_urls()->at(i) == gurl_1) {
+        found_new_id = true;
+        break;
+      }
     }
+    EXPECT_TRUE(found_new_id);
   }
-  EXPECT_TRUE(found_new_id);
+
   // And of course |profile_2| shouldn't have seen anything.
   EXPECT_EQ(0U, handler_2().seen_urls()->size());
 }

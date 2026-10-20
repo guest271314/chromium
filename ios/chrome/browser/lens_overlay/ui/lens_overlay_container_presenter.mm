@@ -4,12 +4,14 @@
 
 #import "ios/chrome/browser/lens_overlay/ui/lens_overlay_container_presenter.h"
 
+#import <memory>
+
 #import "base/ios/block_types.h"
 #import "base/memory/raw_ptr.h"
 #import "ios/chrome/app/application_delegate/app_state.h"
 #import "ios/chrome/app/profile/profile_state.h"
 #import "ios/chrome/browser/device_orientation/ui_bundled/scoped_force_portrait_orientation.h"
-#import "ios/chrome/browser/lens_overlay/coordinator/lens_overlay_availability.h"
+#import "ios/chrome/browser/lens_overlay/public/lens_overlay_availability.h"
 #import "ios/chrome/browser/lens_overlay/ui/lens_overlay_container_view_controller.h"
 #import "ios/chrome/browser/shared/coordinator/scene/scene_state.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
@@ -82,7 +84,8 @@ const CGFloat kSelectionViewOpacityAnimationDuration = 0.4f;
   CHECK(profile);
   if (appState && profile &&
       !IsLensOverlayLandscapeOrientationEnabled(profile->GetPrefs())) {
-    _scopedForceOrientation = ForcePortraitOrientationOnIphone(appState);
+    _scopedForceOrientation =
+        std::make_unique<ScopedForcePortraitOrientation>(appState);
   }
 
   [self.delegate lensOverlayContainerPresenterWillBeginPresentation:self];
@@ -98,9 +101,9 @@ const CGFloat kSelectionViewOpacityAnimationDuration = 0.4f;
   NSDirectionalEdgeInsets insets =
       [self.delegate lensOverlayContainerPresenterInsetsForPresentation:self];
 
-  AddSameConstraintsToSides(
-      _containerViewController.view, _baseViewController.view,
-      LayoutSides::kLeading | LayoutSides::kBottom | LayoutSides::kTrailing);
+  AddSameConstraintsToSides(_containerViewController.view,
+                            _baseViewController.view,
+                            LayoutSides::kBottom | LayoutSides::kHorizontal);
   _topConstraint = [_containerViewController.view.topAnchor
       constraintEqualToAnchor:_baseViewController.view.topAnchor
                      constant:insets.top];
@@ -125,22 +128,32 @@ const CGFloat kSelectionViewOpacityAnimationDuration = 0.4f;
                       completion:(void (^)())completion {
   _scopedForceOrientation.reset();
   _containerViewController.delegate = nil;
+
+  // If the container is not attached, directly call the completion.
+  BOOL alreadyDismissed = !_containerViewController.view.superview;
+  if (alreadyDismissed) {
+    if (completion) {
+      completion();
+    };
+    return;
+  }
+
   [self.delegate lensOverlayContainerPresenterWillDismissPresentation:self];
-  // If the container is not attached, directly call completion.
-  if (!_containerViewController.view.superview) {
+
+  __weak __typeof(self) weakSelf = self;
+  auto updatedCompletion = ^{
+    [weakSelf.delegate
+        lensOverlayContainerPresenterDidDismissPresentation:weakSelf];
     if (completion) {
       completion();
     }
-    return;
-  }
+  };
 
   __weak UIViewController* weakContainer = _containerViewController;
   auto executeCleanup = ^{
     [weakContainer.view removeFromSuperview];
     [weakContainer removeFromParentViewController];
-    if (completion) {
-      completion();
-    }
+    updatedCompletion();
   };
 
   if (!animated) {
@@ -198,6 +211,18 @@ const CGFloat kSelectionViewOpacityAnimationDuration = 0.4f;
 
 - (void)lensOverlayContainerDidChangeSizeClass:
     (LensOverlayContainerViewController*)lensOverlayContainerViewController {
+  [self updatePresentationInsets];
+}
+
+- (void)lensOverlayContainerDidChangeSafeAreaInsets:
+    (LensOverlayContainerViewController*)lensOverlayContainerViewController {
+  [self updatePresentationInsets];
+}
+
+#pragma mark - Private
+
+// Updates the presentation insets.
+- (void)updatePresentationInsets {
   NSDirectionalEdgeInsets insets =
       [self.delegate lensOverlayContainerPresenterInsetsForPresentation:self];
   _topConstraint.constant = insets.top;

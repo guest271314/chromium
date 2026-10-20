@@ -17,6 +17,9 @@
 #include "url/gurl.h"
 
 namespace lens {
+
+enum LensOverlayContextualInputUploadType : int;
+
 // Data struct representing context input data bytes.
 // Moved from lens::PageContent
 struct ContextualInput {
@@ -95,6 +98,8 @@ struct ContextualInputData {
   // Whether or not the tab was added exclusively by the smart tab selection
   // mechanism.
   bool was_smart_tab_selection = false;
+  // The upload type associated with the contextual input.
+  std::optional<lens::LensOverlayContextualInputUploadType> upload_type;
 };
 
 }  // namespace lens

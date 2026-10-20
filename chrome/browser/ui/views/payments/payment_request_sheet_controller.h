@@ -89,9 +89,6 @@ class PaymentRequestSheetController {
   // calls FillContentView again to re-populate it with updated views.
   void UpdateContentView();
 
-  // Clears and recreates the header view for this sheet.
-  void UpdateHeaderView();
-
   // Update the focus to |focused_view|.
   void UpdateFocus(views::View* focused_view);
 
@@ -176,13 +173,15 @@ class PaymentRequestSheetController {
   // also return true for ShouldShowPrimaryButton.
   virtual bool ShouldAccelerateEnterKey();
 
-  // Returns the height of the active header view.
-  int GetHeaderHeight();
-
   // Returns true if the content view should be placed within a scrollable view
   // that will show a vertical scrollbar if the content is taller than the
   // payment sheet.
   virtual bool CanContentViewBeScrollable();
+
+  // Returns true if the content view should fill the height of the sheet below
+  // the header, instead of keeping its preferred height. Only applies when the
+  // content view is not scrollable, see CanContentViewBeScrollable().
+  virtual bool ShouldContentViewFillPane();
 
   views::MdTextButton* primary_button() { return primary_button_; }
 
@@ -203,6 +202,7 @@ class PaymentRequestSheetController {
 
  protected:
   views::View* header_view() { return header_view_; }
+  const views::View* header_view() const { return header_view_; }
 
  private:
   // Add the primary/secondary buttons to |container|.

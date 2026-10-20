@@ -30,6 +30,7 @@
 #include "net/base/load_timing_info.h"
 #include "net/base/net_errors.h"
 #include "net/base/network_anonymization_key.h"
+#include "net/base/network_handle.h"
 #include "net/base/proxy_chain.h"
 #include "net/base/request_priority.h"
 #include "net/http/http_connection_info.h"
@@ -351,14 +352,8 @@ TEST_F(DomainReliabilityMonitorTest, BakedInAndGoogleConfigs) {
   // to the source tree.
   monitor_.AddBakedInConfigs();
 
-  // Count the number of baked-in configs.
-  size_t num_baked_in_configs = 0u;
-  for (const char* const* p = kBakedInJsonConfigs; *p; UNSAFE_TODO(++p)) {
-    ++num_baked_in_configs;
-  }
-  EXPECT_GT(num_baked_in_configs, 0u);
-
-  EXPECT_EQ(num_baked_in_configs, monitor_.contexts_size_for_testing());
+  EXPECT_FALSE(kBakedInJsonConfigs.empty());
+  EXPECT_EQ(kBakedInJsonConfigs.size(), monitor_.contexts_size_for_testing());
 
   // Also count the Google configs stored in abbreviated form.
   std::vector<std::unique_ptr<const DomainReliabilityConfig>> google_configs =
@@ -373,7 +368,7 @@ TEST_F(DomainReliabilityMonitorTest, BakedInAndGoogleConfigs) {
   // The monitor should have contexts for all of the baked-in configs and Google
   // configs. This also ensures that the configs have unique hostnames, i.e.
   // none of them have overwritten each other.
-  EXPECT_EQ(num_baked_in_configs + num_google_configs,
+  EXPECT_EQ(kBakedInJsonConfigs.size() + num_google_configs,
             monitor_.contexts_size_for_testing());
 }
 
@@ -620,7 +615,8 @@ TEST_F(DomainReliabilityMonitorTest, RealRequest) {
   std::unique_ptr<net::URLRequest> url_request =
       url_request_context_->CreateRequest(test_server.GetURL("/close-socket"),
                                           net::DEFAULT_PRIORITY, &test_delegate,
-                                          TRAFFIC_ANNOTATION_FOR_TESTS);
+                                          TRAFFIC_ANNOTATION_FOR_TESTS,
+                                          net::handles::kInvalidNetworkHandle);
   url_request->set_isolation_info(kIsolationInfo);
   url_request->Start();
 

@@ -6,6 +6,7 @@
 #define COMPONENTS_OPTIMIZATION_GUIDE_CONTENT_BROWSER_PAGE_CONTENT_PROTO_UTIL_H_
 
 #include <cstddef>
+#include <string>
 #include <string_view>
 #include <variant>
 
@@ -22,6 +23,7 @@
 #include "third_party/blink/public/common/tokens/tokens.h"
 #include "third_party/blink/public/mojom/content_extraction/ai_page_content.mojom-forward.h"
 #include "ui/gfx/geometry/point.h"
+#include "ui/gfx/geometry/rect.h"
 #include "url/origin.h"
 
 namespace content {
@@ -76,6 +78,18 @@ struct RenderFrameInfo {
   // has an active popup widget. This is used for defense-in-depth against
   // compromised renderers spoofing popups.
   bool has_active_popup = false;
+
+  // The trusted screen bounds of the active popup widget in DIPs.
+  gfx::Rect popup_bounds_in_dips;
+
+  // Whether the browser process has verified that this frame is allowed to
+  // expose WebMCP script tools (i.e., the WebMCP feature is enabled and the
+  // frame's Permissions-Policy allows the `tools` feature). This ensures a
+  // compromised renderer in a frame where `Permissions-Policy: tools` is
+  // disabled (such as a cross-origin iframe without `allow="tools"`) cannot
+  // trick the browser into advertising or registering tools with the actor
+  // stack.
+  bool script_tools_are_allowed = false;
 };
 
 struct TargetNodeInfo {
@@ -120,9 +134,9 @@ void ComputeContentNodeMetrics(
     ContentNodeMetrics* metrics);
 
 // Converts the mojom data structure for AIPageContent to its equivalent proto
-// mapping. If conversion fails, the returned base::expected contains a
-// descriptive error message.
-base::expected<void, std::string> ConvertAIPageContentToProto(
+// mapping. If conversion fails, the returned base::expected contains the
+// extraction status and a descriptive error message.
+base::expected<void, AIPageContentError> ConvertAIPageContentToProto(
     blink::mojom::AIPageContentOptionsPtr main_frame_options,
     content::GlobalRenderFrameHostToken main_frame_token,
     const AIPageContentMap& page_content_map,

@@ -24,7 +24,6 @@
 #include "components/services/storage/dom_storage/async_dom_storage_database.h"
 #include "components/services/storage/dom_storage/db_status.h"
 #include "components/services/storage/dom_storage/dom_storage_database.h"
-#include "components/services/storage/dom_storage/dom_storage_histogram_helper.h"
 #include "components/services/storage/dom_storage/session_storage_data_map.h"
 #include "components/services/storage/dom_storage/session_storage_metadata.h"
 #include "components/services/storage/dom_storage/session_storage_namespace_impl.h"
@@ -53,9 +52,10 @@ class SessionStorageImpl : public base::trace_event::MemoryDumpProvider,
     // Use an in-memory database to store our state.
     kNoDisk,
     // Use disk for the database, but clear its contents before we open
-    // it. This is used for platforms like Android where the session restore
-    // code is never used, ScavengeUnusedNamespace is never called, and old
-    // session storage data will never be reused.
+    // it. Always set on Android where session restore is never used. On
+    // Desktop, this is set when the browser determines that all session
+    // storage data is stale (e.g., fresh non-recovery startup with no
+    // session restore needed).
     kClearDiskStateOnOpen,
     // Use disk for the database, restore all saved namespaces from
     // disk. This assumes that ScavengeUnusedNamespace will eventually be called
@@ -108,11 +108,6 @@ class SessionStorageImpl : public base::trace_event::MemoryDumpProvider,
 
   void FlushAreaForTesting(const std::string& namespace_id,
                            const blink::StorageKey& storage_key);
-  void PutValueForTesting(const std::string& namespace_id,
-                          const blink::StorageKey& storage_key,
-                          const std::vector<uint8_t>& key,
-                          const std::vector<uint8_t>& value,
-                          base::OnceCallback<void(bool)> callback);
 
   // Access the underlying `AsyncDomStorageDatabase`. May be null if the
   // database is not yet open.
@@ -135,14 +130,8 @@ class SessionStorageImpl : public base::trace_event::MemoryDumpProvider,
 
  private:
   friend class DOMStorageBrowserTest;
-
-  // Constructs an absolute path to the database using
-  // `storage_partition_directory_`.
-  base::FilePath GetDatabasePath() const;
-
-  scoped_refptr<DomStorageDatabase::SharedMapLocator> RegisterNewAreaMap(
-      const std::string& namespace_id,
-      const blink::StorageKey& storage_key);
+  FRIEND_TEST_ALL_PREFIXES(SessionStorageImplTest,
+                           ClearDiskStateOnOpenWithEmptyPathUsesInMemory);
 
   // SessionStorageAreaImpl::Listener implementation:
   void OnDataMapCreation(int64_t map_id, SessionStorageDataMap* map) override;
@@ -175,14 +164,16 @@ class SessionStorageImpl : public base::trace_event::MemoryDumpProvider,
   // Part of asynchronous database opening called from `RunWhenConnected()`. If
   // opening the database on disk fails twice, falls back to in memory. If
   // opening the database in memory fails, runs without a database.
-  void InitiateConnection(bool in_memory_only = false);
-  void OnDatabaseOpened(DbStatus status);
+  // For `BackingMode::kClearDiskStateOnOpen`, the on-disk database is
+  // unconditionally destroyed on open.
+  void InitiateConnection(bool in_memory_only = false,
+                          bool destroy_existing_db_for_recovery = false);
+  void OnDatabaseOpened(AsyncDomStorageDatabase::OpenOutcome outcome);
   void OnGotDatabaseMetadata(
       StatusOr<DomStorageDatabase::Metadata> all_metadata);
   void OnConnectionFinished();
   void PurgeAllNamespaceDataMaps();
   void DeleteAndRecreateDatabase(DomStorageRecoveryReason reason);
-  void OnDBDestroyed(bool recreate_in_memory, DbStatus status);
 
   void GetStatistics(size_t* total_cache_size, size_t* unused_areas_count);
 

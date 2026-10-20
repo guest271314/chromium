@@ -9,6 +9,7 @@
 #import "base/test/ios/wait_util.h"
 #import "components/strings/grit/components_strings.h"
 #import "ios/chrome/browser/browser_content/ui_bundled/edit_menu_app_interface.h"
+#import "ios/chrome/browser/infobars/ui_bundled/banners/infobar_banner_constants.h"
 #import "ios/chrome/browser/popup_menu/public/popup_menu_constants.h"
 #import "ios/chrome/browser/settings/clear_browsing_data/public/quick_delete_constants.h"
 #import "ios/chrome/browser/shared/ui/table_view/table_view_constants.h"
@@ -41,13 +42,11 @@ using base::test::ios::kWaitForClearBrowsingDataTimeout;
 using base::test::ios::kWaitForUIElementTimeout;
 using base::test::ios::WaitUntilConditionOrTimeout;
 using chrome_test_util::BrowsingDataButtonMatcher;
-using chrome_test_util::BrowsingDataConfirmButtonMatcher;
 using chrome_test_util::BrowsingDataDoneButtonMatcher;
 using chrome_test_util::ButtonWithAccessibilityLabelId;
 using chrome_test_util::ClearAutofillButton;
 using chrome_test_util::ClearBrowsingDataButton;
 using chrome_test_util::ClearBrowsingDataView;
-using chrome_test_util::ClearSavedPasswordsButton;
 using chrome_test_util::ContextMenuItemWithAccessibilityLabel;
 using chrome_test_util::SettingsActionButton;
 using chrome_test_util::SettingsDestinationButton;
@@ -142,10 +141,25 @@ const int kMaxNumberOfAttemptsAtTypingTextInOmnibox = 3;
 }
 
 - (void)openToolsMenu {
+  if ([ChromeEarlGrey isChromeNextEnabled]) {
+    // Dismiss infobar banner if present, as it might cover the tools menu
+    // button.
+    NSError* error = nil;
+    [[EarlGrey selectElementWithMatcher:grey_accessibilityID(
+                                            kInfobarBannerViewIdentifier)]
+        assertWithMatcher:grey_sufficientlyVisible()
+                    error:&error];
+    if (!error) {
+      [[EarlGrey selectElementWithMatcher:grey_accessibilityID(
+                                              kInfobarBannerViewIdentifier)]
+          performAction:grey_swipeFastInDirection(kGREYDirectionUp)];
+    }
+  }
+
   // TODO(crbug.com/41271107): Add logic to ensure the app is in the correct
   // state, for example DCHECK if no tabs are displayed.
   if ([ChromeEarlGrey isChromeNextEnabled] && ![ChromeEarlGrey isIPadIdiom] &&
-      [ChromeEarlGrey isCurrentTabNTP]) {
+      ![ChromeEarlGrey isIncognitoMode] && [ChromeEarlGrey isCurrentTabNTP]) {
     [self openToolsMenuWithMatcher:chrome_test_util::ToolsMenuNTPButton()];
   } else {
     [self openToolsMenuWithMatcher:chrome_test_util::ToolsMenuButton()];
@@ -259,13 +273,13 @@ const int kMaxNumberOfAttemptsAtTypingTextInOmnibox = 3;
       performAction:grey_tap()];
 }
 
-- (void)deleteBrowsingDataAndPasswords:(BOOL)deletePasswords {
+- (void)clearBrowsingDataFromHistory {
   // Open Clear Browsing Data Button.
   [[EarlGrey selectElementWithMatcher:chrome_test_util::
                                           HistoryClearBrowsingDataButton()]
       performAction:grey_tap()];
   [self waitForClearBrowsingDataViewVisible:YES];
-  [self deleteAllBrowsingDataAndPasswords:deletePasswords];
+  [self deleteAllBrowsingData];
 }
 
 - (void)assertHistoryHasNoEntries {
@@ -379,20 +393,19 @@ const int kMaxNumberOfAttemptsAtTypingTextInOmnibox = 3;
 }
 
 - (void)openNewTab {
-  [self openToolsMenu];
-  id<GREYMatcher> newTabButtonMatcher =
-      grey_accessibilityID(kToolsMenuNewTabId);
-  [[EarlGrey selectElementWithMatcher:newTabButtonMatcher]
-      performAction:grey_tap()];
+  if ([ChromeEarlGrey isChromeNextEnabled]) {
+    [[EarlGrey selectElementWithMatcher:chrome_test_util::NewTabButton()]
+        performAction:grey_tap()];
+  } else {
+    [self openToolsMenu];
+    [self tapToolsMenuAction:grey_accessibilityID(kToolsMenuNewTabId)];
+  }
   [self waitForAppToIdle];
 }
 
 - (void)openNewIncognitoTab {
   [self openToolsMenu];
-  id<GREYMatcher> newIncognitoTabMatcher =
-      grey_accessibilityID(kToolsMenuNewIncognitoTabId);
-  [[EarlGrey selectElementWithMatcher:newIncognitoTabMatcher]
-      performAction:grey_tap()];
+  [self tapToolsMenuAction:grey_accessibilityID(kToolsMenuNewIncognitoTabId)];
   [self waitForAppToIdle];
 }
 
@@ -429,6 +442,11 @@ const int kMaxNumberOfAttemptsAtTypingTextInOmnibox = 3;
 }
 
 - (void)openShareMenu {
+  [[EarlGrey selectElementWithMatcher:chrome_test_util::TabShareButton()]
+      performAction:grey_tap()];
+}
+
+- (void)shareCurrentPage {
   [[EarlGrey selectElementWithMatcher:chrome_test_util::TabShareButton()]
       performAction:grey_tap()];
 }
@@ -561,12 +579,8 @@ const int kMaxNumberOfAttemptsAtTypingTextInOmnibox = 3;
 #pragma mark - Private
 
 // Clears all browsing data from the device. This method needs to be called when
-// the "Delete Browsing Data" panel is opened. Passwords cannot be deleted when
-// the `kPasswordRemovalFromDeleteBrowsingData` is enabled. Note that if
-// `deletePasswords` is "YES" and the feature is enabled or if the
-// `deletePasswords` is `NO` and the feature is disabled, it will cause an eg
-// test failure.
-- (void)deleteAllBrowsingDataAndPasswords:(BOOL)deletePasswords {
+// the "Delete Browsing Data" panel is opened.
+- (void)deleteAllBrowsingData {
   // Set 'Time Range' to 'All Time'.
   [[EarlGrey selectElementWithMatcher:
                  grey_text(l10n_util::GetNSString(
@@ -588,29 +602,15 @@ const int kMaxNumberOfAttemptsAtTypingTextInOmnibox = 3;
   [ChromeEarlGrey waitForSufficientlyVisibleElementWithMatcher:
                       QuickDeleteBrowsingDataPageTitleMatcher()];
 
-  // Check "Saved Passwords" and "Autofill Data" which are unchecked by
-  // default. When the `kPasswordRemovalFromDeleteBrowsingData` feature is
-  // enabled, the passwords are not checked.
-  if (deletePasswords) {
-    [[EarlGrey selectElementWithMatcher:ClearSavedPasswordsButton()]
-        assertWithMatcher:grey_sufficientlyVisible()];
-    [[EarlGrey selectElementWithMatcher:ClearSavedPasswordsButton()]
-        performAction:grey_tap()];
-  }
+  // Check "Autofill Data" which is unchecked by default.
   [[[EarlGrey
       selectElementWithMatcher:grey_allOf(ClearAutofillButton(),
                                           grey_sufficientlyVisible(), nil)]
          usingSearchAction:grey_swipeSlowInDirection(kGREYDirectionUp)
       onElementWithMatcher:ClearBrowsingDataView()] performAction:grey_tap()];
 
-  // Set the correct confirmation button matcher based on whether passwords can
-  // be deleted or not.
-  id<GREYMatcher> browsingDataConfirmationButtonMatcher =
-      deletePasswords ? BrowsingDataConfirmButtonMatcher()
-                      : BrowsingDataDoneButtonMatcher();
-
-  // Tap the confirm button to save the prefs.
-  [[EarlGrey selectElementWithMatcher:browsingDataConfirmationButtonMatcher]
+  // Tap the done button to save the prefs.
+  [[EarlGrey selectElementWithMatcher:BrowsingDataDoneButtonMatcher()]
       performAction:grey_tap()];
 
   // Clear data, and confirm.

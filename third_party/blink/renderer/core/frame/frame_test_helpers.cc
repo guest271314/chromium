@@ -56,6 +56,7 @@
 #include "third_party/blink/public/mojom/frame/frame_replication_state.mojom.h"
 #include "third_party/blink/public/mojom/frame/intrinsic_sizing_info.mojom-blink.h"
 #include "third_party/blink/public/mojom/frame/tree_scope_type.mojom-blink.h"
+#include "third_party/blink/public/mojom/input/pointer_lock_result.mojom-blink.h"
 #include "third_party/blink/public/mojom/input/touch_event.mojom-blink.h"
 #include "third_party/blink/public/mojom/page/prerender_page_param.mojom.h"
 #include "third_party/blink/public/mojom/page/widget.mojom-blink.h"
@@ -344,7 +345,8 @@ WebLocalFrameImpl* CreateLocalChild(
   auto* frame = To<WebLocalFrameImpl>(
       parent.CreateLocalChild(scope, client, nullptr, LocalFrameToken()));
   client->Bind(frame, std::move(owned_client));
-  finish_creation(frame, DocumentToken(), mojo::NullRemote(),
+  finish_creation(frame, DocumentToken(), InitiatorStateToken(),
+                  mojo::NullRemote(),
                   std::make_unique<base::UnguessableToken>(
                       base::UnguessableToken::Create()));
   return frame;
@@ -364,7 +366,8 @@ WebLocalFrameImpl* CreateLocalChild(
   auto* frame = To<WebLocalFrameImpl>(
       parent.CreateLocalChild(scope, client, nullptr, LocalFrameToken()));
   client->Bind(frame, std::move(self_owned));
-  finish_creation(frame, DocumentToken(), mojo::NullRemote(),
+  finish_creation(frame, DocumentToken(), InitiatorStateToken(),
+                  mojo::NullRemote(),
                   std::make_unique<base::UnguessableToken>(
                       base::UnguessableToken::Create()));
   return frame;
@@ -489,6 +492,7 @@ WebViewImpl* WebViewHelper::InitializeWithOpener(
   WebLocalFrame* frame = WebLocalFrame::CreateMainFrame(
       web_view_, web_frame_client, nullptr, mojo::NullRemote(),
       LocalFrameToken(), DocumentToken(),
+      /*initiator_state_token=*/InitiatorStateToken(),
       // Passing a null policy_container will create an empty, default policy
       // container.
       /*policy_container=*/nullptr, opener,
@@ -618,7 +622,7 @@ WebLocalFrameImpl* WebViewHelper::CreateLocalChild(
   auto* frame = To<WebLocalFrameImpl>(parent.CreateLocalChild(
       mojom::blink::TreeScopeType::kDocument, name, FramePolicy(), client,
       nullptr, previous_sibling, properties, LocalFrameToken(), nullptr,
-      DocumentToken(), mojo::NullRemote(),
+      DocumentToken(), InitiatorStateToken(), mojo::NullRemote(),
       std::make_unique<WebPolicyContainer>(
           WebPolicyContainerPolicies(),
           mock_policy_container_host.BindNewEndpointAndPassDedicatedRemote())));
@@ -876,7 +880,8 @@ WebLocalFrame* TestWebFrameClient::CreateChildFrame(
   client->sandbox_flags_ = frame_policy.sandbox_flags;
   TestWebFrameClient* client_ptr = client.get();
   client_ptr->Bind(frame, std::move(client));
-  finish_creation(frame, DocumentToken(), mojo::NullRemote(),
+  finish_creation(frame, DocumentToken(), InitiatorStateToken(),
+                  mojo::NullRemote(),
                   std::make_unique<base::UnguessableToken>(
                       base::UnguessableToken::Create()));
   return frame;
@@ -1008,7 +1013,6 @@ WebView* TestWebFrameClient::CreateNewWindow(
     network::mojom::blink::WebSandboxFlags,
     const SessionStorageNamespaceId&,
     bool& consumed_user_gesture,
-    const std::optional<Impression>&,
     const std::optional<WebPictureInPictureWindowOptions>&,
     const WebURL&) {
   auto webview_helper = std::make_unique<WebViewHelper>();
@@ -1141,6 +1145,8 @@ void TestWebFrameWidgetHost::TextInputStateChanged(
     ui::mojom::blink::TextInputStatePtr state) {
   if (state->show_ime_if_needed)
     ++virtual_keyboard_request_count_;
+  ++text_input_state_changed_count_;
+  last_text_input_state_ = std::move(state);
 }
 
 void TestWebFrameWidgetHost::SelectionBoundsChanged(
@@ -1237,7 +1243,10 @@ void TestWidgetInputHandlerHost::SetAutoscrollSelectionActiveInMainFrame(
 void TestWidgetInputHandlerHost::RequestMouseLock(
     bool from_user_gesture,
     bool unadjusted_movement,
-    RequestMouseLockCallback callback) {}
+    RequestMouseLockCallback callback) {
+  std::move(callback).Run(mojom::blink::PointerLockResult::kSuccess,
+                          /*context=*/mojo::NullRemote());
+}
 
 }  // namespace frame_test_helpers
 }  // namespace blink

@@ -53,9 +53,12 @@ export function processTemplate(filePath) {
     // If it is a template, we add +1 to include the opening backtick of the
     // template literal.
     const jsEnd = node.getStart(sourceFile) + (isTemplate ? 1 : 0);
-    const jsText = code.substring(jsStart, jsEnd);
+    let jsText = code.substring(jsStart, jsEnd);
+    if (prefix === FALSE_TEMPLATE_PREFIX && !isTemplate) {
+      jsText = jsText.replace(/\s*:\s*/, ' : ');
+    }
 
-    map.set(tagName, {code: jsText});
+    map.set(tagName, {code: jsText, isTemplate});
     map.set(`/${tagName}`, {code: closeToken});
 
     return `<${tagName}>${innerResult}</${tagName}>`;
@@ -74,7 +77,7 @@ export function processTemplate(filePath) {
     // Early return for no substitution literals.
     // Return pure text without outer backticks.
     if (ts.isNoSubstitutionTemplateLiteral(node)) {
-      return node.text;
+      return node.rawText;
     }
 
     // Early return if not a template expression
@@ -83,10 +86,13 @@ export function processTemplate(filePath) {
     }
 
     // Start with pure head text, without opening backtick
-    let templateResult = node.head.text;
+    let templateResult = node.head.rawText;
 
     node.templateSpans.forEach((span, index, spans) => {
       const expr = span.expression;
+      const jsStart = (index === 0 ? node.head.getEnd() :
+                                     spans[index - 1].literal.getEnd()) -
+          2;
 
       const nestedTemplate = findTemplate(expr);
 
@@ -103,7 +109,7 @@ export function processTemplate(filePath) {
         templateResult += createPlaceholder({
           node: isTrueTemplate ? expr.whenTrue.template : expr.whenTrue,
           // Subtract 2 to include the opening ${ in the placeholder mapping
-          jsStart: expr.getStart(sourceFile) - 2,
+          jsStart,
           closeToken: isTrueTemplate ? '`' : '',
           isTemplate: isTrueTemplate,
         });
@@ -122,7 +128,7 @@ export function processTemplate(filePath) {
         const nestedResult = createPlaceholder({
           node: nestedTemplate,
           // Subtract 2 to include the opening ${ in the placeholder mapping
-          jsStart: expr.getStart(sourceFile) - 2,
+          jsStart,
           // Include the closing backtick and the closing } in closeToken
           closeToken:
               code.substring(nestedTemplate.getEnd() - 1, expr.getEnd()) + '}',
@@ -142,9 +148,9 @@ export function processTemplate(filePath) {
         }
       }
 
-      // span.literal.text contains the static HTML text following the
+      // span.literal.rawText contains the static HTML text following the
       // expression.
-      templateResult += span.literal.text;
+      templateResult += span.literal.rawText;
     });
 
     // Return pure content without trailing backtick
@@ -168,9 +174,10 @@ export function processTemplate(filePath) {
   const returnStatement = getHtmlFn.body.statements.find(ts.isReturnStatement);
   assert.ok(
       returnStatement && returnStatement.expression &&
-      ts.isTaggedTemplateExpression(returnStatement.expression));
+          ts.isTaggedTemplateExpression(returnStatement.expression),
+      `getHtml() in ${
+          filePath} must return a tagged template expression (e.g. html\`...\`)`);
   const templateNode = returnStatement.expression.template;
-
   result = processNode(templateNode);
   const placeholder = '<!--_html_template_placeholder_-->';
   const start =

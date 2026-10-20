@@ -17,12 +17,11 @@ source_set("sync") {
     "chrome_sync_client.h",
     "chrome_sync_controller_builder.cc",
     "chrome_sync_controller_builder.h",
-    "data_type_store_service_factory.cc",
-    "data_type_store_service_factory.h",
+    "cross_device_theme_tracker_factory.cc",
+    "cross_device_theme_tracker_factory.h",
     "device_info_sync_client_impl.cc",
     "device_info_sync_client_impl.h",
     "device_info_sync_service_factory.cc",
-    "device_info_sync_service_factory.h",
     "glue/extensions_activity_monitor.cc",
     "glue/extensions_activity_monitor.h",
     "glue/sync_start_util.cc",
@@ -53,13 +52,14 @@ source_set("sync") {
     "sync_startup_tracker.h",
     "sync_ui_util.cc",
     "sync_ui_util.h",
+    "tab_context_sync_service_factory.cc",
+    "tab_context_sync_service_factory.h",
     "user_event_service_factory.cc",
     "user_event_service_factory.h",
   ]
   public_deps = [
     ":factories",
     "//base",
-    "//chrome/browser:browser_public_dependencies",
     "//chrome/browser/profiles:profile",
     "//chrome/browser/sharing",
     "//chrome/browser/tab_group_sync:factories",
@@ -76,6 +76,7 @@ source_set("sync") {
     "//components/sync_preferences",
     "//components/sync_preferences:common_syncable_prefs_database",
     "//components/sync_sessions",
+    "//components/sync_tab_context",
     "//components/translate/core/browser",
     "//content/public/browser",
 
@@ -83,12 +84,12 @@ source_set("sync") {
     "//components/paint_preview/buildflags",
   ]
   deps = [
+    ":data_type_store_service_factory",
     "//chrome/app:branded_strings",
     "//chrome/app:branded_strings_grit",
     "//chrome/app:generated_resources",
     "//chrome/app:generated_resources_grit",
     "//chrome/browser:browser_process",
-    "//chrome/browser/accessibility_annotator",
     "//chrome/browser/bookmarks",
     "//chrome/browser/collaboration",
     "//chrome/browser/consent_auditor",
@@ -103,8 +104,9 @@ source_set("sync") {
     "//chrome/browser/glic",
     "//chrome/browser/history",
     "//chrome/browser/metrics",
+    "//chrome/browser/notebooks",
     "//chrome/browser/password_manager/factories",
-    "//chrome/browser/plus_addresses",
+    "//chrome/browser/personal_context",
     "//chrome/browser/signin",
     "//chrome/browser/skills",
     "//chrome/browser/subscription_eligibility",
@@ -114,6 +116,7 @@ source_set("sync") {
     "//chrome/browser/ui/toolbar",
     "//chrome/browser/webauthn",
     "//chrome/browser/webdata_services",
+    "//components/tabs:public",
 
     # TODO(crbug.com/374910357): Investigate for a better dependency injection.
     "//chrome/browser/account_settings",
@@ -127,6 +130,7 @@ source_set("sync") {
     "//chrome/browser/search_engines",
     "//chrome/browser/tab_group_sync",
     "//chrome/browser/tab_group_sync:utils",
+    "//chrome/browser/themes",
     "//chrome/browser/ui:ui_features",
     "//chrome/browser/undo",
     "//chrome/common",
@@ -144,13 +148,14 @@ source_set("sync") {
     "//components/language/core/common",
     "//components/live_caption:constants",
     "//components/metrics/demographics",
+    "//components/network_time",
     "//components/password_manager/core/browser/features:password_features",
     "//components/password_manager/core/browser/features:utils",
     "//components/password_manager/core/browser/password_store:password_store_interface",
     "//components/password_manager/core/browser/sharing",
     "//components/performance_manager",
-    "//components/plus_addresses/core/browser/settings",
-    "//components/plus_addresses/core/browser/webdata",
+    "//components/personal_context/core",
+    "//components/personal_context/core:features",
     "//components/privacy_sandbox:privacy_sandbox_prefs",
     "//components/saved_tab_groups/public",
     "//components/send_tab_to_self",
@@ -163,15 +168,11 @@ source_set("sync") {
     "//components/sync_preferences:features",
     "//components/sync_preferences/cross_device_pref_tracker",
     "//components/sync_user_events",
+    "//components/themes/cross_device",
     "//components/user_manager",
     "//components/variations/service",
-    "//components/webauthn/core/browser:passkey_model",
-
-    # TODO(crbug.com/352700220): Extract target for
-    # //chrome/browser/android/webapk from //chrome/browser and use that instead
-    # here.
-    "//chrome/browser/android/webapk/proto",
     "//components/webapps/browser",
+    "//components/webauthn/core/browser:passkey_model",
   ]
 
   allow_circular_includes_from = []
@@ -192,7 +193,10 @@ source_set("sync") {
   }
 
   if (is_android) {
+    public_deps += [ "//chrome/browser/ui/android/tab_model" ]
     sources += [
+      "cross_device_theme_tracker_android.cc",
+      "cross_device_theme_tracker_android.h",
       "glue/synced_tab_delegate_android.cc",
       "glue/synced_tab_delegate_android.h",
       "glue/synced_window_delegate_android.cc",
@@ -205,9 +209,12 @@ source_set("sync") {
     deps += [
       "//chrome/android:chrome_jni_headers",
       "//chrome/browser/android:tabs_public",
+      "//chrome/browser/ntp_customization",
+      "//chrome/browser/ntp_customization:jni_headers",
       "//chrome/browser/sync/android:jni_headers",
       "//chrome/browser/tab",
-      "//chrome/browser/ui/android/tab_model",
+      "//ui/color:color_provider_key",
+      "//ui/color/dynamic_color",
     ]
   } else {
     sources += [
@@ -220,6 +227,7 @@ source_set("sync") {
     ]
     deps += [
       "//chrome/browser/accessibility/tree_fixing:prefs",
+      "//chrome/browser/ui:singleton_tabs",
       "//chrome/browser/ui/read_anything:prefs",
       "//chrome/browser/ui/tabs:tab_strip",
       "//chrome/browser/ui/tabs/saved_tab_groups",
@@ -240,10 +248,7 @@ source_set("sync") {
     ]
   }
   if (enable_extensions) {
-    deps += [
-      "//chrome/browser/themes",
-      "//chrome/browser/web_applications",
-    ]
+    deps += [ "//chrome/browser/web_applications" ]
   }
   if (is_chromeos) {
     sources += [
@@ -281,8 +286,6 @@ source_set("sync") {
       "//chrome/browser/ash/login/session",
     ]
   }
-
-  allow_circular_includes_from += [ "//chrome/browser/consent_auditor" ]
 }
 
 # Code that depends on this target must be linked into //chrome/browser:browser
@@ -290,12 +293,150 @@ source_set("sync") {
 # because KeyedServiceFactories mix the interface and implementation.
 source_set("factories") {
   sources = [
-    "data_type_store_service_factory.h",
+    "device_info_sync_service_factory.h",
     "sync_service_factory.h",
   ]
   public_deps = [
+    ":data_type_store_service_factory",
     "//base",
     "//chrome/browser/profiles",
     "//components/sync/engine",
   ]
+}
+
+source_set("unit_tests") {
+  testonly = true
+
+  sources = [
+    "chrome_sync_client_unittest.cc",
+    "session_sync_service_factory_unittest.cc",
+    "sessions/sync_sessions_web_contents_router_unittest.cc",
+    "sync_service_factory_unittest.cc",
+    "sync_startup_tracker_unittest.cc",
+  ]
+
+  deps = [
+    ":sync",
+    "//base",
+    "//base/test:test_support",
+    "//chrome/browser/favicon",
+    "//chrome/browser/history",
+    "//chrome/browser/search_engines",
+    "//chrome/browser/spellchecker",
+    "//chrome/browser/trusted_vault",
+    "//chrome/browser/ui:ui_features",
+    "//chrome/browser/ui/sync",
+    "//chrome/browser/webdata_services",
+    "//chrome/common:constants",
+    "//chrome/test:test_support",
+    "//chrome/test/base:chrome_render_view_host_test_harness",
+    "//chrome/test/base:scoped_metrics_service",
+    "//chrome/test/base:testing_browser_process",
+    "//components/commerce/core:feature_list",
+    "//components/metrics",
+    "//components/signin/public/base",
+    "//components/skills:features",
+    "//components/spellcheck:buildflags",
+    "//components/sync:test_support",
+    "//components/sync/base",
+    "//components/sync_device_info:test_support",
+    "//components/tabs:public",
+    "//components/tabs:test_support",
+    "//components/themes/cross_device",
+    "//components/variations",
+    "//components/variations:test_support",
+    "//content/test:test_support",
+    "//google_apis",
+    "//testing/gmock",
+    "//testing/gtest",
+    "//ui/base/unowned_user_data",
+    "//ui/webui:buildflags",
+    "//url",
+  ]
+
+  if (is_chromeos) {
+    deps += [
+      "//ash/constants",
+      "//chrome/browser/ash/app_list",
+      "//chrome/browser/ash/arc:arc_util",
+      "//chrome/browser/ash/floating_sso",
+      "//chromeos/ash/components/dbus/shill",
+      "//chromeos/ash/components/network:test_support",
+      "//chromeos/ash/components/sync_wifi",
+      "//chromeos/ash/services/network_config/public/cpp:test_support",
+    ]
+  }
+
+  if (is_android) {
+    sources += [ "glue/synced_tab_delegate_android_unittest.cc" ]
+    deps += [
+      "//chrome/browser/android:tabs_public",
+      "//chrome/browser/flags:flags_android",
+      "//chrome/browser/ui/android/tab_model",
+      "//chrome/browser/ui/android/tab_model:test_support",
+      "//components/sync_sessions:test_support",
+    ]
+  } else {
+    sources += [
+      "prefs/chrome_syncable_prefs_database_unittest.cc",
+      "sessions/sync_sessions_router_tab_helper_unittest.cc",
+      "sync_ui_util_unittest.cc",
+    ]
+  }
+
+  if (enable_extensions_core) {
+    sources += [ "glue/extensions_activity_monitor_unittest.cc" ]
+    deps += [
+      "//chrome/browser/extensions",
+      "//extensions/common",
+    ]
+  }
+}
+
+if (!is_android) {
+  source_set("browser_tests") {
+    testonly = true
+
+    defines = [ "HAS_OUT_OF_PROC_TEST_RUNNER" ]
+
+    sources = [
+      "sessions/browser_list_router_helper_browsertest.cc",
+      "sessions/sync_sessions_router_tab_helper_browsertest.cc",
+      "sync_ui_util_browsertest.cc",
+    ]
+
+    deps = [
+      ":sync",
+      "//base",
+      "//chrome/browser:browser_process",
+      "//chrome/browser/profiles:profile",
+      "//chrome/browser/resource_coordinator",
+      "//chrome/browser/translate",
+      "//chrome/browser/ui/browser_window",
+      "//chrome/browser/ui/sync",
+      "//chrome/test:test_support",
+      "//chrome/test:test_support_ui",
+      "//components/language/core/common",
+      "//components/sessions:session_id",
+      "//components/sync:test_support",
+      "//components/sync_sessions",
+      "//components/translate/core/browser",
+      "//content/public/common",
+      "//content/test:test_support",
+      "//testing/gtest",
+    ]
+  }
+}
+
+source_set("data_type_store_service_factory") {
+  public = [ "data_type_store_service_factory.h" ]
+  sources = [ "data_type_store_service_factory.cc" ]
+  public_deps = [
+    "//base",
+    "//chrome/browser/profiles:profile",
+    "//chrome/common",
+    "//components/sync/model",
+    "//components/webapps/browser",
+  ]
+  deps = [ "//components/keyed_service/content" ]
 }

@@ -46,6 +46,7 @@ namespace cc {
 class CompositorDelegateForInput;
 class LatencyInfoSwapPromiseMonitor;
 class LayerImpl;
+class MockInputHandler;
 class ScrollbarController;
 class ScrollElasticityHelper;
 class Viewport;
@@ -232,21 +233,17 @@ class CC_EXPORT InputHandler : public InputDelegateForCompositor {
   struct ScrollStatus {
     ScrollThread thread = ScrollThread::kScrollOnImplThread;
 
-    // If nonzero, it tells the caller that the input handler detected a case
+    // If not empty, it tells the caller that the input handler detected a case
     // where it cannot reliably target a scroll node and needs the main thread
-    // to perform a hit test. If nonzero, this will be one or more values from
-    // MainThreadScrollingReason::kHitTestReasons.
-    uint32_t main_thread_hit_test_reasons =
-        MainThreadScrollingReason::kNotScrollingOnMain;
+    // to perform a hit test.
+    MainThreadHitTestReasons main_thread_hit_test_reasons;
 
-    // A nonzero value means we have performed the scroll (i.e. updated the
+    // A non-empty value means we have performed the scroll (i.e. updated the
     // offset in the scroll tree) on the compositor thread, but we will need a
     // main thread lifecycle update + commit before the user will see the new
     // pixels (for example, because the scroller does not have a composited
-    // layer). If nonzero, this will be one or more values from the
-    // MainThreadScrollingReason::kRepaintReasons.
-    uint32_t main_thread_repaint_reasons =
-        MainThreadScrollingReason::kNotScrollingOnMain;
+    // layer).
+    MainThreadRepaintReasons main_thread_repaint_reasons;
 
     // TODO(crbug.com/40735567): This is a temporary workaround for GuestViews
     // as they create viewport nodes and want to bubble scroll if the
@@ -390,6 +387,13 @@ class CC_EXPORT InputHandler : public InputDelegateForCompositor {
 
   // Returns true if there is an active scroll on the viewport.
   virtual bool IsCurrentlyScrollingViewport() const;
+
+  // Returns whether the latched scroll node prevents scroll axis locking (i.e.
+  // because it has scroll-axis-lock: none). Defaults to false if no scroll node
+  // is currently latched.
+  bool prevent_scroll_axis_locking() const {
+    return prevent_scroll_axis_locking_;
+  }
 
   virtual EventListenerProperties GetEventListenerProperties(
       EventListenerClass event_class) const;
@@ -592,6 +596,8 @@ class CC_EXPORT InputHandler : public InputDelegateForCompositor {
   FRIEND_TEST_ALL_PREFIXES(LayerTreeHostImplTest, ScrollOnLargeThumb);
   FRIEND_TEST_ALL_PREFIXES(LayerTreeHostImplTest, AutoscrollTaskAbort);
 
+  friend class MockInputHandler;
+
   // This method gets the scroll offset for a regular scroller, or the combined
   // visual and layout offsets of the viewport.
   gfx::PointF GetVisualScrollOffset(const ScrollNode& scroll_node) const;
@@ -686,8 +692,7 @@ class CC_EXPORT InputHandler : public InputDelegateForCompositor {
   struct ScrollHitTestResult {
     raw_ptr<ScrollNode> scroll_node;
     bool hit_test_successful;
-    uint32_t main_thread_hit_test_reasons =
-        MainThreadScrollingReason::kNotScrollingOnMain;
+    MainThreadHitTestReasons main_thread_hit_test_reasons;
   };
   ScrollHitTestResult HitTestScrollNode(
       const gfx::PointF& device_viewport_point) const;
@@ -810,6 +815,12 @@ class CC_EXPORT InputHandler : public InputDelegateForCompositor {
   // The source device type that started the scroll gesture. Only set between a
   // ScrollBegin and ScrollEnd.
   std::optional<ui::ScrollInputType> latched_scroll_type_;
+
+  // Set at the beginning of a scroll when we latch onto a scroller and cleared
+  // at the end when we unlatch. True if the latched scroller has
+  // scroll-axis-lock: none. When true, unconstrained deltas are used to avoid
+  // axis locking.
+  bool prevent_scroll_axis_locking_ = false;
 
   // Tracks the last scroll update/begin state received. Used to infer the most
   // recent scroll type and direction.

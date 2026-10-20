@@ -1,4 +1,5 @@
 include_rules = [
+    "+components/viz/common/resources/shared_image_format.h",
     "+components/viz/common/resources/shared_image_format_utils.h",
     "+gpu/command_buffer/common",
     "+media/base",
@@ -15,7 +16,7 @@ specific_include_rules = {
         "+gpu/command_buffer/client/context_support.h",
     ],
     # Additional allowed includes for tests.
-    ".*_test(_.*)?\.(cc|h)" : [
+    ".*_test(_.*)?\\.(cc|h)" : [
         "+base/metrics/histogram_base.h",
         "+base/pending_task.h",
         "+base/strings",
@@ -24,6 +25,7 @@ specific_include_rules = {
         "+cc/test/paint_op_matchers.h",
         "+gpu/GLES2/gl2extchromium.h",
         "+gpu/command_buffer/client/test_shared_image_interface.h",
+        "+ui/accessibility",
         "+ui/gfx/skia_util.h",
     ]
 }

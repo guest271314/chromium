@@ -20,16 +20,6 @@ std::ostream& operator<<(std::ostream& out, NetworkRequestType value) {
       return out << "kUploadActions";
     case NetworkRequestType::kNextPage:
       return out << "kNextPage";
-    case NetworkRequestType::kListWebFeeds:
-      return out << "kListWebFeeds";
-    case NetworkRequestType::kUnfollowWebFeed:
-      return out << "kUnfollowWebFeed";
-    case NetworkRequestType::kFollowWebFeed:
-      return out << "kFollowWebFeed";
-    case NetworkRequestType::kListRecommendedWebFeeds:
-      return out << "kListRecommendedWebFeeds";
-    case NetworkRequestType::kWebFeedListContents:
-      return out << "kWebFeedListContents";
     case NetworkRequestType::kQueryInteractiveFeed:
       return out << "kQueryInteractiveFeed";
     case NetworkRequestType::kQueryBackgroundFeed:
@@ -98,8 +88,8 @@ std::ostream& operator<<(std::ostream& out, LoadStreamStatus value) {
       return out << "kAbortWithPendingClearAll";
     case LoadStreamStatus::kAlreadyHaveUnreadContent:
       return out << "kAlreadyHaveUnreadContent";
-    case LoadStreamStatus::kNotAWebFeedSubscriber:
-      return out << "kNotAWebFeedSubscriber";
+    case LoadStreamStatus::kNotAWebFeedSubscriber_DEPRECATED:
+      return out << "kNotAWebFeedSubscriber_DEPRECATED";
     case LoadStreamStatus::kAccountTokenFetchFailedWrongAccount:
       return out << "kAccountTokenFetchFailedWrongAccount";
     case LoadStreamStatus::kAccountTokenFetchTimedOut:
@@ -148,7 +138,7 @@ bool IsLoadingSuccessfulAndFresh(LoadStreamStatus status) {
     case LoadStreamStatus::kDataInStoreIsForAnotherUser:
     case LoadStreamStatus::kAbortWithPendingClearAll:
     case LoadStreamStatus::kAlreadyHaveUnreadContent:
-    case LoadStreamStatus::kNotAWebFeedSubscriber:
+    case LoadStreamStatus::kNotAWebFeedSubscriber_DEPRECATED:
 
     case LoadStreamStatus::kAccountTokenFetchFailedWrongAccount:
     case LoadStreamStatus::kAccountTokenFetchTimedOut:
@@ -210,21 +200,6 @@ std::ostream& operator<<(std::ostream& out, UploadActionsBatchStatus value) {
 #else
   return out << (static_cast<int>(value));
 #endif  // ifndef NDEBUG
-}
-
-std::ostream& operator<<(std::ostream& out, WebFeedRefreshStatus value) {
-  switch (value) {
-    case WebFeedRefreshStatus::kNoStatus:
-      return out << "kNoStatus";
-    case WebFeedRefreshStatus::kSuccess:
-      return out << "kSuccess";
-    case WebFeedRefreshStatus::kNetworkFailure:
-      return out << "kNetworkFailure";
-    case WebFeedRefreshStatus::kNetworkRequestThrottled:
-      return out << "kNetworkRequestThrottled";
-    case WebFeedRefreshStatus::kAbortFetchWebFeedPendingClearAll:
-      return out << "kAbortFetchWebFeedPendingClearAll";
-  }
 }
 
 std::string_view ToString(UserSettingsOnStart v) {

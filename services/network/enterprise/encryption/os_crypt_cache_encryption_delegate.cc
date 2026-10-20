@@ -8,10 +8,11 @@
 #include <string>
 #include <utility>
 
-#include "base/barrier_closure.h"
 #include "base/check_is_test.h"
 #include "base/functional/callback.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/metrics/histogram_functions.h"
+#include "components/os_crypt/async/common/encryptor.h"
 #include "mojo/public/cpp/bindings/remote.h"
 #include "net/base/net_errors.h"
 #include "services/network/enterprise/encryption/chunked_encryptor.h"
@@ -35,7 +36,7 @@ OSCryptCacheEncryptionDelegate::GetEncryptionFileOperationsFactory(
     scoped_refptr<disk_cache::BackendFileOperationsFactory>
         file_operations_factory) {
   // This method should only be called if the delegate is initialized.
-  CHECK(instance_.has_value());
+  CHECK(instance_);
   // This method should only be called once.
   CHECK(!encrypted_file_operations_factory_);
 
@@ -68,7 +69,7 @@ OSCryptCacheEncryptionDelegate::GetEncryptionFileOperationsFactory(
 
 std::unique_ptr<disk_cache::CacheEntryHasher>
 OSCryptCacheEncryptionDelegate::GetCacheEntryHasher() {
-  CHECK(instance_.has_value());
+  CHECK(instance_);
   std::optional<std::string> decrypted_primary_key =
       instance_->DecryptData(encrypted_primary_key_);
   if (!decrypted_primary_key.has_value()) {
@@ -113,47 +114,25 @@ void OSCryptCacheEncryptionDelegate::Init(
       base::BindOnce(&OSCryptCacheEncryptionDelegate::OnDisconnect,
                      weak_ptr_factory_.GetWeakPtr()));
 
-  auto barrier_closure = base::BarrierClosure(
-      2, base::BindOnce(&OSCryptCacheEncryptionDelegate::InitCallback,
-                        weak_ptr_factory_.GetWeakPtr()));
-
-  remote_->GetEncryptor(
-      base::BindOnce(&OSCryptCacheEncryptionDelegate::OnEncryptorReceived,
-                     weak_ptr_factory_.GetWeakPtr(), barrier_closure));
-
   remote_->GetEncryptedCacheEncryptionKey(
-      base::BindOnce(&OSCryptCacheEncryptionDelegate::OnCacheKeyReceived,
-                     weak_ptr_factory_.GetWeakPtr(), barrier_closure));
+      base::BindOnce(&OSCryptCacheEncryptionDelegate::OnKeyAndEncryptorReceived,
+                     weak_ptr_factory_.GetWeakPtr()));
 }
 
-void OSCryptCacheEncryptionDelegate::OnEncryptorReceived(
-    base::OnceClosure done_closure,
-    os_crypt_async::Encryptor encryptor) {
-  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  if (state_ == State::kInitializing) {
-    instance_.emplace(std::move(encryptor));
-  }
-  std::move(done_closure).Run();
-}
-
-void OSCryptCacheEncryptionDelegate::OnCacheKeyReceived(
-    base::OnceClosure done_closure,
-    const std::vector<uint8_t>& key) {
-  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  if (state_ == State::kInitializing) {
-    encrypted_primary_key_ = key;
-  }
-  std::move(done_closure).Run();
-}
-
-void OSCryptCacheEncryptionDelegate::InitCallback() {
+void OSCryptCacheEncryptionDelegate::OnKeyAndEncryptorReceived(
+    const std::vector<uint8_t>& key,
+    scoped_refptr<os_crypt_async::Encryptor> encryptor) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   if (state_ != State::kInitializing) {
     // OnDisconnect() was called during initialization. Callbacks have been
     // notified of failure already.
     return;
   }
-  if (!instance_->IsEncryptionAvailable() || encrypted_primary_key_.empty()) {
+  encrypted_primary_key_ = key;
+  instance_ = std::move(encryptor);
+
+  if (!instance_ || !instance_->IsEncryptionAvailable() ||
+      encrypted_primary_key_.empty()) {
     state_ = State::kUninitialized;
     instance_.reset();
     callbacks_.Notify(net::ERR_FAILED);

@@ -27,8 +27,9 @@
 #include "third_party/blink/renderer/core/dom/node.h"
 
 #include <algorithm>
+#include <ranges>
 
-#include "base/containers/adapters.h"
+#include "third_party/blink/public/common/dom/dom_node_id.h"
 #include "third_party/blink/public/mojom/input/focus_type.mojom-blink.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_get_root_node_options.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_union_node_string_trustedscript.h"
@@ -50,9 +51,7 @@
 #include "third_party/blink/renderer/core/dom/document_type.h"
 #include "third_party/blink/renderer/core/dom/dom_node_ids.h"
 #include "third_party/blink/renderer/core/dom/element.h"
-#include "third_party/blink/renderer/core/dom/element_rare_data_vector.h"
 #include "third_party/blink/renderer/core/dom/element_traversal.h"
-#include "third_party/blink/renderer/core/dom/events/add_event_listener_options_resolved.h"
 #include "third_party/blink/renderer/core/dom/events/event.h"
 #include "third_party/blink/renderer/core/dom/events/event_dispatch_forbidden_scope.h"
 #include "third_party/blink/renderer/core/dom/events/event_dispatcher.h"
@@ -66,6 +65,7 @@
 #include "third_party/blink/renderer/core/dom/node-inl.h"
 #include "third_party/blink/renderer/core/dom/node_cloning_data.h"
 #include "third_party/blink/renderer/core/dom/node_lists_node_data.h"
+#include "third_party/blink/renderer/core/dom/node_rare_data.h"
 #include "third_party/blink/renderer/core/dom/node_traversal.h"
 #include "third_party/blink/renderer/core/dom/processing_instruction.h"
 #include "third_party/blink/renderer/core/dom/range.h"
@@ -99,11 +99,13 @@
 #include "third_party/blink/renderer/core/frame/local_frame.h"
 #include "third_party/blink/renderer/core/frame/local_frame_client.h"
 #include "third_party/blink/renderer/core/frame/local_frame_view.h"
+#include "third_party/blink/renderer/core/frame/settings.h"
 #include "third_party/blink/renderer/core/frame/visual_viewport.h"
 #include "third_party/blink/renderer/core/fullscreen/fullscreen.h"
 #include "third_party/blink/renderer/core/html/custom/custom_element.h"
 #include "third_party/blink/renderer/core/html/forms/html_form_control_element.h"
 #include "third_party/blink/renderer/core/html/forms/html_form_element.h"
+#include "third_party/blink/renderer/core/html/forms/html_select_element.h"
 #include "third_party/blink/renderer/core/html/html_body_element.h"
 #include "third_party/blink/renderer/core/html/html_dialog_element.h"
 #include "third_party/blink/renderer/core/html/html_element.h"
@@ -114,6 +116,7 @@
 #include "third_party/blink/renderer/core/html/html_script_element.h"
 #include "third_party/blink/renderer/core/html/html_slot_element.h"
 #include "third_party/blink/renderer/core/html/html_stream.h"
+#include "third_party/blink/renderer/core/html/html_template_element.h"
 #include "third_party/blink/renderer/core/html/parser/fragment_parser.h"
 #include "third_party/blink/renderer/core/html_names.h"
 #include "third_party/blink/renderer/core/input/event_handler.h"
@@ -322,7 +325,7 @@ void Node::DumpStatistics() {
             << elements_with_attribute_storage << " x " << sizeof(ElementData)
             << "Bytes\n"
             << "  Number of Elements with RareData: " << elements_with_rare_data
-            << " x " << sizeof(ElementRareDataVector) << "Bytes\n"
+            << " x " << sizeof(NodeRareData) << "Bytes\n"
             << "  Number of Elements with NamedNodeMap: "
             << elements_with_named_node_map << " x " << sizeof(NamedNodeMap)
             << "Bytes";
@@ -360,8 +363,8 @@ Node* Node::FromDomNodeId(DOMNodeId dom_node_id) {
   return DOMNodeIds::NodeForId(dom_node_id);
 }
 
-ElementRareDataVector& Node::CreateRareData() {
-  data_ = ElementRareDataVector::Create();
+NodeRareData& Node::CreateRareData() {
+  data_ = NodeRareData::Create();
   return *data_;
 }
 
@@ -388,7 +391,8 @@ void Node::setNodeValue(const String&, ExceptionState&) {
 
 NodeList* Node::childNodes() {
   auto* this_node = DynamicTo<ContainerNode>(this);
-  auto& node_lists = UnpackAndRefresh(EnsureRareData().EnsureNodeLists());
+  auto& node_lists =
+      EnsureRareData().EnsureNodeLists().RefreshNodeAndUnwrap(*this);
   if (this_node)
     return node_lists.EnsureChildNodeList(*this_node);
   return node_lists.EnsureEmptyChildNodeList(*this);
@@ -665,7 +669,7 @@ Node* Node::PseudoAwareLastChild() const {
                                                name);
     }
 
-    for (PseudoId pseudo_id : base::Reversed(kElementChildPseudoOrder)) {
+    for (PseudoId pseudo_id : std::views::reverse(kElementChildPseudoOrder)) {
       switch (pseudo_id) {
         case kPseudoIdColumn:
           // kPseudoIdColumn is an array of indexed pseudo-elements.  Return
@@ -867,69 +871,29 @@ static Node* FindViableNextSibling(
 
 static Node* NodeOrStringToNode(
     const V8UnionNodeOrStringOrTrustedScript* node_or_string,
-    Document& document,
-    bool needs_trusted_types_check,
-    const AtomicString& property_name,
-    ExceptionState& exception_state) {
-  if (!needs_trusted_types_check) {
-    // Without trusted type checks, we simply extract the string from whatever
-    // constituent type we find.
-    switch (node_or_string->GetContentType()) {
-      case V8UnionNodeOrStringOrTrustedScript::ContentType::kNode:
-        return node_or_string->GetAsNode();
-      case V8UnionNodeOrStringOrTrustedScript::ContentType::kString:
-        return Text::Create(document, node_or_string->GetAsString());
-      case V8UnionNodeOrStringOrTrustedScript::ContentType::kTrustedScript:
-        return Text::Create(document,
-                            node_or_string->GetAsTrustedScript()->toString());
-    }
-    NOTREACHED();
+    Document& document) {
+  // We simply extract the string from whatever constituent type we find.
+  switch (node_or_string->GetContentType()) {
+    case V8UnionNodeOrStringOrTrustedScript::ContentType::kNode:
+      return node_or_string->GetAsNode();
+    case V8UnionNodeOrStringOrTrustedScript::ContentType::kString:
+      return Text::Create(document, node_or_string->GetAsString());
+    case V8UnionNodeOrStringOrTrustedScript::ContentType::kTrustedScript:
+      return Text::Create(document,
+                          node_or_string->GetAsTrustedScript()->toString());
   }
-
-  // With trusted type checks, we can process trusted script or non-text nodes
-  // directly. Strings or text nodes need to be checked.
-  if (node_or_string->IsNode() && !node_or_string->GetAsNode()->IsTextNode())
-    return node_or_string->GetAsNode();
-
-  if (node_or_string->IsTrustedScript()) {
-    return Text::Create(document,
-                        node_or_string->GetAsTrustedScript()->toString());
-  }
-
-  String string_value = node_or_string->IsString()
-                            ? node_or_string->GetAsString()
-                            : node_or_string->GetAsNode()->textContent();
-
-  string_value = TrustedTypesCheckForScript(
-      string_value, document.GetExecutionContext(), trusted_types_names::kNode,
-      property_name, exception_state);
-  if (exception_state.HadException())
-    return nullptr;
-  return Text::Create(document, string_value);
 }
 
 // Converts |node_unions| from bindings into actual Nodes by converting strings
 // and script into text nodes via NodeOrStringToNode.
-// Returns nullptr if an exception was thrown.
 // static
 VectorOf<Node> Node::ConvertNodeUnionsIntoNodes(
-    const ContainerNode* parent,
     const HeapVector<Member<V8UnionNodeOrStringOrTrustedScript>>& node_unions,
     Document& document,
-    const AtomicString& property_name,
     ExceptionState& exception_state) {
-  bool needs_check = !RuntimeEnabledFeatures::TrustedTypesHTMLEnabled() &&
-                     IsA<HTMLScriptElement>(parent) &&
-                     document.GetExecutionContext() &&
-                     document.GetExecutionContext()->RequireTrustedTypes();
   VectorOf<Node> nodes;
   for (const auto& node_union : node_unions) {
-    Node* node = NodeOrStringToNode(node_union, document, needs_check,
-                                    property_name, exception_state);
-    if (exception_state.HadException()) {
-      nodes.clear();
-      return nodes;
-    }
+    Node* node = NodeOrStringToNode(node_union, document);
     if (node) {
       if (auto* fragment = DynamicTo<DocumentFragment>(node)) {
         NodeVector fragment_nodes;
@@ -1007,9 +971,8 @@ void Node::prepend(
     return;
   }
 
-  VectorOf<Node> node_vector = ConvertNodeUnionsIntoNodes(
-      this_node, nodes, GetDocument(), trusted_types_names::kPrepend,
-      exception_state);
+  VectorOf<Node> node_vector =
+      ConvertNodeUnionsIntoNodes(nodes, GetDocument(), exception_state);
   if (exception_state.HadException()) {
     return;
   }
@@ -1029,8 +992,7 @@ void Node::append(
   }
 
   VectorOf<Node> node_vector =
-      ConvertNodeUnionsIntoNodes(this_node, nodes, GetDocument(),
-                                 trusted_types_names::kAppend, exception_state);
+      ConvertNodeUnionsIntoNodes(nodes, GetDocument(), exception_state);
   if (exception_state.HadException()) {
     return;
   }
@@ -1045,8 +1007,7 @@ void Node::before(
     return;
   Node* viable_previous_sibling = FindViablePreviousSibling(*this, nodes);
   VectorOf<Node> node_vector =
-      ConvertNodeUnionsIntoNodes(parent, nodes, GetDocument(),
-                                 trusted_types_names::kBefore, exception_state);
+      ConvertNodeUnionsIntoNodes(nodes, GetDocument(), exception_state);
   if (exception_state.HadException()) {
     return;
   }
@@ -1065,8 +1026,7 @@ void Node::after(
     return;
   Node* viable_next_sibling = FindViableNextSibling(*this, nodes);
   VectorOf<Node> node_vector =
-      ConvertNodeUnionsIntoNodes(parent, nodes, GetDocument(),
-                                 trusted_types_names::kAfter, exception_state);
+      ConvertNodeUnionsIntoNodes(nodes, GetDocument(), exception_state);
   if (exception_state.HadException()) {
     return;
   }
@@ -1074,165 +1034,236 @@ void Node::after(
 }
 
 namespace {
-bool CanInsertHTMLToParent(Node* child) {
-  const ContainerNode* parent = child->parentNode();
-  return parent && (parent->IsElementNode() || parent->IsShadowRoot());
+ContainerNode* ParentForHTMLInsertion(Node* self,
+                                      ExceptionState& exception_state) {
+  CHECK(RuntimeEnabledFeatures::NewHTMLSettingMethodsEnabled());
+  ContainerNode* parent = self->parentNode();
+
+  if (IsA<HTMLTemplateElement>(parent)) {
+    exception_state.ThrowDOMException(
+        DOMExceptionCode::kHierarchyRequestError,
+        "Cannot insert HTML around a direct child of a template element.");
+    return nullptr;
+  }
+
+  if (!parent || parent->IsElementNode() || parent->IsShadowRoot()) {
+    return parent;
+  }
+
+  if (parent->IsDocumentFragment() &&
+      To<DocumentFragment>(parent)->IsTemplateContent()) {
+    return parent->ParentOrShadowHostOrTemplateHostNode();
+  }
+
+  exception_state.ThrowDOMException(DOMExceptionCode::kHierarchyRequestError,
+                                    "Invalid parent for HTML insertion");
+  return nullptr;
 }
 }  // namespace
 
 void Node::replaceWithHTML(const String& html,
                            SetHTMLOptions* options,
                            ExceptionState& exception_state) {
-  if (CanInsertHTMLToParent(this)) {
-    parentNode()->ReplaceChildWithHTML(
+  if (ContainerNode* parent = ParentForHTMLInsertion(this, exception_state)) {
+    parent->ReplaceChildWithHTML(
         this, html,
-        FragmentParserConfig::ForContainer(
-            parentNode(), Sanitizer::Mode::kSafe, trusted_types_names::kNode,
-            trusted_types_names::kReplaceWithHTML),
+        FragmentParserConfig::ForContainer(parent, Sanitizer::Mode::kSafe),
         FragmentParserOptions(options), exception_state);
   }
 }
 
 void Node::replaceWithHTMLUnsafe(
     const V8UnionStringOrTrustedHTML* html,
-    V8UnionSetHTMLUnsafeOptionsOrTrustedParserOptions* options,
+    V8UnionSetHTMLUnsafeOptionsOrTrustedHTMLParserOptions* options,
     ExceptionState& exception_state) {
-  if (!CanInsertHTMLToParent(this)) {
+  FragmentParserOptions resolved_options = FragmentParserOptions::From(options);
+  String compliant_string = TrustedTypesCheckForFragment(
+      html, resolved_options, GetExecutionContext(), trusted_types_names::kNode,
+      trusted_types_names::kReplaceWithHTMLUnsafe, exception_state);
+  if (exception_state.HadException()) {
     return;
   }
-  const FragmentParserConfig config = FragmentParserConfig::ForContainer(
-      parentNode(), Sanitizer::Mode::kUnsafe, trusted_types_names::kNode,
-      trusted_types_names::kReplaceWithHTMLUnsafe);
 
-  parentNode()->ReplaceChildWithHTML(
-      this,
-      TrustedTypesCheckForHTML(html, GetExecutionContext(),
-                               config.interface_name, config.property_name,
-                               exception_state),
-      config, FragmentParserOptions::From(options), exception_state);
+  ContainerNode* parent = ParentForHTMLInsertion(this, exception_state);
+  if (!parent) {
+    return;
+  }
+  const FragmentParserConfig config =
+      FragmentParserConfig::ForContainer(parent, Sanitizer::Mode::kUnsafe);
+
+  parent->ReplaceChildWithHTML(this, compliant_string, config, resolved_options,
+                               exception_state);
 }
 
 void Node::beforeHTML(const String& html,
                       SetHTMLOptions* options,
                       ExceptionState& exception_state) {
-  if (CanInsertHTMLToParent(this)) {
-    parentNode()->InsertHTMLBefore(
-        this, html,
-        FragmentParserConfig::ForContainer(parentNode(), Sanitizer::Mode::kSafe,
-                                           trusted_types_names::kNode,
-                                           trusted_types_names::kBeforeHTML),
-        FragmentParserOptions(options), exception_state);
+  ContainerNode* parent = ParentForHTMLInsertion(this, exception_state);
+  if (!parent) {
+    return;
   }
+  parent->InsertHTMLBefore(
+      this, html,
+      FragmentParserConfig::ForContainer(parent, Sanitizer::Mode::kSafe),
+      FragmentParserOptions(options), exception_state);
 }
 
 void Node::beforeHTMLUnsafe(
     const V8UnionStringOrTrustedHTML* html,
-    V8UnionSetHTMLUnsafeOptionsOrTrustedParserOptions* options,
+    V8UnionSetHTMLUnsafeOptionsOrTrustedHTMLParserOptions* options,
     ExceptionState& exception_state) {
-  if (!CanInsertHTMLToParent(this)) {
+  FragmentParserOptions resolved_options = FragmentParserOptions::From(options);
+  String compliant_string = TrustedTypesCheckForFragment(
+      html, resolved_options, GetExecutionContext(), trusted_types_names::kNode,
+      trusted_types_names::kBeforeHTMLUnsafe, exception_state);
+  if (exception_state.HadException()) {
     return;
   }
-  const FragmentParserConfig config = FragmentParserConfig::ForContainer(
-      parentNode(), Sanitizer::Mode::kUnsafe, trusted_types_names::kNode,
-      trusted_types_names::kBeforeHTMLUnsafe);
 
-  parentNode()->InsertHTMLBefore(
-      this,
-      TrustedTypesCheckForHTML(html, GetExecutionContext(),
-                               config.interface_name, config.property_name,
-                               exception_state),
-      config, FragmentParserOptions::From(options), exception_state);
+  ContainerNode* parent = ParentForHTMLInsertion(this, exception_state);
+  if (!parent) {
+    return;
+  }
+  const FragmentParserConfig config =
+      FragmentParserConfig::ForContainer(parent, Sanitizer::Mode::kUnsafe);
+
+  parent->InsertHTMLBefore(this, compliant_string, config, resolved_options,
+                           exception_state);
 }
 
 void Node::afterHTML(const String& html,
                      SetHTMLOptions* options,
                      ExceptionState& exception_state) {
-  if (CanInsertHTMLToParent(this)) {
-    parentNode()->InsertHTMLBefore(
-        nextSibling(), html,
-        FragmentParserConfig::ForContainer(parentNode(), Sanitizer::Mode::kSafe,
-                                           trusted_types_names::kNode,
-                                           trusted_types_names::kAfterHTML),
-        FragmentParserOptions(options), exception_state);
+  ContainerNode* parent = ParentForHTMLInsertion(this, exception_state);
+  if (!parent) {
+    return;
   }
+  parent->InsertHTMLBefore(
+      nextSibling(), html,
+      FragmentParserConfig::ForContainer(parent, Sanitizer::Mode::kSafe),
+      FragmentParserOptions(options), exception_state);
 }
 
 void Node::afterHTMLUnsafe(
     const V8UnionStringOrTrustedHTML* html,
-    V8UnionSetHTMLUnsafeOptionsOrTrustedParserOptions* options,
+    V8UnionSetHTMLUnsafeOptionsOrTrustedHTMLParserOptions* options,
     ExceptionState& exception_state) {
-  if (!CanInsertHTMLToParent(this)) {
+  FragmentParserOptions resolved_options = FragmentParserOptions::From(options);
+  String compliant_string = TrustedTypesCheckForFragment(
+      html, resolved_options, GetExecutionContext(), trusted_types_names::kNode,
+      trusted_types_names::kAfterHTMLUnsafe, exception_state);
+  if (exception_state.HadException()) {
     return;
   }
-  const FragmentParserConfig config = FragmentParserConfig::ForContainer(
-      parentNode(), Sanitizer::Mode::kUnsafe, trusted_types_names::kNode,
-      trusted_types_names::kAfterHTMLUnsafe);
 
-  parentNode()->InsertHTMLBefore(
-      nextSibling(),
-      TrustedTypesCheckForHTML(html, GetExecutionContext(),
-                               config.interface_name, config.property_name,
-                               exception_state),
-      config, FragmentParserOptions::From(options), exception_state);
+  ContainerNode* parent = ParentForHTMLInsertion(this, exception_state);
+  if (!parent) {
+    return;
+  }
+  const FragmentParserConfig config =
+      FragmentParserConfig::ForContainer(parent, Sanitizer::Mode::kUnsafe);
+
+  parent->InsertHTMLBefore(nextSibling(), compliant_string, config,
+                           resolved_options, exception_state);
 }
 
 WritableStream* Node::streamBeforeHTMLUnsafe(
     ScriptState* script_state,
-    V8UnionSetHTMLUnsafeOptionsOrTrustedParserOptions* options,
+    V8UnionSetHTMLUnsafeOptionsOrTrustedHTMLParserOptions* options,
     ExceptionState& exception_state) {
-  return HTMLStream::Create(
-      script_state, parentNode(), this, Sanitizer::Mode::kUnsafe,
-      FragmentParserOptions::From(options), trusted_types_names::kNode,
-      trusted_types_names::kStreamBeforeHTMLUnsafe, exception_state);
+  std::optional<FragmentParserOptions> resolved_options =
+      TrustedTypesCheckForStreaming(
+          FragmentParserOptions::From(options), GetExecutionContext(),
+          trusted_types_names::kNode,
+          trusted_types_names::kStreamBeforeHTMLUnsafe, exception_state);
+  if (!resolved_options) {
+    return nullptr;
+  }
+  ContainerNode* parent = parentNode();
+  if (parent && !parent->CheckValidParentForPartialInsertion(exception_state)) {
+    return nullptr;
+  }
+  return HTMLStream::Create(script_state, parent, this,
+                            Sanitizer::Mode::kUnsafe, *resolved_options,
+                            exception_state);
 }
 
 WritableStream* Node::streamBeforeHTML(ScriptState* script_state,
                                        SetHTMLOptions* options,
                                        ExceptionState& exception_state) {
-  return HTMLStream::Create(
-      script_state, parentNode(), this, Sanitizer::Mode::kSafe,
-      FragmentParserOptions(options), trusted_types_names::kNode,
-      trusted_types_names::kStreamBeforeHTML, exception_state);
+  ContainerNode* parent = parentNode();
+  if (parent && !parent->CheckValidParentForPartialInsertion(exception_state)) {
+    return nullptr;
+  }
+  return HTMLStream::Create(script_state, parent, this, Sanitizer::Mode::kSafe,
+                            FragmentParserOptions(options), exception_state);
 }
 
 WritableStream* Node::streamAfterHTMLUnsafe(
     ScriptState* script_state,
-    V8UnionSetHTMLUnsafeOptionsOrTrustedParserOptions* options,
+    V8UnionSetHTMLUnsafeOptionsOrTrustedHTMLParserOptions* options,
     ExceptionState& exception_state) {
-  return HTMLStream::Create(
-      script_state, parentNode(), nextSibling(), Sanitizer::Mode::kUnsafe,
-      FragmentParserOptions::From(options), trusted_types_names::kNode,
-      trusted_types_names::kStreamAfterHTMLUnsafe, exception_state);
+  std::optional<FragmentParserOptions> resolved_options =
+      TrustedTypesCheckForStreaming(
+          FragmentParserOptions::From(options), GetExecutionContext(),
+          trusted_types_names::kNode,
+          trusted_types_names::kStreamAfterHTMLUnsafe, exception_state);
+  if (!resolved_options) {
+    return nullptr;
+  }
+  ContainerNode* parent = parentNode();
+  if (parent && !parent->CheckValidParentForPartialInsertion(exception_state)) {
+    return nullptr;
+  }
+  return HTMLStream::Create(script_state, parent, nextSibling(),
+                            Sanitizer::Mode::kUnsafe, *resolved_options,
+                            exception_state);
 }
 
 WritableStream* Node::streamAfterHTML(ScriptState* script_state,
                                       SetHTMLOptions* options,
                                       ExceptionState& exception_state) {
-  return HTMLStream::Create(
-      script_state, parentNode(), nextSibling(), Sanitizer::Mode::kSafe,
-      FragmentParserOptions(options), trusted_types_names::kNode,
-      trusted_types_names::kStreamAfterHTML, exception_state);
+  ContainerNode* parent = parentNode();
+  if (parent && !parent->CheckValidParentForPartialInsertion(exception_state)) {
+    return nullptr;
+  }
+  return HTMLStream::Create(script_state, parent, nextSibling(),
+                            Sanitizer::Mode::kSafe,
+                            FragmentParserOptions(options), exception_state);
 }
 
 WritableStream* Node::streamReplaceWithHTMLUnsafe(
     ScriptState* script_state,
-    V8UnionSetHTMLUnsafeOptionsOrTrustedParserOptions* options,
+    V8UnionSetHTMLUnsafeOptionsOrTrustedHTMLParserOptions* options,
     ExceptionState& exception_state) {
-  return HTMLStream::Create(
-      script_state, parentNode(), nextSibling(), Sanitizer::Mode::kUnsafe,
-      FragmentParserOptions::From(options), trusted_types_names::kNode,
-      trusted_types_names::kStreamReplaceWithHTMLUnsafe, exception_state,
-      [&]() { remove(); });
+  std::optional<FragmentParserOptions> resolved_options =
+      TrustedTypesCheckForStreaming(
+          FragmentParserOptions::From(options), GetExecutionContext(),
+          trusted_types_names::kNode,
+          trusted_types_names::kStreamReplaceWithHTMLUnsafe, exception_state);
+  if (!resolved_options) {
+    return nullptr;
+  }
+  ContainerNode* parent = parentNode();
+  if (parent && !parent->CheckValidParentForPartialInsertion(exception_state)) {
+    return nullptr;
+  }
+  return HTMLStream::Create(script_state, parent, nextSibling(),
+                            Sanitizer::Mode::kUnsafe, *resolved_options,
+
+                            exception_state, [&]() { remove(); });
 }
 
 WritableStream* Node::streamReplaceWithHTML(ScriptState* script_state,
                                             SetHTMLOptions* options,
                                             ExceptionState& exception_state) {
+  ContainerNode* parent = parentNode();
+  if (parent && !parent->CheckValidParentForPartialInsertion(exception_state)) {
+    return nullptr;
+  }
   return HTMLStream::Create(
-      script_state, parentNode(), nextSibling(), Sanitizer::Mode::kSafe,
-      FragmentParserOptions(options), trusted_types_names::kNode,
-      trusted_types_names::kStreamReplaceWithHTML, exception_state,
-      [&]() { remove(); });
+      script_state, parent, nextSibling(), Sanitizer::Mode::kSafe,
+      FragmentParserOptions(options), exception_state, [&]() { remove(); });
 }
 
 void Node::replaceWith(
@@ -1242,9 +1273,8 @@ void Node::replaceWith(
   if (!parent)
     return;
   Node* viable_next_sibling = FindViableNextSibling(*this, nodes);
-  VectorOf<Node> node_vector = ConvertNodeUnionsIntoNodes(
-      parent, nodes, GetDocument(), trusted_types_names::kReplaceWith,
-      exception_state);
+  VectorOf<Node> node_vector =
+      ConvertNodeUnionsIntoNodes(nodes, GetDocument(), exception_state);
   if (exception_state.HadException()) {
     return;
   }
@@ -1267,9 +1297,8 @@ void Node::replaceChildren(
     return;
   }
 
-  VectorOf<Node> nodes = ConvertNodeUnionsIntoNodes(
-      this_node, node_unions, GetDocument(), trusted_types_names::kReplace,
-      exception_state);
+  VectorOf<Node> nodes =
+      ConvertNodeUnionsIntoNodes(node_unions, GetDocument(), exception_state);
   if (exception_state.HadException()) {
     return;
   }
@@ -1471,10 +1500,15 @@ bool Node::ShouldSkipMarkingStyleDirty() const {
       return false;
     }
     // This is an element outside the flat tree without a parent. Should only
-    // mark dirty if it has an ensured style.
+    // mark dirty if it has a computed style.
+    //
+    // We may end up with a ComputedStyle outside the flat tree for moveBefore
+    // if we move an element under a shadow host but the moved element does
+    // not have a target slot in the host's shadow tree.
     return !element->GetComputedStyle();
   }
-  // Text nodes outside the flat tree do not need to be marked for style recalc.
+  // Node is outside the flat tree and does not need to be marked for style
+  // recalc.
   return true;
 }
 
@@ -1501,9 +1535,6 @@ bool IsNodeInFlatTree(const Node& node, const Element* style_parent) {
   }
   if (!current_style && style_parent) {
     current_style = style_parent->GetComputedStyle();
-  }
-  if (current_style && current_style->IsEnsuredOutsideFlatTree()) {
-    return false;
   }
   return true;
 }
@@ -1693,7 +1724,7 @@ void Node::FocusabilityLost() {
 
 LinkHighlightCandidate Node::IsLinkHighlightCandidate() const {
   if (const LayoutObject* layout_object = GetLayoutObject()) {
-    const ECursor cursor = layout_object->StyleRef().Cursor();
+    const ECursor cursor = layout_object->Style().Cursor();
     if (cursor == ECursor::kPointer)
       return LinkHighlightCandidate::kYes;
     if (cursor != ECursor::kAuto)
@@ -1725,7 +1756,7 @@ void Node::ClearNodeLists() {
 }
 
 FlatTreeNodeData& Node::EnsureFlatTreeNodeData() {
-  return UnpackAndRefresh(EnsureRareData().EnsureFlatTreeNodeData());
+  return EnsureRareData().EnsureFlatTreeNodeData().RefreshNodeAndUnwrap(*this);
 }
 
 FlatTreeNodeData* Node::GetFlatTreeNodeData() const {
@@ -1891,10 +1922,12 @@ void Node::AttachLayoutTree(AttachContext& context) {
   DCHECK(!context.performing_reattach ||
          GetDocument().GetStyleEngine().InRebuildLayoutTree());
 
-  LayoutObject* layout_object = GetLayoutObject();
+#if DCHECK_IS_ON()
+  const LayoutObject* layout_object = GetLayoutObject();
   DCHECK(!layout_object ||
-         (layout_object->Style() &&
+         (layout_object->HasStyle() &&
           (layout_object->Parent() || IsA<LayoutView>(layout_object))));
+#endif
 
   ClearNeedsReattachLayoutTree();
 
@@ -1993,7 +2026,7 @@ bool Node::CanStartSelection() const {
   }
 
   if (GetLayoutObject()) {
-    const ComputedStyle& style = GetLayoutObject()->StyleRef();
+    const ComputedStyle& style = GetLayoutObject()->Style();
     EUserSelect user_select = style.UsedUserSelect();
     if (user_select == EUserSelect::kNone)
       return false;
@@ -2030,15 +2063,6 @@ void Node::NotifyPriorityScrollAnchorStatusChanged() {
 
 bool Node::IsActiveSlot() const {
   return ToHTMLSlotElementIfSupportsAssignmentOrNull(*this);
-}
-
-bool Node::HasContainerTiming() const {
-  if (IsElementNode()) {
-    return To<Element>(*this).FastHasAttribute(
-        html_names::kContainertimingAttr);
-  } else {
-    return false;
-  }
 }
 
 AtomicString Node::SlotName() const {
@@ -2398,7 +2422,7 @@ void Node::setTextContent(const String& text) {
       // mutation observer listeners attached.
       if (container->HasOneTextChild() &&
           To<Text>(container->firstChild())->data() == text && !text.empty() &&
-          !GetDocument().HasMutationObservers()) {
+          !GetDocument().MayHaveMutationObservers()) {
         return;
       }
 
@@ -2561,8 +2585,9 @@ void Node::InvalidateIfHasEffectiveAppearance() const {
   if (!layout_object)
     return;
 
-  if (!layout_object->StyleRef().HasEffectiveAppearance())
+  if (!layout_object->Style().HasEffectiveAppearance()) {
     return;
+  }
 
   layout_object->SetSubtreeShouldDoFullPaintInvalidation();
 }
@@ -2579,8 +2604,6 @@ Node::InsertionNotificationRequest Node::InsertedInto(
     insertion_point.GetDocument().IncrementNodeCount();
 #endif
   }
-  if (ParentOrShadowHostNode()->IsInShadowTree())
-    SetFlag(kIsInShadowTreeFlag);
   if (auto* cache = GetDocument().ExistingAXObjectCache()) {
     cache->NodeIsConnected(this);
   }
@@ -2605,9 +2628,6 @@ void Node::RemovedFrom(ContainerNode& insertion_point) {
 #if DCHECK_IS_ON()
     insertion_point.GetDocument().DecrementNodeCount();
 #endif
-  }
-  if (IsInShadowTree() && !GetTreeScope().RootNode().IsShadowRoot()) {
-    ClearFlag(kIsInShadowTreeFlag);
   }
   if (auto* cache = GetDocument().ExistingAXObjectCache()) {
     cache->Remove(this);
@@ -2856,6 +2876,10 @@ static void AppendMarkedTree(const String& base_indent,
       if (Element* pseudo = element->GetPseudoElement(kPseudoIdBackdrop))
         AppendMarkedTree(indent_string, pseudo, marked_node1, marked_label1,
                          marked_node2, marked_label2, builder);
+      if (Element* pseudo = element->GetPseudoElement(kPseudoIdSkeleton)) {
+        AppendMarkedTree(indent_string, pseudo, marked_node1, marked_label1,
+                         marked_node2, marked_label2, builder);
+      }
     }
 
     if (ShadowRoot* shadow_root = node.GetShadowRoot()) {
@@ -3002,7 +3026,7 @@ void Node::WillMoveToNewDocument(Document& new_document) {
   if (old_document.FocusedElement() == this) {
     FocusParams params(SelectionBehaviorOnFocus::kNone,
                        mojom::blink::FocusType::kNone, nullptr);
-    params.omit_blur_events = true;
+    params.blur_event_behavior = BlurEventBehavior::kDropWhenRemoving;
     old_document.SetFocusedElement(nullptr, params);
   }
 
@@ -3049,7 +3073,7 @@ void Node::AddedEventListener(const AtomicString& event_type,
   }
   if (auto* frame = GetDocument().GetFrame()) {
     frame->GetEventHandlerRegistry().DidAddEventHandler(
-        *this, event_type, registered_listener.Options());
+        *this, event_type, registered_listener.Passive());
     // We need to track the existence of the visibilitychange event listeners to
     // enable/disable sudden terminations.
     if (IsDocumentNode() && event_type == event_type_names::kVisibilitychange) {
@@ -3070,7 +3094,7 @@ void Node::RemovedEventListener(
   // https://bugs.webkit.org/show_bug.cgi?id=33861
   if (auto* frame = GetDocument().GetFrame()) {
     frame->GetEventHandlerRegistry().DidRemoveEventHandler(
-        *this, event_type, registered_listener.Options());
+        *this, event_type, registered_listener.Passive());
   }
   if (AXObjectCache* cache = GetDocument().ExistingAXObjectCache())
     cache->HandleEventListenerRemoved(*this, event_type);
@@ -3232,7 +3256,7 @@ void Node::RegisterMutationObserver(
     const HashSet<AtomicString>& attribute_filter) {
   MutationObserverRegistration* registration = nullptr;
   auto& mutation_observer_data =
-      UnpackAndRefresh(EnsureRareData().EnsureMutationObserverData());
+      EnsureRareData().EnsureMutationObserverData().RefreshNodeAndUnwrap(*this);
   for (const auto& item : mutation_observer_data.Registry()) {
     if (&item->Observer() == &observer) {
       registration = item.Get();
@@ -3261,13 +3285,17 @@ void Node::UnregisterMutationObserver(
   // understandable by humans.  The explicit dispose() is needed to have the
   // registration object unregister itself promptly.
   registration->Dispose();
-  UnpackAndRefresh(EnsureRareData().EnsureMutationObserverData())
+  EnsureRareData()
+      .EnsureMutationObserverData()
+      .RefreshNodeAndUnwrap(*this)
       .RemoveRegistration(registration);
 }
 
 void Node::RegisterTransientMutationObserver(
     MutationObserverRegistration* registration) {
-  UnpackAndRefresh(EnsureRareData().EnsureMutationObserverData())
+  EnsureRareData()
+      .EnsureMutationObserverData()
+      .RefreshNodeAndUnwrap(*this)
       .AddTransientRegistration(registration);
 }
 
@@ -3279,12 +3307,14 @@ void Node::UnregisterTransientMutationObserver(
   if (!transient_registry)
     return;
 
-  UnpackAndRefresh(EnsureRareData().EnsureMutationObserverData())
+  EnsureRareData()
+      .EnsureMutationObserverData()
+      .RefreshNodeAndUnwrap(*this)
       .RemoveTransientRegistration(registration);
 }
 
 void Node::NotifyMutationObserversNodeWillDetach() {
-  if (!GetDocument().HasMutationObservers())
+  if (!GetDocument().MayHaveMutationObservers())
     return;
 
   ScriptForbiddenScope forbid_script_during_raw_iteration;
@@ -3328,10 +3358,7 @@ DispatchEventResult Node::DispatchDOMActivateEvent(int detail,
   UIEvent& event = *UIEvent::Create();
   // DOMActivate inherits bubbles from the underlying event to prevent
   // activation behavior of parent elements from running when it doesn't bubble.
-  const bool bubbles =
-      RuntimeEnabledFeatures::DOMActivateBubblesInheritanceEnabled()
-          ? underlying_event.bubbles()
-          : true;
+  const bool bubbles = underlying_event.bubbles();
   event.initUIEvent(event_type_names::kDOMActivate, bubbles, true,
                     GetDocument().domWindow(), detail);
   event.SetUnderlyingEvent(&underlying_event);
@@ -3355,6 +3382,17 @@ void Node::DispatchSimulatedClick(const Event* underlying_event,
 }
 
 void Node::DefaultEventHandler(Event& event) {
+#if DCHECK_IS_ON()
+  if (RuntimeEnabledFeatures::CleanUpActivationBehaviorEnabled()) {
+    const bool is_click =
+        event.IsMouseEvent() && event.type() == event_type_names::kClick;
+    const bool is_android_select_mousedown_quirk =
+        event.IsMouseEvent() && event.type() == event_type_names::kMousedown &&
+        IsA<HTMLSelectElement>(*this) && GetDocument().GetSettings() &&
+        GetDocument().GetSettings()->GetWideViewportQuirkEnabled();
+    DCHECK(event.isTrusted() || is_click || is_android_select_mousedown_quirk);
+  }
+#endif
   if (event.RawTarget() != this) {
     return;
   }
@@ -3370,9 +3408,14 @@ void Node::DefaultEventHandler(Event& event) {
   } else if (event_type == event_type_names::kClick) {
     auto* ui_event = DynamicTo<UIEvent>(event);
     int detail = ui_event ? ui_event->detail() : 0;
+    // Canceling DOMActivate marks the click event as default-handled, which
+    // suppresses the rest of the click event's default handling, including
+    // `RunActivationBehavior()`.
+    // TODO(crbug.com/563000231): Consider dropping this cancellation behavior.
     if (DispatchDOMActivateEvent(detail, event) !=
-        DispatchEventResult::kNotCanceled)
+        DispatchEventResult::kNotCanceled) {
       event.SetDefaultHandled();
+    }
   } else if (event_type == event_type_names::kContextmenu &&
              IsA<MouseEvent>(event)) {
     if (Page* page = GetDocument().GetPage()) {
@@ -3706,28 +3749,22 @@ void Node::ParentSlotChanged() {
 
 void Node::FlatTreeParentChanged() {
   DCHECK(isConnected());
+  if (Element* element = DynamicTo<Element>(this)) {
+    element->DetachOverscroll();
+  }
   const ComputedStyle* style =
       IsElementNode() ? To<Element>(this)->GetComputedStyle() : nullptr;
-  bool detach = false;
   if (ShouldSkipMarkingStyleDirty()) {
     // If we should not mark the node dirty in the new flat tree position,
     // detach to make sure all computes styles, layout objects, and dirty
     // flags are cleared.
-    detach = IsDirtyForStyleRecalc() || ChildNeedsStyleRecalc() || style ||
-             GetLayoutObject();
-  }
-  if (!detach) {
-    // We are moving a node with ensured computed style into the flat tree.
-    // Clear ensured styles so that we can use IsEnsuredOutsideFlatTree() to
-    // determine that we are outside the flat tree before updating the style
-    // recalc root in MarkAncestorsWithChildNeedsStyleRecalc().
-    detach = style && style->IsEnsuredOutsideFlatTree();
-  }
-  if (detach) {
-    StyleEngine& engine = GetDocument().GetStyleEngine();
-    StyleEngine::DetachLayoutTreeScope detach_scope(engine);
-    DetachLayoutTree();
-    engine.FlatTreePositionChanged(*this);
+    if (IsDirtyForStyleRecalc() || ChildNeedsStyleRecalc() || style ||
+        GetLayoutObject()) {
+      StyleEngine& engine = GetDocument().GetStyleEngine();
+      StyleEngine::DetachLayoutTreeScope detach_scope(engine);
+      DetachLayoutTree();
+      engine.FlatTreePositionChanged(*this);
+    }
   }
 
   // The node changed the flat tree position by being slotted to a new slot or
@@ -3758,9 +3795,25 @@ void Node::FlatTreeParentChanged() {
     // parent box may have changed.
     SetForceReattachLayoutTree();
   }
+  if (auto* element = DynamicTo<Element>(this)) {
+    bool is_in_canvas_subtree = false;
+    if (element->IsDocumentElement()) {
+      auto* owner = GetDocument().LocalOwner();
+      is_in_canvas_subtree = owner && owner->IsCanvasOrInCanvasSubtree();
+    } else {
+      auto* parent = GetStyleRecalcParent();
+      is_in_canvas_subtree = parent && parent->IsCanvasOrInCanvasSubtree();
+    }
+    element->SetIsInCanvasSubtree(is_in_canvas_subtree);
+  }
 }
 
 void Node::RemovedFromFlatTree() {
+  if (Element* element = DynamicTo<Element>(this)) {
+    element->DetachOverscroll();
+    element->SetIsInCanvasSubtree(false);
+  }
+
   StyleEngine& engine = GetDocument().GetStyleEngine();
   StyleEngine::DetachLayoutTreeScope detach_scope(engine);
   // This node was previously part of the flat tree, but due to slot re-
@@ -3774,10 +3827,10 @@ void Node::RemovedFromFlatTree() {
 }
 
 void Node::RegisterScrollTimeline(ScrollTimeline* timeline) {
-  data_ = EnsureRareData().RegisterScrollTimeline(timeline);
+  EnsureRareData().RegisterScrollTimeline(timeline).RefreshNode(*this);
 }
 void Node::UnregisterScrollTimeline(ScrollTimeline* timeline) {
-  data_ = EnsureRareData().UnregisterScrollTimeline(timeline);
+  EnsureRareData().UnregisterScrollTimeline(timeline).RefreshNode(*this);
 }
 
 void Node::SetManuallyAssignedSlot(HTMLSlotElement* slot) {
@@ -3814,7 +3867,8 @@ void Node::AddConsoleMessage(mojom::blink::ConsoleMessageSource source,
                              const String& message) {
   auto* console_message =
       MakeGarbageCollected<ConsoleMessage>(source, level, message);
-  console_message->SetNodes(GetDocument().GetFrame(), {GetDomNodeId()});
+  console_message->SetNodes(GetDocument().GetFrame(),
+                            {DOMNodeIdType(GetDomNodeId())});
   GetDocument().AddConsoleMessage(console_message);
 }
 

@@ -283,12 +283,28 @@ bool VideoCaptureImpl::ProcessBuffer(
       // it is not sent cross-process the region does not need to be attached to
       // the frame. See also the case for kReadOnlyShmemRegion.
       if (video_frame_init_data.ready_buffer->info->strides) {
-        CHECK(
-            IsYuvPlanar(
-                video_frame_init_data.ready_buffer->info->pixel_format) &&
-            (media::VideoFrame::NumPlanes(
-                 video_frame_init_data.ready_buffer->info->pixel_format) == 3))
+        CHECK(IsYuvPlanar(
+                  video_frame_init_data.ready_buffer->info->pixel_format) &&
+              (media::VideoFrame::NumPlanes(
+                   video_frame_init_data.ready_buffer->info->pixel_format) ==
+               3) &&
+              IsOpaque(video_frame_init_data.ready_buffer->info->pixel_format))
             << "Currently, only YUV formats support custom strides.";
+        const auto pixel_format =
+            video_frame_init_data.ready_buffer->info->pixel_format;
+        const auto coded_width =
+            video_frame_init_data.ready_buffer->info->coded_size.width();
+        const auto& strides =
+            video_frame_init_data.ready_buffer->info->strides->stride_by_plane;
+        CHECK_GE(static_cast<size_t>(strides[0]),
+                 media::VideoFrame::RowBytes(media::VideoFrame::Plane::kY,
+                                             pixel_format, coded_width));
+        CHECK_GE(static_cast<size_t>(strides[1]),
+                 media::VideoFrame::RowBytes(media::VideoFrame::Plane::kU,
+                                             pixel_format, coded_width));
+        CHECK_GE(static_cast<size_t>(strides[2]),
+                 media::VideoFrame::RowBytes(media::VideoFrame::Plane::kV,
+                                             pixel_format, coded_width));
         const size_t y_size =
             (media::VideoFrame::Rows(
                  media::VideoFrame::Plane::kY,
@@ -308,6 +324,14 @@ bool VideoCaptureImpl::ProcessBuffer(
         base::span<const uint8_t> data = buffer_context->data();
         auto [y_data, uv_data] = data.split_at(y_size);
         auto [u_data, v_data] = uv_data.split_at(u_size);
+        CHECK_GE(v_data.size(),
+                 (media::VideoFrame::Rows(
+                      media::VideoFrame::Plane::kV,
+                      video_frame_init_data.ready_buffer->info->pixel_format,
+                      video_frame_init_data.ready_buffer->info->coded_size
+                          .height()) *
+                  video_frame_init_data.ready_buffer->info->strides
+                      ->stride_by_plane[2]));
         video_frame_init_data.frame = media::VideoFrame::WrapExternalYuvData(
             video_frame_init_data.ready_buffer->info->pixel_format,
             gfx::Size(video_frame_init_data.ready_buffer->info->coded_size),
@@ -432,11 +456,11 @@ bool VideoCaptureImpl::ProcessBuffer(
 
 #if BUILDFLAG(IS_CHROMEOS)
       video_frame_init_data.is_webgpu_compatible =
-          gmb_handle.type == gfx::NATIVE_PIXMAP &&
-          gmb_handle.native_pixmap_handle().supports_zero_copy_webgpu_import;
+          gmb_handle.type == gfx::NATIVE_PIXMAP;
 #elif BUILDFLAG(IS_MAC)
       video_frame_init_data.is_webgpu_compatible =
-          gfx::IOSurfaceIsWebGPUCompatible(gmb_handle.io_surface().get());
+          gfx::IOSurfacePixelFormatIsWebGPUCompatible(
+              IOSurfaceGetPixelFormat(gmb_handle.io_surface().get()));
 #elif BUILDFLAG(IS_WIN)
       video_frame_init_data.is_webgpu_compatible =
           gmb_handle.type == gfx::GpuMemoryBufferType::DXGI_SHARED_HANDLE;
@@ -552,6 +576,7 @@ bool VideoCaptureImpl::BindVideoFrameOnMediaTaskRunner(
     should_recreate_shared_image = true;
   }
 
+  gpu::SyncToken sync_token;
   if (!shared_image || should_recreate_shared_image) {
     auto multiplanar_si_format = viz::MultiPlaneFormat::kNV12;
 #if BUILDFLAG(IS_OZONE)
@@ -569,7 +594,9 @@ bool VideoCaptureImpl::BindVideoFrameOnMediaTaskRunner(
 #endif
 #if BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN)
     // These SharedImages may be used for zero-copy of VideoFrames into WebGPU.
-    usage |= gpu::SHARED_IMAGE_USAGE_WEBGPU_READ;
+    if (video_frame_init_data.is_webgpu_compatible) {
+      usage |= gpu::SHARED_IMAGE_USAGE_WEBGPU_READ;
+    }
 #endif
 
     shared_image = sii->CreateSharedImage(
@@ -578,12 +605,14 @@ bool VideoCaptureImpl::BindVideoFrameOnMediaTaskRunner(
         gpu::kNullSurfaceHandle, gfx::BufferUsage::SCANOUT_VEA_CPU_READ,
         std::move(gmb_handle));
     CHECK(shared_image);
+    sync_token = shared_image->creation_sync_token();
   } else {
-    sii->UpdateSharedImage(video_frame_init_data.buffer_context->gmb_resources()
-                               ->release_sync_token,
-                           video_frame_init_data.buffer_context->gmb_resources()
-                               ->shared_image->mailbox());
+    sync_token = video_frame_init_data.buffer_context->gmb_resources()
+                     ->shared_image->BackingWasExternallyUpdated(
+                         video_frame_init_data.buffer_context->gmb_resources()
+                             ->release_sync_token);
   }
+  sii->VerifySyncToken(sync_token);
 
 #if BUILDFLAG(IS_WIN)
   video_frame_init_data.buffer_context->gmb_resources()
@@ -591,7 +620,6 @@ bool VideoCaptureImpl::BindVideoFrameOnMediaTaskRunner(
           video_frame_init_data.ready_buffer->info->is_premapped);
 #endif
 
-  const gpu::SyncToken sync_token = sii->GenVerifiedSyncToken();
   CHECK(shared_image);
 
   auto frame = media::VideoFrame::WrapMappableSharedImage(
@@ -607,12 +635,8 @@ bool VideoCaptureImpl::BindVideoFrameOnMediaTaskRunner(
     return false;
   }
 
-  frame->set_color_space(shared_image->color_space());
   frame->set_metadata(video_frame_init_data.ready_buffer->info->metadata);
-  frame->metadata().allow_overlay = true;
   frame->metadata().read_lock_fences_enabled = true;
-  frame->metadata().is_webgpu_compatible =
-      video_frame_init_data.is_webgpu_compatible;
   video_frame_init_data.frame = frame;
   return true;
 }

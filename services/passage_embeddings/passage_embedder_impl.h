@@ -5,16 +5,20 @@
 #ifndef SERVICES_PASSAGE_EMBEDDINGS_PASSAGE_EMBEDDER_IMPL_H_
 #define SERVICES_PASSAGE_EMBEDDINGS_PASSAGE_EMBEDDER_IMPL_H_
 
+#include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
 
 #include "base/containers/lru_cache.h"
 #include "base/files/file.h"
-#include "services/passage_embeddings/passage_embedder_execution_task.h"
+#include "services/passage_embeddings/passage_embedder_executor.h"
 #include "services/passage_embeddings/public/mojom/passage_embeddings.mojom.h"
-#include "third_party/sentencepiece/src/src/sentencepiece_processor.h"
-#include "third_party/tflite_support/src/tensorflow_lite_support/cc/task/core/base_task_api.h"
+
+namespace sentencepiece {
+class SentencePieceProcessor;
+}
 
 namespace passage_embeddings {
 
@@ -32,13 +36,9 @@ class PassageEmbedderImpl {
 
   // Loads the given text embeddings model and the sentencepiece file for text
   // embedding generation. Return true if successful.
-  //
-  // A TfLiteEngine can be provided to override any defaults.
   bool LoadModels(base::File embeddings_model_file,
                   base::File sp_file,
-                  uint32_t embeddings_input_window_size,
-                  std::unique_ptr<tflite::task::core::TfLiteEngine>
-                      tflite_engine = nullptr);
+                  uint32_t embeddings_input_window_size);
 
   // Executes the model to generate text embeddings result for the input.
   std::vector<mojom::PassageEmbeddingsResultPtr> GenerateEmbeddings(
@@ -59,11 +59,11 @@ class PassageEmbedderImpl {
   bool BuildExecutionTask();
 
   // Executes the model to generate text embeddings result for the input.
-  std::optional<OutputType> Execute(InputType input);
+  std::optional<EmbedderExecutionResult> Execute(const std::vector<int>& input);
 
   std::unique_ptr<sentencepiece::SentencePieceProcessor> sp_processor_;
 
-  std::unique_ptr<PassageEmbedderExecutionTask> loaded_model_;
+  std::unique_ptr<PassageEmbedderExecutor> executor_;
 
   // The text embedding model file. Empty when not loaded.
   base::File embeddings_model_file_;
@@ -71,15 +71,11 @@ class PassageEmbedderImpl {
   // The input window size that the embeddings model expects.
   uint32_t embeddings_input_window_size_;
 
+  // Indicates if the model should be executed with Gemma specific logic.
+  bool execute_for_gemma_ = false;
+
   // The priority that the active tflite_engine is set up for.
   mojom::PassagePriority current_priority_ = mojom::PassagePriority::kUnknown;
-
-  // Whether the tflite engine has been overridden by caller during setup.
-  bool tflite_engine_overridden_ = false;
-
-  // Temporarily stores the pointer to the override engine. Will be null when
-  // it is loaded into an execution task.
-  std::unique_ptr<tflite::task::core::TfLiteEngine> override_tflite_engine_;
 
   base::LRUCache<std::string, std::vector<float>> embeddings_cache_;
 

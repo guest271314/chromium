@@ -23,17 +23,13 @@ namespace browsing_data {
 
 class HistoryCounter : public browsing_data::BrowsingDataCounter {
  public:
-  typedef base::RepeatingCallback<history::WebHistoryService*()>
-      GetUpdatedWebHistoryServiceCallback;
-
   class HistoryResult : public SyncResult {
    public:
     HistoryResult(const HistoryCounter* source,
                   ResultInt value,
                   bool is_sync_enabled,
                   bool has_synced_visits,
-                  std::string last_visited_domain,
-                  ResultInt unique_domains_result);
+                  std::string last_visited_domain);
     ~HistoryResult() override;
 
     bool has_synced_visits() const { return has_synced_visits_; }
@@ -42,19 +38,13 @@ class HistoryCounter : public browsing_data::BrowsingDataCounter {
       return last_visited_domain_;
     }
 
-    ResultInt unique_domains_result() const { return unique_domains_result_; }
-
    private:
     bool has_synced_visits_;
     std::string last_visited_domain_;
-    // TODO(crbug.com/406227667): Migrate the `unique_domains_result_` to be the
-    // default value returned by HistoryResult once the Desktop UI is migrated
-    // to the new strings.
-    ResultInt unique_domains_result_;
   };
 
   explicit HistoryCounter(history::HistoryService* history_service,
-                          GetUpdatedWebHistoryServiceCallback callback,
+                          history::WebHistoryService* web_history_service,
                           syncer::SyncService* sync_service);
   ~HistoryCounter() override;
 
@@ -68,7 +58,6 @@ class HistoryCounter : public browsing_data::BrowsingDataCounter {
  private:
   void Count() override;
 
-  void OnGetLocalHistoryCount(history::HistoryCountResult result);
   void OnGetWebHistoryCount(
       history::WebHistoryService::Request* request,
       base::optional_ref<const history::WebHistoryService::QueryHistoryResult>
@@ -77,19 +66,16 @@ class HistoryCounter : public browsing_data::BrowsingDataCounter {
   void OnWebHistoryTimeout();
   void MergeResults();
 
-  history::WebHistoryService* GetWebHistoryService();
-
-  bool IsHistorySyncEnabled(const syncer::SyncService* sync_service);
+  bool IsHistorySyncEnabled() const;
 
   raw_ptr<history::HistoryService, DanglingUntriaged> history_service_;
 
-  GetUpdatedWebHistoryServiceCallback web_history_service_callback_;
+  raw_ptr<history::WebHistoryService> web_history_service_;
 
   SyncTracker sync_tracker_;
 
   bool has_synced_visits_;
 
-  bool local_counting_finished_;
   bool web_counting_finished_;
   bool domain_fetching_finished_;
 
@@ -99,7 +85,6 @@ class HistoryCounter : public browsing_data::BrowsingDataCounter {
 
   SEQUENCE_CHECKER(sequence_checker_);
 
-  BrowsingDataCounter::ResultInt local_result_;
   std::string last_visited_domain_;
   BrowsingDataCounter::ResultInt unique_domains_result_;
 

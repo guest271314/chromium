@@ -9,7 +9,7 @@ import {strictQuery} from 'chrome://resources/ash/common/typescript_utils/strict
 import {assert} from 'chrome://resources/js/assert.js';
 import type {LoadingPageElement} from 'chrome://scanning/loading_page.js';
 import {AppState} from 'chrome://scanning/scanning_app_types.js';
-import {assertEquals, assertFalse, assertTrue} from 'chrome://webui-test/chromeos/chai_assert.js';
+import {assertEquals, assertFalse, assertTrue} from 'chrome://webui-test/chai_assert.js';
 import {eventToPromise, isVisible} from 'chrome://webui-test/chromeos/test_util.js';
 import {MockController} from 'chrome://webui-test/mock_controller.js';
 import {flushTasks} from 'chrome://webui-test/polymer_test_util.js';
@@ -103,7 +103,7 @@ suite('loadingPageTest', function() {
   // Verify "no scanners" dynamic SVG use.
   test('jellyColors_NoScannersSvg', async () => {
     assert(loadingPage);
-    const dynamicSvg = `svg/illo_no_scanner.svg#illo_no_scanner`;
+    const dynamicSvg = 'svg/illo_no_scanner.svg#illo_no_scanner';
     const getNoScannersVisual = (): SVGUseElement => strictQuery(
         '#noScannersDiv > svg > use', loadingPage!.shadowRoot, SVGUseElement);
 
@@ -120,7 +120,7 @@ suite('loadingPageTest', function() {
   // Verify "loading scanners" dynamic SVG use.
   test('jellyColors_LoadingScannersSvg', async () => {
     assert(loadingPage);
-    const dynamicSvg = `svg/illo_loading_scanner.svg#illo_loading_scanner`;
+    const dynamicSvg = 'svg/illo_loading_scanner.svg#illo_loading_scanner';
 
     const getLoadingVisual = (): SVGUseElement => strictQuery(
         '#loadingDiv > svg > use', loadingPage!.shadowRoot, SVGUseElement);

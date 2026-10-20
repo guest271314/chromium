@@ -14,6 +14,7 @@
 #include "base/scoped_observation.h"
 #include "base/supports_user_data.h"
 #include "base/task/cancelable_task_tracker.h"
+#include "base/time/time.h"
 #include "chrome/browser/finds/core/finds_metrics.h"
 #include "components/history/core/browser/history_service_observer.h"
 #include "components/keyed_service/core/keyed_service.h"
@@ -104,12 +105,21 @@ class FindsService : public KeyedService,
       base::OnceCallback<void(Result)> callback);
   // Records that the user has visited a URL that can be categorized under an
   // eligible finds theme. This will go towards a theme count for URL visits to
-  // determine whether the opt in will be shown.
+  // determine whether the opt-in will be shown.
   void RecordThemeURLVisited(
       optimization_guide::proto::FindsMetadata::ThemeType theme_type);
+  // Records that the user has visited the New Tab Page.
+  void RecordNTPVisited();
   // Notifies the service that the user has reached the required number of SRP
   // back navigations to trigger the opt in promo.
   void SRPBackNavigationCountForOptInReached();
+
+  // Records a successful recent search suggestion navigation and returns true
+  // if the threshold is met.
+  bool RecordRecentSearchSuggestionClickAndCheckThresholdReached();
+  // Notifies the service that the user has reached the required recent search
+  // suggestion navigations to trigger the opt-in promo.
+  void RecentSearchSuggestionCountForOptInReached();
 
   // Returns true if the Finds feature is allowed for the user based on
   // permissions and preferences.
@@ -117,10 +127,6 @@ class FindsService : public KeyedService,
 
   // Potentially requests that pending notifications be rescheduled.
   void MaybeRescheduleNotifications();
-  // Schedules a test notification using mocked data, bypassing model execution.
-  // This is intended for use by the chrome-finds-internals page only. Do not
-  // use in production code.
-  bool ScheduleNotificationForInternalsPage();
 
  private:
   friend class FindsServiceTest;
@@ -135,9 +141,11 @@ class FindsService : public KeyedService,
 
   void CheckFindsNotificationsEnabledAndMaybeExecute();
   void OnHistoryQueryComplete(base::OnceCallback<void(Result)> callback,
+                              base::TimeTicks start_time,
                               history::QueryResults results);
   void OnModelExecutionComplete(
       base::OnceCallback<void(Result)> callback,
+      base::TimeTicks start_time,
       optimization_guide::OptimizationGuideModelExecutionResult result,
       std::unique_ptr<optimization_guide::ModelQualityLogEntry> log_entry);
   void OnGetClientOverview(notifications::ClientOverview overview);
@@ -161,6 +169,8 @@ class FindsService : public KeyedService,
   base::CancelableTaskTracker history_task_tracker_;
   base::flat_map<optimization_guide::proto::FindsMetadata::ThemeType, int>
       theme_url_visit_count_;
+  bool theme_opt_in_criteria_fulfilled_ = false;
+  int omnibox_recent_search_suggestion_click_count_ = 0;
 
   PrefChangeRegistrar pref_change_registrar_;
   base::ScopedObservation<syncer::SyncService, syncer::SyncServiceObserver>

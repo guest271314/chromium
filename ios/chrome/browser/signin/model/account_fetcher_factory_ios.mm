@@ -4,9 +4,13 @@
 
 #import "ios/chrome/browser/signin/model/account_fetcher_factory_ios.h"
 
+#import "base/feature_list.h"
 #import "components/signin/internal/identity_manager/account_info_fetcher_gaia.h"
 #import "components/signin/public/base/signin_client.h"
+#import "components/signin/public/base/signin_switches.h"
+#import "google_apis/gaia/gaia_id.h"
 #import "ios/chrome/browser/signin/model/account_capabilities_fetcher_ios.h"
+#import "ios/chrome/browser/signin/model/account_info_fetcher_ios.h"
 #import "ios/chrome/browser/signin/model/system_identity.h"
 
 namespace ios {
@@ -25,6 +29,11 @@ std::unique_ptr<AccountInfoFetcher>
 AccountFetcherFactoryIOS::CreateAccountInfoFetcher(
     const CoreAccountId& account_id,
     base::OnceCallback<void(std::optional<AccountInfo>)> callback) {
+  if (base::FeatureList::IsEnabled(switches::kUseAccountInfoFetcherIos)) {
+    return std::make_unique<AccountInfoFetcherIos>(
+        account_manager_service_, GaiaId(account_id.ToString()),
+        std::move(callback));
+  }
   return std::make_unique<AccountInfoFetcherGaia>(
       *token_service_, signin_client_->GetURLLoaderFactory(), account_id,
       std::move(callback));
@@ -34,10 +43,14 @@ std::unique_ptr<AccountCapabilitiesFetcher>
 AccountFetcherFactoryIOS::CreateAccountCapabilitiesFetcher(
     const CoreAccountInfo& account_info,
     AccountCapabilitiesFetcher::FetchPriority fetch_priority,
-    AccountCapabilitiesFetcher::OnCompleteCallback on_complete_callback) {
+    AccountCapabilitiesFetcher::OnSomeCapabilitiesFetchedCallback
+        on_some_capabilities_fetched_callback,
+    AccountCapabilitiesFetcher::OnAllFetchesCompleteCallback
+        on_all_fetches_complete_callback) {
   return std::make_unique<AccountCapabilitiesFetcherIOS>(
       account_info, fetch_priority, account_manager_service_,
-      std::move(on_complete_callback));
+      std::move(on_some_capabilities_fetched_callback),
+      std::move(on_all_fetches_complete_callback));
 }
 
 }  // namespace ios

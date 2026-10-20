@@ -46,6 +46,10 @@ struct GlicTestEnvironmentConfig {
   bool force_signin_and_glic_capability = true;
   // The default FRE status saved to prefs after profile creation.
   std::optional<prefs::FreStatus> fre_status = prefs::FreStatus::kCompleted;
+  // If set, overrides the default result of cookie sync.
+  std::optional<bool> override_cookie_sync_result;
+  // The hosted domain of the default account. Empty for consumer accounts.
+  std::string default_account_hosted_domain;
 };
 
 namespace internal {
@@ -54,6 +58,7 @@ class GlicTestEnvironmentShared {
   GlicTestEnvironmentShared(
       std::vector<base::test::FeatureRef> enabled_features,
       std::vector<base::test::FeatureRef> disabled_features);
+  ~GlicTestEnvironmentShared();
 
  private:
   base::test::ScopedFeatureList scoped_feature_list_;
@@ -101,24 +106,31 @@ class GlicTestEnvironment : public ProfileObserver {
   static GlicTestEnvironmentService* GetService(Profile* profile,
                                                 bool create = true);
 
+  // Binds the HTTPS test server socket (without starting its IO thread) and
+  // configures `--glic-guest-url` so `GetGuestURL()` is available during
+  // `SetUpCommandLine()`.
+  [[nodiscard]] bool InitializeEmbeddedTestServers(
+      net::test_server::EmbeddedTestServer* https_server);
+
   // Sets up the embedded test servers for Glic testing.
-  // This serves files from the correct directories and configures the
-  // command line switches for the guest URL and FRE URL.
-  // This must be called in SetUpOnMainThread().
+  // This serves files from the correct directories and starts the servers
+  // accepting connections. This must be called in SetUpOnMainThread().
   [[nodiscard]] bool SetupEmbeddedTestServers(
       net::test_server::EmbeddedTestServer* http_server,
-      net::test_server::EmbeddedTestServer* https_server = nullptr);
+      net::test_server::EmbeddedTestServer* https_server);
 
   void SetGlicPagePath(const std::string& path);
   void AddMockGlicQueryParam(const std::string_view& key,
                              const std::string_view& value);
-  void SetGlicFreUrlOverride(const GURL& url);
   GURL GetGuestURL() const;
-  const std::optional<GURL>& GetGlicFreUrl() const;
 
  private:
   void OnWillCreateBrowserContextKeyedServices(
       content::BrowserContext* context);
+  bool StartTestServerIfNeeded(
+      net::test_server::EmbeddedTestServer* server,
+      net::test_server::EmbeddedTestServerHandle& handle);
+
   base::CallbackListSubscription create_services_subscription_;
 
   base::test::ScopedFeatureList scoped_feature_list_;
@@ -131,10 +143,9 @@ class GlicTestEnvironment : public ProfileObserver {
   // URL configuration state.
   std::string glic_page_path_ = "/glic/test_client/index.html";
   std::map<std::string, std::string> mock_glic_query_params_;
-  std::optional<GURL> glic_fre_url_;
-  std::optional<GURL> glic_fre_url_override_;
   GURL guest_url_;
   net::test_server::EmbeddedTestServerHandle test_server_handle_;
+  net::test_server::EmbeddedTestServerHandle https_test_server_handle_;
 };
 
 // Note: This constructs the GlicKeyedService, if it's not already created,

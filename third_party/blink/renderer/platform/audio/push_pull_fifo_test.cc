@@ -72,7 +72,7 @@ size_t FillBusWithLinearRamp(AudioBus* target_bus, size_t starting_value) {
 // Inspect the content of AudioBus with a given set of index and value across
 // channels.
 bool VerifyBusValueAtIndex(AudioBus* target_bus,
-                           int index,
+                           size_t index,
                            float expected_value) {
   for (unsigned c = 0; c < target_bus->NumberOfChannels(); ++c) {
     base::span<const float> bus_channel = target_bus->Channel(c)->Span();
@@ -89,7 +89,7 @@ struct FIFOAction {
   // The type of action; "PUSH" or "PULL".
   const char* action;
   // Number of frames for the operation.
-  const size_t number_of_frames;
+  const uint32_t number_of_frames;
 };
 
 struct AudioBusSample {
@@ -101,7 +101,7 @@ struct AudioBusSample {
 
 struct FIFOTestSetup {
   // Length of FIFO to be created for test case.
-  const size_t fifo_length;
+  const uint32_t fifo_length;
   // Channel count of FIFO to be created for test case.
   const unsigned number_of_channels;
   const uint32_t render_quantum_frames;
@@ -377,8 +377,8 @@ INSTANTIATE_TEST_SUITE_P(PushPullFIFOFeatureTest,
 
 struct FIFOEarmarkTestParam {
   FIFOTestSetup setup;
-  size_t callback_buffer_size;
-  size_t expected_earmarked_frames;
+  uint32_t callback_buffer_size;
+  uint32_t expected_earmarked_frames;
 };
 
 class PushPullFIFOEarmarkFramesTest
@@ -488,6 +488,80 @@ TEST(PushPullFIFOAllocationTest, FailAllocationWithTooManyChannels) {
   std::unique_ptr<PushPullFIFO> fifo =
       PushPullFIFO::TryCreate(33, 1024, kRenderQuantumFrames);
   EXPECT_EQ(fifo, nullptr);
+}
+
+TEST(PushPullFIFOChannelCountTest, MatchingChannelCount) {
+  constexpr unsigned kRenderQuantumFrames = 128;
+  constexpr uint32_t kFifoLength = 1024;
+
+  std::unique_ptr<PushPullFIFO> fifo =
+      PushPullFIFO::TryCreate(2, kFifoLength, kRenderQuantumFrames);
+  ASSERT_NE(fifo, nullptr);
+
+  scoped_refptr<AudioBus> stereo_input =
+      AudioBus::Create(2, kRenderQuantumFrames);
+  std::ranges::fill(
+      stereo_input->Channel(0)->MutableSpan().first(kRenderQuantumFrames),
+      1.0f);
+  std::ranges::fill(
+      stereo_input->Channel(1)->MutableSpan().first(kRenderQuantumFrames),
+      2.0f);
+  fifo->Push(stereo_input.get());
+  EXPECT_EQ(fifo->FramesAvailable(), kRenderQuantumFrames);
+
+  scoped_refptr<AudioBus> stereo_output =
+      AudioBus::Create(2, kRenderQuantumFrames);
+  size_t frames_to_render =
+      fifo->Pull(stereo_output.get(), kRenderQuantumFrames);
+  EXPECT_EQ(frames_to_render, kRenderQuantumFrames);
+  EXPECT_EQ(fifo->FramesAvailable(), 0u);
+  EXPECT_EQ(stereo_output->Channel(0)->Span()[0], 1.0f);
+  EXPECT_EQ(stereo_output->Channel(1)->Span()[0], 2.0f);
+}
+
+TEST(PushPullFIFOChannelCountTest, ChannelMismatchDeathTests) {
+  GTEST_FLAG_SET(death_test_style, "threadsafe");
+
+  constexpr unsigned kRenderQuantumFrames = 128;
+  constexpr uint32_t kFifoLength = 1024;
+
+  std::unique_ptr<PushPullFIFO> fifo =
+      PushPullFIFO::TryCreate(2, kFifoLength, kRenderQuantumFrames);
+  ASSERT_NE(fifo, nullptr);
+
+  // Input bus has fewer channels (1) than FIFO (2).
+  scoped_refptr<AudioBus> mono_input =
+      AudioBus::Create(1, kRenderQuantumFrames);
+  EXPECT_DEATH_IF_SUPPORTED(fifo->Push(mono_input.get()), "");
+
+  // Input bus has more channels (3) than FIFO (2).
+  scoped_refptr<AudioBus> multi_input =
+      AudioBus::Create(3, kRenderQuantumFrames);
+  EXPECT_DEATH_IF_SUPPORTED(fifo->Push(multi_input.get()), "");
+
+  // Output bus has fewer channels (1) than FIFO (2) in Pull.
+  scoped_refptr<AudioBus> mono_output =
+      AudioBus::Create(1, kRenderQuantumFrames);
+  EXPECT_DEATH_IF_SUPPORTED(fifo->Pull(mono_output.get(), kRenderQuantumFrames),
+                            "");
+
+  // Output bus has more channels (3) than FIFO (2) in Pull.
+  scoped_refptr<AudioBus> multi_output =
+      AudioBus::Create(3, kRenderQuantumFrames);
+  EXPECT_DEATH_IF_SUPPORTED(
+      fifo->Pull(multi_output.get(), kRenderQuantumFrames), "");
+
+  // Output bus has fewer channels (1) than FIFO (2) in
+  // PullAndUpdateEarmarkedFrames.
+  EXPECT_DEATH_IF_SUPPORTED(fifo->PullAndUpdateEarmarkedFrames(
+                                mono_output.get(), kRenderQuantumFrames),
+                            "");
+
+  // Output bus has more channels (3) than FIFO (2) in
+  // PullAndUpdateEarmarkedFrames.
+  EXPECT_DEATH_IF_SUPPORTED(fifo->PullAndUpdateEarmarkedFrames(
+                                multi_output.get(), kRenderQuantumFrames),
+                            "");
 }
 
 }  // namespace

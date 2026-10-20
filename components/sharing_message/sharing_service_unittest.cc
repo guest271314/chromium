@@ -127,10 +127,6 @@ class FakeSharingDeviceRegistration : public SharingDeviceRegistration {
     std::move(callback).Run(result_);
   }
 
-  bool IsClickToCallSupported() const override { return false; }
-
-  bool IsSharedClipboardSupported() const override { return false; }
-
   bool IsSmsFetcherSupported() const override { return false; }
 
   bool IsRemoteCopySupported() const override { return false; }
@@ -144,6 +140,8 @@ class FakeSharingDeviceRegistration : public SharingDeviceRegistration {
   }
 
   bool IsGlicExperimentalTriggeringSupported() const override { return false; }
+
+  bool IsBrowserActuatorSupported() const override { return false; }
 
   void SetEnabledFeaturesForTesting(
       std::set<syncer::DeviceInfo::SharingFeature> enabled_features) override {}
@@ -273,7 +271,7 @@ TEST_F(SharingServiceTest, GetDeviceCandidates_Empty) {
 
   std::vector<SharingTargetDeviceInfo> candidates =
       GetSharingService()->GetDeviceCandidates(
-          syncer::DeviceInfo::SharingFeature::kClickToCallV2);
+          syncer::DeviceInfo::SharingFeature::kRemoteCopy);
   EXPECT_TRUE(candidates.empty());
 }
 
@@ -290,7 +288,7 @@ TEST_F(SharingServiceTest, GetDeviceCandidates_Tracked) {
 
   std::vector<SharingTargetDeviceInfo> candidates =
       GetSharingService()->GetDeviceCandidates(
-          syncer::DeviceInfo::SharingFeature::kClickToCallV2);
+          syncer::DeviceInfo::SharingFeature::kRemoteCopy);
 
   ASSERT_EQ(1u, candidates.size());
 }
@@ -494,6 +492,33 @@ TEST_F(SharingServiceTest, DeviceUnregistrationSyncDisabled) {
             GetSharingService()->GetStateForTesting());
 }
 
+TEST_F(SharingServiceTest, DeviceUnregistrationWhileRegistering) {
+  test_sync_service_.GetUserSettings()->SetSelectedTypes(
+      /*sync_everything=*/false,
+      /*types=*/{syncer::UserSelectableType::kPreferences});
+
+  ASSERT_EQ(SharingService::State::DISABLED,
+            GetSharingService()->GetStateForTesting());
+
+  // Put SharingService into REGISTERING state via a transient error.
+  sharing_device_registration_->SetResult(
+      SharingDeviceRegistrationResult::kFcmTransientError);
+  test_sync_service_.FireStateChanged();
+  ASSERT_EQ(1, sharing_device_registration_->registration_attempts());
+  ASSERT_EQ(SharingService::State::REGISTERING,
+            GetSharingService()->GetStateForTesting());
+
+  // Signing out while REGISTERING should unregister and transition to DISABLED.
+  sharing_device_registration_->SetResult(
+      SharingDeviceRegistrationResult::kSuccess);
+  test_sync_service_.SetSignedOut();
+  EXPECT_CALL(*fcm_handler_, StopListening());
+  test_sync_service_.FireStateChanged();
+  EXPECT_EQ(1, sharing_device_registration_->unregistration_attempts());
+  EXPECT_EQ(SharingService::State::DISABLED,
+            GetSharingService()->GetStateForTesting());
+}
+
 TEST_F(SharingServiceTest, DeviceRegisterAndUnregister) {
   test_sync_service_.GetUserSettings()->SetSelectedTypes(
       /*sync_everything=*/false,
@@ -605,12 +630,12 @@ TEST_F(SharingServiceTest, AddSharingHandler) {
       .Times(1);
   GetSharingService()->RegisterSharingHandler(
       nullptr,
-      components_sharing_message::SharingMessage::kSharedClipboardMessage);
+      components_sharing_message::SharingMessage::kSmsFetchRequest);
 }
 
 TEST_F(SharingServiceTest, RemoveSharingHandler) {
   EXPECT_CALL(*handler_registry_, UnregisterSharingHandler(testing::_))
       .Times(1);
   GetSharingService()->UnregisterSharingHandler(
-      components_sharing_message::SharingMessage::kSharedClipboardMessage);
+      components_sharing_message::SharingMessage::kSmsFetchRequest);
 }

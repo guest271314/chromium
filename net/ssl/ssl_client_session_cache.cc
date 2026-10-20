@@ -10,6 +10,7 @@
 
 #include "base/containers/flat_set.h"
 #include "base/memory_coordinator/memory_coordinator_features.h"
+#include "base/memory_coordinator/traits.h"
 #include "base/memory_coordinator/utils.h"
 #include "base/time/clock.h"
 #include "base/time/default_clock.h"
@@ -26,6 +27,16 @@ auto TieKeyFields(const SSLClientSessionCache::Key& key) {
                   key.privacy_mode, key.session_usage, key.proxy_chain,
                   key.proxy_chain_index);
 }
+
+constexpr base::MemoryConsumerTraits kSSLClientSessionCacheTraits(
+    // Bounded capacity of sessions; way under 10MB.
+    base::MemoryConsumerTraits::EstimatedMemoryUsage::kSmall,
+    // Iterates base::LRUCache, reading the BoringSSL sessions being freed.
+    base::MemoryConsumerTraits::ReleaseMemoryDataAccess::kReads,
+    // Full handshake can be done if not cached.
+    base::MemoryConsumerTraits::InformationRetention::kLossless,
+    // Cache trimming runs synchronously on the calling thread.
+    base::MemoryConsumerTraits::ExecutionType::kSynchronous);
 
 }  // namespace
 
@@ -52,11 +63,9 @@ SSLClientSessionCache::SSLClientSessionCache(const Config& config)
       cache_(config.max_entries),
       memory_consumer_registration_(
           "SSLClientSessionCache",
-          std::nullopt,  // TODO(crbug.com/489671163): Add traits.
+          kSSLClientSessionCacheTraits,
           this,
-          base::AsyncMemoryConsumerRegistration::CheckUnregister::kDisabled,
-          base::AsyncMemoryConsumerRegistration::CheckRegistryExists::
-              kDisabled) {}
+          base::AsyncMemoryConsumerRegistration::CheckUnregister::kDisabled) {}
 
 SSLClientSessionCache::~SSLClientSessionCache() {
   Flush();
@@ -223,8 +232,7 @@ void SSLClientSessionCache::OnUpdateMemoryLimit() {
     return;
   }
 
-  size_t target_size =
-      base::ScaleByMemoryLimit(config_.max_entries, memory_limit());
+  size_t target_size = memory_limit().Scale(config_.max_entries);
 
   // IMPORTANT: Ensure no memory is released during this call.
   // By using std::max, we ensure the new limit is at least the current size,
@@ -243,8 +251,7 @@ void SSLClientSessionCache::OnReleaseMemory() {
   }
   if (base::FeatureList::IsEnabled(base::kStatefulMemoryPressure)) {
     // Now we actually evict entries to reach the target size.
-    cache_.UpdateMaxSize(
-        base::ScaleByMemoryLimit(config_.max_entries, memory_limit()));
+    cache_.UpdateMaxSize(memory_limit().Scale(config_.max_entries));
     return;
   }
 

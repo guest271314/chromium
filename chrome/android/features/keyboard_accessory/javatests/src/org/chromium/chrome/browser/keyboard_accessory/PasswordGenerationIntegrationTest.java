@@ -34,8 +34,8 @@ import org.chromium.base.test.util.IntegrationTest;
 import org.chromium.base.test.util.Matchers;
 import org.chromium.base.test.util.Restriction;
 import org.chromium.chrome.browser.ChromeTabbedActivity;
+import org.chromium.chrome.browser.ChromeWindow;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
-import org.chromium.chrome.browser.infobar.InfoBarContainer;
 import org.chromium.chrome.browser.keyboard_accessory.button_group_component.KeyboardAccessoryButtonGroupView;
 import org.chromium.chrome.browser.password_manager.PasswordManagerTestHelper;
 import org.chromium.chrome.browser.password_manager.PasswordStoreBridge;
@@ -104,6 +104,7 @@ public class PasswordGenerationIntegrationTest {
 
     @Before
     public void setUp() throws InterruptedException {
+        ChromeWindow.setKeyboardVisibilityDelegateFactory(FakeKeyboard::new);
         CoreAccountInfo account = mSyncTestRule.setUpAccountAndSignInForTesting();
         PasswordManagerTestHelper.setAccountForPasswordStore(account.getEmail());
         ManualFillingTestHelper.disableServerPredictions();
@@ -130,6 +131,7 @@ public class PasswordGenerationIntegrationTest {
     @After
     public void tearDown() {
         mHelper.clear();
+        ChromeWindow.resetKeyboardVisibilityDelegateFactory();
     }
 
     // TODO(crbug.com/386734610): enable for autos.
@@ -139,6 +141,7 @@ public class PasswordGenerationIntegrationTest {
         GmsCoreVersionRestriction.RESTRICTION_TYPE_VERSION_GE_22W30,
         DeviceRestriction.RESTRICTION_TYPE_NON_AUTO
     })
+    @DisabledTest(message = "https://crbug.com/562982887")
     public void testAutomaticGenerationCancel() throws InterruptedException, TimeoutException {
         waitForGenerationLabel();
         focusField(PASSWORD_NODE_ID);
@@ -150,7 +153,7 @@ public class PasswordGenerationIntegrationTest {
         BottomSheetTestSupport.waitForOpen(mBottomSheetController);
         rejectPasswordInGenerationBottomSheet(mActivity);
         assertPasswordTextEmpty(PASSWORD_NODE_ID);
-        assertNoInfobarsAreShown();
+        assertNoMessagesAreShown();
         CriteriaHelper.pollUiThread(
                 () -> {
                     PasswordStoreCredential[] credentials =
@@ -177,7 +180,7 @@ public class PasswordGenerationIntegrationTest {
         BottomSheetTestSupport.waitForOpen(mBottomSheetController);
         rejectPasswordInGenerationBottomSheet(mActivity);
         assertPasswordTextEmpty(PASSWORD_NODE_ID_MANUAL);
-        assertNoInfobarsAreShown();
+        assertNoMessagesAreShown();
         CriteriaHelper.pollUiThread(
                 () -> {
                     PasswordStoreCredential[] credentials =
@@ -194,6 +197,7 @@ public class PasswordGenerationIntegrationTest {
         GmsCoreVersionRestriction.RESTRICTION_TYPE_VERSION_GE_22W30,
         DeviceRestriction.RESTRICTION_TYPE_NON_AUTO
     })
+    @DisabledTest(message = "https://crbug.com/562982887")
     public void testAutomaticGenerationUsePassword() throws InterruptedException, TimeoutException {
         waitForGenerationLabel();
         focusField(PASSWORD_NODE_ID);
@@ -255,10 +259,7 @@ public class PasswordGenerationIntegrationTest {
     }
 
     private void pressManualGenerationSuggestion() {
-        CriteriaHelper.pollUiThread(
-                () -> {
-                    return mActivity.findViewById(R.id.passwords_sheet) != null;
-                });
+        CriteriaHelper.pollUiThread(() -> mActivity.findViewById(R.id.passwords_sheet) != null);
         ArrayList<View> selectedViews = new ArrayList<>();
         mActivity
                 .findViewById(R.id.passwords_sheet)
@@ -277,17 +278,14 @@ public class PasswordGenerationIntegrationTest {
                     return mKeyboardAccessoryBarItems != null;
                 });
         CriteriaHelper.pollUiThread(
-                () -> {
-                    return mKeyboardAccessoryBarItems.findViewHolderForLayoutPosition(0) != null;
-                });
+                () -> mKeyboardAccessoryBarItems.findViewHolderForLayoutPosition(0) != null);
         KeyboardAccessoryButtonGroupView keyboardAccessoryView =
                 (KeyboardAccessoryButtonGroupView)
                         mKeyboardAccessoryBarItems.findViewHolderForLayoutPosition(0).itemView;
         CriteriaHelper.pollUiThread(
-                () -> {
-                    return keyboardAccessoryView.getButtons().size()
-                            == KEYBOARD_ACCESSORY_BAR_ITEM_COUNT;
-                });
+                () ->
+                        keyboardAccessoryView.getButtons().size()
+                                == KEYBOARD_ACCESSORY_BAR_ITEM_COUNT);
         ArrayList<ImageButton> buttons = keyboardAccessoryView.getButtons();
         ImageButton keyButton = buttons.get(0);
         InstrumentationRegistry.getInstrumentation().waitForIdleSync();
@@ -339,24 +337,25 @@ public class PasswordGenerationIntegrationTest {
                 });
     }
 
-    private void assertNoInfobarsAreShown() {
+    private void assertNoMessagesAreShown() {
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
-                    Assert.assertFalse(
-                            InfoBarContainer.from(mActivityTestRule.getActivityTab())
-                                    .hasInfoBars());
+                    WindowAndroid window = mActivity.getWindowAndroid();
+                    Assert.assertEquals(
+                            "No messages should be shown.",
+                            0,
+                            MessagesTestHelper.getMessageCount(window));
                 });
     }
 
     private void waitForMessageShown() {
         WindowAndroid window = mActivityTestRule.getActivity().getWindowAndroid();
         CriteriaHelper.pollUiThread(
-                () -> {
-                    Criteria.checkThat(
-                            "Message is not enqueued.",
-                            MessagesTestHelper.getMessageCount(window),
-                            Matchers.is(1));
-                });
+                () ->
+                        Criteria.checkThat(
+                                "Message is not enqueued.",
+                                MessagesTestHelper.getMessageCount(window),
+                                Matchers.is(1)));
     }
 
     private void dismissBottomSheet() {

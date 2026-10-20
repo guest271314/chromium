@@ -5,6 +5,8 @@
 #include "base/memory/ref_counted.h"
 #include "base/run_loop.h"
 #include "base/test/mock_callback.h"
+#include "base/test/scoped_command_line.h"
+#include "media/capture/capture_switches.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
 #include "mojo/public/cpp/bindings/receiver.h"
 #include "mojo/public/cpp/bindings/remote.h"
@@ -23,6 +25,19 @@ using testing::InvokeWithoutArgs;
 namespace video_capture {
 using GetSourceInfosResult =
     video_capture::mojom::VideoSourceProvider::GetSourceInfosResult;
+
+class VideoCaptureServiceVirtualDevicesOnlyTest
+    : public VideoCaptureServiceTest {
+ protected:
+  void SetUp() override {
+    scoped_command_line_.GetProcessCommandLine()->AppendSwitch(
+        switches::kVideoCaptureUseVirtualDevicesOnly);
+    VideoCaptureServiceTest::SetUp();
+  }
+
+ private:
+  base::test::ScopedCommandLine scoped_command_line_;
+};
 
 // Tests that an answer arrives from the service when calling
 // GetSourceInfos().
@@ -54,10 +69,51 @@ TEST_F(VideoCaptureServiceTest, FakeDeviceFactoryEnumeratesThreeDevices) {
   ASSERT_EQ(3u, num_devices_enumerated);
 }
 
+TEST_F(VideoCaptureServiceVirtualDevicesOnlyTest,
+       ExposesOnlyRegisteredVirtualDevices) {
+  // The base fixture configures three fake devices. The virtual-devices-only
+  // switch should hide them until a virtual device is registered.
+  {
+    base::RunLoop wait_loop;
+    EXPECT_CALL(device_info_receiver_, Run)
+        .Times(Exactly(1))
+        .WillOnce([&wait_loop](
+                      GetSourceInfosResult result,
+                      const std::vector<media::VideoCaptureDeviceInfo>& infos) {
+          EXPECT_EQ(result, GetSourceInfosResult::kSuccess);
+          EXPECT_TRUE(infos.empty());
+          wait_loop.Quit();
+        });
+
+    video_source_provider_->GetSourceInfos(device_info_receiver_.Get());
+    wait_loop.Run();
+  }
+
+  const std::string virtual_device_id = "virtual-chromium-device";
+  auto device_context = AddSharedMemoryVirtualDevice(virtual_device_id);
+
+  base::RunLoop wait_loop;
+  EXPECT_CALL(device_info_receiver_, Run)
+      .Times(Exactly(1))
+      .WillOnce([&wait_loop, virtual_device_id](
+                    GetSourceInfosResult result,
+                    const std::vector<media::VideoCaptureDeviceInfo>& infos) {
+        EXPECT_EQ(result, GetSourceInfosResult::kSuccess);
+        EXPECT_EQ(1u, infos.size());
+        if (infos.size() == 1u) {
+          EXPECT_EQ(infos.front().descriptor.device_id, virtual_device_id);
+        }
+        wait_loop.Quit();
+      });
+
+  video_source_provider_->GetSourceInfos(device_info_receiver_.Get());
+  wait_loop.Run();
+}
+
 // Tests that an added virtual device will be returned in the callback
 // when calling GetSourceInfos.
 TEST_F(VideoCaptureServiceTest, VirtualDeviceEnumeratedAfterAdd) {
-  const std::string virtual_device_id = "/virtual/device";
+  const std::string virtual_device_id = "virtual-chromium-device";
   auto device_context = AddSharedMemoryVirtualDevice(virtual_device_id);
 
   base::RunLoop wait_loop;
@@ -97,7 +153,8 @@ TEST_F(VideoCaptureServiceTest,
     EXPECT_CALL(mock_observer, OnDevicesChanged()).WillOnce([&run_loop]() {
       run_loop.Quit();
     });
-    device_context_1 = AddSharedMemoryVirtualDevice("TestDevice1");
+    device_context_1 =
+        AddSharedMemoryVirtualDevice("virtual-chromium-TestDevice1");
     run_loop.Run();
   }
 
@@ -107,7 +164,7 @@ TEST_F(VideoCaptureServiceTest,
     EXPECT_CALL(mock_observer, OnDevicesChanged()).WillOnce([&run_loop]() {
       run_loop.Quit();
     });
-    device_context_2 = AddTextureVirtualDevice("TestDevice2");
+    device_context_2 = AddTextureVirtualDevice("virtual-chromium-TestDevice2");
     run_loop.Run();
   }
 
@@ -145,7 +202,7 @@ TEST_F(VideoCaptureServiceTest,
   // Disconnect observer
   observer_receiver.reset();
 
-  auto device_context = AddTextureVirtualDevice("TestDevice");
+  auto device_context = AddTextureVirtualDevice("virtual-chromium-TestDevice");
   device_context.reset();
 }
 
@@ -196,7 +253,7 @@ TEST_F(VideoCaptureServiceTest,
 // subscription for an added virtual device.
 TEST_F(VideoCaptureServiceTest, CreateDeviceSuccessForVirtualDevice) {
   base::RunLoop wait_loop;
-  const std::string virtual_device_id = "/virtual/device";
+  const std::string virtual_device_id = "virtual-chromium-device";
   auto device_context = AddSharedMemoryVirtualDevice(virtual_device_id);
 
   mojo::PendingRemote<video_capture::mojom::VideoFrameHandler> subscriber;
@@ -406,7 +463,7 @@ TEST_F(VideoCaptureServiceTest,
 }
 
 TEST_F(VideoCaptureServiceTest, VirtualDeviceCanBeReopenedAfterClosing) {
-  const std::string virtual_device_id = "/virtual/device";
+  const std::string virtual_device_id = "virtual-chromium-device";
   auto device_context = AddSharedMemoryVirtualDevice(virtual_device_id);
 
   mojo::Remote<mojom::VideoSource> video_source_remote;

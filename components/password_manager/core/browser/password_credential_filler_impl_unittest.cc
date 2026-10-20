@@ -10,7 +10,7 @@
 #include "base/functional/callback_helpers.h"
 #include "base/test/gmock_callback_support.h"
 #include "base/test/mock_callback.h"
-#include "components/autofill/core/common/autofill_test_utils.h"
+#include "components/autofill/core/common/autofill_test_util.h"
 #include "components/autofill/core/common/form_data.h"
 #include "components/autofill/core/common/mojom/autofill_types.mojom.h"
 #include "components/autofill/core/common/password_form_fill_data.h"
@@ -21,6 +21,7 @@
 #include "components/password_manager/core/common/password_manager_features.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "url/origin.h"
 
 namespace {
 
@@ -43,12 +44,15 @@ struct MockPasswordManagerDriver : password_manager::StubPasswordManagerDriver {
                base::OnceCallback<void(bool)>),
               (override));
   MOCK_METHOD(void, TriggerFormSubmission, (), (override));
-  MOCK_METHOD(const GURL&, GetLastCommittedURL, (), (const override));
+  MOCK_METHOD(const GURL&, GetLastCommittedURL, (), (const, override));
+  MOCK_METHOD(const url::Origin&,
+              GetLastCommittedOrigin,
+              (),
+              (const, override));
 };
 
 enum class FormFieldFocusabilityType {
   kFocusableInput,
-  kFocusableCheckbox,
   kNonFocusableInput,
 };
 
@@ -127,14 +131,6 @@ const std::vector<PasswordCredentialFillerV2ParameterTestParam>
          .username_field_index = 0,
          .password_field_index = 2,
          .submission_readiness = SubmissionReadinessState::kTwoFields},
-        // There is a checkbox field after the password field.
-        {.focusability_vector = {FormFieldFocusabilityType::kFocusableInput,
-                                 FormFieldFocusabilityType::kFocusableInput,
-                                 FormFieldFocusabilityType::kFocusableCheckbox},
-         .has_captcha = false,
-         .username_field_index = 0,
-         .password_field_index = 1,
-         .submission_readiness = SubmissionReadinessState::kTwoFields},
         // There is a CAPTCHA within the form
         {.focusability_vector = {FormFieldFocusabilityType::kFocusableInput,
                                  FormFieldFocusabilityType::kFocusableInput},
@@ -149,6 +145,8 @@ class PasswordCredentialFillerBaseTest : public testing::Test {
   void SetUp() override {
     ON_CALL(driver_, GetLastCommittedURL())
         .WillByDefault(ReturnRefOfCopy(GURL(kExampleCom)));
+    ON_CALL(driver_, GetLastCommittedOrigin())
+        .WillByDefault(ReturnRefOfCopy(url::Origin::Create(GURL(kExampleCom))));
   }
 
   MockPasswordManagerDriver& driver() { return driver_; }
@@ -165,13 +163,9 @@ class PasswordCredentialFillerBaseTest : public testing::Test {
           FormFieldData field;
           field.set_host_frame(form.host_frame());
           field.set_renderer_id(autofill::test::MakeFieldRendererId());
-          field.set_is_focusable(
-              (type == FormFieldFocusabilityType::kFocusableInput ||
-               type == FormFieldFocusabilityType::kFocusableCheckbox));
-          field.set_form_control_type(
-              (type == FormFieldFocusabilityType::kFocusableCheckbox)
-                  ? autofill::FormControlType::kInputCheckbox
-                  : autofill::FormControlType::kInputText);
+          field.set_is_focusable(type ==
+                                 FormFieldFocusabilityType::kFocusableInput);
+          field.set_form_control_type(autofill::FormControlType::kInputText);
           return field;
         }));
     // CAPTCHA is most often incapsulated into a separate iframe on the page. We
@@ -224,6 +218,23 @@ TEST_F(PasswordCredentialFillerBaseTest, FillWithNullDriver) {
                                                /*password_field_index=*/0));
   // Should not crash.
   filler.FillUsernameAndPassword(kUsername, kPassword, base::DoNothing());
+}
+
+TEST_F(PasswordCredentialFillerBaseTest, GetFrameOrigin) {
+  PasswordCredentialFillerImpl filler(
+      driver().AsWeakPtr(),
+      CreatePasswordSuggestionRequest({}, /*has_captcha=*/false,
+                                      /*username_field_index=*/0,
+                                      /*password_field_index=*/0));
+  EXPECT_EQ(filler.GetFrameOrigin(), url::Origin::Create(GURL(kExampleCom)));
+}
+
+TEST_F(PasswordCredentialFillerBaseTest, GetFrameOriginWithNullDriver) {
+  PasswordCredentialFillerImpl filler(
+      nullptr, CreatePasswordSuggestionRequest({}, /*has_captcha=*/false,
+                                               /*username_field_index=*/0,
+                                               /*password_field_index=*/0));
+  EXPECT_TRUE(filler.GetFrameOrigin().opaque());
 }
 
 class PasswordCredentialFillerV2ParameterTest

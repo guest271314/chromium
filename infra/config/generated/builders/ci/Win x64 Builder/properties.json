@@ -98,7 +98,7 @@
           {
             "builder_id": {
               "bucket": "ci",
-              "builder": "win-webium-product-rel",
+              "builder": "windows-no-initial-webui-rel",
               "project": "chromium"
             },
             "builder_spec": {
@@ -148,7 +148,7 @@
         },
         {
           "bucket": "ci",
-          "builder": "win-webium-product-rel",
+          "builder": "windows-no-initial-webui-rel",
           "project": "chromium"
         }
       ],
@@ -163,6 +163,10 @@
         },
         {
           "builder": "win_chromium_x64_rel_ng",
+          "group": "tryserver.chromium.win"
+        },
+        {
+          "builder": "windows-no-initial-webui-rel",
           "group": "tryserver.chromium.win"
         }
       ],

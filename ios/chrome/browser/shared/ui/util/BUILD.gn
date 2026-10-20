@@ -20,6 +20,8 @@ source_set("util") {
     "date_localized_util.mm",
     "file_size_util.h",
     "file_size_util.mm",
+    "layout_constants.h",
+    "layout_constants.mm",
     "layout_guide_names.h",
     "layout_guide_names.mm",
     "named_guide.h",
@@ -32,8 +34,6 @@ source_set("util") {
     "pasteboard_util.mm",
     "property_animator_group.h",
     "property_animator_group.mm",
-    "reversed_animation.h",
-    "reversed_animation.mm",
     "rtl_geometry.h",
     "rtl_geometry.mm",
     "top_view_controller.h",
@@ -71,6 +71,7 @@ source_set("util") {
   frameworks = [
     "Accelerate.framework",
     "CoreGraphics.framework",
+    "CoreImage.framework",
     "QuartzCore.framework",
     "UniformTypeIdentifiers.framework",
   ]
@@ -128,8 +129,9 @@ source_set("omnibox_util") {
     "//base",
     "//components/resources:terms_resources",
     "//ios/chrome/app/strings",
-    "//ios/chrome/browser/omnibox/model/omnibox_position",
     "//ios/chrome/browser/shared/coordinator/layout_guide",
+    "//ios/chrome/browser/shared/coordinator/scene:scene_state_header",
+    "//ios/chrome/browser/shared/coordinator/scene/state",
     "//ios/chrome/browser/shared/model/browser",
     "//ui/base",
     "//url",
@@ -152,7 +154,6 @@ source_set("unit_tests") {
     "named_guide_unittest.mm",
     "optional_property_animator_unittest.mm",
     "pasteboard_util_unittest.mm",
-    "rtl_geometry_unittest.mm",
     "terms_util_unittest.mm",
     "ui_view_controller_with_display_tracing_unittest.mm",
     "uikit_ui_util_unittest.mm",
@@ -172,15 +173,20 @@ source_set("unit_tests") {
     "//ui/base",
     "//url",
   ]
+  frameworks = [ "CoreImage.framework" ]
 }
 
 source_set("eg2_tests") {
   configs += [ "//build/config/ios:xctest_config" ]
   testonly = true
-  sources = [ "omnibox_util_egtest.mm" ]
+  sources = [
+    "multitasking_window_egtest.mm",
+    "omnibox_util_egtest.mm",
+  ]
   deps = [
     "//components/omnibox/browser:pref_names",
     "//ios/chrome/browser/shared/model/prefs:pref_names",
+    "//ios/chrome/browser/shared/public/features",
     "//ios/chrome/test/earl_grey:eg_test_support+eg2",
     "//ios/testing/earl_grey:eg_test_support+eg2",
     "//net:test_support",

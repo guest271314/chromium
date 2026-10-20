@@ -25,6 +25,7 @@
 #include "remoting/host/desktop_display_info_monitor.h"
 #include "remoting/host/desktop_environment.h"
 #include "remoting/host/fake_active_display_monitor.h"
+#include "remoting/host/fake_agent_integration_configurator.h"
 #include "remoting/host/fake_keyboard_layout_monitor.h"
 #include "remoting/host/fake_mouse_cursor_monitor.h"
 #include "remoting/host/file_transfer/file_operations.h"
@@ -83,10 +84,16 @@ FakeScreenControls::~FakeScreenControls() = default;
 
 void FakeScreenControls::SetScreenResolution(
     const ScreenResolution& resolution,
-    std::optional<webrtc::ScreenId> screen_id) {}
+    std::optional<webrtc::ScreenId> screen_id) {
+  last_resolution_ = resolution;
+  set_resolution_called_ = true;
+}
 
 void FakeScreenControls::SetVideoLayout(
-    const protocol::VideoLayout& video_layout) {}
+    const protocol::VideoLayout& video_layout) {
+  last_video_layout_ = video_layout;
+  set_video_layout_called_ = true;
+}
 
 FakeDesktopEnvironment::FakeDesktopEnvironment(
     scoped_refptr<base::SingleThreadTaskRunner> capture_thread,
@@ -111,7 +118,9 @@ std::unique_ptr<InputInjector> FakeDesktopEnvironment::CreateInputInjector() {
 }
 
 std::unique_ptr<ScreenControls> FakeDesktopEnvironment::CreateScreenControls() {
-  return std::make_unique<FakeScreenControls>();
+  auto result = std::make_unique<FakeScreenControls>();
+  last_screen_controls_ = result->GetWeakPtr();
+  return result;
 }
 
 std::unique_ptr<DesktopCapturer> FakeDesktopEnvironment::CreateVideoCapturer(
@@ -156,6 +165,11 @@ std::unique_ptr<FileOperations> FakeDesktopEnvironment::CreateFileOperations() {
 std::unique_ptr<UrlForwarderConfigurator>
 FakeDesktopEnvironment::CreateUrlForwarderConfigurator() {
   return std::make_unique<FakeUrlForwarderConfigurator>();
+}
+
+std::unique_ptr<AgentIntegrationConfigurator>
+FakeDesktopEnvironment::CreateAgentIntegrationConfigurator() {
+  return std::make_unique<FakeAgentIntegrationConfigurator>();
 }
 
 std::string FakeDesktopEnvironment::GetCapabilities() const {

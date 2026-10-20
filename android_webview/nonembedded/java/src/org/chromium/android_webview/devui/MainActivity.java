@@ -68,9 +68,8 @@ public class MainActivity extends FragmentActivity {
     public static final int FRAGMENT_ID_HOME = 0;
     public static final int FRAGMENT_ID_CRASHES = 1;
     public static final int FRAGMENT_ID_FLAGS = 2;
-    public static final int FRAGMENT_ID_COMPONENTS = 3;
-    public static final int FRAGMENT_ID_SAFEMODE = 4;
-    public static final int FRAGMENT_ID_NETLOGS = 5;
+    public static final int FRAGMENT_ID_SAFEMODE = 3;
+    public static final int FRAGMENT_ID_NETLOGS = 4;
 
     // These values are persisted to logs. Entries should not be renumbered and
     // numeric values should never be reused.
@@ -80,8 +79,6 @@ public class MainActivity extends FragmentActivity {
         MenuChoice.CHECK_UPDATES,
         MenuChoice.CRASHES_REFRESH,
         MenuChoice.ABOUT_DEVTOOLS,
-        MenuChoice.COMPONENTS_UI,
-        MenuChoice.COMPONENTS_UPDATE,
         MenuChoice.SAFEMODE_UI
     })
     public @interface MenuChoice {
@@ -90,8 +87,8 @@ public class MainActivity extends FragmentActivity {
         int CHECK_UPDATES = 2;
         int CRASHES_REFRESH = 3;
         int ABOUT_DEVTOOLS = 4;
-        int COMPONENTS_UI = 5;
-        int COMPONENTS_UPDATE = 6;
+        // int COMPONENTS_UI = 5;  // Component updater has been removed
+        // int COMPONENTS_UPDATE = 6;  // Component updater has been removed
         int SAFEMODE_UI = 7;
         int COUNT = 8;
     }
@@ -107,7 +104,6 @@ public class MainActivity extends FragmentActivity {
         FragmentNavigation.HOME_FRAGMENT,
         FragmentNavigation.CRASHES_LIST_FRAGMENT,
         FragmentNavigation.FLAGS_FRAGMENT,
-        FragmentNavigation.COMPONENTS_LIST_FRAGMENT,
         FragmentNavigation.SAFEMODE_FRAGMENT,
         FragmentNavigation.NETLOGS_FRAGMENT
     })
@@ -115,7 +111,7 @@ public class MainActivity extends FragmentActivity {
         int HOME_FRAGMENT = 0;
         int CRASHES_LIST_FRAGMENT = 1;
         int FLAGS_FRAGMENT = 2;
-        int COMPONENTS_LIST_FRAGMENT = 3;
+        // int COMPONENTS_LIST_FRAGMENT = 3;  // Component updater has been removed
         int SAFEMODE_FRAGMENT = 4;
         int NETLOGS_FRAGMENT = 5;
         int COUNT = 6;
@@ -153,9 +149,6 @@ public class MainActivity extends FragmentActivity {
                 break;
             case FRAGMENT_ID_FLAGS:
                 sample = FragmentNavigation.FLAGS_FRAGMENT;
-                break;
-            case FRAGMENT_ID_COMPONENTS:
-                sample = FragmentNavigation.COMPONENTS_LIST_FRAGMENT;
                 break;
             case FRAGMENT_ID_SAFEMODE:
                 sample = FragmentNavigation.SAFEMODE_FRAGMENT;
@@ -285,9 +278,6 @@ public class MainActivity extends FragmentActivity {
                 }
                 // Enable the UI if we don't need a permission check
                 fragment = new FlagsFragment(!needPermissionCheck, shouldResetFlags);
-                break;
-            case FRAGMENT_ID_COMPONENTS:
-                fragment = new ComponentsListFragment();
                 break;
             case FRAGMENT_ID_SAFEMODE:
                 fragment = new SafeModeFragment();
@@ -450,12 +440,6 @@ public class MainActivity extends FragmentActivity {
                     new Intent(Intent.ACTION_VIEW, uri),
                     SafeIntentUtils.NO_BROWSER_FOUND_ERROR);
             return true;
-            // Component updater is disabled and the menu option is hidden for now;
-            // see crbug.com/438310407
-            // } else if (item.getItemId() == R.id.options_menu_components) {
-            //     logMenuSelection(MenuChoice.COMPONENTS_UI);
-            //     switchFragment(FRAGMENT_ID_COMPONENTS, false);
-            //     return true;
         } else if (item.getItemId() == R.id.options_menu_safe_mode) {
             logMenuSelection(MenuChoice.SAFEMODE_UI);
             switchFragment(FRAGMENT_ID_SAFEMODE, false);

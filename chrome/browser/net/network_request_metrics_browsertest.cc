@@ -14,11 +14,12 @@
 #include "base/task/sequenced_task_runner.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/threading/thread_restrictions.h"
+#include "build/build_config.h"
 #include "chrome/browser/download/download_prefs.h"
 #include "chrome/browser/predictors/loading_predictor_config.h"
 #include "chrome/browser/preloading/scoped_prewarm_feature_list.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/omnibox/omnibox_next_features.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/ui_features.h"
@@ -93,6 +94,7 @@ class WaitForMainFrameResourceObserver : public content::WebContentsObserver {
   void ResourceLoadComplete(
       RenderFrameHost* render_frame_host,
       const content::GlobalRequestID& request_id,
+      const GURL& original_url,
       const blink::mojom::ResourceLoadInfo& resource_load_info) override {
     EXPECT_EQ(network::mojom::RequestDestination::kDocument,
               resource_load_info.request_destination);
@@ -113,14 +115,13 @@ class NetworkRequestMetricsBrowserTest
       public testing::WithParamInterface<RequestType> {
  public:
   NetworkRequestMetricsBrowserTest() {
-    // TODO(crbug.com/452061489, crbug.com/444358999): Remove
-    // `scoped_feature_list_` when these features are enabled in
-    // fieldtrial_testing_config.json or tip of tree.
+    // Disable InitialWebUI and WebUI Omnibox Popup features to prevent
+    // background preloaded WebUI navigations from flakily recording extra
+    // samples in the test's histograms.
     scoped_feature_list_.InitWithFeatures(
-        {features::kInitialWebUI, features::kWebUIReloadButton,
-         omnibox::internal::kWebUIOmniboxPopup,
-         omnibox::internal::kWebUIOmniboxAimPopup},
-        {});
+        {}, {features::kInitialWebUI, features::kWebUIReloadButton,
+             omnibox::internal::kWebUIOmniboxPopup,
+             omnibox::internal::kWebUIOmniboxAimPopup});
   }
   ~NetworkRequestMetricsBrowserTest() override = default;
 
@@ -314,10 +315,8 @@ class NetworkRequestMetricsBrowserTest
       // TODO(crbug.com/444358999): we need to exclude the resource load metric
       // for the initial web UI. This might be removed after the initial web UI
       // metrics are separated from the rest.
-      if ((features::IsWebUIToolbarEnabled() ||
-           base::FeatureList::IsEnabled(
-               features::kWebUIToolbarProcessOverheadExperiment)) &&
-          !found_resource_load && bucket.count > 0 && bucket.min == -net::OK) {
+      if (features::IsWebUIToolbarEnabled() && !found_resource_load &&
+          bucket.count > 0 && bucket.min == -net::OK) {
         found_resource_load = true;
         bucket.count--;
       }
@@ -419,7 +418,7 @@ IN_PROC_BROWSER_TEST_P(NetworkRequestMetricsBrowserTest, CancelDuringBody) {
 
   // Unfortunately, there's no way to ensure that the body has partially been
   // received, so can only wait and hope. If the partial body hasn't been
-  // recieved by the time Stop() is called, the test should still pass, however.
+  // received by the time Stop() is called, the test should still pass, however.
   base::RunLoop run_loop;
   base::SequencedTaskRunner::GetCurrentDefault()->PostDelayedTask(
       FROM_HERE, run_loop.QuitClosure(), base::Seconds(1));
@@ -444,15 +443,22 @@ IN_PROC_BROWSER_TEST_P(NetworkRequestMetricsBrowserTest,
   CheckHistogramsAfterMainFrameInterruption();
 }
 
+// TODO(crbug.com/520427873): This bug is flaky on ChromeOS most likely due to
+// the comment above the PostTask. Deflake before re-enabling.
+#if BUILDFLAG(IS_CHROMEOS)
+#define MAYBE_InterruptedCancelDuringBody DISABLED_InterruptedCancelDuringBody
+#else
+#define MAYBE_InterruptedCancelDuringBody InterruptedCancelDuringBody
+#endif
 IN_PROC_BROWSER_TEST_P(NetworkRequestMetricsBrowserTest,
-                       InterruptedCancelDuringBody) {
+                       MAYBE_InterruptedCancelDuringBody) {
   TestNavigationObserver navigation_observer(active_web_contents(), 1);
   StartNavigatingAndWaitForRequest();
   SendHeadersPartialBody();
 
   // Unfortunately, there's no way to ensure that the body has partially been
   // received, so can only wait and hope. If the partial body hasn't been
-  // recieved by the time Stop() is called, the test should still pass, however.
+  // received by the time Stop() is called, the test should still pass, however.
   base::RunLoop run_loop;
   base::SequencedTaskRunner::GetCurrentDefault()->PostDelayedTask(
       FROM_HERE, run_loop.QuitClosure(), base::Seconds(1));
@@ -497,16 +503,16 @@ IN_PROC_BROWSER_TEST_P(NetworkRequestMetricsBrowserTest, Download) {
     return;
   }
 
-  browser()->profile()->GetPrefs()->SetInteger(
+  browser()->GetProfile()->GetPrefs()->SetInteger(
       policy::policy_prefs::kDownloadRestrictions,
       static_cast<int>(policy::DownloadRestriction::ALL_FILES));
-  browser()->profile()->GetPrefs()->SetBoolean(prefs::kPromptForDownload,
-                                               false);
+  browser()->GetProfile()->GetPrefs()->SetBoolean(prefs::kPromptForDownload,
+                                                  false);
 
   // Need this to wait for the download to be fully cancelled to avoid a
   // confirmation prompt on quit.
   DownloadTestObserverTerminal download_test_observer_terminal(
-      browser()->profile()->GetDownloadManager(), 1,
+      browser()->GetProfile()->GetDownloadManager(), 1,
       DownloadTestObserver::ON_DANGEROUS_DOWNLOAD_IGNORE);
 
   TestNavigationObserver navigation_observer(active_web_contents(), 1);
@@ -558,10 +564,8 @@ IN_PROC_BROWSER_TEST_P(NetworkRequestMetricsBrowserTest, Download) {
     // TODO(crbug.com/444358999): we need to exclude the resource load metric
     // for the initial web UI. This might be removed after the initial web UI
     // metrics are separated from the rest.
-    if ((features::IsWebUIToolbarEnabled() ||
-         base::FeatureList::IsEnabled(
-             features::kWebUIToolbarProcessOverheadExperiment)) &&
-        !found_resource_load && bucket.count > 0 && bucket.min == -net::OK) {
+    if (features::IsWebUIToolbarEnabled() && !found_resource_load &&
+        bucket.count > 0 && bucket.min == -net::OK) {
       found_resource_load = true;
       bucket.count--;
     }

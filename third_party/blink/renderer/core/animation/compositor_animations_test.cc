@@ -36,6 +36,7 @@
 
 #include "base/auto_reset.h"
 #include "base/memory/ptr_util.h"
+#include "base/memory/raw_ptr.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/strings/stringprintf.h"
 #include "cc/animation/animation.h"
@@ -55,6 +56,7 @@
 #include "third_party/blink/renderer/bindings/core/v8/v8_union_cssnumericvalue_string_unrestricteddouble.h"
 #include "third_party/blink/renderer/core/animation/animation.h"
 #include "third_party/blink/renderer/core/animation/animation_clock.h"
+#include "third_party/blink/renderer/core/animation/compositing/specific_compositing_decision.h"
 #include "third_party/blink/renderer/core/animation/css/compositor_keyframe_double.h"
 #include "third_party/blink/renderer/core/animation/document_animations.h"
 #include "third_party/blink/renderer/core/animation/document_timeline.h"
@@ -73,6 +75,7 @@
 #include "third_party/blink/renderer/core/css/resolver/style_resolver.h"
 #include "third_party/blink/renderer/core/dom/document.h"
 #include "third_party/blink/renderer/core/dom/dom_token_list.h"
+#include "third_party/blink/renderer/core/dom/static_node_list.h"
 #include "third_party/blink/renderer/core/execution_context/agent.h"
 #include "third_party/blink/renderer/core/execution_context/security_context.h"
 #include "third_party/blink/renderer/core/frame/frame_test_helpers.h"
@@ -86,6 +89,7 @@
 #include "third_party/blink/renderer/core/style/style_generated_image.h"
 #include "third_party/blink/renderer/core/svg/svg_element.h"
 #include "third_party/blink/renderer/core/svg/svg_length.h"
+#include "third_party/blink/renderer/core/svg/svg_use_element.h"
 #include "third_party/blink/renderer/core/testing/color_scheme_helper.h"
 #include "third_party/blink/renderer/core/testing/core_unit_test_helper.h"
 #include "third_party/blink/renderer/core/testing/dummy_page_holder.h"
@@ -97,6 +101,7 @@
 #include "third_party/blink/renderer/platform/graphics/compositing/paint_artifact_compositor.h"
 #include "third_party/blink/renderer/platform/heap/disallow_new_wrapper.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
+#include "third_party/blink/renderer/platform/heap/heap_auto_reset.h"
 #include "third_party/blink/renderer/platform/heap/thread_state.h"
 #include "third_party/blink/renderer/platform/testing/find_cc_layer.h"
 #include "third_party/blink/renderer/platform/testing/paint_test_configurations.h"
@@ -252,22 +257,29 @@ class AnimationCompositorAnimationsTest : public PaintTestConfigurations,
   }
   CompositorAnimations::FailureReasons CheckCanStartEffectOnCompositor(
       const Timing& timing,
-      const Element& element,
-      const Animation* animation,
-      const EffectModel& effect_model,
-      PropertyHandleSet* unsupported_properties_for_tracing = nullptr) {
+      Element& element,
+      Animation* animation,
+      const EffectModel& effect_model) {
+    // Stands in for attaching an animation to `element`.
+    element.EnsureElementAnimations();
     const PaintArtifactCompositor* paint_artifact_compositor =
         GetDocument().View()->GetPaintArtifactCompositor();
+    AnimationCompositingDecisionState empty_state;
+    AnimationCompositingDecisionState& state =
+        animation ? animation->GetCompositingDecisionState() : empty_state;
+    state.disposition = CompositorAnimations::kNoFailure;
     return CompositorAnimations::CheckCanStartEffectOnCompositor(
-        timing, NormalizedTiming(timing), element, animation, effect_model,
-        paint_artifact_compositor, 1, unsupported_properties_for_tracing);
+        timing, NormalizedTiming(timing), element, animation, state,
+        effect_model, paint_artifact_compositor, 1.0);
   }
 
   CompositorAnimations::FailureReasons CheckCanStartElementOnCompositor(
       const Element& element,
       const EffectModel& model) {
-    return CompositorAnimations::CheckCanStartElementOnCompositor(element,
-                                                                  model);
+    AnimationCompositingDecisionState empty_state;
+    empty_state.disposition = CompositorAnimations::kNoFailure;
+    return CompositorAnimations::CheckCanStartElementOnCompositor(
+        element, model, empty_state);
   }
 
   void GetAnimationOnCompositor(
@@ -685,6 +697,63 @@ class LayoutObjectProxy : public LayoutObject {
 
 INSTANTIATE_PAINT_TEST_SUITE_P(AnimationCompositorAnimationsTest);
 
+// This test guards against one case of crbug.com/40061259. This test passes so
+// long as it doesn't crash.
+TEST_P(AnimationCompositorAnimationsTest,
+       NestedBackdropFilterInWillChangeContentsSubtree) {
+  SetBodyInnerHTML(R"HTML(
+    <!DOCTYPE html>
+    <style>
+      #grandparent {
+        will-change: contents;
+      }
+      #parent {
+        width: 400px;
+        height: 400px;
+        background-color: green;
+      }
+      #parent.animation {
+        animation: myanim linear 2s;
+      }
+      #child {
+        backdrop-filter: invert(1);
+        width: 200px;
+        height: 200px;
+      }
+      @keyframes myanim {
+        0% {
+          translate: 10px 10px;
+          opacity: 1;
+        }
+        100% {
+          translate: 0px 0px;
+          opacity: 0;
+        }
+      }
+    </style>
+    <div id="grandparent">
+      <div id="parent">
+        <div id="child">
+        </div>
+      </div>
+    </div>
+  )HTML");
+  Element* target = GetDocument().getElementById(AtomicString("parent"));
+  target->setAttribute(html_names::kClassAttr, AtomicString("animation"));
+
+  UpdateAllLifecyclePhasesForTest();
+
+  ElementAnimations* ea = target->GetElementAnimations();
+  EXPECT_TRUE(ea);
+  EXPECT_EQ(ea->Animations().size(), 1u);
+  Animation* anim = ea->Animations().begin()->key;
+
+  EXPECT_NE(anim->CheckCanStartAnimationOnCompositor(
+                GetDocument().View()->GetPaintArtifactCompositor(),
+                StartOnCompositorReason::kGeneric),
+            CompositorAnimations::kNoFailure);
+}
+
 TEST_P(AnimationCompositorAnimationsTest,
        CanStartEffectOnCompositorKeyframeMultipleCSSProperties) {
   StringKeyframeVector supported_mixed_keyframe_vector;
@@ -767,7 +836,6 @@ TEST_P(AnimationCompositorAnimationsTest,
 
 TEST_P(AnimationCompositorAnimationsTest,
        CanStartEffectOnCompositorCustomCssProperty) {
-  ScopedOffMainThreadCSSPaintForTest off_main_thread_css_paint(true);
   RegisterProperty(GetDocument(), "--foo", "<number>", "0", false);
   RegisterProperty(GetDocument(), "--bar", "<length>", "10px", false);
   RegisterProperty(GetDocument(), "--loo", "<color>", "rgb(0, 0, 0)", false);
@@ -800,7 +868,7 @@ TEST_P(AnimationCompositorAnimationsTest,
 
   NiceMock<MockCSSPaintImageGenerator>* mock_generator =
       MakeGarbageCollected<NiceMock<MockCSSPaintImageGenerator>>();
-  base::AutoReset<MockCSSPaintImageGenerator*> scoped_override_generator(
+  HeapAutoReset<MockCSSPaintImageGenerator> scoped_override_generator(
       &g_override_generator, mock_generator);
   base::AutoReset<CSSPaintImageGenerator::CSSPaintImageGeneratorCreateFunction>
       scoped_create_function(
@@ -817,11 +885,12 @@ TEST_P(AnimationCompositorAnimationsTest,
   CSSPaintValue* paint_value = MakeGarbageCollected<CSSPaintValue>(ident);
   paint_value->CreateGeneratorForTesting(GetDocument());
   StyleGeneratedImage* style_image = MakeGarbageCollected<StyleGeneratedImage>(
-      *paint_value, StyleGeneratedImage::ContainerSizes());
+      *paint_value, StyleGeneratedImage::ContainerSizes(),
+      StyleGeneratedImage::ViewportSize());
 
   ComputedStyleBuilder builder(*style);
   builder.AddPaintImage(style_image);
-  element_->GetLayoutObject()->SetStyle(builder.TakeStyle());
+  element_->GetLayoutObject()->SetStyle(*builder.TakeStyle());
 
   // The image is added for testing off-thread paint worklet supporting
   // custom property animation case. The style doesn't have a real
@@ -860,6 +929,9 @@ TEST_P(AnimationCompositorAnimationsTest,
 
   // Cannot composite due to side effect.
   SetCustomProperty("opacity", "var(--foo)");
+  // We can't run lifecycle, so we clear the needs recalc flag to avoid
+  // kAnimationHasNoVisibleChange.
+  element_->ClearNeedsStyleRecalc();
   EXPECT_TRUE(
       CreateKeyframeListAndTestIsCandidateOnResult(keyframe1, keyframe2) &
       CompositorAnimations::kUnsupportedCSSProperty);
@@ -882,6 +954,9 @@ TEST_P(AnimationCompositorAnimationsTest,
   // Implicitly initial values are not supported when the property
   // has been referenced.
   SetCustomProperty("opacity", "var(--z)");
+  // Again, clear flag to avoid kAnimationHasNoVisibleChange.
+  element_->ClearNeedsStyleRecalc();
+
   StringKeyframe* z_keyframe = CreateReplaceOpKeyframe("--z", "1000", 1);
   StringKeyframeVector keyframe_vector2;
   keyframe_vector2.push_back(z_keyframe);
@@ -1119,9 +1194,7 @@ TEST_P(AnimationCompositorAnimationsTest,
   auto* keyframe_effect1 =
       MakeGarbageCollected<KeyframeEffect>(element_, animation_effect, timing);
   Animation* animation = timeline_->Play(keyframe_effect1);
-  const auto& style = GetDocument().GetStyleResolver().InitialStyle();
-  animation_effect->SnapshotAllCompositorKeyframesIfNecessary(*element_.Get(),
-                                                              style, nullptr);
+  UpdateAllLifecyclePhasesForTest();
 
   // Now we can check that we are set up correctly.
   EXPECT_EQ(CheckCanStartEffectOnCompositor(timing, *element_.Get(), animation,
@@ -1133,6 +1206,7 @@ TEST_P(AnimationCompositorAnimationsTest,
                                             *animation_effect),
             CompositorAnimations::kNoFailure);
   timing.end_delay = Timing::Delay(ANIMATION_TIME_DELTA_FROM_SECONDS(1.0));
+  UpdateAllLifecyclePhasesForTest();
   EXPECT_TRUE(CheckCanStartEffectOnCompositor(timing, *element_.Get(),
                                               animation, *animation_effect) &
               CompositorAnimations::kEffectHasUnsupportedTimingParameters);
@@ -1266,11 +1340,14 @@ TEST_P(AnimationCompositorAnimationsTest, CheckCanStartForceReduceMotion) {
   auto* keyframe_effect =
       MakeGarbageCollected<KeyframeEffect>(element_, effect, timing);
   Animation* animation = timeline_->Play(keyframe_effect);
+  UpdateAllLifecyclePhasesForTest();
+
   // The animation should not run on the compositor since we are forcing reduced
   // motion.
-  EXPECT_NE(CheckCanStartEffectOnCompositor(timing_, *element_.Get(), animation,
-                                            *effect),
-            CompositorAnimations::kNoFailure);
+  EXPECT_EQ(CheckCanStartEffectOnCompositor(timing_, *element_.Get(), animation,
+                                            *effect) |
+                CheckCanStartElementOnCompositor(*element_.Get(), *effect),
+            CompositorAnimations::kAcceleratedAnimationsDisabled);
 }
 
 TEST_P(AnimationCompositorAnimationsTest,
@@ -1361,9 +1438,7 @@ TEST_P(AnimationCompositorAnimationsTest,
       MakeGarbageCollected<KeyframeEffect>(element_.Get(), effect1, timing_);
 
   Animation* animation1 = timeline_->Play(keyframe_effect1);
-  const auto& style = GetDocument().GetStyleResolver().InitialStyle();
-  effect1->SnapshotAllCompositorKeyframesIfNecessary(*element_.Get(), style,
-                                                     nullptr);
+  UpdateAllLifecyclePhasesForTest();
 
   // Now we can check that we are set up correctly.
   EXPECT_EQ(CheckCanStartEffectOnCompositor(timing_, *element_.Get(),
@@ -1379,8 +1454,7 @@ TEST_P(AnimationCompositorAnimationsTest,
       MakeGarbageCollected<KeyframeEffect>(element_.Get(), effect2, timing_);
 
   Animation* animation2 = timeline_->Play(keyframe_effect2);
-  effect2->SnapshotAllCompositorKeyframesIfNecessary(*element_.Get(), style,
-                                                     nullptr);
+  UpdateAllLifecyclePhasesForTest();
   EXPECT_TRUE(CheckCanStartEffectOnCompositor(timing_, *element_.Get(),
                                               animation2, *effect2) &
               CompositorAnimations::kFilterRelatedPropertyMayMovePixels);
@@ -1425,16 +1499,19 @@ TEST_P(AnimationCompositorAnimationsTest,
       MakeGarbageCollected<KeyframeEffect>(element_.Get(), effect1, timing_);
 
   Animation* animation1 = timeline_->Play(keyframe_effect1);
+  AnimationCompositingDecisionState& state =
+      animation1->GetCompositingDecisionState();
+  state.Reset(true);
   effect1->SnapshotAllCompositorKeyframesIfNecessary(*element_.Get(), style,
                                                      nullptr);
 
   // Make sure supported properties do not register a failure
-  PropertyHandleSet unsupported_properties_for_tracing1;
-  EXPECT_EQ(CheckCanStartEffectOnCompositor(
-                timing_, *inline_.Get(), animation1, *effect1,
-                &unsupported_properties_for_tracing1),
+  EXPECT_EQ(CheckCanStartEffectOnCompositor(timing_, *inline_.Get(), animation1,
+                                            *effect1),
             CompositorAnimations::kNoFailure);
-  EXPECT_TRUE(unsupported_properties_for_tracing1.empty());
+  EXPECT_EQ(state.specific_reasons->Map().find(
+                SpecificCompositingDecision::kUnsupportedPropertyName),
+            state.specific_reasons->Map().end());
 
   StringKeyframeEffectModel* effect2 = CreateKeyframeEffectModel(
       CreateReplaceOpKeyframe(CSSPropertyID::kHeight, "100px", 0),
@@ -1444,19 +1521,21 @@ TEST_P(AnimationCompositorAnimationsTest,
       MakeGarbageCollected<KeyframeEffect>(element_.Get(), effect2, timing_);
 
   Animation* animation2 = timeline_->Play(keyframe_effect2);
-  effect1->SnapshotAllCompositorKeyframesIfNecessary(*element_.Get(), style,
+  AnimationCompositingDecisionState& state2 =
+      animation2->GetCompositingDecisionState();
+  state2.Reset(true);
+  effect2->SnapshotAllCompositorKeyframesIfNecessary(*element_.Get(), style,
                                                      nullptr);
 
   // Make sure unsupported properties are reported
-  PropertyHandleSet unsupported_properties_for_tracing2;
-  EXPECT_TRUE(CheckCanStartEffectOnCompositor(
-                  timing_, *inline_.Get(), animation2, *effect2,
-                  &unsupported_properties_for_tracing2) &
-              CompositorAnimations::kUnsupportedCSSProperty);
-  EXPECT_EQ(unsupported_properties_for_tracing2.size(), 1U);
-  EXPECT_EQ(unsupported_properties_for_tracing2.begin()
-                ->GetCSSPropertyName()
-                .ToAtomicString(),
+  EXPECT_EQ(CheckCanStartEffectOnCompositor(timing_, *inline_.Get(), animation2,
+                                            *effect2),
+            CompositorAnimations::kUnsupportedCSSProperty);
+  auto it = state2.specific_reasons->Map().find(
+      SpecificCompositingDecision::kUnsupportedPropertyName);
+  ASSERT_NE(it, state2.specific_reasons->Map().end());
+  ASSERT_EQ(it->value.size(), 1U);
+  EXPECT_EQ(it->value.front().property->GetCSSPropertyName().ToAtomicString(),
             "height");
 
   StringKeyframeEffectModel* effect3 =
@@ -1477,19 +1556,21 @@ TEST_P(AnimationCompositorAnimationsTest,
       MakeGarbageCollected<KeyframeEffect>(element_.Get(), effect3, timing_);
 
   Animation* animation3 = timeline_->Play(keyframe_effect3);
-  effect1->SnapshotAllCompositorKeyframesIfNecessary(*element_.Get(), style,
+  AnimationCompositingDecisionState& state3 =
+      animation3->GetCompositingDecisionState();
+  state3.Reset(true);
+  effect3->SnapshotAllCompositorKeyframesIfNecessary(*element_.Get(), style,
                                                      nullptr);
 
-  // Make sure only the unsupported properties are reported
-  PropertyHandleSet unsupported_properties_for_tracing3;
-  EXPECT_TRUE(CheckCanStartEffectOnCompositor(
-                  timing_, *inline_.Get(), animation3, *effect3,
-                  &unsupported_properties_for_tracing3) &
+  // Make sure none of the supported properties are reported as unsupported
+  EXPECT_TRUE(CheckCanStartEffectOnCompositor(timing_, *inline_.Get(),
+                                              animation3, *effect3) &
               CompositorAnimations::kUnsupportedCSSProperty);
-  EXPECT_EQ(unsupported_properties_for_tracing3.size(), 1U);
-  EXPECT_EQ(unsupported_properties_for_tracing3.begin()
-                ->GetCSSPropertyName()
-                .ToAtomicString(),
+  it = state3.specific_reasons->Map().find(
+      SpecificCompositingDecision::kUnsupportedPropertyName);
+  ASSERT_NE(it, state3.specific_reasons->Map().end());
+  ASSERT_EQ(it->value.size(), 1U);
+  EXPECT_EQ(it->value.front().property->GetCSSPropertyName().ToAtomicString(),
             "height");
 }
 
@@ -1998,8 +2079,6 @@ TEST_P(AnimationCompositorAnimationsTest,
 
 TEST_P(AnimationCompositorAnimationsTest,
        CreateCustomFloatPropertyAnimationWithNonAsciiName) {
-  ScopedOffMainThreadCSSPaintForTest off_main_thread_css_paint(true);
-
   String property_name = "--東京都";
   RegisterProperty(GetDocument(), property_name, "<number>", "0", false);
   SetCustomProperty(property_name, "10");
@@ -2019,8 +2098,6 @@ TEST_P(AnimationCompositorAnimationsTest,
 
 TEST_P(AnimationCompositorAnimationsTest,
        CreateSimpleCustomFloatPropertyAnimation) {
-  ScopedOffMainThreadCSSPaintForTest off_main_thread_css_paint(true);
-
   RegisterProperty(GetDocument(), "--foo", "<number>", "0", false);
   SetCustomProperty("--foo", "10");
 
@@ -2055,8 +2132,6 @@ TEST_P(AnimationCompositorAnimationsTest,
 
 TEST_P(AnimationCompositorAnimationsTest,
        CreateSimpleCustomColorPropertyAnimation) {
-  ScopedOffMainThreadCSSPaintForTest off_main_thread_css_paint(true);
-
   RegisterProperty(GetDocument(), "--foo", "<color>", "rgb(0, 0, 0)", false);
   SetCustomProperty("--foo", "rgb(0, 0, 0)");
 
@@ -2090,8 +2165,6 @@ TEST_P(AnimationCompositorAnimationsTest,
 }
 
 TEST_P(AnimationCompositorAnimationsTest, MixedCustomPropertyAnimation) {
-  ScopedOffMainThreadCSSPaintForTest off_main_thread_css_paint(true);
-
   RegisterProperty(GetDocument(), "--foo", "<number> | <color>", "0", false);
   SetCustomProperty("--foo", "0");
 
@@ -2126,9 +2199,11 @@ TEST_P(AnimationCompositorAnimationsTest,
   const auto& style = GetDocument().GetStyleResolver().InitialStyle();
   animation_effect1->SnapshotAllCompositorKeyframesIfNecessary(*element_.Get(),
                                                                style, nullptr);
+  UpdateAllLifecyclePhasesForTest();
   EXPECT_EQ(CheckCanStartEffectOnCompositor(timing, *element_.Get(), animation1,
                                             *animation_effect1),
             CompositorAnimations::kNoFailure);
+  animation1->NotifyReady(ANIMATION_TIME_DELTA_FROM_MILLISECONDS(0));
 
   // The second animation for opacity is not ok to run on compositor.
   auto* keyframe_effect2 = MakeGarbageCollected<KeyframeEffect>(
@@ -2192,13 +2267,13 @@ TEST_P(AnimationCompositorAnimationsTest,
   // Add a transform with a compositing reason, which should allow starting
   // animation.
   UpdateDummyTransformNode(properties,
-                           CompositingReason::kActiveTransformAnimation);
+                           {CompositingReason::kActiveTransformAnimation});
   EXPECT_EQ(
       CheckCanStartElementOnCompositor(*element, *keyframe_animation_effect2_),
       CompositorAnimations::kNoFailure);
 
   // Setting to CompositingReasonNone should produce false.
-  UpdateDummyTransformNode(properties, CompositingReason::kNone);
+  UpdateDummyTransformNode(properties, {});
   EXPECT_TRUE(
       CheckCanStartElementOnCompositor(*element, *keyframe_animation_effect2_) &
       CompositorAnimations::kTargetHasInvalidCompositingState);
@@ -2228,13 +2303,13 @@ TEST_P(AnimationCompositorAnimationsTest,
   // Add an effect with a compositing reason, which should allow starting
   // animation.
   UpdateDummyEffectNode(properties,
-                        CompositingReason::kActiveTransformAnimation);
+                        {CompositingReason::kActiveTransformAnimation});
   EXPECT_EQ(
       CheckCanStartElementOnCompositor(*element, *keyframe_animation_effect2_),
       CompositorAnimations::kNoFailure);
 
   // Setting to CompositingReasonNone should produce false.
-  UpdateDummyEffectNode(properties, CompositingReason::kNone);
+  UpdateDummyEffectNode(properties, {});
   EXPECT_TRUE(
       CheckCanStartElementOnCompositor(*element, *keyframe_animation_effect2_) &
       CompositorAnimations::kTargetHasInvalidCompositingState);
@@ -2446,18 +2521,70 @@ TEST_P(AnimationCompositorAnimationsTest,
   EXPECT_TRUE(cc_transform->is_currently_animating);
 }
 
-// Regression test for https://crbug.com/781305. When we have a transform
-// animation on a SVG element, the effect can be started on compositor but the
-// element itself cannot.
 TEST_P(AnimationCompositorAnimationsTest,
-       CannotStartElementOnCompositorEffectSVG) {
+       ContentVisibilityHiddenChildElementIsNOOP) {
+  SetBodyInnerHTML(R"HTML(
+    <style>
+      body {
+        content-visibility: hidden;
+      }
+    </style>
+    <div>
+      <div id="target"></div>
+    </div>
+  )HTML");
+  UpdateAllLifecyclePhasesForTest();
+  Element* target = GetDocument().getElementById(AtomicString("target"));
+
+  // We will not get a layout object if our parent has content-visibility:
+  // hidden.
+  EXPECT_EQ(target->GetLayoutObject(), nullptr);
+
+  // Page may force layout anyway, for example by polling clientHeight in
+  // javascript, or other layout properties.
+  GetDocument().UpdateStyleAndLayoutForNode(target,
+                                            DocumentUpdateReason::kTest);
+  UpdateAllLifecyclePhasesForTest();
+
+  // Our LO will attach at this point.
+  EXPECT_NE(target->GetLayoutObject(), nullptr);
+
+  // Typical animation started by WAAPI.
+  StringKeyframeEffectModel* effect = CreateKeyframeEffectModel(
+      CreateReplaceOpKeyframe(CSSPropertyID::kOpacity, "0", 0),
+      CreateReplaceOpKeyframe(CSSPropertyID::kOpacity, "1", 1.0));
+  Timing timing;
+  timing.iteration_duration = ANIMATION_TIME_DELTA_FROM_SECONDS(2);
+  auto* keyframe_effect =
+      MakeGarbageCollected<KeyframeEffect>(element_, effect, timing);
+  Animation* animation = timeline_->Play(keyframe_effect);
+  UpdateAllLifecyclePhasesForTest();
+
+  // The animation should not start because it is no-op.
+  // TODO(clchambers): Invalid compositing state should be removed from here.
+  EXPECT_EQ(CompositorAnimations::kAnimationHasNoVisibleChange |
+                CompositorAnimations::kTargetHasInvalidCompositingState,
+            animation->CheckCanStartAnimationOnCompositor(
+                GetDocument().View()->GetPaintArtifactCompositor(),
+                StartOnCompositorReason::kGeneric));
+}
+
+TEST_P(AnimationCompositorAnimationsTest,
+       TransformsOnSVGChildrenStartOnCompositor) {
   LoadTestData("transform-animation-on-svg.html");
   Document* document = GetFrame()->GetDocument();
-  Element* target = document->getElementById(AtomicString("dots"));
-  EXPECT_TRUE(
-      CheckCanStartElementOnCompositor(*target, *keyframe_animation_effect2_) &
-      CompositorAnimations::kTargetHasInvalidCompositingState);
   EXPECT_EQ(document->Timeline().AnimationsNeedingUpdateCount(), 4u);
+  StaticElementList* rects = document->QuerySelectorAll(AtomicString("rect"));
+  for (unsigned i = 0; i < rects->length(); ++i) {
+    Element* rect = rects->item(i);
+    Animation* animation =
+        rect->GetElementAnimations()->Animations().begin()->key;
+    EXPECT_EQ(CompositorAnimations::kNoFailure,
+              animation->CheckCanStartAnimationOnCompositor(
+                  document->View()->GetPaintArtifactCompositor(),
+                  StartOnCompositorReason::kGeneric));
+    EXPECT_TRUE(animation->HasActiveAnimationsOnCompositor());
+  }
 }
 
 // Regression test for https://crbug.com/999333. We were relying on the Document
@@ -2556,7 +2683,7 @@ TEST_P(AnimationCompositorAnimationsTest,
 
   EXPECT_TRUE(CanStartAnimation("svg"));
   EXPECT_TRUE(CanStartAnimation("rect"));
-  EXPECT_FALSE(CanStartAnimation("rect-useref"));
+  EXPECT_TRUE(CanStartAnimation("rect-useref"));
   EXPECT_FALSE(CanStartAnimation("rect-smil"));
   EXPECT_FALSE(CanStartAnimation("rect-effect"));
   EXPECT_FALSE(CanStartAnimation("g-effect"));
@@ -2575,6 +2702,63 @@ TEST_P(AnimationCompositorAnimationsTest,
   EXPECT_FALSE(CanStartAnimation("rect-zoomed"));
 }
 
+TEST_P(AnimationCompositorAnimationsTest,
+       SVGUseInstancesIndependentlyAnimate) {
+  SetBodyInnerHTML(R"HTML(
+    <style>
+      @keyframes wave {
+        0% { transform: rotate(-5deg); }
+        100% { transform: rotate(5deg); }
+      }
+      .animate {
+        transform-origin: 50px 50px;
+        animation: wave 1s infinite;
+      }
+    </style>
+    <svg>
+      <g id="reference" class="animate">
+        <rect width="100" height="100"/>
+      </g>
+      <use id="use-1" href="#reference"/>
+      <use id="use-2" href="#reference" x="120"/>
+    </svg>
+  )HTML");
+
+  UpdateAllLifecyclePhasesForTest();
+
+  const SVGElement* reference = To<SVGElement>(GetElementById("reference"));
+  const SVGUseElement* use_1 = To<SVGUseElement>(GetElementById("use-1"));
+  const SVGUseElement* use_2 = To<SVGUseElement>(GetElementById("use-2"));
+  const SVGElement* instance_1 = use_1->InstanceRoot();
+  const SVGElement* instance_2 = use_2->InstanceRoot();
+
+  Animation* reference_animation =
+      reference->GetElementAnimations()->Animations().begin()->key;
+  Animation* instance_1_animation =
+      instance_1->GetElementAnimations()->Animations().begin()->key;
+  Animation* instance_2_animation =
+      instance_2->GetElementAnimations()->Animations().begin()->key;
+
+  // The animations all run on compositor
+  EXPECT_EQ(CompositorAnimations::kNoFailure,
+            reference_animation->CheckCanStartAnimationOnCompositor(
+                GetDocument().View()->GetPaintArtifactCompositor(),
+                StartOnCompositorReason::kGeneric));
+  EXPECT_EQ(CompositorAnimations::kNoFailure,
+            instance_1_animation->CheckCanStartAnimationOnCompositor(
+                GetDocument().View()->GetPaintArtifactCompositor(),
+                StartOnCompositorReason::kGeneric));
+  EXPECT_EQ(CompositorAnimations::kNoFailure,
+            instance_2_animation->CheckCanStartAnimationOnCompositor(
+                GetDocument().View()->GetPaintArtifactCompositor(),
+                StartOnCompositorReason::kGeneric));
+
+  // The animations are all different
+  EXPECT_NE(reference_animation, instance_1_animation);
+  EXPECT_NE(reference_animation, instance_2_animation);
+  EXPECT_NE(instance_1_animation, instance_2_animation);
+}
+
 TEST_P(AnimationCompositorAnimationsTest, UnsupportedSVGCSSProperty) {
   SetBodyInnerHTML(R"HTML(
     <style>
@@ -2590,7 +2774,7 @@ TEST_P(AnimationCompositorAnimationsTest, UnsupportedSVGCSSProperty) {
   )HTML");
 
   Element* element = GetDocument().getElementById(AtomicString("rect"));
-  const Animation& animation =
+  Animation& animation =
       *element->GetElementAnimations()->Animations().begin()->key;
   EXPECT_EQ(CompositorAnimations::kUnsupportedCSSProperty,
             animation.CheckCanStartAnimationOnCompositor(
@@ -2621,7 +2805,7 @@ TEST_P(AnimationCompositorAnimationsTest, UnsupportedSVGResource) {
 
   for (Element& child :
        ElementTraversal::DescendantsOf(*GetElementById("root"))) {
-    const Animation& animation =
+    Animation& animation =
         *child.GetElementAnimations()->Animations().begin()->key;
     EXPECT_TRUE(animation.CheckCanStartAnimationOnCompositor(
                     GetDocument().View()->GetPaintArtifactCompositor(),
@@ -2704,7 +2888,7 @@ TEST_P(AnimationCompositorAnimationsTest, Fragmented) {
   )HTML");
 
   Element* target = GetDocument().getElementById(AtomicString("target"));
-  const Animation& animation =
+  Animation& animation =
       *target->GetElementAnimations()->Animations().begin()->key;
   EXPECT_TRUE(target->GetLayoutObject()->IsFragmented());
   EXPECT_EQ(CompositorAnimations::kTargetHasInvalidCompositingState,
@@ -2715,8 +2899,6 @@ TEST_P(AnimationCompositorAnimationsTest, Fragmented) {
 
 TEST_P(AnimationCompositorAnimationsTest,
        CancelIncompatibleTransformCompositorAnimation) {
-  const auto& style = GetDocument().GetStyleResolver().InitialStyle();
-
   // The first animation for transform is ok to run on the compositor.
   StringKeyframeEffectModel* effect1 = CreateKeyframeEffectModel(
       CreateReplaceOpKeyframe(CSSPropertyID::kTransform, "none", 0.0),
@@ -2724,12 +2906,10 @@ TEST_P(AnimationCompositorAnimationsTest,
   auto* keyframe_effect1 =
       MakeGarbageCollected<KeyframeEffect>(element_.Get(), effect1, timing_);
   Animation* animation1 = timeline_->Play(keyframe_effect1);
-  effect1->SnapshotAllCompositorKeyframesIfNecessary(*element_.Get(), style,
-                                                     nullptr);
+  UpdateAllLifecyclePhasesForTest();
   EXPECT_EQ(CheckCanStartEffectOnCompositor(timing_, *element_.Get(),
                                             animation1, *effect1),
             CompositorAnimations::kNoFailure);
-  UpdateAllLifecyclePhasesForTest();
   EXPECT_TRUE(animation1->HasActiveAnimationsOnCompositor());
 
   // The animation for rotation is ok to run on the compositor as it is a
@@ -2740,12 +2920,10 @@ TEST_P(AnimationCompositorAnimationsTest,
   KeyframeEffect* keyframe_effect2 =
       MakeGarbageCollected<KeyframeEffect>(element_.Get(), effect2, timing_);
   Animation* animation2 = timeline_->Play(keyframe_effect2);
-  effect2->SnapshotAllCompositorKeyframesIfNecessary(*element_.Get(), style,
-                                                     nullptr);
+  UpdateAllLifecyclePhasesForTest();
   EXPECT_EQ(CheckCanStartEffectOnCompositor(timing_, *element_.Get(),
                                             animation2, *effect2),
             CompositorAnimations::kNoFailure);
-  UpdateAllLifecyclePhasesForTest();
   EXPECT_TRUE(animation1->HasActiveAnimationsOnCompositor());
   EXPECT_TRUE(animation2->HasActiveAnimationsOnCompositor());
 
@@ -2757,12 +2935,10 @@ TEST_P(AnimationCompositorAnimationsTest,
   KeyframeEffect* keyframe_effect3 =
       MakeGarbageCollected<KeyframeEffect>(element_.Get(), effect3, timing_);
   Animation* animation3 = timeline_->Play(keyframe_effect3);
-  effect3->SnapshotAllCompositorKeyframesIfNecessary(*element_.Get(), style,
-                                                     nullptr);
+  UpdateAllLifecyclePhasesForTest();
   EXPECT_EQ(CheckCanStartEffectOnCompositor(timing_, *element_.Get(),
                                             animation3, *effect3),
             CompositorAnimations::kTargetHasIncompatibleAnimations);
-  UpdateAllLifecyclePhasesForTest();
   EXPECT_FALSE(animation1->HasActiveAnimationsOnCompositor());
   EXPECT_TRUE(animation2->HasActiveAnimationsOnCompositor());
   EXPECT_FALSE(animation3->HasActiveAnimationsOnCompositor());
@@ -2894,9 +3070,6 @@ TEST_P(AnimationCompositorAnimationsTest, NativePaintWorkletProperties) {
   std::unique_ptr<ScopedCompositeClipPathAnimationForTest>
       scoped_composite_clip_path_animation =
           std::make_unique<ScopedCompositeClipPathAnimationForTest>(true);
-  std::unique_ptr<ScopedCompositeBGColorAnimationForTest>
-      scoped_composite_bgcolor_animation =
-          std::make_unique<ScopedCompositeBGColorAnimationForTest>(true);
 
   // Normally, we don't get image generators set up in a testing environment.
   // Construct fake ones to allow us to test that we are making the correct
@@ -2969,14 +3142,14 @@ TEST_P(AnimationCompositorAnimationsTest, NativePaintWorkletProperties) {
       Animation::NativePaintWorkletProperties::kBackgroundColorPaintWorklet |
           Animation::NativePaintWorkletProperties::kClipPathPaintWorklet,
       animation->GetNativePaintWorkletReasons());
-  // Restricted to 1 native paint worklet property per animation.
-  EXPECT_EQ(CompositorAnimations::kUnsupportedCSSProperty,
+  // Support multiple NPW-based properties on the same animation.
+  EXPECT_EQ(CompositorAnimations::kNoFailure,
             animation->CheckCanStartAnimationOnCompositor(
                 GetDocument().View()->GetPaintArtifactCompositor(),
                 StartOnCompositorReason::kGeneric));
-  EXPECT_EQ(ElementAnimations::CompositedPaintStatus::kNotComposited,
+  EXPECT_EQ(ElementAnimations::CompositedPaintStatus::kComposited,
             target->GetElementAnimations()->CompositedBackgroundColorStatus());
-  EXPECT_EQ(ElementAnimations::CompositedPaintStatus::kNotComposited,
+  EXPECT_EQ(ElementAnimations::CompositedPaintStatus::kComposited,
             target->GetElementAnimations()->CompositedClipPathStatus());
 
   target = GetDocument().getElementById(AtomicString("target2"));
@@ -3036,9 +3209,6 @@ TEST_P(AnimationCompositorAnimationsTest, NativePaintWorkletForcedColorsMode) {
   color_scheme_helper.SetInForcedColors(GetDocument(),
                                         /*in_forced_colors=*/true);
 
-  std::unique_ptr<ScopedCompositeBGColorAnimationForTest>
-      scoped_composite_bgcolor_animation =
-          std::make_unique<ScopedCompositeBGColorAnimationForTest>(true);
 
   // Normally, we don't get image generators set up in a testing environment.
   // Construct fake ones to allow us to test that we are making the correct
@@ -3084,9 +3254,6 @@ TEST_P(AnimationCompositorAnimationsTest, NativePaintWorkletForcedColorsMode) {
 }
 
 TEST_P(AnimationCompositorAnimationsTest, BackgroundShorthand) {
-  std::unique_ptr<ScopedCompositeBGColorAnimationForTest>
-      scoped_composite_bgcolor_animation =
-          std::make_unique<ScopedCompositeBGColorAnimationForTest>(true);
 
   // Normally, we don't get image generators set up in a testing environment.
   // Construct a fake one to allow us to test that we are making the correct
@@ -3219,9 +3386,6 @@ TEST_P(AnimationCompositorAnimationsTest,
   std::unique_ptr<ScopedCompositeClipPathAnimationForTest>
       scoped_composite_clip_path_animation =
           std::make_unique<ScopedCompositeClipPathAnimationForTest>(true);
-  std::unique_ptr<ScopedCompositeBGColorAnimationForTest>
-      scoped_composite_background_color_animation =
-          std::make_unique<ScopedCompositeBGColorAnimationForTest>(true);
   ScopedClipPathPaintImageGenerator clip_image_generator(
       GetDocument().GetFrame());
   ScopedBackgroundColorPaintImageGenerator background_image_generator(
@@ -3348,9 +3512,6 @@ TEST_P(AnimationCompositorAnimationsTest,
   std::unique_ptr<ScopedCompositeClipPathAnimationForTest>
       scoped_composite_clip_path_animation =
           std::make_unique<ScopedCompositeClipPathAnimationForTest>(true);
-  std::unique_ptr<ScopedCompositeBGColorAnimationForTest>
-      scoped_composite_background_color_animation =
-          std::make_unique<ScopedCompositeBGColorAnimationForTest>(true);
   ScopedClipPathPaintImageGenerator clip_image_generator(
       GetDocument().GetFrame());
   ScopedBackgroundColorPaintImageGenerator background_image_generator(
@@ -3382,8 +3543,8 @@ TEST_P(AnimationCompositorAnimationsTest,
   )HTML");
 
   // The clip animation being lower in composite order can't be composited.
-  // The multi-property animation also can't be composited.
-  // This test is currently failing, possible that understanding is wrong.
+  // The multi-property animation also can't be composited due to the overlap
+  // of affected properties.
   Element* target = GetDocument().getElementById(AtomicString("target"));
   EXPECT_EQ(2U, target->GetElementAnimations()->Animations().size());
   HeapVector<Member<Animation>> animations = target->getAnimations();
@@ -3392,8 +3553,7 @@ TEST_P(AnimationCompositorAnimationsTest,
                 GetDocument().View()->GetPaintArtifactCompositor(),
                 StartOnCompositorReason::kGeneric));
   EXPECT_FALSE(animations[0]->HasActiveAnimationsOnCompositor());
-  EXPECT_EQ(CompositorAnimations::kUnsupportedCSSProperty |
-                CompositorAnimations::kTargetHasIncompatibleAnimations,
+  EXPECT_EQ(CompositorAnimations::kTargetHasIncompatibleAnimations,
             animations[1]->CheckCanStartAnimationOnCompositor(
                 GetDocument().View()->GetPaintArtifactCompositor(),
                 StartOnCompositorReason::kGeneric));
@@ -3406,18 +3566,32 @@ TEST_P(AnimationCompositorAnimationsTest,
 
   // Clear the effect of the multi-property animation. Now we only have a
   // single compositable animation on the target.
-  Animation* animation =
+  Animation* multi_prop_animation =
       GetAnimation(target, PropertyHandle(GetCSSPropertyBackgroundColor()));
-  ASSERT_TRUE(animation);
-  animation->setEffect(nullptr);
+  ASSERT_TRUE(multi_prop_animation);
+  AnimationEffect* effect = multi_prop_animation->effect();
+  multi_prop_animation->setEffect(nullptr);
 
   UpdateAllLifecyclePhasesForTest();
   EXPECT_EQ(1U, target->GetElementAnimations()->Animations().size());
-  EXPECT_FALSE(animation->HasActiveAnimationsOnCompositor());
-  animation = GetAnimation(target, PropertyHandle(GetCSSPropertyClipPath()));
-  ASSERT_TRUE(animation);
-  EXPECT_TRUE(animation->HasActiveAnimationsOnCompositor());
+  EXPECT_FALSE(multi_prop_animation->HasActiveAnimationsOnCompositor());
+  Animation* clip_path_animation =
+      GetAnimation(target, PropertyHandle(GetCSSPropertyClipPath()));
+  ASSERT_TRUE(clip_path_animation);
+  EXPECT_TRUE(clip_path_animation->HasActiveAnimationsOnCompositor());
   EXPECT_EQ(ElementAnimations::CompositedPaintStatus::kNoAnimation,
+            target->GetElementAnimations()->CompositedBackgroundColorStatus());
+  EXPECT_EQ(ElementAnimations::CompositedPaintStatus::kComposited,
+            target->GetElementAnimations()->CompositedClipPathStatus());
+
+  // restore the effect on the multi-property animations and clear on the
+  // clip-path animation.
+  multi_prop_animation->setEffect(effect);
+  clip_path_animation->setEffect(nullptr);
+  UpdateAllLifecyclePhasesForTest();
+  EXPECT_FALSE(clip_path_animation->HasActiveAnimationsOnCompositor());
+  EXPECT_TRUE(multi_prop_animation->HasActiveAnimationsOnCompositor());
+  EXPECT_EQ(ElementAnimations::CompositedPaintStatus::kComposited,
             target->GetElementAnimations()->CompositedBackgroundColorStatus());
   EXPECT_EQ(ElementAnimations::CompositedPaintStatus::kComposited,
             target->GetElementAnimations()->CompositedClipPathStatus());
@@ -4678,25 +4852,6 @@ class CompositorTimelineTriggerBehaviorTest
     }
   }
 
-  std::unique_ptr<cc::AnimationEvents> PerformImplActivate(
-      base::TimeTicks play_time) {
-    cc::TimelineTrigger* impl_trigger = GetImplCcTrigger();
-
-    std::unique_ptr<cc::MutatorEvents> mutator_events =
-        impl_animation_host_->CreateEvents();
-    cc::AnimationEvents* animation_events =
-        static_cast<cc::AnimationEvents*>(mutator_events.get());
-    impl_trigger->PerformActivateForTesting(animation_events, play_time);
-
-    return std::unique_ptr<cc::AnimationEvents>(
-        static_cast<cc::AnimationEvents*>(mutator_events.release()));
-  }
-
-  base::TimeTicks ZeroTime() const {
-    return base::TimeTicks() +
-           base::Seconds(
-               blink_animation_->TimelineInternal()->ZeroTime().InSecondsF());
-  }
 
   const double time_delta_in_seconds_ = 0.016;
   double frame_count_ = 1;
@@ -4704,7 +4859,8 @@ class CompositorTimelineTriggerBehaviorTest
   Persistent<Element> source_;
   Persistent<Element> target_;
   Persistent<Element> scroller_;
-  cc::AnimationHost* impl_animation_host_;
+  raw_ptr<cc::AnimationHost, UnprotectedInRelease | DanglingUntriaged>
+      impl_animation_host_;
   Persistent<Animation> blink_animation_;
   Persistent<AnimationTrigger> blink_trigger_;
 };
@@ -4719,33 +4875,21 @@ TEST_F(CompositorTimelineTriggerBehaviorTest, PerformPlayOnNewAnimation) {
                     /* hold_time=*/base::TimeDelta(),
                     /* start_time=*/std::nullopt);
 
-  // Simulate trigger activation.
-  base::TimeTicks play_time = ZeroTime() + base::Seconds(1000);
-  std::unique_ptr<cc::AnimationEvents> animation_events =
-      PerformImplActivate(play_time);
-
-  EXPECT_EQ(animation_events->events().size(), 1);
-  cc::AnimationTriggerEvent& event =
-      std::get<cc::AnimationTriggerEvent>(animation_events->events()[0]);
-  EXPECT_EQ(event.type, cc::AnimationTriggerEvent::Type::kActivate);
-  EXPECT_EQ(event.time, play_time);
-
+  source_->scrollIntoView(nullptr);
+  DoBeginFrame();
+  base::TimeTicks start_time = Compositor().LastFrameTime();
   TestKeyframeModel(impl_keyframe_model, gfx::KeyframeModel::RUNNING,
                     /* hold_time=*/std::nullopt,
-                    /* start_time=*/play_time);
+                    /* start_time=*/start_time);
+  EXPECT_EQ(blink_animation_->CalculateAnimationPlayState(),
+            V8AnimationPlayState::Enum::kPaused);
 
-  cc::AnimationTrigger* main_trigger = GetMainCcTrigger();
-
-  TestKeyframeModel(main_keyframe_model, gfx::KeyframeModel::PAUSED_EXCLUSIVE,
-                    /*hold_time=*/base::TimeDelta(),
-                    /*start_time=*/std::nullopt);
-
-  // Simulate main thread sync.
-  main_trigger->DispatchAnimationTriggerEvent(event);
-
+  DoBeginFrame();
+  EXPECT_EQ(blink_animation_->CalculateAnimationPlayState(),
+            V8AnimationPlayState::Enum::kRunning);
   TestKeyframeModel(main_keyframe_model, gfx::KeyframeModel::RUNNING,
                     /*hold_time=*/std::nullopt,
-                    /*start_time=*/play_time);
+                    /*start_time=*/start_time);
 }
 
 TEST_F(CompositorTimelineTriggerBehaviorTest, PerformPlayOnPausedAnimation) {
@@ -4770,37 +4914,20 @@ TEST_F(CompositorTimelineTriggerBehaviorTest, PerformPlayOnPausedAnimation) {
       base::TimeDelta(base::Milliseconds(kAnimationDurationMilliSeconds / 2)),
       /* start_time=*/std::nullopt);
 
-  // Simulate trigger activation.
-  base::TimeTicks play_time = ZeroTime() + base::Seconds(1000);
-  std::unique_ptr<cc::AnimationEvents> animation_events =
-      PerformImplActivate(play_time);
-
-  EXPECT_EQ(animation_events->events().size(), 1);
-  cc::AnimationTriggerEvent& event =
-      std::get<cc::AnimationTriggerEvent>(animation_events->events()[0]);
-  EXPECT_EQ(event.type, cc::AnimationTriggerEvent::Type::kActivate);
-  EXPECT_EQ(event.time, play_time);
-
+  source_->scrollIntoView(nullptr);
+  DoBeginFrame();
   TestKeyframeModel(impl_keyframe_model, gfx::KeyframeModel::RUNNING,
                     /* hold_time=*/std::nullopt,
-                    /*start_time=*/play_time -
+                    /*start_time=*/Compositor().LastFrameTime() -
                         base::Milliseconds(kAnimationDurationMilliSeconds / 2));
-
-  cc::AnimationTrigger* main_trigger = GetMainCcTrigger();
-
-  TestKeyframeModel(
-      main_keyframe_model, gfx::KeyframeModel::PAUSED,
-      /*hold_time=*/
-      base::TimeDelta(base::Milliseconds(kAnimationDurationMilliSeconds / 2)),
-      /*start_time=*/std::nullopt);
-
-  // Simulate main thread sync.
-  main_trigger->DispatchAnimationTriggerEvent(event);
-
+  EXPECT_EQ(blink_animation_->CalculateAnimationPlayState(),
+            V8AnimationPlayState::Enum::kPaused);
+  DoBeginFrame();
+  EXPECT_EQ(blink_animation_->CalculateAnimationPlayState(),
+            V8AnimationPlayState::Enum::kRunning);
   TestKeyframeModel(main_keyframe_model, gfx::KeyframeModel::RUNNING,
                     /*hold_time=*/std::nullopt,
-                    /*start_time=*/play_time -
-                        base::Milliseconds(kAnimationDurationMilliSeconds / 2));
+                    /*start_time=*/impl_keyframe_model->start_time());
 }
 
 TEST_F(CompositorTimelineTriggerBehaviorTest, PerformPlayOnFinishedAnimation) {
@@ -4822,35 +4949,25 @@ TEST_F(CompositorTimelineTriggerBehaviorTest, PerformPlayOnFinishedAnimation) {
       base::TimeDelta(base::Milliseconds(kAnimationDurationMilliSeconds)),
       /* start_time=*/std::nullopt);
 
-  // Simulate trigger activation.
-  base::TimeTicks play_time = base::TimeTicks() + base::Seconds(1000);
-  std::unique_ptr<cc::AnimationEvents> animation_events =
-      PerformImplActivate(play_time);
+  source_->scrollIntoView(nullptr);
+  DoBeginFrame();
+  TestKeyframeModel(
+      impl_keyframe_model, gfx::KeyframeModel::PAUSED,
+      /* hold_time=*/
+      base::TimeDelta(base::Milliseconds(kAnimationDurationMilliSeconds)),
+      /* start_time=*/std::nullopt);
+  EXPECT_EQ(blink_animation_->CalculateAnimationPlayState(),
+            V8AnimationPlayState::Enum::kFinished);
 
-  EXPECT_EQ(animation_events->events().size(), 1);
-  cc::AnimationTriggerEvent& event =
-      std::get<cc::AnimationTriggerEvent>(animation_events->events()[0]);
-  EXPECT_EQ(event.type, cc::AnimationTriggerEvent::Type::kActivate);
-  EXPECT_EQ(event.time, play_time);
-
-  TestKeyframeModel(impl_keyframe_model, gfx::KeyframeModel::RUNNING,
-                    /* hold_time=*/std::nullopt,
-                    /* start_time=*/play_time);
-
-  cc::AnimationTrigger* main_trigger = GetMainCcTrigger();
-
+  DoBeginFrame();
+  EXPECT_EQ(blink_animation_->CalculateAnimationPlayState(),
+            V8AnimationPlayState::Enum::kFinished);
+  main_keyframe_model = GetMainKeyframeModel();
   TestKeyframeModel(
       main_keyframe_model, gfx::KeyframeModel::PAUSED,
       /*hold_time=*/
       base::TimeDelta(base::Milliseconds(kAnimationDurationMilliSeconds)),
       /*start_time=*/std::nullopt);
-
-  // Simulate main thread sync.
-  main_trigger->DispatchAnimationTriggerEvent(event);
-
-  TestKeyframeModel(main_keyframe_model, gfx::KeyframeModel::RUNNING,
-                    /*hold_time=*/std::nullopt,
-                    /*start_time=*/play_time);
 }
 
 TEST_F(CompositorTimelineTriggerBehaviorTest, PlaySimple) {
@@ -4928,48 +5045,26 @@ TEST_F(CompositorTimelineTriggerBehaviorTest, PerformPauseOnRunningAnimation) {
                     /* hold_time=*/std::nullopt,
                     /*start_time=*/impl_keyframe_model->start_time());
 
-  // Simulate trigger activation.
-  base::TimeTicks pause_time =
-      start_time + base::Milliseconds(kAnimationDurationMilliSeconds / 2);
-  std::unique_ptr<cc::AnimationEvents> animation_events =
-      PerformImplActivate(pause_time);
-
-  EXPECT_EQ(animation_events->events().size(), 1);
-  cc::AnimationTriggerEvent& event =
-      std::get<cc::AnimationTriggerEvent>(animation_events->events()[0]);
-  EXPECT_EQ(event.type, cc::AnimationTriggerEvent::Type::kActivate);
-  EXPECT_EQ(event.time, pause_time);
-
-  TestKeyframeModel(
-      impl_keyframe_model, gfx::KeyframeModel::PAUSED,
-      /* hold_time=*/base::Milliseconds(kAnimationDurationMilliSeconds / 2),
-      /* start_time=*/std::nullopt);
-
-  cc::AnimationTrigger* main_trigger = GetMainCcTrigger();
-  // Simulate main thread sync.
-  main_trigger->DispatchAnimationTriggerEvent(event);
-
-  TestKeyframeModel(
-      main_keyframe_model, gfx::KeyframeModel::PAUSED,
-      /*hold_time=*/base::Milliseconds(kAnimationDurationMilliSeconds / 2),
-      /*start_time=*/std::nullopt);
-
-  // After the next frame, blink should create new cc Animations waiting to be
-  // triggered.
+  source_->scrollIntoView(nullptr);
   DoBeginFrame();
+  base::TimeDelta hold_time = Compositor().LastFrameTime() - start_time;
+  TestKeyframeModel(impl_keyframe_model, gfx::KeyframeModel::PAUSED,
+                    /*hold_time=*/hold_time,
+                    /*start_time=*/std::nullopt);
+  EXPECT_EQ(blink_animation_->CalculateAnimationPlayState(),
+            V8AnimationPlayState::Enum::kRunning);
+
+  DoBeginFrame();
+  EXPECT_EQ(blink_animation_->CalculateAnimationPlayState(),
+            V8AnimationPlayState::Enum::kPaused);
   impl_keyframe_model = GetImplKeyframeModel();
   main_keyframe_model = GetMainKeyframeModel();
-
-  TestKeyframeModel(
-      impl_keyframe_model, gfx::KeyframeModel::PAUSED,
-      /* hold_time=*/
-      base::TimeDelta(base::Milliseconds(kAnimationDurationMilliSeconds / 2)),
-      /* start_time=*/std::nullopt);
-  TestKeyframeModel(
-      main_keyframe_model, gfx::KeyframeModel::PAUSED,
-      /* hold_time=*/
-      base::TimeDelta(base::Milliseconds(kAnimationDurationMilliSeconds / 2)),
-      /* start_time=*/std::nullopt);
+  TestKeyframeModel(impl_keyframe_model, gfx::KeyframeModel::PAUSED,
+                    /*hold_time=*/hold_time,
+                    /*start_time=*/std::nullopt);
+  TestKeyframeModel(main_keyframe_model, gfx::KeyframeModel::PAUSED,
+                    /*hold_time=*/hold_time,
+                    /*start_time=*/std::nullopt);
 }
 
 TEST_F(CompositorTimelineTriggerBehaviorTest, PerformPauseOnPausedAnimation) {
@@ -4994,35 +5089,15 @@ TEST_F(CompositorTimelineTriggerBehaviorTest, PerformPauseOnPausedAnimation) {
       base::TimeDelta(base::Milliseconds(kAnimationDurationMilliSeconds / 2)),
       /* start_time=*/std::nullopt);
 
-  // Simulate trigger activation. As the animation is already paused, this
-  // should have no effect.
-  base::TimeTicks pause_time = ZeroTime() + base::Seconds(1000);
-  std::unique_ptr<cc::AnimationEvents> animation_events =
-      PerformImplActivate(pause_time);
-
-  EXPECT_EQ(animation_events->events().size(), 1);
-  cc::AnimationTriggerEvent& event =
-      std::get<cc::AnimationTriggerEvent>(animation_events->events()[0]);
-  EXPECT_EQ(event.type, cc::AnimationTriggerEvent::Type::kActivate);
-  EXPECT_EQ(event.time, pause_time);
-
+  source_->scrollIntoView(nullptr);
+  DoBeginFrame();
   TestKeyframeModel(
       impl_keyframe_model, gfx::KeyframeModel::PAUSED,
       /* hold_time=*/
       base::TimeDelta(base::Milliseconds(kAnimationDurationMilliSeconds / 2)),
       /* start_time=*/std::nullopt);
 
-  cc::AnimationTrigger* main_trigger = GetMainCcTrigger();
-
-  TestKeyframeModel(
-      main_keyframe_model, gfx::KeyframeModel::PAUSED,
-      /* hold_time=*/
-      base::TimeDelta(base::Milliseconds(kAnimationDurationMilliSeconds / 2)),
-      /* start_time=*/std::nullopt);
-
-  // Simulate main thread sync.
-  main_trigger->DispatchAnimationTriggerEvent(event);
-
+  DoBeginFrame();
   TestKeyframeModel(
       main_keyframe_model, gfx::KeyframeModel::PAUSED,
       /* hold_time=*/
@@ -5106,6 +5181,979 @@ TEST_F(CompositorTimelineTriggerBehaviorTest, PlayPause) {
       /*expected_main_run_state=*/gfx::KeyframeModel::PAUSED,
       /*expected_main_current_time=*/current_time_at_pause,
       /*expected_blink_state=*/V8AnimationPlayState::Enum::kPaused);
+}
+
+TEST_F(CompositorTimelineTriggerBehaviorTest, ReplayRunning) {
+  Initialize("replay", "replay");
+
+  cc::KeyframeModel* impl_keyframe_model = GetImplKeyframeModel();
+  TestKeyframeModel(impl_keyframe_model, gfx::KeyframeModel::PAUSED_EXCLUSIVE,
+                    /* hold_time=*/base::TimeDelta(),
+                    /* start_time=*/std::nullopt);
+
+  // Trigger activation to make it running.
+  source_->scrollIntoView(nullptr);
+  DoBeginFrame();
+  base::TimeTicks play_time1 = Compositor().LastFrameTime();
+
+  TestKeyframeModel(impl_keyframe_model, gfx::KeyframeModel::RUNNING,
+                    /* hold_time=*/std::nullopt,
+                    /* start_time=*/play_time1);
+
+  // Deliver trigger activation to main thread.
+  DoBeginFrame();
+
+  cc::KeyframeModel* main_keyframe_model = GetMainKeyframeModel();
+  TestKeyframeModel(main_keyframe_model, gfx::KeyframeModel::RUNNING,
+                    /*hold_time=*/std::nullopt,
+                    /*start_time=*/play_time1);
+
+  // Scroll out to trigger replay on the running animation.
+  scroller_->scrollTo(nullptr, 0, 0);
+  DoBeginFrame();
+  base::TimeTicks play_time2 = Compositor().LastFrameTime();
+
+  // Replay on a running animation with positive playback rate should reset it
+  // to current time 0 and play it from the new start time, play_time2.
+  TestKeyframeModel(impl_keyframe_model, gfx::KeyframeModel::RUNNING,
+                    /* hold_time=*/std::nullopt,
+                    /* start_time=*/play_time2);
+
+  // Deliver second trigger activation to main thread.
+  DoBeginFrame();
+
+  TestKeyframeModel(main_keyframe_model, gfx::KeyframeModel::RUNNING,
+                    /*hold_time=*/std::nullopt,
+                    /*start_time=*/play_time2);
+}
+
+TEST_F(CompositorTimelineTriggerBehaviorTest,
+       ReplayRunningNegativePlaybackRate) {
+  Initialize("replay", "none");
+
+  blink_animation_->setPlaybackRate(-1.0);
+  // We need to sync the playback rate to the compositor.
+  DoBeginFrame();
+
+  cc::KeyframeModel* impl_keyframe_model = GetImplKeyframeModel();
+  cc::KeyframeModel* main_keyframe_model = GetMainKeyframeModel();
+  TestKeyframeModel(impl_keyframe_model, gfx::KeyframeModel::PAUSED,
+                    /* hold_time=*/base::TimeDelta(),
+                    /* start_time=*/std::nullopt);
+
+  // Trigger activation to make it running.
+  source_->scrollIntoView(nullptr);
+  DoBeginFrame();
+  base::TimeTicks play_time1 = Compositor().LastFrameTime();
+
+  TestKeyframeModel(
+      impl_keyframe_model, gfx::KeyframeModel::RUNNING,
+      /* hold_time=*/std::nullopt,
+      /* start_time=*/
+      play_time1 + base::Milliseconds(kAnimationDurationMilliSeconds));
+
+  // Deliver trigger activation to main thread.
+  DoBeginFrame();
+
+  TestKeyframeModel(
+      main_keyframe_model, gfx::KeyframeModel::RUNNING,
+      /*hold_time=*/std::nullopt,
+      /*start_time=*/
+      play_time1 + base::Milliseconds(kAnimationDurationMilliSeconds));
+
+  // Scroll out to re-arm the trigger.
+  scroller_->scrollTo(nullptr, 0, 0);
+  DoBeginFrame();
+
+  // Trigger activation again.
+  source_->scrollIntoView(nullptr);
+  DoBeginFrame();
+  base::TimeTicks play_time2 = Compositor().LastFrameTime();
+
+  // Replay on a running animation with negative playback rate should reset its
+  // current time to the end, i.e. with new start time of play_time2 + duration.
+  TestKeyframeModel(
+      impl_keyframe_model, gfx::KeyframeModel::RUNNING,
+      /* hold_time=*/std::nullopt,
+      /* start_time=*/
+      play_time2 + base::Milliseconds(kAnimationDurationMilliSeconds));
+
+  // Deliver second trigger activation to main thread.
+  DoBeginFrame();
+
+  TestKeyframeModel(
+      main_keyframe_model, gfx::KeyframeModel::RUNNING,
+      /*hold_time=*/std::nullopt,
+      /*start_time=*/
+      play_time2 + base::Milliseconds(kAnimationDurationMilliSeconds));
+}
+
+TEST_F(CompositorTimelineTriggerBehaviorTest,
+       ReplayFinishedNegativePlaybackRate) {
+  Initialize("replay", "none");
+
+  blink_animation_->setPlaybackRate(-1.0);
+  // We need to sync the playback rate to the compositor.
+  DoBeginFrame();
+
+  cc::KeyframeModel* impl_keyframe_model = GetImplKeyframeModel();
+  cc::KeyframeModel* main_keyframe_model = GetMainKeyframeModel();
+
+  // Trigger activation to make it running.
+  source_->scrollIntoView(nullptr);
+  DoBeginFrame();
+  base::TimeTicks play_time1 = Compositor().LastFrameTime();
+
+  // It should start at end (500ms).
+  TestKeyframeModel(
+      impl_keyframe_model, gfx::KeyframeModel::RUNNING,
+      /* hold_time=*/std::nullopt,
+      /* start_time=*/
+      play_time1 + base::Milliseconds(kAnimationDurationMilliSeconds));
+
+  // Dispatch the trigger event to the main thread.
+  DoBeginFrame();
+
+  TestKeyframeModel(
+      main_keyframe_model, gfx::KeyframeModel::RUNNING,
+      /*hold_time=*/std::nullopt,
+      /*start_time=*/
+      play_time1 + base::Milliseconds(kAnimationDurationMilliSeconds));
+
+  // Finish the animation.
+  blink_animation_->finish();
+  DoBeginFrame();
+
+  // Get the new keyframe model after finish and commit.
+  impl_keyframe_model = GetImplKeyframeModel();
+  main_keyframe_model = GetMainKeyframeModel();
+
+  // It should be finished (paused at 0 for negative playback rate).
+  TestKeyframeModel(impl_keyframe_model, gfx::KeyframeModel::PAUSED,
+                    /* hold_time=*/base::TimeDelta(),
+                    /* start_time=*/std::nullopt);
+
+  // Scroll out to re-arm the trigger.
+  scroller_->scrollTo(nullptr, 0, 0);
+  DoBeginFrame();
+
+  // Trigger activation again.
+  source_->scrollIntoView(nullptr);
+  DoBeginFrame();
+  base::TimeTicks play_time2 = Compositor().LastFrameTime();
+
+  // Replay on a finished animation with negative playback rate should reset it
+  // to the end and play it backwards.
+  TestKeyframeModel(
+      impl_keyframe_model, gfx::KeyframeModel::RUNNING,
+      /* hold_time=*/std::nullopt,
+      /* start_time=*/
+      play_time2 + base::Milliseconds(kAnimationDurationMilliSeconds));
+
+  // Simulate main thread sync.
+  DoBeginFrame();
+
+  TestKeyframeModel(
+      main_keyframe_model, gfx::KeyframeModel::RUNNING,
+      /*hold_time=*/std::nullopt,
+      /*start_time=*/
+      play_time2 + base::Milliseconds(kAnimationDurationMilliSeconds));
+}
+
+TEST_F(CompositorTimelineTriggerBehaviorTest, PerformPlayOnceOnNewAnimation) {
+  Initialize("play-once", "none");
+
+  cc::KeyframeModel* impl_keyframe_model = GetImplKeyframeModel();
+  cc::KeyframeModel* main_keyframe_model = GetMainKeyframeModel();
+
+  TestKeyframeModel(impl_keyframe_model, gfx::KeyframeModel::PAUSED_EXCLUSIVE,
+                    /* hold_time=*/base::TimeDelta(),
+                    /* start_time=*/std::nullopt);
+
+  // Simulate trigger activation.
+  source_->scrollIntoView(nullptr);
+  DoBeginFrame();
+  base::TimeTicks start_time = Compositor().LastFrameTime();
+  TestKeyframeModel(impl_keyframe_model, gfx::KeyframeModel::RUNNING,
+                    /* hold_time=*/std::nullopt,
+                    /* start_time=*/start_time);
+  EXPECT_EQ(blink_animation_->CalculateAnimationPlayState(),
+            V8AnimationPlayState::Enum::kPaused);
+
+  DoBeginFrame();
+  EXPECT_EQ(blink_animation_->CalculateAnimationPlayState(),
+            V8AnimationPlayState::Enum::kRunning);
+  TestKeyframeModel(main_keyframe_model, gfx::KeyframeModel::RUNNING,
+                    /*hold_time=*/std::nullopt,
+                    /*start_time=*/start_time);
+}
+
+TEST_F(CompositorTimelineTriggerBehaviorTest,
+       PerformPlayOnceOnPausedAnimation) {
+  Initialize("play-once", "none");
+
+  // Pause the animation half way. Blink should create a cc::Animation to
+  // replacement cc Animation waiting to be triggered.
+  blink_animation_->pause(ASSERT_NO_EXCEPTION);
+  blink_animation_->setCurrentTime(
+      MakeGarbageCollected<V8CSSNumberish>(kAnimationDurationMilliSeconds / 2),
+      ASSERT_NO_EXCEPTION);
+  EXPECT_EQ(blink_animation_->CalculateAnimationPlayState(),
+            V8AnimationPlayState::Enum::kPaused);
+  DoBeginFrame();
+
+  cc::KeyframeModel* impl_keyframe_model = GetImplKeyframeModel();
+  cc::KeyframeModel* main_keyframe_model = GetMainKeyframeModel();
+
+  TestKeyframeModel(
+      impl_keyframe_model, gfx::KeyframeModel::PAUSED,
+      /* hold_time=*/
+      base::TimeDelta(base::Milliseconds(kAnimationDurationMilliSeconds / 2)),
+      /* start_time=*/std::nullopt);
+
+  source_->scrollIntoView(nullptr);
+  DoBeginFrame();
+  TestKeyframeModel(impl_keyframe_model, gfx::KeyframeModel::RUNNING,
+                    /* hold_time=*/std::nullopt,
+                    /*start_time=*/Compositor().LastFrameTime() -
+                        base::Milliseconds(kAnimationDurationMilliSeconds / 2));
+  EXPECT_EQ(blink_animation_->CalculateAnimationPlayState(),
+            V8AnimationPlayState::Enum::kPaused);
+
+  DoBeginFrame();
+  EXPECT_EQ(blink_animation_->CalculateAnimationPlayState(),
+            V8AnimationPlayState::Enum::kRunning);
+  TestKeyframeModel(main_keyframe_model, gfx::KeyframeModel::RUNNING,
+                    /*hold_time=*/std::nullopt,
+                    /*start_time=*/impl_keyframe_model->start_time());
+}
+
+TEST_F(CompositorTimelineTriggerBehaviorTest,
+       PerformPlayOnceOnFinishedAnimation) {
+  Initialize("play-once", "none");
+
+  // Finish the animation. Blink should create a cc::Animation to replacement
+  // cc Animation waiting to be triggered.
+  blink_animation_->finish(ASSERT_NO_EXCEPTION);
+  EXPECT_EQ(blink_animation_->CalculateAnimationPlayState(),
+            V8AnimationPlayState::Enum::kFinished);
+  DoBeginFrame();
+
+  cc::KeyframeModel* impl_keyframe_model = GetImplKeyframeModel();
+  cc::KeyframeModel* main_keyframe_model = GetMainKeyframeModel();
+
+  TestKeyframeModel(
+      impl_keyframe_model, gfx::KeyframeModel::PAUSED,
+      /* hold_time=*/
+      base::TimeDelta(base::Milliseconds(kAnimationDurationMilliSeconds)),
+      /* start_time=*/std::nullopt);
+
+  source_->scrollIntoView(nullptr);
+  DoBeginFrame();
+  TestKeyframeModel(
+      impl_keyframe_model, gfx::KeyframeModel::PAUSED,
+      /* hold_time=*/
+      base::TimeDelta(base::Milliseconds(kAnimationDurationMilliSeconds)),
+      /* start_time=*/std::nullopt);
+  EXPECT_EQ(blink_animation_->CalculateAnimationPlayState(),
+            V8AnimationPlayState::Enum::kFinished);
+
+  DoBeginFrame();
+  EXPECT_EQ(blink_animation_->CalculateAnimationPlayState(),
+            V8AnimationPlayState::Enum::kFinished);
+  TestKeyframeModel(
+      main_keyframe_model, gfx::KeyframeModel::PAUSED,
+      /*hold_time=*/
+      base::TimeDelta(base::Milliseconds(kAnimationDurationMilliSeconds)),
+      /*start_time=*/std::nullopt);
+}
+
+TEST_F(CompositorTimelineTriggerBehaviorTest,
+       PerformPlayForwardsOnFinishedPositive) {
+  Initialize("play-forwards", "none");
+
+  // Finish the animation. Blink should create a cc::Animation to replacement
+  // cc Animation waiting to be triggered.
+  blink_animation_->finish(ASSERT_NO_EXCEPTION);
+  EXPECT_EQ(blink_animation_->CalculateAnimationPlayState(),
+            V8AnimationPlayState::Enum::kFinished);
+  DoBeginFrame();
+
+  cc::KeyframeModel* impl_keyframe_model = GetImplKeyframeModel();
+  cc::KeyframeModel* main_keyframe_model = GetMainKeyframeModel();
+
+  TestKeyframeModel(
+      impl_keyframe_model, gfx::KeyframeModel::PAUSED,
+      /* hold_time=*/
+      base::TimeDelta(base::Milliseconds(kAnimationDurationMilliSeconds)),
+      /* start_time=*/std::nullopt);
+
+  source_->scrollIntoView(nullptr);
+  DoBeginFrame();
+  TestKeyframeModel(
+      impl_keyframe_model, gfx::KeyframeModel::PAUSED,
+      /* hold_time=*/
+      base::TimeDelta(base::Milliseconds(kAnimationDurationMilliSeconds)),
+      /* start_time=*/std::nullopt);
+
+  DoBeginFrame();
+  main_keyframe_model = GetMainKeyframeModel();
+  TestKeyframeModel(
+      main_keyframe_model, gfx::KeyframeModel::PAUSED,
+      /*hold_time=*/
+      base::TimeDelta(base::Milliseconds(kAnimationDurationMilliSeconds)),
+      /*start_time=*/std::nullopt);
+}
+
+TEST_F(CompositorTimelineTriggerBehaviorTest,
+       PerformPlayForwardsOnFinishedNegative) {
+  Initialize("play-forwards", "none");
+
+  // Set playback rate to negative and finish.
+  blink_animation_->updatePlaybackRate(-1, ASSERT_NO_EXCEPTION);
+  blink_animation_->finish(ASSERT_NO_EXCEPTION);
+  EXPECT_EQ(blink_animation_->CalculateAnimationPlayState(),
+            V8AnimationPlayState::Enum::kFinished);
+  DoBeginFrame();
+
+  cc::KeyframeModel* impl_keyframe_model = GetImplKeyframeModel();
+  cc::KeyframeModel* main_keyframe_model = GetMainKeyframeModel();
+
+  TestKeyframeModel(impl_keyframe_model, gfx::KeyframeModel::PAUSED,
+                    /* hold_time=*/base::TimeDelta(),
+                    /* start_time=*/std::nullopt);
+  EXPECT_EQ(impl_keyframe_model->playback_rate(), -1);
+
+  source_->scrollIntoView(nullptr);
+  DoBeginFrame();
+  base::TimeTicks trigger_time = Compositor().LastFrameTime();
+  TestKeyframeModel(impl_keyframe_model, gfx::KeyframeModel::RUNNING,
+                    /* hold_time=*/std::nullopt,
+                    /* start_time=*/trigger_time);
+  EXPECT_EQ(impl_keyframe_model->playback_rate(), 1);
+
+  DoBeginFrame();
+  TestKeyframeModel(main_keyframe_model, gfx::KeyframeModel::RUNNING,
+                    /*hold_time=*/std::nullopt,
+                    /*start_time=*/trigger_time);
+  EXPECT_EQ(main_keyframe_model->playback_rate(), 1);
+}
+
+TEST_F(CompositorTimelineTriggerBehaviorTest,
+       PerformPlayBackwardsOnFinishedPositive) {
+  Initialize("play-backwards", "none");
+
+  // Finish the animation (finished at end, rate = 1).
+  blink_animation_->finish(ASSERT_NO_EXCEPTION);
+  EXPECT_EQ(blink_animation_->CalculateAnimationPlayState(),
+            V8AnimationPlayState::Enum::kFinished);
+  DoBeginFrame();
+
+  cc::KeyframeModel* impl_keyframe_model = GetImplKeyframeModel();
+  cc::KeyframeModel* main_keyframe_model = GetMainKeyframeModel();
+
+  TestKeyframeModel(
+      impl_keyframe_model, gfx::KeyframeModel::PAUSED,
+      /* hold_time=*/
+      base::TimeDelta(base::Milliseconds(kAnimationDurationMilliSeconds)),
+      /* start_time=*/std::nullopt);
+  EXPECT_EQ(impl_keyframe_model->playback_rate(), 1);
+
+  source_->scrollIntoView(nullptr);
+  DoBeginFrame();
+  base::TimeTicks trigger_time = Compositor().LastFrameTime();
+  TestKeyframeModel(impl_keyframe_model, gfx::KeyframeModel::RUNNING,
+                    /* hold_time=*/std::nullopt,
+                    /* start_time=*/trigger_time +
+                        base::Milliseconds(kAnimationDurationMilliSeconds));
+  EXPECT_EQ(impl_keyframe_model->playback_rate(), -1);
+
+  DoBeginFrame();
+  TestKeyframeModel(main_keyframe_model, gfx::KeyframeModel::RUNNING,
+                    /*hold_time=*/std::nullopt,
+                    /*start_time=*/trigger_time +
+                        base::Milliseconds(kAnimationDurationMilliSeconds));
+  EXPECT_EQ(main_keyframe_model->playback_rate(), -1);
+}
+
+TEST_F(CompositorTimelineTriggerBehaviorTest,
+       PerformPlayBackwardsOnFinishedNegative) {
+  Initialize("play-backwards", "none");
+
+  // Set playback rate to negative and finish. (Finished at start).
+  blink_animation_->updatePlaybackRate(-1, ASSERT_NO_EXCEPTION);
+  blink_animation_->finish(ASSERT_NO_EXCEPTION);
+  EXPECT_EQ(blink_animation_->CalculateAnimationPlayState(),
+            V8AnimationPlayState::Enum::kFinished);
+  DoBeginFrame();
+
+  cc::KeyframeModel* impl_keyframe_model = GetImplKeyframeModel();
+  cc::KeyframeModel* main_keyframe_model = GetMainKeyframeModel();
+
+  TestKeyframeModel(impl_keyframe_model, gfx::KeyframeModel::PAUSED,
+                    /* hold_time=*/base::TimeDelta(),
+                    /* start_time=*/std::nullopt);
+  EXPECT_EQ(impl_keyframe_model->playback_rate(), -1);
+
+  source_->scrollIntoView(nullptr);
+  DoBeginFrame();
+  TestKeyframeModel(impl_keyframe_model, gfx::KeyframeModel::PAUSED,
+                    /* hold_time=*/base::TimeDelta(),
+                    /* start_time=*/std::nullopt);
+  EXPECT_EQ(impl_keyframe_model->playback_rate(), -1);
+
+  DoBeginFrame();
+  main_keyframe_model = GetMainKeyframeModel();
+  TestKeyframeModel(main_keyframe_model, gfx::KeyframeModel::PAUSED,
+                    /*hold_time=*/base::TimeDelta(),
+                    /*start_time=*/std::nullopt);
+  EXPECT_EQ(main_keyframe_model->playback_rate(), -1);
+}
+
+TEST_F(CompositorTimelineTriggerBehaviorTest,
+       PerformPlayBackwardsOnRunningPositive) {
+  Initialize("play-backwards", "none");
+
+  // Play the animation.
+  blink_animation_->play(ASSERT_NO_EXCEPTION);
+
+  DoBeginFrame();
+  cc::KeyframeModel* impl_keyframe_model = GetImplKeyframeModel();
+  // Record start time picked up in the last impl frame.
+  base::TimeTicks play_start_time = Compositor().LastFrameTime();
+
+  DoBeginFrame();
+
+  // Main and impl should have the same start time.
+  TestKeyframeModel(impl_keyframe_model, gfx::KeyframeModel::RUNNING,
+                    /* hold_time=*/std::nullopt,
+                    /* start_time=*/play_start_time);
+  EXPECT_EQ(impl_keyframe_model->playback_rate(), 1);
+
+  cc::KeyframeModel* main_keyframe_model = GetMainKeyframeModel();
+  TestKeyframeModel(main_keyframe_model, gfx::KeyframeModel::RUNNING,
+                    /* hold_time=*/std::nullopt,
+                    /* start_time=*/play_start_time);
+  EXPECT_EQ(main_keyframe_model->playback_rate(), 1);
+
+  // Trigger activation.
+  source_->scrollIntoView(nullptr);
+  DoBeginFrame();
+
+  base::TimeTicks trigger_time = Compositor().LastFrameTime();
+  base::TimeDelta current_time_to_match = trigger_time - play_start_time;
+
+  // The impl keyframe model should now be reversed with its start time ahead of
+  // |trigger_time| by the current time at the time of activation.
+  TestKeyframeModel(impl_keyframe_model, gfx::KeyframeModel::RUNNING,
+                    /* hold_time=*/std::nullopt,
+                    /* start_time=*/trigger_time + current_time_to_match);
+  EXPECT_EQ(impl_keyframe_model->playback_rate(), -1);
+  EXPECT_EQ(impl_keyframe_model->CalculateCurrentTime(
+                trigger_time, impl_keyframe_model->playback_rate()),
+            current_time_to_match);
+
+  // Deliver trigger event to main thread.
+  DoBeginFrame();
+
+  // The main thread keyframe model should also be reversed after the sync.
+  TestKeyframeModel(main_keyframe_model, gfx::KeyframeModel::RUNNING,
+                    /* hold_time=*/std::nullopt,
+                    /* start_time=*/trigger_time + current_time_to_match);
+  EXPECT_EQ(main_keyframe_model->playback_rate(), -1);
+  EXPECT_EQ(main_keyframe_model->CalculateCurrentTime(
+                trigger_time, main_keyframe_model->playback_rate()),
+            current_time_to_match);
+}
+
+TEST_F(CompositorTimelineTriggerBehaviorTest,
+       PerformPlayForwardsOnRunningNegative) {
+  Initialize("play-forwards", "none");
+
+  // Reverse the animation to get it playing backwards.
+  // TODO(crbug.com/521374290): We should be able to just call reverse here.
+  blink_animation_->updatePlaybackRate(-1);
+  blink_animation_->play(ASSERT_NO_EXCEPTION);
+  DoBeginFrame();
+
+  cc::KeyframeModel* impl_keyframe_model = GetImplKeyframeModel();
+  cc::KeyframeModel* main_keyframe_model = GetMainKeyframeModel();
+
+  base::TimeTicks frame_time_at_start = Compositor().LastFrameTime();
+  // Negative playback rate pushes the start time ahead.
+  base::TimeTicks play_start_time =
+      frame_time_at_start + base::Milliseconds(kAnimationDurationMilliSeconds);
+
+  // Test the keyframe models after Frame 4 (before trigger).
+  TestKeyframeModel(impl_keyframe_model, gfx::KeyframeModel::RUNNING,
+                    /* hold_time=*/std::nullopt,
+                    /* start_time=*/play_start_time);
+  EXPECT_EQ(impl_keyframe_model->playback_rate(), -1);
+
+  DoBeginFrame();
+  TestKeyframeModel(main_keyframe_model, gfx::KeyframeModel::RUNNING,
+                    /* hold_time=*/std::nullopt,
+                    /* start_time=*/play_start_time);
+  EXPECT_EQ(main_keyframe_model->playback_rate(), -1);
+
+  // Trigger activation.
+  source_->scrollIntoView(nullptr);
+  DoBeginFrame();
+
+  base::TimeTicks trigger_time = Compositor().LastFrameTime();
+  base::TimeDelta current_time_to_match = play_start_time - trigger_time;
+
+  // On Impl thread, it should now be running forwards.
+  TestKeyframeModel(impl_keyframe_model, gfx::KeyframeModel::RUNNING,
+                    /* hold_time=*/std::nullopt,
+                    /* start_time=*/trigger_time - current_time_to_match);
+  EXPECT_EQ(impl_keyframe_model->playback_rate(), 1);
+  EXPECT_EQ(impl_keyframe_model->CalculateCurrentTime(
+                trigger_time, impl_keyframe_model->playback_rate()),
+            current_time_to_match);
+
+  // Deliver trigger event to main thread.
+  DoBeginFrame();
+
+  // On Main thread, it should also be running forwards with same start time.
+  TestKeyframeModel(main_keyframe_model, gfx::KeyframeModel::RUNNING,
+                    /* hold_time=*/std::nullopt,
+                    /* start_time=*/trigger_time - current_time_to_match);
+  EXPECT_EQ(main_keyframe_model->playback_rate(), 1);
+  EXPECT_EQ(main_keyframe_model->CalculateCurrentTime(
+                trigger_time, main_keyframe_model->playback_rate()),
+            current_time_to_match);
+}
+
+TEST_F(CompositorTimelineTriggerBehaviorTest, PerformResetOnRunningPositive) {
+  Initialize("reset", "none");
+
+  // Play the animation.
+  blink_animation_->play(ASSERT_NO_EXCEPTION);
+  DoBeginFrame();
+
+  cc::KeyframeModel* impl_keyframe_model = GetImplKeyframeModel();
+  cc::KeyframeModel* main_keyframe_model = GetMainKeyframeModel();
+
+  base::TimeTicks play_start_time = Compositor().LastFrameTime();
+  TestKeyframeModel(impl_keyframe_model, gfx::KeyframeModel::RUNNING,
+                    /* hold_time=*/std::nullopt,
+                    /* start_time=*/play_start_time);
+
+  DoBeginFrame();
+  TestKeyframeModel(main_keyframe_model, gfx::KeyframeModel::RUNNING,
+                    /* hold_time=*/std::nullopt,
+                    /* start_time=*/play_start_time);
+
+  // Trigger activation (reset).
+  source_->scrollIntoView(nullptr);
+  DoBeginFrame();
+
+  // On Impl thread, it should still be running (reset is not handled on
+  // compositor) until the next commit.
+  // TODO(451238244): Implement reset on the compositor thread.
+  TestKeyframeModel(impl_keyframe_model, gfx::KeyframeModel::RUNNING,
+                    /* hold_time=*/std::nullopt,
+                    /* start_time=*/play_start_time);
+
+  // Deliver trigger activation to main thread. Main thread resets (pauses at 0)
+  // and commits recreated keyframe model to CC.
+  DoBeginFrame();
+
+  // Verify blink animation current time is 0.
+  EXPECT_NEAR(blink_animation_->CurrentTimeInternal().value().InMillisecondsF(),
+              0.0, 1.0);
+  EXPECT_TRUE(blink_animation_->PausedForTrigger());
+
+  // Get pointers again because they will have been recreated.
+  impl_keyframe_model = GetImplKeyframeModel();
+  main_keyframe_model = GetMainKeyframeModel();
+
+  // Both should be PAUSED_EXCLUSIVE at 0.
+  TestKeyframeModel(main_keyframe_model, gfx::KeyframeModel::PAUSED_EXCLUSIVE,
+                    /* hold_time=*/base::TimeDelta(),
+                    /* start_time=*/std::nullopt);
+  TestKeyframeModel(impl_keyframe_model, gfx::KeyframeModel::PAUSED_EXCLUSIVE,
+                    /* hold_time=*/base::TimeDelta(),
+                    /* start_time=*/std::nullopt);
+}
+
+TEST_F(CompositorTimelineTriggerBehaviorTest, PerformResetOnRunningNegative) {
+  Initialize("reset", "none");
+
+  // Play the animation backwards.
+  blink_animation_->updatePlaybackRate(-1);
+  blink_animation_->play(ASSERT_NO_EXCEPTION);
+  DoBeginFrame();
+
+  cc::KeyframeModel* impl_keyframe_model = GetImplKeyframeModel();
+  cc::KeyframeModel* main_keyframe_model = GetMainKeyframeModel();
+
+  base::TimeTicks frame_time_at_start = Compositor().LastFrameTime();
+  base::TimeTicks play_start_time =
+      frame_time_at_start + base::Milliseconds(kAnimationDurationMilliSeconds);
+
+  TestKeyframeModel(impl_keyframe_model, gfx::KeyframeModel::RUNNING,
+                    /* hold_time=*/std::nullopt,
+                    /* start_time=*/play_start_time);
+  EXPECT_EQ(impl_keyframe_model->playback_rate(), -1);
+
+  DoBeginFrame();
+  TestKeyframeModel(main_keyframe_model, gfx::KeyframeModel::RUNNING,
+                    /* hold_time=*/std::nullopt,
+                    /* start_time=*/play_start_time);
+  EXPECT_EQ(main_keyframe_model->playback_rate(), -1);
+
+  // Trigger activation (reset).
+  source_->scrollIntoView(nullptr);
+  DoBeginFrame();
+
+  // On Impl thread, it should still be running (reset is not handled on
+  // compositor) until the next commit.
+  // TODO(451238244): Implement reset on the compositor thread.
+  TestKeyframeModel(impl_keyframe_model, gfx::KeyframeModel::RUNNING,
+                    /* hold_time=*/std::nullopt,
+                    /* start_time=*/play_start_time);
+
+  // Deliver trigger activation to main thread.
+  DoBeginFrame();
+
+  // Verify blink animation current time is effect end.
+  EXPECT_NEAR(blink_animation_->CurrentTimeInternal().value().InMillisecondsF(),
+              kAnimationDurationMilliSeconds, 1.0);
+  EXPECT_TRUE(blink_animation_->PausedForTrigger());
+
+  // Re-evaluate pointers because they might have been recreated.
+  impl_keyframe_model = GetImplKeyframeModel();
+  main_keyframe_model = GetMainKeyframeModel();
+
+  // Both should be PAUSED_EXCLUSIVE at effect end.
+  TestKeyframeModel(
+      main_keyframe_model, gfx::KeyframeModel::PAUSED_EXCLUSIVE,
+      /* hold_time=*/base::Milliseconds(kAnimationDurationMilliSeconds),
+      /* start_time=*/std::nullopt);
+  TestKeyframeModel(
+      impl_keyframe_model, gfx::KeyframeModel::PAUSED_EXCLUSIVE,
+      /* hold_time=*/base::Milliseconds(kAnimationDurationMilliSeconds),
+      /* start_time=*/std::nullopt);
+}
+
+TEST_F(CompositorTimelineTriggerBehaviorTest, PerformResetOnFinishedPositive) {
+  Initialize("reset", "none");
+
+  // Finish the animation.
+  blink_animation_->finish(ASSERT_NO_EXCEPTION);
+  EXPECT_EQ(blink_animation_->CalculateAnimationPlayState(),
+            V8AnimationPlayState::Enum::kFinished);
+  DoBeginFrame();
+
+  cc::KeyframeModel* impl_keyframe_model = GetImplKeyframeModel();
+  cc::KeyframeModel* main_keyframe_model = GetMainKeyframeModel();
+
+  TestKeyframeModel(
+      impl_keyframe_model, gfx::KeyframeModel::PAUSED,
+      /* hold_time=*/
+      base::TimeDelta(base::Milliseconds(kAnimationDurationMilliSeconds)),
+      /* start_time=*/std::nullopt);
+
+  // Trigger activation (reset).
+  source_->scrollIntoView(nullptr);
+  DoBeginFrame();
+
+  // On Impl thread, it should still be PAUSED (reset is not handled on
+  // compositor) until the next commit.
+  // TODO(451238244): Implement reset on the compositor thread.
+  TestKeyframeModel(
+      impl_keyframe_model, gfx::KeyframeModel::PAUSED,
+      /* hold_time=*/
+      base::TimeDelta(base::Milliseconds(kAnimationDurationMilliSeconds)),
+      /* start_time=*/std::nullopt);
+
+  // Deliver trigger activation to main thread.
+  DoBeginFrame();
+
+  // Verify blink animation current time is 0.
+  EXPECT_NEAR(blink_animation_->CurrentTimeInternal().value().InMillisecondsF(),
+              0.0, 1.0);
+  EXPECT_TRUE(blink_animation_->PausedForTrigger());
+
+  // Re-evaluate pointers because they might have been recreated.
+  impl_keyframe_model = GetImplKeyframeModel();
+  main_keyframe_model = GetMainKeyframeModel();
+
+  // Both should be PAUSED_EXCLUSIVE at 0.
+  TestKeyframeModel(main_keyframe_model, gfx::KeyframeModel::PAUSED_EXCLUSIVE,
+                    /* hold_time=*/base::TimeDelta(),
+                    /* start_time=*/std::nullopt);
+  TestKeyframeModel(impl_keyframe_model, gfx::KeyframeModel::PAUSED_EXCLUSIVE,
+                    /* hold_time=*/base::TimeDelta(),
+                    /* start_time=*/std::nullopt);
+}
+
+TEST_F(CompositorTimelineTriggerBehaviorTest, PerformResetOnFinishedNegative) {
+  Initialize("reset", "none");
+
+  // Finish the animation backwards.
+  blink_animation_->updatePlaybackRate(-1);
+  blink_animation_->finish(ASSERT_NO_EXCEPTION);
+  EXPECT_EQ(blink_animation_->CalculateAnimationPlayState(),
+            V8AnimationPlayState::Enum::kFinished);
+  DoBeginFrame();
+
+  cc::KeyframeModel* impl_keyframe_model = GetImplKeyframeModel();
+  cc::KeyframeModel* main_keyframe_model = GetMainKeyframeModel();
+
+  // For negative playback rate, finishing puts it at 0.
+  TestKeyframeModel(impl_keyframe_model, gfx::KeyframeModel::PAUSED,
+                    /* hold_time=*/base::TimeDelta(),
+                    /* start_time=*/std::nullopt);
+
+  // Trigger activation (reset).
+  source_->scrollIntoView(nullptr);
+  DoBeginFrame();
+
+  // On Impl thread, it should still be PAUSED (reset is not handled on
+  // compositor) until the next commit.
+  // TODO(451238244): Implement reset on the compositor thread.
+  TestKeyframeModel(impl_keyframe_model, gfx::KeyframeModel::PAUSED,
+                    /* hold_time=*/base::TimeDelta(),
+                    /* start_time=*/std::nullopt);
+
+  // Deliver trigger activation to main thread.
+  DoBeginFrame();
+
+  // Verify blink animation current time is effect end.
+  EXPECT_NEAR(blink_animation_->CurrentTimeInternal().value().InMillisecondsF(),
+              kAnimationDurationMilliSeconds, 1.0);
+  EXPECT_TRUE(blink_animation_->PausedForTrigger());
+
+  // Re-evaluate pointers because they might have been recreated.
+  impl_keyframe_model = GetImplKeyframeModel();
+  main_keyframe_model = GetMainKeyframeModel();
+
+  // Both should be PAUSED_EXCLUSIVE at effect end.
+  TestKeyframeModel(
+      main_keyframe_model, gfx::KeyframeModel::PAUSED_EXCLUSIVE,
+      /* hold_time=*/base::Milliseconds(kAnimationDurationMilliSeconds),
+      /* start_time=*/std::nullopt);
+  TestKeyframeModel(
+      impl_keyframe_model, gfx::KeyframeModel::PAUSED_EXCLUSIVE,
+      /* hold_time=*/base::Milliseconds(kAnimationDurationMilliSeconds),
+      /* start_time=*/std::nullopt);
+}
+
+TEST_F(CompositorTimelineTriggerBehaviorTest, PlayReset) {
+  Initialize("play", "reset");
+
+  cc::KeyframeModel* impl_keyframe_model = GetImplKeyframeModel();
+  cc::KeyframeModel* main_keyframe_model = GetMainKeyframeModel();
+
+  // Scroll to trigger play.
+  source_->scrollIntoView(nullptr);
+
+  // commit scroll to CC, CC starts playing.
+  DoBeginFrame();
+  base::TimeTicks play_start_time = Compositor().LastFrameTime();
+  TestKeyframeModel(impl_keyframe_model, gfx::KeyframeModel::RUNNING,
+                    /*hold_time=*/std::nullopt,
+                    /*start_time=*/play_start_time);
+  EXPECT_EQ(blink_animation_->CalculateAnimationPlayState(),
+            V8AnimationPlayState::Enum::kPaused);
+
+  // notify main thread of trigger activation, blink animation starts playing.
+  DoBeginFrame();
+  TestKeyframeModel(impl_keyframe_model, gfx::KeyframeModel::RUNNING,
+                    /*hold_time=*/std::nullopt,
+                    /*start_time=*/play_start_time);
+  EXPECT_EQ(blink_animation_->CalculateAnimationPlayState(),
+            V8AnimationPlayState::Enum::kRunning);
+
+  // Scroll to trigger reset.
+  scroller_->scrollTo(nullptr, 0, 0);
+
+  // commit scroll to CC, CC deactivates trigger.
+  // However, since reset is no-op on CC, it should still be running on CC until
+  // the next commit.
+  // TODO(451238244): Implement reset on the compositor thread.
+  DoBeginFrame();
+  TestKeyframeModel(impl_keyframe_model, gfx::KeyframeModel::RUNNING,
+                    /*hold_time=*/std::nullopt,
+                    /*start_time=*/play_start_time);
+  // Main thread hasn't received the event yet.
+  EXPECT_EQ(blink_animation_->CalculateAnimationPlayState(),
+            V8AnimationPlayState::Enum::kRunning);
+  TestKeyframeModel(main_keyframe_model, gfx::KeyframeModel::RUNNING,
+                    /*hold_time=*/std::nullopt,
+                    /*start_time=*/impl_keyframe_model->start_time());
+
+  // Ensure current time has advanced.
+  EXPECT_GT(blink_animation_->CurrentTimeInternal().value().InMillisecondsF(),
+            0.0);
+
+  // notify main thread of trigger deactivation, main performs reset (pauses at
+  // 0), commits to CC. CC should now also be paused at 0.
+  DoBeginFrame();
+  EXPECT_EQ(blink_animation_->CalculateAnimationPlayState(),
+            V8AnimationPlayState::Enum::kPaused);
+  // Verify blink animation current time is 0.
+  EXPECT_NEAR(blink_animation_->CurrentTimeInternal().value().InMillisecondsF(),
+              0.0, 1.0);
+  EXPECT_TRUE(blink_animation_->PausedForTrigger());
+
+  impl_keyframe_model = GetImplKeyframeModel();
+  main_keyframe_model = GetMainKeyframeModel();
+
+  // On Main thread, it should be PAUSED_EXCLUSIVE at 0.
+  TestKeyframeModel(main_keyframe_model, gfx::KeyframeModel::PAUSED_EXCLUSIVE,
+                    /* hold_time=*/base::TimeDelta(),
+                    /* start_time=*/std::nullopt);
+
+  // On Impl thread, it should also be PAUSED_EXCLUSIVE at 0 (synced from main).
+  TestKeyframeModel(impl_keyframe_model, gfx::KeyframeModel::PAUSED_EXCLUSIVE,
+                    /* hold_time=*/base::TimeDelta(),
+                    /* start_time=*/std::nullopt);
+}
+
+TEST_F(CompositorAnimationTriggerTest,
+       TriggeredSourceKeepsInheritanceWhileFinished) {
+  ScopedTrackAnimatedSourcesForTest track_animated_sources(true);
+  SimRequest request("https://example.com/test.html", "text/html");
+  LoadURL("https://example.com/test.html");
+  request.Complete(R"HTML(
+    <!doctype html>
+    <style>
+      div {
+        width: 100px;
+        height: 100px;
+        will-change: opacity;
+      }
+      @keyframes fade {
+        from { opacity: 0.2; }
+        to { opacity: 0.8; }
+      }
+      #source {
+        animation: fade 1s;
+        timeline-trigger: --trigger view();
+        animation-trigger: --trigger replay;
+      }
+      #target {
+        opacity: inherit;
+      }
+    </style>
+    <div id=source><div id=target></div></div>
+  )HTML");
+  Compositor().BeginFrame();
+  Animation* source = GetElement("source")->getAnimations()[0];
+  EXPECT_FALSE(source->HasActiveAnimationsOnCompositor());
+
+  // Once finished, target no longer inherits from source, but the recorded
+  // inheritance still keeps the replayed animation off the compositor.
+  source->finish(ASSERT_NO_EXCEPTION);
+  Compositor().BeginFrame();
+  EXPECT_FALSE(source->HasActiveAnimationsOnCompositor());
+  EXPECT_EQ(source->GetCompositingDecisionState().disposition,
+            CompositorAnimations::kUnsupportedInheritance);
+}
+
+TEST_F(CompositorAnimationTriggerTest, InactiveTimeline) {
+  SimRequest request("https://example.com/test.html", "text/html");
+  LoadURL("https://example.com/test.html");
+  request.Complete(R"HTML(
+    <!DOCTYPE html>
+    <style>
+     @keyframes anim {
+        from { opacity: 0; }
+        to { opacity: 1; }
+      }
+      #target {
+        animation: anim 1s both;
+        width: 100px; height: 50px; background: blue;
+        timeline-trigger: --trigger scroll(self);
+        animation-trigger: --trigger play;
+      }
+    </style>
+    <div id='target'></div>
+  )HTML");
+
+  Compositor().BeginFrame();
+
+  Element* target = GetElement("target");
+  ASSERT_NE(target, nullptr);
+  ASSERT_NE(target->NamedTriggers(), nullptr);
+  ASSERT_FALSE(target->NamedTriggers()->empty());
+
+  TimelineTrigger* trigger =
+      DynamicTo<TimelineTrigger>(target->NamedTriggers()->begin()->value.Get());
+  ASSERT_NE(trigger, nullptr);
+
+  EXPECT_FALSE(trigger->Timeline()->IsActive());
+  EXPECT_EQ(trigger->CompositorTrigger(), nullptr);
+}
+
+TEST_F(CompositorAnimationTriggerTest,
+       InactiveMainTimelineCompositorUpdateSkipped) {
+  SimRequest request("https://example.com/test.html", "text/html");
+  LoadURL("https://example.com/test.html");
+  request.Complete(R"HTML(
+    <!DOCTYPE html>
+    <style>
+      #scroller {
+        width: 100px;
+        height: 200px;
+        overflow: scroll;
+      }
+      #content {
+        height: 300px;
+      }
+      @keyframes anim {
+        from { opacity: 0; }
+        to { opacity: 1; }
+      }
+      #target {
+        width: 100px;
+        height: 50px;
+        background: blue;
+      }
+      #target.trigger-active {
+        animation: anim 1s both;
+        timeline-trigger: --trigger scroll(nearest);
+        animation-trigger: --trigger play;
+      }
+    </style>
+    <div id='scroller'>
+      <div id='content'></div>
+      <div id='target' class='trigger-active'></div>
+    </div>
+  )HTML");
+
+  Compositor().BeginFrame();
+
+  Element* scroller = GetElement("scroller");
+  Element* target = GetElement("target");
+
+  // Verify active and composited.
+  TimelineTrigger* trigger =
+      DynamicTo<TimelineTrigger>(target->NamedTriggers()->begin()->value.Get());
+  EXPECT_TRUE(trigger->Timeline()->IsActive());
+  EXPECT_NE(trigger->CompositorTrigger(), nullptr);
+
+  // Remove animation to destroy compositor trigger.
+  target->removeAttribute(html_names::kClassAttr);
+  Compositor().BeginFrame();
+  EXPECT_EQ(trigger->CompositorTrigger(), nullptr);
+
+  // Make timeline inactive AND restore trigger.
+  scroller->setAttribute(html_names::kStyleAttr,
+                         AtomicString("display: none;"));
+  target->setAttribute(html_names::kClassAttr, AtomicString("trigger-active"));
+
+  // Use kJavaScript to update layout but defer snapshotting, keeping the
+  // compositor timeline offsets stale (active) while main thread is inactive.
+  GetDocument().UpdateStyleAndLayout(DocumentUpdateReason::kJavaScript);
+
+  // Trigger creation while mismatched.
+  GetDocument().GetDocumentAnimations().UpdateAnimations(
+      DocumentLifecycle::kLayoutClean, nullptr, false);
 }
 
 }  // namespace blink

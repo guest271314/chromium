@@ -5,27 +5,36 @@
 #include "chrome/browser/glic/service/glic_instance_coordinator_impl.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
+#include <functional>
 
 #include "base/check.h"
 #include "base/check_deref.h"
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/logging.h"
+#include "base/memory_coordinator/memory_coordinator_features.h"
+#include "base/memory_coordinator/utils.h"
 #include "base/metrics/histogram_functions.h"
+#include "base/numerics/safe_conversions.h"
 #include "base/rand_util.h"
+#include "base/task/sequenced_task_runner.h"
+#include "base/task/single_thread_task_runner.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
+#include "chrome/browser/actor/actor_keyed_service.h"
+#include "chrome/browser/actor/actor_task.h"
 #include "chrome/browser/glic/common/future_browser_features.h"
 #include "chrome/browser/glic/common/glic_tab_observer.h"
 #include "chrome/browser/glic/common/instance_independent_hotkey_manager.h"
 #include "chrome/browser/glic/glic_pref_names.h"
 #include "chrome/browser/glic/host/context/glic_active_instance_sharing_manager.h"
+#include "chrome/browser/glic/host/context/glic_sharing_utils.h"
 #include "chrome/browser/glic/host/glic.mojom.h"
+#include "chrome/browser/glic/host/glic_web_contents_manager.h"
 #include "chrome/browser/glic/host/glic_web_contents_warming_pool.h"
-#include "chrome/browser/glic/host/guest_util.h"
 #include "chrome/browser/glic/host/host.h"
-#include "chrome/browser/glic/host/webui_contents_container.h"
 #include "chrome/browser/glic/public/features.h"
 #include "chrome/browser/glic/public/glic_enabling.h"
 #include "chrome/browser/glic/public/glic_keyed_service.h"
@@ -35,17 +44,21 @@
 #include "chrome/browser/glic/service/glic_instance_impl.h"
 #include "chrome/browser/glic/service/metrics/glic_instance_coordinator_metrics.h"
 #include "chrome/browser/glic/service/metrics/glic_instance_metrics.h"
+#include "chrome/browser/glic/service/metrics/glic_invoke_metrics.h"
 #include "chrome/browser/glic/widget/browser_conditions.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/tab_list/tab_list_interface.h"
 #include "chrome/browser/ui/browser_commands.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface_iterator.h"
 #include "chrome/common/chrome_features.h"
 #include "components/prefs/pref_service.h"
+#include "components/tab_groups/tab_group_id.h"
 #include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/render_process_host.h"
 #include "content/public/browser/web_contents.h"
 #include "third_party/abseil-cpp/absl/functional/overload.h"
+#include "ui/base/base_window.h"
 
 namespace glic {
 
@@ -69,11 +82,44 @@ GlicTabRestoreData* GetTabRestoreData(const TabCreationEvent& creation_event) {
   return GlicTabRestoreData::FromWebContents(
       creation_event.new_tab->GetContents());
 }
-}  // namespace
 
-BASE_FEATURE(kGlicMaxAwakeInstances, base::FEATURE_ENABLED_BY_DEFAULT);
-constexpr base::FeatureParam<int> kGlicMaxAwakeInstancesLimit{
-    &kGlicMaxAwakeInstances, "limit", 15};
+bool IsEligibleForHibernation(const GlicInstanceImpl* instance) {
+  return !instance->IsHibernated() && !instance->IsActuating() &&
+         !instance->IsShowing();
+}
+
+// Whether `target.live_mode_behavior` can have any effect on an invocation
+// targeting `target.surface`. Apart from `kFail`, these behaviors work by
+// choosing between a tab's side panel and the floaty, so they need a surface
+// that resolves to one of those up front. `LastActiveOrNew` instead resolves
+// to whichever surface the instance is already on, so nothing can steer it.
+bool CanLiveModeBehaviorTakeEffect(const Target& target) {
+  switch (target.live_mode_behavior) {
+    case LiveModeBehavior::kProceedInLiveMode:
+    case LiveModeBehavior::kFail:
+      return true;
+    case LiveModeBehavior::kForceSidePanelTextMode:
+      return !std::holds_alternative<Floating>(target.surface) &&
+             !std::holds_alternative<LastActiveOrNew>(target.surface);
+    case LiveModeBehavior::kForceFloatingTextMode:
+      return !std::holds_alternative<LastActiveOrNew>(target.surface);
+  }
+}
+
+constexpr base::MemoryConsumerTraits kGlicInstanceCoordinatorTraits(
+    // Each awake Glic instance can use up to a hundred megabytes.
+    base::MemoryConsumerTraits::EstimatedMemoryUsage::kLarge,
+    // The released memory isn't accessed directly: it's mostly the renderer's,
+    // freed by the OS when the process exits. Only instance metadata is walked
+    // to pick which ones to hibernate.
+    base::MemoryConsumerTraits::ReleaseMemoryDataAccess::kNone,
+    // Hibernating a background Glic instance preserves session state.
+    base::MemoryConsumerTraits::InformationRetention::kLossless,
+    // Releases memory synchronously.
+    base::MemoryConsumerTraits::ExecutionType::kSynchronous,
+    // Awakening an instance requires spawning a new WebContents.
+    base::MemoryConsumerTraits::RecreateMemoryCost::kExpensive);
+}  // namespace
 
 GlicInstanceCoordinatorImpl::GlicInstanceCoordinatorImpl(
     Profile* profile,
@@ -86,24 +132,32 @@ GlicInstanceCoordinatorImpl::GlicInstanceCoordinatorImpl(
       profile_(profile),
       service_(service),
       contextual_cueing_service_(contextual_cueing_service),
-      memory_pressure_listener_registration_(
-          FROM_HERE,
-          base::MemoryPressureListenerTag::kGlicKeyedService,
-          this),
+      memory_consumer_registration_(
+          kMemoryConsumerName,
+          kGlicInstanceCoordinatorTraits,
+          this,
+          base::MemoryConsumerRegistration::CheckUnregister::kDisabled),
+      current_max_awake_limit_(
+          base::FeatureList::IsEnabled(kGlicMaxAwakeInstances)
+              ? ComputeTargetMaxAwakeInstancesLimit()
+              : 0),
       metrics_(this),
       web_contents_warming_pool_(
-          std::make_unique<GlicWebContentsWarmingPool>(profile)),
+          std::make_unique<GlicWebContentsWarmingPool>(profile, enabling)),
       active_instance_sharing_manager_(
           std::make_unique<GlicActiveInstanceSharingManager>(profile,
                                                              enabling)) {
+  OnUpdateMemoryLimit();
   if (identity_manager) {
     identity_manager_observation_.Observe(identity_manager);
   }
   tab_observer_ = GlicTabObserver::Create(
       profile_, base::BindRepeating(&GlicInstanceCoordinatorImpl::OnTabEvent,
                                     weak_ptr_factory_.GetWeakPtr()));
-  hotkey_manager_ =
-      std::make_unique<InstanceIndependentHotkeyManager>(this, profile_);
+  hotkey_manager_ = std::make_unique<InstanceIndependentHotkeyManager>(
+      this, profile_, enabling);
+  onboarding_tracker_ =
+      std::make_unique<GlicOnboardingTracker>(profile_, enabling);
   metrics_.StartPeriodicMemoryMetricsRecording();
 }
 
@@ -112,6 +166,11 @@ GlicInstanceCoordinatorImpl::~GlicInstanceCoordinatorImpl() {
   active_instance_sharing_manager_->SetActiveSharingManager(nullptr);
 
   for (auto& [id, instance] : instances_) {
+    for (auto& handler : TakeInvokeHandlers(instance.get())) {
+      if (handler) {
+        handler->CancelForInstanceRemoval(InstanceRemovalReason::kShutdown);
+      }
+    }
     instance->CloseInstanceAndShutdown();
   }
 
@@ -142,12 +201,19 @@ void GlicInstanceCoordinatorImpl::OnInstanceActivationChanged(
   }
   if (active_instance_) {
     active_instance_sharing_manager_->SetActiveSharingManager(
-        &active_instance_->sharing_manager());
+        &active_instance_->GetSharingManagerInternal());
   } else {
     active_instance_sharing_manager_->SetActiveSharingManager(nullptr);
   }
   NotifyActiveInstanceChanged();
   ComputeContentAccessIndicator();
+}
+
+void GlicInstanceCoordinatorImpl::OnInstanceWillAwaken() {
+  // Before an existing instance creates its WebUI container and awakens,
+  // enforce the max awake limit so that older background instances are pruned
+  // to make room for this one if we are already at capacity.
+  ApplyMaxAwakeInstancesLimit();
 }
 
 void GlicInstanceCoordinatorImpl::OnInstanceVisibilityChanged(
@@ -160,12 +226,76 @@ void GlicInstanceCoordinatorImpl::OnInstanceVisibilityChanged(
   metrics_.OnInstanceVisibilityChanged();
 }
 
+bool GlicInstanceCoordinatorImpl::IsInvoking(
+    const GlicInstanceImpl* instance) const {
+  return FindClientInvokeHandler(const_cast<GlicInstanceImpl*>(instance)) !=
+         nullptr;
+}
+
+void GlicInstanceCoordinatorImpl::CancelInvoke(GlicInstanceImpl* instance) {
+  for (auto& handler : TakeInvokeHandlers(instance)) {
+    if (handler) {
+      handler->Cancel(GlicInvokeError::kCancelled);
+    }
+  }
+}
+
+void GlicInstanceCoordinatorImpl::CancelShowOnlyInvokes(
+    GlicInstanceImpl* instance,
+    GlicInvokeError error) {
+  // Take the handlers out first: cancelling one re-enters
+  // OnInvokeHandlerComplete(), which would otherwise mutate the map under us.
+  std::vector<std::unique_ptr<GlicInvokeHandler>> show_only;
+  auto [begin, end] = invoke_handlers_.equal_range(instance);
+  for (auto it = begin; it != end;) {
+    if (it->second && !it->second->requires_client_invoke()) {
+      show_only.push_back(std::move(invoke_handlers_.extract(it++).mapped()));
+    } else {
+      ++it;
+    }
+  }
+  for (auto& handler : show_only) {
+    handler->Cancel(error);
+  }
+}
+
+std::vector<std::unique_ptr<GlicInvokeHandler>>
+GlicInstanceCoordinatorImpl::TakeInvokeHandlers(GlicInstance* instance) {
+  auto [begin, end] = invoke_handlers_.equal_range(instance);
+  std::vector<std::unique_ptr<GlicInvokeHandler>> handlers;
+  for (auto it = begin; it != end; ++it) {
+    handlers.push_back(std::move(it->second));
+  }
+  invoke_handlers_.erase(begin, end);
+  return handlers;
+}
+
+void GlicInstanceCoordinatorImpl::OnInvoked(mojom::InvocationSource source,
+                                            ukm::SourceId source_id) {
+  if (onboarding_tracker_) {
+    onboarding_tracker_->OnInvoke(source, source_id);
+  }
+}
+
+void GlicInstanceCoordinatorImpl::OnUserInputSubmitted(
+    ukm::SourceId source_id) {
+  if (onboarding_tracker_) {
+    onboarding_tracker_->OnPrompt(source_id);
+  }
+}
+
+void GlicInstanceCoordinatorImpl::OnFreOptInShown(ukm::SourceId source_id) {
+  if (onboarding_tracker_) {
+    onboarding_tracker_->OnFreOptInShown(source_id);
+  }
+}
+
 void GlicInstanceCoordinatorImpl::OnPrimaryAccountChanged(
     const signin::PrimaryAccountChangeEvent& event_details) {
   if (event_details.GetEventTypeFor(signin::ConsentLevel::kSignin) ==
       signin::PrimaryAccountChangeEvent::Type::kCleared) {
     // Close all instances on sign-out.
-    RemoveAllInstances();
+    RemoveAllInstances(InstanceRemovalReason::kSignedOut);
   }
 }
 
@@ -175,15 +305,9 @@ void GlicInstanceCoordinatorImpl::NotifyActiveInstanceChanged() {
 
 void GlicInstanceCoordinatorImpl::ComputeContentAccessIndicator() {
   if (active_instance_) {
-    if (base::FeatureList::IsEnabled(features::kGlicLiveModeOnlyGlow)) {
-      service_->SetContextAccessIndicator(
-          active_instance_->IsShowing() && active_instance_->IsLiveMode() &&
-          active_instance_->host().IsContextAccessIndicatorEnabled());
-    } else {
-      service_->SetContextAccessIndicator(
-          active_instance_->IsShowing() &&
-          active_instance_->host().IsContextAccessIndicatorEnabled());
-    }
+    service_->SetContextAccessIndicator(
+        active_instance_->IsShowing() && active_instance_->IsLiveMode() &&
+        active_instance_->host().IsContextAccessIndicatorEnabled());
   } else {
     service_->SetContextAccessIndicator(false);
   }
@@ -210,8 +334,17 @@ GlicInstanceImpl* GlicInstanceCoordinatorImpl::GetInstanceImplForTab(
   return nullptr;
 }
 
-std::vector<GlicInstanceImpl*>
-GlicInstanceCoordinatorImpl::GetInstancesForTesting() {
+GlicInstanceImpl* GlicInstanceCoordinatorImpl::GetInstanceImplForTabGroup(
+    tab_groups::TabGroupId group_id) const {
+  for (const auto& [id, instance] : instances_) {
+    if (instance->GetTabGroup() == group_id) {
+      return instance.get();
+    }
+  }
+  return nullptr;
+}
+
+std::vector<GlicInstanceImpl*> GlicInstanceCoordinatorImpl::GetInstances() {
   std::vector<GlicInstanceImpl*> instances;
   for (auto& entry : instances_) {
     instances.push_back(entry.second.get());
@@ -240,10 +373,10 @@ GlicInstanceCoordinatorImpl::GetAllUnhibernatedWebContents() {
     }
   }
   if (web_contents_warming_pool_) {
-    if (auto* webui_contents =
+    if (auto warmed_contents =
             web_contents_warming_pool_->GetWarmedWebContents()) {
-      result.push_back(
-          {webui_contents, GetGlicGuestWebContents(webui_contents)});
+      result.push_back({warmed_contents->webui_contents.get(),
+                        warmed_contents->guest_contents.get()});
     }
   }
   return result;
@@ -263,38 +396,143 @@ bool GlicInstanceCoordinatorImpl::IsConversationPresent(
   return !!GetInstanceImplForConversationId(conversation_id);
 }
 
+GlicInstanceCoordinator::ActivateTabResult
+GlicInstanceCoordinatorImpl::ActivateTabWithConversation(
+    const std::string& conversation_id) {
+  GlicInstanceImpl* instance =
+      GetInstanceImplForConversationId(conversation_id);
+  if (!instance) {
+    return GlicInstanceCoordinator::ActivateTabResult::kConversationNotFound;
+  }
+
+  std::vector<raw_ptr<tabs::TabInterface>> target_tabs;
+
+  // Try to get tabs from the actor task manager first.
+  GlicActorTaskManager* task_manager = instance->GetActorTaskManager();
+  if (task_manager) {
+    target_tabs = task_manager->GetLastActedTabs();
+  }
+
+  // If no tabs from actor, fallback to bound tabs.
+  if (target_tabs.empty()) {
+    target_tabs = instance->GetBoundTabs();
+  }
+
+  metrics_.RecordActivateTabCandidateTabCount(target_tabs.size());
+  if (target_tabs.empty()) {
+    return GlicInstanceCoordinator::ActivateTabResult::kNoBoundTabs;
+  }
+
+  tabs::TabInterface* target_tab = GetMostRecentlyActiveTab(target_tabs);
+
+  BrowserWindowInterface* target_browser =
+      target_tab->GetBrowserWindowInterface();
+  if (!target_browser) {
+    return GlicInstanceCoordinator::ActivateTabResult::kTabNotInWindow;
+  }
+
+  auto* tab_list = TabListInterface::From(target_browser);
+  tab_list->ActivateTab(target_tab->GetHandle());
+  target_browser->GetWindow()->Activate();
+
+  return GlicInstanceCoordinator::ActivateTabResult::kSuccess;
+}
+
+GlicInstance* GlicInstanceCoordinatorImpl::GetInstanceForConversationId(
+    const std::string& conversation_id) const {
+  return GetInstanceImplForConversationId(conversation_id);
+}
+
+GlicInstance* GlicInstanceCoordinatorImpl::GetInstanceForTaskId(
+    int task_id) const {
+  for (const auto& [id, instance] : instances_) {
+    if (instance->task_id() == task_id) {
+      return instance.get();
+    }
+  }
+  return nullptr;
+}
+
 GlicInstance* GlicInstanceCoordinatorImpl::GetInstanceForTab(
     const tabs::TabInterface* tab) const {
   return GetInstanceImplForTab(tab);
 }
 
-void GlicInstanceCoordinatorImpl::CreateNewConversationForTabs(
-    const std::vector<tabs::TabInterface*>& tabs) {
-  if (tabs.empty()) {
-    return;
+GlicInstance* GlicInstanceCoordinatorImpl::GetInstanceForTabGroup(
+    tab_groups::TabGroupId group_id) const {
+  return GetInstanceImplForTabGroup(group_id);
+}
+
+GlicInstance* GlicInstanceCoordinatorImpl::ShowInstanceForTabGroup(
+    tab_groups::TabGroupId group_id) {
+  GlicInstanceImpl* existing_instance = GetInstanceImplForTabGroup(group_id);
+
+  if (existing_instance) {
+    existing_instance->ShowForTabGroup(group_id, /*options=*/std::nullopt);
+    return existing_instance;
   }
 
   GlicInstanceImpl* instance = CreateGlicInstance();
-  ShowInstanceForTabs(instance, tabs, GlicPinTrigger::kContextMenu);
+  instance->ShowForTabGroup(group_id, /*options=*/std::nullopt);
+  return instance;
 }
 
-void GlicInstanceCoordinatorImpl::ShowInstanceForTabs(
-    const std::vector<tabs::TabInterface*>& tabs,
-    const InstanceId& instance_id) {
-  auto* target_instance = GetInstanceImplFor(instance_id);
+GlicInstance* GlicInstanceCoordinatorImpl::GetInstanceWithGlicWebContents(
+    content::WebContents* glic_web_contents) const {
+  if (!glic_web_contents) {
+    return nullptr;
+  }
+  for (const auto& [id, instance] : instances_) {
+    if (instance->host().IsWebContentPresentAndMatches(
+            glic_web_contents->GetPrimaryMainFrame())) {
+      return instance.get();
+    }
+  }
+  return nullptr;
+}
 
-  if (!target_instance) {
+bool GlicInstanceCoordinatorImpl::MaybeInvoke(BrowserWindowInterface* bwi,
+                                              mojom::InvocationSource source) {
+  if (!bwi && GlicEnabling::IsLiveAndFloatyEnabledByFlags()) {
+    return false;
+  }
+  BrowserWindowInterface* target_bwi =
+      bwi ? bwi : GetActiveGlicEligibleBrowser(profile_);
+  if (!target_bwi) {
+    return false;
+  }
+
+  bool panel_closed = !IsPanelShowingForBrowser(*target_bwi);
+  bool fre_override_compatible =
+      !GlicEnabling::HasConsentedForProfile(profile_);
+
+  if (fre_override_compatible && panel_closed &&
+      (base::FeatureList::IsEnabled(features::kGlicMessageFirstFre) ||
+       base::FeatureList::IsEnabled(features::kGlicActionFirstFRE))) {
+    GlicInvokeOptions options(source);
+    if (auto* active_tab = TabListInterface::From(target_bwi)->GetActiveTab()) {
+      options.target = Target(*active_tab);
+    }
+    options.fre_override = mojom::FreOverride::kTrustFirstInline;
+    Invoke(std::move(options));
+    return true;
+  }
+
+  return false;
+}
+
+void GlicInstanceCoordinatorImpl::Show(BrowserWindowInterface* browser,
+                                       mojom::InvocationSource source) {
+  CHECK(GlicEnabling::ShouldShowGlicButton(profile_));
+
+  // TODO(b/542727532): Follow up on whether MaybeInvoke is still needed and
+  // remove if possible.
+  if (MaybeInvoke(browser, source)) {
     return;
   }
 
-  ShowInstanceForTabs(target_instance, tabs, GlicPinTrigger::kContextMenu);
-}
+  service()->enabling().MaybeRecordRecoveryOnInteraction();
 
-void GlicInstanceCoordinatorImpl::Toggle(
-    BrowserWindowInterface* browser,
-    bool prevent_close,
-    mojom::InvocationSource source,
-    std::optional<std::string> deprecated_prompt_suggestion) {
   if (!browser) {
     if (!GlicEnabling::IsLiveAndFloatyEnabledByFlags()) {
 #if !BUILDFLAG(IS_ANDROID)
@@ -306,23 +544,130 @@ void GlicInstanceCoordinatorImpl::Toggle(
         return;
       }
     } else {
-      ToggleFloaty(prevent_close, source, deprecated_prompt_suggestion);
+      EmbedderKey key = FloatingEmbedderKey();
+      if (GlicInstanceImpl* instance = GetInstanceWithFloaty()) {
+        instance->instance_metrics().OnToggle(source, key, /*is_showing=*/true);
+        return;
+      }
+
+      InvokeAndLogToggle(source, glic::Floating(), key,
+                         std::make_unique<glic::GlicWindowInvocationTracker>());
       return;
     }
   }
 
-  ToggleSidePanel(browser, prevent_close, source, deprecated_prompt_suggestion);
+  auto* tab = TabListInterface::From(browser)->GetActiveTab();
+  if (!tab) {
+    LOG(ERROR) << "Active tab is null";
+    return;
+  }
+  if (!GlicInstanceHelper::From(tab)) {
+    LOG(ERROR) << "Tab doesn't have an instance helper in its UnownedUserData";
+    return;
+  }
+
+  EmbedderKey key = SidePanelEmbedderKey(tab);
+  if (GlicInstanceImpl* instance = GetInstanceImplForTab(tab);
+      instance && instance->IsActiveEmbedder(key)) {
+    instance->instance_metrics().OnToggle(source, key, /*is_showing=*/true);
+    return;
+  }
+
+  InvokeAndLogToggle(source, tab->GetHandle(), key,
+                     std::make_unique<glic::GlicWindowInvocationTracker>());
 }
 
-void GlicInstanceCoordinatorImpl::EnsurePreload() {
-  web_contents_warming_pool_->EnsurePreload();
+std::optional<GlicInstanceCoordinatorImpl::ToggleCloseTarget>
+GlicInstanceCoordinatorImpl::FindCloseTargetForToggle(
+    BrowserWindowInterface* browser) const {
+  if (!browser) {
+    if (!GlicEnabling::IsLiveAndFloatyEnabledByFlags()) {
+      return std::nullopt;
+    }
+    GlicInstanceImpl* instance = GetInstanceWithFloaty();
+    if (!instance) {
+      return std::nullopt;
+    }
+    return ToggleCloseTarget{instance, FloatingEmbedderKey()};
+  }
+
+  if (!IsPanelShowingForBrowser(*browser)) {
+    return std::nullopt;
+  }
+  auto* tab = TabListInterface::From(browser)->GetActiveTab();
+  if (!tab) {
+    return std::nullopt;
+  }
+  GlicInstanceImpl* instance = GetInstanceImplForTab(tab);
+  if (!instance) {
+    return std::nullopt;
+  }
+  EmbedderKey key = SidePanelEmbedderKey(tab);
+  if (!instance->IsActiveEmbedder(key)) {
+    return std::nullopt;
+  }
+  return ToggleCloseTarget{instance, std::move(key)};
+}
+
+bool GlicInstanceCoordinatorImpl::MaybeCloseForToggle(
+    BrowserWindowInterface* browser,
+    mojom::InvocationSource source) {
+  std::optional<ToggleCloseTarget> target = FindCloseTargetForToggle(browser);
+  if (!target) {
+    return false;
+  }
+  target->instance->instance_metrics().OnToggle(source, target->key,
+                                                /*is_showing=*/true);
+  target->instance->Close(target->key);
+  return true;
+}
+
+bool GlicInstanceCoordinatorImpl::WouldToggleClose(
+    BrowserWindowInterface* browser) const {
+  return FindCloseTargetForToggle(browser).has_value();
+}
+
+void GlicInstanceCoordinatorImpl::Toggle(BrowserWindowInterface* browser,
+                                         bool prevent_close,
+                                         mojom::InvocationSource source) {
+  CHECK(GlicEnabling::ShouldShowGlicButton(profile_));
+
+  if (MaybeInvoke(browser, source)) {
+    return;
+  }
+
+  service()->enabling().MaybeRecordRecoveryOnInteraction();
+
+  if (!prevent_close && MaybeCloseForToggle(browser, source)) {
+    return;
+  }
+
+  Show(browser, source);
+}
+
+bool GlicInstanceCoordinatorImpl::MaybeStartWarming(
+    GlicWarmingTrigger trigger) {
+  return web_contents_warming_pool_->MaybeStartWarming(trigger);
 }
 
 void GlicInstanceCoordinatorImpl::Shutdown() {
+  // Take ownership of the handlers to avoid iterator invalidation when
+  // Cancel() removes them from invoke_handlers_.
+  std::multimap<GlicInstance*, std::unique_ptr<GlicInvokeHandler>> handlers(
+      std::move(invoke_handlers_));
+  invoke_handlers_.clear();
+
+  for (auto& [instance, handler] : handlers) {
+    if (handler) {
+      handler->CancelForInstanceRemoval(InstanceRemovalReason::kShutdown);
+    }
+  }
+
   for (auto& [instance_id, instance] : instances_) {
     instance->Shutdown();
   }
-  web_contents_warming_pool_->Clear();
+  web_contents_warming_pool_->Shutdown();
+  hotkey_manager_.reset();
 }
 
 void GlicInstanceCoordinatorImpl::Close(const CloseOptions& options) {
@@ -331,23 +676,26 @@ void GlicInstanceCoordinatorImpl::Close(const CloseOptions& options) {
   CloseFloaty(options);
 }
 
-void GlicInstanceCoordinatorImpl::RemoveAllInstances() {
+void GlicInstanceCoordinatorImpl::RemoveAllInstances(
+    InstanceRemovalReason reason) {
   while (!instances_.empty()) {
-    RemoveInstance(instances_.begin()->second.get());
+    RemoveInstance(instances_.begin()->first, reason);
   }
 }
 
 base::WeakPtr<GlicInstance> GlicInstanceCoordinatorImpl::Invoke(
     GlicInvokeOptions options) {
   return InvokeInternal(std::nullopt, std::move(options),
-                        GlicInvokeWithAutoSubmitOptions());
+                        GlicInvokeWithAutoSubmitOptions(),
+                        GlicInvokeEntryPath::kInvoke);
 }
 
 base::WeakPtr<GlicInstance> GlicInstanceCoordinatorImpl::InvokeWithAutoSubmit(
     InvokeWithAutoSubmitPasskey auto_submit_passkey,
     GlicInvokeOptions options) {
   return InvokeInternal(auto_submit_passkey, std::move(options),
-                        GlicInvokeWithAutoSubmitOptions());
+                        GlicInvokeWithAutoSubmitOptions(),
+                        GlicInvokeEntryPath::kInvokeWithAutoSubmit);
 }
 
 base::WeakPtr<GlicInstance> GlicInstanceCoordinatorImpl::InvokeWithAutoSubmit(
@@ -355,85 +703,291 @@ base::WeakPtr<GlicInstance> GlicInstanceCoordinatorImpl::InvokeWithAutoSubmit(
     GlicInvokeOptions options,
     GlicInvokeWithAutoSubmitOptions auto_submit_options) {
   return InvokeInternal(auto_submit_passkey, std::move(options),
-                        std::move(auto_submit_options));
+                        std::move(auto_submit_options),
+                        GlicInvokeEntryPath::kInvokeWithAutoSubmit);
 }
 
-void GlicInstanceCoordinatorImpl::GetExperimentalTriggeringUpdates(
-    mojo::PendingRemote<mojom::ExperimentalTriggeringUpdatesHandler> handler,
-    base::OnceCallback<void(bool)> success_status_callback) {
-  if (active_instance_) {
-    active_instance_->host().GetExperimentalTriggeringUpdates(
-        std::move(handler), std::move(success_status_callback));
-  } else {
-    std::move(success_status_callback).Run(false);
-  }
-}
-
-base::WeakPtr<GlicInstance> GlicInstanceCoordinatorImpl::InvokeInternal(
+base::WeakPtr<GlicInstanceImpl> GlicInstanceCoordinatorImpl::InvokeInternal(
     std::optional<InvokeWithAutoSubmitPasskey> auto_submit_passkey,
     GlicInvokeOptions options,
-    GlicInvokeWithAutoSubmitOptions auto_submit_options) {
-  GlicInvokeHandler::ResolvedTarget resolved_target =
-      GlicInvokeHandler::ResolveTargetSurface(profile_, options.target);
-  tabs::TabInterface* tab = resolved_target.tab;
-  options.target.surface = tab;
+    GlicInvokeWithAutoSubmitOptions auto_submit_options,
+    GlicInvokeEntryPath entry_path,
+    std::unique_ptr<GlicCuiTracker> cui_tracker) {
+  auto metrics =
+      std::make_unique<GlicInvokeMetrics>(options.GetInvocationSource());
+  metrics->SetEntryPath(entry_path);
+  metrics->SetCuiTracker(std::move(cui_tracker));
+  metrics->SetFeatureMode(
+      options.feature_mode.value_or(mojom::FeatureMode::kUnspecified));
 
-  if (!tab || !GlicInstanceHelper::From(tab)) {
+  auto notify_error = [&](GlicInvokeError error) {
     if (options.on_error) {
-      std::move(options.on_error).Run(GlicInvokeError::kInvalidTab);
+      base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+          FROM_HERE, base::BindOnce(std::move(options.on_error), error));
     }
-    // TODO(crbug.com/483387751): Show default toast here once implemented.
+  };
+
+  if (!GlicEnabling::IsEnabledForProfile(profile_)) {
+    // A window entry point is still shown to a user whose profile is not (or
+    // is no longer) eligible, so a toggle from it opens the panel and lets the
+    // WebUI render the ProfileReadyState error screen. The WebUI reports that
+    // as a client load failure, so the invocation ends in
+    // WaitForClientReadyTask with kClientLoadError and a ClientLoadError reason
+    // saying why. Other entry points fail fast without showing UI.
+    const bool show_error_panel = entry_path == GlicInvokeEntryPath::kToggle &&
+                                  GlicEnabling::ShouldShowGlicButton(profile_);
+    if (!show_error_panel) {
+      metrics->RecordError(GlicInvokeError::kProfileNotEnabled);
+      notify_error(GlicInvokeError::kProfileNotEnabled);
+      return nullptr;
+    }
+  }
+
+  if (const auto* tab_handle =
+          std::get_if<tabs::TabHandle>(&options.target.surface)) {
+    if (tab_handle->raw_value() == tabs::TabHandle::NullValue) {
+      metrics->RecordError(GlicInvokeError::kInvalidTab);
+      notify_error(GlicInvokeError::kInvalidTab);
+      return nullptr;
+    }
+  }
+
+  // Validate against the requested surface, before it gets resolved and
+  // rewritten below: a behavior that could never take effect is a caller
+  // configuration error, whether or not an instance happens to be live.
+  // TODO(b/559214349): Expose a way for callers to ask up front whether an
+  // invocation would be rejected here or by the `kFail` check below, so that
+  // UI entry points can be disabled or hidden instead of failing on click.
+  if (!CanLiveModeBehaviorTakeEffect(options.target)) {
+    metrics->RecordError(GlicInvokeError::kInvalidConfiguration);
+    notify_error(GlicInvokeError::kInvalidConfiguration);
     return nullptr;
+  }
+
+  GlicInvokeHandler::ResolvedTarget resolved_target;
+  tabs::TabInterface* tab = nullptr;
+
+  auto resolve_surface = [&]() -> bool {
+    resolved_target =
+        GlicInvokeHandler::ResolveTargetSurface(profile_, options.target);
+    metrics->SetEmbedderType(
+        GlicInvokeHandler::GetEmbedderType(resolved_target));
+    if (const auto* tab_surface =
+            std::get_if<GlicInvokeHandler::TabSurface>(&resolved_target)) {
+      tab = tab_surface->tab;
+      if (!tab || !GlicInstanceHelper::From(tab)) {
+        GlicInvokeError error = GlicInvokeError::kTabClosed;
+        if (const auto* tab_handle =
+                std::get_if<tabs::TabHandle>(&options.target.surface)) {
+          if (tab_handle->Get()) {
+            error = GlicInvokeError::kInvalidTab;
+          }
+        }
+        metrics->RecordError(error);
+        notify_error(error);
+        // TODO(crbug.com/483387751): Show default toast here once implemented.
+        return false;
+      }
+      options.target.surface = tab->GetHandle();
+    }
+    return true;
+  };
+
+  // We generally want to resolve the target surface before the conversation.
+  // The primary reason is that resolving the `DefaultConversation` might depend
+  // on which surface the conversation is being invoked from (e.g. which tab it
+  // is attached to, or whether it's floating).
+  //
+  // However, the `LastActiveOrNew` surface is a special case. It cannot be
+  // resolved until we know the target `GlicInstance` and its last active
+  // surface. Because of this Catch-22, we skip initial surface resolution for
+  // `LastActiveOrNew` and defer it until after the instance is found. (Note
+  // that a `LastActiveOrNew` surface will never result in finding a surface-
+  // dependent `DefaultConversation` because the conversation must already have
+  // an explicit instance to query its last active surface).
+  if (!std::holds_alternative<LastActiveOrNew>(options.target.surface)) {
+    if (!resolve_surface()) {
+      return nullptr;
+    }
   }
 
   GlicInstanceImpl* instance = nullptr;
 
   instance = std::visit(
-      absl::Overload{[&](const ConversationId& conv_id) {
-                       if (conv_id.conversation_id.empty()) {
-                         if (options.on_error) {
-                           std::move(options.on_error)
-                               .Run(GlicInvokeError::kInvalidConversationId);
-                         }
-                         // TODO(crbug.com/483387751): Show default toast here
-                         // once implemented.
-                         return static_cast<GlicInstanceImpl*>(nullptr);
-                       }
-                       return GetOrCreateInstanceImplForConversationId(
-                           conv_id.conversation_id, conv_id.turn_id);
-                     },
-                     [&](NewConversation) { return CreateGlicInstance(); },
-                     [&](DefaultConversation) {
-                       return GetOrCreateGlicInstanceImplForTab(tab);
-                     }},
+      absl::Overload{
+          [&](const ConversationId& conv_id) {
+            if (conv_id.conversation_id.empty()) {
+              metrics->RecordError(GlicInvokeError::kInvalidConversationId);
+              notify_error(GlicInvokeError::kInvalidConversationId);
+              // TODO(crbug.com/483387751): Show default toast here
+              // once implemented.
+              return static_cast<GlicInstanceImpl*>(nullptr);
+            }
+            return GetOrCreateInstanceImplForConversationId(
+                conv_id.conversation_id, conv_id.turn_id);
+          },
+          [&](NewConversation) { return CreateGlicInstance(); },
+          [&](const InstanceId& id) {
+            GlicInstanceImpl* target_instance = GetInstanceImplFor(id);
+            if (!target_instance) {
+              metrics->RecordError(GlicInvokeError::kInstanceNotFound);
+              notify_error(GlicInvokeError::kInstanceNotFound);
+            }
+            return target_instance;
+          },
+          [&](DefaultConversation) {
+            if (std::holds_alternative<Floating>(resolved_target)) {
+              return GetOrCreateInstanceImplForFloaty();
+            }
+            return GetOrCreateGlicInstanceImplForTab(tab);
+          }},
       options.target.conversation);
 
   if (!instance) {
     return nullptr;
   }
 
-  if (invoke_handlers_.contains(instance)) {
-    if (options.on_error) {
-      std::move(options.on_error).Run(GlicInvokeError::kInvokeInProgress);
-    }
-    // TODO(crbug.com/483387751): Show default toast here once implemented.
+  // `options.target.live_mode_behavior` decides what happens when this
+  // invocation lands on an instance that is already in live (audio) mode,
+  // superseding `options.preserve_active_surface`. A newly created instance is
+  // never in live mode, so this only affects invocations that joined an
+  // existing conversation. The interaction mode is sticky once reported by the
+  // client, so a hidden instance doesn't count as being in live mode.
+  const bool is_showing_live_mode =
+      instance->IsShowing() && instance->IsLiveMode();
+  if (is_showing_live_mode &&
+      options.target.live_mode_behavior == LiveModeBehavior::kFail) {
+    metrics->RecordError(GlicInvokeError::kLiveModeActive);
+    notify_error(GlicInvokeError::kLiveModeActive);
     return nullptr;
   }
 
-  invoke_handlers_[instance] = std::make_unique<GlicInvokeHandler>(
+  const bool is_floating = instance->IsActiveEmbedder(FloatingEmbedderKey{});
+  bool keep_in_floaty = false;
+  if (is_showing_live_mode) {
+    switch (options.target.live_mode_behavior) {
+      case LiveModeBehavior::kProceedInLiveMode:
+        // Live mode runs in the floaty, so carrying on in live mode means
+        // leaving the conversation where it is.
+        keep_in_floaty = is_floating;
+        break;
+      case LiveModeBehavior::kForceFloatingTextMode:
+        // Unlike the above, this pulls the conversation into the floaty.
+        keep_in_floaty = true;
+        break;
+      case LiveModeBehavior::kForceSidePanelTextMode:
+      case LiveModeBehavior::kFail:
+        break;
+    }
+  } else {
+    keep_in_floaty = options.preserve_active_surface && is_floating;
+  }
+
+  // Leave the conversation in the floaty instead of pulling it into the
+  // targeted tab's side panel.
+  if (keep_in_floaty && tab) {
+    // A `DefaultConversation` only resolves to a floating instance when the tab
+    // is already bound to it. An explicitly targeted one may still need to
+    // adopt the tab.
+    if (GetInstanceImplForTab(tab) != instance) {
+      // Bind first: rewriting the surface below discards the tab.
+      // TODO(b/562983414): Infer a more specific pin trigger from the
+      // invocation source.
+      instance->BindTabWithoutShowing(tab, GlicPinTrigger::kInstanceCreation,
+                                      options.pin_on_bind);
+    }
+    options.target.surface = Floating();
+    if (!resolve_surface()) {
+      return nullptr;
+    }
+  }
+
+  // Now that the instance is fully resolved, we can safely resolve the
+  // `LastActiveOrNew` surface and mutate `options.target.surface` to point to
+  // the appropriate final target, before running the surface resolver.
+  if (auto* last_active_or_new =
+          std::get_if<LastActiveOrNew>(&options.target.surface)) {
+    std::optional<Target::Surface> last_active =
+        instance->GetLastActiveSurface();
+    if (last_active) {
+      options.target.surface = *last_active;
+    } else {
+      options.target.surface = NewTab{last_active_or_new->window,
+                                      last_active_or_new->open_in_foreground};
+    }
+
+    if (!resolve_surface()) {
+      return nullptr;
+    }
+  }
+
+  // Only invocations that send an invoke message to the web client conflict
+  // with each other. Invocations that merely show the UI can safely run
+  // simultaneously with any other invocation on the same instance. The toggle
+  // path never sends one, so it skips the check altogether.
+  if (entry_path != GlicInvokeEntryPath::kToggle &&
+      GlicInvokeHandler::RequiresClientInvoke(
+          options, auto_submit_passkey.has_value())) {
+    if (GlicInvokeHandler* in_progress = FindClientInvokeHandler(instance)) {
+      if (options.supersede_if_in_progress) {
+        // If requested by `options.supersede_if_in_progress` (e.g. for a
+        // continuation prompt from the server during actuation), cancel the
+        // previous handler so this invocation can proceed without being
+        // rejected with kInvokeInProgress.
+        std::unique_ptr<GlicInvokeHandler> old_handler =
+            RemoveInvokeHandler(instance, in_progress);
+        old_handler->Cancel(GlicInvokeError::kSuperseded);
+      } else {
+        metrics->RecordInvokeInProgressError(in_progress->invocation_id());
+        notify_error(GlicInvokeError::kInvokeInProgress);
+        // TODO(crbug.com/483387751): Show default toast here once implemented.
+        return nullptr;
+      }
+    }
+  }
+
+  auto handler = std::make_unique<GlicInvokeHandler>(
       *instance, resolved_target, std::move(options),
-      std::move(auto_submit_options), auto_submit_passkey,
+      std::move(auto_submit_options), auto_submit_passkey, std::move(metrics),
       base::BindOnce(&GlicInstanceCoordinatorImpl::OnInvokeHandlerComplete,
                      base::Unretained(this)));
-  invoke_handlers_[instance]->Invoke();
+  GlicInvokeHandler* handler_ptr = handler.get();
+  invoke_handlers_.emplace(instance, std::move(handler));
+  handler_ptr->Invoke();
 
   return instance->GetWeakPtr();
+}
+
+GlicInvokeHandler* GlicInstanceCoordinatorImpl::FindClientInvokeHandler(
+    GlicInstance* instance) const {
+  auto [begin, end] = invoke_handlers_.equal_range(instance);
+  for (auto it = begin; it != end; ++it) {
+    if (it->second && it->second->requires_client_invoke()) {
+      return it->second.get();
+    }
+  }
+  return nullptr;
+}
+
+std::unique_ptr<GlicInvokeHandler>
+GlicInstanceCoordinatorImpl::RemoveInvokeHandler(GlicInstance* instance,
+                                                 GlicInvokeHandler* handler) {
+  auto [begin, end] = invoke_handlers_.equal_range(instance);
+  auto it = std::ranges::find(begin, end, handler, [](const auto& entry) {
+    return entry.second.get();
+  });
+  if (it == end) {
+    return nullptr;
+  }
+  return std::move(invoke_handlers_.extract(it).mapped());
 }
 
 void GlicInstanceCoordinatorImpl::OnInvokeHandlerComplete(
     GlicInstance* instance,
     GlicInvokeHandler* handler) {
-  invoke_handlers_.erase(instance);
+  // This destroys `handler`, which is what the completion callback contract
+  // requires.
+  RemoveInvokeHandler(instance, handler);
 }
 
 void GlicInstanceCoordinatorImpl::CloseAndShutdownInstanceWithFrame(
@@ -441,8 +995,7 @@ void GlicInstanceCoordinatorImpl::CloseAndShutdownInstanceWithFrame(
   for (auto& [id, instance] : instances_) {
     if (instance &&
         instance->host().IsWebContentPresentAndMatches(render_frame_host)) {
-      instance->host().Close();
-      instance->host().Shutdown();
+      instance->Shutdown();
     }
   }
 }
@@ -461,7 +1014,7 @@ void GlicInstanceCoordinatorImpl::ArchiveInstanceWithFrame(
     content::RenderFrameHost* render_frame_host) {
   for (auto& [id, instance] : instances_) {
     if (instance->host().IsWebContentPresentAndMatches(render_frame_host)) {
-      RemoveInstance(instance.get());
+      RemoveInstance(id, InstanceRemovalReason::kArchived);
       return;
     }
   }
@@ -525,7 +1078,7 @@ GlicInstance* GlicInstanceCoordinatorImpl::GetActiveInstance() {
   return active_instance_;
 }
 
-GlicSharingManager&
+GlicSharingManagerInternal&
 GlicInstanceCoordinatorImpl::active_instance_sharing_manager() {
   CHECK(active_instance_sharing_manager_);
   return *active_instance_sharing_manager_;
@@ -580,19 +1133,6 @@ GlicInstanceCoordinatorImpl::GetOrCreateGlicInstanceImplForTab(
         base::Hours(24), 50);
   }
 
-  if (base::FeatureList::IsEnabled(
-          features::kGlicDefaultToLastActiveConversation) &&
-      last_active_instance_ &&
-      last_active_instance_->GetTimeSinceLastActive() <
-          features::kGlicDefaultToLastActiveConversationMaxRecency.Get() &&
-      !last_active_instance_->IsActuating()) {
-    last_active_instance_->instance_metrics().OnDaisyChain(
-        DaisyChainSource::kLastActiveInstance,
-        /*success=*/true, tab,
-        /*source_tab=*/nullptr);
-    return last_active_instance_;
-  }
-
   // Create a new conversation and instance.
   return CreateGlicInstance();
 }
@@ -606,53 +1146,102 @@ GlicInstanceImpl* GlicInstanceCoordinatorImpl::GetInstanceImplFor(
   return nullptr;
 }
 
-void GlicInstanceCoordinatorImpl::ApplyMaxAwakeInstancesLimit() {
-  if (base::FeatureList::IsEnabled(kGlicMaxAwakeInstances)) {
-    size_t awake_count = 0;
-    for (const auto& [id, instance] : instances_) {
-      if (!instance->IsHibernated()) {
-        awake_count++;
-      }
+size_t GlicInstanceCoordinatorImpl::GetAwakeInstancesCount() const {
+  size_t total_awake_count = 0;
+  for (const auto& [id, instance] : instances_) {
+    if (!instance->IsHibernated()) {
+      total_awake_count++;
     }
+  }
+  return total_awake_count;
+}
 
-    const size_t limit = kGlicMaxAwakeInstancesLimit.Get();
-    if (awake_count < limit) {
-      return;
-    }
+size_t GlicInstanceCoordinatorImpl::ComputeTargetMaxAwakeInstancesLimit()
+    const {
+  CHECK(base::FeatureList::IsEnabled(kGlicMaxAwakeInstances));
+  const size_t baseline_limit =
+      static_cast<size_t>(std::max(1, kGlicMaxAwakeInstancesLimit.Get()));
+  if (!base::FeatureList::IsEnabled(base::kStatefulMemoryPressure)) {
+    return baseline_limit;
+  }
 
-    std::vector<GlicInstanceImpl*> hibernatable_instances;
-    for (auto& [id, instance] : instances_) {
-      if (!instance->IsHibernated() && !instance->IsActuating()) {
+  return CalculateAwakeInstancesLimit(baseline_limit, memory_limit());
+}
+
+size_t GlicInstanceCoordinatorImpl::GetCurrentMaxAwakeInstancesLimit() const {
+  CHECK(base::FeatureList::IsEnabled(kGlicMaxAwakeInstances));
+  return current_max_awake_limit_;
+}
+
+void GlicInstanceCoordinatorImpl::TrimAwakeInstancesTo(
+    size_t target_total_awake_count) {
+  size_t total_awake_count = 0;
+  std::vector<GlicInstanceImpl*> hibernatable_instances;
+  for (const auto& [id, instance] : instances_) {
+    if (!instance->IsHibernated()) {
+      total_awake_count++;
+      if (IsEligibleForHibernation(instance.get())) {
         hibernatable_instances.push_back(instance.get());
       }
     }
-
-    // Sort candidates by time since last active (descending = oldest first).
-    std::sort(hibernatable_instances.begin(), hibernatable_instances.end(),
-              [](const GlicInstanceImpl* a, const GlicInstanceImpl* b) {
-                return a->GetTimeSinceLastActive() >
-                       b->GetTimeSinceLastActive();
-              });
-
-    // Hibernate until we reach `limit - 1`.
-    int target_count = limit - 1;
-    size_t excess_count = awake_count - target_count;
-
-    for (size_t i = 0; i < excess_count && i < hibernatable_instances.size();
-         ++i) {
-      hibernatable_instances[i]->Hibernate();
-    }
   }
+
+  // If we are already within our total awake budget, or if there are no
+  // eligible background instances we can safely hibernate, do nothing.
+  if (total_awake_count <= target_total_awake_count ||
+      hibernatable_instances.empty()) {
+    return;
+  }
+
+  const size_t excess_count =
+      std::min(total_awake_count - target_total_awake_count,
+               hibernatable_instances.size());
+
+  // Partition candidates by time since last active (descending = oldest first)
+  // so that the `excess_count` oldest instances are placed at the front of the
+  // vector.
+  if (excess_count < hibernatable_instances.size()) {
+    std::nth_element(hibernatable_instances.begin(),
+                     hibernatable_instances.begin() + excess_count,
+                     hibernatable_instances.end(),
+                     [](const GlicInstanceImpl* a, const GlicInstanceImpl* b) {
+                       return a->GetTimeSinceLastActive() >
+                              b->GetTimeSinceLastActive();
+                     });
+  }
+
+  for (size_t i = 0; i < excess_count; ++i) {
+    hibernatable_instances[i]->Hibernate();
+  }
+}
+
+void GlicInstanceCoordinatorImpl::ApplyMaxAwakeInstancesLimit() {
+  if (!base::FeatureList::IsEnabled(kGlicMaxAwakeInstances)) {
+    return;
+  }
+
+  // Subtract 1 from the limit to make room for the instance that is about to
+  // awaken. The limit must be at least 1 to avoid an underflow.
+  const size_t limit = std::max<size_t>(1, GetCurrentMaxAwakeInstancesLimit());
+  TrimAwakeInstancesTo(limit - 1);
 }
 
 GlicInstanceImpl* GlicInstanceCoordinatorImpl::CreateGlicInstance(
     std::optional<InstanceId> instance_id) {
-  ApplyMaxAwakeInstancesLimit();
-
   auto instance = CreateInstanceImpl(instance_id);
   instance->instance_metrics().OnInstanceCreatedWithoutWarming();
   auto* instance_ptr = instance.get();
   instances_[instance->id()] = std::move(instance);
+
+  if (auto* task_manager = instance_ptr->GetActorTaskManager()) {
+    actuating_changed_subscriptions_[instance_ptr->id()] =
+        task_manager->AddActuatingChangedCallback(base::BindRepeating(
+            &GlicInstanceCoordinatorImpl::OnInstanceActuatingChanged,
+            base::Unretained(this)));
+  }
+
+  metrics_.RecordCountOnCreation();
+
   return instance_ptr;
 }
 
@@ -664,24 +1253,6 @@ GlicInstanceCoordinatorImpl::CreateInstanceImpl(std::optional<InstanceId> id) {
       profile_, instance_id, weak_ptr_factory_.GetWeakPtr(),
       GlicKeyedServiceFactory::GetGlicKeyedService(profile_)->metrics(),
       contextual_cueing_service_);
-}
-
-void GlicInstanceCoordinatorImpl::ShowInstanceForTabs(
-    GlicInstanceImpl* instance,
-    const std::vector<tabs::TabInterface*>& tabs,
-    GlicPinTrigger pin_trigger) {
-  for (tabs::TabInterface* tab : tabs) {
-    SidePanelShowOptions side_panel_options(*tab);
-    side_panel_options.pin_trigger = pin_trigger;
-    ShowOptions show_opts(side_panel_options);
-    show_opts.focus_on_show =
-        IsActive(tab->GetBrowserWindowInterface()) && tab->IsActivated();
-    // Explicitly pin the tabs for the context menu trigger.
-    if (pin_trigger == GlicPinTrigger::kContextMenu) {
-      instance->sharing_manager().PinTabs({tab->GetHandle()}, pin_trigger);
-    }
-    instance->Show(show_opts);
-  }
 }
 
 GlicInstanceImpl*
@@ -707,66 +1278,53 @@ GlicInstanceCoordinatorImpl::GetOrCreateInstanceImplForFloaty() {
   return floaty_instance;
 }
 
-void GlicInstanceCoordinatorImpl::ToggleFloaty(
-    bool prevent_close,
+// Helper method for toggling the UI open. This should ONLY be used by the
+// toggle flow (ToggleSidePanel, ToggleFloaty) as it bypasses the in-progress
+// invocation check and sets fre_completion_wait_mode to kNever.
+void GlicInstanceCoordinatorImpl::InvokeAndLogToggle(
     glic::mojom::InvocationSource source,
-    std::optional<std::string> prompt_suggestion) {
-  CHECK(GlicEnabling::IsLiveAndFloatyEnabledByFlags());
-  GetOrCreateInstanceImplForFloaty()->Toggle(
-      ShowOptions::ForFloating(/*source_tab=*/tabs::TabHandle::Null()),
-      prevent_close, source, prompt_suggestion);
+    Target::Surface surface,
+    const EmbedderKey& key,
+    std::unique_ptr<GlicWindowInvocationTracker> invocation_tracker) {
+  GlicInvokeOptions invoke_options(source);
+  invoke_options.target.surface = std::move(surface);
+  invoke_options.fre_completion_wait_mode = FreCompletionWaitMode::kNever;
+  if (!GlicEnabling::HasConsentedForProfile(profile_) &&
+      (base::FeatureList::IsEnabled(features::kGlicMessageFirstFre) ||
+       base::FeatureList::IsEnabled(features::kGlicActionFirstFRE))) {
+    invoke_options.fre_override = mojom::FreOverride::kTrustFirstInline;
+  }
+  auto weak_instance = InvokeInternal(std::nullopt, std::move(invoke_options),
+                                      GlicInvokeWithAutoSubmitOptions(),
+                                      GlicInvokeEntryPath::kToggle,
+                                      std::move(invocation_tracker));
+  if (weak_instance) {
+    weak_instance->instance_metrics().OnToggle(source, key,
+                                               /*is_showing=*/false);
+  }
 }
 
-void GlicInstanceCoordinatorImpl::ToggleSidePanel(
-    BrowserWindowInterface* browser,
-    bool prevent_close,
-    mojom::InvocationSource source,
-    std::optional<std::string> prompt_suggestion) {
-  auto* tab = TabListInterface::From(browser)->GetActiveTab();
-  if (!tab) {
-    LOG(ERROR) << "Active tab is null";
-    return;
-  }
-  if (!GlicInstanceHelper::From(tab)) {
-    LOG(ERROR) << "Tab doesn't have an instance helper in its UnownedUserData";
-    return;
-  }
-
-  GlicInstanceImpl* instance = nullptr;
-
-  if (source == glic::mojom::InvocationSource::kSharedImage) {
-    // kSharedImage currently requires a new instance.
-    instance = CreateGlicInstance();
-  } else {
-    instance = GetOrCreateGlicInstanceImplForTab(tab);
-  }
-  // If the tab is already bound, then it already has a pin trigger and this pin
-  // trigger will not be used. If it's not already bound, then we know it's a
-  // newly created instance, so we provide the instance creation trigger.
-  ShowOptions options = ShowOptions::ForSidePanel(
-      *tab, GlicPinTrigger::kInstanceCreation, source);
-
-  instance->Toggle(std::move(options), prevent_close, source,
-                   prompt_suggestion);
-}
-
-void GlicInstanceCoordinatorImpl::RemoveInstance(GlicInstanceImpl* instance) {
-  auto it = instances_.find(instance->id());
+void GlicInstanceCoordinatorImpl::RemoveInstance(InstanceId id,
+                                                 InstanceRemovalReason reason) {
+  auto it = instances_.find(id);
   if (it == instances_.end()) {
     // This instance has already been removed, so there's no work to do.
     return;
   }
-  // If an entry exists for this ID, it must be the specific instance we are
-  // removing. We prohibit overwriting instances in the map, so a mismatch
-  // would indicate a logic bug or state corruption (e.g., during restoration).
-  CHECK_EQ(it->second.get(), instance);
-
+  GlicInstanceImpl* instance = it->second.get();
   OnInstanceActivationChanged(instance, false);
+  actuating_changed_subscriptions_.erase(id);
+
+  // Invocations hold a reference to `instance`, so end them first.
+  for (auto& handler : TakeInvokeHandlers(instance)) {
+    if (handler) {
+      handler->CancelForInstanceRemoval(reason);
+    }
+  }
 
   // Remove the instance first, and then delete. This way,
   // instances_ will not include the instance being deleted while
   // it's being deleted.
-  InstanceId id = instance->id();
   instance->CloseInstanceAndShutdown();
   if (instance == last_active_instance_) {
     last_active_instance_ = nullptr;
@@ -783,6 +1341,8 @@ void GlicInstanceCoordinatorImpl::SwitchConversation(
   ShowOptions mutable_options = options;
   mutable_options.focus_on_show = source_instance.HasFocus();
   mutable_options.reinitialize_if_already_active = true;
+  mutable_options.invocation_source =
+      mojom::InvocationSource::kConversationSwitch;
 
   GlicInstanceImpl* target_instance = nullptr;
   if (!info->conversation_id.empty()) {
@@ -810,8 +1370,9 @@ void GlicInstanceCoordinatorImpl::SwitchConversation(
       // BindTab is not called again, so we must manually overwrite all
       // currently pinned tabs' pin triggers to kConversationChange to make the
       // pin trigger correct.
-      for (auto* tab : target_instance->sharing_manager().GetPinnedTabs()) {
-        target_instance->sharing_manager().SetPinTrigger(
+      for (tabs::TabInterface* tab :
+           target_instance->GetSharingManagerInternal().GetPinnedTabs()) {
+        target_instance->GetSharingManagerInternal().SetPinTrigger(
             tab->GetHandle(), GlicPinTrigger::kConversationChange);
       }
     }
@@ -824,15 +1385,30 @@ void GlicInstanceCoordinatorImpl::SwitchConversation(
       target_instance->conversation_id(), active_instance_);
 
   target_instance->RegisterConversation(std::move(info), base::DoNothing());
+  TransferTabGroupBinding(source_instance, *target_instance);
   target_instance->Show(mutable_options);
   target_instance->instance_metrics().OnSwitchToConversation(mutable_options);
   std::move(callback).Run(std::nullopt);
 }
 
+void GlicInstanceCoordinatorImpl::TransferTabGroupBinding(
+    GlicInstanceImpl& source_instance,
+    GlicInstanceImpl& target_instance) {
+  std::optional<tab_groups::TabGroupId> group_id =
+      source_instance.GetTabGroup();
+  if (group_id.has_value() && &target_instance != &source_instance) {
+    target_instance.BindTabGroup(*group_id);
+  }
+}
+
 std::vector<glic::mojom::ConversationInfoPtr>
 GlicInstanceCoordinatorImpl::GetRecentlyActiveConversations(size_t limit) {
+  base::TimeDelta limit_delta = base::TimeDelta::Max();
+  if (base::FeatureList::IsEnabled(kGlicMaxRecency)) {
+    limit_delta = kGlicMaxRecencyValue.Get();
+  }
   std::vector<GlicInstanceImpl*> sorted_instances =
-      GetSortedRecentInstances(limit);
+      GetSortedRecentInstances(limit, limit_delta);
 
   std::vector<glic::mojom::ConversationInfoPtr> result;
   for (auto* instance : sorted_instances) {
@@ -844,9 +1420,11 @@ GlicInstanceCoordinatorImpl::GetRecentlyActiveConversations(size_t limit) {
 }
 
 std::vector<ConversationInfo>
-GlicInstanceCoordinatorImpl::GetRecentlyActiveInstances(size_t limit) {
+GlicInstanceCoordinatorImpl::GetRecentlyActiveInstances(
+    size_t limit,
+    base::TimeDelta max_time_since_active) {
   std::vector<GlicInstanceImpl*> sorted_instances =
-      GetSortedRecentInstances(limit);
+      GetSortedRecentInstances(limit, max_time_since_active);
 
   std::vector<ConversationInfo> result;
   for (auto* instance : sorted_instances) {
@@ -860,7 +1438,7 @@ GlicInstanceCoordinatorImpl::GetRecentlyActiveInstances(size_t limit) {
 bool GlicInstanceCoordinatorImpl::IsTabPinnedToAnyInstance(
     const tabs::TabHandle& tab_handle) const {
   return std::ranges::any_of(instances_, [&](const auto& entry) {
-    return entry.second->sharing_manager().IsTabPinned(tab_handle);
+    return entry.second->GetSharingManagerInternal().IsTabPinned(tab_handle);
   });
 }
 
@@ -868,12 +1446,14 @@ void GlicInstanceCoordinatorImpl::UnpinTabsFromAllInstances(
     base::span<const tabs::TabHandle> tab_handles,
     GlicUnpinTrigger trigger) {
   for (auto& entry : instances_) {
-    entry.second->sharing_manager().UnpinTabs(tab_handles, trigger);
+    entry.second->GetSharingManagerInternal().UnpinTabs(tab_handles, trigger);
   }
 }
 
 std::vector<GlicInstanceImpl*>
-GlicInstanceCoordinatorImpl::GetSortedRecentInstances(size_t limit) const {
+GlicInstanceCoordinatorImpl::GetSortedRecentInstances(
+    size_t limit,
+    base::TimeDelta max_time_since_active) const {
   // This will only cover recently active conversations that still have living
   // instances. If an instance is torn down because the user closed all bound
   // tabs, it will not be included in the list.
@@ -882,8 +1462,7 @@ GlicInstanceCoordinatorImpl::GetSortedRecentInstances(size_t limit) const {
     if (!instance->conversation_id()) {
       continue;
     }
-    if (base::FeatureList::IsEnabled(kGlicMaxRecency) &&
-        instance->GetTimeSinceLastActive() > kGlicMaxRecencyValue.Get()) {
+    if (instance->GetTimeSinceLastActive() > max_time_since_active) {
       continue;
     }
     sorted_instances.push_back(instance.get());
@@ -904,8 +1483,18 @@ GlicInstanceCoordinatorImpl::GetSortedRecentInstances(size_t limit) const {
 void GlicInstanceCoordinatorImpl::UnbindTabFromAnyInstance(
     tabs::TabInterface* tab) {
   if (auto* instance = GetInstanceImplForTab(tab)) {
-    // `instance` may be deleted after this call.
-    instance->UnbindEmbedder(EmbedderKey(tab));
+    instance->UnbindTab(tab);
+  }
+}
+
+void GlicInstanceCoordinatorImpl::UnbindTabGroupFromAnyInstance(
+    tab_groups::TabGroupId group_id,
+    GlicInstanceImpl* excluding_instance) {
+  for (const auto& [id, instance] : instances_) {
+    if (instance.get() != excluding_instance &&
+        instance->GetTabGroup() == group_id) {
+      instance->UnbindTabGroup();
+    }
   }
 }
 
@@ -915,9 +1504,17 @@ void GlicInstanceCoordinatorImpl::ContextAccessIndicatorChanged(
   ComputeContentAccessIndicator();
 }
 
-std::unique_ptr<WebUIContentsContainer>
-GlicInstanceCoordinatorImpl::CreateWebUIContentsContainer() {
+std::unique_ptr<GlicWebContentsManager>
+GlicInstanceCoordinatorImpl::CreateWebContentsManager() {
+  metrics_.RecordCountAwakeOnContentsCreated();
   return web_contents_warming_pool_->TakeContainer();
+}
+
+void GlicInstanceCoordinatorImpl::OnInstanceActuatingChanged(bool actuating) {
+  if (!actuating) {
+    return;
+  }
+  metrics_.RecordCountActuatingOnTaskCreation();
 }
 
 void GlicInstanceCoordinatorImpl::SetWarmingEnabledForTesting(
@@ -927,7 +1524,7 @@ void GlicInstanceCoordinatorImpl::SetWarmingEnabledForTesting(
 
 GlicInstanceImpl* GlicInstanceCoordinatorImpl::GetInstanceWithFloaty() const {
   for (const auto& [unused, instance] : instances_) {
-    if (instance->GetPanelState().kind == mojom::PanelStateKind::kDetached) {
+    if (instance->GetPanelState()->kind == mojom::PanelStateKind::kDetached) {
       return instance.get();
     }
   }
@@ -939,6 +1536,21 @@ void GlicInstanceCoordinatorImpl::OnWillCreateFloaty() {
 }
 
 void GlicInstanceCoordinatorImpl::OnTabEvent(const GlicTabEvent& event) {
+  if (auto* grouped_event = std::get_if<TabGroupingChangedEvent>(&event)) {
+    if (grouped_event->is_added) {
+      if (auto group_id = grouped_event->tab->GetGroup()) {
+        if (auto* instance = GetInstanceImplForTabGroup(group_id.value())) {
+          instance->OnTabGroupingChanged(grouped_event->tab, /*is_added=*/true);
+        }
+      }
+    } else {
+      for (const auto& [id, instance] : instances_) {
+        instance->OnTabGroupingChanged(grouped_event->tab, /*is_added=*/false);
+      }
+    }
+    return;
+  }
+
   auto* creation_event = std::get_if<TabCreationEvent>(&event);
   if (!creation_event) {
     return;
@@ -1016,30 +1628,43 @@ void GlicInstanceCoordinatorImpl::MaybeDaisyChainNewTab(
   SidePanelShowOptions side_panel_options{*creation_event.new_tab};
   side_panel_options.suppress_opening_animation = true;
   side_panel_options.pin_trigger = GlicPinTrigger::kNewTabDaisyChain;
-  instance->Show(ShowOptions{side_panel_options});
+  auto show_options = ShowOptions{side_panel_options};
+  show_options.invocation_source = mojom::InvocationSource::kDaisyChainOnNewTab;
+  instance->Show(show_options);
 
   instance->instance_metrics().OnDaisyChain(
       DaisyChainSource::kNewTab,
       /*success=*/true, creation_event.new_tab, creation_event.old_tab);
 }
 
-void GlicInstanceCoordinatorImpl::OnMemoryPressure(
-    base::MemoryPressureLevel level) {
-  metrics_.OnMemoryPressure(level);
+void GlicInstanceCoordinatorImpl::OnUpdateMemoryLimit() {
+  web_contents_warming_pool_->OnUpdateMemoryLimit(memory_limit());
 
-  if (level < base::MEMORY_PRESSURE_LEVEL_CRITICAL) {
+  if (!base::FeatureList::IsEnabled(kGlicMaxAwakeInstances) ||
+      !base::FeatureList::IsEnabled(base::kStatefulMemoryPressure)) {
     return;
   }
 
-  web_contents_warming_pool_->Clear();
+  const size_t target_limit = ComputeTargetMaxAwakeInstancesLimit();
+  current_max_awake_limit_ = std::max(GetAwakeInstancesCount(), target_limit);
+}
 
-  for (auto& [_, instance] : instances_) {
-    if (instance->IsShowing() || instance->IsActuating() ||
-        instance->IsHibernated()) {
-      continue;
+void GlicInstanceCoordinatorImpl::OnReleaseMemory() {
+  metrics_.OnReleaseMemory(memory_limit());
+  web_contents_warming_pool_->OnReleaseMemory();
+
+  if (!base::FeatureList::IsEnabled(kGlicMaxAwakeInstances) ||
+      !base::FeatureList::IsEnabled(base::kStatefulMemoryPressure)) {
+    if (memory_limit() <= base::kCriticalMemoryPressureThreshold) {
+      TrimAwakeInstancesTo(0u);
     }
-    instance->Hibernate();
+    return;
   }
+
+  // Both features are enabled; dynamically trim awake instances to the limit
+  // configured for the current memory pressure level.
+  current_max_awake_limit_ = ComputeTargetMaxAwakeInstancesLimit();
+  TrimAwakeInstancesTo(GetCurrentMaxAwakeInstancesLimit());
 }
 
 GlicInstanceImpl* GlicInstanceCoordinatorImpl::GetOrRestoreInstanceImpl(
@@ -1107,7 +1732,9 @@ void GlicInstanceCoordinatorImpl::RestoreTab(
       side_panel_options.suppress_opening_animation = true;
       side_panel_options.pin_on_bind = false;
       side_panel_options.prefer_peek = true;
-      bound_instance->Show(ShowOptions{side_panel_options});
+      auto show_options = ShowOptions{side_panel_options};
+      show_options.invocation_source = mojom::InvocationSource::kTabRestore;
+      bound_instance->Show(show_options);
     } else {
       bound_instance->BindTabWithoutShowing(tab, GlicPinTrigger::kUnknown,
                                             /*pin_on_bind=*/false);
@@ -1119,8 +1746,8 @@ void GlicInstanceCoordinatorImpl::RestoreTab(
             GetOrRestoreInstanceImpl(pinned_instance_info)) {
       // `GlicPinTrigger::kRestore` is used to prevent auto-binding during this
       // pinning process.
-      pinned_instance->sharing_manager().PinTabs({tab->GetHandle()},
-                                                 GlicPinTrigger::kRestore);
+      pinned_instance->GetSharingManagerInternal().PinTabs(
+          {tab->GetHandle()}, GlicPinTrigger::kRestore);
     }
   }
 }

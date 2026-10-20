@@ -24,9 +24,6 @@ dictionary AuthenticationExtensionsClientOutputs {
   boolean credBlob;
   ArrayBuffer getCredBlob;
 
-  // https://w3c.github.io/webauthn/#sctn-supplemental-public-keys-extension
-  [RuntimeEnabled=WebAuthenticationSupplementalPubKeys] AuthenticationExtensionsSupplementalPubKeysOutputs supplementalPubKeys;
-
   // Payment extension outputs support.
   AuthenticationExtensionsPaymentOutputs payment;
 
@@ -37,4 +34,12 @@ dictionary AuthenticationExtensionsClientOutputs {
   // Credential Manager Trust Group (CMTG) key.
   // https://github.com/w3c/webauthn/pull/2377
   [RuntimeEnabled=WebAuthenticationCmtgKey] AuthenticationExtensionsCmtgKeyOutputs cmtgKey;
+
+  // Cross-device fallback URL support.
+  // https://github.com/w3c/webauthn/pull/2380
+  [RuntimeEnabled=WebAuthenticationCrossDeviceFallbackUrl] boolean crossDeviceFallbackUrl;
+
+  // RemoteClientDataJSON extension for remote desktop clients.
+  // https://w3c.github.io/webauthn/#sctn-remote-client-data-json-extension
+  [RuntimeEnabled=WebAuthenticationRemoteClientDataJson] boolean remoteClientDataJSON;
 };

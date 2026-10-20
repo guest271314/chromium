@@ -124,7 +124,7 @@ proto_library("net_quic_test_tools_proto") {
   cc_include = "net/base/net_export.h"
   component_build_force_source_set = true
 
-  link_deps = [ "//net:net_export_header" ]
+  link_deps = [ "//net/base:net_export_header" ]
 
   defines = [ "NET_IMPLEMENTATION" ]
 
@@ -371,6 +371,7 @@ if (!is_ios) {
       "//net:simple_quic_tools",
     ]
   }
+
   source_set("quic_server_core") {
     testonly = true
     sources = [
@@ -483,6 +484,7 @@ source_set("quiche_tests") {
     "src/quiche/binary_http/binary_http_message_test.cc",
     "src/quiche/blind_sign_auth/blind_sign_auth_test.cc",
     "src/quiche/blind_sign_auth/cached_blind_sign_auth_test.cc",
+    "src/quiche/common/abiding_object_pool_test.cc",
     "src/quiche/common/btree_scheduler_test.cc",
     "src/quiche/common/bug_utils_test.cc",
     "src/quiche/common/capsule_test.cc",
@@ -650,6 +652,7 @@ source_set("quiche_tests") {
     "src/quiche/quic/core/http/quic_spdy_stream_test.cc",
     "src/quiche/quic/core/http/spdy_utils_test.cc",
     "src/quiche/quic/core/http/web_transport_http3_test.cc",
+    "src/quiche/quic/core/http/web_transport_stream_adapter_test.cc",
     "src/quiche/quic/core/legacy_quic_stream_id_manager_test.cc",
     "src/quiche/quic/core/packet_number_indexed_queue_test.cc",
     "src/quiche/quic/core/qpack/qpack_decoded_headers_accumulator_test.cc",
@@ -883,13 +886,24 @@ proto_library("blind_sign_auth_proto") {
   sources = protobuf_blind_sign_auth
   cc_generator_options = "lite=true,dllexport_decl=COMPONENT_EXPORT(QUICHE):"
   cc_include = "base/component_export.h"
+
+  # In component builds, blind_sign_auth_proto should be part of the
+  # blind_sign_auth component.
   component_build_force_source_set = true
 
   proto_in_dir = "src"
 
   link_public_deps = [ "//base" ]
 
-  deps = [ "//third_party/anonymous_tokens:anonymous_tokens_cc_proto" ]
+  deps = [
+    "//third_party/anonymous_tokens:anonymous_tokens_cc_proto",
+    "//third_party/protobuf:timestamp_proto",
+  ]
+  if (use_fuzzing_engine) {
+    deps += [ "//third_party/protobuf:any_full_proto" ]
+  } else {
+    deps += [ "//third_party/protobuf:any_proto" ]
+  }
 
   import_dirs = [ "//third_party/anonymous_tokens/src/" ]
 
@@ -914,6 +928,12 @@ source_set("blind_sign_auth_test_support") {
     ":quiche_test_support",
     ":quiche_tool_support",
   ]
+  if (use_fuzzing_engine) {
+    deps += [ "//third_party/protobuf:any_full_proto" ]
+  } else {
+    deps += [ "//third_party/protobuf:any_proto" ]
+  }
+
   public_deps =
       [ "//third_party/anonymous_tokens:anonymous_tokens_test_support" ]
 }

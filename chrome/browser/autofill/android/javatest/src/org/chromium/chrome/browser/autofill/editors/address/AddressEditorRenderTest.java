@@ -22,6 +22,7 @@ import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.Mock;
+import org.mockito.invocation.InvocationOnMock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 
@@ -56,7 +57,7 @@ import org.chromium.components.autofill.AutofillAddressUiComponent;
 import org.chromium.components.autofill.AutofillProfile;
 import org.chromium.components.autofill.FieldType;
 import org.chromium.components.autofill.RecordType;
-import org.chromium.components.signin.base.CoreAccountInfo;
+import org.chromium.components.signin.base.AccountInfo;
 import org.chromium.components.signin.identitymanager.IdentityManager;
 import org.chromium.components.sync.SyncService;
 import org.chromium.google_apis.gaia.GaiaId;
@@ -139,7 +140,8 @@ public class AddressEditorRenderTest {
     @Rule
     public final RenderTestRule mRenderTestRule =
             RenderTestRule.Builder.withPublicCorpus()
-                    .setRevision(3)
+                    .setRevision(4)
+                    .setDescription("Ligatures and contextual alternates disabled in UI text")
                     .setBugComponent(Component.UI_BROWSER_AUTOFILL)
                     .build();
 
@@ -156,8 +158,8 @@ public class AddressEditorRenderTest {
 
     private AddressEditorCoordinator mAddressEditor;
 
-    private final CoreAccountInfo mAccountInfo =
-            CoreAccountInfo.createFromEmailAndGaiaId(USER_EMAIL, new GaiaId("gaia_id"));
+    private final AccountInfo mAccountInfo =
+            new AccountInfo.Builder(USER_EMAIL, new GaiaId("gaia_id")).build();
 
     public AddressEditorRenderTest(boolean nightModeEnabled) {
         ChromeNightModeTestUtils.setUpNightModeForChromeActivity(nightModeEnabled);
@@ -196,16 +198,10 @@ public class AddressEditorRenderTest {
                     when(mIdentityManager.getPrimaryAccountInfo()).thenReturn(mAccountInfo);
                 });
 
-        doAnswer(
-                        invocation -> {
-                            return (String) invocation.getArguments()[0];
-                        })
+        doAnswer((InvocationOnMock invocation) -> invocation.getArguments()[0])
                 .when(mPhoneNumberUtilJni)
                 .formatForDisplay(anyString(), anyString());
-        doAnswer(
-                        invocation -> {
-                            return (String) invocation.getArguments()[0];
-                        })
+        doAnswer((InvocationOnMock invocation) -> invocation.getArguments()[0])
                 .when(mPhoneNumberUtilJni)
                 .formatForResponse(anyString());
         when(mPhoneNumberUtilJni.isPossibleNumber(anyString(), anyString())).thenReturn(true);

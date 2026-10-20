@@ -20,6 +20,8 @@ import org.chromium.chrome.browser.privacy.settings.PrivacyPreferencesManager;
 import org.chromium.chrome.browser.profiles.ProfileProvider;
 import org.chromium.chrome.browser.signin.services.BadgeConfig;
 import org.chromium.chrome.browser.signin.services.IdentityServicesProvider;
+import org.chromium.chrome.browser.ui.signin.ConfirmManagedSyncDataDialogCoordinator;
+import org.chromium.components.signin.base.CoreAccountInfo;
 import org.chromium.components.signin.identitymanager.IdentityManager;
 import org.chromium.components.signin.identitymanager.PrimaryAccountChangeEvent;
 import org.chromium.components.signin.metrics.AccountConsistencyPromoAction;
@@ -36,8 +38,8 @@ import org.chromium.ui.modelutil.PropertyModelChangeProcessor;
 public class FullscreenSigninCoordinator implements IdentityManager.Observer {
     /** Delegate for the fullscreen signin MVC. */
     public interface Delegate {
-        /** Notifies when the user clicked the "add account" button. */
-        void addAccount();
+        /** Notifies when the user clicked the "add account" button with a specified email. */
+        void addAccount(@Nullable String accountEmail);
 
         /**
          * Notifies when the user accepts the terms of service. Only implemented for the FRE.
@@ -49,6 +51,9 @@ public class FullscreenSigninCoordinator implements IdentityManager.Observer {
 
         /** Called when the interaction with the page is over and the next page should be shown. */
         void advanceToNextPage();
+
+        /** Aborts the sign-in flow. */
+        void abortFlow();
 
         /** Called to display the device lock page */
         void displayDeviceLockPage(CoreAccountId selectedAccountId);
@@ -82,6 +87,10 @@ public class FullscreenSigninCoordinator implements IdentityManager.Observer {
          */
         default void showInfoPage(@StringRes int url) {}
 
+        // TODO(crbug.com/537826242): Remove once AndroidFreLayoutUpdate is enabled by default.
+        /** Called when the initial loading phase (native, policies, accounts) is completed. */
+        default void onInitialLoadCompleted() {}
+
         /** Returns the supplier that provides the Profile (when available). */
         OneshotSupplier<ProfileProvider> getProfileSupplier();
 
@@ -106,11 +115,26 @@ public class FullscreenSigninCoordinator implements IdentityManager.Observer {
 
         /** Returns {@code true} when the footer text should be displayed */
         boolean shouldDisplayFooterText();
+
+        /** Returns {@code true} if the preferred account prediction can be used for this flow. */
+        default boolean canUsePreferredAccount() {
+            return false;
+        }
+
+        /**
+         * Called to display the management notice for {@code account}, when {@code
+         * ChromeFeatureList.ANDROID_NEW_MANAGEMENT_NOTICE} is enabled. The host is responsible for
+         * dismissing the notice and must report the user's decision via {@code listener}.
+         */
+        default void displayManagementNotice(
+                CoreAccountInfo account,
+                ConfirmManagedSyncDataDialogCoordinator.Listener listener) {}
     }
 
     private final FullscreenSigninMediator mMediator;
     private final Delegate mDelegate;
     @Nullable private IdentityManager mIdentityManager;
+    private boolean mDestroyed;
 
     @Nullable
     private PropertyModelChangeProcessor<PropertyModel, FullscreenSigninView, PropertyKey>
@@ -145,6 +169,8 @@ public class FullscreenSigninCoordinator implements IdentityManager.Observer {
     }
 
     private void onProfileAvailable(ProfileProvider result) {
+        if (mDestroyed) return;
+
         mIdentityManager =
                 IdentityServicesProvider.get().getIdentityManager(result.getOriginalProfile());
         assumeNonNull(mIdentityManager).addObserver(this);
@@ -152,9 +178,11 @@ public class FullscreenSigninCoordinator implements IdentityManager.Observer {
 
     /** Releases the resources used by the coordinator. */
     public void destroy() {
+        mDestroyed = true;
         setView(null);
         if (mIdentityManager != null) {
             mIdentityManager.removeObserver(this);
+            mIdentityManager = null;
         }
         mMediator.destroy();
     }
@@ -162,6 +190,8 @@ public class FullscreenSigninCoordinator implements IdentityManager.Observer {
     /** Implements {@link IdentityManager.Observer}. */
     @Override
     public void onPrimaryAccountChanged(PrimaryAccountChangeEvent eventDetails) {
+        if (mDestroyed) return;
+
         if (mMediator.isContinueOrDismissClicked()) {
             // If the sign-in occurred through this promo, then it is already being handled.
             return;
@@ -201,6 +231,10 @@ public class FullscreenSigninCoordinator implements IdentityManager.Observer {
 
     public void onAccountAdded(String accountName) {
         mMediator.onAccountAdded(accountName);
+    }
+
+    public void onAddAccountCanceled() {
+        mMediator.onAddAccountCanceled();
     }
 
     /** Continue the sign-in process with the currently selected account. */

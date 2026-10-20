@@ -5,7 +5,10 @@ package org.chromium.android_webview.devui;
 
 import android.os.Bundle;
 import android.os.SystemClock;
+import android.view.KeyEvent;
+import android.view.MotionEvent;
 import android.view.View;
+import android.widget.ListView;
 
 import androidx.activity.OnBackPressedCallback;
 import androidx.fragment.app.Fragment;
@@ -17,15 +20,12 @@ import org.chromium.base.metrics.RecordHistogram;
 public abstract class DevUiBaseFragment extends Fragment {
     private long mStartOfSession;
     private boolean mShouldRequestFocus;
-    private Boolean mIsTV;
+    private final boolean mIsTV = DeviceInfo.isTV();
 
     /**
      * @return true if the device is an Android TV.
      */
     public boolean isTV() {
-        if (mIsTV == null) {
-            mIsTV = DeviceInfo.isTV();
-        }
         return mIsTV;
     }
 
@@ -42,7 +42,14 @@ public abstract class DevUiBaseFragment extends Fragment {
                         new OnBackPressedCallback(true) {
                             @Override
                             public void handleOnBackPressed() {
-                                navBarButton.requestFocus();
+                                View navBar = requireActivity().findViewById(R.id.nav_view);
+                                if (navBarButton.hasFocus()
+                                        || (navBar != null && navBar.hasFocus())) {
+                                    // If navBar has the focus, pressing back should close the app
+                                    requireActivity().finish();
+                                } else {
+                                    navBarButton.requestFocus();
+                                }
                             }
                         });
     }
@@ -89,8 +96,6 @@ public abstract class DevUiBaseFragment extends Fragment {
             suffix = "FlagsFragment";
         } else if (this instanceof CrashesListFragment) {
             suffix = "CrashesListFragment";
-        } else if (this instanceof ComponentsListFragment) {
-            suffix = "ComponentsListFragment";
         } else if (this instanceof SafeModeFragment) {
             suffix = "SafeModeFragment";
         } else if (this instanceof NetLogsFragment) {
@@ -115,5 +120,33 @@ public abstract class DevUiBaseFragment extends Fragment {
                 .getTheme()
                 .resolveAttribute(android.R.attr.selectableItemBackground, outValue, true);
         return outValue.resourceId;
+    }
+
+    /** Trap the focus when pressing down on the last item. */
+    protected void preventFocusEscapeFromLastItem(View view, boolean isLastItem) {
+        view.setOnKeyListener(
+                (v, keyCode, event) -> {
+                    if (event.getAction() == MotionEvent.ACTION_DOWN
+                            && keyCode == KeyEvent.KEYCODE_DPAD_DOWN
+                            && isLastItem) {
+                        return true;
+                    }
+                    return false;
+                });
+    }
+
+    /** Force focus to the first item in the list view when pressing down on the source view. */
+    protected void registerDownPressToFocusOnFirstItem(View sourceView, ListView targetListView) {
+        sourceView.setOnKeyListener(
+                (v, keyCode, event) -> {
+                    if (event.getAction() == MotionEvent.ACTION_DOWN
+                            && keyCode == KeyEvent.KEYCODE_DPAD_DOWN) {
+                        if (targetListView.getChildCount() > 0) {
+                            targetListView.getChildAt(0).requestFocus();
+                            return true;
+                        }
+                    }
+                    return false;
+                });
     }
 }

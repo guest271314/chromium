@@ -5,15 +5,20 @@
 #include <tuple>
 
 #include "base/functional/bind.h"
+#include "base/i18n/rtl.h"
+#include "base/i18n/test/scoped_rtl_for_testing.h"
 #include "base/memory/raw_ptr.h"
+#include "base/run_loop.h"
 #include "base/test/bind.h"
+#include "base/test/run_until.h"
 #include "base/test/test_future.h"
 #include "base/win/windows_version.h"
 #include "chrome/app/chrome_command_ids.h"
 #include "chrome/browser/devtools/devtools_window.h"
 #include "chrome/browser/devtools/devtools_window_testing.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_commands.h"
+#include "chrome/browser/ui/browser_window.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/views/frame/app_menu_button.h"
 #include "chrome/browser/ui/views/frame/browser_caption_button_container_win.h"
 #include "chrome/browser/ui/views/frame/browser_frame_view_win.h"
@@ -162,7 +167,7 @@ INSTANTIATE_TEST_SUITE_P(All,
 IN_PROC_BROWSER_TEST_P(CaptionButtonContainerTest,
                        VerifyCaptionButtonHitTestResults) {
   const bool is_rtl = GetParam();
-  base::i18n::SetRTLForTesting(is_rtl);
+  base::i18n::ScopedRTLForTesting scoped_rtl(is_rtl);
 
   auto* frame_view = GetBrowserFrameViewWin();
   auto* maximize_button = GetMaximizeButton();
@@ -216,10 +221,11 @@ class WebAppBrowserFrameViewWinTest : public InProcessBrowserTest {
     }
 
     webapps::AppId app_id = web_app::test::InstallWebApp(
-        browser()->profile(), std::move(web_app_info));
+        browser()->GetProfile(), std::move(web_app_info));
     content::TestNavigationObserver navigation_observer(GetStartURL());
     navigation_observer.StartWatchingNewWebContents();
-    app_browser_ = web_app::LaunchWebAppBrowser(browser()->profile(), app_id);
+    app_browser_ =
+        web_app::LaunchWebAppBrowser(browser()->GetProfile(), app_id);
     navigation_observer.WaitForNavigationFinished();
 
     browser_view_ = BrowserView::GetBrowserViewForBrowser(app_browser_);
@@ -235,7 +241,8 @@ class WebAppBrowserFrameViewWinTest : public InProcessBrowserTest {
 
   std::optional<SkColor> theme_color_ = SK_ColorBLUE;
   std::vector<web_app::DisplayOverride> display_override_;
-  raw_ptr<Browser, AcrossTasksDanglingUntriaged> app_browser_ = nullptr;
+  raw_ptr<BrowserWindowInterface, AcrossTasksDanglingUntriaged> app_browser_ =
+      nullptr;
   raw_ptr<BrowserView, AcrossTasksDanglingUntriaged> browser_view_ = nullptr;
   raw_ptr<BrowserFrameViewWin, AcrossTasksDanglingUntriaged> frame_view_ =
       nullptr;
@@ -256,9 +263,9 @@ IN_PROC_BROWSER_TEST_F(WebAppBrowserFrameViewWinTest, NoThemeColor) {
   theme_color_ = std::nullopt;
   InstallAndLaunchWebApp();
 
-  EXPECT_EQ(
-      frame_view_->GetTitlebarColor(),
-      browser()->window()->GetColorProvider()->GetColor(ui::kColorFrameActive));
+  EXPECT_EQ(frame_view_->GetTitlebarColor(),
+            BrowserWindow::FromBrowser(browser())->GetColorProvider()->GetColor(
+                ui::kColorFrameActive));
 }
 
 IN_PROC_BROWSER_TEST_F(WebAppBrowserFrameViewWinTest, MaximizedLayout) {
@@ -273,7 +280,7 @@ IN_PROC_BROWSER_TEST_F(WebAppBrowserFrameViewWinTest, MaximizedLayout) {
 }
 
 IN_PROC_BROWSER_TEST_F(WebAppBrowserFrameViewWinTest, RTLTopRightHitTest) {
-  base::i18n::SetRTLForTesting(true);
+  base::i18n::ScopedRTLForTesting scoped_rtl(true);
   InstallAndLaunchWebApp();
   RunScheduledLayouts();
 
@@ -380,18 +387,18 @@ class WebAppBrowserFrameViewWinWindowControlsOverlayTest
     web_app_info->display_override = display_overrides;
 
     webapps::AppId app_id = web_app::test::InstallWebApp(
-        browser()->profile(), std::move(web_app_info));
+        browser()->GetProfile(), std::move(web_app_info));
 
     content::TestNavigationObserver navigation_observer(start_url);
     base::RunLoop loop;
     navigation_observer.StartWatchingNewWebContents();
-    Browser* app_browser =
-        web_app::LaunchWebAppBrowser(browser()->profile(), app_id);
+    BrowserWindowInterface* app_browser =
+        web_app::LaunchWebAppBrowser(browser()->GetProfile(), app_id);
 
     // TODO(crbug.com/40174440): Register binder for BrowserInterfaceBroker
     // during testing.
-    app_browser->app_controller()->SetOnUpdateDraggableRegionForTesting(
-        loop.QuitClosure());
+    web_app::AppBrowserController::From(app_browser)
+        ->SetOnUpdateDraggableRegionForTesting(loop.QuitClosure());
     web_app::NavigateViaLinkClickToURLAndWait(app_browser, start_url);
     loop.Run();
     navigation_observer.WaitForNavigationFinished();
@@ -448,16 +455,27 @@ IN_PROC_BROWSER_TEST_F(WebAppBrowserFrameViewWinWindowControlsOverlayTest,
   InstallAndLaunchWebAppWithWindowControlsOverlay();
   ToggleWindowControlsOverlayEnabledAndWait();
 
+  EXPECT_TRUE(browser_view_->IsWindowControlsOverlayEnabled());
   EXPECT_GT(frame_view_->GetBoundsForClientView().y(), 0);
 
   frame_view_->browser_widget()->SetFullscreen(true);
+  ASSERT_TRUE(base::test::RunUntil(
+      [&]() { return frame_view_->browser_widget()->IsFullscreen(); }));
   browser_view_->GetWidget()->LayoutRootViewIfNecessary();
 
-  // ClientView should be covering the entire screen.
+  // WCO and its caption controls should remain enabled in fullscreen.
+  EXPECT_TRUE(browser_view_->IsWindowControlsOverlayEnabled());
+  EXPECT_TRUE(
+      frame_view_->caption_button_container_for_testing()->GetVisible());
   EXPECT_EQ(frame_view_->GetBoundsForClientView().y(), 0);
+
+  // Non-button overlay areas must stay client-clickable in fullscreen.
+  EXPECT_EQ(frame_view_->NonClientHitTest(gfx::Point(10, 10)), HTCLIENT);
 
   // Exit full screen.
   frame_view_->browser_widget()->SetFullscreen(false);
+  ASSERT_TRUE(base::test::RunUntil(
+      [&]() { return !frame_view_->browser_widget()->IsFullscreen(); }));
 }
 
 IN_PROC_BROWSER_TEST_F(WebAppBrowserFrameViewWinWindowControlsOverlayTest,

@@ -27,6 +27,7 @@
 #include "third_party/blink/renderer/platform/testing/testing_platform_support.h"
 #include "third_party/blink/renderer/platform/weborigin/kurl.h"
 #include "third_party/blink/renderer/platform/weborigin/scheme_registry.h"
+#include "third_party/blink/renderer/platform/wtf/text/format.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_utf8_adaptor.h"
 #include "third_party/blink/renderer/platform/wtf/text/text_encoding.h"
 #include "v8/include/v8.h"
@@ -50,10 +51,10 @@ class V8ScriptRunnerTest : public testing::Test {
     // Simple function for testing. Note:
     // - Add counter to trick V8 code cache.
     // - Pad counter to 1000 digits, to trick minimal cacheability threshold.
-    return String::Format("a = function() { 1 + 1; } // %01000d\n", counter_);
+    return Format("a = function() {{ 1 + 1; }} // {:01000d}\n", counter_);
   }
   String DifferentCode() const {
-    return String::Format("a = function() { 1 + 12; } // %01000d\n", counter_);
+    return Format("a = function() {{ 1 + 12; }} // {:01000d}\n", counter_);
   }
   KURL Url() const { return KURL(StrCat({url_, String::Number(counter_)})); }
   unsigned TagForCodeCache(CachedMetadataHandler* cache_handler) const {
@@ -202,8 +203,8 @@ class V8ScriptRunnerTest : public testing::Test {
  protected:
   static int counter_;
   String url_ = "http://bla.com/bla";
-  test::TaskEnvironment task_environment_;
   base::test::ScopedFeatureList feature_list_;
+  test::TaskEnvironment task_environment_;
   base::RunLoop run_loop_;
 };
 
@@ -276,7 +277,7 @@ TEST_F(V8ScriptRunnerTest, consumeCodeOption) {
   V8CodeCache::ProduceCacheOptions produce_cache_options;
   v8::ScriptCompiler::NoCacheReason no_cache_reason;
   std::tie(compile_options, produce_cache_options, no_cache_reason) =
-      V8CodeCache::GetCompileOptions(mojom::blink::V8CacheOptions::kDefault,
+      V8CodeCache::GetCompileOptions(mojom::blink::V8CacheOptions::kCode,
                                      *classic_script);
   EXPECT_EQ(produce_cache_options,
             V8CodeCache::ProduceCacheOptions::kNoProduceCache);
@@ -297,7 +298,7 @@ TEST_F(V8ScriptRunnerTest, produceAndConsumeCodeOption) {
   // Cold run - should set the timestamp.
   EXPECT_TRUE(CompileScript(scope.GetIsolate(), scope.GetScriptState(),
                             *classic_script,
-                            mojom::blink::V8CacheOptions::kDefault));
+                            mojom::blink::V8CacheOptions::kCode));
   EXPECT_TRUE(cache_handler->GetCachedMetadata(TagForTimeStamp(cache_handler)));
   EXPECT_FALSE(
       cache_handler->GetCachedMetadata(TagForCodeCache(cache_handler)));
@@ -305,7 +306,7 @@ TEST_F(V8ScriptRunnerTest, produceAndConsumeCodeOption) {
   // Warm run - should produce code cache.
   EXPECT_TRUE(CompileScript(scope.GetIsolate(), scope.GetScriptState(),
                             *classic_script,
-                            mojom::blink::V8CacheOptions::kDefault));
+                            mojom::blink::V8CacheOptions::kCode));
   EXPECT_TRUE(cache_handler->GetCachedMetadata(TagForCodeCache(cache_handler)));
 
   // Hot run - should consume code cache.
@@ -313,7 +314,7 @@ TEST_F(V8ScriptRunnerTest, produceAndConsumeCodeOption) {
   V8CodeCache::ProduceCacheOptions produce_cache_options;
   v8::ScriptCompiler::NoCacheReason no_cache_reason;
   std::tie(compile_options, produce_cache_options, no_cache_reason) =
-      V8CodeCache::GetCompileOptions(mojom::blink::V8CacheOptions::kDefault,
+      V8CodeCache::GetCompileOptions(mojom::blink::V8CacheOptions::kCode,
                                      *classic_script);
   EXPECT_EQ(produce_cache_options,
             V8CodeCache::ProduceCacheOptions::kNoProduceCache);
@@ -334,7 +335,7 @@ TEST_F(V8ScriptRunnerTest, cacheDataTypeMismatch) {
       cache_handler->GetCachedMetadata(TagForTimeStamp(cache_handler)));
   EXPECT_TRUE(CompileScript(scope.GetIsolate(), scope.GetScriptState(),
                             *classic_script,
-                            mojom::blink::V8CacheOptions::kDefault));
+                            mojom::blink::V8CacheOptions::kCode));
   EXPECT_TRUE(cache_handler->GetCachedMetadata(TagForTimeStamp(cache_handler)));
   EXPECT_FALSE(
       cache_handler->GetCachedMetadata(TagForCodeCache(cache_handler)));
@@ -359,7 +360,7 @@ TEST_F(V8ScriptRunnerTest, successfulCodeCacheWithHashing) {
   // Cold run - should set the timestamp.
   EXPECT_TRUE(CompileScript(scope.GetIsolate(), scope.GetScriptState(),
                             *classic_script,
-                            mojom::blink::V8CacheOptions::kDefault));
+                            mojom::blink::V8CacheOptions::kCode));
   EXPECT_TRUE(cache_handler->GetCachedMetadata(TagForTimeStamp(cache_handler)));
   EXPECT_FALSE(
       cache_handler->GetCachedMetadata(TagForCodeCache(cache_handler)));
@@ -367,7 +368,7 @@ TEST_F(V8ScriptRunnerTest, successfulCodeCacheWithHashing) {
   // Warm run - should produce code cache.
   EXPECT_TRUE(CompileScript(scope.GetIsolate(), scope.GetScriptState(),
                             *classic_script,
-                            mojom::blink::V8CacheOptions::kDefault));
+                            mojom::blink::V8CacheOptions::kCode));
   EXPECT_TRUE(cache_handler->GetCachedMetadata(TagForCodeCache(cache_handler)));
 
   // Hot run - should consume code cache.
@@ -375,7 +376,7 @@ TEST_F(V8ScriptRunnerTest, successfulCodeCacheWithHashing) {
   V8CodeCache::ProduceCacheOptions produce_cache_options;
   v8::ScriptCompiler::NoCacheReason no_cache_reason;
   std::tie(compile_options, produce_cache_options, no_cache_reason) =
-      V8CodeCache::GetCompileOptions(mojom::blink::V8CacheOptions::kDefault,
+      V8CodeCache::GetCompileOptions(mojom::blink::V8CacheOptions::kCode,
                                      *classic_script);
   EXPECT_EQ(produce_cache_options,
             V8CodeCache::ProduceCacheOptions::kNoProduceCache);
@@ -409,7 +410,7 @@ TEST_F(V8ScriptRunnerTest, codeCacheWithFailedHashCheck) {
   // Cold run - should set the timestamp.
   EXPECT_TRUE(CompileScript(scope.GetIsolate(), scope.GetScriptState(),
                             *classic_script_1,
-                            mojom::blink::V8CacheOptions::kDefault));
+                            mojom::blink::V8CacheOptions::kCode));
   EXPECT_TRUE(cache_handler_1->GetCachedMetadata(
       TagForTimeStamp(cache_handler_1),
       CachedMetadataHandler::kCrashIfUnchecked));
@@ -430,7 +431,7 @@ TEST_F(V8ScriptRunnerTest, codeCacheWithFailedHashCheck) {
   // Warm run - should produce code cache.
   EXPECT_TRUE(CompileScript(scope.GetIsolate(), scope.GetScriptState(),
                             *classic_script_2,
-                            mojom::blink::V8CacheOptions::kDefault));
+                            mojom::blink::V8CacheOptions::kCode));
   EXPECT_TRUE(cache_handler_2->GetCachedMetadata(
       TagForCodeCache(cache_handler_2),
       CachedMetadataHandler::kCrashIfUnchecked));
@@ -450,7 +451,7 @@ TEST_F(V8ScriptRunnerTest, codeCacheWithFailedHashCheck) {
   // be updated back to a timestamp like it would during a cold run.
   EXPECT_TRUE(CompileScript(scope.GetIsolate(), scope.GetScriptState(),
                             *classic_script_3,
-                            mojom::blink::V8CacheOptions::kDefault));
+                            mojom::blink::V8CacheOptions::kCode));
   EXPECT_TRUE(cache_handler_3->GetCachedMetadata(
       TagForTimeStamp(cache_handler_3),
       CachedMetadataHandler::kCrashIfUnchecked));
@@ -472,7 +473,7 @@ TEST_F(V8ScriptRunnerTest, codeCacheWithFailedHashCheck) {
   // content has changed again.
   EXPECT_TRUE(CompileScript(scope.GetIsolate(), scope.GetScriptState(),
                             *classic_script_4,
-                            mojom::blink::V8CacheOptions::kDefault));
+                            mojom::blink::V8CacheOptions::kCode));
   EXPECT_TRUE(cache_handler_4->GetCachedMetadata(
       TagForTimeStamp(cache_handler_4),
       CachedMetadataHandler::kCrashIfUnchecked));
@@ -730,7 +731,7 @@ TEST_F(V8ScriptRunnerTest, discardOffThreadCodeCacheWithDifferentSource) {
   V8CodeCache::ProduceCacheOptions produce_cache_options;
   v8::ScriptCompiler::NoCacheReason no_cache_reason;
   std::tie(compile_options, produce_cache_options, no_cache_reason) =
-      V8CodeCache::GetCompileOptions(mojom::blink::V8CacheOptions::kDefault,
+      V8CodeCache::GetCompileOptions(mojom::blink::V8CacheOptions::kCode,
                                      *classic_script);
   EXPECT_EQ(produce_cache_options,
             V8CodeCache::ProduceCacheOptions::kNoProduceCache);
@@ -776,7 +777,7 @@ TEST_F(V8ScriptRunnerTest, discardOffThreadCodeCacheWithBitCorruption) {
   V8CodeCache::ProduceCacheOptions produce_cache_options;
   v8::ScriptCompiler::NoCacheReason no_cache_reason;
   std::tie(compile_options, produce_cache_options, no_cache_reason) =
-      V8CodeCache::GetCompileOptions(mojom::blink::V8CacheOptions::kDefault,
+      V8CodeCache::GetCompileOptions(mojom::blink::V8CacheOptions::kCode,
                                      *classic_script);
   EXPECT_EQ(produce_cache_options,
             V8CodeCache::ProduceCacheOptions::kNoProduceCache);

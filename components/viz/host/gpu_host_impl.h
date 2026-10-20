@@ -190,8 +190,7 @@ class VIZ_HOST_EXPORT GpuHostImpl : public mojom::GpuHost,
   // browser GPU info data might not be initialized as well.
   void EstablishGpuChannel(int client_id,
                            uint64_t client_tracing_id,
-                           bool is_gpu_host,
-                           bool enable_extra_handles_validation,
+                           mojom::GpuClientType client_type,
                            bool sync,
                            mojo::ScopedMessagePipeHandle handle,
                            EstablishChannelCallback callback);
@@ -290,11 +289,6 @@ class VIZ_HOST_EXPORT GpuHostImpl : public mojom::GpuHost,
                        const std::string& key,
                        const std::string& blob) override;
   void ClearGrShaderDiskCache() override;
-#if BUILDFLAG(IS_WIN)
-  void EnsureWebNNExecutionProvidersReady(
-      EnsureWebNNExecutionProvidersReadyCallback cb) override;
-#endif
-  void CreateWebNNWeightsFile(CreateWebNNWeightsFileCallback cb) override;
 
   // mojom::GpuLogging:
   void RecordLogMessage(int32_t severity,
@@ -365,6 +359,9 @@ class VIZ_HOST_EXPORT GpuHostImpl : public mojom::GpuHost,
   // Signal that the GPU process is ready to accept persistent cache files. They
   // should be forwarded as soon as they are loaded.
   bool send_persistent_cache_files_to_service_ = false;
+
+  // This is only set in GpuHostImpl::DidInitialize().
+  std::optional<bool> gpu_uses_graphite_;
 
   SEQUENCE_CHECKER(sequence_checker_);
 

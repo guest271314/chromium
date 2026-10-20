@@ -12,22 +12,22 @@
 #include "base/strings/strcat.h"
 #include "base/trace_event/trace_event.h"
 #include "components/optimization_guide/core/access_token_helper.h"
+#include "components/optimization_guide/core/feature_registry/feature_keys.h"
 #include "components/optimization_guide/core/feature_registry/mqls_feature_registry.h"
-#include "components/optimization_guide/core/model_execution/feature_keys.h"
 #include "components/optimization_guide/core/model_execution/model_execution_prefs.h"
 #include "components/optimization_guide/core/model_quality/model_quality_log_entry.h"
 #include "components/optimization_guide/core/model_quality/model_quality_util.h"
-#include "components/optimization_guide/core/optimization_guide_constants.h"
 #include "components/optimization_guide/core/optimization_guide_enums.h"
 #include "components/optimization_guide/core/optimization_guide_features.h"
 #include "components/optimization_guide/core/optimization_guide_logger.h"
-#include "components/optimization_guide/core/optimization_guide_switches.h"
 #include "components/optimization_guide/core/optimization_guide_util.h"
 #include "components/optimization_guide/optimization_guide_buildflags.h"
+#include "components/optimization_guide/optimization_guide_internals/webui/optimization_guide_internals.mojom.h"
 #include "components/optimization_guide/proto/model_quality_metadata.pb.h"
 #include "components/optimization_guide/proto/model_quality_service.pb.h"
 #include "components/prefs/pref_service.h"
 #include "components/variations/net/variations_http_headers.h"
+#include "google_apis/google_api_keys.h"
 #include "net/base/url_util.h"
 #include "net/http/http_response_headers.h"
 #include "net/http/http_status_code.h"
@@ -41,6 +41,24 @@ namespace optimization_guide {
 
 namespace {
 
+const char kOptimizationGuideServiceModelQualityDefaultURL[] =
+    "https://chromemodelquality-pa.googleapis.com/v1:LogAiData";
+
+// Overrides the ModelQuality Service API Key for remote requests to be made.
+constexpr char kModelQualityServiceAPIKeySwitch[] =
+    "model-quality-service-api-key";
+
+// Returns the API key for the ModelQualityLoggingService.
+std::string GetModelQualityServiceAPIKey() {
+  // Command line override takes priority.
+  base::CommandLine* command_line = base::CommandLine::ForCurrentProcess();
+  if (command_line->HasSwitch(kModelQualityServiceAPIKeySwitch)) {
+    return command_line->GetSwitchValueASCII(kModelQualityServiceAPIKeySwitch);
+  }
+
+  return google_apis::GetAPIKey();
+}
+
 void RecordUploadStatusHistogram(proto::LogAiDataRequest::FeatureCase feature,
                                  ModelQualityLogsUploadStatus status) {
   const MqlsFeatureMetadata* metadata =
@@ -53,16 +71,16 @@ void RecordUploadStatusHistogram(proto::LogAiDataRequest::FeatureCase feature,
       status);
 }
 
-// Returns the URL endpoint for the model quality service along with the needed
-// API key.
-GURL GetModelQualityLogsUploaderServiceURL() {
-  base::CommandLine* command_line = base::CommandLine::ForCurrentProcess();
-  if (command_line->HasSwitch(switches::kModelQualityServiceURL)) {
-    return GURL(
-        command_line->GetSwitchValueASCII(switches::kModelQualityServiceURL));
-  }
-  return GURL(kOptimizationGuideServiceModelQualtiyDefaultURL);
-}
+// The various model quality user feedback.
+enum class ModelQualityUserFeedback {
+  kUnknown = 0,
+  kThumbsDown = 1,
+  kThumbsUp = 2,
+
+  // Keep in sync with OptimizationGuideUserFeedback in
+  // tools/metrics/histograms/metadata/optimization/enums.xml.
+  kMaxValue = kThumbsUp,
+};
 
 // Sets user feedback for the ModelExecutionFeature corresponding to the
 // `log_entry`.
@@ -93,11 +111,6 @@ void OnURLLoadComplete(
   int response_code = -1;
   if (headers) {
     response_code = headers->response_code();
-
-    // Only record response code when there are headers.
-    base::UmaHistogramSparse(
-        "OptimizationGuide.ModelQualityLogsUploaderService.Status",
-        response_code);
   }
 
   // Net error codes are negative but histogram enums must be positive.
@@ -116,6 +129,15 @@ void OnURLLoadComplete(
 
 }  // namespace
 
+GURL GetModelQualityLogsUploaderServiceURL() {
+  base::CommandLine* command_line = base::CommandLine::ForCurrentProcess();
+  if (command_line->HasSwitch(kModelQualityServiceURLSwitch)) {
+    return GURL(
+        command_line->GetSwitchValueASCII(kModelQualityServiceURLSwitch));
+  }
+  return GURL(kOptimizationGuideServiceModelQualityDefaultURL);
+}
+
 ModelQualityLogsUploaderService::ModelQualityLogsUploaderService(
     scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
     PrefService* pref_service)
@@ -123,7 +145,7 @@ ModelQualityLogsUploaderService::ModelQualityLogsUploaderService(
           net::AppendOrReplaceQueryParameter(
               GetModelQualityLogsUploaderServiceURL(),
               "key",
-              switches::GetModelQualityServiceAPIKey())),
+              GetModelQualityServiceAPIKey())),
       pref_service_(pref_service),
       url_loader_factory_(url_loader_factory) {
   CHECK(model_quality_logs_uploader_service_url_.SchemeIs(url::kHttpsScheme));

@@ -15,6 +15,24 @@ class WebFrame;
 namespace autofill::test {
 // Test delay used for throttling form mutation messages.
 inline constexpr int kTrackFormMutationsDelayInMs = 10;
+
+struct AutofillPlaceholderConfig {
+  bool autofill_across_iframes_throttling = true;
+  bool autofill_disallow_more_hyphen_like_labels = false;
+  bool autofill_support_date_input = false;
+  bool autofill_allow_default_prevented_submission = true;
+  bool autofill_dedupe_form_submission = true;
+  bool autofill_email_verification = false;
+  bool autofill_report_form_submission_errors = false;
+  bool autofill_count_form_submission_in_renderer = true;
+  bool autofill_track_password_fields_ios = true;
+  bool autofill_ignore_tab_index_for_focusability = false;
+};
+
+// Returns JavaScript script to inject default feature flag placeholders in
+// tests.
+NSString* GetAutofillTestPlaceholders(
+    const AutofillPlaceholderConfig& config = {});
 }  // namespace autofill::test
 
 // A fixture to set up testing of Autofill methods.

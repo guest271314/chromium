@@ -158,14 +158,11 @@ public class ContextualSearchSceneLayer extends SceneOverlayLayer {
         int roundedBarTopResourceId = R.drawable.top_round_foreground;
         int separatorLineColor = panel.getSeparatorLineColor();
         int panelShadowResourceId = R.drawable.top_round_shadow;
-        int closeIconResourceId = INVALID_RESOURCE_ID;
+        int closeIconResourceId = panel.getCloseIconResourceId();
 
         int calloutResourceId = calloutControl.getViewId();
         float calloutOpacity = calloutControl.getOpacity();
 
-        // TODO(donnd): crbug.com/40155104 - Remove parameters for the now
-        // defunct close button from the interface and the associated code on
-        // the native side.
         ContextualSearchSceneLayerJni.get()
                 .updateContextualSearchLayer(
                         mNativePtr,
@@ -267,14 +264,21 @@ public class ContextualSearchSceneLayer extends SceneOverlayLayer {
     /** Destroys this object and the corresponding native component. */
     @Override
     public void destroy() {
-        super.destroy();
+        // Do NOT call super.destroy() to avoid double free of the native object.
+        // SceneLayer.destroy() also tries to destroy the native object using its own JNI binding,
+        // but since both Java objects point to the same C++ object, it causes a double free.
         mIsInitialized = false;
-        mNativePtr = 0;
+        if (mNativePtr != 0) {
+            ContextualSearchSceneLayerJni.get().destroy(mNativePtr);
+            mNativePtr = 0;
+        }
     }
 
     @NativeMethods
     interface Natives {
         long init(ContextualSearchSceneLayer self);
+
+        void destroy(long nativeContextualSearchSceneLayer);
 
         void createContextualSearchLayer(
                 long nativeContextualSearchSceneLayer, ResourceManager resourceManager);

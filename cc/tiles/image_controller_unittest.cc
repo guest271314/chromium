@@ -15,7 +15,6 @@
 #include "base/synchronization/condition_variable.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/task/thread_pool.h"
-#include "base/test/scoped_feature_list.h"
 #include "base/threading/simple_thread.h"
 #include "base/threading/thread_checker_impl.h"
 #include "base/threading/thread_restrictions.h"
@@ -187,8 +186,7 @@ DrawImage CreateDiscardableDrawImage(gfx::Size size) {
 DrawImage CreateBitmapDrawImage(gfx::Size size) {
   return DrawImage(CreateBitmapImage(size), false,
                    SkIRect::MakeWH(size.width(), size.height()),
-                   PaintFlags::FilterQuality::kNone, SkM44(),
-                   PaintImage::kDefaultFrameIndex);
+                   PaintFlags::FilterQuality::kNone, SkM44());
 }
 
 class ImageControllerTest : public testing::Test {
@@ -333,9 +331,6 @@ TEST_F(ImageControllerTest, QueueImageDecodeTooLarge) {
 }
 
 TEST_F(ImageControllerTest, QueueImageDecodeTooLargeResolves) {
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndEnableFeature(features::kResolveLargeImageDecodes);
-
   base::RunLoop run_loop;
   DecodeClient decode_client;
 

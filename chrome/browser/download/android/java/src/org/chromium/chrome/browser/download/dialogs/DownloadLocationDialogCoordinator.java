@@ -156,6 +156,23 @@ public class DownloadLocationDialogCoordinator
         }
         mDialogModel = null;
         mCustomView = null;
+        resetDialogState();
+    }
+
+    // Drop references to per-dialog activity-scoped objects so the (long-lived) coordinator
+    // does not keep them alive after a dialog is dismissed.
+    private void resetDialogState() {
+        mContext = null;
+        mModalDialogManager = null;
+        mSuggestedPath = null;
+        mProfile = null;
+        mDirectoryAdapter = null;
+        mDownloadLocationHelper = null;
+        mDownloadLocationDialogModel = null;
+        if (mPropertyModelChangeProcessor != null) {
+            mPropertyModelChangeProcessor.destroy();
+            mPropertyModelChangeProcessor = null;
+        }
     }
 
     /**
@@ -182,6 +199,7 @@ public class DownloadLocationDialogCoordinator
                 mController.onDownloadLocationDialogComplete(
                         mSuggestedPath, /* didUserConfirm= */ false);
             }
+            resetDialogState();
             return;
         }
 
@@ -224,7 +242,7 @@ public class DownloadLocationDialogCoordinator
                         .with(
                                 ModalDialogProperties.POSITIVE_BUTTON_TEXT,
                                 resources,
-                                R.string.duplicate_download_infobar_download_button)
+                                R.string.duplicate_download_prompt_download_button)
                         .with(
                                 ModalDialogProperties.BUTTON_STYLES,
                                 ModalDialogProperties.ButtonStyles.PRIMARY_FILLED_NEGATIVE_OUTLINE)
@@ -306,6 +324,7 @@ public class DownloadLocationDialogCoordinator
                         DownloadUtils.getStringForBytes(mContext, mTotalBytes));
                 builder.with(DownloadLocationDialogProperties.SHOW_SUBTITLE, false);
                 break;
+            case DownloadLocationDialogType.FORCE_PROMPT:
             case DownloadLocationDialogType.DEFAULT:
                 builder.with(DownloadLocationDialogProperties.TITLE, getDefaultTitle());
 
@@ -426,7 +445,7 @@ public class DownloadLocationDialogCoordinator
     public void onDirectorySelectionChanged() {}
 
     @Override
-    public DownloadLocationHelper getDownloadLocationHelper() {
-        return assumeNonNull(mDownloadLocationHelper);
+    public @Nullable DownloadLocationHelper getDownloadLocationHelper() {
+        return mDownloadLocationHelper;
     }
 }

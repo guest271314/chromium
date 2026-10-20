@@ -15,13 +15,12 @@
 #include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
 #include "base/test/test.pb.h"
+#include "components/optimization_guide/core/feature_registry/feature_keys.h"
 #include "components/optimization_guide/core/feature_registry/feature_registration.h"
-#include "components/optimization_guide/core/model_execution/feature_keys.h"
 #include "components/optimization_guide/core/model_execution/model_execution_prefs.h"
 #include "components/optimization_guide/core/model_quality/model_quality_log_entry.h"
-#include "components/optimization_guide/core/optimization_guide_constants.h"
+#include "components/optimization_guide/core/model_quality/model_quality_prefs.h"
 #include "components/optimization_guide/core/optimization_guide_features.h"
-#include "components/optimization_guide/core/optimization_guide_switches.h"
 #include "components/optimization_guide/core/optimization_guide_util.h"
 #include "components/optimization_guide/optimization_guide_buildflags.h"
 #include "components/optimization_guide/proto/features/common_quality_data.pb.h"
@@ -78,7 +77,7 @@ class ModelQualityLogsUploaderServiceTest : public testing::Test {
         shared_url_loader_factory_(
             base::MakeRefCounted<network::WeakWrapperSharedURLLoaderFactory>(
                 &test_url_loader_factory_)) {
-    model_execution::prefs::RegisterLocalStatePrefs(pref_service_.registry());
+    RegisterModelQualityLocalStatePrefs(pref_service_.registry());
     model_quality_logs_uploader_service_ =
         std::make_unique<ModelQualityLogsUploaderService>(
             shared_url_loader_factory_, &pref_service_);
@@ -126,9 +125,6 @@ class ModelQualityLogsUploaderServiceTest : public testing::Test {
             ->mutable_compose()
             ->mutable_quality()
             ->set_user_feedback(feedback);
-        break;
-      case UserVisibleFeatureKey::kTabOrganization:
-        // No longer used.
         break;
       case UserVisibleFeatureKey::kWallpaperSearch:
         log_entry->log_ai_data_request()
@@ -185,7 +181,7 @@ class ModelQualityLogsUploaderServiceTest : public testing::Test {
   bool SimulateResponse(const std::string& content,
                         net::HttpStatusCode http_status) {
     return test_url_loader_factory_.SimulateResponseForPendingRequest(
-        kOptimizationGuideServiceModelQualtiyDefaultURL, content, http_status,
+        GetModelQualityLogsUploaderServiceURL().spec(), content, http_status,
         network::TestURLLoaderFactory::kUrlMatchPrefix);
   }
 
@@ -233,8 +229,6 @@ TEST_F(ModelQualityLogsUploaderServiceTest, TestSuccessfulResponse) {
   histogram_tester_.ExpectUniqueSample(
       "OptimizationGuide.ModelQualityLogsUploaderService.NetErrorCode",
       -net::OK, 1);
-  histogram_tester_.ExpectTotalCount(
-      "OptimizationGuide.ModelQualityLogsUploaderService.Status", 1);
   histogram_tester_.ExpectUniqueSample(
       "OptimizationGuide.ModelQualityLogsUploaderService.UploadStatus.Compose",
       ModelQualityLogsUploadStatus::kUploadSuccessful, 1);
@@ -260,8 +254,6 @@ TEST_F(ModelQualityLogsUploaderServiceTest, TestMultipleUploads) {
   histogram_tester_.ExpectUniqueSample(
       "OptimizationGuide.ModelQualityLogsUploaderService.NetErrorCode",
       -net::OK, 2);
-  histogram_tester_.ExpectTotalCount(
-      "OptimizationGuide.ModelQualityLogsUploaderService.Status", 2);
   histogram_tester_.ExpectUniqueSample(
       "OptimizationGuide.ModelQualityLogsUploaderService.UploadStatus.Compose",
       ModelQualityLogsUploadStatus::kUploadSuccessful, 2);
@@ -283,9 +275,6 @@ TEST_F(ModelQualityLogsUploaderServiceTest, TestNetErrorResponse) {
   SimulateResponse("foo response", net::HTTP_NOT_FOUND);
 
   // Make sure histograms are recorded correctly on bad response.
-  histogram_tester_.ExpectUniqueSample(
-      "OptimizationGuide.ModelQualityLogsUploaderService.Status",
-      net::HTTP_NOT_FOUND, 1);
   histogram_tester_.ExpectTotalCount(
       "OptimizationGuide.ModelQualityLogsUploaderService.NetErrorCode", 1);
 
@@ -303,9 +292,6 @@ TEST_F(ModelQualityLogsUploaderServiceTest, TestBadResponse) {
   SimulateResponse("bad response", net::HTTP_OK);
 
   // Make sure histograms are recorded correctly on bad response.
-  histogram_tester_.ExpectUniqueSample(
-      "OptimizationGuide.ModelQualityLogsUploaderService.Status", net::HTTP_OK,
-      1);
   histogram_tester_.ExpectTotalCount(
       "OptimizationGuide.ModelQualityLogsUploaderService.NetErrorCode", 1);
 }
@@ -329,77 +315,6 @@ TEST_F(ModelQualityLogsUploaderServiceTest, WallpaperSearchUserFeedbackUMA) {
   histogram_tester_.ExpectBucketCount(
       "OptimizationGuide.ModelQuality.UserFeedback.WallpaperSearch",
       proto::USER_FEEDBACK_THUMBS_DOWN, 1);
-}
-
-TEST_F(ModelQualityLogsUploaderServiceTest, TabOrganizationUserFeedbackUMA) {
-  // Nothing gets recorded since the per-organization feedback logic has been
-  // removed.
-  std::unique_ptr<ModelQualityLogEntry> log_entry_1 =
-      GetModelQualityLogEntryAndSetFeedback(
-          UserVisibleFeatureKey::kTabOrganization,
-          proto::USER_FEEDBACK_THUMBS_UP);
-  UploadModelQualityLogsWithLogEntry(std::move(log_entry_1));
-
-  histogram_tester_.ExpectBucketCount(
-      "OptimizationGuide.ModelQuality.UserFeedback.TabOrganization",
-      proto::USER_FEEDBACK_THUMBS_UP, 0);
-
-  std::unique_ptr<ModelQualityLogEntry> log_entry_2 =
-      GetModelQualityLogEntryAndSetFeedback(
-          UserVisibleFeatureKey::kTabOrganization,
-          proto::USER_FEEDBACK_THUMBS_DOWN);
-  UploadModelQualityLogsWithLogEntry(std::move(log_entry_2));
-  histogram_tester_.ExpectBucketCount(
-      "OptimizationGuide.ModelQuality.UserFeedback.TabOrganization",
-      proto::USER_FEEDBACK_THUMBS_DOWN, 0);
-}
-
-TEST_F(ModelQualityLogsUploaderServiceTest,
-       TabOrganizationUserFeedbackNullCheck) {
-  // Set TabOrganization ModelQualityLogEntry without any quality data tab
-  // organization.
-  proto::TabOrganizationLoggingData tab_organization_logging_data;
-
-  proto::TabOrganizationRequest tab_request;
-
-  *(tab_organization_logging_data.mutable_request()) = tab_request;
-  std::unique_ptr<ModelQualityLogEntry> log_entry_1 =
-      std::make_unique<ModelQualityLogEntry>(nullptr);
-  *(log_entry_1->log_ai_data_request()->mutable_tab_organization()) =
-      tab_organization_logging_data;
-
-  // Upload logs without quality data set this should mark user_feedback as
-  // unspecified.
-  UploadModelQualityLogsWithLogEntry(std::move(log_entry_1));
-
-  histogram_tester_.ExpectBucketCount(
-      "OptimizationGuide.ModelQuality.UserFeedback.TabOrganization",
-      proto::USER_FEEDBACK_UNSPECIFIED, 1);
-}
-
-TEST_F(ModelQualityLogsUploaderServiceTest,
-       TabOrganizationMultipleOrganizationUserFeedbackUMA) {
-  std::unique_ptr<ModelQualityLogEntry> log_entry =
-      GetModelQualityLogEntryAndSetFeedback(
-          UserVisibleFeatureKey::kTabOrganization,
-          proto::USER_FEEDBACK_THUMBS_UP);
-  // Add one more tab organization to existing log_entry with user feedback.
-  log_entry->log_ai_data_request()
-      ->mutable_tab_organization()
-      ->mutable_quality()
-      ->add_organizations()
-      ->set_user_feedback(proto::USER_FEEDBACK_THUMBS_DOWN);
-
-  UploadModelQualityLogsWithLogEntry(std::move(log_entry));
-
-  // Nothing gets recorded since the per-organization feedback logic has been
-  // removed.
-  histogram_tester_.ExpectBucketCount(
-      "OptimizationGuide.ModelQuality.UserFeedback.TabOrganization",
-      proto::USER_FEEDBACK_THUMBS_UP, 0);
-  histogram_tester_.ExpectBucketCount(
-      "OptimizationGuide.ModelQuality.UserFeedback.TabOrganization",
-      proto::USER_FEEDBACK_THUMBS_DOWN, 0);
 }
 
 TEST_F(ModelQualityLogsUploaderServiceTest, ComposeUserFeedbackUMA) {

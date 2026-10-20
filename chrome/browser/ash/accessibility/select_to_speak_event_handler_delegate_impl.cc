@@ -9,7 +9,6 @@
 #include "ash/accessibility/accessibility_controller.h"
 #include "chrome/browser/ash/accessibility/accessibility_manager.h"
 #include "chrome/browser/ash/accessibility/event_handler_common.h"
-#include "chrome/common/extensions/extension_constants.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_widget_host.h"
@@ -38,7 +37,8 @@ void SelectToSpeakEventHandlerDelegateImpl::DispatchKeysCurrentlyDown(
     const std::set<ui::KeyboardCode>& pressed_keys) {
   // We can only call the STS extension on the UI thread, make sure we
   // don't ever try to run this code on some other thread.
-  DCHECK(content::BrowserThread::CurrentlyOn(content::BrowserThread::UI));
+  CHECK(content::BrowserThread::CurrentlyOn(content::BrowserThread::UI),
+        base::NotFatalUntil::M160);
 
   auto* accessibility_manager = AccessibilityManager::Get();
   if (accessibility_manager) {
@@ -50,7 +50,8 @@ void SelectToSpeakEventHandlerDelegateImpl::DispatchMouseEvent(
     const ui::MouseEvent& event) {
   // We can only call the STS extension on the UI thread, make sure we
   // don't ever try to run this code on some other thread.
-  DCHECK(content::BrowserThread::CurrentlyOn(content::BrowserThread::UI));
+  CHECK(content::BrowserThread::CurrentlyOn(content::BrowserThread::UI),
+        base::NotFatalUntil::M160);
 
   const gfx::PointF screen_point =
       event.target() ? event.target()->GetScreenLocationF(event)

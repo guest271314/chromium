@@ -12,9 +12,8 @@
 #include "base/test/run_until.h"
 #include "base/time/time.h"
 #include "chrome/browser/ash/policy/skyvault/policy_utils.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_window.h"
-#include "chrome/common/chrome_features.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "content/public/test/browser_test.h"
@@ -49,7 +48,8 @@ class LocalFilesMigrationDialogTest : public InProcessBrowserTest {
  public:
   LocalFilesMigrationDialogTest() {
     scoped_feature_list_.InitWithFeatures(
-        /*enabled_features=*/{features::kSkyVault, ash::features::kSkyVaultV2},
+        /*enabled_features=*/{ash::features::kSkyVault,
+                              ash::features::kSkyVaultV2},
         /*disabled_features=*/{});
   }
   LocalFilesMigrationDialogTest(const LocalFilesMigrationDialogTest&) = delete;
@@ -98,7 +98,7 @@ IN_PROC_BROWSER_TEST_F(LocalFilesMigrationDialogTest, ShowDialog_Dismiss) {
   // Open a new tab, which stacks up over the dialog.
   ASSERT_TRUE(
       ui_test_utils::NavigateToURL(browser(), GURL("https://example.com")));
-  gfx::NativeWindow window = browser()->window()->GetNativeWindow();
+  gfx::NativeWindow window = browser()->GetWindow()->GetNativeWindow();
   views::Widget* widget = views::Widget::GetWidgetForNativeWindow(window);
   ASSERT_TRUE(widget->IsStackedAbove(dialog->GetDialogWindowForTesting()));
 

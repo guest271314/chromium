@@ -21,6 +21,7 @@
 #include "net/http/http_proxy_connect_job.h"
 #include "net/log/net_log_event_type.h"
 #include "net/log/net_log_with_source.h"
+#include "net/socket/client_socket_pool_manager.h"
 #include "net/socket/connect_job.h"
 #include "net/socket/connect_job_factory.h"
 #include "net/socket/socks_connect_job.h"
@@ -183,13 +184,16 @@ void ClientSocketPool::set_used_idle_socket_timeout(base::TimeDelta timeout) {
 
 ClientSocketPool::ClientSocketPool(
     size_t socket_soft_cap,
-    SocketPoolAdditionalCapacity additional_capacity,
     const ProxyChain& proxy_chain,
     bool is_for_websockets,
     const CommonConnectJobParams* common_connect_job_params,
     std::unique_ptr<ConnectJobFactory> connect_job_factory)
     : socket_soft_cap_(socket_soft_cap),
-      additional_capacity_(additional_capacity),
+      additional_capacity_(
+          (proxy_chain.is_direct() ||
+           ClientSocketPoolManager::allow_size_randomization_for_proxy())
+              ? SocketPoolAdditionalCapacity::Create(socket_soft_cap)
+              : SocketPoolAdditionalCapacity::CreateEmpty()),
       proxy_chain_(proxy_chain),
       is_for_websockets_(is_for_websockets),
       common_connect_job_params_(common_connect_job_params),
@@ -224,12 +228,12 @@ std::unique_ptr<ConnectJob> ClientSocketPool::CreateConnectJob(
     resolution_callback = base::BindRepeating(
         &OnHostResolution, common_connect_job_params_->spdy_session_pool,
         // TODO(crbug.com/40181080): Pass along as SchemeHostPort.
-        SpdySessionKey(HostPortPair::FromSchemeHostPort(group_id.destination()),
-                       group_id.privacy_mode(), GetProxyChain(),
-                       SessionUsage::kDestination, socket_tag,
-                       group_id.network_anonymization_key(),
-                       group_id.secure_dns_policy(),
-                       group_id.disable_cert_network_fetches()),
+        SpdySessionKey(
+            HostPortPair::FromSchemeHostPort(group_id.destination()),
+            group_id.privacy_mode(), GetProxyChain(),
+            SessionUsage::kDestination, socket_tag,
+            group_id.network_anonymization_key(), group_id.secure_dns_policy(),
+            group_id.disable_cert_network_fetches(), group_id.target_network()),
         is_for_websockets_);
   }
 
@@ -259,14 +263,14 @@ std::unique_ptr<ConnectJob> ClientSocketPool::CreateConnectJob(
       common_connect_job_params_, group_id.target_network(), delegate);
 }
 
-void ClientSocketPool::UpdateStateBeforeAllocation() {
-  state_ = additional_capacity_.NextStateBeforeAllocation(
-      State(), SocketsInUse(), SocketSoftCap());
+void ClientSocketPool::UpdateExpandabilityBeforeAllocation() {
+  expandability_ = additional_capacity_.NextExpandabilityBeforeAllocation(
+      Expandability(), SocketsInUse(), SocketSoftCap());
 }
 
-void ClientSocketPool::UpdateStateAfterRelease() {
-  state_ = additional_capacity_.NextStateAfterRelease(State(), SocketsInUse(),
-                                                      SocketSoftCap());
+void ClientSocketPool::UpdateExpandabilityAfterRelease() {
+  expandability_ = additional_capacity_.NextExpandabilityAfterRelease(
+      Expandability(), SocketsInUse(), SocketSoftCap());
 }
 
 }  // namespace net

@@ -21,7 +21,6 @@
 #include "base/task/single_thread_task_runner.h"
 #include "build/build_config.h"
 #include "components/dom_distiller/core/distiller_page.h"
-#include "components/dom_distiller/core/distiller_url_fetcher.h"
 #include "components/dom_distiller/core/proto/distilled_article.pb.h"
 #include "components/dom_distiller/core/proto/distilled_page.pb.h"
 
@@ -32,18 +31,14 @@ const size_t kMaxPagesInArticle = 32;
 
 namespace dom_distiller {
 
-DistillerFactoryImpl::DistillerFactoryImpl(
-    std::unique_ptr<DistillerURLFetcherFactory> distiller_url_fetcher_factory,
-    const dom_distiller::proto::DomDistillerOptions& dom_distiller_options)
-    : distiller_url_fetcher_factory_(std::move(distiller_url_fetcher_factory)),
-      dom_distiller_options_(dom_distiller_options) {}
+DistillerFactoryImpl::DistillerFactoryImpl(const DistillerOptions& options)
+    : options_(options) {}
 
 DistillerFactoryImpl::~DistillerFactoryImpl() = default;
 
 std::unique_ptr<Distiller> DistillerFactoryImpl::CreateDistiller() {
   // This default implementation has the same behavior for all URLs.
-  std::unique_ptr<DistillerImpl> distiller(new DistillerImpl(
-      *distiller_url_fetcher_factory_, dom_distiller_options_));
+  std::unique_ptr<DistillerImpl> distiller = std::make_unique<DistillerImpl>(options_);
   return std::move(distiller);
 }
 
@@ -51,11 +46,8 @@ DistillerImpl::DistilledPageData::DistilledPageData() = default;
 
 DistillerImpl::DistilledPageData::~DistilledPageData() = default;
 
-DistillerImpl::DistillerImpl(
-    const DistillerURLFetcherFactory& distiller_url_fetcher_factory,
-    const dom_distiller::proto::DomDistillerOptions& dom_distiller_options)
-    : distiller_url_fetcher_factory_(distiller_url_fetcher_factory),
-      dom_distiller_options_(dom_distiller_options),
+DistillerImpl::DistillerImpl(const DistillerOptions& options)
+    : options_(options),
       max_pages_in_article_(kMaxPagesInArticle),
       destruction_allowed_(true) {}
 
@@ -128,7 +120,7 @@ void DistillerImpl::DistillNextPage() {
     // TODO(gilmanmh): Investigate whether this needs to be
     // base::BindRepeating() or if base::BindOnce() can be used instead.
     distiller_page_->DistillPage(
-        url, dom_distiller_options_,
+        url, options_,
         base::BindRepeating(&DistillerImpl::OnPageDistillationFinished,
                             weak_factory_.GetWeakPtr(), page_num, url));
   }
@@ -138,9 +130,10 @@ void DistillerImpl::OnPageDistillationFinished(
     int page_num,
     const GURL& page_url,
     std::unique_ptr<proto::DomDistillerResult> distiller_result,
-    bool distillation_successful) {
+    DistillationParseResult result) {
   DCHECK(started_pages_index_.find(page_num) != started_pages_index_.end());
-  if (!distillation_successful) {
+  if (result != DistillationParseResult::kSuccess) {
+    last_error_ = result;
     started_pages_index_.erase(page_num);
     RunDistillerCallbackIfDone();
     return;
@@ -170,6 +163,11 @@ void DistillerImpl::OnPageDistillationFinished(
     if (!distiller_result->distilled_content().html().empty()) {
       content_empty = false;
     }
+  }
+
+  if (distiller_result->has_text_content()) {
+    page_data->distilled_page_proto->data.set_text_content(
+        distiller_result->text_content());
   }
 
   if (distiller_result->has_debug_info() &&
@@ -247,69 +245,21 @@ void DistillerImpl::MaybeFetchImage(int page_num,
   DCHECK(started_pages_index_.find(page_num) != started_pages_index_.end());
   DistilledPageData* page_data = GetPageAtIndex(started_pages_index_[page_num]);
 
-  if (!distiller_page_->ShouldFetchOfflineData()) {
-    DistilledPageProto_Image* image =
-        page_data->distilled_page_proto->data.add_image();
-    image->set_name(image_id);
-    image->set_url(image_url);
-    return;
-  }
-
-  DistillerURLFetcher* fetcher =
-      distiller_url_fetcher_factory_->CreateDistillerURLFetcher();
-  page_data->image_fetchers_.push_back(base::WrapUnique(fetcher));
-
-  // TODO(gilmanmh): Investigate whether this needs to be base::BindRepeating()
-  // or if base::BindOnce() can be used instead.
-  fetcher->FetchURL(
-      image_url,
-      base::BindRepeating(&DistillerImpl::OnFetchImageDone,
-                          weak_factory_.GetWeakPtr(), page_num,
-                          base::Unretained(fetcher), image_id, image_url));
-}
-
-void DistillerImpl::OnFetchImageDone(int page_num,
-                                     DistillerURLFetcher* url_fetcher,
-                                     const std::string& id,
-                                     const std::string& original_url,
-                                     const std::string& response) {
-  DCHECK(started_pages_index_.find(page_num) != started_pages_index_.end());
-  DistilledPageData* page_data = GetPageAtIndex(started_pages_index_[page_num]);
-  DCHECK(page_data->distilled_page_proto);
-  DCHECK(url_fetcher);
-  auto fetcher_it =
-      std::ranges::find(page_data->image_fetchers_, url_fetcher,
-                        &std::unique_ptr<DistillerURLFetcher>::get);
-
-  DCHECK(fetcher_it != page_data->image_fetchers_.end());
-  // Delete the |url_fetcher| by DeleteSoon since the OnFetchImageDone
-  // callback is invoked by the |url_fetcher|.
-  base::SingleThreadTaskRunner::GetCurrentDefault()->DeleteSoon(
-      FROM_HERE, std::move(*fetcher_it));
-  page_data->image_fetchers_.erase(fetcher_it);
-
   DistilledPageProto_Image* image =
       page_data->distilled_page_proto->data.add_image();
-  image->set_name(id);
-  image->set_data(response);
-  image->set_url(original_url);
-
-  AddPageIfDone(page_num);
+  image->set_name(image_id);
+  image->set_url(image_url);
 }
 
 void DistillerImpl::AddPageIfDone(int page_num) {
   DCHECK(started_pages_index_.find(page_num) != started_pages_index_.end());
   DCHECK(finished_pages_index_.find(page_num) == finished_pages_index_.end());
-  DistilledPageData* page_data = GetPageAtIndex(started_pages_index_[page_num]);
-  if (page_data->image_fetchers_.empty()) {
-    finished_pages_index_[page_num] = started_pages_index_[page_num];
-    started_pages_index_.erase(page_num);
-    const ArticleDistillationUpdate& article_update =
-        CreateDistillationUpdate();
-    DCHECK_EQ(article_update.GetPagesSize(), finished_pages_index_.size());
-    update_cb_.Run(article_update);
-    RunDistillerCallbackIfDone();
-  }
+  finished_pages_index_[page_num] = started_pages_index_[page_num];
+  started_pages_index_.erase(page_num);
+  const ArticleDistillationUpdate& article_update = CreateDistillationUpdate();
+  DCHECK_EQ(article_update.GetPagesSize(), finished_pages_index_.size());
+  update_cb_.Run(article_update);
+  RunDistillerCallbackIfDone();
 }
 
 const ArticleDistillationUpdate DistillerImpl::CreateDistillationUpdate()
@@ -361,7 +311,9 @@ void DistillerImpl::RunDistillerCallbackIfDone() {
 
     base::AutoReset<bool> dont_delete_this_in_callback(&destruction_allowed_,
                                                        false);
-    std::move(finished_cb_).Run(std::move(article_proto));
+    std::move(finished_cb_)
+        .Run(std::move(article_proto),
+             last_error_.value_or(DistillationParseResult::kSuccess));
   }
 }
 

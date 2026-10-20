@@ -113,7 +113,6 @@ std::vector<DomStorageDatabase::MapMetadata> CloneMapMetadataVector(
 DomStorageDatabase::Metadata CloneMetadata(
     const DomStorageDatabase::Metadata& source) {
   DomStorageDatabase::Metadata copy;
-  copy.next_map_id = source.next_map_id;
   copy.map_metadata = CloneMapMetadataVector(source.map_metadata);
   return copy;
 }
@@ -228,14 +227,15 @@ void InsertMapEntries(
 void OpenAsyncDomStorageDatabaseInMemorySync(
     StorageType storage_type,
     std::unique_ptr<AsyncDomStorageDatabase>* result) {
-  base::test::TestFuture<DbStatus> status_future;
+  base::test::TestFuture<AsyncDomStorageDatabase::OpenOutcome> open_future;
 
   std::unique_ptr<AsyncDomStorageDatabase> database =
       AsyncDomStorageDatabase::Open(
           storage_type, /*database_path=*/base::FilePath(),
-          /*memory_dump_id=*/std::nullopt, status_future.GetCallback());
+          /*memory_dump_id=*/std::nullopt,
+          /*dir_to_destroy=*/base::FilePath(), open_future.GetCallback());
 
-  const DbStatus& status = status_future.Get();
+  const DbStatus& status = open_future.Get().open_status;
   ASSERT_TRUE(status.ok()) << status.ToString();
   *result = std::move(database);
 }
@@ -324,9 +324,26 @@ void FakeCommitter::PutMapKeyValueSync(DomStorageDatabase::Key key,
   CommitSync(std::move(map_update));
 }
 
+void FakeCommitter::QueuePutMapKeyValue(
+    DomStorageDatabase::Key key,
+    DomStorageDatabase::Value value,
+    base::OnceCallback<void(DbStatus)> callback) {
+  DomStorageDatabase::MapBatchUpdate map_update(map_locator_.Clone());
+  map_update.entries_to_add.emplace_back(std::move(key), std::move(value));
+
+  commit_queue_.emplace(std::move(map_update), std::move(callback));
+}
+
+bool FakeCommitter::HasPendingCommit() const {
+  return !commit_queue_.empty();
+}
+
 std::optional<DomStorageDatabase::MapBatchUpdate>
 FakeCommitter::CollectCommit() {
-  return std::exchange(pending_commit_, std::nullopt);
+  if (commit_queue_.empty()) {
+    return std::nullopt;
+  }
+  return std::move(commit_queue_.front().batch_update);
 }
 
 void FakeCommitter::ClearMapSync() {
@@ -342,28 +359,46 @@ base::OnceCallback<void(DbStatus)> FakeCommitter::GetCommitCompleteCallback() {
 }
 
 void FakeCommitter::CommitSync(DomStorageDatabase::MapBatchUpdate map_update) {
-  pending_commit_ = std::move(map_update);
+  CHECK(commit_queue_.empty());
+
+  base::RunLoop run_loop;
+  DbStatus commit_result;
+
+  commit_queue_.emplace(
+      std::move(map_update),
+      /*completed_callback=*/base::BindLambdaForTesting([&](DbStatus status) {
+        commit_result = std::move(status);
+        run_loop.Quit();
+      }));
 
   // Commit the update to the database.
-  CHECK(!commit_complete_run_loop_);
-  commit_complete_run_loop_ = std::make_unique<base::RunLoop>();
   database_->InitiateCommit();
 
   // Wait for the commit to complete.
-  commit_complete_run_loop_->Run();
-  commit_complete_run_loop_.reset();
+  run_loop.Run();
 
   // Verify that the commit succeeded.
-  ASSERT_NE(commit_complete_result_, std::nullopt);
-  EXPECT_TRUE(commit_complete_result_->ok())
-      << commit_complete_result_->ToString();
-  commit_complete_result_.reset();
+  EXPECT_TRUE(commit_result.ok()) << commit_result.ToString();
 }
 
 void FakeCommitter::OnCommitCompleted(DbStatus status) {
-  commit_complete_result_ = status;
-  commit_complete_run_loop_->Quit();
+  CHECK(!commit_queue_.empty());
+
+  Commit completed_commit = std::move(commit_queue_.front());
+  commit_queue_.pop();
+
+  std::move(completed_commit.callback).Run(std::move(status));
 }
+
+FakeCommitter::Commit::Commit(DomStorageDatabase::MapBatchUpdate batch_update,
+                              base::OnceCallback<void(DbStatus)> callback)
+    : batch_update(std::move(batch_update)), callback(std::move(callback)) {}
+
+FakeCommitter::Commit::Commit(Commit&& source) = default;
+FakeCommitter::Commit& FakeCommitter::Commit::operator=(Commit&& source) =
+    default;
+
+FakeCommitter::Commit::~Commit() = default;
 
 void PutVersionForTesting(AsyncDomStorageDatabase& async_database,
                           int64_t version) {

@@ -124,7 +124,7 @@ class LensSearchboxController : public LensSearchboxClient {
   void OnTextModified() override;
   void OnThumbnailRemoved() override;
   void OnSuggestionAccepted(const GURL& destination_url,
-                            AutocompleteMatchType::Type match_type,
+                            omnibox::AutocompleteMatchType match_type,
                             bool is_zero_prefix_suggestion) override;
   void OnFocusChanged(bool focused) override;
   void OnPageBound() override;
@@ -195,7 +195,7 @@ class LensSearchboxController : public LensSearchboxClient {
 
   // A pending text query to be loaded in the side panel. Needed when the side
   // panel is not bound at the time of a text request.
-  std::optional<std::string> pending_text_query_ = std::nullopt;
+  std::optional<std::string> pending_text_query_;
 
   // Must be last member.
   base::WeakPtrFactory<LensSearchboxController> weak_factory_{this};

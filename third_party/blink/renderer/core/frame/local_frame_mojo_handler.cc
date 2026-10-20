@@ -4,12 +4,14 @@
 
 #include "third_party/blink/renderer/core/frame/local_frame_mojo_handler.h"
 
+#include "base/command_line.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/numerics/safe_conversions.h"
 #include "base/time/time.h"
 #include "base/unguessable_token.h"
 #include "build/build_config.h"
 #include "cc/input/browser_controls_offset_tag_modifications.h"
+#include "partition_alloc/oom.h"
 #include "services/network/public/cpp/url_loader_completion_status.h"
 #include "services/network/public/mojom/url_response_head.mojom.h"
 #include "third_party/abseil-cpp/absl/cleanup/cleanup.h"
@@ -18,6 +20,7 @@
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/common/frame/frame_owner_element_type.h"
 #include "third_party/blink/public/common/page_state/page_state.h"
+#include "third_party/blink/public/common/switches.h"
 #include "third_party/blink/public/mojom/devtools/console_message.mojom-blink-forward.h"
 #include "third_party/blink/public/mojom/devtools/inspector_issue.mojom-blink.h"
 #include "third_party/blink/public/mojom/frame/frame_owner_properties.mojom-blink.h"
@@ -34,6 +37,7 @@
 #include "third_party/blink/renderer/bindings/core/v8/script_evaluation_result.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_function.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_fullscreen_options.h"
+#include "third_party/blink/renderer/bindings/core/v8/v8_oom.h"
 #include "third_party/blink/renderer/core/dom/element_traversal.h"
 #include "third_party/blink/renderer/core/dom/focus_params.h"
 #include "third_party/blink/renderer/core/dom/ignore_opens_during_unload_count_incrementer.h"
@@ -75,9 +79,13 @@
 #include "third_party/blink/renderer/core/script_tools/model_context_supplement.h"
 #include "third_party/blink/renderer/core/timing/dom_window_performance.h"
 #include "third_party/blink/renderer/core/view_transition/page_swap_event.h"
+#include "third_party/blink/renderer/core/view_transition/view_transition_skip_reason.h"
 #include "third_party/blink/renderer/core/view_transition/view_transition_supplement.h"
+#include "third_party/blink/renderer/core/workers/worker_backing_thread.h"
 #include "third_party/blink/renderer/platform/loader/fetch/resource_timing_utils.h"
+#include "third_party/blink/renderer/platform/scheduler/public/post_cross_thread_task.h"
 #include "third_party/blink/renderer/platform/widget/frame_widget.h"
+#include "third_party/blink/renderer/platform/wtf/cross_thread_functional.h"
 
 #if BUILDFLAG(IS_MAC)
 #include "base/apple/foundation_util.h"
@@ -295,6 +303,13 @@ class JavaScriptExecuteRequestForTestsHandler
   LocalFrameMojoHandler::JavaScriptExecuteRequestForTestsCallback callback_;
 };
 
+NOINLINE void SimulateBlinkWorkerOOM(
+    std::unique_ptr<WorkerBackingThread> worker_thread) {
+  CHECK(!IsMainThread());
+  CHECK(worker_thread->BackingThread().IsCurrentThread());
+  OOM_CRASH(0);
+}
+
 }  // namespace
 
 ActiveURLMessageFilter::~ActiveURLMessageFilter() {
@@ -428,6 +443,12 @@ mojom::blink::DevicePostureType LocalFrameMojoHandler::GetDevicePosture() {
     return current_device_posture_;
   }
 
+  if (base::CommandLine::ForCurrentProcess()->HasSwitch(
+          blink::switches::kTopChromeWebUI) &&
+      base::FeatureList::IsEnabled(features::kWebUIBypassMojoConnections)) {
+    return current_device_posture_;
+  }
+
   auto task_runner = frame_->GetTaskRunner(TaskType::kInternalDefault);
   DevicePostureProvider()->AddListenerAndGetCurrentPosture(
       device_posture_receiver_.BindNewPipeAndPassRemote(task_runner),
@@ -537,6 +558,13 @@ void LocalFrameMojoHandler::SendInterventionReport(
   }
 }
 
+void LocalFrameMojoHandler::UpdateChildFrameToVideoAd(
+    const FrameToken& child_frame_token) {
+  if (auto* child_frame = Frame::ResolveFrame(child_frame_token)) {
+    To<HTMLFrameOwnerElement>(child_frame->Owner())->UpdateToVideoAd();
+  }
+}
+
 void LocalFrameMojoHandler::SetFrameOwnerProperties(
     mojom::blink::FrameOwnerPropertiesPtr properties) {
   GetDocument()->WillChangeFrameOwnerProperties(
@@ -574,7 +602,7 @@ void LocalFrameMojoHandler::NotifyVirtualKeyboardOverlayRect(
                         keyboard_rect.width() / scale_factor,
                         keyboard_rect.height() / scale_factor);
 
-  frame_->NotifyVirtualKeyboardOverlayRectObservers(scaled_rect);
+  frame_->SetVirtualKeyboardOverlayGeometry(scaled_rect);
 }
 
 void LocalFrameMojoHandler::ShowInterestInElement(int nodeID) {
@@ -791,15 +819,6 @@ void LocalFrameMojoHandler::DidUpdateFramePolicy(
   To<RemoteFrameOwner>(frame_->Owner())->SetFramePolicy(frame_policy);
 }
 
-void LocalFrameMojoHandler::OnFrameVisibilityChanged(
-    mojom::blink::FrameVisibility visibility) {
-  if (frame_->Client() && frame_->Client()->GetWebFrame() &&
-      frame_->Client()->GetWebFrame()->Client()) {
-    frame_->Client()->GetWebFrame()->Client()->OnFrameVisibilityChanged(
-        visibility);
-  }
-}
-
 void LocalFrameMojoHandler::OnPostureChanged(
     mojom::blink::DevicePostureType posture) {
   if (!RuntimeEnabledFeatures::DevicePostureEnabled(
@@ -980,24 +999,29 @@ void LocalFrameMojoHandler::JavaScriptExecuteRequestInIsolatedWorld(
       wants_result
           ? mojom::blink::WantResultOption::kWantResultDateAndRegExpAllowed
           : mojom::blink::WantResultOption::kNoResult,
-      mojom::blink::PromiseResultOption::kDoNotWait);
+      mojom::blink::PromiseResultOption::kDoNotWait,
+      /*script_injector_id=*/String());
 }
 
 void LocalFrameMojoHandler::InvokeScriptToolForInspector(
-    const base::UnguessableToken& invocation_id,
+    const ToolInvocationToken& invocation_id,
     const String& tool_name,
     const String& input_arguments,
     InvokeScriptToolForInspectorCallback callback) {
   if (auto* model_context =
-          ModelContextSupplement::GetIfExists(*DomWindow()->navigator())) {
-    if (model_context->GetScriptToolDeclaration(tool_name)) {
+          ModelContextSupplement::GetIfExists(*GetDocument())) {
+    // DevTools refers to tools by name, but `ExecuteTool()` keys on the tool's
+    // (non-web-exposed) id, so resolve the name here. If the tool is
+    // unregistered before the posted task runs, `ExecuteTool()` simply won't
+    // find the id and will fail, rather than running whatever tool happens to
+    // hold the name by then.
+    if (ToolData* tool_data = model_context->FindToolDataByName(tool_name)) {
       frame_->GetTaskRunner(TaskType::kInternalInspector)
-          ->PostTask(
-              FROM_HERE,
-              blink::BindOnce(base::IgnoreResult(&ModelContext::ExecuteTool),
-                              WrapPersistent(model_context), invocation_id,
-                              tool_name, input_arguments,
-                              /*signal=*/nullptr, base::DoNothing()));
+          ->PostTask(FROM_HERE,
+                     blink::BindOnce(
+                         base::IgnoreResult(&ModelContext::ExecuteTool),
+                         WrapPersistent(model_context), invocation_id,
+                         tool_data->Id(), input_arguments, base::DoNothing()));
       std::move(callback).Run(true);
       return;
     }
@@ -1006,12 +1030,10 @@ void LocalFrameMojoHandler::InvokeScriptToolForInspector(
 }
 
 void LocalFrameMojoHandler::NotifyInspectorOfCrossDocumentScriptToolResult(
-    const base::UnguessableToken& invocation_id) {
-  if (auto* model_context =
-          ModelContextSupplement::modelContext(*DomWindow()->navigator())) {
-    model_context->GetCrossDocumentScriptToolResult(invocation_id,
-                                                    base::DoNothing());
-  }
+    const ToolInvocationToken& invocation_id) {
+  auto* model_context = ModelContextSupplement::modelContext(*GetDocument());
+  model_context->GetCrossDocumentScriptToolResult(invocation_id,
+                                                  base::DoNothing());
 }
 
 #if BUILDFLAG(IS_MAC)
@@ -1153,6 +1175,27 @@ void LocalFrameMojoHandler::HandleRendererDebugURL(const KURL& url) {
   if (url.ProtocolIs("javascript")) {
     // JavaScript URLs should be sent to Blink for handling.
     frame_->LoadJavaScriptURL(url);
+  } else if (url == kChromeUIV8OOMURL) {
+    LOG(ERROR) << "Intentionally causing V8 OOM because user navigated to "
+               << url;
+    // Handle this here rather than in HandleChromeDebugURL() because
+    // HandleChromeDebugURL() is in //third_party/blink/common, which cannot
+    // depend on //third_party/blink/renderer/core without a layering violation.
+    ReportV8OOMError("HandleRendererDebugURL",
+                     v8::OOMDetails{.is_heap_oom = true});
+  } else if (url == kChromeUIBlinkWorkerOOMURL) {
+    LOG(ERROR)
+        << "Intentionally causing Blink worker OOM because user navigated to "
+        << url;
+    // Handled here, because code in //third_party/blink/common cannot use
+    // //third_party/blink/renderer/core to create an actual worker thread.
+    auto worker_thread = std::make_unique<WorkerBackingThread>(
+        ThreadCreationParams(ThreadType::kDedicatedWorkerThread));
+    scoped_refptr<base::SingleThreadTaskRunner> task_runner =
+        worker_thread->BackingThread().GetTaskRunner();
+    PostCrossThreadTask(
+        *task_runner, FROM_HERE,
+        CrossThreadBindOnce(&SimulateBlinkWorkerOOM, std::move(worker_thread)));
   } else {
     // This is a Chrome Debug URL. Handle it.
     HandleChromeDebugURL(GURL(url));
@@ -1426,7 +1469,8 @@ void LocalFrameMojoHandler::NotifyViewTransitionAbortedToOldDocument() {
   if (auto* transition =
           ViewTransitionUtils::GetOutgoingCrossDocumentTransition(
               *frame_->GetDocument())) {
-    transition->SkipTransition();
+    transition->SkipTransition(ViewTransition::PromiseResponse::kRejectAbort,
+                               ViewTransitionSkipReason::kNavigationAborted);
   }
 }
 
@@ -1459,7 +1503,7 @@ void LocalFrameMojoHandler::AddResourceTimingEntryForFailedSubframeNavigation(
     return;
   }
 
-  ResourceResponse response;
+  ResourceResponse response(initial_url);
   response.SetAlpnNegotiatedProtocol(AtomicString(alpn_negotiated_protocol));
   response.SetConnectionInfo(connection_info);
   response.SetConnectionReused(load_timing_info->socket_reused);

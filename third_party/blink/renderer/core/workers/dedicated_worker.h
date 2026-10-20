@@ -47,8 +47,8 @@ class PostMessageOptions;
 class ScriptState;
 class V8UnionTrustedScriptURLOrUSVString;
 class WebContentSettingsClient;
-class WorkerClassicScriptLoader;
 struct GlobalScopeCreationParams;
+struct WebPolicyContainer;
 
 // Implementation of the Worker interface defined in the WebWorker HTML spec:
 // https://html.spec.whatwg.org/C/#worker
@@ -127,6 +127,7 @@ class CORE_EXPORT DedicatedWorker final
       CrossVariantMojoRemote<
           mojom::blink::BackForwardCacheControllerHostInterfaceBase>
           back_forward_cache_controller_host,
+      std::unique_ptr<WebPolicyContainer> policy_container,
       CrossVariantMojoReceiver<mojom::blink::ReportingObserverInterfaceBase>
           coep_reporting_observer,
       CrossVariantMojoReceiver<mojom::blink::ReportingObserverInterfaceBase>
@@ -147,45 +148,28 @@ class CORE_EXPORT DedicatedWorker final
       mojom::blink::FrameLifecycleState state) override;
   void Trace(Visitor*) const override;
 
+  // Emulate necessary parts of `Start()` for testing. This does NOT actually
+  // start the worker.
+  void EmulateStartForTesting();
+
  private:
   FRIEND_TEST_ALL_PREFIXES(DedicatedWorkerTest, TopLevelFrameSecurityOrigin);
 
   // Starts the worker.
   void Start();
-  void ContinueStart(
-      const KURL& script_url,
-      std::unique_ptr<WorkerMainScriptLoadParameters>
-          worker_main_script_load_params,
-      network::mojom::ReferrerPolicy,
-      Vector<network::mojom::blink::ContentSecurityPolicyPtr>
-          response_content_security_policies,
-      DocumentPolicy::DocumentPolicyBundle response_document_policy,
-      mojo::PendingRemote<mojom::blink::BackForwardCacheControllerHost>
-          back_forward_cache_controller_host,
-      mojo::PendingReceiver<mojom::blink::ReportingObserver>
-          coep_reporting_observer,
-      mojo::PendingReceiver<mojom::blink::ReportingObserver>
-          dip_reporting_observer);
   void ContinueStartInternal(
       const KURL& script_url,
       std::unique_ptr<WorkerMainScriptLoadParameters>
           worker_main_script_load_params,
-      network::mojom::ReferrerPolicy,
-      Vector<network::mojom::blink::ContentSecurityPolicyPtr>
-          response_content_security_policies,
-      DocumentPolicy::DocumentPolicyBundle response_document_policy,
       mojo::PendingRemote<mojom::blink::BackForwardCacheControllerHost>
           back_forward_cache_controller_host,
+      std::unique_ptr<WebPolicyContainer> policy_container,
       mojo::PendingReceiver<mojom::blink::ReportingObserver>
           coep_reporting_observer,
       mojo::PendingReceiver<mojom::blink::ReportingObserver>
           dip_reporting_observer);
   std::unique_ptr<GlobalScopeCreationParams> CreateGlobalScopeCreationParams(
       const KURL& script_url,
-      network::mojom::ReferrerPolicy,
-      Vector<network::mojom::blink::ContentSecurityPolicyPtr>
-          response_content_security_policies,
-      DocumentPolicy::DocumentPolicyBundle response_document_policy,
       mojo::PendingReceiver<mojom::blink::ReportingObserver>
           coep_reporting_observer,
       mojo::PendingReceiver<mojom::blink::ReportingObserver>
@@ -194,14 +178,6 @@ class CORE_EXPORT DedicatedWorker final
   scoped_refptr<WebWorkerFetchContext> CreateWebWorkerFetchContext();
   // May return nullptr.
   std::unique_ptr<WebContentSettingsClient> CreateWebContentSettingsClient();
-
-  // Callbacks for |classic_script_loader_|.
-  // TODO(crbug.com/400455021): Investigate whether these can be removed now
-  // that PlzDedicatedWorker has shipped.
-  void OnResponse();
-  void OnFinished(
-      mojo::PendingRemote<mojom::blink::BackForwardCacheControllerHost>
-          back_forward_cache_controller_host);
 
   // Implements EventTarget (via AbstractWorker -> EventTarget).
   const AtomicString& InterfaceName() const final;
@@ -217,8 +193,6 @@ class CORE_EXPORT DedicatedWorker final
       outside_fetch_client_settings_object_;
   const Member<DedicatedWorkerMessagingProxy> context_proxy_;
 
-  Member<WorkerClassicScriptLoader> classic_script_loader_;
-
   std::unique_ptr<WebDedicatedWorkerHostFactoryClient> factory_client_;
 
   // Used for tracking cross-debugger calls.
@@ -233,6 +207,9 @@ class CORE_EXPORT DedicatedWorker final
 
   // The timestamp taken when Start() is called.
   base::TimeTicks start_time_;
+
+  // Initiator URL for the worker script's ResourceTiming entry.
+  KURL worker_script_initiator_url_;
 
   // Whether the worker is frozen due to a call from this context.
   bool requested_frozen_ = false;

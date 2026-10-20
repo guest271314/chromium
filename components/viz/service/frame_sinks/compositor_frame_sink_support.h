@@ -60,8 +60,11 @@ enum class SubmitResult {
   SURFACE_ID_DECREASED = 4,
   SURFACE_OWNED_BY_ANOTHER_CLIENT = 5,
   HIT_TEST_DATA_INVALID = 6,
+  INVALID_FRAME = 7,
+  INVALID_DISPLAY_TRANSFORM = 8,
+  INVALID_BEGIN_FRAME_ACK = 9,
   // Magic constant used by the histogram macros.
-  kMaxValue = HIT_TEST_DATA_INVALID,
+  kMaxValue = INVALID_BEGIN_FRAME_ACK,
 };
 
 class VIZ_SERVICE_EXPORT CompositorFrameSinkSupport
@@ -112,6 +115,17 @@ class VIZ_SERVICE_EXPORT CompositorFrameSinkSupport
   FrameSinkManagerImpl* frame_sink_manager() { return frame_sink_manager_; }
   BeginFrameSource* begin_frame_source() { return begin_frame_source_; }
 
+  void set_resource_return_delegate(LayerContextImpl* delegate) {
+    resource_return_delegate_ = delegate;
+  }
+  LayerContextImpl* resource_return_delegate() const {
+    return resource_return_delegate_;
+  }
+
+  base::WeakPtr<CompositorFrameSinkSupport> GetWeakPtr() {
+    return weak_factory_.GetWeakPtr();
+  }
+
   const FrameTimingDetailsMap& timing_details() {
     return frame_timing_details_;
   }
@@ -160,7 +174,6 @@ class VIZ_SERVICE_EXPORT CompositorFrameSinkSupport
   void SetAllowThrottling(bool allowed);
 
   // If other clients are interactive, reduce frame cadence if `throttled`.
-  void SetThrottledDueToInteraction(bool throttled);
 
   // SurfaceClient implementation.
   void OnSurfaceCommitted(Surface* surface) override;
@@ -197,7 +210,7 @@ class VIZ_SERVICE_EXPORT CompositorFrameSinkSupport
   void SetWantsAnimateOnlyBeginFrames();
   void SetAutoNeedsBeginFrame();
   void SetNoCompositorFrameAcks();
-  void DidNotProduceFrame(const BeginFrameAck& ack);
+  bool DidNotProduceFrame(const BeginFrameAck& ack);
   void SubmitCompositorFrame(
       const LocalSurfaceId& local_surface_id,
       CompositorFrame frame,
@@ -279,18 +292,11 @@ class VIZ_SERVICE_EXPORT CompositorFrameSinkSupport
 
   LayerContextImpl* layer_context_for_testing() { return layer_context_.get(); }
 
-  void SetExternalReservedResourceDelegate(ReservedResourceDelegate* delegate);
-
   // Subscribes or unsubscribes `layer_context_` to subsequent BeginFrames.
   void SetLayerContextWantsBeginFrames(bool wants_begin_frames);
 
   void RegisterSurfaceAnimationManagerNotification(
       base::OnceCallback<void()> callback);
-
-  bool is_handling_interaction() const { return is_handling_interaction_; }
-  base::TimeTicks last_interaction_time() const {
-    return last_interaction_time_;
-  }
 
  private:
   friend class AckOnSurfaceActivationWhenInteractiveTest;
@@ -337,8 +343,6 @@ class VIZ_SERVICE_EXPORT CompositorFrameSinkSupport
   bool ShouldSendBeginFrame(BeginFrameId frame_id,
                             base::TimeTicks timestamp,
                             base::TimeDelta vsync_interval);
-  // Set if this FrameSink is currently being interacted with.
-  void SetIsHandlingInteraction(bool is_handling_interaction);
 
   // Checks if any of the pending surfaces should activate now because their
   // deadline has passed. This is called every BeginFrame.
@@ -361,9 +365,6 @@ class VIZ_SERVICE_EXPORT CompositorFrameSinkSupport
   void UpdateThreadIdsPostVerification(std::vector<Thread> threads,
                                        bool passed_verification);
 
-  void ForAllReservedResourceDelegates(
-      base::FunctionRef<void(ReservedResourceDelegate&)> func);
-
   void DoReturnResources(std::vector<ReturnedResource> resources);
 
   base::TimeDelta begin_frame_interval() const;
@@ -372,6 +373,8 @@ class VIZ_SERVICE_EXPORT CompositorFrameSinkSupport
 
   const raw_ptr<FrameSinkManagerImpl> frame_sink_manager_;
   const raw_ptr<SurfaceManager> surface_manager_;
+
+  raw_ptr<LayerContextImpl> resource_return_delegate_ = nullptr;
 
   const FrameSinkId frame_sink_id_;
   SurfaceId last_activated_surface_id_;
@@ -549,12 +552,6 @@ class VIZ_SERVICE_EXPORT CompositorFrameSinkSupport
                  std::unique_ptr<SurfaceAnimationManager>>
       view_transition_token_to_animation_manager_;
 
-  // This is used for any viz side resources that are managed by viz. These
-  // resources must use the reserved resource range defined by
-  // `kVizReservedRangeStartId`.
-  raw_ptr<ReservedResourceDelegate> external_reserved_resource_delegate_ =
-      nullptr;
-
   std::vector<Thread> threads_;
 
   // Number of frames skipped during throttling since last BeginFrame sent.
@@ -575,11 +572,7 @@ class VIZ_SERVICE_EXPORT CompositorFrameSinkSupport
   // SurfaceAnimationManager.
   base::OnceCallback<void()> surface_animation_manager_callback_;
 
-  // If this frame sink is currently being interacted with this will be true.
-  bool is_handling_interaction_ = false;
 
-  // The time when the last interactive frame was submitted.
-  base::TimeTicks last_interaction_time_;
 
   base::WeakPtrFactory<CompositorFrameSinkSupport> weak_factory_{this};
 };

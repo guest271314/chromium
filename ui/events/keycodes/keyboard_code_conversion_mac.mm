@@ -2,21 +2,19 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/351564777): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #import "ui/events/keycodes/keyboard_code_conversion_mac.h"
 
 #import <Carbon/Carbon.h>
 
 #include <algorithm>
+#include <array>
+#include <string_view>
 
 #include "base/apple/foundation_util.h"
 #include "base/apple/osstatus_logging.h"
 #include "base/apple/scoped_cftyperef.h"
 #include "base/check_op.h"
+#include "base/compiler_specific.h"
 #include "base/containers/fixed_flat_map.h"
 #include "base/notreached.h"
 #include "base/strings/string_util.h"
@@ -95,7 +93,7 @@ bool IsKeypadOrNumericKeyEvent(NSEvent* event) {
 }
 
 // A convenient array for getting symbol characters on the number keys.
-const char kShiftCharsForNumberKeys[] = ")!@#$%^&*(";
+constexpr std::string_view kShiftCharsForNumberKeys = ")!@#$%^&*(";
 
 DomKey DomKeyFromKeyCode(unsigned short key_code) {
   constexpr auto kMap = base::MakeFixedFlatMap<unsigned short, DomKey>({
@@ -644,7 +642,7 @@ KeyboardCode KeyboardCodeFromCharCode(unichar char_code) {
 }
 
 KeyboardCode KeyboardCodeFromKeyCode(unsigned short key_code) {
-  static const KeyboardCode kKeyboardCodes[] = {
+  static constexpr std::array<KeyboardCode, 128> kKeyboardCodes = {
       /* 0x00 */ VKEY_A,
       /* 0x01 */ VKEY_S,
       /* 0x02 */ VKEY_D,

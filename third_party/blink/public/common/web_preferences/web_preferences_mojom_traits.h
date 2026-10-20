@@ -8,6 +8,7 @@
 #include <optional>
 
 #include "build/build_config.h"
+#include "mojo/public/cpp/bindings/map_traits_flat_map.h"
 #include "mojo/public/cpp/bindings/struct_traits.h"
 #include "net/nqe/effective_connection_type.h"
 #include "third_party/blink/public/common/common_export.h"
@@ -20,37 +21,37 @@ namespace mojo {
 template <>
 struct BLINK_COMMON_EXPORT StructTraits<blink::mojom::WebPreferencesDataView,
                                         blink::web_pref::WebPreferences> {
-  static const std::map<std::string, std::u16string>& standard_font_family_map(
+  static const blink::web_pref::ScriptFontFamilyMap& standard_font_family_map(
       const blink::web_pref::WebPreferences& r) {
     return r.standard_font_family_map;
   }
 
-  static const std::map<std::string, std::u16string>& fixed_font_family_map(
+  static const blink::web_pref::ScriptFontFamilyMap& fixed_font_family_map(
       const blink::web_pref::WebPreferences& r) {
     return r.fixed_font_family_map;
   }
 
-  static const std::map<std::string, std::u16string>& serif_font_family_map(
+  static const blink::web_pref::ScriptFontFamilyMap& serif_font_family_map(
       const blink::web_pref::WebPreferences& r) {
     return r.serif_font_family_map;
   }
 
-  static const std::map<std::string, std::u16string>&
-  sans_serif_font_family_map(const blink::web_pref::WebPreferences& r) {
+  static const blink::web_pref::ScriptFontFamilyMap& sans_serif_font_family_map(
+      const blink::web_pref::WebPreferences& r) {
     return r.sans_serif_font_family_map;
   }
 
-  static const std::map<std::string, std::u16string>& cursive_font_family_map(
+  static const blink::web_pref::ScriptFontFamilyMap& cursive_font_family_map(
       const blink::web_pref::WebPreferences& r) {
     return r.cursive_font_family_map;
   }
 
-  static const std::map<std::string, std::u16string>& fantasy_font_family_map(
+  static const blink::web_pref::ScriptFontFamilyMap& fantasy_font_family_map(
       const blink::web_pref::WebPreferences& r) {
     return r.fantasy_font_family_map;
   }
 
-  static const std::map<std::string, std::u16string>& math_font_family_map(
+  static const blink::web_pref::ScriptFontFamilyMap& math_font_family_map(
       const blink::web_pref::WebPreferences& r) {
     return r.math_font_family_map;
   }
@@ -73,7 +74,7 @@ struct BLINK_COMMON_EXPORT StructTraits<blink::mojom::WebPreferencesDataView,
     return r.minimum_logical_font_size;
   }
 
-  static std::string default_encoding(
+  static const std::string& default_encoding(
       const blink::web_pref::WebPreferences& r) {
     return r.default_encoding;
   }
@@ -126,6 +127,10 @@ struct BLINK_COMMON_EXPORT StructTraits<blink::mojom::WebPreferencesDataView,
   static bool allow_unrestricted_window_focus(
       const blink::web_pref::WebPreferences& r) {
     return r.allow_unrestricted_window_focus;
+  }
+
+  static bool clipboard_focus_exempt(const blink::web_pref::WebPreferences& r) {
+    return r.clipboard_focus_exempt;
   }
 
   static bool remote_fonts_enabled(const blink::web_pref::WebPreferences& r) {
@@ -547,6 +552,11 @@ struct BLINK_COMMON_EXPORT StructTraits<blink::mojom::WebPreferencesDataView,
     return r.web_app_scope;
   }
 
+  static const GURL& web_app_custom_manifest_url(
+      const ::blink::web_pref::WebPreferences& r) {
+    return r.web_app_custom_manifest_url;
+  }
+
   static bool is_initial_profile(const ::blink::web_pref::WebPreferences& r) {
     return r.is_initial_profile;
   }
@@ -830,11 +840,6 @@ struct BLINK_COMMON_EXPORT StructTraits<blink::mojom::WebPreferencesDataView,
     return r.dynamic_safe_area_insets_enabled;
   }
 
-  static bool
-  require_transient_activation_and_user_confirmation_for_subapps_api(
-      const blink::web_pref::WebPreferences& r) {
-    return r.subapps_apis_require_user_gesture_and_authorization;
-  }
 
   static bool payment_request_enabled(
       const blink::web_pref::WebPreferences& r) {
@@ -843,16 +848,6 @@ struct BLINK_COMMON_EXPORT StructTraits<blink::mojom::WebPreferencesDataView,
 
   static bool ai_ot_apis_enabled(const blink::web_pref::WebPreferences& r) {
     return r.ai_ot_apis_enabled;
-  }
-
-  static bool ignore_duplicate_nav_enabled(
-      const blink::web_pref::WebPreferences& r) {
-    return r.ignore_duplicate_nav_enabled;
-  }
-
-  static base::TimeDelta duplicate_nav_threshold(
-      const blink::web_pref::WebPreferences& r) {
-    return r.duplicate_nav_threshold;
   }
 
 #if BUILDFLAG(IS_MAC)
@@ -864,6 +859,11 @@ struct BLINK_COMMON_EXPORT StructTraits<blink::mojom::WebPreferencesDataView,
 
   static bool is_indigo_onboarding(const blink::web_pref::WebPreferences& r) {
     return r.is_indigo_onboarding;
+  }
+
+  static bool is_xslt_deprecation_banner_suppressed(
+      const blink::web_pref::WebPreferences& r) {
+    return r.is_xslt_deprecation_banner_suppressed;
   }
 
   static bool Read(blink::mojom::WebPreferencesDataView r,

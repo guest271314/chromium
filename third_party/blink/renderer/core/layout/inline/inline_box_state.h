@@ -26,8 +26,9 @@ class InlineNode;
 class LineInfo;
 class LogicalLineItems;
 class ShapeResultView;
-struct FitTextBlockScale;
+class UsedFont;
 struct LogicalRubyColumn;
+struct TextFitBlockScale;
 
 // Fragments that require the layout position/size of ancestor are packed in
 // this struct.
@@ -102,7 +103,7 @@ struct InlineBoxState {
 
   InlineBoxState() = default;
   // Needs the move constructor for Vector<InlineBoxState>.
-  InlineBoxState(const InlineBoxState&& state);
+  InlineBoxState(InlineBoxState&& state);
   InlineBoxState(const InlineBoxState&) = delete;
   InlineBoxState& operator=(const InlineBoxState&) = delete;
 
@@ -131,11 +132,11 @@ struct InlineBoxState {
   void ComputeTextMetrics(const ComputedStyle&,
                           const Font& fontref,
                           FontBaseline ifc_baseline,
-                          const FitTextBlockScale* scale);
+                          const TextFitBlockScale* scale);
   void EnsureTextMetrics(const ComputedStyle&,
                          const Font& fontref,
                          FontBaseline ifc_baseline,
-                         const FitTextBlockScale* scale);
+                         const TextFitBlockScale* scale);
   void ResetTextMetrics();
 
   void AccumulateUsedFonts(const ShapeResultView*, float scale = 1.0f);
@@ -157,12 +158,22 @@ struct InlineBoxState {
                           FontHeight& metrics);
 
   static FontHeight ComputeEmphasisMarkOutsets(const ComputedStyle& style,
-                                               const Font& font,
-                                               float paint_scale);
+                                               const UsedFont& used_font);
 
 #if DCHECK_IS_ON()
   void CheckSame(const InlineBoxState&) const;
 #endif
+};
+
+// The mode to use for inline box struts.
+enum class LineHeightMode : uint8_t {
+  // Normal mode, all inline boxes have a strut.
+  kNormal,
+  // With the line height quirk, inline boxes have no strut.
+  kQuirk,
+  // For the line-clamp displaced ellipsis, only the root inline box has a
+  // strut.
+  kLineClampDisplacedEllipsis,
 };
 
 // Represents the inline tree structure. This class provides:
@@ -184,7 +195,7 @@ class CORE_EXPORT InlineLayoutStateStack {
   InlineBoxState* OnBeginPlaceItems(const InlineNode& node,
                                     const LineInfo& line_info,
                                     FontBaseline,
-                                    bool line_height_quirk,
+                                    LineHeightMode line_height_mode,
                                     bool should_scale_line_height,
                                     LogicalLineItems* line_box);
 
@@ -199,7 +210,7 @@ class CORE_EXPORT InlineLayoutStateStack {
                             const InlineItem&,
                             const InlineItemResult&,
                             FontBaseline baseline_type,
-                            const FitTextBlockScale& text_scale,
+                            const TextFitBlockScale& text_scale,
                             LogicalLineItems* line_box);
 
   // Pop a box state stack.
@@ -281,9 +292,10 @@ class CORE_EXPORT InlineLayoutStateStack {
                    FontBaseline);
 
   void AddBoxFragmentPlaceholder(InlineBoxState*,
-                                 const FitTextBlockScale& text_scale,
+                                 const TextFitBlockScale& text_scale,
                                  LogicalLineItems*,
-                                 FontBaseline);
+                                 FontBaseline,
+                                 bool has_non_empty_inline_box_start);
   void AddBoxData(const ConstraintSpace&,
                   const InlineBoxState*,
                   LogicalLineItems*);
@@ -405,7 +417,15 @@ struct CORE_EXPORT LogicalRubyColumn
 
   Member<LogicalLineItems> annotation_items;
 
+  // Height of ruby annotations in this column, accumulated recursively from
+  // nested columns before line layout. Represents the height of the annotations
+  // themselves.
   FontHeight annotation_metrics;
+
+  // Exact margin of ruby annotations measured from the baseline after line
+  // layout. Represents the physical bounding box height of the annotations
+  // including line alignment shifts. Used for text-emphasis mark layout.
+  FontHeight layout_annotation_metrics;
 
   // `ruby-position` property value.
   RubyPosition ruby_position = RubyPosition::kOver;

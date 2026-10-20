@@ -10,6 +10,7 @@ import android.app.Activity;
 import android.content.Context;
 
 import androidx.lifecycle.DefaultLifecycleObserver;
+import androidx.lifecycle.Lifecycle;
 import androidx.lifecycle.LifecycleObserver;
 import androidx.lifecycle.LifecycleOwner;
 
@@ -19,8 +20,10 @@ import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.build.annotations.RequiresNonNull;
 import org.chromium.chrome.browser.device_reauth.BiometricStatus;
+import org.chromium.chrome.browser.device_reauth.DeviceAuthAvailabilityCheckerBridge;
 import org.chromium.chrome.browser.device_reauth.DeviceAuthSource;
 import org.chromium.chrome.browser.device_reauth.ReauthenticatorBridge;
+import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.signin.services.IdentityServicesProvider;
 import org.chromium.chrome.browser.signin.services.ProfileDataCache;
@@ -30,7 +33,7 @@ import org.chromium.chrome.browser.sync.ui.BatchUploadDialogCoordinator;
 import org.chromium.chrome.browser.sync.ui.batch_upload_card.BatchUploadCardCoordinator.EntryPoint;
 import org.chromium.chrome.browser.ui.messages.snackbar.Snackbar;
 import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager;
-import org.chromium.components.signin.base.CoreAccountInfo;
+import org.chromium.components.signin.base.AccountInfo;
 import org.chromium.components.signin.identitymanager.IdentityManager;
 import org.chromium.components.sync.DataType;
 import org.chromium.components.sync.LocalDataDescription;
@@ -58,6 +61,7 @@ class BatchUploadCardMediator
                 }
             };
 
+    private final Lifecycle mLifecycle;
     private final Context mContext;
     private final Profile mProfile;
     private final PropertyModel mModel;
@@ -107,6 +111,8 @@ class BatchUploadCardMediator
             mSyncService.addSyncStateChangedListener(this);
         }
 
+        // TODO(crbug.com/574315008): Instantiate the reauthenticator bridge only if biometric
+        // authentication is available/required.
         mReauthenticatorBridge =
                 ReauthenticatorBridge.create(
                         activity,
@@ -116,12 +122,14 @@ class BatchUploadCardMediator
                                 : DeviceAuthSource.SETTINGS_BATCH_UPLOAD);
         mDialogManager = modalDialogManager;
 
-        lifecycleOwner.getLifecycle().addObserver(mLifeCycleObserver);
+        mLifecycle = lifecycleOwner.getLifecycle();
+        mLifecycle.addObserver(mLifeCycleObserver);
 
         updateBatchUploadCard();
     }
 
     public void destroy() {
+        mLifecycle.removeObserver(mLifeCycleObserver);
         if (mSyncService != null) {
             mSyncService.removeSyncStateChangedListener(this);
         }
@@ -171,15 +179,15 @@ class BatchUploadCardMediator
         SyncService syncService = SyncServiceFactory.getForProfile(mProfile);
         assumeNonNull(syncService);
         syncService.triggerLocalDataMigration(types);
-        CoreAccountInfo coreAccountInfo = mIdentityManager.getPrimaryAccountInfo();
-        assumeNonNull(coreAccountInfo);
+        @Nullable AccountInfo accountInfo = mIdentityManager.getPrimaryAccountInfo();
+        assumeNonNull(accountInfo);
         // TODO(crbug.com/354922852): Handle accounts with non-displayable email address.
         String snackbarMessage =
                 mContext.getResources()
                         .getQuantityString(
                                 R.plurals.batch_upload_saved_snackbar_message,
                                 itemsCount,
-                                coreAccountInfo.getEmail());
+                                accountInfo.getEmail());
         SnackbarManager snackbarManager = assumeNonNull(mSnackbarManagerSupplier.get());
         snackbarManager.showSnackbar(
                 Snackbar.make(
@@ -203,9 +211,12 @@ class BatchUploadCardMediator
             return;
         }
 
+        int biometricStatus =
+                ChromeFeatureList.isEnabled(ChromeFeatureList.DEVICE_REAUTH_REFACTOR)
+                        ? DeviceAuthAvailabilityCheckerBridge.getBiometricAvailabilityStatus()
+                        : mReauthenticatorBridge.getBiometricAvailabilityStatus();
         mSyncService.getLocalDataDescriptions(
-                mReauthenticatorBridge.getBiometricAvailabilityStatus()
-                                == BiometricStatus.UNAVAILABLE
+                biometricStatus == BiometricStatus.UNAVAILABLE
                         ? Set.of(DataType.BOOKMARKS, DataType.READING_LIST)
                         : Set.of(DataType.BOOKMARKS, DataType.READING_LIST, DataType.PASSWORDS),
                 localDataDescriptionsMap -> {
@@ -237,7 +248,7 @@ class BatchUploadCardMediator
     }
 
     private void setupBatchUploadCardPropertyModel() {
-        CoreAccountInfo accountInfo = mIdentityManager.getPrimaryAccountInfo();
+        @Nullable AccountInfo accountInfo = mIdentityManager.getPrimaryAccountInfo();
         // setupBatchUploadCardView() is called asynchronously through updateBatchUploadCard(), so
         // it could be called while there is no primary account.
         if (accountInfo == null) {

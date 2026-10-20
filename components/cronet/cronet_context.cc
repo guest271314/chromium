@@ -52,7 +52,6 @@
 #include "net/cookies/cookie_inclusion_status.h"
 #include "net/cookies/cookie_monster.h"
 #include "net/cookies/cookie_setting_override.h"
-#include "net/first_party_sets/first_party_set_metadata.h"
 #include "net/http/http_auth_handler_factory.h"
 #include "net/http/transport_security_state.h"
 #include "net/log/file_net_log_observer.h"
@@ -78,6 +77,15 @@ namespace {
 // clashing with previous feature flag that was rolled back in
 // https://crrev.com/c/6458938.
 BASE_FEATURE(kEnableZstd, "EnableZstdV2", base::FEATURE_DISABLED_BY_DEFAULT);
+
+// Converts a network-quality observation TimeTicks into milliseconds since the
+// Unix epoch (the value exposed through the Cronet API) by anchoring both
+// clocks to the current instant.
+int64_t TimeTicksToMillisecondsSinceUnixEpoch(const base::TimeTicks& ticks) {
+  return (base::Time::Now() - (base::TimeTicks::Now() - ticks) -
+          base::Time::UnixEpoch())
+      .InMilliseconds();
+}
 
 // This class wraps a NetLog that also contains network change events.
 class NetLogWithNetworkChangeEvents {
@@ -134,7 +142,6 @@ class BasicNetworkDelegate : public net::NetworkDelegateImpl {
   // net::NetworkDelegate implementation.
   bool OnAnnotateAndMoveUserBlockedCookies(
       const net::URLRequest& request,
-      const net::FirstPartySetMetadata& first_party_set_metadata,
       net::CookieAccessResultList& maybe_included_cookies,
       net::CookieAccessResultList& excluded_cookies) override {
     // Disallow sending cookies by default.
@@ -148,7 +155,6 @@ class BasicNetworkDelegate : public net::NetworkDelegateImpl {
       const net::URLRequest& request,
       const net::CanonicalCookie& cookie,
       net::CookieOptions* options,
-      const net::FirstPartySetMetadata& first_party_set_metadata,
       net::CookieInclusionStatus* inclusion_status) override {
     // Disallow saving cookies by default.
     return false;
@@ -762,8 +768,7 @@ void CronetContext::NetworkTasks::OnRTTObservation(
   DCHECK_CALLED_ON_VALID_THREAD(network_thread_checker_);
 
   callback_->OnRTTObservation(
-      rtt_ms, (timestamp - base::TimeTicks::UnixEpoch()).InMilliseconds(),
-      source);
+      rtt_ms, TimeTicksToMillisecondsSinceUnixEpoch(timestamp), source);
 }
 
 void CronetContext::NetworkTasks::OnThroughputObservation(
@@ -773,8 +778,8 @@ void CronetContext::NetworkTasks::OnThroughputObservation(
   DCHECK_CALLED_ON_VALID_THREAD(network_thread_checker_);
 
   callback_->OnThroughputObservation(
-      throughput_kbps,
-      (timestamp - base::TimeTicks::UnixEpoch()).InMilliseconds(), source);
+      throughput_kbps, TimeTicksToMillisecondsSinceUnixEpoch(timestamp),
+      source);
 }
 
 void CronetContext::NetworkTasks::OnNetworkDisconnected(

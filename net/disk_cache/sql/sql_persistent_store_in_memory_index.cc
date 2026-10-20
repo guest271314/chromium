@@ -70,25 +70,7 @@ void SqlPersistentStoreInMemoryIndex::Clear() {
   if (impl64_) {
     impl64_.reset();
   }
-}
-
-std::optional<SqlPersistentStoreResId>
-SqlPersistentStoreInMemoryIndex::TryGetSingleResId(
-    CacheEntryKeyHash hash) const {
-  const auto res_id_32 = std::visit(
-      [&](const auto& impl) { return impl.TryGetSingleResId(hash); }, impl32_);
-  const auto res_id_64 =
-      impl64_
-          ? std::visit(
-                [&](const auto& impl) { return impl.TryGetSingleResId(hash); },
-                *impl64_)
-          : std::nullopt;
-  if (res_id_32.has_value() && !res_id_64.has_value()) {
-    return ResId(res_id_32->value());
-  } else if (!res_id_32.has_value() && res_id_64.has_value()) {
-    return *res_id_64;
-  }
-  return std::nullopt;
+  is_entry_metadata_ready_ = false;
 }
 
 void SqlPersistentStoreInMemoryIndex::SetEntryDataHints(
@@ -161,6 +143,73 @@ size_t SqlPersistentStoreInMemoryIndex::size() const {
     size += std::visit([](const auto& impl) { return impl.size(); }, *impl64_);
   }
   return size;
+}
+
+void SqlPersistentStoreInMemoryIndex::SetEntryMetadataReady() {
+  CHECK(IsConsolidatedInMemoryIndexEnabled());
+  is_entry_metadata_ready_ = true;
+}
+
+void SqlPersistentStoreInMemoryIndex::ForEach(
+    base::FunctionRef<void(CacheEntryKeyHash hash,
+                           SqlPersistentStoreResId res_id,
+                           base::Time approximate_last_used,
+                           uint64_t approximate_bytes_usage,
+                           MemoryEntryDataHints hints)> fun) const {
+  CHECK(IsConsolidatedInMemoryIndexEnabled());
+  std::get<ConsolidatedImpl<ResId32>>(impl32_).ForEach(fun);
+  if (impl64_) {
+    std::get<ConsolidatedImpl<SqlPersistentStoreResId>>(*impl64_).ForEach(fun);
+  }
+}
+
+void SqlPersistentStoreInMemoryIndex::ForEach(
+    base::FunctionRef<void(CacheEntryKeyHash hash,
+                           SqlPersistentStoreResId res_id,
+                           MemoryEntryDataHints hints)> fun) const {
+  CHECK(IsConsolidatedInMemoryIndexEnabled());
+  std::get<ConsolidatedImpl<ResId32>>(impl32_).ForEach(fun);
+  if (impl64_) {
+    std::get<ConsolidatedImpl<SqlPersistentStoreResId>>(*impl64_).ForEach(fun);
+  }
+}
+
+void SqlPersistentStoreInMemoryIndex::SetEntryLastUsedAndUsage(
+    CacheEntryKeyHash hash,
+    SqlPersistentStoreResId res_id,
+    base::Time last_used,
+    std::optional<uint64_t> bytes_usage) {
+  CHECK(IsConsolidatedInMemoryIndexEnabled());
+  if (auto res_id_32 = ToResId32(res_id); res_id_32.has_value()) {
+    std::get<ConsolidatedImpl<ResId32>>(impl32_).SetEntryLastUsedAndUsage(
+        hash, *res_id_32, last_used, bytes_usage);
+  } else if (impl64_) {
+    std::get<ConsolidatedImpl<SqlPersistentStoreResId>>(*impl64_)
+        .SetEntryLastUsedAndUsage(hash, res_id, last_used, bytes_usage);
+  }
+}
+
+void SqlPersistentStoreInMemoryIndex::SetEntryLastUsed(
+    CacheEntryKeyHash hash,
+    SqlPersistentStoreResId res_id,
+    base::Time last_used) {
+  SetEntryLastUsedAndUsage(hash, res_id, last_used, std::nullopt);
+}
+
+std::optional<SqlPersistentStoreInMemoryIndex::Metadata>
+SqlPersistentStoreInMemoryIndex::GetEntryMetadataForTesting(  // IN-TEST
+    CacheEntryKeyHash hash,
+    SqlPersistentStoreResId res_id) const {
+  CHECK(IsConsolidatedInMemoryIndexEnabled());
+  if (auto res_id_32 = ToResId32(res_id); res_id_32.has_value()) {
+    return std::get<ConsolidatedImpl<ResId32>>(impl32_)
+        .GetEntryMetadataForTesting(hash, *res_id_32);  // IN-TEST
+  }
+  if (impl64_) {
+    return std::get<ConsolidatedImpl<SqlPersistentStoreResId>>(*impl64_)
+        .GetEntryMetadataForTesting(hash, res_id);  // IN-TEST
+  }
+  return std::nullopt;
 }
 
 }  // namespace disk_cache

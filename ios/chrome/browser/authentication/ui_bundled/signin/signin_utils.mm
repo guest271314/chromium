@@ -5,6 +5,7 @@
 #import "ios/chrome/browser/authentication/ui_bundled/signin/signin_utils.h"
 
 #import "base/barrier_callback.h"
+#import "base/check.h"
 #import "base/command_line.h"
 #import "base/functional/bind.h"
 #import "base/functional/callback_helpers.h"
@@ -68,12 +69,9 @@
 
 namespace {
 
-// The duration between two signin fullscreen sign-in promo trigger is randomly
-// chosen between [53..68) days.
-base::TimeDelta DurationBetweenPromoTriggers() {
-  using signin::kPromoTriggerRange;
-  return base::RandTimeDelta(kPromoTriggerRange.first,
-                             kPromoTriggerRange.second);
+// Returns a random time offset in the past between [0..14) days.
+base::Time GetCurrentTimeWithRandomOffset() {
+  return base::Time::Now() - base::Days(base::RandIntInclusive(0, 13));
 }
 
 // Initiate synchronously the change to `profile`, then run `continuation`
@@ -106,7 +104,7 @@ NSSet<NSString*>* GaiaIdSetWithAccountInfos(
     const std::vector<AccountInfo>& account_infos) {
   NSMutableSet* gaia_id_set = [NSMutableSet set];
   for (const AccountInfo& account_info : account_infos) {
-    [gaia_id_set addObject:account_info.gaia.ToNSString()];
+    [gaia_id_set addObject:account_info.GetGaiaId().ToNSString()];
   }
   return [gaia_id_set copy];
 }
@@ -165,7 +163,7 @@ syncer::DataTypeSet DataCountsMapToDataTypeSet(
 // If `trigger_scene_session_id` is empty or invalid, the new scene state is
 // nullptr.
 void AllBrowsersSignedOut(signin::SignoutCompletion completion,
-                          std::string trigger_scene_session_id,
+                          std::string_view trigger_scene_session_id,
                           std::vector<SceneState*> results) {
   SceneState* new_scene_state = nullptr;
   if (!trigger_scene_session_id.empty()) {
@@ -177,6 +175,18 @@ void AllBrowsersSignedOut(signin::SignoutCompletion completion,
     }
   }
   std::move(completion).Run(new_scene_state);
+}
+
+// Checks that `result` is valid, i.e. either it contains a non-nil identity
+// value or a non-success cancellation/failure reason
+// (`SigninCoordinatorResult`).
+void CheckSigninCoordinatorResultOrIdentity(
+    SigninCoordinatorResultOrIdentity result) {
+  if (result.has_value()) {
+    CHECK(result.value());
+  } else {
+    CHECK_NE(result.error(), SigninCoordinatorResultSuccess);
+  }
 }
 
 }  // namespace
@@ -261,19 +271,31 @@ bool ShouldPresentUserSigninUpgrade(ProfileIOS* profile,
   }
 
   PrefService* local_state = GetApplicationContext()->GetLocalState();
-  base::Time next_show_time = local_state->GetTime(prefs::kNextSSORecallTime);
+  base::Time last_show_time_with_random_offset = local_state->GetTime(
+      prefs::kSigninStartupPromoLastShownTimeWithRandomOffset);
   bool use_date =
       base::FeatureList::IsEnabled(switches::kFullscreenSignInPromoUseDate);
-  if (next_show_time.is_null()) {
-    local_state->SetTime(prefs::kNextSSORecallTime,
-                         base::Time::Now() + DurationBetweenPromoTriggers());
-    // Don't show if `kNextSSORecallTime` was never recorded.
+  // Set the last shown time if it was never set before or if it's in the future
+  // (in the case of device time change).
+  if (last_show_time_with_random_offset.is_null() ||
+      last_show_time_with_random_offset > base::Time::Now()) {
+    local_state->SetTime(
+        prefs::kSigninStartupPromoLastShownTimeWithRandomOffset,
+        GetCurrentTimeWithRandomOffset());
+    // Don't show if `kLastSSORecallTimeWithRandomOffset` was never recorded.
     if (use_date) {
       return false;
     }
   }
-  if (use_date && next_show_time > base::Time::Now()) {
-    return false;
+
+  if (use_date) {
+    int interval = switches::kFullscreenSignInPromoUseDateInterval.Get();
+    DCHECK(interval != -1);
+    base::Time next_show_time =
+        last_show_time_with_random_offset + base::Days(interval);
+    if (next_show_time > base::Time::Now()) {
+      return false;
+    }
   }
 
   NSUserDefaults* defaults = [NSUserDefaults standardUserDefaults];
@@ -371,8 +393,8 @@ void RecordFullscreenSigninPromoStarted(
 
   NSUserDefaults* defaults = [NSUserDefaults standardUserDefaults];
   PrefService* local_state = GetApplicationContext()->GetLocalState();
-  local_state->SetTime(prefs::kNextSSORecallTime,
-                       base::Time::Now() + DurationBetweenPromoTriggers());
+  local_state->SetTime(prefs::kSigninStartupPromoLastShownTimeWithRandomOffset,
+                       GetCurrentTimeWithRandomOffset());
   // TODO(crbug.com/408962000): Remove this key and all code related after
   // `kFullscreenSignInPromoUseDate` is launched.
   [defaults setObject:base::SysUTF8ToNSString(current_version.GetString())
@@ -389,17 +411,6 @@ void RecordFullscreenSigninPromoStarted(
   [defaults setInteger:display_count forKey:kSigninPromoViewDisplayCountKey];
 }
 
-Tribool TriboolFromCapabilityResult(SystemIdentityCapabilityResult result) {
-  switch (result) {
-    case SystemIdentityCapabilityResult::kTrue:
-      return Tribool::kTrue;
-    case SystemIdentityCapabilityResult::kFalse:
-      return Tribool::kFalse;
-    case SystemIdentityCapabilityResult::kUnknown:
-      return Tribool::kUnknown;
-  }
-  NOTREACHED();
-}
 
 NSArray<id<SystemIdentity>>* GetIdentitiesOnDevice(
     signin::IdentityManager* identityManager,
@@ -429,7 +440,7 @@ id<SystemIdentity> GetDefaultIdentityOnDevice(
 
 std::optional<AccountInfo> GetAccountInfoOnDeviceWithEmail(
     signin::IdentityManager* identityManager,
-    std::string email) {
+    std::string_view email) {
   for (const AccountInfo& account_info :
        identityManager->GetAccountsOnDevice()) {
     if (gaia::AreEmailsSame(account_info.GetEmail(), email)) {
@@ -449,11 +460,11 @@ ProfileSignoutRequest::~ProfileSignoutRequest() {
   CHECK(run_has_been_called_);
 }
 
-ProfileSignoutRequest&& ProfileSignoutRequest::SetSnackbarMessage(
-    SnackbarMessage* snackbar_message,
+ProfileSignoutRequest&& ProfileSignoutRequest::SetSnackbarMessageBuilder(
+    SnackbarMessageBuilder snackbar_message_builder,
     bool force_snackbar_over_toolbar) && {
   CHECK(!run_has_been_called_);
-  snackbar_message_ = snackbar_message;
+  snackbar_message_builder_ = std::move(snackbar_message_builder);
   force_snackbar_over_toolbar_ = force_snackbar_over_toolbar;
   return std::move(*this);
 }
@@ -492,7 +503,8 @@ void ProfileSignoutRequest::Run(Browser* browser) && {
   ChangeProfileContinuation continuation =
       CreateChangeProfileSignoutContinuation(
           source_, force_snackbar_over_toolbar_, should_record_metrics_,
-          snackbar_message_, std::move(completion_callback_));
+          std::move(snackbar_message_builder_),
+          std::move(completion_callback_));
   ProfileIOS* profile = browser->GetProfile();
   AuthenticationService* authentication_service =
       AuthenticationServiceFactory::GetForProfile(profile);
@@ -525,7 +537,7 @@ void ProfileSignoutRequest::Run(Browser* browser) && {
 
 void MultiProfileSignOutForProfile(
     ProfileIOS* profile,
-    std::string trigger_scene_session_id,
+    std::string_view trigger_scene_session_id,
     signin_metrics::ProfileSignout signout_source,
     SignoutCompletion signout_completion_closure) {
   // Simply sign out if no profile switching is needed.
@@ -541,11 +553,12 @@ void MultiProfileSignOutForProfile(
         break;
       }
     }
-    base::OnceClosure authentication_signout_completion = base::BindOnce(
-        std::move(signout_completion_closure), trigger_scene_state);
-    authentication_service->SignOut(
-        signout_source,
-        base::CallbackToBlock(std::move(authentication_signout_completion)));
+    authentication_service->SignOut(signout_source);
+    if (signout_completion_closure) {
+      base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+          FROM_HERE, base::BindOnce(std::move(signout_completion_closure),
+                                    trigger_scene_state));
+    }
     return;
   }
 
@@ -561,7 +574,7 @@ void MultiProfileSignOutForProfile(
   // the personal profile.
   auto on_all_switches_done = base::BindOnce(
       &AllBrowsersSignedOut, std::move(signout_completion_closure),
-      trigger_scene_session_id);
+      std::string(trigger_scene_session_id));
   base::RepeatingCallback<void(SceneState*)> barrier =
       base::BarrierCallback<SceneState*>(browser_list.size(),
                                          std::move(on_all_switches_done));
@@ -570,8 +583,8 @@ void MultiProfileSignOutForProfile(
     ChangeProfileContinuation continuation =
         CreateChangeProfileSignoutContinuation(
             signout_source, /*force_snackbar_over_toolbar=*/false,
-            /*should_record_metrics=*/false, /*snackbar_message =*/nil,
-            std::move(barrier));
+            /*should_record_metrics=*/false,
+            /*snackbar_message_builder=*/{}, std::move(barrier));
     SwitchToPersonalProfile(browser->GetSceneState(),
                             ChangeProfileReason::kManagedAccountSignOut,
                             std::move(continuation));
@@ -636,6 +649,36 @@ Browser* GetRegularBrowser(Browser* browser) {
   }
   return browser->GetSceneState()
       .browserProviderInterface.mainBrowserProvider.browser;
+}
+
+void CheckSigninCoordinatorResultAndIdentity(SigninCoordinatorResult result,
+                                             id<SystemIdentity> identity) {
+  if (result == SigninCoordinatorResultSuccess) {
+    CHECK(identity);
+  } else {
+    CHECK(!identity);
+  }
+}
+
+SigninCoordinatorResult
+SigninCoordinatorResultFromSigninCoordinatorResultOrIdentity(
+    SigninCoordinatorResultOrIdentity result) {
+  CheckSigninCoordinatorResultOrIdentity(result);
+  if (result.has_value()) {
+    return SigninCoordinatorResultSuccess;
+  }
+  return result.error();
+}
+
+SigninCoordinatorResultOrIdentity
+SigninCoordinatorResultOrIdentityFromSigninCoordinatorResult(
+    SigninCoordinatorResult result,
+    id<SystemIdentity> identity) {
+  CheckSigninCoordinatorResultAndIdentity(result, identity);
+  if (result == SigninCoordinatorResultSuccess) {
+    return identity;
+  }
+  return base::unexpected(result);
 }
 
 }  // namespace signin

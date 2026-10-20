@@ -5,6 +5,8 @@
 #ifndef UI_BASE_DRAGDROP_OS_EXCHANGE_DATA_PROVIDER_H_
 #define UI_BASE_DRAGDROP_OS_EXCHANGE_DATA_PROVIDER_H_
 
+#include <stdint.h>
+
 #include <memory>
 #include <optional>
 #include <string>
@@ -12,7 +14,9 @@
 #include <vector>
 
 #include "base/component_export.h"
+#include "base/containers/span.h"
 #include "base/files/file_path.h"
+#include "base/unguessable_token.h"
 #include "build/build_config.h"
 #include "ui/base/clipboard/clipboard_format_type.h"
 #include "ui/base/clipboard/clipboard_url_info.h"
@@ -67,6 +71,9 @@ class COMPONENT_EXPORT(UI_BASE_DATA_EXCHANGE) OSExchangeDataProvider {
   virtual void MarkAsFromPrivileged() = 0;
   virtual bool IsFromPrivileged() const = 0;
 
+  virtual void SetChromeDragId(const base::UnguessableToken& drag_id) = 0;
+  virtual std::optional<base::UnguessableToken> GetChromeDragId() const = 0;
+
   virtual void SetString(std::u16string_view data) = 0;
   virtual void SetURLs(base::span<const ClipboardUrlInfo> url_infos) = 0;
   virtual void SetFilename(const base::FilePath& path) = 0;
@@ -93,10 +100,10 @@ class COMPONENT_EXPORT(UI_BASE_DATA_EXCHANGE) OSExchangeDataProvider {
   virtual bool HasCustomFormat(const ClipboardFormatType& format) const = 0;
 
   virtual void SetFileContents(const base::FilePath& filename,
-                               const std::string& file_contents) = 0;
+                               base::span<const uint8_t> file_contents) = 0;
   struct FileContentsInfo {
     base::FilePath filename;
-    std::string file_contents;
+    std::vector<uint8_t> file_contents;
   };
   virtual std::optional<FileContentsInfo> GetFileContents() const = 0;
   virtual bool HasFileContents() const = 0;
@@ -112,7 +119,7 @@ class COMPONENT_EXPORT(UI_BASE_DATA_EXCHANGE) OSExchangeDataProvider {
   // If |show_cfhdrop_without_data| is true, CF_HDROP will be advertised via
   // QueryGetData but GetData will fail - simulating ZIP Shell Folder behavior.
   virtual void SetVirtualFileContentsForTesting(
-      const std::vector<std::pair<base::FilePath, std::string>>&
+      const std::vector<std::pair<base::FilePath, base::span<const uint8_t>>>&
           filenames_and_contents,
       DWORD tymed,
       bool show_cfhdrop_without_data = false) = 0;

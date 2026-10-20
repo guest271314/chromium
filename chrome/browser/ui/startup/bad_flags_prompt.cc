@@ -10,6 +10,7 @@
 #include <variant>
 
 #include "base/base_switches.h"
+#include "base/check.h"
 #include "base/command_line.h"
 #include "base/feature_list.h"
 #include "base/files/file_path.h"
@@ -17,6 +18,9 @@
 #include "base/trace_event/memory_dump_manager.h"
 #include "build/build_config.h"
 #include "cc/base/switches.h"
+#include "chrome/browser/browser_process.h"
+#include "chrome/browser/infobars/browser_infobar_manager.h"
+#include "chrome/browser/infobars/infobar_features.h"
 #include "chrome/browser/infobars/simple_alert_infobar_creator.h"
 #include "chrome/browser/ui/simple_message_box.h"
 #include "chrome/browser/webauthn/webauthn_switches.h"
@@ -35,10 +39,12 @@
 #include "components/translate/core/common/translate_switches.h"
 #include "content/public/common/content_features.h"
 #include "content/public/common/content_switches.h"
+#include "extensions/buildflags/buildflags.h"
 #include "google_apis/gaia/gaia_switches.h"
 #include "gpu/config/gpu_switches.h"
 #include "media/base/media_switches.h"
 #include "media/media_buildflags.h"
+#include "net/base/features.h"
 #include "net/base/switches.h"
 #include "sandbox/policy/switches.h"
 #include "services/network/public/cpp/network_switches.h"
@@ -62,6 +68,7 @@
 #include "chrome/browser/flags/android/chrome_feature_list.h"
 #else
 #include "components/actor/core/actor_switches.h"
+#include "components/tabs/public/tab_interface.h"
 #include "services/device/public/cpp/hid/hid_switches.h"
 #endif
 
@@ -89,6 +96,7 @@ const char* const kBadFlags[] = {
     sandbox::policy::switches::kDisableLandlockSandbox,
     sandbox::policy::switches::kDisableSeccompFilterSandbox,
     sandbox::policy::switches::kDisableSetuidSandbox,
+    sandbox::policy::switches::kDisableWebNNCompilerSandbox,
     sandbox::policy::switches::kNoSandbox,
 #if BUILDFLAG(IS_WIN)
     sandbox::policy::switches::kAllowThirdPartyModules,
@@ -113,6 +121,10 @@ const char* const kBadFlags[] = {
     // chrome-extension:// URLs.
     extensions::switches::kExtensionsOnChromeURLs,
     extensions::switches::kExtensionsOnExtensionURLs,
+
+    // This flag gives the specified extension(s) access to restricted extension
+    // APIs.
+    extensions::switches::kAllowlistedExtensionID,
 #endif
 
 #if BUILDFLAG(IS_LINUX)
@@ -232,11 +244,46 @@ static const std::variant<const base::Feature*, const char*>
 
         // This feature is under development and has known security risks.
         &webnn::mojom::features::kWebMachineLearningNeuralNetwork,
+
+        // This feature enables the test root store, which can contain roots
+        // that are not actually trusted.
+        &net::features::kTestRootStore,
+
+        // This feature allows open web content to use the Unbounded Element
+        // API, which lets a page paint outside the bounds of its frame.
+        &blink::features::kUnsafeUnboundedElementOnTheOpenWeb,
+
+        // This feature allows open web content to use the Unbounded Element
+        // API, which lets a page paint outside the bounds of its window.
+        &blink::features::kUnsafeEscapingUnboundedElementOnTheOpenWeb,
+
+        // This feature is under development and currently has security
+        // concerns.
+        &blink::features::kPersistentWidgetAPI,
 };
 
 void ShowBadFlagsInfoBarHelper(content::WebContents* web_contents,
                                int message_id,
                                std::string_view flag) {
+#if !BUILDFLAG(IS_ANDROID)
+  if (infobars::IsInfoBarMigrated(
+          infobars::InfoBarDelegate::BAD_FLAGS_INFOBAR_DELEGATE)) {
+    auto* manager = infobars::BrowserInfoBarManager::From(g_browser_process);
+    CHECK(manager);
+    tabs::TabInterface* tab =
+        tabs::TabInterface::MaybeGetFromContents(web_contents);
+    if (!tab) {
+      return;
+    }
+    infobars::InfoBarShowParams params;
+    params.message_text =
+        l10n_util::GetStringFUTF16(message_id, base::UTF8ToUTF16(flag));
+    manager->Show(tab, infobars::InfoBarDelegate::BAD_FLAGS_INFOBAR_DELEGATE,
+                  std::move(params));
+    return;
+  }
+#endif
+
   // Animating the infobar also animates the content area size which can trigger
   // a flood of page layout, compositing, texture reallocations, etc.  Do not
   // animate the infobar to reduce noise in perf benchmarks because they pass
@@ -263,7 +310,7 @@ void ShowBadFlagsPrompt(content::WebContents* web_contents) {
   }
 #endif
 
-#if BUILDFLAG(IS_ANDROID)
+#if BUILDFLAG(IS_ANDROID) && defined(OFFICIAL_BUILD)
   JNIEnv* env = base::android::AttachCurrentThread();
   base::CommandLine* commandLine = base::CommandLine::ForCurrentProcess();
   bool isTestIntent = commandLine->HasSwitch("enable-test-intents");

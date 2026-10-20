@@ -20,11 +20,10 @@ class PrefService;
 
 namespace policy {
 class BrowserPolicyConnectorAsh;
-class DeviceRestrictionScheduleController;
 }
 
-namespace user_manager {
-class UserManager;
+namespace session_manager {
+class SessionManager;
 }
 
 namespace ash {
@@ -36,8 +35,8 @@ namespace system {
 // - If the device has been wiped, it will perform a hash dance during OOBE to
 //   find out whether any persistent state has been stored for it on the server.
 //   If so, persistent state is retrieved as a |DeviceStateRetrievalResponse|
-//   protobuf, parsed and written to the |prefs::kServerBackedDeviceState| local
-//   state pref. At the appropriate place in the OOBE flow, the
+//   protobuf, parsed and written to the |ash::prefs::kServerBackedDeviceState|
+//   local state pref. At the appropriate place in the OOBE flow, the
 //   |WizardController| will call CheckWhetherDeviceDisabledDuringOOBE() to find
 //   out whether the device is disabled, causing it to either show or skip the
 //   device disabled screen.
@@ -70,8 +69,6 @@ class DeviceDisablingManager
 
     virtual void OnLocationTrackingEnabledChanged(
         bool location_tracking_enabled) = 0;
-
-    virtual void OnRestrictionScheduleMessageChanged() = 0;
   };
 
   class Delegate {
@@ -92,6 +89,7 @@ class DeviceDisablingManager
   // - `local_state`
   // - `browser_policy_connector_ash`
   // - `device_restriction_schedule_controller`
+  // - `session_manager`
   // `delegate` must outlive `this`.
   DeviceDisablingManager(
       const PrefService* local_state,
@@ -100,7 +98,7 @@ class DeviceDisablingManager
           device_restriction_schedule_controller,
       Delegate* delegate,
       CrosSettings* cros_settings,
-      user_manager::UserManager* user_manager);
+      session_manager::SessionManager* session_manager);
 
   DeviceDisablingManager(const DeviceDisablingManager&) = delete;
   DeviceDisablingManager& operator=(const DeviceDisablingManager&) = delete;
@@ -154,7 +152,6 @@ class DeviceDisablingManager
 
   // DeviceRestrictionScheduleController::Observer:
   void OnRestrictionScheduleStateChanged(bool enabled) override;
-  void OnRestrictionScheduleMessageChanged() override;
 
   void Update();
 
@@ -166,7 +163,7 @@ class DeviceDisablingManager
 
   raw_ptr<Delegate> delegate_;
   raw_ptr<CrosSettings> cros_settings_;
-  raw_ptr<user_manager::UserManager> user_manager_;
+  const raw_ref<session_manager::SessionManager> session_manager_;
 
   base::ObserverList<Observer> observers_;
 

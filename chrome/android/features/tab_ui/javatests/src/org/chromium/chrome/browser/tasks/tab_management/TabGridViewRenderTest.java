@@ -31,8 +31,11 @@ import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.CriteriaHelper;
 import org.chromium.base.test.util.DisabledTest;
 import org.chromium.base.test.util.Feature;
+import org.chromium.chrome.browser.actor.ui.ActorUiTabController.UiTabState;
+import org.chromium.chrome.browser.actor.ui.TabIndicatorStatus;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.tab.Tab;
+import org.chromium.chrome.browser.tab_ui.ThumbnailFetcher;
 import org.chromium.chrome.browser.tab_ui.ThumbnailProvider.MultiThumbnailMetadata;
 import org.chromium.chrome.browser.tasks.tab_management.TabProperties.TabActionState;
 import org.chromium.chrome.browser.tasks.tab_management.TabProperties.TabCardHighlightState;
@@ -68,9 +71,8 @@ public class TabGridViewRenderTest {
 
     private final ThumbnailFetcher mNullThumbnailFetcher =
             new ThumbnailFetcher(
-                    (tabId, thumbnailSize, isSelected, callback) -> callback.onResult(null),
-                    MultiThumbnailMetadata.createMetadataWithoutUrls(
-                            Tab.INVALID_TAB_ID, false, false, null));
+                    (metadata, thumbnailSize, isSelected, callback) -> callback.onResult(null),
+                    MultiThumbnailMetadata.createMetadataForSingleTab(Tab.INVALID_TAB_ID));
 
     @Rule
     public ChromeRenderTestRule mRenderTestRule =
@@ -167,6 +169,27 @@ public class TabGridViewRenderTest {
                     mTabGridView.requestFocus();
                 });
         mRenderTestRule.render(mTabGridView, "tab_grid_view_focused_incognito");
+    }
+
+    @Test
+    @MediumTest
+    @Feature({"RenderTest"})
+    public void testCardView_ActorActiveIndicator() throws IOException {
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    mModel = createModel(false);
+                    UiTabState state =
+                            new UiTabState(
+                                    Tab.INVALID_TAB_ID,
+                                    /* actorOverlay= */ null,
+                                    /* handoffButton= */ null,
+                                    TabIndicatorStatus.STATIC,
+                                    /* borderGlowVisible= */ false);
+                    mModel.set(TabProperties.ACTOR_UI_STATE, state);
+                    PropertyModelChangeProcessor.create(
+                            mModel, mTabGridView, TabGridViewBinder::bindTab);
+                });
+        mRenderTestRule.render(mTabGridView, "tab_grid_view_actor_active_indicator");
     }
 
     public void pollForHighlight(boolean isHighlighted) {

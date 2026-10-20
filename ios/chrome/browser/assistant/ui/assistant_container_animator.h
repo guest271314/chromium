@@ -9,12 +9,12 @@
 
 @protocol AssistantContainerAnimatable;
 @protocol AssistantContainerPresenter;
-@class LayoutState;
+@class SceneLayoutState;
 
 @interface AssistantContainerAnimator : NSObject
 
 // Designated initializer with layout state.
-- (instancetype)initWithLayoutState:(LayoutState*)layoutState
+- (instancetype)initWithLayoutState:(SceneLayoutState*)layoutState
     NS_DESIGNATED_INITIALIZER;
 - (instancetype)init NS_UNAVAILABLE;
 
@@ -22,12 +22,14 @@
 - (void)animatePresentation:
             (UIViewController<AssistantContainerAnimatable>*)viewController
                    animated:(BOOL)animated
+                 animations:(void (^)(void))animations
                  completion:(void (^)(void))completion;
 
 // Animates the dismissal of the assistant container (Slide Down to bottom).
 - (void)animateDismissal:
             (UIViewController<AssistantContainerAnimatable>*)viewController
                 animated:(BOOL)animated
+              animations:(void (^)(void))animations
               completion:(void (^)(void))completion;
 
 // Animates the presentation of the assistant container side panel.

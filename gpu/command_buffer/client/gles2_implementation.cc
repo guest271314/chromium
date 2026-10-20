@@ -59,6 +59,7 @@
 #include "gpu/command_buffer/common/swap_buffers_complete_params.h"
 #include "gpu/command_buffer/common/sync_token.h"
 #include "third_party/skia/include/core/SkAlphaType.h"
+#include "third_party/skia/include/core/SkColorType.h"
 #include "third_party/skia/include/gpu/ganesh/GrTypes.h"
 #include "ui/gfx/color_space.h"
 #include "ui/gfx/geometry/rect.h"
@@ -111,8 +112,6 @@
 namespace gpu {
 namespace gles2 {
 
-BASE_FEATURE(kGLES2CopySIToTextureAlwaysTexAndBind,
-             base::FEATURE_ENABLED_BY_DEFAULT);
 
 namespace {
 
@@ -140,18 +139,6 @@ bool ValidFormatForDirectUploading(GLenum format, uint32_t type) {
 }
 #endif
 
-void BindAndTexImage2D(gpu::gles2::GLES2Interface* gl,
-                       unsigned int target,
-                       unsigned int texture,
-                       unsigned int internal_format,
-                       unsigned int format,
-                       unsigned int type,
-                       int level,
-                       const gfx::Size& size) {
-  gl->BindTexture(target, texture);
-  gl->TexImage2D(target, level, internal_format, size.width(), size.height(), 0,
-                 format, type, nullptr);
-}
 
 void CopyRectToBuffer(base::span<const uint8_t> pixels,
                       uint32_t height,
@@ -455,19 +442,6 @@ void GLES2Implementation::OnGpuControlErrorMessage(const char* message,
   SendErrorMessage(message, id);
 }
 
-void GLES2Implementation::OnGpuSwitched() {
-  gpu_switched_ = true;
-}
-
-GLboolean GLES2Implementation::DidGpuSwitch(gl::GpuPreference* active_gpu) {
-  if (gpu_switched_) {
-    *active_gpu = gl::GpuPreference::kDefault;
-  }
-  GLboolean result = gpu_switched_ ? GL_TRUE : GL_FALSE;
-  gpu_switched_ = false;
-  return result;
-}
-
 bool GLES2Implementation::CanCopySharedImageDirectlyToGLTexture(
     bool is_opaque,
     ClientSharedImage* shared_image,
@@ -482,7 +456,8 @@ bool GLES2Implementation::CanCopySharedImageDirectlyToGLTexture(
              dst_internal_format, dst_type, dst_level, dst_alpha_type);
 }
 
-gpu::SyncToken GLES2Implementation::CopySharedImageToGLTextureViaTextureCopy(
+CopySharedImageSyncCallback
+GLES2Implementation::CopySharedImageToGLTextureViaTextureCopy(
     const gfx::Rect& src_rect,
     ClientSharedImage* source_shared_image,
     const gpu::SyncToken& source_sync_token,
@@ -506,38 +481,28 @@ gpu::SyncToken GLES2Implementation::CopySharedImageToGLTextureViaTextureCopy(
       source_shared_image->alpha_type() == kPremul_SkAlphaType;
 
   const bool do_flip_y = source_shared_image->surface_origin() != dst_origin;
-  if (base::FeatureList::IsEnabled(kGLES2CopySIToTextureAlwaysTexAndBind) ||
-      src_rect != gfx::Rect(source_shared_image->size())) {
-    // Must reallocate the destination texture and copy only a sub-portion.
-
-    // There should always be enough data in the source texture to
-    // cover this copy.
-    GPU_CLIENT_DCHECK(src_rect.width() <= source_shared_image->size().width());
-    GPU_CLIENT_DCHECK(src_rect.height() <=
-                      source_shared_image->size().height());
-
-    BindAndTexImage2D(this, dst_target, dst_texture, dst_internal_format,
-                      dst_format, dst_type, dst_level, src_rect.size());
-    // TODO(crbug.com/378688985): `src_rect` is always in top-left
-    // coordinate space, but CopySubTextureCHROMIUM requires it to be in texture
-    // space, so this is incorrect if `source_shared_image` origin is bottom
-    // left.
-    CopySubTextureCHROMIUM(
-        scoped_si_access->texture_id(), 0, dst_target, dst_texture, dst_level,
-        0, 0, src_rect.x(), src_rect.y(), src_rect.width(), src_rect.height(),
-        do_flip_y, do_premultiply_alpha, do_unpremultiply_alpha);
-
-  } else {
-    CopyTextureCHROMIUM(scoped_si_access->texture_id(), 0, dst_target,
-                        dst_texture, dst_level, dst_internal_format, dst_type,
-                        do_flip_y, do_premultiply_alpha,
-                        do_unpremultiply_alpha);
-  }
-  return gpu::SharedImageTexture::ScopedAccess::EndAccess(
-      std::move(scoped_si_access));
+  // There should always be enough data in the source texture to
+  // cover this copy.
+  GPU_CLIENT_DCHECK(src_rect.width() <= source_shared_image->size().width());
+  GPU_CLIENT_DCHECK(src_rect.height() <= source_shared_image->size().height());
+  // TODO(crbug.com/378688985): `src_rect` is always in top-left
+  // coordinate space, but CopySubTextureCHROMIUM requires it to be in texture
+  // space, so this is incorrect if `source_shared_image` origin is bottom
+  // left.
+  CopySubTextureCHROMIUM(
+      scoped_si_access->texture_id(), 0, dst_target, dst_texture, dst_level, 0,
+      0, src_rect.x(), src_rect.y(), src_rect.width(), src_rect.height(),
+      do_flip_y, do_premultiply_alpha, do_unpremultiply_alpha);
+  return base::BindOnce(
+      [](std::unique_ptr<SharedImageTexture::ScopedAccess> si_access,
+         std::unique_ptr<SharedImageTexture> si_texture) {
+        return gpu::SharedImageTexture::ScopedAccess::EndAccess(
+            std::move(si_access));
+      },
+      std::move(scoped_si_access), std::move(si_texture));
 }
 
-std::unique_ptr<gpu::RasterScopedAccess>
+CopySharedImageSyncCallback
 GLES2Implementation::CopySharedImageDirectlyToGLTexture(
     const gfx::Rect& src_rect,
     ClientSharedImage* source_shared_image,
@@ -551,9 +516,9 @@ GLES2Implementation::CopySharedImageDirectlyToGLTexture(
     int32_t dst_level,
     SkAlphaType dst_alpha_type,
     GrSurfaceOrigin dst_origin) {
-  std::unique_ptr<gpu::RasterScopedAccess> destination_access;
+  CopySharedImageSyncCallback sync_callback;
   if (CanCopySharedImageToGLTextureViaTextureCopy(source_shared_image)) {
-    CopySharedImageToGLTextureViaTextureCopy(
+    sync_callback = CopySharedImageToGLTextureViaTextureCopy(
         src_rect, source_shared_image, source_sync_token, dst_target,
         dst_texture, dst_internal_format, dst_format, dst_type, dst_level,
         dst_alpha_type, dst_origin);
@@ -571,21 +536,22 @@ GLES2Implementation::CopySharedImageDirectlyToGLTexture(
     // upload to work for Graphite *without* depending on being able to create a
     // Ganesh/GL context.
 
-    // Trigger resource allocation for dst texture to back SkSurface.
-    BindAndTexImage2D(this, dst_target, dst_texture, dst_internal_format,
-                      dst_format, dst_type,
-                      /*level=*/0, src_rect.size());
-
-    destination_access = source_shared_image->BeginGLAccessForCopySharedImage(
-        this, source_sync_token, /*readonly=*/true);
+    std::unique_ptr<gpu::RasterScopedAccess> destination_access =
+        source_shared_image->BeginGLAccessForCopySharedImage(
+            this, source_sync_token, /*readonly=*/true);
 
     const bool is_dst_origin_top_left = dst_origin == kTopLeft_GrSurfaceOrigin;
     CopySharedImageToTextureINTERNAL(
         dst_texture, dst_target, dst_internal_format, dst_type, src_rect.x(),
         src_rect.y(), src_rect.width(), src_rect.height(),
         is_dst_origin_top_left, source_shared_image->mailbox().name);
+    sync_callback = base::BindOnce(
+        [](std::unique_ptr<gpu::RasterScopedAccess> ri_access) {
+          return gpu::RasterScopedAccess::EndAccess(std::move(ri_access));
+        },
+        std::move(destination_access));
   }
-  return destination_access;
+  return sync_callback;
 }
 
 void GLES2Implementation::SendErrorMessage(std::string message, int32_t id) {
@@ -1639,18 +1605,6 @@ void GLES2Implementation::Finish() {
   GPU_CLIENT_SINGLE_THREAD_CHECK();
   flush_id_ = GenerateNextFlushId();
   FinishHelper();
-}
-
-void GLES2Implementation::ShallowFinishCHROMIUM() {
-  GPU_CLIENT_SINGLE_THREAD_CHECK();
-  TRACE_EVENT0("gpu", "GLES2::ShallowFinishCHROMIUM");
-  flush_id_ = GenerateNextFlushId();
-  // Flush our command buffer (tell the service to execute up to the flush cmd
-  // and don't return until it completes).
-  helper_->CommandBufferHelper::Finish();
-
-  if (aggressively_free_resources_)
-    FreeEverything();
 }
 
 void GLES2Implementation::FinishHelper() {
@@ -4671,12 +4625,16 @@ GLboolean GLES2Implementation::ReadbackARGBImagePixelsINTERNAL(
   if (!*readback_result) {
     return GL_FALSE;
   }
-  // We need to use `RelaxedAtomicWriteMemcpy` because we might be writing into
-  // memory observed by JS at the same time.
   auto dst = UNSAFE_TODO(base::span(static_cast<uint8_t*>(pixels), dst_size));
   auto src = UNSAFE_TODO(
       base::span(static_cast<uint8_t*>(shm_address) + pixels_offset, dst_size));
-  base::subtle::RelaxedAtomicWriteMemcpy(dst, src);
+  size_t min_row_bytes =
+      dst_width *
+      SkColorTypeBytesPerPixel(static_cast<SkColorType>(dst_sk_color_type));
+  RelaxedAtomicWriteMemcpyImageRowsSkippingPadding(
+      /*dst=*/dst, /*src=*/src, /*row_bytes=*/min_row_bytes,
+      /*height=*/dst_height, /*dst_stride=*/dst_row_bytes,
+      /*src_stride=*/dst_row_bytes);
   return GL_TRUE;
 }
 

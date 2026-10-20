@@ -4,7 +4,7 @@
 
 #include "chrome/browser/ui/webui/discards/site_data_provider_impl.h"
 
-#include "base/byte_count.h"
+#include "base/byte_size.h"
 #include "base/functional/callback_helpers.h"
 #include "base/sequence_checker.h"
 #include "components/performance_manager/persistence/site_data/site_data.pb.h"
@@ -55,8 +55,10 @@ discards::mojom::SiteDataEntryPtr ConvertEntryFromProto(SiteDataProto* proto) {
 
   if (proto->has_load_time_estimates()) {
     const auto& load_time_estimates_proto = proto->load_time_estimates();
-    DCHECK(load_time_estimates_proto.has_avg_cpu_usage_us());
-    DCHECK(load_time_estimates_proto.has_avg_footprint_kb());
+    CHECK(load_time_estimates_proto.has_avg_cpu_usage_us(),
+          base::NotFatalUntil::M162);
+    CHECK(load_time_estimates_proto.has_avg_footprint_kb(),
+          base::NotFatalUntil::M162);
 
     discards::mojom::SiteDataPerformanceMeasurementPtr load_time_estimates =
         discards::mojom::SiteDataPerformanceMeasurement::New();
@@ -84,7 +86,8 @@ discards::mojom::SiteDataEntryPtr ConvertEntryFromProto(SiteDataProto* proto) {
 
 }  // namespace
 
-SiteDataProviderImpl::SiteDataProviderImpl(const std::string& profile_id)
+SiteDataProviderImpl::SiteDataProviderImpl(
+    const base::UnguessableToken& profile_id)
     : profile_id_(profile_id) {}
 
 SiteDataProviderImpl::~SiteDataProviderImpl() = default;
@@ -92,7 +95,7 @@ SiteDataProviderImpl::~SiteDataProviderImpl() = default;
 // static
 void SiteDataProviderImpl::CreateAndBind(
     mojo::PendingReceiver<discards::mojom::SiteDataProvider> receiver,
-    const std::string& profile_id_,
+    const base::UnguessableToken& profile_id_,
     performance_manager::Graph* graph) {
   std::unique_ptr<SiteDataProviderImpl> site_data_provider =
       std::make_unique<SiteDataProviderImpl>(profile_id_);
@@ -123,7 +126,7 @@ void SiteDataProviderImpl::GetSiteDataArray(
   OriginToReaderMap prev_requested_origins;
   prev_requested_origins.swap(requested_origins_);
   performance_manager::SiteDataCache* data_cache = inspector->GetDataCache();
-  DCHECK(data_cache);
+  CHECK(data_cache, base::NotFatalUntil::M162);
 
   for (const std::string& origin : explicitly_requested_origins) {
     auto it = prev_requested_origins.find(origin);
@@ -175,7 +178,7 @@ void SiteDataProviderImpl::GetSiteDataDatabaseSize(
   auto inspector_callback = base::BindOnce(
       [](GetSiteDataDatabaseSizeCallback callback,
          std::optional<int64_t> num_rows,
-         std::optional<base::ByteCount> on_disk_size) {
+         std::optional<base::ByteSize> on_disk_size) {
         discards::mojom::SiteDataDatabaseSizePtr result =
             discards::mojom::SiteDataDatabaseSize::New();
         result->num_rows = num_rows.has_value() ? num_rows.value() : -1;

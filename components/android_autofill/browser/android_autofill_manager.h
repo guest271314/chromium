@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "base/containers/flat_set.h"
+#include "base/containers/span.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/notreached.h"
@@ -57,8 +58,8 @@ class AndroidAutofillManager : public AutofillManager,
 
   void FillOrPreviewField(mojom::ActionPersistence action_persistence,
                           mojom::FieldActionType action_type,
-                          const FormData& form,
-                          const FormFieldData& field,
+                          const FormGlobalId& form_id,
+                          const FieldGlobalId& field_id,
                           const std::u16string& value,
                           FillingProduct filling_product,
                           std::optional<FieldType> field_type_used) override;
@@ -91,6 +92,10 @@ class AndroidAutofillManager : public AutofillManager,
   void OnFormSubmittedImpl(const FormData& form,
                            mojom::SubmissionSource source) override;
 
+  void OnFormWithEmailVerificationTokenSubmittedImpl(
+      const FormData& form,
+      const FieldGlobalId& field_id) override {}
+
   void OnCaretMovedInFormFieldImpl(const FormData& form,
                                    const FieldGlobalId& field_id,
                                    const gfx::Rect& caret_bounds) override {}
@@ -107,7 +112,9 @@ class AndroidAutofillManager : public AutofillManager,
       const FieldGlobalId& field_id,
       const gfx::Rect& caret_bounds,
       AutofillSuggestionTriggerSource trigger_source,
-      std::optional<PasswordSuggestionRequest> password_request) override;
+      std::optional<PasswordSuggestionRequest> password_request,
+      base::ScopedClosureRunner scoped_on_after_ask_for_values_to_fill)
+      override;
 
   void OnFocusOnFormFieldImpl(const FormData& form,
                               const FieldGlobalId& field_id) override;
@@ -121,6 +128,13 @@ class AndroidAutofillManager : public AutofillManager,
       const FieldGlobalId& field_id,
       const std::u16string& old_value) override {}
 
+  void OnDidDetectJavaScriptAutofillImpl(
+      const FormData& form,
+      const FieldGlobalId& trigger_field_id,
+      const std::vector<autofill::JavaScriptFieldModification>&
+          field_modifications,
+      base::TimeTicks detection_start_timestamp) override {}
+
   void OnLoadedServerPredictionsImpl(
       base::span<const raw_ref<FormStructure>> forms) override {}
 
@@ -128,8 +142,7 @@ class AndroidAutofillManager : public AutofillManager,
 
   void OnBeforeProcessParsedForms() override {}
 
-  void OnFormProcessed(const FormData& form,
-                       const FormStructure& form_structure) override;
+  void OnFormProcessed(const FormStructure& form_structure) override;
 
  private:
   // AutofillManager::Observer:

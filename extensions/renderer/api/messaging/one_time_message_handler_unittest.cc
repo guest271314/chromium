@@ -11,12 +11,10 @@
 #include "base/run_loop.h"
 #include "base/strings/stringprintf.h"
 #include "base/test/gmock_callback_support.h"
-#include "base/test/with_feature_override.h"
 #include "extensions/common/api/messaging/message.h"
 #include "extensions/common/api/messaging/port_id.h"
 #include "extensions/common/extension.h"
 #include "extensions/common/extension_builder.h"
-#include "extensions/common/extension_features.h"
 #include "extensions/common/mojom/context_type.mojom.h"
 #include "extensions/common/mojom/message_port.mojom-shared.h"
 #include "extensions/renderer/api/messaging/message_target.h"
@@ -532,6 +530,157 @@ TEST_F(OneTimeMessageHandlerTest, DeliverMessageToReceiverAndReply) {
   EXPECT_FALSE(message_handler()->HasPort(script_context(), port_id));
 }
 
+// Tests delivering a message to an `onMessage` listener that returns a rejected
+// promise. The message channel should be closed with an expected error message.
+TEST_F(OneTimeMessageHandlerTest, DeliverMessageToReceiverAndPromiseRejects) {
+  v8::HandleScope handle_scope(isolate());
+  v8::Local<v8::Context> context = MainContext();
+
+  // Register an `onMessage` listener once that delegates to
+  // `globalThis.testListener`. This allows multiple test cases in the loop to
+  // execute sequentially in the same context without registering multiple
+  // listeners or needing to remove them.
+  constexpr char kRegisterDelegatingListener[] =
+      "(function() {\n"
+      "  chrome.runtime.onMessage.addListener(\n"
+      "      function(message, sender, reply) {\n"
+      "    return globalThis.testListener(message, sender, reply);\n"
+      "  });\n"
+      "})";
+  v8::Local<v8::Function> add_listener =
+      FunctionFromString(context, kRegisterDelegatingListener);
+  RunFunctionOnGlobal(add_listener, context, /*argc=*/0, /*argv=*/nullptr);
+
+  struct PromiseRejectionTestCase {
+    const char* test_name;
+    const char* listener_script;
+    const char* expected_error_message;
+  };
+  const PromiseRejectionTestCase kTestCases[] = {
+      {
+          /*test_name=*/"Error",
+          /*listener_script=*/
+          "(function() {\n"
+          "  globalThis.testListener = function(message, sender, reply) {\n"
+          "    return Promise.reject(new Error('test reject'));\n"
+          "  };\n"
+          "})",
+          /*expected_error_message=*/"test reject",
+      },
+      {
+          /*test_name=*/"SubclassError",
+          /*listener_script=*/
+          "(function() {\n"
+          "  globalThis.testListener = function(message, sender, reply) {\n"
+          "    return Promise.reject(new TypeError('type error reject'));\n"
+          "  };\n"
+          "})",
+          /*expected_error_message=*/"type error reject",
+      },
+      {
+          /*test_name=*/"EmptyError",
+          /*listener_script=*/
+          "(function() {\n"
+          "  globalThis.testListener = function(message, sender, reply) {\n"
+          "    return Promise.reject(new Error(''));\n"
+          "  };\n"
+          "})",
+          /*expected_error_message=*/"",
+      },
+      {
+          /*test_name=*/"ErrorWithoutMessageArgument",
+          /*listener_script=*/
+          "(function() {\n"
+          "  globalThis.testListener = function(message, sender, reply) {\n"
+          "    return Promise.reject(new Error());\n"
+          "  };\n"
+          "})",
+          /*expected_error_message=*/"",
+      },
+      {
+          /*test_name=*/"ErrorThrowingGetter",
+          /*listener_script=*/
+          "(function() {\n"
+          "  globalThis.testListener = function(message, sender, reply) {\n"
+          "    const err = new Error();\n"
+          "    Object.defineProperty(err, 'message', {\n"
+          "      get() { throw new Error('getter throw'); }\n"
+          "    });\n"
+          "    return Promise.reject(err);\n"
+          "  };\n"
+          "})",
+          /*expected_error_message=*/
+          "A runtime.onMessage listener's promise rejected without an Error",
+      },
+      {
+          /*test_name=*/"NonError",
+          /*listener_script=*/
+          "(function() {\n"
+          "  globalThis.testListener = function(message, sender, reply) {\n"
+          "    return Promise.reject('non-error reject');\n"
+          "  };\n"
+          "})",
+          /*expected_error_message=*/
+          "A runtime.onMessage listener's promise rejected without an Error",
+      },
+  };
+
+  for (const auto& test_case : kTestCases) {
+    SCOPED_TRACE(test_case.test_name);
+
+    // Update `globalThis.testListener` with the test case implementation.
+    v8::Local<v8::Function> set_test_listener =
+        FunctionFromString(context, test_case.listener_script);
+    RunFunctionOnGlobal(set_test_listener, context, /*argc=*/0,
+                        /*argv=*/nullptr);
+
+    // Set up the receiver message port and bind `mock_message_port_host`.
+    base::UnguessableToken other_context_id = base::UnguessableToken::Create();
+    const PortId port_id(other_context_id, /*port_number=*/0,
+                         /*is_opener=*/false,
+                         mojom::SerializationFormat::kJson);
+    mojo::PendingAssociatedRemote<mojom::MessagePort> message_port_remote;
+    mojo::PendingAssociatedReceiver<mojom::MessagePortHost>
+        message_port_host_receiver;
+    MockMessagePortHost mock_message_port_host;
+
+    EXPECT_FALSE(message_handler()->HasPort(script_context(), port_id));
+    v8::Local<v8::Object> sender = v8::Object::New(isolate());
+    message_handler()->AddReceiverForTesting(
+        script_context(), port_id, sender, messaging_util::kOnMessageEvent,
+        message_port_remote, message_port_host_receiver);
+    message_port_remote.EnableUnassociatedUsage();
+    message_port_host_receiver.EnableUnassociatedUsage();
+    mock_message_port_host.BindReceiver(std::move(message_port_host_receiver));
+    EXPECT_TRUE(message_handler()->HasPort(script_context(), port_id));
+
+    Message message("\"Hi\"", /*user_gesture=*/false);
+
+    // Expect `OneTimeMessageHandler` to close the port with the expected error
+    // message without an `Uncaught Error` prefix.
+    base::RunLoop port_close_wait_loop;
+    EXPECT_CALL(mock_message_port_host,
+                ClosePort(/*close_channel=*/true,
+                          /*error_message=*/testing::Optional(
+                              std::string(test_case.expected_error_message))))
+        .WillOnce(base::test::RunClosure(port_close_wait_loop.QuitClosure()));
+
+    // Deliver the message to the listener, which triggers the promise
+    // rejection.
+    message_handler()->DeliverMessage(script_context(), std::move(message),
+                                      port_id);
+    {
+      SCOPED_TRACE("waiting for message port to close");
+      port_close_wait_loop.Run();
+    }
+
+    // Verify that all expectations are met and the port is no longer tracked.
+    testing::Mock::VerifyAndClearExpectations(ipc_message_sender());
+    testing::Mock::VerifyAndClearExpectations(&mock_message_port_host);
+    EXPECT_FALSE(message_handler()->HasPort(script_context(), port_id));
+  }
+}
+
 // Tests that nothing breaks when trying to call the reply callback multiple
 // times.
 TEST_F(OneTimeMessageHandlerTest, TryReplyingMultipleTimes) {
@@ -767,23 +916,13 @@ TEST_F(OneTimeMessageHandlerTest, SendMessageInCallback) {
   ::testing::Mock::VerifyAndClearExpectations(&mock_message_port_host1);
 }
 
-class PolyfillSupportOneTimeMessageHandlerTest
-    : public base::test::WithFeatureOverride,
-      public OneTimeMessageHandlerTest {
- public:
-  PolyfillSupportOneTimeMessageHandlerTest()
-      : base::test::WithFeatureOverride(
-            extensions_features::kExtensionBrowserNamespaceAndPolyfillSupport) {
-  }
-};
+using PolyfillSupportOneTimeMessageHandlerTest = OneTimeMessageHandlerTest;
 
 // runtime.onMessage requires that a listener indicate it will send an
-// asynchronous response to a message. It can do this by either by returning
-// `true` or returning a promise if
-// `extensions_features::kExtensionBrowserNamespaceAndPolyfillSupport` is
-// enabled. Verify that we close the port if the listeners don't indicate an
-// async response.
-TEST_P(PolyfillSupportOneTimeMessageHandlerTest,
+// asynchronous response to a message. It can do this by either returning
+// `true` or returning a promise. Verify that we close the port if the
+// listeners don't indicate an async response.
+TEST_F(PolyfillSupportOneTimeMessageHandlerTest,
        ChannelClosedIfAsyncNotIndicated) {
   v8::HandleScope handle_scope(isolate());
   v8::Local<v8::Context> context = MainContext();
@@ -796,8 +935,8 @@ TEST_P(PolyfillSupportOneTimeMessageHandlerTest,
     RunFunctionOnGlobal(add_listener, context, 0, nullptr);
   };
 
-  // Add listeners that return truthy values, but not explicitly `true` (or a
-  // promise if the polyfill support feature is enabled).
+  // Add listeners that return truthy values, but not explicitly `true` or a
+  // promise.
   register_listener("function(message, reply, sender) { }");
   register_listener("function(message, reply, sender) { return {}; }");
 
@@ -863,17 +1002,10 @@ TEST_P(PolyfillSupportOneTimeMessageHandlerTest,
   ::testing::Mock::VerifyAndClearExpectations(&mock_message_port_host);
 }
 
-INSTANTIATE_FEATURE_OVERRIDE_TEST_SUITE(
-    PolyfillSupportOneTimeMessageHandlerTest);
-
 class OneTimeMessageHandlerGarbageCollectionTest
-    : public base::test::WithFeatureOverride,
-      public OneTimeMessageHandlerTest {
+    : public OneTimeMessageHandlerTest {
  public:
-  OneTimeMessageHandlerGarbageCollectionTest()
-      : WithFeatureOverride(
-            extensions_features::kExtensionBrowserNamespaceAndPolyfillSupport) {
-  }
+  OneTimeMessageHandlerGarbageCollectionTest() = default;
 
   OneTimeMessageHandlerGarbageCollectionTest(
       const OneTimeMessageHandlerGarbageCollectionTest&) = delete;
@@ -950,7 +1082,7 @@ void OneTimeMessageHandlerGarbageCollectionTest::RunTest(
 // Tests that when a listener indicates an asynchronous response by returning
 // true, but never responds, we cleanup the C++ callback data stored when v8
 // garbage collects the v8 functions that would've called the C++ callbacks.
-TEST_P(OneTimeMessageHandlerGarbageCollectionTest,
+TEST_F(OneTimeMessageHandlerGarbageCollectionTest,
        DelayedCallbackCleanupOnReturnTrue) {
   constexpr char kRegisterListener[] = R"(
     (function() {
@@ -965,18 +1097,12 @@ TEST_P(OneTimeMessageHandlerGarbageCollectionTest,
           /*pending_callbacks_before_collection=*/1);
 }
 
-// A version of OneTimeMessageHandlerGarbageCollectionTest that only runs with
-// promise support for testing functionality that isn't relevant when the
-// feature is disabled.
-using OneTimeMessageHandlerGarbageCollectionTestWithPromises =
-    OneTimeMessageHandlerGarbageCollectionTest;
-
 // Tests that when a listener indicates an asynchronous response by returning
 // a promise, but the promise never settles, we cleanup the C++ callback data
 // stored when v8 garbage collects the v8 functions that would've called the
-// C++ callbacks. The promise feature being enabled means the returned promise
-// is treated as an asynchronous reply similar to returning true.
-TEST_P(OneTimeMessageHandlerGarbageCollectionTestWithPromises,
+// C++ callbacks. Returning a promise is treated as an asynchronous reply
+// similar to returning `true`.
+TEST_F(OneTimeMessageHandlerGarbageCollectionTest,
        DelayedCallbackCleanupOnReturnPromise) {
   constexpr char kRegisterListener[] = R"(
     (function() {
@@ -986,21 +1112,13 @@ TEST_P(OneTimeMessageHandlerGarbageCollectionTestWithPromises,
       });
     });
   )";
-  // When the listener returns a promise and the feature is enabled, the
-  // port is kept open, and two callbacks are created (one for promise
-  // resolve, one for promise reject).
+  // When the listener returns a promise, the port is kept open, and two
+  // callbacks are created (one for promise resolve, one for promise reject).
   RunTest(kRegisterListener, /*pending_callbacks_before_collection=*/2);
 }
 
 // TODO(crbug.com/40753031): Test callbacks cleanup up when a synchronous and
 // asynchronously reply happens from the listener.
-
-INSTANTIATE_FEATURE_OVERRIDE_TEST_SUITE(
-    OneTimeMessageHandlerGarbageCollectionTest);
-
-INSTANTIATE_TEST_SUITE_P(All,
-                         OneTimeMessageHandlerGarbageCollectionTestWithPromises,
-                         testing::Values(true));
 
 // Verifies that destroying the OneTimeMessageHandler during a reply callback
 // doesn't cause a crash.

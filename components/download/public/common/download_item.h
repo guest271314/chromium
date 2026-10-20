@@ -49,6 +49,10 @@ namespace net {
 class HttpResponseHeaders;
 }
 
+namespace network {
+class SharedURLLoaderFactory;
+}  // namespace network
+
 namespace download {
 class DownloadFile;
 class DownloadItemRenameHandler;
@@ -179,6 +183,9 @@ class COMPONENTS_DOWNLOAD_EXPORT DownloadItem : public base::SupportsUserData {
   // Called when the user has validated the download of an insecure file.
   virtual void ValidateInsecureDownload() = 0;
 
+  // Called when the user has validated the download of a non-dangerous file.
+  virtual void ConfirmNonDangerousDownload() = 0;
+
   // Called to acquire a dangerous download. Mmakes a temp copy of the
   // download file, and invokes |callback| with the path to the temp
   // copy. The caller is responsible for cleanup.  Note: It is important
@@ -287,6 +294,12 @@ class COMPONENTS_DOWNLOAD_EXPORT DownloadItem : public base::SupportsUserData {
   // URL at index i+1.
   virtual const std::vector<GURL>& GetUrlChain() const = 0;
 
+  // Returns true if the download URL was truncated to save memory.
+  virtual bool IsUrlTruncated() const = 0;
+
+  virtual void SetURLLoaderFactory(
+      scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory);
+
   // The URL that the download request originally attempted to fetch. This may
   // differ from GetURL() if there were redirects. The return value from this
   // accessor is the same as the head of GetUrlChain().
@@ -354,6 +367,9 @@ class COMPONENTS_DOWNLOAD_EXPORT DownloadItem : public base::SupportsUserData {
 
   // The credentials mode of the request.
   virtual ::network::mojom::CredentialsMode GetCredentialsMode() const = 0;
+
+  // The fetch request mode of the request.
+  virtual ::network::mojom::RequestMode GetFetchRequestMode() const = 0;
 
   // The isolation mode of the request.
   virtual const std::optional<net::IsolationInfo>& GetIsolationInfo() const = 0;
@@ -427,6 +443,11 @@ class COMPONENTS_DOWNLOAD_EXPORT DownloadItem : public base::SupportsUserData {
   // delivered and we will require a call to ValidateInsecureDownload() to
   // complete.  False if not insecure or that function has been called.
   virtual bool IsInsecure() const = 0;
+
+  // True if the user has accepted in the non-dangerous dialog to download
+  // a file. False if the user has rejected in the non-dangerous dialog to
+  // download a file.
+  virtual bool IsUserConfirmed() const = 0;
 
   // Why |safety_state_| is not SAFE.
   virtual DownloadDangerType GetDangerType() const = 0;

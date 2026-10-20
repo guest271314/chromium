@@ -14,6 +14,7 @@
 #include "third_party/blink/public/mojom/v8_cache_options.mojom-blink.h"
 #include "third_party/blink/public/mojom/worker/dedicated_worker_host.mojom-blink-forward.h"
 #include "third_party/blink/public/platform/task_type.h"
+#include "third_party/blink/public/platform/web_policy_container.h"
 #include "third_party/blink/renderer/bindings/core/v8/sanitize_script_errors.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_worker_options.h"
 #include "third_party/blink/renderer/core/dom/document.h"
@@ -34,6 +35,7 @@
 #include "third_party/blink/renderer/core/workers/dedicated_worker_thread.h"
 #include "third_party/blink/renderer/core/workers/global_scope_creation_params.h"
 #include "third_party/blink/renderer/core/workers/parent_execution_context_task_runners.h"
+#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/blink/renderer/platform/scheduler/public/post_cross_thread_task.h"
 #include "third_party/blink/renderer/platform/wtf/cross_thread_functional.h"
 #include "third_party/blink/renderer/platform/wtf/wtf.h"
@@ -88,7 +90,8 @@ void DedicatedWorkerMessagingProxy::StartWorkerGlobalScope(
     mojo::PendingRemote<mojom::blink::DedicatedWorkerHost>
         dedicated_worker_host,
     mojo::PendingRemote<mojom::blink::BackForwardCacheControllerHost>
-        back_forward_cache_controller_host) {
+        back_forward_cache_controller_host,
+    std::unique_ptr<WebPolicyContainer> web_policy_container) {
   DCHECK(IsParentContextThread());
   if (AskedToTerminate()) {
     virtual_time_pauser_.UnpauseVirtualTime();
@@ -114,6 +117,11 @@ void DedicatedWorkerMessagingProxy::StartWorkerGlobalScope(
     return;
   }
 
+  if (pending_freeze_is_in_back_forward_cache_.has_value()) {
+    GetWorkerThread()->Freeze(*pending_freeze_is_in_back_forward_cache_);
+    pending_freeze_is_in_back_forward_cache_.reset();
+  }
+
   // Step 13: "Obtain script by switching on the value of options's type
   // member:"
   if (options->type() == V8WorkerType::Enum::kClassic) {
@@ -124,10 +132,9 @@ void DedicatedWorkerMessagingProxy::StartWorkerGlobalScope(
     auto* resource_timing_notifier =
         WorkerResourceTimingNotifierImpl::CreateForOutsideResourceFetcher(
             *GetExecutionContext());
-    // TODO(crbug.com/1177199): pass a proper policy container
     GetWorkerThread()->FetchAndRunClassicScript(
         script_url, std::move(worker_main_script_load_params),
-        /*policy_container=*/nullptr, outside_settings_object.CopyData(),
+        std::move(web_policy_container), outside_settings_object.CopyData(),
         resource_timing_notifier, stack_id);
   } else if (options->type() == V8WorkerType::Enum::kModule) {
     // "module: Fetch a module worker script graph given url, outside settings,
@@ -142,10 +149,9 @@ void DedicatedWorkerMessagingProxy::StartWorkerGlobalScope(
     auto* resource_timing_notifier =
         WorkerResourceTimingNotifierImpl::CreateForOutsideResourceFetcher(
             *GetExecutionContext());
-    // TODO(crbug.com/1177199): pass a proper policy container
     GetWorkerThread()->FetchAndRunModuleScript(
         script_url, std::move(worker_main_script_load_params),
-        /*policy_container=*/nullptr, outside_settings_object.CopyData(),
+        std::move(web_policy_container), outside_settings_object.CopyData(),
         resource_timing_notifier, credentials_mode);
   } else {
     NOTREACHED();
@@ -216,16 +222,26 @@ void DedicatedWorkerMessagingProxy::DidFailToFetchScript() {
 void DedicatedWorkerMessagingProxy::Freeze(bool is_in_back_forward_cache) {
   DCHECK(IsParentContextThread());
   auto* worker_thread = GetWorkerThread();
-  if (AskedToTerminate() || !worker_thread)
+  if (AskedToTerminate()) {
     return;
+  }
+  if (!worker_thread) {
+    pending_freeze_is_in_back_forward_cache_ = is_in_back_forward_cache;
+    return;
+  }
   worker_thread->Freeze(is_in_back_forward_cache);
 }
 
 void DedicatedWorkerMessagingProxy::Resume() {
   DCHECK(IsParentContextThread());
   auto* worker_thread = GetWorkerThread();
-  if (AskedToTerminate() || !worker_thread)
+  if (AskedToTerminate()) {
     return;
+  }
+  if (!worker_thread) {
+    pending_freeze_is_in_back_forward_cache_.reset();
+    return;
+  }
   worker_thread->Resume();
 }
 
@@ -325,7 +341,8 @@ void DedicatedWorkerMessagingProxy::PostMessageToWorkerObject(
 void DedicatedWorkerMessagingProxy::DispatchErrorEvent(
     const String& error_message,
     const CrossThreadSourceLocation& cross_location,
-    int exception_id) {
+    int exception_id,
+    SanitizeScriptErrors sanitize_script_errors) {
   DCHECK(IsParentContextThread());
   if (!worker_object_)
     return;
@@ -340,10 +357,20 @@ void DedicatedWorkerMessagingProxy::DispatchErrorEvent(
   // the original Document, even if some of the workers along this chain have
   // been terminated and garbage collected."
   // https://html.spec.whatwg.org/C/#runtime-script-errors-2
+  const SanitizeScriptErrors effective_sanitize =
+      RuntimeEnabledFeatures::SanitizeWorkerErrorPropagationEnabled()
+          ? sanitize_script_errors
+          : SanitizeScriptErrors::kDoNotSanitize;
+
   ErrorEvent* event = ErrorEvent::Create(error_message, location, nullptr);
-  if (worker_object_->DispatchEvent(*event) !=
-      DispatchEventResult::kNotCanceled)
+  ErrorEvent* event_for_worker_object =
+      effective_sanitize == SanitizeScriptErrors::kSanitize
+          ? ErrorEvent::CreateSanitizedError()
+          : event;
+  if (worker_object_->DispatchEvent(*event_for_worker_object) !=
+      DispatchEventResult::kNotCanceled) {
     return;
+  }
 
   // The worker thread can already be terminated.
   if (!GetWorkerThread()) {
@@ -362,8 +389,7 @@ void DedicatedWorkerMessagingProxy::DispatchErrorEvent(
           CrossThreadUnretained(GetWorkerThread())));
 
   // Propagate an unhandled error to the parent context.
-  const auto mute_script_errors = SanitizeScriptErrors::kDoNotSanitize;
-  GetExecutionContext()->DispatchErrorEvent(event, mute_script_errors);
+  GetExecutionContext()->DispatchErrorEvent(event, effective_sanitize);
 }
 
 void DedicatedWorkerMessagingProxy::Trace(Visitor* visitor) const {

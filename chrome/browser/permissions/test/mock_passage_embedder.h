@@ -19,14 +19,11 @@ class PassageEmbedderMock : public passage_embeddings::TestEmbedder {
   PassageEmbedderMock();
   ~PassageEmbedderMock() override;
 
-  PassageEmbedderMock(const PassageEmbedderMock&);
-  PassageEmbedderMock& operator=(const PassageEmbedderMock&);
-
-  PassageEmbedderMock(PassageEmbedderMock&&);
-  PassageEmbedderMock& operator=(PassageEmbedderMock&&);
+  PassageEmbedderMock(const PassageEmbedderMock&) = delete;
+  PassageEmbedderMock& operator=(const PassageEmbedderMock&) = delete;
 
   // passage_embeddings::TestEmbedder:
-  passage_embeddings::Embedder::TaskId ComputePassagesEmbeddings(
+  passage_embeddings::Embedder::Job ComputePassagesEmbeddings(
       passage_embeddings::PassagePriority priority,
       std::vector<std::string> passages,
       ComputePassagesEmbeddingsCallback callback) override;
@@ -36,6 +33,9 @@ class PassageEmbedderMock : public passage_embeddings::TestEmbedder {
   const std::vector<std::string>& GetLastPassages() const {
     return last_passages_;
   }
+
+ protected:
+  uint64_t next_job_id_ = 1;
 
  private:
   passage_embeddings::ComputeEmbeddingsStatus status_ =
@@ -58,7 +58,7 @@ class DelayedPassageEmbedderMock : public PassageEmbedderMock {
   // computing the embeddings, it captures the arguments and the callback. The
   // actual computation (in this case a fake) is deferred until
   // `ReleaseCallback` is called.
-  passage_embeddings::Embedder::TaskId ComputePassagesEmbeddings(
+  passage_embeddings::Embedder::Job ComputePassagesEmbeddings(
       passage_embeddings::PassagePriority priority,
       std::vector<std::string> passages,
       ComputePassagesEmbeddingsCallback callback) override;
@@ -79,9 +79,10 @@ class DelayedPassageEmbedderMock : public PassageEmbedderMock {
   // the results to the original callback and quits the run loop to unblock the
   // test execution that called `ReleaseCallback`.
   void ComputePassageEmbeddingsCallbackWrapper(
+      uint64_t expected_job_id,
       std::vector<std::string> passages,
       std::vector<passage_embeddings::Embedding> embeddings,
-      TaskId task_id,
+      uint64_t job_id,
       passage_embeddings::ComputeEmbeddingsStatus status);
 
   // An internal helper method that is bound as a callback and executed when

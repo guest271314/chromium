@@ -16,7 +16,6 @@
 #include "base/functional/callback_helpers.h"
 #include "base/logging.h"
 #include "base/metrics/histogram_functions.h"
-#include "base/metrics/histogram_macros.h"
 #include "base/no_destructor.h"
 #include "base/observer_list.h"
 #include "base/strings/string_split.h"
@@ -30,9 +29,11 @@
 #include "chrome/browser/extensions/cws_info_service_factory.h"
 #include "chrome/browser/extensions/extension_management_constants.h"
 #include "chrome/browser/extensions/extension_management_internal.h"
+#include "chrome/browser/extensions/extension_util.h"
 #include "chrome/browser/extensions/external_policy_loader.h"
 #include "chrome/browser/extensions/external_provider_impl.h"
 #include "chrome/browser/extensions/forced_extensions/install_stage_tracker_factory.h"
+#include "chrome/browser/extensions/low_trust_policy_install_block_manager.h"
 #include "chrome/browser/extensions/managed_toolbar_pin_mode.h"
 #include "chrome/browser/extensions/permissions_based_management_policy_provider.h"
 #include "chrome/browser/extensions/standard_management_policy_provider.h"
@@ -50,12 +51,12 @@
 #include "extensions/browser/blocklist_extension_prefs.h"
 #include "extensions/browser/cws_info_service.h"
 #include "extensions/browser/extension_prefs.h"
+#include "extensions/browser/extension_prefs_factory.h"
 #include "extensions/browser/forced_extensions/install_stage_tracker.h"
 #include "extensions/browser/managed_installation_mode.h"
 #include "extensions/browser/pref_names.h"
 #include "extensions/buildflags/buildflags.h"
 #include "extensions/common/extension.h"
-#include "extensions/common/extension_features.h"
 #include "extensions/common/extension_urls.h"
 #include "extensions/common/manifest_constants.h"
 #include "extensions/common/manifest_handlers/manifest_url_handlers.h"
@@ -87,6 +88,10 @@ static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
 
 namespace extensions {
 
+namespace {
+bool g_allow_unpacked_without_developer_mode_for_testing = false;
+}
+
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
 // Disables off-store force-installed extensions in low trust environments.
 BASE_FEATURE(kDisableOffstoreForceInstalledExtensionsInLowTrustEnviroment,
@@ -95,6 +100,10 @@ BASE_FEATURE(kDisableOffstoreForceInstalledExtensionsInLowTrustEnviroment,
 // Disables force-installed extensions in low trust environments when
 // greylisted.
 BASE_FEATURE(kDisableForceInstalledExtensionsInLowTrustEnviromentWhenGreylisted,
+             base::FEATURE_ENABLED_BY_DEFAULT);
+
+// Blocks DSE/NTP override policy extensions in low-trust environments.
+BASE_FEATURE(kBlockPolicyDseNtpOverridesInLowTrust,
              base::FEATURE_ENABLED_BY_DEFAULT);
 #endif
 
@@ -126,10 +135,15 @@ ExtensionManagement::ExtensionManagement(Profile* profile)
   pref_change_registrar_.Add(enterprise_reporting::kCloudReportingEnabled,
                              pref_change_callback);
 #endif
-  pref_change_registrar_.Add(pref_names::kManifestV2Availability,
-                             pref_change_callback);
+
   pref_change_registrar_.Add(pref_names::kExtensionUnpublishedAvailability,
                              pref_change_callback);
+
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
+  pref_change_registrar_.Add(
+      pref_names::kExtensionForceInstallWithSearchOrNewTabOverridesEnabled,
+      pref_change_callback);
+#endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
 
   // Note that both |global_settings_| and |default_settings_| will be null
   // before first call to Refresh(), so in order to resolve this, Refresh() must
@@ -140,6 +154,10 @@ ExtensionManagement::ExtensionManagement(Profile* profile)
           NOTIFIED_FROM_MANAGEMENT_INITIAL_CREATION_FORCED,
       InstallStageTracker::InstallCreationStage::
           NOTIFIED_FROM_MANAGEMENT_INITIAL_CREATION_NOT_FORCED);
+  low_trust_block_manager_ =
+      std::make_unique<LowTrustPolicyInstallBlockManager>(
+          profile_, *pref_service_, *this);
+  low_trust_block_manager_->CleanupStaleRecords();
   providers_.push_back(
       std::make_unique<StandardManagementPolicyProvider>(this, profile_.get()));
   providers_.push_back(
@@ -149,6 +167,7 @@ ExtensionManagement::ExtensionManagement(Profile* profile)
 ExtensionManagement::~ExtensionManagement() = default;
 
 void ExtensionManagement::Shutdown() {
+  low_trust_block_manager_.reset();
   pref_change_registrar_.RemoveAll();
   pref_service_ = nullptr;
 }
@@ -181,34 +200,36 @@ ManagedInstallationMode ExtensionManagement::GetInstallationMode(
                              update_url ? *update_url : std::string());
 }
 
-#if BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS)
-bool ExtensionManagement::ExtensionsEnabledForDesktopAndroid() const {
-  std::string user_name = profile_->GetProfileUserName();
-  // Crude check to avoid passing invalid strings to `ExtractDomainName`.
-  if (user_name.contains("@")) {
-    std::string domain = gaia::ExtractDomainName(user_name);
-    if (domain == "google.com" || domain == "managedchrome.com") {
-      return base::FeatureList::IsEnabled(
-              extensions_features::kEnableExtensionsForCorpDesktopAndroid);
-    }
-  }
-  return true;
-}
-#endif  // BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS)
-
 ManagedInstallationMode ExtensionManagement::GetInstallationMode(
     const ExtensionId& extension_id,
     const std::string& update_url) {
-#if BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS)
-  // Block extensions for managed profiles on Desktop Android. This is
-  // temporary until extensions are ready for dogfooding.
-  // TODO(crbug.com/422307625): Remove this check once extensions are ready for
-  // dogfooding.
-  if (!ExtensionsEnabledForDesktopAndroid()) {
-    return ManagedInstallationMode::kRemoved;
+  ManagedInstallationMode mode =
+      GetConfiguredInstallationMode(extension_id, update_url);
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
+  // When a forced or recommended policy install is blocked in low trust,
+  // override the mode to kAllowed so the user can still manage the extension
+  // (install, enable, disable, or uninstall). Explicitly blocked extension
+  // policies remain in effect, however.
+  if ((mode == ManagedInstallationMode::kForced ||
+       mode == ManagedInstallationMode::kRecommended) &&
+      IsExtensionBlockedByLowTrust(extension_id)) {
+    return ManagedInstallationMode::kAllowed;
   }
-#endif  // BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS)
+#endif
+  return mode;
+}
 
+ManagedInstallationMode ExtensionManagement::GetConfiguredInstallationMode(
+    const Extension& extension) {
+  const std::string* update_url =
+      extension.manifest()->FindStringPath(manifest_keys::kUpdateURL);
+  return GetConfiguredInstallationMode(
+      extension.id(), update_url ? *update_url : std::string());
+}
+
+ManagedInstallationMode ExtensionManagement::GetConfiguredInstallationMode(
+    const ExtensionId& extension_id,
+    const std::string& update_url) {
   // Check per-extension installation mode setting first.
   auto* setting = GetSettingsForId(extension_id);
   if (setting)
@@ -221,6 +242,39 @@ ManagedInstallationMode ExtensionManagement::GetInstallationMode(
   }
   // Fall back to default installation mode setting.
   return default_settings_->installation_mode;
+}
+
+bool ExtensionManagement::IsForcedOrRecommendedInstallConfigured(
+    const Extension& extension) {
+  ManagedInstallationMode mode = GetConfiguredInstallationMode(extension);
+  return mode == ManagedInstallationMode::kForced ||
+         mode == ManagedInstallationMode::kRecommended;
+}
+
+bool ExtensionManagement::IsForcedOrRecommendedInstallConfigured(
+    const ExtensionId& extension_id) {
+  return IsForcedOrRecommendedInstallConfigured(extension_id, std::string());
+}
+
+bool ExtensionManagement::IsForcedOrRecommendedInstallConfigured(
+    const ExtensionId& extension_id,
+    const std::string& update_url) {
+  ManagedInstallationMode mode =
+      GetConfiguredInstallationMode(extension_id, update_url);
+  return mode == ManagedInstallationMode::kForced ||
+         mode == ManagedInstallationMode::kRecommended;
+}
+
+bool ExtensionManagement::IsPolicyInstalled(const Extension& extension) {
+  if (Manifest::IsPolicyLocation(extension.location())) {
+    return true;
+  }
+  // Verify policy settings for recommended extensions because the
+  // `kExternalPrefDownload` location is shared with non-policy installs
+  // and default apps.
+  return extension.location() ==
+             mojom::ManifestLocation::kExternalPrefDownload &&
+         IsForcedOrRecommendedInstallConfigured(extension);
 }
 
 base::DictValue ExtensionManagement::GetForceInstallList() const {
@@ -256,7 +310,7 @@ bool ExtensionManagement::HasAllowlistedExtension() {
     auto extension_id = *deferred_ids_.begin();
     // This will remove the entry from |deferred_ids_|.
     LoadDeferredExtensionSetting(extension_id);
-    DCHECK(!deferred_ids_.contains(extension_id));
+    CHECK(!deferred_ids_.contains(extension_id), base::NotFatalUntil::M161);
     if (AccessById(extension_id)->installation_mode ==
         ManagedInstallationMode::kAllowed) {
       NotifyExtensionManagementPrefChanged();
@@ -280,7 +334,7 @@ GURL ExtensionManagement::GetEffectiveUpdateURL(const Extension& extension) {
         << "Update URL should not be overridden for default-installed "
            "extensions!";
     auto* setting = GetSettingsForId(extension.id());
-    DCHECK(setting);
+    CHECK(setting, base::NotFatalUntil::M161);
     const GURL update_url(setting->update_url);
     // It's important that we never override a non-webstore update URL to be
     // the webstore URL. Otherwise, a policy may inadvertently cause
@@ -354,9 +408,10 @@ bool ExtensionManagement::IsAllowedManifestType(
 #if BUILDFLAG(ENABLE_EXTENSIONS)
   // If a managed theme has been set for the current profile, theme extension
   // installations are not allowed.
-  if (manifest_type == Manifest::Type::TYPE_THEME &&
-      ThemeServiceFactory::GetForProfile(profile_)->UsingPolicyTheme())
+  if (manifest_type == Manifest::Type::kTheme &&
+      ThemeServiceFactory::GetForProfile(profile_)->UsingPolicyTheme()) {
     return false;
+  }
 #endif  // BUILDFLAG(ENABLE_EXTENSIONS)
 
   if (!global_settings_->allowed_types.has_value())
@@ -364,80 +419,6 @@ bool ExtensionManagement::IsAllowedManifestType(
   const std::vector<Manifest::Type>& allowed_types =
       *global_settings_->allowed_types;
   return std::ranges::contains(allowed_types, manifest_type);
-}
-
-bool ExtensionManagement::IsAllowedManifestVersion(
-    int manifest_version,
-    const std::string& extension_id,
-    Manifest::Type manifest_type) {
-  bool enabled_by_default =
-      !base::FeatureList::IsEnabled(
-          extensions_features::kExtensionsManifestV3Only) ||
-      manifest_version >= 3;
-
-  // Manifest version policy only supports normal extensions, Chrome OS login
-  // screen extensions, and user scripts (which are largely treated as
-  // extensions).
-  if (manifest_type != Manifest::Type::TYPE_EXTENSION &&
-      manifest_type != Manifest::Type::TYPE_LOGIN_SCREEN_EXTENSION &&
-      manifest_type != Manifest::Type::TYPE_USER_SCRIPT) {
-    return enabled_by_default;
-  }
-  switch (global_settings_->manifest_v2_setting) {
-    case internal::GlobalSettings::ManifestV2Setting::kDefault:
-      return enabled_by_default;
-    case internal::GlobalSettings::ManifestV2Setting::kDisabled:
-      return manifest_version >= 3;
-    case internal::GlobalSettings::ManifestV2Setting::kEnabled:
-      return true;
-    case internal::GlobalSettings::ManifestV2Setting::kEnabledForForceInstalled:
-      auto installation_mode =
-          GetInstallationMode(extension_id, /*update_url=*/std::string());
-      return manifest_version >= 3 ||
-             installation_mode == ManagedInstallationMode::kForced ||
-             installation_mode == ManagedInstallationMode::kRecommended;
-  }
-}
-
-bool ExtensionManagement::IsAllowedManifestVersion(const Extension* extension) {
-  return IsAllowedManifestVersion(extension->manifest_version(),
-                                  extension->id(), extension->GetType());
-}
-
-bool ExtensionManagement::IsExemptFromMV2DeprecationByPolicy(
-    int manifest_version,
-    const std::string& extension_id,
-    Manifest::Type manifest_type) {
-  // This policy only affects MV2 extensions.
-  if (manifest_version != 2) {
-    return false;
-  }
-  if (manifest_type != Manifest::Type::TYPE_EXTENSION &&
-      manifest_type != Manifest::Type::TYPE_LOGIN_SCREEN_EXTENSION &&
-      manifest_type != Manifest::Type::TYPE_USER_SCRIPT) {
-    return false;
-  }
-
-  switch (global_settings_->manifest_v2_setting) {
-    case internal::GlobalSettings::ManifestV2Setting::kDefault:
-      // Default browser behavior. Not exempt.
-      return false;
-    case internal::GlobalSettings::ManifestV2Setting::kDisabled:
-      // All MV2 extensions are disallowed. Not exempt.
-      return false;
-    case internal::GlobalSettings::ManifestV2Setting::kEnabled:
-      // All MV2 extensions are allowed. Exempt.
-      return true;
-    case internal::GlobalSettings::ManifestV2Setting::kEnabledForForceInstalled:
-      // Force-installed MV2 extensions are allowed. Exempt if it's a force-
-      // installed extension only.
-      auto installation_mode =
-          GetInstallationMode(extension_id, /*update_url=*/std::string());
-      return installation_mode == ManagedInstallationMode::kForced ||
-             installation_mode == ManagedInstallationMode::kRecommended;
-  }
-
-  return false;
 }
 
 bool ExtensionManagement::IsAllowedByUnpublishedAvailabilityPolicy(
@@ -472,8 +453,7 @@ bool ExtensionManagement::IsAllowedByUnpublishedAvailabilityPolicy(
 
 bool ExtensionManagement::IsAllowedByUnpackedDeveloperModePolicy(
     const Extension& extension) {
-  if (!base::FeatureList::IsEnabled(
-          extensions_features::kExtensionDisableUnsupportedDeveloper)) {
+  if (g_allow_unpacked_without_developer_mode_for_testing) {
     return true;
   }
   if (!extension.is_extension()) {
@@ -490,6 +470,19 @@ bool ExtensionManagement::IsAllowedByUnpackedDeveloperModePolicy(
   bool in_developer_mode =
       profile_->GetPrefs()->GetBoolean(prefs::kExtensionsUIDeveloperMode);
   return in_developer_mode;
+}
+
+// static
+base::AutoReset<bool>
+ExtensionManagement::AllowUnpackedWithoutDeveloperModeForTesting(bool allow) {
+  return base::AutoReset<bool>(
+      &g_allow_unpacked_without_developer_mode_for_testing, allow);
+}
+
+// static
+void ExtensionManagement::SetAllowUnpackedWithoutDeveloperModeForTesting(
+    bool allow) {
+  g_allow_unpacked_without_developer_mode_for_testing = allow;
 }
 
 bool ExtensionManagement::IsGreylistedForceInstalledInLowTrustEnvironment(
@@ -510,12 +503,8 @@ bool ExtensionManagement::IsGreylistedForceInstalledInLowTrustEnvironment(
       setting->installation_mode != ManagedInstallationMode::kForced) {
     return false;
   }
-
-  return GetHigherManagementAuthorityTrustworthiness(profile_) <
-         policy::ManagementAuthorityTrustworthiness::TRUSTED;
-#else
-  return false;
 #endif
+  return IsLowTrustEnforcementActive();
 }
 
 bool ExtensionManagement::IsForceInstalledInLowTrustEnvironment(
@@ -528,12 +517,8 @@ bool ExtensionManagement::IsForceInstalledInLowTrustEnvironment(
   if (!Manifest::IsPolicyLocation(extension.location())) {
     return false;
   }
-
-  return GetHigherManagementAuthorityTrustworthiness(profile_) <
-         policy::ManagementAuthorityTrustworthiness::TRUSTED;
-#else
-  return false;
 #endif
+  return IsLowTrustEnforcementActive();
 }
 
 bool ExtensionManagement::ShouldBlockForceInstalledOffstoreExtension(
@@ -552,12 +537,50 @@ bool ExtensionManagement::ShouldBlockForceInstalledOffstoreExtension(
   if (!Manifest::IsPolicyLocation(extension.location())) {
     return false;
   }
+#endif
+  return IsLowTrustEnforcementActive();
+}
 
-  return GetHigherManagementAuthorityTrustworthiness(profile_) <
+bool ExtensionManagement::IsLowTrustEnforcementActive() const {
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
+  return GetHigherManagementAuthorityTrustworthinessForPolicyLoading(profile_) <
          policy::ManagementAuthorityTrustworthiness::TRUSTED;
 #else
   return false;
 #endif
+}
+
+bool ExtensionManagement::IsDseNtpOverrideBlockingActive() const {
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
+  if (!base::FeatureList::IsEnabled(kBlockPolicyDseNtpOverridesInLowTrust) ||
+      global_settings_->allow_low_trust_dse_ntp_overrides) {
+    return false;
+  }
+#endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
+  return IsLowTrustEnforcementActive();
+}
+
+bool ExtensionManagement::ShouldBlockPolicyInstalledDseNtpOverrideExtension(
+    const Extension& extension) {
+  if (!IsDseNtpOverrideBlockingActive()) {
+    return false;
+  }
+  if (util::GetDseNtpOverrideType(extension) ==
+      util::DseNtpOverrideType::kNone) {
+    return false;
+  }
+
+  // Block policy install attempts while allowing user-driven installs.
+  return IsPolicyInstalled(extension);
+}
+
+bool ExtensionManagement::IsExtensionBlockedByLowTrust(
+    const ExtensionId& extension_id) const {
+  if (!IsDseNtpOverrideBlockingActive()) {
+    return false;
+  }
+  return low_trust_block_manager_ &&
+         low_trust_block_manager_->IsBlocked(extension_id);
 }
 
 APIPermissionSet ExtensionManagement::GetBlockedAPIPermissions(
@@ -680,10 +703,7 @@ bool ExtensionManagement::IsFileUrlNavigationAllowed(const ExtensionId& id) {
 extensions::ManagedToolbarPinMode ExtensionManagement::GetToolbarPinMode(
     const ExtensionId& extension_id) {
   auto* setting = GetSettingsForId(extension_id);
-  if (setting) {
-    return setting->toolbar_pin;
-  }
-  return extensions::ManagedToolbarPinMode::kDefaultUnpinned;
+  return setting ? setting->toolbar_pin : ManagedToolbarPinMode::kNotSet;
 }
 
 bool ExtensionManagement::CheckMinimumVersion(const Extension* extension,
@@ -702,7 +722,6 @@ bool ExtensionManagement::CheckMinimumVersion(const Extension* extension,
 
 void ExtensionManagement::Refresh() {
   TRACE_EVENT0("browser,startup", "ExtensionManagement::Refresh");
-  SCOPED_UMA_HISTOGRAM_TIMER("Extensions.Management_Refresh");
   // Load all extension management settings preferences.
   const base::ListValue* allowed_list_pref =
       LoadListPreference(pref_names::kInstallAllowList, true);
@@ -722,12 +741,14 @@ void ExtensionManagement::Refresh() {
       LoadPreference(enterprise_reporting::kCloudExtensionRequestEnabled, false,
                      base::Value::Type::BOOLEAN);
 
-  const base::Value* manifest_v2_pref =
-      LoadPreference(pref_names::kManifestV2Availability,
-                     /*force_managed=*/true, base::Value::Type::INTEGER);
   const base::Value* unpublished_availability_pref =
       LoadPreference(pref_names::kExtensionUnpublishedAvailability,
                      /*force_managed=*/true, base::Value::Type::INTEGER);
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
+  const base::Value* allow_overrides_pref = LoadPreference(
+      pref_names::kExtensionForceInstallWithSearchOrNewTabOverridesEnabled,
+      /*force_managed=*/true, base::Value::Type::BOOLEAN);
+#endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
 
   // Reset all settings.
   global_settings_ = std::make_unique<internal::GlobalSettings>();
@@ -801,22 +822,17 @@ void ExtensionManagement::Refresh() {
     global_settings_->allowed_types.emplace();
     for (const auto& entry : *allowed_types_pref) {
       if (entry.is_int() && entry.GetInt() >= 0 &&
-          entry.GetInt() < Manifest::Type::NUM_LOAD_TYPES) {
+          entry.GetInt() < std::to_underlying(Manifest::Type::kNumLoadTypes)) {
         global_settings_->allowed_types->push_back(
             static_cast<Manifest::Type>(entry.GetInt()));
       } else if (entry.is_string()) {
         Manifest::Type manifest_type =
             schema_constants::GetManifestType(entry.GetString());
-        if (manifest_type != Manifest::TYPE_UNKNOWN)
+        if (manifest_type != Manifest::Type::kUnknown) {
           global_settings_->allowed_types->push_back(manifest_type);
+        }
       }
     }
-  }
-
-  if (manifest_v2_pref) {
-    global_settings_->manifest_v2_setting =
-        static_cast<internal::GlobalSettings::ManifestV2Setting>(
-            manifest_v2_pref->GetInt());
   }
 
   if (unpublished_availability_pref) {
@@ -824,6 +840,13 @@ void ExtensionManagement::Refresh() {
         static_cast<internal::GlobalSettings::UnpublishedAvailability>(
             unpublished_availability_pref->GetInt());
   }
+
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
+  if (allow_overrides_pref) {
+    global_settings_->allow_low_trust_dse_ntp_overrides =
+        allow_overrides_pref->GetBool();
+  }
+#endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
 
   if (dict_pref) {
     // Parse new extension management preference.
@@ -949,7 +972,7 @@ internal::IndividualSettings* ExtensionManagement::GetSettingsForId(
 
 void ExtensionManagement::LoadDeferredExtensionSetting(
     const std::string& extension_id) {
-  DCHECK(deferred_ids_.contains(extension_id));
+  CHECK(deferred_ids_.contains(extension_id), base::NotFatalUntil::M161);
 
   // No need to check again later.
   deferred_ids_.erase(extension_id);
@@ -1046,8 +1069,9 @@ base::DictValue ExtensionManagement::GetInstallListByMode(
     ManagedInstallationMode installation_mode) const {
   // This is only meaningful if we 've loaded the extensions for the given
   // installation mode.
-  DCHECK(installation_mode == ManagedInstallationMode::kForced ||
-         installation_mode == ManagedInstallationMode::kRecommended);
+  CHECK(installation_mode == ManagedInstallationMode::kForced ||
+            installation_mode == ManagedInstallationMode::kRecommended,
+        base::NotFatalUntil::M161);
 
   base::DictValue extension_dict;
   for (const auto& [id, settings] : settings_by_id_) {
@@ -1144,6 +1168,7 @@ ExtensionManagementFactory::ExtensionManagementFactory()
               // Ash Internals.
               .WithAshInternals(ProfileSelection::kRedirectedToOriginal)
               .Build()) {
+  DependsOn(ExtensionPrefsFactory::GetInstance());
   DependsOn(InstallStageTrackerFactory::GetInstance());
 }
 

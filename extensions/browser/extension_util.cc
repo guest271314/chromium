@@ -16,10 +16,12 @@
 #include "components/user_prefs/user_prefs.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/child_process_security_policy.h"
+#include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/security_principal.h"
 #include "content/public/browser/site_instance.h"
 #include "content/public/browser/storage_partition.h"
 #include "content/public/browser/storage_partition_config.h"
+#include "content/public/browser/web_contents.h"
 #include "extensions/browser/extension_host.h"
 #include "extensions/browser/extension_prefs.h"
 #include "extensions/browser/extension_registry.h"
@@ -38,6 +40,7 @@
 #include "extensions/common/manifest.h"
 #include "extensions/common/manifest_handlers/incognito_info.h"
 #include "extensions/common/manifest_handlers/shared_module_info.h"
+#include "extensions/common/mojom/api_permission_id.mojom.h"
 #include "extensions/common/mojom/manifest.mojom.h"
 #include "extensions/common/permissions/permissions_data.h"
 #include "extensions/common/switches.h"
@@ -78,6 +81,30 @@ bool ExtensionIsFromWebstore(const Extension& extension) {
          extension.location() == mojom::ManifestLocation::kInternal;
 }
 
+// Handles logic that only requires the ExtensionId and the BrowserContext.
+// This is safe to call even when the extension is completely unloaded.
+bool IsIncognitoEnabledForIdAndContext(const ExtensionId& extension_id,
+                                       content::BrowserContext* context) {
+#if BUILDFLAG(IS_CHROMEOS)
+  // An OTR Profile is used for captive portal signin to hide PII from
+  // captive portals (which require HTTP redirects to function).
+  // However, for captive portal signin we do not want want to disable
+  // extensions by default. (Proxies are explicitly disabled elsewhere).
+  // See b/261727502 for details.
+  PrefService* prefs = user_prefs::UserPrefs::Get(context);
+  if (prefs) {
+    const PrefService::Preference* captive_portal_pref =
+        prefs->FindPreference(chromeos::prefs::kCaptivePortalSignin);
+    if (captive_portal_pref && captive_portal_pref->GetValue()->GetBool()) {
+      return true;
+    }
+  }
+#endif
+
+  // The ultimate fallback database check.
+  return ExtensionPrefs::Get(context)->IsIncognitoEnabled(extension_id);
+}
+
 }  // namespace
 
 bool CanBeIncognitoEnabled(const Extension* extension) {
@@ -86,11 +113,8 @@ bool CanBeIncognitoEnabled(const Extension* extension) {
           extension->location() == mojom::ManifestLocation::kComponent);
 }
 
-bool IsIncognitoEnabled(const ExtensionId& extension_id,
+bool IsIncognitoEnabled(const Extension* extension,
                         content::BrowserContext* context) {
-  const Extension* extension =
-      ExtensionRegistry::Get(context)->enabled_extensions().GetByID(
-          extension_id);
   if (extension) {
     if (!CanBeIncognitoEnabled(extension)) {
       return false;
@@ -109,22 +133,22 @@ bool IsIncognitoEnabled(const ExtensionId& extension_id,
     }
 #endif
   }
-#if BUILDFLAG(IS_CHROMEOS)
-  // An OTR Profile is used for captive portal signin to hide PII from
-  // captive portals (which require HTTP redirects to function).
-  // However, for captive portal signin we do not want want to disable
-  // extensions by default. (Proxies are explicitly disabled elsewhere).
-  // See b/261727502 for details.
-  PrefService* prefs = user_prefs::UserPrefs::Get(context);
-  if (prefs) {
-    const PrefService::Preference* captive_portal_pref =
-        prefs->FindPreference(chromeos::prefs::kCaptivePortalSignin);
-    if (captive_portal_pref && captive_portal_pref->GetValue()->GetBool()) {
-      return true;
+
+  return IsIncognitoEnabledForIdAndContext(extension->id(), context);
+}
+
+bool IsIncognitoEnabled(const ExtensionId& extension_id,
+                        content::BrowserContext* context) {
+  ExtensionRegistry* registry = ExtensionRegistry::Get(context);
+  if (registry) {
+    const Extension* extension =
+        registry->enabled_extensions().GetByID(extension_id);
+    if (extension) {
+      return IsIncognitoEnabled(extension, context);
     }
   }
-#endif
-  return ExtensionPrefs::Get(context)->IsIncognitoEnabled(extension_id);
+
+  return IsIncognitoEnabledForIdAndContext(extension_id, context);
 }
 
 bool CanCrossIncognito(const Extension* extension,
@@ -135,6 +159,23 @@ bool CanCrossIncognito(const Extension* extension,
   CHECK(extension);
   return IsIncognitoEnabled(extension->id(), context) &&
          !IncognitoInfo::IsSplitMode(extension);
+}
+
+bool IsWebContentsInContext(content::WebContents& web_contents,
+                            content::BrowserContext& browser_context,
+                            bool include_incognito) {
+  content::BrowserContext* web_contents_browser_context =
+      web_contents.GetBrowserContext();
+  if (web_contents_browser_context == &browser_context) {
+    return true;
+  }
+
+  if (!include_incognito) {
+    return false;
+  }
+
+  return ExtensionsBrowserClient::Get()->IsSameContext(
+      web_contents_browser_context, &browser_context);
 }
 
 bool IsExtensionIdle(const std::string& extension_id,
@@ -315,7 +356,7 @@ bool CanWithholdPermissionsFromExtension(const ExtensionId& extension_id,
 }
 
 int GetBrowserContextId(content::BrowserContext* context) {
-  using ContextIdMap = std::map<std::string, int>;
+  using ContextIdMap = std::map<base::UnguessableToken, int>;
 
   static int next_id = 0;
   static base::NoDestructor<ContextIdMap> context_map;
@@ -323,7 +364,7 @@ int GetBrowserContextId(content::BrowserContext* context) {
   // we need to get the original context to make sure we take the right context.
   content::BrowserContext* original_context =
       ExtensionsBrowserClient::Get()->GetOriginalContext(context);
-  const std::string& context_id = original_context->UniqueId();
+  const base::UnguessableToken& context_id = original_context->UniqueToken();
   auto iter = context_map->find(context_id);
   if (iter == context_map->end()) {
     iter = context_map->insert(std::make_pair(context_id, next_id++)).first;
@@ -391,7 +432,7 @@ ExtensionId GetExtensionIdForSiteInstance(
 
   // Navigating to a disabled (or uninstalled or not-yet-installed) extension
   // will set the site URL to chrome-extension://invalid.
-  ExtensionId maybe_extension_id =
+  std::string_view maybe_extension_id =
       site_instance.GetSecurityPrincipal().GetHost();
   if (maybe_extension_id == "invalid") {
     return ExtensionId();
@@ -403,7 +444,7 @@ ExtensionId GetExtensionIdForSiteInstance(
   // known, extension-id-based hostname).
   DCHECK(crx_file::id_util::IdIsValid(maybe_extension_id))
       << "; maybe_extension_id = " << maybe_extension_id;
-  return maybe_extension_id;
+  return ExtensionId(maybe_extension_id);
 }
 
 std::string GetExtensionIdFromFrame(
@@ -414,7 +455,7 @@ std::string GetExtensionIdFromFrame(
     return std::string();
   }
 
-  return site_instance->GetSecurityPrincipal().GetHost();
+  return std::string(site_instance->GetSecurityPrincipal().GetHost());
 }
 
 bool CanRendererHostExtensionOrigin(int render_process_id,
@@ -530,6 +571,15 @@ bool IsChromeApp(const ExtensionId& extension_id,
   return extension->is_platform_app();
 }
 
+bool HasClipboardWritePermission(const ExtensionId& extension_id,
+                                 content::BrowserContext* context) {
+  const Extension* extension =
+      ExtensionRegistry::Get(context)->enabled_extensions().GetByID(
+          extension_id);
+  return extension && extension->permissions_data()->HasAPIPermission(
+                          mojom::APIPermissionID::kClipboardWrite);
+}
+
 bool IsAppLaunchable(const ExtensionId& extension_id,
                      content::BrowserContext* context) {
   DisableReasonSet reason =
@@ -560,12 +610,23 @@ bool IsExtensionDownload(const download::DownloadItem& download_item) {
     return false;
   }
 
-  if (download_item.GetMimeType() == Extension::kMimeType ||
-      UserScript::IsURLUserScript(download_item.GetURL(),
-                                  download_item.GetMimeType())) {
+  if (download_item.GetMimeType() == Extension::kMimeType) {
     return true;
   }
   return false;
+}
+
+const GURL& GetURLForExtensionPermissionCheck(content::RenderFrameHost* rfh) {
+  // Avoid `CHECK_NE(lifecycle_state(), LifecycleStateImpl::kSpeculative)` in
+  // `content::RenderFrameHost::IsErrorDocument()` by checking for an empty
+  // `GURL` first.
+  if (!rfh || rfh->GetLastCommittedURL().is_empty()) {
+    return GURL::EmptyGURL();
+  }
+  if (rfh->IsErrorDocument()) {
+    return GURL::EmptyGURL();
+  }
+  return rfh->GetLastCommittedURL();
 }
 
 }  // namespace extensions::util

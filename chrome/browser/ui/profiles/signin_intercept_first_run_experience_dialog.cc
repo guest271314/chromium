@@ -19,11 +19,11 @@
 #include "chrome/browser/sync/sync_service_factory.h"
 #include "chrome/browser/themes/theme_service.h"
 #include "chrome/browser/themes/theme_service_factory.h"
-#include "chrome/browser/ui/browser.h"
-#include "chrome/browser/ui/browser_window.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/chrome_pages.h"
 #include "chrome/browser/ui/dialogs/browser_dialogs.h"
 #include "chrome/browser/ui/profiles/profile_customization_synced_theme_waiter.h"
+#include "chrome/browser/ui/toolbar/avatar_toolbar_iph_controller.h"
 #include "chrome/browser/ui/views/profiles/profile_management_types.h"
 #include "chrome/browser/ui/webui/signin/history_sync_optin/history_sync_optin_ui.h"
 #include "chrome/browser/ui/webui/signin/history_sync_optin_helper.h"
@@ -40,6 +40,7 @@
 #include "components/signin/public/base/signin_metrics.h"
 #include "components/signin/public/base/signin_switches.h"
 #include "components/sync/base/features.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_contents_observer.h"
@@ -73,6 +74,8 @@ class SigninInterceptFirstRunExperienceDialog::
       signin::SigninChoiceCallback on_account_management_screen_closed)
       override;
   void FinishFlowWithoutHistorySyncOptin() override;
+  void ShowSignInCelebration(
+      base::OnceClosure celebration_finished) override;
 
   HistorySyncOptinHelper::FlowCompletedCallback
   MoveHistorySyncOptinCompletionCallback();
@@ -113,6 +116,14 @@ void SigninInterceptFirstRunExperienceDialog::
         signin::SigninChoiceCallback on_account_management_screen_closed) {
   // This flow marks the management as approved and does not invoke this
   // method.
+  NOTREACHED();
+}
+
+void SigninInterceptFirstRunExperienceDialog::
+    InterceptHistorySyncOptinHelperDelegate::ShowSignInCelebration(
+        base::OnceClosure celebration_finished) {
+  // The celebration screen is not available for the sign-in intercept access
+  // point.
   NOTREACHED();
 }
 
@@ -262,7 +273,7 @@ class SigninInterceptFirstRunExperienceDialog::InterceptTurnSyncOnHelperDelegate
  private:
   const base::WeakPtr<SigninInterceptFirstRunExperienceDialog> dialog_;
   // Store `browser_` separately as it may outlive `dialog_`.
-  const base::WeakPtr<Browser> browser_;
+  const base::WeakPtr<BrowserWindowInterface> browser_;
 
   base::OnceCallback<void(LoginUIService::SyncConfirmationUIClosedResult)>
       sync_confirmation_callback_;
@@ -273,7 +284,7 @@ class SigninInterceptFirstRunExperienceDialog::InterceptTurnSyncOnHelperDelegate
 SigninInterceptFirstRunExperienceDialog::InterceptTurnSyncOnHelperDelegate::
     InterceptTurnSyncOnHelperDelegate(
         base::WeakPtr<SigninInterceptFirstRunExperienceDialog> dialog)
-    : dialog_(std::move(dialog)), browser_(dialog_->browser_->AsWeakPtr()) {
+    : dialog_(std::move(dialog)), browser_(dialog_->browser_->GetWeakPtr()) {
   CHECK(!syncer::IsReplaceSyncPromosWithSignInPromosEnabled());
 }
 
@@ -330,8 +341,8 @@ void SigninInterceptFirstRunExperienceDialog::
   }
 
   scoped_login_ui_service_observation_.Observe(
-      LoginUIServiceFactory::GetForProfile(browser_->profile()));
-  DCHECK(!sync_confirmation_callback_);
+      LoginUIServiceFactory::GetForProfile(browser_->GetProfile()));
+  CHECK(!sync_confirmation_callback_, base::NotFatalUntil::M162);
   sync_confirmation_callback_ = std::move(callback);
   dialog_->DoNextStep(Step::kTurnOnSync, Step::kSyncConfirmation);
 }
@@ -406,13 +417,13 @@ void SigninInterceptFirstRunExperienceDialog::
     result = LoginUIService::ABORT_SYNC;
   }
 
-  DCHECK(sync_confirmation_callback_);
+  CHECK(sync_confirmation_callback_, base::NotFatalUntil::M162);
   std::move(sync_confirmation_callback_).Run(result);
   // `this` may now be deleted.
 }
 
 SigninInterceptFirstRunExperienceDialog::
-    SigninInterceptFirstRunExperienceDialog(Browser* browser,
+    SigninInterceptFirstRunExperienceDialog(BrowserWindowInterface* browser,
                                             const CoreAccountId& account_id,
                                             bool is_forced_intercept,
                                             base::OnceClosure on_close_callback)
@@ -426,14 +437,14 @@ SigninInterceptFirstRunExperienceDialog::
     // management.
     auto_accept_management_ = enterprise_util::
         EnabledAutomaticManagementDisclaimerAcceptanceUntilReset(
-            browser_->profile());
+            browser_->GetProfile());
 
     if (!base::FeatureList::IsEnabled(switches::kEnforceManagementDisclaimer)) {
       // Trigger the disclaimer service is to auto-approve the management and
       // fetch the applicable policies.
       auto* profile_management_disclaimer_service =
           ProfileManagementDisclaimerServiceFactory::GetForProfile(
-              browser_->profile());
+              browser_->GetProfile());
       CHECK(profile_management_disclaimer_service);
       const CoreAccountId account_id_of_ongoing_management_flow =
           profile_management_disclaimer_service
@@ -476,7 +487,7 @@ void SigninInterceptFirstRunExperienceDialog::CloseModalDialog() {
   }
 }
 void SigninInterceptFirstRunExperienceDialog::ResizeNativeView(int height) {
-  DCHECK(dialog_delegate_);
+  CHECK(dialog_delegate_, base::NotFatalUntil::M162);
   dialog_delegate_->ResizeNativeView(height);
 }
 
@@ -486,8 +497,9 @@ SigninInterceptFirstRunExperienceDialog::GetModalDialogWebContentsForTesting() {
 }
 
 void SigninInterceptFirstRunExperienceDialog::OnModalDialogClosed() {
-  DCHECK(!dialog_delegate_ ||
-         dialog_delegate_observation_.IsObservingSource(dialog_delegate_));
+  CHECK(!dialog_delegate_ ||
+            dialog_delegate_observation_.IsObservingSource(dialog_delegate_),
+        base::NotFatalUntil::M162);
   dialog_delegate_observation_.Reset();
   dialog_delegate_ = nullptr;
   NotifyModalDialogClosed();
@@ -496,9 +508,9 @@ void SigninInterceptFirstRunExperienceDialog::OnModalDialogClosed() {
 void SigninInterceptFirstRunExperienceDialog::DoNextStep(
     Step expected_current_step,
     Step step) {
-  DCHECK_EQ(expected_current_step, current_step_);
+  CHECK_EQ(expected_current_step, current_step_, base::NotFatalUntil::M162);
   // Going to a previous step is not allowed.
-  DCHECK_GT(step, current_step_);
+  CHECK_GT(step, current_step_, base::NotFatalUntil::M162);
   current_step_ = step;
 
   switch (step) {
@@ -554,7 +566,7 @@ void SigninInterceptFirstRunExperienceDialog::DoTurnOnSync() {
   signin_metrics::RecordSigninUserActionForAccessPoint(access_point);
 
   // TurnSyncOnHelper deletes itself once done.
-  new TurnSyncOnHelper(browser_->profile(), access_point, promo_action,
+  new TurnSyncOnHelper(browser_->GetProfile(), access_point, promo_action,
                        account_id_,
                        TurnSyncOnHelper::SigninAbortedMode::KEEP_ACCOUNT,
                        std::make_unique<InterceptTurnSyncOnHelperDelegate>(
@@ -574,7 +586,7 @@ void SigninInterceptFirstRunExperienceDialog::DoSyncConfirmation() {
 void SigninInterceptFirstRunExperienceDialog::DoStartHistorySync() {
   CHECK(syncer::IsReplaceSyncPromosWithSignInPromosEnabled());
   signin::IdentityManager* identity_manager =
-      IdentityManagerFactory::GetForProfile(browser_->profile());
+      IdentityManagerFactory::GetForProfile(browser_->GetProfile());
   CHECK(identity_manager);
   auto extended_account_info =
       identity_manager->FindExtendedAccountInfoByAccountId(account_id_);
@@ -583,7 +595,7 @@ void SigninInterceptFirstRunExperienceDialog::DoStartHistorySync() {
           weak_ptr_factory_.GetWeakPtr());
   history_sync_optin_delegate_ = history_sync_optin_delegate->GetWeakPtr();
   auto* history_sync_optin_service =
-      HistorySyncOptinServiceFactory::GetForProfile(browser_->profile());
+      HistorySyncOptinServiceFactory::GetForProfile(browser_->GetProfile());
   CHECK(history_sync_optin_service);
   history_sync_optin_service->StartHistorySyncOptinFlow(
       extended_account_info, std::move(history_sync_optin_delegate),
@@ -605,8 +617,8 @@ void SigninInterceptFirstRunExperienceDialog::DoShowHistorySyncOptin() {
 void SigninInterceptFirstRunExperienceDialog::DoWaitForSyncedTheme() {
   synced_theme_waiter_ =
       std::make_unique<ProfileCustomizationSyncedThemeWaiter>(
-          SyncServiceFactory::GetForProfile(browser_->profile()),
-          ThemeServiceFactory::GetForProfile(browser_->profile()),
+          SyncServiceFactory::GetForProfile(browser_->GetProfile()),
+          ThemeServiceFactory::GetForProfile(browser_->GetProfile()),
           base::BindOnce(
               &SigninInterceptFirstRunExperienceDialog::OnSyncedThemeReady,
               // Unretained() is fine because `this` owns `synced_theme_waiter_`
@@ -616,7 +628,7 @@ void SigninInterceptFirstRunExperienceDialog::DoWaitForSyncedTheme() {
 
 void SigninInterceptFirstRunExperienceDialog::DoProfileCustomization() {
   // Don't show the customization bubble if a valid policy theme is set.
-  if (ThemeServiceFactory::GetForProfile(browser_->profile())
+  if (ThemeServiceFactory::GetForProfile(browser_->GetProfile())
           ->UsingPolicyTheme()) {
     // Show the profile switch IPH that is normally shown after the
     // customization bubble.
@@ -642,7 +654,7 @@ void SigninInterceptFirstRunExperienceDialog::DoProfileCustomization() {
     return;
   }
 
-  DCHECK(profile_customization_preloaded_contents_);
+  CHECK(profile_customization_preloaded_contents_, base::NotFatalUntil::M162);
   dialog_delegate_->SetWebContents(
       profile_customization_preloaded_contents_.get());
   dialog_delegate_->ResizeNativeView(ProfileCustomizationUI::kPreferredHeight);
@@ -650,14 +662,14 @@ void SigninInterceptFirstRunExperienceDialog::DoProfileCustomization() {
 
 void SigninInterceptFirstRunExperienceDialog::
     DoProfileSwitchIPHAndCloseModal() {
-  browser_->window()->MaybeShowProfileSwitchIPH();
+  AvatarToolbarIphController::From(browser_)->MaybeShowProfileSwitchIPH();
   CloseModalDialog();
 }
 
 void SigninInterceptFirstRunExperienceDialog::SetDialogDelegate(
     SigninViewControllerDelegate* delegate) {
-  DCHECK(!dialog_delegate_);
-  DCHECK(!dialog_delegate_observation_.IsObserving());
+  CHECK(!dialog_delegate_, base::NotFatalUntil::M162);
+  CHECK(!dialog_delegate_observation_.IsObserving(), base::NotFatalUntil::M162);
   dialog_delegate_ = delegate;
   dialog_delegate_observation_.Observe(dialog_delegate_);
 }
@@ -665,8 +677,8 @@ void SigninInterceptFirstRunExperienceDialog::SetDialogDelegate(
 void SigninInterceptFirstRunExperienceDialog::PreloadProfileCustomizationUI() {
   profile_customization_preloaded_contents_ =
       content::WebContents::Create(content::WebContents::CreateParams(
-          browser_->profile(),
-          content::SiteInstance::Create(browser_->profile())));
+          browser_->GetProfile(),
+          content::SiteInstance::Create(browser_->GetProfile())));
   profile_customization_preloaded_contents_->GetController().LoadURL(
       GURL(chrome::kChromeUIProfileCustomizationURL), content::Referrer(),
       ui::PAGE_TRANSITION_AUTO_TOPLEVEL, std::string());
@@ -674,7 +686,7 @@ void SigninInterceptFirstRunExperienceDialog::PreloadProfileCustomizationUI() {
       profile_customization_preloaded_contents_->GetWebUI()
           ->GetController()
           ->GetAs<ProfileCustomizationUI>();
-  DCHECK(web_ui);
+  CHECK(web_ui, base::NotFatalUntil::M162);
   web_ui->Initialize(
       base::BindOnce(&SigninInterceptFirstRunExperienceDialog::
                          ProfileCustomizationCloseOnCompletion,

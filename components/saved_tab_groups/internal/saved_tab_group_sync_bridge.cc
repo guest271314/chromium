@@ -44,6 +44,7 @@
 #include "components/sync/protocol/entity_data.h"
 #include "components/sync/protocol/saved_tab_group_specifics.pb.h"
 #include "google_apis/gaia/gaia_id.h"
+#include "url/gurl.h"
 
 namespace tab_groups {
 namespace {
@@ -776,6 +777,19 @@ void SavedTabGroupSyncBridge::AddDataToLocalStorage(
 
   proto::SavedTabGroupData data;
   data.set_allocated_specifics(new sync_pb::SavedTabGroupSpecifics(specifics));
+
+  // Sanitize incoming remote URLs before writing to the local database. This
+  // ensures we don't store unsafe URLs (e.g. from a compromised sync server)
+  // while allowing locally created unsyncable URLs (like file://) to be
+  // preserved.
+  if (data.specifics().has_tab()) {
+    if (!IsURLValidForSavedTabGroups(GURL(data.specifics().tab().url()))) {
+      data.mutable_specifics()->mutable_tab()->set_url(
+          kChromeSavedTabGroupUnsupportedURL);
+      data.mutable_specifics()->mutable_tab()->clear_title();
+    }
+  }
+
   std::string guid = data.specifics().guid();
 
   // Cases where `specifics` is a group.
@@ -793,16 +807,7 @@ void SavedTabGroupSyncBridge::AddDataToLocalStorage(
           TimeFromWindowsEpochMicros(
               specifics.update_time_windows_epoch_micros()),
           /*updated_by=*/GaiaId());
-      // Copy over the pinned_position to avoid overwriting it when performing
-      // a sync update.
-      if (tab_groups::IsProjectsPanelFeatureEnabled()) {
-        std::optional<size_t> pinned_position = std::nullopt;
-        if (specifics.group().has_pinned_position()) {
-          pinned_position = specifics.group().pinned_position();
-        }
-        model_wrapper_->UpdateGroupPinnedPositionForMigration(group_guid,
-                                                              pinned_position);
-      }
+
       proto::SavedTabGroupData updated_data =
           SavedTabGroupToData(*existing_group);
 

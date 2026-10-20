@@ -8,6 +8,7 @@
 #include <stdint.h>
 
 #include <memory>
+#include <optional>
 #include <string>
 
 #include "components/sync/base/data_type.h"
@@ -21,6 +22,8 @@ enum LoopbackServerEntity_Type : int;
 
 namespace syncer {
 
+class PersistentBookmarkEntity;
+
 // The representation of a Sync entity for the loopback server.
 class LoopbackServerEntity {
  public:
@@ -31,10 +34,15 @@ class LoopbackServerEntity {
   // If `inner_id` is globally unique, then the returned ID will also be
   // globally unique.
   static std::string CreateId(const syncer::DataType& data_type,
-                              const std::string& inner_id);
+                              const std::string& inner_id,
+                              int migration_version);
 
   // Returns the ID string of the top level node for the specified type.
-  static std::string GetTopLevelId(const syncer::DataType& data_type);
+  static std::string GetTopLevelId(const syncer::DataType& data_type,
+                                   int migration_version);
+
+  // Mutates the entity's ID to the new migration version.
+  virtual void MigrateToNewVersionForTesting(int new_version);
 
   static std::unique_ptr<LoopbackServerEntity> CreateEntityFromProto(
       const sync_pb::LoopbackServerEntity& entity);
@@ -59,8 +67,9 @@ class LoopbackServerEntity {
   virtual sync_pb::LoopbackServerEntity_Type GetLoopbackServerEntityType()
       const;
   virtual bool IsDeleted() const;
-  virtual bool IsFolder() const;
   virtual bool IsPermanent() const;
+  virtual PersistentBookmarkEntity* AsBookmarkEntity();
+  virtual const PersistentBookmarkEntity* AsBookmarkEntity() const;
 
   virtual void SerializeAsLoopbackServerEntity(
       sync_pb::LoopbackServerEntity* entity) const;
@@ -72,6 +81,10 @@ class LoopbackServerEntity {
   // Extracts the inner ID as specified in the constructor from `id`.
   static std::string GetInnerIdFromId(const std::string& id);
 
+  // Extracts the datatype migration version from `id`. If `id` is malformed,
+  // 0 is returned.
+  static int GetMigrationVersionFromId(const std::string& id);
+
  protected:
   LoopbackServerEntity(const std::string& id,
                        const syncer::DataType& data_type,
@@ -82,7 +95,7 @@ class LoopbackServerEntity {
 
  private:
   // The entity's ID.
-  const std::string id_;
+  std::string id_;
 
   // The DataType that categorizes this entity.
   const syncer::DataType data_type_;

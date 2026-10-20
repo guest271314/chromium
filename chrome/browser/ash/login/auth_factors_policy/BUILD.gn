@@ -22,13 +22,16 @@ static_library("auth_factors_policy") {
     "//chromeos/ash/components/osauth/public",
   ]
   deps = [
+    "//ash/strings",
+    "//chrome/browser:browser_process",
     "//chrome/browser/ash/login",
     "//chrome/browser/ash/login/quick_unlock",
-    "//chrome/browser/notifications",
+    "//chrome/browser/policy",
     "//chromeos/ash/components/browser_context_helper",
     "//chromeos/ash/experiences/settings_ui",
     "//chromeos/ash/services/auth_factor_config",
     "//components/session_manager/core",
+    "//ui/message_center",
   ]
 }
 
@@ -50,7 +53,6 @@ source_set("browser_tests") {
     "//chrome/browser/ash/login:test_support",
     "//chrome/browser/ash/login/signin",
     "//chrome/browser/ash/login/test:test_support",
-    "//chrome/browser/ash/profiles",
     "//chrome/test:test_support",
     "//chromeos/ash/components/login/auth/public:authpublic",
     "//components/policy:policy_code_generate",
@@ -59,5 +61,7 @@ source_set("browser_tests") {
     "//components/user_manager",
     "//content/test:test_support",
     "//testing/gmock",
+    "//ui/message_center",
+    "//ui/message_center:test_support",
   ]
 }

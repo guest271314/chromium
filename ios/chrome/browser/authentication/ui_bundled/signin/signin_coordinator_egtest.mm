@@ -4,6 +4,7 @@
 
 #import "base/ios/block_types.h"
 #import "base/ios/ios_util.h"
+#import "base/strings/strcat.h"
 #import "base/strings/sys_string_conversions.h"
 #import "base/test/ios/wait_util.h"
 #import "base/time/time.h"
@@ -14,6 +15,8 @@
 #import "components/signin/public/base/signin_switches.h"
 #import "components/strings/grit/components_strings.h"
 #import "components/sync/base/user_selectable_type.h"
+#import "google_apis/gaia/core_account_id.h"
+#import "google_apis/gaia/gaia_id.h"
 #import "ios/chrome/browser/authentication/test/expected_signin_histograms.h"
 #import "ios/chrome/browser/authentication/test/signin_earl_grey.h"
 #import "ios/chrome/browser/authentication/test/signin_earl_grey_ui_test_util.h"
@@ -40,11 +43,12 @@
 #import "ios/chrome/browser/signin/model/fake_system_identity.h"
 #import "ios/chrome/browser/signin/model/test_constants.h"
 #import "ios/chrome/grit/ios_strings.h"
+#import "ios/chrome/test/earl_grey/background_launch_app_interface.h"
 #import "ios/chrome/test/earl_grey/chrome_earl_grey.h"
 #import "ios/chrome/test/earl_grey/chrome_earl_grey_ui.h"
 #import "ios/chrome/test/earl_grey/chrome_matchers.h"
 #import "ios/chrome/test/earl_grey/chrome_test_case.h"
-#import "ios/chrome/test/earl_grey/web_http_server_chrome_test_case.h"
+#import "ios/chrome/test/earl_grey/test_switches.h"
 #import "ios/testing/earl_grey/app_launch_configuration.h"
 #import "ios/testing/earl_grey/app_launch_manager.h"
 #import "ios/testing/earl_grey/earl_grey_test.h"
@@ -118,10 +122,16 @@ void SetSigninEnterprisePolicyValue(BrowserSigninMode signinMode) {
 
 // Sign-in interaction tests that work both with Unified Consent enabled or
 // disabled.
-@interface SigninCoordinatorTestCase : WebHttpServerChromeTestCase
+@interface SigninCoordinatorTestCase : ChromeTestCase
 @end
 
 @implementation SigninCoordinatorTestCase
+
+- (AppLaunchConfiguration)appConfigurationForTestCase {
+  AppLaunchConfiguration config;
+  config.features_disabled.push_back(kAuthenticationFlowReauthFirstKillswitch);
+  return config;
+}
 
 - (void)setUp {
   [super setUp];
@@ -137,6 +147,7 @@ void SetSigninEnterprisePolicyValue(BrowserSigninMode signinMode) {
 }
 
 - (void)tearDownHelper {
+  [ChromeEarlGrey resetDataForLocalStatePref:prefs::kSigninAllowedOnDevice];
   [super tearDownHelper];
   [BookmarkEarlGrey clearBookmarksPositionCache];
   chrome_test_util::GREYAssertErrorNil(
@@ -153,6 +164,37 @@ void SetSigninEnterprisePolicyValue(BrowserSigninMode signinMode) {
   // Check `fakeIdentity` is signed-in.
   [SigninEarlGrey verifySignedInWithFakeIdentity:fakeIdentity];
   ExpectSigninConsentHistogram(signin_metrics::SigninAccountType::kRegular);
+}
+
+// Tests that opening the sign-in screen from the Settings and signing in works
+// correctly when there is an account that requires reauthentication on the
+// device.
+- (void)testSignInOneUserNeedsReauth {
+  // Set up a fake identity needing reauthentication.
+  FakeSystemIdentity* fakeIdentity = [FakeSystemIdentity fakeIdentity1];
+  [SigninEarlGrey addFakeIdentity:fakeIdentity];
+  [SigninEarlGrey setPersistentAuthErrorForAccount:CoreAccountId::FromGaiaId(
+                                                       fakeIdentity.gaiaId)];
+
+  [ChromeEarlGreyUI openSettingsMenu];
+  [ChromeEarlGreyUI tapSettingsMenuButton:SettingsSignInRowMatcher()];
+
+  [ChromeEarlGreyUI waitForAppToIdle];
+  [ChromeEarlGrey
+      waitForMatcher:chrome_test_util::ConsistencySigninPrimaryButtonMatcher()];
+  [[EarlGrey selectElementWithMatcher:
+                 chrome_test_util::ConsistencySigninPrimaryButtonMatcher()]
+      performAction:grey_tap()];
+
+  // Confirm the fake reauthentication dialog.
+  [[EarlGrey
+      selectElementWithMatcher:grey_allOf(
+                                   grey_accessibilityID(
+                                       kFakeAuthAddAccountButtonIdentifier),
+                                   grey_sufficientlyVisible(), nil)]
+      performAction:grey_tap()];
+
+  [SigninEarlGrey verifySignedInWithFakeIdentity:fakeIdentity];
 }
 
 // Tests that opening the sign-in screen from the Settings and signing in works
@@ -235,7 +277,7 @@ void SetSigninEnterprisePolicyValue(BrowserSigninMode signinMode) {
 
 // Tests that signing out a supervised user account clears the account data.
 // TODO(crbug.com/378058907): Re-enable this test.
-- (void)DISABLED_testSignOutForSupervisedUserClearAccountData {
+- (void)testSignOutForSupervisedUserClearAccountData {
   // Sign in with a fake supervised identity.
   FakeSystemIdentity* fakeSupervisedIdentity =
       [FakeSystemIdentity fakeIdentity1];
@@ -467,7 +509,8 @@ void SetSigninEnterprisePolicyValue(BrowserSigninMode signinMode) {
           IDS_IOS_ACCOUNT_IDENTITY_CHOOSER_ADD_ACCOUNT);
   [[EarlGrey selectElementWithMatcher:add_account_matcher]
       performAction:grey_tap()];
-  [ChromeEarlGreyUI waitForAppToIdle];
+  [ChromeEarlGrey waitForSufficientlyVisibleElementWithMatcher:
+                      grey_accessibilityID(kFakeAuthActivityViewIdentifier)];
 
   // Open new tab to cancel sign-in.
   GREYAssertTrue(self.testServer->Start(), @"Test server failed to start.");
@@ -873,10 +916,11 @@ void SetSigninEnterprisePolicyValue(BrowserSigninMode signinMode) {
   [SigninEarlGreyUI verifySigninPromoNotVisible];
 }
 
-// TODO(crbug.com/386196414): Test is flaky.
 // Tests that Sync is on when introducing passphrase from settings, after
 // logging in.
-- (void)testSyncOnWhenPassphraseIntroducedAfterSignIn {
+// TODO(crbug.com/386196414): Test is flaky.
+// TODO(crbug.com/568719330): Re-enable this test.
+- (void)DISABLED_testSyncOnWhenPassphraseIntroducedAfterSignIn {
   [ChromeEarlGrey addSyncPassphrase:kPassphrase];
   FakeSystemIdentity* fakeIdentity = [FakeSystemIdentity fakeIdentity1];
   [SigninEarlGrey addFakeIdentity:fakeIdentity];
@@ -892,6 +936,12 @@ void SetSigninEnterprisePolicyValue(BrowserSigninMode signinMode) {
   // Tap the snackbar to make it disappear.
   [[EarlGrey selectElementWithMatcher:snackbarMatcher]
       performAction:grey_tap()];
+
+  // Wait for History Sync screen to be visible.
+  [ChromeEarlGrey
+      waitForSufficientlyVisibleElementWithMatcher:
+          grey_accessibilityID(kHistorySyncViewAccessibilityIdentifier)];
+
   [[EarlGrey
       selectElementWithMatcher:chrome_test_util::ButtonStackSecondaryButton()]
       performAction:grey_tap()];
@@ -1017,6 +1067,91 @@ void SetSigninEnterprisePolicyValue(BrowserSigninMode signinMode) {
   // But the reading list is still open.
   [[EarlGrey selectElementWithMatcher:grey_accessibilityID(kReadingListViewID)]
       assertWithMatcher:grey_notNil()];
+}
+
+// Tests that a user signed in with a personal account is signed out on startup
+// if sign-in is disabled before Chrome starts.
+- (void)testSignInDisabledAtStartupWithPersonalAccount {
+  FakeSystemIdentity* fakeIdentity = [FakeSystemIdentity fakeIdentity1];
+  [SigninEarlGrey signinWithFakeIdentity:fakeIdentity];
+
+  [self relaunchWithIdentity:fakeIdentity signinDisabledAtStartup:YES];
+
+  [SigninEarlGrey verifySignedOut];
+}
+
+// Tests that a user signed in with a personal account is signed out when
+// sign-in is disabled in the background (without UI).
+- (void)testSignInDisabledInBackgroundWithPersonalAccount {
+  FakeSystemIdentity* fakeIdentity = [FakeSystemIdentity fakeIdentity1];
+  [SigninEarlGrey signinWithFakeIdentity:fakeIdentity];
+
+  [ChromeEarlGrey setBoolValue:NO
+             forLocalStatePref:prefs::kSigninAllowedOnDevice];
+
+  [SigninEarlGrey verifySignedOut];
+}
+
+// Tests that a user signed in with a managed account is switched to the
+// personal profile and signed out on startup if sign-in is disabled before
+// Chrome starts.
+- (void)testSignInDisabledAtStartupWithManagedAccount {
+  FakeSystemIdentity* fakeIdentity = [FakeSystemIdentity fakeManagedIdentity];
+  [SigninEarlGrey signinWithFakeManagedIdentityInPersonalProfile:fakeIdentity];
+
+  [self relaunchWithIdentity:fakeIdentity signinDisabledAtStartup:YES];
+
+  [SigninEarlGrey verifySignedOut];
+}
+
+// Tests that a user signed in with a managed account is switched to the
+// personal profile and signed out when sign-in is disabled in the background
+// (without UI).
+- (void)testSignInDisabledInBackgroundWithManagedAccount {
+  FakeSystemIdentity* fakeIdentity = [FakeSystemIdentity fakeManagedIdentity];
+  [SigninEarlGrey signinWithFakeManagedIdentityInPersonalProfile:fakeIdentity];
+
+  [ChromeEarlGrey setBoolValue:NO
+             forLocalStatePref:prefs::kSigninAllowedOnDevice];
+
+  [ChromeEarlGrey
+      waitForCurrentProfileName:[ChromeEarlGrey personalProfileName]];
+  [SigninEarlGrey verifySignedOut];
+}
+
+#pragma mark - Helpers
+
+// Relaunches the app with `identity` present on the device, pausing startup at
+// the background stage to optionally disable `prefs::kSigninAllowedOnDevice`
+// before profiles are attached and scenes reach the foreground.
+- (void)relaunchWithIdentity:(FakeSystemIdentity*)identity
+     signinDisabledAtStartup:(BOOL)signinDisabled {
+  [ChromeEarlGrey commitPendingUserPrefsWrite];
+  AppLaunchConfiguration config = [self appConfigurationForTestCase];
+  config.relaunch_policy = ForceRelaunchByCleanShutdown;
+  config.additional_args.push_back(base::StrCat({
+    "-", test_switches::kAddFakeIdentitiesAtStartup, "=",
+        [FakeSystemIdentity encodeIdentitiesToBase64:@[ identity ]]
+  }));
+  config.additional_args.push_back(
+      base::StrCat({"--", test_switches::kPauseStartupAtBackgroundStage}));
+
+  // Temporarily remove `self` as an `AppLaunchManager` observer because
+  // `ChromeTestCase`'s relaunch callback requires a foregrounded scene with an
+  // attached profile, which does not exist while startup is paused at the
+  // background stage.
+  id<AppLaunchManagerObserver> observer = (id<AppLaunchManagerObserver>)self;
+  [[AppLaunchManager sharedManager] removeObserver:observer];
+  [[AppLaunchManager sharedManager] ensureAppLaunchedWithConfiguration:config];
+  if (signinDisabled) {
+    [ChromeEarlGrey setBoolValue:NO
+               forLocalStatePref:prefs::kSigninAllowedOnDevice];
+  }
+  [BackgroundLaunchAppInterface unblockStartupAndForeground];
+  [ChromeEarlGrey
+      waitForCurrentProfileName:[ChromeEarlGrey personalProfileName]];
+  [[AppLaunchManager sharedManager] addObserver:observer];
+  [self enableMockAuthentication];
 }
 
 @end

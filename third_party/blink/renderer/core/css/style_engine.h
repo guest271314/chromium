@@ -94,6 +94,7 @@ class LayoutQuote;
 class HTMLAnchorElement;
 class MediaQueryEvaluator;
 class MediaQuerySet;
+class NavigationTestExpression;
 class Node;
 class ReferenceFilterOperation;
 class RuleFeatureSet;
@@ -112,6 +113,7 @@ class StyleSheetContents;
 class StyleInitialData;
 class TextTrack;
 class StyleSheetCollection;
+class URLPattern;
 class ViewportStyleResolver;
 class SelectorFilter;
 struct LogicalSize;
@@ -275,6 +277,11 @@ class CORE_EXPORT StyleEngine final : public GarbageCollected<StyleEngine>,
   void AdoptedStyleSheetAdded(TreeScope& tree_scope, CSSStyleSheet* sheet);
   void AdoptedStyleSheetRemoved(TreeScope& tree_scope, CSSStyleSheet* sheet);
 
+  StyleSheetContents* FindStyleSheetContents(
+      const String& text,
+      const CSSParserContext* parser_context);
+  void AddStyleSheetContents(const String& text, StyleSheetContents* contents);
+
   void WatchedSelectorsChanged();
   void DocumentRulesSelectorsChanged();
   void InitialStyleChanged();
@@ -320,6 +327,29 @@ class CORE_EXPORT StyleEngine final : public GarbageCollected<StyleEngine>,
   // which are evaluated when building the RuleSet.
   bool EvaluateFunctionalMediaQuery(const MediaQuerySet&);
   void MediaQueryAffectingValueChanged(MediaValueChange change);
+
+  // Evaluate and store the result of a navigation test expression. This is
+  // typically called during value resolution. If navigation query evaluation
+  // changes at some later point, we may have to mark affected elements for
+  // style recalc.
+  bool EvaluateFunctionalNavigationQuery(const NavigationTestExpression&);
+
+  void SetNeedsStyleUpdateOnNavigation() {
+    needs_style_update_on_navigation_ = true;
+  }
+  bool NeedsStyleUpdateOnNavigation() const {
+    return needs_style_update_on_navigation_;
+  }
+
+  // Add a URLPattern for a given @location rule.
+  // `location` is a <dashed-ident>.
+  void AddURLPatternFromLocation(const AtomicString& location_name,
+                                 URLPattern*);
+
+  // Look up and return the URLPattern identified by <dashed-ident> `location`.
+  const URLPattern* FindURLPatternByLocation(
+      const AtomicString& location_name) const;
+
   void UpdateActiveStyle();
 
   String PreferredStylesheetSetName() const {
@@ -374,14 +404,12 @@ class CORE_EXPORT StyleEngine final : public GarbageCollected<StyleEngine>,
     uses_glyph_relative_units_ = uses_glyph_relative_units;
   }
 
-  bool UsesRootFontRelativeUnits() const {
-    return uses_root_font_relative_units_;
+  bool UsesRootRelativeUnits() const { return uses_root_relative_units_; }
+  void SetUsesRootRelativeUnits(bool uses_root_relative_units) {
+    uses_root_relative_units_ = uses_root_relative_units;
   }
-  void SetUsesRootFontRelativeUnits(bool uses_root_font_relative_units) {
-    uses_root_font_relative_units_ = uses_root_font_relative_units;
-  }
-  bool UpdateRootFontRelativeUnits(const ComputedStyle* old_root_style,
-                                   const ComputedStyle* new_root_style);
+  bool UpdateRootRelativeUnits(const ComputedStyle* old_root_style,
+                               const ComputedStyle* new_root_style);
   void SetUsesTreeCountingFunctions() { uses_tree_counting_functions_ = true; }
 
   void ResetCSSFeatureFlags(const RuleFeatureSet&);
@@ -422,7 +450,7 @@ class CORE_EXPORT StyleEngine final : public GarbageCollected<StyleEngine>,
   }
   // Push all pending invalidations on the document.
   void InvalidateStyle();
-  bool HasViewportDependentMediaQueries();
+  bool MayHaveViewportDependentMediaQueries();
   bool HasViewportDependentPropertyRegistrations();
 
   class InApplyAnimationUpdateScope {
@@ -495,7 +523,7 @@ class CORE_EXPORT StyleEngine final : public GarbageCollected<StyleEngine>,
                              PendingSheetType type,
                              RenderBlockingBehavior render_blocking_behavior);
 
-  void CollectFeaturesTo(RuleFeatureSet& features);
+  void CollectFeaturesTo(RuleFeatureSet& features) const;
 
   void EnsureUAStyleForFullscreen(const Element&);
   void EnsureUAStyleForElement(const Element&);
@@ -549,7 +577,6 @@ class CORE_EXPORT StyleEngine final : public GarbageCollected<StyleEngine>,
       InvalidationScope,
       bool invalidate_slotted,
       bool invalidate_part);
-  void ScheduleCustomElementInvalidations(HashSet<AtomicString> tag_names);
   void ScheduleInvalidationsForHasPseudoAffectedByInsertionOrRemoval(
       ContainerNode* parent,
       Node* node_before_change,
@@ -693,7 +720,6 @@ class CORE_EXPORT StyleEngine final : public GarbageCollected<StyleEngine>,
   StyleRulePositionTry* GetPositionTryRule(const ScopedCSSName&);
   void RecalcStyle();
 
-  void ClearEnsuredDescendantStyles(Element& element);
   void RebuildLayoutTree(Element* size_container = nullptr);
   bool InRebuildLayoutTree() const { return in_layout_tree_rebuild_; }
   bool InDOMRemoval() const { return in_dom_removal_; }
@@ -861,11 +887,6 @@ class CORE_EXPORT StyleEngine final : public GarbageCollected<StyleEngine>,
   void CollectUserStyleFeaturesTo(RuleFeatureSet&) const;
   void CollectScopedStyleFeaturesTo(RuleFeatureSet&) const;
 
-  CSSStyleSheet* ParseSheet(Element&,
-                            const String& text,
-                            TextPosition start_position,
-                            RenderBlockingBehavior render_blocking_behavior);
-
   const StyleSheetCollection& GetDocumentStyleSheetCollection() const {
     DCHECK(document_style_sheet_collection_);
     return *document_style_sheet_collection_;
@@ -878,8 +899,7 @@ class CORE_EXPORT StyleEngine final : public GarbageCollected<StyleEngine>,
 
   void PrepareUpdateActiveStyleSheetsInShadow(
       TreeScope*,
-      UnorderedTreeScopeSet& tree_scopes_removed,
-      const MediaQueryEvaluator& medium);
+      UnorderedTreeScopeSet& tree_scopes_removed);
 
   bool ShouldSkipInvalidationFor(const Element&) const;
   bool IsSubtreeAndSiblingsStyleDirty(const Element&) const;
@@ -1000,6 +1020,9 @@ class CORE_EXPORT StyleEngine final : public GarbageCollected<StyleEngine>,
   // See EvaluateFunctionalMediaQuery
   void InvalidateFunctionalMediaDependentStylesIfNeeded();
 
+  // See EvaluateFunctionalNavigationQuery
+  void InvalidateFunctionalNavigationDependentStylesIfNeeded();
+
   MixinMap EffectiveMixinsForTreeScope(TreeScope& tree_scope);
 
   Member<Document> document_;
@@ -1048,7 +1071,7 @@ class CORE_EXPORT StyleEngine final : public GarbageCollected<StyleEngine>,
   // the need to call UpdateCounters.
   bool counters_changed_{false};
 
-  bool uses_root_font_relative_units_{false};
+  bool uses_root_relative_units_{false};
   bool uses_glyph_relative_units_{false};
   bool uses_line_height_units_{false};
   // True if we ever resolved style that involved tree-counting functions such
@@ -1079,6 +1102,7 @@ class CORE_EXPORT StyleEngine final : public GarbageCollected<StyleEngine>,
   bool fonts_need_update_{false};
   bool counter_styles_need_update_{false};
   bool position_try_styles_dirty_{false};
+  bool needs_style_update_on_navigation_{false};
 
   // Set to true if we allow marking style dirty from style recalc. Ideally, we
   // should get rid of this, but we keep track of where we allow it with
@@ -1097,6 +1121,11 @@ class CORE_EXPORT StyleEngine final : public GarbageCollected<StyleEngine>,
 
   // True if some data backing env() has changed.
   bool is_env_dirty_{false};
+
+  // Media query result flags from the "media" attribute of author style
+  // sheets. Sticky: only ever grows for the lifetime of the StyleEngine, so
+  // that setting it never requires rebuilding the CSSGlobalRuleSet.
+  MediaQueryResultFlags media_query_result_flags_;
 
   // Flags collected from all calls to EvaluateFunctionalMediaQuery.
   MediaQueryResultFlags functional_media_query_result_flags_;
@@ -1210,11 +1239,12 @@ class CORE_EXPORT StyleEngine final : public GarbageCollected<StyleEngine>,
   bool force_dark_mode_enabled_{false};
 
   friend class NodeTest;
-  friend class StyleEngineTest;
-  friend class WhitespaceAttacherTest;
   friend class StyleCascadeTest;
+  friend class StyleEngineTest;
   friend class StyleImageCacheTest;
+  friend class WhitespaceAttacherTest;
   FRIEND_TEST_ALL_PREFIXES(BlockChildIteratorTest, DeleteNodeWhileIteration);
+  FRIEND_TEST_ALL_PREFIXES(SkeletonLoaderTest, PseudoElementRecalcRoot);
 
   HeapHashSet<Member<TextTrack>> text_tracks_;
   Member<Element> vtt_originating_element_;
@@ -1269,6 +1299,9 @@ class CORE_EXPORT StyleEngine final : public GarbageCollected<StyleEngine>,
   HeapHashMap<Member<const MediaQuerySet>, bool>
       functional_media_query_results_;
 
+  HeapHashMap<Member<const NavigationTestExpression>, bool>
+      functional_navigation_query_results_;
+
   // Caches for random base values which are used for generating random values
   // for the CSS random() function. For element-shared values, that are not
   // dependent on Element, we use `element_shared_random_base_value_cache_`. For
@@ -1285,6 +1318,9 @@ class CORE_EXPORT StyleEngine final : public GarbageCollected<StyleEngine>,
   RandomValueCache random_base_value_cache_;
   using ElementSharedRandomValueCache = HashMap<AtomicString, double>;
   ElementSharedRandomValueCache element_shared_random_base_value_cache_;
+
+  // URLPattern entries defined by @location rules.
+  HeapHashMap<AtomicString, Member<URLPattern>> navigation_locations_;
 };
 
 void PossiblyScheduleNthPseudoInvalidations(Node& node);

@@ -16,6 +16,7 @@
 #include "base/containers/flat_map.h"
 #include "base/containers/flat_set.h"
 #include "base/containers/span.h"
+#include "base/containers/span_reader.h"
 #include "base/environment.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
@@ -33,6 +34,7 @@
 #include "base/task/thread_pool.h"
 #include "base/time/time.h"
 #include "ui/base/x/x11_util.h"
+#include "ui/gfx/skia_span_util.h"
 #include "ui/gfx/x/atom_cache.h"
 #include "ui/gfx/x/connection.h"
 #include "ui/gfx/x/xproto.h"
@@ -151,12 +153,22 @@ base::FilePath CanonicalizePath(base::FilePath path) {
   return path;
 }
 
+bool IsValidCursorThemeName(const std::string& theme) {
+  base::FilePath theme_path(theme);
+  return !theme.empty() && theme != "." && !theme_path.IsAbsolute() &&
+         !theme_path.ReferencesParent() && theme_path.BaseName() == theme_path;
+}
+
 scoped_refptr<base::RefCountedMemory> ReadCursorFromThemeImpl(
     const std::string& theme,
     const std::string& cursor_name,
     base::flat_set<ThemeAndCursorName>* parent_theme_and_cursor_names,
     base::flat_map<ThemeAndCursorName, scoped_refptr<base::RefCountedMemory>>*
         cache) {
+  if (!IsValidCursorThemeName(theme)) {
+    return nullptr;
+  }
+
   constexpr const char kCursorDir[] = "cursors";
   constexpr const char kThemeInfo[] = "index.theme";
 
@@ -266,6 +278,10 @@ std::vector<XCursorLoader::Image> ReadCursorImages(
 
 }  // namespace
 
+bool IsValidCursorThemeNameForTesting(const std::string& theme) {
+  return IsValidCursorThemeName(theme);
+}
+
 XCursorLoader::XCursorLoader(x11::Connection* connection,
                              base::RepeatingClosure on_cursor_config_changed)
     : connection_(connection),
@@ -279,9 +295,11 @@ XCursorLoader::XCursorLoader(x11::Connection* connection,
   cursor_font_ = connection_->GenerateId<x11::Font>();
   connection_->OpenFont({cursor_font_, "cursor"});
 
-  // Fetch the initial property value which will call `OnPropertyChanged` and
-  // initialize `rm_xcursor_theme_`, `rm_xcursor_size_`, and `rm_xft_dpi_`.
-  rm_cache_.Get(x11::Atom::RESOURCE_MANAGER);
+  // Fetch the initial property value and initialize `rm_xcursor_theme_`,
+  // `rm_xcursor_size_`, and `rm_xft_dpi_`. Note that `PropertyCache::Get()`
+  // does not invoke `OnPropertyChanged()`.
+  OnPropertyChanged(x11::Atom::RESOURCE_MANAGER,
+                    rm_cache_.Get(x11::Atom::RESOURCE_MANAGER));
 
   if (auto pf_reply = pf_cookie.Sync())
     pict_format_ = GetRenderARGBFormat(*pf_reply.reply);
@@ -347,9 +365,6 @@ scoped_refptr<X11Cursor> XCursorLoader::CreateCursor(
       {32, pixmap, connection_->default_root(), width, height});
   connection_->CreateGC({gc, pixmap});
 
-  size_t size = bitmap.computeByteSize();
-  std::vector<uint8_t> vec(size);
-  UNSAFE_TODO(memcpy(vec.data(), bitmap.getPixels(), size));
   auto* connection = x11::Connection::Get();
   x11::PutImageRequest put_image_request{
       .format = x11::ImageFormat::ZPixmap,
@@ -358,7 +373,8 @@ scoped_refptr<X11Cursor> XCursorLoader::CreateCursor(
       .width = width,
       .height = height,
       .depth = 32,
-      .data = base::MakeRefCounted<base::RefCountedBytes>(std::move(vec)),
+      .data = base::MakeRefCounted<base::RefCountedBytes>(
+          gfx::SkPixmapToSpan(bitmap.pixmap())),
   };
   connection->PutImage(put_image_request);
 
@@ -589,31 +605,7 @@ std::vector<XCursorLoader::Image> ParseCursorFile(
   constexpr uint32_t kMagic = 0x72756358u;
   constexpr uint32_t kImageType = 0xfffd0002u;
 
-  size_t offset = 0u;
-
-  // Reads bytes from `file` and writes them into the `dest` buffer.
-  auto ReadBytes = [&](base::span<uint8_t> dest) {
-    CHECK_EQ(dest.size() % 4u, 0u);
-    auto src = base::span<const uint8_t>(*file);
-    if (auto end = base::CheckAdd(offset, dest.size());
-        !end.IsValid() || end.ValueOrDie() > src.size()) {
-      return false;
-    }
-    dest.copy_from(src.subspan(offset, dest.size()));
-    offset += dest.size();
-    return true;
-  };
-  // Reads a single 32-bit value from `file` and writes it to `dest`.
-  auto ReadU32 = [&](uint32_t& dest) {
-    auto src = base::span(*file);
-    if (auto end = base::CheckAdd(offset, sizeof(dest));
-        !end.IsValid() || end.ValueOrDie() > src.size()) {
-      return false;
-    }
-    dest = base::U32FromLittleEndian(src.subspan(offset).first<sizeof(dest)>());
-    offset += sizeof(dest);
-    return true;
-  };
+  base::SpanReader<const uint8_t> reader{base::span<const uint8_t>(*file)};
 
   struct FileHeader {
     uint32_t magic;
@@ -621,10 +613,10 @@ std::vector<XCursorLoader::Image> ParseCursorFile(
     uint32_t version;
     uint32_t ntoc;
   } header;
-  if (!ReadU32(header.magic) ||    //
-      !ReadU32(header.header) ||   //
-      !ReadU32(header.version) ||  //
-      !ReadU32(header.ntoc) ||     //
+  if (!reader.ReadU32LittleEndian(header.magic) ||    //
+      !reader.ReadU32LittleEndian(header.header) ||   //
+      !reader.ReadU32LittleEndian(header.version) ||  //
+      !reader.ReadU32LittleEndian(header.ntoc) ||     //
       header.magic != kMagic) {
     return {};
   }
@@ -637,9 +629,9 @@ std::vector<XCursorLoader::Image> ParseCursorFile(
   std::vector<TableOfContentsEntry> toc;
   for (uint32_t i = 0u; i < header.ntoc; i++) {
     TableOfContentsEntry entry;
-    if (!ReadU32(entry.type) ||     //
-        !ReadU32(entry.subtype) ||  //
-        !ReadU32(entry.position)) {
+    if (!reader.ReadU32LittleEndian(entry.type) ||     //
+        !reader.ReadU32LittleEndian(entry.subtype) ||  //
+        !reader.ReadU32LittleEndian(entry.position)) {
       return {};
     }
     toc.push_back(entry);
@@ -660,17 +652,25 @@ std::vector<XCursorLoader::Image> ParseCursorFile(
   for (const auto& entry : toc) {
     if (entry.type != kImageType || entry.subtype != best_size)
       continue;
-    offset = entry.position;
+    base::span<const uint8_t> file_bytes{*file};
+    // Constructing a subspan from the file's contents will CHECK if the
+    // starting position is beyond the file's extent, but we want to tolerate
+    // malformed cursor files without crashing the browser.
+    if (entry.position > file_bytes.size()) {
+      return {};
+    }
+    base::SpanReader<const uint8_t> chunk_reader{
+        file_bytes.subspan(entry.position)};
     struct ChunkHeader {
       uint32_t header;
       uint32_t type;
       uint32_t subtype;
       uint32_t version;
     } chunk_header;
-    if (!ReadU32(chunk_header.header) ||   //
-        !ReadU32(chunk_header.type) ||     //
-        !ReadU32(chunk_header.subtype) ||  //
-        !ReadU32(chunk_header.version) ||  //
+    if (!chunk_reader.ReadU32LittleEndian(chunk_header.header) ||   //
+        !chunk_reader.ReadU32LittleEndian(chunk_header.type) ||     //
+        !chunk_reader.ReadU32LittleEndian(chunk_header.subtype) ||  //
+        !chunk_reader.ReadU32LittleEndian(chunk_header.version) ||  //
         chunk_header.type != entry.type ||
         chunk_header.subtype != entry.subtype) {
       return {};
@@ -683,11 +683,11 @@ std::vector<XCursorLoader::Image> ParseCursorFile(
       uint32_t yhot;
       uint32_t delay;
     } image;
-    if (!ReadU32(image.width) ||   //
-        !ReadU32(image.height) ||  //
-        !ReadU32(image.xhot) ||    //
-        !ReadU32(image.yhot) ||    //
-        !ReadU32(image.delay)) {
+    if (!chunk_reader.ReadU32LittleEndian(image.width) ||   //
+        !chunk_reader.ReadU32LittleEndian(image.height) ||  //
+        !chunk_reader.ReadU32LittleEndian(image.xhot) ||    //
+        !chunk_reader.ReadU32LittleEndian(image.yhot) ||    //
+        !chunk_reader.ReadU32LittleEndian(image.delay)) {
       return {};
     }
     // Ignore unreasonably-sized cursors to prevent allocating too much
@@ -697,15 +697,8 @@ std::vector<XCursorLoader::Image> ParseCursorFile(
     }
     SkBitmap bitmap;
     bitmap.allocN32Pixels(image.width, image.height);
-    base::span<uint8_t> pixels =
-        // SAFETY: SkBitmap promises that getPixels() returns a pointer to
-        // at least as many bytes as computeByteSize().
-        //
-        // TODO(crbug.com/40284755): SkBitmap should provide a span-based
-        // API.
-        UNSAFE_TODO(base::span(static_cast<uint8_t*>(bitmap.getPixels()),
-                               bitmap.computeByteSize()));
-    if (!ReadBytes(pixels)) {
+    base::span<uint8_t> pixels = gfx::SkPixmapToWritableSpan(bitmap.pixmap());
+    if (!chunk_reader.ReadCopy(pixels)) {
       return {};
     }
     images.push_back(XCursorLoader::Image{bitmap,

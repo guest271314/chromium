@@ -14,6 +14,8 @@
 #include "base/metrics/histogram_macros.h"
 #include "base/trace_event/trace_event.h"
 #include "base/types/pass_key.h"
+#include "build/build_config.h"
+#include "build/buildflag.h"
 #include "device/vr/buildflags/buildflags.h"
 #include "device/vr/public/mojom/hit_test_subscription_id.h"
 #include "services/metrics/public/cpp/ukm_builders.h"
@@ -50,6 +52,7 @@
 #include "third_party/blink/renderer/modules/xr/xr_image_tracking_result.h"
 #include "third_party/blink/renderer/modules/xr/xr_input_source_event.h"
 #include "third_party/blink/renderer/modules/xr/xr_input_sources_change_event.h"
+#include "third_party/blink/renderer/modules/xr/xr_layer.h"
 #include "third_party/blink/renderer/modules/xr/xr_light_probe.h"
 #include "third_party/blink/renderer/modules/xr/xr_mesh_manager.h"
 #include "third_party/blink/renderer/modules/xr/xr_plane_manager.h"
@@ -92,6 +95,10 @@ const char kBaseLayerAndLayers[] =
 
 const char kMultiLayersNotEnabled[] =
     "This session does not support multiple layers.";
+
+const char kNonProjectionLayerNotEnabled[] =
+    "Non-projection layers are not allowed when layers feature is not "
+    "enabled.";
 
 const char kDuplicateLayer[] = "All layers in render state must be unique.";
 
@@ -485,6 +492,20 @@ const FrozenArray<IDLString>& XRSession::enabledFeatures() const {
   return *enabled_features_.Get();
 }
 
+bool XRSession::isSystemKeyboardSupported() const {
+#if BUILDFLAG(ENABLE_VR) && BUILDFLAG(IS_ANDROID)
+  // Cardboard and ARCore technically support the keyboard as-is, but to avoid
+  // exposing it on Quest/OpenXR before the implementation is ready, we guard
+  // it with this flag for all Android for now. This results in false-negatives
+  // for non-OpenXR runtimes, which matches the existing behavior where keyboard
+  // support was always disabled.
+  return base::FeatureList::IsEnabled(
+      device::features::kOpenXrAndroidSystemKeyboard);
+#else
+  return false;
+#endif
+}
+
 XRAnchorSet* XRSession::TrackedAnchors() const {
   DVLOG(3) << __func__;
 
@@ -544,22 +565,6 @@ void XRSession::updateRenderState(XRRenderStateInit* init,
       return;
     }
 
-    // Validate that the session was created with the layers feature enabled
-    // when the user wishes to render multiple layers at once.
-    if (init->layers()->size() > 1 &&
-        !IsFeatureEnabled(device::mojom::XRSessionFeature::LAYERS)) {
-      exception_state.ThrowDOMException(DOMExceptionCode::kNotSupportedError,
-                                        kMultiLayersNotEnabled);
-      return;
-    }
-
-    // Validate that the number of layers is allowed.
-    if (init->layers()->size() > maxRenderLayers()) {
-      exception_state.ThrowDOMException(DOMExceptionCode::kNotSupportedError,
-                                        kTooManyLayers);
-      return;
-    }
-
     HeapHashSet<Member<const XRLayer>> unique_layers;
     for (const XRLayer* layer : *init->layers()) {
       // Check for duplicate layers.
@@ -573,6 +578,32 @@ void XRSession::updateRenderState(XRRenderStateInit* init,
         exception_state.ThrowTypeError(kIncompatibleLayer);
         return;
       }
+    }
+
+    // Validate that the session was created with the layers feature enabled
+    // when the user wishes to render multiple layers at once or non-projection
+    // layers.
+    if (!IsFeatureEnabled(device::mojom::XRSessionFeature::LAYERS)) {
+      if (init->layers()->size() > 1) {
+        exception_state.ThrowDOMException(DOMExceptionCode::kNotSupportedError,
+                                          kMultiLayersNotEnabled);
+        return;
+      }
+      for (const XRLayer* layer : *init->layers()) {
+        if (layer->LayerType() != XRLayerType::kProjectionLayer) {
+          exception_state.ThrowDOMException(
+              DOMExceptionCode::kNotSupportedError,
+              kNonProjectionLayerNotEnabled);
+          return;
+        }
+      }
+    }
+
+    // Validate that the number of layers is allowed.
+    if (init->layers()->size() > maxRenderLayers()) {
+      exception_state.ThrowDOMException(DOMExceptionCode::kNotSupportedError,
+                                        kTooManyLayers);
+      return;
     }
   }
 
@@ -983,7 +1014,7 @@ void XRSession::ExecuteVideoFrameCallbacks(double timestamp) {
     std::move(callback).Run(timestamp);
 }
 
-int XRSession::requestAnimationFrame(V8XRFrameRequestCallback* callback) {
+uint32_t XRSession::requestAnimationFrame(V8XRFrameRequestCallback* callback) {
   DVLOG(3) << __func__;
 
   TRACE_EVENT0("gpu", "requestAnimationFrame");
@@ -991,12 +1022,12 @@ int XRSession::requestAnimationFrame(V8XRFrameRequestCallback* callback) {
   if (ended_)
     return 0;
 
-  int id = callback_collection_->RegisterCallback(callback);
+  uint32_t id = callback_collection_->RegisterCallback(callback);
   MaybeRequestFrame();
   return id;
 }
 
-void XRSession::cancelAnimationFrame(int id) {
+void XRSession::cancelAnimationFrame(uint32_t id) {
   callback_collection_->CancelCallback(id);
 }
 
@@ -2248,7 +2279,8 @@ void XRSession::OnFrame(double timestamp,
     auto* transport_delegate = render_state_->GetTransportDelegate();
     CHECK(transport_delegate);
 
-    if (shared_images.empty() && layers_enabled_) {
+    if (shared_images.empty() &&
+        (layers_enabled_ || !render_state_->layers().empty())) {
       DVLOG(2) << __func__ << ": there is no shared images.";
       xr_->frameProvider()->SubmitFrame(transport_delegate);
       return;
@@ -2256,7 +2288,7 @@ void XRSession::OnFrame(double timestamp,
 
     if (should_update_layers_backend_) {
       should_update_layers_backend_ = false;
-      if (layers_enabled_) {
+      if (LayerManager()) {
         // This means that the page has updated the layers since it last
         // received a new frame, but we haven't updated the backend yet, so the
         // page won't be able to use those layers just yet as they expect. For
@@ -2266,7 +2298,6 @@ void XRSession::OnFrame(double timestamp,
         // allow the layer sequence to be updated by the backend compositor
         // without dropping the current frame.
         render_state_->UpdateLayersBackend(LayerManager());
-        render_state_->OnLayersUpdated();
 
         // Submit this animation frame without changes and request a new one
         // immediately.
@@ -2276,10 +2307,11 @@ void XRSession::OnFrame(double timestamp,
       }
     }
 
-    // If the 'layers' feature is disabled, the shared image lacks an associated
-    // layer ID. The shared image must then be bound to the first layer.
+    // If baseLayer is used or LayerManager is not available, bind the shared
+    // image with the first layer's ID.
     layer_shared_image_manager_.SetSharedImages(
-        layers_enabled_ ? nullptr : render_state_->GetFirstLayer(),
+        LayerManager() ? render_state_->baseLayer()
+                       : render_state_->GetFirstLayer(),
         std::move(shared_images));
 
     // Dispatch the "redraw" event for layers that should be updated.
@@ -2327,16 +2359,28 @@ void XRSession::OnFrame(double timestamp,
     // submit its drawing data to be cached by the frame provider.
     render_state_->OnFrameEnd();
 
-    Vector<gpu::SyncToken> camera_sync_tokens;
+    std::vector<gpu::SyncToken> camera_sync_tokens;
     camera_sync_tokens.reserve(graphics_bindings_.size());
 
     for (auto& binding : graphics_bindings_) {
-      camera_sync_tokens.push_back(binding->OnFrameEnd());
+      gpu::SyncToken camera_sync_token = binding->OnFrameEnd();
+      if (camera_sync_token.HasData()) {
+        transport_delegate->VerifySyncToken(camera_sync_token);
+        camera_sync_tokens.push_back(camera_sync_token);
+      }
     }
 
-    // Submit frame with cached layers data.
-    xr_->frameProvider()->SubmitFrame(transport_delegate,
-                                      std::move(camera_sync_tokens));
+    auto shared_image =
+        LayerSharedImageManager().CameraSharedImage().shared_image;
+    if (shared_image) {
+      gpu::SharedImageExportResult camera_export_result =
+          shared_image->EndImport(std::move(camera_sync_tokens));
+      // Submit frame with cached layers data.
+      xr_->frameProvider()->SubmitFrame(transport_delegate,
+                                        std::move(camera_export_result));
+    } else {
+      xr_->frameProvider()->SubmitFrame(transport_delegate);
+    }
 
     // Ensure the XRFrame cannot be used outside the callbacks.
     animation_frame_->Deactivate();

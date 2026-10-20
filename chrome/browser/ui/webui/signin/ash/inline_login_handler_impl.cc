@@ -9,9 +9,9 @@
 #include <optional>
 #include <string>
 
+#include "ash/constants/ash_login_pref_names.h"
 #include "ash/constants/ash_pref_names.h"
 #include "ash/style/dark_light_mode_controller_impl.h"
-#include "ash/system/session/guest_session_confirmation_dialog.h"
 #include "base/base64.h"
 #include "base/check.h"
 #include "base/check_op.h"
@@ -27,23 +27,23 @@
 #include "chrome/browser/profiles/profiles_state.h"
 #include "chrome/browser/signin/chrome_device_id_helper.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
+#include "chrome/browser/ui/ash/account_manager/account_manager_dialog_coordinator.h"
+#include "chrome/browser/ui/ash/account_manager/account_manager_dialog_coordinator_factory.h"
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/webui/ash/edu_coexistence/edu_coexistence_state_tracker.h"
 #include "chrome/browser/ui/webui/signin/ash/signin_helper.h"
 #include "chrome/browser/ui/webui/signin/inline_login_handler.h"
-#include "chrome/common/pref_names.h"
 #include "chromeos/ash/components/account_manager/account_manager_factory.h"
 #include "chromeos/version/version_loader.h"
 #include "components/account_manager_core/account.h"
 #include "components/account_manager_core/chromeos/account_manager.h"
-#include "components/account_manager_core/chromeos/account_manager_mojo_service.h"
 #include "components/prefs/pref_registry_simple.h"
 #include "components/prefs/pref_service.h"
+#include "components/session_manager/core/session.h"
+#include "components/session_manager/core/session_manager.h"
 #include "components/signin/public/identity_manager/account_info.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "components/user_manager/known_user.h"
-#include "components/user_manager/user.h"
-#include "components/user_manager/user_manager.h"
 #include "crypto/sha2.h"
 #include "google_apis/gaia/gaia_auth_util.h"
 #include "google_apis/gaia/gaia_id.h"
@@ -99,7 +99,7 @@ bool IsPrimaryAccountBeingReauthenticated(
 
 std::string GetInlineLoginFlowName(Profile* profile,
                                    const std::optional<std::string>& email) {
-  DCHECK(profile);
+  CHECK(profile, base::NotFatalUntil::M162);
   if (profile->IsChild() &&
       !IsPrimaryAccountBeingReauthenticated(profile, email)) {
     // Child user is adding / reauthenticating a secondary account.
@@ -118,8 +118,9 @@ const SkBitmap& GetDefaultAccountIcon() {
 
 base::DictValue GaiaAccountToValue(const ::account_manager::Account& account,
                                    const AccountInfo& account_info) {
-  DCHECK_EQ(account.key.account_type(), account_manager::AccountType::kGaia);
-  DCHECK(!account_info.IsEmpty());
+  CHECK_EQ(account.key.account_type(), account_manager::AccountType::kGaia,
+           base::NotFatalUntil::M162);
+  CHECK(!account_info.IsEmpty(), base::NotFatalUntil::M162);
 
   base::DictValue dict;
   dict.Set(kAccountKeyId, account.key.id());
@@ -135,9 +136,9 @@ base::DictValue GaiaAccountToValue(const ::account_manager::Account& account,
 
 ::account_manager::Account ValueToGaiaAccount(const base::DictValue& dict) {
   const std::string* id = dict.FindString(kAccountKeyId);
-  DCHECK(id);
+  CHECK(id, base::NotFatalUntil::M162);
   const std::string* email = dict.FindString(kAccountKeyEmail);
-  DCHECK(email);
+  CHECK(email, base::NotFatalUntil::M162);
   return ::account_manager::Account{
       ::account_manager::AccountKey{*id, account_manager::AccountType::kGaia},
       *email};
@@ -165,7 +166,8 @@ class EduCoexistenceChildSigninHelper : public SigninHelper {
  public:
   EduCoexistenceChildSigninHelper(
       account_manager::AccountManager* account_manager,
-      crosapi::AccountManagerMojoService* account_manager_mojo_service,
+      SigninHelper::AccountUpsertionFinishedCallback
+          account_upsertion_finished_callback,
       scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
       std::unique_ptr<SigninHelper::ArcHelper> arc_helper,
       const GaiaId& gaia_id,
@@ -175,7 +177,7 @@ class EduCoexistenceChildSigninHelper : public SigninHelper {
       PrefService* pref_service,
       const content::WebUI* web_ui)
       : SigninHelper(account_manager,
-                     account_manager_mojo_service,
+                     std::move(account_upsertion_finished_callback),
                      // EduCoexistenceChildSigninHelper will not be closing the
                      // dialog. Therefore, passing a void callback.
                      /*close_dialog_closure=*/base::DoNothing(),
@@ -217,8 +219,8 @@ class EduCoexistenceChildSigninHelper : public SigninHelper {
     if (success) {
       // The EDU account has been added/re-authenticated. Mark migration to
       // ARC++ as completed.
-      pref_service_->SetBoolean(::prefs::kEduCoexistenceArcMigrationCompleted,
-                                true);
+      pref_service_->SetBoolean(
+          ash::prefs::kEduCoexistenceArcMigrationCompleted, true);
 
       UpsertAccount(refresh_token);
     } else {
@@ -304,7 +306,7 @@ void InlineLoginHandlerImpl::SetExtraInitParams(base::DictValue& params) {
   params.Set("clientId", gaia_urls->oauth2_chrome_client_id());
 
   const GURL& url = gaia_urls->embedded_setup_chromeos_url();
-  params.Set("gaiaPath", url.GetPath().substr(1));
+  params.Set("gaiaPath", url.path().substr(1));
 
   std::optional<std::string> version = chromeos::version_loader::GetVersion(
       chromeos::version_loader::VERSION_SHORT);
@@ -372,9 +374,10 @@ void InlineLoginHandlerImpl::CreateSigninHelper(
   auto* account_manager = AccountManagerFactory::Get()->GetAccountManager(
       profile->GetPath().value());
 
-  crosapi::AccountManagerMojoService* account_manager_mojo_service =
-      AccountManagerFactory::Get()->GetAccountManagerMojoService(
-          profile->GetPath().value());
+  SigninHelper::AccountUpsertionFinishedCallback
+      account_upsertion_finished_callback =
+          AccountManagerDialogCoordinatorFactory::GetForProfile(profile)
+              ->CreateInlineLoginAccountUpsertionFinishedCallback();
 
   signin::IdentityManager* identity_manager =
       IdentityManagerFactory::GetForProfile(profile);
@@ -387,7 +390,7 @@ void InlineLoginHandlerImpl::CreateSigninHelper(
   if (profile->IsChild() &&
       !gaia::AreEmailsSame(primary_account_email, params.email)) {
     new EduCoexistenceChildSigninHelper(
-        account_manager, account_manager_mojo_service,
+        account_manager, std::move(account_upsertion_finished_callback),
         profile->GetURLLoaderFactory(), std::move(arc_helper), params.gaia_id,
         params.email, params.auth_code,
         GetAccountDeviceId(GetSigninScopedDeviceIdForProfile(profile),
@@ -399,9 +402,9 @@ void InlineLoginHandlerImpl::CreateSigninHelper(
 
   // SigninHelper deletes itself after its work is done.
   new SigninHelper(
-      account_manager, account_manager_mojo_service, close_dialog_closure_,
-      show_signin_error_, profile->GetURLLoaderFactory(), std::move(arc_helper),
-      params.gaia_id, params.email, params.auth_code,
+      account_manager, std::move(account_upsertion_finished_callback),
+      close_dialog_closure_, show_signin_error_, profile->GetURLLoaderFactory(),
+      std::move(arc_helper), params.gaia_id, params.email, params.auth_code,
       GetAccountDeviceId(GetSigninScopedDeviceIdForProfile(profile),
                          primary_account_gaia_id, params.gaia_id));
 }
@@ -526,7 +529,7 @@ void InlineLoginHandlerImpl::GetDeviceId(const base::ListValue& args) {
 
   user_manager::KnownUser known_user{g_browser_process->local_state()};
   const AccountId& device_account_id =
-      user_manager::UserManager::Get()->GetPrimaryUser()->GetAccountId();
+      session_manager::SessionManager::Get()->GetPrimarySession()->account_id();
   ResolveJavascriptCallback(
       callback_id,
       ::ash::GetDeviceId(known_user, device_account_id, initial_email_));

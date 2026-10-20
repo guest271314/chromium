@@ -4,6 +4,7 @@
 
 #include "extensions/renderer/api/core_extensions_renderer_api_provider.h"
 
+#include "base/containers/fixed_flat_map.h"
 #include "components/guest_view/buildflags/buildflags.h"
 #include "extensions/buildflags/buildflags.h"
 #include "extensions/grit/extensions_renderer_generated_resources.h"
@@ -14,6 +15,7 @@
 #include "extensions/renderer/api/file_system_natives.h"
 #include "extensions/renderer/api/i18n_hooks_delegate.h"
 #include "extensions/renderer/api/messaging/messaging_bindings.h"
+#include "extensions/renderer/api/public_suffix_hooks_delegate.h"
 #include "extensions/renderer/api/runtime_hooks_delegate.h"
 #include "extensions/renderer/api/web_request_hooks.h"
 #include "extensions/renderer/api/web_request_natives.h"
@@ -34,6 +36,7 @@
 #include "extensions/renderer/service_worker_natives.h"
 #include "extensions/renderer/set_icon_natives.h"
 #include "extensions/renderer/storage_area.h"
+#include "extensions/renderer/test_api_standardized_behavior_native_handler.h"
 #include "extensions/renderer/test_features_native_handler.h"
 #include "extensions/renderer/user_gestures_native_handler.h"
 #include "extensions/renderer/utils_native_handler.h"
@@ -69,6 +72,9 @@ void CoreExtensionsRendererAPIProvider::RegisterNativeHandlers(
   module_system->RegisterNativeHandler(
       "schema_registry",
       v8_schema_registry->AsNativeHandler(context->isolate()));
+  module_system->RegisterNativeHandler(
+      "test_api_standardized_behavior",
+      std::make_unique<TestApiStandardizedBehaviorNativeHandler>(context));
   module_system->RegisterNativeHandler(
       "test_features", std::make_unique<TestFeaturesNativeHandler>(context));
   module_system->RegisterNativeHandler(
@@ -121,7 +127,8 @@ void CoreExtensionsRendererAPIProvider::RegisterNativeHandlers(
   module_system->RegisterNativeHandler(
       "runtime", std::make_unique<RuntimeCustomBindings>(context));
   module_system->RegisterNativeHandler(
-      "web_request_natives", std::make_unique<WebRequestNatives>(context));
+      "web_request_natives",
+      std::make_unique<WebRequestNatives>(context, bindings_system));
 
 #if BUILDFLAG(ENABLE_EXTENSIONS)
   module_system->RegisterNativeHandler(
@@ -149,6 +156,8 @@ void CoreExtensionsRendererAPIProvider::AddBindingsSystemHooks(
   bindings->RegisterHooksDelegate("dom", std::make_unique<DOMHooksDelegate>());
   bindings->RegisterHooksDelegate("i18n",
                                   std::make_unique<I18nHooksDelegate>());
+  bindings->RegisterHooksDelegate(
+      "publicSuffix", std::make_unique<PublicSuffixHooksDelegate>());
   bindings->RegisterHooksDelegate("runtime",
                                   std::make_unique<RuntimeHooksDelegate>(
                                       bindings_system->messaging_service()));
@@ -158,10 +167,8 @@ void CoreExtensionsRendererAPIProvider::AddBindingsSystemHooks(
 
 void CoreExtensionsRendererAPIProvider::PopulateSourceMap(
     ResourceBundleSourceMap* source_map) const {
-  static constexpr struct {
-    const char* name = nullptr;
-    int id = 0;
-  } js_resources[] = {
+  static constexpr auto kSources = base::MakeFixedFlatMap<std::string_view,
+                                                          int>({
 #if BUILDFLAG(IS_CHROMEOS)
       {"appView",
        IDR_EXTENSIONS_RENDERER_GENERATED_GUEST_VIEW_APP_VIEW_APP_VIEW_JS},
@@ -215,8 +222,6 @@ void CoreExtensionsRendererAPIProvider::PopulateSourceMap(
       {"uncaught_exception_handler",
        IDR_EXTENSIONS_RENDERER_GENERATED_UNCAUGHT_EXCEPTION_HANDLER_JS},
       {"utils", IDR_EXTENSIONS_RENDERER_GENERATED_UTILS_JS},
-      {"webRequest",
-       IDR_EXTENSIONS_RENDERER_GENERATED_WEB_REQUEST_CUSTOM_BINDINGS_JS},
       {"webRequestEvent",
        IDR_EXTENSIONS_RENDERER_GENERATED_WEB_REQUEST_EVENT_JS},
 
@@ -241,8 +246,6 @@ void CoreExtensionsRendererAPIProvider::PopulateSourceMap(
        IDR_EXTENSIONS_RENDERER_GENERATED_GUEST_VIEW_WEB_VIEW_WEB_VIEW_CONSTANTS_JS},
       {"webViewEvents",
        IDR_EXTENSIONS_RENDERER_GENERATED_GUEST_VIEW_WEB_VIEW_WEB_VIEW_EVENTS_JS},
-      {"webViewInternal",
-       IDR_EXTENSIONS_RENDERER_GENERATED_GUEST_VIEW_WEB_VIEW_WEB_VIEW_INTERNAL_JS},
 #endif
 
       {"keep_alive", IDR_EXTENSIONS_RENDERER_GENERATED_KEEP_ALIVE_JS},
@@ -298,11 +301,9 @@ void CoreExtensionsRendererAPIProvider::PopulateSourceMap(
       // Platform app sources that are not API-specific..
       {"platformApp", IDR_EXTENSIONS_RENDERER_GENERATED_PLATFORM_APP_JS},
 #endif
-  };
+  });
 
-  for (const auto& resource : js_resources) {
-    source_map->RegisterSource(resource.name, resource.id);
-  }
+  source_map->RegisterSources(kSources);
 }
 
 void CoreExtensionsRendererAPIProvider::EnableCustomElementAllowlist() const {}

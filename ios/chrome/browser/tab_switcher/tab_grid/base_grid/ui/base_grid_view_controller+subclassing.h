@@ -5,7 +5,7 @@
 #ifndef IOS_CHROME_BROWSER_TAB_SWITCHER_TAB_GRID_BASE_GRID_UI_BASE_GRID_VIEW_CONTROLLER_SUBCLASSING_H_
 #define IOS_CHROME_BROWSER_TAB_SWITCHER_TAB_GRID_BASE_GRID_UI_BASE_GRID_VIEW_CONTROLLER_SUBCLASSING_H_
 
-#import "ios/chrome/browser/menu/ui_bundled/menu_histograms.h"
+#import "ios/chrome/browser/menu/public/menu_histograms.h"
 #import "ios/chrome/browser/tab_switcher/tab_grid/base_grid/ui/base_grid_view_controller.h"
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/grid/grid_cell.h"
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/grid/grid_layout.h"
@@ -20,18 +20,14 @@ typedef UICollectionViewDiffableDataSource<NSString*, GridItemIdentifier*>
     GridDiffableDataSource;
 
 @interface BaseGridViewController (Subclassing) <GridCellDelegate,
-                                                 UICollectionViewDragDelegate,
-                                                 UICollectionViewDelegate>
+                                                 UICollectionViewDelegate,
+                                                 UICollectionViewDragDelegate>
 
 // A collection view of items in a grid format.
 @property(nonatomic, weak, readonly) UICollectionView* collectionView;
 
 // The collection view's data source.
 @property(nonatomic, strong) GridDiffableDataSource* diffableDataSource;
-
-// Tracks if the items are in a batch action, which are the "Close All" or
-// "Undo" the close all.
-@property(nonatomic, readonly) BOOL isClosingAllOrUndoRunning;
 
 // The current mode for the grid.
 @property(nonatomic, assign, readonly) TabGridMode mode;

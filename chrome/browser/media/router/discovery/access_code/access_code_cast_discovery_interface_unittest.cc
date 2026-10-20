@@ -4,6 +4,7 @@
 
 #include "chrome/browser/media/router/discovery/access_code/access_code_cast_discovery_interface.h"
 
+#include "base/byte_size.h"
 #include "base/command_line.h"
 #include "base/strings/stringprintf.h"
 #include "base/test/mock_callback.h"
@@ -23,6 +24,7 @@
 #include "net/http/http_util.h"
 #include "net/traffic_annotation/network_traffic_annotation_test_helper.h"
 #include "services/data_decoder/public/cpp/test_support/in_process_data_decoder.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "services/network/public/cpp/weak_wrapper_shared_url_loader_factory.h"
 #include "services/network/public/mojom/url_response_head.mojom.h"
 #include "services/network/test/test_shared_url_loader_factory.h"
@@ -238,7 +240,7 @@ class AccessCodeCastDiscoveryInterfaceTest : public testing::Test {
         net::HttpUtil::AssembleRawHeaders(headers));
     head->mime_type = "application/json";
     network::URLLoaderCompletionStatus status(error);
-    status.decoded_body_length = response_data.size();
+    status.decoded_body_length = base::ByteSize(response_data.size());
     test_url_loader_factory_.AddResponse(request_url, std::move(head),
                                          response_data, status);
   }

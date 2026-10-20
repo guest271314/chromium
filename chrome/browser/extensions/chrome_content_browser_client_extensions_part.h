@@ -6,6 +6,7 @@
 #define CHROME_BROWSER_EXTENSIONS_CHROME_CONTENT_BROWSER_CLIENT_EXTENSIONS_PART_H_
 
 #include <memory>
+#include <string>
 #include <vector>
 
 #include "base/auto_reset.h"
@@ -21,6 +22,7 @@ static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
 namespace content {
 class RenderFrameHost;
 class RenderProcessHost;
+class SecurityPrincipal;
 class VpnServiceProxy;
 class WebContents;
 }
@@ -64,7 +66,9 @@ class ChromeContentBrowserClientExtensionsPart
       bool is_outermost_main_frame,
       const GURL& candidate_url,
       const GURL& destination_url);
-  static bool ShouldUseProcessPerSite(Profile* profile, const GURL& site_url);
+  static bool ShouldUseProcessPerSite(
+      Profile* profile,
+      const content::SecurityPrincipal& security_principal);
   static bool ShouldUseSpareRenderProcessHost(Profile* profile,
                                               const GURL& site_url);
   static bool DoesSiteRequireDedicatedProcess(
@@ -76,9 +80,10 @@ class ChromeContentBrowserClientExtensionsPart
       const GURL& url);
   static bool CanCommitURL(content::RenderProcessHost* process_host,
                            const GURL& url);
-  static bool IsSuitableHost(Profile* profile,
-                             content::RenderProcessHost* process_host,
-                             const GURL& site_url);
+  static bool IsSuitableHost(
+      Profile* profile,
+      content::RenderProcessHost* process_host,
+      const content::SecurityPrincipal& security_principal);
   static size_t GetProcessCountToIgnoreForLimit();
   static bool ShouldEmbeddedFramesTryToReuseExistingProcess(
       content::RenderFrameHost* outermost_main_frame);
@@ -90,6 +95,12 @@ class ChromeContentBrowserClientExtensionsPart
                                  const GURL& first_party_url,
                                  const GURL& script_url,
                                  content::BrowserContext* context);
+
+  // Returns whether a service worker with `origin` may be given a ClipboardHost
+  // at all. Answers only whether this class of context is ever eligible, not
+  // whether an individual clipboard call is allowed.
+  static bool IsClipboardAllowedForServiceWorker(const url::Origin& origin);
+
   static bool MayDeleteServiceWorkerRegistration(
       const GURL& scope,
       content::BrowserContext* browser_context);

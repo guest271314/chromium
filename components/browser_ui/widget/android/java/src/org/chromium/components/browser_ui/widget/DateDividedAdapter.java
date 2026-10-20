@@ -62,7 +62,7 @@ public abstract class DateDividedAdapter extends Adapter<RecyclerView.ViewHolder
         private boolean mIsDateHeader;
 
         /** See {@link #mPosition}. */
-        private final void setPosition(int position) {
+        private void setPosition(int position) {
             mPosition = position;
         }
 
@@ -199,7 +199,7 @@ public abstract class DateDividedAdapter extends Adapter<RecyclerView.ViewHolder
 
         public DateViewHolder(View view) {
             super(view);
-            if (view instanceof TextView) mTextView = (TextView) view;
+            if (view instanceof TextView textView) mTextView = textView;
         }
 
         /**
@@ -811,7 +811,55 @@ public abstract class DateDividedAdapter extends Adapter<RecyclerView.ViewHolder
         return assumeNonNull(null);
     }
 
-    /** @param item The item to remove from the adapter. */
+    /**
+     * Updates the items in a group (replaces an item, and inserts/removes subsequent items) and
+     * notifies.
+     *
+     * @param position The absolute position of the item being replaced (e.g. cluster head).
+     * @param newHead The new item to replace the old one at {@code position}.
+     * @param removeCount The number of items to remove after {@code position}.
+     * @param insertItems The items to insert after {@code position}.
+     */
+    protected void updateGroupItems(
+            int position,
+            TimedItem newHead,
+            int removeCount,
+            @Nullable List<? extends TimedItem> insertItems) {
+        Pair<ItemGroup, Integer> pair = getGroupAt(position);
+        if (pair == null) return;
+        ItemGroup group = pair.first;
+        int indexInGroup = pair.second;
+
+        group.mItems.set(indexInGroup, newHead);
+
+        int actionStartPosition = position + 1;
+
+        if (removeCount > 0) {
+            int start = indexInGroup + 1;
+            int end = Math.min(start + removeCount, group.mItems.size());
+            if (start < end) {
+                group.mItems.subList(start, end).clear();
+            }
+        }
+
+        if (insertItems != null && !insertItems.isEmpty()) {
+            group.mItems.addAll(indexInGroup + 1, insertItems);
+        }
+
+        setSizeAndGroupPositions();
+
+        notifyItemChanged(position, newHead);
+        if (removeCount > 0) {
+            notifyItemRangeRemoved(actionStartPosition, removeCount);
+        }
+        if (insertItems != null && !insertItems.isEmpty()) {
+            notifyItemRangeInserted(actionStartPosition, insertItems.size());
+        }
+    }
+
+    /**
+     * @param item The item to remove from the adapter.
+     */
     // #getGroupAt() asserts false before returning null, causing findbugs to complain about
     // a redundant nullcheck even though getGroupAt can return null.
     protected void removeItem(TimedItem item) {
@@ -819,10 +867,10 @@ public abstract class DateDividedAdapter extends Adapter<RecyclerView.ViewHolder
         if (groupPair == null) {
             Log.e(
                     TAG,
-                    "Failed to find group for item during remove. Item position: "
-                            + item.getPosition()
-                            + ", total size: "
-                            + mSize);
+                    "Failed to find group for item during remove. Item position: %d, total"
+                            + " size: %d",
+                    item.getPosition(),
+                    mSize);
             return;
         }
 
@@ -865,7 +913,9 @@ public abstract class DateDividedAdapter extends Adapter<RecyclerView.ViewHolder
         return compareCalendar(cal1, cal2);
     }
 
-    /** @return 0 if cal1 and cal2 are in the same day; 1 if cal1 happens before cal2; -1 otherwise. */
+    /**
+     * @return 0 if cal1 and cal2 are in the same day; 1 if cal1 happens before cal2; -1 otherwise.
+     */
     private static int compareCalendar(Calendar cal1, Calendar cal2) {
         boolean sameDay =
                 cal1.get(Calendar.YEAR) == cal2.get(Calendar.YEAR)

@@ -16,7 +16,6 @@
 #include "chrome/browser/ash/policy/core/device_local_account.h"
 #include "chrome/browser/ash/policy/handlers/configuration_policy_handler_ash.h"
 #include "chrome/browser/ash/profiles/profile_helper.h"
-#include "chrome/browser/browser_process.h"
 #include "chrome/browser/policy/profile_policy_connector.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chromeos/ash/components/policy/device_local_account/device_local_account_type.h"
@@ -89,7 +88,8 @@ void CloudExternalDataPolicyObserver::PolicyServiceObserver::OnPolicyUpdated(
     const PolicyNamespace& ns,
     const PolicyMap& previous,
     const PolicyMap& current) {
-  DCHECK(ns == PolicyNamespace(POLICY_DOMAIN_CHROME, std::string()));
+  CHECK(ns == PolicyNamespace(POLICY_DOMAIN_CHROME, std::string()),
+        base::NotFatalUntil::M160);
 
   const PolicyMap::Entry* previous_entry = previous.Get(parent_->policy_);
   const PolicyMap::Entry* current_entry = current.Get(parent_->policy_);
@@ -232,8 +232,9 @@ void CloudExternalDataPolicyObserver::OnDeviceLocalAccountsChanged() {
 
 // static
 AccountId CloudExternalDataPolicyObserver::GetAccountId(
+    PrefService& local_state,
     const std::string& user_id) {
-  user_manager::KnownUser known_user(g_browser_process->local_state());
+  user_manager::KnownUser known_user(&local_state);
   return known_user.GetAccountId(user_id, /*id=*/std::string(),
                                  AccountType::UNKNOWN);
 }
@@ -306,7 +307,7 @@ void CloudExternalDataPolicyObserver::OnExternalDataFetched(
     std::unique_ptr<std::string> data,
     const base::FilePath& file_path) {
   FetchWeakPtrMap::iterator it = fetch_weak_ptrs_.find(user_id);
-  DCHECK(it != fetch_weak_ptrs_.end());
+  CHECK(it != fetch_weak_ptrs_.end(), base::NotFatalUntil::M160);
   fetch_weak_ptrs_.erase(it);
   delegate_->OnExternalDataFetched(policy_, user_id, std::move(data),
                                    file_path);

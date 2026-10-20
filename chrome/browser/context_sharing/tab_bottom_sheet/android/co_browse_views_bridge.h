@@ -6,9 +6,12 @@
 #define CHROME_BROWSER_CONTEXT_SHARING_TAB_BOTTOM_SHEET_ANDROID_CO_BROWSE_VIEWS_BRIDGE_H_
 
 #include "base/android/scoped_java_ref.h"
+#include "base/callback_list.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/raw_ref.h"
+#include "chrome/browser/context_sharing/tab_bottom_sheet/android/co_browse_container_type.h"
 #include "chrome/browser/context_sharing/tab_bottom_sheet/android/tab_bottom_sheet_client_type.h"
+#include "ui/color/color_id.h"
 
 class TabAndroid;
 
@@ -33,9 +36,14 @@ class CoBrowseViewsBridge {
   static base::android::ScopedJavaLocalRef<jobject> GetViewFromCoBrowseViews(
       const base::android::JavaRef<jobject>& java_co_browse_views);
 
-  explicit CoBrowseViewsBridge(
+  CoBrowseViewsBridge(
       tabs::TabInterface& tab,
-      context_sharing::TabBottomSheetClientType client_type);
+      context_sharing::TabBottomSheetClientType client_type,
+      context_sharing::CoBrowseContainerType container_type,
+      const base::android::JavaRef<jobject>& bottom_sheet_content_provider,
+      bool enable_pinch_to_zoom,
+      ui::ColorId background_color_id,
+      ui::ColorId placeholder_elem_color_id);
   ~CoBrowseViewsBridge();
 
   CoBrowseViewsBridge(const CoBrowseViewsBridge&) = delete;
@@ -43,10 +51,11 @@ class CoBrowseViewsBridge {
 
   // Creates the CoBrowseViews instance using the factory.
   // Returns true if successful.
-  bool CreateCoBrowseViews(content::WebContents* web_contents);
+  bool CreateCoBrowseViews(content::WebContents* web_contents,
+                           bool request_focus);
 
   // Sets the web contents for the view.
-  void SetWebContents(content::WebContents* web_contents);
+  void SetWebContents(content::WebContents* web_contents, bool request_focus);
 
   // Returns the Java CoBrowseViews object.
   base::android::ScopedJavaLocalRef<jobject> GetCoBrowseViews();
@@ -54,11 +63,19 @@ class CoBrowseViewsBridge {
  private:
   void DestroyCoBrowseViews();
   TabAndroid* GetTabAndroid() const;
+  void OnTabInserted(tabs::TabInterface* tab);
 
   const raw_ref<tabs::TabInterface> tab_;
   const context_sharing::TabBottomSheetClientType client_type_;
+  const context_sharing::CoBrowseContainerType container_type_;
+  const bool enable_pinch_to_zoom_;
+  const ui::ColorId background_color_id_;
+  const ui::ColorId placeholder_elem_color_id_;
   base::android::ScopedJavaGlobalRef<jobject> java_co_browse_views_;
+  base::android::ScopedJavaGlobalRef<jobject> bottom_sheet_content_provider_;
   raw_ptr<ui::WindowAndroid> window_android_ = nullptr;
+  raw_ptr<content::WebContents> guest_web_contents_ = nullptr;
+  base::CallbackListSubscription tab_insert_subscription_;
 };
 
 }  // namespace context_sharing

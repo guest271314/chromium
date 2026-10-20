@@ -12,7 +12,7 @@
 
 #include "base/containers/flat_map.h"
 #include "base/containers/span.h"
-#include "base/functional/callback_forward.h"
+#include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/observer_list.h"
@@ -38,6 +38,7 @@ namespace protocol {
 class DevToolsDomainHandler;
 class AuditsHandler;
 class DOMHandler;
+class DebuggerHandler;
 class DeviceOrientationHandler;
 class EmulationHandler;
 class InputHandler;
@@ -64,7 +65,8 @@ class DevToolsSession : public protocol::FrontendChannel,
   static CONTENT_EXPORT bool ValidateMessage(
       const std::string& expected_session_id,
       const bool expected_has_id,
-      base::span<const uint8_t> message);
+      base::span<const uint8_t> message,
+      bool expect_cbor);
 
   // For sessions attached to the Tab target, the mode is set to TabTarget.
   // For other sessions, the mode is inherited from the parent.
@@ -85,8 +87,8 @@ class DevToolsSession : public protocol::FrontendChannel,
   };
 
   // For root sessions (see also private constructor for children).
-  DevToolsSession(DevToolsAgentHostClient* client, Mode mode);
-  ~DevToolsSession() override;
+  CONTENT_EXPORT DevToolsSession(DevToolsAgentHostClient* client, Mode mode);
+  CONTENT_EXPORT ~DevToolsSession() override;
 
   void SetAgentHost(DevToolsAgentHostImpl* agent_host);
   void SetRuntimeResumeCallback(base::OnceClosure runtime_resume);
@@ -119,7 +121,12 @@ class DevToolsSession : public protocol::FrontendChannel,
   void AttachToAgent(blink::mojom::DevToolsAgent* agent,
                      bool force_using_io_session);
   void DispatchProtocolMessage(base::span<const uint8_t> message);
-  void SuspendSendingMessagesToAgent();
+  enum class SuspendMode {
+    kNone,
+    kAll,
+    kExecutionOnly,
+  };
+  void SuspendSendingMessagesToAgent(SuspendMode mode = SuspendMode::kAll);
   void ResumeSendingMessagesToAgent();
   void ClearPendingMessages(bool did_crash);
 
@@ -143,16 +150,10 @@ class DevToolsSession : public protocol::FrontendChannel,
 
   friend class FlattenedDevToolsProtocolTest;
 
-  blink::mojom::BrowserOriginatingSessionState* browser_agent_state() {
+  blink::mojom::BrowserOriginatingSessionState*
+  browser_originating_session_state() {
     return session_state_cookie_->browser_originating_session_state.get();
   }
-
-  void AddScriptToEvaluateOnNewDocument(
-      const std::string& identifier,
-      blink::mojom::ScriptToEvaluateOnNewDocumentPtr script,
-      bool run_immediately,
-      base::OnceClosure callback);
-  void RemoveScriptToEvaluateOnNewDocument(const std::string& identifier);
 
   base::RepeatingCallback<void(std::string)> MakePrepareForReloadCallback() {
     return base::BindRepeating(&DevToolsSession::PrepareForReload,
@@ -173,6 +174,7 @@ class DevToolsSession : public protocol::FrontendChannel,
     int call_id;
     std::string method;
     std::vector<uint8_t> payload;
+    std::string fallthrough_data;
 
     PendingMessage() = delete;
     PendingMessage(const PendingMessage&) = delete;
@@ -181,7 +183,8 @@ class DevToolsSession : public protocol::FrontendChannel,
     PendingMessage(PendingMessage&&);
     PendingMessage(int call_id,
                    crdtp::span<uint8_t> method,
-                   crdtp::span<uint8_t> payload);
+                   crdtp::span<uint8_t> payload,
+                   std::string fallthrough_data);
     ~PendingMessage();
   };
 
@@ -206,9 +209,6 @@ class DevToolsSession : public protocol::FrontendChannel,
   void SendProtocolNotification(
       std::unique_ptr<protocol::Serializable> message) override;
   void FlushProtocolNotifications() override;
-  void FallThrough(int call_id,
-                   crdtp::span<uint8_t> method,
-                   crdtp::span<uint8_t> message) override;
 
   // content::DevToolsAgentHostClientChannel implementation.
   void DispatchProtocolMessageToClient(std::vector<uint8_t> message) override;
@@ -226,6 +226,11 @@ class DevToolsSession : public protocol::FrontendChannel,
   void DispatchOnClientHost(base::span<const uint8_t> message) override;
   void ConnectionClosed() override;
 
+  void FallThrough(int call_id,
+                   crdtp::span<uint8_t> method,
+                   crdtp::span<uint8_t> message,
+                   std::string_view fallthrough_data);
+
   static void DispatchProtocolResponseOrNotification(
       DevToolsAgentHostClient* client,
       DevToolsAgentHostImpl* agent_host,
@@ -242,6 +247,7 @@ class DevToolsSession : public protocol::FrontendChannel,
     return std::disjunction_v<
         std::is_same<T, protocol::AuditsHandler>,
         std::is_same<T, protocol::DOMHandler>,
+        std::is_same<T, protocol::DebuggerHandler>,
         std::is_same<T, protocol::DeviceOrientationHandler>,
         std::is_same<T, protocol::EmulationHandler>,
         std::is_same<T, protocol::InputHandler>,
@@ -276,7 +282,7 @@ class DevToolsSession : public protocol::FrontendChannel,
   std::unique_ptr<protocol::UberDispatcher> dispatcher_{
       new protocol::UberDispatcher(this)};
 
-  bool suspended_sending_messages_to_agent_ = false;
+  SuspendMode suspend_mode_ = SuspendMode::kNone;
 
   // Messages that were sent to the agent or queued after suspending.
   std::list<PendingMessage> pending_messages_;
@@ -288,7 +294,6 @@ class DevToolsSession : public protocol::FrontendChannel,
   // any of the waiting for response messages have been handled.
   // |session_state_cookie_| is nullptr before first attach.
   blink::mojom::DevToolsSessionStatePtr session_state_cookie_;
-  std::string script_to_evaluate_on_load_;
 
   base::flat_map<std::string, raw_ptr<DevToolsSession, CtnExperimental>>
       child_sessions_;
@@ -300,6 +305,8 @@ class DevToolsSession : public protocol::FrontendChannel,
       child_observers_;
   mojo::Remote<network::mojom::DurableMessageCollector>
       durable_message_collector_;
+  base::RepeatingCallback<void(base::span<const uint8_t>)>
+      handle_command_callback_;
 
   base::WeakPtrFactory<DevToolsSession> weak_factory_{this};
 };

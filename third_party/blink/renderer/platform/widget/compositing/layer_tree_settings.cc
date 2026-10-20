@@ -10,8 +10,10 @@
 #include "base/base_switches.h"
 #include "base/byte_size.h"
 #include "base/command_line.h"
+#include "base/feature_list.h"
 #include "base/logging.h"
 #include "base/metrics/field_trial_params.h"
+#include "base/numerics/safe_conversions.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/system/sys_info.h"
 #include "build/build_config.h"
@@ -21,7 +23,6 @@
 #include "cc/trees/layer_tree_settings.h"
 #include "components/viz/common/features.h"
 #include "components/viz/common/switches.h"
-#include "gpu/config/gpu_finch_features.h"
 #include "media/base/media_switches.h"
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/common/switches.h"
@@ -30,9 +31,14 @@
 #include "third_party/blink/renderer/platform/web_test_support.h"
 #include "ui/base/ui_base_features.h"
 #include "ui/base/ui_base_switches.h"
+#include "ui/gl/gl_switches.h"
 #include "ui/native_theme/features/native_theme_features.h"
 #include "ui/native_theme/native_theme.h"
 #include "ui/native_theme/overlay_scrollbar_constants.h"
+
+#if BUILDFLAG(IS_ANDROID)
+#include "base/android/device_info.h"
+#endif
 
 namespace blink {
 
@@ -54,7 +60,10 @@ constexpr base::FeatureParam<double> kFadeDurationScalingFactor{
 bool ShouldUseDesktopOverlayScrollbars() {
 #if BUILDFLAG(IS_ANDROID)
   return base::CommandLine::ForCurrentProcess()->HasSwitch(
-      switches::kEnableDesktopAndroidScrollbars);
+             switches::kEnableDesktopAndroidScrollbars) &&
+         // This feature is not ready for non-desktop devices. See
+         // crbug.com/522529331.
+         base::android::device_info::is_desktop();
 #else
   return ui::NativeTheme::GetInstanceForWeb()->use_overlay_scrollbar();
 #endif  // BUILDFLAG(IS_ANDROID)
@@ -87,6 +96,13 @@ bool IsSmallScreen(const gfx::Size& size) {
     return false;
   return area < kSmallScreenPixelThreshold;
 }
+
+bool ShouldUseDesktopLimits(Platform* platform) {
+  return !platform->IsSynchronousCompositingEnabledForAndroidWebView() &&
+         base::android::device_info::is_desktop() &&
+         base::FeatureList::IsEnabled(
+             ::features::kDesktopAndroidUnifiedCompositorLimits);
+}
 #endif
 
 std::pair<int, int> GetTilingInterestAreaSizes() {
@@ -113,40 +129,6 @@ std::pair<int, int> GetTilingInterestAreaSizes() {
       2 * ::features::kDefaultInterestAreaSizeInPixels / 3);
   return {interest_area_size_in_pixels, (2 * interest_area_size_in_pixels) / 3};
 }
-
-#if !BUILDFLAG(IS_ANDROID)
-// Adjusting tile memory size in case a lot more websites need more tile
-// memory than the current calculation.
-BASE_FEATURE(kAdjustTileGpuMemorySize, base::FEATURE_DISABLED_BY_DEFAULT);
-
-constexpr size_t kLargeResolutionMemoryMB = 1152;
-constexpr size_t kDefaultMemoryMB = 512;
-
-constexpr base::FeatureParam<int> kNewLargeResolutionMemoryMB{
-    &kAdjustTileGpuMemorySize, "new_large_resolution_memory_mb",
-    /*default_value=*/kLargeResolutionMemoryMB};
-
-constexpr base::FeatureParam<int> kNewDefaultMemoryMB{
-    &kAdjustTileGpuMemorySize, "new_default_memory_mb",
-    /*default_value=*/kDefaultMemoryMB};
-
-size_t GetLargeResolutionMemoryMB() {
-  if (base::FeatureList::IsEnabled(kAdjustTileGpuMemorySize)) {
-    return kNewLargeResolutionMemoryMB.Get();
-  } else {
-    return kLargeResolutionMemoryMB;
-  }
-}
-
-size_t GetDefaultMemoryMB() {
-  if (base::FeatureList::IsEnabled(kAdjustTileGpuMemorySize)) {
-    return kNewDefaultMemoryMB.Get();
-  } else {
-    return kDefaultMemoryMB;
-  }
-}
-#endif
-
 }  // namespace
 
 // static
@@ -174,13 +156,20 @@ cc::ManagedMemoryPolicy GetGpuMemoryPolicy(
   }
 
 #if BUILDFLAG(IS_ANDROID)
-  if (base::SysInfo::IsLowEndDevice() ||
-      base::SysInfo::AmountOfTotalPhysicalMemory().InMiB() < 2000) {
-    actual.bytes_limit_when_visible = 96 * 1024 * 1024;
-  } else {
-    actual.bytes_limit_when_visible = 256 * 1024 * 1024;
+  if (!ShouldUseDesktopLimits(Platform::Current())) {
+    if (base::SysInfo::IsLowEndDevice() ||
+        base::SysInfo::AmountOfTotalPhysicalMemory().InMiB() < 2000) {
+      actual.bytes_limit_when_visible = 96 * 1024 * 1024;
+    } else {
+      actual.bytes_limit_when_visible = 256 * 1024 * 1024;
+    }
+    return actual;
   }
-#else
+#endif  // BUILDFLAG(IS_ANDROID)
+
+  static constexpr size_t kLargeResolutionMemoryMB = 1152;
+  static constexpr size_t kDefaultMemoryMB = 512;
+
   // This calculation will increase the tile memory size. It should apply to
   // the other plateforms if no regression on Mac.
   //
@@ -196,24 +185,21 @@ cc::ManagedMemoryPolicy GetGpuMemoryPolicy(
       std::round(initial_screen_size.width() * initial_device_scale_factor *
                  initial_screen_size.height() * initial_device_scale_factor);
 
-  size_t large_resolution_memory_mb = GetLargeResolutionMemoryMB();
   size_t mb_limit_when_visible =
-      large_resolution_memory_mb * (display_size * 1.0 / kLargeResolution);
+      kLargeResolutionMemoryMB * (display_size * 1.0 / kLargeResolution);
 
   // Cap the memory size to one fourth of the total system memory so it won't
   // consume too much of the system memory. Still keep the minimum to the
   // default of 512MB.
-  size_t default_memory_mb = GetDefaultMemoryMB();
-  size_t memory_cap_mb =
-      base::SysInfo::AmountOfTotalPhysicalMemory().InMiB() / 4;
+  size_t memory_cap_mb = base::checked_cast<size_t>(
+      base::SysInfo::AmountOfTotalPhysicalMemory().InMiB() / 4);
   if (mb_limit_when_visible > memory_cap_mb) {
     mb_limit_when_visible = memory_cap_mb;
-  } else if (mb_limit_when_visible < default_memory_mb) {
-    mb_limit_when_visible = default_memory_mb;
+  } else if (mb_limit_when_visible < kDefaultMemoryMB) {
+    mb_limit_when_visible = kDefaultMemoryMB;
   }
 
   actual.bytes_limit_when_visible = mb_limit_when_visible * 1024 * 1024;
-#endif
   return actual;
 }
 
@@ -242,13 +228,18 @@ cc::LayerTreeSettings GenerateLayerTreeSettings(
       !cmd.HasSwitch(::switches::kDisableCheckerImaging) && is_threaded;
 
 #if BUILDFLAG(IS_ANDROID)
-  // We can use a more aggressive limit on Android since decodes tend to take
-  // longer on these devices.
-  settings.min_image_bytes_to_checker = 512 * 1024;  // 512kB
+  const bool is_webview =
+      platform->IsSynchronousCompositingEnabledForAndroidWebView();
+  const bool use_desktop_limits = ShouldUseDesktopLimits(platform);
+  if (!use_desktop_limits) {
+    // We can use a more aggressive limit on Android since decodes tend to take
+    // longer on these devices.
+    settings.min_image_bytes_to_checker = 512 * 1024;  // 512kB
 
-  // Re-rasterization of checker-imaged content with software raster can be too
-  // costly on Android.
-  settings.only_checker_images_with_gpu_raster = true;
+    // Re-rasterization of checker-imaged content with software raster can be
+    // too costly on Android.
+    settings.only_checker_images_with_gpu_raster = true;
+  }
 #endif
 
   auto switch_value_as_int = [](const base::CommandLine& command_line,
@@ -273,11 +264,13 @@ cc::LayerTreeSettings GenerateLayerTreeSettings(
       gfx::ScaleToFlooredSize(initial_screen_size, initial_device_scale_factor);
   int display_width = screen_size.width();
   int display_height = screen_size.height();
-  int numTiles = (display_width * display_height) / (256 * 256);
-  if (numTiles > 16)
+  int num_tiles = (display_width * display_height) / (256 * 256);
+  if (num_tiles > 16) {
     default_tile_size = 384;
-  if (numTiles >= 40)
+  }
+  if (num_tiles >= 40) {
     default_tile_size = 512;
+  }
 
   // Adjust for some resolutions that barely straddle an extra
   // tile when in portrait mode. This helps worst case scroll/raster
@@ -349,8 +342,6 @@ cc::LayerTreeSettings GenerateLayerTreeSettings(
   settings.can_use_lcd_text = platform->IsLcdTextEnabled();
   settings.use_zero_copy = cmd.HasSwitch(switches::kEnableZeroCopy);
   settings.use_partial_raster = !cmd.HasSwitch(switches::kDisablePartialRaster);
-  // Partial raster is not supported with RawDraw
-  settings.use_partial_raster &= !::features::IsUsingRawDraw();
 
   // Overscroll effect on the root scroller.
   settings.enable_elastic_overscroll_on_root =
@@ -452,13 +443,10 @@ cc::LayerTreeSettings GenerateLayerTreeSettings(
 
 #if BUILDFLAG(IS_ANDROID)
   // Synchronous compositing is used only for the outermost main frame.
-  bool use_synchronous_compositor =
-      platform->IsSynchronousCompositingEnabledForAndroidWebView() &&
-      !is_for_embedded_frame;
+  bool use_synchronous_compositor = is_webview && !is_for_embedded_frame;
   // Do not use low memory policies for Android WebView.
-  bool using_low_memory_policy =
-      base::SysInfo::IsLowEndDevice() && !IsSmallScreen(screen_size) &&
-      !platform->IsSynchronousCompositingEnabledForAndroidWebView();
+  bool using_low_memory_policy = base::SysInfo::IsLowEndDevice() &&
+                                 !IsSmallScreen(screen_size) && !is_webview;
 
   settings.using_synchronous_renderer_compositor = use_synchronous_compositor;
   if (using_low_memory_policy) {
@@ -466,7 +454,7 @@ cc::LayerTreeSettings GenerateLayerTreeSettings(
     // apps. So initially we use 50% more memory to avoid flickering
     // or raster-on-demand.
     settings.max_memory_for_prepaint_percentage = 67;
-  } else {
+  } else if (!use_desktop_limits) {
     // On other devices we have increased memory excessively to avoid
     // raster-on-demand already, so now we reserve 50% _only_ to avoid
     // raster-on-demand, and use 50% of the memory otherwise.
@@ -483,6 +471,13 @@ cc::LayerTreeSettings GenerateLayerTreeSettings(
       ui::IsFluentOverlayScrollbarEnabled();
 
   if (use_synchronous_compositor) {
+    if (base::FeatureList::IsEnabled(::features::kWebViewMemoryMultiplier)) {
+      int soft = ::features::kWebViewMemoryMultiplierSoftPercentageParam.Get();
+      if (soft >= 0) {
+        settings.max_memory_for_prepaint_percentage =
+            std::clamp(soft, 10, 100);
+      }
+    }
     // Root frame in Android WebView uses system scrollbars, so make ours
     // invisible. http://crbug.com/677348: This can't be done using
     // hide_scrollbars setting because supporting -webkit custom scrollbars is
@@ -502,12 +497,8 @@ cc::LayerTreeSettings GenerateLayerTreeSettings(
             : base::Milliseconds(200);
     if (!settings.enable_fluent_overlay_scrollbar) {
       // Set scrollbar flash behavior based on feature flags
-      const bool flash_once_enabled = base::FeatureList::IsEnabled(
-          ::features::kOverlayScrollbarFlashOnlyOnceVisibleOnViewport);
-      settings.scrollbar_flash_once_after_scroll_update = flash_once_enabled;
-      settings.scrollbar_flash_after_any_scroll_update = !flash_once_enabled;
-      settings.scrollbar_flash_once_visible_on_viewport =
-          settings.scrollbar_flash_once_after_scroll_update;
+      settings.scrollbar_flash_once_after_scroll_update = true;
+      settings.scrollbar_flash_once_visible_on_viewport = true;
       settings.scrollbar_flash_when_mouse_enter = base::FeatureList::IsEnabled(
           ::features::kOverlayScrollbarFlashWhenMouseEnter);
     }
@@ -523,9 +514,16 @@ cc::LayerTreeSettings GenerateLayerTreeSettings(
     settings.scrollbar_fade_duration = base::TimeDelta();
   }
 
+#if BUILDFLAG(IS_ANDROID)
+  settings.decoded_image_working_set_budget_bytes =
+      is_webview ? cc::ImageDecodeCacheUtils::kDefaultWorkingSet.InBytes()
+                 : cc::ImageDecodeCacheUtils::GetWorkingSetBytesForImageDecode(
+                       /*for_renderer=*/true);
+#else
   settings.decoded_image_working_set_budget_bytes =
       cc::ImageDecodeCacheUtils::GetWorkingSetBytesForImageDecode(
           /*for_renderer=*/true);
+#endif
 
   if (using_low_memory_policy) {
     // RGBA_4444 textures are only enabled:
@@ -534,16 +532,12 @@ cc::LayerTreeSettings GenerateLayerTreeSettings(
     //  - If we are not running in a WebView, where 4444 isn't supported.
     //  - If we are not using vulkan, since some GPU drivers don't support
     //    using RGBA4444 as color buffer.
-    //  - If we are not using Skia's Graphite-Dawn backend, since dawn does not
-    //  support RGBA_4444 formats.
     // TODO(crbug.com/398868042): Instead of Graphite/Vulkan feature checks, add
     // appropriate shared image capability and check for its support.
     if (!cmd.HasSwitch(switches::kDisableRGBA4444Textures) &&
         base::SysInfo::AmountOfTotalPhysicalMemory().InMiB() <= 512 &&
-        !::features::IsUsingVulkan() &&
-        !::features::IsSkiaGraphiteEnabled(
-            base::CommandLine::ForCurrentProcess())) {
-      settings.use_rgba_4444 = true;
+        !::features::IsUsingVulkan()) {
+      settings.prefer_rgba_4444 = true;
 
       // TODO(crbug.com/40042400): Determine whether this is actually necessary;
       // its purpose was to support unpremultiply-and-dither, but it ended up
@@ -554,7 +548,7 @@ cc::LayerTreeSettings GenerateLayerTreeSettings(
 
   if (cmd.HasSwitch(switches::kEnableRGBA4444Textures) &&
       !cmd.HasSwitch(switches::kDisableRGBA4444Textures)) {
-    settings.use_rgba_4444 = true;
+    settings.prefer_rgba_4444 = true;
   }
 
   settings.max_staging_buffer_usage_in_bytes = 32 * 1024 * 1024;  // 32MB
@@ -582,6 +576,12 @@ cc::LayerTreeSettings GenerateLayerTreeSettings(
 
   settings.enable_backface_visibility_interop =
       RuntimeEnabledFeatures::BackfaceVisibilityInteropEnabled();
+
+  settings.enable_unbounded_element =
+      RuntimeEnabledFeatures::UnboundedElementEnabled();
+
+  settings.enable_scroll_performance_timing =
+      RuntimeEnabledFeatures::ScrollPerformanceTimingEnabled();
 
   settings.disable_frame_rate_limit =
       cmd.HasSwitch(::switches::kDisableFrameRateLimit);

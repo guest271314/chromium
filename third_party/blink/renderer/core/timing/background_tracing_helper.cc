@@ -56,7 +56,7 @@ std::optional<uint64_t> ConvertToHashInteger(std::string_view chars) {
     }
   }
   return HexCharactersToUInt64(base::as_byte_span(chars),
-                               NumberParsingOptions(), nullptr);
+                               NumberParsingOptions());
 }
 
 static constexpr char kTriggerPrefix[] = "trigger:";
@@ -94,8 +94,9 @@ BackgroundTracingHelper::BackgroundTracingHelper(ExecutionContext* context) {
 
   // Only support http and https origins to actual remote servers.
   auto* origin = context->GetSecurityOrigin();
-  if (origin->IsLocal() || origin->IsOpaque() || origin->IsLocalhost())
+  if (origin->IsLocal() || origin->IsOpaque() || origin->IsLocalhost()) {
     return;
+  }
   if (!CommonSchemeRegistry::IsExtensionScheme(origin->Protocol().Ascii()) &&
       origin->Protocol() != url::kHttpScheme &&
       origin->Protocol() != url::kHttpsScheme) {
@@ -186,9 +187,9 @@ BackgroundTracingHelper::GetSiteHashSet() {
 }
 
 // static
-size_t BackgroundTracingHelper::GetIdSuffixPos(StringView string) {
+wtf_size_t BackgroundTracingHelper::GetIdSuffixPos(StringView string) {
   // Extract any trailing integers.
-  size_t cursor = string.length();
+  wtf_size_t cursor = string.length();
   while (cursor > 0) {
     // SAFETY: non-zero cursor <= length implies cursor - 1 is valid.
     char c = UNSAFE_BUFFERS(string[cursor - 1]);
@@ -205,8 +206,9 @@ size_t BackgroundTracingHelper::GetIdSuffixPos(StringView string) {
 
   // A valid suffix must be preceded by an underscore and at least one prefix
   // character.
-  if (cursor < 2)
+  if (cursor < 2) {
     return 0;
+  }
 
   // A valid suffix must be preceded by an underscore.
   // SAFETY: cursor is 2 or more and not EOS per checks above.
@@ -228,7 +230,7 @@ BackgroundTracingHelper::SplitMarkNameAndId(StringView mark_name) {
   DCHECK(MarkNameIsTrigger(mark_name));
   // Extract a sequence number suffix, if it exists.
   mark_name = StringView(mark_name, std::size(kTriggerPrefix) - 1);
-  size_t sequence_number_pos = GetIdSuffixPos(mark_name);
+  wtf_size_t sequence_number_pos = GetIdSuffixPos(mark_name);
   if (sequence_number_pos == 0) {
     return std::make_pair(mark_name, std::nullopt);
   }

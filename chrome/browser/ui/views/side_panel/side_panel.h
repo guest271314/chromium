@@ -6,6 +6,7 @@
 #define CHROME_BROWSER_UI_VIEWS_SIDE_PANEL_SIDE_PANEL_H_
 
 #include <memory>
+#include <optional>
 
 #include "base/callback_list.h"
 #include "base/memory/raw_ptr.h"
@@ -43,9 +44,10 @@ class SidePanel : public views::AccessiblePaneView,
   DECLARE_CLASS_CUSTOM_ELEMENT_EVENT_TYPE(kCloseAnimationCompletedEvent);
 
   void SetPanelWidth(int width);
-  bool ShouldRestrictMaxWidth() const;
   void UpdateWidthOnEntryChanged();
   void UpdateSidePanelWidthPref(const std::string& panel_id, int width);
+  void UpdateHorizontalAlignment(
+      std::optional<SidePanelEntryId> entry_id = std::nullopt);
   double GetAnimationValue() const;
   gfx::RoundedCornersF background_radii() const { return background_radii_; }
   void SetBackgroundRadii(const gfx::RoundedCornersF& radii);
@@ -112,17 +114,21 @@ class SidePanel : public views::AccessiblePaneView,
   // and resets the animation.
   void ResetSidePanelAnimationContent();
 
-  void SetActiveEntryUsesDefaultHorizontalAlignment(
-      bool use_default_horizontal_alignment);
-
   // This is the parent view for the contents of the side panel.
   views::View* GetContentParentView();
 
   views::View* resize_area_for_testing() { return resize_area_; }
 
- private:
-  class VisibleBoundsViewClipper;
+  // Sets or clears the visible area to clip the side panel and its children to.
+  // If null, no clipping is performed.
+  //
+  // Since things can move around in the UI, should be called every frame after
+  // layout but before rendering (typically in
+  // `BrowserLayoutImpl::DoPostLayoutVisualAdjustments()`).
+  void SetClipToVisibleArea(
+      const std::optional<gfx::Rect>& clip_to_visible_area);
 
+ private:
   // This method is the shared implementation of Open/Close.
   void UpdateVisibility(bool should_be_open, bool animated);
 
@@ -130,8 +136,6 @@ class SidePanel : public views::AccessiblePaneView,
 
   bool ShouldShowAnimation() const;
   void AnnounceResize();
-
-  void UpdateHorizontalAlignment();
 
   // views::View:
   void OnBoundsChanged(const gfx::Rect& previous_bounds) override;
@@ -162,17 +166,7 @@ class SidePanel : public views::AccessiblePaneView,
   // animation is shown.
   std::optional<gfx::Rect> content_starting_bounds_;
 
-  // Helps to clip layer backed children to their visible bounds.
-  // TODO: 344626785 - Remove this once WebView layer behavior has been fixed.
-  std::unique_ptr<VisibleBoundsViewClipper> visible_bounds_view_clipper_;
-
   gfx::RoundedCornersF background_radii_;
-
-  // When false, the side panel's should align to the opposite side of what it
-  // typically would based on the alignment pref and panel type. This is special
-  // case behavior that should be removed when toolbar and content height side
-  // panels are unified.
-  bool use_default_horizontal_alignment_ = true;
 
   // Keeps track of the side the side panel will appear on (left or right).
   HorizontalAlignment horizontal_alignment_;
@@ -184,9 +178,6 @@ class SidePanel : public views::AccessiblePaneView,
 
   // Subscription for animation updates.
   base::CallbackListSubscription animation_subscription_;
-
-  // Cache of recent animation values.
-  std::map<BrowserAnimationSequence, double> last_animation_values_;
 };
 
 #endif  // CHROME_BROWSER_UI_VIEWS_SIDE_PANEL_SIDE_PANEL_H_

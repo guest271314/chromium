@@ -4,10 +4,14 @@
 
 #import "ios/chrome/browser/toolbar/ui/buttons/toolbar_tab_grid_badge_button.h"
 
+#import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/shared/ui/symbols/symbols.h"
 #import "ios/chrome/browser/shared/ui/util/uikit_ui_util.h"
 #import "ios/chrome/browser/toolbar/ui/buttons/toolbar_button_constants.h"
+#import "ios/chrome/common/ui/colors/semantic_color_names.h"
 #import "ios/chrome/common/ui/util/constraints_ui_util.h"
+#import "ios/chrome/grit/ios_strings.h"
+#import "ui/base/l10n/l10n_util.h"
 
 namespace {
 
@@ -15,6 +19,8 @@ namespace {
 constexpr CGFloat kTabGridFontSize = 11;
 // Offset of the tab count label in the tab grid button tab group state.
 constexpr CGFloat kTabGroupLabelOffset = 1.5;
+// Legacy offset of the tab count label in the tab grid button tab group state.
+constexpr CGFloat kLegacyTabGroupLabelOffset = 3.0;
 // The size of the button image.
 constexpr CGFloat kButtonImageSize = 23;
 
@@ -38,33 +44,49 @@ constexpr CGFloat kButtonImageSize = 23;
       }
                 incognito:incognito];
   if (self) {
+    self.isAccessibilityElement = YES;
     _tabGridContentView = [[UIView alloc] init];
     _tabGridContentView.translatesAutoresizingMaskIntoConstraints = NO;
     _tabGridContentView.userInteractionEnabled = NO;
     [self addSubview:_tabGridContentView];
 
     // Align custom content view inside the button bounds.
-    [NSLayoutConstraint activateConstraints:@[
-      [_tabGridContentView.centerXAnchor
-          constraintEqualToAnchor:self.centerXAnchor],
-      [_tabGridContentView.centerYAnchor
-          constraintEqualToAnchor:self.centerYAnchor],
-      [_tabGridContentView.widthAnchor
-          constraintEqualToConstant:kButtonImageSize],
-      [_tabGridContentView.heightAnchor
-          constraintEqualToAnchor:_tabGridContentView.widthAnchor],
-    ]];
+    if (IsNextOldDesignEnabled()) {
+      AddSameConstraints(_tabGridContentView, self);
+    } else {
+      [NSLayoutConstraint activateConstraints:@[
+        [_tabGridContentView.centerXAnchor
+            constraintEqualToAnchor:self.centerXAnchor],
+        [_tabGridContentView.centerYAnchor
+            constraintEqualToAnchor:self.centerYAnchor],
+        [_tabGridContentView.widthAnchor
+            constraintEqualToConstant:kButtonImageSize],
+        [_tabGridContentView.heightAnchor
+            constraintEqualToAnchor:_tabGridContentView.widthAnchor],
+      ]];
+    }
 
     _tabGridSymbolView = [[UIImageView alloc] init];
     _tabGridSymbolView.translatesAutoresizingMaskIntoConstraints = NO;
+    if (IsNextOldDesignEnabled()) {
+      _tabGridSymbolView.contentMode = UIViewContentModeCenter;
+    }
     [_tabGridContentView addSubview:_tabGridSymbolView];
     AddSameConstraints(_tabGridSymbolView, _tabGridContentView);
 
     _tabCountLabel = [[UILabel alloc] init];
     _tabCountLabel.translatesAutoresizingMaskIntoConstraints = NO;
-    // Use tintColor to match normal or incognito mode colors automatically.
     _tabCountLabel.textColor = self.tintColor;
+    if (IsNextOldDesignEnabled()) {
+      _tabCountLabel.adjustsFontSizeToFitWidth = YES;
+      _tabCountLabel.minimumScaleFactor = 0.1;
+      _tabCountLabel.baselineAdjustment = UIBaselineAdjustmentAlignCenters;
+      _tabCountLabel.textAlignment = NSTextAlignmentCenter;
+    }
     [_tabGridContentView addSubview:_tabCountLabel];
+
+    CGFloat labelOffset = IsNextOldDesignEnabled() ? kLegacyTabGroupLabelOffset
+                                                   : kTabGroupLabelOffset;
 
     _tabGridButtonNormalStateConstraints = @[
       [_tabCountLabel.centerXAnchor
@@ -76,11 +98,18 @@ constexpr CGFloat kButtonImageSize = 23;
     _tabGridButtonTabGroupStateConstraints = @[
       [_tabCountLabel.centerXAnchor
           constraintEqualToAnchor:_tabGridContentView.centerXAnchor
-                         constant:kTabGroupLabelOffset],
+                         constant:labelOffset],
       [_tabCountLabel.centerYAnchor
           constraintEqualToAnchor:_tabGridContentView.centerYAnchor
-                         constant:kTabGroupLabelOffset],
+                         constant:labelOffset],
     ];
+
+    if (IsNextOldDesignEnabled()) {
+      [NSLayoutConstraint activateConstraints:@[
+        [_tabCountLabel.widthAnchor constraintEqualToConstant:14],
+        [_tabCountLabel.heightAnchor constraintEqualToConstant:14],
+      ]];
+    }
 
     [_tabGridContentView bringSubviewToFront:_tabCountLabel];
     [self updateTabGridButtonAppearance];
@@ -95,7 +124,9 @@ constexpr CGFloat kButtonImageSize = 23;
     return;
   }
   _tabCount = tabCount;
-  _tabCountLabel.attributedText = TextForTabCount(tabCount, kTabGridFontSize);
+  CGFloat fontSize = IsNextOldDesignEnabled() ? 13 : kTabGridFontSize;
+  _tabCountLabel.attributedText = TextForTabCount(tabCount, fontSize);
+  [self setAccessibilityValue:[NSString stringWithFormat:@"%lu", tabCount]];
 }
 
 - (void)setInTabGroup:(BOOL)inTabGroup {
@@ -106,11 +137,20 @@ constexpr CGFloat kButtonImageSize = 23;
   [self updateTabGridButtonAppearance];
 }
 
+- (NSString*)accessibilityLabel {
+  return l10n_util::GetNSString(self.inTabGroup ? IDS_IOS_TOOLBAR_SHOW_TAB_GROUP
+                                                : IDS_IOS_TOOLBAR_SHOW_TABS);
+}
+
 #pragma mark - UIView
 
 - (void)tintColorDidChange {
   [super tintColorDidChange];
-  _tabCountLabel.textColor = self.tintColor;
+  if (IsNextOldDesignEnabled() && _inTabGroup) {
+    _tabCountLabel.textColor = [UIColor colorNamed:kBackgroundColor];
+  } else {
+    _tabCountLabel.textColor = self.tintColor;
+  }
 }
 
 - (UIBezierPath*)visiblePath {
@@ -121,15 +161,21 @@ constexpr CGFloat kButtonImageSize = 23;
 #pragma mark - Private
 
 - (void)updateTabGridButtonAppearance {
-  NSString* symbolName = _inTabGroup ? kTabsSymbol : kAppSymbol;
-
-  // Point size configuration matching point size of standard symbols.
-  UIImageSymbolConfiguration* symbolConfig = [UIImageSymbolConfiguration
-      configurationWithPointSize:kButtonImageSize
-                          weight:UIImageSymbolWeightSemibold
-                           scale:UIImageSymbolScaleMedium];
-  _tabGridSymbolView.image =
-      DefaultSymbolWithConfiguration(symbolName, symbolConfig);
+  if (IsNextOldDesignEnabled()) {
+    Symbol symbol =
+        _inTabGroup ? SymbolSquareFilledOnSquare : SymbolSquareNumber;
+    _tabGridSymbolView.image = SymbolWithPointSize(symbol, 24);
+    _tabCountLabel.textColor =
+        _inTabGroup ? [UIColor colorNamed:kBackgroundColor] : self.tintColor;
+  } else {
+    Symbol symbol = _inTabGroup ? SymbolTabs : SymbolApp;
+    UIImageSymbolConfiguration* symbolConfig = [UIImageSymbolConfiguration
+        configurationWithPointSize:kButtonImageSize
+                            weight:UIImageSymbolWeightSemibold
+                             scale:UIImageSymbolScaleMedium];
+    _tabGridSymbolView.image = SymbolWithConfiguration(symbol, symbolConfig);
+    _tabCountLabel.textColor = self.tintColor;
+  }
 
   if (_inTabGroup) {
     [NSLayoutConstraint

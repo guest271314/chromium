@@ -31,14 +31,21 @@ struct AdaptiveRefreshRateInfo {
   float device_scale_factor;
 };
 
+// Controls the visibility and buffer retention state of a Display.
+enum DisplayVisibility {
+  // The display is visible and draws frames normally.
+  kVisible,
+  // Drawing is paused (e.g. during window resize transactions), but
+  // compositing buffers are retained.
+  kPaused,
+  // The display is invisible (e.g. occluded or hidden) and compositing
+  // buffers may be discarded.
+  kInvisible,
+};
+
 // The DisplayPrivate is used by privileged clients to talk to Display.
 interface DisplayPrivate {
-  SetDisplayVisible(bool visible);
-
-  // Attempts to immediately swap a frame with the current size if possible,
-  // then will no longer swap until Resize() is called with a non-empty size.
-  [EnableIf=is_win, Sync]
-  DisableSwapUntilResize() => ();
+  SetDisplayVisible(DisplayVisibility visibility);
 
   // Resizes the display.
   Resize(gfx.mojom.Size size);
@@ -56,10 +63,6 @@ interface DisplayPrivate {
   [EnableIf=is_mac]
   SetVSyncDisplayID(int64 display_id);
 
-  // Notifies the display that the refresh rate has changed on the same display.
-  [EnableIf=is_mac]
-  RefreshRateChangedOnSameDisplay();
-
   // Updates vsync parameters used to generate BeginFrames for this display.
   // This will do nothing if the display is using an external BeginFrame source.
   SetDisplayVSyncParameters(
@@ -75,7 +78,7 @@ interface DisplayPrivate {
   ForceImmediateDrawAndSwapIfPossible();
 
   // Updates the refresh rate of the associated Display.
-  [EnableIf=is_android]
+  [EnableIf=is_android|is_mac]
   UpdateRefreshRate(float refresh_rate);
 
   // Updates adaptive refresh rate information of the associated Display.

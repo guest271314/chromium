@@ -96,6 +96,10 @@ ffmpeg -filter_complex "smptehdbars=size=1280x720" -t 30 -c:v libx264 -y bars.mp
 ffmpeg -i bars.mp4 -ss 10 -copyts -c copy -movflags +faststart -y bars2.mp4
 ```
 
+#### tiny-clip.mp4
+AAC audio in MP4 container, encoded with Apple's `afconvert` in TVBR mode. It has a 2112 sample priming gap and a 644 sample remainder gap. The target audio duration is 30011 samples, but the last packet duration is not shortened in the sample table (`stts`), relying on the edit list (`elst`) for trimming. Used to test AAC end trimming.
+Source: https://jakearchibald.github.io/aac-decode-bug/tiny-clip.mp4
+
 ### FLAC
 
 #### bear-flac.mp4
@@ -138,6 +142,28 @@ ffmpeg -i sfx.flac -map 0:0 -acodec copy -strict -2 -movflags frag_keyframe+empt
 
 #### with_mask.flac
 A 4-channel FLAC file with a `WAVEFORMATEXTENSIBLE_CHANNEL_MASK` tag. Used to verify that `AudioFileReader` can handle files where FFmpeg refines the channel layout during decoding without failing due to "unsupported midstream configuration change".
+
+#### sine-s32-stereo.flac
+0.3 second, 44.1kHz, 32-bit stereo FLAC file containing near full-scale sine waves of different frequencies in each channel. The encoder selects Right/Side and Mid/Side stereo decorrelation for most frames, which require a 33-bit Side channel. Used to verify that 32-bit FLAC stereo decorrelation decodes correctly (https://crbug.com/572363272). Created using:
+```
+sox -n -b 32 -e signed -r 44100 -c 2 s32src.wav synth 0.3 sine 440 sine 557 gain -0.05
+flac -8 --lax --no-padding -o sine-s32-stereo.flac s32src.wav
+```
+
+### MP3
+
+#### repro-minimal.mp3
+MP3 file containing independent channel block_type switching in joint stereo (e.g. from Zoom H1n recorder). Used to verify that Symphonia decodes frames with per-channel block_type differences without error.
+Source: Repro file from https://issues.chromium.org/issues/563087658
+
+#### silent-section.mp3
+MP3 file containing silent sections filled with 0xff bytes, causing Symphonia decoder to trigger out-of-bounds error on bit reservoir. Used to verify the fix for this regression.
+Source: https://abfiles.s3.amazonaws.com/jds/silent-section.mp3
+
+#### synth-bad.mp3
+Truncated MP3 test file (~2.6 KB, 4 complete frames followed by a truncated 5th frame). Used to verify that SymphoniaAudioDecoder gracefully drops undecodeable trailing frames and reaches end-of-stream (firing the 'ended' event) without a fatal decode error.
+Source: Repro file from https://issues.chromium.org/issues/558966895, trimmed to the first 2650 bytes.
+
 
 ### VVC
 
@@ -683,6 +709,80 @@ tfhd.default_sample_flags: s/0x01010000/0x02000000 (second frame is sync-sample,
 doesn't depend on other frames, mismatches compressed h264 second frame's
 nonkeyframe-ness).
 
+### IAMF
+
+#### iamf_alternating_sine_waves_714.mp4
+Fragmented MP4 containing an IAMF audio stream (7.1.4 layout, using Opus codec) and a H.264 video track.
+The audio consists of alternating 440Hz sine wave segments and silence across different channels, with no initial silence, used to verify that the decoded audio block hashes change over time.
+Generated using:
+```
+ffmpeg -y \
+  -f lavfi -i "aevalsrc=exprs='if(between(t\,0.0\,0.5)\,sin(2*PI*440*t)\,0)|if(between(t\,0.5\,1.0)\,sin(2*PI*440*t)\,0)|if(between(t\,1.0\,1.5)\,sin(2*PI*440*t)\,0)|if(between(t\,1.5\,2.0)\,sin(2*PI*440*t)\,0)|if(between(t\,2.0\,2.5)\,sin(2*PI*440*t)\,0)|if(between(t\,2.5\,3.0)\,sin(2*PI*440*t)\,0)|if(between(t\,3.0\,3.5)\,sin(2*PI*440*t)\,0)|if(between(t\,3.5\,4.0)\,sin(2*PI*440*t)\,0)|if(between(t\,4.0\,4.5)\,sin(2*PI*440*t)\,0)|if(between(t\,4.5\,5.0)\,sin(2*PI*440*t)\,0)|if(between(t\,5.0\,5.5)\,sin(2*PI*440*t)\,0)|if(between(t\,5.5\,6.0)\,sin(2*PI*440*t)\,0)':sample_rate=48000:duration=6" \
+  -f lavfi -i "color=c=black:s=1920x1080:r=25:d=6" \
+  -filter_complex "[0:a]asplit=7[s0][s1][s2][s3][s4][s5][s6];[s0]pan=stereo|c0=c0|c1=c1[FRONT];[s1]pan=stereo|c0=c2|c1=c3[SIDE];[s2]pan=stereo|c0=c4|c1=c5[BACK];[s3]pan=stereo|c0=c6|c1=c7[TOP_FRONT];[s4]pan=stereo|c0=c8|c1=c9[TOP_BACK];[s5]pan=mono|c0=c10[CENTER];[s6]pan=mono|c0=c11[LFE]" \
+  -map "[FRONT]" -map "[SIDE]" -map "[BACK]" -map "[TOP_FRONT]" -map "[TOP_BACK]" -map "[CENTER]" -map "[LFE]" -map "1:v:0" \
+  -stream_group "type=iamf_audio_element:id=1:st=0:st=1:st=2:st=3:st=4:st=5:st=6:audio_element_type=channel,layer=ch_layout=7.1.4" \
+  -stream_group "type=iamf_mix_presentation:id=3:stg=0:annotations=en-us=default_mix_presentation,submix=parameter_id=100:parameter_rate=48000:default_mix_gain=0.0|element=stg=0:headphones_rendering_mode=binaural:annotations=en-us=7.1.4:parameter_id=101:parameter_rate=48000:default_mix_gain=0.0|layout=sound_system=stereo:integrated_loudness=0.0:digital_peak=0.0" \
+  -streamid "0:0" -streamid "1:1" -streamid "2:2" -streamid "3:3" -streamid "4:4" -streamid "5:5" -streamid "6:6" -streamid "7:7" \
+  -c:a libopus -b:a 64000 \
+  -c:v libx264 -pix_fmt yuv420p -g 25 \
+  -movflags frag_keyframe+empty_moov+default_base_moof \
+  iamf_alternating_sine_waves_714.mp4
+```
+
+#### iamf_alternating_sine_waves_stereo.mp4
+Fragmented MP4 containing an IAMF audio stream (stereo layout, using Opus codec) and a H.264 video track.
+The audio consists of alternating 440Hz sine wave segments and silence across different channels, with no initial silence, used to verify that the decoded audio block hashes change over time.
+Generated using:
+```
+ffmpeg -y \
+  -f lavfi -i "aevalsrc=exprs='if(lt(mod(t\,1.0)\,0.5)\,sin(2*PI*440*t)\,0)|if(gte(mod(t\,1.0)\,0.5)\,sin(2*PI*440*t)\,0)':sample_rate=48000:duration=6" \
+  -f lavfi -i "color=c=black:s=1920x1080:r=25:d=6" \
+  -map 0:a -map 1:v:0 \
+  -stream_group "type=iamf_audio_element:id=1:st=0:audio_element_type=channel,layer=ch_layout=stereo" \
+  -stream_group "type=iamf_mix_presentation:id=3:stg=0:annotations=en-us=default_mix_presentation,submix=parameter_id=100:parameter_rate=48000:default_mix_gain=0.0|element=stg=0:headphones_rendering_mode=stereo:annotations=en-us=stereo:parameter_id=101:parameter_rate=48000:default_mix_gain=0.0|layout=sound_system=stereo:integrated_loudness=0.0:digital_peak=0.0" \
+  -streamid "0:0" -streamid "1:1" \
+  -c:a libopus -b:a 64000 \
+  -c:v libx264 -pix_fmt yuv420p -g 25 \
+  -movflags frag_keyframe+empty_moov+default_base_moof \
+  iamf_alternating_sine_waves_stereo.mp4
+```
+
+#### iamf_alternating_sine_waves_714_flac_96khz.mp4
+Fragmented MP4 containing an IAMF audio stream (7.1.4 layout, using FLAC codec at 96kHz) and a H.264 video track.
+Generated using:
+```
+ffmpeg -y \
+  -f lavfi -i "aevalsrc=exprs='if(between(t\,0.0\,0.5)\,sin(2*PI*440*t)\,0)|if(between(t\,0.5\,1.0)\,sin(2*PI*440*t)\,0)|if(between(t\,1.0\,1.5)\,sin(2*PI*440*t)\,0)|if(between(t\,1.5\,2.0)\,sin(2*PI*440*t)\,0)|if(between(t\,2.0\,2.5)\,sin(2*PI*440*t)\,0)|if(between(t\,2.5\,3.0)\,sin(2*PI*440*t)\,0)|if(between(t\,3.0\,3.5)\,sin(2*PI*440*t)\,0)|if(between(t\,3.5\,4.0)\,sin(2*PI*440*t)\,0)|if(between(t\,4.0\,4.5)\,sin(2*PI*440*t)\,0)|if(between(t\,4.5\,5.0)\,sin(2*PI*440*t)\,0)|if(between(t\,5.0\,5.5)\,sin(2*PI*440*t)\,0)|if(between(t\,5.5\,6.0)\,sin(2*PI*440*t)\,0)':sample_rate=96000:duration=6" \
+  -f lavfi -i "color=c=black:s=1920x1080:r=25:d=6" \
+  -filter_complex "[0:a]asplit=7[s0][s1][s2][s3][s4][s5][s6];[s0]pan=stereo|c0=c0|c1=c1[FRONT];[s1]pan=stereo|c0=c2|c1=c3[SIDE];[s2]pan=stereo|c0=c4|c1=c5[BACK];[s3]pan=stereo|c0=c6|c1=c7[TOP_FRONT];[s4]pan=stereo|c0=c8|c1=c9[TOP_BACK];[s5]pan=mono|c0=c10[CENTER];[s6]pan=mono|c0=c11[LFE]" \
+  -map "[FRONT]" -map "[SIDE]" -map "[BACK]" -map "[TOP_FRONT]" -map "[TOP_BACK]" -map "[CENTER]" -map "[LFE]" -map "1:v:0" \
+  -stream_group "type=iamf_audio_element:id=1:st=0:st=1:st=2:st=3:st=4:st=5:st=6:audio_element_type=channel,layer=ch_layout=7.1.4" \
+  -stream_group "type=iamf_mix_presentation:id=3:stg=0:annotations=en-us=default_mix_presentation,submix=parameter_id=100:parameter_rate=48000:default_mix_gain=0.0|element=stg=0:headphones_rendering_mode=binaural:annotations=en-us=7.1.4:parameter_id=101:parameter_rate=48000:default_mix_gain=0.0|layout=sound_system=stereo:integrated_loudness=0.0:digital_peak=0.0" \
+  -streamid "0:0" -streamid "1:1" -streamid "2:2" -streamid "3:3" -streamid "4:4" -streamid "5:5" -streamid "6:6" -streamid "7:7" \
+  -c:a flac -sample_fmt s16 \
+  -c:v libx264 -pix_fmt yuv420p -g 25 \
+  -movflags frag_keyframe+empty_moov+default_base_moof \
+  iamf_alternating_sine_waves_714_flac_96khz.mp4
+```
+
+#### iamf_alternating_sine_waves_stereo_flac_96khz.mp4
+Fragmented MP4 containing an IAMF audio stream (stereo layout, using FLAC codec at 96kHz) and a H.264 video track.
+Generated using:
+```
+ffmpeg -y \
+  -f lavfi -i "aevalsrc=exprs='if(lt(mod(t\,1.0)\,0.5)\,sin(2*PI*440*t)\,0)|if(gte(mod(t\,1.0)\,0.5)\,sin(2*PI*440*t)\,0)':sample_rate=96000:duration=6" \
+  -f lavfi -i "color=c=black:s=1920x1080:r=25:d=6" \
+  -map 0:a -map 1:v:0 \
+  -stream_group "type=iamf_audio_element:id=1:st=0:audio_element_type=channel,layer=ch_layout=stereo" \
+  -stream_group "type=iamf_mix_presentation:id=3:stg=0:annotations=en-us=default_mix_presentation,submix=parameter_id=100:parameter_rate=48000:default_mix_gain=0.0|element=stg=0:headphones_rendering_mode=stereo:annotations=en-us=stereo:parameter_id=101:parameter_rate=48000:default_mix_gain=0.0|layout=sound_system=stereo:integrated_loudness=0.0:digital_peak=0.0" \
+  -streamid "0:0" -streamid "1:1" \
+  -c:a flac -sample_fmt s16 \
+  -c:v libx264 -pix_fmt yuv420p -g 25 \
+  -movflags frag_keyframe+empty_moov+default_base_moof \
+  iamf_alternating_sine_waves_stereo_flac_96khz.mp4
+```
+
 ## Encrypted Test Files
 
 [Shaka Packager]: https://github.com/google/shaka-packager
@@ -947,6 +1047,21 @@ Fragmented mp4 samples with SMPTE ST 2094-50 timed metadata track.
 
 #### agtm-metadata-track-frag.mp4
 Fragmented mp4 header with SMPTE ST 2094-50 timed metadata track.
+
+#### agtm-metadata-cdsc-track.mp4
+MP4 file with SMPTE ST 2094-50 timed metadata track using cdsc track reference.
+
+#### agtm-metadata-rndr-track.mp4
+MP4 file with SMPTE ST 2094-50 timed metadata track using rndr track reference.
+
+#### staircase-pq-av1-st-2094-50-rndr.mp4
+A PQ AV1 video of a staircase gradient with 8 steps. A black box moves across
+the otherwise unchanging background at 1 step per second. A SMPTE ST 2094-50
+timed metadata track (using an rndr track reference) changes the metadata each
+second so that the step that the black box is currently on is white (by
+changing the HDR reference white, with tone mapping done by clamping). The
+samples of the timed metadata track are at the start of the file, before all
+of the video samples.
 
 #### av1-I-frame-320x240-agtm
 Same as av1-I-frame-320x240 but with an AGTM ITU_T35 metadata OBU added.
@@ -1949,3 +2064,12 @@ Generated with Bento4's mp4encrypt:
 #### hat-broken.wav
 
 From https://crbug.com/414508118
+
+#### spherical_frag.mp4
+Spherical video in fragmented MP4, generated with bento4 by the following command:
+```
+mp4fragment spherical.mp4 spherical_frag.mp4
+```
+
+#### trun_overflow.mp4
+Fragmented MP4 whose trun sample count exceeds index entries, from https://crbug.com/573128234.

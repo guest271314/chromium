@@ -17,7 +17,6 @@
 #include "chrome/browser/ui/webui/theme_source.h"
 #include "chrome/grit/compose_resources.h"
 #include "chrome/grit/compose_resources_map.h"
-#include "chrome/grit/generated_resources.h"
 #include "components/compose/core/browser/compose_features.h"
 #include "components/optimization_guide/core/feature_registry/feature_registration.h"
 #include "components/optimization_guide/core/model_execution/model_execution_prefs.h"
@@ -173,7 +172,7 @@ void ComposeUntrustedUI::CreateComposeSessionUntrustedPageHandler(
     mojo::PendingReceiver<compose::mojom::ComposeSessionUntrustedPageHandler>
         handler,
     mojo::PendingRemote<compose::mojom::ComposeUntrustedDialog> dialog) {
-  DCHECK(dialog.is_valid());
+  CHECK(dialog.is_valid(), base::NotFatalUntil::M162);
 
   content::WebContents* web_contents = triggering_web_contents_
                                            ? triggering_web_contents_.get()

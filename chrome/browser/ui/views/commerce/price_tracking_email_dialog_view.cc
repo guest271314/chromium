@@ -28,6 +28,7 @@
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/mojom/dialog_button.mojom.h"
+#include "ui/base/page_transition_types.h"
 #include "ui/base/window_open_disposition.h"
 #include "ui/views/controls/styled_label.h"
 #include "ui/views/layout/flex_layout_view.h"
@@ -58,11 +59,10 @@ std::unique_ptr<views::StyledLabel> CreateBodyLabel(std::u16string& body_text) {
 }  // namespace
 
 PriceTrackingEmailDialogView::PriceTrackingEmailDialogView(
-    View* anchor_view,
+    views::BubbleAnchor anchor,
     content::WebContents* web_contents,
     Profile* profile)
-    : LocationBarBubbleDelegateView(anchor_view, web_contents),
-      profile_(profile) {
+    : LocationBarBubbleDelegateView(anchor, web_contents), profile_(profile) {
   SetShowCloseButton(true);
   SetLayoutManager(std::make_unique<views::FlexLayout>())
       ->SetOrientation(views::LayoutOrientation::kVertical)
@@ -135,11 +135,11 @@ PriceTrackingEmailDialogView::~PriceTrackingEmailDialogView() = default;
 
 void PriceTrackingEmailDialogView::OpenHelpArticle() {
   // Open web page with help article.
-  web_contents()->OpenURL(
-      content::OpenURLParams(GURL(kPriceTrackingHelpLink), content::Referrer(),
-                             WindowOpenDisposition::NEW_FOREGROUND_TAB,
-                             ui::PAGE_TRANSITION_AUTO_TOPLEVEL, false),
-      /*navigation_handle_callback=*/{});
+  web_contents()->OpenURL(content::OpenURLParams::CreateBrowserInitiated(
+                              GURL(kPriceTrackingHelpLink),
+                              WindowOpenDisposition::NEW_FOREGROUND_TAB,
+                              ui::PAGE_TRANSITION_AUTO_TOPLEVEL),
+                          /*navigation_handle_callback=*/{});
   base::RecordAction(base::UserMetricsAction(
       "Commerce.PriceTracking.EmailConsentDialog.HelpLinkClicked"));
 }
@@ -148,7 +148,7 @@ void PriceTrackingEmailDialogView::OpenSettings() {
   base::RecordAction(base::UserMetricsAction(
       "Commerce.PriceTracking.EmailConsentDialog.EmailLinkClicked"));
   chrome::ScopedTabbedBrowserDisplayer browser_displayer(profile_);
-  chrome::ShowSettings(browser_displayer.browser());
+  chrome::ShowSettings(browser_displayer.browser_window_interface());
 }
 
 void PriceTrackingEmailDialogView::OnAccepted() {
@@ -187,15 +187,16 @@ END_METADATA
 
 // PriceTrackingEmailDialogCoordinator
 PriceTrackingEmailDialogCoordinator::PriceTrackingEmailDialogCoordinator(
-    views::View* anchor_view)
-    : anchor_view_(anchor_view) {}
+    views::BubbleAnchor anchor)
+    : anchor_(anchor) {}
 
 PriceTrackingEmailDialogCoordinator::~PriceTrackingEmailDialogCoordinator() =
     default;
 
 void PriceTrackingEmailDialogCoordinator::OnWidgetDestroying(
     views::Widget* widget) {
-  DCHECK(bubble_widget_observation_.IsObservingSource(widget));
+  CHECK(bubble_widget_observation_.IsObservingSource(widget),
+        base::NotFatalUntil::M162);
   bubble_widget_observation_.Reset();
 
   std::move(on_dialog_closing_callback_).Run();
@@ -205,14 +206,14 @@ void PriceTrackingEmailDialogCoordinator::Show(
     content::WebContents* web_contents,
     Profile* profile,
     base::OnceClosure on_dialog_closing_callback) {
-  DCHECK(!tracker_.view());
+  CHECK(!tracker_.view(), base::NotFatalUntil::M162);
   on_dialog_closing_callback_ = std::move(on_dialog_closing_callback);
 
   base::RecordAction(base::UserMetricsAction(
       "Commerce.PriceTracking.EmailConsentDialog.Shown"));
 
   auto bubble = std::make_unique<PriceTrackingEmailDialogView>(
-      anchor_view_, web_contents, profile);
+      anchor_, web_contents, profile);
   bubble->SetProperty(views::kElementIdentifierKey,
                       kPriceTrackingEmailConsentDialogId);
   tracker_.SetView(bubble.get());

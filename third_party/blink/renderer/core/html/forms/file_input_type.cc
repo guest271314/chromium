@@ -120,9 +120,12 @@ Vector<String> FileInputType::FilesFromFormControlState(
 }
 
 FormControlState FileInputType::SaveFormControlState() const {
-  if (file_list_->IsEmpty() ||
-      GetElement().GetDocument().GetFormController().DropReferencedFilePaths())
+  if (file_list_->IsEmpty() || GetElement()
+                                   .GetDocument()
+                                   .EnsureFormController()
+                                   .DropReferencedFilePaths()) {
     return FormControlState();
+  }
   FormControlState state;
   unsigned num_files = file_list_->length();
   for (unsigned i = 0; i < num_files; ++i)
@@ -183,6 +186,7 @@ void FileInputType::HandleDOMActivateEvent(Event& event) {
         mojom::ConsoleMessageLevel::kWarning, message));
     return;
   }
+  LocalFrame::ConsumeTransientUserActivation(document.GetFrame());
 
   OpenPopupView();
   event.SetDefaultHandled();
@@ -304,7 +308,7 @@ FileList* FileInputType::CreateFileList(ExecutionContext& context,
   // |base_dir|.
   if (size && !base_dir.empty()) {
     base::FilePath root_path = base_dir.DirName();
-    string_size_t root_length = FilePathToString(root_path).length();
+    wtf_size_t root_length = FilePathToString(root_path).length();
     DCHECK(root_length);
     if (!root_path.EndsWithSeparator())
       root_length += 1;
@@ -415,7 +419,7 @@ Node* FileInputType::FileStatusElement() const {
   return GetElement().EnsureShadowSubtree()->lastChild();
 }
 
-void FileInputType::DisabledAttributeChanged() {
+void FileInputType::DisabledAttributeChanged(DisabledChangedReason reason) {
   if (Element* button = UploadButton()) {
     button->SetBooleanAttribute(html_names::kDisabledAttr,
                                 GetElement().IsDisabledFormControl());
@@ -457,7 +461,10 @@ bool FileInputType::SetFiles(FileList* files) {
 }
 
 void FileInputType::SetFilesAndDispatchEvents(FileList* files) {
-  if (SetFiles(files)) {
+  bool force = force_change_event_;
+  force_change_event_ = false;
+
+  if (SetFiles(files) || force) {
     // This call may cause destruction of this instance.
     // input instance is safe since it is ref-counted.
     GetElement().DispatchInputEvent();
@@ -484,12 +491,27 @@ void FileInputType::FilesChosen(FileChooserFileInfoList files,
     }
     ++i;
   }
+  if (RuntimeEnabledFeatures::FilePickerEventsFixEnabled() &&
+      HasConnectedFileChooser()) {
+    force_change_event_ = true;
+  }
   if (!will_be_destroyed_) {
     SetFilesAndDispatchEvents(
         CreateFileList(*GetElement().GetExecutionContext(), files, base_dir));
   }
   if (HasConnectedFileChooser())
     DisconnectFileChooser();
+
+  GetElement().PseudoStateChanged(CSSSelector::kPseudoOpen);
+}
+
+void FileInputType::FileChooserCanceled() {
+  if (!will_be_destroyed_) {
+    GetElement().DispatchCancelEvent();
+  }
+  if (HasConnectedFileChooser()) {
+    DisconnectFileChooser();
+  }
 
   GetElement().PseudoStateChanged(CSSSelector::kPseudoOpen);
 }
@@ -621,6 +643,14 @@ String FileInputType::FileStatusText() const {
 void FileInputType::UpdateView() {
   if (auto* span = FileStatusElement())
     span->setTextContent(FileStatusText());
+}
+
+bool FileInputType::SupportsBaseAppearance(
+    Element::BaseAppearanceValue value) const {
+  if (!RuntimeEnabledFeatures::AppearanceBaseEnabled()) {
+    return false;
+  }
+  return value == Element::BaseAppearanceValue::kBase;
 }
 
 }  // namespace blink

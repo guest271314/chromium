@@ -31,7 +31,6 @@
 #import "ios/chrome/browser/shared/model/browser/browser.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
 #import "ios/chrome/browser/shared/public/commands/snackbar_commands.h"
-#import "ios/chrome/browser/shared/ui/table_view/legacy_chrome_table_view_styler.h"
 #import "ios/chrome/browser/shared/ui/table_view/table_view_utils.h"
 #import "ios/chrome/browser/shared/ui/util/rtl_geometry.h"
 #import "ios/chrome/browser/signin/model/authentication_service.h"
@@ -200,7 +199,8 @@ typedef NS_ENUM(NSInteger, ItemType) {
 
 - (void)viewDidLoad {
   [super viewDidLoad];
-  self.tableView.backgroundColor = self.styler.tableViewBackgroundColor;
+  self.tableView.backgroundColor =
+      [UIColor colorNamed:kGroupedPrimaryBackgroundColor];
   self.tableView.estimatedRowHeight = 150.0;
   self.tableView.rowHeight = UITableViewAutomaticDimension;
   self.tableView.sectionHeaderHeight = 0;
@@ -244,9 +244,15 @@ typedef NS_ENUM(NSInteger, ItemType) {
   }
 }
 
-- (void)didMoveToParentViewController:(UIViewController*)parent {
-  [super didMoveToParentViewController:parent];
-  if (!parent) {
+- (void)viewDidDisappear:(BOOL)animated {
+  [super viewDidDisappear:animated];
+  if (self.coordinatorIsStopping) {
+    return;
+  }
+  // Exclude when the disappearance is due to pushing a new view controller
+  // into stack.
+  if (self.isBeingDismissed || self.navigationController.isBeingDismissed ||
+      self.isMovingFromParentViewController) {
     [self.delegate bookmarksFolderEditorDidDismiss:self];
   }
 }
@@ -280,7 +286,7 @@ typedef NS_ENUM(NSInteger, ItemType) {
   CHECK(_folder, base::NotFatalUntil::M152);
   base::RecordAction(
       base::UserMetricsAction("MobileBookmarksFolderEditorDeletedFolder"));
-  std::set<const BookmarkNode*> editedNodes;
+  bookmark_utils_ios::NodeSet editedNodes;
   editedNodes.insert(_folder);
   [self.snackbarCommandsHandler
       showSnackbarMessage:bookmark_utils_ios::DeleteBookmarksWithUndoSnackbar(
@@ -312,7 +318,7 @@ typedef NS_ENUM(NSInteger, ItemType) {
                              bookmarks::metrics::BookmarkEditSource::kUser);
     if (_folder->parent() != _parentFolder) {
       base::AutoReset<BOOL> autoReset(&_ignoresOwnMove, YES);
-      std::vector<const BookmarkNode*> bookmarksVector{_folder};
+      bookmark_utils_ios::NodeVector bookmarksVector{_folder};
       [self.snackbarCommandsHandler
           showSnackbarMessage:bookmark_utils_ios::MoveBookmarksWithUndoSnackbar(
                                   bookmarksVector, _bookmarkModel.get(),
@@ -343,12 +349,12 @@ typedef NS_ENUM(NSInteger, ItemType) {
   }
   base::RecordAction(base::UserMetricsAction(
       "MobileBookmarksFolderEditorOpenedFolderChooser"));
-  std::set<raw_ptr<const bookmarks::BookmarkNode>> hiddenNodes;
+  std::set<raw_ptr<const bookmarks::BookmarkNode>> editedNodes;
   if (_folder) {
-    hiddenNodes.insert(_folder);
+    editedNodes.insert(_folder);
   }
   [self.delegate showBookmarksFolderChooserWithParentFolder:_parentFolder
-                                                hiddenNodes:hiddenNodes];
+                                                editedNodes:editedNodes];
 }
 
 #pragma mark - BookmarkModelBridgeObserver

@@ -33,7 +33,8 @@ enum class ActiveRegionalProgram {
   kMixed = 2,
   kWaffle = 3,
   kTaiyaki = 4,
-  kMaxValue = kTaiyaki,
+  kScone = 5,
+  kMaxValue = kScone,
 };
 // LINT.ThenChange(/tools/metrics/histograms/metadata/regional_capabilities/enums.xml:ActiveRegionalProgram)
 
@@ -127,6 +128,14 @@ void RecordActiveRegionalProgramPerProfile(
     ActiveRegionalProgram program,
     metrics::ProfileMetricsService& profile_metrics_service);
 
+// Records, through `profile_metrics_service`, the program that would be active
+// for the profile if the current profile country was used instead of the one
+// persisted at profile creation (i.e. as if the dynamic profile country feature
+// was enabled).
+void RecordDynamicCountryRegionalProgram(
+    ActiveRegionalProgram program,
+    metrics::ProfileMetricsService& profile_metrics_service);
+
 // These values are persisted to logs. Entries should not be renumbered and
 // numeric values should never be reused.
 //
@@ -139,6 +148,10 @@ enum class ProgramSpecificExclusion {
 // LINT.ThenChange(/tools/metrics/histograms/metadata/regional_capabilities/enums.xml:RegionalProgramSpecificExclusion)
 
 void RecordProgramSpecificExclusion(ProgramSpecificExclusion exclusion);
+
+void RecordDebugTriggeringEligibility(
+    SearchEngineChoiceScreenConditions conditions,
+    bool is_first_run);
 
 }  // namespace regional_capabilities
 

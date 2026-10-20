@@ -496,9 +496,10 @@ bool IsDefaultDecoderSupportedAudioType(const AudioType& type) {
     case AudioCodec::kGSM_MS:
     case AudioCodec::kALAC:
     case AudioCodec::kMpegHAudio:
-    case AudioCodec::kIAMF:
     case AudioCodec::kUnknown:
       return false;
+    case AudioCodec::kIAMF:
+      return IsIamfAudioDecodingSupported();
     case AudioCodec::kDTS:
     case AudioCodec::kDTSXP2:
     case AudioCodec::kDTSE:

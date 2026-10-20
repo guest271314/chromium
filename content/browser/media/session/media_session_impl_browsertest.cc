@@ -27,6 +27,7 @@
 #include "components/ukm/test_ukm_recorder.h"
 #include "content/browser/back_forward_cache/back_forward_cache_impl.h"
 #include "content/browser/media/session/audio_focus_delegate.h"
+#include "content/browser/media/session/media_session_service_impl.h"
 #include "content/browser/media/session/mock_media_session_player_observer.h"
 #include "content/browser/media/session/mock_media_session_service_impl.h"
 #include "content/browser/renderer_host/render_frame_host_impl.h"
@@ -40,6 +41,7 @@
 #include "content/public/test/prerender_test_util.h"
 #include "content/shell/browser/shell.h"
 #include "content/test/content_browser_test_utils_internal.h"
+#include "media/audio/audio_constants.h"
 #include "media/base/media_content_type.h"
 #include "media/base/media_switches.h"
 #include "net/base/filename_util.h"
@@ -48,9 +50,11 @@
 #include "net/test/embedded_test_server/http_response.h"
 #include "services/media_session/public/cpp/test/mock_media_session.h"
 #include "services/media_session/public/mojom/audio_focus.mojom.h"
+#include "services/metrics/public/cpp/ukm_builders.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/mojom/favicon/favicon_url.mojom.h"
+#include "url/url_constants.h"
 
 using media_session::mojom::AudioFocusType;
 using media_session::mojom::MediaPlaybackState;
@@ -64,7 +68,6 @@ using ::testing::NiceMock;
 namespace {
 
 const double kDefaultVolumeMultiplier = 1.0;
-const double kDuckingVolumeMultiplier = 0.2;
 const double kDifferentDuckingVolumeMultiplier = 0.018;
 
 const std::u16string kExpectedSourceTitlePrefix = u"http://example.com:";
@@ -280,6 +283,10 @@ class MediaSessionImplBrowserTest : public ContentBrowserTest {
   }
 
   bool IsActive() { return media_session_->IsActive(); }
+
+  MediaSessionServiceImpl* GetRoutedService() const {
+    return media_session_->routed_service_;
+  }
 
   std::optional<AudioFocusType> GetSessionAudioFocusType() {
     return mock_audio_focus_delegate_->GetCurrentFocusType();
@@ -593,14 +600,14 @@ IN_PROC_BROWSER_TEST_P(MediaSessionImplParamBrowserTest,
   StartNewPlayer(player_observer.get());
   SystemStartDucking();
 
-  EXPECT_FLOAT_EQ(kDuckingVolumeMultiplier,
+  EXPECT_FLOAT_EQ(media::kDefaultDuckingVolumeMultiplier,
                   player_observer->GetVolumeMultiplier(0));
-  EXPECT_FLOAT_EQ(kDuckingVolumeMultiplier,
+  EXPECT_FLOAT_EQ(media::kDefaultDuckingVolumeMultiplier,
                   player_observer->GetVolumeMultiplier(1));
 
   StartNewPlayer(player_observer.get());
 
-  EXPECT_FLOAT_EQ(kDuckingVolumeMultiplier,
+  EXPECT_FLOAT_EQ(media::kDefaultDuckingVolumeMultiplier,
                   player_observer->GetVolumeMultiplier(2));
 }
 
@@ -657,7 +664,7 @@ IN_PROC_BROWSER_TEST_P(MediaSessionImplParamBrowserTest,
   EXPECT_FALSE(IsActive());
 
   SystemStartDucking();
-  EXPECT_FLOAT_EQ(kDuckingVolumeMultiplier,
+  EXPECT_FLOAT_EQ(media::kDefaultDuckingVolumeMultiplier,
                   player_observer->GetVolumeMultiplier(player_id));
 
   // On resume, ducking should stop.
@@ -2727,7 +2734,8 @@ IN_PROC_BROWSER_TEST_F(MediaSessionImplBrowserTest, UpdateFaviconURL) {
       /*is_default_icon=*/false));
 
   media_session_->DidUpdateFaviconURL(
-      shell()->web_contents()->GetPrimaryMainFrame(), favicons);
+      shell()->web_contents()->GetPrimaryMainFrame(), favicons,
+      blink::mojom::FaviconUpdateReason::kPageLoad);
 
   {
     std::vector<media_session::MediaImage> expected_images;
@@ -2756,7 +2764,8 @@ IN_PROC_BROWSER_TEST_F(MediaSessionImplBrowserTest, UpdateFaviconURL) {
     media_session::test::MockMediaSessionMojoObserver observer(*media_session_);
     media_session_->DidUpdateFaviconURL(
         shell()->web_contents()->GetPrimaryMainFrame(),
-        std::vector<blink::mojom::FaviconURLPtr>());
+        std::vector<blink::mojom::FaviconURLPtr>(),
+        blink::mojom::FaviconUpdateReason::kPageLoad);
     observer.WaitForExpectedImagesOfType(
         media_session::mojom::MediaSessionImageType::kSourceIcon,
         std::vector<media_session::MediaImage>());
@@ -2772,7 +2781,8 @@ IN_PROC_BROWSER_TEST_F(MediaSessionImplBrowserTest,
       /*is_default_icon=*/false));
 
   media_session_->DidUpdateFaviconURL(
-      shell()->web_contents()->GetPrimaryMainFrame(), favicons);
+      shell()->web_contents()->GetPrimaryMainFrame(), favicons,
+      blink::mojom::FaviconUpdateReason::kPageLoad);
 
   {
     std::vector<media_session::MediaImage> expected_images;
@@ -2803,6 +2813,26 @@ IN_PROC_BROWSER_TEST_F(MediaSessionImplBrowserTest,
         media_session::mojom::MediaSessionImageType::kSourceIcon,
         expected_images);
   }
+}
+
+// Pages that never report favicons (non-HTTP(S) pages without <link rel=icon>,
+// e.g. WebUIs) must not keep the previous page's favicons as source icons.
+// Regression test for crbug.com/449515858.
+IN_PROC_BROWSER_TEST_F(MediaSessionImplBrowserTest,
+                       UpdateFaviconURL_ClearOnNavigateToPageWithoutFavicons) {
+  EXPECT_TRUE(NavigateToURL(
+      shell(), embedded_test_server()->GetURL("example.com", "/title1.html")));
+  media_session::MediaImage favicon;
+  favicon.src = embedded_test_server()->GetURL("example.com", "/favicon.ico");
+  favicon.sizes.push_back(kDefaultFaviconSize);
+  media_session::test::MockMediaSessionMojoObserver(*media_session_)
+      .WaitForExpectedImagesOfType(
+          media_session::mojom::MediaSessionImageType::kSourceIcon, {favicon});
+
+  EXPECT_TRUE(NavigateToURL(shell(), GURL(url::kAboutBlankURL)));
+  media_session::test::MockMediaSessionMojoObserver(*media_session_)
+      .WaitForExpectedImagesOfType(
+          media_session::mojom::MediaSessionImageType::kSourceIcon, {});
 }
 
 IN_PROC_BROWSER_TEST_F(MediaSessionImplBrowserTest,
@@ -2836,7 +2866,8 @@ class FaviconWaiter : public WebContentsObserver {
 
   void DidUpdateFaviconURL(
       RenderFrameHost* render_frame_host,
-      const std::vector<blink::mojom::FaviconURLPtr>& candidates) override {
+      const std::vector<blink::mojom::FaviconURLPtr>& candidates,
+      blink::mojom::FaviconUpdateReason reason) override {
     received_favicon_ = true;
     run_loop_.Quit();
   }
@@ -3123,7 +3154,8 @@ IN_PROC_BROWSER_TEST_F(MediaSessionImplBrowserTest, CacheFaviconImages) {
                                     valid_sizes, /*is_default_icon=*/false));
 
   media_session_->DidUpdateFaviconURL(
-      shell()->web_contents()->GetPrimaryMainFrame(), favicons);
+      shell()->web_contents()->GetPrimaryMainFrame(), favicons,
+      blink::mojom::FaviconUpdateReason::kPageLoad);
 
   media_session::MediaImage test_image;
   test_image.src = favicon_server().GetURL("/favicon.ico");
@@ -3497,7 +3529,8 @@ IN_PROC_BROWSER_TEST_F(MediaSessionImplPrerenderingBrowserTest,
       /*is_default_icon=*/false));
 
   media_session_->DidUpdateFaviconURL(
-      shell()->web_contents()->GetPrimaryMainFrame(), favicons);
+      shell()->web_contents()->GetPrimaryMainFrame(), favicons,
+      blink::mojom::FaviconUpdateReason::kPageLoad);
   media_session::MediaImage test_image;
   test_image.src = test_image_src;
   test_image.sizes = valid_sizes;
@@ -3644,9 +3677,11 @@ IN_PROC_BROWSER_TEST_F(MediaSessionImplWithBackForwardCacheBrowserTest,
   EXPECT_TRUE(frame_host->IsInBackForwardCache());
 
   // Add a player on the new page
-  StartNewPlayer(player_observer.get());
+  auto new_player_observer = std::make_unique<MockMediaSessionPlayerObserver>(
+      GetPrimaryMainFrame(), media::MediaContentType::kPersistent);
+  StartNewPlayer(new_player_observer.get());
   ResolveAudioFocusSuccess();
-  EXPECT_TRUE(player_observer->IsPlaying(1));
+  EXPECT_TRUE(new_player_observer->IsPlaying(0));
 
   // Evict the page from the back-forward cache.
   shell()->web_contents()->GetController().GetBackForwardCache().Flush();
@@ -3654,11 +3689,74 @@ IN_PROC_BROWSER_TEST_F(MediaSessionImplWithBackForwardCacheBrowserTest,
 
   // The page being removed from the back-forward cache should not affect the
   // play state of the current page.
-  EXPECT_TRUE(player_observer->IsPlaying(1));
+  EXPECT_TRUE(new_player_observer->IsPlaying(0));
 }
 
+IN_PROC_BROWSER_TEST_F(MediaSessionImplWithBackForwardCacheBrowserTest,
+                       BFCachedFrameCannotHijackMediaSession) {
+  EXPECT_TRUE(NavigateToURL(
+      shell(), embedded_test_server()->GetURL("a.test", "/title1.html")));
+
+  RenderFrameHostImplWrapper frame_host_a(GetPrimaryMainFrame());
+  mojo::Remote<blink::mojom::MediaSessionService> service_remote_a;
+  MediaSessionServiceImpl::Create(
+      frame_host_a.get(), service_remote_a.BindNewPipeAndPassReceiver());
+
+  auto metadata_a = blink::mojom::SpecMediaMetadata::New();
+  metadata_a->title = u"Page A Title";
+  service_remote_a->SetMetadata(std::move(metadata_a));
+  service_remote_a.FlushForTesting();
+
+  // Page A is routed.
+  EXPECT_NE(nullptr, GetRoutedService());
+  EXPECT_EQ(frame_host_a.get(), GetRoutedService()->GetRenderFrameHost());
+
+  // Navigate to Page B. Page A is cached in back-forward cache.
+  EXPECT_TRUE(NavigateToURL(
+      shell(), embedded_test_server()->GetURL("b.test", "/title1.html")));
+  EXPECT_TRUE(frame_host_a->IsInBackForwardCache());
+
+  // Page A must no longer be routed while in BFCache.
+  EXPECT_EQ(nullptr, GetRoutedService());
+
+  // A document in BFCache cannot bind a new MediaSessionService.
+  mojo::Remote<blink::mojom::MediaSessionService> bad_service_remote;
+  MediaSessionServiceImpl::Create(
+      frame_host_a.get(), bad_service_remote.BindNewPipeAndPassReceiver());
+  bad_service_remote.FlushForTesting();
+  EXPECT_EQ(nullptr, GetRoutedService());
+
+  // A document in BFCache cannot update metadata on an existing Mojo pipe.
+  auto malicious_metadata = blink::mojom::SpecMediaMetadata::New();
+  malicious_metadata->title = u"Malicious Spoofed Title";
+  service_remote_a->SetMetadata(std::move(malicious_metadata));
+  service_remote_a.FlushForTesting();
+  EXPECT_EQ(nullptr, GetRoutedService());
+
+  // A document in BFCache cannot add a media player.
+  auto bad_player_observer = std::make_unique<MockMediaSessionPlayerObserver>(
+      frame_host_a.get(), media::MediaContentType::kPersistent);
+  EXPECT_FALSE(AddPlayer(bad_player_observer.get(), 0));
+  EXPECT_EQ(nullptr, GetRoutedService());
+
+  // Restoring Page A from BFCache allows it to be routed again.
+  shell()->web_contents()->GetController().GoBack();
+  EXPECT_TRUE(WaitForLoadStop(shell()->web_contents()));
+  EXPECT_FALSE(frame_host_a->IsInBackForwardCache());
+  EXPECT_NE(nullptr, GetRoutedService());
+  EXPECT_EQ(frame_host_a.get(), GetRoutedService()->GetRenderFrameHost());
+}
+
+// TODO(crbug.com/521159836): Re-enable on Linux MSAN.
+#if BUILDFLAG(IS_LINUX) && defined(MEMORY_SANITIZER)
+#define MAYBE_RecordsUkm_BrowserInitiated_AutoPip_IsDryRun \
+  DISABLED_RecordsUkm_BrowserInitiated_AutoPip_IsDryRun
+#else
+#define MAYBE_RecordsUkm_BrowserInitiated_AutoPip_IsDryRun \
+  RecordsUkm_BrowserInitiated_AutoPip_IsDryRun
+#endif
 IN_PROC_BROWSER_TEST_P(MediaSessionImplUkmBrowserTest,
-                       RecordsUkm_BrowserInitiated_AutoPip_IsDryRun) {
+                       MAYBE_RecordsUkm_BrowserInitiated_AutoPip_IsDryRun) {
   EXPECT_TRUE(NavigateToURL(
       shell(), embedded_test_server()->GetURL("example.com",
                                               "/media/session/position.html")));

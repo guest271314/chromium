@@ -5,10 +5,13 @@
 #ifndef COMPONENTS_FACILITATED_PAYMENTS_CORE_BROWSER_NETWORK_API_FACILITATED_PAYMENTS_NETWORK_INTERFACE_H_
 #define COMPONENTS_FACILITATED_PAYMENTS_CORE_BROWSER_NETWORK_API_FACILITATED_PAYMENTS_NETWORK_INTERFACE_H_
 
+#include <cstdint>
 #include <memory>
+#include <vector>
 
 #include "base/memory/raw_ref.h"
 #include "base/types/strong_alias.h"
+#include "base/values.h"
 #include "components/autofill/core/browser/payments/multiple_request_payments_network_interface_base.h"
 #include "components/autofill/core/browser/payments/payments_autofill_client.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
@@ -42,7 +45,8 @@ class FacilitatedPaymentsNetworkInterface
   using GetDetailsForCreatePaymentInstrumentResponseCallback =
       base::OnceCallback<void(
           autofill::payments::PaymentsAutofillClient::PaymentsRpcResult,
-          bool)>;
+          bool,
+          const std::vector<uint8_t>&)>;
   using RequestId =
       base::StrongAlias<struct autofill::payments::RequestIdTag, std::string>;
 
@@ -72,6 +76,8 @@ class FacilitatedPaymentsNetworkInterface
   // server. This method is virtual so it can be overridden in tests.
   virtual RequestId GetDetailsForCreatePaymentInstrument(
       int64_t billing_customer_number,
+      const std::vector<uint8_t>& client_token,
+      base::DictValue account_linking_payload,
       GetDetailsForCreatePaymentInstrumentResponseCallback response_callback,
       const std::string& app_locale);
 

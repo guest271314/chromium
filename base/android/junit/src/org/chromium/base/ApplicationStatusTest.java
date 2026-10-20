@@ -39,9 +39,7 @@ import java.util.List;
 
 /** Unit tests for {@link ApplicationStatus}. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(
-        manifest = Config.NONE,
-        shadows = {ApplicationStatusTest.TrackingShadowActivity.class})
+@Config(shadows = {ApplicationStatusTest.TrackingShadowActivity.class})
 public class ApplicationStatusTest {
     private static class WindowCallbackWrapper implements Window.Callback {
         final Window.Callback mWrapped;
@@ -235,7 +233,7 @@ public class ApplicationStatusTest {
 
     private Window.Callback createWindowCallbackProxy() {
         return ApplicationStatus.createWindowCallbackProxy(
-                mock(Activity.class), mock(Window.Callback.class));
+                Robolectric.buildActivity(Activity.class).get(), mock(Window.Callback.class));
     }
 
     @Test

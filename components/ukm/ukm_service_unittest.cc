@@ -34,6 +34,7 @@
 #include "components/metrics/metrics_log.h"
 #include "components/metrics/metrics_log_uploader.h"
 #include "components/metrics/metrics_pref_names.h"
+#include "components/metrics/metrics_reporting_choice_service.h"
 #include "components/metrics/test/test_metrics_provider.h"
 #include "components/metrics/test/test_metrics_service_client.h"
 #include "components/metrics/ukm_demographic_metrics_provider.h"
@@ -1054,6 +1055,46 @@ TEST_F(UkmServiceTest, SystemProfileTest) {
             proto_report.system_profile().brand_code());
 }
 
+TEST_F(UkmServiceTest, RecordingEnabledWithoutConsentRestructure) {
+  // 1. Consent restructure is NOT enabled.
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndDisableFeature(
+      metrics::features::kRestructureMetricsConsentSettings);
+
+  UkmService service(&prefs_, &client_,
+                     std::make_unique<MockDemographicMetricsProvider>());
+  service.Initialize();
+
+  // MSBB consented, APPS not consented.
+  service.UpdateRecording({MSBB});
+  service.EnableRecording();
+  EXPECT_TRUE(service.recording_enabled(MSBB));
+  EXPECT_FALSE(service.recording_enabled(APPS));
+}
+
+TEST_F(UkmServiceTest, RecordingEnabledWithConsentRestructure) {
+  // 2. Consent restructure is enabled.
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndEnableFeature(
+      metrics::features::kRestructureMetricsConsentSettings);
+
+  UkmService service(&prefs_, &client_,
+                     std::make_unique<MockDemographicMetricsProvider>());
+  service.Initialize();
+
+  // Even if only MSBB is consented, both should be enabled if service
+  // recording is enabled.
+  service.UpdateRecording({MSBB});
+  service.EnableRecording();
+  EXPECT_TRUE(service.recording_enabled(MSBB));
+  EXPECT_TRUE(service.recording_enabled(APPS));
+
+  // If service recording is disabled, both should be disabled.
+  service.DisableRecording();
+  EXPECT_FALSE(service.recording_enabled(MSBB));
+  EXPECT_FALSE(service.recording_enabled(APPS));
+}
+
 TEST_F(UkmServiceTest, AddUserDemograhicsWhenAvailableAndFeatureEnabled) {
   int number_of_invocations = 0;
   int test_birth_year = 1983;
@@ -1631,6 +1672,9 @@ TEST_F(UkmServiceTest, SupportedSchemes) {
       {"about:blank", true},
       {"chrome://version/", true},
       {"app://play/abcdefghijklmnopqrstuvwxyzabcdef/", true},
+      {"isolated-app://"
+       "pl2ctdpnkf7ltse22mpjdb376etd3ydo7s72lgspuopgzcwl5tkqaaic/",
+       true},
       // chrome-extension are controlled by TestIsWebstoreExtension, above.
       {"chrome-extension://bhcnanendmgjjeghamaccjnochlnhcgj/", true},
       {"chrome-extension://abcdefghijklmnopqrstuvwxyzabcdef/", false},
@@ -2114,10 +2158,13 @@ TEST_F(UkmServiceTest, WebDXFeatures) {
 #if BUILDFLAG(IS_CHROMEOS)
 TEST_F(UkmServiceTest, NotifyObserverOnShutdown) {
   MockUkmRecorderObserver observer;
-  UkmService service(&prefs_, &client_,
-                     std::make_unique<MockDemographicMetricsProvider>());
-  ukm::UkmRecorder::Get()->AddObserver(&observer);
-  EXPECT_CALL(observer, OnStartingShutdown()).Times(1);
+  {
+    UkmService service(&prefs_, &client_,
+                       std::make_unique<MockDemographicMetricsProvider>());
+    ukm::UkmRecorder::Get()->AddObserver(&observer);
+    EXPECT_CALL(observer, OnStartingShutdown()).Times(1);
+  }
+  ukm::UkmRecorder::Get()->RemoveObserver(&observer);
 }
 
 namespace {

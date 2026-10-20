@@ -88,11 +88,14 @@ OpenXrDevice::OpenXrDevice(
         mojom::XRSessionFeature::LAYERS);
   }
 
-  // Only support WebGPU sessions if feature flag is enabled.
+  // Only support WebGPU sessions if the feature flag is enabled; the Linux
+  // Vulkan binding does not support WebGPU sessions yet.
+#if !BUILDFLAG(IS_LINUX)
   if (base::FeatureList::IsEnabled(features::kWebXRWebGPUBinding)) {
     device_data.supported_features.emplace_back(
         mojom::XRSessionFeature::WEBGPU);
   }
+#endif
 
   // Only support Plane Detection if the feature flag is enabled.
   if (base::FeatureList::IsEnabled(features::kWebXRPlaneDetection)) {
@@ -139,14 +142,14 @@ void OpenXrDevice::RequestSession(
   request_session_callback_ = std::move(callback);
 
   OpenXrCreateInfo create_info;
+#if BUILDFLAG(IS_ANDROID)
   if (options->renderer_information) {
     create_info.render_process_id =
         options->renderer_information->render_process_id;
     create_info.render_frame_id =
         options->renderer_information->render_frame_id;
   }
-  create_info.needs_separate_activity =
-      OpenXrApiWrapper::NeedsSeparateActivity();
+#endif
   platform_helper_->CreateInstanceWithCreateInfo(
       create_info,
       base::BindOnce(&OpenXrDevice::OnCreateInstanceResult,
@@ -231,7 +234,11 @@ void OpenXrDevice::OnRequestSessionResult(
   session_result->session = std::move(session);
   session_result->controller =
       exclusive_controller_receiver_.BindNewPipeAndPassRemote();
+#if !BUILDFLAG(IS_LINUX)
+  // The in-headset overlay UI is not implemented on Linux; leaving the overlay
+  // unset tells the browser to skip the VrUiHost.
   session_result->overlay = std::move(overlay);
+#endif
 
   std::move(request_session_callback_).Run(std::move(session_result));
 

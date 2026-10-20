@@ -4,34 +4,60 @@
 
 #include "chrome/browser/ui/profiles/profile_view_utils.h"
 
+#include "base/check.h"
+#include "build/branding_buildflags.h"
 #include "chrome/app/chrome_command_ids.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/prefs/incognito_mode_prefs.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_attributes_entry.h"
 #include "chrome/browser/profiles/profile_attributes_storage.h"
+#include "chrome/browser/profiles/profile_avatar_icon_util.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
+#include "chrome/browser/signin/signin_util.h"
+#include "chrome/browser/subscription_eligibility/subscription_eligibility_service_factory.h"
 #include "chrome/browser/sync/sync_service_factory.h"
 #include "chrome/browser/sync/sync_ui_util.h"
 #include "chrome/browser/ui/browser_window/public/profile_browser_collection.h"
+#include "chrome/browser/ui/color/chrome_color_id.h"
 #include "chrome/browser/ui/incognito_allowed_url.h"
 #include "chrome/browser/ui/layout_constants.h"
 #include "chrome/browser/ui/navigator/browser_navigator.h"
 #include "chrome/browser/ui/navigator/browser_navigator_params.h"
 #include "chrome/browser/ui/toolbar/app_menu_model.h"
+#include "chrome/browser/ui/ui_features.h"
 #include "chrome/common/url_constants.h"
+#include "chrome/grit/generated_resources.h"
 #include "components/policy/core/common/policy_pref_names.h"
 #include "components/signin/public/base/consent_level.h"
+#include "components/signin/public/base/signin_switches.h"
 #include "components/signin/public/identity_manager/account_info.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
+#include "components/subscription_eligibility/subscription_eligibility_service.h"
 #include "components/sync/service/sync_service.h"
 #include "components/user_prefs/user_prefs.h"
 #include "net/base/url_util.h"
 #include "ui/base/accelerators/menu_label_accelerator_util.h"
+#include "ui/base/l10n/l10n_util.h"
+#include "ui/base/models/image_model.h"
+#include "ui/base/page_transition_types.h"
 #include "ui/base/window_open_disposition.h"
+#include "ui/color/color_provider.h"
+#include "ui/gfx/image/image_skia.h"
 #include "ui/gfx/text_elider.h"
 #include "url/gurl.h"
+
+#if BUILDFLAG(GOOGLE_CHROME_BRANDING)
+#include "chrome/browser/internal/profiles/profile_view_avatar_decoration_specs_branded.h"
+#else
+#include "chrome/browser/ui/profiles/profile_view_avatar_decoration_specs.h"
+#endif
+
+int GetAvatarRingThickness(int avatar_size) {
+  return avatar_size <= kSmallAvatarThresholdDip ? kAvatarRingThicknessSmallDip
+                                                 : kAvatarRingThicknessDip;
+}
 
 void NavigateToGoogleAccountPage(Profile* profile, const std::string& email) {
   // Create a URL so that the account chooser is shown if the account with
@@ -120,6 +146,22 @@ std::u16string GetProfileMenuDisplayName(
   return profile_name;
 }
 
+std::u16string GetSigninStatusChipString(Profile* profile) {
+  CHECK(profile);
+  const AccountInfo account_info = GetAccountInfoFromProfile(profile);
+
+  if (IsSyncPaused(profile) || account_info.IsEmpty()) {
+    return l10n_util::GetStringUTF16(IDS_PROFILES_LOCAL_PROFILE_STATE);
+  }
+
+  if (signin_util::IsSigninPending(
+          IdentityManagerFactory::GetForProfile(profile))) {
+    return l10n_util::GetStringUTF16(IDS_PROFILE_ROW_VERIFY_MESSAGE);
+  }
+
+  return l10n_util::GetStringUTF16(IDS_PROFILE_ROW_SIGNED_IN_MESSAGE);
+}
+
 std::vector<ProfileAttributesEntry*> GetAllOtherProfileEntriesForProfileSubMenu(
     const Profile* current_profile) {
   auto profile_entries =
@@ -159,7 +201,39 @@ bool IsOpenLinkOTREnabled(Profile* source_profie, const GURL& url) {
   }
 
   policy::IncognitoModeAvailability incognito_avail =
-      IncognitoModePrefs::GetAvailability(
-          user_prefs::UserPrefs::Get(source_profie));
+      IncognitoModePrefs::GetAvailability(source_profie);
   return incognito_avail != policy::IncognitoModeAvailability::kDisabled;
+}
+
+bool ShouldShowAvatarGradientRing(Profile* profile) {
+  if (!base::FeatureList::IsEnabled(
+          switches::kEnableAiSubscriptionAvatarRing)) {
+    return false;
+  }
+  if (!profile) {
+    return false;
+  }
+  // TODO(crbug.com/522296672): Specify the right way to obtain this information
+  // as `GetAiSubscriptionTier` only works for certain groups of users.
+  subscription_eligibility::SubscriptionEligibilityService*
+      subscription_service = subscription_eligibility::
+          SubscriptionEligibilityServiceFactory::GetForProfile(profile);
+  return subscription_service &&
+         subscription_service->GetAiSubscriptionTier() > 0;
+}
+
+gfx::ImageSkia AddLinearGradientRingToAvatar(
+    const ui::ImageModel& avatar_image,
+    const ui::ColorProvider& color_provider,
+    int avatar_size,
+    int gap_width,
+    std::optional<int> ring_thickness) {
+  const int thickness =
+      ring_thickness.value_or(GetAvatarRingThickness(avatar_size));
+  return profiles::AddLinearGradientRingToAvatar(
+      avatar_image, color_provider,
+      color_provider.GetColor(kAvatarRingGradientStartColorId),
+      color_provider.GetColor(kAvatarRingGradientEndColorId),
+      kAvatarRingGradientPositions, kAvatarRingGradientP1Normalized,
+      kAvatarRingGradientP2Normalized, avatar_size, gap_width, thickness);
 }

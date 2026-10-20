@@ -18,13 +18,20 @@
 #include "components/autofill/core/browser/data_model/autofill_ai/entity_type_names.h"
 #include "components/autofill/core/browser/field_types.h"
 #include "components/autofill/core/browser/proto/server.pb.h"
-#include "components/autofill/core/browser/test_utils/entity_data_test_utils.h"
+#include "components/autofill/core/browser/test_utils/entity_data_test_util.h"
 #include "components/autofill/core/common/autofill_features.h"
+#include "components/personal_context/proto/features/at_memory.pb.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "url/gurl.h"
 
 namespace autofill {
 namespace {
+
+using ::testing::ElementsAre;
+using ::testing::IsEmpty;
+using ::testing::Property;
+using ::testing::SizeIs;
 
 using enum AttributeTypeName;
 
@@ -41,15 +48,29 @@ std::u16string GetInfo(const AttributeInstance& a,
   return a.GetInfo(field_type, params.app_locale, params.format_string);
 }
 
-class AutofillEntityInstanceTest : public base::test::WithFeatureOverride,
-                                   public testing::Test {
+class AutofillEntityInstanceTest : public testing::Test {
  public:
-  AutofillEntityInstanceTest()
+  AutofillEntityInstanceTest() = default;
+};
+
+class AutofillEntityInstanceWalletPrivatePassesTest
+    : public base::test::WithFeatureOverride,
+      public testing::Test {
+ public:
+  AutofillEntityInstanceWalletPrivatePassesTest()
       : base::test::WithFeatureOverride(
             features::kAutofillAiWalletPrivatePasses) {}
 };
 
-TEST_P(AutofillEntityInstanceTest, MaskedAttribute) {
+class AutofillEntityInstanceAmbientAutofillTest
+    : public base::test::WithFeatureOverride,
+      public testing::Test {
+ public:
+  AutofillEntityInstanceAmbientAutofillTest()
+      : base::test::WithFeatureOverride(features::kAutofillAmbientAutofill) {}
+};
+
+TEST_F(AutofillEntityInstanceTest, MaskedAttribute) {
   AttributeInstance attribute((AttributeType(kPassportNumber)));
   EXPECT_FALSE(attribute.masked());
 
@@ -57,7 +78,7 @@ TEST_P(AutofillEntityInstanceTest, MaskedAttribute) {
   EXPECT_TRUE(attribute.masked());
 }
 
-TEST_P(AutofillEntityInstanceTest, MaskedEntityWithMaskedAttributes) {
+TEST_F(AutofillEntityInstanceTest, MaskedEntityWithMaskedAttributes) {
   AttributeInstance attribute((AttributeType(kPassportNumber)));
   ASSERT_TRUE(attribute.type().is_obfuscated());
   test_api(attribute).mark_as_masked();
@@ -73,7 +94,7 @@ TEST_P(AutofillEntityInstanceTest, MaskedEntityWithMaskedAttributes) {
   EXPECT_CHECK_DEATH(invalid_entity.IsMaskedEntity());
 }
 
-TEST_P(AutofillEntityInstanceTest, MaskedPersonalContextEntity) {
+TEST_F(AutofillEntityInstanceTest, MaskedPersonalContextEntity) {
   AttributeInstance attribute((AttributeType(kPassportNumber)));
   ASSERT_TRUE(attribute.type().is_obfuscated());
   test_api(attribute).mark_as_masked();
@@ -85,7 +106,32 @@ TEST_P(AutofillEntityInstanceTest, MaskedPersonalContextEntity) {
   EXPECT_FALSE(entity.IsUnmaskedEntity());
 }
 
-TEST_P(AutofillEntityInstanceTest, NeitherMaskedNorUnmaskedEntity) {
+TEST_F(AutofillEntityInstanceTest, PersonalContextSource) {
+  using Source = EntityInstance::PersonalContextRecordTypePayload::Source;
+  using GmailSourceMetadata =
+      EntityInstance::PersonalContextRecordTypePayload::GmailSourceMetadata;
+  using PhotosSourceMetadata =
+      EntityInstance::PersonalContextRecordTypePayload::PhotosSourceMetadata;
+
+  base::Time kTestTime = base::Time::FromSecondsSinceUnixEpoch(1700000000);
+  Source gmail_source{
+      .url = GURL("https://mail.google.com"),
+      .metadata = GmailSourceMetadata{.title = "Flight confirmation"},
+  };
+  EXPECT_EQ(gmail_source.type(), Source::Type::kGmail);
+  EXPECT_EQ(std::get<GmailSourceMetadata>(gmail_source.metadata).title,
+            "Flight confirmation");
+
+  Source photos_source{
+      .url = GURL("https://photos.google.com"),
+      .metadata = PhotosSourceMetadata{.timestamp = kTestTime},
+  };
+  EXPECT_EQ(photos_source.type(), Source::Type::kPhotos);
+  EXPECT_EQ(std::get<PhotosSourceMetadata>(photos_source.metadata).timestamp,
+            kTestTime);
+}
+
+TEST_F(AutofillEntityInstanceTest, NeitherMaskedNorUnmaskedEntity) {
   AttributeInstance attribute((AttributeType(kPassportNumber)));
   ASSERT_TRUE(attribute.type().is_obfuscated());
 
@@ -95,7 +141,7 @@ TEST_P(AutofillEntityInstanceTest, NeitherMaskedNorUnmaskedEntity) {
   EXPECT_FALSE(entity.IsUnmaskedEntity());
 }
 
-TEST_P(AutofillEntityInstanceTest, ServerEntityWithoutObfuscatedAttributes) {
+TEST_F(AutofillEntityInstanceTest, ServerEntityWithoutObfuscatedAttributes) {
   AttributeInstance attribute((AttributeType(kPassportName)));
   ASSERT_FALSE(attribute.type().is_obfuscated());
 
@@ -105,7 +151,7 @@ TEST_P(AutofillEntityInstanceTest, ServerEntityWithoutObfuscatedAttributes) {
   EXPECT_FALSE(entity.IsUnmaskedEntity());
 }
 
-TEST_P(AutofillEntityInstanceTest, ServerEntityWithUnmaskedAttributes) {
+TEST_F(AutofillEntityInstanceTest, ServerEntityWithUnmaskedAttributes) {
   AttributeInstance attribute((AttributeType(kPassportNumber)));
   ASSERT_TRUE(attribute.type().is_obfuscated());
 
@@ -115,12 +161,43 @@ TEST_P(AutofillEntityInstanceTest, ServerEntityWithUnmaskedAttributes) {
   EXPECT_TRUE(entity.IsUnmaskedEntity());
 }
 
-TEST_P(AutofillEntityInstanceTest, Attributes) {
+TEST_F(AutofillEntityInstanceTest, CopyWithNewRecordTypeSetsWalletPayload) {
+  EntityInstance local_entity = test::GetPassportEntityInstance(
+      {.record_type = EntityInstance::RecordType::kLocal});
+
+  // Converting kLocal to kServerWallet initializes an empty
+  // WalletRecordTypePayload.
+  EntityInstance converted_wallet_entity = local_entity.CopyWithNewRecordType(
+      EntityInstance::RecordType::kServerWallet);
+  const EntityInstance::WalletRecordTypePayload* converted_payload =
+      std::get_if<EntityInstance::WalletRecordTypePayload>(
+          &converted_wallet_entity.record_type_data());
+  ASSERT_NE(converted_payload, nullptr);
+  EXPECT_EQ(converted_payload->management_url, GURL());
+}
+
+TEST_F(AutofillEntityInstanceTest,
+       CopyWithNewRecordTypeSameTypeCopiesThePayload) {
+  const GURL kWalletUrl("https://wallet.google.com/synthetic_pass?id=fake123");
+  EntityInstance wallet_entity = test::GetPassportEntityInstance(
+      {.record_type = EntityInstance::WalletRecordTypePayload{.management_url =
+                                                                  kWalletUrl}});
+
+  EntityInstance converted_wallet_entity = wallet_entity.CopyWithNewRecordType(
+      EntityInstance::RecordType::kServerWallet);
+  const EntityInstance::WalletRecordTypePayload* converted_payload =
+      std::get_if<EntityInstance::WalletRecordTypePayload>(
+          &converted_wallet_entity.record_type_data());
+  ASSERT_NE(converted_payload, nullptr);
+  EXPECT_EQ(converted_payload->management_url, kWalletUrl);
+}
+
+TEST_F(AutofillEntityInstanceTest, Attributes) {
   const char16_t kName[] = u"Pippi";
   EntityInstance pp =
       test::GetPassportEntityInstance({.name = kName, .number = nullptr});
-  EXPECT_EQ(pp.attributes().size(), 4u);
-  EXPECT_EQ(pp.type().attributes().size(), 5u);
+  EXPECT_THAT(pp.attributes(), SizeIs(4u));
+  EXPECT_THAT(pp.type().attributes(), SizeIs(5u));
   EXPECT_FALSE(pp.attribute(AttributeType(kPassportNumber)));
   {
     base::optional_ref<const AttributeInstance> a =
@@ -134,7 +211,7 @@ TEST_P(AutofillEntityInstanceTest, Attributes) {
 // Tests that AttributeInstance::GetInfo() returns the value for the specified
 // subtype (as per AttributeType::field_subtypes()) and defaults to the overall
 // type (AttributeType::field_type()).
-TEST_P(AutofillEntityInstanceTest, Attributes_NormalizedType) {
+TEST_F(AutofillEntityInstanceTest, Attributes_NormalizedType) {
   AttributeInstance passport_name((AttributeType(kPassportName)));
   passport_name.SetInfo(NAME_FULL, u"John Doe",
                         /*app_locale=*/"", /*format_string=*/std::nullopt,
@@ -158,7 +235,7 @@ TEST_P(AutofillEntityInstanceTest, Attributes_NormalizedType) {
 }
 
 // Tests that AttributeInstance localizes the country name.
-TEST_P(AutofillEntityInstanceTest, Attributes_CountryLocalization) {
+TEST_F(AutofillEntityInstanceTest, Attributes_CountryLocalization) {
   AttributeInstance passport_country((AttributeType(kPassportCountry)));
   passport_country.SetInfo(PASSPORT_ISSUING_COUNTRY, u"SE",
                            /*app_locale=*/"", /*format_string=*/std::nullopt,
@@ -185,7 +262,7 @@ TEST_P(AutofillEntityInstanceTest, Attributes_CountryLocalization) {
 }
 
 // Tests that AttributeInstance appropriately manages structured names.
-TEST_P(AutofillEntityInstanceTest, Attributes_StructuredName) {
+TEST_F(AutofillEntityInstanceTest, Attributes_StructuredName) {
   AttributeInstance passport_name((AttributeType(kPassportName)));
   passport_name.SetInfo(NAME_FULL, u"Some Name",
                         /*app_locale=*/"", /*format_string=*/std::nullopt,
@@ -200,9 +277,15 @@ TEST_P(AutofillEntityInstanceTest, Attributes_StructuredName) {
 
 // Tests that AttributeInstance honors the affix formats (only) for
 // identification numbers.
-TEST_P(AutofillEntityInstanceTest, Attributes_IdentificationNumbers) {
+TEST_F(AutofillEntityInstanceTest, Attributes_IdentificationNumbers) {
   auto from_affix = [](std::u16string fs) {
     return AutofillFormatString(std::move(fs), FormatString_Type_AFFIX);
+  };
+  auto from_date = [](std::u16string fs) {
+    return AutofillFormatString(std::move(fs), FormatString_Type_DATE);
+  };
+  auto from_flight_number = [](std::u16string fs) {
+    return AutofillFormatString(std::move(fs), FormatString_Type_FLIGHT_NUMBER);
   };
 
   {
@@ -220,6 +303,13 @@ TEST_P(AutofillEntityInstanceTest, Attributes_IdentificationNumbers) {
     EXPECT_EQ(GetInfo(passport_number, PASSPORT_NUMBER,
                       {.format_string = from_affix(u"-4")}),
               u"3456");
+    // Incompatible format strings must be ignored.
+    EXPECT_EQ(GetInfo(passport_number, PASSPORT_NUMBER,
+                      {.format_string = from_date(u"DD/MM/YYYY")}),
+              u"LR0123456");
+    EXPECT_EQ(GetInfo(passport_number, PASSPORT_NUMBER,
+                      {.format_string = from_flight_number(u"N")}),
+              u"LR0123456");
   }
 
   {
@@ -239,9 +329,18 @@ TEST_P(AutofillEntityInstanceTest, Attributes_IdentificationNumbers) {
 }
 
 // Tests that AttributeInstance appropriately manages dates.
-TEST_P(AutofillEntityInstanceTest, Attributes_Date) {
+TEST_F(AutofillEntityInstanceTest, Attributes_Date) {
   auto from_date = [](std::u16string fs) {
     return AutofillFormatString(std::move(fs), FormatString_Type_DATE);
+  };
+  auto from_affix = [](std::u16string fs) {
+    return AutofillFormatString(std::move(fs), FormatString_Type_AFFIX);
+  };
+  auto from_flight_number = [](std::u16string fs) {
+    return AutofillFormatString(std::move(fs), FormatString_Type_FLIGHT_NUMBER);
+  };
+  auto from_icu_date = [](std::u16string fs) {
+    return AutofillFormatString(std::move(fs), FormatString_Type_ICU_DATE);
   };
 
   AttributeInstance passport_name((AttributeType(kPassportIssueDate)));
@@ -253,12 +352,29 @@ TEST_P(AutofillEntityInstanceTest, Attributes_Date) {
   EXPECT_EQ(GetInfo(passport_name, PASSPORT_ISSUE_DATE,
                     {.format_string = from_date(u"DD/MM/YYYY")}),
             u"03/02/2001");
+  EXPECT_EQ(GetInfo(passport_name, PASSPORT_ISSUE_DATE,
+                    {.app_locale = "en_US",
+                     .format_string = from_icu_date(u"MMM d")}),
+            u"Feb 3");
+  // Incompatible format strings must be ignored and fall back to YYYY-MM-DD.
+  EXPECT_EQ(GetInfo(passport_name, PASSPORT_ISSUE_DATE,
+                    {.format_string = from_affix(u"-4")}),
+            u"2001-02-03");
+  EXPECT_EQ(GetInfo(passport_name, PASSPORT_ISSUE_DATE,
+                    {.format_string = from_flight_number(u"N")}),
+            u"2001-02-03");
 }
 
 // Tests that formatting flight numbers works correctly.
-TEST_P(AutofillEntityInstanceTest, AttributesFlightFormat) {
+TEST_F(AutofillEntityInstanceTest, AttributesFlightFormat) {
   auto from_flight_number = [](std::u16string fs) {
     return AutofillFormatString(std::move(fs), FormatString_Type_FLIGHT_NUMBER);
+  };
+  auto from_affix = [](std::u16string fs) {
+    return AutofillFormatString(std::move(fs), FormatString_Type_AFFIX);
+  };
+  auto from_date = [](std::u16string fs) {
+    return AutofillFormatString(std::move(fs), FormatString_Type_DATE);
   };
 
   {
@@ -278,6 +394,13 @@ TEST_P(AutofillEntityInstanceTest, AttributesFlightFormat) {
     EXPECT_EQ(GetInfo(flight_number, FLIGHT_RESERVATION_FLIGHT_NUMBER,
                       {.format_string = from_flight_number(u"F")}),
               u"LH89");
+    // Incompatible format strings must be ignored.
+    EXPECT_EQ(GetInfo(flight_number, FLIGHT_RESERVATION_FLIGHT_NUMBER,
+                      {.format_string = from_affix(u"-4")}),
+              u"LH89");
+    EXPECT_EQ(GetInfo(flight_number, FLIGHT_RESERVATION_FLIGHT_NUMBER,
+                      {.format_string = from_date(u"DD/MM/YYYY")}),
+              u"LH89");
   }
 
   {
@@ -294,7 +417,7 @@ TEST_P(AutofillEntityInstanceTest, AttributesFlightFormat) {
 
 // Tests that calling `SetInfo` with an ICU date format string causes a CHECK
 // failure.
-TEST_P(AutofillEntityInstanceTest, Attributes_SetInfoWithIcuDate_CheckFails) {
+TEST_F(AutofillEntityInstanceTest, Attributes_SetInfoWithIcuDate_CheckFails) {
   AttributeType type(kFlightReservationDepartureDate);
   AttributeInstance attribute(type);
   EXPECT_DEATH_IF_SUPPORTED(
@@ -306,38 +429,38 @@ TEST_P(AutofillEntityInstanceTest, Attributes_SetInfoWithIcuDate_CheckFails) {
       "");
 }
 
-TEST_P(
+TEST_F(
     AutofillEntityInstanceTest,
     GetEntityMergeability_IdentiticalEntities_NoMergeableAttribute_IsASubset) {
   EntityInstance::EntityMergeability result =
       test::GetPassportEntityInstance().GetEntityMergeability(
           test::GetPassportEntityInstance());
-  EXPECT_TRUE(result.mergeable_attributes.empty());
+  EXPECT_THAT(result.mergeable_attributes, IsEmpty());
   EXPECT_TRUE(result.is_subset);
 }
 
-TEST_P(
+TEST_F(
     AutofillEntityInstanceTest,
     GetEntityMergeability_NewEntityMissingAttribute_NoMergeableAttributes_IsASubset) {
   EntityInstance::EntityMergeability result =
       test::GetPassportEntityInstance().GetEntityMergeability(
           test::GetPassportEntityInstance({.expiry_date = nullptr}));
 
-  EXPECT_TRUE(result.mergeable_attributes.empty());
+  EXPECT_THAT(result.mergeable_attributes, IsEmpty());
   EXPECT_TRUE(result.is_subset);
 }
-TEST_P(
+TEST_F(
     AutofillEntityInstanceTest,
     GetEntityMergeability_NewEntityEmptyStringAttribute_NoMergeablesAttribute_IsASubset) {
   EntityInstance::EntityMergeability result =
       test::GetPassportEntityInstance().GetEntityMergeability(
-          test::GetPassportEntityInstance({.expiry_date = nullptr}));
+          test::GetPassportEntityInstance({.expiry_date = u""}));
 
-  EXPECT_TRUE(result.mergeable_attributes.empty());
+  EXPECT_THAT(result.mergeable_attributes, IsEmpty());
   EXPECT_TRUE(result.is_subset);
 }
 
-TEST_P(
+TEST_F(
     AutofillEntityInstanceTest,
     GetEntityMergeability_NewEntityHasNewAttribute_MergeableAttributesExists_IsNotASubset) {
   EntityInstance old_entity =
@@ -346,9 +469,9 @@ TEST_P(
   EntityInstance::EntityMergeability result =
       old_entity.GetEntityMergeability(new_entity);
 
-  ASSERT_EQ(result.mergeable_attributes.size(), 1u);
-  EXPECT_EQ(result.mergeable_attributes[0].type().name(),
-            kPassportExpirationDate);
+  ASSERT_THAT(result.mergeable_attributes,
+              ElementsAre(Property(&AttributeInstance::type,
+                                   AttributeType(kPassportExpirationDate))));
 
   const AttributeInstance& old_attribute = result.mergeable_attributes[0];
   base::optional_ref<const AttributeInstance> new_attribute =
@@ -361,7 +484,7 @@ TEST_P(
 // This test has two entities that have the same merge constraints (Passport
 // number and expiry date). However, newer contains an update data for country,
 // this should not lead to a fresh entity, rather an updated one.
-TEST_P(
+TEST_F(
     AutofillEntityInstanceTest,
     GetEntityMergeability_MergeConstraintsMatch_AttributeWithDifferentValue_MergeableAttributesExists_IsNotASubset) {
   EntityInstance new_entity =
@@ -369,8 +492,9 @@ TEST_P(
   EntityInstance::EntityMergeability result =
       test::GetPassportEntityInstance().GetEntityMergeability(new_entity);
 
-  ASSERT_EQ(result.mergeable_attributes.size(), 1u);
-  EXPECT_EQ(result.mergeable_attributes[0].type().name(), kPassportCountry);
+  ASSERT_THAT(result.mergeable_attributes,
+              ElementsAre(Property(&AttributeInstance::type,
+                                   AttributeType(kPassportCountry))));
 
   const AttributeInstance& old_attribute = result.mergeable_attributes[0];
   base::optional_ref<const AttributeInstance> new_attribute =
@@ -380,7 +504,7 @@ TEST_P(
   EXPECT_FALSE(result.is_subset);
 }
 
-TEST_P(
+TEST_F(
     AutofillEntityInstanceTest,
     GetEntityMergeability_NewEntityHasSameAttributeWithDifferentValue_MergeableAttributesDoNotExists_IsNotASubset) {
   EntityInstance old_entity =
@@ -389,11 +513,11 @@ TEST_P(
       test::GetPassportEntityInstance({.number = u"456"});
   EntityInstance::EntityMergeability result =
       old_entity.GetEntityMergeability(new_entity);
-  EXPECT_TRUE(result.mergeable_attributes.empty());
+  EXPECT_THAT(result.mergeable_attributes, IsEmpty());
   EXPECT_FALSE(result.is_subset);
 }
 
-TEST_P(
+TEST_F(
     AutofillEntityInstanceTest,
     GetEntityMergeability_NewEntityHasEquivalentAttribute_MergeableAttributesDoNotExists_IsASubset) {
   EntityInstance::EntityMergeability result =
@@ -401,31 +525,31 @@ TEST_P(
           .GetEntityMergeability(
               test::GetPassportEntityInstance({.number = u"1234    5"}));
 
-  EXPECT_TRUE(result.mergeable_attributes.empty());
+  EXPECT_THAT(result.mergeable_attributes, IsEmpty());
   EXPECT_TRUE(result.is_subset);
 }
 
-TEST_P(AutofillEntityInstanceTest, IsSubsetOf_IdenticalEntities) {
+TEST_F(AutofillEntityInstanceTest, IsSubsetOf_IdenticalEntities) {
   EntityInstance entity1 = test::GetPassportEntityInstance();
   EntityInstance entity2 = test::GetPassportEntityInstance();
   EXPECT_TRUE(entity1.IsSubsetOf(entity2));
 }
 
-TEST_P(AutofillEntityInstanceTest, IsSubsetOf_ProperSubset) {
+TEST_F(AutofillEntityInstanceTest, IsSubsetOf_ProperSubset) {
   EntityInstance entity1 =
       test::GetPassportEntityInstance({.expiry_date = nullptr});
   EntityInstance entity2 = test::GetPassportEntityInstance();
   EXPECT_TRUE(entity1.IsSubsetOf(entity2));
 }
 
-TEST_P(AutofillEntityInstanceTest, IsSubsetOf_NotASubset) {
+TEST_F(AutofillEntityInstanceTest, IsSubsetOf_NotASubset) {
   EntityInstance entity1 = test::GetPassportEntityInstance();
   EntityInstance entity2 =
       test::GetPassportEntityInstance({.expiry_date = nullptr});
   EXPECT_FALSE(entity1.IsSubsetOf(entity2));
 }
 
-TEST_P(AutofillEntityInstanceTest, IsSubsetOf_DifferentEntityTypes) {
+TEST_F(AutofillEntityInstanceTest, IsSubsetOf_DifferentEntityTypes) {
   EntityInstance entity1 = test::GetPassportEntityInstance();
   EntityInstance entity2 = test::GetVehicleEntityInstance();
   EXPECT_FALSE(entity1.IsSubsetOf(entity2));
@@ -433,17 +557,17 @@ TEST_P(AutofillEntityInstanceTest, IsSubsetOf_DifferentEntityTypes) {
 
 // Tests that valid entities that don't share any attribute in common are not
 // merged, as we cannot verify that they represent the same real-world object.
-TEST_P(AutofillEntityInstanceTest, GetEntityMergeability_EntitiesAreDisjoint) {
+TEST_F(AutofillEntityInstanceTest, GetEntityMergeability_EntitiesAreDisjoint) {
   EntityInstance::EntityMergeability result =
       test::GetVehicleEntityInstance({.number = u"12345"})
           .GetEntityMergeability(
               test::GetVehicleEntityInstance({.plate = u"6789"}));
 
-  EXPECT_TRUE(result.mergeable_attributes.empty());
+  EXPECT_THAT(result.mergeable_attributes, IsEmpty());
   EXPECT_FALSE(result.is_subset);
 }
 
-TEST_P(AutofillEntityInstanceTest, FrecencyOrder_SortEntitiesByFrecency) {
+TEST_F(AutofillEntityInstanceTest, FrecencyOrder_SortEntitiesByFrecency) {
   auto pp_with_random_guid = []() {
     return test::GetPassportEntityInstance(
         {.guid = base::Uuid::GenerateRandomV4().AsLowercaseString()});
@@ -471,7 +595,7 @@ TEST_P(AutofillEntityInstanceTest, FrecencyOrder_SortEntitiesByFrecency) {
 }
 
 // Tests that frecency override takes precedence over frecency.
-TEST_P(AutofillEntityInstanceTest, FrecencyOrder_EntitiesWithFrecencyOverride) {
+TEST_F(AutofillEntityInstanceTest, FrecencyOrder_EntitiesWithFrecencyOverride) {
   EntityInstance first_flight = test::GetFlightReservationEntityInstance(
       {.departure_time = test::kJune2017});
   EntityInstance second_flight = test::GetFlightReservationEntityInstance(
@@ -487,7 +611,7 @@ TEST_P(AutofillEntityInstanceTest, FrecencyOrder_EntitiesWithFrecencyOverride) {
 
 // Tests that if one entity has a non-empty frecency override, while other has
 // empty override, the non-empty takes precedence.
-TEST_P(AutofillEntityInstanceTest,
+TEST_F(AutofillEntityInstanceTest,
        FrecencyOrder_EntityWithFrecencyOverrideTakesPrecedence) {
   EntityInstance flight = test::GetFlightReservationEntityInstance(
       {.departure_time = test::kJune2017});
@@ -501,7 +625,7 @@ TEST_P(AutofillEntityInstanceTest,
   EXPECT_EQ(entities[0].guid(), flight.guid());
 }
 
-TEST_P(AutofillEntityInstanceTest, AreAttributesReadOnly_ForReadOnlyEntity) {
+TEST_F(AutofillEntityInstanceTest, AreAttributesReadOnly_ForReadOnlyEntity) {
   EntityInstance entity = test::GetPassportEntityInstance(
       {.are_attributes_read_only =
            EntityInstance::AreAttributesReadOnly{true}});
@@ -509,7 +633,7 @@ TEST_P(AutofillEntityInstanceTest, AreAttributesReadOnly_ForReadOnlyEntity) {
   EXPECT_TRUE(entity.are_attributes_read_only());
 }
 
-TEST_P(AutofillEntityInstanceTest, AreAttributesReadOnly_ForMutableEntity) {
+TEST_F(AutofillEntityInstanceTest, AreAttributesReadOnly_ForMutableEntity) {
   EntityInstance entity = test::GetPassportEntityInstance(
       {.are_attributes_read_only =
            EntityInstance::AreAttributesReadOnly{false}});
@@ -517,7 +641,7 @@ TEST_P(AutofillEntityInstanceTest, AreAttributesReadOnly_ForMutableEntity) {
   EXPECT_FALSE(entity.are_attributes_read_only());
 }
 
-TEST_P(AutofillEntityInstanceTest, FormatFlightDepartureDate) {
+TEST_F(AutofillEntityInstanceTest, FormatFlightDepartureDate) {
   AttributeType type(kFlightReservationDepartureDate);
   AttributeInstance attribute(type);
   attribute.SetInfo(FLIGHT_RESERVATION_DEPARTURE_DATE, u"2025-01-01",
@@ -532,7 +656,7 @@ TEST_P(AutofillEntityInstanceTest, FormatFlightDepartureDate) {
 }
 
 // Tests that the metadata of an entity instance can be updated correctly.
-TEST_P(AutofillEntityInstanceTest, SetMetadata) {
+TEST_F(AutofillEntityInstanceTest, SetMetadata) {
   EntityInstance entity = test::GetPassportEntityInstance();
   EntityInstance::EntityId original_guid = entity.guid();
   // Create new metadata with different values but the same GUID.
@@ -545,9 +669,50 @@ TEST_P(AutofillEntityInstanceTest, SetMetadata) {
   EXPECT_EQ(entity.metadata(), new_metadata);
 }
 
+// Tests that GetTypedValue() returns the country code for a country attribute.
+TEST_F(AutofillEntityInstanceTest, GetTypedValue_Country) {
+  AttributeType type(kPassportCountry);
+  AttributeInstance attribute(type);
+  attribute.SetInfo(PASSPORT_ISSUING_COUNTRY, u"United States",
+                    /*app_locale=*/"en_US",
+                    /*format_string=*/std::nullopt,
+                    VerificationStatus::kObserved);
+  personal_context::proto::TypedValue val = attribute.GetTypedValue();
+  EXPECT_TRUE(val.has_country_code());
+  EXPECT_EQ(val.country_code(), "US");
+}
+
+// Tests that GetTypedValue() returns the date proto for a date attribute.
+TEST_F(AutofillEntityInstanceTest, GetTypedValue_Date) {
+  AttributeType type(kFlightReservationDepartureDate);
+  AttributeInstance attribute(type);
+  attribute.SetInfo(FLIGHT_RESERVATION_DEPARTURE_DATE, u"2025-01-01",
+                    /*app_locale=*/"en_US",
+                    AutofillFormatString(u"YYYY-MM-DD", FormatString_Type_DATE),
+                    VerificationStatus::kObserved);
+  personal_context::proto::TypedValue val = attribute.GetTypedValue();
+  EXPECT_TRUE(val.has_date());
+  EXPECT_EQ(val.date().year(), 2025);
+  EXPECT_EQ(val.date().month(), 1);
+  EXPECT_EQ(val.date().day(), 1);
+}
+
+// Tests that GetTypedValue() returns an unset TypedValue for a string
+// attribute.
+TEST_F(AutofillEntityInstanceTest, GetTypedValue_Unset) {
+  AttributeType type(kPassportNumber);
+  AttributeInstance attribute(type);
+  attribute.SetInfo(PASSPORT_NUMBER, u"12345", /*app_locale=*/"en_US",
+                    /*format_string=*/std::nullopt,
+                    VerificationStatus::kObserved);
+  personal_context::proto::TypedValue val = attribute.GetTypedValue();
+  EXPECT_EQ(val.value_case(),
+            personal_context::proto::TypedValue::VALUE_NOT_SET);
+}
+
 // Tests that calling `set_metadata` with a different GUID causes a CHECK
 // failure.
-TEST_P(AutofillEntityInstanceTest, SetMetadata_DifferentGuid_CheckFails) {
+TEST_F(AutofillEntityInstanceTest, SetMetadata_DifferentGuid_CheckFails) {
   EntityInstance entity = test::GetPassportEntityInstance();
   EntityInstance::EntityMetadata new_metadata = entity.metadata();
   new_metadata.guid = EntityInstance::EntityId(base::Uuid::GenerateRandomV4());
@@ -557,7 +722,8 @@ TEST_P(AutofillEntityInstanceTest, SetMetadata_DifferentGuid_CheckFails) {
 
 // Tests that masked attributes only require a suffix match if the feature is
 // enabled.
-TEST_P(AutofillEntityInstanceTest, IsSubsetOf_MaskedAttributes) {
+TEST_P(AutofillEntityInstanceWalletPrivatePassesTest,
+       IsSubsetOf_MaskedAttributes) {
   AttributeInstance a1((AttributeType(kPassportNumber)));
   a1.SetRawInfo(PASSPORT_NUMBER, u"LR0123456", VerificationStatus::kNoStatus);
 
@@ -575,7 +741,8 @@ TEST_P(AutofillEntityInstanceTest, IsSubsetOf_MaskedAttributes) {
 
 // Tests that GetEntityMergeability also honors the suffix match for masked
 // attributes if the feature is enabled.
-TEST_P(AutofillEntityInstanceTest, GetEntityMergeability_MaskedAttributes) {
+TEST_P(AutofillEntityInstanceWalletPrivatePassesTest,
+       GetEntityMergeability_MaskedAttributes) {
   // Passport merge constraints include the passport number.
   AttributeInstance a1_num((AttributeType(kPassportNumber)));
   a1_num.SetRawInfo(PASSPORT_NUMBER, u"LR0123456",
@@ -607,7 +774,8 @@ TEST_P(AutofillEntityInstanceTest, GetEntityMergeability_MaskedAttributes) {
 
 // Tests that if both attributes are masked, they compare as unequal if they
 // are not the same.
-TEST_P(AutofillEntityInstanceTest, IsSubsetOf_BothMasked_OneIsSuffixOfOther) {
+TEST_P(AutofillEntityInstanceWalletPrivatePassesTest,
+       IsSubsetOf_BothMasked_OneIsSuffixOfOther) {
   AttributeInstance a1((AttributeType(kPassportNumber)));
   a1.SetRawInfo(PASSPORT_NUMBER, u"LR0123456", VerificationStatus::kNoStatus);
   test_api(a1).mark_as_masked();
@@ -629,7 +797,7 @@ TEST_P(AutofillEntityInstanceTest, IsSubsetOf_BothMasked_OneIsSuffixOfOther) {
 // obfuscated attribute. Private passes should only be used for entities
 // with obfuscated attributes, since entities without them can be safely stored
 // locally.
-TEST_P(AutofillEntityInstanceTest, GetWalletPassType) {
+TEST_F(AutofillEntityInstanceTest, GetWalletPassType) {
   for (EntityType t : DenseSet<EntityType>::all()) {
     EXPECT_TRUE(
         GetWalletPassType(t, EntityInstance::RecordType::kServerWallet) !=
@@ -644,7 +812,7 @@ TEST_P(AutofillEntityInstanceTest, GetWalletPassType) {
 }
 
 // Tests explicitly for the expected WalletPassType of some entity types.
-TEST_P(AutofillEntityInstanceTest, GetWalletPassTypeExpectedTypes) {
+TEST_F(AutofillEntityInstanceTest, GetWalletPassTypeExpectedTypes) {
   using enum EntityTypeName;
   EXPECT_EQ(GetWalletPassType(EntityType(kDriversLicense),
                               EntityInstance::RecordType::kServerWallet),
@@ -668,19 +836,18 @@ TEST_P(AutofillEntityInstanceTest, GetWalletPassTypeExpectedTypes) {
   EXPECT_EQ(GetWalletPassType(EntityType(kVehicle),
                               EntityInstance::RecordType::kServerWallet),
             EntityInstance::WalletPassType::kPublic);
-
   EXPECT_EQ(GetWalletPassType(EntityType(kOrder),
                               EntityInstance::RecordType::kServerWallet),
-            EntityInstance::WalletPassType::kUnsupported);
+            EntityInstance::WalletPassType::kPublic);
   EXPECT_EQ(GetWalletPassType(EntityType(kShipment),
                               EntityInstance::RecordType::kServerWallet),
-            EntityInstance::WalletPassType::kUnsupported);
+            EntityInstance::WalletPassType::kPublic);
 }
 
 // Tests that personal context SPII types have at least one obfuscated
 // attribute for sensitive categories (Spii), since entities without them can
 // be safely stored locally.
-TEST_P(AutofillEntityInstanceTest, GetPersonalContextSpiiType) {
+TEST_F(AutofillEntityInstanceTest, GetPersonalContextSpiiType) {
   for (EntityType t : DenseSet<EntityType>::all()) {
     EXPECT_TRUE(
         GetPersonalContextSpiiType(
@@ -701,7 +868,7 @@ TEST_P(AutofillEntityInstanceTest, GetPersonalContextSpiiType) {
 
 // Tests explicitly for the expected PersonalContextSpiiType of some entity
 // types.
-TEST_P(AutofillEntityInstanceTest, GetPersonalContextSpiiTypeExpectedTypes) {
+TEST_F(AutofillEntityInstanceTest, GetPersonalContextSpiiTypeExpectedTypes) {
   using enum EntityTypeName;
   EXPECT_EQ(
       GetPersonalContextSpiiType(EntityType(kDriversLicense),
@@ -758,7 +925,7 @@ TEST_P(AutofillEntityInstanceTest, GetPersonalContextSpiiTypeExpectedTypes) {
 // Should this test start to fail, then the form import logic must be updated.
 // For example, you might need to fetch the unmasked entity from the Wallet
 // server before sending the update request.
-TEST_P(AutofillEntityInstanceTest, ObfuscatedAttributesAreImportConstraints) {
+TEST_F(AutofillEntityInstanceTest, ObfuscatedAttributesAreImportConstraints) {
   for (const EntityType entity_type : DenseSet<EntityType>::all()) {
     if (GetWalletPassType(entity_type,
                           EntityInstance::RecordType::kServerWallet) !=
@@ -780,7 +947,147 @@ TEST_P(AutofillEntityInstanceTest, ObfuscatedAttributesAreImportConstraints) {
   }
 }
 
-INSTANTIATE_FEATURE_OVERRIDE_TEST_SUITE(AutofillEntityInstanceTest);
+// Tests that MatchesMergeConstraintsOf correctly identifies matches based on
+// the entity type's merge constraints (e.g., ticket number or confirmation
+// code for flight reservations), including cases where some fields are missing.
+TEST_F(AutofillEntityInstanceTest, MatchesMergeConstraintsOf) {
+  EntityInstance flight1 = test::GetFlightReservationEntityInstance(
+      {.ticket_number = u"123-ABC", .confirmation_code = u"Conf-Code"});
+
+  // flight2 matches via ticket number.
+  EntityInstance flight2 = test::GetFlightReservationEntityInstance(
+      {.ticket_number = u"123-ABC", .confirmation_code = nullptr});
+  EXPECT_TRUE(flight1.MatchesMergeConstraintsOf(flight2));
+  EXPECT_TRUE(flight2.MatchesMergeConstraintsOf(flight1));
+
+  // flight3 matches via confirmation code.
+  EntityInstance flight3 = test::GetFlightReservationEntityInstance(
+      {.ticket_number = nullptr, .confirmation_code = u"Conf-Code"});
+  EXPECT_TRUE(flight1.MatchesMergeConstraintsOf(flight3));
+  EXPECT_TRUE(flight3.MatchesMergeConstraintsOf(flight1));
+
+  // flight4 does not match because it has a different ticket number and
+  // confirmation code.
+  EntityInstance flight4 = test::GetFlightReservationEntityInstance(
+      {.ticket_number = u"999-XYZ", .confirmation_code = u"Other-Conf-Code"});
+  EXPECT_FALSE(flight1.MatchesMergeConstraintsOf(flight4));
+  EXPECT_FALSE(flight4.MatchesMergeConstraintsOf(flight1));
+
+  // flight5 does not match flight3 because flight5 has no confirmation code,
+  // and flight3 has no ticket number, so no overlapping constraint is present
+  // on both.
+  EntityInstance flight5 = test::GetFlightReservationEntityInstance(
+      {.ticket_number = u"123-ABC", .confirmation_code = nullptr});
+  EXPECT_FALSE(flight3.MatchesMergeConstraintsOf(flight5));
+  EXPECT_FALSE(flight5.MatchesMergeConstraintsOf(flight3));
+}
+
+// Tests MatchesMergeConstraintsOf when one entity is masked and the other is
+// not.
+TEST_P(AutofillEntityInstanceAmbientAutofillTest,
+       MatchesMergeConstraintsOf_MixedMasking) {
+  // This test is run with AmbientAutofill enabled and disabled. Comparing
+  // suffixes for masked attributes is also controlled by the Wallet feature.
+  // Disable it to avoid it interfering with the expectations.
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndDisableFeature(features::kAutofillAiWalletPrivatePasses);
+  EntityInstance passport_masked =
+      test::MaskEntityInstance(test::GetPassportEntityInstanceWithRandomGuid(
+          {.number = u"1234567890",
+           .record_type = EntityInstance::RecordType::kPersonalContext}));
+  EntityInstance passport_unmasked =
+      test::GetPassportEntityInstanceWithRandomGuid(
+          {.number = u"1234567890",
+           .record_type = EntityInstance::RecordType::kLocal});
+  const bool expected_match = GetParam();
+
+  EXPECT_EQ(passport_masked.MatchesMergeConstraintsOf(passport_unmasked),
+            expected_match);
+  EXPECT_EQ(passport_unmasked.MatchesMergeConstraintsOf(passport_masked),
+            expected_match);
+}
+
+INSTANTIATE_FEATURE_OVERRIDE_TEST_SUITE(
+    AutofillEntityInstanceWalletPrivatePassesTest);
+INSTANTIATE_FEATURE_OVERRIDE_TEST_SUITE(
+    AutofillEntityInstanceAmbientAutofillTest);
+
+struct GetManagementUrlWithFallbackTestCase {
+  std::string_view description;
+  EntityTypeName entity_type;
+  std::string_view stored_url;
+  std::string_view expected_url;
+};
+
+class GetManagementUrlWithFallbackTest
+    : public ::testing::TestWithParam<GetManagementUrlWithFallbackTestCase> {
+ public:
+  GetManagementUrlWithFallbackTest() {
+    feature_list_.InitWithFeatures(
+        /*enabled_features=*/{features::kAutofillAiWalletPrivatePassesDeepLink,
+                              features::
+                                  kAutofillAiWalletServerProvidedDeepLink},
+        /*disabled_features=*/{});
+  }
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
+};
+
+TEST_P(GetManagementUrlWithFallbackTest, ResolvesExpectedUrl) {
+  const GetManagementUrlWithFallbackTestCase& test_case = GetParam();
+  const EntityInstance::WalletRecordTypePayload payload{
+      .management_url = GURL(test_case.stored_url)};
+  EXPECT_EQ(payload.GetManagementUrlWithFallback(
+                EntityType(test_case.entity_type),
+                EntityInstance::EntityId("123-456:789")),
+            GURL(test_case.expected_url))
+      << test_case.description;
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    AutofillEntityInstanceTest,
+    GetManagementUrlWithFallbackTest,
+    ::testing::Values(
+        GetManagementUrlWithFallbackTestCase{
+            .description = "Public pass with valid server management URL",
+            .entity_type = EntityTypeName::kVehicle,
+            .stored_url = "https://wallet.google.com/wallet/passes/vehicle_123",
+            .expected_url =
+                "https://wallet.google.com/wallet/passes/vehicle_123"},
+        GetManagementUrlWithFallbackTestCase{
+            .description = "Public pass with empty management URL falls back "
+                           "to passes page",
+            .entity_type = EntityTypeName::kVehicle,
+            .stored_url = "",
+            .expected_url = "https://wallet.google.com/wallet/passes"},
+        GetManagementUrlWithFallbackTestCase{
+            .description = "Shopping entity with valid server management URL",
+            .entity_type = EntityTypeName::kOrder,
+            .stored_url =
+                "https://wallet.google.com/wallet/transactions/order_123",
+            .expected_url =
+                "https://wallet.google.com/wallet/transactions/order_123"},
+        GetManagementUrlWithFallbackTestCase{
+            .description = "Shopping entity with empty management URL falls "
+                           "back to transactions page",
+            .entity_type = EntityTypeName::kOrder,
+            .stored_url = "",
+            .expected_url = "https://wallet.google.com/wallet/transactions"},
+        GetManagementUrlWithFallbackTestCase{
+            .description = "Private pass with valid server management URL",
+            .entity_type = EntityTypeName::kPassport,
+            .stored_url = "https://wallet.google.com/server_private_pass",
+            .expected_url = "https://wallet.google.com/server_private_pass"},
+        GetManagementUrlWithFallbackTestCase{
+            .description = "Private pass with empty management URL falls back "
+                           "to client-constructed deep link",
+            .entity_type = EntityTypeName::kPassport,
+            .stored_url = "",
+            .expected_url =
+                "https://wallet.google.com/wallet?p=walletpass&"
+                "ppid=123-456%3A789&utm_source=chrome&utm_medium=settings&"
+                "utm_campaign=enhanced_autofill"}));
 
 }  // namespace
 }  // namespace autofill

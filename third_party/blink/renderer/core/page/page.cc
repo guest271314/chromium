@@ -38,8 +38,8 @@
 #include "third_party/blink/renderer/core/css/style_change_reason.h"
 #include "third_party/blink/renderer/core/css/style_engine.h"
 #include "third_party/blink/renderer/core/css/vision_deficiency.h"
-#include "third_party/blink/renderer/core/dom/element_rare_data_vector.h"
 #include "third_party/blink/renderer/core/dom/events/event.h"
+#include "third_party/blink/renderer/core/dom/node_rare_data.h"
 #include "third_party/blink/renderer/core/dom/visited_link_state.h"
 #include "third_party/blink/renderer/core/editing/drag_caret.h"
 #include "third_party/blink/renderer/core/editing/markers/document_marker_controller.h"
@@ -60,7 +60,6 @@
 #include "third_party/blink/renderer/core/frame/viewport_data.h"
 #include "third_party/blink/renderer/core/frame/visual_viewport.h"
 #include "third_party/blink/renderer/core/fullscreen/fullscreen.h"
-#include "third_party/blink/renderer/core/html/fenced_frame/document_fenced_frames.h"
 #include "third_party/blink/renderer/core/html/media/html_media_element.h"
 #include "third_party/blink/renderer/core/inspector/console_message.h"
 #include "third_party/blink/renderer/core/inspector/console_message_storage.h"
@@ -438,8 +437,6 @@ void Page::SetMainFrame(Frame* main_frame) {
   // initialization or swaps between local and remote frames.
   main_frame_ = main_frame;
 
-  page_scheduler_->SetIsMainFrameLocal(main_frame->IsLocalFrame());
-
   // Now that the page has a main frame, connect it to related pages if needed.
   // However, if the main frame is a fake RemoteFrame used for a new Page to
   // host a provisional main LocalFrame, don't connect it just yet, as this Page
@@ -507,6 +504,12 @@ void Page::TakePropertiesForLocalMainFrameSwap(Page* old_page) {
   // renderer-side opener is only set during construction and might be stale.
   // When we create the new page, we get the latest opener frame token, so the
   // new page's opener should be the most up-to-date opener.
+
+  // Transfer user agent page scale constraints (such as initial scale set by
+  // the embedder) to the new Page so that scale settings persist across main
+  // frame swaps.
+  SetUserAgentPageScaleConstraints(
+      old_page->GetPageScaleConstraintsSet().UserAgentConstraints());
 }
 
 LocalFrame* Page::DeprecatedLocalMainFrame() const {
@@ -540,18 +543,8 @@ SpatialNavigationController& Page::GetSpatialNavigationController() {
 
 SVGDocumentResourceTracker& Page::GetSVGDocumentResourceTracker() {
   if (!svg_document_resource_tracker_) {
-    if (RuntimeEnabledFeatures::
-            SvgPartitionSVGDocumentResourcesInMemoryCacheEnabled()) {
-      svg_document_resource_tracker_ =
-          SVGResourceSchedulerRegistry::GetTracker(GetAgentGroupScheduler());
-
-    } else {
-      svg_document_resource_tracker_ =
-          MakeGarbageCollected<SVGDocumentResourceTracker>(
-              GetPageScheduler()->GetAgentGroupScheduler().DefaultTaskRunner(),
-              SVGDocumentResourceTracker::MakeCacheIdentifier(
-                  String(BrowsingContextGroupToken().ToString())));
-    }
+    svg_document_resource_tracker_ =
+        SVGResourceSchedulerRegistry::GetTracker(GetAgentGroupScheduler());
   }
   return *svg_document_resource_tracker_;
 }
@@ -575,17 +568,8 @@ void Page::ForcedColorsChanged() {
 }
 
 void Page::PlatformColorsChanged() {
-  for (const Page* page : AllPages()) {
-    for (Frame* frame = page->MainFrame(); frame;
-         frame = frame->Tree().TraverseNext()) {
-      if (auto* local_frame = DynamicTo<LocalFrame>(frame)) {
-        if (Document* document = local_frame->GetDocument()) {
-          document->PlatformColorsChanged();
-        }
-        if (LayoutView* view = local_frame->ContentLayoutObject())
-          view->InvalidatePaintForViewAndDescendants();
-      }
-    }
+  for (Page* page : AllPages()) {
+    page->InvalidatePlatformColors();
   }
 }
 
@@ -929,16 +913,6 @@ void CheckFrameCountConsistency(int expected_frame_count, Frame* frame) {
   for (; frame; frame = frame->Tree().TraverseNext()) {
     ++actual_frame_count;
 
-    // Check the ``DocumentFencedFrames`` on every local frame beneath
-    // the ``frame`` to get an accurate count (i.e. if an iframe embeds
-    // a fenced frame and creates a new ``DocumentFencedFrames`` object).
-    if (auto* local_frame = DynamicTo<LocalFrame>(frame)) {
-      if (auto* fenced_frames =
-              DocumentFencedFrames::Get(*local_frame->GetDocument())) {
-        actual_frame_count +=
-            static_cast<int>(fenced_frames->GetFencedFrames().size());
-      }
-    }
   }
 
   DCHECK_EQ(expected_frame_count, actual_frame_count);
@@ -1219,7 +1193,8 @@ void Page::SettingsChanged(ChangeType change_type) {
       break;
     }
     case ChangeType::kForcedColors: {
-      ForcedColorsChanged();
+      InvalidatePlatformColors();
+      InvalidateColorScheme();
       break;
     }
     case ChangeType::kAcceptLanguages:
@@ -1242,6 +1217,20 @@ void Page::InvalidateColorScheme() {
         if (auto* preferences = NavigatorPreferences::preferences(*navigator)) {
           preferences->PreferenceMaybeChanged();
         }
+      }
+    }
+  }
+}
+
+void Page::InvalidatePlatformColors() {
+  for (Frame* frame = MainFrame(); frame;
+       frame = frame->Tree().TraverseNext()) {
+    if (auto* local_frame = DynamicTo<LocalFrame>(frame)) {
+      if (Document* document = local_frame->GetDocument()) {
+        document->PlatformColorsChanged();
+      }
+      if (LayoutView* view = local_frame->ContentLayoutObject()) {
+        view->InvalidatePaintForViewAndDescendants();
       }
     }
   }
@@ -1403,10 +1392,6 @@ void Page::WillBeDestroyed() {
     next_related_page_ = nullptr;
   }
 
-  if (svg_document_resource_tracker_) {
-    svg_document_resource_tracker_->WillBeDestroyed();
-  }
-
   if (scrolling_coordinator_)
     scrolling_coordinator_->WillBeDestroyed();
 
@@ -1462,12 +1447,10 @@ int32_t Page::AutoplayFlags() const {
   return autoplay_flags_;
 }
 
-void Page::SetIsMainFrameFencedFrameRoot() {
-  is_fenced_frame_tree_ = true;
-}
+void Page::SetIsMainFrameFencedFrameRoot() {}
 
 bool Page::IsMainFrameFencedFrameRoot() const {
-  return is_fenced_frame_tree_;
+  return false;
 }
 
 void Page::SetMediaFeatureOverride(const AtomicString& media_feature,
@@ -1585,11 +1568,6 @@ void Page::UpdateBrowsingContextGroup(
   }
 }
 
-void Page::SetAttributionSupport(
-    network::mojom::AttributionSupport attribution_support) {
-  attribution_support_ = attribution_support;
-}
-
 template class CORE_TEMPLATE_EXPORT Supplement<Page>;
 
 const char InternalSettingsPageSupplementBase::kSupplementName[] =
@@ -1638,7 +1616,7 @@ void Page::UpgradePrerenderUntilScriptToFullPrerender() {
 // Ensure the 10 bits reserved for connected frame count in NodeRareData are
 // sufficient.
 static_assert(kMaxNumberOfFrames <
-                  (1 << ElementRareDataVector::kConnectedFrameCountBits),
+                  (1 << NodeRareData::kConnectedFrameCountBits),
               "Frame limit should fit in rare data count");
 static_assert(kTenFrames < kMaxNumberOfFrames,
               "Reduced frame limit for testing should actually be lower");

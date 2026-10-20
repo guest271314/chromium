@@ -12,9 +12,9 @@
 #include "base/memory/weak_ptr.h"
 #include "base/run_loop.h"
 #include "build/build_config.h"
-#include "components/optimization_guide/core/optimization_guide_constants.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "mojo/public/cpp/bindings/unique_receiver_set.h"
+#include "services/on_device_model/public/cpp/capabilities.h"
 #include "services/on_device_model/public/cpp/model_assets.h"
 #include "services/on_device_model/public/cpp/service_client.h"
 #include "services/on_device_model/public/mojom/on_device_model.mojom.h"
@@ -27,9 +27,6 @@ class FakeOnDeviceModel;
 // The expected content of safety model files.
 inline constexpr std::string FakeTsData() {
   return "fake_ts_data";
-}
-inline constexpr std::string FakeTsSpModel() {
-  return "fake_ts_sp_model";
 }
 inline constexpr std::string FakeLanguageModel() {
   return "fake_language_model";
@@ -52,7 +49,7 @@ struct FakeOnDeviceServiceSettings final {
       mojom::PerformanceClass::kVeryHigh;
 
   // Initialize VRAM high enough to support audio input capability.
-  uint64_t vram_mb = optimization_guide::kOnDeviceModelAudioVramMinMb;
+  uint64_t vram_mb = kAudioVramMinMb;
 
   // If non-empty, used as the output from Execute().
   std::vector<std::string> model_execute_result;
@@ -157,6 +154,7 @@ class FakeOnDeviceModel : public mojom::OnDeviceModel {
 
     std::string base_weight = "";
     std::string adaptation_model_weight = "";
+    std::string postprocessor_weight = "";
     std::string cache_weight = "";
     std::string encoder_cache_weight = "";
     std::string adapter_cache_weight = "";
@@ -183,6 +181,10 @@ class FakeOnDeviceModel : public mojom::OnDeviceModel {
                       mojo::PendingReceiver<mojom::OnDeviceModel> model,
                       LoadAdaptationCallback callback) override;
 
+  void LoadPostProcessor(mojom::LoadPostProcessorParamsPtr params,
+                         mojo::PendingReceiver<mojom::OnDeviceModel> model,
+                         LoadPostProcessorCallback callback) override;
+
   void AddSession(
       mojo::PendingReceiver<on_device_model::mojom::Session> receiver,
       std::unique_ptr<FakeOnDeviceSession> session);
@@ -205,11 +207,11 @@ class FakeOnDeviceModel : public mojom::OnDeviceModel {
   mojo::UniqueReceiverSet<mojom::OnDeviceModel> model_adaptation_receivers_;
 };
 
-class FakeTsModel final : public mojom::TextSafetyModel,
-                          public mojom::TextSafetySession {
+class FakeTextSafetyModel final : public mojom::TextSafetyModel,
+                                  public mojom::TextSafetySession {
  public:
-  explicit FakeTsModel(mojom::TextSafetyModelParamsPtr params);
-  ~FakeTsModel() override;
+  explicit FakeTextSafetyModel(mojom::TextSafetyModelParamsPtr params);
+  ~FakeTextSafetyModel() override;
 
   // on_device_model::mojom::TextSafetyModel
   void StartSession(
@@ -228,15 +230,14 @@ class FakeTsModel final : public mojom::TextSafetyModel,
   mojo::ReceiverSet<mojom::TextSafetySession> sessions_;
 };
 
-// TsHolder holds a single TsModel. Its operations may block.
-class FakeTsHolder final {
+// FakeSafetyModelHolder holds a single FakeTextSafetyModel for testing.
+class FakeSafetyModelHolder final {
  public:
-  explicit FakeTsHolder();
-  ~FakeTsHolder();
+  FakeSafetyModelHolder();
+  ~FakeSafetyModelHolder();
 
-  void Reset(on_device_model::mojom::TextSafetyModelParamsPtr params,
-             mojo::PendingReceiver<on_device_model::mojom::TextSafetyModel>
-                 model_receiver);
+  void Reset(mojom::TextSafetyModelParamsPtr params,
+             mojo::PendingReceiver<mojom::TextSafetyModel> model_receiver);
 
  private:
   mojo::UniqueReceiverSet<on_device_model::mojom::TextSafetyModel> model_;
@@ -273,7 +274,7 @@ class FakeOnDeviceModelService : public mojom::OnDeviceModelService {
       GetDeviceAndPerformanceInfoCallback callback) override;
 
   raw_ptr<FakeOnDeviceServiceSettings> settings_;
-  FakeTsHolder ts_holder_;
+  FakeSafetyModelHolder safety_model_holder_;
   mojo::UniqueReceiverSet<mojom::OnDeviceModel, FakeOnDeviceModel*>
       model_receivers_;
 };

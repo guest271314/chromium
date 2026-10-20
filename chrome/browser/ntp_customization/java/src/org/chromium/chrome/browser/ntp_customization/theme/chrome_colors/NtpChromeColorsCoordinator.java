@@ -29,6 +29,10 @@ import org.chromium.chrome.browser.ntp_customization.NtpCustomizationUtils;
 import org.chromium.chrome.browser.ntp_customization.NtpCustomizationUtils.NtpBackgroundType;
 import org.chromium.chrome.browser.ntp_customization.R;
 import org.chromium.chrome.browser.ntp_customization.theme.ThemeBottomSheetObserver;
+import org.chromium.chrome.browser.ntp_customization.theme_sync.data.NtpBackgroundDataBase;
+import org.chromium.chrome.browser.ntp_customization.theme_sync.data.NtpBackgroundDataColor;
+import org.chromium.chrome.browser.ntp_customization.theme_sync.data.NtpBackgroundDataCustomizedColor;
+import org.chromium.chrome.browser.ntp_customization.theme_sync.data.PlatformType;
 import org.chromium.ui.modelutil.PropertyModel;
 import org.chromium.ui.modelutil.PropertyModelChangeProcessor;
 import org.chromium.ui.text.EmptyTextWatcher;
@@ -184,11 +188,22 @@ public class NtpChromeColorsCoordinator implements ThemeBottomSheetObserver {
                 !NtpThemeColorUtils.isPrimaryColorMatched(
                         mContext, mPrimaryColorInfo, ntpThemeColorInfo));
 
+        NtpBackgroundDataBase backgroundData;
+        if (ntpThemeColorInfo instanceof NtpThemeColorFromHexInfo colorFromHexInfo) {
+            backgroundData =
+                    new NtpBackgroundDataCustomizedColor(PlatformType.ANDROID, colorFromHexInfo);
+            mLastClickedColorInfo = null;
+        } else {
+            backgroundData =
+                    new NtpBackgroundDataColor(
+                            PlatformType.ANDROID, mIsDailyRefreshEnabled, ntpThemeColorInfo);
+            mLastClickedColorInfo = ntpThemeColorInfo;
+        }
+
         NtpCustomizationConfigManager.getInstance()
-                .onBackgroundColorChanged(mContext, ntpThemeColorInfo);
+                .onBackgroundDataChanged(mContext, backgroundData);
 
         mOnChromeColorSelectedCallback.run();
-        mLastClickedColorInfo = ntpThemeColorInfo;
     }
 
     /** Cleans up the resources used by this coordinator. */

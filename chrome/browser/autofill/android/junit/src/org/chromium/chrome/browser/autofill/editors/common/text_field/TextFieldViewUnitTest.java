@@ -47,7 +47,7 @@ import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.chrome.browser.autofill.R;
 import org.chromium.chrome.browser.autofill.editors.common.field.EditorFieldValidator;
 import org.chromium.chrome.browser.autofill.editors.common.field.FieldView;
-import org.chromium.ui.accessibility.AccessibilityState;
+import org.chromium.ui.accessibility.AccessibilityStateTestHelper;
 import org.chromium.ui.modelutil.PropertyModel;
 import org.chromium.ui.modelutil.PropertyModelChangeProcessor;
 import org.chromium.ui.text.EmptyTextWatcher;
@@ -76,7 +76,7 @@ public final class TextFieldViewUnitTest {
 
     @After
     public void tearDown() {
-        AccessibilityState.setIsTouchExplorationEnabledForTesting(false);
+        AccessibilityStateTestHelper.setIsTouchExplorationEnabledForTesting(false);
     }
 
     private PropertyModel buildDefaultPropertyModel() {
@@ -383,25 +383,27 @@ public final class TextFieldViewUnitTest {
     public void testRequiredFieldHasCorrectLabelAndAccessibilityScreenReaderOff() {
         PropertyModel model = buildDefaultPropertyModel();
         model.set(IS_REQUIRED, true);
-        AccessibilityState.setIsTouchExplorationEnabledForTesting(false);
+        AccessibilityStateTestHelper.setIsTouchExplorationEnabledForTesting(false);
         TextInputLayout inputLayout = attachTextFieldView(model).getInputLayoutForTesting();
 
         // Hint should contain '*' when screen reader is off.
         assertTrue(inputLayout.getHint().toString().contains(FieldView.REQUIRED_FIELD_INDICATOR));
 
-        // Accessibility text should be the value, not the label.
+        // Accessibility text should lead with the value, not the label. TextInputLayout
+        // reports the hint through setHintText() on API 26+, but appends it to the text on
+        // older ones, so assert the value is announced first instead of being replaced.
         AccessibilityDelegate delegate = inputLayout.getEditText().getAccessibilityDelegate();
         assertNotNull(delegate);
         AccessibilityNodeInfo infoNode = AccessibilityNodeInfo.obtain();
         delegate.onInitializeAccessibilityNodeInfo(inputLayout.getEditText(), infoNode);
-        assertEquals(FIELD_VALUE, infoNode.getText().toString());
+        assertTrue(infoNode.getText().toString().startsWith(FIELD_VALUE));
     }
 
     @Test
     public void testRequiredFieldHasCorrectLabelAndAccessibilityScreenReaderOn() {
         PropertyModel model = buildDefaultPropertyModel();
         model.set(IS_REQUIRED, true);
-        AccessibilityState.setIsTouchExplorationEnabledForTesting(true);
+        AccessibilityStateTestHelper.setIsTouchExplorationEnabledForTesting(true);
         TextInputLayout inputLayout = attachTextFieldView(model).getInputLayoutForTesting();
 
         // Hint should contain "required" text.
@@ -412,12 +414,12 @@ public final class TextFieldViewUnitTest {
                         FIELD_LABEL);
         assertEquals(expectedHint, hint);
 
-        // Accessibility text should still be the value, not the label.
+        // Accessibility text should still lead with the value, not the label.
         AccessibilityDelegate delegate = inputLayout.getEditText().getAccessibilityDelegate();
         assertNotNull(delegate);
         AccessibilityNodeInfo infoNode = AccessibilityNodeInfo.obtain();
         delegate.onInitializeAccessibilityNodeInfo(inputLayout.getEditText(), infoNode);
-        assertEquals(FIELD_VALUE, infoNode.getText().toString());
+        assertTrue(infoNode.getText().toString().startsWith(FIELD_VALUE));
     }
 
     /**

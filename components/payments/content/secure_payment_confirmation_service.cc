@@ -10,20 +10,23 @@
 #include "base/compiler_specific.h"
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
+#include "base/logging.h"
 #include "base/memory/ref_counted_memory.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/task/thread_pool.h"
 #include "base/timer/elapsed_timer.h"
 #include "components/payments/content/browser_binding/browser_bound_key.h"
 #include "components/payments/content/browser_binding/browser_bound_key_store.h"
-#include "components/payments/content/web_payments_web_data_service.h"
 #include "components/payments/core/features.h"
 #include "components/payments/core/secure_payment_confirmation_credential.h"
+#include "components/payments/core/web_payments_web_data_service.h"
 #include "components/webauthn/core/browser/internal_authenticator.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/navigation_handle.h"
+#include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/secure_payment_confirmation_utils.h"
 #include "content/public/browser/web_contents.h"
+#include "content/public/browser/webauth_request_security_checker.h"
 #include "content/public/common/content_features.h"
 #include "crypto/random.h"
 #include "services/network/public/mojom/permissions_policy/permissions_policy_feature.mojom-shared.h"
@@ -108,8 +111,8 @@ void SecurePaymentConfirmationService::SecurePaymentConfirmationAvailability(
     return;
   }
 
-  if (base::FeatureList::IsEnabled(
-          features::kSecurePaymentConfirmationUseCredentialStoreAPIs) &&
+  if (features::kCredentialDiscoveryModeParam.Get() ==
+          features::CredentialDiscoveryMode::kOsOnly &&
       !authenticator_->IsGetMatchingCredentialIdsSupported()) {
     std::move(callback).Run(mojom::SecurePaymentConfirmationAvailabilityEnum::
                                 kUnavailableUnknownReason);
@@ -141,12 +144,81 @@ void SecurePaymentConfirmationService::StorePaymentCredential(
     const std::string& rp_id,
     const std::vector<uint8_t>& user_id,
     StorePaymentCredentialCallback callback) {
-  if (!web_data_service_ ||
+  VLOG(1) << "SecurePaymentConfirmationService::StorePaymentCredential"
+          << " credential_id="
+          << std::string(credential_id.begin(), credential_id.end())
+          << ", rp_id=" << rp_id
+          << ", user_id=" << std::string(user_id.begin(), user_id.end());
+  if (remote_validation_ || !web_data_service_ ||
       !content::IsFrameAllowedToUseSecurePaymentConfirmation(
           &render_frame_host()) ||
       credential_id.empty() || rp_id.empty() || user_id.empty()) {
+    VLOG(1) << "SecurePaymentConfirmationService::StorePaymentCredential "
+               "failed to store credential: [remote_validation="
+            << remote_validation_
+            << ", !web_data_service=" << !web_data_service_
+            << ", !IsFrameAllowedToUseSecurePaymentConfirmation="
+            << !content::IsFrameAllowedToUseSecurePaymentConfirmation(
+                   &render_frame_host())
+            << ", credential_id.empty()=" << credential_id.empty()
+            << ", rp_id.empty()=" << rp_id.empty()
+            << ", user_id.empty()=" << user_id.empty() << " ]";
+
     std::move(callback).Run(
         mojom::PaymentCredentialStorageStatus::FAILED_TO_STORE_CREDENTIAL);
+    return;
+  }
+
+  base::WeakPtr<SecurePaymentConfirmationService> weak_this =
+      weak_ptr_factory_.GetWeakPtr();
+
+  auto remote_validation =
+      render_frame_host()
+          .GetWebAuthRequestSecurityChecker()
+          ->ValidateDomainAndRelyingPartyID(
+              origin(), rp_id,
+              content::WebAuthRequestSecurityChecker::RequestType::
+                  kMakePaymentCredential,
+              /*remote_desktop_client_override=*/std::nullopt,
+              base::BindOnce(&SecurePaymentConfirmationService::
+                                 ContinueStorePaymentCredentialAfterRpIdCheck,
+                             weak_this, mojo::GetBadMessageCallback(),
+                             credential_id, rp_id, user_id,
+                             std::move(callback)));
+
+  // ValidateDomainAndRelyingPartyID might run the callback synchronously.
+  // If validation fails, the callback will call `ResetAndDeleteThis()` and
+  // delete `this`. We must check `weak_this` to avoid a UAF when storing the
+  // returned validation handle.
+  if (weak_this) {
+    remote_validation_ = std::move(remote_validation);
+  }
+}
+
+void SecurePaymentConfirmationService::
+    ContinueStorePaymentCredentialAfterRpIdCheck(
+        mojo::ReportBadMessageCallback bad_message_callback,
+        std::vector<uint8_t> credential_id,
+        std::string rp_id,
+        std::vector<uint8_t> user_id,
+        StorePaymentCredentialCallback callback,
+        blink::mojom::AuthenticatorStatus rp_id_validation_result) {
+  VLOG(1) << "SecurePaymentConfirmationService::"
+             "ContinueStorePaymentCredentialAfterRpIdCheck"
+          << " credential_id="
+          << std::string(credential_id.begin(), credential_id.end())
+          << ", rp_id=" << rp_id
+          << ", user_id=" << std::string(user_id.begin(), user_id.end())
+          << ", rp_id_validation_result=" << rp_id_validation_result;
+  remote_validation_.reset();
+  // If the RP ID check failed, we cannot store the credential.
+  if (rp_id_validation_result != blink::mojom::AuthenticatorStatus::SUCCESS) {
+    VLOG(1) << "SecurePaymentConfirmationService::"
+               "ContinueStorePaymentCredentialAfterRpIdCheck"
+            << " Invalid RP ID in StorePaymentCredential";
+    std::move(bad_message_callback)
+        .Run("Invalid RP ID in StorePaymentCredential");
+    ResetAndDeleteThis();
     return;
   }
 
@@ -156,16 +228,31 @@ void SecurePaymentConfirmationService::StorePaymentCredential(
   // If credential-store level APIs are available, the credential information
   // will already have been stored during creation.
   if (base::FeatureList::IsEnabled(
-          features::kSecurePaymentConfirmationUseCredentialStoreAPIs)) {
+          features::kSecurePaymentConfirmationStoreCredentialsInOS)) {
+    VLOG(1) << "SecurePaymentConfirmationService::"
+               "ContinueStorePaymentCredentialAfterRpIdCheck: Using"
+               " Credential Store APIs";
     std::move(callback).Run(mojom::PaymentCredentialStorageStatus::SUCCESS);
     return;
   }
 
+  VLOG(1) << "SecurePaymentConfirmationService::"
+             "ContinueStorePaymentCredentialAfterRpIdCheck: Using web data"
+             " service";
   web_data_service_->AddSecurePaymentConfirmationCredential(
-      std::make_unique<SecurePaymentConfirmationCredential>(credential_id,
-                                                            rp_id, user_id),
+      std::make_unique<SecurePaymentConfirmationCredential>(
+          std::move(credential_id), std::move(rp_id), std::move(user_id)),
       base::BindOnce([](WebDataServiceBase::Handle h,
                         std::unique_ptr<WDTypedResult> result) {
+        VLOG(1)
+            << "SecurePaymentConfirmationService::"
+               "ContinueStorePaymentCredentialAfterRpIdCheck"
+            << "after web_data_service::AddSecurePaymentConfirmationCredential "
+            << "callback result="
+            << (result ? (static_cast<WDResult<bool>*>(result.get())->GetValue()
+                              ? "success"
+                              : "failed")
+                       : "null");
         return result && static_cast<WDResult<bool>*>(result.get())->GetValue()
                    ? mojom::PaymentCredentialStorageStatus::SUCCESS
                    : mojom::PaymentCredentialStorageStatus::

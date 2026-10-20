@@ -11,7 +11,6 @@
 <translation id="1253734725326687145">Objektivi i prekjes u lëviz në krye djathtas. Trokit këtu</translation>
 <translation id="1266864766717917324">Nuk mund të ndahet <ph name="CONTENT_TYPE" /></translation>
 <translation id="1269641567813814718">Win</translation>
-<translation id="1291104554099683393">Provo ta ndash tekstin në copëza më të vogla.</translation>
 <translation id="1293699935367580298">Esc</translation>
 <translation id="1368832886055348810">Nga e majta në të djathtë</translation>
 <translation id="1383876407941801731">Kërko</translation>
@@ -38,13 +37,11 @@
 <translation id="1901303067676059328">Zgjidhi &amp;të gjitha</translation>
 <translation id="19085484004813472">Kjo është një veçori e re</translation>
 <translation id="2006524834898217237">Sigurohu që kjo pajisje të jetë e lidhur me internetin.</translation>
-<translation id="208586643495776849">Provo sërish</translation>
 <translation id="2111134541987263231">Aktivizo <ph name="BEGIN_BOLD" />Lejo në modalitetin "e fshehtë"<ph name="END_BOLD" /></translation>
 <translation id="2141853158323869627">{DAYS,plural, =1{1 d}other{# d}}</translation>
 <translation id="2148716181193084225">Sot</translation>
 <translation id="2168039046890040389">Faqe lart</translation>
 <translation id="2190355936436201913">(bosh)</translation>
-<translation id="2192232475740621500">Përdor dendësi të ulët</translation>
 <translation id="2267918077332197517">Blloko të gjitha njoftimet nga ky sajt</translation>
 <translation id="2283117145434822734">F6</translation>
 <translation id="2289052229480071835">Trokit dhe prek objektivat në ekran.</translation>
@@ -56,7 +53,6 @@
 <translation id="2388990488038464401">Do ta telefonosh këtë numër nga telefoni yt?</translation>
 <translation id="2435457462613246316">Shfaq fjalëkalimin</translation>
 <translation id="24452542372838207">Zgjero njoftimin</translation>
-<translation id="2445449901874883781">Përdor dendësi të lartë</translation>
 <translation id="2448407890032181691">Objektivi i prekjes u lëviz në fund djathtas. Trokit këtu</translation>
 <translation id="2482878487686419369">Njoftimet</translation>
 <translation id="2497284189126895209">Të gjithë skedarët</translation>
@@ -87,7 +83,6 @@
 <translation id="3306688585798492231">Ekrani i integruar</translation>
 <translation id="335581015389089642">Ligjërimi</translation>
 <translation id="3372635229069101468">Kliko te <ph name="BEGIN_BOLD" />Detajet<ph name="END_BOLD" /></translation>
-<translation id="3389286852084373014">Teksti është tepër i madh</translation>
 <translation id="3406306243914553062">Përmbajtje HTML</translation>
 <translation id="3600566671520689681">{DAYS,plural, =1{1 ditë e mbetur}other{# ditë të mbetura}}</translation>
 <translation id="3600969208114796418"><ph name="SAVEAS_EXTENSION_TYPE" /> Skedar</translation>
@@ -130,7 +125,6 @@
 <translation id="5046499563572181734">Trokit këtu</translation>
 <translation id="5076340679995252485">&amp;Ngjit</translation>
 <translation id="520299402983819650"><ph name="QUANTITY" /> PB</translation>
-<translation id="5278860589123563674">Dërgimi dështoi</translation>
 <translation id="5283101102242354279">Aktivizo një shtesë në modalitetin "e fshehtë":</translation>
 <translation id="528468243742722775">Fundi</translation>
 <translation id="5329858601952122676">&amp;Fshi</translation>
@@ -190,7 +184,6 @@
 <translation id="6965382102122355670">Në rregull</translation>
 <translation id="6974053822202609517">Nga e djathta në të majtë</translation>
 <translation id="7052633198403197513">F1</translation>
-<translation id="7170202025028120564">Cilësimet e ekranit të aplikacionit tënd do të hyjnë në fuqi kur të riniset Linux herën tjetër.</translation>
 <translation id="7222373446505536781">F11</translation>
 <translation id="7238427729722629793">{MINUTES,plural, =1{1 min. e mbetur}other{# min. të mbetura}}</translation>
 <translation id="7252604552361840748">Gjej shtesën më sipër</translation>

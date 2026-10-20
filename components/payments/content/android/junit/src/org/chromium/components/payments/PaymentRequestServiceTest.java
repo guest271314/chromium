@@ -17,7 +17,6 @@ import org.mockito.Mockito;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 import org.mockito.quality.Strictness;
-import org.robolectric.annotation.Config;
 
 import org.chromium.base.Callback;
 import org.chromium.base.test.BaseRobolectricTestRunner;
@@ -29,17 +28,21 @@ import org.chromium.components.payments.test_support.PaymentRequestServiceBuilde
 import org.chromium.content.browser.webcontents.WebContentsImpl;
 import org.chromium.content.browser.webcontents.WebContentsImplJni;
 import org.chromium.content_public.browser.NavigationController;
+import org.chromium.content_public.browser.RenderFrameHost;
 import org.chromium.content_public.browser.WebContents;
 import org.chromium.mojo.system.MojoException;
 import org.chromium.payments.mojom.CanMakePaymentQueryResult;
 import org.chromium.payments.mojom.PayerDetail;
 import org.chromium.payments.mojom.PaymentAddress;
+import org.chromium.payments.mojom.PaymentComplete;
 import org.chromium.payments.mojom.PaymentDetails;
 import org.chromium.payments.mojom.PaymentErrorReason;
 import org.chromium.payments.mojom.PaymentMethodData;
 import org.chromium.payments.mojom.PaymentOptions;
 import org.chromium.payments.mojom.PaymentRequestClient;
 import org.chromium.payments.mojom.PaymentResponse;
+import org.chromium.url.GURL;
+import org.chromium.url.JUnitTestGURLs;
 import org.chromium.url.mojom.Url;
 
 import java.util.ArrayList;
@@ -49,7 +52,7 @@ import java.util.Set;
 
 /** A test for PaymentRequestService. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
+@EnableFeatures({PaymentFeatureList.SECURE_PAYMENT_CONFIRMATION})
 @DisableFeatures({
     PaymentFeatureList.WEB_PAYMENTS_EXPERIMENTAL_FEATURES,
     PaymentFeatureList.ANDROID_PAYMENT_INTENTS_OMIT_DEPRECATED_PARAMETERS
@@ -313,6 +316,7 @@ public class PaymentRequestServiceTest implements PaymentRequestClient {
         mSentErrorMessage = null;
         mIsClientClosed = false;
         mIsOnCloseListenerInvoked = false;
+        Mockito.reset(mJourneyLogger);
     }
 
     @Test
@@ -350,6 +354,8 @@ public class PaymentRequestServiceTest implements PaymentRequestClient {
     public void testNullClientFailsCreation() {
         Assert.assertNull(defaultBuilder().setPaymentRequestClient(null).build());
         // Not asserting error because no client to receive the error message and error reason.
+        Mockito.verify(mJourneyLogger, Mockito.times(1))
+                .setAborted(AbortReason.INVALID_DATA_FROM_RENDERER);
     }
 
     @Test
@@ -358,6 +364,8 @@ public class PaymentRequestServiceTest implements PaymentRequestClient {
         Assert.assertNull(defaultBuilder().setOriginSecure(false).build());
         assertErrorAndReason(
                 ErrorStrings.NOT_IN_A_SECURE_ORIGIN, PaymentErrorReason.INVALID_DATA_FROM_RENDERER);
+        Mockito.verify(mJourneyLogger, Mockito.times(1))
+                .setAborted(AbortReason.INVALID_DATA_FROM_RENDERER);
     }
 
     @Test
@@ -367,6 +375,8 @@ public class PaymentRequestServiceTest implements PaymentRequestClient {
         assertErrorAndReason(
                 ErrorStrings.INVALID_PAYMENT_METHODS_OR_DATA,
                 PaymentErrorReason.INVALID_DATA_FROM_RENDERER);
+        Mockito.verify(mJourneyLogger, Mockito.times(1))
+                .setAborted(AbortReason.INVALID_DATA_FROM_RENDERER);
     }
 
     @Test
@@ -376,6 +386,8 @@ public class PaymentRequestServiceTest implements PaymentRequestClient {
         assertErrorAndReason(
                 ErrorStrings.INVALID_PAYMENT_DETAILS,
                 PaymentErrorReason.INVALID_DATA_FROM_RENDERER);
+        Mockito.verify(mJourneyLogger, Mockito.times(1))
+                .setAborted(AbortReason.INVALID_DATA_FROM_RENDERER);
     }
 
     @Test
@@ -385,6 +397,8 @@ public class PaymentRequestServiceTest implements PaymentRequestClient {
         assertErrorAndReason(
                 ErrorStrings.INVALID_PAYMENT_DETAILS,
                 PaymentErrorReason.INVALID_DATA_FROM_RENDERER);
+        Mockito.verify(mJourneyLogger, Mockito.times(1))
+                .setAborted(AbortReason.INVALID_DATA_FROM_RENDERER);
     }
 
     @Test
@@ -394,6 +408,8 @@ public class PaymentRequestServiceTest implements PaymentRequestClient {
         assertErrorAndReason(
                 ErrorStrings.INVALID_PAYMENT_DETAILS,
                 PaymentErrorReason.INVALID_DATA_FROM_RENDERER);
+        Mockito.verify(mJourneyLogger, Mockito.times(1))
+                .setAborted(AbortReason.INVALID_DATA_FROM_RENDERER);
     }
 
     @Test
@@ -408,6 +424,8 @@ public class PaymentRequestServiceTest implements PaymentRequestClient {
                 PaymentErrorReason.INVALID_DATA_FROM_RENDERER);
         Mockito.verify(mBrowserPaymentRequest, Mockito.never())
                 .onPaymentDetailsUpdated(Mockito.any(), Mockito.anyBoolean());
+        Mockito.verify(mJourneyLogger, Mockito.times(1))
+                .setAborted(AbortReason.INVALID_DATA_FROM_RENDERER);
     }
 
     @Test
@@ -424,6 +442,8 @@ public class PaymentRequestServiceTest implements PaymentRequestClient {
                 PaymentErrorReason.INVALID_DATA_FROM_RENDERER);
         Mockito.verify(mBrowserPaymentRequest, Mockito.never())
                 .onPaymentDetailsUpdated(Mockito.any(), Mockito.anyBoolean());
+        Mockito.verify(mJourneyLogger, Mockito.times(1))
+                .setAborted(AbortReason.INVALID_DATA_FROM_RENDERER);
     }
 
     @Test
@@ -446,6 +466,9 @@ public class PaymentRequestServiceTest implements PaymentRequestClient {
         service.updateWith(null);
         assertErrorAndReason(ErrorStrings.INVALID_PAYMENT_DETAILS, PaymentErrorReason.USER_CANCEL);
         verifyContinuedShowWithUpdatedDetails(0);
+        Mockito.verify(mJourneyLogger, Mockito.times(1))
+                .setAborted(AbortReason.INVALID_DATA_FROM_RENDERER);
+        Mockito.verify(mJourneyLogger, Mockito.times(1)).setNotShown(NotShownReason.USER_CANCEL);
     }
 
     @Test
@@ -459,6 +482,52 @@ public class PaymentRequestServiceTest implements PaymentRequestClient {
         service.updateWith(details);
         assertErrorAndReason(ErrorStrings.INVALID_PAYMENT_DETAILS, PaymentErrorReason.USER_CANCEL);
         verifyContinuedShowWithUpdatedDetails(0);
+        Mockito.verify(mJourneyLogger, Mockito.times(1))
+                .setAborted(AbortReason.INVALID_DATA_FROM_RENDERER);
+        Mockito.verify(mJourneyLogger, Mockito.times(1)).setNotShown(NotShownReason.USER_CANCEL);
+    }
+
+    @Test
+    @Feature({"Payments"})
+    public void testDetailsWithErrorFailsContinueShow() {
+        PaymentRequestService service = defaultBuilder().build();
+        service.show(true, mIsUserGestureShow);
+        assertNoError();
+        PaymentDetails details = getDefaultPaymentDetailsUpdate();
+        details.error = "Error message";
+        service.updateWith(details);
+        assertErrorAndReason(ErrorStrings.INVALID_STATE, PaymentErrorReason.USER_CANCEL);
+        verifyContinuedShowWithUpdatedDetails(0);
+        Mockito.verify(mJourneyLogger, Mockito.times(1)).setNotShown(NotShownReason.USER_CANCEL);
+    }
+
+    @Test
+    @Feature({"Payments"})
+    public void testContinueShowWithUpdatedDetailsBrowserErrorFailsPayment() {
+        Mockito.doReturn(ErrorStrings.CONTEXT_NOT_FOUND)
+                .when(mBrowserPaymentRequest)
+                .continueShowWithUpdatedDetails(Mockito.any(), Mockito.anyBoolean());
+        PaymentRequestService service = defaultBuilder().build();
+        service.show(true, mIsUserGestureShow);
+        assertNoError();
+        updateWith(service);
+        assertErrorAndReason(ErrorStrings.CONTEXT_NOT_FOUND, PaymentErrorReason.USER_CANCEL);
+        Mockito.verify(mJourneyLogger, Mockito.times(1)).setNotShown(NotShownReason.USER_CANCEL);
+    }
+
+    @Test
+    @Feature({"Payments"})
+    public void testOnShowCalledAndAppsQueriedAndDetailsFinalizedBrowserErrorFailsPayment() {
+        Mockito.doReturn(ErrorStrings.WINDOW_NOT_FOUND)
+                .when(mBrowserPaymentRequest)
+                .onShowCalledAndAppsQueriedAndDetailsFinalized();
+        PaymentRequestService service = defaultBuilder().build();
+        service.show(true, mIsUserGestureShow);
+        queryPaymentApps();
+        assertNoError();
+        updateWith(service);
+        assertErrorAndReason(ErrorStrings.WINDOW_NOT_FOUND, PaymentErrorReason.USER_CANCEL);
+        Mockito.verify(mJourneyLogger, Mockito.times(1)).setNotShown(NotShownReason.USER_CANCEL);
     }
 
     @Test
@@ -491,6 +560,8 @@ public class PaymentRequestServiceTest implements PaymentRequestClient {
         updateWith(service);
         assertErrorAndReason(
                 ErrorStrings.CANNOT_UPDATE_WITHOUT_SHOW, PaymentErrorReason.USER_CANCEL);
+        Mockito.verify(mJourneyLogger, Mockito.times(1))
+                .setAborted(AbortReason.INVALID_DATA_FROM_RENDERER);
     }
 
     @Test
@@ -504,6 +575,8 @@ public class PaymentRequestServiceTest implements PaymentRequestClient {
 
         updateWith(service);
         assertErrorAndReason(ErrorStrings.INVALID_STATE, PaymentErrorReason.USER_CANCEL);
+        Mockito.verify(mJourneyLogger, Mockito.times(1))
+                .setAborted(AbortReason.INVALID_DATA_FROM_RENDERER);
     }
 
     @Test
@@ -515,6 +588,8 @@ public class PaymentRequestServiceTest implements PaymentRequestClient {
         service.onPaymentDetailsNotUpdated();
         assertErrorAndReason(
                 ErrorStrings.CANNOT_UPDATE_WITHOUT_SHOW, PaymentErrorReason.USER_CANCEL);
+        Mockito.verify(mJourneyLogger, Mockito.times(1))
+                .setAborted(AbortReason.INVALID_DATA_FROM_RENDERER);
     }
 
     @Test
@@ -525,6 +600,8 @@ public class PaymentRequestServiceTest implements PaymentRequestClient {
 
         service.onConnectionError(null);
         Assert.assertTrue(mIsOnCloseListenerInvoked);
+        Mockito.verify(mJourneyLogger, Mockito.times(1))
+                .setAborted(AbortReason.MOJO_CONNECTION_ERROR);
     }
 
     @Test
@@ -534,6 +611,8 @@ public class PaymentRequestServiceTest implements PaymentRequestClient {
         assertErrorAndReason(
                 ErrorStrings.INVALID_PAYMENT_OPTIONS,
                 PaymentErrorReason.INVALID_DATA_FROM_RENDERER);
+        Mockito.verify(mJourneyLogger, Mockito.times(1))
+                .setAborted(AbortReason.INVALID_DATA_FROM_RENDERER);
     }
 
     @Test
@@ -543,6 +622,8 @@ public class PaymentRequestServiceTest implements PaymentRequestClient {
                 defaultBuilder().setInvalidSslCertificateErrorMessage("StubbedError").build());
         assertErrorAndReason(
                 "StubbedError", PaymentErrorReason.NOT_SUPPORTED_FOR_INVALID_ORIGIN_OR_SSL);
+        Mockito.verify(mJourneyLogger, Mockito.times(1))
+                .setAborted(AbortReason.INVALID_DATA_FROM_RENDERER);
     }
 
     @Test
@@ -552,6 +633,8 @@ public class PaymentRequestServiceTest implements PaymentRequestClient {
         assertErrorAndReason(
                 ErrorStrings.PROHIBITED_ORIGIN,
                 PaymentErrorReason.NOT_SUPPORTED_FOR_INVALID_ORIGIN_OR_SSL);
+        Mockito.verify(mJourneyLogger, Mockito.times(1))
+                .setAborted(AbortReason.INVALID_DATA_FROM_RENDERER);
     }
 
     @Test
@@ -562,6 +645,8 @@ public class PaymentRequestServiceTest implements PaymentRequestClient {
         assertErrorAndReason(
                 ErrorStrings.INVALID_PAYMENT_METHODS_OR_DATA,
                 PaymentErrorReason.INVALID_DATA_FROM_RENDERER);
+        Mockito.verify(mJourneyLogger, Mockito.times(1))
+                .setAborted(AbortReason.INVALID_DATA_FROM_RENDERER);
     }
 
     @Test
@@ -574,6 +659,8 @@ public class PaymentRequestServiceTest implements PaymentRequestClient {
         assertErrorAndReason(
                 ErrorStrings.INVALID_PAYMENT_METHODS_OR_DATA,
                 PaymentErrorReason.INVALID_DATA_FROM_RENDERER);
+        Mockito.verify(mJourneyLogger, Mockito.times(1))
+                .setAborted(AbortReason.INVALID_DATA_FROM_RENDERER);
     }
 
     @Test
@@ -586,6 +673,8 @@ public class PaymentRequestServiceTest implements PaymentRequestClient {
         assertErrorAndReason(
                 ErrorStrings.INVALID_PAYMENT_METHODS_OR_DATA,
                 PaymentErrorReason.INVALID_DATA_FROM_RENDERER);
+        Mockito.verify(mJourneyLogger, Mockito.times(1))
+                .setAborted(AbortReason.INVALID_DATA_FROM_RENDERER);
     }
 
     @Test
@@ -595,6 +684,8 @@ public class PaymentRequestServiceTest implements PaymentRequestClient {
         assertErrorAndReason(
                 ErrorStrings.INVALID_PAYMENT_DETAILS,
                 PaymentErrorReason.INVALID_DATA_FROM_RENDERER);
+        Mockito.verify(mJourneyLogger, Mockito.times(1))
+                .setAborted(AbortReason.INVALID_DATA_FROM_RENDERER);
     }
 
     @Test
@@ -605,6 +696,8 @@ public class PaymentRequestServiceTest implements PaymentRequestClient {
         Assert.assertNull(defaultBuilder().setPaymentRequestSpec(spec).build());
         assertErrorAndReason(
                 ErrorStrings.TOTAL_REQUIRED, PaymentErrorReason.INVALID_DATA_FROM_RENDERER);
+        Mockito.verify(mJourneyLogger, Mockito.times(1))
+                .setAborted(AbortReason.INVALID_DATA_FROM_RENDERER);
     }
 
     @Test
@@ -617,6 +710,8 @@ public class PaymentRequestServiceTest implements PaymentRequestClient {
         show(service);
         assertErrorAndReason(ErrorStrings.CANNOT_SHOW_TWICE, PaymentErrorReason.USER_CANCEL);
         assertClosed(true);
+        Mockito.verify(mJourneyLogger, Mockito.times(1))
+                .setAborted(AbortReason.INVALID_DATA_FROM_RENDERER);
     }
 
     @Test
@@ -639,6 +734,8 @@ public class PaymentRequestServiceTest implements PaymentRequestClient {
         mPaymentAppServiceDelegate.onDoneCreatingPaymentApps(List.of(createDefaultPaymentApp()));
         assertErrorAndReason(ErrorStrings.USER_CANCELLED, PaymentErrorReason.USER_CANCEL);
         assertClosed(true);
+        Mockito.verify(mJourneyLogger, Mockito.times(1))
+                .setNotShown(NotShownReason.NO_SUPPORTED_PAYMENT_METHOD);
     }
 
     @Test
@@ -649,6 +746,24 @@ public class PaymentRequestServiceTest implements PaymentRequestClient {
         mPaymentAppServiceDelegate.onDoneCreatingPaymentApps(List.of());
         assertErrorAndReason(ErrorStrings.USER_CANCELLED, PaymentErrorReason.USER_CANCEL);
         assertClosed(true);
+        Mockito.verify(mJourneyLogger, Mockito.times(1))
+                .setNotShown(NotShownReason.NO_SUPPORTED_PAYMENT_METHOD);
+    }
+
+    @Test
+    @Feature({"Payments"})
+    public void testCannotShowInBackgroundTab() {
+        PaymentRequestService service = defaultBuilder().build();
+        show(service);
+        Mockito.doReturn(ErrorStrings.CANNOT_SHOW_IN_BACKGROUND_TAB)
+                .when(mBrowserPaymentRequest)
+                .showOrSkipAppSelector(Mockito.anyBoolean(), Mockito.any(), Mockito.anyBoolean());
+        mPaymentAppServiceDelegate.onCanMakePaymentCalculated(true);
+        mPaymentAppServiceDelegate.onDoneCreatingPaymentApps(List.of(createDefaultPaymentApp()));
+        assertErrorAndReason(
+                ErrorStrings.CANNOT_SHOW_IN_BACKGROUND_TAB, PaymentErrorReason.USER_CANCEL);
+        assertClosed(true);
+        Mockito.verify(mJourneyLogger, Mockito.times(1)).setNotShown(NotShownReason.BACKGROUND_TAB);
     }
 
     @Test
@@ -684,6 +799,18 @@ public class PaymentRequestServiceTest implements PaymentRequestClient {
         verifyShowAppSelector(0);
         show(service);
         verifyShowAppSelector(1);
+    }
+
+    @Test
+    @Feature({"Payments"})
+    public void testNoPaymentAppFailsPayment_appsQueriedBeforeShow() {
+        PaymentRequestService service = defaultBuilder().build();
+        mPaymentAppServiceDelegate.onDoneCreatingPaymentApps(List.of());
+        show(service);
+        assertErrorAndReason(ErrorStrings.USER_CANCELLED, PaymentErrorReason.USER_CANCEL);
+        assertClosed(true);
+        Mockito.verify(mJourneyLogger, Mockito.times(1))
+                .setNotShown(NotShownReason.NO_SUPPORTED_PAYMENT_METHOD);
     }
 
     @Test
@@ -741,13 +868,50 @@ public class PaymentRequestServiceTest implements PaymentRequestClient {
 
     @Test
     @Feature({"Payments"})
+    public void testCloseByRenderer() {
+        PaymentRequestService service = defaultBuilder().build();
+        service.closeByRenderer();
+        Mockito.verify(mBrowserPaymentRequest, Mockito.times(1)).close();
+        assertClosed(true);
+        Mockito.verify(mJourneyLogger, Mockito.times(1))
+                .setAborted(AbortReason.MOJO_RENDERER_CLOSING);
+    }
+
+    @Test
+    @Feature({"Payments"})
+    public void testComplete() {
+        PaymentRequestService service = defaultBuilder().build();
+        show(service);
+        service.complete(PaymentComplete.SUCCESS);
+        Mockito.verify(mBrowserPaymentRequest, Mockito.times(1))
+                .complete(Mockito.eq(PaymentComplete.SUCCESS), Mockito.any());
+        Mockito.verify(mJourneyLogger, Mockito.times(1)).setCompleted();
+    }
+
+    @Test
+    @Feature({"Payments"})
+    public void testInvalidRetryErrorsFailsPayment() {
+        PaymentRequestService service = defaultBuilder().build();
+        show(service);
+        service.retry(null);
+        assertErrorAndReason(
+                ErrorStrings.INVALID_VALIDATION_ERRORS, PaymentErrorReason.USER_CANCEL);
+        Mockito.verify(mJourneyLogger, Mockito.times(1))
+                .setAborted(AbortReason.INVALID_DATA_FROM_RENDERER);
+    }
+
+    @Test
+    @Feature({"Payments"})
     public void testOnlyOneServiceCanBeShownGlobally() {
         PaymentRequestService service1 = defaultBuilder().build();
         show(service1);
         assertNoError();
-        PaymentRequestService service2 = defaultBuilder().build();
+        JourneyLogger journeyLogger2 = Mockito.mock(JourneyLogger.class);
+        PaymentRequestService service2 = defaultBuilder().setJourneyLogger(journeyLogger2).build();
         show(service2);
         assertErrorAndReason(ErrorStrings.ANOTHER_UI_SHOWING, PaymentErrorReason.ALREADY_SHOWING);
+        Mockito.verify(journeyLogger2, Mockito.times(1))
+                .setNotShown(NotShownReason.ALREADY_SHOWING);
     }
 
     @Test
@@ -789,11 +953,70 @@ public class PaymentRequestServiceTest implements PaymentRequestClient {
         Assert.assertNull(
                 defaultBuilder()
                         .setOnlySpcMethodWithoutPaymentOptions()
-                        .setSecurePaymentConfirmationRequestValid(false)
+                        .setSecurePaymentConfirmationValidationError(
+                                SecurePaymentConfirmationRequestValidationError
+                                        .CREDENTIAL_IDS_REQUIRED)
                         .build());
         assertErrorAndReason(
                 ErrorStrings.INVALID_PAYMENT_METHODS_OR_DATA,
                 PaymentErrorReason.INVALID_DATA_FROM_RENDERER);
+        Mockito.verify(mJourneyLogger, Mockito.times(1))
+                .setAborted(AbortReason.INVALID_DATA_FROM_RENDERER);
+    }
+
+    @Test
+    @Feature({"Payments"})
+    public void testSpcLocaleMismatch_returnsNotSupported() {
+        Assert.assertNull(
+                defaultBuilder()
+                        .setOnlySpcMethodWithoutPaymentOptions()
+                        .setSecurePaymentConfirmationValidationError(
+                                SecurePaymentConfirmationRequestValidationError
+                                        .LOCALE_DOES_NOT_MATCH)
+                        .build());
+        assertErrorAndReason(
+                ErrorStrings.SPC_LOCALE_DOES_NOT_MATCH, PaymentErrorReason.NOT_SUPPORTED);
+        Mockito.verify(mJourneyLogger, Mockito.times(1))
+                .setAborted(AbortReason.INVALID_DATA_FROM_RENDERER);
+    }
+
+    @Test
+    @Feature({"Payments"})
+    public void testSpcWebAuthnExtensionsNotSupported_returnsNotSupported() {
+        Assert.assertNull(
+                defaultBuilder()
+                        .setOnlySpcMethodWithoutPaymentOptions()
+                        .setSecurePaymentConfirmationValidationError(
+                                SecurePaymentConfirmationRequestValidationError
+                                        .WEB_AUTHN_EXTENSIONS_NOT_SUPPORTED)
+                        .build());
+        assertErrorAndReason(
+                ErrorStrings.INVALID_PAYMENT_METHODS_OR_DATA, PaymentErrorReason.NOT_SUPPORTED);
+        Mockito.verify(mJourneyLogger, Mockito.times(1))
+                .setAborted(AbortReason.INVALID_DATA_FROM_RENDERER);
+    }
+
+    @Test
+    @Feature({"Payments"})
+    @DisableFeatures({PaymentFeatureList.SECURE_PAYMENT_CONFIRMATION})
+    public void testSpcConstraintsBypassedWhenDisabled() {
+        // When SPC is disabled, it should be successfully initialized even if:
+        // 1. It is not the only payment method.
+        // 2. Payment options (like shipping) are requested.
+        // Note: securePaymentConfirmation must be null when the feature is disabled.
+        PaymentOptions options = new PaymentOptions();
+        options.requestShipping = true;
+
+        PaymentMethodData[] methodData = new PaymentMethodData[2];
+        methodData[0] = new PaymentMethodData();
+        methodData[0].supportedMethod = "https://www.chromium.org";
+        methodData[1] = new PaymentMethodData();
+        methodData[1].supportedMethod = MethodStrings.SECURE_PAYMENT_CONFIRMATION;
+        methodData[1].securePaymentConfirmation = null;
+
+        Assert.assertNotNull(
+                defaultBuilder().setMethodData(methodData).setOptions(options).build());
+        assertNoError();
     }
 
     @Test
@@ -820,6 +1043,8 @@ public class PaymentRequestServiceTest implements PaymentRequestClient {
                 ErrorStrings.CANNOT_SHOW_WITHOUT_USER_ACTIVATION,
                 PaymentErrorReason.USER_ACTIVATION_REQUIRED);
         assertClosed(true);
+        Mockito.verify(mJourneyLogger, Mockito.times(1))
+                .setNotShown(NotShownReason.USER_ACTIVATION_REQUIRED);
         resetErrorMessageAndCloseState();
 
         // A following show() with a user gesture is allowed.
@@ -874,7 +1099,18 @@ public class PaymentRequestServiceTest implements PaymentRequestClient {
 
     @Test
     @Feature({"Payments"})
-    @EnableFeatures({PaymentFeatureList.PAYMENT_REQUEST_SUPPORT_REPORTING_APP_ERROR})
+    public void testOnInstrumentAbortResult_success() {
+        PaymentRequestService service = defaultBuilder().build();
+        show(service);
+        service.onInstrumentAbortResult(true);
+        Assert.assertTrue(mIsAbortedSuccessfully);
+        assertClosed(true);
+        Mockito.verify(mJourneyLogger, Mockito.times(1))
+                .setAborted(AbortReason.ABORTED_BY_MERCHANT);
+    }
+
+    @Test
+    @Feature({"Payments"})
     public void testOnInstrumentDetailsError_userCancel() {
         int[] userCancelResponses = {
             org.chromium.payments.mojom.PaymentEventResponseType.PAYMENT_EVENT_REJECT,
@@ -885,13 +1121,14 @@ public class PaymentRequestServiceTest implements PaymentRequestClient {
             Mockito.doReturn(true).when(mBrowserPaymentRequest).hasSkippedAppSelector();
             service.onInstrumentDetailsError(error, "User cancel");
             assertErrorAndReason("User cancel", PaymentErrorReason.USER_CANCEL);
+            Mockito.verify(mJourneyLogger, Mockito.times(1))
+                    .setAborted(AbortReason.ABORTED_BY_USER);
             resetErrorMessageAndCloseState();
         }
     }
 
     @Test
     @Feature({"Payments"})
-    @EnableFeatures({PaymentFeatureList.PAYMENT_REQUEST_SUPPORT_REPORTING_APP_ERROR})
     public void testOnInstrumentDetailsError_appError() {
         int[] appErrorResponses = {
             org.chromium.payments.mojom.PaymentEventResponseType.PAYMENT_EVENT_BROWSER_ERROR,
@@ -917,13 +1154,14 @@ public class PaymentRequestServiceTest implements PaymentRequestClient {
             Mockito.doReturn(true).when(mBrowserPaymentRequest).hasSkippedAppSelector();
             service.onInstrumentDetailsError(error, "App error");
             assertErrorAndReason("App error", PaymentErrorReason.PAYMENT_APP_ERROR);
+            Mockito.verify(mJourneyLogger, Mockito.times(1))
+                    .setAborted(AbortReason.ABORTED_BY_USER);
             resetErrorMessageAndCloseState();
         }
     }
 
     @Test
     @Feature({"Payments"})
-    @EnableFeatures({PaymentFeatureList.PAYMENT_REQUEST_SUPPORT_REPORTING_APP_ERROR})
     public void testOnInstrumentDetailsError_notAllowed() {
         PaymentRequestService service = defaultBuilder().build();
         Mockito.doReturn(true).when(mBrowserPaymentRequest).hasSkippedAppSelector();
@@ -933,5 +1171,112 @@ public class PaymentRequestServiceTest implements PaymentRequestClient {
                         .PAYMENT_HANDLER_INSECURE_NAVIGATION,
                 "Insecure");
         assertErrorAndReason("Insecure", PaymentErrorReason.NOT_ALLOWED_ERROR);
+        Mockito.verify(mJourneyLogger, Mockito.times(1)).setAborted(AbortReason.ABORTED_BY_USER);
+    }
+
+    @Test
+    @Feature({"Payments"})
+    public void testOpenPaymentHandlerWindow_noPaymentFlow() {
+        GURL targetUrl = new GURL("https://alice.example/pay");
+        Assert.assertNull(PaymentRequestService.openPaymentHandlerWindow(targetUrl));
+    }
+
+    @Test
+    @Feature({"Payments"})
+    public void testOpenPaymentHandlerWindow_noAppInvoked() {
+        GURL targetUrl = new GURL("https://alice.example/pay");
+        PaymentRequestService service = defaultBuilder().build();
+        show(service);
+        Assert.assertNull(PaymentRequestService.openPaymentHandlerWindow(targetUrl));
+    }
+
+    @Test
+    @Feature({"Payments"})
+    public void testOpenPaymentHandlerWindow_nativeAppInvoked() {
+        GURL targetUrl = new GURL("https://alice.example/pay");
+        PaymentRequestService service = defaultBuilder().build();
+        show(service);
+
+        AndroidPaymentApp nativeApp = Mockito.mock(AndroidPaymentApp.class);
+        Mockito.doReturn(PaymentAppType.NATIVE_MOBILE_APP).when(nativeApp).getPaymentAppType();
+        Mockito.doReturn("alice.example.app").when(nativeApp).packageName();
+        service.invokePaymentApp(nativeApp, Mockito.mock(PaymentResponseHelperInterface.class));
+
+        // A request to open the payment handler window should be denied because the invoked app
+        // is not a service worker app.
+        Assert.assertNull(PaymentRequestService.openPaymentHandlerWindow(targetUrl));
+    }
+
+    @Test
+    @Feature({"Payments"})
+    public void testOpenPaymentHandlerWindow_sameOrigin() {
+        GURL targetUrl = new GURL("https://alice.example/pay");
+        PaymentRequestService service = defaultBuilder().build();
+        show(service);
+
+        PaymentApp swAppSameOrigin = Mockito.mock(PaymentApp.class);
+        Mockito.doReturn(PaymentAppType.SERVICE_WORKER_APP)
+                .when(swAppSameOrigin)
+                .getPaymentAppType();
+        Mockito.doReturn("https://alice.example/scope").when(swAppSameOrigin).getIdentifier();
+        service.invokePaymentApp(
+                swAppSameOrigin, Mockito.mock(PaymentResponseHelperInterface.class));
+
+        WebContents mockWebContents = Mockito.mock(WebContents.class);
+        Mockito.doReturn(mockWebContents)
+                .when(mBrowserPaymentRequest)
+                .openPaymentHandlerWindow(Mockito.any(), Mockito.anyLong());
+
+        Assert.assertEquals(
+                mockWebContents, PaymentRequestService.openPaymentHandlerWindow(targetUrl));
+    }
+
+    @Test
+    @Feature({"Payments"})
+    public void testOpenPaymentHandlerWindow_crossOrigin() {
+        GURL targetUrl = new GURL("https://alice.example/pay");
+        PaymentRequestService service = defaultBuilder().build();
+        show(service);
+
+        PaymentApp swAppCrossOrigin = Mockito.mock(PaymentApp.class);
+        Mockito.doReturn(PaymentAppType.SERVICE_WORKER_APP)
+                .when(swAppCrossOrigin)
+                .getPaymentAppType();
+        Mockito.doReturn("https://bob.example/scope").when(swAppCrossOrigin).getIdentifier();
+        service.invokePaymentApp(
+                swAppCrossOrigin, Mockito.mock(PaymentResponseHelperInterface.class));
+
+        // A request to open the payment handler window should be denied because the invoked app
+        // has a different origin scope than the target URL.
+        Assert.assertNull(PaymentRequestService.openPaymentHandlerWindow(targetUrl));
+    }
+
+    @Test
+    @Feature({"Payments"})
+    public void testCanMakePayment_recordsToJourneyLogger() {
+        PaymentRequestService service = defaultBuilder().build();
+        service.canMakePayment();
+        Mockito.verify(mJourneyLogger, Mockito.times(1)).setCanMakePaymentCalled();
+    }
+
+    @Test
+    @Feature({"Payments"})
+    public void testHasEnrolledInstrument_recordsToJourneyLogger() {
+        PaymentRequestService service = defaultBuilder().build();
+        service.hasEnrolledInstrument();
+        Mockito.verify(mJourneyLogger, Mockito.times(1)).setHasEnrolledInstrumentCalled();
+    }
+
+    @Test
+    @Feature({"Payments"})
+    public void testInitiatedInCrossSiteIframe_recordsToJourneyLogger() {
+        RenderFrameHost mainFrame = Mockito.mock(RenderFrameHost.class);
+        Mockito.doReturn(JUnitTestGURLs.URL_1).when(mainFrame).getLastCommittedURL();
+        PaymentRequestServiceBuilder builder = defaultBuilder();
+        Mockito.doReturn(false).when(builder.getRenderFrameHost()).isOutermostMainFrame();
+        Mockito.doReturn(mainFrame).when(builder.getRenderFrameHost()).getMainFrame();
+        builder.setFrameOrigin(JUnitTestGURLs.URL_2);
+        builder.build();
+        Mockito.verify(mJourneyLogger, Mockito.times(1)).setInitiatedInCrossSiteIframe();
     }
 }

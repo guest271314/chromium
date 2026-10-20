@@ -4,12 +4,14 @@
 
 #include <tuple>
 
+#include "base/strings/strcat.h"
 #include "base/test/scoped_feature_list.h"
 #include "chrome/browser/policy/policy_test_utils.h"
 #include "components/policy/policy_constants.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "content/public/test/test_utils.h"
+#include "content/public/test/url_loader_interceptor.h"
 #include "third_party/blink/public/common/features.h"
 
 namespace policy {
@@ -25,9 +27,9 @@ enum class FeatureState {
   kDisabled,
 };
 
-class XSLTPolicyBrowserTest
-    : public PolicyTest,
-      public ::testing::WithParamInterface<std::tuple<Policy, FeatureState>> {
+class XSLTPolicyBrowserTest : public PolicyTest,
+                              public ::testing::WithParamInterface<
+                                  std::tuple<Policy, FeatureState, bool>> {
  public:
   static std::string DescribeParams(
       const ::testing::TestParamInfo<ParamType>& info) {
@@ -52,18 +54,33 @@ class XSLTPolicyBrowserTest
         description += "FeatureDisabled";
         break;
     }
+    description += "_";
+    if (std::get<2>(info.param)) {
+      description += "OriginTrialPresent";
+    } else {
+      description += "OriginTrialAbsent";
+    }
     return description;
   }
 
  protected:
   void SetUpCommandLine(base::CommandLine* command_line) override {
     FeatureState feature_state = std::get<1>(GetParam());
+    // The banner feature is "experimental", so it is off unless enabled here.
     if (feature_state == FeatureState::kEnabled) {
-      feature_list_.InitWithFeatures({blink::features::kXSLT},
-                                     {blink::features::kXSLTSpecialTrial});
+      feature_list_.InitWithFeatures(
+          {blink::features::kXSLT, blink::features::kGenerateXSLTWarningBanner},
+          {blink::features::kXSLTSpecialTrial});
     } else {
-      feature_list_.InitWithFeatures({}, {blink::features::kXSLT});
+      feature_list_.InitWithFeatures(
+          {blink::features::kGenerateXSLTWarningBanner},
+          {blink::features::kXSLT});
     }
+    // The test public key, see:
+    // https://chromium.googlesource.com/chromium/src/+/main/docs/origin_trials_integration.md
+    command_line->AppendSwitchASCII(
+        "origin-trial-public-key",
+        "dRCs+TocuKkocNKa0AtZ4awrt9XKH2SQCI6o4FY6BNA=");
   }
 
   void SetUpInProcessBrowserTestFixture() override {
@@ -78,13 +95,81 @@ class XSLTPolicyBrowserTest
     UpdateProviderPolicy(policies);
   }
 
+  void SetUpOnMainThread() override {
+    PolicyTest::SetUpOnMainThread();
+    url_loader_interceptor_ =
+        std::make_unique<content::URLLoaderInterceptor>(base::BindRepeating(
+            &XSLTPolicyBrowserTest::InterceptRequest, base::Unretained(this)));
+  }
+
+  void TearDownOnMainThread() override {
+    url_loader_interceptor_.reset();
+    PolicyTest::TearDownOnMainThread();
+  }
+
+  bool InterceptRequest(content::URLLoaderInterceptor::RequestParams* params) {
+    if (params->url_request.url.host() != "example.com") {
+      return false;
+    }
+
+    const bool inject_OT_token = std::get<2>(GetParam());
+
+    // The banner is only shown for documents transformed via an
+    // xml-stylesheet processing instruction, so serve one along with its
+    // stylesheet.
+    const std::string_view path = params->url_request.url.path();
+    std::string content_type = "text/html";
+    std::string body =
+        "<!DOCTYPE "
+        "html><html><head><meta charset=\"utf-8\"></head><body></body></html>";
+    if (path == "/xslt.xml") {
+      content_type = "application/xml";
+      body =
+          "<?xml version=\"1.0\"?>"
+          "<?xml-stylesheet type=\"text/xsl\" href=\"xslt.xsl\"?>"
+          "<r><n>1</n></r>";
+    } else if (path == "/xslt.xsl") {
+      content_type = "text/xsl";
+      body =
+          "<?xml version=\"1.0\"?>"
+          "<xsl:stylesheet version=\"1.0\" "
+          "xmlns:xsl=\"http://www.w3.org/1999/XSL/Transform\">"
+          "<xsl:template match=\"/\">"
+          "<html xmlns=\"http://www.w3.org/1999/xhtml\"><body>"
+          "<p id=\"r\"><xsl:value-of select=\"//n\"/></p>"
+          "</body></html>"
+          "</xsl:template>"
+          "</xsl:stylesheet>";
+    }
+
+    std::string headers = "HTTP/1.1 200 OK\n";
+    base::StrAppend(&headers,
+                    {"Content-Type: ", content_type, "; charset=utf-8\n"});
+    if (inject_OT_token) {
+      base::StrAppend(
+          &headers,
+          {"Origin-Trial: "
+           "A1+hez7wjW7oxcSp/ned30T2klwP/J3eaV/kHc3iZBoKICKOSHAHP7u2h+lgeIH/"
+           "MvXfAbLGwUOL9++"
+           "lEfOUdQsAAABOeyJvcmlnaW4iOiAiaHR0cHM6Ly9leGFtcGxlLmNvbTo0NDMiLCAiZm"
+           "VhdHVyZSI6ICJYU0xUIiwgImV4cGlyeSI6IDIwMDAwMDAwMDB9\n"});
+    }
+    headers += '\n';
+
+    content::URLLoaderInterceptor::WriteResponse(headers, body,
+                                                 params->client.get());
+    return true;
+  }
+
  private:
   base::test::ScopedFeatureList feature_list_;
+  std::unique_ptr<content::URLLoaderInterceptor> url_loader_interceptor_;
 };
 
 IN_PROC_BROWSER_TEST_P(XSLTPolicyBrowserTest, PolicyIsFollowed) {
   Policy policy_val = std::get<0>(GetParam());
   FeatureState feature_state = std::get<1>(GetParam());
+  bool origin_trial_present = std::get<2>(GetParam());
 
   bool expected_enabled = false;
   if (policy_val == Policy::kTrue) {
@@ -93,11 +178,11 @@ IN_PROC_BROWSER_TEST_P(XSLTPolicyBrowserTest, PolicyIsFollowed) {
     expected_enabled = false;
   } else {
     // Default
-    expected_enabled = (feature_state == FeatureState::kEnabled);
+    expected_enabled =
+        (feature_state == FeatureState::kEnabled) || origin_trial_present;
   }
 
-  ASSERT_TRUE(embedded_test_server()->Start());
-  const GURL url(embedded_test_server()->GetURL("/empty.html"));
+  const GURL url("https://example.com/xslt.html");
   ASSERT_TRUE(NavigateToUrl(url, this));
 
   content::DOMMessageQueue message_queue(
@@ -117,6 +202,33 @@ IN_PROC_BROWSER_TEST_P(XSLTPolicyBrowserTest, PolicyIsFollowed) {
   EXPECT_TRUE(message_queue.WaitForMessage(&message));
   EXPECT_TRUE(message == "true" || message == "false");
   EXPECT_EQ(message == "true", expected_enabled);
+
+  if (expected_enabled) {
+    bool expected_banner =
+        (policy_val != Policy::kTrue) && !origin_trial_present;
+    content::DOMMessageQueue banner_queue(
+        chrome_test_utils::GetActiveWebContents(this));
+    content::ExecuteScriptAsync(chrome_test_utils::GetActiveWebContents(this),
+                                R"(
+          const iframe = document.createElement('iframe');
+          iframe.onload = () => {
+            // Give time for the XSLT commit navigation to settle.
+            requestAnimationFrame(() => requestAnimationFrame(() => {
+              const doc = iframe.contentDocument;
+              const banner =
+                  doc ? doc.querySelector('xslt-warning-banner') : null;
+              const hasBanner = banner && banner.shadowRoot &&
+                  banner.shadowRoot.textContent.includes('This site uses XSLT');
+              window.domAutomationController.send(Boolean(hasBanner));
+            }));
+          };
+          iframe.src = 'xslt.xml';
+          document.body.appendChild(iframe);
+        )");
+    std::string banner_message;
+    EXPECT_TRUE(banner_queue.WaitForMessage(&banner_message));
+    EXPECT_EQ(banner_message == "true", expected_banner);
+  }
 }
 
 INSTANTIATE_TEST_SUITE_P(
@@ -124,7 +236,8 @@ INSTANTIATE_TEST_SUITE_P(
     XSLTPolicyBrowserTest,
     ::testing::Combine(
         ::testing::Values(Policy::kDefault, Policy::kTrue, Policy::kFalse),
-        ::testing::Values(FeatureState::kEnabled, FeatureState::kDisabled)),
+        ::testing::Values(FeatureState::kEnabled, FeatureState::kDisabled),
+        ::testing::Bool()),
     &XSLTPolicyBrowserTest::DescribeParams);
 
 }  // namespace policy

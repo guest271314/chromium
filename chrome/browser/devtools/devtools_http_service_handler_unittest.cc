@@ -4,7 +4,8 @@
 
 #include "chrome/browser/devtools/devtools_http_service_handler.h"
 
-#include "base/memory/ptr_util.h"
+#include <memory>
+
 #include "base/test/bind.h"
 #include "base/test/test_future.h"
 #include "chrome/browser/devtools/devtools_dispatch_http_request_params.h"
@@ -14,6 +15,7 @@
 #include "content/public/test/browser_task_environment.h"
 #include "content/public/test/url_loader_interceptor.h"
 #include "net/traffic_annotation/network_traffic_annotation_test_helper.h"
+#include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace {
@@ -41,7 +43,7 @@ class DevToolsHttpServiceHandlerTest : public testing::Test {
         CreateProfileForIdentityTestEnvironment();
     identity_test_env_adaptor_ =
         std::make_unique<IdentityTestEnvironmentProfileAdaptor>(profile_.get());
-    mock_handler_ = base::WrapUnique(new TestServiceHandler());
+    mock_handler_ = std::make_unique<TestServiceHandler>();
 
     params_.service = "unknownService";
     params_.path = "/path";
@@ -209,6 +211,7 @@ TEST_F(DevToolsHttpServiceHandlerTest, RequestStreamingHttpError) {
   EXPECT_EQ(result->error,
             DevToolsHttpServiceHandler::Result::Error::kHttpError);
   EXPECT_EQ(result->http_status, 500);
+  EXPECT_THAT(result->response_body, testing::Optional(std::string("Error")));
 }
 
 }  // namespace

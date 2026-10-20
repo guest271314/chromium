@@ -12,17 +12,23 @@
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/stringprintf.h"
 #include "base/test/run_until.h"
+#include "chrome/app/chrome_command_ids.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/browser_tabstrip.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/tabs/split_tab_metrics.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/webui/tab_search/tab_search_page_handler.h"
 #include "chrome/common/chrome_isolated_world_ids.h"
 #include "chrome/common/webui_url_constants.h"
 #include "chrome/test/base/in_process_browser_test.h"
+#include "chrome/test/base/ui_test_utils.h"
 #include "components/metrics/mapping/metrics_mapping_features.h"
 #include "components/metrics/mapping/metrics_name_mapping.pb.h"
+#include "components/split_tabs/split_tab_visual_data.h"
 #include "components/tabs/public/tab_interface.h"
-#include "content/public/common/content_features.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "content/public/test/test_utils.h"
@@ -46,7 +52,7 @@ class TabSearchUIBrowserTest : public InProcessBrowserTest {
     AppendTab(chrome::kChromeUIBookmarksURL);
 
     webui_contents_ = content::WebContents::Create(
-        content::WebContents::CreateParams(browser()->profile()));
+        content::WebContents::CreateParams(browser()->GetProfile()));
 
     webui_contents_->GetController().LoadURLWithParams(
         content::NavigationController::LoadURLParams(
@@ -63,7 +69,7 @@ class TabSearchUIBrowserTest : public InProcessBrowserTest {
   }
 
   tabs::TabInterface* GetActiveTab() {
-    return browser()->tab_strip_model()->GetActiveTab();
+    return browser()->GetTabStripModel()->GetActiveTab();
   }
 
   TabSearchUI* GetWebUIController() {
@@ -105,12 +111,12 @@ IN_PROC_BROWSER_TEST_F(TabSearchUIBrowserTest, DISABLED_InitialTabItemsListed) {
 
 // Flaky - see https://crbug.com/40932977
 IN_PROC_BROWSER_TEST_F(TabSearchUIBrowserTest, DISABLED_SwitchToTabAction) {
-  int tab_count = browser()->tab_strip_model()->count();
+  int tab_count = browser()->GetTabStripModel()->count();
   tabs::TabHandle tab_id =
-      browser()->tab_strip_model()->GetTabAtIndex(tab_count - 1)->GetHandle();
+      browser()->GetTabStripModel()->GetTabAtIndex(tab_count - 1)->GetHandle();
   ASSERT_EQ(tab_id, GetActiveTab()->GetHandle());
 
-  tab_id = browser()->tab_strip_model()->GetTabAtIndex(0)->GetHandle();
+  tab_id = browser()->GetTabStripModel()->GetTabAtIndex(0)->GetHandle();
 
   const std::string tab_item_js = base::StringPrintf(
       "document.querySelector('tab-search-app').shadowRoot"
@@ -126,10 +132,10 @@ IN_PROC_BROWSER_TEST_F(TabSearchUIBrowserTest, DISABLED_SwitchToTabAction) {
 
 // TODO(https://crbug.com/401303184): Disabled due to excessive flakiness.
 IN_PROC_BROWSER_TEST_F(TabSearchUIBrowserTest, DISABLED_CloseTabAction) {
-  ASSERT_EQ(4, browser()->tab_strip_model()->count());
+  ASSERT_EQ(4, browser()->GetTabStripModel()->count());
 
   tabs::TabHandle tab_id =
-      browser()->tab_strip_model()->GetTabAtIndex(0)->GetHandle();
+      browser()->GetTabStripModel()->GetTabAtIndex(0)->GetHandle();
 
   const std::string tab_item_button_js = base::StringPrintf(
       "document.querySelector('tab-search-app').shadowRoot"
@@ -142,13 +148,13 @@ IN_PROC_BROWSER_TEST_F(TabSearchUIBrowserTest, DISABLED_CloseTabAction) {
                               tab_item_button_js + ".click()",
                               content::EXECUTE_SCRIPT_DEFAULT_OPTIONS,
                               ISOLATED_WORLD_ID_CHROME_INTERNAL));
-  int tab_count = browser()->tab_strip_model()->count();
+  int tab_count = browser()->GetTabStripModel()->count();
   ASSERT_EQ(3, tab_count);
 
   std::vector<tabs::TabHandle> open_tab_ids(tab_count);
   for (int tab_index = 0; tab_index < tab_count; tab_index++) {
     open_tab_ids.push_back(
-        browser()->tab_strip_model()->GetTabAtIndex(tab_index)->GetHandle());
+        browser()->GetTabStripModel()->GetTabAtIndex(tab_index)->GetHandle());
   }
   ASSERT_FALSE(std::ranges::contains(open_tab_ids, tab_id));
 }
@@ -159,7 +165,7 @@ IN_PROC_BROWSER_TEST_F(TabSearchUIBrowserTest, DISABLED_CloseTabAction) {
 IN_PROC_BROWSER_TEST_F(TabSearchUIBrowserTest,
                        CloseTabSearchAsBrowserTabDoesNotCrash) {
   AppendTab(chrome::kChromeUITabSearchURL);
-  auto* tab_strip_model = browser()->tab_strip_model();
+  auto* tab_strip_model = browser()->GetTabStripModel();
   ASSERT_EQ(5, tab_strip_model->count());
   content::WebContents* tab_contents = tab_strip_model->GetWebContentsAt(4);
   const tabs::TabHandle tab_id = tab_strip_model->GetTabAtIndex(4)->GetHandle();
@@ -272,12 +278,6 @@ class TabSearchUIBundledCodeCacheBrowserTest
 
 IN_PROC_BROWSER_TEST_P(TabSearchUIBundledCodeCacheBrowserTest,
                        SuccessfullyLoadsCodeCache) {
-  if (base::FeatureList::IsEnabled(features::kInitialWebUI) &&
-      ShouldEnableFieldTrialTestingConfig()) {
-    GTEST_SKIP() << "Skipping test because it fails with InitialWebUI enabled. "
-                    "See crbug.com/464087732.";
-  }
-
   // Assert the bundled code-cache map is non-empty.
   EXPECT_FALSE(webui::GetWebUIResourceUrlToCodeCacheMap().empty());
 
@@ -329,3 +329,116 @@ INSTANTIATE_TEST_SUITE_P(
           std::get<1>(info.param) ? "WithFieldTrials" : "WithoutFieldTrials");
     });
 #endif  // BUILDFLAG(ENABLE_WEBUI_GENERATE_CODE_CACHE)
+
+// ChromeOS has a different concept of guest profile, so we will only test
+// standard desktop behavior.
+#if BUILDFLAG(IS_CHROMEOS)
+#define MAYBE_GuestModeSplitViewFavicons DISABLED_GuestModeSplitViewFavicons
+#else
+#define MAYBE_GuestModeSplitViewFavicons GuestModeSplitViewFavicons
+#endif  // BUILDFLAG(IS_CHROMEOS)
+IN_PROC_BROWSER_TEST_F(TabSearchUIBrowserTest,
+                       MAYBE_GuestModeSplitViewFavicons) {
+  // Open guest browser.
+  EXPECT_TRUE(chrome::ExecuteCommand(browser(), IDC_OPEN_GUEST_PROFILE));
+  BrowserWindowInterface* guest_browser = ui_test_utils::WaitForBrowserToOpen();
+  ASSERT_TRUE(guest_browser);
+  ASSERT_TRUE(guest_browser->GetProfile()->IsGuestSession());
+
+  // Start embedded test server.
+  ASSERT_TRUE(embedded_test_server()->Start());
+
+  // Add two tabs with real favicons to the guest browser.
+  const GURL favicon_url1 =
+      embedded_test_server()->GetURL("/favicon/page_with_favicon.html");
+  chrome::AddTabAt(guest_browser, favicon_url1, -1, true);
+  ASSERT_TRUE(content::WaitForLoadStop(
+      guest_browser->GetTabStripModel()->GetActiveWebContents()));
+
+  const GURL favicon_url2 =
+      embedded_test_server()->GetURL("/favicon/title2_with_favicon.html");
+  chrome::AddTabAt(guest_browser, favicon_url2, -1, true);
+  ASSERT_TRUE(content::WaitForLoadStop(
+      guest_browser->GetTabStripModel()->GetActiveWebContents()));
+
+  // Active tab is favicon_url2 (at index 2). Activate tab at index 1.
+  guest_browser->GetTabStripModel()->ActivateTabAt(1);
+
+  // Put them in a split view.
+  guest_browser->GetTabStripModel()->AddToNewSplit(
+      {2}, split_tabs::SplitTabVisualData(),
+      split_tabs::SplitTabCreatedSource::kToolbarButton);
+
+  // Load chrome://tab-search in the guest browser.
+  content::WebContents* webui_contents = chrome::AddAndReturnTabAt(
+      guest_browser, GURL(chrome::kChromeUITabSearchURL), -1,
+      /*foreground=*/true);
+  ASSERT_TRUE(content::WaitForLoadStop(webui_contents));
+
+  // Get the PageHandler.
+  TabSearchUI* tab_search_ui = webui_contents->GetWebUI()
+                                   ->GetController()
+                                   ->template GetAs<TabSearchUI>();
+  ASSERT_TRUE(tab_search_ui);
+  TabSearchPageHandler* page_handler =
+      tab_search_ui->page_handler_for_testing();
+  ASSERT_TRUE(page_handler);
+
+  // Fetch and verify the profile data once the split tabs are present and
+  // their proper favicons are loaded.
+  tab_search::mojom::ProfileDataPtr profile_data;
+  auto get_split_tabs_loaded = [&]() -> bool {
+    base::RunLoop run_loop;
+    page_handler->GetProfileData(base::BindOnce(
+        [](base::OnceClosure quit_closure,
+           tab_search::mojom::ProfileDataPtr* out_profile_data,
+           tab_search::mojom::ProfileDataPtr profile_data) {
+          *out_profile_data = std::move(profile_data);
+          std::move(quit_closure).Run();
+        },
+        run_loop.QuitClosure(), &profile_data));
+    run_loop.Run();
+
+    if (!profile_data || profile_data->windows.empty()) {
+      return false;
+    }
+
+    int found_split_tabs = 0;
+    for (const auto& window : profile_data->windows) {
+      for (const auto& tab : window->tabs) {
+        if (tab->url == favicon_url1 || tab->url == favicon_url2) {
+          if (!tab->split || !tab->split_id.has_value() ||
+              tab->is_default_favicon) {
+            return false;
+          }
+          found_split_tabs++;
+        }
+      }
+    }
+    return found_split_tabs == 2;
+  };
+
+  ASSERT_TRUE(base::test::RunUntil(get_split_tabs_loaded));
+
+  // Perform full verification on the populated profile data.
+  int found_split_tabs = 0;
+  std::optional<base::Token> split_id;
+  for (const auto& window : profile_data->windows) {
+    for (const auto& tab : window->tabs) {
+      if (tab->url == favicon_url1 || tab->url == favicon_url2) {
+        EXPECT_TRUE(tab->split);
+        EXPECT_TRUE(tab->split_id.has_value());
+        if (!split_id.has_value()) {
+          split_id = tab->split_id;
+        } else {
+          EXPECT_EQ(split_id.value(), tab->split_id.value());
+        }
+        EXPECT_FALSE(tab->is_default_favicon);
+        EXPECT_TRUE(tab->favicon_url.has_value());
+        EXPECT_FALSE(tab->favicon_url->spec().empty());
+        found_split_tabs++;
+      }
+    }
+  }
+  EXPECT_EQ(found_split_tabs, 2);
+}

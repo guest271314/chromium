@@ -4,6 +4,7 @@
 
 #include "third_party/blink/renderer/platform/text/justification_opportunity.h"
 
+#include "base/numerics/safe_conversions.h"
 #include "third_party/blink/renderer/platform/text/character.h"
 #include "third_party/blink/renderer/platform/text/character_break_iterator.h"
 #include "third_party/blink/renderer/platform/wtf/text/character_names.h"
@@ -37,7 +38,7 @@ template <typename CharType>
   requires IsStringCharType<CharType>
 std::pair<bool, bool> JustificationContext::CheckOpportunity(TextJustify method,
                                                              UChar32 ch) {
-  if (Character::IsDefaultIgnorable(ch)) {
+  if (unicode::IsDefaultIgnorable(ch)) {
     return {false, false};
   }
   constexpr bool kIsLatin = sizeof(CharType) == 1u;
@@ -45,7 +46,7 @@ std::pair<bool, bool> JustificationContext::CheckOpportunity(TextJustify method,
   if constexpr (!kIsLatin) {
     if (ch == uchar::kObjectReplacementCharacter) {
       type = Type::kAtomicInline;
-    } else if (Character::IsCursiveScript(ch)) {
+    } else if (unicode::IsCursiveScript(ch)) {
       type = Type::kCursive;
     }
   }
@@ -79,7 +80,7 @@ std::pair<bool, bool> JustificationContext::CheckOpportunity(TextJustify method,
 
     // https://drafts.csswg.org/css-text-4/#valdef-text-justify-inter-word
     case TextJustify::kInterWord:
-      if (Character::TreatAsSpace(ch)) {
+      if (unicode::TreatAsSpace(ch)) {
         is_after_opportunity_ = true;
         return {false, true};
       }
@@ -91,7 +92,7 @@ std::pair<bool, bool> JustificationContext::CheckOpportunity(TextJustify method,
       // See below.
       break;
   }
-  bool treat_as_space = Character::TreatAsSpace(ch);
+  bool treat_as_space = unicode::TreatAsSpace(ch);
   if (treat_as_space && ch != uchar::kNoBreakSpace) {
     ch = uchar::kSpace;
   }
@@ -109,7 +110,7 @@ std::pair<bool, bool> JustificationContext::CheckOpportunity(TextJustify method,
   // IsCjkIdeographOrSymbol() has opportunities both before and after
   // each character.
   // http://www.w3.org/TR/jlreq/#line_adjustment
-  if (!Character::IsCjkIdeographOrSymbol(ch)) {
+  if (!unicode::IsCjkIdeographOrSymbol(ch)) {
     is_after_opportunity_ = false;
     return {false, false};
   }
@@ -167,8 +168,8 @@ wtf_size_t JustificationContext::CountOpportunities(
       count += CountOpportunity16(method, CodePointAt(chars, i));
     }
   } else {
-    for (int i = iter.Preceding(chars.size()); i != kTextBreakDone;
-         i = iter.Preceding(i)) {
+    for (int i = iter.Preceding(base::checked_cast<int>(chars.size()));
+         i != kTextBreakDone; i = iter.Preceding(i)) {
       count += CountOpportunity16(method, CodePointAt(chars, i));
     }
   }

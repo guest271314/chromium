@@ -5,6 +5,7 @@
 #include "chrome/browser/ui/webui/whats_new/whats_new_ui.h"
 
 #include "base/feature_list.h"
+#include "base/memory/ref_counted_memory.h"
 #include "base/version.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/global_features.h"
@@ -87,11 +88,10 @@ WhatsNewUI::WhatsNewUI(content::WebUI* web_ui)
 }
 
 // static
-base::RefCountedMemory* WhatsNewUI::GetFaviconResourceBytes(
+scoped_refptr<base::RefCountedMemory> WhatsNewUI::GetFaviconResourceBytes(
     ui::ResourceScaleFactor scale_factor) {
-  return static_cast<base::RefCountedMemory*>(
-      ui::ResourceBundle::GetSharedInstance().LoadDataResourceBytesForScale(
-          IDR_NTP_FAVICON, scale_factor));
+  return ui::ResourceBundle::GetSharedInstance().LoadDataResourceBytesForScale(
+      IDR_NTP_FAVICON, scale_factor);
 }
 
 WEB_UI_CONTROLLER_TYPE_IMPL(WhatsNewUI)
@@ -103,12 +103,10 @@ void WhatsNewUI::BindInterface(
 }
 
 void WhatsNewUI::CreatePageHandler(
-    mojo::PendingRemote<whats_new::mojom::Page> page,
     mojo::PendingReceiver<whats_new::mojom::PageHandler> receiver) {
-  DCHECK(page);
   page_handler_ = std::make_unique<WhatsNewHandler>(
-      std::move(receiver), std::move(page), profile_,
-      web_ui()->GetWebContents(), navigation_start_time_,
+      std::move(receiver), profile_, web_ui()->GetWebContents(),
+      navigation_start_time_,
       g_browser_process->GetFeatures()->whats_new_registry());
 }
 

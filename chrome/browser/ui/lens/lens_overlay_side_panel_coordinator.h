@@ -23,7 +23,6 @@
 #include "mojo/public/cpp/bindings/pending_remote.h"
 #include "mojo/public/cpp/bindings/receiver.h"
 #include "mojo/public/cpp/bindings/remote.h"
-#include "third_party/lens_server_proto/lens_overlay_selection_type.pb.h"
 #include "third_party/skia/include/core/SkBitmap.h"
 #include "ui/base/models/menu_model.h"
 #include "ui/menus/simple_menu_model.h"
@@ -47,6 +46,7 @@ namespace lens {
 
 class LensOverlaySidePanelNavigationThrottle;
 class LensSearchboxController;
+enum LensOverlaySelectionType : int;
 
 // Data struct representing a previous search query.
 struct SearchQuery {
@@ -324,9 +324,6 @@ class LensOverlaySidePanelCoordinator
   void DidStartNavigation(
       content::NavigationHandle* navigation_handle) override;
   void DOMContentLoaded(content::RenderFrameHost* render_frame_host) override;
-  void DidFinishNavigation(
-      content::NavigationHandle* navigation_handle) override;
-
   // ChromeWebModalDialogManagerDelegate:
   web_modal::WebContentsModalDialogHost* GetWebContentsModalDialogHost(
       content::WebContents* web_contents) override;
@@ -405,7 +402,7 @@ class LensOverlaySidePanelCoordinator
 
   // A pending url to be loaded in the side panel. Needed when the side
   // panel is not yet bound at the time of a request.
-  std::optional<GURL> pending_side_panel_url_ = std::nullopt;
+  std::optional<GURL> pending_side_panel_url_;
 
   // Whether the side panel should show the error page.
   bool side_panel_should_show_error_page_ = false;

@@ -18,10 +18,11 @@ import './sections/page_metadata.js';
 import './sections/additional_context.js';
 import './sections/interaction.js';
 import './sections/skills.js';
+import './sections/tools.js';
 import './sections/stress.js';
 
 import type {OpenSettingsOptions} from '/glic/glic_api/glic_api.js';
-import {SettingsPageField, WebClientMode} from '/glic/glic_api/glic_api.js';
+import {SbThreatType, SettingsPageField, WebClientMode} from '/glic/glic_api/glic_api.js';
 
 import {createGlicHostRegistryOnLoad} from '../api_boot.js';
 
@@ -52,6 +53,8 @@ $.openGlicSettings.addEventListener('click', () => {
     options.highlightField = SettingsPageField.OS_HOTKEY;
   } else if (selectedHighlight === 'osEntrypointToggle') {
     options.highlightField = SettingsPageField.OS_ENTRYPOINT_TOGGLE;
+  } else if (selectedHighlight === 'locationPermission') {
+    options.highlightField = SettingsPageField.LOCATION_PERMISSION;
   }
   getBrowser()!.openGlicSettingsPage!(options);
 });
@@ -60,7 +63,7 @@ $.syncCookiesBn.addEventListener('click', async () => {
   $.syncCookieStatus!.innerText = 'Requesting';
   try {
     await getBrowser()!.refreshSignInCookies!();
-    $.syncCookieStatus!.innerText = `Done!`;
+    $.syncCookieStatus!.innerText = 'Done!';
   } catch (e) {
     $.syncCookieStatus!.innerText = `Caught error: ${e}`;
   }
@@ -130,6 +133,29 @@ $.detachpanelbn.addEventListener('click', () => {
 });
 $.refreshbn.addEventListener('click', () => {
   location.reload();
+});
+$.processCounterAbuseVerdictTestEngageBtn.addEventListener('click', () => {
+  const tabId = client.getFocusedTabId();
+  if (!tabId) {
+    logMessage('Cannot process verdict: No focused tab');
+    return;
+  }
+  const showInterstitial = $.counterAbuseShowInterstitial.checked;
+  const selectedThreatType =
+      $.counterAbuseThreatType.value as keyof typeof SbThreatType;
+  const threatType = SbThreatType[selectedThreatType];
+  const url = $.focusedUrlV2.value || 'https://www.google.com';
+
+  logMessage(`Triggering processCounterAbuseVerdict (threatType: ${
+      selectedThreatType}, showInterstitial: ${showInterstitial}, url: ${
+      url})`);
+  getBrowser()!.processCounterAbuseVerdict!(tabId, {
+    sbVerdictResult: {
+      url: url,
+      threatType: threatType,
+      showInterstitial: showInterstitial,
+    },
+  });
 });
 $.navigateWebviewUrl.addEventListener('keyup', ({key}) => {
   if (key === 'Enter') {
@@ -207,23 +233,6 @@ $.maybeRefreshUserStatusBn.addEventListener('click', async () => {
 
 window.addEventListener('load', () => {
   initCaptureRegion();
-  $.desktopScreenshot.addEventListener('click', async () => {
-    logMessage('Requesting desktop screenshot...');
-    try {
-      const screenshot = await getBrowser()!.captureScreenshot!();
-      if (screenshot) {
-        const blob = new Blob([screenshot.data], {type: 'image/jpeg'});
-        $.desktopScreenshotImg.src = URL.createObjectURL(blob);
-        $.desktopScreenshotErrorReason!.innerText =
-            'Desktop screenshot captured.';
-      } else {
-        $.desktopScreenshotErrorReason!.innerText =
-            'Failed to capture desktop screenshot.';
-      }
-    } catch (error) {
-      $.desktopScreenshotErrorReason!.innerText = `Caught error: ${error}`;
-    }
-  });
   $.panelScreenshot.addEventListener('click', async () => {
     const stream = await navigator.mediaDevices.getDisplayMedia({
       video: {
@@ -310,3 +319,5 @@ async function releaseScreenWakeLock(): Promise<void> {
     $.screenWakeLockStatus.setAttribute('lockStatus', 'released');
   }
 }
+
+performance.mark('gemini.interactive');

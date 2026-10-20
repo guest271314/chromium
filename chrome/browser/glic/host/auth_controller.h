@@ -9,7 +9,9 @@
 #include "base/memory/weak_ptr.h"
 #include "base/scoped_observation.h"
 #include "base/time/time.h"
-#include "chrome/browser/glic/host/glic.mojom.h"
+#include "base/timer/timer.h"
+#include "chrome/browser/glic/host/glic.mojom-shared.h"
+#include "chrome/browser/glic/host/glic_webui.mojom.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
 
 class Profile;
@@ -20,6 +22,21 @@ class WebContents;
 
 namespace glic {
 class GlicCookieSynchronizer;
+
+// These values are persisted to logs. Entries should not be renumbered and
+// numeric values should never be reused.
+// LINT.IfChange(GlicCookieSyncTrigger)
+enum class GlicCookieSyncTrigger {
+  kCheckAuthBeforeLoad = 0,
+  kCheckAuthBeforeLoadForced = 1,
+  kOnPrimaryAccountChanged = 2,
+  kOnRefreshTokenUpdated = 3,
+  kMaybeSyncCookiesOnError = 4,
+  kGlicClient = 5,
+  kInstanceCreated = 6,
+  kMaxValue = kInstanceCreated,
+};
+// LINT.ThenChange(//tools/metrics/histograms/metadata/glic/enums.xml:GlicCookieSyncTrigger)
 
 bool IsPrimaryAccountGoogleInternal(signin::IdentityManager& signin_manager);
 
@@ -52,7 +69,8 @@ class AuthController : public signin::IdentityManager::Observer {
       base::OnceCallback<void(mojom::PrepareForClientResult)> callback);
 
   // Sync cookies, even if it appears as though a sync is not required.
-  void ForceSyncCookies(base::OnceCallback<void(bool)> callback);
+  void ForceSyncCookies(GlicCookieSyncTrigger trigger,
+                        base::OnceCallback<void(bool)> callback);
 
   // Called when the client reports that it has encountered an error.
   void OnClientError();
@@ -70,6 +88,16 @@ class AuthController : public signin::IdentityManager::Observer {
 
   GlicCookieSynchronizer* GetCookieSynchronizerForTesting() const {
     return cookie_synchronizer_.get();
+  }
+
+  // Called when a Glic instance is created due to user action.
+  void OnInstanceCreated();
+
+  bool HasInstanceBeenCreatedForTesting() const {
+    return has_instance_been_created_;
+  }
+  void SetInstanceCreatedForTesting(bool created) {
+    has_instance_been_created_ = created;
   }
 
   bool NeedsSyncForTesting() const;
@@ -95,11 +123,18 @@ class AuthController : public signin::IdentityManager::Observer {
   base::WeakPtr<AuthController> GetWeakPtr() {
     return weak_ptr_factory_.GetWeakPtr();
   }
-  void CookieSyncDone(base::OnceCallback<void(bool)> callback,
+  void DelayedForceSyncCookies(GlicCookieSyncTrigger trigger);
+  void CookieSyncDone(GlicCookieSyncTrigger trigger,
+                      base::OnceCallback<void(bool)> callback,
                       bool sync_success);
   void CookieSyncBeforeLoadDone(
+      GlicCookieSyncTrigger trigger,
       base::OnceCallback<void(mojom::PrepareForClientResult)> callback,
       bool sync_success);
+  void RecordSyncResult(GlicCookieSyncTrigger trigger, bool success);
+  void MaybeSyncCookiesOnError();
+  void MaybeSetNeedsSync();
+  bool ShouldSyncCookiesDelayed();
 
   raw_ptr<Profile> profile_;
   raw_ptr<signin::IdentityManager> identity_manager_;
@@ -107,6 +142,9 @@ class AuthController : public signin::IdentityManager::Observer {
   base::ScopedObservation<signin::IdentityManager,
                           signin::IdentityManager::Observer>
       observation_;
+  base::TimeTicks last_sync_on_error_time_;
+  base::OneShotTimer token_change_sync_timer_;
+  bool has_instance_been_created_ = false;
   base::WeakPtrFactory<AuthController> weak_ptr_factory_{this};
 };
 

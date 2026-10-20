@@ -6,7 +6,6 @@
 
 #include <utility>
 
-#include "base/metrics/histogram_macros.h"
 #include "base/numerics/safe_conversions.h"
 #include "base/task/single_thread_task_runner.h"
 #include "third_party/blink/public/mojom/notifications/notification.mojom-blink.h"
@@ -22,6 +21,7 @@
 #include "third_party/blink/renderer/modules/notifications/notification.h"
 #include "third_party/blink/renderer/modules/notifications/notification_metrics.h"
 #include "third_party/blink/renderer/modules/permissions/permission_utils.h"
+#include "third_party/blink/renderer/platform/bindings/exception_code.h"
 #include "third_party/blink/renderer/platform/bindings/script_state.h"
 #include "third_party/blink/renderer/platform/heap/collection_support/heap_vector.h"
 #include "third_party/blink/renderer/platform/heap/member.h"
@@ -71,8 +71,6 @@ mojom::blink::PermissionStatus NotificationManager::GetPermissionStatus() {
     }
   }
 
-  SCOPED_UMA_HISTOGRAM_TIMER(
-      "Blink.NotificationManager.GetPermissionStatusTime");
   mojom::blink::PermissionStatus permission_status;
   if (!GetNotificationService()->GetPermissionStatus(&permission_status)) {
     // The browser-side Mojo connection was closed, disabling notifications.
@@ -216,7 +214,8 @@ void NotificationManager::DisplayPersistentNotification(
       mojom::blink::NotificationData::kMaximumDeveloperDataSize) {
     RecordPersistentNotificationDisplayResult(
         PersistentNotificationDisplayResult::kTooMuchData);
-    resolver->Reject();
+    resolver->RejectWithTypeError(
+        "The notification data exceeds the maximum allowed size.");
     return;
   }
 
@@ -236,16 +235,25 @@ void NotificationManager::DidDisplayPersistentNotification(
           PersistentNotificationDisplayResult::kOk);
       resolver->Resolve();
       return;
-    case mojom::blink::PersistentNotificationError::INTERNAL_ERROR:
+    case mojom::blink::PersistentNotificationError::
+        NOTIFICATION_SERVICE_NOT_FOUND:
       RecordPersistentNotificationDisplayResult(
           PersistentNotificationDisplayResult::kInternalError);
-      resolver->Reject();
+      resolver->RejectWithDOMException(DOMExceptionCode::kUnknownError,
+                                       "Notification service not found.");
+      return;
+    case mojom::blink::PersistentNotificationError::DATABASE_ERROR:
+      RecordPersistentNotificationDisplayResult(
+          PersistentNotificationDisplayResult::kInternalError);
+      resolver->RejectWithDOMException(
+          DOMExceptionCode::kUnknownError,
+          "Notification data could not be persisted.");
       return;
     case mojom::blink::PersistentNotificationError::PERMISSION_DENIED:
       RecordPersistentNotificationDisplayResult(
           PersistentNotificationDisplayResult::kPermissionDenied);
-      // TODO(https://crbug.com/832944): Throw a TypeError if permission denied.
-      resolver->Reject();
+      resolver->RejectWithTypeError(
+          "No notification permission has been granted for this origin.");
       return;
   }
   NOTREACHED();

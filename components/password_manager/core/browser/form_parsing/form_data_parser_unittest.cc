@@ -21,7 +21,7 @@
 #include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
 #include "components/autofill/core/browser/field_types.h"
-#include "components/autofill/core/common/autofill_test_utils.h"
+#include "components/autofill/core/common/autofill_test_util.h"
 #include "components/autofill/core/common/form_data.h"
 #include "components/autofill/core/common/form_data_test_api.h"
 #include "components/autofill/core/common/form_field_data.h"
@@ -234,15 +234,19 @@ void CheckPasswordFormFields(const FormParsingResult& parsing_result,
   EXPECT_EQ(expectations.username_id,
             parsing_result.password_form->username_element_renderer_id);
 
+  std::u16string password_value_plain =
+      parsing_result.password_form->password_value.value();
   CheckField(form_data.fields(), expectations.password_id,
              parsing_result.password_form->password_element,
-             &parsing_result.password_form->password_value, "password");
+             &password_value_plain, "password");
   EXPECT_EQ(expectations.password_id,
             parsing_result.password_form->password_element_renderer_id);
 
+  std::u16string new_password_value_plain =
+      parsing_result.password_form->new_password_value.value();
   CheckField(form_data.fields(), expectations.new_password_id,
              parsing_result.password_form->new_password_element,
-             &parsing_result.password_form->new_password_value, "new_password");
+             &new_password_value_plain, "new_password");
 
   CheckField(form_data.fields(), expectations.confirmation_password_id,
              parsing_result.password_form->confirmation_password_element,
@@ -1941,6 +1945,24 @@ TEST_F(FormParserTest, IgnoreCvcFields) {
       },
       {
           .description_for_logging =
+              "Server hints: CREDIT_CARD_STANDALONE_VERIFICATION_CODE.",
+          .fields =
+              {
+                  {.role = ElementRole::USERNAME,
+                   .form_control_type = FormControlType::kInputText},
+                  {.form_control_type = FormControlType::kInputPassword,
+                   .server_predicted_type =
+                       autofill::CREDIT_CARD_STANDALONE_VERIFICATION_CODE,
+                   .manual_generation_enabled = false},
+                  {.role = ElementRole::CURRENT_PASSWORD,
+                   .form_control_type = FormControlType::kInputPassword},
+              },
+          // The result should be trusted for more than just fallback, because
+          // the chosen password was not a suspected CVC.
+          .fallback_only = false,
+      },
+      {
+          .description_for_logging =
               "Server hints: CREDIT_CARD_VERIFICATION_CODE on only password.",
           .fields =
               {
@@ -1948,6 +1970,19 @@ TEST_F(FormParserTest, IgnoreCvcFields) {
                   {.form_control_type = FormControlType::kInputPassword,
                    .server_predicted_type =
                        autofill::CREDIT_CARD_VERIFICATION_CODE,
+                   .manual_generation_enabled = false},
+              },
+      },
+      {
+          .description_for_logging =
+              "Server hints: CREDIT_CARD_STANDALONE_VERIFICATION_CODE on only "
+              "password.",
+          .fields =
+              {
+                  {.form_control_type = FormControlType::kInputText},
+                  {.form_control_type = FormControlType::kInputPassword,
+                   .server_predicted_type =
+                       autofill::CREDIT_CARD_STANDALONE_VERIFICATION_CODE,
                    .manual_generation_enabled = false},
               },
       },
@@ -1979,6 +2014,37 @@ TEST_F(FormParserTest, IgnoreCvcFields) {
                    .form_control_type = FormControlType::kInputPassword},
               },
           .fallback_only = true,
+      },
+  });
+}
+
+// The parser should avoid identifying IBAN fields as passwords.
+TEST_F(FormParserTest, IgnoreIbanFields) {
+  CheckTestData({
+      {
+          .description_for_logging = "Server hints: IBAN_VALUE.",
+          .fields =
+              {
+                  {.role = ElementRole::USERNAME,
+                   .form_control_type = FormControlType::kInputText},
+                  {.form_control_type = FormControlType::kInputPassword,
+                   .server_predicted_type = autofill::IBAN_VALUE,
+                   .manual_generation_enabled = false},
+                  {.role = ElementRole::CURRENT_PASSWORD,
+                   .form_control_type = FormControlType::kInputPassword},
+              },
+          .fallback_only = false,
+      },
+      {
+          .description_for_logging =
+              "Server hints: IBAN_VALUE on only password.",
+          .fields =
+              {
+                  {.form_control_type = FormControlType::kInputText},
+                  {.form_control_type = FormControlType::kInputPassword,
+                   .server_predicted_type = autofill::IBAN_VALUE,
+                   .manual_generation_enabled = false},
+              },
       },
   });
 }
@@ -3923,6 +3989,98 @@ TEST_F(FormParserTest, ModelPredictions_WebAuthnRationalization) {
           .accepts_webauthn_credentials = true,
       },
   });
+}
+
+TEST_F(FormParserTest, ConflictingUsernameAndPassword) {
+  CheckTestData({{
+      .description_for_logging =
+          "Conflicting model (USERNAME) and server (PASSWORD) predictions on "
+          "the same field.",
+      .fields =
+          {
+              {.role = ElementRole::CURRENT_PASSWORD,
+               .form_control_type = FormControlType::kInputPassword,
+               .server_predicted_type = autofill::PASSWORD,
+               .model_predicted_type = autofill::USERNAME},
+              {.role = ElementRole::NEW_PASSWORD,
+               .form_control_type = FormControlType::kInputPassword,
+               .server_predicted_type = autofill::PASSWORD,
+               .model_predicted_type = autofill::MAX_VALID_FIELD_TYPE},
+          },
+  }});
+}
+
+TEST_F(FormParserTest, ConflictingPasswordAndNewPasswordWithConfirmation) {
+  CheckTestData({{
+      .description_for_logging =
+          "Conflicting model (NEW_PASSWORD) and server (PASSWORD) predictions "
+          "on the same field, with confirmation present.",
+      .fields =
+          {
+              {.role = ElementRole::CURRENT_PASSWORD,
+               .form_control_type = FormControlType::kInputPassword,
+               .server_predicted_type = autofill::PASSWORD,
+               .model_predicted_type = autofill::ACCOUNT_CREATION_PASSWORD},
+              {.role = ElementRole::NEW_PASSWORD,
+               .form_control_type = FormControlType::kInputPassword,
+               .server_predicted_type = autofill::CONFIRMATION_PASSWORD,
+               .model_predicted_type = autofill::MAX_VALID_FIELD_TYPE},
+          },
+  }});
+}
+
+TEST_F(FormParserTest, ConflictingPasswordAndNewPasswordWithoutConfirmation) {
+  CheckTestData({{
+      .description_for_logging =
+          "Conflicting model (NEW_PASSWORD) and server (PASSWORD) predictions "
+          "on the same field, without confirmation.",
+      .fields =
+          {
+              {.role = ElementRole::CURRENT_PASSWORD,
+               .form_control_type = FormControlType::kInputPassword,
+               .server_predicted_type = autofill::PASSWORD,
+               .model_predicted_type = autofill::ACCOUNT_CREATION_PASSWORD},
+              {.role = ElementRole::NEW_PASSWORD,
+               .form_control_type = FormControlType::kInputPassword,
+               .server_predicted_type = autofill::UNKNOWN_TYPE,
+               .model_predicted_type = autofill::MAX_VALID_FIELD_TYPE},
+          },
+  }});
+}
+
+TEST_F(FormParserTest, ConflictingNewPasswordAndConfirmationPassword) {
+  CheckTestData({{
+      .description_for_logging =
+          "Conflicting model (NEW_PASSWORD) and server (CONFIRMATION_PASSWORD) "
+          "predictions on the same field.",
+      .fields =
+          {
+              {.role = ElementRole::CURRENT_PASSWORD,
+               .form_control_type = FormControlType::kInputPassword,
+               .server_predicted_type = autofill::CONFIRMATION_PASSWORD,
+               .model_predicted_type = autofill::ACCOUNT_CREATION_PASSWORD},
+              {.role = ElementRole::NEW_PASSWORD,
+               .form_control_type = FormControlType::kInputPassword,
+               .server_predicted_type = autofill::UNKNOWN_TYPE,
+               .model_predicted_type = autofill::MAX_VALID_FIELD_TYPE},
+          },
+  }});
+}
+
+TEST_F(FormParserTest, HeuristicsConflictSanitizesRole) {
+  CheckTestData({{
+      .description_for_logging =
+          "Conflicting heuristic prediction (PASSWORD) and HTML context "
+          "prediction (USERNAME) on the same field.",
+      .fields =
+          {
+              {.role = ElementRole::CURRENT_PASSWORD,
+               .form_control_type = FormControlType::kInputPassword,
+               .predicted_username = 0},
+              {.role = ElementRole::NEW_PASSWORD,
+               .form_control_type = FormControlType::kInputPassword},
+          },
+  }});
 }
 
 }  // namespace

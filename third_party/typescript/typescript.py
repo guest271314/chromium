@@ -17,9 +17,9 @@ def GetBinaryPath():
     darwin_path = 'mac-amd64'
 
   return os_path.normpath(os_path.join(os_path.dirname(__file__), *{
-    'Darwin': (darwin_path, 'src', 'lib', 'tsgo'),
-    'Linux': ('linux-amd64', 'src', 'lib', 'tsgo'),
-    'Windows': ('windows-amd64', 'src', 'lib', 'tsgo.exe'),
+    'Darwin': (darwin_path, 'src', 'lib', 'tsc'),
+    'Linux': ('linux-amd64', 'src', 'lib', 'tsc'),
+    'Windows': ('windows-amd64', 'src', 'lib', 'tsc.exe'),
   }[platform.system()]))
 
 
@@ -33,6 +33,10 @@ def RunTypeScriptRaw(cmd_parts, stdout=None):
 
 
 def RunTypeScript(cmd_parts, stdout=None):
+  # Force pretty output.
+  if '--pretty' not in cmd_parts:
+    cmd_parts = cmd_parts + ['--pretty']
+
   code, stdout, stderr = RunTypeScriptRaw(cmd_parts, stdout)
   if code != 0:
     errs = []

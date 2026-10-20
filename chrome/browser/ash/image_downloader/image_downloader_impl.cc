@@ -4,10 +4,10 @@
 
 #include "chrome/browser/ash/image_downloader/image_downloader_impl.h"
 
-#include "chrome/browser/ash/profiles/profile_helper.h"
 #include "chrome/browser/bitmap_fetcher/bitmap_fetcher.h"
 #include "chrome/browser/bitmap_fetcher/bitmap_fetcher_delegate.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
 #include "components/account_id/account_id.h"
 #include "net/url_request/referrer_policy.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
@@ -46,8 +46,9 @@ class DownloadTask : public BitmapFetcherDelegate {
                  const net::NetworkTrafficAnnotationTag& annotation_tag,
                  const AccountId& account_id,
                  const net::HttpRequestHeaders& additional_headers) {
-    Profile* profile =
-        ash::ProfileHelper::Get()->GetProfileByAccountId(account_id);
+    Profile* profile = Profile::FromBrowserContext(
+        ash::BrowserContextHelper::Get()->GetBrowserContextByAccountId(
+            account_id));
     if (!profile) {
       std::move(callback_).Run(gfx::ImageSkia());
       return;
@@ -90,7 +91,7 @@ void ImageDownloaderImpl::Download(
     const AccountId& account_id,
     const net::HttpRequestHeaders& additional_headers,
     ash::ImageDownloader::DownloadCallback callback) {
-  DCHECK(account_id.is_valid());
+  CHECK(account_id.is_valid(), base::NotFatalUntil::M161);
   // The download task will delete itself upon task completion.
   new DownloadTask(url, annotation_tag, account_id, additional_headers,
                    std::move(callback));

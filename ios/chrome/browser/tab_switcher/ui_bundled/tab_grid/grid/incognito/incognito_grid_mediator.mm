@@ -38,8 +38,8 @@
 // refactored.
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/tab_grid_view_controller.h"
 
-@interface IncognitoGridMediator () <IncognitoStateObserver,
-                                     FamilyLinkUserCapabilitiesObserving>
+@interface IncognitoGridMediator () <FamilyLinkUserCapabilitiesObserving,
+                                     IncognitoStateObserver>
 @end
 
 @implementation IncognitoGridMediator {
@@ -76,18 +76,6 @@
   SnapshotBrowserAgent::FromBrowser(self.browser)->RemoveAllSnapshots();
 }
 
-- (void)saveAndCloseAllItems {
-  NOTREACHED() << "Incognito tabs should not be saved before closing.";
-}
-
-- (void)undoCloseAllItems {
-  NOTREACHED() << "Incognito tabs are not saved before closing.";
-}
-
-- (void)discardSavedClosedItems {
-  NOTREACHED() << "Incognito tabs cannot be saved.";
-}
-
 - (void)setPinState:(BOOL)pinState forItemWithID:(web::WebStateID)itemID {
   NOTREACHED() << "Should not be called in incognito.";
 }
@@ -105,25 +93,25 @@
   }
 }
 
-- (void)setPageAsActive {
-  [self.gridConsumer setActivePageFromPage:TabGridPageIncognitoTabs];
+- (void)setPageAsActiveWithBehavior:(TabGridScrollBehavior)behavior {
+  [self.gridConsumer setActivePageFromPage:TabGridPageIncognitoTabs
+                                  behavior:behavior];
 }
 
 #pragma mark - TabGridToolbarsGridDelegate
 
 - (void)closeAllButtonTapped:(id)sender {
-  if (base::FeatureList::IsEnabled(kTabSwitcherOverflowMenu)) {
-    [self.incognitoDelegate showCloseAllConfirmationFromSourceView:sender];
-    return;
-  }
-  [self closeAllItems];
+  [self.incognitoDelegate showCloseAllConfirmationFromSourceView:sender];
 }
 
 - (void)closeOtherTabsButtonTapped:(id)sender {
+  int indexToKeep = self.webStateList->active_index();
+  if (indexToKeep == WebStateList::kInvalidIndex) {
+    return;
+  }
   RecordTabGridCloseOtherTabs(/*incognito=*/true);
   // There is no pinned tabs in incognito.
   RecordTabGridCloseTabsCount(self.webStateList->count() - 1);
-  int indexToKeep = self.webStateList->active_index();
   CloseOtherWebStates(*self.webStateList, indexToKeep,
                       WebStateList::ClosingReason::kUserAction);
 }
@@ -192,9 +180,12 @@
     [self configureButtonsInSelectionMode:toolbarsConfiguration];
   } else {
     toolbarsConfiguration.closeAllButton = !self.webStateList->empty();
-    toolbarsConfiguration.doneButton = !self.webStateList->empty();
+    toolbarsConfiguration.exitTabGridButton =
+        !self.webStateList->empty() &&
+        self.modeHolder.mode == TabGridMode::kNormal;
     toolbarsConfiguration.newTabButton = YES;
-    toolbarsConfiguration.searchButton = YES;
+    toolbarsConfiguration.searchButtonHidden = self.webStateList->empty();
+    toolbarsConfiguration.searchButton = !self.webStateList->empty();
     toolbarsConfiguration.selectTabsButton = !self.webStateList->empty();
     toolbarsConfiguration.closeOtherTabsButton = [self canCloseOtherTabs];
   }
@@ -203,7 +194,8 @@
 }
 
 - (void)displayActiveTab {
-  [self.gridConsumer setActivePageFromPage:TabGridPageIncognitoTabs];
+  [self.gridConsumer setActivePageFromPage:TabGridPageIncognitoTabs
+                                  behavior:TabGridScrollBehaviorAnimated];
   [self.tabPresentationDelegate showActiveTabInPage:TabGridPageIncognitoTabs
                                        focusOmnibox:NO];
   if (IsDownloadAutoDeletionFeatureEnabled()) {

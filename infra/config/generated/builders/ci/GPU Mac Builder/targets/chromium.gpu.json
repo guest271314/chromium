@@ -15,7 +15,7 @@
             "cpu": "x86-64",
             "display_attached": "1",
             "gpu": "8086:3e9b",
-            "os": "Mac-14.5",
+            "os": "Mac-15.5",
             "puppet_env": "production"
           },
           "hard_timeout": 1800,
@@ -44,7 +44,7 @@
             "cpu": "x86-64",
             "display_attached": "1",
             "gpu": "8086:3e9b",
-            "os": "Mac-14.5",
+            "os": "Mac-15.5",
             "puppet_env": "production"
           },
           "hard_timeout": 1800,
@@ -58,7 +58,8 @@
       {
         "args": [
           "--use-gpu-in-tests",
-          "--git-revision=${got_revision}"
+          "--git-revision=${got_revision}",
+          "--bypass-skia-gold-functionality"
         ],
         "merge": {
           "script": "//testing/merge_scripts/standard_gtest_merge.py"
@@ -77,7 +78,7 @@
             "cpu": "x86-64",
             "display_attached": "1",
             "gpu": "8086:3e9b",
-            "os": "Mac-14.5",
+            "os": "Mac-15.5",
             "puppet_env": "production"
           },
           "hard_timeout": 1800,
@@ -117,7 +118,7 @@
             "cpu": "x86-64",
             "display_attached": "1",
             "gpu": "8086:3e9b",
-            "os": "Mac-14.5",
+            "os": "Mac-15.5",
             "puppet_env": "production"
           },
           "hard_timeout": 1800,
@@ -139,6 +140,7 @@
           "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=metal --enable-skia-graphite",
           "--enforce-browser-version",
           "--git-revision=${got_revision}",
+          "--bypass-skia-gold-functionality",
           "--dont-restore-color-profile-after-test",
           "--test-machine-name",
           "${buildername}",
@@ -165,7 +167,7 @@
             "cpu": "x86-64",
             "display_attached": "1",
             "gpu": "8086:3e9b",
-            "os": "Mac-14.5",
+            "os": "Mac-15.5",
             "puppet_env": "production"
           },
           "hard_timeout": 1800,
@@ -204,7 +206,7 @@
             "cpu": "x86-64",
             "display_attached": "1",
             "gpu": "8086:3e9b",
-            "os": "Mac-14.5",
+            "os": "Mac-15.5",
             "puppet_env": "production"
           },
           "hard_timeout": 1800,
@@ -243,7 +245,7 @@
             "cpu": "x86-64",
             "display_attached": "1",
             "gpu": "8086:3e9b",
-            "os": "Mac-14.5",
+            "os": "Mac-15.5",
             "puppet_env": "production"
           },
           "hard_timeout": 1800,
@@ -286,7 +288,7 @@
             "cpu": "x86-64",
             "display_attached": "1",
             "gpu": "8086:3e9b",
-            "os": "Mac-14.5",
+            "os": "Mac-15.5",
             "puppet_env": "production"
           },
           "hard_timeout": 1800,
@@ -308,6 +310,7 @@
           "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=metal --enable-skia-graphite",
           "--enforce-browser-version",
           "--git-revision=${got_revision}",
+          "--bypass-skia-gold-functionality",
           "--dont-restore-color-profile-after-test",
           "--test-machine-name",
           "${buildername}",
@@ -334,7 +337,7 @@
             "cpu": "x86-64",
             "display_attached": "1",
             "gpu": "8086:3e9b",
-            "os": "Mac-14.5",
+            "os": "Mac-15.5",
             "puppet_env": "production"
           },
           "hard_timeout": 1800,
@@ -374,7 +377,7 @@
             "cpu": "x86-64",
             "display_attached": "1",
             "gpu": "8086:3e9b",
-            "os": "Mac-14.5",
+            "os": "Mac-15.5",
             "puppet_env": "production"
           },
           "hard_timeout": 1800,
@@ -413,7 +416,7 @@
             "cpu": "x86-64",
             "display_attached": "1",
             "gpu": "8086:3e9b",
-            "os": "Mac-14.5",
+            "os": "Mac-15.5",
             "puppet_env": "production"
           },
           "hard_timeout": 1800,
@@ -454,7 +457,7 @@
             "cpu": "x86-64",
             "display_attached": "1",
             "gpu": "8086:3e9b",
-            "os": "Mac-14.5",
+            "os": "Mac-15.5",
             "puppet_env": "production"
           },
           "hard_timeout": 1800,
@@ -529,7 +532,8 @@
       {
         "args": [
           "--use-gpu-in-tests",
-          "--git-revision=${got_revision}"
+          "--git-revision=${got_revision}",
+          "--bypass-skia-gold-functionality"
         ],
         "merge": {
           "script": "//testing/merge_scripts/standard_gtest_merge.py"
@@ -614,6 +618,7 @@
           "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=metal --enable-skia-graphite",
           "--enforce-browser-version",
           "--git-revision=${got_revision}",
+          "--bypass-skia-gold-functionality",
           "--dont-restore-color-profile-after-test",
           "--test-machine-name",
           "${buildername}",
@@ -791,6 +796,7 @@
           "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=metal --enable-skia-graphite",
           "--enforce-browser-version",
           "--git-revision=${got_revision}",
+          "--bypass-skia-gold-functionality",
           "--dont-restore-color-profile-after-test",
           "--test-machine-name",
           "${buildername}",

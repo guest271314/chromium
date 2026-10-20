@@ -4,8 +4,9 @@
 
 #import "ios/chrome/browser/scene/coordinator/scene_coordinator.h"
 
+#import <utility>
+
 #import "base/cancelable_callback.h"
-#import "base/ios/ios_util.h"
 #import "base/metrics/histogram_functions.h"
 #import "base/metrics/histogram_macros.h"
 #import "base/metrics/user_metrics.h"
@@ -14,6 +15,7 @@
 #import "base/strings/sys_string_conversions.h"
 #import "components/autofill/core/browser/data_model/addresses/autofill_profile.h"
 #import "components/autofill/core/browser/data_model/payments/credit_card.h"
+#import "components/autofill/core/browser/metrics/autofill_settings_metrics.h"
 #import "components/infobars/core/infobar_manager.h"
 #import "components/password_manager/core/browser/ui/credential_ui_entry.h"
 #import "components/signin/public/base/consent_level.h"
@@ -43,19 +45,31 @@
 #import "ios/chrome/browser/authentication/ui_bundled/signin/signin_coordinator.h"
 #import "ios/chrome/browser/authentication/ui_bundled/signin/signin_utils.h"
 #import "ios/chrome/browser/authentication/ui_bundled/signin_notification_infobar_delegate.h"
+#import "ios/chrome/browser/authentication/ui_bundled/signout_action_sheet/undo_signout/coordinator/undo_signout_coordinator.h"
 #import "ios/chrome/browser/cobrowse/coordinator/assistant_aim_coordinator.h"
+#import "ios/chrome/browser/cobrowse/model/cobrowse_browser_agent.h"
 #import "ios/chrome/browser/cobrowse/model/cobrowse_context.h"
 #import "ios/chrome/browser/default_browser/model/utils.h"
 #import "ios/chrome/browser/feature_engagement/model/tracker_factory.h"
+#import "ios/chrome/browser/first_run/guided_tour/coordinator/guided_tour_coordinator.h"
 #import "ios/chrome/browser/fullscreen/ui_bundled/fullscreen_controller.h"
 #import "ios/chrome/browser/history/ui_bundled/history_coordinator_factory.h"
 #import "ios/chrome/browser/incognito_interstitial/ui_bundled/incognito_interstitial_coordinator.h"
 #import "ios/chrome/browser/incognito_interstitial/ui_bundled/incognito_interstitial_coordinator_delegate.h"
 #import "ios/chrome/browser/incognito_reauth/ui_bundled/incognito_reauth_scene_agent.h"
 #import "ios/chrome/browser/infobars/model/infobar_manager_impl.h"
+#import "ios/chrome/browser/intelligence/bwg/coordinator/gemini_container_coordinator.h"
+#import "ios/chrome/browser/intelligence/bwg/coordinator/gemini_entry_flow_coordinator.h"
+#import "ios/chrome/browser/intelligence/bwg/coordinator/gemini_web_modal_coordinator.h"
+#import "ios/chrome/browser/intelligence/bwg/first_run/coordinator/gemini_first_run_coordinator.h"
+#import "ios/chrome/browser/intelligence/bwg/model/gemini_browser_agent.h"
 #import "ios/chrome/browser/intelligence/bwg/model/gemini_service.h"
 #import "ios/chrome/browser/intelligence/bwg/model/gemini_service_factory.h"
+#import "ios/chrome/browser/intelligence/bwg/model/gemini_tab_helper.h"
+#import "ios/chrome/browser/intelligence/bwg/utils/gemini_availability.h"
 #import "ios/chrome/browser/intelligence/bwg/utils/gemini_constants.h"
+#import "ios/chrome/browser/intelligence/bwg/utils/gemini_entry_flow_result.h"
+#import "ios/chrome/browser/intelligence/features/features.h"
 #import "ios/chrome/browser/mailto_handler/model/mailto_handler_service.h"
 #import "ios/chrome/browser/mailto_handler/model/mailto_handler_service_factory.h"
 #import "ios/chrome/browser/main/ui/browser_layout_view_controller.h"
@@ -69,11 +83,14 @@
 #import "ios/chrome/browser/scene/ui/scene_view_controller.h"
 #import "ios/chrome/browser/scene/ui/scene_view_controller_delegate.h"
 #import "ios/chrome/browser/settings/ui_bundled/password/password_checkup/password_checkup_coordinator.h"
+#import "ios/chrome/browser/settings/ui_bundled/password/password_settings/password_settings_coordinator.h"
+#import "ios/chrome/browser/settings/ui_bundled/password/password_settings/password_settings_coordinator_delegate.h"
 #import "ios/chrome/browser/settings/ui_bundled/settings_navigation_controller.h"
 #import "ios/chrome/browser/shared/coordinator/layout_guide/layout_guide_util.h"
 #import "ios/chrome/browser/shared/coordinator/scene/scene_state.h"
 #import "ios/chrome/browser/shared/coordinator/scene/state/incognito_state.h"
-#import "ios/chrome/browser/shared/coordinator/scene/state/layout_state.h"
+#import "ios/chrome/browser/shared/coordinator/scene/state/layout_state_passkey.h"
+#import "ios/chrome/browser/shared/coordinator/scene/state/scene_layout_state.h"
 #import "ios/chrome/browser/shared/coordinator/scene/state/tab_grid_state.h"
 #import "ios/chrome/browser/shared/model/application_context/application_context.h"
 #import "ios/chrome/browser/shared/model/browser/browser.h"
@@ -86,11 +103,12 @@
 #import "ios/chrome/browser/shared/public/commands/app_bar_commands.h"
 #import "ios/chrome/browser/shared/public/commands/bookmarks_commands.h"
 #import "ios/chrome/browser/shared/public/commands/browser_coordinator_commands.h"
-#import "ios/chrome/browser/shared/public/commands/bwg_commands.h"
 #import "ios/chrome/browser/shared/public/commands/command_dispatcher.h"
+#import "ios/chrome/browser/shared/public/commands/gemini_commands.h"
 #import "ios/chrome/browser/shared/public/commands/open_new_tab_command.h"
 #import "ios/chrome/browser/shared/public/commands/policy_change_commands.h"
 #import "ios/chrome/browser/shared/public/commands/scene_commands.h"
+#import "ios/chrome/browser/shared/public/commands/scene_sign_in_commands.h"
 #import "ios/chrome/browser/shared/public/commands/settings_commands.h"
 #import "ios/chrome/browser/shared/public/commands/show_signin_command.h"
 #import "ios/chrome/browser/shared/public/commands/snackbar_commands.h"
@@ -98,6 +116,8 @@
 #import "ios/chrome/browser/shared/ui/util/uikit_ui_util.h"
 #import "ios/chrome/browser/signin/model/authentication_service.h"
 #import "ios/chrome/browser/signin/model/authentication_service_factory.h"
+#import "ios/chrome/browser/signin/model/chrome_account_manager_service.h"
+#import "ios/chrome/browser/signin/model/chrome_account_manager_service_factory.h"
 #import "ios/chrome/browser/signin/model/identity_manager_factory.h"
 #import "ios/chrome/browser/signin/model/system_identity_manager.h"
 #import "ios/chrome/browser/snapshots/model/snapshot_tab_helper.h"
@@ -111,6 +131,24 @@
 #import "ios/public/provider/chrome/browser/ui_utils/ui_utils_api.h"
 #import "ios/public/provider/chrome/browser/user_feedback/user_feedback_api.h"
 #import "ios/public/provider/chrome/browser/user_feedback/user_feedback_data.h"
+
+// Used to create PassKey to access the UIViewController through the
+// BrowserProvider interface (crbug.com/40606165).
+class SceneCoordinatorPassKeyFactory {
+ public:
+  static BrowserProviderPassKey CreateKey() {
+    return base::PassKey<SceneCoordinatorPassKeyFactory>();
+  }
+};
+
+namespace layout_state {
+class SceneCoordinatorPassKeyFactory {
+ public:
+  static base::PassKey<SceneCoordinatorPassKeyFactory> CreateKey() {
+    return base::PassKey<SceneCoordinatorPassKeyFactory>();
+  }
+};
+}  // namespace layout_state
 
 namespace {
 
@@ -152,17 +190,26 @@ void OnListFamilyMembersResponse(
   }
 }
 
+// Helper function to return the domain passkey used to mutate the layout state.
+inline LayoutStateScenePassKey PassKey() {
+  return layout_state::SceneCoordinatorPassKeyFactory::CreateKey();
+}
+
 }  // namespace
 
 @interface SceneCoordinator () <AccountMenuCoordinatorDelegate,
+                                GeminiWebModalCoordinatorDelegate,
                                 HistoryCoordinatorDelegate,
                                 IncognitoInterstitialCoordinatorDelegate,
                                 ManagedProfileCreationCoordinatorDelegate,
                                 PasswordCheckupCoordinatorDelegate,
+                                PasswordSettingsCoordinatorDelegate,
                                 PolicyWatcherBrowserAgentObserving,
                                 SafariDataImportMainCoordinatorDelegate,
+                                SceneSignInCommands,
                                 SceneViewControllerDelegate,
                                 SettingsNavigationControllerDelegate,
+                                UndoSignoutCoordinatorDelegate,
                                 YoutubeIncognitoCoordinatorDelegate>
 
 // The SceneState for this scene.
@@ -193,8 +240,19 @@ void OnListFamilyMembersResponse(
   SigninCoordinator* _signinCoordinator;
   // Coordinator for the Safari Data Import flow.
   SafariDataImportMainCoordinator* _safariDataImportCoordinator;
+  // The coordinators for Gemini related logic.
+  GeminiContainerCoordinator* _geminiContainerCoordinator;
+  // TODO(crbug.com/560114059): Move Live first run coordinator to Gemini
+  // container coordinator.
+  GeminiFirstRunCoordinator* _geminiLiveFirstRunCoordinator;
+  GeminiEntryFlowCoordinator* _geminiEntryFlowCoordinator;
+  // TODO(crbug.com/573186211): Remove once `IOSGeminiBottomSheetMigration`
+  // completes rollout.
+  GeminiWebModalCoordinator* _geminiWebModalCoordinator;
   // Coordinator for display of the Password Checkup.
   PasswordCheckupCoordinator* _passwordCheckupCoordinator;
+  // Coordinator for display of Password Settings.
+  PasswordSettingsCoordinator* _passwordSettingsCoordinator;
   // Coordinator for displaying history.
   HistoryCoordinator* _historyCoordinator;
   // Coordinator for the Youtube Incognito interstitial.
@@ -222,7 +280,7 @@ void OnListFamilyMembersResponse(
   // window.
   SceneViewController* _viewController;
   // The layout state for this scene.
-  LayoutState* _layoutState;
+  SceneLayoutState* _layoutState;
   // Fetches the Family Link member role asynchronously from KidsManagement API.
   std::unique_ptr<supervised_user::ListFamilyMembersFetcher>
       _familyMembersFetcher;
@@ -230,6 +288,12 @@ void OnListFamilyMembersResponse(
   base::CancelableOnceClosure _familyMembersTimeoutClosure;
   // Navigation View controller for the settings.
   SettingsNavigationController* _settingsNavigationController;
+  // Completion block called when Settings are dismissed.
+  ProceduralBlock _settingsDismissalCompletion;
+  // Coordinator for the first step of the guided tour (NTP).
+  GuidedTourCoordinator* _guidedTourCoordinator;
+  // Coordinator for the undo sign-out flow.
+  UndoSignoutCoordinator* _undoSignoutCoordinator;
 }
 
 - (instancetype)initWithTabOpener:(id<TabOpening>)tabOpener {
@@ -267,18 +331,9 @@ void OnListFamilyMembersResponse(
     _viewController.layoutGuideCenter =
         LayoutGuideCenterForScene(self.sceneState);
     _viewController.delegate = self;
-    UIViewController* tabGridViewController =
-        _tabGridCoordinator.viewController;
-    [_viewController addChildViewController:tabGridViewController];
-    if (IsChromeNextIaEnabled() && !IsFullscreenRefactoringEnabled()) {
-      [_viewController.view addSubview:tabGridViewController.view];
-      [tabGridViewController.view addSubview:_viewController.appContainer];
-      tabGridViewController.view.frame = _viewController.view.bounds;
-    } else {
-      [_viewController.appContainer addSubview:tabGridViewController.view];
-      tabGridViewController.view.frame = _viewController.appContainer.bounds;
-    }
-    [tabGridViewController didMoveToParentViewController:_viewController];
+    _viewController.geminiHandler = HandlerForProtocol(
+        _regularBrowser->GetCommandDispatcher(), GeminiCommands);
+    [_viewController setTabGrid:_tabGridCoordinator.viewController];
     self.sceneState.window.rootViewController = _viewController;
 
     _sceneMediator = [[SceneMediator alloc]
@@ -292,7 +347,8 @@ void OnListFamilyMembersResponse(
         GeminiServiceFactory::GetForProfile(self.profile);
     if (IsChromeNextIaEnabled()) {
       [_layoutState updateAppBarPositionWithView:_viewController.view
-                                     coordinator:nil];
+                                     coordinator:nil
+                                         passKey:PassKey()];
       _sceneMediator.appBarPositionAtLaunch = _layoutState.appBarPosition;
     }
     _viewController.mutator = _sceneMediator;
@@ -311,7 +367,7 @@ void OnListFamilyMembersResponse(
   }
 
   if (IsAssistantContainerEnabled()) {
-    UIViewController* baseViewController = IsAssistantSidePanelEnabled()
+    UIViewController* baseViewController = IsUseSceneViewControllerEnabled()
                                                ? _viewController
                                                : self.activeViewController;
     _assistantContainerCoordinator = [[AssistantContainerCoordinator alloc]
@@ -326,11 +382,22 @@ void OnListFamilyMembersResponse(
   // unregister observers and destroy C++ objects before the application is
   // shut down without depending on non-deterministic call to -dealloc.
   [self stopSettingsAnimated:NO completion:nil];
-  [_regularBrowser->GetCommandDispatcher() stopDispatchingToTarget:self];
+  // Ensure command dispatching is stopped across all non-nil browsers so that
+  // shutdown captures unregistered targets in silently failing targets.
+  if (_regularBrowser) {
+    [_regularBrowser->GetCommandDispatcher() stopDispatchingToTarget:self];
+  }
+  if (_incognitoBrowser) {
+    [_incognitoBrowser->GetCommandDispatcher() stopDispatchingToTarget:self];
+  }
+  if (_inactiveBrowser) {
+    [_inactiveBrowser->GetCommandDispatcher() stopDispatchingToTarget:self];
+  }
   _policyWatcherObserver.reset();
   _policyWatcherObserverBridge.reset();
   [self stopAccountMenu];
   [self stopSigninCoordinatorWithCompletionAnimated:NO];
+  [self stopUndoSignoutCoordinator];
   [self stopSafariDataImportCoordinator];
   [self stopPasswordCheckupCoordinator];
   [self stopHistoryCoordinator];
@@ -348,6 +415,17 @@ void OnListFamilyMembersResponse(
   self.UIHandler = nil;
   self.tabGridDelegate = nil;
   self.sceneURLLoadingService = nullptr;
+  [self hideGuidedTourNTPStep];
+  [_geminiContainerCoordinator stop];
+  _geminiContainerCoordinator = nil;
+  [_geminiLiveFirstRunCoordinator stopWithCompletion:nil];
+  _geminiLiveFirstRunCoordinator = nil;
+  [_geminiEntryFlowCoordinator stop];
+  _geminiEntryFlowCoordinator = nil;
+  [_geminiWebModalCoordinator stop];
+  _geminiWebModalCoordinator = nil;
+
+  _incognitoBrowser = nullptr;
 }
 
 #pragma mark - Public
@@ -363,7 +441,7 @@ void OnListFamilyMembersResponse(
 }
 
 - (BOOL)isTabAvailableToPresentViewController {
-  if (self.isSigninInProgress) {
+  if (self.sceneState.signinInProgress) {
     return NO;
   }
   if (_settingsNavigationController) {
@@ -455,12 +533,23 @@ void OnListFamilyMembersResponse(
 - (void)dismissModalDialogsWithCompletion:(ProceduralBlock)completion {
   [self dismissModalDialogsWithCompletion:completion
                            dismissOmnibox:YES
-                         dismissSnackbars:YES];
+                         dismissSnackbars:YES
+                            dismissGemini:YES];
 }
 
 - (void)dismissModalDialogsWithCompletion:(ProceduralBlock)completion
                            dismissOmnibox:(BOOL)dismissOmnibox
                          dismissSnackbars:(BOOL)dismissSnackbars {
+  [self dismissModalDialogsWithCompletion:completion
+                           dismissOmnibox:dismissOmnibox
+                         dismissSnackbars:dismissSnackbars
+                            dismissGemini:YES];
+}
+
+- (void)dismissModalDialogsWithCompletion:(ProceduralBlock)completion
+                           dismissOmnibox:(BOOL)dismissOmnibox
+                         dismissSnackbars:(BOOL)dismissSnackbars
+                            dismissGemini:(BOOL)dismissGemini {
   // Disconnected scenes should no-op, since browser objects may not exist.
   // See crbug.com/371847600.
   if (self.sceneState.activationLevel == SceneActivationLevelDisconnected) {
@@ -482,6 +571,14 @@ void OnListFamilyMembersResponse(
     id<SnackbarCommands> snackbarHandler = HandlerForProtocol(
         _regularBrowser->GetCommandDispatcher(), SnackbarCommands);
     [snackbarHandler dismissAllSnackbars];
+  }
+
+  if (IsAimCobrowseEnabled()) {
+    CobrowseBrowserAgent* agent =
+        CobrowseBrowserAgent::FromBrowser(_regularBrowser.get());
+    if (agent) {
+      agent->TerminateSession();
+    }
   }
 
   // Exit fullscreen mode for web page when we re-enter app through external
@@ -507,25 +604,28 @@ void OnListFamilyMembersResponse(
 
   id<BrowserCoordinatorCommands> browserCoordinatorHandler = HandlerForProtocol(
       self.currentBrowser->GetCommandDispatcher(), BrowserCoordinatorCommands);
-  ProceduralBlock completionWithBVC = ^{
-    DCHECK(!self.isTabGridActive);
-    DCHECK(!self.isSigninInProgress);
-    [browserCoordinatorHandler
-        clearPresentedStateWithCompletion:completion
-                           dismissOmnibox:dismissOmnibox];
-  };
-  ProceduralBlock completionWithoutBVC = ^{
-    // The BVC may exist but tab switcher should be active.
-    DCHECK(self.isTabGridActive);
-    DCHECK(!self.isSigninInProgress);
-    [self stopChildCoordinatorsWithCompletion:completion];
+  ProceduralBlock closePresentedViewsCompletion = ^{
+    ProceduralBlock finalCompletion = ^{
+      if (completion) {
+        completion();
+      }
+    };
+    if (self.isTabGridActive) {
+      [self stopChildCoordinatorsWithCompletion:finalCompletion];
+    } else {
+      [browserCoordinatorHandler
+          clearPresentedStateWithCompletion:finalCompletion
+                             dismissOmnibox:dismissOmnibox];
+    }
   };
 
-  // Select a completion based on whether the BVC is shown.
-  ProceduralBlock chosenCompletion =
-      self.isTabGridActive ? completionWithoutBVC : completionWithBVC;
+  [self closePresentedViews:NO completion:closePresentedViewsCompletion];
 
-  [self closePresentedViews:NO completion:chosenCompletion];
+  if (dismissGemini) {
+    id<GeminiCommands> geminiHandler = HandlerForProtocol(
+        _regularBrowser->GetCommandDispatcher(), GeminiCommands);
+    [geminiHandler dismissGeminiFlowWithCompletion:nil];
+  }
 
   // Verify that no modal views are left presented.
   ios::provider::LogIfModalViewsArePresented();
@@ -546,13 +646,6 @@ void OnListFamilyMembersResponse(
   [self startPasswordCheckupCoordinator:referrer];
   [_passwordCheckupCoordinator showPasswordIssuesWithWarningType:warningType];
   [self presentSettingsFromViewController:self.activeViewController];
-}
-
-- (void)maybeShowSettingsFromViewController {
-  if (self.isSigninInProgress) {
-    return;
-  }
-  [self showSettingsFromViewController:nil];
 }
 
 - (void)showSettingsFromViewController:(UIViewController*)baseViewController {
@@ -578,36 +671,58 @@ void OnListFamilyMembersResponse(
 
 - (void)showSettingsFromViewController:(UIViewController*)baseViewController
               hasDefaultBrowserBlueDot:(BOOL)hasDefaultBrowserBlueDot {
+  [self showSettingsFromViewController:baseViewController
+              hasDefaultBrowserBlueDot:hasDefaultBrowserBlueDot
+       shouldShowLevelUpWalkthroughIPH:NO];
+}
+
+- (void)showSettingsFromViewController:(UIViewController*)baseViewController
+       shouldShowLevelUpWalkthroughIPH:(BOOL)shouldShowLevelUpWalkthroughIPH {
+  [self showSettingsFromViewController:baseViewController
+              hasDefaultBrowserBlueDot:NO
+       shouldShowLevelUpWalkthroughIPH:shouldShowLevelUpWalkthroughIPH];
+}
+
+- (void)showSettingsFromViewController:(UIViewController*)baseViewController
+              hasDefaultBrowserBlueDot:(BOOL)hasDefaultBrowserBlueDot
+       shouldShowLevelUpWalkthroughIPH:(BOOL)shouldShowLevelUpWalkthroughIPH {
   if (!baseViewController) {
     baseViewController = self.activeViewController;
   }
 
-  if (self.isSigninInProgress) {
-    [self stopSigninCoordinatorWithCompletionAnimated:NO];
-  }
+  BOOL hadSigninCoordinator = self.sceneState.signinInProgress;
+  [self stopSigninCoordinatorWithCompletionAnimated:NO];
 
   if (_settingsNavigationController) {
     DCHECK(_settingsNavigationController.presentingViewController)
+        << "Settings present but presentingViewController is nil. "
+        << "Active VC: " << [self.activeViewController description]
+        << ", Settings stack: "
         << base::SysNSStringToUTF8(
                [_settingsNavigationController.viewControllers description]);
     return;
   }
-  [self.sceneState.profileState.appState.deferredRunner
-      runBlockNamed:kStartupInitPrefObservers];
 
-  Browser* browser = _regularBrowser.get();
+  __weak __typeof(self) weakSelf = self;
+  auto presentSettings = ^{
+    [weakSelf
+        presentSettingsWithBaseViewController:baseViewController
+                     hasDefaultBrowserBlueDot:hasDefaultBrowserBlueDot
+              shouldShowLevelUpWalkthroughIPH:shouldShowLevelUpWalkthroughIPH];
+  };
 
-  _settingsNavigationController = [SettingsNavigationController
-      mainSettingsControllerForBrowser:browser
-                              delegate:self
-              hasDefaultBrowserBlueDot:hasDefaultBrowserBlueDot];
-  [baseViewController presentViewController:_settingsNavigationController
-                                   animated:YES
-                                 completion:nil];
+  if (hadSigninCoordinator) {
+    // Defer presentation to the next runloop tick to allow the sign-in UI
+    // dismissal to complete and clean up the view hierarchy. `dispatch_async`
+    // is used instead of a Chromium task runner to closely align with UIKit's
+    // GCD dispatching.
+    dispatch_async(dispatch_get_main_queue(), presentSettings);
+  } else {
+    presentSettings();
+  }
 }
 
 - (void)showPriceTrackingNotificationsSettings {
-  CHECK(!self.isSigninInProgress);
   if (_settingsNavigationController) {
     __weak SceneCoordinator* weakSelf = self;
     [self closePresentedViews:NO
@@ -650,6 +765,11 @@ void OnListFamilyMembersResponse(
   CHECK(!self.currentBrowser->GetProfile()->IsOffTheRecord())
       << "Current interface is incognito and should NOT show history. Call "
          "this on regular interface.";
+
+  if (_historyCoordinator) {
+    [self stopHistoryCoordinator];
+  }
+
   _historyCoordinator = CreateHistoryCoordinator(self.activeViewController,
                                                  _regularBrowser.get());
   _historyCoordinator.loadStrategy = UrlLoadStrategy::NORMAL;
@@ -657,19 +777,50 @@ void OnListFamilyMembersResponse(
   [_historyCoordinator start];
 }
 
+- (void)showAssistantWithNewSession {
+  [self closeAssistant];
+  // Close any active gemini session.
+  [self dismissGeminiFlowWithCompletion:nil];
+  [self showAssistant];
+}
+
 - (void)showAssistant {
-  if (!IsAssistantContainerEnabled()) {
+  [self showAssistantInMinimizedState:NO];
+}
+
+- (void)showAssistantInMinimizedState:(BOOL)minimized {
+  if (!IsAssistantContainerEnabled() || !IsAimCobrowseEnabled()) {
     return;
   }
-  [self stopAssistantAIMCoordinator];
+  if (_assistantAIMCoordinator) {
+    [self revealAssistantInMinimizedState:minimized];
+    // If the app was backgrounded, the OS might have killed the WebProcess.
+    // Calling loadIfNecessary ensures the WebState restarts the process and
+    // reloads the page if it died, while being a no-op if it is still alive.
+    [_assistantAIMCoordinator loadIfNecessary];
+    return;
+  }
   _assistantAIMCoordinator = [[AssistantAIMCoordinator alloc]
       initWithBaseViewController:self.activeViewController
                          browser:self.currentBrowser];
-  [_assistantAIMCoordinator start];
+  [_assistantAIMCoordinator startInMinimizedState:minimized];
+}
+
+- (void)revealAssistant {
+  [self revealAssistantInMinimizedState:NO];
+}
+
+- (void)revealAssistantInMinimizedState:(BOOL)minimized {
+  [_assistantAIMCoordinator setVisible:YES inMinimizedState:minimized];
 }
 
 - (void)hideAssistant {
-  [self stopAssistantAIMCoordinator];
+  [_assistantAIMCoordinator setVisible:NO];
+}
+
+- (void)closeAssistant {
+  [_assistantAIMCoordinator stop];
+  _assistantAIMCoordinator = nil;
 }
 
 - (void)closePresentedViewsAndOpenURL:(OpenNewTabCommand*)command {
@@ -710,17 +861,20 @@ void OnListFamilyMembersResponse(
   BOOL incognito = self.currentBrowser->type() == Browser::Type::kIncognito;
   TabGridPage page =
       incognito ? TabGridPageIncognitoTabs : TabGridPageRegularTabs;
-  if (mode == TabGridOpeningMode::kRegular && incognito) {
-    [self.UIHandler setCurrentInterfaceForMode:ApplicationMode::NORMAL];
-    page = TabGridPageRegularTabs;
-  } else if (mode == TabGridOpeningMode::kIncognito && !incognito) {
-    [self.UIHandler setCurrentInterfaceForMode:ApplicationMode::INCOGNITO];
-    page = TabGridPageIncognitoTabs;
-  } else if (mode == TabGridOpeningMode::kTabGroups) {
-    [self.UIHandler setCurrentInterfaceForMode:ApplicationMode::NORMAL];
-    page = TabGridPageTabGroups;
+  switch (mode) {
+    case TabGridOpeningMode::kRegular:
+      page = TabGridPageRegularTabs;
+      break;
+    case TabGridOpeningMode::kIncognito:
+      page = TabGridPageIncognitoTabs;
+      break;
+    case TabGridOpeningMode::kTabGroups:
+      page = TabGridPageTabGroups;
+      break;
+    case TabGridOpeningMode::kDefault:
+      break;
   }
-
+  [self hideAssistant];
   [self showTabSwitcherAtPage:page];
 }
 
@@ -759,7 +913,8 @@ void OnListFamilyMembersResponse(
         identityManager->GetPrimaryAccountInfo(signin::ConsentLevel::kSignin);
     AccountInfo info = identityManager->FindExtendedAccountInfoByAccountId(
         primaryAccountInfo.account_id);
-    if (info.capabilities.can_submit_feedback() == signin::Tribool::kFalse) {
+    if (info.GetAccountCapabilities().can_submit_feedback() ==
+        signin::Tribool::kFalse) {
       // TODO(crbug.com/512043635): Remove this test once Chrome uses Aloha
       // feedback. Aloha feedback is responsible for checking the capability.
       base::UmaHistogramEnumeration("IOS.Feedback.ReportAnIssue.NotDisplayed",
@@ -840,6 +995,21 @@ void OnListFamilyMembersResponse(
   [_accountMenuCoordinator start];
 }
 
+- (void)showAccountMenuWithAccessPoint:(AccountMenuAccessPoint)accessPoint {
+  if (_accountMenuCoordinator) {
+    // Avoid double tap issue.
+    return;
+  }
+  _accountMenuCoordinator = [[AccountMenuCoordinator alloc]
+      initWithBaseViewController:self.activeViewController
+                         browser:_regularBrowser.get()
+                      anchorView:nil
+                     accessPoint:accessPoint
+                             URL:GURL()];
+  _accountMenuCoordinator.delegate = self;
+  [_accountMenuCoordinator start];
+}
+
 - (void)showWebSigninPromoFromViewController:(UIViewController*)viewController
                                          URL:(const GURL&)URL {
   // Do not display the web sign-in promo if there is any UI on the screen.
@@ -869,6 +1039,7 @@ void OnListFamilyMembersResponse(
                                                   accessPoint:signin_metrics::
                                                                   AccessPoint::
                                                                       kWebSignin
+                                         confirmChangeProfile:nil
                                          prepareChangeProfile:
                                              prepareChangeProfile
                                          continuationProvider:provider];
@@ -877,10 +1048,10 @@ void OnListFamilyMembersResponse(
   }
   // Copy the URL so it can be safely captured in the block.
   GURL copiedURL = URL;
-  [self startSigninCoordinatorWithCompletion:^(SigninCoordinator* coordinator,
-                                               SigninCoordinatorResult result,
-                                               id<SystemIdentity> identity) {
-    if (result == SigninCoordinatorResultSuccess && regularBrowser) {
+  [self startSigninCoordinatorWithCompletion:^(
+            SigninCoordinator* coordinator,
+            SigninCoordinatorResultOrIdentity result) {
+    if (result.has_value() && regularBrowser) {
       UrlLoadingBrowserAgent::FromBrowser(regularBrowser.get())
           ->Load(UrlLoadParams::InCurrentTab(copiedURL));
     }
@@ -902,13 +1073,31 @@ void OnListFamilyMembersResponse(
       infoBarManager, self.profile, settingsHandler, baseViewController);
 }
 
+- (void)showUndoSignoutFromSnackbarForIdentity:(id<SystemIdentity>)identity {
+  CHECK(IsIdentityAwarenessEnabled());
+  ChromeAccountManagerService* accountManagerService =
+      ChromeAccountManagerServiceFactory::GetForProfile(self.profile);
+  if (!accountManagerService ||
+      !accountManagerService->GetIdentityOnDeviceWithGaiaID(identity.gaiaId)) {
+    // The identity is not available anymore.
+    return;
+  }
+
+  _undoSignoutCoordinator = [[UndoSignoutCoordinator alloc]
+               initWithBrowser:self.currentBrowser
+                      identity:identity
+      presentingViewController:self.activeViewController];
+  _undoSignoutCoordinator.delegate = self;
+  [_undoSignoutCoordinator start];
+}
+
 - (void)setIncognitoContentVisible:(BOOL)incognitoContentVisible {
   self.sceneState.incognitoState.incognitoContentVisible =
       incognitoContentVisible;
 }
 
 - (void)openNewWindowWithActivity:(NSUserActivity*)userActivity {
-  if (!base::ios::IsMultipleScenesSupported()) {
+  if (!self.sceneState.multipleScenesAvailable) {
     return;  // silent no-op.
   }
 
@@ -917,27 +1106,13 @@ void OnListFamilyMembersResponse(
     return;
   }
 
-  UIWindowSceneActivationRequestOptions* options =
-      [[UIWindowSceneActivationRequestOptions alloc] init];
-  options.requestingScene = self.sceneState.scene;
-  if (@available(iOS 26.0, *)) {
-    // For iOS26 windowing, ensure the new window doesn't fully overlap the
-    // prior window.
-    options.placement = [UIWindowSceneProminentPlacement prominentPlacement];
-  }
-
-  AttachProfileNameToActivity(userActivity, profile->GetProfileName());
-  PrefService* prefs = profile->GetPrefs();
-  if (IsIncognitoModeForced(prefs)) {
-    userActivity = AdaptUserActivityToIncognito(userActivity, true);
-  } else if (IsIncognitoModeDisabled(prefs)) {
-    userActivity = AdaptUserActivityToIncognito(userActivity, false);
-  }
-
+  UIWindowSceneActivationConfiguration* config =
+      CreateWindowSceneActivationConfiguration(userActivity, profile,
+                                               self.sceneState.scene);
   [UIApplication.sharedApplication
       requestSceneSessionActivation:nil /* make a new scene */
-                       userActivity:userActivity
-                            options:options
+                       userActivity:config.userActivity
+                            options:config.options
                        errorHandler:nil];
 }
 
@@ -1051,6 +1226,35 @@ void OnListFamilyMembersResponse(
   [_managedConfirmationScreenCoordinator start];
 }
 
+- (void)showGuidedTourNTPStepWithCompletion:(ProceduralBlock)completion {
+  UIViewController* baseViewController;
+  if (IsChromeNextIaEnabled()) {
+    baseViewController = _viewController;
+  } else {
+    id<BrowserProvider> presentingInterface =
+        self.sceneState.browserProviderInterface.currentBrowserProvider;
+    baseViewController = [presentingInterface
+        viewController:SceneCoordinatorPassKeyFactory::CreateKey()];
+  }
+  __weak __typeof(self) weakSelf = self;
+  _guidedTourCoordinator =
+      [[GuidedTourCoordinator alloc] initWithStep:GuidedTourStep::kNTP
+                               baseViewController:baseViewController
+                                          browser:self.currentBrowser
+                                  completionBlock:^{
+                                    [weakSelf hideGuidedTourNTPStep];
+                                    if (completion) {
+                                      completion();
+                                    }
+                                  }];
+  [_guidedTourCoordinator start];
+}
+
+- (void)hideGuidedTourNTPStep {
+  [_guidedTourCoordinator stop];
+  _guidedTourCoordinator = nil;
+}
+
 #pragma mark - ManagedProfileCreationCoordinatorDelegate
 
 - (void)managedProfileCreationCoordinator:
@@ -1086,10 +1290,13 @@ void OnListFamilyMembersResponse(
                                ![self isTabAvailableToPresentViewController])) {
     return;
   }
-  DCHECK(!self.isSigninInProgress);
 
   if (self.currentBrowser->type() == Browser::Type::kIncognito) {
-    NOTREACHED();
+    // This can occur if the URL ended up loading while the user switched to
+    // incognito mode. This can occur in particular in case of faulty internet
+    // connection, that caused the URL to ends up loading long after the request
+    // was sent.
+    return;
   }
   if (_settingsNavigationController) {
     [_settingsNavigationController
@@ -1122,6 +1329,7 @@ void OnListFamilyMembersResponse(
       BWGControllerForBrowser:_regularBrowser.get()
                      delegate:self];
 
+  // TODO(crbug.com/566220673): Standardize modal presentation across settings.
   UIViewController* presenter = self.activeViewController;
   while (presenter.presentedViewController) {
     presenter = presenter.presentedViewController;
@@ -1131,10 +1339,59 @@ void OnListFamilyMembersResponse(
                         completion:nil];
 }
 
+- (void)showGeminiContextualCueSettings {
+  if (_settingsNavigationController) {
+    [_settingsNavigationController showGeminiContextualCueSettings];
+    return;
+  }
+
+  _settingsNavigationController = [SettingsNavigationController
+      BWGContextualCueControllerForBrowser:_regularBrowser.get()
+                                  delegate:self];
+
+  [self.activeViewController presentViewController:_settingsNavigationController
+                                          animated:YES
+                                        completion:nil];
+}
+
+- (void)showSuggestionsFromGemini {
+  if (self.sceneState.isUIBlocked) {
+    // This could occur due to race condition with multiple windows and
+    // simultaneous taps. See crbug.com/368310663.
+    return;
+  }
+  if (_settingsNavigationController) {
+    [_settingsNavigationController showSuggestionsFromGemini];
+    return;
+  }
+
+  _settingsNavigationController = [SettingsNavigationController
+      geminiSuggestionsControllerForBrowser:_regularBrowser.get()
+                                   delegate:self];
+
+  [self.activeViewController presentViewController:_settingsNavigationController
+                                          animated:YES
+                                        completion:nil];
+}
+
+- (void)showSuggestionsFromGeminiHelpImprove {
+  if (_settingsNavigationController) {
+    [_settingsNavigationController showSuggestionsFromGeminiHelpImprove];
+    return;
+  }
+
+  _settingsNavigationController = [SettingsNavigationController
+      geminiHelpImproveControllerForBrowser:_regularBrowser.get()
+                                   delegate:self];
+
+  [self.activeViewController presentViewController:_settingsNavigationController
+                                          animated:YES
+                                        completion:nil];
+}
+
 // TODO(crbug.com/41352590) : Do not pass baseViewController through dispatcher.
 - (void)showGoogleServicesSettingsFromViewController:
     (UIViewController*)baseViewController {
-  DCHECK(!self.isSigninInProgress);
   if (!baseViewController) {
     baseViewController = self.activeViewController;
   }
@@ -1159,7 +1416,6 @@ void OnListFamilyMembersResponse(
 // The user must be signed-in and sign-in must be enabled.
 - (void)showSyncSettingsFromViewController:
     (UIViewController*)baseViewController {
-  DCHECK(!self.isSigninInProgress);
   if (_settingsNavigationController) {
     [_settingsNavigationController
         showSyncSettingsFromViewController:baseViewController];
@@ -1177,7 +1433,15 @@ void OnListFamilyMembersResponse(
 // TODO(crbug.com/41352590) : Do not pass baseViewController through dispatcher.
 - (void)showSyncPassphraseSettingsFromViewController:
     (UIViewController*)baseViewController {
-  DCHECK(!self.isSigninInProgress);
+  [self showSyncPassphraseSettingsFromViewController:baseViewController
+                                          completion:nil];
+}
+
+// TODO(crbug.com/41352590) : Do not pass baseViewController through dispatcher.
+- (void)showSyncPassphraseSettingsFromViewController:
+            (UIViewController*)baseViewController
+                                          completion:
+                                              (ProceduralBlock)completion {
   if (_settingsNavigationController) {
     [_settingsNavigationController
         showSyncPassphraseSettingsFromViewController:baseViewController];
@@ -1188,6 +1452,7 @@ void OnListFamilyMembersResponse(
     // simultaneous taps. See crbug.com/368310663.
     return;
   }
+  _settingsDismissalCompletion = [completion copy];
   _settingsNavigationController = [SettingsNavigationController
       syncPassphraseControllerForBrowser:_regularBrowser.get()
                                 delegate:self];
@@ -1199,10 +1464,102 @@ void OnListFamilyMembersResponse(
 // TODO(crbug.com/41352590) : Do not pass baseViewController through dispatcher.
 - (void)showSavedPasswordsSettingsFromViewController:
     (UIViewController*)baseViewController {
+  [self showSavedPasswordsSettingsFromViewController:baseViewController
+                     shouldShowLevelUpWalkthroughIPH:NO];
+}
+
+- (void)showSavedPasswordsSettingsFromViewController:
+            (UIViewController*)baseViewController
+                     shouldShowLevelUpWalkthroughIPH:
+                         (BOOL)shouldShowLevelUpWalkthroughIPH {
   __weak SceneCoordinator* weakSelf = self;
   [self dismissModalDialogsWithCompletion:^{
-    [weakSelf showSavedPasswordsSettingsAfterModalDismissFromViewController:
+    [weakSelf
+        showSavedPasswordsSettingsAfterModalDismissFromViewController:
+            baseViewController
+                                      shouldShowLevelUpWalkthroughIPH:
+                                          shouldShowLevelUpWalkthroughIPH];
+  }];
+}
+
+// TODO(crbug.com/41352590) : Do not pass baseViewController through dispatcher.
+- (void)showPasswordSettingsFromViewController:
+    (UIViewController*)baseViewController {
+  __weak SceneCoordinator* weakSelf = self;
+  [self dismissModalDialogsWithCompletion:^{
+    [weakSelf showPasswordSettingsAfterModalDismissFromViewController:
                   baseViewController];
+  }];
+}
+
+- (void)showAutofillAndPasswordsSettingsWithReferrer:
+    (autofill::autofill_metrics::AutofillSettingsReferrer)referrer {
+  __weak SceneCoordinator* weakSelf = self;
+  [self dismissModalDialogsWithCompletion:^{
+    [weakSelf
+        showAutofillAndPasswordsSettingsAfterModalDismissWithReferrer:referrer];
+  }];
+}
+
+- (void)showIdentityDocsWithReferrer:
+    (autofill::autofill_metrics::AutofillSettingsReferrer)referrer {
+  if (_settingsNavigationController) {
+    [_settingsNavigationController showIdentityDocsWithReferrer:referrer];
+    return;
+  }
+
+  _settingsNavigationController = [SettingsNavigationController
+      identityDocsControllerForBrowser:_regularBrowser.get()
+                              referrer:referrer
+                              delegate:self];
+  [self.activeViewController presentViewController:_settingsNavigationController
+                                          animated:YES
+                                        completion:nil];
+}
+
+- (void)showTravelWithReferrer:
+    (autofill::autofill_metrics::AutofillSettingsReferrer)referrer {
+  if (_settingsNavigationController) {
+    [_settingsNavigationController showTravelWithReferrer:referrer];
+    return;
+  }
+
+  _settingsNavigationController = [SettingsNavigationController
+      travelControllerForBrowser:_regularBrowser.get()
+                        referrer:referrer
+                        delegate:self];
+  [self.activeViewController presentViewController:_settingsNavigationController
+                                          animated:YES
+                                        completion:nil];
+}
+
+- (void)showShoppingWithReferrer:
+    (autofill::autofill_metrics::AutofillSettingsReferrer)referrer {
+  if (_settingsNavigationController) {
+    [_settingsNavigationController showShoppingWithReferrer:referrer];
+    return;
+  }
+
+  _settingsNavigationController = [SettingsNavigationController
+      shoppingControllerForBrowser:_regularBrowser.get()
+                          referrer:referrer
+                          delegate:self];
+  [self.activeViewController presentViewController:_settingsNavigationController
+                                          animated:YES
+                                        completion:nil];
+}
+
+- (void)showAutofillSettings {
+  __weak SceneCoordinator* weakSelf = self;
+  [self dismissModalDialogsWithCompletion:^{
+    [weakSelf showAutofillSettingsAfterModalDismiss];
+  }];
+}
+
+- (void)showAutofillSettingsFromNotice {
+  __weak SceneCoordinator* weakSelf = self;
+  [self dismissModalDialogsWithCompletion:^{
+    [weakSelf showAutofillSettingsFromNoticeAfterModalDismiss];
   }];
 }
 
@@ -1265,7 +1622,6 @@ void OnListFamilyMembersResponse(
 // TODO(crbug.com/41352590) : Do not pass baseViewController through dispatcher.
 - (void)showProfileSettingsFromViewController:
     (UIViewController*)baseViewController {
-  DCHECK(!self.isSigninInProgress);
   if (_settingsNavigationController) {
     [_settingsNavigationController
         showProfileSettingsFromViewController:baseViewController];
@@ -1281,7 +1637,6 @@ void OnListFamilyMembersResponse(
 }
 
 - (void)showCreditCardSettings {
-  DCHECK(!self.isSigninInProgress);
   if (_settingsNavigationController) {
     [_settingsNavigationController showCreditCardSettings];
     return;
@@ -1376,6 +1731,18 @@ void OnListFamilyMembersResponse(
   [_settingsNavigationController showSafeBrowsingSettingsFromPromoInteraction];
 }
 
+- (void)showUniversalOptOutSettings {
+  if (_settingsNavigationController &&
+      !_settingsNavigationController.presentedViewController) {
+    [_settingsNavigationController showUniversalOptOutSettings];
+    return;
+  }
+  __weak SceneCoordinator* weakSelf = self;
+  [self dismissModalDialogsWithCompletion:^{
+    [weakSelf showUniversalOptOutSettingsAfterModalDismiss];
+  }];
+}
+
 - (void)showPasswordSearchPage {
   if (_settingsNavigationController) {
     [_settingsNavigationController showPasswordSearchPage];
@@ -1428,6 +1795,10 @@ void OnListFamilyMembersResponse(
 
 #pragma mark - Properties
 
+- (id<SceneSignInCommands>)sceneSignInEndpoint {
+  return self;
+}
+
 - (void)setTabGridDelegate:(id<TabGridCoordinatorDelegate>)delegate {
   _tabGridDelegate = delegate;
   _tabGridCoordinator.delegate = delegate;
@@ -1438,6 +1809,9 @@ void OnListFamilyMembersResponse(
 }
 
 - (void)setIncognitoBrowser:(Browser*)incognitoBrowser {
+  if (_incognitoBrowser) {
+    [_incognitoBrowser->GetCommandDispatcher() stopDispatchingToTarget:self];
+  }
   _incognitoBrowser = incognitoBrowser;
   _tabGridCoordinator.incognitoBrowser = incognitoBrowser;
   if (IsChromeNextIaEnabled()) {
@@ -1467,9 +1841,6 @@ void OnListFamilyMembersResponse(
       .browser;
 }
 
-- (BOOL)isSigninInProgress {
-  return _signinCoordinator != nil;
-}
 
 #pragma mark - PolicyWatcherBrowserAgentObserving
 
@@ -1525,6 +1896,25 @@ void OnListFamilyMembersResponse(
   [self stopPasswordCheckupCoordinator];
 }
 
+#pragma mark - PasswordSettingsCoordinatorDelegate
+
+- (void)passwordSettingsCoordinatorDidRemove:
+    (PasswordSettingsCoordinator*)coordinator {
+  CHECK_EQ(_passwordSettingsCoordinator, coordinator);
+  [self stopPasswordSettingsCoordinator];
+}
+
+#pragma mark - GeminiWebModalCoordinatorDelegate
+
+// TODO(crbug.com/573186211): Remove once `IOSGeminiBottomSheetMigration`
+// completes rollout.
+- (void)geminiWebModalCoordinatorDidDismiss:
+    (GeminiWebModalCoordinator*)coordinator {
+  CHECK_EQ(_geminiWebModalCoordinator, coordinator);
+  [_geminiWebModalCoordinator stop];
+  _geminiWebModalCoordinator = nil;
+}
+
 #pragma mark - HistoryCoordinatorDelegate
 
 - (void)closeHistoryWithCompletion:(ProceduralBlock)completion {
@@ -1557,14 +1947,49 @@ void OnListFamilyMembersResponse(
   [_settingsNavigationController cleanUpSettings];
   _settingsNavigationController = nil;
   [self stopPasswordCheckupCoordinator];
+  if (_settingsDismissalCompletion) {
+    _settingsDismissalCompletion();
+    _settingsDismissalCompletion = nil;
+  }
+}
+
+#pragma mark - UndoSignoutCoordinatorDelegate
+
+- (void)undoSignoutCoordinatorDidFinish:(UndoSignoutCoordinator*)coordinator {
+  CHECK_EQ(_undoSignoutCoordinator, coordinator);
+  [self stopUndoSignoutCoordinator];
 }
 
 #pragma mark - Private
+
+// Presents the Settings UI using the regular browser, base view controller,
+// and blue dot promo state.
+- (void)presentSettingsWithBaseViewController:
+            (UIViewController*)baseViewController
+                     hasDefaultBrowserBlueDot:(BOOL)hasDefaultBrowserBlueDot
+              shouldShowLevelUpWalkthroughIPH:
+                  (BOOL)shouldShowLevelUpWalkthroughIPH {
+  [self.sceneState.profileState.appState.deferredRunner
+      runBlockNamed:kStartupInitPrefObservers];
+
+  _settingsNavigationController = [SettingsNavigationController
+      mainSettingsControllerForBrowser:_regularBrowser.get()
+                              delegate:self
+              hasDefaultBrowserBlueDot:hasDefaultBrowserBlueDot
+       shouldShowLevelUpWalkthroughIPH:shouldShowLevelUpWalkthroughIPH];
+  [baseViewController presentViewController:_settingsNavigationController
+                                   animated:YES
+                                 completion:nil];
+}
 
 // Callbacks for `stopSettingsAnimated:completion:`. It releases the navigation
 // controller and call the completion if it is non nil.
 - (void)stopSettingsCallbackWithCompletion:(ProceduralBlock)completion {
   _settingsNavigationController = nil;
+  if (_settingsDismissalCompletion) {
+    _settingsDismissalCompletion();
+    _settingsDismissalCompletion = nil;
+  }
   if (completion) {
     completion();
   }
@@ -1639,7 +2064,7 @@ void OnListFamilyMembersResponse(
         // because the part that check the coordinator value is in the
         // `signinCompletedWithCoordinator:...` below, and so not integrated in
         // the completion function yet.
-        completion(nil, SigninCoordinatorResultDisabled, nil);
+        completion(nil, base::unexpected(SigninCoordinatorResultDisabled));
       }
       [self stopSigninCoordinatorAnimated:NO];
       id<PolicyChangeCommands> handler =
@@ -1674,7 +2099,7 @@ void OnListFamilyMembersResponse(
       // because the part that check the coordinator value is in the
       // `signinCompletedWithCoordinator:...` below, and so not integrated in
       // the completion function yet.
-      completion(nil, SigninCoordinatorResultInterrupted, nil);
+      completion(nil, base::unexpected(SigninCoordinatorResultInterrupted));
     }
     _signinCoordinator = nil;
     RecordIfNeededSigninFullscreenPromoEvent(
@@ -1685,11 +2110,10 @@ void OnListFamilyMembersResponse(
 
   __weak __typeof(self) weakSelf = self;
   _signinCoordinator.signinCompletion =
-      ^(SigninCoordinator* coordinator, SigninCoordinatorResult result,
-        id<SystemIdentity> identity) {
+      ^(SigninCoordinator* coordinator,
+        SigninCoordinatorResultOrIdentity result) {
         [weakSelf signinCompletedWithCoordinator:coordinator
-                                          result:result
-                                        identity:identity
+                                          result:std::move(result)
                                       completion:completion];
       };
 
@@ -1712,39 +2136,132 @@ void OnListFamilyMembersResponse(
 
 // Called when the sign-in coordinator finishes.
 - (void)signinCompletedWithCoordinator:(SigninCoordinator*)coordinator
-                                result:(SigninCoordinatorResult)result
-                              identity:(id<SystemIdentity>)identity
+                                result:(SigninCoordinatorResultOrIdentity)result
                             completion:(SigninCoordinatorCompletionCallback)
                                            completion {
-  CHECK_EQ(coordinator, _signinCoordinator, base::NotFatalUntil::M151);
+  CHECK_EQ(coordinator, _signinCoordinator);
 
   if (completion) {
-    completion(coordinator, result, identity);
+    completion(coordinator, std::move(result));
   }
   [self stopSigninCoordinatorAnimated:YES];
 }
 
 // Shows the saved passwords settings in the settings UI.
 - (void)showSavedPasswordsSettingsAfterModalDismissFromViewController:
+            (UIViewController*)baseViewController
+                                      shouldShowLevelUpWalkthroughIPH:
+                                          (BOOL)
+                                              shouldShowLevelUpWalkthroughIPH {
+  if (!baseViewController) {
+    // TODO(crbug.com/41352590): Don't pass base view controller through
+    // dispatched command.
+    baseViewController = self.activeViewController;
+  }
+
+  if (_settingsNavigationController) {
+    [_settingsNavigationController
+        showSavedPasswordsSettingsFromViewController:baseViewController
+                     shouldShowLevelUpWalkthroughIPH:
+                         shouldShowLevelUpWalkthroughIPH];
+    return;
+  }
+  _settingsNavigationController = [SettingsNavigationController
+      savePasswordsControllerForBrowser:_regularBrowser.get()
+        shouldShowLevelUpWalkthroughIPH:shouldShowLevelUpWalkthroughIPH
+                               delegate:self];
+  [baseViewController presentViewController:_settingsNavigationController
+                                   animated:YES
+                                 completion:nil];
+}
+
+// Shows the Password Settings in the settings UI.
+- (void)showPasswordSettingsAfterModalDismissFromViewController:
     (UIViewController*)baseViewController {
   if (!baseViewController) {
     // TODO(crbug.com/41352590): Don't pass base view controller through
     // dispatched command.
     baseViewController = self.activeViewController;
   }
-  DCHECK(!self.isSigninInProgress);
 
   if (_settingsNavigationController) {
     [_settingsNavigationController
-        showSavedPasswordsSettingsFromViewController:baseViewController];
+        showPasswordSettingsFromViewController:baseViewController];
+    return;
+  }
+
+  [self stopPasswordSettingsCoordinator];
+  _passwordSettingsCoordinator = [[PasswordSettingsCoordinator alloc]
+      initWithBaseViewController:baseViewController
+                         browser:_regularBrowser.get()];
+  _passwordSettingsCoordinator.delegate = self;
+  [_passwordSettingsCoordinator start];
+}
+
+// Shows the Autofill and Passwords settings in the settings UI.
+- (void)showAutofillAndPasswordsSettingsAfterModalDismissWithReferrer:
+    (autofill::autofill_metrics::AutofillSettingsReferrer)referrer {
+  if (_settingsNavigationController) {
+    [_settingsNavigationController
+        showAutofillAndPasswordsSettingsWithReferrer:referrer];
     return;
   }
   _settingsNavigationController = [SettingsNavigationController
-      savePasswordsControllerForBrowser:_regularBrowser.get()
-                               delegate:self];
-  [baseViewController presentViewController:_settingsNavigationController
-                                   animated:YES
-                                 completion:nil];
+      autofillAndPasswordsControllerForBrowser:_regularBrowser.get()
+                                      referrer:referrer
+                                      delegate:self];
+  [self.activeViewController presentViewController:_settingsNavigationController
+                                          animated:YES
+                                        completion:nil];
+}
+
+// Shows the Autofill settings in the settings UI.
+- (void)showAutofillSettingsAfterModalDismiss {
+  if (_settingsNavigationController) {
+    [_settingsNavigationController showAutofillSettings];
+    return;
+  }
+  _settingsNavigationController = [SettingsNavigationController
+      autofillAndPasswordsControllerForBrowser:_regularBrowser.get()
+                                      referrer:autofill::autofill_metrics::
+                                                   AutofillSettingsReferrer::
+                                                       kFillingFlowDropdown
+                                      delegate:self];
+  [_settingsNavigationController showAutofillSettings];
+  [self.activeViewController presentViewController:_settingsNavigationController
+                                          animated:YES
+                                        completion:nil];
+}
+
+// Shows the Universal Opt-Out settings in the settings UI.
+- (void)showUniversalOptOutSettingsAfterModalDismiss {
+  if (_settingsNavigationController) {
+    [_settingsNavigationController showUniversalOptOutSettings];
+    return;
+  }
+  _settingsNavigationController = [SettingsNavigationController
+      universalOptOutControllerForBrowser:_regularBrowser.get()
+                                 delegate:self];
+  [self.activeViewController presentViewController:_settingsNavigationController
+                                          animated:YES
+                                        completion:nil];
+}
+
+// Shows the Autofill settings in the settings UI from an Autofill notice (no
+// back button).
+- (void)showAutofillSettingsFromNoticeAfterModalDismiss {
+  if (_settingsNavigationController) {
+    [_settingsNavigationController showAutofillSettingsFromNotice];
+    return;
+  }
+  _settingsNavigationController = [[SettingsNavigationController alloc]
+      initWithRootViewController:nil
+                         browser:_regularBrowser.get()
+                        delegate:self];
+  [_settingsNavigationController showAutofillSettingsFromNotice];
+  [self.activeViewController presentViewController:_settingsNavigationController
+                                          animated:YES
+                                        completion:nil];
 }
 
 // Stops the Incognito interstitial coordinator.
@@ -1791,6 +2308,13 @@ void OnListFamilyMembersResponse(
   [_tabGridCoordinator stopChildCoordinatorsWithCompletion:completion];
 }
 
+// Stops `_undoSignoutCoordinator`.
+- (void)stopUndoSignoutCoordinator {
+  _undoSignoutCoordinator.delegate = nil;
+  [_undoSignoutCoordinator stop];
+  _undoSignoutCoordinator = nil;
+}
+
 // Presents the Report an Issue UI.
 - (void)presentReportAnIssueViewController:(UIViewController*)baseViewController
                                     sender:(UserFeedbackSender)sender
@@ -1816,7 +2340,6 @@ void OnListFamilyMembersResponse(
                                    timeout:(base::TimeDelta)timeout
                                 completion:
                                     (UserFeedbackDataCallback)completion {
-  DCHECK(!self.isSigninInProgress);
   if (_settingsNavigationController) {
     return;
   }
@@ -1938,6 +2461,13 @@ void OnListFamilyMembersResponse(
   _passwordCheckupCoordinator = nil;
 }
 
+// Stops the PasswordSettingsCoordinator.
+- (void)stopPasswordSettingsCoordinator {
+  [_passwordSettingsCoordinator stop];
+  _passwordSettingsCoordinator.delegate = nil;
+  _passwordSettingsCoordinator = nil;
+}
+
 // Creates the settings navigation controller for the safety check if it doesn't
 // exist.
 - (void)createSafetyCheckSettingsWithReferrer:
@@ -1968,10 +2498,10 @@ void OnListFamilyMembersResponse(
   SigninCoordinatorCompletionCallback signinCompletion =
       signinCoordinator.signinCompletion;
   signinCoordinator.signinCompletion = nil;
-  CHECK(signinCompletion, base::NotFatalUntil::M142);
+  CHECK(signinCompletion);
   // The `signinCoordinator` must be nil here, because `_signinCoordinator`
   // was set to `nil` above.
-  signinCompletion(nil, SigninCoordinatorResultInterrupted, nil);
+  signinCompletion(nil, base::unexpected(SigninCoordinatorResultInterrupted));
 }
 
 // Shows the settings navigation controller.
@@ -2083,6 +2613,9 @@ void OnListFamilyMembersResponse(
   // If the Safari data import workflow is active, stop it.
   [self stopSafariDataImportCoordinator];
 
+  // Stop the password settings.
+  [self stopPasswordSettingsCoordinator];
+
   // If the guided tour is active, stop it.
   FirstRunProfileAgent* firstRunAgent =
       [FirstRunProfileAgent agentFromProfile:self.sceneState.profileState];
@@ -2122,14 +2655,337 @@ void OnListFamilyMembersResponse(
 
 - (void)sceneViewControllerShowGeminiFloatyIfInvoked:
     (SceneViewController*)viewController {
-  CommandDispatcher* dispatcher = _regularBrowser->GetCommandDispatcher();
-  if ([dispatcher dispatchingForProtocol:@protocol(BWGCommands)]) {
-    id<BWGCommands> geminiHandler = HandlerForProtocol(dispatcher, BWGCommands);
-    [geminiHandler
-        updateFloatyVisibilityIfEligibleAnimated:NO
-                                      fromSource:gemini::FloatyUpdateSource::
-                                                     ViewTransition];
+  if (IsPageActionMenuEnabled()) {
+    [self updateFloatyVisibilityIfEligibleAnimated:NO
+                                        fromSource:gemini::FloatyUpdateSource::
+                                                       ViewTransition];
   }
+}
+
+- (void)sceneViewControllerHideGeminiFloatyIfInvoked:
+    (SceneViewController*)viewController {
+  if (IsPageActionMenuEnabled()) {
+    [self
+        hideFloatyIfInvokedAnimated:YES
+                         fromSource:gemini::FloatyUpdateSource::ViewTransition];
+  }
+}
+
+#pragma mark - GeminiCommands
+
+- (void)startGeminiFlowWithStartupState:(GeminiStartupState*)startupState {
+  [self startGeminiSessionWithStartupState:startupState];
+}
+
+- (void)
+    startGeminiEntryFlowWithStartupState:(GeminiStartupState*)startupState
+                      baseViewController:(UIViewController*)baseViewController
+                showSnackbarOnCompletion:(BOOL)showSnackbar
+                              completion:(GeminiEntryFlowCompletion)completion {
+  if (!IsGeneralizedGeminiEntryFlowEnabled()) {
+    return;
+  }
+
+  // Clean up any previous entry flow.
+  [_geminiEntryFlowCoordinator stop];
+  _geminiEntryFlowCoordinator = nil;
+
+  UIViewController* presenter = baseViewController;
+  if (!presenter) {
+    presenter = IsUseSceneViewControllerEnabled() ? _viewController
+                                                  : self.activeViewController;
+  }
+
+  __weak __typeof(self) weakSelf = self;
+  _geminiEntryFlowCoordinator = [[GeminiEntryFlowCoordinator alloc]
+      initWithBaseViewController:presenter
+                         browser:_regularBrowser.get()
+                    startupState:startupState
+        showSnackbarOnCompletion:showSnackbar
+                      completion:^(GeminiEntryFlowResult result) {
+                        [weakSelf
+                            geminiEntryFlowDidFinishWithResult:result
+                                                    completion:completion];
+                      }];
+
+  [_geminiEntryFlowCoordinator start];
+}
+
+- (void)dismissGeminiFlowWithCompletion:(ProceduralBlock)completion {
+  if (_geminiEntryFlowCoordinator) {
+    [_geminiEntryFlowCoordinator stop];
+    _geminiEntryFlowCoordinator = nil;
+    return;
+  }
+
+  // If the user is still in the FRE, dismiss it.
+  if (_geminiLiveFirstRunCoordinator) {
+    [_geminiLiveFirstRunCoordinator stopWithCompletion:completion];
+    _geminiLiveFirstRunCoordinator = nil;
+    return;
+  }
+
+  if (IsIOSGeminiBottomSheetMigrationEnabled()) {
+    if (_geminiContainerCoordinator) {
+      __weak __typeof(self) weakSelf = self;
+      [_geminiContainerCoordinator dismissWithCompletion:^{
+        [weakSelf geminiContainerCoordinatorDidDismiss];
+        if (completion) {
+          completion();
+        }
+      }];
+      return;
+    }
+    // If feature flag is enabled but container is not present then just run the
+    // completion block.
+    if (completion) {
+      completion();
+    }
+    return;
+  }
+
+  GeminiBrowserAgent* geminiBrowserAgent =
+      GeminiBrowserAgent::FromBrowser(_regularBrowser.get());
+  if (geminiBrowserAgent) {
+    geminiBrowserAgent->DismissFloaty();
+  }
+  if (completion) {
+    completion();
+  }
+}
+
+- (void)updateFloatyWithTraitCollection:(UITraitCollection*)traitCollection {
+  GeminiBrowserAgent* geminiBrowserAgent =
+      GeminiBrowserAgent::FromBrowser(_regularBrowser.get());
+  if (!geminiBrowserAgent) {
+    return;
+  }
+
+  geminiBrowserAgent->UpdateForTraitCollection(traitCollection);
+}
+
+- (void)startGeminiLiveFirstRunWithBaseViewController:
+            (UIViewController*)baseViewController
+                                           completion:(void (^)(BOOL success))
+                                                          completion {
+  __weak SceneCoordinator* weakSelf = self;
+  void (^completionWrapper)(BOOL) =
+      [self geminiCompletionWrapperForCompletion:completion];
+
+  ProceduralBlock startCoordinatorBlock = ^{
+    [weakSelf
+        startGeminiLiveFirstRunCoordinatorWithBaseViewController:
+            baseViewController
+                                                      completion:
+                                                          completionWrapper];
+  };
+
+  [self stopGeminiLiveFirstRunCoordinatorAndStartBlock:startCoordinatorBlock];
+}
+
+- (void)showGeminiLiveMicrophoneAlertWithBaseViewController:
+            (UIViewController*)baseViewController
+                                                 completion:
+                                                     (void (^)(BOOL granted))
+                                                         completion {
+  GeminiBrowserAgent* geminiBrowserAgent =
+      GeminiBrowserAgent::FromBrowser(_regularBrowser.get());
+  if (geminiBrowserAgent) {
+    geminiBrowserAgent->ShowGeminiLiveMicrophoneAlert(baseViewController,
+                                                      completion);
+  } else {
+    if (completion) {
+      completion(NO);
+    }
+  }
+}
+
+- (void)hideFloatyIfInvokedAnimated:(BOOL)animated
+                         fromSource:(gemini::FloatyUpdateSource)source {
+  GeminiBrowserAgent* geminiBrowserAgent =
+      GeminiBrowserAgent::FromBrowser(_regularBrowser.get());
+  if (!geminiBrowserAgent) {
+    return;
+  }
+
+  geminiBrowserAgent->HideFloatyIfInvoked(animated, source);
+}
+
+- (void)updateFloatyVisibilityIfEligibleAnimated:(BOOL)animated
+                                      fromSource:
+                                          (gemini::FloatyUpdateSource)source {
+  if (!_regularBrowser) {
+    return;
+  }
+  web::WebState* activeWebState =
+      _regularBrowser->GetWebStateList()->GetActiveWebState();
+  if (!activeWebState) {
+    return;
+  }
+
+  GeminiBrowserAgent* geminiBrowserAgent =
+      GeminiBrowserAgent::FromBrowser(_regularBrowser.get());
+  GeminiTabHelper* geminiTabHelper =
+      GeminiTabHelper::FromWebState(activeWebState);
+  if (!geminiBrowserAgent || !geminiTabHelper) {
+    return;
+  }
+
+  bool isFloatyVisible = geminiBrowserAgent->IsFloatyVisible();
+  if (!isFloatyVisible) {
+    geminiTabHelper->UpdatePresentedSource(source, /*is_presented=*/false);
+    geminiBrowserAgent->HideFloatyIfInvoked(
+        animated, gemini::FloatyUpdateSource::IneligibleSite);
+  } else {
+    geminiBrowserAgent->ShowFloatyIfInvoked(animated, source);
+  }
+}
+
+
+- (void)minimizeGeminiIfInvoked {
+  if (IsIOSGeminiBottomSheetMigrationEnabled()) {
+    [_geminiContainerCoordinator minimize];
+    return;
+  }
+
+  // Calling CollapseFloatyIfInvoked would minimize the floaty for the overlay
+  // use case.
+  GeminiBrowserAgent* geminiBrowserAgent =
+      GeminiBrowserAgent::FromBrowser(_regularBrowser.get());
+  if (geminiBrowserAgent) {
+    geminiBrowserAgent->CollapseFloatyIfInvoked();
+  }
+}
+
+- (void)showGeminiWebModalForURL:(const GURL&)URL {
+  CHECK(IsPageActionMenuEnabled());
+  if (IsIOSGeminiBottomSheetMigrationEnabled()) {
+    [_geminiContainerCoordinator showWebModalForURL:URL];
+    return;
+  }
+  // TODO(crbug.com/573186211): Remove once `IOSGeminiBottomSheetMigration`
+  // rolls out, and dispatch to `GeminiContainerCoordinator` directly instead of
+  // via `SceneCoordinator`.
+  if (_geminiWebModalCoordinator) {
+    return;
+  }
+
+  UIViewController* baseViewController = IsUseSceneViewControllerEnabled()
+                                             ? _viewController
+                                             : self.activeViewController;
+  _geminiWebModalCoordinator = [[GeminiWebModalCoordinator alloc]
+      initWithBaseViewController:baseViewController
+                         browser:_regularBrowser.get()
+                             URL:URL];
+  _geminiWebModalCoordinator.delegate = self;
+  [_geminiWebModalCoordinator start];
+}
+
+#pragma mark - Helper methods for Gemini entry flow
+
+// Called when the Gemini container coordinator is dismissed.
+- (void)geminiContainerCoordinatorDidDismiss {
+  [_geminiContainerCoordinator stop];
+  _geminiContainerCoordinator = nil;
+}
+
+// Called when the Gemini entry flow coordinator finishes.
+- (void)geminiEntryFlowDidFinishWithResult:(GeminiEntryFlowResult)result
+                                completion:
+                                    (GeminiEntryFlowCompletion)completion {
+  GeminiStartupState* startupState = _geminiEntryFlowCoordinator.startupState;
+
+  [_geminiEntryFlowCoordinator stop];
+  _geminiEntryFlowCoordinator = nil;
+
+  // Notify the caller first so they can handle their own UI.
+  if (completion) {
+    completion(result);
+  }
+
+  // Start the Gemini session on success.
+  if (result == kGeminiEntryFlowResultSuccess) {
+    [self startGeminiSessionWithStartupState:startupState];
+  }
+}
+
+// Starts the Gemini session directly via the browser agent.
+- (void)startGeminiSessionWithStartupState:(GeminiStartupState*)startupState {
+  // Close any active assistant aim session.
+  [self closeAssistant];
+
+  UIViewController* baseViewController = IsUseSceneViewControllerEnabled()
+                                             ? _viewController
+                                             : self.activeViewController;
+  if (IsIOSGeminiBottomSheetMigrationEnabled()) {
+    if (!_geminiContainerCoordinator) {
+      _geminiContainerCoordinator = [[GeminiContainerCoordinator alloc]
+          initWithBaseViewController:baseViewController
+                             browser:_regularBrowser.get()];
+    }
+    _geminiContainerCoordinator.startupState = startupState;
+    [_geminiContainerCoordinator start];
+    return;
+  }
+
+  GeminiBrowserAgent* geminiBrowserAgent =
+      GeminiBrowserAgent::FromBrowser(_regularBrowser.get());
+  if (!geminiBrowserAgent) {
+    return;
+  }
+
+  geminiBrowserAgent->StartGeminiFlow(baseViewController, startupState);
+}
+
+// Stops the existing first run coordinator (if any) and runs `startBlock`.
+- (void)stopGeminiLiveFirstRunCoordinatorAndStartBlock:
+    (ProceduralBlock)startBlock {
+  if (_geminiLiveFirstRunCoordinator) {
+    GeminiFirstRunCoordinator* coordinatorToStop =
+        _geminiLiveFirstRunCoordinator;
+    _geminiLiveFirstRunCoordinator = nil;
+    [coordinatorToStop stopWithCompletion:startBlock];
+  } else {
+    startBlock();
+  }
+}
+
+// Returns a completion block wrapper that resets
+// `_geminiLiveFirstRunCoordinator` when executed.
+- (void (^)(BOOL))geminiCompletionWrapperForCompletion:
+    (void (^)(BOOL))completion {
+  __weak SceneCoordinator* weakSelf = self;
+  return ^(BOOL success) {
+    if (completion) {
+      completion(success);
+    }
+    SceneCoordinator* strongSelf = weakSelf;
+    if (strongSelf) {
+      strongSelf->_geminiLiveFirstRunCoordinator = nil;
+    }
+  };
+}
+
+// Starts the Gemini Live First Run Experience (FRE) coordinator.
+- (void)
+    startGeminiLiveFirstRunCoordinatorWithBaseViewController:
+        (UIViewController*)baseViewController
+                                                  completion:
+                                                      (void (^)(BOOL success))
+                                                          completion {
+  gemini::EntryPoint entryPoint = gemini::EntryPoint::Unknown;
+  GeminiBrowserAgent* geminiBrowserAgent =
+      GeminiBrowserAgent::FromBrowser(_regularBrowser.get());
+  if (geminiBrowserAgent) {
+    entryPoint = geminiBrowserAgent->GetEntryPoint();
+  }
+  _geminiLiveFirstRunCoordinator = [[GeminiFirstRunCoordinator alloc]
+      initWithBaseViewController:baseViewController
+                         browser:_regularBrowser.get()
+                  fromEntryPoint:entryPoint
+                    firstRunType:GeminiFirstRunType::kLive
+               completionHandler:completion];
+  [_geminiLiveFirstRunCoordinator start];
 }
 
 @end

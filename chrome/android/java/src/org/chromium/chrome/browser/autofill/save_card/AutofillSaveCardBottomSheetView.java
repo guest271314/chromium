@@ -68,12 +68,12 @@ import org.chromium.ui.widget.LoadingView;
     final ImageView mGooglePayPillLogo;
 
     AutofillSaveCardBottomSheetView(Context context) {
-        mContentView =
-                (ViewGroup)
+        mScrollView =
+                (ScrollView)
                         LayoutInflater.from(context)
                                 .inflate(
                                         R.layout.autofill_save_card_bottom_sheet, /* root= */ null);
-        mScrollView = mContentView.findViewById(R.id.autofill_save_card_scroll_view);
+        mContentView = mScrollView;
         mTitle = mContentView.findViewById(R.id.autofill_save_card_title_text);
         mDescription = mContentView.findViewById(R.id.autofill_save_card_description_text);
         mLogoIcon = mContentView.findViewById(R.id.autofill_save_card_icon);

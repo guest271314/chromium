@@ -20,7 +20,7 @@
 #include "components/unexportable_keys/background_task_priority.h"
 #include "components/unexportable_keys/unexportable_key_loader.h"
 #include "components/unexportable_keys/unexportable_key_service.h"
-#include "crypto/signature_verifier.h"
+#include "crypto/sign.h"
 #include "third_party/abseil-cpp/absl/functional/overload.h"
 
 namespace signin {
@@ -33,17 +33,16 @@ constexpr std::string_view kSessionBindingResultHistogram =
     "Signin.BoundSessionCredentials."
     "SessionRegistrationGenerateRegistrationTokenResult";
 
-// New session registration doesn't block the user and can be done with a delay.
-constexpr unexportable_keys::BackgroundTaskPriority kTaskPriority =
-    unexportable_keys::BackgroundTaskPriority::kBestEffort;
 
 }  // namespace
 
 BindingKeyRegistrationTokenHelper::BindingKeyRegistrationTokenHelper(
     unexportable_keys::UnexportableKeyService& unexportable_key_service,
-    KeyInitParam key_init_param)
+    KeyInitParam key_init_param,
+    unexportable_keys::BackgroundTaskPriority priority)
     : unexportable_key_service_(unexportable_key_service),
-      key_init_param_(std::move(key_init_param)) {}
+      key_init_param_(std::move(key_init_param)),
+      priority_(priority) {}
 
 BindingKeyRegistrationTokenHelper::~BindingKeyRegistrationTokenHelper() {
   // Explicitly teardown `key_loader_` before `weak_ptr_factory_` gets
@@ -51,6 +50,10 @@ BindingKeyRegistrationTokenHelper::~BindingKeyRegistrationTokenHelper() {
   // This ensures that active weak pointers remain valid when `key_loader_`
   // signals cancellation, allowing completion callbacks to execute cleanly.
   key_loader_.reset();
+}
+
+bool BindingKeyRegistrationTokenHelper::IsRegistrationKeyReady() const {
+  return key_loader_ && key_loader_->GetKeyIdOrError().has_value();
 }
 
 void BindingKeyRegistrationTokenHelper::GenerateForSessionBinding(
@@ -70,13 +73,14 @@ void BindingKeyRegistrationTokenHelper::GenerateForSessionBinding(
 }
 void BindingKeyRegistrationTokenHelper::GenerateForTokenBinding(
     std::string_view client_id,
-    std::string_view auth_code,
+    const std::variant<TokenBindingAuthCode, TokenBindingChallenge>&
+        auth_code_or_challenge,
     const GURL& registration_url,
     base::OnceCallback<void(std::optional<Result>)> callback) {
   CreateKeyLoaderIfNeeded();
   HeaderAndPayloadGenerator header_and_payload_generator = base::BindRepeating(
       &signin::CreateKeyRegistrationHeaderAndPayloadForTokenBinding,
-      std::string(client_id), std::string(auth_code), registration_url);
+      std::string(client_id), auth_code_or_challenge, registration_url);
   key_loader_->InvokeCallbackAfterKeyLoaded(base::BindOnce(
       &BindingKeyRegistrationTokenHelper::SignHeaderAndPayload,
       weak_ptr_factory_.GetWeakPtr(), std::move(header_and_payload_generator),
@@ -96,14 +100,14 @@ void BindingKeyRegistrationTokenHelper::CreateKeyLoaderIfNeeded() {
             key_loader_ =
                 unexportable_keys::UnexportableKeyLoader::CreateFromWrappedKey(
                     unexportable_key_service_.get(),
-                    wrapped_binding_key_to_reuse, kTaskPriority);
+                    wrapped_binding_key_to_reuse, priority_);
           },
-          [&](const std::vector<crypto::SignatureVerifier::SignatureAlgorithm>&
+          [&](const std::vector<crypto::sign::SignatureKind>&
                   acceptable_algorithms) {
             key_loader_ =
                 unexportable_keys::UnexportableKeyLoader::CreateWithNewKey(
                     unexportable_key_service_.get(), acceptable_algorithms,
-                    kTaskPriority);
+                    priority_);
           }},
       key_init_param_);
 }
@@ -118,8 +122,7 @@ void BindingKeyRegistrationTokenHelper::SignHeaderAndPayload(
         absl::Overload{[](const std::vector<uint8_t>&) {
                          return Error::kLoadReusedKeyFailure;
                        },
-                       [](const std::vector<
-                           crypto::SignatureVerifier::SignatureAlgorithm>&) {
+                       [](const std::vector<crypto::sign::SignatureKind>&) {
                          return Error::kGenerateNewKeyFailure;
                        }},
         key_init_param_);
@@ -127,7 +130,7 @@ void BindingKeyRegistrationTokenHelper::SignHeaderAndPayload(
     return;
   }
 
-  crypto::SignatureVerifier::SignatureAlgorithm algorithm =
+  crypto::sign::SignatureKind algorithm =
       *unexportable_key_service_->GetAlgorithm(*binding_key);
   std::optional<std::string> header_and_payload =
       header_and_payload_generator.Run(
@@ -141,7 +144,7 @@ void BindingKeyRegistrationTokenHelper::SignHeaderAndPayload(
   }
 
   unexportable_key_service_->SignSlowlyAsync(
-      *binding_key, base::as_byte_span(*header_and_payload), kTaskPriority,
+      *binding_key, base::as_byte_span(*header_and_payload), priority_,
       base::BindOnce(
           &BindingKeyRegistrationTokenHelper::CreateRegistrationToken,
           weak_ptr_factory_.GetWeakPtr(), std::string(*header_and_payload),
@@ -150,7 +153,7 @@ void BindingKeyRegistrationTokenHelper::SignHeaderAndPayload(
 
 void BindingKeyRegistrationTokenHelper::CreateRegistrationToken(
     std::string_view header_and_payload,
-    unexportable_keys::UnexportableKeyId binding_key,
+    unexportable_keys::UnexportableSigningKeyId binding_key,
     base::OnceCallback<void(base::expected<Result, Error>)> callback,
     unexportable_keys::ServiceErrorOr<std::vector<uint8_t>> signature) {
   if (!signature.has_value()) {
@@ -158,7 +161,7 @@ void BindingKeyRegistrationTokenHelper::CreateRegistrationToken(
     return;
   }
 
-  crypto::SignatureVerifier::SignatureAlgorithm algorithm =
+  crypto::sign::SignatureKind algorithm =
       *unexportable_key_service_->GetAlgorithm(binding_key);
   std::vector<uint8_t> pubkey =
       *unexportable_key_service_->GetSubjectPublicKeyInfo(binding_key);

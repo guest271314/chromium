@@ -6,6 +6,7 @@ package org.chromium.chrome.browser.glic;
 
 import org.jni_zero.CalledByNative;
 import org.jni_zero.JNINamespace;
+import org.jni_zero.JniType;
 import org.jni_zero.NativeMethods;
 
 import org.chromium.base.ObserverList;
@@ -31,14 +32,19 @@ public class GlicInstanceHelper {
 
     private String mConversationId = "";
     private String mConversationTitle = "";
+    private int mTaskId;
 
     @CalledByNative
     private GlicInstanceHelper() {}
 
     @CalledByNative
-    private void onInstanceChanged(String conversationId, String conversationTitle) {
+    private void onInstanceChanged(
+            @JniType("std::string") String conversationId,
+            @JniType("std::string") String conversationTitle,
+            int taskId) {
         mConversationId = conversationId;
         mConversationTitle = conversationTitle;
+        mTaskId = taskId;
         for (Observer observer : mObservers) {
             observer.onInstanceChanged();
         }
@@ -80,6 +86,13 @@ public class GlicInstanceHelper {
      */
     public String getConversationTitle() {
         return mConversationTitle;
+    }
+
+    /**
+     * @return The ID of the active task associated with this instance, or 0 if none.
+     */
+    public int getTaskId() {
+        return mTaskId;
     }
 
     /**

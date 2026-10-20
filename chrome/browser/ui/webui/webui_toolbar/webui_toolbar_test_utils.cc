@@ -6,6 +6,7 @@
 
 #include <utility>
 
+#include "components/browser_apis/ui_controllers/toolbar/extensions_bar_data_model.mojom.h"
 #include "mojo/public/cpp/bindings/clone_traits.h"
 #include "skia/ext/skia_utils_base.h"
 
@@ -34,39 +35,55 @@ MockBrowserControlsServiceDelegate::MockBrowserControlsServiceDelegate() =
 MockBrowserControlsServiceDelegate::~MockBrowserControlsServiceDelegate() =
     default;
 
-toolbar_ui_api::mojom::NavigationControlsStatePtr
-CreateValidNavigationControlsState() {
+toolbar_ui_api::mojom::ToolbarStatePtr CreateValidToolbarState() {
   auto back_forward_state =
       toolbar_ui_api::mojom::BackForwardControlState::New();
   back_forward_state->back_button_state =
       toolbar_ui_api::mojom::BackForwardButtonState::New();
   back_forward_state->forward_button_state =
       toolbar_ui_api::mojom::BackForwardButtonState::New();
-  return toolbar_ui_api::mojom::NavigationControlsState::New(
+  return toolbar_ui_api::mojom::ToolbarState::New(
       toolbar_ui_api::mojom::ReloadControlState::New(),
       toolbar_ui_api::mojom::SplitTabsControlState::New(),
       std::move(back_forward_state),
       toolbar_ui_api::mojom::HomeControlState::New(),
+      toolbar_ui_api::mojom::PerformanceInterventionControlState::New(),
+      toolbar_ui_api::mojom::AppMenuControlState::New(),
       toolbar_ui_api::mojom::AvatarControlState::New(),
+      toolbar_ui_api::mojom::OverflowButtonControlState::New(),
+      toolbar_ui_api::mojom::MediaControlState::New(),
+      toolbar_ui_api::mojom::BatterySaverControlState::New(),
       toolbar_ui_api::mojom::LocationBarState::New(
           toolbar_ui_api::mojom::OmniboxViewState::New(),
           toolbar_ui_api::mojom::LocationBarFlags::New(),
           std::vector<toolbar_ui_api::mojom::ContentSettingImageStatePtr>(),
+          std::vector<toolbar_ui_api::mojom::PageActionStatePtr>(),
           toolbar_ui_api::mojom::LhsChipsState::New(
               toolbar_ui_api::mojom::SecurityChipState::New(
                   toolbar_ui_api::IconHandle(),
                   toolbar_ui_api::mojom::SecurityLevel::kNone,
                   /*text=*/std::u16string(),
+                  /*tooltip=*/std::u16string(),
                   toolbar_ui_api::mojom::SecurityChipAccessibilityState::New(
+                      /*role=*/toolbar_ui_api::mojom::SecurityChipRole::kButton,
                       /*label=*/std::u16string(),
                       /*description=*/std::u16string()),
                   /*is_clickable=*/false,
                   /*is_text_dangerous=*/false,
-                  /*is_visible=*/true),
+                  /*is_visible=*/true,
+                  /*is_context_menu_visible=*/false),
               std::vector<toolbar_ui_api::mojom::ContentSettingImageStatePtr>(),
-              /*permission_dashboard=*/nullptr)),
+              /*permission_dashboard=*/
+              toolbar_ui_api::mojom::PermissionDashboardState::New(
+                  toolbar_ui_api::mojom::PermissionChipState::New(),
+                  toolbar_ui_api::mojom::PermissionChipState::New(),
+                  /*is_divider_visible=*/false)),
+          toolbar_ui_api::mojom::SelectedKeywordStatePtr()),
+      std::vector<extensions_bar::mojom::ExtensionActionInfoPtr>(),
       std::vector<toolbar_ui_api::mojom::PinnedToolbarActionStatePtr>(),
-      /*layout_constants_version=*/0);
+      /*layout_constants_version=*/0,
+      /*touch_ui=*/false, toolbar_ui_api::mojom::GlicButtonState::New(),
+      /*controls_appear_inactive=*/false);
 }
 
 MockCommandUpdater::MockCommandUpdater() = default;

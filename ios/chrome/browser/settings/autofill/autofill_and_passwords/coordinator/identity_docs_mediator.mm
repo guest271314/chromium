@@ -5,13 +5,16 @@
 #import "ios/chrome/browser/settings/autofill/autofill_and_passwords/coordinator/identity_docs_mediator.h"
 
 #import "base/apple/foundation_util.h"
-#import "base/memory/raw_ptr.h"
+#import "base/feature_list.h"
 #import "base/notreached.h"
-#import "components/autofill/core/browser/data_manager/autofill_ai/entity_data_manager.h"
-#import "components/autofill/core/browser/integrators/autofill_ai/management_utils.h"
+#import "components/autofill/core/common/autofill_features.h"
+#import "components/autofill/core/common/autofill_prefs.h"
+#import "components/prefs/pref_service.h"
 #import "ios/chrome/browser/settings/autofill/autofill_ai/ui/autofill_ai_entity_item.h"
 #import "ios/chrome/browser/settings/autofill/autofill_and_passwords/coordinator/autofill_ai_base_mediator_protected.h"
 #import "ios/chrome/browser/settings/autofill/autofill_and_passwords/ui/identity_docs_consumer.h"
+#import "ios/chrome/browser/shared/model/prefs/pref_backed_boolean.h"
+#import "ios/chrome/browser/shared/model/utils/observable_boolean.h"
 
 namespace {
 
@@ -23,16 +26,33 @@ static constexpr autofill::DenseSet<autofill::EntityTypeName> kIdentityDocs = {
 
 }  // namespace
 
+@interface IdentityDocsMediator () <BooleanObserver>
+@end
+
 // Mediator implementation for Identity Docs.
 @implementation IdentityDocsMediator {
-  raw_ptr<autofill::EntityDataManager> _entityDataManager;
+  PrefBackedBoolean* _identityDocsEnabled;
+  PrefBackedBoolean* _autofillProfileEnabled;
 }
 
 - (instancetype)initWithEntityDataManager:
-    (autofill::EntityDataManager*)entityDataManager {
-  self = [super initWithEntityDataManager:entityDataManager];
+                    (autofill::EntityDataManager*)entityDataManager
+                              prefService:(PrefService*)prefService {
+  self = [super initWithEntityDataManager:entityDataManager
+                              prefService:prefService];
   if (self) {
-    _entityDataManager = entityDataManager;
+    if (prefService) {
+      _identityDocsEnabled = [[PrefBackedBoolean alloc]
+          initWithPrefService:prefService
+                     prefName:autofill::prefs::
+                                  kAutofillAiIdentityEntitiesEnabled];
+      _identityDocsEnabled.observer = self;
+      _autofillProfileEnabled = [[PrefBackedBoolean alloc]
+          initWithPrefService:prefService
+                     prefName:autofill::prefs::kAutofillProfileEnabled];
+      _autofillProfileEnabled.observer = self;
+      self.personalContextEnabled.observer = self;
+    }
   }
   return self;
 }
@@ -45,13 +65,66 @@ static constexpr autofill::DenseSet<autofill::EntityTypeName> kIdentityDocs = {
   if (_consumer) {
     // Trigger initial push.
     [self pushEntitiesToConsumer];
+
+    [self updateConsumerToggleState];
+
+    [self updateSuggestionsFromGeminiForConsumer:_consumer];
   }
 }
 
 - (void)disconnect {
-  [super disconnect];
+  self.personalContextEnabled.observer = nil;
+  _identityDocsEnabled.observer = nil;
+  [_identityDocsEnabled stop];
+  _identityDocsEnabled = nil;
+  _autofillProfileEnabled.observer = nil;
+  [_autofillProfileEnabled stop];
+  _autofillProfileEnabled = nil;
   _consumer = nil;
-  _entityDataManager = nullptr;
+  [super disconnect];
+}
+
+#pragma mark - BooleanObserver
+
+- (void)booleanDidChange:(id<ObservableBoolean>)observableBoolean {
+  if (observableBoolean == _identityDocsEnabled ||
+      observableBoolean == _autofillProfileEnabled) {
+    [self updateConsumerToggleState];
+  } else if (observableBoolean == self.personalContextEnabled) {
+    [self updateSuggestionsFromGeminiForConsumer:_consumer];
+  }
+}
+
+#pragma mark - Protected
+
+- (void)updateConsumerToggleState {
+  if (!self.consumer) {
+    return;
+  }
+  BOOL profileEnabled =
+      _autofillProfileEnabled ? _autofillProfileEnabled.value : YES;
+  BOOL identityDocsEnabled =
+      _identityDocsEnabled ? _identityDocsEnabled.value : YES;
+  BOOL managed = [self isAutofillAiDisabledByEnterprisePolicy];
+
+  if (base::FeatureList::IsEnabled(
+          autofill::features::
+              kAutofillEnableAutofillSettingsEnterprisePolicy)) {
+    [self.consumer setIdentityDocsToggleState:identityDocsEnabled
+                                      enabled:YES
+                                      managed:managed];
+  } else {
+    [self.consumer
+        setIdentityDocsToggleState:identityDocsEnabled && profileEnabled
+                           enabled:profileEnabled
+                           managed:managed];
+  }
+}
+
+#pragma mark - IdentityDocsMutator
+
+- (void)didToggleIdentityDocs:(BOOL)enabled {
+  _identityDocsEnabled.value = enabled;
 }
 
 #pragma mark - AutofillAIBaseMediator
@@ -95,15 +168,7 @@ static constexpr autofill::DenseSet<autofill::EntityTypeName> kIdentityDocs = {
                                     nationalIdCards:nationalIdCards
                                           passports:passports];
 
-  std::vector<autofill::EntityType> writableTypes;
-  autofill::DenseSet<autofill::EntityType> all_types =
-      autofill::GetWritableEntityTypes(
-          _entityDataManager->GetVariationCountryCode());
-  std::ranges::copy_if(all_types, std::back_inserter(writableTypes),
-                       [](const autofill::EntityType& type) {
-                         return kIdentityDocs.contains(type.name());
-                       });
-  [self.consumer setWritableEntityTypes:writableTypes];
+  [self.consumer setWritableEntityTypes:[self writableEntityTypes]];
 }
 
 @end

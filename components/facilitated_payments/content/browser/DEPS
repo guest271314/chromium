@@ -1,6 +1,10 @@
 include_rules = [
   "+components/network_session_configurator",
+  "+components/optimization_guide/core",
   "+components/security_state",
+  "+components/wallet/content/browser",
+  "+components/wallet/content/common/mojom",
+  "+components/wallet/core/browser/data_models",
   "+content/public/browser",
   "+mojo/public/cpp/bindings",
   "+services/network/public/cpp",
@@ -17,5 +21,7 @@ specific_include_rules = {
    ],
    "content_facilitated_payments_driver_factory_unittest.cc": [
       "+components/optimization_guide/core",
-      "+content/public/test",]
+      "+content/public/test",
+      "+net/base/net_errors.h",
+   ]
 }

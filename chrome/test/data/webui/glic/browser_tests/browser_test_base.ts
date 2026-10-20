@@ -7,16 +7,28 @@
 //   --gn_target chrome/test/data/webui/glic:build_ts
 
 import {WebClientMode} from '/glic/glic_api/glic_api.js';
-import type {GlicBrowserHost, GlicHostRegistry, GlicWebClient, Observable, OpenPanelInfo, PanelOpeningData, PanelStateKind} from '/glic/glic_api/glic_api.js';
+import type {                  //
+             GlicBrowserHost,  //
+             GlicHostRegistry, //
+             GlicWebClient,    //
+             InvokeOptions,    //
+             Observable,       //
+             OpenPanelInfo,    //
+             PanelOpeningData, //
+             PanelStateKind,   //
+             Screenshot,       //
+} from '/glic/glic_api/glic_api.js';
 import {ObservableValue, Subject, type Subscriber} from '/glic/observable.js';
 import {TaskQueue} from '/glic/task_queue.js';
 
 import {createGlicHostRegistryOnLoad} from '../api_boot.js';
 
 let maxTimeoutEndTime = performance.now() + 10000;
+export const longWaitTimeMs = 120000;
 
 export interface TestInitData {
   embeddedTestServerUrl: string;
+  embeddedHttpsTestServerUrl?: string;
 }
 
 export function getTestName(): string|null {
@@ -57,13 +69,26 @@ export class SequencedSubscriber<T> {
   // A promise that resolves when the observable is completed.
   readonly completed: Promise<void>;
 
+  // A promise that resolves when the observable emits an error.
+  readonly errorPromise: Promise<unknown>;
+
   constructor(observable: Observable<T>) {
     const completedResolvers = Promise.withResolvers<void>();
+    const errorResolvers = Promise.withResolvers<unknown>();
     this.completed = completedResolvers.promise;
-    this.subscriber = observable.subscribeObserver!({
-      next: this.change.bind(this),
-      complete: completedResolvers.resolve,
-    });
+    this.errorPromise = errorResolvers.promise;
+    if (observable.subscribeObserver) {
+      this.subscriber = observable.subscribeObserver({
+        next: this.change.bind(this),
+        error: (err: unknown) => {
+          this.error(err);
+          errorResolvers.resolve(err);
+        },
+        complete: completedResolvers.resolve,
+      });
+    } else {
+      this.subscriber = observable.subscribe(this.change.bind(this));
+    }
   }
   async next(): Promise<T> {
     // Wrapping the returned value with `waitFor` improves failure logs
@@ -86,6 +111,9 @@ export class SequencedSubscriber<T> {
   }
   waitForComplete(): Promise<void> {
     return waitFor(this.completed, undefined, 'waitForComplete timed out');
+  }
+  waitForError(): Promise<unknown> {
+    return waitFor(this.errorPromise, undefined, 'waitForError timed out');
   }
 
   // Waits for `condition` to return true.
@@ -125,7 +153,7 @@ export class SequencedSubscriber<T> {
               evalCount} values, last value was ${
               JSON.stringify(lastValueSaw)}${errorSuffix}`);
         } else {
-          console.warn(`waitFor() failed, saw no values emitted`);
+          console.warn('waitFor() failed, saw no values emitted');
         }
         throw e;
       }
@@ -143,6 +171,9 @@ export class SequencedSubscriber<T> {
   }
   private change(val: T) {
     this.getSignal(this.writeIndex++).resolve(val);
+  }
+  private error(err: unknown) {
+    this.getSignal(this.writeIndex++).reject(err);
   }
   private getSignal(index: number) {
     while (this.signals.length <= index) {
@@ -167,9 +198,29 @@ export class WebClient implements GlicWebClient {
   panelOpenState = ObservableValue.withValue<boolean>(false);
   panelOpenStateKind = ObservableValue.withNoValue<PanelStateKind>();
   panelOpenData = ObservableValue.withNoValue<PanelOpeningData>();
+  invokeData = ObservableValue.withNoValue<InvokeOptions>();
+  onCheckResponsive: () => Promise<void> = () => Promise.resolve();
+
+  async invoke(options: InvokeOptions): Promise<void> {
+    this.invokeData.assignAndSignal(options);
+  }
 
   async initialize(glicBrowserHost: GlicBrowserHost): Promise<void> {
     this.host = glicBrowserHost;
+    glicBrowserHost.experimentalTriggering?.()
+        ?.uploadEncryptedScreenshotRequests?.()
+        ?.subscribe((request) => {
+          this.lastUploadedScreenshot = request.screenshot;
+          request.uploadComplete(this.mockFileToken);
+        });
+    glicBrowserHost.experimentalTriggering?.()
+        ?.confirmationResponses?.()
+        ?.subscribe((request) => {
+          this.confirmationResponseReceived.resolve(request.response);
+          if (this.completeConfirmationResponses) {
+            request.onComplete(this.mockConfirmationApplied);
+          }
+        });
     this.initializedPromise.resolve();
   }
 
@@ -196,6 +247,10 @@ export class WebClient implements GlicWebClient {
     this.onStopMicrophone();
   }
 
+  checkResponsive(): Promise<void> {
+    return Promise.resolve();
+  }
+
   waitForFirstOpen(): Promise<void> {
     return this.firstOpened.promise;
   }
@@ -203,6 +258,25 @@ export class WebClient implements GlicWebClient {
   waitForInitialize(): Promise<void> {
     return this.initializedPromise.promise;
   }
+
+  lastUploadedScreenshot: Screenshot|null = null;
+  get lastUploadedScreenshotPayload(): Uint8Array|null {
+    return this.lastUploadedScreenshot ?
+        new Uint8Array(this.lastUploadedScreenshot.data) :
+        null;
+  }
+  mockFileToken: string|null = 'mock-file-token-12345';
+
+  // Resolved with the opaque payload of the first confirmation response
+  // received from the browser.
+  confirmationResponseReceived = Promise.withResolvers<ArrayBuffer>();
+  waitForConfirmationResponse(): Promise<ArrayBuffer> {
+    return this.confirmationResponseReceived.promise;
+  }
+  mockConfirmationApplied = true;
+  // When false, the client receives confirmation responses but never calls
+  // onComplete(), simulating a client which drops the result.
+  completeConfirmationResponses = true;
 }
 
 export interface TestStepper {
@@ -222,6 +296,24 @@ export type BrowserCommand = {
 }|{
   command: 'navigate-tab',
   tabId?: string, url: string,
+}|{
+  command: 'parse-actions-result',
+  actionsResult: string,
+}|{
+  command: 'make-wait-action',
+  tabId?: string,
+  durationMs?: number, taskId: number,
+}|{
+  command: 'make-navigate-action',
+  tabId?: string, url: string, taskId: number,
+}|{
+  command: 'make-attempt-otp-filling-action',
+  taskId: number,
+  tabId?: string,
+       nodeId: number,
+       documentIdentifier: string,
+       forSignin: boolean,
+       otpType: number,
 };
 
 export class BrowserControl {
@@ -244,6 +336,45 @@ export class BrowserControl {
   async navigateActiveTab(url: string): Promise<boolean> {
     return this.testStepper.doCommand({command: 'navigate-tab', url}) as
         Promise<boolean>;
+  }
+
+  async parseActionsResult(resultBuffer: ArrayBuffer): Promise<string> {
+    const base64 = (new Uint8Array(resultBuffer)).toBase64();
+    return this.testStepper.doCommand(
+               {command: 'parse-actions-result', actionsResult: base64}) as
+        Promise<string>;
+  }
+
+  async makeWaitAction(taskId: number, durationMs?: number, tabId?: string):
+      Promise<ArrayBuffer> {
+    const base64 =
+        await this.testStepper.doCommand(
+            {command: 'make-wait-action', taskId, durationMs, tabId}) as string;
+    return Uint8Array.fromBase64(base64).buffer as ArrayBuffer;
+  }
+
+  async makeNavigateAction(taskId: number, url: string, tabId?: string):
+      Promise<ArrayBuffer> {
+    const base64 =
+        await this.testStepper.doCommand(
+            {command: 'make-navigate-action', taskId, url, tabId}) as string;
+    return Uint8Array.fromBase64(base64).buffer as ArrayBuffer;
+  }
+
+  async makeAttemptOtpFillingAction(
+      taskId: number, nodeId: number, documentIdentifier: string,
+      forSignin: boolean, otpType: number,
+      tabId?: string): Promise<ArrayBuffer> {
+    const base64 = await this.testStepper.doCommand({
+      command: 'make-attempt-otp-filling-action',
+      taskId,
+      tabId,
+      nodeId,
+      documentIdentifier,
+      forSignin,
+      otpType,
+    }) as string;
+    return Uint8Array.fromBase64(base64).buffer as ArrayBuffer;
   }
 }
 
@@ -318,18 +449,18 @@ export class ApiTestFixtureBase {
     return this.testStepCount;
   }
 
-  getTestUrl(path: string): string {
-    return new URL('/test_data/' + path, this.initData!.embeddedTestServerUrl)
-        .href;
+  getUrl(path: string): string {
+    return new URL(path, this.initData!.embeddedTestServerUrl).href;
   }
 
-  async testAllTestsAreRegistered() {
-    const allNames = [];
-    for (const fixture of testRunner.testFixtures) {
-      allNames.push(...Object.getOwnPropertyNames(fixture.prototype)
-                        .filter(name => name.startsWith('test')));
-    }
-    await this.advanceToNextStep(allNames);
+  getHttpsUrl(path: string): string {
+    const baseUrl = this.initData?.embeddedHttpsTestServerUrl ??
+        this.initData!.embeddedTestServerUrl;
+    return new URL(path, baseUrl).href;
+  }
+
+  getTestUrl(path: string): string {
+    return this.getUrl('/test_data/' + path);
   }
 
   protected async doBrowserCommand(command: BrowserCommand) {
@@ -344,10 +475,6 @@ function findTestFixture(
     if (Object.getOwnPropertyNames(fixture.prototype).includes(testName)) {
       return fixture;
     }
-  }
-  // testAllTestsAreRegistered is provided by the fixture base class.
-  if (testName === 'testAllTestsAreRegistered') {
-    return testFixtures[0];
   }
   return undefined;
 }

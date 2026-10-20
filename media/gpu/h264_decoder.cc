@@ -15,8 +15,11 @@
 #include "base/functional/callback_helpers.h"
 #include "base/logging.h"
 #include "base/numerics/safe_conversions.h"
+#include "base/numerics/safe_math.h"
+#include "media/base/agtm.h"
 #include "media/base/media_switches.h"
 #include "media/parsers/h264_level_limits.h"
+#include "media/parsers/h26x_parser.h"
 #include "third_party/abseil-cpp/absl/functional/overload.h"
 
 namespace media {
@@ -293,23 +296,30 @@ bool H264Decoder::CalculatePicOrderCounts(scoped_refptr<H264Picture> pic) {
       int max_pic_order_cnt_lsb =
           1 << (sps->log2_max_pic_order_cnt_lsb_minus4 + 4);
       DCHECK_NE(max_pic_order_cnt_lsb, 0);
+      base::CheckedNumeric<int> pic_order_cnt_msb = prev_pic_order_cnt_msb;
       if ((pic->pic_order_cnt_lsb < prev_pic_order_cnt_lsb) &&
           (prev_pic_order_cnt_lsb - pic->pic_order_cnt_lsb >=
            max_pic_order_cnt_lsb / 2)) {
-        pic->pic_order_cnt_msb = prev_pic_order_cnt_msb + max_pic_order_cnt_lsb;
+        pic_order_cnt_msb += max_pic_order_cnt_lsb;
       } else if ((pic->pic_order_cnt_lsb > prev_pic_order_cnt_lsb) &&
                  (pic->pic_order_cnt_lsb - prev_pic_order_cnt_lsb >
                   max_pic_order_cnt_lsb / 2)) {
-        pic->pic_order_cnt_msb = prev_pic_order_cnt_msb - max_pic_order_cnt_lsb;
-      } else {
-        pic->pic_order_cnt_msb = prev_pic_order_cnt_msb;
+        pic_order_cnt_msb -= max_pic_order_cnt_lsb;
       }
 
-      pic->top_field_order_cnt =
-          pic->pic_order_cnt_msb + pic->pic_order_cnt_lsb;
+      base::CheckedNumeric<int> top_field_order_cnt =
+          pic_order_cnt_msb + pic->pic_order_cnt_lsb;
+      base::CheckedNumeric<int> bottom_field_order_cnt =
+          top_field_order_cnt + pic->delta_pic_order_cnt_bottom;
 
-      pic->bottom_field_order_cnt =
-          pic->top_field_order_cnt + pic->delta_pic_order_cnt_bottom;
+      if (!top_field_order_cnt.IsValid() || !bottom_field_order_cnt.IsValid()) {
+        DVLOG(1) << "Invalid pic_order_cnt (type 0).";
+        return false;
+      }
+
+      pic->pic_order_cnt_msb = pic_order_cnt_msb.ValueOrDie();
+      pic->top_field_order_cnt = top_field_order_cnt.ValueOrDie();
+      pic->bottom_field_order_cnt = bottom_field_order_cnt.ValueOrDie();
 
       break;
     }
@@ -319,33 +329,46 @@ bool H264Decoder::CalculatePicOrderCounts(scoped_refptr<H264Picture> pic) {
       if (prev_has_memmgmnt5_)
         prev_frame_num_offset_ = 0;
 
+      base::CheckedNumeric<int> frame_num_offset = prev_frame_num_offset_;
       if (pic->idr)
-        pic->frame_num_offset = 0;
+        frame_num_offset = 0;
       else if (prev_frame_num_ > pic->frame_num)
-        pic->frame_num_offset = prev_frame_num_offset_ + max_frame_num_;
-      else
-        pic->frame_num_offset = prev_frame_num_offset_;
+        frame_num_offset += max_frame_num_;
 
-      int abs_frame_num = 0;
+      if (!frame_num_offset.IsValid()) {
+        DVLOG(1) << "Invalid frame_num_offset.";
+        return false;
+      }
+
+      pic->frame_num_offset = frame_num_offset.ValueOrDie();
+
+      base::CheckedNumeric<int> abs_frame_num = 0;
       if (sps->num_ref_frames_in_pic_order_cnt_cycle != 0)
-        abs_frame_num = pic->frame_num_offset + pic->frame_num;
-      else
-        abs_frame_num = 0;
+        abs_frame_num = frame_num_offset + pic->frame_num;
 
-      if (pic->nal_ref_idc == 0 && abs_frame_num > 0)
-        --abs_frame_num;
+      if (!abs_frame_num.IsValid()) {
+        DVLOG(1) << "Invalid abs_frame_num.";
+        return false;
+      }
+
+      int abs_frame_num_val = abs_frame_num.ValueOrDie();
+      if (pic->nal_ref_idc == 0 && abs_frame_num_val > 0) {
+        --abs_frame_num_val;
+      }
 
       base::CheckedNumeric<int> expected_pic_order_cnt = 0;
-      if (abs_frame_num > 0) {
+      if (abs_frame_num_val > 0) {
         if (sps->num_ref_frames_in_pic_order_cnt_cycle == 0) {
           DVLOG(1) << "Invalid num_ref_frames_in_pic_order_cnt_cycle.";
           return false;
         }
 
         int pic_order_cnt_cycle_cnt =
-            (abs_frame_num - 1) / sps->num_ref_frames_in_pic_order_cnt_cycle;
+            (abs_frame_num_val - 1) /
+            sps->num_ref_frames_in_pic_order_cnt_cycle;
         int frame_num_in_pic_order_cnt_cycle =
-            (abs_frame_num - 1) % sps->num_ref_frames_in_pic_order_cnt_cycle;
+            (abs_frame_num_val - 1) %
+            sps->num_ref_frames_in_pic_order_cnt_cycle;
 
         expected_pic_order_cnt =
             base::CheckedNumeric<int>(pic_order_cnt_cycle_cnt) *
@@ -385,24 +408,35 @@ bool H264Decoder::CalculatePicOrderCounts(scoped_refptr<H264Picture> pic) {
       if (prev_has_memmgmnt5_)
         prev_frame_num_offset_ = 0;
 
+      base::CheckedNumeric<int> frame_num_offset = prev_frame_num_offset_;
       if (pic->idr)
-        pic->frame_num_offset = 0;
+        frame_num_offset = 0;
       else if (prev_frame_num_ > pic->frame_num)
-        pic->frame_num_offset = prev_frame_num_offset_ + max_frame_num_;
-      else
-        pic->frame_num_offset = prev_frame_num_offset_;
+        frame_num_offset += max_frame_num_;
 
-      int temp_pic_order_cnt;
+      if (!frame_num_offset.IsValid()) {
+        DVLOG(1) << "Invalid frame_num_offset.";
+        return false;
+      }
+
+      pic->frame_num_offset = frame_num_offset.ValueOrDie();
+
+      base::CheckedNumeric<int> temp_pic_order_cnt;
       if (pic->idr) {
         temp_pic_order_cnt = 0;
       } else if (!pic->nal_ref_idc) {
-        temp_pic_order_cnt = 2 * (pic->frame_num_offset + pic->frame_num) - 1;
+        temp_pic_order_cnt = 2 * (frame_num_offset + pic->frame_num) - 1;
       } else {
-        temp_pic_order_cnt = 2 * (pic->frame_num_offset + pic->frame_num);
+        temp_pic_order_cnt = 2 * (frame_num_offset + pic->frame_num);
       }
 
-      pic->top_field_order_cnt = temp_pic_order_cnt;
-      pic->bottom_field_order_cnt = temp_pic_order_cnt;
+      if (!temp_pic_order_cnt.IsValid()) {
+        DVLOG(1) << "Invalid temp_pic_order_cnt.";
+        return false;
+      }
+
+      pic->top_field_order_cnt = temp_pic_order_cnt.ValueOrDie();
+      pic->bottom_field_order_cnt = temp_pic_order_cnt.ValueOrDie();
 
       break;
     }
@@ -1174,10 +1208,15 @@ bool H264Decoder::UpdateMaxNumReorderFrames(const H264SPS* sps) {
   return true;
 }
 
-bool H264Decoder::ProcessSPS(int sps_id, bool* need_new_buffers) {
-  DVLOG(4) << "Processing SPS id:" << sps_id;
+bool H264Decoder::ProcessPPSAndSPS(int pps_id, bool* need_new_buffers) {
+  DVLOG(4) << "Processing PPS id:" << pps_id;
 
-  const H264SPS* sps = parser_.GetSPS(sps_id);
+  const H264PPS* pps = parser_.GetPPS(pps_id);
+  if (!pps) {
+    return false;
+  }
+
+  const H264SPS* sps = parser_.GetSPS(pps->seq_parameter_set_id);
   if (!sps)
     return false;
 
@@ -1306,7 +1345,13 @@ bool H264Decoder::ProcessSPS(int sps_id, bool* need_new_buffers) {
     dpb_.set_max_num_pics(max_dpb_size);
   }
 
-  gfx::Rect new_visible_rect = sps->GetVisibleRect().value_or(gfx::Rect());
+  gfx::Rect new_visible_rect = sps->GetVisibleRect().value_or(gfx::Rect(new_pic_size));
+  if (!gfx::Rect(new_pic_size).Contains(new_visible_rect)) {
+    DVLOG(1) << "Visible rect " << new_visible_rect.ToString()
+             << " exceeds pic size " << new_pic_size.ToString()
+             << ", resetting to pic size";
+    new_visible_rect = gfx::Rect(new_pic_size);
+  }
   if (visible_rect_ != new_visible_rect) {
     DVLOG(2) << "New visible rect: " << new_visible_rect.ToString();
     visible_rect_ = new_visible_rect;
@@ -1316,6 +1361,11 @@ bool H264Decoder::ProcessSPS(int sps_id, bool* need_new_buffers) {
     return false;
   DVLOG(1) << "max_num_reorder_frames: " << max_num_reorder_frames_;
 
+  if (*need_new_buffers) {
+    ref_pic_list_p0_.clear();
+    ref_pic_list_b0_.clear();
+    ref_pic_list_b1_.clear();
+  }
   return true;
 }
 
@@ -1545,6 +1595,11 @@ void H264Decoder::SetStream(int32_t id,
   CHECK(decoder_buffer);
   prior_cencv1_nalus_.clear();
   prior_cencv1_subsamples_.clear();
+  curr_nalu_.reset();
+  curr_slice_hdr_.reset();
+  // Keep the old buffer alive until the end of this function to ensure
+  // that any active spans in the parser are cleared before the memory is freed.
+  auto outgoing_decoder_buffer = std::move(decoder_buffer_);
   decoder_buffer_ = std::move(decoder_buffer);
   const DecryptConfig* decrypt_config = decoder_buffer_->decrypt_config();
 
@@ -1651,6 +1706,25 @@ H264Decoder::DecodeResult H264Decoder::Decode() {
             // There is only a single clear byte for the NALU information for
             // full sample encryption, and the rest is encrypted.
             if (!subsamples.empty() && subsamples[0].clear_bytes == 1) {
+              if (base::FeatureList::IsEnabled(
+                      kVaapiEarlyPPSParsingForCENCv1)) {
+                // On ChromeOS for CENCv1 on some devices, we need to wait until
+                // after the decoder buffers are created to be able to process
+                // the encrypted slice header.
+                bool need_new_buffers = false;
+                if (!ProcessPPSAndSPS(last_parsed_pps_id_, &need_new_buffers)) {
+                  SET_ERROR_AND_RETURN();
+                }
+
+                if (need_new_buffers) {
+                  // Yield `kConfigChange` to the client so they can allocate
+                  // new surfaces. We do not advance `state_` or clear
+                  // `curr_nalu_`. When Decode() resumes, it will re-enter this
+                  // block, but ProcessPPSAndSPS will evaluate `need_new_buffers
+                  // = false` and proceed.
+                  return kConfigChange;
+                }
+              }
               CHECK_ACCELERATOR_RESULT(ProcessEncryptedSliceHeader(subsamples));
               parsed_header = true;
               curr_slice_hdr_->pic_parameter_set_id = last_parsed_pps_id_;
@@ -1675,14 +1749,13 @@ H264Decoder::DecodeResult H264Decoder::Decode() {
             // |curr_pic_| already exists, so skip to ProcessCurrentSlice().
             state_ = State::kTryCurrentSlice;
           } else {
-            const H264PPS* pps =
-                parser_.GetPPS(curr_slice_hdr_->pic_parameter_set_id);
-            if (!pps) {
-              SET_ERROR_AND_RETURN();
-            }
-
+            // When kVaapiEarlyPPSParsingForCENCv1 is enabled and the stream is
+            // CENCv1, ProcessPPSAndSPS will always set `need_new_buffers` to
+            // false, since the configuration change gets handled in the
+            // ProcessPPSAndSPS call above.
             bool need_new_buffers = false;
-            if (!ProcessSPS(pps->seq_parameter_set_id, &need_new_buffers)) {
+            if (!ProcessPPSAndSPS(curr_slice_hdr_->pic_parameter_set_id,
+                                  &need_new_buffers)) {
               SET_ERROR_AND_RETURN();
             }
 
@@ -1690,11 +1763,8 @@ H264Decoder::DecodeResult H264Decoder::Decode() {
               // Yield `kConfigChange` to the client so they can allocate new
               // surfaces. We do not advance `state_` or clear `curr_nalu_`.
               // When Decode() resumes, it will re-enter this block, but
-              // ProcessSPS will evaluate `need_new_buffers = false` and
+              // ProcessPPSAndSPS will evaluate `need_new_buffers = false` and
               // proceed.
-              ref_pic_list_p0_.clear();
-              ref_pic_list_b0_.clear();
-              ref_pic_list_b1_.clear();
               return kConfigChange;
             }
 
@@ -1811,12 +1881,18 @@ H264Decoder::DecodeResult H264Decoder::Decode() {
                         }
                         return true;
                       },
-                      [this](const H264SEIContentLightLevelInfo& info) {
+                      [this](const H26xSEIContentLightLevelInfo& info) {
                         hdr_metadata_bitstream_.SetCLLI(info.ToSkHdr());
                         return true;
                       },
-                      [this](const H264SEIMasteringDisplayInfo& info) {
+                      [this](const H26xSEIMasteringDisplayInfo& info) {
                         hdr_metadata_bitstream_.SetMDCV(info.ToSkHdr());
+                        return true;
+                      },
+                      [this](const H26xSEIUserDataRegisteredT35& info) {
+                        SetAgtmFromT35WithCountryCode(hdr_metadata_bitstream_,
+                                                      info.country_code,
+                                                      info.payload);
                         return true;
                       },
                       [](const std::monostate) { return true; }},

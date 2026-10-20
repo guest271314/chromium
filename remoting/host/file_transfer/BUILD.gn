@@ -20,12 +20,16 @@ source_set("file_transfer") {
     frameworks = [ "AppKit.framework" ]
   } else if (is_win) {
     sources += [
-      "file_chooser_common_win.h",
+      "file_chooser_factory_win.cc",
       "file_chooser_main_win.cc",
-      "file_chooser_win.cc",
     ]
+    public_deps += [ ":file_chooser_win" ]
     deps += [
       "//ipc",
+      "//mojo/core/embedder",
+      "//mojo/public/cpp/bindings",
+      "//mojo/public/cpp/platform",
+      "//mojo/public/cpp/system",
       "//remoting/host:common",
       "//remoting/host/base",
       "//remoting/host/mojom",
@@ -53,20 +57,27 @@ source_set("common") {
     "file_chooser.h",
     "file_operations.h",
     "file_transfer_message_handler.h",
-    "ipc_file_operations.h",
     "local_file_operations.h",
     "rtc_log_file_operations.h",
-    "session_file_operations_handler.h",
   ]
 
   sources = [
     "buffered_file_writer.cc",
     "file_transfer_message_handler.cc",
-    "ipc_file_operations.cc",
     "local_file_operations.cc",
     "rtc_log_file_operations.cc",
-    "session_file_operations_handler.cc",
   ]
+
+  if (remoting_multi_process) {
+    public += [
+      "ipc_file_operations.h",
+      "session_file_operations_handler.h",
+    ]
+    sources += [
+      "ipc_file_operations.cc",
+      "session_file_operations_handler.cc",
+    ]
+  }
 
   deps = [
     "//base",
@@ -114,6 +125,28 @@ if (is_chromeos) {
       "//remoting/resources",
       "//ui/display",
       "//ui/shell_dialogs",
+    ]
+  }
+}
+
+if (is_win) {
+  source_set("file_chooser_win") {
+    sources = [
+      "file_chooser_win.cc",
+      "file_chooser_win.h",
+    ]
+    deps = [
+      ":common",
+      "//base",
+      "//ipc",
+      "//mojo/core/embedder",
+      "//mojo/public/cpp/bindings",
+      "//mojo/public/cpp/platform",
+      "//mojo/public/cpp/system",
+      "//remoting/host:common",
+      "//remoting/host/base",
+      "//remoting/host/mojom",
+      "//remoting/host/win",
     ]
   }
 }
@@ -174,10 +207,14 @@ source_set("unit_tests") {
       "//ui/shell_dialogs",
     ]
   } else {
-    sources += [
-      "ipc_file_operations_unittest.cc",
-      "local_file_operations_unittest.cc",
-    ]
+    sources += [ "local_file_operations_unittest.cc" ]
+    if (is_win) {
+      sources += [ "file_chooser_win_unittest.cc" ]
+      deps += [ ":file_chooser_win" ]
+    }
+    if (remoting_multi_process) {
+      sources += [ "ipc_file_operations_unittest.cc" ]
+    }
   }
 
   # TODO(crbug.com/40031409): Fix code that adds exit-time destructors and

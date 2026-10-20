@@ -5,7 +5,9 @@
 #include "components/autofill/core/browser/metrics/autofill_metrics_test_base.h"
 
 #include <memory>
+#include <string>
 
+#include "base/strings/string_number_conversions.h"
 #include "components/autofill/core/browser/data_manager/addresses/address_data_manager.h"
 #include "components/autofill/core/browser/data_manager/addresses/address_data_manager_test_api.h"
 #include "components/autofill/core/browser/data_manager/payments/payments_data_manager.h"
@@ -15,6 +17,7 @@
 #include "components/autofill/core/browser/form_import/form_data_importer_test_api.h"
 #include "components/autofill/core/browser/form_import/payments/payments_form_data_importer_test_api.h"
 #include "components/autofill/core/browser/foundations/autofill_manager_test_api.h"
+#include "components/autofill/core/browser/foundations/browser_autofill_manager_test_api.h"
 #include "components/autofill/core/browser/payments/credit_card_access_manager.h"
 #include "components/autofill/core/browser/payments/credit_card_access_manager_test_api.h"
 #include "components/autofill/core/browser/payments/credit_card_cvc_authenticator.h"
@@ -24,7 +27,7 @@
 #include "components/autofill/core/browser/payments/test/mock_multiple_request_payments_network_interface.h"
 #include "components/autofill/core/browser/payments/test_payments_autofill_client.h"
 #include "components/autofill/core/browser/payments/test_payments_network_interface.h"
-#include "components/autofill/core/browser/test_utils/autofill_form_test_utils.h"
+#include "components/autofill/core/browser/test_utils/autofill_form_test_util.h"
 #include "components/autofill/core/browser/webdata/valuables/valuables_table.h"
 #include "components/autofill/core/common/autofill_clock.h"
 #include "components/autofill/core/common/autofill_features.h"
@@ -73,10 +76,12 @@ MockCreditCardAccessManager::MockCreditCardAccessManager(
     BrowserAutofillManager* bam)
     : CreditCardAccessManager(bam) {
   ON_CALL(*this, FetchCreditCard)
-      .WillByDefault(
-          [this](const CreditCard* card, OnCreditCardFetchedCallback cb) {
-            CreditCardAccessManager::FetchCreditCard(card, std::move(cb));
-          });
+      .WillByDefault([this](const CreditCard* card,
+                            bool require_user_confirmation,
+                            OnCreditCardFetchedCallback cb) {
+        CreditCardAccessManager::FetchCreditCard(
+            card, require_user_confirmation, std::move(cb));
+      });
 }
 
 MockCreditCardAccessManager::~MockCreditCardAccessManager() = default;
@@ -90,13 +95,10 @@ MockAutofillDriver::MockAutofillDriver(TestAutofillClient* client)
                  base::span<const FormFieldData> data, const FillId& fill_id,
                  bool supports_refill, const url::Origin& triggered_origin,
                  const absl::flat_hash_map<FieldGlobalId, FieldType>&
-                     field_type_map,
-                 const Section& section_for_clear_form_on_ios)
-              -> base::flat_set<FieldGlobalId> {
+                     field_type_map) -> base::flat_set<FieldGlobalId> {
             return TestAutofillDriver::ApplyFormAction(
                 action_type, action_persistence, data, fill_id, supports_refill,
-                triggered_origin, field_type_map,
-                section_for_clear_form_on_ios);
+                triggered_origin, field_type_map);
           });
 }
 
@@ -111,7 +113,7 @@ TestBrowserAutofillManager::TestBrowserAutofillManager(AutofillDriver* driver)
 }
 
 void TestBrowserAutofillManager::Reset() {
-  autofill::TestBrowserAutofillManager::Reset();
+  test_api(*this).ResetBrowserAutofillManagerWithoutDynamicDispatch();
   test_api(*this).set_credit_card_access_manager(
       std::make_unique<NiceMock<MockCreditCardAccessManager>>(this));
 }
@@ -402,7 +404,7 @@ void AutofillMetricsBaseTest::AddMaskedServerCreditCardWithOffer(
   personal_data().test_payments_data_manager().AddServerCreditCard(
       masked_server_credit_card);
 
-  int64_t offer_id = id;
+  std::string offer_id = base::NumberToString(id);
   base::Time expiry = offer_expired ? AutofillClock::Now() - base::Days(2)
                                     : AutofillClock::Now() + base::Days(2);
   std::vector<GURL> merchant_origins = {GURL{url}};

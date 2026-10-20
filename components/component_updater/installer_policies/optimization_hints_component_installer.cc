@@ -4,7 +4,12 @@
 
 #include "components/component_updater/installer_policies/optimization_hints_component_installer.h"
 
+#include <stdint.h>
+
+#include <memory>
+#include <string>
 #include <utility>
+#include <vector>
 
 #include "base/command_line.h"
 #include "base/files/file_path.h"
@@ -16,34 +21,31 @@
 #include "base/version.h"
 #include "components/component_updater/component_updater_paths.h"
 #include "components/optimization_guide/core/filters/optimization_hints_component_update_listener.h"
-#include "components/optimization_guide/core/optimization_guide_constants.h"
 #include "components/optimization_guide/core/optimization_guide_features.h"
 
 namespace component_updater {
 
 namespace {
 
-const char kDisableInstallerUpdate[] = "optimization-guide-disable-installer";
+constexpr char kDisableInstallerUpdate[] =
+    "optimization-guide-disable-installer";
+
+constexpr char kRulesetFormatVersionString[] = "1.0.0";
 
 // The extension id is: lmelglejhemejginpboagddgdfbepgmp
-const uint8_t kOptimizationHintsPublicKeySHA256[32] = {
+constexpr uint8_t kOptimizationHintsPublicKeySHA256[32] = {
     0xbc, 0x4b, 0x6b, 0x49, 0x74, 0xc4, 0x96, 0x8d, 0xf1, 0xe0, 0x63,
     0x36, 0x35, 0x14, 0xf6, 0xcf, 0x86, 0x92, 0xe6, 0x06, 0x03, 0x76,
     0x70, 0xaf, 0x8b, 0xd4, 0x47, 0x2c, 0x42, 0x59, 0x38, 0xef};
 
-const char kOptimizationHintsSetFetcherManifestName[] = "Optimization Hints";
+constexpr char kOptimizationHintsSetFetcherManifestName[] =
+    "Optimization Hints";
 
 }  // namespace
 
-// static
-const char
-    OptimizationHintsComponentInstallerPolicy::kManifestRulesetFormatKey[] =
-        "ruleset_format";
-
 OptimizationHintsComponentInstallerPolicy::
     OptimizationHintsComponentInstallerPolicy()
-    : ruleset_format_version_(
-          base::Version(optimization_guide::kRulesetFormatVersionString)) {
+    : ruleset_format_version_(base::Version(kRulesetFormatVersionString)) {
   DCHECK(ruleset_format_version_.IsValid());
 }
 
@@ -81,8 +83,7 @@ void OptimizationHintsComponentInstallerPolicy::ComponentReady(
   if (update_listener && !base::CommandLine::ForCurrentProcess()->HasSwitch(
                              kDisableInstallerUpdate)) {
     optimization_guide::HintsComponentInfo info(
-        version,
-        install_dir.Append(optimization_guide::kUnindexedHintsFileName));
+        version, install_dir.Append(kUnindexedHintsFileName));
     update_listener->MaybeUpdateHintsComponent(info);
   }
 }
@@ -104,8 +105,7 @@ void OptimizationHintsComponentInstallerPolicy::GetHash(
   if (!hash) {
     return;
   }
-  hash->assign(std::begin(kOptimizationHintsPublicKeySHA256),
-               std::end(kOptimizationHintsPublicKeySHA256));
+  hash->assign_range(kOptimizationHintsPublicKeySHA256);
 }
 
 std::string OptimizationHintsComponentInstallerPolicy::GetName() const {

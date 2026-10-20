@@ -48,6 +48,9 @@ COMPONENT_EXPORT(PERMISSIONS_COMMON)
 BASE_DECLARE_FEATURE(kPermissionsAIP92);
 
 COMPONENT_EXPORT(PERMISSIONS_COMMON)
+BASE_DECLARE_FEATURE(kPermissionsAILikelihoodOrRelevance);
+
+COMPONENT_EXPORT(PERMISSIONS_COMMON)
 BASE_DECLARE_FEATURE(kPermissionPromiseLifetimeModulationAndroid);
 
 COMPONENT_EXPORT(PERMISSIONS_COMMON)
@@ -104,6 +107,11 @@ BASE_DECLARE_FEATURE(kPermissionPredictionsGeolocationAccuracy);
 
 COMPONENT_EXPORT(PERMISSIONS_COMMON)
 BASE_DECLARE_FEATURE(kPermissionsGestureGatedPrompts);
+
+#if BUILDFLAG(IS_ANDROID)
+COMPONENT_EXPORT(PERMISSIONS_COMMON)
+BASE_DECLARE_FEATURE(kPermanentNotificationSubscribeInPageInfo);
+#endif  // BUILDFLAG(IS_ANDROID)
 
 }  // namespace features
 
@@ -187,6 +195,10 @@ extern const base::FeatureParam<bool>
 COMPONENT_EXPORT(PERMISSIONS_COMMON)
 extern const base::FeatureParam<bool>
     kPermissionsGestureGatedPromptsMuteGeolocation;
+
+COMPONENT_EXPORT(PERMISSIONS_COMMON)
+extern const base::FeatureParam<bool>
+    kPermissionsGestureGatedPromptsExcludeSameOriginNavigations;
 
 #if !BUILDFLAG(IS_ANDROID)
 COMPONENT_EXPORT(PERMISSIONS_COMMON)

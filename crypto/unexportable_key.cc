@@ -22,8 +22,7 @@ UnexportableKeyProvider::~UnexportableKeyProvider() = default;
 
 std::unique_ptr<UnexportableAttestationKey>
 UnexportableKeyProvider::GenerateAttestationKeySlowly(
-    base::span<const SignatureVerifier::SignatureAlgorithm>
-        acceptable_algorithms) {
+    base::span<const sign::SignatureKind> acceptable_algorithms) {
   return nullptr;
 }
 
@@ -36,11 +35,11 @@ UnexportableKeyProvider::FromWrappedAttestationKeySlowly(
 VirtualUnexportableSigningKey::~VirtualUnexportableSigningKey() = default;
 VirtualUnexportableKeyProvider::~VirtualUnexportableKeyProvider() = default;
 
-bool UnexportableKey::IsHardwareBacked() const {
+bool UnexportableSigningKey::IsHardwareBacked() const {
   return false;
 }
 
-const StatefulKey* UnexportableKey::AsStatefulKey() const {
+const StatefulKey* UnexportableSigningKey::AsStatefulKey() const {
   return nullptr;
 }
 

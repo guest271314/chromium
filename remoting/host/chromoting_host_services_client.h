@@ -6,6 +6,7 @@
 #define REMOTING_HOST_CHROMOTING_HOST_SERVICES_CLIENT_H_
 
 #include <memory>
+#include <optional>
 #include <vector>
 
 #include "base/functional/callback.h"
@@ -15,8 +16,10 @@
 #include "mojo/public/cpp/platform/named_platform_channel.h"
 #include "remoting/host/chromoting_host_services_provider.h"
 #include "remoting/host/mojom/chromoting_host_services.mojom.h"
+#include "remoting/proto/control.pb.h"
 
 namespace base {
+class CommandLine;
 class Environment;
 }  // namespace base
 
@@ -29,6 +32,12 @@ namespace remoting {
 class ChromotingHostServicesClient final
     : public ChromotingHostServicesProvider {
  public:
+  // Parses `--agent-status`, `--terminal-title`, and `--terminal-id` switches.
+  // Requires `--terminal-id` and at least one of `--agent-status` or
+  // `--terminal-title`. Returns `std::nullopt` if the arguments are invalid.
+  static std::optional<protocol::TerminalControl::AgentInfo>
+  ParseAgentStatusArgs(const base::CommandLine* command_line);
+
   ChromotingHostServicesClient();
   explicit ChromotingHostServicesClient(
       const mojo::NamedPlatformChannel::ServerName& server_name);
@@ -38,12 +47,6 @@ class ChromotingHostServicesClient final
   ChromotingHostServicesClient& operator=(const ChromotingHostServicesClient&) =
       delete;
   ~ChromotingHostServicesClient() override;
-
-  // Configures the current process to allow it to communicate with the
-  // ChromotingHostServices server. Must be called once before using any
-  // instance of ChromotingHostServicesClient.
-  // Returns a boolean that indicates whether the initialization succeeded.
-  static bool Initialize();
 
   // Gets the ChromotingSessionServices. Always null-check before using it, as
   // nullptr will be returned if the connection could not be established.

@@ -10,8 +10,8 @@
 #include <vector>
 
 #include "base/test/metrics/histogram_tester.h"
-#include "chrome/browser/web_applications/isolated_web_apps/isolation_data.h"
 #include "chrome/browser/web_applications/model/display_override.h"
+#include "chrome/browser/web_applications/model/isolation_data.h"
 #include "chrome/browser/web_applications/proto/web_app.pb.h"
 #include "chrome/browser/web_applications/proto/web_app_url_pattern.pb.h"
 #include "chrome/browser/web_applications/test/web_app_test.h"
@@ -622,6 +622,26 @@ TEST_F(WebAppDatabaseSerializationTest,
   isolation_data->mutable_proxy()->set_proxy_url("https://proxy.com");
   isolation_data->set_update_channel("");  // Invalid channel
   EXPECT_THAT(ParseWebAppProto(proto, app_id), IsNull());
+}
+
+TEST_F(WebAppDatabaseSerializationTest,
+       ParseWebAppProto_IsolationData_NonDevModeUpdateChannel) {
+  proto::WebApp proto;
+  webapps::AppId app_id;
+  std::tie(proto, app_id) =
+      CreateWebAppProtoForTesting("Test App", GURL("isolated-app://random_name"));
+  auto* isolation_data = proto.mutable_isolation_data();
+  isolation_data->set_version("1.0.0");
+  isolation_data->mutable_owned_bundle()->set_dir_name_ascii("bundle");
+  isolation_data->mutable_owned_bundle()->set_dev_mode(false);
+  isolation_data->set_update_channel("beta");
+
+  std::unique_ptr<WebApp> web_app = ParseWebAppProto(proto, app_id);
+  ASSERT_THAT(web_app, NotNull());
+  ASSERT_TRUE(web_app->isolation_data().has_value());
+  EXPECT_FALSE(web_app->isolation_data()->location().dev_mode());
+  EXPECT_EQ(*UpdateChannel::Create("beta"),
+            web_app->isolation_data()->update_channel());
 }
 
 // --- Tests for GeneratedIconFix ---

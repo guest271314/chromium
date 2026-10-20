@@ -21,11 +21,12 @@
 namespace blink {
 
 class ExceptionState;
-class PeriodicWaveImpl;
+class PeriodicWaveHandler;
 
 class MODULES_EXPORT OscillatorHandler final
     : public AudioScheduledSourceHandler {
   FRIEND_TEST_ALL_PREFIXES(OscillatorHandlerTest, RoundingBug);
+  FRIEND_TEST_ALL_PREFIXES(OscillatorHandlerTest, NegativeIncrementRoundingBug);
 
  public:
   // The waveform type.
@@ -58,7 +59,7 @@ class MODULES_EXPORT OscillatorHandler final
   V8OscillatorType::Enum GetType() const;
   void SetType(V8OscillatorType::Enum, ExceptionState&);
 
-  void SetPeriodicWave(PeriodicWaveImpl*);
+  void SetPeriodicWave(const PeriodicWaveHandler*);
 
   void HandleStoppableSourceNode() override;
 
@@ -66,7 +67,7 @@ class MODULES_EXPORT OscillatorHandler final
   bool SetInitialType(const String& oscillator_type);
 
   // Sets the initial periodic wave.
-  void SetInitialPeriodicWave(PeriodicWaveImpl*);
+  void SetInitialPeriodicWave(const PeriodicWaveHandler*);
 
  private:
   OscillatorHandler(AudioNode&,
@@ -190,9 +191,9 @@ class MODULES_EXPORT OscillatorHandler final
   AudioFloatArray phase_increments_;
   AudioFloatArray detune_values_;
 
-  // PeriodicWaveImpl cannot cause cycles with OscillatorNode as it is not
+  // PeriodicWaveHandler cannot cause cycles with OscillatorNode as it is not
   // scriptable.
-  CrossThreadPersistent<PeriodicWaveImpl> periodic_wave_;
+  CrossThreadPersistent<const PeriodicWaveHandler> periodic_wave_;
 
   base::WeakPtrFactory<AudioScheduledSourceHandler> weak_ptr_factory_{this};
 };

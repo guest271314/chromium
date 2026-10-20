@@ -7,7 +7,7 @@
 #include <algorithm>
 #include <optional>
 
-#include "base/byte_count.h"
+#include "base/byte_size.h"
 #include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/read_only_shared_memory_region.h"
@@ -81,8 +81,8 @@ TEST_F(ProcessNodeImplTest, ProcessLifeCycle) {
   EXPECT_TRUE(process_node->GetPrivateFootprint().is_zero());
   EXPECT_TRUE(process_node->GetResidentSet().is_zero());
 
-  process_node->set_private_footprint(base::KiBU(10));
-  process_node->set_resident_set(base::KiBU(20));
+  process_node->set_private_footprint(base::KiB(10));
+  process_node->set_resident_set(base::KiB(20));
 
   // Kill it again.
   // Verify that the process is cleared, but the properties stick around.
@@ -91,8 +91,8 @@ TEST_F(ProcessNodeImplTest, ProcessLifeCycle) {
   EXPECT_EQ(self.Pid(), process_node->GetProcessId());
 
   EXPECT_EQ(launch_time, process_node->GetLaunchTime());
-  EXPECT_EQ(base::KiBU(10), process_node->GetPrivateFootprint());
-  EXPECT_EQ(base::KiBU(20), process_node->GetResidentSet());
+  EXPECT_EQ(base::KiB(10), process_node->GetPrivateFootprint());
+  EXPECT_EQ(base::KiB(20), process_node->GetResidentSet());
 
   // Resurrect again and verify the launch time and measurements
   // are cleared.
@@ -235,7 +235,7 @@ TEST_F(ProcessNodeImplTest, ConstructionArguments_Browser) {
 
 TEST_F(ProcessNodeImplTest, ConstructionArguments_Renderer) {
   constexpr RenderProcessHostId kRenderProcessHostId =
-      RenderProcessHostId(0xF0B);
+      RenderProcessHostId(content::ChildProcessId(0xF0B));
   auto process_node = CreateNode<ProcessNodeImpl>(
       RenderProcessHostProxy::CreateForTesting(kRenderProcessHostId));
 
@@ -246,7 +246,7 @@ TEST_F(ProcessNodeImplTest, ConstructionArguments_Renderer) {
 
 TEST_F(ProcessNodeImplTest, ConstructionArguments_NonRenderer) {
   constexpr BrowserChildProcessHostId kBrowserChildProcessHostId =
-      BrowserChildProcessHostId(0xF0B);
+      BrowserChildProcessHostId(content::ChildProcessId(0xF0B));
   auto process_node = CreateNode<ProcessNodeImpl>(
       content::PROCESS_TYPE_GPU, BrowserChildProcessHostProxy::CreateForTesting(
                                      kBrowserChildProcessHostId));

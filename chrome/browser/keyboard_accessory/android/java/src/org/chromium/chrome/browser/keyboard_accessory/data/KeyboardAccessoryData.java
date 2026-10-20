@@ -37,7 +37,7 @@ public class KeyboardAccessoryData {
         private final @Nullable Listener mListener;
         private final SettableNonNullObservableSupplier<Integer> mIconIdSupplier;
 
-        /** A Tab's Listener get's notified when e.g. the Tab was assigned a view. */
+        /** A Tab's Listener gets notified when e.g. the Tab was assigned a view. */
         public interface Listener {
             /**
              * Triggered when the tab was successfully created.
@@ -138,29 +138,45 @@ public class KeyboardAccessoryData {
      * example hereof is the "Generate Password" action.
      */
     public static final class Action {
-        private final Callback<Action> mActionCallback;
-        private final @Nullable Callback<Action> mLongPressCallback;
+        // The boolean parameter indicates if the application window was fully or partially
+        // obscured when the action was triggered by a click event.
+        private final Callback<Boolean> mActionCallback;
+        private final @Nullable Runnable mLongPressCallback;
+        private final @Nullable Callback<Boolean> mHoverCallback;
         private final @AccessoryAction int mType;
 
-        public Action(@AccessoryAction int type, Callback<Action> actionCallback) {
-            this(type, actionCallback, null);
+        public Action(@AccessoryAction int type, Callback<Boolean> actionCallback) {
+            this(type, actionCallback, /* longPressCallback= */ null);
         }
 
         public Action(
                 @AccessoryAction int type,
-                Callback<Action> actionCallback,
-                @Nullable Callback<Action> longPressCallback) {
+                Callback<Boolean> actionCallback,
+                @Nullable Runnable longPressCallback) {
+            this(type, actionCallback, longPressCallback, /* hoverCallback= */ null);
+        }
+
+        public Action(
+                @AccessoryAction int type,
+                Callback<Boolean> actionCallback,
+                @Nullable Runnable longPressCallback,
+                @Nullable Callback<Boolean> hoverCallback) {
             mActionCallback = actionCallback;
             mLongPressCallback = longPressCallback;
+            mHoverCallback = hoverCallback;
             mType = type;
         }
 
-        public Callback<Action> getCallback() {
+        public Callback<Boolean> getCallback() {
             return mActionCallback;
         }
 
-        public @Nullable Callback<Action> getLongPressCallback() {
+        public @Nullable Runnable getLongPressCallback() {
             return mLongPressCallback;
+        }
+
+        public @Nullable Callback<Boolean> getHoverCallback() {
+            return mHoverCallback;
         }
 
         public @AccessoryAction int getActionType() {
@@ -230,41 +246,6 @@ public class KeyboardAccessoryData {
 
         public @AccessoryAction int getActionType() {
             return mType;
-        }
-    }
-
-    public static final class PlusAddressInfo {
-        private final String mOrigin;
-        private final UserInfoField mPlusAddressInfo;
-
-        public PlusAddressInfo(String origin, UserInfoField plusAddressInfo) {
-            mOrigin = origin;
-            mPlusAddressInfo = plusAddressInfo;
-        }
-
-        public String getOrigin() {
-            return mOrigin;
-        }
-
-        public UserInfoField getPlusAddress() {
-            return mPlusAddressInfo;
-        }
-    }
-
-    public static final class PlusAddressSection {
-        private final String mTitle;
-        private final List<PlusAddressInfo> mPlusAddressInfoList = new ArrayList<>();
-
-        public PlusAddressSection(String title) {
-            mTitle = title;
-        }
-
-        public String getTitle() {
-            return mTitle;
-        }
-
-        public List<PlusAddressInfo> getPlusAddressInfoList() {
-            return mPlusAddressInfoList;
         }
     }
 
@@ -499,7 +480,6 @@ public class KeyboardAccessoryData {
         private final String mWarning;
         private final @AccessoryTabType int mSheetType;
         private @Nullable OptionToggle mToggle;
-        private final PlusAddressSection mPlusAddressSection;
         private final UserInfoSection mUserInfoSection;
         private final List<PasskeySection> mPasskeySectionList = new ArrayList<>();
         private final List<PromoCodeInfo> mPromoCodeInfoList = new ArrayList<>();
@@ -513,19 +493,14 @@ public class KeyboardAccessoryData {
          * @param sheetType The type of the accessory manual filling sheet (addresses, credit cards,
          *     passwords).
          * @param userInfoTitle The user info title of accessory sheet tab.
-         * @param plusAddressTitle The plus address section title.
          * @param warning An optional warning to be displayed the beginning of the sheet.
          */
         public AccessorySheetData(
-                @AccessoryTabType int sheetType,
-                String userInfoTitle,
-                String plusAddressTitle,
-                String warning) {
+                @AccessoryTabType int sheetType, String userInfoTitle, String warning) {
             mWarning = warning;
             mSheetType = sheetType;
             mToggle = null;
             mUserInfoSection = new UserInfoSection(userInfoTitle);
-            mPlusAddressSection = new PlusAddressSection(plusAddressTitle);
         }
 
         public @AccessoryTabType int getSheetType() {
@@ -558,21 +533,6 @@ public class KeyboardAccessoryData {
         /** Returns the list of {@link UserInfo} to be shown on the accessory sheet. */
         public List<UserInfo> getUserInfoList() {
             return mUserInfoSection.getUserInfoList();
-        }
-
-        /**
-         * @return a possibly empty title for the plus address section to be shown on the accessory
-         *     sheet
-         */
-        public String getPlusAddressSectionTitle() {
-            return mPlusAddressSection.getTitle();
-        }
-
-        /**
-         * @return a list if {@link PlusAddressInfo} to be shown on the accessory sheet.
-         */
-        public List<PlusAddressInfo> getPlusAddressInfoList() {
-            return mPlusAddressSection.getPlusAddressInfoList();
         }
 
         /** Returns the list of {@link PasskeySection} to be shown on the accessory sheet. */

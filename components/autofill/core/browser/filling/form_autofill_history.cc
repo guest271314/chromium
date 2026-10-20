@@ -13,7 +13,6 @@
 
 #include "base/containers/span.h"
 #include "base/types/pass_key.h"
-#include "base/types/zip.h"
 #include "components/autofill/core/browser/autofill_field.h"
 #include "components/autofill/core/browser/field_types.h"
 #include "components/autofill/core/browser/filling/filling_product.h"
@@ -22,6 +21,29 @@
 #include "components/autofill/core/common/unique_ids.h"
 
 namespace autofill {
+
+bool ShouldRecordFillingHistory(FillingProduct filling_product) {
+  switch (filling_product) {
+    case FillingProduct::kAddress:
+    case FillingProduct::kAutofillAi:
+    case FillingProduct::kCreditCard:
+    case FillingProduct::kLoyaltyCard:
+    case FillingProduct::kOneTimePassword:
+      return true;
+    case FillingProduct::kNone:
+    case FillingProduct::kMerchantPromoCode:
+    case FillingProduct::kIban:
+    case FillingProduct::kAutocomplete:
+    case FillingProduct::kPasskey:
+    case FillingProduct::kPassword:
+    case FillingProduct::kCompose:
+    case FillingProduct::kIdentityCredential:
+    case FillingProduct::kDataList:
+    case FillingProduct::kAtMemory:
+      return false;
+  }
+  NOTREACHED();
+}
 
 FormAutofillHistory::FieldFillingEntry::FieldFillingEntry(
     std::u16string field_value,
@@ -54,8 +76,7 @@ FormAutofillHistory::FormAutofillHistory() = default;
 FormAutofillHistory::~FormAutofillHistory() = default;
 
 void FormAutofillHistory::AddFormFillingEntry(
-    base::span<const FormFieldData* const> filled_fields,
-    base::span<const AutofillField* const> filled_autofill_fields,
+    base::span<const AutofillField* const> filled_fields,
     FillingProduct filling_product,
     bool is_refill) {
   // Intuitively, `if (!is_refill) history_.emplace_front()` suffices, but it
@@ -67,8 +88,7 @@ void FormAutofillHistory::AddFormFillingEntry(
     history_.emplace_front();
   }
 
-  for (const auto [field, autofill_field] :
-       base::zip(filled_fields, filled_autofill_fields)) {
+  for (const AutofillField* field : filled_fields) {
     // During refills, a field that was previously filled in the original
     // fill operation, with initial value `A` and filled value `B`, might be
     // refilled with a newer value `C`. We do not store this so that upon
@@ -81,11 +101,9 @@ void FormAutofillHistory::AddFormFillingEntry(
                 FieldFillingEntry(
                     field->value(),
                     field->is_autofilled_according_to_renderer(),
-                    autofill_field->field_modifiers(
-                        base::PassKey<FormAutofillHistory>()),
-                    autofill_field->autofill_source_profile_guid(),
-                    autofill_field->autofilled_type(),
-                    autofill_field->filling_product(),
+                    field->field_modifiers(/*pass_key=*/{}),
+                    field->autofill_source_profile_guid(),
+                    field->autofilled_type(), field->filling_product(),
                     // `FormAutofillHistory::AddFormFillingEntry` only gets
                     // fields that were autofilled. In case a field has an
                     // empty value, this means Autofill intentionally

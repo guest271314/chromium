@@ -5,7 +5,9 @@
 package org.chromium.chrome.browser.toolbar.signin_button;
 
 import static androidx.test.espresso.Espresso.onView;
+import static androidx.test.espresso.Espresso.pressBack;
 import static androidx.test.espresso.action.ViewActions.click;
+import static androidx.test.espresso.assertion.ViewAssertions.doesNotExist;
 import static androidx.test.espresso.assertion.ViewAssertions.matches;
 import static androidx.test.espresso.matcher.ViewMatchers.isDisplayed;
 import static androidx.test.espresso.matcher.ViewMatchers.isEnabled;
@@ -14,74 +16,82 @@ import static androidx.test.espresso.matcher.ViewMatchers.withId;
 import static androidx.test.espresso.matcher.ViewMatchers.withText;
 
 import static org.hamcrest.Matchers.allOf;
-import static org.hamcrest.Matchers.anyOf;
 import static org.hamcrest.Matchers.not;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertNotNull;
-
-import static org.chromium.chrome.browser.url_constants.UrlConstantResolver.getOriginalNativeNtpUrl;
+import static org.junit.Assert.assertTrue;
 
 import android.app.Activity;
 import android.content.res.ColorStateList;
+import android.graphics.Rect;
 
 import androidx.test.filters.MediumTest;
-import androidx.test.platform.app.InstrumentationRegistry;
 
 import org.junit.After;
-import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
+import org.chromium.base.DeviceInfo;
 import org.chromium.base.ThreadUtils;
-import org.chromium.base.test.util.ApplicationTestUtils;
+import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.CommandLineFlags;
-import org.chromium.base.test.util.DoNotBatch;
 import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.base.test.util.Features.EnableFeatures;
+import org.chromium.base.test.util.RequiresRestart;
 import org.chromium.base.test.util.Restriction;
 import org.chromium.chrome.R;
+import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
+import org.chromium.chrome.browser.multiwindow.MultiWindowUtils;
 import org.chromium.chrome.browser.preferences.Pref;
 import org.chromium.chrome.browser.profiles.ProfileManager;
-import org.chromium.chrome.browser.settings.SettingsActivity;
-import org.chromium.chrome.browser.signin.SigninAndHistorySyncActivity;
+import org.chromium.chrome.browser.settings.MainSettings;
 import org.chromium.chrome.browser.sync.FakeSyncServiceImpl;
 import org.chromium.chrome.browser.sync.SyncServiceFactory;
+import org.chromium.chrome.browser.tabmodel.IncognitoTabHostUtils;
 import org.chromium.chrome.browser.ui.desktop_windowing.AppHeaderUtils;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
+import org.chromium.chrome.test.transit.AutoResetCtaTransitTestRule;
 import org.chromium.chrome.test.transit.ChromeTransitTestRules;
-import org.chromium.chrome.test.transit.FreshCtaTransitTestRule;
+import org.chromium.chrome.test.transit.ntp.IncognitoNewTabPageStation;
 import org.chromium.chrome.test.transit.ntp.RegularNewTabPageStation;
 import org.chromium.chrome.test.transit.page.WebPageStation;
-import org.chromium.chrome.test.util.ActivityTestUtils;
+import org.chromium.chrome.test.transit.signin.SignedOutAccountMenuFacility;
+import org.chromium.chrome.test.util.ChromeTabUtils;
 import org.chromium.chrome.test.util.NewTabPageTestUtils;
 import org.chromium.chrome.test.util.OmniboxTestUtils;
+import org.chromium.chrome.test.util.SettingsTestUtils;
 import org.chromium.chrome.test.util.browser.signin.SigninTestRule;
+import org.chromium.components.embedder_support.util.UrlConstants;
+import org.chromium.components.prefs.PrefService;
 import org.chromium.components.signin.SigninFeatures;
 import org.chromium.components.signin.test.util.TestAccounts;
 import org.chromium.components.user_prefs.UserPrefs;
-import org.chromium.content_public.common.ContentUrlConstants;
 import org.chromium.ui.base.DeviceFormFactor;
+import org.chromium.ui.listmenu.ListMenuButton;
+import org.chromium.ui.modaldialog.DialogDismissalCause;
 import org.chromium.ui.test.util.GmsCoreVersionRestriction;
 import org.chromium.ui.test.util.ViewUtils;
-import org.chromium.ui.widget.ChromeImageButton;
 
 /** Integration tests for {@link SigninButtonCoordinator}. */
 @RunWith(ChromeJUnit4ClassRunner.class)
-@DoNotBatch(reason = "This test relies on native initialization")
+@Batch(Batch.PER_CLASS)
 @CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
 @EnableFeatures({SigninFeatures.SIGNIN_LEVEL_UP_BUTTON, SigninFeatures.PROFILE_DISC_ON_ALL_PAGES})
+@DisableFeatures(ChromeFeatureList.USE_WEB_UI_NTP_ANDROID) // crbug.com/555414915
 public class SigninButtonCoordinatorTest {
-
-    @Rule(order = 1)
-    public final FreshCtaTransitTestRule mActivityTestRule =
-            ChromeTransitTestRules.freshChromeTabbedActivityRule();
 
     // Mock sign-in environment needs to be destroyed after ChromeTabbedActivity in case there are
     // observers registered in the AccountManagerFacade mock.
     @Rule(order = 0)
-    public final SigninTestRule mSigninTestRule = new SigninTestRule();
+    public final SigninTestRule mSigninTestRule = SigninTestRule.createWithCleanups();
+
+    @Rule(order = 1)
+    public final AutoResetCtaTransitTestRule mActivityTestRule =
+            ChromeTransitTestRules.fastAutoResetCtaActivityRule();
 
     private FakeSyncServiceImpl mFakeSyncServiceImpl;
 
@@ -89,32 +99,33 @@ public class SigninButtonCoordinatorTest {
 
     private String mContentDescriptionWithNameAndEmail;
 
-    @Before
-    public void setUp() {
-        mPage = mActivityTestRule.startOnNtp();
-        NewTabPageTestUtils.waitForNtpLoaded(mPage.getTab());
-        mContentDescriptionWithNameAndEmail =
-                mActivityTestRule
-                        .getActivity()
-                        .getString(
-                                R.string
-                                        .accessibility_toolbar_btn_identity_disc_with_name_and_email,
-                                TestAccounts.ACCOUNT1.getFullName(),
-                                TestAccounts.ACCOUNT1.getEmail());
-    }
-
     @After
     public void tearDown() {
-        if (mFakeSyncServiceImpl != null) {
-            mFakeSyncServiceImpl = null;
-            SyncServiceFactory.setInstanceForTesting(null);
-        }
-        setSigninAllowed(true);
+        mFakeSyncServiceImpl = null;
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    if (mActivityTestRule.getActivity() != null) {
+                        mActivityTestRule.getActivity().onTopResumedActivityChanged(true);
+                    }
+                    PrefService prefService =
+                            UserPrefs.get(ProfileManager.getLastUsedRegularProfile());
+                    prefService.clearPref(Pref.SIGNIN_ALLOWED);
+                    IncognitoTabHostUtils.closeAllIncognitoTabs();
+                    if (mActivityTestRule.getActivity() != null) {
+                        var modalDialogManager =
+                                mActivityTestRule.getActivity().getModalDialogManager();
+                        if (modalDialogManager != null) {
+                            modalDialogManager.dismissAllDialogs(DialogDismissalCause.UNKNOWN);
+                        }
+                    }
+                });
     }
 
     @Test
     @MediumTest
     public void testSigninButtonVisibleOnNtp() {
+        startActivityOnNtp();
+
         // Button to sign-in should be visible on NTP.
         verifySignedOutButtonVisible();
     }
@@ -122,6 +133,8 @@ public class SigninButtonCoordinatorTest {
     @Test
     @MediumTest
     public void testSigninButton_DisabledSignin_ShowsAvatar() {
+        startActivityOnNtp();
+
         setSigninAllowed(false);
 
         // Should show signed-out avatar instead of text button.
@@ -145,6 +158,8 @@ public class SigninButtonCoordinatorTest {
     // UserActionableError.NEEDS_UPM_BACKEND_UPGRADE.
     @Restriction(GmsCoreVersionRestriction.RESTRICTION_TYPE_VERSION_GE_24W15)
     public void testSignIn_ShowsPersonalizedIdentityDisc() {
+        startActivityOnNtp();
+
         // Initially shows sign-in button.
         verifySignedOutButtonVisible();
 
@@ -165,6 +180,8 @@ public class SigninButtonCoordinatorTest {
     // UserActionableError.NEEDS_UPM_BACKEND_UPGRADE.
     @Restriction(GmsCoreVersionRestriction.RESTRICTION_TYPE_VERSION_GE_24W15)
     public void testSignIn_ShowsPersonalizedIdentityDiscNonDisplayableEmail() {
+        startActivityOnNtp();
+
         // Initially shows sign-in button.
         verifySignedOutButtonVisible();
 
@@ -192,6 +209,8 @@ public class SigninButtonCoordinatorTest {
     // UserActionableError.NEEDS_UPM_BACKEND_UPGRADE.
     @Restriction(GmsCoreVersionRestriction.RESTRICTION_TYPE_VERSION_GE_24W15)
     public void testSignIn_ShowsPersonalizedIdentityDiscNoName() {
+        startActivityOnNtp();
+
         // Initially shows sign-in button.
         verifySignedOutButtonVisible();
 
@@ -221,6 +240,8 @@ public class SigninButtonCoordinatorTest {
     // UserActionableError.NEEDS_UPM_BACKEND_UPGRADE.
     @Restriction(GmsCoreVersionRestriction.RESTRICTION_TYPE_VERSION_GE_24W15)
     public void testSignOut_ShowsSigninTextButton() {
+        startActivityOnNtp();
+
         mSigninTestRule.addAccountThenSignin(TestAccounts.ACCOUNT1);
 
         // Initially shows the user's avatar with a personalized description.
@@ -238,6 +259,7 @@ public class SigninButtonCoordinatorTest {
 
     @Test
     @MediumTest
+    @RequiresRestart("Injects mock SyncService before the Activity launches")
     // Specifies the test to run only with the GMS Core version greater than or equal to 24w15 which
     // is the min version that supports split stores UPM backend, to avoid
     // UserActionableError.NEEDS_UPM_BACKEND_UPGRADE.
@@ -248,10 +270,8 @@ public class SigninButtonCoordinatorTest {
                     mFakeSyncServiceImpl = new FakeSyncServiceImpl();
                     SyncServiceFactory.setInstanceForTesting(mFakeSyncServiceImpl);
                 });
-
-        // SigninButton may have already been initialized with a real SyncService. As such,
-        // recreating the activity in order to ensure the fake SyncService override is used.
         mActivityTestRule.recreateActivity();
+        startActivityOnNtp();
 
         // Test initial state with no error.
         mSigninTestRule.addAccountThenSignin(TestAccounts.ACCOUNT1);
@@ -289,6 +309,7 @@ public class SigninButtonCoordinatorTest {
 
     @Test
     @MediumTest
+    @RequiresRestart("Injects null SyncService before the Activity launches")
     // Specifies the test to run only with the GMS Core version greater than or equal to 24w15 which
     // is the min version that supports split stores UPM backend, to avoid
     // UserActionableError.NEEDS_UPM_BACKEND_UPGRADE.
@@ -298,10 +319,8 @@ public class SigninButtonCoordinatorTest {
                 () -> {
                     SyncServiceFactory.setInstanceForTesting(null);
                 });
-
-        // SigninButton may have already been initialized with a real SyncService. As such,
-        // recreating the activity in order to ensure the null SyncService override is used.
         mActivityTestRule.recreateActivity();
+        startActivityOnNtp();
 
         mSigninTestRule.addAccountThenSignin(TestAccounts.ACCOUNT1);
 
@@ -317,105 +336,116 @@ public class SigninButtonCoordinatorTest {
     @MediumTest
     @Restriction(DeviceFormFactor.PHONE)
     public void testSigninButtonHiddenOnNavigationOnPhone() {
+        startActivityOnNtp();
+
         // Initially visible on NTP.
-        ViewUtils.waitForVisibleView(withId(R.id.signin_button));
+        mPage.signinButtonElement.checkPresent();
 
         // Should be hidden on navigation away from NTP.
-        WebPageStation aboutBlank =
-                mPage.loadWebPageProgrammatically(ContentUrlConstants.ABOUT_BLANK_DISPLAY_URL);
+        WebPageStation aboutBlank = mPage.loadAboutBlank();
 
-        onView(withId(R.id.signin_button)).check(matches(not(isDisplayed())));
+        aboutBlank.signinButtonElement.checkAbsent();
 
         // Should be visible again when navigating back to NTP.
-        aboutBlank.loadPageProgrammatically(
-                getOriginalNativeNtpUrl(), RegularNewTabPageStation.newBuilder());
-        ViewUtils.waitForVisibleView(withId(R.id.signin_button));
+        RegularNewTabPageStation ntp = aboutBlank.loadNtp();
+        ntp.signinButtonElement.checkPresent();
     }
 
     @Test
     @MediumTest
     @Restriction(DeviceFormFactor.TABLET_OR_DESKTOP)
     public void testSigninButtonShownOnNavigationOnTablet() {
+        startActivityOnNtp();
+
         // Initially visible on NTP.
-        ViewUtils.waitForVisibleView(withId(R.id.signin_button));
+        mPage.signinButtonElement.checkPresent();
 
         // Should still be visible on navigation away from NTP.
-        mPage.loadWebPageProgrammatically(ContentUrlConstants.ABOUT_BLANK_DISPLAY_URL);
+        WebPageStation aboutBlank = mPage.loadAboutBlank();
 
-        ViewUtils.waitForVisibleView(withId(R.id.signin_button));
+        aboutBlank.signinButtonElement.checkPresent();
     }
 
     @Test
     @MediumTest
     @DisableFeatures(SigninFeatures.PROFILE_DISC_ON_ALL_PAGES)
     public void testSigninButtonHiddenOnNavigation() {
+        startActivityOnNtp();
+
         // Initially visible on NTP.
-        ViewUtils.waitForVisibleView(withId(R.id.signin_button));
+        mPage.signinButtonElement.checkPresent();
 
         // Should be hidden on navigation away from NTP.
-        mPage.loadWebPageProgrammatically(ContentUrlConstants.ABOUT_BLANK_DISPLAY_URL);
+        WebPageStation aboutBlank = mPage.loadAboutBlank();
 
-        onView(withId(R.id.signin_button)).check(matches(not(isDisplayed())));
+        aboutBlank.signinButtonElement.checkAbsent();
     }
 
     @Test
     @MediumTest
-    // TODO(crbug.com/496912352): Not including Brya as inconsistent test state causes flakiness.
-    @Restriction(DeviceFormFactor.PHONE_OR_TABLET)
+    @DisableFeatures(SigninFeatures.PROFILE_DISC_ON_ALL_PAGES)
+    public void testSigninButton_InflatesAndShowsWhenNavigatingToNtp() {
+        // Start on a non-NTP page so button should not be inflated.
+        WebPageStation blankPage = mActivityTestRule.startOnBlankPage();
+        onView(withId(R.id.signin_button)).check(doesNotExist());
+
+        // Navigate to the NTP. This triggers updateButtonVisibility -> inflation.
+        RegularNewTabPageStation ntp = blankPage.loadNtp();
+
+        ntp.signinButtonElement.checkPresent();
+    }
+
+    @Test
+    @MediumTest
     public void testSigninButtonHiddenOnIncognitoNtp() {
+        startActivityOnNtp();
+
         // Initially visible on NTP.
-        ViewUtils.waitForVisibleView(withId(R.id.signin_button));
+        mPage.signinButtonElement.checkPresent();
 
-        mPage.openNewIncognitoTabOrWindowFast();
+        IncognitoNewTabPageStation incognitoNtp = mPage.openNewIncognitoTabOrWindowFast();
 
-        // Signin button should not be visible on incognito NTP.
-        // It may not be inflated yet in the new incognito tab, so we check for both the
-        // inflated view and its stub.
-        onView(anyOf(withId(R.id.signin_button), withId(R.id.signin_button_stub)))
-                .check(matches(not(isDisplayed())));
+        // Signin button should not be visible on incognito NTP. It may not be inflated yet in the
+        // new incognito tab, which also counts as absent.
+        incognitoNtp.signinButtonElement.checkAbsent();
     }
 
     @Test
     @MediumTest
-    @EnableFeatures(SigninFeatures.ENABLE_SEAMLESS_SIGNIN)
+    // TODO(crbug.com/551756560): Once SIGNIN_BUTTON_PROFILE_MENU is launched, restrict
+    // this test by form factor instead of disabling the flag.
+    @DisableFeatures(SigninFeatures.SIGNIN_BUTTON_PROFILE_MENU)
     public void testClickSigninButton_SignedOut() {
-        ViewUtils.waitForVisibleView(withId(R.id.signin_button));
+        startActivityOnNtp();
+
+        mPage.signinButtonElement.checkPresent();
 
         // Clicking the sign-in button should lead to the sign-in bottom sheet.
         onView(withId(R.id.signin_button)).perform(click());
-        ViewUtils.waitForVisibleView(withText(R.string.signin_account_picker_bottom_sheet_title));
+        ViewUtils.waitForVisibleView(
+                allOf(
+                        withId(R.id.account_picker_header_title),
+                        withText(R.string.signin_account_picker_bottom_sheet_title)));
+        pressBack();
     }
 
     @Test
     @MediumTest
-    @DisableFeatures(SigninFeatures.ENABLE_SEAMLESS_SIGNIN)
-    public void testClickSigninButton_SignedOut_SeamlessSigninDisabled() {
-        ViewUtils.waitForVisibleView(withId(R.id.signin_button));
-
-        // Clicking the signed-out button should lead to the sign-in activity.
-        Activity signinActivity =
-                ActivityTestUtils.waitForActivity(
-                        InstrumentationRegistry.getInstrumentation(),
-                        SigninAndHistorySyncActivity.class,
-                        () -> onView(withId(R.id.signin_button)).perform(click()));
-        assertNotNull("Signin activity should not be null.", signinActivity);
-        ViewUtils.waitForVisibleView(withText(R.string.signin_account_picker_bottom_sheet_title));
-        ApplicationTestUtils.finishActivity(signinActivity);
-    }
-
-    @Test
-    @MediumTest
+    // TODO(crbug.com/551756560): Once SIGNIN_BUTTON_PROFILE_MENU is launched, restrict
+    // this test by form factor instead of disabling the flag.
+    @DisableFeatures(SigninFeatures.SIGNIN_BUTTON_PROFILE_MENU)
     public void testClickSigninButton_SignedOut_SigninDisabled() {
+        startActivityOnNtp();
+
         setSigninAllowed(false);
-        ViewUtils.waitForVisibleView(withId(R.id.signin_button));
+        mPage.signinButtonElement.checkPresent();
 
         // Clicking the avatar should lead to the settings screen when signin is disabled.
-        Activity settingsActivity =
-                ActivityTestUtils.waitForActivity(
-                        InstrumentationRegistry.getInstrumentation(),
-                        SettingsActivity.class,
-                        () -> onView(withId(R.id.signin_button)).perform(click()));
-        ApplicationTestUtils.finishActivity(settingsActivity);
+        Activity settingsHost =
+                SettingsTestUtils.waitForSettingsFragment(
+                        () -> onView(withId(R.id.signin_button)).perform(click()),
+                        MainSettings.class);
+        SettingsTestUtils.closeSettings(settingsHost);
     }
 
     @Test
@@ -424,7 +454,12 @@ public class SigninButtonCoordinatorTest {
     // is the min version that supports split stores UPM backend, to avoid
     // UserActionableError.NEEDS_UPM_BACKEND_UPGRADE.
     @Restriction(GmsCoreVersionRestriction.RESTRICTION_TYPE_VERSION_GE_24W15)
+    // TODO(crbug.com/551756560): Once SIGNIN_BUTTON_PROFILE_MENU is launched, restrict
+    // this test by form factor instead of disabling the flag.
+    @DisableFeatures(SigninFeatures.SIGNIN_BUTTON_PROFILE_MENU)
     public void testClickSigninButton_SignedIn() {
+        startActivityOnNtp();
+
         mSigninTestRule.addAccountThenSignin(TestAccounts.ACCOUNT1);
         ViewUtils.waitForVisibleView(
                 allOf(
@@ -433,40 +468,78 @@ public class SigninButtonCoordinatorTest {
                         withContentDescription(mContentDescriptionWithNameAndEmail)));
 
         // Clicking the signed-in avatar should lead to the settings screen.
-        Activity settingsActivity =
-                ActivityTestUtils.waitForActivity(
-                        InstrumentationRegistry.getInstrumentation(),
-                        SettingsActivity.class,
-                        () -> onView(withId(R.id.signin_button)).perform(click()));
-        ApplicationTestUtils.finishActivity(settingsActivity);
+        Activity settingsHost =
+                SettingsTestUtils.waitForSettingsFragment(
+                        () -> onView(withId(R.id.signin_button)).perform(click()),
+                        MainSettings.class);
+        SettingsTestUtils.closeSettings(settingsHost);
+    }
+
+    @Test
+    @MediumTest
+    @Restriction(DeviceFormFactor.TABLET_OR_DESKTOP)
+    public void testClickSigninButton_ClearsUrlFocus() {
+        startActivityOnNtp();
+
+        // Initially visible on NTP.
+        mPage.signinButtonElement.checkPresent();
+
+        // Focus the URL bar.
+        OmniboxTestUtils omniboxTestUtils = new OmniboxTestUtils(mActivityTestRule.getActivity());
+        omniboxTestUtils.requestFocus();
+
+        // Signin button should still be visible on tablet.
+        mPage.signinButtonElement.checkPresent();
+
+        if (SigninButtonMediator.isAccountMenuEnabled()) {
+            // Clicking the sign-in button opens the account menu.
+            SignedOutAccountMenuFacility accountMenu = mPage.openSignedOutAccountMenu();
+
+            // The URL bar should lose focus.
+            omniboxTestUtils.checkFocus(false);
+
+            // Close the account menu so it doesn't leak into the next test in the batch.
+            accountMenu.dismissViaBack();
+        } else {
+            // Clicking the sign-in button starts the sign-in flow, which tearDown() dismisses.
+            onView(withId(R.id.signin_button)).perform(click());
+
+            // The URL bar should lose focus.
+            omniboxTestUtils.checkFocus(false);
+        }
     }
 
     @Test
     @MediumTest
     @Restriction(DeviceFormFactor.PHONE)
     public void testSigninButtonHiddenOnUrlFocus() {
+        startActivityOnNtp();
+
         // Initially visible on NTP.
-        ViewUtils.waitForVisibleView(withId(R.id.signin_button));
+        mPage.signinButtonElement.checkPresent();
 
         // Focus the URL bar.
         OmniboxTestUtils omniboxTestUtils = new OmniboxTestUtils(mActivityTestRule.getActivity());
         omniboxTestUtils.requestFocus();
 
         // Signin button should be hidden when URL bar is focused.
-        onView(withId(R.id.signin_button)).check(matches(not(isDisplayed())));
+        mPage.signinButtonElement.checkAbsent();
 
         // Clear focus from the URL bar.
         omniboxTestUtils.clearFocus();
 
         // Signin button should be visible again.
-        ViewUtils.waitForVisibleView(withId(R.id.signin_button));
+        mPage.signinButtonElement.checkPresent();
     }
 
     @Test
     @MediumTest
     @Restriction(DeviceFormFactor.DESKTOP_FREEFORM)
     public void testSigninButtonDisabledOnInactiveWindow() {
+        startActivityOnNtp();
+
         AppHeaderUtils.setAppInDesktopWindowForTesting(true);
+        MultiWindowUtils.getInstance().setIsInMultiWindowModeForTesting(true);
         ViewUtils.waitForVisibleView(withId(R.id.avatar_button));
         onView(withId(R.id.avatar_button)).check(matches(isEnabled()));
 
@@ -489,11 +562,14 @@ public class SigninButtonCoordinatorTest {
     @MediumTest
     @Restriction(DeviceFormFactor.DESKTOP_FREEFORM)
     public void testSigninButtonAvatarTintChangesOnInactiveWindow() {
+        startActivityOnNtp();
+
         AppHeaderUtils.setAppInDesktopWindowForTesting(true);
+        MultiWindowUtils.getInstance().setIsInMultiWindowModeForTesting(true);
         setSigninAllowed(false);
         ViewUtils.waitForVisibleView(withId(R.id.avatar_button));
 
-        ChromeImageButton avatarButton =
+        ListMenuButton avatarButton =
                 mActivityTestRule.getActivity().findViewById(R.id.avatar_button);
         ColorStateList focusedTint = avatarButton.getImageTintList();
         assertNotNull(focusedTint);
@@ -505,23 +581,130 @@ public class SigninButtonCoordinatorTest {
         ColorStateList unfocusedTint = avatarButton.getImageTintList();
         assertNotNull(unfocusedTint);
         assertNotEquals("Tint should change when window is inactive", focusedTint, unfocusedTint);
+
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    mActivityTestRule.getActivity().onTopResumedActivityChanged(true);
+                });
+    }
+
+    @Test
+    @MediumTest
+    @Restriction(DeviceFormFactor.DESKTOP)
+    @EnableFeatures(SigninFeatures.SIGNIN_BUTTON_PROFILE_MENU)
+    public void testClickSigninButton_DesktopOpensAccountMenu() {
+        DeviceInfo.setIsDesktopForTesting(true);
+        startActivityOnNtp();
+
+        AppHeaderUtils.setAppInDesktopWindowForTesting(true);
+        mPage.signinButtonElement.checkPresent();
+
+        ListMenuButton avatarButton =
+                mActivityTestRule.getActivity().findViewById(R.id.avatar_button);
+        assertFalse(avatarButton.isPressed());
+
+        // Clicking the sign-in button opens the account menu popup.
+        SignedOutAccountMenuFacility accountMenu = mPage.openSignedOutAccountMenu();
+        assertTrue(avatarButton.isPressed());
+
+        accountMenu.dismissViaBack();
+    }
+
+    @Test
+    @MediumTest
+    @Restriction(DeviceFormFactor.DESKTOP)
+    @EnableFeatures({
+        SigninFeatures.SIGNIN_BUTTON_PROFILE_MENU,
+        SigninFeatures.SIGNIN_BUTTON_PROFILE_MENU_REFINEMENTS
+    })
+    public void testClickSigninButton_managedAccount_opensManagementPage() {
+        DeviceInfo.setIsDesktopForTesting(true);
+        startActivityOnNtp();
+
+        AppHeaderUtils.setAppInDesktopWindowForTesting(true);
+        mSigninTestRule.addAccountThenSignin(TestAccounts.MANAGED_ACCOUNT);
+
+        ViewUtils.waitForVisibleView(withId(R.id.signin_button));
+
+        onView(withId(R.id.signin_button)).perform(click());
+
+        ViewUtils.waitForVisibleView(withId(R.id.account_menu_container));
+        ViewUtils.waitForVisibleView(withId(R.id.account_menu_managed_header));
+
+        onView(withId(R.id.account_menu_managed_header)).perform(click());
+
+        ChromeTabUtils.waitForTabPageLoaded(
+                mActivityTestRule.getActivityTab(), UrlConstants.MANAGEMENT_URL);
+    }
+
+    @Test
+    @MediumTest
+    @Restriction(DeviceFormFactor.PHONE)
+    public void testAvatarButtonTouchTargetOnPhone() {
+        startActivityOnNtp();
+        verifySignedOutButtonVisible();
+
+        int expectedWidth =
+                mActivityTestRule
+                        .getActivity()
+                        .getResources()
+                        .getDimensionPixelSize(R.dimen.signin_button_width);
+        assertEquals(
+                "On phones the signin button keeps the identity disc's wider touch target",
+                expectedWidth,
+                getAvatarButtonHitRect().width());
+    }
+
+    @Test
+    @MediumTest
+    @Restriction(DeviceFormFactor.TABLET_OR_DESKTOP)
+    public void testAvatarButtonTouchTargetOnTablet() {
+        startActivityOnNtp();
+        verifySignedOutButtonVisible();
+
+        int expectedWidth =
+                mActivityTestRule
+                        .getActivity()
+                        .getResources()
+                        .getDimensionPixelSize(R.dimen.toolbar_button_width);
+        assertEquals(
+                "On tablets the signin button matches other toolbar buttons' touch target width",
+                expectedWidth,
+                getAvatarButtonHitRect().width());
+    }
+
+    private void startActivityOnNtp() {
+        mPage = mActivityTestRule.startOnNtp();
+        NewTabPageTestUtils.waitForNtpLoaded(mPage.getTab());
+        mContentDescriptionWithNameAndEmail =
+                mActivityTestRule
+                        .getActivity()
+                        .getString(
+                                R.string
+                                        .accessibility_toolbar_btn_identity_disc_with_name_and_email,
+                                TestAccounts.ACCOUNT1.getFullName(),
+                                TestAccounts.ACCOUNT1.getEmail());
     }
 
     private void verifySignedOutButtonVisible() {
-        if (DeviceFormFactor.isNonMultiDisplayContextOnTablet(mActivityTestRule.getActivity())) {
-            ViewUtils.waitForVisibleView(
-                    allOf(
-                            withId(R.id.avatar_button),
-                            isDisplayed(),
-                            withContentDescription(
-                                    R.string.accessibility_toolbar_btn_signed_out_identity_disc)));
-        } else {
-            ViewUtils.waitForVisibleView(
-                    allOf(
-                            withId(R.id.signin_text_button),
-                            isDisplayed(),
-                            withText(R.string.signin_promo_sign_in)));
-        }
+        ViewUtils.waitForVisibleView(
+                allOf(
+                        withId(R.id.avatar_button),
+                        isDisplayed(),
+                        withContentDescription(
+                                R.string.accessibility_toolbar_btn_signed_out_identity_disc)));
+    }
+
+    private Rect getAvatarButtonHitRect() {
+        return ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    ListMenuButton avatarButton =
+                            mActivityTestRule.getActivity().findViewById(R.id.avatar_button);
+                    assertNotNull(avatarButton);
+                    Rect hitRect = new Rect();
+                    avatarButton.getHitRect(hitRect);
+                    return hitRect;
+                });
     }
 
     private void setSigninAllowed(boolean allowed) {

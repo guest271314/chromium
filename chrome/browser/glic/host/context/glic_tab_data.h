@@ -14,10 +14,11 @@
 #include "base/functional/callback_forward.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/scoped_refptr.h"
+#include "base/memory/weak_ptr.h"
 #include "base/scoped_observation.h"
 #include "base/timer/timer.h"
 #include "base/types/expected.h"
-#include "chrome/browser/glic/host/glic.mojom.h"
+#include "chrome/browser/glic/host/glic.mojom-forward.h"
 #include "components/favicon/core/favicon_driver_observer.h"
 #include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/web_contents.h"
@@ -47,9 +48,7 @@ enum class TabDataChangeCause : uint32_t {
 
   kMaxValue = kTabChanged,
 };
-using TabDataChangeCauseSet = base::EnumSet<TabDataChangeCause,
-                                            TabDataChangeCause::kMinValue,
-                                            TabDataChangeCause::kMaxValue>;
+using TabDataChangeCauseSet = base::EnumSet<TabDataChangeCause>;
 
 std::ostream& operator<<(std::ostream& os, const TabDataChangeCause& cause);
 
@@ -134,7 +133,7 @@ class TabDataObserver : public content::WebContentsObserver
   // Subscription to TabInterface detach callback.
   base::CallbackListSubscription tab_detach_subscription_;
 
-  raw_ptr<tabs::TabInterface> tab_ = nullptr;
+  base::WeakPtr<tabs::TabInterface> tab_;
 };
 
 // Either a focused tab, or an error string.
@@ -151,7 +150,7 @@ class FocusedTabData {
   FocusedTabData(const FocusedTabData& src) = delete;
   FocusedTabData& operator=(const FocusedTabData& src) = delete;
   bool is_focus() const {
-    return std::holds_alternative<tabs::TabInterface*>(data_);
+    return std::holds_alternative<raw_ptr<tabs::TabInterface>>(data_);
   }
 
   // Returns the focused tab or nullptr.
@@ -165,7 +164,7 @@ class FocusedTabData {
   tabs::TabInterface* unfocused_tab() const { return unfocused_tab_.get(); }
 
  private:
-  std::variant<tabs::TabInterface*, std::string> data_;
+  std::variant<raw_ptr<tabs::TabInterface>, std::string> data_;
 
   // Only see if `data_` is string variant.
   raw_ptr<tabs::TabInterface> unfocused_tab_;

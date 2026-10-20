@@ -4,7 +4,6 @@
 
 package org.chromium.chrome.browser.firstrun;
 
-import static org.mockito.Mockito.when;
 import static org.robolectric.Shadows.shadowOf;
 
 import android.app.Activity;
@@ -33,10 +32,7 @@ import org.robolectric.android.controller.ActivityController;
 import org.robolectric.annotation.Config;
 import org.robolectric.shadows.ShadowApplication;
 
-import org.chromium.base.FeatureList;
-import org.chromium.base.FeatureListJni;
 import org.chromium.base.FeatureOverrides;
-import org.chromium.base.library_loader.LibraryLoader;
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.RobolectricUtil;
 import org.chromium.base.test.util.Features;
@@ -60,16 +56,12 @@ import java.util.List;
 
 /** JUnit tests for first run triggering code. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 public final class FirstRunIntegrationUnitTest {
 
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
 
     @Mock private ChromeBrowserInitializer mChromeBrowserInitializer;
-    @Mock private FeatureList.Natives mFeatureListNatives;
-    @Mock private LibraryLoader mLibraryLoader;
 
-    private static final String BROWSER_WINDOW_INTERFACE_MOBILE = "BrowserWindowInterfaceMobile";
     private final List<ActivityController> mActivityControllerList = new ArrayList<>();
 
     private Context mContext;
@@ -82,13 +74,6 @@ public final class FirstRunIntegrationUnitTest {
 
         ChromeBrowserInitializer.setForTesting(mChromeBrowserInitializer);
 
-        // Library and Feature flags mocks.
-        FeatureListJni.setInstanceForTesting(mFeatureListNatives);
-        when(mFeatureListNatives.isInitialized()).thenReturn(true);
-        LibraryLoader.setLibraryLoaderForTesting(mLibraryLoader);
-        when(mLibraryLoader.isInitialized()).thenReturn(true);
-
-        FeatureOverrides.newBuilder().enable(BROWSER_WINDOW_INTERFACE_MOBILE).apply();
         FeatureOverrides.newBuilder()
                 .enable(UiAndroidFeatures.ANDROID_UPDATE_DISPLAY_FOR_CONTEXT)
                 .apply();
@@ -322,9 +307,8 @@ public final class FirstRunIntegrationUnitTest {
     }
 
     @Test
-    @Config(qualifiers = "large")
-    @Features.DisableFeatures({ChromeFeatureList.EDGE_TO_EDGE_EVERYWHERE})
-    public void testFirstRunActivityScreenLayoutLarge() {
+    @Config(sdk = 29, qualifiers = "large")
+    public void testFirstRunActivityScreenLayoutLarge_Legacy() {
         Activity firstRunActivity = createActivity(FirstRunActivity.class, new Intent());
         Assert.assertEquals(Color.BLACK, firstRunActivity.getWindow().getStatusBarColor());
     }
@@ -390,5 +374,16 @@ public final class FirstRunIntegrationUnitTest {
         Assert.assertTrue(
                 "Bundle should contain the completion key",
                 outState.containsKey("HISTORY_SYNC_STEP_COMPLETED"));
+    }
+
+    @Test
+    public void testExitFirstRunSetsSkipWelcomePage() {
+        FirstRunActivity activity =
+                (FirstRunActivity) createActivity(FirstRunActivity.class, new Intent());
+        Assert.assertFalse(FirstRunStatus.shouldSkipWelcomePage());
+
+        activity.exitFirstRun();
+
+        Assert.assertTrue(FirstRunStatus.shouldSkipWelcomePage());
     }
 }

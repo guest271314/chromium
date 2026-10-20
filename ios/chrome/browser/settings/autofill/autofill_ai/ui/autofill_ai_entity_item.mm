@@ -20,14 +20,15 @@
   return self;
 }
 
-- (void)configureCell:(LegacyTableViewCell*)cell
-           withStyler:(ChromeTableViewStyler*)styler {
-  [super configureCell:cell withStyler:styler];
+- (void)configureCell:(LegacyTableViewCell*)cell {
+  [super configureCell:cell];
 
   TableViewCellContentConfiguration* contentConfiguration =
       [[TableViewCellContentConfiguration alloc] init];
 
   contentConfiguration.title = self.name;
+  contentConfiguration.titleNumberOfLines = 1;
+  contentConfiguration.titleLineBreakMode = NSLineBreakByTruncatingTail;
   contentConfiguration.subtitle = self.typeDescription;
   contentConfiguration.trailingText = self.trailingText;
 

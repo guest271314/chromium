@@ -5,12 +5,9 @@
 #ifndef COMPONENTS_AUTOFILL_CORE_BROWSER_UI_MOCK_AUTOFILL_SUGGESTION_DELEGATE_H_
 #define COMPONENTS_AUTOFILL_CORE_BROWSER_UI_MOCK_AUTOFILL_SUGGESTION_DELEGATE_H_
 
-#include <variant>
-
 #include "base/memory/weak_ptr.h"
 #include "components/autofill/core/browser/suggestions/suggestion_hiding_reason.h"
 #include "components/autofill/core/browser/ui/autofill_suggestion_delegate.h"
-#include "components/autofill/core/browser/ui/suggestion_button_action.h"
 #include "components/autofill/core/browser/ui/tabbed_pane_enums.h"
 #include "testing/gmock/include/gmock/gmock.h"
 
@@ -22,14 +19,9 @@ class MockAutofillSuggestionDelegate : public AutofillSuggestionDelegate {
   MockAutofillSuggestionDelegate();
   ~MockAutofillSuggestionDelegate() override;
 
-  MOCK_METHOD(
-      (std::variant<AutofillDriver*, password_manager::PasswordManagerDriver*>),
-      GetDriver,
-      (),
-      (override));
   MOCK_METHOD(void,
               OnSuggestionsShown,
-              (base::span<const Suggestion>),
+              (base::span<const Suggestion>, const SuggestionUiMetadata&),
               (override));
   MOCK_METHOD(void, OnSuggestionsHidden, (SuggestionHidingReason), (override));
   MOCK_METHOD(bool,
@@ -43,21 +35,22 @@ class MockAutofillSuggestionDelegate : public AutofillSuggestionDelegate {
   MOCK_METHOD(bool, IsSearching, (), (const, override));
   MOCK_METHOD(void,
               DidSelectSuggestion,
-              (const Suggestion& suggestion),
+              (const Suggestion& suggestion,
+               const FormGlobalId& form_id,
+               const FieldGlobalId& field_id),
               (override));
   MOCK_METHOD(void,
               DidAcceptSuggestion,
               (const Suggestion& suggestion,
-               const AutofillSuggestionDelegate::SuggestionMetadata& metadata),
-              (override));
-  MOCK_METHOD(void,
-              DidPerformButtonActionForSuggestion,
-              (const Suggestion&, const SuggestionButtonAction&),
+               const AutofillSuggestionDelegate::SuggestionMetadata& metadata,
+               const FormGlobalId& form_id,
+               const FieldGlobalId& field_id),
               (override));
   MOCK_METHOD(bool, RemoveSuggestion, (const Suggestion&), (override));
   MOCK_METHOD(void, ClearPreviewedForm, (), (override));
-  MOCK_METHOD(FillingProduct, GetMainFillingProduct, (), (const override));
+  MOCK_METHOD(FillingProduct, GetMainFillingProduct, (), (const, override));
   MOCK_METHOD(void, OnTabSelected, (TabbedPaneTabType tab_type), (override));
+  MOCK_METHOD(FieldGlobalId, GetQueriedFieldId, (), (const, override));
 
   base::WeakPtr<MockAutofillSuggestionDelegate> GetWeakPtr();
 

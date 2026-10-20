@@ -12,7 +12,9 @@
 #include "ash/constants/webui_url_constants.h"
 #include "ash/public/cpp/child_accounts/parent_access_controller.h"
 #include "ash/public/cpp/login_screen.h"
+#include "ash/strings/grit/ash_strings.h"
 #include "base/build_time.h"
+#include "base/check_deref.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/scoped_observation.h"
@@ -21,18 +23,23 @@
 #include "chrome/browser/ash/system/timezone_util.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/webui/ash/set_time/set_time_dialog.h"
-#include "chrome/grit/generated_resources.h"
+#include "chrome/browser/ui/webui/theme_source.h"
 #include "chrome/grit/set_time_dialog_resources.h"
 #include "chrome/grit/set_time_dialog_resources_map.h"
 #include "chromeos/ash/components/dbus/system_clock/system_clock_client.h"
 #include "chromeos/ash/components/settings/cros_settings.h"
 #include "chromeos/ash/components/settings/timezone_settings.h"
+#include "components/prefs/pref_service.h"
+#include "components/session_manager/core/session.h"
+#include "components/session_manager/core/session_manager.h"
 #include "components/strings/grit/components_strings.h"
 #include "components/user_manager/user_manager.h"
+#include "content/public/browser/url_data_source.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_ui.h"
 #include "content/public/browser/web_ui_data_source.h"
 #include "content/public/browser/web_ui_message_handler.h"
+#include "content/public/common/url_constants.h"
 #include "services/network/public/mojom/content_security_policy.mojom.h"
 #include "ui/base/webui/web_ui_util.h"
 #include "ui/webui/mojo_web_ui_controller.h"
@@ -46,7 +53,9 @@ class SetTimeMessageHandler : public content::WebUIMessageHandler,
                               public SystemClockClient::Observer,
                               public system::TimezoneSettings::Observer {
  public:
-  SetTimeMessageHandler() : weak_factory_(this) {}
+  // `local_state` must be non-null and must outlive `this`.
+  explicit SetTimeMessageHandler(PrefService* local_state)
+      : local_state_(CHECK_DEREF(local_state)), weak_factory_(this) {}
 
   SetTimeMessageHandler(const SetTimeMessageHandler&) = delete;
   SetTimeMessageHandler& operator=(const SetTimeMessageHandler&) = delete;
@@ -118,8 +127,8 @@ class SetTimeMessageHandler : public content::WebUIMessageHandler,
     std::string timezone_id = args[0].GetString();
 
     Profile* profile = Profile::FromWebUI(web_ui());
-    DCHECK(profile);
-    system::SetTimezoneFromUI(profile, timezone_id);
+    CHECK(profile, base::NotFatalUntil::M162);
+    system::SetTimezoneFromUI(local_state_.get(), profile, timezone_id);
   }
 
   void DoneClicked(const base::ListValue& args) {
@@ -134,7 +143,9 @@ class SetTimeMessageHandler : public content::WebUIMessageHandler,
     bool is_user_logged_in = user_manager::UserManager::Get()->IsUserLoggedIn();
     if (is_user_logged_in) {
       account_id =
-          user_manager::UserManager::Get()->GetActiveUser()->GetAccountId();
+          CHECK_DEREF(
+              session_manager::SessionManager::Get()->GetActiveSession())
+              .account_id();
     }
     ParentAccessController::Get()->ShowWidget(
         account_id,
@@ -150,6 +161,7 @@ class SetTimeMessageHandler : public content::WebUIMessageHandler,
     }
   }
 
+  const raw_ref<PrefService> local_state_;
   base::ScopedObservation<SystemClockClient, SystemClockClient::Observer>
       clock_observation_{this};
   base::ScopedObservation<system::TimezoneSettings,
@@ -160,14 +172,30 @@ class SetTimeMessageHandler : public content::WebUIMessageHandler,
 
 }  // namespace
 
-SetTimeUI::SetTimeUI(content::WebUI* web_ui) : MojoWebDialogUI(web_ui) {
-  web_ui->AddMessageHandler(std::make_unique<SetTimeMessageHandler>());
+SetTimeUIConfig::SetTimeUIConfig(PrefService* local_state)
+    : WebUIConfig(content::kChromeUIScheme, ash::kChromeUISetTimeHost),
+      local_state_(CHECK_DEREF(local_state)) {}
+
+SetTimeUIConfig::~SetTimeUIConfig() = default;
+
+std::unique_ptr<content::WebUIController>
+SetTimeUIConfig::CreateWebUIController(content::WebUI* web_ui,
+                                       const GURL& url) {
+  return std::make_unique<SetTimeUI>(&local_state_.get(), web_ui);
+}
+
+SetTimeUI::SetTimeUI(PrefService* local_state, content::WebUI* web_ui)
+    : MojoWebDialogUI(web_ui) {
+  web_ui->AddMessageHandler(
+      std::make_unique<SetTimeMessageHandler>(local_state));
 
   // Set up the chrome://set-time source.
+  Profile* profile = Profile::FromWebUI(web_ui);
   content::WebUIDataSource* source = content::WebUIDataSource::CreateAndAdd(
-      Profile::FromWebUI(web_ui), ash::kChromeUISetTimeHost);
-  webui::SetJSModuleDefaults(source);
-  webui::EnableTrustedTypesCSP(source);
+      profile, ash::kChromeUISetTimeHost);
+  content::URLDataSource::Add(profile, std::make_unique<ThemeSource>(profile));
+  webui::SetupWebUIDataSource(source, kSetTimeDialogResources,
+                              IDR_SET_TIME_DIALOG_SET_TIME_HTML);
   static constexpr webui::LocalizedString kStrings[] = {
       {"setTimeTitle", IDS_SET_TIME_TITLE},
       {"prompt", IDS_SET_TIME_PROMPT},
@@ -190,9 +218,6 @@ SetTimeUI::SetTimeUI(content::WebUI* web_ui) : MojoWebDialogUI(web_ui) {
   values.Set("buildTime", base::GetBuildTime().InMillisecondsFSinceUnixEpoch());
 
   source->AddLocalizedStrings(values);
-
-  webui::SetupWebUIDataSource(source, kSetTimeDialogResources,
-                              IDR_SET_TIME_DIALOG_SET_TIME_HTML);
 }
 
 SetTimeUI::~SetTimeUI() = default;

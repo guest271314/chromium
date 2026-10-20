@@ -14,8 +14,6 @@
 #include "components/lens/lens_overlay_invocation_source.h"
 #include "components/lens/lens_overlay_mime_type.h"
 #include "components/lens/lens_overlay_non_blocking_privacy_notice_user_action.h"
-#include "components/lens/lens_side_panel_iframe_load_status.h"
-#include "net/base/net_errors.h"
 #include "services/metrics/public/cpp/ukm_builders.h"
 
 namespace lens {
@@ -63,6 +61,20 @@ std::string InvocationSourceToString(
       return "ContextualTasksComposebox";
     case LensOverlayInvocationSource::kCobrowseToolbarButton:
       return "CobrowseToolbarButton";
+    case LensOverlayInvocationSource::kCobrowsePinnedToolbarButton:
+      return "CobrowsePinnedToolbarButton";
+    case LensOverlayInvocationSource::kNtpActionChips:
+      return "NtpActionChips";
+    case LensOverlayInvocationSource::kAppBarAimButton:
+      return "AppBarAimButton";
+    case LensOverlayInvocationSource::kOmniboxEverywhereComposebox:
+      return "OmniboxEverywhereComposebox";
+    case LensOverlayInvocationSource::kOmniboxPopupButton:
+      return "OmniboxPopupButton";
+    case LensOverlayInvocationSource::kContextualCue:
+      return "ContextualCue";
+    case LensOverlayInvocationSource::kSelectionSuggestion:
+      return "SelectionSuggestion";
   }
 }
 
@@ -115,6 +127,11 @@ void RecordPermissionRequestedToBeShown(
   base::UmaHistogramBoolean(histogram_name, shown);
 }
 
+void RecordFirstRunPermissionNoticeToBeShown() {
+  base::UmaHistogramBoolean("Lens.Overlay.FirstRunPermissionNotice.Shown",
+                            true);
+}
+
 void RecordPermissionUserAction(LensPermissionUserAction user_action,
                                 LensOverlayInvocationSource invocation_source) {
   base::UmaHistogramEnumeration("Lens.Overlay.PermissionBubble.UserAction",
@@ -123,6 +140,12 @@ void RecordPermissionUserAction(LensPermissionUserAction user_action,
       "Lens.Overlay.PermissionBubble.ByInvocationSource." +
       InvocationSourceToString(invocation_source) + ".UserAction";
   base::UmaHistogramEnumeration(histogram_name, user_action);
+}
+
+void RecordFirstRunPermissionNoticeUserAction(
+    LensPermissionUserAction user_action) {
+  base::UmaHistogramEnumeration(
+      "Lens.Overlay.FirstRunPermissionNotice.UserAction", user_action);
 }
 
 void RecordNonBlockingPrivacyNoticeToBeShown(
@@ -465,6 +488,7 @@ void RecordTimeToFirstInteraction(
       event.SetOmnibox(time_to_first_interaction.InMilliseconds());
       break;
     case lens::LensOverlayInvocationSource::kOmniboxPageAction:
+    case lens::LensOverlayInvocationSource::kOmniboxPopupButton:
       event.SetOmniboxPageAction(time_to_first_interaction.InMilliseconds());
       break;
     case lens::LensOverlayInvocationSource::kOmniboxContextualSuggestion:
@@ -483,17 +507,24 @@ void RecordTimeToFirstInteraction(
           time_to_first_interaction.InMilliseconds());
       break;
     case lens::LensOverlayInvocationSource::kContentAreaContextMenuVideo:
-      // Not recorded since the video context menu entry point results in a
-      // search without the user having to interact with the overlay. Time to
-      // first interaction in this case is essentially zero.
+    case lens::LensOverlayInvocationSource::kSelectionSuggestion:
+      // Not recorded since the video context menu and selection suggestion
+      // entry points result in a search without the user having to interact
+      // with the overlay. Time to first interaction in this case is essentially
+      // zero.
       break;
     case lens::LensOverlayInvocationSource::kNtpContextualQuery:
+    case lens::LensOverlayInvocationSource::kNtpActionChips:
     case lens::LensOverlayInvocationSource::kOmniboxContextualQuery:
     case lens::LensOverlayInvocationSource::kCobrowseToolbarButton:
+    case lens::LensOverlayInvocationSource::kCobrowsePinnedToolbarButton:
+    case lens::LensOverlayInvocationSource::kAppBarAimButton:
+    case lens::LensOverlayInvocationSource::kContextualCue:
       // Not recorded since the ntp and omnibox contextual query flows and the
       // cobrowse toolbar button flow do not use the Lens Overlay Controller.
       break;
     case LensOverlayInvocationSource::kContextualTasksComposebox:
+    case LensOverlayInvocationSource::kOmniboxEverywhereComposebox:
       // TODO(crbug.com/469460311): Add metrics for Contextual Tasks lens
       // button.
       break;
@@ -537,6 +568,15 @@ void RecordUKMSessionEndMetrics(
       .SetSessionDuration(session_duration.InMilliseconds())
       .SetInvocationDocumentType(static_cast<int64_t>(document_content_type))
       .Record(ukm::UkmRecorder::Get());
+}
+
+void RecordClusterInfoFetchStatus(LensOverlayClusterInfoStatus status) {
+  base::UmaHistogramEnumeration("Lens.Overlay.ClusterInfo.Status", status);
+}
+
+void RecordClusterInfoResponseTime(base::TimeDelta response_time) {
+  base::UmaHistogramTimes("Lens.Overlay.ClusterInfo.ResponseTime",
+                          response_time);
 }
 
 void RecordLensResponseTime(base::TimeDelta response_time) {
@@ -616,34 +656,6 @@ void RecordHandleTextDirectiveResult(
   base::UmaHistogramEnumeration("Lens.Overlay.TextDirectiveResult", result);
 }
 
-void RecordIframeLoadStatus(bool is_error_page, net::Error net_error_code) {
-  lens::IframeLoadStatus status = lens::IframeLoadStatus::kSuccess;
-  if (is_error_page) {
-    switch (net_error_code) {
-      case net::ERR_CONNECTION_REFUSED:
-        status = lens::IframeLoadStatus::kFailedConnectionRefused;
-        break;
-      case net::ERR_CONNECTION_RESET:
-        status = lens::IframeLoadStatus::kFailedConnectionReset;
-        break;
-      case net::ERR_CONNECTION_TIMED_OUT:
-        status = lens::IframeLoadStatus::kFailedConnectionTimedOut;
-        break;
-      case net::ERR_TIMED_OUT:
-        status = lens::IframeLoadStatus::kFailedTimedOut;
-        break;
-      case net::ERR_NAME_NOT_RESOLVED:
-        status = lens::IframeLoadStatus::kFailedNameNotResolved;
-        break;
-      default:
-        status = lens::IframeLoadStatus::kFailedOther;
-        break;
-    }
-  }
-  base::UmaHistogramEnumeration("Lens.Overlay.SidePanel.IframeLoadStatus",
-                                status);
-}
-
 void RecordTimeToCloseOpenedSidePanel(base::TimeDelta duration) {
   // UMA unsliced TimeToFirstInteraction.
   base::UmaHistogramCustomTimes("Lens.Overlay.TimeToCloseOpenedSidePanel",
@@ -701,6 +713,22 @@ void RecordTimeToWebuiBound(base::TimeDelta duration) {
   base::UmaHistogramCustomTimes("Lens.Overlay.TimeToWebuiBound", duration,
                                 /*min=*/base::Milliseconds(1),
                                 /*max=*/base::Minutes(10), /*buckets=*/50);
+}
+
+void RecordContextualTasksQueryEligibility(
+    LensContextualTasksQueryEligibility eligibility,
+    std::optional<LensOverlayInvocationSource> invocation_source) {
+  base::UmaHistogramEnumeration("Lens.Overlay.ContextualTasks.QueryEligibility",
+                                eligibility);
+
+  std::string invocation_source_string =
+      invocation_source.has_value()
+          ? InvocationSourceToString(*invocation_source)
+          : "Unknown";
+  base::UmaHistogramEnumeration(
+      "Lens.Overlay.ContextualTasks.QueryEligibility.ByInvocationSource." +
+          invocation_source_string,
+      eligibility);
 }
 
 }  // namespace lens

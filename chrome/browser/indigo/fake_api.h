@@ -30,6 +30,10 @@ class FakeApi {
   void StartAcceptingConnections(int num_generate_requests = 1,
                                  int num_delete_requests = 0);
 
+  // Starts accepting connections and automatically answers all generate and
+  // delete requests with mock success responses.
+  void StartAcceptingConnectionsAutomatic();
+
   // Returns the URL to be used for the generate endpoint.
   GURL GetGenerateUrl() const;
 
@@ -48,8 +52,14 @@ class FakeApi {
   // Waits for a request to arrive at the delete endpoint.
   void WaitForDeleteRequest(size_t index = 0);
 
+  // Returns whether a request has been received at the delete endpoint.
+  bool HasReceivedDeleteRequest(size_t index = 0) const;
+
   // Sends a successful response for delete.
   void SendDeleteSuccessResponse(size_t index = 0);
+
+  // Sends an error response for delete.
+  void SendDeleteErrorResponse(size_t index = 0);
 
   // Checks that the request has a valid product image.
   testing::AssertionResult RequestHasValidProductImage(
@@ -57,6 +67,9 @@ class FakeApi {
       size_t index = 0);
 
  private:
+  std::unique_ptr<net::test_server::HttpResponse> HandleDefaultRequest(
+      const net::test_server::HttpRequest& request);
+
   net::EmbeddedTestServer test_server_;
   std::vector<std::unique_ptr<net::test_server::ControllableHttpResponse>>
       controllable_responses_;

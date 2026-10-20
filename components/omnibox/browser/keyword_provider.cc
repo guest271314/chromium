@@ -83,7 +83,7 @@ void ScopedEndExtensionKeywordMode::StayInKeywordMode() {
 
 KeywordProvider::KeywordProvider(AutocompleteProviderClient* client,
                                  AutocompleteProviderListener* listener)
-    : AutocompleteProvider(AutocompleteProvider::TYPE_KEYWORD),
+    : AutocompleteProvider(AutocompleteProvider::Type::kKeyword),
       model_(client->GetTemplateURLService()),
       extensions_delegate_(client->GetKeywordExtensionsDelegate(this)),
       client_(client) {
@@ -118,12 +118,8 @@ const TemplateURL* KeywordProvider::GetTemplateUrlForText(
     return nullptr;
   }
 
-  // Don't provide a keyword for inactive search engines (if the active search
-  // engine flag is enabled). Prepopulated engines and extensions controlled
-  // engines should always work regardless of is_active.
-  if (template_url->type() != TemplateURL::OMNIBOX_API_EXTENSION &&
-      template_url->prepopulate_id() == 0 &&
-      template_url->is_active() != TemplateURLData::ActiveStatus::kTrue) {
+  // Don't provide a keyword for inactive search engines.
+  if (!template_url->CanBeUsedForKeywordMatching()) {
     return nullptr;
   }
 
@@ -250,12 +246,8 @@ void KeywordProvider::Start(const AutocompleteInput& input,
       continue;
     }
 
-    // Prune any keywords for inactive search engines (if the active search
-    // engine flag is enabled). Prepopulated engines and extensions controlled
-    // engines should always work regardless of is_active.
-    if (template_url->type() != TemplateURL::OMNIBOX_API_EXTENSION &&
-        template_url->prepopulate_id() == 0 &&
-        template_url->is_active() != TemplateURLData::ActiveStatus::kTrue) {
+    // Prune any keywords for inactive search engines.
+    if (!template_url->CanBeUsedForKeywordMatching()) {
       i = turls.erase(i);
       continue;
     }
@@ -339,7 +331,7 @@ KeywordProvider::~KeywordProvider() = default;
 int KeywordProvider::CalculateRelevance(metrics::OmniboxInputType type,
                                         bool complete,
                                         bool supports_replacement,
-                                        bool prefer_keyword,
+                                        bool in_keyword_mode,
                                         bool allow_exact_keyword_match) {
   if (!complete) {
     return (type == metrics::OmniboxInputType::URL) ? 700 : 450;
@@ -347,7 +339,7 @@ int KeywordProvider::CalculateRelevance(metrics::OmniboxInputType type,
   if (!supports_replacement)
     return 1500;
   return SearchProvider::CalculateRelevanceForKeywordVerbatim(
-      type, allow_exact_keyword_match, prefer_keyword);
+      type, allow_exact_keyword_match, in_keyword_mode);
 }
 
 AutocompleteMatch KeywordProvider::CreateAutocompleteMatch(
@@ -373,14 +365,14 @@ AutocompleteMatch KeywordProvider::CreateAutocompleteMatch(
                            // When the user wants keyword matches to take
                            // preference, score them highly regardless of
                            // whether the input provides query text.
-                           supports_replacement, input.prefer_keyword(),
+                           supports_replacement, input.in_keyword_mode(),
                            input.allow_exact_keyword_match());
   }
 
-  AutocompleteMatch match(this, relevance, deletable,
-                          supports_replacement
-                              ? AutocompleteMatchType::SEARCH_OTHER_ENGINE
-                              : AutocompleteMatchType::HISTORY_KEYWORD);
+  AutocompleteMatch match(
+      this, relevance, deletable,
+      supports_replacement ? omnibox::AutocompleteMatchType::kSearchOtherEngine
+                           : omnibox::AutocompleteMatchType::kHistoryKeyword);
   match.allowed_to_be_default_match = allowed_to_be_default_match;
   match.fill_into_edit = keyword;
   if (!remaining_input.empty() || supports_replacement)

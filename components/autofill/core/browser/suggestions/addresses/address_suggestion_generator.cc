@@ -34,16 +34,15 @@
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "build/build_config.h"
-#include "components/autofill/core/browser/autofill_browser_util.h"
 #include "components/autofill/core/browser/autofill_trigger_source.h"
 #include "components/autofill/core/browser/data_manager/addresses/address_data_manager.h"
 #include "components/autofill/core/browser/data_manager/personal_data_manager.h"
-#include "components/autofill/core/browser/data_model/addresses/autofill_normalization_utils.h"
+#include "components/autofill/core/browser/data_model/addresses/autofill_normalization_util.h"
 #include "components/autofill/core/browser/data_model/addresses/autofill_profile.h"
 #include "components/autofill/core/browser/data_model/addresses/autofill_profile_comparator.h"
 #include "components/autofill/core/browser/data_model/transliterator.h"
 #include "components/autofill/core/browser/data_quality/autofill_data_util.h"
-#include "components/autofill/core/browser/field_type_utils.h"
+#include "components/autofill/core/browser/field_type_util.h"
 #include "components/autofill/core/browser/field_types.h"
 #include "components/autofill/core/browser/filling/addresses/field_filling_address_util.h"
 #include "components/autofill/core/browser/filling/field_filling_skip_reason.h"
@@ -147,28 +146,6 @@ struct ProfileWithText {
   std::u16string text;
 };
 
-Suggestion CreateUndoOrClearFormSuggestion() {
-#if BUILDFLAG(IS_IOS)
-  std::u16string value =
-      l10n_util::GetStringUTF16(IDS_AUTOFILL_CLEAR_FORM_MENU_ITEM);
-  // TODO(crbug.com/40266549): iOS still uses Clear Form logic, replace with
-  // Undo.
-  Suggestion suggestion(value, SuggestionType::kUndoOrClear);
-  suggestion.icon = Suggestion::Icon::kClear;
-#else
-  std::u16string value = l10n_util::GetStringUTF16(IDS_AUTOFILL_UNDO_MENU_ITEM);
-  if constexpr (BUILDFLAG(IS_ANDROID)) {
-    value = base::i18n::ToUpper(value);
-  }
-  Suggestion suggestion(value, SuggestionType::kUndoOrClear);
-  suggestion.icon = Suggestion::Icon::kUndo;
-#endif
-  // TODO(crbug.com/40266549): update "Clear Form" a11y announcement to "Undo"
-  suggestion.acceptance_a11y_announcement =
-      l10n_util::GetStringUTF16(IDS_AUTOFILL_A11Y_ANNOUNCE_CLEARED_FORM);
-  return suggestion;
-}
-
 bool ShouldUseNationalFormatPhoneNumber(FieldType trigger_field_type) {
   return GroupTypeOfFieldType(trigger_field_type) == FieldTypeGroup::kPhone &&
          trigger_field_type != PHONE_HOME_WHOLE_NUMBER &&
@@ -212,9 +189,7 @@ bool ShouldTransliterateMainTextToKatakana(
     const FormFieldData& trigger_field,
     const FieldType& trigger_field_type) {
   return IsAlternativeNameType(trigger_field_type) &&
-         data_util::HasKatakanaCharacter(trigger_field.label()) &&
-         base::FeatureList::IsEnabled(
-             features::kAutofillSupportPhoneticNameForJP);
+         data_util::HasKatakanaCharacter(trigger_field.label());
 }
 
 // In addition to just getting the values out of the profile, this function
@@ -318,12 +293,13 @@ std::optional<Suggestion> GetSuggestionForTestAddresses(
                         SuggestionType::kDevtoolsTestAddresses);
   suggestion.main_text.is_primary = Suggestion::Text::IsPrimary(false);
   suggestion.icon = Suggestion::Icon::kCode;
-  suggestion.acceptability = Suggestion::Acceptability::kUnacceptable;
+  suggestion.acceptability =
+      Suggestion::Acceptability::kSelectableButUnacceptable;
   suggestion.children.emplace_back(
       l10n_util::GetStringUTF16(IDS_AUTOFILL_TEST_ADDRESS_BY_COUNTRY),
       SuggestionType::kDevtoolsTestAddressByCountry);
   suggestion.children.back().acceptability =
-      Suggestion::Acceptability::kUnacceptableWithDeactivatedStyle;
+      Suggestion::Acceptability::kUnselectableAndUnacceptable;
   suggestion.children.emplace_back(SuggestionType::kSeparator);
   for (const AutofillProfile& test_address : test_addresses) {
     CHECK(test_address.is_devtools_testing_profile());
@@ -363,9 +339,16 @@ std::vector<ProfileWithText> DeduplicatedProfilesForSuggestions(
     const AutofillProfile* profile_a = matched_profiles[a].profile;
     for (size_t b = 0; b < matched_profiles.size(); ++b) {
       const AutofillProfile* profile_b = matched_profiles[b].profile;
-      if (profile_a == profile_b ||
-          !AutofillProfileComparator::Compare(matched_profiles[a].text,
-                                              matched_profiles[b].text)) {
+      if (profile_a == profile_b) {
+        continue;
+      }
+      if (!AutofillProfileComparator::Compare(
+              matched_profiles[a].text, matched_profiles[b].text,
+              normalization::WhitespaceSpec::kDiscard)) {
+        // Skip obviously distinct profiles whose suggestion strings do not
+        // match even when ignoring whitespace and punctuation. This avoids
+        // checking all profile values via
+        // `AutofillProfile::IsSubsetOfForFieldSet()`.
         continue;
       }
       if (!profile_a->IsSubsetOfForFieldSet(comparator, *profile_b,
@@ -449,13 +432,13 @@ void RemoveDisusedSuggestions(std::vector<ProfileWithText>& profiles) {
 }
 
 // Returns non address suggestions which are displayed below address
-// suggestions in the Autofill popup. `is_autofilled` is used to conditionally
-// add suggestion for clearing all autofilled fields.
-std::vector<Suggestion> GetAddressFooterSuggestions(bool is_autofilled) {
+// suggestions in the Autofill popup. If `should_add_undo` is `true`, add a
+// suggestion for undoing the last Autofill operation.
+std::vector<Suggestion> GetAddressFooterSuggestions(bool should_add_undo) {
   std::vector<Suggestion> footer_suggestions;
   footer_suggestions.emplace_back(SuggestionType::kSeparator);
-  if (is_autofilled) {
-    footer_suggestions.push_back(CreateUndoOrClearFormSuggestion());
+  if (should_add_undo) {
+    footer_suggestions.push_back(CreateUndoSuggestion());
   }
   footer_suggestions.push_back(CreateManageAddressesSuggestion());
   return footer_suggestions;
@@ -496,8 +479,7 @@ std::vector<AutofillProfile> GetProfilesToSuggest(
   // Similarly, prefix matching is disabled for <select> fields. Select fields
   // are only used as trigger fields during actor flows, in which the initial
   // value is likely irrelevant.
-  // TODO(crbug.com/393114125): Change to use `AutofillField::field_modifiers_`
-  // after launching `kAutofillFixIsAutofilled`.
+  // TODO(crbug.com/393114125): Change to use `AutofillField::field_modifiers_`.
   if (!trigger_field.is_autofilled_according_to_renderer() &&
       trigger_field.form_control_type() != FormControlType::kSelectOne) {
     profiles_to_suggest = GetPrefixMatchedProfiles(
@@ -530,12 +512,9 @@ std::vector<AutofillProfile> GetProfilesToSuggest(
   // filtering logic after it, this case is fine since for field-by-field
   // filling suggestions, deduplication is rather trivial and the problem
   // explained above wouldn't apply.
-  // TODO(crbug.com/393114125): Change to use `AutofillField::field_modifiers_`
-  // after launching `kAutofillFixIsAutofilled`.
+  // TODO(crbug.com/393114125): Change to use `AutofillField::field_modifiers_`.
   if (trigger_field.is_autofilled_according_to_renderer() &&
-      profiles_to_suggest.size() > 1 &&
-      base::FeatureList::IsEnabled(
-          features::kAutofillImproveAddressFieldSwapping)) {
+      profiles_to_suggest.size() > 1) {
     std::erase_if(profiles_to_suggest, [&](const ProfileWithText& profile) {
       return trigger_field.value() == profile.text;
     });
@@ -598,7 +577,8 @@ std::vector<Suggestion> CreateSuggestionsFromProfiles(
     suggestion.payload = std::move(payloads[i]);
     suggestion.acceptance_a11y_announcement =
         l10n_util::GetStringUTF16(IDS_AUTOFILL_A11Y_ANNOUNCE_FILLED_FORM);
-    suggestion.acceptability = Suggestion::Acceptability::kAcceptable;
+    suggestion.acceptability =
+        Suggestion::Acceptability::kSelectableAndAcceptable;
     if (suggestion.type == SuggestionType::kAddressFieldByFieldFilling) {
       suggestion.field_by_field_filling_type_used =
           std::optional(trigger_field_type);
@@ -609,34 +589,29 @@ std::vector<Suggestion> CreateSuggestionsFromProfiles(
     if (GroupTypeOfFieldType(trigger_field_type) == FieldTypeGroup::kEmail) {
       suggestion.icon = Suggestion::Icon::kEmail;
     } else {
-      if (base::FeatureList::IsEnabled(
-              features::kAutofillEnableSupportForHomeAndWork)) {
-        switch (profile.record_type()) {
-          case AutofillProfile::RecordType::kAccountHome:
-            suggestion.icon = Suggestion::Icon::kHome;
-            suggestion.iph_metadata = Suggestion::IPHMetadata(
-                &feature_engagement::
-                    kIPHAutofillHomeWorkProfileSuggestionFeature);
-            suggestion.voice_over =
-                l10n_util::GetStringFUTF16(IDS_HOME_SUGGESTION_VOICE_OVER,
-                                           GetFullSuggestionText(suggestion));
-            break;
-          case AutofillProfile::RecordType::kAccountWork:
-            suggestion.icon = Suggestion::Icon::kWork;
-            suggestion.iph_metadata = Suggestion::IPHMetadata(
-                &feature_engagement::
-                    kIPHAutofillHomeWorkProfileSuggestionFeature);
-            suggestion.voice_over =
-                l10n_util::GetStringFUTF16(IDS_WORK_SUGGESTION_VOICE_OVER,
-                                           GetFullSuggestionText(suggestion));
-            break;
-          case AutofillProfile::RecordType::kLocalOrSyncable:
-          case AutofillProfile::RecordType::kAccount:
-          case AutofillProfile::RecordType::kAccountNameEmail:
-            suggestion.icon = Suggestion::Icon::kAccount;
-        }
-      } else {
-        suggestion.icon = Suggestion::Icon::kAccount;
+      switch (profile.record_type()) {
+        case AutofillProfile::RecordType::kAccountHome:
+          suggestion.icon = Suggestion::Icon::kHome;
+          suggestion.iph_metadata = Suggestion::IPHMetadata(
+              &feature_engagement::
+                  kIPHAutofillHomeWorkProfileSuggestionFeature);
+          suggestion.voice_over =
+              l10n_util::GetStringFUTF16(IDS_HOME_SUGGESTION_VOICE_OVER,
+                                         GetFullSuggestionText(suggestion));
+          break;
+        case AutofillProfile::RecordType::kAccountWork:
+          suggestion.icon = Suggestion::Icon::kWork;
+          suggestion.iph_metadata = Suggestion::IPHMetadata(
+              &feature_engagement::
+                  kIPHAutofillHomeWorkProfileSuggestionFeature);
+          suggestion.voice_over =
+              l10n_util::GetStringFUTF16(IDS_WORK_SUGGESTION_VOICE_OVER,
+                                         GetFullSuggestionText(suggestion));
+          break;
+        case AutofillProfile::RecordType::kLocalOrSyncable:
+        case AutofillProfile::RecordType::kAccount:
+        case AutofillProfile::RecordType::kAccountNameEmail:
+          suggestion.icon = Suggestion::Icon::kAccount;
       }
     }
     // This is intentionally not using `profile.IsAccountProfile()` because the
@@ -650,9 +625,7 @@ std::vector<Suggestion> CreateSuggestionsFromProfiles(
     }
 
     if (profile.record_type() ==
-            AutofillProfile::RecordType::kAccountNameEmail &&
-        base::FeatureList::IsEnabled(
-            features::kAutofillEnableSupportForNameAndEmail)) {
+        AutofillProfile::RecordType::kAccountNameEmail) {
       suggestion.iph_metadata = Suggestion::IPHMetadata(
           &feature_engagement::kIPHAutofillAccountNameEmailSuggestionFeature);
     }
@@ -664,8 +637,7 @@ SuggestionType GetSuggestionType(FormFieldData trigger_field) {
   // If the user triggers suggestions on an autofilled field, field-by-field
   // filling suggestions should be shown so that the user could easily correct
   // values to something present in different stored addresses.
-  // TODO(crbug.com/393114125): Change to use `AutofillField::field_modifiers_`
-  // after launching `kAutofillFixIsAutofilled`.
+  // TODO(crbug.com/393114125): Change to use `AutofillField::field_modifiers_`.
   return trigger_field.is_autofilled_according_to_renderer()
              ? SuggestionType::kAddressFieldByFieldFilling
              : SuggestionType::kAddressEntry;
@@ -677,10 +649,19 @@ SuggestionType GetSuggestionType(FormFieldData trigger_field) {
 std::vector<AddressOnTypingSuggestionData>
 MaybeFetchAddressOnTypingSuggestionData(
     const AddressDataManager& address_data_manager,
-    const FormFieldData& trigger_field) {
+    const FormFieldData& trigger_field,
+    const AutofillField* trigger_autofill_field) {
   if (!trigger_field.should_autocomplete() ||
       !base::FeatureList::IsEnabled(
           features::kAutofillAddressSuggestionsOnTyping)) {
+    return {};
+  }
+
+  const bool is_classified =
+      trigger_autofill_field &&
+      trigger_autofill_field->Type().GetAddressType() != UNKNOWN_TYPE;
+  if (is_classified &&
+      features::kAutofillOnTypingAllowOnlyOnUnclassifiedFields.Get()) {
     return {};
   }
 
@@ -792,7 +773,7 @@ std::vector<Suggestion> GenerateAddressOnTypingSuggestions(
   }
   // TODO(crbug.com/381994105): Consider adding undo.
   base::Extend(suggestions,
-               GetAddressFooterSuggestions(/*is_autofilled=*/false));
+               GetAddressFooterSuggestions(/*should_add_undo=*/false));
   return suggestions;
 }
 
@@ -836,12 +817,8 @@ std::vector<Suggestion> GenerateAddressSuggestions(
   if (suggestions.empty()) {
     return {};
   }
-  base::Extend(suggestions,
-               // TODO(crbug.com/393114125): Change to use
-               // `AutofillField::field_modifiers_` after launching
-               // `kAutofillFixIsAutofilled`.
-               GetAddressFooterSuggestions(
-                   trigger_field.is_autofilled_according_to_renderer()));
+  base::Extend(suggestions, GetAddressFooterSuggestions(ShouldOfferUndoOnField(
+                                *trigger_autofill_field)));
   return suggestions;
 }
 
@@ -999,6 +976,13 @@ void AddressSuggestionGenerator::GenerateSuggestions(
     const AutofillField* trigger_autofill_field,
     AutofillClient& client,
     base::FunctionRef<void(ReturnedSuggestions)> callback) {
+  if (client.IsAutofillTypeBlockedByPolicy(
+          client.GetLastCommittedPrimaryMainFrameURL(),
+          AutofillClient::AutofillPolicyDataCategory::kContactInfo)) {
+    callback({SuggestionDataSource::kAddress, {}});
+    return;
+  }
+
   FieldTypeSet field_types = [&]() -> FieldTypeSet {
     if (!form_structure || !trigger_autofill_field) {
       return {};
@@ -1013,7 +997,7 @@ void AddressSuggestionGenerator::GenerateSuggestions(
         skip_reasons;
     if (form.fields().size() == form_structure->field_count()) {
       skip_reasons = FormFiller::GetFieldFillingSkipReasons(
-          form.fields(), *form_structure, *trigger_autofill_field,
+          *form_structure, *trigger_autofill_field,
           FormFiller::RefillOptions::NotRefill(), FillingProduct::kAddress,
           TriggerSourceFromSuggestionTriggerSource(trigger_source_), client,
           /*blocked_fields=*/{});
@@ -1023,10 +1007,16 @@ void AddressSuggestionGenerator::GenerateSuggestions(
       if (const DenseSet<FieldFillingSkipReason>* field_skip_reasons =
               base::FindOrNull(skip_reasons,
                                form_structure->field(i)->global_id());
-          !field_skip_reasons || field_skip_reasons->empty()) {
-        field_types.insert(form_structure->field(i)->Type().GetAddressType());
+          field_skip_reasons && !field_skip_reasons->empty()) {
+        continue;
+      }
+      if (FieldType address_type =
+              form_structure->field(i)->Type().GetAddressType();
+          address_type != UNKNOWN_TYPE) {
+        field_types.insert(address_type);
       }
     }
+
     return field_types;
   }();
 
@@ -1045,7 +1035,7 @@ void AddressSuggestionGenerator::GenerateSuggestions(
   if (std::vector<AddressOnTypingSuggestionData> addresses_to_suggest =
           MaybeFetchAddressOnTypingSuggestionData(
               client.GetPersonalDataManager().address_data_manager(),
-              trigger_field);
+              trigger_field, trigger_autofill_field);
       !addresses_to_suggest.empty()) {
     callback({SuggestionDataSource::kAddressOnTyping,
               GenerateAddressOnTypingSuggestions(addresses_to_suggest)});

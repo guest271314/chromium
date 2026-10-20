@@ -5,7 +5,6 @@
 #include "content/browser/devtools/protocol/webmcp_handler.h"
 
 #include "base/functional/bind.h"
-#include "base/unguessable_token.h"
 #include "content/browser/devtools/devtools_agent_host_impl.h"
 #include "content/browser/devtools/protocol/handler_helpers.h"
 #include "content/browser/devtools/render_frame_devtools_agent_host.h"
@@ -13,6 +12,7 @@
 #include "content/browser/renderer_host/render_frame_host_impl.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/web_contents.h"
+#include "third_party/blink/public/common/tokens/tokens.h"
 #include "third_party/blink/public/mojom/frame/frame.mojom.h"
 #include "third_party/inspector_protocol/crdtp/json.h"
 
@@ -98,14 +98,14 @@ void WebMCPHandler::InvokeTool(const std::string& frame_id,
     input_arguments = "{}";
   }
 
-  base::UnguessableToken invocation_token = base::UnguessableToken::Create();
-  initiated_invocations_.insert(invocation_token);
+  blink::ToolInvocationToken invocation_token;
+  initiated_invocations_[invocation_token] = rfh->GetLastCommittedOrigin();
 
   rfh->GetAssociatedLocalFrame()->InvokeScriptToolForInspector(
       invocation_token, tool_name, input_arguments,
       base::BindOnce(
           [](std::unique_ptr<InvokeToolCallback> callback,
-             base::UnguessableToken invocation_token, bool success) {
+             blink::ToolInvocationToken invocation_token, bool success) {
             if (success) {
               callback->sendSuccess(invocation_token.ToString());
             } else {
@@ -121,7 +121,7 @@ void WebMCPHandler::DidFinishNavigation(NavigationHandle* navigation_handle) {
     return;
   }
 
-  std::optional<base::UnguessableToken> invocation_id =
+  std::optional<blink::ToolInvocationToken> invocation_id =
       navigation_handle->GetScriptToolInvocationId();
   if (!invocation_id) {
     return;
@@ -134,6 +134,23 @@ void WebMCPHandler::DidFinishNavigation(NavigationHandle* navigation_handle) {
 
   RenderFrameHostImpl* rfh = static_cast<RenderFrameHostImpl*>(
       navigation_handle->GetRenderFrameHost());
+
+  // Note: This differs from how the normal Web Platform API (Blink and
+  // //content) handles this case. The normal API only tells the invoker that an
+  // execution has been canceled/failed when the document hosting the tool is
+  // destroyed. Here (and in the //chrome Actor implementation), we cancel tool
+  // calls whenever a navigation has happened, regardless of the bf-cache status
+  // of the previous document. This means if a tool is invoked in DevTools and
+  // navigates cross-origin, DevTools receives an error immediately, rather than
+  // hanging until the document is destroyed.
+  if (!rfh->GetLastCommittedOrigin().IsSameOriginWith(it->second)) {
+    frontend_->ToolResponded(
+        invocation_id->ToString(), WebMCP::InvocationStatusEnum::Error, nullptr,
+        "Cannot return tool results after a cross-origin navigation");
+    initiated_invocations_.erase(it);
+    return;
+  }
+
   rfh->GetAssociatedLocalFrame()
       ->NotifyInspectorOfCrossDocumentScriptToolResult(*invocation_id);
   initiated_invocations_.erase(it);

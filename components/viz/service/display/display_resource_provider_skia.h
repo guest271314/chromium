@@ -54,16 +54,17 @@ class VIZ_SERVICE_EXPORT DisplayResourceProviderSkia
     // to |override_color_space| if non-nullptr, otherwise it will be set to the
     // resource's color space. If |is_video_plane| is true, the image color
     // space will be set to nullptr (to avoid LOG spam).
-    ExternalUseClient::ImageContext* LockResource(
-        ResourceId resource_id,
-        bool maybe_concurrent_reads,
-        bool raw_draw_if_possible = false);
+    ExternalUseClient::ImageContext* LockResource(ResourceId resource_id,
+                                                  bool maybe_concurrent_reads);
 
     // Unlock all locked resources with a |sync_token|.  The |sync_token| should
     // be waited on before reusing the resource's backing to ensure that any
     // external use of it is completed. This |sync_token| should have been
     // verified.  All resources must be unlocked before destroying this class.
     void UnlockResources(const gpu::SyncToken& sync_token);
+
+    // Returns true if there are no resources currently locked.
+    bool empty() const { return resources_.empty(); }
 
    private:
     const raw_ptr<DisplayResourceProviderSkia, DanglingUntriaged>

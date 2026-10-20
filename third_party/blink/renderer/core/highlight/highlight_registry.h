@@ -27,6 +27,8 @@ namespace blink {
 using HighlightRegistryMap =
     HeapLinkedHashSet<Member<HighlightRegistryMapEntry>>;
 using HighlightRegistryMapIterable = Maplike<HighlightRegistry>;
+
+class Element;
 class HighlightHitResult;
 class HighlightsFromPointOptions;
 class LocalFrame;
@@ -60,6 +62,10 @@ class CORE_EXPORT HighlightRegistry : public ScriptWrappable,
 
   const HighlightRegistryMap& GetHighlights() const { return highlights_; }
   const HashSet<AtomicString>& GetActiveHighlights(const Text& node) const;
+  // Returns the active custom highlight names for a replaced element (e.g.
+  // <img>), or a reference to a static empty set if none.
+  const HashSet<AtomicString>& GetActiveHighlightsForReplacedElement(
+      const Element& element) const;
   void ValidateHighlightMarkers();
   void ScheduleRepaint();
 
@@ -108,10 +114,15 @@ class CORE_EXPORT HighlightRegistry : public ScriptWrappable,
       const HighlightsFromPointOptions* options);
 
  private:
+  void Set(const AtomicString& highlight_name, Highlight* highlight);
   bool IsAbstractRangePaintable(AbstractRange*, Document*) const;
 
+  // Adds `highlight_name` to the set of custom highlights tracked as
+  // covering the given replaced element.
+  void TrackReplacedElementForHighlight(const Element& element,
+                                        const AtomicString& highlight_name);
+
   HighlightRegistryMap highlights_;
-  Member<LocalFrame> frame_;
   // Active iteration sources that need to be notified of mutations.
   // WeakMember ensures GC automatically cleans up unreferenced iterators.
   HeapHashSet<WeakMember<RegistryLiveIterator>> active_iterators_;
@@ -120,6 +131,11 @@ class CORE_EXPORT HighlightRegistry : public ScriptWrappable,
   // Only valid after ValidateHighlightMarkers(), used to optimize painting.
   HeapHashMap<WeakMember<const Text>, HashSet<AtomicString>>
       active_highlights_in_node_;
+  // Replaced elements (e.g. <img>) covered by custom highlight ranges,
+  // tracked here so ReplacedPainter::PaintCustomHighlights can look up the
+  // active highlight names at paint time.
+  HeapHashMap<WeakMember<const Element>, HashSet<AtomicString>>
+      active_highlights_in_replaced_element_;
   uint64_t dom_tree_version_for_validate_highlight_markers_ = 0;
   uint64_t style_version_for_validate_highlight_markers_ = 0;
   bool force_markers_validation_ = true;
@@ -131,6 +147,14 @@ class CORE_EXPORT HighlightRegistry : public ScriptWrappable,
   HighlightRegistryMap::iterator GetMapIterator(const AtomicString& key) const {
     return highlights_.Find<HighlightRegistryMapEntryNameTranslator>(key);
   }
+
+  // The frame of the window this registry supplements, or null once that
+  // window has been detached from its frame. A registry can be created for an
+  // already detached window, because script can reach the CSS.highlights of a
+  // destroyed document through a saved reference to its CSS namespace object.
+  // Such a registry has nothing to paint or hit test.
+  LocalFrame* GetFrame() const;
+  Document* GetDocument() const;
 
   bool GetMapEntry(ScriptState*,
                    const String& key,

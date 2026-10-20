@@ -68,15 +68,17 @@ class ACCELERATED_WIDGET_MAC_EXPORT CALayerTreeCoordinator {
   CALayerTreeCoordinator(bool allow_av_sample_buffer_display_layer,
                          BufferPresentedCallback buffer_presented_callback,
                          GLMakeCurrentCallback gl_make_current_callback,
-                         id<MTLDevice> metal_device,
-                         bool no_post_task_for_callback);
+                         id<MTLDevice> metal_device);
 
   CALayerTreeCoordinator(const CALayerTreeCoordinator&) = delete;
   CALayerTreeCoordinator& operator=(const CALayerTreeCoordinator&) = delete;
 
   virtual ~CALayerTreeCoordinator();
 
-  CALayer* root_ca_layer() const { return root_ca_layer_; }
+  CALayer* root_ca_layer() {
+    EnsureCAContextAndRootLayer();
+    return root_ca_layer_;
+  }
 
   // Set the composited frame's size.
   void Resize(const gfx::Size& pixel_size, float scale_factor);
@@ -139,10 +141,6 @@ class ACCELERATED_WIDGET_MAC_EXPORT CALayerTreeCoordinator {
   // This is needed to ensure synchronization between the display compositor and
   // the HDRCopierLayer. See https://crbug.com/1372898
   id<MTLDevice> __strong metal_device_;
-
-  // Allows running the completion callbacks and the presnetation callbacks
-  // directly without posting tasks.
-  const bool no_post_task_for_callback_;
 
   // The frame that is currently under construction. It has had planes
   // scheduled, but has not had Present() called yet. When Present() is called,

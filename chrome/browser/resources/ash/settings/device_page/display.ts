@@ -38,7 +38,6 @@ import {flush, PolymerElement} from 'chrome://resources/polymer/v3_0/polymer/pol
 
 import {assertExists, cast, castExists} from '../assert_extras.js';
 import {DeepLinkingMixin} from '../common/deep_linking_mixin.js';
-import {isDisplayBrightnessControlInSettingsEnabled} from '../common/load_time_booleans.js';
 import {RouteObserverMixin} from '../common/route_observer_mixin.js';
 import type {DropdownMenuOptionList} from '../controls/settings_dropdown_menu.js';
 import type {SettingsSliderElement} from '../controls/settings_slider.js';
@@ -282,14 +281,14 @@ export class SettingsDisplayElement extends SettingsDisplayElementBase {
     ];
   }
 
-  displayIds: string;
-  displays: DisplayUnitInfo[];
-  layouts: DisplayLayout[];
-  mirroringDestinationIds: string[];
-  overscanDisplayId: string;
-  primaryDisplayId: string;
-  primaryDisplay?: DisplayUnitInfo;
-  selectedDisplay?: DisplayUnitInfo;
+  declare displayIds: string;
+  declare displays: DisplayUnitInfo[];
+  declare layouts: DisplayLayout[];
+  declare mirroringDestinationIds: string[];
+  declare overscanDisplayId: string;
+  declare primaryDisplayId: string;
+  declare primaryDisplay?: DisplayUnitInfo;
+  declare selectedDisplay?: DisplayUnitInfo;
 
   // DeepLinkingMixin override
   override supportedSettingIds = new Set<Setting>([
@@ -305,39 +304,39 @@ export class SettingsDisplayElement extends SettingsDisplayElementBase {
     Setting.kDisplayOverscan,
   ]);
 
-  private readonly ambientColorAvailable_: boolean;
+  declare private readonly ambientColorAvailable_: boolean;
   private browserProxy_: DevicePageBrowserProxy;
-  private brightnessSliderMax_: number;
-  private brightnessSliderMin_: number;
-  private currentInternalScreenBrightness_: number;
+  declare private brightnessSliderMax_: number;
+  declare private brightnessSliderMin_: number;
+  declare private currentInternalScreenBrightness_: number;
   private currentRoute_: Route|null;
   private currentSelectedModeIndex_: number;
   private currentSelectedParentModeIndex_: number;
   private displayChangedListener_: (() => void)|null;
-  private displayModeList_: DropdownMenuOptionList;
+  declare private displayModeList_: DropdownMenuOptionList;
   private displaySettingsProvider: DisplaySettingsProviderInterface;
-  private displayTabNames_: string[];
-  private hasAmbientLightSensor_: boolean;
+  declare private displayTabNames_: string[];
+  declare private hasAmbientLightSensor_: boolean;
   private invalidDisplayId_: string;
-  private isAmbientLightSensorEnabled_: boolean;
-  private isDisplayPerformanceEnabled_: boolean;
-  private readonly isDisplayPerformanceSupported_: boolean;
-  private isTabletMode_: boolean;
-  private logicalResolutionText_: string;
+  declare private isAmbientLightSensorEnabled_: boolean;
+  declare private isDisplayPerformanceEnabled_: boolean;
+  declare private readonly isDisplayPerformanceSupported_: boolean;
+  declare private isTabletMode_: boolean;
+  declare private logicalResolutionText_: string;
   private mirroringExcludedId_: string;
   private modeToParentModeMap_: Map<number, number>;
-  private modeValues_: number[];
-  private opsDisplayScaleFactorEnabled_: boolean;
+  declare private modeValues_: number[];
+  declare private opsDisplayScaleFactorEnabled_: boolean;
   private parentModeToRefreshRateMap_: Map<number, DropdownMenuOptionList>;
-  private pendingSettingId_: Setting|null;
-  private refreshRateList_: DropdownMenuOptionList;
-  private selectedModePref_: chrome.settingsPrivate.PrefObject;
-  private selectedParentModePref_: chrome.settingsPrivate.PrefObject;
-  private selectedTab_: number;
-  private selectedZoomPref_: chrome.settingsPrivate.PrefObject;
-  private readonly unifiedDesktopAvailable_: boolean;
-  private unifiedDesktopMode_: boolean;
-  private zoomValues_: SliderTick[];
+  declare private pendingSettingId_: Setting|null;
+  declare private refreshRateList_: DropdownMenuOptionList;
+  declare private selectedModePref_: chrome.settingsPrivate.PrefObject;
+  declare private selectedParentModePref_: chrome.settingsPrivate.PrefObject;
+  declare private selectedTab_: number;
+  declare private selectedZoomPref_: chrome.settingsPrivate.PrefObject;
+  declare private readonly unifiedDesktopAvailable_: boolean;
+  declare private unifiedDesktopMode_: boolean;
+  declare private zoomValues_: SliderTick[];
 
   constructor() {
     super();
@@ -953,15 +952,14 @@ export class SettingsDisplayElement extends SettingsDisplayElementBase {
    * Returns true if display brightness controls should be shown for |display|.
    */
   private showBrightnessControls_(display: DisplayUnitInfo): boolean {
-    return isDisplayBrightnessControlInSettingsEnabled() && display.isInternal;
+    return display.isInternal;
   }
 
   /**
    * Returns true if the auto-brightness toggle should be shown.
    */
   private showAutoBrightnessToggle_(): boolean {
-    return isDisplayBrightnessControlInSettingsEnabled() &&
-        this.hasAmbientLightSensor_;
+    return this.hasAmbientLightSensor_;
   }
 
   /**
@@ -1250,10 +1248,6 @@ export class SettingsDisplayElement extends SettingsDisplayElementBase {
    * Handles the event when the display brightness slider changes value.
    */
   private onDisplayBrightnessSliderChanged_(): void {
-    if (!isDisplayBrightnessControlInSettingsEnabled()) {
-      return;
-    }
-
     const brightnessSliderValue =
         strictQuery('#brightnessSlider', this.shadowRoot, CrSliderElement)
             .value;
@@ -1269,10 +1263,6 @@ export class SettingsDisplayElement extends SettingsDisplayElementBase {
    * Handles the event when the auto-brightness toggle changes value.
    */
   private onAutoBrightnessToggleChange_(): void {
-    if (!isDisplayBrightnessControlInSettingsEnabled()) {
-      return;
-    }
-
     const isAutoBrightnessToggleChecked: boolean =
         strictQuery('#autoBrightnessToggle', this.shadowRoot, CrToggleElement)
             .checked;

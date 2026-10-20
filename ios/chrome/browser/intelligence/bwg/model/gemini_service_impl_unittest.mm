@@ -6,6 +6,7 @@
 
 #import <memory>
 
+#import "base/functional/bind.h"
 #import "base/strings/sys_string_conversions.h"
 #import "base/test/metrics/histogram_tester.h"
 #import "base/test/scoped_feature_list.h"
@@ -14,7 +15,10 @@
 #import "components/signin/public/base/consent_level.h"
 #import "components/signin/public/identity_manager/account_capabilities_test_mutator.h"
 #import "components/signin/public/identity_manager/account_info.h"
-#import "components/signin/public/identity_manager/identity_test_environment.h"
+#import "components/signin/public/identity_manager/identity_test_utils.h"
+#import "components/signin/public/identity_manager/tribool.h"
+#import "components/sync/test/test_sync_service.h"
+#import "google_apis/gaia/core_account_id.h"
 #import "ios/chrome/browser/intelligence/bwg/metrics/gemini_metrics.h"
 #import "ios/chrome/browser/intelligence/bwg/utils/gemini_constants.h"
 #import "ios/chrome/browser/intelligence/features/features.h"
@@ -23,14 +27,17 @@
 #import "ios/chrome/browser/shared/model/application_context/application_context.h"
 #import "ios/chrome/browser/shared/model/prefs/pref_names.h"
 #import "ios/chrome/browser/shared/model/profile/test/test_profile_ios.h"
+#import "ios/chrome/browser/shared/model/profile/test/test_profile_manager_ios.h"
 #import "ios/chrome/browser/signin/model/authentication_service.h"
 #import "ios/chrome/browser/signin/model/authentication_service_factory.h"
 #import "ios/chrome/browser/signin/model/chrome_account_manager_service_factory.h"
-#import "ios/chrome/browser/signin/model/fake_authentication_service_delegate.h"
 #import "ios/chrome/browser/signin/model/fake_system_identity.h"
 #import "ios/chrome/browser/signin/model/fake_system_identity_manager.h"
 #import "ios/chrome/browser/signin/model/identity_manager_factory.h"
 #import "ios/chrome/browser/signin/model/identity_test_environment_browser_state_adaptor.h"
+#import "ios/chrome/browser/signin/model/signin_test_util.h"
+#import "ios/chrome/browser/sync/model/sync_service_factory.h"
+#import "ios/chrome/browser/sync/model/test_sync_service_utils.h"
 #import "ios/chrome/test/ios_chrome_scoped_testing_local_state.h"
 #import "ios/web/public/test/web_task_environment.h"
 #import "testing/gtest/include/gtest/gtest.h"
@@ -40,22 +47,6 @@ class GeminiServiceImplTest : public PlatformTest {
  protected:
   void SetUp() override {
     PlatformTest::SetUp();
-
-    scoped_feature_list_.InitWithFeatures({kGeminiCopresence}, {});
-
-    TestProfileIOS::Builder builder;
-    builder.AddTestingFactory(
-        AuthenticationServiceFactory::GetInstance(),
-        AuthenticationServiceFactory::GetFactoryWithDelegate(
-            std::make_unique<FakeAuthenticationServiceDelegate>()));
-    builder.AddTestingFactory(
-        OptimizationGuideServiceFactory::GetInstance(),
-        OptimizationGuideServiceFactory::GetDefaultFactory());
-    profile_ = std::move(builder).Build();
-
-    auth_service_ = AuthenticationServiceFactory::GetForProfile(profile_.get());
-    optimization_guide_service_ =
-        OptimizationGuideServiceFactory::GetForProfile(profile_.get());
 
     pref_service_ = std::make_unique<TestingPrefServiceSimple>();
     pref_service_->registry()->RegisterIntegerPref(
@@ -69,9 +60,37 @@ class GeminiServiceImplTest : public PlatformTest {
     pref_service_->registry()->RegisterBooleanPref(
         prefs::kAIHubEligibilityTriggered, false);
 
+    InitializeGeminiServiceForProfile(
+        profile_manager_.AddProfileWithBuilder(CreateProfileBuilder()));
+  }
+
+  TestProfileIOS::Builder CreateProfileBuilder() {
+    TestProfileIOS::Builder builder;
+    builder.AddTestingFactory(
+        AuthenticationServiceFactory::GetInstance(),
+        AuthenticationServiceFactory::GetDefaultFactory());
+    builder.AddTestingFactory(SyncServiceFactory::GetInstance(),
+                              base::BindRepeating(&CreateTestSyncService));
+    builder.AddTestingFactory(
+        OptimizationGuideServiceFactory::GetInstance(),
+        OptimizationGuideServiceFactory::GetDefaultFactory());
+    return builder;
+  }
+
+  // Initializes `profile_` and its associated services for `profile`.
+  void InitializeGeminiServiceForProfile(TestProfileIOS* profile) {
+    if (gemini_service_) {
+      gemini_service_->Shutdown();
+      gemini_service_.reset();
+    }
+    profile_ = profile;
+    auth_service_ = AuthenticationServiceFactory::GetForProfile(profile_);
+    identity_manager_ = IdentityManagerFactory::GetForProfile(profile_);
+    optimization_guide_service_ =
+        OptimizationGuideServiceFactory::GetForProfile(profile_);
     gemini_service_ = std::make_unique<GeminiServiceImpl>(
-        profile_.get(), auth_service_, identity_test_env_.identity_manager(),
-        pref_service_.get(), optimization_guide_service_);
+        profile_, auth_service_, identity_manager_, pref_service_.get(),
+        optimization_guide_service_);
   }
 
   void TearDown() override {
@@ -80,30 +99,39 @@ class GeminiServiceImplTest : public PlatformTest {
     if (gemini_service_) {
       gemini_service_->Shutdown();
     }
+    gemini_service_.reset();
+    pref_service_.reset();
+    auth_service_ = nullptr;
+    identity_manager_ = nullptr;
+    optimization_guide_service_ = nullptr;
+    profile_ = nullptr;
     PlatformTest::TearDown();
   }
 
   // Signs in an unmanaged account and sets their model execution capability.
-  void SignInUnmanagedAccountWithCapability(bool capability) {
+  void SignInUnmanagedAccountWithCapability(signin::Tribool capability) {
     std::string email = "unmanaged@gmail.com";
-    AccountInfo account_info = identity_test_env_.MakePrimaryAccountAvailable(
-        email, signin::ConsentLevel::kSignin);
-    SetCapabilityForAccount(account_info, capability);
+    FakeSystemIdentity* identity = [FakeSystemIdentity fakeIdentity1];
+    fake_system_identity_manager()->AddIdentity(identity);
+    auth_service_->SignIn(identity, signin_metrics::AccessPoint::kStartPage);
+    if (capability != signin::Tribool::kUnknown) {
+      SetCapabilityForAccount(
+          identity_manager_->GetPrimaryAccountId(signin::ConsentLevel::kSignin),
+          signin::TriboolToBoolOrDie(capability));
+    }
   }
 
   // Signs in a managed account and sets their model execution capability.
-  void SignInManagedAccountWithCapability(bool capability) {
+  void SignInManagedAccountWithCapability(signin::Tribool capability) {
     FakeSystemIdentity* identity = [FakeSystemIdentity fakeManagedIdentity];
-    fake_system_identity_manager()->AddIdentity(identity);
-    ChromeAccountManagerService* account_manager =
-        ChromeAccountManagerServiceFactory::GetForProfile(profile_.get());
-    auth_service_->SignIn(account_manager->GetDefaultIdentity(),
-                          signin_metrics::AccessPoint::kStartPage);
-
-    AccountInfo account_info = identity_test_env_.MakePrimaryAccountAvailable(
-        base::SysNSStringToUTF8(identity.userEmail),
-        signin::ConsentLevel::kSignin);
-    SetCapabilityForAccount(account_info, capability);
+    InitializeGeminiServiceForProfile(AddManagedProfileWithBuilder(
+        profile_manager_, identity, CreateProfileBuilder()));
+    auth_service_->SignIn(identity, signin_metrics::AccessPoint::kStartPage);
+    if (capability != signin::Tribool::kUnknown) {
+      SetCapabilityForAccount(
+          identity_manager_->GetPrimaryAccountId(signin::ConsentLevel::kSignin),
+          signin::TriboolToBoolOrDie(capability));
+    }
   }
 
   // Sets the workspace eligibility.
@@ -111,11 +139,14 @@ class GeminiServiceImplTest : public PlatformTest {
     gemini_service_->is_disabled_by_gemini_policy_ = is_disabled;
   }
 
-  void SetCapabilityForAccount(AccountInfo info, bool capability) {
-    AccountCapabilitiesTestMutator mutator(&info.capabilities);
+  void SetCapabilityForAccount(const CoreAccountId& account_id,
+                               bool capability) {
+    AccountInfo account_info =
+        identity_manager_->FindExtendedAccountInfoByAccountId(account_id);
+    AccountCapabilitiesTestMutator mutator(&account_info);
     mutator.set_can_use_model_execution_features(capability);
     mutator.set_can_use_gemini_in_chrome(capability);
-    identity_test_env_.UpdateAccountInfoForAccount(info);
+    signin::UpdateAccountInfoForAccount(identity_manager_, account_info);
   }
 
   FakeSystemIdentityManager* fake_system_identity_manager() {
@@ -124,18 +155,20 @@ class GeminiServiceImplTest : public PlatformTest {
   }
 
   // Environment objects are declared first, so they are destroyed last.
-  IOSChromeScopedTestingLocalState scoped_testing_local_state_;
   web::WebTaskEnvironment task_environment_;
-  signin::IdentityTestEnvironment identity_test_env_;
+  IOSChromeScopedTestingLocalState scoped_testing_local_state_;
+  TestProfileManagerIOS profile_manager_;
   base::test::ScopedFeatureList scoped_feature_list_;
 
-  // Profile and services that depend on the environment are declared next.
+  // Active profile under test (personal profile by default, or managed profile
+  // after `SignInManagedAccountWithCapability`) and its associated services.
   // Note: `pref_service_` must be declared before `gemini_service_` so that
   // it is destroyed after `gemini_service_`, preventing a dangling pointer.
-  std::unique_ptr<TestProfileIOS> profile_;
+  raw_ptr<TestProfileIOS> profile_;
   std::unique_ptr<TestingPrefServiceSimple> pref_service_;
   std::unique_ptr<GeminiServiceImpl> gemini_service_;
   raw_ptr<AuthenticationService> auth_service_;
+  raw_ptr<signin::IdentityManager> identity_manager_;
   raw_ptr<OptimizationGuideService> optimization_guide_service_;
 
   base::HistogramTester histogram_tester_;
@@ -144,7 +177,7 @@ class GeminiServiceImplTest : public PlatformTest {
 // Tests that a user is considered eligible if they are signed in and their
 // account has the `can_use_model_execution_features` capability.
 TEST_F(GeminiServiceImplTest, IsProfileEligibleForGemini_WhenUserIsEligible) {
-  SignInUnmanagedAccountWithCapability(true);
+  SignInUnmanagedAccountWithCapability(signin::Tribool::kTrue);
   SetWorkspaceEligibility(/*is_disabled=*/false);
 
   EXPECT_TRUE(gemini_service_->IsProfileEligibleForGemini());
@@ -158,7 +191,7 @@ TEST_F(GeminiServiceImplTest, IsProfileEligibleForGemini_WhenUserIsEligible) {
 // capability is explicitly false.
 TEST_F(GeminiServiceImplTest,
        IsProfileEligibleForGemini_IneligibleByCapability) {
-  SignInUnmanagedAccountWithCapability(false);
+  SignInUnmanagedAccountWithCapability(signin::Tribool::kFalse);
   SetWorkspaceEligibility(/*is_disabled=*/false);
   pref_service_->SetInteger(prefs::kGeminiEnabledByPolicy,
                             static_cast<int>(gemini::SettingsPolicy::kAllowed));
@@ -175,7 +208,7 @@ TEST_F(GeminiServiceImplTest,
 // Tests that a user is ineligible if both of the Gemini policies are disabled.
 TEST_F(GeminiServiceImplTest,
        IsProfileEligibleForGemini_IneligibleByBothPolicies) {
-  SignInUnmanagedAccountWithCapability(true);
+  SignInUnmanagedAccountWithCapability(signin::Tribool::kTrue);
   SetWorkspaceEligibility(/*is_disabled=*/false);
   pref_service_->SetInteger(
       prefs::kGeminiEnabledByPolicy,
@@ -196,7 +229,7 @@ TEST_F(GeminiServiceImplTest,
 // Tests that a user is ineligible if the Gemini policy is disabled.
 TEST_F(GeminiServiceImplTest,
        IsProfileEligibleForGemini_IneligibleByGeminiPolicy) {
-  SignInUnmanagedAccountWithCapability(true);
+  SignInUnmanagedAccountWithCapability(signin::Tribool::kTrue);
   SetWorkspaceEligibility(/*is_disabled=*/false);
   pref_service_->SetInteger(
       prefs::kGeminiEnabledByPolicy,
@@ -214,7 +247,7 @@ TEST_F(GeminiServiceImplTest,
 // Tests that a user is ineligible if the GenAI policy is disabled.
 TEST_F(GeminiServiceImplTest,
        IsProfileEligibleForGemini_IneligibleByGenAIPolicy) {
-  SignInUnmanagedAccountWithCapability(true);
+  SignInUnmanagedAccountWithCapability(signin::Tribool::kTrue);
   SetWorkspaceEligibility(/*is_disabled=*/false);
   pref_service_->SetInteger(
       prefs::kGenAiEnabledByPolicy,
@@ -231,7 +264,7 @@ TEST_F(GeminiServiceImplTest,
 
 // Tests that a user is eligible if both of the Gemini policies are enabled.
 TEST_F(GeminiServiceImplTest, IsProfileEligibleForGemini_EligibleByPolicy) {
-  SignInUnmanagedAccountWithCapability(true);
+  SignInUnmanagedAccountWithCapability(signin::Tribool::kTrue);
   SetWorkspaceEligibility(/*is_disabled=*/false);
   pref_service_->SetInteger(prefs::kGeminiEnabledByPolicy,
                             static_cast<int>(gemini::SettingsPolicy::kAllowed));
@@ -252,8 +285,8 @@ TEST_F(GeminiServiceImplTest, IsProfileEligibleForGemini_EligibleByPolicy) {
 TEST_F(GeminiServiceImplTest,
        IsProfileEligibleForGemini_IneligibleWhenSignedOut) {
   // The default state is signed out.
-  EXPECT_FALSE(identity_test_env_.identity_manager()->HasPrimaryAccount(
-      signin::ConsentLevel::kSignin));
+  EXPECT_FALSE(
+      identity_manager_->HasPrimaryAccount(signin::ConsentLevel::kSignin));
 
   EXPECT_FALSE(gemini_service_->IsProfileEligibleForGemini());
   histogram_tester_.ExpectBucketCount(
@@ -269,8 +302,7 @@ TEST_F(GeminiServiceImplTest,
 TEST_F(GeminiServiceImplTest,
        IsProfileEligibleForGemini_IneligibleWhenCapabilityIsUnknown) {
   // Sign in without setting any capabilities.
-  identity_test_env_.MakePrimaryAccountAvailable("test@example.com",
-                                                 signin::ConsentLevel::kSignin);
+  SignInUnmanagedAccountWithCapability(signin::Tribool::kUnknown);
 
   EXPECT_FALSE(gemini_service_->IsProfileEligibleForGemini());
   histogram_tester_.ExpectUniqueSample(
@@ -285,7 +317,7 @@ TEST_F(GeminiServiceImplTest,
 TEST_F(GeminiServiceImplTest,
        IsProfileEligibleForGemini_IneligibleWithRestrictedWorkspace) {
   // Sign in with workspace set to non eligible
-  SignInUnmanagedAccountWithCapability(true);
+  SignInUnmanagedAccountWithCapability(signin::Tribool::kTrue);
   SetWorkspaceEligibility(/*is_disabled=*/true);
 
   EXPECT_FALSE(gemini_service_->IsProfileEligibleForGemini());
@@ -301,7 +333,7 @@ TEST_F(GeminiServiceImplTest,
 // workspace response arrives, but we don't log the workspace restriction.
 TEST_F(GeminiServiceImplTest,
        IsProfileEligibleForGemini_ManagedAccountPending) {
-  SignInManagedAccountWithCapability(true);
+  SignInManagedAccountWithCapability(signin::Tribool::kTrue);
   SetWorkspaceEligibility(/*is_disabled=*/std::nullopt);
 
   // Should be ineligible because it's managed and response is pending.
@@ -321,7 +353,7 @@ TEST_F(GeminiServiceImplTest,
 // confirms it is restricted, we do log the workspace restriction.
 TEST_F(GeminiServiceImplTest,
        IsProfileEligibleForGemini_ManagedAccountRestricted) {
-  SignInManagedAccountWithCapability(true);
+  SignInManagedAccountWithCapability(signin::Tribool::kTrue);
   SetWorkspaceEligibility(/*is_disabled=*/true);
 
   EXPECT_FALSE(gemini_service_->IsProfileEligibleForGemini());
@@ -336,7 +368,7 @@ TEST_F(GeminiServiceImplTest,
 // Tests that LogUserConsentState correctly logs the consent flow state when
 // the profile is eligible.
 TEST_F(GeminiServiceImplTest, LogUserConsentState_LogsWhenEligible) {
-  SignInUnmanagedAccountWithCapability(true);
+  SignInUnmanagedAccountWithCapability(signin::Tribool::kTrue);
   SetWorkspaceEligibility(/*is_disabled=*/false);
 
   // Explicitly set to no consent.
@@ -344,20 +376,128 @@ TEST_F(GeminiServiceImplTest, LogUserConsentState_LogsWhenEligible) {
   // Triggering IsProfileEligibleForGemini should log the state.
   EXPECT_TRUE(gemini_service_->IsProfileEligibleForGemini());
 
-  histogram_tester_.ExpectUniqueSample(kGeminiFREStateHistogram,
-                                       gemini::FREState::kPending, 1);
+  histogram_tester_.ExpectUniqueSample(kGeminiFirstRunStateHistogram,
+                                       gemini::FirstRunState::kPending, 1);
 
   // Changing state and checking eligibility again should log the new state.
   pref_service_.get()->SetInteger(prefs::kIOSBWGPromoImpressionCount, 1);
   EXPECT_TRUE(gemini_service_->IsProfileEligibleForGemini());
 
-  histogram_tester_.ExpectBucketCount(kGeminiFREStateHistogram,
-                                      gemini::FREState::kStarted, 1);
+  histogram_tester_.ExpectBucketCount(kGeminiFirstRunStateHistogram,
+                                      gemini::FirstRunState::kStarted, 1);
 
   pref_service_.get()->SetBoolean(prefs::kIOSBwgConsent, true);
   EXPECT_TRUE(gemini_service_->IsProfileEligibleForGemini());
 
-  histogram_tester_.ExpectBucketCount(kGeminiFREStateHistogram,
-                                      gemini::FREState::kCompleted, 1);
-  histogram_tester_.ExpectTotalCount(kGeminiFREStateHistogram, 3);
+  histogram_tester_.ExpectBucketCount(kGeminiFirstRunStateHistogram,
+                                      gemini::FirstRunState::kCompleted, 1);
+  histogram_tester_.ExpectTotalCount(kGeminiFirstRunStateHistogram, 3);
+}
+
+// Tests that when the user is signed out, the workspace policy check is not
+// pending, and the user is ineligible.
+TEST_F(GeminiServiceImplTest, CheckGeminiEnterpriseEligibility_SignedOut) {
+  // Ensure we are signed out.
+  ASSERT_FALSE(
+      identity_manager_->HasPrimaryAccount(signin::ConsentLevel::kSignin));
+
+  // Call the check (or trigger it).
+  gemini_service_->CheckGeminiEnterpriseEligibilityIfNeeded();
+
+  // The check should not be pending.
+  EXPECT_FALSE(gemini_service_->IsWorkspacePolicyCheckPending());
+  EXPECT_FALSE(gemini_service_->IsProfileEligibleForGemini());
+}
+
+// Tests that when the user signs in, the workspace policy check becomes pending
+// (std::nullopt) synchronously.
+TEST_F(GeminiServiceImplTest, CheckGeminiEnterpriseEligibility_SignInPending) {
+  // Start signed out.
+  gemini_service_->CheckGeminiEnterpriseEligibilityIfNeeded();
+  ASSERT_FALSE(gemini_service_->IsWorkspacePolicyCheckPending());
+
+  // Sign in. This triggers OnPrimaryAccountChanged, which calls
+  // CheckGeminiEnterpriseEligibility.
+  SignInUnmanagedAccountWithCapability(signin::Tribool::kTrue);
+
+  // It should now be pending (std::nullopt) synchronously.
+  EXPECT_TRUE(gemini_service_->IsWorkspacePolicyCheckPending());
+}
+
+// Tests that updating the primary account's extended info (e.g. capabilities)
+// correctly updates the service's eligibility.
+TEST_F(GeminiServiceImplTest, OnExtendedAccountInfoUpdated_UpdatesEligibility) {
+  // Sign in with unknown capability first.
+  SignInUnmanagedAccountWithCapability(signin::Tribool::kUnknown);
+  SetWorkspaceEligibility(/*is_disabled=*/false);
+
+  // User should be ineligible because capabilities are unknown.
+  EXPECT_FALSE(gemini_service_->IsProfileEligibleForGemini());
+
+  // Trigger extended account info update for the primary account, setting
+  // capabilities to true.
+  AccountInfo account_info =
+      identity_manager_->FindExtendedAccountInfoByAccountId(
+          identity_manager_->GetPrimaryAccountId(
+              signin::ConsentLevel::kSignin));
+  AccountCapabilitiesTestMutator mutator(&account_info);
+  mutator.set_can_use_model_execution_features(true);
+  mutator.set_can_use_gemini_in_chrome(true);
+  signin::UpdateAccountInfoForAccount(identity_manager_, account_info);
+
+  // User should now be eligible.
+  EXPECT_TRUE(gemini_service_->IsProfileEligibleForGemini());
+}
+
+// Tests that a refresh token error state update for the primary account
+// correctly updates the service's eligibility.
+TEST_F(GeminiServiceImplTest,
+       OnErrorStateOfRefreshTokenUpdatedForAccount_UpdatesEligibility) {
+  // Sign in as eligible.
+  SignInUnmanagedAccountWithCapability(signin::Tribool::kTrue);
+  SetWorkspaceEligibility(/*is_disabled=*/false);
+  EXPECT_TRUE(gemini_service_->IsProfileEligibleForGemini());
+
+  // Trigger refresh token error state update to make it invalid.
+  CoreAccountId account_id =
+      identity_manager_->GetPrimaryAccountId(signin::ConsentLevel::kSignin);
+  signin::UpdatePersistentErrorOfRefreshTokenForAccount(
+      identity_manager_, account_id,
+      GoogleServiceAuthError::FromInvalidGaiaCredentialsReason(
+          GoogleServiceAuthError::InvalidGaiaCredentialsReason::UNKNOWN));
+
+  // User should now be ineligible.
+  EXPECT_FALSE(gemini_service_->IsProfileEligibleForGemini());
+}
+
+// Tests that changing the Gemini policy prefs correctly updates the service's
+// eligibility.
+TEST_F(GeminiServiceImplTest, OnPolicyPrefChanged_UpdatesEligibility) {
+  // Sign in as eligible.
+  SignInUnmanagedAccountWithCapability(signin::Tribool::kTrue);
+  SetWorkspaceEligibility(/*is_disabled=*/false);
+  EXPECT_TRUE(gemini_service_->IsProfileEligibleForGemini());
+
+  // Trigger GenAI policy preference change (disallow).
+  pref_service_->SetInteger(
+      prefs::kGenAiEnabledByPolicy,
+      static_cast<int>(gemini::GenAiDefaultSettingsPolicy::kNotAllowed));
+
+  // User should now be ineligible.
+  EXPECT_FALSE(gemini_service_->IsProfileEligibleForGemini());
+
+  // Reset GenAI policy and check that user is eligible again.
+  pref_service_->SetInteger(
+      prefs::kGenAiEnabledByPolicy,
+      static_cast<int>(
+          gemini::GenAiDefaultSettingsPolicy::kAllowedWithoutImprovingModels));
+  EXPECT_TRUE(gemini_service_->IsProfileEligibleForGemini());
+
+  // Trigger Gemini policy preference change (disallow).
+  pref_service_->SetInteger(
+      prefs::kGeminiEnabledByPolicy,
+      static_cast<int>(gemini::SettingsPolicy::kNotAllowed));
+
+  // User should now be ineligible again.
+  EXPECT_FALSE(gemini_service_->IsProfileEligibleForGemini());
 }

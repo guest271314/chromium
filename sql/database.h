@@ -20,6 +20,7 @@
 #include "base/component_export.h"
 #include "base/containers/flat_map.h"
 #include "base/containers/span.h"
+#include "base/feature.h"
 #include "base/files/file_path.h"
 #include "base/functional/callback.h"
 #include "base/gtest_prod_util.h"
@@ -51,6 +52,10 @@ struct sqlite3;
 struct sqlite3_file;
 struct sqlite3_stmt;
 
+namespace base::trace_event {
+class ProcessMemoryDump;
+}  // namespace base::trace_event
+
 namespace perfetto {
 class NamedTrack;
 }
@@ -68,6 +73,9 @@ class StreamingBlobHandle;
 namespace test {
 class ScopedErrorExpecter;
 }  // namespace test
+
+COMPONENT_EXPORT(SQL)
+BASE_DECLARE_FEATURE(kCheckAutoCommitInCommitAndRollback);
 
 struct COMPONENT_EXPORT(SQL) DatabaseOptions {
   // Default page size for newly created databases.
@@ -160,19 +168,6 @@ struct COMPONENT_EXPORT(SQL) DatabaseOptions {
   // More details at https://www.sqlite.org/wal.html
   DatabaseOptions& set_wal_mode(bool wal_mode) {
     wal_mode_ = wal_mode;
-    return *this;
-  }
-
-  // If true, enables preloading the database before opening it.
-  //
-  // Hints the file system that the database will be accessed soon.
-  //
-  // This method should be called on databases that are on the critical path to
-  // Chrome startup. Informing the filesystem about our expected access pattern
-  // early on reduces the likelihood that we'll be blocked on disk I/O. This has
-  // a high impact on startup time.
-  DatabaseOptions& set_preload(bool preload) {
-    preload_ = preload;
     return *this;
   }
 
@@ -359,7 +354,6 @@ struct COMPONENT_EXPORT(SQL) DatabaseOptions {
   bool flush_to_media_ = false;
   int page_size_ = kDefaultPageSize;
   int cache_size_ = 0;
-  bool preload_ = false;
   bool mmap_alt_status_discouraged_ = false;
   bool enable_views_discouraged_ = false;
   const char* vfs_name_discouraged_ = nullptr;
@@ -501,17 +495,9 @@ class COMPONENT_EXPORT(SQL) Database {
   // Set an error-handling callback.  On errors, the error number (and
   // statement, if available) will be passed to the callback.
   //
-  // If no callback is set, the default error-handling behavior is invoked. The
-  // default behavior is to LOGs the error and propagate the failure.
-  //
-  // In DCHECK-enabled builds, the default error-handling behavior currently
-  // DCHECKs on errors. This is not correct, because DCHECKs are supposed to
-  // cover invariants and never fail, whereas SQLite errors can surface even on
-  // correct usage, due to I/O errors and data corruption. At some point in the
-  // future, errors will not result in DCHECKs.
-  //
   // The callback will be called on the sequence used for database operations.
-  // The callback will never be called after the Database instance is destroyed.
+  // The callback will never be called after the `Database` instance is
+  // destroyed. The callback must never destroy the `Database` instance.
   using ErrorCallback = base::RepeatingCallback<void(int, Statement*)>;
   void set_error_callback(ErrorCallback callback) {
     DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
@@ -551,6 +537,10 @@ class COMPONENT_EXPORT(SQL) Database {
   std::string GetDiagnosticInfo(int extended_error,
                                 Statement* statement,
                                 DatabaseDiagnostics* diagnostics = nullptr);
+
+  // Reports the memory usage into the provided memory dump with the given name.
+  bool ReportMemoryUsage(base::trace_event::ProcessMemoryDump* pmd,
+                         const std::string& dump_name);
 
   // Initialization ------------------------------------------------------------
 
@@ -640,6 +630,17 @@ class COMPONENT_EXPORT(SQL) Database {
   // value from `Raze()`.
   bool RazeAndPoison();
 
+  // Runs the `VACUUM` SQLite operation, rebuilding the database file and
+  // repacking it into a minimal amount of disk space. Only the main database is
+  // vacuumed, the attached databases (if any) are not.
+  //
+  // Returns `true` on success. `Vacuum` will fail if called while a
+  // `Transaction`, `Statement` or `StreamingBlobHandle` is active.
+  //
+  // Warning: `Vacuum` may change the ROWIDs of entries in any tables that do
+  // not have an explicit INTEGER PRIMARY KEY.
+  [[nodiscard]] bool Vacuum();
+
   // Delete the underlying database files associated with |path|. This should be
   // used on a database which is not opened by any Database instance. Open
   // Database instances pointing to the database can cause odd results or
@@ -674,21 +675,12 @@ class COMPONENT_EXPORT(SQL) Database {
 
   // Rollback all outstanding transactions.  Use with care, there may
   // be scoped transactions on the stack.
-  void RollbackAllTransactions();
+  void RollbackAllTransactions(InternalApiToken);
 
   bool HasActiveTransactions() const {
     DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
     DCHECK_GE(transaction_nesting_, 0);
     return is_open() && transaction_nesting_ > 0;
-  }
-
-  // Deprecated in favor of HasActiveTransactions().
-  //
-  // Returns the current transaction nesting, which will be 0 if there are
-  // no open transactions.
-  int transaction_nesting() const {
-    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-    return transaction_nesting_;
   }
 
   // Attached databases---------------------------------------------------------
@@ -970,10 +962,6 @@ class COMPONENT_EXPORT(SQL) Database {
   bool OpenInternal(const std::string& file_name)
       VALID_CONTEXT_REQUIRED(sequence_checker_);
 
-  // Requests the operating system to preload the pages on disk into memory.
-  void PreloadInternal(const base::FilePath& path)
-      VALID_CONTEXT_REQUIRED(sequence_checker_);
-
   // Configures the underlying sqlite3* object via sqlite3_db_config().
   //
   // To minimize the number of possible SQLite code paths executed in Chrome,
@@ -1246,9 +1234,6 @@ class COMPONENT_EXPORT(SQL) Database {
   // The number of blobs open for streaming, tracked for debugging purposes.
   size_t outstanding_blob_count_ GUARDED_BY_CONTEXT(sequence_checker_) = 0;
 
-  // When non-zero, indicates that `this` is inside `OnSqliteError()`.
-  size_t handling_error_nesting_ GUARDED_BY_CONTEXT(sequence_checker_) = 0;
-
   // Number of currently-nested transactions.
   int transaction_nesting_ GUARDED_BY_CONTEXT(sequence_checker_) = 0;
 
@@ -1295,6 +1280,9 @@ class COMPONENT_EXPORT(SQL) Database {
   // this guarantee.
   ErrorCallback error_callback_ GUARDED_BY_CONTEXT(sequence_checker_);
 
+  // `true` if `error_callback_` is executing.
+  bool executing_error_callback_ GUARDED_BY_CONTEXT(sequence_checker_) = false;
+
   // Developer-friendly database ID used in logging output and memory dumps.
   const std::string histogram_tag_;
 
@@ -1310,13 +1298,8 @@ class COMPONENT_EXPORT(SQL) Database {
   base::RepeatingCallback<void(SqliteResultCode)> open_error_reporting_callback_
       GUARDED_BY_CONTEXT(sequence_checker_);
 
-  // Weak factory for tracking lifetime of `this` (as opposed to
-  // `weak_factory_`, which will also invalidate pointers if the database is
-  // closed).
-  base::WeakPtrFactory<Database> weak_factory_lifetime_tracker_
-      GUARDED_BY_CONTEXT(sequence_checker_){this};
-
-  // Vends WeakPtr<Database> for internal scoping helpers.
+  // Vends WeakPtr<Database> for internal scoping helpers, invalidated when the
+  // database is closed.
   base::WeakPtrFactory<Database> weak_factory_
       GUARDED_BY_CONTEXT(sequence_checker_){this};
 };

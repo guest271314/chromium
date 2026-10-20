@@ -50,11 +50,11 @@ import org.chromium.chrome.R;
     final TextView mLegalMessage;
 
     AutofillSaveIbanBottomSheetView(Context context) {
-        mContentView =
-                (ViewGroup)
+        mScrollView =
+                (ScrollView)
                         LayoutInflater.from(context)
                                 .inflate(R.layout.autofill_save_iban_bottom_sheet, null);
-        mScrollView = mContentView.findViewById(R.id.autofill_save_iban_scroll_view);
+        mContentView = mScrollView;
         mLogoIcon = mContentView.findViewById(R.id.autofill_save_iban_google_pay_icon);
         mTitle = mContentView.findViewById(R.id.autofill_save_iban_title_text);
         mDescription = mContentView.findViewById(R.id.autofill_save_iban_description_text);

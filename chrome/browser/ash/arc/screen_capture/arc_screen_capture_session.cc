@@ -8,6 +8,7 @@
 
 #include "ash/shell.h"
 #include "base/functional/bind.h"
+#include "base/metrics/histogram_macros.h"
 #include "base/strings/utf_string_conversions.h"
 #include "chrome/browser/ash/notifications/screen_capture_notification_ui_ash.h"
 #include "chrome/browser/media/webrtc/desktop_capture_access_handler.h"
@@ -25,7 +26,7 @@
 #include "gpu/command_buffer/client/raster_interface.h"
 #include "gpu/command_buffer/client/shared_image_interface.h"
 #include "gpu/command_buffer/common/shared_image_usage.h"
-#include "mojo/public/cpp/system/platform_handle.h"
+#include "mojo/public/cpp/platform/platform_handle.h"
 #include "third_party/blink/public/common/mediastream/media_stream_request.h"
 #include "ui/aura/env.h"
 #include "ui/aura/window.h"
@@ -149,7 +150,7 @@ mojo::PendingRemote<mojom::ScreenCaptureSession>
 ArcScreenCaptureSession::Initialize(content::DesktopMediaID desktop_id,
                                     const std::string& display_name,
                                     bool enable_notification) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
   display_root_window_ =
       content::DesktopMediaID::GetNativeWindowById(desktop_id);
   if (!display_root_window_) {
@@ -191,7 +192,7 @@ ArcScreenCaptureSession::Initialize(content::DesktopMediaID desktop_id,
 }
 
 void ArcScreenCaptureSession::Close() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
   delete this;
 }
 
@@ -211,12 +212,12 @@ ArcScreenCaptureSession::~ArcScreenCaptureSession() {
 }
 
 void ArcScreenCaptureSession::NotificationStop() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
   Close();
 }
 
 void ArcScreenCaptureSession::SetOutputBufferDeprecated(
-    mojo::ScopedHandle graphics_buffer,
+    mojo::PlatformHandle graphics_buffer,
     uint32_t stride,
     SetOutputBufferDeprecatedCallback callback) {
   // Defined locally to avoid having to add a dependency on drm_fourcc.h
@@ -232,13 +233,13 @@ void ArcScreenCaptureSession::SetOutputBufferDeprecated(
 }
 
 void ArcScreenCaptureSession::SetOutputBuffer(
-    mojo::ScopedHandle graphics_buffer,
+    mojo::PlatformHandle graphics_buffer,
     mojom::BufferFormat buffer_format,
     uint64_t buffer_format_modifier,
     uint32_t stride,
     SetOutputBufferCallback callback) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
-  if (!graphics_buffer.is_valid()) {
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
+  if (!graphics_buffer.is_valid_platform_file()) {
     LOG(ERROR) << "Invalid handle passed into SetOutputBuffer";
     std::move(callback).Run();
     return;
@@ -252,19 +253,13 @@ void ArcScreenCaptureSession::SetOutputBuffer(
 
   gfx::NativePixmapHandle native_pixmap_handle;
   native_pixmap_handle.modifier = buffer_format_modifier;
-  base::ScopedPlatformFile platform_file;
-  MojoResult mojo_result =
-      mojo::UnwrapPlatformFile(std::move(graphics_buffer), &platform_file);
-  if (mojo_result != MOJO_RESULT_OK) {
-    LOG(ERROR) << "Failed unwrapping Mojo handle " << mojo_result;
-    std::move(callback).Run();
-    return;
-  }
   native_pixmap_handle.planes.emplace_back(
       stride * kBytesPerPixel, 0, stride * kBytesPerPixel * size_.height(),
-      std::move(platform_file));
+      graphics_buffer.TakePlatformFile());
 
   viz::SharedImageFormat si_format = GetSharedImageFormat(buffer_format);
+  UMA_HISTOGRAM_ENUMERATION("Arc.ScreenCaptureSession.SharedImageFormat",
+                            viz::GetSharedImageFormatUMA(si_format));
   auto client_shared_image = sii->CreateSharedImage(
       {si_format, size_, gfx::ColorSpace(),
        // NOTE: This SI will be used as the destination of a copy of the desktop
@@ -297,7 +292,7 @@ void ArcScreenCaptureSession::QueryCompleted(
     std::unique_ptr<DesktopTexture> desktop_texture,
     std::unique_ptr<PendingBuffer> pending_buffer,
     gpu::SyncToken sync_token) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
 
   auto* ri = GetContextProvider()->RasterInterface();
   auto* sii = GetContextProvider()->SharedImageInterface();
@@ -323,7 +318,7 @@ void ArcScreenCaptureSession::QueryCompleted(
 
 void ArcScreenCaptureSession::OnDesktopCaptured(
     std::unique_ptr<viz::CopyOutputResult> result) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
 
   if (result->IsEmpty() || result->size().width() < size_.width() - 1 ||
       result->size().width() > size_.width() + 1 ||
@@ -342,9 +337,11 @@ void ArcScreenCaptureSession::OnDesktopCaptured(
     return;
   }
 
-  DCHECK_EQ(result->format(), viz::CopyOutputResult::Format::RGBA);
-  DCHECK_EQ(result->destination(),
-            viz::CopyOutputResult::Destination::kSharedImage);
+  CHECK_EQ(result->format(), viz::CopyOutputResult::Format::RGBA,
+           base::NotFatalUntil::M160);
+  CHECK_EQ(result->destination(),
+           viz::CopyOutputResult::Destination::kSharedImage,
+           base::NotFatalUntil::M160);
 
   auto* ri = GetContextProvider()->RasterInterface();
   if (!ri) {
@@ -407,7 +404,7 @@ void ArcScreenCaptureSession::CopyDesktopTextureToGpuBuffer(
 }
 
 void ArcScreenCaptureSession::OnAnimationStep(base::TimeTicks timestamp) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
   CompositorAnimationObserver::ResetIfActive();
   if (texture_queue_.size() >= kQueueSizeToForceUpdate) {
     DVLOG(3) << "AnimationStep callback forcing update due to texture queue "
@@ -458,18 +455,18 @@ void ArcScreenCaptureSession::OnAnimationStep(base::TimeTicks timestamp) {
 
 void ArcScreenCaptureSession::OnCompositingShuttingDown(
     ui::Compositor* compositor) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
   compositor->RemoveAnimationObserver(this);
 }
 
 void ArcScreenCaptureSession::OnContextLost() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
   Close();
 }
 
 void ArcScreenCaptureSession::OnWillRemoveDisplays(
     const display::Displays& removed_displays) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
   bool removed = false;
   for (const auto& display : removed_displays) {
     removed |= (display.id() == display_id_);

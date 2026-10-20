@@ -156,8 +156,8 @@ class VIEWS_EXAMPLES_EXPORT DesignerExample : public ExampleBase,
   void OnSelectionChanged() override;
 
   // ui::TableModel overrides
-  size_t RowCount() override;
-  std::u16string GetText(size_t row, int column_id) override;
+  size_t RowCount() const override;
+  std::u16string GetText(size_t row, int column_id) const override;
   void SetObserver(ui::TableModelObserver* observer) override;
 
   // ui::ComboboxModel overrides
@@ -185,7 +185,7 @@ class VIEWS_EXAMPLES_EXPORT DesignerExample : public ExampleBase,
   GrabHandles grab_handles_;
 
   std::vector<std::unique_ptr<BaseClassRegistration>> class_registrations_;
-  std::set<View*> designer_views_;
+  std::set<raw_ptr<View>> designer_views_;
 
   views::ViewTracker tracker_;
 

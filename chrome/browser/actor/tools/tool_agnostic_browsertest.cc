@@ -5,6 +5,7 @@
 #include "base/run_loop.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/test/bind.h"
+#include "base/test/run_until.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/test_future.h"
 #include "base/time/time.h"
@@ -13,7 +14,10 @@
 #include "chrome/browser/actor/execution_engine.h"
 #include "chrome/browser/actor/tools/tool_request.h"
 #include "chrome/browser/actor/tools/tools_test_util.h"
+#include "chrome/browser/actor/ui/actor_task_unload_handler.h"
+#include "chrome/browser/glic/public/features.h"
 #include "chrome/browser/ui/navigator/browser_navigator_params.h"
+#include "chrome/browser/ui/unload_controller.h"
 #include "chrome/common/actor.mojom.h"
 #include "chrome/common/chrome_features.h"
 #include "chrome/test/base/ui_test_utils.h"
@@ -28,8 +32,13 @@
 #include "content/public/test/back_forward_cache_util.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
+#include "ui/base/models/dialog_model.h"
 #include "ui/base/page_transition_types.h"
+#include "ui/base/window_open_disposition.h"
 #include "ui/gfx/geometry/point_conversions.h"
+#include "ui/views/widget/widget.h"
+#include "ui/views/widget/widget_delegate.h"
+#include "ui/views/window/dialog_delegate.h"
 #include "url/url_util.h"
 
 #if BUILDFLAG(IS_CHROMEOS)
@@ -48,6 +57,17 @@ using content::WebContents;
 namespace actor {
 
 namespace {
+
+views::Widget* GetActorDialogWidget(UnloadController* controller) {
+  for (const auto& h : controller->tab_unload_handlers_for_testing()) {
+    if (auto* handler = static_cast<ActorTaskUnloadHandler*>(h.get())) {
+      if (auto* widget = handler->GetActiveDialogWidgetForTesting()) {
+        return widget;
+      }
+    }
+  }
+  return nullptr;
+}
 
 class ActorToolAgnosticBrowserTest : public ActorToolsTest {
  public:
@@ -84,10 +104,10 @@ IN_PROC_BROWSER_TEST_F(ActorToolAgnosticBrowserTest,
     GTEST_SKIP();
   }
 
-  const GURL url_first =
-      embedded_test_server()->GetURL("/actor/blank.html?start");
-  const GURL url_second =
-      embedded_test_server()->GetURL("/actor/blank.html?target");
+  const GURL url_first = embedded_https_test_server().GetURL(
+      "example.com", "/actor/blank.html?start");
+  const GURL url_second = embedded_https_test_server().GetURL(
+      "example.com", "/actor/blank.html?target");
   ASSERT_TRUE(content::NavigateToURL(web_contents(), url_first));
 
   content::WeakDocumentPtr first_rfh = main_frame()->GetWeakDocumentPtr();
@@ -115,12 +135,19 @@ IN_PROC_BROWSER_TEST_F(ActorToolAgnosticBrowserTest,
 // Ensure actuation for a page tool simulates the page having focus. This is
 // important to ensure, e.g. 'focus' events are fired on the page in a way that
 // matches if a real user was interacting with the page.
+// TODO(crbug.com/460575305): Re-enable when no longer flaky on Mac.
+#if BUILDFLAG(IS_MAC)
+#define MAYBE_EnsureFocusSimulatedWhenActing \
+  DISABLED_EnsureFocusSimulatedWhenActing
+#else
+#define MAYBE_EnsureFocusSimulatedWhenActing EnsureFocusSimulatedWhenActing
+#endif
 IN_PROC_BROWSER_TEST_F(ActorToolAgnosticBrowserTest,
-                       EnsureFocusSimulatedWhenActing) {
+                       MAYBE_EnsureFocusSimulatedWhenActing) {
   const GURL url_background =
-      embedded_test_server()->GetURL("/actor/focus.html");
+      embedded_https_test_server().GetURL("example.com", "/actor/focus.html");
   const GURL url_foreground =
-      embedded_test_server()->GetURL("/actor/blank.html");
+      embedded_https_test_server().GetURL("example.com", "/actor/blank.html");
 
   ASSERT_TRUE(content::NavigateToURL(web_contents(), url_background));
 
@@ -131,7 +158,7 @@ IN_PROC_BROWSER_TEST_F(ActorToolAgnosticBrowserTest,
   ::ui_test_utils::NavigateToURL(&params);
 
   WebContents* foreground_contents = web_contents();
-  ASSERT_NE(web_contents(), background_contents);
+  ASSERT_NE(foreground_contents, background_contents);
   ASSERT_FALSE(background_contents->GetPrimaryMainFrame()
                    ->GetRenderWidgetHost()
                    ->GetView()
@@ -196,12 +223,12 @@ IN_PROC_BROWSER_TEST_F(ActorToolAgnosticBrowserTest,
 // works.
 IN_PROC_BROWSER_TEST_F(ActorToolAgnosticBrowserTest,
                        InvokeToolSameSiteSubframe) {
-  const GURL url =
-      embedded_https_test_server().GetURL("/actor/positioned_iframe.html");
+  const GURL url = embedded_https_test_server().GetURL(
+      "example.com", "/actor/positioned_iframe.html");
   ASSERT_TRUE(content::NavigateToURL(web_contents(), url));
 
   const GURL subframe_url = embedded_https_test_server().GetURL(
-      "/actor/page_with_clickable_element.html");
+      "example.com", "/actor/page_with_clickable_element.html");
   ASSERT_TRUE(NavigateIframeToURL(web_contents(), "iframe", subframe_url));
 
   content::RenderFrameHost* subframe =
@@ -229,11 +256,11 @@ IN_PROC_BROWSER_TEST_F(ActorToolAgnosticBrowserTest,
 IN_PROC_BROWSER_TEST_F(ActorToolAgnosticBrowserTest,
                        InvokeToolCrossSiteSubframeWithCoordinateTarget) {
   const GURL url = embedded_https_test_server().GetURL(
-      "/actor/positioned_iframe_no_scroll.html");
+      "a.com", "/actor/positioned_iframe_no_scroll.html");
   ASSERT_TRUE(content::NavigateToURL(web_contents(), url));
 
   const GURL cross_origin_iframe_url = embedded_https_test_server().GetURL(
-      "foo.com", "/actor/page_with_clickable_element.html");
+      "b.com", "/actor/page_with_clickable_element.html");
   ASSERT_TRUE(
       NavigateIframeToURL(web_contents(), "iframe", cross_origin_iframe_url));
 
@@ -263,8 +290,8 @@ IN_PROC_BROWSER_TEST_F(ActorToolAgnosticBrowserTest,
 // Sending an action to an offscreen element on a page should succeed by
 // scrolling it into view first.
 IN_PROC_BROWSER_TEST_F(ActorToolAgnosticBrowserTest, OffscreenElement) {
-  const GURL url =
-      embedded_test_server()->GetURL("/actor/page_with_clickable_element.html");
+  const GURL url = embedded_https_test_server().GetURL(
+      "example.com", "/actor/page_with_clickable_element.html");
   ASSERT_TRUE(content::NavigateToURL(web_contents(), url));
 
   ASSERT_EQ(EvalJs(web_contents(), "offscreen_button_clicked"), false);
@@ -284,8 +311,8 @@ IN_PROC_BROWSER_TEST_F(ActorToolAgnosticBrowserTest, OffscreenElement) {
 // Same as above but the element is an inline element. (i.e. doesn't have a
 // LayoutBox).
 IN_PROC_BROWSER_TEST_F(ActorToolAgnosticBrowserTest, OffscreenElementInline) {
-  const GURL url =
-      embedded_test_server()->GetURL("/actor/page_with_clickable_element.html");
+  const GURL url = embedded_https_test_server().GetURL(
+      "example.com", "/actor/page_with_clickable_element.html");
   ASSERT_TRUE(content::NavigateToURL(web_contents(), url));
 
   ASSERT_EQ(EvalJs(web_contents(), "offscreen_inline_clicked"), false);
@@ -304,8 +331,8 @@ IN_PROC_BROWSER_TEST_F(ActorToolAgnosticBrowserTest, OffscreenElementInline) {
 
 // Sending an action to an offscreen coordinate should fail.
 IN_PROC_BROWSER_TEST_F(ActorToolAgnosticBrowserTest, OffscreenCoordinate) {
-  const GURL url =
-      embedded_test_server()->GetURL("/actor/page_with_clickable_element.html");
+  const GURL url = embedded_https_test_server().GetURL(
+      "example.com", "/actor/page_with_clickable_element.html");
   ASSERT_TRUE(content::NavigateToURL(web_contents(), url));
 
   {
@@ -327,8 +354,8 @@ IN_PROC_BROWSER_TEST_F(ActorToolAgnosticBrowserTest, OffscreenCoordinate) {
 // Sending an action to a coordinate that's outside the document bounds (i.e.
 // cannot be scrolled to) should fail.
 IN_PROC_BROWSER_TEST_F(ActorToolAgnosticBrowserTest, InvalidCoordinate) {
-  const GURL url =
-      embedded_test_server()->GetURL("/actor/page_with_clickable_element.html");
+  const GURL url = embedded_https_test_server().GetURL(
+      "example.com", "/actor/page_with_clickable_element.html");
   ASSERT_TRUE(content::NavigateToURL(web_contents(), url));
 
   {
@@ -360,8 +387,8 @@ IN_PROC_BROWSER_TEST_F(ActorToolAgnosticBrowserTest, InvalidCoordinate) {
 // should fail.
 IN_PROC_BROWSER_TEST_F(ActorToolAgnosticBrowserTest,
                        OffscreenElementNonScrollablePage) {
-  const GURL url =
-      embedded_test_server()->GetURL("/actor/page_with_clickable_element.html");
+  const GURL url = embedded_https_test_server().GetURL(
+      "example.com", "/actor/page_with_clickable_element.html");
   ASSERT_TRUE(content::NavigateToURL(web_contents(), url));
   ASSERT_TRUE(ExecJs(web_contents(),
                      "document.documentElement.style.overflow = 'hidden';"));
@@ -384,8 +411,8 @@ IN_PROC_BROWSER_TEST_F(ActorToolAgnosticBrowserTest,
 
 // Sending an action to an offscreen fixed position element should fail.
 IN_PROC_BROWSER_TEST_F(ActorToolAgnosticBrowserTest, OffscreenFixedElement) {
-  const GURL url =
-      embedded_test_server()->GetURL("/actor/page_with_clickable_element.html");
+  const GURL url = embedded_https_test_server().GetURL(
+      "example.com", "/actor/page_with_clickable_element.html");
   ASSERT_TRUE(content::NavigateToURL(web_contents(), url));
 
   // Page starts unscrolled
@@ -406,8 +433,8 @@ IN_PROC_BROWSER_TEST_F(ActorToolAgnosticBrowserTest, OffscreenFixedElement) {
 
 IN_PROC_BROWSER_TEST_F(ActorToolAgnosticBrowserTest,
                        ToolFailsWhenNodeInteractionPointObscured) {
-  const GURL url =
-      embedded_test_server()->GetURL("/actor/page_with_obscured_element.html");
+  const GURL url = embedded_https_test_server().GetURL(
+      "example.com", "/actor/page_with_obscured_element.html");
   ASSERT_TRUE(content::NavigateToURL(web_contents(), url));
   ASSERT_EQ(EvalJs(web_contents(), "target_button_clicked"), false);
   ASSERT_EQ(EvalJs(web_contents(), "obstruction_button_clicked"), false);
@@ -431,8 +458,8 @@ IN_PROC_BROWSER_TEST_F(ActorToolAgnosticBrowserTest,
 
 IN_PROC_BROWSER_TEST_F(ActorToolAgnosticBrowserTest,
                        ToolFailingValidationAddsTab) {
-  const GURL url_start =
-      embedded_https_test_server().GetURL("/actor/blank.html?start");
+  const GURL url_start = embedded_https_test_server().GetURL(
+      "example.com", "/actor/blank.html?start");
   const GURL url_target = embedded_https_test_server().GetURL(
       "blocked.example.com", "/actor/blank.html?target");
   ASSERT_TRUE(content::NavigateToURL(web_contents(), url_start));
@@ -442,14 +469,14 @@ IN_PROC_BROWSER_TEST_F(ActorToolAgnosticBrowserTest,
       MakeNavigateRequest(*active_tab(), url_target.spec());
   ActResultFuture result;
 
-  ASSERT_TRUE(actor_task().GetLastActedTabs().empty());
+  ASSERT_TRUE(actor_task().GetLastActedActorSurfaces().empty());
 
   actor_task().Act(ToRequestList(action), result.GetCallback());
   ExpectErrorResult(result, mojom::ActionResultCode::kUrlBlocked);
 
   // Ensure the tab was added to the tab set even though the tool failed before
   // invoking.
-  EXPECT_FALSE(actor_task().GetLastActedTabs().empty());
+  EXPECT_FALSE(actor_task().GetLastActedActorSurfaces().empty());
 }
 
 // Ensures that a Tool that would normally return !page_stabilization_required
@@ -457,7 +484,8 @@ IN_PROC_BROWSER_TEST_F(ActorToolAgnosticBrowserTest,
 // performed.
 IN_PROC_BROWSER_TEST_F(ActorToolAgnosticBrowserTest,
                        ScrollIntoViewForcesPageStabilization) {
-  const GURL url = embedded_test_server()->GetURL("/actor/input.html");
+  const GURL url =
+      embedded_https_test_server().GetURL("example.com", "/actor/input.html");
   ASSERT_TRUE(content::NavigateToURL(web_contents(), url));
 
   const std::string_view selector = "#offscreen-disabled-input";
@@ -514,25 +542,12 @@ IN_PROC_BROWSER_TEST_F(ActorToolAgnosticBrowserTest,
   }
 }
 
-// TODO(b/472640712): Test runs only when this flag is enabled, remove the
-// unique test-suite once the change lands safely and the flag is removed.
-class ActorEarlyAddTaskTabsBrowserTest : public ActorToolAgnosticBrowserTest {
- public:
-  ActorEarlyAddTaskTabsBrowserTest() {
-    scoped_feature_list_.InitAndEnableFeature(kGlicEarlyAddTaskTabs);
-  }
-  ~ActorEarlyAddTaskTabsBrowserTest() override = default;
-
- private:
-  base::test::ScopedFeatureList scoped_feature_list_;
-};
-
 // Ensure that a tab-scoped action associates the tab with the ActorTask
 // immediately after calling Act.
-IN_PROC_BROWSER_TEST_F(ActorEarlyAddTaskTabsBrowserTest,
+IN_PROC_BROWSER_TEST_F(ActorToolAgnosticBrowserTest,
                        TabScopedToolRequestAddsTabImmediately) {
-  const GURL url =
-      embedded_test_server()->GetURL("/actor/page_with_clickable_element.html");
+  const GURL url = embedded_https_test_server().GetURL(
+      "example.com", "/actor/page_with_clickable_element.html");
   ASSERT_TRUE(content::NavigateToURL(web_contents(), url));
 
   std::optional<int> button_id =
@@ -541,7 +556,7 @@ IN_PROC_BROWSER_TEST_F(ActorEarlyAddTaskTabsBrowserTest,
 
   std::unique_ptr<ToolRequest> action =
       MakeClickRequest(*main_frame(), button_id.value());
-  tabs::TabHandle tab = action->GetTabHandle();
+  tabs::TabHandle tab = action->GetActorSurfaceHandle().GetTabHandle();
   ASSERT_NE(tab, tabs::TabHandle::Null());
   ASSERT_FALSE(actor_task().GetTabs().contains(tab));
 
@@ -571,10 +586,10 @@ IN_PROC_BROWSER_TEST_F(ActorEarlyAddTaskTabsBrowserTest,
   EXPECT_TRUE(actor_task().GetTabs().contains(tab));
 }
 
-IN_PROC_BROWSER_TEST_F(ActorEarlyAddTaskTabsBrowserTest,
+IN_PROC_BROWSER_TEST_F(ActorToolAgnosticBrowserTest,
                        NewlyAddedTabsVisibleFromStateChangeCallback) {
-  const GURL url =
-      embedded_test_server()->GetURL("/actor/page_with_clickable_element.html");
+  const GURL url = embedded_https_test_server().GetURL(
+      "example.com", "/actor/page_with_clickable_element.html");
   ASSERT_TRUE(content::NavigateToURL(web_contents(), url));
 
   std::optional<int> button_id =
@@ -583,7 +598,7 @@ IN_PROC_BROWSER_TEST_F(ActorEarlyAddTaskTabsBrowserTest,
 
   std::unique_ptr<ToolRequest> action =
       MakeClickRequest(*main_frame(), button_id.value());
-  tabs::TabHandle tab = action->GetTabHandle();
+  tabs::TabHandle tab = action->GetActorSurfaceHandle().GetTabHandle();
 
   ASSERT_TRUE(actor_task().GetTabs().empty());
 
@@ -608,8 +623,8 @@ IN_PROC_BROWSER_TEST_F(ActorEarlyAddTaskTabsBrowserTest,
 // Ensure ActorKeyedService removes a task from its tracked task set when the
 // task is stopped.
 IN_PROC_BROWSER_TEST_F(ActorToolAgnosticBrowserTest, ActorTaskRemovedOnStop) {
-  const GURL url =
-      embedded_test_server()->GetURL("/actor/page_with_clickable_element.html");
+  const GURL url = embedded_https_test_server().GetURL(
+      "example.com", "/actor/page_with_clickable_element.html");
   ASSERT_TRUE(content::NavigateToURL(web_contents(), url));
 
   TaskId task_id = actor_task().id();
@@ -624,8 +639,8 @@ IN_PROC_BROWSER_TEST_F(ActorToolAgnosticBrowserTest, ActorTaskRemovedOnStop) {
 
 IN_PROC_BROWSER_TEST_F(ActorToolAgnosticBrowserTest,
                        ActorTaskNoLongerAvailableInStopStateCallback) {
-  const GURL url =
-      embedded_test_server()->GetURL("/actor/page_with_clickable_element.html");
+  const GURL url = embedded_https_test_server().GetURL(
+      "example.com", "/actor/page_with_clickable_element.html");
   ASSERT_TRUE(content::NavigateToURL(web_contents(), url));
 
   ASSERT_EQ(actor_task().GetState(), ActorTask::State::kCreated);
@@ -665,10 +680,11 @@ class ActorToolAgnosticBrowserTestWithDeferWhileInterrupted
 
 IN_PROC_BROWSER_TEST_F(ActorToolAgnosticBrowserTestWithDeferWhileInterrupted,
                        ActCallbackDeferredWhileInterrupted) {
-  const GURL next_url = embedded_test_server()->GetURL("/actor/blank.html");
-  const GURL start_url = embedded_test_server()->GetURL(
-      base::StrCat({"/actor/link_full_page.html?href=",
-                    url::EncodeUriComponent(next_url.spec())}));
+  const GURL next_url =
+      embedded_https_test_server().GetURL("example.com", "/actor/blank.html");
+  const GURL start_url = embedded_https_test_server().GetURL(
+      "example.com", base::StrCat({"/actor/link_full_page.html?href=",
+                                   url::EncodeUriComponent(next_url.spec())}));
 
   ASSERT_TRUE(content::NavigateToURL(web_contents(), start_url));
 
@@ -736,10 +752,11 @@ class ActorToolAgnosticBrowserTestWithCustomDelay
  public:
   ActorToolAgnosticBrowserTestWithCustomDelay() {
     // Ensure tool doesn't finish before the tab is closed.
-    feature_list_.InitAndEnableFeatureWithParameters(
-        features::kGlicActor,
-        {{"glic-actor-page-stability-min-wait", "500ms"},
-         {features::kGlicActorPolicyControlExemption.name, "true"}});
+    feature_list_.InitWithFeaturesAndParameters(
+        {{features::kGlicActor, {}},
+         {features::kGlicActorPolicyControlExemption, {}},
+         {kActorPageStability, {{kActorPageStabilityMinWait.name, "10000ms"}}}},
+        {});
   }
   ~ActorToolAgnosticBrowserTestWithCustomDelay() override = default;
 
@@ -750,11 +767,12 @@ class ActorToolAgnosticBrowserTestWithCustomDelay
 // Closing a tab before tool finishes should cancel callbacks and not crash.
 IN_PROC_BROWSER_TEST_F(ActorToolAgnosticBrowserTestWithCustomDelay,
                        CloseTabBeforeToolFinishes) {
+  actor::ActorTaskTabCloseConfirmDialog::SetSuppressForTesting(false);
   // Use a new tab so closing it later won't trigger destruction of browser
   // (needed for proper test teardown).
   AddBlankTabAndShow(browser());
-  const GURL url =
-      embedded_test_server()->GetURL("/actor/page_with_clickable_element.html");
+  const GURL url = embedded_https_test_server().GetURL(
+      "example.com", "/actor/page_with_clickable_element.html");
   ASSERT_TRUE(content::NavigateToURL(web_contents(), url));
 
   std::optional<int> button_id =
@@ -769,7 +787,7 @@ IN_PROC_BROWSER_TEST_F(ActorToolAgnosticBrowserTestWithCustomDelay,
 
   std::unique_ptr<ToolRequest> action =
       MakeClickRequest(*main_frame(), button_id.value());
-  tabs::TabHandle tab_handle = action->GetTabHandle();
+  tabs::TabHandle tab_handle = action->GetActorSurfaceHandle().GetTabHandle();
   actor_task().Act(ToRequestList(action), result.GetCallback());
 
   // Wait until the tab has been associated with the task but before the tool
@@ -781,7 +799,18 @@ IN_PROC_BROWSER_TEST_F(ActorToolAgnosticBrowserTestWithCustomDelay,
   ASSERT_FALSE(result.IsReady());
 
   web_contents()->Close();
-  // ActorTask::OnTabWillDetach will return kError before renderer tool
+
+  // Wait for the confirmation dialog widget to appear.
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return GetActorDialogWidget(UnloadController::From(browser())) != nullptr;
+  }));
+  views::Widget* dialog =
+      GetActorDialogWidget(UnloadController::From(browser()));
+
+  // Accept the dialog to allow the tab to close.
+  dialog->widget_delegate()->AsDialogDelegate()->AcceptDialog();
+
+  // ActorTask::OnActorSurfaceWillDetach will return kError before renderer tool
   // completes. The code is kTaskWentAway because removing a tab causes the task
   // to be stopped.
   ExpectErrorResult(result, mojom::ActionResultCode::kTaskWentAway);
@@ -798,8 +827,8 @@ IN_PROC_BROWSER_TEST_F(ActorToolAgnosticBrowserTestWithCustomDelay,
 
 IN_PROC_BROWSER_TEST_F(ActorToolAgnosticBrowserTestWithCustomDelay,
                        RendererCrashesBeforeToolFinishes) {
-  const GURL url =
-      embedded_test_server()->GetURL("/actor/page_with_clickable_element.html");
+  const GURL url = embedded_https_test_server().GetURL(
+      "example.com", "/actor/page_with_clickable_element.html");
   ASSERT_TRUE(content::NavigateToURL(web_contents(), url));
 
   std::optional<int> button_id =

@@ -29,6 +29,7 @@
 #include "chrome/browser/user_education/user_education_service.h"
 #include "chrome/browser/user_education/user_education_service_factory.h"
 #include "chrome/common/webui_url_constants.h"
+#include "components/feature_engagement/public/feature_list.h"
 #include "components/feature_engagement/public/tracker.h"
 #include "components/user_education/common/feature_promo/feature_promo_controller.h"
 #include "components/user_education/common/feature_promo/feature_promo_registry.h"
@@ -47,7 +48,9 @@
 #include "third_party/abseil-cpp/absl/strings/ascii.h"
 #include "ui/base/interaction/element_identifier.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/base/page_transition_types.h"
 #include "ui/base/webui/resource_path.h"
+#include "ui/base/window_open_disposition.h"
 
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
 #include "chrome/browser/ui/navigator/browser_navigator.h"
@@ -72,7 +75,7 @@ namespace {
 
 user_education::TutorialService* GetTutorialService(Profile* profile) {
   auto* service = UserEducationServiceFactory::GetForBrowserContext(profile);
-  return service ? &service->tutorial_service() : nullptr;
+  return service ? service->tutorial_service() : nullptr;
 }
 
 user_education::FeaturePromoRegistry* GetFeaturePromoRegistry(
@@ -148,6 +151,11 @@ const base::Feature* GetFeatureByName(const std::string& feature_name,
       }
     }
   }
+  for (const base::Feature* feature : feature_engagement::GetAllFeatures()) {
+    if (feature_name == feature->name) {
+      return feature;
+    }
+  }
   return nullptr;
 }
 
@@ -189,7 +197,8 @@ std::string RemovePrefixAndCamelCase(std::string str, const char* prefix) {
 // be displayed on the tester page.
 std::string GetTitleFromFeaturePromoData(
     const base::Feature* feature,
-    const user_education::FeaturePromoSpecification& spec) {
+    const user_education::FeaturePromoSpecification& spec =
+        user_education::FeaturePromoSpecification()) {
   return RemovePrefixAndCamelCase(feature->name, "IPH_");
 }
 
@@ -381,6 +390,9 @@ auto GetNtpPromoData(
       storage.ReadNtpPromoData(id).value_or(user_education::NtpPromoData());
   std::vector<FeaturePromoDemoPageDataPtr> result;
   std::string eligibility = [&]() {
+    if (!context || !context->IsValid()) {
+      return "Not Eligible";
+    }
     switch (spec.eligibility_callback().Run(context)) {
       case user_education::NtpPromoSpecification::Eligibility::kEligible:
         return "Eligible";
@@ -421,6 +433,13 @@ UserEducationInternalsPageHandlerImpl::UserEducationInternalsPageHandlerImpl(
 
 UserEducationInternalsPageHandlerImpl::
     ~UserEducationInternalsPageHandlerImpl() = default;
+
+void UserEducationInternalsPageHandlerImpl::IsFeatureEngagementInitialized(
+    IsFeatureEngagementInitializedCallback callback) {
+  auto* const tracker =
+      feature_engagement::TrackerFactory::GetForBrowserContext(profile_);
+  std::move(callback).Run(tracker && tracker->IsInitialized());
+}
 
 void UserEducationInternalsPageHandlerImpl::GetTutorials(
     GetTutorialsCallback callback) {
@@ -695,8 +714,65 @@ void UserEducationInternalsPageHandlerImpl::ClearFeaturePromoData(
     return;
   }
 
-  tracker->ClearEventData(*feature);
+  tracker->ClearEventData(
+      *feature, base::PassKey<UserEducationInternalsPageHandlerImpl>());
   storage_service->Reset(*feature);
+  std::move(callback).Run(std::string());
+}
+
+void UserEducationInternalsPageHandlerImpl::GetNonIphPromos(
+    GetFeaturePromosCallback callback) {
+  std::vector<FeaturePromoDemoPageInfoPtr> info_list;
+  auto* const registry = GetFeaturePromoRegistry(profile_);
+  auto* const tracker =
+      feature_engagement::TrackerFactory::GetForBrowserContext(profile_);
+  if (registry && tracker && tracker->IsInitialized()) {
+    std::set<const base::Feature*> iph_features;
+    std::ranges::transform(registry->feature_data(),
+                           std::inserter(iph_features, iph_features.begin()),
+                           [](const auto& pair) { return pair.first; });
+    auto* const config = tracker->GetConfiguration(
+        base::PassKey<UserEducationInternalsPageHandlerImpl>());
+    CHECK(config);
+    for (auto* const feature : feature_engagement::GetAllFeatures()) {
+      if (!base::FeatureList::IsEnabled(*feature) ||
+          iph_features.contains(feature)) {
+        continue;
+      }
+      if (!config->HasFeatureConfig(*feature)) {
+        continue;
+      }
+      std::vector<FeaturePromoDemoPageDataPtr> promo_data;
+      AddTrackerData(*feature, promo_data, tracker);
+      info_list.emplace_back(FeaturePromoDemoPageInfo::New(
+          GetTitleFromFeaturePromoData(feature), "", feature->name, "", 0,
+          std::vector<std::string>{}, std::vector<std::string>{},
+          std::vector<std::string>{}, "", std::move(promo_data)));
+    }
+  }
+
+  return std::move(callback).Run(std::move(info_list));
+}
+
+void UserEducationInternalsPageHandlerImpl::ClearNonIphPromoData(
+    const std::string& feature_name,
+    ClearFeaturePromoDataCallback callback) {
+  const base::Feature* feature = GetFeatureByName(feature_name, profile_);
+  if (!feature) {
+    std::move(callback).Run(
+        std::string("Cannot find feature engagement feature: ") + feature_name);
+    return;
+  }
+
+  auto* const tracker =
+      feature_engagement::TrackerFactory::GetForBrowserContext(profile_);
+  if (!tracker || !tracker->IsInitialized()) {
+    std::move(callback).Run(std::string("Feature Engagement not ready."));
+    return;
+  }
+
+  tracker->ClearEventData(
+      *feature, base::PassKey<UserEducationInternalsPageHandlerImpl>());
   std::move(callback).Run(std::string());
 }
 
@@ -777,6 +853,9 @@ void UserEducationInternalsPageHandlerImpl::GetNewBadges(
   auto* const storage_service = GetStorageService(profile_);
   if (registry) {
     for (const auto& [feature, spec] : registry->feature_data()) {
+      if (!base::FeatureList::IsEnabled(*feature)) {
+        continue;
+      }
       info_list.emplace_back(FeaturePromoDemoPageInfo::New(
           RemovePrefixAndCamelCase(feature->name, ""),
           spec.metadata.additional_description, feature->name, "\"New\" Badge",
@@ -844,6 +923,7 @@ void UserEducationInternalsPageHandlerImpl::ClearNewBadgeData(
   }
 
   auto data = storage_service->ReadNewBadgeData(*feature);
+  data.feature_enabled_time = base::Time::Now();
   data.show_count = 0;
   data.used_count = 0;
   storage_service->SaveNewBadgeData(*feature, data);
@@ -961,7 +1041,28 @@ void UserEducationInternalsPageHandlerImpl::ClearNtpPromoPreferences(
 }
 
 // static
-std::vector<mojom::user_education_internals::FeaturePromoDemoPageDataPtr>
+void UserEducationInternalsPageHandlerImpl::AddTrackerData(
+    const base::Feature& feature,
+    std::vector<FeaturePromoDemoPageDataPtr>& result,
+    const feature_engagement::Tracker* tracker) {
+  const bool is_enabled = base::FeatureList::IsEnabled(feature);
+  result.emplace_back(FormatDemoPageData("Feature enabled?", is_enabled));
+  for (const auto& [config, count] : tracker->ListEvents(feature)) {
+    std::ostringstream oss;
+    oss << "Required condition: " << config.name << " " << config.comparator
+        << " Actual:";
+    result.emplace_back(FormatDemoPageData(oss.str().c_str(), count));
+  }
+  if (is_enabled) {
+    result.emplace_back(FormatDemoPageData(
+        "Would be allowed by Feature Engagement Tracker?",
+        tracker->WouldTriggerHelpUI(
+            feature, base::PassKey<UserEducationInternalsPageHandlerImpl>())));
+  }
+}
+
+// static
+std::vector<FeaturePromoDemoPageDataPtr>
 UserEducationInternalsPageHandlerImpl::GetPromoData(
     const user_education::FeaturePromoSpecification& spec,
     const user_education::UserEducationStorageService* storage_service,
@@ -1003,20 +1104,6 @@ UserEducationInternalsPageHandlerImpl::GetPromoData(
       }
     }
   }
-  const bool is_enabled = base::FeatureList::IsEnabled(*spec.feature());
-  result.emplace_back(FormatDemoPageData("Feature enabled?", is_enabled));
-  for (const auto& [config, count] : tracker->ListEvents(*spec.feature())) {
-    std::ostringstream oss;
-    oss << "Required condition: " << config.name << config.comparator
-        << " Actual:";
-    result.emplace_back(FormatDemoPageData(oss.str().c_str(), count));
-  }
-  if (is_enabled) {
-    result.emplace_back(FormatDemoPageData(
-        "Feature Engagement Tracker OK?",
-        tracker->WouldTriggerHelpUI(
-            *spec.feature(),
-            base::PassKey<UserEducationInternalsPageHandlerImpl>())));
-  }
+  AddTrackerData(*spec.feature(), result, tracker);
   return result;
 }

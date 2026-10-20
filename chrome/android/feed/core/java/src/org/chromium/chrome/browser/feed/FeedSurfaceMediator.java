@@ -12,7 +12,6 @@ import android.content.res.Resources;
 import android.os.Handler;
 import android.view.View;
 import android.view.View.OnLayoutChangeListener;
-import android.view.ViewGroup;
 
 import androidx.annotation.VisibleForTesting;
 import androidx.recyclerview.widget.RecyclerView;
@@ -21,6 +20,8 @@ import androidx.recyclerview.widget.RecyclerView.OnScrollListener;
 
 import org.chromium.base.ApplicationStatus;
 import org.chromium.base.Callback;
+import org.chromium.base.DeviceInfo;
+import org.chromium.base.MemoryPressureLevel;
 import org.chromium.base.MemoryPressureListener;
 import org.chromium.base.ObserverList;
 import org.chromium.base.memory.MemoryPressureCallback;
@@ -32,30 +33,22 @@ import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.feed.FeedSurfaceProvider.RestoringState;
 import org.chromium.chrome.browser.feed.Stream.ContentChangedListener;
+import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.gesturenav.GestureNavigationUtils;
 import org.chromium.chrome.browser.new_tab_url.DseNewTabUrlManager;
-import org.chromium.chrome.browser.preferences.ChromePreferenceKeys;
-import org.chromium.chrome.browser.preferences.ChromeSharedPreferences;
 import org.chromium.chrome.browser.preferences.Pref;
 import org.chromium.chrome.browser.preferences.PrefServiceUtil;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.search_engines.TemplateUrlServiceFactory;
-import org.chromium.chrome.browser.setup_list.SetupListModuleUtils;
-import org.chromium.chrome.browser.signin.SigninAndHistorySyncActivityLauncherImpl;
 import org.chromium.chrome.browser.signin.services.IdentityServicesProvider;
 import org.chromium.chrome.browser.signin.services.SigninManager;
-import org.chromium.chrome.browser.signin.services.SigninPreferencesManager;
 import org.chromium.chrome.browser.ui.native_page.TouchEnabledDelegate;
-import org.chromium.chrome.browser.ui.signin.signin_promo.NtpSigninPromoDelegate;
-import org.chromium.chrome.browser.ui.signin.signin_promo.SigninPromoCoordinator;
 import org.chromium.chrome.browser.xsurface.ListLayoutHelper;
 import org.chromium.chrome.browser.xsurface.feed.FeedUserInteractionReliabilityLogger.ClosedReason;
 import org.chromium.components.prefs.PrefChangeRegistrar;
 import org.chromium.components.prefs.PrefService;
 import org.chromium.components.search_engines.TemplateUrlService;
 import org.chromium.components.search_engines.TemplateUrlService.TemplateUrlServiceObserver;
-import org.chromium.components.signin.SigninFeatureMap;
-import org.chromium.components.signin.SigninFeatures;
 import org.chromium.components.signin.identitymanager.IdentityManager;
 import org.chromium.components.signin.identitymanager.PrimaryAccountChangeEvent;
 import org.chromium.ui.base.DeviceFormFactor;
@@ -76,103 +69,6 @@ public class FeedSurfaceMediator
                 TemplateUrlServiceObserver,
                 IdentityManager.Observer {
 
-    /**
-     * Wrapper class on top of {@link SigninPromoCoordinator} to also account for suggestions
-     * available signal. TODO(crbug.com/448227402): remove this class once Seamless Sign-in is
-     * launched.
-     */
-    private class FeedSigninPromo {
-        private final SigninPromoCoordinator mSigninPromoCoordinator;
-        private @Nullable View mPromoView;
-        private boolean mCanShowPersonalizedSuggestions;
-        private boolean mCanShowPromo;
-
-        FeedSigninPromo(boolean canShowPersonalizedSuggestions) {
-            mSigninPromoCoordinator =
-                    new SigninPromoCoordinator(
-                            mContext,
-                            mProfile,
-                            new NtpSigninPromoDelegate(
-                                    mContext,
-                                    mProfile,
-                                    SigninAndHistorySyncActivityLauncherImpl.get(),
-                                    this::onPromoStateChange,
-                                    SetupListModuleUtils::isSetupListActive));
-            mCanShowPersonalizedSuggestions = canShowPersonalizedSuggestions;
-            mCanShowPromo =
-                    mSigninPromoCoordinator.canShowPromo() && mCanShowPersonalizedSuggestions;
-
-            if (mCanShowPromo) {
-                // The view is created lazily to avoid increasing the browser memory footprint by
-                // keeping the view in memory even when it's never shown to the user.
-                initializePromoView();
-            }
-        }
-
-        boolean canShowPromo() {
-            return mCanShowPromo;
-        }
-
-        @Nullable View getPromoView() {
-            return mPromoView;
-        }
-
-        void setCanShowPersonalizedSuggestions(boolean canShow) {
-            mCanShowPersonalizedSuggestions = canShow;
-            onPromoStateChange();
-        }
-
-        void destroy() {
-            mSigninPromoCoordinator.destroy();
-            mCoordinator.updateHeaderViews(/* signinPromoView= */ null);
-        }
-
-        void onPromoStateChange() {
-            boolean canShowPromo =
-                    mSigninPromoCoordinator.canShowPromo() && mCanShowPersonalizedSuggestions;
-            if (mCanShowPromo == canShowPromo) {
-                return;
-            }
-
-            mCanShowPromo = canShowPromo;
-            if (mPromoView == null && mCanShowPromo) {
-                initializePromoView();
-            }
-            mCoordinator.updateHeaderViews(mCanShowPromo ? mPromoView : null);
-        }
-
-        private void initializePromoView() {
-            mPromoView = mSigninPromoCoordinator.buildPromoView((ViewGroup) mCoordinator.getView());
-            mSigninPromoCoordinator.setView(mPromoView);
-        }
-
-        /**
-         * @return Whether the {@link FeedSignInPromo} should be created.
-         */
-        public static boolean shouldCreatePromo() {
-            NtpSigninPromoDelegate.resetNtpSyncPromoLimitsIfHiddenForTooLong();
-            return !ChromeSharedPreferences.getInstance()
-                            .readBoolean(
-                                    ChromePreferenceKeys.SIGNIN_PROMO_NTP_PROMO_DISMISSED, false)
-                    && !getSuppressionStatus();
-        }
-
-        private static boolean getSuppressionStatus() {
-            long suppressedFrom =
-                    SigninPreferencesManager.getInstance()
-                            .getNewTabPageSigninPromoSuppressionPeriodStart();
-            if (suppressedFrom == 0) return false;
-            long currentTime = System.currentTimeMillis();
-            long suppressedTo = suppressedFrom + NtpSigninPromoDelegate.getSuppressionPeriodMs();
-            if (suppressedFrom <= currentTime && currentTime < suppressedTo) {
-                return true;
-            }
-            SigninPreferencesManager.getInstance()
-                    .clearNewTabPageSigninPromoSuppressionPeriodStart();
-            return false;
-        }
-    }
-
     /** Internal implementation of Stream.StreamsMediator. */
     @VisibleForTesting
     public class StreamsMediatorImpl implements Stream.StreamsMediator {
@@ -191,6 +87,7 @@ public class FeedSurfaceMediator
     private static @Nullable PrefChangeRegistrar sTestPrefChangeRegistar;
     private static final int SPAN_COUNT_SMALL_WIDTH = 1;
     private static final int SPAN_COUNT_LARGE_WIDTH = 2;
+    private static final int SPAN_COUNT_RESPONSIVE_LAYOUT = 1;
     private static final int SMALL_WIDTH_DP = 700;
 
     private final FeedSurfaceCoordinator mCoordinator;
@@ -211,7 +108,6 @@ public class FeedSurfaceMediator
     private final ObserverList<ScrollListener> mScrollListeners = new ObserverList<>();
     private @Nullable ContentChangedListener mStreamContentChangedListener;
     private @Nullable MemoryPressureCallback mMemoryPressureCallback;
-    private @Nullable FeedSigninPromo mSigninPromo;
     private @Nullable RecyclerViewAnimationFinishDetector mRecyclerViewAnimationFinishDetector;
 
     private boolean mFeedEnabled;
@@ -235,6 +131,7 @@ public class FeedSurfaceMediator
     // This avoids automatically binding the first stream when it's added.
     private boolean mSettingUpStreams;
     private final boolean mIsNewTabSearchEngineUrlAndroidEnabled;
+    private final boolean mUseResponsiveLayoutForFoldables;
     private boolean mIsPropertiesInitializedForStream;
     private @ClosedReason int mClosedReason = ClosedReason.SUSPEND_APP;
 
@@ -261,6 +158,10 @@ public class FeedSurfaceMediator
         mActionDelegate = actionDelegate;
         mIsNewTabSearchEngineUrlAndroidEnabled =
                 DseNewTabUrlManager.isNewTabSearchEngineUrlAndroidEnabled();
+        mUseResponsiveLayoutForFoldables =
+                DeviceInfo.isFoldable()
+                        && ChromeFeatureList.isEnabled(
+                                ChromeFeatureList.WIDE_SCREEN_FEED_FOR_FOLDABLES);
 
         /*
          * When feature flag isNewTabSearchEngineUrlAndroidEnabled is enabled, the Feeds may be
@@ -297,6 +198,12 @@ public class FeedSurfaceMediator
                         assumeNonNull(mRecyclerViewAnimationFinishDetector)
                                 .runWhenAnimationComplete(this::onContentsChanged);
 
+        mStreamScrollListener = createScrollListener();
+        RecyclerView recyclerView = mCoordinator.getRecyclerView();
+        if (recyclerView != null) {
+            recyclerView.addOnScrollListener(mStreamScrollListener);
+        }
+
         initialize();
     }
 
@@ -308,7 +215,12 @@ public class FeedSurfaceMediator
                 || mCurrentStream == null) {
             return;
         }
-        int spanCount = isSmallLayoutWidth ? SPAN_COUNT_SMALL_WIDTH : SPAN_COUNT_LARGE_WIDTH;
+        int spanCount;
+        if (mUseResponsiveLayoutForFoldables) {
+            spanCount = SPAN_COUNT_RESPONSIVE_LAYOUT;
+        } else {
+            spanCount = isSmallLayoutWidth ? SPAN_COUNT_SMALL_WIDTH : SPAN_COUNT_LARGE_WIDTH;
+        }
         boolean res = listLayoutHelper.setColumnCount(spanCount);
         assert res : "Failed to set column count on Feed";
     }
@@ -322,6 +234,11 @@ public class FeedSurfaceMediator
         if (mOnLayoutChangeListener != null) {
             mCoordinator.getView().removeOnLayoutChangeListener(mOnLayoutChangeListener);
             mOnLayoutChangeListener = null;
+        }
+
+        if (mStreamScrollListener != null) {
+            mCoordinator.getRecyclerView().removeOnScrollListener(mStreamScrollListener);
+            mStreamScrollListener = null;
         }
 
         if (mSnapScrollHelper != null) {
@@ -468,77 +385,16 @@ public class FeedSurfaceMediator
         mSettingUpStreams = false;
 
         mStreamScrollAnimationFinishDetector = new RecyclerViewAnimationFinishDetector();
-        mStreamScrollListener =
-                new OnScrollListener() {
-                    @Override
-                    public void onScrollStateChanged(RecyclerView recyclerView, int newState) {
-                        for (ScrollListener listener : mScrollListeners) {
-                            listener.onScrollStateChanged(newState);
-                        }
-                    }
-
-                    @Override
-                    public void onScrolled(RecyclerView v, int dx, int dy) {
-                        final Runnable callback =
-                                () -> {
-                                    if (mSnapScrollHelper != null) {
-                                        mSnapScrollHelper.handleScroll();
-                                    }
-                                    for (ScrollListener listener : mScrollListeners) {
-                                        listener.onScrolled(dx, dy);
-                                    }
-                                    // Null if the stream has not been binded yet.
-                                    if (GestureNavigationUtils.shouldAnimateBackForwardTransitions()
-                                            && mCoordinator.getHybridListRenderer() != null
-                                            && mCoordinator
-                                                            .getHybridListRenderer()
-                                                            .getListLayoutHelper()
-                                                    != null
-                                            && mPositionToRestore != RecyclerView.NO_POSITION
-                                            && Objects.equals(
-                                                    mGetRestoringStateSupplier.get(),
-                                                    RestoringState.WAITING_TO_RESTORE)) {
-                                        final boolean restored =
-                                                mCoordinator
-                                                                .getHybridListRenderer()
-                                                                .getListLayoutHelper()
-                                                                .findFirstVisibleItemPosition()
-                                                        >= mPositionToRestore;
-                                        if (restored) {
-                                            mPositionToRestore = RecyclerView.NO_POSITION;
-                                            final var originalAnimator =
-                                                    mCoordinator
-                                                            .getRecyclerView()
-                                                            .getItemAnimator();
-                                            mCoordinator
-                                                    .getRecyclerView()
-                                                    .setItemAnimator(
-                                                            new ItemAnimatorWithoutAnimation());
-                                            final Runnable onComplete =
-                                                    () -> {
-                                                        mGetRestoringStateSupplier.set(
-                                                                RestoringState.RESTORED);
-                                                        mCoordinator
-                                                                .getRecyclerView()
-                                                                .setItemAnimator(originalAnimator);
-                                                        assumeNonNull(
-                                                                        mStreamScrollAnimationFinishDetector)
-                                                                .runWhenAnimationComplete(null);
-                                                    };
-                                            assumeNonNull(mStreamScrollAnimationFinishDetector)
-                                                    .runWhenAnimationComplete(onComplete);
-                                        }
-                                    }
-                                };
-                        mCoordinator.getView().postOnAnimation(callback);
-                    }
-                };
         var view = mCoordinator.getRecyclerView();
-        view.addOnScrollListener(mStreamScrollListener);
 
         initStreamHeaderViews();
 
-        mMemoryPressureCallback = pressure -> view.getRecycledViewPool().clear();
+        mMemoryPressureCallback =
+                pressure -> {
+                    if (pressure != MemoryPressureLevel.NONE) {
+                        view.getRecycledViewPool().clear();
+                    }
+                };
         MemoryPressureListener.addCallback(mMemoryPressureCallback);
 
         mIsPropertiesInitializedForStream = true;
@@ -667,41 +523,12 @@ public class FeedSurfaceMediator
     }
 
     private void initStreamHeaderViews() {
-        boolean signInPromoVisible = shouldShowSigninPromo();
-        if (signInPromoVisible && mSigninPromo != null) {
-            mCoordinator.updateHeaderViews(mSigninPromo.getPromoView());
-        } else {
-            mCoordinator.updateHeaderViews(/* signinPromoView= */ null);
-        }
-    }
-
-    /**
-     * Determines whether a signin promo should be shown.
-     *
-     * @return Whether the FeedSigninPromo should be visible.
-     */
-    private boolean shouldShowSigninPromo() {
-        if (SigninFeatureMap.isEnabled(SigninFeatures.ENABLE_SEAMLESS_SIGNIN)) {
-            return false;
-        }
-        boolean shouldCreatePromo = FeedSigninPromo.shouldCreatePromo();
-        if (!shouldCreatePromo) {
-            return false;
-        }
-        if (mSigninPromo == null) {
-            mSigninPromo = new FeedSigninPromo(isSuggestionsVisible());
-        }
-        return mSigninPromo.canShowPromo();
+        mCoordinator.updateHeaderViews();
     }
 
     /** Clear any dependencies related to the {@link Stream}. */
     @VisibleForTesting
     void destroyPropertiesForStream() {
-        if (mStreamScrollListener != null) {
-            mCoordinator.getRecyclerView().removeOnScrollListener(mStreamScrollListener);
-            mStreamScrollListener = null;
-        }
-
         if (mStreamScrollAnimationFinishDetector != null) {
             mStreamScrollAnimationFinishDetector.destroy();
             mStreamScrollAnimationFinishDetector = null;
@@ -710,11 +537,6 @@ public class FeedSurfaceMediator
         if (mMemoryPressureCallback != null) {
             MemoryPressureListener.removeCallback(mMemoryPressureCallback);
             mMemoryPressureCallback = null;
-        }
-
-        if (mSigninPromo != null) {
-            mSigninPromo.destroy();
-            mSigninPromo = null;
         }
 
         if (mStreamHolder != null) {
@@ -751,9 +573,6 @@ public class FeedSurfaceMediator
 
         boolean suggestionsVisible = isSuggestionsVisible();
 
-        if (mSigninPromo != null) {
-            mSigninPromo.setCanShowPersonalizedSuggestions(suggestionsVisible);
-        }
         if (suggestionsVisible) {
             assumeNonNull(mCoordinator.getSurfaceLifecycleManager()).show();
         }
@@ -821,7 +640,12 @@ public class FeedSurfaceMediator
     @Override
     public boolean isScrollViewInitialized() {
         RecyclerView recyclerView = mCoordinator.getRecyclerView();
-        return recyclerView != null && (!mFeedEnabled || recyclerView.getHeight() > 0);
+        if (!mFeedEnabled) return true;
+        if (recyclerView.getHeight() <= 0) return false;
+        // The Litho/xsurface renderer binds item layouts asynchronously. A RecyclerView with
+        // height but no laid-out children must not be considered initialized (otherwise it is
+        // treated as 'scrolled past the header' incorrectly).
+        return recyclerView.getChildCount() > 0;
     }
 
     @Override
@@ -1052,5 +876,82 @@ public class FeedSurfaceMediator
 
     public @ClosedReason int getClosedReason() {
         return mClosedReason;
+    }
+
+    private OnScrollListener createScrollListener() {
+        return new OnScrollListener() {
+            @Override
+            public void onScrollStateChanged(RecyclerView recyclerView, int newState) {
+                if (!mFeedEnabled) return;
+
+                for (ScrollListener listener : mScrollListeners) {
+                    listener.onScrollStateChanged(newState);
+                }
+            }
+
+            @Override
+            public void onScrolled(RecyclerView v, int dx, int dy) {
+                final Runnable callback =
+                        () -> {
+                            if (mSnapScrollHelper != null) {
+                                mSnapScrollHelper.handleScroll();
+                            }
+                            if (!mFeedEnabled) return;
+
+                            for (ScrollListener listener : mScrollListeners) {
+                                listener.onScrolled(dx, dy);
+                            }
+                            // Null if the stream has not been binded yet.
+                            if (GestureNavigationUtils.shouldAnimateBackForwardTransitions()
+                                    && mCoordinator.getHybridListRenderer() != null
+                                    && mCoordinator.getHybridListRenderer().getListLayoutHelper()
+                                            != null
+                                    && mPositionToRestore != RecyclerView.NO_POSITION
+                                    && Objects.equals(
+                                            mGetRestoringStateSupplier.get(),
+                                            RestoringState.WAITING_TO_RESTORE)) {
+                                final boolean restored =
+                                        mCoordinator
+                                                        .getHybridListRenderer()
+                                                        .getListLayoutHelper()
+                                                        .findFirstVisibleItemPosition()
+                                                >= mPositionToRestore;
+                                if (restored) {
+                                    mPositionToRestore = RecyclerView.NO_POSITION;
+                                    final var originalAnimator =
+                                            mCoordinator.getRecyclerView().getItemAnimator();
+                                    // Skip item animations until the restore completes. With a
+                                    // null ItemAnimator, RecyclerView skips its animation steps,
+                                    // so removed items can't be left behind as stale views, as
+                                    // happens with ItemAnimatorWithoutAnimation, which never
+                                    // reports its items as finished. See b/517926260.
+                                    if (ChromeFeatureList.isEnabled(
+                                            ChromeFeatureList
+                                                    .FEED_NULL_ITEM_ANIMATOR_ON_SCROLL_RESTORE)) {
+                                        mCoordinator.getRecyclerView().setItemAnimator(null);
+                                    } else {
+                                        mCoordinator
+                                                .getRecyclerView()
+                                                .setItemAnimator(
+                                                        new ItemAnimatorWithoutAnimation());
+                                    }
+                                    final Runnable onComplete =
+                                            () -> {
+                                                mGetRestoringStateSupplier.set(
+                                                        RestoringState.RESTORED);
+                                                mCoordinator
+                                                        .getRecyclerView()
+                                                        .setItemAnimator(originalAnimator);
+                                                assumeNonNull(mStreamScrollAnimationFinishDetector)
+                                                        .runWhenAnimationComplete(null);
+                                            };
+                                    assumeNonNull(mStreamScrollAnimationFinishDetector)
+                                            .runWhenAnimationComplete(onComplete);
+                                }
+                            }
+                        };
+                mCoordinator.getView().postOnAnimation(callback);
+            }
+        };
     }
 }

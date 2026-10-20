@@ -8,6 +8,8 @@
 #include <utility>
 
 #include "base/feature_list.h"
+#include "base/functional/callback_forward.h"
+#include "build/build_config.h"
 #include "components/autofill/core/common/autofill_payments_features.h"
 #include "components/strings/grit/components_strings.h"
 #include "ui/base/l10n/l10n_util.h"
@@ -37,7 +39,10 @@ SavePaymentMethodAndVirtualCardEnrollConfirmationUiParams::
         bool should_display_wallet_logo,
         std::u16string title_text,
         std::u16string description_text,
-        std::u16string failure_ok_button_accessible_name = std::u16string())
+        std::optional<std::tuple<DescriptionTextLinkStart,
+                                 DescriptionTextLinkEnd,
+                                 base::RepeatingClosure>>
+            description_text_link_range_and_callback)
     : is_success(is_success),
       should_display_wallet_logo(should_display_wallet_logo),
       title_text(std::move(title_text)),
@@ -46,12 +51,9 @@ SavePaymentMethodAndVirtualCardEnrollConfirmationUiParams::
           is_success
               ? std::u16string()
               : l10n_util::GetStringUTF16(
-                    IDS_AUTOFILL_SAVE_CARD_AND_VIRTUAL_CARD_ENROLL_CONFIRMATION_BUTTON_TEXT)) {
-  if (!is_success) {
-    this->failure_ok_button_accessible_name =
-        std::move(failure_ok_button_accessible_name);
-  }
-}
+                    IDS_AUTOFILL_SAVE_CARD_AND_VIRTUAL_CARD_ENROLL_CONFIRMATION_BUTTON_TEXT)),
+      description_text_link_range_and_callback(
+          std::move(description_text_link_range_and_callback)) {}
 
 // static
 SavePaymentMethodAndVirtualCardEnrollConfirmationUiParams
@@ -75,6 +77,42 @@ SavePaymentMethodAndVirtualCardEnrollConfirmationUiParams::
               : IDS_AUTOFILL_SAVE_CARD_CONFIRMATION_SUCCESS_DESCRIPTION_TEXT));
 }
 
+#if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
+// static
+SavePaymentMethodAndVirtualCardEnrollConfirmationUiParams
+SavePaymentMethodAndVirtualCardEnrollConfirmationUiParams::
+    CreateForSaveCardholderNameSuccess() {
+  return SavePaymentMethodAndVirtualCardEnrollConfirmationUiParams(
+      /*is_success=*/true,
+      /*should_display_wallet_logo=*/true,
+      /*title_text=*/
+      l10n_util::GetStringUTF16(
+          IDS_AUTOFILL_SAVE_CARDHOLDER_NAME_CONFIRMATION_SUCCESS_TITLE_TEXT),
+      /*description_text=*/
+      l10n_util::GetStringUTF16(
+          IDS_AUTOFILL_SAVE_CARDHOLDER_NAME_CONFIRMATION_SUCCESS_DESCRIPTION_TEXT));
+}
+
+// static
+SavePaymentMethodAndVirtualCardEnrollConfirmationUiParams
+SavePaymentMethodAndVirtualCardEnrollConfirmationUiParams::
+    CreateForSaveCardholderNameFailure() {
+  // Note: `should_display_wallet_logo` is only honored for success
+  // confirmations. For failure confirmations, the title logo visibility is
+  // determined by `features::kAutofillEnableWalletBranding` in
+  // `SavePaymentMethodAndVirtualCardEnrollConfirmationBubbleViews`.
+  return SavePaymentMethodAndVirtualCardEnrollConfirmationUiParams(
+      /*is_success=*/false,
+      /*should_display_wallet_logo=*/true,
+      /*title_text=*/
+      l10n_util::GetStringUTF16(
+          IDS_AUTOFILL_SAVE_CARDHOLDER_NAME_CONFIRMATION_FAILURE_TITLE_TEXT),
+      /*description_text=*/
+      l10n_util::GetStringUTF16(
+          IDS_AUTOFILL_SAVE_CARDHOLDER_NAME_CONFIRMATION_FAILURE_DESCRIPTION_TEXT));
+}
+#endif  // !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
+
 // static
 SavePaymentMethodAndVirtualCardEnrollConfirmationUiParams
 SavePaymentMethodAndVirtualCardEnrollConfirmationUiParams::
@@ -94,6 +132,37 @@ SavePaymentMethodAndVirtualCardEnrollConfirmationUiParams::
 // static
 SavePaymentMethodAndVirtualCardEnrollConfirmationUiParams
 SavePaymentMethodAndVirtualCardEnrollConfirmationUiParams::
+    CreateForChurnedUsersAcceptanceSuccess(
+        base::RepeatingClosure link_callback) {
+  std::u16string description = l10n_util::GetStringFUTF16(
+      IDS_AUTOFILL_CHURNED_USERS_CONFIRMATION_BUBBLE_DESCRIPTION,
+      l10n_util::GetStringUTF16(
+          IDS_AUTOFILL_CHURNED_USERS_CONFIRMATION_BUBBLE_LINK_TEXT));
+  size_t link_start = description.find(l10n_util::GetStringUTF16(
+      IDS_AUTOFILL_CHURNED_USERS_CONFIRMATION_BUBBLE_LINK_TEXT));
+  CHECK(link_start != std::string::npos);
+  size_t link_end =
+      link_start + l10n_util::GetStringUTF16(
+                       IDS_AUTOFILL_CHURNED_USERS_CONFIRMATION_BUBBLE_LINK_TEXT)
+                       .length();
+  return SavePaymentMethodAndVirtualCardEnrollConfirmationUiParams(
+      /*is_success=*/true,
+      /*should_display_wallet_logo=*/
+      false,
+      /*title_text=*/
+      l10n_util::GetStringUTF16(
+          IDS_AUTOFILL_CHURNED_USERS_CONFIRMATION_BUBBLE_TITLE),
+      /*description_text=*/
+      std::move(description),
+      /*description_text_link_range_and_callback=*/
+      std::make_tuple(DescriptionTextLinkStart(link_start),
+                      DescriptionTextLinkEnd(link_end),
+                      std::move(link_callback)));
+}
+
+// static
+SavePaymentMethodAndVirtualCardEnrollConfirmationUiParams
+SavePaymentMethodAndVirtualCardEnrollConfirmationUiParams::
     CreateForSaveCardFailure(bool is_for_save_and_fill) {
   return SavePaymentMethodAndVirtualCardEnrollConfirmationUiParams(
       /*is_success=*/false,
@@ -107,10 +176,7 @@ SavePaymentMethodAndVirtualCardEnrollConfirmationUiParams::
       l10n_util::GetStringUTF16(
           base::FeatureList::IsEnabled(features::kAutofillEnableWalletBranding)
               ? IDS_AUTOFILL_SAVE_CARD_TO_WALLET_CONFIRMATION_FAILURE_DESCRIPTION_TEXT
-              : IDS_AUTOFILL_SAVE_CARD_CONFIRMATION_FAILURE_DESCRIPTION_TEXT),
-      /*failure_ok_button_accessible_name=*/
-      l10n_util::GetStringUTF16(
-          IDS_AUTOFILL_SAVE_CARD_CONFIRMATION_FAILURE_OK_BUTTON_ACCESSIBLE_NAME));
+              : IDS_AUTOFILL_SAVE_CARD_CONFIRMATION_FAILURE_DESCRIPTION_TEXT));
 }
 
 // static
@@ -126,10 +192,7 @@ SavePaymentMethodAndVirtualCardEnrollConfirmationUiParams::
       /*description_text=*/
       l10n_util::GetStringFUTF16(
           IDS_AUTOFILL_VIRTUAL_CARD_ENROLL_CONFIRMATION_FAILURE_DESCRIPTION_TEXT,
-          card_label),
-      /*failure_ok_button_accessible_name=*/
-      l10n_util::GetStringUTF16(
-          IDS_AUTOFILL_VIRTUAL_CARD_ENROLL_CONFIRMATION_FAILURE_OK_BUTTON_ACCESSIBLE_NAME));
+          card_label));
 }
 
 // static
@@ -170,10 +233,7 @@ SavePaymentMethodAndVirtualCardEnrollConfirmationUiParams::
                 base::FeatureList::IsEnabled(
                     features::kAutofillEnableWalletBranding)
                     ? IDS_AUTOFILL_SAVE_IBAN_TO_WALLET_CONFIRMATION_FAILURE_DESCRIPTION_TEXT
-                    : IDS_AUTOFILL_SAVE_IBAN_CONFIRMATION_FAILURE_DESCRIPTION_TEXT),
-      /*failure_ok_button_accessible_name=*/
-      l10n_util::GetStringUTF16(
-          IDS_AUTOFILL_SAVE_CARD_CONFIRMATION_FAILURE_OK_BUTTON_ACCESSIBLE_NAME));
+                    : IDS_AUTOFILL_SAVE_IBAN_CONFIRMATION_FAILURE_DESCRIPTION_TEXT));
 }
 
 }  // namespace autofill

@@ -20,7 +20,6 @@
 #include "chrome/browser/web_applications/web_app_command_scheduler.h"
 #include "chrome/browser/web_applications/web_app_helpers.h"
 #include "chrome/browser/web_applications/web_app_icon_generator.h"
-#include "chrome/browser/web_applications/web_app_install_finalizer.h"
 #include "chrome/browser/web_applications/web_app_install_info.h"
 #include "chrome/browser/web_applications/web_app_install_params.h"
 #include "chrome/browser/web_applications/web_app_provider.h"
@@ -128,9 +127,9 @@ TEST_F(ShortcutSubManagerConfigureTest, ConfigureAppInstall) {
 
   ASSERT_THAT(state.value().shortcut().title(), testing::Eq("Test App"));
 
-  int icons_count = icon_map.size();
+  // kTotalIconSizes icons will be added, as this is a policy (trusted) install.
   ASSERT_THAT(state.value().shortcut().icon_data_any_size(),
-              testing::Eq(icons_count));
+              testing::Eq(kTotalIconSizes));
 
   for (const proto::os_state::ShortcutIconData& icon_time_map_data :
        state.value().shortcut().icon_data_any()) {

@@ -29,28 +29,10 @@
 
 namespace commerce {
 
-// static
-ShoppingServiceFactory* ShoppingServiceFactory::GetInstance() {
-  static base::NoDestructor<ShoppingServiceFactory> instance;
-  return instance.get();
-}
-
-// static
-ShoppingService* ShoppingServiceFactory::GetForProfile(ProfileIOS* profile) {
-  return GetInstance()->GetServiceForProfileAs<ShoppingService>(
-      profile, /*create=*/true);
-}
-
-// static
-ShoppingService* ShoppingServiceFactory::GetForProfileIfExists(
-    ProfileIOS* profile) {
-  return GetInstance()->GetServiceForProfileAs<ShoppingService>(
-      profile, /*create=*/false);
-}
-
-ShoppingServiceFactory::ShoppingServiceFactory()
-    : ProfileKeyedServiceFactoryIOS("ShoppingService",
-                                    TestingCreation::kNoServiceForTests) {
+ShoppingServiceFactory::ShoppingServiceFactory(PassKey key)
+    : TypedProfileKeyedServiceFactoryIOS(std::move(key),
+                                         "ShoppingService",
+                                         TestingCreation::kNoServiceForTests) {
   DependsOn(IdentityManagerFactory::GetInstance());
   DependsOn(ios::BookmarkModelFactory::GetInstance());
   DependsOn(OptimizationGuideServiceFactory::GetInstance());
@@ -74,7 +56,10 @@ std::unique_ptr<KeyedService> ShoppingServiceFactory::BuildServiceInstanceFor(
   PrefService* pref_service = profile->GetPrefs();
   return std::make_unique<ShoppingService>(
       GetCurrentCountryCode(GetApplicationContext()->GetVariationsService()),
-      GetApplicationContext()->GetApplicationLocaleStorage()->Get(),
+      std::string(GetApplicationContext()
+                      ->GetApplicationLocaleStorage()
+                      ->GetTag()
+                      .tag_string()),
       ios::BookmarkModelFactory::GetForProfile(profile),
       OptimizationGuideServiceFactory::GetForProfile(profile), pref_service,
       IdentityManagerFactory::GetForProfile(profile),

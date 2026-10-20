@@ -31,6 +31,7 @@
 #include "components/optimization_guide/proto/hints.pb.h"
 #include "components/page_content_annotations/content/page_content_extraction_service.h"
 #include "components/page_content_annotations/core/page_content_extraction_types.h"
+#include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/web_contents.h"
 #include "third_party/blink/public/mojom/content_extraction/ai_page_content.mojom.h"
 
@@ -97,7 +98,9 @@ ZeroStateSuggestionsPageData::ZeroStateSuggestionsPageData(content::Page& page)
       web_contents->GetLastCommittedURL().spec()));
 
   base::TimeDelta initiate_page_content_extraction_delay;
-  if (auto* helper = ContextualCueingHelper::FromWebContents(web_contents)) {
+  tabs::TabInterface* tab =
+      tabs::TabInterface::MaybeGetFromContents(web_contents);
+  if (auto* helper = tab ? ContextualCueingHelper::From(tab) : nullptr) {
     std::optional<base::TimeTicks> last_same_doc_navigation_time =
         helper->last_same_doc_navigation_committed();
     if (last_same_doc_navigation_time) {
@@ -165,7 +168,9 @@ void ZeroStateSuggestionsPageData::InitiatePageContentExtraction() {
   content::WebContents* web_contents =
       content::WebContents::FromRenderFrameHost(&(page().GetMainDocument()));
   bool has_first_contentful_paint = false;
-  if (auto* helper = ContextualCueingHelper::FromWebContents(web_contents)) {
+  tabs::TabInterface* tab =
+      tabs::TabInterface::MaybeGetFromContents(web_contents);
+  if (auto* helper = tab ? ContextualCueingHelper::From(tab) : nullptr) {
     has_first_contentful_paint = helper->has_first_contentful_paint();
   }
   if (!has_first_contentful_paint &&
@@ -250,15 +255,13 @@ void ZeroStateSuggestionsPageData::InitiatePageContentExtraction() {
           profile->IsOffTheRecord(), profile->GetPrefs());
   if (can_request_metadata) {
     optimization_guide_keyed_service_->CanApplyOptimization(
-        web_contents->GetLastCommittedURL(),
-        optimization_guide::proto::GLIC_ZERO_STATE_SUGGESTIONS,
+        url, optimization_guide::proto::GLIC_ZERO_STATE_SUGGESTIONS,
         base::BindOnce(
             &ZeroStateSuggestionsPageData::OnReceivedOptimizationMetadata,
             weak_ptr_factory_.GetWeakPtr()));
   } else {
     optimization_guide_keyed_service_->CanApplyOptimizationOnDemand(
-        {web_contents->GetLastCommittedURL()},
-        {optimization_guide::proto::GLIC_ZERO_STATE_SUGGESTIONS},
+        {url}, {optimization_guide::proto::GLIC_ZERO_STATE_SUGGESTIONS},
         optimization_guide::proto::RequestContext::
             CONTEXT_GLIC_ZERO_STATE_SUGGESTIONS,
         base::BindRepeating(&ZeroStateSuggestionsPageData::
@@ -269,6 +272,14 @@ void ZeroStateSuggestionsPageData::InitiatePageContentExtraction() {
 
 void ZeroStateSuggestionsPageData::GetPageContext(
     PageContextCallback callback) {
+  content::WebContents* web_contents =
+      content::WebContents::FromRenderFrameHost(&(page().GetMainDocument()));
+  if (!IsSamePrimaryPage(web_contents)) {
+    std::move(callback).Run(
+        base::unexpected(PageContextIneligibilityType::kPageContext));
+    return;
+  }
+
   if (work_done()) {
     std::move(callback).Run(ConstructPageContextProto());
     return;
@@ -366,6 +377,14 @@ void ZeroStateSuggestionsPageData::GiveUp() {
 }
 
 void ZeroStateSuggestionsPageData::InvokePageContextCallbacksIfComplete() {
+  content::WebContents* web_contents =
+      content::WebContents::FromRenderFrameHost(&(page().GetMainDocument()));
+  if (!IsSamePrimaryPage(web_contents)) {
+    page_context_callbacks_.Notify(
+        base::unexpected(PageContextIneligibilityType::kPageContext));
+    return;
+  }
+
   if (!work_done()) {
     return;
   }
@@ -397,8 +416,13 @@ void ZeroStateSuggestionsPageData::InvokePageContextCallbacksIfComplete() {
 }
 
 const GURL ZeroStateSuggestionsPageData::GetUrl() const {
-  return content::WebContents::FromRenderFrameHost(&(page().GetMainDocument()))
-      ->GetLastCommittedURL();
+  return page().GetMainDocument().GetLastCommittedURL();
+}
+
+bool ZeroStateSuggestionsPageData::IsSamePrimaryPage(
+    content::WebContents* web_contents) const {
+  return web_contents && page().GetMainDocument().IsActive() &&
+         &page() == &web_contents->GetPrimaryPage();
 }
 
 optimization_guide::proto::ZeroStatePageContext

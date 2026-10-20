@@ -25,21 +25,19 @@
 #include "chrome/browser/ash/login/demo_mode/demo_setup_controller.h"
 #include "chrome/browser/ash/ownership/owner_settings_service_ash.h"
 #include "chrome/browser/ash/policy/core/device_cloud_policy_store_ash.h"
-#include "chrome/browser/ash/policy/dev_mode/dev_mode_policy_util.h"
 #include "chrome/browser/ash/policy/enrollment/auto_enrollment_type_checker.h"
 #include "chrome/browser/ash/policy/enrollment/enrollment_config.h"
 #include "chrome/browser/ash/policy/enrollment/enrollment_requisition_manager.h"
 #include "chrome/browser/ash/policy/enrollment/enrollment_status.h"
 #include "chrome/browser/ash/policy/enrollment/tpm_enrollment_key_signing_service.h"
 #include "chrome/browser/ash/policy/server_backed_state/server_backed_state_keys_broker.h"
-#include "chrome/browser/browser_process.h"
-#include "chrome/browser/profiles/profile.h"
 #include "chromeos/ash/components/attestation/attestation_features.h"
 #include "chromeos/ash/components/attestation/attestation_flow.h"
 #include "chromeos/ash/components/dbus/constants/attestation_constants.h"
 #include "chromeos/ash/components/dbus/cryptohome/rpc.pb.h"
 #include "chromeos/ash/components/dbus/dbus_thread_manager.h"
 #include "chromeos/ash/components/dbus/upstart/upstart_client.h"
+#include "chromeos/ash/components/policy/dev_mode/dev_mode_policy_util.h"
 #include "components/policy/core/common/cloud/dm_auth.h"
 #include "components/policy/proto/chrome_device_policy.pb.h"
 #include "components/policy/proto/device_management_backend.pb.h"
@@ -177,7 +175,7 @@ std::optional<int64_t> GetPsmDeterminationTimestamp(
 
   // The PSM determination timestamp should exist at this stage. Because
   // we already checked the existence of the pref with non-default value.
-  DCHECK(!psm_determination_timestamp.is_null());
+  CHECK(!psm_determination_timestamp.is_null(), base::NotFatalUntil::M160);
 
   return psm_determination_timestamp.InMillisecondsSinceUnixEpoch();
 }
@@ -185,6 +183,8 @@ std::optional<int64_t> GetPsmDeterminationTimestamp(
 }  // namespace
 
 EnrollmentHandler::EnrollmentHandler(
+    PrefService* local_state,
+    scoped_refptr<network::SharedURLLoaderFactory> shared_url_loader_factory,
     DeviceCloudPolicyStoreAsh* store,
     ash::InstallAttributes* install_attributes,
     ServerBackedStateKeysBroker* state_keys_broker,
@@ -197,7 +197,9 @@ EnrollmentHandler::EnrollmentHandler(
     const std::string& requisition,
     const std::string& sub_organization,
     EnrollmentCallback completion_callback)
-    : store_(store),
+    : local_state_(CHECK_DEREF(local_state)),
+      shared_url_loader_factory_(std::move(shared_url_loader_factory)),
+      store_(store),
       install_attributes_(install_attributes),
       state_keys_broker_(state_keys_broker),
       attestation_flow_(attestation_flow),
@@ -210,22 +212,21 @@ EnrollmentHandler::EnrollmentHandler(
       sub_organization_(sub_organization),
       completion_callback_(std::move(completion_callback)),
       enrollment_step_(STEP_PENDING) {
+  CHECK(shared_url_loader_factory_);
   dm_auth_ = std::move(dm_auth);
   CHECK(!client_->is_registered());
   CHECK_EQ(DM_STATUS_SUCCESS, client_->last_dm_status());
   CHECK_EQ(dm_auth_.empty(), enrollment_config_.is_mode_attestation());
   CHECK(enrollment_config_.is_mode_attestation() || attestation_flow_);
 
-  // TODO(crbug.com/404133022): Avoid using g_browser_process.
-  PrefService& local_state = CHECK_DEREF(g_browser_process->local_state());
-
   register_params_ =
       std::make_unique<CloudPolicyClient::RegistrationParameters>(
           em::DeviceRegisterRequest::DEVICE,
           EnrollmentModeToRegistrationFlavor(enrollment_config.mode));
-  register_params_->psm_execution_result = GetPsmExecutionResult(local_state);
+  register_params_->psm_execution_result =
+      GetPsmExecutionResult(local_state_.get());
   register_params_->psm_determination_timestamp =
-      GetPsmDeterminationTimestamp(local_state);
+      GetPsmDeterminationTimestamp(local_state_.get());
   // License type is set only if terminal license is used. Unset field is
   // treated as enterprise license.
   if (enrollment_config_.license_type == LicenseType::kTerminal) {
@@ -237,7 +238,7 @@ EnrollmentHandler::EnrollmentHandler(
 
   if (requisition == EnrollmentRequisitionManager::kDemoRequisition) {
     register_params_->demo_mode_dimensions =
-        ash::demo_mode::GetDemoModeDimensions(local_state);
+        ash::demo_mode::GetDemoModeDimensions(local_state_.get());
   }
 
   store_->AddObserver(this);
@@ -302,7 +303,7 @@ std::unique_ptr<CloudPolicyClient> EnrollmentHandler::ReleaseClient() {
 }
 
 void EnrollmentHandler::OnPolicyFetched(CloudPolicyClient* client) {
-  DCHECK_EQ(client_.get(), client);
+  CHECK_EQ(client_.get(), client, base::NotFatalUntil::M160);
   CHECK_EQ(STEP_POLICY_FETCH, enrollment_step_);
   SetStep(STEP_VALIDATION);
 
@@ -329,14 +330,14 @@ void EnrollmentHandler::OnPolicyFetched(CloudPolicyClient* client) {
     validator->ValidateDomain(domain);
   validator->ValidateDMToken(client->dm_token(),
                              CloudPolicyValidatorBase::DM_TOKEN_REQUIRED);
-  DeviceCloudPolicyValidator::StartValidation(
+  CloudPolicyValidatorBase::StartValidation(
       std::move(validator),
       base::BindOnce(&EnrollmentHandler::HandlePolicyValidationResult,
                      weak_ptr_factory_.GetWeakPtr()));
 }
 
 void EnrollmentHandler::OnRegistrationStateChanged(CloudPolicyClient* client) {
-  DCHECK_EQ(client_.get(), client);
+  CHECK_EQ(client_.get(), client, base::NotFatalUntil::M160);
 
   if (enrollment_step_ != STEP_REGISTRATION || !client_->is_registered()) {
     LOG(FATAL) << "Registration state changed to " << client_->is_registered()
@@ -363,7 +364,7 @@ void EnrollmentHandler::OnRegistrationStateChanged(CloudPolicyClient* client) {
 }
 
 void EnrollmentHandler::OnClientError(CloudPolicyClient* client) {
-  DCHECK_EQ(client_.get(), client);
+  CHECK_EQ(client_.get(), client, base::NotFatalUntil::M160);
 
   if (enrollment_step_ == STEP_ROBOT_AUTH_FETCH ||
       enrollment_step_ == STEP_STORE_ROBOT_AUTH) {
@@ -380,7 +381,7 @@ void EnrollmentHandler::OnClientError(CloudPolicyClient* client) {
 }
 
 void EnrollmentHandler::OnStoreLoaded(CloudPolicyStore* store) {
-  DCHECK_EQ(store_, store);
+  CHECK_EQ(store_, store, base::NotFatalUntil::M160);
 
   if (enrollment_step_ == STEP_LOADING_STORE) {
     // If the |store_| wasn't initialized when StartEnrollment() was called,
@@ -394,7 +395,7 @@ void EnrollmentHandler::OnStoreLoaded(CloudPolicyStore* store) {
 }
 
 void EnrollmentHandler::OnStoreError(CloudPolicyStore* store) {
-  DCHECK_EQ(store_, store);
+  CHECK_EQ(store_, store, base::NotFatalUntil::M160);
 
   if (enrollment_step_ < STEP_STORE_POLICY) {
     // At those steps it is not expected to have any error notifications from
@@ -415,12 +416,13 @@ void EnrollmentHandler::OnStoreError(CloudPolicyStore* store) {
 
 void EnrollmentHandler::HandleStateKeys(
     std::optional<std::vector<std::string>> opt_state_keys) {
-  DCHECK_EQ(STEP_STATE_KEYS, enrollment_step_);
+  CHECK_EQ(STEP_STATE_KEYS, enrollment_step_, base::NotFatalUntil::M160);
 
   if (opt_state_keys.has_value()) {
     auto state_keys = opt_state_keys.value();
 
-    client_->SetStateKeysToUpload(state_keys);
+    client_->SetStateKeysToUpload(
+        state_keys, state_keys_broker_->current_time_quantum_index());
     register_params_->current_state_key =
         state_keys_broker_->current_state_key();
     if (state_keys.empty() || register_params_->current_state_key.empty()) {
@@ -441,7 +443,7 @@ void EnrollmentHandler::HandleStateKeys(
 }
 
 void EnrollmentHandler::StartRegistration() {
-  DCHECK_EQ(STEP_LOADING_STORE, enrollment_step_);
+  CHECK_EQ(STEP_LOADING_STORE, enrollment_step_, base::NotFatalUntil::M160);
   if (!store_->is_initialized()) {
     // Do nothing. StartRegistration() will be called again from OnStoreLoaded()
     // after the CloudPolicyStore has initialized.
@@ -548,8 +550,8 @@ std::unique_ptr<DeviceCloudPolicyValidator> EnrollmentHandler::CreateValidator(
 }
 
 void EnrollmentHandler::HandlePolicyValidationResult(
-    DeviceCloudPolicyValidator* validator) {
-  DCHECK_EQ(STEP_VALIDATION, enrollment_step_);
+    CloudPolicyValidatorBase* validator) {
+  CHECK_EQ(STEP_VALIDATION, enrollment_step_, base::NotFatalUntil::M160);
   if (!validator->success()) {
     ReportResult(EnrollmentStatus::ForValidationError(validator->status()));
     return;
@@ -567,8 +569,8 @@ void EnrollmentHandler::HandlePolicyValidationResult(
 
   domain_ = gaia::ExtractDomainName(gaia::CanonicalizeEmail(username));
   SetStep(STEP_ROBOT_AUTH_FETCH);
-  device_account_initializer_ =
-      std::make_unique<DeviceAccountInitializer>(client_.get(), this);
+  device_account_initializer_ = std::make_unique<DeviceAccountInitializer>(
+      shared_url_loader_factory_, client_.get(), this);
   device_account_initializer_->FetchToken();
 }
 
@@ -610,13 +612,8 @@ std::set<std::string> EnrollmentHandler::GetRobotOAuthScopes() {
   return {GaiaConstants::kAnyApiOAuth2Scope};
 }
 
-scoped_refptr<network::SharedURLLoaderFactory>
-EnrollmentHandler::GetURLLoaderFactory() {
-  return g_browser_process->shared_url_loader_factory();
-}
-
 void EnrollmentHandler::SetFirmwareManagementParametersData() {
-  DCHECK_EQ(STEP_SET_FWMP_DATA, enrollment_step_);
+  CHECK_EQ(STEP_SET_FWMP_DATA, enrollment_step_, base::NotFatalUntil::M160);
 
   // In case of reenrollment, the device has the TPM locked and nothing has to
   // change in install attributes. No need to update firmware parameters in this
@@ -641,7 +638,7 @@ void EnrollmentHandler::SetFirmwareManagementParametersData() {
 void EnrollmentHandler::OnFirmwareManagementParametersDataSet(
     std::optional<device_management::SetFirmwareManagementParametersReply>
         reply) {
-  DCHECK_EQ(STEP_SET_FWMP_DATA, enrollment_step_);
+  CHECK_EQ(STEP_SET_FWMP_DATA, enrollment_step_, base::NotFatalUntil::M160);
   if (!reply.has_value()) {
     LOG(ERROR) << "Failed to update firmware management parameters in TPM due "
                   "to DBus error.";
@@ -657,7 +654,7 @@ void EnrollmentHandler::OnFirmwareManagementParametersDataSet(
 }
 
 void EnrollmentHandler::StartLockDevice() {
-  DCHECK_EQ(STEP_LOCK_DEVICE, enrollment_step_);
+  CHECK_EQ(STEP_LOCK_DEVICE, enrollment_step_, base::NotFatalUntil::M160);
   // Since this method is also called directly.
   weak_ptr_factory_.InvalidateWeakPtrs();
 
@@ -669,7 +666,7 @@ void EnrollmentHandler::StartLockDevice() {
 
 void EnrollmentHandler::HandleLockDeviceResult(
     ash::InstallAttributes::LockResult lock_result) {
-  DCHECK_EQ(STEP_LOCK_DEVICE, enrollment_step_);
+  CHECK_EQ(STEP_LOCK_DEVICE, enrollment_step_, base::NotFatalUntil::M160);
   switch (lock_result) {
     case ash::InstallAttributes::LOCK_SUCCESS:
       StartStoreRobotAuth();
@@ -716,25 +713,24 @@ void EnrollmentHandler::StartStoreRobotAuth() {
 }
 
 void EnrollmentHandler::StoreVersion() {
-  DCHECK_EQ(STEP_STORE_VERSION, enrollment_step_);
-  PrefService* prefs = g_browser_process->local_state();
-  prefs->SetString(ash::prefs::kEnrollmentVersionOS,
-                   base::SysInfo::OperatingSystemVersion());
-  prefs->SetString(ash::prefs::kEnrollmentVersionBrowser,
-                   version_info::GetVersionNumber());
-  prefs->CommitPendingWrite();
+  CHECK_EQ(STEP_STORE_VERSION, enrollment_step_, base::NotFatalUntil::M160);
+  local_state_->SetString(ash::prefs::kEnrollmentVersionOS,
+                          base::SysInfo::OperatingSystemVersion());
+  local_state_->SetString(ash::prefs::kEnrollmentVersionBrowser,
+                          version_info::GetVersionNumber());
+  local_state_->CommitPendingWrite();
 
   SetStep(STEP_STORE_POLICY);
   StartStoreDevicePolicy();
 }
 
 void EnrollmentHandler::StartStoreDevicePolicy() {
-  DCHECK_EQ(STEP_STORE_POLICY, enrollment_step_);
+  CHECK_EQ(STEP_STORE_POLICY, enrollment_step_, base::NotFatalUntil::M160);
   store_->InstallInitialPolicy(*policy_);
 }
 
 void EnrollmentHandler::OnDeviceAccountTokenStored() {
-  DCHECK_EQ(STEP_STORE_ROBOT_AUTH, enrollment_step_);
+  CHECK_EQ(STEP_STORE_ROBOT_AUTH, enrollment_step_, base::NotFatalUntil::M160);
   SetStep(STEP_STORE_VERSION);
   StoreVersion();
 }
@@ -768,7 +764,7 @@ void EnrollmentHandler::ReportResult(EnrollmentStatus status) {
 }
 
 void EnrollmentHandler::SetStep(EnrollmentStep step) {
-  DCHECK_LE(enrollment_step_, step);
+  CHECK_LE(enrollment_step_, step, base::NotFatalUntil::M160);
 
   // TODO(crbug.com/40805389): Logging as "WARNING" to make sure it's preserved
   // in the logs.

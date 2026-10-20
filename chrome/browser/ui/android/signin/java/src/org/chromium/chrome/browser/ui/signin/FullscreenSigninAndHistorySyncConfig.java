@@ -4,6 +4,8 @@
 
 package org.chromium.chrome.browser.ui.signin;
 
+import android.text.TextUtils;
+
 import androidx.annotation.DrawableRes;
 
 import org.chromium.build.annotations.NullMarked;
@@ -35,8 +37,10 @@ public final class FullscreenSigninAndHistorySyncConfig {
         private @HistorySyncConfig.OptInMode int mHistoryOptInMode =
                 HistorySyncConfig.OptInMode.OPTIONAL;
         private @Nullable String mSelectedAccountEmail;
+        private @SigninAndHistorySyncCoordinator.SigninFlow int mSigninFlow =
+                SigninAndHistorySyncCoordinator.SigninFlow.DEFAULT_SIGNIN;
 
-        public Builder(
+        private Builder(
                 String signinTitle,
                 String signinSubtitle,
                 String signinDismissText,
@@ -73,6 +77,11 @@ public final class FullscreenSigninAndHistorySyncConfig {
             return this;
         }
 
+        public Builder signinFlow(@SigninAndHistorySyncCoordinator.SigninFlow int signinFlow) {
+            mSigninFlow = signinFlow;
+            return this;
+        }
+
         public FullscreenSigninAndHistorySyncConfig build() {
             final FullscreenSigninConfig signinConfig =
                     new FullscreenSigninConfig(
@@ -82,7 +91,8 @@ public final class FullscreenSigninAndHistorySyncConfig {
                             /* logoId= */ mSigninLogoId,
                             /* shouldDisableSignin= */ mShouldDisableSignin,
                             /* surveyType= */ null,
-                            /* selectedAccountEmail= */ mSelectedAccountEmail);
+                            /* selectedAccountEmail= */ mSelectedAccountEmail,
+                            /* signinFlow= */ mSigninFlow);
             final HistorySyncConfig historySyncConfig =
                     new HistorySyncConfig(
                             /* title= */ mHistorySyncTitle, /* subtitle= */ mHistorySyncSubtitle);
@@ -99,6 +109,43 @@ public final class FullscreenSigninAndHistorySyncConfig {
         this.signinConfig = signinConfig;
         this.historySyncConfig = historySyncConfig;
         this.historyOptInMode = historyOptInMode;
+    }
+
+    /** Creates a builder for the fresh sign-in flow. */
+    public static Builder builder(
+            String signinTitle,
+            String signinSubtitle,
+            String signinDismissText,
+            String historySyncTitle,
+            String historySyncSubtitle) {
+        return new Builder(
+                signinTitle,
+                signinSubtitle,
+                signinDismissText,
+                historySyncTitle,
+                historySyncSubtitle);
+    }
+
+    /** Creates a builder for the switch account flow. */
+    public static Builder builderForSwitchAccountFlow(
+            String signinTitle,
+            String signinSubtitle,
+            String signinDismissText,
+            String historySyncTitle,
+            String historySyncSubtitle,
+            String selectedAccountEmail) {
+        Builder builder =
+                new Builder(
+                        signinTitle,
+                        signinSubtitle,
+                        signinDismissText,
+                        historySyncTitle,
+                        historySyncSubtitle);
+        assert !TextUtils.isEmpty(selectedAccountEmail)
+                : "Selected account email cannot be null or empty!";
+        builder.mSelectedAccountEmail = selectedAccountEmail;
+        builder.mSigninFlow = SigninAndHistorySyncCoordinator.SigninFlow.SWITCH_ACCOUNT;
+        return builder;
     }
 
     @Override

@@ -56,8 +56,7 @@ bool AutofillVCNEnrollBottomSheetBridge::RequestShowContent(
   int network_icon_resource_id = 0;
   GURL issuer_icon_url;
   if (base::FeatureList::IsEnabled(
-          autofill::features::
-              kAutofillEnableVirtualCardJavaPaymentsDataManager)) {
+          features::kAutofillEnableVirtualCardJavaPaymentsDataManager)) {
     network_icon_resource_id = ResourceMapper::MapToJavaDrawableId(
         delegate_->GetNetworkIconResourceId());
     issuer_icon_url = delegate_->GetIssuerIconUrl();
@@ -71,12 +70,9 @@ bool AutofillVCNEnrollBottomSheetBridge::RequestShowContent(
       delegate_->GetMessageText(), delegate_->GetDescriptionText(),
       delegate_->GetLearnMoreLinkText(), issuer_icon_bitmap,
       network_icon_resource_id, std::move(issuer_icon_url),
-      delegate_->GetCardLabel(),
-      LegalMessageLineAndroid::ConvertToJavaLinkedList(
-          delegate_->GetGoogleLegalMessage()),
-      LegalMessageLineAndroid::ConvertToJavaLinkedList(
-          delegate_->GetIssuerLegalMessage()),
-      delegate_->GetAcceptButtonLabel(), delegate_->GetCancelButtonLabel());
+      delegate_->GetCardLabel(), delegate_->GetGoogleLegalMessage(),
+      delegate_->GetIssuerLegalMessage(), delegate_->GetAcceptButtonLabel(),
+      delegate_->GetCancelButtonLabel());
 }
 
 void AutofillVCNEnrollBottomSheetBridge::Hide() {

@@ -5,8 +5,9 @@
 #ifndef CC_TREES_STICKY_POSITION_CONSTRAINT_H_
 #define CC_TREES_STICKY_POSITION_CONSTRAINT_H_
 
-#include "cc/cc_export.h"
+#include <optional>
 
+#include "cc/cc_export.h"
 #include "cc/paint/element_id.h"
 #include "ui/gfx/geometry/point.h"
 #include "ui/gfx/geometry/rect.h"
@@ -65,9 +66,30 @@ struct CC_EXPORT StickyPositionConstraint {
   ElementId nearest_element_shifting_sticky_box;
   ElementId nearest_element_shifting_containing_block;
 
-  // Returns true if `this` and `other` are equivalent and either one can be
-  // used to get the same rendering result.
-  bool CanMerge(const StickyPositionConstraint& other) const;
+  // Returns whether the blink layerization algorithm can merge `this` and
+  // `other`:
+  // - kCanAlwaysMerge if the two constraints are equivalent;
+  // - kCanMergeWithinScrollRange if `scroll_range` is provided and the two
+  //   constraints always produce StickyPositionOffset values with a constant
+  //   difference for any scroll position within `scroll_range`;
+  // - kCannotMerge otherwise.
+  enum class CanMergeResult {
+    kCannotMerge,
+    kCanAlwaysMerge,
+    kCanMergeWithinScrollRange,
+  };
+  CanMergeResult CanMerge(
+      const StickyPositionConstraint& other,
+      const std::optional<gfx::RectF>& scroll_range = std::nullopt) const;
+
+  // Returns the offset that should be applied to the sticky box based on the
+  // current scroll position and the constraint. Pixel snapping is not applied
+  // to the returned offset.
+  gfx::Vector2dF StickyPositionOffset(
+      gfx::PointF scroll_position,
+      gfx::Vector2dF constraint_box_expansion,
+      gfx::Vector2dF ancestor_sticky_box_offset,
+      gfx::Vector2dF ancestor_containing_block_offset) const;
 
   bool operator==(const StickyPositionConstraint&) const;
 };

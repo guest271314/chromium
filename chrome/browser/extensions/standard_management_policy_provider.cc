@@ -8,16 +8,25 @@
 
 #include "base/logging.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/time/time.h"
+#include "build/build_config.h"
 #include "chrome/browser/extensions/extension_management.h"
+#include "chrome/browser/extensions/extension_util.h"
+#include "chrome/browser/extensions/low_trust_policy_install_block_manager.h"
 #include "chrome/grit/generated_resources.h"
+#include "components/policy/core/common/policy_logger.h"
 #include "extensions/browser/managed_installation_mode.h"
-#include "extensions/browser/manifest_v2_experiment_manager.h"
+#include "extensions/browser/manifest_v2_handler.h"
 #include "extensions/buildflags/buildflags.h"
 #include "extensions/common/constants.h"
 #include "extensions/common/extension.h"
 #include "extensions/common/manifest.h"
 #include "extensions/strings/grit/extensions_strings.h"
 #include "ui/base/l10n/l10n_util.h"
+
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
+#include "chrome/browser/extensions/policy_dse_ntp_override_metrics_reporter.h"
+#endif
 
 static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
 
@@ -122,17 +131,17 @@ bool StandardManagementPolicyProvider::UserMayLoad(
   // a branch to the second block and add a line to the definition of
   // kAllowedTypesMap in extension_management_constants.h.
   switch (extension->GetType()) {
-    case Manifest::TYPE_UNKNOWN:
+    case Manifest::Type::kUnknown:
       break;
-    case Manifest::TYPE_EXTENSION:
-    case Manifest::TYPE_THEME:
-    case Manifest::TYPE_USER_SCRIPT:
-    case Manifest::TYPE_HOSTED_APP:
-    case Manifest::TYPE_LEGACY_PACKAGED_APP:
-    case Manifest::TYPE_PLATFORM_APP:
-    case Manifest::TYPE_SHARED_MODULE:
-    case Manifest::TYPE_LOGIN_SCREEN_EXTENSION:
-    case Manifest::TYPE_CHROMEOS_SYSTEM_EXTENSION: {
+    case Manifest::Type::kExtension:
+    case Manifest::Type::kTheme:
+    case Manifest::Type::kUserScript:
+    case Manifest::Type::kHostedApp:
+    case Manifest::Type::kLegacyPackagedApp:
+    case Manifest::Type::kPlatformApp:
+    case Manifest::Type::kSharedModule:
+    case Manifest::Type::kLoginScreenExtension:
+    case Manifest::Type::kChromeOSSystemExtension: {
       if (!settings_->IsAllowedManifestType(extension->GetType(),
                                             extension->id())) {
         if (error) {
@@ -142,7 +151,7 @@ bool StandardManagementPolicyProvider::UserMayLoad(
       }
       break;
     }
-    case Manifest::NUM_LOAD_TYPES:
+    case Manifest::Type::kNumLoadTypes:
       NOTREACHED();
   }
 
@@ -156,15 +165,6 @@ bool StandardManagementPolicyProvider::UserMayLoad(
     return false;
   }
 
-  if (!settings_->IsAllowedManifestVersion(extension)) {
-    if (error) {
-      *error = l10n_util::GetStringFUTF16(
-          IDS_EXTENSION_MANIFEST_VERSION_NOT_SUPPORTED,
-          base::UTF8ToUTF16(extension->name()));
-    }
-    return false;
-  }
-
   return true;
 }
 
@@ -172,6 +172,44 @@ void StandardManagementPolicyProvider::UserMayInstall(
     scoped_refptr<const Extension> extension,
     base::OnceCallback<void(ManagementPolicy::Decision)> callback) const {
   std::u16string error;
+
+  // Evaluate DSE/NTP policy overrides first so they take precedence over
+  // general policy abuse mitigations (such as off-store or greylist rules).
+  // This blocks the policy installation and transitions the extension to an
+  // effective user-allowed state rather than force-disabling it.
+  //
+  // TODO(crbug.com/536913423): Currently this also intercepts user-initiated
+  // installs if a corresponding policy is configured. A follow-up CL will
+  // allow user installs (e.g. from Chrome Web Store) while keeping policy
+  // installs blocked.
+  if (settings_->ShouldBlockPolicyInstalledDseNtpOverrideExtension(
+          *extension)) {
+    if (auto* block_manager = settings_->low_trust_block_manager()) {
+      std::string update_url =
+          settings_->GetEffectiveUpdateURL(*extension).spec();
+      block_manager->MarkBlocked(
+          extension->id(),
+          BlockedExtensionInfo{
+              .override_type = util::GetDseNtpOverrideType(*extension),
+              .update_url = std::move(update_url),
+              .timestamp = base::Time::Now()});
+    }
+    LOG_POLICY(WARNING, POLICY_PROCESSING)
+        << "[BlockLowTrustExtension] Blocked installation of policy extension "
+        << extension->id()
+        << ": Extension is not allowed to override DSE/NTP settings in "
+           "low-trust environments.";
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
+    PolicyDseNtpOverrideMetricsReporter::LogBlockAction(
+        LowTrustPolicyBlockAction::kBlockedOnInstall);
+#endif
+    error = l10n_util::GetStringFUTF16(
+        IDS_EXTENSION_CANT_POLICY_INSTALL_IN_LOW_TRUST,
+        base::UTF8ToUTF16(extension->name()),
+        base::UTF8ToUTF16(extension->id()));
+    std::move(callback).Run({false, error});
+    return;
+  }
 
   ManagedInstallationMode installation_mode =
       settings_->GetInstallationMode(extension.get());
@@ -186,9 +224,8 @@ void StandardManagementPolicyProvider::UserMayInstall(
 
   // Check if the extension would be force-disabled once it's installed. If it
   // would, block the new installation.
-  auto* mv2_experiment_manager = ManifestV2ExperimentManager::Get(profile_);
-  if (mv2_experiment_manager &&
-      mv2_experiment_manager->ShouldBlockExtensionEnable(*extension)) {
+  auto* mv2_handler = ManifestV2Handler::Get(profile_);
+  if (mv2_handler && mv2_handler->ShouldBlockExtensionEnable(*extension)) {
     error =
         l10n_util::GetStringUTF16(IDS_EXTENSIONS_CANT_INSTALL_MV2_EXTENSION);
     std::move(callback).Run({false, error});
@@ -250,12 +287,11 @@ bool StandardManagementPolicyProvider::MustRemainDisabled(
     return true;
   }
 
-  // Note: `mv2_experiment_manager` may be null for certain types of profiles
+  // Note: `mv2_handler` may be null for certain types of profiles
   // (such as the sign-in profile). We can ignore this check in this case, since
   // users can't install extensions in these profiles.
-  auto* mv2_experiment_manager = ManifestV2ExperimentManager::Get(profile_);
-  if (mv2_experiment_manager &&
-      mv2_experiment_manager->ShouldBlockExtensionEnable(*extension)) {
+  auto* mv2_handler = ManifestV2Handler::Get(profile_);
+  if (mv2_handler && mv2_handler->ShouldBlockExtensionEnable(*extension)) {
     if (reason) {
       *reason = disable_reason::DISABLE_UNSUPPORTED_MANIFEST_VERSION;
     }

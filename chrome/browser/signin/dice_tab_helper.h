@@ -6,6 +6,10 @@
 #define CHROME_BROWSER_SIGNIN_DICE_TAB_HELPER_H_
 
 #include "base/functional/callback_forward.h"
+#include "base/memory/scoped_refptr.h"
+#include "base/memory/weak_ptr.h"
+#include "base/observer_list.h"
+#include "base/observer_list_types.h"
 #include "base/time/time.h"
 #include "base/timer/elapsed_timer.h"
 #include "base/timer/timer.h"
@@ -17,6 +21,10 @@ namespace content {
 class NavigationHandle;
 }
 
+namespace device {
+class BluetoothAdapter;
+}
+
 struct CoreAccountInfo;
 class SigninUIError;
 
@@ -24,6 +32,12 @@ class SigninUIError;
 class DiceTabHelper : public content::WebContentsUserData<DiceTabHelper>,
                       public content::WebContentsObserver {
  public:
+  class Observer : public base::CheckedObserver {
+   public:
+    virtual void OnIsChromeSigninPageChanged(bool is_signin_page) {}
+    virtual void OnDiceTabHelperWillDestroy() {}
+  };
+
   // Callback starting Sync. This is a repeating callback, because multiple
   // `ProcessDiceHeaderDelegateImpl` may make copies of it.
   using EnableSyncCallback =
@@ -121,16 +135,16 @@ class DiceTabHelper : public content::WebContentsUserData<DiceTabHelper>,
   // Returns false if the user or the page has navigated away from |signin_url|.
   bool IsChromeSigninPage() const;
 
-  // Returns true if a signin flow was initialized with the reason
-  // kSigninPrimaryAccount and is not yet complete.
-  // Note that there is not guarantee that the flow would ever finish, and in
-  // some rare cases it is possible that a "non-sync" signin happens while this
+  // Returns true if a Chrome sign-in flow was initialized on this tab and is
+  // not yet complete.
+  // Note that there is no guarantee that the flow would ever finish, and in
+  // some rare cases it is possible that a web-only signin happens while this
   // is true (if the user aborts the flow and then re-uses the same tab for a
   // normal web signin).
-  bool IsSyncSigninInProgress() const;
+  bool IsChromeSigninInProgress() const;
 
-  // Called to notify that the sync signin is complete.
-  void OnSyncSigninFlowComplete();
+  // Called to notify that the sign-in flow is complete.
+  void OnSigninFlowComplete();
   // Called to notify that the auth token exchange is complete.
   // Starts a timer for the Sync header to arrive.
   void OnTokenExchangeSuccess(
@@ -146,6 +160,9 @@ class DiceTabHelper : public content::WebContentsUserData<DiceTabHelper>,
   // in case of errors.
   void UpdateRedirectUrl(const GURL& redirect_url);
 
+  void AddObserver(Observer* observer);
+  void RemoveObserver(Observer* observer);
+
   // Can be used in tests to reduce the delay before showing the interception
   // bubble, after the auth token is received.
   [[nodiscard]] static base::AutoReset<base::TimeDelta>
@@ -156,9 +173,9 @@ class DiceTabHelper : public content::WebContentsUserData<DiceTabHelper>,
   friend class content::WebContentsUserData<DiceTabHelper>;
   explicit DiceTabHelper(content::WebContents* web_contents);
 
-  // kStarted: a Sync signin flow was started and not completed.
-  // kNotStarted: there is no sync signin flow in progress.
-  enum class SyncSigninFlowStatus { kNotStarted, kStarted };
+  // kStarted: a Chrome sign-in flow was started and not completed.
+  // kNotStarted: there is no Chrome sign-in flow in progress.
+  enum class SigninFlowStatus { kNotStarted, kStarted };
 
   struct ResetableState {
     ResetableState();
@@ -182,8 +199,7 @@ class DiceTabHelper : public content::WebContentsUserData<DiceTabHelper>,
         signin_metrics::PromoAction::PROMO_ACTION_NO_SIGNIN_PROMO;
     signin_metrics::Reason signin_reason =
         signin_metrics::Reason::kUnknownReason;
-    SyncSigninFlowStatus sync_signin_flow_status =
-        SyncSigninFlowStatus::kNotStarted;
+    SigninFlowStatus signin_flow_status = SigninFlowStatus::kNotStarted;
 
     // Tracks the time between the LST exchange and the Sync header reception.
     std::unique_ptr<base::ElapsedTimer> elapsed_time_since_lst_arrival_timer;
@@ -208,6 +224,8 @@ class DiceTabHelper : public content::WebContentsUserData<DiceTabHelper>,
   // Resets the internal state to the initial values.
   void Reset();
 
+  void SetIsChromeSigninPage(bool is_signin_page);
+
   // Starts the timer before showing the interception bubble.
   void StartInterceptionBubbleTimer(
       base::OnceClosure retry_interception_bubble_callback);
@@ -217,12 +235,31 @@ class DiceTabHelper : public content::WebContentsUserData<DiceTabHelper>,
 
   bool IsTokenExchangeDone() const;
 
+  // Gets the Bluetooth adapter via
+  // `signin::IsHybridTransportSupportedForQrCodeSignin()` and stores it in
+  // `bluetooth_adapter_`.
+  void KeepBluetoothAdapterAlive();
+  void OnGetBluetoothAdapter(bool hybrid_transport_supported,
+                             scoped_refptr<device::BluetoothAdapter> adapter);
+
   static base::TimeDelta g_delay_before_interception_bubble_retry;
 
   std::unique_ptr<ResetableState> state_;
 
   bool is_chrome_signin_page_ = false;
   bool signin_page_load_recorded_ = false;
+
+  // Never read, but do not remove. Holding this reference while the tab shows
+  // the Chrome sign-in page keeps the Bluetooth adapter alive, so the page's
+  // WebAuthn request reuses it instead of creating a new one. On macOS, a new
+  // adapter reports Bluetooth as off until its first background poll
+  // completes, which hides the passkey QR code from the Autofill suggestions.
+  // See crbug.com/568301366.
+  scoped_refptr<device::BluetoothAdapter> bluetooth_adapter_;
+
+  base::ObserverList<Observer> observer_list_;
+
+  base::WeakPtrFactory<DiceTabHelper> weak_ptr_factory_{this};
 
   WEB_CONTENTS_USER_DATA_KEY_DECL();
 };

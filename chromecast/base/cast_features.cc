@@ -142,10 +142,6 @@ BASE_FEATURE(kSingleBuffer,
              "enable_single_buffer",
              base::FEATURE_DISABLED_BY_DEFAULT);
 
-BASE_FEATURE(kEnableGeneralAudienceBrowsing,
-             "enable_general_audience_browsing",
-             base::FEATURE_DISABLED_BY_DEFAULT);
-
 // Uses AudioManagerAndroid, instead of CastAudioManagerAndroid. This will
 // disable lots of Cast features, so it should only be used for development and
 // testing.
@@ -185,7 +181,6 @@ const base::Feature* kFeatures[] = {
     &kEnableQuic,
     &kTripleBuffer720,
     &kSingleBuffer,
-    &kEnableGeneralAudienceBrowsing,
     &kEnableChromeAudioManagerAndroid,
     &kEnableCastAudioOutputDevice,
     &kEnableStarboardMimeChecks,
@@ -290,7 +285,7 @@ void InitializeFeatureList(const base::DictValue& dcs_features,
 
         // Register the params, so that they can be queried by client code.
         bool success = base::AssociateFieldTrialParams(
-            feature_name, kDefaultDCSFeaturesGroup, params);
+            feature_name, kDefaultDCSFeaturesGroup, std::move(params));
         DCHECK(success);
       }
       continue;

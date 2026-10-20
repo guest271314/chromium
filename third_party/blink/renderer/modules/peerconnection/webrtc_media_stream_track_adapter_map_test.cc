@@ -4,11 +4,17 @@
 
 #include "third_party/blink/renderer/modules/peerconnection/webrtc_media_stream_track_adapter_map.h"
 
+#include <cstddef>
 #include <memory>
+#include <string>
+#include <utility>
+#include <vector>
 
-#include "base/memory/ptr_util.h"
+#include "base/check.h"
+#include "base/location.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/run_loop.h"
+#include "base/synchronization/waitable_event.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/test/scoped_run_loop_timeout.h"
 #include "base/test/test_timeouts.h"
@@ -16,15 +22,20 @@
 #include "third_party/blink/public/platform/scheduler/test/renderer_scheduler_test_support.h"
 #include "third_party/blink/public/web/web_heap.h"
 #include "third_party/blink/renderer/modules/peerconnection/mock_peer_connection_dependency_factory.h"
+#include "third_party/blink/renderer/platform/heap/cross_thread_persistent.h"
+#include "third_party/blink/renderer/platform/heap/garbage_collected.h"
 #include "third_party/blink/renderer/platform/mediastream/media_stream_audio_source.h"
 #include "third_party/blink/renderer/platform/mediastream/media_stream_audio_track.h"
 #include "third_party/blink/renderer/platform/mediastream/media_stream_component_impl.h"
+#include "third_party/blink/renderer/platform/mediastream/media_stream_source.h"
 #include "third_party/blink/renderer/platform/scheduler/public/post_cross_thread_task.h"
 #include "third_party/blink/renderer/platform/testing/io_task_runner_testing_platform_support.h"
 #include "third_party/blink/renderer/platform/testing/task_environment.h"
-#include "third_party/blink/renderer/platform/wtf/cross_thread_copier_std.h"
+#include "third_party/blink/renderer/platform/testing/testing_platform_support.h"
 #include "third_party/blink/renderer/platform/wtf/cross_thread_functional.h"
 #include "third_party/blink/renderer/platform/wtf/functional.h"
+#include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
+#include "third_party/webrtc/api/media_stream_interface.h"
 
 namespace blink {
 
@@ -253,6 +264,29 @@ TEST_F(WebRtcMediaStreamTrackAdapterMapTest, GetMissingRemoteTrackAdapter) {
   scoped_refptr<blink::MockWebRtcAudioTrack> webrtc_track =
       blink::MockWebRtcAudioTrack::Create("missing");
   EXPECT_EQ(nullptr, map_->GetRemoteTrackAdapter(webrtc_track.get()));
+}
+
+TEST_F(WebRtcMediaStreamTrackAdapterMapTest,
+       DestroyAdapterRefOnSignalingThread) {
+  MediaStreamComponent* track = CreateLocalTrack("local_track");
+  std::unique_ptr<blink::WebRtcMediaStreamTrackAdapterMap::AdapterRef>
+      adapter_ref = map_->GetOrCreateLocalTrackAdapter(track);
+  EXPECT_TRUE(adapter_ref->is_initialized());
+  EXPECT_EQ(1u, map_->GetLocalTrackCount());
+
+  // Destroying the AdapterRef on the signaling thread should post the removal
+  // and disposal to the main thread.
+  PostCrossThreadTask(
+      *signaling_thread(), FROM_HERE,
+      CrossThreadBindOnce(
+          [](std::unique_ptr<
+              blink::WebRtcMediaStreamTrackAdapterMap::AdapterRef> ref) {
+            // Destroyed when going out of scope on the signaling thread.
+          },
+          std::move(adapter_ref)));
+  RunMessageLoopsUntilIdle();
+  EXPECT_EQ(0u, map_->GetLocalTrackCount());
+  EXPECT_EQ(nullptr, map_->GetLocalTrackAdapter(track));
 }
 
 // Continuously calls GetOrCreateLocalTrackAdapter() on the main thread and

@@ -13,7 +13,6 @@
 #include "chrome/browser/contextual_tasks/contextual_tasks_ui_service_factory.h"
 #include "chrome/browser/pdf/pdf_extension_test_base.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/common/extensions/api/pdf_viewer_private.h"
 #include "components/contextual_tasks/public/contextual_tasks_service.h"
@@ -50,7 +49,7 @@ IN_PROC_BROWSER_TEST_F(ContextualTasksUiServicePdfBrowserTest,
   tabs::TabInterface* active_tab = browser()->tab_strip_model()->GetActiveTab();
 
   ContextualTasksService* contextual_tasks_service =
-      ContextualTasksServiceFactory::GetForProfile(browser()->profile());
+      ContextualTasksServiceFactory::GetForProfile(browser()->GetProfile());
   ContextualTask task = contextual_tasks_service->CreateTask();
   contextual_tasks_service->AssociateTabWithTask(
       task.GetTaskId(),
@@ -58,16 +57,16 @@ IN_PROC_BROWSER_TEST_F(ContextualTasksUiServicePdfBrowserTest,
 
   ContextualTasksUiService* ui_service =
       ContextualTasksUiServiceFactory::GetForBrowserContext(
-          browser()->profile());
+          browser()->GetProfile());
 
   std::string pdf_url_with_fragment = std::string(url.spec()) + "#page=3";
   const GURL citation_url(pdf_url_with_fragment);
 
   extensions::TestEventRouterObserver observer(
-      extensions::EventRouter::Get(browser()->profile()));
+      extensions::EventRouter::Get(browser()->GetProfile()));
 
   ui_service->OnThreadLinkClicked(citation_url, task.GetTaskId(), nullptr,
-                                  browser()->GetWeakPtr());
+                                  browser()->GetWeakPtr(), url::Origin());
 
   observer.WaitForEventWithName(
       extensions::api::pdf_viewer_private::OnShouldUpdateViewport::kEventName);
@@ -86,7 +85,7 @@ IN_PROC_BROWSER_TEST_F(ContextualTasksUiServicePdfBrowserTest,
   tabs::TabInterface* active_tab = browser()->tab_strip_model()->GetActiveTab();
 
   ContextualTasksService* contextual_tasks_service =
-      ContextualTasksServiceFactory::GetForProfile(browser()->profile());
+      ContextualTasksServiceFactory::GetForProfile(browser()->GetProfile());
   ContextualTask task = contextual_tasks_service->CreateTask();
   contextual_tasks_service->AssociateTabWithTask(
       task.GetTaskId(),
@@ -94,12 +93,12 @@ IN_PROC_BROWSER_TEST_F(ContextualTasksUiServicePdfBrowserTest,
 
   ContextualTasksUiService* ui_service =
       ContextualTasksUiServiceFactory::GetForBrowserContext(
-          browser()->profile());
+          browser()->GetProfile());
 
   GURL bad_url("https://example.com/other.pdf#page=2");
 
   ui_service->OnThreadLinkClicked(bad_url, task.GetTaskId(), nullptr,
-                                  browser()->GetWeakPtr());
+                                  browser()->GetWeakPtr(), url::Origin());
 
   // Wait for the new tab to be created.
   EXPECT_TRUE(base::test::RunUntil(

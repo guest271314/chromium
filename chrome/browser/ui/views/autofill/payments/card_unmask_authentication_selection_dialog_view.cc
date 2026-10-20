@@ -18,7 +18,6 @@
 #include "ui/base/mojom/dialog_button.mojom.h"
 #include "ui/base/mojom/ui_base_types.mojom-shared.h"
 #include "ui/base/ui_base_features.h"
-#include "ui/gfx/image/image_skia_operations.h"
 #include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/border.h"
 #include "ui/views/bubble/bubble_frame_view.h"
@@ -110,7 +109,7 @@ void CardUnmaskAuthenticationSelectionDialogView::UpdateContent() {
 }
 
 bool CardUnmaskAuthenticationSelectionDialogView::Accept() {
-  DCHECK(!controller_->GetChallengeOptions().empty());
+  CHECK(!controller_->GetChallengeOptions().empty(), base::NotFatalUntil::M162);
   controller_->OnOkButtonClicked();
   return false;
 }
@@ -127,7 +126,7 @@ void CardUnmaskAuthenticationSelectionDialogView::AddedToWidget() {
 }
 
 void CardUnmaskAuthenticationSelectionDialogView::InitViews() {
-  DCHECK(children().empty());
+  CHECK(children().empty(), base::NotFatalUntil::M162);
   // Sets the layout manager for the top level view.
   auto* layout = SetLayoutManager(std::make_unique<views::BoxLayout>(
       views::BoxLayout::Orientation::kVertical, gfx::Insets(),

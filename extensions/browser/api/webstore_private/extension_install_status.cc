@@ -20,7 +20,7 @@
 #include "extensions/browser/extension_registry.h"
 #include "extensions/browser/extensions_browser_client.h"
 #include "extensions/browser/managed_installation_mode.h"
-#include "extensions/browser/manifest_v2_experiment_manager.h"
+#include "extensions/browser/manifest_v2_handler.h"
 #include "extensions/browser/supervised_user_extensions_delegate.h"
 #include "extensions/buildflags/buildflags.h"
 #include "extensions/common/extension.h"
@@ -65,7 +65,7 @@ bool IsExtensionInstallBlockedByPolicy(
 
   // Extension is allowed by wildcard or update_url, checks required permissions
   // and manifest type.
-  if (manifest_type != Manifest::Type::TYPE_UNKNOWN &&
+  if (manifest_type != Manifest::Type::kUnknown &&
       !extension_management_client->IsAllowedManifestType(manifest_type,
                                                           extension_id)) {
     return true;
@@ -120,7 +120,7 @@ ExtensionInstallStatus PerformSynchronousChecks(
       !supervised_user_extensions_delegate->CanSkipExtensionParentApprovals() &&
       !prefs->GetDict(prefs::kSupervisedUserApprovedExtensions)
            .contains(extension_id) &&
-      manifest_type != Manifest::Type::TYPE_THEME) {
+      manifest_type != Manifest::Type::kTheme) {
     return kCustodianApprovalRequiredForInstallation;
   }
   // Check if parent approval is needed for a supervised user to enable
@@ -145,13 +145,6 @@ ExtensionInstallStatus PerformSynchronousChecks(
     return kBlocklisted;
   }
 
-  // When manifest version is not allowed, the extension is blocked and can't be
-  // requested.
-  if (!extension_management_client->IsAllowedManifestVersion(
-          manifest_version, extension_id, manifest_type)) {
-    return kBlockedByPolicy;
-  }
-
   bool is_blocked_by_policy = IsExtensionInstallBlockedByPolicy(
       extension_management_client, mode, extension_id, update_url.spec(),
       manifest_type, required_permission_set);
@@ -174,16 +167,14 @@ ExtensionInstallStatus PerformSynchronousChecks(
   }
 
   // Check if the extension is using an unsupported manifest version.
-  ManifestV2ExperimentManager* mv2_experiment_manager =
-      ManifestV2ExperimentManager::Get(browser_context);
+  ManifestV2Handler* mv2_handler = ManifestV2Handler::Get(browser_context);
   // At this point, we don't know what the extension manifest location really
   // is (because it's not installed). We pretend it will be kInternal, which
   // reflects an extension installed by the webstore.
   constexpr mojom::ManifestLocation kManifestLocation =
       mojom::ManifestLocation::kInternal;
-  if (mv2_experiment_manager->ShouldBlockExtensionInstallation(
-          extension_id, manifest_version, manifest_type, kManifestLocation,
-          HashedExtensionId(extension_id))) {
+  if (mv2_handler->ShouldBlockExtensionInstallation(
+          manifest_version, manifest_type, kManifestLocation)) {
     // The extension is using a deprecated manifest version and should not
     // be installable.
     return kDeprecatedManifestVersion;
@@ -245,7 +236,7 @@ ExtensionInstallStatus GetWebstoreExtensionInstallStatus(
   // We don't know the extension's version, so we can't check
   // ExtensionInstallPolicyService. Only perform the other checks.
   return PerformSynchronousChecks(extension_id, browser_context,
-                                  Manifest::Type::TYPE_UNKNOWN, PermissionSet(),
+                                  Manifest::Type::kUnknown, PermissionSet(),
                                   /*manifest_version=*/3);
 }
 

@@ -5,9 +5,8 @@
 #ifndef COMPONENTS_SAFE_BROWSING_CORE_BROWSER_DB_SB_PROTOCOL_MANAGER_UTIL_H_
 #define COMPONENTS_SAFE_BROWSING_CORE_BROWSER_DB_SB_PROTOCOL_MANAGER_UTIL_H_
 
-// A class that implements the stateless methods used by the GetHashUpdate and
-// GetFullHash stubby calls made by Chrome using the SafeBrowsing V4 protocol.
-// TODO(crbug.com/362791941): Update v4-specific comments in this file.
+// Stateless methods and helper types used by calls made by Chrome using the
+// Safe Browsing protocols (v4 and v5).
 
 #include <functional>
 #include <initializer_list>
@@ -31,7 +30,7 @@ class HttpRequestHeaders;
 
 namespace safe_browsing {
 
-struct V4ProtocolConfig;
+struct SBProtocolConfig;
 
 // The size of the hash prefix, in bytes. It should be between 4 to 32 (full
 // hash).
@@ -44,7 +43,7 @@ const PrefixSize kMinHashPrefixLength = 4;
 // length of a SHA256 hash.
 const PrefixSize kMaxHashPrefixLength = 32;
 
-// A hash prefix sent by the SafeBrowsing PVer4 service.
+// A hash prefix sent by the Safe Browsing service.
 using HashPrefixStr = std::string;
 
 // A full SHA256 hash.
@@ -55,10 +54,17 @@ using ListUpdateResponse = FetchThreatListUpdatesResponse::ListUpdateResponse;
 
 void SetSbV4UrlPrefixForTesting(const char* url_prefix);
 
+// Sets the URL prefix for testing V5 GetHash and update requests.
+//  - url_prefix: The URL prefix string to use in tests.
+void SetSbV5UrlPrefixForTesting(const char* url_prefix);
+
+// Returns the URL prefix to use for V5 GetHash and update requests.
+const char* GetSbV5UrlPrefix();
+
 // Returns the URL to use for sending threat reports and other Safe Browsing
 // hits back to Safe Browsing service.
 std::string GetReportUrl(
-    const V4ProtocolConfig& config,
+    const SBProtocolConfig& config,
     const std::string& method,
     const ExtendedReportingLevel* reporting_level = nullptr,
     const bool is_enhanced_protection = false);
@@ -137,16 +143,19 @@ enum class SBThreatType {
   // page,
   SB_THREAT_TYPE_SIGNED_IN_NON_SYNC_PASSWORD_REUSE = 16,
 
-  // A Google ad that caused a blocked autoredirect was collected
-  SB_THREAT_TYPE_BLOCKED_AD_REDIRECT = 17,
+  // DEPRECATED. A Google ad that caused a blocked autoredirect was collected.
+  DEPRECATED_SB_THREAT_TYPE_BLOCKED_AD_REDIRECT = 17,
 
   // A sample of an ad was collected
   SB_THREAT_TYPE_AD_SAMPLE = 18,
 
-  // A report of Google ad that caused a blocked popup was collected.
-  SB_THREAT_TYPE_BLOCKED_AD_POPUP = 19,
+  // DEPRECATED. A report of Google ad that caused a blocked popup was
+  // collected.
+  DEPRECATED_SB_THREAT_TYPE_BLOCKED_AD_POPUP = 19,
 
-  // The page loaded a resource from the Suspicious Site list.
+  // This site is considered suspicious enough to trigger logging a report to
+  // Safe Browsing with more details.
+  // TODO(awado): Rename this to SB_THREAT_TYPE_LOGGABLE_SUSPICIOUS_SITE.
   SB_THREAT_TYPE_SUSPICIOUS_SITE = 20,
 
   // Enterprise password reuse detected on low reputation page.
@@ -173,12 +182,17 @@ enum class SBThreatType {
   // CSD Download allowlist.
   SB_THREAT_TYPE_CSD_DOWNLOAD_ALLOWLIST = 28,
 
-  kMaxValue = SB_THREAT_TYPE_CSD_DOWNLOAD_ALLOWLIST,
+  // Sites that are classified as suspicious by SafeBrowsing and should display
+  // a nonblocking warning.
+  SB_THREAT_TYPE_WARNABLE_SUSPICIOUS_SITE = 29,
+
+  kMaxValue = SB_THREAT_TYPE_WARNABLE_SUSPICIOUS_SITE,
+
 };
 
 using SBThreatTypeSet = base::flat_set<SBThreatType>;
 
-// Return true if |set| only contains types that are valid for CheckBrowseUrl().
+// Return true if `set` only contains types that are valid for CheckBrowseUrl().
 // Intended for use in DCHECK().
 bool SBThreatTypeSetIsValidForCheckBrowseUrl(const SBThreatTypeSet& set);
 
@@ -192,10 +206,12 @@ inline SBThreatTypeSet CreateSBThreatTypeSet(
 
 // The information required to uniquely identify each list the client is
 // interested in maintaining and downloading from the SafeBrowsing servers.
-// For example for v4, for digests of Malware binaries on Windows:
+// For v4: an example for digests of Malware binaries on Windows:
 // platform_type = WINDOWS,
 // threat_entry_type = EXECUTABLE,
 // threat_type = MALWARE
+// For v5: lists are identified by an SBThreatType (e.g.
+// SB_THREAT_TYPE_URL_MALWARE).
 class ListIdentifier {
  public:
   // For v4:
@@ -255,8 +271,56 @@ class ListIdentifier {
 
 std::ostream& operator<<(std::ostream& os, const ListIdentifier& id);
 
+// Associates metadata for a list with its ListIdentifier.
+class ListInfo {
+ public:
+  ListInfo(const bool fetch_updates,
+           const std::string& name,
+           const ListIdentifier& list_id,
+           const SBThreatType sb_threat_type);
+  ~ListInfo();
+  ListInfo(const ListInfo&);
+  ListInfo(ListInfo&&) noexcept;
+  ListInfo& operator=(const ListInfo&);
+  ListInfo& operator=(ListInfo&&) noexcept;
+  ListInfo() = delete;
+
+  const ListIdentifier& list_id() const { return list_id_; }
+  const std::string& filename() const { return filename_; }
+  const std::string& v4_filename() const { return v4_filename_; }
+  SBThreatType sb_threat_type() const { return sb_threat_type_; }
+  bool fetch_updates() const { return fetch_updates_; }
+  std::optional<PrefixSize> v5_prefix_size() const { return v5_prefix_size_; }
+
+ private:
+  // Whether to fetch and store updates for this list.
+  bool fetch_updates_;
+
+  // The ASCII name of the file on disk. This file is created inside the
+  // user-data directory.
+  std::string filename_;
+
+  // The ASCII name of the V4 file on disk. This file is created inside the
+  // user-data directory.
+  std::string v4_filename_;
+
+  // The list being read from/written to the disk.
+  ListIdentifier list_id_;
+
+  // The threat type enum value for this store.
+  SBThreatType sb_threat_type_;
+
+  // The expected prefix size for the hash prefixes in V5 store. Not populated
+  // when not fetching updates for this list.
+  std::optional<PrefixSize> v5_prefix_size_;
+};
+
+using ListInfos = std::vector<ListInfo>;
+
 PlatformType GetCurrentPlatformType();
 ListIdentifier GetChromeExtMalwareId();
+// TODO(crbug.com/372395685): Rename method and SB_THREAT_TYPE_API_ABUSE to be
+// notifications-specific once v4 is deprecated.
 ListIdentifier GetChromeUrlApiId();
 ListIdentifier GetUrlBillingId();
 ListIdentifier GetUrlCsdDownloadAllowlistId();
@@ -275,8 +339,14 @@ std::string GetUmaSuffixForStore(const base::FilePath& file_path);
 // Get the prefix size of a v5 list.
 PrefixSize GetV5ListPrefixSize(const ListIdentifier& list_identifier);
 
+// Get the prefix size of a v5 list based on SBThreatType.
+PrefixSize GetV5PrefixSizeForThreatType(SBThreatType threat_type);
+
 // Get the name of a v5 list.
 std::string GetV5ListName(const ListIdentifier& list_identifier);
+
+// Returns the SBThreatType corresponding to a given ListIdentifier.
+SBThreatType GetSBThreatTypeForList(const ListIdentifier& list_id);
 
 // Represents the state of each store.
 using StoreStateMap = std::unordered_map<ListIdentifier, std::string>;
@@ -346,28 +416,37 @@ enum V4OperationResult {
   OPERATION_RESULT_MAX = 9
 };
 
-// A class that provides static methods related to the Pver4 protocol.
+// A class that provides static methods related to Safe Browsing protocols.
 class SBProtocolManagerUtil {
  public:
   SBProtocolManagerUtil(const SBProtocolManagerUtil&) = delete;
   SBProtocolManagerUtil& operator=(const SBProtocolManagerUtil&) = delete;
 
   // Canonicalizes url as per Google Safe Browsing Specification.
-  // See: https://developers.google.com/safe-browsing/v4/urls-hashing
+  // For v4, see: https://developers.google.com/safe-browsing/v4/urls-hashing
+  // For v5, see:
+  // https://developers.google.com/safe-browsing/reference/URLs.and.Hashing
+  // TODO(crbug.com/372395685): Remove v4 references in this file.
   static void CanonicalizeUrl(const GURL& url,
                               std::string* canonicalized_hostname,
                               std::string* canonicalized_path,
                               std::string* canonicalized_query);
 
   // This method returns the host suffix combinations from the hostname in the
-  // URL, as described here:
+  // URL, as described here for v4:
   // https://developers.google.com/safe-browsing/v4/urls-hashing
+  // In v5, the base component is the eTLD+1 rather than TLD+1:
+  // https://developers.google.com/safe-browsing/reference/URLs.and.Hashing
+  // Note: `host` must be canonicalized before calling this method.
+  // TODO(crbug.com/372395685): make description v5-only
   static void GenerateHostVariantsToCheck(const std::string& host,
                                           std::vector<std::string>* hosts);
 
   // This method returns the path prefix combinations from the path in the
-  // URL, as described here:
+  // URL, as described here for v4:
   // https://developers.google.com/safe-browsing/v4/urls-hashing
+  // And here for v5:
+  // https://developers.google.com/safe-browsing/reference/URLs.and.Hashing
   static void GeneratePathVariantsToCheck(const std::string& path,
                                           const std::string& query,
                                           std::vector<std::string>* paths);
@@ -381,29 +460,33 @@ class SBProtocolManagerUtil {
   static FullHashStr GetFullHash(const GURL& url);
 
   // Generates a Pver4 request URL and sets the appropriate header values.
-  // |request_base64| is the serialized request protocol buffer encoded in
+  // `request_base64` is the serialized request protocol buffer encoded in
   // base 64.
-  // |method_name| is the name of the method to call, as specified in the proto,
-  // |config| is an instance of V4ProtocolConfig that stores the client config,
-  // |gurl| is set to the value of the PVer4 request URL,
-  // |headers| is populated with the appropriate header values.
+  // `method_name` is the name of the method to call, as specified in the proto,
+  // `config` is an instance of SBProtocolConfig that stores the client config,
+  // `gurl` is set to the value of the PVer4 request URL,
+  // `headers` is populated with the appropriate header values.
+  // TODO(crbug.com/372395685): Deprecate with v4.
   static void GetRequestUrlAndHeaders(const std::string& request_base64,
                                       const std::string& method_name,
-                                      const V4ProtocolConfig& config,
+                                      const SBProtocolConfig& config,
                                       GURL* gurl,
                                       net::HttpRequestHeaders* headers);
 
   // Worker function for calculating the backoff times.
-  // |multiplier| is doubled for each consecutive error after the
-  // first, and |error_count| is incremented with each call.
+  // `multiplier` is doubled for each consecutive error after the
+  // first, and `error_count` is incremented with each call.
   // Backoff interval is MIN(((2^(n-1))*15 minutes) * (RAND + 1), 24 hours)
   // where n is the number of consecutive errors.
   static base::TimeDelta GetNextBackOffInterval(size_t* error_count,
                                                 size_t* multiplier);
 
-  // Generate the set of FullHashes to check for |url|.
+  // Generate the set of FullHashes to check for `url`.
   static void UrlToFullHashes(const GURL& url,
                               std::vector<FullHashStr>* full_hashes);
+
+  // Returns the 4-byte prefix of the requested 32-byte `full_hash`.
+  static HashPrefixStr GetHashPrefix(const FullHashStr& full_hash);
 
   static bool FullHashToHashPrefix(const FullHashStr& full_hash,
                                    PrefixSize prefix_size,
@@ -416,10 +499,25 @@ class SBProtocolManagerUtil {
                                         const HashPrefixStr& hash_prefix);
 
   static void SetClientInfoFromConfig(ClientInfo* client_info,
-                                      const V4ProtocolConfig& config);
+                                      const SBProtocolConfig& config);
 
-  // Stores the client state values for each of the lists in |store_state_map|
-  // into |list_client_states|.
+  // Sets the User-Agent header for a V5 request based on the config.
+  // The v5 User-Agent header docs state: "While there is no prescribed format
+  // for supplying the client identification in this header, we suggest simply
+  // including the original client ID and client version separated by a space
+  // character or a slash character."
+  // Thus, this uses the same `client_name` and `version` originally used for
+  // v4, here separated with a space character.
+  // Parameters:
+  //   - `headers`: The HTTP request headers to populate.
+  //   - `config`: The protocol configuration containing client name and
+  //     version.
+  static void SetV5UserAgentHeader(net::HttpRequestHeaders* headers,
+                                   const SBProtocolConfig& config);
+
+  // Stores the client state values for each of the lists in `store_state_map`
+  // into `list_client_states`.
+  // TODO(crbug.com/372395685): Deprecate with v4.
   static void GetListClientStatesFromStoreStateMap(
       const std::unique_ptr<StoreStateMap>& store_state_map,
       std::vector<std::string>* list_client_states);
@@ -430,11 +528,11 @@ class SBProtocolManagerUtil {
   FRIEND_TEST_ALL_PREFIXES(SBProtocolManagerUtilTest, TestBackOffLogic);
   FRIEND_TEST_ALL_PREFIXES(SBProtocolManagerUtilTest,
                            TestGetRequestUrlAndUpdateHeaders);
-  FRIEND_TEST_ALL_PREFIXES(SBProtocolManagerUtilTest, UrlParsing);
+  FRIEND_TEST_ALL_PREFIXES(SBProtocolManagerUtilUrlParsingTest, UrlParsing);
   FRIEND_TEST_ALL_PREFIXES(SBProtocolManagerUtilTest, CanonicalizeUrl);
 
-  // Composes a URL using |prefix|, |method| (e.g.: encodedFullHashes).
-  // |request_base64|, |client_id|, |version| and |key_param|. |prefix|
+  // Composes a URL using `prefix`, `method` (e.g.: encodedFullHashes),
+  // `request_base64`, `client_id`, `version` and `key_param`. `prefix`
   // should contain the entire url prefix including scheme, host and path.
   static std::string ComposeUrl(const std::string& prefix,
                                 const std::string& method,
@@ -442,6 +540,7 @@ class SBProtocolManagerUtil {
                                 const std::string& key_param);
 
   // Sets the HTTP headers expected by a standard PVer4 request.
+  // TODO(crbug.com/372395685): Deprecate with v4.
   static void UpdateHeaders(net::HttpRequestHeaders* headers);
 
   // Given a URL, returns all the hosts we need to check.  They are returned

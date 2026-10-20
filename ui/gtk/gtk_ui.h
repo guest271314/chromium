@@ -92,6 +92,7 @@ class GtkUi : public ui::LinuxUiAndTheme {
   bool PrimaryPasteEnabled() const override;
   int GetWindowDragThresholdPx() const override;
   std::vector<std::string> GetCmdLineFlagsForCopy() const override;
+  void SetShutdownCb(base::OnceClosure shutdown_cb) override;
 
   // ui::LinuxUiTheme:
   ui::NativeTheme* GetNativeTheme() const override;
@@ -104,6 +105,7 @@ class GtkUi : public ui::LinuxUiAndTheme {
   void GetInactiveSelectionFgColor(SkColor* color) const override;
   bool PreferDarkTheme() const override;
   void SetDarkTheme(bool dark) override;
+  void SetColorScheme(std::optional<bool> prefer_dark) override;
   void SetAccentColor(std::optional<SkColor> accent_color) override;
   std::unique_ptr<ui::NavButtonProvider> CreateNavButtonProvider(
       ui::FrameType type) override;

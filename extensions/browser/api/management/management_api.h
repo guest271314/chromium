@@ -22,7 +22,6 @@
 #include "extensions/browser/supervised_user_extensions_delegate.h"
 #include "extensions/buildflags/buildflags.h"
 #include "extensions/common/extension_id.h"
-#include "services/data_decoder/public/cpp/data_decoder.h"
 
 static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
 
@@ -39,7 +38,7 @@ class ManagementGetAllFunction : public ExtensionFunction {
   DECLARE_EXTENSION_FUNCTION("management.getAll", MANAGEMENT_GETALL)
 
  protected:
-  ~ManagementGetAllFunction() override {}
+  ~ManagementGetAllFunction() override = default;
 
   // ExtensionFunction:
   ResponseAction Run() override;
@@ -50,7 +49,7 @@ class ManagementGetFunction : public ExtensionFunction {
   DECLARE_EXTENSION_FUNCTION("management.get", MANAGEMENT_GET)
 
  protected:
-  ~ManagementGetFunction() override {}
+  ~ManagementGetFunction() override = default;
 
   // ExtensionFunction:
   ResponseAction Run() override;
@@ -61,7 +60,7 @@ class ManagementGetSelfFunction : public ExtensionFunction {
   DECLARE_EXTENSION_FUNCTION("management.getSelf", MANAGEMENT_GETSELF)
 
  protected:
-  ~ManagementGetSelfFunction() override {}
+  ~ManagementGetSelfFunction() override = default;
 
   // ExtensionFunction:
   ResponseAction Run() override;
@@ -73,7 +72,7 @@ class ManagementGetPermissionWarningsByIdFunction : public ExtensionFunction {
                              MANAGEMENT_GETPERMISSIONWARNINGSBYID)
 
  protected:
-  ~ManagementGetPermissionWarningsByIdFunction() override {}
+  ~ManagementGetPermissionWarningsByIdFunction() override = default;
 
   // ExtensionFunction:
   ResponseAction Run() override;
@@ -85,11 +84,8 @@ class ManagementGetPermissionWarningsByManifestFunction
   DECLARE_EXTENSION_FUNCTION("management.getPermissionWarningsByManifest",
                              MANAGEMENT_GETPERMISSIONWARNINGSBYMANIFEST)
 
-  // Called when manifest parsing is finished.
-  void OnParse(data_decoder::DataDecoder::ValueOrError result);
-
  protected:
-  ~ManagementGetPermissionWarningsByManifestFunction() override {}
+  ~ManagementGetPermissionWarningsByManifestFunction() override = default;
 
   // ExtensionFunction:
   ResponseAction Run() override;
@@ -100,7 +96,7 @@ class ManagementLaunchAppFunction : public ExtensionFunction {
   DECLARE_EXTENSION_FUNCTION("management.launchApp", MANAGEMENT_LAUNCHAPP)
 
  protected:
-  ~ManagementLaunchAppFunction() override {}
+  ~ManagementLaunchAppFunction() override = default;
 
   // ExtensionFunction:
   ResponseAction Run() override;
@@ -245,7 +241,7 @@ class ManagementSetLaunchTypeFunction : public ExtensionFunction {
                              MANAGEMENT_SETLAUNCHTYPE)
 
  protected:
-  ~ManagementSetLaunchTypeFunction() override {}
+  ~ManagementSetLaunchTypeFunction() override = default;
 
   ResponseAction Run() override;
 };

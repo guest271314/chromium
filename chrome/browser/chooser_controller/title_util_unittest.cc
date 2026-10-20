@@ -5,11 +5,11 @@
 #include "chrome/browser/chooser_controller/title_util.h"
 
 #include "base/command_line.h"
-#include "chrome/grit/generated_resources.h"
 #include "chrome/test/base/chrome_render_view_host_test_harness.h"
 #include "components/strings/grit/components_strings.h"
 #include "content/public/common/content_features.h"
 #include "content/public/test/navigation_simulator.h"
+#include "extensions/buildflags/buildflags.h"
 #include "url/gurl.h"
 #include "url/origin.h"
 

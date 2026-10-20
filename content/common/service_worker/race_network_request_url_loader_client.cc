@@ -22,6 +22,7 @@
 #include "mojo/public/cpp/system/handle_signals_state.h"
 #include "net/http/http_response_headers.h"
 #include "net/http/http_status_code.h"
+#include "net/url_request/redirect_info.h"
 #include "services/network/public/cpp/features.h"
 #include "services/network/public/cpp/header_util.h"
 #include "services/network/public/cpp/record_ontransfersizeupdate_utils.h"
@@ -29,6 +30,17 @@
 #include "third_party/perfetto/include/perfetto/tracing/track_event_args.h"
 
 namespace content {
+
+// (crbug.com/340949948): When enabled, deprecates TwoPhaseWrite in
+// ServiceWorkerRaceNetworkRequestURLLoaderClient when the fetch handler
+// responds first for Static Routing race requests.
+BASE_FEATURE(kServiceWorkerRaceNetworkRequestDeprecateTwoPhaseWrite,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
+// Kill switch for crbug.com/559592113.
+BASE_FEATURE(kServiceWorkerAutoPreloadFixRedirectHang,
+             base::FEATURE_ENABLED_BY_DEFAULT);
+
 namespace {
 const char kMainResourceHistogramLoadTiming[] =
     "ServiceWorker.LoadTiming.MainFrame.MainResource";
@@ -38,6 +50,13 @@ const char kMainResourceHistogramForRaceNetworkFetchEvent[] =
     "ServiceWorker.FetchEvent.MainResource.RaceNetworkRequest";
 const char kSubresourceHistogramForRaceNetworkFetchEvent[] =
     "ServiceWorker.FetchEvent.Subresource.RaceNetworkRequest";
+
+// When this is enabled, it fixes the network socket stall bug when
+// RaceNetworkRequest receives a redirect response.
+//
+// crbug.com/510900934 for more details.
+BASE_FEATURE(kServiceWorkerStaticRouterRaceRedirectFix,
+             base::FEATURE_ENABLED_BY_DEFAULT);
 
 void RecordRaceNetworkRequestCloningResponseForFetchHandlerHistogram(
     bool is_main_resource,
@@ -62,6 +81,19 @@ enum class DataTransferCompletionResult {
   kMaxValue = kBothNotCompleted
 };
 // LINT.ThenChange(//tools/metrics/histograms/metadata/service/enums.xml:RaceNetworkRequestDataTransferResult)
+
+// Omit navigation-only fields before forwarding the response head to the fetch
+// handler. The fetch handler observes the response as a subresource fetch and
+// does not require internal timing or SSL info.
+void SanitizeResponseHeadForFetchHandler(
+    network::mojom::URLResponseHeadPtr& head) {
+  if (!head) {
+    return;
+  }
+  head->load_timing_internal_info.reset();
+  head->ssl_info.reset();
+}
+
 }  // namespace
 
 ServiceWorkerRaceNetworkRequestURLLoaderClient::
@@ -178,15 +210,34 @@ void ServiceWorkerRaceNetworkRequestURLLoaderClient::OnReceiveResponse(
       // this is called only when the response is returned from the fetch event.
       head_->was_fetched_via_service_worker = true;
       if (base::FeatureList::IsEnabled(
-              features::
-                  kServiceWorkerStaticRouterRaceNetworkRequestPerformanceImprovement) &&
-          owner_->commit_responsibility() ==
-              FetchResponseFrom::kNoResponseYet) {
+              kServiceWorkerRaceNetworkRequestDeprecateTwoPhaseWrite) &&
+          owner_->dispatched_preload_type() ==
+              ServiceWorkerResourceLoader::DispatchedPreloadType::
+                  kRaceNetworkRequest) {
         simple_buffer_manager_.emplace(std::move(body));
-        CloneResponse();
+        switch (owner_->commit_responsibility()) {
+          case FetchResponseFrom::kNoResponseYet:
+          case FetchResponseFrom::kWithoutServiceWorker:
+          case FetchResponseFrom::kSubresourceLoaderIsHandlingRedirect:
+            CloneResponse();
+            break;
+          case FetchResponseFrom::kServiceWorker:
+            CloneResponseForFetchHandler();
+            break;
+          case FetchResponseFrom::kAutoPreloadHandlingFallback:
+            NOTREACHED();
+        }
       } else {
-        read_buffer_manager_.emplace(std::move(body));
-        WatchDataUpdate();
+        if (owner_->commit_responsibility() ==
+            FetchResponseFrom::kNoResponseYet) {
+          simple_buffer_manager_.emplace(std::move(body));
+          CloneResponse();
+        } else {
+          // TODO(crbug.com/523017337): Remove the else block and the related
+          // code once we confirmed this is not needed anymore.
+          read_buffer_manager_.emplace(std::move(body));
+          WatchDataUpdate();
+        }
       }
       break;
     case DataConsumePolicy::kForwardingOnly:
@@ -211,6 +262,11 @@ void ServiceWorkerRaceNetworkRequestURLLoaderClient::OnReceiveRedirect(
   // If redirect happened, we don't have to create another data pipe.
   data_consume_policy_ = DataConsumePolicy::kForwardingOnly;
   response_received_time_ = base::TimeTicks::Now();
+  redirected_ = true;
+  if (base::FeatureList::IsEnabled(kServiceWorkerAutoPreloadFixRedirectHang)) {
+    redirect_info_ = redirect_info;
+    head_ = head.Clone();
+  }
 
   // TODO(crbug.com/40258805): Return a redirect response to |owner| as a
   // RaceNetworkRequest result without breaking the cache storage compatibility.
@@ -226,31 +282,46 @@ void ServiceWorkerRaceNetworkRequestURLLoaderClient::OnReceiveRedirect(
   // |owner| as a RaceNetworkResponse's response, we stop the race and back the
   // response to the fetch handler only instead, so that we guarantee the fetch
   // handler completion.
+  // For robustness, ensure non-HTTP(S) redirect URLs are replaced with "data:,"
+  // before forwarding to the client in the renderer process, matching the
+  // behavior of manual redirects handled by CorsURLLoader. The original
+  // redirect info is still passed to `owner_` in the kWithoutServiceWorker
+  // case where the redirect is handled directly within the browser process.
+  net::RedirectInfo forwarding_redirect_info = redirect_info;
+  if (!redirect_info.new_url.SchemeIsHTTPOrHTTPS()) {
+    forwarding_redirect_info.new_url = GURL("data:,");
+  }
+
   switch (owner_->commit_responsibility()) {
     case FetchResponseFrom::kNoResponseYet:
     case FetchResponseFrom::kSubresourceLoaderIsHandlingRedirect:
       // This happens when the response is faster than the fetch handler.
       owner_->SetCommitResponsibility(FetchResponseFrom::kServiceWorker);
-      forwarding_client_->OnReceiveRedirect(redirect_info, std::move(head));
-      break;
+      SanitizeResponseHeadForFetchHandler(head);
+      forwarding_client_->OnReceiveRedirect(forwarding_redirect_info,
+                                            std::move(head));
+      MaybeCompleteRedirectResponse(/*run_completion_callback=*/false);
+      return;
     case FetchResponseFrom::kServiceWorker:
       // This happens when the fetch handler is faster, so basically
       // RaceNetworkRequest does not handle the response anymore. The fetch
       // handler is already executed but in rare case in-flight request may be
       // used. Let the fetch handler side client to handle the rest. The fetch
       // handler side close the connection if it's not needed anyway.
-      forwarding_client_->OnReceiveRedirect(redirect_info, std::move(head));
-      break;
+      SanitizeResponseHeadForFetchHandler(head);
+      forwarding_client_->OnReceiveRedirect(forwarding_redirect_info,
+                                            std::move(head));
+      MaybeCompleteRedirectResponse(/*run_completion_callback=*/true);
+      return;
     case FetchResponseFrom::kWithoutServiceWorker:
       // This happens when the fetch handler is faster and the result is
       // fallback. In this case in-flight RaceNetworkRequest will be used as a
       // fallback request.
-      owner_->HandleRedirect(redirect_info, head);
-      break;
+      HandleRedirect(redirect_info, head);
+      return;
     case FetchResponseFrom::kAutoPreloadHandlingFallback:
       NOTREACHED();
   }
-  redirected_ = true;
 }
 
 void ServiceWorkerRaceNetworkRequestURLLoaderClient::OnComplete(
@@ -297,6 +368,37 @@ void ServiceWorkerRaceNetworkRequestURLLoaderClient::
 void ServiceWorkerRaceNetworkRequestURLLoaderClient::Bind(
     mojo::PendingRemote<network::mojom::URLLoaderClient>* remote) {
   receiver_.Bind(remote->InitWithNewPipeAndPassReceiver());
+}
+
+void ServiceWorkerRaceNetworkRequestURLLoaderClient::
+    MaybeCompleteRedirectResponse(bool run_completion_callback) {
+  if (!base::FeatureList::IsEnabled(
+          kServiceWorkerStaticRouterRaceRedirectFix)) {
+    return;
+  }
+  if (!is_main_resource_) {
+    return;
+  }
+  // For main resource requests, there is no response body to transfer upon a
+  // redirect. We can immediately consider the data transfer for the fetch
+  // handler completed so that we don't delay the loader's destruction.
+  //
+  // If `run_completion_callback` is true, it notifies the owner (loader) to
+  // trigger its self-destruction check immediately.
+  clone_response_for_fetch_handler_completed_ = true;
+  if (run_completion_callback) {
+    MaybeRunCloneCompletedForFetchHandlerCallback();
+  }
+}
+
+void ServiceWorkerRaceNetworkRequestURLLoaderClient::HandleRedirect(
+    const net::RedirectInfo& redirect_info,
+    const network::mojom::URLResponseHeadPtr& head) {
+  if (!owner_) {
+    return;
+  }
+  owner_->HandleRedirect(redirect_info, head);
+  MaybeCompleteRedirectResponse(/*run_completion_callback=*/true);
 }
 
 void ServiceWorkerRaceNetworkRequestURLLoaderClient::CommitResponse() {
@@ -442,9 +544,7 @@ void ServiceWorkerRaceNetworkRequestURLLoaderClient::CompleteResponse() {
     // the fetch handler if it's not called yet. crbug.com/384414080 for more
     // contexts.
     //
-    // Note: This is needed only when the
-    // ServiceWorkerStaticRouterRaceNetworkRequestPerformanceImprovement feature
-    // is enabled.
+    // Note: This is needed only in the race network request mode.
     forwarding_client_->OnComplete(completion_status_.value());
     RecordRaceNetworkRequestCloningResponseForFetchHandlerHistogram(
         is_main_resource_,
@@ -454,6 +554,19 @@ void ServiceWorkerRaceNetworkRequestURLLoaderClient::CompleteResponse() {
 
 void ServiceWorkerRaceNetworkRequestURLLoaderClient::
     CommitAndCompleteResponseIfDataTransferFinished() {
+  // When AutoPreload is active, a 302 redirect from the network request may
+  // arrive while the fetch handler is still running. In that case, the redirect
+  // is forwarded to the fetch handler without committing to `owner_` in case
+  // the fetch handler responds. If the fetch handler subsequently falls back,
+  // this method is called to commit the response. For redirects, there is no
+  // body to transfer, so forward the buffered redirect to `owner_` immediately.
+  if (base::FeatureList::IsEnabled(kServiceWorkerAutoPreloadFixRedirectHang) &&
+      state_ == State::kRedirect) {
+    CHECK(redirect_info_.has_value());
+    CHECK(head_);
+    HandleRedirect(*redirect_info_, head_);
+    return;
+  }
   if (state_ == State::kDataTransferFinished) {
     CommitResponse();
     // Step back to State::kDataTransferFinished since MaybeCompleteResponse()
@@ -722,6 +835,7 @@ void ServiceWorkerRaceNetworkRequestURLLoaderClient::ForwardResponseToClient(
   // debug crbug.com/463388771.
   CHECK(!has_forwarded_response_);
   has_forwarded_response_ = true;
+  SanitizeResponseHeadForFetchHandler(head);
   forwarding_client_->OnReceiveResponse(std::move(head), std::move(body),
                                         std::move(cached_metadata));
 }
@@ -752,15 +866,13 @@ void ServiceWorkerRaceNetworkRequestURLLoaderClient::OnCloneCompleted() {
   clone_response_for_network_completed_ = true;
   if (state_ == State::kCompleted) {
     //  `kCompleted` indicates the network request and data processing to
-    //  `owner_` are finished. With
-    //  `ServiceWorkerStaticRouterRaceNetworkRequestPerformanceImprovement`,
-    //  `state_` might reach `kCompleted` before clone completion in case of
-    //  network errors. This prevents `OnDataTransferComplete()` propagation
-    //  since `owner_->OnComplete()` would have already been called.
+    //  `owner_` are finished. `state_` might reach `kCompleted` before clone
+    //  completion in case of network errors. This prevents
+    //  `OnDataTransferComplete()` propagation since `owner_->OnComplete()`
+    //  would have already been called.
     //
-    // TODO(crbug.com/374606637): The current state machine is designed without
-    // `ServiceWorkerStaticRouterRaceNetworkRequestPerformanceImprovement`. We
-    // need to re-design the state transition after the feature is enabled.
+    // TODO(crbug.com/374606637): We need to re-design the state transition for
+    // this scenario.
     CHECK(completion_status_.has_value());
     CHECK_NE(completion_status_->error_code, net::OK);
   } else {

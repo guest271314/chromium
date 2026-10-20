@@ -166,11 +166,23 @@ VideoDecoderHelper::Status VideoDecoderHelper::ConvertNalUnitStreamToByteStream(
     base::SpanWriter writer(output);
     converted = h265_converter_->ConvertNalUnitStreamToByteStream(
         input, is_first_chunk ? h265_hvcc_.get() : nullptr, writer);
-    *output_size = writer.num_written();
+    *output_size = base::checked_cast<uint32_t>(writer.num_written());
   }
 #endif  // BUILDFLAG(ENABLE_PLATFORM_HEVC)
 #endif  // BUILDFLAG(USE_PROPRIETARY_CODECS)
   return converted ? Status::kSucceed : Status::kBitstreamConvertFailed;
+}
+
+gfx::HDRMetadata VideoDecoderHelper::GetHdrMetadata() const {
+#if BUILDFLAG(USE_PROPRIETARY_CODECS) && BUILDFLAG(ENABLE_PLATFORM_HEVC) && \
+    BUILDFLAG(ENABLE_HEVC_PARSER_AND_HW_DECODER)
+  if (h265_hvcc_) {
+    return h265_hvcc_->GetHDRMetadata();
+  }
+#endif  // BUILDFLAG(USE_PROPRIETARY_CODECS) &&
+        // BUILDFLAG(ENABLE_PLATFORM_HEVC) &&
+        // BUILDFLAG(ENABLE_HEVC_PARSER_AND_HW_DECODER)
+  return {};
 }
 
 }  // namespace blink

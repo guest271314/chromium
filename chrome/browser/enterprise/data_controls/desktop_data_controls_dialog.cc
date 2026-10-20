@@ -4,7 +4,6 @@
 
 #include "chrome/browser/enterprise/data_controls/desktop_data_controls_dialog.h"
 
-#include "chrome/grit/generated_resources.h"
 #include "components/constrained_window/constrained_window_views.h"
 #include "components/guest_view/browser/guest_view_base.h"
 #include "components/strings/grit/components_strings.h"
@@ -48,6 +47,12 @@ class DataControlsDialogDelegate : public views::DialogDelegate {
       : type_(type), dialog_(dialog) {
     set_fixed_width(views::LayoutProvider::Get()->GetDistanceMetric(
         views::DISTANCE_MODAL_DIALOG_PREFERRED_WIDTH));
+    // Unlike most dialogs, "esc" is not equivalent to the "cancel" button as it
+    // bypasses warnings for this dialog, so this override is necessary to have
+    // "esc" behave the same as dismissing the dialog without letting data
+    // through.
+    set_esc_should_cancel_dialog_override(false);
+
     // TODO(crbug.com/351342878): Move shared logic for dialog button styling to
     // `DataControlsDialog`.
     // For warning dialogs, "cancel" means "ignore the warning and bypass" and
@@ -235,9 +240,9 @@ DesktopDataControlsDialog::TestObserver::~TestObserver() {
 void DesktopDataControlsDialog::SetObserverForTesting(TestObserver* observer) {
   // These checks add safety that tests are only setting one observer at a time.
   if (observer_for_testing_) {
-    DCHECK_EQ(observer, nullptr);
+    CHECK_EQ(observer, nullptr, base::NotFatalUntil::M161);
   } else {
-    DCHECK_NE(observer, nullptr);
+    CHECK_NE(observer, nullptr, base::NotFatalUntil::M161);
   }
 
   observer_for_testing_ = observer;
@@ -264,9 +269,22 @@ void DesktopDataControlsDialog::Show(base::OnceClosure on_destructed) {
     return;
   }
 
-  widget_ = constrained_window::ShowWebModalDialogViewsOwned(
+  // Showing a tab-modal dialog can run a nested loop on some platforms which
+  // may dispatch `WebContentsObserver` notifications for `web_contents()`, so
+  // hold the returned widget in a local until `this` is known to still be
+  // valid.
+  auto weak_this = weak_ptr_factory_.GetWeakPtr();
+  auto widget = constrained_window::ShowWebModalDialogViewsOwned(
       dialog_delegate_.get(), top_web_contents,
       views::Widget::InitParams::CLIENT_OWNS_WIDGET);
+  if (!weak_this) {
+    return;
+  }
+  widget_ = std::move(widget);
+  if (!web_contents()) {
+    CloseDialog(views::Widget::ClosedReason::kAcceptButtonClicked);
+    return;
+  }
   widget_->MakeCloseSynchronous(base::BindOnce(
       &DesktopDataControlsDialog::CloseDialog, base::Unretained(this)));
 }
@@ -303,6 +321,12 @@ void DesktopDataControlsDialog::WebContentsDestroyed() {
   // was neither bypassed or accepted so it should close without calling
   // any callback.
   ClearCallbacks();
+  if (!widget_) {
+    // `Show()` is still creating the widget; it will close the dialog once the
+    // widget is owned by `this`.
+    Observe(nullptr);
+    return;
+  }
   CloseDialog(views::Widget::ClosedReason::kAcceptButtonClicked);
 }
 
@@ -313,6 +337,12 @@ void DesktopDataControlsDialog::PrimaryPageChanged(content::Page& page) {
   // that trigger on the new page, so callbacks must be cleared before closing
   // the dialog.
   ClearCallbacks();
+  if (!widget_) {
+    // `Show()` is still creating the widget; it will close the dialog once the
+    // widget is owned by `this`.
+    Observe(nullptr);
+    return;
+  }
   CloseDialog(views::Widget::ClosedReason::kAcceptButtonClicked);
 }
 

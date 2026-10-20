@@ -113,7 +113,7 @@ TEST(BlinkTransferableMessageStructTraitsTest,
   auto backing_store = v8_buffer->GetBackingStore();
   auto* originalContentsData = static_cast<uint8_t*>(backing_store->Data());
   {
-    ArrayBufferContents buffer_contents(backing_store);
+    ArrayBufferContents buffer_contents(std::move(backing_store));
     uint8_t i = 0;
     std::ranges::generate(buffer_contents.ByteSpan(), [&i]() { return i++; });
   }
@@ -247,10 +247,12 @@ class BlinkTransferableMessageStructTraitsWithFakeGpuTest : public Test {
     auto client_si = gpu::ClientSharedImage::CreateForTesting(
         gpu::SHARED_IMAGE_USAGE_RASTER_READ);
 
+    // TODO(https://crbug.com/515698973): Test a non-trivial HDR metadata
+    // parameter.
     return MakeGarbageCollected<ImageBitmap>(
         AcceleratedStaticBitmapImage::CreateFromCanvasSharedImage(
             std::move(client_si), GenTestSyncToken(100), kPremul_SkAlphaType,
-            SharedGpuContext::ContextProviderWrapper(),
+            gfx::HDRMetadata(), SharedGpuContext::ContextProviderWrapper(),
             base::PlatformThread::CurrentRef(),
             base::MakeRefCounted<base::NullTaskRunner>(),
             BindOnce(&BlinkTransferableMessageStructTraitsWithFakeGpuTest::

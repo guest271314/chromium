@@ -54,14 +54,26 @@ class MEDIA_EXPORT MediaFoundationCdmFactory final : public CdmFactory {
   using IsTypeSupportedResultCB =
       base::OnceCallback<void(IsTypeSupportedValueOrError value_or_error)>;
 
-  void OnCdmOriginIdObtained(
+  // `content_protection_hwnd_value` is the browser-owned HWND for Media
+  // Foundation GPU adapter selection, transmitted as a `uint32` (see
+  // `base::win::Uint32ToHandle()`).
+  using InitializeCdmCB = base::OnceCallback<void(
+      uint32_t content_protection_hwnd_value,
+      std::unique_ptr<MediaFoundationCdmData> media_foundation_cdm_data)>;
+
+  void OnContentProtectionWindowObtained(
+      InitializeCdmCB init_cdm_cb,
+      uint32_t content_protection_hwnd_value);
+
+  void InitializeMediaFoundationCdm(
       const CdmConfig& cdm_config,
       const SessionMessageCB& session_message_cb,
       const SessionClosedCB& session_closed_cb,
       const SessionKeysChangeCB& session_keys_change_cb,
       const SessionExpirationUpdateCB& session_expiration_update_cb,
       CdmCreatedCB cdm_created_cb,
-      const std::unique_ptr<MediaFoundationCdmData> media_foundation_cdm_data);
+      uint32_t content_protection_hwnd_value,
+      std::unique_ptr<MediaFoundationCdmData> media_foundation_cdm_data);
 
   HRESULT GetCdmFactory(
       const std::string& key_system,
@@ -71,7 +83,6 @@ class MEDIA_EXPORT MediaFoundationCdmFactory final : public CdmFactory {
                        const std::string& content_type,
                        IsTypeSupportedResultCB is_type_supported_result_cb);
 
-  void StoreClientToken(const std::vector<uint8_t>& client_token);
   void OnCdmEvent(CdmEvent event, HRESULT hresult);
 
   // Creates `mf_cdm` based on the input parameters. Same as
@@ -79,7 +90,6 @@ class MEDIA_EXPORT MediaFoundationCdmFactory final : public CdmFactory {
   // can bind it to a repeating callback using weak pointer.
   void CreateMfCdm(const CdmConfig& cdm_config,
                    const base::UnguessableToken& cdm_origin_id,
-                   const std::optional<std::vector<uint8_t>>& cdm_client_token,
                    const base::FilePath& cdm_store_path_root,
                    HRESULT& hresult,
                    Microsoft::WRL::ComPtr<IMFContentDecryptionModule>& mf_cdm);

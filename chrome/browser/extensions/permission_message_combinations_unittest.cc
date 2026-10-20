@@ -290,6 +290,81 @@ TEST_F(PermissionMessageCombinationsUnittest, USBSerialBluetoothCoalescing) {
       "Access information about Bluetooth devices paired with your system and "
       "discover nearby Bluetooth devices."));
 
+  // Test that bluetooth with socket produces the devices warning.
+  CreateAndInstall(
+      "{"
+      "  'app': {"
+      "    'background': {"
+      "      'scripts': ['background.js']"
+      "    }"
+      "  },"
+      "  'bluetooth': {"
+      "    'socket': true"
+      "  }"
+      "}");
+  ASSERT_TRUE(CheckManifestProducesPermissions(
+      "Access information about Bluetooth devices paired with your system and "
+      "discover nearby Bluetooth devices.",
+      "Send messages to and receive messages from Bluetooth devices using "
+      "sockets."));
+
+  // Test that bluetooth with low_energy produces the devices warning.
+  CreateAndInstall(
+      "{"
+      "  'app': {"
+      "    'background': {"
+      "      'scripts': ['background.js']"
+      "    }"
+      "  },"
+      "  'bluetooth': {"
+      "    'low_energy': true"
+      "  }"
+      "}");
+  ASSERT_TRUE(CheckManifestProducesPermissions(
+      "Access information about Bluetooth devices paired with your system and "
+      "discover nearby Bluetooth devices.",
+      "Send messages to and receive messages from Bluetooth devices using Low "
+      "Energy."));
+
+  // Test that bluetooth with peripheral produces the devices warning.
+  CreateAndInstall(
+      "{"
+      "  'app': {"
+      "    'background': {"
+      "      'scripts': ['background.js']"
+      "    }"
+      "  },"
+      "  'bluetooth': {"
+      "    'peripheral': true"
+      "  }"
+      "}");
+  ASSERT_TRUE(CheckManifestProducesPermissions(
+      "Access information about Bluetooth devices paired with your system and "
+      "discover nearby Bluetooth devices.",
+      "Allow nearby Bluetooth devices to discover and connect to this "
+      "device."));
+
+  // Test that bluetooth with multiple sub-capabilities produces only one
+  // devices warning.
+  CreateAndInstall(
+      "{"
+      "  'app': {"
+      "    'background': {"
+      "      'scripts': ['background.js']"
+      "    }"
+      "  },"
+      "  'bluetooth': {"
+      "    'socket': true,"
+      "    'low_energy': true,"
+      "    'peripheral': true"
+      "  }"
+      "}");
+  ASSERT_TRUE(CheckManifestProducesPermissions(
+      "Access information about Bluetooth devices paired with your system and "
+      "discover nearby Bluetooth devices.",
+      "Send messages to and receive messages from Bluetooth devices using "
+      "sockets."));
+
   // Test that the USB and Serial permissions coalesce.
   CreateAndInstall(
       "{"
@@ -346,7 +421,9 @@ TEST_F(PermissionMessageCombinationsUnittest, USBSerialBluetoothCoalescing) {
       "}");
   ASSERT_TRUE(CheckManifestProducesPermissions(
       "Access USB devices from an unknown vendor",
-      "Access your Bluetooth and Serial devices"));
+      "Access your Bluetooth and Serial devices",
+      "Send messages to and receive messages from Bluetooth devices using "
+      "sockets."));
 }
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
@@ -1215,6 +1292,31 @@ TEST_F(PermissionMessageCombinationsUnittest, NewTabPagePermissionMessages) {
   CreateAndInstall(kManifest);
   ASSERT_TRUE(CheckManifestProducesPermissions(
       "Replace the page you see when opening a new tab"));
+}
+
+// Only access to all sites hides the MIME handler warning.
+TEST_F(PermissionMessageCombinationsUnittest,
+       MimeTypesHandlerPermissionMessages) {
+  static constexpr char kManifest[] = R"({
+    "permissions": [%s],
+    "mime_types_handler": {
+      "application/pdf": {
+        "handler_url": "viewer.html"
+      }
+    }
+  })";
+
+  CreateAndInstall(base::StringPrintf(kManifest, ""));
+  ASSERT_TRUE(CheckManifestProducesPermissions("Read and display PDF files"));
+
+  CreateAndInstall(base::StringPrintf(kManifest, "\"<all_urls>\""));
+  ASSERT_TRUE(CheckManifestProducesPermissions(
+      "Read and change all your data on all websites"));
+
+  CreateAndInstall(base::StringPrintf(kManifest, "\"https://example.com/*\""));
+  ASSERT_TRUE(CheckManifestProducesPermissions(
+      "Read and change your data on example.com",
+      "Read and display PDF files"));
 }
 
 TEST_F(PermissionMessageCombinationsUnittest,

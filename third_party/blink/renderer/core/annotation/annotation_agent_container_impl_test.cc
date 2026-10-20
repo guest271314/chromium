@@ -43,7 +43,7 @@ class AnnotationAgentContainerImplTest : public SimTest {
   }
 
   AnnotationAgentImpl* GetAgentAt(AnnotationAgentContainerImpl& container,
-                                  size_t index) {
+                                  wtf_size_t index) {
     return container.agents_[index];
   }
 
@@ -434,7 +434,7 @@ TEST_F(AnnotationAgentContainerImplTest,
   FrameSelection& frame_selection = GetDocument().GetFrame()->Selection();
 
   Element* body = GetDocument().body();
-  frame_selection.SetSelection(SelectionInDOMTree::Builder()
+  frame_selection.SetSelection(SelectionInDomTree::Builder()
                                    .Collapse(Position(body->firstChild(), 0))
                                    .Build(),
                                SetSelectionOptions());
@@ -484,7 +484,7 @@ TEST_F(AnnotationAgentContainerImplTest,
   ASSERT_EQ("TEST ", PlainText(range));
 
   frame_selection.SetSelection(
-      SelectionInDOMTree::Builder().SetBaseAndExtent(range).Build(),
+      SelectionInDomTree::Builder().SetBaseAndExtent(range).Build(),
       SetSelectionOptions());
 
   // Right click on the selected text
@@ -559,7 +559,7 @@ TEST_F(AnnotationAgentContainerImplTest, CreateAgentFromSelection) {
   ASSERT_EQ("TEST ", PlainText(range));
 
   frame_selection.SetSelection(
-      SelectionInDOMTree::Builder().SetBaseAndExtent(range).Build(),
+      SelectionInDomTree::Builder().SetBaseAndExtent(range).Build(),
       SetSelectionOptions());
 
   const auto& selection_rect = CreateRange(range)->BoundingBox();
@@ -634,13 +634,13 @@ TEST_F(AnnotationAgentContainerImplTest, ShutdownDocumentWhileGenerating) {
 
   FrameSelection& frame_selection = GetDocument().GetFrame()->Selection();
 
-  Element* target = GetDocument().getElementById(AtomicString("target"));
+  Element* target = GetElementById("target");
   EphemeralRange range =
       EphemeralRange(Position(target, 0), Position(target, 1));
   ASSERT_EQ("TARGET", PlainText(range));
 
   frame_selection.SetSelection(
-      SelectionInDOMTree::Builder().SetBaseAndExtent(range).Build(),
+      SelectionInDomTree::Builder().SetBaseAndExtent(range).Build(),
       SetSelectionOptions());
 
   // Right click on the selected text
@@ -717,12 +717,11 @@ TEST_F(AnnotationAgentContainerImplTest, CreateBoundAgentWithNodeId) {
 
   auto* container = AnnotationAgentContainerImpl::CreateIfNeeded(GetDocument());
   ASSERT_TRUE(container);
-  container->CreateAgent(
-      std::move(remote_receiver_pair.first),
-      std::move(remote_receiver_pair.second),
-      mojom::blink::AnnotationType::kSharedHighlight,
-      mojom::blink::Selector::NewNodeId(DOMNodeIds::IdForNode(
-          GetDocument().getElementById(AtomicString("text")))));
+  container->CreateAgent(std::move(remote_receiver_pair.first),
+                         std::move(remote_receiver_pair.second),
+                         mojom::blink::AnnotationType::kSharedHighlight,
+                         mojom::blink::Selector::NewNodeId(
+                             DOMNodeIds::IdForNode(GetElementById("text"))));
 
   EXPECT_EQ(GetAgentCount(*container), 1ul);
   EXPECT_TRUE(host.agent_.is_connected());

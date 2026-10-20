@@ -7,20 +7,21 @@
 #include <memory>
 #include <utility>
 
+#include "base/check.h"
 #include "base/feature_list.h"
-#include "chrome/browser/private_ai/private_ai_service.h"
 #include "chrome/browser/private_ai/private_ai_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/webui/private_ai_internals/private_ai_internals.mojom.h"
-#include "chrome/browser/ui/webui/private_ai_internals/private_ai_internals_page_handler.h"
-#include "chrome/common/webui_url_constants.h"
-#include "chrome/grit/private_ai_internals_resources.h"
-#include "chrome/grit/private_ai_internals_resources_map.h"
+#include "chrome/common/channel_info.h"
+#include "components/grit/private_ai_internals_resources.h"
+#include "components/grit/private_ai_internals_resources_map.h"
 #include "components/private_ai/features.h"
-#include "components/private_ai/proto/private_ai.pb.h"
+#include "components/private_ai/private_ai_internals/webui/private_ai_internals.mojom.h"
+#include "components/private_ai/private_ai_internals/webui/private_ai_internals_page_handler.h"
+#include "components/private_ai/private_ai_internals/webui/url_constants.h"
+#include "components/private_ai/private_ai_service.h"
+#include "components/version_info/channel.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/internal_webui_config.h"
-#include "content/public/browser/storage_partition.h"
 #include "content/public/browser/web_ui.h"
 #include "content/public/browser/web_ui_data_source.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
@@ -30,7 +31,8 @@
 namespace private_ai {
 
 PrivateAiInternalsUIConfig::PrivateAiInternalsUIConfig()
-    : DefaultInternalWebUIConfig(chrome::kChromeUIPrivateAiInternalsHost) {}
+    : DefaultInternalWebUIConfig(
+          private_ai_internals::kChromeUIPrivateAiInternalsHost) {}
 
 PrivateAiInternalsUIConfig::~PrivateAiInternalsUIConfig() = default;
 
@@ -51,7 +53,7 @@ PrivateAiInternalsUI::PrivateAiInternalsUI(content::WebUI* web_ui)
 
   // Set up the chrome://private-ai-internals source.
   content::WebUIDataSource* source = content::WebUIDataSource::CreateAndAdd(
-      profile, chrome::kChromeUIPrivateAiInternalsHost);
+      profile, private_ai_internals::kChromeUIPrivateAiInternalsHost);
 
   webui::SetupWebUIDataSource(
       source, kPrivateAiInternalsResources,
@@ -59,14 +61,10 @@ PrivateAiInternalsUI::PrivateAiInternalsUI(content::WebUI* web_ui)
 
   source->AddString("default_url", kPrivateAiUrl.Get());
   source->AddString("default_api_key",
-                    PrivateAiService::GetApiKey().empty()
+                    PrivateAiService::GetApiKey(chrome::GetChannel()).empty()
                         ? ""
                         : PrivateAiInternalsPageHandler::kApiKeyPlaceholder);
   source->AddString("default_proxy_url", kPrivateAiProxyServerUrl.Get());
-  source->AddString(
-      "default_feature_name",
-      proto::FeatureName_Name(
-          proto::FeatureName::FEATURE_NAME_DEMO_GEMINI_GENERATE_CONTENT));
   source->AddBoolean(
       "default_use_token_attestation",
       base::FeatureList::IsEnabled(kPrivateAiUseTokenAttestation));
@@ -86,11 +84,12 @@ void PrivateAiInternalsUI::BindInterface(
   auto* token_manager = private_ai_service->GetTokenManager();
   CHECK(token_manager);
 
-  auto* network_context =
-      profile->GetDefaultStoragePartition()->GetNetworkContext();
   page_handler_ = std::make_unique<PrivateAiInternalsPageHandler>(
-      token_manager, network_context, private_ai_service->GetClient(),
-      private_ai_service->GetLogger(), std::move(receiver));
+      token_manager,
+      PrivateAiServiceFactory::CreateNetworkContextGetter(profile),
+      private_ai_service->GetClient(), private_ai_service->GetLogger(),
+      &oak_session_driver_content_, &network_driver_content_,
+      chrome::GetChannel(), std::move(receiver));
 }
 
 WEB_UI_CONTROLLER_TYPE_IMPL(PrivateAiInternalsUI)

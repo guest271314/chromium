@@ -60,16 +60,18 @@ class PdfInkModuleClient {
 
   // Tells the client about a new font. The data is a serialized SkTypeface.
   virtual void AddFont(FontId font_id,
+                       const std::string& font_name,
                        base::span<const uint8_t> serialized_typeface) {}
 
   // Notifies the client to clear the current text selection.
   virtual void ClearSelection() {}
 
-  // Notifies the client to draw `text_info` with `attributes` into the page
+  // Notifies the client to draw `text_lines` with `attributes` into the page
   // at `page_index`, identified as `id`.
   virtual void DrawText(int page_index,
                         InkTextId id,
-                        base::span<const InkTextInfo> text_info,
+                        base::span<const InkTextLine> text_lines,
+                        float ascent,
                         double pdf_zoom,
                         const InkTextBoxAttributes& attributes) {}
 
@@ -197,7 +199,7 @@ class PdfInkModuleClient {
   // Notifies that an existing text annotation identified by `id` should update
   // its active state and then invalidate the rect that corresponds to the union
   // of all text in the text annotation.
-  virtual void UpdateTextActiveAndInvalidate(InkTextId id, bool active) {}
+  virtual void UpdateTextActiveAndInvalidate(TextId id, bool active) {}
 
   // Same as `PageIndexFromPoint()`, but `point` must be on a visible page,
   // otherwise returns -1.

@@ -52,13 +52,10 @@ public class HistoryActivity extends SnackbarActivity {
         HistoryUmaRecorder historyUmaRecorder =
                 appSpecificHistory ? new AppHistoryUmaRecorder() : new HistoryUmaRecorder();
         boolean showAppFilter = !appSpecificHistory && !profile.isOffTheRecord();
-        Function<View, EdgeToEdgePadAdjuster> edgeToEdgePadAdjusterGenerator = null;
-        if (ChromeFeatureList.sDrawChromePagesEdgeToEdge.isEnabled()) {
-            edgeToEdgePadAdjusterGenerator =
-                    (view) ->
-                            EdgeToEdgeControllerFactory.createForViewAndObserveSupplier(
-                                    view, getEdgeToEdgeSupplier());
-        }
+        Function<View, EdgeToEdgePadAdjuster> edgeToEdgePadAdjusterGenerator =
+                (view) ->
+                        EdgeToEdgeControllerFactory.createForViewAndObserveSupplier(
+                                view, getEdgeToEdgeSupplier());
 
         mHistoryManager =
                 new HistoryManager(
@@ -82,7 +79,7 @@ public class HistoryActivity extends SnackbarActivity {
                         edgeToEdgePadAdjusterGenerator);
         ViewGroup contentView = mHistoryManager.getView();
         setContentView(contentView);
-        if (showAppFilter) createBottomSheetController(contentView);
+        createBottomSheetController(contentView);
         BackPressHelper.create(this, getOnBackPressedDispatcher(), mHistoryManager);
     }
 
@@ -100,7 +97,10 @@ public class HistoryActivity extends SnackbarActivity {
                         SupplierUtils.of(sheetContainer),
                         SupplierUtils.of(0),
                         /* desktopWindowStateManager= */ null,
-                        getWindowAndroid().getInsetObserver());
+                        getWindowAndroid().getInsetObserver(),
+                        /* enableLargeFormFactorUi= */ ChromeFeatureList
+                                .sBottomSheetOnDesktopWindowing
+                                .isEnabled());
 
         // HistoryActivity needs its own container for bottom sheet. Add it as a child of the
         // layout enclosing the history list layout so they'll be siblings. HistoryPage doesn't

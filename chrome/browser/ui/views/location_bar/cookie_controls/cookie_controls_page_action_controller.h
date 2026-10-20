@@ -65,16 +65,9 @@ class CookieControlsPageActionController
 
   void Init();
 
-  // PageActionObserver
-  void OnPageActionChipShown(
-      const page_actions::PageActionState& page_action) override;
-
   // CookieControlsObserver:
   void OnCookieControlsIconStatusChanged(
-      bool icon_visible,
-      CookieControlsState controls_state,
-      bool should_highlight) override;
-  void OnFinishedPageReloadWithChangedSettings() override;
+      CookieControlsState controls_state) override;
 
   void ExecutePageAction(ToolbarButtonProvider* toolbar_button_provider);
 
@@ -84,23 +77,12 @@ class CookieControlsPageActionController
   }
 
  private:
-  // Encapsulates values provided by `OnCookieControlsIconStatusChanged`.
-  struct CookieControlsIconStatus {
-    bool icon_visible;
-    CookieControlsState controls_state;
-    bool should_highlight;
-  };
-
   // Updates the icon's visibility.
   void UpdateIconVisibility();
 
   std::u16string GetLabelForState() const;
   bool ShouldShowIcon() const;
-  bool IsManagedIPHActive() const;
-  void OnShowPromoResult(user_education::FeaturePromoResult result);
-  void OnIPHClosed();
   void OnBubbleClosed();
-  void MaybeShowIPH(BrowserUserEducationInterface& user_education);
 
   void OnDidActivate(tabs::TabInterface* tab);
   void OnWillDeactivate(tabs::TabInterface* tab);
@@ -112,11 +94,7 @@ class CookieControlsPageActionController
   const raw_ref<page_actions::PageActionController> page_action_controller_;
   std::unique_ptr<BubbleDelegate> bubble_delegate_;
 
-  // Tracks when an IPH is showing, ensuring the icon is highlighted.
-  std::optional<page_actions::ScopedPageActionActivity> iph_activity_ =
-      std::nullopt;
-
-  CookieControlsIconStatus icon_status_;
+  CookieControlsState controls_state_ = CookieControlsState::kHidden;
 
   base::CallbackListSubscription did_activate_subscription_;
   base::CallbackListSubscription will_deactivate_subscription_;

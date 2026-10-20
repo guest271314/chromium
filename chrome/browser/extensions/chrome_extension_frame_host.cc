@@ -38,14 +38,22 @@ void ChromeExtensionFrameHost::RequestScriptInjectionPermission(
     mojom::InjectionType script_type,
     mojom::RunLocation run_location,
     RequestScriptInjectionPermissionCallback callback) {
+  content::RenderFrameHost& render_frame_host = receivers_.CurrentTargetFrame();
   if (!crx_file::id_util::IdIsValid(extension_id)) {
-    content::RenderProcessHost* render_process =
-        receivers_.GetCurrentTargetFrame()->GetProcess();
+    content::RenderProcessHost* render_process = render_frame_host.GetProcess();
     if (render_process) {
       bad_message::ReceivedBadMessage(
           render_process,
           bad_message::CEFH_INVALID_EXTENSION_ID_FOR_SCRIPT_INJECT_REQUEST);
     }
+    return;
+  }
+
+  // We only handle blocked actions for the primary main frame since there is no
+  // way to surface permission requests for non-primary frames (such as
+  // subframes or prerendered frames) to the user.
+  if (!render_frame_host.IsInPrimaryMainFrame()) {
+    std::move(callback).Run(false);
     return;
   }
 
@@ -55,7 +63,8 @@ void ChromeExtensionFrameHost::RequestScriptInjectionPermission(
     std::move(callback).Run(false);
     return;
   }
-  runner->OnRequestScriptInjectionPermission(extension_id, script_type,
+  runner->OnRequestScriptInjectionPermission(&receivers_.CurrentTargetFrame(),
+                                             extension_id, script_type,
                                              run_location, std::move(callback));
 }
 
@@ -94,9 +103,8 @@ void ChromeExtensionFrameHost::DetailedConsoleMessageAdded(
   if (!IsSourceFromAnExtension(source))
     return;
 
-  content::RenderFrameHost* render_frame_host =
-      receivers_.GetCurrentTargetFrame();
-  ExtensionId extension_id = util::GetExtensionIdFromFrame(render_frame_host);
+  content::RenderFrameHost& render_frame_host = receivers_.CurrentTargetFrame();
+  ExtensionId extension_id = util::GetExtensionIdFromFrame(&render_frame_host);
   if (extension_id.empty())
     extension_id = GURL(source).GetHost();
 
@@ -106,8 +114,8 @@ void ChromeExtensionFrameHost::DetailedConsoleMessageAdded(
           extension_id, browser_context->IsOffTheRecord(), source, message,
           stack_trace, web_contents_->GetLastCommittedURL(),
           blink::ConsoleMessageLevelToLogSeverity(level),
-          render_frame_host->GetRoutingID(),
-          render_frame_host->GetProcess()->GetDeprecatedID())));
+          render_frame_host.GetRoutingID(),
+          render_frame_host.GetProcess()->GetDeprecatedID())));
 }
 
 void ChromeExtensionFrameHost::ContentScriptsExecuting(

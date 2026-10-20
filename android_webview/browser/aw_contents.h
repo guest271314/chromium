@@ -16,6 +16,7 @@
 #include "android_webview/browser/find_helper.h"
 #include "android_webview/browser/gfx/browser_view_renderer.h"
 #include "android_webview/browser/gfx/browser_view_renderer_client.h"
+#include "android_webview/browser/http_headers/aw_header_interceptor_store.h"
 #include "android_webview/browser/icon_helper.h"
 #include "android_webview/browser/metrics/visibility_metrics_logger.h"
 #include "android_webview/browser/permission/permission_callback.h"
@@ -32,13 +33,14 @@
 #include "components/content_relationship_verification/digital_asset_links_handler.h"
 #include "components/js_injection/browser/js_communication_host.h"
 #include "components/js_injection/common/enum.mojom-forward.h"
+#include "content/public/browser/prerender_handle.h"
 #include "content/public/browser/web_contents_observer.h"
 #include "content/public/common/child_process_id.h"
+#include "third_party/jni_zero/jni_raw_ptr.h"
 
 class SkBitmap;
 
 namespace content {
-class PrerenderHandle;
 class WebContents;
 }  // namespace content
 
@@ -116,18 +118,27 @@ class AwContents : public FindHelper::Listener,
                                   int64_t compositor_frame_consumer);
   base::android::ScopedJavaLocalRef<jobject> GetRenderProcess(JNIEnv* env);
   base::android::ScopedJavaLocalRef<jobject> GetJavaObject();
-  SkBitmap GetFavicon(JNIEnv* env);
+  bool GetShouldDownloadFaviconsOnNavigation(JNIEnv* env);
   void Destroy(JNIEnv* env);
   void DocumentHasImages(JNIEnv* env,
                          const base::android::JavaRef<jobject>& message);
+  // Delivers a SharedArrayBuffer message from the embedding application to the
+  // main frame's document. This exists separately from
+  // WebContents::PostMessageToMainFrame() because the shared memory region
+  // backing the buffer cannot travel in a blink::TransferableMessage, so it
+  // needs WebView's own frame interface. An empty `target_origin` is a
+  // wildcard.
+  void PostSharedArrayBufferMessageToMainFrame(
+      JNIEnv* env,
+      const base::android::JavaRef<jobject>& payload_obj,
+      const std::u16string& target_origin,
+      const base::android::JavaRef<jobjectArray>& ports);
   void GenerateMHTML(JNIEnv* env,
-                     const base::android::JavaRef<jstring>& jpath,
+                     const std::string& path,
                      const base::android::JavaRef<jobject>& callback);
   void CreatePdfExporter(JNIEnv* env,
                          const base::android::JavaRef<jobject>& pdfExporter);
-  void AddVisitedLinks(
-      JNIEnv* env,
-      const base::android::JavaRef<jobjectArray>& jvisited_links);
+  void AddVisitedLinks(const std::vector<std::string>& visited_links);
   base::android::ScopedJavaLocalRef<jbyteArray> GetCertificate(JNIEnv* env);
   void UpdateLastHitTestData(JNIEnv* env);
   void OnSizeChanged(JNIEnv* env, int w, int h, int ow, int oh);
@@ -165,14 +176,10 @@ class AwContents : public FindHelper::Listener,
       int64_t request_id,
       const base::android::JavaRef<jobject>& callback);
   void ClearView(JNIEnv* env);
-  void SetExtraHeadersForUrl(
-      JNIEnv* env,
-      const base::android::JavaRef<jstring>& url,
-      const base::android::JavaRef<jstring>& extra_headers);
+  void SetExtraHeadersForUrl(const std::string& url,
+                             const std::string& extra_headers);
 
-  void InvokeGeolocationCallback(JNIEnv* env,
-                                 bool value,
-                                 const base::android::JavaRef<jstring>& origin);
+  void InvokeGeolocationCallback(bool value, const std::string& origin);
 
   int32_t GetEffectivePriority(JNIEnv* env);
 
@@ -187,8 +194,7 @@ class AwContents : public FindHelper::Listener,
 
   void RemovePersistentJavaScript(JNIEnv* env, int32_t script_id);
 
-  base::android::ScopedJavaLocalRef<jstring> AddWebMessageListener(
-      JNIEnv* env,
+  std::u16string AddWebMessageListener(
       const base::android::JavaRef<jobject>& listener,
       const std::u16string& js_object_name,
       const std::vector<std::string>& allowed_origin_rules,
@@ -236,9 +242,7 @@ class AwContents : public FindHelper::Listener,
     return permission_request_handler_.get();
   }
 
-  void PreauthorizePermission(JNIEnv* env,
-                              const base::android::JavaRef<jstring>& origin,
-                              int64_t resources);
+  void PreauthorizePermission(const std::string& origin, int64_t resources);
 
   // AwBrowserPermissionRequestDelegate implementation.
   void RequestProtectedMediaIdentifierPermission(
@@ -253,9 +257,14 @@ class AwContents : public FindHelper::Listener,
                                   PermissionCallback callback) override;
   void CancelMIDISysexPermissionRequests(const GURL& origin) override;
 
+  AwHeaderInterceptorStore& GetHeaderInterceptorStore() {
+    return header_interceptor_store_;
+  }
+  jni_zero::JniRawPtr<AwHeaderInterceptorStore>
+  GetHeaderInterceptorStoreFromJava(JNIEnv* env);
+
   // Find-in-page API and related methods.
-  void FindAllAsync(JNIEnv* env,
-                    const base::android::JavaRef<jstring>& search_string);
+  void FindAllAsync(const std::u16string& search_string);
   void FindNext(JNIEnv* env, bool forward);
   void ClearMatches(JNIEnv* env);
   FindHelper* GetFindHelper();
@@ -271,7 +280,7 @@ class AwContents : public FindHelper::Listener,
                             int match_count,
                             bool finished) override;
   // IconHelper::Listener implementation.
-  bool ShouldDownloadFavicon(const GURL& icon_url) override;
+  bool ShouldDownloadFavicon() override;
   void OnReceivedIcon(const GURL& icon_url, const SkBitmap& bitmap) override;
   void OnReceivedTouchIconUrl(const std::string& url,
                               const bool precomposed) override;
@@ -316,11 +325,10 @@ class AwContents : public FindHelper::Listener,
                     int32_t target_y,
                     int64_t duration_ms);
   void SetDipScale(JNIEnv* env, float dip_scale);
-  base::android::ScopedJavaLocalRef<jstring> GetScheme(JNIEnv* env);
+  std::string GetScheme();
   void OnInputEvent(JNIEnv* env);
 
   void SetJsOnlineProperty(JNIEnv* env, bool network_up);
-  void SetOnReceivedIconOverridden(JNIEnv* env, bool is_overridden);
   void TrimMemory(JNIEnv* env, int32_t level, bool visible);
 
   void GrantFileSchemeAccesstoChildProcess(JNIEnv* env);
@@ -377,12 +385,24 @@ class AwContents : public FindHelper::Listener,
   std::unique_ptr<AwPdfExporter> pdf_exporter_;
   std::unique_ptr<PermissionRequestHandler> permission_request_handler_;
   std::unique_ptr<js_injection::JsCommunicationHost> js_communication_host_;
+  AwHeaderInterceptorStore header_interceptor_store_;
 
-  base::circular_deque<std::unique_ptr<content::PrerenderHandle>>
-      prerender_handles_;
+  struct PrerenderInfo : public content::PrerenderHandle::Observer {
+    PrerenderInfo(std::unique_ptr<content::PrerenderHandle> prerender_handle,
+                  base::OnceClosure activation_callback,
+                  base::OnceClosure error_callback);
+    ~PrerenderInfo() override;
+
+    void OnLifecycleStateChanged(
+        content::PrerenderLifecycleStatus status) override;
+
+    std::unique_ptr<content::PrerenderHandle> handle;
+    std::vector<base::OnceClosure> activation_callbacks;
+    std::vector<base::OnceClosure> error_callbacks;
+  };
+  base::circular_deque<std::unique_ptr<PrerenderInfo>> prerender_infos_;
 
   bool view_tree_force_dark_state_ = false;
-  bool is_on_received_icon_overridden_ = false;
   std::string scheme_;
 
   // GURL is supplied by the content layer as requesting frame.

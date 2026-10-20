@@ -7,7 +7,6 @@
 #include "ash/constants/webui_url_constants.h"
 #include "chrome/browser/ash/system_web_apps/system_web_app_manager.h"
 #include "chrome/browser/profiles/profile_manager.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/web_applications/web_app_browsertest_base.h"
@@ -38,10 +37,10 @@ class WebAppGuestSessionBrowserTest : public WebAppBrowserTestBase {
 
 // Test that the OS Settings app launches successfully.
 IN_PROC_BROWSER_TEST_F(WebAppGuestSessionBrowserTest, LaunchOsSettings) {
-  ash::SystemWebAppManager::GetForTest(browser()->profile())
+  ash::SystemWebAppManager::GetForTest(browser()->GetProfile())
       ->InstallSystemAppsForTesting();
 
-  Profile* profile = browser()->profile();
+  Profile* profile = browser()->GetProfile();
   apps::AppLaunchParams params(
       ash::kOsSettingsAppId, apps::LaunchContainer::kLaunchContainerWindow,
       WindowOpenDisposition::NEW_FOREGROUND_TAB, apps::LaunchSource::kFromTest);

@@ -9,8 +9,10 @@
 #import "components/search_engines/search_engine_choice/search_engine_choice_utils.h"
 #import "components/search_engines/search_engines_switches.h"
 #import "components/strings/grit/components_strings.h"
+#import "google_apis/gaia/core_account_id.h"
 #import "ios/chrome/browser/authentication/test/signin_earl_grey.h"
 #import "ios/chrome/browser/authentication/test/signin_matchers.h"
+#import "ios/chrome/browser/first_run/public/features.h"
 #import "ios/chrome/browser/first_run/test/first_run_app_interface.h"
 #import "ios/chrome/browser/first_run/test/first_run_test_case_base.h"
 #import "ios/chrome/browser/metrics/model/metrics_app_interface.h"
@@ -19,7 +21,9 @@
 #import "ios/chrome/browser/search_engine_choice/ui/search_engine_choice_constants.h"
 #import "ios/chrome/browser/settings/ui_bundled/settings_app_interface.h"
 #import "ios/chrome/browser/settings/ui_bundled/settings_table_view_controller_constants.h"
+#import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/signin/model/fake_system_identity.h"
+#import "ios/chrome/common/ui/button_stack/button_stack_constants.h"
 #import "ios/chrome/common/ui/promo_style/constants.h"
 #import "ios/chrome/test/earl_grey/chrome_actions.h"
 #import "ios/chrome/test/earl_grey/chrome_earl_grey.h"
@@ -38,6 +42,7 @@
 
 - (AppLaunchConfiguration)appConfigurationForTestCase {
   AppLaunchConfiguration config = [super appConfigurationForTestCase];
+  config.features_disabled.push_back(kAuthenticationFlowReauthFirstKillswitch);
   // Need to use `switches::kEeaListCountryOverride` as the country to list all
   // the search engines. This is to make sure the more button appears.
   config.additional_args.push_back(
@@ -46,19 +51,23 @@
   config.additional_args.push_back(
       "--" + std::string(switches::kForceSearchEngineChoiceScreen));
   config.additional_args.push_back("true");
-  /// Disable post FRE actions so the test cases could open Settings sooner.
-  config.additional_args.push_back(
-      "--disable-features=UpdatedFirstRunSequence");
-  config.additional_args.push_back(
-      "--disable-features=AnimatedDefaultBrowserPromoInFRE");
+  // Enable the updated FRE sequence variation 2 (kRemoveSignInSync) to verify
+  // that the standard sequence is displayed when a choice screen is required.
+  config.features_enabled_and_params.push_back(
+      {first_run::kUpdatedFirstRunSequence,
+       {{first_run::kUpdatedFirstRunSequenceParam, "2"}}});
+  // Disable the animated default browser promo to prevent post-FRE promotions
+  // from interfering with the settings verification steps.
+  config.features_disabled.push_back(
+      first_run::kAnimatedDefaultBrowserPromoInFRE);
 
   if ([self isRunningTest:@selector
             (testNoDefaultBrowserPromoAfterSearchEngineChoiceScreen)]) {
-    config.additional_args.push_back(
-        "--enable-features=SkipDefaultBrowserPromoInFirstRun");
+    config.features_enabled.push_back(
+        first_run::kSkipDefaultBrowserPromoInFirstRun);
   } else {
-    config.additional_args.push_back(
-        "--disable-features=SkipDefaultBrowserPromoInFirstRun");
+    config.features_disabled.push_back(
+        first_run::kSkipDefaultBrowserPromoInFirstRun);
   }
 
   return config;
@@ -87,7 +96,7 @@
   [[self elementInteractionWithGreyMatcher:chrome_test_util::
                                                ButtonStackSecondaryButton()
                       scrollViewIdentifier:
-                          kPromoStyleScrollViewAccessibilityIdentifier]
+                          kButtonStackScrollViewAccessibilityIdentifier]
       performAction:grey_tap()];
   // Check that the choice screen is shown
   [SearchEngineChoiceEarlGreyUI verifySearchEngineChoiceScreenIsDisplayed];
@@ -129,7 +138,7 @@
   [[self elementInteractionWithGreyMatcher:chrome_test_util::
                                                ButtonStackSecondaryButton()
                       scrollViewIdentifier:
-                          kPromoStyleScrollViewAccessibilityIdentifier]
+                          kButtonStackScrollViewAccessibilityIdentifier]
       performAction:grey_tap()];
   // Check that the choice screen is shown
   [SearchEngineChoiceEarlGreyUI verifySearchEngineChoiceScreenIsDisplayed];
@@ -166,6 +175,47 @@
       verifyDefaultSearchEngineSetting:searchEngineToSelect];
 }
 
+// Tests completing the FRE onboarding including the Search Engine Choice screen
+// for an identity requiring reauthentication.
+- (void)testSearchEngineChoiceScreenWithSigninNeedsReauth {
+  FakeSystemIdentity* fakeIdentity = [FakeSystemIdentity fakeIdentity1];
+  [SigninEarlGrey addFakeIdentity:fakeIdentity];
+  [SigninEarlGrey setPersistentAuthErrorForAccount:CoreAccountId::FromGaiaId(
+                                                       fakeIdentity.gaiaId)];
+
+  // Accept sign-in on the welcome screen.
+  [[self elementInteractionWithGreyMatcher:chrome_test_util::
+                                               ButtonStackPrimaryButton()
+                      scrollViewIdentifier:
+                          kButtonStackScrollViewAccessibilityIdentifier]
+      performAction:grey_tap()];
+
+  // Accept sync.
+  [self acceptSyncOrHistory];
+
+  // Check that the choice screen is shown.
+  [SearchEngineChoiceEarlGreyUI verifySearchEngineChoiceScreenIsDisplayed];
+
+  // Select Bing.
+  NSString* searchEngineToSelect = [SearchEngineChoiceEarlGreyUI
+      searchEngineNameWithPrepopulatedEngine:TemplateURLPrepopulateData::bing];
+  [SearchEngineChoiceEarlGreyUI
+      selectSearchEngineCellWithName:searchEngineToSelect
+                     scrollDirection:kGREYDirectionDown
+                              amount:50];
+
+  // Confirm choice.
+  id<GREYMatcher> continueButtonMatcher =
+      grey_accessibilityID(kSearchEngineContinueButtonIdentifier);
+  [[[EarlGrey selectElementWithMatcher:continueButtonMatcher]
+      assertWithMatcher:grey_notNil()] performAction:grey_tap()];
+
+  [SearchEngineChoiceEarlGreyUI confirmSearchEngineChoiceScreen];
+
+  // Verify user is signed in.
+  [SigninEarlGrey verifySignedInWithFakeIdentity:fakeIdentity];
+}
+
 // Tests that the search engine screen is skipped if the enterprise policies
 // are loaded after the sign-in screen is presented.
 - (void)testLoadingEnterprisePoliciesAfterPresentingFRE {
@@ -185,7 +235,7 @@
   [[self elementInteractionWithGreyMatcher:chrome_test_util::
                                                ButtonStackSecondaryButton()
                       scrollViewIdentifier:
-                          kPromoStyleScrollViewAccessibilityIdentifier]
+                          kButtonStackScrollViewAccessibilityIdentifier]
       performAction:grey_tap()];
   // Dismiss the default browser screen.
   [[self class] dismissDefaultBrowserAndRemainingScreens];
@@ -221,7 +271,7 @@
   [[self elementInteractionWithGreyMatcher:chrome_test_util::
                                                ButtonStackSecondaryButton()
                       scrollViewIdentifier:
-                          kPromoStyleScrollViewAccessibilityIdentifier]
+                          kButtonStackScrollViewAccessibilityIdentifier]
       performAction:grey_tap()];
   // Check that the choice screen is shown
   [SearchEngineChoiceEarlGreyUI verifySearchEngineChoiceScreenIsDisplayed];
@@ -299,7 +349,7 @@
   [[self elementInteractionWithGreyMatcher:chrome_test_util::
                                                ButtonStackPrimaryButton()
                       scrollViewIdentifier:
-                          kPromoStyleScrollViewAccessibilityIdentifier]
+                          kButtonStackScrollViewAccessibilityIdentifier]
       performAction:grey_tap()];
   // Accept sync.
   [self acceptSyncOrHistory];
@@ -331,7 +381,7 @@
   [[self elementInteractionWithGreyMatcher:chrome_test_util::
                                                ButtonStackSecondaryButton()
                       scrollViewIdentifier:
-                          kPromoStyleScrollViewAccessibilityIdentifier]
+                          kButtonStackScrollViewAccessibilityIdentifier]
       performAction:grey_tap()];
 
   // Select a search engine.

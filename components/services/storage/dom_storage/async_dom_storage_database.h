@@ -11,14 +11,21 @@
 #include <string>
 #include <vector>
 
+#include "base/check.h"
+#include "base/files/file_path.h"
+#include "base/functional/callback.h"
+#include "base/gtest_prod_util.h"
+#include "base/system/sys_info.h"
 #include "base/threading/sequence_bound.h"
-#include "base/time/time.h"
 #include "base/trace_event/memory_allocator_dump_guid.h"
 #include "components/services/storage/dom_storage/db_status.h"
 #include "components/services/storage/dom_storage/dom_storage_database.h"
+#include "components/services/storage/dom_storage/dom_storage_histogram_helper.h"
+#include "components/services/storage/public/cpp/inactivity_timer.h"
 #include "third_party/blink/public/common/storage_key/storage_key.h"
 
 namespace storage {
+class FilesystemProxy;
 
 class AsyncDomStorageDatabase {
  public:
@@ -29,29 +36,55 @@ class AsyncDomStorageDatabase {
 
   ~AsyncDomStorageDatabase();
 
+  struct OpenOutcome {
+    DbStatus open_status;
+    std::optional<DomStorageDatabaseFactory::DestroyOutcome> destroy_outcome;
+  };
+  using OpenCallback = base::OnceCallback<void(OpenOutcome)>;
+
   // Creates an `AsyncDomStorageDatabase` then asynchronously opens the
   // database. Callers must wait to use `AsyncDomStorageDatabase` until
   // `callback` completes with an OK status. After failing to open,
   // `AsyncDomStorageDatabase` must be discarded.
   //
-  // To create an in-memory database, provide an empty `database_path`.
+  // The new database is in-memory if `dir_to_open` is empty. If
+  // `dir_to_destroy` is non-empty, the pre-existing on-disk database at that
+  // location is destroyed before the new one is opened, and the destroy outcome
+  // is passed to `callback`. `dir_to_destroy` may differ from `dir_to_open`.
+  // E.g. recovery destroys the on-disk database then opens an in-memory DB by
+  // passing an empty `dir_to_open`.
   static std::unique_ptr<AsyncDomStorageDatabase> Open(
       StorageType storage_type,
-      const base::FilePath& database_path,
+      const base::FilePath& dir_to_open,
       const std::optional<base::trace_event::MemoryAllocatorDumpGuid>&
           memory_dump_id,
-      StatusCallback callback);
+      const base::FilePath& dir_to_destroy,
+      OpenCallback callback);
 
   // An interface that represents a source of commits. Practically speaking,
   // this is a `StorageAreaImpl`.
   class Committer {
    public:
+    virtual bool HasPendingCommit() const = 0;
     virtual std::optional<DomStorageDatabase::MapBatchUpdate>
     CollectCommit() = 0;
     virtual base::OnceCallback<void(DbStatus)> GetCommitCompleteCallback() = 0;
   };
 
-  base::SequenceBound<DomStorageDatabase>& database() { return database_; }
+  base::SequenceBound<std::unique_ptr<DomStorageDatabase>>& database() {
+    return database_;
+  }
+
+  bool is_sqlite() const {
+    CHECK(is_database_opened_);
+    return is_sqlite_;
+  }
+
+  DatabaseMetricsType metrics_type() const { return metrics_type_; }
+
+  bool is_migrating() const {
+    return migration_state_ == MigrationState::kMigrating;
+  }
 
   // The functions below use `base::SequenceBound` to read and write
   // `database_` through the `DomStorageDatabase` interface. See function
@@ -93,8 +126,22 @@ class AsyncDomStorageDatabase {
   // completed callback for each `Committer` that provided a `Commit`.
   void InitiateCommit();
 
+  // Immediately starts migration after stopping the `migration_timer_`.
+  // Migration requires a successfully opened database with a `kAwaitingIdle`
+  // migration state.
+  void ForceMigrationForTesting();
+
  private:
-  AsyncDomStorageDatabase(StorageType storage_type, bool in_memory);
+  FRIEND_TEST_ALL_PREFIXES(AsyncDomStorageDatabaseMigrationTest,
+                           MigrationFails);
+  FRIEND_TEST_ALL_PREFIXES(AsyncDomStorageDatabaseMigrationTest,
+                           QueuesOperationsDuringFailedMigration);
+
+  explicit AsyncDomStorageDatabase(
+      StorageType storage_type,
+      const base::FilePath& dir_to_open,
+      const std::optional<base::trace_event::MemoryAllocatorDumpGuid>&
+          memory_dump_id);
 
   std::string_view StorageTypeForHistograms() const;
   std::string GetHistogram(std::string_view operation) const;
@@ -115,18 +162,68 @@ class AsyncDomStorageDatabase {
       base::OnceCallback<StatusOr<T>(DomStorageDatabase*)> db_task,
       base::OnceCallback<void(StatusOr<T>)> callback);
 
-  // Sets `is_database_opened_` to true when `open_status` is ok.  Then runs
-  // `callback` with `open_status`.
-  void OnDatabaseOpened(StatusCallback callback, DbStatus open_status);
+  // Callback from DomStorageDatabaseFactory::Open(). Stores the opened
+  // database and its resolved configuration. Then, runs `callback` with the
+  // `DbStatus` from opening the database and the destroy outcome, if any.
+  void OnDatabaseOpened(OpenCallback callback,
+                        DomStorageDatabaseFactory::OpenResult result);
 
-  // `database_` must not be used until `is_database_opened_` is true.
+  void ResetMigrationTimer();
+  void StartMigration();
+
+  // Returns OK when the disk for `leveldb_path` contains enough free space to
+  // support SQLite migration.
+  void CheckAvailableDiskSpaceForMigration(StatusCallback callback);
+  void OnDiskSpaceComputedForMigration(
+      const base::FilePath& leveldb_path,
+      StatusCallback callback,
+      std::optional<base::SysInfo::DiskSpaceInfo> disk_space);
+  static DbStatus OnLeveldbSizeAndDiskSpaceComputedForMigration(
+      base::SysInfo::DiskSpaceInfo disk_space,
+      base::ByteSize leveldb_size);
+
+  void ContinueMigrationAfterDiskSpaceCheck(
+      DbStatus available_disk_space_status);
+
+  void OnMigrationFinished(DomStorageDatabaseFactory::OpenResult result);
+
+  // Creates `file_system_proxy_` if necessary.
+  FilesystemProxy* EnsureFileSystemProxy();
+
+  // `database_` and `is_sqlite_` must not be used until `is_database_opened_`
+  // is true.
   bool is_database_opened_ = false;
-  base::SequenceBound<DomStorageDatabase> database_;
+  base::SequenceBound<std::unique_ptr<DomStorageDatabase>> database_;
+  bool is_sqlite_ = false;
 
   std::set<raw_ptr<Committer>> committers_;
 
   const StorageType storage_type_;
-  const bool in_memory_;
+  const base::FilePath dir_to_open_;
+  const std::optional<base::trace_event::MemoryAllocatorDumpGuid>
+      memory_dump_id_;
+  DatabaseMetricsType metrics_type_;
+
+  // Tracks an on-disk LevelDB to SQLite migration.
+  enum class MigrationState {
+    kInactive,      // Migration disabled or not needed.
+    kAwaitingIdle,  // Waiting for a long time without database reads or writes.
+    kMigrating,     // Migration in progress.
+    kAborted,       // Migration failed.
+    kCompleted,     // Migration succeeded.
+  };
+  MigrationState migration_state_ = MigrationState::kInactive;
+
+  // Migration starts after the idle timer fires.
+  InactivityTimer migration_timer_;
+
+  // Used by migration to check available disk space and calculate the size of
+  // the source LevelDB to migrate.  `nullptr` while migration is inactive.
+  std::unique_ptr<FilesystemProxy> file_system_proxy_;
+
+  // Database read and write operations that occurred during migration.  Each
+  // operation must run after migration completes or aborts.
+  std::vector<base::OnceClosure> tasks_blocked_on_migration_;
 
   base::WeakPtrFactory<AsyncDomStorageDatabase> weak_ptr_factory_{this};
 };

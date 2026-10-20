@@ -64,7 +64,8 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/managed_ui.h"
 #include "components/enterprise/browser/reporting/common_pref_names.h"
-#include "components/enterprise/connectors/core/features.h"
+#include "components/enterprise/net/core/features.h"
+#include "components/enterprise/net/core/prefs.h"
 #include "components/safe_browsing/core/common/features.h"
 
 // Must come after other includes, because FromJniType() uses Profile.
@@ -247,13 +248,29 @@ net::NetworkTrafficAnnotationTag GetTrafficAnnotationForPolicy(
 }  // namespace
 
 bool IsBrowserManaged(Profile* profile) {
-  DCHECK(profile);
+  CHECK(profile, base::NotFatalUntil::M161);
   return policy::ManagementServiceFactory::GetForProfile(profile)->IsManaged();
 }
 
-std::string GetDomainFromEmail(const std::string& email) {
+bool IsSecureGatewayDisclosureRequired(Profile* profile) {
+#if BUILDFLAG(IS_ANDROID)
+  CHECK(profile);
+
+  if (!enterprise_net::IsDynamicRouteFetchingEnabled()) {
+    return false;
+  }
+
+  return !profile->GetPrefs()
+              ->GetList(enterprise_net::kProxyProvisioningDomains)
+              .empty();
+#else
+  return false;
+#endif  // BUILDFLAG(IS_ANDROID)
+}
+
+std::string GetDomainFromEmail(std::string_view email) {
   size_t email_separator_pos = email.find('@');
-  bool is_email = email_separator_pos != std::string::npos &&
+  bool is_email = email_separator_pos != std::string_view::npos &&
                   email_separator_pos < email.length() - 1;
 
   if (!is_email)
@@ -376,20 +393,7 @@ bool IsEnterpriseBadgingEnabledForToolbar(Profile* profile) {
 }
 
 bool CanShowEnterpriseBadgingForMenu(Profile* profile) {
-  if (!CanShowEnterpriseProfileUI(profile) && !profile->IsChild()) {
-    return false;
-  }
-  if (base::FeatureList::IsEnabled(
-          features::kEnterpriseProfileBadgingForMenu)) {
-    return true;
-  }
-
-  // The check for supervised users is here as a precaution since the
-  // kEnterpriseLogoUrlForProfile should be set by policy.
-  return !profile->GetPrefs()
-              ->GetString(prefs::kEnterpriseLogoUrlForProfile)
-              .empty() &&
-         !profile->IsChild();
+  return CanShowEnterpriseProfileUI(profile) || profile->IsChild();
 }
 
 bool CanShowEnterpriseBadgingForAvatar(Profile* profile) {
@@ -507,7 +511,7 @@ static bool JNI_ManagedBrowserUtils_IsProfileReportingEnabled(
 static bool JNI_ManagedBrowserUtils_IsOnSecurityEventEnterpriseConnectorEnabled(
     JNIEnv* env,
     Profile* profile) {
-  DCHECK(profile);
+  CHECK(profile, base::NotFatalUntil::M161);
 
   auto* service =
       enterprise_connectors::ConnectorsServiceFactory::GetForBrowserContext(
@@ -523,7 +527,7 @@ static bool JNI_ManagedBrowserUtils_IsOnSecurityEventEnterpriseConnectorEnabled(
 static bool JNI_ManagedBrowserUtils_IsEnterpriseRealTimeUrlCheckModeEnabled(
     JNIEnv* env,
     Profile* profile) {
-  DCHECK(profile);
+  CHECK(profile, base::NotFatalUntil::M161);
 
   auto* service =
       enterprise_connectors::ConnectorsServiceFactory::GetForBrowserContext(
@@ -534,6 +538,24 @@ static bool JNI_ManagedBrowserUtils_IsEnterpriseRealTimeUrlCheckModeEnabled(
 
   return service->GetAppliedRealTimeUrlCheck() !=
          enterprise_connectors::REAL_TIME_CHECK_DISABLED;
+}
+
+// static
+static bool
+JNI_ManagedBrowserUtils_IsOnFileDownloadedEnterpriseConnectorEnabled(
+    JNIEnv* env,
+    Profile* profile) {
+  CHECK(profile, base::NotFatalUntil::M161);
+
+  auto* service =
+      enterprise_connectors::ConnectorsServiceFactory::GetForBrowserContext(
+          profile);
+
+  return service &&
+         !service
+              ->GetAnalysisServiceProviderNames(
+                  enterprise_connectors::AnalysisConnector::FILE_DOWNLOADED)
+              .empty();
 }
 
 #endif  // BUILDFLAG(IS_ANDROID)

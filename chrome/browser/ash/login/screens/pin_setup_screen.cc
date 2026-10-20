@@ -132,7 +132,7 @@ PinSetupScreen::PinSetupScreen(PrefService* local_state,
       auth_performer_(UserDataAuthClient::Get()),
       cryptohome_pin_engine_(local_state, &auth_performer_) {
   CHECK(local_state);
-  DCHECK(view_);
+  CHECK(view_, base::NotFatalUntil::M161);
 
   quick_unlock::PinBackend::GetInstance()->HasLoginSupport(base::BindOnce(
       &PinSetupScreen::OnHasLoginSupport, weak_ptr_factory_.GetWeakPtr()));
@@ -296,7 +296,8 @@ void PinSetupScreen::DoShow() {
       IsInSetupMode(PinSetupMode::kRecovery, *context());
 
   bool cannot_skip_flow = false;
-  if (features::IsManagedLocalPinAndPasswordEnabled()) {
+  if (features::IsManagedLocalPinAndPasswordEnabled() &&
+      using_pin_as_main_factor) {
     CHECK(account_id_.has_value());
     CHECK(is_saml_flow_.has_value());
     auto allowed_factors = AuthPolicyConnector::Get()->AllowedLocalAuthFactors(

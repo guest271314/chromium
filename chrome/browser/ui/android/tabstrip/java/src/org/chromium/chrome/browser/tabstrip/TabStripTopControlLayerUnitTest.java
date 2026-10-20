@@ -9,6 +9,7 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.clearInvocations;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.times;
@@ -24,6 +25,7 @@ import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 
+import org.chromium.base.ContextUtils;
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.util.CallbackHelper;
 import org.chromium.chrome.browser.browser_controls.BrowserControlsStateProvider;
@@ -42,8 +44,8 @@ public class TabStripTopControlLayerUnitTest {
     @Mock private ControlContainer mControlContainer;
     @Mock private TabStripSceneLayerHolder mTabStripSceneLayerHolder;
     @Mock private BrowserControlsStateProvider mBrowserControls;
-    @Mock private View mControlContainerView;
 
+    private final View mControlContainerView = new View(ContextUtils.getApplicationContext());
     private TabStripTopControlLayer mTabStripTopControlLayer;
     private final CallbackHelper mOnTransitionStartedCallback = new CallbackHelper();
     private final CallbackHelper mOnTokenUpdateCallback = new CallbackHelper();
@@ -63,7 +65,8 @@ public class TabStripTopControlLayerUnitTest {
     @Test
     public void testTransitionToVisible() {
         requestTransition(100, true);
-        verify(mTabStripSceneLayerHolder, times(0)).onHeightChanged(anyInt(), anyBoolean());
+        verify(mTabStripSceneLayerHolder, times(0))
+                .onHeightChanged(anyInt(), anyInt(), anyBoolean());
 
         // First update to start the transition. Visible height still at 0.
         doReturn(-100).when(mBrowserControls).getTopControlOffset();
@@ -94,7 +97,8 @@ public class TabStripTopControlLayerUnitTest {
     public void testTransitionToHidden() {
         mTabStripTopControlLayer.set(100);
         requestTransition(0, true);
-        verify(mTabStripSceneLayerHolder, times(0)).onHeightChanged(anyInt(), anyBoolean());
+        verify(mTabStripSceneLayerHolder, times(0))
+                .onHeightChanged(anyInt(), anyInt(), anyBoolean());
 
         // Start transition. Top controls offset change from 100 -> 0.
         doReturn(100).when(mBrowserControls).getTopControlOffset();
@@ -226,14 +230,149 @@ public class TabStripTopControlLayerUnitTest {
                 "mOnTransitionStartedCallback is not called.",
                 1,
                 mOnTransitionStartedCallback.getCallCount());
-        verify(mControlContainer).onHeightChanged(120, true);
+        verify(mControlContainer).onHeightChanged(120, 0, true);
         // The TabStripSceneLayerHolder should not be updated since it's not initialized.
         verify(mTabStripSceneLayerHolder, times(0)).onLayerYOffsetChanged(anyInt(), anyInt());
     }
 
+    @Test
+    public void testVerticalTabToggle_RequestsNonAnimatingLayerUpdate() {
+        mTabStripTopControlLayer.set(100);
+        // Request a non-animating transition (e.g. V <-> H toggle).
+        mTabStripTopControlLayer.onTransitionRequested(
+                0,
+                0,
+                true,
+                /* isVerticalTabToggle= */ true,
+                mOnTransitionStartedCallback::notifyCalled);
+        // Non-animating transition should request non-animating update.
+        verifyLayerUpdateRequest(false);
+
+        // When Stacker dispatches the resting offset, transition starts and finishes cleanly.
+        mTabStripTopControlLayer.onBrowserControlsOffsetUpdate(0, /* reachRestingPosition= */ true);
+        verifyHeightTransitionStarted(/* newHeight= */ 0, /* applyScrimOverlay= */ true);
+        verify(mTabStripSceneLayerHolder, times(1)).onHeightTransitionFinished(true);
+        verify(mTabStripSceneLayerHolder).onLayerYOffsetChanged(0, 0);
+    }
+
+    @Test
+    public void testVerticalTabToggle_ColdStartWithSuppressedTabStrip() {
+        // Re-initialize (simulating cold start with VT enabled).
+        mTabStripTopControlLayer =
+                new TabStripTopControlLayer(
+                        0, mTopControlsStacker, mBrowserControls, mControlContainer, mTokenHolder);
+        mTabStripTopControlLayer.initializeWithNative(mTabStripSceneLayerHolder);
+
+        // First toggle to HT (non-animating).
+        mTabStripTopControlLayer.onTransitionRequested(
+                100,
+                0,
+                true,
+                /* isVerticalTabToggle= */ true,
+                mOnTransitionStartedCallback::notifyCalled);
+        verifyLayerUpdateRequest(false);
+
+        // Transition should finish cleanly on offset dispatch.
+        mTabStripTopControlLayer.onBrowserControlsOffsetUpdate(0, /* reachRestingPosition= */ true);
+        verifyHeightTransitionStarted(/* newHeight= */ 100, /* applyScrimOverlay= */ true);
+        verify(mTabStripSceneLayerHolder, times(1)).onHeightTransitionFinished(true);
+        verify(mTabStripSceneLayerHolder).onLayerYOffsetChanged(0, 100);
+    }
+
+    @Test
+    public void testVerticalTabToggle_DuplicateTransitionRequest_PreservesNonAnimating() {
+        mTabStripTopControlLayer.set(100);
+        // First transition request for non-animating toggle.
+        mTabStripTopControlLayer.onTransitionRequested(
+                0,
+                0,
+                true,
+                /* isVerticalTabToggle= */ true,
+                mOnTransitionStartedCallback::notifyCalled);
+        verifyLayerUpdateRequest(false);
+
+        // A second duplicate transition request arrives (e.g. from bitmap capture callback or
+        // layout pass).
+        mTabStripTopControlLayer.onTransitionRequested(
+                0,
+                0,
+                true,
+                /* isVerticalTabToggle= */ true,
+                mOnTransitionStartedCallback::notifyCalled);
+
+        mTabStripTopControlLayer.onBrowserControlsOffsetUpdate(0, /* reachRestingPosition= */ true);
+
+        // onHeightTransitionFinished(true) is invoked twice:
+        // 1. Synchronously by the first request via the non-animating fallback when
+        // topControlOffset == 0.
+        // 2. Immediately by the duplicate request since startHeight == targetHeight == 0.
+        verify(mTabStripSceneLayerHolder, times(2)).onHeightTransitionFinished(true);
+        verify(mTabStripSceneLayerHolder, atLeastOnce()).onLayerYOffsetChanged(0, 0);
+    }
+
+    @Test
+    public void testNormalTransition_DoesNotFinishImmediately() {
+        mTabStripTopControlLayer.set(100);
+        // Request a normal animated transition.
+        mTabStripTopControlLayer.onTransitionRequested(
+                0,
+                0,
+                true,
+                /* isVerticalTabToggle= */ false,
+                mOnTransitionStartedCallback::notifyCalled);
+        verifyLayerUpdateRequest(true);
+
+        // Since animate is true, the transition should wait for C++ callbacks.
+        verify(mTabStripSceneLayerHolder, times(0)).onHeightTransitionFinished(anyBoolean());
+    }
+
+    @Test
+    public void testVerticalTabToggleTransition_FinishesSynchronouslyWithoutOffsetUpdate() {
+        mTabStripTopControlLayer.set(100);
+        doReturn(0).when(mBrowserControls).getTopControlOffset();
+
+        mTabStripTopControlLayer.onTransitionRequested(
+                0,
+                0,
+                true,
+                /* isVerticalTabToggle= */ true,
+                mOnTransitionStartedCallback::notifyCalled);
+
+        verifyHeightTransitionStarted(/* newHeight= */ 0, /* applyScrimOverlay= */ true);
+        verify(mTabStripSceneLayerHolder, times(1)).onHeightTransitionFinished(true);
+        verify(mTopControlsStacker).requestLayerUpdatePost(false);
+    }
+
+    @Test
+    public void testVerticalTabToggle_ControlsScrolled_WaitsForRestingPosition() {
+        mTabStripTopControlLayer.set(100);
+        doReturn(-50).when(mBrowserControls).getTopControlOffset();
+
+        mTabStripTopControlLayer.onTransitionRequested(
+                0,
+                0,
+                true,
+                /* isVerticalTabToggle= */ true,
+                mOnTransitionStartedCallback::notifyCalled);
+        verifyLayerUpdateRequest(false);
+
+        // Since controls are scrolled (offset != 0), transition does not finish synchronously.
+        verify(mTabStripSceneLayerHolder, times(0)).onHeightTransitionFinished(anyBoolean());
+
+        // Once resting position is reached, transition finishes.
+        mTabStripTopControlLayer.onBrowserControlsOffsetUpdate(0, /* reachRestingPosition= */ true);
+        verifyHeightTransitionStarted(/* newHeight= */ 0, /* applyScrimOverlay= */ true);
+        verify(mTabStripSceneLayerHolder, times(1)).onHeightTransitionFinished(true);
+        verify(mTopControlsStacker).requestLayerUpdatePost(false);
+    }
+
     private void requestTransition(int newHeight, boolean applyScrimOverlay) {
         mTabStripTopControlLayer.onTransitionRequested(
-                newHeight, applyScrimOverlay, mOnTransitionStartedCallback::notifyCalled);
+                newHeight,
+                0,
+                applyScrimOverlay,
+                /* isVerticalTabToggle= */ false,
+                mOnTransitionStartedCallback::notifyCalled);
     }
 
     private void verifyHeightTransitionStarted(int newHeight, boolean applyScrimOverlay) {
@@ -241,8 +380,8 @@ public class TabStripTopControlLayerUnitTest {
                 "mOnTransitionStartedCallback is not called.",
                 1,
                 mOnTransitionStartedCallback.getCallCount());
-        verify(mControlContainer).onHeightChanged(newHeight, applyScrimOverlay);
-        verify(mTabStripSceneLayerHolder).onHeightChanged(newHeight, applyScrimOverlay);
+        verify(mControlContainer).onHeightChanged(newHeight, 0, applyScrimOverlay);
+        verify(mTabStripSceneLayerHolder).onHeightChanged(newHeight, 0, applyScrimOverlay);
     }
 
     private void verifyLayerUpdateRequest(boolean animate) {
@@ -254,8 +393,9 @@ public class TabStripTopControlLayerUnitTest {
                 "mOnTransitionStartedCallback should not trigger yet.",
                 0,
                 mOnTransitionStartedCallback.getCallCount());
-        verify(mControlContainer, times(0)).onHeightChanged(anyInt(), anyBoolean());
-        verify(mTabStripSceneLayerHolder, times(0)).onHeightChanged(anyInt(), anyBoolean());
+        verify(mControlContainer, times(0)).onHeightChanged(anyInt(), anyInt(), anyBoolean());
+        verify(mTabStripSceneLayerHolder, times(0))
+                .onHeightChanged(anyInt(), anyInt(), anyBoolean());
         verify(mTopControlsStacker, times(0)).requestLayerUpdateSync(anyBoolean());
     }
 }

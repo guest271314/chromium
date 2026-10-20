@@ -14,7 +14,6 @@
 #include "build/buildflag.h"
 #include "chrome/browser/extensions/extension_apitest.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "components/guest_view/browser/guest_view_manager.h"
@@ -24,6 +23,7 @@
 #include "components/javascript_dialogs/app_modal_dialog_view.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/devtools_agent_host.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/render_widget_host_view.h"
 #include "content/public/browser/web_contents.h"
@@ -56,6 +56,7 @@
 #include "net/test/embedded_test_server/http_request.h"
 #include "printing/buildflags/buildflags.h"
 #include "third_party/blink/public/common/associated_interfaces/associated_interface_provider.h"
+#include "ui/base/page_transition_types.h"
 #include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/view.h"
 #include "url/url_constants.h"
@@ -121,7 +122,7 @@ class ChromeMimeHandlerViewTest : public extensions::ExtensionApiTest,
  protected:
   TestGuestViewManager* GetGuestViewManager() {
     return factory_.GetOrCreateTestGuestViewManager(
-        browser()->profile(),
+        browser()->GetProfile(),
         ExtensionsAPIClient::Get()->CreateGuestViewManagerDelegate());
   }
 
@@ -703,7 +704,7 @@ IN_PROC_BROWSER_TEST_P(ChromeMimeHandlerViewTest, FrameIterationBeforeAttach) {
   base::OnceClosure resume_attach;
   auto* web_contents = browser()->tab_strip_model()->GetActiveWebContents();
   auto* mime_handler_view_helper = extensions::MimeHandlerViewAttachHelper::Get(
-      web_contents->GetPrimaryMainFrame()->GetProcess()->GetDeprecatedID());
+      web_contents->GetPrimaryMainFrame()->GetProcess()->GetID());
   mime_handler_view_helper->set_resume_attach_callback_for_testing(
       base::BindLambdaForTesting([&](base::OnceClosure resume_closure) {
         resume_attach = std::move(resume_closure);
@@ -813,4 +814,64 @@ IN_PROC_BROWSER_TEST_P(ChromeMimeHandlerViewTest, SetActiveUAF) {
   // with a Use-After-Free during the message flush. If fixed, it returns
   // safely.
   ASSERT_TRUE(content::ExecJs(web_contents, "true"));
+}
+
+IN_PROC_BROWSER_TEST_P(ChromeMimeHandlerViewTest, PostMessageGetterOverwrite) {
+  TestGuestViewManager* manager = GetGuestViewManager();
+  TestMimeHandlerViewGuest::RegisterTestGuestViewType(manager);
+  ASSERT_TRUE(LoadTestExtension());
+
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(
+      browser(), embedded_test_server()->GetURL("/title1.html")));
+
+  auto* web_contents = GetEmbedderWebContents();
+
+  const char kSetupScript[] = R"(
+    (() => {
+      const iframe = document.createElement('iframe');
+      iframe.src = 'testEmbedded.csv';
+      document.body.appendChild(iframe);
+    })();
+  )";
+
+  ASSERT_TRUE(content::ExecJs(web_contents, kSetupScript));
+
+  guest_view::GuestViewBase* guest = manager->WaitForNextGuestViewCreated();
+  ASSERT_TRUE(guest);
+  ASSERT_TRUE(manager->WaitUntilAttachedAndLoaded(guest));
+
+  // This replaces the internal embed element with our own frame of the same
+  // name. The new frame has a custom getter for the postMessage property, which
+  // destroys the parent iframe when accessed. Then we trigger a postMessage.
+  // The implementation should be robust to this manipulation.
+  // See https://crbug.com/516910450
+  const char kReproScript[] = R"(
+    (async () => {
+      const iframe = document.querySelector('iframe');
+      while (typeof iframe.contentDocument.querySelector('embed')?.postMessage
+                 !== 'function') {
+        await new Promise(r => setTimeout(r));
+      }
+      let innerEmbed = iframe.contentDocument.querySelector('embed');
+      let internalid = innerEmbed.getAttribute('internalid');
+      let savedPostMessage = innerEmbed.postMessage;
+
+      innerEmbed.remove();
+      let evilFrame = iframe.contentDocument.createElement('iframe');
+      evilFrame.name = internalid;
+      iframe.contentDocument.body.appendChild(evilFrame);
+
+      Object.defineProperty(evilFrame.contentWindow, 'postMessage', {
+        configurable: true,
+        get() {
+          iframe.remove();
+          return function() {};
+        }
+      });
+
+      savedPostMessage({});
+    })();
+  )";
+
+  ASSERT_TRUE(content::ExecJs(web_contents, kReproScript));
 }

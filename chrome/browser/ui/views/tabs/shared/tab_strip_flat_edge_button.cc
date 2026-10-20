@@ -13,14 +13,12 @@
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/compositor/layer.h"
 #include "ui/gfx/canvas.h"
-#include "ui/gfx/geometry/rrect_f.h"
 #include "ui/gfx/geometry/skia_conversions.h"
 #include "ui/views/actions/action_view_interface.h"
 #include "ui/views/animation/ink_drop.h"
 #include "ui/views/background.h"
 #include "ui/views/controls/button/label_button_border.h"
 #include "ui/views/controls/highlight_path_generator.h"
-#include "ui/views/layout/layout_provider.h"
 #include "ui/views/view_class_properties.h"
 #include "ui/views/widget/widget.h"
 
@@ -68,7 +66,7 @@ class TabStripFlatEdgeButtonActionViewInterface
 }  // namespace
 
 TabStripFlatEdgeButton::TabStripFlatEdgeButton() {
-  ConfigureInkDropForToolbar(
+  ConfigureInkDrop(
       this, std::make_unique<views::RoundRectHighlightPathGenerator>(
                 gfx::Insets(), GetButtonCornerRadii()));
   ConfigureToolbarInkdropForRefresh2023(
@@ -151,14 +149,7 @@ void TabStripFlatEdgeButton::SetFlatEdgeFactor(float factor) {
   }
   flat_edge_factor_ = factor;
 
-  SetProperty(views::kHighlightPathGeneratorKey,
-              std::make_unique<views::RoundRectHighlightPathGenerator>(
-                  gfx::Insets(), GetButtonCornerRadii()));
-  // The ink drop doesn't automatically pick up on rounded corner changes, so │
-  // we need to manually notify it here.
-  views::InkDrop::Get(this)->GetInkDrop()->HostSizeChanged(size());
-
-  SchedulePaint();
+  UpdateHighlightPathAndInkDrop();
 }
 
 void TabStripFlatEdgeButton::SetShouldShowLabel(bool show_label) {
@@ -182,6 +173,9 @@ void TabStripFlatEdgeButton::NotifyWillInvokeAction() {
 }
 
 void TabStripFlatEdgeButton::OnPaintBackground(gfx::Canvas* canvas) {
+  if (paint_transparent_) {
+    return;
+  }
   const SkColor color = GetColorProvider()->GetColor(GetBackgroundColor());
 
   cc::PaintFlags flags;
@@ -202,6 +196,13 @@ void TabStripFlatEdgeButton::OnThemeChanged() {
   if (should_show_label_) {
     UpdateLabelColor();
   }
+  const bool frame_active = GetWidget() && GetWidget()->ShouldPaintAsActive();
+  ConfigureToolbarInkdropForRefresh2023(
+      this,
+      frame_active ? kColorTabStripControlButtonInkDrop
+                   : kColorTabStripControlButtonInkDropFrameInactive,
+      frame_active ? kColorTabStripControlButtonInkDropRipple
+                   : kColorTabStripControlButtonInkDropRippleFrameInactive);
 }
 
 bool TabStripFlatEdgeButton::GetHitTestMask(SkPath* mask) const {
@@ -215,10 +216,36 @@ void TabStripFlatEdgeButton::SetFlatEdge(FlatEdge flat_edge) {
   }
   flat_edge_ = flat_edge;
 
+  UpdateHighlightPathAndInkDrop();
+}
+
+void TabStripFlatEdgeButton::SetCornerRadius(float corner_radius) {
+  if (corner_radius_ == corner_radius) {
+    return;
+  }
+  corner_radius_ = corner_radius;
+
+  UpdateHighlightPathAndInkDrop();
+}
+
+void TabStripFlatEdgeButton::UpdateHighlightPathAndInkDrop() {
   SetProperty(views::kHighlightPathGeneratorKey,
               std::make_unique<views::RoundRectHighlightPathGenerator>(
                   gfx::Insets(), GetButtonCornerRadii()));
+  // The ink drop doesn't automatically pick up on rounded corner changes, so
+  // we need to manually notify it here.
+  if (GetWidget() && views::InkDrop::Get(this)->HasInkDrop()) {
+    views::InkDrop::Get(this)->GetInkDrop()->HostSizeChanged(size());
+  }
 
+  SchedulePaint();
+}
+
+void TabStripFlatEdgeButton::SetPaintTransparent(bool paint_transparent) {
+  if (paint_transparent_ == paint_transparent) {
+    return;
+  }
+  paint_transparent_ = paint_transparent;
   SchedulePaint();
 }
 
@@ -271,42 +298,31 @@ ui::ColorId TabStripFlatEdgeButton::GetBackgroundColor() const {
 
 gfx::RoundedCornersF TabStripFlatEdgeButton::GetButtonCornerRadii() const {
   constexpr float kFlatRadius = 2.0f;
-  constexpr float kRoundedRadius = 10.0f;
-  float flat_radius = kFlatRadius + ((kRoundedRadius - kFlatRadius) *
+  const float rounded_radius = corner_radius_.value_or(10.0f);
+  float flat_radius = kFlatRadius + ((rounded_radius - kFlatRadius) *
                                      (1.0f - flat_edge_factor_));
 
   switch (flat_edge_) {
     case FlatEdge::kNone:
-      return gfx::RoundedCornersF(kRoundedRadius, kRoundedRadius,
-                                  kRoundedRadius, kRoundedRadius);
+      return gfx::RoundedCornersF(rounded_radius, rounded_radius,
+                                  rounded_radius, rounded_radius);
     case FlatEdge::kTop:
-      return gfx::RoundedCornersF(flat_radius, flat_radius, kRoundedRadius,
-                                  kRoundedRadius);
+      return gfx::RoundedCornersF(flat_radius, flat_radius, rounded_radius,
+                                  rounded_radius);
     case FlatEdge::kLeft:
-      return gfx::RoundedCornersF(flat_radius, kRoundedRadius, kRoundedRadius,
+      return gfx::RoundedCornersF(flat_radius, rounded_radius, rounded_radius,
                                   flat_radius);
     case FlatEdge::kBottom:
-      return gfx::RoundedCornersF(kRoundedRadius, kRoundedRadius, flat_radius,
+      return gfx::RoundedCornersF(rounded_radius, rounded_radius, flat_radius,
                                   flat_radius);
     case FlatEdge::kRight:
-      return gfx::RoundedCornersF(kRoundedRadius, flat_radius, flat_radius,
-                                  kRoundedRadius);
+      return gfx::RoundedCornersF(rounded_radius, flat_radius, flat_radius,
+                                  rounded_radius);
   }
 }
 
 SkRRect TabStripFlatEdgeButton::GetButtonShape() const {
-  const gfx::RoundedCornersF corners = GetButtonCornerRadii();
-  const SkRect rect = gfx::RectToSkRect(GetLocalBounds());
-
-  SkVector radii[4];
-  radii[0] = {corners.upper_left(), corners.upper_left()};
-  radii[1] = {corners.upper_right(), corners.upper_right()};
-  radii[2] = {corners.lower_right(), corners.lower_right()};
-  radii[3] = {corners.lower_left(), corners.lower_left()};
-
-  SkRRect rrect;
-  rrect.setRectRadii(rect, radii);
-  return rrect;
+  return gfx::RoundedRectToSkRRect(GetLocalBounds(), GetButtonCornerRadii());
 }
 
 void TabStripFlatEdgeButton::UpdateLabel(bool should_show) {

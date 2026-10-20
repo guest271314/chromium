@@ -14,6 +14,7 @@
 #include <utility>
 #include <vector>
 
+#include "base/check_op.h"
 #include "base/containers/flat_set.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/raw_ptr_exclusion.h"
@@ -199,11 +200,8 @@ class CC_EXPORT LayerTreeImpl {
   OwnedLayerImplList DetachLayersKeepingRootLayerForTesting();
   OwnedLayerImplList SwapLayers(OwnedLayerImplList new_layers);
 
-  void SetPropertyTrees(const PropertyTrees& property_trees,
-                        PropertyTreesChangeState& change_state,
-                        bool preserve_change_tracking);
-
   void SetPropertyTrees(PropertyTrees& property_trees,
+                        const ViewportPropertyIds& viewport_property_ids,
                         bool preserve_change_tracking = false);
 
   PropertyTrees* property_trees() {
@@ -258,6 +256,12 @@ class CC_EXPORT LayerTreeImpl {
     Iterator it_;
   };
   size_t num_layers() const { return layer_list_.size(); }
+  // Returns the layer at |index| in the layer list. |index| is bounds-checked
+  // against num_layers().
+  LayerImpl* LayerAtIndex(size_t index) const {
+    CHECK_LT(index, num_layers());
+    return layer_list_[index].get();
+  }
   using const_iterator = IteratorAdapter<OwnedLayerImplList::const_iterator>;
   using const_reverse_iterator =
       IteratorAdapter<OwnedLayerImplList::const_reverse_iterator>;
@@ -531,6 +535,8 @@ class CC_EXPORT LayerTreeImpl {
   void set_ui_resource_request_queue(UIResourceRequestQueue queue);
 
   const RenderSurfaceList& GetRenderSurfaceList() const;
+  RenderSurfaceImpl* GetRenderSurface(int effect_id);
+  const RenderSurfaceImpl* GetRenderSurface(int effect_id) const;
   const Region& UnoccludedScreenSpaceRegion() const;
 
   // These return the size of the root scrollable area and the size of
@@ -617,7 +623,7 @@ class CC_EXPORT LayerTreeImpl {
 
   void NotifyLayerHasAnimatedImagesChanged(PictureLayerImpl* layer,
                                            bool has_animated_images);
-  void AnnotateAnimatedImages(base::flat_map<PaintImage::Id, bool>&) const;
+  void AnnotateAnimatedImages(AnimatedImageDriverMap&) const;
   void NotifyLayerHasPaintWorkletsChanged(PictureLayerImpl* layer,
                                           bool has_worklets);
 
@@ -873,7 +879,7 @@ class CC_EXPORT LayerTreeImpl {
 
    private:
     LayerTreeImpl* const layer_tree_impl_;
-    std::vector<PictureLayerImpl*> layers_needing_update_;
+    std::vector<raw_ptr<PictureLayerImpl>> layers_needing_update_;
   };
 
  protected:
@@ -1008,10 +1014,9 @@ class CC_EXPORT LayerTreeImpl {
 
   base::flat_set<viz::SurfaceRange> surface_layer_ranges_;
 
-  // List of render surfaces for the most recently prepared frame.
-  //
-  // RAW_PTR_EXCLUSION: visible in stack samples when Renderer BRP is enabled.
-  RAW_PTR_EXCLUSION RenderSurfaceList render_surface_list_;
+  // List of effect node IDs for the render surfaces in the most recently
+  // prepared frame.
+  RenderSurfaceList render_surface_list_;
   // After drawing the |render_surface_list_| the areas in this region
   // would not be fully covered by opaque content.
   Region unoccluded_screen_space_region_;

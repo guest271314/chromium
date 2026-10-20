@@ -5,9 +5,9 @@
 #include "ui/views/controls/tree/tree_view.h"
 
 #include <algorithm>
+#include <ranges>
 #include <utility>
 
-#include "base/containers/adapters.h"
 #include "base/i18n/rtl.h"
 #include "base/memory/ptr_util.h"
 #include "build/build_config.h"
@@ -111,7 +111,7 @@ TreeView::TreeView()
 
   folder_icon_ = ui::ImageModel::FromVectorIcon(
       features::IsRoundedIconsEnabled()
-          ? vector_icons::kFolderIcon
+          ? vector_icons::kFolderFlippableIcon
           : vector_icons::kFolderChromeRefreshOldIcon,
       ui::kColorIcon);
 
@@ -125,11 +125,6 @@ TreeView::~TreeView() {
   if (GetInputMethod() && selector_.get()) {
     // TreeView should have been blurred before destroy.
     DCHECK(selector_.get() != GetInputMethod()->GetTextInputClient());
-  }
-
-  if (focus_manager_) {
-    focus_manager_->RemoveFocusChangeListener(this);
-    focus_manager_ = nullptr;
   }
 }
 
@@ -225,9 +220,8 @@ void TreeView::StartEditing(TreeModelNode* node) {
   editor_->SelectAll(false);
 
   // Listen for focus changes so that we can cancel editing.
-  focus_manager_ = GetFocusManager();
-  if (focus_manager_) {
-    focus_manager_->AddFocusChangeListener(this);
+  if (FocusManager* focus_manager = GetFocusManager()) {
+    focus_manager_observation_.Observe(focus_manager);
   }
 
   // Accelerators to commit/cancel edit.
@@ -243,10 +237,7 @@ void TreeView::CancelEdit() {
   // WARNING: don't touch |selected_node_|, it may be bogus.
 
   editing_ = false;
-  if (focus_manager_) {
-    focus_manager_->RemoveFocusChangeListener(this);
-    focus_manager_ = nullptr;
-  }
+  focus_manager_observation_.Reset();
   editor_->SetVisible(false);
   SchedulePaint();
 
@@ -345,7 +336,7 @@ void TreeView::ExpandAll(TreeModelNode* node) {
   bool expanded_at_least_one = ExpandImpl(node);
   // And recursively expand all the children.
   const auto& children = model_->GetChildren(node);
-  for (TreeModelNode* child : base::Reversed(children)) {
+  for (TreeModelNode* child : std::views::reverse(children)) {
     if (ExpandImpl(child)) {
       expanded_at_least_one = true;
     }
@@ -1252,7 +1243,7 @@ void TreeView::PaintExpandControl(gfx::Canvas* canvas,
                                   const gfx::Rect& node_bounds,
                                   bool expanded) {
   gfx::ImageSkia arrow = gfx::CreateVectorIcon(
-      features::IsRoundedIconsEnabled() ? vector_icons::kArrowRightIcon
+      features::IsRoundedIconsEnabled() ? vector_icons::kArrowRightFlippableIcon
                                         : vector_icons::kSubmenuArrowOldIcon,
       color_utils::DeriveDefaultIconColor(
           drawing_provider()->GetTextColorForNode(this, nullptr)));

@@ -2,6 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include <array>
 
 #include "base/at_exit.h"
 #include "base/command_line.h"
@@ -83,14 +84,14 @@ void SubSurfaceClient::Run(const ClientBase::InitParams& params) {
 
     // Only generate frames to child surface for the first 200 frames.
     if (frame_count < 200) {
-      SkScalar half_width = SkScalarHalf(kSubsurfaceWidth);
-      SkScalar half_height = SkScalarHalf(kSubsurfaceHeight);
-      SkIRect rect = SkIRect::MakeXYWH(-SkScalarHalf(half_width),
-                                       -SkScalarHalf(half_height), half_width,
-                                       half_height);
+      float half_width = kSubsurfaceWidth / 2.f;
+      float half_height = kSubsurfaceHeight / 2.f;
+      SkIRect rect = SkIRect::MakeXYWH(static_cast<int>(-half_width / 2.f),
+                                       static_cast<int>(-half_height / 2.f),
+                                       half_width, half_height);
       // Rotation speed (degrees/frame).
       const double kRotationSpeed = 5.;
-      SkScalar rotation = frame_count * kRotationSpeed;
+      float rotation = frame_count * kRotationSpeed;
       SkCanvas* canvas = subbuffer->sk_surface->getCanvas();
       canvas->save();
       canvas->clear(SK_ColorBLACK);
@@ -114,8 +115,9 @@ void SubSurfaceClient::Run(const ClientBase::InitParams& params) {
     if (frame_count < 400) {
       Buffer* buffer = buffers_.front().get();
       SkCanvas* canvas = buffer->sk_surface->getCanvas();
-      static const SkColor kColors[] = {SK_ColorRED, SK_ColorBLACK};
-      canvas->clear(kColors[frame_count % std::size(kColors)]);
+      static constexpr std::array<SkColor, 2> kColors = {SK_ColorRED,
+                                                         SK_ColorBLACK};
+      canvas->clear(kColors[frame_count % kColors.size()]);
       if (gr_context_) {
         gr_context_->flushAndSubmit();
         glFinish();

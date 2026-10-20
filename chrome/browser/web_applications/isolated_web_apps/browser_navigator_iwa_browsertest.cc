@@ -18,10 +18,13 @@
 #include "chrome/browser/external_protocol/external_protocol_handler.h"
 #include "chrome/browser/preloading/scoped_prewarm_feature_list.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/browser_window/public/create_browser_window.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/navigator/browser_navigator.h"
 #include "chrome/browser/ui/navigator/browser_navigator_browsertest.h"
 #include "chrome/browser/ui/navigator/browser_navigator_params.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/web_applications/app_browser_controller.h"
 #include "chrome/browser/ui/web_applications/test/isolated_web_app_test_utils.h"
 #include "chrome/browser/web_applications/isolated_web_apps/commands/install_isolated_web_app_command.h"
@@ -73,7 +76,7 @@ class BrowserNavigatorIwaTest : public BrowserNavigatorTest {
         web_app::WebAppProvider::GetForTest(profile()));
   }
 
-  Profile* profile() { return browser()->profile(); }
+  Profile* profile() { return browser()->GetProfile(); }
 
  protected:
   void InstallBundles() {
@@ -124,7 +127,7 @@ IN_PROC_BROWSER_TEST_F(BrowserNavigatorIwaTest, NavigateCurrentTab) {
   params1.disposition = WindowOpenDisposition::CURRENT_TAB;
   ui_test_utils::NavigateToURL(&params1);
 
-  Browser* iwa_browser = params1.browser->GetBrowserForMigrationOnly();
+  BrowserWindowInterface* iwa_browser = params1.browser;
   EXPECT_NE(iwa_browser, browser());
   EXPECT_EQ(2u, GlobalBrowserCollection::GetInstance()->GetSize());
 
@@ -166,7 +169,7 @@ IN_PROC_BROWSER_TEST_F(BrowserNavigatorIwaTest, NavigateCurrentTab) {
   ui_test_utils::NavigateToURL(&params3);
 
   // Navigating a tab outside of the app's scope should create a new browser.
-  Browser* new_iwa_browser = params3.browser->GetBrowserForMigrationOnly();
+  BrowserWindowInterface* new_iwa_browser = params3.browser;
   EXPECT_NE(iwa_browser, new_iwa_browser);
   EXPECT_NE(browser(), new_iwa_browser);
   EXPECT_EQ(3u, GlobalBrowserCollection::GetInstance()->GetSize());
@@ -211,6 +214,28 @@ IN_PROC_BROWSER_TEST_F(BrowserNavigatorIwaTest, NavigateCurrentTab) {
                   .IsAboutBlank());
   EXPECT_EQ(GetGoogleURL(),
             browser()->tab_strip_model()->GetWebContentsAt(1)->GetURL());
+}
+
+IN_PROC_BROWSER_TEST_F(BrowserNavigatorIwaTest,
+                       AutoBookmarkNavigationCancelled) {
+  ASSERT_NO_FATAL_FAILURE(InstallBundles());
+
+  const size_t browsers_before =
+      GlobalBrowserCollection::GetInstance()->GetSize();
+
+  // Navigating to an IWA via PAGE_TRANSITION_AUTO_BOOKMARK from a non-app
+  // context (e.g. History menu, History clusters, bookmarks) must be cancelled
+  // as a cross-IWA navigation.
+  NavigateParams params = MakeNavigateParams(browser());
+  params.url = url_info1_->origin().GetURL().Resolve("/deep-link.html");
+  params.transition = ui::PAGE_TRANSITION_AUTO_BOOKMARK;
+  params.disposition = WindowOpenDisposition::NEW_WINDOW;
+  base::WeakPtr<content::NavigationHandle> handle = Navigate(&params);
+  EXPECT_EQ(nullptr, handle);
+
+  EXPECT_EQ(browsers_before, GlobalBrowserCollection::GetInstance()->GetSize());
+  EXPECT_FALSE(web_app::AppBrowserController::FindForWebApp(
+      *profile(), url_info1_->app_id()));
 }
 
 #if BUILDFLAG(IS_CHROMEOS)
@@ -294,9 +319,11 @@ class BrowserNavigatorIwaNewTabTest
 IN_PROC_BROWSER_TEST_P(BrowserNavigatorIwaNewTabTest, NavigateNewTab) {
   EXPECT_NO_FATAL_FAILURE(InstallBundles());
 
-  Browser* iwa_browser = Browser::Create(Browser::CreateParams::CreateForApp(
-      web_app::GenerateApplicationNameFromAppId(url_info1_->app_id()),
-      /*trusted_source=*/false, gfx::Rect(), profile(), /*user_gesture=*/true));
+  BrowserWindowInterface* iwa_browser =
+      CreateBrowserWindow(BrowserWindowCreateParams::CreateForApp(
+          web_app::GenerateApplicationNameFromAppId(url_info1_->app_id()),
+          /*trusted_source=*/false, gfx::Rect(), profile(),
+          /*user_gesture=*/true));
 
   // 1. Navigate a new tab in the in an empty IWA browser to an http: origin.
   //    This should be aborted and instead be opened in the default browser (as
@@ -338,7 +365,7 @@ IN_PROC_BROWSER_TEST_P(BrowserNavigatorIwaNewTabTest, NavigateNewTab) {
   params3.disposition = GetParam();
   ui_test_utils::NavigateToURL(&params3);
 
-  Browser* new_iwa_browser = params3.browser->GetBrowserForMigrationOnly();
+  BrowserWindowInterface* new_iwa_browser = params3.browser;
   EXPECT_NE(new_iwa_browser, iwa_browser);
   EXPECT_NE(new_iwa_browser, browser());
   EXPECT_EQ(3u, GlobalBrowserCollection::GetInstance()->GetSize());

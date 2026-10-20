@@ -5,13 +5,12 @@
 #include "components/page_load_metrics/browser/observers/prerender_page_load_metrics_observer.h"
 
 #include "base/metrics/histogram_functions.h"
-#include "base/no_destructor.h"
 #include "base/time/time.h"
 #include "base/trace_event/trace_event.h"
 #include "base/trace_event/trace_id_helper.h"
 #include "base/tracing/protos/chrome_track_event.pbzero.h"
 #include "components/page_load_metrics/browser/metrics_web_contents_observer.h"
-#include "components/page_load_metrics/browser/navigation_handle_user_data.h"
+#include "components/page_load_metrics/browser/navigation_initiator.h"
 #include "components/page_load_metrics/browser/observers/core/largest_contentful_paint_handler.h"
 #include "components/page_load_metrics/browser/page_load_metrics_util.h"
 #include "content/public/browser/navigation_handle.h"
@@ -66,11 +65,6 @@ const char kHistogramPrerenderCumulativeShiftScore[] =
 const char kHistogramPrerenderCumulativeShiftScoreMainFrame[] =
     "PageLoad.Clients.Prerender.LayoutInstability.CumulativeShiftScore."
     "MainFrame";
-const char
-    kHistogramPrerenderMaxCumulativeShiftScoreSessionWindowGap1000msMax5000ms2
-        [] = "PageLoad.Clients.Prerender.LayoutInstability."
-             "MaxCumulativeShiftScore.SessionWindow."
-             "Gap1000ms.Max5000ms2";
 
 // Responsiveness metrics.
 const char kHistogramPrerenderNumInteractions[] =
@@ -166,21 +160,12 @@ void PrerenderPageLoadMetricsObserver::DidActivatePrerenderedPage(
         main_frame_resource_has_no_store_.value() ? 1 : 0);
   }
 
-  auto prerender_trigger_type =
-      page_load_metrics::NavigationHandleUserData::InitiatorLocation::kOther;
-  auto* navigation_userdata =
-      page_load_metrics::NavigationHandleUserData::GetForNavigationHandle(
-          *navigation_handle);
-  if (navigation_userdata) {
-    prerender_trigger_type = navigation_userdata->navigation_type();
-  }
-
   builder.SetWasPrerendered(true)
       .SetTiming_NavigationToActivation(
           navigation_to_activation_time_.value().InMilliseconds())
       .SetNavigation_PageTransition(navigation_handle->GetPageTransition())
       .SetNavigation_InitiatorLocation(
-          static_cast<int>(prerender_trigger_type));
+          page_load_metrics::GetNavigationInitiator(*navigation_handle).id());
   builder.Record(ukm::UkmRecorder::Get());
 
   base::UmaHistogramBoolean(AppendSuffix(internal::kHistogramHostReused),
@@ -223,8 +208,93 @@ void PrerenderPageLoadMetricsObserver::OnFirstContentfulPaintInPage(
       timing.paint_timing->first_contentful_paint.value());
 }
 
-void PrerenderPageLoadMetricsObserver::OnSoftNavigation() {
+void PrerenderPageLoadMetricsObserver::
+    RecordLargestContentfulPaintBeforeSoftNavigation() {
+  CHECK(GetDelegate().WasPrerenderedThenActivatedInForeground());
+  CHECK(navigation_to_activation_time_.has_value());
+  const page_load_metrics::ContentfulPaintTimingInfo& lcp =
+      GetDelegate()
+          .GetLargestContentfulPaintHandler()
+          .MergeMainFrameAndSubframes();
+  if (lcp.ContainsValidTime() &&
+      WasActivatedInForegroundOptionalEventInForeground(lcp.Time(),
+                                                        GetDelegate())) {
+    base::TimeDelta activation_to_lcp =
+        lcp.Time().value() - navigation_to_activation_time_.value();
+    ukm::builders::PrerenderPageLoad(GetDelegate().GetPageUkmSourceId())
+        .SetTimingBeforeSoftNavigation_ActivationToLargestContentfulPaint(
+            activation_to_lcp.InMilliseconds())
+        .Record(ukm::UkmRecorder::Get());
+  }
+}
+
+void PrerenderPageLoadMetricsObserver::
+    RecordResponsivenessMetricsBeforeSoftNavigation() {
+  CHECK(GetDelegate().WasPrerenderedThenActivatedInForeground());
+  CHECK(navigation_to_activation_time_.has_value());
+
+  const page_load_metrics::InteractionToNextPaintCalculator& calculator =
+      GetDelegate().GetInteractionToNextPaintCalculator();
+  std::optional<
+      page_load_metrics::InteractionToNextPaintCalculator::InteractionData>
+      inp_data = calculator.ApproximateHighPercentile();
+  if (!inp_data.has_value()) {
+    return;
+  }
+  const page_load_metrics::mojom::EventTiming& inp = inp_data->max_event;
+  ukm::builders::PrerenderPageLoad builder(GetDelegate().GetPageUkmSourceId());
+  builder
+      .SetInteractiveTimingBeforeSoftNavigation_UserInteractionLatency_HighPercentile2_MaxEventDuration(
+          inp.duration.InMilliseconds());
+  builder.SetInteractiveTimingBeforeSoftNavigation_NumInteractions(
+      ukm::GetExponentialBucketMinForCounts1000(
+          calculator.num_user_interactions()));
+  builder.Record(ukm::UkmRecorder::Get());
+}
+
+void PrerenderPageLoadMetricsObserver::RecordLayoutShiftBeforeSoftNavigation() {
+  CHECK(GetDelegate().WasPrerenderedThenActivatedInForeground());
+  CHECK(navigation_to_activation_time_.has_value());
+
+  const page_load_metrics::NormalizedCLSData& normalized_cls_data =
+      GetDelegate().GetNormalizedCLSData(
+          page_load_metrics::PageLoadMetricsObserverDelegate::BfcacheStrategy::
+              ACCUMULATE);
+  if (normalized_cls_data.data_tainted) {
+    return;
+  }
+  const float max_cls =
+      normalized_cls_data.session_windows_gap1000ms_max5000ms_max_cls;
+  ukm::builders::PrerenderPageLoad builder(GetDelegate().GetPageUkmSourceId());
+  builder
+      .SetLayoutInstabilityBeforeSoftNavigation_MaxCumulativeShiftScore_MainFrame_SessionWindow_Gap1000ms_Max5000ms(
+          page_load_metrics::LayoutShiftUkmValue(max_cls));
+  builder.Record(ukm::UkmRecorder::Get());
+}
+
+void PrerenderPageLoadMetricsObserver::OnSoftNavigationFirstContentfulPaint(
+    const page_load_metrics::mojom::SoftNavigationMetrics&
+        soft_navigation_metrics) {
+  CHECK_GE(soft_navigation_count_, 0);
   soft_navigation_count_++;
+
+  // When the 1st soft navigation presents FCP, we record the CWVs before then,
+  // so that we can blend them. We also require:
+  //
+  // * Must have been prerendered and activated in the foreground.
+  //
+  // * activation time must have been captured; note:
+  //   navigation_to_activation_time is the same value as is
+  //   |main_frame_timing.activation_start| used elsewhere in this file.
+  if (soft_navigation_count_ == 1 &&
+      GetDelegate().GetPrerenderingState() ==
+          page_load_metrics::PrerenderingState::kActivated &&
+      GetDelegate().WasPrerenderedThenActivatedInForeground() &&
+      navigation_to_activation_time_.has_value()) {
+    RecordLargestContentfulPaintBeforeSoftNavigation();
+    RecordResponsivenessMetricsBeforeSoftNavigation();
+    RecordLayoutShiftBeforeSoftNavigation();
+  }
 }
 
 void PrerenderPageLoadMetricsObserver::OnFirstInputInPage(
@@ -394,11 +464,6 @@ void PrerenderPageLoadMetricsObserver::RecordLayoutShiftScoreMetrics(
     return;
   }
 
-  page_load_metrics::UmaMaxCumulativeShiftScoreHistogram10000x(
-      AppendSuffix(
-          internal::
-              kHistogramPrerenderMaxCumulativeShiftScoreSessionWindowGap1000msMax5000ms2),
-      normalized_cls_data);
   const float max_cls =
       normalized_cls_data.session_windows_gap1000ms_max5000ms_max_cls;
   ukm::builders::PrerenderPageLoad(GetDelegate().GetPageUkmSourceId())

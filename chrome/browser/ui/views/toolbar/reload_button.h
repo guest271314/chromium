@@ -38,6 +38,9 @@ class ReloadButton : public ToolbarButton, public ReloadControl {
   METADATA_HEADER(ReloadButton, ToolbarButton)
 
  public:
+  // `profile` is null when the button is hosted outside a browser window, for
+  // example in the ChromeOS login screen captive portal dialog. No WaaP UI
+  // metrics are recorded in that case.
   ReloadButton(Profile* profile,
                CommandUpdater* command_updater,
                InitialWebUIWindowMetricsManager* window_metrics_manager);
@@ -52,15 +55,8 @@ class ReloadButton : public ToolbarButton, public ReloadControl {
   [[nodiscard]] base::CallbackListSubscription AddVisibleModeChangedCallback(
       views::PropertyChangedCallback callback);
 
-  void SetVectorIconsForMode(Mode mode,
-                             const gfx::VectorIcon& icon,
-                             const gfx::VectorIcon& touch_icon);
-
   // ToolbarButton:
-  void OnMouseEntered(const ui::MouseEvent& event) override;
   void OnMouseExited(const ui::MouseEvent& event) override;
-  bool OnMousePressed(const ui::MouseEvent& event) override;
-  void OnMouseReleased(const ui::MouseEvent& event) override;
   bool ShouldShowMenu() override;
   void ShowDropDownMenu(ui::mojom::MenuSourceType source_type) override;
 
@@ -110,17 +106,14 @@ class ReloadButton : public ToolbarButton, public ReloadControl {
   void OnDoubleClickTimer();
   void OnStopToReloadTimer();
   void UpdateAccessibleHasPopup();
-  void OnNextPresentation(Mode mode,
-                          Button::ButtonState state,
-                          const viz::FrameTimingDetails&);
+  void OnNextPresentation(const viz::FrameTimingDetails&);
 
   base::OneShotTimer double_click_timer_;
 
   // Timer to delay switching between reload and stop states.
   base::OneShotTimer mode_switch_timer_;
 
-  // This can't be null. But it may not record anything if the feature is
-  // disabled or if profile is missing.
+  // Null when the button has no profile, i.e. it is not in a browser window.
   const std::unique_ptr<WaapUIMetricsRecorder> metrics_recorder_;
 
   // This may be NULL when testing.
@@ -137,6 +130,9 @@ class ReloadButton : public ToolbarButton, public ReloadControl {
 
   // The currently-visible mode - this may differ from the intended mode.
   Mode visible_mode_ = Mode::kReload;
+
+  // If true, we will animate the transitions between reload and stop.
+  bool animate_transitions_ = false;
 
   // The delay times for the timers.  These are members so that tests can modify
   // them.

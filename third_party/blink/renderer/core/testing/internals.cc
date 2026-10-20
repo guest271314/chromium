@@ -40,7 +40,6 @@
 #include "cc/trees/layer_tree_host.h"
 #include "gpu/command_buffer/client/gles2_interface.h"
 #include "third_party/blink/public/common/widget/device_emulation_params.h"
-#include "third_party/blink/public/mojom/devtools/inspector_issue.mojom-blink.h"
 #include "third_party/blink/public/mojom/favicon/favicon_url.mojom-blink.h"
 #include "third_party/blink/public/mojom/input/focus_type.mojom-blink.h"
 #include "third_party/blink/public/platform/platform.h"
@@ -49,6 +48,7 @@
 #include "third_party/blink/renderer/bindings/core/v8/script_promise.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_promise_resolver.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_binding_for_core.h"
+#include "third_party/blink/renderer/core/ad_tracker/extension_script_tracker.h"
 #include "third_party/blink/renderer/core/animation/document_timeline.h"
 #include "third_party/blink/renderer/core/css/css_property_names.h"
 #include "third_party/blink/renderer/core/css/parser/css_property_parser.h"
@@ -117,9 +117,6 @@
 #include "third_party/blink/renderer/core/html_names.h"
 #include "third_party/blink/renderer/core/input/event_handler.h"
 #include "third_party/blink/renderer/core/input/keyboard_event_manager.h"
-#include "third_party/blink/renderer/core/inspector/inspector_audits_issue.h"
-#include "third_party/blink/renderer/core/inspector/inspector_issue.h"
-#include "third_party/blink/renderer/core/inspector/inspector_issue_conversion.h"
 #include "third_party/blink/renderer/core/inspector/main_thread_debugger.h"
 #include "third_party/blink/renderer/core/intersection_observer/intersection_observer.h"
 #include "third_party/blink/renderer/core/layout/layout_object.h"
@@ -138,7 +135,6 @@
 #include "third_party/blink/renderer/core/page/spatial_navigation_controller.h"
 #include "third_party/blink/renderer/core/page/touch_adjustment.h"
 #include "third_party/blink/renderer/core/page/validation_message_client.h"
-#include "third_party/blink/renderer/core/page/viewport_description.h"
 #include "third_party/blink/renderer/core/paint/paint_layer.h"
 #include "third_party/blink/renderer/core/paint/paint_layer_scrollable_area.h"
 #include "third_party/blink/renderer/core/probe/core_probes.h"
@@ -169,6 +165,7 @@
 #include "third_party/blink/renderer/core/testing/mock_hyphenation.h"
 #include "third_party/blink/renderer/core/testing/nadc_attribute_test.h"
 #include "third_party/blink/renderer/core/testing/origin_trials_test.h"
+#include "third_party/blink/renderer/core/testing/pass_as_span_test.h"
 #include "third_party/blink/renderer/core/testing/record_test.h"
 #include "third_party/blink/renderer/core/testing/scoped_mock_overlay_scrollbars.h"
 #include "third_party/blink/renderer/core/testing/sequence_test.h"
@@ -202,6 +199,7 @@
 #include "third_party/blink/renderer/platform/wtf/cross_thread_copier_base.h"
 #include "third_party/blink/renderer/platform/wtf/cross_thread_copier_std.h"
 #include "third_party/blink/renderer/platform/wtf/dtoa.h"
+#include "third_party/blink/renderer/platform/wtf/text/format.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_buffer.h"
 #include "third_party/blink/renderer/platform/wtf/text/text_encoding_registry.h"
 #include "third_party/blink/renderer/platform/wtf/threading.h"
@@ -907,13 +905,10 @@ Element* Internals::innerEditorElement(Element* container,
 }
 
 bool Internals::isPreloaded(const String& url) {
-  return isPreloadedBy(url, document_.Get());
-}
-
-bool Internals::isPreloadedBy(const String& url, Document* document) {
-  if (!document)
+  if (!document_) {
     return false;
-  return document->Fetcher()->IsPreloadedForTest(document->CompleteURL(url));
+  }
+  return document_->Fetcher()->IsPreloadedForTest(document_->CompleteURL(url));
 }
 
 bool Internals::isLoading(const String& url) {
@@ -1015,9 +1010,8 @@ uint16_t Internals::compareTreeScopePosition(
   if (!tree_scope1 || !tree_scope2) {
     exception_state.ThrowDOMException(
         DOMExceptionCode::kInvalidAccessError,
-        UNSAFE_TODO(String::Format(
-            "The %s node is neither a document node, nor a shadow root.",
-            tree_scope1 ? "second" : "first")));
+        Format("The {} node is neither a document node, nor a shadow root.",
+               tree_scope1 ? "second" : "first"));
     return 0;
   }
   return tree_scope1->ComparePosition(*tree_scope2);
@@ -1196,28 +1190,7 @@ ShadowRoot* Internals::shadowRoot(Element* host) {
   return host->GetShadowRoot();
 }
 
-String Internals::ShadowRootMode(const Node* root,
-                                 ExceptionState& exception_state) const {
-  DCHECK(root);
-  auto* shadow_root = DynamicTo<ShadowRoot>(root);
-  if (!shadow_root) {
-    exception_state.ThrowDOMException(
-        DOMExceptionCode::kInvalidAccessError,
-        "The node provided is not a shadow root.");
-    return String();
-  }
 
-  switch (shadow_root->GetMode()) {
-    case ShadowRootMode::kUserAgent:
-      return String("UserAgentShadowRoot");
-    case ShadowRootMode::kOpen:
-      return String("OpenShadowRoot");
-    case ShadowRootMode::kClosed:
-      return String("ClosedShadowRoot");
-    default:
-      NOTREACHED();
-  }
-}
 
 const AtomicString& Internals::shadowPseudoId(Element* element) {
   DCHECK(element);
@@ -1317,7 +1290,7 @@ String Internals::textAffinity() {
                             ->GetFocusController()
                             .FocusedFrame()
                             ->Selection()
-                            .GetSelectionInDOMTree()
+                            .GetSelectionInDomTree()
                             .Affinity() == TextAffinity::kUpstream) {
     return "Upstream";
   }
@@ -1348,18 +1321,19 @@ void Internals::setMarker(Document* document,
   if (!type) {
     exception_state.ThrowDOMException(
         DOMExceptionCode::kSyntaxError,
-        "The marker type provided ('" + marker_type + "') is invalid.");
+        StrCat({"The marker type provided ('", marker_type, "') is invalid."}));
     return;
   }
 
   if (type != DocumentMarker::kSpelling && type != DocumentMarker::kGrammar &&
       type != DocumentMarker::kGlic) {
-    exception_state.ThrowDOMException(DOMExceptionCode::kSyntaxError,
-                                      "internals.setMarker() currently only "
-                                      "supports spelling, grammar and glic "
-                                      " markers; attempted to add marker of "
-                                      " type '" +
-                                          marker_type + "'.");
+    exception_state.ThrowDOMException(
+        DOMExceptionCode::kSyntaxError,
+        StrCat({"internals.setMarker() currently only "
+                "supports spelling, grammar and glic "
+                " markers; attempted to add marker of "
+                " type '",
+                marker_type, "'."}));
     return;
   }
 
@@ -1392,16 +1366,17 @@ void Internals::removeMarker(Document* document,
   if (!type) {
     exception_state.ThrowDOMException(
         DOMExceptionCode::kSyntaxError,
-        "The marker type provided ('" + marker_type + "') is invalid.");
+        StrCat({"The marker type provided ('", marker_type, "') is invalid."}));
     return;
   }
 
   if (type != DocumentMarker::kSpelling && type != DocumentMarker::kGrammar) {
-    exception_state.ThrowDOMException(DOMExceptionCode::kSyntaxError,
-                                      "internals.setMarker() currently only "
-                                      "supports spelling and grammar markers; "
-                                      "attempted to add marker of type '" +
-                                          marker_type + "'.");
+    exception_state.ThrowDOMException(
+        DOMExceptionCode::kSyntaxError,
+        StrCat({"internals.setMarker() currently only "
+                "supports spelling and grammar markers; "
+                "attempted to add marker of type '",
+                marker_type, "'."}));
     return;
   }
 
@@ -1424,7 +1399,7 @@ unsigned Internals::markerCountForNode(Text* text,
   if (!marker_types) {
     exception_state.ThrowDOMException(
         DOMExceptionCode::kSyntaxError,
-        "The marker type provided ('" + marker_type + "') is invalid.");
+        StrCat({"The marker type provided ('", marker_type, "') is invalid."}));
     return 0;
   }
 
@@ -1460,7 +1435,7 @@ DocumentMarker* Internals::MarkerAt(Text* text,
   if (!marker_types) {
     exception_state.ThrowDOMException(
         DOMExceptionCode::kSyntaxError,
-        "The marker type provided ('" + marker_type + "') is invalid.");
+        StrCat({"The marker type provided ('", marker_type, "') is invalid."}));
     return nullptr;
   }
 
@@ -1539,9 +1514,9 @@ void Internals::addTextMatchMarker(const Range* range,
   std::optional<TextMatchMarker::MatchStatus> match_status_enum =
       MatchStatusFrom(match_status);
   if (!match_status_enum) {
-    exception_state.ThrowDOMException(
-        DOMExceptionCode::kSyntaxError,
-        "The match status provided ('" + match_status + "') is invalid.");
+    exception_state.ThrowDOMException(DOMExceptionCode::kSyntaxError,
+                                      StrCat({"The match status provided ('",
+                                              match_status, "') is invalid."}));
     return;
   }
 
@@ -1623,17 +1598,18 @@ void AddStyleableMarkerHelper(const Range* range,
   if (!thickness) {
     exception_state.ThrowDOMException(
         DOMExceptionCode::kSyntaxError,
-        "The thickness provided ('" + thickness_value + "') is invalid.");
+        StrCat(
+            {"The thickness provided ('", thickness_value, "') is invalid."}));
     return;
   }
 
   std::optional<ImeTextSpanUnderlineStyle> underline_style =
       UnderlineStyleFrom(underline_style_value);
   if (!underline_style_value) {
-    exception_state.ThrowDOMException(DOMExceptionCode::kSyntaxError,
-                                      "The underline style provided ('" +
-                                          underline_style_value +
-                                          "') is invalid.");
+    exception_state.ThrowDOMException(
+        DOMExceptionCode::kSyntaxError,
+        StrCat({"The underline style provided ('", underline_style_value,
+                "') is invalid."}));
     return;
   }
 
@@ -1752,54 +1728,7 @@ void Internals::setTextMatchMarkersActive(Node* node,
       To<Text>(*node), start_offset, end_offset, active);
 }
 
-String Internals::viewportAsText(Document* document,
-                                 float,
-                                 int available_width,
-                                 int available_height,
-                                 ExceptionState& exception_state) {
-  DCHECK(document);
-  if (!document->GetPage()) {
-    exception_state.ThrowDOMException(DOMExceptionCode::kInvalidAccessError,
-                                      "The document provided is invalid.");
-    return String();
-  }
 
-  document->UpdateStyleAndLayout(DocumentUpdateReason::kTest);
-
-  Page* page = document->GetPage();
-
-  // Update initial viewport size.
-  gfx::Size initial_viewport_size(available_width, available_height);
-  document->GetPage()->DeprecatedLocalMainFrame()->View()->SetFrameRect(
-      gfx::Rect(gfx::Point(), initial_viewport_size));
-
-  ViewportDescription description = page->GetViewportDescription();
-  PageScaleConstraints constraints =
-      description.Resolve(gfx::SizeF(initial_viewport_size), ViewportLength());
-
-  constraints.FitToContentsWidth(constraints.layout_size.width(),
-                                 available_width);
-  constraints.ResolveAutoInitialScale();
-
-  StringBuilder builder;
-
-  builder.Append("viewport size ");
-  builder.Append(String::Number(constraints.layout_size.width()));
-  builder.Append('x');
-  builder.Append(String::Number(constraints.layout_size.height()));
-
-  builder.Append(" scale ");
-  builder.Append(String::Number(constraints.initial_scale));
-  builder.Append(" with limits [");
-  builder.Append(String::Number(constraints.minimum_scale));
-  builder.Append(", ");
-  builder.Append(String::Number(constraints.maximum_scale));
-
-  builder.Append("] and userScalable ");
-  builder.Append(String::Boolean(description.user_zoom));
-
-  return builder.ToString();
-}
 
 bool Internals::elementShouldAutoComplete(Element* element,
                                           ExceptionState& exception_state) {
@@ -1853,8 +1782,14 @@ void Internals::setSuggestedValue(Element* element,
     textarea->SetSuggestedValue(value);
 
   if (auto* select = DynamicTo<HTMLSelectElement>(*element)) {
-    // A Null string resets the suggested value.
-    select->SetSuggestedValue(value.empty() ? String() : value);
+    // Pass `value` directly so that an empty string can still match an
+    // `<option value="">` (and resets the suggestion if no option matches).
+    // Return early because HTMLSelectElement::SetSuggestedValue() already
+    // updates the autofill state based on whether a matching option was found,
+    // and calling SetAutofillState(kNotFilled) below for an empty `value`
+    // would clear a matched `<option value="">` suggestion.
+    select->SetSuggestedValue(value);
+    return;
   }
 
   To<HTMLFormControlElement>(element)->SetAutofillState(
@@ -2408,24 +2343,15 @@ bool Internals::executeCommand(Document* document,
   return frame->GetEditor().ExecuteCommand(name, value);
 }
 
-void Internals::triggerTestInspectorIssue(Document* document) {
-  DCHECK(document);
-  auto info = mojom::blink::InspectorIssueInfo::New(
-      mojom::InspectorIssueCode::kCookieIssue,
-      mojom::blink::InspectorIssueDetails::New());
-  document->GetFrame()->AddInspectorIssue(
-      AuditsIssue(ConvertInspectorIssueToProtocolFormat(
-          InspectorIssue::Create(std::move(info)))));
-}
-
 AtomicString Internals::htmlNamespace() {
   return html_names::xhtmlNamespaceURI;
 }
 
 Vector<AtomicString> Internals::htmlTags() {
   base::HeapArray<const QualifiedName*> qualified_names = html_names::GetTags();
-  Vector<AtomicString> tags(qualified_names.size());
-  for (size_t i = 0; i < qualified_names.size(); ++i) {
+  wtf_size_t names_size = static_cast<wtf_size_t>(qualified_names.size());
+  Vector<AtomicString> tags(names_size);
+  for (wtf_size_t i = 0; i < names_size; ++i) {
     tags[i] = qualified_names[i]->LocalName();
   }
   return tags;
@@ -2437,8 +2363,9 @@ AtomicString Internals::svgNamespace() {
 
 Vector<AtomicString> Internals::svgTags() {
   base::HeapArray<const QualifiedName*> qualified_names = svg_names::GetTags();
-  Vector<AtomicString> tags(qualified_names.size());
-  for (size_t i = 0; i < qualified_names.size(); ++i) {
+  wtf_size_t names_size = static_cast<wtf_size_t>(qualified_names.size());
+  Vector<AtomicString> tags(names_size);
+  for (wtf_size_t i = 0; i < names_size; ++i) {
     tags[i] = qualified_names[i]->LocalName();
   }
   return tags;
@@ -2540,21 +2467,7 @@ unsigned Internals::numberOfLiveDocuments() const {
   return InstanceCounters::CounterValue(InstanceCounters::kDocumentCounter);
 }
 
-bool Internals::hasGrammarMarker(Document* document,
-                                 int from,
-                                 int length,
-                                 ExceptionState& exception_state) {
-  if (!document || !document->GetFrame()) {
-    exception_state.ThrowDOMException(
-        DOMExceptionCode::kInvalidAccessError,
-        "No frame can be obtained from the provided document.");
-    return false;
-  }
 
-  document->UpdateStyleAndLayout(DocumentUpdateReason::kTest);
-  return document->GetFrame()->GetSpellChecker().SelectionStartHasMarkerFor(
-      DocumentMarker::kGrammar, from, length);
-}
 
 unsigned Internals::numberOfScrollableAreas(Document* document) {
   DCHECK(document);
@@ -2889,6 +2802,10 @@ NADCAttributeTest* Internals::nadcAttributeTest() const {
   return MakeGarbageCollected<NADCAttributeTest>();
 }
 
+PassAsSpanTest* Internals::passAsSpanTest() const {
+  return MakeGarbageCollected<PassAsSpanTest>();
+}
+
 Vector<String> Internals::getReferencedFilePaths() const {
   if (!GetFrame())
     return Vector<String>();
@@ -2905,7 +2822,7 @@ void Internals::disableReferencedFilePathsVerification() const {
     return;
   GetFrame()
       ->GetDocument()
-      ->GetFormController()
+      ->EnsureFormController()
       .SetDropReferencedFilePathsForTesting();
 }
 
@@ -2959,18 +2876,7 @@ void Internals::updateLayoutAndRunPostLayoutTasks(
     view->FlushAnyPendingPostLayoutTasks();
 }
 
-void Internals::forceFullRepaint(Document* document,
-                                 ExceptionState& exception_state) {
-  DCHECK(document);
-  if (!document->View()) {
-    exception_state.ThrowDOMException(DOMExceptionCode::kInvalidAccessError,
-                                      "The document provided is invalid.");
-    return;
-  }
 
-  if (auto* layout_view = document->GetLayoutView())
-    layout_view->InvalidatePaintForViewAndDescendants();
-}
 
 DOMRectList* Internals::draggableRegions(Document* document,
                                          ExceptionState& exception_state) {
@@ -3205,7 +3111,7 @@ void Internals::forceReload(bool bypass_cache) {
 }
 
 StaticSelection* Internals::getDragCaret() {
-  SelectionInDOMTree::Builder builder;
+  SelectionInDomTree::Builder builder;
   if (GetFrame()) {
     const DragCaret& caret = GetFrame()->GetPage()->GetDragCaret();
     const PositionWithAffinity& position = caret.CaretPosition();
@@ -3226,7 +3132,7 @@ StaticSelection* Internals::getSelectionInFlatTree(
     return nullptr;
   }
   return StaticSelection::FromSelectionInFlatTree(ConvertToSelectionInFlatTree(
-      local_frame->Selection().GetSelectionInDOMTree()));
+      local_frame->Selection().GetSelectionInDomTree()));
 }
 
 Node* Internals::visibleSelectionAnchorNode() {
@@ -3234,7 +3140,7 @@ Node* Internals::visibleSelectionAnchorNode() {
     return nullptr;
   GetFrame()->GetDocument()->UpdateStyleAndLayout(DocumentUpdateReason::kTest);
   Position position =
-      GetFrame()->Selection().ComputeVisibleSelectionInDOMTree().Anchor();
+      GetFrame()->Selection().ComputeVisibleSelectionInDomTree().Anchor();
   return position.IsNull() ? nullptr : position.ComputeContainerNode();
 }
 
@@ -3243,7 +3149,7 @@ unsigned Internals::visibleSelectionAnchorOffset() {
     return 0;
   GetFrame()->GetDocument()->UpdateStyleAndLayout(DocumentUpdateReason::kTest);
   Position position =
-      GetFrame()->Selection().ComputeVisibleSelectionInDOMTree().Anchor();
+      GetFrame()->Selection().ComputeVisibleSelectionInDomTree().Anchor();
   return position.IsNull() ? 0 : position.ComputeOffsetInContainerNode();
 }
 
@@ -3252,7 +3158,7 @@ Node* Internals::visibleSelectionFocusNode() {
     return nullptr;
   GetFrame()->GetDocument()->UpdateStyleAndLayout(DocumentUpdateReason::kTest);
   Position position =
-      GetFrame()->Selection().ComputeVisibleSelectionInDOMTree().Focus();
+      GetFrame()->Selection().ComputeVisibleSelectionInDomTree().Focus();
   return position.IsNull() ? nullptr : position.ComputeContainerNode();
 }
 
@@ -3261,7 +3167,7 @@ unsigned Internals::visibleSelectionFocusOffset() {
     return 0;
   GetFrame()->GetDocument()->UpdateStyleAndLayout(DocumentUpdateReason::kTest);
   Position position =
-      GetFrame()->Selection().ComputeVisibleSelectionInDOMTree().Focus();
+      GetFrame()->Selection().ComputeVisibleSelectionInDomTree().Focus();
   return position.IsNull() ? 0 : position.ComputeOffsetInContainerNode();
 }
 
@@ -3387,6 +3293,16 @@ void Internals::setDarkPreferredRootScrollbarColorScheme(Document* document) {
   color_scheme_helper_.emplace(*document);
   color_scheme_helper_->SetPreferredRootScrollbarColorScheme(
       mojom::blink::PreferredColorScheme::kDark);
+}
+
+void Internals::setAccentColor(const String& color_value) {
+#if BUILDFLAG(IS_MAC)
+  NOTREACHED() << "Accent color customization not supported on Mac.";
+#else   // BUILDFLAG(IS_MAC)
+  if (InternalSettings* internal_settings = settings()) {
+    internal_settings->setAccentColor(color_value);
+  }
+#endif  // BUILDFLAG(IS_MAC)
 }
 
 void Internals::setShouldRevealPassword(Element* element,
@@ -3553,7 +3469,7 @@ String Internals::selectedHTMLForClipboard() {
   // Selection normalization and markup generation require clean layout.
   GetFrame()->GetDocument()->UpdateStyleAndLayout(DocumentUpdateReason::kTest);
 
-  return GetFrame()->Selection().SelectedHTMLForClipboard();
+  return GetFrame()->Selection().SelectedHtmlForClipboard();
 }
 
 String Internals::selectedTextForClipboard() {
@@ -3726,12 +3642,6 @@ int64_t Internals::currentTimeTicks() {
   return base::TimeTicks::Now().since_origin().InMicroseconds();
 }
 
-String Internals::getScrollAnimationState(Node* node) const {
-  if (ScrollableArea* scrollable_area = ScrollableAreaForNode(node))
-    return scrollable_area->GetScrollAnimator().RunStateAsText();
-  return String();
-}
-
 String Internals::getProgrammaticScrollAnimationState(Node* node) const {
   if (ScrollableArea* scrollable_area = ScrollableAreaForNode(node))
     return scrollable_area->GetProgrammaticScrollAnimator().RunStateAsText();
@@ -3838,7 +3748,8 @@ String Internals::getAgentId(DOMWindow* window) {
   // This serializes a pointer as a decimal number, which is a bit ugly, but
   // it works. Is there any utility to dump a number in a hexadecimal form?
   // I couldn't find one in WTF.
-  return String::Number(process_id) + ":" + String::Number(agent_address);
+  return StrCat(
+      {String::Number(process_id), ":", String::Number(agent_address)});
 }
 
 void Internals::useMockOverlayScrollbars() {
@@ -4017,6 +3928,22 @@ ScriptPromise<IDLString> Internals::LCPPrediction(ScriptState* script_state,
   lcpp->AddLCPPredictedCallback(
       BindOnce(&OnLCPPredicted, WrapPersistent(resolver)));
   return promise;
+}
+
+String Internals::extensionScriptInStack() const {
+  if (!GetFrame() || !GetFrame()->GetExtensionScriptTracker()) {
+    return String();
+  }
+  return GetFrame()->GetExtensionScriptTracker()->ExtensionScriptInStack();
+}
+
+bool Internals::isExtensionScriptUrl(const String& url) const {
+  if (!GetFrame()) {
+    return false;
+  }
+  return GetFrame()->GetExtensionScriptTracker() &&
+         GetFrame()->GetExtensionScriptTracker()->IsExtensionScriptUrlMarked(
+             url);
 }
 
 }  // namespace blink

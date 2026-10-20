@@ -15,10 +15,14 @@ const char kAllowHTTPBackgroundPage[] = "allow-http-background-page";
 const char kAllowLegacyExtensionManifests[] =
     "allow-legacy-extension-manifests";
 const char kAllowlistedExtensionID[] = "allowlisted-extension-id";
+const char kAllowWebUITestInComponentExtensions[] =
+    "allow-webui-test-in-component-extensions";
 const char kEmbeddedExtensionOptions[] = "embedded-extension-options";
 const char kEnableBLEAdvertising[] = "enable-ble-advertising-in-apps";
 const char kEnableExperimentalExtensionApis[] =
     "enable-experimental-extension-apis";
+const char kDisableCrashOnComponentExtensionJsError[] =
+    "disable-crash-on-component-extension-js-error";
 const char kDisableExtensionsFileAccessCheck[] =
     "disable-extensions-file-access-check";
 const char kDisableExtensionsHttpThrottling[] =
@@ -39,6 +43,8 @@ const char kLoadGuestModeTestExtension[] = "load-guest-mode-test-extension";
 #endif
 
 const char kOffscreenDocumentTesting[] = "offscreen-document-testing";
+const char kRefreshComponentExtensionServiceWorkers[] =
+    "refresh-component-extension-service-workers";
 const char kSetExtensionThrottleTestParams[] =
     "set-extension-throttle-test-params";
 const char kShowComponentExtensionOptions[] =
@@ -47,6 +53,8 @@ const char kTraceAppSource[] = "enable-trace-app-source";
 const char kEnableCrxHashCheck[] = "enable-crx-hash-check";
 const char kAllowFutureManifestVersion[] = "allow-future-manifest-version";
 const char kExtensionTestApiOnWebPages[] = "extension-test-api-on-web-pages";
+const char kExtensionTestApiStandardizedBehavior[] =
+    "extension-test-api-standardized-behavior";
 
 const char kZeroStatePromoIphVariantParamName[] =
     "extension-zero-state-iph-variant";

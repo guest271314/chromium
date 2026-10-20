@@ -23,6 +23,7 @@
 #include "third_party/blink/renderer/core/svg/svg_a_element.h"
 
 #include "third_party/blink/public/mojom/input/focus_type.mojom-blink.h"
+#include "third_party/blink/renderer/bindings/core/v8/v8_union_string_trustedscripturl.h"
 #include "third_party/blink/renderer/core/dom/attr.h"
 #include "third_party/blink/renderer/core/dom/attribute.h"
 #include "third_party/blink/renderer/core/dom/document.h"
@@ -30,11 +31,11 @@
 #include "third_party/blink/renderer/core/editing/editing_utilities.h"
 #include "third_party/blink/renderer/core/events/keyboard_event.h"
 #include "third_party/blink/renderer/core/events/mouse_event.h"
+#include "third_party/blink/renderer/core/frame/local_dom_window.h"
 #include "third_party/blink/renderer/core/frame/local_frame.h"
 #include "third_party/blink/renderer/core/frame/settings.h"
 #include "third_party/blink/renderer/core/html/anchor_element_utils.h"
 #include "third_party/blink/renderer/core/html/forms/html_form_element.h"
-#include "third_party/blink/renderer/core/html/html_anchor_element.h"
 #include "third_party/blink/renderer/core/html/parser/html_parser_idioms.h"
 #include "third_party/blink/renderer/core/layout/svg/layout_svg_inline.h"
 #include "third_party/blink/renderer/core/layout/svg/layout_svg_transformable_container.h"
@@ -46,10 +47,13 @@
 #include "third_party/blink/renderer/core/svg/animation/svg_smil_element.h"
 #include "third_party/blink/renderer/core/svg/svg_animated_string.h"
 #include "third_party/blink/renderer/core/svg_names.h"
+#include "third_party/blink/renderer/core/url/dom_origin.h"
 #include "third_party/blink/renderer/core/xlink_names.h"
+#include "third_party/blink/renderer/platform/bindings/exception_state.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
 #include "third_party/blink/renderer/platform/instrumentation/use_counter.h"
 #include "third_party/blink/renderer/platform/loader/fetch/resource_request.h"
+#include "third_party/blink/renderer/platform/weborigin/security_origin.h"
 #include "third_party/blink/renderer/platform/weborigin/security_policy.h"
 
 namespace blink {
@@ -93,15 +97,7 @@ void SVGAElement::SvgAttributeChanged(const SvgAttributeChangedParams& params) {
   // SVGURIReference changes as none of the other properties changes the linking
   // behaviour for our <a> element.
   if (SVGURIReference::IsKnownAttribute(params.name)) {
-    bool was_link = IsLink();
-    SetIsLink(!HrefString().IsNull());
-
-    if (was_link || IsLink()) {
-      PseudoStateChanged(CSSSelector::kPseudoLink);
-      PseudoStateChanged(CSSSelector::kPseudoVisited);
-      PseudoStateChanged(CSSSelector::kPseudoWebkitAnyLink);
-      PseudoStateChanged(CSSSelector::kPseudoAnyLink);
-    }
+    AnchorElementUtils::UpdateHref(*this, AtomicString(HrefString()));
     return;
   }
 
@@ -118,13 +114,13 @@ LayoutObject* SVGAElement::CreateLayoutObject(const ComputedStyle&) {
 
 void SVGAElement::DefaultEventHandler(Event& event) {
   if (IsLink()) {
-    if (IsFocused() && IsEnterKeyKeydownEvent(event)) {
+    if (IsFocused() && KeyboardEvent::IsEnterKeyKeydownEvent(event)) {
       event.SetDefaultHandled();
       DispatchSimulatedClick(&event);
       return;
     }
 
-    if (IsLinkClick(event)) {
+    if (AnchorElementUtils::IsLinkClick(event)) {
       // It's unclear whether synthesized middle-button "click" events should be
       // allowed to be dispatched and create a navigation. Measure how common
       // this is to see if we can disallow it. Per Pointer Events: "The click
@@ -162,23 +158,18 @@ void SVGAElement::DefaultEventHandler(Event& event) {
       const KURL& resolved_url = GetDocument().CompleteURL(url);
       ResourceRequest request(resolved_url);
 
-      if (RuntimeEnabledFeatures::SvgAnchorElementAttributesEnabled()) {
-        // Schedule the ping before the frame load. Prerender in Chrome may kill
-        // the renderer as soon as the navigation is sent out.
-        AnchorElementUtils::SendPings(resolved_url, GetDocument(),
-                                      FastGetAttribute(svg_names::kPingAttr));
+      // Schedule the ping before the frame load. Prerender in Chrome may kill
+      // the renderer as soon as the navigation is sent out.
+      AnchorElementUtils::SendPings(resolved_url, GetDocument(),
+                                    FastGetAttribute(svg_names::kPingAttr));
 
-        AnchorElementUtils::HandleReferrerPolicyAttribute(
-            request, FastGetAttribute(svg_names::kReferrerpolicyAttr),
-            link_relations_, GetDocument());
-      }
-
-      request.SetHasUserGesture(LocalFrame::HasTransientUserActivation(frame));
+      AnchorElementUtils::HandleReferrerPolicyAttribute(
+          request, FastGetAttribute(svg_names::kReferrerpolicyAttr),
+          link_relations_, GetDocument());
 
       // Respect the download attribute only if we can read the content, and the
       // event is not an alt-click or similar.
-      if (RuntimeEnabledFeatures::SvgAnchorElementDownloadAttributeEnabled() &&
-          FastHasAttribute(svg_names::kDownloadAttr) &&
+      if (FastHasAttribute(svg_names::kDownloadAttr) &&
           navigation_policy != kNavigationPolicyDownload &&
           GetDocument().domWindow()->GetSecurityOrigin()->CanReadContent(
               resolved_url)) {
@@ -207,6 +198,9 @@ void SVGAElement::DefaultEventHandler(Event& event) {
       AnchorElementUtils::HandleRelAttribute(
           frame_request, frame->GetSettings(), GetExecutionContext(), target,
           link_relations_);
+
+      AnchorElementUtils::EnforceBlobUrlNoopenerIfNeeded(
+          frame_request, resolved_url, *GetDocument().domWindow());
 
       frame_request.SetTriggeringEventInfo(
           event.isTrusted()
@@ -237,6 +231,26 @@ bool SVGAElement::IsValidInterestInvoker(Element& target) const {
 KURL SVGAElement::Url() const {
   return GetDocument().CompleteURL(
       StripLeadingAndTrailingHtmlSpaces(HrefString()));
+}
+
+DOMOrigin* SVGAElement::GetDOMOrigin(LocalDOMWindow*) const {
+  // No access check is necessary, as anchor elements are not accessible
+  // cross-origin.
+  if (HrefIsSpecified()) {
+    return DOMOrigin::Create(SecurityOrigin::Create(Url()));
+  }
+  return nullptr;
+}
+
+void SVGAElement::SetUrl(const KURL& url) {
+  auto* value =
+      MakeGarbageCollected<V8UnionStringOrTrustedScriptURL>(url.GetString());
+
+  href()->setBaseVal(value, ASSERT_NO_EXCEPTION);
+}
+
+String SVGAElement::Input() const {
+  return HrefString();
 }
 
 bool SVGAElement::HasActivationBehavior() const {

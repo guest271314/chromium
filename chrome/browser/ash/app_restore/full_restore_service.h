@@ -26,30 +26,16 @@ namespace app_restore {
 class RestoreData;
 }  // namespace app_restore
 
+namespace sessions {
+enum class CommandStorageReadStatus;
+enum class SessionReplayResult;
+}  // namespace sessions
+
 namespace ash::full_restore {
 
 class FullRestoreAppLaunchHandler;
 class FullRestoreDataHandler;
 class NewUserRestorePrefHandler;
-
-// The restore notification button index.
-enum class RestoreNotificationButtonIndex {
-  kRestore = 0,
-  kCancel,
-};
-
-// This is used to record histograms, so do not remove or reorder existing
-// entries.
-enum class RestoreAction {
-  kRestore = 0,
-  kCancel = 1,
-  kCloseByUser = 2,
-  kCloseNotByUser = 3,
-
-  // Add any new values above this one, and update kMaxValue to the highest
-  // enumerator value.
-  kMaxValue = kCloseNotByUser,
-};
 
 // The FullRestoreService class calls AppService and Window Management
 // interfaces to restore the app launchings and app windows.
@@ -153,7 +139,8 @@ class FullRestoreService : public KeyedService,
   void OnGotSessionAsh(base::OnceCallback<void(SessionWindows)> callback,
                        SessionWindows session_windows,
                        SessionID active_window_id,
-                       bool read_error);
+                       sessions::CommandStorageReadStatus status,
+                       sessions::SessionReplayResult replay_result);
   void OnGotAllSessionsAsh(
       const std::vector<SessionWindows>& all_session_windows);
 

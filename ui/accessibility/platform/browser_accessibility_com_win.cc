@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/342213636): Remove this and spanify to fix the errors.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "ui/accessibility/platform/browser_accessibility_com_win.h"
 
 #include <algorithm>
@@ -33,6 +28,7 @@
 #include "ui/accessibility/ax_mode.h"
 #include "ui/accessibility/ax_role_properties.h"
 #include "ui/accessibility/platform/ax_platform.h"
+#include "ui/accessibility/platform/ax_platform_node_win.h"
 #include "ui/accessibility/platform/browser_accessibility_manager_win.h"
 #include "ui/accessibility/platform/browser_accessibility_win.h"
 #include "ui/base/win/accessibility_ids_win.h"
@@ -711,7 +707,7 @@ IFACEMETHODIMP BrowserAccessibilityComWin::get_valid(boolean* valid) {
 }
 
 //
-// IAccessibleAction partly implemented.
+// IAccessibleAction methods.
 //
 
 IFACEMETHODIMP BrowserAccessibilityComWin::nActions(LONG* n_actions) {
@@ -744,7 +740,7 @@ IFACEMETHODIMP BrowserAccessibilityComWin::doAction(LONG action_index) {
 
   BrowserAccessibilityWin* const owner = GetOwner();
   const std::vector<ax::mojom::Action> actions = owner->GetSupportedActions();
-  const std::vector<int32_t>& aria_actions =
+  base::span<const int32_t> aria_actions =
       owner->GetIntListAttribute(ax::mojom::IntListAttribute::kActionsIds);
 
   // Actions can be from Blink for the given markup, or from the aria-actions
@@ -767,8 +763,12 @@ IFACEMETHODIMP BrowserAccessibilityComWin::doAction(LONG action_index) {
   // aria-actions vector. To find the corresponding index in the aria_actions
   // vector, subtract the number of Blink actions.
   int32_t aria_action_id = aria_actions[action_index - actions.size()];
+  BrowserAccessibilityComWin* aria_action_obj = GetFromID(aria_action_id);
+  if (!aria_action_obj) {
+    return E_FAIL;
+  }
   data.action = ax::mojom::Action::kDoDefault;
-  GetFromID(aria_action_id)->GetOwner()->AccessibilityPerformAction(data);
+  aria_action_obj->GetOwner()->AccessibilityPerformAction(data);
   return S_OK;
 }
 
@@ -780,8 +780,27 @@ BrowserAccessibilityComWin::get_description(LONG action_index,
   if (IsDestroyed()) {
     return E_FAIL;
   }
+
+  if (!description) {
+    return E_INVALIDARG;
+  }
+
   OnExtendedPropertiesUsed(WinApiType::kMsaa);
-  return E_NOTIMPL;
+
+  BrowserAccessibilityWin* const owner = GetOwner();
+  const std::vector<ax::mojom::Action> actions = owner->GetSupportedActions();
+  base::span<const int32_t> aria_actions =
+      owner->GetIntListAttribute(ax::mojom::IntListAttribute::kActionsIds);
+
+  if (action_index < 0 ||
+      action_index >= static_cast<LONG>(actions.size() + aria_actions.size())) {
+    *description = nullptr;
+    return E_INVALIDARG;
+  }
+
+  // No descriptions are currently defined for any action type.
+  *description = nullptr;
+  return S_FALSE;
 }
 
 IFACEMETHODIMP BrowserAccessibilityComWin::get_keyBinding(LONG action_index,
@@ -805,7 +824,11 @@ IFACEMETHODIMP BrowserAccessibilityComWin::get_keyBinding(LONG action_index,
 
   BrowserAccessibilityWin* const owner = GetOwner();
   const std::vector<ax::mojom::Action> actions = owner->GetSupportedActions();
-  if (action_index < 0 || action_index >= static_cast<LONG>(actions.size())) {
+  base::span<const int32_t> aria_actions =
+      owner->GetIntListAttribute(ax::mojom::IntListAttribute::kActionsIds);
+
+  if (action_index < 0 ||
+      action_index >= static_cast<LONG>(actions.size() + aria_actions.size())) {
     return E_INVALIDARG;
   }
 
@@ -840,7 +863,7 @@ IFACEMETHODIMP BrowserAccessibilityComWin::get_name(LONG action_index,
 
   BrowserAccessibilityWin* const owner = GetOwner();
   const std::vector<ax::mojom::Action> actions = owner->GetSupportedActions();
-  const std::vector<int32_t>& aria_actions =
+  base::span<const int32_t> aria_actions =
       owner->GetIntListAttribute(ax::mojom::IntListAttribute::kActionsIds);
 
   if (action_index < 0 ||
@@ -864,6 +887,10 @@ IFACEMETHODIMP BrowserAccessibilityComWin::get_name(LONG action_index,
     // vector, subtract the number of Blink actions.
     int32_t aria_action_id = aria_actions[action_index - actions.size()];
     BrowserAccessibilityComWin* aria_action_obj = GetFromID(aria_action_id);
+    if (!aria_action_obj) {
+      *name = nullptr;
+      return E_FAIL;
+    }
     const std::string& html_id = aria_action_obj->GetStringAttribute(
         ax::mojom::StringAttribute::kHtmlId);
     action_verb = html_id.empty()
@@ -898,7 +925,7 @@ BrowserAccessibilityComWin::get_localizedName(LONG action_index,
 
   BrowserAccessibilityWin* const owner = GetOwner();
   const std::vector<ax::mojom::Action> actions = owner->GetSupportedActions();
-  const std::vector<int32_t>& aria_actions =
+  base::span<const int32_t> aria_actions =
       owner->GetIntListAttribute(ax::mojom::IntListAttribute::kActionsIds);
 
   if (action_index < 0 ||
@@ -928,6 +955,10 @@ BrowserAccessibilityComWin::get_localizedName(LONG action_index,
     // vector, subtract the number of Blink actions.
     int32_t aria_action_id = aria_actions[action_index - actions.size()];
     BrowserAccessibilityComWin* aria_action_obj = GetFromID(aria_action_id);
+    if (!aria_action_obj) {
+      *localized_name = nullptr;
+      return E_FAIL;
+    }
 
     action_verb = aria_action_obj->GetName();
   }
@@ -1149,11 +1180,13 @@ IFACEMETHODIMP BrowserAccessibilityComWin::get_attributes(USHORT max_attribs,
 
   AXPlatform::GetInstance().OnHTMLAttributesUsed();
 
-#define ADD_ATTRIBUTE(name, value)                                          \
-  if (index < max_attribs) {                                                \
-    attrib_names[index] = SysAllocString(base::UTF8ToWide(name).c_str());   \
-    attrib_values[index] = SysAllocString(base::UTF8ToWide(value).c_str()); \
-    ++index;                                                                \
+#define ADD_ATTRIBUTE(name, value)                       \
+  if (index < max_attribs) {                             \
+    UNSAFE_TODO(attrib_names[index]) =                   \
+        SysAllocString(base::UTF8ToWide(name).c_str());  \
+    UNSAFE_TODO(attrib_values[index]) =                  \
+        SysAllocString(base::UTF8ToWide(value).c_str()); \
+    ++index;                                             \
   }
 
   BrowserAccessibilityWin* const owner = GetOwner();
@@ -1329,18 +1362,13 @@ IFACEMETHODIMP BrowserAccessibilityComWin::get_previousSibling(
   if (!node)
     return E_INVALIDARG;
 
-  BrowserAccessibilityWin* const owner = GetOwner();
-  std::optional<size_t> index_in_parent = std::nullopt;
-  if (owner->PlatformGetParent()) {
-    index_in_parent = GetIndexInParent();
-  }
-  if (!index_in_parent.has_value() || index_in_parent.value() == 0) {
+  BrowserAccessibilityComWin* sibling = ToBrowserAccessibilityComWin(
+      GetOwner()->InternalGetPreviousSibling());
+  if (!sibling) {
     *node = NULL;
     return S_FALSE;
   }
-
-  *node = ToBrowserAccessibilityComWin(owner->InternalGetPreviousSibling())
-              ->NewReference();
+  *node = sibling->NewReference();
   return S_OK;
 }
 
@@ -1355,20 +1383,13 @@ IFACEMETHODIMP BrowserAccessibilityComWin::get_nextSibling(
   if (!node)
     return E_INVALIDARG;
 
-  BrowserAccessibilityWin* const owner = GetOwner();
-  std::optional<size_t> index_in_parent = std::nullopt;
-  if (owner->PlatformGetParent()) {
-    index_in_parent = GetIndexInParent();
-  }
-  if (!index_in_parent.has_value() ||
-      (index_in_parent.value() + 1) >=
-          owner->PlatformGetParent()->InternalChildCount()) {
+  BrowserAccessibilityComWin* sibling =
+      ToBrowserAccessibilityComWin(GetOwner()->InternalGetNextSibling());
+  if (!sibling) {
     *node = NULL;
     return S_FALSE;
   }
-
-  *node = ToBrowserAccessibilityComWin(owner->InternalGetNextSibling())
-              ->NewReference();
+  *node = sibling->NewReference();
   return S_OK;
 }
 
@@ -1833,8 +1854,13 @@ BrowserAccessibilityComWin* BrowserAccessibilityComWin::GetTargetFromChildID(
     return ToBrowserAccessibilityComWin(owner->PlatformGetChild(child_id - 1));
   }
 
-  auto* child = static_cast<BrowserAccessibilityComWin*>(
-      AXPlatformNodeWin::GetFromUniqueId(-child_id));
+  auto* platform_node = AXPlatformNodeWin::GetFromUniqueId(-child_id);
+  if (!platform_node) {
+    return nullptr;
+  }
+  auto* child = ToBrowserAccessibilityComWin(
+      BrowserAccessibility::FromAXPlatformNodeDelegate(
+          platform_node->GetDelegate()));
   if (child && child->GetOwner()->IsDescendantOf(owner)) {
     return child;
   }

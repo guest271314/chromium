@@ -24,6 +24,11 @@
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/geometry/size.h"
 
+namespace base::trace_event {
+struct MemoryDumpArgs;
+class ProcessMemoryDump;
+}  // namespace base::trace_event
+
 namespace viz {
 
 class SkiaOutputSurface;
@@ -47,6 +52,10 @@ class VIZ_SERVICE_EXPORT BufferQueue {
   BufferQueue& operator=(const BufferQueue&) = delete;
 
   ~BufferQueue();
+
+  // Adds memory dumps for this queue's buffers to |pmd|.
+  void OnMemoryDump(const base::trace_event::MemoryDumpArgs& args,
+                    base::trace_event::ProcessMemoryDump* pmd) const;
 
   // Returns the SharedImage backed by the current buffer (i.e., the render
   // target for compositing).
@@ -90,6 +99,9 @@ class VIZ_SERVICE_EXPORT BufferQueue {
   // |supports_dynamic_frame_buffer_allocation| is true, and allocates those
   // buffers if necessary. If |n| <= |number_of_buffers_| this is a no-op.
   void EnsureMinNumberOfBuffers(size_t n);
+
+  // Returns the number of currently allocated buffers.
+  int GetCurrentAllocatedBuffers() const;
 
   // Free all buffers and allocate |number_of_buffers_| new ones.
   // Note: SwapBuffersComplete() calls are still expected for all current

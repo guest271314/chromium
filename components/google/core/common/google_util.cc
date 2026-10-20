@@ -7,6 +7,7 @@
 #include <stddef.h>
 
 #include <array>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -15,6 +16,7 @@
 #include "base/containers/fixed_flat_set.h"
 #include "base/feature_list.h"
 #include "base/no_destructor.h"
+#include "base/strings/escape.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_split.h"
@@ -58,22 +60,21 @@ bool IsValidHostName(std::string_view host,
     return false;
   }
 
-  size_t tld_length =
-      net::registry_controlled_domains::GetCanonicalHostRegistryLength(
+  std::optional<std::string_view> tld =
+      net::registry_controlled_domains::GetCanonicalHostRegistry(
           host, net::registry_controlled_domains::EXCLUDE_UNKNOWN_REGISTRIES,
           net::registry_controlled_domains::EXCLUDE_PRIVATE_REGISTRIES);
-  if ((tld_length == 0) || (tld_length == std::string::npos)) {
+  if (!tld.has_value() || tld->empty()) {
     return false;
   }
 
   // Removes the tld and the preceding dot.
   std::string_view host_minus_tld =
-      host.substr(0, host.length() - tld_length - 1);
+      host.substr(0, host.length() - tld->size() - 1);
 
-  std::string_view tld = host.substr(host.length() - tld_length);
   // Remove the trailing dot from tld if present, as for Google domains it's the
   // same page.
-  StripTrailingDot(&tld);
+  StripTrailingDot(&*tld);
   if (!allowed_tlds.contains(tld)) {
     return false;
   }
@@ -151,11 +152,13 @@ BASE_FEATURE(kIsViewerGoogleSearchUrl, base::FEATURE_ENABLED_BY_DEFAULT);
 // Global functions -----------------------------------------------------------
 
 const char kGoogleHomepageURL[] = "https://www.google.com/";
+const char kGoogleSearchPrewarmPath[] = "/search/warmup.html";
 
 bool HasGoogleSearchQueryParam(std::string_view str) {
   url::Component query(0, static_cast<int>(str.length())), key, value;
   while (url::ExtractQueryKeyValue(str, &query, &key, &value)) {
-    std::string_view key_str = str.substr(key.begin, key.len);
+    std::string key_str = base::ToLowerASCII(
+        base::UnescapeBinaryURLComponent(str.substr(key.begin, key.len)));
     if (key_str == "q" || key_str == "as_q" || key_str == "imgurl") {
       return true;
     }
@@ -287,6 +290,17 @@ bool IsGoogleSearchUrl(const GURL& url) {
   // the path type.
   return HasGoogleSearchQueryParam(url.ref()) ||
          (!is_home_page_base && HasGoogleSearchQueryParam(url.query()));
+}
+
+bool IsGoogleSearchPrewarmUrl(const GURL& url) {
+  if (!IsGoogleDomainUrl(url, DISALLOW_SUBDOMAIN,
+                         DISALLOW_NON_STANDARD_PORTS) &&
+      !IsGoogleSearchSubdomainUrl(url)) {
+    return false;
+  }
+
+  return base::EndsWith(url.path(), kGoogleSearchPrewarmPath,
+                        base::CompareCase::INSENSITIVE_ASCII);
 }
 
 bool IsYoutubeDomainUrl(const GURL& url,

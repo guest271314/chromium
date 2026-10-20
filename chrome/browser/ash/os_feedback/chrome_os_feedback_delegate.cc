@@ -25,21 +25,22 @@
 #include "base/strings/utf_string_conversions.h"
 #include "base/time/time.h"
 #include "base/values.h"
-#include "chrome/browser/ash/browser_delegate/browser_controller.h"
-#include "chrome/browser/ash/browser_delegate/browser_delegate.h"
 #include "chrome/browser/ash/multidevice_setup/multidevice_setup_client_factory.h"
 #include "chrome/browser/ash/os_feedback/os_feedback_screenshot_manager.h"
-#include "chrome/browser/browser_process.h"
 #include "chrome/browser/feedback/feedback_uploader_chrome.h"
 #include "chrome/browser/feedback/feedback_uploader_factory_chrome.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/ui/ash/system_web_apps/system_web_app_ui_utils.h"
 #include "chrome/browser/ui/dialogs/browser_dialogs.h"
 #include "chrome/browser/ui/webui/ash/diagnostics_dialog/diagnostics_dialog.h"
 #include "chrome/browser/ui/webui/ash/os_feedback_dialog/os_feedback_dialog.h"
+#include "chromeos/ash/components/browser_context_helper/annotated_account_id.h"
+#include "chromeos/ash/components/browser_delegate/browser_controller.h"
+#include "chromeos/ash/components/browser_delegate/browser_delegate.h"
+#include "chromeos/ash/components/signin/identity_manager_provider.h"
 #include "chromeos/ash/components/system_web_apps/system_web_app_type.h"
 #include "chromeos/ash/services/multidevice_setup/public/cpp/multidevice_setup_client.h"
+#include "components/account_id/account_id.h"
 #include "components/feedback/content/content_tracing_manager.h"
 #include "components/feedback/feedback_common.h"
 #include "components/feedback/feedback_data.h"
@@ -48,6 +49,7 @@
 #include "components/signin/public/base/consent_level.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "content/public/browser/browser_context.h"
+#include "content/public/browser/web_contents.h"
 #include "extensions/browser/api/feedback_private/feedback_private_api.h"
 #include "extensions/browser/api/feedback_private/feedback_service.h"
 #include "mojo/public/cpp/base/big_buffer.h"
@@ -184,10 +186,6 @@ ChromeOsFeedbackDelegate::~ChromeOsFeedbackDelegate() {
   }
 }
 
-std::string ChromeOsFeedbackDelegate::GetApplicationLocale() {
-  return g_browser_process->GetApplicationLocale();
-}
-
 std::optional<GURL> ChromeOsFeedbackDelegate::GetLastActivePageUrl() {
   // GetLastActivePageUrl will be called when the UI is about to be displayed.
   PreloadSystemLogs();
@@ -196,7 +194,12 @@ std::optional<GURL> ChromeOsFeedbackDelegate::GetLastActivePageUrl() {
 
 std::optional<std::string> ChromeOsFeedbackDelegate::GetSignedInUserEmail()
     const {
-  auto* identity_manager = IdentityManagerFactory::GetForProfile(profile_);
+  // Guest profiles have no annotated account, so there's no signed-in email
+  // to report for them.
+  const AccountId* account_id = ash::AnnotatedAccountId::Get(profile_);
+  auto* identity_manager =
+      account_id ? ash::IdentityManagerProvider::Get().Find(*account_id)
+                 : nullptr;
   if (!identity_manager)
     return std::nullopt;
   // Browser sync consent is not required to use feedback.

@@ -8,6 +8,8 @@
 #include "components/viz/common/surfaces/frame_sink_id.h"
 #include "components/viz/common/surfaces/local_surface_id.h"
 #include "content/common/content_export.h"
+#include "ui/accessibility/ax_node_id_forward.h"
+#include "ui/accessibility/ax_tree_id.h"
 
 namespace gfx {
 class Size;
@@ -32,12 +34,27 @@ class WebContents;
 // when the child is detached.
 class CONTENT_EXPORT SurfaceEmbedConnector {
  public:
+  // Controls how touchscreen pinch gestures originating in the child
+  // WebContents affect page scale.
+  enum class PinchGestureMode {
+    // Scale the child WebContents independently of its embedder.
+    kScaleChildWebContents,
+    // Delegate to the parent WebContents, which may delegate to its own parent.
+    kDelegateToParentWebContents,
+  };
+
   // The SurfaceEmbedConnector::Delegate class is implemented by
   // surface_embed::SurfaceEmbedHost.
   class Delegate {
    public:
-    // Embeds a surface by its FrameSinkId.
-    virtual void SetFrameSinkId(const viz::FrameSinkId& frame_sink_id) = 0;
+    // Embeds a surface by its FrameSinkId. When `allow_paint_holding` is true,
+    // the old surface will be used as a fallback until the new surface produces
+    // its first frame (or a timeout expires), preventing a visual flash during
+    // navigation.
+    // The `allow_paint_holding` is decided in Navigator::DidNavigate(). See
+    // crbug.com/40942531 for why we cannot always enable paint holding.
+    virtual void SetFrameSinkId(const viz::FrameSinkId& frame_sink_id,
+                                bool allow_paint_holding) = 0;
 
     // Called when the child frame initiates a LocalSurfaceId update.
     // This typically happens when an auto-resized child frame has a new
@@ -58,14 +75,19 @@ class CONTENT_EXPORT SurfaceEmbedConnector {
     virtual void ChildProcessGone() = 0;
 
     // Requests focus for the embedding element in the parent.
-    virtual void RequestFocus() = 0;
+    virtual void RequestFocusOnEmbedElement() = 0;
+
+    // Advances focus from the embedding element in the parent.
+    virtual void AdvanceFocusFromEmbedElement(bool reverse) = 0;
   };
 
   // Attach a child WebContents to a parent WebContents. This creates a
   // SurfaceEmbedConnector owned by the child WebContents.
   static void Attach(WebContents* child_web_contents,
                      RenderFrameHost* outer_document_rfh,
-                     SurfaceEmbedConnector::Delegate* delegate);
+                     SurfaceEmbedConnector::Delegate* delegate,
+                     PinchGestureMode pinch_gesture_mode =
+                         PinchGestureMode::kDelegateToParentWebContents);
 
   // Detach the SurfaceEmbedConnector from the child WebContents. This destroys
   // the SurfaceEmbedConnector owned by the child WebContents.
@@ -79,10 +101,15 @@ class CONTENT_EXPORT SurfaceEmbedConnector {
   virtual void OnVisibilityChanged(
       blink::mojom::FrameVisibility visibility) = 0;
 
-  // Called by the SecureEmbedHost to synchronize visual properties between the
+  // Called by the SurfaceEmbedHost to synchronize visual properties between the
   // parent and child WebContents.
   virtual void OnSynchronizeVisualProperties(
       const blink::FrameVisualProperties& visual_properties) = 0;
+
+  // Called by the SurfaceEmbedHost to update the render throttling status.
+  virtual void UpdateRenderThrottlingStatus(bool is_throttled,
+                                            bool subtree_throttled,
+                                            bool display_locked) = 0;
 
   // Gets the FrameSinkId of the child's view.
   virtual const viz::FrameSinkId& GetFrameSinkId() const = 0;
@@ -96,6 +123,37 @@ class CONTENT_EXPORT SurfaceEmbedConnector {
   // Exposed for testing to cleanly verify properties without creating flakes
   // from cross-process EvalJs layout evaluation delays.
   virtual const gfx::Size& GetLocalFrameSizeInPixelsForTesting() = 0;
+
+  // Returns whether rendering is currently throttled.
+  // Exposed for testing to verify throttling propagation.
+  virtual bool IsThrottledForTesting() = 0;
+
+  // Returns whether the subtree is currently throttled.
+  // Exposed for testing to verify throttling propagation.
+  virtual bool IsSubtreeThrottledForTesting() = 0;
+
+  // Returns whether the display is currently locked.
+  // Exposed for testing to verify throttling propagation.
+  virtual bool IsDisplayLockedForTesting() = 0;
+
+  // Returns how touchscreen pinch gestures originating in the child
+  // WebContents are handled.
+  virtual PinchGestureMode GetPinchGestureModeForTesting() const = 0;
+
+  // Updates how future touchscreen pinch gestures originating in the child
+  // WebContents affect page scale. A pinch sequence already in progress keeps
+  // the target selected when that sequence began.
+  virtual void SetPinchGestureMode(PinchGestureMode mode) = 0;
+
+  // Sets the accessibility node ID and tree ID of the container element
+  // in the parent document. This is used to stitch the accessibility trees.
+  virtual void SetParentAccessibilityInfo(ui::AXNodeID ax_node_id,
+                                          const ui::AXTreeID& ax_tree_id) = 0;
+
+  // Returns the AXTreeID of the parent (embedder) accessibility tree that the
+  // surface-embedded child WebContents' tree is stitched into, or
+  // ui::AXTreeIDUnknown() if the trees are not currently stitched.
+  virtual ui::AXTreeID GetParentAXTreeID() const = 0;
 };
 
 }  // namespace content

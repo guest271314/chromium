@@ -53,10 +53,9 @@ std::u16string SaveAddressBubbleController::GetWindowTitle() const {
     switch (save_address_bubble_type_) {
       case AutofillClient::SaveAddressBubbleType::kSave:
         return IDS_AUTOFILL_SAVE_ADDRESS_PROMPT_TITLE;
-      case autofill::AutofillClient::SaveAddressBubbleType::kMigrateToAccount:
+      case AutofillClient::SaveAddressBubbleType::kMigrateToAccount:
         return IDS_AUTOFILL_ACCOUNT_MIGRATE_ADDRESS_PROMPT_TITLE;
-      case autofill::AutofillClient::SaveAddressBubbleType::
-          kHomeWorkNameEmailMerge:
+      case AutofillClient::SaveAddressBubbleType::kHomeWorkNameEmailMerge:
         return IDS_AUTOFILL_SAVE_ADDRESS_PROMPT_NAME_EMAIL_HOME_WORK_MERGE_PROMPT_TITLE;
     }
   }());
@@ -73,13 +72,14 @@ SaveAddressBubbleController::GetHeaderImages() const {
       // so these numbers are exclusively for ..._AVATAR50_X135_Y54.
       static constexpr gfx::Point kAvatarPosition{135, 54};
       static constexpr size_t kAvatarSize{50};
-      return HeaderImages{
-          .light = profiles::EmbedAvatarOntoImage(
-              IDR_MIGRATE_ADDRESS_AVATAR50_X135_Y54, account->account_image,
-              kAvatarPosition, kAvatarSize),
-          .dark = profiles::EmbedAvatarOntoImage(
-              IDR_MIGRATE_ADDRESS_AVATAR50_X135_Y54_DARK,
-              account->account_image, kAvatarPosition, kAvatarSize)};
+      gfx::Image avatar_image =
+          account->GetAvatarImage().value_or(gfx::Image());
+      return HeaderImages{.light = profiles::EmbedAvatarOntoImage(
+                              IDR_MIGRATE_ADDRESS_AVATAR50_X135_Y54,
+                              avatar_image, kAvatarPosition, kAvatarSize),
+                          .dark = profiles::EmbedAvatarOntoImage(
+                              IDR_MIGRATE_ADDRESS_AVATAR50_X135_Y54_DARK,
+                              avatar_image, kAvatarPosition, kAvatarSize)};
     }
   }
 
@@ -103,7 +103,7 @@ std::u16string SaveAddressBubbleController::GetBodyText() const {
                         : IDS_AUTOFILL_LOCAL_PROFILE_MIGRATION_PROMPT_NOTICE;
 
     return l10n_util::GetStringFUTF16(string_id,
-                                      base::UTF8ToUTF16(account->email));
+                                      base::UTF8ToUTF16(account->GetEmail()));
   }
 
   return {};
@@ -120,7 +120,8 @@ std::u16string SaveAddressBubbleController::GetAddressSummary() const {
       std::u16string value =
           address_profile_.GetInfo(field, g_browser_process->GetFeatures()
                                               ->application_locale_storage()
-                                              ->Get());
+                                              ->GetTag()
+                                              .tag_string());
       if (!value.empty()) {
         values.push_back(value);
       }
@@ -131,10 +132,13 @@ std::u16string SaveAddressBubbleController::GetAddressSummary() const {
     return base::JoinString(values, u"\n");
   }
 
-  return GetEnvelopeStyleAddress(
-      address_profile_,
-      g_browser_process->GetFeatures()->application_locale_storage()->Get(),
-      /*include_recipient=*/true, /*include_country=*/true);
+  return GetEnvelopeStyleAddress(address_profile_,
+                                 std::string(g_browser_process->GetFeatures()
+                                                 ->application_locale_storage()
+                                                 ->GetTag()
+                                                 .tag_string()),
+                                 /*include_recipient=*/true,
+                                 /*include_country=*/true);
 }
 
 std::u16string SaveAddressBubbleController::GetProfileEmail() const {
@@ -144,9 +148,11 @@ std::u16string SaveAddressBubbleController::GetProfileEmail() const {
     return {};
   }
 
-  return address_profile_.GetInfo(
-      EMAIL_ADDRESS,
-      g_browser_process->GetFeatures()->application_locale_storage()->Get());
+  return address_profile_.GetInfo(EMAIL_ADDRESS,
+                                  g_browser_process->GetFeatures()
+                                      ->application_locale_storage()
+                                      ->GetTag()
+                                      .tag_string());
 }
 
 std::u16string SaveAddressBubbleController::GetProfilePhone() const {
@@ -156,9 +162,11 @@ std::u16string SaveAddressBubbleController::GetProfilePhone() const {
     return {};
   }
 
-  return autofill::i18n::GetFormattedPhoneNumberForDisplay(
-      address_profile_,
-      g_browser_process->GetFeatures()->application_locale_storage()->Get());
+  return i18n::GetFormattedPhoneNumberForDisplay(
+      address_profile_, std::string(g_browser_process->GetFeatures()
+                                        ->application_locale_storage()
+                                        ->GetTag()
+                                        .tag_string()));
 }
 
 std::u16string SaveAddressBubbleController::GetOkButtonLabel() const {
@@ -166,10 +174,9 @@ std::u16string SaveAddressBubbleController::GetOkButtonLabel() const {
     switch (save_address_bubble_type_) {
       case AutofillClient::SaveAddressBubbleType::kSave:
         return IDS_AUTOFILL_EDIT_ADDRESS_DIALOG_OK_BUTTON_LABEL_SAVE;
-      case autofill::AutofillClient::SaveAddressBubbleType::kMigrateToAccount:
+      case AutofillClient::SaveAddressBubbleType::kMigrateToAccount:
         return IDS_AUTOFILL_MIGRATE_ADDRESS_DIALOG_OK_BUTTON_LABEL_SAVE;
-      case autofill::AutofillClient::SaveAddressBubbleType::
-          kHomeWorkNameEmailMerge:
+      case AutofillClient::SaveAddressBubbleType::kHomeWorkNameEmailMerge:
         return IDS_AUTOFILL_SAVE_ADDRESS_PROMPT_NAME_EMAIL_HOME_WORK_MERGE_OK_BUTTON_LABEL;
     }
   }());
@@ -179,10 +186,9 @@ std::u16string SaveAddressBubbleController::GetNegativeButtonLabel() const {
   return l10n_util::GetStringUTF16([this] {
     switch (save_address_bubble_type_) {
       case AutofillClient::SaveAddressBubbleType::kSave:
-      case autofill::AutofillClient::SaveAddressBubbleType::kMigrateToAccount:
+      case AutofillClient::SaveAddressBubbleType::kMigrateToAccount:
         return IDS_AUTOFILL_SAVE_ADDRESS_PROMPT_CANCEL_BUTTON_LABEL;
-      case autofill::AutofillClient::SaveAddressBubbleType::
-          kHomeWorkNameEmailMerge:
+      case AutofillClient::SaveAddressBubbleType::kHomeWorkNameEmailMerge:
         return IDS_AUTOFILL_SAVE_ADDRESS_PROMPT_NAME_EMAIL_HOME_WORK_MERGE_CANCEL_BUTTON_LABEL;
     }
   }());
@@ -206,7 +212,7 @@ std::u16string SaveAddressBubbleController::GetFooterMessage() const {
 
     return l10n_util::GetStringFUTF16(
         IDS_AUTOFILL_SAVE_IN_ACCOUNT_PROMPT_ADDRESS_SOURCE_NOTICE,
-        base::UTF8ToUTF16(account->email));
+        base::UTF8ToUTF16(account->GetEmail()));
   }
 
   return {};
@@ -219,7 +225,7 @@ std::u16string SaveAddressBubbleController::GetEditorFooterMessage() const {
             web_contents()->GetBrowserContext());
     return l10n_util::GetStringFUTF16(
         IDS_AUTOFILL_SAVE_IN_ACCOUNT_PROMPT_ADDRESS_SOURCE_NOTICE,
-        base::UTF8ToUTF16(account->email));
+        base::UTF8ToUTF16(account->GetEmail()));
   }
 
   return GetFooterMessage();

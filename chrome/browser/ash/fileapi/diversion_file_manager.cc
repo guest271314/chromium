@@ -130,7 +130,7 @@ class DiversionFileManager::Entry
   Tmpfile tmpfile_;
   uint64_t num_workers_constructed_ = 0;
   uint64_t num_workers_destroyed_ = 0;
-  std::optional<StoppedReason> stopped_reason_ = std::nullopt;
+  std::optional<StoppedReason> stopped_reason_;
   bool is_running_an_op_ = false;
   base::circular_deque<Op> pending_ops_;
   Callback implicit_callback_;
@@ -145,7 +145,7 @@ DiversionFileManager::Entry::Entry(const storage::FileSystemURL& url,
       manager_(manager),
       idle_timeout_(idle_timeout),
       implicit_callback_(std::move(implicit_callback)) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::IO);
+  CHECK_CURRENTLY_ON(content::BrowserThread::IO, base::NotFatalUntil::M160);
 
   // transform creates the O_TMPFILE file.
   static constexpr auto transform =
@@ -169,17 +169,17 @@ DiversionFileManager::Entry::Entry(const storage::FileSystemURL& url,
 }
 
 DiversionFileManager::Entry::~Entry() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::IO);
+  CHECK_CURRENTLY_ON(content::BrowserThread::IO, base::NotFatalUntil::M160);
 }
 
 void DiversionFileManager::Entry::OnWorkerConstructed() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::IO);
+  CHECK_CURRENTLY_ON(content::BrowserThread::IO, base::NotFatalUntil::M160);
 
   num_workers_constructed_++;
 }
 
 void DiversionFileManager::Entry::OnWorkerDestroyed() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::IO);
+  CHECK_CURRENTLY_ON(content::BrowserThread::IO, base::NotFatalUntil::M160);
 
   num_workers_destroyed_++;
   if (ShouldRunCallback()) {
@@ -191,7 +191,7 @@ void DiversionFileManager::Entry::OnWorkerDestroyed() {
 }
 
 void DiversionFileManager::Entry::Enqueue(Op op) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::IO);
+  CHECK_CURRENTLY_ON(content::BrowserThread::IO, base::NotFatalUntil::M160);
 
   if (is_running_an_op_) {
     pending_ops_.push_back(std::move(op));
@@ -238,7 +238,7 @@ void DiversionFileManager::Entry::OnRunComplete(
 }
 
 void DiversionFileManager::Entry::Finish(Callback explicit_callback) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::IO);
+  CHECK_CURRENTLY_ON(content::BrowserThread::IO, base::NotFatalUntil::M160);
 
   CHECK(!stopped_reason_.has_value());
   stopped_reason_ = StoppedReason::kExplicitFinish;
@@ -358,26 +358,26 @@ DiversionFileManager::Worker::Worker(Role role,
                                      scoped_refptr<Entry> entry,
                                      int64_t offset)
     : role_(role), entry_(std::move(entry)), offset_(offset) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::IO);
+  CHECK_CURRENTLY_ON(content::BrowserThread::IO, base::NotFatalUntil::M160);
   entry_->OnWorkerConstructed();
 }
 
 DiversionFileManager::Worker::~Worker() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::IO);
+  CHECK_CURRENTLY_ON(content::BrowserThread::IO, base::NotFatalUntil::M160);
   entry_->OnWorkerDestroyed();
 }
 
 int DiversionFileManager::Worker::Read(net::IOBuffer* buf,
                                        int buf_len,
                                        net::CompletionOnceCallback callback) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::IO);
+  CHECK_CURRENTLY_ON(content::BrowserThread::IO, base::NotFatalUntil::M160);
   CHECK_EQ(role_, Role::kReader);
   ReadOrWrite(buf, buf_len, std::move(callback));
   return net::ERR_IO_PENDING;
 }
 
 int64_t DiversionFileManager::Worker::GetLength(GetLengthCallback callback) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::IO);
+  CHECK_CURRENTLY_ON(content::BrowserThread::IO, base::NotFatalUntil::M160);
   CHECK_EQ(role_, Role::kReader);
 
   static constexpr auto reply = [](GetLengthCallback callback,
@@ -399,14 +399,14 @@ int64_t DiversionFileManager::Worker::GetLength(GetLengthCallback callback) {
 int DiversionFileManager::Worker::Write(net::IOBuffer* buf,
                                         int buf_len,
                                         net::CompletionOnceCallback callback) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::IO);
+  CHECK_CURRENTLY_ON(content::BrowserThread::IO, base::NotFatalUntil::M160);
   CHECK_EQ(role_, Role::kWriter);
   ReadOrWrite(buf, buf_len, std::move(callback));
   return net::ERR_IO_PENDING;
 }
 
 int DiversionFileManager::Worker::Cancel(net::CompletionOnceCallback callback) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::IO);
+  CHECK_CURRENTLY_ON(content::BrowserThread::IO, base::NotFatalUntil::M160);
   CHECK_EQ(role_, Role::kWriter);
   // Unimplemented.
   return net::OK;
@@ -414,7 +414,7 @@ int DiversionFileManager::Worker::Cancel(net::CompletionOnceCallback callback) {
 
 int DiversionFileManager::Worker::Flush(storage::FlushMode flush_mode,
                                         net::CompletionOnceCallback callback) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::IO);
+  CHECK_CURRENTLY_ON(content::BrowserThread::IO, base::NotFatalUntil::M160);
   CHECK_EQ(role_, Role::kWriter);
   // Flush is a no-op. An O_TMPFILE file isn't persistent anyway if the process
   // crashes. Within this process (and its open file descriptor), any
@@ -426,9 +426,17 @@ void DiversionFileManager::Worker::ReadOrWrite(
     net::IOBuffer* buf,
     int buf_len,
     net::CompletionOnceCallback callback) {
+  // The transform lambda is queued on Entry::pending_ops_ and later posted to
+  // a BEST_EFFORT threadpool. It can outlive both this Worker (Cancel() is a
+  // no-op and ~Worker does not dequeue) and the caller's IOBuffer reference
+  // (e.g. FileWriterDelegate frees its io_buffer_ synchronously when
+  // Worker::Cancel returns net::OK). Per net/base/io_buffer.h's cancellation
+  // contract, retain a scoped_refptr so the buffer survives until the
+  // pread/pwrite completes.
   static constexpr auto transform =
-      [](Role role, char* data_ptr, int data_len, int64_t offset,
-         Tmpfile tmpfile) -> std::pair<Tmpfile, int> {
+      [](Role role, scoped_refptr<net::IOBuffer> buf, int data_len,
+         int64_t offset, Tmpfile tmpfile) -> std::pair<Tmpfile, int> {
+    char* data_ptr = buf->data();
     if (tmpfile.net_error != net::OK) {
       return std::make_pair(std::move(tmpfile), 0);
     } else if (!tmpfile.scoped_fd.is_valid()) {
@@ -470,7 +478,8 @@ void DiversionFileManager::Worker::ReadOrWrite(
   };
 
   entry_->Enqueue(
-      {base::BindOnce(transform, role_, buf->data(), buf_len, offset_),
+      {base::BindOnce(transform, role_, base::WrapRefCounted(buf), buf_len,
+                      offset_),
        base::BindOnce(&DiversionFileManager::Worker::OnReadOrWrite,
                       weak_ptr_factory_.GetWeakPtr(), std::move(callback))});
 }
@@ -497,7 +506,7 @@ DiversionFileManager::DiversionFileManager() = default;
 DiversionFileManager::~DiversionFileManager() = default;
 
 bool DiversionFileManager::IsDiverting(const storage::FileSystemURL& url) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::IO);
+  CHECK_CURRENTLY_ON(content::BrowserThread::IO, base::NotFatalUntil::M160);
 
   return entries_.find(url) != entries_.end();
 }
@@ -506,7 +515,7 @@ DiversionFileManager::StartDivertingResult DiversionFileManager::StartDiverting(
     const storage::FileSystemURL& url,
     base::TimeDelta idle_timeout,
     Callback implicit_callback) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::IO);
+  CHECK_CURRENTLY_ON(content::BrowserThread::IO, base::NotFatalUntil::M160);
 
   const auto [iter, success] = entries_.insert(
       std::make_pair(url, base::MakeRefCounted<Entry>(
@@ -521,7 +530,7 @@ DiversionFileManager::StartDivertingResult DiversionFileManager::StartDiverting(
 DiversionFileManager::FinishDivertingResult
 DiversionFileManager::FinishDiverting(const storage::FileSystemURL& url,
                                       Callback explicit_callback) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::IO);
+  CHECK_CURRENTLY_ON(content::BrowserThread::IO, base::NotFatalUntil::M160);
 
   if (auto iter = entries_.find(url); iter != entries_.end()) {
     scoped_refptr<Entry> entry = std::move(iter->second);
@@ -536,7 +545,7 @@ std::unique_ptr<storage::FileStreamReader>
 DiversionFileManager::CreateDivertedFileStreamReader(
     const storage::FileSystemURL& url,
     int64_t offset) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::IO);
+  CHECK_CURRENTLY_ON(content::BrowserThread::IO, base::NotFatalUntil::M160);
 
   if (auto iter = entries_.find(url); iter != entries_.end()) {
     return std::make_unique<Worker>(Worker::Role::kReader, iter->second,
@@ -549,7 +558,7 @@ std::unique_ptr<storage::FileStreamWriter>
 DiversionFileManager::CreateDivertedFileStreamWriter(
     const storage::FileSystemURL& url,
     int64_t offset) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::IO);
+  CHECK_CURRENTLY_ON(content::BrowserThread::IO, base::NotFatalUntil::M160);
 
   if (auto iter = entries_.find(url); iter != entries_.end()) {
     return std::make_unique<Worker>(Worker::Role::kWriter, iter->second,
@@ -562,7 +571,7 @@ void DiversionFileManager::GetDivertedFileInfo(
     const storage::FileSystemURL& url,
     storage::FileSystemOperation::GetMetadataFieldSet fields,
     GetFileInfoCallback callback) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::IO);
+  CHECK_CURRENTLY_ON(content::BrowserThread::IO, base::NotFatalUntil::M160);
 
   static constexpr auto reply = [](GetFileInfoCallback callback,
                                    const Tmpfile& tmpfile, int ignored) {
@@ -592,7 +601,7 @@ void DiversionFileManager::TruncateDivertedFile(
     const storage::FileSystemURL& url,
     int64_t length,
     StatusCallback callback) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::IO);
+  CHECK_CURRENTLY_ON(content::BrowserThread::IO, base::NotFatalUntil::M160);
 
   static constexpr auto transform =
       [](int64_t length, Tmpfile tmpfile) -> std::pair<Tmpfile, int> {
@@ -632,7 +641,7 @@ void DiversionFileManager::TruncateDivertedFile(
 
 void DiversionFileManager::OverrideTmpfileDirForTesting(
     const base::FilePath& tmpfile_dir) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::IO);
+  CHECK_CURRENTLY_ON(content::BrowserThread::IO, base::NotFatalUntil::M160);
   tmpfile_dir_ = tmpfile_dir;
 }
 

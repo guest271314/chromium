@@ -22,6 +22,7 @@
 #import "components/signin/public/identity_manager/objc/identity_manager_observer_bridge.h"
 #import "components/strings/grit/components_strings.h"
 #import "ios/chrome/browser/account_picker/ui_bundled/account_picker_configuration.h"
+#import "ios/chrome/browser/authentication/ui_bundled/signin/signin_utils.h"
 #import "ios/chrome/browser/google_one/shared/google_one_entry_point.h"
 #import "ios/chrome/browser/photos/model/photos_metrics.h"
 #import "ios/chrome/browser/photos/model/photos_service.h"
@@ -47,9 +48,6 @@ namespace {
 
 // Maximum length of the suggested image name passed to the Photos service.
 constexpr size_t kSuggestedImageNameMaxLength = 100;
-NSString* const kNotEnoughStorageErrorLocalizedDescription =
-    @"The remaining storage in the user's account is not enough to perform "
-    @"this operation.";
 
 NSURL* GetGooglePhotosAppURL() {
   NSURLComponents* photosAppURLComponents = [[NSURLComponents alloc] init];
@@ -64,14 +62,19 @@ NSString* GetSizeString(NSUInteger sizeInBytes) {
                countStyle:NSByteCountFormatterCountStyleFile];
 }
 
-// Helper to call -[mediator startWithImageURL:referrer:webState:]
+// Helper to call -[mediator
+// startWithImageURL:referrer:webState:frameID:frameOrigin:]
 void StartMediatorHelper(__weak SaveToPhotosMediator* mediator,
                          const GURL& image_url,
                          const web::Referrer referrer,
-                         base::WeakPtr<web::WebState> web_state) {
+                         base::WeakPtr<web::WebState> web_state,
+                         const std::string& frame_id,
+                         const url::Origin& frame_origin) {
   [mediator startWithImageURL:image_url
                      referrer:referrer
-                     webState:web_state.get()];
+                     webState:web_state.get()
+                      frameID:frame_id
+                  frameOrigin:frame_origin];
 }
 
 }  // namespace
@@ -88,7 +91,7 @@ NSString* const kGooglePhotosRecentlyAddedURLString =
 NSString* const kGooglePhotosAppURLScheme = @"googlephotos";
 
 @interface SaveToPhotosMediator () <AuthenticationServiceObserving,
-                                    IdentityManagerObserverBridgeDelegate>
+                                    IdentityManagerObserving>
 
 // Identity used to perform an upload. Should be set when the user selects an
 // identity, right before starting to upload. If the upload fails, should be
@@ -167,7 +170,9 @@ NSString* const kGooglePhotosAppURLScheme = @"googlephotos";
 
 - (void)startWithImageURL:(const GURL&)imageURL
                  referrer:(const web::Referrer&)referrer
-                 webState:(web::WebState*)webState {
+                 webState:(web::WebState*)webState
+                  frameID:(const std::string&)frameID
+              frameOrigin:(const url::Origin&)frameOrigin {
   // If the web state does not exist anymore (which can happen when the user
   // tries again), hide Save to Photos.
   if (!webState) {
@@ -184,20 +189,21 @@ NSString* const kGooglePhotosAppURLScheme = @"googlephotos";
   __weak __typeof(self) weakSelf = self;
   ProceduralBlock tryAgainBlock = base::CallbackToBlock(
       base::BindOnce(&StartMediatorHelper, weakSelf, imageURL, referrer,
-                     webState->GetWeakPtr()));
+                     webState->GetWeakPtr(), frameID, frameOrigin));
 
   _imageName = base::SysUTF8ToNSString(imageURL.ExtractFileName());
 
   ImageFetchTabHelper* imageFetcher =
       ImageFetchTabHelper::FromWebState(webState);
   CHECK(imageFetcher);
-  imageFetcher->GetImageData(imageURL, referrer, ^(NSData* imageData) {
-    if (imageData) {
-      [weakSelf continueSaveImageWithData:imageData];
-    } else {
-      [weakSelf showTryAgainOrCancelAlertWithTryAgainBlock:tryAgainBlock];
-    }
-  });
+  imageFetcher->GetImageData(
+      imageURL, referrer, frameID, frameOrigin, ^(NSData* imageData) {
+        if (imageData) {
+          [weakSelf continueSaveImageWithData:imageData];
+        } else {
+          [weakSelf showTryAgainOrCancelAlertWithTryAgainBlock:tryAgainBlock];
+        }
+      });
 }
 
 - (void)accountPickerDidSelectIdentity:(id<SystemIdentity>)identity
@@ -311,6 +317,14 @@ NSString* const kGooglePhotosAppURLScheme = @"googlephotos";
   // being fetched. Exit now if that happened.
   if (!_identityManager->HasPrimaryAccount(signin::ConsentLevel::kSignin)) {
     if (base::FeatureList::IsEnabled(kIOSSaveToPhotosSignedOut)) {
+      BOOL accountOnDevice =
+          [signin::GetIdentitiesOnDevice(_identityManager,
+                                         _accountManagerService) count] > 0;
+      base::UmaHistogramEnumeration(
+          kSaveToPhotosSignInStatusHistogram,
+          accountOnDevice
+              ? SaveToPhotosSignInStatus::kSignedOutWithAccountOnDevice
+              : SaveToPhotosSignInStatus::kSignedOutWithoutAccountOnDevice);
       [self.delegate openSignIn];
     } else {
       base::UmaHistogramEnumeration(kSaveToPhotosActionsHistogram,
@@ -318,6 +332,10 @@ NSString* const kGooglePhotosAppURLScheme = @"googlephotos";
       [self.delegate hideSaveToPhotos];
     }
     return;
+  }
+  if (base::FeatureList::IsEnabled(kIOSSaveToPhotosSignedOut)) {
+    base::UmaHistogramEnumeration(kSaveToPhotosSignInStatusHistogram,
+                                  SaveToPhotosSignInStatus::kSignedIn);
   }
 
   const GaiaId defaultGaiaId(
@@ -348,7 +366,7 @@ NSString* const kGooglePhotosAppURLScheme = @"googlephotos";
       [[AccountPickerConfiguration alloc] init];
   configuration.useBrandedTitle = YES;
 #if BUILDFLAG(IOS_USE_BRANDED_ASSETS)
-  configuration.brandedSymbolName = kGoogleFullSymbol;
+  configuration.brandedSymbol = SymbolGoogleFull;
   configuration.titleText = l10n_util::GetNSString(
       IDS_IOS_SAVE_TO_PHOTOS_ACCOUNT_PICKER_GOOGLE_PHOTOS_TITLE);
 #else
@@ -432,14 +450,6 @@ NSString* const kGooglePhotosAppURLScheme = @"googlephotos";
     _identity = nil;
     base::UmaHistogramTimes(kSaveToPhotosUploadFailureLatencyHistogram,
                             base::TimeTicks::Now() - _uploadStart);
-    // TODO(crbug.com/41486457): Emit the failure type as-is once the service is
-    // able to identify out-of-storage errors by itself.
-    if (result.failure_type == PhotosServiceUploadFailureType::kUploadPhoto2 &&
-        [result.error.localizedDescription
-            isEqualToString:kNotEnoughStorageErrorLocalizedDescription]) {
-      result.failure_type =
-          PhotosServiceUploadFailureType::kUploadPhoto2NotEnoughStorage;
-    }
     base::UmaHistogramEnumeration(kSaveToPhotosUploadFailureTypeHistogram,
                                   result.failure_type);
     // If the user is out of storage, offer to manage their storage.
@@ -594,9 +604,9 @@ NSString* const kGooglePhotosAppURLScheme = @"googlephotos";
   [self.delegate hideSaveToPhotos];
 }
 
-#pragma mark - IdentityManagerObserverBridgeDelegate
+#pragma mark - IdentityManagerObserving
 
-- (void)onPrimaryAccountChanged:
+- (void)primaryAccountDidChange:
     (const signin::PrimaryAccountChangeEvent&)event {
   if (event.GetEventTypeFor(signin::ConsentLevel::kSignin) ==
       signin::PrimaryAccountChangeEvent::Type::kCleared) {

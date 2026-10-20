@@ -86,7 +86,7 @@ bool ExtensionsGuestViewManagerDelegate::IsGuestAvailableToContextWithFeature(
       ProcessManager::Get(context)->GetExtensionForRenderFrameHost(
           guest->owner_rfh());
 
-  const GURL& owner_site_url = guest->GetOwnerSiteURL();
+  const GURL owner_site_url = guest->GetOwnerSiteURL();
   // Ok for |owner_extension| to be nullptr, the embedder might be WebUI.
   Feature::Availability availability = feature->IsAvailableToContext(
       owner_extension,
@@ -120,8 +120,8 @@ void ExtensionsGuestViewManagerDelegate::DispatchEvent(
   CHECK(guest);
   mojom::EventFilteringInfoPtr info = mojom::EventFilteringInfo::New();
   info->instance_id = instance_id;
-  base::ListValue event_args;
-  event_args.Append(std::move(args));
+  scoped_refptr<EventArgs> event_args = base::MakeRefCounted<EventArgs>();
+  event_args->data.Append(std::move(args));
 
   // GetEventHistogramValue maps guest view event names to their histogram
   // value. It needs to be like this because the guest view component doesn't
@@ -149,7 +149,14 @@ void ExtensionsGuestViewManagerDelegate::DispatchEvent(
 
 bool ExtensionsGuestViewManagerDelegate::IsGuestAvailableToContext(
     const GuestViewBase* guest) const {
-  return IsGuestAvailableToContextWithFeature(guest, guest->GetAPINamespace());
+  const char* api_namespace = guest->GetAPINamespace();
+  if (!api_namespace) {
+    // If there's no associated API namespace, we consider the feature
+    // implicitly allowed.
+    return true;
+  }
+
+  return IsGuestAvailableToContextWithFeature(guest, api_namespace);
 }
 
 bool ExtensionsGuestViewManagerDelegate::IsOwnedByExtension(

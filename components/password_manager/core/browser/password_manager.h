@@ -137,7 +137,7 @@ class PasswordManager : public PasswordManagerInterface {
       const autofill::FormData& form,
       const std::u16string& generated_password) override;
   void ProcessAutofillPredictions(
-      PasswordManagerDriver* driver,
+      PasswordManagerDriver& driver,
       const autofill::FormData& form,
       const base::flat_map<autofill::FieldGlobalId,
                            autofill::AutofillServerPrediction>&
@@ -279,7 +279,7 @@ class PasswordManager : public PasswordManagerInterface {
   }
 
   const std::map<
-      std::pair<PasswordManagerDriver*, autofill::FormRendererId>,
+      std::pair<DriverId, autofill::FormRendererId>,
       base::flat_map<autofill::FieldRendererId, autofill::FieldType>>&
   GetClassifierModelPredictionsForTesting() const {
     return classifier_model_predictions_;
@@ -353,7 +353,7 @@ class PasswordManager : public PasswordManagerInterface {
   // |form_managers_| and returns it.
   // Returns nullptr if the manager should not be created for a form (e.g. when
   // filling is disabled).
-  PasswordFormManager* CreateFormManager(PasswordManagerDriver* driver,
+  PasswordFormManager* CreateFormManager(PasswordManagerDriver& driver,
                                          const autofill::FormData& form);
 
   // Passes |form| to PasswordFormManager that manages it for using it after
@@ -426,11 +426,9 @@ class PasswordManager : public PasswordManagerInterface {
   // predictions.
   void ResetFormsAndPredictionsCache();
 
-#if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
-  // Triggers a user survey to rate Password Manager, if the user actively
-  // engaged with Password Manager (filled a form manually).
+  // Triggers a user survey about the password filling experience, if the user
+  // actively engaged with Password Manager (filled a form manually).
   void MaybeTriggerHatsSurvey(PasswordFormManager& form_manager);
-#endif  // !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
 
 #if BUILDFLAG(IS_IOS)
   // Even though the formal submission might not happen, the manager
@@ -491,9 +489,9 @@ class PasswordManager : public PasswordManagerInterface {
       server_predictions_;
 
   // Classification model predictions for the forms on the page, keyed by
-  // the combination of the driver and the renderer id of the form, that allow
-  // to uniquely identify forms on the page.
-  std::map<std::pair<PasswordManagerDriver*, autofill::FormRendererId>,
+  // the combination of the driver id and the renderer id of the form, that
+  // allow to uniquely identify forms on the page.
+  std::map<std::pair<DriverId, autofill::FormRendererId>,
            base::flat_map<autofill::FieldRendererId, autofill::FieldType>>
       classifier_model_predictions_;
 

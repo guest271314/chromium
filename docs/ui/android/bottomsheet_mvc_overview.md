@@ -53,7 +53,8 @@ Specifically, a top-level activity UI component (like `RootUiCoordinator`)
 instantiates the **BottomSheetController** using the
 **BottomSheetControllerFactory** since it manages the root view hierarchy,
 whereas individual feature components (such as
-`AutofillSaveCardBottomSheetBridge` or `TouchToFillBridge`) retrieve the shared
+`AutofillSaveCardBottomSheetBridge` or `TouchToFillPasswordManagerBridge`)
+retrieve the shared
 controller from the `WindowAndroid` via the **BottomSheetControllerProvider**.
 
 The **Coordinator** also creates and stores both the **BottomSheetContent** to
@@ -69,12 +70,13 @@ class ExampleCoordinator {
     private final BottomSheetController mBottomSheetController;
 
     private final BottomSheetObserver mBottomSheetObserver =
-            new EmptyBottomSheetObserver() {
+            new BottomSheetObserver() {
                 @Override
-                public void onSheetClosed(@BottomSheetController.StateChangeReason int reason) {
-                    super.onSheetClosed(reason);
+                public void onSheetClosed(
+                        @BottomSheetController.StateChangeReason int reason) {
                     if (mBottomSheetController.getCurrentSheetContent() != null
-                            && mBottomSheetController.getCurrentSheetContent() == mContent) {
+                            && mBottomSheetController.getCurrentSheetContent()
+                                    == mContent) {
                         onDismissed();
                     }
                 }
@@ -90,7 +92,8 @@ class ExampleCoordinator {
 
     void show() {
         mBottomSheetController.addObserver(mBottomSheetObserver);
-        if (!mBottomSheetController.requestShowContent(mContent, /* animate= */ true)) {
+        if (!mBottomSheetController.requestShowContent(
+                mContent, /* animate= */ true)) {
             onDismissed();
         }
     }

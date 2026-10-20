@@ -122,7 +122,6 @@ class GLES2_IMPL_EXPORT GLES2Implementation : public GLES2Interface,
 
   // GLES2Interface implementation
   void FreeSharedMemory(void*) override;
-  GLboolean DidGpuSwitch(gl::GpuPreference* active_gpu) final;
   bool CanCopySharedImageDirectlyToGLTexture(
       bool is_opaque,
       ClientSharedImage* shared_image,
@@ -131,7 +130,7 @@ class GLES2_IMPL_EXPORT GLES2Implementation : public GLES2Interface,
       uint32_t dst_type,
       int32_t dst_level,
       SkAlphaType dst_alpha_type) override;
-  gpu::SyncToken CopySharedImageToGLTextureViaTextureCopy(
+  CopySharedImageSyncCallback CopySharedImageToGLTextureViaTextureCopy(
       const gfx::Rect& src_rect,
       ClientSharedImage* source_shared_image,
       const gpu::SyncToken& source_sync_token,
@@ -143,7 +142,7 @@ class GLES2_IMPL_EXPORT GLES2Implementation : public GLES2Interface,
       int32_t dst_level,
       SkAlphaType dst_alpha_type,
       GrSurfaceOrigin dst_origin) override;
-  std::unique_ptr<RasterScopedAccess> CopySharedImageDirectlyToGLTexture(
+  CopySharedImageSyncCallback CopySharedImageDirectlyToGLTexture(
       const gfx::Rect& src_rect,
       ClientSharedImage* source_shared_image,
       const gpu::SyncToken& source_sync_token,
@@ -397,7 +396,6 @@ class GLES2_IMPL_EXPORT GLES2Implementation : public GLES2Interface,
   void OnGpuControlLostContext() final;
   void OnGpuControlLostContextMaybeReentrant() final;
   void OnGpuControlErrorMessage(const char* message, int32_t id) final;
-  void OnGpuSwitched() final;
   void OnGpuControlReturnData(base::span<const uint8_t> data) final;
 
   void SendErrorMessage(std::string message, int32_t id);
@@ -842,8 +840,6 @@ class GLES2_IMPL_EXPORT GLES2Implementation : public GLES2Interface,
   std::vector<const char*> cached_extensions_;
 
   std::string last_active_url_;
-
-  bool gpu_switched_ = false;
 
   base::WeakPtrFactory<GLES2Implementation> weak_ptr_factory_{this};
 };

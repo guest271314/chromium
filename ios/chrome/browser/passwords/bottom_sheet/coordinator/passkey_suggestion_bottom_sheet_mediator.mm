@@ -4,10 +4,12 @@
 
 #import "ios/chrome/browser/passwords/bottom_sheet/coordinator/passkey_suggestion_bottom_sheet_mediator.h"
 
-#import "base/memory/raw_ptr.h"
+#import "base/functional/bind.h"
+#import "base/memory/weak_ptr.h"
+#import "components/autofill/core/common/unique_ids.h"
 #import "components/autofill/ios/browser/form_suggestion.h"
+#import "components/password_manager/core/browser/passkey_credential.h"
 #import "components/webauthn/ios/ios_webauthn_credentials_delegate.h"
-#import "components/webauthn/ios/ios_webauthn_credentials_delegate_factory.h"
 #import "components/webauthn/ios/passkey_suggestion_utils.h"
 #import "ios/chrome/browser/passwords/bottom_sheet/coordinator/credential_suggestion_bottom_sheet_mediator_base+Subclassing.h"
 #import "ios/chrome/browser/passwords/bottom_sheet/ui/credential_suggestion_bottom_sheet_consumer.h"
@@ -16,39 +18,33 @@
 #import "ios/chrome/grit/ios_strings.h"
 #import "ui/base/l10n/l10n_util.h"
 
-@implementation PasskeySuggestionBottomSheetMediator {
-  // Delegate used to fetch and select passkey suggestions.
-  raw_ptr<webauthn::IOSWebAuthnCredentialsDelegate>
-      _webAuthnCredentialsDelegate;
-}
+@implementation PasskeySuggestionBottomSheetMediator
 
 - (instancetype)
     initWithWebStateList:(WebStateList*)webStateList
              requestInfo:(webauthn::IOSPasskeyClient::RequestInfo)requestInfo
             reauthModule:(id<ReauthenticationProtocol>)reauthModule {
-  std::string frameId = requestInfo.frame_id;
-
   self = [super initWithWebStateList:webStateList
                         reauthModule:reauthModule
                          requestInfo:std::move(requestInfo)];
-  if (self) {
-    _webAuthnCredentialsDelegate =
-        webauthn::IOSWebAuthnCredentialsDelegateFactory::GetFactory(
-            webStateList->GetActiveWebState())
-            ->GetDelegateForFrameId(frameId);
-    if (_webAuthnCredentialsDelegate) {
-      base::expected<const std::vector<password_manager::PasskeyCredential>*,
-                     password_manager::WebAuthnCredentialsDelegate::
-                         PasskeysUnavailableReason>
-          passkeys = _webAuthnCredentialsDelegate->GetPasskeys();
-      if (passkeys.has_value()) {
-        self.suggestions =
-            webauthn::FormSuggestionsFromPasskeyCredentials(**passkeys);
-      }
+  return self;
+}
+
+- (void)setWebAuthnCredentialsDelegate:
+    (base::WeakPtr<webauthn::IOSWebAuthnCredentialsDelegate>)delegate {
+  [super setWebAuthnCredentialsDelegate:delegate];
+  [self clearCredentials];
+  if (delegate) {
+    base::expected<const std::vector<password_manager::PasskeyCredential>*,
+                   password_manager::WebAuthnCredentialsDelegate::
+                       PasskeysUnavailableReason>
+        passkeys = delegate->GetPasskeys();
+    if (passkeys.has_value() && *passkeys) {
+      self.suggestions =
+          webauthn::FormSuggestionsFromPasskeyCredentials(**passkeys);
+      [self fetchPasskeyCredentials];
     }
   }
-
-  return self;
 }
 
 #pragma mark - CredentialSuggestionBottomSheetMediatorBase
@@ -67,15 +63,8 @@
                                  IDS_IOS_CREDENTIAL_BOTTOM_SHEET_CONTINUE)
        secondaryActionString:l10n_util::GetNSString(
                                  IDS_IOS_CREDENTIAL_BOTTOM_SHEET_MORE_PASSKEYS)
-        secondaryActionImage:DefaultSymbolWithPointSize(
-                                 kPersonBadgeKeyFillSymbol,
-                                 kSymbolActionPointSize)];
-}
-
-- (void)disconnect {
-  [super disconnect];
-
-  _webAuthnCredentialsDelegate = nullptr;
+        secondaryActionImage:SymbolWithPointSize(SymbolPersonBadgeKeyFill,
+                                                 kSymbolActionPointSize)];
 }
 
 - (void)didSelectSuggestion:(FormSuggestion*)suggestion
@@ -91,14 +80,14 @@
 - (void)selectSuggestion:(FormSuggestion*)suggestion
                  atIndex:(NSInteger)index
               completion:(ProceduralBlock)completion {
-  // `_webAuthnCredentialsDelegate` can be null if the frame it was created for
+  // `webAuthnCredentialsDelegate` can be null if the frame it was created for
   // was destroyed or navigated away.
-  if (!_webAuthnCredentialsDelegate) {
+  if (!self.webAuthnCredentialsDelegate) {
     completion();
     return;
   }
 
-  _webAuthnCredentialsDelegate->SelectPasskey(
+  self.webAuthnCredentialsDelegate->SelectPasskey(
       webauthn::GetPasskeySuggestionEncodedCredentialId(suggestion),
       base::BindOnce(completion));
 }

@@ -31,30 +31,34 @@
 #include "third_party/blink/renderer/modules/crypto/subtle_crypto.h"
 
 #include "base/check_deref.h"
+#include "base/containers/to_vector.h"
 #include "base/task/single_thread_task_runner.h"
 #include "third_party/blink/public/platform/platform.h"
 #include "third_party/blink/public/platform/task_type.h"
 #include "third_party/blink/public/platform/web_crypto.h"
 #include "third_party/blink/public/platform/web_crypto_algorithm.h"
 #include "third_party/blink/public/platform/web_crypto_algorithm_params.h"
+#include "third_party/blink/public/platform/web_crypto_key_algorithm.h"
 #include "third_party/blink/public/web/web_crypto_histograms.h"
 #include "third_party/blink/renderer/bindings/core/v8/dictionary.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_promise_resolver.h"
+#include "third_party/blink/renderer/bindings/core/v8/v8_union_arraybuffer_arraybufferview.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_encapsulated_bits.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_encapsulated_key.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_json_web_key.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_union_arraybuffer_arraybufferview_jsonwebkey.h"
+#include "third_party/blink/renderer/bindings/modules/v8/v8_union_arraybuffer_jsonwebkey.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_union_cryptokey_cryptokeypair.h"
 #include "third_party/blink/renderer/core/execution_context/execution_context.h"
 #include "third_party/blink/renderer/core/typed_arrays/dom_array_buffer.h"
+#include "third_party/blink/renderer/core/typed_arrays/dom_array_buffer_util.h"
 #include "third_party/blink/renderer/core/typed_arrays/dom_array_buffer_view.h"
-#include "third_party/blink/renderer/core/typed_arrays/dom_array_piece.h"
 #include "third_party/blink/renderer/modules/crypto/crypto_key.h"
 #include "third_party/blink/renderer/modules/crypto/crypto_result_impl.h"
-#include "third_party/blink/renderer/modules/crypto/crypto_utilities.h"
 #include "third_party/blink/renderer/modules/crypto/normalize_algorithm.h"
 #include "third_party/blink/renderer/platform/bindings/exception_state.h"
 #include "third_party/blink/renderer/platform/json/json_values.h"
+#include "third_party/blink/renderer/platform/wtf/text/strcat.h"
 
 namespace blink {
 
@@ -147,6 +151,9 @@ std::optional<WebCryptoOperation> StringToWebCryptoOperation(const String& op) {
   if (op == "deriveKey" || op == "deriveBits") {
     return kWebCryptoOperationDeriveBits;
   }
+  if (op == "exportKey") {
+    return kWebCryptoOperationExportKey;
+  }
   if (op == "wrapKey") {
     return kWebCryptoOperationWrapKey;
   }
@@ -158,6 +165,9 @@ std::optional<WebCryptoOperation> StringToWebCryptoOperation(const String& op) {
   }
   if (op == "decapsulateKey" || op == "decapsulateBits") {
     return kWebCryptoOperationDecapsulate;
+  }
+  if (op == "getPublicKey") {
+    return kWebCryptoOperationGetPublicKey;
   }
   return std::nullopt;
 }
@@ -214,6 +224,8 @@ bool supportsInternal(ScriptState* script_state,
     case kWebCryptoOperationEncapsulate:
     case kWebCryptoOperationDecapsulate:
     case kWebCryptoOperationGenerateKey:
+    case kWebCryptoOperationGetPublicKey:
+    case kWebCryptoOperationExportKey:
       if (normalized_algorithm.ParamsType() ==
           kWebCryptoAlgorithmParamsTypeNone) {
         return true;
@@ -230,7 +242,7 @@ bool supportsInternal(ScriptState* script_state,
 
 SubtleCrypto::SubtleCrypto() = default;
 
-ScriptPromise<IDLAny> SubtleCrypto::encrypt(
+ScriptPromise<DOMArrayBuffer> SubtleCrypto::encrypt(
     ScriptState* script_state,
     const V8AlgorithmIdentifier* raw_algorithm,
     CryptoKey* key,
@@ -239,11 +251,7 @@ ScriptPromise<IDLAny> SubtleCrypto::encrypt(
   // Method described by:
   // https://w3c.github.io/webcrypto/Overview.html#dfn-SubtleCrypto-method-encrypt
 
-  // 14.3.1.2: Let data be the result of getting a copy of the bytes held by
-  //           the data parameter passed to the encrypt method.
-  std::vector<uint8_t> data = CopyBytes(raw_data);
-
-  // 14.3.1.3: Let normalizedAlgorithm be the result of normalizing an
+  // 14.3.1.2: Let normalizedAlgorithm be the result of normalizing an
   //           algorithm, with alg set to algorithm and op set to "encrypt".
   WebCryptoAlgorithm normalized_algorithm;
   if (!NormalizeAlgorithm(script_state->GetIsolate(), raw_algorithm,
@@ -252,8 +260,15 @@ ScriptPromise<IDLAny> SubtleCrypto::encrypt(
     return EmptyPromise();
   }
 
+  // 14.3.1.4: Let data be the result of getting a copy of the bytes held by
+  //           the data parameter passed to the encrypt method. This must
+  //           happen after normalizing the algorithm, since normalization can
+  //           run author getters that mutate or detach the data buffer.
+  std::vector<uint8_t> data =
+      base::ToVector(AsSpan<SharedBufferPolicy::kDisallow>(*raw_data));
+
   auto* resolver =
-      MakeGarbageCollected<ScriptPromiseResolver<IDLAny>>(script_state);
+      MakeGarbageCollected<ScriptPromiseResolver<DOMArrayBuffer>>(script_state);
   auto* result = MakeGarbageCollected<CryptoResultImpl>(script_state, resolver);
   auto promise = resolver->Promise();
 
@@ -278,7 +293,7 @@ ScriptPromise<IDLAny> SubtleCrypto::encrypt(
   return promise;
 }
 
-ScriptPromise<IDLAny> SubtleCrypto::decrypt(
+ScriptPromise<DOMArrayBuffer> SubtleCrypto::decrypt(
     ScriptState* script_state,
     const V8AlgorithmIdentifier* raw_algorithm,
     CryptoKey* key,
@@ -287,11 +302,7 @@ ScriptPromise<IDLAny> SubtleCrypto::decrypt(
   // Method described by:
   // https://w3c.github.io/webcrypto/Overview.html#dfn-SubtleCrypto-method-decrypt
 
-  // 14.3.2.2: Let data be the result of getting a copy of the bytes held by
-  //           the data parameter passed to the decrypt method.
-  std::vector<uint8_t> data = CopyBytes(raw_data);
-
-  // 14.3.2.3: Let normalizedAlgorithm be the result of normalizing an
+  // 14.3.2.2: Let normalizedAlgorithm be the result of normalizing an
   //           algorithm, with alg set to algorithm and op set to "decrypt".
   WebCryptoAlgorithm normalized_algorithm;
   if (!NormalizeAlgorithm(script_state->GetIsolate(), raw_algorithm,
@@ -300,8 +311,15 @@ ScriptPromise<IDLAny> SubtleCrypto::decrypt(
     return EmptyPromise();
   }
 
+  // 14.3.2.4: Let data be the result of getting a copy of the bytes held by
+  //           the data parameter passed to the decrypt method. This must
+  //           happen after normalizing the algorithm, since normalization can
+  //           run author getters that mutate or detach the data buffer.
+  std::vector<uint8_t> data =
+      base::ToVector(AsSpan<SharedBufferPolicy::kDisallow>(*raw_data));
+
   auto* resolver =
-      MakeGarbageCollected<ScriptPromiseResolver<IDLAny>>(script_state);
+      MakeGarbageCollected<ScriptPromiseResolver<DOMArrayBuffer>>(script_state);
   auto* result = MakeGarbageCollected<CryptoResultImpl>(script_state, resolver);
   auto promise = resolver->Promise();
 
@@ -326,7 +344,7 @@ ScriptPromise<IDLAny> SubtleCrypto::decrypt(
   return promise;
 }
 
-ScriptPromise<IDLAny> SubtleCrypto::sign(
+ScriptPromise<DOMArrayBuffer> SubtleCrypto::sign(
     ScriptState* script_state,
     const V8AlgorithmIdentifier* raw_algorithm,
     CryptoKey* key,
@@ -335,11 +353,7 @@ ScriptPromise<IDLAny> SubtleCrypto::sign(
   // Method described by:
   // https://w3c.github.io/webcrypto/Overview.html#dfn-SubtleCrypto-method-sign
 
-  // 14.3.3.2: Let data be the result of getting a copy of the bytes held by
-  //           the data parameter passed to the sign method.
-  std::vector<uint8_t> data = CopyBytes(raw_data);
-
-  // 14.3.3.3: Let normalizedAlgorithm be the result of normalizing an
+  // 14.3.3.2: Let normalizedAlgorithm be the result of normalizing an
   //           algorithm, with alg set to algorithm and op set to "sign".
   WebCryptoAlgorithm normalized_algorithm;
   if (!NormalizeAlgorithm(script_state->GetIsolate(), raw_algorithm,
@@ -348,8 +362,15 @@ ScriptPromise<IDLAny> SubtleCrypto::sign(
     return EmptyPromise();
   }
 
+  // 14.3.3.4: Let data be the result of getting a copy of the bytes held by
+  //           the data parameter passed to the sign method. This must happen
+  //           after normalizing the algorithm, since normalization can run
+  //           author getters that mutate or detach the data buffer.
+  std::vector<uint8_t> data =
+      base::ToVector(AsSpan<SharedBufferPolicy::kDisallow>(*raw_data));
+
   auto* resolver =
-      MakeGarbageCollected<ScriptPromiseResolver<IDLAny>>(script_state);
+      MakeGarbageCollected<ScriptPromiseResolver<DOMArrayBuffer>>(script_state);
   auto* result = MakeGarbageCollected<CryptoResultImpl>(script_state, resolver);
   auto promise = resolver->Promise();
 
@@ -384,15 +405,7 @@ ScriptPromise<IDLBoolean> SubtleCrypto::verifySignature(
   // Method described by:
   // https://w3c.github.io/webcrypto/Overview.html#SubtleCrypto-method-verify
 
-  // 14.3.4.2: Let signature be the result of getting a copy of the bytes
-  //           held by the signature parameter passed to the verify method.
-  std::vector<uint8_t> signature = CopyBytes(raw_signature);
-
-  // 14.3.4.3: Let data be the result of getting a copy of the bytes held by
-  //           the data parameter passed to the verify method.
-  std::vector<uint8_t> data = CopyBytes(raw_data);
-
-  // 14.3.4.4: Let normalizedAlgorithm be the result of normalizing an
+  // 14.3.4.2: Let normalizedAlgorithm be the result of normalizing an
   //           algorithm, with alg set to algorithm and op set to "verify".
   WebCryptoAlgorithm normalized_algorithm;
   if (!NormalizeAlgorithm(script_state->GetIsolate(), raw_algorithm,
@@ -400,6 +413,19 @@ ScriptPromise<IDLBoolean> SubtleCrypto::verifySignature(
                           exception_state)) {
     return EmptyPromise();
   }
+
+  // 14.3.4.4: Let signature be the result of getting a copy of the bytes
+  //           held by the signature parameter passed to the verify method.
+  //
+  // 14.3.4.5: Let data be the result of getting a copy of the bytes held by
+  //           the data parameter passed to the verify method.
+  //
+  // Both copies must happen after normalizing the algorithm, since
+  // normalization can run author getters that mutate or detach these buffers.
+  std::vector<uint8_t> signature =
+      base::ToVector(AsSpan<SharedBufferPolicy::kDisallow>(*raw_signature));
+  std::vector<uint8_t> data =
+      base::ToVector(AsSpan<SharedBufferPolicy::kDisallow>(*raw_data));
 
   auto* resolver =
       MakeGarbageCollected<ScriptPromiseResolver<IDLBoolean>>(script_state);
@@ -427,7 +453,7 @@ ScriptPromise<IDLBoolean> SubtleCrypto::verifySignature(
   return promise;
 }
 
-ScriptPromise<IDLAny> SubtleCrypto::digest(
+ScriptPromise<DOMArrayBuffer> SubtleCrypto::digest(
     ScriptState* script_state,
     const V8AlgorithmIdentifier* raw_algorithm,
     const V8BufferSource* raw_data,
@@ -435,11 +461,7 @@ ScriptPromise<IDLAny> SubtleCrypto::digest(
   // Method described by:
   // https://w3c.github.io/webcrypto/Overview.html#SubtleCrypto-method-digest
 
-  // 14.3.5.2: Let data be the result of getting a copy of the bytes held
-  //              by the data parameter passed to the digest method.
-  std::vector<uint8_t> data = CopyBytes(raw_data);
-
-  // 14.3.5.3: Let normalizedAlgorithm be the result of normalizing an
+  // 14.3.5.2: Let normalizedAlgorithm be the result of normalizing an
   //           algorithm, with alg set to algorithm and op set to "digest".
   WebCryptoAlgorithm normalized_algorithm;
   if (!NormalizeAlgorithm(script_state->GetIsolate(), raw_algorithm,
@@ -448,8 +470,15 @@ ScriptPromise<IDLAny> SubtleCrypto::digest(
     return EmptyPromise();
   }
 
+  // 14.3.5.4: Let data be the result of getting a copy of the bytes held by
+  //           the data parameter passed to the digest method. This must
+  //           happen after normalizing the algorithm, since normalization can
+  //           run author getters that mutate or detach the data buffer.
+  std::vector<uint8_t> data =
+      base::ToVector(AsSpan<SharedBufferPolicy::kDisallow>(*raw_data));
+
   auto* resolver =
-      MakeGarbageCollected<ScriptPromiseResolver<IDLAny>>(script_state);
+      MakeGarbageCollected<ScriptPromiseResolver<DOMArrayBuffer>>(script_state);
   auto* result = MakeGarbageCollected<CryptoResultImpl>(script_state, resolver);
 
   HistogramAlgorithm(ExecutionContext::From(script_state),
@@ -527,12 +556,24 @@ ScriptPromise<CryptoKey> SubtleCrypto::importKey(
     return EmptyPromise();
   }
 
+  // 14.3.9.2: Let normalizedAlgorithm be the result of normalizing an
+  //           algorithm, with alg set to algorithm and op set to
+  //           "importKey". This must happen before copying the key data,
+  //           since normalization can run author getters that mutate or
+  //           detach the keyData buffer.
+  WebCryptoAlgorithm normalized_algorithm;
+  if (!NormalizeAlgorithm(script_state->GetIsolate(), raw_algorithm,
+                          kWebCryptoOperationImportKey, normalized_algorithm,
+                          exception_state)) {
+    return EmptyPromise();
+  }
+
   // In the case of JWK keyData will hold the UTF8-encoded JSON for the
   // JsonWebKey, otherwise it holds a copy of the BufferSource.
   std::vector<uint8_t> key_data;
 
   switch (format) {
-    // 14.3.9.2: If format is equal to the string "raw", "pkcs8", or "spki":
+    // 14.3.9.4: If format is equal to the string "raw", "pkcs8", or "spki":
     //
     //  (1) If the keyData parameter passed to the importKey method is a
     //      JsonWebKey dictionary, throw a TypeError.
@@ -552,10 +593,12 @@ ScriptPromise<CryptoKey> SubtleCrypto::importKey(
     case kWebCryptoKeyFormatSpki:
       switch (raw_key_data->GetContentType()) {
         case V8UnionBufferSourceOrJsonWebKey::ContentType::kArrayBuffer:
-          key_data = CopyBytes(raw_key_data->GetAsArrayBuffer());
+          key_data =
+              base::ToVector(raw_key_data->GetAsArrayBuffer()->ByteSpan());
           break;
         case V8UnionBufferSourceOrJsonWebKey::ContentType::kArrayBufferView:
-          key_data = CopyBytes(raw_key_data->GetAsArrayBufferView().Get());
+          key_data =
+              base::ToVector(raw_key_data->GetAsArrayBufferView()->ByteSpan());
           break;
         case V8UnionBufferSourceOrJsonWebKey::ContentType::kJsonWebKey:
           exception_state.ThrowTypeError(
@@ -563,7 +606,7 @@ ScriptPromise<CryptoKey> SubtleCrypto::importKey(
           return EmptyPromise();
       }
       break;
-    // 14.3.9.2: If format is equal to the string "jwk":
+    // 14.3.9.4: If format is equal to the string "jwk":
     //
     //  (1) If the keyData parameter passed to the importKey method is not a
     //      JsonWebKey dictionary, throw a TypeError.
@@ -582,17 +625,6 @@ ScriptPromise<CryptoKey> SubtleCrypto::importKey(
       break;
   }
 
-  // 14.3.9.3: Let normalizedAlgorithm be the result of normalizing an
-  //           algorithm, with alg set to algorithm and op set to
-  //           "importKey".
-
-  WebCryptoAlgorithm normalized_algorithm;
-  if (!NormalizeAlgorithm(script_state->GetIsolate(), raw_algorithm,
-                          kWebCryptoOperationImportKey, normalized_algorithm,
-                          exception_state)) {
-    return EmptyPromise();
-  }
-
   auto* resolver =
       MakeGarbageCollected<ScriptPromiseResolver<CryptoKey>>(script_state);
   auto* result = MakeGarbageCollected<CryptoResultImpl>(script_state, resolver);
@@ -609,10 +641,11 @@ ScriptPromise<CryptoKey> SubtleCrypto::importKey(
   return promise;
 }
 
-ScriptPromise<IDLAny> SubtleCrypto::exportKey(ScriptState* script_state,
-                                              const String& raw_format,
-                                              CryptoKey* key,
-                                              ExceptionState& exception_state) {
+ScriptPromise<V8UnionArrayBufferOrJsonWebKey> SubtleCrypto::exportKey(
+    ScriptState* script_state,
+    const String& raw_format,
+    CryptoKey* key,
+    ExceptionState& exception_state) {
   // Method described by:
   // https://w3c.github.io/webcrypto/Overview.html#dfn-SubtleCrypto-method-exportKey
 
@@ -621,7 +654,20 @@ ScriptPromise<IDLAny> SubtleCrypto::exportKey(ScriptState* script_state,
     return EmptyPromise();
   }
 
-  // 14.3.10.6: If the [[extractable]] internal slot of key is false, then
+  // 14.3.10.6: If the name member of the [[algorithm]] internal slot of key
+  //            does not identify a registered algorithm that supports the
+  //            export key operation, then throw a NotSupportedError.
+  const WebCryptoAlgorithmInfo* algorithm_info =
+      WebCryptoAlgorithm::LookupAlgorithmInfo(key->Key().Algorithm().Id());
+  if (algorithm_info->operation_to_params_type[kWebCryptoOperationExportKey] ==
+      WebCryptoAlgorithmInfo::kUndefined) {
+    exception_state.ThrowDOMException(
+        DOMExceptionCode::kNotSupportedError,
+        StrCat({algorithm_info->name, ": Unsupported operation: exportKey"}));
+    return EmptyPromise();
+  }
+
+  // 14.3.10.7: If the [[extractable]] internal slot of key is false, then
   //            throw an InvalidAccessError.
   if (!key->extractable()) {
     exception_state.ThrowDOMException(DOMExceptionCode::kInvalidAccessError,
@@ -629,8 +675,8 @@ ScriptPromise<IDLAny> SubtleCrypto::exportKey(ScriptState* script_state,
     return EmptyPromise();
   }
 
-  auto* resolver =
-      MakeGarbageCollected<ScriptPromiseResolver<IDLAny>>(script_state);
+  auto* resolver = MakeGarbageCollected<
+      ScriptPromiseResolver<V8UnionArrayBufferOrJsonWebKey>>(script_state);
   auto* result = MakeGarbageCollected<CryptoResultImpl>(script_state, resolver);
   auto promise = resolver->Promise();
 
@@ -643,7 +689,7 @@ ScriptPromise<IDLAny> SubtleCrypto::exportKey(ScriptState* script_state,
   return promise;
 }
 
-ScriptPromise<IDLAny> SubtleCrypto::wrapKey(
+ScriptPromise<DOMArrayBuffer> SubtleCrypto::wrapKey(
     ScriptState* script_state,
     const String& raw_format,
     CryptoKey* key,
@@ -672,7 +718,7 @@ ScriptPromise<IDLAny> SubtleCrypto::wrapKey(
   }
 
   auto* resolver =
-      MakeGarbageCollected<ScriptPromiseResolver<IDLAny>>(script_state);
+      MakeGarbageCollected<ScriptPromiseResolver<DOMArrayBuffer>>(script_state);
   auto* result = MakeGarbageCollected<CryptoResultImpl>(script_state, resolver);
   auto promise = resolver->Promise();
 
@@ -687,9 +733,18 @@ ScriptPromise<IDLAny> SubtleCrypto::wrapKey(
                                            kWebCryptoKeyUsageWrapKey, result))
     return promise;
 
-  // TODO(crbug.com/628416): The error from step 11
-  // (NotSupportedError) is thrown after step 12 which does not match
-  // the spec order.
+  // 14.3.11.11: If the algorithm identified by the [[algorithm]] internal
+  //             slot of key does not support the export key operation, then
+  //             throw a NotSupportedError.
+  const WebCryptoAlgorithmInfo* algorithm_info =
+      WebCryptoAlgorithm::LookupAlgorithmInfo(key->Key().Algorithm().Id());
+  if (algorithm_info->operation_to_params_type[kWebCryptoOperationExportKey] ==
+      WebCryptoAlgorithmInfo::kUndefined) {
+    result->CompleteWithError(
+        kWebCryptoErrorTypeNotSupported,
+        StrCat({algorithm_info->name, ": Unsupported operation: exportKey"}));
+    return promise;
+  }
 
   // 14.3.11.12: If the [[extractable]] internal slot of key is false, then
   //             throw an InvalidAccessError.
@@ -767,7 +822,8 @@ ScriptPromise<CryptoKey> SubtleCrypto::unwrapKey(
   // 14.3.12.2: Let wrappedKey be the result of getting a copy of the bytes
   //            held by the wrappedKey parameter passed to the unwrapKey
   //            method.
-  std::vector<uint8_t> wrapped_key = CopyBytes(raw_wrapped_key);
+  std::vector<uint8_t> wrapped_key =
+      base::ToVector(AsSpan<SharedBufferPolicy::kDisallow>(*raw_wrapped_key));
 
   // 14.3.12.11: If the name member of normalizedAlgorithm is not equal to
   //             the name attribute of the [[algorithm]] internal slot of
@@ -843,7 +899,7 @@ ScriptPromise<DOMArrayBuffer> SubtleCrypto::deriveBits(
   return promise;
 }
 
-ScriptPromise<IDLAny> SubtleCrypto::deriveKey(
+ScriptPromise<CryptoKey> SubtleCrypto::deriveKey(
     ScriptState* script_state,
     const V8AlgorithmIdentifier* raw_algorithm,
     CryptoKey* base_key,
@@ -895,7 +951,7 @@ ScriptPromise<IDLAny> SubtleCrypto::deriveKey(
   }
 
   auto* resolver =
-      MakeGarbageCollected<ScriptPromiseResolver<IDLAny>>(script_state);
+      MakeGarbageCollected<ScriptPromiseResolver<CryptoKey>>(script_state);
   auto* result = MakeGarbageCollected<CryptoResultImpl>(script_state, resolver);
   auto promise = resolver->Promise();
 
@@ -1056,7 +1112,7 @@ ScriptPromise<CryptoKey> SubtleCrypto::decapsulateKey(
     ScriptState* script_state,
     const V8AlgorithmIdentifier* raw_decapsulation_algorithm,
     CryptoKey* decapsulation_key,
-    const V8BufferSource* raw_ciphertext,
+    base::span<const uint8_t> raw_ciphertext,
     const V8AlgorithmIdentifier* raw_shared_key_algorithm,
     bool extractable,
     const Vector<String>& raw_key_usages,
@@ -1071,7 +1127,7 @@ ScriptPromise<CryptoKey> SubtleCrypto::decapsulateKey(
 
   // 3.2.3.2: Let ciphertext be the result of getting a copy of the bytes held
   //          by the ciphertext parameter passed to the decapsulateKey() method.
-  std::vector<uint8_t> ciphertext = CopyBytes(raw_ciphertext);
+  std::vector<uint8_t> ciphertext = base::ToVector(raw_ciphertext);
 
   // 3.2.3.3: Let normalizedAlgorithm be the result of normalizing an
   //          algorithm, with alg set to algorithm and op set to
@@ -1134,7 +1190,7 @@ ScriptPromise<DOMArrayBuffer> SubtleCrypto::decapsulateBits(
     ScriptState* script_state,
     const V8AlgorithmIdentifier* raw_decapsulation_algorithm,
     CryptoKey* decapsulation_key,
-    const V8BufferSource* raw_ciphertext,
+    base::span<const uint8_t> raw_ciphertext,
     ExceptionState& exception_state) {
   // Method described by:
   // https://wicg.github.io/webcrypto-modern-algos/#SubtleCrypto-method-decapsulateBits
@@ -1142,7 +1198,7 @@ ScriptPromise<DOMArrayBuffer> SubtleCrypto::decapsulateBits(
   // 3.2.4.2: Let ciphertext be the result of getting a copy of the bytes held
   //          by the ciphertext parameter passed to the decapsulateBits()
   //          method.
-  std::vector<uint8_t> ciphertext = CopyBytes(raw_ciphertext);
+  std::vector<uint8_t> ciphertext = base::ToVector(raw_ciphertext);
 
   // 3.2.4.3: Let normalizedDecapsulationAlgorithm be the result of normalizing
   //          an algorithm, with alg set to decapsulationAlgorithm and op set to
@@ -1188,6 +1244,50 @@ ScriptPromise<DOMArrayBuffer> SubtleCrypto::decapsulateBits(
   return promise;
 }
 
+ScriptPromise<CryptoKey> SubtleCrypto::getPublicKey(
+    ScriptState* script_state,
+    CryptoKey* key,
+    const Vector<String>& raw_key_usages,
+    ExceptionState& exception_state) {
+  // Method described by:
+  // https://wicg.github.io/webcrypto-modern-algos/#SubtleCrypto-method-getPublicKey
+
+  if (!WebCryptoAlgorithm::IsAsymmetric(key->Key().Algorithm().Id())) {
+    exception_state.ThrowDOMException(DOMExceptionCode::kNotSupportedError,
+                                      "getPublicKey can only be called with "
+                                      "keys from an asymmetric algorithm");
+    return EmptyPromise();
+  }
+
+  if (key->Key().GetType() != kWebCryptoKeyTypePrivate) {
+    exception_state.ThrowDOMException(
+        DOMExceptionCode::kInvalidAccessError,
+        "getPublicKey can only be called with a private key");
+    return EmptyPromise();
+  }
+
+  WebCryptoKeyUsageMask key_usages;
+  if (!CryptoKey::ParseUsageMask(raw_key_usages, key_usages, exception_state)) {
+    return EmptyPromise();
+  }
+
+  auto* resolver =
+      MakeGarbageCollected<ScriptPromiseResolver<CryptoKey>>(script_state);
+  auto* result = MakeGarbageCollected<CryptoResultImpl>(script_state, resolver);
+  auto promise = resolver->Promise();
+
+  auto* execution_context = ExecutionContext::From(script_state);
+  HistogramKey(execution_context, key->Key());
+
+  scoped_refptr<base::SingleThreadTaskRunner> task_runner =
+      execution_context->GetTaskRunner(blink::TaskType::kInternalWebCrypto);
+
+  Platform::Current()->Crypto()->GetPublicKey(
+      key->Key(), key_usages, result->Result(), std::move(task_runner));
+
+  return promise;
+}
+
 // Defined by
 // https://wicg.github.io/webcrypto-modern-algos/#SubtleCrypto-method-supports,
 // 3.2.6 and for the supports(operation, algorithm, length) section.
@@ -1195,7 +1295,6 @@ bool SubtleCrypto::supports(ScriptState* script_state,
                             const String& operation,
                             const V8AlgorithmIdentifier* algorithm,
                             std::optional<unsigned> length) {
-  // No support for "getPublicKey"; we return false if that's the operation.
   std::optional<WebCryptoOperation> op = StringToWebCryptoOperation(operation);
   if (!op) {
     return false;
@@ -1212,7 +1311,6 @@ bool SubtleCrypto::supports(ScriptState* script_state,
                             const String& operation,
                             const V8AlgorithmIdentifier* algorithm,
                             const V8AlgorithmIdentifier* additional_algorithm) {
-  // No support for "getPublicKey"; we return false if that's the operation.
   std::optional<WebCryptoOperation> op = StringToWebCryptoOperation(operation);
   if (!op) {
     return false;
@@ -1229,7 +1327,13 @@ bool SubtleCrypto::supports(ScriptState* script_state,
   //           an algorithm with op set to "exportKey" and alg set to
   //           additionalAlgorithm is false, return false.
   //
-  // importKey and exportKey are always supported, so we skip these checks.
+  // importKey is always supported, so that check is skipped.
+  if (operation == "wrapKey") {
+    if (!supportsInternal(script_state, kWebCryptoOperationExportKey,
+                          additional_algorithm, length_bits)) {
+      return false;
+    }
+  }
 
   if (operation == "deriveKey") {
     // 3.2.6.4.1 If the result of checking support for an algorithm with op set

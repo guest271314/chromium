@@ -34,7 +34,9 @@ inline constexpr char kWebNNTfliteDumpModel[] = "webnn-tflite-dump-model";
 // "FATAL".
 inline constexpr char kWebNNOrtLoggingLevel[] = "webnn-ort-logging-level";
 // Set the folder specified by --webnn-ort-dump-model for ONNX Runtime to save
-// optimized ONNX model after graph level transformations.
+// optimized models after graph level transformations. By default, ORT saves the
+// optimized ONNX model. Some EPs (e.g., OpenVINO) dump their own IR models via
+// a session config entry specified by `EpInfo::model_dump_config_key` instead.
 // Usage: --no-sandbox --webnn-ort-dump-model=/tmp/ort_models
 inline constexpr char kWebNNOrtDumpModel[] = "webnn-ort-dump-model";
 // Force onnxruntime.dll to be loaded from a location specified by the switch
@@ -75,6 +77,18 @@ inline constexpr char kWebNNOrtEpLibraryPathForTesting[] =
 // --webnn-ort-ep-device=OpenVINOExecutionProvider,0x8086,0x4680
 inline constexpr char kWebNNOrtEpDevice[] = "webnn-ort-ep-device";
 
+// Add arbitrary ONNX Runtime session configuration entries for testing.
+// The value must use the format <key>,<value>[,<key>,<value>...].
+// Like other testing switches, this is available in release builds and must
+// only be supplied through a trusted startup command line. Existing session
+// configuration entries, including dispatch security settings, cannot be
+// replaced.
+// Usage:
+// --webnn-ort-session-config-entries-for-testing=
+//   ep.qnnexecutionprovider.webnn_scenario,1,key2,value2
+inline constexpr char kWebNNOrtSessionConfigEntriesForTesting[] =
+    "webnn-ort-session-config-entries-for-testing";
+
 // Enable all execution providers, ignoring the enabled flag blocklist.
 inline constexpr char kWebNNOrtIgnoreEpBlocklist[] =
     "webnn-ort-ignore-ep-blocklist";
@@ -82,6 +96,20 @@ inline constexpr char kWebNNOrtIgnoreEpBlocklist[] =
 // Ignore all IHV execution providers, only the default CPUExecutionProvider and
 // DmlExecutionProvider will be used.
 inline constexpr char kWebNNOrtIgnoreIhvEps[] = "webnn-ort-ignore-ihv-eps";
+
+// Disable ORT virtual devices in the Compiler process, requiring actual
+// hardware devices for compilation instead. This switch is for testing only.
+// Note that online compilation requires access to actual hardware which is
+// blocked by the compiler sandbox, so this switch is usually used together with
+// `--disable-webnn-compiler-sandbox`.
+inline constexpr char kWebNNOrtDisableVirtualDevices[] =
+    "webnn-ort-disable-virtual-devices";
+
+// Allow all EP devices to be selected for the Compiler process, regardless of
+// whether `kKnownEPs` declares offline compilation support for them. For
+// testing only.
+inline constexpr char kWebNNOrtAllowAllCompilerDevices[] =
+    "webnn-ort-allow-all-compiler-devices";
 
 // Configure the graph optimization level of ONNX Runtime.
 // Usage: --webnn-ort-graph-optimization-level=DISABLE_ALL
@@ -106,11 +134,27 @@ inline constexpr char kWebNNOrtEnableProfiling[] = "webnn-ort-enable-profiling";
 // Usage: --webnn-ort-disable-cpu-fallback
 inline constexpr char kWebNNOrtDisableCpuFallback[] =
     "webnn-ort-disable-cpu-fallback";
+
+// Used internally to pass the target EP library path from the browser process
+// to the WebNN Compiler utility process. The compiler process reads this switch
+// during PreSandboxInit() to load the EP libraries before sandbox lockdown.
+inline constexpr char kWebNNCompilerEpLibrary[] = "webnn-compiler-ep-library";
+
+// Used internally to pass the target EP device info from the browser process to
+// the WebNN Compiler utility process, alongside `kWebNNCompilerEpLibrary`. The
+// compiler process parses this switch during PreSandboxInit() to register the
+// correct EP device before sandbox lockdown. The value is produced by
+// webnn::EpDeviceInfo::ToSwitchValue().
+inline constexpr char kWebNNCompilerEpDeviceInfo[] =
+    "webnn-compiler-ep-device-info";
 #endif  // BUILDFLAG(IS_WIN)
 
-extern base::span<const char* const> GetWebNNSwitchesCopiedFromGpuProcessHost();
-// extern const base::span<const char* const>
-//     kWebNNSwitchesCopiedFromGpuProcessHost;
+base::span<const char* const> GetWebNNSwitchesCopiedFromGpuProcessHost();
+
+// Returns the list of WebNN switches forwarded from the browser process to
+// the renderer process. Only backends that actually run inside the renderer
+// should appear here.
+base::span<const char* const> GetWebNNSwitchesForRendererProcess();
 
 }  // namespace switches
 

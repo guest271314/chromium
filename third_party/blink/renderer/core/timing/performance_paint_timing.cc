@@ -14,18 +14,13 @@ namespace blink {
 
 namespace {
 
-AtomicString FromPaintTypeToString(PerformancePaintTiming::PaintType type) {
-  DCHECK(IsMainThread());
+const AtomicString& FromPaintTypeToString(
+    PerformancePaintTiming::PaintType type) {
   switch (type) {
-    case PerformancePaintTiming::PaintType::kFirstPaint: {
-      DEFINE_STATIC_LOCAL(const AtomicString, kFirstPaint, ("first-paint"));
-      return kFirstPaint;
-    }
-    case PerformancePaintTiming::PaintType::kFirstContentfulPaint: {
-      DEFINE_STATIC_LOCAL(const AtomicString, kFirstContentfulPaint,
-                          ("first-contentful-paint"));
-      return kFirstContentfulPaint;
-    }
+    case PerformancePaintTiming::PaintType::kFirstPaint:
+      return performance_entry_names::kFirstPaint;
+    case PerformancePaintTiming::PaintType::kFirstContentfulPaint:
+      return performance_entry_names::kFirstContentfulPaint;
   }
   NOTREACHED();
 }
@@ -36,7 +31,7 @@ PerformancePaintTiming::PerformancePaintTiming(
     PaintType type,
     const DOMPaintTimingInfo& paint_timing_info,
     DOMWindow* source,
-    uint32_t navigation_id)
+    uint64_t navigation_id)
     : PerformanceEntry(
           /*duration=*/0.0,
           FromPaintTypeToString(type),

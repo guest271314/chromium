@@ -9,15 +9,22 @@ import static org.chromium.build.NullUtil.assertNonNull;
 import android.accounts.AccountManager;
 import android.app.Activity;
 import android.content.Intent;
+import android.net.Uri;
 import android.text.TextUtils;
 
+import androidx.browser.customtabs.CustomTabsIntent;
+
 import org.chromium.base.Callback;
+import org.chromium.base.CallbackController;
 import org.chromium.base.DeviceInfo;
 import org.chromium.base.supplier.NonNullObservableSupplier;
 import org.chromium.base.supplier.ObservableSuppliers;
 import org.chromium.base.supplier.SettableNonNullObservableSupplier;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
+import org.chromium.chrome.browser.flags.ChromeFeatureList;
+import org.chromium.chrome.browser.signin.services.AccountPreviewDataService;
+import org.chromium.chrome.browser.signin.services.AccountPreviewPreference;
 import org.chromium.chrome.browser.signin.services.DisplayableProfileData;
 import org.chromium.chrome.browser.signin.services.ProfileDataCache;
 import org.chromium.chrome.browser.signin.services.SigninFlowTimestampsLogger;
@@ -26,6 +33,8 @@ import org.chromium.chrome.browser.signin.services.SigninFlowTimestampsLogger.Fl
 import org.chromium.chrome.browser.signin.services.SigninManager;
 import org.chromium.chrome.browser.signin.services.SigninMetricsUtils;
 import org.chromium.chrome.browser.signin.services.SigninPreferencesManager;
+import org.chromium.chrome.browser.ui.enterprise_signals_disclaimer.EnterpriseSignalsDisclaimerCoordinator;
+import org.chromium.chrome.browser.ui.signin.AccountPreviewPreferenceStringUtils;
 import org.chromium.chrome.browser.ui.signin.SigninUtils;
 import org.chromium.chrome.browser.ui.signin.account_picker.AccountPickerBottomSheetProperties.ViewState;
 import org.chromium.components.browser_ui.device_lock.DeviceLockActivityLauncher;
@@ -33,6 +42,8 @@ import org.chromium.components.signin.AccountManagerFacade;
 import org.chromium.components.signin.AccountManagerFacadeProvider;
 import org.chromium.components.signin.AccountUtils;
 import org.chromium.components.signin.AccountsChangeObserver;
+import org.chromium.components.signin.SigninFeatureMap;
+import org.chromium.components.signin.SigninFeatures;
 import org.chromium.components.signin.base.AccountInfo;
 import org.chromium.components.signin.base.CoreAccountInfo;
 import org.chromium.components.signin.identitymanager.IdentityManager;
@@ -55,21 +66,36 @@ public class AccountPickerBottomSheetMediator
                 AccountPickerBottomSheetView.BackPressListener,
                 AccountPickerDelegate.SigninStateController,
                 AccountsChangeObserver,
-                ProfileDataCache.Observer {
+                ProfileDataCache.Observer,
+                EnterpriseSignalsDisclaimerCoordinator.Delegate {
+
+    /** Delegate of the AccountPickerBottomSheetMediator. */
+    interface Delegate {
+        /**
+         * Sets up the management notice hosted by the {@link ViewState#CONFIRM_MANAGEMENT} screen
+         * for the given account.
+         *
+         * @param account The account being signed in.
+         */
+        void setUpManagementNoticeForAccount(CoreAccountInfo account);
+    }
 
     private final WindowAndroid mWindowAndroid;
     private final Activity mActivity;
     private final IdentityManager mIdentityManager;
     private final SigninManager mSigninManager;
+    private final @Nullable AccountPreviewDataService mAccountPreviewDataService;
     private final AccountPickerDelegate mAccountPickerDelegate;
+    // TODO(b/553341908): Make non-null once seamless sign-in supports the new management notice.
+    private final @Nullable Delegate mDelegate;
     private final Runnable mDismissBottomSheet;
+    private final AccountPickerBottomSheetStrings mAccountPickerBottomSheetStrings;
     private final DeviceLockActivityLauncher mDeviceLockActivityLauncher;
     private final @ViewState int mInitialViewState;
     private final ProfileDataCache mProfileDataCache;
     private final PropertyModel mModel;
     private final AccountManagerFacade mAccountManagerFacade;
     private final boolean mIsSeamlessSignin;
-
     private @Nullable Runnable mRequestDisplayBottomSheet;
     private @Nullable CoreAccountInfo mSelectedAccount;
     private @Nullable CoreAccountInfo mDefaultAccount;
@@ -92,11 +118,13 @@ public class AccountPickerBottomSheetMediator
     private final PropertyObserver<PropertyKey> mModelPropertyChangedObserver;
     private final SettableNonNullObservableSupplier<Boolean> mBackPressStateChangedSupplier =
             ObservableSuppliers.createNonNull(false);
+    private final CallbackController mCallbackController = new CallbackController();
 
     static AccountPickerBottomSheetMediator create(
             WindowAndroid windowAndroid,
             IdentityManager identityManager,
             SigninManager signinManager,
+            @Nullable AccountPreviewDataService accountPreviewDataService,
             AccountPickerDelegate accountPickerDelegate,
             Runnable dismissBottomSheet,
             AccountPickerBottomSheetStrings accountPickerBottomSheetStrings,
@@ -104,9 +132,9 @@ public class AccountPickerBottomSheetMediator
             @AccountPickerLaunchMode int launchMode,
             boolean isWebSignin,
             @SigninAccessPoint int signinAccessPoint,
-            @Nullable CoreAccountId accountId) {
-
-        final @ViewState int initialView;
+            @Nullable CoreAccountId accountId,
+            Delegate delegate) {
+        @ViewState int initialView;
         switch (launchMode) {
             case AccountPickerLaunchMode.CHOOSE_ACCOUNT:
                 initialView = ViewState.EXPANDED_ACCOUNT_LIST;
@@ -125,6 +153,7 @@ public class AccountPickerBottomSheetMediator
                 windowAndroid,
                 identityManager,
                 signinManager,
+                accountPreviewDataService,
                 accountPickerDelegate,
                 /* requestDisplayBottomSheet= */ null,
                 dismissBottomSheet,
@@ -134,13 +163,15 @@ public class AccountPickerBottomSheetMediator
                 initialView,
                 isWebSignin,
                 signinAccessPoint,
-                accountId);
+                accountId,
+                delegate);
     }
 
     static AccountPickerBottomSheetMediator createForSeamlessSignin(
             WindowAndroid windowAndroid,
             IdentityManager identityManager,
             SigninManager signinManager,
+            @Nullable AccountPreviewDataService accountPreviewDataService,
             AccountPickerDelegate accountPickerDelegate,
             Runnable requestDisplayBottomSheet,
             Runnable dismissBottomSheet,
@@ -152,6 +183,7 @@ public class AccountPickerBottomSheetMediator
                 windowAndroid,
                 identityManager,
                 signinManager,
+                accountPreviewDataService,
                 accountPickerDelegate,
                 requestDisplayBottomSheet,
                 dismissBottomSheet,
@@ -161,13 +193,16 @@ public class AccountPickerBottomSheetMediator
                 ViewState.NONE,
                 /* isWebSignin= */ false,
                 signinAccessPoint,
-                accountId);
+                accountId,
+                // TODO(b/553341908): Support the new management notice in seamless sign-in.
+                /* delegate= */ null);
     }
 
     private AccountPickerBottomSheetMediator(
             WindowAndroid windowAndroid,
             IdentityManager identityManager,
             SigninManager signinManager,
+            @Nullable AccountPreviewDataService accountPreviewDataService,
             AccountPickerDelegate accountPickerDelegate,
             @Nullable Runnable requestDisplayBottomSheet,
             Runnable dismissBottomSheet,
@@ -177,14 +212,18 @@ public class AccountPickerBottomSheetMediator
             @ViewState int initialViewState,
             boolean isWebSignin,
             @SigninAccessPoint int signinAccessPoint,
-            @Nullable CoreAccountId accountId) {
+            @Nullable CoreAccountId accountId,
+            @Nullable Delegate delegate) {
         mWindowAndroid = windowAndroid;
         mActivity = assertNonNull(windowAndroid.getActivity().get());
         mIdentityManager = identityManager;
         mSigninManager = signinManager;
+        mAccountPreviewDataService = accountPreviewDataService;
         mAccountPickerDelegate = accountPickerDelegate;
+        mDelegate = delegate;
         mRequestDisplayBottomSheet = requestDisplayBottomSheet;
         mDismissBottomSheet = dismissBottomSheet;
+        mAccountPickerBottomSheetStrings = accountPickerBottomSheetStrings;
         mProfileDataCache =
                 ProfileDataCache.createWithDefaultImageSizeAndNoBadge(mActivity, identityManager);
         mDeviceLockActivityLauncher = deviceLockActivityLauncher;
@@ -340,7 +379,7 @@ public class AccountPickerBottomSheetMediator
 
     /** Implements {@link AccountsChangeObserver}. */
     @Override
-    public void onCoreAccountInfosChanged() {
+    public void onAccountsChanged() {
         mAccountManagerFacade.getAccounts().then(this::updateAccounts);
     }
 
@@ -387,11 +426,45 @@ public class AccountPickerBottomSheetMediator
         assertNonNull(mSigninTimestampsLogger).recordTimestamp(Event.SIGNIN_COMPLETED);
     }
 
+    /** Implements {@link EnterpriseSignalsDisclaimerCoordinator.Delegate}. */
+    @Override
+    public void showInfoPage(String url) {
+        assert url.startsWith("https://") : "URL must start with https://";
+        // Open the page in a Chrome custom tab on top of the sign-in UI, so that the user can
+        // return to the management notice after reading it.
+        CustomTabsIntent customTabsIntent =
+                new CustomTabsIntent.Builder().setShowTitle(true).build();
+        customTabsIntent.intent.setPackage(mActivity.getPackageName());
+        customTabsIntent.launchUrl(mActivity, Uri.parse(url));
+    }
+
+    /** Implements {@link EnterpriseSignalsDisclaimerCoordinator.Delegate}. */
+    @Override
+    public void onAccept() {
+        if (mModel.get(AccountPickerBottomSheetProperties.VIEW_STATE)
+                != ViewState.CONFIRM_MANAGEMENT) {
+            return;
+        }
+
+        onConfirmManagementAccepted();
+    }
+
+    /** Implements {@link EnterpriseSignalsDisclaimerCoordinator.Delegate}. */
+    @Override
+    public void onDecline() {
+        if (mModel.get(AccountPickerBottomSheetProperties.VIEW_STATE)
+                != ViewState.CONFIRM_MANAGEMENT) {
+            return;
+        }
+        onConfirmManagementCancelClicked();
+    }
+
     PropertyModel getModel() {
         return mModel;
     }
 
     void destroy() {
+        mCallbackController.destroy();
         mAccountPickerDelegate.onAccountPickerDestroy();
         mProfileDataCache.removeObserver(this);
         mAccountManagerFacade.removeObserver(this);
@@ -432,11 +505,18 @@ public class AccountPickerBottomSheetMediator
         if (accountId != null) {
             mDefaultAccount =
                     assertNonNull(AccountUtils.findAccountByGaiaId(accounts, accountId.getId()));
-            setSelectedAccount(mDefaultAccount);
-            mModel.set(AccountPickerBottomSheetProperties.VIEW_STATE, mInitialViewState);
-            return;
+        } else {
+            AccountPreviewPreference preference = getValidAccountPreference(accounts);
+            if (preference != null) {
+                mDefaultAccount =
+                        assertNonNull(
+                                AccountUtils.findAccountByGaiaId(accounts, preference.getGaiaId()));
+                updateSubtitleForPreferredAccountIfNeeded(preference);
+            } else {
+                mDefaultAccount = accounts.get(0);
+            }
         }
-        mDefaultAccount = accounts.get(0);
+
         setSelectedAccount(mDefaultAccount);
         mModel.set(AccountPickerBottomSheetProperties.VIEW_STATE, mInitialViewState);
     }
@@ -470,7 +550,13 @@ public class AccountPickerBottomSheetMediator
             return;
         }
 
-        mDefaultAccount = accounts.get(0);
+        // Do not update the subtitle once set during initialization to avoid visual flicker.
+        AccountPreviewPreference preference = getValidAccountPreference(accounts);
+        mDefaultAccount =
+                preference != null
+                        ? assertNonNull(
+                                AccountUtils.findAccountByGaiaId(accounts, preference.getGaiaId()))
+                        : accounts.get(0);
         mSelectedAccount =
                 mSelectedAccount == null
                         ? null
@@ -516,8 +602,8 @@ public class AccountPickerBottomSheetMediator
     }
 
     /**
-     * Callback for the PropertyKey
-     * {@link AccountPickerBottomSheetProperties#ON_SELECTED_ACCOUNT_CLICKED}.
+     * Callback for the PropertyKey {@link
+     * AccountPickerBottomSheetProperties#ON_SELECTED_ACCOUNT_CLICKED}.
      */
     private void onSelectedAccountClicked() {
         assert !mIsSeamlessSignin;
@@ -528,8 +614,8 @@ public class AccountPickerBottomSheetMediator
     }
 
     /**
-     * Callback for the PropertyKey
-     * {@link AccountPickerBottomSheetProperties#ON_CONTINUE_AS_CLICKED}.
+     * Callback for the PropertyKey {@link
+     * AccountPickerBottomSheetProperties#ON_CONTINUE_AS_CLICKED}.
      */
     private void onContinueAsClicked() {
         @ViewState int viewState = mModel.get(AccountPickerBottomSheetProperties.VIEW_STATE);
@@ -552,12 +638,17 @@ public class AccountPickerBottomSheetMediator
             assert !mIsSeamlessSignin;
             updateCredentials();
         } else if (viewState == ViewState.CONFIRM_MANAGEMENT) {
-            mAcceptedAccountManagement = true;
-            assertNonNull(mSigninTimestampsLogger).onManagementNoticeAccepted();
-            SigninMetricsUtils.logAccountConsistencyPromoAction(
-                    AccountConsistencyPromoAction.CONFIRM_MANAGEMENT_ACCEPTED, mSigninAccessPoint);
-            signInAfterCheckingManagement();
+            onConfirmManagementAccepted();
         }
+    }
+
+    /** Called when the user accepts account management on the confirm management screen. */
+    private void onConfirmManagementAccepted() {
+        mAcceptedAccountManagement = true;
+        assertNonNull(mSigninTimestampsLogger).onManagementNoticeAccepted();
+        SigninMetricsUtils.logAccountConsistencyPromoAction(
+                AccountConsistencyPromoAction.CONFIRM_MANAGEMENT_ACCEPTED, mSigninAccessPoint);
+        signInAfterCheckingManagement();
     }
 
     /**
@@ -621,22 +712,29 @@ public class AccountPickerBottomSheetMediator
         mModel.set(AccountPickerBottomSheetProperties.VIEW_STATE, ViewState.SIGNIN_IN_PROGRESS);
         mSigninManager.isAccountManaged(
                 mSelectedAccount,
-                (Boolean isAccountManaged) -> {
-                    assertNonNull(mSigninTimestampsLogger)
-                            .recordTimestamp(Event.MANAGEMENT_STATUS_LOADED);
-                    if (isAccountManaged) {
-                        SigninMetricsUtils.logAccountConsistencyPromoAction(
-                                AccountConsistencyPromoAction.CONFIRM_MANAGEMENT_SHOWN,
-                                mSigninAccessPoint);
-                        shownConfirmManagementSheet();
-                        assertNonNull(mSigninTimestampsLogger).onManagementNoticeShown();
-                    } else {
-                        signInAfterCheckingManagement();
-                    }
-                });
+                mCallbackController.makeCancelable(
+                        (Boolean isAccountManaged) -> {
+                            assertNonNull(mSigninTimestampsLogger)
+                                    .recordTimestamp(Event.MANAGEMENT_STATUS_LOADED);
+                            if (isAccountManaged) {
+                                SigninMetricsUtils.logAccountConsistencyPromoAction(
+                                        AccountConsistencyPromoAction.CONFIRM_MANAGEMENT_SHOWN,
+                                        mSigninAccessPoint);
+                                shownConfirmManagementSheet();
+                                assertNonNull(mSigninTimestampsLogger).onManagementNoticeShown();
+                            } else {
+                                signInAfterCheckingManagement();
+                            }
+                        }));
     }
 
     private void shownConfirmManagementSheet() {
+        // TODO(b/553341908): Support the new management notice in the seamless sign-in flow.
+        if (!mIsSeamlessSignin
+                && ChromeFeatureList.isEnabled(ChromeFeatureList.ANDROID_NEW_MANAGEMENT_NOTICE)) {
+            assertNonNull(mDelegate)
+                    .setUpManagementNoticeForAccount(assertNonNull(mSelectedAccount));
+        }
         mModel.set(AccountPickerBottomSheetProperties.VIEW_STATE, ViewState.CONFIRM_MANAGEMENT);
         if (mIsSeamlessSignin && mRequestDisplayBottomSheet != null) {
             mRequestDisplayBottomSheet.run();
@@ -690,8 +788,8 @@ public class AccountPickerBottomSheetMediator
                     public void onSignInComplete() {
                         // Delegates can optionally run extra operations immediately after sign-in
                         // while the loading bottom sheet is still shown. For example, websignin
-                        // creates a WebSigninBridge which asynchronously awaits cookie sync. If
-                        // this fails reauthentication is necessary.
+                        // creates a WebSigninTrackerBridge which asynchronously awaits cookie sync.
+                        // If this fails reauthentication is necessary.
                         mAccountPickerDelegate.runPostSigninAction(
                                 selectedAccount,
                                 result -> handlePostSigninResult(selectedAccount, result));
@@ -765,11 +863,51 @@ public class AccountPickerBottomSheetMediator
                 };
         assertNonNull(mSelectedAccount);
         mAccountManagerFacade.updateCredentials(
-                mSelectedAccount, mActivity, onUpdateCredentialsCompleted);
+                mSelectedAccount.getId(), mActivity, onUpdateCredentialsCompleted);
     }
 
     private void startSigninTimestampLogging() {
         @FlowVariant String flowVariant = mAccountPickerDelegate.getSigninFlowVariant();
         mSigninTimestampsLogger = SigninFlowTimestampsLogger.startLogging(flowVariant);
+    }
+
+    private @Nullable AccountPreviewPreference getValidAccountPreference(
+            List<AccountInfo> accounts) {
+        if (mAccountPreviewDataService != null
+                && SigninFeatureMap.isEnabled(
+                        SigninFeatures.ENABLE_ACCOUNT_PREVIEW_PREFERRED_ACCOUNT)) {
+            AccountPreviewPreference preference =
+                    mAccountPreviewDataService.getPreferredAccountForSignin();
+            if (preference != null
+                    && AccountUtils.findAccountByGaiaId(accounts, preference.getGaiaId()) != null) {
+                return preference;
+            }
+        }
+        return null;
+    }
+
+    private void updateSubtitleForPreferredAccountIfNeeded(AccountPreviewPreference preference) {
+        // TODO(crbug.com/553530451): Migrate access point specific subtitle customization to a per
+        // access point string delegate instead of checking individual access points here.
+        // We shouldn't use access point in such a helper.
+        boolean isCustomizedSubtitleEnabled =
+                mIsWebSignin || mSigninAccessPoint == SigninAccessPoint.NTP_SIGNED_OUT_ICON;
+        if (!isCustomizedSubtitleEnabled) {
+            return;
+        }
+        String customizedSubtitle =
+                mIsWebSignin
+                        ? AccountPreviewPreferenceStringUtils.getSubtitleForWebSignin(
+                                mActivity, preference)
+                        : AccountPreviewPreferenceStringUtils.getSubtitleForDefaultFlow(
+                                mActivity, preference);
+        if (customizedSubtitle == null) {
+            return;
+        }
+        AccountPickerBottomSheetStrings newStrings =
+                new AccountPickerBottomSheetStrings.Builder(mAccountPickerBottomSheetStrings)
+                        .setSubtitleString(customizedSubtitle)
+                        .build();
+        mModel.set(AccountPickerBottomSheetProperties.BOTTOM_SHEET_STRINGS, newStrings);
     }
 }

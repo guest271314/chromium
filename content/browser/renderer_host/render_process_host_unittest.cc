@@ -13,9 +13,9 @@
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
 #include "build/build_config.h"
-#include "content/browser/child_process_security_policy_impl.h"
 #include "content/browser/renderer_host/render_process_host_impl.h"
 #include "content/browser/renderer_host/spare_render_process_host_manager_impl.h"
+#include "content/browser/security/cpsp/child_process_security_policy_impl.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/content_browser_client.h"
 #include "content/public/common/content_client.h"
@@ -259,8 +259,8 @@ TEST_F(RenderProcessHostUnitTest, ReuseCommittedSite) {
       TestRenderFrameHost::CreateStubAssociatedInterfaceProviderReceiver(),
       blink::mojom::TreeScopeType::kDocument, std::string(), unique_name, false,
       blink::LocalFrameToken(), base::UnguessableToken::Create(),
-      blink::DocumentToken(), blink::FramePolicy(),
-      blink::mojom::FrameOwnerProperties(),
+      blink::DocumentToken(), blink::InitiatorStateToken(),
+      blink::FramePolicy(), blink::mojom::FrameOwnerProperties(),
       blink::FrameOwnerElementType::kIframe, ukm::kInvalidSourceId);
   TestRenderFrameHost* subframe =
       static_cast<TestRenderFrameHost*>(contents()
@@ -360,7 +360,7 @@ class UnsuitableHostContentBrowserClient : public ContentBrowserClient {
 
  private:
   bool IsSuitableHost(RenderProcessHost* process_host,
-                      const GURL& site_url) override {
+                      const SecurityPrincipal& security_principal) override {
     return false;
   }
 };
@@ -1052,6 +1052,26 @@ TEST_F(RenderProcessHostUnitTest, ProcessAssignmentDefault) {
   EXPECT_EQ(SiteInstanceProcessAssignment::UNKNOWN,
             site_instance->GetLastProcessAssignmentOutcome());
   EXPECT_FALSE(site_instance->HasProcess());
+}
+
+TEST_F(RenderProcessHostUnitTest,
+       ProcessAssignmentReuseExistingProcessIfPossible) {
+  const GURL kUrl1("https://foo.com");
+  const GURL kUrl2("https://foo.com");
+
+  scoped_refptr<SiteInstanceImpl> site_instance1 = CreateForUrl(kUrl1);
+  RenderProcessHost* host1 = site_instance1->GetOrCreateProcessForTesting();
+
+  scoped_refptr<SiteInstanceImpl> site_instance2 = CreateForUrl(kUrl2);
+  EXPECT_EQ(SiteInstanceProcessAssignment::UNKNOWN,
+            site_instance2->GetLastProcessAssignmentOutcome());
+  EXPECT_FALSE(site_instance2->HasProcess());
+
+  site_instance2->ReuseExistingProcessIfPossible(host1);
+  EXPECT_TRUE(site_instance2->HasProcess());
+  EXPECT_EQ(host1, site_instance2->GetProcess());
+  EXPECT_EQ(SiteInstanceProcessAssignment::REUSED_EXISTING_PROCESS,
+            site_instance2->GetLastProcessAssignmentOutcome());
 }
 
 // Tests the GetPendingReuseRefCount() function.

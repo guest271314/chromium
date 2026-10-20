@@ -37,6 +37,7 @@
 #include "third_party/blink/public/platform/web_common.h"
 #include "third_party/blink/public/platform/web_media_player.h"
 #include "third_party/blink/public/platform/web_media_player_client.h"
+#include "third_party/blink/renderer/platform/heap/garbage_collected.h"
 #include "third_party/blink/renderer/platform/platform_export.h"
 #include "ui/gfx/color_space.h"
 
@@ -48,6 +49,7 @@ namespace media {
 enum class MediaContentType;
 enum class VideoCodec;
 enum class AudioCodec;
+struct CdmConfig;
 }  // namespace media
 
 namespace blink {
@@ -55,7 +57,8 @@ namespace blink {
 class WebMediaSource;
 
 class PLATFORM_EXPORT MediaPlayerClient : public WebMediaPlayerClient,
-                                          public media::TrackManager {
+                                          public media::TrackManager,
+                                          public GarbageCollectedMixin {
  public:
   enum VideoTrackKind {
     kVideoTrackKindNone,
@@ -202,6 +205,9 @@ class PLATFORM_EXPORT MediaPlayerClient : public WebMediaPlayerClient,
 
   // Notify the client that the RemotePlayback has been disabled/enabled.
   virtual void OnRemotePlaybackDisabled(bool disabled) = 0;
+
+  // Called when a ContentDecryptionModule is attached.
+  virtual void OnCdmAttached(const media::CdmConfig& cdm_config) {}
 
  protected:
   ~MediaPlayerClient() override = default;

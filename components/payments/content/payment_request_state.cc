@@ -9,6 +9,7 @@
 #include <utility>
 #include <vector>
 
+#include "base/command_line.h"
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/location.h"
@@ -28,21 +29,24 @@
 #include "components/payments/content/payment_app.h"
 #include "components/payments/content/payment_response_helper.h"
 #include "components/payments/content/service_worker_payment_app.h"
-#include "components/payments/content/web_payments_web_data_service.h"
 #include "components/payments/core/error_strings.h"
 #include "components/payments/core/features.h"
 #include "components/payments/core/method_strings.h"
 #include "components/payments/core/payment_prefs.h"
 #include "components/payments/core/payment_request_data_util.h"
 #include "components/payments/core/payments_experimental_features.h"
+#include "components/payments/core/web_payments_web_data_service.h"
 #include "components/webauthn/core/browser/internal_authenticator.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_process_host.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/content_features.h"
+#include "content/public/common/content_switches.h"
 
 namespace payments {
 namespace {
+
+constexpr char kWebDriver[] = "webdriver";
 
 // Invokes the |callback| with |status|.
 void CallStatusCallback(PaymentRequestState::StatusCallback callback,
@@ -110,6 +114,10 @@ PaymentRequestState::GetPaymentRequestDelegate() const {
 
 void PaymentRequestState::ShowProcessingSpinner() {
   GetPaymentRequestDelegate()->ShowProcessingSpinner();
+}
+
+void PaymentRequestState::ShowLoadingView() {
+  GetPaymentRequestDelegate()->ShowLoadingView();
 }
 
 base::WeakPtr<PaymentRequestSpec> PaymentRequestState::GetSpec() const {
@@ -210,7 +218,14 @@ void PaymentRequestState::OnDoneCreatingPaymentApps() {
       [](const auto& app) { return app->HasEnrolledInstrument(); });
   are_requested_methods_supported_ |= !available_apps_.empty();
   NotifyOnGetAllPaymentAppsFinished();
+
+  // NotifyInitialized() can synchronously trigger observers that destroy the
+  // payment window's WebContents and delete `this`.
+  auto weak_this = weak_ptr_factory_.GetWeakPtr();
   NotifyInitialized();
+  if (!weak_this) {
+    return;
+  }
 
   // Fulfill the pending CanMakePayment call.
   if (can_make_payment_callback_)
@@ -238,15 +253,6 @@ base::WeakPtr<CSPChecker> PaymentRequestState::GetCSPChecker() {
 void PaymentRequestState::SetOptOutOffered() {
   if (journey_logger_)
     journey_logger_->SetOptOutOffered();
-}
-
-std::optional<base::UnguessableToken>
-PaymentRequestState::GetChromeOSTWAInstanceId() const {
-  if (!payment_request_delegate_) {
-    return std::nullopt;
-  }
-
-  return payment_request_delegate_->GetChromeOSTWAInstanceId();
 }
 
 void PaymentRequestState::OnPaymentResponseReady(
@@ -362,12 +368,6 @@ void PaymentRequestState::CheckRequestedMethodsSupported(
                           get_all_payment_apps_error_reason_);
 }
 
-std::string PaymentRequestState::GetAuthenticatedEmail() const {
-  return payment_request_delegate_
-             ? payment_request_delegate_->GetAuthenticatedEmail()
-             : std::string();
-}
-
 void PaymentRequestState::AddObserver(Observer* observer) {
   CHECK(observer);
   observers_.AddObserver(observer);
@@ -386,7 +386,7 @@ void PaymentRequestState::GeneratePaymentResponse() {
   // Once the response is ready, will call back into OnPaymentResponseReady.
   response_helper_ = std::make_unique<PaymentResponseHelper>(
       app_locale_, spec_, selected_app_, payment_request_delegate_,
-      selected_shipping_profile_, selected_contact_profile_,
+      selected_shipping_profile_, selected_contact_profile_, journey_logger_,
       weak_ptr_factory_.GetWeakPtr());
 }
 
@@ -525,11 +525,6 @@ autofill::PersonalDataManager* PaymentRequestState::GetPersonalDataManager() {
   return personal_data_manager_;
 }
 
-autofill::RegionDataLoader* PaymentRequestState::GetRegionDataLoader() {
-  return payment_request_delegate_
-             ? payment_request_delegate_->GetRegionDataLoader()
-             : nullptr;
-}
 
 bool PaymentRequestState::IsPaymentAppInvoked() const {
   return !!response_helper_;
@@ -736,6 +731,37 @@ bool PaymentRequestState::GetCanMakePaymentValue() const {
 
 bool PaymentRequestState::GetHasEnrolledInstrumentValue() const {
   return has_enrolled_instrument_ || can_make_payment_even_without_apps_;
+}
+
+bool PaymentRequestState::user_interaction_in_web_payment_app() const {
+  // Bypass user interaction check in Chrome/WebDriver testing environments
+  // (flags set by chromedriver launcher in
+  // chrome/test/chromedriver/chrome_launcher.cc) or when explicitly requested
+  // for testing.
+  base::CommandLine* command_line = base::CommandLine::ForCurrentProcess();
+  if (command_line->HasSwitch(switches::kEnableAutomation) ||
+      command_line->GetSwitchValueASCII(switches::kTestType) == kWebDriver ||
+      bypass_user_interaction_for_testing_) {
+    return true;
+  }
+  return user_interaction_in_web_payment_app_;
+}
+
+void PaymentRequestState::set_user_interaction_in_web_payment_app(
+    bool user_interaction) {
+  user_interaction_in_web_payment_app_ = user_interaction;
+  if (user_interaction_in_web_payment_app_) {
+    if (journey_logger_) {
+      journey_logger_->SetPaymentAppUserInteractionCaptured();
+    }
+    if (response_helper_) {
+      response_helper_->OnUserInteractionCaptured();
+    }
+  }
+}
+
+bool PaymentRequestState::WasPaymentHandlerWindowInteractedWith() const {
+  return user_interaction_in_web_payment_app();
 }
 
 }  // namespace payments

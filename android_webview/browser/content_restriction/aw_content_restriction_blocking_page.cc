@@ -8,7 +8,7 @@
 #include "android_webview/browser/content_restriction/aw_content_restriction_manager_client.h"
 #include "base/android/jni_android.h"
 #include "base/android/jni_string.h"
-#include "base/i18n/rtl.h"
+#include "base/i18n/icubridge/default_icu_locale.h"
 #include "base/memory/ptr_util.h"
 #include "base/strings/string_number_conversions.h"
 #include "components/grit/components_resources.h"
@@ -46,7 +46,8 @@ AwContentRestrictionBlockingPage::CreateBlockingPage(
       std::make_unique<
           security_interstitials::SecurityInterstitialControllerClient>(
           web_contents, GetMetricsHelper(url), pref_service,
-          base::i18n::GetConfiguredLocale(), GURL(url::kAboutBlankURL),
+          std::string(base::i18n::GetDefaultIcuLocale().tag_string()),
+          GURL(url::kAboutBlankURL),
           /*settings_page_helper=*/nullptr)));
 }
 
@@ -109,6 +110,8 @@ void AwContentRestrictionBlockingPage::PopulateInterstitialStrings(
       l10n_util::GetStringUTF16(IDS_WEBVIEW_CONTENT_RESTRICTION_LEARN_MORE));
   load_time_data.Set("backText", l10n_util::GetStringUTF16(
                                      IDS_WEBVIEW_CONTENT_RESTRICTION_GO_BACK));
+  load_time_data.Set("hide_back_link",
+                     !controller()->CanGoBackBeforeNavigation());
 }
 
 }  // namespace android_webview

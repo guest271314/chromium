@@ -19,6 +19,7 @@
 #include "chrome/browser/webshare/win/fake_buffer.h"
 #include "chrome/browser/webshare/win/fake_data_transfer_manager.h"
 #include "chrome/browser/webshare/win/fake_data_transfer_manager_interop.h"
+#include "chrome/browser/webshare/win/fake_data_writer_factory.h"
 #include "chrome/browser/webshare/win/scoped_share_operation_fake_components.h"
 #include "chrome/test/base/chrome_render_view_host_test_harness.h"
 #include "content/public/browser/browser_thread.h"
@@ -191,6 +192,10 @@ class ShareOperationUnitTest : public ChromeRenderViewHostTestHarness {
     return scoped_fake_components_.fake_data_transfer_manager_interop();
   }
 
+  FakeDataWriterFactory& fake_data_writer_factory() {
+    return scoped_fake_components_.fake_data_writer_factory();
+  }
+
  private:
   raw_ptr<FakeDataTransferManager, DanglingUntriaged>
       fake_data_transfer_manager_ = nullptr;
@@ -339,6 +344,7 @@ TEST_F(ShareOperationUnitTest, SingleFileAtSizeLimit) {
 }
 
 TEST_F(ShareOperationUnitTest, SingleFileLargerThanSizeLimit) {
+  fake_data_writer_factory().SetCheckForUnflushedWriterDestroyed(false);
   bool post_data_requested_callback_invoked = false;
   ComPtr<IStorageFile> shared_file;
   fake_data_transfer_manager()->SetPostDataRequestedCallback(
@@ -416,6 +422,8 @@ TEST_F(ShareOperationUnitTest, FilesTotallingSizeLimit) {
 }
 
 TEST_F(ShareOperationUnitTest, FilesTotallingLargerThanSizeLimit) {
+  fake_data_writer_factory().SetCheckForUnflushedWriterDestroyed(false);
+
   bool post_data_requested_callback_invoked = false;
   ComPtr<IStorageFile> shared_file_1;
   ComPtr<IStorageFile> shared_file_2;
@@ -456,6 +464,36 @@ TEST_F(ShareOperationUnitTest, FilesTotallingLargerThanSizeLimit) {
   ASSERT_NO_FATAL_FAILURE(ReadFile(shared_file_2.Get(), file2_contents));
   ASSERT_LT(file1_contents.length() + file2_contents.length(),
             kMaxSharedFileBytesForTest + 1);
+}
+
+TEST_F(ShareOperationUnitTest, TestHiddenWebContentsBlocked) {
+  web_contents()->WasHidden();
+
+  base::RunLoop run_loop;
+  std::vector<blink::mojom::SharedFilePtr> files;
+  ShareOperation operation{"", "", GURL(), web_contents()};
+  operation.Run(
+      std::move(files),
+      base::BindLambdaForTesting([&run_loop](blink::mojom::ShareError error) {
+        ASSERT_EQ(error, blink::mojom::ShareError::PERMISSION_DENIED);
+        run_loop.Quit();
+      }));
+  run_loop.Run();
+}
+
+TEST_F(ShareOperationUnitTest, TestOccludedWebContentsBlocked) {
+  web_contents()->WasOccluded();
+
+  base::RunLoop run_loop;
+  std::vector<blink::mojom::SharedFilePtr> files;
+  ShareOperation operation{"", "", GURL(), web_contents()};
+  operation.Run(
+      std::move(files),
+      base::BindLambdaForTesting([&run_loop](blink::mojom::ShareError error) {
+        ASSERT_EQ(error, blink::mojom::ShareError::PERMISSION_DENIED);
+        run_loop.Quit();
+      }));
+  run_loop.Run();
 }
 
 }  // namespace webshare

@@ -14,7 +14,8 @@ namespace blink {
 class HTMLSelectElement;
 class HTMLOptionElement;
 class HTMLMenuOwnerElement;
-class HTMLMenuItemElement;
+class HTMLMenuItemElementBase;
+struct FocusParams;
 
 template <typename OwnerType, typename ItemType>
 class ElementListIterator final {
@@ -135,6 +136,11 @@ class ElementList final {
                                      bool inclusive = false,
                                      bool wrap = false);
 
+  enum class PageKey { kDown, kUp };
+  void HandlePageUpDown(ItemType& element,
+                        PageKey page_key,
+                        FocusParams& focus_params);
+
  private:
   ItemType* FindElement(ItemType& element,
                         ElementMatchingPredicate predicate,
@@ -152,13 +158,13 @@ extern template class CORE_EXTERN_TEMPLATE_EXPORT
 extern template class CORE_EXTERN_TEMPLATE_EXPORT
     ElementList<HTMLSelectElement, HTMLOptionElement>;
 extern template class CORE_EXTERN_TEMPLATE_EXPORT
-    ElementListIterator<HTMLMenuOwnerElement, HTMLMenuItemElement>;
+    ElementListIterator<HTMLMenuOwnerElement, HTMLMenuItemElementBase>;
 extern template class CORE_EXTERN_TEMPLATE_EXPORT
-    ElementList<HTMLMenuOwnerElement, HTMLMenuItemElement>;
+    ElementList<HTMLMenuOwnerElement, HTMLMenuItemElementBase>;
 
 // OptionList class is a lightweight version of HTMLOptionsCollection.
 using OptionList = ElementList<HTMLSelectElement, HTMLOptionElement>;
-using MenuItemList = ElementList<HTMLMenuOwnerElement, HTMLMenuItemElement>;
+using MenuItemList = ElementList<HTMLMenuOwnerElement, HTMLMenuItemElementBase>;
 
 }  // namespace blink
 

@@ -17,6 +17,7 @@
 #include "chrome/browser/password_manager/android/password_store_android_backend_dispatcher_bridge.h"
 #include "chrome/browser/password_manager/android/password_store_android_backend_receiver_bridge.h"
 #include "components/password_manager/core/browser/password_form.h"
+#include "components/sync/protocol/deletion_origin.pb.h"
 
 namespace password_manager {
 
@@ -79,20 +80,20 @@ PasswordStoreAndroidBackendBridgeHelperImpl::
   // Delete dispatcher bridge on the background thread where it lives.
   bool will_delete = background_task_runner_->DeleteSoon(
       FROM_HERE, std::move(dispatcher_bridge_));
-  DCHECK(will_delete);
+  CHECK(will_delete, base::NotFatalUntil::M161);
 }
 
 void PasswordStoreAndroidBackendBridgeHelperImpl::SetConsumer(
     base::WeakPtr<Consumer> consumer) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(main_sequence_checker_);
-  DCHECK(receiver_bridge_);
+  CHECK(receiver_bridge_, base::NotFatalUntil::M161);
   receiver_bridge_->SetConsumer(consumer);
 }
 
 JobId PasswordStoreAndroidBackendBridgeHelperImpl::GetAllLogins(
     std::string account) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(main_sequence_checker_);
-  DCHECK(dispatcher_bridge_);
+  CHECK(dispatcher_bridge_, base::NotFatalUntil::M161);
   JobId job_id = GetNextJobId();
   background_task_runner_->PostTask(
       FROM_HERE,
@@ -105,7 +106,7 @@ JobId PasswordStoreAndroidBackendBridgeHelperImpl::GetAllLogins(
 JobId PasswordStoreAndroidBackendBridgeHelperImpl::GetAllLoginsWithBrandingInfo(
     std::string account) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(main_sequence_checker_);
-  DCHECK(dispatcher_bridge_);
+  CHECK(dispatcher_bridge_, base::NotFatalUntil::M161);
   JobId job_id = GetNextJobId();
   background_task_runner_->PostTask(
       FROM_HERE, base::BindOnce(&PasswordStoreAndroidBackendDispatcherBridge::
@@ -118,7 +119,7 @@ JobId PasswordStoreAndroidBackendBridgeHelperImpl::GetAllLoginsWithBrandingInfo(
 JobId PasswordStoreAndroidBackendBridgeHelperImpl::GetAutofillableLogins(
     std::string account) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(main_sequence_checker_);
-  DCHECK(dispatcher_bridge_);
+  CHECK(dispatcher_bridge_, base::NotFatalUntil::M161);
   JobId job_id = GetNextJobId();
   background_task_runner_->PostTask(
       FROM_HERE,
@@ -133,7 +134,7 @@ JobId PasswordStoreAndroidBackendBridgeHelperImpl::GetLoginsForSignonRealm(
     const std::string& signon_realm,
     std::string account) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(main_sequence_checker_);
-  DCHECK(dispatcher_bridge_);
+  CHECK(dispatcher_bridge_, base::NotFatalUntil::M161);
   JobId job_id = GetNextJobId();
   background_task_runner_->PostTask(
       FROM_HERE,
@@ -162,7 +163,7 @@ JobId PasswordStoreAndroidBackendBridgeHelperImpl::AddLogin(
     password_manager::StoredCredential credential,
     std::string account) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(main_sequence_checker_);
-  DCHECK(dispatcher_bridge_);
+  CHECK(dispatcher_bridge_, base::NotFatalUntil::M161);
   JobId job_id = GetNextJobId();
   background_task_runner_->PostTask(
       FROM_HERE,
@@ -176,7 +177,7 @@ JobId PasswordStoreAndroidBackendBridgeHelperImpl::UpdateLogin(
     password_manager::StoredCredential credential,
     std::string account) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(main_sequence_checker_);
-  DCHECK(dispatcher_bridge_);
+  CHECK(dispatcher_bridge_, base::NotFatalUntil::M161);
   JobId job_id = GetNextJobId();
   background_task_runner_->PostTask(
       FROM_HERE,
@@ -190,13 +191,39 @@ JobId PasswordStoreAndroidBackendBridgeHelperImpl::RemoveLogin(
     password_manager::StoredCredential credential,
     std::string account) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(main_sequence_checker_);
-  DCHECK(dispatcher_bridge_);
+  CHECK(dispatcher_bridge_, base::NotFatalUntil::M161);
   JobId job_id = GetNextJobId();
   background_task_runner_->PostTask(
       FROM_HERE,
-      base::BindOnce(&PasswordStoreAndroidBackendDispatcherBridge::RemoveLogin,
-                     base::Unretained(dispatcher_bridge_.get()), job_id,
-                     std::move(credential), std::move(account)));
+      base::BindOnce(
+          [](PasswordStoreAndroidBackendDispatcherBridge* bridge, JobId job_id,
+             StoredCredential credential, std::string account) {
+            bridge->RemoveLogin(job_id, credential, std::move(account));
+          },
+          base::Unretained(dispatcher_bridge_.get()), job_id,
+          std::move(credential), std::move(account)));
+  return job_id;
+}
+
+JobId PasswordStoreAndroidBackendBridgeHelperImpl::RemoveLogin(
+    password_manager::StoredCredential credential,
+    std::string account,
+    sync_pb::DeletionOrigin deletion_origin) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(main_sequence_checker_);
+  CHECK(dispatcher_bridge_, base::NotFatalUntil::M161);
+  JobId job_id = GetNextJobId();
+  background_task_runner_->PostTask(
+      FROM_HERE,
+      base::BindOnce(
+          [](PasswordStoreAndroidBackendDispatcherBridge* bridge, JobId job_id,
+             StoredCredential credential, std::string account,
+             sync_pb::DeletionOrigin deletion_origin) {
+            bridge->RemoveLogin(job_id, credential, std::move(account),
+                                std::move(deletion_origin));
+          },
+          base::Unretained(dispatcher_bridge_.get()), job_id,
+          std::move(credential), std::move(account),
+          std::move(deletion_origin)));
   return job_id;
 }
 

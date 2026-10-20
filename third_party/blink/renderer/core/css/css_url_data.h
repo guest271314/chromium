@@ -35,6 +35,7 @@
 namespace blink {
 
 class Document;
+class ExecutionContext;
 class KURL;
 class StringBuilder;
 class TextEncoding;
@@ -77,9 +78,9 @@ class CORE_EXPORT CSSUrlData : public GarbageCollected<CSSUrlData> {
   // computed values - the above should otherwise be preferred.
   explicit CSSUrlData(const AtomicString& resolved_url);
 
-  // Returns the resolved URL, potentially reresolving against passed Document
-  // if there's a potential risk of "dangling markup".
-  KURL ResolveUrl(const Document&) const;
+  // Returns the resolved URL, potentially reresolving against the passed
+  // ExecutionContext if there's a potential risk of "dangling markup".
+  KURL ResolveUrl(const ExecutionContext&) const;
 
   // Re-resolve the URL against the base provided by the passed
   // Document. Returns true if the resolved URL changed, otherwise false.
@@ -101,8 +102,14 @@ class CORE_EXPORT CSSUrlData : public GarbageCollected<CSSUrlData> {
   // Returns a copy where the referrer has been reset.
   const CSSUrlData* MakeWithoutReferrer() const;
 
+  // For dangling-markup URLs, return the raw relative form so that
+  // round-tripping through computed-style serialization cannot launder the
+  // potentially-dangling-markup flag. See MakeResolved()/MakeComputed() for
+  // the same rationale.
   const AtomicString& ValueForSerialization() const {
-    return is_local_ || absolute_url_.empty() ? relative_url_ : absolute_url_;
+    return is_local_ || absolute_url_.empty() || potentially_dangling_markup_
+               ? relative_url_
+               : absolute_url_;
   }
 
   const AtomicString& UnresolvedUrl() const { return relative_url_; }
@@ -114,6 +121,9 @@ class CORE_EXPORT CSSUrlData : public GarbageCollected<CSSUrlData> {
     return is_from_origin_clean_style_sheet_;
   }
   bool IsAdRelated() const { return is_ad_related_; }
+  bool IsPotentiallyDanglingMarkup() const {
+    return potentially_dangling_markup_;
+  }
   const CSSUrlRequestModifiers& GetModifiers() const { return modifiers_; }
 
   // Returns true if this URL is "local" to the specified Document (either by

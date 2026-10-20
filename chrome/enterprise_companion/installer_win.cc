@@ -49,7 +49,7 @@ bool WaitForFileWritable(const base::FilePath& path) {
   base::TimeTicks next_logging_time = base::TimeTicks::Now() + kLoggingInterval;
   base::TimeTicks deadline = base::TimeTicks::Now() + kMaxWait;
   while (base::TimeTicks::Now() < deadline) {
-    // The file is writeable if it can be opened for exclusive write access or
+    // The file is writable if it can be opened for exclusive write access or
     // if it does not exist.
     if (base::File file(path, base::File::FLAG_OPEN | base::File::FLAG_WRITE |
                                   base::File::FLAG_WIN_EXCLUSIVE_WRITE |
@@ -70,15 +70,6 @@ bool WaitForFileWritable(const base::FilePath& path) {
 #endif  // ENTERPRISE_COMPANION_USE_ICU_DATA_FILE
 
 }  // namespace
-
-const wchar_t kAppRegKey[] = L"Software\\" COMPANY_SHORTNAME_STRING
-                             "\\Update\\Clients\\" ENTERPRISE_COMPANION_APPID;
-const wchar_t kRegValuePV[] = L"pv";
-const wchar_t kRegValueName[] = L"name";
-
-#if ENTERPRISE_COMPANION_USE_ICU_DATA_FILE
-const wchar_t kIcuDataFileName[] = L"icudtl.dat";
-#endif
 
 bool Install() {
   base::FilePath source_exe_path;

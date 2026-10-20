@@ -6,18 +6,20 @@
 
 #include <utility>
 
-#include "base/metrics/histogram_functions.h"
 #include "base/strings/utf_string_conversions.h"
 #include "build/build_config.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/signin/chrome_signin_client_factory.h"
+#include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/signin/signin_util.h"
 #include "chrome/browser/sync/sync_service_factory.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/sync/sync_passphrase_dialog.h"
 #include "chrome/grit/branded_strings.h"
 #include "chrome/grit/generated_resources.h"
 #include "components/prefs/pref_service.h"
 #include "components/signin/public/base/signin_switches.h"
+#include "components/signin/public/identity_manager/identity_manager.h"
 #include "components/strings/grit/components_strings.h"
 #include "components/sync/base/features.h"
 #include "components/sync/service/sync_service.h"
@@ -26,6 +28,8 @@
 #include "google_apis/gaia/google_service_auth_error.h"
 #include "net/base/url_util.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/base/page_transition_types.h"
+#include "ui/base/window_open_disposition.h"
 
 #if BUILDFLAG(IS_CHROMEOS)
 #include "ash/constants/ash_features.h"
@@ -34,10 +38,10 @@
 #if !BUILDFLAG(IS_ANDROID)
 #include "chrome/browser/search_engines/ui_thread_search_terms_data.h"
 #include "chrome/browser/trusted_vault/trusted_vault_encryption_keys_tab_helper.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/navigator/browser_navigator.h"
 #include "chrome/browser/ui/singleton_tabs.h"
+#include "components/trusted_vault/trusted_vault_histograms.h"
 #include "content/public/browser/navigation_handle.h"
 #endif
 
@@ -67,6 +71,22 @@ void OpenTabForSyncTrustedVaultUserAction(
   }
 }
 
+size_t GetAccountIndexForPrimaryAccount(BrowserWindowInterface* browser) {
+  if (!browser) {
+    return 0u;
+  }
+  Profile* profile = browser->GetProfile();
+  if (!profile) {
+    return 0u;
+  }
+  signin::IdentityManager* identity_manager =
+      IdentityManagerFactory::GetForProfile(profile);
+  if (!identity_manager) {
+    return 0u;
+  }
+  return identity_manager->GetSessionIndexForPrimaryAccount().value_or(0u);
+}
+
 #endif  // !BUILDFLAG(IS_ANDROID)
 
 }  // namespace
@@ -87,7 +107,9 @@ SyncStatusLabels GetSyncStatusLabelsForSettings(
   }
 
 #if BUILDFLAG(IS_CHROMEOS)
-  if (service->GetUserSettings()->IsSyncFeatureDisabledViaDashboard()) {
+  if (service->GetUserSettings()->IsSyncFeatureDisabledViaDashboard() &&
+      (service->HasSyncConsent() ||
+       !syncer::IsReplaceSyncPromosWithSignInPromosEnabled())) {
     return {SyncStatusMessageType::kSyncError,
             IDS_SIGNED_IN_WITH_SYNC_STOPPED_VIA_DASHBOARD,
             IDS_SYNC_EMPTY_STRING, IDS_SYNC_EMPTY_STRING,
@@ -184,11 +206,15 @@ SyncStatusLabels GetAvatarSyncErrorLabelsForSettings(
           button_string_id, IDS_PROFILES_ACCOUNT_REMOVAL_TITLE,
           SyncStatusActionType::kRetrieveTrustedVaultKeys};
 
-    case syncer::SyncService::UserActionableError::kNeedsPassphrase:
+    case syncer::SyncService::UserActionableError::kNeedsPassphrase: {
+#if BUILDFLAG(IS_CHROMEOS)
+      syncer::SyncService* service = SyncServiceFactory::GetForProfile(profile);
+#endif
       return {
           SyncStatusMessageType::kSyncError,
 #if BUILDFLAG(IS_CHROMEOS)
-          syncer::IsReplaceSyncPromosWithSignInPromosEnabled()
+          (syncer::IsReplaceSyncPromosWithSignInPromosEnabled() && service &&
+           !service->HasSyncConsent())
               ? IDS_SETTINGS_ERROR_PASSPHRASE_USER_ERROR_DESCRIPTION_WITH_EMAIL
               : IDS_SETTINGS_ERROR_PASSPHRASE_USER_ERROR_DESCRIPTION,
 #else
@@ -199,6 +225,7 @@ SyncStatusLabels GetAvatarSyncErrorLabelsForSettings(
               ? IDS_SETTINGS_PEOPLE_SIGN_OUT
               : IDS_SETTINGS_SIGN_OUT,
           SyncStatusActionType::kEnterPassphrase};
+    }
 
     case syncer::SyncService::UserActionableError::
         kTrustedVaultRecoverabilityDegradedForEverything:
@@ -307,10 +334,10 @@ bool ShouldShowSyncPassphraseError(const syncer::SyncService* service) {
   return settings->IsPassphraseRequiredForPreferredDataTypes();
 }
 
-#if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_CHROMEOS)
-void ShowSyncPassphraseDialogAndDecryptData(Browser& browser) {
+#if !BUILDFLAG(IS_ANDROID)
+void ShowSyncPassphraseDialogAndDecryptData(BrowserWindowInterface& browser) {
   syncer::SyncService* sync_service =
-      SyncServiceFactory::GetForProfile(browser.profile());
+      SyncServiceFactory::GetForProfile(browser.GetProfile());
   if (!sync_service) {
     return;
   }
@@ -325,9 +352,9 @@ void ShowSyncPassphraseDialogAndDecryptData(Browser& browser) {
             return SyncPassphraseDialogDecryptData(
                 SyncServiceFactory::GetForProfile(profile.get()), passphrase);
           },
-          browser.profile()->GetWeakPtr()));
+          browser.GetProfile()->GetWeakPtr()));
 }
-#endif  // !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_CHROMEOS)
+#endif  // !BUILDFLAG(IS_ANDROID)
 
 #if !BUILDFLAG(IS_ANDROID)
 void OpenTabForSyncKeyRetrieval(
@@ -336,8 +363,14 @@ void OpenTabForSyncKeyRetrieval(
   syncer::RecordKeyRetrievalTrigger(trigger);
   const GURL continue_url =
       GURL(UIThreadSearchTermsData().GoogleBaseURLValue());
+
+  size_t account_index = GetAccountIndexForPrimaryAccount(browser);
+
+  trusted_vault::RecordTrustedVaultRecoveryFlowTriggeredEndpoint(
+      trusted_vault::TrustedVaultRecoveryFlowEndpoint::kDesktop);
+
   GURL retrieval_url =
-      GaiaUrls::GetInstance()->signin_chrome_sync_keys_retrieval_url();
+      GaiaUrls::GetInstance()->SigninChromeSyncKeysRetrievalUrl(account_index);
   if (continue_url.is_valid()) {
     retrieval_url = net::AppendQueryParameter(retrieval_url, "continue",
                                               continue_url.spec());
@@ -351,8 +384,15 @@ void OpenTabForSyncKeyRecoverabilityDegraded(
   syncer::RecordRecoverabilityDegradedFixTrigger(trigger);
   const GURL continue_url =
       GURL(UIThreadSearchTermsData().GoogleBaseURLValue());
-  GURL url = GaiaUrls::GetInstance()
-                 ->signin_chrome_sync_keys_recoverability_degraded_url();
+
+  size_t account_index = GetAccountIndexForPrimaryAccount(browser);
+
+  trusted_vault::RecordTrustedVaultRecoveryFlowTriggeredEndpoint(
+      trusted_vault::TrustedVaultRecoveryFlowEndpoint::kDesktop);
+
+  GURL url =
+      GaiaUrls::GetInstance()->SigninChromeSyncKeysRecoverabilityDegradedUrl(
+          account_index);
   if (continue_url.is_valid()) {
     url = net::AppendQueryParameter(url, "continue", continue_url.spec());
   }

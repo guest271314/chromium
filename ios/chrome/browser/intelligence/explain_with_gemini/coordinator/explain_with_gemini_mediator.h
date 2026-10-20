@@ -9,7 +9,7 @@
 
 #import "components/signin/public/identity_manager/identity_manager.h"
 #import "ios/chrome/browser/browser_content/model/edit_menu_builder.h"
-#import "ios/chrome/browser/shared/public/commands/bwg_commands.h"
+#import "ios/chrome/browser/shared/public/commands/gemini_commands.h"
 #import "ios/chrome/browser/signin/model/authentication_service.h"
 
 @protocol SceneCommands;
@@ -22,7 +22,12 @@
 @property(nonatomic, weak) id<SceneCommands> sceneHandler;
 
 // The handler for Gemini commands.
-@property(nonatomic, weak) id<BWGCommands> BWGHandler;
+@property(nonatomic, weak) id<GeminiCommands> geminiHandler;
+
+// TODO(crbug.com/537876189): Remove this reference to UIViewController once
+// Helios Prime launches.
+// The base view controller for presenting Gemini UI.
+@property(nonatomic, weak) UIViewController* baseViewController;
 
 // Initializer for a mediator.
 - (instancetype)initWithIdentityManager:

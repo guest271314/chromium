@@ -47,9 +47,6 @@ bool IsAutofillEnabled();
 // Whether nonce usage in params is enabled.
 bool IsNonceInParamsEnabled();
 
-// Whether showing the non-string token is enabled.
-bool IsNonStringTokenEnabled();
-
 // Controls whether FedCM requires explicit accounts_endpoint and
 // login_url in well-known files when using client_metadata.
 bool IsWellKnownEndpointValidationEnabled();
@@ -57,17 +54,23 @@ bool IsWellKnownEndpointValidationEnabled();
 // Whether preserving ports for testing is enabled.
 bool IsPreservePortsForTestingEnabled();
 
-// Whether accessing error attribute is enabled.
-bool IsErrorAttributeEnabled();
-
 // Whether navigation interception is enabled.
 bool IsNavigationInterceptionEnabled();
+
+// Whether the FedCM Identity Handler (service worker interception) is enabled.
+bool IsFedCmIdentityHandlerEnabled();
 
 // Whether embedder initiated login is enabled.
 bool IsEmbedderInitiatedLoginEnabled();
 
 // Whether the ambient UI is enabled.
 bool IsFedCmAmbientUIEnabled();
+
+// Whether native IdPs are enabled.
+bool IsFedCmNativeIdPsEnabled();
+
+// Whether Active Mode with multiple IdPs is enabled.
+bool IsActiveModeMultipleIdentityProvidersEnabled();
 
 }  // namespace content::webid
 

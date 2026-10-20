@@ -7,6 +7,8 @@
 
 #import <UIKit/UIKit.h>
 
+#import "ios/chrome/browser/shared/ui/symbols/symbols.h"
+
 @protocol GREYMatcher;
 
 // Helper class to return matchers for EG tests.  These helpers are compiled
@@ -86,10 +88,9 @@
 // Matcher for element with an image defined by its name in the main bundle.
 + (id<GREYMatcher>)imageViewWithImageNamed:(NSString*)imageName;
 
-// Matcher for element with a custom symbol defined by its name and point size
-// in the main bundle.
-+ (id<GREYMatcher>)imageViewWithCustomSymbolNamed:(NSString*)symbolName
-                                        pointSize:(CGFloat)pointSize;
+// Matcher for element with a symbol defined by `symbol` and `pointSize`.
++ (id<GREYMatcher>)imageViewWithSymbol:(Symbol)symbol
+                             pointSize:(CGFloat)pointSize;
 
 // Matcher for element with an image corresponding to `imageID` and
 // accessibility trait UIAccessibilityTraitButton.
@@ -221,6 +222,9 @@
 // Matcher for the tab Share button (either in the omnibox or the toolbar).
 + (id<GREYMatcher>)tabShareButton;
 
+// Matcher for the Share button in the overflow menu.
++ (id<GREYMatcher>)overflowMenuShareButton;
+
 // Matcher for show tabs button.
 + (id<GREYMatcher>)showTabsButton;
 
@@ -263,6 +267,9 @@
 
 // Matcher for the done button on the navigation bar.
 + (id<GREYMatcher>)navigationBarDoneButton;
+
+// Matcher for the edit button on the navigation bar.
++ (id<GREYMatcher>)navigationBarEditButton;
 
 // Matcher for the done button on the Bookmarks navigation bar.
 + (id<GREYMatcher>)bookmarksNavigationBarDoneButton;
@@ -425,9 +432,6 @@
 // Returns matcher for the voice search button on the main Settings screen.
 + (id<GREYMatcher>)voiceSearchButton;
 
-// Returns matcher for the voice search button on the omnibox input accessory.
-+ (id<GREYMatcher>)voiceSearchInputAccessoryButton;
-
 // Returns matcher for the settings main menu view.
 + (id<GREYMatcher>)settingsCollectionView;
 
@@ -436,11 +440,6 @@
 
 // Returns the matcher for the quick delete browsing data button.
 + (id<GREYMatcher>)browsingDataButtonMatcher;
-
-// TODO(crbug.com/487269108): Delete the BrowsingDataConfirmButtonMatcher()
-// once the feature flag `kPasswordRemovalFromDeleteBrowsingData` is enabled.
-// Returns the matcher for the quick delete browsing data confirm button.
-+ (id<GREYMatcher>)browsingDataConfirmButtonMatcher;
 
 // Returns the matcher for the quick delete browsing data done button.
 + (id<GREYMatcher>)browsingDataDoneButtonMatcher;
@@ -455,12 +454,7 @@
 // Returns matcher for the clear cache cell on the clear browsing data panel.
 + (id<GREYMatcher>)clearCacheButton;
 
-// Returns matcher for the clear saved passwords cell on the clear browsing data
-// panel.
-+ (id<GREYMatcher>)clearSavedPasswordsButton;
-
-// Returns matcher for the clear saved passwords cell on the clear browsing data
-// panel.
+// Returns matcher for the clear autofill cell on the clear browsing data panel.
 + (id<GREYMatcher>)clearAutofillButton;
 
 // Returns matcher for the collection view of content suggestion.
@@ -601,12 +595,6 @@
 // Returns the GREYMatcher for the button that closes the tab grid.
 + (id<GREYMatcher>)tabGridDoneButton;
 
-// Returns the GREYMatcher for the button to open the overflow menu.
-+ (id<GREYMatcher>)tabGridOverflowMenuButton;
-
-// Returns the GREYMatcher for the button that reverts the close all tabs action
-// in the tab grid.
-+ (id<GREYMatcher>)tabGridUndoCloseAllButton;
 
 // Returns the GREYMatcher for the cell that opens History in Recent Tabs.
 + (id<GREYMatcher>)tabGridSelectShowHistoryCell;
@@ -805,17 +793,17 @@
 // Returns a matcher for the button to accept the generated password.
 + (id<GREYMatcher>)useSuggestedPasswordMatcher;
 
-#pragma mark - Tab Grid Edit Mode
+#pragma mark - Tab Grid Overflow Menu
 
-// Returns a matcher for the button to open the context menu for edit actions.
-+ (id<GREYMatcher>)tabGridEditButton;
+// Returns the GREYMatcher for the button to open the overflow menu.
++ (id<GREYMatcher>)tabGridOverflowMenuButton;
 
-// Returns a matcher for the context menu button to close all tabs.
-+ (id<GREYMatcher>)tabGridEditMenuCloseAllButton;
+// Returns a matcher for the overflow menu button to close all tabs.
++ (id<GREYMatcher>)tabGridOverflowMenuCloseAllButton;
 
-// Returns a matcher for the context menu button to enter the tab grid tab
+// Returns a matcher for the overflow menu button to enter the tab grid tab
 // selection mode.
-+ (id<GREYMatcher>)tabGridSelectTabsMenuButton;
++ (id<GREYMatcher>)tabGridOverflowMenuSelectTabsButton;
 
 // Returns a matcher for the button to act on the selected tabs.
 + (id<GREYMatcher>)tabGridEditAddToButton;

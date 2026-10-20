@@ -8,7 +8,6 @@
 #include "base/test/scoped_feature_list.h"
 #include "chrome/browser/accessibility/live_caption/live_translate_controller_factory.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "components/live_caption/pref_names.h"
 #include "components/prefs/pref_service.h"
@@ -37,22 +36,22 @@ class LiveTranslateControllerTest : public InProcessBrowserTest {
   }
 
   void SetLiveCaptionEnabled(bool enabled) {
-    browser()->profile()->GetPrefs()->SetBoolean(prefs::kLiveCaptionEnabled,
+    browser()->GetProfile()->GetPrefs()->SetBoolean(prefs::kLiveCaptionEnabled,
                                                  enabled);
   }
 
   bool GetLiveCaptionEnabled() {
-    return browser()->profile()->GetPrefs()->GetBoolean(
+    return browser()->GetProfile()->GetPrefs()->GetBoolean(
         prefs::kLiveCaptionEnabled);
   }
 
   void SetLiveTranslateEnabled(bool enabled) {
-    browser()->profile()->GetPrefs()->SetBoolean(prefs::kLiveTranslateEnabled,
+    browser()->GetProfile()->GetPrefs()->SetBoolean(prefs::kLiveTranslateEnabled,
                                                  enabled);
   }
 
   bool GetLiveTranslateEnabled() {
-    return browser()->profile()->GetPrefs()->GetBoolean(
+    return browser()->GetProfile()->GetPrefs()->GetBoolean(
         prefs::kLiveTranslateEnabled);
   }
 

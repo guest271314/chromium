@@ -29,7 +29,6 @@
 #include "gpu/ipc/host/gpu_disk_cache.h"
 #include "gpu/webgpu/dawn_commit_hash.h"
 #include "mojo/public/cpp/bindings/sync_call_restrictions.h"
-#include "services/webnn/host/weights_file_provider.h"
 #include "skia/buildflags.h"
 #include "skia/ext/skia_commit_hash.h"
 #include "ui/gfx/font_render_params.h"
@@ -39,7 +38,6 @@
 #endif
 
 #if BUILDFLAG(IS_WIN)
-#include "services/webnn/host/execution_provider_initializer.h"
 #include "ui/gfx/win/rendering_window_manager.h"
 #elif BUILDFLAG(IS_MAC)
 #include "ui/accelerated_widget_mac/window_resize_helper_mac.h"
@@ -113,6 +111,21 @@ std::string GraphiteDawnCacheVersion() {
   return SKIA_COMMIT_HASH "_" DAWN_COMMIT_HASH;
 }
 #endif
+
+bool CanUseShaderCache(const gpu::GpuDiskCacheHandle& handle,
+                       const std::optional<bool>& gpu_uses_graphite) {
+  if (handle == gpu::GpuDiskCacheHandle(gpu::kGraphiteDawnGpuDiskCacheHandle) &&
+      !gpu_uses_graphite.value()) {
+    // GraphiteDawn cache is not used when Skia Graphite is disabled.
+    return false;
+  }
+  if (handle == gpu::GpuDiskCacheHandle(gpu::kGrShaderGpuDiskCacheHandle) &&
+      gpu_uses_graphite.value()) {
+    // GrShader cache is not used when Skia Graphite is enabled.
+    return false;
+  }
+  return true;
+}
 
 }  // namespace
 
@@ -279,16 +292,13 @@ void GpuHostImpl::ConnectFrameSinkManager(
 
 void GpuHostImpl::EstablishGpuChannel(int client_id,
                                       uint64_t client_tracing_id,
-                                      bool is_gpu_host,
-                                      bool enable_extra_handles_validation,
+                                      mojom::GpuClientType client_type,
                                       bool sync,
                                       mojo::ScopedMessagePipeHandle handle,
                                       EstablishChannelCallback callback) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   TRACE_EVENT2("gpu", "GpuHostImpl::EstablishGpuChannel", "client_id",
-               client_id, "is_gpu_host", is_gpu_host);
-  DCHECK(!(is_gpu_host && enable_extra_handles_validation));
-
+               client_id, "client_type", client_type);
   shutdown_timeout_.Stop();
 
   if (gpu::IsReservedClientId(client_id)) {
@@ -310,22 +320,20 @@ void GpuHostImpl::EstablishGpuChannel(int client_id,
     {
       mojo::SyncCallRestrictions::ScopedAllowSyncCall scoped_allow;
       gpu_service_remote_->EstablishGpuChannel(
-          client_id, client_tracing_id, is_gpu_host,
-          enable_extra_handles_validation, std::move(handle), &success,
-          &gpu_info, &gpu_feature_info, &shared_image_capabilities);
+          client_id, client_tracing_id, client_type, std::move(handle),
+          &success, &gpu_info, &gpu_feature_info, &shared_image_capabilities);
     }
     OnChannelEstablished(client_id, /*sync=*/true, /*success=*/success,
                          gpu_info, gpu_feature_info, shared_image_capabilities);
   } else {
     gpu_service_remote_->EstablishGpuChannel(
-        client_id, client_tracing_id, is_gpu_host,
-        enable_extra_handles_validation, std::move(handle),
+        client_id, client_tracing_id, client_type, std::move(handle),
         base::BindOnce(&GpuHostImpl::OnChannelEstablished,
                        weak_ptr_factory_.GetWeakPtr(), client_id, false));
   }
 
   // The gpu host channel uses the same cache as the compositor client.
-  if (is_gpu_host &&
+  if (client_type == mojom::GpuClientType::kBrowser &&
       !base::FeatureList::IsEnabled(features::kGpuPersistentCache)) {
     SetChannelDiskCacheHandle(client_id,
                               gpu::kDisplayCompositorGpuDiskCacheHandle);
@@ -341,6 +349,10 @@ void GpuHostImpl::SetChannelDiskCacheHandle(
     int client_id,
     const gpu::GpuDiskCacheHandle& handle) {
   if (params_.disable_gpu_shader_disk_cache) {
+    return;
+  }
+
+  if (!CanUseShaderCache(handle, gpu_uses_graphite_)) {
     return;
   }
 
@@ -493,7 +505,9 @@ void GpuHostImpl::InitPersistentCache() {
                 gpu_host->OnPersistentCacheFilesCreated(
                     handle, std::move(*pending_backend));
               },
-              weak_ptr_factory_.GetWeakPtr(), handle));
+              weak_ptr_factory_.GetWeakPtr(), handle),
+          /*extra_opts=*/
+          {.retries = 30, .retry_delay = base::Milliseconds(100)});
     };
 
     if (base::FeatureList::IsEnabled(features::kGpuPersistentCache)) {
@@ -502,7 +516,7 @@ void GpuHostImpl::InitPersistentCache() {
       load_persistent_cache(gpu::kGrShaderGpuDiskCacheHandle, params_.product);
     }
 #if BUILDFLAG(SKIA_USE_DAWN)
-    if (features::kSkiaGraphiteDawnUsePersistentCache.Get()) {
+    if (features::SkiaGraphiteUsesPersistentCache()) {
       load_persistent_cache(gpu::kGraphiteDawnGpuDiskCacheHandle,
                             GraphiteDawnCacheVersion());
     }
@@ -515,6 +529,17 @@ void GpuHostImpl::SetChannelPersistentCachePendingBackend(
     persistent_cache::PendingBackend pending_backend) {
   TRACE_EVENT2("gpu", "GpuHostImpl::SetChannelPersistentCachePendingBackend",
                "client_id", client_id, "handle_type", GetHandleType(handle));
+  if (!CanUseShaderCache(handle, gpu_uses_graphite_)) {
+    if (auto* factory = PersistentCacheSandboxedFileFactory::GetInstance()) {
+      factory->DeletePendingBackendAsync(std::move(pending_backend));
+    }
+    return;
+  }
+  // Only record the size of the caches that the GPU process uses.
+  if (auto* factory = PersistentCacheSandboxedFileFactory::GetInstance()) {
+    factory->RecordDiskSizeAsync(
+        GetGpuDiskCacheSubdir(gpu::GetHandleType(handle)));
+  }
   gpu_service()->SetChannelPersistentCachePendingBackend(
       client_id, handle, std::move(pending_backend));
 }
@@ -622,6 +647,10 @@ void GpuHostImpl::DidInitialize(
                            gpu_info_for_hardware_gpu,
                            gpu_feature_info_for_hardware_gpu, gpu_extra_info);
 
+  gpu_uses_graphite_ =
+      gpu_feature_info.status_values[gpu::GPU_FEATURE_TYPE_SKIA_GRAPHITE] ==
+      gpu::kGpuFeatureStatusEnabled;
+
   if (!params_.disable_gpu_shader_disk_cache) {
     // Signal that any delayed loads of the persistent cache files should be
     // immediately forwarded to the GPU process.
@@ -644,7 +673,7 @@ void GpuHostImpl::DidInitialize(
       SetChannelDiskCacheHandle(gpu::kGrShaderCacheClientId,
                                 gpu::kGrShaderGpuDiskCacheHandle);
     }
-    if (!features::kSkiaGraphiteDawnUsePersistentCache.Get()) {
+    if (!features::SkiaGraphiteUsesPersistentCache()) {
       SetChannelDiskCacheHandle(gpu::kGraphiteDawnClientId,
                                 gpu::kGraphiteDawnGpuDiskCacheHandle);
     }
@@ -805,17 +834,6 @@ void GpuHostImpl::ClearGrShaderDiskCache() {
           cache, base::Time(), base::Time::Max(), base::DoNothing());
     }
   }
-}
-
-#if BUILDFLAG(IS_WIN)
-void GpuHostImpl::EnsureWebNNExecutionProvidersReady(
-    EnsureWebNNExecutionProvidersReadyCallback cb) {
-  webnn::EnsureExecutionProvidersReady(std::move(cb));
-}
-#endif
-
-void GpuHostImpl::CreateWebNNWeightsFile(CreateWebNNWeightsFileCallback cb) {
-  webnn::CreateWeightsFile(std::move(cb));
 }
 
 void GpuHostImpl::RecordLogMessage(int32_t severity,

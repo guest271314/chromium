@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "base/base64.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
 #include "components/os_crypt/async/browser/test_utils.h"
@@ -47,10 +48,6 @@ MATCHER_P(MatchesToken, expected_token, "") {
          expected_token.ToProto().SerializeAsString();
 }
 
-// Copy of the same constant in sync_prefs.cc, for testing purposes.
-constexpr char kObsoleteAutofillWalletImportEnabled[] =
-    "autofill.wallet_import_enabled";
-
 class SyncPrefsTest : public testing::Test {
  protected:
   SyncPrefsTest() {
@@ -74,76 +71,76 @@ class SyncPrefsTest : public testing::Test {
 };
 
 TEST_F(SyncPrefsTest, EncryptionBootstrapTokenPerAccountSignedOut) {
-  os_crypt_async::Encryptor encryptor =
+  scoped_refptr<os_crypt_async::Encryptor> encryptor =
       os_crypt_async::GetTestEncryptorForTesting();
   EXPECT_TRUE(
-      sync_prefs_->GetEncryptionBootstrapTokenForAccount(encryptor, GaiaId())
+      sync_prefs_->GetEncryptionBootstrapTokenForAccount(*encryptor, GaiaId())
           .IsEmpty());
 }
 
 TEST_F(SyncPrefsTest, EncryptionBootstrapTokenPerAccount) {
-  os_crypt_async::Encryptor encryptor =
+  scoped_refptr<os_crypt_async::Encryptor> encryptor =
       os_crypt_async::GetTestEncryptorForTesting();
   ASSERT_TRUE(
-      sync_prefs_->GetEncryptionBootstrapTokenForAccount(encryptor, gaia_id_)
+      sync_prefs_->GetEncryptionBootstrapTokenForAccount(*encryptor, gaia_id_)
           .IsEmpty());
   CustomPassphraseBootstrapToken token1 =
       CustomPassphraseBootstrapToken::CreateFakeForTesting(1);
 
-  sync_prefs_->SetEncryptionBootstrapTokenForAccount(token1, encryptor,
+  sync_prefs_->SetEncryptionBootstrapTokenForAccount(token1, *encryptor,
                                                      gaia_id_);
   EXPECT_THAT(
-      sync_prefs_->GetEncryptionBootstrapTokenForAccount(encryptor, gaia_id_),
+      sync_prefs_->GetEncryptionBootstrapTokenForAccount(*encryptor, gaia_id_),
       MatchesToken(token1));
 
   GaiaId gaia_id_2("account_gaia_2");
   EXPECT_TRUE(
-      sync_prefs_->GetEncryptionBootstrapTokenForAccount(encryptor, gaia_id_2)
+      sync_prefs_->GetEncryptionBootstrapTokenForAccount(*encryptor, gaia_id_2)
           .IsEmpty());
 
   CustomPassphraseBootstrapToken token2 =
       CustomPassphraseBootstrapToken::CreateFakeForTesting(2);
 
-  sync_prefs_->SetEncryptionBootstrapTokenForAccount(token2, encryptor,
+  sync_prefs_->SetEncryptionBootstrapTokenForAccount(token2, *encryptor,
                                                      gaia_id_2);
   EXPECT_THAT(
-      sync_prefs_->GetEncryptionBootstrapTokenForAccount(encryptor, gaia_id_),
+      sync_prefs_->GetEncryptionBootstrapTokenForAccount(*encryptor, gaia_id_),
       MatchesToken(token1));
   EXPECT_THAT(
-      sync_prefs_->GetEncryptionBootstrapTokenForAccount(encryptor, gaia_id_2),
+      sync_prefs_->GetEncryptionBootstrapTokenForAccount(*encryptor, gaia_id_2),
       MatchesToken(token2));
 }
 
 TEST_F(SyncPrefsTest, ClearEncryptionBootstrapTokenPerAccount) {
-  os_crypt_async::Encryptor encryptor =
+  scoped_refptr<os_crypt_async::Encryptor> encryptor =
       os_crypt_async::GetTestEncryptorForTesting();
   ASSERT_TRUE(
-      sync_prefs_->GetEncryptionBootstrapTokenForAccount(encryptor, gaia_id_)
+      sync_prefs_->GetEncryptionBootstrapTokenForAccount(*encryptor, gaia_id_)
           .IsEmpty());
   CustomPassphraseBootstrapToken token1 =
       CustomPassphraseBootstrapToken::CreateFakeForTesting(1);
 
-  sync_prefs_->SetEncryptionBootstrapTokenForAccount(token1, encryptor,
+  sync_prefs_->SetEncryptionBootstrapTokenForAccount(token1, *encryptor,
                                                      gaia_id_);
   EXPECT_THAT(
-      sync_prefs_->GetEncryptionBootstrapTokenForAccount(encryptor, gaia_id_),
+      sync_prefs_->GetEncryptionBootstrapTokenForAccount(*encryptor, gaia_id_),
       MatchesToken(token1));
 
   GaiaId gaia_id_2("account_gaia_2");
   EXPECT_TRUE(
-      sync_prefs_->GetEncryptionBootstrapTokenForAccount(encryptor, gaia_id_2)
+      sync_prefs_->GetEncryptionBootstrapTokenForAccount(*encryptor, gaia_id_2)
           .IsEmpty());
 
   CustomPassphraseBootstrapToken token2 =
       CustomPassphraseBootstrapToken::CreateFakeForTesting(2);
 
-  sync_prefs_->SetEncryptionBootstrapTokenForAccount(token2, encryptor,
+  sync_prefs_->SetEncryptionBootstrapTokenForAccount(token2, *encryptor,
                                                      gaia_id_2);
   EXPECT_THAT(
-      sync_prefs_->GetEncryptionBootstrapTokenForAccount(encryptor, gaia_id_),
+      sync_prefs_->GetEncryptionBootstrapTokenForAccount(*encryptor, gaia_id_),
       MatchesToken(token1));
   EXPECT_THAT(
-      sync_prefs_->GetEncryptionBootstrapTokenForAccount(encryptor, gaia_id_2),
+      sync_prefs_->GetEncryptionBootstrapTokenForAccount(*encryptor, gaia_id_2),
       MatchesToken(token2));
 
   // Remove account 2 from device by setting the available_gaia_ids to have the
@@ -151,10 +148,10 @@ TEST_F(SyncPrefsTest, ClearEncryptionBootstrapTokenPerAccount) {
   sync_prefs_->KeepAccountSettingsPrefsOnlyForUsers(
       /*available_gaia_ids=*/{gaia_id_});
   EXPECT_THAT(
-      sync_prefs_->GetEncryptionBootstrapTokenForAccount(encryptor, gaia_id_),
+      sync_prefs_->GetEncryptionBootstrapTokenForAccount(*encryptor, gaia_id_),
       MatchesToken(token1));
   EXPECT_TRUE(
-      sync_prefs_->GetEncryptionBootstrapTokenForAccount(encryptor, gaia_id_2)
+      sync_prefs_->GetEncryptionBootstrapTokenForAccount(*encryptor, gaia_id_2)
           .IsEmpty());
 }
 
@@ -895,58 +892,10 @@ class SyncPrefsMigrationTest : public testing::Test {
   GaiaId gaia_id_;
 };
 
-TEST_F(SyncPrefsMigrationTest, MigrateAutofillWalletImportEnabledPrefIfSet) {
-  pref_service_.SetBoolean(kObsoleteAutofillWalletImportEnabled, false);
-  ASSERT_TRUE(
-      pref_service_.GetUserPrefValue(kObsoleteAutofillWalletImportEnabled));
-
-  SyncPrefs::MigrateAutofillWalletImportEnabledPref(&pref_service_);
-
-  SyncPrefs prefs(&pref_service_);
-
-  EXPECT_TRUE(pref_service_.GetUserPrefValue(
-      SyncPrefs::GetPrefNameForTypeForTesting(UserSelectableType::kPayments)));
-  EXPECT_FALSE(pref_service_.GetBoolean(
-      SyncPrefs::GetPrefNameForTypeForTesting(UserSelectableType::kPayments)));
-}
-
-TEST_F(SyncPrefsMigrationTest, MigrateAutofillWalletImportEnabledPrefIfUnset) {
-  ASSERT_FALSE(
-      pref_service_.GetUserPrefValue(kObsoleteAutofillWalletImportEnabled));
-
-  SyncPrefs::MigrateAutofillWalletImportEnabledPref(&pref_service_);
-
-  SyncPrefs prefs(&pref_service_);
-
-  EXPECT_FALSE(pref_service_.GetUserPrefValue(
-      SyncPrefs::GetPrefNameForTypeForTesting(UserSelectableType::kPayments)));
-}
-
-// Regression test for crbug.com/1467307.
-TEST_F(SyncPrefsMigrationTest,
-       MigrateAutofillWalletImportEnabledPrefIfUnsetWithSyncEverythingOff) {
-  // Mimic an old profile where sync-everything was turned off without
-  // populating kObsoleteAutofillWalletImportEnabled (i.e. before the UI
-  // included the payments toggle).
-  pref_service_.SetBoolean(prefs::internal::kSyncKeepEverythingSynced, false);
-
-  ASSERT_FALSE(
-      pref_service_.GetUserPrefValue(kObsoleteAutofillWalletImportEnabled));
-
-  SyncPrefs::MigrateAutofillWalletImportEnabledPref(&pref_service_);
-
-  SyncPrefs prefs(&pref_service_);
-
-  EXPECT_TRUE(pref_service_.GetUserPrefValue(
-      SyncPrefs::GetPrefNameForTypeForTesting(UserSelectableType::kPayments)));
-  EXPECT_TRUE(pref_service_.GetBoolean(
-      SyncPrefs::GetPrefNameForTypeForTesting(UserSelectableType::kPayments)));
-}
-
 TEST_F(SyncPrefsMigrationTest, NoPassphraseMigrationForSignoutUsers) {
   SyncPrefs prefs(&pref_service_);
   // Passphrase is not set.
-  os_crypt_async::Encryptor encryptor =
+  scoped_refptr<os_crypt_async::Encryptor> encryptor =
       os_crypt_async::GetTestEncryptorForTesting();
   ASSERT_TRUE(
       pref_service_.GetString(prefs::internal::kSyncEncryptionBootstrapToken)
@@ -956,16 +905,16 @@ TEST_F(SyncPrefsMigrationTest, NoPassphraseMigrationForSignoutUsers) {
   EXPECT_TRUE(
       pref_service_.GetString(prefs::internal::kSyncEncryptionBootstrapToken)
           .empty());
-  EXPECT_TRUE(prefs.GetEncryptionBootstrapTokenForAccount(encryptor, GaiaId())
+  EXPECT_TRUE(prefs.GetEncryptionBootstrapTokenForAccount(*encryptor, GaiaId())
                   .IsEmpty());
 }
 
 TEST_F(SyncPrefsMigrationTest, PassphraseMigrationDone) {
-  os_crypt_async::Encryptor encryptor =
+  scoped_refptr<os_crypt_async::Encryptor> encryptor =
       os_crypt_async::GetTestEncryptorForTesting();
   CustomPassphraseBootstrapToken token1 =
       CustomPassphraseBootstrapToken::CreateFakeForTesting(1);
-  std::string encrypted_token1 = token1.ToEncryptedPref(encryptor);
+  std::string encrypted_token1 = token1.ToEncryptedPref(*encryptor);
 
   SyncPrefs prefs(&pref_service_);
   pref_service_.SetString(prefs::internal::kSyncEncryptionBootstrapToken,
@@ -974,23 +923,23 @@ TEST_F(SyncPrefsMigrationTest, PassphraseMigrationDone) {
   EXPECT_EQ(
       pref_service_.GetString(prefs::internal::kSyncEncryptionBootstrapToken),
       encrypted_token1);
-  EXPECT_THAT(prefs.GetEncryptionBootstrapTokenForAccount(encryptor, gaia_id_),
+  EXPECT_THAT(prefs.GetEncryptionBootstrapTokenForAccount(*encryptor, gaia_id_),
               MatchesToken(token1));
   GaiaId gaia_id_2("account_gaia_2");
-  EXPECT_TRUE(prefs.GetEncryptionBootstrapTokenForAccount(encryptor, gaia_id_2)
+  EXPECT_TRUE(prefs.GetEncryptionBootstrapTokenForAccount(*encryptor, gaia_id_2)
                   .IsEmpty());
 }
 
 TEST_F(SyncPrefsMigrationTest, PassphraseMigrationOnlyOnce) {
-  os_crypt_async::Encryptor encryptor =
+  scoped_refptr<os_crypt_async::Encryptor> encryptor =
       os_crypt_async::GetTestEncryptorForTesting();
   CustomPassphraseBootstrapToken token1 =
       CustomPassphraseBootstrapToken::CreateFakeForTesting(1);
-  std::string encrypted_token1 = token1.ToEncryptedPref(encryptor);
+  std::string encrypted_token1 = token1.ToEncryptedPref(*encryptor);
 
   CustomPassphraseBootstrapToken token2 =
       CustomPassphraseBootstrapToken::CreateFakeForTesting(2);
-  std::string encrypted_token2 = token2.ToEncryptedPref(encryptor);
+  std::string encrypted_token2 = token2.ToEncryptedPref(*encryptor);
 
   SyncPrefs prefs(&pref_service_);
   pref_service_.SetString(prefs::internal::kSyncEncryptionBootstrapToken,
@@ -999,7 +948,7 @@ TEST_F(SyncPrefsMigrationTest, PassphraseMigrationOnlyOnce) {
   EXPECT_EQ(
       pref_service_.GetString(prefs::internal::kSyncEncryptionBootstrapToken),
       encrypted_token1);
-  EXPECT_THAT(prefs.GetEncryptionBootstrapTokenForAccount(encryptor, gaia_id_),
+  EXPECT_THAT(prefs.GetEncryptionBootstrapTokenForAccount(*encryptor, gaia_id_),
               MatchesToken(token1));
 
   // Force old pref to change for testing purposes.
@@ -1010,20 +959,20 @@ TEST_F(SyncPrefsMigrationTest, PassphraseMigrationOnlyOnce) {
   EXPECT_EQ(
       pref_service_.GetString(prefs::internal::kSyncEncryptionBootstrapToken),
       encrypted_token2);
-  EXPECT_THAT(prefs.GetEncryptionBootstrapTokenForAccount(encryptor, gaia_id_),
+  EXPECT_THAT(prefs.GetEncryptionBootstrapTokenForAccount(*encryptor, gaia_id_),
               MatchesToken(token1));
 }
 
 TEST_F(SyncPrefsMigrationTest, PassphraseMigrationOnlyOnceWithBrowserRestart) {
-  os_crypt_async::Encryptor encryptor =
+  scoped_refptr<os_crypt_async::Encryptor> encryptor =
       os_crypt_async::GetTestEncryptorForTesting();
   CustomPassphraseBootstrapToken token1 =
       CustomPassphraseBootstrapToken::CreateFakeForTesting(1);
-  std::string encrypted_token1 = token1.ToEncryptedPref(encryptor);
+  std::string encrypted_token1 = token1.ToEncryptedPref(*encryptor);
 
   CustomPassphraseBootstrapToken token2 =
       CustomPassphraseBootstrapToken::CreateFakeForTesting(2);
-  std::string encrypted_token2 = token2.ToEncryptedPref(encryptor);
+  std::string encrypted_token2 = token2.ToEncryptedPref(*encryptor);
 
   {
     SyncPrefs prefs(&pref_service_);
@@ -1034,7 +983,7 @@ TEST_F(SyncPrefsMigrationTest, PassphraseMigrationOnlyOnceWithBrowserRestart) {
         pref_service_.GetString(prefs::internal::kSyncEncryptionBootstrapToken),
         encrypted_token1);
     EXPECT_THAT(
-        prefs.GetEncryptionBootstrapTokenForAccount(encryptor, gaia_id_),
+        prefs.GetEncryptionBootstrapTokenForAccount(*encryptor, gaia_id_),
         MatchesToken(token1));
     // Force old pref to change for testing purposes.
     pref_service_.SetString(prefs::internal::kSyncEncryptionBootstrapToken,
@@ -1050,7 +999,7 @@ TEST_F(SyncPrefsMigrationTest, PassphraseMigrationOnlyOnceWithBrowserRestart) {
         pref_service_.GetString(prefs::internal::kSyncEncryptionBootstrapToken),
         encrypted_token2);
     EXPECT_THAT(
-        prefs.GetEncryptionBootstrapTokenForAccount(encryptor, gaia_id_),
+        prefs.GetEncryptionBootstrapTokenForAccount(*encryptor, gaia_id_),
         MatchesToken(token1));
   }
 }
@@ -1131,8 +1080,10 @@ TEST_F(SyncPrefsMigrationTest, RunsAgainAfterFeatureReenabled) {
   // On the next startup, the feature is disabled.
   {
     base::test::ScopedFeatureList disable_sync_to_signin;
-    disable_sync_to_signin.InitAndDisableFeature(
-        kReplaceSyncPromosWithSignInPromos);
+    disable_sync_to_signin.InitWithFeatures(
+        /*enabled_features=*/{},
+        /*disabled_features=*/{kReplaceSyncPromosWithSignInPromos,
+                               kReplaceSyncPromosWithSigninPromosNewSignin});
 
     SyncPrefs prefs(&pref_service_);
 
@@ -1858,6 +1809,79 @@ TEST_F(SyncPrefsMigrationTest,
   SyncPrefs prefs(&pref_service_);
   EXPECT_FALSE(prefs.GetSelectedTypesForAccount(gaia_id_).Has(
       UserSelectableType::kBookmarks));
+}
+
+// Regression test for crbug.com/568406887.
+TEST_F(SyncPrefsMigrationTest,
+       GlobalToAccount_ExplicitSigninForReadingListEnabled_SyncEverything) {
+  base::test::ScopedFeatureList feature_list(
+      syncer::kReplaceSyncPromosWithSigninPromosNewSignin);
+
+  // All types including kReadingList are selected in the global prefs.
+  {
+    SyncPrefs old_prefs(&pref_service_);
+    // Sync Everything ON.
+    old_prefs.SetSelectedTypesForSyncingUser(
+        /*keep_everything_synced=*/true,
+        /*registered_types=*/UserSelectableTypeSet::All(),
+        UserSelectableTypeSet::All());
+  }
+
+  SyncPrefs::MigrateGlobalDataTypePrefsToAccount(&pref_service_, gaia_id_);
+
+  SyncPrefs prefs(&pref_service_);
+  EXPECT_TRUE(prefs.GetSelectedTypesForAccount(gaia_id_).Has(
+      UserSelectableType::kReadingList));
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
+  EXPECT_TRUE(pref_service_.GetBoolean(
+      prefs::internal::kReadingListPrefMigratedToAccount));
+#endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
+}
+
+// Regression test for crbug.com/568406887.
+TEST_F(SyncPrefsMigrationTest,
+       GlobalToAccount_ExplicitSigninForReadingListEnabled_TypeEnabled) {
+  base::test::ScopedFeatureList feature_list(
+      syncer::kReplaceSyncPromosWithSigninPromosNewSignin);
+
+  // All types including kReadingList are selected in the global prefs.
+  {
+    SyncPrefs old_prefs(&pref_service_);
+    // Enable everything manually (Sync Everything OFF).
+    old_prefs.SetSelectedTypesForSyncingUser(
+        /*keep_everything_synced=*/false,
+        /*registered_types=*/UserSelectableTypeSet::All(),
+        UserSelectableTypeSet::All());
+  }
+
+  SyncPrefs::MigrateGlobalDataTypePrefsToAccount(&pref_service_, gaia_id_);
+
+  SyncPrefs prefs(&pref_service_);
+  EXPECT_TRUE(prefs.GetSelectedTypesForAccount(gaia_id_).Has(
+      UserSelectableType::kReadingList));
+}
+
+// Regression test for crbug.com/568406887.
+TEST_F(SyncPrefsMigrationTest,
+       GlobalToAccount_ExplicitSigninForReadingListEnabled_TypeDisabled) {
+  base::test::ScopedFeatureList feature_list(
+      syncer::kReplaceSyncPromosWithSigninPromosNewSignin);
+
+  // All types except for kReadingList are selected in the global prefs.
+  {
+    SyncPrefs old_prefs(&pref_service_);
+    UserSelectableTypeSet selected_types = UserSelectableTypeSet::All();
+    selected_types.Remove(UserSelectableType::kReadingList);
+    old_prefs.SetSelectedTypesForSyncingUser(
+        /*keep_everything_synced=*/false,
+        /*registered_types=*/UserSelectableTypeSet::All(), selected_types);
+  }
+
+  SyncPrefs::MigrateGlobalDataTypePrefsToAccount(&pref_service_, gaia_id_);
+
+  SyncPrefs prefs(&pref_service_);
+  EXPECT_FALSE(prefs.GetSelectedTypesForAccount(gaia_id_).Has(
+      UserSelectableType::kReadingList));
 }
 #endif  // !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
 

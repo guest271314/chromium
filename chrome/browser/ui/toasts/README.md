@@ -24,7 +24,7 @@ to replace the placeholders with in `ToastParams` when you trigger your toast.
 
 #### Registering a Default Toast
 ```
-void ToastService::RegisterToast(BrowserWindowInterface* interface) {
+void ToastService::RegisterToasts() {
   ...
   toast_registry_->RegisterToast(
     ToastId,
@@ -35,7 +35,7 @@ void ToastService::RegisterToast(BrowserWindowInterface* interface) {
 
 #### Registering a Toast with a Close Button
 ```
-void ToastService::RegisterToast(BrowserWindowInterface* interface) {
+void ToastService::RegisterToasts() {
   ...
   toast_registry_->RegisterToast(
     ToastId,
@@ -47,16 +47,26 @@ void ToastService::RegisterToast(BrowserWindowInterface* interface) {
 
 #### Registering a Toast with an Action Button
 ```
-void ToastService::RegisterToast(BrowserWindowInterface* interface) {
+void ToastService::RegisterToasts() {
   ...
   toast_registry_->RegisterToast(
     ToastId,
     ToastSpecification::Builder(vector_icon, string_id)
-        .AddActionButton(button_string_id, button_closure)
+        .AddActionButton(
+            button_string_id,
+            base::BindRepeating([](BrowserWindowInterface* window) {
+              ...
+            }))
         .AddCloseButton()
         .Build());
 }
 ```
+
+If the action button callback needs to know which item/toast is being acted on,
+you can register a
+`base::RepeatingCallback<void(BrowserWindowInterface*, const base::Value&)>` and
+supply the identifier via `params.action_button_callback_data = base::Value(id)`
+when invoking the toast.
 
 Note: there are a couple restrictions when declaring a toast specification with
 an action button:
@@ -65,7 +75,7 @@ an action button:
 
 #### Registering a Toast with a Menu
 ```
-void ToastService::RegisterToast(BrowserWindowInterface* interface) {
+void ToastService::RegisterToasts() {
   ...
   toast_registry_->RegisterToast(
     ToastId,
@@ -81,6 +91,28 @@ populate the menu in `ToastParams` when you trigger your toast.
 Also note that toasts with a menu cannot have a "X" close button. If this
 behavior is needed, please consult with UX on how to design this in a way
 that supports both.
+
+#### Registering a Toast that Persists on Navigation
+By default, tab-scoped toasts will disappear when the user navigates to a new
+page or switches tabs.
+
+Toasts that persist on navigation are still tab-scoped, meaning they will
+disappear if the user switches to a different tab, but they will survive
+navigation events (like form submissions) within the same tab. This is
+different from global toasts, which are not tied to any specific tab and will
+persist across both tab switches and navigations until they are explicitly
+closed or time out.
+
+```
+void ToastService::RegisterToasts() {
+  ...
+  toast_registry_->RegisterToast(
+    ToastId,
+    ToastSpecification::Builder(vector_icon, string_id)
+        .SetPersistOnNavigation()
+        .Build());
+}
+```
 
 ### 3. Trigger your Toast
 When you want to trigger your toast to show, you will need to retrieve the

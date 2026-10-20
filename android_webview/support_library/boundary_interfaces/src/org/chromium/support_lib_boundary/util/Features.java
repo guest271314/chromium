@@ -271,9 +271,14 @@ public class Features {
     // WebSettingsCompat.getUserAgentMetadataMap
     public static final String USER_AGENT_METADATA = "USER_AGENT_METADATA";
 
+    // UserAgentMetadata.Builder.setFormFactors
+    // UserAgentMetadata.getFormFactors
+    public static final String USER_AGENT_METADATA_FORM_FACTORS =
+            "USER_AGENT_METADATA_FORM_FACTORS";
+
     // WebSettingsCompat.setAttributionBehavior
     // WebSettingsCompat.getAttributionBehavior
-    public static final String ATTRIBUTION_BEHAVIOR = "ATTRIBUTION_BEHAVIOR";
+    @Deprecated public static final String ATTRIBUTION_BEHAVIOR = "ATTRIBUTION_BEHAVIOR";
 
     // WebSettingsCompat.setWebViewMediaIntegrityApiStatus
     // WebSettingsCompat.getWebViewMediaIntegrityApiDefaultStatus
@@ -397,6 +402,10 @@ public class Features {
     public static final String COMMITTED_NAVIGATION_GET_PAGE_NON_NULL =
             "COMMITTED_NAVIGATION_GET_PAGE_NON_NULL";
 
+    // WebViewNavigationListener.onNavigationVisible()
+    public static final String WEB_VIEW_NAVIGATION_LISTENER_NAVIGATION_VISIBLE =
+            "WEB_VIEW_NAVIGATION_LISTENER_NAVIGATION_VISIBLE";
+
     // SupportLibWebViewChromium weakly reference WebView
     public static final String PROVIDER_WEAKLY_REF_WEBVIEW = "PROVIDER_WEAKLY_REF_WEBVIEW";
 
@@ -447,6 +456,9 @@ public class Features {
     // Profile.preconnect
     public static final String PRECONNECT = "PRECONNECT";
 
+    // Profile.enqueuePreconnect
+    public static final String ENQUEUE_PRECONNECT = "ENQUEUE_PRECONNECT";
+
     // WebSettingsCompat#setHyperlinkContextMenuItems
     public static final String HYPERLINK_CONTEXT_MENU_ITEMS = "HYPERLINK_CONTEXT_MENU_ITEMS";
 
@@ -459,6 +471,7 @@ public class Features {
 
     // Profile.addQuicHints
     public static final String ADD_QUIC_HINTS_V1 = "ADD_QUIC_HINTS_V1";
+    public static final String ADD_QUIC_HINTS_WILDCARDS = "ADD_QUIC_HINTS_WILDCARDS";
 
     // JsReplyProxy.executeJavaScript
     // WebViewCompat.addJavaScriptOnEvent
@@ -478,12 +491,63 @@ public class Features {
     public static final String NAVIGATION_GET_WEB_RESOURCE_ERROR =
             "NAVIGATION_GET_WEB_RESOURCE_ERROR";
 
-    // WebViewSettings.setIgnoreDuplicateNavEnabled
-    // WebViewSettings.getIgnoreDuplicateNavEnabled
-    // WebViewSettings.setIgnoreDuplicateNavThreshold
-    // WebViewSettings.getIgnoreDuplicateNavThreshold
-    public static final String IGNORE_DUPLICATE_NAV = "IGNORE_DUPLICATE_NAV";
-
     // WebViewCompat.navigate
     public static final String WEBVIEW_NAVIGATE_V1 = "WEBVIEW_NAVIGATE_V1";
+
+    // WebViewCompat.navigate
+    // Prefetch queue is drained prior to loading the URL in the WebView Navigate method.
+    public static final String WEBVIEW_NAVIGATE_DRAIN_PREFETCH = "WEBVIEW_NAVIGATE_DRAIN_PREFETCH";
+
+    // WebSettingsCompat.setDownloadFaviconsEnabled
+    // WebSettingsCompat.getDownloadFaviconsEnabled
+    public static final String DOWNLOAD_FAVICONS_ENABLED = "DOWNLOAD_FAVICONS_ENABLED";
+
+    // Profile.getHttpCache
+    // HttpCache.getDefaultQuotaBytes
+    // HttpCache.isUsingDefaultQuota
+    // HttpCache.useDefaultQuota
+    // HttpCache.getQuotaBytes
+    // HttpCache.setQuotaBytes
+    public static final String HTTP_CACHE_MANAGER = "HTTP_CACHE_MANAGER";
+
+    // Profile.setCrossOriginIsolatedAllowList
+    // Profile.getCrossOriginIsolatedAllowList
+    public static final String CROSS_ORIGIN_ISOLATED_ALLOW_LIST =
+            "CROSS_ORIGIN_ISOLATED_ALLOW_LIST";
+
+    // NavigationState.getResponseHeaders
+    //
+    // WebViewNavigationListener.onNavigationRedirected(WebViewNavigationState,
+    // NavigationRedirectParameters)
+    //
+    // NavigationRedirectParameters.getResponseHeaders
+    //
+    // NavigationRedirectParameters.getStatusCode
+    public static final String NAVIGATION_GET_RESPONSE_HEADERS = "NAVIGATION_GET_RESPONSE_HEADERS";
+
+    // WebViewNavigationState.getNavigationStartUptimeMillis
+    public static final String NAVIGATION_GET_NAVIGATION_START_UPTIME_MILLIS =
+            "NAVIGATION_GET_NAVIGATION_START_UPTIME_MILLIS";
+
+    // WebViewCompat.createSharedArrayBuffer
+    // WebMessagePayload.getAsSharedArrayBuffer
+    public static final String WEB_MESSAGE_SHARED_ARRAY_BUFFER = "WEB_MESSAGE_SHARED_ARRAY_BUFFER";
+
+    // WebChromeClientCompat.onReceivedThemeColor
+    public static final String THEME_COLOR_CALLBACK = "THEME_COLOR_CALLBACK";
+
+    // WebViewNavigationListener.onNavigationStarted(WebViewNavigationState)
+    // WebViewNavigationListener.onNavigationRedirected(WebViewNavigationState)
+    // WebViewNavigationListener.onNavigationCompleted(WebViewNavigationState)
+    // WebViewNavigationListener.onPageDeleted(WebViewPageState)
+    // WebViewNavigationListener.onPageLoadEventFired(WebViewPageState)
+    // WebViewNavigationListener.onPageDOMContentLoadedEventFired(WebViewPageState)
+    // WebViewNavigationListener.onFirstContentfulPaintMillis(WebViewPageState)
+    // WebViewNavigationListener.onLargestContentfulPaintMillis(WebViewPageState)
+    // WebViewNavigationListener.onPerformanceMarkMillis(WebViewPageState)
+    //
+    // Navigation.snapshotState
+    // Page.snapshotState
+    public static final String NAVIGATION_LISTENER_NAVIGATION_STATE =
+            "NAVIGATION_LISTENER_NAVIGATION_STATE";
 }

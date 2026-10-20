@@ -23,12 +23,6 @@ CONTENT_EXPORT BASE_DECLARE_FEATURE(kPrefetchTesting);
 CONTENT_EXPORT extern const base::FeatureParam<int>
     kPrefetchReusableBodySizeLimit;
 
-// This feature was used to launch the prefetch migration from embedder layer to
-// content/, and this work has finished and the old implemnetation was deleted.
-// Now this flag is just for injecting parameters through field trials as an
-// umberella feature.
-CONTENT_EXPORT BASE_DECLARE_FEATURE(kPrefetchUseContentRefactor);
-
 // If enabled, navigational prefetch is scoped to the referring document's
 // network isolation key instead of the old behavior of the referring document
 // itself. See crbug.com/1502326
@@ -86,10 +80,23 @@ CONTENT_EXPORT extern const base::FeatureParam<size_t>
 // Controls field trials parameters for prefetch canary checker.
 CONTENT_EXPORT BASE_DECLARE_FEATURE(kPrefetchCanaryCheckerParams);
 
+// Burst prefetches with a specific query parameter (e.g., pf=op).
+CONTENT_EXPORT BASE_DECLARE_FEATURE(kPrefetchSchedulerBurstQueryParam);
+CONTENT_EXPORT extern const base::FeatureParam<std::string>
+    kPrefetchSchedulerBurstQueryParamKey;
+CONTENT_EXPORT extern const base::FeatureParam<std::string>
+    kPrefetchSchedulerBurstQueryParamValue;
+CONTENT_EXPORT extern const base::FeatureParam<size_t>
+    kPrefetchSchedulerBurstQueryParamExtraLimit;
+
 // Allows multiple base limit on `PrefetchScheduler`.
 CONTENT_EXPORT BASE_DECLARE_FEATURE(kPrefetchMultipleActiveSetSizeLimitForBase);
 CONTENT_EXPORT extern const base::FeatureParam<size_t>
     kPrefetchMultipleActiveSetSizeLimitForBaseValue;
+
+// When enabled, calculates active set size limit for burst per
+// `PrefetchSchedulerPriority`.
+CONTENT_EXPORT BASE_DECLARE_FEATURE(kPrefetchSchedulerBurstLimitPerPriority);
 
 // Controls the limit for Eager prefetches.
 CONTENT_EXPORT
@@ -112,9 +119,50 @@ CONTENT_EXPORT extern const base::FeatureParam<size_t>
 // To enable this, also enable `kPrefetchOffTheMainThread`.
 CONTENT_EXPORT BASE_DECLARE_FEATURE(kPrefetchOffTheMainThreadForceForTesting);
 
-// If enabled, prefetch activation beacon will be sent when a prefetch is
-// activated.
-CONTENT_EXPORT BASE_DECLARE_FEATURE(kPrefetchActivationBeacon);
+// Cancels unrelated prefetch when a navigation is started.
+CONTENT_EXPORT BASE_DECLARE_FEATURE(kPrefetchCancelUnrelatedPrefetch);
+
+enum class PrefetchCancelUnrelatedPrefetchCancelPolicy {
+  // Cancel prefetches that are not servable.
+  kNotServable,
+  // Cancel prefetches that are not servable && initiated by the navigation's
+  // initiator document.
+  //
+  // Since browser-initiated navigations do not have an initiator document,
+  // no prefetches are cancelled for them.
+  kNotServableSameInitiatorDocument,
+};
+
+CONTENT_EXPORT extern const base::FeatureParam<
+    PrefetchCancelUnrelatedPrefetchCancelPolicy>
+    kPrefetchCancelUnrelatedPrefetchCancelPolicy;
+
+enum class PrefetchMatchResolverUnblockAsyncPolicy {
+  // Asyncifies `PrefetchMatchResolver::UnblockInternal()` for all blocked
+  // navigations.
+  kAsyncBlocked,
+  // Asyncifies `PrefetchMatchResolver::UnblockInternal()` for blocked
+  // navigations only when there is no matching prefetch (unmatch case).
+  kAsyncBlockedUnmatch,
+};
+
+CONTENT_EXPORT extern const base::FeatureParam<
+    PrefetchMatchResolverUnblockAsyncPolicy>
+    kPrefetchMatchResolverUnblockAsyncPolicy;
+
+// Kill switch for making `PrefetchHandle`'s callbacks async.
+// TODO(crbug.com/480271813): Remove it after confirming stability.
+CONTENT_EXPORT BASE_DECLARE_FEATURE(kPrefetchAsyncPrefetchHandleCallback);
+
+// Making `PrefetchMatchResolver::UnblockInternal()` async.
+// See crbug.com/404416345 to track this issue.
+CONTENT_EXPORT BASE_DECLARE_FEATURE(kPrefetchMatchResolverUnblockAsync);
+
+// Kill switch for a couple of changes to the "Accept" request header for
+// prefetch requests: when enabled,
+// - SXG is removed from the "Accept" request header value.
+// - "Accept" request header is added on non-UI thread.
+CONTENT_EXPORT BASE_DECLARE_FEATURE(kPrefetchRevampAcceptHeader);
 
 }  // namespace features
 

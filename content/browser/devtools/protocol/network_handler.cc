@@ -15,6 +15,7 @@
 
 #include "base/barrier_closure.h"
 #include "base/base64.h"
+#include "base/byte_size.h"
 #include "base/check_deref.h"
 #include "base/command_line.h"
 #include "base/containers/queue.h"
@@ -32,12 +33,13 @@
 #include "base/strings/utf_string_conversions.h"
 #include "base/time/time.h"
 #include "base/unguessable_token.h"
+#include "components/url_pattern/simple_url_pattern_matcher.h"
 #include "content/browser/background_sync/background_sync_manager.h"
 #include "content/browser/devtools/devtools_agent_host_impl.h"
 #include "content/browser/devtools/devtools_io_context.h"
 #include "content/browser/devtools/devtools_stream_file.h"
 #include "content/browser/devtools/devtools_stream_pipe.h"
-#include "content/browser/devtools/devtools_url_loader_interceptor.h"
+#include "content/browser/devtools/protocol/debugger.h"
 #include "content/browser/devtools/protocol/devtools_network_resource_loader.h"
 #include "content/browser/devtools/protocol/handler_helpers.h"
 #include "content/browser/devtools/protocol/network.h"
@@ -88,6 +90,7 @@
 #include "net/cookies/cookie_partition_key.h"
 #include "net/cookies/cookie_setting_override.h"
 #include "net/cookies/cookie_util.h"
+#include "net/device_bound_sessions/session.h"
 #include "net/filter/source_stream_type.h"
 #include "net/http/http_response_headers.h"
 #include "net/http/http_status_code.h"
@@ -95,6 +98,7 @@
 #include "net/ssl/ssl_cipher_suite_names.h"
 #include "net/ssl/ssl_connection_status_flags.h"
 #include "net/url_request/referrer_policy.h"
+#include "services/network/public/cpp/constants.h"
 #include "services/network/public/cpp/data_element.h"
 #include "services/network/public/cpp/devtools_observer_util.h"
 #include "services/network/public/cpp/features.h"
@@ -115,6 +119,7 @@
 #include "third_party/blink/public/mojom/navigation/navigation_params.mojom.h"
 #include "third_party/blink/public/platform/resource_request_blocked_reason.h"
 #include "third_party/boringssl/src/include/openssl/ssl.h"
+#include "third_party/re2/src/re2/re2.h"
 #include "url/third_party/mozilla/url_parse.h"
 
 namespace content {
@@ -132,6 +137,24 @@ using ClearBrowserCookiesCallback =
 
 static constexpr char kInvalidCookieFields[] = "Invalid cookie fields";
 
+void DispatchSearchResults(
+    std::unique_ptr<Network::Backend::SearchInResponseBodyCallback> callback,
+    std::optional<std::vector<network::mojom::MessageSearchMatchPtr>> matches) {
+  if (!matches.has_value()) {
+    callback->fallThrough();
+    return;
+  }
+
+  auto protocol_matches =
+      std::make_unique<protocol::Array<protocol::Debugger::SearchMatch>>();
+  for (const auto& match : *matches) {
+    protocol_matches->emplace_back(protocol::Debugger::SearchMatch::Create()
+                                       .SetLineNumber(match->line_number)
+                                       .SetLineContent(match->line_content)
+                                       .Build());
+  }
+  callback->sendSuccess(std::move(protocol_matches));
+}
 Network::CertificateTransparencyCompliance SerializeCTPolicyCompliance(
     net::ct::CTPolicyCompliance ct_compliance) {
   switch (ct_compliance) {
@@ -209,7 +232,7 @@ std::unique_ptr<Network::Cookie> BuildCookie(
           .SetExpires(cookie.ExpiryDate().is_null()
                           ? -1
                           : cookie.ExpiryDate().InSecondsFSinceUnixEpoch())
-          .SetSize(cookie.Name().length() + cookie.Value().length())
+          .SetSize(net::cookie_util::NameValueSizeBytes(cookie))
           .SetHttpOnly(cookie.IsHttpOnly())
           .SetSecure(cookie.SecureAttribute())
           .SetSession(!cookie.IsPersistent())
@@ -658,19 +681,6 @@ String securityState(const GURL& url, const net::CertStatus& cert_status) {
   return Security::SecurityStateEnum::Secure;
 }
 
-std::optional<DevToolsURLLoaderInterceptor::InterceptionStage>
-ToInterceptorStage(
-    const protocol::Network::InterceptionStage& interceptor_stage) {
-  if (interceptor_stage == protocol::Network::InterceptionStageEnum::Request) {
-    return DevToolsURLLoaderInterceptor::kRequest;
-  }
-  if (interceptor_stage ==
-      protocol::Network::InterceptionStageEnum::HeadersReceived) {
-    return DevToolsURLLoaderInterceptor::kResponse;
-  }
-  return std::nullopt;
-}
-
 double timeDelta(base::TimeTicks time,
                  base::TimeTicks start,
                  double invalid_value = -1) {
@@ -870,34 +880,19 @@ GetProtocolBlockedSetCookieReason(net::CookieInclusionStatus status) {
   }
   if (status.HasExclusionReason(net::CookieInclusionStatus::ExclusionReason::
                                     EXCLUDE_SAMESITE_STRICT)) {
-    if (status.HasSchemefulDowngradeWarning()) {
-      blockedReasons->push_back(
-          Network::SetCookieBlockedReasonEnum::SchemefulSameSiteStrict);
-    } else {
-      blockedReasons->push_back(
-          Network::SetCookieBlockedReasonEnum::SameSiteStrict);
-    }
+    blockedReasons->push_back(
+        Network::SetCookieBlockedReasonEnum::SchemefulSameSiteStrict);
   }
   if (status.HasExclusionReason(
           net::CookieInclusionStatus::ExclusionReason::EXCLUDE_SAMESITE_LAX)) {
-    if (status.HasSchemefulDowngradeWarning()) {
-      blockedReasons->push_back(
-          Network::SetCookieBlockedReasonEnum::SchemefulSameSiteLax);
-    } else {
-      blockedReasons->push_back(
-          Network::SetCookieBlockedReasonEnum::SameSiteLax);
-    }
+    blockedReasons->push_back(
+        Network::SetCookieBlockedReasonEnum::SchemefulSameSiteLax);
   }
   if (status.HasExclusionReason(
           net::CookieInclusionStatus::ExclusionReason::
               EXCLUDE_SAMESITE_UNSPECIFIED_TREATED_AS_LAX)) {
-    if (status.HasSchemefulDowngradeWarning()) {
-      blockedReasons->push_back(Network::SetCookieBlockedReasonEnum::
-                                    SchemefulSameSiteUnspecifiedTreatedAsLax);
-    } else {
-      blockedReasons->push_back(
-          Network::SetCookieBlockedReasonEnum::SameSiteUnspecifiedTreatedAsLax);
-    }
+    blockedReasons->push_back(Network::SetCookieBlockedReasonEnum::
+                                  SchemefulSameSiteUnspecifiedTreatedAsLax);
   }
   if (status.HasExclusionReason(net::CookieInclusionStatus::ExclusionReason::
                                     EXCLUDE_SAMESITE_NONE_INSECURE)) {
@@ -908,12 +903,6 @@ GetProtocolBlockedSetCookieReason(net::CookieInclusionStatus status) {
                                     EXCLUDE_USER_PREFERENCES)) {
     blockedReasons->push_back(
         Network::SetCookieBlockedReasonEnum::UserPreferences);
-  }
-  if (status.HasExclusionReason(
-          net::CookieInclusionStatus::ExclusionReason::
-              EXCLUDE_THIRD_PARTY_BLOCKED_WITHIN_FIRST_PARTY_SET)) {
-    blockedReasons->push_back(
-        Network::SetCookieBlockedReasonEnum::ThirdPartyBlockedInFirstPartySet);
   }
   if (status.HasExclusionReason(net::CookieInclusionStatus::ExclusionReason::
                                     EXCLUDE_THIRD_PARTY_PHASEOUT)) {
@@ -987,33 +976,19 @@ GetProtocolBlockedCookieReason(net::CookieInclusionStatus status) {
   }
   if (status.HasExclusionReason(net::CookieInclusionStatus::ExclusionReason::
                                     EXCLUDE_SAMESITE_STRICT)) {
-    if (status.HasSchemefulDowngradeWarning()) {
-      blockedReasons->push_back(
-          Network::CookieBlockedReasonEnum::SchemefulSameSiteStrict);
-    } else {
-      blockedReasons->push_back(
-          Network::CookieBlockedReasonEnum::SameSiteStrict);
-    }
+    blockedReasons->push_back(
+        Network::CookieBlockedReasonEnum::SchemefulSameSiteStrict);
   }
   if (status.HasExclusionReason(
           net::CookieInclusionStatus::ExclusionReason::EXCLUDE_SAMESITE_LAX)) {
-    if (status.HasSchemefulDowngradeWarning()) {
-      blockedReasons->push_back(
-          Network::CookieBlockedReasonEnum::SchemefulSameSiteLax);
-    } else {
-      blockedReasons->push_back(Network::CookieBlockedReasonEnum::SameSiteLax);
-    }
+    blockedReasons->push_back(
+        Network::CookieBlockedReasonEnum::SchemefulSameSiteLax);
   }
   if (status.HasExclusionReason(
           net::CookieInclusionStatus::ExclusionReason::
               EXCLUDE_SAMESITE_UNSPECIFIED_TREATED_AS_LAX)) {
-    if (status.HasSchemefulDowngradeWarning()) {
-      blockedReasons->push_back(Network::CookieBlockedReasonEnum::
-                                    SchemefulSameSiteUnspecifiedTreatedAsLax);
-    } else {
-      blockedReasons->push_back(
-          Network::CookieBlockedReasonEnum::SameSiteUnspecifiedTreatedAsLax);
-    }
+    blockedReasons->push_back(Network::CookieBlockedReasonEnum::
+                                  SchemefulSameSiteUnspecifiedTreatedAsLax);
   }
   if (status.HasExclusionReason(net::CookieInclusionStatus::ExclusionReason::
                                     EXCLUDE_SAMESITE_NONE_INSECURE)) {
@@ -1024,12 +999,6 @@ GetProtocolBlockedCookieReason(net::CookieInclusionStatus status) {
                                     EXCLUDE_USER_PREFERENCES)) {
     blockedReasons->push_back(
         Network::CookieBlockedReasonEnum::UserPreferences);
-  }
-  if (status.HasExclusionReason(
-          net::CookieInclusionStatus::ExclusionReason::
-              EXCLUDE_THIRD_PARTY_BLOCKED_WITHIN_FIRST_PARTY_SET)) {
-    blockedReasons->push_back(
-        Network::CookieBlockedReasonEnum::ThirdPartyBlockedInFirstPartySet);
   }
   if (status.HasExclusionReason(net::CookieInclusionStatus::ExclusionReason::
                                     EXCLUDE_THIRD_PARTY_PHASEOUT)) {
@@ -1234,25 +1203,6 @@ BuildProtocolDeviceBoundSessionUsages(
   return protocol_list;
 }
 
-using SourceTypeEnum = net::SourceStreamType;
-namespace ContentEncodingEnum = protocol::Network::ContentEncodingEnum;
-std::optional<SourceTypeEnum> SourceTypeFromProtocol(
-    const protocol::Network::ContentEncoding& encoding) {
-  if (ContentEncodingEnum::Gzip == encoding) {
-    return SourceTypeEnum::kGzip;
-  }
-  if (ContentEncodingEnum::Br == encoding) {
-    return SourceTypeEnum::kBrotli;
-  }
-  if (ContentEncodingEnum::Deflate == encoding) {
-    return SourceTypeEnum::kDeflate;
-  }
-  if (ContentEncodingEnum::Zstd == encoding) {
-    return SourceTypeEnum::kZstd;
-  }
-  return std::nullopt;
-}
-
 }  // namespace
 
 class BackgroundSyncRestorer {
@@ -1316,7 +1266,6 @@ NetworkHandler::NetworkHandler(
     DevToolsIOContext* io_context,
     DevToolsSession* session,
     StoragePartition* maybe_storage_partition,
-    base::RepeatingClosure update_loader_factories_callback,
     DevToolsAgentHostClient* client,
     base::OnceClosure cleanup_after_modifications_callback)
     : DevToolsDomainHandler(Network::Metainfo::domainName),
@@ -1336,8 +1285,6 @@ NetworkHandler::NetworkHandler(
 #endif  // BUILDFLAG(ENABLE_DEVICE_BOUND_SESSIONS)
       bypass_service_worker_(false),
       cache_disabled_(false),
-      update_loader_factories_callback_(
-          std::move(update_loader_factories_callback)),
       cleanup_after_modifications_callback_(
           std::move(cleanup_after_modifications_callback)),
       root_session_(*session->GetRootSession()),
@@ -1366,56 +1313,6 @@ std::unique_ptr<Array<Network::Cookie>> NetworkHandler::BuildCookieArray(
   }
 
   return cookies;
-}
-
-// static
-net::Error NetworkHandler::NetErrorFromString(const std::string& error,
-                                              bool* ok) {
-  *ok = true;
-  if (error == Network::ErrorReasonEnum::Failed) {
-    return net::ERR_FAILED;
-  }
-  if (error == Network::ErrorReasonEnum::Aborted) {
-    return net::ERR_ABORTED;
-  }
-  if (error == Network::ErrorReasonEnum::TimedOut) {
-    return net::ERR_TIMED_OUT;
-  }
-  if (error == Network::ErrorReasonEnum::AccessDenied) {
-    return net::ERR_ACCESS_DENIED;
-  }
-  if (error == Network::ErrorReasonEnum::ConnectionClosed) {
-    return net::ERR_CONNECTION_CLOSED;
-  }
-  if (error == Network::ErrorReasonEnum::ConnectionReset) {
-    return net::ERR_CONNECTION_RESET;
-  }
-  if (error == Network::ErrorReasonEnum::ConnectionRefused) {
-    return net::ERR_CONNECTION_REFUSED;
-  }
-  if (error == Network::ErrorReasonEnum::ConnectionAborted) {
-    return net::ERR_CONNECTION_ABORTED;
-  }
-  if (error == Network::ErrorReasonEnum::ConnectionFailed) {
-    return net::ERR_CONNECTION_FAILED;
-  }
-  if (error == Network::ErrorReasonEnum::NameNotResolved) {
-    return net::ERR_NAME_NOT_RESOLVED;
-  }
-  if (error == Network::ErrorReasonEnum::InternetDisconnected) {
-    return net::ERR_INTERNET_DISCONNECTED;
-  }
-  if (error == Network::ErrorReasonEnum::AddressUnreachable) {
-    return net::ERR_ADDRESS_UNREACHABLE;
-  }
-  if (error == Network::ErrorReasonEnum::BlockedByClient) {
-    return net::ERR_BLOCKED_BY_CLIENT;
-  }
-  if (error == Network::ErrorReasonEnum::BlockedByResponse) {
-    return net::ERR_BLOCKED_BY_RESPONSE;
-  }
-  *ok = false;
-  return net::ERR_FAILED;
 }
 
 // static
@@ -1450,79 +1347,6 @@ String NetworkHandler::NetErrorToString(int net_error) {
     default:
       return Network::ErrorReasonEnum::Failed;
   }
-}
-
-// static
-bool NetworkHandler::AddInterceptedResourceType(
-    const std::string& resource_type,
-    base::flat_set<blink::mojom::ResourceType>* intercepted_resource_types) {
-  if (resource_type == protocol::Network::ResourceTypeEnum::Document) {
-    intercepted_resource_types->insert(blink::mojom::ResourceType::kMainFrame);
-    intercepted_resource_types->insert(blink::mojom::ResourceType::kSubFrame);
-    return true;
-  }
-  if (resource_type == protocol::Network::ResourceTypeEnum::Stylesheet) {
-    intercepted_resource_types->insert(blink::mojom::ResourceType::kStylesheet);
-    return true;
-  }
-  if (resource_type == protocol::Network::ResourceTypeEnum::Image) {
-    intercepted_resource_types->insert(blink::mojom::ResourceType::kImage);
-    return true;
-  }
-  if (resource_type == protocol::Network::ResourceTypeEnum::Media) {
-    intercepted_resource_types->insert(blink::mojom::ResourceType::kMedia);
-    return true;
-  }
-  if (resource_type == protocol::Network::ResourceTypeEnum::Font) {
-    intercepted_resource_types->insert(
-        blink::mojom::ResourceType::kFontResource);
-    return true;
-  }
-  if (resource_type == protocol::Network::ResourceTypeEnum::Script) {
-    intercepted_resource_types->insert(blink::mojom::ResourceType::kScript);
-    return true;
-  }
-
-  // Map several fetch-like CDP resource types to the underlying `kXhr` Blink
-  // resource type. This is necessary because Blink's loader subsystem, where
-  // interception occurs, does not differentiate between these types at a
-  // protocol level. This mapping provides a functional interception mechanism
-  // and resolves the issue where filtering for 'Fetch' or 'EventSource' would
-  // silently fail. See https://crbug.com/40256663#comment10 for context.
-  if (resource_type == protocol::Network::ResourceTypeEnum::XHR ||
-      resource_type == protocol::Network::ResourceTypeEnum::Fetch ||
-      resource_type == protocol::Network::ResourceTypeEnum::EventSource) {
-    intercepted_resource_types->insert(blink::mojom::ResourceType::kXhr);
-    if (resource_type == protocol::Network::ResourceTypeEnum::Fetch) {
-      intercepted_resource_types->insert(blink::mojom::ResourceType::kPrefetch);
-    }
-    return true;
-  }
-
-  if (resource_type ==
-      protocol::Network::ResourceTypeEnum::CSPViolationReport) {
-    intercepted_resource_types->insert(blink::mojom::ResourceType::kCspReport);
-    return true;
-  }
-  if (resource_type == protocol::Network::ResourceTypeEnum::Ping) {
-    intercepted_resource_types->insert(blink::mojom::ResourceType::kPing);
-    return true;
-  }
-  if (resource_type == protocol::Network::ResourceTypeEnum::Other) {
-    intercepted_resource_types->insert(
-        blink::mojom::ResourceType::kSubResource);
-    intercepted_resource_types->insert(blink::mojom::ResourceType::kObject);
-    intercepted_resource_types->insert(blink::mojom::ResourceType::kWorker);
-    intercepted_resource_types->insert(
-        blink::mojom::ResourceType::kSharedWorker);
-    intercepted_resource_types->insert(blink::mojom::ResourceType::kFavicon);
-    intercepted_resource_types->insert(
-        blink::mojom::ResourceType::kServiceWorker);
-    intercepted_resource_types->insert(
-        blink::mojom::ResourceType::kPluginResource);
-    return true;
-  }
-  return false;
 }
 
 // static
@@ -1636,10 +1460,11 @@ Response NetworkHandler::Enable(
 
 DispatchResponse NetworkHandler::Disable() {
   enabled_ = false;
-  url_loader_interceptor_.reset();
-  SetNetworkConditions({}, /*offline=*/false);
+  if (network_conditions_configured_) {
+    SetNetworkConditions({}, /*offline=*/false);
+  }
   extra_headers_.clear();
-  ClearAcceptedEncodingsOverride();
+  session()->browser_originating_session_state()->extra_request_headers.clear();
   enable_third_party_cookie_restriction_ = false;
 #if BUILDFLAG(ENABLE_DEVICE_BOUND_SESSIONS)
   device_bound_session_receiver_.reset();
@@ -1693,8 +1518,10 @@ NetworkHandler::BuildProtocolReport(const net::ReportingReport& report) {
         .SetInitiatorUrl(report.url.spec())
         .SetDestination(report.group)
         .SetType(report.type)
-        .SetTimestamp(
-            (report.queued - base::TimeTicks::UnixEpoch()).InSecondsF())
+        .SetTimestamp((base::Time::Now() -
+                       (base::TimeTicks::Now() - report.queued) -
+                       base::Time::UnixEpoch())
+                          .InSecondsF())
         .SetDepth(report.depth)
         .SetCompletedAttempts(report.attempts)
         .SetBody(std::make_unique<base::DictValue>(report.body.Clone()))
@@ -1896,13 +1723,20 @@ BuildProtocolDeviceBoundSessionFailedRequest(
   return protocol_failed_request;
 }
 
+// LINT.IfChange(DeviceBoundSessionFetchResult)
 String BuildProtocolDeviceBoundSessionFetchResult(
     net::device_bound_sessions::SessionError::ErrorType type) {
   switch (type) {
     case net::device_bound_sessions::SessionError::ErrorType::kSuccess:
       return protocol::Network::DeviceBoundSessionFetchResultEnum::Success;
-    case net::device_bound_sessions::SessionError::ErrorType::kKeyError:
-      return protocol::Network::DeviceBoundSessionFetchResultEnum::KeyError;
+    case net::device_bound_sessions::SessionError::ErrorType::
+        kSigningKeyGenerationError:
+      return protocol::Network::DeviceBoundSessionFetchResultEnum::
+          SigningKeyGenerationError;
+    case net::device_bound_sessions::SessionError::ErrorType::
+        kAttestationKeyGenerationError:
+      return protocol::Network::DeviceBoundSessionFetchResultEnum::
+          AttestationKeyGenerationError;
     case net::device_bound_sessions::SessionError::ErrorType::kSigningError:
       return protocol::Network::DeviceBoundSessionFetchResultEnum::SigningError;
     case net::device_bound_sessions::SessionError::ErrorType::
@@ -2160,9 +1994,35 @@ String BuildProtocolDeviceBoundSessionFetchResult(
         kSessionDeletedDuringRefresh:
       return protocol::Network::DeviceBoundSessionFetchResultEnum::
           SessionDeletedDuringRefresh;
+    case net::device_bound_sessions::SessionError::ErrorType::
+        kCrossOriginRegistrationSiteNotIncluded:
+      return protocol::Network::DeviceBoundSessionFetchResultEnum::
+          CrossOriginRegistrationSiteNotIncluded;
+    case net::device_bound_sessions::SessionError::ErrorType::
+        kInvalidPreProvisionedKeyInitiatorMissing:
+      return protocol::Network::DeviceBoundSessionFetchResultEnum::
+          InvalidPreProvisionedKeyInitiatorMissing;
+    case net::device_bound_sessions::SessionError::ErrorType::
+        kPreProvisionedKeyAccessNotGranted:
+      return protocol::Network::DeviceBoundSessionFetchResultEnum::
+          PreProvisionedKeyAccessNotGranted;
+    case net::device_bound_sessions::SessionError::ErrorType::
+        kPreProvisionedKeyNotFound:
+      return protocol::Network::DeviceBoundSessionFetchResultEnum::
+          PreProvisionedKeyNotFound;
+    case net::device_bound_sessions::SessionError::ErrorType::
+        kAttestationCertificationError:
+      return protocol::Network::DeviceBoundSessionFetchResultEnum::
+          AttestationCertificationError;
+    case net::device_bound_sessions::SessionError::ErrorType::
+        kAttestationSigningError:
+      return protocol::Network::DeviceBoundSessionFetchResultEnum::
+          AttestationSigningError;
   }
 }
+// LINT.ThenChange(//third_party/blink/public/devtools_protocol/domains/Network.pdl:DeviceBoundSessionFetchResult)
 
+// LINT.IfChange(DeviceBoundSessionRefreshResult)
 String BuildProtocolDeviceBoundSessionRefreshResult(
     net::device_bound_sessions::RefreshResult result) {
   switch (result) {
@@ -2181,9 +2041,6 @@ String BuildProtocolDeviceBoundSessionRefreshResult(
     case net::device_bound_sessions::RefreshResult::kServerError:
       return protocol::Network::RefreshEventDetails::RefreshResultEnum::
           ServerError;
-    case net::device_bound_sessions::RefreshResult::kRefreshQuotaExceeded:
-      return protocol::Network::RefreshEventDetails::RefreshResultEnum::
-          RefreshQuotaExceeded;
     case net::device_bound_sessions::RefreshResult::kFatalError:
       return protocol::Network::RefreshEventDetails::RefreshResultEnum::
           FatalError;
@@ -2193,8 +2050,15 @@ String BuildProtocolDeviceBoundSessionRefreshResult(
     case net::device_bound_sessions::RefreshResult::kTransientSigningError:
       return protocol::Network::RefreshEventDetails::RefreshResultEnum::
           TransientSigningError;
+    case net::device_bound_sessions::RefreshResult::kInScopeRefreshNotYetNeeded:
+      return protocol::Network::RefreshEventDetails::RefreshResultEnum::
+          InScopeRefreshNotYetNeeded;
+    case net::device_bound_sessions::RefreshResult::kCanceled:
+      return protocol::Network::RefreshEventDetails::RefreshResultEnum::
+          Canceled;
   }
 }
+// LINT.ThenChange(//third_party/blink/public/devtools_protocol/domains/Network.pdl:DeviceBoundSessionRefreshResult,//net/device_bound_sessions/refresh_result.h:DeviceBoundSessionRefreshResult)
 
 String BuildProtocolDeviceBoundSessionChallengeResult(
     net::device_bound_sessions::ChallengeResult result) {
@@ -2244,6 +2108,9 @@ String BuildProtocolDeviceBoundSessionDeletionReason(
     case net::device_bound_sessions::DeletionReason::kDevTools:
       return protocol::Network::TerminationEventDetails::DeletionReasonEnum::
           DevTools;
+    case net::device_bound_sessions::DeletionReason::kReplaced:
+      return protocol::Network::TerminationEventDetails::DeletionReasonEnum::
+          Replaced;
   }
 }
 
@@ -2431,26 +2298,6 @@ Response NetworkHandler::SetCacheDisabled(bool cache_disabled) {
   return Response::FallThrough();
 }
 
-Response NetworkHandler::SetAcceptedEncodings(
-    std::unique_ptr<Array<Network::ContentEncoding>> encodings) {
-  std::set<net::SourceStreamType> accepted_stream_types;
-  for (auto encoding : *encodings) {
-    auto type = SourceTypeFromProtocol(encoding);
-    if (!type) {
-      return Response::InvalidParams("Unknown encoding type: " + encoding);
-    }
-    accepted_stream_types.insert(type.value());
-  }
-  accepted_stream_types_ = std::move(accepted_stream_types);
-
-  return Response::FallThrough();
-}
-
-Response NetworkHandler::ClearAcceptedEncodingsOverride() {
-  accepted_stream_types_ = std::nullopt;
-  return Response::FallThrough();
-}
-
 class DevtoolsClearCacheObserver
     : public content::BrowsingDataRemover::Observer {
  public:
@@ -2495,41 +2342,10 @@ void NetworkHandler::ClearBrowserCookies(
     return;
   }
 
-  NetworkHandler::ClearCookies(
-      storage_partition_, CHECK_DEREF(client_.get()),
-      base::BindRepeating(
-          [](base::WeakPtr<NetworkHandler> handler,
-             const net::CanonicalCookie& cookie) {
-            return handler && handler->CanAccessCookie(cookie);
-          },
-          weak_factory_.GetWeakPtr()),
-      base::BindOnce(&ClearBrowserCookiesCallback::sendSuccess,
-                     std::move(callback)));
-}
-
-// static
-void NetworkHandler::ClearCookies(
-    StoragePartition* storage_partition,
-    DevToolsAgentHostClient& client,
-    base::RepeatingCallback<bool(const net::CanonicalCookie&)> filter,
-    base::OnceClosure callback) {
-  auto* cookie_manager = storage_partition->GetCookieManagerForBrowserProcess();
-
-  if (client.MayAccessAllCookies()) {
-    // Unrestricted clients can clear all cookies atomically.
-    cookie_manager->DeleteCookies(
-        network::mojom::CookieDeletionFilter::New(),
-        base::BindOnce(base::IgnoreArgs<uint32_t>(std::move(callback))));
-  } else {
-    // Restricted clients must filter by URL permissions before deletion.
-    cookie_manager->GetAllCookies(
-        base::BindOnce(&DeleteFilteredCookies, base::Unretained(cookie_manager),
-                       /*name=*/std::nullopt,
-                       /*normalized_domain=*/std::nullopt,
-                       /*path=*/std::nullopt, /*partition_key=*/nullptr,
-                       /*filter_by_partition_key=*/false, std::move(filter),
-                       std::move(callback)));
-  }
+  storage_partition_->GetCookieManagerForBrowserProcess()->DeleteCookies(
+      network::mojom::CookieDeletionFilter::New(),
+      base::IgnoreArgs<uint32_t>(base::BindOnce(
+          &ClearBrowserCookiesCallback::sendSuccess, std::move(callback))));
 }
 
 bool NetworkHandler::CanAccessCookie(const net::CanonicalCookie& cookie) const {
@@ -2793,6 +2609,7 @@ void NetworkHandler::DeleteCookies(
 Response NetworkHandler::SetExtraHTTPHeaders(
     std::unique_ptr<protocol::Network::Headers> headers) {
   std::vector<std::pair<std::string, std::string>> new_headers;
+  base::flat_map<std::string, std::string> extra_request_headers;
   for (const auto entry : *headers) {
     if (!entry.second.is_string()) {
       return Response::InvalidParams("Invalid header value, string expected");
@@ -2805,8 +2622,11 @@ Response NetworkHandler::SetExtraHTTPHeaders(
       return Response::InvalidParams("Invalid header value");
     }
     new_headers.emplace_back(entry.first, value);
+    extra_request_headers[entry.first] = value;
   }
   extra_headers_.swap(new_headers);
+  session()->browser_originating_session_state()->extra_request_headers =
+      std::move(extra_request_headers);
   return Response::FallThrough();
 }
 
@@ -2857,12 +2677,20 @@ Response NetworkHandler::EmulateNetworkConditionsByRule(
         matched_network_conditions,
     std::unique_ptr<protocol::Array<String>>* rule_ids_result) {
   std::vector<network::mojom::MatchedNetworkConditionsPtr> matched_conditions;
-  *rule_ids_result = std::make_unique<protocol::Array<String>>();
+  auto rule_ids = std::make_unique<protocol::Array<String>>();
   for (auto& matched_condition : *matched_network_conditions) {
+    const std::string& pattern = matched_condition->GetUrlPattern();
+    if (!pattern.empty() &&
+        !url_pattern::SimpleUrlPatternMatcher::Create(pattern,
+                                                      /*base_url=*/nullptr)
+             .has_value()) {
+      return Response::InvalidParams(base::StrCat(
+          {"Pattern \"", pattern, "\" failed to parse as a URLPattern."}));
+    }
     auto rule_id = base::UnguessableToken::Create();
     network::mojom::MatchedNetworkConditionsPtr conditions =
         network::mojom::MatchedNetworkConditions::New();
-    conditions->pattern = matched_condition->GetUrlPattern();
+    conditions->pattern = pattern;
     conditions->conditions = network::mojom::NetworkConditions::New();
     conditions->conditions->offline =
         offline.has_value() ? offline.value()
@@ -2879,9 +2707,10 @@ Response NetworkHandler::EmulateNetworkConditionsByRule(
     conditions->conditions->packet_reordering =
         matched_condition->GetPacketReordering(false);
     conditions->conditions->rule_id = rule_id;
-    rule_ids_result->get()->push_back(rule_id.ToString());
+    rule_ids->push_back(rule_id.ToString());
     matched_conditions.emplace_back(std::move(conditions));
   }
+  *rule_ids_result = std::move(rule_ids);
   SetNetworkConditions(
       std::move(matched_conditions),
       emulate_offline_service_worker.value_or(offline.value_or(false)));
@@ -3016,6 +2845,12 @@ std::unique_ptr<base::DictValue> BuildRequestHeaders(
     const GURL& referrer) {
   auto headers_dict = std::make_unique<base::DictValue>();
   for (net::HttpRequestHeaders::Iterator it(headers); it.GetNext();) {
+    // Skip case variants of the referer header if it's added below.
+    if (!referrer.is_empty() &&
+        base::EqualsCaseInsensitiveASCII(it.name(),
+                                         net::HttpRequestHeaders::kReferer)) {
+      continue;
+    }
     headers_dict->Set(it.name(), it.value());
   }
 
@@ -3346,42 +3181,10 @@ void NetworkHandler::PrefetchRequestWillBeSent(
     std::optional<std::pair<const GURL&,
                             const network::mojom::URLResponseHeadDevToolsInfo&>>
         redirect_info) {
-  if (!enabled_) {
-    return;
-  }
-
-  std::string url = request.url.is_valid() ? request.url.spec() : "";
-  double current_ticks = timestamp.since_origin().InSecondsF();
-  double current_wall_time = base::Time::Now().InSecondsFSinceUnixEpoch();
-  auto initiator =
-      Network::Initiator::Create()
-          .SetType(Network::Initiator::TypeEnum::Script)
-          .SetUrl(initiator_url.is_valid() ? initiator_url.spec() : "")
-          .Build();
-
-  bool redirect_emitted_extra_info = false;
-  std::unique_ptr<Network::Response> redirect_response =
-      BuildRedirectResponse(redirect_info, redirect_emitted_extra_info);
-
-  auto request_info =
-      Network::Request::Create()
-          .SetUrl(url)
-          .SetMethod(request.method)
-          .SetHeaders(BuildRequestHeaders(request.headers, request.referrer))
-          .SetInitialPriority(resourcePriority(request.priority))
-          .SetReferrerPolicy(referrerPolicy(request.referrer_policy))
-          .Build();
-
-  if (request.is_ad_tagged) {
-    request_info->SetIsAdRelated(true);
-  }
-
-  frontend_->RequestWillBeSent(
-      request_id, request_id, url, std::move(request_info), current_ticks,
-      current_wall_time, std::move(initiator), redirect_emitted_extra_info,
-      std::move(redirect_response),
-      std::string(Network::ResourceTypeEnum::Prefetch), std::move(frame_token),
-      request.has_user_gesture);
+  RequestWillBeSent(request_id, request_id, request, initiator_url,
+                    Network::Initiator::TypeEnum::Script,
+                    Network::ResourceTypeEnum::Prefetch, std::move(frame_token),
+                    timestamp, std::move(redirect_info));
 }
 
 void NetworkHandler::NavigationRequestWillBeSent(
@@ -3400,9 +3203,9 @@ void NetworkHandler::NavigationRequestWillBeSent(
   const blink::mojom::CommitNavigationParams& commit_params =
       nav_request.commit_params();
   bool redirect_emitted_extra_info = false;
-  if (!commit_params.redirect_response.empty()) {
+  if (!commit_params.redirect_params.empty()) {
     const network::mojom::URLResponseHead& head =
-        *commit_params.redirect_response.back();
+        *commit_params.redirect_params.back()->response_head;
     network::mojom::URLResponseHeadDevToolsInfoPtr head_info =
         network::ExtractDevToolsInfo(head);
     redirect_response =
@@ -3494,42 +3297,19 @@ void NetworkHandler::FencedFrameReportRequestSent(
     const network::ResourceRequest& request,
     const std::string& event_data,
     base::TimeTicks timestamp) {
-  if (!enabled_) {
-    return;
-  }
-
-  CHECK(request.url.is_valid());
-  double current_ticks = timestamp.since_origin().InSecondsF();
-  double current_wall_time = base::Time::Now().InSecondsFSinceUnixEpoch();
-  auto initiator = Network::Initiator::Create()
-                       .SetType(Network::Initiator::TypeEnum::Other)
-                       .SetRequestId(request_id)
-                       .Build();
-
-  auto request_info =
-      Network::Request::Create()
-          .SetUrl(request.url.spec())
-          .SetMethod(request.method)
-          .SetHeaders(BuildRequestHeaders(request.headers, request.referrer))
-          .SetInitialPriority(resourcePriority(request.priority))
-          .SetReferrerPolicy(referrerPolicy(request.referrer_policy))
-          .Build();
-
+  std::vector<base::expected<std::vector<uint8_t>, std::string>>
+      request_body_bytes;
   if (!event_data.empty()) {
-    request_info->SetHasPostData(true);
-    request_info->SetPostData(event_data);
+    request_body_bytes.emplace_back(
+        std::vector<uint8_t>(event_data.begin(), event_data.end()));
   }
-
-  if (request.is_ad_tagged) {
-    request_info->SetIsAdRelated(true);
-  }
-
-  frontend_->RequestWillBeSent(
-      request_id, request_id, request.url.spec(), std::move(request_info),
-      current_ticks, current_wall_time, std::move(initiator),
-      /*redirectHasExtraInfo=*/false, std::unique_ptr<Network::Response>(),
-      std::string(Network::ResourceTypeEnum::Other),
-      std::nullopt /* frame_id */, request.has_user_gesture);
+  RequestWillBeSent(request_id, request_id, request, /*initiator_url=*/GURL(),
+                    Network::Initiator::TypeEnum::Other,
+                    Network::ResourceTypeEnum::Other,
+                    /*frame_token=*/std::nullopt, timestamp,
+                    /*redirect_info=*/std::nullopt,
+                    /*initiator_devtools_request_id=*/request_id,
+                    std::move(request_body_bytes));
 }
 
 void NetworkHandler::RequestSent(
@@ -3733,7 +3513,8 @@ void NetworkHandler::LoadingComplete(
       request_id,
       status.completion_time.ToInternalValue() /
           static_cast<double>(base::Time::kMicrosecondsPerSecond),
-      status.encoded_data_length);
+      status.encoded_data_length.InBytesF(),
+      status.encoded_body_length.InBytesF());
 }
 
 void NetworkHandler::FetchKeepAliveRequestWillBeSent(
@@ -3745,36 +3526,67 @@ void NetworkHandler::FetchKeepAliveRequestWillBeSent(
     std::optional<std::pair<const GURL&,
                             const network::mojom::URLResponseHeadDevToolsInfo&>>
         redirect_info) {
+  RequestWillBeSent(request_id, request_id, request, initiator_url,
+                    Network::Initiator::TypeEnum::Script,
+                    Network::ResourceTypeEnum::Fetch, std::move(frame_token),
+                    timestamp, std::move(redirect_info),
+                    /*initiator_devtools_request_id=*/"", /*request_bodies=*/{},
+                    Security::MixedContentTypeEnum::Blockable);
+}
+
+void NetworkHandler::PrefetchActivationBeaconWillBeSent(
+    const std::string& request_id,
+    const network::ResourceRequest& request,
+    const GURL& initiator_url,
+    std::optional<std::string> frame_token,
+    base::TimeTicks timestamp,
+    std::optional<std::pair<const GURL&,
+                            const network::mojom::URLResponseHeadDevToolsInfo&>>
+        redirect_info) {
+  RequestWillBeSent(request_id, request_id, request, initiator_url,
+                    Network::Initiator::TypeEnum::Other,
+                    Network::ResourceTypeEnum::Ping, std::move(frame_token),
+                    timestamp, std::move(redirect_info));
+}
+
+void NetworkHandler::RequestWillBeSent(
+    const std::string& request_id,
+    const std::string& loader_id,
+    const network::ResourceRequest& request,
+    const GURL& initiator_url,
+    const std::string& initiator_type,
+    const std::string& resource_type,
+    std::optional<std::string> frame_token,
+    base::TimeTicks timestamp,
+    std::optional<std::pair<const GURL&,
+                            const network::mojom::URLResponseHeadDevToolsInfo&>>
+        redirect_info,
+    const std::string& initiator_devtools_request_id,
+    std::vector<base::expected<std::vector<uint8_t>, std::string>>
+        request_bodies,
+    std::optional<std::string> mixed_content_type) {
   if (!enabled_) {
     return;
   }
 
-  std::string url = request.url.is_valid() ? request.url.spec() : "";
   double current_ticks = timestamp.since_origin().InSecondsF();
   double current_wall_time = base::Time::Now().InSecondsFSinceUnixEpoch();
-  auto initiator =
-      Network::Initiator::Create()
-          .SetType(Network::Initiator::TypeEnum::Script)
-          .SetUrl(initiator_url.is_valid() ? initiator_url.spec() : "")
-          .Build();
+  auto initiator = Network::Initiator::Create().SetType(initiator_type).Build();
+  if (initiator_url.is_valid()) {
+    initiator->SetUrl(initiator_url.spec());
+  }
+  if (!initiator_devtools_request_id.empty()) {
+    initiator->SetRequestId(initiator_devtools_request_id);
+  }
 
   bool redirect_emitted_extra_info = false;
   std::unique_ptr<Network::Response> redirect_response =
       BuildRedirectResponse(redirect_info, redirect_emitted_extra_info);
 
   auto request_info =
-      Network::Request::Create()
-          .SetUrl(url)
-          .SetMethod(request.method)
-          .SetHeaders(BuildRequestHeaders(request.headers, request.referrer))
-          .SetInitialPriority(resourcePriority(request.priority))
-          .SetReferrerPolicy(referrerPolicy(request.referrer_policy))
-          // A fetch keepalive request is categorized as blockable.
-          // https://www.w3.org/TR/mixed-content/#category-blockable
-          .SetMixedContentType(Security::MixedContentTypeEnum::Blockable)
-          .Build();
+      CreateRequestFromResourceRequest(request, "", std::move(request_bodies));
 
-  if (request.request_body) {
+  if (request.request_body && !request_info->GetHasPostData()) {
     request_info->SetHasPostData(true);
     std::string post_data;
     auto data_entries =
@@ -3789,15 +3601,16 @@ void NetworkHandler::FetchKeepAliveRequestWillBeSent(
     }
   }
 
-  if (request.is_ad_tagged) {
-    request_info->SetIsAdRelated(true);
+  if (mixed_content_type.has_value()) {
+    request_info->SetMixedContentType(*mixed_content_type);
   }
 
+  std::string url = request_info->GetUrl();
+
   frontend_->RequestWillBeSent(
-      request_id, request_id, url, std::move(request_info), current_ticks,
+      request_id, loader_id, url, std::move(request_info), current_ticks,
       current_wall_time, std::move(initiator), redirect_emitted_extra_info,
-      std::move(redirect_response),
-      std::string(Network::ResourceTypeEnum::Fetch), std::move(frame_token),
+      std::move(redirect_response), resource_type, std::move(frame_token),
       request.has_user_gesture);
 }
 
@@ -3876,176 +3689,6 @@ void NetworkHandler::OnSignedExchangeReceived(
       std::move(signed_exchange_info));
 }
 
-DispatchResponse NetworkHandler::SetRequestInterception(
-    std::unique_ptr<protocol::Array<protocol::Network::RequestPattern>>
-        patterns) {
-  if (patterns->empty()) {
-    if (url_loader_interceptor_) {
-      url_loader_interceptor_.reset();
-      update_loader_factories_callback_.Run();
-    }
-    return Response::Success();
-  }
-
-  std::vector<DevToolsURLLoaderInterceptor::Pattern> interceptor_patterns;
-  for (const std::unique_ptr<protocol::Network::RequestPattern>& pattern :
-       *patterns) {
-    base::flat_set<blink::mojom::ResourceType> resource_types;
-    std::string resource_type = pattern->GetResourceType("");
-    if (!resource_type.empty()) {
-      if (!AddInterceptedResourceType(resource_type, &resource_types)) {
-        return Response::InvalidParams(base::StringPrintf(
-            "Cannot intercept resources of type '%s'", resource_type.c_str()));
-      }
-    }
-    auto interception_stage = pattern->GetInterceptionStage(
-        protocol::Network::InterceptionStageEnum::Request);
-    auto stage = ToInterceptorStage(interception_stage);
-    if (!stage.has_value()) {
-      return Response::InvalidParams(base::StringPrintf(
-          "Unsupported interception stage '%s'", interception_stage.c_str()));
-    }
-    interceptor_patterns.emplace_back(pattern->GetUrlPattern("*"),
-                                      std::move(resource_types), stage.value());
-  }
-
-  if (!host_) {
-    return Response::InternalError();
-  }
-
-  if (!url_loader_interceptor_) {
-    url_loader_interceptor_ = std::make_unique<DevToolsURLLoaderInterceptor>(
-        base::BindRepeating(&NetworkHandler::RequestIntercepted,
-                            weak_factory_.GetWeakPtr()),
-        base::BindRepeating(
-            [](base::WeakPtr<NetworkHandler> handler,
-               const net::CanonicalCookie& cookie) {
-              return handler && handler->CanAccessCookie(cookie);
-            },
-            weak_factory_.GetWeakPtr()));
-    url_loader_interceptor_->SetPatterns(interceptor_patterns, true);
-    update_loader_factories_callback_.Run();
-  } else {
-    url_loader_interceptor_->SetPatterns(interceptor_patterns, true);
-  }
-  return Response::Success();
-}
-
-void NetworkHandler::ContinueInterceptedRequest(
-    const std::string& interception_id,
-    std::optional<std::string> error_reason,
-    std::optional<protocol::Binary> raw_response,
-    std::optional<std::string> url,
-    std::optional<std::string> method,
-    std::optional<std::string> post_data,
-    std::unique_ptr<protocol::Network::Headers> opt_headers,
-    std::unique_ptr<protocol::Network::AuthChallengeResponse>
-        auth_challenge_response,
-    std::unique_ptr<ContinueInterceptedRequestCallback> callback) {
-  scoped_refptr<net::HttpResponseHeaders> response_headers;
-  scoped_refptr<base::RefCountedMemory> response_body;
-  size_t body_offset = 0;
-
-  if (raw_response.has_value()) {
-    const protocol::Binary& raw = raw_response.value();
-
-    std::string raw_headers;
-    size_t header_size = net::HttpUtil::LocateEndOfHeaders(raw);
-    if (header_size == std::string::npos) {
-      LOG(WARNING) << "Can't find headers in raw response";
-      header_size = 0;
-    } else {
-      raw_headers = net::HttpUtil::AssembleRawHeaders(std::string_view(
-          reinterpret_cast<const char*>(raw.data()), header_size));
-    }
-    CHECK_LE(header_size, raw.size());
-    response_headers =
-        base::MakeRefCounted<net::HttpResponseHeaders>(std::move(raw_headers));
-    response_body = raw.bytes();
-    body_offset = header_size;
-  }
-
-  std::optional<net::Error> error;
-  if (error_reason.has_value()) {
-    bool ok;
-    error = NetErrorFromString(error_reason.value(), &ok);
-    if (!ok) {
-      callback->sendFailure(Response::InvalidParams("Invalid errorReason."));
-      return;
-    }
-  }
-
-  std::unique_ptr<DevToolsURLLoaderInterceptor::Modifications::HeadersVector>
-      override_headers;
-  if (opt_headers) {
-    const base::DictValue& headers = *opt_headers;
-    override_headers = std::make_unique<
-        DevToolsURLLoaderInterceptor::Modifications::HeadersVector>();
-    for (const auto entry : headers) {
-      std::string value;
-      if (!entry.second.is_string()) {
-        callback->sendFailure(Response::InvalidParams("Invalid header value"));
-        return;
-      }
-      override_headers->emplace_back(entry.first, entry.second.GetString());
-    }
-  }
-  using AuthChallengeResponse =
-      DevToolsURLLoaderInterceptor::AuthChallengeResponse;
-  std::unique_ptr<AuthChallengeResponse> override_auth;
-  if (auth_challenge_response) {
-    std::string type = auth_challenge_response->GetResponse();
-    if (type == Network::AuthChallengeResponse::ResponseEnum::Default) {
-      override_auth = std::make_unique<AuthChallengeResponse>(
-          AuthChallengeResponse::kDefault);
-    } else if (type ==
-               Network::AuthChallengeResponse::ResponseEnum::CancelAuth) {
-      override_auth = std::make_unique<AuthChallengeResponse>(
-          AuthChallengeResponse::kCancelAuth);
-    } else if (type == Network::AuthChallengeResponse::ResponseEnum::
-                           ProvideCredentials) {
-      override_auth = std::make_unique<AuthChallengeResponse>(
-          base::UTF8ToUTF16(auth_challenge_response->GetUsername("")),
-          base::UTF8ToUTF16(auth_challenge_response->GetPassword("")));
-    } else {
-      callback->sendFailure(
-          Response::InvalidParams("Unrecognized authChallengeResponse."));
-      return;
-    }
-  }
-
-  std::optional<protocol::Binary> post_data_bytes;
-  if (post_data.has_value()) {
-    post_data_bytes = protocol::Binary::fromString(post_data.value());
-  }
-
-  auto modifications =
-      std::make_unique<DevToolsURLLoaderInterceptor::Modifications>(
-          std::move(error), std::move(response_headers),
-          std::move(response_body), body_offset, std::move(url),
-          std::move(method), std::move(post_data_bytes),
-          std::move(override_headers), std::move(override_auth));
-
-  if (!url_loader_interceptor_) {
-    return;
-  }
-
-  did_modifications_ = true;
-  url_loader_interceptor_->ContinueInterceptedRequest(
-      interception_id, std::move(modifications), std::move(callback));
-}
-
-void NetworkHandler::GetResponseBodyForInterception(
-    const String& interception_id,
-    std::unique_ptr<GetResponseBodyForInterceptionCallback> callback) {
-  if (!url_loader_interceptor_) {
-    return;
-  }
-
-  url_loader_interceptor_->GetResponseBody(interception_id,
-                                           std::move(callback));
-}
-
 void NetworkHandler::BodyDataReceived(const String& request_id,
                                       const String& body,
                                       bool is_base64_encoded) {
@@ -4067,40 +3710,20 @@ void NetworkHandler::FedCmRequestWillBeSent(
     const GURL& initiator_url,
     const std::optional<base::UnguessableToken>& frame_token,
     base::TimeTicks timestamp) {
-  if (!enabled_) {
-    return;
-  }
-
-  double current_wall_time = base::Time::Now().InSecondsFSinceUnixEpoch();
-  double current_ticks = timestamp.since_origin().InSecondsF();
-
   std::vector<base::expected<std::vector<uint8_t>, std::string>>
       request_body_bytes;
   if (request_body.has_value() && !request_body->empty()) {
     request_body_bytes.emplace_back(
         std::vector<uint8_t>(request_body->begin(), request_body->end()));
   }
-
-  std::unique_ptr<protocol::Network::Request> request_info =
-      CreateRequestFromResourceRequest(request, "",
-                                       std::move(request_body_bytes));
-
-  auto initiator = protocol::Network::Initiator::Create()
-                       .SetType(protocol::Network::Initiator::TypeEnum::FedCM)
-                       .Build();
-  if (!initiator_url.is_empty()) {
-    initiator->SetUrl(initiator_url.spec());
-  }
-
-  std::string frame_token_str =
-      frame_token.has_value() ? frame_token.value().ToString() : "";
-
-  frontend_->RequestWillBeSent(
-      request_id, loader_id, request.url.spec(), std::move(request_info),
-      current_ticks, current_wall_time, std::move(initiator),
-      /*redirectHasExtraInfo=*/false, /*redirectResponse=*/nullptr,
-      std::string(Network::ResourceTypeEnum::FedCM), frame_token_str,
-      /*hasUserGesture=*/false);
+  std::optional<std::string> frame_token_str =
+      frame_token.has_value() ? std::make_optional(frame_token->ToString())
+                              : std::nullopt;
+  RequestWillBeSent(
+      request_id, loader_id, request, initiator_url,
+      Network::Initiator::TypeEnum::FedCM, Network::ResourceTypeEnum::FedCM,
+      std::move(frame_token_str), timestamp, /*redirect_info=*/std::nullopt,
+      /*initiator_devtools_request_id=*/"", std::move(request_body_bytes));
 }
 
 void NetworkHandler::ProcessDurableMessageOrGetLocalData(
@@ -4129,8 +3752,6 @@ void NetworkHandler::ProcessDurableMessageOrGetLocalData(
 void NetworkHandler::GetResponseBody(
     const String& request_id,
     std::unique_ptr<GetResponseBodyCallback> callback) {
-  CHECK(storage_partition_);
-  CHECK(devtools_token_);
   network::mojom::DurableMessageCollector* collector =
       root_session_->MaybeGetDurableMessageCollector();
   if (collector) {
@@ -4145,35 +3766,23 @@ void NetworkHandler::GetResponseBody(
                                       std::nullopt);
 }
 
-void NetworkHandler::TakeResponseBodyForInterceptionAsStream(
-    const String& interception_id,
-    std::unique_ptr<TakeResponseBodyForInterceptionAsStreamCallback> callback) {
-  if (url_loader_interceptor_) {
-    url_loader_interceptor_->TakeResponseBodyPipe(
-        interception_id,
-        base::BindOnce(&NetworkHandler::OnResponseBodyPipeTaken,
-                       weak_factory_.GetWeakPtr(), std::move(callback)));
+void NetworkHandler::SearchInResponseBody(
+    const std::string& request_id,
+    const std::string& query,
+    std::optional<bool> case_sensitive,
+    std::optional<bool> is_regex,
+    std::unique_ptr<SearchInResponseBodyCallback> callback) {
+  network::mojom::DurableMessageCollector* collector =
+      root_session_->MaybeGetDurableMessageCollector();
+  if (collector) {
+    std::string pattern =
+        is_regex.value_or(false) ? query : re2::RE2::QuoteMeta(query);
+    collector->Search(
+        request_id, pattern, case_sensitive.value_or(false),
+        base::BindOnce(&DispatchSearchResults, std::move(callback)));
     return;
   }
-  callback->sendFailure(Response::ServerError(
-      "Network.takeResponseBodyForInterceptionAsStream is only "
-      "currently supported with --enable-features=NetworkService"));
-}
-
-void NetworkHandler::OnResponseBodyPipeTaken(
-    std::unique_ptr<TakeResponseBodyForInterceptionAsStreamCallback> callback,
-    Response response,
-    mojo::ScopedDataPipeConsumerHandle pipe,
-    const std::string& mime_type) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
-  DCHECK_EQ(response.IsSuccess(), pipe.is_valid());
-  if (!response.IsSuccess()) {
-    callback->sendFailure(std::move(response));
-    return;
-  }
-  // The pipe stream is owned only by io_context after we return.
-  auto stream = DevToolsStreamPipe::Create(io_context_, std::move(pipe));
-  callback->sendSuccess(stream->handle());
+  callback->fallThrough();
 }
 
 // static
@@ -4241,27 +3850,14 @@ NetworkHandler::CreateRequestFromResourceRequest(
   return request_object;
 }
 
-bool NetworkHandler::MaybeCreateProxyForInterception(
-    int process_id,
-    StoragePartition* storage_partition,
-    const base::UnguessableToken& frame_token,
-    bool is_navigation,
-    bool is_download,
-    network::mojom::URLLoaderFactoryOverride* intercepting_factory,
-    mojo::PendingRemote<network::mojom::TrustedURLLoaderHeaderClient>*
-        header_client) {
-  return url_loader_interceptor_ &&
-         url_loader_interceptor_->CreateProxyForInterception(
-             process_id, storage_partition, frame_token, is_navigation,
-             is_download, intercepting_factory, header_client);
+bool NetworkHandler::MayApplyOverridesTo(const GURL& url) const {
+  return client_ && client_->MayAttachToURL(url, host_ && host_->web_ui());
 }
 
-void NetworkHandler::ApplyOverrides(
-    net::HttpRequestHeaders* headers,
-    bool* skip_service_worker,
-    bool* disable_cache,
-    std::optional<std::vector<net::SourceStreamType>>* accepted_stream_types,
-    GURL* referrer_override) {
+void NetworkHandler::ApplyOverrides(net::HttpRequestHeaders* headers,
+                                    bool* skip_service_worker,
+                                    bool* disable_cache,
+                                    GURL* referrer_override) {
   for (auto& entry : extra_headers_) {
     if (referrer_override &&
         base::EqualsCaseInsensitiveASCII(entry.first,
@@ -4277,15 +3873,6 @@ void NetworkHandler::ApplyOverrides(
   }
   *skip_service_worker |= bypass_service_worker_;
   *disable_cache |= cache_disabled_;
-  if (!accepted_stream_types_) {
-    return;
-  }
-  if (!*accepted_stream_types) {
-    *accepted_stream_types = std::vector<net::SourceStreamType>();
-  }
-  (*accepted_stream_types)
-      ->insert((*accepted_stream_types)->end(), accepted_stream_types_->begin(),
-               accepted_stream_types_->end());
 }
 
 void NetworkHandler::ApplyCookieControlsOverrides(
@@ -4295,48 +3882,13 @@ void NetworkHandler::ApplyCookieControlsOverrides(
   }
 }
 
-void NetworkHandler::RequestIntercepted(
-    std::unique_ptr<InterceptedRequestInfo> info) {
-  std::optional<protocol::Network::ErrorReason> error_reason;
-  if (info->response_error_code < 0) {
-    error_reason = NetErrorToString(info->response_error_code);
-  }
-
-  std::optional<int> status_code;
-  std::unique_ptr<protocol::Network::Headers> response_headers;
-  if (info->response_headers) {
-    status_code = info->response_headers->response_code();
-    response_headers = BuildResponseHeaders(info->response_headers.get());
-  }
-
-  std::unique_ptr<protocol::Network::AuthChallenge> auth_challenge;
-  if (info->auth_challenge) {
-    auth_challenge =
-        protocol::Network::AuthChallenge::Create()
-            .SetSource(info->auth_challenge->is_proxy
-                           ? Network::AuthChallenge::SourceEnum::Proxy
-                           : Network::AuthChallenge::SourceEnum::Server)
-            .SetOrigin(info->auth_challenge->challenger.Serialize())
-            .SetScheme(info->auth_challenge->scheme)
-            .SetRealm(info->auth_challenge->realm)
-            .Build();
-  }
-
-  frontend_->RequestIntercepted(
-      info->interception_id, std::move(info->network_request),
-      info->frame_id.ToString(), ResourceTypeToString(info->resource_type),
-      info->is_navigation, std::move(info->is_download),
-      std::move(info->redirect_url), std::move(auth_challenge),
-      std::move(error_reason), std::move(status_code),
-      std::move(response_headers), std::move(info->renderer_request_id));
-}
-
 void NetworkHandler::SetNetworkConditions(
     std::vector<network::mojom::MatchedNetworkConditionsPtr> matched_conditions,
     bool offline) {
   if (!storage_partition_) {
     return;
   }
+  network_conditions_configured_ = !matched_conditions.empty() || offline;
   network::mojom::NetworkContext* context =
       storage_partition_->GetNetworkContext();
 
@@ -4689,6 +4241,11 @@ void NetworkHandler::LoadNetworkResource(
       return;
     }
 
+    if (!frame->policy_container_host()) {
+      callback->sendFailure(
+          Response::ServerError("Frame does not have a policy container"));
+      return;
+    }
     RenderFrameHostCSPContext csp_context(frame);
 
     network::CSPCheckResult result = csp_context.IsAllowedByCsp(
@@ -4711,7 +4268,8 @@ void NetworkHandler::LoadNetworkResource(
         network::mojom::TrustTokenOperationPolicyVerdict::kForbid,
         network::mojom::TrustTokenOperationPolicyVerdict::kForbid,
         frame->GetCookieSettingOverrides(),
-        /*network_restrictions_id=*/std::nullopt,
+        /*network_restrictions_id=*/frame->GetNetworkRestrictionsID(),
+        /*renderer_accessible_http_cache_write_enabled=*/false,
         "NetworkHandler::LoadNetworkResource");
 
     auto factory = CreateNetworkFactoryForDevTools(
@@ -4722,11 +4280,33 @@ void NetworkHandler::LoadNetworkResource(
       return;
     }
 
+    auto redirect_check = base::BindRepeating(
+        [](scoped_refptr<PolicyContainerHost> policy_container_host,
+           base::WeakPtr<RenderFrameHostImpl> frame, const GURL& initial_url,
+           const net::RedirectInfo& redirect_info) -> bool {
+          if (!frame || !policy_container_host ||
+              frame->policy_container_host() != policy_container_host.get()) {
+            return false;
+          }
+          RenderFrameHostCSPContext csp_context(frame.get());
+          network::CSPCheckResult result = csp_context.IsAllowedByCsp(
+              policy_container_host->policies().content_security_policies,
+              network::mojom::CSPDirectiveName::ConnectSrc,
+              redirect_info.new_url, initial_url,
+              /*has_followed_redirect=*/true,
+              /*source_location=*/nullptr,
+              network::CSPContext::CHECK_ENFORCED_CSP,
+              /*is_opaque_fenced_frame=*/false);
+          return result.IsAllowed();
+        },
+        base::WrapRefCounted(frame->policy_container_host()),
+        frame->GetWeakPtr(), gurl);
     url_loader_factory.Bind(std::move(factory));
     auto loader = DevToolsNetworkResourceLoader::Create(
         std::move(url_loader_factory), std::move(gurl),
         frame->GetLastCommittedOrigin(), frame->ComputeSiteForCookies(),
-        caching, include_credentials, std::move(complete_callback));
+        caching, include_credentials, std::move(complete_callback),
+        frame->IsOutermostMainFrame(), std::move(redirect_check));
     loaders_.emplace(std::move(loader), std::move(callback));
     return;
   }

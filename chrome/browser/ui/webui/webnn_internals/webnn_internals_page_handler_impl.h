@@ -41,9 +41,18 @@ class WebNNInternalsPageHandlerImpl
   void OnUpdateExistingContextDetails(
       const std::vector<webnn::mojom::WebNNContextIntrospectionDetailsPtr>&
           contexts_details) override;
+  void OnUpdateAvailableExecutionProvidersDetails(
+      const std::vector<webnn::mojom::WebNNExecutionProviderDetailsPtr>&
+          available_execution_providers) override;
   // webnn_internals::mojom::PageHandler
   void RequestExistingContextsDetails(
       RequestExistingContextsDetailsCallback callback) override;
+  void RequestAvailableExecutionProvidersDetails(
+      RequestAvailableExecutionProvidersDetailsCallback callback) override;
+#if BUILDFLAG(IS_WIN)
+  void ForceOrtEnvironmentCreationForIntrospection(
+      ForceOrtEnvironmentCreationForIntrospectionCallback callback) override;
+#endif
 
  private:
   mojo::Receiver<webnn_internals::mojom::PageHandler> receiver_;

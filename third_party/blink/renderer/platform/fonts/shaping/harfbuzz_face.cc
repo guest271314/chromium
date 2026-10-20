@@ -38,7 +38,9 @@
 
 #include <memory>
 
+#include "base/containers/span.h"
 #include "base/memory/ptr_util.h"
+#include "base/memory/raw_ptr.h"
 #include "build/build_config.h"
 #include "third_party/blink/renderer/platform/fonts/font_cache.h"
 #include "third_party/blink/renderer/platform/fonts/font_global_context.h"
@@ -80,18 +82,8 @@ void HarfBuzzFace::Trace(Visitor* visitor) const {
   visitor->Trace(harfbuzz_font_data_);
 }
 
-VariationSelectorMode& GetIgnoreVariationSelectorModeRef() {
-  DEFINE_THREAD_SAFE_STATIC_LOCAL(ThreadSpecific<VariationSelectorMode>,
-                                  variation_selector_mode, ());
-  return *variation_selector_mode;
-}
-
-VariationSelectorMode HarfBuzzFace::GetVariationSelectorMode() {
-  return GetIgnoreVariationSelectorModeRef();
-}
-
 void HarfBuzzFace::SetVariationSelectorMode(VariationSelectorMode value) {
-  GetIgnoreVariationSelectorModeRef() = value;
+  harfbuzz_font_data_->SetVariationSelectorMode(value);
 }
 
 static hb_bool_t HarfBuzzGetGlyph(hb_font_t* hb_font,
@@ -124,29 +116,31 @@ static hb_bool_t HarfBuzzGetGlyph(hb_font_t* hb_font,
   bool consider_variation_selector = false;
   bool is_variation_sequence = false;
 
+  // TODO(https://crbug.com/396607232): The special casing for system fonts
+  // below can be removed if we ship our own emoji fonts.
   // Emoji System Fonts on Mac, Win and Android either do not have cmap 14
   // subtable or it does not include all emojis from their cmap table. We use
   // cmap 14 subtable to identify whether there is a colored (emoji
-  // presentation) or a monochromatic (text presentation) glyph in the font.
-  // This may lead to the cases when we will not be able to get the glyph ID
-  // for the requested variation sequence using fallback system font and will
-  // continue the second shaping fallback list pass ignoring variation
-  // selectors and may end up using web font with wrong emoji presentation
-  // instead of using system font with the correct presentation. To prevent that
-  // once we reached system fallback fonts, we can ignore emoji variation
-  // selectors since we will get the font with the correct presentation relying
-  // on FontFallbackPriority in `FontCache::PlatformFallbackFontForCharacter`.
+  // presentation) or a monochromatic (text presentation) glyph in the
+  // font. This may lead to the cases when we will not be able to get the glyph
+  // ID for the requested variation sequence using fallback system font and will
+  // continue the second shaping fallback list pass ignoring variation selectors
+  // and may end up using web font with wrong emoji presentation instead of
+  // using system font with the correct presentation. To prevent that once we
+  // reached system fallback fonts, we can ignore emoji variation selectors
+  // since we will get the font with the correct presentation relying on
+  // FontFallbackPriority in `FontCache::PlatformFallbackFontForCharacter`.
   VariationSelectorMode variation_selector_mode =
-      HarfBuzzFace::GetVariationSelectorMode();
-    if (!ShouldIgnoreVariationSelector(variation_selector_mode) &&
-        Character::IsUnicodeVariationSelector(variation_selector) &&
-        Character::IsVariationSequence(unicode, variation_selector)) {
-      is_variation_sequence = true;
-      consider_variation_selector = true;
-    } else if (UseFontVariantEmojiVariationSelector(variation_selector_mode) &&
-               Character::IsEmoji(unicode)) {
-      consider_variation_selector = true;
-    }
+      hb_font_data->GetVariationSelectorMode();
+  if (!ShouldIgnoreVariationSelector(variation_selector_mode) &&
+      unicode::IsUnicodeVariationSelector(variation_selector) &&
+      unicode::IsVariationSequence(unicode, variation_selector)) {
+    is_variation_sequence = true;
+    consider_variation_selector = true;
+  } else if (UseFontVariantEmojiVariationSelector(variation_selector_mode) &&
+             unicode::IsEmoji(unicode)) {
+    consider_variation_selector = true;
+  }
 
   bool text_presentation_requested = false;
   bool emoji_presentation_requested = false;
@@ -160,11 +154,11 @@ static hb_bool_t HarfBuzzGetGlyph(hb_font_t* hb_font,
     if (!is_variation_sequence) {
       if (variation_selector_mode == kForceVariationSelector15 ||
           (variation_selector_mode == kUseUnicodeDefaultPresentation &&
-           Character::IsEmojiTextDefault(unicode))) {
+           unicode::IsEmojiTextDefault(unicode))) {
         variation_selector = uchar::kVariationSelector15;
       } else if (variation_selector_mode == kForceVariationSelector16 ||
                  (variation_selector_mode == kUseUnicodeDefaultPresentation &&
-                  Character::IsEmojiEmojiDefault(unicode))) {
+                  unicode::IsEmojiEmojiDefault(unicode))) {
         variation_selector = uchar::kVariationSelector16;
       }
     }
@@ -197,8 +191,7 @@ static hb_bool_t HarfBuzzGetGlyph(hb_font_t* hb_font,
     // has a colored or monochromatic glyph for base character from variation
     // sequence. We set `glyph` to `kUnmatchedVSGlyphId` only when font has a
     // wrong presentation for base character.
-    if (RuntimeEnabledFeatures::SystemFallbackEmojiVSSupportEnabled() &&
-        (text_presentation_requested || emoji_presentation_requested)) {
+    if (text_presentation_requested || emoji_presentation_requested) {
       SkTypeface* typeface = hb_font_data->font_.getTypeface();
       // TODO(https://bugs.skia.org/374078818): Ideally we also want to check
       // weather the base codepoint is present in the found color table,
@@ -246,6 +239,70 @@ static hb_bool_t HarfBuzzGetNominalGlyph(hb_font_t* hb_font,
   return HarfBuzzGetGlyph(hb_font, font_data, unicode, 0, glyph, user_data);
 }
 
+static unsigned int HarfBuzzGetNominalGlyphs(
+    hb_font_t* hb_font,
+    void* font_data,
+    unsigned int count,
+    const hb_codepoint_t* first_unicode,
+    unsigned int unicode_stride,
+    hb_codepoint_t* first_glyph,
+    unsigned int glyph_stride,
+    void* user_data) {
+  HarfBuzzFontData* hb_font_data =
+      reinterpret_cast<HarfBuzzFontData*>(font_data);
+  CHECK(hb_font_data);
+
+  auto resolve_nominal_glyphs =
+      [&](wtf_size_t start, const UnicodeRangeSet* range_set = nullptr)
+          __attribute__((always_inline)) {
+            UNSAFE_BUFFERS({
+              for (wtf_size_t i = start; i < count; ++i) {
+                hb_codepoint_t u = *reinterpret_cast<const hb_codepoint_t*>(
+                    reinterpret_cast<const char*>(first_unicode) +
+                    i * unicode_stride);
+                if (range_set && !range_set->Contains(u)) {
+                  return i;
+                }
+                hb_codepoint_t* g = reinterpret_cast<hb_codepoint_t*>(
+                    reinterpret_cast<char*>(first_glyph) + i * glyph_stride);
+                if (!HarfBuzzGetGlyph(hb_font, font_data, u, 0, g, user_data)) {
+                  return i;
+                }
+              }
+            });
+            return count;
+          };
+
+  if (hb_font_data->range_set_) {
+    return resolve_nominal_glyphs(0, hb_font_data->range_set_);
+  }
+
+  VariationSelectorMode variation_selector_mode =
+      hb_font_data->GetVariationSelectorMode();
+  if (UseFontVariantEmojiVariationSelector(variation_selector_mode)) {
+    return resolve_nominal_glyphs(0);
+  }
+
+  wtf_size_t done = hb_font_get_nominal_glyphs(
+      hb_font_get_parent(hb_font), count, first_unicode, unicode_stride,
+      first_glyph, glyph_stride);
+
+#if BUILDFLAG(IS_APPLE)
+  if (done < count) {
+    UNSAFE_BUFFERS({
+      const hb_codepoint_t u = *reinterpret_cast<const hb_codepoint_t*>(
+          reinterpret_cast<const char*>(first_unicode) + done * unicode_stride);
+      if (u == uchar::kHyphen || u == uchar::kNonBreakingHyphen ||
+          u == uchar::kLineSeparator || u == uchar::kParagraphSeparator) {
+        return resolve_nominal_glyphs(done);
+      }
+    });
+  }
+#endif
+
+  return done;
+}
+
 static hb_position_t HarfBuzzGetGlyphHorizontalAdvance(hb_font_t* hb_font,
                                                        void* font_data,
                                                        hb_codepoint_t glyph,
@@ -270,9 +327,11 @@ static void HarfBuzzGetGlyphHorizontalAdvances(
     void* user_data) {
   HarfBuzzFontData* hb_font_data =
       reinterpret_cast<HarfBuzzFontData*>(font_data);
+  CHECK_EQ(glyph_stride % 4, 0u);
+  CHECK_EQ(advance_stride % 4, 0u);
   SkFontGetGlyphWidthForHarfBuzz(
       hb_font_data->EnsureStrikeRef(), hb_font_data->font_.isSubpixel(), count,
-      first_glyph, glyph_stride, first_advance, advance_stride);
+      first_glyph, glyph_stride / 4, first_advance, advance_stride / 4);
 }
 
 static hb_bool_t HarfBuzzGetGlyphVerticalOrigin(hb_font_t* hb_font,
@@ -290,8 +349,8 @@ static hb_bool_t HarfBuzzGetGlyphVerticalOrigin(hb_font_t* hb_font,
 
   float result[] = {0, 0};
   Glyph the_glyph = glyph;
-  vertical_data->GetVerticalTranslationsForGlyphs(hb_font_data->font_,
-                                                  &the_glyph, 1, result);
+  vertical_data->GetVerticalTranslationsForGlyphs(
+      hb_font_data->font_, base::span_from_ref(the_glyph), result);
   *x = SkiaScalarToHarfBuzzPosition(-result[0]);
   *y = SkiaScalarToHarfBuzzPosition(-result[1]);
   return true;
@@ -329,8 +388,8 @@ static inline bool TableHasSpace(hb_face_t* face,
                                  hb_set_t* glyphs,
                                  hb_tag_t tag,
                                  hb_codepoint_t space) {
-  unsigned count = hb_ot_layout_table_get_lookup_count(face, tag);
-  for (unsigned i = 0; i < count; i++) {
+  wtf_size_t count = hb_ot_layout_table_get_lookup_count(face, tag);
+  for (wtf_size_t i = 0; i < count; ++i) {
     hb_ot_layout_lookup_collect_glyphs(face, tag, i, glyphs, glyphs, glyphs,
                                        nullptr);
     if (hb_set_has(glyphs, space)) {
@@ -395,7 +454,7 @@ bool HarfBuzzFace::HasSpaceInLigaturesOrKerning(TypesettingFeatures features) {
               HarfBuzzFontData::SpaceGlyphInOpenTypeTables::kPresent);
 }
 
-unsigned HarfBuzzFace::UnitsPerEmFromHeadTable() {
+wtf_size_t HarfBuzzFace::UnitsPerEmFromHeadTable() {
   hb_face_t* face = hb_font_get_face(harfbuzz_font_data_->unscaled_font_.get());
   return hb_face_get_upem(face);
 }
@@ -430,13 +489,9 @@ class HarfBuzzSkiaFontFuncs final {
     return shared_hb_funcs;
   }
 
-#if BUILDFLAG(IS_APPLE)
-  HarfBuzzSkiaFontFuncs()
-      : hb_font_funcs_skia_advances_(
-            CreateFontFunctions(kSkiaHorizontalAdvances)),
-        hb_font_funcs_harfbuzz_advances_(
-            CreateFontFunctions(kHarfBuzzHorizontalAdvances)) {}
+  HarfBuzzSkiaFontFuncs() = default;
 
+#if BUILDFLAG(IS_APPLE)
   ~HarfBuzzSkiaFontFuncs() {
     hb_font_funcs_destroy(hb_font_funcs_skia_advances_);
     hb_font_funcs_destroy(hb_font_funcs_harfbuzz_advances_);
@@ -466,10 +521,6 @@ class HarfBuzzSkiaFontFuncs final {
                                  : hb_font_funcs_skia_advances_;
   }
 #else
-  HarfBuzzSkiaFontFuncs()
-      : hb_font_funcs_skia_advances_(
-            CreateFontFunctions(kSkiaHorizontalAdvances)) {}
-
   ~HarfBuzzSkiaFontFuncs() {
     hb_font_funcs_destroy(hb_font_funcs_skia_advances_);
   }
@@ -507,6 +558,8 @@ class HarfBuzzSkiaFontFuncs final {
                                            nullptr);
     hb_font_funcs_set_nominal_glyph_func(funcs, HarfBuzzGetNominalGlyph,
                                          nullptr, nullptr);
+    hb_font_funcs_set_nominal_glyphs_func(funcs, HarfBuzzGetNominalGlyphs,
+                                          nullptr, nullptr);
     // TODO(crbug.com/899718): Replace vertical metrics callbacks with
     // HarfBuzz VORG/VMTX internal implementation by deregistering those.
     hb_font_funcs_set_glyph_v_advance_func(
@@ -520,9 +573,17 @@ class HarfBuzzSkiaFontFuncs final {
     return funcs;
   }
 
-  hb_font_funcs_t* const hb_font_funcs_skia_advances_;
+  // UnprotectedInReleaseForPerformance: Based on analysis of Speedometer 3
+  // (font shaping).
+  const raw_ptr<hb_font_funcs_t,
+                UnprotectedInReleaseForPerformance | DanglingUntriaged>
+      hb_font_funcs_skia_advances_ =
+          CreateFontFunctions(kSkiaHorizontalAdvances);
 #if BUILDFLAG(IS_APPLE)
-  hb_font_funcs_t* const hb_font_funcs_harfbuzz_advances_;
+  const raw_ptr<hb_font_funcs_t,
+                UnprotectedInReleaseForPerformance | DanglingUntriaged>
+      hb_font_funcs_harfbuzz_advances_ =
+          CreateFontFunctions(kHarfBuzzHorizontalAdvances);
 #endif
 };
 

@@ -20,6 +20,9 @@ class WebStateID;
 // Sets the mode of the grid.
 - (void)setTabGridMode:(TabGridMode)mode;
 
+// Sets whether multiple scenes are available for multi-window interactions.
+- (void)setMultipleScenesAvailable:(BOOL)multipleScenesAvailable;
+
 // Many of the following methods pass a `selectedItemID` as a parameter,
 // indicating the identifier of the item that should be in the selected state
 // after the method is called. In every such case, a nil `selectedItemID`
@@ -32,6 +35,14 @@ class WebStateID;
 // `items` array containing items without unique IDs.
 - (void)populateItems:(NSArray<GridItemIdentifier*>*)items
     selectedItemIdentifier:(GridItemIdentifier*)selectedItemIdentifier;
+
+// Tells the consumer to replace its current set of items with `items` and
+// update the selected item to be `selectedItem`. It's an error to pass an
+// `items` array containing items without unique IDs. `completion` is called
+// when the items are populated and layout is finalized.
+- (void)populateItems:(NSArray<GridItemIdentifier*>*)items
+    selectedItemIdentifier:(GridItemIdentifier*)selectedItemIdentifier
+                completion:(void (^)(void))completion;
 
 // Tells the consumer to insert `item` before the given `nextItemIdentifier` and
 // update the selected item identifier to be `selectedItemIdentifier`. It's an
@@ -70,18 +81,6 @@ class WebStateID;
 
 // Dismisses any presented modal UI.
 - (void)dismissModals;
-
-// Notifies the grid that all items will be closed.
-- (void)willCloseAll;
-
-// Notifies the grid that all items have been closed.
-- (void)didCloseAll;
-
-// Notifies the grid that all closed items will be restored.
-- (void)willUndoCloseAll;
-
-// Notifies the grid that all closed items have been restored.
-- (void)didUndoCloseAll;
 
 // Reloads the view.
 - (void)reload;

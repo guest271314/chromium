@@ -35,7 +35,6 @@
 #include "base/metrics/histogram_functions.h"
 #include "base/strings/strcat.h"
 #include "third_party/blink/public/common/features.h"
-#include "third_party/blink/public/mojom/fenced_frame/fenced_frame.mojom-blink.h"
 #include "third_party/blink/public/mojom/frame/frame.mojom-blink.h"
 #include "third_party/blink/public/mojom/frame/frame_owner_properties.mojom-blink.h"
 #include "third_party/blink/public/web/web_local_frame.h"
@@ -238,6 +237,26 @@ bool Frame::IsCrossOriginToParentOrOuterDocument() const {
   return !security_origin->CanAccess(parent_security_origin);
 }
 
+bool Frame::HasCrossOriginAncestorFrame() const {
+  DCHECK(GetSecurityContext());
+  if (IsInFencedFrameTree()) {
+    return true;
+  }
+  if (IsMainFrame()) {
+    return false;
+  }
+  const SecurityOrigin* security_origin =
+      GetSecurityContext()->GetSecurityOrigin();
+  for (const Frame* f = this; f; f = f->Tree().Parent()) {
+    const SecurityOrigin* ancestor_security_origin =
+        f->GetSecurityContext()->GetSecurityOrigin();
+    if (!security_origin->CanAccess(ancestor_security_origin)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 HTMLFrameOwnerElement* Frame::DeprecatedLocalOwner() const {
   return DynamicTo<HTMLFrameOwnerElement>(owner_.Get());
 }
@@ -376,8 +395,9 @@ bool Frame::ConsumeTransientUserActivationInFrameTree() {
 
   // To record UMA once per consumption, we arbitrarily picked the LocalFrame
   // for root.
-  if (IsA<LocalFrame>(root))
+  if (IsA<LocalFrame>(root)) {
     root.user_activation_state_.RecordPreconsumptionUma();
+  }
 
   for (Frame* node = &root; node; node = node->Tree().TraverseNext())
     node->user_activation_state_.ConsumeIfActive();
@@ -431,32 +451,16 @@ void Frame::RenderFallbackContent() {
 }
 
 bool Frame::IsInFencedFrameTree() const {
-  DCHECK(!IsDetached());
-  if (!features::IsFencedFramesEnabled())
-    return false;
-
-  return GetPage() && GetPage()->IsMainFrameFencedFrameRoot();
+  return false;
 }
 
 bool Frame::IsFencedFrameRoot() const {
-  DCHECK(!IsDetached());
-  if (!features::IsFencedFramesEnabled())
-    return false;
-
-  return IsInFencedFrameTree() && IsMainFrame();
+  return false;
 }
 
 std::optional<blink::FencedFrame::DeprecatedFencedFrameMode>
 Frame::GetDeprecatedFencedFrameMode() const {
-  DCHECK(!IsDetached());
-
-  if (!features::IsFencedFramesEnabled())
-    return std::nullopt;
-
-  if (!IsInFencedFrameTree())
-    return std::nullopt;
-
-  return GetPage()->DeprecatedFencedFrameMode();
+  return std::nullopt;
 }
 
 void Frame::SetOwner(FrameOwner* owner) {
@@ -493,7 +497,7 @@ void Frame::UpdateVisibleToHitTesting() {
   if (auto* local_owner = DynamicTo<HTMLFrameOwnerElement>(owner_.Get())) {
     self_visible_to_hit_testing =
         !local_owner->GetLayoutObject() ||
-        local_owner->GetLayoutObject()->StyleRef().VisibleToHitTesting();
+        local_owner->GetLayoutObject()->Style().VisibleToHitTesting();
   }
 
   bool visible_to_hit_testing =
@@ -588,6 +592,7 @@ void Frame::ApplyFrameOwnerProperties(
   owner->SetAllowFullscreen(properties->allow_fullscreen);
   owner->SetAllowPaymentRequest(properties->allow_payment_request);
   owner->SetIsDisplayNone(properties->is_display_none);
+  owner->SetResponsiveSizing(properties->responsive_sizing);
   owner->SetColorScheme(properties->color_scheme);
   owner->SetPreferredColorScheme(properties->preferred_color_scheme);
 }
@@ -716,6 +721,66 @@ Frame* Frame::Top() {
     parent = next_parent;
   }
   return parent;
+}
+
+Frame* Frame::CommonAncestor(const Frame* other) const {
+  if (!other || &Tree().Top() != &other->Tree().Top()) {
+    return nullptr;
+  }
+
+  const Frame* frame_a = this;
+  const Frame* frame_b = other;
+  unsigned depth_a = 0;
+  for (const Frame* frame = frame_a; frame; frame = frame->Parent()) {
+    ++depth_a;
+  }
+  unsigned depth_b = 0;
+  for (const Frame* frame = frame_b; frame; frame = frame->Parent()) {
+    ++depth_b;
+  }
+
+  while (depth_a > depth_b) {
+    frame_a = frame_a->Parent();
+    --depth_a;
+  }
+  while (depth_b > depth_a) {
+    frame_b = frame_b->Parent();
+    --depth_b;
+  }
+  while (frame_a != frame_b) {
+    frame_a = frame_a->Parent();
+    frame_b = frame_b->Parent();
+  }
+  return const_cast<Frame*>(frame_a);
+}
+
+bool Frame::IsFrameTreePathSameOrigin(const Frame* other) const {
+  Frame* common_ancestor = CommonAncestor(other);
+  if (!common_ancestor || !GetSecurityContext()) {
+    return false;
+  }
+
+  const SecurityOrigin* origin = GetSecurityContext()->GetSecurityOrigin();
+  auto has_same_origin = [origin](const Frame* frame) {
+    const SecurityContext* security_context = frame->GetSecurityContext();
+    const SecurityOrigin* frame_origin =
+        security_context ? security_context->GetSecurityOrigin() : nullptr;
+    return origin && frame_origin && origin->IsSameOriginWith(frame_origin);
+  };
+
+  for (const Frame* frame = this; frame != common_ancestor;
+       frame = frame->Parent()) {
+    if (!has_same_origin(frame)) {
+      return false;
+    }
+  }
+  for (const Frame* frame = other; frame != common_ancestor;
+       frame = frame->Parent()) {
+    if (!has_same_origin(frame)) {
+      return false;
+    }
+  }
+  return has_same_origin(common_ancestor);
 }
 
 bool Frame::AllowFocusWithoutUserActivation() {
@@ -1025,12 +1090,13 @@ void Frame::DetachFromParent() {
   Parent()->RemoveChild(this);
 }
 
-void Frame::AdjustOffsetByAncestorFrames(gfx::Point* origin_point) {
+void Frame::DeprecatedAdjustOffsetByAncestorFrames(gfx::Point* origin_point) {
+  CHECK(!RuntimeEnabledFeatures::AvoidEmbeddedContentViewLocationEnabled());
   CHECK(origin_point);
   Frame* current_frame = this;
   while (current_frame->Owner()) {
     if (auto* frame_view = current_frame->View()) {
-      gfx::Point location = frame_view->Location();
+      gfx::Point location = frame_view->DeprecatedLocation();
       origin_point->Offset(-location.x(), -location.y());
     }
     current_frame = current_frame->Parent();

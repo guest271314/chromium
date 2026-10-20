@@ -21,6 +21,7 @@
 #import "ios/chrome/browser/authentication/ui_bundled/continuation.h"
 #import "ios/chrome/browser/authentication/ui_bundled/signin/signin_constants.h"
 #import "ios/chrome/browser/authentication/ui_bundled/signin/signin_coordinator+protected.h"
+#import "ios/chrome/browser/authentication/ui_bundled/signin/signin_utils.h"
 #import "ios/chrome/browser/shared/coordinator/alert/alert_coordinator.h"
 #import "ios/chrome/browser/shared/model/application_context/application_context.h"
 #import "ios/chrome/browser/shared/model/browser/browser.h"
@@ -93,7 +94,7 @@ using signin_metrics::PromoAction;
                                accessPoint:accessPoint];
   if (self) {
     CHECK(continuationProvider);
-    CHECK(viewController, base::NotFatalUntil::M140);
+    CHECK(viewController);
     _continuationProvider = continuationProvider;
     _signinIntent = signinIntent;
     _promoAction = promoAction;
@@ -103,7 +104,7 @@ using signin_metrics::PromoAction;
 }
 
 - (void)dealloc {
-  CHECK(!_continuationProvider, base::NotFatalUntil::M145);
+  CHECK(!_continuationProvider);
 }
 
 #pragma mark - ChromeCoordinator
@@ -124,13 +125,11 @@ using signin_metrics::PromoAction;
       break;
     case AddAccountSigninIntent::kPrimaryAccountReauth:
       // The user wants to reauth their primary account.
-      CHECK(_authenticationService->HasPrimaryIdentity(),
-            base::NotFatalUntil::M143);
+      CHECK(_authenticationService->HasPrimaryIdentity());
       break;
     case AddAccountSigninIntent::kResignin:
       // The user wants to add back their primary account.
-      CHECK(!_authenticationService->HasPrimaryIdentity(),
-            base::NotFatalUntil::M143);
+      CHECK(!_authenticationService->HasPrimaryIdentity());
       break;
   }
   _syncService = SyncServiceFactory::GetForProfile(profile);
@@ -160,7 +159,7 @@ using signin_metrics::PromoAction;
   // The coordinator should not be stopped twice. Indeed, after the first stop,
   // the coordinator will be released, and this will cause the second stop to be
   // executed on a zombie object. See crbug.com/442589294.
-  CHECK(!_stopped, base::NotFatalUntil::M145);
+  CHECK(!_stopped);
   _stopped = YES;
   [super stopAnimated:animated];
   [self stopPostSigninManagerCoordinatorAnimated:animated];
@@ -228,7 +227,7 @@ using signin_metrics::PromoAction;
       std::vector<AccountInfo> accountsOnDevice =
           _identityManager->GetAccountsOnDevice();
       for (const AccountInfo& accountInfo : accountsOnDevice) {
-        if (accountInfo.gaia == gaia) {
+        if (accountInfo.GetGaiaId() == gaia) {
           identityOnDeviceFound = true;
           break;
         }
@@ -347,9 +346,7 @@ using signin_metrics::PromoAction;
   DCHECK(!self.alertCoordinator);
   DCHECK(!self.postSigninManagerCoordinator);
   DCHECK(!self.historySyncPopupCoordinator);
-  // `identity` is set, only and only if the sign-in is successful.
-  DCHECK(((signinResult == SigninCoordinatorResultSuccess) && identity) ||
-         ((signinResult != SigninCoordinatorResultSuccess) && !identity));
+  signin::CheckSigninCoordinatorResultAndIdentity(signinResult, identity);
   if (_stopped) {
     // The delegate is already dealing with stopping `self`.
     return;
@@ -367,7 +364,7 @@ using signin_metrics::PromoAction;
                      completionIdentity:nil];
     return;
   }
-  CHECK([self isStarted], base::NotFatalUntil::M144);
+  CHECK([self isStarted]);
   // The new UIViewController is presented on top of the currently displayed
   // view controller.
   self.postSigninManagerCoordinator = [SigninCoordinator
@@ -380,14 +377,17 @@ using signin_metrics::PromoAction;
                                 continuationProvider:_continuationProvider];
 
   __weak AddAccountSigninCoordinator* weakSelf = self;
-  self.postSigninManagerCoordinator.signinCompletion =
-      ^(SigninCoordinator* coordinator, SigninCoordinatorResult signinResult,
-        id<SystemIdentity> signinCompletionIdentity) {
-        [weakSelf postSigninManagerCoordinatorDoneWithCoordinator:coordinator
-                                                           result:signinResult
-                                         signinCompletionIdentity:
-                                             signinCompletionIdentity];
-      };
+  self.postSigninManagerCoordinator.signinCompletion = ^(
+      SigninCoordinator* coordinator,
+      SigninCoordinatorResultOrIdentity result) {
+    SigninCoordinatorResult signinResult =
+        signin::SigninCoordinatorResultFromSigninCoordinatorResultOrIdentity(
+            result);
+    [weakSelf
+        postSigninManagerCoordinatorDoneWithCoordinator:coordinator
+                                                 result:signinResult
+                               signinCompletionIdentity:result.value_or(nil)];
+  };
   [self.postSigninManagerCoordinator start];
 }
 
@@ -398,8 +398,7 @@ using signin_metrics::PromoAction;
                                                          result
                                signinCompletionIdentity:
                                    (id<SystemIdentity>)resultIdentity {
-  CHECK_EQ(self.postSigninManagerCoordinator, coordinator,
-           base::NotFatalUntil::M151);
+  CHECK_EQ(self.postSigninManagerCoordinator, coordinator);
   [self stopPostSigninManagerCoordinatorAnimated:NO];
   if (result != SigninCoordinatorResultSuccess) {
     [self addAccountDoneWithSigninResult:result identity:resultIdentity];
@@ -412,7 +411,7 @@ using signin_metrics::PromoAction;
     [self addAccountDoneWithSigninResult:result identity:resultIdentity];
     return;
   }
-  CHECK([self isStarted], base::NotFatalUntil::M144);
+  CHECK([self isStarted]);
   self.historySyncPopupCoordinator = [[HistorySyncPopupCoordinator alloc]
       initWithBaseViewController:self.baseViewController
                          browser:self.browser
@@ -440,11 +439,11 @@ using signin_metrics::PromoAction;
     case HistorySyncResult::kSuccess:
     case HistorySyncResult::kSkipped:
       signinResult = SigninCoordinatorResultSuccess;
-      CHECK(primaryIdentity, base::NotFatalUntil::M145);
+      CHECK(primaryIdentity);
       break;
     case HistorySyncResult::kPrimaryIdentityRemoved:
       signinResult = SigninCoordinatorResultInterrupted;
-      CHECK(!primaryIdentity, base::NotFatalUntil::M145);
+      CHECK(!primaryIdentity);
       break;
   }
   [self addAccountDoneWithSigninResult:signinResult identity:primaryIdentity];
@@ -453,7 +452,7 @@ using signin_metrics::PromoAction;
 #pragma mark - AddAccountSigninMediatorDelegate
 
 - (void)mediatorWantsToBeStopped:(AddAccountSigninMediator*)mediator {
-  CHECK_EQ(_mediator, mediator, base::NotFatalUntil::M144);
+  CHECK_EQ(_mediator, mediator);
   if (_stopped) {
     // Stop is already ongoing.
     return;

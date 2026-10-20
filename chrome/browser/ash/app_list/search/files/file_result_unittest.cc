@@ -4,6 +4,7 @@
 
 #include "chrome/browser/ash/app_list/search/files/file_result.h"
 
+#include <array>
 #include <optional>
 
 #include "ash/public/cpp/app_list/app_list_types.h"
@@ -21,6 +22,7 @@
 #include "chrome/browser/ash/file_manager/volume_manager_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/ash/thumbnail_loader/thumbnail_loader.h"
+#include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile.h"
 #include "chromeos/ash/components/disks/fake_disk_mount_manager.h"
 #include "chromeos/ash/components/string_matching/tokenized_string.h"
@@ -105,6 +107,7 @@ class FileResultTest : public testing::Test {
         base::BindLambdaForTesting([&](content::BrowserContext* context) {
           return std::unique_ptr<KeyedService>(
               std::make_unique<file_manager::VolumeManager>(
+                  TestingBrowserProcess::GetGlobal()->local_state(),
                   Profile::FromBrowserContext(context), nullptr, nullptr,
                   &disk_mount_manager_, nullptr,
                   file_manager::VolumeManager::GetMtpStorageInfoCallback()));
@@ -159,15 +162,21 @@ TEST_F(FileResultTest, PenalizeScore) {
   query.emplace(u"somefile");
   base::Time now = base::Time::Now();
 
-  double expected_scores[] = {1.0, 0.9, 0.63};
-  int access_days_ago[] = {0, 10, 30};
+  struct TestCase {
+    int access_days_ago;
+    double expected_score;
+  };
+  static constexpr std::array kTestCases = {
+      TestCase{0, 1.0},
+      TestCase{10, 0.9},
+      TestCase{30, 0.63},
+  };
 
-  for (int i = 0; i < 3; ++i) {
-    base::Time last_accessed =
-        now - base::Days(UNSAFE_TODO(access_days_ago[i]));
+  for (const auto& test_case : kTestCases) {
+    base::Time last_accessed = now - base::Days(test_case.access_days_ago);
     double relevance =
         FileResult::CalculateRelevance(query, path, last_accessed);
-    UNSAFE_TODO(EXPECT_THAT(relevance, DoubleNear(expected_scores[i], 0.01)));
+    EXPECT_THAT(relevance, DoubleNear(test_case.expected_score, 0.01));
   }
 }
 

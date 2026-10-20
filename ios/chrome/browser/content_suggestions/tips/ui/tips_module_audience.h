@@ -15,6 +15,13 @@ enum class TipIdentifier;
 // Called when a Tips item matching `identifier` is selected by the user.
 - (void)didSelectTip:(segmentation_platform::TipIdentifier)identifier;
 
+// Called when the photo picker button is selected in the actionable NTP Theme
+// tip.
+- (void)didSelectNTPThemePhotoPicker;
+
+// Called when a theme at `index` is selected in the actionable NTP Theme tip.
+- (void)didSelectNTPThemeAtIndex:(NSInteger)index;
+
 @end
 
 #endif  // IOS_CHROME_BROWSER_CONTENT_SUGGESTIONS_TIPS_UI_TIPS_MODULE_AUDIENCE_H_

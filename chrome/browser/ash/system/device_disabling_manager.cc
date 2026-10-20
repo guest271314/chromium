@@ -4,6 +4,7 @@
 
 #include "chrome/browser/ash/system/device_disabling_manager.h"
 
+#include "ash/constants/ash_policy_pref_names.h"
 #include "ash/constants/ash_switches.h"
 #include "base/check_deref.h"
 #include "base/command_line.h"
@@ -15,7 +16,6 @@
 #include "chrome/browser/ash/policy/server_backed_state/server_backed_device_state.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/browser_process_platform_part.h"
-#include "chrome/common/pref_names.h"
 #include "chromeos/ash/components/install_attributes/install_attributes.h"
 #include "chromeos/ash/components/policy/restriction_schedule/device_restriction_schedule_controller.h"
 #include "chromeos/ash/components/settings/cros_settings_names.h"
@@ -23,7 +23,7 @@
 #include "chromeos/ash/components/system/statistics_provider.h"
 #include "components/policy/core/common/cloud/cloud_policy_constants.h"
 #include "components/prefs/pref_service.h"
-#include "components/user_manager/user_manager.h"
+#include "components/session_manager/core/session_manager.h"
 
 namespace ash {
 namespace system {
@@ -39,14 +39,14 @@ DeviceDisablingManager::DeviceDisablingManager(
         device_restriction_schedule_controller,
     Delegate* delegate,
     CrosSettings* cros_settings,
-    user_manager::UserManager* user_manager)
+    session_manager::SessionManager* session_manager)
     : local_state_(CHECK_DEREF(local_state)),
       browser_policy_connector_ash_(CHECK_DEREF(browser_policy_connector_ash)),
       device_restriction_schedule_controller_(
           CHECK_DEREF(device_restriction_schedule_controller)),
       delegate_(delegate),
       cros_settings_(cros_settings),
-      user_manager_(user_manager),
+      session_manager_(CHECK_DEREF(session_manager)),
       device_disabled_(false) {
   CHECK(delegate_);
 }
@@ -110,7 +110,8 @@ void DeviceDisablingManager::CacheLocationTrackingEnabledAndNotify(
 
 void DeviceDisablingManager::CheckWhetherDeviceDisabledDuringOOBE(
     DeviceDisabledCheckCallback callback) {
-  if (policy::GetDeviceStateMode() != policy::RESTORE_MODE_DISABLED ||
+  if (policy::GetDeviceStateMode(local_state_.get()) !=
+          policy::RESTORE_MODE_DISABLED ||
       base::CommandLine::ForCurrentProcess()->HasSwitch(
           switches::kDisableDeviceDisabling)) {
     // Indicate that the device is not disabled if it is not marked as such in
@@ -127,7 +128,7 @@ void DeviceDisablingManager::CheckWhetherDeviceDisabledDuringOOBE(
   // Update the enrollment domain.
   enrollment_domain_.clear();
   const std::string* maybe_enrollment_domain =
-      local_state_->GetDict(prefs::kServerBackedDeviceState)
+      local_state_->GetDict(ash::prefs::kServerBackedDeviceState)
           .FindString(policy::kDeviceStateManagementDomain);
   enrollment_domain_ =
       maybe_enrollment_domain ? *maybe_enrollment_domain : std::string();
@@ -138,7 +139,7 @@ void DeviceDisablingManager::CheckWhetherDeviceDisabledDuringOOBE(
 
   // Update the disabled message.
   const std::string* maybe_disabled_message =
-      local_state_->GetDict(prefs::kServerBackedDeviceState)
+      local_state_->GetDict(ash::prefs::kServerBackedDeviceState)
           .FindString(policy::kDeviceStateDisabledMessage);
   std::string disabled_message =
       maybe_disabled_message ? *maybe_disabled_message : std::string();
@@ -146,7 +147,7 @@ void DeviceDisablingManager::CheckWhetherDeviceDisabledDuringOOBE(
 
   // Update the location tracking enabled state.
   std::optional<bool> maybe_location_tracking_enabled =
-      local_state_->GetDict(prefs::kServerBackedDeviceState)
+      local_state_->GetDict(ash::prefs::kServerBackedDeviceState)
           .FindBool(policy::kDeviceStateLocationTrackingEnabled);
   bool location_tracking_enabled =
       maybe_location_tracking_enabled.value_or(false);
@@ -188,12 +189,6 @@ bool DeviceDisablingManager::HonorDeviceDisablingDuringNormalOperation() {
 
 void DeviceDisablingManager::OnRestrictionScheduleStateChanged(bool enabled) {
   Update();
-}
-
-void DeviceDisablingManager::OnRestrictionScheduleMessageChanged() {
-  for (auto& observer : observers_) {
-    observer.OnRestrictionScheduleMessageChanged();
-  }
 }
 
 void DeviceDisablingManager::Update() {
@@ -246,7 +241,7 @@ void DeviceDisablingManager::Update() {
 
   const ExistingUserController* existing_user_controller =
       ExistingUserController::current_controller();
-  if (user_manager_->GetActiveUser() ||
+  if (session_manager_->GetActiveSession() ||
       (existing_user_controller &&
        existing_user_controller->IsSigninInProgress())) {
     // If a session or a login is in progress, restart Chrome and return to the

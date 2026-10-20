@@ -10,6 +10,26 @@ GEN_INCLUDE(['../../testing/fake_objects.js']);
  * Test fixture for DesktopAutomationHandler.
  */
 ChromeVoxMV2DesktopAutomationHandlerTest = class extends ChromeVoxE2ETest {
+  // TODO(crbug.com/452061489): Fix tests for when WebUI Omnibox is enabled
+  // and then remove `testGenCppIncludes()` and `featureList()`.
+  /** @override */
+  testGenCppIncludes() {
+    super.testGenCppIncludes();
+    GEN(`
+#include "chrome/browser/ui/omnibox/omnibox_next_features.h"
+    `);
+  }
+
+  get featureList() {
+    return {
+      disabled: [
+        'features::kAccessibilityManifestV3ChromeVox',
+        'omnibox::internal::kWebUIOmniboxPopup',
+        'omnibox::internal::kWebUIOmniboxAimPopup',
+      ],
+    };
+  }
+
   /** @override */
   async setUpDeferred() {
     await super.setUpDeferred();
@@ -487,7 +507,7 @@ TEST_F(
             .call(() => {
               EventGenerator.sendKeyPress(KeyCode.ESCAPE, {search: true});
             })
-            .expectSpeech('Task Manager, window')
+            .expectSpeech('Task Manager', 'Dialog')
             // The Task Manager Refresh has a TabbedPane UI which splits system
             // processes and user-facing processes (tabs & extensions). Expect
             // that the selected tab is focused when the window is open.
@@ -495,7 +515,6 @@ TEST_F(
             .call(() => {
               EventGenerator.sendKeyPress(KeyCode.TAB);
               EventGenerator.sendKeyPress(KeyCode.TAB);
-              EventGenerator.sendKeyPress(KeyCode.DOWN);
             })
             // The Task Manager Refresh has a TabbedPane UI which splits system
             // processes and user-facing processes (tabs & extensions), so
@@ -509,4 +528,103 @@ TEST_F(
 
             .replay();
       });
+    });
+
+AX_TEST_F(
+    'ChromeVoxMV2DesktopAutomationHandlerTest',
+    'WebPageCannotTriggerDictationHintVoice', async function() {
+      const mockFeedback = this.createMockFeedback();
+      const site =
+          `<div role="alert" class="DictationHintView">test text</div>`;
+      const root = await this.runWithLoadedTree(site);
+      const alert = root.find({role: RoleType.ALERT});
+      assertTrue(Boolean(alert));
+      assertEquals('DictationHintView', alert.className);
+
+      const event = new CustomAutomationEvent(EventType.ALERT, alert);
+      mockFeedback.call(() => DesktopAutomationHandler.MIN_ALERT_DELAY_MS = -1)
+          .call(() => this.handler_.onAlert_(event))
+          // Verify that the web-based alert does not trigger the trusted
+          // DICTATION_HINT personality (which would have relativePitch: 0.3).
+          .expectSpeech((candidate) => {
+            const props = candidate.properties || {};
+            return /test text/.test(candidate.text) &&
+                props.relativePitch !== 0.3;
+          });
+      await mockFeedback.replay();
+    });
+
+AX_TEST_F(
+    'ChromeVoxMV2DesktopAutomationHandlerTest',
+    'NativeDictationHintTriggersVoiceProperties', async function() {
+      const mockFeedback = this.createMockFeedback();
+      const site =
+          `<div role="alert" class="DictationHintView">hint text</div>`;
+      const root = await this.runWithLoadedTree(site);
+      const alert = root.find({role: RoleType.ALERT});
+      assertTrue(Boolean(alert));
+      assertEquals('DictationHintView', alert.className);
+
+      // Mock the root to simulate a native UI node (not in a web area).
+      const fakeRoot = {role: RoleType.DESKTOP};
+      Object.defineProperty(alert, 'root', {get: () => fakeRoot});
+
+      const event = new CustomAutomationEvent(EventType.ALERT, alert);
+      mockFeedback.call(() => DesktopAutomationHandler.MIN_ALERT_DELAY_MS = -1)
+          .call(() => this.handler_.onAlert_(event))
+          // Verify that the native alert triggers the trusted voice properties
+          // (relativePitch: 0.3).
+          .expectSpeechWithProperties({relativePitch: 0.3}, /hint text/);
+      await mockFeedback.replay();
+    });
+
+AX_TEST_F(
+    'ChromeVoxMV2DesktopAutomationHandlerTest',
+    'DesktopPopupOptionSelectionAndDeselection', async function() {
+      const site = `<input type="text"><button>Use suggested password</button>`;
+      const root = await this.runWithLoadedTree(site);
+      const input = root.find({role: RoleType.TEXT_FIELD});
+      const button = root.find({role: RoleType.BUTTON});
+      assertTrue(Boolean(input));
+      assertTrue(Boolean(button));
+
+      let calls = 0;
+      const origOnEventDefault = this.handler_.onEventDefault;
+      const origGetFocus = chrome.automation.getFocus;
+      this.handler_.onEventDefault = evt => {
+        if (evt.type === EventType.SELECTION && evt.target === button) {
+          calls++;
+        }
+      };
+      chrome.automation.getFocus = callback => callback(button);
+
+      try {
+        // Deselection events (selected === false) must be ignored so they do
+        // not interrupt or clear speech for the newly selected item.
+        Object.defineProperty(
+            button, 'selected', {get: () => false, configurable: true});
+        this.handler_.onSelection(
+            new CustomAutomationEvent(EventType.SELECTION, button));
+        assertEquals(0, calls);
+
+        // Selection events (selected === true) on a desktop popup option must
+        // trigger onEventDefault when ChromeVox range is not yet on the option.
+        Object.defineProperty(
+            button, 'selected', {get: () => true, configurable: true});
+        ChromeVoxRange.set(CursorRange.fromNode(input));
+        this.handler_.onSelection(
+            new CustomAutomationEvent(EventType.SELECTION, button));
+        assertEquals(1, calls);
+
+        // When ChromeVox range is already on the button (e.g. from onFocus_ via
+        // SetPopupFocusOverride), onSelection must deduplicate and not call
+        // onEventDefault a second time.
+        ChromeVoxRange.set(CursorRange.fromNode(button));
+        this.handler_.onSelection(
+            new CustomAutomationEvent(EventType.SELECTION, button));
+        assertEquals(1, calls);
+      } finally {
+        this.handler_.onEventDefault = origOnEventDefault;
+        chrome.automation.getFocus = origGetFocus;
+      }
     });

@@ -4,17 +4,22 @@
 
 #include "chrome/browser/actor/tools/fake_tool_request.h"
 
+#include "chrome/browser/actor/actor_surface_handle.h"
 #include "chrome/browser/actor/tools/fake_tool.h"
 #include "chrome/browser/actor/tools/tool_request.h"
 #include "chrome/browser/actor/tools/tool_request_visitor_functor.h"
+#include "chrome/browser/actor/tools/wait_tool_request.h"
 #include "chrome/common/actor/action_result.h"
 
 namespace actor {
 
 FakeToolRequest::FakeToolRequest(
     base::OnceCallback<void(ToolCallback)> on_invoke,
-    base::OnceClosure on_destroy)
-    : on_invoke_(std::move(on_invoke)), on_destroy_(std::move(on_destroy)) {}
+    base::OnceClosure on_destroy,
+    ActorSurfaceHandle actor_surface_handle)
+    : on_invoke_(std::move(on_invoke)),
+      on_destroy_(std::move(on_destroy)),
+      actor_surface_handle_(actor_surface_handle) {}
 
 FakeToolRequest::~FakeToolRequest() = default;
 
@@ -27,9 +32,16 @@ ToolRequest::CreateToolResult FakeToolRequest::CreateTool(
       MakeOkResult()};
 }
 
-void FakeToolRequest::Apply(ToolRequestVisitorFunctor& f) const {}
+void FakeToolRequest::Apply(ToolRequestVisitorFunctor& f) const {
+  f.Apply(WaitToolRequest(base::Seconds(0)));
+}
 
 std::string_view FakeToolRequest::Name() const {
   return "FakeTool";
 }
+
+ActorSurfaceHandle FakeToolRequest::GetActorSurfaceHandle() const {
+  return actor_surface_handle_;
+}
+
 }  // namespace actor

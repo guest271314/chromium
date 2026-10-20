@@ -4,6 +4,8 @@
 
 #include "third_party/blink/renderer/core/input/mouse_event_manager.h"
 
+#include <cmath>
+
 #include "base/metrics/histogram_functions.h"
 #include "build/build_config.h"
 #include "third_party/blink/public/platform/web_input_event_result.h"
@@ -29,6 +31,7 @@
 #include "third_party/blink/renderer/core/frame/local_frame_view.h"
 #include "third_party/blink/renderer/core/frame/settings.h"
 #include "third_party/blink/renderer/core/html/forms/html_label_element.h"
+#include "third_party/blink/renderer/core/html/forms/html_select_element.h"
 #include "third_party/blink/renderer/core/html/html_dialog_element.h"
 #include "third_party/blink/renderer/core/html/html_image_element.h"
 #include "third_party/blink/renderer/core/input/event_handler.h"
@@ -50,6 +53,7 @@
 #include "third_party/blink/renderer/core/timing/event_timing.h"
 #include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "ui/gfx/geometry/point_conversions.h"
+#include "ui/gfx/geometry/vector2d_f.h"
 
 namespace blink {
 
@@ -263,7 +267,8 @@ MouseEventManager::DispatchMouseEvent(
         HTMLDialogElement::HandleDialogLightDismissForClick(
             *pointer_down_target, *pointer_up_target);
       }
-      UIEventTiming event_timing(frame_, *event);
+      UIEventTiming event_timing(frame_.Get(),
+                                 target_node->GetDocument().GetFrame(), *event);
 
       if (should_dispatch) {
         input_event_result = event_handling_util::ToWebInputEventResult(
@@ -280,7 +285,8 @@ MouseEventManager::DispatchMouseEvent(
           mouse_event.FromTouch() ? MouseEvent::kFromTouch
                                   : MouseEvent::kRealOrIndistinguishable,
           mouse_event.menu_source_type);
-      UIEventTiming event_timing(frame_, *event);
+      UIEventTiming event_timing(frame_.Get(),
+                                 target_node->GetDocument().GetFrame(), *event);
 
       if (should_dispatch) {
         input_event_result = event_handling_util::ToWebInputEventResult(
@@ -565,7 +571,7 @@ WebInputEventResult MouseEventManager::HandleMouseFocus(
   // TODO(editing-dev): The use of VisibleSelection should be audited. See
   // crbug.com/657237 for details.
   if (element &&
-      frame_->Selection().ComputeVisibleSelectionInDOMTree().IsRange()) {
+      frame_->Selection().ComputeVisibleSelectionInDomTree().IsRange()) {
     // Don't check for scroll controls pseudo-elements, since they can't
     // be in selection, until we support selecting their content.
     // Just clear the selection, since it won't be cleared otherwise.
@@ -574,7 +580,7 @@ WebInputEventResult MouseEventManager::HandleMouseFocus(
       frame_->Selection().Clear();
     } else {
       const EphemeralRange& range = frame_->Selection()
-                                        .ComputeVisibleSelectionInDOMTree()
+                                        .ComputeVisibleSelectionInDomTree()
                                         .ToNormalizedEphemeralRange();
       if (IsNodeFullyContained(range, *element) &&
           element->IsDescendantOf(frame_->GetDocument()->FocusedElement())) {
@@ -869,8 +875,14 @@ WebInputEventResult MouseEventManager::HandleMouseDraggedEvent(
       return WebInputEventResult::kNotHandled;
 
     layout_object = parent->GetLayoutObject();
-    if (!layout_object || !layout_object->IsListBox()) {
+    if (!layout_object) {
       return WebInputEventResult::kNotHandled;
+    }
+
+    if (const auto* select = DynamicTo<HTMLSelectElement>(parent)) {
+      if (select->UsesMenuList()) {
+        return WebInputEventResult::kNotHandled;
+      }
     }
   }
 
@@ -895,7 +907,7 @@ WebInputEventResult MouseEventManager::HandleMouseDraggedEvent(
 
   if (layout_object && mouse_down_may_start_autoscroll_ &&
       !scroll_manager_->MiddleClickAutoscrollInProgress() &&
-      !frame_->Selection().SelectedHTMLForClipboard().empty()) {
+      !frame_->Selection().SelectedHtmlForClipboard().empty()) {
     if (AutoscrollController* controller =
             scroll_manager_->GetAutoscrollController()) {
       // Avoid updating the lifecycle unless it's possible to autoscroll.
@@ -962,8 +974,10 @@ DragHandlingResult MouseEventManager::HandleDrag(
                                  : DragHandlingResult::kNotHandled;
   }
 
-  if (initiated_by_button_press && !DragThresholdExceeded(gfx::ToFlooredPoint(
-                                       event.Event().PositionInRootFrame()))) {
+  if (initiated_by_button_press &&
+      !DragThresholdExceeded(
+          gfx::ToFlooredPoint(event.Event().PositionInRootFrame()),
+          event.Event().PositionInScreen())) {
     ResetDragSource();
     return DragHandlingResult::kHandledDragNotStarted;
   }
@@ -1026,8 +1040,11 @@ bool MouseEventManager::TryStartDrag(
   GetDragState().drag_data_transfer_ = CreateDraggingDataTransfer();
 
   DragController& drag_controller = frame_->GetPage()->GetDragController();
-  if (!drag_controller.PopulateDragDataTransfer(frame_, GetDragState(),
-                                                mouse_down_pos_)) {
+  if (!frame_->View() ||
+      !drag_controller.PopulateDragDataTransfer(
+          frame_, GetDragState(), mouse_down_pos_,
+          frame_->View()->ConvertFromRootFrame(
+              gfx::ToFlooredPoint(event.Event().PositionInRootFrame())))) {
     return false;
   }
 
@@ -1056,7 +1073,7 @@ bool MouseEventManager::TryStartDrag(
   frame_->GetDocument()->UpdateStyleAndLayout(DocumentUpdateReason::kInput);
   if (GetDragState().drag_type_ == kDragSourceActionSelection &&
       IsInPasswordField(
-          frame_->Selection().ComputeVisibleSelectionInDOMTree().Start())) {
+          frame_->Selection().ComputeVisibleSelectionInDomTree().Start())) {
     return false;
   }
 
@@ -1126,14 +1143,12 @@ WebInputEventResult MouseEventManager::DispatchDragEvent(
   initializer->setView(frame_->GetDocument()->domWindow());
   initializer->setComposed(true);
   // Per the DnD spec, these events have a default `dropEffect`.
-  if (RuntimeEnabledFeatures::SetDefaultDropEffectEnabled()) {
-    if (event_type == event_type_names::kDragenter ||
-        event_type == event_type_names::kDragover) {
-      data_transfer->SetDestinationOperationFromEffectAllowed();
-    } else if (event_type == event_type_names::kDragleave) {
-      data_transfer->SetDestinationOperation(
-          ui::mojom::blink::DragOperation::kNone);
-    }
+  if (event_type == event_type_names::kDragenter ||
+      event_type == event_type_names::kDragover) {
+    data_transfer->SetDestinationOperationFromEffectAllowed();
+  } else if (event_type == event_type_names::kDragleave) {
+    data_transfer->SetDestinationOperation(
+        ui::mojom::blink::DragOperation::kNone);
   }
   initializer->setDataTransfer(data_transfer);
   initializer->setSourceCapabilities(
@@ -1157,8 +1172,7 @@ WebInputEventResult MouseEventManager::DispatchDragEvent(
   // an uninitialized state. In cases where a drag leaves a target, having
   // dropEffect explicitly set to none would be incorrect and may
   // cause unintended behavior when the dataTransfer object is reused.
-  if (RuntimeEnabledFeatures::SetDefaultDropEffectEnabled() &&
-      event_type == event_type_names::kDragleave) {
+  if (event_type == event_type_names::kDragleave) {
     data_transfer->resetDropEffect();
   }
   return event_result;
@@ -1223,10 +1237,29 @@ void MouseEventManager::ResetDragSource() {
 }
 
 bool MouseEventManager::DragThresholdExceeded(
-    const gfx::Point& drag_location_in_root_frame) const {
+    const gfx::Point& drag_location_in_root_frame,
+    const gfx::PointF& drag_location_in_screen) const {
   LocalFrameView* view = frame_->View();
   if (!view)
     return false;
+
+  if (RuntimeEnabledFeatures::DragThresholdRequiresMouseMovementEnabled()) {
+    // A script moving, resizing the window, or scrolling the
+    // content while the mouse button is held shifts the content under a
+    // stationary cursor, causing a relative mouse shift when the user didn't
+    // actually intend one. We eliminate this issue by comparing screen
+    // absolute positions instead of window-relative.
+    const gfx::Vector2dF screen_delta =
+        drag_location_in_screen - mouse_down_.PositionInScreen();
+    const bool screen_threshold_exceeded =
+        std::abs(screen_delta.x()) >= kDragThresholdX ||
+        std::abs(screen_delta.y()) >= kDragThresholdY;
+    // PositionInScreen() is in DIPs, so the threshold is measured in logical
+    // pixels. Unlike content pixels, this is unaffected by pinch-zoom and CSS
+    // transforms.
+    return screen_threshold_exceeded;
+  }
+
   gfx::Point drag_location =
       view->ConvertFromRootFrame(drag_location_in_root_frame);
   gfx::Vector2d delta = drag_location - mouse_down_pos_;

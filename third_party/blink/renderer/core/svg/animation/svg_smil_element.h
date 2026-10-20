@@ -26,6 +26,7 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_CORE_SVG_ANIMATION_SVG_SMIL_ELEMENT_H_
 #define THIRD_PARTY_BLINK_RENDERER_CORE_SVG_ANIMATION_SVG_SMIL_ELEMENT_H_
 
+#include "base/containers/span.h"
 #include "third_party/blink/renderer/core/core_export.h"
 #include "third_party/blink/renderer/core/svg/animation/smil_repeat_count.h"
 #include "third_party/blink/renderer/core/svg/animation/smil_time.h"
@@ -57,9 +58,9 @@ class CORE_EXPORT SMILInstanceTimeList {
   wtf_size_t size() const { return instance_times_.size(); }
   bool IsEmpty() const { return instance_times_.empty(); }
 
-  using const_iterator = typename Vector<SMILTimeWithOrigin>::const_iterator;
-  const_iterator begin() const { return instance_times_.begin(); }
-  const_iterator end() const { return instance_times_.end(); }
+  base::span<const SMILTimeWithOrigin> AsSpan() const {
+    return base::span<const SMILTimeWithOrigin>(instance_times_);
+  }
 
  private:
   void RemoveTimeOriginIfNotFound(SMILTimeOrigin origin);
@@ -69,7 +70,7 @@ class CORE_EXPORT SMILInstanceTimeList {
 };
 
 // This class implements SMIL interval timing model as needed for SVG animation.
-class CORE_EXPORT SVGSMILElement : public SVGElement, public SVGTests {
+class CORE_EXPORT SVGSMILElement : public SVGElement {
  public:
   SVGSMILElement(const QualifiedName&, Document&);
   ~SVGSMILElement() override;
@@ -140,6 +141,10 @@ class CORE_EXPORT SVGSMILElement : public SVGElement, public SVGTests {
 
   void Trace(Visitor*) const override;
 
+  // SVGTests mixin forwarders.
+  SVGStringListTearOff* requiredExtensions();
+  SVGStringListTearOff* systemLanguage();
+
  protected:
   enum BeginOrEnd { kBegin, kEnd };
 
@@ -156,6 +161,8 @@ class CORE_EXPORT SVGSMILElement : public SVGElement, public SVGTests {
     unsigned repeat;
   };
   const ProgressState& GetProgressState() const { return last_progress_; }
+
+  bool SvgTestsIsValid() const { return !tests_ || tests_->IsValid(); }
 
  private:
   bool IsPresentationAttribute(const QualifiedName&) const override;
@@ -255,6 +262,8 @@ class CORE_EXPORT SVGSMILElement : public SVGElement, public SVGTests {
   void NotifyDependentsOnNewInterval(const SMILInterval& interval);
   void NotifyDependentsOnRepeat(unsigned repeat_nr, SMILTime repeat_time);
 
+  SVGTests& EnsureSvgTests() const;
+
   struct NotifyDependentsInfo;
   void NotifyDependents(const NotifyDependentsInfo& info);
   void CreateInstanceTimesFromSyncBase(SVGSMILElement* timed_element,
@@ -318,20 +327,19 @@ class CORE_EXPORT SVGSMILElement : public SVGElement, public SVGTests {
   bool interval_needs_revalidation_;
   bool is_notifying_dependents_;
 
+  mutable Member<SVGTests> tests_;
+
   friend class ConditionEventListener;
 };
 
 template <>
 struct DowncastTraits<SVGSMILElement> {
   static bool AllowFrom(const Node& node) {
-    auto* svg_element = DynamicTo<SVGElement>(node);
-    return svg_element && AllowFrom(*svg_element);
-  }
-  static bool AllowFrom(const SVGElement& svg_element) {
-    return svg_element.HasTagName(svg_names::kSetTag) ||
-           svg_element.HasTagName(svg_names::kAnimateTag) ||
-           svg_element.HasTagName(svg_names::kAnimateMotionTag) ||
-           svg_element.HasTagName(svg_names::kAnimateTransformTag);
+    const ElementType type = node.GetElementType();
+    return type == ElementType::kSVGSetElement ||
+           type == ElementType::kSVGAnimateElement ||
+           type == ElementType::kSVGAnimateMotionElement ||
+           type == ElementType::kSVGAnimateTransformElement;
   }
 };
 

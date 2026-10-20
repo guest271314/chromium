@@ -4,9 +4,8 @@
 
 import type {IconContainerElement, TabGroupsModuleElement} from 'chrome://new-tab-page/lazy_load.js';
 import {COLOR_NEW_TAB_PAGE_MODULE_TAB_GROUPS_DOT_PREFIX, COLOR_NEW_TAB_PAGE_MODULE_TAB_GROUPS_PREFIX, colorIdToString, NTPPluralStringProxyImpl, tabGroupsDescriptor, TabGroupsProxyImpl} from 'chrome://new-tab-page/lazy_load.js';
-import {Color} from 'chrome://new-tab-page/tab_group_types.mojom-webui.js';
-import {PageHandlerRemote} from 'chrome://new-tab-page/tab_groups.mojom-webui.js';
-import type {TabGroup} from 'chrome://new-tab-page/tab_groups.mojom-webui.js';
+import {Color, TabGroupsPageHandlerRemote as PageHandlerRemote} from 'chrome://new-tab-page/new_tab_page.js';
+import type {TabGroup} from 'chrome://new-tab-page/new_tab_page.js';
 import type {CrButtonElement} from 'chrome://resources/cr_elements/cr_button/cr_button.js';
 import type {CrIconElement} from 'chrome://resources/cr_elements/cr_icon/cr_icon.js';
 import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
@@ -22,12 +21,6 @@ import {installMock} from '../../test_support.js';
 suite('NewTabPageModulesTabGroupsModuleTest', () => {
   let handler: TestMock<PageHandlerRemote>;
   let metrics: MetricsTracker;
-
-  suiteSetup(() => {
-    loadTimeData.overrideValues({
-      hideDismissModules: false,
-    });
-  });
 
   setup(() => {
     handler = installMock(
@@ -348,41 +341,6 @@ suite('NewTabPageModulesTabGroupsModuleTest', () => {
     assertEquals(
         loadTimeData.getString('modulesTabGroupsDisableToastMessage'),
         detail.message);
-  });
-
-  test('action menu - dismiss and restore module', async () => {
-    // Arrange.
-    const module = await createModule([{
-      id: '0',
-      color: Color.kBlue,
-      title: 'Tab Group',
-      updateTime: 'Recently used',
-      deviceName: 'Test Device',
-      faviconUrls: ['https://www.google.com'],
-      totalTabCount: 1,
-      isSharedTabGroup: false,
-    }]);
-    assertTrue(!!module);
-
-    // Act.
-    const whenFired = eventToPromise('dismiss-module-instance', module);
-    const headerElement = module.shadowRoot.querySelector('ntp-module-header');
-    assertTrue(!!headerElement);
-    headerElement.dispatchEvent(new Event('dismiss-button-click'));
-
-    // Assert.
-    const {detail} = await whenFired;
-    assertEquals(
-        loadTimeData.getString('modulesTabGroupsDismissToastMessage'),
-        detail.message);
-    assertTrue(!!detail.restoreCallback);
-    assertEquals(1, handler.getCallCount('dismissModule'));
-
-    // Act.
-    detail.restoreCallback();
-
-    // Assert.
-    assertEquals(1, handler.getCallCount('restoreModule'));
   });
 
   test('create new tab group from the footer button', async () => {

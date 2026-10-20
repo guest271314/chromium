@@ -23,7 +23,6 @@ import org.chromium.chrome.browser.collaboration.CollaborationServiceFactory;
 import org.chromium.chrome.browser.collaboration.messaging.MessagingBackendServiceFactory;
 import org.chromium.chrome.browser.data_sharing.DataSharingServiceFactory;
 import org.chromium.chrome.browser.data_sharing.DataSharingTabManager;
-import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.hub.PaneManager;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.profiles.ProfileProvider;
@@ -33,6 +32,7 @@ import org.chromium.chrome.browser.tab_group_sync.TabGroupSyncFeatures;
 import org.chromium.chrome.browser.tab_group_sync.TabGroupSyncServiceFactory;
 import org.chromium.chrome.browser.tab_ui.ActionConfirmationManager;
 import org.chromium.chrome.browser.tab_ui.TabListFaviconProvider;
+import org.chromium.chrome.browser.tab_ui.TabListMode;
 import org.chromium.chrome.browser.tabmodel.TabModel;
 import org.chromium.chrome.browser.ui.edge_to_edge.EdgeToEdgeController;
 import org.chromium.chrome.browser.ui.edge_to_edge.EdgeToEdgeControllerFactory;
@@ -82,7 +82,7 @@ public class TabGroupListCoordinator {
      * @param modalDialogManager Used to show confirmation dialogs.
      * @param onIsScrolledChanged To be invoked whenever the scrolled state changes.
      * @param edgeToEdgeSupplier Supplier to the {@link EdgeToEdgeController} instance.
-     * @param dataSharingTabManager The {@link} DataSharingTabManager to start collaboration flows.
+     * @param dataSharingTabManager The {@link DataSharingTabManager} to start collaboration flows.
      */
     public TabGroupListCoordinator(
             Context context,
@@ -108,18 +108,15 @@ public class TabGroupListCoordinator {
 
         PropertyModel.Builder builder = new PropertyModel.Builder(TabGroupListProperties.ALL_KEYS);
         builder.with(ON_IS_SCROLLED_CHANGED, onIsScrolledChanged);
-        builder.with(ENABLE_CONTAINMENT, enableContainment());
+        builder.with(ENABLE_CONTAINMENT, true);
         PropertyModel propertyModel = builder.build();
 
         ViewBuilder<TabGroupRowView> innerBuilder = new LayoutViewBuilder<>(R.layout.tab_group_row);
         ViewBuilder<TabGroupRowView> tabGroupRowLayoutBuilder =
-                new ViewBuilder<>() {
-                    @Override
-                    public TabGroupRowView buildView(ViewGroup parent) {
-                        TabGroupRowView view = innerBuilder.buildView(parent);
-                        if (enableContainment()) view.setupForContainment();
-                        return view;
-                    }
+                (ViewGroup parent) -> {
+                    TabGroupRowView view = innerBuilder.buildView(parent);
+                    view.setupForContainment();
+                    return view;
                 };
 
         mSimpleRecyclerViewAdapter.registerType(
@@ -145,7 +142,7 @@ public class TabGroupListCoordinator {
         mTabListFaviconProvider =
                 new TabListFaviconProvider(
                         context,
-                        /* isTabStrip= */ false,
+                        TabListMode.GRID,
                         R.dimen.default_favicon_corner_radius,
                         TabFavicon::getBitmap);
         FaviconResolver faviconResolver =
@@ -190,7 +187,7 @@ public class TabGroupListCoordinator {
                         tabGroupUiActionHandler,
                         actionConfirmationManager,
                         syncService,
-                        enableContainment(),
+                        /* enableContainment= */ true,
                         dataSharingTabManager,
                         tabGroupRemovedMessageMediator,
                         persistentVersioningMessageMediator);
@@ -215,9 +212,5 @@ public class TabGroupListCoordinator {
             mEdgeToEdgePadAdjuster = null;
         }
         mTabListFaviconProvider.destroy();
-    }
-
-    private static boolean enableContainment() {
-        return ChromeFeatureList.sTabGroupListContainment.getValue();
     }
 }

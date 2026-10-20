@@ -46,7 +46,7 @@
 #include "components/autofill/core/browser/autofill_format_string.h"
 #include "components/autofill/core/browser/crowdsourcing/randomized_encoder.h"
 #include "components/autofill/core/browser/crowdsourcing/server_prediction_overrides.h"
-#include "components/autofill/core/browser/field_type_utils.h"
+#include "components/autofill/core/browser/field_type_util.h"
 #include "components/autofill/core/browser/field_types.h"
 #include "components/autofill/core/browser/form_parsing/form_field_parser.h"
 #include "components/autofill/core/browser/form_structure.h"
@@ -71,6 +71,7 @@
 #include "components/version_info/version_info_with_user_agent.h"
 #include "net/base/registry_controlled_domains/registry_controlled_domain.h"
 #include "third_party/abseil-cpp/absl/strings/str_format.h"
+#include "url/origin.h"
 
 namespace autofill {
 namespace {
@@ -101,7 +102,6 @@ FieldPrediction::Source ToSafeFieldPredictionSource(
     case FieldPrediction::SOURCE_UNSPECIFIED:
     case FieldPrediction::SOURCE_AUTOFILL_DEFAULT:
     case FieldPrediction::SOURCE_PASSWORDS_DEFAULT:
-    case FieldPrediction::SOURCE_ALL_APPROVED_EXPERIMENTS:
     case FieldPrediction::SOURCE_FIELD_RANKS:
     case FieldPrediction::SOURCE_OVERRIDE:
     case FieldPrediction::SOURCE_MANUAL_OVERRIDE:
@@ -462,8 +462,9 @@ void PopulateThreeBitHashedFieldMetadata(
     field_metadata->set_aria_description(
         StrToHash3Bit(field.aria_description()));
   }
-  if (!field.placeholder().empty()) {
-    field_metadata->set_placeholder(StrToHash3Bit(field.placeholder()));
+  if (!field.placeholder_attribute().empty()) {
+    field_metadata->set_placeholder(
+        StrToHash3Bit(field.placeholder_attribute()));
   }
   if (!field.autocomplete_attribute().empty()) {
     field_metadata->set_autocomplete(
@@ -485,18 +486,6 @@ void EncodeFormFieldsForUpload(
   DCHECK(!IsMalformed(form));
 
   for (const AutofillField* const field : upload_fields) {
-    // Don't upload checkable fields.
-    if (IsCheckable(field->check_status())) {
-      continue;
-    }
-    // Do not upload fields that were filled with a fallback type, as this would
-    // introduce unnecessary noise in the field votes.
-    if (field->WasAutofilledWithFallback() &&
-        !base::FeatureList::IsEnabled(
-            features::kAutofillUploadManualFallbackFieldsToServer)) {
-      continue;
-    }
-
     const EncodeUploadRequestOptions::Field* field_options = nullptr;
     if (auto it = fields.find(field->global_id()); it != fields.end()) {
       field_options = &it->second;
@@ -612,8 +601,7 @@ void EncodeFormForQuery(const FormData& form,
         queried_form_signatures.push_back(form_signature);
 
         for (const auto& field : fields) {
-          if (IsCheckable(field.check_status()) ||
-              !necessary_condition(field)) {
+          if (!necessary_condition(field)) {
             continue;
           }
 
@@ -720,7 +708,6 @@ std::optional<FieldSuggestion> GetFieldSuggestion(
           case FieldPrediction::SOURCE_UNSPECIFIED:
           case FieldPrediction::SOURCE_AUTOFILL_DEFAULT:
           case FieldPrediction::SOURCE_PASSWORDS_DEFAULT:
-          case FieldPrediction::SOURCE_ALL_APPROVED_EXPERIMENTS:
           case FieldPrediction::SOURCE_FIELD_RANKS:
           case FieldPrediction::SOURCE_AUTOFILL_COMBINED_TYPES:
             return std::ranges::all_of(suggestion->predictions(),
@@ -890,11 +877,6 @@ void ClearSmallAddressFormPredictions(
   auto is_address_or_undetermined_type = [](const FieldPrediction& prediction) {
     FieldType type =
         ToSafeFieldType(prediction.type()).value_or(NO_SERVER_DATA);
-    // For historic reasons, AutofillAI types are treated as "unknown type".
-    // They don't influence the small form handling.
-    if (GroupTypeOfFieldType(type) == FieldTypeGroup::kAutofillAi) {
-      return true;
-    }
     return type == NO_SERVER_DATA || type == UNKNOWN_TYPE ||
            IsAddressType(type);
   };
@@ -923,7 +905,6 @@ void ClearSmallAddressFormPredictions(
         break;  // Continue below to check if this is an address prediction.
       case FieldPrediction::SOURCE_UNSPECIFIED:
       case FieldPrediction::SOURCE_PASSWORDS_DEFAULT:
-      case FieldPrediction::SOURCE_ALL_APPROVED_EXPERIMENTS:
       case FieldPrediction::SOURCE_OVERRIDE:
       case FieldPrediction::SOURCE_MANUAL_OVERRIDE:
       case FieldPrediction::SOURCE_AUTOFILL_COMBINED_TYPES:
@@ -988,7 +969,7 @@ std::vector<AutofillUploadContents> EncodeUploadRequest(
   AutofillUploadContents upload;
   upload.set_submission(options.observed_submission);
   upload.set_client_version(
-      std::string(version_info::GetProductNameAndVersionForUserAgent()));
+      version_info::GetProductNameAndVersionForUserAgent());
   upload.set_form_signature(form.form_signature().value());
   if (base::FeatureList::IsEnabled(
           features::kAutofillUseStructuralSignatureInsteadOfSecondary)) {
@@ -1068,7 +1049,7 @@ std::vector<AutofillUploadContents> EncodeUploadRequest(
        subform_begin != upload_fields.end();) {
     AutofillUploadContents& upload_content = uploads.emplace_back();
     upload_content.set_client_version(
-        std::string(version_info::GetProductNameAndVersionForUserAgent()));
+        version_info::GetProductNameAndVersionForUserAgent());
     upload_content.set_form_signature(
         (*subform_begin)->host_form_signature().value());
     upload_content.set_autofill_used(false);
@@ -1081,9 +1062,14 @@ std::vector<AutofillUploadContents> EncodeUploadRequest(
                               (*subform_begin)->renderer_form_id();
                      });
     // SAFETY: The iterators are from the same container.
-    EncodeFormFieldsForUpload(form, options.encoder, options.fields,
-                              UNSAFE_BUFFERS({subform_begin, subform_end}),
-                              &uploads.back());
+    EncodeFormFieldsForUpload(
+        form, options.encoder, options.fields,
+        base::span(upload_fields)
+            .subspan(
+                static_cast<size_t>(
+                    std::distance(upload_fields.begin(), subform_begin)),
+                static_cast<size_t>(std::distance(subform_begin, subform_end))),
+        &uploads.back());
     subform_begin = subform_end;
   }
   return uploads;
@@ -1095,7 +1081,7 @@ EncodeAutofillPageQueryRequest(const std::vector<FormData>& forms) {
   std::vector<FormSignature> queried_form_signatures;
   queried_form_signatures.reserve(forms.size());
   query.set_client_version(
-      std::string(version_info::GetProductNameAndVersionForUserAgent()));
+      version_info::GetProductNameAndVersionForUserAgent());
 
   // If a page contains repeated forms, detect that and encode only one form as
   // the returned data would be the same for all the repeated forms.
@@ -1174,9 +1160,10 @@ void ServerPredictions::ApplyTo(FormStructure& form) const {
     MaybeMergeServerPredictions(server_predictions);
     field->set_server_predictions(std::move(server_predictions));
     if (field_suggestion.has_password_requirements() &&
-        (field->origin().IsSameOriginWith(form.main_frame_origin()) ||
+        (field->origin().IsSameOriginWith(
+             url::Origin::Create(form.source_url())) ||
          net::registry_controlled_domains::SameDomainOrHost(
-             field->origin(), form.main_frame_origin(),
+             field->origin(), url::Origin::Create(form.source_url()),
              net::registry_controlled_domains::INCLUDE_PRIVATE_REGISTRIES))) {
       field->SetPasswordRequirements(field_suggestion.password_requirements());
     }
@@ -1213,7 +1200,8 @@ void ServerPredictions::ApplyTo(FormStructure& form) const {
                                   ? field->server_predictions()[1].source()
                                   : FieldPrediction::SOURCE_UNSPECIFIED,
         .server_type_prediction_is_override =
-            field->server_type_prediction_is_override(),
+            field->PredictionSource() ==
+            AutofillPredictionSource::kServerOverride,
         .rank_in_field_signature_group =
             field_rank_map[field->GetFieldSignature()],
     });
@@ -1226,9 +1214,6 @@ std::vector<ServerPredictions> ParseServerPredictionsFromQueryResponse(
     const std::vector<FormSignature>& queried_form_signatures,
     LogManager* log_manager,
     bool ignore_small_forms) {
-  AutofillMetrics::LogServerQueryMetric(
-      AutofillMetrics::QUERY_RESPONSE_RECEIVED);
-
   std::string decoded_payload;
   if (!base::Base64Decode(payload, &decoded_payload)) {
     DVLOG(1) << "Could not decode payload from base64 to bytes";
@@ -1244,7 +1229,6 @@ std::vector<ServerPredictions> ParseServerPredictionsFromQueryResponse(
   DVLOG(1) << "Autofill query response from API was successfully parsed: "
            << response;
 
-  AutofillMetrics::LogServerQueryMetric(AutofillMetrics::QUERY_RESPONSE_PARSED);
   LOG_AF(log_manager) << LoggingScope::kParsing
                       << LogMessage::kProcessingServerData;
 

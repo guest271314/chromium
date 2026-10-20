@@ -54,6 +54,12 @@ const char* AttributeTypeToString(
       return "UnorderedList";
     case mojom::blink::AIPageContentAttributeType::kListItem:
       return "ListItem";
+    case mojom::blink::AIPageContentAttributeType::kDialogModal:
+      return "DialogModal";
+    case mojom::blink::AIPageContentAttributeType::kDialogModeless:
+      return "DialogModeless";
+    case mojom::blink::AIPageContentAttributeType::kMath:
+      return "Math";
   }
   return "Unknown";
 }

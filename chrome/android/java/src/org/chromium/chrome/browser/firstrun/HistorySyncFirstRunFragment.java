@@ -108,6 +108,7 @@ public class HistorySyncFirstRunFragment extends Fragment
                         SigninAccessPoint.START_PAGE,
                         false,
                         false,
+                        /* isFre= */ true,
                         null);
     }
 
@@ -126,6 +127,12 @@ public class HistorySyncFirstRunFragment extends Fragment
     public void dismissHistorySync(boolean didSignOut, boolean isHistorySyncAccepted) {
         FirstRunPageDelegate delegate = getPageDelegate();
         if (delegate == null) return;
+
+        if (isHistorySyncAccepted) {
+            delegate.recordFreProgressHistogram(MobileFreProgress.HISTORY_SYNC_ACCEPTED);
+        } else {
+            delegate.recordFreProgressHistogram(MobileFreProgress.HISTORY_SYNC_DISMISSED);
+        }
 
         // We mark the step as completed no matter what the user chose.
         if (ChromeFeatureList.isEnabled(ChromeFeatureList.DEFAULT_BROWSER_PROMO_FRE)) {
@@ -148,7 +155,7 @@ public class HistorySyncFirstRunFragment extends Fragment
         }
     }
 
-    private boolean isFrePromoEnabled() {
+    private static boolean isFrePromoEnabled() {
         return ChromeFeatureList.isEnabled(ChromeFeatureList.DEFAULT_BROWSER_PROMO_FRE);
     }
 }

@@ -23,10 +23,11 @@ source_set("impl") {
   deps = [
     ":indigo",
     "//base",
-    "//chrome/app:generated_resources",
     "//chrome/app/vector_icons",
-    "//chrome/browser/ui",
+    "//chrome/browser/glic/browser_ui",
+    "//chrome/browser/indigo/resources:indigo_strings",
     "//chrome/browser/ui/color:color_headers",
+    "//chrome/browser/ui/views/controls",
     "//components/strings:components_strings",
     "//components/vector_icons",
     "//ui/base",
@@ -43,9 +44,12 @@ source_set("unit_tests") {
   deps = [
     ":impl",
     ":indigo",
-    "//chrome/browser/ui",
+    "//base/test:test_support",
+    "//chrome/browser/ui/views/controls",
+    "//chrome/test/views",
     "//testing/gmock",
     "//testing/gtest",
+    "//ui/events:test_support",
     "//ui/views",
     "//ui/views:test_support",
   ]

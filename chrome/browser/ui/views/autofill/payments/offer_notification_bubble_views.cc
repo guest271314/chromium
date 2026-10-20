@@ -4,36 +4,26 @@
 
 #include "chrome/browser/ui/views/autofill/payments/offer_notification_bubble_views.h"
 
-#include "base/strings/strcat.h"
 #include "base/strings/utf_string_conversions.h"
-#include "chrome/browser/ui/views/accessibility/theme_tracking_non_accessible_image_view.h"
 #include "chrome/browser/ui/views/autofill/autofill_location_bar_bubble.h"
 #include "chrome/browser/ui/views/autofill/payments/payments_view_util.h"
-#include "chrome/browser/ui/views/autofill/payments/promo_code_label_button.h"
 #include "chrome/browser/ui/views/chrome_layout_provider.h"
 #include "chrome/browser/ui/views/chrome_typography.h"
-#include "chrome/browser/ui/views/controls/page_switcher_view.h"
 #include "chrome/browser/ui/views/controls/subpage_view.h"
-#include "chrome/grit/theme_resources.h"
 #include "components/autofill/core/browser/data_model/payments/autofill_offer_data.h"
 #include "components/autofill/core/browser/data_model/payments/credit_card.h"
-#include "components/autofill/core/common/autofill_payments_features.h"
 #include "components/strings/grit/components_strings.h"
 #include "net/base/registry_controlled_domains/registry_controlled_domain.h"
-#include "ui/base/clipboard/clipboard_buffer.h"
-#include "ui/base/clipboard/scoped_clipboard_writer.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/mojom/dialog_button.mojom.h"
-#include "ui/base/ui_base_features.h"
-#include "ui/gfx/geometry/insets.h"
+#include "ui/base/page_transition_types.h"
+#include "ui/base/window_open_disposition.h"
 #include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/bubble/bubble_frame_view.h"
 #include "ui/views/controls/styled_label.h"
 #include "ui/views/interaction/element_tracker_views.h"
 #include "ui/views/layout/box_layout.h"
-#include "ui/views/layout/box_layout_view.h"
-#include "ui/views/layout/fill_layout.h"
 #include "ui/views/layout/flex_layout.h"
 #include "ui/views/layout/layout_types.h"
 
@@ -48,7 +38,7 @@ OfferNotificationBubbleViews::OfferNotificationBubbleViews(
                                 web_contents,
                                 /*autosize=*/true),
       controller_(controller) {
-  DCHECK(controller);
+  CHECK(controller, base::NotFatalUntil::M162);
   SetShowCloseButton(true);
   set_fixed_width(views::LayoutProvider::Get()->GetDistanceMetric(
       views::DISTANCE_BUBBLE_PREFERRED_WIDTH));
@@ -78,6 +68,9 @@ void OfferNotificationBubbleViews::Init() {
     case AutofillOfferData::OfferType::GPAY_PROMO_CODE_OFFER:
       InitWithGPayPromoCodeOfferContent();
       return;
+    case AutofillOfferData::OfferType::WALLET_DIRECT_OFFER:
+      InitWithWalletDirectOfferContent();
+      return;
     case AutofillOfferData::OfferType::UNKNOWN:
       NOTREACHED();
   }
@@ -87,9 +80,16 @@ void OfferNotificationBubbleViews::AddedToWidget() {
   const AutofillOfferData* offer = controller_->GetOffer();
   CHECK(offer);
 
+  // Wallet direct offers are surfaced from the user's Google Wallet, so they
+  // show the Google Wallet logo next to the title. Legacy GPay offers keep the
+  // Google super G.
+  const TitleWithIconAfterLabelView::Icon icon =
+      offer->GetOfferType() == AutofillOfferData::OfferType::WALLET_DIRECT_OFFER
+          ? TitleWithIconAfterLabelView::Icon::GOOGLE_WALLET
+          : TitleWithIconAfterLabelView::Icon::GOOGLE_G;
+
   GetBubbleFrameView()->SetTitleView(
-      std::make_unique<TitleWithIconAfterLabelView>(
-          GetWindowTitle(), TitleWithIconAfterLabelView::Icon::GOOGLE_G));
+      std::make_unique<TitleWithIconAfterLabelView>(GetWindowTitle(), icon));
 }
 
 std::u16string OfferNotificationBubbleViews::GetWindowTitle() const {
@@ -109,8 +109,9 @@ void OfferNotificationBubbleViews::OnWidgetDestroying(views::Widget* widget) {
   if (!widget->IsClosed()) {
     return;
   }
-  DCHECK_NE(widget->closed_reason(),
-            views::Widget::ClosedReason::kCancelButtonClicked);
+  CHECK_NE(widget->closed_reason(),
+           views::Widget::ClosedReason::kCancelButtonClicked,
+           base::NotFatalUntil::M162);
 }
 
 void OfferNotificationBubbleViews::InitWithCardLinkedOfferContent() {
@@ -142,7 +143,7 @@ void OfferNotificationBubbleViews::InitWithGPayPromoCodeOfferContent() {
       views::BoxLayout::CrossAxisAlignment::kStart);
 
   const AutofillOfferData* offer = controller_->GetOffer();
-  DCHECK(offer);
+  CHECK(offer, base::NotFatalUntil::M162);
   const std::string& value_prop_text =
       offer->GetDisplayStrings().value_prop_text;
   // Add the first line of `value_prop_text` with see details link.
@@ -167,7 +168,7 @@ void OfferNotificationBubbleViews::InitWithGPayPromoCodeOfferContent() {
       promo_code_label_->AddStyleRange(
           gfx::Range(offsets.at(1), offsets.at(1) + see_details_text.length()),
           views::StyledLabel::RangeStyleInfo::CreateForLink(base::BindRepeating(
-              &OfferNotificationBubbleViews::OnPromoCodeSeeDetailsClicked,
+              &OfferNotificationBubbleViews::OnOfferDetailsLinkClicked,
               base::Unretained(this))));
     }
   }
@@ -182,14 +183,48 @@ void OfferNotificationBubbleViews::InitWithGPayPromoCodeOfferContent() {
   }
 }
 
-void OfferNotificationBubbleViews::OnPromoCodeSeeDetailsClicked() {
-  DCHECK(controller_->GetOffer()->GetOfferDetailsUrl().is_valid());
+void OfferNotificationBubbleViews::InitWithWalletDirectOfferContent() {
+  // Wallet direct offers have no CTA buttons.
+  SetButtons(static_cast<int>(ui::mojom::DialogButton::kNone));
+
+  // Create bubble content:
+  auto* layout = SetLayoutManager(std::make_unique<views::BoxLayout>());
+  layout->SetOrientation(views::BoxLayout::Orientation::kVertical);
+  layout->set_cross_axis_alignment(
+      views::BoxLayout::CrossAxisAlignment::kStart);
+
+  const AutofillOfferData* offer = controller_->GetOffer();
+  CHECK(offer);
+  CHECK(offer->GetOfferDetailsUrl().is_valid());
+
+  std::vector<size_t> offsets;
+  const std::u16string label_text = l10n_util::GetStringFUTF16(
+      IDS_AUTOFILL_WALLET_DIRECT_OFFER_REMINDER_BODY_TEXT,
+      /*a=*/std::u16string(), /*b=*/std::u16string(), &offsets);
+  CHECK_EQ(offsets.size(), 2u);
+
+  wallet_direct_offer_label_ =
+      AddChildView(std::make_unique<views::StyledLabel>());
+  wallet_direct_offer_label_->SetText(label_text);
+  wallet_direct_offer_label_->SetTextContext(
+      ChromeTextContext::CONTEXT_DIALOG_BODY_TEXT_SMALL);
+  wallet_direct_offer_label_->SetDefaultTextStyle(
+      views::style::STYLE_SECONDARY);
+  wallet_direct_offer_label_->SetHorizontalAlignment(gfx::ALIGN_LEFT);
+  wallet_direct_offer_label_->AddStyleRange(
+      gfx::Range(offsets[0], offsets[1]),
+      views::StyledLabel::RangeStyleInfo::CreateForLink(base::BindRepeating(
+          &OfferNotificationBubbleViews::OnOfferDetailsLinkClicked,
+          base::Unretained(this))));
+}
+
+void OfferNotificationBubbleViews::OnOfferDetailsLinkClicked() {
+  CHECK(controller_->GetOffer()->GetOfferDetailsUrl().is_valid(),
+        base::NotFatalUntil::M162);
   web_contents()->OpenURL(
-      content::OpenURLParams(
+      content::OpenURLParams::CreateBrowserInitiated(
           GURL(controller_->GetOffer()->GetOfferDetailsUrl()),
-          content::Referrer(), WindowOpenDisposition::NEW_FOREGROUND_TAB,
-          ui::PAGE_TRANSITION_LINK,
-          /*is_renderer_initiated=*/false),
+          WindowOpenDisposition::NEW_FOREGROUND_TAB, ui::PAGE_TRANSITION_LINK),
       /*navigation_handle_callback=*/{});
 }
 

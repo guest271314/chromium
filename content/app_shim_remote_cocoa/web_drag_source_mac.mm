@@ -104,11 +104,18 @@
   if (_privileged) {
     [writableTypes addObject:ui::kUTTypeChromiumPrivilegedInitiatedDrag];
   }
+  if (_dropData.drag_id.has_value()) {
+    [writableTypes addObject:ui::kUTTypeChromiumDragId];
+  }
 
   // URL (and title).
   if (!_dropData.url_infos.empty()) {
     [writableTypes addObject:NSPasteboardTypeURL];
     [writableTypes addObject:ui::kUTTypeUrlName];
+    // Advertise kUTTypeWebKitWebUrlsWithTitles so Chromium/WebKit receivers can
+    // recover the complete URL/title list via ReadWebURLsWithTitlesPboardType.
+    // NSPasteboardTypeURL exposes only the first URL on the primary item.
+    [writableTypes addObject:ui::kUTTypeWebKitWebUrlsWithTitles];
   }
 
   // File.
@@ -237,6 +244,26 @@
     return base::SysUTF16ToNSString(_dropData.url_infos.front().title);
   }
 
+  // Return the legacy WebKit property-list format expected by
+  // ReadWebURLsWithTitlesPboardType:
+  //
+  // @[ @[ url0, url1, ... ],
+  //    @[ title0, title1, ... ] ]
+  //
+  // Keep this property-list format compatible with WebKit for interoperability.
+  if ([type isEqualToString:ui::kUTTypeWebKitWebUrlsWithTitles]) {
+    DCHECK(!_dropData.url_infos.empty());
+    NSMutableArray<NSString*>* urls =
+        [NSMutableArray arrayWithCapacity:_dropData.url_infos.size()];
+    NSMutableArray<NSString*>* titles =
+        [NSMutableArray arrayWithCapacity:_dropData.url_infos.size()];
+    for (const auto& url_info : _dropData.url_infos) {
+      [urls addObject:base::SysUTF8ToNSString(url_info.url.spec())];
+      [titles addObject:base::SysUTF16ToNSString(url_info.title)];
+    }
+    return @[ urls, titles ];
+  }
+
   // Content-Disposition (carries the original filename for file contents).
   if ([type isEqualToString:ui::kUTTypeChromiumContentDisposition]) {
     return base::SysUTF8ToNSString(_dropData.file_contents_content_disposition);
@@ -245,7 +272,7 @@
   // File contents.
   if ([type isEqualToString:_fileType.identifier]) {
     return [NSData dataWithBytes:_dropData.file_contents.data()
-                          length:_dropData.file_contents.length()];
+                          length:_dropData.file_contents.size()];
   }
 
   // File instantiation promise.
@@ -302,6 +329,11 @@
     return _sourceOrigin.opaque()
                ? [NSString string]
                : base::SysUTF8ToNSString(_sourceOrigin.Serialize());
+  }
+
+  if ([type isEqualToString:ui::kUTTypeChromiumDragId]) {
+    CHECK(_dropData.drag_id.has_value());
+    return base::SysUTF8ToNSString(_dropData.drag_id->ToString());
   }
 
   // Flavors used to tag.

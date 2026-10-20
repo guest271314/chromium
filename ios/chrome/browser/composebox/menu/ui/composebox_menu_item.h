@@ -22,9 +22,19 @@
 @property(nonatomic, readonly, getter=isDisabled) BOOL disabled;
 // The composebox menu item favicon.
 @property(nonatomic, strong, readonly) UIImage* favicon;
+// The composebox menu item subtitle.
+@property(nonatomic, copy, readonly) NSString* subtitle;
+// The composebox menu item favicons.
+@property(nonatomic, copy, readonly) NSArray<UIImage*>* favicons;
 
 - (BOOL)isEqual:(id)object;
 - (NSUInteger)hash;
+
+// Initializes a menu item with a subtitle and a list of favicons.
+- (instancetype)initWithTitle:(NSString*)title
+                     subtitle:(NSString*)subtitle
+                     favicons:(NSArray<UIImage*>*)favicons
+                         type:(ComposeboxMenuItemType)type;
 
 - (instancetype)initWithTitle:(NSString*)title
                         image:(UIImage*)image
@@ -33,6 +43,12 @@
                       favicon:(UIImage*)favicon;
 
 - (instancetype)initWithTitle:(NSString*)title
+                        image:(UIImage*)image
+                         type:(ComposeboxMenuItemType)type
+                     disabled:(BOOL)disabled;
+
+- (instancetype)initWithTitle:(NSString*)title
+                     subtitle:(NSString*)subtitle
                         image:(UIImage*)image
                          type:(ComposeboxMenuItemType)type
                      disabled:(BOOL)disabled;

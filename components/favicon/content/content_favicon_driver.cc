@@ -139,7 +139,13 @@ void ContentFaviconDriver::OnFaviconUpdated(
     entry->GetFavicon().valid = true;
     entry->GetFavicon().url = icon_url;
     entry->GetFavicon().image = image;
-    web_contents()->NotifyNavigationStateChanged(content::INVALIDATE_TYPE_TAB);
+    unsigned changed_flags = content::INVALIDATE_TYPE_TAB;
+    if (!notified_icon_available_) {
+      notified_icon_available_ = true;
+      changed_flags |= content::INVALIDATE_TYPE_ICON;
+    }
+    web_contents()->NotifyNavigationStateChanged(
+        static_cast<content::InvalidateTypes>(changed_flags));
   }
 
   NotifyFaviconUpdatedObservers(notification_icon_type, icon_url,
@@ -165,7 +171,8 @@ void ContentFaviconDriver::OnFaviconDeleted(
 
 void ContentFaviconDriver::DidUpdateFaviconURL(
     content::RenderFrameHost* rfh,
-    const std::vector<blink::mojom::FaviconURLPtr>& candidates) {
+    const std::vector<blink::mojom::FaviconURLPtr>& candidates,
+    blink::mojom::FaviconUpdateReason reason) {
   // Ignore the update if there is no last committed navigation entry. This can
   // occur when loading an initially blank page.
   content::NavigationEntry* entry =
@@ -235,6 +242,11 @@ void ContentFaviconDriver::DidFinishNavigation(
   if (!navigation_handle->IsInPrimaryMainFrame() ||
       !navigation_handle->HasCommitted() || navigation_handle->IsErrorPage()) {
     return;
+  }
+
+  if (!navigation_handle->IsSameDocument()) {
+    // Reset the notified bit after navigating to a new page.
+    notified_icon_available_ = false;
   }
 
   // Transfer in-flight navigation data to the document user data.

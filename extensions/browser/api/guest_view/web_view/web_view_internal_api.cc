@@ -11,7 +11,6 @@
 #include <vector>
 
 #include "base/check_deref.h"
-#include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/stringprintf.h"
@@ -25,9 +24,9 @@
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_view_host.h"
-#include "content/public/browser/security_principal.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/stop_find_action.h"
+#include "content/public/common/url_constants.h"
 #include "extensions/browser/extension_api_frame_id_map.h"
 #include "extensions/browser/extensions_browser_client.h"
 #include "extensions/browser/guest_view/web_view/controlled_frame_embedder_url_fetcher.h"
@@ -57,10 +56,6 @@ namespace errors = extensions::manifest_errors;
 namespace web_view_internal = extensions::api::web_view_internal;
 
 namespace {
-
-// Kill switch for the fix for https://crbug.com/496016840
-// TODO(crbug.com/496016840): Remove in M151 or later.
-BASE_FEATURE(kWebviewScriptFileOriginCheck, base::FEATURE_ENABLED_BY_DEFAULT);
 
 constexpr std::string_view kCacheKey = "cache";
 constexpr std::string_view kCookiesKey = "cookies";
@@ -112,11 +107,9 @@ std::optional<extensions::mojom::HostID> GenerateHostIDFromEmbedder(
   }
 
   if (embedder_rfh && embedder_rfh->GetMainFrame()->GetWebUI()) {
-    const GURL& url = embedder_rfh->GetSiteInstance()
-                          ->GetSecurityPrincipal()
-                          .GetDeprecatedSiteURL();
     return extensions::mojom::HostID(
-        extensions::mojom::HostID::HostType::kWebUi, url.spec());
+        extensions::mojom::HostID::HostType::kWebUi,
+        embedder_rfh->GetLastCommittedOrigin().Serialize());
   }
 
   if (embedder_rfh->GetWebExposedIsolationLevel() >=
@@ -142,8 +135,7 @@ void ParseScriptFiles(const GURL& owner_base_url,
   if (items.files) {
     for (const std::string& relative : *items.files) {
       GURL url = owner_base_url.Resolve(relative);
-      if (!url::IsSameOriginWith(owner_base_url, url) &&
-          base::FeatureList::IsEnabled(kWebviewScriptFileOriginCheck)) {
+      if (!url::IsSameOriginWith(owner_base_url, url)) {
         continue;
       }
       if (extension) {
@@ -339,6 +331,9 @@ ExtensionFunction::ResponseAction
 WebViewInternalCaptureVisibleRegionFunction::Run() {
   using api::extension_types::ImageDetails;
 
+  EXTENSION_FUNCTION_VALIDATE(
+      !source_url().SchemeIs(content::kChromeUIUntrustedScheme));
+
   std::optional<web_view_internal::CaptureVisibleRegion::Params> params =
       web_view_internal::CaptureVisibleRegion::Params::Create(args());
   EXTENSION_FUNCTION_VALIDATE(params);
@@ -379,13 +374,10 @@ bool WebViewInternalCaptureVisibleRegionFunction::ShouldSkipQuotaLimiting()
   return user_gesture();
 }
 
-WebContentsCaptureClient::ScreenshotAccess
+base::expected<void, ScreenshotAccessError>
 WebViewInternalCaptureVisibleRegionFunction::GetScreenshotAccess(
     content::WebContents* web_contents) const {
-  if (ExtensionsBrowserClient::Get()->IsScreenshotRestricted(web_contents))
-    return ScreenshotAccess::kDisabledByDlp;
-
-  return ScreenshotAccess::kEnabled;
+  return ExtensionsBrowserClient::Get()->IsScreenshotRestricted(web_contents);
 }
 
 bool WebViewInternalCaptureVisibleRegionFunction::ClientAllowsTransparency() {
@@ -557,8 +549,7 @@ bool WebViewInternalExecuteCodeFunction::LoadFileForEmbedder(
   GURL owner_base_url(guest->GetOwnerSiteURL().GetWithEmptyPath());
   GURL file_url(owner_base_url.Resolve(file_src));
 
-  if (!url::IsSameOriginWith(owner_base_url, file_url) &&
-      base::FeatureList::IsEnabled(kWebviewScriptFileOriginCheck)) {
+  if (!url::IsSameOriginWith(owner_base_url, file_url)) {
     return false;
   }
 
@@ -616,7 +607,19 @@ bool WebViewInternalExecuteCodeFunction::LoadFile(const std::string& file,
 WebViewInternalExecuteScriptFunction::WebViewInternalExecuteScriptFunction() {
 }
 
+ExtensionFunction::ResponseAction WebViewInternalExecuteScriptFunction::Run() {
+  EXTENSION_FUNCTION_VALIDATE(
+      !source_url().SchemeIs(content::kChromeUIUntrustedScheme));
+  return WebViewInternalExecuteCodeFunction::Run();
+}
+
 WebViewInternalInsertCSSFunction::WebViewInternalInsertCSSFunction() {
+}
+
+ExtensionFunction::ResponseAction WebViewInternalInsertCSSFunction::Run() {
+  EXTENSION_FUNCTION_VALIDATE(
+      !source_url().SchemeIs(content::kChromeUIUntrustedScheme));
+  return WebViewInternalExecuteCodeFunction::Run();
 }
 
 bool WebViewInternalInsertCSSFunction::ShouldInsertCSS() const {
@@ -633,6 +636,9 @@ WebViewInternalAddContentScriptsFunction::
 
 ExecuteCodeFunction::ResponseAction
 WebViewInternalAddContentScriptsFunction::Run() {
+  EXTENSION_FUNCTION_VALIDATE(
+      !source_url().SchemeIs(content::kChromeUIUntrustedScheme));
+
   std::optional<web_view_internal::AddContentScripts::Params> params =
       web_view_internal::AddContentScripts::Params::Create(args());
   EXTENSION_FUNCTION_VALIDATE(params);
@@ -640,11 +646,12 @@ WebViewInternalAddContentScriptsFunction::Run() {
   if (!params->instance_id)
     return RespondNow(Error(kViewInstanceIdError));
 
+  // Use GetTupleOrPrecursorTupleIfOpaque() so that this works properly if
+  // the owner is in a sandboxed frame, which has an opaque origin.
   GURL owner_base_url(render_frame_host()
-                          ->GetSiteInstance()
-                          ->GetSecurityPrincipal()
-                          .GetDeprecatedSiteURL()
-                          .GetWithEmptyPath());
+                          ->GetLastCommittedOrigin()
+                          .GetTupleOrPrecursorTupleIfOpaque()
+                          .GetURL());
   std::optional<extensions::mojom::HostID> host_id =
       GenerateHostIDFromEmbedder(extension(), render_frame_host());
   if (!host_id) {
@@ -852,6 +859,9 @@ void WebViewInternalFindFunction::ForwardResponse(base::DictValue results) {
 }
 
 ExtensionFunction::ResponseAction WebViewInternalFindFunction::Run() {
+  EXTENSION_FUNCTION_VALIDATE(
+      !source_url().SchemeIs(content::kChromeUIUntrustedScheme));
+
   std::optional<web_view_internal::Find::Params> params =
       web_view_internal::Find::Params::Create(args());
   EXTENSION_FUNCTION_VALIDATE(params);
@@ -919,6 +929,9 @@ WebViewInternalLoadDataWithBaseUrlFunction::
 
 ExtensionFunction::ResponseAction
 WebViewInternalLoadDataWithBaseUrlFunction::Run() {
+  EXTENSION_FUNCTION_VALIDATE(
+      !source_url().SchemeIs(content::kChromeUIUntrustedScheme));
+
   std::optional<web_view_internal::LoadDataWithBaseUrl::Params> params =
       web_view_internal::LoadDataWithBaseUrl::Params::Create(args());
   EXTENSION_FUNCTION_VALIDATE(params);

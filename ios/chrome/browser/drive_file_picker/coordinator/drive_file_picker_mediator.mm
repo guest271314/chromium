@@ -12,12 +12,14 @@
 #import "base/files/file_path.h"
 #import "base/functional/callback_helpers.h"
 #import "base/notreached.h"
+#import "base/scoped_observation.h"
 #import "base/strings/sys_string_conversions.h"
 #import "base/timer/timer.h"
 #import "components/signin/public/base/consent_level.h"
 #import "components/signin/public/identity_manager/identity_manager.h"
 #import "components/signin/public/identity_manager/objc/identity_manager_observer_bridge.h"
 #import "ios/chrome/browser/authentication/ui_bundled/signin/signin_utils.h"
+#import "ios/chrome/browser/composebox/shared/ui/composebox_snackbar_presenter.h"
 #import "ios/chrome/browser/drive/model/drive_file_downloader.h"
 #import "ios/chrome/browser/drive/model/drive_list.h"
 #import "ios/chrome/browser/drive/model/drive_service.h"
@@ -36,6 +38,8 @@
 #import "ios/chrome/browser/signin/model/authentication_service_observer_bridge.h"
 #import "ios/chrome/browser/signin/model/chrome_account_manager_service.h"
 #import "ios/chrome/browser/signin/model/system_identity.h"
+#import "ios/chrome/browser/web/model/choose_file/choose_file_controller.h"
+#import "ios/chrome/browser/web/model/choose_file/choose_file_controller_observer_bridge.h"
 #import "ios/chrome/browser/web/model/choose_file/choose_file_tab_helper.h"
 #import "ios/chrome/common/ui/util/image_util.h"
 #import "ios/chrome/grit/ios_strings.h"
@@ -59,7 +63,8 @@ constexpr base::TimeDelta kClearItemsDelay = base::Seconds(2.0);
 }  // namespace
 
 @interface DriveFilePickerMediator () <AuthenticationServiceObserving,
-                                       IdentityManagerObserverBridgeDelegate>
+                                       ChooseFileControllerObserving,
+                                       IdentityManagerObserving>
 @end
 
 @implementation DriveFilePickerMediator {
@@ -118,11 +123,21 @@ constexpr base::TimeDelta kClearItemsDelay = base::Seconds(2.0);
       _authenticationServiceObserverBridge;
   // Whether this mediator is at the root level of the file picker.
   BOOL _isRoot;
+  // Bridge to observe the ChooseFileController.
+  std::unique_ptr<ChooseFileControllerObserverBridge>
+      _chooseFileControllerObserverBridge;
+  // Scoped observation for the ChooseFileController.
+  std::unique_ptr<base::ScopedObservation<ChooseFileController,
+                                          ChooseFileController::Observer>>
+      _chooseFileControllerObservation;
+  // Whether the mediator is running in Composebox metadata-only mode.
+  BOOL _forComposebox;
 }
 
 - (instancetype)initWithWebState:(web::WebState*)webState
                          options:(DriveFilePickerOptions)options
                           isRoot:(BOOL)isRoot
+                   forComposebox:(BOOL)forComposebox
                  identityManager:(signin::IdentityManager*)identityManager
            authenticationService:(AuthenticationService*)authenticationService {
   self = [super init];
@@ -133,6 +148,7 @@ constexpr base::TimeDelta kClearItemsDelay = base::Seconds(2.0);
     _webState = webState->GetWeakPtr();
     _options = options;
     _isRoot = isRoot;
+    _forComposebox = forComposebox;
     _fetchedDriveItems = {};
     _identityManager = identityManager;
     _authenticationService = authenticationService;
@@ -144,13 +160,30 @@ constexpr base::TimeDelta kClearItemsDelay = base::Seconds(2.0);
         std::make_unique<AuthenticationServiceObserverBridge>(
             _authenticationService, self);
 
-    // Initialize the list of accepted types.
-    ChooseFileTabHelper* tab_helper =
-        ChooseFileTabHelper::FromWebState(webState);
-    CHECK(tab_helper->IsChoosingFiles());
-    const ChooseFileEvent& event = tab_helper->GetChooseFileEvent();
-    _acceptedTypes = UTTypesAcceptedForEvent(event);
-    _allowsMultipleSelection = event.allow_multiple_files;
+    // For the Composebox native attachment flow, bypass the web-page-specific
+    // file chooser controller and allow universal multi-file selection.
+    if (_forComposebox) {
+      _acceptedTypes = @[];
+      _allowsMultipleSelection = YES;
+    } else {
+      // Start observing ChooseFileController.
+      ChooseFileTabHelper* tabHelper =
+          ChooseFileTabHelper::FromWebState(webState);
+      CHECK(tabHelper->IsChoosingFiles());
+      ChooseFileController* controller = tabHelper->GetChooseFileController();
+      _chooseFileControllerObserverBridge =
+          std::make_unique<ChooseFileControllerObserverBridge>(self);
+      _chooseFileControllerObservation =
+          std::make_unique<base::ScopedObservation<
+              ChooseFileController, ChooseFileController::Observer>>(
+              _chooseFileControllerObserverBridge.get());
+      _chooseFileControllerObservation->Observe(controller);
+
+      // Initialize the list of accepted types.
+      const ChooseFileEvent& event = tabHelper->GetChooseFileEvent();
+      _acceptedTypes = UTTypesAcceptedForEvent(event);
+      _allowsMultipleSelection = event.allow_multiple_files;
+    }
   }
   return self;
 }
@@ -162,6 +195,7 @@ constexpr base::TimeDelta kClearItemsDelay = base::Seconds(2.0);
 #pragma mark - Public properties
 
 - (void)setMetricsHelper:(DriveFilePickerMetricsHelper*)metricsHelper {
+  CHECK(!_forComposebox);
   if (_metricsHelper == metricsHelper) {
     return;
   }
@@ -169,11 +203,11 @@ constexpr base::TimeDelta kClearItemsDelay = base::Seconds(2.0);
   if (_metricsHelper) {
     _metricsHelper.searchingState = DriveFilePickerSearchState::kNotSearching;
     if (_collection->IsRoot()) {
-      ChooseFileTabHelper* tab_helper =
+      ChooseFileTabHelper* tabHelper =
           ChooseFileTabHelper::FromWebState(_webState.get());
-      CHECK(tab_helper);
+      CHECK(tabHelper);
       [_metricsHelper
-          reportActivationMetricsForEvent:tab_helper->GetChooseFileEvent()];
+          reportActivationMetricsForEvent:tabHelper->GetChooseFileEvent()];
     }
   }
 }
@@ -189,12 +223,12 @@ constexpr base::TimeDelta kClearItemsDelay = base::Seconds(2.0);
 
 - (void)disconnect {
   if (_isRoot && _webState && !_webState->IsBeingDestroyed()) {
-    ChooseFileTabHelper* tab_helper =
+    ChooseFileTabHelper* tabHelper =
         ChooseFileTabHelper::FromWebState(_webState.get());
 
-    CHECK(tab_helper);
-    if (tab_helper->IsChoosingFiles()) {
-      tab_helper->StopChoosingFiles();
+    CHECK(tabHelper);
+    if (tabHelper->IsChoosingFiles()) {
+      tabHelper->StopChoosingFiles();
     }
   }
   // Clear selection on shutdown (stops download, allows dismissal, etc...)
@@ -215,6 +249,8 @@ constexpr base::TimeDelta kClearItemsDelay = base::Seconds(2.0);
   _authenticationService = nullptr;
   _authenticationServiceObserverBridge.reset();
   _imageFetcher = nullptr;
+  _chooseFileControllerObservation.reset();
+  _chooseFileControllerObserverBridge.reset();
 }
 
 - (void)setCollection:(std::unique_ptr<DriveFilePickerCollection>)collection {
@@ -256,6 +292,7 @@ constexpr base::TimeDelta kClearItemsDelay = base::Seconds(2.0);
   [_consumer setFilterMenuEnabled:[self filterMenuShouldBeEnabled]];
   [_consumer setSortingMenuEnabled:[self sortingMenuShouldBeEnabled]];
   [_consumer setAllowsMultipleSelection:_allowsMultipleSelection];
+  [_consumer setAccountButtonHidden:_forComposebox];
 }
 
 - (void)setActive:(BOOL)active {
@@ -337,6 +374,13 @@ constexpr base::TimeDelta kClearItemsDelay = base::Seconds(2.0);
                                            options:_options];
 }
 
+- (void)didTapDisabledDriveItem:(NSString*)itemIdentifier {
+  if (_forComposebox && _maxAttachmentCount > 0 &&
+      _selectedFiles.size() >= _maxAttachmentCount) {
+    [self.delegate mediatorDidReachAttachmentLimit:self];
+  }
+}
+
 - (void)loadFirstPage {
   [self loadItemsAppending:NO delayed:NO animated:NO];
 }
@@ -386,6 +430,16 @@ constexpr base::TimeDelta kClearItemsDelay = base::Seconds(2.0);
     [self.driveFilePickerHandler hideDriveFilePicker];
     return;
   }
+
+  // For the Composebox, directly return the selected metadata (identifiers,
+  // filenames, MIME types) to bypass local downloads.
+  if (_forComposebox) {
+    std::vector<DriveItem> driveItems(_selectedFiles.begin(),
+                                      _selectedFiles.end());
+    [self.delegate mediator:self didPickDriveItems:driveItems];
+    return;
+  }
+
   ChooseFileTabHelper* tab_helper =
       ChooseFileTabHelper::FromWebState(_webState.get());
   CHECK(tab_helper);
@@ -488,6 +542,14 @@ constexpr base::TimeDelta kClearItemsDelay = base::Seconds(2.0);
   }
 }
 
+#pragma mark - ChooseFileControllerObserving
+
+- (void)chooseFileControllerDestroyed:(ChooseFileController*)controller {
+  _chooseFileControllerObservation.reset();
+  _chooseFileControllerObserverBridge.reset();
+  [self.delegate mediatorDidStopFileSelection:self];
+}
+
 #pragma mark - Private methods
 
 // Browses to the collection corresponding to `item`.
@@ -530,20 +592,30 @@ constexpr base::TimeDelta kClearItemsDelay = base::Seconds(2.0);
 
 // Update what items can be selected by the user.
 - (void)updateAcceptableItems {
+  BOOL limitReached = _forComposebox && _maxAttachmentCount > 0 &&
+                      _selectedFiles.size() >= _maxAttachmentCount;
   NSMutableSet<NSString*>* enabledItemsIdentifiers = [NSMutableSet set];
   for (const DriveItem& item : _fetchedDriveItems) {
-    if (DriveFilePickerItemShouldBeEnabled(item, _acceptedTypes,
-                                           _options.ignore_accepted_types)) {
+    if (limitReached) {
+      if (item.CanBeBrowsed() || _selectedFiles.contains(item)) {
+        [enabledItemsIdentifiers addObject:item.identifier];
+      }
+    } else if (DriveFilePickerItemShouldBeEnabled(
+                   item, _acceptedTypes, _options.ignore_accepted_types,
+                   _forComposebox)) {
       [enabledItemsIdentifiers addObject:item.identifier];
     }
   }
   [self.consumer setEnabledItems:enabledItemsIdentifiers];
-  [self.consumer setAllFilesEnabled:_options.ignore_accepted_types];
+  [self.consumer
+      setAllFilesEnabled:(!limitReached &&
+                          (_options.ignore_accepted_types || _forComposebox))];
   // Update selected files to exclude items which should not be enabled.
   std::unordered_set<DriveItem> enabledSelectedFiles;
   for (const DriveItem& selectedFile : _selectedFiles) {
-    if (DriveFilePickerItemShouldBeEnabled(selectedFile, _acceptedTypes,
-                                           _options.ignore_accepted_types)) {
+    if (limitReached || DriveFilePickerItemShouldBeEnabled(
+                            selectedFile, _acceptedTypes,
+                            _options.ignore_accepted_types, _forComposebox)) {
       enabledSelectedFiles.insert(selectedFile);
     }
   }
@@ -657,10 +729,19 @@ constexpr base::TimeDelta kClearItemsDelay = base::Seconds(2.0);
       // If the file was selected, deselect it.
       [self deselectFile:file];
     } else {
+      if (_forComposebox && _maxAttachmentCount > 0 &&
+          oldSelectedFiles.size() >= _maxAttachmentCount) {
+        [self.delegate mediatorDidReachAttachmentLimit:self];
+        return;
+      }
       // If the file was not selected, add it to the selection.
       std::unordered_set<DriveItem> newSelectedFiles = oldSelectedFiles;
       newSelectedFiles.insert(file);
       [self setSelectedFiles:newSelectedFiles];
+      if (_forComposebox && _maxAttachmentCount > 0 &&
+          newSelectedFiles.size() >= _maxAttachmentCount) {
+        [self.delegate mediatorDidReachAttachmentLimit:self];
+      }
     }
     return;
   }
@@ -733,6 +814,27 @@ constexpr base::TimeDelta kClearItemsDelay = base::Seconds(2.0);
   // Allow/forbid file picker dismissal.
   [self.delegate mediator:self didAllowDismiss:_selectedFiles.empty()];
   _metricsHelper.selectedFile = !_selectedFiles.empty();
+
+  if (_forComposebox && _maxAttachmentCount > 0) {
+    NSMutableSet<NSString*>* enabledItemsIdentifiers = [NSMutableSet set];
+    BOOL limitReached = _selectedFiles.size() >= _maxAttachmentCount;
+    for (const DriveItem& item : _fetchedDriveItems) {
+      if (limitReached) {
+        if (item.CanBeBrowsed() || _selectedFiles.contains(item)) {
+          [enabledItemsIdentifiers addObject:item.identifier];
+        }
+      } else if (DriveFilePickerItemShouldBeEnabled(
+                     item, _acceptedTypes, _options.ignore_accepted_types,
+                     _forComposebox)) {
+        [enabledItemsIdentifiers addObject:item.identifier];
+      }
+    }
+    [self.consumer setEnabledItems:enabledItemsIdentifiers];
+    [self.consumer
+        setAllFilesEnabled:(!limitReached && (_options.ignore_accepted_types ||
+                                              _forComposebox))];
+  }
+
   [self processDownloadingQueue];
 }
 
@@ -742,6 +844,17 @@ constexpr base::TimeDelta kClearItemsDelay = base::Seconds(2.0);
 - (void)processDownloadingQueue {
   if (!_webState || _webState->IsBeingDestroyed()) {
     // If the WebState was or is being destroyed, do nothing.
+    return;
+  }
+
+  // Since Composebox attachments are metadata-driven and uploaded server-side,
+  // bypass local downloader queue tasks entirely. Update the consumer
+  // status directly based on whether the selection list is populated.
+  if (_forComposebox) {
+    DriveFileDownloadStatus newDownloadStatus =
+        _selectedFiles.empty() ? DriveFileDownloadStatus::kNotStarted
+                               : DriveFileDownloadStatus::kSuccess;
+    [self.consumer setDownloadStatus:newDownloadStatus];
     return;
   }
 
@@ -920,11 +1033,9 @@ constexpr base::TimeDelta kClearItemsDelay = base::Seconds(2.0);
 
   // If there is a timer programmed to fetch items, cancel it.
   _timerBeforeFetch.Stop();
+  _timerAfterFetchBeforeClearItems.Stop();
   // Cancel any pending fetch query.
-  if (_driveList->IsExecutingQuery()) {
-    _timerAfterFetchBeforeClearItems.Stop();
-    _driveList->CancelCurrentQuery();
-  }
+  _driveList->CancelCurrentQuery();
 
   if (!_collection->IsRoot() || _shouldShowSearchItems) {
     const base::TimeDelta delay =
@@ -994,7 +1105,7 @@ constexpr base::TimeDelta kClearItemsDelay = base::Seconds(2.0);
       _shouldShowSearchItems, _searchText, _nextPageToken);
 
   auto completion = base::BindOnce(
-      [](DriveFilePickerMediator* mediator, const base::TimeDelta& delayToRetry,
+      [](DriveFilePickerMediator* mediator, base::TimeDelta delayToRetry,
          BOOL animated, const DriveListResult& result) {
         [mediator handleListItemsResponse:result
                              delayToRetry:delayToRetry
@@ -1018,6 +1129,12 @@ constexpr base::TimeDelta kClearItemsDelay = base::Seconds(2.0);
                        animated:(BOOL)animated {
   // Cancel clearing items if fetching completed.
   _timerAfterFetchBeforeClearItems.Stop();
+
+  // If the response is delivered when displaying the root collection outside
+  // of search, ignore the result as root items are static collections.
+  if (_collection->IsRoot() && !_shouldShowSearchItems) {
+    return;
+  }
 
   const BOOL append = _nextPageToken != nil;
   if (result.error) {
@@ -1069,7 +1186,7 @@ constexpr base::TimeDelta kClearItemsDelay = base::Seconds(2.0);
         item, _collection->GetType(), _options.sorting_criterion,
         _shouldShowSearchItems, _searchText);
     filePickerItem.enabled = DriveFilePickerItemShouldBeEnabled(
-        item, _acceptedTypes, _options.ignore_accepted_types);
+        item, _acceptedTypes, _options.ignore_accepted_types, _forComposebox);
     // If the search text is not empty, emphasize the first match of the search
     // text inside the name of the item.
     if (_searchText.length != 0) {
@@ -1224,9 +1341,9 @@ constexpr base::TimeDelta kClearItemsDelay = base::Seconds(2.0);
   }
 }
 
-#pragma mark - IdentityManagerObserverBridgeDelegate
+#pragma mark - IdentityManagerObserving
 
-- (void)onPrimaryAccountChanged:
+- (void)primaryAccountDidChange:
     (const signin::PrimaryAccountChangeEvent&)event {
   switch (event.GetEventTypeFor(signin::ConsentLevel::kSignin)) {
     case signin::PrimaryAccountChangeEvent::Type::kCleared:

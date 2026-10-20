@@ -9,6 +9,7 @@
 #include "ash/constants/ash_features.h"
 #include "ash/constants/ash_pref_names.h"
 #include "ash/constants/ash_switches.h"
+#include "ash/login/resources/grit/ash_login_strings.h"
 #include "ash/public/cpp/login_screen_test_api.h"
 #include "base/check.h"
 #include "base/check_deref.h"
@@ -16,6 +17,7 @@
 #include "base/test/gtest_util.h"
 #include "base/test/run_until.h"
 #include "base/test/scoped_feature_list.h"
+#include "base/threading/thread_restrictions.h"
 #include "base/values.h"
 #include "build/build_config.h"
 #include "chrome/browser/ash/app_mode/consumer_kiosk_test_helper.h"
@@ -59,7 +61,6 @@
 #include "chrome/browser/ui/webui/ash/login/error_screen_handler.h"
 #include "chrome/browser/ui/webui/ash/login/gaia_screen_handler.h"
 #include "chrome/browser/ui/webui/ash/login/online_login_utils.h"
-#include "chrome/grit/generated_resources.h"
 #include "chrome/test/base/fake_gaia_mixin.h"
 #include "chromeos/ash/components/attestation/mock_attestation_flow.h"
 #include "chromeos/ash/components/attestation/stub_attestation_features.h"
@@ -1421,7 +1422,6 @@ IN_PROC_BROWSER_TEST_F(
   ScopedDeviceSettings settings;
 
   SetupAutoLaunchApp(settings.owner_settings_service());
-  enrollment_screen()->OnConfirmationClosed();
   enrollment_ui_.LeaveSuccessScreen();
 
   // Wait for app to be launched.

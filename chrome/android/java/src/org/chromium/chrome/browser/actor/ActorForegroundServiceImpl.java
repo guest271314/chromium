@@ -16,16 +16,21 @@ import android.os.SystemClock;
 import androidx.annotation.VisibleForTesting;
 import androidx.core.app.ServiceCompat;
 
+import org.chromium.base.Log;
+import org.chromium.base.SplitCompatService;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.actor.ActorForegroundServiceUmaHelper.ForegroundLifecycle;
 import org.chromium.chrome.browser.actor.ActorForegroundServiceUmaHelper.StopReason;
-import org.chromium.chrome.browser.base.SplitCompatService;
+import org.chromium.chrome.browser.flags.ChromeFeatureList;
+import org.chromium.chrome.browser.init.ChromeBrowserInitializer;
 import org.chromium.components.browser_ui.notifications.ForegroundServiceUtils;
 
 /** Implementation of ActorForegroundService. */
 @NullMarked
 public class ActorForegroundServiceImpl extends SplitCompatService.Impl {
+    private static final String TAG = "ActorFGS";
+
     private final IBinder mBinder = new LocalBinder();
     private long mStartTime;
     private boolean mIsForeground;
@@ -65,6 +70,9 @@ public class ActorForegroundServiceImpl extends SplitCompatService.Impl {
         if (!mIsForeground) {
             ActorForegroundServiceUmaHelper.recordLifecycleHistogram(ForegroundLifecycle.STARTED);
             mIsForeground = true;
+            if (ChromeFeatureList.sGlicBackgroundTriggering.isEnabled()) {
+                ChromeBrowserInitializer.getInstance().handleSynchronousStartup();
+            }
         } else {
             ActorForegroundServiceUmaHelper.recordLifecycleHistogram(ForegroundLifecycle.UPDATED);
         }
@@ -92,9 +100,6 @@ public class ActorForegroundServiceImpl extends SplitCompatService.Impl {
         if (mStartTime == 0) {
             mStartTime = SystemClock.elapsedRealtime();
         }
-
-        // Return START_NOT_STICKY so the system doesn't attempt to recreate the service if it is
-        // killed.
         return Service.START_NOT_STICKY;
     }
 
@@ -117,6 +122,8 @@ public class ActorForegroundServiceImpl extends SplitCompatService.Impl {
                     SystemClock.elapsedRealtime() - mStartTime);
             recordStopReason(StopReason.DESTROYED);
         }
+
+        ActorForegroundServiceController.get().destroyBackgroundActuationManager();
 
         // TODO(ritkagup) : Notify observers so they can perform cleanup or pause active tasks.
         super.onDestroy();
@@ -153,6 +160,7 @@ public class ActorForegroundServiceImpl extends SplitCompatService.Impl {
                         notificationId,
                         notification,
                         ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC);
+        Log.d(TAG, "Successfully promoted to foreground");
     }
 
     @VisibleForTesting

@@ -32,7 +32,6 @@ import type {Route} from '../router.js';
 import {Router, routes} from '../router.js';
 
 import {getTemplate} from './chromevox_subpage.html.js';
-import type {ChromeVoxSubpageBrowserProxy} from './chromevox_subpage_browser_proxy.js';
 import {ChromeVoxSubpageBrowserProxyImpl} from './chromevox_subpage_browser_proxy.js';
 
 export {SettingsToggleButtonElement} from '../controls/settings_toggle_button.js';
@@ -332,6 +331,11 @@ export class SettingsChromeVoxSubpageElement extends
         value: loadTimeData.getBoolean('japaneseBrailleEnabled'),
         readOnly: true,
       },
+
+      brailleTables_: {
+        type: Array,
+        value: () => [],
+      },
     };
   }
 
@@ -346,20 +350,21 @@ export class SettingsChromeVoxSubpageElement extends
     ];
   }
 
-  private capitalStrategyOptions_: DropdownMenuOptionList;
-  private numberReadingStyleOptions_: DropdownMenuOptionList;
-  private punctuationEchoOptions_: DropdownMenuOptionList;
-  private audioStrategyOptions_: DropdownMenuOptionList;
-  private brailleTableTypeOptions_: DropdownMenuOptionList;
-  private brailleTableOptions_: DropdownMenuOptionList;
-  private voiceOptions_: DropdownMenuOptionList;
-  private virtualBrailleDisplayStyleOptions_: DropdownMenuOptionList;
-  private chromeVoxBrowserProxy_: ChromeVoxSubpageBrowserProxy;
-  private brailleTables_: BrailleTable[];
-  private developerOptionsExpanded_: boolean;
-  private readonly eventStreamFilters_: string[];
-  private readonly mainNodeAnnotationsFeatureEnabled_: boolean;
-  private readonly japaneseBrailleEnabled_: boolean;
+  declare private capitalStrategyOptions_: DropdownMenuOptionList;
+  declare private numberReadingStyleOptions_: DropdownMenuOptionList;
+  declare private punctuationEchoOptions_: DropdownMenuOptionList;
+  declare private audioStrategyOptions_: DropdownMenuOptionList;
+  declare private brailleTableTypeOptions_: DropdownMenuOptionList;
+  declare private brailleTableOptions_: DropdownMenuOptionList;
+  declare private voiceOptions_: DropdownMenuOptionList;
+  declare private virtualBrailleDisplayStyleOptions_: DropdownMenuOptionList;
+  private chromeVoxBrowserProxy_ =
+      ChromeVoxSubpageBrowserProxyImpl.getInstance();
+  declare private brailleTables_: BrailleTable[];
+  declare private developerOptionsExpanded_: boolean;
+  declare private readonly eventStreamFilters_: string[];
+  declare private readonly mainNodeAnnotationsFeatureEnabled_: boolean;
+  declare private readonly japaneseBrailleEnabled_: boolean;
 
   // Regular expressions that will match against a voice name if it contains a
   // speaker ID in it.
@@ -369,16 +374,10 @@ export class SettingsChromeVoxSubpageElement extends
   private localSpeakerNameReplacement_ = '-x-local';
   private networkSpeakerNameReplacement_ = '-x-network';
 
+  // RouteOriginMixin override
+  override route = routes.A11Y_CHROMEVOX;
+
   // TODO(270619855): Add tests to verify these controls change their prefs.
-  constructor() {
-    super();
-
-    this.chromeVoxBrowserProxy_ =
-        ChromeVoxSubpageBrowserProxyImpl.getInstance();
-
-    /** RouteOriginMixin override */
-    this.route = routes.A11Y_CHROMEVOX;
-  }
 
   override ready(): void {
     super.ready();

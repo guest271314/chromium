@@ -15,6 +15,7 @@
 #include "base/containers/span.h"
 #include "base/functional/callback_forward.h"
 #include "base/memory/scoped_refptr.h"
+#include "crypto/hash.h"
 #include "device/fido/authenticator_get_assertion_response.h"
 #include "device/fido/authenticator_make_credential_response.h"
 #include "device/fido/ctap_get_assertion_request.h"
@@ -85,22 +86,28 @@ std::variant<std::pair<AuthenticatorMakeCredentialResponse,
 // Returns a CBOR value with the provided GetAssertion request and associated
 // passkey. The return value can be serialized into a Command request according
 // to the enclave protocol.
+// If `cmtg_device_keys` is not null, CMTG key creation will be requested.
 cbor::Value COMPONENT_EXPORT(DEVICE_FIDO) BuildGetAssertionCommand(
     const sync_pb::WebauthnCredentialSpecifics& passkey,
     scoped_refptr<JSONRequest> request,
-    std::string client_data_hash,
+    std::string client_data_json,
     std::unique_ptr<ClaimedPIN> claimed_pin,
     std::optional<std::vector<uint8_t>> wrapped_secret,
-    std::optional<std::vector<uint8_t>> secret);
+    std::optional<std::vector<uint8_t>> secret,
+    std::optional<std::vector<std::vector<uint8_t>>> cmtg_device_keys);
 
 // Returns a CBOR value with the provided MakeCredential request. The return
 // value can be serialized into a Command request according to the enclave
 // protocol.
+// If `cmtg_device_key` is not null, CMTG key creation will be requested.
 cbor::Value COMPONENT_EXPORT(DEVICE_FIDO) BuildMakeCredentialCommand(
     scoped_refptr<JSONRequest> request,
     std::unique_ptr<ClaimedPIN> claimed_pin,
     std::optional<std::vector<uint8_t>> wrapped_secret,
-    std::optional<std::vector<uint8_t>> secret);
+    std::optional<std::vector<uint8_t>> secret,
+    UserPresentAndVerifiedBits up_and_uv_bits,
+    base::span<const uint8_t> client_data_json,
+    std::optional<std::vector<uint8_t>> cmtg_device_key);
 
 // Returns a CBOR value with the provided AddUVKey command to the enclave.
 // It must precede a credential registration or assertion request in the
@@ -121,7 +128,7 @@ cbor::Value COMPONENT_EXPORT(DEVICE_FIDO)
 void COMPONENT_EXPORT(DEVICE_FIDO) BuildCommandRequestBody(
     cbor::Value command,
     SigningCallback signing_callback,
-    base::span<const uint8_t, crypto::kSHA256Length> handshake_hash,
+    base::span<const uint8_t, crypto::hash::kSha256Size> handshake_hash,
     base::OnceCallback<void(std::optional<std::vector<uint8_t>>)>
         complete_callback);
 

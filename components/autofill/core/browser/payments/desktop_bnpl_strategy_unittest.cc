@@ -19,11 +19,11 @@ class DesktopBnplStrategyTest : public testing::Test {
   DesktopBnplStrategy desktop_bnpl_strategy_;
 };
 
-// Verify that GetNextActionOnSuggestionShown() returns the correct action for
+// Verify that GetNextActionOnSuggestionsShown() returns the correct action for
 // the desktop platform.
-TEST_F(DesktopBnplStrategyTest, GetNextActionOnSuggestionShown) {
-  EXPECT_EQ(desktop_bnpl_strategy_.GetNextActionOnSuggestionShown(),
-            BnplStrategy::SuggestionShownNextAction::
+TEST_F(DesktopBnplStrategyTest, GetNextActionOnSuggestionsShown) {
+  EXPECT_EQ(desktop_bnpl_strategy_.GetNextActionOnSuggestionsShown(),
+            BnplStrategy::SuggestionsShownNextAction::
                 kNotifyUpdateCallbackOfSuggestionsShownResponse);
 }
 
@@ -58,6 +58,47 @@ TEST_F(DesktopBnplStrategyTest, GetNextActionOnAmountExtractionReturned) {
 TEST_F(DesktopBnplStrategyTest, GetBeforeViewSwitchAction) {
   EXPECT_EQ(desktop_bnpl_strategy_.GetBeforeViewSwitchAction(),
             BnplStrategy::BeforeSwitchingViewAction::kCloseCurrentUi);
+}
+
+// Verify that GetNextActionOnAiBasedAmountExtractionReturned() returns the
+// correct action for the desktop platform.
+TEST_F(DesktopBnplStrategyTest,
+       GetNextActionOnAiBasedAmountExtractionReturned) {
+  EXPECT_EQ(
+      desktop_bnpl_strategy_.GetNextActionOnAiBasedAmountExtractionReturned(),
+      BnplStrategy::BnplAiBasedAmountExtractionReturnedNextAction::
+          kReplaceLoadingThrobberWithIssuerSuggestionsOnDesktop);
+}
+
+// Verify that GetNextActionOnUserDecisionToUseSavedCards() returns the correct
+// action for the desktop platform.
+TEST_F(DesktopBnplStrategyTest, GetNextActionOnUserDecisionToUseSavedCards) {
+  EXPECT_EQ(desktop_bnpl_strategy_.GetNextActionOnUserDecisionToUseSavedCards(),
+            BnplStrategy::UserDecisionToUseSavedCardsNextAction::
+                kUpdateDesktopPopupSuggestions);
+}
+
+// Verify that GetNextActionOnUserDecisionToUseBnplAgain() returns the correct
+// action for the desktop platform.
+TEST_F(DesktopBnplStrategyTest, GetNextActionOnUserDecisionToUseBnplAgain) {
+  EXPECT_EQ(desktop_bnpl_strategy_.GetNextActionOnUserDecisionToUseBnplAgain(),
+            BnplStrategy::UserDecisionToUseBnplAgainNextAction::kDoNothing);
+}
+
+// Verify that GetUiDismissalAction() returns the correct action for
+// the desktop platform.
+TEST_F(DesktopBnplStrategyTest, GetUiDismissalAction) {
+  EXPECT_EQ(desktop_bnpl_strategy_.GetUiDismissalAction(),
+            BnplStrategy::UiDismissalAction::kRemoveBnplUi);
+}
+
+// Verify that GetUiDismissalAction() returns the correct action for
+// the desktop platform in the Pay later tabs case.
+TEST_F(DesktopBnplStrategyTest, GetUiDismissalAction_PayLaterTabs) {
+  base::test::ScopedFeatureList feature_list{
+      features::kAutofillEnablePayNowPayLaterTabs};
+  EXPECT_EQ(desktop_bnpl_strategy_.GetUiDismissalAction(),
+            BnplStrategy::UiDismissalAction::kHideSuggestions);
 }
 
 // Verify that ShouldRemoveExistingUiOnServerReturn() returns the correct

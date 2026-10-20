@@ -133,7 +133,6 @@ std::string LoadLatencyStepName(LoadLatencyTimes::StepKind kind) {
 
 void ReportLoadLatencies(std::unique_ptr<LoadLatencyTimes> latencies) {
   for (const LoadLatencyTimes::Step& step : latencies->steps()) {
-    // TODO(crbug.com/40158714): Add a WebFeed-specific histogram for this.
     base::UmaHistogramCustomTimes("ContentSuggestions.Feed.LoadStepLatency." +
                                       LoadLatencyStepName(step.kind),
                                   step.latency, base::Milliseconds(50),
@@ -178,16 +177,6 @@ std::string_view NetworkRequestTypeUmaName(NetworkRequestType type) {
       return "UploadActions";
     case NetworkRequestType::kNextPage:
       return "NextPage";
-    case NetworkRequestType::kListWebFeeds:
-      return "ListFollowedWebFeeds";
-    case NetworkRequestType::kUnfollowWebFeed:
-      return "UnfollowWebFeed";
-    case NetworkRequestType::kFollowWebFeed:
-      return "FollowWebFeed";
-    case NetworkRequestType::kListRecommendedWebFeeds:
-      return "ListRecommendedWebFeeds";
-    case NetworkRequestType::kWebFeedListContents:
-      return "WebFeedListContents";
     case NetworkRequestType::kQueryInteractiveFeed:
       return "QueryInteractiveFeed";
     case NetworkRequestType::kQueryBackgroundFeed:

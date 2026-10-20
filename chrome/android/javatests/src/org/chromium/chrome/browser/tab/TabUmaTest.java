@@ -90,12 +90,13 @@ public class TabUmaTest {
                 cta.getActivityTabProvider(),
                 cta.getLifecycleDispatcher(),
                 cta.getWindowAndroid(),
-                rootUiCoordinator.getToolbarManager()::getToolbar,
+                rootUiCoordinator.getToolbarManagerSupplier().get()::getToolbar,
                 /* homeSurfaceTracker= */ null,
-                rootUiCoordinator.getToolbarManager().getTabStripHeightSupplier(),
+                rootUiCoordinator.getToolbarManagerSupplier().get().getTabStripHeightSupplier(),
                 new OneshotSupplierImpl<>(),
                 ObservableSuppliers.alwaysNull(),
                 new NoOpTopInsetProvider(),
+                new OneshotSupplierImpl<>(),
                 cta.getStartupMetricsTracker(),
                 /* exclusiveAccessManager= */ null,
                 /* backPressManager= */ null,
@@ -205,7 +206,6 @@ public class TabUmaTest {
             state.themeColor = 4;
             state.openerAppId = "test";
             state.tabLaunchTypeAtCreation = TabLaunchType.UNSET;
-            state.rootId = 1;
         }
         return state;
     }

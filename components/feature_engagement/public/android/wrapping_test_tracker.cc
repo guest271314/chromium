@@ -61,16 +61,6 @@ bool WrappingTestTracker::HasEverTriggered(const base::Feature& feature,
       from_window);
 }
 
-Tracker::TriggerState WrappingTestTracker::GetTriggerState(
-    const base::Feature& feature) const {
-  JNIEnv* env = base::android::AttachCurrentThread();
-  base::android::ScopedJavaLocalRef<jstring> jfeature(
-      base::android::ConvertUTF8ToJavaString(env, feature.name));
-  return static_cast<Tracker::TriggerState>(
-      Java_CppWrappedTestTracker_getTriggerState(
-          base::android::AttachCurrentThread(), java_tracker_, jfeature));
-}
-
 void WrappingTestTracker::Dismissed(const base::Feature& feature) {
   JNIEnv* env = base::android::AttachCurrentThread();
   base::android::ScopedJavaLocalRef<jstring> jfeature(
@@ -120,7 +110,7 @@ void WrappingTestTracker::AddOnInitializedCallback(
       FROM_HERE, base::BindOnce(std::move(callback), IsInitialized()));
 }
 
-const Configuration* WrappingTestTracker::GetConfigurationForTesting() const {
+const Configuration* WrappingTestTracker::GetConfiguration() const {
   NOTIMPLEMENTED();
   return nullptr;
 }

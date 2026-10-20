@@ -169,7 +169,6 @@ public class SafeModeTest extends AwParameterizedTest {
 
     private final TestJobScheduler mScheduler = new TestJobScheduler();
     private final TestVariationsSeedFetcher mDownloader = new TestVariationsSeedFetcher();
-    private static final int HTTP_NOT_FOUND = 404;
     private static final int HTTP_NOT_MODIFIED = 304;
     private static final int JOB_ID = TaskIds.WEBVIEW_VARIATIONS_SEED_FETCH_JOB_ID;
 
@@ -638,16 +637,16 @@ public class SafeModeTest extends AwParameterizedTest {
     @Test
     @MediumTest
     @Feature({"AndroidWebView"})
-    public void testQueryActions_enablesActions() throws Throwable {
+    public void testEnableAction() throws Throwable {
         TestSafeModeAction testAction1 = new TestSafeModeAction("test1");
         TestSafeModeAction testAction2 = new TestSafeModeAction("test2");
-        setSafeMode(List.of("test2"));
+        setSafeMode(List.of("test1", "test2"));
         SafeModeController controller = SafeModeController.getInstance();
         controller.registerActions(new SafeModeAction[] {testAction1, testAction2});
         Assert.assertFalse(controller.isActionEnabled(testAction1.getId()));
         Assert.assertFalse(controller.isActionEnabled(testAction2.getId()));
 
-        controller.queryActions(TEST_WEBVIEW_PACKAGE_NAME);
+        controller.enableAction("test2");
         Assert.assertFalse(controller.isActionEnabled(testAction1.getId()));
         Assert.assertTrue(controller.isActionEnabled(testAction2.getId()));
     }

@@ -18,6 +18,8 @@
 #include "build/branding_buildflags.h"
 #include "build/buildflag.h"
 #include "chrome/app/vector_icons/vector_icons.h"
+#include "chrome/browser/glic/browser_ui/glic_vector_icon_manager.h"
+#include "chrome/browser/glic/resources/grit/glic_browser_resources.h"
 #include "chrome/browser/ui/webui/util/image_util.h"
 #include "chrome/browser/ui/webui/webui_toolbar/adapters/icon_table_fetcher.h"
 #include "components/omnibox/browser/vector_icons.h"
@@ -25,7 +27,10 @@
 #include "third_party/abseil-cpp/absl/container/flat_hash_map.h"
 #include "third_party/skia/include/core/SkBitmap.h"
 #include "ui/base/models/image_model.h"
+#include "ui/base/ui_base_features.h"
 #include "ui/gfx/image/image_skia.h"
+#include "ui/gfx/image/image_skia_rep.h"
+#include "ui/gfx/skia_util.h"
 #include "ui/gfx/vector_icon_types.h"
 #include "ui/views/vector_icons.h"
 
@@ -42,146 +47,337 @@ struct IconInfo {
   IconType type;
 };
 
+// Mapping from vector_icon objects to info on how to render them on the
+// WebUI end. Note that the VectorIcon is the /key/.
 const base::flat_map<const gfx::VectorIcon*, IconInfo>& KnownIcons() {
   static base::NoDestructor<base::flat_map<const gfx::VectorIcon*, IconInfo>>
       table({
-          {{&vector_icons::kPasswordManagerOldIcon},
-           {"rhs_icons/password_manager.svg", IconType::kMaskUrl}},
-          {{&vector_icons::kLocationOnChromeRefreshOldIcon},
-           {"rhs_icons/location_on_chrome_refresh.svg", IconType::kMaskUrl}},
-
-          // Post-rounding, used by pinned toolbar actions and omnibox:
-          {{&kIncognitoIcon}, {"webui-toolbar:incognito", IconType::kIconSet}},
+          {{&glic::GlicVectorIconManager::GetVectorIcon(
+               IDR_GLIC_BUTTON_VECTOR_ICON)},
+           {"webui-toolbar:glic_button_old", IconType::kIconSet}},
+          {{&kAccountBoxIcon},
+           {"webui-toolbar:account_box", IconType::kIconSet}},
+          {{&kAccountBoxOldIcon},
+           {"webui-toolbar:account_box", IconType::kIconSet}},
+          {{&kArrowDownwardAltIcon},
+           {"webui-toolbar:arrow_downward_alt_icon", IconType::kIconSet}},
+          {{&kBookmarksSidePanelRefreshOldIcon},
+           {"webui-toolbar:hotel_class", IconType::kIconSet}},
+          {{&kCastChromeRefreshOldIcon},
+           {"webui-toolbar:cast", IconType::kIconSet}},
+          {{&kCastIcon}, {"webui-toolbar:cast", IconType::kIconSet}},
+          {{&kCodeIcon}, {"webui-toolbar:code_16", IconType::kIconSet}},
+          {{&kCreditCardChromeRefreshOldIcon},
+           {"webui-toolbar:credit_card", IconType::kIconSet}},
           {{&kCreditCardIcon},
            {"webui-toolbar:credit_card", IconType::kIconSet}},
+          {{&kDeleteIcon}, {"webui-toolbar:delete", IconType::kIconSet}},
+          {{&kDeveloperToolsOldIcon},
+           {"webui-toolbar:code_16", IconType::kIconSet}},
+          {{&kDevicesChromeRefreshOldIcon},
+           {"webui-toolbar:devices_16", IconType::kIconSet}},
+          {{&kDevicesIcon}, {"webui-toolbar:devices_16", IconType::kIconSet}},
+          {{&kDockToRightSparkCustomIcon},
+           {"webui-toolbar:dock_to_right_spark_custom", IconType::kIconSet}},
+          {{&kDownloadIcon}, {"webui-toolbar:download_24", IconType::kIconSet}},
+          {{&kDownloadInProgressChromeRefreshOldIcon},
+           {"webui-toolbar:arrow_downward_alt_icon", IconType::kIconSet}},
+          {{&kDownloadInProgressTouchOldIcon},
+           {"webui-toolbar:arrow_downward_alt_icon", IconType::kIconSet}},
+          {{&kDownloadToolbarButtonChromeRefreshOldIcon},
+           {"webui-toolbar:download_24", IconType::kIconSet}},
+          {{&kDownloadToolbarButtonTouchOldIcon},
+           {"webui-toolbar:download_24", IconType::kIconSet}},
+          {{&kEditIcon}, {"webui-toolbar:edit_24", IconType::kIconSet}},
+          {{&kFileSaveChromeRefreshOldIcon},
+           {"webui-toolbar:file_save", IconType::kIconSet}},
+          {{&kFileSaveIcon}, {"webui-toolbar:file_save", IconType::kIconSet}},
+          {{&kGTranslateIcon},
+           {"webui-toolbar:g_translate_16", IconType::kIconSet}},
           {{&kHotelClassIcon},
            {"webui-toolbar:hotel_class", IconType::kIconSet}},
+          {{&kIncognitoIcon}, {"webui-toolbar:incognito", IconType::kIconSet}},
+          {{&kIncognitoRefreshMenuOldIcon},
+           {"webui-toolbar:incognito", IconType::kIconSet}},
+          {{&kInfoIcon}, {"webui-toolbar:info", IconType::kIconSet}},
+          {{&kInstallDesktopChromeRefreshOldIcon},
+           {"webui-toolbar:install_desktop", IconType::kIconSet}},
+          {{&kLinkChromeRefreshOldIcon},
+           {"webui-toolbar:link", IconType::kIconSet}},
           {{&kListAltIcon}, {"webui-toolbar:list_alt", IconType::kIconSet}},
-          {{&kDownloadIcon}, {"webui-toolbar:download", IconType::kIconSet}},
-          {{&kDeleteIcon}, {"webui-toolbar:delete", IconType::kIconSet}},
-          {{&kPrintIcon}, {"webui-toolbar:print", IconType::kIconSet}},
-          {{&kGTranslateIcon},
-           {"webui-toolbar:g_translate", IconType::kIconSet}},
-          {{&kQrCodeIcon}, {"webui-toolbar:qr_code", IconType::kIconSet}},
-          {{&kCastIcon}, {"webui-toolbar:cast", IconType::kIconSet}},
-          {{&kMenuBookIcon}, {"webui-toolbar:menu_book", IconType::kIconSet}},
-          {{&kLinkIcon}, {"webui-toolbar:link", IconType::kIconSet}},
-          {{&kDevicesIcon}, {"webui-toolbar:devices", IconType::kIconSet}},
-          {{&kTableChartIcon},
-           {"webui-toolbar:table_chart", IconType::kIconSet}},
-          {{&kCodeIcon}, {"webui-toolbar:code", IconType::kIconSet}},
           {{&kManageSearchIcon},
            {"webui-toolbar:manage_search", IconType::kIconSet}},
-          {{&kDockToRightSparkCustomIcon},
-           {"webui-toolbar:dock_to_right_spark", IconType::kIconSet}},
-          {{&kInfoIcon}, {"webui-toolbar:info", IconType::kIconSet}},
-          {{&kEditIcon}, {"webui-toolbar:edit", IconType::kIconSet}},
-          {{&omnibox::kPublicIcon},
-           {"webui-toolbar:omnibox_public", IconType::kIconSet}},
-          {{&omnibox::kInfoIcon},
-           {"webui-toolbar:omnibox_info", IconType::kIconSet}},
-          {{&omnibox::kChromeProductIcon},
-           {"webui-toolbar:omnibox_chrome_product", IconType::kIconSet}},
-          {{&omnibox::kPageInfoIcon},
-           {"webui-toolbar:omnibox_page_info", IconType::kIconSet}},
-          {{&omnibox::kStarIcon},
-           {"webui-toolbar:omnibox_star", IconType::kIconSet}},
-
-          // LHS icons:
-          {{&vector_icons::kDangerousChromeRefreshOldIcon},
-           {"lhs_icons/dangerous_chrome_refresh.svg", IconType::kMaskUrl}},
-          {{&vector_icons::kNotSecureWarningChromeRefreshOldIcon},
-           {"lhs_icons/not_secure_warning_chrome_refresh_16.svg",
-            IconType::kMaskUrl}},
-          // Will be replaced by kInfoIcon.
-          {{&omnibox::kHttpChromeRefreshOldIcon},
-           {"lhs_icons/http_chrome_refresh.svg", IconType::kMaskUrl}},
-          // Will be replaced by kPublicIcon.
-          {{&omnibox::kPageChromeRefreshOldIcon},
-           {"lhs_icons/page_chrome_refresh_icon.svg", IconType::kMaskUrl}},
-          // Will be replaced by kChromeProductIcon.
-          {{&omnibox::kProductChromeRefreshOldIcon},
-           {"lhs_icons/product_chrome_refresh_icon.svg", IconType::kMaskUrl}},
-          // Will be replaced by kPageInfoIcon.
-          {{&omnibox::kSecurePageInfoChromeRefreshOldIcon},
-           {"lhs_icons/secure_page_info_chrome_refresh.svg",
-            IconType::kMaskUrl}},
-
-          // Used by pinned toolbar actions:
-          {{&kIncognitoRefreshMenuOldIcon},
-           {"pinned-toolbar-action:NewIncognitoWindow", IconType::kIconSet}},
-          {{&kCreditCardChromeRefreshOldIcon},
-           {"pinned-toolbar-action:ShowPaymentsBubbleOrPage",
-            IconType::kIconSet}},
-          {{&kBookmarksSidePanelRefreshOldIcon},
-           {"pinned-toolbar-action:SidePanelShowBookmarks",
-            IconType::kIconSet}},
-          {{&kReadingListOldIcon},
-           {"pinned-toolbar-action:SidePanelShowReadingList",
-            IconType::kIconSet}},
-          {{&vector_icons::kHistoryChromeRefreshOldIcon},
-           {"pinned-toolbar-action:SidePanelShowHistoryCluster",
-            IconType::kIconSet}},
-          {{&kDownloadToolbarButtonChromeRefreshOldIcon},
-           {"pinned-toolbar-action:ShowDownloads", IconType::kIconSet}},
-          {{&kTrashCanRefreshOldIcon},
-           {"pinned-toolbar-action:ClearBrowsingData", IconType::kIconSet}},
-          {{&kPrintMenuOldIcon},
-           {"pinned-toolbar-action:Print", IconType::kIconSet}},
-          {{&vector_icons::kSearchChromeRefreshOldIcon},
-           {"pinned-toolbar-action:SidePanelShowLensOverlayResults",
-            IconType::kIconSet}},
-          {{&vector_icons::kGTranslateIcon},
-           {"pinned-toolbar-action:ShowTranslate", IconType::kIconSet}},
-          {{&kQrCodeChromeRefreshOldIcon},
-           {"pinned-toolbar-action:QrCodeGenerator", IconType::kIconSet}},
-          {{&vector_icons::kMediaRouterIdleChromeRefreshOldIcon},
-           {"pinned-toolbar-action:RouteMediaIdle", IconType::kIconSet}},
-          {{&vector_icons::kMediaRouterWarningChromeRefreshOldIcon},
-           {"pinned-toolbar-action:RouteMediaWarning", IconType::kIconSet}},
-          {{&vector_icons::kMediaRouterPausedOldIcon},
-           {"pinned-toolbar-action:RouteMediaPaused", IconType::kIconSet}},
-          {{&vector_icons::kMediaRouterActiveChromeRefreshOldIcon},
-           {"pinned-toolbar-action:RouteMediaActive", IconType::kIconSet}},
-          {{&kCastChromeRefreshOldIcon},
-           {"pinned-toolbar-action:RouteMedia", IconType::kIconSet}},
           {{&kMenuBookChromeRefreshOldIcon},
-           {"pinned-toolbar-action:SidePanelShowReadAnything",
-            IconType::kIconSet}},
-          {{&kLinkChromeRefreshOldIcon},
-           {"pinned-toolbar-action:CopyUrl", IconType::kIconSet}},
-          {{&kDevicesChromeRefreshOldIcon},
-           {"pinned-toolbar-action:SendTabToSelf", IconType::kIconSet}},
-          {{&kTaskManagerOldIcon},
-           {"pinned-toolbar-action:TaskManager", IconType::kIconSet}},
-          {{&kDeveloperToolsOldIcon},
-           {"pinned-toolbar-action:DevTools", IconType::kIconSet}},
+           {"webui-toolbar:menu_book", IconType::kIconSet}},
+          {{&kMenuBookIcon}, {"webui-toolbar:menu_book", IconType::kIconSet}},
+          {{&kOpenInNewChromeRefreshOldIcon},
+           {"webui-toolbar:open_in_new_24", IconType::kIconSet}},
+          {{&kOpenInNewIcon},
+           {"webui-toolbar:open_in_new_24", IconType::kIconSet}},
+          {{&kPerformanceSpeedometerOldIcon},
+           {"webui-toolbar:speed", IconType::kIconSet}},
+          {{&kPersonFilledIcon},
+           {"webui-toolbar:person_filled", IconType::kIconSet}},
+          {{&kPersonFilledPaddedSmallOldIcon},
+           {"webui-toolbar:person_filled", IconType::kIconSet}},
+          {{&kPrintIcon}, {"webui-toolbar:print_16", IconType::kIconSet}},
+          {{&kPrintMenuOldIcon},
+           {"webui-toolbar:print_16", IconType::kIconSet}},
+          {{&kQrCodeChromeRefreshOldIcon},
+           {"webui-toolbar:qr_code", IconType::kIconSet}},
+          {{&kQrCodeIcon}, {"webui-toolbar:qr_code", IconType::kIconSet}},
+          {{&kReadingListOldIcon},
+           {"webui-toolbar:list_alt", IconType::kIconSet}},
+          {{&kSpeedIcon}, {"webui-toolbar:speed", IconType::kIconSet}},
           {{&kTabSearchTabStripOldIcon},
-           {"pinned-toolbar-action:TabSearch", IconType::kIconSet}},
-          {{&kDockToRightSparkCustomIcon},
-           {"pinned-toolbar-action:SidePanelShowContextualTasks",
-            IconType::kIconSet}},
-          {{&vector_icons::kImageSearchOldIcon},
-           {"pinned-toolbar-action:SidePanelShowLens", IconType::kIconSet}},
-          {{&views::kInfoChromeRefreshOldIcon},
-           {"pinned-toolbar-action:SidePanelShowAboutThisSite",
-            IconType::kIconSet}},
-          {{&vector_icons::kEditChromeRefreshOldIcon},
-           {"pinned-toolbar-action:SidePanelShowCustomizeChrome",
-            IconType::kIconSet}},
-          {{&vector_icons::kShoppingBagOldIcon},
-           {"pinned-toolbar-action:SidePanelShowShoppingInsights",
-            IconType::kIconSet}},
-          {{&vector_icons::kStorefrontOldIcon},
-           {"pinned-toolbar-action:SidePanelShowMerchantTrust",
-            IconType::kIconSet}},
-          {{&vector_icons::kFeedbackOldIcon},
-           {"pinned-toolbar-action:SendSharedTabGroupFeedback",
-            IconType::kIconSet}},
+           {"webui-toolbar:manage_search", IconType::kIconSet}},
+          {{&kTrashCanRefreshOldIcon},
+           {"webui-toolbar:delete", IconType::kIconSet}},
+          {{&kWalletIcon}, {"webui-toolbar:wallet_24", IconType::kIconSet}},
+          {{&kZoomInIcon}, {"webui-toolbar:zoom_in", IconType::kIconSet}},
+          {{&kZoomInOldIcon}, {"webui-toolbar:zoom_in", IconType::kIconSet}},
+          {{&kZoomMinusChromeRefreshOldIcon},
+           {"webui-toolbar:zoom_out_24", IconType::kIconSet}},
+          {{&kZoomMinusMenuRefreshOldIcon},
+           {"webui-toolbar:zoom_out_24", IconType::kIconSet}},
+          {{&kZoomMinusOldIcon},
+           {"webui-toolbar:zoom_out_24", IconType::kIconSet}},
+          {{&kZoomOutIcon}, {"webui-toolbar:zoom_out_24", IconType::kIconSet}},
+          {{&kZoomPlusChromeRefreshOldIcon},
+           {"webui-toolbar:zoom_in", IconType::kIconSet}},
+          {{&kZoomPlusMenuRefreshOldIcon},
+           {"webui-toolbar:zoom_in", IconType::kIconSet}},
+          {{&omnibox::kBookmarkChromeRefreshOldIcon},
+           {"webui-toolbar:star", IconType::kIconSet}},
+          {{&omnibox::kCalculatorChromeRefreshOldIcon},
+           {"webui-toolbar:equal", IconType::kIconSet}},
+          {{&omnibox::kChromeProductIcon},
+           {"webui-toolbar:chrome_product", IconType::kIconSet}},
+          {{&omnibox::kConversionPathIcon},
+           {"webui-toolbar:conversion_path", IconType::kIconSet}},
+          {{&omnibox::kDomainIcon},
+           {"webui-toolbar:domain", IconType::kIconSet}},
+          {{&omnibox::kEnterpriseOldIcon},
+           {"webui-toolbar:domain", IconType::kIconSet}},
+          {{&omnibox::kEqualIcon}, {"webui-toolbar:equal", IconType::kIconSet}},
+          {{&omnibox::kExtensionAppOldIcon},
+           {"webui-toolbar:extension_filled", IconType::kIconSet}},
+          {{&omnibox::kExtensionFilledIcon},
+           {"webui-toolbar:extension_filled", IconType::kIconSet}},
+          {{&omnibox::kFindInPageChromeRefreshOldIcon},
+           {"webui-toolbar:find_in_page", IconType::kIconSet}},
+          {{&omnibox::kFindInPageIcon},
+           {"webui-toolbar:find_in_page", IconType::kIconSet}},
+          {{&omnibox::kHttpChromeRefreshOldIcon},
+           {"webui-toolbar:info", IconType::kIconSet}},
+          {{&omnibox::kHttpOldIcon},
+           {"webui-toolbar:info", IconType::kIconSet}},
+          {{&omnibox::kInfoIcon}, {"webui-toolbar:info", IconType::kIconSet}},
+          {{&omnibox::kJourneysChromeRefreshOldIcon},
+           {"webui-toolbar:conversion_path", IconType::kIconSet}},
+          {{&omnibox::kNotesSparkIcon},
+           {"webui-toolbar:notes_spark", IconType::kIconSet}},
+          {{&omnibox::kNotesSparkOldIcon},
+           {"webui-toolbar:notes_spark", IconType::kIconSet}},
+          {{&omnibox::kPageChromeRefreshOldIcon},
+           {"webui-toolbar:public", IconType::kIconSet}},
+          {{&omnibox::kPageInfoCustomIcon},
+           {"webui-toolbar:page_info_custom", IconType::kIconSet}},
+          {{&omnibox::kProductChromeRefreshOldIcon},
+           {"webui-toolbar:chrome_product", IconType::kIconSet}},
+          {{&omnibox::kPublicIcon},
+           {"webui-toolbar:public", IconType::kIconSet}},
+          {{&omnibox::kSearchSparkIcon},
+           {"webui-toolbar:search_spark", IconType::kIconSet}},
+          {{&omnibox::kSearchSparkOldIcon},
+           {"webui-toolbar:search_spark", IconType::kIconSet}},
+          {{&omnibox::kSparkIcon},
+           {"webui-toolbar:search_spark", IconType::kIconSet}},
+          {{&omnibox::kSecurePageInfoChromeRefreshOldIcon},
+           {"webui-toolbar:page_info_custom", IconType::kIconSet}},
+          {{&omnibox::kSparkIcon}, {"webui-toolbar:spark", IconType::kIconSet}},
+          {{&omnibox::kStarActiveChromeRefreshOldIcon},
+           {"webui-toolbar:star_filled", IconType::kIconSet}},
+          {{&omnibox::kStarChromeRefreshOldIcon},
+           {"webui-toolbar:star", IconType::kIconSet}},
+          {{&omnibox::kStarFilledIcon},
+           {"webui-toolbar:star_filled", IconType::kIconSet}},
+          {{&omnibox::kStarIcon}, {"webui-toolbar:star", IconType::kIconSet}},
+          {{&omnibox::kSubdirectoryArrowRightIcon},
+           {"webui-toolbar:subdirectory_arrow_right", IconType::kIconSet}},
+          {{&omnibox::kSubdirectoryArrowRightOldIcon},
+           {"webui-toolbar:subdirectory_arrow_right", IconType::kIconSet}},
+          {{&omnibox::kTrendingUpChromeRefreshOldIcon},
+           {"webui-toolbar:trending_up", IconType::kIconSet}},
+          {{&omnibox::kTrendingUpIcon},
+           {"webui-toolbar:trending_up", IconType::kIconSet}},
+          {{&vector_icons::kArrowForwardIcon},
+           {"webui-toolbar:arrow_forward", IconType::kIconSet}},
+          {{&vector_icons::kBusinessChromeRefreshOldIcon},
+           {"webui-toolbar:domain", IconType::kIconSet}},
+          {{&vector_icons::kCastConnectedIcon},
+           {"webui-toolbar:cast_connected", IconType::kIconSet}},
+          {{&vector_icons::kCastIcon},
+           {"webui-toolbar:cast", IconType::kIconSet}},
+          {{&vector_icons::kCastPauseIcon},
+           {"webui-toolbar:cast_pause", IconType::kIconSet}},
+          {{&vector_icons::kCastWarningIcon},
+           {"webui-toolbar:cast_warning", IconType::kIconSet}},
+          {{&vector_icons::kChatIcon},
+           {"webui-toolbar:chat", IconType::kIconSet}},
           {{&vector_icons::kChatOldIcon},
-           {"pinned-toolbar-action:SidePanelShowComments", IconType::kIconSet}},
+           {"webui-toolbar:chat", IconType::kIconSet}},
+          {{&vector_icons::kChromeExtensionCheckIcon},
+           {"webui-toolbar:chrome_extension_check", IconType::kIconSet}},
+          {{&vector_icons::kChromeExtensionIcon},
+           {"webui-toolbar:chrome_extension", IconType::kIconSet}},
+          {{&vector_icons::kChromeExtensionOffIcon},
+           {"webui-toolbar:chrome_extension_off", IconType::kIconSet}},
+          {{&vector_icons::kCodeIcon},
+           {"webui-toolbar-shared:code_24", IconType::kIconSet}},
+          {{&vector_icons::kCodeOldIcon},
+           {"webui-toolbar-shared:code_24", IconType::kIconSet}},
+          {{&vector_icons::kDangerousChromeRefreshOldIcon},
+           {"webui-toolbar:dangerous_filled", IconType::kIconSet}},
+          {{&vector_icons::kDangerousFilledIcon},
+           {"webui-toolbar:dangerous_filled", IconType::kIconSet}},
+          {{&vector_icons::kDomainIcon},
+           {"webui-toolbar:domain", IconType::kIconSet}},
+          {{&vector_icons::kDraftIcon},
+           {"webui-toolbar:draft", IconType::kIconSet}},
+          {{&vector_icons::kEditChromeRefreshOldIcon},
+           {"webui-toolbar:edit_20", IconType::kIconSet}},
+          {{&vector_icons::kEditIcon},
+           {"webui-toolbar:edit_20", IconType::kIconSet}},
+          {{&vector_icons::kExtensionChromeRefreshOldIcon},
+           {"webui-toolbar:chrome_extension", IconType::kIconSet}},
+          {{&vector_icons::kExtensionFilledIcon},
+           {"webui-toolbar:extension_filled", IconType::kIconSet}},
+          {{&vector_icons::kExtensionOffOldIcon},
+           {"webui-toolbar:chrome_extension_off", IconType::kIconSet}},
+          {{&vector_icons::kExtensionOldIcon},
+           {"webui-toolbar:extension_filled", IconType::kIconSet}},
+          {{&vector_icons::kExtensionOnOldIcon},
+           {"webui-toolbar:chrome_extension_check", IconType::kIconSet}},
+          {{&vector_icons::kFeedbackIcon},
+           {"webui-toolbar:feedback", IconType::kIconSet}},
+          {{&vector_icons::kFeedbackOldIcon},
+           {"webui-toolbar:feedback", IconType::kIconSet}},
+          {{&vector_icons::kGTranslateIcon},
+           {"webui-toolbar:g_translate_20", IconType::kIconSet}},
+          {{&vector_icons::kGoogleColorIcon},
+           {"webui-toolbar:google_color", IconType::kIconSet}},
+          {{&vector_icons::kHistoryChromeRefreshOldIcon},
+           {"webui-toolbar:history", IconType::kIconSet}},
+          {{&vector_icons::kHistoryIcon},
+           {"webui-toolbar:history", IconType::kIconSet}},
+          {{&vector_icons::kImageSearchIcon},
+           {"webui-toolbar:image_search", IconType::kIconSet}},
+          {{&vector_icons::kImageSearchOldIcon},
+           {"webui-toolbar:image_search", IconType::kIconSet}},
+          {{&vector_icons::kInsertDriveFileOutlineOldIcon},
+           {"webui-toolbar:draft", IconType::kIconSet}},
+          {{&vector_icons::kInstallDesktopIcon},
+           {"webui-toolbar:install_desktop", IconType::kIconSet}},
+          {{&vector_icons::kLinkIcon},
+           {"webui-toolbar:link", IconType::kIconSet}},
+          {{&vector_icons::kLocationOnChromeRefreshOldIcon},
+           {"webui-toolbar:location_on", IconType::kIconSet}},
+          {{&vector_icons::kLocationOnIcon},
+           {"webui-toolbar:location_on", IconType::kIconSet}},
+          {{&vector_icons::kMailAsteriskIcon},
+           {"webui-toolbar:mail_asterisk", IconType::kIconSet}},
+          {{&vector_icons::kMediaRouterActiveChromeRefreshOldIcon},
+           {"webui-toolbar:cast_connected", IconType::kIconSet}},
+          {{&vector_icons::kMediaRouterIdleChromeRefreshOldIcon},
+           {"webui-toolbar:cast", IconType::kIconSet}},
+          {{&vector_icons::kMediaRouterPausedOldIcon},
+           {"webui-toolbar:cast_pause", IconType::kIconSet}},
+          {{&vector_icons::kMediaRouterWarningChromeRefreshOldIcon},
+           {"webui-toolbar:cast_warning", IconType::kIconSet}},
+          {{&vector_icons::kMicChromeRefreshOldIcon},
+           {"webui-toolbar:mic_filled", IconType::kIconSet}},
+          {{&vector_icons::kMicFilledIcon},
+           {"webui-toolbar:mic_filled", IconType::kIconSet}},
+          {{&vector_icons::kMicOldIcon},
+           {"webui-toolbar:mic_filled", IconType::kIconSet}},
+          {{&vector_icons::kNoEncryptionIcon},
+           {"webui-toolbar:no_encryption", IconType::kIconSet}},
+          {{&vector_icons::kNoEncryptionOldIcon},
+           {"webui-toolbar:no_encryption", IconType::kIconSet}},
+          {{&vector_icons::kNotSecureWarningChromeRefreshOldIcon},
+           {"webui-toolbar:warning", IconType::kIconSet}},
+          {{&vector_icons::kPasskeyIcon},
+           {"webui-toolbar:passkey", IconType::kIconSet}},
+          {{&vector_icons::kPasswordManagerIcon},
+           {"webui-toolbar:password_manager", IconType::kIconSet}},
+          {{&vector_icons::kPasswordManagerOldIcon},
+           {"webui-toolbar:password_manager", IconType::kIconSet}},
+          {{&vector_icons::kPlayArrowChromeRefreshOldIcon},
+           {"webui-toolbar:play_arrow", IconType::kIconSet}},
+          {{&vector_icons::kPlayArrowFilledFlippableIcon},
+           {"webui-toolbar:play_arrow", IconType::kIconSet}},
+          {{&vector_icons::kPlayArrowIcon},
+           {"webui-toolbar:play_arrow", IconType::kIconSet}},
+          {{&vector_icons::kPlayArrowOldIcon},
+           {"webui-toolbar:play_arrow", IconType::kIconSet}},
+          {{&vector_icons::kScienceIcon},
+           {"webui-toolbar:science", IconType::kIconSet}},
+          {{&vector_icons::kScienceOldIcon},
+           {"webui-toolbar:science", IconType::kIconSet}},
+          {{&vector_icons::kScreenRecordIcon},
+           {"webui-toolbar:screen_record", IconType::kIconSet}},
+          {{&vector_icons::kScreenRecordOldIcon},
+           {"webui-toolbar:screen_record", IconType::kIconSet}},
+          {{&vector_icons::kSearchChromeRefreshOldIcon},
+           {"webui-toolbar:search", IconType::kIconSet}},
+          {{&vector_icons::kSearchIcon},
+           {"webui-toolbar:search", IconType::kIconSet}},
+          {{&vector_icons::kSearchOldIcon},
+           {"webui-toolbar:search_old", IconType::kIconSet}},
+          {{&vector_icons::kShieldIcon},
+           {"webui-toolbar:shield", IconType::kIconSet}},
+          {{&vector_icons::kShieldQuestionIcon},
+           {"webui-toolbar:shield_question", IconType::kIconSet}},
+          {{&vector_icons::kShoppingBagIcon},
+           {"webui-toolbar:shopping_bag", IconType::kIconSet}},
+          {{&vector_icons::kShoppingBagOldIcon},
+           {"webui-toolbar:shopping_bag", IconType::kIconSet}},
+          {{&vector_icons::kShoppingBagRefreshOldIcon},
+           {"webui-toolbar:shopping_bag", IconType::kIconSet}},
+          {{&vector_icons::kShoppingmodeIcon},
+           {"webui-toolbar:shoppingmode", IconType::kIconSet}},
+          {{&vector_icons::kShoppingmodeOldIcon},
+           {"webui-toolbar:shoppingmode", IconType::kIconSet}},
+          {{&vector_icons::kStopCircleIcon},
+           {"webui-toolbar:stop_circle", IconType::kIconSet}},
+          {{&vector_icons::kStopCircleOldIcon},
+           {"webui-toolbar:stop_circle", IconType::kIconSet}},
+          {{&vector_icons::kStorefrontIcon},
+           {"webui-toolbar:storefront", IconType::kIconSet}},
+          {{&vector_icons::kStorefrontOldIcon},
+           {"webui-toolbar:storefront", IconType::kIconSet}},
+          {{&vector_icons::kTableChartIcon},
+           {"webui-toolbar:table_chart", IconType::kIconSet}},
+          {{&vector_icons::kWarningIcon},
+           {"webui-toolbar:warning", IconType::kIconSet}},
+          {{&views::kEyeCrossedRefreshOldIcon},
+           {"webui-toolbar:visibility_off", IconType::kIconSet}},
+          {{&views::kEyeRefreshOldIcon},
+           {"webui-toolbar:visibility", IconType::kIconSet}},
+          {{&views::kInfoChromeRefreshOldIcon},
+           {"webui-toolbar:info", IconType::kIconSet}},
+          {{&views::kInfoIcon}, {"webui-toolbar:info", IconType::kIconSet}},
+          {{&views::kVisibilityIcon},
+           {"webui-toolbar:visibility", IconType::kIconSet}},
+          {{&views::kVisibilityOffIcon},
+           {"webui-toolbar:visibility_off", IconType::kIconSet}},
 
 #if BUILDFLAG(GOOGLE_CHROME_BRANDING)
+          {{&vector_icons::kAudioSparkIcon},
+           {"internal-icons:audio_spark", IconType::kIconSet}},
+          {{&vector_icons::kFastForwardCircleSparkIcon},
+           {"internal-icons:fast_forward_circle_spark", IconType::kIconSet}},
           {{&vector_icons::kGoogleLensMonochromeLogoIcon},
            {"internal-icons:google_lens_monochrome_logo", IconType::kIconSet}},
           {{&vector_icons::kPageInsightsIcon},
@@ -192,6 +388,51 @@ const base::flat_map<const gfx::VectorIcon*, IconInfo>& KnownIcons() {
 
       });
   return *table;
+}
+
+// Return true if `a` and `b` would appear identical at `scale_factor` scale
+// factor. Attempts to use cheaper comparison methods first, but will fall back
+// to building representations at `scale_factor` scale factor and doing
+// byte-by-byte comparisons of underlying memory, so only use if failing to
+// compare would result in building representations at `scale_factor` scale
+// factor.
+bool AreImageModelsEqual(const ui::ImageModel& a,
+                         const ui::ImageModel& b,
+                         float scale_factor) {
+  if (a == b) {
+    return true;
+  }
+  if (a.IsImage() && b.IsImage()) {
+    gfx::Image img_a = a.GetImage();
+    gfx::Image img_b = b.GetImage();
+    if (img_a == img_b) {
+      return true;
+    }
+    if (img_a.IsEmpty() || img_b.IsEmpty()) {
+      return img_a.IsEmpty() == img_b.IsEmpty();
+    }
+    if (img_a.HasRepresentation(gfx::Image::kImageRepSkia) &&
+        img_b.HasRepresentation(gfx::Image::kImageRepSkia)) {
+      const gfx::ImageSkia* skia_a = img_a.ToImageSkia();
+      const gfx::ImageSkia* skia_b = img_b.ToImageSkia();
+      if (!skia_a || !skia_b) {
+        return !skia_a && !skia_b;
+      }
+      if (skia_a->BackedBySameObjectAs(*skia_b)) {
+        return true;
+      }
+      if (skia_a->isNull() || skia_b->isNull()) {
+        return skia_a->isNull() == skia_b->isNull();
+      }
+      const gfx::ImageSkiaRep& rep_a = skia_a->GetRepresentation(scale_factor);
+      const gfx::ImageSkiaRep& rep_b = skia_b->GetRepresentation(scale_factor);
+      if (rep_a.is_null() || rep_b.is_null()) {
+        return rep_a.is_null() == rep_b.is_null();
+      }
+      return gfx::BitmapsAreEqual(rep_a.GetBitmap(), rep_b.GetBitmap());
+    }
+  }
+  return false;
 }
 
 }  // namespace
@@ -232,6 +473,7 @@ class IconTable::ProviderImpl : public toolbar_ui_api::IconHandle::Provider {
         name_or_url_ = webui::EncodePNGAndMakeDataURI(
             image_model_->Rasterize(icon_table_->delegate_->GetColorProvider()),
             scale_factor);
+        rasterized_scale_ = scale_factor;
       }
     } else if (image_model_ && image_model_->IsVectorIcon()) {
       ui::ColorVariant color_variant = image_model_->GetVectorIcon().color();
@@ -245,6 +487,8 @@ class IconTable::ProviderImpl : public toolbar_ui_api::IconHandle::Provider {
   const std::optional<ui::ImageModel>& MaybeImageModel() {
     return image_model_;
   }
+
+  void ForceRerasterize() { rasterized_scale_.reset(); }
 
  private:
   ~ProviderImpl() override {
@@ -261,7 +505,7 @@ class IconTable::ProviderImpl : public toolbar_ui_api::IconHandle::Provider {
 
   std::optional<ui::ImageModel> image_model_;
   // Set if `image_model_` got rendered to `name_or_url_`.
-  std::optional<float> rasterized_scale_ = std::nullopt;
+  std::optional<float> rasterized_scale_;
 };
 
 class IconTable::IconTableFetcherImpl
@@ -299,13 +543,15 @@ IconTable::~IconTable() {
   registered_icons_.clear();
 }
 
-toolbar_ui_api::IconHandle IconTable::RegisterVectorIcon(
+std::optional<toolbar_ui_api::IconHandle> IconTable::RegisterVectorIcon(
     const gfx::VectorIcon& icon,
     std::optional<ui::ImageModel> model_info) {
   const auto& known_icons = KnownIcons();
   auto it = known_icons.find(&icon);
   if (it == known_icons.end()) {
-    return toolbar_ui_api::IconHandle();
+    return &icon == &gfx::VectorIcon::EmptyIcon()
+               ? std::optional(toolbar_ui_api::IconHandle())
+               : std::nullopt;
   }
 
   return AddRegistration(/*need_rasterize=*/false,
@@ -321,11 +567,11 @@ toolbar_ui_api::IconHandle IconTable::RegisterImageModel(ui::ImageModel icon) {
   if (icon.IsVectorIcon()) {
     const auto& vector_icon_model = icon.GetVectorIcon();
     if (vector_icon_model.vector_icon() && !vector_icon_model.badge_icon()) {
-      const gfx::VectorIcon& vector_icon = *icon.GetVectorIcon().vector_icon();
-      toolbar_ui_api::IconHandle maybe_icon =
+      const gfx::VectorIcon& vector_icon = *vector_icon_model.vector_icon();
+      std::optional<toolbar_ui_api::IconHandle> maybe_icon =
           RegisterVectorIcon(vector_icon, icon);
-      if (!maybe_icon.is_null()) {
-        return maybe_icon;
+      if (maybe_icon.has_value()) {
+        return *maybe_icon;
       } else {
         // If this hit, please add a WebUI version of the icon
         // (via iconset or SVG to chrome/browser/resources/webui_toolbar/ if
@@ -333,7 +579,9 @@ toolbar_ui_api::IconHandle IconTable::RegisterImageModel(ui::ImageModel icon) {
         // TODO(crbug.com/511760342): probably want to DWoC here when more
         // mature.
         DCHECK(permit_fallback_vector_rasterization_for_testing_)
-            << "Don't know how to map:" << vector_icon.name;
+            << "Don't know how to map:"
+            << (vector_icon.name ? std::string_view(vector_icon.name)
+                                 : std::string_view("(null name)"));
       }
     }
   }
@@ -352,7 +600,9 @@ toolbar_ui_api::IconHandle IconTable::RegisterImageModelTryReuse(
     if (auto it = registered_icons_.find(handle_id);
         it != registered_icons_.end()) {
       const auto& maybe_existing = it->second->MaybeImageModel();
-      if (maybe_existing == icon) {
+      if (maybe_existing.has_value() &&
+          AreImageModelsEqual(*maybe_existing, icon,
+                              delegate_->GetScaleFactor())) {
         return previous_handle;
       }
     }
@@ -413,6 +663,15 @@ IconTable::TakePendingUpdates() {
 
   pending_updates_.clear();
   return updates;
+}
+
+void IconTable::OnThemeChanged() {
+  // In the rare event of a theme change, update all icons as their colors
+  // likely changed.
+  for (auto& kv : registered_icons_) {
+    kv.second->ForceRerasterize();
+    pending_updates_.insert(kv.first);
+  }
 }
 
 toolbar_ui_api::IconHandle IconTable::AddRegistration(

@@ -12,6 +12,7 @@
 #include <utility>
 
 #include "base/compiler_specific.h"
+#include "base/containers/span.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/logging.h"
@@ -273,11 +274,7 @@ class VideoCaptureDeviceTest
   }
 
   void SetUp() override {
-#if BUILDFLAG(IS_ANDROID)
-    static_cast<VideoCaptureDeviceFactoryAndroid*>(
-        video_capture_device_factory_.get())
-        ->ConfigureForTesting();
-#elif BUILDFLAG(IS_WIN)
+#if BUILDFLAG(IS_WIN)
     static_cast<VideoCaptureDeviceFactoryWin*>(
         video_capture_device_factory_.get())
         ->set_use_media_foundation_for_testing(UseWinMediaFoundation());
@@ -308,14 +305,12 @@ class VideoCaptureDeviceTest
     auto result = std::make_unique<NiceMockVideoCaptureDeviceClient>();
     ON_CALL(*result, OnError).WillByDefault(DumpError);
     EXPECT_CALL(*result, ReserveOutputBuffer).Times(0);
-    EXPECT_CALL(*result, DoOnIncomingCapturedBuffer).Times(0);
     EXPECT_CALL(*result, DoOnIncomingCapturedBufferExt).Times(0);
     ON_CALL(*result, OnIncomingCapturedData)
-        .WillByDefault(WithArgs<0, 1, 2>(
-            [this](const uint8_t* data, int length,
+        .WillByDefault(WithArgs<0, 1>(
+            [this](base::span<const uint8_t> data,
                    const media::VideoCaptureFormat& frame_format) {
-              ASSERT_GT(length, 0);
-              ASSERT_TRUE(data);
+              ASSERT_FALSE(data.empty());
               main_thread_task_runner_->PostTask(
                   FROM_HERE,
                   base::BindOnce(&VideoCaptureDeviceTest::OnFrameCaptured,

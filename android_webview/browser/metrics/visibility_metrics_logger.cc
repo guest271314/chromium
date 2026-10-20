@@ -12,6 +12,7 @@
 #include "base/trace_event/typed_macros.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/common/url_constants.h"
+#include "third_party/perfetto/include/perfetto/tracing/track.h"
 
 using content::BrowserThread;
 
@@ -226,18 +227,16 @@ void VisibilityMetricsLogger::UpdateDurations() {
       delta * (client_visibility_.size() - all_clients_visible_count_);
 
   for (size_t i = 0; i < std::size(per_scheme_visible_counts_); i++) {
-    if (!UNSAFE_TODO(per_scheme_visible_counts_[i])) {
+    if (!per_scheme_visible_counts_[i]) {
       continue;
     }
-    UNSAFE_TODO(per_scheme_trackers_[i]).any_webview_tracked_duration_ += delta;
-    UNSAFE_TODO(per_scheme_trackers_[i]).per_webview_duration_ +=
-        delta * UNSAFE_TODO(per_scheme_visible_counts_[i]);
+    per_scheme_trackers_[i].any_webview_tracked_duration_ += delta;
+    per_scheme_trackers_[i].per_webview_duration_ +=
+        delta * per_scheme_visible_counts_[i];
   }
 
   if (all_clients_visible_count_ > 0) {
-    UNSAFE_TODO(
-        global_coverage_percentage_durations_[global_coverage_percentage_]) +=
-        delta;
+    global_coverage_percentage_durations_[global_coverage_percentage_] += delta;
 
     for (auto& scheme_and_percentage : schemes_to_coverage_percentages_) {
       schemes_to_percentages_to_durations_[scheme_and_percentage.first]
@@ -256,6 +255,7 @@ bool VisibilityMetricsLogger::VisibilityInfo::IsVisible() const {
 void VisibilityMetricsLogger::ProcessClientUpdate(Client* client,
                                                   const VisibilityInfo& info,
                                                   ClientAction action) {
+  auto track = perfetto::NamedTrack::FromPointer("WebViewVisibility", client);
   VisibilityInfo curr_info = client_visibility_[client];
   bool was_visible = curr_info.IsVisible();
   bool is_visible = info.IsVisible();
@@ -272,36 +272,32 @@ void VisibilityMetricsLogger::ProcessClientUpdate(Client* client,
     // TODO(b/280334022): set the track name explicitly after the Perfetto SDK
     // migration is finished (crbug/1006541).
     if (is_visible) {
-      TRACE_EVENT_BEGIN("android_webview.timeline", "WebViewVisible",
-                        perfetto::Track::FromPointer(client));
+      TRACE_EVENT_BEGIN("android_webview.timeline", "WebViewVisible", track);
     }
   }
 
   // If visibility changes or the client is removed, close the event
   // corresponding to the previous visibility state.
   if (action == ClientAction::kRemoved || was_visible != is_visible) {
-    TRACE_EVENT_END("android_webview.timeline",
-                    perfetto::Track::FromPointer(client));
+    TRACE_EVENT_END("android_webview.timeline", track);
   }
 
   if (!was_visible && is_visible) {
     if (action != ClientAction::kRemoved) {
-      TRACE_EVENT_BEGIN("android_webview.timeline", "WebViewVisible",
-                        perfetto::Track::FromPointer(client));
+      TRACE_EVENT_BEGIN("android_webview.timeline", "WebViewVisible", track);
     }
     ++all_clients_visible_count_;
   } else if (was_visible && !is_visible) {
     if (action != ClientAction::kRemoved) {
-      TRACE_EVENT_BEGIN("android_webview.timeline", "WebViewInvisible",
-                        perfetto::Track::FromPointer(client));
+      TRACE_EVENT_BEGIN("android_webview.timeline", "WebViewInvisible", track);
     }
     --all_clients_visible_count_;
   }
 
   if (was_visible)
-    UNSAFE_TODO(per_scheme_visible_counts_[static_cast<size_t>(old_scheme)])--;
+    per_scheme_visible_counts_[static_cast<size_t>(old_scheme)]--;
   if (is_visible)
-    UNSAFE_TODO(per_scheme_visible_counts_[static_cast<size_t>(new_scheme)])++;
+    per_scheme_visible_counts_[static_cast<size_t>(new_scheme)]++;
 
   bool any_client_is_visible = all_clients_visible_count_ > 0;
   if (on_visibility_changed_callback_ &&
@@ -371,7 +367,7 @@ void VisibilityMetricsLogger::RecordVisibilityMetrics() {
 void VisibilityMetricsLogger::RecordVisibleSchemeMetrics() {
   for (size_t i = 0; i < std::size(per_scheme_trackers_); i++) {
     Scheme scheme = static_cast<Scheme>(i);
-    auto& tracker = UNSAFE_TODO(per_scheme_trackers_[i]);
+    auto& tracker = per_scheme_trackers_[i];
 
     int32_t any_webview_seconds =
         tracker.any_webview_tracked_duration_.InSeconds();
@@ -392,13 +388,11 @@ void VisibilityMetricsLogger::RecordVisibleSchemeMetrics() {
 void VisibilityMetricsLogger::RecordScreenCoverageMetrics() {
   for (size_t i = 0; i < std::size(global_coverage_percentage_durations_);
        i++) {
-    int32_t seconds =
-        UNSAFE_TODO(global_coverage_percentage_durations_[i]).InSeconds();
+    int32_t seconds = global_coverage_percentage_durations_[i].InSeconds();
     if (seconds == 0)
       continue;
 
-    UNSAFE_TODO(global_coverage_percentage_durations_[i]) -=
-        base::Seconds(seconds);
+    global_coverage_percentage_durations_[i] -= base::Seconds(seconds);
     LogGlobalVisibleScreenCoverage(i, seconds);
   }
 

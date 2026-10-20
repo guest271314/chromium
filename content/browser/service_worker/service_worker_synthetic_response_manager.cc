@@ -26,6 +26,7 @@
 #include "content/public/browser/global_request_id.h"
 #include "mojo/public/cpp/system/data_pipe.h"
 #include "net/http/http_status_code.h"
+#include "services/network/public/cpp/constants.h"
 #include "services/network/public/cpp/features.h"
 #include "services/network/public/cpp/header_util.h"
 #include "services/network/public/cpp/synthetic_response_util.h"
@@ -132,7 +133,7 @@ blink::mojom::FetchAPIResponsePtr GetFetchAPIResponse(
   out_response->response_type = head.response_type;
   out_response->padding = head.padding;
   out_response->mime_type.emplace(head.mime_type);
-  out_response->response_source = head.service_worker_response_source;
+  out_response->response_source = network::mojom::FetchResponseSource::kNetwork;
   out_response->cache_storage_cache_name.emplace(head.cache_storage_cache_name);
   out_response->cors_exposed_header_names = head.cors_exposed_header_names;
   out_response->parsed_headers = head.parsed_headers.Clone();
@@ -141,6 +142,7 @@ blink::mojom::FetchAPIResponsePtr GetFetchAPIResponse(
   out_response->was_fetched_via_spdy = head.was_fetched_via_spdy;
   out_response->has_range_requested = head.has_range_requested;
   out_response->auth_challenge_info = head.auth_challenge_info;
+  out_response->timing_allow_passed = head.timing_allow_passed;
 
   // Parse headers.
   size_t iter = 0;
@@ -243,10 +245,14 @@ void ServiceWorkerSyntheticResponseManager::InitiateRequest(
     OnReceiveResponseCallback receive_response_callback,
     OnReceiveRedirectCallback receive_redirect_callback,
     OnCompleteCallback complete_callback) {
+  // A synthetic response request is initiated by the browser to fetch the
+  // webpage's main resource. Just like a standard frame navigation, it does not
+  // carry a factory-level network restrictions ID, as it is subjected to
+  // Connection Allowlists via NavigationRequest instead.
   url_loader_factory_ = service_worker_client->CreateNetworkURLLoaderFactory(
       ServiceWorkerClient::CreateNetworkURLLoaderFactoryType::
           kSyntheticNetworkRequest,
-      storage_partition, request);
+      storage_partition, request, network::GetNoOpNetworkRestrictionsId());
   is_initiated_by_prefetch_ = service_worker_client->is_initiated_by_prefetch();
   factory_interceptor_count_ =
       service_worker_client->factory_interceptor_count();
@@ -274,6 +280,7 @@ void ServiceWorkerSyntheticResponseManager::StartRequest(
               perfetto::Flow::FromPointer(this), "request_id", request_id,
               "url", request.url.spec());
   CHECK(!request.client_side_content_decoding_enabled);
+  request_url_ = request.url;
   request_start_time_ = base::TimeTicks::Now();
   response_callback_ = std::move(receive_response_callback);
   redirect_callback_ = std::move(receive_redirect_callback);
@@ -347,7 +354,7 @@ bool ServiceWorkerSyntheticResponseManager::MaybeStartSyntheticResponse(
       blink::ServiceWorkerStatusCode::kOk,
       ServiceWorkerFetchDispatcher::FetchEventResult::kGotResponse,
       std::move(response), std::move(stream_handle), std::move(timing),
-      version_);
+      /*errors=*/nullptr, version_);
   did_start_synthetic_response_ = true;
 
   return true;
@@ -607,7 +614,7 @@ bool ServiceWorkerSyntheticResponseManager::CheckHeaderConsistency(
   const auto& response_head = version_->GetResponseHeadForSyntheticResponse();
   CHECK(response_head);
   bool result = network::CheckHeaderConsistencyForSyntheticResponse(
-      *headers, *response_head->headers);
+      *headers, *response_head->headers, request_url_.spec());
   TRACE_EVENT1("ServiceWorker",
                "ServiceWorkerSyntheticResponseManager::CheckHeaderConsistency",
                "result", result);

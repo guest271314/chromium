@@ -4,25 +4,19 @@
 
 #include "chrome/browser/ui/views/location_bar/record_replay_page_action_controller.h"
 
-#include "base/memory/ptr_util.h"
-#include "base/strings/utf_string_conversions.h"
 #include "chrome/browser/ui/actions/chrome_action_id.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
-#include "chrome/browser/ui/color/chrome_color_id.h"
 #include "chrome/browser/ui/page_action/page_action_controller.h"
 #include "chrome/browser/ui/record_replay/save_recording_bubble_controller_impl.h"
 #include "chrome/browser/ui/tabs/public/tab_features.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
+#include "chrome/browser/ui/views/frame/toolbar_button_provider.h"
 #include "chrome/browser/ui/views/location_bar/location_bar_view.h"
 #include "chrome/browser/ui/views/page_action/page_action_container_view.h"
-#include "chrome/browser/ui/views/page_action/page_action_view.h"
 #include "chrome/browser/ui/views/record_replay/replay_recording_bubble_view.h"
 #include "chrome/browser/ui/views/record_replay/save_recording_bubble_view.h"
-#include "chrome/grit/generated_resources.h"
 #include "components/record_replay/core/browser/record_replay_client.h"
 #include "components/record_replay/core/browser/record_replay_manager.h"
-#include "components/record_replay/core/browser/recording_data_manager.h"
 #include "components/tabs/public/tab_interface.h"
 #include "components/vector_icons/vector_icons.h"
 #include "third_party/skia/include/core/SkColor.h"
@@ -46,9 +40,17 @@ views::BubbleAnchor GetAnchorForBubble(tabs::TabInterface& tab) {
   if (!browser_view) {
     return views::BubbleAnchor();
   }
-  return views::BubbleAnchor(browser_view->GetLocationBarView()
-                                 ->page_action_container()
-                                 ->GetPageActionView(kActionRecordReplay));
+  auto* provider = browser_view->toolbar_button_provider();
+  views::BubbleAnchor anchor =
+      provider->GetPageActionBubbleAnchor(kActionRecordReplay);
+  // `GetPageActionBubbleAnchor` can return a null anchor if the action is not
+  // hosted directly inside the page action container (e.g., when displayed on
+  // the toolbar). Fall back to `GetBubbleAnchor` so the bubble anchors
+  // properly.
+  if (anchor.IsNull()) {
+    anchor = provider->GetBubbleAnchor(kActionRecordReplay);
+  }
+  return anchor;
 }
 
 }  // namespace
@@ -105,15 +107,15 @@ void RecordReplayPageActionController::ExecuteAction(
         break;
       }
 
-      auto* rdm = client->GetRecordingDataManager();
-      if (!rdm) {
+      auto* store = client->GetTaskStore();
+      if (!store) {
         break;
       }
 
       record_replay::SaveRecordingBubbleView::Show(
           anchor, tab_->GetContents(),
           std::make_unique<record_replay::SaveRecordingBubbleControllerImpl>(
-              std::move(*recording), rdm,
+              std::move(*recording), store,
               base::BindOnce(&record_replay::RecordReplayManager::ReportToUser,
                              manager.GetWeakPtr()),
               base::BindOnce(&RecordReplayPageActionController::UpdateState,
@@ -162,7 +164,7 @@ void RecordReplayPageActionController::OnRetrieveRecordingsComplete(
       if (!recent_recordings_.empty()) {
         tooltip_text = u"Replay (UT)";
         icon = &(features::IsRoundedIconsEnabled()
-                     ? vector_icons::kPlayArrowFilledIcon
+                     ? vector_icons::kPlayArrowFilledFlippableIcon
                      : vector_icons::kPlayArrowOldIcon);
         color = gfx::kGoogleGreen600;
       } else {

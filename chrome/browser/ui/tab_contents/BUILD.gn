@@ -26,8 +26,10 @@ source_set("tab_contents") {
     "//chrome/common:mojo_bindings",
     "//components/lens",
     "//components/search_engines",
+    "//components/tabs:public",
     "//content/public/browser",
     "//mojo/public/cpp/bindings",
+    "//ui/base/unowned_user_data",
     "//ui/gfx",
     "//ui/gfx/geometry",
     "//url",
@@ -82,13 +84,19 @@ source_set("impl") {
   } else {
     deps += [
       "//chrome/browser/glic",
+      "//chrome/browser/ui:browser_command_controller",
       "//chrome/browser/ui/views/side_panel",
     ]
   }
   if (enable_extensions) {
     deps += [ "//components/guest_view/browser" ]
   }
-  public_deps = [ "//chrome/browser:browser_public_dependencies" ]
+  if (is_chromeos) {
+    deps += [
+      "//chrome/browser/ash/file_manager",
+      "//chrome/browser/ash/fusebox",
+    ]
+  }
 }
 
 if (!is_android) {
@@ -103,10 +111,14 @@ if (!is_android) {
       "//base/test:test_support",
       "//chrome/browser:browser_process",
       "//chrome/browser/prefs",
+      "//chrome/browser/tab_list",
+      "//chrome/browser/tab_list:test_support",
+      "//chrome/browser/ui:test_support",
+      "//chrome/browser/ui/browser_window",
       "//chrome/browser/ui/tab_contents",
-      "//chrome/browser/ui/tabs:tab_enums",
-      "//chrome/browser/ui/tabs:tab_strip",
       "//chrome/test:test_support",
+      "//chrome/test/base:chrome_render_view_host_test_harness",
+      "//chrome/test/base:testing_browser_process",
       "//components/lens:features",
       "//components/lens:lens_mojo",
       "//components/prefs",
@@ -115,9 +127,14 @@ if (!is_android) {
       "//components/search_engines",
       "//components/sync_preferences",
       "//components/sync_preferences:test_support",
+      "//components/tabs:public",
+      "//components/tabs:test_support",
       "//content/public/common",
       "//content/test:test_support",
+      "//testing/gmock",
+      "//third_party/abseil-cpp:absl",
       "//third_party/libwebp:libwebp_webp",
+      "//ui/base/unowned_user_data",
       "//ui/gfx:test_support",
       "//ui/gfx/codec",
     ]
@@ -128,8 +145,15 @@ if (!is_android) {
         "//chrome/browser/enterprise/connectors/test:test_support",
         "//components/enterprise/connectors/core:cloud_content_scanning",
       ]
+      if (is_chromeos) {
+        deps += [
+          "//chrome/browser/ash/file_manager",
+          "//chrome/browser/ash/fusebox",
+        ]
+      }
     }
   }
+
   source_set("browser_tests") {
     testonly = true
     defines = [ "HAS_OUT_OF_PROC_TEST_RUNNER" ]
@@ -141,6 +165,7 @@ if (!is_android) {
       "//base/test:test_support",
       "//chrome/browser:browser_process",
       "//chrome/browser/prefs",
+      "//chrome/browser/ui:browser_commands",
       "//chrome/browser/ui/tab_contents",
       "//chrome/browser/ui/tabs:tab_enums",
       "//chrome/browser/ui/tabs:tab_strip",

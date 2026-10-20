@@ -7,15 +7,14 @@
 #include <array>
 #include <ostream>
 #include <string_view>
+#include <utility>
 
 #include "base/check.h"
 #include "base/check_op.h"
+#include "base/containers/fixed_flat_map.h"
 #include "base/logging.h"
-#include "base/no_destructor.h"
 #include "base/notreached.h"
-#include "components/sync/base/features.h"
 #include "components/sync/protocol/entity_specifics.pb.h"
-#include "third_party/abseil-cpp/absl/container/flat_hash_map.h"
 
 namespace syncer {
 
@@ -61,6 +60,11 @@ enum class ApplyUpdatesBatchPolicy {
   kImmediately,
 };
 
+enum class LocalSyncSupportPolicy {
+  kSupported,
+  kUnsupported,
+};
+
 struct DataTypeInfo {
   DataType type;
   int specifics_field_number;
@@ -73,6 +77,7 @@ struct DataTypeInfo {
   ApplyUpdatesBatchPolicy apply_updates_batch_policy;
   UnsyncedDataCheckOnSignoutPolicy unsynced_data_check_on_signout_policy;
   CrossUserSharingPolicy cross_user_sharing_policy;
+  LocalSyncSupportPolicy local_sync_support_policy;
 };
 
 constexpr std::array<DataTypeInfo, syncer::GetNumDataTypes()>
@@ -90,6 +95,7 @@ constexpr std::array<DataTypeInfo, syncer::GetNumDataTypes()>
             .unsynced_data_check_on_signout_policy =
                 UnsyncedDataCheckOnSignoutPolicy::kNone,
             .cross_user_sharing_policy = CrossUserSharingPolicy::kNone,
+            .local_sync_support_policy = LocalSyncSupportPolicy::kUnsupported,
         },
         {
             .type = BOOKMARKS,
@@ -106,6 +112,7 @@ constexpr std::array<DataTypeInfo, syncer::GetNumDataTypes()>
             .unsynced_data_check_on_signout_policy =
                 UnsyncedDataCheckOnSignoutPolicy::kRequired,
             .cross_user_sharing_policy = CrossUserSharingPolicy::kNone,
+            .local_sync_support_policy = LocalSyncSupportPolicy::kSupported,
         },
         {
             .type = PREFERENCES,
@@ -122,6 +129,7 @@ constexpr std::array<DataTypeInfo, syncer::GetNumDataTypes()>
             .unsynced_data_check_on_signout_policy =
                 UnsyncedDataCheckOnSignoutPolicy::kNone,
             .cross_user_sharing_policy = CrossUserSharingPolicy::kNone,
+            .local_sync_support_policy = LocalSyncSupportPolicy::kSupported,
         },
         {
             .type = PASSWORDS,
@@ -137,6 +145,7 @@ constexpr std::array<DataTypeInfo, syncer::GetNumDataTypes()>
             .unsynced_data_check_on_signout_policy =
                 UnsyncedDataCheckOnSignoutPolicy::kRequired,
             .cross_user_sharing_policy = CrossUserSharingPolicy::kNone,
+            .local_sync_support_policy = LocalSyncSupportPolicy::kSupported,
         },
         {
             .type = AUTOFILL_PROFILE,
@@ -153,6 +162,7 @@ constexpr std::array<DataTypeInfo, syncer::GetNumDataTypes()>
             .unsynced_data_check_on_signout_policy =
                 UnsyncedDataCheckOnSignoutPolicy::kNone,
             .cross_user_sharing_policy = CrossUserSharingPolicy::kNone,
+            .local_sync_support_policy = LocalSyncSupportPolicy::kSupported,
         },
         {
             .type = AUTOFILL,
@@ -169,6 +179,7 @@ constexpr std::array<DataTypeInfo, syncer::GetNumDataTypes()>
             .unsynced_data_check_on_signout_policy =
                 UnsyncedDataCheckOnSignoutPolicy::kNone,
             .cross_user_sharing_policy = CrossUserSharingPolicy::kNone,
+            .local_sync_support_policy = LocalSyncSupportPolicy::kSupported,
         },
         {
             .type = AUTOFILL_WALLET_CREDENTIAL,
@@ -184,6 +195,10 @@ constexpr std::array<DataTypeInfo, syncer::GetNumDataTypes()>
             .unsynced_data_check_on_signout_policy =
                 UnsyncedDataCheckOnSignoutPolicy::kNone,
             .cross_user_sharing_policy = CrossUserSharingPolicy::kNone,
+            // Note: AUTOFILL_WALLET_CREDENTIAL *is* supported even though
+            // AUTOFILL_WALLET_DATA is not - the user can still save CVVs for
+            // local credit cards.
+            .local_sync_support_policy = LocalSyncSupportPolicy::kSupported,
         },
         {
             .type = AUTOFILL_WALLET_DATA,
@@ -201,6 +216,7 @@ constexpr std::array<DataTypeInfo, syncer::GetNumDataTypes()>
             .unsynced_data_check_on_signout_policy =
                 UnsyncedDataCheckOnSignoutPolicy::kNone,
             .cross_user_sharing_policy = CrossUserSharingPolicy::kNone,
+            .local_sync_support_policy = LocalSyncSupportPolicy::kUnsupported,
         },
         {
             .type = AUTOFILL_WALLET_METADATA,
@@ -217,23 +233,7 @@ constexpr std::array<DataTypeInfo, syncer::GetNumDataTypes()>
             .unsynced_data_check_on_signout_policy =
                 UnsyncedDataCheckOnSignoutPolicy::kNone,
             .cross_user_sharing_policy = CrossUserSharingPolicy::kNone,
-        },
-        {
-            .type = AUTOFILL_WALLET_OFFER,
-            .specifics_field_number =
-                sync_pb::EntitySpecifics::kAutofillOfferFieldNumber,
-            .debug_string = "Autofill Wallet Offer",
-            .histogram_suffix = "AUTOFILL_OFFER",
-            .stable_lowercase_string = "autofill_wallet_offer",
-            // Wallet data is not encrypted since it actually originates on the
-            // server.
-            .encryption_policy = EncryptionPolicy::kNeverEncrypted,
-            .priority = DataTypePriority::kRegular,
-            .communication_direction = CommunicationDirection::kRegularTwoWay,
-            .apply_updates_batch_policy = ApplyUpdatesBatchPolicy::kStandard,
-            .unsynced_data_check_on_signout_policy =
-                UnsyncedDataCheckOnSignoutPolicy::kNone,
-            .cross_user_sharing_policy = CrossUserSharingPolicy::kNone,
+            .local_sync_support_policy = LocalSyncSupportPolicy::kUnsupported,
         },
         {
             .type = AUTOFILL_WALLET_USAGE,
@@ -251,6 +251,7 @@ constexpr std::array<DataTypeInfo, syncer::GetNumDataTypes()>
             .unsynced_data_check_on_signout_policy =
                 UnsyncedDataCheckOnSignoutPolicy::kNone,
             .cross_user_sharing_policy = CrossUserSharingPolicy::kNone,
+            .local_sync_support_policy = LocalSyncSupportPolicy::kUnsupported,
         },
         {
             .type = THEMES,
@@ -267,6 +268,7 @@ constexpr std::array<DataTypeInfo, syncer::GetNumDataTypes()>
             .unsynced_data_check_on_signout_policy =
                 UnsyncedDataCheckOnSignoutPolicy::kRequired,
             .cross_user_sharing_policy = CrossUserSharingPolicy::kNone,
+            .local_sync_support_policy = LocalSyncSupportPolicy::kSupported,
         },
         {
             .type = EXTENSIONS,
@@ -283,6 +285,7 @@ constexpr std::array<DataTypeInfo, syncer::GetNumDataTypes()>
             .unsynced_data_check_on_signout_policy =
                 UnsyncedDataCheckOnSignoutPolicy::kRequired,
             .cross_user_sharing_policy = CrossUserSharingPolicy::kNone,
+            .local_sync_support_policy = LocalSyncSupportPolicy::kSupported,
         },
         {
             .type = SEARCH_ENGINES,
@@ -299,6 +302,7 @@ constexpr std::array<DataTypeInfo, syncer::GetNumDataTypes()>
             .unsynced_data_check_on_signout_policy =
                 UnsyncedDataCheckOnSignoutPolicy::kNone,
             .cross_user_sharing_policy = CrossUserSharingPolicy::kNone,
+            .local_sync_support_policy = LocalSyncSupportPolicy::kSupported,
         },
         {
             .type = SESSIONS,
@@ -315,6 +319,7 @@ constexpr std::array<DataTypeInfo, syncer::GetNumDataTypes()>
             .unsynced_data_check_on_signout_policy =
                 UnsyncedDataCheckOnSignoutPolicy::kNone,
             .cross_user_sharing_policy = CrossUserSharingPolicy::kNone,
+            .local_sync_support_policy = LocalSyncSupportPolicy::kSupported,
         },
         {
             .type = APPS,
@@ -330,6 +335,7 @@ constexpr std::array<DataTypeInfo, syncer::GetNumDataTypes()>
             .unsynced_data_check_on_signout_policy =
                 UnsyncedDataCheckOnSignoutPolicy::kNone,
             .cross_user_sharing_policy = CrossUserSharingPolicy::kNone,
+            .local_sync_support_policy = LocalSyncSupportPolicy::kSupported,
         },
         {
             .type = APP_SETTINGS,
@@ -346,6 +352,7 @@ constexpr std::array<DataTypeInfo, syncer::GetNumDataTypes()>
             .unsynced_data_check_on_signout_policy =
                 UnsyncedDataCheckOnSignoutPolicy::kNone,
             .cross_user_sharing_policy = CrossUserSharingPolicy::kNone,
+            .local_sync_support_policy = LocalSyncSupportPolicy::kSupported,
         },
         {
             .type = EXTENSION_SETTINGS,
@@ -362,6 +369,7 @@ constexpr std::array<DataTypeInfo, syncer::GetNumDataTypes()>
             .unsynced_data_check_on_signout_policy =
                 UnsyncedDataCheckOnSignoutPolicy::kNone,
             .cross_user_sharing_policy = CrossUserSharingPolicy::kNone,
+            .local_sync_support_policy = LocalSyncSupportPolicy::kSupported,
         },
         {
             .type = HISTORY_DELETE_DIRECTIVES,
@@ -378,6 +386,7 @@ constexpr std::array<DataTypeInfo, syncer::GetNumDataTypes()>
             .unsynced_data_check_on_signout_policy =
                 UnsyncedDataCheckOnSignoutPolicy::kNone,
             .cross_user_sharing_policy = CrossUserSharingPolicy::kNone,
+            .local_sync_support_policy = LocalSyncSupportPolicy::kUnsupported,
         },
         {
             .type = DICTIONARY,
@@ -394,6 +403,7 @@ constexpr std::array<DataTypeInfo, syncer::GetNumDataTypes()>
             .unsynced_data_check_on_signout_policy =
                 UnsyncedDataCheckOnSignoutPolicy::kNone,
             .cross_user_sharing_policy = CrossUserSharingPolicy::kNone,
+            .local_sync_support_policy = LocalSyncSupportPolicy::kSupported,
         },
         {
             .type = DEVICE_INFO,
@@ -410,6 +420,7 @@ constexpr std::array<DataTypeInfo, syncer::GetNumDataTypes()>
             .unsynced_data_check_on_signout_policy =
                 UnsyncedDataCheckOnSignoutPolicy::kNone,
             .cross_user_sharing_policy = CrossUserSharingPolicy::kNone,
+            .local_sync_support_policy = LocalSyncSupportPolicy::kSupported,
         },
         {
             .type = PRIORITY_PREFERENCES,
@@ -426,6 +437,7 @@ constexpr std::array<DataTypeInfo, syncer::GetNumDataTypes()>
             .unsynced_data_check_on_signout_policy =
                 UnsyncedDataCheckOnSignoutPolicy::kNone,
             .cross_user_sharing_policy = CrossUserSharingPolicy::kNone,
+            .local_sync_support_policy = LocalSyncSupportPolicy::kSupported,
         },
         {
             .type = SUPERVISED_USER_SETTINGS,
@@ -442,6 +454,7 @@ constexpr std::array<DataTypeInfo, syncer::GetNumDataTypes()>
             .unsynced_data_check_on_signout_policy =
                 UnsyncedDataCheckOnSignoutPolicy::kNone,
             .cross_user_sharing_policy = CrossUserSharingPolicy::kNone,
+            .local_sync_support_policy = LocalSyncSupportPolicy::kSupported,
         },
         {
             .type = APP_LIST,
@@ -458,6 +471,7 @@ constexpr std::array<DataTypeInfo, syncer::GetNumDataTypes()>
             .unsynced_data_check_on_signout_policy =
                 UnsyncedDataCheckOnSignoutPolicy::kNone,
             .cross_user_sharing_policy = CrossUserSharingPolicy::kNone,
+            .local_sync_support_policy = LocalSyncSupportPolicy::kUnsupported,
         },
         {
             .type = ARC_PACKAGE,
@@ -474,6 +488,7 @@ constexpr std::array<DataTypeInfo, syncer::GetNumDataTypes()>
             .unsynced_data_check_on_signout_policy =
                 UnsyncedDataCheckOnSignoutPolicy::kNone,
             .cross_user_sharing_policy = CrossUserSharingPolicy::kNone,
+            .local_sync_support_policy = LocalSyncSupportPolicy::kSupported,
         },
         {
             .type = PRINTERS,
@@ -490,6 +505,7 @@ constexpr std::array<DataTypeInfo, syncer::GetNumDataTypes()>
             .unsynced_data_check_on_signout_policy =
                 UnsyncedDataCheckOnSignoutPolicy::kNone,
             .cross_user_sharing_policy = CrossUserSharingPolicy::kNone,
+            .local_sync_support_policy = LocalSyncSupportPolicy::kSupported,
         },
         {
             .type = READING_LIST,
@@ -506,6 +522,7 @@ constexpr std::array<DataTypeInfo, syncer::GetNumDataTypes()>
             .unsynced_data_check_on_signout_policy =
                 UnsyncedDataCheckOnSignoutPolicy::kRequired,
             .cross_user_sharing_policy = CrossUserSharingPolicy::kNone,
+            .local_sync_support_policy = LocalSyncSupportPolicy::kSupported,
         },
         {
             .type = USER_EVENTS,
@@ -523,6 +540,7 @@ constexpr std::array<DataTypeInfo, syncer::GetNumDataTypes()>
             .unsynced_data_check_on_signout_policy =
                 UnsyncedDataCheckOnSignoutPolicy::kNone,
             .cross_user_sharing_policy = CrossUserSharingPolicy::kNone,
+            .local_sync_support_policy = LocalSyncSupportPolicy::kUnsupported,
         },
         {
             .type = USER_CONSENTS,
@@ -540,6 +558,7 @@ constexpr std::array<DataTypeInfo, syncer::GetNumDataTypes()>
             .unsynced_data_check_on_signout_policy =
                 UnsyncedDataCheckOnSignoutPolicy::kNone,
             .cross_user_sharing_policy = CrossUserSharingPolicy::kNone,
+            .local_sync_support_policy = LocalSyncSupportPolicy::kUnsupported,
         },
         {
             .type = SEND_TAB_TO_SELF,
@@ -556,6 +575,7 @@ constexpr std::array<DataTypeInfo, syncer::GetNumDataTypes()>
             .unsynced_data_check_on_signout_policy =
                 UnsyncedDataCheckOnSignoutPolicy::kNone,
             .cross_user_sharing_policy = CrossUserSharingPolicy::kNone,
+            .local_sync_support_policy = LocalSyncSupportPolicy::kUnsupported,
         },
         {
             .type = SECURITY_EVENTS,
@@ -573,6 +593,7 @@ constexpr std::array<DataTypeInfo, syncer::GetNumDataTypes()>
             .unsynced_data_check_on_signout_policy =
                 UnsyncedDataCheckOnSignoutPolicy::kNone,
             .cross_user_sharing_policy = CrossUserSharingPolicy::kNone,
+            .local_sync_support_policy = LocalSyncSupportPolicy::kUnsupported,
         },
         {
             .type = WIFI_CONFIGURATIONS,
@@ -588,6 +609,7 @@ constexpr std::array<DataTypeInfo, syncer::GetNumDataTypes()>
             .unsynced_data_check_on_signout_policy =
                 UnsyncedDataCheckOnSignoutPolicy::kNone,
             .cross_user_sharing_policy = CrossUserSharingPolicy::kNone,
+            .local_sync_support_policy = LocalSyncSupportPolicy::kSupported,
         },
         {
             .type = WEB_APPS,
@@ -604,22 +626,7 @@ constexpr std::array<DataTypeInfo, syncer::GetNumDataTypes()>
             .unsynced_data_check_on_signout_policy =
                 UnsyncedDataCheckOnSignoutPolicy::kNone,
             .cross_user_sharing_policy = CrossUserSharingPolicy::kNone,
-        },
-        {
-            .type = WEB_APKS,
-            .specifics_field_number =
-                sync_pb::EntitySpecifics::kWebApkFieldNumber,
-            .debug_string = "Web Apks",
-            .histogram_suffix = "WEB_APK",
-            .stable_lowercase_string = "webapks",
-            .encryption_policy =
-                EncryptionPolicy::kEncryptedIfCustomPassphraseSet,
-            .priority = DataTypePriority::kRegular,
-            .communication_direction = CommunicationDirection::kRegularTwoWay,
-            .apply_updates_batch_policy = ApplyUpdatesBatchPolicy::kStandard,
-            .unsynced_data_check_on_signout_policy =
-                UnsyncedDataCheckOnSignoutPolicy::kNone,
-            .cross_user_sharing_policy = CrossUserSharingPolicy::kNone,
+            .local_sync_support_policy = LocalSyncSupportPolicy::kSupported,
         },
         {
             .type = OS_PREFERENCES,
@@ -636,6 +643,7 @@ constexpr std::array<DataTypeInfo, syncer::GetNumDataTypes()>
             .unsynced_data_check_on_signout_policy =
                 UnsyncedDataCheckOnSignoutPolicy::kNone,
             .cross_user_sharing_policy = CrossUserSharingPolicy::kNone,
+            .local_sync_support_policy = LocalSyncSupportPolicy::kSupported,
         },
         {
             .type = OS_PRIORITY_PREFERENCES,
@@ -652,6 +660,7 @@ constexpr std::array<DataTypeInfo, syncer::GetNumDataTypes()>
             .unsynced_data_check_on_signout_policy =
                 UnsyncedDataCheckOnSignoutPolicy::kNone,
             .cross_user_sharing_policy = CrossUserSharingPolicy::kNone,
+            .local_sync_support_policy = LocalSyncSupportPolicy::kSupported,
         },
         {
             .type = SHARING_MESSAGE,
@@ -669,6 +678,7 @@ constexpr std::array<DataTypeInfo, syncer::GetNumDataTypes()>
             .unsynced_data_check_on_signout_policy =
                 UnsyncedDataCheckOnSignoutPolicy::kNone,
             .cross_user_sharing_policy = CrossUserSharingPolicy::kNone,
+            .local_sync_support_policy = LocalSyncSupportPolicy::kUnsupported,
         },
         {
             .type = WORKSPACE_DESK,
@@ -685,6 +695,7 @@ constexpr std::array<DataTypeInfo, syncer::GetNumDataTypes()>
             .unsynced_data_check_on_signout_policy =
                 UnsyncedDataCheckOnSignoutPolicy::kNone,
             .cross_user_sharing_policy = CrossUserSharingPolicy::kNone,
+            .local_sync_support_policy = LocalSyncSupportPolicy::kUnsupported,
         },
         {
             .type = HISTORY,
@@ -701,6 +712,7 @@ constexpr std::array<DataTypeInfo, syncer::GetNumDataTypes()>
             .unsynced_data_check_on_signout_policy =
                 UnsyncedDataCheckOnSignoutPolicy::kNone,
             .cross_user_sharing_policy = CrossUserSharingPolicy::kNone,
+            .local_sync_support_policy = LocalSyncSupportPolicy::kUnsupported,
         },
         {
             .type = PRINTERS_AUTHORIZATION_SERVERS,
@@ -717,6 +729,7 @@ constexpr std::array<DataTypeInfo, syncer::GetNumDataTypes()>
             .unsynced_data_check_on_signout_policy =
                 UnsyncedDataCheckOnSignoutPolicy::kNone,
             .cross_user_sharing_policy = CrossUserSharingPolicy::kNone,
+            .local_sync_support_policy = LocalSyncSupportPolicy::kSupported,
         },
         {
             .type = CONTACT_INFO,
@@ -733,6 +746,7 @@ constexpr std::array<DataTypeInfo, syncer::GetNumDataTypes()>
             .unsynced_data_check_on_signout_policy =
                 UnsyncedDataCheckOnSignoutPolicy::kRequired,
             .cross_user_sharing_policy = CrossUserSharingPolicy::kNone,
+            .local_sync_support_policy = LocalSyncSupportPolicy::kUnsupported,
         },
         {
             .type = SAVED_TAB_GROUP,
@@ -749,6 +763,7 @@ constexpr std::array<DataTypeInfo, syncer::GetNumDataTypes()>
             .unsynced_data_check_on_signout_policy =
                 UnsyncedDataCheckOnSignoutPolicy::kRequired,
             .cross_user_sharing_policy = CrossUserSharingPolicy::kNone,
+            .local_sync_support_policy = LocalSyncSupportPolicy::kSupported,
         },
         {
             .type = WEBAUTHN_CREDENTIAL,
@@ -765,6 +780,7 @@ constexpr std::array<DataTypeInfo, syncer::GetNumDataTypes()>
             .unsynced_data_check_on_signout_policy =
                 UnsyncedDataCheckOnSignoutPolicy::kNone,
             .cross_user_sharing_policy = CrossUserSharingPolicy::kNone,
+            .local_sync_support_policy = LocalSyncSupportPolicy::kSupported,
         },
         {
             .type = INCOMING_PASSWORD_SHARING_INVITATION,
@@ -782,6 +798,7 @@ constexpr std::array<DataTypeInfo, syncer::GetNumDataTypes()>
             .unsynced_data_check_on_signout_policy =
                 UnsyncedDataCheckOnSignoutPolicy::kNone,
             .cross_user_sharing_policy = CrossUserSharingPolicy::kNone,
+            .local_sync_support_policy = LocalSyncSupportPolicy::kUnsupported,
         },
         {
             .type = OUTGOING_PASSWORD_SHARING_INVITATION,
@@ -800,6 +817,7 @@ constexpr std::array<DataTypeInfo, syncer::GetNumDataTypes()>
             .unsynced_data_check_on_signout_policy =
                 UnsyncedDataCheckOnSignoutPolicy::kNone,
             .cross_user_sharing_policy = CrossUserSharingPolicy::kNone,
+            .local_sync_support_policy = LocalSyncSupportPolicy::kUnsupported,
         },
         {
             .type = SHARED_TAB_GROUP_DATA,
@@ -816,6 +834,7 @@ constexpr std::array<DataTypeInfo, syncer::GetNumDataTypes()>
             .unsynced_data_check_on_signout_policy =
                 UnsyncedDataCheckOnSignoutPolicy::kNone,
             .cross_user_sharing_policy = CrossUserSharingPolicy::kShared,
+            .local_sync_support_policy = LocalSyncSupportPolicy::kUnsupported,
         },
         {
             .type = COLLABORATION_GROUP,
@@ -832,23 +851,7 @@ constexpr std::array<DataTypeInfo, syncer::GetNumDataTypes()>
             .unsynced_data_check_on_signout_policy =
                 UnsyncedDataCheckOnSignoutPolicy::kNone,
             .cross_user_sharing_policy = CrossUserSharingPolicy::kNone,
-        },
-        {
-            .type = PLUS_ADDRESS,
-            .specifics_field_number =
-                sync_pb::EntitySpecifics::kPlusAddressFieldNumber,
-            .debug_string = "Plus Address",
-            .histogram_suffix = "PLUS_ADDRESS",
-            .stable_lowercase_string = "plus_address",
-            // Plus addresses and their settings are never encrypted because
-            // they originate from outside Chrome.
-            .encryption_policy = EncryptionPolicy::kNeverEncrypted,
-            .priority = DataTypePriority::kRegular,
-            .communication_direction = CommunicationDirection::kRegularTwoWay,
-            .apply_updates_batch_policy = ApplyUpdatesBatchPolicy::kStandard,
-            .unsynced_data_check_on_signout_policy =
-                UnsyncedDataCheckOnSignoutPolicy::kNone,
-            .cross_user_sharing_policy = CrossUserSharingPolicy::kNone,
+            .local_sync_support_policy = LocalSyncSupportPolicy::kUnsupported,
         },
         {
             .type = PRODUCT_COMPARISON,
@@ -865,6 +868,7 @@ constexpr std::array<DataTypeInfo, syncer::GetNumDataTypes()>
             .unsynced_data_check_on_signout_policy =
                 UnsyncedDataCheckOnSignoutPolicy::kNone,
             .cross_user_sharing_policy = CrossUserSharingPolicy::kNone,
+            .local_sync_support_policy = LocalSyncSupportPolicy::kSupported,
         },
         {
             .type = COOKIES,
@@ -880,23 +884,7 @@ constexpr std::array<DataTypeInfo, syncer::GetNumDataTypes()>
             .unsynced_data_check_on_signout_policy =
                 UnsyncedDataCheckOnSignoutPolicy::kNone,
             .cross_user_sharing_policy = CrossUserSharingPolicy::kNone,
-        },
-        {
-            .type = PLUS_ADDRESS_SETTING,
-            .specifics_field_number =
-                sync_pb::EntitySpecifics::kPlusAddressSettingFieldNumber,
-            .debug_string = "Plus Address Setting",
-            .histogram_suffix = "PLUS_ADDRESS_SETTING",
-            .stable_lowercase_string = "plus_address_setting",
-            // Plus addresses and their settings are never encrypted because
-            // they originate from outside Chrome.
-            .encryption_policy = EncryptionPolicy::kNeverEncrypted,
-            .priority = DataTypePriority::kRegular,
-            .communication_direction = CommunicationDirection::kRegularTwoWay,
-            .apply_updates_batch_policy = ApplyUpdatesBatchPolicy::kStandard,
-            .unsynced_data_check_on_signout_policy =
-                UnsyncedDataCheckOnSignoutPolicy::kNone,
-            .cross_user_sharing_policy = CrossUserSharingPolicy::kNone,
+            .local_sync_support_policy = LocalSyncSupportPolicy::kUnsupported,
         },
         {
             .type = AUTOFILL_VALUABLE,
@@ -914,6 +902,7 @@ constexpr std::array<DataTypeInfo, syncer::GetNumDataTypes()>
             .unsynced_data_check_on_signout_policy =
                 UnsyncedDataCheckOnSignoutPolicy::kNone,
             .cross_user_sharing_policy = CrossUserSharingPolicy::kNone,
+            .local_sync_support_policy = LocalSyncSupportPolicy::kUnsupported,
         },
         {
             .type = AUTOFILL_VALUABLE_METADATA,
@@ -930,6 +919,7 @@ constexpr std::array<DataTypeInfo, syncer::GetNumDataTypes()>
             .unsynced_data_check_on_signout_policy =
                 UnsyncedDataCheckOnSignoutPolicy::kNone,
             .cross_user_sharing_policy = CrossUserSharingPolicy::kNone,
+            .local_sync_support_policy = LocalSyncSupportPolicy::kUnsupported,
         },
         {
             .type = SHARED_TAB_GROUP_ACCOUNT_DATA,
@@ -946,6 +936,7 @@ constexpr std::array<DataTypeInfo, syncer::GetNumDataTypes()>
             .unsynced_data_check_on_signout_policy =
                 UnsyncedDataCheckOnSignoutPolicy::kNone,
             .cross_user_sharing_policy = CrossUserSharingPolicy::kNone,
+            .local_sync_support_policy = LocalSyncSupportPolicy::kUnsupported,
         },
         {
             .type = SHARED_COMMENT,
@@ -962,6 +953,7 @@ constexpr std::array<DataTypeInfo, syncer::GetNumDataTypes()>
             .unsynced_data_check_on_signout_policy =
                 UnsyncedDataCheckOnSignoutPolicy::kNone,
             .cross_user_sharing_policy = CrossUserSharingPolicy::kNone,
+            .local_sync_support_policy = LocalSyncSupportPolicy::kUnsupported,
         },
         {
             .type = ACCOUNT_SETTING,
@@ -978,6 +970,7 @@ constexpr std::array<DataTypeInfo, syncer::GetNumDataTypes()>
             .unsynced_data_check_on_signout_policy =
                 UnsyncedDataCheckOnSignoutPolicy::kNone,
             .cross_user_sharing_policy = CrossUserSharingPolicy::kNone,
+            .local_sync_support_policy = LocalSyncSupportPolicy::kUnsupported,
         },
         {
             .type = AI_THREAD,
@@ -994,6 +987,7 @@ constexpr std::array<DataTypeInfo, syncer::GetNumDataTypes()>
             .unsynced_data_check_on_signout_policy =
                 UnsyncedDataCheckOnSignoutPolicy::kNone,
             .cross_user_sharing_policy = CrossUserSharingPolicy::kNone,
+            .local_sync_support_policy = LocalSyncSupportPolicy::kUnsupported,
         },
         {
             .type = CONTEXTUAL_TASK,
@@ -1010,6 +1004,7 @@ constexpr std::array<DataTypeInfo, syncer::GetNumDataTypes()>
             .unsynced_data_check_on_signout_policy =
                 UnsyncedDataCheckOnSignoutPolicy::kNone,
             .cross_user_sharing_policy = CrossUserSharingPolicy::kNone,
+            .local_sync_support_policy = LocalSyncSupportPolicy::kUnsupported,
         },
         {
             .type = SKILL,
@@ -1026,6 +1021,7 @@ constexpr std::array<DataTypeInfo, syncer::GetNumDataTypes()>
             .unsynced_data_check_on_signout_policy =
                 UnsyncedDataCheckOnSignoutPolicy::kNone,
             .cross_user_sharing_policy = CrossUserSharingPolicy::kNone,
+            .local_sync_support_policy = LocalSyncSupportPolicy::kUnsupported,
         },
         {
             .type = GEMINI_THREAD,
@@ -1042,6 +1038,43 @@ constexpr std::array<DataTypeInfo, syncer::GetNumDataTypes()>
             .unsynced_data_check_on_signout_policy =
                 UnsyncedDataCheckOnSignoutPolicy::kNone,
             .cross_user_sharing_policy = CrossUserSharingPolicy::kNone,
+            .local_sync_support_policy = LocalSyncSupportPolicy::kUnsupported,
+        },
+        {
+            .type = ENCRYPTED_TAB_CONTEXT_CONTAINER,
+            .specifics_field_number = sync_pb::EntitySpecifics::
+                kEncryptedTabContextContainerFieldNumber,
+            .debug_string = "Encrypted Tab Context Container",
+            .histogram_suffix = "ENCRYPTED_TAB_CONTEXT_CONTAINER",
+            .stable_lowercase_string = "encrypted_tab_context_container",
+            .encryption_policy = EncryptionPolicy::kAlwaysEncrypted,
+            .priority = DataTypePriority::kRegular,
+            .communication_direction = CommunicationDirection::kRegularTwoWay,
+            .apply_updates_batch_policy = ApplyUpdatesBatchPolicy::kStandard,
+            .unsynced_data_check_on_signout_policy =
+                UnsyncedDataCheckOnSignoutPolicy::kNone,
+            .cross_user_sharing_policy = CrossUserSharingPolicy::kNone,
+            .local_sync_support_policy = LocalSyncSupportPolicy::kUnsupported,
+        },
+        {
+            .type = ENCRYPTED_TAB_CONTEXT_ITEM,
+            .specifics_field_number =
+                sync_pb::EntitySpecifics::kEncryptedTabContextItemFieldNumber,
+            .debug_string = "Encrypted Tab Context Item",
+            .histogram_suffix = "ENCRYPTED_TAB_CONTEXT_ITEM",
+            .stable_lowercase_string = "encrypted_tab_context_item",
+            // Not encrypted by sync infra because it relies on
+            // custom feature-specific encryption logic.
+            .encryption_policy = EncryptionPolicy::kNeverEncrypted,
+            // Low priority ensures that ENCRYPTED_TAB_CONTEXT_CONTAINER
+            // (regular priority) is downloaded and committed before items.
+            .priority = DataTypePriority::kLow,
+            .communication_direction = CommunicationDirection::kCommitOnly,
+            .apply_updates_batch_policy = ApplyUpdatesBatchPolicy::kStandard,
+            .unsynced_data_check_on_signout_policy =
+                UnsyncedDataCheckOnSignoutPolicy::kNone,
+            .cross_user_sharing_policy = CrossUserSharingPolicy::kNone,
+            .local_sync_support_policy = LocalSyncSupportPolicy::kUnsupported,
         },
         {
             .type = THEMES_IOS,
@@ -1058,22 +1091,7 @@ constexpr std::array<DataTypeInfo, syncer::GetNumDataTypes()>
             .unsynced_data_check_on_signout_policy =
                 UnsyncedDataCheckOnSignoutPolicy::kNone,
             .cross_user_sharing_policy = CrossUserSharingPolicy::kNone,
-        },
-        {
-            .type = ACCESSIBILITY_ANNOTATION,
-            .specifics_field_number =
-                sync_pb::EntitySpecifics::kAccessibilityAnnotationFieldNumber,
-            .debug_string = "Accessibility Annotation",
-            .histogram_suffix = "ACCESSIBILITY_ANNOTATION",
-            .stable_lowercase_string = "accessibility_annotation",
-            // Not encrypted since it originates from the server.
-            .encryption_policy = EncryptionPolicy::kNeverEncrypted,
-            .priority = DataTypePriority::kRegular,
-            .communication_direction = CommunicationDirection::kRegularTwoWay,
-            .apply_updates_batch_policy = ApplyUpdatesBatchPolicy::kStandard,
-            .unsynced_data_check_on_signout_policy =
-                UnsyncedDataCheckOnSignoutPolicy::kNone,
-            .cross_user_sharing_policy = CrossUserSharingPolicy::kNone,
+            .local_sync_support_policy = LocalSyncSupportPolicy::kUnsupported,
         },
         {
             .type = THEMES_ANDROID,
@@ -1090,6 +1108,23 @@ constexpr std::array<DataTypeInfo, syncer::GetNumDataTypes()>
             .unsynced_data_check_on_signout_policy =
                 UnsyncedDataCheckOnSignoutPolicy::kNone,
             .cross_user_sharing_policy = CrossUserSharingPolicy::kNone,
+            .local_sync_support_policy = LocalSyncSupportPolicy::kUnsupported,
+        },
+        {
+            .type = JOURNEY,
+            .specifics_field_number =
+                sync_pb::EntitySpecifics::kJourneyFieldNumber,
+            .debug_string = "Journey",
+            .histogram_suffix = "JOURNEY",
+            .stable_lowercase_string = "journey",
+            .encryption_policy = EncryptionPolicy::kNeverEncrypted,
+            .priority = DataTypePriority::kRegular,
+            .communication_direction = CommunicationDirection::kRegularTwoWay,
+            .apply_updates_batch_policy = ApplyUpdatesBatchPolicy::kStandard,
+            .unsynced_data_check_on_signout_policy =
+                UnsyncedDataCheckOnSignoutPolicy::kNone,
+            .cross_user_sharing_policy = CrossUserSharingPolicy::kNone,
+            .local_sync_support_policy = LocalSyncSupportPolicy::kUnsupported,
         },
         {
             .type = NIGORI,
@@ -1107,6 +1142,39 @@ constexpr std::array<DataTypeInfo, syncer::GetNumDataTypes()>
             .unsynced_data_check_on_signout_policy =
                 UnsyncedDataCheckOnSignoutPolicy::kNone,
             .cross_user_sharing_policy = CrossUserSharingPolicy::kNone,
+            .local_sync_support_policy = LocalSyncSupportPolicy::kSupported,
+        },
+        {
+            .type = NOTEBOOK,
+            .specifics_field_number =
+                sync_pb::EntitySpecifics::kNotebookFieldNumber,
+            .debug_string = "Notebook",
+            .histogram_suffix = "NOTEBOOK",
+            .stable_lowercase_string = "notebook",
+            .encryption_policy = EncryptionPolicy::kNeverEncrypted,
+            .priority = DataTypePriority::kRegular,
+            .communication_direction = CommunicationDirection::kRegularTwoWay,
+            .apply_updates_batch_policy = ApplyUpdatesBatchPolicy::kStandard,
+            .unsynced_data_check_on_signout_policy =
+                UnsyncedDataCheckOnSignoutPolicy::kNone,
+            .cross_user_sharing_policy = CrossUserSharingPolicy::kNone,
+            .local_sync_support_policy = LocalSyncSupportPolicy::kUnsupported,
+        },
+        {
+            .type = AUTOFILL_ENTITY_SUPPRESSION,
+            .specifics_field_number =
+                sync_pb::EntitySpecifics::kAutofillEntitySuppressionFieldNumber,
+            .debug_string = "Autofill Entity Suppression",
+            .histogram_suffix = "AUTOFILL_ENTITY_SUPPRESSION",
+            .stable_lowercase_string = "autofill_entity_suppression",
+            .encryption_policy = EncryptionPolicy::kAlwaysEncrypted,
+            .priority = DataTypePriority::kRegular,
+            .communication_direction = CommunicationDirection::kRegularTwoWay,
+            .apply_updates_batch_policy = ApplyUpdatesBatchPolicy::kStandard,
+            .unsynced_data_check_on_signout_policy =
+                UnsyncedDataCheckOnSignoutPolicy::kNone,
+            .cross_user_sharing_policy = CrossUserSharingPolicy::kNone,
+            .local_sync_support_policy = LocalSyncSupportPolicy::kUnsupported,
         },
     }};
 
@@ -1116,23 +1184,21 @@ static_assert(GetNumDataTypes() == 64,
               "histograms.xml and follow the integration checklist in "
               "https://www.chromium.org/developers/design-documents/sync/"
               "integration-checklist/");
-// LINT.ThenChange(/tools/metrics/histograms/metadata/sync/histograms.xml:DataTypeHistogramSuffix)
+// LINT.ThenChange(//tools/metrics/histograms/metadata/sync/histograms.xml:DataTypeHistogramSuffix)
 
-const DataTypeInfo& GetDataTypeInfo(DataType type) {
-  static const base::NoDestructor<
-      absl::flat_hash_map<DataType, const DataTypeInfo*>>
-      type_to_info([] {
-        absl::flat_hash_map<DataType, const DataTypeInfo*> map;
-        for (const auto& info : kDataTypeInfoTable) {
-          map.emplace(info.type, &info);
-        }
-        return map;
-      }());
+constexpr const DataTypeInfo& GetDataTypeInfo(DataType type) {
+  static constexpr auto kTypeToInfo = [] {
+    std::array<const DataTypeInfo*, GetNumDataTypes()> table{};
+    for (const DataTypeInfo& info : kDataTypeInfoTable) {
+      CHECK(!table[info.type]);
+      table[info.type] = &info;
+    }
+    return table;
+  }();
 
-  auto it = type_to_info->find(type);
-  CHECK(it != type_to_info->end())
-      << "Unknown data type: " << static_cast<int>(type);
-  return *it->second;
+  const size_t index = static_cast<size_t>(type);
+  CHECK_LT(index, kTypeToInfo.size()) << "Unknown data type: " << index;
+  return *kTypeToInfo[index];
 }
 
 }  // namespace
@@ -1166,14 +1232,17 @@ void AddDefaultFieldValue(DataType type, sync_pb::EntitySpecifics* specifics) {
     case AUTOFILL_WALLET_METADATA:
       specifics->mutable_wallet_metadata();
       break;
-    case AUTOFILL_WALLET_OFFER:
-      specifics->mutable_autofill_offer();
-      break;
     case AUTOFILL_WALLET_USAGE:
       specifics->mutable_autofill_wallet_usage();
       break;
     case THEMES:
       specifics->mutable_theme();
+      break;
+    case ENCRYPTED_TAB_CONTEXT_CONTAINER:
+      specifics->mutable_encrypted_tab_context_container();
+      break;
+    case ENCRYPTED_TAB_CONTEXT_ITEM:
+      specifics->mutable_encrypted_tab_context_item();
       break;
     case THEMES_IOS:
       specifics->mutable_theme_ios();
@@ -1244,9 +1313,6 @@ void AddDefaultFieldValue(DataType type, sync_pb::EntitySpecifics* specifics) {
     case WEB_APPS:
       specifics->mutable_web_app();
       break;
-    case WEB_APKS:
-      specifics->mutable_web_apk();
-      break;
     case WIFI_CONFIGURATIONS:
       specifics->mutable_wifi_configuration();
       break;
@@ -1286,17 +1352,11 @@ void AddDefaultFieldValue(DataType type, sync_pb::EntitySpecifics* specifics) {
     case COLLABORATION_GROUP:
       specifics->mutable_collaboration_group();
       break;
-    case PLUS_ADDRESS:
-      specifics->mutable_plus_address();
-      break;
     case PRODUCT_COMPARISON:
       specifics->mutable_product_comparison();
       break;
     case COOKIES:
       specifics->mutable_cookie();
-      break;
-    case PLUS_ADDRESS_SETTING:
-      specifics->mutable_plus_address_setting();
       break;
     case AUTOFILL_VALUABLE:
       specifics->mutable_autofill_valuable();
@@ -1325,29 +1385,31 @@ void AddDefaultFieldValue(DataType type, sync_pb::EntitySpecifics* specifics) {
     case GEMINI_THREAD:
       specifics->mutable_gemini_thread();
       break;
-    case ACCESSIBILITY_ANNOTATION:
-      specifics->mutable_accessibility_annotation();
-      break;
     case THEMES_ANDROID:
       specifics->mutable_theme_android();
+      break;
+    case NOTEBOOK:
+      specifics->mutable_notebook();
+      break;
+    case JOURNEY:
+      specifics->mutable_journey();
+      break;
+    case AUTOFILL_ENTITY_SUPPRESSION:
+      specifics->mutable_autofill_entity_suppression();
       break;
   }
 }
 
 DataType GetDataTypeFromSpecificsFieldNumber(int field_number) {
-  static const base::NoDestructor<absl::flat_hash_map<int, DataType>>
-      field_number_to_type([] {
-        absl::flat_hash_map<int, DataType> map;
-        for (const auto& info : kDataTypeInfoTable) {
-          if (info.specifics_field_number != -1) {
-            map.emplace(info.specifics_field_number, info.type);
-          }
-        }
-        return map;
-      }());
+  static constexpr auto kFieldNumberToType =
+      []<size_t... I>(std::index_sequence<I...>) {
+        return base::MakeFixedFlatMap<int, DataType>(
+            {{kDataTypeInfoTable[I].specifics_field_number,
+              kDataTypeInfoTable[I].type}...});
+      }(std::make_index_sequence<GetNumDataTypes()>());
 
-  auto it = field_number_to_type->find(field_number);
-  return (it != field_number_to_type->end()) ? it->second : UNSPECIFIED;
+  auto it = kFieldNumberToType.find(field_number);
+  return (it != kFieldNumberToType.end()) ? it->second : UNSPECIFIED;
 }
 
 int GetSpecificsFieldNumberFromDataType(DataType data_type) {
@@ -1399,36 +1461,6 @@ DataTypeSet ProtocolTypes() {
 DataTypeSet UserTypes() {
   static const DataTypeSet types =
       DataTypeSet::FromRange(FIRST_USER_DATA_TYPE, LAST_USER_DATA_TYPE);
-  return types;
-}
-
-DataTypeSet AlwaysPreferredUserTypes() {
-  // TODO(crbug.com/477624427): add SKILL to a corresponding UserSelectableType
-  // or another toggle.
-  DataTypeSet types = {ACCOUNT_SETTING,
-                       DEVICE_INFO,
-                       USER_CONSENTS,
-                       PLUS_ADDRESS,
-                       PLUS_ADDRESS_SETTING,
-                       PRIORITY_PREFERENCES,
-                       SECURITY_EVENTS,
-                       SEND_TAB_TO_SELF,
-                       SUPERVISED_USER_SETTINGS,
-                       SHARING_MESSAGE,
-                       SKILL,
-                       AI_THREAD,
-                       GEMINI_THREAD};
-  // TODO(crbug.com/412602018): Mark AlwaysPreferredUserTypes() method as
-  // constexpr when removing the feature flag.
-  if (!base::FeatureList::IsEnabled(
-          kSyncSupportAlwaysSyncingPriorityPreferences)) {
-    types.Remove(PRIORITY_PREFERENCES);
-  }
-
-  if (base::FeatureList::IsEnabled(kSyncAccessibilityAnnotation)) {
-    types.Put(ACCESSIBILITY_ANNOTATION);
-  }
-
   return types;
 }
 
@@ -1545,6 +1577,20 @@ DataTypeSet EncryptableUserTypes() {
   return encryptable_user_types;
 }
 
+DataTypeSet LocalSyncSupportedTypes() {
+  static const DataTypeSet types = [] {
+    DataTypeSet types;
+    for (const DataTypeInfo& info : kDataTypeInfoTable) {
+      if (info.local_sync_support_policy ==
+          LocalSyncSupportPolicy::kSupported) {
+        types.Put(info.type);
+      }
+    }
+    return types;
+  }();
+  return types;
+}
+
 std::string_view DataTypeToDebugString(DataType data_type) {
   return GetDataTypeInfo(data_type).debug_string;
 }
@@ -1573,12 +1619,14 @@ DataTypeForHistograms DataTypeHistogramValue(DataType data_type) {
       return DataTypeForHistograms::kAutofillWalletData;
     case AUTOFILL_WALLET_METADATA:
       return DataTypeForHistograms::kAutofillWalletMetadata;
-    case AUTOFILL_WALLET_OFFER:
-      return DataTypeForHistograms::kAutofillWalletOffer;
     case AUTOFILL_WALLET_USAGE:
       return DataTypeForHistograms::kAutofillWalletUsage;
     case THEMES:
       return DataTypeForHistograms::kThemes;
+    case ENCRYPTED_TAB_CONTEXT_CONTAINER:
+      return DataTypeForHistograms::kEncryptedTabContextContainer;
+    case ENCRYPTED_TAB_CONTEXT_ITEM:
+      return DataTypeForHistograms::kEncryptedTabContextItem;
     case THEMES_IOS:
       return DataTypeForHistograms::kThemesIos;
     case EXTENSIONS:
@@ -1623,8 +1671,6 @@ DataTypeForHistograms DataTypeHistogramValue(DataType data_type) {
       return DataTypeForHistograms::kWifiConfigurations;
     case WEB_APPS:
       return DataTypeForHistograms::kWebApps;
-    case WEB_APKS:
-      return DataTypeForHistograms::kWebApks;
     case OS_PREFERENCES:
       return DataTypeForHistograms::kOsPreferences;
     case OS_PRIORITY_PREFERENCES:
@@ -1651,14 +1697,10 @@ DataTypeForHistograms DataTypeHistogramValue(DataType data_type) {
       return DataTypeForHistograms::kSharedTabGroupData;
     case COLLABORATION_GROUP:
       return DataTypeForHistograms::kCollaborationGroup;
-    case PLUS_ADDRESS:
-      return DataTypeForHistograms::kPlusAddresses;
     case PRODUCT_COMPARISON:
       return DataTypeForHistograms::kProductComparison;
     case COOKIES:
       return DataTypeForHistograms::kCookies;
-    case PLUS_ADDRESS_SETTING:
-      return DataTypeForHistograms::kPlusAddressSettings;
     case AUTOFILL_VALUABLE:
       return DataTypeForHistograms::kAutofillValuable;
     case AUTOFILL_VALUABLE_METADATA:
@@ -1679,10 +1721,14 @@ DataTypeForHistograms DataTypeHistogramValue(DataType data_type) {
       return DataTypeForHistograms::kSkill;
     case GEMINI_THREAD:
       return DataTypeForHistograms::kGeminiThread;
-    case ACCESSIBILITY_ANNOTATION:
-      return DataTypeForHistograms::kAccessibilityAnnotation;
     case THEMES_ANDROID:
       return DataTypeForHistograms::kThemesAndroid;
+    case NOTEBOOK:
+      return DataTypeForHistograms::kNotebook;
+    case JOURNEY:
+      return DataTypeForHistograms::kJourney;
+    case AUTOFILL_ENTITY_SUPPRESSION:
+      return DataTypeForHistograms::kAutofillEntitySuppression;
   }
   NOTREACHED();
 }
@@ -1690,6 +1736,18 @@ DataTypeForHistograms DataTypeHistogramValue(DataType data_type) {
 int DataTypeToStableIdentifier(DataType data_type) {
   // Make sure the value is stable and positive.
   return static_cast<int>(DataTypeHistogramValue(data_type)) + 1;
+}
+
+DataType GetDataTypeFromStableIdentifier(int stable_identifier) {
+  if (stable_identifier <= 0) {
+    return UNSPECIFIED;
+  }
+  for (DataType data_type : DataTypeSet::All()) {
+    if (DataTypeToStableIdentifier(data_type) == stable_identifier) {
+      return data_type;
+    }
+  }
+  return UNSPECIFIED;
 }
 
 std::string DataTypeSetToDebugString(DataTypeSet data_types) {

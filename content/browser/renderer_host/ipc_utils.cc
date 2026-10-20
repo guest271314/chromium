@@ -9,12 +9,13 @@
 
 #include "base/debug/crash_logging.h"
 #include "base/debug/dump_without_crashing.h"
+#include "base/strings/string_util.h"
 #include "base/strings/to_string.h"
 #include "content/browser/bad_message.h"
 #include "content/browser/blob_storage/chrome_blob_storage_context.h"
-#include "content/browser/child_process_security_policy_impl.h"
 #include "content/browser/renderer_host/frame_tree_node.h"
 #include "content/browser/renderer_host/render_frame_host_impl.h"
+#include "content/browser/security/cpsp/child_process_security_policy_impl.h"
 #include "content/common/features.h"
 #include "content/common/frame.mojom.h"
 #include "content/common/navigation_params_utils.h"
@@ -58,10 +59,10 @@ bool IsValidRendererDisposition(WindowOpenDisposition disposition) {
 
 // Validates that |received_token| is non-null iff associated with a blob: URL.
 bool VerifyBlobToken(
-    int process_id,
+    ChildProcessId process_id,
     const mojo::PendingRemote<blink::mojom::BlobURLToken>& received_token,
     const GURL& received_url) {
-  DCHECK_NE(ChildProcessHost::kInvalidUniqueID, process_id);
+  CHECK(process_id, base::NotFatalUntil::M154);
 
   if (received_token.is_valid()) {
     if (!received_url.SchemeIsBlob()) {
@@ -75,46 +76,31 @@ bool VerifyBlobToken(
 }
 
 bool VerifyInitiatorOrigin(
-    int process_id,
+    ChildProcessId process_id,
     const url::Origin& initiator_origin,
     const RenderFrameHostImpl* current_rfh = nullptr,
     GURL* navigation_url = nullptr,
     std::optional<blink::LocalFrameToken>* initiator_frame_token = nullptr) {
-  // TODO(crbug.com/40109437): Ideally, origin verification should be performed
-  // even if `initiator_origin` is opaque, to ensure that the precursor origin
-  // matches the process lock. However, there are a couple of cases where this
-  // doesn't yet work, which are documented and skipped below.
-  if (initiator_origin.opaque()) {
-    // Reloads initiated from error pages may currently lead to a precursor
-    // mismatch, since the error page loads with an opaque origin with the
-    // original URL's origin as its precursor, which may not match the error
-    // page's process lock. This is seen in the following
-    // RenderFrameHostManagerTest tests:
-    // 1. ErrorPageNavigationReload:
-    //    - renderer origin lock = chrome-error://chromewebdata/
-    //    - precursor of initiator origin = http://127.0.0.1:.../
-    // 2. ErrorPageNavigationReload_InSubframe_BlockedByClient
-    //    - renderer origin lock = http://b.com:.../
-    //    - precursor of initiator origin = http://c.com:.../
-    if (current_rfh && current_rfh->IsErrorDocument()) {
-      return true;
-    }
-
-    // Certain (e.g., data:) navigations in subframes of MHTML documents may
-    // have precursor origins that do not match the process lock of the MHTML
-    // document. This is seen in NavigationMhtmlBrowserTest.DataIframe, where:
-    //   - renderer origin lock = { file:/// sandboxed }
-    //   - precursor of initiator origin = http://8.8.8.8/
-    // Note that RenderFrameHostImpl::CanCommitOriginAndUrl() similarly allows
-    // such navigations to commit, and it also ensures that they can only commit
-    // in the main frame MHTML document's process.
-    if (current_rfh && current_rfh->IsMhtmlSubframe()) {
-      return true;
-    }
-  }
+  // Important Note about opaque origins: these checks used to be skipped for
+  // opaque origins in two tricky cases, error pages and MHTML subframes. These
+  // exemptions are no longer needed now that ChildProcessSecurityPolicy's
+  // enforcements have been switched to use committed origin tracking. Any error
+  // page or MHTML subframe that could legitimately initiate a navigation has
+  // already committed in this process, so its (opaque) origin has been recorded
+  // by ChildProcessSecurityPolicyImpl::AddCommittedOrigin and the HostsOrigin()
+  // check below will accept it, even if the precursor doesn't match the process
+  // lock. This is covered in tests such as ErrorPageNavigationReload,
+  // ErrorPageNavigationReload_InSubframe_BlockedByClient, and
+  // NavigationMhtmlBrowserTest.DataIframe.
+  //
+  // Warning: avoid skipping this check for future cases, as doing so carries
+  // security consequences, allowing the renderer to claim an opaque initiator
+  // with an arbitrary precursor. See crbug.com/516398679 and
+  // crbug.com/517606780.
 
   auto* policy = ChildProcessSecurityPolicyImpl::GetInstance();
-  if (!policy->HostsOrigin(process_id, initiator_origin)) {
+  // TODO(crbug.com/379869738): Remove GetUnsafeValue.
+  if (!policy->HostsOrigin(process_id.GetUnsafeValue(), initiator_origin)) {
     if (navigation_url) {
       static auto* const navigation_url_key =
           base::debug::AllocateCrashKeyString(
@@ -201,23 +187,44 @@ bool VerifyInitiatorOrigin(
 
 bool VerifyDownloadUrlParams(RenderProcessHost* process,
                              const blink::mojom::DownloadURLParams& params) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M154);
   CHECK(process);
-  int process_id = process->GetDeprecatedID();
+  ChildProcessId process_id = process->GetID();
 
   // Verifies |params.blob_url_token| is appropriately set.
   if (!VerifyBlobToken(process_id, params.blob_url_token, params.url))
     return false;
+
+  // Unlike OpenURL (where a renderer may legitimately navigate to an external
+  // blob: URL without a token, e.g. via drag-and-drop), renderer-initiated
+  // downloads of blob: URLs always bind a BlobURLToken.
+  if (params.url.SchemeIsBlob() && !params.blob_url_token.is_valid()) {
+    bad_message::ReceivedBadMessage(
+        process_id, bad_message::RFH_DOWNLOAD_URL_BLOB_WITHOUT_TOKEN);
+    return false;
+  }
 
   // Verify |params.initiator_origin|.
   if (params.initiator_origin &&
       !VerifyInitiatorOrigin(process_id, *params.initiator_origin))
     return false;
 
-  // If |params.url| is not set, this must be a large data URL being passed
-  // through |params.data_url_blob|.
-  if (!params.url.is_valid() && !params.data_url_blob.is_valid())
+  // Verify |params.referrer|.
+  if (params.referrer && !params.referrer->url.is_empty()) {
+    auto* policy = ChildProcessSecurityPolicyImpl::GetInstance();
+    if (!policy->HostsOrigin(process_id.GetUnsafeValue(),
+                             url::Origin::Create(params.referrer->url))) {
+      bad_message::ReceivedBadMessage(
+          process_id, bad_message::RFH_DOWNLOAD_URL_INVALID_REFERRER);
+      return false;
+    }
+  }
+
+  // If `params.url` is not set, this must be a large data URL being passed
+  // through `params.data_url_buffer`.
+  if (!params.url.is_valid() && !params.data_url_buffer) {
     return false;
+  }
 
   // Verification succeeded.
   return true;
@@ -229,12 +236,12 @@ bool VerifyOpenURLParams(RenderFrameHostImpl* current_rfh,
                          GURL* out_validated_url,
                          scoped_refptr<network::SharedURLLoaderFactory>*
                              out_blob_url_loader_factory) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
-  DCHECK(current_rfh);
-  DCHECK(process);
-  DCHECK(out_validated_url);
-  DCHECK(out_blob_url_loader_factory);
-  int process_id = process->GetDeprecatedID();
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M154);
+  CHECK(current_rfh, base::NotFatalUntil::M154);
+  CHECK(process, base::NotFatalUntil::M154);
+  CHECK(out_validated_url, base::NotFatalUntil::M154);
+  CHECK(out_blob_url_loader_factory, base::NotFatalUntil::M154);
+  ChildProcessId process_id = process->GetID();
 
   // Verify |params.url| and populate |out_validated_url|.
   *out_validated_url = params->url;
@@ -311,10 +318,10 @@ bool VerifyBeginNavigationCommonParams(
     const RenderFrameHostImpl& current_rfh,
     blink::mojom::CommonNavigationParams* common_params,
     std::optional<blink::LocalFrameToken>& initiator_frame_token) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
-  DCHECK(common_params);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M154);
+  CHECK(common_params, base::NotFatalUntil::M154);
   RenderProcessHost* process = current_rfh.GetProcess();
-  int process_id = process->GetDeprecatedID();
+  ChildProcessId process_id = process->GetID();
 
   // Verify (and possibly rewrite) |url|.
   process->FilterURL(false, &common_params->url);
@@ -380,9 +387,46 @@ bool VerifyBeginNavigationCommonParams(
   return true;
 }
 
+bool VerifyClientSideRedirectUrl(const RenderFrameHostImpl& current_rfh,
+                                 GURL* client_side_redirect_url) {
+  CHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK(client_side_redirect_url);
+
+  // `client_side_redirect_url` is only populated if the navigation's transition
+  // type is a client side redirect. For all other renderer-initiated
+  // navigations, it is intentionally empty.
+  if (client_side_redirect_url->is_empty()) {
+    return true;
+  }
+
+  RenderProcessHost* process = current_rfh.GetProcess();
+  CHECK(process);
+
+  process->FilterURL(false, client_side_redirect_url);
+
+  // Verify that `process` has hosted `redirect_origin` either as a standard
+  // tuple origin or as the precursor of an opaque origin (e.g. when the
+  // redirect is initiated by a sandboxed document). URLs blocked by FilterURL()
+  // are rewritten to about:blank#blocked, which is treated as the
+  // `current_rfh`'s origin.
+  url::Origin redirect_origin = url::Origin::Resolve(
+      *client_side_redirect_url, current_rfh.GetLastCommittedOrigin());
+  auto* policy = ChildProcessSecurityPolicyImpl::GetInstance();
+  ChildProcessId process_id = process->GetID();
+  if (!policy->HostsOrigin(process_id.GetUnsafeValue(), redirect_origin) &&
+      !policy->HostsOrigin(process_id.GetUnsafeValue(),
+                           redirect_origin.DeriveNewOpaqueOrigin())) {
+    bad_message::ReceivedBadMessage(
+        process, bad_message::RFHI_INVALID_CLIENT_SIDE_REDIRECT_URL);
+    return false;
+  }
+
+  return true;
+}
+
 bool VerifyCreateNewWindowParams(const RenderFrameHostImpl& current_rfh,
                                  const mojom::CreateNewWindowParams& params) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M154);
   RenderProcessHost* process = current_rfh.GetProcess();
 
   // Certain dispositions should never be sent from the renderer, so terminate
@@ -390,6 +434,13 @@ bool VerifyCreateNewWindowParams(const RenderFrameHostImpl& current_rfh,
   if (!IsValidRendererDisposition(params.disposition)) {
     bad_message::ReceivedBadMessage(
         process, bad_message::RFH_CREATE_NEW_WINDOW_INVALID_DISPOSITION);
+    return false;
+  }
+
+  if (params.pip_options &&
+      params.disposition != WindowOpenDisposition::NEW_PICTURE_IN_PICTURE) {
+    bad_message::ReceivedBadMessage(
+        process, bad_message::RFH_CREATE_NEW_WINDOW_INVALID_PIP_OPTIONS);
     return false;
   }
 
@@ -407,7 +458,7 @@ bool VerifyCreateNewWindowParams(const RenderFrameHostImpl& current_rfh,
 bool VerifyNavigationInitiator(
     RenderFrameHostImpl* current_rfh,
     const std::optional<blink::LocalFrameToken>& initiator_frame_token,
-    int initiator_process_id) {
+    ChildProcessId initiator_process_id) {
   // Verify that a frame inside a fenced frame cannot navigate its ancestors,
   // unless the frame being navigated is the outermost main frame.
   if (current_rfh->IsOutermostMainFrame())
@@ -465,8 +516,15 @@ bool VerifyNavigationInitiator(
 
 bool VerifyNavigationHeaders(RenderProcessHost* process,
                              const std::string& headers) {
+  // Navigation headers may be LF-separated and are normalized to CRLF
+  // before being applied to the outgoing request.
+  // AddHeadersFromString() splits only on CRLF, so apply the same normalization
+  // here to ensure consistent header verification.
+  std::string headers_crlf;
+  base::ReplaceChars(headers, "\n", "\r\n", &headers_crlf);
+
   net::HttpRequestHeaders parsed_headers;
-  parsed_headers.AddHeadersFromString(headers);
+  parsed_headers.AddHeadersFromString(headers_crlf);
   for (net::HttpRequestHeaders::Iterator header(parsed_headers);
        header.GetNext();) {
     // Headers should be strictly allowlisted because there can be security
@@ -480,7 +538,8 @@ bool VerifyNavigationHeaders(RenderProcessHost* process,
         header.name() != net::HttpRequestHeaders::kContentType &&
         header.name() != net::HttpRequestHeaders::kUserAgent &&
         header.name() != net::HttpRequestHeaders::kSecPurpose &&
-        header.name() != net::HttpRequestHeaders::kDNT) {
+        header.name() != net::HttpRequestHeaders::kDNT &&
+        header.name() != net::HttpRequestHeaders::kSecGPC) {
       if (base::FeatureList::IsEnabled(
               features::kKillOnInvalidNavigationHeaders)) {
         SCOPED_CRASH_KEY_STRING64("Bug487795397", "invalid_header",

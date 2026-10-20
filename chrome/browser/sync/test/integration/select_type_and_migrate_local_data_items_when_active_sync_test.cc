@@ -18,7 +18,7 @@
 #include "components/autofill/core/browser/data_manager/addresses/address_data_manager.h"
 #include "components/autofill/core/browser/data_manager/personal_data_manager.h"
 #include "components/autofill/core/browser/data_model/addresses/autofill_profile.h"
-#include "components/autofill/core/browser/test_utils/autofill_test_utils.h"
+#include "components/autofill/core/browser/test_utils/autofill_test_util.h"
 #include "components/autofill/core/common/autofill_features.h"
 #include "components/bookmarks/browser/bookmark_model.h"
 #include "components/bookmarks/browser/bookmark_node.h"
@@ -127,7 +127,7 @@ class SelectTypeAndMigrateLocalDataItemsWhenActiveTest : public SyncTest {
   extensions::ExtensionId SaveLocalExtension() {
     return SyncExtensionHelper::GetInstance()->InstallExtension(
         GetProfile(0), "simple_with_file",
-        extensions::Manifest::TYPE_EXTENSION);
+        extensions::Manifest::Type::kExtension);
   }
 
   std::vector<const AutofillProfile*> GetLocalAddresses() {

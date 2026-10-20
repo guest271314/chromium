@@ -9,10 +9,9 @@
 #include "content/public/browser/web_contents.h"
 
 PermissionPromptQuietIcon::PermissionPromptQuietIcon(
-    Browser* browser,
     content::WebContents* web_contents,
     Delegate* delegate)
-    : PermissionPromptDesktop(browser, web_contents, delegate) {
+    : PermissionPromptDesktop(web_contents, delegate) {
   content_settings::UpdateLocationBarUiForWebContents(web_contents);
 }
 
@@ -28,4 +27,11 @@ PermissionPromptQuietIcon::GetPromptDisposition() const {
                    LOCATION_BAR_RIGHT_STATIC_ICON
              : permissions::PermissionPromptDisposition::
                    LOCATION_BAR_RIGHT_ANIMATED_ICON;
+}
+
+std::optional<gfx::Rect> PermissionPromptQuietIcon::GetViewBoundsInScreen()
+    const {
+  // The quiet prompt is only an icon in the location bar and does not own a
+  // view that overlays the web contents.
+  return std::nullopt;
 }

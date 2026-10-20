@@ -16,8 +16,10 @@
 #include "components/search_engines/template_url.h"
 #include "components/search_engines/template_url_service.h"
 #include "components/version_info/channel.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/web_contents.h"
 #include "net/base/url_util.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
 
 std::unique_ptr<KeyedService> BuildMockContextualSearchServiceInstance(
     content::BrowserContext* /*context*/) {
@@ -134,11 +136,15 @@ void MockQueryController::FakeCreateSearchUrl(
   std::move(callback).Run(result_url);
 }
 
+TestWebContentsDelegate::TestWebContentsDelegate() = default;
+TestWebContentsDelegate::~TestWebContentsDelegate() = default;
+
 content::WebContents* TestWebContentsDelegate::OpenURLFromTab(
     content::WebContents* source,
     const content::OpenURLParams& params,
     base::OnceCallback<void(content::NavigationHandle&)>
         navigation_handle_callback) {
+  callback_ = std::move(navigation_handle_callback);
   source->GetController().LoadURLWithParams(
       content::NavigationController::LoadURLParams(params));
   return source;
@@ -203,6 +209,10 @@ ContextualSearchboxHandlerTestHarness::GetTestingFactories() const {
                 /*url_loader_factory=*/nullptr,
                 /*template_url_service=*/nullptr,
                 /*variations_client=*/nullptr, version_info::Channel::UNKNOWN,
-                "en-US");
+                "en-US",
+                /*tab_validator=*/nullptr,
+                base::BindRepeating(
+                    [](std::optional<size_t>,
+                       base::OnceCallback<void(std::vector<std::string>)>) {}));
           })}};
 }

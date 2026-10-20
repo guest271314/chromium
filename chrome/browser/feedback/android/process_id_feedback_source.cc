@@ -7,6 +7,7 @@
 
 #include "base/android/jni_array.h"
 #include "base/functional/bind.h"
+#include "base/process/process.h"
 #include "base/types/fixed_array.h"
 #include "content/public/browser/browser_child_process_host_iterator.h"
 #include "content/public/browser/browser_thread.h"
@@ -46,23 +47,28 @@ ProcessIdFeedbackSource::~ProcessIdFeedbackSource() = default;
 void ProcessIdFeedbackSource::PrepareProcessIds() {
   // Browser child process info needs accessing on IO thread, while renderer
   // process info on UI thread.
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M161);
 
   for (content::RenderProcessHost::iterator it(
            content::RenderProcessHost::AllHostsIterator());
        !it.IsAtEnd(); it.Advance()) {
     content::RenderProcessHost* host = it.GetCurrentValue();
-    process_ids_[content::PROCESS_TYPE_RENDERER].push_back(
-        host->GetProcess().Pid());
+    const base::Process& process = host->GetProcess();
+    if (process.IsValid()) {
+      process_ids_[content::PROCESS_TYPE_RENDERER].push_back(process.Pid());
+    }
   }
 
-  for (content::BrowserChildProcessHostIterator iter; !iter.Done(); ++iter)
-    process_ids_[iter.GetData().process_type].push_back(
-        iter.GetData().GetProcess().Handle());
+  for (content::BrowserChildProcessHostIterator iter; !iter.Done(); ++iter) {
+    const base::Process& process = iter.GetProcess();
+    if (process.IsValid()) {
+      process_ids_[iter.GetData().process_type].push_back(process.Handle());
+    }
+  }
 
   JNIEnv* env = AttachCurrentThread();
   ScopedJavaLocalRef<jobject> obj = java_ref_.get(env);
-  DCHECK(!obj.is_null());
+  CHECK(!obj.is_null(), base::NotFatalUntil::M161);
   Java_ProcessIdFeedbackSource_prepareCompleted(
       env, obj, reinterpret_cast<intptr_t>(this));
 }

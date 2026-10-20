@@ -26,6 +26,7 @@ swift_source_set("ui_swift") {
     "overflow_menu_footer.swift",
     "overflow_menu_footer_row.swift",
     "overflow_menu_hosting_controller.swift",
+    "overflow_menu_identity_row.swift",
     "overflow_menu_item.swift",
     "overflow_menu_list_style.swift",
     "overflow_menu_model.swift",
@@ -33,7 +34,6 @@ swift_source_set("ui_swift") {
     "overflow_menu_ui_configuration.swift",
     "overflow_menu_view.swift",
     "overflow_menu_view_provider.swift",
-    "ui_menu_element_view.swift",
   ]
 
   deps = [
@@ -42,7 +42,9 @@ swift_source_set("ui_swift") {
     "//ios/chrome/browser/popup_menu/public",
     "//ios/chrome/browser/popup_menu/public:metrics_protocols",
     "//ios/chrome/browser/shared/ui/symbols",
+    "//ios/chrome/browser/shared/ui/table_view/content_configuration",
     "//ios/chrome/browser/shared/ui/util:util_swiftui",
+    "//ios/chrome/browser/signin/ui/avatar",
     "//ios/chrome/common:timing",
     "//ios/chrome/common/ui/colors:swift",
     "//ui/base",
@@ -71,14 +73,19 @@ source_set("unit_tests") {
   testonly = true
   sources = [
     "action_customization_model_unittest.mm",
+    "destination_customization_model_unittest.mm",
+    "overflow_menu_hosting_controller_unittest.mm",
     "overflow_menu_metrics_unittest.mm",
   ]
   deps = [
     ":overflow_menu_metrics",
     ":ui_swift",
     "//base",
+    "//base/test:test_support",
     "//ios/chrome/browser/popup_menu/overflow_menu/public:overflow_menu_constants",
+    "//ios/chrome/browser/popup_menu/public:metrics_protocols",
     "//ios/chrome/browser/shared/ui/symbols",
     "//testing/gtest",
+    "//ui/base",
   ]
 }

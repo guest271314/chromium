@@ -26,7 +26,6 @@ class TickClock;
 
 namespace net {
 
-class CanaryDomainService;
 class HostCache;
 class HostResolverManager;
 class ResolveContext;
@@ -57,16 +56,19 @@ class NET_EXPORT ContextHostResolver : public HostResolver {
   std::unique_ptr<ResolveHostRequest> CreateRequest(
       url::SchemeHostPort host,
       NetworkAnonymizationKey network_anonymization_key,
+      handles::NetworkHandle target_network,
       NetLogWithSource net_log,
       std::optional<ResolveHostParameters> optional_parameters) override;
   std::unique_ptr<ResolveHostRequest> CreateRequest(
       const HostPortPair& host,
       const NetworkAnonymizationKey& network_anonymization_key,
+      handles::NetworkHandle target_network,
       const NetLogWithSource& net_log,
       const std::optional<ResolveHostParameters>& optional_parameters) override;
   std::unique_ptr<ServiceEndpointRequest> CreateServiceEndpointRequest(
       Host host,
       NetworkAnonymizationKey network_anonymization_key,
+      handles::NetworkHandle target_network,
       NetLogWithSource net_log,
       ResolveHostParameters parameters) override;
   std::unique_ptr<ProbeRequest> CreateDohProbeRequest() override;
@@ -80,7 +82,6 @@ class NET_EXPORT ContextHostResolver : public HostResolver {
   HostResolverManager* GetManagerForTesting() override;
   const URLRequestContext* GetContextForTesting() const override;
   handles::NetworkHandle GetTargetNetworkForTesting() const override;
-  std::unique_ptr<CanaryDomainService> CreateCanaryDomainService() override;
 
   // Returns the number of host cache entries that were restored, or 0 if there
   // is no cache.
@@ -99,6 +100,7 @@ class NET_EXPORT ContextHostResolver : public HostResolver {
   std::unique_ptr<ResolveHostRequest> CreateRequestInternal(
       HostResolver::Host host,
       NetworkAnonymizationKey network_anonymization_key,
+      handles::NetworkHandle target_network,
       NetLogWithSource net_log,
       std::optional<ResolveHostParameters> optional_parameters);
 

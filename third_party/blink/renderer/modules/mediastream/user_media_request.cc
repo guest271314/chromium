@@ -427,9 +427,9 @@ UserMediaRequest* UserMediaRequest::Create(
       };
       for (const BaseConstraint* constraint : constraints) {
         if (constraint->HasMandatory()) {
-          exception_state.ThrowTypeError(UNSAFE_TODO(
-              String::Format("Mandatory %s constraints are not supported",
-                             constraint->GetName())));
+          exception_state.ThrowTypeError(
+              StrCat({"Mandatory ", constraint->GetName(),
+                      " constraints are not supported"}));
           return nullptr;
         }
       }
@@ -649,6 +649,14 @@ UserMediaRequest* UserMediaRequest::Create(
     RecordGetDisplayMediaIncludeExcludeConstraintUma(
         include_or_exclude,
         "Media.GetDisplayMedia.Constraints.MonitorTypeSurfaces");
+  }
+
+  result->set_audio_selection_preferred(options->hasAudioSelection());
+  if (media_type == UserMediaRequestType::kDisplayMedia) {
+    RecordBooleanConstraintUma(
+        result->audio_selection_preferred() ? std::make_optional(true)
+                                            : std::nullopt,
+        "Media.GetDisplayMedia.Constraints.AudioSelection");
   }
 
   result->set_suppress_local_audio_playback(
@@ -996,6 +1004,7 @@ void UserMediaRequest::Fail(Result error, const String& message) {
     case Result::TRACK_START_FAILURE_VIDEO:
     case Result::AUDIO_DEVICE_SOCKET_ERROR:
     case Result::DEVICE_IN_USE:
+    case Result::DEVICE_REMOVED:
       exception_code = DOMExceptionCode::kNotReadableError;
       result_enum = UserMediaRequestResult::kNotReadableError;
       break;

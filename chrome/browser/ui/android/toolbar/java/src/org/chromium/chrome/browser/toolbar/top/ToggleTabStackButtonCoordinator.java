@@ -35,9 +35,10 @@ import org.chromium.chrome.browser.layouts.LayoutStateProvider.LayoutStateObserv
 import org.chromium.chrome.browser.layouts.LayoutType;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.tab.CurrentTabObserver;
-import org.chromium.chrome.browser.tab.EmptyTabObserver;
 import org.chromium.chrome.browser.tab.Tab;
+import org.chromium.chrome.browser.tab.TabObserver;
 import org.chromium.chrome.browser.tab_ui.TabModelDotInfo;
+import org.chromium.chrome.browser.tab_ui.TabSwitcherUtils;
 import org.chromium.chrome.browser.tabmodel.IncognitoStateProvider;
 import org.chromium.chrome.browser.tabmodel.TabModelSelector;
 import org.chromium.chrome.browser.tabmodel.TabModelUtils;
@@ -90,6 +91,7 @@ public class ToggleTabStackButtonCoordinator extends ToolbarChildButton {
     private final Callback<Integer> mArchivedTabCountObserver = this::maybeShowDeclutterIph;
     private @Nullable Callback<TabModelSelector> mTabModelSelectorCallback;
     private boolean mAlreadyRequestedDeclutterIph;
+    private boolean mHasSpaceToShow;
 
     /**
      * @param context The Android context used for various view operations.
@@ -124,13 +126,16 @@ public class ToggleTabStackButtonCoordinator extends ToolbarChildButton {
         mPageLoadObserver =
                 new CurrentTabObserver(
                         activityTabSupplier,
-                        new EmptyTabObserver() {
+                        new TabObserver() {
                             @Override
                             public void onPageLoadFinished(Tab tab, GURL url) {
                                 handlePageLoadFinished();
                             }
                         },
                         /* swapCallback= */ null);
+        if (TabSwitcherUtils.isGridTabSwitcherDisabled()) {
+            setHasSpaceToShow(false);
+        }
     }
 
     /**
@@ -148,7 +153,7 @@ public class ToggleTabStackButtonCoordinator extends ToolbarChildButton {
      */
     public void initializeWithNative(
             OnClickListener onClickListener,
-            OnLongClickListener onLongClickListener,
+            @Nullable OnLongClickListener onLongClickListener,
             MonotonicObservableSupplier<Integer> tabCountSupplier,
             @Nullable NonNullObservableSupplier<Integer> archivedTabCountSupplier,
             NonNullObservableSupplier<TabModelDotInfo> tabModelNotificationDotSupplier,
@@ -178,7 +183,7 @@ public class ToggleTabStackButtonCoordinator extends ToolbarChildButton {
         TabModelUtils.runOnTabStateInitialized(
                 tabModelSelector,
                 mCallbackController.makeCancelable(
-                        (unusedTabModelSelector) -> {
+                        _ -> {
                             handleTabRestoreCompleted();
                         }));
         if (tabModelSelector.isTabStateInitialized()) {
@@ -221,11 +226,29 @@ public class ToggleTabStackButtonCoordinator extends ToolbarChildButton {
     }
 
     @Override
+    public boolean hasSpaceToShow() {
+        return mHasSpaceToShow;
+    }
+
+    @Override
     public void setHasSpaceToShow(boolean hasSpaceToShow) {
+        if (TabSwitcherUtils.isGridTabSwitcherDisabled()) {
+            hasSpaceToShow = false;
+        }
+        mHasSpaceToShow = hasSpaceToShow;
         // TODO(crbug.com/455658153): Ensure setVisibility() can handle multiple sources for setting
         //  visibility. Currently this only accounts for visibility being set due to the width of
         //  the ToolbarTablet.
         mToggleTabStackButton.setVisibility(hasSpaceToShow ? View.VISIBLE : View.GONE);
+    }
+
+    @Override
+    public int updateVisibility(int availableWidth) {
+        if (TabSwitcherUtils.isGridTabSwitcherDisabled()) {
+            setHasSpaceToShow(false);
+            return 0;
+        }
+        return super.updateVisibility(availableWidth);
     }
 
     @Override
@@ -316,7 +339,7 @@ public class ToggleTabStackButtonCoordinator extends ToolbarChildButton {
                     public void onStartedShowing(@LayoutType int layoutType) {
                         if (layoutType == LayoutType.BROWSING) {
                             setClickable(false);
-                        } else if (layoutType == LayoutType.TAB_SWITCHER) {
+                        } else if (layoutType == LayoutType.HUB) {
                             updateTabSwitcherButtonRipple();
                         }
                     }

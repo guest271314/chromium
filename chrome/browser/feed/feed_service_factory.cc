@@ -10,6 +10,7 @@
 #include <utility>
 
 #include "base/check.h"
+#include "base/feature_list.h"
 #include "base/strings/string_util.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/task/task_traits.h"
@@ -23,7 +24,7 @@
 #include "chrome/browser/search_engines/template_url_service_factory.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/common/channel_info.h"
-#include "chrome/common/chrome_version.h"
+#include "chrome/common/pref_names.h"
 #include "components/background_task_scheduler/background_task_scheduler_factory.h"
 #include "components/feed/core/proto/v2/keyvalue_store.pb.h"
 #include "components/feed/core/proto/v2/store.pb.h"
@@ -140,12 +141,13 @@ class FeedServiceDelegateImpl : public FeedService::Delegate {
 // static
 FeedService* FeedServiceFactory::GetForBrowserContext(
     content::BrowserContext* context) {
-// Note that if both v1 and v2 are disabled in the build, feed::IsV2Enabled()
-// returns true. In that case, this function will return null. This prevents
-// creation of the Feed surface from triggering any other Feed behavior.
-  if (context)
+  // Note that if both v1 and v2 are disabled in the build, feed::IsV2Enabled()
+  // returns true. In that case, this function will return null. This prevents
+  // creation of the Feed surface from triggering any other Feed behavior.
+  if (context) {
     return static_cast<FeedService*>(
         GetInstance()->GetServiceForBrowserContext(context, /*create=*/true));
+  }
   return nullptr;
 }
 
@@ -207,7 +209,7 @@ FeedServiceFactory::BuildServiceInstanceForBrowserContext(
   base::FilePath feed_dir(profile->GetPath().Append(kFeedv2Folder));
 
   feed::ChromeInfo chrome_info;
-  chrome_info.version = base::Version({CHROME_VERSION});
+  chrome_info.version = version_info::GetVersion();
   chrome_info.channel = chrome::GetChannel();
 #if BUILDFLAG(IS_ANDROID)
   regional_capabilities::RegionalCapabilitiesService* regional_capabilities =
@@ -215,6 +217,7 @@ FeedServiceFactory::BuildServiceInstanceForBrowserContext(
           profile);
   chrome_info.is_new_tab_search_engine_url_android_enabled =
       regional_capabilities->IsInEeaCountry();
+  chrome_info.user_feedback_allowed_pref_key = ::prefs::kUserFeedbackAllowed;
 #else
   chrome_info.is_new_tab_search_engine_url_android_enabled = false;
 #endif

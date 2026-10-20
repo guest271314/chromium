@@ -8,8 +8,10 @@
 
 #include "base/base64.h"
 #include "base/functional/bind.h"
+#include "base/memory/scoped_refptr.h"
 #include "chrome/common/pref_names.h"
 #include "components/os_crypt/async/browser/os_crypt_async.h"
+#include "components/os_crypt/async/common/encryptor.h"
 #include "components/policy/core/common/policy_pref_names.h"
 #include "components/prefs/pref_registry_simple.h"
 #include "components/prefs/pref_service.h"
@@ -55,13 +57,12 @@ void DeviceOAuth2TokenStoreDesktop::RegisterPrefs(
 void DeviceOAuth2TokenStoreDesktop::Init(InitCallback callback) {
   os_crypt_async_->GetInstance(
       base::BindOnce(&DeviceOAuth2TokenStoreDesktop::OnOsCryptReady,
-                     weak_ptr_factory_.GetWeakPtr(), std::move(callback)),
-      os_crypt_async::Encryptor::Option::kEncryptSyncCompat);
+                     weak_ptr_factory_.GetWeakPtr(), std::move(callback)));
 }
 
 void DeviceOAuth2TokenStoreDesktop::OnOsCryptReady(
     InitCallback callback,
-    os_crypt_async::Encryptor encryptor) {
+    scoped_refptr<os_crypt_async::Encryptor> encryptor) {
   encryptor_ = std::move(encryptor);
 
   const bool had_pending_requests = !pending_set_token_requests_.empty();
@@ -171,8 +172,8 @@ void DeviceOAuth2TokenStoreDesktop::OnServiceAccountIdentityChanged() {
 }
 
 void DeviceOAuth2TokenStoreDesktop::DecryptToken() const {
-  DCHECK(!token_decrypted_);
-  DCHECK(!refresh_token_.empty());
+  CHECK(!token_decrypted_, base::NotFatalUntil::M161);
+  CHECK(!refresh_token_.empty(), base::NotFatalUntil::M161);
 
   std::string decrypted_token;
   CHECK(encryptor_) << "DecryptToken called before Init completed";

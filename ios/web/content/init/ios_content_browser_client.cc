@@ -68,7 +68,7 @@ std::string IOSContentBrowserClient::GetAcceptLangs(
 }
 
 std::string IOSContentBrowserClient::GetProduct() {
-  return std::string(version_info::GetProductNameAndVersionForUserAgent());
+  return version_info::GetProductNameAndVersionForUserAgent();
 }
 
 std::string IOSContentBrowserClient::GetUserAgent() {
@@ -76,22 +76,7 @@ std::string IOSContentBrowserClient::GetUserAgent() {
 }
 
 blink::UserAgentMetadata IOSContentBrowserClient::GetUserAgentMetadata() {
-  blink::UserAgentMetadata metadata;
-
-  metadata.brand_version_list.emplace_back(
-      std::string(version_info::GetProductName()), "113");
-  metadata.brand_full_version_list.emplace_back(
-      std::string(version_info::GetProductName()),
-      std::string(version_info::GetVersionNumber()));
-  metadata.full_version = std::string(version_info::GetVersionNumber());
-  metadata.platform = "Unknown";
-  metadata.architecture = embedder_support::GetCpuArchitecture();
-  metadata.model = embedder_support::BuildModelInfo();
-
-  metadata.bitness = embedder_support::GetCpuBitness();
-  metadata.wow64 = embedder_support::IsWoW64();
-
-  return metadata;
+  return embedder_support::GetUserAgentMetadata();
 }
 
 std::unique_ptr<content::WebContentsViewDelegate>
@@ -102,25 +87,6 @@ IOSContentBrowserClient::GetWebContentsViewDelegate(
     registry->MaybeCreatePageNodeForWebContents(web_contents);
   }
   return CreateWebContentsViewDelegate(web_contents);
-}
-
-bool IOSContentBrowserClient::IsSharedStorageAllowed(
-    content::BrowserContext* browser_context,
-    content::RenderFrameHost* rfh,
-    const url::Origin& top_frame_origin,
-    const url::Origin& accessing_origin,
-    std::string* out_debug_message,
-    bool* out_block_is_site_setting_specific) {
-  return true;
-}
-
-bool IOSContentBrowserClient::IsSharedStorageSelectURLAllowed(
-    content::BrowserContext* browser_context,
-    const url::Origin& top_frame_origin,
-    const url::Origin& accessing_origin,
-    std::string* out_debug_message,
-    bool* out_block_is_site_setting_specific) {
-  return true;
 }
 
 content::GeneratedCodeCacheSettings

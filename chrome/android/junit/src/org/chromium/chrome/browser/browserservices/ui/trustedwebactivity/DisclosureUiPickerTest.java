@@ -28,12 +28,11 @@ import org.mockito.junit.MockitoRule;
 
 import org.chromium.base.Callback;
 import org.chromium.base.test.BaseRobolectricTestRunner;
-import org.chromium.base.test.util.DisabledTest;
 import org.chromium.base.test.util.Feature;
 import org.chromium.chrome.browser.browserservices.intents.BrowserServicesIntentDataProvider;
 import org.chromium.chrome.browser.browserservices.intents.BrowserServicesIntentDataProvider.TwaDisclosureUi;
-import org.chromium.chrome.browser.browserservices.ui.view.DisclosureInfobar;
 import org.chromium.chrome.browser.browserservices.ui.view.DisclosureNotification;
+import org.chromium.chrome.browser.browserservices.ui.view.DisclosurePersistentSnackbar;
 import org.chromium.chrome.browser.browserservices.ui.view.DisclosureSnackbar;
 import org.chromium.chrome.browser.lifecycle.ActivityLifecycleDispatcher;
 import org.chromium.chrome.test.OverrideContextWrapperTestRule;
@@ -49,7 +48,7 @@ import java.util.List;
 @RunWith(BaseRobolectricTestRunner.class)
 public class DisclosureUiPickerTest {
 
-    @Mock public DisclosureInfobar mInfobar;
+    @Mock public DisclosurePersistentSnackbar mPersistentSnackbar;
     @Mock public DisclosureSnackbar mSnackbar;
     @Mock public DisclosureNotification mNotification;
 
@@ -73,7 +72,7 @@ public class DisclosureUiPickerTest {
         BaseNotificationManagerProxyFactory.setInstanceForTesting(mNotificationManager);
         mPicker =
                 new DisclosureUiPicker(
-                        () -> mInfobar,
+                        () -> mPersistentSnackbar,
                         () -> mSnackbar,
                         () -> mNotification,
                         mIntentDataProvider,
@@ -101,7 +100,7 @@ public class DisclosureUiPickerTest {
         when(mIntentDataProvider.getTwaDisclosureUi()).thenReturn(TwaDisclosureUi.V1_INFOBAR);
 
         mPicker.onFinishNativeInitialization();
-        verify(mInfobar).showIfNeeded();
+        verify(mPersistentSnackbar).showIfNeeded();
     }
 
     @Test
@@ -148,9 +147,9 @@ public class DisclosureUiPickerTest {
 
     @Test
     @Feature("TrustedWebActivities")
-    @DisabledTest // This needs to be re-worked for Q.
     public void picksSnackbar_whenAutomotive() {
         mAutomotiveContextWrapperTestRule.setIsAutomotive(true);
+        setNotificationsEnabled(true);
         setChannelEnabled(WEBAPPS, true);
         setChannelEnabled(WEBAPPS_QUIET, true);
 

@@ -101,7 +101,7 @@ class CORE_EXPORT PerformanceTimingForReporting final
   // not useful, this function can be removed.
   uint64_t FirstMeaningfulPaintCandidate() const;
 
-  LargestContentfulPaintDetailsForReporting
+  const LargestContentfulPaintDetailsForReporting&
   LargestContentfulPaintDetailsForMetrics() const {
     return largest_contentful_paint_details_for_metrics_;
   }
@@ -183,6 +183,15 @@ class CORE_EXPORT PerformanceTimingForReporting final
 
   // The start time of the prerender activation navigation.
   std::optional<base::TimeDelta> PrerenderActivationStart() const;
+
+  base::TimeDelta SystemFallbackFontTime() const;
+  uint32_t SystemFallbackFontCount() const;
+  base::TimeDelta SystemFallbackFontInitialDuration() const;
+  uint32_t ShapeCacheHitCount() const;
+  uint32_t ShapeCacheMissCount() const;
+
+  std::vector<ScriptFontFallbackDetailsForReporting>
+  GetScriptFontFallbackDetails() const;
 
   void Trace(Visitor*) const override;
 

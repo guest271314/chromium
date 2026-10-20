@@ -19,6 +19,8 @@ import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.core.AllOf.allOf;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
+import static org.mockito.Mockito.any;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 
@@ -36,45 +38,49 @@ import androidx.test.espresso.UiController;
 import androidx.test.espresso.ViewAction;
 import androidx.test.filters.LargeTest;
 import androidx.test.filters.MediumTest;
-import androidx.test.filters.SmallTest;
 
 import org.hamcrest.Matcher;
 import org.hamcrest.Matchers;
 import org.junit.After;
+import org.junit.AfterClass;
 import org.junit.Before;
+import org.junit.BeforeClass;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
-import org.mockito.Spy;
+import org.mockito.Mockito;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.TimeUtils;
 import org.chromium.base.Token;
+import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.Criteria;
 import org.chromium.base.test.util.CriteriaHelper;
-import org.chromium.base.test.util.DoNotBatch;
 import org.chromium.base.test.util.Feature;
+import org.chromium.base.test.util.Features.DisableFeatures;
+import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.base.test.util.Restriction;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.ChromeTabbedActivity;
 import org.chromium.chrome.browser.RecentlyClosedEntriesManager;
+import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.multiwindow.MultiWindowUtils;
 import org.chromium.chrome.browser.preferences.ChromePreferenceKeys;
 import org.chromium.chrome.browser.preferences.ChromeSharedPreferences;
-import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tabmodel.TabModel;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
+import org.chromium.chrome.test.transit.AutoResetCtaTransitTestRule;
 import org.chromium.chrome.test.transit.ChromeTransitTestRules;
-import org.chromium.chrome.test.transit.FreshCtaTransitTestRule;
+import org.chromium.chrome.test.transit.page.CtaPageStation;
+import org.chromium.chrome.test.transit.page.RecentTabsPageStation;
+import org.chromium.chrome.test.transit.page.WebPageStation;
 import org.chromium.chrome.test.util.ChromeRenderTestRule;
-import org.chromium.chrome.test.util.RecentTabsPageTestUtils;
 import org.chromium.chrome.test.util.browser.signin.SigninTestRule;
 import org.chromium.chrome.test.util.browser.signin.SigninTestUtil;
-import org.chromium.components.embedder_support.util.UrlConstants;
 import org.chromium.components.embedder_support.util.UrlUtilities;
 import org.chromium.components.messages.MessageDispatcher;
 import org.chromium.components.messages.MessageDispatcherProvider;
@@ -88,6 +94,8 @@ import org.chromium.components.tab_groups.TabGroupColorPickerUtils;
 import org.chromium.content_public.common.ContentUrlConstants;
 import org.chromium.ui.base.DeviceFormFactor;
 import org.chromium.ui.mojom.WindowOpenDisposition;
+import org.chromium.ui.widget.Toast;
+import org.chromium.ui.widget.ToastManager;
 import org.chromium.url.GURL;
 
 import java.util.ArrayList;
@@ -100,16 +108,15 @@ import java.util.concurrent.TimeUnit;
 /** Instrumentation tests for {@link RecentTabsPage}. */
 @RunWith(ChromeJUnit4ClassRunner.class)
 @CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
-@DoNotBatch(reason = "Tests manipulate UI which can interfere between tests.")
+@Batch(Batch.PER_CLASS)
 public class RecentTabsPageTest {
     private static final int COLOR_ID = TabGroupColorId.YELLOW;
-    private static final int COLOR_ID_2 = TabGroupColorId.RED;
 
     @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
 
     @Rule
-    public FreshCtaTransitTestRule mActivityTestRule =
-            ChromeTransitTestRules.freshChromeTabbedActivityRule();
+    public AutoResetCtaTransitTestRule mActivityTestRule =
+            ChromeTransitTestRules.fastAutoResetCtaActivityRule();
 
     // FakeAccountInfoService is required to create the ProfileDataCache entry with sync_off badge
     // for Sync promo.
@@ -118,23 +125,39 @@ public class RecentTabsPageTest {
     @Rule
     public final ChromeRenderTestRule mRenderTestRule =
             ChromeRenderTestRule.Builder.withPublicCorpus()
-                    .setRevision(10)
+                    .setRevision(13)
+                    .setDescription("Ligatures and contextual alternates disabled in UI text")
                     .setBugComponent(ChromeRenderTestRule.Component.UI_BROWSER_MOBILE_RECENT_TABS)
                     .build();
 
-    @Spy private FakeRecentlyClosedTabManager mManager = new FakeRecentlyClosedTabManager();
+    private static FakeRecentlyClosedTabManager sManager;
+    private FakeRecentlyClosedTabManager mManager;
     private ChromeTabbedActivity mActivity;
-    private Tab mTab;
     private TabModel mTabModel;
     private RecentTabsPage mPage;
+    private CtaPageStation mPageStation;
+
+    @BeforeClass
+    public static void setUpClass() {
+        sManager = Mockito.spy(new FakeRecentlyClosedTabManager());
+        RecentlyClosedEntriesManager.setRecentlyClosedTabManagerForTests(sManager);
+    }
+
+    @AfterClass
+    public static void tearDownClass() {
+        RecentlyClosedEntriesManager.setRecentlyClosedTabManagerForTests(null);
+        sManager = null;
+    }
 
     @Before
     public void setUp() throws Exception {
+        mManager = sManager;
+        Mockito.clearInvocations(mManager);
+        mManager.clearRecentlyClosedEntries();
         RecentlyClosedEntriesManager.setRecentlyClosedTabManagerForTests(mManager);
-        mActivityTestRule.startOnBlankPage();
-        mActivity = mActivityTestRule.getActivity();
-        mTabModel = mActivity.getTabModelSelector().getModel(false);
-        mTab = mActivityTestRule.getActivityTab();
+        mPageStation = mActivityTestRule.startOnBlankPage();
+        mActivity = mPageStation.getActivity();
+        mTabModel = mPageStation.getTabModel();
     }
 
     @After
@@ -142,6 +165,19 @@ public class RecentTabsPageTest {
         leaveRecentTabsPage();
         ChromeSharedPreferences.getInstance()
                 .removeKey(ChromePreferenceKeys.SYNC_PROMO_TOTAL_SHOW_COUNT);
+        if (sManager != null) {
+            sManager.clearRecentlyClosedEntries();
+        }
+        if (mActivity != null && mActivity.getRecentlyClosedEntriesManagerForTesting() != null) {
+            ThreadUtils.runOnUiThreadBlocking(
+                    () ->
+                            mActivity
+                                    .getRecentlyClosedEntriesManagerForTesting()
+                                    .clearRecentlyClosedEntries());
+        }
+        if (mSigninTestRule.getPrimaryAccount() != null) {
+            mSigninTestRule.forceSignOut();
+        }
     }
 
     @Test
@@ -158,22 +194,20 @@ public class RecentTabsPageTest {
         final String title = tab.getTitle();
         final View view = waitForView(title);
 
-        openContextMenuAndInvokeItem(
-                view, RecentTabsRowAdapter.RecentlyClosedTabsGroup.ID_OPEN_IN_NEW_TAB);
+        openContextMenuAndInvokeItem(view, R.string.contextmenu_open_in_new_tab);
         verify(mManager, times(1))
                 .openRecentlyClosedTab(mTabModel, tab, WindowOpenDisposition.NEW_BACKGROUND_TAB);
 
         final int groupIdx = !DeviceFormFactor.isNonMultiDisplayContextOnTablet(mActivity) ? 0 : 1;
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
-                    mPage.onChildClick(null, null, groupIdx, 0, 0);
+                    mPage.performChildClickForTesting(groupIdx, 0);
                 });
         verify(mManager, times(1))
                 .openRecentlyClosedTab(mTabModel, tab, WindowOpenDisposition.CURRENT_TAB);
 
         // Clear the recently closed tabs with the context menu and confirm the view is gone.
-        openContextMenuAndInvokeItem(
-                view, RecentTabsRowAdapter.RecentlyClosedTabsGroup.ID_REMOVE_ALL);
+        openContextMenuAndInvokeItem(view, R.string.remove_all);
         assertEquals(0, mManager.getRecentlyClosedEntries(1).size());
         waitForViewToDisappear(title);
     }
@@ -261,13 +295,12 @@ public class RecentTabsPageTest {
         final int groupIdx = !DeviceFormFactor.isNonMultiDisplayContextOnTablet(mActivity) ? 0 : 1;
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
-                    mPage.onChildClick(null, null, groupIdx, 0, 0);
+                    mPage.performChildClickForTesting(groupIdx, 0);
                 });
         verify(mManager, times(1)).openRecentlyClosedEntry(mTabModel, group);
 
         // Clear the recently closed tabs with the context menu and confirm the view is gone.
-        openContextMenuAndInvokeItem(
-                view, RecentTabsRowAdapter.RecentlyClosedTabsGroup.ID_REMOVE_ALL);
+        openContextMenuAndInvokeItem(view, R.string.remove_all);
         assertEquals(0, mManager.getRecentlyClosedEntries(1).size());
         waitForViewToDisappear(groupString);
 
@@ -313,6 +346,8 @@ public class RecentTabsPageTest {
                                             R.string.recent_tabs_group_closure_with_title,
                                             group.getTitle());
                         });
+        final int accessibilityResId =
+                R.string.recent_tabs_group_closure_with_title_with_color_accessibility;
         final String groupAccessibilityString =
                 ThreadUtils.runOnUiThreadBlocking(
                         () -> {
@@ -322,10 +357,7 @@ public class RecentTabsPageTest {
                                             .getTabGroupColorPickerItemColorAccessibilityString(
                                                     group.getColor());
                             return res.getString(
-                                    R.string
-                                            .recent_tabs_group_closure_with_title_with_color_accessibility,
-                                    group.getTitle(),
-                                    res.getString(colorDesc));
+                                    accessibilityResId, group.getTitle(), res.getString(colorDesc));
                         });
         final View view = waitForView(groupString);
         assertEquals(groupAccessibilityString, view.getContentDescription());
@@ -335,13 +367,12 @@ public class RecentTabsPageTest {
         final int groupIdx = !DeviceFormFactor.isNonMultiDisplayContextOnTablet(mActivity) ? 0 : 1;
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
-                    mPage.onChildClick(null, null, groupIdx, 0, 0);
+                    mPage.performChildClickForTesting(groupIdx, 0);
                 });
         verify(mManager, times(1)).openRecentlyClosedEntry(mTabModel, group);
 
         // Clear the recently closed tabs with the context menu and confirm the view is gone.
-        openContextMenuAndInvokeItem(
-                view, RecentTabsRowAdapter.RecentlyClosedTabsGroup.ID_REMOVE_ALL);
+        openContextMenuAndInvokeItem(view, R.string.remove_all);
         assertEquals(0, mManager.getRecentlyClosedEntries(1).size());
         waitForViewToDisappear(groupString);
     }
@@ -385,6 +416,8 @@ public class RecentTabsPageTest {
                                             group.getTabs().size(),
                                             group.getTabs().size());
                         });
+        final int accessibilityResId =
+                R.plurals.recent_tabs_group_closure_without_title_with_color_accessibility;
         final String groupAccessibilityString =
                 ThreadUtils.runOnUiThreadBlocking(
                         () -> {
@@ -394,8 +427,7 @@ public class RecentTabsPageTest {
                                             .getTabGroupColorPickerItemColorAccessibilityString(
                                                     group.getColor());
                             return res.getQuantityString(
-                                    R.plurals
-                                            .recent_tabs_group_closure_without_title_with_color_accessibility,
+                                    accessibilityResId,
                                     group.getTabs().size(),
                                     group.getTabs().size(),
                                     res.getString(colorDesc));
@@ -426,13 +458,12 @@ public class RecentTabsPageTest {
         final int groupIdx = !DeviceFormFactor.isNonMultiDisplayContextOnTablet(mActivity) ? 0 : 1;
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
-                    mPage.onChildClick(null, null, groupIdx, 0, 0);
+                    mPage.performChildClickForTesting(groupIdx, 0);
                 });
         verify(mManager, times(1)).openRecentlyClosedEntry(mTabModel, group);
 
         // Clear the recently closed tabs with the context menu and confirm the view is gone.
-        openContextMenuAndInvokeItem(
-                view, RecentTabsRowAdapter.RecentlyClosedTabsGroup.ID_REMOVE_ALL);
+        openContextMenuAndInvokeItem(view, R.string.remove_all);
         assertEquals(0, mManager.getRecentlyClosedEntries(1).size());
         waitForViewToDisappear(groupString);
     }
@@ -508,13 +539,12 @@ public class RecentTabsPageTest {
         final int groupIdx = !DeviceFormFactor.isNonMultiDisplayContextOnTablet(mActivity) ? 0 : 1;
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
-                    mPage.onChildClick(null, null, groupIdx, 0, 0);
+                    mPage.performChildClickForTesting(groupIdx, 0);
                 });
         verify(mManager, times(1)).openRecentlyClosedEntry(mTabModel, event);
 
         // Clear the recently closed tabs with the context menu and confirm the view is gone.
-        openContextMenuAndInvokeItem(
-                view, RecentTabsRowAdapter.RecentlyClosedTabsGroup.ID_REMOVE_ALL);
+        openContextMenuAndInvokeItem(view, R.string.remove_all);
         assertEquals(0, mManager.getRecentlyClosedEntries(1).size());
         waitForViewToDisappear(eventString);
     }
@@ -583,7 +613,8 @@ public class RecentTabsPageTest {
 
     @Test
     @LargeTest
-    @Restriction(DeviceFormFactor.TABLET_OR_DESKTOP)
+    @Restriction(DeviceFormFactor.ONLY_TABLET)
+    @DisableFeatures(ChromeFeatureList.IN_APP_WINDOW_MANAGER_DEPRECATION)
     public void testRecentlyClosedWindows_reachInstanceLimit_showInstanceCreationLimitMessage()
             throws Exception {
         // Simulate reaching the instance limit.
@@ -629,6 +660,48 @@ public class RecentTabsPageTest {
 
     @Test
     @LargeTest
+    @Restriction(DeviceFormFactor.TABLET_OR_DESKTOP)
+    @EnableFeatures(ChromeFeatureList.IN_APP_WINDOW_MANAGER_DEPRECATION)
+    public void
+            testRecentlyClosedWindows_reachInstanceLimit_showInstanceCreationLimitMessage_windowManagerDeprecation()
+                    throws Exception {
+        // Mock ToastManager.
+        ToastManager mockToastManager = mock(ToastManager.class);
+        ToastManager.setInstanceForTesting(mockToastManager);
+
+        // Simulate reaching the instance limit.
+        MultiWindowUtils.setInstanceCountForTesting(3);
+        MultiWindowUtils.setMaxInstancesForTesting(3);
+
+        mPage = loadRecentTabsPage();
+        long time = getValidTimestampForEntry();
+        String title1 = "Window 1";
+        String activeTabTitle1 = "Google";
+        String activeTabUrl1 = "https://www.google.com";
+        int tabCount = 3;
+
+        // Create a recently closed window.
+        final RecentlyClosedWindow window1 =
+                new RecentlyClosedWindow(
+                        time,
+                        /* instanceId= */ 0,
+                        activeTabUrl1,
+                        title1,
+                        activeTabTitle1,
+                        tabCount);
+        RecentlyClosedEntriesManager recentlyClosedEntriesManager =
+                mActivity.getRecentlyClosedEntriesManagerForTesting();
+
+        // Simulate open a recently closed window.
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> recentlyClosedEntriesManager.openRecentlyClosedEntry(window1));
+
+        // Verify that the toast is shown.
+        verify(mockToastManager).requestShow(any(Toast.class));
+    }
+
+    @Test
+    @LargeTest
     @Feature({"RecentTabsPage", "RenderTest"})
     // Disable sign-in to suppress sign-in promo, as it's unrelated to this render test.
     @Policies.Add(@Policies.Item(key = "BrowserSignin", string = "0"))
@@ -663,8 +736,7 @@ public class RecentTabsPageTest {
         mRenderTestRule.render(mPage.getView(), "recently_closed_entries");
 
         // Confirm the recently closed entries are all gone after "Remove all" is clicked.
-        openContextMenuAndInvokeItem(
-                windowView, RecentTabsRowAdapter.RecentlyClosedTabsGroup.ID_REMOVE_ALL);
+        openContextMenuAndInvokeItem(windowView, R.string.remove_all);
         assertEquals(0, recentlyClosedEntriesManager.getRecentlyClosedEntries().size());
         waitForViewToDisappear(windowDescriptionString);
     }
@@ -715,6 +787,7 @@ public class RecentTabsPageTest {
                 new RecentlyClosedTab(
                         0, 0, "Tab Title", new GURL("https://www.example.com/"), null);
         setRecentlyClosedEntries(Collections.singletonList(tab));
+        waitForView(tab.getTitle());
         final View groupView = mPage.getView().findViewById(R.id.recent_tabs_group_view);
         final View expandCollapseIcon = groupView.findViewById(R.id.expand_collapse_icon);
 
@@ -750,20 +823,6 @@ public class RecentTabsPageTest {
         mRenderTestRule.render(mPage.getView(), "signin_promo");
     }
 
-    @Test
-    @SmallTest
-    public void testTabStripHeightChangeCallback() {
-        mPage = loadRecentTabsPage();
-        var tabStripHeightChangeCallback = mPage.getTabStripHeightChangeCallbackForTesting();
-        int newTabStripHeight = 40;
-        ThreadUtils.runOnUiThreadBlocking(
-                () -> tabStripHeightChangeCallback.onResult(newTabStripHeight));
-        assertEquals(
-                "Top padding of page view should be updated when tab strip height changes.",
-                newTabStripHeight,
-                mPage.getView().getPaddingTop());
-    }
-
     /**
      * Generates the specified number of {@link RecentlyClosedTab} instances and sets them on the
      * manager.
@@ -776,23 +835,20 @@ public class RecentTabsPageTest {
     }
 
     private RecentTabsPage loadRecentTabsPage() {
-        mActivityTestRule.loadUrl(UrlConstants.RECENT_TABS_URL);
-        RecentTabsPageTestUtils.waitForRecentTabsPageLoaded(mTab);
-        return (RecentTabsPage) mTab.getNativePage();
+        RecentTabsPageStation recentTabsPage =
+                mPageStation.loadPageProgrammatically(
+                        RecentTabsPageStation.RECENT_TABS_URL, RecentTabsPageStation.newBuilder());
+        mPageStation = recentTabsPage;
+        return recentTabsPage.nativePageElement.get();
     }
 
     /**
      * Leaves and destroys the {@link RecentTabsPage} by navigating the tab to {@code about:blank}.
      */
     private void leaveRecentTabsPage() {
-        mActivityTestRule.loadUrl(ContentUrlConstants.ABOUT_BLANK_DISPLAY_URL);
-        CriteriaHelper.pollUiThread(
-                () -> {
-                    Criteria.checkThat(
-                            "RecentTabsPage is still there",
-                            mTab.getNativePage(),
-                            Matchers.not(Matchers.instanceOf(RecentTabsPage.class)));
-                });
+        mPageStation =
+                mPageStation.loadPageProgrammatically(
+                        ContentUrlConstants.ABOUT_BLANK_DISPLAY_URL, WebPageStation.newBuilder());
     }
 
     /** Waits for the view with the specified text to appear. */

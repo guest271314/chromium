@@ -24,10 +24,8 @@
 #include "base/time/default_clock.h"
 #include "base/timer/timer.h"
 #include "components/crx_file/id_util.h"
-#include "components/gcm_driver/crypto/gcm_decryption_result.h"
-#include "components/gcm_driver/features.h"
-#include "components/gcm_driver/gcm_account_mapper.h"
-#include "components/gcm_driver/gcm_backoff_policy.h"
+#include "components/fcm/base/fcm_backoff_policy.h"
+#include "components/fcm/crypto/fcm_decryption_result.h"
 #include "google_apis/gcm/base/encryptor.h"
 #include "google_apis/gcm/base/mcs_message.h"
 #include "google_apis/gcm/base/mcs_util.h"
@@ -82,6 +80,7 @@ const char kSubtypeKey[] = "subtype";
 const char kSendMessageFromValue[] = "gcm@chrome.com";
 const int64_t kDefaultUserSerialNumber = 0LL;
 const int kDestroyGCMStoreDelayMS = 5 * 60 * 1000;  // 5 minutes.
+constexpr base::TimeDelta kTokenInvalidationInterval = base::Days(7);
 
 GCMClient::Result ToGCMClientResult(MCSClient::MessageSendStatus status) {
   switch (status) {
@@ -99,61 +98,6 @@ GCMClient::Result ToGCMClientResult(MCSClient::MessageSendStatus status) {
       NOTREACHED();
   }
   return GCMClientImpl::UNKNOWN_ERROR;
-}
-
-void ToCheckinProtoVersion(
-    const GCMClient::ChromeBuildInfo& chrome_build_info,
-    checkin_proto::ChromeBuildProto* android_build_info) {
-  checkin_proto::ChromeBuildProto_Platform platform =
-      checkin_proto::ChromeBuildProto_Platform_PLATFORM_LINUX;
-  switch (chrome_build_info.platform) {
-    case GCMClient::PLATFORM_WIN:
-      platform = checkin_proto::ChromeBuildProto_Platform_PLATFORM_WIN;
-      break;
-    case GCMClient::PLATFORM_MAC:
-      platform = checkin_proto::ChromeBuildProto_Platform_PLATFORM_MAC;
-      break;
-    case GCMClient::PLATFORM_LINUX:
-      platform = checkin_proto::ChromeBuildProto_Platform_PLATFORM_LINUX;
-      break;
-    case GCMClient::PLATFORM_IOS:
-      platform = checkin_proto::ChromeBuildProto_Platform_PLATFORM_IOS;
-      break;
-    case GCMClient::PLATFORM_ANDROID:
-      platform = checkin_proto::ChromeBuildProto_Platform_PLATFORM_ANDROID;
-      break;
-    case GCMClient::PLATFORM_CROS:
-      platform = checkin_proto::ChromeBuildProto_Platform_PLATFORM_CROS;
-      break;
-    case GCMClient::PLATFORM_UNSPECIFIED:
-      // For unknown platform, return as LINUX.
-      platform = checkin_proto::ChromeBuildProto_Platform_PLATFORM_LINUX;
-      break;
-  }
-  android_build_info->set_platform(platform);
-
-  checkin_proto::ChromeBuildProto_Channel channel =
-      checkin_proto::ChromeBuildProto_Channel_CHANNEL_UNKNOWN;
-  switch (chrome_build_info.channel) {
-    case GCMClient::CHANNEL_STABLE:
-      channel = checkin_proto::ChromeBuildProto_Channel_CHANNEL_STABLE;
-      break;
-    case GCMClient::CHANNEL_BETA:
-      channel = checkin_proto::ChromeBuildProto_Channel_CHANNEL_BETA;
-      break;
-    case GCMClient::CHANNEL_DEV:
-      channel = checkin_proto::ChromeBuildProto_Channel_CHANNEL_DEV;
-      break;
-    case GCMClient::CHANNEL_CANARY:
-      channel = checkin_proto::ChromeBuildProto_Channel_CHANNEL_CANARY;
-      break;
-    case GCMClient::CHANNEL_UNKNOWN:
-      channel = checkin_proto::ChromeBuildProto_Channel_CHANNEL_UNKNOWN;
-      break;
-  }
-  android_build_info->set_channel(channel);
-
-  android_build_info->set_chrome_version(chrome_build_info.version);
 }
 
 MessageType DecodeMessageType(const std::string& value) {
@@ -210,52 +154,9 @@ void RecordRegistrationRequestToUMA(gcm::RegistrationCacheStatus status) {
       "GCM.RegistrationCacheStatus", status,
       RegistrationCacheStatus::REGISTRATION_CACHE_STATUS_COUNT);
 }
-GCMInternalsBuilder::GCMInternalsBuilder() = default;
-GCMInternalsBuilder::~GCMInternalsBuilder() = default;
-
-base::Clock* GCMInternalsBuilder::GetClock() {
-  return base::DefaultClock::GetInstance();
-}
-
-std::unique_ptr<MCSClient> GCMInternalsBuilder::BuildMCSClient(
-    const std::string& version,
-    base::Clock* clock,
-    ConnectionFactory* connection_factory,
-    GCMStore* gcm_store,
-    scoped_refptr<base::SequencedTaskRunner> io_task_runner,
-    GCMStatsRecorder* recorder) {
-  return std::make_unique<MCSClient>(version, clock, connection_factory,
-                                     gcm_store, std::move(io_task_runner),
-                                     recorder);
-}
-
-std::unique_ptr<ConnectionFactory> GCMInternalsBuilder::BuildConnectionFactory(
-    const std::vector<GURL>& endpoints,
-    const net::BackoffEntry::Policy& backoff_policy,
-    base::RepeatingCallback<void(
-        mojo::PendingReceiver<network::mojom::ProxyResolvingSocketFactory>)>
-        get_socket_factory_callback,
-    scoped_refptr<base::SequencedTaskRunner> io_task_runner,
-    GCMStatsRecorder* recorder,
-    network::NetworkConnectionTracker* network_connection_tracker) {
-  return std::make_unique<ConnectionFactoryImpl>(
-      endpoints, backoff_policy, std::move(get_socket_factory_callback),
-      std::move(io_task_runner), recorder, network_connection_tracker);
-}
-
-GCMClientImpl::CheckinInfo::CheckinInfo()
-    : android_id(0), secret(0), accounts_set(false) {}
-
-GCMClientImpl::CheckinInfo::~CheckinInfo() = default;
-
-void GCMClientImpl::CheckinInfo::Reset() {
-  android_id = 0;
-  secret = 0;
-  accounts_set = false;
-}
 
 GCMClientImpl::GCMClientImpl(
-    std::unique_ptr<GCMInternalsBuilder> internals_builder)
+    std::unique_ptr<fcm::FcmInternalsBuilder> internals_builder)
     : internals_builder_(std::move(internals_builder)),
       state_(UNINITIALIZED),
       delegate_(nullptr),
@@ -267,7 +168,7 @@ GCMClientImpl::GCMClientImpl(
 GCMClientImpl::~GCMClientImpl() = default;
 
 void GCMClientImpl::Initialize(
-    const ChromeBuildInfo& chrome_build_info,
+    const fcm::ChromeBuildInfo& chrome_build_info,
     const base::FilePath& path,
     const scoped_refptr<base::SequencedTaskRunner>& blocking_task_runner,
     scoped_refptr<base::SequencedTaskRunner> io_task_runner,
@@ -299,9 +200,15 @@ void GCMClientImpl::Start(StartMode start_mode) {
   DCHECK_NE(UNINITIALIZED, state_);
   DCHECK(io_task_runner_->RunsTasksInCurrentSequence());
 
+  // The delay start behavior will be abandoned when Start has been called
+  // once with IMMEDIATE_START behavior.
+  if (start_mode == IMMEDIATE_START) {
+    start_mode_ = IMMEDIATE_START;
+  }
+
   if (state_ == LOADED) {
     // Start the GCM if not yet.
-    if (start_mode == IMMEDIATE_START) {
+    if (start_mode_ == IMMEDIATE_START) {
       // Give up the scheduling to wipe out the store since now some one starts
       // to use GCM.
       destroying_gcm_store_ptr_factory_.InvalidateWeakPtrs();
@@ -311,11 +218,6 @@ void GCMClientImpl::Start(StartMode start_mode) {
     return;
   }
 
-  // The delay start behavior will be abandoned when Start has been called
-  // once with IMMEDIATE_START behavior.
-  if (start_mode == IMMEDIATE_START)
-    start_mode_ = IMMEDIATE_START;
-
   // Bail out if the loading is not started or completed.
   if (state_ != INITIALIZED)
     return;
@@ -323,8 +225,9 @@ void GCMClientImpl::Start(StartMode start_mode) {
   // Once the loading is completed, the check-in will be initiated.
   // If we're in lazy start mode, don't create a new store since none is really
   // using GCM functionality yet.
-  gcm_store_->Load((start_mode == IMMEDIATE_START) ? GCMStore::CREATE_IF_MISSING
-                                                   : GCMStore::DO_NOT_CREATE,
+  gcm_store_->Load((start_mode_ == IMMEDIATE_START)
+                       ? GCMStore::CREATE_IF_MISSING
+                       : GCMStore::DO_NOT_CREATE,
                    base::BindOnce(&GCMClientImpl::OnLoadCompleted,
                                   weak_ptr_factory_.GetWeakPtr()));
   state_ = LOADING;
@@ -357,9 +260,9 @@ void GCMClientImpl::OnLoadCompleted(
   }
   gcm_store_reset_ = false;
 
-  device_checkin_info_.android_id = result->device_android_id;
-  device_checkin_info_.secret = result->device_security_token;
-  device_checkin_info_.accounts_set = true;
+  device_checkin_info_.set_android_id(result->device_android_id);
+  device_checkin_info_.set_secret(result->device_security_token);
+  device_checkin_info_.set_accounts_set(true);
   last_checkin_time_ = result->last_checkin_time;
   gservices_settings_.UpdateFromLoadResult(*result);
 
@@ -387,7 +290,7 @@ void GCMClientImpl::OnLoadCompleted(
   if (start_mode_ == DELAYED_START && !HasStandaloneRegisteredApp()) {
     // If no standalone app is using GCM and the device ID is present, schedule
     // to have the store wiped out.
-    if (device_checkin_info_.android_id) {
+    if (device_checkin_info_.android_id()) {
       DVLOG(1) << "GCM is in delayed start mode and there is no standalone "
                   "app, posting task to wipe store in "
                << base::Milliseconds(kDestroyGCMStoreDelayMS)
@@ -437,7 +340,7 @@ void GCMClientImpl::InitializeMCSClient() {
   if (fallback_endpoint.is_valid())
     endpoints.push_back(fallback_endpoint);
   connection_factory_ = internals_builder_->BuildConnectionFactory(
-      endpoints, GetGCMBackoffPolicy(), get_socket_factory_callback_,
+      endpoints, fcm::GetBackoffPolicy(), get_socket_factory_callback_,
       io_task_runner_, &recorder_, network_connection_tracker_);
   connection_factory_->SetConnectionListener(this);
   mcs_client_ = internals_builder_->BuildMCSClient(
@@ -455,16 +358,16 @@ void GCMClientImpl::InitializeMCSClient() {
 }
 
 void GCMClientImpl::OnFirstTimeDeviceCheckinCompleted(
-    const CheckinInfo& checkin_info) {
+    const fcm::CheckinInfo& checkin_info) {
   DCHECK(!device_checkin_info_.IsValid());
 
-  device_checkin_info_.android_id = checkin_info.android_id;
-  device_checkin_info_.secret = checkin_info.secret;
+  device_checkin_info_.set_android_id(checkin_info.android_id());
+  device_checkin_info_.set_secret(checkin_info.secret());
   // If accounts were not set by now, we can consider them set (to empty list)
   // to make sure periodic checkins get scheduled after initial checkin.
-  device_checkin_info_.accounts_set = true;
+  device_checkin_info_.set_accounts_set(true);
   gcm_store_->SetDeviceCredentials(
-      checkin_info.android_id, checkin_info.secret,
+      checkin_info.android_id(), checkin_info.secret(),
       base::BindOnce(&GCMClientImpl::SetDeviceCredentialsCallback,
                      weak_ptr_factory_.GetWeakPtr()));
 
@@ -482,8 +385,8 @@ void GCMClientImpl::OnReady(const std::vector<AccountMapping>& account_mappings,
 void GCMClientImpl::StartMCSLogin() {
   DCHECK_EQ(READY, state_);
   DCHECK(device_checkin_info_.IsValid());
-  mcs_client_->Login(device_checkin_info_.android_id,
-                     device_checkin_info_.secret);
+  mcs_client_->Login(device_checkin_info_.android_id(),
+                     device_checkin_info_.secret());
 }
 
 void GCMClientImpl::DestroyStoreWhenNotNeeded() {
@@ -512,8 +415,8 @@ void GCMClientImpl::SetAccountTokens(
     const std::vector<AccountTokenInfo>& account_tokens) {
   DCHECK(io_task_runner_->RunsTasksInCurrentSequence());
 
-  bool accounts_set_before = device_checkin_info_.accounts_set;
-  device_checkin_info_.accounts_set = true;
+  bool accounts_set_before = device_checkin_info_.accounts_set();
+  device_checkin_info_.set_accounts_set(true);
 
   DVLOG(1) << "Set account called with: " << account_tokens.size()
            << " accounts.";
@@ -616,13 +519,14 @@ void GCMClientImpl::StartCheckin() {
     return;
 
   checkin_proto::ChromeBuildProto chrome_build_proto;
-  ToCheckinProtoVersion(chrome_build_info_, &chrome_build_proto);
+  fcm::ToCheckinProtoVersion(chrome_build_info_, &chrome_build_proto);
 
   CheckinRequest::RequestInfo request_info(
-      device_checkin_info_.android_id, device_checkin_info_.secret,
+      device_checkin_info_.android_id(), device_checkin_info_.secret(),
       gservices_settings_.digest(), chrome_build_proto);
   checkin_request_ = std::make_unique<CheckinRequest>(
-      gservices_settings_.GetCheckinURL(), request_info, GetGCMBackoffPolicy(),
+      gservices_settings_.GetCheckinURL(), request_info,
+      fcm::GetBackoffPolicy(),
       base::BindOnce(&GCMClientImpl::OnCheckinCompleted,
                      weak_ptr_factory_.GetWeakPtr()),
       url_loader_factory_, io_task_runner_, &recorder_);
@@ -645,9 +549,9 @@ void GCMClientImpl::OnCheckinCompleted(
 
   DCHECK(checkin_response.has_android_id());
   DCHECK(checkin_response.has_security_token());
-  CheckinInfo checkin_info;
-  checkin_info.android_id = checkin_response.android_id();
-  checkin_info.secret = checkin_response.security_token();
+  fcm::CheckinInfo checkin_info;
+  checkin_info.set_android_id(checkin_response.android_id());
+  checkin_info.set_secret(checkin_response.security_token());
 
   if (state_ == INITIAL_DEVICE_CHECKIN) {
     OnFirstTimeDeviceCheckinCompleted(checkin_info);
@@ -655,8 +559,8 @@ void GCMClientImpl::OnCheckinCompleted(
     // checkin_info is not expected to change after a periodic checkin as it
     // would invalidate the registration IDs.
     DCHECK_EQ(READY, state_);
-    DCHECK_EQ(device_checkin_info_.android_id, checkin_info.android_id);
-    DCHECK_EQ(device_checkin_info_.secret, checkin_info.secret);
+    DCHECK_EQ(device_checkin_info_.android_id(), checkin_info.android_id());
+    DCHECK_EQ(device_checkin_info_.secret(), checkin_info.secret());
   }
 
   if (device_checkin_info_.IsValid()) {
@@ -685,8 +589,9 @@ void GCMClientImpl::SchedulePeriodicCheckin() {
   DCHECK(io_task_runner_->RunsTasksInCurrentSequence());
 
   // Make sure no checkin is in progress.
-  if (checkin_request_.get() || !device_checkin_info_.accounts_set)
+  if (checkin_request_.get() || !device_checkin_info_.accounts_set()) {
     return;
+  }
 
   // There should be only one periodic checkin pending at a time. Removing
   // pending periodic checkin to schedule a new one.
@@ -780,6 +685,7 @@ void GCMClientImpl::ResetCache() {
 
   weak_ptr_factory_.InvalidateWeakPtrs();
   periodic_checkin_ptr_factory_.InvalidateWeakPtrs();
+  destroying_gcm_store_ptr_factory_.InvalidateWeakPtrs();
   device_checkin_info_.Reset();
   connection_factory_.reset();
   delegate_->OnDisconnected();
@@ -827,14 +733,10 @@ void GCMClientImpl::Register(
 
     if (matched) {
       // Skip registration if token is fresh.
-      base::TimeDelta token_invalidation_period =
-          features::GetTokenInvalidationInterval();
       base::TimeDelta time_since_last_validation =
           clock_->Now() - registrations_iter->first->last_validated;
-      if (token_invalidation_period.is_zero() ||
-          time_since_last_validation < token_invalidation_period) {
-        // Token is fresh, or token invalidation is disabled.
-        // Use cached registration.
+      if (time_since_last_validation < kTokenInvalidationInterval) {
+        // Token is fresh. Use cached registration.
         delegate_->OnRegisterFinished(registration_info,
                                       registrations_iter->second, SUCCESS);
         RecordRegistrationRequestToUMA(
@@ -890,14 +792,14 @@ void GCMClientImpl::Register(
                              ? chrome_build_info_.product_category_for_subtypes
                              : registration_info->app_id;
   std::string subtype = use_subtype ? registration_info->app_id : std::string();
-  RegistrationRequest::RequestInfo request_info(device_checkin_info_.android_id,
-                                                device_checkin_info_.secret,
-                                                category, subtype);
+  RegistrationRequest::RequestInfo request_info(
+      device_checkin_info_.android_id(), device_checkin_info_.secret(),
+      category, subtype);
 
   std::unique_ptr<RegistrationRequest> registration_request(
       new RegistrationRequest(
           gservices_settings_.GetRegistrationURL(), request_info,
-          std::move(request_handler), GetGCMBackoffPolicy(),
+          std::move(request_handler), fcm::GetBackoffPolicy(),
           base::BindOnce(&GCMClientImpl::OnRegisterCompleted,
                          weak_ptr_factory_.GetWeakPtr(), registration_info),
           kMaxRegistrationRetries, url_loader_factory_, io_task_runner_,
@@ -1074,13 +976,13 @@ void GCMClientImpl::Unregister(
                              : registration_info->app_id;
   std::string subtype = use_subtype ? registration_info->app_id : std::string();
   UnregistrationRequest::RequestInfo request_info(
-      device_checkin_info_.android_id, device_checkin_info_.secret, category,
-      subtype);
+      device_checkin_info_.android_id(), device_checkin_info_.secret(),
+      category, subtype);
 
   std::unique_ptr<UnregistrationRequest> unregistration_request(
       new UnregistrationRequest(
           gservices_settings_.GetRegistrationURL(), request_info,
-          std::move(request_handler), GetGCMBackoffPolicy(),
+          std::move(request_handler), fcm::GetBackoffPolicy(),
           base::BindOnce(&GCMClientImpl::OnUnregisterCompleted,
                          weak_ptr_factory_.GetWeakPtr(), registration_info),
           kMaxUnregistrationRetries, url_loader_factory_, io_task_runner_,
@@ -1164,7 +1066,7 @@ std::string GCMClientImpl::GetStateString() const {
 }
 
 void GCMClientImpl::RecordDecryptionFailure(const std::string& app_id,
-                                            GCMDecryptionResult result) {
+                                            fcm::FcmDecryptionResult result) {
   DCHECK(io_task_runner_->RunsTasksInCurrentSequence());
   recorder_.RecordDecryptionFailure(app_id, result);
 }
@@ -1194,10 +1096,12 @@ GCMClient::GCMStatistics GCMClientImpl::GetStatistics() const {
     stats.send_queue_size = mcs_client_->GetSendQueueSize();
     stats.resend_queue_size = mcs_client_->GetResendQueueSize();
   }
-  if (device_checkin_info_.android_id > 0)
-    stats.android_id = device_checkin_info_.android_id;
-  if (device_checkin_info_.secret > 0)
-    stats.android_secret = device_checkin_info_.secret;
+  if (device_checkin_info_.android_id() > 0) {
+    stats.android_id = device_checkin_info_.android_id();
+  }
+  if (device_checkin_info_.secret() > 0) {
+    stats.android_secret = device_checkin_info_.secret();
+  }
 
   recorder_.CollectActivities(&stats.recorded_activities);
 
@@ -1389,12 +1293,7 @@ void GCMClientImpl::HandleIncomingSendError(
 }
 
 bool GCMClientImpl::HasStandaloneRegisteredApp() const {
-  if (registrations_.empty())
-    return false;
-  // Note that account mapper is not counted as a standalone app since it is
-  // automatically started when other app uses GCM.
-  return registrations_.size() > 1 ||
-         !ExistsGCMRegistrationInMap(registrations_, kGCMAccountMapperAppId);
+  return !registrations_.empty();
 }
 
 }  // namespace gcm

@@ -14,6 +14,7 @@
 #include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
 #include "base/time/time.h"
+#include "build/build_config.h"
 #include "components/autofill/core/browser/data_manager/addresses/test_address_data_manager.h"
 #include "components/autofill/core/browser/form_import/form_data_importer_test_api.h"
 #include "components/autofill/core/browser/foundations/test_autofill_client.h"
@@ -24,14 +25,13 @@
 #include "components/autofill/core/browser/payments/test_payments_autofill_client.h"
 #include "components/autofill/core/browser/strike_databases/payments/save_and_fill_strike_database.h"
 #include "components/autofill/core/browser/strike_databases/payments/test_strike_database.h"
-#include "components/autofill/core/browser/test_utils/autofill_test_utils.h"
+#include "components/autofill/core/browser/test_utils/autofill_test_util.h"
 #include "components/autofill/core/common/autofill_prefs.h"
 #include "components/strike_database/strike_database_features.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace autofill::payments {
-
 namespace {
 
 using ::base::test::RunOnceCallback;
@@ -76,7 +76,7 @@ constexpr char kInvalidLegalMessageLines[] =
 
 class TestPaymentsAutofillClientMock : public TestPaymentsAutofillClient {
  public:
-  explicit TestPaymentsAutofillClientMock(autofill::AutofillClient* client)
+  explicit TestPaymentsAutofillClientMock(AutofillClient* client)
       : TestPaymentsAutofillClient(client) {}
 
   ~TestPaymentsAutofillClientMock() override = default;
@@ -114,8 +114,32 @@ class MockPaymentsDataManager : public TestPaymentsDataManager {
               (int64_t instrument_id, const std::u16string& cvc),
               (override));
 };
+
+UserProvidedCardSaveAndFillDetails CreateUserProvidedCardDetails(
+    std::u16string card_number,
+    std::u16string cardholder_name,
+    std::u16string expiration_date_month,
+    std::u16string expiration_date_year,
+    std::optional<std::u16string> security_code,
+    std::optional<std::u16string> nickname = std::nullopt) {
+  UserProvidedCardSaveAndFillDetails user_provided_card_details;
+  user_provided_card_details.card_number = std::move(card_number);
+  user_provided_card_details.cardholder_name = std::move(cardholder_name);
+  user_provided_card_details.expiration_date_month =
+      std::move(expiration_date_month);
+  user_provided_card_details.expiration_date_year =
+      std::move(expiration_date_year);
+  user_provided_card_details.security_code = std::move(security_code);
+#if BUILDFLAG(IS_IOS)
+  user_provided_card_details.nickname = nickname;
+#endif
+  return user_provided_card_details;
+}
+
 }  // namespace
 
+// This is outside of the anonymous namespace because it is a friend of of
+// SaveAndFillManagerImpl.
 class SaveAndFillManagerImplTest : public testing::Test {
  public:
   SaveAndFillManagerImplTest() {
@@ -231,27 +255,6 @@ class SaveAndFillManagerImplTest : public testing::Test {
   std::unique_ptr<SaveAndFillManagerImpl> save_and_fill_manager_impl_;
 };
 
-UserProvidedCardSaveAndFillDetails CreateUserProvidedCardDetails(
-    std::u16string card_number,
-    std::u16string cardholder_name,
-    std::u16string expiration_date_month,
-    std::u16string expiration_date_year,
-    std::optional<std::u16string> security_code,
-    std::optional<std::u16string> nickname = std::nullopt) {
-  UserProvidedCardSaveAndFillDetails user_provided_card_details;
-  user_provided_card_details.card_number = std::move(card_number);
-  user_provided_card_details.cardholder_name = std::move(cardholder_name);
-  user_provided_card_details.expiration_date_month =
-      std::move(expiration_date_month);
-  user_provided_card_details.expiration_date_year =
-      std::move(expiration_date_year);
-  user_provided_card_details.security_code = std::move(security_code);
-#if BUILDFLAG(IS_IOS)
-  user_provided_card_details.nickname = nickname;
-#endif
-  return user_provided_card_details;
-}
-
 TEST_F(SaveAndFillManagerImplTest, OfferLocalSaveAndFill_ShowsLocalDialog) {
   EXPECT_CALL(payments_autofill_client(),
               ShowCreditCardLocalSaveAndFillDialog(
@@ -280,7 +283,7 @@ TEST_F(SaveAndFillManagerImplTest, OnUserDidDecideOnLocalSave_Accepted) {
   SaveAndFillStrikeDatabase save_and_fill_strike_database(strike_database());
   // Add an existing strike.
   save_and_fill_strike_database.AddStrike();
-  EXPECT_EQ(1, save_and_fill_strike_database.GetStrikes());
+  EXPECT_EQ(save_and_fill_strike_database.GetStrikes(), 1);
 
   EXPECT_CALL(payments_autofill_client(),
               ShowCreditCardLocalSaveAndFillDialog(
@@ -306,18 +309,18 @@ TEST_F(SaveAndFillManagerImplTest, OnUserDidDecideOnLocalSave_Accepted) {
   const CreditCard* saved_card =
       payments_data_manager().GetLocalCreditCards()[0];
 
-  EXPECT_EQ(u"4444333322221111", saved_card->GetRawInfo(CREDIT_CARD_NUMBER));
-  EXPECT_EQ(u"John Doe", saved_card->GetRawInfo(CREDIT_CARD_NAME_FULL));
-  EXPECT_EQ(u"06", saved_card->GetRawInfo(CREDIT_CARD_EXP_MONTH));
-  EXPECT_EQ(u"2035", saved_card->GetRawInfo(CREDIT_CARD_EXP_4_DIGIT_YEAR));
+  EXPECT_EQ(saved_card->GetRawInfo(CREDIT_CARD_NUMBER), u"4444333322221111");
+  EXPECT_EQ(saved_card->GetRawInfo(CREDIT_CARD_NAME_FULL), u"John Doe");
+  EXPECT_EQ(saved_card->GetRawInfo(CREDIT_CARD_EXP_MONTH), u"06");
+  EXPECT_EQ(saved_card->GetRawInfo(CREDIT_CARD_EXP_4_DIGIT_YEAR), u"2035");
 
-  EXPECT_EQ(u"4444333322221111", card_to_fill.GetRawInfo(CREDIT_CARD_NUMBER));
-  EXPECT_EQ(u"John Doe", card_to_fill.GetRawInfo(CREDIT_CARD_NAME_FULL));
-  EXPECT_EQ(u"06", card_to_fill.GetRawInfo(CREDIT_CARD_EXP_MONTH));
-  EXPECT_EQ(u"2035", card_to_fill.GetRawInfo(CREDIT_CARD_EXP_4_DIGIT_YEAR));
+  EXPECT_EQ(card_to_fill.GetRawInfo(CREDIT_CARD_NUMBER), u"4444333322221111");
+  EXPECT_EQ(card_to_fill.GetRawInfo(CREDIT_CARD_NAME_FULL), u"John Doe");
+  EXPECT_EQ(card_to_fill.GetRawInfo(CREDIT_CARD_EXP_MONTH), u"06");
+  EXPECT_EQ(card_to_fill.GetRawInfo(CREDIT_CARD_EXP_4_DIGIT_YEAR), u"2035");
 
   // Make sure that all strikes are cleared upon user acceptance.
-  EXPECT_EQ(0, save_and_fill_strike_database.GetStrikes());
+  EXPECT_EQ(save_and_fill_strike_database.GetStrikes(), 0);
 }
 
 TEST_F(SaveAndFillManagerImplTest, OnUserDidDecideOnLocalSave_Declined) {
@@ -406,7 +409,7 @@ TEST_F(SaveAndFillManagerImplTest,
 
   EXPECT_EQ(details.upload_card_source, UploadCardSource::kUpstreamSaveAndFill);
   EXPECT_EQ(details.billing_customer_number,
-            payments::GetBillingCustomerId(payments_data_manager()));
+            GetBillingCustomerId(payments_data_manager()));
   EXPECT_EQ(details.app_locale, autofill_client().GetAppLocale());
   EXPECT_THAT(
       details.client_behavior_signals,
@@ -574,7 +577,7 @@ TEST_F(SaveAndFillManagerImplTest,
       CardSaveAndFillDialogUserDecision::kDeclined,
       UserProvidedCardSaveAndFillDetails());
 
-  EXPECT_EQ(1, save_and_fill_strike_database.GetStrikes());
+  EXPECT_EQ(save_and_fill_strike_database.GetStrikes(), 1);
 }
 
 TEST_F(SaveAndFillManagerImplTest,
@@ -590,7 +593,7 @@ TEST_F(SaveAndFillManagerImplTest,
 
   save_and_fill_manager().OnDidAcceptCreditCardSaveAndFillSuggestion(
       base::DoNothing());
-  EXPECT_EQ(1, save_and_fill_strike_database.GetStrikes());
+  EXPECT_EQ(save_and_fill_strike_database.GetStrikes(), 1);
 }
 
 TEST_F(SaveAndFillManagerImplTest, OnUserDidDecideOnUploadSave_Accepted) {
@@ -600,7 +603,7 @@ TEST_F(SaveAndFillManagerImplTest, OnUserDidDecideOnUploadSave_Accepted) {
   SaveAndFillStrikeDatabase save_and_fill_strike_database(strike_database());
   // Add an existing strike.
   save_and_fill_strike_database.AddStrike();
-  EXPECT_EQ(1, save_and_fill_strike_database.GetStrikes());
+  EXPECT_EQ(save_and_fill_strike_database.GetStrikes(), 1);
 
   save_and_fill_manager().SetCreditCardUploadEnabledOverrideForTesting(true);
   SetUpGetDetailsForCreateCardResponse(
@@ -633,19 +636,19 @@ TEST_F(SaveAndFillManagerImplTest, OnUserDidDecideOnUploadSave_Accepted) {
       PaymentsAutofillClient::PaymentsRpcResult::kSuccess,
       /*instrument_id=*/"1122334455");
 
-  EXPECT_EQ(u"1111222233334444", card_to_fill.GetRawInfo(CREDIT_CARD_NUMBER));
-  EXPECT_EQ(u"Jane Smith", card_to_fill.GetRawInfo(CREDIT_CARD_NAME_FULL));
-  EXPECT_EQ(u"06", card_to_fill.GetRawInfo(CREDIT_CARD_EXP_MONTH));
-  EXPECT_EQ(u"2035", card_to_fill.GetRawInfo(CREDIT_CARD_EXP_4_DIGIT_YEAR));
-  EXPECT_EQ(u"456", card_to_fill.cvc());
+  EXPECT_EQ(card_to_fill.GetRawInfo(CREDIT_CARD_NUMBER), u"1111222233334444");
+  EXPECT_EQ(card_to_fill.GetRawInfo(CREDIT_CARD_NAME_FULL), u"Jane Smith");
+  EXPECT_EQ(card_to_fill.GetRawInfo(CREDIT_CARD_EXP_MONTH), u"06");
+  EXPECT_EQ(card_to_fill.GetRawInfo(CREDIT_CARD_EXP_4_DIGIT_YEAR), u"2035");
+  EXPECT_EQ(card_to_fill.cvc(), u"456");
 #if BUILDFLAG(IS_IOS)
-  EXPECT_EQ(u"My Card", card_to_fill.nickname());
+  EXPECT_EQ(card_to_fill.nickname(), u"My Card");
 #else
   EXPECT_EQ(card_to_fill.nickname(), std::u16string());
 #endif
 
   // Make sure that all strikes are cleared upon user acceptance.
-  EXPECT_EQ(0, save_and_fill_strike_database.GetStrikes());
+  EXPECT_EQ(save_and_fill_strike_database.GetStrikes(), 0);
 }
 
 TEST_F(SaveAndFillManagerImplTest, CardUploadFeedback_UploadSucceeded) {
@@ -723,11 +726,11 @@ TEST_F(SaveAndFillManagerImplTest,
   save_and_fill_manager().OnSuggestionOffered();
   save_and_fill_manager().MaybeAddStrikeForSaveAndFill();
 
-  EXPECT_EQ(1, save_and_fill_strike_database.GetStrikes());
+  EXPECT_EQ(save_and_fill_strike_database.GetStrikes(), 1);
 
   // Verifies that calling it again won't log another strike.
   save_and_fill_manager().MaybeAddStrikeForSaveAndFill();
-  EXPECT_EQ(1, save_and_fill_strike_database.GetStrikes());
+  EXPECT_EQ(save_and_fill_strike_database.GetStrikes(), 1);
 }
 
 // Verify that no strike is added if the suggestion was offered and accepted by
@@ -741,7 +744,7 @@ TEST_F(SaveAndFillManagerImplTest,
       base::DoNothing());
   save_and_fill_manager().MaybeAddStrikeForSaveAndFill();
 
-  EXPECT_EQ(0, save_and_fill_strike_database.GetStrikes());
+  EXPECT_EQ(save_and_fill_strike_database.GetStrikes(), 0);
 }
 
 // Verify that no strike is added if the suggestion is offered but the form is
@@ -754,7 +757,7 @@ TEST_F(SaveAndFillManagerImplTest,
   // To simulate the tab being closed, we destroy the save and fill manager.
   ResetSaveAndFillManager();
 
-  EXPECT_EQ(0, save_and_fill_strike_database.GetStrikes());
+  EXPECT_EQ(save_and_fill_strike_database.GetStrikes(), 0);
 }
 
 TEST_F(SaveAndFillManagerImplTest, RequestLatencyMetrics) {
@@ -914,8 +917,17 @@ TEST_F(SaveAndFillManagerImplTest, StrikeDatabaseMetrics) {
 
   histogram_tester.ExpectUniqueSample(
       "Autofill.StrikeDatabase.NumOfStrikesPresentWhenSaveAndFillAccepted",
-      /*sample=*/2,
+      /*sample=*/save_and_fill_strike_database.GetMaxStrikesLimit() - 1,
       /*expected_bucket_count=*/1);
+}
+
+TEST_F(SaveAndFillManagerImplTest, MaxStrikeLimit) {
+  SaveAndFillStrikeDatabase save_and_fill_strike_database(strike_database());
+#if BUILDFLAG(IS_IOS)
+  EXPECT_EQ(save_and_fill_strike_database.GetMaxStrikesLimit(), 2);
+#else
+  EXPECT_EQ(save_and_fill_strike_database.GetMaxStrikesLimit(), 3);
+#endif
 }
 
 TEST_F(SaveAndFillManagerImplTest, HideDialog_CalledAfterLocalSaveCompleted) {

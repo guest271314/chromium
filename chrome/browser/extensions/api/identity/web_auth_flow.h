@@ -9,6 +9,7 @@
 #include <string>
 
 #include "base/functional/callback_forward.h"
+#include "base/functional/callback_helpers.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/scoped_observation.h"
@@ -20,10 +21,15 @@
 #include "extensions/buildflags/buildflags.h"
 #include "ui/gfx/geometry/rect.h"
 #include "url/gurl.h"
+#include "url/origin.h"
 
 static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
 
 class Profile;
+
+namespace infobars {
+class BrowserInfoBarManager;
+}
 
 namespace base {
 class OneShotTimer;
@@ -97,12 +103,19 @@ class WebAuthFlow : public content::WebContentsObserver,
 
   // Creates an instance with the given parameters.
   // Caller owns `delegate`.
+  //
+  // `initiator_origin` must be the origin of the extension that supplied
+  // `provider_url`, so that the resulting navigation is attributed to it
+  // instead of being treated as a trusted, browser-initiated navigation. Pass
+  // `std::nullopt` only when `provider_url` does not originate from web or
+  // extension content.
   WebAuthFlow(
       Delegate* delegate,
       Profile* profile,
       const GURL& provider_url,
       Mode mode,
       bool user_gesture,
+      std::optional<url::Origin> initiator_origin,
       AbortOnLoad abort_on_load_for_non_interactive = AbortOnLoad::kYes,
       std::optional<base::TimeDelta> timeout_for_non_interactive = std::nullopt,
       std::optional<gfx::Rect> popup_bounds = std::nullopt);
@@ -122,16 +135,16 @@ class WebAuthFlow : public content::WebContentsObserver,
   // Prevents further calls to the delegate and deletes the flow.
   void DetachDelegateAndDelete();
 
+  // Registers the InfoBarSpec for EXTENSIONS_WEB_AUTH_FLOW_INFOBAR_DELEGATE.
+  static void RegisterInfoBar(infobars::BrowserInfoBarManager& infobar_manager);
+
   // This call will make the interactive mode, that opens up a browser tab for
   // auth, display an Infobar that shows the extension name.
   void SetShouldShowInfoBar(const std::string& extension_display_name);
 
-  // Returns nullptr if the InfoBar is not displayed.
-  base::WeakPtr<WebAuthFlowInfoBarDelegate> GetInfoBarDelegateForTesting();
-
 #if BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS)
-  void SetWindowCreatedCallbackForTesting(
-      base::OnceCallback<void(BrowserWindowInterface*)> callback);
+  void OnBrowserWindowInterfaceInitialized(BrowserWindowInterface* browser);
+  void SetPopupDisplayedCallbackForTesting(base::OnceClosure callback);
 #endif
 
  private:
@@ -169,6 +182,9 @@ class WebAuthFlow : public content::WebContentsObserver,
   const GURL provider_url_;
   const Mode mode_;
   const bool user_gesture_;
+  // Origin to attribute the navigation to, or `std::nullopt` for a
+  // browser-initiated navigation. See the constructor for details.
+  const std::optional<url::Origin> initiator_origin_;
 
   // WebContents used to initialize the authentication. It is not displayed
   // and not owned by browser window. This WebContents is observed by
@@ -198,8 +214,8 @@ class WebAuthFlow : public content::WebContentsObserver,
   bool initial_url_loaded_ = false;
   base::ScopedObservation<Profile, ProfileObserver> profile_observation_{this};
 #if BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS)
-  base::OnceCallback<void(BrowserWindowInterface*)>
-      window_created_callback_for_testing_;
+  base::OnceClosure popup_displayed_callback_for_testing_;
+  base::WeakPtrFactory<WebAuthFlow> weak_factory_{this};
 #endif
 };
 

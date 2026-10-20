@@ -2,6 +2,9 @@
   "Mac Retina Release (Apple M2)": {
     "gtest_tests": [
       {
+        "ci_only": true,
+        "experiment_percentage": 100,
+        "isolate_profile_data": true,
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
@@ -16,7 +19,7 @@
             "gpu": "apple:m2",
             "hidpi": "1",
             "mac_model": "Mac14,7",
-            "os": "Mac-14.4.1",
+            "os": "Mac-26.5.1",
             "pool": "chromium.tests.gpu",
             "puppet_env": "production"
           },
@@ -34,6 +37,9 @@
           "--use-gl=angle",
           "--use-gpu-in-tests"
         ],
+        "ci_only": true,
+        "experiment_percentage": 100,
+        "isolate_profile_data": true,
         "merge": {
           "script": "//testing/merge_scripts/standard_gtest_merge.py"
         },
@@ -48,7 +54,7 @@
             "gpu": "apple:m2",
             "hidpi": "1",
             "mac_model": "Mac14,7",
-            "os": "Mac-14.4.1",
+            "os": "Mac-26.5.1",
             "pool": "chromium.tests.gpu",
             "puppet_env": "production"
           },
@@ -63,8 +69,12 @@
       {
         "args": [
           "--use-gpu-in-tests",
-          "--git-revision=${got_revision}"
+          "--git-revision=${got_revision}",
+          "--bypass-skia-gold-functionality"
         ],
+        "ci_only": true,
+        "experiment_percentage": 100,
+        "isolate_profile_data": true,
         "merge": {
           "script": "//testing/merge_scripts/standard_gtest_merge.py"
         },
@@ -84,7 +94,7 @@
             "gpu": "apple:m2",
             "hidpi": "1",
             "mac_model": "Mac14,7",
-            "os": "Mac-14.4.1",
+            "os": "Mac-26.5.1",
             "pool": "chromium.tests.gpu",
             "puppet_env": "production"
           },
@@ -109,6 +119,9 @@
           "--enforce-browser-version",
           "--jobs=4"
         ],
+        "ci_only": true,
+        "experiment_percentage": 100,
+        "isolate_profile_data": true,
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
@@ -127,7 +140,7 @@
             "gpu": "apple:m2",
             "hidpi": "1",
             "mac_model": "Mac14,7",
-            "os": "Mac-14.4.1",
+            "os": "Mac-26.5.1",
             "pool": "chromium.tests.gpu",
             "puppet_env": "production"
           },
@@ -150,11 +163,15 @@
           "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=metal --enable-skia-graphite",
           "--enforce-browser-version",
           "--git-revision=${got_revision}",
+          "--bypass-skia-gold-functionality",
           "--dont-restore-color-profile-after-test",
           "--test-machine-name",
           "${buildername}",
           "--jobs=4"
         ],
+        "ci_only": true,
+        "experiment_percentage": 100,
+        "isolate_profile_data": true,
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
@@ -178,7 +195,7 @@
             "gpu": "apple:m2",
             "hidpi": "1",
             "mac_model": "Mac14,7",
-            "os": "Mac-14.4.1",
+            "os": "Mac-26.5.1",
             "pool": "chromium.tests.gpu",
             "puppet_env": "production"
           },
@@ -202,6 +219,9 @@
           "--enforce-browser-version",
           "--jobs=4"
         ],
+        "ci_only": true,
+        "experiment_percentage": 100,
+        "isolate_profile_data": true,
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
@@ -220,7 +240,7 @@
             "gpu": "apple:m2",
             "hidpi": "1",
             "mac_model": "Mac14,7",
-            "os": "Mac-14.4.1",
+            "os": "Mac-26.5.1",
             "pool": "chromium.tests.gpu",
             "puppet_env": "production"
           },
@@ -244,6 +264,9 @@
           "--enforce-browser-version",
           "--jobs=4"
         ],
+        "ci_only": true,
+        "experiment_percentage": 100,
+        "isolate_profile_data": true,
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
@@ -262,7 +285,7 @@
             "gpu": "apple:m2",
             "hidpi": "1",
             "mac_model": "Mac14,7",
-            "os": "Mac-14.4.1",
+            "os": "Mac-26.5.1",
             "pool": "chromium.tests.gpu",
             "puppet_env": "production"
           },
@@ -290,6 +313,9 @@
           "0",
           "--jobs=4"
         ],
+        "ci_only": true,
+        "experiment_percentage": 100,
+        "isolate_profile_data": true,
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
@@ -308,7 +334,7 @@
             "gpu": "apple:m2",
             "hidpi": "1",
             "mac_model": "Mac14,7",
-            "os": "Mac-14.4.1",
+            "os": "Mac-26.5.1",
             "pool": "chromium.tests.gpu",
             "puppet_env": "production"
           },
@@ -331,11 +357,15 @@
           "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=metal --enable-skia-graphite",
           "--enforce-browser-version",
           "--git-revision=${got_revision}",
+          "--bypass-skia-gold-functionality",
           "--dont-restore-color-profile-after-test",
           "--test-machine-name",
           "${buildername}",
           "--jobs=4"
         ],
+        "ci_only": true,
+        "experiment_percentage": 100,
+        "isolate_profile_data": true,
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
@@ -359,7 +389,7 @@
             "gpu": "apple:m2",
             "hidpi": "1",
             "mac_model": "Mac14,7",
-            "os": "Mac-14.4.1",
+            "os": "Mac-26.5.1",
             "pool": "chromium.tests.gpu",
             "puppet_env": "production"
           },
@@ -384,6 +414,9 @@
           "--dont-restore-color-profile-after-test",
           "--jobs=4"
         ],
+        "ci_only": true,
+        "experiment_percentage": 100,
+        "isolate_profile_data": true,
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
@@ -402,7 +435,7 @@
             "gpu": "apple:m2",
             "hidpi": "1",
             "mac_model": "Mac14,7",
-            "os": "Mac-14.4.1",
+            "os": "Mac-26.5.1",
             "pool": "chromium.tests.gpu",
             "puppet_env": "production"
           },
@@ -426,6 +459,9 @@
           "--enforce-browser-version",
           "--jobs=4"
         ],
+        "ci_only": true,
+        "experiment_percentage": 100,
+        "isolate_profile_data": true,
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
@@ -444,7 +480,7 @@
             "gpu": "apple:m2",
             "hidpi": "1",
             "mac_model": "Mac14,7",
-            "os": "Mac-14.4.1",
+            "os": "Mac-26.5.1",
             "pool": "chromium.tests.gpu",
             "puppet_env": "production"
           },
@@ -470,6 +506,9 @@
           "--read-abbreviated-json-results-from=../../content/test/data/gpu/webgl1_conformance_mac_runtimes.json",
           "--jobs=4"
         ],
+        "ci_only": true,
+        "experiment_percentage": 100,
+        "isolate_profile_data": true,
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
@@ -488,7 +527,7 @@
             "gpu": "apple:m2",
             "hidpi": "1",
             "mac_model": "Mac14,7",
-            "os": "Mac-14.4.1",
+            "os": "Mac-26.5.1",
             "pool": "chromium.tests.gpu",
             "puppet_env": "production"
           },

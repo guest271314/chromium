@@ -7,17 +7,19 @@
 #include "base/functional/callback_helpers.h"
 #include "base/test/gtest_util.h"
 #include "base/test/scoped_feature_list.h"
-#include "chrome/browser/private_ai/private_ai_service.h"
 #include "chrome/browser/private_ai/private_ai_service_factory.h"
-#include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser.h"
-#include "chrome/test/base/in_process_browser_test.h"
+#include "chrome/browser/ui/omnibox/omnibox_next_features.h"
+#include "chrome/common/channel_info.h"
+#include "chrome/test/base/chrome_test_utils.h"
+#include "chrome/test/base/platform_browser_test.h"
 #include "components/private_ai/common/private_ai_logger.h"
 #include "components/private_ai/features.h"
 #include "components/private_ai/phosphor/token_manager.h"
-#include "content/public/browser/storage_partition.h"
+#include "components/private_ai/private_ai_service.h"
+#include "components/private_ai/testing/fake_private_ai_network_driver.h"
+#include "components/private_ai/testing/fake_private_ai_oak_session_driver.h"
 #include "content/public/test/browser_test.h"
-#include "services/network/public/mojom/network_context.mojom.h"
+#include "services/network/public/cpp/network_context_getter.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "url/gurl.h"
 
@@ -25,25 +27,29 @@ namespace private_ai {
 
 namespace {
 
-class ConnectionFactoryImplBrowserTest : public InProcessBrowserTest {
+class ConnectionFactoryImplBrowserTest : public PlatformBrowserTest {
  public:
   ConnectionFactoryImplBrowserTest() {
-    feature_list_.InitAndEnableFeatureWithParameters(
-        kPrivateAi, {{kPrivateAiApiKey.name, "test-api-key"}});
+    feature_list_.InitWithFeaturesAndParameters(
+        /*enabled_features=*/
+        {{kPrivateAi, {{kPrivateAiApiKey.name, "test-api-key"}}}},
+        /*disabled_features=*/
+        // TODO(crbug.com/452061489): Fix tests that fail when the WebUI Omnibox
+        // is enabled and then remove these two Features.
+        {omnibox::internal::kWebUIOmniboxPopup,
+         omnibox::internal::kWebUIOmniboxAimPopup});
   }
   ~ConnectionFactoryImplBrowserTest() override = default;
 
  protected:
-  network::mojom::NetworkContext* GetNetworkContext() {
-    return browser()
-        ->profile()
-        ->GetDefaultStoragePartition()
-        ->GetNetworkContext();
+  network::NetworkContextGetter GetNetworkContextGetter() {
+    return PrivateAiServiceFactory::CreateNetworkContextGetter(
+        chrome_test_utils::GetProfile(this));
   }
 
   phosphor::TokenManager* GetTokenManager() {
-    auto* service =
-        PrivateAiServiceFactory::GetForProfile(browser()->profile());
+    auto* service = PrivateAiServiceFactory::GetForProfile(
+        chrome_test_utils::GetProfile(this));
     CHECK(service);
     auto* token_manager = service->GetTokenManager();
     CHECK(token_manager);
@@ -52,8 +58,15 @@ class ConnectionFactoryImplBrowserTest : public InProcessBrowserTest {
 
   PrivateAiLogger* GetLogger() { return &logger_; }
 
+  FakePrivateAiOakSessionDriver* GetOakSessionDriver() {
+    return &oak_session_driver_;
+  }
+  FakePrivateAiNetworkDriver* GetNetworkDriver() { return &network_driver_; }
+
  private:
   PrivateAiLogger logger_;
+  FakePrivateAiOakSessionDriver oak_session_driver_;
+  FakePrivateAiNetworkDriver network_driver_;
   base::test::ScopedFeatureList feature_list_;
 };
 
@@ -61,27 +74,44 @@ IN_PROC_BROWSER_TEST_F(ConnectionFactoryImplBrowserTest,
                        CreateConnectionWithoutToken) {
   GURL url("wss://private-ai.googleapis.com?key=test_api_key");
 
-  ConnectionFactoryImpl factory(url, GetNetworkContext(), GetLogger());
+  ConnectionFactoryImpl factory(url, GetNetworkContextGetter(), GetLogger(),
+                                GetOakSessionDriver(), GetNetworkDriver(),
+                                chrome::GetChannel());
 
-  auto connection = factory.Create(base::DoNothing());
+  auto connection = factory.Create(
+      proto::FeatureName::FEATURE_NAME_CHROME_ZERO_STATE_SUGGESTION,
+      base::DoNothing());
   EXPECT_TRUE(connection);
 }
 
+// TODO(crbug.com/542347163): Re-enable test.
+#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_MAC) || \
+    BUILDFLAG(IS_WIN)
+#define MAYBE_FactoryCtorFailsWithoutApiKey \
+  DISABLED_FactoryCtorFailsWithoutApiKey
+#else
+#define MAYBE_FactoryCtorFailsWithoutApiKey FactoryCtorFailsWithoutApiKey
+#endif
 IN_PROC_BROWSER_TEST_F(ConnectionFactoryImplBrowserTest,
-                       FactoryCtorFailsWithoutApiKey) {
+                       MAYBE_FactoryCtorFailsWithoutApiKey) {
   GURL url("wss://private-ai.googleapis.com");
-  EXPECT_CHECK_DEATH(
-      ConnectionFactoryImpl(url, GetNetworkContext(), GetLogger()));
+  EXPECT_CHECK_DEATH(ConnectionFactoryImpl(
+      url, GetNetworkContextGetter(), GetLogger(), GetOakSessionDriver(),
+      GetNetworkDriver(), chrome::GetChannel()));
 }
 
 IN_PROC_BROWSER_TEST_F(ConnectionFactoryImplBrowserTest,
                        CreateConnectionWithToken) {
   GURL url("wss://private-ai.googleapis.com?key=test_api_key");
 
-  ConnectionFactoryImpl factory(url, GetNetworkContext(), GetLogger());
+  ConnectionFactoryImpl factory(url, GetNetworkContextGetter(), GetLogger(),
+                                GetOakSessionDriver(), GetNetworkDriver(),
+                                chrome::GetChannel());
   factory.EnableTokenAttestation(GetTokenManager());
 
-  auto connection = factory.Create(base::DoNothing());
+  auto connection = factory.Create(
+      proto::FeatureName::FEATURE_NAME_CHROME_ZERO_STATE_SUGGESTION,
+      base::DoNothing());
   EXPECT_TRUE(connection);
 }
 
@@ -89,11 +119,15 @@ IN_PROC_BROWSER_TEST_F(ConnectionFactoryImplBrowserTest,
                        CreateConnectionWithProxyAndToken) {
   GURL url("wss://private-ai.googleapis.com?key=test_api_key");
 
-  ConnectionFactoryImpl factory(url, GetNetworkContext(), GetLogger());
+  ConnectionFactoryImpl factory(url, GetNetworkContextGetter(), GetLogger(),
+                                GetOakSessionDriver(), GetNetworkDriver(),
+                                chrome::GetChannel());
   factory.EnableTokenAttestation(GetTokenManager());
   factory.EnableProxy(GURL("https://proxy.com"));
 
-  auto connection = factory.Create(base::DoNothing());
+  auto connection = factory.Create(
+      proto::FeatureName::FEATURE_NAME_CHROME_ZERO_STATE_SUGGESTION,
+      base::DoNothing());
   EXPECT_TRUE(connection);
 }
 

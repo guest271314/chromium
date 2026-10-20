@@ -8,7 +8,6 @@
 
 #include "base/functional/bind.h"
 #include "base/values.h"
-#include "chrome/grit/generated_resources.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/web_ui.h"
 
@@ -18,7 +17,7 @@ ConflictsHandler::ConflictsHandler()
 ConflictsHandler::~ConflictsHandler() = default;
 
 void ConflictsHandler::RegisterMessages() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
 
   web_ui()->RegisterMessageCallback(
       "requestModuleList",
@@ -28,7 +27,7 @@ void ConflictsHandler::RegisterMessages() {
 
 void ConflictsHandler::HandleRequestModuleList(
     const base::ListValue& args_list) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
 
   // Make sure the JS doesn't call 'requestModuleList' more than once.
   // TODO(crbug.com/40528619): It would be better to kill the renderer instead
@@ -42,8 +41,8 @@ void ConflictsHandler::HandleRequestModuleList(
 }
 
 void ConflictsHandler::OnConflictsDataFetched(base::DictValue results) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
-  DCHECK(!module_list_callback_id_.empty());
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
+  CHECK(!module_list_callback_id_.empty(), base::NotFatalUntil::M162);
 
   conflicts_data_fetcher_ = nullptr;
 

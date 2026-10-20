@@ -12,6 +12,7 @@
 #include "ash/constants/ash_switches.h"
 #include "ash/constants/chrome_webui_url_constants.h"
 #include "base/check.h"
+#include "base/check_deref.h"
 #include "base/check_is_test.h"
 #include "base/check_op.h"
 #include "base/command_line.h"
@@ -22,17 +23,16 @@
 #include "base/task/single_thread_task_runner.h"
 #include "chrome/browser/ash/login/wizard_controller.h"
 #include "chrome/browser/ash/profiles/profile_helper.h"
-#include "chrome/browser/consent_auditor/consent_auditor_factory.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/sync/sync_service_factory.h"
 #include "chrome/browser/ui/chrome_pages.h"
 #include "chrome/browser/ui/webui/ash/login/sync_consent_screen_handler.h"
 #include "chrome/browser/ui/webui/ash/settings/pref_names.h"
-#include "chrome/browser/unified_consent/unified_consent_service_factory.h"
-#include "chrome/common/pref_names.h"
+#include "chromeos/ash/components/consent_auditor/consent_auditor_provider.h"
 #include "chromeos/ash/components/osauth/public/auth_session_storage.h"
 #include "chromeos/ash/components/settings/cros_settings_names.h"
+#include "chromeos/ash/components/signin/identity_manager_provider.h"
+#include "components/account_id/account_id.h"
 #include "components/consent_auditor/consent_auditor.h"
 #include "components/prefs/pref_service.h"
 #include "components/signin/public/base/consent_level.h"
@@ -53,28 +53,6 @@
 namespace {
 
 constexpr char kUserActionContinue[] = "continue";
-constexpr char kUserActionLacrosSync[] = "sync-everything";
-constexpr char kUserActionLacrosCustom[] = "sync-custom";
-constexpr char kUserActionLacrosDecline[] = "lacros-decline";
-// OS Sync type options
-constexpr char kOsApps[] = "osApps";
-constexpr char kOsPreferences[] = "osPreferences";
-constexpr char kOsWifiConfigurations[] = "osWifiConfigurations";
-constexpr char kOsWallpaper[] = "osWallpaper";
-
-// This helper function to convert user selected items to UserSelectableOsType.
-void GetUserSelectedSyncOsType(const base::DictValue& os_sync_items,
-                               syncer::UserSelectableOsTypeSet& os_sync_set) {
-  if (os_sync_items.FindBool(kOsApps).value()) {
-    os_sync_set.Put(syncer::UserSelectableOsType::kOsApps);
-  }
-  if (os_sync_items.FindBool(kOsPreferences).value()) {
-    os_sync_set.Put(syncer::UserSelectableOsType::kOsPreferences);
-  }
-  if (os_sync_items.FindBool(kOsWifiConfigurations).value()) {
-    os_sync_set.Put(syncer::UserSelectableOsType::kOsWifiConfigurations);
-  }
-}
 
 }  // namespace
 
@@ -105,17 +83,32 @@ void RecordUmaReviewFollowingSetup(bool value) {
 // Returns true if the user is in minor mode (e.g. under age of 18). The value
 // is read from account capabilities. We assume user is in minor mode if
 // capability value is unknown.
-bool IsMinorMode(Profile* profile, const user_manager::User* user) {
-  auto* identity_manager = IdentityManagerFactory::GetForProfile(profile);
+bool IsMinorMode(const user_manager::User* user) {
+  auto* identity_manager =
+      ash::IdentityManagerProvider::Get().Find(user->GetAccountId());
+  if (!identity_manager) {
+    // No identity_manager means we can't check the capability; assume minor
+    // mode, consistent with the "unknown capability" case below.
+    return true;
+  }
   GaiaId gaia_id = user->GetAccountId().GetGaiaId();
   const AccountInfo account_info =
       identity_manager->FindExtendedAccountInfoByGaiaId(gaia_id);
   auto capability =
-      account_info.capabilities
+      account_info.GetAccountCapabilities()
           .can_show_history_sync_opt_ins_without_minor_mode_restrictions();
   base::UmaHistogramBoolean("OOBE.SyncConsentScreen.IsCapabilityKnown",
                             capability != signin::Tribool::kUnknown);
   return capability != signin::Tribool::kTrue;
+}
+
+// Returns the IdentityManager for `user`. Init() resolved the primary user to
+// `profile_` through the same user-to-profile mapping this lookup uses, so by
+// the time the callers below run the IdentityManager is always present.
+signin::IdentityManager& GetIdentityManagerForUser(
+    const user_manager::User& user) {
+  return CHECK_DEREF(
+      ash::IdentityManagerProvider::Get().Find(user.GetAccountId()));
 }
 
 base::TimeDelta GetWaitTimeout() {
@@ -134,8 +127,6 @@ std::string SyncConsentScreen::GetResultString(Result result) {
   switch (result) {
     case Result::NEXT:
       return "Next";
-    case Result::DECLINE:
-      return "DeclineOnLacros";
     case Result::NOT_APPLICABLE:
       return BaseScreen::kNotApplicable;
   }
@@ -148,7 +139,12 @@ void SyncConsentScreen::MaybeLaunchSyncConsentSettings(Profile* profile) {
   // moment we show Settings, it might crash here because profile could be
   // already destroyed. This needs to be fixed.
   if (profile->GetPrefs()->GetBoolean(
-          ::prefs::kShowSyncSettingsOnSessionStart)) {
+          ash::prefs::kShowSyncSettingsOnSessionStart)) {
+    const user_manager::User* user =
+        ash::ProfileHelper::Get()->GetUserByProfile(profile);
+    if (!user) {
+      return;
+    }
     // SyncSetupSubPage here is shown in the browser instead of the OS
     // Settings. We delay showing chrome sync settings by
     // kSyncConsentSettingsShowDelay to make the settings tab shows on top of
@@ -156,21 +152,31 @@ void SyncConsentScreen::MaybeLaunchSyncConsentSettings(Profile* profile) {
     base::SingleThreadTaskRunner::GetCurrentDefault()->PostDelayedTask(
         FROM_HERE,
         base::BindOnce(
-            [](Profile* profile) {
+            [](Profile* profile, const AccountId& account_id) {
               profile->GetPrefs()->ClearPref(
-                  ::prefs::kShowSyncSettingsOnSessionStart);
+                  ash::prefs::kShowSyncSettingsOnSessionStart);
+              signin::IdentityManager* identity_manager =
+                  ash::IdentityManagerProvider::Get().Find(account_id);
               chrome::ShowSettingsSubPageForProfile(
-                  profile,
-                  (base::FeatureList::IsEnabled(
-                       syncer::kReplaceSyncPromosWithSignInPromos) &&
-                   base::FeatureList::IsEnabled(
-                       ::switches::kChromeOsUseConsentLevelSigninForNewUsers))
-                      ? ash::chrome_urls::kAccountSubPage
-                      : ash::chrome_urls::kSyncSetupSubPage);
+                  profile, (identity_manager &&
+                            !identity_manager->HasPrimaryAccount(
+                                signin::ConsentLevel::kSync) &&
+                            base::FeatureList::IsEnabled(
+                                syncer::kReplaceSyncPromosWithSignInPromos))
+                               ? ash::chrome_urls::kAccountSubPage
+                               : ash::chrome_urls::kSyncSetupSubPage);
             },
-            base::Unretained(profile)),
+            base::Unretained(profile), user->GetAccountId()),
         kSyncConsentSettingsShowDelay);
   }
+}
+
+// static
+bool SyncConsentScreen::AreCapabilitiesLoaded(
+    const AccountCapabilities& capabilities) {
+  return capabilities
+             .can_show_history_sync_opt_ins_without_minor_mode_restrictions() !=
+         signin::Tribool::kUnknown;
 }
 
 SyncConsentScreen::SyncConsentScreen(base::WeakPtr<SyncConsentScreenView> view,
@@ -178,7 +184,7 @@ SyncConsentScreen::SyncConsentScreen(base::WeakPtr<SyncConsentScreenView> view,
     : BaseScreen(SyncConsentScreenView::kScreenId, OobeScreenPriority::DEFAULT),
       view_(std::move(view)),
       exit_callback_(exit_callback) {
-  DCHECK(view_);
+  CHECK(view_, base::NotFatalUntil::M161);
 }
 
 SyncConsentScreen::~SyncConsentScreen() = default;
@@ -193,17 +199,23 @@ void SyncConsentScreen::Init(const WizardContext& context) {
 }
 
 void SyncConsentScreen::Finish(Result result) {
-  DCHECK(profile_);
+  CHECK(profile_, base::NotFatalUntil::M161);
   profile_->GetPrefs()->SetBoolean(prefs::kRecordArcAppSyncMetrics, true);
   // Always set completed, even if the dialog was skipped (e.g. by policy).
   profile_->GetPrefs()->SetBoolean(prefs::kSyncOobeCompleted, true);
   // Record whether the dialog was shown, skipped, etc.
   base::UmaHistogramEnumeration("OOBE.SyncConsentScreen.Behavior", behavior_);
-  // Record the final state of the sync service.
-  syncer::SyncService* service = GetSyncService(profile_);
-  bool sync_enabled = service && service->IsSyncFeatureEnabled() &&
-                      service->GetUserSettings()->IsSyncEverythingEnabled();
-  base::UmaHistogramBoolean("OOBE.SyncConsentScreen.SyncEnabled", sync_enabled);
+  if (!base::FeatureList::IsEnabled(
+          syncer::kReplaceSyncPromosWithSignInPromos) ||
+      GetIdentityManagerForUser(CHECK_DEREF(user_.get()))
+          .HasPrimaryAccount(signin::ConsentLevel::kSync)) {
+    // Record the final state of the sync service.
+    syncer::SyncService* service = GetSyncService(profile_);
+    bool sync_enabled = service && service->IsSyncFeatureEnabled() &&
+                        service->GetUserSettings()->IsSyncEverythingEnabled();
+    base::UmaHistogramBoolean("OOBE.SyncConsentScreen.SyncEnabled",
+                              sync_enabled);
+  }
   exit_callback_.Run(result);
 }
 
@@ -267,7 +279,7 @@ void SyncConsentScreen::HideImpl() {
 }
 
 void SyncConsentScreen::OnStateChanged(syncer::SyncService* sync) {
-  DCHECK(context());
+  CHECK(context(), base::NotFatalUntil::M161);
   UpdateScreen(*context());
 }
 
@@ -299,7 +311,7 @@ void SyncConsentScreen::MaybeEnableSyncForSkip() {
 
 void SyncConsentScreen::OnTimeout() {
   is_timed_out_ = true;
-  DCHECK(context());
+  CHECK(context(), base::NotFatalUntil::M161);
   UpdateScreen(*context());
 }
 
@@ -386,12 +398,16 @@ void SyncConsentScreen::RecordConsent(
     ConsentGiven consent_given,
     const std::vector<int>& consent_description,
     int consent_confirmation) {
+  // Only reached for the signed-in user whose profile Init() resolved, so the
+  // account always maps back to a ConsentAuditor.
   consent_auditor::ConsentAuditor* consent_auditor =
-      ConsentAuditorFactory::GetForProfile(profile_);
+      ash::ConsentAuditorProvider::Get().Find(
+          CHECK_DEREF(user_.get()).GetAccountId());
+  CHECK(consent_auditor);
   // The user might not consent to browser sync, so use the "unconsented" ID.
   const GaiaId gaia_id =
-      IdentityManagerFactory::GetForProfile(profile_)
-          ->GetPrimaryAccountInfo(signin::ConsentLevel::kSignin)
+      GetIdentityManagerForUser(CHECK_DEREF(user_.get()))
+          .GetPrimaryAccountInfo(signin::ConsentLevel::kSignin)
           .gaia;
   // TODO(alemate): Support unified_consent_enabled
   sync_pb::UserConsentTypes::SyncConsent sync_consent;
@@ -431,7 +447,7 @@ bool SyncConsentScreen::IsProfileSyncEngineInitialized() const {
 }
 
 void SyncConsentScreen::PrepareScreenBasedOnCapability() {
-  bool is_minor_mode = IsMinorMode(profile_, user_);
+  bool is_minor_mode = IsMinorMode(user_);
   base::UmaHistogramBoolean("OOBE.SyncConsentScreen.IsMinorUser",
                             is_minor_mode);
   // Turn on "sync everything" toggle for non-minor users; turn off all data
@@ -482,7 +498,7 @@ void SyncConsentScreen::OnAshContinue(
       "OOBE.SyncConsentScreen.UserChoice",
       opted_in ? SyncConsentScreenHandler::UserChoice::kAccepted
                : SyncConsentScreenHandler::UserChoice::kDeclined);
-  profile_->GetPrefs()->SetBoolean(::prefs::kShowSyncSettingsOnSessionStart,
+  profile_->GetPrefs()->SetBoolean(ash::prefs::kShowSyncSettingsOnSessionStart,
                                    review_sync);
   SetSyncEverythingEnabled(opted_in);
   RecordAllConsents(opted_in, consent_description_list, consent_confirmation);
@@ -513,13 +529,6 @@ void SyncConsentScreen::RecordAllConsents(
   }
 }
 
-void SyncConsentScreen::OnLacrosContinue(
-    const base::ListValue& consent_description_list,
-    const std::string& consent_confirmation) {
-  RecordAllConsents(/*opted_in=*/true, consent_description_list,
-                    consent_confirmation);
-}
-
 void SyncConsentScreen::OnUserAction(const base::ListValue& args) {
   const std::string& action_id = args[0].GetString();
   if (action_id == kUserActionContinue) {
@@ -530,86 +539,6 @@ void SyncConsentScreen::OnUserAction(const base::ListValue& args) {
     const std::string& consent_confirmation = args[4].GetString();
     OnAshContinue(opted_in, review_sync, consent_description_list,
                   consent_confirmation);
-    return;
-  }
-  if (action_id == kUserActionLacrosSync) {
-    CHECK_EQ(args.size(), 3u);
-
-    const base::ListValue& consent_description_list = args[1].GetList();
-    const std::string& consent_confirmation = args[2].GetString();
-
-    OnLacrosContinue(consent_description_list, consent_confirmation);
-
-    syncer::SyncService* sync_service = GetSyncService(profile_);
-    syncer::SyncUserSettings* sync_settings = sync_service->GetUserSettings();
-
-    base::UmaHistogramBoolean(
-        "OOBE.SyncConsentScreen.LacrosSyncOptIns.SyncEverything", true);
-
-    syncer::UserSelectableOsTypeSet os_empty_set;
-    sync_settings->SetSelectedOsTypes(/*sync_all_os_types=*/true, os_empty_set);
-
-    exit_callback_.Run(Result::NEXT);
-
-    return;
-  }
-  if (action_id == kUserActionLacrosDecline) {
-    CHECK_EQ(args.size(), 1u);
-    syncer::SyncService* sync_service = GetSyncService(profile_);
-    syncer::SyncUserSettings* sync_settings = sync_service->GetUserSettings();
-
-    base::UmaHistogramBoolean(
-        "OOBE.SyncConsentScreen.LacrosSyncOptIns.SyncEverything", false);
-
-    syncer::UserSelectableOsTypeSet os_empty_set;
-    sync_settings->SetSelectedOsTypes(/*sync_all_os_types=*/false,
-                                      os_empty_set);
-
-    exit_callback_.Run(Result::DECLINE);
-    return;
-  }
-  if (action_id == kUserActionLacrosCustom) {
-    CHECK_EQ(args.size(), 4u);
-    const base::DictValue& osSyncItemsStatus = args[1].GetDict();
-    syncer::UserSelectableOsTypeSet os_sync_set;
-
-    const base::ListValue& consent_description_list = args[2].GetList();
-    const std::string& consent_confirmation = args[3].GetString();
-
-    OnLacrosContinue(consent_description_list, consent_confirmation);
-
-    GetUserSelectedSyncOsType(osSyncItemsStatus, os_sync_set);
-
-    syncer::SyncService* sync_service = GetSyncService(profile_);
-    syncer::SyncUserSettings* sync_settings = sync_service->GetUserSettings();
-
-    base::UmaHistogramBoolean(
-        "OOBE.SyncConsentScreen.LacrosSyncOptIns.SyncEverything", false);
-
-    sync_settings->SetSelectedOsTypes(/*sync_all_os_types=*/false, os_sync_set);
-
-    bool wallpaper_synced = osSyncItemsStatus.FindBool(kOsWallpaper).value();
-
-    if (wallpaper_synced) {
-      DCHECK(osSyncItemsStatus.FindBool(kOsPreferences).value());
-    }
-
-    base::UmaHistogramBoolean(
-        "OOBE.SyncConsentScreen.LacrosSyncOptIns.DataType.SyncWallpaper",
-        wallpaper_synced);
-    base::UmaHistogramBoolean(
-        "OOBE.SyncConsentScreen.LacrosSyncOptIns.DataType.SyncApps",
-        osSyncItemsStatus.FindBool(kOsApps).value());
-    base::UmaHistogramBoolean(
-        "OOBE.SyncConsentScreen.LacrosSyncOptIns.DataType.SyncSettings",
-        osSyncItemsStatus.FindBool(kOsPreferences).value());
-    base::UmaHistogramBoolean(
-        "OOBE.SyncConsentScreen.LacrosSyncOptIns.DataType.SyncWifi",
-        osSyncItemsStatus.FindBool(kOsWifiConfigurations).value());
-    profile_->GetPrefs()->SetBoolean(settings::prefs::kSyncOsWallpaper,
-                                     wallpaper_synced);
-
-    exit_callback_.Run(Result::NEXT);
     return;
   }
   BaseScreen::OnUserAction(args);

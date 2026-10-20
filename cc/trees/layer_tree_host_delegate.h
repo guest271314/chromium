@@ -12,10 +12,10 @@
 #include "cc/cc_export.h"
 #include "cc/input/browser_controls_state.h"
 #include "cc/metrics/frame_sequence_tracker_collection.h"
-#include "cc/trees/paint_holding_commit_trigger.h"
 #include "cc/trees/paint_holding_reason.h"
 #include "cc/trees/property_tree.h"
 #include "components/viz/common/frame_timing_details.h"
+#include "components/viz/common/quads/compositor_frame.h"
 #include "ui/gfx/geometry/vector2d_f.h"
 
 namespace viz {
@@ -132,13 +132,9 @@ class CC_EXPORT LayerTreeHostDelegate {
   virtual void OnDeferMainFrameUpdatesChanged(bool) = 0;
 
   // Notification that the proxy started or stopped deferring commits. |reason|
-  // indicates why commits are/were deferred. |trigger| indicates why the commit
-  // restarted. |trigger| is always provided on restarts, when |defer_status|
-  // switches to false.
-  virtual void OnDeferCommitsChanged(
-      bool defer_status,
-      PaintHoldingReason reason,
-      std::optional<PaintHoldingCommitTrigger> trigger) = 0;
+  // indicates why commits are/were deferred.
+  virtual void OnDeferCommitsChanged(bool defer_status,
+                                     PaintHoldingReason reason) = 0;
 
   // Notification that a compositing update has been requested.
   virtual void OnCommitRequested() = 0;
@@ -163,6 +159,12 @@ class CC_EXPORT LayerTreeHostDelegate {
   // Notifies the client about scroll and input related changes that occurred in
   // the LayerTreeHost since the last commit.
   virtual void UpdateCompositorScrollState(
+      const CompositorCommitData& commit_data) = 0;
+
+  // Notifies the client about the current frame index of animated images
+  // running the compositor, and animated image client elements who should be
+  // notified that an animated image has advanced.
+  virtual void UpdateAnimatedImageState(
       const CompositorCommitData& commit_data) = 0;
 
   // Request a LayerTreeFrameSink from the client. When the client has one it

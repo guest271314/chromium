@@ -71,9 +71,9 @@ bool IsValidDocument(const Document& document) {
   return document.GetFrame() && document.GetFrame()->GetDocument() == &document;
 }
 
-String DispatchBeforeTextInsertedEvent(const String& text,
-                                       const SelectionInDOMTree& selection,
-                                       EditingState* editing_state) {
+String FilterBeforeTextInserted(const String& text,
+                                const SelectionInDomTree& selection,
+                                EditingState* editing_state) {
   // We use SelectionForUndoStep because it is resilient to DOM
   // mutation.
   const SelectionForUndoStep& selection_as_undo_step =
@@ -82,13 +82,20 @@ String DispatchBeforeTextInsertedEvent(const String& text,
   if (!start_node || !RootEditableElement(*start_node))
     return text;
 
-  // Send BeforeTextInsertedEvent. The event handler will update text if
+  // Filter text before insertion. The element will update text if
   // necessary.
   const Document& document = start_node->GetDocument();
-  auto* evt = MakeGarbageCollected<BeforeTextInsertedEvent>(text);
-  RootEditableElement(*start_node)->DefaultEventHandler(*evt);
+  String filtered_text;
+  if (RuntimeEnabledFeatures::CleanUpActivationBehaviorEnabled()) {
+    filtered_text =
+        RootEditableElement(*start_node)->FilterBeforeTextInserted(text);
+  } else {
+    auto* evt = MakeGarbageCollected<BeforeTextInsertedEvent>(text);
+    RootEditableElement(*start_node)->DefaultEventHandler(*evt);
+    filtered_text = evt->GetText();
+  }
   if (IsValidDocument(document) && selection_as_undo_step.IsValidFor(document))
-    return evt->GetText();
+    return filtered_text;
   // editing/inserting/webkitBeforeTextInserted-removes-frame.html
   // and
   // editing/inserting/webkitBeforeTextInserted-disconnects-selection.html
@@ -105,7 +112,7 @@ DispatchEventResult DispatchTextInputEvent(LocalFrame* frame,
   if (!target)
     return DispatchEventResult::kCanceledBeforeDispatch;
 
-  // Send TextInputEvent. Unlike BeforeTextInsertedEvent, there is no need to
+  // Send TextInputEvent. Unlike FilterBeforeTextInserted, there is no need to
   // update text for TextInputEvent as it doesn't have the API to modify text.
   TextEvent* event = TextEvent::Create(frame->DomWindow(), text,
                                        kTextEventInputIncrementalInsertion);
@@ -119,7 +126,7 @@ DispatchEventResult DispatchTextInputEvent(LocalFrame* frame,
   return result;
 }
 
-PlainTextRange GetSelectionOffsets(const SelectionInDOMTree& selection) {
+PlainTextRange GetSelectionOffsets(const SelectionInDomTree& selection) {
   TRACE_EVENT0("blink", "GetSelectionOffsets");
   const EphemeralRange range = selection.ComputeRange();
   if (range.IsNull())
@@ -130,7 +137,7 @@ PlainTextRange GetSelectionOffsets(const SelectionInDOMTree& selection) {
   return PlainTextRange::Create(*editable, range);
 }
 
-SelectionInDOMTree CreateSelection(const wtf_size_t start,
+SelectionInDomTree CreateSelection(const wtf_size_t start,
                                    const wtf_size_t end,
                                    Element* element) {
   const EphemeralRange& start_range =
@@ -143,14 +150,14 @@ SelectionInDOMTree CreateSelection(const wtf_size_t start,
   DCHECK(end_range.IsNotNull());
   const Position& end_position = end_range.EndPosition();
 
-  const SelectionInDOMTree& selection =
-      SelectionInDOMTree::Builder()
+  const SelectionInDomTree& selection =
+      SelectionInDomTree::Builder()
           .SetBaseAndExtent(start_position, end_position)
           .Build();
   return selection;
 }
 
-bool CanAppendNewLineFeedToSelection(const SelectionInDOMTree& selection,
+bool CanAppendNewLineFeedToSelection(const SelectionInDomTree& selection,
                                      EditingState* editing_state) {
   // We use SelectionForUndoStep because it is resilient to DOM
   // mutation.
@@ -161,11 +168,17 @@ bool CanAppendNewLineFeedToSelection(const SelectionInDOMTree& selection,
     return false;
 
   const Document& document = element->GetDocument();
-  auto* event = MakeGarbageCollected<BeforeTextInsertedEvent>(String("\n"));
-  element->DefaultEventHandler(*event);
-  // event may invalidate frame or selection
+  String filtered_text;
+  if (RuntimeEnabledFeatures::CleanUpActivationBehaviorEnabled()) {
+    filtered_text = element->FilterBeforeTextInserted(String("\n"));
+  } else {
+    auto* event = MakeGarbageCollected<BeforeTextInsertedEvent>(String("\n"));
+    element->DefaultEventHandler(*event);
+    filtered_text = event->GetText();
+  }
+  // event/filtering may invalidate frame or selection
   if (IsValidDocument(document) && selection_as_undo_step.IsValidFor(document))
-    return event->GetText().length();
+    return filtered_text.length();
   // editing/inserting/webkitBeforeTextInserted-removes-frame.html
   // and
   // editing/inserting/webkitBeforeTextInserted-disconnects-selection.html
@@ -214,13 +227,11 @@ TypingCommand::TypingCommand(Document& document,
     : CompositeEditCommand(document, data_transfer),
       command_type_(command_type),
       text_to_insert_(NormalizeTextForInsertion(text_to_insert)),
-      open_for_more_typing_(true),
       select_inserted_text_(options & kSelectInsertedText),
       smart_delete_(options & kSmartDelete),
       granularity_(granularity),
       composition_type_(composition_type),
-      kill_ring_(options & kKillRing),
-      opened_by_backward_delete_(false) {
+      kill_ring_(options & kKillRing) {
   UpdatePreservesTypingStyle(command_type_);
 }
 
@@ -228,7 +239,7 @@ void TypingCommand::DeleteSelection(Document& document, Options options) {
   LocalFrame* frame = document.GetFrame();
   DCHECK(frame);
 
-  if (!frame->Selection().ComputeVisibleSelectionInDOMTree().IsRange()) {
+  if (!frame->Selection().ComputeVisibleSelectionInDomTree().IsRange()) {
     return;
   }
 
@@ -332,15 +343,23 @@ void TypingCommand::UpdateSelectionIfDifferentFromCurrentSelection(
     TypingCommand* typing_command,
     LocalFrame* frame) {
   DCHECK(frame);
-  const SelectionInDOMTree& current_selection =
-      frame->Selection().GetSelectionInDOMTree();
+  const SelectionInDomTree& current_selection =
+      frame->Selection().GetSelectionInDomTree();
   if (current_selection == typing_command->EndingSelection().AsSelection())
     return;
 
   typing_command->SetStartingSelection(
       SelectionForUndoStep::From(current_selection));
+  if (RuntimeEnabledFeatures::EditingUseDomPositionApiEnabled()) {
+    typing_command->SetStartingDomSelection(
+        SelectionForUndoStep::From(current_selection));
+  }
   typing_command->SetEndingSelection(
       SelectionForUndoStep::From(current_selection));
+  if (RuntimeEnabledFeatures::EditingUseDomPositionApiEnabled()) {
+    typing_command->SetEndingDomSelection(
+        SelectionForUndoStep::From(current_selection));
+  }
 }
 
 void TypingCommand::InsertText(Document& document,
@@ -352,7 +371,7 @@ void TypingCommand::InsertText(Document& document,
   LocalFrame* frame = document.GetFrame();
   DCHECK(frame);
   EditingState editing_state;
-  InsertText(document, text, frame->Selection().GetSelectionInDOMTree(),
+  InsertText(document, text, frame->Selection().GetSelectionInDomTree(),
              options, &editing_state, password_echo_behavior, composition,
              is_incremental_insertion);
 }
@@ -370,7 +389,7 @@ void TypingCommand::AdjustSelectionAfterIncrementalInsertion(
   frame->GetDocument()->UpdateStyleAndLayout(DocumentUpdateReason::kEditing);
 
   Element* element = frame->Selection()
-                         .ComputeVisibleSelectionInDOMTree()
+                         .ComputeVisibleSelectionInDomTree()
                          .RootEditableElement();
 
   // TODO(editing-dev): The text insertion should probably always leave the
@@ -383,9 +402,12 @@ void TypingCommand::AdjustSelectionAfterIncrementalInsertion(
   }
 
   const wtf_size_t new_end = selection_start + text_length;
-  const SelectionInDOMTree& selection =
+  const SelectionInDomTree& selection =
       CreateSelection(new_end, new_end, element);
   SetEndingSelection(SelectionForUndoStep::From(selection));
+  if (RuntimeEnabledFeatures::EditingUseDomPositionApiEnabled()) {
+    SetEndingDomSelection(SelectionForUndoStep::From(selection));
+  }
 }
 
 // FIXME: We shouldn't need to take selectionForInsertion. It should be
@@ -393,7 +415,7 @@ void TypingCommand::AdjustSelectionAfterIncrementalInsertion(
 void TypingCommand::InsertText(
     Document& document,
     const String& text,
-    const SelectionInDOMTree& passed_selection_for_insertion,
+    const SelectionInDomTree& passed_selection_for_insertion,
     Options options,
     EditingState* editing_state,
     PasswordEchoBehavior password_echo_behavior,
@@ -413,8 +435,8 @@ void TypingCommand::InsertText(
 
   String new_text = text;
   if (composition_type != kTextCompositionUpdate) {
-    new_text = DispatchBeforeTextInsertedEvent(
-        text, passed_selection_for_insertion, editing_state);
+    new_text = FilterBeforeTextInserted(text, passed_selection_for_insertion,
+                                        editing_state);
     if (editing_state->IsAborted())
       return;
     ABORT_EDITING_COMMAND_IF(
@@ -461,8 +483,16 @@ void TypingCommand::InsertText(
         passed_selection_for_insertion_as_undo_step) {
       last_typing_command->SetStartingSelection(
           passed_selection_for_insertion_as_undo_step);
+      if (RuntimeEnabledFeatures::EditingUseDomPositionApiEnabled()) {
+        last_typing_command->SetStartingDomSelection(
+            passed_selection_for_insertion_as_undo_step);
+      }
       last_typing_command->SetEndingSelection(
           passed_selection_for_insertion_as_undo_step);
+      if (RuntimeEnabledFeatures::EditingUseDomPositionApiEnabled()) {
+        last_typing_command->SetEndingDomSelection(
+            passed_selection_for_insertion_as_undo_step);
+      }
     }
 
     last_typing_command->SetCompositionType(composition_type);
@@ -481,14 +511,22 @@ void TypingCommand::InsertText(
   TypingCommand* command = MakeGarbageCollected<TypingCommand>(
       document, kInsertText, new_text, options, TextGranularity::kCharacter,
       composition_type, data_transfer);
-  const SelectionInDOMTree& current_selection =
-      frame->Selection().GetSelectionInDOMTree();
+  const SelectionInDomTree& current_selection =
+      frame->Selection().GetSelectionInDomTree();
   bool change_selection =
       current_selection !=
       passed_selection_for_insertion_as_undo_step.AsSelection();
   if (change_selection) {
     command->SetStartingSelection(passed_selection_for_insertion_as_undo_step);
+    if (RuntimeEnabledFeatures::EditingUseDomPositionApiEnabled()) {
+      command->SetStartingDomSelection(
+          passed_selection_for_insertion_as_undo_step);
+    }
     command->SetEndingSelection(passed_selection_for_insertion_as_undo_step);
+    if (RuntimeEnabledFeatures::EditingUseDomPositionApiEnabled()) {
+      command->SetEndingDomSelection(
+          passed_selection_for_insertion_as_undo_step);
+    }
   }
   command->is_incremental_insertion_ = is_incremental_insertion;
   command->selection_start_ = selection_start;
@@ -497,10 +535,14 @@ void TypingCommand::InsertText(
   ABORT_EDITING_COMMAND_IF(!command->Apply());
 
   if (change_selection) {
-    const SelectionInDOMTree& current_selection_as_dom =
-        frame->Selection().GetSelectionInDOMTree();
+    const SelectionInDomTree& current_selection_as_dom =
+        frame->Selection().GetSelectionInDomTree();
     command->SetEndingSelection(
         SelectionForUndoStep::From(current_selection_as_dom));
+    if (RuntimeEnabledFeatures::EditingUseDomPositionApiEnabled()) {
+      command->SetEndingDomSelection(
+          SelectionForUndoStep::From(current_selection_as_dom));
+    }
     frame->Selection().SetSelection(
         current_selection_as_dom,
         SetSelectionOptions::Builder()
@@ -684,7 +726,7 @@ void TypingCommand::InsertTextInternal(const String& text,
     return;
   }
   wtf_size_t selection_start = selection_start_;
-  unsigned offset = 0;
+  wtf_size_t offset = 0;
   wtf_size_t newline;
   while ((newline = text.find('\n', offset)) != kNotFound) {
     if (newline > offset) {
@@ -734,13 +776,16 @@ void TypingCommand::InsertTextInternal(const String& text,
       PlainTextRange(selection_start_, selection_start_).CreateRange(*editable);
   const Position current_selection_end = EndingSelection().End();
 
-  const SelectionInDOMTree& new_selection =
-      SelectionInDOMTree::Builder()
+  const SelectionInDomTree& new_selection =
+      SelectionInDomTree::Builder()
           .SetBaseAndExtent(new_selection_start_collapsed_range.StartPosition(),
                             current_selection_end)
           .Build();
 
   SetEndingSelection(SelectionForUndoStep::From(new_selection));
+  if (RuntimeEnabledFeatures::EditingUseDomPositionApiEnabled()) {
+    SetEndingDomSelection(SelectionForUndoStep::From(new_selection));
+  }
 }
 
 void TypingCommand::InsertTextRunWithoutNewlines(const String& text,
@@ -762,7 +807,13 @@ void TypingCommand::InsertTextRunWithoutNewlines(const String& text,
   }
 
   command->SetStartingSelection(EndingSelection());
+  if (RuntimeEnabledFeatures::EditingUseDomPositionApiEnabled()) {
+    command->SetStartingDomSelection(EndingDomSelection());
+  }
   command->SetEndingSelection(EndingSelection());
+  if (RuntimeEnabledFeatures::EditingUseDomPositionApiEnabled()) {
+    command->SetEndingDomSelection(EndingDomSelection());
+  }
   ApplyCommandToComposite(command, editing_state);
   if (editing_state->IsAborted())
     return;
@@ -833,8 +884,8 @@ bool TypingCommand::MakeEditableRootEmpty(EditingState* editing_state) {
   // The selection is updated prior to the removal of the element
   // that makes the node empty. (see crbug.com/40876506)
   LocalFrame* const frame = GetDocument().GetFrame();
-  const SelectionInDOMTree& new_selection =
-      SelectionInDOMTree::Builder()
+  const SelectionInDomTree& new_selection =
+      SelectionInDomTree::Builder()
           .Collapse(Position::FirstPositionInNode(*root))
           .Build();
   frame->Selection().SetSelection(
@@ -842,6 +893,9 @@ bool TypingCommand::MakeEditableRootEmpty(EditingState* editing_state) {
                          .SetIsDirectional(SelectionIsDirectional())
                          .Build());
   SetEndingSelection(SelectionForUndoStep::From(new_selection));
+  if (RuntimeEnabledFeatures::EditingUseDomPositionApiEnabled()) {
+    SetEndingDomSelection(SelectionForUndoStep::From(new_selection));
+  }
 
   RemoveAllChildrenIfPossible(root, editing_state);
   if (editing_state->IsAborted() || root->firstChild())
@@ -857,7 +911,7 @@ bool TypingCommand::MakeEditableRootEmpty(EditingState* editing_state) {
 // If there are multiple Unicode code points to be deleted, adjust the
 // range to match platform conventions.
 static SelectionForUndoStep AdjustSelectionForBackwardDelete(
-    const SelectionInDOMTree& selection) {
+    const SelectionInDomTree& selection) {
   const Position& anchor = selection.Anchor();
   if (selection.IsCaret()) {
     // TODO(yosin): We should make |DeleteSelectionCommand| to work with
@@ -876,19 +930,14 @@ static SelectionForUndoStep AdjustSelectionForBackwardDelete(
     }
     return SelectionForUndoStep::From(selection);
   }
-  if (anchor.ComputeContainerNode() !=
-      selection.Focus().ComputeContainerNode()) {
+  const SelectionInDomTree& adjusted =
+      NarrowSelectionToBackwardDeletionUnit(selection);
+  if (adjusted == selection) {
     return SelectionForUndoStep::From(selection);
   }
-  if (anchor.ComputeOffsetInContainerNode() -
-          selection.Focus().ComputeOffsetInContainerNode() <=
-      1) {
-    return SelectionForUndoStep::From(selection);
-  }
-  const Position& end = selection.ComputeEndPosition();
+
   return SelectionForUndoStep::Builder()
-      .SetAnchorAndFocusAsBackwardSelection(
-          end, PreviousPositionOf(end, PositionMoveType::kBackwardDeletion))
+      .SetAnchorAndFocusAsBackwardSelection(adjusted.Anchor(), adjusted.Focus())
       .Build();
 }
 
@@ -990,12 +1039,15 @@ void TypingCommand::DeleteKeyPressed(TextGranularity granularity,
     // If the caret is just after a table, select the table and don't delete
     // anything.
   } else if (Element* table = TableElementJustBefore(visible_start)) {
-    const SelectionInDOMTree& selection =
-        SelectionInDOMTree::Builder()
+    const SelectionInDomTree& selection =
+        SelectionInDomTree::Builder()
             .Collapse(Position::BeforeNode(*table))
             .Extend(EndingSelection().Start())
             .Build();
     SetEndingSelection(SelectionForUndoStep::From(selection));
+    if (RuntimeEnabledFeatures::EditingUseDomPositionApiEnabled()) {
+      SetEndingDomSelection(SelectionForUndoStep::From(selection));
+    }
     TypingAddedToOpenCommand(kDeleteKey);
     return;
   }
@@ -1051,8 +1103,12 @@ void TypingCommand::DeleteKeyPressedInternal(
   // text insertion and then delete more text than you insert.  In that case all
   // of the text that was around originally should be selected.
   if (frame->GetEditor().Behavior().ShouldUndoOfDeleteSelectText() &&
-      opened_by_backward_delete_)
+      opened_by_backward_delete_) {
     SetStartingSelection(selection_after_undo);
+    if (RuntimeEnabledFeatures::EditingUseDomPositionApiEnabled()) {
+      SetStartingDomSelection(selection_after_undo);
+    }
+  }
   frame->GetEditor().NotifyAccessibilityOfDeletionOrInsertionInTextField(
       selection_to_delete, /* is_deletion */ true);
   DeleteSelectionIfRange(selection_to_delete, editing_state);
@@ -1131,13 +1187,16 @@ void TypingCommand::ForwardDeleteKeyPressed(TextGranularity granularity,
   if (IsDisplayInsideTable(downstream_end.ComputeContainerNode()) &&
       downstream_end.ComputeOffsetInContainerNode() <=
           CaretMinOffset(downstream_end.ComputeContainerNode())) {
-    const SelectionInDOMTree& selection =
-        SelectionInDOMTree::Builder()
+    const SelectionInDomTree& selection =
+        SelectionInDomTree::Builder()
             .SetBaseAndExtentDeprecated(
                 EndingSelection().End(),
                 Position::AfterNode(*downstream_end.ComputeContainerNode()))
             .Build();
     SetEndingSelection(SelectionForUndoStep::From(selection));
+    if (RuntimeEnabledFeatures::EditingUseDomPositionApiEnabled()) {
+      SetEndingDomSelection(SelectionForUndoStep::From(selection));
+    }
     TypingAddedToOpenCommand(kForwardDeleteKey);
     return;
   }
@@ -1195,8 +1254,12 @@ void TypingCommand::ForwardDeleteKeyPressedInternal(
                                          .ToNormalizedEphemeralRange());
   }
   // Make undo select what was deleted on Mac alone
-  if (frame->GetEditor().Behavior().ShouldUndoOfDeleteSelectText())
+  if (frame->GetEditor().Behavior().ShouldUndoOfDeleteSelectText()) {
     SetStartingSelection(selection_after_undo);
+    if (RuntimeEnabledFeatures::EditingUseDomPositionApiEnabled()) {
+      SetStartingDomSelection(selection_after_undo);
+    }
+  }
   DeleteSelectionIfRange(selection_to_delete, editing_state);
   if (editing_state->IsAborted())
     return;

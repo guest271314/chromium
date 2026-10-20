@@ -3,6 +3,8 @@
 // found in the LICENSE file.
 
 export enum UmaName {
+  HEADING_TO_PARAGRAPH_RATIO =
+      'Accessibility.ReadAnything.DistilledPageStructure.HeadingToParagraphRatio',
   HIGHLIGHT_GRANULARITY =
       'Accessibility.ReadAnything.ReadAloud.HighlightGranularity',
   LANGUAGE = 'Accessibility.ReadAnything.ReadAloud.Language',
@@ -12,18 +14,60 @@ export enum UmaName {
       'Accessibility.ReadAnything.DistilledPageStructure.NumberParagraphs',
   SPEECH_ERROR = 'Accessibility.ReadAnything.SpeechError',
   SPEECH_PLAYBACK = 'Accessibility.ReadAnything.SpeechPlaybackSession',
+  SPEECH_PLAYBACK_PER_PAGE =
+      'Accessibility.ReadAnything.SpeechPlaybackSession.PerPage',
+  PDF_HEADING_TO_PARAGRAPH_RATIO =
+      'Accessibility.ReadAnything.Pdf.HeadingToParagraphRatio',
+  PDF_NUMBER_PARAGRAPHS = 'Accessibility.ReadAnything.Pdf.NumberParagraphs',
   SPEECH_SETTINGS_CHANGE =
       'Accessibility.ReadAnything.ReadAloud.SettingsChange',
+  SETTINGS_ACTION = 'Accessibility.ReadAnything.SettingsAction',
   TEXT_SETTINGS_CHANGE = 'Accessibility.ReadAnything.SettingsChange',
   TOTAL_HEADER_COUNT =
       'Accessibility.ReadAnything.DistilledPageStructure.TotalHeaderCount',
+  TOP_TWO_HEADERS_COUNT =
+      'Accessibility.ReadAnything.DistilledPageStructure.TopTwoHeadersCount',
+  TOP_TWO_HEADERS_HAVE_MINIMUM_TWO_ITEMS =
+      'Accessibility.ReadAnything.DistilledPageStructure.TopTwoHeadersHaveMinimumTwoItems',
+  TOP_TWO_HEADING_RATIO =
+      'Accessibility.ReadAnything.DistilledPageStructure.TopTwoHeadingRatio',
   UNIQUE_HEADER_TAGS =
       'Accessibility.ReadAnything.DistilledPageStructure.UniqueHeaderTags',
   VOICE = 'Accessibility.ReadAnything.ReadAloud.Voice',
   VOICE_LANGUAGE_CHANGE =
       'Accessibility.ReadAnything.ReadAloud.VoiceLanguageChange',
   VOICE_SPEED = 'Accessibility.ReadAnything.ReadAloud.VoiceSpeed',
+  MATHML_DISTILLATION_STATUS =
+      'Accessibility.ReadAnything.MathML.DistillationStatus',
+  MATHML_PRESENT_ON_PAGE = 'Accessibility.ReadAnything.MathML.PresentOnPage',
 }
+
+// Enum for logging MathML distillation status. Recorded once per distilled page
+// when at least one MathML element is present on the original page.
+//
+// Categorizes how math formulas were captured in the distilled Reading Mode
+// DOM:
+// - ONLY_MATHML: only native <math> elements were captured.
+// - MIXED_MATHML_AND_FALLBACK: both native <math> and fallbacks were captured.
+// - ONLY_FALLBACK: only math fallbacks (images with LaTeX/math class, or math
+// containers) were captured.
+// - NOT_DISTILLED_*: no math was captured in Reading Mode.
+//
+// These values are persisted to logs. Entries should not be renumbered and
+// numeric values should never be reused.
+//
+// LINT.IfChange(ReadAnythingMathMlDistillationStatus)
+export enum ReadAnythingMathMlDistillationStatus {
+  ONLY_MATHML = 0,
+  MIXED_MATHML_AND_FALLBACK = 1,
+  ONLY_FALLBACK = 2,
+  NOT_DISTILLED_READABILITY = 3,
+  NOT_DISTILLED_SCREEN2X = 4,
+
+  // Must be last.
+  COUNT = 5,
+}
+// LINT.ThenChange(//tools/metrics/histograms/metadata/accessibility/enums.xml:ReadAnythingMathMlDistillationStatus)
 
 // Enum for logging when we play speech on a page.
 // These values are persisted to logs. Entries should not be renumbered and
@@ -71,11 +115,25 @@ export enum ReadAnythingSettingsChange {
   // LINE_FOCUS_CHANGE = 7, // no longer used, split into style and movement
   LINE_FOCUS_STYLE_CHANGE = 8,
   LINE_FOCUS_MOVEMENT_CHANGE = 9,
+  LINE_FOCUS_TOGGLE = 10,
 
   // Must be last.
-  COUNT = 10,
+  COUNT = 11,
 }
 // LINT.ThenChange(/tools/metrics/histograms/metadata/accessibility/enums.xml:ReadAnythingSettingsChange)
+
+// Enum for logging when an action from the settings menu is executed.
+// These values are persisted to logs. Entries should not be renumbered and
+// numeric values should never be reused.
+//
+// LINT.IfChange(ReadAnythingSettingsAction)
+export enum ReadAnythingSettingsAction {
+  TRANSLATE_ACTION = 0,
+
+  // Must be last.
+  COUNT = 1,
+}
+// LINT.ThenChange(/tools/metrics/histograms/metadata/accessibility/enums.xml:ReadAnythingSettingsAction)
 
 // Enum for logging the reading highlight granularity.
 // These values are persisted to logs. Entries should not be renumbered and
@@ -104,9 +162,10 @@ export enum ReadAloudSettingsChange {
   VOICE_NAME_CHANGE = 1,
   HIGHLIGHT_CHANGE = 2,
   LANGUAGE_TOGGLE = 3,
+  ACCENT_CHANGE = 4,
 
   // Must be last.
-  COUNT = 4,
+  COUNT = 5,
 }
 // LINT.ThenChange(/tools/metrics/histograms/metadata/accessibility/enums.xml:ReadAnythingReadAloudSettingsChange)
 
@@ -145,9 +204,11 @@ export interface MetricsBrowserProxy {
   recordNewPage(): void;
   recordNewPageWithSpeech(): void;
   recordSpeechError(error: ReadAnythingSpeechError): void;
-  recordSpeechPlaybackLength(time: number): void;
+  recordSpeechPlaybackLength(umaName: string, time: number): void;
+  recordSpeechPlaybackLengthLegacy(time: number): void;
   recordSpeechSettingsChange(settingsChange: ReadAloudSettingsChange): void;
   recordSpeechStopSource(source: number): void;
+  recordSettingsAction(settingsAction: ReadAnythingSettingsAction): void;
   recordTextSettingsChange(settingsChange: ReadAnythingSettingsChange): void;
   recordTime(umaName: string, time: number): void;
   recordVoiceSpeed(index: number): void;
@@ -155,6 +216,16 @@ export interface MetricsBrowserProxy {
   recordVoiceLanguageChange(): void;
   recordExtensionState(): void;
   recordCount(umaName: string, count: number): void;
+  recordBoolean(umaName: string, value: boolean): void;
+  recordMathMlDistillationStatus(status: ReadAnythingMathMlDistillationStatus):
+      void;
+  updateWordsSeen(wordsSeen: number): void;
+  updateWordsHeard(wordsHeard: number): void;
+  startLineFocusSession(): void;
+  incrementLineFocusKeyboardLines(): void;
+  incrementLineFocusSpeechLines(): void;
+  addLineFocusScrollDistance(distance: number): void;
+  addLineFocusMouseDistance(distance: number): void;
 }
 
 export class MetricsBrowserProxyImpl implements MetricsBrowserProxy {
@@ -168,6 +239,26 @@ export class MetricsBrowserProxyImpl implements MetricsBrowserProxy {
 
   recordLineFocusSession() {
     chrome.readingMode.logLineFocusSession();
+  }
+
+  startLineFocusSession(): void {
+    chrome.readingMode.startLineFocusSession();
+  }
+
+  incrementLineFocusKeyboardLines(): void {
+    chrome.readingMode.incrementLineFocusKeyboardLines();
+  }
+
+  incrementLineFocusSpeechLines(): void {
+    chrome.readingMode.incrementLineFocusSpeechLines();
+  }
+
+  addLineFocusScrollDistance(distance: number): void {
+    chrome.readingMode.addLineFocusScrollDistance(distance);
+  }
+
+  addLineFocusMouseDistance(distance: number): void {
+    chrome.readingMode.addLineFocusMouseDistance(distance);
   }
 
   recordLineFocusToggled(enabled: boolean): void {
@@ -219,6 +310,12 @@ export class MetricsBrowserProxyImpl implements MetricsBrowserProxy {
         UmaName.LANGUAGE, lang);
   }
 
+  recordSettingsAction(settingsAction: ReadAnythingSettingsAction) {
+    chrome.metricsPrivate.recordEnumerationValue(
+        UmaName.SETTINGS_ACTION, settingsAction,
+        ReadAnythingSettingsAction.COUNT);
+  }
+
   recordTextSettingsChange(settingsChange: ReadAnythingSettingsChange) {
     chrome.metricsPrivate.recordEnumerationValue(
         UmaName.TEXT_SETTINGS_CHANGE, settingsChange,
@@ -235,7 +332,11 @@ export class MetricsBrowserProxyImpl implements MetricsBrowserProxy {
     chrome.metricsPrivate.recordSmallCount(UmaName.VOICE_SPEED, index);
   }
 
-  recordSpeechPlaybackLength(time: number) {
+  recordSpeechPlaybackLength(umaName: string, time: number) {
+    chrome.metricsPrivate.recordLongTime(umaName, time);
+  }
+
+  recordSpeechPlaybackLengthLegacy(time: number) {
     chrome.metricsPrivate.recordLongTime(UmaName.SPEECH_PLAYBACK, time);
   }
 
@@ -245,6 +346,25 @@ export class MetricsBrowserProxyImpl implements MetricsBrowserProxy {
 
   recordCount(umaName: string, count: number) {
     chrome.metricsPrivate.recordCount(umaName, count);
+  }
+
+  recordBoolean(umaName: string, value: boolean) {
+    chrome.metricsPrivate.recordBoolean(umaName, value);
+  }
+
+  recordMathMlDistillationStatus(status: ReadAnythingMathMlDistillationStatus):
+      void {
+    chrome.metricsPrivate.recordEnumerationValue(
+        UmaName.MATHML_DISTILLATION_STATUS, status,
+        ReadAnythingMathMlDistillationStatus.COUNT);
+  }
+
+  updateWordsSeen(wordsSeen: number): void {
+    chrome.readingMode.updateWordsSeen(wordsSeen);
+  }
+
+  updateWordsHeard(wordsHeard: number): void {
+    chrome.readingMode.updateWordsHeard(wordsHeard);
   }
 
   static getInstance(): MetricsBrowserProxy {

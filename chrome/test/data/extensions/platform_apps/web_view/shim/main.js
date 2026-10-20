@@ -213,30 +213,46 @@ function testAllowTransparencyAttribute() {
 
 // This test verifies that a lengthy page with autosize enabled will report
 // the correct height in the sizechanged event.
-function testAutosizeHeight() {
+function testAutosizeHeight(expectedWidths) {
   var webview = document.createElement('webview');
 
   webview.autosize = true;
   webview.minwidth = 200;
   webview.maxwidth = 210;
   webview.minheight = 40;
-  webview.maxheight = 200;
 
-  var step = 1;
-  var finalWidth = 200;
+  var initialMaxHeight = 200;
   var finalHeight = 50;
+  webview.maxheight = initialMaxHeight;
+  var loaded = false;
+  var completed = false;
+  webview.addEventListener('loadstop', function() {
+    loaded = true;
+    webview.maxheight = finalHeight;
+  });
+
   webview.addEventListener('sizechanged', function(e) {
+    if (completed) {
+      return;
+    }
+
     embedder.test.assertTrue(e.newHeight >= webview.minheight);
-    embedder.test.assertTrue(e.newHeight <= webview.maxheight);
+    embedder.test.assertTrue(e.newHeight <= initialMaxHeight);
     embedder.test.assertTrue(e.newWidth >= webview.minwidth);
     embedder.test.assertTrue(e.newWidth <= webview.maxwidth);
-    if (step == 1)
-      webview.maxheight = 50;
 
-    // We are done once the size settles on the final width and height.
-    if (e.newHeight == finalHeight && e.newWidth == finalWidth)
+    if (!loaded || e.newHeight != finalHeight) {
+      return;
+    }
+
+    completed = true;
+    if (expectedWidths.includes(e.newWidth)) {
       embedder.test.succeed();
-    ++step;
+      return;
+    }
+
+    console.error('Unexpected final width: ' + e.newWidth);
+    embedder.test.fail();
   });
 
   webview.src = 'data:text/html,' +
@@ -3249,6 +3265,17 @@ function testDialogInPdf() {
   document.body.appendChild(webview);
 }
 
+// Test that <webview>.executeScript({allFrames: true}) on a guest page
+// embedding a PDF does not execute scripts in the PDF extension frame or the
+// PDF content frame.
+function testExecuteScriptInEmbeddedPdf() {
+  let webview = document.createElement('webview');
+  webview.onloadstop = embedder.test.succeed;
+  webview.onloadabort = embedder.test.fail;
+  webview.src = embedder.baseGuestURL + '/page_with_embedded_pdf.html';
+  document.body.appendChild(webview);
+}
+
 // This test verifies that mailto links are enabled.
 function testMailtoLink() {
   var webview = new WebView();
@@ -4023,9 +4050,86 @@ function testCannotLockKeyboard() {
   document.body.appendChild(webview);
 }
 
+async function testWebRequestOnErrorOccurredNavigation() {
+  var webview = util.createWebViewTagInDOM();
+
+  // Helper promise to await the next loadstop event on the webview.
+  const waitForLoadStop = () => new Promise((resolve) => {
+    webview.addEventListener('loadstop', resolve, {once: true});
+  });
+
+  // Helper promise for chrome.test.sendMessage.
+  const sendMessage = (msg) => new Promise((resolve) => {
+    chrome.test.sendMessage(msg, resolve);
+  });
+
+  // Helper promise to await SW registration via postMessage.
+  const waitForSwRegistration = () => new Promise((resolve) => {
+    webview.addEventListener('loadstop', () => {
+      const channel = new MessageChannel();
+      channel.port1.onmessage = (e) => {
+        if (e.data === 'SW_REGISTERED') {
+          resolve();
+        }
+      };
+      webview.contentWindow.postMessage(
+          'CHECK_SW_REGISTRATION', '*', [channel.port2]);
+    }, {once: true});
+  });
+
+  // Initial registration.
+  let swRegisteredPromise = waitForSwRegistration();
+  webview.src = embedder.baseGuestURL +
+      '/extensions/platform_apps/web_view/shim/sw_register.html';
+  await swRegisteredPromise;
+
+  // Step 1: Navigate to the page (SW installed)
+  let loadStopPromise1 = waitForLoadStop();
+  webview.src = embedder.baseGuestURL +
+      '/extensions/platform_apps/web_view/shim/sw/index.html';
+  await loadStopPromise1;
+
+  // Step 2: Navigate away and stop the SW.
+  let loadStopPromise2 = waitForLoadStop();
+  webview.src = embedder.emptyGuestURL;
+  await loadStopPromise2;
+
+  const reply = await sendMessage('SW_REGISTERED');
+  embedder.test.assertEq('SW_STOPPED', reply);
+
+  // SW is stopped. Now register WebRequest listener.
+  webview.request.onErrorOccurred.addListener(function(details) {
+    // This should NOT be called!
+    LOG('Unexpected onErrorOccurred: ' + details.error);
+    embedder.test.fail();
+  }, {urls: ['<all_urls>']});
+
+  // Step 3: Navigate to the page again using ?stream=1.
+  let loadStopPromise3 = waitForLoadStop();
+  webview.addEventListener('loadcommit', (e) => {
+    const channel = new MessageChannel();
+    channel.port1.onmessage = (event) => {
+      if (event.data === 'SW_READY') {
+        channel.port1.postMessage('FINISH');
+      }
+    };
+    webview.contentWindow.postMessage('START', '*', [channel.port2]);
+  }, {once: true});
+
+  webview.src = embedder.baseGuestURL +
+      '/extensions/platform_apps/web_view/shim/sw/index.html?stream=1';
+  await loadStopPromise3;
+
+  // Step 4: Confirm that SWAutoPreload is not enabled (onErrorOccurred not
+  // called).
+  embedder.test.succeed();
+}
+
 embedder.test.testList = {
   'testAllowTransparencyAttribute': testAllowTransparencyAttribute,
-  'testAutosizeHeight': testAutosizeHeight,
+  // The final width depends on whether the scrollbar consumes layout space.
+  'testAutosizeHeightFeatureEnabled': () => testAutosizeHeight([200, 210]),
+  'testAutosizeHeightFeatureDisabled': () => testAutosizeHeight([200]),
   'testAutosizeAfterNavigation': testAutosizeAfterNavigation,
   'testAutosizeBeforeNavigation': testAutosizeBeforeNavigation,
   'testAutosizeRemoveAttributes': testAutosizeRemoveAttributes,
@@ -4145,6 +4249,7 @@ embedder.test.testList = {
   'testPDFInWebview': testPDFInWebview,
   'testNavigateToPDFInWebview': testNavigateToPDFInWebview,
   'testDialogInPdf': testDialogInPdf,
+  'testExecuteScriptInEmbeddedPdf': testExecuteScriptInEmbeddedPdf,
   'testMailtoLink': testMailtoLink,
   'testRendererNavigationRedirectWhileUnattached':
       testRendererNavigationRedirectWhileUnattached,
@@ -4174,6 +4279,8 @@ embedder.test.testList = {
   'testCannotLockKeyboard': testCannotLockKeyboard,
   'testRequestInterceptionCoverage': testRequestInterceptionCoverage,
   'testPictureInPictureRequestWindow': testPictureInPictureRequestWindow,
+  'testWebRequestOnErrorOccurredNavigation':
+      testWebRequestOnErrorOccurredNavigation,
 };
 
 onload = function() {

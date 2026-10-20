@@ -27,8 +27,8 @@ class FragmentItems;
 class InlinePaintContext;
 class PhysicalBoxFragment;
 class UsedFont;
-struct FitTextScale;
 struct LogicalLineItem;
+struct TextFitScale;
 struct TextFragmentPaintInfo;
 
 // Structure of additional fields that are rarely used for a Text type
@@ -157,7 +157,7 @@ class CORE_EXPORT FragmentItem final {
   bool IsBlockInInline() const;
   bool IsFloating() const;
   bool IsEmptyLineBox() const;
-  bool IsHiddenForPaint() const { return is_hidden_for_paint_; }
+  bool IsHiddenDueToLayout() const { return is_hidden_due_to_layout_; }
   bool IsListMarker() const;
 
   bool IsSvgText() const {
@@ -260,6 +260,8 @@ class CORE_EXPORT FragmentItem final {
     return rect_.offset;
   }
   const PhysicalOffset ContentOffsetInContainerFragment() const;
+  const PhysicalOffset ContentOffsetInContainerFragmentIgnoringTextBoxTrim()
+      const;
   const PhysicalSize& Size() const { return rect_.size; }
   PhysicalRect LocalRect() const { return {PhysicalOffset(), Size()}; }
   void SetOffset(const PhysicalOffset& offset) { rect_.offset = offset; }
@@ -512,15 +514,19 @@ class CORE_EXPORT FragmentItem final {
   // These functions are valid only if IsText() is true.
   bool HasOverAnnotation() const { return has_over_annotation_; }
   bool HasUnderAnnotation() const { return has_under_annotation_; }
-  // Returns the height of over/under ruby annotations for this fragment,
-  // measured from the annotation's baseline.
+  // This function represents how far emphasis marks should be painted from
+  // this text.
   //
-  // If this FragmentItem is associated with multiple ruby texts, the returned
-  // metrics only include the annotations directly associated with this fragment
-  // for now, and do not account for heights of other ruby annotations.
-  // For example, in:
-  // <ruby><ruby>base<rt><em>THIS</em></rt></ruby><rt>outer rt</rt></ruby>
-  // the returned metrics for |THIS| do not include those of |outer rt|.
+  // AnnotationMetrics().ascent is the distance from the line-over of this
+  // FragmentItem to the bottom edge of the over text-emphasis. This value
+  // can be negative for fonts with large internal leading.
+  //
+  // AnnotationMetrics().descent is the distance from the line-under of this
+  // FragmentItem to the top edge of the under text-emphasis. This value
+  // can be negative for fonts with large internal leading.
+  //
+  // This function returns a valid value only when it is a Text FragmentItem
+  // with text-emphasis enabled, otherwise it returns {0, 0}.
   FontHeight AnnotationMetrics() const;
 
   // Whether this item was marked dirty for reuse or not.
@@ -570,7 +576,7 @@ class CORE_EXPORT FragmentItem final {
   const UsedFont GetUsedFont() const;
 
   // Returns a paint-time text scaling factor for text-fit property.
-  float GetFitTextScale() const;
+  float GetTextFitScale() const;
   void SetLineTextFitScale(float scale);
 
   // Get a description of |this| for the debug purposes.
@@ -589,13 +595,13 @@ class CORE_EXPORT FragmentItem final {
                const ShapeResultView* shape_result,
                const TextOffsetRange& text_offset,
                const PhysicalSize& size,
-               bool is_hidden_for_paint);
+               bool is_hidden_due_to_layout);
   // Create a generated text item.
   FragmentItem(const InlineItem& inline_item,
                const ShapeResultView* shape_result,
                const String& text_content,
                const PhysicalSize& size,
-               bool is_hidden_for_paint);
+               bool is_hidden_due_to_layout);
   FragmentItem(const LayoutObject& layout_object,
                TextItemType text_type,
                StyleVariant style_variant,
@@ -603,7 +609,7 @@ class CORE_EXPORT FragmentItem final {
                const ShapeResultView* shape_result,
                const String& text_content,
                const PhysicalSize& size,
-               bool is_hidden_for_paint);
+               bool is_hidden_due_to_layout);
 
   InkOverflow::Type InkOverflowType() const {
     return static_cast<InkOverflow::Type>(ink_overflow_type_);
@@ -631,7 +637,7 @@ class CORE_EXPORT FragmentItem final {
       const AffineTransform& length_adjust) const;
   AffineTransform BuildSvgTransformForLengthAdjust() const;
 
-  void SetTextRareData(const FitTextScale* scale,
+  void SetTextRareData(const TextFitScale* scale,
                        FontHeight annotation_metrics = FontHeight());
 
   // TODO(kojii): We can make them sub-classes if we need to make the vector of
@@ -663,7 +669,7 @@ class CORE_EXPORT FragmentItem final {
   const unsigned const_type_ : kConstTypeBits;  // ItemType
   unsigned sub_type_ : kSubTypeBits;            // TextItemType or LineBoxType
   unsigned style_variant_ : 2;                  // StyleVariant
-  unsigned is_hidden_for_paint_ : 1;
+  unsigned is_hidden_due_to_layout_ : 1;
   // Note: For |TextItem| and |GeneratedTextItem|, |text_direction_| equals to
   // |ShapeResult::Direction()|.
   unsigned text_direction_ : 1;  // TextDirection.

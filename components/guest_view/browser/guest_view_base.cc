@@ -20,6 +20,7 @@
 #include "components/zoom/zoom_controller.h"
 #include "content/public/browser/file_select_listener.h"
 #include "content/public/browser/isolated_web_apps_policy.h"
+#include "content/public/browser/keyboard_event_processing_result.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/permission_result.h"
 #include "content/public/browser/render_process_host.h"
@@ -599,11 +600,11 @@ const GURL& GuestViewBase::GetOwnerLastCommittedURL() const {
   return owner_rfh()->GetLastCommittedURL();
 }
 
-const GURL& GuestViewBase::GetOwnerSiteURL() const {
+GURL GuestViewBase::GetOwnerSiteURL() const {
   return owner_rfh()
-      ->GetSiteInstance()
-      ->GetSecurityPrincipal()
-      .GetDeprecatedSiteURL();
+      ->GetLastCommittedOrigin()
+      .GetTupleOrPrecursorTupleIfOpaque()
+      .GetURL();
 }
 
 void GuestViewBase::SetAttachParams(const base::DictValue& params) {
@@ -789,6 +790,12 @@ bool GuestViewBase::GuestCheckMediaAccessPermission(
   return false;
 }
 
+bool GuestViewBase::GuestShouldAllowRendererInitiatedCrossProcessNavigation(
+    bool is_outermost_main_frame_navigation) {
+  return ShouldAllowRendererInitiatedCrossProcessNavigation(
+      is_outermost_main_frame_navigation);
+}
+
 void GuestViewBase::LoadProgressChanged(double progress) {
   if (base::FeatureList::IsEnabled(features::kGuestViewMPArch)) {
     // The load state of the embedder does not affect the load state of the
@@ -959,6 +966,20 @@ void GuestViewBase::ContentsZoomChange(bool zoom_in) {
   embedder_web_contents()->GetDelegate()->ContentsZoomChange(zoom_in);
 }
 
+content::KeyboardEventProcessingResult GuestViewBase::PreHandleKeyboardEvent(
+    WebContents* source,
+    const input::NativeWebKeyboardEvent& event) {
+  CHECK(!base::FeatureList::IsEnabled(features::kGuestViewMPArch));
+
+  if (!attached() || !embedder_web_contents()->GetDelegate()) {
+    return content::KeyboardEventProcessingResult::NOT_HANDLED;
+  }
+
+  // Send the keyboard events back to the embedder to reprocess them.
+  return embedder_web_contents()->GetDelegate()->PreHandleKeyboardEvent(
+      embedder_web_contents(), event);
+}
+
 bool GuestViewBase::HandleKeyboardEvent(
     WebContents* source,
     const input::NativeWebKeyboardEvent& event) {
@@ -1042,8 +1063,8 @@ void GuestViewBase::DraggableRegionsChanged(
     return;
   }
 
-  embedder_web_contents()->GetDelegate()->DraggableRegionsChanged(
-      regions, embedder_web_contents());
+  embedder_web_contents()->GetDelegate()->DraggableRegionsChanged(regions,
+                                                                  contents);
 }
 
 void GuestViewBase::OnZoomControllerDestroyed(zoom::ZoomController* source) {
@@ -1377,7 +1398,9 @@ bool GuestViewBase::IsPermissionRequestable(ContentSettingsType type) const {
 }
 
 std::optional<content::PermissionResult>
-GuestViewBase::OverridePermissionResult(ContentSettingsType type) const {
+GuestViewBase::OverridePermissionResult(
+    ContentSettingsType type,
+    const url::Origin& requesting_origin) const {
   return std::nullopt;
 }
 

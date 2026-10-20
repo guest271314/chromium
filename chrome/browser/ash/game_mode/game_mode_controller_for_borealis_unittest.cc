@@ -9,7 +9,6 @@
 #include "chrome/browser/ash/borealis/borealis_window_manager.h"
 #include "chrome/browser/ash/borealis/testing/windows.h"
 #include "chrome/browser/ash/game_mode/testing/game_mode_controller_test_base.h"
-#include "chrome/test/base/testing_profile.h"
 #include "chromeos/ash/components/dbus/resourced/fake_resourced_client.h"
 #include "ui/views/widget/widget.h"
 
@@ -165,7 +164,9 @@ TEST_F(GameModeControllerForBorealisTest, GameModeMetricsRecorded) {
   test_widget->SetFullscreen(false);
   EXPECT_FALSE(ash::WindowState::Get(window)->IsFullscreen());
   EXPECT_EQ(1, fake_resourced_client_->get_exit_game_mode_count());
-  base::RunLoop().RunUntilIdle();
+  // Exiting game mode posts the fake resourced reply as a zero-delay task.
+  // Run that reply without advancing mock time before checking histograms.
+  task_environment()->FastForwardBy(base::TimeDelta());
   histogram_tester_->ExpectBucketCount(kGameModeResultHistogramName,
                                        GameModeResult::kAttempted, 1);
   histogram_tester_->ExpectBucketCount(kGameModeResultHistogramName,

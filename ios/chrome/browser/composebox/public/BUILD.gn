@@ -25,7 +25,11 @@ source_set("features") {
     "features.h",
     "features.mm",
   ]
-  deps = [ "//base" ]
+  deps = [
+    "//base",
+    "//components/omnibox/common",
+    "//ui/base",
+  ]
 }
 
 source_set("theme") {
@@ -87,10 +91,7 @@ source_set("attachment_selection") {
     "composebox_attachment_selection.h",
     "composebox_attachment_selection.mm",
   ]
-  public_deps = [
-    "//ios/chrome/browser/composebox/shared/coordinator",
-    "//ios/web/public",
-  ]
+  public_deps = [ "//ios/web/public" ]
   deps = [ "//base" ]
 }
 

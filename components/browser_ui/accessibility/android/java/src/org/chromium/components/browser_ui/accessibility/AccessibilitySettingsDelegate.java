@@ -4,7 +4,10 @@
 
 package org.chromium.components.browser_ui.accessibility;
 
+import android.content.Context;
+
 import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.components.browser_ui.settings.SettingsNavigation;
 import org.chromium.components.dom_distiller.core.DistilledPagePrefs;
 import org.chromium.content_public.browser.BrowserContextHandle;
@@ -53,6 +56,14 @@ public interface AccessibilitySettingsDelegate {
     SettingsNavigation getSiteSettingsNavigation();
 
     /**
+     * @param context Android context used for scoping settings navigation in tab mode.
+     * @return SettingsNavigation for navigating between Settings pages.
+     */
+    default SettingsNavigation getSiteSettingsNavigation(Context context) {
+        return getSiteSettingsNavigation();
+    }
+
+    /**
      * @return the InterPreferenceDelegate instance that should be used for reading and setting the
      *     text size contrast value for accessibility settings. Return null to omit the preference.
      */
@@ -83,13 +94,6 @@ public interface AccessibilitySettingsDelegate {
     DistilledPagePrefs getDistilledPagePrefs();
 
     /**
-     * Returns whether the material slider should be used for the page zoom preference.
-     *
-     * @return True if the slider should be used, false otherwise.
-     */
-    boolean shouldUseSlider();
-
-    /**
      * Returns whether caret browsing is enabled.
      *
      * @return boolean - Whether caret browsing is enabled.
@@ -98,4 +102,11 @@ public interface AccessibilitySettingsDelegate {
 
     /** Sets whether caret browsing is enabled. */
     void setCaretBrowsingEnabled(boolean enabled);
+
+    /**
+     * @return String preference key for caret browsing.
+     */
+    default @Nullable String getCaretBrowsingPreferenceKey() {
+        return null;
+    }
 }

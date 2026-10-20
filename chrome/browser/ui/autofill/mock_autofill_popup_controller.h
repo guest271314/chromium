@@ -14,10 +14,11 @@
 #include "base/time/time.h"
 #include "build/build_config.h"
 #include "chrome/browser/ui/autofill/autofill_popup_controller.h"
+#include "chrome/browser/ui/autofill/autofill_popup_view.h"
+#include "chrome/browser/ui/autofill/popup_controller_common.h"
 #include "components/autofill/core/browser/suggestions/suggestion.h"
 #include "components/autofill/core/browser/suggestions/suggestion_type.h"
 #include "components/autofill/core/browser/ui/popup_open_enums.h"
-#include "components/autofill/core/browser/ui/suggestion_button_action.h"
 #include "components/autofill/core/browser/ui/tabbed_pane_enums.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "ui/gfx/geometry/point.h"
@@ -34,37 +35,33 @@ class MockAutofillPopupController : public AutofillPopupController {
   // AutofillPopupViewDelegate:
   MOCK_METHOD(void, Hide, (SuggestionHidingReason), (override));
   MOCK_METHOD(void, ViewDestroyed, (), (override));
-  MOCK_METHOD(bool, HasSelection, (), (const override));
-  MOCK_METHOD(gfx::Rect, popup_bounds, (), (const override));
-  MOCK_METHOD(AutofillSuggestionTriggerSource,
-              GetAutofillSuggestionTriggerSource,
-              (),
-              (const override));
   MOCK_METHOD(bool,
               ShouldIgnoreMouseObservedOutsideItemBoundsCheck,
               (),
-              (const override));
-  MOCK_METHOD(gfx::NativeView, container_view, (), (const override));
-  MOCK_METHOD(content::WebContents*, GetWebContents, (), (const override));
+              (const, override));
+  MOCK_METHOD(gfx::NativeView, container_view, (), (const, override));
+  MOCK_METHOD(content::WebContents*, GetWebContents, (), (const, override));
   const gfx::RectF& element_bounds() const override { return element_bounds_; }
   PopupAnchorType anchor_type() const override { return anchor_type_; }
   void set_element_bounds(const gfx::RectF& bounds) {
     element_bounds_ = bounds;
   }
+  const LocalFrameToken& GetAnchorFrameToken() const override {
+    return anchor_frame_token_;
+  }
+  void set_anchor_frame_token(const LocalFrameToken& frame_token) {
+    anchor_frame_token_ = frame_token;
+  }
   MOCK_METHOD(base::i18n::TextDirection,
               GetElementTextDirection,
               (),
-              (const override));
+              (const, override));
 
   // AutofillSuggestionController:
   MOCK_METHOD(void, OnSuggestionsChanged, (), (override));
   MOCK_METHOD(void,
               AcceptSuggestion,
-              (int, autofill::AutofillMetrics::SuggestionAcceptedMethod),
-              (override));
-  MOCK_METHOD(void,
-              PerformButtonActionForSuggestion,
-              (int, const SuggestionButtonAction&),
+              (int, AutofillMetrics::SuggestionAcceptedMethod, bool),
               (override));
   const std::vector<Suggestion>& GetSuggestions() const override {
     return suggestions_;
@@ -72,10 +69,10 @@ class MockAutofillPopupController : public AutofillPopupController {
   MOCK_METHOD((const std::vector<std::optional<SuggestionFilterMatch>>&),
               GetSuggestionFilterMatches,
               (),
-              (const override));
+              (const, override));
   int GetLineCount() const override { return suggestions_.size(); }
 
-  const autofill::Suggestion& GetSuggestionAt(int row) const override {
+  const Suggestion& GetSuggestionAt(int row) const override {
     return suggestions_[row];
   }
 
@@ -83,13 +80,10 @@ class MockAutofillPopupController : public AutofillPopupController {
     return weak_ptr_factory_.GetWeakPtr();
   }
 
-  MOCK_METHOD(bool,
-              RemoveSuggestion,
-              (int, AutofillMetrics::SingleEntryRemovalMethod),
-              (override));
+  MOCK_METHOD(bool, RemoveSuggestion, (int), (override));
   MOCK_METHOD(void, SelectSuggestion, (int), (override));
   MOCK_METHOD(void, UnselectSuggestion, (), (override));
-  MOCK_METHOD(FillingProduct, GetMainFillingProduct, (), (const override));
+  MOCK_METHOD(FillingProduct, GetMainFillingProduct, (), (const, override));
   MOCK_METHOD(base::WeakPtr<AutofillSuggestionController>,
               OpenSubPopup,
               (const gfx::RectF& anchor_bounds,
@@ -103,16 +97,29 @@ class MockAutofillPopupController : public AutofillPopupController {
                std::vector<Suggestion>,
                AutofillSuggestionTriggerSource,
                AutoselectFirstSuggestion,
-               AutofillSuggestionsIgnoreFocusLoss),
+               AutofillSuggestionsIgnoreFocusLoss,
+               std::u16string),
               (override));
   MOCK_METHOD(std::optional<AutofillSuggestionController::UiSessionId>,
               GetUiSessionId,
               (),
-              (const override));
+              (const, override));
   MOCK_METHOD(void, SetKeepPopupOpenForTesting, (bool), (override));
   MOCK_METHOD(void,
               UpdateDataListValues,
               (base::span<const SelectOption>),
+              (override));
+  MOCK_METHOD(bool,
+              MayRecycle,
+              (base::WeakPtr<AutofillSuggestionDelegate> delegate,
+               content::WebContents* web_contents,
+               const LocalFrameToken& anchor_frame_token,
+               AutofillSuggestionTriggerSource trigger_source),
+              (const, override));
+  MOCK_METHOD(void,
+              Recycle,
+              (PopupControllerCommon controller_common,
+               int32_t form_control_ax_id),
               (override));
   MOCK_METHOD(void,
               SetFilter,
@@ -124,12 +131,15 @@ class MockAutofillPopupController : public AutofillPopupController {
               HandleKeyPressEvent,
               (const input::NativeWebKeyboardEvent& event),
               (override));
-  MOCK_METHOD(bool, HasFilteredOutSuggestions, (), (const override));
-  MOCK_METHOD(bool, ShouldShowNoSuggestionsMessage, (), (const override));
+  MOCK_METHOD(bool, HasFilteredOutSuggestions, (), (const, override));
+  MOCK_METHOD(bool,
+              ShouldShowNoSuggestionsMessage,
+              (const std::optional<AutofillPopupView::SearchBarConfig>&),
+              (const, override));
   MOCK_METHOD(bool,
               IsViewVisibilityAcceptingThresholdEnabled,
               (),
-              (const override));
+              (const, override));
   MOCK_METHOD(bool, IsSearching, (), (const, override));
 
   void set_suggestions(const std::vector<SuggestionType>& ids) {
@@ -151,12 +161,13 @@ class MockAutofillPopupController : public AutofillPopupController {
   void InvalidateWeakPtrs() { weak_ptr_factory_.InvalidateWeakPtrs(); }
 
  private:
-  std::vector<autofill::Suggestion> suggestions_;
+  std::vector<Suggestion> suggestions_;
   std::vector<std::optional<SuggestionFilterMatch>> filter_matches_;
   gfx::ScopedDefaultFontDescription default_font_desc_setter_{
       "Arial, Times New Roman, 15px"};
   gfx::RectF element_bounds_ = {100, 100, 250, 50};
   PopupAnchorType anchor_type_ = PopupAnchorType::kField;
+  LocalFrameToken anchor_frame_token_;
 
   base::WeakPtrFactory<MockAutofillPopupController> weak_ptr_factory_{this};
 };

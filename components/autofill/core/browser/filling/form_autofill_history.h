@@ -25,6 +25,10 @@ class AutofillField;
 
 enum class FieldModifier;
 
+// Returns whether a filling action for `filling_product` should be included in
+// the form autofill history, in order to support Undo operations later.
+bool ShouldRecordFillingHistory(FillingProduct filling_product);
+
 // Holds history of Autofill filling operations so that they can be undone
 // later. The class is used to add, remove and access filling operations, which
 // are maps from fields to their corresponding value and state before filling.
@@ -58,9 +62,7 @@ class FormAutofillHistory {
     // because fields that are autofilled might be reset to still autofilled
     // field, considering cases where autofill is allowed to override autofilled
     // fields.
-    // TODO(crbug.com/393114125): Remove after launching
-    // `kAutofillFixIsAutofilled`.
-    bool is_autofilled_according_to_renderer;
+    bool is_autofilled_according_to_renderer = false;
 
     // The sequence of modifiers that have affected the field.
     std::vector<FieldModifier> field_modifiers;
@@ -79,13 +81,13 @@ class FormAutofillHistory {
     // Last product used to fill the field. This is stored so that Autofill
     // stores accurate information about the last modifier of the field,
     // especially since a single field can now be filled via different products.
-    FillingProduct filling_product;
+    FillingProduct filling_product = FillingProduct::kNone;
 
     // The undo functionality is supposed to work only on autofilled fields.
     // However when this boolean is enabled, this check is relaxed to include
     // non-autofilled fields as well provided that the undo history contains a
     // value for the field.
-    bool ignore_is_autofilled;
+    bool ignore_is_autofilled = false;
   };
 
   using FormFillingEntry = std::map<FieldGlobalId, FieldFillingEntry>;
@@ -99,14 +101,11 @@ class FormAutofillHistory {
   ~FormAutofillHistory();
 
   // Adds a new history entry in the beginning of the list.
-  // FormFieldData's are needed to get the most recent value of a field.
-  // AutofillField's are needed to get the type of a field.
-  // TODO(crbug.com/40232021): Only pass AutofillFields.
-  void AddFormFillingEntry(
-      base::span<const FormFieldData* const> filled_fields,
-      base::span<const AutofillField* const> filled_autofill_fields,
-      FillingProduct filling_product,
-      bool is_refill);
+  // `filled_fields` contain the state of the fields that were filled BEFORE
+  // the filling operation happened.
+  void AddFormFillingEntry(base::span<const AutofillField* const> filled_fields,
+                           FillingProduct filling_product,
+                           bool is_refill);
 
   // Erases the field history information corresponding to all `field_ids` from
   // `filling_entry`. If `filling_entry` becomes empty afterwards, the function

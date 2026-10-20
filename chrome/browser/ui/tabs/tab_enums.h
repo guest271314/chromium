@@ -5,14 +5,6 @@
 #ifndef CHROME_BROWSER_UI_TABS_TAB_ENUMS_H_
 #define CHROME_BROWSER_UI_TABS_TAB_ENUMS_H_
 
-// State indicating if the user is following the web feed of the site loaded in
-// a tab.
-enum class TabWebFeedFollowState {
-  kUnknown,      // The initial state before the follow state is determined.
-  kFollowed,     // The web feed is followed.
-  kNotFollowed,  // The web feed is not followed.
-};
-
 // The Service, UI, or Setting which muted the tab.
 enum class TabMutedReason {
   kNone,                  // The tab has never been muted or unmuted.
@@ -20,6 +12,16 @@ enum class TabMutedReason {
   kAudioIndicator,        // Mute toggled via tab-strip audio icon.
   kContentSetting,        // The sound content setting was set to BLOCK.
   kContentSettingChrome,  // Mute toggled on chrome:// URL.
+};
+
+// Source of the call to CloseTab().
+enum class CloseTabSource {
+  // Tab was closed by a mouse event on the tab or its close button
+  kFromMouse,
+  // Tab was closed by a touch event on the tab or its close button
+  kFromTouch,
+  // Tab is closed by some means other than direct tab interaction
+  kFromNonUIEvent,
 };
 
 // A BitField used to specify what should happen when the tab is closed.
@@ -116,5 +118,42 @@ enum class VerticalTabStripCollapseState {
   kMaxValue = kCollapsed,
 };
 // LINT.ThenChange(//tools/metrics/histograms/metadata/tab/enums.xml:VerticalTabStripCollapseState)
+
+// Enumerates entry points for Tab Groups Focus mode.
+// KEEP IN SYNC WITH THE TabGroupFocusEntryPoint ENUM IN enums.xml.
+// LINT.IfChange(TabGroupFocusEntryPoint)
+enum class TabGroupFocusEntryPoint {
+  kEditorBubble = 0,
+  kTabContextMenu = 1,
+  kTabContextMenuNonGroup = 2,
+  kBookmarksBarContextMenu = 3,
+  kAppMenu = 4,
+  kOrganizerPanel = 5,
+  kMaxValue = kOrganizerPanel,
+};
+// LINT.ThenChange(//tools/metrics/histograms/metadata/tab/enums.xml:TabGroupFocusEntryPoint)
+
+// Enumerates exit reasons for Tab Groups Focus mode.
+// KEEP IN SYNC WITH THE TabGroupFocusExitReason ENUM IN enums.xml.
+// LINT.IfChange(TabGroupFocusExitReason)
+enum class TabGroupFocusExitReason {
+  kEditorBubble = 0,
+  // kTabStripButton = 1,  // Deprecated, replaced by kHeaderUnfocusButton.
+  kGroupClosed = 2,
+  kGroupUngrouped = 3,
+  kLastTabClosed = 4,
+  kUnpinActiveTab = 5,
+  kGroupHeaderDraggedIn = 6,
+  kActiveTabGroupOperation = 7,
+  kTabOutsideGroupClosed = 8,
+  kTabContextMenu = 9,
+  kGroupCreated = 10,
+  kBookmarksBarContextMenu = 11,
+  kAppMenu = 12,
+  kOrganizerPanel = 13,
+  kHeaderUnfocusButton = 14,
+  kMaxValue = kHeaderUnfocusButton,
+};
+// LINT.ThenChange(//tools/metrics/histograms/metadata/tab/enums.xml:TabGroupFocusExitReason)
 
 #endif  // CHROME_BROWSER_UI_TABS_TAB_ENUMS_H_

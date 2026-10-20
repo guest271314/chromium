@@ -31,7 +31,8 @@ class MockMediaCodecBridge : public MediaCodecBridge,
 
   MOCK_METHOD0(Stop, void());
   MOCK_METHOD0(Flush, MediaCodecResult());
-  MOCK_METHOD1(GetOutputSize, MediaCodecResult(gfx::Size* size));
+  MOCK_METHOD2(GetOutputSizeAndCropRect,
+               MediaCodecResult(gfx::Size& size, gfx::Rect& rect));
   MOCK_METHOD1(GetOutputSamplingRate, MediaCodecResult(int* sampling_rate));
   MOCK_METHOD1(GetOutputChannelCount, MediaCodecResult(int* channel_count));
   MOCK_METHOD1(GetOutputColorSpace,
@@ -95,7 +96,7 @@ class MockMediaCodecBridge : public MediaCodecBridge,
 
   CodecType codec_type_ = CodecType::kAny;
   std::string name_;
-  bool is_software_codec_;
+  bool is_software_codec_ = false;
 };
 
 }  // namespace media

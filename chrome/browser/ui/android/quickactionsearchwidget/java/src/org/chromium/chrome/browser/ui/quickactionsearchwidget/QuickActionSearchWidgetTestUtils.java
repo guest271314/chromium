@@ -4,6 +4,8 @@
 
 package org.chromium.chrome.browser.ui.quickactionsearchwidget;
 
+import static org.junit.Assert.assertTrue;
+
 import static org.chromium.chrome.browser.url_constants.UrlConstantResolver.getOriginalNativeNtpUrl;
 
 import android.app.Activity;
@@ -11,8 +13,6 @@ import android.view.View;
 
 import androidx.test.platform.app.InstrumentationRegistry;
 import androidx.test.runner.lifecycle.Stage;
-
-import org.junit.Assert;
 
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.BaseActivityTestRule;
@@ -23,6 +23,7 @@ import org.chromium.base.test.util.Matchers;
 import org.chromium.chrome.browser.ChromeTabbedActivity;
 import org.chromium.chrome.browser.searchwidget.SearchActivity;
 import org.chromium.chrome.browser.tab.Tab;
+import org.chromium.chrome.test.ChromeActivityTestRule;
 import org.chromium.components.embedder_support.util.UrlConstants;
 
 /** Util class for testing the Quick Action Search Widget. */
@@ -60,8 +61,11 @@ class QuickActionSearchWidgetTestUtils {
                 ApplicationTestUtils.waitForActivityWithClass(
                         ChromeTabbedActivity.class, Stage.CREATED, action);
         testRule.setActivity(activity);
+        ApplicationTestUtils.waitForActivityState(activity, Stage.RESUMED);
+        ChromeActivityTestRule.waitForActivityNativeInitializationComplete(activity);
 
-        CriteriaHelper.pollUiThread(
+        CriteriaHelper.pollUiThreadLongTimeout(
+                "Dino tab not launched",
                 () -> {
                     Tab activityTab = activity.getActivityTab();
                     Criteria.checkThat(activityTab, Matchers.notNullValue());
@@ -104,7 +108,7 @@ class QuickActionSearchWidgetTestUtils {
         CriteriaHelper.pollUiThread(
                 () -> {
                     Tab activityTab = activity.getActivityTab();
-                    Assert.assertTrue(activity.getTabModelSelector().isIncognitoSelected());
+                    assertTrue(activity.getTabModelSelector().isIncognitoSelected());
                     Criteria.checkThat(activityTab, Matchers.notNullValue());
                     Criteria.checkThat(
                             activityTab.getUrl().getSpec(),

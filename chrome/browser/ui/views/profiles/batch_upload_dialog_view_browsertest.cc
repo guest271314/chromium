@@ -4,16 +4,12 @@
 
 #include "chrome/browser/ui/views/profiles/batch_upload_dialog_view.h"
 
-#include "base/functional/callback.h"
-#include "base/functional/callback_helpers.h"
-#include "base/memory/ptr_util.h"
 #include "base/strings/to_string.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/mock_callback.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
-#include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/common/webui_url_constants.h"
-#include "chrome/grit/generated_resources.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "components/input/native_web_keyboard_event.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
@@ -21,7 +17,6 @@
 #include "components/sync/base/data_type.h"
 #include "content/public/browser/render_view_host.h"
 #include "content/public/browser/render_widget_host.h"
-#include "content/public/test/browser_task_environment.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/test_navigation_observer.h"
 #include "testing/gmock/include/gmock/gmock.h"
@@ -31,9 +26,8 @@
 
 namespace {
 
-const std::map<syncer::DataType,
-               std::vector<syncer::LocalDataItemModel::DataId>>
-    kEmptySelectedMap;
+using SelectedDataMap =
+    std::map<syncer::DataType, std::vector<syncer::LocalDataItemModel::DataId>>;
 
 syncer::LocalDataDescription GetFakeLocalData(syncer::DataType type,
                                               int item_count) {
@@ -123,14 +117,21 @@ class BatchUploadDialogViewBrowserTest : public InProcessBrowserTest {
   void Signout() { signin::ClearPrimaryAccount(GetIdentityManager()); }
 
   void TriggerSigninPending() {
-    signin::SetInvalidRefreshTokenForPrimaryAccount(GetIdentityManager());
+    signin::IdentityManager* identity_manager = GetIdentityManager();
+    CoreAccountId account_id =
+        identity_manager->GetPrimaryAccountId(signin::ConsentLevel::kSignin);
+    signin::UpdatePersistentErrorOfRefreshTokenForAccount(
+        identity_manager, account_id,
+        GoogleServiceAuthError::FromInvalidGaiaCredentialsReason(
+            GoogleServiceAuthError::InvalidGaiaCredentialsReason::
+                CREDENTIALS_REJECTED_BY_SERVER));
   }
 
   base::HistogramTester& histogram_tester() { return histogram_tester_; }
 
  private:
   signin::IdentityManager* GetIdentityManager() {
-    return IdentityManagerFactory::GetForProfile(browser()->profile());
+    return IdentityManagerFactory::GetForProfile(browser()->GetProfile());
   }
 
   base::HistogramTester histogram_tester_;
@@ -147,11 +148,11 @@ IN_PROC_BROWSER_TEST_F(BatchUploadDialogViewBrowserTest,
   descriptions.push_back(GetFakeLocalData(type, 1));
   BatchUploadService::EntryPoint entry_point =
       BatchUploadService::EntryPoint::kPasswordManagerSettings;
-  BatchUploadDialogView* dialog_view =
-      CreateBatchUploadDialogView(browser()->profile(), std::move(descriptions),
-                                  entry_point, mock_callback.Get());
+  BatchUploadDialogView* dialog_view = CreateBatchUploadDialogView(
+      browser()->GetProfile(), std::move(descriptions), entry_point,
+      mock_callback.Get());
 
-  EXPECT_CALL(mock_callback, Run(kEmptySelectedMap)).Times(1);
+  EXPECT_CALL(mock_callback, Run(SelectedDataMap())).Times(1);
 
   dialog_view->OnDialogSelectionMade({});
   views::test::WidgetDestroyedWaiter(dialog_view->GetWidget()).Wait();
@@ -159,7 +160,9 @@ IN_PROC_BROWSER_TEST_F(BatchUploadDialogViewBrowserTest,
   base::HistogramTester::CountsMap expected_histograms_count = {
       {"Sync.BatchUpload.Opened", 1},
       {"Sync.BatchUpload.DataTypeAvailable", 1},
-      {"Sync.BatchUpload.DialogCloseReason", 1}};
+      {"Sync.BatchUpload.DialogCloseReason", 1},
+      {"Sync.BatchUpload.NoUpload", 1},
+  };
   EXPECT_THAT(histogram_tester().GetTotalCountsForPrefix("Sync.BatchUpload."),
               testing::ContainerEq(expected_histograms_count));
   histogram_tester().ExpectUniqueSample("Sync.BatchUpload.Opened", entry_point,
@@ -169,6 +172,8 @@ IN_PROC_BROWSER_TEST_F(BatchUploadDialogViewBrowserTest,
   histogram_tester().ExpectUniqueSample(
       "Sync.BatchUpload.DialogCloseReason",
       BatchUploadDialogCloseReason::kCancelClicked, 1);
+  histogram_tester().ExpectUniqueSample("Sync.BatchUpload.NoUpload",
+                                        entry_point, 1);
 }
 
 IN_PROC_BROWSER_TEST_F(BatchUploadDialogViewBrowserTest,
@@ -178,14 +183,14 @@ IN_PROC_BROWSER_TEST_F(BatchUploadDialogViewBrowserTest,
   base::MockCallback<BatchUploadSelectedDataTypeItemsCallback> mock_callback;
 
   syncer::DataType input_type = syncer::DataType::PASSWORDS;
-  EXPECT_CALL(mock_callback, Run(kEmptySelectedMap)).Times(1);
+  EXPECT_CALL(mock_callback, Run(SelectedDataMap())).Times(1);
   BatchUploadService::EntryPoint entry_point =
       BatchUploadService::EntryPoint::kPasswordManagerSettings;
   {
     std::vector<syncer::LocalDataDescription> descriptions;
     descriptions.push_back(GetFakeLocalData(input_type, 1));
     BatchUploadDialogView* dialog_view = CreateBatchUploadDialogView(
-        browser()->profile(), std::move(descriptions), entry_point,
+        browser()->GetProfile(), std::move(descriptions), entry_point,
         mock_callback.Get());
 
     // Simulate the widget closing without user action.
@@ -199,6 +204,7 @@ IN_PROC_BROWSER_TEST_F(BatchUploadDialogViewBrowserTest,
       {"Sync.BatchUpload.Opened", 1},
       {"Sync.BatchUpload.DataTypeAvailable", 1},
       {"Sync.BatchUpload.DialogCloseReason", 1},
+      {"Sync.BatchUpload.NoUpload", 1},
   };
   EXPECT_THAT(histogram_tester().GetTotalCountsForPrefix("Sync.BatchUpload."),
               testing::ContainerEq(expected_histograms_count));
@@ -209,6 +215,8 @@ IN_PROC_BROWSER_TEST_F(BatchUploadDialogViewBrowserTest,
   histogram_tester().ExpectUniqueSample(
       "Sync.BatchUpload.DialogCloseReason",
       BatchUploadDialogCloseReason::kWindowClosed, 1);
+  histogram_tester().ExpectUniqueSample("Sync.BatchUpload.NoUpload",
+                                        entry_point, 1);
 }
 
 IN_PROC_BROWSER_TEST_F(BatchUploadDialogViewBrowserTest,
@@ -221,12 +229,12 @@ IN_PROC_BROWSER_TEST_F(BatchUploadDialogViewBrowserTest,
   descriptions.push_back(GetFakeLocalData(type, 1));
   BatchUploadService::EntryPoint entry_point =
       BatchUploadService::EntryPoint::kPasswordPromoCard;
-  BatchUploadDialogView* dialog_view =
-      CreateBatchUploadDialogView(browser()->profile(), std::move(descriptions),
-                                  entry_point, mock_callback.Get());
+  BatchUploadDialogView* dialog_view = CreateBatchUploadDialogView(
+      browser()->GetProfile(), std::move(descriptions), entry_point,
+      mock_callback.Get());
 
   // Pressing the escape key should dismiss the dialog and return empty result.
-  EXPECT_CALL(mock_callback, Run(kEmptySelectedMap)).Times(1);
+  EXPECT_CALL(mock_callback, Run(SelectedDataMap())).Times(1);
   views::test::WidgetDestroyedWaiter destroyed_waiter(dialog_view->GetWidget());
   SimulateEscapeKeyPress(dialog_view->GetWebViewForTesting()->GetWebContents());
   destroyed_waiter.Wait();
@@ -235,6 +243,7 @@ IN_PROC_BROWSER_TEST_F(BatchUploadDialogViewBrowserTest,
       {"Sync.BatchUpload.Opened", 1},
       {"Sync.BatchUpload.DataTypeAvailable", 1},
       {"Sync.BatchUpload.DialogCloseReason", 1},
+      {"Sync.BatchUpload.NoUpload", 1},
   };
   EXPECT_THAT(histogram_tester().GetTotalCountsForPrefix("Sync.BatchUpload."),
               testing::ContainerEq(expected_histograms_count));
@@ -245,6 +254,8 @@ IN_PROC_BROWSER_TEST_F(BatchUploadDialogViewBrowserTest,
   histogram_tester().ExpectUniqueSample(
       "Sync.BatchUpload.DialogCloseReason",
       BatchUploadDialogCloseReason::kDismissed, 1);
+  histogram_tester().ExpectUniqueSample("Sync.BatchUpload.NoUpload",
+                                        entry_point, 1);
 }
 
 // Fails on Mac only.  http://crbug.com/372194892
@@ -255,22 +266,23 @@ IN_PROC_BROWSER_TEST_F(BatchUploadDialogViewBrowserTest,
 #define MAYBE_OpenBatchUploadDialogViewClosesOnSignout \
   OpenBatchUploadDialogViewClosesOnSignout
 #endif
+#if !BUILDFLAG(IS_CHROMEOS)
 IN_PROC_BROWSER_TEST_F(BatchUploadDialogViewBrowserTest,
                        MAYBE_OpenBatchUploadDialogViewClosesOnSignout) {
   SigninWithFullInfo();
 
   base::MockCallback<BatchUploadSelectedDataTypeItemsCallback> mock_callback;
 
-  EXPECT_CALL(mock_callback, Run(kEmptySelectedMap)).Times(1);
+  EXPECT_CALL(mock_callback, Run(SelectedDataMap())).Times(1);
 
   std::vector<syncer::LocalDataDescription> descriptions;
   syncer::DataType type = syncer::DataType::PASSWORDS;
   descriptions.push_back(GetFakeLocalData(type, 1));
   BatchUploadService::EntryPoint entry_point =
       BatchUploadService::EntryPoint::kPasswordPromoCard;
-  BatchUploadDialogView* dialog_view =
-      CreateBatchUploadDialogView(browser()->profile(), std::move(descriptions),
-                                  entry_point, mock_callback.Get());
+  BatchUploadDialogView* dialog_view = CreateBatchUploadDialogView(
+      browser()->GetProfile(), std::move(descriptions), entry_point,
+      mock_callback.Get());
   ASSERT_TRUE(dialog_view->GetWidget()->IsVisible());
 
   // Signing out should close the dialog.
@@ -281,6 +293,7 @@ IN_PROC_BROWSER_TEST_F(BatchUploadDialogViewBrowserTest,
       {"Sync.BatchUpload.Opened", 1},
       {"Sync.BatchUpload.DataTypeAvailable", 1},
       {"Sync.BatchUpload.DialogCloseReason", 1},
+      {"Sync.BatchUpload.NoUpload", 1},
   };
   EXPECT_THAT(histogram_tester().GetTotalCountsForPrefix("Sync.BatchUpload."),
               testing::ContainerEq(expected_histograms_count));
@@ -291,7 +304,10 @@ IN_PROC_BROWSER_TEST_F(BatchUploadDialogViewBrowserTest,
   histogram_tester().ExpectUniqueSample("Sync.BatchUpload.DialogCloseReason",
                                         BatchUploadDialogCloseReason::kSignout,
                                         1);
+  histogram_tester().ExpectUniqueSample("Sync.BatchUpload.NoUpload",
+                                        entry_point, 1);
 }
+#endif  // !BUILDFLAG(IS_CHROMEOS)
 
 // Fails on Mac only.  http://crbug.com/372194892
 #if BUILDFLAG(IS_MAC)
@@ -307,26 +323,30 @@ IN_PROC_BROWSER_TEST_F(BatchUploadDialogViewBrowserTest,
 
   base::MockCallback<BatchUploadSelectedDataTypeItemsCallback> mock_callback;
 
-  EXPECT_CALL(mock_callback, Run(kEmptySelectedMap)).Times(1);
+  EXPECT_CALL(mock_callback, Run(SelectedDataMap())).Times(1);
 
   std::vector<syncer::LocalDataDescription> descriptions;
   syncer::DataType type = syncer::DataType::PASSWORDS;
   descriptions.push_back(GetFakeLocalData(type, 1));
   BatchUploadService::EntryPoint entry_point =
       BatchUploadService::EntryPoint::kPasswordPromoCard;
-  BatchUploadDialogView* dialog_view =
-      CreateBatchUploadDialogView(browser()->profile(), std::move(descriptions),
-                                  entry_point, mock_callback.Get());
-  ASSERT_TRUE(dialog_view->GetWidget()->IsVisible());
+  BatchUploadDialogView* dialog_view = CreateBatchUploadDialogView(
+      browser()->GetProfile(), std::move(descriptions), entry_point,
+      mock_callback.Get());
+  views::Widget* widget = dialog_view->GetWidget();
+  ASSERT_TRUE(widget);
+  ASSERT_TRUE(widget->IsVisible());
+  views::test::WidgetDestroyedWaiter waiter(widget);
 
   // Signing out should close the dialog.
   TriggerSigninPending();
-  views::test::WidgetDestroyedWaiter(dialog_view->GetWidget()).Wait();
+  waiter.Wait();
 
   base::HistogramTester::CountsMap expected_histograms_count = {
       {"Sync.BatchUpload.Opened", 1},
       {"Sync.BatchUpload.DataTypeAvailable", 1},
       {"Sync.BatchUpload.DialogCloseReason", 1},
+      {"Sync.BatchUpload.NoUpload", 1},
   };
   EXPECT_THAT(histogram_tester().GetTotalCountsForPrefix("Sync.BatchUpload."),
               testing::ContainerEq(expected_histograms_count));
@@ -337,6 +357,8 @@ IN_PROC_BROWSER_TEST_F(BatchUploadDialogViewBrowserTest,
   histogram_tester().ExpectUniqueSample(
       "Sync.BatchUpload.DialogCloseReason",
       BatchUploadDialogCloseReason::kSiginPending, 1);
+  histogram_tester().ExpectUniqueSample("Sync.BatchUpload.NoUpload",
+                                        entry_point, 1);
 }
 
 IN_PROC_BROWSER_TEST_F(BatchUploadDialogViewBrowserTest,
@@ -354,9 +376,9 @@ IN_PROC_BROWSER_TEST_F(BatchUploadDialogViewBrowserTest,
   descriptions.push_back(GetFakeLocalData(type2, count2));
   BatchUploadService::EntryPoint entry_point =
       BatchUploadService::EntryPoint::kPasswordPromoCard;
-  BatchUploadDialogView* dialog_view =
-      CreateBatchUploadDialogView(browser()->profile(), std::move(descriptions),
-                                  entry_point, mock_callback.Get());
+  BatchUploadDialogView* dialog_view = CreateBatchUploadDialogView(
+      browser()->GetProfile(), std::move(descriptions), entry_point,
+      mock_callback.Get());
 
   std::map<syncer::DataType, std::vector<syncer::LocalDataItemModel::DataId>>
       result;
@@ -372,6 +394,7 @@ IN_PROC_BROWSER_TEST_F(BatchUploadDialogViewBrowserTest,
       {"Sync.BatchUpload.DataTypeSelected", 2},
       {"Sync.BatchUpload.DataTypeSelectedItemPercentage", 2},
       {"Sync.BatchUpload.DialogCloseReason", 1},
+      {"Sync.BatchUpload.FullUpload", 1},
   };
   EXPECT_THAT(histogram_tester().GetTotalCountsForPrefix("Sync.BatchUpload."),
               testing::ContainerEq(expected_histograms_count));
@@ -390,6 +413,8 @@ IN_PROC_BROWSER_TEST_F(BatchUploadDialogViewBrowserTest,
   histogram_tester().ExpectUniqueSample(
       "Sync.BatchUpload.DialogCloseReason",
       BatchUploadDialogCloseReason::kSaveClicked, 1);
+  histogram_tester().ExpectUniqueSample("Sync.BatchUpload.FullUpload",
+                                        entry_point, 1);
 }
 
 IN_PROC_BROWSER_TEST_F(BatchUploadDialogViewBrowserTest,
@@ -406,9 +431,9 @@ IN_PROC_BROWSER_TEST_F(BatchUploadDialogViewBrowserTest,
   descriptions.push_back(GetFakeLocalData(type2, count2));
   BatchUploadService::EntryPoint entry_point =
       BatchUploadService::EntryPoint::kPasswordPromoCard;
-  BatchUploadDialogView* dialog_view =
-      CreateBatchUploadDialogView(browser()->profile(), std::move(descriptions),
-                                  entry_point, mock_callback.Get());
+  BatchUploadDialogView* dialog_view = CreateBatchUploadDialogView(
+      browser()->GetProfile(), std::move(descriptions), entry_point,
+      mock_callback.Get());
 
   std::map<syncer::DataType, std::vector<syncer::LocalDataItemModel::DataId>>
       result;
@@ -430,6 +455,7 @@ IN_PROC_BROWSER_TEST_F(BatchUploadDialogViewBrowserTest,
       {"Sync.BatchUpload.DataTypeSelected", 1},
       {"Sync.BatchUpload.DataTypeSelectedItemPercentage", 1},
       {"Sync.BatchUpload.DialogCloseReason", 1},
+      {"Sync.BatchUpload.PartialUpload", 1},
   };
   EXPECT_THAT(histogram_tester().GetTotalCountsForPrefix("Sync.BatchUpload."),
               testing::ContainerEq(expected_histograms_count));
@@ -448,4 +474,54 @@ IN_PROC_BROWSER_TEST_F(BatchUploadDialogViewBrowserTest,
   histogram_tester().ExpectUniqueSample(
       "Sync.BatchUpload.DialogCloseReason",
       BatchUploadDialogCloseReason::kSaveClicked, 1);
+  histogram_tester().ExpectUniqueSample("Sync.BatchUpload.PartialUpload",
+                                        entry_point, 1);
+}
+
+IN_PROC_BROWSER_TEST_F(BatchUploadDialogViewBrowserTest,
+                       OpenBatchUploadDialogViewWithSaveActionNoItems) {
+  SigninWithFullInfo();
+
+  base::MockCallback<BatchUploadSelectedDataTypeItemsCallback> mock_callback;
+
+  std::vector<syncer::LocalDataDescription> descriptions;
+  syncer::DataType type1 = syncer::DataType::PASSWORDS;
+  descriptions.push_back(GetFakeLocalData(type1, 1));
+  syncer::DataType type2 = syncer::DataType::CONTACT_INFO;
+  descriptions.push_back(GetFakeLocalData(type2, 2));
+  BatchUploadService::EntryPoint entry_point =
+      BatchUploadService::EntryPoint::kPasswordPromoCard;
+  BatchUploadDialogView* dialog_view = CreateBatchUploadDialogView(
+      browser()->GetProfile(), std::move(descriptions), entry_point,
+      mock_callback.Get());
+
+  std::map<syncer::DataType, std::vector<syncer::LocalDataItemModel::DataId>>
+      result;
+  result.insert_or_assign(type1,
+                          std::vector<syncer::LocalDataItemModel::DataId>{});
+  result.insert_or_assign(type2,
+                          std::vector<syncer::LocalDataItemModel::DataId>{});
+  EXPECT_CALL(mock_callback, Run(result)).Times(1);
+  dialog_view->OnDialogSelectionMade(result);
+  views::test::WidgetDestroyedWaiter(dialog_view->GetWidget()).Wait();
+
+  base::HistogramTester::CountsMap expected_histograms_count = {
+      {"Sync.BatchUpload.Opened", 1},
+      {"Sync.BatchUpload.DataTypeAvailable", 2},
+      {"Sync.BatchUpload.DialogCloseReason", 1},
+      {"Sync.BatchUpload.NoUpload", 1},
+  };
+  EXPECT_THAT(histogram_tester().GetTotalCountsForPrefix("Sync.BatchUpload."),
+              testing::ContainerEq(expected_histograms_count));
+  histogram_tester().ExpectUniqueSample("Sync.BatchUpload.Opened", entry_point,
+                                        1);
+  histogram_tester().ExpectBucketCount("Sync.BatchUpload.DataTypeAvailable",
+                                       DataTypeHistogramValue(type1), 1);
+  histogram_tester().ExpectBucketCount("Sync.BatchUpload.DataTypeAvailable",
+                                       DataTypeHistogramValue(type2), 1);
+  histogram_tester().ExpectUniqueSample(
+      "Sync.BatchUpload.DialogCloseReason",
+      BatchUploadDialogCloseReason::kCancelClicked, 1);
+  histogram_tester().ExpectUniqueSample("Sync.BatchUpload.NoUpload",
+                                        entry_point, 1);
 }

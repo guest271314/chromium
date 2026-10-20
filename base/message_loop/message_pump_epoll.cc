@@ -19,6 +19,7 @@
 #include "base/logging.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/ref_counted.h"
+#include "base/message_loop/message_pump_wakeup_counter.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/numerics/safe_conversions.h"
 #include "base/posix/eintr_wrapper.h"
@@ -26,10 +27,6 @@
 #include "base/time/time.h"
 #include "base/trace_event/heap_profiler.h"
 #include "base/trace_event/trace_event.h"
-
-#if DCHECK_IS_ON()
-#include <iomanip>
-#endif
 
 namespace base {
 
@@ -325,23 +322,6 @@ void MessagePumpEpoll::AddEpollEvent(EpollEventEntry& entry) {
   const uint32_t events = entry.ComputeActiveEvents();
   epoll_event event{.events = events, .data = {.ptr = &entry}};
   int rv = epoll_ctl(epoll_.get(), EPOLL_CTL_ADD, entry.fd, &event);
-#if DCHECK_IS_ON()
-  // TODO(361611793): Remove these debug logs after resolving the issue.
-  if (rv != 0) {
-    for (auto& history : entry.epoll_history_) {
-      if (history.event) {
-        auto& e = history.event.value();
-        LOG(ERROR) << "events=0x" << std::hex << std::setfill('0')
-                   << std::setw(8) << e.events;
-        LOG(ERROR) << "data=0x" << std::hex << std::setfill('0')
-                   << std::setw(16) << e.data.u64;
-      }
-      LOG(ERROR) << history.stack_trace;
-    }
-  } else {
-    entry.PushEpollHistory(std::make_optional(event));
-  }
-#endif
   DPCHECK(rv == 0);
   entry.registered_events = events;
 
@@ -383,9 +363,6 @@ void MessagePumpEpoll::UpdateEpollEvent(EpollEventEntry& entry) {
     epoll_event event{.events = events, .data = {.ptr = &entry}};
     int rv = epoll_ctl(epoll_.get(), EPOLL_CTL_MOD, entry.fd, &event);
     DPCHECK(rv == 0);
-#if DCHECK_IS_ON()
-    entry.PushEpollHistory(std::make_optional(event));
-#endif
     entry.registered_events = events;
 
     auto poll_entry = FindPollEntry(entry.fd);
@@ -403,9 +380,6 @@ void MessagePumpEpoll::StopEpollEvent(EpollEventEntry& entry) {
   if (!entry.stopped) {
     int rv = epoll_ctl(epoll_.get(), EPOLL_CTL_DEL, entry.fd, nullptr);
     DPCHECK(rv == 0);
-#if DCHECK_IS_ON()
-    entry.PushEpollHistory(std::nullopt);
-#endif
     entry.stopped = true;
     entry.registered_events = 0;
     RemovePollEntry(entry.fd);
@@ -416,15 +390,25 @@ void MessagePumpEpoll::UnregisterInterest(
     const scoped_refptr<Interest>& interest) {
   DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
 
+  interest->set_active(false);
+
   const int fd = interest->params().fd;
   auto entry_it = entries_.find(fd);
   CHECK(entry_it != entries_.end());
 
   EpollEventEntry& entry = entry_it->second;
   auto& interests = entry.interests;
-  auto* it = std::ranges::find(interests, interest);
+  auto it = std::ranges::find(interests, interest);
   CHECK(it != interests.end());
   interests.erase(it);
+
+  // OnEpollEvent() dispatches from a copy of `interests` and skips inactive
+  // ones. An interest that is unregistered while that copy is being iterated
+  // (e.g. because another watcher on the same fd called
+  // StopWatchingFileDescriptor() on this interest's controller from its own
+  // callback) must not be dispatched afterwards: its controller's `watcher_`
+  // has already been cleared.
+  interest->set_active(false);
 
   if (interests.empty()) {
     StopEpollEvent(entry);
@@ -477,6 +461,10 @@ bool MessagePumpEpoll::WaitForEpollEvents(TimeDelta timeout) {
 
     ready_events =
         span(epoll_events).first(base::checked_cast<size_t>(epoll_result));
+  }
+
+  if (!ready_events.empty()) {
+    MessagePumpWakeupCounter::GetForCurrentThread().RecordWakeup();
   }
 
   for (epoll_event& e : ready_events) {

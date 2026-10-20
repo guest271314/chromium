@@ -7,6 +7,10 @@
 
 #import <Foundation/Foundation.h>
 
+namespace actor {
+enum class ActorControlState;
+}  // namespace actor
+
 // Error domain for ActorAppInterface.
 extern NSString* const kActorAppInterfaceErrorDomain;
 
@@ -16,6 +20,8 @@ typedef NS_ENUM(NSInteger, ActorAppInterfaceErrorCode) {
   ActorToolExecutionResultNoService = 2,
   ActorToolExecutionResultInvalidProto = 3,
   ActorToolExecutionResultNoActuationResults = 4,
+  ActorToolExecutionResultNoWebState = 5,
+  ActorToolExecutionResultNoMainFrame = 6,
 };
 
 // App interface to interact with the ActorService from integration tests.
@@ -26,10 +32,35 @@ typedef NS_ENUM(NSInteger, ActorAppInterfaceErrorCode) {
 + (void)executeActionWithProto:(NSData*)actionProto
                     completion:(void (^)(NSError* error))completion;
 
+// Executes a list of Actions defined by the serialized Actions proto.
+// The completion block is called when all actions finish or any action fails.
++ (void)executeActionsWithProto:(NSData*)actionsProto
+                     completion:(void (^)(NSError* error))completion;
+
 // Fetches the latest Annotated Page Content (APC) via the PageContextWrapper
 // and returns the serialized optimization_guide::proto::PageContext.
 + (NSData*)fetchLatestAPC;
 
+// Waits for page stability in the current main frame.
++ (void)waitForPageStabilityWithCompletion:(void (^)(NSError* error))completion;
+
+// Sets the ActorControlState on the ActorTabHelper of the WebState at `index`.
++ (void)setControlState:(actor::ActorControlState)controlState
+     forWebStateAtIndex:(int)index;
+
+// Simulates in-flight Autofill server predictions for the active `WebState`'s
+// `AutofillManager` to hold `FormPredictionsTracker` in a waiting state.
++ (void)simulateInFlightAutofillPredictions;
+
+// Resolves in-flight Autofill server predictions for the active `WebState`'s
+// `AutofillManager` to unblock `FormPredictionsTracker`.
++ (void)resolveInFlightAutofillPredictions;
+
+// Stops all active tasks in the `ActorService`.
++ (void)stopAllTasks;
+
+// Returns the current window ID.
++ (int32_t)currentWindowID;
 @end
 
 #endif  // IOS_CHROME_BROWSER_INTELLIGENCE_ACTOR_TOOLS_TEST_ACTOR_APP_INTERFACE_H_

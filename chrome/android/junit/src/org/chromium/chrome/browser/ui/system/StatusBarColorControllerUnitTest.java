@@ -24,6 +24,7 @@ import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
@@ -31,26 +32,28 @@ import org.robolectric.annotation.Config;
 
 import org.chromium.base.supplier.MonotonicObservableSupplier;
 import org.chromium.base.supplier.ObservableSuppliers;
+import org.chromium.base.supplier.SettableMonotonicObservableSupplier;
 import org.chromium.base.supplier.SettableNonNullObservableSupplier;
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.RobolectricUtil;
-import org.chromium.chrome.R;
 import org.chromium.chrome.browser.ActivityTabProvider;
 import org.chromium.chrome.browser.browser_controls.BrowserControlsStateProvider;
 import org.chromium.chrome.browser.layouts.LayoutManager;
+import org.chromium.chrome.browser.layouts.LayoutStateProvider.LayoutStateObserver;
 import org.chromium.chrome.browser.lifecycle.ActivityLifecycleDispatcher;
 import org.chromium.chrome.browser.ntp.NewTabPage;
 import org.chromium.chrome.browser.ntp_customization.NtpCustomizationConfigManager;
 import org.chromium.chrome.browser.ntp_customization.NtpCustomizationUtils.NtpBackgroundType;
 import org.chromium.chrome.browser.ntp_customization.theme.chrome_colors.NtpThemeColorInfo.NtpThemeColorId;
 import org.chromium.chrome.browser.ntp_customization.theme.chrome_colors.NtpThemeColorUtils;
-import org.chromium.chrome.browser.ntp_customization.theme_sync.data.NtpBackgroundDataBase;
 import org.chromium.chrome.browser.ntp_customization.theme_sync.data.NtpBackgroundDataColor;
+import org.chromium.chrome.browser.ntp_customization.theme_sync.data.PlatformType;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tasks.tab_management.TabUiThemeUtil;
 import org.chromium.chrome.browser.theme.TopUiThemeColorProvider;
 import org.chromium.chrome.browser.ui.desktop_windowing.AppHeaderUtils;
 import org.chromium.chrome.browser.ui.system.StatusBarColorController.StatusBarColorProvider;
+import org.chromium.chrome.browser.ui.theme.ChromeSemanticColorUtils;
 import org.chromium.components.browser_ui.desktop_windowing.DesktopWindowStateManager;
 import org.chromium.ui.base.TestActivity;
 import org.chromium.ui.edge_to_edge.EdgeToEdgeSystemBarColorHelper;
@@ -73,8 +76,10 @@ public class StatusBarColorControllerUnitTest {
     @Mock private BrowserControlsStateProvider mBrowserControlsStateProvider;
     @Mock private Tab mNtpTab;
     @Mock private NewTabPage mNewTabPage;
+    @Mock private LayoutManager mLayoutManager1;
+    @Mock private LayoutManager mLayoutManager2;
 
-    private final MonotonicObservableSupplier<LayoutManager> mLayoutManagerSupplier =
+    private MonotonicObservableSupplier<LayoutManager> mLayoutManagerSupplier =
             ObservableSuppliers.alwaysNull();
 
     private final ActivityTabProvider mActivityTabProvider = new ActivityTabProvider();
@@ -95,6 +100,8 @@ public class StatusBarColorControllerUnitTest {
     @Test
     @Config(sdk = 30) // Min version needed for e2e everywhere
     public void testSetStatusBarColor_EdgeToEdgeEnabled() {
+        when(mSystemBarColorHelper.canSetStatusBarColor()).thenReturn(true);
+
         StatusBarColorController.setStatusBarColor(mSystemBarColorHelper, mActivity, Color.BLUE);
         verify(mSystemBarColorHelper).setStatusBarColor(Color.BLUE, false);
 
@@ -105,6 +112,8 @@ public class StatusBarColorControllerUnitTest {
     @Test
     @Config(sdk = 30) // Min version needed for e2e everywhere
     public void testSetStatusBarColor_EdgeToEdgeEnabled_UseLightIconColor() {
+        when(mSystemBarColorHelper.canSetStatusBarColor()).thenReturn(true);
+
         StatusBarColorController.setStatusBarColor(
                 mSystemBarColorHelper, mActivity, Color.BLUE, /* forceLightIconColor= */ true);
         verify(mSystemBarColorHelper).setStatusBarColor(Color.BLUE, true);
@@ -231,12 +240,30 @@ public class StatusBarColorControllerUnitTest {
     }
 
     @Test
+    public void testLayoutManagerSwapMovesLayoutStateObserver() {
+        SettableMonotonicObservableSupplier<LayoutManager> layoutManagerSupplier =
+                ObservableSuppliers.createMonotonic();
+        mLayoutManagerSupplier = layoutManagerSupplier;
+        initialize(/* isTablet= */ false, /* isInDesktopWindow= */ false);
+
+        layoutManagerSupplier.set(mLayoutManager1);
+        ArgumentCaptor<LayoutStateObserver> observerCaptor =
+                ArgumentCaptor.forClass(LayoutStateObserver.class);
+        verify(mLayoutManager1).addObserver(observerCaptor.capture());
+
+        layoutManagerSupplier.set(mLayoutManager2);
+        verify(mLayoutManager1).removeObserver(observerCaptor.getValue());
+        verify(mLayoutManager2).addObserver(observerCaptor.getValue());
+    }
+
+    @Test
     public void testBackgroundColorForNtp() {
         @ColorInt
-        int defaultNtpBackground = mActivity.getColor(R.color.home_surface_background_color);
+        int defaultNtpBackground =
+                ChromeSemanticColorUtils.getHomeSurfaceBackgroundColor(mActivity);
         NtpBackgroundDataColor dataColor =
                 new NtpBackgroundDataColor(
-                        NtpBackgroundDataBase.PlatformType.ANDROID_LOCAL,
+                        PlatformType.ANDROID,
                         /* isChromeColorDailyRefreshEnabled= */ false,
                         NtpThemeColorUtils.createNtpThemeColorInfo(
                                 mActivity, NtpThemeColorId.NTP_COLORS_AQUA));
@@ -280,7 +307,8 @@ public class StatusBarColorControllerUnitTest {
                 /* isInDesktopWindow= */ false,
                 /* supportEdgeToEdge= */ true);
         @ColorInt
-        int defaultNtpBackground = mActivity.getColor(R.color.home_surface_background_color);
+        int defaultNtpBackground =
+                ChromeSemanticColorUtils.getHomeSurfaceBackgroundColor(mActivity);
         assertEquals(
                 defaultNtpBackground,
                 mStatusBarColorController.getBackgroundColorForNtpForTesting());
@@ -299,7 +327,8 @@ public class StatusBarColorControllerUnitTest {
                 /* isInDesktopWindow= */ false,
                 /* supportEdgeToEdge= */ true);
         @ColorInt
-        int defaultNtpBackground = mActivity.getColor(R.color.home_surface_background_color);
+        int defaultNtpBackground =
+                ChromeSemanticColorUtils.getHomeSurfaceBackgroundColor(mActivity);
         assertEquals(
                 defaultNtpBackground,
                 mStatusBarColorController.getBackgroundColorForNtpForTesting());
@@ -313,6 +342,7 @@ public class StatusBarColorControllerUnitTest {
     public void testForceLightIconColorForNtp_DisabledWhenOmniboxFocused() {
         // Set up a mock NTP tab.
         when(mNtpTab.getNativePage()).thenReturn(mNewTabPage);
+        when(mSystemBarColorHelper.canSetStatusBarColor()).thenReturn(true);
 
         initialize(
                 /* isTablet= */ false,

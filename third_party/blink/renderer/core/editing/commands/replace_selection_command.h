@@ -33,6 +33,7 @@
 namespace blink {
 
 class DocumentFragment;
+class HTMLSpanElement;
 class ReplacementFragment;
 
 class CORE_EXPORT ReplaceSelectionCommand final : public CompositeEditCommand {
@@ -46,7 +47,7 @@ class CORE_EXPORT ReplaceSelectionCommand final : public CompositeEditCommand {
     kSanitizeFragment = 1 << 5
   };
 
-  typedef unsigned CommandOptions;
+  using CommandOptions = uint8_t;
 
   ReplaceSelectionCommand(Document&,
                           DocumentFragment*,
@@ -63,8 +64,9 @@ class CORE_EXPORT ReplaceSelectionCommand final : public CompositeEditCommand {
   void DoApply(EditingState*) override;
   InputEvent::InputType GetInputType() const override;
   bool IsReplaceSelectionCommand() const override;
-  void HandleStyleSpansBeforeInsertion(ReplacementFragment& fragment,
-                                       const Position& insertion_pos);
+  HTMLSpanElement* PreserveWhiteSpaceForNode(Node* node, EditingState*);
+  void HandleStyleSpansBeforeInsertion(const Position& insertion_pos,
+                                       ReplacementFragment& fragment);
 
   class InsertedNodes {
     STACK_ALLOCATED();
@@ -127,7 +129,7 @@ class CORE_EXPORT ReplaceSelectionCommand final : public CompositeEditCommand {
 
   bool ShouldPerformSmartReplace() const;
   void AddSpacesForSmartReplace(EditingState*);
-  void CompleteHTMLReplacement(const Position& last_position_to_select,
+  void CompleteHtmlReplacement(const Position& last_position_to_select,
                                EditingState*);
   void MergeTextNodesAroundPosition(Position&,
                                     Position& position_only_to_be_updated,
@@ -155,7 +157,7 @@ class CORE_EXPORT ReplaceSelectionCommand final : public CompositeEditCommand {
   PasswordEchoBehavior password_echo_behavior_;
   InputEvent::InputType input_type_;
   const bool sanitize_fragment_;
-  bool should_merge_end_;
+  bool should_merge_end_ = false;
   String input_event_data_;
 
   Position start_of_inserted_range_;

@@ -62,7 +62,8 @@ TEST(VerificationKeyUtilsTest, ParseTinkSignaturePrefixZero) {
 
 // Tests for LoadVerificationKeys.
 TEST(VerificationKeyUtilsTest, LoadVerificationKeysSuccess) {
-  auto key_map = LoadVerificationKeys(GetServerVerificationKey());
+  auto key_map = LoadVerificationKeys(
+      GetServerVerificationKey(GURL("https://private-ai.example.com")));
   EXPECT_FALSE(key_map.empty());
 }
 
@@ -73,11 +74,6 @@ TEST(VerificationKeyUtilsTest, LoadVerificationKeysAutopush) {
 
 TEST(VerificationKeyUtilsTest, LoadVerificationKeysDev) {
   auto key_map = LoadVerificationKeys(GetDevKeysForTesting());
-  EXPECT_FALSE(key_map.empty());
-}
-
-TEST(VerificationKeyUtilsTest, LoadVerificationKeysStaging) {
-  auto key_map = LoadVerificationKeys(GetStagingKeysForTesting());
   EXPECT_FALSE(key_map.empty());
 }
 
@@ -95,7 +91,7 @@ TEST(VerificationKeyUtilsTest, LoadVerificationKeysInvalidKeyData) {
        /*y=*/
        "\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"
        "\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"}};
-  ASSERT_DEATH(LoadVerificationKeys(invalid_keys), "");
+  ASSERT_DEATH_IF_SUPPORTED(LoadVerificationKeys(invalid_keys), "");
 }
 
 }  // namespace

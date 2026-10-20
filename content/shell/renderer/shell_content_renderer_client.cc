@@ -7,6 +7,7 @@
 #include <string>
 
 #include "base/base_switches.h"
+#include "base/check_is_test.h"
 #include "base/check_op.h"
 #include "base/command_line.h"
 #include "base/files/file.h"
@@ -16,12 +17,14 @@
 #include "base/strings/string_number_conversions.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/task/single_thread_task_runner.h"
+#include "base/test/allow_check_is_test_for_testing.h"
 #include "base/types/pass_key.h"
 #include "components/cdm/renderer/external_clear_key_key_system_info.h"
 #include "components/network_hints/renderer/web_prescient_networking_impl.h"
 #include "components/surface_embed/renderer/create_plugin.h"
 #include "components/web_cache/renderer/web_cache_impl.h"
 #include "content/common/pseudonymization_salt.h"
+#include "content/common/skia_utils.h"
 #include "content/public/common/content_switches.h"
 #include "content/public/common/pseudonymization_util.h"
 #include "content/public/common/web_identity.h"
@@ -38,6 +41,7 @@
 #include "mojo/public/cpp/bindings/receiver.h"
 #include "mojo/public/cpp/system/message_pipe.h"
 #include "net/base/net_errors.h"
+#include "net/http/structured_headers.h"
 #include "sandbox/policy/sandbox.h"
 #include "third_party/blink/public/platform/url_loader_throttle_provider.h"
 #include "third_party/blink/public/platform/web_url_error.h"
@@ -158,9 +162,18 @@ class TestRendererServiceImpl : public mojom::TestService {
     std::move(callback).Run(content::IsSaltInitialized());
   }
 
+  void IsSkiaInitialized(IsSkiaInitializedCallback callback) override {
+    std::move(callback).Run(IsSkiaInitializedForTesting());
+  }
+
   void PassWriteableFile(base::File file,
                          PassWriteableFileCallback callback) override {
     std::move(callback).Run();
+  }
+
+  void VerifyCheckIsTest(VerifyCheckIsTestCallback callback) override {
+    CHECK_IS_TEST();
+    std::move(callback).Run(true);
   }
 
   void WriteToPreloadedPipe() override { NOTREACHED(); }
@@ -194,11 +207,12 @@ class ShellContentRendererUrlLoaderThrottleProvider
       const network::ResourceRequest& request) override {
     std::vector<std::unique_ptr<blink::URLLoaderThrottle>> throttles;
     if (local_frame_token.has_value()) {
-      auto throttle =
-          content::MaybeCreateIdentityUrlLoaderThrottle(base::BindRepeating(
+      auto throttle = content::MaybeCreateIdentityUrlLoaderThrottle(
+          base::BindRepeating(
               [](const blink::LocalFrameToken& token,
                  const scoped_refptr<base::SequencedTaskRunner>
                      main_thread_task_runner,
+                 network::mojom::RequestDestination destination,
                  const std::optional<url::Origin>& initiator,
                  const url::Origin& idp_origin,
                  blink::mojom::IdpSigninStatus status) {
@@ -212,7 +226,8 @@ class ShellContentRendererUrlLoaderThrottleProvider
                                                 token, idp_origin, status));
                 }
               },
-              local_frame_token.value(), main_thread_task_runner_));
+              local_frame_token.value(), main_thread_task_runner_),
+          content::GetSetLoginHeaderInProcessParser());
       if (throttle)
         throttles.push_back(std::move(throttle));
     }
@@ -236,7 +251,13 @@ void CreateRendererTestService(
 
 }  // namespace
 
-ShellContentRendererClient::ShellContentRendererClient() {}
+ShellContentRendererClient::ShellContentRendererClient(bool is_browsertest) {
+  if (is_browsertest &&
+      base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
+          switches::kProcessType) == switches::kRendererProcess) {
+    base::test::AllowCheckIsTestForTesting();
+  }
+}
 
 ShellContentRendererClient::~ShellContentRendererClient() {
 }
@@ -404,7 +425,7 @@ ShellContentRendererClient::GetSupportedKeySystems(
   if (base::FeatureList::IsEnabled(media::kExternalClearKeyForTesting))
     key_systems.push_back(
         std::make_unique<cdm::ExternalClearKeyKeySystemInfo>());
-  std::move(cb).Run(std::move(key_systems));
+  std::move(cb).Run(std::move(key_systems), /*pending_key_systems=*/{});
   return nullptr;
 }
 #endif

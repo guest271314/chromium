@@ -31,8 +31,8 @@ class WebContents;
 namespace send_tab_to_self {
 
 // Handles the logic for Send Tab to Self on a specific page, including
-// capturing page context (e.g. scroll position) and sending the tab to
-// the selected device.
+// capturing page context (e.g. form fields and scroll position) and sending
+// the tab to the selected device.
 class SendTabToSelfPageHandler
     : public content::WebContentsObserver,
       public content::WebContentsUserData<SendTabToSelfPageHandler> {
@@ -45,13 +45,15 @@ class SendTabToSelfPageHandler
   static SendTabToSelfPageHandler* GetOrCreateForWebContents(
       content::WebContents* web_contents);
 
-  // Sends the tab to the target device, potentially after capturing page
-  // context (like scroll position).
-   void SendTabToDevice(
-       const std::string& target_device_guid,
-       const GURL& url,
-       const std::string& title,
-       base::OnceCallback<void(SendTabToSelfResult)> commit_confirmation);
+  // Sends the tab to the target device, capturing page context (form fields
+  // and scroll position) and navigation history when `url` matches the current
+  // page.
+  void SendTabToDevice(
+      const std::string& target_device_guid,
+      const GURL& url,
+      const std::string& title,
+      base::OnceCallback<void(SendTabToSelfResult)> commit_confirmation,
+      ShareEntryPoint entry_point);
 
   void SetSelectorGenerationTimeoutForTesting(base::TimeDelta timeout);
 
@@ -69,7 +71,8 @@ class SendTabToSelfPageHandler
         const std::string& target_device_guid,
         const GURL& url,
         const std::string& title,
-        base::OnceCallback<void(SendTabToSelfResult)> commit_confirmation);
+        base::OnceCallback<void(SendTabToSelfResult)> commit_confirmation,
+        ShareEntryPoint entry_point);
     PendingRequest(PendingRequest&&);
     PendingRequest& operator=(PendingRequest&&);
     ~PendingRequest();
@@ -81,6 +84,7 @@ class SendTabToSelfPageHandler
     PageContext page_context;
     NavigationHistory navigation_history;
     content::GlobalRenderFrameHostId main_frame_id;
+    ShareEntryPoint entry_point;
     base::OnceCallback<void(SendTabToSelfResult)> commit_confirmation;
   };
 
@@ -104,8 +108,6 @@ class SendTabToSelfPageHandler
       const PendingRequest& request,
       const std::string& selector,
       shared_highlighting::LinkGenerationError error);
-
-  void MaybeExtractFormFields(PendingRequest& request);
 
   void MaybeExtractNavigationHistory(PendingRequest& request);
 

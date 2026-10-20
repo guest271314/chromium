@@ -15,7 +15,6 @@
 #include "base/android/scoped_java_ref.h"
 #include "base/containers/span.h"
 #include "base/containers/to_vector.h"
-#include "base/notimplemented.h"
 #include "base/strings/string_util.h"
 #include "chrome/browser/autofill/android/personal_data_manager_android.h"
 #include "chrome/browser/profiles/profile.h"
@@ -27,8 +26,7 @@
 #include "components/autofill/core/browser/payments/bnpl_util.h"
 #include "components/autofill/core/browser/payments/payments_util.h"
 #include "components/autofill/core/browser/suggestions/suggestion.h"
-#include "components/autofill/core/browser/ui/autofill_resource_utils.h"
-#include "components/autofill/core/common/autofill_features.h"
+#include "components/autofill/core/browser/ui/autofill_resource_util.h"
 #include "content/public/browser/web_contents.h"
 #include "ui/android/view_android.h"
 #include "ui/android/window_android.h"
@@ -41,21 +39,22 @@
 #include "components/autofill/android/payments_jni_headers/BnplIssuerTosDetail_jni.h"
 #include "components/autofill/android/payments_jni_headers/TouchToFillDisplayOptions_jni.h"
 
+namespace autofill {
+
 namespace {
 
 static base::android::ScopedJavaLocalRef<jobject>
 ConvertBnplIssuerTosDetailToJavaObject(
     JNIEnv* env,
     const jni_zero::JavaRef<jobject>& obj,
-    const autofill::payments::BnplIssuerTosDetail& bnpl_issuer_tos_detail) {
+    const payments::BnplIssuerTosDetail& bnpl_issuer_tos_detail) {
   return Java_BnplIssuerTosDetail_Constructor(
       env,
       std::string(
           ConvertToBnplIssuerIdString(bnpl_issuer_tos_detail.issuer_id)),
       bnpl_issuer_tos_detail.is_linked_issuer,
       bnpl_issuer_tos_detail.issuer_name,
-      autofill::LegalMessageLineAndroid::ConvertToJavaLinkedList(
-          bnpl_issuer_tos_detail.legal_message_lines));
+      bnpl_issuer_tos_detail.legal_message_lines);
 }
 
 // TODO(crbug.com/449764859): Refactor BnplIssuerContext to use JNI type
@@ -63,14 +62,14 @@ ConvertBnplIssuerTosDetailToJavaObject(
 static base::android::ScopedJavaLocalRef<jobject>
 CreateJavaBnplIssuerContextFromNative(
     JNIEnv* env,
-    const autofill::payments::BnplIssuerContext& bnpl_issuer_context,
+    const payments::BnplIssuerContext& bnpl_issuer_context,
     const std::string& app_locale) {
   const std::u16string selection_text =
-      autofill::payments::GetBnplIssuerSelectionOptionText(
+      payments::GetBnplIssuerSelectionOptionText(
           bnpl_issuer_context.issuer.issuer_id(), app_locale,
           {bnpl_issuer_context});
 
-  return autofill::Java_BnplIssuerContext_Constructor(
+  return Java_BnplIssuerContext_Constructor(
       env,
       std::string(
           ConvertToBnplIssuerIdString(bnpl_issuer_context.issuer.issuer_id())),
@@ -80,8 +79,6 @@ CreateJavaBnplIssuerContextFromNative(
 }
 
 }  // namespace
-
-namespace autofill {
 
 TouchToFillPaymentMethodViewImpl::TouchToFillPaymentMethodViewImpl(
     content::WebContents* web_contents)
@@ -160,7 +157,7 @@ bool TouchToFillPaymentMethodViewImpl::ShowPaymentMethods(
             custom_icon_url ? url::GURLAndroid::FromNativeGURL(
                                   env, custom_icon_url->value())
                             : url::GURLAndroid::EmptyGURL(env),
-            android_icon_id, suggestion.HasDeactivatedStyle(),
+            android_icon_id, !suggestion.IsSelectable(),
             payments_payload.CreateJavaObject()));
   }
   Java_TouchToFillPaymentMethodViewBridge_showPaymentMethods(
@@ -172,7 +169,7 @@ bool TouchToFillPaymentMethodViewImpl::ShowPaymentMethods(
 
 bool TouchToFillPaymentMethodViewImpl::ShowIbans(
     TouchToFillPaymentMethodViewController* controller,
-    base::span<const autofill::Iban> ibans_to_suggest) {
+    base::span<const Iban> ibans_to_suggest) {
   JNIEnv* env = base::android::AttachCurrentThread();
   if (!IsReadyToShow(controller, env)) {
     return false;
@@ -180,7 +177,7 @@ bool TouchToFillPaymentMethodViewImpl::ShowIbans(
 
   std::vector<base::android::ScopedJavaLocalRef<jobject>> ibans_array;
   ibans_array.reserve(ibans_to_suggest.size());
-  for (const autofill::Iban& iban : ibans_to_suggest) {
+  for (const Iban& iban : ibans_to_suggest) {
     ibans_array.push_back(
         PersonalDataManagerAndroid::CreateJavaIbanFromNative(env, iban));
   }

@@ -57,6 +57,7 @@
 #include "components/services/app_service/public/cpp/run_on_os_login_types.h"
 #include "components/site_engagement/content/site_engagement_service.h"
 #include "components/webapps/browser/web_app_error_page_constants.h"
+#include "components/webapps/common/constants.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/web_contents.h"
@@ -68,6 +69,8 @@
 #include "third_party/blink/public/common/safe_url_pattern.h"
 #include "third_party/blink/public/mojom/manifest/display_mode.mojom-shared.h"
 #include "third_party/blink/public/mojom/manifest/manifest.mojom-shared.h"
+#include "third_party/icu/source/common/unicode/uchar.h"
+#include "third_party/icu/source/common/unicode/utf16.h"
 #include "third_party/liburlpattern/options.h"
 #include "third_party/liburlpattern/part.h"
 #include "third_party/liburlpattern/pattern.h"
@@ -156,12 +159,12 @@ class AppIconFetcherTask : public content::WebContentsObserver {
   }
 
   void OnIconFetched(int fetched_size, OrderedSizeToBitmap icon_bitmaps) {
-    DCHECK_EQ(icon_bitmaps.size(), 1ul);
-    DCHECK_EQ(icon_bitmaps.begin()->first, fetched_size);
     if (icon_bitmaps.empty()) {
       delete this;
       return;
     }
+    DCHECK_EQ(icon_bitmaps.size(), 1ul);
+    DCHECK_EQ(icon_bitmaps.begin()->first, fetched_size);
     icon_url_ = EncodeIconAsUrl(icon_bitmaps.begin()->second);
     MaybeSendImageAndSelfDestruct();
   }
@@ -185,7 +188,7 @@ class AppIconFetcherTask : public content::WebContentsObserver {
 
     content::RenderFrameHost* host = web_contents()->GetPrimaryMainFrame();
     host->ExecuteJavaScriptInIsolatedWorld(app_icon_inline, base::DoNothing(),
-                                           ISOLATED_WORLD_ID_EXTENSIONS);
+                                           ISOLATED_WORLD_ID_CHROME_INTERNAL);
 
     delete this;
   }
@@ -426,7 +429,33 @@ std::vector<std::u16string> TransformFileExtensionsForDisplay(
   std::ranges::transform(
       extensions, std::back_inserter(extensions_for_display),
       [](const std::string& extension) {
-        return base::UTF8ToUTF16(base::ToUpperASCII(extension.substr(1)));
+        if (extension.empty()) {
+          return std::u16string();
+        }
+        std::u16string ext_u16 =
+            base::UTF8ToUTF16(base::ToUpperASCII(extension.substr(1)));
+        std::u16string sanitized;
+        sanitized.reserve(ext_u16.size());
+        for (size_t i = 0; i < ext_u16.length();) {
+          UChar32 c;
+          U16_NEXT(ext_u16, i, ext_u16.length(), c);
+          // TODO(crbug.com/530303003): This check for control and format
+          // characters is duplicated across manifest parsing, IPC validation,
+          // and PWA display. Consider consolidating it into a shared helper in
+          // //base/strings/string_util.h.
+          if (!base::IsUnicodeControl(c) && u_charType(c) != U_FORMAT_CHAR) {
+            if (c <= 0xFFFF) {
+              // Safe to cast UChar32 to char16_t here because the guard ensures
+              // c is within the BMP (<= 0xFFFF), and Unicode code points are
+              // non-negative.
+              sanitized.push_back(static_cast<char16_t>(c));
+            } else {
+              sanitized.push_back(U16_LEAD(c));
+              sanitized.push_back(U16_TRAIL(c));
+            }
+          }
+        }
+        return sanitized;
       });
   return extensions_for_display;
 }
@@ -569,34 +598,6 @@ bool IsValidScopeForLinkCapturing(const GURL& scope) {
   return scope.is_valid() && scope.has_scheme() && scope.SchemeIsHTTPOrHTTPS();
 }
 
-void ResetAllContentSettingsForWebApp(Profile* profile, const GURL& app_scope) {
-  HostContentSettingsMap* host_content_settings_map =
-      HostContentSettingsMapFactory::GetForProfile(profile);
-  for (int i = static_cast<int>(ContentSettingsType::kMinValue);
-       i <= static_cast<int>(ContentSettingsType::kMaxValue); ++i) {
-    ContentSettingsType content_type = static_cast<ContentSettingsType>(i);
-
-    if (content_type == ContentSettingsType::MIXEDSCRIPT ||
-        content_type == ContentSettingsType::PROTOCOL_HANDLERS) {
-      // These types are excluded because one can't call
-      // GetDefaultContentSetting() for them.
-      continue;
-    }
-
-    // ContentSettingsType enum values may include deprecated types or other
-    // that are not registered in the PermissionSettingsRegistry.
-    // `Get()` returns nullptr for unregistered types. Skip these, as they
-    // cannot be managed or reset via HostContentSettingsMap.
-    if (!content_settings::PermissionSettingsRegistry::GetInstance()->Get(
-            content_type)) {
-      continue;
-    }
-
-    host_content_settings_map->SetPermissionSettingDefaultScope(
-        app_scope, app_scope, content_type, CONTENT_SETTING_DEFAULT);
-  }
-}
-
 // TODO(crbug.com/331208955): Remove after migration.
 bool WillBeSystemWebApp(const webapps::AppId& app_id,
                         WebAppManagementTypes sources) {
@@ -607,5 +608,24 @@ bool WillBeSystemWebApp(const webapps::AppId& app_id,
   return false;
 #endif
 }
+
+// LINT.IfChange(WebAppPrefs)
+void ClearWebAppProfilePrefs(PrefService* profile_prefs) {
+  profile_prefs->ClearPref(prefs::kWebAppsPreferences);
+  profile_prefs->ClearPref(prefs::kWebAppsDailyMetrics);
+  profile_prefs->ClearPref(prefs::kWebAppsAppAgnosticIphState);
+  profile_prefs->ClearPref(prefs::kWebAppsAppAgnosticMlState);
+  profile_prefs->ClearPref(prefs::kWebAppsAppAgnosticIPHLinkCapturingState);
+  profile_prefs->ClearPref(prefs::kWebAppsLastPreinstallSynchronizeVersion);
+  profile_prefs->ClearPref(webapps::kWebAppsMigratedPreinstalledApps);
+  profile_prefs->ClearPref(prefs::kWebAppsDidMigrateDefaultChromeApps);
+  profile_prefs->ClearPref(prefs::kWebAppsUninstalledDefaultChromeApps);
+  profile_prefs->ClearPref(prefs::kAppShortcutsVersion);
+  profile_prefs->ClearPref(prefs::kAppShortcutsArch);
+  profile_prefs->ClearPref(prefs::kAppShortcutsOsVersion);
+  profile_prefs->ClearPref(prefs::kIsolatedWebAppPendingInitializationCount);
+  profile_prefs->ClearPref(prefs::kIsolatedWebAppUserInstallationEnabled);
+}
+// LINT.ThenChange()
 
 }  // namespace web_app

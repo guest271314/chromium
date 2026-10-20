@@ -12,8 +12,7 @@
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface_iterator.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
-#include "chrome/browser/ui/views/frame/browser_view.h"
-#include "chrome/browser/ui/views/tabs/tab_strip.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "components/performance_manager/public/features.h"
 #include "components/url_matcher/url_util.h"
 #include "content/public/browser/cpu_performance.h"
@@ -63,7 +62,7 @@ void PerformanceHandler::OnJavascriptDisallowed() {
 }
 
 void PerformanceHandler::OnDeviceHasBatteryChanged(bool device_has_battery) {
-  DCHECK(IsJavascriptAllowed());
+  CHECK(IsJavascriptAllowed(), base::NotFatalUntil::M162);
   FireWebUIListener("device-has-battery-changed", device_has_battery);
 }
 
@@ -129,7 +128,7 @@ void PerformanceHandler::HandleOpenFeedbackDialog(const base::ListValue& args) {
   BrowserWindowInterface* browser =
       GlobalBrowserCollection::GetInstance()->FindBrowserWithTab(
           web_ui()->GetWebContents());
-  DCHECK(browser);
+  CHECK(browser, base::NotFatalUntil::M162);
   std::string unused;
   chrome::ShowFeedbackPage(browser,
                            feedback::kFeedbackSourceSettingsPerformancePage,

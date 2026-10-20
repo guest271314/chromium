@@ -169,11 +169,11 @@ class CONTENT_EXPORT FileSystemAccessManagerImpl
   blink::mojom::FileSystemAccessEntryPtr CreateFileEntryFromPath(
       const BindingContext& binding_context,
       const PathInfo& path_info,
-      UserAction user_action) override;
+      AccessTrigger access_trigger) override;
   blink::mojom::FileSystemAccessEntryPtr CreateDirectoryEntryFromPath(
       const BindingContext& binding_context,
       const PathInfo& path_info,
-      UserAction user_action) override;
+      AccessTrigger access_trigger) override;
   void ResolveTransferToken(
       mojo::PendingRemote<blink::mojom::FileSystemAccessTransferToken>
           transfer_token,
@@ -349,7 +349,16 @@ class CONTENT_EXPORT FileSystemAccessManagerImpl
 
   void SetFilePickerResultForTesting(std::optional<PathInfo> result_entry) {
     DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-    auto_file_picker_result_for_test_ = result_entry;
+    if (result_entry) {
+      auto_file_picker_results_for_test_ = {std::move(*result_entry)};
+    } else {
+      auto_file_picker_results_for_test_.clear();
+    }
+  }
+
+  void SetFilePickerResultsForTesting(std::vector<PathInfo> result_entries) {
+    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+    auto_file_picker_results_for_test_ = std::move(result_entries);
   }
 
   // A callback used to create SharedHandleState instances for testing.
@@ -391,7 +400,7 @@ class CONTENT_EXPORT FileSystemAccessManagerImpl
       const PathInfo& path_info,
       const blink::StorageKey& storage_key,
       FileSystemAccessPermissionContext::HandleType handle_type,
-      FileSystemAccessPermissionContext::UserAction user_action);
+      FileSystemAccessPermissionContext::AccessTrigger access_trigger);
   // Same as above, but for paths in a sandboxed file system.
   SharedHandleState GetSharedHandleStateForSandboxedPath();
 
@@ -420,7 +429,6 @@ class CONTENT_EXPORT FileSystemAccessManagerImpl
   // TODO(crbug.com/40159607): Merge this with
   // net::IsSafePortablePathComponent.
   bool IsSafePathComponent(storage::FileSystemType type,
-                           const url::Origin& origin,
                            const std::string& name);
 
   // Invokes `method` on the correct sequence on the FileSystemOperationRunner,
@@ -547,7 +555,7 @@ class CONTENT_EXPORT FileSystemAccessManagerImpl
                                     const PathInfo& entry,
                                     const storage::FileSystemURL& url,
                                     ChooseEntriesCallback callback,
-                                    bool success);
+                                    base::File::Error result);
   void DidChooseDirectory(
       const BindingContext& binding_context,
       const PathInfo& entry,
@@ -653,6 +661,26 @@ class CONTENT_EXPORT FileSystemAccessManagerImpl
 
   void FilePickerDeactivated(GlobalRenderFrameHostId global_rfh_id);
 
+  // Helper function to recurse `entries` to check sensitivity.
+  void ConfirmSensitiveEntryAccessForEntries(
+      const BindingContext& binding_context,
+      const FileSystemChooser::Options& options,
+      const std::string& starting_directory_id,
+      bool request_directory_write_access,
+      ChooseEntriesCallback callback,
+      std::vector<PathInfo> entries,
+      size_t current_entry_index);
+  // Helper function for `ConfirmSensitiveEntryAccessForEntries`.
+  void DidVerifySensitiveDirectoryAccessForIndex(
+      const BindingContext& binding_context,
+      const FileSystemChooser::Options& options,
+      const std::string& starting_directory_id,
+      bool request_directory_write_access,
+      ChooseEntriesCallback callback,
+      std::vector<PathInfo> entries,
+      size_t current_entry_index,
+      FileSystemAccessPermissionContext::SensitiveEntryResult result);
+
   SEQUENCE_CHECKER(sequence_checker_);
 
   const scoped_refptr<storage::FileSystemContext> context_;
@@ -726,7 +754,7 @@ class CONTENT_EXPORT FileSystemAccessManagerImpl
   std::set<GlobalRenderFrameHostId> rfhs_with_active_file_pickers_
       GUARDED_BY_CONTEXT(sequence_checker_);
 
-  std::optional<PathInfo> auto_file_picker_result_for_test_
+  std::vector<PathInfo> auto_file_picker_results_for_test_
       GUARDED_BY_CONTEXT(sequence_checker_);
 
   // An optional callback to be used to create SharedHandleState instances for

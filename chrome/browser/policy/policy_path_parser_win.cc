@@ -38,7 +38,7 @@ namespace policy {
 
 namespace path_parser {
 
-// Replaces all variable occurances in the policy string with the respective
+// Replaces all variable occurrences in the policy string with the respective
 // system settings values.
 base::FilePath::StringType ExpandPathVariables(
     const base::FilePath::StringType& untranslated_string) {
@@ -49,7 +49,7 @@ base::FilePath::StringType ExpandPathVariables(
 }
 
 void CheckUserDataDirPolicy(base::FilePath* user_data_dir) {
-  DCHECK(user_data_dir);
+  CHECK(user_data_dir, base::NotFatalUntil::M162);
   // Policy from the HKLM hive has precedence over HKCU.
   if (!LoadUserDataDirPolicyFromRegistry(HKEY_LOCAL_MACHINE, key::kUserDataDir,
                                          user_data_dir)) {

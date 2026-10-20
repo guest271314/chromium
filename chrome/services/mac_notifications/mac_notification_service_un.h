@@ -15,7 +15,6 @@
 #include "base/thread_annotations.h"
 #include "base/time/time.h"
 #include "base/timer/timer.h"
-#include "chrome/common/notifications/notification_image_retainer.h"
 #import "chrome/services/mac_notifications/notification_category_manager.h"
 #include "chrome/services/mac_notifications/public/mojom/mac_notifications.mojom.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
@@ -93,6 +92,11 @@ class MacNotificationServiceUN : public mojom::MacNotificationService {
 
   void SynchronizePermissionStatus(bool log_result);
 
+  // Called when the application becomes active. macOS doesn't notify apps when
+  // their notification permission changes, so this is a good moment to poll
+  // for changes the user might have made in System Settings.
+  void OnApplicationDidBecomeActive();
+
   // Called by |delegate_| when a user interacts with a notification.
   void OnNotificationAction(mojom::NotificationActionInfoPtr action);
 
@@ -106,6 +110,8 @@ class MacNotificationServiceUN : public mojom::MacNotificationService {
   mojo::Remote<mojom::MacNotificationActionHandler> action_handler_;
   AlertUNNotificationCenterDelegate* __strong delegate_;
   UNUserNotificationCenter* __strong notification_center_;
+  // Observer token for NSApplicationDidBecomeActiveNotification.
+  id<NSObject> __strong did_become_active_observer_;
 
   // Set to true when initialization has finished, and this service is ready
   // to receive mojo calls. `binding_` will not be bound until this happens.
@@ -116,8 +122,6 @@ class MacNotificationServiceUN : public mojom::MacNotificationService {
 
   // Category manager for action buttons.
   NotificationCategoryManager category_manager_;
-  // Image retainer to pass image attachments to notifications.
-  NotificationImageRetainer image_retainer_;
 
   // Keeps track of delivered notifications to detect closed notifications.
   base::flat_map<std::string, mojom::NotificationMetadataPtr>
@@ -133,6 +137,11 @@ class MacNotificationServiceUN : public mojom::MacNotificationService {
   // requests.
   std::vector<RequestPermissionCallback> pending_permission_requests_
       GUARDED_BY_CONTEXT(sequence_checker_);
+
+  // True while an OS notification permission prompt is being requested via
+  // `DoRequestPermission()`.
+  bool is_permission_prompt_pending_ GUARDED_BY_CONTEXT(sequence_checker_) =
+      false;
 
   // Callback to be called any time the system level permission status changes.
   base::RepeatingCallback<void(mojom::PermissionStatus)>

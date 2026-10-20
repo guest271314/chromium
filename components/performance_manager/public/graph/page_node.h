@@ -11,13 +11,16 @@
 
 #include "base/byte_size.h"
 #include "base/containers/flat_set.h"
+#include "base/memory/raw_ptr.h"
 #include "base/observer_list_types.h"
 #include "base/time/time.h"
+#include "base/unguessable_token.h"
 #include "components/performance_manager/public/graph/node.h"
 #include "components/performance_manager/public/graph/node_set_view.h"
 #include "components/performance_manager/public/mojom/lifecycle.mojom.h"
 #include "services/metrics/public/cpp/ukm_source_id.h"
 #include "third_party/blink/public/common/permissions/permission_utils.h"
+#include "third_party/blink/public/mojom/favicon/favicon_url.mojom-forward.h"
 
 class GURL;
 
@@ -39,6 +42,8 @@ enum class PageType {
   kTab,
   // An extension background page.
   kExtension,
+  // A non-tab WebUI surface (e.g., Top Chrome WebUI, Side Panel).
+  kNonTabWebUI,
   // Anything else.
   kUnknown,
 };
@@ -47,7 +52,7 @@ enum class PageType {
 // These may correspond to normal tabs, WebViews, Chrome Apps or Extensions.
 class PageNode : public TypedNode<PageNode> {
  public:
-  using NodeSet = base::flat_set<const Node*>;
+  using NodeSet = base::flat_set<raw_ptr<const Node>>;
   template <class NodeViewPtr>
   using NodeSetView = NodeSetView<NodeSet, NodeViewPtr>;
 
@@ -88,7 +93,7 @@ class PageNode : public TypedNode<PageNode> {
   ~PageNode() override;
 
   // Returns the unique ID of the browser context that this page belongs to.
-  virtual const std::string& GetBrowserContextID() const = 0;
+  virtual const base::UnguessableToken& GetBrowserContextID() const = 0;
 
   // Returns the opener frame node, if there is one. This may change over the
   // lifetime of this page. See "OnOpenerFrameNodeChanged".
@@ -132,7 +137,7 @@ class PageNode : public TypedNode<PageNode> {
   virtual bool HasPictureInPicture() const = 0;
 
   // Returns true if this page is opted-out from freezing via origin trial, i.e.
-  // if any of its current frames sets the origin trial.
+  // if any of its active frames sets the origin trial.
   virtual bool HasFreezingOriginTrialOptOut() const = 0;
 
   // Returns true if this page is off the record, false otherwise.
@@ -141,6 +146,17 @@ class PageNode : public TypedNode<PageNode> {
 
   // Returns the page's loading state.
   virtual LoadingState GetLoadingState() const = 0;
+
+  // Returns true if the current (or most recent) load was initiated by the
+  // browser (e.g. omnibox, bookmarks, session restore, extensions) or by a
+  // renderer with transient user activation (e.g. a link click), including
+  // client redirects that continue such a load (renderer-initiated
+  // navigations without activation that start shortly after the previous
+  // commit). Returns false for other renderer-initiated loads, e.g. a
+  // timer-driven `location.reload()` or meta-refresh that fires long after the
+  // page loaded.
+  // See PageNodeObserver::OnIsUserOrBrowserInitiatedLoadChanged.
+  virtual bool IsUserOrBrowserInitiatedLoad() const = 0;
 
   // Returns the UKM source ID associated with the URL of the main frame of
   // this page.
@@ -180,13 +196,25 @@ class PageNode : public TypedNode<PageNode> {
   // since the last navigation commit.
   virtual base::TimeDelta GetTimeSinceLastNavigation() const = 0;
 
-  // Returns the current main frame node (if there is one), otherwise returns
-  // any of the potentially multiple main frames that currently exist. If there
-  // are no main frames at the moment, returns nullptr.
-  virtual const FrameNode* GetMainFrameNode() const = 0;
+  // Returns the primary main frame node (if there is one), otherwise returns
+  // nullptr. The primary main frame is the outermost main frame of the active
+  // frame tree (i.e. not prerendering, not in the BackForwardCache, and not
+  // an inner/embedded frame tree like a fenced frame).
+  //
+  // Note: If multiple active outermost main frames exist (which can happen
+  // transiently during frame swaps), an arbitrary one is returned.
+  virtual const FrameNode* GetPrimaryMainFrameNode() const = 0;
 
-  // Returns all of the main frame nodes, both current and otherwise. If there
-  // are no main frames at the moment, returns the empty set.
+  // Returns all of the main frame nodes associated with this page, both active
+  // and otherwise. If there are no main frames at the moment, returns the empty
+  // set.
+  //
+  // Note that this includes the main frame of the primary frame tree, but also
+  // main frames of non-primary frame trees (such as prerendered pages or pages
+  // in the BackForwardCache) and inner/embedded frame trees (such as fenced
+  // frames). Because of this, it is not guaranteed that all returned nodes
+  // are "primary" or "outermost". Most callers should prefer
+  // GetPrimaryMainFrameNode().
   virtual NodeSetView<const FrameNode*> GetMainFrameNodes() const = 0;
 
   // Returns the URL the main frame last committed a navigation to, or the
@@ -319,6 +347,10 @@ class PageNodeObserver : public base::CheckedObserver {
   virtual void OnLoadingStateChanged(const PageNode* page_node,
                                      PageNode::LoadingState previous_state) {}
 
+  // Invoked when the IsUserOrBrowserInitiatedLoad property changes.
+  virtual void OnIsUserOrBrowserInitiatedLoadChanged(
+      const PageNode* page_node) {}
+
   // Invoked when the UkmSourceId property changes.
   virtual void OnUkmSourceIdChanged(const PageNode* page_node) {}
 
@@ -343,7 +375,8 @@ class PageNodeObserver : public base::CheckedObserver {
       std::optional<blink::mojom::PermissionStatus> previous_status) {}
 
   // Invoked when the MainFrameUrl property changes.
-  virtual void OnMainFrameUrlChanged(const PageNode* page_node) {}
+  virtual void OnMainFrameUrlChanged(const PageNode* page_node,
+                                     const GURL& previous_url) {}
 
   // This is fired when a non-same document navigation commits in the main
   // frame. It indicates that the the |NavigationId| property and possibly the
@@ -364,7 +397,8 @@ class PageNodeObserver : public base::CheckedObserver {
 
   // Fired when the favicon associated with a page is updated. This property is
   // not directly reflected on the node.
-  virtual void OnFaviconUpdated(const PageNode* page_node) {}
+  virtual void OnFaviconUpdated(const PageNode* page_node,
+                                blink::mojom::FaviconUpdateReason reason) {}
 
   // Fired after `new_page_node` is created but before `page_node` is deleted
   // from being discarded. See the equivalent function on `WebContentsObserver`

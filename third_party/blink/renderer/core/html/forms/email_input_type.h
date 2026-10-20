@@ -36,6 +36,8 @@
 
 namespace blink {
 
+class HTMLInputElement;
+
 class EmailInputType final : public BaseTextInputType {
  public:
   explicit EmailInputType(HTMLInputElement&);

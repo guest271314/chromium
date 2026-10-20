@@ -16,14 +16,12 @@ import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.robolectric.Robolectric;
-import org.robolectric.annotation.Config;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.chrome.browser.actor.ActorTaskState;
 
 /** Tests for {@link ActorPictureInPictureOverlayCoordinator}. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 public class ActorPictureInPictureOverlayCoordinatorTest {
     private Activity mActivity;
     private FrameLayout mParentView;
@@ -95,7 +93,7 @@ public class ActorPictureInPictureOverlayCoordinatorTest {
 
         TextView statusTextView = mParentView.findViewById(R.id.pip_status);
         String expectedStatus =
-                mActivity.getString(R.string.actor_notification_title_task_interrupted);
+                mActivity.getString(R.string.actor_notification_title_task_stopped);
         assertEquals(expectedStatus, statusTextView.getText().toString());
     }
 

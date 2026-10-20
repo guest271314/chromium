@@ -117,11 +117,6 @@ class CdmDocumentServiceImplTest : public ChromeRenderViewHostTestHarness {
     return media_foundation_cdm_data;
   }
 
-  void SetCdmClientToken(const std::vector<uint8_t>& client_token) {
-    cdm_document_service_->SetCdmClientToken(client_token);
-    base::RunLoop().RunUntilIdle();
-  }
-
   void CorruptCdmPreference() {
     PrefService* user_prefs = profile()->GetPrefs();
 
@@ -181,64 +176,78 @@ TEST_F(CdmDocumentServiceImplTest, GetSameOriginId) {
   ASSERT_EQ(origin_id1, origin_id3);
 }
 
-TEST_F(CdmDocumentServiceImplTest, GetNullClientToken) {
-  NavigateToUrlAndCreateCdmDocumentService(GURL(kTestOrigin));
-  auto media_foundation_cdm_data = GetMediaFoundationCdmData();
+// Check that obsolete client tokens are cleanly stripped by
+// MigrateObsoleteProfilePrefs() while other origin data is preserved.
+TEST_F(CdmDocumentServiceImplTest, MigrateObsoleteClientToken) {
+  PrefService* user_prefs = profile()->GetPrefs();
 
-  ASSERT_FALSE(media_foundation_cdm_data->client_token);
-}
+  const auto origin_id = base::UnguessableToken::Create();
+  const auto creation_time = base::Time::Now();
+  const std::string origin_str = "https://example.com";
 
-TEST_F(CdmDocumentServiceImplTest, SetClientToken) {
-  NavigateToUrlAndCreateCdmDocumentService(GURL(kTestOrigin));
-  // Call GetMediaFoundationCdmData to create the origin id first, otherwise
-  // `SetCdmClientToken()` will assume the preference data associated with the
-  // origin was recently cleared and will not save the client token.
-  std::ignore = GetMediaFoundationCdmData();
+  const auto clean_origin_id = base::UnguessableToken::Create();
+  const std::string clean_origin_str = "https://other.com";
 
-  std::vector<uint8_t> expected_client_token = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9};
-  SetCdmClientToken(expected_client_token);
+  // Populate an entry containing valid origin data alongside obsolete client
+  // token data, and another entry that has no client token data.
+  {
+    ScopedDictPrefUpdate update(user_prefs, prefs::kMediaCdmOriginData);
+    base::DictValue entry;
+    entry.Set(kOriginId, base::UnguessableTokenToValue(origin_id));
+    entry.Set("origin_id_creation_time", base::TimeToValue(creation_time));
+    entry.Set(prefs::kHardwareSecureDecryptionDisabledTimes, base::ListValue());
+    entry.Set("client_token", "dGVzdF90b2tlbg==");
+    entry.Set("client_token_creation_time", base::TimeToValue(creation_time));
+    update->Set(origin_str, std::move(entry));
 
-  auto media_foundation_cdm_data = GetMediaFoundationCdmData();
+    base::DictValue clean_entry;
+    clean_entry.Set(kOriginId, base::UnguessableTokenToValue(clean_origin_id));
+    clean_entry.Set("origin_id_creation_time",
+                    base::TimeToValue(creation_time));
+    clean_entry.Set(prefs::kHardwareSecureDecryptionDisabledTimes,
+                    base::ListValue());
+    update->Set(clean_origin_str, std::move(clean_entry));
+  }
 
-  ASSERT_EQ(media_foundation_cdm_data->client_token, expected_client_token);
-}
+  // Verify the client token keys are present before migration.
+  {
+    const base::DictValue& dict =
+        user_prefs->GetDict(prefs::kMediaCdmOriginData);
+    const base::DictValue* origin_dict = dict.FindDict(origin_str);
+    ASSERT_TRUE(origin_dict);
+    EXPECT_TRUE(origin_dict->Find("client_token"));
+    EXPECT_TRUE(origin_dict->Find("client_token_creation_time"));
+  }
 
-// Sets a client token for one origin and check that we get the same
-// client token after navigating back to that origin.
-TEST_F(CdmDocumentServiceImplTest, GetSameClientToken) {
-  const auto kOrigin = url::Origin::Create(GURL(kTestOrigin));
-  const auto kOtherOrigin = url::Origin::Create(GURL(kTestOrigin2));
+  // Run the migration.
+  CdmPrefServiceHelper::MigrateObsoleteProfilePrefs(user_prefs);
 
-  NavigateToUrlAndCreateCdmDocumentService(GURL(kTestOrigin));
-  // Call GetMediaFoundationCdmData to create the origin id first, otherwise
-  // `SetCdmClientToken()` will assume the preference data associated with the
-  // origin was recently cleared and will not save the client token.
-  std::ignore = GetMediaFoundationCdmData();
-  std::vector<uint8_t> expected_client_token = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9};
-  SetCdmClientToken(expected_client_token);
+  // Verify client token keys are removed, but origin_id and creation time
+  // remain for the migrated origin.
+  {
+    const base::DictValue& dict =
+        user_prefs->GetDict(prefs::kMediaCdmOriginData);
+    const base::DictValue* origin_dict = dict.FindDict(origin_str);
+    ASSERT_TRUE(origin_dict);
+    EXPECT_FALSE(origin_dict->Find("client_token"));
+    EXPECT_FALSE(origin_dict->Find("client_token_creation_time"));
+    EXPECT_EQ(base::ValueToUnguessableToken(*origin_dict->Find(kOriginId)),
+              origin_id);
+    EXPECT_EQ(base::ValueToTime(origin_dict->Find("origin_id_creation_time")),
+              creation_time);
 
-  NavigateToUrlAndCreateCdmDocumentService(GURL(kTestOrigin2));
-  std::ignore = GetMediaFoundationCdmData();
-  SetCdmClientToken({1, 2, 3, 4, 5});
+    // The clean origin remains intact.
+    const base::DictValue* clean_dict = dict.FindDict(clean_origin_str);
+    ASSERT_TRUE(clean_dict);
+    EXPECT_EQ(base::ValueToUnguessableToken(*clean_dict->Find(kOriginId)),
+              clean_origin_id);
+  }
 
-  NavigateToUrlAndCreateCdmDocumentService(GURL(kTestOrigin));
-  auto media_foundation_cdm_data = GetMediaFoundationCdmData();
-
-  ASSERT_EQ(media_foundation_cdm_data->client_token, expected_client_token);
-}
-
-// If an entry cannot be parsed correctly, `SetCdmClientToken` should simply
-// remove that entry and return without saving the client token.
-TEST_F(CdmDocumentServiceImplTest, SetClientTokenAfterCorruption) {
-  NavigateToUrlAndCreateCdmDocumentService(GURL(kTestOrigin));
-  std::ignore = GetMediaFoundationCdmData();
-  CorruptCdmPreference();
-
-  std::vector<uint8_t> expected_client_token = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9};
-  SetCdmClientToken(expected_client_token);
-
-  auto media_foundation_cdm_data = GetMediaFoundationCdmData();
-  ASSERT_FALSE(media_foundation_cdm_data->client_token.has_value());
+  // Verify that CdmDocumentService continues to read the preserved origin_id.
+  NavigateToUrlAndCreateCdmDocumentService(GURL(origin_str));
+  auto data = GetMediaFoundationCdmData();
+  ASSERT_TRUE(data);
+  EXPECT_EQ(data->origin_id, origin_id);
 }
 
 // Check that we can clear the CDM preferences. `GetMediaFoundationCdmData()`
@@ -467,6 +476,9 @@ TEST_F(CdmDocumentServiceImplTest, MigrateCdmStorePathRootAcl) {
   // Verify the vulnerable ACL is actually applied.
   EXPECT_TRUE(HasListDirectoryPermission(data->cdm_store_path_root, sids));
 
+  // Clear the processed paths cache so the migration logic runs again.
+  CdmDocumentServiceImpl::ClearCdmStoreProcessedPathsForTesting();
+
   // Trigger the creation/migration logic again.
   auto data2 = GetMediaFoundationCdmData();
 
@@ -480,6 +492,55 @@ TEST_F(CdmDocumentServiceImplTest, MigrateCdmStorePathRootAcl) {
       data2->cdm_store_path_root, sids,
       FILE_GENERIC_READ | FILE_GENERIC_WRITE | DELETE,
       CONTAINER_INHERIT_ACE | OBJECT_INHERIT_ACE | INHERIT_ONLY_ACE));
+}
+
+// Verifies that an existing per-origin subdirectory still grants the
+// lpacMediaFoundationCdmData SID effective read/write/delete access after the
+// CDM store root's ACL is re-applied on a subsequent call to
+// GetMediaFoundationCdmData().
+//
+// The first call creates the root with the inherit-only broad ACE and
+// pre-creates <origin_id>/, which inherits (I)(OI)(CI)(R,W,D) for the SID at
+// creation time. The second call sees the root already exists and runs the
+// migration path, which revokes the SID's ACEs on the root (cascading the
+// removal through NTFS auto-inheritance onto existing children) and then
+// re-applies the inherit-only broad ACE. The final re-apply must propagate
+// the new ACE onto existing <origin_id>/ subdirectories so the LPAC retains
+// access to per-origin CDM state created in an earlier session.
+TEST_F(CdmDocumentServiceImplTest, MigrationPreservesAccessOnExistingSubdirs) {
+  NavigateToUrlAndCreateCdmDocumentService(GURL(kTestOrigin));
+
+  // Session 1: creates the root and pre-creates the per-origin subdir.
+  auto data1 = GetMediaFoundationCdmData();
+  ASSERT_TRUE(data1);
+  base::FilePath origin_subdir =
+      data1->cdm_store_path_root.AppendASCII(data1->origin_id.ToString());
+  ASSERT_TRUE(base::PathExists(origin_subdir));
+
+  auto sids = base::win::Sid::FromNamedCapabilityVector(
+      {sandbox::policy::kMediaFoundationCdmData});
+  ASSERT_FALSE(sids.empty());
+
+  // After session 1, the per-origin subdir should have inherited the broad
+  // ACE from the root (effective on the subdir itself, not just inherit-only).
+  EXPECT_TRUE(base::win::HasAccessToPath(
+      origin_subdir, sids, FILE_GENERIC_READ | FILE_GENERIC_WRITE | DELETE,
+      CONTAINER_INHERIT_ACE | OBJECT_INHERIT_ACE))
+      << "Newly-created per-origin subdir should inherit the LPAC ACE.";
+
+  // Session 2: same origin, root already exists -> migration path runs.
+  auto data2 = GetMediaFoundationCdmData();
+  ASSERT_TRUE(data2);
+  ASSERT_EQ(data1->origin_id, data2->origin_id);
+  ASSERT_TRUE(base::PathExists(origin_subdir));
+
+  // After migration, the same per-origin subdir must still grant the LPAC SID
+  // effective FILE_GENERIC_READ | FILE_GENERIC_WRITE | DELETE.
+  EXPECT_TRUE(base::win::HasAccessToPath(
+      origin_subdir, sids, FILE_GENERIC_READ | FILE_GENERIC_WRITE | DELETE,
+      CONTAINER_INHERIT_ACE | OBJECT_INHERIT_ACE))
+      << "After migration, per-origin subdir lost effective LPAC access; the "
+         "inherit-only ACE on the root did not propagate to existing children.";
 }
 #endif  // BUILDFLAG(IS_WIN)
 

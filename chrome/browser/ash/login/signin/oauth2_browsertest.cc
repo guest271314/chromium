@@ -38,13 +38,12 @@
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/ui/ash/login/login_display_host.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_tabstrip.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/scoped_tabbed_browser_displayer.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/webui/ash/login/gaia_screen_handler.h"
 #include "chrome/common/chrome_paths.h"
-#include "chrome/common/chrome_switches.h"
 #include "chrome/test/base/fake_gaia_mixin.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "chromeos/ash/components/login/auth/public/key.h"
@@ -52,6 +51,8 @@
 #include "components/account_id/account_id.h"
 #include "components/javascript_dialogs/tab_modal_dialog_manager.h"
 #include "components/prefs/pref_service.h"
+#include "components/session_manager/core/session.h"
+#include "components/session_manager/core/session_manager.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "components/signin/public/identity_manager/identity_test_utils.h"
 #include "components/sync/base/command_line_switches.h"
@@ -71,6 +72,7 @@
 #include "net/cookies/canonical_cookie.h"
 #include "net/test/embedded_test_server/http_request.h"
 #include "net/test/embedded_test_server/http_response.h"
+#include "ui/base/window_open_disposition.h"
 
 namespace ash {
 
@@ -223,6 +225,7 @@ class RequestDeferrer {
 
     signal_ = std::make_unique<base::test::TestFuture<void>>();
     EXPECT_TRUE(signal_->Wait());
+    signal_.reset();
   }
 
   void InterceptRequest(const HttpRequest& request) {
@@ -353,12 +356,9 @@ class OAuth2Test : public OobeBaseTest {
     if (!AddUserToSession(account_id, password))
       return false;
 
-    if (const user_manager::User* active_user =
-            user_manager::UserManager::Get()->GetActiveUser()) {
-      return active_user->GetAccountId() == account_id;
-    }
-
-    return false;
+    const session_manager::Session* active_session =
+        session_manager::SessionManager::Get()->GetActiveSession();
+    return active_session && active_session->account_id() == account_id;
   }
 
   user_manager::User::OAuthTokenStatus GetOAuthStatusFromLocalState(
@@ -383,9 +383,12 @@ class OAuth2Test : public OobeBaseTest {
 
  protected:
   // OobeBaseTest overrides.
+  // TODO(crbug.com/575229287): Callers should ask for the profile they expect
+  // (sign-in or the logged-in user's) instead of this primary/active mix.
   Profile* GetProfile() {
-    if (user_manager::UserManager::Get()->GetActiveUser())
+    if (session_manager::SessionManager::Get()->GetActiveSession()) {
       return ProfileManager::GetPrimaryUserProfile();
+    }
 
     return ProfileManager::GetActiveUserProfile();
   }
@@ -701,7 +704,7 @@ IN_PROC_BROWSER_TEST_F(OAuth2Test, VerifyInAdvancedProtectionAfterOnlineAuth) {
       IdentityManagerFactory::GetInstance()->GetForProfile(GetProfile());
   EXPECT_TRUE(
       identity_manager->FindExtendedAccountInfoByEmailAddress(kTestEmail)
-          .is_under_advanced_protection);
+          .IsUnderAdvancedProtection());
 }
 
 IN_PROC_BROWSER_TEST_F(OAuth2Test,
@@ -714,7 +717,7 @@ IN_PROC_BROWSER_TEST_F(OAuth2Test,
       IdentityManagerFactory::GetInstance()->GetForProfile(GetProfile());
   EXPECT_FALSE(
       identity_manager->FindExtendedAccountInfoByEmailAddress(kTestEmail)
-          .is_under_advanced_protection);
+          .IsUnderAdvancedProtection());
 }
 
 // FakeGoogle serves content of http://www.google.com/hello_google page for
@@ -909,11 +912,12 @@ class MergeSessionTest : public OAuth2Test,
   GURL non_google_page_url_;
 };
 
-Browser* FindOrCreateVisibleBrowser(Profile* profile) {
+BrowserWindowInterface* FindOrCreateVisibleBrowser(Profile* profile) {
   chrome::ScopedTabbedBrowserDisplayer displayer(profile);
-  Browser* browser = displayer.browser();
-  if (browser->tab_strip_model()->count() == 0)
+  BrowserWindowInterface* browser = displayer.browser_window_interface();
+  if (browser->GetTabStripModel()->count() == 0) {
     chrome::AddTabAt(browser, GURL(), -1, true);
+  }
   return browser;
 }
 
@@ -922,14 +926,14 @@ IN_PROC_BROWSER_TEST_P(MergeSessionTest, PageThrottle) {
                       /*is_under_advanced_protection=*/false);
 
   // Try to open a page from google.com.
-  Browser* browser = FindOrCreateVisibleBrowser(GetProfile());
+  BrowserWindowInterface* browser = FindOrCreateVisibleBrowser(GetProfile());
   ui_test_utils::NavigateToURLWithDisposition(
       browser, fake_google_page_url_, WindowOpenDisposition::CURRENT_TAB,
       ui_test_utils::BROWSER_TEST_NO_WAIT);
 
   // JavaScript dialog wait setup.
   content::WebContents* tab =
-      browser->tab_strip_model()->GetActiveWebContents();
+      browser->GetTabStripModel()->GetActiveWebContents();
   auto* js_dialog_manager =
       javascript_dialogs::TabModalDialogManager::FromWebContents(tab);
   base::test::TestFuture<void> dialog_wait;
@@ -1083,7 +1087,7 @@ class MergeSessionTimeoutTest : public MergeSessionTest {
  public:
   void SetUpCommandLine(base::CommandLine* command_line) override {
     MergeSessionTest::SetUpCommandLine(command_line);
-    command_line->AppendSwitch(::switches::kShortMergeSessionTimeoutForTest);
+    command_line->AppendSwitch(ash::switches::kShortMergeSessionTimeoutForTest);
   }
 
   void RegisterAdditionalRequestHandlers() override {

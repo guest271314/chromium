@@ -19,8 +19,11 @@
 #include "content/public/browser/global_routing_id.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/render_widget_host_view.h"
+#include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_contents_observer.h"
 #include "content/public/browser/web_contents_user_data.h"
+#include "ui/android/view_android.h"
+#include "ui/android/view_android_observer.h"
 #include "ui/android/window_android.h"
 #include "ui/android/window_android_observer.h"
 #include "ui/gfx/native_ui_types.h"
@@ -77,6 +80,7 @@ class WebContentsViewAndroid;
 class CONTENT_EXPORT BlurTransitionAnimationManager
     : public WebContentsObserver,
       public base::SupportsUserData::Data,
+      public ui::ViewAndroidObserver,
       public ui::WindowAndroidObserver {
  public:
   // Interface to delegate the Android-specific view operations.
@@ -111,6 +115,10 @@ class CONTENT_EXPORT BlurTransitionAnimationManager
   void DidFirstVisuallyNonEmptyPaint() override;
   void PrimaryMainFrameRenderProcessGone(
       base::TerminationStatus status) override;
+
+  // ui::ViewAndroidObserver:
+  void OnDetachedFromWindow() override;
+  void OnViewAndroidDestroyed() override;
 
   // ui::WindowAndroidObserver:
   void OnRootWindowVisibilityChanged(bool visible) override {}
@@ -171,7 +179,7 @@ class CONTENT_EXPORT BlurTransitionAnimationManager
   void ShowBlurTransitionLayer();
   void HideBlurTransitionLayer();
   // Removes the layer from the tree, releases the reference (freeing memory),
-  // and unregisters the window observer.
+  // and unregisters the window and view observers.
   void DestroyLayer();
 
   void RegisterWindowObserver();
@@ -203,12 +211,16 @@ class CONTENT_EXPORT BlurTransitionAnimationManager
   float initial_blur_opacity_ = 0.0f;
   float initial_fallback_opacity_ = 0.0f;
 
+  base::ScopedObservation<ui::ViewAndroid, ui::ViewAndroidObserver>
+      view_observation_{this};
   base::ScopedObservation<ui::WindowAndroid, ui::WindowAndroidObserver>
       window_observation_{this};
   TransitionExitReason last_exit_reason_ =
       TransitionExitReason::kAnimationTimerExpired;
   std::unique_ptr<WebContentsViewAndroidDelegate>
       web_contents_view_android_delegate_;
+
+  std::optional<WebContents::ScopedIgnoreInputEvents> ignore_input_scope_;
 
   base::WeakPtrFactory<BlurTransitionAnimationManager> weak_factory_{this};
 };

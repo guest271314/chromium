@@ -16,6 +16,7 @@ import android.os.Message;
 import android.os.Parcel;
 import android.os.ParcelUuid;
 import android.os.Parcelable;
+import android.util.LongSparseArray;
 import android.view.MotionEvent;
 import android.view.Surface;
 import android.view.ViewStructure;
@@ -80,10 +81,8 @@ import org.chromium.url.GURL;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
-import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
-import java.util.Map;
 import java.util.UUID;
 
 /**
@@ -101,7 +100,7 @@ public class WebContentsImpl
     // Map from native web contents pointer to WebContentsImpl to allow scaling of unlimited web
     // contents objects.
     // ScopedGlobalRef tables are finite.
-    private static final Map<Long, WebContentsImpl> sWebContentsMap = new HashMap<>();
+    private static final LongSparseArray<WebContentsImpl> sWebContentsMap = new LongSparseArray<>();
 
     private static final String PARCEL_VERSION_KEY = "version";
     private static final String PARCEL_WEBCONTENTS_KEY = "webcontents";
@@ -218,8 +217,8 @@ public class WebContentsImpl
         assert nativeWebContentsAndroid != 0;
         mNativeWebContentsAndroid = nativeWebContentsAndroid;
         mNavigationController = navigationController;
-        var oldValue = sWebContentsMap.put(mNativeWebContentsAndroid, this);
-        assert oldValue == null;
+        assert sWebContentsMap.get(mNativeWebContentsAndroid) == null;
+        sWebContentsMap.put(mNativeWebContentsAndroid, this);
     }
 
     @CalledByNative
@@ -311,7 +310,8 @@ public class WebContentsImpl
             userDataHost.destroy();
             mInternalsHolder.set(null);
         }
-        var removedValue = sWebContentsMap.remove(nativeWebContentsAndroid);
+        var removedValue = sWebContentsMap.get(nativeWebContentsAndroid);
+        sWebContentsMap.remove(nativeWebContentsAndroid);
         assert removedValue != null;
     }
 
@@ -408,6 +408,12 @@ public class WebContentsImpl
                 clearNativePtr();
             }
         }
+    }
+
+    @Override
+    public boolean isBeingCaptured() {
+        return mNativeWebContentsAndroid != 0
+                && WebContentsImplJni.get().isBeingCaptured(mNativeWebContentsAndroid);
     }
 
     @Override
@@ -948,7 +954,7 @@ public class WebContentsImpl
     }
 
     @Override
-    public void setOverscrollRefreshHandler(OverscrollRefreshHandler handler) {
+    public void setOverscrollRefreshHandler(@Nullable OverscrollRefreshHandler handler) {
         checkNotDestroyed();
         WebContentsImplJni.get().setOverscrollRefreshHandler(mNativeWebContentsAndroid, handler);
     }
@@ -1218,6 +1224,12 @@ public class WebContentsImpl
                 .needToFireBeforeUnloadOrUnloadEvents(mNativeWebContentsAndroid);
     }
 
+    @Override
+    public boolean needToFireBeforeUnload() {
+        if (mNativeWebContentsAndroid == 0) return false;
+        return WebContentsImplJni.get().needToFireBeforeUnload(mNativeWebContentsAndroid);
+    }
+
     public void addTearDownDialogOverlaysHandler(Runnable handler) {
         if (mTearDownDialogOverlaysHandlers == null) {
             mTearDownDialogOverlaysHandlers = new ObserverList<>();
@@ -1480,7 +1492,7 @@ public class WebContentsImpl
 
         void setOverscrollRefreshHandler(
                 long nativeWebContentsAndroid,
-                OverscrollRefreshHandler nativeOverscrollRefreshHandler);
+                @Nullable OverscrollRefreshHandler nativeOverscrollRefreshHandler);
 
         void setSpatialNavigationDisabled(long nativeWebContentsAndroid, boolean disabled);
 
@@ -1508,6 +1520,8 @@ public class WebContentsImpl
 
         int getHeight(long nativeWebContentsAndroid);
 
+        boolean isBeingCaptured(long nativeWebContentsAndroid);
+
         EventForwarder getOrCreateEventForwarder(long nativeWebContentsAndroid);
 
         void setViewAndroidDelegate(
@@ -1531,6 +1545,8 @@ public class WebContentsImpl
         boolean isBeingDestroyed(long nativeWebContentsAndroid);
 
         boolean needToFireBeforeUnloadOrUnloadEvents(long nativeWebContentsAndroid);
+
+        boolean needToFireBeforeUnload(long nativeWebContentsAndroid);
 
         void onContentForNavigationEntryShown(long nativeWebContentsAndroid);
 

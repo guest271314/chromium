@@ -8,11 +8,13 @@
 #include "chrome/browser/download/download_core_service.h"
 #include "chrome/browser/download/download_core_service_factory.h"
 #include "chrome/browser/download/offline_item_utils.h"
+#include "chrome/browser/enterprise/connectors/reporting/event_initiator_utils.h"
 #include "chrome/browser/safe_browsing/download_protection/download_protection_util.h"
 #include "components/download/public/common/download_item.h"
 #include "components/enterprise/connectors/core/reporting_utils.h"
 #include "components/enterprise/obfuscation/core/download_obfuscator.h"
 #include "content/public/browser/download_item_utils.h"
+#include "content/public/browser/render_frame_host.h"
 
 #if !BUILDFLAG(IS_ANDROID)
 #include "chrome/browser/download/bubble/download_bubble_ui_controller.h"
@@ -80,6 +82,17 @@ bool DownloadItemMetadata::IsObfuscated() const {
           item_->GetUserData(
               enterprise_obfuscation::DownloadObfuscationData::kUserDataKey));
   return obfuscation_data ? obfuscation_data->is_obfuscated : false;
+}
+
+void DownloadItemMetadata::MarkDeobfuscated() {
+  // TODO(crbug.com/367259664): Ensure this doesn't run too soon.
+  enterprise_obfuscation::DownloadObfuscationData* obfuscation_data =
+      static_cast<enterprise_obfuscation::DownloadObfuscationData*>(
+          item_->GetUserData(
+              enterprise_obfuscation::DownloadObfuscationData::kUserDataKey));
+  if (obfuscation_data) {
+    obfuscation_data->is_obfuscated = false;
+  }
 }
 
 bool DownloadItemMetadata::IsTopLevelEncryptedArchive() const {
@@ -231,11 +244,18 @@ google::protobuf::RepeatedPtrField<std::string>
 DownloadItemMetadata::CollectFrameUrls() const {
   return enterprise_connectors::CollectFrameUrls(
       content::DownloadItemUtils::GetWebContents(item_),
-      enterprise_connectors::DeepScanAccessPoint::DOWNLOAD);
+      enterprise_connectors::DeepScanAccessPoint::DOWNLOAD,
+      std::make_optional(
+          content::DownloadItemUtils::GetRenderFrameHostId(item_)));
 }
 
 content::WebContents* DownloadItemMetadata::web_contents() const {
   return content::DownloadItemUtils::GetOriginalWebContents(item_.get());
+}
+
+std::optional<ExtensionTelemetryReportRequest::ExtensionInfo>
+DownloadItemMetadata::extension_initiator() const {
+  return enterprise_connectors::GetExtensionInitiatorInfo(item_);
 }
 
 base::WeakPtr<DownloadItemMetadata> DownloadItemMetadata::GetWeakPtr() {

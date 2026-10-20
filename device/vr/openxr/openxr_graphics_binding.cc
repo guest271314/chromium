@@ -4,6 +4,7 @@
 
 #include "device/vr/openxr/openxr_graphics_binding.h"
 
+#include "build/build_config.h"
 #include "components/viz/common/gpu/context_provider.h"
 #include "device/vr/openxr/openxr_api_wrapper.h"
 #include "device/vr/openxr/openxr_extension_helper.h"
@@ -37,7 +38,15 @@ OpenXrGraphicsBinding::~OpenXrGraphicsBinding() {
 }
 
 bool OpenXrGraphicsBinding::ShouldRenderBaseLayer() const {
-  return layers_sequence_.empty() || overlay_visible_;
+  // When WebXR uses a custom projection layer and is visible, the overlay is
+  // composited directly into that layer rather than the base layer.
+  const bool overlay_needs_base_layer =
+      overlay_visible_ && (!webxr_visible_ || !has_custom_projection_layer_);
+  return layers_sequence_.empty() || overlay_needs_base_layer;
+}
+
+bool OpenXrGraphicsBinding::RequiresSharedImages() const {
+  return false;
 }
 
 void OpenXrGraphicsBinding::OnSessionCreated(XrSpace local_space,
@@ -56,8 +65,10 @@ void OpenXrGraphicsBinding::OnSessionCreated(XrSpace local_space,
   layer_data->read_only_data->layout =
       kNumPrimaryViews > 1 ? mojom::XRLayerLayout::kStereoLeftRight
                            : mojom::XRLayerLayout::kMono;
+  layer_data->read_only_data->texture_type = mojom::XRTextureType::kTexture;
   layer_data->read_only_data->texture_width = 0;
   layer_data->read_only_data->texture_height = 0;
+  layer_data->read_only_data->is_static = false;
   layer_data->mutable_data = mojom::XRLayerMutableData::New();
   layer_data->mutable_data->layer_data =
       mojom::XRLayerSpecificData::NewProjection(
@@ -82,6 +93,8 @@ void OpenXrGraphicsBinding::OnSessionDestroyed(gpu::SharedImageInterface* sii) {
     layer->DestroySwapchain(sii);
   }
   layers_.clear();
+  layers_sequence_.clear();
+  has_custom_projection_layer_ = false;
 }
 
 std::vector<XrCompositionLayerProjectionView>
@@ -98,10 +111,10 @@ OpenXrGraphicsBinding::GetProjectionViews(
   DCHECK(view_config.Active());
   DCHECK(layer.type() == OpenXrCompositionLayer::Type::kProjection);
 
-  // The following code only works for "mono" and "stereo-left-right".
-  CHECK(layer.read_only_data().layout ==
-            mojom::XRLayerLayout::kStereoLeftRight ||
-        layer.read_only_data().layout == mojom::XRLayerLayout::kMono);
+  const mojom::XRLayerLayout layout = layer.read_only_data().layout;
+
+  // The following code doesn't work for "stereo-top-bottom".
+  CHECK(layout != mojom::XRLayerLayout::kStereoTopBottom);
 
   std::vector<XrCompositionLayerProjectionView> projection_views;
   projection_views.resize(view_config.Views().size());
@@ -121,17 +134,31 @@ OpenXrGraphicsBinding::GetProjectionViews(
     projection_view.fov.angleLeft = view.fov.angleLeft;
     projection_view.fov.angleRight = view.fov.angleRight;
     projection_view.subImage.swapchain = layer.color_swapchain();
-    // Since we're in double wide mode, the texture array only has one texture
-    // and is always index 0. If secondary views are enabled, those views are
-    // also in this same texture array.
-    projection_view.subImage.imageArrayIndex = 0;
-    projection_view.subImage.imageRect.extent.width = properties.Width();
-    projection_view.subImage.imageRect.extent.height = properties.Height();
-    projection_view.subImage.imageRect.offset.x = x_offset;
-    x_offset += properties.Width();
+    // If SwapchainUsesTextureArray() is true, each primary view maps to its
+    // corresponding layer index in the texture array.
+    projection_view.subImage.imageArrayIndex =
+        layer.SwapchainUsesTextureArray()
+            ? std::min(view_index, static_cast<uint32_t>(kNumPrimaryViews - 1))
+            : 0;
+    if (layer.SwapchainUsesTextureArray()) {
+      projection_view.subImage.imageRect.extent.width =
+          layer.GetSwapchainImageSize().width();
+      projection_view.subImage.imageRect.extent.height =
+          layer.GetSwapchainImageSize().height();
+      projection_view.subImage.imageRect.offset.x = 0;
+      projection_view.subImage.imageRect.offset.y = 0;
+    } else {
+      projection_view.subImage.imageRect.extent.width = properties.Width();
+      projection_view.subImage.imageRect.extent.height = properties.Height();
+      projection_view.subImage.imageRect.offset.x = x_offset;
 
-    projection_view.subImage.imageRect.offset.y =
-        layer.GetSwapchainImageSize().height() - properties.Height();
+      if (layout == mojom::XRLayerLayout::kStereoLeftRight) {
+        x_offset += properties.Width();
+      }
+
+      projection_view.subImage.imageRect.offset.y =
+          layer.GetSwapchainImageSize().height() - properties.Height();
+    }
     projection_view.fov.angleUp = view.fov.angleUp;
     projection_view.fov.angleDown = view.fov.angleDown;
 
@@ -153,12 +180,19 @@ OpenXrGraphicsBinding::GetProjectionViews(
 }
 
 const void* OpenXrGraphicsBinding::GetFlipLayerLayout() const {
+  if (!base_layer_) {
+    return nullptr;
+  }
+  return GetFlipLayerLayout(*base_layer_);
+}
+
+const void* OpenXrGraphicsBinding::GetFlipLayerLayout(
+    OpenXrCompositionLayer& layer) const {
   // If we don't need to flip the image, then we have nothing to do here.
   // If we do need to flip the image and `fb_composition_layer_ext_enabled_`
   // is false, we have already flipped the image during
   // `GetProjectionViews`.
-  if (!ShouldFlipSubmittedImage(*base_layer_) ||
-      !fb_composition_layer_ext_enabled_) {
+  if (!ShouldFlipSubmittedImage(layer) || !fb_composition_layer_ext_enabled_) {
     return nullptr;
   }
   return &y_flip_layer_layout_;
@@ -194,22 +228,24 @@ std::unique_ptr<OpenXrLayers> OpenXrGraphicsBinding::GetLayersForViewConfig(
     OpenXrApiWrapper* openxr,
     const OpenXrViewConfiguration& view_config) const {
   auto openxr_layers = std::make_unique<OpenXrLayers>();
-  for (const auto& layer_id : layers_sequence_) {
-    auto layer_it = layers_.find(layer_id);
-    if (layer_it == layers_.end()) {
-      continue;
-    }
-    if (layer_it->second->type() == OpenXrCompositionLayer::Type::kProjection) {
-      openxr_layers->AddCompositionLayer(
-          openxr, *layer_it->second,
-          GetProjectionViews(view_config, *layer_it->second),
-          GetFlipLayerLayout());
-    } else {
-      openxr_layers->AddCompositionLayer(openxr, *layer_it->second, {},
-                                         GetFlipLayerLayout());
+  if (webxr_visible_) {
+    for (const auto& layer_id : layers_sequence_) {
+      auto layer_it = layers_.find(layer_id);
+      if (layer_it == layers_.end()) {
+        continue;
+      }
+      OpenXrCompositionLayer& layer = *layer_it->second;
+      if (layer.type() == OpenXrCompositionLayer::Type::kProjection) {
+        openxr_layers->AddCompositionLayer(
+            openxr, layer, GetProjectionViews(view_config, layer),
+            GetFlipLayerLayout(layer));
+      } else {
+        openxr_layers->AddCompositionLayer(openxr, layer, {},
+                                           GetFlipLayerLayout(layer));
+      }
     }
   }
-  if (ShouldRenderBaseLayer()) {
+  if (ShouldRenderBaseLayer() && base_layer_->is_rendered()) {
     openxr_layers->AddBaseLayer(
         openxr->GetReferenceSpace(mojom::XRReferenceSpaceType::kLocal),
         GetBaseLayerProjectionViews(view_config), GetFlipLayerLayout());
@@ -273,6 +309,22 @@ bool OpenXrGraphicsBinding::WaitOnBaseLayerFence(gfx::GpuFence& gpu_fence) {
   return WaitOnFence(*base_layer_, gpu_fence);
 }
 
+#if BUILDFLAG(IS_LINUX)
+bool OpenXrGraphicsBinding::WaitOnImplicitFences(
+    const std::vector<LayerId>& updated_layers) {
+  if (layers_sequence_.empty()) {
+    return base_layer_ && WaitOnImplicitFence(*base_layer_);
+  }
+  for (LayerId layer_id : updated_layers) {
+    auto layer_it = layers_.find(layer_id);
+    if (layer_it != layers_.end() && !WaitOnImplicitFence(*layer_it->second)) {
+      return false;
+    }
+  }
+  return true;
+}
+#endif  // BUILDFLAG(IS_LINUX)
+
 void OpenXrGraphicsBinding::UpdateProjectionLayerActiveSwapchainImageSize(
     gpu::SharedImageInterface* sii) {
   CHECK(base_layer_);
@@ -289,14 +341,23 @@ void OpenXrGraphicsBinding::UpdateProjectionLayerActiveSwapchainImageSize(
   }
 }
 
-XrResult OpenXrGraphicsBinding::ActivateSwapchainImages(
+XrResult OpenXrGraphicsBinding::AcquireSwapchainImages(
     gpu::SharedImageInterface* sii) {
   if (ShouldRenderBaseLayer()) {
-    RETURN_IF_XR_FAILED(base_layer_->ActivateSwapchainImage(sii));
+    DCHECK(base_layer_);
+    if (base_layer_->swapchain_image_state() ==
+        OpenXrCompositionLayer::SwapchainImageState::kReleased) {
+      RETURN_IF_XR_FAILED(base_layer_->AcquireSwapchainImage(sii));
+    }
   }
   for (const auto& layer_id : layers_sequence_) {
     auto layer_it = layers_.find(layer_id);
     if (layer_it == layers_.end()) {
+      continue;
+    }
+
+    if (layer_it->second->swapchain_image_state() ==
+        OpenXrCompositionLayer::SwapchainImageState::kAcquired) {
       continue;
     }
 
@@ -317,9 +378,43 @@ XrResult OpenXrGraphicsBinding::ActivateSwapchainImages(
         layer_it->second->is_rendered()) {
       continue;
     }
-    RETURN_IF_XR_FAILED(layer_it->second->ActivateSwapchainImage(sii));
+    RETURN_IF_XR_FAILED(layer_it->second->AcquireSwapchainImage(sii));
   }
   return XR_SUCCESS;
+}
+
+XrResult OpenXrGraphicsBinding::WaitSwapchainImages(
+    gpu::SharedImageInterface* sii) {
+  XrResult return_result = XR_SUCCESS;
+
+  if (ShouldRenderBaseLayer()) {
+    DCHECK(base_layer_);
+    if (base_layer_->swapchain_image_state() ==
+        OpenXrCompositionLayer::SwapchainImageState::kAcquired) {
+      XrResult result = base_layer_->WaitSwapchainImage(sii);
+      RETURN_IF_XR_FAILED(result);
+      if (result == XR_TIMEOUT_EXPIRED) {
+        return_result = result;
+      }
+    }
+  }
+
+  for (const auto& layer_id : layers_sequence_) {
+    auto layer_it = layers_.find(layer_id);
+    if (layer_it == layers_.end()) {
+      continue;
+    }
+    if (layer_it->second->swapchain_image_state() ==
+        OpenXrCompositionLayer::SwapchainImageState::kAcquired) {
+      XrResult result = layer_it->second->WaitSwapchainImage(sii);
+      RETURN_IF_XR_FAILED(result);
+      if (result == XR_TIMEOUT_EXPIRED) {
+        return_result = result;
+      }
+    }
+  }
+
+  return return_result;
 }
 
 XrResult OpenXrGraphicsBinding::ReleaseActiveSwapchainImages() {
@@ -374,6 +469,40 @@ void OpenXrGraphicsBinding::PopulateSharedImageData(
     layers.push_back(std::move(layer_data));
   }
   frame_data.composition_layers_data = std::move(layers);
+}
+
+std::vector<scoped_refptr<gpu::ClientSharedImage>>
+OpenXrGraphicsBinding::EndSharedImagesExport(
+    const std::vector<device::mojom::XRLayerUpdatePtr>& layers,
+    std::vector<gpu::SyncToken>& out_sync_tokens) {
+  std::vector<scoped_refptr<gpu::ClientSharedImage>> shared_images;
+
+  if (layers_sequence_.empty()) {
+    if (base_layer_) {
+      CHECK_EQ(layers.size(), 1u);
+      auto* swapchain_image = base_layer_->GetActiveSwapchainImage();
+      if (swapchain_image && swapchain_image->shared_image) {
+        shared_images.emplace_back(swapchain_image->shared_image);
+        out_sync_tokens.emplace_back(shared_images.back()->EndExport(
+            std::move(layers[0]->shared_image_export_result)));
+      }
+    }
+  } else {
+    for (auto& layer : layers) {
+      LayerId layer_id = layer->layer_id;
+      auto layer_it = layers_.find(layer_id);
+      if (layer_it != layers_.end()) {
+        auto* swapchain_image = layer_it->second->GetActiveSwapchainImage();
+        if (swapchain_image && swapchain_image->shared_image) {
+          auto shared_image = swapchain_image->shared_image;
+          out_sync_tokens.emplace_back(shared_image->EndExport(
+              std::move(layer->shared_image_export_result)));
+          shared_images.push_back(std::move(shared_image));
+        }
+      }
+    }
+  }
+  return shared_images;
 }
 
 bool OpenXrGraphicsBinding::Render(
@@ -432,11 +561,13 @@ bool OpenXrGraphicsBinding::CreateCompositionLayer(
   if (!SupportsLayers()) {
     return false;
   }
-
-  // We don't support "stereo" layout here. The blink side should wrap it into
-  // "stereo-left-right".
-  CHECK_NE(layer_data->read_only_data->layout,
-           device::mojom::XRLayerLayout::kStereo);
+#if BUILDFLAG(IS_LINUX)
+  // The page's layer of an unsupported type never becomes active.
+  if (!SupportsLayerType(OpenXrCompositionLayer::GetTypeFromMojomData(
+          *layer_data->mutable_data->layer_data))) {
+    return false;
+  }
+#endif
 
   auto layer_id = layer_data->read_only_data->layer_id;
   CHECK(!layers_.contains(layer_id));

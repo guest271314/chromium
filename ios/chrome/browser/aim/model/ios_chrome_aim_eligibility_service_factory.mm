@@ -32,6 +32,9 @@ AimEligibilityService::Configuration CreateConfiguration(
   config.user_agent_with_cobrowse_suffix = base::StrCat(
       {web::GetWebClient()->GetUserAgent(web::UserAgentType::MOBILE), " ",
        contextual_tasks::GetContextualTasksUserAgentSuffix()});
+  config.search_capabilities_version =
+      contextual_tasks::GetContextualTasksSearchCapabilitiesVersion();
+
   // TODO(crbug.com/486945769): Add support for `Sec-CH-UA-Full-Version-List`
   // Header.
   config.full_version_list = "";
@@ -40,22 +43,10 @@ AimEligibilityService::Configuration CreateConfiguration(
 
 }  // namespace
 
-// static
-AimEligibilityService* IOSChromeAimEligibilityServiceFactory::GetForProfile(
-    ProfileIOS* profile) {
-  return GetInstance()->GetServiceForProfileAs<IOSChromeAimEligibilityService>(
-      profile, /*create=*/true);
-}
-
-// static
-IOSChromeAimEligibilityServiceFactory*
-IOSChromeAimEligibilityServiceFactory::GetInstance() {
-  static base::NoDestructor<IOSChromeAimEligibilityServiceFactory> instance;
-  return instance.get();
-}
-
-IOSChromeAimEligibilityServiceFactory::IOSChromeAimEligibilityServiceFactory()
-    : ProfileKeyedServiceFactoryIOS(
+IOSChromeAimEligibilityServiceFactory::IOSChromeAimEligibilityServiceFactory(
+    PassKey key)
+    : TypedProfileKeyedServiceFactoryIOS(
+          std::move(key),
           "AimEligibilityService",
           IsAIMEligibilityServiceStartWithProfileEnabled()
               ? ServiceCreation::kCreateWithProfile
@@ -67,9 +58,6 @@ IOSChromeAimEligibilityServiceFactory::IOSChromeAimEligibilityServiceFactory()
   DependsOn(ios::TemplateURLServiceFactory::GetInstance());
   DependsOn(IdentityManagerFactory::GetInstance());
 }
-
-IOSChromeAimEligibilityServiceFactory::
-    ~IOSChromeAimEligibilityServiceFactory() = default;
 
 std::unique_ptr<KeyedService>
 IOSChromeAimEligibilityServiceFactory::BuildServiceInstanceFor(

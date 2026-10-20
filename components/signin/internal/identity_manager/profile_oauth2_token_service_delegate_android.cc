@@ -216,7 +216,7 @@ ProfileOAuth2TokenServiceDelegateAndroid::CreateAccessTokenFetcher(
       << " account= " << account_id;
   ValidateAccountId(account_id);
   CoreAccountInfo account_info =
-      account_tracker_service_->GetAccountInfo(account_id);
+      account_tracker_service_->GetAccountInfo(account_id).GetCoreAccountInfo();
   DCHECK(!account_info.IsEmpty())
       << "Cannot find account info for account id " << account_id;
   return std::make_unique<AndroidAccessTokenFetcher>(this, consumer,
@@ -232,11 +232,7 @@ void ProfileOAuth2TokenServiceDelegateAndroid::OnAccessTokenInvalidated(
   JNIEnv* env = AttachCurrentThread();
   ScopedJavaLocalRef<jstring> j_access_token =
       ConvertUTF8ToJavaString(env, access_token);
-  // CHECK added to investigate crbug.com/366403142.
-  // Sometimes access_token is unexpectedly empty (for example,
-  // when visiting corp sites), and a previous attempt to throw an exception
-  // still causing crashes (see crbug.com/443111285).
-  CHECK(!access_token.empty(), base::NotFatalUntil::M145);
+  CHECK(!access_token.empty());
   signin::Java_ProfileOAuth2TokenServiceDelegate_invalidateAccessToken(
       env, java_ref_, j_access_token);
 }
@@ -262,7 +258,7 @@ void ProfileOAuth2TokenServiceDelegateAndroid::
       /*should_remove_stale_accounts=*/false);
   std::vector<CoreAccountId> account_ids;
   for (const auto& account : accounts) {
-    CoreAccountId id(account.account_id);
+    CoreAccountId id(account.GetAccountId());
     if (!id.empty()) {
       account_ids.push_back(std::move(id));
     }
@@ -359,6 +355,10 @@ void ProfileOAuth2TokenServiceDelegateAndroid::FireRefreshTokensLoaded() {
 
 void ProfileOAuth2TokenServiceDelegateAndroid::RevokeAllCredentialsInternal(
     signin_metrics::SourceForRefreshTokenOperation source) {
+  // Revoking credentials on Android is not allowed.
+  NOTREACHED(base::NotFatalUntil::M153);
+
+  // TODO(crbug.com/512831931): Cleanup after M153 is rolled out.
   DVLOG(1) << "ProfileOAuth2TokenServiceDelegateAndroid::RevokeAllCredentials";
   ScopedBatchChange batch(this);
   std::vector<CoreAccountId> accounts_to_revoke = GetAccounts();

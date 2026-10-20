@@ -13,7 +13,7 @@
 #include <vector>
 
 #include "base/gtest_prod_util.h"
-#include "base/memory/advanced_memory_safety_checks.h"
+#include "base/memory/sanitized_object.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
 #include "components/omnibox/browser/actions/omnibox_action.h"
@@ -41,7 +41,7 @@ class TemplateURLService;
 // match.
 class AutocompleteResult {
   // TODO(crbug.com/449894891): Remove this macro once it gets fixed.
-  ADVANCED_MEMORY_SAFETY_CHECKS();
+  SANITIZED_OBJECT();
 
  public:
   typedef ACMatches::const_iterator const_iterator;
@@ -65,12 +65,19 @@ class AutocompleteResult {
   ~AutocompleteResult();
   AutocompleteResult(const AutocompleteResult&) = delete;
   AutocompleteResult& operator=(const AutocompleteResult&) = delete;
+  AutocompleteResult(AutocompleteResult&&) noexcept;
+  AutocompleteResult& operator=(AutocompleteResult&&) noexcept;
+
+  // Returns a copy of this result with its matches and associated metadata for
+  // snapshot retention.
+  AutocompleteResult CopyForSnapshot() const;
 
 #if BUILDFLAG(IS_ANDROID)
   // Returns a corresponding Java object, creating it if necessary.
   // NOTE: Android specific methods are defined in autocomplete_match_android.cc
   base::android::ScopedJavaLocalRef<jobject> GetOrCreateJavaObject(
-      JNIEnv* env) const;
+      JNIEnv* env,
+      const TemplateURLService* template_url_service) const;
 
   // Notify the Java object that its native counterpart is about to be
   // destroyed.
@@ -79,7 +86,8 @@ class AutocompleteResult {
   // Construct an array of AutocompleteMatch objects arranged in the exact same
   // order as |matches_|.
   base::android::ScopedJavaLocalRef<jobjectArray> BuildJavaMatches(
-      JNIEnv* env) const;
+      JNIEnv* env,
+      const TemplateURLService* template_url_service) const;
 
   // Group suggestions in specified range by search vs url.
   // The range used is [first_index, last_index), which contains all the
@@ -250,13 +258,12 @@ class AutocompleteResult {
       const ACMatches& matches,
       const CompareWithDemoteByType<AutocompleteMatch>& comparing_object);
   // Determines how many matches to keep depending on how many URLs would be
-  // shown. Increases the match limit if there are TYPE_UNSCOPED_EXTENSION
-  // suggestions available so they don't replace other match types.
-  // CalculateNumMatches defers to CalculateNumMatchesPerUrlCount if
-  // all of the following are true:
-  // 1) not in zero suggest.
-  // 2) not in exact featured keyword mode.
-  // 3) `kDynamicMaxAutocomplete` feature is enabled.
+  // shown. Increases the match limit if there are
+  // AutocompleteProvider::Type::kUnscopedExtension suggestions available so
+  // they don't replace other match types. CalculateNumMatches defers to
+  // CalculateNumMatchesPerUrlCount if all of the following are true: 1) not in
+  // zero suggest. 2) not in exact featured keyword mode. 3)
+  // `kDynamicMaxAutocomplete` feature is enabled.
   static size_t CalculateNumMatchesPerUrlCount(
       const ACMatches& matches,
       const CompareWithDemoteByType<AutocompleteMatch>& comparing_object);
@@ -300,6 +307,12 @@ class AutocompleteResult {
   void clear_gws_event_id_hashes_in_session() {
     session_.gws_event_id_hashes.clear();
   }
+
+  const std::vector<omnibox::metrics::ChromeSearchboxStats::ExperimentStatsV2>&
+  experiment_stats_v2s_in_session() const;
+
+  void add_experiment_stat_v2_in_session(
+      const omnibox::metrics::ChromeSearchboxStats::ExperimentStatsV2& stat);
 
   std::pair<bool, bool> contextual_suggestions_shown_in_session() {
     return {session_.contextual_search_suggestions_shown_in_session,
@@ -455,6 +468,8 @@ class AutocompleteResult {
   FRIEND_TEST_ALL_PREFIXES(AutocompleteResultTest, SwapMatches);
   FRIEND_TEST_ALL_PREFIXES(AutocompleteResultTimeTest,
                            ResultReadyTimeSwapAndCopy);
+  FRIEND_TEST_ALL_PREFIXES(WebuiOmniboxHandlerTest,
+                           OpenAutocompleteMatch_HistoricalSnapshot);
 
   typedef std::map<AutocompleteProvider*, ACMatches> ProviderToMatches;
 

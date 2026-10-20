@@ -2,12 +2,11 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 import 'chrome://contextual-tasks/strings.m.js';
-import 'chrome://resources/cr_components/composebox/composebox.js';
+import './test_composebox_mixin.js';
 import 'chrome://resources/cr_components/composebox/file_carousel.js';
 
 import type {ComposeboxFile} from 'chrome://resources/cr_components/composebox/common.js';
-import type {ComposeboxElement} from 'chrome://resources/cr_components/composebox/composebox.js';
-import {PageCallbackRouter, PageHandlerRemote} from 'chrome://resources/cr_components/composebox/composebox.mojom-webui.js';
+import {PageHandlerRemote} from 'chrome://resources/cr_components/composebox/composebox.mojom-webui.js';
 import {ComposeboxProxyImpl} from 'chrome://resources/cr_components/composebox/composebox_proxy.js';
 import type {ComposeboxFileCarouselElement} from 'chrome://resources/cr_components/composebox/file_carousel.js';
 import {WindowProxy} from 'chrome://resources/cr_components/composebox/window_proxy.js';
@@ -22,6 +21,7 @@ import type {TestMock} from 'chrome://webui-test/test_mock.js';
 import {microtasksFinished} from 'chrome://webui-test/test_util.js';
 
 import {installMock, MockInputState} from './composebox_test_utils.js';
+import type {TestComposeboxMixinElement} from './test_composebox_mixin.js';
 
 const ADD_FILE_CONTEXT_FN = 'addFileContext';
 
@@ -200,7 +200,7 @@ suite('DragAndDropHandler', () => {
 
 // --- SUITE 2: Integration Tests for the Element ---
 suite('ComposeboxDragAndDrop', () => {
-  let composeboxElement: ComposeboxElement;
+  let composeboxElement: TestComposeboxMixinElement;
   let pageHandler: TestMock<PageHandlerRemote>;
   let searchboxHandler: TestMock<SearchboxPageHandlerRemote>;
   let windowProxy: TestMock<WindowProxy>;
@@ -211,13 +211,15 @@ suite('ComposeboxDragAndDrop', () => {
     pageHandler = installMock(
         PageHandlerRemote,
         mock => ComposeboxProxyImpl.setInstance(new ComposeboxProxyImpl(
-            mock, new PageCallbackRouter(), new SearchboxPageHandlerRemote(),
+            mock, new SearchboxPageHandlerRemote(),
             new SearchboxPageCallbackRouter())));
-    pageHandler.setResultFor(
-        'getSmartTabSharingActive', Promise.resolve({active: false}));
     searchboxHandler = installMock(
         SearchboxPageHandlerRemote,
         mock => ComposeboxProxyImpl.getInstance().searchboxHandler = mock);
+    // <if expr="not is_android">
+    searchboxHandler.setResultFor(
+        'getSmartTabSharingActive', Promise.resolve({active: false}));
+    // </if>
     searchboxHandler.setResultFor('getRecentTabs', Promise.resolve({tabs: []}));
     searchboxHandler.setResultFor('getInputState', Promise.resolve({
       state: new MockInputState({
@@ -262,7 +264,7 @@ suite('ComposeboxDragAndDrop', () => {
   });
 
   async function createComposeboxElement() {
-    composeboxElement = document.createElement('cr-composebox');
+    composeboxElement = document.createElement('test-composebox-mixin');
     document.body.appendChild(composeboxElement);
     await composeboxElement.updateComplete;
   }
@@ -554,4 +556,31 @@ suite('ComposeboxDragAndDrop', () => {
     await searchboxHandler.whenCalled(ADD_FILE_CONTEXT_FN);
     assertEquals(1, searchboxHandler.getCallCount(ADD_FILE_CONTEXT_FN));
   });
+
+  test(
+      'handles dropped directory when file.arrayBuffer() rejects', async () => {
+        loadTimeData.overrideValues({'lensSendRawFileMediaTypesEnabled': true});
+        await createComposeboxElement();
+        await microtasksFinished();
+
+        // On macOS/POSIX, a directory reports a non-zero stat size (e.g. 64
+        // bytes on APFS) with an empty MIME type, bypassing initial size/type
+        // checks, and then rejects with NotFoundError when read via
+        // arrayBuffer().
+        const directoryFile =
+            new File([new Uint8Array(64)], 'EmptyFolder', {type: ''});
+        directoryFile.arrayBuffer = () => Promise.reject(new DOMException(
+            'A requested file or directory could not be found at the time an ' +
+                'operation was processed.',
+            'NotFoundError'));
+
+        await dispatchDragAndDropEvent(composeboxElement, [directoryFile]);
+        await microtasksFinished();
+
+        assertEquals(0, searchboxHandler.getCallCount(ADD_FILE_CONTEXT_FN));
+        assertEquals(0, composeboxElement.attachedContext.size);
+        assertEquals(
+            composeboxElement.i18n('composeboxFileUploadFailed'),
+            composeboxElement.errorMessage);
+      });
 });

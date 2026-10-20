@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "base/containers/flat_map.h"
+#include "base/memory/raw_ptr.h"
 #include "base/memory/raw_ptr_exclusion.h"
 #include "base/memory/stack_allocated.h"
 #include "base/memory/weak_ptr.h"
@@ -139,9 +140,10 @@ class VIZ_SERVICE_EXPORT DisplayResourceProvider
       DCHECK(resource_);
       return resource_->transferable.mailbox();
     }
-    const gpu::SyncToken& sync_token() const {
+    std::vector<gpu::SyncToken> GetSyncTokens() const {
       DCHECK(resource_);
-      return resource_->sync_token();
+      return resource_->transferable.shared_image()
+          ->GetSyncTokensForDisplayCompositor(resource_->sync_token());
     }
 
     // Sets the given |release_fence| onto this resource.
@@ -157,11 +159,9 @@ class VIZ_SERVICE_EXPORT DisplayResourceProvider
    private:
     void Reset();
 
-    // RAW_PTR_EXCLUSION: Performance reasons (based on analysis of MotionMark).
-    RAW_PTR_EXCLUSION DisplayResourceProvider* resource_provider_ = nullptr;
+    raw_ptr<DisplayResourceProvider> resource_provider_ = nullptr;
     ResourceId resource_id_ = kInvalidResourceId;
-    // RAW_PTR_EXCLUSION: Performance reasons (based on analysis of MotionMark).
-    RAW_PTR_EXCLUSION ChildResource* resource_ = nullptr;
+    raw_ptr<ChildResource> resource_ = nullptr;
   };
 
   // All resources that are returned to children while an instance of this

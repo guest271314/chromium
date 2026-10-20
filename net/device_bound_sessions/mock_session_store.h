@@ -21,14 +21,23 @@ class SessionStoreMock : public SessionStore {
   MOCK_METHOD(void, LoadSessions, (LoadSessionsCallback callback), (override));
   MOCK_METHOD(void,
               SaveSession,
-              (const SchemefulSite& site, const Session& session),
+              (const SchemefulSite& site,
+               const Session& session,
+               SessionStore::SaveSessionMode mode),
               (override));
   MOCK_METHOD(void, DeleteSession, (const SessionKey& key), (override));
   MOCK_METHOD(SessionStore::SessionsMap, GetAllSessions, (), (const, override));
   MOCK_METHOD(void,
               RestoreSessionBindingKey,
               (const SessionKey& session_key,
+               unexportable_keys::BackgroundTaskPriority priority,
                RestoreSessionBindingKeyCallback callback),
+              (override));
+  MOCK_METHOD(void,
+              RestoreSessionAttestationKey,
+              (const SessionKey& session_key,
+               unexportable_keys::BackgroundTaskPriority priority,
+               RestoreSessionAttestationKeyCallback callback),
               (override));
 };
 

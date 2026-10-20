@@ -5,6 +5,7 @@
 #include "chrome/browser/ash/app_list/search/search_controller.h"
 
 #include <algorithm>
+#include <array>
 #include <memory>
 #include <string>
 #include <vector>
@@ -17,6 +18,7 @@
 #include "base/memory/raw_ptr.h"
 #include "base/strings/stringprintf.h"
 #include "base/test/bind.h"
+#include "base/test/test_future.h"
 #include "base/time/time.h"
 #include "chrome/browser/ash/app_list/search/chrome_search_result.h"
 #include "chrome/browser/ash/app_list/search/common/types_util.h"
@@ -89,6 +91,7 @@ class SearchControllerTest : public testing::Test {
 
   void SetUp() override {
     search_controller_ = std::make_unique<SearchController>(
+        TestingBrowserProcess::GetGlobal()->local_state(),
         /*model_updater=*/&model_updater_,
         /*list_controller=*/&list_controller_,
         /*notifier=*/nullptr, &profile_);
@@ -145,7 +148,11 @@ class SearchControllerTest : public testing::Test {
                 UnorderedElementsAreArray(expected_ids_to_burn_in_iteration));
   }
 
-  void Wait() { task_environment_.RunUntilIdle(); }
+  void WaitForZeroStateCompletion() {
+    base::test::TestFuture<void> future;
+    search_controller_->WaitForZeroStateCompletionForTest(future.GetCallback());
+    EXPECT_TRUE(future.Wait());
+  }
 
   // Add a wait period in milliseconds to allow results collected from search
   // providers. The default period is 1000 milliseconds (i.e., 1 second).
@@ -684,9 +691,6 @@ TEST_F(SearchControllerTest, ZeroStateResultsGetTimedOut) {
 }
 
 TEST_F(SearchControllerTest, ContinueRanksDriveAboveLocal) {
-  if (ash::features::UseMixedFileLauncherContinueSection()) {
-    return;
-  }
   // Use the full ranking stack.
   search_controller_->set_ranker_manager_for_test(
       std::make_unique<RankerManager>(&profile_));
@@ -708,7 +712,7 @@ TEST_F(SearchControllerTest, ContinueRanksDriveAboveLocal) {
 
   search_controller_->StartZeroState(base::DoNothing(), base::Seconds(1));
 
-  Wait();
+  WaitForZeroStateCompletion();
 
   ExpectIdOrder({"drive_a", "drive_b", "local_a", "local_b"});
 }
@@ -745,7 +749,7 @@ TEST_F(SearchControllerTest, ContinueRanksAdminTemplateAboveHelpAppAndDrive) {
 
   search_controller_->StartZeroState(base::DoNothing(), base::Seconds(1));
 
-  Wait();
+  WaitForZeroStateCompletion();
   ExpectIdOrder({"template_a", "template_b", "explore_a", "explore_b",
                  "drive_a", "drive_b"});
 }
@@ -869,18 +873,17 @@ TEST_F(SearchControllerTest, ProviderIsFilteredWithSearchControl) {
   scoped_feature_list_.InitWithFeatures(
       {ash::features::kFeatureManagementLocalImageSearch}, {});
 
-  const Result result_categories[] = {
-      Result::kAnswerCard, Result::kDriveSearch,    Result::kAppShortcutV2,
-      Result::kFileSearch, Result::kArcAppShortcut, Result::kImageSearch,
-      Result::kGames,      Result::kAssistantText,  Result::kArcAppShortcut,
+  const std::array result_categories = {
+      Result::kAnswerCard,    Result::kDriveSearch,    Result::kAppShortcutV2,
+      Result::kFileSearch,    Result::kImageSearch,    Result::kHelpApp,
+      Result::kAssistantText, Result::kArcAppShortcut,
   };
 
-  const SearchCategory search_categories[] = {
+  const std::array search_categories = {
       SearchCategory::kTest /*always returns results*/,
       SearchCategory::kApps,
       SearchCategory::kAppShortcuts,
       SearchCategory::kFiles,
-      SearchCategory::kGames,
       SearchCategory::kHelp,
       SearchCategory::kImages,
       SearchCategory::kPlayStore,
@@ -888,16 +891,15 @@ TEST_F(SearchControllerTest, ProviderIsFilteredWithSearchControl) {
   };
 
   std::vector<TestSearchProvider*> provider_ptrs;
-  for (int i = 0; i < 9; ++i) {
+  for (int i = 0; i < 8; ++i) {
     // The result type needs to be unique.
     auto provider = std::make_unique<TestSearchProvider>(
-        UNSAFE_TODO(result_categories[i]), base::Milliseconds(20),
-        UNSAFE_TODO(search_categories[i]));
+        result_categories[i], base::Milliseconds(20), search_categories[i]);
     provider_ptrs.push_back(provider.get());
     search_controller_->AddProvider(std::move(provider));
   }
 
-  ASSERT_EQ(provider_ptrs.size(), 9u);
+  ASSERT_EQ(provider_ptrs.size(), 8u);
 
   ScopedDictPrefUpdate pref_update(
       profile_.GetPrefs(), ash::prefs::kLauncherSearchCategoryControlStatus);

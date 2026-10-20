@@ -4,7 +4,9 @@
 
 #include "chrome/browser/ui/webui/signin/sync_confirmation_ui.h"
 
-#include "build/build_config.h"
+#include <utility>
+#include <vector>
+
 #include "base/functional/bind.h"
 #include "base/scoped_environment_variable_override.h"
 #include "base/scoped_observation.h"
@@ -14,8 +16,8 @@
 #include "chrome/browser/consent_auditor/consent_auditor_factory.h"
 #include "chrome/browser/consent_auditor/consent_auditor_test_utils.h"
 #include "chrome/browser/signin/signin_browser_test_base.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/signin/signin_view_controller.h"
 #include "chrome/browser/ui/test/test_browser_dialog.h"
 #include "chrome/browser/ui/test/test_browser_ui.h"
@@ -36,7 +38,7 @@
 #include "components/signin/public/base/signin_switches.h"
 #include "components/signin/public/identity_manager/account_info.h"
 #include "components/signin/public/identity_manager/tribool.h"
-#include "content/public/common/content_features.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/test_navigation_observer.h"
 #include "ui/base/ui_base_switches.h"
@@ -55,19 +57,18 @@
 // in the webui directory because they manipulate views.
 namespace {
 
-using testing::AllOf;
-using testing::Contains;
-using testing::ElementsAre;
+using ::testing::AllOf;
+using ::testing::Contains;
+using ::testing::ElementsAre;
+using ::testing::ValuesIn;
 
 // Configures the can_show_history_sync_opt_ins_without_minor_mode_restrictions
 // account capability, which determines minor mode restrictions status.
 using MinorModeRestrictions =
     base::StrongAlias<class MinorModeRestrictionsTag, signin::Tribool>;
 
-#if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_WIN)
 constexpr MinorModeRestrictions kWithUnrestrictedUser(signin::Tribool::kTrue);
 constexpr MinorModeRestrictions kWithRestrictedUser(signin::Tribool::kFalse);
-#endif
 
 struct SyncConfirmationTestParam {
   PixelTestParam pixel_test_param;
@@ -78,75 +79,121 @@ struct SyncConfirmationTestParam {
   MinorModeRestrictions minor_mode_restrictions = kWithUnrestrictedUser;
 };
 
-// Second parameter is a `bool` standing for whether the First Run Desktop
-// Refresh flag is enabled, so refreshed UI should be shown.
-using SyncConfirmationPixelTestParam =
-    std::tuple<SyncConfirmationTestParam, bool>;
+enum class FirstRunVersion {
+  kLegacy,
+  kRefresh,
+  kRevamp,
+};
 
-// To be passed as 4th argument to `INSTANTIATE_TEST_SUITE_P()`, allows the test
-// to be named like `<TestClassName>.InvokeUi_default/<TestSuffix>` instead
-// of using the index of the param in `TestParam` as suffix.
-std::string ParamToTestSuffix(
-    const testing::TestParamInfo<SyncConfirmationPixelTestParam>& info) {
-  const auto& [sync_param, is_ui_refresh_enabled] = info.param;
-  return base::StrCat({sync_param.pixel_test_param.test_suffix,
-                       is_ui_refresh_enabled ? "Refresh" : ""});
+struct SyncConfirmationPixelTestParam {
+  SyncConfirmationTestParam sync_param;
+  FirstRunVersion first_run_version = FirstRunVersion::kLegacy;
+};
+
+struct SyncConfirmationWindowPixelTestParam {
+  SyncConfirmationPixelTestParam context_param;
+  bool is_first_run = false;
+};
+
+std::string ParamToTestSuffix(const SyncConfirmationPixelTestParam& param) {
+  std::string first_run_version_suffix;
+  switch (param.first_run_version) {
+    case FirstRunVersion::kLegacy:
+      break;
+    case FirstRunVersion::kRefresh:
+      first_run_version_suffix = "Refresh";
+      break;
+    case FirstRunVersion::kRevamp:
+      first_run_version_suffix = "Revamp";
+      break;
+  }
+  return base::StrCat({param.sync_param.pixel_test_param.test_suffix,
+                       first_run_version_suffix});
 }
 
-// Permutations of supported parameters.
-const SyncConfirmationTestParam kWindowTestParams[] = {
-    {.pixel_test_param = {.test_suffix = "Regular"}},
-    {.pixel_test_param = {.test_suffix = "DarkTheme", .use_dark_theme = true}},
-    {.pixel_test_param = {.test_suffix = "Rtl",
-                          .use_right_to_left_language = true}},
-    {.pixel_test_param = {.test_suffix = "SmallWindow",
-                          .window_size = PixelTestParam::kSmallWindowSize}},
-    {.pixel_test_param = {.test_suffix = "ManagedAccount"},
-     .account_management_status = AccountManagementStatus::kManaged},
+std::string ParamToTestSuffix(
+    const SyncConfirmationWindowPixelTestParam& info) {
+  return base::StrCat({ParamToTestSuffix(info.context_param),
+                       info.is_first_run ? "FirstRun" : ""});
+}
 
-#if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_WIN)
-    // Restricted mode is only implemented for these platforms.
-    {.pixel_test_param = {.test_suffix =
-                              "RegularWithRestrictionsWithUnrestrictedUser"},
-     .minor_mode_restrictions = kWithUnrestrictedUser},
-    {.pixel_test_param = {.test_suffix =
-                              "RegularWithRestrictionsWithRestrictedUser"},
-     .minor_mode_restrictions = kWithRestrictedUser},
-#endif
+std::vector<SyncConfirmationWindowPixelTestParam> GetWindowPixelTestParams() {
+  // Permutations of supported parameters.
+  const SyncConfirmationTestParam base_params[] = {
+      {.pixel_test_param = {.test_suffix = "Regular"}},
+      {.pixel_test_param = {.test_suffix = "DarkTheme",
+                            .use_dark_theme = true}},
+      {.pixel_test_param = {.test_suffix = "Rtl",
+                            .use_right_to_left_language = true}},
+      {.pixel_test_param = {.test_suffix = "SmallWindow",
+                            .window_size = PixelTestParam::kSmallWindowSize}},
+      {.pixel_test_param = {.test_suffix = "ManagedAccount"},
+       .account_management_status = AccountManagementStatus::kManaged},
+      {.pixel_test_param = {.test_suffix =
+                                "RegularWithRestrictionsWithUnrestrictedUser"},
+       .minor_mode_restrictions = kWithUnrestrictedUser},
+      {.pixel_test_param = {.test_suffix =
+                                "RegularWithRestrictionsWithRestrictedUser"},
+       .minor_mode_restrictions = kWithRestrictedUser},
+  };
+  const FirstRunVersion versions[] = {FirstRunVersion::kLegacy,
+                                      FirstRunVersion::kRefresh,
+                                      FirstRunVersion::kRevamp};
+  const bool first_run_states[] = {true, false};
+  std::vector<SyncConfirmationWindowPixelTestParam> params;
+  for (const auto& sync_param : base_params) {
+    for (auto version : versions) {
+      for (bool is_first_run : first_run_states) {
+        params.push_back({.context_param = {.sync_param = sync_param,
+                                            .first_run_version = version},
+                          .is_first_run = is_first_run});
+      }
+    }
+  }
+  return params;
+}
 
-};
-
-const SyncConfirmationTestParam kDialogTestParams[] = {
-    {.pixel_test_param = {.test_suffix = "Regular"},
-     .sync_style = SyncConfirmationStyle::kDefaultModal},
-    {.pixel_test_param = {.test_suffix = "SigninInterceptStyle"},
-     .sync_style = SyncConfirmationStyle::kSigninInterceptModal,
-     .is_sync_promo = true},
-    {.pixel_test_param = {.test_suffix = "DarkTheme", .use_dark_theme = true},
-     .sync_style = SyncConfirmationStyle::kDefaultModal},
-    {.pixel_test_param = {.test_suffix = "Rtl",
-                          .use_right_to_left_language = true},
-     .sync_style = SyncConfirmationStyle::kDefaultModal},
-    {.pixel_test_param = {.test_suffix = "Promo"},
-     .sync_style = SyncConfirmationStyle::kDefaultModal,
-     .is_sync_promo = true},
-    {.pixel_test_param = {.test_suffix = "ManagedAccount"},
-     .account_management_status = AccountManagementStatus::kManaged,
-     .sync_style = SyncConfirmationStyle::kDefaultModal},
-
-#if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_WIN)
-    // Restricted mode is only implemented for these platforms.
-    {.pixel_test_param = {.test_suffix =
-                              "RegularWithRestrictionsWithUnrestrictedUser"},
-     .sync_style = SyncConfirmationStyle::kDefaultModal,
-     .minor_mode_restrictions = kWithUnrestrictedUser},
-    {.pixel_test_param = {.test_suffix =
-                              "RegularWithRestrictionsWithRestrictedUser"},
-     .sync_style = SyncConfirmationStyle::kDefaultModal,
-     .minor_mode_restrictions = kWithRestrictedUser},
-#endif
-
-};
+std::vector<SyncConfirmationPixelTestParam> GetDialogPixelTestParams() {
+  const SyncConfirmationTestParam base_params[] = {
+      {.pixel_test_param = {.test_suffix = "Regular"},
+       .sync_style = SyncConfirmationStyle::kDefaultModal},
+      {.pixel_test_param = {.test_suffix = "SigninInterceptStyle"},
+       .sync_style = SyncConfirmationStyle::kSigninInterceptModal,
+       .is_sync_promo = true},
+      {.pixel_test_param = {.test_suffix = "DarkTheme", .use_dark_theme = true},
+       .sync_style = SyncConfirmationStyle::kDefaultModal},
+      {.pixel_test_param = {.test_suffix = "Rtl",
+                            .use_right_to_left_language = true},
+       .sync_style = SyncConfirmationStyle::kDefaultModal},
+      {.pixel_test_param = {.test_suffix = "Promo"},
+       .sync_style = SyncConfirmationStyle::kDefaultModal,
+       .is_sync_promo = true},
+      {.pixel_test_param = {.test_suffix = "ManagedAccount"},
+       .account_management_status = AccountManagementStatus::kManaged,
+       .sync_style = SyncConfirmationStyle::kDefaultModal},
+      {.pixel_test_param = {.test_suffix =
+                                "RegularWithRestrictionsWithUnrestrictedUser"},
+       .sync_style = SyncConfirmationStyle::kDefaultModal,
+       .minor_mode_restrictions = kWithUnrestrictedUser},
+      {.pixel_test_param = {.test_suffix =
+                                "RegularWithRestrictionsWithRestrictedUser"},
+       .sync_style = SyncConfirmationStyle::kDefaultModal,
+       .minor_mode_restrictions = kWithRestrictedUser},
+  };
+  const FirstRunVersion versions[] = {
+      FirstRunVersion::kLegacy,
+      FirstRunVersion::kRefresh,
+      // There is no revamp version for the dialog.
+  };
+  std::vector<SyncConfirmationPixelTestParam> params;
+  for (const auto& sync_param : base_params) {
+    for (auto version : versions) {
+      params.push_back(
+          {.sync_param = sync_param, .first_run_version = version});
+    }
+  }
+  return params;
+}
 
 GURL BuildSyncConfirmationWindowURL() {
   std::string url_string = chrome::kChromeUISyncConfirmationURL;
@@ -169,19 +216,17 @@ class SyncConfirmationStepControllerForTest
   void Show(StepSwitchFinishedCallback step_shown_callback,
             bool reset_state) override {
     // Reload the WebUI in the picker contents.
-    host()->ShowScreenInPickerContents(
+    host().ShowScreenInPickerContents(
         sync_confirmation_url_,
         base::BindOnce(
             &SyncConfirmationStepControllerForTest::OnSyncConfirmationLoaded,
             weak_ptr_factory_.GetWeakPtr(), std::move(step_shown_callback)));
   }
 
-  void OnNavigateBackRequested() override { NOTREACHED(); }
-
   void OnSyncConfirmationLoaded(
       StepSwitchFinishedCallback step_shown_callback) {
     SyncConfirmationUI* sync_confirmation_ui = static_cast<SyncConfirmationUI*>(
-        host()->GetPickerContents()->GetWebUI()->GetController());
+        host().GetPickerContents()->GetWebUI()->GetController());
 
     sync_confirmation_ui->InitializeMessageHandlerWithBrowser(nullptr);
 
@@ -195,19 +240,55 @@ class SyncConfirmationStepControllerForTest
   base::WeakPtrFactory<SyncConfirmationStepControllerForTest> weak_ptr_factory_{
       this};
 };
+
+template <typename T>
+class SyncConfirmationPixelTestBase : public ProfilesPixelTestBaseT<T> {
+ public:
+  template <typename... Args>
+  SyncConfirmationPixelTestBase(const PixelTestParam& pixel_test_param,
+                                FirstRunVersion first_run_version,
+                                Args&&... args)
+      : ProfilesPixelTestBaseT<T>(pixel_test_param,
+                                  std::forward<Args>(args)...) {
+    std::vector<base::test::FeatureRef> enabled_features;
+    std::vector<base::test::FeatureRef> disabled_features;
+    switch (first_run_version) {
+      case FirstRunVersion::kLegacy:
+        disabled_features.push_back(switches::kFirstRunDesktopRefresh);
+        disabled_features.push_back(switches::kFirstRunDesktopRevamp);
+        break;
+      case FirstRunVersion::kRefresh:
+        enabled_features.push_back(switches::kFirstRunDesktopRefresh);
+        enabled_features.push_back(
+            switches::kFirstRunDesktopChoiceScreenRefresh);
+        disabled_features.push_back(switches::kFirstRunDesktopRevamp);
+        break;
+      case FirstRunVersion::kRevamp:
+        enabled_features.push_back(switches::kFirstRunDesktopRefresh);
+        enabled_features.push_back(
+            switches::kFirstRunDesktopChoiceScreenRefresh);
+        enabled_features.push_back(switches::kFirstRunDesktopRevamp);
+        break;
+    }
+    scoped_feature_list_.InitWithFeatures(enabled_features, disabled_features);
+  }
+
+ private:
+  base::test::ScopedFeatureList scoped_feature_list_;
+};
+
 }  // namespace
 
 class SyncConfirmationUIWindowPixelTest
-    : public ProfilesPixelTestBaseT<UiBrowserTest>,
-      public testing::WithParamInterface<SyncConfirmationPixelTestParam> {
+    : public SyncConfirmationPixelTestBase<UiBrowserTest>,
+      public testing::WithParamInterface<SyncConfirmationWindowPixelTestParam> {
  public:
   SyncConfirmationUIWindowPixelTest()
-      : ProfilesPixelTestBaseT<UiBrowserTest>(
-            std::get<0>(GetParam()).pixel_test_param) {
-    const auto& [sync_param, is_ui_refresh_enabled] = GetParam();
-    DCHECK(sync_param.sync_style == SyncConfirmationStyle::kWindow);
-    scoped_feature_list_.InitWithFeatureState(switches::kFirstRunDesktopRefresh,
-                                              is_ui_refresh_enabled);
+      : SyncConfirmationPixelTestBase<UiBrowserTest>(
+            GetParam().context_param.sync_param.pixel_test_param,
+            GetParam().context_param.first_run_version) {
+    DCHECK(GetParam().context_param.sync_param.sync_style ==
+           SyncConfirmationStyle::kWindow);
   }
 
   void ShowUi(const std::string& name) override {
@@ -215,14 +296,17 @@ class SyncConfirmationUIWindowPixelTest
         gfx::ScopedAnimationDurationScaleMode::ZERO_DURATION);
     DCHECK(browser());
 
-    const SyncConfirmationTestParam& sync_param = std::get<0>(GetParam());
+    const SyncConfirmationTestParam& sync_param =
+        GetParam().context_param.sync_param;
 
     SignInWithAccount(sync_param.account_management_status,
                       signin::ConsentLevel::kSignin,
                       sync_param.minor_mode_restrictions.value());
     profile_picker_view_ = new ProfileManagementStepTestView(
-        ProfilePicker::Params::ForFirstRun(browser()->profile()->GetPath(),
-                                           base::DoNothing()),
+        ProfilePicker::Params::ForTesting(
+            GetParam().is_first_run ? ProfilePicker::EntryPoint::kFirstRun
+                                    : ProfilePicker::EntryPoint::kOnStartup,
+            browser()->GetProfile()->GetPath()),
         ProfileManagementFlowController::Step::kPostSignInFlow,
         /*step_controller_factory=*/
         base::BindRepeating([](ProfilePickerWebContentsHost* host) {
@@ -236,8 +320,9 @@ class SyncConfirmationUIWindowPixelTest
     views::Widget* widget = GetWidgetForScreenshot();
 
     auto* test_info = testing::UnitTest::GetInstance()->current_test_info();
-    const std::string screenshot_name =
-        base::StrCat({test_info->test_suite_name(), "_", test_info->name()});
+    const std::string baseline = "8481376";
+    const std::string screenshot_name = base::StrCat(
+        {test_info->test_suite_name(), "_", test_info->name(), "_", baseline});
 
     return VerifyPixelUi(widget, "SyncConfirmationUIWindowPixelTest",
                          screenshot_name) != ui::test::ActionResult::kFailed;
@@ -255,31 +340,28 @@ class SyncConfirmationUIWindowPixelTest
 
   raw_ptr<ProfileManagementStepTestView, DanglingUntriaged>
       profile_picker_view_;
-
-  base::test::ScopedFeatureList scoped_feature_list_;
 };
 
 IN_PROC_BROWSER_TEST_P(SyncConfirmationUIWindowPixelTest, InvokeUi_default) {
   ShowAndVerifyUi();
 }
 
-INSTANTIATE_TEST_SUITE_P(,
-                         SyncConfirmationUIWindowPixelTest,
-                         testing::Combine(testing::ValuesIn(kWindowTestParams),
-                                          testing::Bool()),
-                         &ParamToTestSuffix);
+INSTANTIATE_TEST_SUITE_P(
+    ,
+    SyncConfirmationUIWindowPixelTest,
+    ValuesIn(GetWindowPixelTestParams()),
+    [](const testing::TestParamInfo<SyncConfirmationWindowPixelTestParam>&
+           info) { return ParamToTestSuffix(info.param); });
 
 class SyncConfirmationUIDialogPixelTest
-    : public ProfilesPixelTestBaseT<DialogBrowserTest>,
+    : public SyncConfirmationPixelTestBase<DialogBrowserTest>,
       public testing::WithParamInterface<SyncConfirmationPixelTestParam> {
  public:
   SyncConfirmationUIDialogPixelTest()
-      : ProfilesPixelTestBaseT<DialogBrowserTest>(
-            std::get<0>(GetParam()).pixel_test_param) {
-    const auto& [sync_param, is_ui_refresh_enabled] = GetParam();
-    DCHECK(sync_param.sync_style != SyncConfirmationStyle::kWindow);
-    scoped_feature_list_.InitWithFeatureState(switches::kFirstRunDesktopRefresh,
-                                              is_ui_refresh_enabled);
+      : SyncConfirmationPixelTestBase<DialogBrowserTest>(
+            GetParam().sync_param.pixel_test_param,
+            GetParam().first_run_version) {
+    DCHECK(GetParam().sync_param.sync_style != SyncConfirmationStyle::kWindow);
   }
 
   ~SyncConfirmationUIDialogPixelTest() override = default;
@@ -288,7 +370,7 @@ class SyncConfirmationUIDialogPixelTest
   void ShowUi(const std::string& name) override {
     DCHECK(browser());
 
-    const SyncConfirmationTestParam& sync_param = std::get<0>(GetParam());
+    const SyncConfirmationTestParam& sync_param = GetParam().sync_param;
     SignInWithAccount(sync_param.account_management_status,
                       signin::ConsentLevel::kSignin,
                       sync_param.minor_mode_restrictions.value());
@@ -305,33 +387,27 @@ class SyncConfirmationUIDialogPixelTest
         views::test::AnyWidgetTestPasskey{},
         "SigninViewControllerDelegateViews");
 
-    auto* controller = browser()->GetFeatures().signin_view_controller();
+    auto* controller = SigninViewController::From(browser());
     controller->ShowModalSyncConfirmationDialog(
         sync_param.sync_style == SyncConfirmationStyle::kSigninInterceptModal,
         sync_param.is_sync_promo);
     widget_waiter.WaitIfNeededAndGet();
     observer.Wait();
   }
-
- private:
-  base::test::ScopedFeatureList scoped_feature_list_;
 };
 
 IN_PROC_BROWSER_TEST_P(SyncConfirmationUIDialogPixelTest, InvokeUi_default) {
-#if BUILDFLAG(IS_WIN)
-  if (base::FeatureList::IsEnabled(features::kInitialWebUI)) {
-    GTEST_SKIP() << "Skipping test because it fails with InitialWebUI enabled. "
-                    "See b/477426026.";
-  }
-#endif
+  set_baseline("8481376");
   ShowAndVerifyUi();
 }
 
-INSTANTIATE_TEST_SUITE_P(,
-                         SyncConfirmationUIDialogPixelTest,
-                         testing::Combine(testing::ValuesIn(kDialogTestParams),
-                                          testing::Bool()),
-                         &ParamToTestSuffix);
+INSTANTIATE_TEST_SUITE_P(
+    ,
+    SyncConfirmationUIDialogPixelTest,
+    ValuesIn(GetDialogPixelTestParams()),
+    [](const testing::TestParamInfo<SyncConfirmationPixelTestParam>& info) {
+      return ParamToTestSuffix(info.param);
+    });
 
 enum class SyncConfirmationUIAction { kTurnSyncOn, kGoToSettings };
 
@@ -374,7 +450,7 @@ class SyncConfirmationUITest
   // LoginUIService::Observer:
   void OnSyncConfirmationUIClosed(
       LoginUIService::SyncConfirmationUIClosedResult result) override {
-    browser()->GetFeatures().signin_view_controller()->CloseModalSignin();
+    SigninViewController::From(browser())->CloseModalSignin();
   }
 
   [[nodiscard]] AccountInfo FillAccountInfoWithEscapedHtmlCharacters(
@@ -446,11 +522,9 @@ IN_PROC_BROWSER_TEST_P(SyncConfirmationUITest,
   account_info = FillAccountInfoWithEscapedHtmlCharacters(account_info);
   identity_test_env()->UpdateAccountInfoForAccount(account_info);
 
-  browser()
-      ->GetFeatures()
-      .signin_view_controller()
-      ->ShowModalSyncConfirmationDialog(IsSigninIntercept(),
-                                        /*is_sync_promo=*/true);
+  SigninViewController::From(browser())->ShowModalSyncConfirmationDialog(
+      IsSigninIntercept(),
+      /*is_sync_promo=*/true);
   switch (GetAction()) {
     case SyncConfirmationUIAction::kTurnSyncOn:
       EXPECT_TRUE(

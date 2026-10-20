@@ -43,7 +43,7 @@ SendTabToSelfCommitTracker::SendTabToSelfCommitTracker(
 SendTabToSelfCommitTracker::~SendTabToSelfCommitTracker() = default;
 
 void SendTabToSelfCommitTracker::TrackCommit(
-    const std::string& guid,
+    std::string guid,
     base::OnceCallback<void(SendTabToSelfResult)> callback) {
   if (!callback) {
     return;
@@ -52,7 +52,7 @@ void SendTabToSelfCommitTracker::TrackCommit(
   syncer::ClientTagHash client_tag_hash =
       syncer::ClientTagHash::FromUnhashed(syncer::SEND_TAB_TO_SELF, guid);
   pending_commits_.emplace(client_tag_hash,
-                           PendingCommit{guid, std::move(callback)});
+                           PendingCommit{std::move(guid), std::move(callback)});
 
   base::SequencedTaskRunner::GetCurrentDefault()->PostDelayedTask(
       FROM_HERE,
@@ -81,15 +81,24 @@ void SendTabToSelfCommitTracker::OnCommitErrors(
   }
 }
 
-void SendTabToSelfCommitTracker::OnCommitAttemptFailed() {
-  ClearAllAndInvokeCallbacks(SendTabToSelfResult::kFailureCommitAttemptFailed);
+void SendTabToSelfCommitTracker::OnCommitAttemptFailed(
+    syncer::SyncCommitError error) {
+  SendTabToSelfResult result = SendTabToSelfResult::kFailureCommitAttemptFailed;
+  if (error == syncer::SyncCommitError::kNetworkError) {
+    // Network error usually means no internet connection is available. The UI
+    // code will show a specific toast for this case as it a) happens frequently
+    // according to metrics and b) the user can take a specific action (check
+    // internet connection).
+    result = SendTabToSelfResult::kFailureNoInternetConnection;
+  }
+  ClearAllAndInvokeCallbacks(result);
 }
 
 void SendTabToSelfCommitTracker::OnSyncDisabled() {
   ClearAllAndInvokeCallbacks(SendTabToSelfResult::kFailureSyncDisabled);
 }
 
-void SendTabToSelfCommitTracker::OnEntryRemoved(const std::string& guid) {
+void SendTabToSelfCommitTracker::OnEntryRemoved(std::string_view guid) {
   InvokeCallbackAndErase(
       syncer::ClientTagHash::FromUnhashed(syncer::SEND_TAB_TO_SELF, guid),
       SendTabToSelfResult::kFailureEntryRemoved);

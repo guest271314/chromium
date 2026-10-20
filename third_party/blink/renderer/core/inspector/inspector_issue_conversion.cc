@@ -61,12 +61,13 @@ blink::protocol::String InspectorIssueCodeValue(
     case mojom::blink::InspectorIssueCode::kHeavyAdIssue:
     case mojom::blink::InspectorIssueCode::kFederatedAuthRequestIssue:
     case mojom::blink::InspectorIssueCode::kFederatedAuthUserInfoRequestIssue:
+    case mojom::blink::InspectorIssueCode::kEmailVerificationRequestIssue:
     case mojom::blink::InspectorIssueCode::kBounceTrackingIssue:
     case mojom::blink::InspectorIssueCode::kPartitioningBlobURLIssue:
     case mojom::blink::InspectorIssueCode::kCookieDeprecationMetadataIssue:
     case mojom::blink::InspectorIssueCode::kGenericIssue:
     case mojom::blink::InspectorIssueCode::kDeprecationIssue:
-    case mojom::blink::InspectorIssueCode::kAttributionReportingIssue:
+    case mojom::blink::InspectorIssueCode::kWebInstallIssue:
       NOTREACHED();
   }
 }
@@ -197,8 +198,6 @@ protocol::String BuildMixedContentResolutionStatus(
 protocol::String BuildMixedContentResourceType(
     mojom::blink::RequestContextType request_context) {
   switch (request_context) {
-    case mojom::blink::RequestContextType::ATTRIBUTION_SRC:
-      return protocol::Audits::MixedContentResourceTypeEnum::AttributionSrc;
     case blink::mojom::blink::RequestContextType::AUDIO:
       return protocol::Audits::MixedContentResourceTypeEnum::Audio;
     case blink::mojom::blink::RequestContextType::BEACON:
@@ -232,6 +231,7 @@ protocol::String BuildMixedContentResourceType(
     case blink::mojom::blink::RequestContextType::INTERNAL:
       return protocol::Audits::MixedContentResourceTypeEnum::Resource;
     case blink::mojom::blink::RequestContextType::JSON:
+    case blink::mojom::blink::RequestContextType::TEXT:
       // TODO(crbug.com/1511738): Consider adding a type
       // specific to JSON modules requests
       return protocol::Audits::MixedContentResourceTypeEnum::Resource;

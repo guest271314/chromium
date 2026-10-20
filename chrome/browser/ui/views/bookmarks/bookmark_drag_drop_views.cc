@@ -20,30 +20,23 @@
 #include "chrome/browser/ui/bookmarks/bookmark_drag_drop.h"
 #include "chrome/browser/ui/bookmarks/bookmark_utils.h"
 #include "chrome/browser/ui/color/chrome_color_id.h"
-#include "chrome/browser/ui/views/frame/browser_view.h"
-#include "chrome/grit/platform_locale_settings.h"
 #include "components/bookmarks/browser/base_bookmark_model_observer.h"
 #include "components/bookmarks/browser/bookmark_model.h"
 #include "components/bookmarks/browser/bookmark_node_data.h"
+#include "components/commerce/core/price_tracking_utils.h"
+#include "components/vector_icons/vector_icons.h"
 #include "content/public/browser/web_contents.h"
 #include "ui/base/dragdrop/drag_drop_types.h"
 #include "ui/base/dragdrop/mojom/drag_drop_types.mojom-shared.h"
 #include "ui/base/dragdrop/os_exchange_data.h"
-#include "ui/base/l10n/l10n_util.h"
-#include "ui/base/resource/resource_bundle.h"
-#include "ui/base/ui_base_features.h"
 #include "ui/color/color_id.h"
 #include "ui/gfx/canvas.h"
-#include "ui/gfx/color_palette.h"
-#include "ui/gfx/font.h"
 #include "ui/gfx/font_list.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/image/canvas_image_source.h"
 #include "ui/gfx/image/image.h"
 #include "ui/gfx/render_text.h"
-#include "ui/resources/grit/ui_resources.h"
 #include "ui/views/drag_utils.h"
-#include "ui/views/style/platform_style.h"
 #include "ui/views/style/typography.h"
 #include "ui/views/style/typography_provider.h"
 #include "ui/views/widget/widget.h"
@@ -153,8 +146,10 @@ class BookmarkDragImageSource : public gfx::CanvasImageSource {
 
     // Draw icon image.
     canvas->DrawImageInt(
-        icon_, kContainerRadius - kIconSize / 2,
-        kContainerRadius + kIconContainerRadius - kIconSize / 2);
+        icon_, /*src_x=*/0, /*src_y=*/0, icon_.width(), icon_.height(),
+        kContainerRadius - kIconSize / 2,
+        kContainerRadius + kIconContainerRadius - kIconSize / 2, kIconSize,
+        kIconSize, /*filter=*/true);
 
     // Draw bookmark title.
     gfx::FontList font_list = views::TypographyProvider::Get().GetFont(
@@ -252,8 +247,13 @@ class BookmarkDragHelper : public bookmarks::BaseBookmarkModelObserver {
 
       icon = ui::ImageModel::FromImage(image);
     } else {
-      icon = GetBookmarkFolderIcon(chrome::BookmarkFolderIconType::kNormal,
-                                   ui::kColorMenuIcon);
+      if (commerce::IsShoppingCollectionBookmarkFolder(drag_node)) {
+        icon = ui::ImageModel::FromVectorIcon(vector_icons::kShoppingBagIcon,
+                                              ui::kColorMenuIcon);
+      } else {
+        icon = GetBookmarkFolderIcon(chrome::BookmarkFolderIconType::kNormal,
+                                     ui::kColorMenuIcon);
+      }
     }
 
     OnBookmarkIconLoaded(drag_node, icon);
@@ -263,7 +263,7 @@ class BookmarkDragHelper : public bookmarks::BaseBookmarkModelObserver {
                             const ui::ImageModel& icon) {
     // This function should not be called a second time, even if the icon
     // changes repeatedly.
-    DCHECK(!icon_loaded_);
+    CHECK(!icon_loaded_, base::NotFatalUntil::M162);
     icon_loaded_ = true;
 
     auto weak_this = GetWeakPtr();
@@ -311,7 +311,7 @@ class BookmarkDragHelper : public bookmarks::BaseBookmarkModelObserver {
 
     const ui::ImageModel& image =
         ui::ImageModel::FromImage(model_->GetFavicon(node));
-    DCHECK(node->is_favicon_loaded());
+    CHECK(node->is_favicon_loaded(), base::NotFatalUntil::M162);
 
     OnBookmarkIconLoaded(node, image);
   }
@@ -358,13 +358,13 @@ void DoDragImpl(std::unique_ptr<ui::OSExchangeData> drag_data,
 void DragBookmarksImpl(Profile* profile,
                        const BookmarkDragParams& params,
                        DoBookmarkDragCallback do_drag_callback) {
-  DCHECK(!params.nodes.empty());
+  CHECK(!params.nodes.empty(), base::NotFatalUntil::M162);
   static base::NoDestructor<base::WeakPtr<BookmarkDragHelper>> g_drag_helper;
   if (*g_drag_helper) {
     delete g_drag_helper->get();
   }
 
-  DCHECK(!*g_drag_helper);
+  CHECK(!*g_drag_helper, base::NotFatalUntil::M162);
 
   // Cleaned up in
   // BookmarkDragHelper::BookmarkIconLoaded()/BookmarkModelBeingDeleted(), or

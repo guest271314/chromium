@@ -8,6 +8,7 @@ import "mojo/public/mojom/base/unguessable_token.mojom";
 import "services/network/public/mojom/blocked_by_response_reason.mojom";
 import "services/network/public/mojom/cookie_manager.mojom";
 import "third_party/blink/public/mojom/fetch/fetch_api_request.mojom";
+import "third_party/blink/public/mojom/webid/email_verification_request.mojom";
 import "url/mojom/url.mojom";
 
 // A code that uniquely identifies an issue. This type should be descriptive
@@ -19,7 +20,6 @@ enum InspectorIssueCode {
   kContentSecurityPolicyIssue,
   kSharedArrayBufferIssue,
   kHeavyAdIssue,
-  kAttributionReportingIssue,
   kFederatedAuthRequestIssue,
   kBounceTrackingIssue,
   kCookieDeprecationMetadataIssue,
@@ -29,6 +29,8 @@ enum InspectorIssueCode {
   kPartitioningBlobURLIssue,
   kUserReidentificationIssue,
   kPerformanceIssue,
+  kEmailVerificationRequestIssue,
+  kWebInstallIssue,
 };
 
 // Information about a cookie that is affected by an issue.
@@ -76,36 +78,6 @@ struct HeavyAdIssueDetails {
   HeavyAdResolutionStatus resolution;
   HeavyAdReason reason;
   AffectedFrame frame;
-};
-
-enum AttributionReportingIssueType {
-  kPermissionPolicyDisabled,
-  kUntrustworthyReportingOrigin,
-  kInsecureContext,
-  kInvalidRegisterSourceHeader,
-  kInvalidRegisterTriggerHeader,
-  kSourceAndTriggerHeaders,
-  kSourceIgnored,
-  kTriggerIgnored,
-  kOsSourceIgnored,
-  kOsTriggerIgnored,
-  kInvalidRegisterOsSourceHeader,
-  kInvalidRegisterOsTriggerHeader,
-  kWebAndOsHeaders,
-  kNoWebOrOsSupport,
-  kNavigationRegistrationWithoutTransientUserActivation,
-  kInvalidInfoHeader,
-  kNoRegisterSourceHeader,
-  kNoRegisterTriggerHeader,
-  kNoRegisterOsSourceHeader,
-  kNoRegisterOsTriggerHeader,
-  kNavigationRegistrationUniqueScopeAlreadySet,
-};
-
-struct AttributionReportingIssueDetails {
-  AttributionReportingIssueType violation_type;
-  AffectedRequest? request;
-  string? invalid_parameter;
 };
 
 enum MixedContentResolutionStatus {
@@ -213,7 +185,7 @@ struct SharedArrayBufferIssueDetails {
 // be updated alongside FederatedAuthRequestIssueReason in
 // third_party/blink/public/devtools_protocol/domains/Audits.pdl, which includes
 // all cases except for kSuccess.
-enum FederatedAuthRequestResult {
+enum FederatedRequestResult {
   kSuccess,
   kShouldEmbargo,
   kIdpNotPotentiallyTrustworthy,
@@ -222,6 +194,7 @@ enum FederatedAuthRequestResult {
   kTooManyRequests,
   kWellKnownHttpNotFound,
   kWellKnownNoResponse,
+  kWellKnownBlockedByConnectionAllowlist,
   kWellKnownInvalidResponse,
   kWellKnownListEmpty,
   kWellKnownInvalidContentType,
@@ -229,15 +202,18 @@ enum FederatedAuthRequestResult {
   kWellKnownTooBig,
   kConfigHttpNotFound,
   kConfigNoResponse,
+  kConfigBlockedByConnectionAllowlist,
   kConfigInvalidResponse,
   kConfigInvalidContentType,
   kAccountsHttpNotFound,
   kAccountsNoResponse,
+  kAccountsBlockedByConnectionAllowlist,
   kAccountsInvalidResponse,
   kAccountsListEmpty,
   kAccountsInvalidContentType,
   kIdTokenHttpNotFound,
   kIdTokenNoResponse,
+  kIdTokenBlockedByConnectionAllowlist,
   kIdTokenInvalidResponse,
   kIdTokenIdpErrorResponse,
   kIdTokenCrossSiteIdpErrorResponse,
@@ -254,10 +230,11 @@ enum FederatedAuthRequestResult {
   kUiDismissedNoEmbargo,
   kCorsError,
   kSuppressedBySegmentationPlatform,
+  kPopupBlockedByConnectionAllowlist,
 };
 
-struct FederatedAuthRequestIssueDetails {
-  FederatedAuthRequestResult status;
+struct FederatedRequestIssueDetails {
+  FederatedRequestResult status;
 };
 
 // Represents the fetch result from a getUserInfo() call. Should
@@ -284,6 +261,23 @@ enum FederatedAuthUserInfoRequestResult {
 // LINT.ThenChange(//tools/metrics/histograms/metadata/blink/enums.xml:FedCmUserInfoStatus)
 struct FederatedAuthUserInfoRequestIssueDetails {
   FederatedAuthUserInfoRequestResult status;
+};
+
+struct EmailVerificationRequestIssueDetails {
+  EmailVerificationRequestResult status;
+};
+
+enum WebInstallIssueReason {
+  kManifestParsingOrNetworkError,
+  kStartUrlInvalid,
+  kManifestMissingNameOrShortName,
+  kManifestMissingId,
+  kNoManifest,
+};
+
+struct WebInstallIssueDetails {
+  url.mojom.Url? manifest_url;
+  WebInstallIssueReason reason;
 };
 
 struct BounceTrackingIssueDetails {
@@ -329,6 +323,7 @@ enum GenericIssueErrorType {
   kFormModelContextMissingToolDescription,
   kFormModelContextRequiredParameterMissingName,
   kFormModelContextParameterMissingName,
+  kGeolocationPromptWithoutUserGesture,
 };
 
 struct GenericIssueDetails {
@@ -374,8 +369,7 @@ struct InspectorIssueDetails {
   ContentSecurityPolicyIssueDetails? csp_issue_details;
   SharedArrayBufferIssueDetails? sab_issue_details;
   HeavyAdIssueDetails? heavy_ad_issue_details;
-  AttributionReportingIssueDetails? attribution_reporting_issue_details;
-  FederatedAuthRequestIssueDetails? federated_auth_request_details;
+  FederatedRequestIssueDetails? federated_request_details;
   BounceTrackingIssueDetails? bounce_tracking_issue_details;
   PartitioningBlobURLIssueDetails? partitioning_blob_url_issue_details;
   CookieDeprecationMetadataIssueDetails?
@@ -386,6 +380,8 @@ struct InspectorIssueDetails {
       federated_auth_user_info_request_details;
   UserReidentificationIssueDetails? user_reidentification_issue_details;
   PerformanceIssueDetails? performance_issue_details;
+  EmailVerificationRequestIssueDetails? email_verification_request_details;
+  WebInstallIssueDetails? web_install_issue_details;
   mojo_base.mojom.UnguessableToken? issue_id;
 };
 

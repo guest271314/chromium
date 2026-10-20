@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <memory>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -482,9 +483,8 @@ ui::EventDispatchDetails FullscreenMagnifierController::RewriteEvent(
   return SendEvent(continuation, &event);
 }
 
-const std::string& FullscreenMagnifierController::GetName() const {
-  static const std::string name("FullscreenMagnifierController");
-  return name;
+std::string_view FullscreenMagnifierController::GetName() const {
+  return kName;
 }
 
 base::WeakPtr<ui::GestureConsumer> FullscreenMagnifierController::GetWeakPtr() {

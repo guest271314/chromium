@@ -5,13 +5,18 @@
 #import "ios/chrome/browser/tabs/model/tab_helper_util.h"
 
 #import "base/test/scoped_feature_list.h"
+#import "components/sync/test/test_sync_service.h"
 #import "ios/chrome/browser/cobrowse/model/cobrowse_tab_helper.h"
+#import "ios/chrome/browser/enterprise/connectors/device_trust/features.h"
+#import "ios/chrome/browser/enterprise/connectors/device_trust/model/device_trust_challenge_tab_helper.h"
 #import "ios/chrome/browser/infobars/model/infobar_badge_tab_helper.h"
 #import "ios/chrome/browser/lens/model/lens_tab_helper.h"
 #import "ios/chrome/browser/overlays/model/public/overlay_modality.h"
 #import "ios/chrome/browser/overlays/model/public/overlay_request_queue.h"
 #import "ios/chrome/browser/shared/model/profile/test/test_profile_ios.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
+#import "ios/chrome/browser/sync/model/sync_service_factory.h"
+#import "ios/chrome/browser/sync/model/test_sync_service_utils.h"
 #import "ios/chrome/test/ios_chrome_scoped_testing_local_state.h"
 #import "ios/web/public/test/fakes/fake_navigation_manager.h"
 #import "ios/web/public/test/fakes/fake_web_frames_manager.h"
@@ -37,12 +42,17 @@ class TabHelperUtilTest : public PlatformTest,
         return "LensOverlay";
       case TabHelperFilter::kAssistantAim:
         return "AssistantAim";
+      case TabHelperFilter::kGeminiWebModal:
+        return "GeminiWebModal";
     }
   }
 
  protected:
   TabHelperUtilTest() {
-    profile_ = TestProfileIOS::Builder().Build();
+    TestProfileIOS::Builder builder;
+    builder.AddTestingFactory(SyncServiceFactory::GetInstance(),
+                              base::BindRepeating(&CreateTestSyncService));
+    profile_ = std::move(builder).Build();
 
     web_state_.SetBrowserState(profile_.get());
     web_state_.SetWebFramesManager(
@@ -87,6 +97,7 @@ TEST_P(TabHelperUtilTest, LensTabHelper) {
     case TabHelperFilter::kReaderMode:
     case TabHelperFilter::kLensOverlay:
     case TabHelperFilter::kAssistantAim:
+    case TabHelperFilter::kGeminiWebModal:
       ASSERT_FALSE(LensTabHelper::FromWebState(&web_state_));
       break;
   }
@@ -108,7 +119,32 @@ TEST_P(TabHelperUtilTest, CobrowseTabHelper) {
     case TabHelperFilter::kReaderMode:
     case TabHelperFilter::kLensOverlay:
     case TabHelperFilter::kAssistantAim:
+    case TabHelperFilter::kGeminiWebModal:
       ASSERT_FALSE(CobrowseTabHelper::FromWebState(&web_state_));
+      break;
+  }
+}
+
+// Validate that DeviceTrustChallengeTabHelper is created for WebStates that
+// serve a standard navigation and suppressed for the embedded WebStates used
+// by other features.
+TEST_P(TabHelperUtilTest, DeviceTrustChallengeTabHelper) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndEnableFeature(
+      enterprise_connectors::features::kEnableIOSDeviceTrustConnector);
+
+  AttachTabHelpers(&web_state_, tab_helper_filter());
+
+  switch (tab_helper_filter()) {
+    case TabHelperFilter::kEmpty:
+    case TabHelperFilter::kPrerender:
+      ASSERT_TRUE(DeviceTrustChallengeTabHelper::FromWebState(&web_state_));
+      break;
+    case TabHelperFilter::kReaderMode:
+    case TabHelperFilter::kLensOverlay:
+    case TabHelperFilter::kAssistantAim:
+    case TabHelperFilter::kGeminiWebModal:
+      ASSERT_FALSE(DeviceTrustChallengeTabHelper::FromWebState(&web_state_));
       break;
   }
 }
@@ -130,7 +166,8 @@ TEST_P(TabHelperUtilTest, InfobarBadgeTabHelper) {
     } break;
     case TabHelperFilter::kReaderMode:
     case TabHelperFilter::kLensOverlay:
-    case TabHelperFilter::kAssistantAim: {
+    case TabHelperFilter::kAssistantAim:
+    case TabHelperFilter::kGeminiWebModal: {
       ASSERT_FALSE(tab_helper);
     } break;
   }
@@ -142,5 +179,6 @@ INSTANTIATE_TEST_SUITE_P(,
                                          TabHelperFilter::kPrerender,
                                          TabHelperFilter::kLensOverlay,
                                          TabHelperFilter::kReaderMode,
-                                         TabHelperFilter::kAssistantAim),
+                                         TabHelperFilter::kAssistantAim,
+                                         TabHelperFilter::kGeminiWebModal),
                          TabHelperUtilTest::TabHelperFilterToString);

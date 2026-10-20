@@ -10,10 +10,6 @@ assert(!is_android)
 source_set("link_capturing") {
   sources = [
     "apps_intent_picker_delegate.h",
-    "intent_picker_info.cc",
-    "intent_picker_info.h",
-    "link_capturing_navigation_throttle.cc",
-    "link_capturing_navigation_throttle.h",
     "link_capturing_tab_data.cc",
     "link_capturing_tab_data.h",
   ]
@@ -24,6 +20,8 @@ source_set("link_capturing") {
       "mac_intent_picker_helpers.mm",
     ]
   }
+
+  public_deps = [ "//components/apps/link_capturing" ]
 
   deps = [
     "//base",
@@ -49,8 +47,6 @@ source_set("link_capturing") {
     sources += [
       "chromeos_apps_intent_picker_delegate.cc",
       "chromeos_apps_intent_picker_delegate.h",
-      "chromeos_link_capturing_delegate.cc",
-      "chromeos_link_capturing_delegate.h",
       "chromeos_reimpl_navigation_capturing_throttle.cc",
       "chromeos_reimpl_navigation_capturing_throttle.h",
       "metrics/intent_handling_metrics.cc",
@@ -62,6 +58,7 @@ source_set("link_capturing") {
       "//ash/webui/projector_app/public/cpp",
       "//chrome/browser/apps/app_service",
       "//chromeos/ash/experiences/arc",
+      "//components/webapps/browser",
     ]
 
     # Needed only to allow circular includes.
@@ -72,8 +69,6 @@ source_set("link_capturing") {
     sources += [
       "enable_link_capturing_infobar_delegate.cc",
       "enable_link_capturing_infobar_delegate.h",
-      "web_app_link_capturing_delegate.cc",
-      "web_app_link_capturing_delegate.h",
       "web_apps_intent_picker_delegate.cc",
       "web_apps_intent_picker_delegate.h",
     ]
@@ -110,7 +105,7 @@ source_set("test_support") {
 
 source_set("unit_tests") {
   testonly = true
-  sources = [ "link_capturing_navigation_throttle_unittest.cc" ]
+  sources = []
   deps = [
     ":link_capturing",
     "//base/test:test_support",
@@ -125,10 +120,7 @@ source_set("unit_tests") {
   ]
 
   if (is_chromeos) {
-    sources += [
-      "chromeos_link_capturing_delegate_unittest.cc",
-      "metrics/intent_handling_metrics_unittest.cc",
-    ]
+    sources += [ "metrics/intent_handling_metrics_unittest.cc" ]
     deps += [
       "//chrome/browser/apps/app_service",
       "//components/prefs:test_support",
@@ -142,13 +134,12 @@ source_set("app_service_browser_tests") {
 
   defines = [ "HAS_OUT_OF_PROC_TEST_RUNNER" ]
 
-  sources = [ "link_capturing_navigation_throttle_browsertest.cc" ]
+  sources = []
 
   deps = [
     ":link_capturing",
     ":test_support",
     "//chrome/browser/apps/app_service:app_registry_cache_waiter",
-    "//chrome/browser/ui",
     "//chrome/browser/ui/tabs:tab_strip",
     "//chrome/browser/ui/web_applications",
     "//chrome/browser/web_applications",

@@ -20,7 +20,6 @@
 #include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/sync/sync_service_factory.h"
 #include "chrome/common/pref_names.h"
-#include "chrome/grit/generated_resources.h"
 #include "components/browsing_data/core/features.h"
 #include "components/browsing_data/core/pref_names.h"
 #include "components/prefs/pref_service.h"
@@ -108,58 +107,43 @@ std::u16string GetChromeCounterTextFromResult(
     return l10n_util::GetStringUTF16(IDS_CLEAR_BROWSING_DATA_CALCULATING);
   }
 
-  if (pref_name == browsing_data::prefs::kDeleteCache ||
-      pref_name == browsing_data::prefs::kDeleteCacheBasic) {
+  if (pref_name == browsing_data::prefs::kDeleteCache) {
     // Cache counter.
     const auto* cache_result =
         static_cast<const CacheCounter::CacheResult*>(result);
     base::ByteSize cache_size_bytes = base::ByteSize(
         base::checked_cast<uint64_t>(cache_result->cache_size()));
     bool is_upper_limit = cache_result->is_upper_limit();
-    bool is_basic_tab = pref_name == browsing_data::prefs::kDeleteCacheBasic;
 
     // Three cases: Nonzero result for the entire cache, nonzero result for
     // a subset of cache (i.e. a finite time interval), and almost zero (< 1MB).
-    if (cache_size_bytes >= base::MiBU(1)) {
+    if (cache_size_bytes >= base::MiB(1)) {
       std::u16string formatted_size = FormatBytesMBOrHigher(cache_size_bytes);
       if (!is_upper_limit) {
 #if BUILDFLAG(IS_ANDROID)
-        if (!is_basic_tab) {
-          return l10n_util::GetStringFUTF16(
-              IDS_ANDROID_DEL_CACHE_COUNTER_ADVANCED, formatted_size);
-        }
-#endif
-        return is_basic_tab ? l10n_util::GetStringFUTF16(
-                                  IDS_DEL_CACHE_COUNTER_BASIC, formatted_size)
-                            : formatted_size;
-      }
-
-#if BUILDFLAG(IS_ANDROID)
-      if (!is_basic_tab) {
         return l10n_util::GetStringFUTF16(
-            IDS_ANDROID_DEL_CACHE_COUNTER_ADVANCED_UPPER_ESTIMATE,
-            formatted_size);
-      }
+            IDS_ANDROID_DEL_CACHE_COUNTER_ADVANCED, formatted_size);
+#else
+        return formatted_size;
 #endif
+      }
+
+#if BUILDFLAG(IS_ANDROID)
       return l10n_util::GetStringFUTF16(
-          is_basic_tab ? IDS_DEL_CACHE_COUNTER_UPPER_ESTIMATE_BASIC
-                       : IDS_DEL_CACHE_COUNTER_UPPER_ESTIMATE,
+          IDS_ANDROID_DEL_CACHE_COUNTER_ADVANCED_UPPER_ESTIMATE,
           formatted_size);
+#else
+      return l10n_util::GetStringFUTF16(IDS_DEL_CACHE_COUNTER_UPPER_ESTIMATE,
+                                        formatted_size);
+#endif
     }
 
 #if BUILDFLAG(IS_ANDROID)
-    if (!is_basic_tab) {
-      return l10n_util::GetStringUTF16(
-          IDS_ANDROID_DEL_CACHE_COUNTER_ADVANCED_ALMOST_EMPTY);
-    }
-#endif
     return l10n_util::GetStringUTF16(
-        is_basic_tab ? IDS_DEL_CACHE_COUNTER_ALMOST_EMPTY_BASIC
-                     : IDS_DEL_CACHE_COUNTER_ALMOST_EMPTY);
-  }
-  if (pref_name == browsing_data::prefs::kDeleteCookiesBasic) {
-    // The basic tab doesn't show cookie counter results.
-    NOTREACHED();
+        IDS_ANDROID_DEL_CACHE_COUNTER_ADVANCED_ALMOST_EMPTY);
+#else
+    return l10n_util::GetStringUTF16(IDS_DEL_CACHE_COUNTER_ALMOST_EMPTY);
+#endif
   }
   if (pref_name == browsing_data::prefs::kDeleteCookies) {
     // Site data counter.
@@ -201,9 +185,10 @@ std::u16string GetChromeCounterTextFromResult(
         static_cast<const HostedAppsCounter::HostedAppsResult*>(result);
     int hosted_apps_count = hosted_apps_result->Value();
 
-    DCHECK_GE(
+    CHECK_GE(
         hosted_apps_result->Value(),
-        base::checked_cast<ResultInt>(hosted_apps_result->examples().size()));
+        base::checked_cast<ResultInt>(hosted_apps_result->examples().size()),
+        base::NotFatalUntil::M161);
 
     std::vector<std::u16string> replacements;
     if (hosted_apps_count > 0) {

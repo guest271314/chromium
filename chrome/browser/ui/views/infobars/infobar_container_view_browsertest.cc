@@ -8,7 +8,6 @@
 #include <string>
 #include <vector>
 
-#include "base/memory/raw_ptr.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/scoped_feature_list.h"
 #include "build/build_config.h"
@@ -27,7 +26,10 @@
 #include "components/infobars/core/infobar_manager.h"
 #include "content/public/test/browser_test.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "ui/base/page_transition_types.h"
 #include "ui/gfx/animation/animation_test_api.h"
+#include "ui/views/controls/label.h"
+#include "ui/views/test/widget_activation_waiter.h"
 #include "ui/views/view_utils.h"
 #include "url/gurl.h"
 
@@ -77,7 +79,7 @@ class InfoBarContainerViewBrowserTest : public InProcessBrowserTest {
 
   infobars::InfoBarManager* GetInfoBarManager() {
     return infobars::ContentInfoBarManager::FromWebContents(
-        browser()->tab_strip_model()->GetActiveWebContents());
+        browser()->GetTabStripModel()->GetActiveWebContents());
   }
 
   infobars::InfoBar* AddInfoBar(
@@ -115,7 +117,9 @@ class InfoBarContainerViewBrowserTest : public InProcessBrowserTest {
 //
 class InfoBarContainerPriorityTest : public InfoBarContainerViewBrowserTest {
  protected:
-  InfoBarContainerPriorityTest() = default;
+  InfoBarContainerPriorityTest() {
+    feature_list_.InitAndEnableFeature(features::kInfoBarQueuedCountPill);
+  }
 
   // Helper to get the currently focused or stored view. On Wayland, the focused
   // view may be null. In that case, we return the stored view.
@@ -123,7 +127,133 @@ class InfoBarContainerPriorityTest : public InfoBarContainerViewBrowserTest {
     views::View* focused_view = focus_manager->GetFocusedView();
     return focused_view ? focused_view : focus_manager->GetStoredFocusView();
   }
+
+  // Returns the queued-count pill of `infobar`, or null if it was never
+  // created.
+  views::Label* GetQueuedCountPill(infobars::InfoBar* infobar) {
+    views::View* pill = static_cast<InfoBarView*>(infobar)->GetViewByElementId(
+        InfoBarView::kQueuedCountPillElementId);
+    return pill ? views::AsViewClass<views::Label>(pill) : nullptr;
+  }
+
+  // Returns true if `infobar` currently shows the queued-count pill.
+  bool IsPillVisibleOn(infobars::InfoBar* infobar) {
+    views::Label* pill = GetQueuedCountPill(infobar);
+    return pill && pill->GetVisible();
+  }
+
+  // Returns the pill's label text, e.g. u"+2". The pill must exist.
+  std::u16string PillTextOn(infobars::InfoBar* infobar) {
+    return std::u16string(GetQueuedCountPill(infobar)->GetText());
+  }
 };
+
+IN_PROC_BROWSER_TEST_F(InfoBarContainerPriorityTest,
+                       QueuedCountPillTracksQueue) {
+  infobars::InfoBar* visible_bar = AddInfoBar(
+      infobars::InfoBarDelegate::InfobarPriority::kDefault, "Default 1");
+  // Nothing queued: no pill.
+  EXPECT_FALSE(IsPillVisibleOn(visible_bar));
+
+  infobars::InfoBar* queued_bar =
+      AddInfoBar(infobars::InfoBarDelegate::InfobarPriority::kDefault,
+                 "Default 2 (Queued)");
+  EXPECT_TRUE(IsPillVisibleOn(visible_bar));
+  EXPECT_EQ(u"+1", PillTextOn(visible_bar));
+
+  AddInfoBar(infobars::InfoBarDelegate::InfobarPriority::kLow, "Low (Queued)");
+  EXPECT_EQ(u"+2", PillTextOn(visible_bar));
+
+  // Removing an infobar straight out of the queue updates the count.
+  GetInfoBarManager()->RemoveInfoBar(queued_bar);
+  EXPECT_TRUE(IsPillVisibleOn(visible_bar));
+  EXPECT_EQ(u"+1", PillTextOn(visible_bar));
+
+  // Dismissing the host promotes the queued infobar; with the queue drained,
+  // the promoted bar carries no pill.
+  GetInfoBarManager()->RemoveInfoBar(visible_bar);
+  ASSERT_EQ(1u, GetVisibleInfoBarMessages().size());
+  ASSERT_EQ("Low (Queued)", GetVisibleInfoBarMessages()[0]);
+  EXPECT_FALSE(IsPillVisibleOn(GetInfoBarManager()->infobars()[0]));
+}
+
+IN_PROC_BROWSER_TEST_F(InfoBarContainerPriorityTest,
+                       QueuedCountPillSuppressedOnCriticalBars) {
+  infobars::InfoBar* critical_1 =
+      AddInfoBar(infobars::InfoBarDelegate::InfobarPriority::kCriticalSecurity,
+                 "Critical 1");
+  infobars::InfoBar* critical_2 =
+      AddInfoBar(infobars::InfoBarDelegate::InfobarPriority::kCriticalSecurity,
+                 "Critical 2");
+  AddInfoBar(infobars::InfoBarDelegate::InfobarPriority::kDefault,
+             "Default 1 (Queued)");
+  AddInfoBar(infobars::InfoBarDelegate::InfobarPriority::kDefault,
+             "Default 2 (Queued)");
+
+  // Both visible bars are security warnings: no pill anywhere, even though
+  // two infobars are queued.
+  EXPECT_FALSE(IsPillVisibleOn(critical_1));
+  EXPECT_FALSE(IsPillVisibleOn(critical_2));
+
+  // After the warnings drain, the promoted default still has one queued
+  // behind it and re-hosts the pill.
+  GetInfoBarManager()->RemoveInfoBar(critical_1);
+  GetInfoBarManager()->RemoveInfoBar(critical_2);
+  ASSERT_EQ(1u, GetVisibleInfoBarMessages().size());
+  ASSERT_EQ("Default 1 (Queued)", GetVisibleInfoBarMessages()[0]);
+  infobars::InfoBar* promoted = GetInfoBarManager()->infobars()[0];
+  EXPECT_TRUE(IsPillVisibleOn(promoted));
+  EXPECT_EQ(u"+1", PillTextOn(promoted));
+}
+
+IN_PROC_BROWSER_TEST_F(InfoBarContainerPriorityTest,
+                       QueuedCountPillHidesWhenCriticalArrives) {
+  infobars::InfoBar* default_bar = AddInfoBar(
+      infobars::InfoBarDelegate::InfobarPriority::kDefault, "Default 1");
+  AddInfoBar(infobars::InfoBarDelegate::InfobarPriority::kLow, "Low (Queued)");
+  ASSERT_TRUE(IsPillVisibleOn(default_bar));
+
+  // A critical infobar is admitted below the pill's host. The bottom-most
+  // bar is now a warning, so the pill disappears entirely.
+  infobars::InfoBar* critical_bar =
+      AddInfoBar(infobars::InfoBarDelegate::InfobarPriority::kCriticalSecurity,
+                 "Critical");
+  EXPECT_EQ(2u, GetVisibleInfoBarMessages().size());
+  EXPECT_FALSE(IsPillVisibleOn(default_bar));
+
+  // Resolving the warning makes the default bar bottom-most again; the pill
+  // returns because an infobar is still queued behind it.
+  GetInfoBarManager()->RemoveInfoBar(critical_bar);
+  ASSERT_EQ(1u, GetVisibleInfoBarMessages().size());
+  EXPECT_TRUE(IsPillVisibleOn(default_bar));
+  EXPECT_EQ(u"+1", PillTextOn(default_bar));
+}
+
+IN_PROC_BROWSER_TEST_F(InfoBarContainerPriorityTest,
+                       QueuedCountPillSurvivesEqualQueueTabSwitch) {
+  // Tab 0: one visible default, one queued.
+  infobars::InfoBar* tab0_bar = AddInfoBar(
+      infobars::InfoBarDelegate::InfobarPriority::kDefault, "Tab0 Default");
+  AddInfoBar(infobars::InfoBarDelegate::InfobarPriority::kDefault,
+             "Tab0 Queued");
+  ASSERT_TRUE(IsPillVisibleOn(tab0_bar));
+
+  // Tab 1: the same shape. Equal pending counts across the switch must not
+  // suppress the pill on the newly attached tab.
+  ASSERT_TRUE(AddTabAtIndex(1, GURL("about:blank"), ui::PAGE_TRANSITION_TYPED));
+  browser()->GetTabStripModel()->ActivateTabAt(1);
+  infobars::InfoBar* tab1_bar = AddInfoBar(
+      infobars::InfoBarDelegate::InfobarPriority::kDefault, "Tab1 Default");
+  AddInfoBar(infobars::InfoBarDelegate::InfobarPriority::kDefault,
+             "Tab1 Queued");
+  EXPECT_TRUE(IsPillVisibleOn(tab1_bar));
+  EXPECT_EQ(u"+1", PillTextOn(tab1_bar));
+
+  // Switch back: tab 0's bar re-attaches with the same count as tab 1 had.
+  browser()->GetTabStripModel()->ActivateTabAt(0);
+  EXPECT_TRUE(IsPillVisibleOn(tab0_bar));
+  EXPECT_EQ(u"+1", PillTextOn(tab0_bar));
+}
 
 IN_PROC_BROWSER_TEST_F(InfoBarContainerPriorityTest, CriticalStacksUpToCap) {
   AddInfoBar(infobars::InfoBarDelegate::InfobarPriority::kCriticalSecurity,
@@ -231,13 +361,13 @@ IN_PROC_BROWSER_TEST_F(InfoBarContainerPriorityTest,
 
   // Open and switch to a new tab.
   ASSERT_TRUE(AddTabAtIndex(1, GURL("about:blank"), ui::PAGE_TRANSITION_TYPED));
-  browser()->tab_strip_model()->ActivateTabAt(1);
+  browser()->GetTabStripModel()->ActivateTabAt(1);
 
   // The new tab should have an existing, but empty, infobar container.
   ASSERT_TRUE(GetInfoBarContainer()->IsEmpty());
 
   // Switch back to the first tab.
-  browser()->tab_strip_model()->ActivateTabAt(0);
+  browser()->GetTabStripModel()->ActivateTabAt(0);
 
   // The state should be preserved.
   EXPECT_EQ(1u, GetVisibleInfoBarMessages().size());
@@ -246,6 +376,12 @@ IN_PROC_BROWSER_TEST_F(InfoBarContainerPriorityTest,
 
 IN_PROC_BROWSER_TEST_F(InfoBarContainerPriorityTest,
                        PromotionRestoresFocusWhenFocusWasInInfobars) {
+  // Ensure the browser window is active to avoid focus races.
+  views::Widget* widget =
+      BrowserView::GetBrowserViewForBrowser(browser())->GetWidget();
+  widget->Activate();
+  views::test::WaitForWidgetActive(widget, true);
+
   infobars::InfoBar* first = AddInfoBar(
       infobars::InfoBarDelegate::InfobarPriority::kDefault, "Default 1");
   AddInfoBar(infobars::InfoBarDelegate::InfobarPriority::kDefault,
@@ -289,7 +425,7 @@ IN_PROC_BROWSER_TEST_F(InfoBarContainerPriorityTest,
 
   // Put focus in web contents (outside infobars).
   content::WebContents* contents =
-      browser()->tab_strip_model()->GetActiveWebContents();
+      browser()->GetTabStripModel()->GetActiveWebContents();
   ASSERT_TRUE(contents);
   contents->Focus();
 
@@ -321,7 +457,7 @@ class InfoBarContainerSplitTabTest : public InfoBarContainerViewBrowserTest {
 
   // Splits the tab at `index_to_split` with the currently active tab.
   void SplitTabWithActive(int index_to_split) {
-    browser()->tab_strip_model()->AddToNewSplit(
+    browser()->GetTabStripModel()->AddToNewSplit(
         {index_to_split},
         split_tabs::SplitTabVisualData(split_tabs::SplitTabLayout::kSideBySide,
                                        0.5f),
@@ -330,8 +466,8 @@ class InfoBarContainerSplitTabTest : public InfoBarContainerViewBrowserTest {
 
   // Switches focus between the two panes of the active split tab.
   void SwitchSplitTabFocus() {
-    TabStripModel* tab_strip_model = browser()->tab_strip_model();
-    ASSERT_TRUE(tab_strip_model->IsActiveTabSplit());
+    TabStripModel* tab_strip_model = browser()->GetTabStripModel();
+    ASSERT_TRUE(tab_strip_model->GetActiveTab()->IsSplit());
 
     // In this test setup with exactly two tabs (0 and 1) involved in a split,
     // switching focus simply means activating the other index.
@@ -346,7 +482,7 @@ class InfoBarContainerSplitTabTest : public InfoBarContainerViewBrowserTest {
 
 IN_PROC_BROWSER_TEST_F(InfoBarContainerSplitTabTest,
                        InfobarsAreIndependentInSplitTabs) {
-  TabStripModel* tab_strip_model = browser()->tab_strip_model();
+  TabStripModel* tab_strip_model = browser()->GetTabStripModel();
 
   // 1. Set up two tabs. The browser starts with one tab, so navigate it and
   // add one more.
@@ -369,7 +505,7 @@ IN_PROC_BROWSER_TEST_F(InfoBarContainerSplitTabTest,
   SplitTabWithActive(0);
   // The tabs are now split but remain as distinct indices in the model.
   ASSERT_EQ(2, tab_strip_model->count());
-  ASSERT_TRUE(tab_strip_model->IsActiveTabSplit());
+  ASSERT_TRUE(tab_strip_model->GetActiveTab()->IsSplit());
 
   // 4. Verify the infobars are still visible in the active pane (Tab 1).
   EXPECT_EQ(GURL("chrome://version"),

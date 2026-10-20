@@ -8,12 +8,15 @@
 
 #include "base/command_line.h"
 #include "base/metrics/field_trial.h"
+#include "base/metrics/runtime_field_trial_overrides.h"
 #include "base/run_loop.h"
+#include "base/strings/stringprintf.h"
 #include "base/test/task_environment.h"
 #include "build/build_config.h"
 #include "components/crash/core/common/crash_key.h"
 #include "components/variations/active_field_trials.h"
 #include "components/variations/hashing.h"
+#include "components/variations/service/variations_service.h"
 #include "components/variations/synthetic_trial_registry.h"
 #include "components/variations/synthetic_trials_active_group_id_provider.h"
 #include "components/variations/variations_switches.h"
@@ -33,6 +36,14 @@ std::string GetNumExperimentsCrashKey() {
 
 std::string GetVariationsSeedVersionCrashKey() {
   return crash_reporter::GetCrashKeyValue("variations-seed-version");
+}
+
+std::string GetVariationsRuntimeFieldTrialOverridesCrashKey() {
+  return crash_reporter::GetCrashKeyValue("variations-runtime-overrides");
+}
+
+std::string GetNumVariationsRuntimeFieldTrialOverridesCrashKey() {
+  return crash_reporter::GetCrashKeyValue("num-variations-runtime-overrides");
 }
 
 class VariationsCrashKeysTest : public ::testing::Test {
@@ -158,6 +169,136 @@ TEST_F(VariationsCrashKeysTest, OverriddenFieldTrial) {
   EXPECT_EQ("1", GetNumExperimentsCrashKey());
   EXPECT_EQ("2a140065", HashNameAsHexString("Group1_MANUALLY_FORCED"));
   EXPECT_EQ("8e7abfb0-2a140065,", GetVariationsCrashKey());
+}
+
+TEST_F(VariationsCrashKeysTest, RuntimeFieldTrialOverride) {
+  InitCrashKeys();
+
+  std::string expected_crash_key;
+  auto pass_key = variations::VariationsService::CreatePassKeyForTesting();
+
+  auto* overrides = base::RuntimeFieldTrialOverrides::GetInstance();
+
+  // Add two runtime overrides, the second replacing the first.
+  overrides->ApplyRuntimeOverride(
+      pass_key,
+      std::make_unique<base::RuntimeFieldTrialInfo>(
+          "Killswitch", "Disabled50", base::FieldTrialParams(), nullptr),
+      "");
+  overrides->GetRuntimeOverride("Killswitch")->Activate();
+  overrides->ApplyRuntimeOverride(
+      pass_key,
+      std::make_unique<base::RuntimeFieldTrialInfo>(
+          "Killswitch", "Disabled100", base::FieldTrialParams(), nullptr),
+      "Killswitch");
+  expected_crash_key += base::StringPrintf(
+      "%x-%x-%x-%x,", HashName("Killswitch"), HashName("Disabled50"), 0, 0);
+  expected_crash_key +=
+      base::StringPrintf("%x-%x-%x-%x,", HashName("Killswitch"),
+                         HashName("Disabled100"), 0, HashName("Killswitch"));
+
+  // Same as above, but override an actual FieldTrial.
+  base::FieldTrial* overridden_trial =
+      base::FieldTrialList::CreateFieldTrial("OverriddenTrial", "Group");
+  overridden_trial->Activate();
+  overrides->ApplyRuntimeOverride(
+      pass_key,
+      std::make_unique<base::RuntimeFieldTrialInfo>(
+          "TrialKillswitch", "Disabled50", base::FieldTrialParams(),
+          overridden_trial),
+      "");
+  overrides->GetRuntimeOverride("TrialKillswitch")->Activate();
+  overrides->ApplyRuntimeOverride(
+      pass_key,
+      std::make_unique<base::RuntimeFieldTrialInfo>(
+          "TrialKillswitch", "Disabled100", base::FieldTrialParams(),
+          overridden_trial),
+      "TrialKillswitch");
+  expected_crash_key += base::StringPrintf(
+      "%x-%x-%x-%x,", HashName("TrialKillswitch"), HashName("Disabled50"),
+      HashName("OverriddenTrial"), 0);
+  expected_crash_key += base::StringPrintf(
+      "%x-%x-%x-%x,", HashName("TrialKillswitch"), HashName("Disabled100"),
+      HashName("OverriddenTrial"), HashName("TrialKillswitch"));
+
+  // Create a FieldTrial that will not be overridden at all.
+  base::FieldTrial* trial =
+      base::FieldTrialList::CreateFieldTrial("Trial", "Group");
+  trial->Activate();
+
+  // Verify that the full history of overrides is recorded.
+  EXPECT_EQ(expected_crash_key,
+            GetVariationsRuntimeFieldTrialOverridesCrashKey());
+  EXPECT_EQ("4", GetNumVariationsRuntimeFieldTrialOverridesCrashKey());
+
+  // Before activating the runtime overrides, only Trial should be reported
+  // (OverriddenTrial was suppressed by TrialKillswitch).
+  EXPECT_EQ("1", GetNumExperimentsCrashKey());
+  EXPECT_EQ(base::StringPrintf("%x-%x,", HashName("Trial"), HashName("Group")),
+            GetVariationsCrashKey());
+
+  // Activate the overrides.
+  overrides->GetRuntimeOverride("Killswitch")->Activate();
+  overrides->GetRuntimeOverride("TrialKillswitch")->Activate();
+
+  // Verify that the variations crash key reports the latest overrides. I.e.,
+  // OverriddenTrial should not be reported, while Trial should be reported.
+  std::string expected_variations_crash_key;
+  expected_variations_crash_key +=
+      base::StringPrintf("%x-%x,", HashName("Trial"), HashName("Group"));
+  expected_variations_crash_key += base::StringPrintf(
+      "%x-%x,", HashName("Killswitch"), HashName("Disabled100"));
+  expected_variations_crash_key += base::StringPrintf(
+      "%x-%x,", HashName("TrialKillswitch"), HashName("Disabled100"));
+  EXPECT_EQ("3", GetNumExperimentsCrashKey());
+  EXPECT_EQ(expected_variations_crash_key, GetVariationsCrashKey());
+
+  overrides->ResetForTesting();
+
+  RecreateCrashKeys();
+  EXPECT_EQ("", GetVariationsRuntimeFieldTrialOverridesCrashKey());
+  EXPECT_EQ("0", GetNumVariationsRuntimeFieldTrialOverridesCrashKey());
+}
+
+TEST_F(VariationsCrashKeysTest, RuntimeFieldTrialOverride_Truncate) {
+  InitCrashKeys();
+
+  std::string expected_crash_key;
+  auto pass_key = variations::VariationsService::CreatePassKeyForTesting();
+
+  // Assuming a full override entry is 36 characters, this will truncate after
+  // 1024 / 36 ~= 28 overrides. Register twice as much overrides, and confirm
+  // that the crash key is truncated to the first 28 overrides.
+  constexpr size_t kNumOverrides = 1024 / 36;
+  base::FieldTrial* trial =
+      base::FieldTrialList::CreateFieldTrial("Trial", "Group");
+  base::RuntimeFieldTrialOverrides::GetInstance()->ApplyRuntimeOverride(
+      pass_key,
+      std::make_unique<base::RuntimeFieldTrialInfo>(
+          "TrialKillswitch", "Disabled50", base::FieldTrialParams(), trial),
+      "");
+  for (size_t i = 0; i < 2 * kNumOverrides - 1; ++i) {
+    base::RuntimeFieldTrialOverrides::GetInstance()->ApplyRuntimeOverride(
+        pass_key,
+        std::make_unique<base::RuntimeFieldTrialInfo>(
+            "TrialKillswitch", "Disabled100", base::FieldTrialParams(), trial),
+        "TrialKillswitch");
+  }
+
+  expected_crash_key +=
+      base::StringPrintf("%x-%x-%x-%x,", HashName("TrialKillswitch"),
+                         HashName("Disabled50"), HashName("Trial"), 0);
+  for (size_t i = 0; i < kNumOverrides - 1; ++i) {
+    expected_crash_key += base::StringPrintf(
+        "%x-%x-%x-%x,", HashName("TrialKillswitch"), HashName("Disabled100"),
+        HashName("Trial"), HashName("TrialKillswitch"));
+  }
+
+  EXPECT_EQ(expected_crash_key,
+            GetVariationsRuntimeFieldTrialOverridesCrashKey());
+  EXPECT_EQ(base::NumberToString(2 * kNumOverrides),
+            GetNumVariationsRuntimeFieldTrialOverridesCrashKey());
+  base::RuntimeFieldTrialOverrides::GetInstance()->ResetForTesting();
 }
 
 }  // namespace variations

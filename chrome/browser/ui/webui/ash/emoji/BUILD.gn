@@ -38,13 +38,11 @@ static_library("emoji") {
   public_deps = [
     ":mojo_bindings",
     "//base",
-    "//chrome/browser:browser_public_dependencies",
     "//chrome/browser/profiles:profile",
     "//chrome/browser/ui/views/bubble",
     "//chrome/browser/ui/webui:webui_load_timer",
     "//chrome/browser/ui/webui/sanitized_image:sanitized_image_source",
     "//chrome/browser/ui/webui/top_chrome",
-    "//chrome/common",
     "//chromeos/ash/components/emoji",
     "//chromeos/ash/components/emoji:mojo_bindings",
     "//components/manta",
@@ -63,6 +61,7 @@ static_library("emoji") {
     "//chrome/app:generated_resources",
     "//chrome/browser/profiles:profile_manager",
     "//chrome/browser/resources/chromeos/emoji_picker:resources",
+    "//chrome/browser/ui/webui:theme_source",
     "//chromeos/ash/components/emoji:resources",
     "//components/prefs",
     "//net",
@@ -110,8 +109,4 @@ source_set("unit_tests") {
     "//ui/gfx/geometry",
     "//url",
   ]
-
-  # TODO(crbug.com/40031409): Fix code that adds exit-time destructors and
-  # enable the diagnostic by removing this line.
-  configs += [ "//build/config/compiler:no_exit_time_destructors" ]
 }

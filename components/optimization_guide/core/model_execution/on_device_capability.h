@@ -53,6 +53,14 @@ enum class OnDeviceError : int {
   kMaxValue = kFailedToRunSafety
 };
 
+// Whether a response is complete or not.
+enum class ResponseCompleteness {
+  // This is a partial response, more output may follow.
+  kPartial,
+  // The response is complete and no more output will be produced.
+  kComplete,
+};
+
 // A response type used for OnDeviceSession.
 struct StreamingResponse {
   // The response proto. This may be incomplete until `is_complete` is true.
@@ -109,6 +117,7 @@ using OptimizationGuideModelSizeInTokenCallback =
 // The callback for adding a download progress observer to
 // OnDeviceModelDownloadProgressManager.
 using AddDownloadProgressObserverCallback = base::RepeatingCallback<void(
+    const std::string& use_case,
     mojo::PendingRemote<on_device_model::mojom::DownloadObserver>)>;
 
 // Params used to control sampling output tokens for the on-device model.
@@ -183,9 +192,12 @@ enum class OnDeviceModelEligibilityReason {
   // There was no on-device feature usage so the model has not been
   // downloaded yet.
   kNoOnDeviceFeatureUsed = 18,
+  // The device does not have enough disk space to build caches for the
+  // on-device model.
+  kInsufficientDiskSpaceForCaches = 19,
 
   // Insert new values before this line.
-  kMaxValue = kNoOnDeviceFeatureUsed,
+  kMaxValue = kInsufficientDiskSpaceForCaches,
 };
 // LINT.ThenChange(//tools/metrics/histograms/metadata/optimization/enums.xml:OptimizationGuideOnDeviceModelEligibilityReason)
 

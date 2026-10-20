@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "chrome/browser/private_ai/private_ai_service.h"
+#include "components/private_ai/private_ai_service.h"
 
 #include "base/base64.h"
 #include "base/run_loop.h"
@@ -10,15 +10,20 @@
 #include "base/test/scoped_feature_list.h"
 #include "base/test/test_future.h"
 #include "chrome/browser/private_ai/private_ai_service_factory.h"
-#include "chrome/browser/private_ai/test_private_ai_service.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_test_util.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/signin/identity_test_environment_profile_adaptor.h"
-#include "chrome/test/base/in_process_browser_test.h"
+#include "chrome/common/channel_info.h"
+#include "chrome/test/base/chrome_test_utils.h"
+#include "chrome/test/base/platform_browser_test.h"
+#include "components/private_ai/content/private_ai_network_driver_content.h"
+#include "components/private_ai/content/private_ai_oak_session_driver_content.h"
 #include "components/private_ai/features.h"
 #include "components/private_ai/phosphor/token_manager.h"
+#include "components/private_ai/testing/test_private_ai_service.h"
 #include "components/signin/public/identity_manager/identity_test_environment.h"
+#include "content/public/browser/storage_partition.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/test_utils.h"
 #include "net/third_party/quiche/src/quiche/blind_sign_auth/proto/spend_token_data.pb.h"
@@ -27,7 +32,7 @@
 
 namespace private_ai {
 
-class PrivateAiServiceBrowserTest : public InProcessBrowserTest {
+class PrivateAiServiceBrowserTest : public PlatformBrowserTest {
  public:
   PrivateAiServiceBrowserTest() {
     feature_list_.InitAndEnableFeatureWithParameters(
@@ -43,16 +48,23 @@ class PrivateAiServiceBrowserTest : public InProcessBrowserTest {
                                          -> std::unique_ptr<KeyedService> {
           Profile* profile = Profile::FromBrowserContext(context);
           auto test_bsa_factory = std::make_unique<TestBlindSignAuthFactory>();
-          auto* test_bsa_factory_ptr = test_bsa_factory.get();
           return std::make_unique<TestPrivateAiService>(
               IdentityManagerFactory::GetForProfile(profile),
-              profile->GetPrefs(), profile, test_bsa_factory_ptr,
-              std::move(test_bsa_factory));
+              profile->GetDefaultStoragePartition()
+                  ->GetURLLoaderFactoryForBrowserProcess(),
+              PrivateAiServiceFactory::CreateNetworkContextGetter(profile),
+              kPrivateAiUrl.Get(),
+              PrivateAiService::GetApiKey(chrome::GetChannel()),
+              kPrivateAiProxyServerUrl.Get(),
+              base::FeatureList::IsEnabled(kPrivateAiUseTokenAttestation),
+              std::make_unique<PrivateAiNetworkDriverContent>(),
+              std::make_unique<PrivateAiOakSessionDriverContent>(),
+              std::move(test_bsa_factory), chrome::GetChannel());
         }));
   }
 
   void SetUpOnMainThread() override {
-    InProcessBrowserTest::SetUpOnMainThread();
+    PlatformBrowserTest::SetUpOnMainThread();
 
     identity_test_env_adaptor_ =
         std::make_unique<IdentityTestEnvironmentProfileAdaptor>(profile());
@@ -63,10 +75,10 @@ class PrivateAiServiceBrowserTest : public InProcessBrowserTest {
     PrivateAiServiceFactory::GetInstance()->SetTestingFactory(profile(), {});
 
     identity_test_env_adaptor_.reset();
-    InProcessBrowserTest::TearDownOnMainThread();
+    PlatformBrowserTest::TearDownOnMainThread();
   }
 
-  Profile* profile() { return browser()->profile(); }
+  Profile* profile() { return chrome_test_utils::GetProfile(this); }
 
   signin::IdentityTestEnvironment* identity_test_env() {
     return identity_test_env_adaptor_->identity_test_env();
@@ -129,14 +141,16 @@ IN_PROC_BROWSER_TEST_F(PrivateAiServiceBrowserTest, GetAuthToken) {
   tokens.push_back(std::move(bsa_token));
   test_private_ai_service->mock_bsa()->set_tokens(std::move(tokens));
 
-  base::test::TestFuture<std::optional<phosphor::BlindSignedAuthToken>> future;
+  base::test::TestFuture<base::expected<phosphor::BlindSignedAuthToken,
+                                        phosphor::TokenManager::Error>>
+      future;
 
   // First call is async and starts the fetch.
   token_manager->GetAuthToken(future.GetCallback());
   EXPECT_FALSE(future.IsReady());
 
   // Wait for the async fetch to complete.
-  std::optional<phosphor::BlindSignedAuthToken> token = future.Get();
+  auto token = future.Get();
   ASSERT_TRUE(token.has_value());
 
   EXPECT_EQ(token->token, base::Base64Encode("test_token"));
@@ -171,13 +185,17 @@ IN_PROC_BROWSER_TEST_F(PrivateAiServiceBrowserTest,
   test_private_ai_service->mock_bsa()->set_tokens(std::move(tokens));
 
   // First call is async and starts the fetch.
-  base::test::TestFuture<std::optional<phosphor::BlindSignedAuthToken>> future;
+  base::test::TestFuture<base::expected<phosphor::BlindSignedAuthToken,
+                                        phosphor::TokenManager::Error>>
+      future;
   token_manager->GetAuthToken(future.GetCallback());
 
   ASSERT_TRUE(future.Get().has_value());
 
   // Second call should return a token from the cache.
-  base::test::TestFuture<std::optional<phosphor::BlindSignedAuthToken>> future2;
+  base::test::TestFuture<base::expected<phosphor::BlindSignedAuthToken,
+                                        phosphor::TokenManager::Error>>
+      future2;
   token_manager->GetAuthToken(future2.GetCallback());
   EXPECT_FALSE(future2.IsReady());
   EXPECT_TRUE(future2.Get().has_value());

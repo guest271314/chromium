@@ -24,6 +24,7 @@
 #include "third_party/blink/renderer/core/css/css_markup.h"
 #include "third_party/blink/renderer/core/css_value_keywords.h"
 #include "third_party/blink/renderer/core/dom/document.h"
+#include "third_party/blink/renderer/core/execution_context/execution_context.h"
 #include "third_party/blink/renderer/platform/weborigin/kurl.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_builder.h"
 #include "third_party/blink/renderer/platform/wtf/text/text_encoding.h"
@@ -120,7 +121,7 @@ CSSUrlData::CSSUrlData(const AtomicString& resolved_url)
                  /*is_ad_related=*/false,
                  /*modifiers=*/CSSUrlRequestModifiers()) {}
 
-KURL CSSUrlData::ResolveUrl(const Document& document) const {
+KURL CSSUrlData::ResolveUrl(const ExecutionContext& context) const {
   if (!potentially_dangling_markup_) {
     return KURL(absolute_url_);
   }
@@ -134,12 +135,12 @@ KURL CSSUrlData::ResolveUrl(const Document& document) const {
   // changed if the base url for the document changed since last time the url
   // was resolved. This change in base url resolving is different from the
   // typical behavior for base url changes. CSS urls are typically not re-
-  // resolved. This is mentioned in the "What “browser eccentricities”?" note
+  // resolved. This is mentioned in the "What "browser eccentricities"?" note
   // in https://www.w3.org/TR/css-values-3/#local-urls
   //
   // Having the more spec-compliant behavior for the dangling markup edge case
   // should be fine.
-  KURL url = document.CompleteURL(relative_url_);
+  KURL url = context.CompleteURL(relative_url_);
   // Manually propagate the dangling markup flag when resolving from a string
   // that has already been canonicalized (and thus lost its newlines).
   // This ensures that URLs that were originally flagged as dangling markup
@@ -166,10 +167,16 @@ const CSSUrlData* CSSUrlData::MakeComputed() const {
   if (relative_url_.empty() || is_local_ || absolute_url_.empty()) {
     return this;
   }
+  // When the URL was flagged as potentially dangling markup, keep the raw
+  // relative spelling so that CssText() round-trips a string that re-derives
+  // PotentiallyDanglingMarkup() on the consuming side (e.g. via
+  // commitStyles()). Using the canonicalized serialization would launder away
+  // the newline/'<' characters. This matches the logic in MakeResolved().
   return MakeGarbageCollected<CSSUrlData>(
-      base::PassKey<CSSUrlData>(), absolute_url_, absolute_url_, Referrer(),
-      is_from_origin_clean_style_sheet_, is_ad_related_, is_local_,
-      potentially_dangling_markup_, modifiers_);
+      base::PassKey<CSSUrlData>(),
+      potentially_dangling_markup_ ? relative_url_ : absolute_url_,
+      absolute_url_, Referrer(), is_from_origin_clean_style_sheet_,
+      is_ad_related_, is_local_, potentially_dangling_markup_, modifiers_);
 }
 
 const CSSUrlData* CSSUrlData::MakeResolved(const KURL& base_url,
@@ -206,8 +213,9 @@ const CSSUrlData* CSSUrlData::MakeResolvedIfDanglingMarkup(
   if (!potentially_dangling_markup_) {
     return this;
   }
+  DCHECK(document.GetExecutionContext());
   return MakeGarbageCollected<CSSUrlData>(
-      relative_url_, ResolveUrl(document), referrer_,
+      relative_url_, ResolveUrl(*document.GetExecutionContext()), referrer_,
       is_from_origin_clean_style_sheet_, is_ad_related_, modifiers_);
 }
 

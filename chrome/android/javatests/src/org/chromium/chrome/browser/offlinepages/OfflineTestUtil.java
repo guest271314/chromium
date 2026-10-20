@@ -196,7 +196,7 @@ public class OfflineTestUtil {
         void getRequestsInQueue(Callback<SavePageRequest[]> callback);
 
         void getAllPages(
-                List<OfflinePageItem> offlinePages, final Callback<List<OfflinePageItem>> callback);
+                List<OfflinePageItem> offlinePages, Callback<List<OfflinePageItem>> callback);
 
         void getRawThumbnail(long offlineId, Callback<byte[]> callback);
 
@@ -208,7 +208,8 @@ public class OfflineTestUtil {
 
         void clearIntercepts();
 
-        void dumpRequestCoordinatorState(Callback<String> callback);
+        void dumpRequestCoordinatorState(
+                @JniType("base::OnceCallback<void(std::string)>") Callback<String> callback);
 
         void waitForConnectivityState(
                 boolean connected, @JniType("base::OnceClosure") Runnable callback);

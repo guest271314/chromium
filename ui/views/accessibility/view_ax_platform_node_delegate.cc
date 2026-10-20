@@ -6,17 +6,16 @@
 
 #include <algorithm>
 #include <memory>
+#include <ranges>
 #include <utility>
 #include <vector>
 
 #include "base/check_op.h"
-#include "base/containers/adapters.h"
 #include "base/functional/bind.h"
 #include "base/i18n/rtl.h"
 #include "base/memory/raw_ptr.h"
 #include "base/no_destructor.h"
 #include "base/notimplemented.h"
-#include "base/strings/string_number_conversions.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/task/single_thread_task_runner.h"
 #include "build/build_config.h"
@@ -584,7 +583,8 @@ gfx::NativeViewAccessible ViewAXPlatformNodeDelegate::GetParent() const {
 
   if (Widget* widget = view()->GetWidget()) {
     Widget* top_widget = widget->GetTopLevelWidget();
-    if (top_widget && widget != top_widget && top_widget->GetRootView()) {
+    if (top_widget && widget != top_widget && top_widget->GetRootView() &&
+        !IsInHiddenWidget()) {
       return top_widget->GetRootView()->GetNativeViewAccessible();
     }
   }
@@ -592,8 +592,25 @@ gfx::NativeViewAccessible ViewAXPlatformNodeDelegate::GetParent() const {
   return gfx::NativeViewAccessible();
 }
 
+bool ViewAXPlatformNodeDelegate::IsInHiddenWidget() const {
+  const Widget* widget = view()->GetWidget();
+  return widget && !widget->IsVisible();
+}
+
 bool ViewAXPlatformNodeDelegate::IsLeaf() const {
   return ViewAccessibility::IsLeaf() || AXPlatformNodeDelegate::IsLeaf();
+}
+
+bool ViewAXPlatformNodeDelegate::IsIgnored() const {
+  if (GetIsIgnored()) {
+    return true;
+  }
+
+  // ViewAXPlatformNodeDelegate::GetChildCount() gives virtual children
+  // precedence over the real ones, hiding them and their subtrees from
+  // platform APIs.
+  const View* parent = view()->parent();
+  return parent && !parent->GetViewAccessibility().virtual_children().empty();
 }
 
 bool ViewAXPlatformNodeDelegate::IsInvisibleOrIgnored() const {
@@ -669,7 +686,7 @@ gfx::RectF ViewAXPlatformNodeDelegate::GetInlineTextRect(
   DCHECK_GE(start_offset, 0);
   DCHECK_GE(end_offset, 0);
   DCHECK_LE(start_offset, end_offset);
-  const std::vector<int32_t>& character_offsets =
+  base::span<const int32_t> character_offsets =
       data_.GetIntListAttribute(ax::mojom::IntListAttribute::kCharacterOffsets);
   if (character_offsets.empty()) {
     return gfx::RectF();
@@ -752,7 +769,7 @@ gfx::NativeViewAccessible ViewAXPlatformNodeDelegate::HitTestSync(
   if (!virtual_children().empty()) {
     // Search the greater indices first, since they're on top in the z-order.
     for (const std::unique_ptr<AXVirtualView>& child :
-         base::Reversed(virtual_children())) {
+         std::views::reverse(virtual_children())) {
       gfx::NativeViewAccessible result =
           child->HitTestSync(screen_physical_pixel_x, screen_physical_pixel_y);
       if (result) {
@@ -780,8 +797,8 @@ gfx::NativeViewAccessible ViewAXPlatformNodeDelegate::HitTestSync(
     v->ConvertPointToTarget(v, child, &point_in_child_coords);
     return child->HitTestPoint(point_in_child_coords);
   };
-  const auto i =
-      std::ranges::find_if(base::Reversed(v->children()), is_point_in_child);
+  const auto i = std::ranges::find_if(std::views::reverse(v->children()),
+                                      is_point_in_child);
   // If it's not inside any of our children, it's inside this view.
   return (i == v->children().rend()) ? GetNativeViewAccessible()
                                      : (*i)->GetNativeViewAccessible();
@@ -832,18 +849,6 @@ bool ViewAXPlatformNodeDelegate::ShouldIgnoreHoveredStateForTesting() {
 bool ViewAXPlatformNodeDelegate::IsOffscreen() const {
   // TODO(katydek): need to implement.
   return false;
-}
-
-std::u16string ViewAXPlatformNodeDelegate::GetAuthorUniqueId() const {
-  const View* v = view();
-  if (v) {
-    const int view_id = v->GetID();
-    if (view_id) {
-      return u"view_" + base::NumberToString16(view_id);
-    }
-  }
-
-  return std::u16string();
 }
 
 bool ViewAXPlatformNodeDelegate::IsMinimized() const {
@@ -1056,10 +1061,7 @@ bool ViewAXPlatformNodeDelegate::TableHasColumnOrRowHeaderNodeForTesting()
 
 ViewAXPlatformNodeDelegate::ChildWidgetsResult
 ViewAXPlatformNodeDelegate::GetChildWidgets() const {
-  // This method is used to create a parent / child relationship between the
-  // root view and any child widgets. Child widgets should only be exposed as
-  // the direct children of the root view. A root view should appear as the only
-  // child of a widget.
+  // Only root views expose owned widgets for navigation or hit testing.
   Widget* widget = view()->GetWidget();
   // Note that during window close, a Widget may exist in a state where it has
   // no NativeView, but hasn't yet torn down its view hierarchy.
@@ -1072,7 +1074,10 @@ ViewAXPlatformNodeDelegate::GetChildWidgets() const {
 
   std::vector<raw_ptr<Widget, VectorExperimental>> visible_widgets;
   std::ranges::copy_if(owned_widgets, std::back_inserter(visible_widgets),
-                       &Widget::IsVisible);
+                       [this](Widget* child_widget) {
+                         return child_widget->IsVisible() &&
+                                ShouldIncludeChildWidget(*child_widget);
+                       });
 
   // Focused child widgets should take the place of the web page they cover in
   // the accessibility tree.
@@ -1092,6 +1097,11 @@ ViewAXPlatformNodeDelegate::GetChildWidgets() const {
   }
 
   return ChildWidgetsResult(visible_widgets, false /* is_tab_modal_showing */);
+}
+
+bool ViewAXPlatformNodeDelegate::ShouldIncludeChildWidget(
+    const Widget& child_widget) const {
+  return true;
 }
 
 }  // namespace views

@@ -16,6 +16,7 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_avatar_icon_util.h"
 #include "chrome/browser/signin/account_consistency_mode_manager.h"
+#include "chrome/browser/signin/account_preview_data_service_factory.h"
 #include "chrome/browser/signin/chrome_signin_pref_names.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/signin/signin_hats_util.h"
@@ -135,7 +136,33 @@ int GetSubtitleID(bool is_signin_promo,
           case SignedInState::kSyncPaused:
             break;
         }
-      }
+      } break;
+      case signin::SignInPromoType::kSendTabToSelf: {
+        switch (signed_in_state) {
+          case SignedInState::kSignedOut:
+          case SignedInState::kWebOnlySignedIn:
+            return IDS_SEND_TAB_TO_SELF_SIGN_IN_PROMO_BODY;
+          case SignedInState::kSignInPending:
+          case SignedInState::kSyncPaused:
+            return IDS_SEND_TAB_TO_SELF_VERIFY_ITS_YOU_PROMO_LABEL;
+          case SignedInState::kSignedIn:
+          case SignedInState::kSyncing:
+            break;
+        }
+      } break;
+      case signin::SignInPromoType::kComposeboxDriveContextMenuOption: {
+        switch (signed_in_state) {
+          case SignedInState::kSignedOut:
+          case SignedInState::kWebOnlySignedIn:
+            return IDS_COMPOSEBOX_DRIVE_CONTEXT_MENU_OPTION_SIGNIN_PROMO_SUBTITLE;
+          case SignedInState::kSignInPending:
+            return IDS_COMPOSEBOX_DRIVE_CONTEXT_MENU_OPTION_VERIFY_PROMO_SUBTITLE;
+          case SignedInState::kSignedIn:
+          case SignedInState::kSyncing:
+          case SignedInState::kSyncPaused:
+            break;
+        }
+      } break;
     }
   }
 
@@ -210,44 +237,29 @@ void IncrementContextualPromoDismissCountPerSignedOutProfile(
     signin_metrics::AccessPoint access_point) {
   signin::SignInPromoType promo_type =
       signin::GetSignInPromoTypeFromAccessPoint(access_point);
-  if (signin::ShouldUseAutofillSignInPromoLimits(promo_type)) {
-    int dismiss_count = profile->GetPrefs()->GetInteger(
-        prefs::kAutofillSignInPromoDismissCountPerProfile);
-    profile->GetPrefs()->SetInteger(
-        prefs::kAutofillSignInPromoDismissCountPerProfile, dismiss_count + 1);
-    return;
-  }
-
   switch (promo_type) {
     case signin::SignInPromoType::kPassword:
-      return profile->GetPrefs()->SetInteger(
-          prefs::kPasswordSignInPromoDismissCountPerProfileForLimitsExperiment,
-          profile->GetPrefs()->GetInteger(
-              prefs::
-                  kPasswordSignInPromoDismissCountPerProfileForLimitsExperiment) +
-              1);
     case signin::SignInPromoType::kAddress:
-      return profile->GetPrefs()->SetInteger(
-          prefs::kAddressSignInPromoDismissCountPerProfileForLimitsExperiment,
-          profile->GetPrefs()->GetInteger(
-              prefs::
-                  kAddressSignInPromoDismissCountPerProfileForLimitsExperiment) +
-              1);
+    case signin::SignInPromoType::kBookmark: {
+      int dismiss_count = profile->GetPrefs()->GetInteger(
+          prefs::kAutofillSignInPromoDismissCountPerProfile);
+      profile->GetPrefs()->SetInteger(
+          prefs::kAutofillSignInPromoDismissCountPerProfile, dismiss_count + 1);
+      return;
+    }
     case signin::SignInPromoType::kSearchAIMode:
-      return profile->GetPrefs()->SetInteger(
+      profile->GetPrefs()->SetInteger(
           prefs::kSearchAIModeSignInPromoDismissCountPerProfile,
           profile->GetPrefs()->GetInteger(
               prefs::kSearchAIModeSignInPromoDismissCountPerProfile) +
               1);
-    case signin::SignInPromoType::kBookmark:
-      CHECK(base::FeatureList::IsEnabled(syncer::kUnoPhase2FollowUp));
-      return profile->GetPrefs()->SetInteger(
-          prefs::kBookmarkSignInPromoDismissCountPerProfileForLimitsExperiment,
-          profile->GetPrefs()->GetInteger(
-              prefs::
-                  kBookmarkSignInPromoDismissCountPerProfileForLimitsExperiment) +
-              1);
+      return;
+    case signin::SignInPromoType::kComposeboxDriveContextMenuOption:
+      // Composebox Drive signin promo does not track dismiss counts as it is
+      // explicitly triggered by the user from the context menu.
+      return;
     case signin::SignInPromoType::kExtension:
+    case signin::SignInPromoType::kSendTabToSelf:
       NOTREACHED();
   }
 }
@@ -258,31 +270,23 @@ void IncrementContextualPromoDismissCountPerAccount(
     const AccountInfo& account) {
   signin::SignInPromoType promo_type =
       signin::GetSignInPromoTypeFromAccessPoint(access_point);
-  if (signin::ShouldUseAutofillSignInPromoLimits(promo_type)) {
-    SigninPrefs(*profile->GetPrefs())
-        .IncrementAutofillSigninPromoDismissCount(account.gaia);
-    return;
-  }
-
   switch (promo_type) {
     case signin::SignInPromoType::kPassword:
-      SigninPrefs(*profile->GetPrefs())
-          .IncrementPasswordSigninPromoDismissCount(account.gaia);
-      break;
     case signin::SignInPromoType::kAddress:
-      SigninPrefs(*profile->GetPrefs())
-          .IncrementAddressSigninPromoDismissCount(account.gaia);
-      break;
     case signin::SignInPromoType::kBookmark:
-      CHECK(base::FeatureList::IsEnabled(syncer::kUnoPhase2FollowUp));
       SigninPrefs(*profile->GetPrefs())
-          .IncrementBookmarkSigninPromoDismissCount(account.gaia);
+          .IncrementAutofillSigninPromoDismissCount(account.GetGaiaId());
       break;
     case signin::SignInPromoType::kSearchAIMode:
       SigninPrefs(*profile->GetPrefs())
-          .IncrementSearchAIModeSigninPromoDismissCount(account.gaia);
+          .IncrementSearchAIModeSigninPromoDismissCount(account.GetGaiaId());
+      break;
+    case signin::SignInPromoType::kComposeboxDriveContextMenuOption:
+      // Composebox Drive signin promo does not track dismiss counts as it is
+      // explicitly triggered by the user from the context menu.
       break;
     case signin::SignInPromoType::kExtension:
+    case signin::SignInPromoType::kSendTabToSelf:
       NOTREACHED();
   }
 }
@@ -306,12 +310,22 @@ BubbleSignInPromoView::BubbleSignInPromoView(
     signin_metrics::AccessPoint access_point,
     std::optional<syncer::LocalDataItemModel::DataId> data_id,
     ui::ButtonStyle button_style)
-    : access_point_(access_point),
-      delegate_(CreateDelegate(web_contents, access_point, data_id)) {
+    : BubbleSignInPromoView(web_contents,
+                            access_point,
+                            CreateDelegate(web_contents, access_point, data_id),
+                            button_style) {}
+
+BubbleSignInPromoView::BubbleSignInPromoView(
+    content::WebContents* web_contents,
+    signin_metrics::AccessPoint access_point,
+    std::unique_ptr<BubbleSignInPromoDelegate> delegate,
+    ui::ButtonStyle button_style)
+    : access_point_(access_point), delegate_(std::move(delegate)) {
+  CHECK(delegate_);
   Profile* profile =
       Profile::FromBrowserContext(web_contents->GetBrowserContext())
           ->GetOriginalProfile();
-  DCHECK(!profile->IsGuestSession());
+  CHECK(!profile->IsGuestSession(), base::NotFatalUntil::M162);
 
   signin::IdentityManager* identity_manager =
       IdentityManagerFactory::GetForProfile(profile);
@@ -323,9 +337,10 @@ BubbleSignInPromoView::BubbleSignInPromoView(
 
   AccountInfo account;
   // Sync promos can be shown in incognito, they use an empty account list.
-  if (!Profile::FromBrowserContext(web_contents->GetBrowserContext())
-           ->IsOffTheRecord()) {
-    account = signin_ui_util::GetSingleAccountForPromos(identity_manager);
+  if (!profile->IsOffTheRecord()) {
+    account = signin_ui_util::GetSingleAccountForPromos(
+        identity_manager,
+        AccountPreviewDataServiceFactory::GetForProfile(profile));
   }
 
   // Set the layout.
@@ -502,7 +517,8 @@ void BubbleSignInPromoView::OnWidgetDestroying(views::Widget* widget) {
   Profile* profile = Profile::FromBrowserContext(
       delegate_->GetWebContents()->GetBrowserContext());
   AccountInfo account = signin_ui_util::GetSingleAccountForPromos(
-      IdentityManagerFactory::GetForProfile(profile));
+      IdentityManagerFactory::GetForProfile(profile),
+      AccountPreviewDataServiceFactory::GetForProfile(profile));
 
   // Count the number of times the promo was dismissed in order to not show it
   // anymore after 2 dismissals.

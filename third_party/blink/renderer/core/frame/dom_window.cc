@@ -611,6 +611,13 @@ String DOMWindow::CrossDomainAccessErrorMessage(
     return StrCat({message, "The document-access policy denied access."});
   }
 
+  if (active_origin->CanAccess(target_origin)) {
+    return StrCat({message,
+                   "The frames are same-origin but belong to different agent "
+                   "clusters, possibly due to conflicting Document Isolation "
+                   "Policies."});
+  }
+
   // Default.
   return StrCat({message, "Protocols, domains, and ports must match."});
 }
@@ -1059,21 +1066,9 @@ void DOMWindow::DoPostMessage(scoped_refptr<SerializedScriptValue> message,
   mojom::blink::DelegatedCapability delegated_capability =
       mojom::blink::DelegatedCapability::kNone;
   if (options->hasDelegate()) {
-    Vector<StringView> capability_list =
-        StringView(options->delegate()).SplitSkippingEmpty(' ');
-    if (capability_list.Contains("payment")) {
-      delegated_capability = mojom::blink::DelegatedCapability::kPaymentRequest;
-    } else if (capability_list.Contains("fullscreen")) {
-      delegated_capability =
-          mojom::blink::DelegatedCapability::kFullscreenRequest;
-    } else if (capability_list.Contains("display-capture")) {
-      delegated_capability =
-          mojom::blink::DelegatedCapability::kDisplayCaptureRequest;
-    } else {
-      exception_state.ThrowDOMException(
-          DOMExceptionCode::kNotSupportedError,
-          StrCat({"Delegation of \'", options->delegate(),
-                  "\' is not supported."}));
+    delegated_capability = PostMessageHelper::MapStringToDelegatedCapability(
+        options->delegate(), source, exception_state);
+    if (exception_state.HadException()) {
       return;
     }
 

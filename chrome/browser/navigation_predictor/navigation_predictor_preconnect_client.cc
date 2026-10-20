@@ -28,12 +28,11 @@
 #include "content/public/browser/web_contents.h"
 #include "net/base/features.h"
 #include "net/base/ip_address.h"
+#include "services/network/public/cpp/constants.h"
 
 NavigationPredictorPreconnectClient::NavigationPredictorPreconnectClient(
     content::WebContents* web_contents)
     : content::WebContentsObserver(web_contents),
-      content::WebContentsUserData<NavigationPredictorPreconnectClient>(
-          *web_contents),
       browser_context_(web_contents->GetBrowserContext()),
       current_visibility_(web_contents->GetVisibility()) {}
 
@@ -121,7 +120,7 @@ void NavigationPredictorPreconnectClient::OnVisibilityChanged(
   auto* search_engine_preconnector = GetSearchEnginePreconnector();
   if (search_engine_preconnector) {
     search_engine_preconnector->OnWebContentsVisibilityChanged(
-        web_contents(), current_visibility_ == content::Visibility::VISIBLE);
+        web_contents(), visibility == content::Visibility::VISIBLE);
   }
 
   // Check for same state.
@@ -198,14 +197,18 @@ void NavigationPredictorPreconnectClient::MaybePreconnectNow(
   auto* loading_predictor = predictors::LoadingPredictorFactory::GetForProfile(
       Profile::FromBrowserContext(browser_context_));
   GURL preconnect_url_serialized(preconnect_origin.Serialize());
-  DCHECK(preconnect_url_serialized.is_valid());
+  CHECK(preconnect_url_serialized.is_valid(), base::NotFatalUntil::M161);
 
   if (!loading_predictor)
     return;
 
   loading_predictor->PrepareForPageLoad(
       preconnect_origin, preconnect_url_serialized,
-      predictors::HintOrigin::NAVIGATION_PREDICTOR, true);
+      predictors::HintOrigin::NAVIGATION_PREDICTOR,
+      web_contents()->GetPrimaryMainFrame()->GetNetworkRestrictionsID(),
+      /*preconnectable=*/true,
+      /*preconnect_prediction=*/std::nullopt,
+      web_contents()->GetPrimaryMainFrame()->GetGlobalId());
 
   // The delay beyond the idle socket timeout that net uses when
   // re-preconnecting. If negative, no retries occur.
@@ -259,5 +262,3 @@ bool NavigationPredictorPreconnectClient::
 std::optional<int>
     NavigationPredictorPreconnectClient::preconnect_interval_for_testing_ =
         std::nullopt;
-
-WEB_CONTENTS_USER_DATA_KEY_IMPL(NavigationPredictorPreconnectClient);

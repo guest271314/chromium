@@ -5,6 +5,7 @@
 #include "cc/paint/paint_cache.h"
 
 #include "base/compiler_specific.h"
+#include "base/containers/span.h"
 #include "base/hash/hash.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -90,7 +91,7 @@ TEST_P(PaintCacheTest, ServiceBasic) {
   switch (GetType()) {
     case PaintCacheDataType::kPath: {
       auto path = CreatePath();
-      auto id = path.getGenerationID();
+      PaintCacheId id = path.getGenerationID();
       SkPath cached_path;
       EXPECT_EQ(false, service_cache.GetPath(id, &cached_path));
       service_cache.PutPath(id, path);
@@ -103,7 +104,7 @@ TEST_P(PaintCacheTest, ServiceBasic) {
     } break;
     case PaintCacheDataType::kSkRuntimeEffect: {
       auto effect = GetEffect();
-      auto id = base::PersistentHash(effect->source());
+      PaintCacheId id = base::PersistentHash(effect->source());
       sk_sp<SkRuntimeEffect> cached_effect = nullptr;
       EXPECT_FALSE(service_cache.GetEffect(id, &cached_effect));
       service_cache.PutEffect(id, effect);

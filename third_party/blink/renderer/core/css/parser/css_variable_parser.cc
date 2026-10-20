@@ -158,43 +158,6 @@ static bool ConsumeCommonArgumentGrammar(CSSParserTokenStream& stream,
       /*separator_required=*/false, context);
 }
 
-// if() argument grammar:
-// <if-args> = if( [ <if-args-branch> ; ]* <if-args-branch> ;? )
-// <if-args-branch> = <declaration-value> : <declaration-value>?
-static bool ConsumeIfArgumentGrammar(CSSParserTokenStream& stream,
-                                     VariableDataFeatures& features,
-                                     const CSSParserContext& context) {
-  CSSParserTokenStream::BlockGuard guard(stream);
-  {
-    CSSParserTokenStream::Boundary boundary(stream, kSemicolonToken);
-    if (!ConsumeCommonArgumentGrammarContent(
-            stream, features, /*separator_type=*/kColonToken,
-            /*separator_required=*/true, context)) {
-      return false;
-    }
-  }
-
-  while (!stream.AtEnd()) {
-    if (stream.Peek().GetType() != kSemicolonToken) {
-      return false;
-    }
-    stream.ConsumeIncludingWhitespace();
-
-    if (stream.AtEnd()) {
-      return true;
-    }
-
-    CSSParserTokenStream::Boundary boundary(stream, kSemicolonToken);
-    if (!ConsumeCommonArgumentGrammarContent(
-            stream, features, /*separator_type=*/kColonToken,
-            /*separator_required=*/true, context)) {
-      return false;
-    }
-  }
-
-  return true;
-}
-
 static bool ConsumeVariableReference(CSSParserTokenStream& stream,
                                      VariableDataFeatures& features,
                                      const CSSParserContext& context) {
@@ -418,7 +381,8 @@ static bool ConsumeCustomFunction(CSSParserTokenStream& stream,
         return false;
       }
       if (!ConsumeUnparsedValue(stream, /*restricted_value=*/false,
-                                /*stop_type=*/kEOFToken, features, context)) {
+                                /*stop_type=*/kEOFToken, features, context) ||
+          !stream.AtEnd()) {
         return false;
       }
     } else {
@@ -589,11 +553,9 @@ static bool ConsumeUnparsedValue(CSSParserTokenStream& stream,
     // First check if this is a valid substitution function (e.g. var(),
     // then handle the next token accordingly.
     if (token.GetBlockType() == CSSParserToken::kBlockStart) {
-      CSSParserTokenStream::State state = stream.Save();
-      CSSValueID function_id = token.FunctionId();
       // A block may have both var and env references. They can also be nested
       // and used as fallbacks.
-      switch (function_id) {
+      switch (token.FunctionId()) {
         case CSSValueID::kInvalid:
           // Not a built-in function, but it might be an author-defined
           // CSS function (e.g. --foo()).
@@ -608,19 +570,11 @@ static bool ConsumeUnparsedValue(CSSParserTokenStream& stream,
           continue;
         case CSSValueID::kInherit:
           if (!RuntimeEnabledFeatures::CSSInheritFunctionEnabled()) {
-            return false;
+            break;
           }
           [[fallthrough]];
         case CSSValueID::kVar:
           if (!ConsumeVariableReference(stream, features, context)) {
-            if (function_id == CSSValueID::kVar) {
-              stream.EnsureLookAhead();
-              stream.Restore(state);
-              if (ConsumeCommonArgumentGrammar(stream, features, context)) {
-                context.Count(
-                    WebFeature::kCSSDiscardedVarWithValidArgumentGrammar);
-              }
-            }
             error = true;
           }
           features |= static_cast<VariableDataFeatures>(
@@ -628,12 +582,6 @@ static bool ConsumeUnparsedValue(CSSParserTokenStream& stream,
           continue;
         case CSSValueID::kEnv:
           if (!ConsumeEnvVariableReference(stream, features, context)) {
-            stream.EnsureLookAhead();
-            stream.Restore(state);
-            if (ConsumeCommonArgumentGrammar(stream, features, context)) {
-              context.Count(
-                  WebFeature::kCSSDiscardedEnvWithValidArgumentGrammar);
-            }
             error = true;
           }
           features |= static_cast<VariableDataFeatures>(
@@ -645,12 +593,6 @@ static bool ConsumeUnparsedValue(CSSParserTokenStream& stream,
               error = true;
             }
           } else if (!ConsumeAttributeReference(stream, features, context)) {
-            stream.EnsureLookAhead();
-            stream.Restore(state);
-            if (ConsumeCommonArgumentGrammar(stream, features, context)) {
-              context.Count(
-                  WebFeature::kCSSDiscardedAttrWithValidArgumentGrammar);
-            }
             error = true;
           }
           features |= static_cast<VariableDataFeatures>(
@@ -668,12 +610,6 @@ static bool ConsumeUnparsedValue(CSSParserTokenStream& stream,
           continue;
         case CSSValueID::kIf:
           if (!ConsumeIf(stream, features, context)) {
-            stream.EnsureLookAhead();
-            stream.Restore(state);
-            if (ConsumeIfArgumentGrammar(stream, features, context)) {
-              context.Count(
-                  WebFeature::kCSSDiscardedIfWithValidArgumentGrammar);
-            }
             error = true;
           }
           if (!error) {
@@ -796,6 +732,12 @@ CSSVariableData* CSSVariableParser::ConsumeUnparsedDeclaration(
   original_text =
       CSSVariableParser::StripTrailingWhitespaceAndComments(original_text);
 
+  // We consumed the leading whitespace before taking `value_start_offset`, and
+  // just stripped the trailing one. (The test needs to be after the trailing
+  // strip, or we could look at trailing space believing it was leading.)
+  DCHECK(original_text.empty() ||
+         original_text.Find(IsNotHTMLSpace<UChar>) == 0u);
+
   return CSSVariableData::Create(original_text, is_animation_tainted, false,
                                  features);
 }
@@ -911,15 +853,7 @@ StringView CSSVariableParser::StripTrailingWhitespaceAndComments(
     }
   }
 
-  StringView ret = StringView(text, 0, string_len);
-
-  // Leading whitespace should already have been stripped.
-  // (This test needs to be after we stripped trailing spaces,
-  // or we could look at trailing space believing it was leading.)
-  // SAFETY: ret is checked for emptiness before access.
-  DCHECK(ret.empty() || !IsHTMLSpace(UNSAFE_BUFFERS(ret[0])));
-
-  return ret;
+  return StringView(text, 0, string_len);
 }
 
 void CSSVariableParser::CollectDashedFunctions(CSSParserTokenStream& stream,

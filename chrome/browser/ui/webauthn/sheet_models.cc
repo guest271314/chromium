@@ -38,6 +38,7 @@
 #include "device/fido/public/fido_types.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/resource/resource_bundle.h"
+#include "ui/base/window_open_disposition.h"
 #include "ui/views/layout/layout_provider.h"
 #include "ui/views/style/typography.h"
 
@@ -115,7 +116,7 @@ std::u16string PossibleAttestationWarning(
 AuthenticatorSheetModelBase::AuthenticatorSheetModelBase(
     AuthenticatorRequestDialogModel* dialog_model)
     : dialog_model_(dialog_model) {
-  DCHECK(dialog_model);
+  CHECK(dialog_model, base::NotFatalUntil::M162);
   dialog_model_->observers.AddObserver(this);
 }
 
@@ -224,7 +225,7 @@ void AuthenticatorSheetModelBase::OnCancel() {
 
 void AuthenticatorSheetModelBase::OnModelDestroyed(
     AuthenticatorRequestDialogModel* model) {
-  DCHECK(model == dialog_model_);
+  CHECK(model == dialog_model_, base::NotFatalUntil::M162);
   dialog_model_ = nullptr;
 }
 
@@ -672,7 +673,7 @@ AuthenticatorTouchIdSheetModel::AuthenticatorTouchIdSheetModel(
 
 std::u16string AuthenticatorTouchIdSheetModel::GetStepTitle() const {
   const std::u16string rp_id = GetRelyingPartyIdStringTitle(dialog_model());
-  std::optional<int> id = std::nullopt;
+  std::optional<int> id;
   switch (dialog_model()->request_type) {
     case device::FidoRequestType::kMakeCredential:
       id = IDS_WEBAUTHN_GPM_CREATE_PASSKEY_TITLE;
@@ -801,38 +802,6 @@ AuthenticatorOffTheRecordInterstitialSheetModel::GetCancelButtonLabel() const {
       IDS_WEBAUTHN_PLATFORM_AUTHENTICATOR_OFF_THE_RECORD_INTERSTITIAL_DENY);
 }
 
-// AuthenticatorPaaskSheetModel -----------------------------------------
-
-AuthenticatorPaaskSheetModel::AuthenticatorPaaskSheetModel(
-    AuthenticatorRequestDialogModel* dialog_model)
-    : AuthenticatorSheetModelBase(dialog_model,
-                                  OtherMechanismButtonVisibility::kHidden) {
-  vector_illustrations_.emplace(kPasskeyPhoneCustomIcon,
-                                kPasskeyPhoneDarkCustomIcon);
-}
-
-AuthenticatorPaaskSheetModel::~AuthenticatorPaaskSheetModel() = default;
-
-bool AuthenticatorPaaskSheetModel::IsActivityIndicatorVisible() const {
-  return true;
-}
-
-std::u16string AuthenticatorPaaskSheetModel::GetStepTitle() const {
-  switch (*dialog_model()->cable_ui_type) {
-    case AuthenticatorRequestDialogModel::CableUIType::CABLE_V1:
-    case AuthenticatorRequestDialogModel::CableUIType::CABLE_V2_SERVER_LINK:
-      // caBLEv1 and v2 server-link don't include device names.
-      return l10n_util::GetStringUTF16(IDS_WEBAUTHN_CABLE_ACTIVATE_TITLE);
-    case AuthenticatorRequestDialogModel::CableUIType::CABLE_V2_2ND_FACTOR:
-      return l10n_util::GetStringUTF16(
-          IDS_WEBAUTHN_CABLE_ACTIVATE_TITLE_DEVICE);
-  }
-}
-
-std::u16string AuthenticatorPaaskSheetModel::GetStepDescription() const {
-  return l10n_util::GetStringUTF16(IDS_WEBAUTHN_CABLE_ACTIVATE_DESCRIPTION);
-}
-
 // AuthenticatorClientPinEntrySheetModel
 // -----------------------------------------
 
@@ -884,7 +853,8 @@ void AuthenticatorClientPinEntrySheetModel::SetPinCode(
 
 void AuthenticatorClientPinEntrySheetModel::SetPinConfirmation(
     std::u16string pin_confirmation) {
-  DCHECK(mode_ == Mode::kPinSetup || mode_ == Mode::kPinChange);
+  CHECK(mode_ == Mode::kPinSetup || mode_ == Mode::kPinChange,
+        base::NotFatalUntil::M162);
   pin_confirmation_ = std::move(pin_confirmation);
 }
 
@@ -1231,8 +1201,9 @@ AuthenticatorSelectAccountSheetModel::~AuthenticatorSelectAccountSheetModel() =
     default;
 
 void AuthenticatorSelectAccountSheetModel::SetCurrentSelection(int selected) {
-  DCHECK_LE(0, selected);
-  DCHECK_LT(static_cast<size_t>(selected), dialog_model()->creds.size());
+  CHECK_LE(0, selected, base::NotFatalUntil::M162);
+  CHECK_LT(static_cast<size_t>(selected), dialog_model()->creds.size(),
+           base::NotFatalUntil::M162);
   selected_ = selected;
 }
 

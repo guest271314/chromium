@@ -4,12 +4,19 @@
 
 #include "device/vr/openxr/openxr_composition_layer.h"
 
+#include "base/time/time.h"
 #include "device/vr/openxr/openxr_graphics_binding.h"
 #include "device/vr/openxr/openxr_platform.h"
 #include "device/vr/openxr/openxr_util.h"
+#include "device/vr/openxr/openxr_view_configuration.h"
 #include "gpu/command_buffer/client/shared_image_interface.h"
 
 namespace device {
+
+// Timeout for waiting for a swapchain image. 50ms is chosen to be long enough
+// to avoid false positives on slow frames, but short enough to avoid ANR.
+constexpr XrDuration kSwapchainWaitTimeout =
+    base::Milliseconds(50).InNanoseconds();
 
 // static
 OpenXrCompositionLayer::Type OpenXrCompositionLayer::GetTypeFromMojomData(
@@ -89,11 +96,15 @@ OpenXrCompositionLayer::GetSwapchainImages() const {
 
 XrResult OpenXrCompositionLayer::CreateSwapchain(XrSession session,
                                                  uint32_t sample_count) {
+  // If kNumPrimaryViews is not 2, we need to be given the number of views here.
+  static_assert(kNumPrimaryViews == 2);
+
   DCHECK(!HasColorSwapchain());
   DCHECK(GetSwapchainImages().empty());
 
   XrSwapchainCreateInfo swapchain_create_info = {XR_TYPE_SWAPCHAIN_CREATE_INFO};
-  swapchain_create_info.arraySize = 1;
+  swapchain_create_info.arraySize =
+      SwapchainUsesTextureArray() ? kNumPrimaryViews : 1;
   swapchain_create_info.format = graphics_binding_->GetSwapchainFormat(session);
 
   swapchain_create_info.createFlags = creation_data_->read_only_data->is_static
@@ -146,31 +157,53 @@ void OpenXrCompositionLayer::DestroySwapchain(gpu::SharedImageInterface* sii) {
   color_swapchain_images_.clear();
 }
 
-XrResult OpenXrCompositionLayer::ActivateSwapchainImage(
+XrResult OpenXrCompositionLayer::AcquireSwapchainImage(
     gpu::SharedImageInterface* sii) {
-  CHECK(!has_active_swapchain_image_);
+  if (swapchain_image_state_ == SwapchainImageState::kAcquired) {
+    return XR_SUCCESS;
+  }
+  CHECK(swapchain_image_state_ == SwapchainImageState::kReleased);
   XrSwapchainImageAcquireInfo acquire_info = {
       XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
   RETURN_IF_XR_FAILED(xrAcquireSwapchainImage(color_swapchain_, &acquire_info,
                                               &active_swapchain_index_));
 
-  XrSwapchainImageWaitInfo wait_info = {XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
-  wait_info.timeout = XR_INFINITE_DURATION;
-  RETURN_IF_XR_FAILED(xrWaitSwapchainImage(color_swapchain_, &wait_info));
+  swapchain_image_state_ = SwapchainImageState::kAcquired;
+  return XR_SUCCESS;
+}
 
-  has_active_swapchain_image_ = true;
+XrResult OpenXrCompositionLayer::WaitSwapchainImage(
+    gpu::SharedImageInterface* sii) {
+  CHECK(swapchain_image_state_ == SwapchainImageState::kAcquired);
+  XrSwapchainImageWaitInfo wait_info = {XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
+  // TODO(crbug.com/530263060): We should use XR_INFINITE_DURATION here
+  // instead of a timeout, and remove the XR_TIMEOUT_EXPIRED workaround
+  // once the underlying runtime issue is resolved.
+  wait_info.timeout = kSwapchainWaitTimeout;
+  XrResult result = xrWaitSwapchainImage(color_swapchain_, &wait_info);
+
+  if (result == XR_TIMEOUT_EXPIRED) {
+    return XR_TIMEOUT_EXPIRED;
+  }
+
+  if (XR_FAILED(result)) {
+    swapchain_image_state_ = SwapchainImageState::kReleased;
+    return result;
+  }
+
+  swapchain_image_state_ = SwapchainImageState::kWaited;
   // The current active swapchain image has not yet been rendered.
   is_rendered_ = false;
-  graphics_binding_->OnSwapchainImageActivated(*this, sii);
+  graphics_binding_->OnSwapchainImageReady(*this, sii);
   return XR_SUCCESS;
 }
 
 XrResult OpenXrCompositionLayer::ReleaseActiveSwapchainImage() {
-  if (!has_active_swapchain_image_) {
+  if (swapchain_image_state_ != SwapchainImageState::kWaited) {
     return XR_SUCCESS;
   }
 
-  has_active_swapchain_image_ = false;
+  swapchain_image_state_ = SwapchainImageState::kReleased;
 
   // Since `active_swapchain_index_` is a unit32_t there's not a good "invalid"
   // number to set; so just leave it alone after clearing it.
@@ -180,7 +213,7 @@ XrResult OpenXrCompositionLayer::ReleaseActiveSwapchainImage() {
 }
 
 OpenXrSwapchainInfo* OpenXrCompositionLayer::GetActiveSwapchainImage() {
-  if (!has_active_swapchain_image_ ||
+  if (swapchain_image_state_ != SwapchainImageState::kWaited ||
       active_swapchain_index_ >= color_swapchain_images_.size()) {
     return nullptr;
   }
@@ -196,6 +229,17 @@ bool OpenXrCompositionLayer::IsUsingSharedImages() const {
   return ((swapchain_info.size() > 1) && swapchain_info[0].shared_image);
 }
 
+bool OpenXrCompositionLayer::SharedImageUsesTextureArray() const {
+  return read_only_data().texture_type == mojom::XRTextureType::kTextureArray;
+}
+
+bool OpenXrCompositionLayer::SwapchainUsesTextureArray() const {
+  // We will let arraySize be kNumPrimaryViews. Open XR only uses
+  // GL_TEXTURE_2D_ARRAY when arraySize > 1.
+  return read_only_data().layout == mojom::XRLayerLayout::kStereo &&
+         kNumPrimaryViews > 1;
+}
+
 LayerId OpenXrCompositionLayer::GetLayerId() const {
   return creation_data_->read_only_data->layer_id;
 }
@@ -208,13 +252,13 @@ void OpenXrCompositionLayer::UpdateMutableLayerData(
 
 void OpenXrCompositionLayer::UpdateActiveSwapchainImageSize(
     gpu::SharedImageInterface* sii) {
-  if (has_active_swapchain_image_) {
+  if (has_active_swapchain_image()) {
     graphics_binding_->ResizeSharedBuffer(*this, *GetActiveSwapchainImage(),
                                           sii);
   }
 }
 
-const gfx::Rect OpenXrCompositionLayer::GetSubImageViewport(
+gfx::Rect OpenXrCompositionLayer::GetSubImageViewport(
     XrEyeVisibility eye) const {
   gfx::Rect info{0, 0, static_cast<int>(read_only_data().texture_width),
                  static_cast<int>(read_only_data().texture_height)};
@@ -236,6 +280,11 @@ const gfx::Rect OpenXrCompositionLayer::GetSubImageViewport(
     }
   }
   return info;
+}
+
+uint32_t OpenXrCompositionLayer::GetSubImageArrayIndex(
+    XrEyeVisibility eye) const {
+  return SwapchainUsesTextureArray() && eye == XR_EYE_VISIBILITY_RIGHT ? 1 : 0;
 }
 
 std::vector<XrEyeVisibility> OpenXrCompositionLayer::GetXrEyesForComposition()

@@ -62,6 +62,7 @@
 namespace net {
 
 namespace test {
+class SpdyHttpStreamTest;
 class SpdyStreamTest;
 }
 
@@ -638,16 +639,16 @@ class NET_EXPORT SpdySession
   }
 
  private:
-  friend class test::SpdyStreamTest;
   friend class base::RefCounted<SpdySession>;
   friend class HttpNetworkTransactionTest;
   friend class HttpProxyClientSocketPoolTest;
-  friend class SpdyHttpStreamTest;
   friend class SpdyNetworkTransactionTest;
   friend class SpdyProxyClientSocketTest;
   friend class SpdySessionPoolTest;
   friend class SpdySessionTest;
   friend class SpdyStreamRequest;
+  friend class test::SpdyHttpStreamTest;
+  friend class test::SpdyStreamTest;
 
   // Represents a pending stream request.
   struct PendingStreamRequest {
@@ -1139,6 +1140,12 @@ class NET_EXPORT SpdySession
   AvailabilityState availability_state_ = STATE_AVAILABLE;
   ReadState read_state_ = READ_STATE_DO_READ;
   WriteState write_state_ = WRITE_STATE_IDLE;
+
+  // True when DoDrainSessionAsync() has made the session unavailable and posted
+  // a task to run DoDrainSession(). Prevents further reads and suppresses
+  // premature synchronous draining (e.g., when closing the last active stream)
+  // before the posted DoDrainSession() task runs.
+  bool drain_session_pending_ = false;
 
   // If the session is closing (i.e., |availability_state_| is STATE_DRAINING),
   // then |error_on_close_| holds the error with which it was closed, which

@@ -11,6 +11,7 @@
 #import "ios/chrome/browser/shared/ui/util/ui_view_controller_with_display_tracing.h"
 
 @protocol AssistantAIMMutator;
+@class AssistantAIMMetricsRecorder;
 @class AssistantAIMViewController;
 @class ComposeboxInputPlateViewController;
 
@@ -38,6 +39,26 @@
 - (void)assistantAIMViewControllerDidChangeTraits:
     (AssistantAIMViewController*)viewController;
 
+// Called when the user requests to see the AIM SRP logs.
+- (void)assistantAIMViewControllerDidRequestSRPLogs:
+    (AssistantAIMViewController*)viewController;
+
+// Called when the user requests to see the AIM Loaded URL.
+- (void)assistantAIMViewControllerDidRequestLoadedURL:
+    (AssistantAIMViewController*)viewController;
+
+// Called when the user requests to see the Composebox logs.
+- (void)assistantAIMViewControllerDidRequestComposeboxLogs:
+    (AssistantAIMViewController*)viewController;
+
+// Called when the user taps on my activity.
+- (void)assistantAIMViewControllerDidTapMyActivity:
+    (AssistantAIMViewController*)viewController;
+
+// Called when the user taps on help.
+- (void)assistantAIMViewControllerDidTapHelp:
+    (AssistantAIMViewController*)viewController;
+
 @end
 
 @interface AssistantAIMViewController
@@ -48,6 +69,9 @@
 
 // The mutator for this view controller.
 @property(nonatomic, weak) id<AssistantAIMMutator> mutator;
+
+// Metrics recorder for the Assistant AIM session.
+@property(nonatomic, strong) AssistantAIMMetricsRecorder* metricsRecorder;
 
 // Adds the input view controller to this ViewController.
 - (void)addInputViewController:
@@ -61,6 +85,9 @@
 - (BOOL)shouldPauseScrollView:(UIScrollView*)scrollView
                    forGesture:(UIGestureRecognizer*)gesture
             isInLargestDetent:(BOOL)isInLargestDetent;
+
+// Weather to intercept the given pan gesture.
+- (BOOL)shouldInterceptPanGesture:(UIPanGestureRecognizer*)gesture;
 
 @end
 

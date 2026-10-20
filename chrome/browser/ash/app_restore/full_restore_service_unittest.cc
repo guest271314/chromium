@@ -10,6 +10,8 @@
 #include "ash/constants/ash_features.h"
 #include "ash/constants/ash_pref_names.h"
 #include "ash/constants/ash_switches.h"
+#include "ash/constants/chrome_pref_names.h"
+#include "ash/constants/chrome_switches.h"
 #include "ash/wm/window_restore/informed_restore_contents_data.h"
 #include "ash/wm/window_restore/window_restore_util.h"
 #include "base/command_line.h"
@@ -21,14 +23,13 @@
 #include "chrome/browser/ash/app_restore/full_restore_service_factory.h"
 #include "chrome/browser/ash/floating_workspace/floating_workspace_util.h"
 #include "chrome/browser/ash/login/users/profile_user_manager_controller.h"
+#include "chrome/browser/ash/login/users/scoped_account_id_annotator.h"
 #include "chrome/browser/ash/profiles/profile_helper.h"
 #include "chrome/browser/first_run/first_run.h"
 #include "chrome/browser/prefs/browser_prefs.h"
 #include "chrome/browser/prefs/session_startup_pref.h"
 #include "chrome/browser/sessions/exit_type_service.h"
 #include "chrome/common/chrome_switches.h"
-#include "chrome/common/pref_names.h"
-#include "chrome/grit/generated_resources.h"
 #include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile.h"
 #include "chrome/test/base/testing_profile_manager.h"
@@ -45,7 +46,7 @@
 #include "components/app_restore/restore_data.h"
 #include "components/session_manager/core/session.h"
 #include "components/session_manager/core/session_manager.h"
-#include "components/session_manager/test/test_user_session_manager.h"
+#include "components/session_manager/test/user_session_test_environment.h"
 #include "components/strings/grit/components_strings.h"
 #include "components/sync/base/client_tag_hash.h"
 #include "components/sync/base/data_type.h"
@@ -88,7 +89,8 @@ void SetPrefValue(const std::string& name,
 syncer::SyncData CreateRestoreOnStartupPrefSyncData(
     SessionStartupPref::PrefValue value) {
   sync_pb::EntitySpecifics specifics;
-  SetPrefValue(::prefs::kRestoreOnStartup, base::Value(static_cast<int>(value)),
+  SetPrefValue(ash::chrome_prefs::kRestoreOnStartup,
+               base::Value(static_cast<int>(value)),
                specifics.mutable_preference());
   return syncer::SyncData::CreateRemoteData(
       specifics, syncer::ClientTagHash::FromHashed("unused"));
@@ -139,10 +141,12 @@ class FullRestoreTestHelper {
  public:
   FullRestoreTestHelper(
       const AccountId& account_id,
-      ash::test::TestUserSessionManager& test_user_session_manager,
+      ash::test::UserSessionTestEnvironment& user_session_test_environment,
       TestingProfileManager& profile_manager)
       : account_id_(account_id) {
-    test_user_session_manager.LogIn(account_id);
+    user_session_test_environment.LogIn(account_id);
+    ash::ScopedAccountIdAnnotator annotator(profile_manager.profile_manager(),
+                                            account_id);
     profile_ = profile_manager.CreateTestingProfile(account_id_.GetUserEmail());
 
     ::app_restore::AppRestoreInfo::GetInstance()->SetRestorePref(account_id_,
@@ -194,10 +198,10 @@ class FullRestoreServiceTest : public testing::Test {
 
   void SetUp() override {
     base::CommandLine::ForCurrentProcess()->AppendSwitch(
-        ::switches::kNoFirstRun);
+        ash::chrome_switches::kNoFirstRun);
 
-    test_user_session_manager_ =
-        std::make_unique<ash::test::TestUserSessionManager>(
+    user_session_test_environment_ =
+        std::make_unique<ash::test::UserSessionTestEnvironment>(
             TestingBrowserProcess::GetGlobal()->local_state());
 
     profile_manager_ = std::make_unique<TestingProfileManager>(
@@ -210,18 +214,18 @@ class FullRestoreServiceTest : public testing::Test {
             user_manager::UserManager::Get());
 
     // Register two accounts. The second account may be needed by a subclass.
-    CHECK(test_user_session_manager_->AddRegularUser(kAccountId1));
-    CHECK(test_user_session_manager_->AddRegularUser(kAccountId2));
+    CHECK(user_session_test_environment_->AddRegularUser(kAccountId1));
+    CHECK(user_session_test_environment_->AddRegularUser(kAccountId2));
 
     test_helper_ = std::make_unique<FullRestoreTestHelper>(
-        kAccountId1, *test_user_session_manager_, *profile_manager_);
+        kAccountId1, *user_session_test_environment_, *profile_manager_);
   }
 
   void TearDown() override {
     test_helper_.reset();
     profile_manager_.reset();
     profile_user_manager_controller_.reset();
-    test_user_session_manager_.reset();
+    user_session_test_environment_.reset();
   }
 
   TestingProfile* profile() { return test_helper_->profile(); }
@@ -317,7 +321,8 @@ class FullRestoreServiceTest : public testing::Test {
  protected:
   content::BrowserTaskEnvironment task_environment_;
   ash::SessionTerminationManager session_termination_manager_;
-  std::unique_ptr<ash::test::TestUserSessionManager> test_user_session_manager_;
+  std::unique_ptr<ash::test::UserSessionTestEnvironment>
+      user_session_test_environment_;
   std::unique_ptr<TestingProfileManager> profile_manager_;
   std::unique_ptr<ash::ProfileUserManagerController>
       profile_user_manager_controller_;
@@ -474,7 +479,7 @@ TEST_F(FullRestoreServiceTest, ReImage) {
 // restore setting. Don't show the informed restore dialog and don't restore.
 TEST_F(FullRestoreServiceTest, Upgrading) {
   profile()->GetPrefs()->SetInteger(
-      ::prefs::kRestoreOnStartup,
+      ash::chrome_prefs::kRestoreOnStartup,
       static_cast<int>(SessionStartupPref::kPrefValueNewTab));
   auto mock_delegate = std::make_unique<MockFullRestoreServiceDelegate>();
   EXPECT_CALL(*mock_delegate,
@@ -488,7 +493,7 @@ TEST_F(FullRestoreServiceTest, Upgrading) {
 
   // Simulate the Chrome restore setting is changed.
   profile()->GetPrefs()->SetInteger(
-      ::prefs::kRestoreOnStartup,
+      ash::chrome_prefs::kRestoreOnStartup,
       static_cast<int>(SessionStartupPref::kPrefValueLast));
 
   // The OS restore setting should not change.
@@ -648,7 +653,7 @@ class FullRestoreServiceMultipleUsersTest
     FullRestoreServiceTestHavingFullRestoreFile::SetUp();
 
     test_helper2_ = std::make_unique<FullRestoreTestHelper>(
-        kAccountId2, *test_user_session_manager_, *profile_manager_);
+        kAccountId2, *user_session_test_environment_, *profile_manager_);
     CreateRestoreData(profile2());
   }
 
@@ -694,7 +699,7 @@ class ForestFullRestoreServiceMultipleUsersTest
 
   void SetUp() override {
     base::CommandLine::ForCurrentProcess()->AppendSwitch(
-        ::switches::kNoFirstRun);
+        ash::chrome_switches::kNoFirstRun);
     FullRestoreServiceMultipleUsersTest::SetUp();
   }
 };

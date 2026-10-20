@@ -5,7 +5,6 @@
 #include "chrome/browser/ui/views/passwords/manage_passwords_list_view.h"
 
 #include "build/build_config.h"
-#include "build/buildflag.h"
 #include "chrome/browser/ui/layout_constants.h"
 #include "chrome/browser/ui/passwords/ui_utils.h"
 #include "chrome/browser/ui/views/chrome_layout_provider.h"
@@ -18,7 +17,6 @@
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/ui_base_features.h"
 #include "ui/gfx/favicon_size.h"
-#include "ui/gfx/vector_icon_utils.h"
 #include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/controls/separator.h"
 #include "ui/views/view_class_properties.h"
@@ -68,7 +66,7 @@ ManagePasswordsListView::ManagePasswordsListView(
             /*action_image_icon=*/
             ui::ImageModel::FromVectorIcon(
                 features::IsRoundedIconsEnabled()
-                    ? vector_icons::kArrowRightIcon
+                    ? vector_icons::kArrowRightFlippableIcon
                     : vector_icons::kSubmenuArrowOldIcon,
                 ui::kColorIcon),
             /*state_icon=*/store_icon);
@@ -103,8 +101,9 @@ ManagePasswordsListView::ManagePasswordsListView(
           /*subtitle_text=*/std::u16string(),
           /*action_image_icon=*/
           ui::ImageModel::FromVectorIcon(
-              features::IsRoundedIconsEnabled() ? vector_icons::kOpenInNewIcon
-                                                : vector_icons::kLaunchOldIcon,
+              features::IsRoundedIconsEnabled()
+                  ? vector_icons::kOpenInNewFlippableIcon
+                  : vector_icons::kLaunchOldIcon,
               ui::kColorIconSecondary,
               GetLayoutConstant(LayoutConstant::kPageInfoIconSize))));
   manage_passwords_button->SetID(static_cast<int>(

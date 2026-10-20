@@ -2,10 +2,9 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import type {DisableModuleEvent, DismissModuleInstanceEvent, OutlookCalendarModuleElement} from 'chrome://new-tab-page/lazy_load.js';
+import type {DisableModuleEvent, OutlookCalendarModuleElement} from 'chrome://new-tab-page/lazy_load.js';
 import {outlookCalendarDescriptor, OutlookCalendarProxyImpl, ParentTrustedDocumentProxy} from 'chrome://new-tab-page/lazy_load.js';
-import {MicrosoftAuthUntrustedDocumentRemote} from 'chrome://new-tab-page/ntp_microsoft_auth_shared_ui.mojom-webui.js';
-import {OutlookCalendarPageHandlerRemote} from 'chrome://new-tab-page/outlook_calendar.mojom-webui.js';
+import {MicrosoftAuthUntrustedDocumentRemote, OutlookCalendarPageHandlerRemote} from 'chrome://new-tab-page/new_tab_page.js';
 import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
 import {assertEquals, assertTrue} from 'chrome://webui-test/chai_assert.js';
 import type {TestMock} from 'chrome://webui-test/test_mock.js';
@@ -24,7 +23,6 @@ suite('NewTabPageModulesOutlookCalendarModuleTest', () => {
   setup(() => {
     loadTimeData.overrideValues({
       modulesOutlookCalendarTitle: title,
-      hideDismissModules: false,
     });
     document.body.innerHTML = window.trustedTypes!.emptyHTML;
     handler = installMock(
@@ -36,7 +34,7 @@ suite('NewTabPageModulesOutlookCalendarModuleTest', () => {
         mock => ParentTrustedDocumentProxy.setInstance(mock));
   });
 
-  test(`creates module`, async () => {
+  test('creates module', async () => {
     handler.setPromiseResolveFor('getEvents', {events: createEvents(1)});
     module = await outlookCalendarDescriptor.initialize(0) as
         OutlookCalendarModuleElement;
@@ -48,7 +46,7 @@ suite('NewTabPageModulesOutlookCalendarModuleTest', () => {
     assertEquals(module.$.moduleHeader.headerText, title);
   });
 
-  test(`module not created when there are no events`, async () => {
+  test('module not created when there are no events', async () => {
     handler.setPromiseResolveFor('getEvents', {events: createEvents(0)});
     module = await outlookCalendarDescriptor.initialize(0) as
         OutlookCalendarModuleElement;
@@ -75,31 +73,6 @@ suite('NewTabPageModulesOutlookCalendarModuleTest', () => {
     assertEquals(
         ('You won\'t see Outlook Calendar on this page again'),
         event.detail.message);
-  });
-
-  test(`dismiss and restore module`, async () => {
-    // Set up module.
-    handler.setPromiseResolveFor('getEvents', {events: createEvents(1)});
-    module = await outlookCalendarDescriptor.initialize(0) as
-        OutlookCalendarModuleElement;
-    assertTrue(!!module);
-    document.body.append(module);
-
-    // Dismiss module.
-    const whenFired = eventToPromise('dismiss-module-instance', module);
-    const dismissButton =
-        module.$.moduleHeader.shadowRoot.querySelector<HTMLElement>('#dismiss');
-    assertTrue(!!dismissButton);
-    dismissButton.click();
-
-    const event: DismissModuleInstanceEvent = await whenFired;
-    assertEquals('Outlook Calendar hidden', event.detail.message);
-    assertTrue(!!event.detail.restoreCallback);
-    assertEquals(1, handler.getCallCount('dismissModule'));
-
-    // Restore module.
-    event.detail.restoreCallback();
-    assertEquals(1, handler.getCallCount('restoreModule'));
   });
 
   test('clicking the sign out button sends sign out request', async () => {

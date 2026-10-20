@@ -33,18 +33,27 @@
 #include <hb.h>
 #include <stdarg.h>
 
+#include <string>
+
 #include "base/compiler_specific.h"
+#include "base/containers/span.h"
+#include "base/numerics/byte_conversions.h"
 #include "base/numerics/safe_conversions.h"
 #include "build/build_config.h"
 #include "third_party/blink/public/platform/platform.h"
 #include "third_party/blink/renderer/platform/fonts/font_cache.h"
+#include "third_party/blink/renderer/platform/fonts/ift/ift_patcher.h"
 #include "third_party/blink/renderer/platform/fonts/web_font_typeface_factory.h"
 #include "third_party/blink/renderer/platform/instrumentation/tracing/trace_event.h"
+#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/blink/renderer/platform/wtf/shared_buffer.h"
+#include "third_party/blink/renderer/platform/wtf/text/format.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_builder.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
 #include "third_party/ots/src/include/ots-memory-stream.h"
 #include "third_party/skia/include/core/SkStream.h"
+#include "third_party/woff2/include/woff2/decode.h"
+#include "third_party/woff2/include/woff2/output.h"
 
 namespace blink {
 
@@ -55,6 +64,11 @@ const size_t kMaxDecompressedSizeMb = 30;
 #else
 const size_t kMaxDecompressedSizeMb = 128;
 #endif
+
+constexpr size_t kMaxDecompressedSize = kMaxDecompressedSizeMb * 1024 * 1024;
+
+constexpr uint32_t kWoffTag = OTS_TAG('w', 'O', 'F', 'F');
+constexpr uint32_t kWoff2Tag = OTS_TAG('w', 'O', 'F', '2');
 
 class BlinkOTSContext final : public ots::OTSContext {
   DISALLOW_NEW();
@@ -68,7 +82,6 @@ class BlinkOTSContext final : public ots::OTSContext {
   void AppendErrorMessage(const String& new_error_string);
 
   StringBuilder accumulated_error_string_;
-  bool stopped_accepting_messages_ = false;
 };
 
 void BlinkOTSContext::Message(int level, const char* format, ...) {
@@ -87,7 +100,7 @@ void BlinkOTSContext::Message(int level, const char* format, ...) {
     AppendErrorMessage(String("Unspecified OTS Error"));
   } else {
     Vector<char, 256> buffer;
-    unsigned len = result;
+    wtf_size_t len = result;
     buffer.Grow(len + 1);
 
     va_start(args, format);
@@ -101,24 +114,16 @@ void BlinkOTSContext::Message(int level, const char* format, ...) {
 
 void BlinkOTSContext::AppendErrorMessage(const String& new_error_string) {
   // OTS can emit a large number of warnings for malformed fonts. Keep enough
-  // text for diagnostics, but avoid unbounded string growth. Once a message
-  // would push the accumulated string past the budget, stop accepting further
-  // messages entirely rather than truncating individual ones.
-  static constexpr unsigned kMaxAccumulatedErrorStringLength = 4096;
+  // text for diagnostics, but avoid unbounded string growth. Once the
+  // accumulated string reaches the budget, stop accepting further messages
+  // entirely rather than truncating individual ones.
+  static constexpr wtf_size_t kMaxAccumulatedErrorStringLength = 4096;
 
-  if (stopped_accepting_messages_) {
+  if (accumulated_error_string_.length() >= kMaxAccumulatedErrorStringLength) {
     return;
   }
 
-  const unsigned separator_length = accumulated_error_string_.empty() ? 0u : 1u;
-  if (accumulated_error_string_.length() + separator_length +
-          new_error_string.length() >
-      kMaxAccumulatedErrorStringLength) {
-    stopped_accepting_messages_ = true;
-    return;
-  }
-
-  if (separator_length) {
+  if (!accumulated_error_string_.empty()) {
     accumulated_error_string_.Append('\n');
   }
   accumulated_error_string_.Append(new_error_string);
@@ -184,21 +189,97 @@ ots::TableAction BlinkOTSContext::GetTableAction(uint32_t tag) {
   }
 }
 
-}  // namespace
+struct FontDecodeResult {
+  std::unique_ptr<IftPatcher> ift_patcher;
+};
 
-sk_sp<SkTypeface> WebFontDecoder::Decode(SegmentedBuffer* buffer) {
-  if (!buffer) {
-    SetErrorString("Empty Buffer");
-    return nullptr;
+// Decompresses and sanitizes `font_data` into an output stream using
+// `ots_context`, and initializes `ift_patcher` if `font_data` is an IFT-enabled
+// font. Returns whether decoding succeeded. On failure, the error string can be
+// retrieved from `ots_context`.
+bool DecodeFontWithIft(BlinkOTSContext& ots_context,
+                       base::span<const uint8_t> font_data,
+                       ots::ExpandingMemoryStream* output,
+                       std::unique_ptr<IftPatcher>& ift_patcher) {
+  TRACE_EVENT("blink", "DecodeFont");
+
+  uint32_t magic = 0;
+  if (font_data.size() >= 4) {
+    magic = base::U32FromBigEndian(font_data.first<4u>());
   }
 
-  // This is the largest web font size which we'll try to transcode.
-  static const size_t kMaxDecompressedSize =
-      kMaxDecompressedSizeMb * 1024 * 1024;
+  switch (magic) {
+    case kWoff2Tag: {
+      size_t decompressed_size =
+          woff2::ComputeWOFF2FinalSize(font_data.data(), font_data.size());
+      if (decompressed_size == 0) {
+        ots_context.Message(0, "Size of decompressed WOFF 2.0 is set to 0");
+        return false;
+      }
+      if (decompressed_size < font_data.size()) {
+        ots_context.Message(
+            0, "Size of decompressed WOFF 2.0 is less than compressed size");
+        return false;
+      }
+      if (decompressed_size > kMaxDecompressedSize) {
+        ots_context.Message(0,
+                            "Size of decompressed WOFF 2.0 font exceeds %gMB",
+                            kMaxDecompressedSize / (1024.0 * 1024.0));
+        return false;
+      }
+
+      std::string buf(decompressed_size, 0);
+      woff2::WOFF2StringOut out(&buf);
+      if (!woff2::ConvertWOFF2ToTTF(font_data.data(), font_data.size(), &out)) {
+        ots_context.Message(0, "Failed to convert WOFF 2.0 font to SFNT");
+        return false;
+      }
+
+      base::span<const uint8_t> decompressed_span =
+          base::as_byte_span(buf).first(out.Size());
+      if (!ots_context.Process(output, decompressed_span.data(),
+                               decompressed_span.size())) {
+        return false;
+      }
+      ift_patcher = IftPatcher::Create(decompressed_span);
+      break;
+    }
+    case kWoffTag: {
+      // The IFT (Incremental Font Transfer) specification recommends using
+      // WOFF2. OTS handles WOFF decompression directly, so we do not extract
+      // unsanitized font data or create an IftPatcher for the WOFF format.
+      if (!ots_context.Process(output, font_data.data(), font_data.size())) {
+        return false;
+      }
+      break;
+    }
+    default: {
+      if (!ots_context.Process(output, font_data.data(), font_data.size())) {
+        return false;
+      }
+      ift_patcher = IftPatcher::Create(font_data);
+      break;
+    }
+  }
+
+  return true;
+}
+
+}  // namespace
+
+DecodedWebFont::DecodedWebFont() = default;
+DecodedWebFont::DecodedWebFont(DecodedWebFont&&) noexcept = default;
+DecodedWebFont& DecodedWebFont::operator=(DecodedWebFont&&) noexcept = default;
+DecodedWebFont::~DecodedWebFont() = default;
+
+base::expected<DecodedWebFont, String> DecodeWebFont(SegmentedBuffer* buffer) {
+  if (!buffer) {
+    return base::unexpected("Empty Buffer");
+  }
+
   if (buffer->size() > kMaxDecompressedSize) {
-    SetErrorString(String::Format("Web font size more than %zuMB",
-                                  kMaxDecompressedSizeMb));
-    return nullptr;
+    return base::unexpected(
+        Format("Web font size more than {}MB", kMaxDecompressedSizeMb));
   }
 
   // Most web fonts are compressed, so the result can be much larger than
@@ -209,36 +290,38 @@ sk_sp<SkTypeface> WebFontDecoder::Decode(SegmentedBuffer* buffer) {
   BlinkOTSContext ots_context;
   SegmentedBuffer::DeprecatedFlatData flattened_buffer(buffer);
 
-  TRACE_EVENT_BEGIN0("blink", "DecodeFont");
-  bool ok = ots_context.Process(
-      output.get(), reinterpret_cast<const uint8_t*>(flattened_buffer.data()),
-      buffer->size());
-  TRACE_EVENT_END0("blink", "DecodeFont");
+  bool ok;
+  std::unique_ptr<IftPatcher> ift_patcher;
+  if (RuntimeEnabledFeatures::IncrementalFontTransferEnabled()) {
+    ok = DecodeFontWithIft(ots_context, base::as_byte_span(flattened_buffer),
+                           output.get(), ift_patcher);
+  } else {
+    TRACE_EVENT("blink", "DecodeFont");
+    ok = ots_context.Process(
+        output.get(), reinterpret_cast<const uint8_t*>(flattened_buffer.data()),
+        buffer->size());
+  }
 
   if (!ok) {
-    SetErrorString(ots_context.GetErrorString());
-    return nullptr;
+    return base::unexpected(ots_context.GetErrorString());
   }
 
   const void* decoded_data = output->get();
-  const size_t decoded_length = base::checked_cast<size_t>(output->Tell());
+  DecodedWebFont result;
+  result.ift_patcher = std::move(ift_patcher);
+  result.decoded_size = base::checked_cast<size_t>(output->Tell());
   sk_sp<SkData> sk_data = SkData::MakeWithProc(
-      decoded_data, decoded_length,
+      decoded_data, result.decoded_size,
       [](const void*, void* output) {
         delete static_cast<const ots::ExpandingMemoryStream*>(output);
       },
       output.release());
 
-  sk_sp<SkTypeface> new_typeface;
-
-  if (!WebFontTypefaceFactory::CreateTypeface(sk_data, new_typeface)) {
-    SetErrorString("Unable to instantiate font face from font data.");
-    return nullptr;
+  if (!WebFontTypefaceFactory::CreateTypeface(sk_data, result.sk_typeface)) {
+    return base::unexpected("Unable to instantiate font face from font data.");
   }
 
-  decoded_size_ = decoded_length;
-
-  return new_typeface;
+  return result;
 }
 
 }  // namespace blink

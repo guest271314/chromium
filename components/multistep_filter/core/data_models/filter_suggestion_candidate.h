@@ -20,8 +20,12 @@ struct FilterSuggestionCandidateAttribute {
   std::string key;
   // User-visible label for the filter (e.g., "Minimum Price").
   std::u16string label;
+  // The resolved value of the filter (e.g., "2" or "LGA").
+  std::u16string value;
 
-  FilterSuggestionCandidateAttribute(std::string key, std::u16string label);
+  FilterSuggestionCandidateAttribute(std::string key,
+                                     std::u16string label,
+                                     std::u16string value = u"");
 
   FilterSuggestionCandidateAttribute(
       const FilterSuggestionCandidateAttribute&) = default;
@@ -52,11 +56,17 @@ struct FilterSuggestionCandidate {
   GURL navigation_url;
   // Attributes applied to this suggestion.
   std::vector<FilterSuggestionCandidateAttribute> attributes;
+  // The short cue string to display in the Omnibox.
+  std::u16string short_text;
+  // The detailed cue string to display.
+  std::u16string detailed_text;
 
   FilterSuggestionCandidate(
       base::Uuid filter_annotation_id,
       GURL navigation_url,
-      std::vector<FilterSuggestionCandidateAttribute> attributes);
+      std::vector<FilterSuggestionCandidateAttribute> attributes,
+      std::u16string short_text = u"",
+      std::u16string detailed_text = u"");
 
   FilterSuggestionCandidate(const FilterSuggestionCandidate&);
   FilterSuggestionCandidate(FilterSuggestionCandidate&&);

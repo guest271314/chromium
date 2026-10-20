@@ -37,7 +37,7 @@
 #include "content/public/browser/network_service_instance.h"
 #include "content/public/test/test_storage_partition.h"
 #include "crypto/scoped_fake_unexportable_key_provider.h"
-#include "crypto/signature_verifier.h"
+#include "crypto/sign.h"
 #include "crypto/unexportable_key.h"
 #include "net/cookies/canonical_cookie.h"
 #include "services/network/public/mojom/cookie_manager.mojom.h"
@@ -48,7 +48,6 @@
 using bound_session_credentials::RotationDebugInfo;
 using chrome::mojom::ResumeBlockedRequestsTrigger;
 using unexportable_keys::ServiceErrorOr;
-using unexportable_keys::UnexportableKeyId;
 using unexportable_keys::UnexportableSigningKeyId;
 using Result = BoundSessionRefreshCookieFetcher::Result;
 
@@ -133,8 +132,8 @@ class BoundSessionCookieControllerImplTest
     base::test::TestFuture<ServiceErrorOr<UnexportableSigningKeyId>>
         generate_future;
     unexportable_key_service_.GenerateSigningKeySlowlyAsync(
-        base::span<const crypto::SignatureVerifier::SignatureAlgorithm>(
-            {crypto::SignatureVerifier::ECDSA_SHA256}),
+        base::span<const crypto::sign::SignatureKind>(
+            {crypto::sign::ECDSA_SHA256}),
         unexportable_keys::BackgroundTaskPriority::kUserBlocking,
         generate_future.GetCallback());
     ServiceErrorOr<UnexportableSigningKeyId> key_id = generate_future.Get();
@@ -142,7 +141,7 @@ class BoundSessionCookieControllerImplTest
     return *key_id;
   }
 
-  std::vector<uint8_t> GetWrappedKey(UnexportableKeyId key_id) {
+  std::vector<uint8_t> GetWrappedKey(UnexportableSigningKeyId key_id) {
     ServiceErrorOr<std::vector<uint8_t>> wrapped_key =
         unexportable_key_service_.GetWrappedKey(key_id);
     CHECK(wrapped_key.has_value());

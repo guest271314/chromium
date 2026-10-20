@@ -30,7 +30,7 @@
 #include "chrome/browser/profiles/profile_window.h"
 #include "chrome/browser/signin/about_signin_internals_factory.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
-#include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/profile_browser_collection.h"
 #include "chrome/browser/ui/webui/signin/history_sync_optin_service.h"
 #include "chrome/browser/ui/webui/signin/history_sync_optin_service_factory.h"
@@ -90,13 +90,13 @@ std::string DecryptRefreshToken(const std::string& cipher_text) {
 // Shows the history sync promo. Called after a browser window is available.
 void ShowHistorySyncPromo(const CoreAccountId& account_id,
                           Profile* profile,
-                          Browser* browser) {
+                          BrowserWindowInterface* browser) {
   if (!browser) {
     // Chrome failed to open a browser.
     base::debug::DumpWithoutCrashing();
     return;
   }
-  CHECK_EQ(browser->profile(), profile);
+  CHECK_EQ(browser->GetProfile(), profile);
 
   signin::IdentityManager* identity_manager =
       IdentityManagerFactory::GetForProfile(profile);
@@ -118,13 +118,13 @@ void ShowHistorySyncPromo(const CoreAccountId& account_id,
 // already available or is delayed until a browser can first be opened.
 void FinishImportCredentialsFromProvider(const CoreAccountId& account_id,
                                          Profile* profile,
-                                         Browser* browser) {
+                                         BrowserWindowInterface* browser) {
   if (!browser) {
     // Chrome failed to open a browser, the sync confirmation cannot be shown.
     base::debug::DumpWithoutCrashing();
     return;
   }
-  CHECK_EQ(browser->profile(), profile);
+  CHECK_EQ(browser->GetProfile(), profile);
 
   // TurnSyncOnHelper deletes itself once done.
   if (GetTurnSyncOnHelperDelegateForTestingStorage()->get()) {
@@ -145,12 +145,11 @@ void FinishImportCredentialsFromProvider(const CoreAccountId& account_id,
 
 // Helper to run |callback| either immediately if a browser exists for
 // |profile|, or schedules it to run once a browser is added.
-void RunOnBrowserReady(Profile* profile,
-                       base::OnceCallback<void(Browser*)> callback) {
-  BrowserWindowInterface* current_browser =
+void RunOnBrowserReady(
+    Profile* profile,
+    base::OnceCallback<void(BrowserWindowInterface*)> callback) {
+  BrowserWindowInterface* browser =
       ProfileBrowserCollection::GetForProfile(profile)->GetLastActiveBrowser();
-  Browser* browser =
-      current_browser ? current_browser->GetBrowserForMigrationOnly() : nullptr;
   if (browser) {
     std::move(callback).Run(browser);
   } else {
@@ -220,8 +219,8 @@ void ImportCredentialsFromProvider(Profile* profile,
 // signed in throuhg credential provider.
 void ExtractCredentialProviderUser(std::wstring* cred_provider_gaia_id,
                                    std::wstring* cred_provider_email) {
-  DCHECK(cred_provider_gaia_id);
-  DCHECK(cred_provider_email);
+  CHECK(cred_provider_gaia_id, base::NotFatalUntil::M162);
+  CHECK(cred_provider_email, base::NotFatalUntil::M162);
 
   cred_provider_gaia_id->clear();
   cred_provider_email->clear();
@@ -330,7 +329,7 @@ void SetTurnSyncOnHelperDelegateForTesting(
 // credential provider shouldn't attempt to import credentials into current
 // profile.
 bool IsGCPWUsedInOtherProfile(Profile* profile) {
-  DCHECK(profile);
+  CHECK(profile, base::NotFatalUntil::M162);
 
   ProfileManager* profile_manager = g_browser_process->profile_manager();
   if (profile_manager) {

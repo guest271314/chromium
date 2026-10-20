@@ -28,22 +28,19 @@
 #include "chromeos/ash/components/dbus/rmad/rmad_client.h"
 #include "chromeos/ash/components/dbus/update_engine/update_engine.pb.h"
 #include "chromeos/ash/components/dbus/update_engine/update_engine_client.h"
-#include "chromeos/ash/components/login/login_state/login_state.h"
 #include "chromeos/ash/components/network/managed_network_configuration_handler.h"
 #include "chromeos/ash/components/network/network_configuration_handler.h"
 #include "chromeos/ash/components/network/network_state_handler.h"
 #include "chromeos/ash/components/network/network_state_test_helper.h"
 #include "chromeos/ash/components/network/network_type_pattern.h"
 #include "chromeos/ash/components/network/technology_state_controller.h"
-#include "chromeos/ash/components/test/ash_test_suite.h"
 #include "chromeos/ash/services/network_config/public/cpp/cros_network_config_test_helper.h"
 #include "chromeos/dbus/power/fake_power_manager_client.h"
 #include "chromeos/services/network_config/public/mojom/cros_network_config.mojom.h"
-#include "components/user_manager/fake_user_manager.h"
-#include "components/user_manager/scoped_user_manager.h"
+#include "components/session_manager/test/user_session_test_environment.h"
+#include "components/user_manager/user_manager.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/cros_system_api/dbus/shill/dbus-constants.h"
-#include "ui/base/resource/resource_bundle.h"
 
 namespace ash {
 namespace shimless_rma {
@@ -124,28 +121,28 @@ class FakeDiagnosticsBrowserDelegate
 // tests requiring DiagnosticsLogController singleton.
 class ShimlessRmaServiceTest : public NoSessionAshTestBase {
  public:
-  ShimlessRmaServiceTest() {}
+  ShimlessRmaServiceTest() = default;
 
   ~ShimlessRmaServiceTest() override {}
 
   void SetUp() override {
     scoped_feature_list_.InitWithFeatures({features::kShimlessRMAOsUpdate}, {});
+
     chromeos::PowerManagerClient::InitializeFake();
     // VersionUpdater depends on UpdateEngineClient.
     UpdateEngineClient::InitializeFake();
+    FakeRmadClientForTest::Initialize();
+    rmad_client_ = RmadClient::Get();
 
-    scoped_user_manager_ = std::make_unique<user_manager::ScopedUserManager>(
-        std::make_unique<user_manager::FakeUserManager>());
-
-    ui::ResourceBundle::CleanupSharedInstance();
-    AshTestSuite::LoadTestResources();
+    user_session_test_environment_ =
+        std::make_unique<ash::test::UserSessionTestEnvironment>(local_state());
     NoSessionAshTestBase::SetUp();
+
     diagnostics::DiagnosticsLogController::Initialize(
         std::make_unique<FakeDiagnosticsBrowserDelegate>());
 
     SetupFakeNetwork();
-    FakeRmadClientForTest::Initialize();
-    rmad_client_ = RmadClient::Get();
+
     // ShimlessRmaService has to be created after RmadClient or there will be a
     // null ptr dereference in the service constructor.
     shimless_rma_provider_ = std::make_unique<ShimlessRmaService>(
@@ -163,16 +160,18 @@ class ShimlessRmaServiceTest : public NoSessionAshTestBase {
     // a null ptr dereference in the service destructor.
     version_updater_ = nullptr;
     shimless_rma_provider_.reset();
-    rmad_client_ = nullptr;
-    RmadClient::Shutdown();
+
     NetworkHandler::Shutdown();
     cros_network_config_test_helper_.reset();
 
-    scoped_user_manager_.reset();
-    UpdateEngineClient::Shutdown();
-
     task_environment()->RunUntilIdle();
     NoSessionAshTestBase::TearDown();
+    user_session_test_environment_.reset();
+
+    rmad_client_ = nullptr;
+    RmadClient::Shutdown();
+    UpdateEngineClient::Shutdown();
+    chromeos::PowerManagerClient::Shutdown();
   }
 
   void SetupFakeNetwork() {
@@ -328,7 +327,8 @@ class ShimlessRmaServiceTest : public NoSessionAshTestBase {
   raw_ptr<VersionUpdater> version_updater_ = nullptr;
 
  private:
-  std::unique_ptr<user_manager::ScopedUserManager> scoped_user_manager_;
+  std::unique_ptr<ash::test::UserSessionTestEnvironment>
+      user_session_test_environment_;
 
   std::unique_ptr<network_config::CrosNetworkConfigTestHelper>
       cros_network_config_test_helper_;

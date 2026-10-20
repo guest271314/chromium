@@ -6,6 +6,7 @@
 #define COMPONENTS_SYNC_SERVICE_GLUE_SYNC_ENGINE_BACKEND_H_
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -18,6 +19,7 @@
 #include "components/sync/engine/cancelation_signal.h"
 #include "components/sync/engine/data_type_configurer.h"
 #include "components/sync/engine/shutdown_reason.h"
+#include "components/sync/engine/sync_access_token_fetcher.h"
 #include "components/sync/engine/sync_encryption_handler.h"
 #include "components/sync/engine/sync_engine.h"
 #include "components/sync/engine/sync_manager.h"
@@ -30,7 +32,8 @@ class DataTypeController;
 class SyncEngineImpl;
 
 class SyncEngineBackend : public base::RefCountedThreadSafe<SyncEngineBackend>,
-                          public SyncManager::Observer {
+                          public SyncManager::Observer,
+                          public SyncAccessTokenFetcher {
  public:
   using AllNodesCallback = base::OnceCallback<void(base::ListValue)>;
 
@@ -111,6 +114,10 @@ class SyncEngineBackend : public base::RefCountedThreadSafe<SyncEngineBackend>,
   // SyncEngine::InvalidateCredentials.
   void DoInvalidateCredentials();
 
+  // Called to notify the sync manager of credential changes on behalf of
+  // SyncEngine::OnCredentialsChanged.
+  void DoOnCredentialsChanged();
+
   // Switches sync engine into configuration mode. In this mode only initial
   // data for newly enabled types is downloaded from server. No local changes
   // are committed to server.
@@ -165,7 +172,10 @@ class SyncEngineBackend : public base::RefCountedThreadSafe<SyncEngineBackend>,
   // invalidations.
   void DoOnStandaloneInvalidationReceived(
       const std::string& payload,
-      const DataTypeSet& interested_data_types);
+      const DataTypeSet& interested_data_types,
+      base::Time arrival_time,
+      std::optional<base::Time> network_time,
+      std::optional<base::TimeDelta> network_time_uncertainty);
 
   // Functions to deal with NIGORI, resembling DataTypeController APIs.
   void DoClearNigoriDataForMigration();
@@ -181,6 +191,10 @@ class SyncEngineBackend : public base::RefCountedThreadSafe<SyncEngineBackend>,
   void DoOnActiveDevicesChanged(
       ActiveDevicesInvalidationInfo active_devices_invalidation_info);
 
+  // SyncAccessTokenFetcher implementation.
+  void FetchAccessToken(
+      base::OnceCallback<void(signin::AccessTokenInfo)> callback) override;
+
  private:
   friend class base::RefCountedThreadSafe<SyncEngineBackend>;
 
@@ -190,7 +204,10 @@ class SyncEngineBackend : public base::RefCountedThreadSafe<SyncEngineBackend>,
 
   IncomingInvalidationStatus DoOnStandaloneInvalidationReceivedImpl(
       const std::string& payload,
-      const DataTypeSet& interested_data_types);
+      const DataTypeSet& interested_data_types,
+      base::Time arrival_time,
+      std::optional<base::Time> network_time,
+      std::optional<base::TimeDelta> network_time_uncertainty);
 
   // Name used for debugging.
   const std::string name_;

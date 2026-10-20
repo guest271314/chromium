@@ -8,26 +8,23 @@
 
 #include "ash/constants/ash_features.h"
 #include "base/byte_size.h"
+#include "base/logging.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/system/sys_info.h"
 #include "chrome/browser/ash/app_list/arc/arc_app_list_prefs.h"
 #include "chrome/browser/ash/arc/policy/arc_policy_util.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chromeos/ash/components/dbus/session_manager/session_manager_client.h"
 #include "chromeos/ash/experiences/arc/arc_features.h"
 #include "chromeos/ash/experiences/arc/arc_prefs.h"
 #include "chromeos/ash/experiences/arc/arc_util.h"
-#include "chromeos/ash/experiences/arc/session/adb_sideloading_availability_delegate.h"
 #include "chromeos/ash/experiences/arc/session/arc_management_transition.h"
 #include "components/prefs/pref_service.h"
 
 namespace arc {
 
-ArcActivationNecessityChecker::ArcActivationNecessityChecker(
-    Profile* profile,
-    AdbSideloadingAvailabilityDelegate* adb_sideloading_availability_delegate)
-    : profile_(profile),
-      adb_sideloading_availability_delegate_(
-          adb_sideloading_availability_delegate) {}
+ArcActivationNecessityChecker::ArcActivationNecessityChecker(Profile* profile)
+    : profile_(profile) {}
 
 ArcActivationNecessityChecker::~ArcActivationNecessityChecker() = default;
 
@@ -60,6 +57,14 @@ void ArcActivationNecessityChecker::Check(CheckCallback callback) {
     return;
   }
 
+  // Activate ARC if Auto-Launch apps are configured by policy.
+  // AutoLaunchAndroidAppsPolicyHandler validates and filters entries,
+  // so any entry in the pref is a valid package name.
+  if (!profile_->GetPrefs()->GetList(prefs::kArcAutoLaunchApps).empty()) {
+    OnChecked(std::move(callback), true);
+    return;
+  }
+
   // Activate ARC if Coral feature is enabled, since it depends on the on-device
   // safety service which is powered inside arc.
   if (ash::features::IsCoralFeatureEnabled()) {
@@ -69,16 +74,34 @@ void ArcActivationNecessityChecker::Check(CheckCallback callback) {
 
   // If ADB sideloading is enabled, activate ARC. Otherwise, no need to
   // activate.
-  adb_sideloading_availability_delegate_->CanChangeAdbSideloading(
-      base::BindOnce(&ArcActivationNecessityChecker::OnChecked,
+  ash::SessionManagerClient* client = ash::SessionManagerClient::Get();
+  if (!client) {
+    OnChecked(std::move(callback), false);
+    return;
+  }
+
+  client->QueryAdbSideload(
+      base::BindOnce(&ArcActivationNecessityChecker::OnQueryAdbSideload,
                      weak_ptr_factory_.GetWeakPtr(), std::move(callback)));
+}
+
+void ArcActivationNecessityChecker::OnQueryAdbSideload(
+    CheckCallback callback,
+    ash::SessionManagerClient::AdbSideloadResponseCode response_code,
+    bool is_allowed) {
+  if (response_code !=
+      ash::SessionManagerClient::AdbSideloadResponseCode::SUCCESS) {
+    LOG(ERROR) << "Failed to query ADB sideload status";
+    is_allowed = false;
+  }
+  OnChecked(std::move(callback), is_allowed);
 }
 
 void ArcActivationNecessityChecker::OnChecked(CheckCallback callback,
                                               bool result) {
-  // Activate ARC if the user has no installed apps.
+  // Check if the user installed any apps and the last launch time if any.
   ArcAppListPrefs* app_list = ArcAppListPrefs::Get(profile_);
-  DCHECK(app_list);
+  CHECK(app_list, base::NotFatalUntil::M160);
   std::optional<base::Time> last_launch;
   bool is_app_installed = false;
   const auto app_ids = app_list->GetAppIds();
@@ -108,7 +131,7 @@ void ArcActivationNecessityChecker::OnChecked(CheckCallback callback,
     is_app_recently_launched = last_launch.has_value();
   } else if (last_launch.has_value()) {
     base::ByteSize ram_size = base::SysInfo::AmountOfTotalPhysicalMemory();
-    bool is_4gb_device = ram_size < base::GiBU(4.5);
+    bool is_4gb_device = ram_size < base::GiB(4.5);
 
     base::TimeDelta inactive_interval =
         is_4gb_device ? kArcOnDemandInactiveIntervalFor4GiB.Get()

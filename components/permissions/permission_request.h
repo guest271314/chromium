@@ -12,6 +12,7 @@
 
 #include "base/functional/callback.h"
 #include "base/functional/callback_helpers.h"
+#include "base/memory/safe_ref.h"
 #include "base/memory/weak_ptr.h"
 #include "build/build_config.h"
 #include "components/content_settings/core/common/content_settings.h"
@@ -84,7 +85,8 @@ class PermissionRequest {
 
   virtual ~PermissionRequest();
 
-  GURL requesting_origin() const { return data_->requesting_origin; }
+  const GURL& requesting_origin() const { return data_->requesting_origin; }
+  const GURL& embedding_origin() const { return data_->embedding_origin; }
   RequestType request_type() const;
 
   // Whether |this| and |other_request| are duplicates and therefore don't both
@@ -121,8 +123,8 @@ class PermissionRequest {
       bool format_origin_bold);
 #endif  // BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_IOS)
 
-  // Returns a weak pointer to this instance.
-  base::WeakPtr<PermissionRequest> GetWeakPtr();
+  // Returns a safe reference to this instance.
+  base::SafeRef<PermissionRequest> GetSafeRef();
 
 #if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
   // Returns whether displaying a confirmation chip for the request is
@@ -131,11 +133,17 @@ class PermissionRequest {
 
   // Returns prompt icon appropriate for displaying on the chip button in the
   // location bar.
-  IconId GetIconForChip();
+  virtual IconId GetIconForChip() const;
 
   // Returns prompt icon appropriate for displaying on the quiet chip button in
   // the location bar.
-  IconId GetBlockedIconForChip();
+  virtual IconId GetBlockedIconForChip() const;
+
+  // Returns whether the request stays pending, with its chip still in the
+  // location bar, when the user closes the prompt bubble without deciding. The
+  // user can then reopen the bubble from the chip until the chip expires.
+  // Otherwise, closing the bubble dismisses the request.
+  virtual bool ShouldKeepChipOnBubbleClose() const;
 
   // Returns prompt text appropriate for displaying on the chip button in the
   // location bar.

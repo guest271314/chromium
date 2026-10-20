@@ -19,10 +19,10 @@
 #import "ios/chrome/browser/shared/public/commands/scene_commands.h"
 #import "ios/chrome/browser/signin/model/authentication_service.h"
 #import "ios/chrome/browser/signin/model/authentication_service_factory.h"
-#import "ios/chrome/browser/signin/model/fake_authentication_service_delegate.h"
 #import "ios/chrome/browser/signin/model/identity_manager_factory.h"
 #import "ios/chrome/browser/signin/model/identity_test_environment_browser_state_adaptor.h"
 #import "ios/chrome/browser/sync/model/sync_service_factory.h"
+#import "ios/chrome/browser/sync/model/test_sync_service_utils.h"
 #import "ios/chrome/browser/web_selection/model/web_selection_response.h"
 #import "ios/chrome/browser/web_selection/model/web_selection_tab_helper.h"
 #import "ios/chrome/test/ios_chrome_scoped_testing_local_state.h"
@@ -35,6 +35,10 @@
 #import "third_party/ocmock/OCMock/OCMock.h"
 #import "third_party/ocmock/gtest_support.h"
 #import "url/gurl.h"
+
+namespace ios::provider {
+void SetMockProtectedUrl(bool is_protected);
+}
 
 @interface WebSelectionResponse (Testing)
 - (instancetype)initWithSelectedText:(NSString*)selectedText
@@ -64,18 +68,13 @@ class ExplainWithGeminiMediatorTest : public PlatformTest {
     TestProfileIOS::Builder builder;
     builder.AddTestingFactory(
         AuthenticationServiceFactory::GetInstance(),
-        AuthenticationServiceFactory::GetFactoryWithDelegate(
-            std::make_unique<FakeAuthenticationServiceDelegate>()));
+        AuthenticationServiceFactory::GetDefaultFactory());
     builder.AddTestingFactory(
         IdentityManagerFactory::GetInstance(),
         base::BindRepeating(IdentityTestEnvironmentBrowserStateAdaptor::
                                 BuildIdentityManagerForTests));
-    builder.AddTestingFactory(
-        SyncServiceFactory::GetInstance(),
-        base::BindOnce(
-            [](ProfileIOS* profile) -> std::unique_ptr<KeyedService> {
-              return std::make_unique<syncer::TestSyncService>();
-            }));
+    builder.AddTestingFactory(SyncServiceFactory::GetInstance(),
+                              base::BindRepeating(&CreateTestSyncService));
     builder.AddTestingFactory(
         GeminiServiceFactory::GetInstance(),
         base::BindRepeating(
@@ -94,6 +93,7 @@ class ExplainWithGeminiMediatorTest : public PlatformTest {
     web_state_ = std::make_unique<web::FakeWebState>();
     web_state_->SetBrowserState(browser_state_.get());
     web_state_->SetVisibleURL(GURL("https://example.com"));
+    web_state_->WasShown();
 
     GeminiTabHelper::CreateForWebState(web_state_.get());
     WebSelectionTabHelper::CreateForWebState(web_state_.get());
@@ -104,6 +104,7 @@ class ExplainWithGeminiMediatorTest : public PlatformTest {
   }
 
   void TearDown() override {
+    ios::provider::SetMockProtectedUrl(false);
     mediator_ = nil;
     PlatformTest::TearDown();
   }
@@ -145,7 +146,7 @@ TEST_F(ExplainWithGeminiMediatorTest, ButtonTitle_Default) {
   EXPECT_NSEQ([mediator_ buttonTitle], @"Explain with Gemini");
 }
 
-// Tests that triggering the action calls the BWGHandler.
+// Tests that triggering the action calls the geminiHandler.
 TEST_F(ExplainWithGeminiMediatorTest, TriggerAction_StartsFlow) {
   // Wrapped in @autoreleasepool to ensure that the partial mock is deallocated
   // before the test fixture destroys the profile and its services, avoiding
@@ -157,26 +158,30 @@ TEST_F(ExplainWithGeminiMediatorTest, TriggerAction_StartsFlow) {
          {kExplainGeminiEditMenu, {{"PositionForExplainGeminiEditMenu", "1"}}}},
         {});
 
-    id mockBwgHandler = OCMProtocolMock(@protocol(BWGCommands));
+    id mockGeminiHandler = OCMProtocolMock(@protocol(GeminiCommands));
 
     id partialMock = OCMPartialMock(mediator_);
     OCMStub(
         [partialMock canPerformExplainWithGeminiInWebState:web_state_.get()])
         .andReturn(YES);
-    [partialMock setBWGHandler:mockBwgHandler];
+    [partialMock setGeminiHandler:mockGeminiHandler];
 
     NSString* testText = @"Hello World";
 
-    OCMExpect([mockBwgHandler
-        startGeminiFlowWithStartupState:[OCMArg checkWithBlock:^BOOL(id value) {
+    OCMExpect([mockGeminiHandler
+        startGeminiEntryFlowWithStartupState:[OCMArg checkWithBlock:^BOOL(
+                                                         id value) {
           GeminiStartupState* startupState = (GeminiStartupState*)value;
           return [startupState.prepopulatedPrompt containsString:testText];
-        }]]);
+        }]
+                          baseViewController:OCMOCK_ANY
+                    showSnackbarOnCompletion:YES
+                                  completion:OCMOCK_ANY]);
 
     [partialMock triggerExplainWithGeminiForText:testText
                                         webState:web_state_.get()];
 
-    EXPECT_OCMOCK_VERIFY(mockBwgHandler);
+    EXPECT_OCMOCK_VERIFY(mockGeminiHandler);
   }
 }
 
@@ -231,7 +236,6 @@ TEST_F(ExplainWithGeminiMediatorTest, TriggerAction_StartsFlow_NoMock) {
     base::test::ScopedFeatureList scoped_feature_list;
     scoped_feature_list.InitWithFeaturesAndParameters(
         {{kPageActionMenu, {}},
-         {kGeminiFloatyAllPages, {}},
          {kExplainGeminiEditMenu, {{"PositionForExplainGeminiEditMenu", "1"}}}},
         {});
 
@@ -250,23 +254,27 @@ TEST_F(ExplainWithGeminiMediatorTest, TriggerAction_StartsFlow_NoMock) {
     id mockSceneHandler = OCMProtocolMock(@protocol(SceneCommands));
     mediator_.sceneHandler = mockSceneHandler;
 
-    id mockBwgHandler = OCMProtocolMock(@protocol(BWGCommands));
-    mediator_.BWGHandler = mockBwgHandler;
+    id mockGeminiHandler = OCMProtocolMock(@protocol(GeminiCommands));
+    mediator_.geminiHandler = mockGeminiHandler;
 
     NSString* testText = @"Hello World";
 
     // Expect that starting the Gemini flow will be called with a prompt
     // containing the test text.
-    OCMExpect([mockBwgHandler
-        startGeminiFlowWithStartupState:[OCMArg checkWithBlock:^BOOL(id value) {
+    OCMExpect([mockGeminiHandler
+        startGeminiEntryFlowWithStartupState:[OCMArg checkWithBlock:^BOOL(
+                                                         id value) {
           GeminiStartupState* startupState = (GeminiStartupState*)value;
           return [startupState.prepopulatedPrompt containsString:testText];
-        }]]);
+        }]
+                          baseViewController:OCMOCK_ANY
+                    showSnackbarOnCompletion:YES
+                                  completion:OCMOCK_ANY]);
 
     [mediator_ triggerExplainWithGeminiForText:testText
                                       webState:web_state_.get()];
 
-    EXPECT_OCMOCK_VERIFY(mockBwgHandler);
+    EXPECT_OCMOCK_VERIFY(mockGeminiHandler);
   }
 }
 
@@ -338,4 +346,39 @@ TEST_F(ExplainWithGeminiMediatorTest, AddItem_InvalidSelection) {
     EXPECT_TRUE(completionCalled);
     EXPECT_EQ(items.count, 0u);
   }
+}
+
+// Tests that `canPerformExplainWithGeminiInWebState` returns NO on a protected
+// URL (We need to ensure Explain With Gemini is not shown on protected URLs).
+TEST_F(ExplainWithGeminiMediatorTest, CanPerformExplain_ProtectedURL) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitWithFeaturesAndParameters(
+      {{kPageActionMenu, {}},
+       {kExplainGeminiEditMenu, {{"PositionForExplainGeminiEditMenu", "1"}}}},
+      {});
+
+  // Setup a valid eligible state on an unprotected URL.
+  fake_gemini_service_->SetIsEligible(true);
+
+  // Configure WebState to allow page context extraction.
+  auto frames_manager = std::make_unique<web::FakeWebFramesManager>();
+  auto main_frame = web::FakeWebFrame::CreateMainWebFrame();
+  frames_manager->AddWebFrame(std::move(main_frame));
+  web_state_->SetWebFramesManager(std::move(frames_manager));
+  web_state_->SetContentIsHTML(true);
+
+  id mockSceneHandler = OCMProtocolMock(@protocol(SceneCommands));
+  mediator_.sceneHandler = mockSceneHandler;
+
+  web_state_->SetCurrentURL(GURL("https://example.com"));
+
+  // Ensure Explain With Gemini is available on unprotected URLs.
+  ios::provider::SetMockProtectedUrl(false);
+  EXPECT_TRUE(
+      [mediator_ canPerformExplainWithGeminiInWebState:web_state_.get()]);
+
+  // Ensure Explain With Gemini is not available on protected URLs.
+  ios::provider::SetMockProtectedUrl(true);
+  EXPECT_FALSE(
+      [mediator_ canPerformExplainWithGeminiInWebState:web_state_.get()]);
 }

@@ -33,7 +33,6 @@
 #include "media/gpu/macros.h"
 #include "media/video/video_encode_accelerator.h"
 #include "mojo/public/cpp/bindings/type_converter.h"
-#include "mojo/public/cpp/system/platform_handle.h"
 #include "ui/ozone/public/ozone_platform.h"
 
 namespace arc {
@@ -45,9 +44,6 @@ namespace {
 // VEAs. Currently this value is selected as 40 instances are enough to pass
 // the CTS tests.
 constexpr size_t kMaxConcurrentClients = 8;
-
-BASE_FEATURE(kArcVideoEncodeUseRec709ColorSpace,
-             base::FEATURE_ENABLED_BY_DEFAULT);
 
 bool ForceL1T3Encode(const media::VideoEncodeAccelerator::Config& config) {
   if (media::VideoCodecProfileToVideoCodec(config.output_profile) !=
@@ -174,6 +170,7 @@ GpuArcVideoEncodeAccelerator::InitializeTask(
   }
 
   visible_size_ = config.input_visible_size;
+  coded_size_ = gfx::Size();
   accelerator_.reset();
   auto accelerator_or_error =
       media::GpuVideoEncodeAcceleratorFactory::CreateVEA(
@@ -194,7 +191,7 @@ GpuArcVideoEncodeAccelerator::InitializeTask(
 
 void GpuArcVideoEncodeAccelerator::Encode(
     media::VideoPixelFormat format,
-    mojo::ScopedHandle handle,
+    mojo::PlatformHandle handle,
     std::vector<::arc::VideoFramePlane> planes,
     int64_t timestamp,
     bool force_keyframe,
@@ -205,8 +202,24 @@ void GpuArcVideoEncodeAccelerator::Encode(
     return;
   }
 
+  // |coded_size_| is only set when the (asynchronous) RequireBitstreamBuffers()
+  // callback fires. Until then it is empty (reset in Initialize()) and cannot
+  // be used to validate the incoming dmabuf. Reject early instead.
+  if (coded_size_.IsEmpty()) {
+    DLOG(ERROR) << "Encode() called before RequireBitstreamBuffers().";
+    if (client_) {
+      client_->NotifyError(Error::kIllegalStateError);
+    }
+    return;
+  }
+
   if (planes.empty()) {  // EOS
     accelerator_->Encode(media::VideoFrame::CreateEOSFrame(), force_keyframe);
+    return;
+  }
+
+  if (!client_) {
+    DLOG(ERROR) << "No client is bound.";
     return;
   }
 
@@ -245,10 +258,7 @@ void GpuArcVideoEncodeAccelerator::Encode(
     return;
   }
   scoped_refptr<media::VideoFrame> frame;
-  const gfx::ColorSpace color_space =
-      base::FeatureList::IsEnabled(kArcVideoEncodeUseRec709ColorSpace)
-          ? gfx::ColorSpace::CreateREC709()
-          : gfx::ColorSpace();
+  const gfx::ColorSpace color_space = gfx::ColorSpace::CreateREC709();
   auto shared_image = sii_->CreateSharedImage(
       {*si_format, visible_size_, color_space,
        gpu::SHARED_IMAGE_USAGE_CPU_ONLY_READ_WRITE,
@@ -271,10 +281,6 @@ void GpuArcVideoEncodeAccelerator::Encode(
     return;
   }
 
-  if (base::FeatureList::IsEnabled(kArcVideoEncodeUseRec709ColorSpace)) {
-    frame->set_color_space(gfx::ColorSpace::CreateREC709());
-  }
-
   // Make sure the Mojo callback is called on the same thread as where the Mojo
   // call is received (here).
   frame->AddDestructionObserver(
@@ -283,7 +289,7 @@ void GpuArcVideoEncodeAccelerator::Encode(
 }
 
 void GpuArcVideoEncodeAccelerator::UseBitstreamBuffer(
-    mojo::ScopedHandle shmem_fd,
+    mojo::PlatformHandle shmem_fd,
     uint32_t offset,
     uint32_t size,
     UseBitstreamBufferCallback callback) {

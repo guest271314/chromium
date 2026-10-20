@@ -19,11 +19,14 @@
 #include "chrome/browser/renderer_preferences_util.h"
 #include "chrome/browser/ui/prefs/prefs_tab_helper.h"
 #include "chrome/common/pref_names.h"
+#include "components/autofill/core/common/autofill_prefs.h"
 #include "components/keyed_service/core/keyed_service.h"
 #include "components/language/core/browser/pref_names.h"
 #include "components/live_caption/pref_names.h"
 #include "components/prefs/pref_change_registrar.h"
+#include "components/universal_optout/prefs.h"
 #include "content/public/browser/browser_context.h"
+#include "extensions/buildflags/buildflags.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
 #include "third_party/blink/public/common/renderer_preferences/renderer_preferences.h"
 #include "third_party/blink/public/mojom/renderer_preference_watcher.mojom.h"
@@ -88,6 +91,7 @@ const char* const kWebPrefsToObserve[] = {
     prefs::kAccessibilityFocusHighlightEnabled,
 #endif
     prefs::kPageColorsBlockList,
+    prefs::kXSLTDeprecationBannerSuppressed,
 };
 
 }  // namespace
@@ -98,7 +102,7 @@ const char* const kWebPrefsToObserve[] = {
 class PrimaryPastePrefHelper : public ui::PrimaryPastePrefObserver {
  public:
   explicit PrimaryPastePrefHelper(PrefWatcher* watcher) : watcher_(watcher) {
-    DCHECK(watcher);
+    CHECK(watcher, base::NotFatalUntil::M162);
 
     if (auto* linux_ui = ui::LinuxUi::instance()) {
       primary_paste_pref_observation_.Observe(linux_ui);
@@ -152,6 +156,13 @@ PrefWatcher::PrefWatcher(Profile* profile) : profile_(profile) {
                                      renderer_callback);
   profile_pref_change_registrar_.Add(prefs::kEnableDoNotTrack,
                                      renderer_callback);
+  profile_pref_change_registrar_.Add(
+      universal_optout::prefs::kUniversalOptOutEnabled, renderer_callback);
+  profile_pref_change_registrar_.Add(autofill::prefs::kAutofillAtMemoryShortcut,
+                                     renderer_callback);
+  profile_pref_change_registrar_.Add(
+      autofill::prefs::kAutofillAtMemoryDoubleCtrlTriggerEnabled,
+      renderer_callback);
 
 #if !BUILDFLAG(IS_MAC)
   profile_pref_change_registrar_.Add(prefs::kFullscreenAllowed,

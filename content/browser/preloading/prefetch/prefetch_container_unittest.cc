@@ -6,6 +6,7 @@
 
 #include <algorithm>
 
+#include "base/byte_size.h"
 #include "base/strings/strcat.h"
 #include "base/test/bind.h"
 #include "base/test/metrics/histogram_tester.h"
@@ -131,7 +132,7 @@ class PrefetchContainerTestBase : public PrefetchingMetricsTestBase,
                       CreateBrowserInitiatedWithoutWebContentsOffTheMainThread(
                           test_fixture->browser_context()->GetWeakPtr(), url,
                           PrefetchType(PreloadingTriggerType::kEmbedder,
-                                       /*use_prefetch_proxy=*/true),
+                                       /*use_prefetch_proxy=*/false),
                           test::kPreloadingEmbedderHistogramSuffixForTesting,
                           blink::mojom::Referrer(),
                           /*javascript_enabled=*/true,
@@ -158,23 +159,14 @@ class PrefetchContainerTestBase : public PrefetchingMetricsTestBase,
         std::move(prefetch_request), std::move(pre_prefetch_container));
   }
 
-  std::unique_ptr<PrefetchContainer> CreateBrowserContextPrefetchContainer(
-      const GURL& prefetch_url,
-      const net::HttpRequestHeaders& additional_headers = {},
-      bool should_append_additional_headers = true) {
-    return PrefetchContainer::CreateForTesting(
-        CreateBrowserContextPrefetchRequest(prefetch_url, additional_headers,
-                                            should_append_additional_headers));
-  }
-
   std::unique_ptr<const PrefetchRequest> CreateBrowserContextPrefetchRequest(
       const GURL& prefetch_url,
       const net::HttpRequestHeaders& additional_headers = {},
-      bool should_append_additional_headers = true) {
+      bool should_append_variations_header = true) {
     return PrefetchRequest::CreateBrowserInitiatedWithoutWebContents(
         browser_context(), prefetch_url,
         PrefetchType(PreloadingTriggerType::kEmbedder,
-                     /*use_prefetch_proxy=*/true),
+                     /*use_prefetch_proxy=*/false),
         test::kPreloadingEmbedderHistogramSuffixForTesting,
         blink::mojom::Referrer(),
         /*javascript_enabled=*/true,
@@ -185,7 +177,7 @@ class PrefetchContainerTestBase : public PrefetchingMetricsTestBase,
             /*planned_max_preloading_type=*/content::PreloadingType::kPrefetch),
         /*attempt=*/nullptr, additional_headers,
         /*request_status_listener=*/nullptr, base::Minutes(10),
-        should_append_additional_headers,
+        should_append_variations_header,
         /*should_disable_block_until_head_timeout=*/false,
         /*should_bypass_http_cache=*/false);
   }
@@ -307,8 +299,9 @@ TEST_P(PrefetchContainerXClientDataHeaderTest,
       {"1"}, {"2"});
 
   auto request = MakeInitialResourceRequestForPrefetch(
-      *CreateBrowserContextPrefetchRequest(kTestEligibleUrl, additional_headers,
-                                           false),
+      *CreateBrowserContextPrefetchRequest(
+          kTestEligibleUrl, additional_headers,
+          /*should_append_variations_header=*/false),
       /*is_decoy=*/false);
 
   EXPECT_TRUE(request->headers.HasHeader(variations::kClientDataHeader));
@@ -388,7 +381,7 @@ TEST_P(PrefetchContainerTest, CreatePrefetchContainer_Embedder_PrePrefetch) {
   EXPECT_EQ(prefetch_container->GetURL(), GURL("https://test.com"));
   EXPECT_EQ(prefetch_container->request().prefetch_type(),
             PrefetchType(PreloadingTriggerType::kEmbedder,
-                         /*use_prefetch_proxy=*/true));
+                         /*use_prefetch_proxy=*/false));
   EXPECT_EQ(prefetch_container->key(),
             PrefetchKey(std::nullopt, GURL("https://test.com")));
   EXPECT_FALSE(prefetch_container->GetNonRedirectHead());
@@ -427,7 +420,6 @@ TEST_P(PrefetchContainerTest, Servable) {
   auto prefetch_container =
       CreateSpeculationRulesPrefetchContainer(GURL("https://test.com"));
 
-  prefetch_container->SimulatePrefetchEligibleForTest();
   MakeServableStreamingURLLoaderForTest(
       prefetch_container.get(), SuccessfulPrefetchResponseHeadForTesting(),
       "test body");
@@ -507,7 +499,6 @@ TEST_P(PrefetchContainerTest, CookieListener) {
 
 TEST_P(PrefetchContainerTest, CookieCopy) {
   const GURL kTestUrl = GURL("https://test.com");
-  base::HistogramTester histogram_tester;
   auto prefetch_container = CreateSpeculationRulesPrefetchContainer(kTestUrl);
 
   // This registers a cookie listener.
@@ -547,16 +538,16 @@ TEST_P(PrefetchContainerTest, CookieCopy) {
   EXPECT_FALSE(serving_handle.IsIsolatedCookieCopyInProgressForTesting());
   EXPECT_TRUE(callback_called);
 
-  histogram_tester.ExpectUniqueTimeSample(
+  histogram_tester().ExpectUniqueTimeSample(
       "PrefetchProxy.AfterClick.Mainframe.CookieReadTime",
       base::Milliseconds(10), 1);
-  histogram_tester.ExpectUniqueTimeSample(
+  histogram_tester().ExpectUniqueTimeSample(
       "PrefetchProxy.AfterClick.Mainframe.CookieWriteTime",
       base::Milliseconds(60), 1);
-  histogram_tester.ExpectUniqueTimeSample(
+  histogram_tester().ExpectUniqueTimeSample(
       "PrefetchProxy.AfterClick.Mainframe.CookieCopyStartToInterceptorCheck",
       base::Milliseconds(30), 1);
-  histogram_tester.ExpectUniqueTimeSample(
+  histogram_tester().ExpectUniqueTimeSample(
       "PrefetchProxy.AfterClick.Mainframe.CookieCopyTime",
       base::Milliseconds(70), 1);
 }
@@ -565,7 +556,6 @@ TEST_P(PrefetchContainerTest, CookieCopyWithRedirects) {
   const GURL kTestUrl = GURL("https://test.com");
   const GURL kRedirectUrl1 = GURL("https://redirect1.com");
   const GURL kRedirectUrl2 = GURL("https://redirect2.com");
-  base::HistogramTester histogram_tester;
   auto prefetch_container = CreateSpeculationRulesPrefetchContainer(kTestUrl);
 
   // Cookie listeners for each redirect hop are registered inside
@@ -670,16 +660,16 @@ TEST_P(PrefetchContainerTest, CookieCopyWithRedirects) {
   EXPECT_FALSE(serving_handle.IsIsolatedCookieCopyInProgressForTesting());
   EXPECT_TRUE(callback_called);
 
-  histogram_tester.ExpectUniqueTimeSample(
+  histogram_tester().ExpectUniqueTimeSample(
       "PrefetchProxy.AfterClick.Mainframe.CookieReadTime",
       base::Milliseconds(10), 3);
-  histogram_tester.ExpectUniqueTimeSample(
+  histogram_tester().ExpectUniqueTimeSample(
       "PrefetchProxy.AfterClick.Mainframe.CookieWriteTime",
       base::Milliseconds(60), 3);
-  histogram_tester.ExpectUniqueTimeSample(
+  histogram_tester().ExpectUniqueTimeSample(
       "PrefetchProxy.AfterClick.Mainframe.CookieCopyStartToInterceptorCheck",
       base::Milliseconds(30), 3);
-  histogram_tester.ExpectUniqueTimeSample(
+  histogram_tester().ExpectUniqueTimeSample(
       "PrefetchProxy.AfterClick.Mainframe.CookieCopyTime",
       base::Milliseconds(70), 3);
 }
@@ -688,10 +678,8 @@ TEST_P(PrefetchContainerTest, PrefetchProxyPrefetchedResourceUkm) {
   auto prefetch_container =
       CreateSpeculationRulesPrefetchContainer(GURL("https://test.com"));
 
-  prefetch_container->SimulatePrefetchEligibleForTest();
-
   network::URLLoaderCompletionStatus completion_status;
-  completion_status.encoded_data_length = 100;
+  completion_status.encoded_data_length = base::ByteSize(100u);
   completion_status.completion_time =
       base::TimeTicks() + base::Milliseconds(200);
 
@@ -861,8 +849,6 @@ TEST_P(PrefetchContainerTest, EligibilityCheck) {
   const GURL kTestUrl1 = GURL("https://test1.com");
   const GURL kTestUrl2 = GURL("https://test2.com");
 
-  base::HistogramTester histogram_tester;
-
   auto* prefetch_document_manager =
       PrefetchDocumentManager::GetOrCreateForCurrentDocument(
           &web_contents()->GetPrimaryPage().GetMainDocument());
@@ -873,25 +859,17 @@ TEST_P(PrefetchContainerTest, EligibilityCheck) {
   prefetch_container->SimulatePrefetchEligibleForTest();
   prefetch_container->SimulatePrefetchStartedForTest();
 
-  EXPECT_EQ(prefetch_document_manager->GetReferringPageMetrics()
-                .prefetch_eligible_count,
-            1);
 
   // Add a redirect, register a callback for it, and then mark it as eligible.
   prefetch_container->SimulatePrefetchRedirectedForTest(kTestUrl2);
 
   // Referring page metrics is only incremented for the original prefetch URL
   // and not any redirects.
-  EXPECT_EQ(prefetch_document_manager->GetReferringPageMetrics()
-                .prefetch_eligible_count,
-            1);
 }
 
 TEST_P(PrefetchContainerTest, IneligibleRedirect) {
   const GURL kTestUrl1 = GURL("https://test1.com");
   const GURL kTestUrl2 = GURL("https://test2.com");
-
-  base::HistogramTester histogram_tester;
 
   auto* prefetch_document_manager =
       PrefetchDocumentManager::GetOrCreateForCurrentDocument(
@@ -903,9 +881,6 @@ TEST_P(PrefetchContainerTest, IneligibleRedirect) {
   prefetch_container->SimulatePrefetchEligibleForTest();
   prefetch_container->SimulatePrefetchStartedForTest();
 
-  EXPECT_EQ(prefetch_document_manager->GetReferringPageMetrics()
-                .prefetch_eligible_count,
-            1);
 
   // Receives an ineligible redirect.
   prefetch_container->SimulatePrefetchRedirectedForTest(
@@ -913,9 +888,6 @@ TEST_P(PrefetchContainerTest, IneligibleRedirect) {
 
   // Ineligible redirects are treated as failed prefetches, and not ineligible
   // prefetches.
-  EXPECT_EQ(prefetch_document_manager->GetReferringPageMetrics()
-                .prefetch_eligible_count,
-            1);
   EXPECT_EQ(prefetch_container->GetPrefetchStatus(),
             PrefetchStatus::kPrefetchFailedIneligibleRedirect);
 }
@@ -966,7 +938,7 @@ TEST_P(PrefetchContainerTest, BlockUntilHeadHistograms) {
           .blocked_duration = std::nullopt,
       },
       {.prefetch_type = PrefetchType(PreloadingTriggerType::kEmbedder,
-                                     /*use_prefetch_proxy=*/true),
+                                     /*use_prefetch_proxy=*/false),
        .is_served = false,
        .is_nav_prerender = false,
        .blocked_duration = base::Milliseconds(20)},
@@ -974,8 +946,6 @@ TEST_P(PrefetchContainerTest, BlockUntilHeadHistograms) {
 
   const GURL prefetch_url = GURL("https://test.example/?nvsparam=1");
   const GURL navigated_url = GURL("https://test.example/");
-
-  base::HistogramTester histogram_tester;
   for (const auto& test_case : test_cases) {
     auto prefetch_container = [&] {
       if (test_case.prefetch_type.IsRendererInitiated()) {
@@ -997,187 +967,187 @@ TEST_P(PrefetchContainerTest, BlockUntilHeadHistograms) {
         test_case.is_nav_prerender, test_case.blocked_duration);
   }
 
-  histogram_tester.ExpectUniqueSample(
+  histogram_tester().ExpectUniqueSample(
       "Prefetch.PrefetchMatchingBlockedNavigation.PerMatchingCandidate."
       "SpeculationRule_Immediate2",
       false, 1);
-  histogram_tester.ExpectUniqueSample(
+  histogram_tester().ExpectUniqueSample(
       "Prefetch.PrefetchMatchingBlockedNavigation.PerMatchingCandidate."
       "NonPrerender.SpeculationRule_Immediate2",
       false, 1);
-  histogram_tester.ExpectTotalCount(
+  histogram_tester().ExpectTotalCount(
       "Prefetch.PrefetchMatchingBlockedNavigation.PerMatchingCandidate."
       "Prerender.SpeculationRule_Immediate2",
       0);
-  histogram_tester.ExpectUniqueTimeSample(
+  histogram_tester().ExpectUniqueTimeSample(
       "Prefetch.BlockUntilHeadDuration.PerMatchingCandidate.Served."
       "SpeculationRule_Immediate2",
       base::Milliseconds(0), 1);
-  histogram_tester.ExpectTotalCount(
+  histogram_tester().ExpectTotalCount(
       "Prefetch.BlockUntilHeadDuration.PerMatchingCandidate.NotServed."
       "SpeculationRule_Immediate2",
       0);
-  histogram_tester.ExpectUniqueTimeSample(
+  histogram_tester().ExpectUniqueTimeSample(
       "Prefetch.BlockUntilHeadDuration.PerMatchingCandidate.NonPrerender."
       "Served.SpeculationRule_Immediate2",
       base::Milliseconds(0), 1);
-  histogram_tester.ExpectTotalCount(
+  histogram_tester().ExpectTotalCount(
       "Prefetch.BlockUntilHeadDuration.PerMatchingCandidate.NonPrerender."
       "NotServed.SpeculationRule_Immediate2",
       0);
-  histogram_tester.ExpectTotalCount(
+  histogram_tester().ExpectTotalCount(
       "Prefetch.BlockUntilHeadDuration.PerMatchingCandidate.Prerender.Served."
       "SpeculationRule_Immediate2",
       0);
-  histogram_tester.ExpectTotalCount(
+  histogram_tester().ExpectTotalCount(
       "Prefetch.BlockUntilHeadDuration.PerMatchingCandidate.Prerender."
       "NotServed.SpeculationRule_Immediate2",
       0);
 
-  histogram_tester.ExpectUniqueSample(
+  histogram_tester().ExpectUniqueSample(
       "Prefetch.PrefetchMatchingBlockedNavigation.PerMatchingCandidate."
       "SpeculationRule_Eager2",
       true, 1);
-  histogram_tester.ExpectUniqueSample(
+  histogram_tester().ExpectUniqueSample(
       "Prefetch.PrefetchMatchingBlockedNavigation.PerMatchingCandidate."
       "SpeculationRule_Moderate",
       true, 1);
-  histogram_tester.ExpectUniqueSample(
+  histogram_tester().ExpectUniqueSample(
       "Prefetch.PrefetchMatchingBlockedNavigation.PerMatchingCandidate."
       "NonPrerender.SpeculationRule_Immediate2",
       false, 1);
 
-  histogram_tester.ExpectTotalCount(
+  histogram_tester().ExpectTotalCount(
       "Prefetch.PrefetchMatchingBlockedNavigation.PerMatchingCandidate."
       "Prerender.SpeculationRule_Eager2",
       0);
-  histogram_tester.ExpectUniqueTimeSample(
+  histogram_tester().ExpectUniqueTimeSample(
       "Prefetch.BlockUntilHeadDuration.PerMatchingCandidate.Served."
       "SpeculationRule_Eager2",
       base::Milliseconds(10), 1);
-  histogram_tester.ExpectTotalCount(
+  histogram_tester().ExpectTotalCount(
       "Prefetch.BlockUntilHeadDuration.PerMatchingCandidate.NotServed."
       "SpeculationRule_Eager2",
       0);
-  histogram_tester.ExpectUniqueTimeSample(
+  histogram_tester().ExpectUniqueTimeSample(
       "Prefetch.BlockUntilHeadDuration.PerMatchingCandidate.NonPrerender."
       "Served.SpeculationRule_Eager2",
       base::Milliseconds(10), 1);
-  histogram_tester.ExpectTotalCount(
+  histogram_tester().ExpectTotalCount(
       "Prefetch.BlockUntilHeadDuration.PerMatchingCandidate.NonPrerender."
       "NotServed.SpeculationRule_Eager2",
       0);
-  histogram_tester.ExpectTotalCount(
+  histogram_tester().ExpectTotalCount(
       "Prefetch.BlockUntilHeadDuration.PerMatchingCandidate.Prerender.Served."
       "SpeculationRule_Eager2",
       0);
-  histogram_tester.ExpectTotalCount(
+  histogram_tester().ExpectTotalCount(
       "Prefetch.BlockUntilHeadDuration.PerMatchingCandidate.Prerender."
       "NotServed.SpeculationRule_Eager2",
       0);
 
-  histogram_tester.ExpectTotalCount(
+  histogram_tester().ExpectTotalCount(
       "Prefetch.PrefetchMatchingBlockedNavigation.PerMatchingCandidate."
       "Prerender.SpeculationRule_Moderate",
       0);
-  histogram_tester.ExpectUniqueTimeSample(
+  histogram_tester().ExpectUniqueTimeSample(
       "Prefetch.BlockUntilHeadDuration.PerMatchingCandidate.Served."
       "SpeculationRule_Moderate",
       base::Milliseconds(10), 1);
-  histogram_tester.ExpectTotalCount(
+  histogram_tester().ExpectTotalCount(
       "Prefetch.BlockUntilHeadDuration.PerMatchingCandidate.NotServed."
       "SpeculationRule_Moderate",
       0);
-  histogram_tester.ExpectUniqueTimeSample(
+  histogram_tester().ExpectUniqueTimeSample(
       "Prefetch.BlockUntilHeadDuration.PerMatchingCandidate.NonPrerender."
       "Served.SpeculationRule_Moderate",
       base::Milliseconds(10), 1);
-  histogram_tester.ExpectTotalCount(
+  histogram_tester().ExpectTotalCount(
       "Prefetch.BlockUntilHeadDuration.PerMatchingCandidate.NonPrerender."
       "NotServed.SpeculationRule_Moderate",
       0);
-  histogram_tester.ExpectTotalCount(
+  histogram_tester().ExpectTotalCount(
       "Prefetch.BlockUntilHeadDuration.PerMatchingCandidate.Prerender.Served."
       "SpeculationRule_Moderate",
       0);
-  histogram_tester.ExpectTotalCount(
+  histogram_tester().ExpectTotalCount(
       "Prefetch.BlockUntilHeadDuration.PerMatchingCandidate.Prerender."
       "NotServed.SpeculationRule_Moderate",
       0);
 
-  histogram_tester.ExpectUniqueSample(
+  histogram_tester().ExpectUniqueSample(
       "Prefetch.PrefetchMatchingBlockedNavigation.PerMatchingCandidate."
       "SpeculationRule_Conservative",
       false, 1);
-  histogram_tester.ExpectUniqueSample(
+  histogram_tester().ExpectUniqueSample(
       "Prefetch.PrefetchMatchingBlockedNavigation.PerMatchingCandidate."
       "NonPrerender.SpeculationRule_Conservative",
       false, 1);
-  histogram_tester.ExpectTotalCount(
+  histogram_tester().ExpectTotalCount(
       "Prefetch.PrefetchMatchingBlockedNavigation.PerMatchingCandidate."
       "Prerender.SpeculationRule_Conservative",
       0);
-  histogram_tester.ExpectTotalCount(
+  histogram_tester().ExpectTotalCount(
       "Prefetch.BlockUntilHeadDuration.PerMatchingCandidate.Served."
       "SpeculationRule_Conservative",
       0);
-  histogram_tester.ExpectUniqueTimeSample(
+  histogram_tester().ExpectUniqueTimeSample(
       "Prefetch.BlockUntilHeadDuration.PerMatchingCandidate.NotServed."
       "SpeculationRule_Conservative",
       base::Milliseconds(0), 1);
-  histogram_tester.ExpectTotalCount(
+  histogram_tester().ExpectTotalCount(
       "Prefetch.BlockUntilHeadDuration.PerMatchingCandidate.NonPrerender."
       "Served.SpeculationRule_Conservative",
       0);
-  histogram_tester.ExpectUniqueTimeSample(
+  histogram_tester().ExpectUniqueTimeSample(
       "Prefetch.BlockUntilHeadDuration.PerMatchingCandidate.NonPrerender."
       "NotServed.SpeculationRule_Conservative",
       base::Milliseconds(0), 1);
-  histogram_tester.ExpectTotalCount(
+  histogram_tester().ExpectTotalCount(
       "Prefetch.BlockUntilHeadDuration.PerMatchingCandidate.Prerender.Served."
       "SpeculationRule_Conservative",
       0);
-  histogram_tester.ExpectTotalCount(
+  histogram_tester().ExpectTotalCount(
       "Prefetch.BlockUntilHeadDuration.PerMatchingCandidate.Prerender."
       "NotServed.SpeculationRule_Conservative",
       0);
 
-  histogram_tester.ExpectUniqueSample(
+  histogram_tester().ExpectUniqueSample(
       base::StrCat({"Prefetch.PrefetchMatchingBlockedNavigation."
                     "PerMatchingCandidate.Embedder_",
                     test::kPreloadingEmbedderHistogramSuffixForTesting}),
       true, 1);
-  histogram_tester.ExpectTotalCount(
+  histogram_tester().ExpectTotalCount(
       base::StrCat({"Prefetch.PrefetchMatchingBlockedNavigation."
                     "PerMatchingCandidate.Prerender.Embedder_",
                     test::kPreloadingEmbedderHistogramSuffixForTesting}),
       0);
-  histogram_tester.ExpectTotalCount(
+  histogram_tester().ExpectTotalCount(
       base::StrCat({"Prefetch.BlockUntilHeadDuration.PerMatchingCandidate."
                     "Served.Embedder_",
                     test::kPreloadingEmbedderHistogramSuffixForTesting}),
       0);
-  histogram_tester.ExpectUniqueTimeSample(
+  histogram_tester().ExpectUniqueTimeSample(
       base::StrCat({"Prefetch.BlockUntilHeadDuration.PerMatchingCandidate."
                     "NotServed.Embedder_",
                     test::kPreloadingEmbedderHistogramSuffixForTesting}),
       base::Milliseconds(20), 1);
-  histogram_tester.ExpectTotalCount(
+  histogram_tester().ExpectTotalCount(
       base::StrCat({"Prefetch.BlockUntilHeadDuration.PerMatchingCandidate."
                     "NonPrerender.Served.Embedder_",
                     test::kPreloadingEmbedderHistogramSuffixForTesting}),
       0);
-  histogram_tester.ExpectUniqueTimeSample(
+  histogram_tester().ExpectUniqueTimeSample(
       base::StrCat({"Prefetch.BlockUntilHeadDuration.PerMatchingCandidate."
                     "NonPrerender.NotServed.Embedder_",
                     test::kPreloadingEmbedderHistogramSuffixForTesting}),
       base::Milliseconds(20), 1);
-  histogram_tester.ExpectTotalCount(
+  histogram_tester().ExpectTotalCount(
       base::StrCat({"Prefetch.BlockUntilHeadDuration.PerMatchingCandidate."
                     "Prerender.Served.Embedder_",
                     test::kPreloadingEmbedderHistogramSuffixForTesting}),
       0);
-  histogram_tester.ExpectTotalCount(
+  histogram_tester().ExpectTotalCount(
       base::StrCat({"Prefetch.BlockUntilHeadDuration.PerMatchingCandidate."
                     "Prerender.NotServed.Embedder_",
                     test::kPreloadingEmbedderHistogramSuffixForTesting}),
@@ -1201,8 +1171,6 @@ TEST_P(PrefetchContainerTest, BlockUntilHeadHistograms_Prerender) {
       .is_nav_prerender = true,
       .blocked_duration = base::Milliseconds(100),
   };
-
-  base::HistogramTester histogram_tester;
   const GURL prefetch_url = GURL("https://test.com/?nvsparam=1");
   const GURL navigated_url = GURL("https://test.com/");
 
@@ -1224,54 +1192,51 @@ TEST_P(PrefetchContainerTest, BlockUntilHeadHistograms_Prerender) {
                                 kNotServedBlockUntilHeadTimeout,
       test_case.is_nav_prerender, test_case.blocked_duration);
 
-  histogram_tester.ExpectUniqueSample(
+  histogram_tester().ExpectUniqueSample(
       "Prefetch.PrefetchMatchingBlockedNavigation.PerMatchingCandidate."
       "SpeculationRule_Immediate2",
       true, 1);
-  histogram_tester.ExpectTotalCount(
+  histogram_tester().ExpectTotalCount(
       "Prefetch.PrefetchMatchingBlockedNavigation.PerMatchingCandidate."
       "NonPrerender.SpeculationRule_Immediate2",
       0);
-  histogram_tester.ExpectUniqueSample(
+  histogram_tester().ExpectUniqueSample(
       "Prefetch.PrefetchMatchingBlockedNavigation.PerMatchingCandidate."
       "Prerender.SpeculationRule_Immediate2",
       true, 1);
-  histogram_tester.ExpectUniqueTimeSample(
+  histogram_tester().ExpectUniqueTimeSample(
       "Prefetch.BlockUntilHeadDuration.PerMatchingCandidate.Served."
       "SpeculationRule_Immediate2",
       test_case.blocked_duration.value_or(base::Seconds(0)), 1);
-  histogram_tester.ExpectTotalCount(
+  histogram_tester().ExpectTotalCount(
       "Prefetch.BlockUntilHeadDuration.PerMatchingCandidate.NotServed."
       "SpeculationRule_Immediate2",
       0);
-  histogram_tester.ExpectTotalCount(
+  histogram_tester().ExpectTotalCount(
       "Prefetch.BlockUntilHeadDuration.PerMatchingCandidate.NonPrerender."
       "Served.SpeculationRule_Immediate2",
       0);
-  histogram_tester.ExpectTotalCount(
+  histogram_tester().ExpectTotalCount(
       "Prefetch.BlockUntilHeadDuration.PerMatchingCandidate.NonPrerender."
       "NotServed.SpeculationRule_Immediate2",
       0);
-  histogram_tester.ExpectUniqueTimeSample(
+  histogram_tester().ExpectUniqueTimeSample(
       "Prefetch.BlockUntilHeadDuration.PerMatchingCandidate.Prerender.Served."
       "SpeculationRule_Immediate2",
       test_case.blocked_duration.value_or(base::Seconds(0)), 1);
-  histogram_tester.ExpectTotalCount(
+  histogram_tester().ExpectTotalCount(
       "Prefetch.BlockUntilHeadDuration.PerMatchingCandidate.Prerender."
       "NotServed.SpeculationRule_Immediate2",
       0);
 }
 
 TEST_P(PrefetchContainerTest, RecordRedirectChainSize) {
-  base::HistogramTester histogram_tester;
-
   auto prefetch_container =
       CreateSpeculationRulesPrefetchContainer(GURL("https://test.com"));
-  prefetch_container->SimulatePrefetchEligibleForTest();
   MakeServableStreamingURLLoaderWithRedirectForTest(
       prefetch_container.get(), GURL("https://test.com"),
       GURL("https://redirect1.com"));
-  histogram_tester.ExpectUniqueSample(
+  histogram_tester().ExpectUniqueSample(
       "PrefetchProxy.Prefetch.RedirectChainSize", 2, 1);
 }
 
@@ -1370,8 +1335,6 @@ TEST_P(PrefetchContainerTest, MultipleStreamingURLLoaders) {
   const GURL kTestUrl1 = GURL("https://test1.com");
   const GURL kTestUrl2 = GURL("https://test2.com");
 
-  base::HistogramTester histogram_tester;
-
   auto prefetch_container = CreateSpeculationRulesPrefetchContainer(kTestUrl1);
 
   EXPECT_FALSE(prefetch_container->GetStreamingURLLoader());
@@ -1380,7 +1343,6 @@ TEST_P(PrefetchContainerTest, MultipleStreamingURLLoaders) {
             PrefetchServableState::kServable);
   EXPECT_FALSE(prefetch_container->GetNonRedirectHead());
 
-  prefetch_container->SimulatePrefetchEligibleForTest();
   MakeServableStreamingURLLoadersWithNetworkTransitionRedirectForTest(
       prefetch_container.get(), kTestUrl1, kTestUrl2);
   EXPECT_EQ(prefetch_container->GetMatchResolverAction().ToServableState(),
@@ -1461,10 +1423,7 @@ TEST_P(PrefetchContainerTest, CancelAndClearStreamingLoader) {
   const GURL kTestUrl1 = GURL("https://test1.com");
   const GURL kTestUrl2 = GURL("https://test2.com");
 
-  base::HistogramTester histogram_tester;
-
   auto prefetch_container = CreateSpeculationRulesPrefetchContainer(kTestUrl1);
-  prefetch_container->SimulatePrefetchEligibleForTest();
   auto pending_request =
       MakeManuallyServableStreamingURLLoaderForTest(prefetch_container.get());
 
@@ -1572,8 +1531,6 @@ class PrefetchContainerLifetimeTest
 TEST_P(PrefetchContainerLifetimeTest, Lifetime) {
   auto prefetch_container =
       CreateSpeculationRulesPrefetchContainer(GURL("https://test.com"));
-
-  prefetch_container->SimulatePrefetchEligibleForTest();
 
   auto pending_request =
       MakeManuallyServableStreamingURLLoaderForTest(prefetch_container.get());
@@ -1875,6 +1832,7 @@ class TestPrefetchContainerObserver final : public PrefetchContainerObserver {
   void OnDeterminedHead(const PrefetchContainer& prefetch_container) override {}
   void OnPrefetchCompletedOrFailed(
       const PrefetchContainer& prefetch_container) override {}
+  void OnPrefetchStale(const PrefetchContainer& prefetch_container) override {}
 
   base::OnceClosure callback_;
 };

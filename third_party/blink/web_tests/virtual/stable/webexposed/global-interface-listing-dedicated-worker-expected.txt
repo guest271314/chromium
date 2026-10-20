@@ -106,6 +106,7 @@ Starting worker: resources/global-interface-listing-worker.js
 [Worker]     method slice
 [Worker]     method stream
 [Worker]     method text
+[Worker]     method textStream
 [Worker] interface BroadcastChannel : EventTarget
 [Worker]     attribute @@toStringTag
 [Worker]     getter name
@@ -121,6 +122,67 @@ Starting worker: resources/global-interface-listing-worker.js
 [Worker]     getter highWaterMark
 [Worker]     getter size
 [Worker]     method constructor
+[Worker] interface CSSKeywordValue : CSSStyleValue
+[Worker]     attribute @@toStringTag
+[Worker]     getter value
+[Worker]     method constructor
+[Worker]     setter value
+[Worker] interface CSSMathClamp : CSSMathValue
+[Worker]     attribute @@toStringTag
+[Worker]     getter lower
+[Worker]     getter upper
+[Worker]     getter value
+[Worker]     method constructor
+[Worker] interface CSSMathInvert : CSSMathValue
+[Worker]     attribute @@toStringTag
+[Worker]     getter value
+[Worker]     method constructor
+[Worker] interface CSSMathMax : CSSMathValue
+[Worker]     attribute @@toStringTag
+[Worker]     getter values
+[Worker]     method constructor
+[Worker] interface CSSMathMin : CSSMathValue
+[Worker]     attribute @@toStringTag
+[Worker]     getter values
+[Worker]     method constructor
+[Worker] interface CSSMathNegate : CSSMathValue
+[Worker]     attribute @@toStringTag
+[Worker]     getter value
+[Worker]     method constructor
+[Worker] interface CSSMathProduct : CSSMathValue
+[Worker]     attribute @@toStringTag
+[Worker]     getter values
+[Worker]     method constructor
+[Worker] interface CSSMathSum : CSSMathValue
+[Worker]     attribute @@toStringTag
+[Worker]     getter values
+[Worker]     method constructor
+[Worker] interface CSSMathValue : CSSNumericValue
+[Worker]     attribute @@toStringTag
+[Worker]     getter operator
+[Worker]     method constructor
+[Worker] interface CSSNumericArray
+[Worker]     attribute @@toStringTag
+[Worker]     getter length
+[Worker]     method @@iterator
+[Worker]     method constructor
+[Worker]     method entries
+[Worker]     method forEach
+[Worker]     method keys
+[Worker]     method values
+[Worker] interface CSSNumericValue : CSSStyleValue
+[Worker]     attribute @@toStringTag
+[Worker]     method add
+[Worker]     method constructor
+[Worker]     method div
+[Worker]     method equals
+[Worker]     method max
+[Worker]     method min
+[Worker]     method mul
+[Worker]     method sub
+[Worker]     method to
+[Worker]     method toSum
+[Worker]     method type
 [Worker] interface CSSSkewX : CSSTransformComponent
 [Worker]     attribute @@toStringTag
 [Worker]     getter ax
@@ -131,6 +193,25 @@ Starting worker: resources/global-interface-listing-worker.js
 [Worker]     getter ay
 [Worker]     method constructor
 [Worker]     setter ay
+[Worker] interface CSSStyleValue
+[Worker]     attribute @@toStringTag
+[Worker]     method constructor
+[Worker]     method toString
+[Worker] interface CSSUnitValue : CSSNumericValue
+[Worker]     attribute @@toStringTag
+[Worker]     getter unit
+[Worker]     getter value
+[Worker]     method constructor
+[Worker]     setter value
+[Worker] interface CSSUnparsedValue : CSSStyleValue
+[Worker]     attribute @@toStringTag
+[Worker]     getter length
+[Worker]     method @@iterator
+[Worker]     method constructor
+[Worker]     method entries
+[Worker]     method forEach
+[Worker]     method keys
+[Worker]     method values
 [Worker] interface Cache
 [Worker]     attribute @@toStringTag
 [Worker]     method add
@@ -418,6 +499,10 @@ Starting worker: resources/global-interface-listing-worker.js
 [Worker]     method dispose
 [Worker]     method move
 [Worker]     method use
+[Worker] interface ElementImage
+[Worker]     attribute @@toStringTag
+[Worker]     method close
+[Worker]     method constructor
 [Worker] interface EncodedAudioChunk
 [Worker]     attribute @@toStringTag
 [Worker]     getter byteLength
@@ -606,6 +691,7 @@ Starting worker: resources/global-interface-listing-worker.js
 [Worker]     getter variant
 [Worker]     getter variationSettings
 [Worker]     getter weight
+[Worker]     getter width
 [Worker]     method constructor
 [Worker]     method load
 [Worker]     setter ascentOverride
@@ -621,6 +707,30 @@ Starting worker: resources/global-interface-listing-worker.js
 [Worker]     setter variant
 [Worker]     setter variationSettings
 [Worker]     setter weight
+[Worker]     setter width
+[Worker] interface FontFaceSet : EventTarget
+[Worker]     attribute @@toStringTag
+[Worker]     getter onloading
+[Worker]     getter onloadingdone
+[Worker]     getter onloadingerror
+[Worker]     getter ready
+[Worker]     getter size
+[Worker]     getter status
+[Worker]     method @@iterator
+[Worker]     method add
+[Worker]     method check
+[Worker]     method clear
+[Worker]     method constructor
+[Worker]     method delete
+[Worker]     method entries
+[Worker]     method forEach
+[Worker]     method has
+[Worker]     method keys
+[Worker]     method load
+[Worker]     method values
+[Worker]     setter onloading
+[Worker]     setter onloadingdone
+[Worker]     setter onloadingerror
 [Worker] interface FormData
 [Worker]     attribute @@toStringTag
 [Worker]     method @@iterator
@@ -734,6 +844,7 @@ Starting worker: resources/global-interface-listing-worker.js
 [Worker]     method popDebugGroup
 [Worker]     method pushDebugGroup
 [Worker]     method setBindGroup
+[Worker]     method setImmediates
 [Worker]     method setPipeline
 [Worker]     method writeTimestamp
 [Worker]     setter label
@@ -815,6 +926,7 @@ Starting worker: resources/global-interface-listing-worker.js
 [Worker]     getter label
 [Worker]     method constructor
 [Worker]     method copyExternalImageToTexture
+[Worker]     method drawElementImageToTexture
 [Worker]     method onSubmittedWorkDone
 [Worker]     method submit
 [Worker]     method writeBuffer
@@ -838,6 +950,7 @@ Starting worker: resources/global-interface-listing-worker.js
 [Worker]     method popDebugGroup
 [Worker]     method pushDebugGroup
 [Worker]     method setBindGroup
+[Worker]     method setImmediates
 [Worker]     method setIndexBuffer
 [Worker]     method setPipeline
 [Worker]     method setVertexBuffer
@@ -859,6 +972,7 @@ Starting worker: resources/global-interface-listing-worker.js
 [Worker]     method pushDebugGroup
 [Worker]     method setBindGroup
 [Worker]     method setBlendConstant
+[Worker]     method setImmediates
 [Worker]     method setIndexBuffer
 [Worker]     method setPipeline
 [Worker]     method setScissorRect
@@ -910,6 +1024,7 @@ Starting worker: resources/global-interface-listing-worker.js
 [Worker]     getter maxComputeWorkgroupsPerDimension
 [Worker]     getter maxDynamicStorageBuffersPerPipelineLayout
 [Worker]     getter maxDynamicUniformBuffersPerPipelineLayout
+[Worker]     getter maxImmediateSize
 [Worker]     getter maxInterStageShaderVariables
 [Worker]     getter maxSampledTexturesPerShaderStage
 [Worker]     getter maxSamplersPerShaderStage
@@ -1352,10 +1467,13 @@ Starting worker: resources/global-interface-listing-worker.js
 [Worker]     getter oncontextlost
 [Worker]     getter oncontextrestored
 [Worker]     getter width
+[Worker]     method clearElementGeometry
 [Worker]     method constructor
 [Worker]     method convertToBlob
 [Worker]     method getContext
+[Worker]     method getElementImageDefaultSize
 [Worker]     method transferToImageBitmap
+[Worker]     method updateElementGeometry
 [Worker]     setter height
 [Worker]     setter oncontextlost
 [Worker]     setter oncontextrestored
@@ -1403,6 +1521,7 @@ Starting worker: resources/global-interface-listing-worker.js
 [Worker]     method createLinearGradient
 [Worker]     method createPattern
 [Worker]     method createRadialGradient
+[Worker]     method drawElementImage
 [Worker]     method drawImage
 [Worker]     method ellipse
 [Worker]     method fill
@@ -1505,6 +1624,7 @@ Starting worker: resources/global-interface-listing-worker.js
 [Worker]     getter duration
 [Worker]     getter entryType
 [Worker]     getter name
+[Worker]     getter navigationId
 [Worker]     getter startTime
 [Worker]     method constructor
 [Worker]     method toJSON
@@ -1782,6 +1902,7 @@ Starting worker: resources/global-interface-listing-worker.js
 [Worker]     method formData
 [Worker]     method json
 [Worker]     method text
+[Worker]     method textStream
 [Worker] interface Response
 [Worker]     static method error
 [Worker]     static method redirect
@@ -1803,6 +1924,7 @@ Starting worker: resources/global-interface-listing-worker.js
 [Worker]     method formData
 [Worker]     method json
 [Worker]     method text
+[Worker]     method textStream
 [Worker] interface RestrictionTarget
 [Worker]     attribute @@toStringTag
 [Worker]     method constructor
@@ -1939,15 +2061,21 @@ Starting worker: resources/global-interface-listing-worker.js
 [Worker]     method error
 [Worker]     method next
 [Worker] interface SubtleCrypto
+[Worker]     static method supports
 [Worker]     attribute @@toStringTag
 [Worker]     method constructor
+[Worker]     method decapsulateBits
+[Worker]     method decapsulateKey
 [Worker]     method decrypt
 [Worker]     method deriveBits
 [Worker]     method deriveKey
 [Worker]     method digest
+[Worker]     method encapsulateBits
+[Worker]     method encapsulateKey
 [Worker]     method encrypt
 [Worker]     method exportKey
 [Worker]     method generateKey
+[Worker]     method getPublicKey
 [Worker]     method importKey
 [Worker]     method sign
 [Worker]     method unwrapKey
@@ -3031,6 +3159,7 @@ Starting worker: resources/global-interface-listing-worker.js
 [Worker]     method stencilMaskSeparate
 [Worker]     method stencilOp
 [Worker]     method stencilOpSeparate
+[Worker]     method texElementSubImage2D
 [Worker]     method texImage2D
 [Worker]     method texImage3D
 [Worker]     method texParameterf
@@ -3533,6 +3662,7 @@ Starting worker: resources/global-interface-listing-worker.js
 [Worker]     method stencilMaskSeparate
 [Worker]     method stencilOp
 [Worker]     method stencilOpSeparate
+[Worker]     method texElementSubImage2D
 [Worker]     method texImage2D
 [Worker]     method texParameterf
 [Worker]     method texParameteri
@@ -3634,6 +3764,7 @@ Starting worker: resources/global-interface-listing-worker.js
 [Worker]     method close
 [Worker]     method constructor
 [Worker] interface WebTransport
+[Worker]     static getter supportsReliableOnly
 [Worker]     attribute @@toStringTag
 [Worker]     getter closed
 [Worker]     getter datagrams
@@ -3641,6 +3772,8 @@ Starting worker: resources/global-interface-listing-worker.js
 [Worker]     getter incomingUnidirectionalStreams
 [Worker]     getter protocol
 [Worker]     getter ready
+[Worker]     getter reliability
+[Worker]     getter responseHeaders
 [Worker]     method close
 [Worker]     method constructor
 [Worker]     method createBidirectionalStream
@@ -3654,16 +3787,20 @@ Starting worker: resources/global-interface-listing-worker.js
 [Worker]     attribute @@toStringTag
 [Worker]     getter incomingHighWaterMark
 [Worker]     getter incomingMaxAge
+[Worker]     getter incomingMaxBufferedDatagrams
 [Worker]     getter maxDatagramSize
 [Worker]     getter outgoingHighWaterMark
 [Worker]     getter outgoingMaxAge
+[Worker]     getter outgoingMaxBufferedDatagrams
 [Worker]     getter readable
 [Worker]     getter writable
 [Worker]     method constructor
 [Worker]     setter incomingHighWaterMark
 [Worker]     setter incomingMaxAge
+[Worker]     setter incomingMaxBufferedDatagrams
 [Worker]     setter outgoingHighWaterMark
 [Worker]     setter outgoingMaxAge
+[Worker]     setter outgoingMaxBufferedDatagrams
 [Worker] interface WebTransportError : DOMException
 [Worker]     attribute @@toStringTag
 [Worker]     getter source

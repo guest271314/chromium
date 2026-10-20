@@ -55,35 +55,34 @@ import org.chromium.base.ApplicationStatus;
 import org.chromium.base.Callback;
 import org.chromium.base.ContextUtils;
 import org.chromium.base.DeviceInfo;
+import org.chromium.base.FeatureOverrides;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.supplier.OneshotSupplier;
 import org.chromium.base.task.PostTask;
 import org.chromium.base.task.TaskTraits;
 import org.chromium.base.test.BaseActivityTestRule;
+import org.chromium.base.test.params.ParameterAnnotations;
+import org.chromium.base.test.params.ParameterSet;
+import org.chromium.base.test.params.ParameterizedRunner;
 import org.chromium.base.test.transit.RootSpec;
 import org.chromium.base.test.transit.ViewElement;
 import org.chromium.base.test.util.ApplicationTestUtils;
 import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.Criteria;
 import org.chromium.base.test.util.CriteriaHelper;
-import org.chromium.base.test.util.DisableLeakChecks;
 import org.chromium.base.test.util.DisabledTest;
 import org.chromium.base.test.util.DoNotBatch;
 import org.chromium.base.test.util.Features;
 import org.chromium.base.test.util.HistogramWatcher;
 import org.chromium.base.test.util.MinAndroidSdkLevel;
 import org.chromium.base.test.util.Restriction;
-import org.chromium.base.test.util.ScalableTimeout;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.ChromeTabbedActivity;
-import org.chromium.chrome.browser.DeferredStartupHandler;
 import org.chromium.chrome.browser.app.ChromeActivity;
 import org.chromium.chrome.browser.customtabs.CustomTabActivity;
 import org.chromium.chrome.browser.customtabs.CustomTabsIntentTestUtils;
 import org.chromium.chrome.browser.document.ChromeLauncherActivity;
-import org.chromium.chrome.browser.enterprise.util.EnterpriseInfo;
-import org.chromium.chrome.browser.enterprise.util.FakeEnterpriseInfo;
 import org.chromium.chrome.browser.firstrun.FirstRunActivityTestObserver.ScopedObserverData;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
@@ -100,11 +99,14 @@ import org.chromium.chrome.browser.search_engines.TemplateUrlServiceFactory;
 import org.chromium.chrome.browser.signin.SigninFirstRunFragment;
 import org.chromium.chrome.browser.ui.signin.DialogWhenLargeContentLayout;
 import org.chromium.chrome.browser.ui.signin.fullscreen_signin.FullscreenSigninMediator;
-import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
+import org.chromium.chrome.test.ChromeActivityTestRule;
+import org.chromium.chrome.test.ChromeJUnit4RunnerDelegate;
 import org.chromium.chrome.test.util.browser.signin.SigninTestRule;
 import org.chromium.chrome.test.util.browser.sync.SyncTestUtil;
 import org.chromium.components.browser_ui.styles.SemanticColorUtils;
 import org.chromium.components.externalauth.ExternalAuthUtils;
+import org.chromium.components.policy.EnterpriseInfo;
+import org.chromium.components.policy.test.FakeEnterpriseInfo;
 import org.chromium.components.policy.test.annotations.Policies;
 import org.chromium.components.search_engines.TemplateUrl;
 import org.chromium.components.signin.SigninFeatures;
@@ -116,6 +118,7 @@ import org.chromium.ui.edge_to_edge.EdgeToEdgeSystemBarColorHelper;
 import org.chromium.ui.test.util.BlankUiTestActivity;
 import org.chromium.ui.test.util.DeviceRestriction;
 
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -123,25 +126,34 @@ import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 
-/** Integration test suite for the first run experience. */
-@RunWith(ChromeJUnit4ClassRunner.class)
-@Features.EnableFeatures({
-    SigninFeatures.SMART_EMAIL_LINE_BREAKING,
-    ChromeFeatureList.XPLAT_SYNCED_SETUP
-})
+/**
+ * Integration test suite for the first run experience.
+ *
+ * <p>TODO(crbug.com/493130564): Revert to regular runner after
+ * MAKE_IDENTITY_MANAGER_SOURCE_OF_ACCOUNTS launch.
+ */
+@RunWith(ParameterizedRunner.class)
+@ParameterAnnotations.UseRunnerDelegate(ChromeJUnit4RunnerDelegate.class)
+@Features.EnableFeatures({SigninFeatures.SMART_EMAIL_LINE_BREAKING})
 @DoNotBatch(reason = "This test interacts with startup, native initialization, and first run.")
 @CommandLineFlags.Add({ChromeSwitches.NO_FIRST_RUN})
-@DisableLeakChecks({
-    "crbug.com/512490467 (FirstRunActivity)",
-    "crbug.com/512493365 (FirstRunActivity)",
-    "crbug.com/512493466 (ChromeTabbedActivity)",
-    "crbug.com/512492736 (BlankUiTestActivity)"
-})
 public class FirstRunIntegrationTest {
     private static final String TEST_URL = "https://test.com";
     private static final String FOO_URL = "https://foo.com";
     private static final long ACTIVITY_WAIT_LONG_MS = TimeUnit.SECONDS.toMillis(20);
     private static final String TEST_ENROLLMENT_TOKEN = "enrollment-token";
+
+    @ParameterAnnotations.ClassParameter
+    private static final List<ParameterSet> sClassParams =
+            Arrays.asList(
+                    new ParameterSet().value(true).name("IdentityManagerMigrationEnabled"),
+                    new ParameterSet().value(false).name("IdentityManagerMigrationDisabled"));
+
+    public FirstRunIntegrationTest(boolean isIdentityManagerMigrationEnabled) {
+        FeatureOverrides.overrideFlag(
+                SigninFeatures.MAKE_IDENTITY_MANAGER_SOURCE_OF_ACCOUNTS,
+                isIdentityManagerMigrationEnabled);
+    }
 
     @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
 
@@ -216,6 +228,12 @@ public class FirstRunIntegrationTest {
 
         FirstRunActivity.disableAnimationForTesting(false);
         FirstRunStatus.setFirstRunSkippedByPolicy(false);
+
+        for (ActivityMonitor monitor : mMonitorMap.values()) {
+            mInstrumentation.removeMonitor(monitor);
+        }
+        mMonitorMap.clear();
+        mLastActivity = null;
     }
 
     private ActivityMonitor getMonitor(Class activityClass) {
@@ -240,8 +258,13 @@ public class FirstRunIntegrationTest {
 
     private FirstRunActivity launchFirstRunActivityAndWaitForNativeInitialization() {
         FirstRunActivity firstRunActivity = launchFirstRunActivity();
+        // Each test method cold-starts native in a fresh process (@DoNotBatch), which can exceed
+        // the default poll timeout on loaded emulators.
         CriteriaHelper.pollUiThread(
-                () -> firstRunActivity.getNativeInitializationPromise().isFulfilled());
+                () -> firstRunActivity.getNativeInitializationPromise().isFulfilled(),
+                "FirstRunActivity native initialization did not complete",
+                CriteriaHelper.DEFAULT_MAX_TIME_TO_POLL_LONG,
+                CriteriaHelper.DEFAULT_POLLING_INTERVAL);
         return firstRunActivity;
     }
 
@@ -449,7 +472,6 @@ public class FirstRunIntegrationTest {
     @MediumTest
     // Sign-in is not supported on automotive devices.
     @Restriction({DeviceRestriction.RESTRICTION_TYPE_NON_AUTO})
-    @DisabledTest(message = "crbug.com/431982831")
     public void testFirstRunPages_NoCctPolicy_OnBackPressed() throws Exception {
         mSigninTestRule.addAccount(TestAccounts.AADC_ADULT_ACCOUNT);
         initializePreferences(FirstRunPagesTestCase.createWithShowAllPromos());
@@ -478,7 +500,32 @@ public class FirstRunIntegrationTest {
     @MediumTest
     // Sign-in is not supported on automotive devices.
     @Restriction({DeviceRestriction.RESTRICTION_TYPE_NON_AUTO})
-    @DisabledTest(message = "crbug.com/431982831")
+    public void testSkipWelcomePageUpdatedWhenNavigatingThroughWelcomePage() throws Exception {
+        mSigninTestRule.addAccount(TestAccounts.AADC_ADULT_ACCOUNT);
+        initializePreferences(FirstRunPagesTestCase.createWithShowAllPromos());
+
+        FirstRunActivity firstRunActivity = launchFirstRunActivity();
+        FirstRunNavigationHelper navigationHelper =
+                new FirstRunNavigationHelper(firstRunActivity)
+                        .ensurePagesCreationSucceeded()
+                        .ensureWelcomePageIsCurrentPage();
+        Assert.assertFalse(FirstRunStatus.shouldSkipWelcomePage());
+
+        // Moving past the welcome page should mark it as skippable.
+        navigationHelper
+                .continueAndSignIn(TestAccounts.AADC_ADULT_ACCOUNT)
+                .ensureDefaultSearchEnginePromoIsCurrentPage();
+        Assert.assertTrue(FirstRunStatus.shouldSkipWelcomePage());
+
+        // Going back to the welcome page should make it shown again.
+        navigationHelper.goBackToPreviousPage().ensureWelcomePageIsCurrentPage();
+        Assert.assertFalse(FirstRunStatus.shouldSkipWelcomePage());
+    }
+
+    @Test
+    @MediumTest
+    // Sign-in is not supported on automotive devices.
+    @Restriction({DeviceRestriction.RESTRICTION_TYPE_NON_AUTO})
     public void testFirstRunPages_WithCctPolicy_OnBackPressed() throws Exception {
         mSigninTestRule.addAccount(TestAccounts.AADC_ADULT_ACCOUNT);
         initializePreferences(FirstRunPagesTestCase.createWithShowAllPromos().withCctTosDisabled());
@@ -569,7 +616,6 @@ public class FirstRunIntegrationTest {
     @MediumTest
     // Sign-in is not supported on automotive devices.
     @Restriction({DeviceRestriction.RESTRICTION_TYPE_NON_AUTO})
-    @DisabledTest(message = "Flaky, see crbug.com/431982831")
     public void testFirstRunPages_ProgressHistogramRecordedOnlyOnce() throws Exception {
         mSigninTestRule.addAccount(TestAccounts.AADC_ADULT_ACCOUNT);
         HistogramWatcher histograms =
@@ -876,13 +922,9 @@ public class FirstRunIntegrationTest {
         CriteriaHelper.pollUiThreadLongTimeout(
                 "Native init never completed", activity::didFinishNativeInitialization);
 
-        // DeferredStartupHandler could not finish with CriteriaHelper#DEFAULT_MAX_TIME_TO_POLL.
-        // Use longer timeout here to avoid flakiness. See https://crbug.com/40736538.
-        CriteriaHelper.pollUiThread(activity::deferredStartupPostedForTesting);
         Assert.assertTrue(
                 "Deferred startup never completed",
-                DeferredStartupHandler.waitForDeferredStartupCompleteForTesting(
-                        ScalableTimeout.scaleTimeout(ACTIVITY_WAIT_LONG_MS)));
+                ChromeActivityTestRule.waitForDeferredStartup(activity));
 
         // FirstRun status should be refreshed by TosDialogBehaviorSharedPrefInvalidator in deferred
         // start up task.
@@ -1381,7 +1423,7 @@ public class FirstRunIntegrationTest {
                 activity.getEdgeToEdgeManager().getEdgeToEdgeSystemBarColorHelper();
         @ColorInt int backgroundColor;
         if (DialogWhenLargeContentLayout.shouldShowAsDialog(activity)) {
-            backgroundColor = DialogWhenLargeContentLayout.getDialogBackgroundColor(activity);
+            backgroundColor = SemanticColorUtils.getColorSurfaceContainerLow(activity);
         } else {
             backgroundColor = SemanticColorUtils.getDefaultBgColor(activity);
         }
@@ -1406,8 +1448,7 @@ public class FirstRunIntegrationTest {
         EdgeToEdgeSystemBarColorHelper edgeToEdgeSystemBarColorHelper =
                 activity.getEdgeToEdgeManager().getEdgeToEdgeSystemBarColorHelper();
 
-        @ColorInt
-        int backgroundColor = DialogWhenLargeContentLayout.getDialogBackgroundColor(activity);
+        @ColorInt int backgroundColor = SemanticColorUtils.getColorSurfaceContainerLow(activity);
         Assert.assertEquals(backgroundColor, edgeToEdgeSystemBarColorHelper.getStatusBarColor());
         Assert.assertEquals(
                 backgroundColor, edgeToEdgeSystemBarColorHelper.getNavigationBarColor());

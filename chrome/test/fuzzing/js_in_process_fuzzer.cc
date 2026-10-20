@@ -2,6 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include <csignal>
 #include <optional>
 #include <string_view>
 
@@ -11,10 +12,16 @@
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/bind.h"
 #include "base/time/time.h"
-#include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "chrome/test/fuzzing/in_process_fuzzer.h"
 #include "chrome/test/fuzzing/in_process_fuzzer_buildflags.h"
+#include "components/content_settings/core/browser/content_settings_registry.h"
+#include "components/content_settings/core/browser/host_content_settings_map.h"
+#include "components/content_settings/core/common/content_settings.h"
+#include "components/content_settings/core/common/content_settings_types.h"
+#include "components/permissions/permission_request_manager.h"
+#include "components/permissions/permissions_client.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/test/browser_test_utils.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
@@ -50,7 +57,7 @@ namespace {
 #if BUILDFLAG(IS_FUZZILLI)
 // Fuzzilli handles timeouts by itself so that it detects when there are
 // infinite loops.
-constexpr std::optional<base::TimeDelta> kJsExecutionTimeout = std::nullopt;
+constexpr std::optional<base::TimeDelta> kJsExecutionTimeout;
 constexpr RunLoopTimeoutBehavior kJsRunLoopTimeoutBehavior =
     RunLoopTimeoutBehavior::kDefault;
 #else
@@ -58,11 +65,40 @@ constexpr std::optional<base::TimeDelta> kJsExecutionTimeout = base::Seconds(8);
 constexpr RunLoopTimeoutBehavior kJsRunLoopTimeoutBehavior =
     RunLoopTimeoutBehavior::kDeclareInfiniteLoop;
 #endif
-
 constexpr char kMojoFuzzerHtml[] = R"(
 <script src="gen/mojo/public/js/mojo_bindings_lite.js"></script>
+<script src="gen/mojo/public/mojom/base/big_buffer.mojom-lite.js"></script>
+<script src="gen/mojo/public/mojom/base/string16.mojom-lite.js"></script>
+<script src="gen/mojo/public/mojom/base/time.mojom-lite.js"></script>
+<script
+ src="gen/mojo/public/mojom/base/unguessable_token.mojom-lite.js">
+</script>
+<script src="gen/url/mojom/scheme_host_port.mojom-lite.js"></script>
+<script src="gen/url/mojom/origin.mojom-lite.js"></script>
+<script src="gen/url/mojom/url.mojom-lite.js"></script>
+<script
+ src="gen/components/payments/mojom/payment_request_data.mojom-lite.js">
+</script>
+<script
+ src="gen/third_party/blink/public/mojom/credentialmanagement/credential_manager.mojom-lite.js">
+</script>
+<script
+ src="gen/third_party/blink/public/mojom/webauthn/authenticator.mojom-lite.js">
+</script>
 <script
  src="gen/third_party/blink/public/mojom/locks/lock_manager.mojom-lite.js">
+</script>
+<script
+ src="gen/services/network/public/mojom/no_vary_search.mojom-lite.js">
+</script>
+<script
+ src="gen/services/network/public/mojom/referrer_policy.mojom-lite.js">
+</script>
+<script
+ src="gen/third_party/blink/public/mojom/loader/referrer.mojom-lite.js">
+</script>
+<script
+ src="gen/third_party/blink/public/mojom/speculation_rules/speculation_rules.mojom-lite.js">
 </script>
 )";
 
@@ -99,6 +135,30 @@ void JsInProcessFuzzer::SetUpOnMainThread() {
 
   GURL url = embedded_https_test_server().GetURL("/mojo_fuzzer.html");
   CHECK(ui_test_utils::NavigateToURL(browser(), url));
+
+  // Grant all permissions so that fuzzed JS can reach permission-gated APIs.
+  content::WebContents* web_contents =
+      browser()->tab_strip_model()->GetActiveWebContents();
+  permissions::PermissionRequestManager::FromWebContents(web_contents)
+      ->set_auto_response_for_test(
+          permissions::PermissionRequestManager::ACCEPT_ALL);
+
+  HostContentSettingsMap* host_content_settings_map =
+      permissions::PermissionsClient::Get()->GetSettingsMap(
+          web_contents->GetBrowserContext());
+  content_settings::ContentSettingsRegistry* content_settings_registry =
+      content_settings::ContentSettingsRegistry::GetInstance();
+  for (int i = static_cast<int>(ContentSettingsType::kMinValue);
+       i <= static_cast<int>(ContentSettingsType::kMaxValue); i++) {
+    auto content_settings_type = static_cast<ContentSettingsType>(i);
+    const content_settings::ContentSettingsInfo* content_settings_info =
+        content_settings_registry->Get(content_settings_type);
+    if (content_settings_info &&
+        content_settings_info->IsDefaultSettingValid(CONTENT_SETTING_ALLOW)) {
+      host_content_settings_map->SetDefaultContentSetting(
+          content_settings_type, CONTENT_SETTING_ALLOW);
+    }
+  }
 #if BUILDFLAG(IS_FUZZILLI)
   // Fuzzilli needs to see this. Unfortunately, we install a signal handler at
   // //content/public/test/browser_test_base.cc that exits when one of those
@@ -126,6 +186,7 @@ JsInProcessFuzzer::GetChromiumCommandLineArguments() {
                         "--expose-gc --fuzzing --future --harmony"),
       FILE_PATH_LITERAL("--enable-blink-features=MojoJS,MojoJSTest"),
       FILE_PATH_LITERAL("--enable-experimental-web-platform-features"),
+      FILE_PATH_LITERAL("--enable-features=WebMachineLearningNeuralNetwork"),
       // Disable this to avoid crashing the testing framework when invalid Mojo
       // messages are received which happens a lot for some interfaces. We're
       // trading off worse runtime accuracy for better fuzzer performance.

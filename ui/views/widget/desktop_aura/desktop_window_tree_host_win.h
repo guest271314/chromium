@@ -51,6 +51,17 @@ class VIEWS_EXPORT DesktopWindowTreeHostWin
       public aura::WindowTreeHost,
       public HWNDMessageHandlerDelegate {
  public:
+  // These values are persisted to logs. Entries should not be renumbered and
+  // numeric values should never be reused.
+  // LINT.IfChange(DisplayAffinityResult)
+  enum class DisplayAffinityResult {
+    kSuccess = 0,
+    kSkippedRemoteSession = 1,
+    kSetWindowDisplayAffinityFailed = 2,
+    kMaxValue = kSetWindowDisplayAffinityFailed,
+  };
+  // LINT.ThenChange(//tools/metrics/histograms/metadata/media/enums.xml:DisplayAffinityResult)
+
   DesktopWindowTreeHostWin(
       internal::NativeWidgetDelegate* native_widget_delegate,
       DesktopNativeWidgetAura* desktop_native_widget_aura);
@@ -92,6 +103,9 @@ class VIEWS_EXPORT DesktopWindowTreeHostWin
   // noop, which is accomplished by checking if `in_touch_drag_` is already
   // false.
   void FinishTouchDrag(gfx::Point screen_point);
+
+  // Returns true if any window is in a move/resize loop.
+  bool IsInNativeMoveResizeLoop() const;
 
  protected:
   // Overridden from DesktopWindowTreeHost:
@@ -273,8 +287,6 @@ class VIEWS_EXPORT DesktopWindowTreeHostWin
   void PostHandleMSG(UINT message, WPARAM w_param, LPARAM l_param) override;
   bool HandleScrollEvent(ui::ScrollEvent* event) override;
   bool HandleGestureEvent(ui::GestureEvent* event) override;
-  void HandleWindowSizeChanging() override;
-  void HandleWindowSizeUnchanged() override;
   void HandleWindowScaleFactorChanged(float window_scale_factor) override;
   void HandleHeadlessWindowBoundsChanged(const gfx::Rect& bounds) override;
   HBRUSH GetBackgroundPaintBrush() override;
@@ -301,6 +313,11 @@ class VIEWS_EXPORT DesktopWindowTreeHostWin
 
   // Call Windows API to update the window display affinity.
   void UpdateDisplayAffinity();
+
+  // Returns true if screen capture exclusion is allowed on this device or
+  // session. By default, exclusion is bypassed (returns false) in remote
+  // sessions.
+  bool IsCaptureExclusionAllowed() const;
 
   // Designates a Mica DWM_SYSTEMBACKDROP to the window if it does not have
   // a redirection bitmap.
@@ -357,11 +374,28 @@ class VIEWS_EXPORT DesktopWindowTreeHostWin
   // True if the window should be excluded from screen capture.
   bool exclude_from_capture_ = false;
 
+  // True if the UMA metric for the current capture exclusion activation has
+  // already been recorded.
+  bool has_recorded_capture_exclusion_metric_ = false;
+
+  // Overrides the remote session detection for testing.
+  std::optional<bool> remote_session_for_testing_;
+
   // Visibility of the cursor. On Windows we can have multiple root windows and
   // the implementation of ::ShowCursor() is based on a counter, so making this
   // member static ensures that ::ShowCursor() is always called exactly once
   // whenever the cursor visibility state changes.
+  // Used for legacy behavior when `features::kHideCursorWhileTyping` is
+  // disabled.
+  // TODO(crbug.com/567626032): Clean up `is_cursor_visible_` and fallback
+  // branches once `features::kHideCursorWhileTyping` launches permanently.
   static bool is_cursor_visible_;
+
+  // Modality of the window should be immutable, so we can cache it here for
+  // later interrogation. This ensures that any owner window is properly enabled
+  // when a modal window is destroyed/hidden, regardless of whether or not the
+  // native_widget_delegate_ is still present.
+  const bool is_modal_;
 
   // Captures system key events when keyboard lock is requested.
   std::unique_ptr<ui::KeyboardHook> keyboard_hook_;
@@ -383,6 +417,9 @@ class VIEWS_EXPORT DesktopWindowTreeHostWin
   // Optional brush for filling the window background if the redirection surface
   // is present.
   HBRUSH background_paint_brush_ = nullptr;
+
+  // True if HandleDestroying() has been called.
+  bool called_handle_destroying_ = false;
 };
 
 }  // namespace views

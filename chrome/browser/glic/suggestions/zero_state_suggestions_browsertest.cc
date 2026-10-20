@@ -14,21 +14,26 @@
 #include "chrome/browser/glic/suggestions/contextual_cueing_service_factory.h"
 #include "chrome/browser/glic/suggestions/zero_state_suggestions_page_data.h"
 #include "chrome/browser/optimization_guide/browser_test_util.h"
+#include "chrome/browser/optimization_guide/optimization_guide_keyed_service.h"
 #include "chrome/browser/optimization_guide/optimization_guide_keyed_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_commands.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "components/optimization_guide/core/model_execution/remote_model_executor.h"
 #include "components/optimization_guide/core/optimization_guide_features.h"
+#include "components/optimization_guide/core/optimization_guide_permissions_util.h"
 #include "components/optimization_guide/core/optimization_guide_proto_util.h"
-#include "components/optimization_guide/core/optimization_guide_switches.h"
 #include "components/optimization_guide/proto/contextual_cueing_metadata.pb.h"
 #include "components/optimization_guide/proto/features/zero_state_suggestions.pb.h"
 #include "components/page_content_annotations/core/page_content_annotations_features.h"
 #include "components/prefs/pref_service.h"
+#include "content/public/test/back_forward_cache_util.h"
 #include "content/public/test/browser_test.h"
+#include "content/public/test/browser_test_utils.h"
+#include "net/dns/mock_host_resolver.h"
+#include "ui/base/window_open_disposition.h"
 
 namespace glic {
 
@@ -87,14 +92,14 @@ class ZeroStateSuggestionsBrowserTest
 
   void SetUpOnMainThread() override {
     // Override glic tab context sharing to be always on.
-    browser()->profile()->GetPrefs()->SetBoolean(
+    browser()->GetProfile()->GetPrefs()->SetBoolean(
         glic::prefs::kGlicTabContextEnabled, true);
   }
 
   void DisableOptimizationPermissionCheck() {
     base::CommandLine::ForCurrentProcess()->AppendSwitch(
-        optimization_guide::switches::
-            kDisableCheckingUserPermissionsForTesting);
+        optimization_guide::
+            kDisableCheckingUserPermissionsForTestingSwitch);
   }
 
   GURL url() { return url_; }
@@ -120,7 +125,7 @@ class ZeroStateSuggestionsBrowserTest
         optimization_guide::AnyWrapProto(metadata));
 
     OptimizationGuideKeyedServiceFactory::GetInstance()
-        ->GetForProfile(browser()->profile())
+        ->GetForProfile(browser()->GetProfile())
         ->AddOnDemandHintForTesting(
             url, optimization_guide::proto::GLIC_ZERO_STATE_SUGGESTIONS,
             decision_with_metadata);
@@ -137,7 +142,7 @@ class ZeroStateSuggestionsBrowserTest
     og_metadata.set_any_metadata(optimization_guide::AnyWrapProto(metadata));
 
     OptimizationGuideKeyedServiceFactory::GetInstance()
-        ->GetForProfile(browser()->profile())
+        ->GetForProfile(browser()->GetProfile())
         ->AddHintForTesting(
             url, optimization_guide::proto::GLIC_ZERO_STATE_SUGGESTIONS,
             og_metadata);
@@ -145,7 +150,7 @@ class ZeroStateSuggestionsBrowserTest
 
   void SetUpHintsNoResult(const GURL& url) {
     OptimizationGuideKeyedServiceFactory::GetInstance()
-        ->GetForProfile(browser()->profile())
+        ->GetForProfile(browser()->GetProfile())
         ->AddHintForTesting(
             url, optimization_guide::proto::GLIC_ZERO_STATE_SUGGESTIONS,
             std::nullopt);
@@ -164,7 +169,7 @@ class ZeroStateSuggestionsBrowserTest
     any_result.set_value(serialized_metadata);
 
     OptimizationGuideKeyedServiceFactory::GetInstance()
-        ->GetForProfile(browser()->profile())
+        ->GetForProfile(browser()->GetProfile())
         ->AddExecutionResultForTesting(
             optimization_guide::ModelBasedCapabilityKey::kZeroStateSuggestions,
             optimization_guide::OptimizationGuideModelExecutionResult(
@@ -174,7 +179,7 @@ class ZeroStateSuggestionsBrowserTest
   void SetUpEmptyModelExecutionResult() {
     optimization_guide::proto::Any any_result;
     OptimizationGuideKeyedServiceFactory::GetInstance()
-        ->GetForProfile(browser()->profile())
+        ->GetForProfile(browser()->GetProfile())
         ->AddExecutionResultForTesting(
             optimization_guide::ModelBasedCapabilityKey::kZeroStateSuggestions,
             optimization_guide::OptimizationGuideModelExecutionResult(
@@ -227,7 +232,7 @@ IN_PROC_BROWSER_TEST_P(ZeroStateSuggestionsBrowserTest, BasicFlow) {
 
   base::test::TestFuture<std::vector<std::string>> future;
 
-  ContextualCueingServiceFactory::GetForProfile(browser()->profile())
+  ContextualCueingServiceFactory::GetForProfile(browser()->GetProfile())
       ->GetContextualGlicZeroStateSuggestionsForFocusedTab(
           web_contents, /*is_fre=*/false, /*supported_tools=*/{},
           future.GetCallback());
@@ -277,7 +282,7 @@ IN_PROC_BROWSER_TEST_P(ZeroStateSuggestionsBrowserTest,
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), url()));
 
   ContextualCueingService* contextual_cueing_service =
-      ContextualCueingServiceFactory::GetForProfile(browser()->profile());
+      ContextualCueingServiceFactory::GetForProfile(browser()->GetProfile());
 
   // Set up two concurrent calls (simulates mouse down and then on load).
   base::test::TestFuture<std::vector<std::string>> future;
@@ -348,7 +353,7 @@ IN_PROC_BROWSER_TEST_P(ZeroStateSuggestionsBrowserTest,
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), url()));
 
   base::test::TestFuture<std::vector<std::string>> future;
-  ContextualCueingServiceFactory::GetForProfile(browser()->profile())
+  ContextualCueingServiceFactory::GetForProfile(browser()->GetProfile())
       ->GetContextualGlicZeroStateSuggestionsForFocusedTab(
           web_contents, /*is_fre=*/true, /*supported_tools=*/{},
           future.GetCallback());
@@ -389,7 +394,7 @@ IN_PROC_BROWSER_TEST_P(ZeroStateSuggestionsBrowserTest, NoResultFromHints) {
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), url()));
 
   base::test::TestFuture<std::vector<std::string>> future;
-  ContextualCueingServiceFactory::GetForProfile(browser()->profile())
+  ContextualCueingServiceFactory::GetForProfile(browser()->GetProfile())
       ->GetContextualGlicZeroStateSuggestionsForFocusedTab(
           web_contents, /*is_fre=*/false, /*supported_tools=*/{},
           future.GetCallback());
@@ -414,7 +419,7 @@ IN_PROC_BROWSER_TEST_P(ZeroStateSuggestionsBrowserTest, CacheBehavior) {
     SetUpHints(url(), /*allow_contextual=*/true, /*suggestions=*/{});
     SetUpSuccessfulModelExecution();
 
-    ContextualCueingServiceFactory::GetForProfile(browser()->profile())
+    ContextualCueingServiceFactory::GetForProfile(browser()->GetProfile())
         ->GetContextualGlicZeroStateSuggestionsForFocusedTab(
             web_contents, /*is_fre=*/false, /*supported_tools=*/{},
             future.GetCallback());
@@ -432,7 +437,7 @@ IN_PROC_BROWSER_TEST_P(ZeroStateSuggestionsBrowserTest, CacheBehavior) {
     base::HistogramTester histogram_tester;
     base::test::TestFuture<std::vector<std::string>> future;
 
-    ContextualCueingServiceFactory::GetForProfile(browser()->profile())
+    ContextualCueingServiceFactory::GetForProfile(browser()->GetProfile())
         ->GetContextualGlicZeroStateSuggestionsForFocusedTab(
             web_contents, /*is_fre=*/false, /*supported_tools=*/{},
             future.GetCallback());
@@ -465,7 +470,7 @@ IN_PROC_BROWSER_TEST_P(ZeroStateSuggestionsBrowserTest, CacheBehaviorError) {
             ERROR_STATE_INTERNAL_SERVER_ERROR_NO_RETRY);
 
     OptimizationGuideKeyedServiceFactory::GetInstance()
-        ->GetForProfile(browser()->profile())
+        ->GetForProfile(browser()->GetProfile())
         ->AddExecutionResultForTesting(
             optimization_guide::ModelBasedCapabilityKey::kZeroStateSuggestions,
             optimization_guide::OptimizationGuideModelExecutionResult(
@@ -474,7 +479,7 @@ IN_PROC_BROWSER_TEST_P(ZeroStateSuggestionsBrowserTest, CacheBehaviorError) {
                         FromModelExecutionServerError(error_response)),
                 nullptr));
 
-    ContextualCueingServiceFactory::GetForProfile(browser()->profile())
+    ContextualCueingServiceFactory::GetForProfile(browser()->GetProfile())
         ->GetContextualGlicZeroStateSuggestionsForFocusedTab(
             web_contents, /*is_fre=*/false, /*supported_tools=*/{},
             future.GetCallback());
@@ -490,7 +495,7 @@ IN_PROC_BROWSER_TEST_P(ZeroStateSuggestionsBrowserTest, CacheBehaviorError) {
 
     base::test::TestFuture<std::vector<std::string>> future;
 
-    ContextualCueingServiceFactory::GetForProfile(browser()->profile())
+    ContextualCueingServiceFactory::GetForProfile(browser()->GetProfile())
         ->GetContextualGlicZeroStateSuggestionsForFocusedTab(
             web_contents, /*is_fre=*/false, /*supported_tools=*/{},
             future.GetCallback());
@@ -511,7 +516,7 @@ IN_PROC_BROWSER_TEST_P(ZeroStateSuggestionsBrowserTest,
 
   base::test::TestFuture<std::vector<std::string>> future;
 
-  ContextualCueingServiceFactory::GetForProfile(browser()->profile())
+  ContextualCueingServiceFactory::GetForProfile(browser()->GetProfile())
       ->GetContextualGlicZeroStateSuggestionsForFocusedTab(
           web_contents, /*is_fre=*/false, /*supported_tools=*/{},
           future.GetCallback());
@@ -552,7 +557,7 @@ IN_PROC_BROWSER_TEST_P(ZeroStateSuggestionsBrowserTest,
 
   // This is true since we do not know the answer yet.
   EXPECT_TRUE(
-      ContextualCueingServiceFactory::GetForProfile(browser()->profile())
+      ContextualCueingServiceFactory::GetForProfile(browser()->GetProfile())
           ->GetContextualGlicZeroStateSuggestionsForPinnedTabs(
               {initial_web_contents, web_contents2}, /*is_fre=*/false,
               /*supported_tools=*/{}, initial_web_contents,
@@ -593,7 +598,7 @@ IN_PROC_BROWSER_TEST_P(ZeroStateSuggestionsBrowserTest,
   base::test::TestFuture<std::vector<std::string>> future;
 
   EXPECT_TRUE(
-      ContextualCueingServiceFactory::GetForProfile(browser()->profile())
+      ContextualCueingServiceFactory::GetForProfile(browser()->GetProfile())
           ->GetContextualGlicZeroStateSuggestionsForPinnedTabs(
               {initial_web_contents, web_contents2}, /*is_fre=*/false,
               /*supported_tools=*/{}, initial_web_contents,
@@ -614,17 +619,17 @@ IN_PROC_BROWSER_TEST_P(ZeroStateSuggestionsBrowserTest,
   base::HistogramTester histogram_tester;
 
   // Open 2 tabs with new tab page.
-  chrome::NewTab(browser());
+  chrome::NewTab(browser(), NewTabTypes::kNoUserAction);
   auto* initial_web_contents =
       browser()->tab_strip_model()->GetActiveWebContents();
-  chrome::NewTab(browser());
+  chrome::NewTab(browser(), NewTabTypes::kNoUserAction);
   auto* web_contents2 = browser()->tab_strip_model()->GetActiveWebContents();
 
   SetUpSuccessfulModelExecution();
 
   base::test::TestFuture<std::vector<std::string>> future;
   EXPECT_FALSE(
-      ContextualCueingServiceFactory::GetForProfile(browser()->profile())
+      ContextualCueingServiceFactory::GetForProfile(browser()->GetProfile())
           ->GetContextualGlicZeroStateSuggestionsForPinnedTabs(
               {initial_web_contents, web_contents2}, /*is_fre=*/false,
               /*supported_tools=*/{}, nullptr, future.GetCallback()));
@@ -663,7 +668,7 @@ IN_PROC_BROWSER_TEST_P(ZeroStateSuggestionsBrowserTest, BasicPinnedTabsFlow) {
   base::test::TestFuture<std::vector<std::string>> future;
 
   EXPECT_TRUE(
-      ContextualCueingServiceFactory::GetForProfile(browser()->profile())
+      ContextualCueingServiceFactory::GetForProfile(browser()->GetProfile())
           ->GetContextualGlicZeroStateSuggestionsForPinnedTabs(
               {initial_web_contents, web_contents2}, /*is_fre=*/false,
               /*supported_tools=*/{}, initial_web_contents,
@@ -685,6 +690,126 @@ IN_PROC_BROWSER_TEST_P(ZeroStateSuggestionsBrowserTest, BasicPinnedTabsFlow) {
       "ContextualCueing.GlicSuggestions.PageContextIneligibilityReason."
       "Reengagement",
       PageContextIneligibilityType::kNone, 1);
+}
+
+// =============================================================================
+// POC: BFCached attacker page content joined with victim primary-page URL/title
+// =============================================================================
+//
+// ZeroStateSuggestionsPageData is a PageUserData. Its
+// ConstructPageContextProto()/GetUrl() read per-WebContents (primary-page)
+// state via WebContents::GetLastCommittedURL()/GetTitle() without checking
+// whether `page()` is still the primary page. When the bound page has been
+// BFCached and the tab now shows a different (victim) primary page, the
+// produced ZeroStatePageContext proto carries:
+//   url   = victim primary-page URL
+//   title = victim primary-page title
+//   inner_text / annotated_page_content = ATTACKER page content
+//
+// In production this fires on the late OptimizationGuide / inner-text callback
+// path (page_context_callbacks_.Notify -> ConstructPageContextProto) while the
+// attacker page sits in BFCache, and the mismatched proto is uploaded to the
+// ZSS model server attributed to the victim origin.
+class ZeroStateSuggestionsBFCacheConfusionBrowserTest
+    : public InProcessBrowserTest {
+ public:
+  ZeroStateSuggestionsBFCacheConfusionBrowserTest() {
+    // Default-on inner-text extraction; APC off to keep the test deterministic.
+    scoped_feature_list_.InitWithFeaturesAndParameters(
+        content::GetDefaultEnabledBackForwardCacheFeaturesForTesting(
+            {{glic::kContextualCueing, {}},
+             {glic::kGlicZeroStateSuggestions,
+              {{"ZSSExtractInnerText", "true"},
+               {"ZSSExtractAnnotatedPageContent", "false"}}}}),
+        content::GetDefaultDisabledBackForwardCacheFeaturesForTesting(
+            {page_content_annotations::features::
+                 kPageContentExtractionUsingPageSettledMonitor}));
+  }
+
+  void SetUp() override {
+    ASSERT_TRUE(embedded_test_server()->Start());
+    InProcessBrowserTest::SetUp();
+  }
+
+  void SetUpOnMainThread() override {
+    host_resolver()->AddRule("*", "127.0.0.1");
+    browser()->GetProfile()->GetPrefs()->SetBoolean(
+        glic::prefs::kGlicTabContextEnabled, true);
+    base::CommandLine::ForCurrentProcess()->AppendSwitch(
+        optimization_guide::
+            kDisableCheckingUserPermissionsForTestingSwitch);
+  }
+
+  void SetUpHintsNoResult(const GURL& url) {
+    OptimizationGuideKeyedServiceFactory::GetInstance()
+        ->GetForProfile(browser()->GetProfile())
+        ->AddHintForTesting(
+            url, optimization_guide::proto::GLIC_ZERO_STATE_SUGGESTIONS,
+            std::nullopt);
+  }
+
+ private:
+  base::test::ScopedFeatureList scoped_feature_list_;
+};
+
+IN_PROC_BROWSER_TEST_F(ZeroStateSuggestionsBFCacheConfusionBrowserTest,
+                       BFCacheRegressionTest) {
+  base::HistogramTester histogram_tester;
+
+  const GURL attacker_url = embedded_test_server()->GetURL(
+      "attacker.test", "/optimization_guide/zss_attacker_page.html");
+  const GURL victim_url = embedded_test_server()->GetURL(
+      "victim.test", "/optimization_guide/zss_victim_page.html");
+
+  // Allow the attacker URL's optimization-metadata callback to resolve so that
+  // work_done() becomes true and inner_text_result_ is captured (not cleared
+  // by the GiveUp() timeout).
+  SetUpHintsNoResult(attacker_url);
+
+  auto* web_contents = browser()->tab_strip_model()->GetActiveWebContents();
+
+  // Step 1: Load the attacker page.
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), attacker_url));
+  ASSERT_EQ(attacker_url, web_contents->GetLastCommittedURL());
+
+  content::RenderFrameHost* attacker_rfh = web_contents->GetPrimaryMainFrame();
+
+  // Step 2: Simulate the user opening Glic on the attacker tab. This is the
+  // exact call performed by ContextualCueingService::
+  // PrepareToFetchContextualGlicZeroStateSuggestions().
+  ZeroStateSuggestionsPageData::CreateForPage(web_contents->GetPrimaryPage());
+  base::WeakPtr<ZeroStateSuggestionsPageData> attacker_zss_data =
+      ZeroStateSuggestionsPageData::GetForPage(web_contents->GetPrimaryPage())
+          ->AsWeakPtr();
+  ASSERT_TRUE(attacker_zss_data);
+
+  // Wait for inner_text + optimization metadata to resolve so the attacker
+  // body text is captured into `inner_text_result_`.
+  optimization_guide::RetryForHistogramUntilCountReached(
+      &histogram_tester,
+      "ContextualCueing.ZeroStateSuggestions.ContextExtractionDone", 1);
+
+  // Step 3: Attacker navigates the tab cross-origin to the victim page (this
+  // is fully attacker-controlled via `location.href = ...`). Use a
+  // renderer-initiated navigation to mirror the real attack.
+  ASSERT_TRUE(content::NavigateToURLFromRenderer(web_contents, victim_url));
+  ASSERT_EQ(victim_url, web_contents->GetLastCommittedURL());
+
+  // The attacker Page (and its PageUserData) survives in BFCache (or, when
+  // BFCache is unavailable, in the kPendingDeletion window).
+  ASSERT_TRUE(attacker_zss_data)
+      << "attacker ZeroStateSuggestionsPageData was destroyed; expected it to "
+         "survive in BFCache";
+  EXPECT_EQ(attacker_rfh->GetLifecycleState(),
+            content::RenderFrameHost::LifecycleState::kInBackForwardCache);
+
+  // Ensure that GetPageContext() fails to return an eligible page context.
+  base::test::TestFuture<
+      base::expected<optimization_guide::proto::ZeroStatePageContext,
+                     PageContextIneligibilityType>>
+      proto_future;
+  attacker_zss_data->GetPageContext(proto_future.GetCallback());
+  ASSERT_FALSE(proto_future.Get().has_value());
 }
 
 }  // namespace glic

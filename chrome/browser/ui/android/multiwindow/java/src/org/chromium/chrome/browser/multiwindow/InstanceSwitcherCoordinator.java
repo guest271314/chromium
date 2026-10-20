@@ -34,6 +34,7 @@ import com.google.android.material.tabs.TabLayout.OnTabSelectedListener;
 import com.google.android.material.tabs.TabLayout.Tab;
 
 import org.chromium.base.Callback;
+import org.chromium.base.ResettersForTesting;
 import org.chromium.base.metrics.RecordUserAction;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
@@ -41,6 +42,7 @@ import org.chromium.chrome.browser.multiwindow.UiUtils.NameWindowDialogSource;
 import org.chromium.components.browser_ui.util.TimeTextResolver;
 import org.chromium.components.browser_ui.widget.BoundedLinearLayout;
 import org.chromium.components.browser_ui.widget.BrowserUiListMenuUtils;
+import org.chromium.components.browser_ui.widget.DialogListItemDecoration;
 import org.chromium.components.favicon.LargeIconBridge;
 import org.chromium.ui.listmenu.BasicListMenu;
 import org.chromium.ui.listmenu.ListMenu;
@@ -54,6 +56,7 @@ import org.chromium.ui.modelutil.MVCListAdapter.ListItem;
 import org.chromium.ui.modelutil.MVCListAdapter.ModelList;
 import org.chromium.ui.modelutil.PropertyModel;
 import org.chromium.ui.modelutil.SimpleRecyclerViewAdapter;
+import org.chromium.ui.util.CommonOnLayoutChangeListeners;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -247,7 +250,10 @@ public class InstanceSwitcherCoordinator {
                 TYPE_INSTANCE,
                 parentView ->
                         LayoutInflater.from(mContext)
-                                .inflate(R.layout.instance_switcher_item, null),
+                                .inflate(
+                                        R.layout.instance_switcher_item,
+                                        parentView,
+                                        /* attachToRoot= */ false),
                 InstanceSwitcherItemViewBinder::bind);
         return adapter;
     }
@@ -269,20 +275,19 @@ public class InstanceSwitcherCoordinator {
             // The global layout listener is one-shot so it is unable to handle subsequent window
             // resizes.
             dialogView.addOnLayoutChangeListener(
-                    (v, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom) -> {
-                        if (bottom - top != oldBottom - oldTop) {
-                            maybeUpdateInstanceListContainerParams(
-                                    dialogView,
-                                    tabHeaderRow,
-                                    instanceListContainer,
-                                    activeInstancesList,
-                                    inactiveInstancesList,
-                                    isInactiveListShowingSupplier.getAsBoolean(),
-                                    newWindowLayout,
-                                    minCommandItemHeightPx,
-                                    itemPaddingHeightPx);
-                        }
-                    });
+                    CommonOnLayoutChangeListeners.createHeightChangedListener(
+                            () -> {
+                                maybeUpdateInstanceListContainerParams(
+                                        dialogView,
+                                        tabHeaderRow,
+                                        instanceListContainer,
+                                        activeInstancesList,
+                                        inactiveInstancesList,
+                                        isInactiveListShowingSupplier.getAsBoolean(),
+                                        newWindowLayout,
+                                        minCommandItemHeightPx,
+                                        itemPaddingHeightPx);
+                            }));
         }
 
         var listener =
@@ -411,6 +416,7 @@ public class InstanceSwitcherCoordinator {
     private void show(List<InstanceInfo> items) {
         UiUtils.closeOpenDialogs();
         sPrevInstance = this;
+        ResettersForTesting.register(() -> sPrevInstance = null);
 
         List<InstanceInfo> activeInstances = new ArrayList<>();
         List<InstanceInfo> inactiveInstances = new ArrayList<>();
@@ -625,10 +631,12 @@ public class InstanceSwitcherCoordinator {
         // Update the UI models to reflect the new selection state.
         for (ListItem li : getCurrentList()) {
             int id = li.model.get(InstanceSwitcherItemProperties.INSTANCE_ID);
-            li.model.set(InstanceSwitcherItemProperties.IS_SELECTED, mSelectedItems.contains(id));
+            boolean selected = mSelectedItems.contains(id);
+            li.model.set(InstanceSwitcherItemProperties.IS_SELECTED, selected);
         }
 
         updateActionButtons();
+        invalidateItemDecorations();
     }
 
     private void selectAllItems() {
@@ -638,6 +646,7 @@ public class InstanceSwitcherCoordinator {
             li.model.set(InstanceSwitcherItemProperties.IS_SELECTED, true);
         }
         updateActionButtons();
+        invalidateItemDecorations();
     }
 
     private void updateActionButtons() {
@@ -646,8 +655,11 @@ public class InstanceSwitcherCoordinator {
 
         // 1. Update positive button state.
         boolean positiveButtonDisabled = true;
-        if (selectionCount > 0) {
-            if (selectionCount == 1 && mActiveModelList.size() < mMaxInstanceCount) {
+        if (selectionCount == 1) {
+            // If the active instances list is showing, or if the inactive instances list is showing
+            // when within instance limit, enable the button for opening the active window or for
+            // restoring an inactive window respectively.
+            if (!mIsInactiveListShowing || mActiveModelList.size() < mMaxInstanceCount) {
                 positiveButtonDisabled = false;
             }
         }
@@ -696,6 +708,15 @@ public class InstanceSwitcherCoordinator {
         }
         mSelectedItems.clear();
         updateActionButtons();
+        invalidateItemDecorations();
+    }
+
+    private void invalidateItemDecorations() {
+        if (mIsInactiveListShowing) {
+            mInactiveInstancesList.invalidateItemDecorations();
+        } else {
+            mActiveInstancesList.invalidateItemDecorations();
+        }
     }
 
     void dismissDialog(@DialogDismissalCause int cause) {

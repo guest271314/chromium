@@ -8,8 +8,10 @@
 #include <tuple>
 
 #include "ash/constants/ash_features.h"
+#include "ash/constants/ash_policy_pref_names.h"
 #include "ash/constants/ash_pref_names.h"
 #include "ash/constants/ash_switches.h"
+#include "ash/login/resources/grit/ash_login_strings.h"
 #include "ash/public/cpp/login_screen_test_api.h"
 #include "ash/root_window_controller.h"
 #include "ash/shell.h"
@@ -113,8 +115,6 @@
 #include "chrome/browser/ui/webui/ash/login/update_required_screen_handler.h"
 #include "chrome/browser/ui/webui/ash/login/user_creation_screen_handler.h"
 #include "chrome/common/chrome_switches.h"
-#include "chrome/common/pref_names.h"
-#include "chrome/grit/generated_resources.h"
 #include "chrome/test/base/testing_profile.h"
 #include "chromeos/ash/components/audio/cras_audio_handler.h"
 #include "chromeos/ash/components/dbus/device_management/fake_install_attributes_client.h"
@@ -149,6 +149,7 @@
 #include "net/test/embedded_test_server/register_basic_auth_handler.h"
 #include "net/traffic_annotation/network_traffic_annotation_test_helper.h"
 #include "remoting/host/chromeos/features.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "services/network/public/cpp/weak_wrapper_shared_url_loader_factory.h"
 #include "services/network/test/test_url_loader_factory.h"
 #include "testing/gmock/include/gmock/gmock.h"
@@ -471,14 +472,14 @@ IN_PROC_BROWSER_TEST_F(WizardControllerTest, SwitchLanguage) {
   EXPECT_STREQ("en", icu::Locale::getDefault().getLanguage());
   EXPECT_FALSE(base::i18n::IsRTL());
   const std::u16string en_str =
-      l10n_util::GetStringUTF16(IDS_UPDATE_STATUS_TITLE);
+      l10n_util::GetStringUTF16(IDS_LOGIN_GET_STARTED);
 
   RunSwitchLanguageTest("fr", "fr", true);
   EXPECT_EQ("fr", g_browser_process->GetApplicationLocale());
   EXPECT_STREQ("fr", icu::Locale::getDefault().getLanguage());
   EXPECT_FALSE(base::i18n::IsRTL());
   const std::u16string fr_str =
-      l10n_util::GetStringUTF16(IDS_UPDATE_STATUS_TITLE);
+      l10n_util::GetStringUTF16(IDS_LOGIN_GET_STARTED);
 
   EXPECT_NE(en_str, fr_str);
 
@@ -487,7 +488,7 @@ IN_PROC_BROWSER_TEST_F(WizardControllerTest, SwitchLanguage) {
   EXPECT_STREQ("ar", icu::Locale::getDefault().getLanguage());
   EXPECT_TRUE(base::i18n::IsRTL());
   const std::u16string ar_str =
-      l10n_util::GetStringUTF16(IDS_UPDATE_STATUS_TITLE);
+      l10n_util::GetStringUTF16(IDS_LOGIN_GET_STARTED);
 
   EXPECT_NE(fr_str, ar_str);
 }
@@ -569,6 +570,8 @@ class WizardControllerFlowTest : public WizardControllerTest {
     device_disabled_screen_view_ =
         std::make_unique<MockDeviceDisabledScreenView>();
     MockScreen(std::make_unique<DeviceDisabledScreen>(
+        g_browser_process->platform_part()
+            ->device_restriction_schedule_controller(),
         device_disabled_screen_view_->AsWeakPtr()));
     EXPECT_CALL(*device_disabled_screen_view_, Show(_)).Times(0);
 
@@ -1270,8 +1273,8 @@ IN_PROC_BROWSER_TEST_F(WizardControllerUnifiedEnrollmentTest, Enrollment) {
   device_state.Set(
       policy::kDeviceStateMode,
       base::Value(policy::kDeviceStateRestoreModeReEnrollmentEnforced));
-  g_browser_process->local_state()->SetDict(::prefs::kServerBackedDeviceState,
-                                            std::move(device_state));
+  g_browser_process->local_state()->SetDict(
+      ash::prefs::kServerBackedDeviceState, std::move(device_state));
   fetcher_factory.ReportEnrollmentState(
       policy::AutoEnrollmentResult::kEnrollment);
 
@@ -1295,8 +1298,8 @@ IN_PROC_BROWSER_TEST_F(WizardControllerUnifiedEnrollmentTest, Disabled) {
                    base::Value(policy::kDeviceStateModeDisabled));
   device_state.Set(policy::kDeviceStateDisabledMessage,
                    base::Value(kDisabledMessage));
-  g_browser_process->local_state()->SetDict(::prefs::kServerBackedDeviceState,
-                                            std::move(device_state));
+  g_browser_process->local_state()->SetDict(
+      ash::prefs::kServerBackedDeviceState, std::move(device_state));
   fetcher_factory.ReportEnrollmentState(
       policy::AutoEnrollmentResult::kDisabled);
 
@@ -1366,8 +1369,8 @@ IN_PROC_BROWSER_TEST_F(WizardControllerUnifiedEnrollmentTest,
                    base::Value(policy::kDeviceStateModeDisabled));
   device_state.Set(policy::kDeviceStateDisabledMessage,
                    base::Value(kDisabledMessage));
-  g_browser_process->local_state()->SetDict(::prefs::kServerBackedDeviceState,
-                                            std::move(device_state));
+  g_browser_process->local_state()->SetDict(
+      ash::prefs::kServerBackedDeviceState, std::move(device_state));
 
   EXPECT_CALL(*mock_auto_enrollment_check_screen_, HideImpl());
   EXPECT_CALL(*device_disabled_screen_view_,
@@ -1460,8 +1463,8 @@ IN_PROC_BROWSER_TEST_F(WizardControllerFjordOOBETest, FjordOobeScreenFlow) {
   device_state.Set(
       policy::kDeviceStateMode,
       base::Value(policy::kDeviceStateRestoreModeReEnrollmentEnforced));
-  g_browser_process->local_state()->SetDict(::prefs::kServerBackedDeviceState,
-                                            std::move(device_state));
+  g_browser_process->local_state()->SetDict(
+      ash::prefs::kServerBackedDeviceState, std::move(device_state));
   fetcher_factory.ReportEnrollmentState(
       policy::AutoEnrollmentResult::kEnrollment);
 
@@ -1502,8 +1505,8 @@ IN_PROC_BROWSER_TEST_F(WizardControllerFjordOOBETest,
   device_state.Set(
       policy::kDeviceStateMode,
       base::Value(policy::kDeviceStateRestoreModeReEnrollmentEnforced));
-  g_browser_process->local_state()->SetDict(::prefs::kServerBackedDeviceState,
-                                            std::move(device_state));
+  g_browser_process->local_state()->SetDict(
+      ash::prefs::kServerBackedDeviceState, std::move(device_state));
   fetcher_factory.ReportEnrollmentState(
       policy::AutoEnrollmentResult::kEnrollment);
 
@@ -2419,7 +2422,7 @@ class WizardControllerEnrollmentTokenRebootTest : public WizardControllerTest {
     device_state.Set(
         policy::kDeviceStateMode,
         base::Value(policy::kDeviceStateInitialModeTokenEnrollment));
-    local_state->SetDict(::prefs::kServerBackedDeviceState,
+    local_state->SetDict(ash::prefs::kServerBackedDeviceState,
                          std::move(device_state));
   }
 };

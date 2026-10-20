@@ -5,9 +5,9 @@
 #include "third_party/blink/renderer/core/layout/inline/inline_layout_algorithm.h"
 
 #include <memory>
+#include <ranges>
 
 #include "base/compiler_specific.h"
-#include "base/containers/adapters.h"
 #include "base/metrics/histogram_macros.h"
 #include "third_party/blink/public/mojom/use_counter/metrics/web_feature.mojom-shared.h"
 #include "third_party/blink/renderer/core/css/resolver/style_resolver.h"
@@ -48,6 +48,7 @@
 #include "third_party/blink/renderer/core/layout/unpositioned_float.h"
 #include "third_party/blink/renderer/core/style/computed_style.h"
 #include "third_party/blink/renderer/platform/heap/collection_support/clear_collection_scope.h"
+#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 
 namespace blink {
 
@@ -277,9 +278,11 @@ void InlineLayoutAlgorithm::PrepareBoxStates(
 
   // Check if the box states in InlineChildLayoutContext is valid for this line.
   // If the previous line was ::first-line, always rebuild because box states
-  // have ::first-line styles.
+  // have ::first-line styles. If the previous line was a line-clamp displaced
+  // line, we also rebuild because the box states might have the wrong metrics.
   const InlineItems& items = line_info.ItemsData().items;
-  if (!break_token->UseFirstLineStyle() && !apply_fit_text_) {
+  if (!break_token->UseFirstLineStyle() &&
+      !break_token->IsLineClampDisplacedLine() && !apply_text_fit_) {
     box_states_ = context_->BoxStatesIfValidForItemIndex(
         items, break_token->StartItemIndex());
     if (box_states_) {
@@ -319,7 +322,15 @@ void InlineLayoutAlgorithm::CheckBoxStates(
                      should_scale_line_height)
       .RebuildBoxStates(line_info, 0u, GetBreakToken()->StartItemIndex());
   LogicalLineItems& line_box = context_->AcquireTempLogicalLineItems();
-  rebuilt.OnBeginPlaceItems(Node(), line_info, baseline_type_, quirks_mode_,
+  LineHeightMode line_height_mode;
+  if (line_clamp_ellipsis_.has_value() && line_info.Results().empty()) {
+    line_height_mode = LineHeightMode::kLineClampDisplacedEllipsis;
+  } else if (quirks_mode_) {
+    line_height_mode = LineHeightMode::kQuirk;
+  } else {
+    line_height_mode = LineHeightMode::kNormal;
+  }
+  rebuilt.OnBeginPlaceItems(Node(), line_info, baseline_type_, line_height_mode,
                             should_scale_line_height, &line_box);
   DCHECK(box_states_);
   box_states_->CheckSame(rebuilt);
@@ -331,13 +342,13 @@ ALWAYS_INLINE InlineLayoutAlgorithm::LineClampState
 InlineLayoutAlgorithm::GetLineClampState(const LineInfo* line_info) const {
   const ConstraintSpace& space = GetConstraintSpace();
   LineClampData line_clamp_data = space.GetLineClampData();
-  if (line_clamp_data.ShouldHideForPaint()) {
+  if (line_clamp_data.IsHidden()) {
     return LineClampState::kHide;
   }
   if (!(line_info && line_info->IsBlockInInline()) &&
       line_clamp_data.IsAtClampPoint()) {
     EBlockEllipsis block_ellipsis =
-        RuntimeEnabledFeatures::CSSLineClampEnabled()
+        RuntimeEnabledFeatures::CSSLineClampAsShorthandEnabled()
             ? Style().BlockEllipsis()
             : line_clamp_data.block_ellipsis;
     if (block_ellipsis == EBlockEllipsis::kEllipsis) [[likely]] {
@@ -387,7 +398,7 @@ void InlineLayoutAlgorithm::CreateLine(const LineLayoutOpportunity& opportunity,
     // No scaling because of no text.
     box_states_->LineBoxState().EnsureTextMetrics(
         line_info->LineStyle(), *box_states_->LineBoxState().font,
-        baseline_type_, FitTextBlockScale::kFixed);
+        baseline_type_, TextFitBlockScale::kFixed);
   } else if (line_builder.InitialLetterItemResult() &&
              box_states_->LineBoxState().metrics.IsEmpty()) [[unlikely]] {
     box_states_->LineBoxState().metrics = FontHeight();
@@ -395,29 +406,30 @@ void InlineLayoutAlgorithm::CreateLine(const LineLayoutOpportunity& opportunity,
 
   const FontHeight& line_box_metrics = box_states_->LineBoxState().metrics;
 
-  if (Node().HasRuby() && !line_info->IsEmptyLine()) [[unlikely]] {
+  const bool has_text_emphasis = Node().HasTextEmphasis();
+  if ((Node().HasRuby() || has_text_emphasis) && !line_info->IsEmptyLine())
+      [[unlikely]] {
     std::optional<FontHeight> annotation_metrics;
-    if (!box_states_->RubyColumnList().empty()) {
-      HeapVector<Member<LogicalRubyColumn>>& column_list =
-          box_states_->RubyColumnList();
+    HeapVector<Member<LogicalRubyColumn>>& column_list =
+        box_states_->RubyColumnList();
+    if (!column_list.empty()) {
       UpdateRubyColumnInlinePositions(*line_box, inline_size, column_list);
       RubyBlockPositionCalculator calculator;
       calculator.GroupLines(column_list)
           .PlaceLines(*line_box, line_box_metrics)
           .AddLinesTo(*line_container);
       annotation_metrics = calculator.AnnotationMetrics();
-
-      if (RuntimeEnabledFeatures::TextEmphasisWithRubyEnabled()) {
-        for (const auto& column : column_list) {
-          for (wtf_size_t i = 0; i < column->size; ++i) {
-            (*line_box)[column->start_index + i].annotation_metrics =
-                column->annotation_metrics;
-          }
-        }
-      }
+      calculator.UpdateColumnLayoutAnnotationMetrics(column_list);
     }
+
+    SetTextEmphasisAnnotationMetrics(column_list, *line_box);
     line_info->SetAnnotationBlockStartAdjustment(SetAnnotationOverflow(
         *line_info, *line_box, line_box_metrics, annotation_metrics));
+  } else if (RuntimeEnabledFeatures::AnnotationSpaceOnStartEnabled() &&
+             GetConstraintSpace().ContainsAnnotations() &&
+             line_info->IsLastLine() && !line_info->IsEmptyLine()) {
+    line_info->SetAnnotationBlockStartAdjustment(SetAnnotationOverflow(
+        *line_info, *line_box, line_box_metrics, std::nullopt));
   }
 
   // Truncate the line if:
@@ -444,11 +456,11 @@ void InlineLayoutAlgorithm::CreateLine(const LineLayoutOpportunity& opportunity,
   }
 
   // With the CSSLineClamp feature, if we're past the clamp point, we mark every
-  // inline item in the line as hidden for paint.
+  // inline item in the line as hidden due to layout.
   if (line_clamp_state == LineClampState::kHide) [[unlikely]] {
-    container_builder_.SetIsHiddenForPaint(true);
+    container_builder_.SetIsHiddenDueToLayout(true);
     for (auto& child : *line_box) {
-      child.is_hidden_for_paint = true;
+      child.is_hidden_due_to_layout = true;
     }
   }
 
@@ -641,7 +653,7 @@ void InlineLayoutAlgorithm::ApplyTextBoxTrim(LineInfo& line_info,
   InlineBoxState::AdjustEdges(line_style, *line_style.GetFont(), baseline_type_,
                               should_apply_over, should_apply_under,
                               intrinsic_metrics);
-  if (RuntimeEnabledFeatures::CssTextFitEnabled() && apply_fit_text_) {
+  if (RuntimeEnabledFeatures::CssTextFitEnabled() && apply_text_fit_) {
     float scale = line_info.TextFitScale();
     if (scale < 1.0f) {
       std::optional<float> min_size = Node().MinimumFontPhysicalSize();
@@ -780,7 +792,8 @@ void InlineLayoutAlgorithm::PlaceOutOfFlowObjects(
   bool is_ltr = IsLtr(line_info.BaseDirection());
 
   for (LogicalLineItem& child : *line_box) {
-    has_preceding_inline_level_content |= child.HasInFlowFragment();
+    has_preceding_inline_level_content |=
+        child.HasInFlowFragment() || child.has_non_empty_inline_box_start;
 
     const LayoutObject* box = child.out_of_flow_positioned_box;
     if (!box)
@@ -789,7 +802,7 @@ void InlineLayoutAlgorithm::PlaceOutOfFlowObjects(
     // All children within the linebox are positioned relative to the baseline,
     // then shifted later using LineBoxFragmentBuilder::MoveInBlockDirection.
     LogicalOffset static_offset(LayoutUnit(), -metrics.ascent);
-    if (box->StyleRef().IsOriginalDisplayInlineType()) {
+    if (box->Style().IsOriginalDisplayInlineType()) {
       // An inline-level OOF element positions itself within the line, at the
       // position it would have been if it was in-flow.
       static_offset.inline_offset = child.rect.offset.inline_offset;
@@ -820,14 +833,15 @@ void InlineLayoutAlgorithm::PlaceOutOfFlowObjects(
 
   if (has_rtl_block_level_out_of_flow_objects) [[unlikely]] {
     has_preceding_inline_level_content = false;
-    for (LogicalLineItem& child : base::Reversed(*line_box)) {
+    for (LogicalLineItem& child : std::views::reverse(*line_box)) {
       const LayoutObject* box = child.out_of_flow_positioned_box;
       if (!box) {
-        has_preceding_inline_level_content |= child.HasInFlowFragment();
+        has_preceding_inline_level_content |=
+            child.HasInFlowFragment() || child.has_non_empty_inline_box_start;
         continue;
       }
       if (has_preceding_inline_level_content &&
-          !box->StyleRef().IsOriginalDisplayInlineType()) {
+          !box->Style().IsOriginalDisplayInlineType()) {
         child.rect.offset.block_offset += metrics.LineHeight();
       }
     }
@@ -954,9 +968,11 @@ LayoutUnit InlineLayoutAlgorithm::SetAnnotationOverflow(
     const LogicalLineItems& line_box,
     const FontHeight& line_box_metrics,
     std::optional<FontHeight> annotation_font_height) {
-  AnnotationMetrics annotation_metrics =
-      ComputeAnnotationOverflow(line_box, line_box_metrics,
-                                line_info.LineStyle(), annotation_font_height);
+  AnnotationMetrics annotation_metrics = ComputeAnnotationOverflow(
+      line_box, line_box_metrics,
+      LayoutUnit(line_info.LineStyle().ComputedFontSize() *
+                 line_info.TextFitScale()),
+      annotation_font_height);
   LayoutUnit annotation_overflow_block_start;
   LayoutUnit annotation_overflow_block_end;
   LayoutUnit annotation_space_block_start;
@@ -1144,7 +1160,8 @@ const LayoutResult* InlineLayoutAlgorithm::Layout() {
   LayoutOpportunityVector opportunities =
       initial_exclusion_space.AllLayoutOpportunities(
           {constraint_space.GetBfcOffset().line_offset, bfc_block_offset},
-          constraint_space.AvailableSize().inline_size);
+          constraint_space.AvailableSize().inline_size,
+          constraint_space.Direction());
   ClearCollectionScope scope(&opportunities);
 
   const InlineBreakToken* break_token = GetBreakToken();
@@ -1153,7 +1170,7 @@ const LayoutResult* InlineLayoutAlgorithm::Layout() {
     container_builder_.SetIsLineForParallelFlow();
   }
 
-  apply_fit_text_ = ShouldApplyFitText(Node());
+  apply_text_fit_ = ShouldApplyTextFit(Node());
 
   FragmentItemsBuilder* const items_builder = context_->ItemsBuilder();
   DCHECK(items_builder);
@@ -1344,7 +1361,7 @@ const LayoutResult* InlineLayoutAlgorithm::Layout() {
     }
 
     bool should_scale_line_height = false;
-    if (apply_fit_text_) {
+    if (apply_text_fit_) {
       if (context_->IsMeasuringScale()) {
         // No fit-text handling here. We call MeasurePerBlockScale() later.
       } else if (ParagraphScale scale = context_->MeasuredScale();
@@ -1561,7 +1578,7 @@ InlineLayoutAlgorithm::DoesRemainderFitInLineWithoutEllipsis(
     // ellipsis. So we set `current` to the end of the last result that doesn't
     // hang (if any), or the start of the first result otherwise.
     current = line_info.Results()[0].Start();
-    for (auto& item_result : base::Reversed(line_info.Results())) {
+    for (auto& item_result : std::views::reverse(line_info.Results())) {
       if (item_result.item->EndCollapseType() !=
               InlineItem::kOpaqueToCollapsing &&
           !item_result.has_only_pre_wrap_trailing_spaces) {
@@ -1631,7 +1648,7 @@ InlineLayoutAlgorithm::DoesRemainderFitInLineWithoutEllipsis(
             if (!item.Style()->ShouldBreakSpaces()) {
               UChar last_char = text[item.EndOffset() - 1];
               has_hanging_whitespace =
-                  Character::IsOtherSpaceSeparator(last_char) ||
+                  unicode::IsOtherSpaceSeparator(last_char) ||
                   (item.Style()->ShouldPreserveWhiteSpaces() &&
                    item.Style()->ShouldWrapLine() &&
                    (last_char == uchar::kSpace || last_char == uchar::kTab));
@@ -1735,7 +1752,7 @@ void InlineLayoutAlgorithm::PositionLeadingFloats(
     }
 
     container_builder_.AddAdjoiningObjectTypes(
-        item.GetLayoutObject()->StyleRef().Floating(
+        item.GetLayoutObject()->Style().Floating(
             GetConstraintSpace().Direction()) == EFloat::kLeft
             ? kAdjoiningFloatLeft
             : kAdjoiningFloatRight);
@@ -1770,21 +1787,19 @@ PositionedFloat InlineLayoutAlgorithm::PositionFloat(
   BfcOffset origin_bfc_offset = {space.GetBfcOffset().line_offset,
                                  origin_bfc_block_offset};
 
-  // The BFC offset passed to `ShouldHideForPaint` should be the bottom offset
-  // of the line, which we don't know at this point. However, since block layout
-  // will relayout to fix the clamp BFC offset to the bottom of the last line
-  // before clamp, we now that if the line's BFC offset is equal or greater than
-  // the clamp BFC offset in the final relayout, the line will be hidden.
-  bool is_hidden_for_paint =
-      GetConstraintSpace().GetLineClampData().ShouldHideForPaint();
+  LineClampFloatState line_clamp_state =
+      GetConstraintSpace().GetLineClampData().FloatState();
 
   BlockNode child(To<LayoutBox>(floating_object));
+  // TODO(crbug.com/40267498): Set this up properly, or verify that this will
+  // do.
+  FragmentationLayoutInput fragmentation;
   UnpositionedFloat unpositioned_float(
-      child, /* break_token */ nullptr, space.AvailableSize(),
+      child, fragmentation, space.AvailableSize(),
       child.IsReplaced() ? space.ReplacedChildPercentageResolutionSize()
                          : space.PercentageResolutionSize(),
       origin_bfc_offset, space, Style(), space.FragmentainerBlockSize(),
-      space.FragmentainerOffset(), is_hidden_for_paint);
+      space.FragmentainerOffset(), line_clamp_state);
 
   PositionedFloat positioned_float =
       ::blink::PositionFloat(&unpositioned_float, exclusion_space);

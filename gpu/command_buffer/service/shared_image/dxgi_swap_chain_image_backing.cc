@@ -6,7 +6,6 @@
 
 #include "base/debug/alias.h"
 #include "base/debug/dump_without_crashing.h"
-#include "base/feature_list.h"
 #include "base/memory/ptr_util.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/strings/stringprintf.h"
@@ -25,13 +24,13 @@
 #include "gpu/command_buffer/service/shared_image/shared_image_format_service_utils.h"
 #include "gpu/command_buffer/service/shared_image/shared_image_manager.h"
 #include "gpu/command_buffer/service/shared_image/skia_gl_image_representation.h"
+#include "gpu/config/gpu_util.h"
 #include "third_party/skia/include/core/SkAlphaType.h"
 #include "third_party/skia/include/gpu/ganesh/GrTypes.h"
 #include "ui/gfx/color_space.h"
 #include "ui/gfx/color_space_win.h"
 #include "ui/gfx/geometry/size.h"
 #include "ui/gl/direct_composition_support.h"
-#include "ui/gl/gl_switches.h"
 #include "ui/gl/gl_utils.h"
 
 #if BUILDFLAG(SKIA_USE_DAWN)
@@ -50,7 +49,8 @@ std::unique_ptr<DXGISwapChainImageBacking> DXGISwapChainImageBacking::Create(
     Microsoft::WRL::ComPtr<ID3D11Device> d3d11_device,
     const Mailbox& mailbox,
     const SharedImageInfo& si_info,
-    DXGI_FORMAT internal_format) {
+    DXGI_FORMAT internal_format,
+    GrContextType gr_context_type) {
   if (!d3d11_device) {
     return nullptr;
   }
@@ -71,7 +71,8 @@ std::unique_ptr<DXGISwapChainImageBacking> DXGISwapChainImageBacking::Create(
   desc.Format = internal_format;
   desc.Stereo = FALSE;
   desc.SampleDesc.Count = 1;
-  desc.BufferCount = gl::DirectCompositionRootSurfaceBufferCount();
+  desc.BufferCount =
+      gpu::DirectCompositionRootSurfaceBufferCount(gr_context_type);
   desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT |
                      /* Needed to bind to GL texture */ DXGI_USAGE_SHADER_INPUT;
   desc.Scaling = DXGI_SCALING_STRETCH;
@@ -87,9 +88,9 @@ std::unique_ptr<DXGISwapChainImageBacking> DXGISwapChainImageBacking::Create(
     desc.Flags |= DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
   }
 
-  Microsoft::WRL::ComPtr<IDXGISwapChain1> dxgi_swap_chain;
+  Microsoft::WRL::ComPtr<IDXGISwapChain1> dxgi_swap_chain1;
   hr = dxgi_factory->CreateSwapChainForComposition(d3d11_device.Get(), &desc,
-                                                   nullptr, &dxgi_swap_chain);
+                                                   nullptr, &dxgi_swap_chain1);
 
   // If CreateSwapChainForComposition fails, we cannot draw to the
   // browser window. Return false after disabling Direct Composition support
@@ -101,21 +102,20 @@ std::unique_ptr<DXGISwapChainImageBacking> DXGISwapChainImageBacking::Create(
     return nullptr;
   }
 
+  Microsoft::WRL::ComPtr<IDXGISwapChain3> dxgi_swap_chain;
+  CHECK_EQ(dxgi_swap_chain1.As(&dxgi_swap_chain), S_OK);
   gl::LabelSwapChainAndBuffers(dxgi_swap_chain.Get(),
                                kDXGISwapChainImageBackingLabel);
 
-  Microsoft::WRL::ComPtr<IDXGISwapChain3> swap_chain_3;
-  if (SUCCEEDED(dxgi_swap_chain.As(&swap_chain_3))) {
-    hr = swap_chain_3->SetColorSpace1(
-        gfx::ColorSpaceWin::GetDXGIColorSpace(si_info.color_space));
-    DCHECK_EQ(hr, S_OK) << ", SetColorSpace1 failed: "
+  hr = dxgi_swap_chain->SetColorSpace1(
+      gfx::ColorSpaceWin::GetDXGIColorSpace(si_info.color_space));
+  DCHECK_EQ(hr, S_OK) << ", SetColorSpace1 failed: "
+                      << logging::SystemErrorCodeToString(hr);
+  if (gl::DXGIWaitableSwapChainEnabled()) {
+    hr = dxgi_swap_chain->SetMaximumFrameLatency(
+        gl::GetDXGIWaitableSwapChainMaxQueuedFrames());
+    DCHECK_EQ(hr, S_OK) << ", SetMaximumFrameLatency failed: "
                         << logging::SystemErrorCodeToString(hr);
-    if (gl::DXGIWaitableSwapChainEnabled()) {
-      hr = swap_chain_3->SetMaximumFrameLatency(
-          gl::GetDXGIWaitableSwapChainMaxQueuedFrames());
-      DCHECK_EQ(hr, S_OK) << ", SetMaximumFrameLatency failed: "
-                          << logging::SystemErrorCodeToString(hr);
-    }
   }
 
   // When |format| has no alpha (e.g. RGBX) but |internal_format| does, we wrap
@@ -135,7 +135,7 @@ DXGISwapChainImageBacking::DXGISwapChainImageBacking(
     const Mailbox& mailbox,
     const SharedImageInfo& si_info,
     Microsoft::WRL::ComPtr<ID3D11Device> d3d11_device,
-    Microsoft::WRL::ComPtr<IDXGISwapChain1> dxgi_swap_chain,
+    Microsoft::WRL::ComPtr<IDXGISwapChain3> dxgi_swap_chain,
     int buffers_need_alpha_initialization_count)
     : ClearTrackingSharedImageBacking(
           mailbox,
@@ -162,9 +162,8 @@ SharedImageBackingType DXGISwapChainImageBacking::GetType() const {
   return SharedImageBackingType::kDXGISwapChain;
 }
 
-void DXGISwapChainImageBacking::Update(
-    std::unique_ptr<gfx::GpuFence> in_fence) {
-  DCHECK(!in_fence);
+void DXGISwapChainImageBacking::Update(gfx::GpuFenceHandle in_fence) {
+  DCHECK(in_fence.is_null());
 }
 
 bool DXGISwapChainImageBacking::DidBeginWriteAccess(
@@ -177,7 +176,7 @@ bool DXGISwapChainImageBacking::DidBeginWriteAccess(
     // debugging.
     LOG(WARNING) << "Multiple skia write accesses per overlay access, flushing "
                     "pending swap.";
-    if (!Present(false)) {
+    if (!Present()) {
       return false;
     }
   }
@@ -238,8 +237,7 @@ bool DXGISwapChainImageBacking::DidBeginWriteAccess(
   return true;
 }
 
-bool DXGISwapChainImageBacking::Present(
-    bool should_synchronize_present_with_vblank) {
+bool DXGISwapChainImageBacking::Present() {
   if (!pending_swap_rect_.has_value() || pending_swap_rect_.value().IsEmpty()) {
     DVLOG(1) << "Skipping present without an update rect";
     return true;
@@ -248,12 +246,9 @@ bool DXGISwapChainImageBacking::Present(
   HRESULT hr, device_removed_reason;
   const bool use_swap_chain_tearing =
       gl::DirectCompositionSwapChainTearingEnabled();
-  const bool force_present_interval_0 =
-      base::FeatureList::IsEnabled(features::kDXGISwapChainPresentInterval0);
-  UINT interval = first_swap_ || !should_synchronize_present_with_vblank ||
-                          use_swap_chain_tearing || force_present_interval_0
-                      ? 0
-                      : 1;
+  // Always present with interval 0, i.e. don't synchronize with vblank. Frames
+  // may be discarded if they are presented more frequently than one per vblank.
+  const UINT interval = 0;
   UINT flags = use_swap_chain_tearing ? DXGI_PRESENT_ALLOW_TEARING : 0;
 
   TRACE_EVENT2("gpu", "DXGISwapChainImageBacking::Present", "has_alpha",
@@ -411,7 +406,8 @@ wgpu::Texture DXGISwapChainImageBacking::BeginAccessDawn(
   }
 
   if (!cached_wgpu_texture_ ||
-      !shared_texture_memory_.BeginAccess(cached_wgpu_texture_, &desc)) {
+      (shared_texture_memory_.BeginAccess(cached_wgpu_texture_, &desc) !=
+       wgpu::Status::Success)) {
     LOG(ERROR) << "Failed to begin access and produce WGPUTexture";
     return nullptr;
   }

@@ -195,7 +195,7 @@ public abstract class PickerAdapter extends Adapter<RecyclerView.ViewHolder>
      * @param query The search term to use.
      */
     public void setSearchString(String query) {
-        if (query.equals("")) {
+        if (query.isEmpty()) {
             if (mSearchResults == null) return;
             mSearchResults.clear();
             mSearchResults = null;
@@ -279,6 +279,9 @@ public abstract class PickerAdapter extends Adapter<RecyclerView.ViewHolder>
 
         update();
     }
+
+    /** Called when the dialog is dismissed to perform cleanup. */
+    public void destroy() {}
 
     // RecyclerView.Adapter:
 

@@ -172,7 +172,7 @@ class DisplayHelper {
         std::move(updated_notification_data), std::move(system_data));
 
     auto* client = context_->client_registrar()->GetClient(entry->type);
-    DCHECK(client);
+    CHECK(client, base::NotFatalUntil::M161);
     client->OnShowNotification(std::move(updated_notification_data));
 
     MaybeFinish(entry->guid, true /*shown*/);
@@ -251,7 +251,7 @@ class NotificationSchedulerImpl : public NotificationScheduler,
       SchedulerClientType type,
       ClientOverview::ClientOverviewCallback callback,
       ImpressionDetail impression_detail) {
-    std::vector<const NotificationEntry*> notifications;
+    std::vector<raw_ptr<const NotificationEntry>> notifications;
     context_->notification_manager()->GetNotifications(type, &notifications);
     ClientOverview result(std::move(impression_detail),
                           std::move(notifications));
@@ -277,16 +277,16 @@ class NotificationSchedulerImpl : public NotificationScheduler,
   }
 
   void NotifyClientAfterInit(SchedulerClientType type, bool success) {
-    std::vector<const NotificationEntry*> notifications;
+    std::vector<raw_ptr<const NotificationEntry>> notifications;
     context_->notification_manager()->GetNotifications(type, &notifications);
     std::set<std::string> guids;
-    for (const auto* notification : notifications) {
-      DCHECK(notification);
+    for (const notifications::NotificationEntry* notification : notifications) {
+      CHECK(notification, base::NotFatalUntil::M161);
       guids.emplace(notification->guid);
     }
 
     auto* client = context_->client_registrar()->GetClient(type);
-    DCHECK(client);
+    CHECK(client, base::NotFatalUntil::M161);
     client->OnSchedulerInitialized(success, std::move(guids));
   }
 

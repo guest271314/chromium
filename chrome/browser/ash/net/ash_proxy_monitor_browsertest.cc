@@ -14,7 +14,6 @@
 #include "chrome/browser/browser_process_platform_part.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_manager.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chromeos/ash/components/dbus/shill/shill_ipconfig_client.h"
 #include "chromeos/ash/components/dbus/shill/shill_profile_client.h"
@@ -164,7 +163,7 @@ class AshProxyMonitorTest : public InProcessBrowserTest {
         std::make_unique<TestAshProxyMonitorObserver>();
     g_browser_process->platform_part()
         ->ash_proxy_monitor()
-        ->SetProfileForTesting(browser()->profile());
+        ->SetProfileForTesting(browser()->GetProfile());
   }
 
   void TearDownOnMainThread() override {

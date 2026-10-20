@@ -24,7 +24,7 @@
 #include "components/autofill/core/browser/field_types.h"
 #include "components/autofill/core/browser/form_types.h"
 #include "components/autofill/core/browser/foundations/autofill_driver.h"
-#include "components/autofill/core/browser/metrics/autofill_metrics_utils.h"
+#include "components/autofill/core/browser/metrics/autofill_metrics_util.h"
 #include "components/autofill/core/browser/metrics/form_events/form_event_logger_base.h"
 #include "components/autofill/core/browser/metrics/form_events/form_events.h"
 #include "components/autofill/core/browser/metrics/form_interactions_ukm_logger.h"
@@ -94,11 +94,6 @@ void AddressFormEventLogger::OnDidShowSuggestions(
       form, field, field.Type().GetAddressType(), form_parsed_timestamp,
       off_the_record, suggestions);
 
-  if (!base::FeatureList::IsEnabled(
-          features::kAutofillEnableSupportForHomeAndWork)) {
-    return;
-  }
-
   const AddressDataManager& address_data_manager =
       client().GetPersonalDataManager().address_data_manager();
 
@@ -147,9 +142,7 @@ void AddressFormEventLogger::OnDidUndoAutofill() {
 void AddressFormEventLogger::OnDestroyed() {
   FormEventLoggerBase::OnDestroyed();
 
-  if (base::FeatureList::IsEnabled(
-          features::kAutofillEnableSupportForHomeAndWork) &&
-      has_logged_suggestions_shown_) {
+  if (has_logged_suggestions_shown_) {
     if (profile_categories_available_.contains(
             AutofillProfileRecordTypeCategory::kAccountHome)) {
       base::UmaHistogramBoolean("Autofill.HomeAndWork.SuggestionPresent.Home",

@@ -5,6 +5,7 @@
 #include "extensions/browser/test_extensions_browser_client.h"
 
 #include "base/command_line.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/values.h"
 #include "build/build_config.h"
 #include "build/chromeos_buildflags.h"
@@ -17,15 +18,12 @@
 #include "extensions/browser/test_runtime_api_delegate.h"
 #include "extensions/browser/updater/null_extension_cache.h"
 #include "extensions/buildflags/buildflags.h"
+#include "extensions/common/event_args.h"
 #include "extensions/common/extension_id.h"
 #include "extensions/common/switches.h"
 #include "extensions/common/url_pattern_set.h"
 #include "services/network/public/mojom/url_loader.mojom.h"
 #include "ui/base/l10n/l10n_util.h"
-
-#if BUILDFLAG(IS_CHROMEOS)
-#include "chromeos/ash/components/login/login_state/login_state.h"
-#endif
 
 using content::BrowserContext;
 
@@ -63,21 +61,7 @@ class TestExtensionManagementClient : public ExtensionManagementClient {
   }
   bool BlocklistedByDefault() const override { return false; }
   GURL GetEffectiveUpdateURL(const Extension& extension) override { return {}; }
-  bool IsExemptFromMV2DeprecationByPolicy(
-      int manifest_version,
-      const std::string& extension_id,
-      Manifest::Type manifest_type) override {
-    return false;
-  }
 
-  bool IsAllowedManifestVersion(int manifest_version,
-                                const std::string& extension_id,
-                                Manifest::Type manifest_type) override {
-    return false;
-  }
-  bool IsAllowedManifestVersion(const Extension* extension) override {
-    return false;
-  }
   bool IsAllowedManifestType(Manifest::Type manifest_type,
                              const std::string& extension_id) const override {
     return false;
@@ -189,6 +173,9 @@ bool TestExtensionsBrowserClient::HasOffTheRecordContext(
 
 BrowserContext* TestExtensionsBrowserClient::GetOffTheRecordContext(
     BrowserContext* context) {
+  if (context == incognito_context_) {
+    return context;
+  }
   if (context == main_context_) {
     return incognito_context_;
   }
@@ -234,14 +221,6 @@ bool TestExtensionsBrowserClient::IsActiveContext(
     content::BrowserContext* browser_context) const {
   return true;
 }
-
-std::string TestExtensionsBrowserClient::GetUserIdHashFromContext(
-    content::BrowserContext* context) {
-  if (context != main_context_ || !ash::LoginState::IsInitialized()) {
-    return "";
-  }
-  return ash::LoginState::Get()->primary_user_hash();
-}
 #endif
 
 bool TestExtensionsBrowserClient::IsGuestSession(
@@ -255,10 +234,21 @@ bool TestExtensionsBrowserClient::IsExtensionIncognitoEnabled(
   return false;
 }
 
+bool TestExtensionsBrowserClient::IsExtensionIncognitoEnabled(
+    const Extension* extension,
+    content::BrowserContext* context) const {
+  return false;
+}
+
 bool TestExtensionsBrowserClient::CanExtensionCrossIncognito(
     const extensions::Extension* extension,
     content::BrowserContext* context) const {
   return false;
+}
+
+BrowserContextLifetimeTracker*
+TestExtensionsBrowserClient::GetBrowserContextLifetimeTracker() {
+  return nullptr;
 }
 
 base::FilePath TestExtensionsBrowserClient::GetBundleResourcePath(
@@ -275,7 +265,8 @@ void TestExtensionsBrowserClient::LoadResourceFromResourceBundle(
     const base::FilePath& resource_relative_path,
     int resource_id,
     scoped_refptr<net::HttpResponseHeaders> headers,
-    mojo::PendingRemote<network::mojom::URLLoaderClient> client) {
+    mojo::PendingRemote<network::mojom::URLLoaderClient> client,
+    content::BrowserContext* browser_context) {
   // Should not be called because GetBundleResourcePath() returned empty path.
   NOTREACHED() << "Resource is not from a bundle.";
 }
@@ -367,7 +358,7 @@ TestExtensionsBrowserClient::GetComponentExtensionResourceManager() {
 void TestExtensionsBrowserClient::BroadcastEventToRenderers(
     events::HistogramValue histogram_value,
     const std::string& event_name,
-    base::ListValue args,
+    scoped_refptr<const EventArgs> args,
     bool dispatch_to_off_the_record_profiles) {}
 
 ExtensionCache* TestExtensionsBrowserClient::GetExtensionCache() {

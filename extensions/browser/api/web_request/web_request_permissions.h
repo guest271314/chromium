@@ -8,8 +8,8 @@
 #include <optional>
 #include <string>
 
-#include "extensions/browser/api/web_request/web_request_resource_type.h"
 #include "extensions/buildflags/buildflags.h"
+#include "extensions/common/api/web_request/web_request_resource_type.h"
 #include "extensions/common/extension_id.h"
 #include "extensions/common/permissions/permissions_data.h"
 #include "third_party/blink/public/mojom/loader/resource_load_info.mojom-shared.h"
@@ -33,7 +33,9 @@ class WebRequestPermissions {
  public:
   // Different host permission checking modes for CanExtensionAccessURL.
   enum HostPermissionsCheck {
-    DO_NOT_CHECK_HOST = 0,  // No check.
+    // No host permission check. Requests initiated by policy or user blocked
+    // hosts are still denied.
+    DO_NOT_CHECK_HOST = 0,
     // Permission needed for given request URL.
     // TODO(karandeepb): Remove this checking mode.
     REQUIRE_HOST_PERMISSION_FOR_URL,

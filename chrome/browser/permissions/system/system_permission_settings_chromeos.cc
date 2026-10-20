@@ -13,6 +13,7 @@
 #include "chrome/browser/ash/privacy_hub/privacy_hub_util.h"
 #include "chrome/browser/permissions/system/platform_handle.h"
 #include "components/content_settings/core/common/content_settings_types.h"
+#include "content/public/common/content_switches.h"
 #include "media/base/media_switches.h"
 
 namespace system_permission_settings {
@@ -50,6 +51,13 @@ class PlatformHandleImpl : public PlatformHandle {
   }
 
   bool IsAllowed(ContentSettingsType type) override { return !IsDenied(type); }
+
+  // On ChromeOS checking the privacy hub setting is cheap and therefore can
+  // just be called directly from here.
+  void IsDeniedFresh(ContentSettingsType type,
+                     SystemPermissionDeniedCallback callback) override {
+    std::move(callback).Run(IsDenied(type));
+  }
 
   void OpenSystemSettings(content::WebContents*,
                           ContentSettingsType type) override {

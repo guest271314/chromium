@@ -7,6 +7,8 @@
 #include <string>
 #include <utility>
 
+#include "ash/login/resources/grit/ash_login_strings.h"
+#include "ash/strings/grit/ash_strings.h"
 #include "base/i18n/number_formatting.h"
 #include "base/logging.h"
 #include "base/strings/string_number_conversions.h"

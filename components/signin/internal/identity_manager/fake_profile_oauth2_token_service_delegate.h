@@ -26,6 +26,7 @@
 #if BUILDFLAG(ENABLE_DICE_SUPPORT)
 #include "components/signin/public/base/binding_key_registration_token_result.h"
 #include "components/unexportable_keys/unexportable_key_id.h"
+#include "crypto/sign.h"
 #endif
 
 namespace network {
@@ -67,7 +68,7 @@ class FakeProfileOAuth2TokenServiceDelegate
 
 #if BUILDFLAG(ENABLE_DICE_SUPPORT)
   bool GenerateBindingKeyRegistrationToken(
-      std::string_view supported_algorithms,
+      base::span<const crypto::sign::SignatureKind> supported_algorithms,
       std::string_view auth_code,
       base::OnceCallback<void(
           std::optional<signin::BindingKeyRegistrationTokenResult>)> callback)
@@ -78,6 +79,8 @@ class FakeProfileOAuth2TokenServiceDelegate
       std::optional<signin::BindingKeyRegistrationTokenResult> result);
   bool IsRefreshTokenBoundToKey(const CoreAccountId& account_id) const override;
   std::vector<uint8_t> GetWrappedBindingKey(
+      const CoreAccountId& account_id) const override;
+  bool IsRefreshTokenBoundToMtls(
       const CoreAccountId& account_id) const override;
   bool AllBoundTokensShareSameBindingKey() const override;
   void GenerateRefreshTokenBindingKeyAssertionForMultilogin(
@@ -151,6 +154,7 @@ class FakeProfileOAuth2TokenServiceDelegate
            base::OnceCallback<void(
                std::optional<signin::BindingKeyRegistrationTokenResult>)>>
       pending_token_binding_callbacks_;
+  std::map<CoreAccountId, bool> mtls_token_bindings_;
 #endif
 
   network::TestURLLoaderFactory test_url_loader_factory_;

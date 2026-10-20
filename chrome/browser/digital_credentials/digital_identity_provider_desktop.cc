@@ -202,16 +202,21 @@ void DigitalIdentityProviderDesktop::OnEvent(
 
 void DigitalIdentityProviderDesktop::OnCableEvent(
     device::cablev2::Event event) {
+  base::WeakPtr<DigitalIdentityProviderDesktop> weak_this =
+      weak_ptr_factory_.GetWeakPtr();
   switch (event) {
     case device::cablev2::Event::kPhoneConnected:
     case device::cablev2::Event::kBLEAdvertReceived:
       ShowConnectingToPhoneDialog();
+      if (!weak_this) {
+        return;
+      }
       if (!cable_connecting_dialog_timer_.IsRunning()) {
         cable_connecting_dialog_timer_.Start(
             FROM_HERE, base::Milliseconds(2500),
             base::BindOnce(
                 &DigitalIdentityProviderDesktop::OnCableConnectingTimerComplete,
-                weak_ptr_factory_.GetWeakPtr()));
+                weak_this));
       }
       break;
     case device::cablev2::Event::kReady:
@@ -399,8 +404,19 @@ void DigitalIdentityProviderDesktop::EndRequestWithError(
     return;
   }
 
+  // `dialog_.reset()` can synchronously close the UI which (via activation
+  // observers) may destroy the hosting WebContents, resulting in the
+  // synchronous destruction of the frame-bound Mojo DocumentService
+  // `DigitalIdentityRequestImpl` and therefore `this`.
+  //
+  // To avoid a Use-After-Free, move the callback to a local variable on the
+  // stack before resetting the dialog or the manual bluetooth controller (both
+  // of which could trigger synchronous teardown via UI events).
+  auto local_callback = std::move(callback_);
+
   bluetooth_manual_dialog_controller_.reset();
   dialog_.reset();
+  // `this` may be deleted at this point.
 
-  std::move(callback_).Run(base::unexpected(status));
+  std::move(local_callback).Run(base::unexpected(status));
 }

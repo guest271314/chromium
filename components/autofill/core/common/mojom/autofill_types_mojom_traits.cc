@@ -197,6 +197,14 @@ bool StructTraits<
   }
 
   {
+    std::u16string placeholder_attribute;
+    if (!data.ReadPlaceholderAttribute(&placeholder_attribute)) {
+      return false;
+    }
+    out->set_placeholder_attribute(std::move(placeholder_attribute));
+  }
+
+  {
     std::u16string css_classes;
     if (!data.ReadCssClasses(&css_classes)) {
       return false;
@@ -250,14 +258,6 @@ bool StructTraits<
   out->set_max_length(data.max_length());
   out->set_is_autofilled_according_to_renderer(
       data.is_autofilled_according_to_renderer());
-
-  {
-    autofill::FormFieldData::CheckStatus check_status;
-    if (!data.ReadCheckStatus(&check_status)) {
-      return false;
-    }
-    out->set_check_status(std::move(check_status));
-  }
 
   out->set_is_focusable(data.is_focusable());
   out->set_is_visible(data.is_visible());
@@ -453,6 +453,10 @@ bool StructTraits<autofill::mojom::FormFieldDataPredictionsDataView,
   if (!data.ReadHostFormSignature(&out->host_form_signature)) {
     return false;
   }
+  if (!data.ReadHostFormStructuralSignature(
+          &out->host_form_structural_signature)) {
+    return false;
+  }
   if (!data.ReadSignature(&out->signature)) {
     return false;
   }
@@ -488,6 +492,7 @@ bool StructTraits<autofill::mojom::FormFieldDataPredictionsDataView,
   out->rank_in_host_form = data.rank_in_host_form();
   out->rank_in_host_form_signature_group =
       data.rank_in_host_form_signature_group();
+  out->did_trigger_javascript_autofill = data.did_trigger_javascript_autofill();
 
   return true;
 }

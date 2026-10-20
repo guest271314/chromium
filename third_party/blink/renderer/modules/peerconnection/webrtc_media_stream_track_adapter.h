@@ -7,14 +7,17 @@
 
 #include <memory>
 
+#include "base/memory/scoped_refptr.h"
 #include "base/synchronization/waitable_event.h"
 #include "base/task/single_thread_task_runner.h"
 #include "third_party/blink/renderer/modules/modules_export.h"
 #include "third_party/blink/renderer/modules/peerconnection/media_stream_video_webrtc_sink.h"
+#include "third_party/blink/renderer/platform/heap/cross_thread_persistent.h"
 #include "third_party/blink/renderer/platform/mediastream/media_stream_component.h"
 #include "third_party/blink/renderer/platform/peerconnection/webrtc_audio_sink.h"
 #include "third_party/blink/renderer/platform/wtf/thread_safe_ref_counted.h"
 #include "third_party/webrtc/api/media_stream_interface.h"
+#include "third_party/webrtc/api/scoped_refptr.h"
 
 namespace blink {
 
@@ -56,7 +59,7 @@ class MODULES_EXPORT WebRtcMediaStreamTrackAdapter
       const WebRtcMediaStreamTrackAdapter&) = delete;
 
   // Must be called before all external references are released (i.e. before
-  // destruction). Invoke on the main thread. Disposing may finish
+  // destruction). Can be called from any thread. Disposing may finish
   // asynchronously using the webrtc signaling thread and the main thread. After
   // calling this method it is safe to release all external references to the
   // adapter.
@@ -110,9 +113,11 @@ class MODULES_EXPORT WebRtcMediaStreamTrackAdapter
   void FinalizeRemoteTrackInitializationOnMainThread();
   void EnsureTrackIsInitialized();
 
-  // Disposing starts and finishes on the main thread. Local tracks and remote
-  // video tracks are disposed synchronously. Remote audio tracks are disposed
-  // asynchronously with a jump to the webrtc signaling thread and back.
+  // The disposal logic starts and finishes on the main thread, although it can
+  // be initiated from any thread. Local tracks and remote video tracks are
+  // disposed synchronously. Remote audio tracks are disposed asynchronously
+  // with a jump to the webrtc signaling thread and back.
+  void DisposeOnMainThread();
   void DisposeLocalAudioTrack();
   void DisposeLocalVideoTrack();
   void DisposeRemoteAudioTrack();

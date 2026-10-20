@@ -19,7 +19,6 @@
 #include "skia/ext/codec_utils.h"
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/renderer/platform/bindings/buildflags.h"
-#include "third_party/blink/renderer/platform/graphics/canvas_resource_provider.h"
 #include "third_party/blink/renderer/platform/graphics/memory_managed_paint_recorder.h"
 #include "third_party/blink/renderer/platform/graphics/static_bitmap_image.h"
 #include "third_party/blink/renderer/platform/graphics/web_graphics_context_3d_provider_util.h"
@@ -123,7 +122,7 @@ HibernatedCanvasMemoryDumpProvider::HibernatedCanvasMemoryDumpProvider() {
 }
 
 CanvasHibernationHandler::CanvasHibernationHandler(Delegate& delegate)
-    : delegate_(delegate) {}
+    : delegate_(&delegate) {}
 
 CanvasHibernationHandler::~CanvasHibernationHandler() {
   DCheckInvariant();
@@ -135,13 +134,11 @@ CanvasHibernationHandler::~CanvasHibernationHandler() {
 
 void CanvasHibernationHandler::SaveForHibernation(
     sk_sp<SkImage>&& image,
-    std::unique_ptr<MemoryManagedPaintRecorder> recorder,
     base::MemoryReductionTaskContext context,
     base::TimeDelta delay) {
   DCheckInvariant();
   DCHECK(image);
   image_ = image;
-  recorder_ = std::move(recorder);
 
   width_ = image_->width();
   height_ = image_->height();
@@ -250,8 +247,8 @@ void CanvasHibernationHandler::Encode(
       sk_sp<SkData> encoded_uncompressed =
           skia::FastEncodePngAsSkData(nullptr, params->image.get());
 
-      TRACE_EVENT_BEGIN2("blink", "ZstdCompression", "original_size", 0, "size",
-                         0);
+      TRACE_EVENT_BEGIN("blink", "ZstdCompression", "original_size", 0, "size",
+                        0);
       size_t uncompressed_size = encoded_uncompressed->size();
       size_t buffer_size = ZSTD_compressBound(encoded_uncompressed->size());
       std::vector<char> compressed_buffer(buffer_size);
@@ -270,8 +267,8 @@ void CanvasHibernationHandler::Encode(
       // much smaller.
       encoded_uncompressed = nullptr;
       encoded = SkData::MakeWithCopy(compressed_buffer.data(), compressed_size);
-      TRACE_EVENT_END2("blink", "ZstdCompression", "original_size",
-                       uncompressed_size, "size", compressed_size);
+      TRACE_EVENT_END("blink", "original_size", uncompressed_size, "size",
+                      compressed_size);
       break;
 #else
       NOTREACHED();
@@ -360,7 +357,6 @@ void CanvasHibernationHandler::Clear() {
   HibernatedCanvasMemoryDumpProvider::GetInstance().Unregister(this);
   encoded_ = nullptr;
   image_ = nullptr;
-  recorder_ = nullptr;
 }
 
 size_t CanvasHibernationHandler::memory_size() const {
@@ -410,9 +406,9 @@ void CanvasHibernationHandler::Hibernate(
     base::TimeDelta delay) {
   TRACE_EVENT0("blink", __PRETTY_FUNCTION__);
   DCHECK(!IsHibernating());
+  CHECK(delegate_);
 
-  CanvasResourceProvider* provider = delegate_->GetResourceProvider();
-  if (!provider) {
+  if (!delegate_->HasBacking()) {
     ReportHibernationEvent(
         HibernationEvent::kHibernationAbortedBecauseNoSurface);
     return;
@@ -424,13 +420,13 @@ void CanvasHibernationHandler::Hibernate(
     return;
   }
 
-  if (!provider->IsValid() || delegate_->IsContextLost()) {
+  if (!delegate_->IsBackingValid() || delegate_->IsContextLost()) {
     ReportHibernationEvent(
         HibernationEvent::kHibernationAbortedDueGpuContextLoss);
     return;
   }
 
-  if (!provider->IsAccelerated()) {
+  if (!delegate_->IsBackingAccelerated()) {
     ReportHibernationEvent(
         HibernationEvent::
             kHibernationAbortedDueToSwitchToUnacceleratedRendering);
@@ -441,8 +437,8 @@ void CanvasHibernationHandler::Hibernate(
   // No HibernationEvent reported on success. This is on purppose to avoid
   // non-complementary stats. Each HibernationScheduled event is paired with
   // exactly one failure or exit event.
-  provider->FlushCanvas2D();
-  scoped_refptr<StaticBitmapImage> snapshot = provider->Snapshot();
+  delegate_->FlushCanvas(FlushReason::kOther);
+  scoped_refptr<StaticBitmapImage> snapshot = delegate_->Snapshot();
   if (!snapshot) {
     ReportHibernationEvent(
         HibernationEvent::kHibernationAbortedDueSnapshotFailure);
@@ -455,10 +451,9 @@ void CanvasHibernationHandler::Hibernate(
         HibernationEvent::kHibernationAbortedDueSnapshotFailure);
     return;
   }
-  SaveForHibernation(std::move(sw_image), provider->ReleaseRecorder(), context,
-                     delay);
+  SaveForHibernation(std::move(sw_image), context, delay);
 
-  delegate_->ResetResourceProvider();
+  delegate_->ResetBacking();
   delegate_->ClearCanvas2DLayerTexture();
 
   // shouldBeDirectComposited() may have changed.
@@ -479,6 +474,7 @@ void CanvasHibernationHandler::Hibernate(
 }
 
 void CanvasHibernationHandler::InitiateHibernationIfNecessary() {
+  CHECK(delegate_);
   delegate_->ClearCanvas2DLayerTexture();
   ReportHibernationEvent(HibernationEvent::kHibernationScheduled);
   ++epoch_;

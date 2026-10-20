@@ -27,6 +27,7 @@ import android.os.SystemClock;
 import androidx.annotation.RequiresApi;
 import androidx.annotation.VisibleForTesting;
 
+import org.chromium.base.Callback;
 import org.chromium.blink.mojom.AuthenticatorStatus;
 import org.chromium.blink.mojom.CredentialInfo;
 import org.chromium.blink.mojom.GetAssertionAuthenticatorResponse;
@@ -43,6 +44,7 @@ import org.chromium.components.webauthn.Barrier;
 import org.chromium.components.webauthn.CredManSupport;
 import org.chromium.components.webauthn.CredentialRequestResult;
 import org.chromium.components.webauthn.Fido2CredentialRequest.CancellableUiState;
+import org.chromium.components.webauthn.Fido2CredentialRequest.StopImmediateTimerBehavior;
 import org.chromium.components.webauthn.Fido2CredentialRequestJni;
 import org.chromium.components.webauthn.GetAssertionOutcome;
 import org.chromium.components.webauthn.MakeCredentialOutcome;
@@ -116,6 +118,10 @@ public class CredManHelper {
         mClientDataJson = clientDataJson;
         final String requestAsJson =
                 Fido2CredentialRequestJni.get().createOptionsToJson(options.serialize());
+        WebauthnRequestCallback callback = mAuthenticationContextProvider.getRequestCallback();
+        if (callback != null) {
+            callback.addCompletionCallback(this::cleanupRequest);
+        }
 
         OutcomeReceiver<CreateCredentialResponse, CreateCredentialException> receiver =
                 new OutcomeReceiver<>() {
@@ -241,7 +247,14 @@ public class CredManHelper {
         return AuthenticatorStatus.SUCCESS;
     }
 
-    /** Queries credential availability using the Android 14 CredMan API. */
+    /**
+     * Queries credential availability using the Android 14 CredMan API.
+     *
+     * @param stopImmediateTimer Callback to stop the immediate mediation timer, taking {@link
+     *     StopImmediateTimerBehavior#RECORD_METRIC} when prefetch succeeds or {@link
+     *     StopImmediateTimerBehavior#DO_NOT_RECORD_METRIC} to cancel the timer without recording on
+     *     error.
+     */
     @RequiresApi(Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
     public void startPrefetchRequest(
             GetCredentialOptions options,
@@ -249,7 +262,7 @@ public class CredManHelper {
             byte @Nullable [] clientDataJson,
             byte @Nullable [] clientDataHash,
             Barrier barrier,
-            @Nullable Runnable stopImmediateTimer,
+            @Nullable Callback<Integer> stopImmediateTimer,
             boolean ignoreGpm) {
         log(TAG, "startPrefetchRequest");
         long startTimeMs = SystemClock.elapsedRealtime();
@@ -272,6 +285,10 @@ public class CredManHelper {
                                         + " ("
                                         + e.getMessage()
                                         + ")");
+                        if (stopImmediateTimer != null) {
+                            stopImmediateTimer.onResult(
+                                    StopImmediateTimerBehavior.DO_NOT_RECORD_METRIC);
+                        }
                         mCancellableUiState = CancellableUiState.NONE;
                         localBarrier.onCredManFailed(AuthenticatorStatus.UNKNOWN_ERROR);
                         mMetricsHelper.recordCredmanPrepareRequestHistogram(
@@ -326,7 +343,8 @@ public class CredManHelper {
                             // if the request is taking more than a certain amount of time to
                             // resolve. If credentials were found then it is followed by a call
                             // to `startGetRequest`.
-                            assumeNonNull(stopImmediateTimer).run();
+                            assumeNonNull(stopImmediateTimer)
+                                    .onResult(StopImmediateTimerBehavior.RECORD_METRIC);
 
                             setRequestPasswords(options.password && hasAuthenticationResults);
 
@@ -444,6 +462,10 @@ public class CredManHelper {
         mClientDataJson = clientDataJson;
         RenderFrameHost frameHost = mAuthenticationContextProvider.getRenderFrameHost();
         final WebauthnBrowserBridge localBridge = assumeNonNull(mBridgeProvider.getBridge());
+        WebauthnRequestCallback callback = mAuthenticationContextProvider.getRequestCallback();
+        if (callback != null) {
+            callback.addCompletionCallback(this::cleanupRequest);
+        }
 
         // The Android 14 APIs have to be called via reflection until Chromium
         // builds with the Android 14 SDK by default.
@@ -541,7 +563,9 @@ public class CredManHelper {
                         if (mCancellableUiState == CancellableUiState.CANCEL_PENDING) {
                             notifyBrowserOnCredManClosed(false);
                             mCancellableUiState = CancellableUiState.NONE;
-                            localBridge.cleanupCredManRequest(frameHost);
+                            if (localBridge != null && localBridge.isInitialized()) {
+                                localBridge.cleanupCredManRequest(frameHost);
+                            }
                             return;
                         }
                         Bundle data = getCredentialResponse.getCredential().getData();
@@ -570,6 +594,10 @@ public class CredManHelper {
                                 return;
                             }
 
+                            // Unlike passkeys, password filling is delegated to the Chrome Password
+                            // Manager UI and does not resolve the Mojo request callback.
+                            // Thus, we must clean up the browser bridge request manually.
+                            cleanupRequest();
                             localBridge.onPasswordCredentialReceived(
                                     frameHost,
                                     data.getString(CRED_MAN_PREFIX + "BUNDLE_KEY_ID"),
@@ -720,10 +748,11 @@ public class CredManHelper {
                 mBarrier.onCredManCancelled(error);
                 break;
             case CancellableUiState.WAITING_FOR_SELECTION:
-                assumeNonNull(mBridgeProvider.getBridge());
-                mBridgeProvider
-                        .getBridge()
-                        .cleanupCredManRequest(mAuthenticationContextProvider.getRenderFrameHost());
+                WebauthnBrowserBridge bridge = mBridgeProvider.getBridge();
+                if (bridge != null && bridge.isInitialized()) {
+                    bridge.cleanupCredManRequest(
+                            mAuthenticationContextProvider.getRenderFrameHost());
+                }
                 mCancellableUiState = CancellableUiState.NONE;
                 assumeNonNull(mBarrier);
                 mBarrier.onCredManCancelled(error);
@@ -837,6 +866,13 @@ public class CredManHelper {
         } catch (DeserializationException e) {
             logDeserializationException(e);
             return null;
+        }
+    }
+
+    private void cleanupRequest() {
+        WebauthnBrowserBridge bridge = mBridgeProvider.getBridge();
+        if (bridge != null && bridge.isInitialized()) {
+            bridge.cleanupRequest(mAuthenticationContextProvider.getRenderFrameHost());
         }
     }
 

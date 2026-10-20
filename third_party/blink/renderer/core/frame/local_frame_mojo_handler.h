@@ -102,6 +102,7 @@ class LocalFrameMojoHandler
       const String& id,
       const String& message,
       const std::optional<FrameToken>& child_frame_token) final;
+  void UpdateChildFrameToVideoAd(const FrameToken& child_frame_token) final;
   void SetFrameOwnerProperties(
       mojom::blink::FrameOwnerPropertiesPtr properties) final;
   void NotifyUserActivation(
@@ -144,7 +145,6 @@ class LocalFrameMojoHandler
   // frame's sandbox flags or container policy. The new policy won't take effect
   // until the next navigation.
   void DidUpdateFramePolicy(const FramePolicy& frame_policy) final;
-  void OnFrameVisibilityChanged(mojom::blink::FrameVisibility visibility) final;
   void PostMessageEvent(
       const std::optional<RemoteFrameToken>& source_frame_token,
       const scoped_refptr<const SecurityOrigin>& source_origin,
@@ -173,12 +173,12 @@ class LocalFrameMojoHandler
       int32_t world_id,
       JavaScriptExecuteRequestInIsolatedWorldCallback callback) final;
   void InvokeScriptToolForInspector(
-      const base::UnguessableToken& invocation_id,
+      const ToolInvocationToken& invocation_id,
       const String& tool_name,
       const String& input_arguments,
       InvokeScriptToolForInspectorCallback callback) final;
   void NotifyInspectorOfCrossDocumentScriptToolResult(
-      const base::UnguessableToken& invocation_id) final;
+      const ToolInvocationToken& invocation_id) final;
 #if BUILDFLAG(IS_MAC)
   void GetCharacterIndexAtPoint(const base::UnguessableToken& request_token,
                                 const gfx::Point& point) final;

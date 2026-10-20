@@ -5,8 +5,8 @@
 #import "ios/chrome/browser/authentication/ui_bundled/change_profile/change_profile_signout_continuation.h"
 
 #import "base/check.h"
+#import "base/functional/bind.h"
 #import "base/functional/callback.h"
-#import "base/functional/callback_helpers.h"
 #import "base/metrics/user_metrics.h"
 #import "base/metrics/user_metrics_action.h"
 #import "ios/chrome/app/profile/profile_state.h"
@@ -24,18 +24,33 @@
 
 namespace {
 
-// Completion for ChangeProfileSignoutContinuation(...) that presents the
-// snackback message (if non-null), invoke the signout completion and then
-// the closure.
-void ChangeProfileSignoutCompletion(
-    base::WeakPtr<Browser> weak_browser,
-    SnackbarMessage* snackbar_message,
-    bool force_snackbar_over_toolbar,
+// Implementation of the continuation that sign-out the profile.
+void ChangeProfileSignoutContinuation(
+    signin_metrics::ProfileSignout signout_source_metric,
+    BOOL force_snackbar_over_toolbar,
+    BOOL should_record_metrics,
+    signin::SnackbarMessageBuilder snackbar_message_builder,
     SignoutCompletionCallback signout_completion,
+    SceneState* scene_state,
     base::OnceClosure closure) {
-  Browser* browser = weak_browser.get();
-  if (!browser) {
-    return;
+  // The regular browser should be used to complete the signout, even if in
+  // incognito mode.
+  Browser* browser =
+      scene_state.browserProviderInterface.mainBrowserProvider.browser;
+  CHECK(browser);
+
+  AuthenticationService* authentication_service =
+      AuthenticationServiceFactory::GetForProfile(browser->GetProfile());
+  authentication_service->SignOut(signout_source_metric);
+
+  // TODO(crbug.com/406274746): Consider removing `should_record_metrics`.
+  if (should_record_metrics) {
+    base::RecordAction(base::UserMetricsAction("Signin_Signout"));
+  }
+
+  SnackbarMessage* snackbar_message = nil;
+  if (!snackbar_message_builder.is_null()) {
+    snackbar_message = std::move(snackbar_message_builder).Run(browser);
   }
 
   if (snackbar_message) {
@@ -53,39 +68,6 @@ void ChangeProfileSignoutCompletion(
 
   std::move(signout_completion).Run(browser->GetSceneState());
   std::move(closure).Run();
-}
-
-// Implementation of the continuation that sign-out the profile.
-void ChangeProfileSignoutContinuation(
-    signin_metrics::ProfileSignout signout_source_metric,
-    BOOL force_snackbar_over_toolbar,
-    BOOL should_record_metrics,
-    SnackbarMessage* snackbar_message,
-    SignoutCompletionCallback signout_completion,
-    SceneState* scene_state,
-    base::OnceClosure closure) {
-  // The regular browser should be used to complete the signout, even if in
-  // incognito mode.
-  Browser* browser =
-      scene_state.browserProviderInterface.mainBrowserProvider.browser;
-  CHECK(browser);
-
-  // Create the final completion that will be invoked when the signout
-  // operation completes.
-  base::OnceClosure completion =
-      base::BindOnce(&ChangeProfileSignoutCompletion, browser->AsWeakPtr(),
-                     snackbar_message, force_snackbar_over_toolbar,
-                     std::move(signout_completion), std::move(closure));
-
-  AuthenticationService* authentication_service =
-      AuthenticationServiceFactory::GetForProfile(browser->GetProfile());
-  authentication_service->SignOut(signout_source_metric,
-                                  base::CallbackToBlock(std::move(completion)));
-
-  // TODO(crbug.com/406274746): Consider removing `should_record_metrics`.
-  if (should_record_metrics) {
-    base::RecordAction(base::UserMetricsAction("Signin_Signout"));
-  }
 }
 
 // Implementation of the continuation that shows the force sign out prompt after
@@ -116,13 +98,13 @@ ChangeProfileContinuation CreateChangeProfileSignoutContinuation(
     signin_metrics::ProfileSignout signout_source_metric,
     BOOL force_snackbar_over_toolbar,
     BOOL should_record_metrics,
-    SnackbarMessage* snackbar_message,
+    signin::SnackbarMessageBuilder snackbar_message_builder,
     SignoutCompletionCallback signout_completion) {
   CHECK(!signout_completion.is_null());
-  return base::BindOnce(&ChangeProfileSignoutContinuation,
-                        signout_source_metric, force_snackbar_over_toolbar,
-                        should_record_metrics, snackbar_message,
-                        std::move(signout_completion));
+  return base::BindOnce(
+      &ChangeProfileSignoutContinuation, signout_source_metric,
+      force_snackbar_over_toolbar, should_record_metrics,
+      std::move(snackbar_message_builder), std::move(signout_completion));
 }
 
 ChangeProfileContinuation CreateChangeProfileForceSignoutContinuation() {

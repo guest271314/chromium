@@ -9,15 +9,18 @@
 #include "base/command_line.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/stringprintf.h"
+#include "base/strings/utf_string_conversions.h"
 #include "base/test/scoped_feature_list.h"
 #include "build/build_config.h"
 #include "chrome/browser/media/clear_key_cdm_test_helper.h"
 #include "chrome/browser/media/media_browsertest.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/tabs/tab_enums.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/common/chrome_switches.h"
 #include "chrome/common/pref_names.h"
+#include "chrome/test/base/ui_test_utils.h"
 #include "components/prefs/pref_service.h"
 #include "components/ukm/test_ukm_recorder.h"
 #include "content/public/common/content_features.h"
@@ -30,9 +33,11 @@
 #include "media/cdm/clear_key_cdm_common.h"
 #include "media/cdm/supported_cdm_versions.h"
 #include "media/media_buildflags.h"
+#include "net/test/embedded_test_server/embedded_test_server.h"
 #include "services/metrics/public/cpp/ukm_builders.h"
 #include "third_party/widevine/cdm/buildflags.h"
 #include "third_party/widevine/cdm/widevine_cdm_common.h"
+#include "ui/gfx/geometry/size.h"
 
 #if BUILDFLAG(IS_WIN)
 #include <mfapi.h>
@@ -160,7 +165,7 @@ class EncryptedMediaTestBase : public MediaBrowserTest {
     }
 #endif  // BUILDFLAG(IS_WIN)
     std::string prefix = std::string(media::kExternalClearKeyKeySystem) + '.';
-    return key_system.substr(0, prefix.size()) == prefix;
+    return key_system.starts_with(prefix);
   }
 
 #if BUILDFLAG(IS_WIN)
@@ -231,7 +236,7 @@ class EncryptedMediaTestBase : public MediaBrowserTest {
                           kNoSessionToLoad, false, play_count, expected_title);
     // Check KeyMessage received for all key systems.
     EXPECT_EQ(true, content::EvalJs(
-                        browser()->tab_strip_model()->GetActiveWebContents(),
+                        browser()->GetTabStripModel()->GetActiveWebContents(),
                         "document.querySelector('video').receivedKeyMessage;"));
   }
 
@@ -330,8 +335,6 @@ class EncryptedMediaTestBase : public MediaBrowserTest {
 #if BUILDFLAG(IS_WIN)
     if (IsMediaFoundationClearKey(key_system)) {
       RegisterMediaFoundationClearKeyCdm(enabled_features);
-      enabled_features.push_back(
-          {media::kHardwareSecureDecryptionExperiment, {}});
 
       base::FieldTrialParams fallback_params;
       fallback_params["per_site"] = "true";
@@ -512,7 +515,7 @@ class EncryptedMediaVisibilityRatioReportTest : public EncryptedMediaTestBase {
     ukm_recorder_->SetOnAddEntryCallback(Media_WebMediaPlayerState::kEntryName,
                                          run_loop.QuitClosure());
 
-    browser()->tab_strip_model()->CloseWebContentsAt(
+    browser()->GetTabStripModel()->CloseWebContentsAt(
         0, TabCloseTypes::CLOSE_USER_GESTURE);
     run_loop.Run();
 
@@ -729,7 +732,7 @@ class ParameterizedEncryptedMediaTestBase : public EncryptedMediaTestBase {
   }
 
   void DisableEncryptedMedia() {
-    PrefService* pref_service = browser()->profile()->GetPrefs();
+    PrefService* pref_service = browser()->GetProfile()->GetPrefs();
     pref_service->SetBoolean(prefs::kEnableEncryptedMedia, false);
   }
 
@@ -1041,19 +1044,17 @@ IN_PROC_BROWSER_TEST_P(MseEncryptedMediaTest,
 
 #if BUILDFLAG(ENABLE_LIBRARY_CDMS)
 
-// Test CDM_10 through CDM_12.
+// TODO(b/425796122): Update to (11, 12) once shipped CDM manifests also list
+// 11 in x-cdm-interface-versions and CDM_10 is removed from
+// kSupportedCdmInterfaceVersions.
 static_assert(media::CheckSupportedCdmInterfaceVersions(10, 12),
               "Mismatch between implementation and test coverage");
-INSTANTIATE_TEST_SUITE_P(CDM_10, ECKEncryptedMediaTest, Values(10));
+// Test CDM_11 through CDM_12.
 INSTANTIATE_TEST_SUITE_P(CDM_11, ECKEncryptedMediaTest, Values(11));
 INSTANTIATE_TEST_SUITE_P(CDM_12, ECKEncryptedMediaTest, Values(12));
-INSTANTIATE_TEST_SUITE_P(CDM_10, ECKEncryptedMediaFileIOTest, Values(10));
 INSTANTIATE_TEST_SUITE_P(CDM_11, ECKEncryptedMediaFileIOTest, Values(11));
 INSTANTIATE_TEST_SUITE_P(CDM_12, ECKEncryptedMediaFileIOTest, Values(12));
 
-INSTANTIATE_TEST_SUITE_P(CDM_10,
-                         ECKEncryptedMediaReportMetricsTest,
-                         Values(10));
 INSTANTIATE_TEST_SUITE_P(CDM_11,
                          ECKEncryptedMediaReportMetricsTest,
                          Values(11));
@@ -1064,70 +1065,50 @@ INSTANTIATE_TEST_SUITE_P(CDM_12,
 IN_PROC_BROWSER_TEST_P(ECKEncryptedMediaReportMetricsTest, RecordUkmTest) {
   base::RunLoop run_loop;
 
-  // The ReportMetrics functionality only works in v11 and onwards, so verify
-  // that in v10, RecordUkm is not called and the Cdm Metrics UKM is not set.
-  if (GetCdmInterfaceVersion() > 10) {
-    ukm_recorder_->SetOnAddEntryCallback(Media_EME_CdmMetrics::kEntryName,
-                                         run_loop.QuitClosure());
-    RunSimpleEncryptedMediaTest("bear-320x240-av_enc-a.webm",
-                                media::kExternalClearKeyKeySystem, SrcType::SRC,
-                                PlayCount::ONCE);
-    browser()->tab_strip_model()->CloseWebContentsAt(
-        0, TabCloseTypes::CLOSE_USER_GESTURE);
-    run_loop.Run();
+  ukm_recorder_->SetOnAddEntryCallback(Media_EME_CdmMetrics::kEntryName,
+                                       run_loop.QuitClosure());
+  RunSimpleEncryptedMediaTest("bear-320x240-av_enc-a.webm",
+                              media::kExternalClearKeyKeySystem, SrcType::SRC,
+                              PlayCount::ONCE);
+  browser()->GetTabStripModel()->CloseWebContentsAt(
+      0, TabCloseTypes::CLOSE_USER_GESTURE);
+  run_loop.Run();
 
-    auto report_metric_entries = ukm_recorder_->GetEntries(
-        Media_EME_CdmMetrics::kEntryName,
-        {
-            Media_EME_CdmMetrics::kCertificateSerialNumberName,
-            Media_EME_CdmMetrics::kDecoderBypassBlockCountName,
-            Media_EME_CdmMetrics::kDecoderCheck1SuccessCountName,
-            Media_EME_CdmMetrics::kDecoderCheck1WarningCountName,
-            Media_EME_CdmMetrics::kDecoderCheck1ErrorCountName,
-            Media_EME_CdmMetrics::kKeySystemDataTime1Name,
-            Media_EME_CdmMetrics::kKeySystemDataTime2Name,
-            Media_EME_CdmMetrics::kKeySystemDataTime3Name,
-            Media_EME_CdmMetrics::kKeySystemDataBool1Name,
-            Media_EME_CdmMetrics::kLicenseSdkVersionName,
-            Media_EME_CdmMetrics::kNumberOfOnMessageEventsName,
-            Media_EME_CdmMetrics::kNumberOfUpdateCallsName,
-        });
+  auto report_metric_entries = ukm_recorder_->GetEntries(
+      Media_EME_CdmMetrics::kEntryName,
+      {
+          Media_EME_CdmMetrics::kCertificateSerialNumberName,
+          Media_EME_CdmMetrics::kDecoderBypassBlockCountName,
+          Media_EME_CdmMetrics::kDecoderCheck1SuccessCountName,
+          Media_EME_CdmMetrics::kDecoderCheck1WarningCountName,
+          Media_EME_CdmMetrics::kDecoderCheck1ErrorCountName,
+          Media_EME_CdmMetrics::kKeySystemDataTime1Name,
+          Media_EME_CdmMetrics::kKeySystemDataTime2Name,
+          Media_EME_CdmMetrics::kKeySystemDataTime3Name,
+          Media_EME_CdmMetrics::kKeySystemDataBool1Name,
+          Media_EME_CdmMetrics::kLicenseSdkVersionName,
+          Media_EME_CdmMetrics::kNumberOfOnMessageEventsName,
+          Media_EME_CdmMetrics::kNumberOfUpdateCallsName,
+      });
 
-    ASSERT_EQ(report_metric_entries.size(), 1u);
+  ASSERT_EQ(report_metric_entries.size(), 1u);
 
-    EXPECT_EQ(ukm::GetSourceIdType(report_metric_entries[0].source_id),
-              ukm::SourceIdType::CDM_ID);
+  EXPECT_EQ(ukm::GetSourceIdType(report_metric_entries[0].source_id),
+            ukm::SourceIdType::CDM_ID);
 
-    // The ClearKey cdm does not report kCertificateSerialNumber or
-    // kDecoderBypassBlockCount, so the entries should not even be set in the
-    // ukm data.
-    EXPECT_THAT(
-        report_metric_entries[0].metrics,
-        UnorderedElementsAre(
-            Pair(Media_EME_CdmMetrics::kLicenseSdkVersionName, 12345),
-            Pair(Media_EME_CdmMetrics::kNumberOfOnMessageEventsName, 1),
-            Pair(Media_EME_CdmMetrics::kNumberOfUpdateCallsName, 1),
-            Pair(Media_EME_CdmMetrics::kDecoderCheck1SuccessCountName, 1),
-            Pair(Media_EME_CdmMetrics::kKeySystemDataTime1Name, 111),
-            Pair(Media_EME_CdmMetrics::kKeySystemDataTime2Name, 222),
-            Pair(Media_EME_CdmMetrics::kKeySystemDataTime3Name, 333),
-            Pair(Media_EME_CdmMetrics::kKeySystemDataBool1Name, 1)));
-  } else {
-    // Wait for a standard media metric to ensure the reporting pipeline has
-    // flushed.
-    ukm_recorder_->SetOnAddEntryCallback(Media_WebMediaPlayerState::kEntryName,
-                                         run_loop.QuitClosure());
-    RunSimpleEncryptedMediaTest("bear-320x240-av_enc-a.webm",
-                                media::kExternalClearKeyKeySystem, SrcType::SRC,
-                                PlayCount::ONCE);
-    browser()->tab_strip_model()->CloseWebContentsAt(
-        0, TabCloseTypes::CLOSE_USER_GESTURE);
-    run_loop.Run();
-
-    auto report_metric_entries =
-        ukm_recorder_->GetEntries(Media_EME_CdmMetrics::kEntryName, {});
-    EXPECT_EQ(report_metric_entries.size(), 0u);
-  }
+  // The ClearKey cdm does not report kCertificateSerialNumber or
+  // kDecoderBypassBlockCount, so the entries should not even be set in the
+  // ukm data.
+  EXPECT_THAT(report_metric_entries[0].metrics,
+              UnorderedElementsAre(
+                  Pair(Media_EME_CdmMetrics::kLicenseSdkVersionName, 12345),
+                  Pair(Media_EME_CdmMetrics::kNumberOfOnMessageEventsName, 1),
+                  Pair(Media_EME_CdmMetrics::kNumberOfUpdateCallsName, 1),
+                  Pair(Media_EME_CdmMetrics::kDecoderCheck1SuccessCountName, 1),
+                  Pair(Media_EME_CdmMetrics::kKeySystemDataTime1Name, 111),
+                  Pair(Media_EME_CdmMetrics::kKeySystemDataTime2Name, 222),
+                  Pair(Media_EME_CdmMetrics::kKeySystemDataTime3Name, 333),
+                  Pair(Media_EME_CdmMetrics::kKeySystemDataBool1Name, 1)));
 }
 
 IN_PROC_BROWSER_TEST_P(ECKEncryptedMediaTest, InitializeCDMFail) {
@@ -1172,7 +1153,7 @@ IN_PROC_BROWSER_TEST_P(ECKEncryptedMediaTest, MAYBE_MessageTypeTest) {
   // 'individualization-request'.
   EXPECT_EQ(3,
             content::EvalJs(
-                browser()->tab_strip_model()->GetActiveWebContents(),
+                browser()->GetTabStripModel()->GetActiveWebContents(),
                 "document.querySelector('video').receivedMessageTypes.size;"));
 }
 
@@ -1266,11 +1247,10 @@ IN_PROC_BROWSER_TEST_P(ECKEncryptedMediaTest, StorageIdTest) {
 }
 
 // TODO(crbug.com/40601162): Times out in debug builds.
-// TODO(crbug.com/40916095): Test flakiness.
 #if !defined(NDEBUG) || BUILDFLAG(IS_CHROMEOS)
-#define MAYBE_MultipleCdmTypes DISABLED_MultipeCdmTypes
+#define MAYBE_MultipleCdmTypes DISABLED_MultipleCdmTypes
 #else
-#define MAYBE_MultipleCdmTypes MultipeCdmTypes
+#define MAYBE_MultipleCdmTypes MultipleCdmTypes
 #endif
 IN_PROC_BROWSER_TEST_P(ECKEncryptedMediaTest, MAYBE_MultipleCdmTypes) {
   base::StringPairs empty_query_params;
@@ -1362,6 +1342,206 @@ class MediaFoundationEncryptedMediaTest : public EncryptedMediaTestBase {
                                 SrcType::MSE, PlayCount::ONCE);
   }
 
+  void TestMediaFoundationTrackSwitchPlayback(const std::string& video_file_0,
+                                              const gfx::Size& video_size_0,
+                                              const std::string& video_file_1,
+                                              const gfx::Size& video_size_1,
+                                              const std::string& audio_file) {
+    ASSERT_TRUE(IsPlayBackPossible(media::kMediaFoundationClearKeyKeySystem));
+
+    base::StringPairs query_params;
+    const auto video_format_0 = media::GetMimeTypeForFile(video_file_0);
+    const auto video_format_1 = media::GetMimeTypeForFile(video_file_1);
+    const auto audio_format = media::GetMimeTypeForFile(audio_file);
+    const auto media_type =
+        media::GetMimeTypeForFile(audio_file + ";" + video_file_0);
+    query_params.emplace_back("keySystem",
+                              media::kMediaFoundationClearKeyKeySystem);
+    query_params.emplace_back("runEncrypted", "1");
+    query_params.emplace_back("useMSE", "1");
+    query_params.emplace_back("playCount", "1");
+    query_params.emplace_back("videoFile", video_file_0);
+    query_params.emplace_back("videoFormat", video_format_0);
+    query_params.emplace_back("secondVideoFile", video_file_1);
+    query_params.emplace_back("secondVideoFormat", video_format_1);
+    query_params.emplace_back("audioFile", audio_file);
+    query_params.emplace_back("audioFormat", audio_format);
+    query_params.emplace_back("mediaType", media_type);
+
+    net::EmbeddedTestServer http_test_server;
+    http_test_server.ServeFilesFromSourceDirectory(media::GetTestDataPath());
+    ASSERT_TRUE(http_test_server.Start());
+
+    content::WebContents* web_contents =
+        browser()->GetTabStripModel()->GetActiveWebContents();
+    content::TitleWatcher title_watcher(web_contents,
+                                        base::ASCIIToUTF16(media::kEndedTitle));
+    AddWaitForTitles(&title_watcher);
+
+    GURL gurl =
+        http_test_server.GetURL("/" + std::string(kDefaultEmePlayer) + "?" +
+                                media::GetURLQueryString(query_params));
+    ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), gurl));
+
+    // In MediaFoundationRenderer:
+    // - WebMediaPlayerImpl::SelectedVideoTrackChanged does not update
+    //   video.videoWidth or video.videoHeight.
+    // - MediaFoundationH264VideoStream::AreFormatChangesEnabled() returns
+    //   false, so DemuxerStream::Status::kConfigChanged does not send a format
+    //   change event to IMFMediaEngine.
+    // Therefore, video.videoWidth and video.videoHeight only change when
+    // IMFMediaEngine's H.264 decoder actually decodes the newly selected video
+    // track's bitstream and fires MF_MEDIA_ENGINE_EVENT_FORMATCHANGE ->
+    // MediaFoundationRenderer::OnVideoNaturalSizeChange().
+    //
+    // This helper waits for:
+    // 1. video.videoWidth and video.videoHeight to match `expected_size`, and
+    // 2. video.webkitDecodedFrameCount to increase across two subsequent
+    //    pipeline statistics updates while at `expected_size`.
+    auto wait_for_track_decoding = [&](int baseline_frames,
+                                       const gfx::Size& expected_size) -> int {
+      static constexpr char kWaitForTrackDecodingScript[] = R"(
+        new Promise((resolve, reject) => {
+          const minBaseline = $1;
+          const expectedWidth = $2;
+          const expectedHeight = $3;
+          let sizeMatchedBaseline = null;
+          let firstIncreaseSeen = null;
+          const check = () => {
+            const video = document.querySelector('video');
+            if (!video) {
+              setTimeout(check, 50);
+              return;
+            }
+            video.loop = true;
+            if (video.error) {
+              reject('Video error: ' + video.error.message);
+              return;
+            }
+            if (Utils.titleChanged && document.title !== 'ENDED') {
+              reject('Test failed with title: ' + document.title);
+              return;
+            }
+            if (!video.videoTracks || video.videoTracks.length < 2) {
+              setTimeout(check, 50);
+              return;
+            }
+            if (video.videoWidth !== expectedWidth ||
+                video.videoHeight !== expectedHeight) {
+              sizeMatchedBaseline = null;
+              firstIncreaseSeen = null;
+              setTimeout(check, 50);
+              return;
+            }
+            const count = video.webkitDecodedFrameCount;
+            if (sizeMatchedBaseline === null) {
+              sizeMatchedBaseline = Math.max(minBaseline, count);
+            } else if (firstIncreaseSeen === null) {
+              if (count > sizeMatchedBaseline) {
+                firstIncreaseSeen = count;
+              }
+            } else if (count > firstIncreaseSeen) {
+              resolve(count);
+              return;
+            }
+            setTimeout(check, 50);
+          };
+          check();
+        });
+      )";
+      return content::EvalJs(web_contents,
+                             content::JsReplace(
+                                 kWaitForTrackDecodingScript, baseline_frames,
+                                 expected_size.width(), expected_size.height()))
+          .ExtractInt();
+    };
+
+    // 1. Wait for initial playback to decode frames on video track 0
+    // (640x360).
+    int frames_on_track_0 = wait_for_track_decoding(0, video_size_0);
+    ASSERT_GT(frames_on_track_0, 0);
+    EXPECT_EQ(2, content::EvalJs(
+                     web_contents,
+                     "document.querySelector('video').videoTracks.length;"));
+    EXPECT_EQ(true,
+              content::EvalJs(
+                  web_contents,
+                  "document.querySelector('video').videoTracks[0].selected;"));
+    EXPECT_EQ(video_size_0.width(),
+              content::EvalJs(web_contents,
+                              "document.querySelector('video').videoWidth;"));
+    EXPECT_EQ(video_size_0.height(),
+              content::EvalJs(web_contents,
+                              "document.querySelector('video').videoHeight;"));
+
+    // 2. Switch to video track 1 (1280x720) and verify that the decoded video
+    // resolution changes to 1280x720 and decoded frames keep increasing.
+    // Note: Because each video track is loaded in its own MSE SourceBuffer,
+    // SourceBuffer::InitializationSegmentReceived initially sets
+    // VideoTrack::selected to true on the first video track of each
+    // SourceBuffer before attaching it to HTMLMediaElement (while ChunkDemuxer
+    // only enables video track 0). Clear videoTracks[1].selected to false first
+    // so that setting it to true transitions its state and triggers
+    // HTMLMediaElement::SelectedVideoTrackChanged.
+    ASSERT_TRUE(content::ExecJs(web_contents,
+                                "const video = document.querySelector('video');"
+                                "video.videoTracks[1].selected = false;"
+                                "video.videoTracks[1].selected = true;"));
+    EXPECT_EQ(false,
+              content::EvalJs(
+                  web_contents,
+                  "document.querySelector('video').videoTracks[0].selected;"));
+    EXPECT_EQ(true,
+              content::EvalJs(
+                  web_contents,
+                  "document.querySelector('video').videoTracks[1].selected;"));
+
+    int frames_after_switch_to_track_1 =
+        wait_for_track_decoding(frames_on_track_0, video_size_1);
+    EXPECT_GT(frames_after_switch_to_track_1, frames_on_track_0);
+    EXPECT_EQ(video_size_1.width(),
+              content::EvalJs(web_contents,
+                              "document.querySelector('video').videoWidth;"));
+    EXPECT_EQ(video_size_1.height(),
+              content::EvalJs(web_contents,
+                              "document.querySelector('video').videoHeight;"));
+
+    // 3. Switch back to video track 0 (640x360) and verify that the decoded
+    // video resolution returns to 640x360 and decoded frames keep increasing.
+    ASSERT_TRUE(content::ExecJs(
+        web_contents,
+        "document.querySelector('video').videoTracks[0].selected = true;"));
+    EXPECT_EQ(true,
+              content::EvalJs(
+                  web_contents,
+                  "document.querySelector('video').videoTracks[0].selected;"));
+    EXPECT_EQ(false,
+              content::EvalJs(
+                  web_contents,
+                  "document.querySelector('video').videoTracks[1].selected;"));
+
+    int frames_after_switch_back_to_track_0 =
+        wait_for_track_decoding(frames_after_switch_to_track_1, video_size_0);
+    EXPECT_GT(frames_after_switch_back_to_track_0,
+              frames_after_switch_to_track_1);
+    EXPECT_EQ(video_size_0.width(),
+              content::EvalJs(web_contents,
+                              "document.querySelector('video').videoWidth;"));
+    EXPECT_EQ(video_size_0.height(),
+              content::EvalJs(web_contents,
+                              "document.querySelector('video').videoHeight;"));
+
+    // 4. Disable looping, wait for playback to finish cleanly, and verify EME
+    // key exchange occurred.
+    ASSERT_TRUE(content::ExecJs(
+        web_contents, "document.querySelector('video').loop = false;"));
+    EXPECT_EQ(base::ASCIIToUTF16(media::kEndedTitle),
+              title_watcher.WaitAndGetTitle());
+    EXPECT_EQ(true, content::EvalJs(
+                        web_contents,
+                        "document.querySelector('video').receivedKeyMessage;"));
+  }
+
   void TestMediaFoundationMultipleFilePlayback(const std::string& video_file,
                                                const std::string& audio_file) {
     std::string expected_title = media::kEndedTitle;
@@ -1390,7 +1570,7 @@ class MediaFoundationEncryptedMediaTest : public EncryptedMediaTestBase {
 
     // Check KeyMessage received for all key systems.
     EXPECT_EQ(true, content::EvalJs(
-                        browser()->tab_strip_model()->GetActiveWebContents(),
+                        browser()->GetTabStripModel()->GetActiveWebContents(),
                         "document.querySelector('video').receivedKeyMessage;"));
   }
 
@@ -1399,6 +1579,8 @@ class MediaFoundationEncryptedMediaTest : public EncryptedMediaTestBase {
     EncryptedMediaTestBase::SetUpCommandLine(command_line);
     SetUpCommandLineForKeySystem(media::kMediaFoundationClearKeyKeySystem,
                                  command_line);
+    command_line->AppendSwitchASCII(switches::kEnableBlinkFeatures,
+                                    "AudioVideoTracks");
   }
 
   bool IsMediaFoundationEncryptedPlaybackSupported() {
@@ -1582,6 +1764,18 @@ IN_PROC_BROWSER_TEST_F(MediaFoundationEncryptedMediaTest,
 }
 
 IN_PROC_BROWSER_TEST_F(MediaFoundationEncryptedMediaTest,
+                       Playback_EncryptedCencVideoAudio_TrackSwitch) {
+  if (!IsMediaFoundationEncryptedPlaybackSupported()) {
+    GTEST_SKIP() << "MediaFoundationEncryptedPlayback not supported on device.";
+  }
+
+  TestMediaFoundationTrackSwitchPlayback(
+      "bear-640x360-v_frag-cenc.mp4", gfx::Size(640, 360),    // H.264 640x360
+      "bear-1280x720-v_frag-cenc.mp4", gfx::Size(1280, 720),  // H.264 1280x720
+      "bear-640x360-a_frag-cenc.mp4");                        // MP4 AAC
+}
+
+IN_PROC_BROWSER_TEST_F(MediaFoundationEncryptedMediaTest,
                        Playback_EncryptedCencAudio_Success) {
   if (!IsMediaFoundationEncryptedPlaybackSupported()) {
     GTEST_SKIP() << "MediaFoundationEncryptedPlayback not supported on device.";
@@ -1630,9 +1824,8 @@ IN_PROC_BROWSER_TEST_F(MediaFoundationEncryptedMediaTest,
     GTEST_SKIP() << "MediaFoundationEncryptedPlayback not supported on device.";
   }
 
-  // MediaFoundationServiceMonitor gets lazily initialized in
-  // media_foundation_widevine_cdm_component_installer which is not call by the
-  // browser tests. Lazily initialize it here.
+  // MediaFoundationServiceMonitor gets lazily initialized which is not call by
+  // the browser tests. Lazily initialize it here.
   MediaFoundationServiceMonitor::GetInstance();
 
   const char* fallback_expected_title = media::kEndedTitle;
@@ -1648,7 +1841,7 @@ IN_PROC_BROWSER_TEST_F(MediaFoundationEncryptedMediaTest,
     GTEST_SKIP() << "MediaFoundationEncryptedPlayback not supported on device.";
   }
 
-  PrefService* prefs = browser()->profile()->GetPrefs();
+  PrefService* prefs = browser()->GetProfile()->GetPrefs();
   ASSERT_TRUE(prefs);
 
   prefs->SetInteger(kProtectedContentIdPrefPath, kAllowProtectedContentId);
@@ -1665,7 +1858,7 @@ IN_PROC_BROWSER_TEST_F(MediaFoundationEncryptedMediaTest,
     GTEST_SKIP() << "MediaFoundationEncryptedPlayback not supported on device.";
   }
 
-  PrefService* prefs = browser()->profile()->GetPrefs();
+  PrefService* prefs = browser()->GetProfile()->GetPrefs();
   ASSERT_TRUE(prefs);
 
 
@@ -1683,7 +1876,7 @@ IN_PROC_BROWSER_TEST_F(MediaFoundationEncryptedMediaTest,
     GTEST_SKIP() << "MediaFoundationEncryptedPlayback not supported on device.";
   }
 
-  PrefService* prefs = browser()->profile()->GetPrefs();
+  PrefService* prefs = browser()->GetProfile()->GetPrefs();
   ASSERT_TRUE(prefs);
 
   // Disable protected media identifier by default.
@@ -1708,7 +1901,7 @@ IN_PROC_BROWSER_TEST_F(MediaFoundationEncryptedMediaTest,
     GTEST_SKIP() << "MediaFoundationEncryptedPlayback not supported on device.";
   }
 
-  PrefService* prefs = browser()->profile()->GetPrefs();
+  PrefService* prefs = browser()->GetProfile()->GetPrefs();
   ASSERT_TRUE(prefs);
 
   // Enable protected media identifier by default.

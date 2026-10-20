@@ -120,7 +120,8 @@ std::string_view ContentClient::GetDataResource(
   return std::string_view();
 }
 
-base::RefCountedMemory* ContentClient::GetDataResourceBytes(int resource_id) {
+scoped_refptr<base::RefCountedMemory> ContentClient::GetDataResourceBytes(
+    int resource_id) {
   return nullptr;
 }
 
@@ -165,9 +166,17 @@ bool ContentClient::ShouldAllowDefaultSiteInstanceGroup() {
   return true;
 }
 
+base::TimeDelta ContentClient::GetIgnoreDuplicateNavsThreshold() const {
+  return features::kDuplicateNavThreshold.Get();
+}
+
 bool ContentClient::ShouldIgnoreDuplicateNavs(
     const GURL& url,
     bool is_renderer_initiated) const {
+  if (!base::FeatureList::IsEnabled(features::kIgnoreDuplicateNavs)) {
+    return false;
+  }
+
   const std::string& origins_list_str =
       features::kIgnoreDuplicateNavsOrigins.Get();
 

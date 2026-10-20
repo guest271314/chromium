@@ -24,7 +24,7 @@
 #include "third_party/blink/renderer/core/html/html_collection.h"
 
 #include "third_party/blink/renderer/core/dom/class_collection.h"
-#include "third_party/blink/renderer/core/dom/element_rare_data_vector.h"
+#include "third_party/blink/renderer/core/dom/document.h"
 #include "third_party/blink/renderer/core/dom/element_traversal.h"
 #include "third_party/blink/renderer/core/html/collection_type.h"
 #include "third_party/blink/renderer/core/html/document_all_name_collection.h"
@@ -207,12 +207,22 @@ void HTMLCollection::InvalidateCache(Document* old_document) const {
   InvalidateIdNameCacheMaps(old_document);
 }
 
-unsigned HTMLCollection::length() const {
-  return collection_items_cache_.NodeCount(*this);
+void HTMLCollection::SetNamedItemCache(NamedItemCache* cache) const {
+  DCHECK(!named_item_cache_);
+  // Do not repeat registration for the same invalidation type.
+  if (InvalidationType() != kInvalidateOnIdNameAttrChange) {
+    GetDocument().RegisterNodeListWithIdNameCache(this);
+  }
+  named_item_cache_ = cache;
 }
 
-Element* HTMLCollection::item(unsigned offset) const {
-  return collection_items_cache_.NodeAt(*this, offset);
+void HTMLCollection::UnregisterIdNameCacheFromDocument(
+    Document& document) const {
+  DCHECK(HasValidIdNameCache());
+  // Do not repeat unregistration for the same invalidation type.
+  if (InvalidationType() != kInvalidateOnIdNameAttrChange) {
+    document.UnregisterNodeListWithIdNameCache(this);
+  }
 }
 
 static inline bool IsMatchingHTMLElement(const HTMLCollection& html_collection,

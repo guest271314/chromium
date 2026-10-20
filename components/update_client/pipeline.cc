@@ -4,15 +4,16 @@
 
 #include "components/update_client/pipeline.h"
 
-#include <cstdint>
+#include <stdint.h>
+
 #include <optional>
 #include <queue>
+#include <ranges>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include "base/check.h"
-#include "base/containers/adapters.h"
 #include "base/files/file_path.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
@@ -30,6 +31,7 @@
 #include "components/update_client/op_download.h"
 #include "components/update_client/op_install.h"
 #include "components/update_client/op_puffin.h"
+#include "components/update_client/op_space_check.h"
 #include "components/update_client/op_xz.h"
 #include "components/update_client/op_zucchini.h"
 #include "components/update_client/pipeline_util.h"
@@ -61,11 +63,11 @@ using Operation = base::OnceCallback<base::OnceClosure(
 
 constexpr CategorizedError kUnsupportedOperationError = CategorizedError(
     {.category = ErrorCategory::kUpdateCheck,
-     .code = static_cast<int>(ProtocolError::UNSUPPORTED_OPERATION)});
+     .code = std::to_underlying(ProtocolError::UNSUPPORTED_OPERATION)});
 
 constexpr CategorizedError kInvalidOperationAttributesError = CategorizedError(
     {.category = ErrorCategory::kUpdateCheck,
-     .code = static_cast<int>(ProtocolError::INVALID_OPERATION_ATTRIBUTES)});
+     .code = std::to_underlying(ProtocolError::INVALID_OPERATION_ATTRIBUTES)});
 
 // `Pipeline` manages the flow of operations, passing the output path of
 // each operation to the next one, short-circuiting on errors.
@@ -78,9 +80,7 @@ constexpr CategorizedError kInvalidOperationAttributesError = CategorizedError(
 // completion callback will keep it alive).
 class Pipeline : public base::RefCountedThreadSafe<Pipeline> {
  public:
-  Pipeline(
-      std::queue<Operation> operations,
-      scoped_refptr<Pipeline> fallback);
+  Pipeline(std::queue<Operation> operations, scoped_refptr<Pipeline> fallback);
   Pipeline(const Pipeline&) = delete;
   Pipeline& operator=(const Pipeline&) = delete;
 
@@ -143,7 +143,7 @@ void Pipeline::OpComplete(
     // Pipeline still running, but cancelled.
     std::move(callback_).Run(
         {.category = ErrorCategory::kService,
-         .code = static_cast<int>(ServiceError::CANCELLED)});
+         .code = std::to_underlying(ServiceError::CANCELLED)});
     return;
   }
   // Pipeline still running: start next operation.
@@ -261,6 +261,9 @@ std::queue<Operation> MakeOperations(
              void(base::expected<base::FilePath, UnpackerError>)>)> cache_check,
     const std::string& install_data) {
   std::queue<Operation> ops;
+  ops.push(SkipIfCached(cache_check,
+                        base::BindOnce(&SpaceCheckOperation, pipeline,
+                                       get_available_space, event_adder)));
   for (const ProtocolParser::Operation& operation : pipeline.operations) {
     if (operation.type == "download") {
       // expects: `urls` (list of url objects), `size`, and `out` (hash object)
@@ -272,9 +275,9 @@ std::queue<Operation> MakeOperations(
       }
       ops.push(SkipIfCached(
           cache_check,
-          base::BindOnce(&DownloadOperation, config, id, get_available_space,
-                         is_foreground, operation.urls, operation.size,
-                         operation.sha256_out, event_adder, state_tracker,
+          base::BindOnce(&DownloadOperation, config, id, is_foreground,
+                         operation.urls, operation.size, operation.sha256_out,
+                         event_adder, state_tracker,
                          download_progress_callback)));
     } else if (operation.type == "puff") {
       // expects: `previous` (hash object) and `out` (hash object)
@@ -406,7 +409,7 @@ void MakePipeline(
   // Assemble the pipelines from last to first.
   scoped_refptr<Pipeline> fallback = nullptr;
   for (const ProtocolParser::Pipeline& pipeline :
-       base::Reversed(result.pipelines)) {
+       std::views::reverse(result.pipelines)) {
     // First, scan the operations to find any to-be-installed CRX so that
     // downloads can be skipped if it is already in cache.
     auto cache_check = base::BindRepeating(

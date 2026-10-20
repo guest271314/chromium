@@ -35,6 +35,12 @@ class COMPONENT_EXPORT(WEBNN_SERVICE) PlatformFunctions {
   const OrtModelEditorApi* ort_model_editor_api() const {
     return ort_model_editor_api_.get();
   }
+  const OrtCompileApi* ort_compile_api() const {
+    return ort_compile_api_.get();
+  }
+  const OrtInteropApi* ort_interop_api() const {
+    return ort_interop_api_.get();
+  }
 
   static base::FilePath InitializePackageDependency(
       base::wcstring_view package_family_name,
@@ -43,12 +49,9 @@ class COMPONENT_EXPORT(WEBNN_SERVICE) PlatformFunctions {
  private:
   PlatformFunctions(base::ScopedNativeLibrary ort_library,
                     const OrtApi* ort_api,
-                    const OrtModelEditorApi* ort_model_editor_api);
-
-  // Tries to load onnxruntime.dll from the path specified by the
-  // `kWebNNOrtLibraryPathForTesting` command-line switch. Returns false if
-  // the switch is not set or the library cannot be loaded.
-  static bool InitializeFromCommandLine();
+                    const OrtModelEditorApi* ort_model_editor_api,
+                    const OrtCompileApi* ort_compile_api,
+                    const OrtInteropApi* ort_interop_api);
 
   // Tries to load onnxruntime.dll from the WinML package. Returns false if
   // the Windows version is too old or the WinML package cannot be loaded.
@@ -63,6 +66,8 @@ class COMPONENT_EXPORT(WEBNN_SERVICE) PlatformFunctions {
   base::ScopedNativeLibrary ort_library_;
   raw_ptr<const OrtApi> ort_api_ = nullptr;
   raw_ptr<const OrtModelEditorApi> ort_model_editor_api_ = nullptr;
+  raw_ptr<const OrtCompileApi> ort_compile_api_ = nullptr;
+  raw_ptr<const OrtInteropApi> ort_interop_api_ = nullptr;
 };
 
 }  // namespace webnn::ort

@@ -6,20 +6,20 @@
 
 #include "base/memory/raw_ptr.h"
 #include "base/metrics/histogram_functions.h"
-#include "base/numerics/safe_conversions.h"
 #include "base/task/sequenced_task_runner.h"
+#include "chrome/browser/enterprise/data_protection/data_protection_features.h"
 #include "chrome/browser/media/webrtc/desktop_media_list_layout_config.h"
-#include "chrome/browser/ui/color/chrome_color_id.h"
-#include "chrome/browser/ui/views/desktop_capture/desktop_media_picker_views.h"
 #include "chrome/grit/generated_resources.h"
-#include "content/public/browser/browser_task_traits.h"
+#include "components/enterprise/buildflags/buildflags.h"
+#include "components/strings/grit/components_strings.h"
+#include "components/vector_icons/vector_icons.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_widget_host_view.h"
 #include "content/public/browser/web_contents.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
-#include "ui/color/color_provider.h"
+#include "ui/base/ui_base_features.h"
 #include "ui/gfx/favicon_size.h"
 #include "ui/gfx/geometry/rounded_corners_f.h"
 #include "ui/views/accessibility/view_accessibility.h"
@@ -30,7 +30,6 @@
 #include "ui/views/controls/table/table_view_observer.h"
 #include "ui/views/layout/box_layout.h"
 #include "ui/views/layout/fill_layout.h"
-#include "ui/views/layout/layout_provider.h"
 #include "ui/views/view.h"
 
 using content::BrowserThread;
@@ -67,16 +66,20 @@ class TabListModel : public ui::TableModel,
                      public DesktopMediaListController::SourceListListener {
  public:
   explicit TabListModel(
-      DesktopMediaListController* controller,
+      base::WeakPtr<DesktopMediaListController> controller,
       base::RepeatingCallback<void(size_t)> preview_updated_callback);
 
   TabListModel(const TabListModel&) = delete;
   TabListModel operator=(const TabListModel&) = delete;
 
   // ui::TableModel:
-  size_t RowCount() override;
-  std::u16string GetText(size_t row, int column) override;
-  ui::ImageModel GetIcon(size_t row) override;
+  size_t RowCount() const override;
+  std::u16string GetText(size_t row, int column) const override;
+  ui::ImageModel GetIcon(size_t row) const override;
+  std::u16string GetTooltip(size_t row) const override;
+  std::u16string GetAXNameForRow(
+      size_t row,
+      const std::vector<int>& visible_column_ids) const override;
   void SetObserver(ui::TableModelObserver* observer) override;
 
   // DesktopMediaListController::SourceListListener:
@@ -89,32 +92,81 @@ class TabListModel : public ui::TableModel,
   void OnDelegatedSourceListSelection() override;
 
  private:
-  raw_ptr<DesktopMediaListController, DanglingUntriaged> controller_;
+  base::WeakPtr<DesktopMediaListController> controller_;
   raw_ptr<ui::TableModelObserver> observer_ = nullptr;
   base::RepeatingCallback<void(size_t)> preview_updated_callback_;
 };
 
 TabListModel::TabListModel(
-    DesktopMediaListController* controller,
+    base::WeakPtr<DesktopMediaListController> controller,
     base::RepeatingCallback<void(size_t)> preview_updated_callback)
     : controller_(controller),
       preview_updated_callback_(preview_updated_callback) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
 }
 
-size_t TabListModel::RowCount() {
+size_t TabListModel::RowCount() const {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
-  return controller_->GetSourceCount();
+  return controller_ ? controller_->GetSourceCount() : 0;
 }
 
-std::u16string TabListModel::GetText(size_t row, int column) {
+std::u16string TabListModel::GetText(size_t row, int column) const {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
-  return controller_->GetSource(row).name;
+  return controller_ ? controller_->GetSource(row).name : std::u16string();
 }
 
-ui::ImageModel TabListModel::GetIcon(size_t row) {
+ui::ImageModel TabListModel::GetIcon(size_t row) const {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  if (!controller_) {
+    return ui::ImageModel();
+  }
+#if BUILDFLAG(ENTERPRISE_SCREENSHOT_PROTECTION)
+  if (base::FeatureList::IsEnabled(
+          enterprise_data_protection::kEnableTabSharingProtection) &&
+      controller_->GetSource(row).is_sharing_blocked) {
+    return ui::ImageModel::FromVectorIcon(
+        features::IsRoundedIconsEnabled() ? vector_icons::kDomainIcon
+                                          : vector_icons::kBusinessOldIcon,
+        ui::kColorIcon, ui::TableModel::kIconSize);
+  }
+#endif
   return ui::ImageModel::FromImageSkia(controller_->GetSource(row).thumbnail);
+}
+
+std::u16string TabListModel::GetTooltip(size_t row) const {
+  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+#if BUILDFLAG(ENTERPRISE_SCREENSHOT_PROTECTION)
+  if (controller_ &&
+      base::FeatureList::IsEnabled(
+          enterprise_data_protection::kEnableTabSharingProtection)) {
+    const DesktopMediaList::Source& source = controller_->GetSource(row);
+    if (source.is_sharing_blocked) {
+      return l10n_util::GetStringUTF16(
+          IDS_POLICY_DLP_SCREEN_SHARE_BLOCKED_TITLE);
+    }
+  }
+#endif
+  return std::u16string();
+}
+
+std::u16string TabListModel::GetAXNameForRow(
+    size_t row,
+    const std::vector<int>& visible_column_ids) const {
+  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  std::u16string ax_name =
+      ui::TableModel::GetAXNameForRow(row, visible_column_ids);
+#if BUILDFLAG(ENTERPRISE_SCREENSHOT_PROTECTION)
+  if (controller_ &&
+      base::FeatureList::IsEnabled(
+          enterprise_data_protection::kEnableTabSharingProtection)) {
+    const DesktopMediaList::Source& source = controller_->GetSource(row);
+    if (source.is_sharing_blocked) {
+      ax_name += u", " + l10n_util::GetStringUTF16(
+                             IDS_POLICY_DLP_SCREEN_SHARE_BLOCKED_TITLE);
+    }
+  }
+#endif
+  return ax_name;
 }
 
 void TabListModel::SetObserver(ui::TableModelObserver* observer) {
@@ -148,6 +200,7 @@ void TabListModel::OnSourceNameChanged(size_t index) {
 void TabListModel::OnSourceThumbnailChanged(size_t index) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
   observer_->OnItemsChanged(index, 1);
+  preview_updated_callback_.Run(index);
 }
 
 void TabListModel::OnSourcePreviewChanged(size_t index) {
@@ -164,7 +217,7 @@ void TabListModel::OnDelegatedSourceListSelection() {
 // listing tabs and the DesktopMediaTabList.
 class TabListViewObserver : public views::TableViewObserver {
  public:
-  TabListViewObserver(DesktopMediaListController* controller,
+  TabListViewObserver(base::WeakPtr<DesktopMediaListController> controller,
                       base::RepeatingClosure selection_changed_callback);
 
   TabListViewObserver(const TabListViewObserver&) = delete;
@@ -174,12 +227,12 @@ class TabListViewObserver : public views::TableViewObserver {
   void OnKeyDown(ui::KeyboardCode virtual_keycode) override;
 
  private:
-  const raw_ptr<DesktopMediaListController, DanglingUntriaged> controller_;
+  base::WeakPtr<DesktopMediaListController> controller_;
   base::RepeatingClosure selection_changed_callback_;
 };
 
 TabListViewObserver::TabListViewObserver(
-    DesktopMediaListController* controller,
+    base::WeakPtr<DesktopMediaListController> controller,
     base::RepeatingClosure selection_changed_callback)
     : controller_(controller),
       selection_changed_callback_(std::move(selection_changed_callback)) {
@@ -188,13 +241,15 @@ TabListViewObserver::TabListViewObserver(
 
 void TabListViewObserver::OnSelectionChanged() {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
-  controller_->OnSourceSelectionChanged();
+  if (controller_) {
+    controller_->OnSourceSelectionChanged();
+  }
   selection_changed_callback_.Run();
 }
 
 void TabListViewObserver::OnKeyDown(ui::KeyboardCode virtual_keycode) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
-  if (virtual_keycode == ui::VKEY_RETURN) {
+  if (virtual_keycode == ui::VKEY_RETURN && controller_) {
     controller_->AcceptSource();
   }
 }
@@ -214,7 +269,7 @@ std::unique_ptr<views::ScrollView> CreateScrollViewWithTable(
 
 DesktopMediaTabList::DesktopMediaTabList(DesktopMediaListController* controller,
                                          const std::u16string& accessible_name)
-    : controller_(controller) {
+    : controller_(controller ? controller->GetWeakPtr() : nullptr) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
   // The thumbnail size isn't allowed to be smaller than gfx::kFaviconSize by
   // the underlying media list. TableView requires that the icon size be exactly
@@ -223,8 +278,10 @@ DesktopMediaTabList::DesktopMediaTabList(DesktopMediaListController* controller,
   // list.
   DCHECK_GE(ui::TableModel::kIconSize, gfx::kFaviconSize);
 
-  controller_->SetThumbnailSize(
-      gfx::Size(ui::TableModel::kIconSize, ui::TableModel::kIconSize));
+  if (controller_) {
+    controller_->SetThumbnailSize(
+        gfx::Size(ui::TableModel::kIconSize, ui::TableModel::kIconSize));
+  }
 
   SetLayoutManager(std::make_unique<views::FillLayout>());
 
@@ -349,6 +406,9 @@ void DesktopMediaTabList::OnThemeChanged() {
 
 std::optional<content::DesktopMediaID> DesktopMediaTabList::GetSelection() {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  if (!controller_) {
+    return std::nullopt;
+  }
   std::optional<size_t> row = table_->GetFirstSelectedRow();
   if (!row.has_value()) {
     return std::nullopt;
@@ -373,8 +433,22 @@ void DesktopMediaTabList::ClearPreview() {
   preview_label_->SetText(u"");
   preview_->SetImage(ui::ImageModel());
   preview_->SetVisible(false);
+  empty_preview_label_->SetText(
+      l10n_util::GetStringUTF16(IDS_DESKTOP_MEDIA_PICKER_EMPTY_PREVIEW));
   empty_preview_label_->SetVisible(true);
 }
+
+#if BUILDFLAG(ENTERPRISE_SCREENSHOT_PROTECTION)
+void DesktopMediaTabList::ShowBlockedPreview(
+    const DesktopMediaList::Source& source) {
+  preview_->SetImage(ui::ImageModel());
+  preview_->SetVisible(false);
+  empty_preview_label_->SetText(
+      l10n_util::GetStringUTF16(IDS_DESKTOP_MEDIA_PICKER_BLOCKED_PREVIEW));
+  empty_preview_label_->SetVisible(true);
+  preview_label_->SetText(source.name.substr(0, kMaxPreviewTitleLength));
+}
+#endif
 
 void DesktopMediaTabList::OnSelectionChanged() {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
@@ -382,16 +456,17 @@ void DesktopMediaTabList::OnSelectionChanged() {
   std::optional<size_t> row = table_->GetFirstSelectedRow();
   if (!row.has_value()) {
     ClearPreview();
-    controller_->SetPreviewedSource(std::nullopt);
+    if (controller_) {
+      controller_->SetPreviewedSource(std::nullopt);
+    }
+    return;
+  }
+  if (!controller_) {
     return;
   }
   const DesktopMediaList::Source& source = controller_->GetSource(row.value());
 
   RecordSourceDiscardedStatus(source);
-
-  const std::u16string truncated_title =
-      source.name.substr(0, kMaxPreviewTitleLength);
-  preview_label_->SetText(truncated_title);
 
   // Trigger a preview update to either show a previous snapshot for this source
   // if we have one, or clear it if we don't.
@@ -399,9 +474,6 @@ void DesktopMediaTabList::OnSelectionChanged() {
 
   // Update the source for which previews are generated.
   controller_->SetPreviewedSource(source.id);
-
-  preview_->SetVisible(true);
-  empty_preview_label_->SetVisible(false);
 }
 
 void DesktopMediaTabList::ClearPreviewImageIfUnchanged(
@@ -417,11 +489,25 @@ void DesktopMediaTabList::ClearPreviewImageIfUnchanged(
 
 void DesktopMediaTabList::OnPreviewUpdated(size_t index) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
-  if (index != table_->GetFirstSelectedRow()) {
+  if (index != table_->GetFirstSelectedRow() || !controller_) {
     return;
   }
 
   const DesktopMediaList::Source& source = controller_->GetSource(index);
+#if BUILDFLAG(ENTERPRISE_SCREENSHOT_PROTECTION)
+  if (base::FeatureList::IsEnabled(
+          enterprise_data_protection::kEnableTabSharingProtection) &&
+      source.is_sharing_blocked) {
+    ShowBlockedPreview(source);
+    return;
+  }
+#endif
+
+  empty_preview_label_->SetText(
+      l10n_util::GetStringUTF16(IDS_DESKTOP_MEDIA_PICKER_EMPTY_PREVIEW));
+  preview_->SetVisible(true);
+  empty_preview_label_->SetVisible(false);
+
   if (!source.preview.isNull()) {
     preview_->SetImage(ui::ImageModel::FromImageSkia(source.preview));
     ++preview_set_count_;

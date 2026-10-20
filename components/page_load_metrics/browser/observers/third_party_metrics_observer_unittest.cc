@@ -4,7 +4,7 @@
 
 #include "components/page_load_metrics/browser/observers/third_party_metrics_observer.h"
 
-#include "base/byte_count.h"
+#include "base/byte_size.h"
 #include "base/memory/ptr_util.h"
 #include "components/page_load_metrics/browser/observers/page_load_metrics_observer_content_test_harness.h"
 #include "components/page_load_metrics/browser/page_load_tracker.h"
@@ -326,6 +326,37 @@ TEST_P(ThirdPartyMetricsObserverTest,
   tester()->histogram_tester().ExpectUniqueSample(kReadCookieHistogram, 2, 1);
 }
 
+// Accesses from several non-root URLs of one registrable domain must be
+// counted as a single third party, whichever URL is seen first.
+TEST_P(ThirdPartyMetricsObserverTest,
+       CookiesReadFromNonRootUrls_OneRecordedPerThirdParty) {
+  NavigateAndCommit(GURL("https://top.com"));
+
+  tester()->SimulateCookieAccess({content::CookieAccessDetails::Type::kRead,
+                                  GURL("https://a.com/foo?q=1"),
+                                  GURL("https://top.com"),
+                                  {net::CookieWithAccessResult()},
+                                  false /* blocked_by_policy */});
+  tester()->SimulateCookieAccess({content::CookieAccessDetails::Type::kRead,
+                                  GURL("https://a.com/bar"),
+                                  GURL("https://top.com"),
+                                  {net::CookieWithAccessResult()},
+                                  false /* blocked_by_policy */});
+  tester()->SimulateCookieAccess({content::CookieAccessDetails::Type::kChange,
+                                  GURL("https://sub.a.com/baz"),
+                                  GURL("https://top.com"),
+                                  {net::CookieWithAccessResult()},
+                                  false /* blocked_by_policy */});
+  tester()->SimulateCookieAccess({content::CookieAccessDetails::Type::kRead,
+                                  GURL("https://b.com/qux"),
+                                  GURL("https://top.com"),
+                                  {net::CookieWithAccessResult()},
+                                  false /* blocked_by_policy */});
+  tester()->NavigateToUntrackedUrl();
+
+  tester()->histogram_tester().ExpectUniqueSample(kReadCookieHistogram, 2, 1);
+}
+
 TEST_P(ThirdPartyMetricsObserverTest, OneCookieChanged_OneRecorded) {
   NavigateAndCommit(GURL("https://top.com"));
 
@@ -383,7 +414,7 @@ TEST_P(ThirdPartyMetricsObserverTest,
       {url::SchemeHostPort(GURL("https://bar.test")), net::IPEndPoint(),
        frame_tree_node_id, /*was_cached=*/false,
        /*raw_body_bytes=*/base::KiB(20),
-       /*original_network_content_length=*/base::ByteCount(0),
+       /*original_network_content_length=*/base::ByteSize(0),
        network::mojom::RequestDestination::kFont, 0,
        /*load_timing_info=*/nullptr},
       content::GlobalRequestID());
@@ -423,7 +454,7 @@ TEST_P(ThirdPartyMetricsObserverTest,
       {url::SchemeHostPort(GURL("http://b.foo.test")), net::IPEndPoint(),
        frame_tree_node_id, /*was_cached=*/false,
        /*raw_body_bytes=*/base::KiB(20),
-       /*original_network_content_length=*/base::ByteCount(0),
+       /*original_network_content_length=*/base::ByteSize(0),
        network::mojom::RequestDestination::kFont, 0,
        /*load_timing_info=*/nullptr},
       content::GlobalRequestID());
@@ -458,7 +489,7 @@ TEST_P(ThirdPartyMetricsObserverTest,
       {url::SchemeHostPort(GURL("https://bar.test")), net::IPEndPoint(),
        frame_tree_node_id, /*was_cached=*/false,
        /*raw_body_bytes=*/base::KiB(20),
-       /*original_network_content_length=*/base::ByteCount(0),
+       /*original_network_content_length=*/base::ByteSize(0),
        network::mojom::RequestDestination::kFont, 0,
        /*load_timing_info=*/nullptr},
       content::GlobalRequestID());

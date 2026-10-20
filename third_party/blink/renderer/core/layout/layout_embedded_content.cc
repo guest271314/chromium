@@ -55,14 +55,12 @@ LayoutEmbeddedContent::LayoutEmbeddedContent(HTMLFrameOwnerElement* element)
   SetInline(false);
 }
 
-void LayoutEmbeddedContent::WillBeDestroyed() {
+void LayoutEmbeddedContent::WillBeDestroyed(const ComputedStyle* style) {
   NOT_DESTROYED();
   if (auto* frame_owner = GetFrameOwnerElement())
     frame_owner->SetEmbeddedContentView(nullptr);
 
-  LayoutReplaced::WillBeDestroyed();
-
-  ClearNode();
+  LayoutReplaced::WillBeDestroyed(style);
 }
 
 FrameView* LayoutEmbeddedContent::ChildFrameView() const {
@@ -97,10 +95,6 @@ EmbeddedContentView* LayoutEmbeddedContent::GetEmbeddedContentView() const {
 const std::optional<PhysicalSize> LayoutEmbeddedContent::FrozenFrameSize()
     const {
   NOT_DESTROYED();
-  // The `<fencedframe>` element can freeze the child frame size when navigated.
-  if (const auto* fenced_frame = DynamicTo<HTMLFencedFrameElement>(GetNode()))
-    return fenced_frame->FrozenFrameSize();
-
   return std::nullopt;
 }
 
@@ -113,7 +107,7 @@ AffineTransform LayoutEmbeddedContent::EmbeddedContentTransform() const {
   NOT_DESTROYED();
   auto frozen_size = FrozenFrameSize();
   if (!frozen_size || frozen_size->IsEmpty()) {
-    const PhysicalOffset content_box_offset = PhysicalContentBoxOffset();
+    const PhysicalOffset content_box_offset = PhysicalContentBoxRect().offset;
     return AffineTransform().Translate(content_box_offset.left,
                                        content_box_offset.top);
   }
@@ -143,6 +137,12 @@ gfx::PointF LayoutEmbeddedContent::EmbeddedContentFromBorderBox(
     const gfx::PointF& point) const {
   NOT_DESTROYED();
   return EmbeddedContentTransform().Inverse().MapPoint(point);
+}
+
+gfx::Rect LayoutEmbeddedContent::EmbeddedContentFromBorderBox(
+    const gfx::Rect& rect) const {
+  NOT_DESTROYED();
+  return EmbeddedContentTransform().Inverse().MapRect(rect);
 }
 
 PhysicalOffset LayoutEmbeddedContent::BorderBoxFromEmbeddedContent(
@@ -256,9 +256,23 @@ bool LayoutEmbeddedContent::NodeAtPoint(
 
     if (VisibleToHitTestRequest(result.GetHitTestRequest()) &&
         child_layout_view) {
-      const PhysicalOffset content_offset = PhysicalContentBoxOffset();
-      HitTestLocation new_hit_test_location(
-          hit_test_location, -accumulated_offset - content_offset);
+      PhysicalOffset offset = accumulated_offset + ReplacedContentRect().offset;
+      if (RuntimeEnabledFeatures::UsePaintGeometryForIntersectionEnabled() &&
+          result.GetHitTestRequest().IsHitTestVisualOverflow()) {
+        // To hit test where we paint, adjust the offset by the paint offset
+        // subpixels to be consistent with PrePaint and Paint when we round
+        // paint offset when crossing frame boundaries.
+        PhysicalOffset frame_paint_offset =
+            FirstFragment().PaintOffset() + ReplacedContentRect().offset;
+        // LINT.IfChange(FramePixelSnapping)
+        PhysicalOffset subpixel_adjustment =
+            frame_paint_offset -
+            PhysicalOffset(ToRoundedPoint(frame_paint_offset));
+        // LINT.ThenChange(../paint/pre_paint_tree_walk.cc:FramePixelSnapping)
+        offset -= subpixel_adjustment;
+      }
+
+      HitTestLocation new_hit_test_location(hit_test_location, -offset);
       HitTestRequest new_hit_test_request(
           result.GetHitTestRequest().GetType() |
               HitTestRequest::kChildFrameHitTest,
@@ -309,10 +323,11 @@ bool LayoutEmbeddedContent::NodeAtPoint(
 void LayoutEmbeddedContent::StyleDidChange(
     StyleDifference diff,
     const ComputedStyle* old_style,
+    const ComputedStyle& new_style,
     const StyleChangeContext& style_change_context) {
   NOT_DESTROYED();
-  LayoutReplaced::StyleDidChange(diff, old_style, style_change_context);
-  const ComputedStyle& new_style = StyleRef();
+  LayoutReplaced::StyleDidChange(diff, old_style, new_style,
+                                 style_change_context);
 
   if (Frame* frame = GetFrameOwnerElement()->ContentFrame())
     frame->UpdateInertIfPossible();
@@ -401,20 +416,16 @@ PhysicalRect LayoutEmbeddedContent::ReplacedContentRectFrom(
 
 void LayoutEmbeddedContent::UpdateOnEmbeddedContentViewChange() {
   NOT_DESTROYED();
-  if (!Style())
-    return;
 
   if (EmbeddedContentView* embedded_content_view = GetEmbeddedContentView()) {
     if (!NeedsLayout()) {
       UpdateGeometry(*embedded_content_view);
     }
-    if (Style()) {
-      PropagateZoomFactor(StyleRef().EffectiveZoom());
-      if (StyleRef().Visibility() != EVisibility::kVisible) {
-        embedded_content_view->Hide();
-      } else {
-        embedded_content_view->Show();
-      }
+    PropagateZoomFactor(Style().EffectiveZoom());
+    if (Style().Visibility() != EVisibility::kVisible) {
+      embedded_content_view->Hide();
+    } else {
+      embedded_content_view->Show();
     }
   }
 
@@ -430,6 +441,13 @@ void LayoutEmbeddedContent::UpdateOnEmbeddedContentViewChange() {
 void LayoutEmbeddedContent::UpdateGeometry(
     EmbeddedContentView& embedded_content_view) {
   NOT_DESTROYED();
+  if (RuntimeEnabledFeatures::AvoidEmbeddedContentViewLocationEnabled()) {
+    embedded_content_view.SetNeedsFrameRectPropagation();
+    embedded_content_view.SetFrameRect(
+        gfx::Rect(ToCeiledSize(ReplacedContentRect().size)));
+    return;
+  }
+
   // TODO(wangxianzhu): We reset subpixel accumulation at some boundaries, so
   // the following code is incorrect when some ancestors are such boundaries.
   // What about multicol? Need a LayoutBox function to query sub-pixel
@@ -438,7 +456,7 @@ void LayoutEmbeddedContent::UpdateGeometry(
   TransformState transform_state(TransformState::kApplyTransformDirection,
                                  gfx::PointF(),
                                  gfx::QuadF(gfx::RectF(replaced_rect)));
-  MapLocalToAncestor(nullptr, transform_state, 0);
+  MapLocalToAncestor(nullptr, transform_state, {});
   transform_state.Flatten();
   PhysicalOffset absolute_location =
       PhysicalOffset::FromPointFRound(transform_state.LastPlanarPoint());
@@ -472,7 +490,8 @@ void LayoutEmbeddedContent::UpdateGeometry(
     // which is a float-type but frame_rect in a content view is an gfx::Rect.
     // We may want to reevaluate the use of pixel snapping that since scroll
     // offsets/layout can be fractional.
-    frame_rect.Offset(layout_view->PixelSnappedScrolledContentOffset());
+    frame_rect.Offset(
+        layout_view->GetScrollableArea()->PixelSnappedScrollOffset());
   }
 
   embedded_content_view.SetFrameRect(frame_rect);
@@ -493,7 +512,7 @@ void LayoutEmbeddedContent::CountSvgFilterPaint() const {
   // content is rare enough that we do not expect this to be a problem.
   const LayoutObject* target = this;
   while (target) {
-    if (target->StyleRef().HasReferenceFilter()) {
+    if (target->Style().HasReferenceFilter()) {
       UseCounter::Count(GetDocument(),
                         GetEmbeddedContentView()->SvgFilterPaintedCounter());
       return;

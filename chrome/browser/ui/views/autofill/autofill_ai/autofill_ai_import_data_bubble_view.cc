@@ -8,42 +8,30 @@
 #include <string>
 #include <string_view>
 
-#include "base/strings/strcat.h"
-#include "base/strings/string_util.h"
-#include "base/strings/utf_string_conversions.h"
+#include "base/feature_list.h"
 #include "chrome/browser/ui/autofill/autofill_ai/autofill_ai_import_data_controller.h"
 #include "chrome/browser/ui/autofill/autofill_ai/entity_attribute_update_details.h"
-#include "chrome/browser/ui/views/accessibility/theme_tracking_non_accessible_image_view.h"
 #include "chrome/browser/ui/views/autofill/autofill_ai/autofill_ai_bubble_utils.h"
+#include "chrome/browser/ui/views/autofill/autofill_bubble_utils.h"
 #include "chrome/browser/ui/views/autofill/payments/dialog_view_ids.h"
 #include "chrome/browser/ui/views/chrome_layout_provider.h"
-#include "chrome/grit/theme_resources.h"
 #include "components/autofill/core/browser/data_model/autofill_ai/entity_instance.h"
+#include "components/autofill/core/browser/integrators/autofill_ai/metrics/autofill_ai_metrics.h"
 #include "components/autofill/core/common/autofill_features.h"
-#include "components/optimization_guide/proto/features/common_quality_data.pb.h"
 #include "components/strings/grit/components_strings.h"
 #include "ui/accessibility/ax_enums.mojom-shared.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
-#include "ui/base/models/image_model_utils.h"
 #include "ui/base/resource/resource_bundle.h"
-#include "ui/base/ui_base_types.h"
 #include "ui/color/color_id.h"
-#include "ui/gfx/font.h"
-#include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/range/range.h"
-#include "ui/gfx/text_elider.h"
 #include "ui/views/accessibility/view_accessibility.h"
-#include "ui/views/controls/button/button_controller.h"
-#include "ui/views/controls/button/image_button.h"
-#include "ui/views/controls/button/image_button_factory.h"
 #include "ui/views/controls/image_view.h"
 #include "ui/views/controls/label.h"
 #include "ui/views/controls/styled_label.h"
 #include "ui/views/controls/throbber.h"
 #include "ui/views/layout/box_layout.h"
 #include "ui/views/layout/box_layout_view.h"
-#include "ui/views/layout/flex_layout_view.h"
 #include "ui/views/metadata/view_factory.h"
 #include "ui/views/style/typography.h"
 #include "ui/views/view_class_properties.h"
@@ -54,7 +42,7 @@ namespace {
 
 AutofillClient::AutofillAiBubbleResult GetAutofillAiBubbleResultFromWidget(
     const views::Widget* widget) {
-  DCHECK(widget);
+  CHECK(widget, base::NotFatalUntil::M162);
   if (!widget->IsClosed()) {
     return AutofillClient::AutofillAiBubbleResult::kUnknown;
   }
@@ -74,6 +62,11 @@ AutofillClient::AutofillAiBubbleResult GetAutofillAiBubbleResultFromWidget(
   }
 }
 
+bool IsWalletPassBrandingSavePrompt(
+    const AutofillAiImportDataController& controller) {
+  return controller.IsSavePrompt() && controller.IsBranding2026FeatureEnabled();
+}
+
 }  // namespace
 
 AutofillAiImportDataBubbleView::AutofillAiImportDataBubbleView(
@@ -87,7 +80,8 @@ AutofillAiImportDataBubbleView::AutofillAiImportDataBubbleView(
       views::BoxLayout::Orientation::kVertical));
   set_margins(GetAutofillAiBubbleInnerMargins());
   SetAccessibleTitle(controller_->GetSaveUpdateDialogTitle());
-  if (!controller_->IsWalletableEntity()) {
+  if (!controller_->IsWalletableEntity() ||
+      IsWalletPassBrandingSavePrompt(*controller_)) {
     SetTitle(controller_->GetSaveUpdateDialogTitle());
   }
   auto* main_content_wrapper =
@@ -118,6 +112,12 @@ AutofillAiImportDataBubbleView::AutofillAiImportDataBubbleView(
       controller_->GetUpdatedAttributesDetails();
   for (const EntityAttributeUpdateDetails& detail : attributes_details) {
     attributes_wrapper->AddChildView(BuildEntityAttributeRow(detail));
+  }
+
+  if (!controller_->GetLegalMessageLines().empty()) {
+    LogWalletNoticeFunnelEvent(
+        AutofillAiWalletNoticeFunnelEvents::kLegalMessageShown);
+    main_content_wrapper->AddChildView(GetWalletableEntityDisclosure());
   }
 
   DialogDelegate::SetButtonLabel(
@@ -253,6 +253,7 @@ AutofillAiImportDataBubbleView::GetWalletableEntitySubtitle() const {
       views::StyledLabel::RangeStyleInfo::CreateForLink(base::BindRepeating(
           &AutofillAiImportDataController::OnGoToWalletLinkClicked,
           controller_));
+  go_to_wallet.text_style = views::style::STYLE_LINK_4;
 
   return views::Builder<views::StyledLabel>()
       .SetText(std::move(formatted_text))
@@ -262,6 +263,22 @@ AutofillAiImportDataBubbleView::GetWalletableEntitySubtitle() const {
       .SetHorizontalAlignment(gfx::HorizontalAlignment::ALIGN_LEFT)
       .AddStyleRange(link_range, go_to_wallet)
       .Build();
+}
+
+std::unique_ptr<views::View>
+AutofillAiImportDataBubbleView::GetWalletableEntityDisclosure() {
+  std::unique_ptr<views::View> legal_message_view = CreateLegalMessageView(
+      controller_->GetLegalMessageLines(), views::style::STYLE_BODY_4,
+      ui::kColorSysOnSurfaceSubtle, views::style::STYLE_LINK_4,
+      base::BindRepeating(
+          &AutofillAiImportDataController::OnLegalMessageLinkClicked,
+          controller_));
+  legal_message_view->SetProperty(
+      views::kMarginsKey,
+      gfx::Insets().set_top(ChromeLayoutProvider::Get()->GetDistanceMetric(
+          views::DISTANCE_RELATED_CONTROL_VERTICAL)));
+  legal_message_view->SetID(DialogViewId::LEGAL_MESSAGE_VIEW);
+  return legal_message_view;
 }
 
 void AutofillAiImportDataBubbleView::Hide() {
@@ -285,9 +302,11 @@ void AutofillAiImportDataBubbleView::AddedToWidget() {
 
     GetBubbleFrameView()->SetHeaderView(std::move(image_view));
   }
-  if (controller_->IsWalletableEntity()) {
-    GetBubbleFrameView()->SetTitleView(
-        CreateWalletBubbleTitleView(controller_->GetSaveUpdateDialogTitle()));
+  if (controller_->IsWalletableEntity() &&
+      !IsWalletPassBrandingSavePrompt(*controller_)) {
+    GetBubbleFrameView()->SetTitleView(CreateWalletBubbleTitleView(
+        controller_->GetSaveUpdateDialogTitle(),
+        controller_->IsBranding2026FeatureEnabled()));
   }
 }
 

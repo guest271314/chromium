@@ -79,7 +79,6 @@
 #include "content/browser/fenced_frame/fenced_frame_reporter.h"
 #include "content/common/content_export.h"
 #include "third_party/blink/public/common/fenced_frame/redacted_fenced_frame_config.h"
-#include "third_party/blink/public/mojom/fenced_frame/fenced_frame.mojom.h"
 #include "ui/gfx/geometry/size.h"
 #include "url/gurl.h"
 #include "url/origin.h"
@@ -97,15 +96,6 @@ GURL CONTENT_EXPORT GenerateUrnUuid();
 // FencedFramePropertiesNodeSource, and all FencedFrameProperties objects will
 // originate from the fenced frame root.
 enum class FencedFramePropertiesNodeSource { kFrameTreeRoot, kClosestAncestor };
-
-// Returns a new string based on input where the matching substrings have been
-// replaced with the corresponding substitutions. This function avoids repeated
-// string operations by building the output based on all substitutions, one
-// substitution at a time. This effectively performs all substitutions
-// simultaneously, with the earliest match in the input taking precedence.
-std::string SubstituteMappedStrings(
-    const std::string& input,
-    const std::vector<std::pair<std::string, std::string>>& substitutions);
 
 using AdAuctionData = blink::FencedFrame::AdAuctionData;
 using DeprecatedFencedFrameMode = blink::FencedFrame::DeprecatedFencedFrameMode;
@@ -445,19 +435,7 @@ class CONTENT_EXPORT FencedFrameProperties {
     return shared_storage_budget_metadata_;
   }
 
-  const std::optional<std::u16string>& embedder_shared_storage_context() const {
-    return embedder_shared_storage_context_;
-  }
 
-  // Used to store the shared storage context passed from the embedder
-  // (navigation initiator)'s renderer into the new FencedFrameProperties.
-  // TODO(crbug.com/40257432): Refactor this to be part of the
-  // FencedFrameProperties constructor rather than
-  // OnFencedFrameURLMappingComplete.
-  void SetEmbedderSharedStorageContext(
-      const std::optional<std::u16string>& embedder_shared_storage_context) {
-    embedder_shared_storage_context_ = embedder_shared_storage_context;
-  }
 
   // Stores whether the original document loaded with this config opted in to
   // cross-origin event-level reporting. That is, if the document was served
@@ -555,12 +533,6 @@ class CONTENT_EXPORT FencedFrameProperties {
   // the outermost frame tree.
   std::optional<FencedFrameProperty<raw_ptr<const SharedStorageBudgetMetadata>>>
       shared_storage_budget_metadata_;
-
-  // Any context that is written by the embedder using
-  // `blink::FencedFrameConfig::setSharedStorageContext`. Only readable in
-  // shared storage worklets via `sharedStorage.context()`. Not copied during
-  // redaction.
-  std::optional<std::u16string> embedder_shared_storage_context_;
 
   scoped_refptr<FencedFrameReporter> fenced_frame_reporter_;
 

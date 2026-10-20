@@ -8,6 +8,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 
 #include "base/gtest_prod_util.h"
 #include "base/memory/raw_ptr.h"
@@ -28,7 +29,12 @@
 #include "components/signin/public/identity_manager/access_token_fetcher.h"
 #include "components/signin/public/identity_manager/account_info.h"
 #include "components/signin/public/identity_manager/identity_mutator.h"
+#include "crypto/sign.h"
 #include "google_apis/gaia/oauth2_access_token_manager.h"
+
+#if BUILDFLAG(ENABLE_DICE_SUPPORT)
+#include "components/signin/public/base/binding_key_registration_token_result.h"
+#endif
 
 #if BUILDFLAG(IS_ANDROID)
 #include "base/android/jni_android.h"
@@ -53,7 +59,6 @@ class AccountFetcherService;
 class AccountTrackerService;
 class GaiaCookieManagerService;
 class NewTabPageUI;
-class PrivacySandboxSettingsDelegate;
 
 namespace signin {
 
@@ -310,9 +315,28 @@ class IdentityManager : public KeyedService,
       const CoreAccountId& account_id) const;
 
 #if BUILDFLAG(ENABLE_DICE_SUPPORT)
+  // Asynchronously generates a registration token for binding a refresh token
+  // to a shared binding key.
+  // `supported_algorithms` is a space-separated list of acceptable signature
+  // algorithm names (e.g., "ES256 RS256"). This parameter may be ignored if an
+  // existing binding key is reused instead of generating a new one.
+  // Returns false if the generation cannot be started. In that case, `callback`
+  // will not be invoked.
+  bool GenerateBindingKeyRegistrationToken(
+      base::span<const crypto::sign::SignatureKind> supported_algorithms,
+      std::string_view auth_code,
+      base::OnceCallback<void(
+          std::optional<signin::BindingKeyRegistrationTokenResult>)> callback);
+
   // Returns `true` if (a) a refresh token exists for `account_id`, and (b) the
   // refresh token is bound to a device, it returns `false` otherwise.
   bool HasAccountWithBoundRefreshToken(const CoreAccountId& account_id) const;
+
+  // Returns `true` if (a) a refresh token exists for `account_id`, and (b) the
+  // refresh token is bound to an mTLS certificate. It returns `false`
+  // otherwise.
+  bool HasAccountWithRefreshTokenBoundToMtls(
+      const CoreAccountId& account_id) const;
 
   // Returns whether all bound refresh tokens share the same binding key.
   //
@@ -349,16 +373,23 @@ class IdentityManager : public KeyedService,
       const CoreAccountId& account_id) const;
   // The same as `FindExtendedAccountInfo()` but finds an account by email.
   AccountInfo FindExtendedAccountInfoByEmailAddress(
-      const std::string& email_address) const;
+      std::string_view email_address) const;
   // The same as `FindExtendedAccountInfo()` but finds an account by gaia ID.
   AccountInfo FindExtendedAccountInfoByGaiaId(const GaiaId& gaia_id) const;
 
   // Provides the information of all accounts that are present in the Gaia
   // cookie in the cookie jar, ordered by their order in the cookie.
-  // If the returned accounts are not fresh, an internal update will be
-  // triggered and there will be a subsequent invocation of
-  // IdentityManager::Observer::OnAccountsInCookieJarChanged().
+  //
+  // When `switches::kAvoidAutoTriggerListAccountsOnStale` is enabled, this
+  // method will not trigger an update even if the accounts are stale.
   AccountsInCookieJarInfo GetAccountsInCookieJar() const;
+
+  // Returns the accounts in the cookie jar without triggering an internal
+  // update even if the accounts in the cookie jar are stale.
+  //
+  // TODO(crbug.com/517864199): Remove once GetAccountsInCookieJar() no longer
+  // triggers an update.
+  AccountsInCookieJarInfo GetCachedAccountsInCookieJar() const;
 
   // Returns the session index of the primary account in the cookie jar, or
   // std::nullopt if the primary account is not signed in or not found in the
@@ -387,8 +418,14 @@ class IdentityManager : public KeyedService,
   // Gets all accounts on the device, including the ones from other profiles, in
   // the order provided by the system (usually the order in which the accounts
   // were added).
-  [[nodiscard]] std::vector<AccountInfo> GetAccountsOnDevice();
+  [[nodiscard]] std::vector<AccountInfo> GetAccountsOnDevice() const;
 #endif
+
+  // Overrides the value of the given account capability for the account.
+  // Passing `std::nullopt` clears the override.
+  void SetCapabilityOverride(const CoreAccountId& account_id,
+                             std::string_view capability_name,
+                             std::optional<Tribool> override_value);
 
   // Observer interface for classes that want to monitor status of various
   // requests. Mostly useful in tests and debugging contexts (e.g., WebUI).
@@ -608,13 +645,13 @@ class IdentityManager : public KeyedService,
   friend void SimulateSuccessfulFetchOfAccountInfo(
       IdentityManager* identity_manager,
       const CoreAccountId& account_id,
-      const std::string& email,
+      std::string_view email,
       const GaiaId& gaia,
-      const std::string& hosted_domain,
-      const std::string& full_name,
-      const std::string& given_name,
-      const std::string& locale,
-      const std::string& picture_url);
+      std::string_view hosted_domain,
+      std::string_view full_name,
+      std::string_view given_name,
+      std::string_view locale,
+      std::string_view picture_url);
 
 #if BUILDFLAG(IS_CHROMEOS)
   friend account_manager::AccountManagerFacade* GetAccountManagerFacade(
@@ -679,7 +716,6 @@ class IdentityManager : public KeyedService,
   // TODO(crbug.com/40183609): Delete once the private calls have been
   // removed.
   friend class ::NewTabPageUI;
-  friend class ::PrivacySandboxSettingsDelegate;
 
   // Returns the extended account info for the primary account. This function
   // does not require tokens to be loaded.

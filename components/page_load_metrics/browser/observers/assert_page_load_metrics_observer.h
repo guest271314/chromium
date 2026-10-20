@@ -42,8 +42,6 @@ class AssertPageLoadMetricsObserver final
       const GURL& currently_committed_url) override;
   ObservePolicy OnPrerenderStart(content::NavigationHandle* navigation_handle,
                                  const GURL& currently_committed_url) override;
-  ObservePolicy OnPreviewStart(content::NavigationHandle* navigation_handle,
-                               const GURL& currently_committed_url) override;
   ObservePolicy OnNavigationHandleTimingUpdated(
       content::NavigationHandle* navigation_handle) override;
   ObservePolicy OnRedirect(
@@ -53,8 +51,6 @@ class AssertPageLoadMetricsObserver final
   ObservePolicy OnCommit(content::NavigationHandle* navigation_handle) override;
   void DidActivatePrerenderedPage(
       content::NavigationHandle* navigation_handle) override;
-  void DidActivatePreviewedPage(base::TimeTicks activation_time) override;
-
   // Termination-like events
   void OnFailedProvisionalLoad(
       const page_load_metrics::FailedProvisionalLoadInfo&
@@ -166,8 +162,13 @@ class AssertPageLoadMetricsObserver final
   void OnRestoreFromBackForwardCache(
       const page_load_metrics::mojom::PageLoadTiming& timing,
       content::NavigationHandle* navigation_handle) override {}
-  void OnSoftNavigation() override {}
-  void OnSoftNavigationLargestContentfulPaint(uint64_t num_soft_lcps) override {}
+  void OnSoftNavigationFirstContentfulPaint(
+      const page_load_metrics::mojom::SoftNavigationMetrics&
+          soft_navigation_metrics) override {}
+  void OnSoftNavigationCompleted(const page_load_metrics::SoftNavigationData&
+                                     soft_navigation_data) override {}
+  void OnSoftNavigationLargestContentfulPaint(uint64_t num_soft_lcps) override {
+  }
   void OnCpuTimingUpdate(
       content::RenderFrameHost* subframe_rfh,
       const page_load_metrics::mojom::CpuTiming& timing) override {}
@@ -183,6 +184,9 @@ class AssertPageLoadMetricsObserver final
       content::RenderFrameHost* rfh,
       const std::vector<page_load_metrics::mojom::ResourceDataUpdatePtr>&
           resources) override {}
+  void OnSubresourceLoadMetricsObserved(
+      content::RenderFrameHost* rfh,
+      const blink::SubresourceLoadMetrics& subresource_load_metrics) override {}
   void MediaStartedPlaying(
       const content::WebContentsObserver::MediaPlayerInfo& video_type,
       content::RenderFrameHost* render_frame_host) override {}
@@ -193,6 +197,9 @@ class AssertPageLoadMetricsObserver final
       const base::flat_map<int, gfx::Rect>& main_frame_ad_rects) override {}
   void OnLoadedResource(const page_load_metrics::ExtraRequestCompleteInfo&
                             extra_request_complete_info) override {}
+  void DidLoadResourceFromMemoryCache(
+      const page_load_metrics::MemoryResourceLoadInfo&
+          memory_resource_load_info) override {}
   void FrameReceivedUserActivation(
       content::RenderFrameHost* render_frame_host) override {}
   void FrameDisplayStateChanged(content::RenderFrameHost* render_frame_host,
@@ -218,15 +225,11 @@ class AssertPageLoadMetricsObserver final
                          const GURL& first_party_url,
                          bool blocked_by_policy,
                          page_load_metrics::StorageType access_type) override {}
-  void OnPrefetchLikely() override {}
   void OnSharedStorageWorkletHostCreated() override {}
   void OnSharedStorageSelectURLCalled() override {}
   void OnCustomUserTimingMarkObserved(
       const std::vector<page_load_metrics::mojom::CustomUserTimingMarkPtr>&
           timings) override {}
-  void OnAdAuctionComplete(bool is_server_auction,
-                           bool is_on_device_auction,
-                           content::AuctionResult result) override {}
   void OnPrimaryPageRenderProcessGone() override {}
   void OnUserTimingMarkFullyLoaded(
       const page_load_metrics::mojom::PageLoadTiming& timing) override {}
@@ -256,7 +259,6 @@ class AssertPageLoadMetricsObserver final
   bool backforwardcache_entering_ = false;
   bool backforwardcache_entered_ = false;
   bool in_prerendering_ = false;
-  bool in_preview_ = false;
 };
 
 #endif  // COMPONENTS_PAGE_LOAD_METRICS_BROWSER_OBSERVERS_ASSERT_PAGE_LOAD_METRICS_OBSERVER_H_

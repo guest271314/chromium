@@ -327,8 +327,14 @@ void SaveUpdateBubbleController::ReportInteractions() {
         profile && PasswordCounterFactory::GetForProfile(profile) &&
         PasswordCounterFactory::GetForProfile(profile)
                 ->autofillable_passwords() == 0;
+    std::optional<password_manager::ActionableError> saving_blocked_error;
+    if (IsSavingBlockedByTrustedVaultError()) {
+      saving_blocked_error =
+          password_manager::ActionableError::kTrustedVaultKeyNeeded;
+    }
     metrics_util::LogSaveUIDismissalReason(GetDismissalReason(), user_state,
-                                           log_adoption_metric);
+                                           log_adoption_metric,
+                                           saving_blocked_error);
   }
 
   // Update the delegate so that it can send votes to the server.
@@ -343,4 +349,15 @@ void SaveUpdateBubbleController::ReportInteractions() {
   if (metrics_recorder_) {
     metrics_recorder_->RecordUIDismissalReason(GetDismissalReason());
   }
+}
+
+bool SaveUpdateBubbleController::IsSavingBlockedByTrustedVaultError() const {
+  return delegate_ && delegate_->IsSavingBlockedByTrustedVaultError();
+}
+
+void SaveUpdateBubbleController::OnTrustedVaultUnlockClicked() {
+  CHECK(GetState() == password_manager::ui::PENDING_PASSWORD_STATE ||
+        GetState() == password_manager::ui::PENDING_PASSWORD_UPDATE_STATE);
+  delegate_->SavePasswordAfterTrustedVaultErrorResolution();
+  delegate_->StartTrustedVaultErrorResolutionFlow();
 }

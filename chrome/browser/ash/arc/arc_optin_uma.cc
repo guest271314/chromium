@@ -20,7 +20,8 @@
 #include "chromeos/ash/experiences/arc/metrics/stability_metrics_manager.h"
 #include "chromeos/ash/experiences/arc/mojom/app.mojom.h"
 #include "chromeos/ash/experiences/arc/mojom/auth.mojom.h"
-#include "components/user_manager/user_manager.h"
+#include "components/session_manager/core/session.h"
+#include "components/session_manager/core/session_manager.h"
 
 // Enable VLOG level 1.
 #undef ENABLED_VLOG_LEVEL
@@ -53,21 +54,23 @@ ArcEnabledState ComputeEnabledState(bool enabled, const Profile* profile) {
                    : ArcEnabledState::DISABLED_MANAGED_ON;
   }
 
-  DCHECK(!enabled);
+  CHECK(!enabled, base::NotFatalUntil::M160);
   return ArcEnabledState::DISABLED_MANAGED_OFF;
 }
 
 }  // namespace
 
 void UpdateEnabledStateByUserTypeUMA() {
-  auto* primary_user = user_manager::UserManager::Get()->GetPrimaryUser();
-  // Don't record UMA if there is no primary user.
-  if (!primary_user) {
+  auto* primary_session =
+      session_manager::SessionManager::Get()->GetPrimarySession();
+  // Don't record UMA if there is no primary session.
+  if (!primary_session) {
     return;
   }
 
   const Profile* profile = Profile::FromBrowserContext(
-      ash::BrowserContextHelper::Get()->GetBrowserContextByUser(primary_user));
+      ash::BrowserContextHelper::Get()->GetBrowserContextByAccountId(
+          primary_session->account_id()));
   // Don't record UMA if the primary user profile is not loaded.
   if (!profile) {
     return;
@@ -105,7 +108,8 @@ void UpdateOptinTosLoadResultUMA(bool success) {
 
 void UpdateProvisioningStatusUMA(ProvisioningStatus status,
                                  const Profile* profile) {
-  DCHECK_NE(status, ProvisioningStatus::CHROME_SERVER_COMMUNICATION_ERROR);
+  CHECK_NE(status, ProvisioningStatus::CHROME_SERVER_COMMUNICATION_ERROR,
+           base::NotFatalUntil::M160);
   LogStabilityUmaEnum(
       GetHistogramNameByUserType("Arc.Provisioning.Status", profile), status);
 }
@@ -216,7 +220,8 @@ void UpdateAuthCheckinAttempts(int32_t num_attempts, const Profile* profile) {
 
 void UpdateAuthAccountCheckStatus(mojom::AccountCheckStatus status,
                                   const Profile* profile) {
-  DCHECK_LE(status, mojom::AccountCheckStatus::CHECK_FAILED);
+  CHECK_LE(status, mojom::AccountCheckStatus::CHECK_FAILED,
+           base::NotFatalUntil::M160);
   LogStabilityUmaEnum(
       GetHistogramNameByUserType("Arc.Auth.AccountCheck.Status", profile),
       status);
@@ -231,7 +236,7 @@ void UpdateAccountReauthReason(mojom::ReauthReason reason,
 void UpdateMainAccountResolutionStatus(
     const Profile* profile,
     mojom::MainAccountResolutionStatus status) {
-  DCHECK(mojom::IsKnownEnumValue(status));
+  CHECK(mojom::IsKnownEnumValue(status), base::NotFatalUntil::M160);
   LogStabilityUmaEnum(GetHistogramNameByUserType(
                           "Arc.Auth.MainAccountResolution.Status", profile),
                       status);

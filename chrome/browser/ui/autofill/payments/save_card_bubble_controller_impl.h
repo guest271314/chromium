@@ -30,6 +30,7 @@ namespace autofill {
 
 enum class BubbleType;
 
+class AutofillBubbleHandler;
 class PaymentsDataManager;
 
 // Implementation of per-tab class to control the local/server save credit card
@@ -85,7 +86,9 @@ class SaveCardBubbleControllerImpl
   // offer-to-save card bubble is shown. If the value is
   // `CardSaveType::kCardSaveWithCvc`, the offer-to-save card bubble is shown,
   // and the users are informed that the CVC will also be stored. If the type is
-  // `CardSaveType::kCvcSaveOnly`, the offer-to-save CVC bubble is shown.
+  // `CardSaveType::kCvcSaveOnly`, the offer-to-save CVC bubble is shown. If the
+  // type is `CardSaveType::kCardholderNameUpdateOnly`, the offer-to-save
+  // cardholder name bubble is shown.
   void OfferUploadSave(
       const CreditCard& card,
       const LegalMessageLines& legal_message_lines,
@@ -302,6 +305,7 @@ class SaveCardBubbleControllerImpl
   // stopped once the bubble is closed.
   base::OneShotTimer auto_close_confirmation_timer_;
 
+  AutofillBubbleHandler* GetAutofillBubbleHandler();
   // Weak pointer factory for this save card bubble controller.
   base::WeakPtrFactory<SaveCardBubbleControllerImpl> weak_ptr_factory_{this};
 

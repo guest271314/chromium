@@ -21,13 +21,13 @@ import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
+import org.chromium.base.CallbackUtils;
 import org.chromium.base.FakeTimeTestRule;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.CallbackHelper;
 import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.CriteriaHelper;
-import org.chromium.base.test.util.DisabledTest;
 import org.chromium.base.test.util.Features;
 import org.chromium.base.test.util.Restriction;
 import org.chromium.chrome.R;
@@ -46,7 +46,7 @@ import org.chromium.content.browser.accessibility.WebContentsAccessibilityImpl;
 import org.chromium.content_public.browser.WebContents;
 import org.chromium.content_public.browser.WebContentsAccessibility;
 import org.chromium.ui.accessibility.AccessibilityFeatures;
-import org.chromium.ui.accessibility.AccessibilityState;
+import org.chromium.ui.accessibility.AccessibilityStateTestHelper;
 import org.chromium.ui.base.DeviceFormFactor;
 import org.chromium.ui.modelutil.PropertyModel;
 
@@ -69,11 +69,20 @@ public class MessageTest {
 
     @Before
     public void setUp() {
+        String url =
+                "data:text/html,<!DOCTYPE html><html><body style='margin: 0; display: flex;"
+                        + " justify-content: center;'><button id='test_button'"
+                        + " style='height: 100px; width: 100px;'>Button</button>"
+                        + "</body></html>";
         mPage =
-                mActivityTestRule.startOnUrl(
-                        "data:text/html,<!DOCTYPE html><html><body><button id='test_button'"
-                                + " style='height: 100px; width: 100px;'>Button</button>"
-                                + "</body></html>");
+                mActivityTestRule
+                        .startOnUrlTo(url)
+                        .withTimeout(10000L)
+                        .arriveAt(
+                                WebPageStation.newBuilder()
+                                        .withEntryPoint()
+                                        .withExpectedUrlSubstring(url)
+                                        .build());
         mActivity = mPage.getActivity();
         mMessageDispatcher =
                 ThreadUtils.runOnUiThreadBlocking(
@@ -105,10 +114,9 @@ public class MessageTest {
     /** Test that the message container occludes the web contents. */
     @Test
     @SmallTest
-    @DisabledTest(message = "b/514878860")
-    // TODO(crbug.com/514848255): Failing on other larger form factors.
-    @Restriction(DeviceFormFactor.PHONE)
+    // TODO(crbug.com/514848255): Failing on desktop.
     @Features.EnableFeatures({AccessibilityFeatures.ACCESSIBILITY_HANDLE_OCCLUDING_VIEWS})
+    @Restriction({DeviceFormFactor.PHONE_OR_TABLET})
     public void testMessageContainerOccludesWebContents() throws TimeoutException {
         CallbackHelper helper = new CallbackHelper();
         PropertyModel model =
@@ -117,7 +125,9 @@ public class MessageTest {
                                 new PropertyModel.Builder(MessageBannerProperties.ALL_KEYS)
                                         .with(MessageBannerProperties.TITLE, "Test title")
                                         .with(MessageBannerProperties.PRIMARY_BUTTON_TEXT, "Action")
-                                        .with(MessageBannerProperties.ON_DISMISSED, (v) -> {})
+                                        .with(
+                                                MessageBannerProperties.ON_DISMISSED,
+                                                CallbackUtils.emptyCallback())
                                         .with(
                                                 MessageBannerProperties.ON_PRIMARY_ACTION,
                                                 () -> {
@@ -132,7 +142,8 @@ public class MessageTest {
         WebContentsAccessibilityImpl wcax =
                 ThreadUtils.runOnUiThreadBlocking(
                         () -> {
-                            AccessibilityState.setIsAnyAccessibilityServiceEnabledForTesting(true);
+                            AccessibilityStateTestHelper
+                                    .setIsAnyAccessibilityServiceEnabledForTesting(true);
                             WebContents webContents = mActivity.getActivityTab().getWebContents();
                             return (WebContentsAccessibilityImpl)
                                     WebContentsAccessibility.fromWebContents(webContents);
@@ -141,7 +152,7 @@ public class MessageTest {
         CriteriaHelper.pollUiThread(
                 () -> wcax.getAccessibilityNodeProvider() != null,
                 "AccessibilityNodeProvider should be initialized",
-                8000L,
+                CriteriaHelper.DEFAULT_MAX_TIME_TO_POLL_LONG,
                 CriteriaHelper.DEFAULT_POLLING_INTERVAL);
 
         CriteriaHelper.pollUiThread(
@@ -151,7 +162,7 @@ public class MessageTest {
                     return buttonNodeId[0] != -1;
                 },
                 "Button should be found",
-                8000L,
+                CriteriaHelper.DEFAULT_MAX_TIME_TO_POLL_LONG,
                 CriteriaHelper.DEFAULT_POLLING_INTERVAL);
 
         ThreadUtils.runOnUiThreadBlocking(
@@ -166,14 +177,15 @@ public class MessageTest {
 
         onView(withId(R.id.message_primary_button)).check(matches(isDisplayed()));
 
-        ThreadUtils.runOnUiThreadBlocking(
+        CriteriaHelper.pollUiThread(
                 () -> {
                     AccessibilityNodeInfoCompat buttonNode =
                             wcax.createAccessibilityNodeInfo(buttonNodeId[0]);
-                    Assert.assertFalse(
-                            "Button node should be mostly occluded, thus not visible",
-                            buttonNode.isVisibleToUser());
-                });
+                    return !buttonNode.isVisibleToUser();
+                },
+                "Button node should be mostly occluded, thus not visible",
+                CriteriaHelper.DEFAULT_MAX_TIME_TO_POLL_LONG,
+                CriteriaHelper.DEFAULT_POLLING_INTERVAL);
     }
 
     /**
@@ -191,7 +203,9 @@ public class MessageTest {
                                 new PropertyModel.Builder(MessageBannerProperties.ALL_KEYS)
                                         .with(MessageBannerProperties.TITLE, "Test title")
                                         .with(MessageBannerProperties.PRIMARY_BUTTON_TEXT, "Action")
-                                        .with(MessageBannerProperties.ON_DISMISSED, (v) -> {})
+                                        .with(
+                                                MessageBannerProperties.ON_DISMISSED,
+                                                CallbackUtils.emptyCallback())
                                         .with(
                                                 MessageBannerProperties.ON_PRIMARY_ACTION,
                                                 () -> {
@@ -209,6 +223,63 @@ public class MessageTest {
         Assert.assertEquals("Not clickable with tap protection period", 0, helper.getCallCount());
         mFakeTimeTestRule.advanceMillis(1500);
         onView(withId(R.id.message_primary_button)).perform(click());
-        helper.waitForNext("Should able to click when tap protection period ends");
+        helper.waitForNext("Should be able to click when tap protection period ends");
+    }
+
+    /** Test that mutating message properties resets the tap protection period. */
+    @Test
+    @SmallTest
+    public void testTapProtection_PropertyMutation() throws TimeoutException {
+        MessagesTestHelper.enableTapProtectionDuration(500);
+        CallbackHelper helper = new CallbackHelper();
+        PropertyModel model =
+                ThreadUtils.runOnUiThreadBlocking(
+                        () ->
+                                new PropertyModel.Builder(MessageBannerProperties.ALL_KEYS)
+                                        .with(MessageBannerProperties.TITLE, "Test title")
+                                        .with(MessageBannerProperties.PRIMARY_BUTTON_TEXT, "Action")
+                                        .with(
+                                                MessageBannerProperties.ON_DISMISSED,
+                                                CallbackUtils.emptyCallback())
+                                        .with(
+                                                MessageBannerProperties.ON_PRIMARY_ACTION,
+                                                () -> {
+                                                    helper.notifyCalled();
+                                                    return PrimaryActionClickBehavior
+                                                            .DO_NOT_DISMISS;
+                                                })
+                                        .build());
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    mMessageDispatcher.enqueueWindowScopedMessage(model, true);
+                });
+        onView(withId(R.id.message_primary_button)).check(matches(isDisplayed()));
+
+        // Wait for initial tap protection period to end.
+        mFakeTimeTestRule.advanceMillis(1500);
+        onView(withId(R.id.message_primary_button)).perform(click());
+        helper.waitForNext("Should be able to click when initial tap protection period ends");
+        Assert.assertEquals(1, helper.getCallCount());
+
+        // Mutating property should reset tap protection.
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> model.set(MessageBannerProperties.PRIMARY_BUTTON_TEXT, "New Action"));
+        onView(withId(R.id.message_primary_button)).perform(click());
+        Assert.assertEquals(
+                "Not clickable immediately after property mutation", 1, helper.getCallCount());
+
+        // Still within tap protection period.
+        mFakeTimeTestRule.advanceMillis(450);
+        onView(withId(R.id.message_primary_button)).perform(click());
+        Assert.assertEquals(
+                "Not clickable within tap protection period after property mutation",
+                1,
+                helper.getCallCount());
+
+        // Advance time past tap protection.
+        mFakeTimeTestRule.advanceMillis(1500);
+        onView(withId(R.id.message_primary_button)).perform(click());
+        helper.waitForNext("Should be able to click after post-mutation tap protection ends");
+        Assert.assertEquals(2, helper.getCallCount());
     }
 }

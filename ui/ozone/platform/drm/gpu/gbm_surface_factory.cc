@@ -189,15 +189,14 @@ class GLOzoneEGLGbm : public GLOzoneEGL {
  private:
   std::unique_ptr<NativePixmapGLBinding> ImportNativePixmap(
       scoped_refptr<gfx::NativePixmap> pixmap,
-      viz::SharedImageFormat plane_format,
+      viz::SharedImageFormat format,
       std::optional<int> plane_index,
-      gfx::Size plane_size,
+      gfx::Size size,
       const gfx::ColorSpace& color_space,
       GLenum target,
       GLuint texture_id) override {
-    return NativePixmapEGLBinding::Create(pixmap, plane_format, plane_index,
-                                          plane_size, color_space, target,
-                                          texture_id);
+    return NativePixmapEGLBinding::Create(pixmap, format, plane_index, size,
+                                          color_space, target, texture_id);
   }
 
   raw_ptr<GbmSurfaceFactory> surface_factory_;
@@ -206,6 +205,18 @@ class GLOzoneEGLGbm : public GLOzoneEGL {
 };
 
 }  // namespace
+
+GbmSurfaceFactory::GbmDeviceAndFile::GbmDeviceAndFile(base::File file,
+                                                      ScopedGbmDevice device)
+    : file(std::move(file)), device(std::move(device)) {}
+
+GbmSurfaceFactory::GbmDeviceAndFile::~GbmDeviceAndFile() = default;
+
+GbmSurfaceFactory::GbmDeviceAndFile::GbmDeviceAndFile(GbmDeviceAndFile&&) =
+    default;
+
+GbmSurfaceFactory::GbmDeviceAndFile&
+GbmSurfaceFactory::GbmDeviceAndFile::operator=(GbmDeviceAndFile&&) = default;
 
 GbmSurfaceFactory::GbmSurfaceFactory(DrmThreadProxy* drm_thread_proxy)
     : egl_implementation_(
@@ -401,8 +412,21 @@ GbmSurfaceFactory::CreateNativePixmapFromHandle(
   // valid and can be further importer by standard means.
   if (!get_protected_native_pixmap_callback_.is_null()) {
     auto protected_pixmap = get_protected_native_pixmap_callback_.Run(handle);
-    if (protected_pixmap)
+    if (protected_pixmap) {
+      // The substituted pixmap is used in place of the supplied handle, so it
+      // must match the geometry the caller will use to bind it.
+      // See https://crbug.com/501762862
+      if (protected_pixmap->GetBufferSize() != size ||
+          protected_pixmap->GetSharedImageFormat() != format) {
+        LOG(ERROR) << "Protected pixmap ("
+                   << protected_pixmap->GetBufferSize().ToString() << ", "
+                   << protected_pixmap->GetSharedImageFormat().ToString()
+                   << ") does not match requested geometry (" << size.ToString()
+                   << ", " << format.ToString() << ")";
+        return nullptr;
+      }
       return protected_pixmap;
+    }
   }
 
   return CreateNativePixmapFromHandleInternal(widget, size, format,
@@ -438,34 +462,47 @@ void GbmSurfaceFactory::SetGetProtectedNativePixmapDelegate(
 
 bool GbmSurfaceFactory::IsFormatSupportedForTexturing(
     viz::SharedImageFormat format) const {
-  // We cannot use FileEnumerator here because the sandbox is already closed.
-  constexpr char kRenderNodeFilePattern[] = "/dev/dri/renderD%d";
-  for (int i = 128; /* end on first card# that does not exist */; i++) {
-    base::FilePath dev_path(FILE_PATH_LITERAL(
-        base::StringPrintf(kRenderNodeFilePattern, i).c_str()));
+  base::AutoLock lock(gbm_devices_lock_);
+  if (!gbm_devices_initialized_) {
+    // We cannot use FileEnumerator here because the sandbox is already closed.
+    constexpr char kRenderNodeFilePattern[] = "/dev/dri/renderD%d";
+    for (int i = 128; /* end on first card# that does not exist */; i++) {
+      base::FilePath dev_path(FILE_PATH_LITERAL(
+          base::StringPrintf(kRenderNodeFilePattern, i).c_str()));
 
-    ScopedAllowBlockingForGbmSurface scoped_allow_blocking;
-    base::File dev_path_file(dev_path,
-                             base::File::FLAG_OPEN | base::File::FLAG_READ);
-    if (!dev_path_file.IsValid()) {
-      break;
+      ScopedAllowBlockingForGbmSurface scoped_allow_blocking;
+      base::File dev_path_file(dev_path,
+                               base::File::FLAG_OPEN | base::File::FLAG_READ);
+      if (!dev_path_file.IsValid()) {
+        break;
+      }
+
+      // Skip the virtual graphics memory manager device.
+      ScopedDrmVersionPtr version(
+          drmGetVersion(dev_path_file.GetPlatformFile()));
+      if (!version || base::EqualsCaseInsensitiveASCII(version->name, "vgem")) {
+        continue;
+      }
+
+      ScopedGbmDevice device(
+          gbm_create_device(dev_path_file.GetPlatformFile()));
+      if (!device) {
+        LOG(ERROR) << "Couldn't create Gbm Device at "
+                   << dev_path.MaybeAsASCII();
+        continue;
+      }
+      VLOG(1) << "Found Gbm Device at " << dev_path.MaybeAsASCII();
+
+      gbm_devices_.push_back(
+          GbmDeviceAndFile(std::move(dev_path_file), std::move(device)));
     }
+    gbm_devices_initialized_ = true;
+  }
 
-    // Skip the virtual graphics memory manager device.
-    ScopedDrmVersionPtr version(drmGetVersion(dev_path_file.GetPlatformFile()));
-    if (!version || base::EqualsCaseInsensitiveASCII(version->name, "vgem")) {
-      continue;
-    }
-
-    ScopedGbmDevice device(gbm_create_device(dev_path_file.GetPlatformFile()));
-    if (!device) {
-      LOG(ERROR) << "Couldn't create Gbm Device at " << dev_path.MaybeAsASCII();
-      continue;
-    }
-    VLOG(1) << "Found Gbm Device at " << dev_path.MaybeAsASCII();
-
+  for (const auto& device_and_file : gbm_devices_) {
     if (gbm_device_is_format_supported(
-            device.get(), GetFourCCFormatFromSharedImageFormat(format),
+            device_and_file.device.get(),
+            GetFourCCFormatFromSharedImageFormat(format),
             GBM_BO_USE_TEXTURING)) {
       return true;
     }

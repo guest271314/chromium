@@ -11,7 +11,6 @@
 
 #include "base/base_switches.h"
 #include "base/command_line.h"
-#include "base/compiler_specific.h"
 #include "base/feature_list.h"
 #include "base/files/scoped_file.h"
 #include "base/functional/bind.h"
@@ -45,8 +44,6 @@
 #include "chromecast/browser/cast_web_preferences.h"
 #include "chromecast/browser/cast_web_service.h"
 #include "chromecast/browser/devtools/cast_devtools_manager_delegate.h"
-#include "chromecast/browser/general_audience_browsing_navigation_throttle.h"
-#include "chromecast/browser/general_audience_browsing_service.h"
 #include "chromecast/browser/media/media_caps_impl.h"
 #include "chromecast/browser/service/cast_service_simple.h"
 #include "chromecast/browser/service_connector.h"
@@ -114,6 +111,7 @@
 #include "base/android/device_info.h"
 #include "chromecast/media/audio/cast_audio_manager_android.h"  // nogncheck
 #include "components/crash/core/app/crashpad.h"
+#include "components/input/features.h"
 #include "media/audio/android/audio_manager_android.h"
 #include "media/audio/audio_features.h"
 #endif  // BUILDFLAG(IS_ANDROID)
@@ -127,9 +125,6 @@
 #include "chromecast/media/service/video_geometry_setter_service.h"
 #endif  // BUILDFLAG(ENABLE_CAST_RENDERER)
 
-#if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_FUCHSIA)
-#include "device/bluetooth/cast/bluetooth_adapter_cast.h"
-#endif
 
 namespace chromecast {
 namespace shell {
@@ -167,6 +162,7 @@ CastContentBrowserClient::CastContentBrowserClient(
 #if BUILDFLAG(IS_ANDROID)
   extra_enable_features.push_back(
       &::media::kUseTaskRunnerForMojoAudioDecoderService);
+  extra_disable_features.push_back(&input::features::kInputOnViz);
 
   if (base::android::device_info::is_tv()) {
     // Use the software decoder provided by MediaCodec instead of the built in
@@ -325,13 +321,6 @@ media::MediaCapsImpl* CastContentBrowserClient::media_caps() {
   return cast_browser_main_parts_->media_caps();
 }
 
-#if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_FUCHSIA)
-scoped_refptr<device::BluetoothAdapterCast>
-CastContentBrowserClient::CreateBluetoothAdapter() {
-  NOTREACHED() << "Bluetooth Adapter is not supported!";
-}
-#endif  // !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_FUCHSIA)
-
 void CastContentBrowserClient::SetMetricsClientId(
     const std::string& client_id) {}
 
@@ -375,8 +364,8 @@ bool CastContentBrowserClient::IsHandledURL(const GURL& url) {
   };
 
   const std::string& scheme = url.GetScheme();
-  for (size_t i = 0; i < std::size(kProtocolList); ++i) {
-    if (scheme == UNSAFE_TODO(kProtocolList[i])) {
+  for (const char* protocol : kProtocolList) {
+    if (scheme == protocol) {
       return true;
     }
   }
@@ -421,7 +410,9 @@ void CastContentBrowserClient::AppendExtraCommandLineSwitches(
         switches::kCastAppBackgroundColor,
         switches::kForceMediaResolutionHeight,
         switches::kForceMediaResolutionWidth,
-        network::switches::kUnsafelyTreatInsecureOriginAsSecure};
+        network::switches::kUnsafelyTreatInsecureOriginAsSecure,
+        switches::kCastAssetsDir,
+        switches::kHomeEnvOverride};
     command_line->CopySwitchesFrom(*browser_command_line, kForwardSwitches);
   } else if (process_type == switches::kUtilityProcess) {
     if (browser_command_line->HasSwitch(switches::kAudioOutputChannels)) {
@@ -738,6 +729,14 @@ bool CastContentBrowserClient::ShouldEnableStrictSiteIsolation() {
   return false;
 }
 
+bool CastContentBrowserClient::ShouldIsolateErrorPage(bool in_main_frame) {
+  // Isolating subframe error pages requires out-of-process iframes, which Cast
+  // avoids by not enabling strict site isolation (see above) on its
+  // memory-constrained devices. Hence, only isolate main frame error pages,
+  // which don't require out-of-process iframes.
+  return in_main_frame;
+}
+
 scoped_refptr<net::X509Certificate> CastContentBrowserClient::DeviceCert() {
   return nullptr;
 }
@@ -791,16 +790,6 @@ CastContentBrowserClient::CreateCrashHandlerHost(
 }
 #endif  // BUILDFLAG(IS_ANDROID)
 
-void CastContentBrowserClient::CreateThrottlesForNavigation(
-    content::NavigationThrottleRegistry& registry) {
-  if (chromecast::IsFeatureEnabled(kEnableGeneralAudienceBrowsing)) {
-    registry.AddThrottle(
-        std::make_unique<GeneralAudienceBrowsingNavigationThrottle>(
-            registry,
-            general_audience_browsing_service_.get()));
-  }
-}
-
 void CastContentBrowserClient::RegisterNonNetworkSubresourceURLLoaderFactories(
     int render_process_id,
     int render_frame_id,
@@ -815,8 +804,9 @@ void CastContentBrowserClient::RegisterNonNetworkSubresourceURLLoaderFactories(
 
   factories->emplace(
       kChromeResourceScheme,
-      content::CreateWebUIURLLoaderFactory(
-          frame_host, kChromeResourceScheme,
+      content::CreateWebUIURLLoaderFactoryWithoutOriginLock(
+          content::WebUIURLLoaderFactoryPasskey::GetPassKey(), frame_host,
+          kChromeResourceScheme,
           /*allowed_webui_hosts=*/base::flat_set<std::string>()));
 }
 
@@ -861,14 +851,6 @@ CastContentBrowserClient::ShouldOverrideLocalNetworkAccessRequestPolicy(
 
 std::string CastContentBrowserClient::GetUserAgent() {
   return chromecast::GetUserAgent();
-}
-
-void CastContentBrowserClient::CreateGeneralAudienceBrowsingService() {
-  DCHECK(!general_audience_browsing_service_);
-  general_audience_browsing_service_ =
-      std::make_unique<GeneralAudienceBrowsingService>(
-          browser_main_parts()->connector(),
-          cast_network_contexts_->GetSystemSharedURLLoaderFactory());
 }
 
 }  // namespace shell

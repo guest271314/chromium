@@ -12,8 +12,9 @@
 #include "base/test/simple_test_clock.h"
 #include "base/time/time.h"
 #include "chrome/browser/apps/link_capturing/link_capturing_feature_test_support.h"
-#include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/web_apps/web_app_link_capturing_test_utils.h"
 #include "chrome/browser/ui/web_applications/app_browser_controller.h"
 #include "chrome/browser/ui/web_applications/test/isolated_web_app_test_utils.h"
@@ -25,6 +26,7 @@
 #include "chrome/browser/web_applications/web_app_filter.h"
 #include "chrome/browser/web_applications/web_app_install_info.h"
 #include "chrome/browser/web_applications/web_app_navigation_capturing_browsertest_base.h"
+#include "chrome/browser/web_applications/web_app_origin_association_manager.h"
 #include "chrome/browser/web_applications/web_app_provider.h"
 #include "chrome/browser/web_applications/web_app_tab_helper.h"
 #include "chrome/common/pref_names.h"
@@ -38,6 +40,7 @@
 #include "content/public/common/content_features.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
+#include "content/public/test/hit_test_region_observer.h"
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/common/input/web_input_event.h"
 #include "third_party/blink/public/mojom/manifest/manifest_launch_handler.mojom-shared.h"
@@ -204,7 +207,7 @@ class IsolatedWebAppLinkCapturingBrowserTestBase
             .AddJs("script.js", kIwaJsContent)
             .BuildBundle(GetBundleId(),
                          {web_package::test::GetDefaultEd25519KeyPair()})
-            ->InstallChecked(browser()->profile());
+            ->InstallChecked(browser()->GetProfile());
 
     app_id_ = url_info.app_id();
     app_start_url_ = url_info.origin().GetURL();
@@ -230,6 +233,11 @@ class IsolatedWebAppLinkCapturingBrowserTestBase
     const base::ListValue& result = eval_js_result.ExtractList();
     double x = result[0].GetDouble();
     double y = result[1].GetDouble();
+
+    // SimulateMouseClickAt on a freshly opened app window is dropped until the
+    // window is registered in the browser's viz hit-test data. A renderer
+    // main-frame wait is insufficient: the data lands asynchronously.
+    content::WaitForHitTestData(contents->GetPrimaryMainFrame());
 
     // Simulate the click at those coordinates.
     content::SimulateMouseClickAt(contents, modifiers, button,
@@ -379,7 +387,7 @@ IN_PROC_BROWSER_TEST_P(IsolatedWebAppLinkCapturingFromBrowserWindowBrowserTest,
   ASSERT_TRUE(content::ExecJs(GetBrowserTab(), script));
 
   if (expect_new_window) {
-    Browser* new_browser = browser_observer.Wait();
+    BrowserWindowInterface* new_browser = browser_observer.Wait();
     ASSERT_TRUE(new_browser);
     EXPECT_NE(new_browser, browser());
     EXPECT_NE(new_browser, existing_app_browser);
@@ -458,11 +466,6 @@ IN_PROC_BROWSER_TEST_P(IsolatedWebAppLinkCapturingFromAppWindowBrowserTest,
   GURL destination_url = GetCapturableUrlWithQuery();
   CreateLinkInTab(existing_app_contents, destination_url, "capture-link");
 
-  // Wait for hit-test data to be updated so the simulated click doesn't miss.
-  content::MainThreadFrameObserver(
-      existing_app_contents->GetPrimaryMainFrame()->GetRenderWidgetHost())
-      .Wait();
-
   ui_test_utils::AllBrowserTabAddedWaiter tab_waiter;
   SimulateClickOnElement(existing_app_contents, "capture-link",
                          blink::WebInputEvent::kNoModifiers,
@@ -504,7 +507,7 @@ IN_PROC_BROWSER_TEST_P(IsolatedWebAppLinkCapturingFromAppWindowBrowserTest,
                          blink::WebMouseEvent::Button::kLeft);
 
   // Verify NEW window opened regardless of ClientMode.
-  Browser* new_browser = browser_observer.Wait();
+  BrowserWindowInterface* new_browser = browser_observer.Wait();
   ASSERT_TRUE(new_browser);
   EXPECT_NE(new_browser, browser());
   EXPECT_NE(new_browser, existing_app_browser);
@@ -546,7 +549,7 @@ IN_PROC_BROWSER_TEST_P(IsolatedWebAppLinkCapturingFromAppWindowBrowserTest,
                          blink::WebMouseEvent::Button::kLeft);
 
   if (expect_new_window) {
-    Browser* new_browser = browser_observer.Wait();
+    BrowserWindowInterface* new_browser = browser_observer.Wait();
     ASSERT_TRUE(new_browser);
     EXPECT_NE(new_browser, existing_app_browser);
     EXPECT_TRUE(AppBrowserController::IsForWebApp(new_browser, app_id()));
@@ -591,7 +594,7 @@ IN_PROC_BROWSER_TEST_P(IsolatedWebAppLinkCapturingFromAppWindowBrowserTest,
                          blink::WebInputEvent::kNoModifiers,
                          blink::WebMouseEvent::Button::kLeft);
 
-  Browser* new_browser = browser_observer.Wait();
+  BrowserWindowInterface* new_browser = browser_observer.Wait();
   ASSERT_TRUE(new_browser);
   EXPECT_NE(new_browser, existing_app_browser);
   EXPECT_TRUE(AppBrowserController::IsForWebApp(new_browser, app_id()));
@@ -634,7 +637,7 @@ IN_PROC_BROWSER_TEST_F(IsolatedWebAppLinkCapturingDefaultBehaviorBrowserTest,
                          blink::WebInputEvent::kNoModifiers,
                          blink::WebMouseEvent::Button::kLeft);
 
-  Browser* new_browser = browser_observer.Wait();
+  BrowserWindowInterface* new_browser = browser_observer.Wait();
   ASSERT_TRUE(new_browser);
   EXPECT_TRUE(AppBrowserController::IsForWebApp(new_browser, app_id()));
 
@@ -692,7 +695,9 @@ IN_PROC_BROWSER_TEST_F(IsolatedWebAppLinkCapturingDefaultBehaviorBrowserTest,
       &provider().install_manager());
   manifest_updated_observer.BeginListening({url_info.app_id()});
 
-  EXPECT_THAT(provider().isolated_web_app_update_manager().DiscoverUpdatesNow(),
+  EXPECT_THAT(provider()
+                  .isolated_web_app_update_manager()
+                  .DiscoverAndPrepareUpdatesNow(),
               testing::Eq(1ul));
 
   manifest_updated_observer.Wait();
@@ -714,7 +719,7 @@ IN_PROC_BROWSER_TEST_F(IsolatedWebAppLinkCapturingDefaultBehaviorBrowserTest,
                          blink::WebInputEvent::kNoModifiers,
                          blink::WebMouseEvent::Button::kLeft);
 
-  Browser* new_browser = browser_observer.Wait();
+  BrowserWindowInterface* new_browser = browser_observer.Wait();
   ASSERT_TRUE(new_browser);
 
   EXPECT_TRUE(
@@ -780,7 +785,7 @@ IN_PROC_BROWSER_TEST_F(IsolatedWebAppLinkCapturingAddValidatedOriginBrowserTest,
                          blink::WebInputEvent::kNoModifiers,
                          blink::WebMouseEvent::Button::kLeft);
 
-  Browser* new_browser = browser_observer.Wait();
+  BrowserWindowInterface* new_browser = browser_observer.Wait();
   ASSERT_TRUE(new_browser);
   EXPECT_NE(new_browser, existing_app_browser);
   EXPECT_TRUE(AppBrowserController::IsForWebApp(new_browser, app_id()));

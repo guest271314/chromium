@@ -18,6 +18,7 @@
 #include "components/webapps/browser/launch_queue/launch_queue_delegate.h"
 #include "content/public/browser/file_system_access_entry_factory.h"
 #include "content/public/browser/navigation_handle.h"
+#include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_process_host.h"
 #include "content/public/browser/storage_partition.h"
 #include "content/public/browser/web_contents.h"
@@ -52,16 +53,21 @@ class EntriesBuilder {
     entries_.reserve(expected_number_of_entries);
   }
 
-  void AddFileEntry(const content::PathInfo& path_info) {
-    entries_.push_back(entry_factory_->CreateFileEntryFromPath(
-        context_, path_info,
-        content::FileSystemAccessEntryFactory::UserAction::kSave));
+  void AddFileEntry(
+      const content::PathInfo& path_info,
+      content::FileSystemAccessEntryFactory::AccessTrigger trigger) {
+    entries_.push_back(
+        entry_factory_->CreateFileEntryFromPath(context_, path_info, trigger));
   }
 
   void AddDirectoryEntry(const content::PathInfo& path_info) {
+    // TODO(crbug.com/545006893): Directory launch entries currently use kOpen.
+    // Investigate whether write triggers or checks are needed when write
+    // permission may be requested. This CL is a pure refactoring so we avoid
+    // making behavioral changes here.
     entries_.push_back(entry_factory_->CreateDirectoryEntryFromPath(
         context_, path_info,
-        content::FileSystemAccessEntryFactory::UserAction::kOpen));
+        content::FileSystemAccessEntryFactory::AccessTrigger::kOpen));
   }
 
   std::vector<blink::mojom::FileSystemAccessEntryPtr> Build() {
@@ -78,110 +84,35 @@ class EntriesBuilder {
 
 LaunchQueue::LaunchQueue(content::WebContents* web_contents,
                          std::unique_ptr<LaunchQueueDelegate> delegate)
-    : content::WebContentsObserver(web_contents),
-      delegate_(std::move(delegate)) {}
+    : web_contents_(web_contents), delegate_(std::move(delegate)) {}
 
 LaunchQueue::~LaunchQueue() = default;
 
 void LaunchQueue::Enqueue(LaunchParams launch_params) {
-  DCHECK(delegate_->IsInScope(launch_params, launch_params.target_url))
-      << launch_params.target_url.spec();
+  DCHECK(delegate_->IsInScope(launch_params, launch_params.target_url()))
+      << launch_params.target_url().spec();
 
-  DCHECK(delegate_->IsValidLaunchParams(launch_params));
-
-  // Drop the existing queue state if a new launch navigation was started.
-  if (launch_params.started_new_navigation) {
-    Reset();
-    queue_.push_back(std::move(launch_params));
-    pending_navigation_ = true;
-    return;
+  if (!delegate_->IsValidLaunchParams(launch_params)) {
+    launch_params.clear_paths();
+    launch_params.clear_dir();
   }
 
-  if (!queue_.empty()) {
-    DCHECK_EQ(launch_params.app_id, queue_.front().app_id);
-  }
-  queue_.push_back(std::move(launch_params));
-  if (!pending_navigation_) {
-    SendQueuedLaunchParams(web_contents()->GetLastCommittedURL());
-  }
+  SendLaunchParams(std::move(launch_params),
+                   web_contents_->GetLastCommittedURL());
+}
+
+bool LaunchQueue::IsInScope(const LaunchParams& launch_params,
+                            const GURL& url) const {
+  return delegate_->IsInScope(launch_params, url);
 }
 
 void LaunchQueue::FlushForTesting() const {
   CHECK_IS_TEST();
   mojo::AssociatedRemote<blink::mojom::WebLaunchService> launch_service;
-  web_contents()
-      ->GetPrimaryMainFrame()
+  web_contents_->GetPrimaryMainFrame()
       ->GetRemoteAssociatedInterfaces()
       ->GetInterface(&launch_service);
   launch_service.FlushForTesting();  // IN-TEST
-}
-
-void LaunchQueue::Reset() {
-  queue_.clear();
-  pending_navigation_ = false;
-  last_sent_queued_launch_params_.reset();
-}
-
-const webapps::AppId* LaunchQueue::GetPendingLaunchAppId() const {
-  if (queue_.empty()) {
-    return nullptr;
-  }
-  return &(queue_.front().app_id);
-}
-
-void LaunchQueue::DidFinishNavigation(content::NavigationHandle* handle) {
-  // Currently, launch data is only sent the primary main frame.
-  if (!handle->IsInPrimaryMainFrame()) {
-    return;
-  }
-
-  if (pending_navigation_) {
-    if (!handle->HasCommitted() || handle->IsErrorPage() ||
-        !delegate_->IsInScope(queue_.front(), handle->GetURL())) {
-      Reset();
-      return;
-    }
-    pending_navigation_ = false;
-    SendQueuedLaunchParams(handle->GetURL());
-    return;
-  }
-
-  // Reloads have the last sent launch params re-sent as they may contain live
-  // file handles that should persist across reloads.
-  if (!base::FeatureList::IsEnabled(
-          ::webapps::features::kLaunchQueueStopSendingOnReload) &&
-      last_sent_queued_launch_params_ &&
-      handle->GetReloadType() != content::ReloadType::NONE) {
-    if (!delegate_->IsInScope(*last_sent_queued_launch_params_,
-                              handle->GetURL())) {
-      Reset();
-      return;
-    }
-
-    // LaunchParams with the `time_navigation_started_for_enqueue` set will be
-    // resent, but the latency metrics should not be measured, so the time is
-    // cleared.
-    last_sent_queued_launch_params_->time_navigation_started_for_enqueue =
-        base::TimeTicks();
-
-    SendLaunchParams(*last_sent_queued_launch_params_, handle->GetURL());
-    return;
-  }
-
-  // Leaving the document resets all queue state.
-  if (!handle->IsSameDocument()) {
-    Reset();
-  }
-}
-
-void LaunchQueue::SendQueuedLaunchParams(const GURL& current_url) {
-  for (LaunchParams& launch_params : queue_) {
-    if (&launch_params == &queue_.back()) {
-      last_sent_queued_launch_params_ = launch_params;
-    }
-    SendLaunchParams(std::move(launch_params), current_url);
-  }
-  queue_.clear();
 }
 
 void LaunchQueue::SendLaunchParams(LaunchParams launch_params,
@@ -190,34 +121,64 @@ void LaunchQueue::SendLaunchParams(LaunchParams launch_params,
   // https://crbug.com/2546057
   DCHECK(delegate_->IsInScope(launch_params, current_url))
       << current_url.spec();
-  CHECK(launch_params.target_url.is_valid());
+  CHECK(launch_params.target_url().is_valid());
+
+  // Launch params are routed to a document by URL scope (see
+  // `LaunchQueueDelegate::IsInScope()`), but URL scope does not describe the
+  // effective origin of the document that receives them. An in-scope document
+  // can commit an opaque origin, e.g. when the app serves it with
+  // `Content-Security-Policy: sandbox` without `allow-same-origin`, or when a
+  // navigation fails and commits an error page. Such a document is
+  // cross-origin to the app and must not receive the app's launch params:
+  //  - File and directory entries are origin-bound capabilities minted for the
+  //    app's origin, and the user's one-time file-handling approval was granted
+  //    to the app, not to an opaque document.
+  //  - The target URL may carry tokens or query parameters, and when the
+  //    document was not navigated to it, delivering it leaks it across the
+  //    origin boundary.
+  //
+  // Callers that reuse an existing document in place already reject opaque
+  // documents (see `WebAppTabHelper::CanBeUsedForFocusExisting()`), but this
+  // is also reached after a launch navigation commits, and whether that commit
+  // is opaque depends on the response. So this is a runtime conditional, not a
+  // CHECK: it is reachable by web content.
+  if (web_contents_->GetPrimaryMainFrame()->GetLastCommittedOrigin().opaque()) {
+    return;
+  }
+
   mojo::AssociatedRemote<blink::mojom::WebLaunchService> launch_service;
-  web_contents()
-      ->GetPrimaryMainFrame()
+  web_contents_->GetPrimaryMainFrame()
       ->GetRemoteAssociatedInterfaces()
       ->GetInterface(&launch_service);
   DCHECK(launch_service);
 
   std::vector<blink::mojom::FileSystemAccessEntryPtr> files;
 
-  if (!launch_params.paths.empty() || !launch_params.dir.empty()) {
-    EntriesBuilder entries_builder(web_contents(), launch_params.target_url,
-                                   launch_params.paths.size() + 1);
-    if (!launch_params.dir.empty()) {
+  if (!launch_params.paths().empty() || !launch_params.dir().empty()) {
+    EntriesBuilder entries_builder(web_contents_, launch_params.target_url(),
+                                   launch_params.paths().size() + 1);
+    if (!launch_params.dir().empty()) {
       entries_builder.AddDirectoryEntry(
-          delegate_->GetPathInfo(launch_params.dir));
+          delegate_->GetPathInfo(launch_params.dir()));
     }
 
-    for (const auto& path : launch_params.paths) {
-      entries_builder.AddFileEntry(delegate_->GetPathInfo(path));
+    CHECK_EQ(launch_params.paths().size(), launch_params.can_write().size());
+    for (size_t i = 0; i < launch_params.paths().size(); ++i) {
+      bool can_write = launch_params.can_write()[i];
+      content::FileSystemAccessEntryFactory::AccessTrigger trigger =
+          can_write
+              ? content::FileSystemAccessEntryFactory::AccessTrigger::kSave
+              : content::FileSystemAccessEntryFactory::AccessTrigger::kOpen;
+      entries_builder.AddFileEntry(
+          delegate_->GetPathInfo(launch_params.paths()[i]), trigger);
     }
 
     files = entries_builder.Build();
   }
   launch_service->EnqueueLaunchParams(
-      launch_params.target_url,
-      launch_params.time_navigation_started_for_enqueue,
-      launch_params.started_new_navigation, std::move(files));
+      launch_params.target_url(),
+      launch_params.time_navigation_started_for_enqueue(),
+      launch_params.started_new_navigation(), std::move(files));
 }
 
 }  // namespace webapps

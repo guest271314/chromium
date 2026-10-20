@@ -64,6 +64,8 @@
 #include "third_party/blink/renderer/platform/platform_export.h"
 #include "third_party/blink/renderer/platform/timer.h"
 #include "third_party/blink/renderer/platform/wtf/hash_set.h"
+#include "third_party/blink/renderer/platform/wtf/text/atomic_string.h"
+#include "third_party/blink/renderer/platform/wtf/text/atomic_string_hash.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_hash.h"
 
 namespace network {
@@ -270,6 +272,30 @@ class PLATFORM_EXPORT ResourceFetcher
     return preload_records_;
   }
 
+  // Information about a preconnect for the SpeculationMeasurement API.
+  struct PreconnectInfo {
+    // The serialized origin the connection was opened to.
+    String origin;
+    // The reflected crossorigin attribute value of the preconnect.
+    CrossOriginAttributeValue crossorigin = kCrossOriginAttributeNotSet;
+    // Whether the preconnect was delivered via an Early Hints response.
+    bool early_hints = false;
+  };
+
+  // Records a developer-initiated preconnect for the SpeculationMeasurement
+  // API. `crossorigin` is the reflected crossorigin attribute value.
+  // Preconnects are deduped by (origin, crossorigin); a duplicate that arrives
+  // via Early Hints upgrades the existing entry's `early_hints` flag to true.
+  void RecordPreconnect(const KURL& url,
+                        CrossOriginAttributeValue crossorigin,
+                        bool early_hints);
+
+  // Returns a map keyed by (origin, crossorigin) to PreconnectInfo for all
+  // developer-initiated preconnects.
+  const HashMap<String, PreconnectInfo>& GetPreconnectRecords() const {
+    return preconnect_records_;
+  }
+
   MHTMLArchive* Archive() const { return archive_.Get(); }
 
   // Set the deferring state of each loader owned by this ResourceFetcher. This
@@ -327,6 +353,14 @@ class PLATFORM_EXPORT ResourceFetcher
   bool ContainsAsPreload(Resource*) const;
 
   void RemovePreload(Resource*);
+
+  // Called when a CSS font face is resolved from a local font source (via
+  // src: local()). Deduplicates loads per document by font name and updates
+  // SubresourceLoadMetrics.
+  void DidLoadResourceFromFontCache(const AtomicString& font_name);
+  const SubresourceLoadMetrics& GetSubresourceLoadMetricsForTesting() const {
+    return subresource_load_metrics_;
+  }
 
   void LoosenLoadThrottlingPolicy() { scheduler_->LoosenThrottlingPolicy(); }
 
@@ -671,6 +705,10 @@ class PLATFORM_EXPORT ResourceFetcher
   // API.
   HashMap<KURL, PreloadInfo> preload_records_;
 
+  // Records of all developer-initiated preconnects for the
+  // SpeculationMeasurement API, keyed by (origin, credentials).
+  HashMap<String, PreconnectInfo> preconnect_records_;
+
   // Keeps preloads which are deferred to start loading based on the LCPP
   // signal of potentially unused preloads, in order to prevent subsequent
   // resource loading to the same resource from being scheduled, and record the
@@ -727,6 +765,7 @@ class PLATFORM_EXPORT ResourceFetcher
   std::unique_ptr<ukm::MojoUkmRecorder> ukm_recorder_;
 
   SubresourceLoadMetrics subresource_load_metrics_;
+  HashSet<AtomicString> loaded_local_fonts_;
 
   // Number of images that have had their priority boosted by heuristics.
   uint32_t boosted_image_count_ = 0;

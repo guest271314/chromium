@@ -20,11 +20,11 @@
 #import "ios/chrome/browser/omnibox/ui/popup/carousel/carousel_item.h"
 #import "ios/chrome/browser/omnibox/ui/popup/carousel/omnibox_popup_carousel_cell.h"
 #import "ios/chrome/browser/omnibox/ui/popup/omnibox_popup_mutator.h"
+#import "ios/chrome/browser/omnibox/ui/popup/omnibox_popup_util.h"
 #import "ios/chrome/browser/omnibox/ui/popup/row/actions/omnibox_popup_actions_row_content_configuration.h"
 #import "ios/chrome/browser/omnibox/ui/popup/row/actions/omnibox_popup_actions_row_delegate.h"
 #import "ios/chrome/browser/omnibox/ui/popup/row/omnibox_popup_row_content_configuration.h"
 #import "ios/chrome/browser/omnibox/ui/popup/row/omnibox_popup_row_delegate.h"
-#import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/shared/public/features/system_flags.h"
 #import "ios/chrome/browser/shared/ui/elements/self_sizing_table_view.h"
 #import "ios/chrome/browser/shared/ui/symbols/symbols.h"
@@ -35,9 +35,7 @@
 #import "ios/chrome/browser/toolbar/legacy/ui_bundled/buttons/toolbar_configuration.h"
 #import "ios/chrome/common/ui/colors/semantic_color_names.h"
 #import "ios/chrome/common/ui/util/constraints_ui_util.h"
-#import "ios/chrome/common/ui/util/device_util.h"
 #import "ios/chrome/common/ui/util/ui_util.h"
-#import "ui/base/device_form_factor.h"
 
 namespace {
 const CGFloat kBottomPadding = 8.0;
@@ -67,9 +65,9 @@ const CGFloat kCloseButtonPadding = 16.0f;
 @interface OmniboxPopupViewController () <OmniboxPopupActionsRowDelegate,
                                           OmniboxPopupCarouselCellDelegate,
                                           OmniboxPopupRowDelegate,
+                                          SelfSizingTableViewDelegate,
                                           UITableViewDataSource,
-                                          UITableViewDelegate,
-                                          SelfSizingTableViewDelegate>
+                                          UITableViewDelegate>
 
 /// Index path of currently highlighted row. The rows can be highlighted by
 /// tapping and holding on them or by using arrow keys on a hardware keyboard.
@@ -143,6 +141,8 @@ const CGFloat kCloseButtonPadding = 16.0f;
   UIButton* _closeButton;
   // Top constraints for the table view.
   NSLayoutConstraint* _constraintTableToCloseButton;
+  // The additional vertical insets for the content of the popup.
+  UIEdgeInsets _additionalVerticalContentInset;
 }
 
 @synthesize omniboxGuide = _omniboxGuide;
@@ -177,13 +177,8 @@ const CGFloat kCloseButtonPadding = 16.0f;
 // Sets the additional vertical content inset for the suggestion list.
 - (void)setAdditionalVerticalContentInset:
     (UIEdgeInsets)additionalVerticalContentInset {
-  self.tableView.contentInset = UIEdgeInsetsMake(
-      kOmniboxPopupTopPadding + additionalVerticalContentInset.top, 0,
-      additionalVerticalContentInset.bottom, 0);
-  [self.tableView
-      setContentOffset:CGPointMake(0, -self.tableView.contentInset.top)
-              animated:YES];
-  self.shouldUpdateVisibleSuggestionCount = YES;
+  _additionalVerticalContentInset = additionalVerticalContentInset;
+  [self updateTableViewForCurrentSizeClass];
 }
 
 - (void)toggleOmniboxDebuggerView {
@@ -256,9 +251,8 @@ const CGFloat kCloseButtonPadding = 16.0f;
   [self.view addSubview:self.tableView];
   [self.view addSubview:_closeButton];
 
-  AddSameConstraintsToSides(
-      self.tableView, self.view,
-      LayoutSides::kLeading | LayoutSides::kTrailing | LayoutSides::kBottom);
+  AddSameConstraintsToSides(self.tableView, self.view,
+                            LayoutSides::kBottom | LayoutSides::kHorizontal);
   AddSameConstraintsToSidesWithInsets(
       _closeButton, self.view, LayoutSides::kTop | LayoutSides::kTrailing,
       NSDirectionalEdgeInsetsMake(kCloseButtonPadding, 0, 0,
@@ -692,6 +686,22 @@ const CGFloat kCloseButtonPadding = 16.0f;
 }
 
 - (void)tableView:(UITableView*)tableView
+    didHighlightRowAtIndexPath:(NSIndexPath*)indexPath {
+  if (!IsOmniboxPrerenderOnTouchDownEnabled()) {
+    return;
+  }
+  NSUInteger row = indexPath.row;
+  NSUInteger section = indexPath.section;
+  if (section >= self.currentResult.count ||
+      row >= self.currentResult[section].suggestions.count) {
+    return;
+  }
+  NSInteger absoluteRow = [self absoluteRowIndexForIndexPath:indexPath];
+  [self.mutator prerenderSuggestion:[self suggestionAtIndexPath:indexPath]
+                              inRow:absoluteRow];
+}
+
+- (void)tableView:(UITableView*)tableView
     didSelectRowAtIndexPath:(NSIndexPath*)indexPath {
   NSUInteger row = indexPath.row;
   NSUInteger section = indexPath.section;
@@ -750,10 +760,10 @@ const CGFloat kCloseButtonPadding = 16.0f;
       initWithFrame:CGRectMake(0, 0, tableView.bounds.size.width,
                                2 / tableView.window.screen.scale)];
 
-  hairline.backgroundColor = [UIColor
-      colorNamed:ui::GetDeviceFormFactor() == ui::DEVICE_FORM_FACTOR_TABLET
-                     ? kOmniboxPopoutSuggestionRowSeparatorColor
-                     : kOmniboxSuggestionRowSeparatorColor];
+  hairline.backgroundColor =
+      [UIColor colorNamed:ShouldApplyOmniboxPopoutLayout(self)
+                              ? kOmniboxPopoutSuggestionRowSeparatorColor
+                              : kOmniboxSuggestionRowSeparatorColor];
   [footer addSubview:hairline];
   hairline.autoresizingMask = UIViewAutoresizingFlexibleWidth;
 
@@ -835,6 +845,8 @@ const CGFloat kCloseButtonPadding = 16.0f;
   contentConfiguration.text = title;
   contentConfiguration.textProperties.font =
       [UIFont systemFontOfSize:14 weight:UIFontWeightSemibold];
+  contentConfiguration.textProperties.color =
+      [UIColor colorNamed:kTextSecondaryColor];
   contentConfiguration.textProperties.transform =
       UIListContentTextTransformUppercase;
   contentConfiguration.directionalLayoutMargins = NSDirectionalEdgeInsetsMake(
@@ -851,8 +863,9 @@ const CGFloat kCloseButtonPadding = 16.0f;
         // Inset the header to match the omnibox width, similar to
         // `adjustMarginsToMatchOmniboxWidth` method.
         CGFloat leadingPadding = kHeaderPadding;
-        if (IsRegularXRegularSizeClass(strongSelf) && strongSelf.omniboxGuide) {
-          leadingPadding += CGRectGetMinX(weakSelf.omniboxGuide.layoutFrame);
+        if (ShouldApplyOmniboxPopoutLayout(strongSelf) &&
+            strongSelf.omniboxGuide) {
+          leadingPadding += CGRectGetMinX(strongSelf.omniboxGuide.layoutFrame);
         }
 
         UIListContentConfiguration* configurationCopy =
@@ -951,7 +964,8 @@ const CGFloat kCloseButtonPadding = 16.0f;
 #pragma mark - SelfSizingTableViewDelegate
 
 - (void)tableViewContentSizeDidChange:(CGSize)contentSize {
-  self.preferredContentSize = contentSize;
+  CGFloat height = self.tableView.intrinsicContentSize.height;
+  self.preferredContentSize = CGSizeMake(contentSize.width, height);
 }
 
 #pragma mark - OmniboxPopupCarouselCellDelegate
@@ -1014,7 +1028,7 @@ const CGFloat kCloseButtonPadding = 16.0f;
 /// Updates the color of the background based on the incognito-ness and the size
 /// class.
 - (void)updateBackgroundColor {
-  if (ui::GetDeviceFormFactor() == ui::DEVICE_FORM_FACTOR_TABLET) {
+  if (ShouldApplyOmniboxPopoutLayout(self)) {
     UIColor* primaryBackgroundColor =
         [UIColor colorNamed:kPrimaryBackgroundColor];
     self.view.backgroundColor = primaryBackgroundColor;
@@ -1100,9 +1114,7 @@ const CGFloat kCloseButtonPadding = 16.0f;
                                            style:UITableViewStyleGrouped];
   self.tableView.translatesAutoresizingMaskIntoConstraints = NO;
   self.tableView.delegate = self;
-  if (IsComposeboxIpadEnabled()) {
-    self.tableView.contentSizeDelegate = self;
-  }
+  self.tableView.contentSizeDelegate = self;
   self.tableView.dataSource = self;
 
   self.tableView.accessibilityIdentifier =
@@ -1119,20 +1131,7 @@ const CGFloat kCloseButtonPadding = 16.0f;
   self.tableView.contentInsetAdjustmentBehavior =
       UIScrollViewContentInsetAdjustmentAutomatic;
 
-  if (ui::GetDeviceFormFactor() == ui::DEVICE_FORM_FACTOR_TABLET) {
-    self.tableView.tableFooterView =
-        [[UIView alloc] initWithFrame:CGRectMake(0, 0, 0, FLT_MIN)];
-    [self.tableView setDirectionalLayoutMargins:NSDirectionalEdgeInsetsMake(
-                                                    kOmniboxPopupTopPadding, 0,
-                                                    kBottomPadding, 0)];
-    self.tableView.contentInset =
-        UIEdgeInsetsMake(kOmniboxPopupTopPadding, 0, kBottomPadding, 0);
-  } else {
-    [self.tableView setDirectionalLayoutMargins:NSDirectionalEdgeInsetsMake(
-                                                    0, 0, kBottomPadding, 0)];
-    self.tableView.contentInset =
-        UIEdgeInsetsMake(kOmniboxPopupTopPadding, 0, 0, 0);
-  }
+  [self updateTableViewForCurrentSizeClass];
 
   self.tableView.sectionHeaderHeight = 0.1;
   self.tableView.estimatedRowHeight = 0;
@@ -1159,14 +1158,12 @@ const CGFloat kCloseButtonPadding = 16.0f;
       configurationWithPointSize:kCloseButtonSize
                           weight:UIImageSymbolWeightRegular
                            scale:UIImageSymbolScaleMedium];
-  UIImage* buttonImage =
-      SymbolWithPalette(DefaultSymbolWithConfiguration(kXMarkCircleFillSymbol,
-                                                       symbolConfiguration),
-                        @[
-                          [[UIColor tertiaryLabelColor]
-                              colorWithAlphaComponent:kCloseButtonAlpha],
-                          [UIColor tertiarySystemFillColor]
-                        ]);
+  UIImage* buttonImage = SymbolWithPalette(
+      SymbolWithConfiguration(SymbolXMarkCircleFill, symbolConfiguration), @[
+        [[UIColor tertiaryLabelColor]
+            colorWithAlphaComponent:kCloseButtonAlpha],
+        [UIColor tertiarySystemFillColor]
+      ]);
   [_closeButton setImage:buttonImage forState:UIControlStateNormal];
 
   [_closeButton addTarget:self
@@ -1320,15 +1317,31 @@ const CGFloat kCloseButtonPadding = 16.0f;
   return _omniboxGuide;
 }
 
+// Updates table view insets and margins based on the current size class.
+- (void)updateTableViewForCurrentSizeClass {
+  CGFloat bottomInset = _additionalVerticalContentInset.bottom;
+  if (ShouldApplyOmniboxPopoutLayout(self)) {
+    bottomInset += kBottomPadding;
+    self.tableView.tableFooterView =
+        [[UIView alloc] initWithFrame:CGRectMake(0, 0, 0, FLT_MIN)];
+  }
+  self.tableView.contentInset = UIEdgeInsetsMake(
+      kOmniboxPopupTopPadding + _additionalVerticalContentInset.top, 0,
+      bottomInset, 0);
+  [self.tableView
+      setContentOffset:CGPointMake(0, -self.tableView.contentInset.top)
+              animated:YES];
+  self.shouldUpdateVisibleSuggestionCount = YES;
+}
+
 // Update the view controller's background color and notifies `delegate` when a
 // UITrait has been changed.
 - (void)updateUIOnTraitChange {
   [self updateBackgroundColor];
-
-  if (ui::GetDeviceFormFactor() == ui::DEVICE_FORM_FACTOR_TABLET) {
-    [self updateCloseButtonVisibility];
-    [self.mutator onTraitCollectionChange];
-  }
+  [self updateTableViewForCurrentSizeClass];
+  [self updateCloseButtonVisibility];
+  [self adjustMarginsToMatchOmniboxWidth];
+  [self.mutator onTraitCollectionChange];
 }
 
 @end

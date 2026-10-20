@@ -6,6 +6,7 @@
 
 #include "base/dcheck_is_on.h"
 #include "base/files/file_util.h"
+#include "base/immediate_crash.h"
 #include "base/logging.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/metrics/histogram_macros.h"
@@ -15,10 +16,13 @@
 #include "base/trace_event/trace_event.h"
 #include "build/build_config.h"
 #include "content/browser/network_sandbox_grant_result.h"
+#include "content/browser/network_sandbox_grant_result_helper.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/content_browser_client.h"
 #include "content/public/browser/network_service_util.h"
 #include "content/public/common/content_client.h"
+#include "mojo/public/cpp/bindings/remote.h"
+#include "services/network/public/cpp/transferable_directory.h"
 #include "sql/database.h"
 
 #if BUILDFLAG(IS_WIN)
@@ -52,6 +56,19 @@ struct SandboxParameters {
 #endif  // BUILDFLAG(IS_WIN)
 };
 
+SandboxParameters GetSandboxParameters() {
+  SandboxParameters sandbox_params = {};
+#if BUILDFLAG(IS_WIN)
+  sandbox_params.lpac_capability_name =
+      GetContentClient()->browser()->GetLPACCapabilityNameForNetworkService();
+#if DCHECK_IS_ON()
+  sandbox_params.sandbox_enabled =
+      GetContentClient()->browser()->ShouldSandboxNetworkService();
+#endif  // DCHECK_IS_ON()
+#endif  // BUILDFLAG(IS_WIN)
+  return sandbox_params;
+}
+
 // Deletes the old data for a data file called `filename` from `old_path`. If
 // `file_path` refers to an SQL database then `is_sql` should be set to true,
 // and the journal file will also be deleted.
@@ -69,6 +86,8 @@ SandboxGrantResult MaybeDeleteOldData(
     return SandboxGrantResult::kSuccess;
 
   // Check old path exists, and is a directory.
+  // TODO(crbug.com/571050903): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
   DCHECK(base::DirectoryExists(old_path));
 
   base::FilePath old_file_path = old_path.Append(*filename);
@@ -119,6 +138,8 @@ SandboxGrantResult MaybeCopyData(const base::FilePath& old_path,
     return SandboxGrantResult::kSuccess;
 
   // Check both paths exist, and are directories.
+  // TODO(crbug.com/571728864): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
   DCHECK(base::DirectoryExists(old_path) && base::DirectoryExists(new_path));
 
   base::FilePath old_file_path = old_path.Append(*filename);
@@ -167,6 +188,8 @@ SandboxGrantResult MaybeCopyData(const base::FilePath& old_path,
 SandboxGrantResult CleanUpOldData(
     network::mojom::NetworkContextParams* params) {
   // Never delete old data unless the checkpoint file exists.
+  // TODO(crbug.com/571386676): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
   DCHECK(base::PathExists(
       params->file_paths->data_directory.path().Append(kCheckpointFileName)));
 
@@ -227,7 +250,8 @@ bool MaybeGrantAccessToDataPath(const SandboxParameters& sandbox_params,
   if (!sandbox::policy::features::IsNetworkSandboxSupported()) {
     return true;
   }
-  DCHECK(!sandbox_params.lpac_capability_name.empty());
+  CHECK(!sandbox_params.lpac_capability_name.empty(),
+        base::NotFatalUntil::M159);
   auto ac_sids = base::win::Sid::FromNamedCapabilityVector(
       {sandbox_params.lpac_capability_name});
 
@@ -354,7 +378,8 @@ void CreateAndGrantAccessLoggingError(
 SandboxGrantResult MaybeGrantSandboxAccessToNetworkContextData(
     const SandboxParameters& sandbox_params,
     network::mojom::NetworkContextParams* params) {
-  DCHECK(!BrowserThread::CurrentlyOn(BrowserThread::UI));
+  CHECK(!BrowserThread::CurrentlyOn(BrowserThread::UI),
+        base::NotFatalUntil::M159);
 #if BUILDFLAG(IS_WIN)
 #if DCHECK_IS_ON()
   params->win_permissions_set = true;
@@ -374,7 +399,11 @@ SandboxGrantResult MaybeGrantSandboxAccessToNetworkContextData(
     //
     // Cache/
     // |-- Cache_Data/ <- `http_cache_directory`
-    // \-- No_Vary_Search/ <- `no_vary_search_directory`
+    // |-- No_Vary_Search/ <- `no_vary_search_directory`
+    // \-- Logical_Invalidation/ <- `logical_invalidation_directory`
+    //
+    // `Logical_Invalidation` is created lazily on first write by
+    // `LogicalInvalidationStore` and inherits the parent directory's ACL.
     //
     // The path must exist for the cache ACL to be set. Create if needed.
     if (base::CreateDirectory(
@@ -406,6 +435,16 @@ SandboxGrantResult MaybeGrantSandboxAccessToNetworkContextData(
       base::CreateDirectory(
           params->file_paths->no_vary_search_directory.value().path());
     }
+
+    // Not created here: `LogicalInvalidationStore` does that on its first
+    // write, because Android skips this function entirely. It still has to be
+    // a sibling so that the ACL emplaced on the shared parent above covers it.
+    if (params->file_paths->logical_invalidation_directory) {
+      CHECK_EQ(
+          params->file_paths->logical_invalidation_directory->path().DirName(),
+          params->file_paths->http_cache_directory->path().DirName())
+          << "Logical Invalidation and Cache must be siblings.";
+    }
   }
   if (params->file_paths->shared_dictionary_directory &&
       params->shared_dictionary_enabled) {
@@ -426,11 +465,11 @@ SandboxGrantResult MaybeGrantSandboxAccessToNetworkContextData(
 #if BUILDFLAG(IS_WIN) && DCHECK_IS_ON()
     // On Windows, if network sandbox is enabled then there a migration must
     // happen, so a `unsandboxed_data_path` must be specified.
-    DCHECK(!sandbox_params.sandbox_enabled);
+    CHECK(!sandbox_params.sandbox_enabled, base::NotFatalUntil::M159);
 #endif
     // Trigger migration should never be requested if `unsandboxed_data_path` is
     // not set.
-    DCHECK(!params->file_paths->trigger_migration);
+    CHECK(!params->file_paths->trigger_migration, base::NotFatalUntil::M159);
     // Nothing to do here if `unsandboxed_data_path` is not specified.
     return SandboxGrantResult::kDidNotAttemptToGrantSandboxAccess;
   }
@@ -438,8 +477,9 @@ SandboxGrantResult MaybeGrantSandboxAccessToNetworkContextData(
   // If these paths are ever the same then this is a mistake, as the file
   // permissions will be applied to the top level path which could contain other
   // data that should not be accessible by the network sandbox.
-  DCHECK_NE(params->file_paths->data_directory.path(),
-            *params->file_paths->unsandboxed_data_path);
+  CHECK_NE(params->file_paths->data_directory.path(),
+           *params->file_paths->unsandboxed_data_path,
+           base::NotFatalUntil::M159);
 
   // Four cases need to be handled here.
   //
@@ -466,7 +506,7 @@ SandboxGrantResult MaybeGrantSandboxAccessToNetworkContextData(
     // On Windows, if network sandbox is enabled then there a migration must
     // happen, so `trigger_migration` must be true, or a migration must have
     // already happened.
-    DCHECK(!sandbox_params.sandbox_enabled);
+    CHECK(!sandbox_params.sandbox_enabled, base::NotFatalUntil::M159);
 #endif
     return SandboxGrantResult::kNoMigrationRequested;
   }
@@ -612,15 +652,7 @@ void GrantSandboxAccessOnThreadPool(
     network::mojom::NetworkContextParamsPtr params,
     base::OnceCallback<void(network::mojom::NetworkContextParamsPtr,
                             SandboxGrantResult)> result_callback) {
-  SandboxParameters sandbox_params = {};
-#if BUILDFLAG(IS_WIN)
-  sandbox_params.lpac_capability_name =
-      GetContentClient()->browser()->GetLPACCapabilityNameForNetworkService();
-#if DCHECK_IS_ON()
-  sandbox_params.sandbox_enabled =
-      GetContentClient()->browser()->ShouldSandboxNetworkService();
-#endif  // DCHECK_IS_ON()
-#endif  // BUILDFLAG(IS_WIN)
+  SandboxParameters sandbox_params = GetSandboxParameters();
   base::OnceCallback<SandboxGrantResult()> worker_task =
       base::BindOnce(&MaybeGrantSandboxAccessToNetworkContextData,
                      sandbox_params, params.get());
@@ -628,6 +660,36 @@ void GrantSandboxAccessOnThreadPool(
       FROM_HERE, {base::MayBlock(), base::TaskPriority::USER_BLOCKING},
       std::move(worker_task),
       base::BindOnce(std::move(result_callback), std::move(params)));
+}
+
+void GrantSandboxAccessAndCreateNetworkContextOnThreadPool(
+    mojo::PendingRemote<network::mojom::NetworkContextCreator> context_creator,
+    mojo::PendingReceiver<network::mojom::NetworkContext> context,
+    network::mojom::NetworkContextParamsPtr params) {
+  SandboxParameters sandbox_params = GetSandboxParameters();
+
+  base::ThreadPool::CreateSequencedTaskRunner(
+      {base::MayBlock(), base::TaskPriority::USER_BLOCKING})
+      ->PostTask(
+          FROM_HERE,
+          base::BindOnce(
+              [](mojo::PendingRemote<network::mojom::NetworkContextCreator>
+                     context_creator,
+                 mojo::PendingReceiver<network::mojom::NetworkContext> context,
+                 const SandboxParameters& sandbox_params,
+                 network::mojom::NetworkContextParamsPtr params) {
+                SandboxGrantResult grant_access_result =
+                    MaybeGrantSandboxAccessToNetworkContextData(sandbox_params,
+                                                                params.get());
+                ProcessSandboxGrantResult(*params.get(), grant_access_result);
+
+                mojo::Remote<network::mojom::NetworkContextCreator> creator(
+                    std::move(context_creator));
+                creator->CreateNetworkContext(std::move(context),
+                                              std::move(params));
+              },
+              std::move(context_creator), std::move(context), sandbox_params,
+              std::move(params)));
 }
 
 }  // namespace content

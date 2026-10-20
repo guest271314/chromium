@@ -8,8 +8,11 @@
 #include <vector>
 
 #include "base/time/time.h"
+#include "mojo/public/cpp/test_support/test_utils.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/blink/public/common/page/record_content_to_visible_time_request_mojom_traits.h"
+#include "third_party/blink/public/mojom/widget/record_content_to_visible_time_request.mojom.h"
 
 namespace blink {
 
@@ -18,13 +21,33 @@ using ::testing::IsEmpty;
 using ::testing::Optional;
 using ::testing::UnorderedElementsAre;
 
+TEST(ContentToVisibleTimeRequestTest, MojoRoundTripPreservesFrozenState) {
+  const RecordContentToVisibleTimeRequest input{
+      .events = {VisibleTimeEvent{.event_start_time = base::TimeTicks::Now(),
+                                  .reason = VisibleTimeEvent::TabSwitchReason{
+                                      .destination_is_loaded = true,
+                                      .had_saved_frame_at_start = false,
+                                      .destination_is_frozen = true}}}};
+  RecordContentToVisibleTimeRequest output;
+
+  ASSERT_TRUE(mojo::test::SerializeAndDeserialize<
+              mojom::RecordContentToVisibleTimeRequest>(input, output));
+  EXPECT_EQ(input, output);
+}
+
 TEST(ContentToVisibleTimeRequestTest, ExtractTabSwitchEvents_Empty) {
   RecordContentToVisibleTimeRequest request{.events = {}};
   EXPECT_EQ(request.ExtractTabSwitchEventsWithSavedFrame(), std::nullopt);
   EXPECT_FALSE(request.AllEventsAreTabSwitchesWithSavedFrame());
 }
 
-TEST(ContentToVisibleTimeRequestTest, ExtractTabSwitchEvents_NoTabSwitches) {
+TEST(ContentToVisibleTimeRequestTest, ExtractAllTabSwitchEvents_Empty) {
+  RecordContentToVisibleTimeRequest request{.events = {}};
+  EXPECT_EQ(request.ExtractAllTabSwitchEvents(), std::nullopt);
+  EXPECT_FALSE(request.AllEventsAreTabSwitches());
+}
+
+TEST(ContentToVisibleTimeRequestTest, ExtractTabSwitchEvents_NoMatches) {
   auto event1 =
       VisibleTimeEvent{.event_start_time = base::TimeTicks::Now(),
                        .reason = VisibleTimeEvent::BFCacheRestoreReason{}};
@@ -38,7 +61,17 @@ TEST(ContentToVisibleTimeRequestTest, ExtractTabSwitchEvents_NoTabSwitches) {
   EXPECT_FALSE(request.AllEventsAreTabSwitchesWithSavedFrame());
 }
 
-TEST(ContentToVisibleTimeRequestTest, ExtractTabSwitchEvents_AllTabSwitches) {
+TEST(ContentToVisibleTimeRequestTest, ExtractAllTabSwitchEvents_NoMatches) {
+  auto event1 =
+      VisibleTimeEvent{.event_start_time = base::TimeTicks::Now(),
+                       .reason = VisibleTimeEvent::BFCacheRestoreReason{}};
+  RecordContentToVisibleTimeRequest request{.events = {event1}};
+  EXPECT_EQ(request.ExtractAllTabSwitchEvents(), std::nullopt);
+  EXPECT_THAT(request.events, UnorderedElementsAre(event1));
+  EXPECT_FALSE(request.AllEventsAreTabSwitches());
+}
+
+TEST(ContentToVisibleTimeRequestTest, ExtractTabSwitchEvents_AllMatches) {
   auto event1 = VisibleTimeEvent{
       .event_start_time = base::TimeTicks::Now(),
       .reason = VisibleTimeEvent::TabSwitchReason{
@@ -60,6 +93,34 @@ TEST(ContentToVisibleTimeRequestTest, ExtractTabSwitchEvents_AllTabSwitches) {
   EXPECT_TRUE(tab_switch_events->AllEventsAreTabSwitchesWithSavedFrame());
   EXPECT_THAT(request.events, IsEmpty());
   EXPECT_FALSE(request.AllEventsAreTabSwitchesWithSavedFrame());
+}
+
+TEST(ContentToVisibleTimeRequestTest, ExtractAllTabSwitchEvents_AllMatches) {
+  auto event1 = VisibleTimeEvent{
+      .event_start_time = base::TimeTicks::Now(),
+      .reason = VisibleTimeEvent::TabSwitchReason{
+          .destination_is_loaded = true, .had_saved_frame_at_start = true}};
+  auto event2 = VisibleTimeEvent{
+      .event_start_time = base::TimeTicks::Now(),
+      .reason = VisibleTimeEvent::TabSwitchReason{
+          .destination_is_loaded = false, .had_saved_frame_at_start = true}};
+  auto event3 = VisibleTimeEvent{
+      .event_start_time = base::TimeTicks::Now(),
+      .reason = VisibleTimeEvent::TabSwitchReason{
+          .destination_is_loaded = false, .had_saved_frame_at_start = false}};
+  RecordContentToVisibleTimeRequest request{.events = {event1, event2, event3}};
+  EXPECT_TRUE(request.AllEventsAreTabSwitches());
+
+  std::optional<RecordContentToVisibleTimeRequest> tab_switch_events =
+      request.ExtractAllTabSwitchEvents();
+  EXPECT_THAT(
+      tab_switch_events,
+      Optional(Field("events", &RecordContentToVisibleTimeRequest::events,
+                     UnorderedElementsAre(event1, event2, event3))));
+  ASSERT_TRUE(tab_switch_events.has_value());
+  EXPECT_TRUE(tab_switch_events->AllEventsAreTabSwitches());
+  EXPECT_THAT(request.events, IsEmpty());
+  EXPECT_FALSE(request.AllEventsAreTabSwitches());
 }
 
 TEST(ContentToVisibleTimeRequestTest, ExtractTabSwitchEvents_Mixed) {
@@ -92,6 +153,38 @@ TEST(ContentToVisibleTimeRequestTest, ExtractTabSwitchEvents_Mixed) {
   EXPECT_TRUE(tab_switch_events->AllEventsAreTabSwitchesWithSavedFrame());
   EXPECT_THAT(request.events, UnorderedElementsAre(event2, event4));
   EXPECT_FALSE(request.AllEventsAreTabSwitchesWithSavedFrame());
+}
+
+TEST(ContentToVisibleTimeRequestTest, ExtractAllTabSwitchEvents_Mixed) {
+  auto event1 = VisibleTimeEvent{
+      .event_start_time = base::TimeTicks::Now(),
+      .reason = VisibleTimeEvent::TabSwitchReason{
+          .destination_is_loaded = true, .had_saved_frame_at_start = true}};
+  auto event2 =
+      VisibleTimeEvent{.event_start_time = base::TimeTicks::Now(),
+                       .reason = VisibleTimeEvent::BFCacheRestoreReason{}};
+  auto event3 = VisibleTimeEvent{
+      .event_start_time = base::TimeTicks::Now(),
+      .reason = VisibleTimeEvent::TabSwitchReason{
+          .destination_is_loaded = false, .had_saved_frame_at_start = true}};
+  auto event4 = VisibleTimeEvent{
+      .event_start_time = base::TimeTicks::Now(),
+      .reason = VisibleTimeEvent::TabSwitchReason{
+          .destination_is_loaded = true, .had_saved_frame_at_start = false}};
+  RecordContentToVisibleTimeRequest request{
+      .events = {event1, event2, event3, event4}};
+  EXPECT_FALSE(request.AllEventsAreTabSwitches());
+
+  std::optional<RecordContentToVisibleTimeRequest> tab_switch_events =
+      request.ExtractAllTabSwitchEvents();
+  EXPECT_THAT(
+      tab_switch_events,
+      Optional(Field("events", &RecordContentToVisibleTimeRequest::events,
+                     UnorderedElementsAre(event1, event3, event4))));
+  ASSERT_TRUE(tab_switch_events.has_value());
+  EXPECT_TRUE(tab_switch_events->AllEventsAreTabSwitches());
+  EXPECT_THAT(request.events, UnorderedElementsAre(event2));
+  EXPECT_FALSE(request.AllEventsAreTabSwitches());
 }
 
 }  // namespace blink

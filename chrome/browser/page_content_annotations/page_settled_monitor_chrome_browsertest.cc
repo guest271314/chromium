@@ -8,13 +8,14 @@
 
 #include "base/test/scoped_feature_list.h"
 #include "base/test/test_future.h"
+#include "base/test/test_timeouts.h"
 #include "base/time/time.h"
 #include "chrome/browser/page_content_annotations/page_stability_test_utils.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "components/page_content_annotations/content/browser/page_settled_monitor.h"
 #include "components/page_content_annotations/content/mojom/page_stability.mojom.h"
 #include "components/page_content_annotations/core/page_content_annotations_features.h"
+#include "components/pdf/browser/pdf_document_helper.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/test/browser_test.h"
@@ -78,7 +79,9 @@ IN_PROC_BROWSER_TEST_F(PageSettledMonitorChromeBrowserTest,
   // Complete the fetch, ensure the monitor completes.
   Respond("NETWORK DONE");
   ASSERT_TRUE(result.Wait());
-  ASSERT_EQ(GetOutputText(), "NETWORK DONE");
+  while (GetOutputText() != "NETWORK DONE") {
+    Sleep(TestTimeouts::tiny_timeout());
+  }
 }
 
 IN_PROC_BROWSER_TEST_F(PageSettledMonitorChromeBrowserTest, WaitOnMainThread) {
@@ -144,6 +147,28 @@ IN_PROC_BROWSER_TEST_F(PageSettledMonitorChromeBrowserTest,
 
   ASSERT_TRUE(result.Wait());
   EXPECT_EQ(GetOutputText(), "INITIAL");
+}
+
+IN_PROC_BROWSER_TEST_F(PageSettledMonitorChromeBrowserTest, PdfFlow) {
+  ui_test_utils::NavigateToURLBlockUntilNavigationsComplete(
+      browser(), embedded_test_server()->GetURL("/pdf/test.pdf"),
+      /*number_of_navigations=*/1);
+
+  PageSettledMonitor monitor(main_frame(),
+                             std::make_unique<PageSettledMonitor::Delegate>(
+                                 PageSettledMonitor::PageStabilityConfig{}));
+
+  base::test::TestFuture<void> result;
+  monitor.Wait(web_contents(), result.GetCallback());
+
+  // Ensure it completes successfully.
+  ASSERT_TRUE(result.Wait());
+
+  // Verify that it is fully loaded.
+  auto* pdf_helper =
+      pdf::PDFDocumentHelper::MaybeGetForWebContents(*web_contents());
+  ASSERT_TRUE(pdf_helper);
+  EXPECT_TRUE(pdf_helper->IsDocumentLoadComplete());
 }
 
 }  // namespace

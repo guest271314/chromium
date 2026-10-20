@@ -4,8 +4,6 @@
 
 #include "content/browser/loader/subresource_proxying_url_loader.h"
 
-#include "content/browser/browsing_topics/browsing_topics_url_loader_interceptor.h"
-#include "content/browser/interest_group/ad_auction_url_loader_interceptor.h"
 #include "mojo/public/cpp/bindings/message.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "services/network/public/mojom/early_hints.mojom.h"
@@ -22,21 +20,7 @@ SubresourceProxyingURLLoader::SubresourceProxyingURLLoader(
     scoped_refptr<network::SharedURLLoaderFactory> network_loader_factory)
     : resource_request_(resource_request),
       forwarding_client_(std::move(client)) {
-  DCHECK(network_loader_factory);
-
-  CHECK(resource_request_.browsing_topics ||
-        resource_request_.ad_auction_headers);
-
-  if (resource_request_.browsing_topics) {
-    interceptors_.push_back(
-        std::make_unique<BrowsingTopicsURLLoaderInterceptor>(
-            document, resource_request_));
-  }
-
-  if (resource_request_.ad_auction_headers) {
-    interceptors_.push_back(std::make_unique<AdAuctionURLLoaderInterceptor>(
-        document, resource_request_));
-  }
+  CHECK(network_loader_factory, base::NotFatalUntil::M160);
 
   // Make a copy of `resource_request`, because we may need to modify the
   // request.
@@ -58,9 +42,7 @@ SubresourceProxyingURLLoader::SubresourceProxyingURLLoader(
 SubresourceProxyingURLLoader::~SubresourceProxyingURLLoader() = default;
 
 void SubresourceProxyingURLLoader::FollowRedirect(
-    const std::vector<std::string>& removed_headers,
-    const net::HttpRequestHeaders& modified_headers,
-    const net::HttpRequestHeaders& modified_cors_exempt_headers,
+    network::HttpRequestHeadersUpdateParams headers_update_params,
     const std::optional<GURL>& new_url) {
   if (!redirect_pending_) {
     mojo::ReportBadMessage("Unexpected FollowRedirect");
@@ -68,16 +50,13 @@ void SubresourceProxyingURLLoader::FollowRedirect(
   }
   redirect_pending_ = false;
 
-  std::vector<std::string> new_removed_headers = removed_headers;
-  net::HttpRequestHeaders new_modified_headers = modified_headers;
-
   for (auto& interceptor : interceptors_) {
-    interceptor->WillFollowRedirect(new_url, new_removed_headers,
-                                    new_modified_headers);
+    interceptor->WillFollowRedirect(new_url,
+                                    headers_update_params.removed_headers,
+                                    headers_update_params.modified_headers);
   }
 
-  loader_->FollowRedirect(new_removed_headers, new_modified_headers,
-                          modified_cors_exempt_headers, new_url);
+  loader_->FollowRedirect(std::move(headers_update_params), new_url);
 }
 
 void SubresourceProxyingURLLoader::SetPriority(net::RequestPriority priority,

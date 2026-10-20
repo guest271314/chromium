@@ -6,12 +6,13 @@ import("//components/safe_browsing/buildflags.gni")
 import("//mojo/public/tools/bindings/mojom.gni")
 
 mojom("interfaces") {
+  generate_rust = true
   sources = [ "safe_browsing.mojom" ]
 
   public_deps = [
     "//components/safe_browsing/core/common:interfaces",
     "//mojo/public/mojom/base:protobuf_support",
-    "//services/network/public/mojom",
+    "//services/network/public/mojom:mojom_http_request_headers",
     "//third_party/blink/public/mojom/tokens",
     "//url/mojom:url_mojom_gurl",
   ]
@@ -32,8 +33,6 @@ if (safe_browsing_mode != 0) {
       "file_type_policies_prefs.cc",
       "file_type_policies_prefs.h",
     ]
-
-    configs += [ "//build/config/compiler:wexit_time_destructors" ]
 
     public_deps = [
       "//base",
@@ -87,37 +86,6 @@ if (safe_browsing_mode != 0) {
       "//components/prefs:test_support",
       "//testing/gmock",
       "//testing/gtest",
-    ]
-  }
-
-  source_set("visual_utils") {
-    sources = [
-      "visual_utils.cc",
-      "visual_utils.h",
-    ]
-
-    configs += [ "//build/config/compiler:wexit_time_destructors" ]
-
-    deps = [
-      "//components/safe_browsing:buildflags",
-      "//components/safe_browsing/core/common",
-      "//components/safe_browsing/core/common/proto:client_model_proto",
-      "//components/safe_browsing/core/common/proto:csd_proto",
-      "//ui/gfx:color_utils",
-    ]
-  }
-
-  source_set("unit_tests") {
-    testonly = true
-    sources = [ "visual_utils_unittest.cc" ]
-
-    deps = [
-      ":visual_utils",
-      "//base/test:test_support",
-      "//components/safe_browsing/core/common",
-      "//testing/gmock",
-      "//testing/gtest",
-      "//ui/gfx:color_utils",
     ]
   }
 }

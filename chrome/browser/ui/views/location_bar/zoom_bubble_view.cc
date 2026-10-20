@@ -6,28 +6,25 @@
 
 #include <cmath>
 #include <memory>
+#include <optional>
 
 #include "base/auto_reset.h"
 #include "base/check.h"
 #include "base/i18n/number_formatting.h"
-#include "base/i18n/rtl.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
 #include "chrome/app/vector_icons/vector_icons.h"
 #include "chrome/browser/platform_util.h"
-#include "chrome/browser/ui/actions/chrome_action_id.h"
 #include "chrome/browser/ui/browser_tabstrip.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/dialogs/browser_dialogs.h"
 #include "chrome/browser/ui/tabs/public/tab_features.h"
-#include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/views/chrome_layout_provider.h"
 #include "chrome/browser/ui/views/location_bar/zoom_bubble_manager.h"
-#include "chrome/browser/ui/views/page_action/page_action_view.h"
-#include "chrome/browser/ui/views/page_action/zoom_view.h"
 #include "chrome/browser/ui/views/zoom/zoom_view_controller.h"
 #include "chrome/grit/generated_resources.h"
+#include "components/vector_icons/vector_icons.h"
 #include "components/zoom/page_zoom.h"
 #include "components/zoom/zoom_controller.h"
 #include "extensions/browser/extension_zoom_request_client.h"
@@ -36,12 +33,12 @@
 #include "extensions/grit/extensions_browser_resources.h"
 #include "third_party/blink/public/common/page/page_zoom.h"
 #include "third_party/skia/include/core/SkPath.h"
-#include "ui/actions/actions.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_header_macros.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/models/image_model.h"
 #include "ui/base/mojom/dialog_button.mojom.h"
+#include "ui/base/page_transition_types.h"
 #include "ui/base/resource/resource_bundle.h"
 #include "ui/base/ui_base_features.h"
 #include "ui/gfx/favicon_size.h"
@@ -54,9 +51,7 @@
 #include "ui/views/controls/button/image_button_factory.h"
 #include "ui/views/controls/button/md_text_button.h"
 #include "ui/views/controls/highlight_path_generator.h"
-#include "ui/views/controls/separator.h"
 #include "ui/views/layout/box_layout.h"
-#include "ui/views/layout/fill_layout.h"
 #include "ui/views/view_class_properties.h"
 #include "ui/views/widget/widget.h"
 
@@ -84,9 +79,10 @@ class ZoomButtonHighlightPathGenerator : public views::HighlightPathGenerator {
 std::unique_ptr<views::ImageButton> CreateZoomButton(
     views::Button::PressedCallback callback,
     const gfx::VectorIcon& icon,
-    int tooltip_id) {
-  auto zoom_button =
-      views::CreateVectorImageButtonWithNativeTheme(std::move(callback), icon);
+    int tooltip_id,
+    std::optional<int> icon_size = std::nullopt) {
+  auto zoom_button = views::CreateVectorImageButtonWithNativeTheme(
+      std::move(callback), icon, icon_size);
   zoom_button->SetTooltipText(l10n_util::GetStringUTF16(tooltip_id));
   views::HighlightPathGenerator::Install(
       zoom_button.get(), std::make_unique<ZoomButtonHighlightPathGenerator>());
@@ -126,7 +122,7 @@ class ZoomValue : public views::Label {
     const int border_width = GetInsets().width();
     int max_w = 0;
     auto* zoom_controller = zoom::ZoomController::FromWebContents(web_contents);
-    DCHECK(zoom_controller);
+    CHECK(zoom_controller, base::NotFatalUntil::M162);
     // Enumerate all zoom factors that can be used in PageZoom::Zoom.
     std::vector<double> zoom_factors =
         zoom::PageZoom::PresetZoomFactors(zoom_controller->GetZoomPercent());
@@ -290,17 +286,20 @@ void ZoomBubbleView::Init() {
   };
 
   // Add Zoom Out ("-") button.
+  const int zoom_out_icon_size = 20;
   zoom_out_button_ = AddChildView(CreateZoomButton(
       zoom_callback(content::PAGE_ZOOM_OUT),
       features::IsRoundedIconsEnabled() ? kRemoveIcon : kRemoveOldIcon,
-      IDS_ACCNAME_ZOOM_MINUS2));
+      IDS_ACCNAME_ZOOM_MINUS2,
+      features::IsRoundedIconsEnabled() ? std::make_optional(zoom_out_icon_size)
+                                        : std::nullopt));
   zoom_out_button_->SetProperty(views::kMarginsKey,
                                 gfx::Insets(vector_button_margin));
 
   // Add Zoom In ("+") button.
   zoom_in_button_ = AddChildView(CreateZoomButton(
       zoom_callback(content::PAGE_ZOOM_IN),
-      features::IsRoundedIconsEnabled() ? kAddIcon : kAddOldIcon,
+      features::IsRoundedIconsEnabled() ? vector_icons::kAdd2Icon : kAddOldIcon,
       IDS_ACCNAME_ZOOM_PLUS2));
   zoom_in_button_->SetProperty(views::kMarginsKey,
                                gfx::Insets(vector_button_margin));
@@ -327,7 +326,7 @@ void ZoomBubbleView::OnExtensionIconImageChanged(
 }
 
 void ZoomBubbleView::SetExtensionInfo(const extensions::Extension* extension) {
-  DCHECK(extension);
+  CHECK(extension, base::NotFatalUntil::M162);
   extension_info_.id = extension->id();
   extension_info_.name = extension->name();
 
@@ -373,12 +372,15 @@ void ZoomBubbleView::UpdateZoomPercent() {
   double default_zoom_level = zoom_controller->GetDefaultZoomLevel();
   std::vector<double> zoom_levels =
       zoom::PageZoom::PresetZoomLevels(default_zoom_level);
-  DCHECK(zoom_out_button_);
+  CHECK(zoom_out_button_);
   zoom_out_button_->SetEnabled(
       !blink::ZoomValuesEqual(zoom_levels.front(), current_zoom_level));
-  DCHECK(zoom_in_button_);
+  CHECK(zoom_in_button_);
   zoom_in_button_->SetEnabled(
       !blink::ZoomValuesEqual(zoom_levels.back(), current_zoom_level));
+  CHECK(reset_button_);
+  reset_button_->SetEnabled(
+      !blink::ZoomValuesEqual(current_zoom_level, default_zoom_level));
 }
 
 void ZoomBubbleView::StartTimerIfNecessary() {
@@ -416,7 +418,7 @@ void ZoomBubbleView::ButtonPressed(base::RepeatingClosure closure) {
 void ZoomBubbleView::ImageButtonPressed() {
   DCHECK(extension_info_.icon_image) << "Invalid button press.";
   chrome::AddSelectedTabWithURL(
-      browser_->GetBrowserForMigrationOnly(),
+      browser_,
       GURL(base::StringPrintf("chrome://extensions?id=%s",
                               extension_info_.id.c_str())),
       ui::PAGE_TRANSITION_FROM_API);

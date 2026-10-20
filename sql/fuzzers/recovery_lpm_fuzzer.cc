@@ -41,6 +41,7 @@
 #include "build/buildflag.h"
 #include "sql/database.h"
 #include "sql/fuzzers/sql_disk_corruption.pb.h"
+#include "sql/fuzzers/sql_disk_corruption_fuzzable.pb.h"
 #include "sql/recovery.h"
 #include "sql/statement.h"
 #include "sql/test/test_helpers.h"
@@ -142,7 +143,11 @@ class Environment {
 #if BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
     base::CommandLine::Init(0, nullptr);
     base::FilePath shmem_temp_dir;
-    CHECK(base::GetShmemTempDir(false, &shmem_temp_dir));
+    if (char* env_shmdir = std::getenv("SQL_RECOVERY_FUZZER_TEMP_DIR")) {
+      shmem_temp_dir = base::FilePath(env_shmdir);
+    } else {
+      CHECK(base::GetShmemTempDir(false, &shmem_temp_dir));
+    }
     base::ScopedTempDir temp_dir;
     CHECK(temp_dir.CreateUniqueTempDirUnderPath(shmem_temp_dir));
     return temp_dir;
@@ -238,7 +243,16 @@ std::ostream& operator<<(std::ostream& os, const TestCase& test_case) {
 
 }  // namespace
 
-DEFINE_PROTO_FUZZER(const sql_fuzzers::RecoveryFuzzerTestCase& fuzzer_input) {
+DEFINE_PROTO_FUZZER(const fuzzable::sql_fuzzers::RecoveryFuzzerTestCase&
+                        fuzzable_fuzzer_input) {
+  std::string serialized;
+  CHECK(fuzzable_fuzzer_input.SerializeToString(&serialized));
+  sql_fuzzers::RecoveryFuzzerTestCase fuzzer_input;
+  // Recursion limits can cause parsing to fail.
+  if (!fuzzer_input.ParseFromString(serialized)) {
+    return;
+  }
+
   static Environment env;
 
   // Ignore this input if it includes any "ATTACH DATABASE" queries. These
@@ -284,8 +298,8 @@ DEFINE_PROTO_FUZZER(const sql_fuzzers::RecoveryFuzzerTestCase& fuzzer_input) {
 
   // Mutate the backing file. Skip the expensive file operations when there are
   // no bytes to mutate.
-  std::optional<int64_t> file_length = GetFileSize(env.db_path());
-  if (*file_length > 0) {
+  std::optional<int64_t> file_length = base::GetFileSize(env.db_path());
+  if (file_length.value_or(0) > 0) {
     base::File file(env.db_path(), base::File::FLAG_OPEN |
                                        base::File::FLAG_READ |
                                        base::File::FLAG_WRITE);

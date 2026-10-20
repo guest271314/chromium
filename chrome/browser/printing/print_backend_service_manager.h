@@ -25,7 +25,6 @@
 #include "build/build_config.h"
 #include "chrome/services/printing/public/mojom/print_backend_service.mojom.h"
 #include "mojo/public/cpp/bindings/remote.h"
-#include "mojo/public/cpp/bindings/remote_set.h"
 #include "printing/buildflags/buildflags.h"
 
 #if BUILDFLAG(ENABLE_OOP_BASIC_PRINT_DIALOG)
@@ -41,10 +40,6 @@ class ScopedPrinterInfo;
 }
 
 namespace printing {
-
-#if BUILDFLAG(IS_WIN)
-class PrinterXmlParserImpl;
-#endif  // BUILDFLAG(IS_WIN)
 
 class PrintedPage;
 
@@ -615,12 +610,6 @@ class PrintBackendServiceManager {
       const ClientsSet& query_clients,
       const QueryWithUiClientsMap& query_with_ui_clients,
       const PrintClientsMap& print_document_clients);
-
-#if BUILDFLAG(IS_WIN)
-  // Printer XML Parser implementation used to allow Print Backend Service to
-  // send XML parse requests to the browser process.
-  std::unique_ptr<PrinterXmlParserImpl> xml_parser_;
-#endif  // BUILDFLAG(IS_WIN)
 
   // Bundles of remotes for the Print Backend Service and their corresponding
   // wrapping hosts, to manage these sets until they disconnect.  The sandboxed

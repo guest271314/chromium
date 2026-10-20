@@ -5,17 +5,19 @@
 #ifndef CHROME_BROWSER_GLIC_HOST_CONTEXT_GLIC_TAB_FAVICON_OBSERVER_H_
 #define CHROME_BROWSER_GLIC_HOST_CONTEXT_GLIC_TAB_FAVICON_OBSERVER_H_
 
-#include <map>
 #include <memory>
-#include <set>
 
 #include "base/memory/raw_ptr.h"
 #include "base/timer/timer.h"
-#include "chrome/browser/glic/host/glic.mojom.h"
+#include "chrome/browser/glic/host/glic.mojom-forward.h"
 #include "components/tabs/public/tab_interface.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
 #include "third_party/abseil-cpp/absl/container/flat_hash_map.h"
 #include "third_party/abseil-cpp/absl/container/flat_hash_set.h"
+
+#if BUILDFLAG(IS_ANDROID)
+#include "chrome/browser/android/tab_favicon.h"
+#endif
 
 class Profile;
 
@@ -40,6 +42,14 @@ class GlicTabFaviconObserver {
 
   // For internal use.
   void ScheduleCleanupForTab(tabs::TabHandle tab_handle);
+
+#if BUILDFLAG(IS_ANDROID)
+  TabFavicon::Observer* GetTabFaviconObserverForTesting(
+      tabs::TabInterface::Handle handle);
+#endif
+
+  bool HasTabObserverForTesting(tabs::TabInterface::Handle handle);
+  void FireCleanupTimerForTesting();
 
  private:
   class TabObserver;

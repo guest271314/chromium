@@ -4,6 +4,7 @@
 
 #include "third_party/blink/renderer/platform/graphics/mailbox_texture_backing.h"
 
+#include "cc/paint/texture_backing.h"
 #include "components/viz/common/gpu/raster_context_provider.h"
 #include "third_party/blink/renderer/platform/graphics/accelerated_static_bitmap_image.h"
 #include "third_party/blink/renderer/platform/graphics/mailbox_ref.h"
@@ -34,7 +35,7 @@ MailboxTextureBacking::MailboxTextureBacking(
 }
 
 MailboxTextureBacking::~MailboxTextureBacking() {
-  DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
+  CHECK(thread_checker_.CalledOnValidThread());
   gpu::raster::RasterInterface* ri = context_provider_->RasterInterface();
   // Update the sync token for MailboxRef.
   ri->WaitSyncTokenCHROMIUM(mailbox_ref_->sync_token().GetConstData());
@@ -51,8 +52,18 @@ gpu::Mailbox MailboxTextureBacking::GetMailbox() const {
   return shared_image_->mailbox();
 }
 
+void MailboxTextureBacking::Bind(scoped_refptr<cc::TextureBackingContext>) {
+  // TODO(paint-dev): Do we need to support this for html-in-canvas?
+  CHECK(thread_checker_.CalledOnValidThread());
+}
+
+void MailboxTextureBacking::Unbind() {
+  // TODO(paint-dev): Do we need to support this for html-in-canvas?
+  CHECK(thread_checker_.CalledOnValidThread());
+}
+
 sk_sp<SkImage> MailboxTextureBacking::GetSkImageViaReadback() {
-  DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
+  CHECK(thread_checker_.CalledOnValidThread());
   // TODO(jochin): Consider doing some caching and using discardable memory.
   sk_sp<SkData> image_pixels =
       TryAllocateSkData(sk_image_info_.computeMinByteSize());
@@ -63,7 +74,7 @@ sk_sp<SkImage> MailboxTextureBacking::GetSkImageViaReadback() {
       static_cast<uint8_t*>(image_pixels->writable_data());
   gpu::raster::RasterInterface* ri = context_provider_->RasterInterface();
   if (!ri->ReadbackImagePixels(
-          GetMailbox(), sk_image_info_,
+          GetMailbox(), shared_image_->size(), sk_image_info_,
           static_cast<GLuint>(sk_image_info_.minRowBytes()), 0, 0,
           /*plane_index=*/0, writable_pixels)) {
     return nullptr;
@@ -78,11 +89,11 @@ bool MailboxTextureBacking::readPixels(const SkImageInfo& dst_info,
                                        size_t dst_row_bytes,
                                        int src_x,
                                        int src_y) {
-  DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
+  CHECK(thread_checker_.CalledOnValidThread());
   gpu::raster::RasterInterface* ri = context_provider_->RasterInterface();
-  return ri->ReadbackImagePixels(GetMailbox(), dst_info,
-                                 static_cast<GLuint>(dst_info.minRowBytes()),
-                                 src_x, src_y, /*plane_index=*/0, dst_pixels);
+  return ri->ReadbackImagePixels(GetMailbox(), shared_image_->size(), dst_info,
+                                 static_cast<GLuint>(dst_row_bytes), src_x,
+                                 src_y, /*plane_index=*/0, dst_pixels);
 }
 
 }  // namespace blink

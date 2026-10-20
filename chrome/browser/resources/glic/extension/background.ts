@@ -24,7 +24,8 @@ chrome.runtime.onMessageExternal.addListener(
       }
 
       if (message && message.type === 'glicPrivate.getState') {
-        const state = await chrome.glicPrivate.getState(sender.documentId);
+        const state =
+            await chrome.glicPrivate.getState(sender.documentId, message.args);
         return {state};
       }
 
@@ -38,9 +39,6 @@ chrome.runtime.onMessageExternal.addListener(
           details = message.args[0];
         }
 
-        if (!details.promptId) {
-          throw new Error('missing promptId');
-        }
         if (!details.invocationSource) {
           throw new Error('missing invocationSource');
         }
@@ -49,7 +47,28 @@ chrome.runtime.onMessageExternal.addListener(
           invocationSource: details.invocationSource,
           documentId: sender.documentId,
           inNewTab: details.inNewTab,
+          conversationId: details.conversationId,
+          turnId: details.turnId,
         });
+      }
+
+      if (message && message.type === 'glicPrivate.hasConversation') {
+        if (!message.args || !message.args.conversationId) {
+          return {error: 'missing conversationId'};
+        }
+        const isPresent = await chrome.glicPrivate.hasConversation(
+            message.args.conversationId);
+        return {isPresent};
+      }
+
+      if (message &&
+          message.type === 'glicPrivate.activateTabWithConversation') {
+        if (!message.args || !message.args.conversationId) {
+          return {error: 'missing conversationId'};
+        }
+        await chrome.glicPrivate.activateTabWithConversation(
+            message.args.conversationId);
+        return;
       }
 
       throw new Error(`Unhandled message: ${JSON.stringify(message)}`);

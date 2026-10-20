@@ -8,6 +8,9 @@ source_set("delegate") {
     "actor_login_credential_filler.h",
     "actor_login_credentials_fetcher.h",
     "actor_login_delegate.h",
+    "actor_login_delegate_client.h",
+    "actor_login_delegate_impl.cc",
+    "actor_login_delegate_impl.h",
     "actor_login_form_finder.cc",
     "actor_login_form_finder.h",
     "actor_login_get_credentials_helper.cc",
@@ -20,22 +23,27 @@ source_set("delegate") {
     "actor_login_password_credentials_fetcher.cc",
     "actor_login_password_credentials_fetcher.h",
     "actor_login_siwg_controller_interface.h",
+    "actor_login_web_content_interface.h",
   ]
 
   visibility = [
     ":unit_tests",
     "//chrome/browser/password_manager/actor_login:*",
     "//chrome/browser/password_manager/actor_login/internal:*",
+    "//components/password_manager/core/browser/actor_login:*",
     "//components/password_manager/core/browser/actor_login/test:*",
+    "//ios/chrome/browser/passwords/model/actor_login:*",
   ]
 
   deps = [
+    ":permission_cleaner",
     "//base",
     "//components/device_reauth",
     "//components/optimization_guide/proto:optimization_guide_proto",
     "//components/password_manager/core/browser",
     "//components/password_manager/core/browser:password_form",
     "//components/password_manager/core/browser/actor_login:common",
+    "//components/password_manager/core/browser/actor_login:frame_util",
     "//components/password_manager/core/browser/features:password_features",
     "//components/strings:components_strings",
     "//components/url_formatter",
@@ -56,6 +64,7 @@ source_set("permission_service_impl") {
     ":unit_tests",
     "//chrome/browser/password_manager/actor_login:*",
     "//components/password_manager/core/browser/actor_login:*",
+    "//ios/chrome/browser/passwords/model/actor_login:*",
   ]
 
   deps = [
@@ -80,10 +89,12 @@ source_set("permission_cleaner") {
   ]
 
   visibility = [
+    ":delegate",
     ":unit_tests",
     "//chrome/browser/password_manager/actor_login:*",
     "//chrome/browser/password_manager/actor_login/internal:*",
     "//components/password_manager/core/browser/actor_login:*",
+    "//ios/chrome/browser/passwords/model/actor_login:*",
   ]
 
   deps = [
@@ -98,6 +109,7 @@ source_set("unit_tests") {
   testonly = true
   sources = [
     "actor_login_credential_filler_unittest.cc",
+    "actor_login_delegate_impl_unittest.cc",
     "actor_login_duplicate_permission_cleaner_unittest.cc",
     "actor_login_get_credentials_helper_unittest.cc",
     "actor_login_password_credentials_fetcher_unittest.cc",
@@ -116,7 +128,9 @@ source_set("unit_tests") {
     "//components/password_manager/core/browser/actor_login/test:test_support",
     "//components/password_manager/core/browser/affiliation:affiliation_match_helper",
     "//components/password_manager/core/browser/features:password_features",
+    "//components/prefs:test_support",
     "//components/proto_extras:proto_matchers",
+    "//components/ukm:test_support",
     "//google_apis/common",
     "//services/network:test_support",
     "//testing/gmock",

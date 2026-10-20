@@ -10,7 +10,8 @@
 #include "base/check.h"
 #include "base/check_op.h"
 #include "base/feature_list.h"
-#include "components/language/core/common/language_util.h"
+#include "base/i18n/language_tag.h"
+#include "base/i18n/tag_converters.h"
 #include "components/live_caption/caption_bubble_settings.h"
 #include "components/live_caption/views/format_constants.h"
 #include "components/strings/grit/components_strings.h"
@@ -19,6 +20,7 @@
 #include "components/vector_icons/vector_icons.h"
 #include "media/base/media_switches.h"
 #include "ui/base/cursor/cursor.h"
+#include "ui/base/l10n/chromium_language_matcher.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_header_macros.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
@@ -40,12 +42,28 @@
 namespace captions {
 namespace {
 
+using ::base::i18n::GetKnownLanguageTag;
+using ::base::i18n::GetLanguageTagFromString;
+using ::base::i18n::LanguageTag;
+
 void InitButton(views::MdTextButton* button, views::Label* label) {
   button->SetCustomPadding(kLanguageButtonInsets);
   label->SetMultiLine(false);
   button->SetImageLabelSpacing(kLanguageButtonImageLabelSpacing);
   button->SetBgColorIdOverride(ui::kColorLiveCaptionBubbleButtonBackground);
   button->SetPaintToLayer();
+}
+
+LanguageTag GetCanonicalLanguageTag(std::string_view language_code) {
+  std::optional<LanguageTag> tag = GetLanguageTagFromString(language_code);
+  if (!tag) {
+    return GetKnownLanguageTag("und");
+  }
+  if (tag == GetKnownLanguageTag("zh-TW") ||
+      tag == GetKnownLanguageTag("zh-CN")) {
+    return *tag;
+  }
+  return tag->WithLanguageSubtagOnly();
 }
 
 }  // namespace
@@ -116,10 +134,10 @@ void TranslationViewWrapperBase::Init(views::View* translate_container,
                                                              &language_codes);
   std::string source_language_code =
       caption_bubble_settings()->GetLiveCaptionLanguageCode();
-  language::ToTranslateLanguageSynonym(&source_language_code);
   std::string target_language_code =
-      caption_bubble_settings()->GetLiveTranslateTargetLanguageCode();
-  language::ToTranslateLanguageSynonym(&target_language_code);
+      std::string(caption_bubble_settings()
+                      ->GetLiveTranslateTargetLanguageCode()
+                      .tag_string());
   translate_ui_languages_manager_ =
       std::make_unique<translate::TranslateUILanguagesManager>(
           language_codes, source_language_code, target_language_code);
@@ -238,16 +256,15 @@ void TranslationViewWrapperBase::UpdateLanguageLabel() {
 
 void TranslationViewWrapperBase::OnAutoDetectedLanguageChanged(
     std::string auto_detected_language_code) {
-  language::ToTranslateLanguageSynonym(&auto_detected_language_code);
   translate_ui_languages_manager_->UpdateSourceLanguage(
       auto_detected_language_code);
   source_language_text_ = GetSourceLanguageName();
 
   std::string live_caption_language_code =
       caption_bubble_settings()->GetLiveCaptionLanguageCode();
-  language::ToTranslateLanguageSynonym(&live_caption_language_code);
   auto_detected_source_language_ =
-      live_caption_language_code != auto_detected_language_code;
+      GetCanonicalLanguageTag(live_caption_language_code) !=
+      GetCanonicalLanguageTag(auto_detected_language_code);
   UpdateLanguageLabel();
   delegate_->OnLanguageChanged(GetDisplayLanguage());
 }
@@ -290,9 +307,13 @@ views::View* TranslationViewWrapperBase::GetTranslateArrowIconForTesting() {
 
 void TranslationViewWrapperBase::SetTargetLanguageForTesting(
     const std::string& language_code) {
+  base::i18n::LanguageTag language_tag =
+      base::i18n::LanguageTagConverter::GetInstance()
+          .FromString(language_code)
+          .value_or(base::i18n::GetKnownLanguageTag("und"));
   for (size_t i = 0;
        i < translate_ui_languages_manager_->GetNumberOfLanguages(); ++i) {
-    if (language_code ==
+    if (language_tag.tag_string() ==
         translate_ui_languages_manager_->GetLanguageCodeAt(i)) {
       ExecuteCommand(/*target_language_code_index=*/i, /*event_flags=*/0);
     }
@@ -390,10 +411,12 @@ void TranslationViewWrapperBase::ExecuteCommand(int target_language_code_index,
       translate_ui_languages_manager_->UpdateTargetLanguageIndex(
           target_language_code_index);
   if (updated) {
-    std::string target_language_code = GetTargetLanguageCode();
-    language::ToChromeLanguageSynonym(&target_language_code);
-    caption_bubble_settings()->SetLiveTranslateTargetLanguageCode(
-        target_language_code);
+    std::optional<LanguageTag> parsed_tag =
+        GetLanguageTagFromString(GetTargetLanguageCode());
+    if (parsed_tag) {
+      caption_bubble_settings()->SetLiveTranslateTargetLanguageCode(
+          *parsed_tag);
+    }
   }
 }
 
@@ -412,7 +435,6 @@ void TranslationViewWrapperBase::OnLiveCaptionLanguageChanged() {
   auto_detected_source_language_ = false;
   std::string source_language_code =
       caption_bubble_settings()->GetLiveCaptionLanguageCode();
-  language::ToTranslateLanguageSynonym(&source_language_code);
   translate_ui_languages_manager_->UpdateSourceLanguage(source_language_code);
   source_language_text_ = GetSourceLanguageName();
   UpdateLanguageLabel();
@@ -421,8 +443,9 @@ void TranslationViewWrapperBase::OnLiveCaptionLanguageChanged() {
 
 void TranslationViewWrapperBase::OnLiveTranslateTargetLanguageChanged() {
   std::string target_language_code =
-      caption_bubble_settings()->GetLiveTranslateTargetLanguageCode();
-  language::ToTranslateLanguageSynonym(&target_language_code);
+      std::string(caption_bubble_settings()
+                      ->GetLiveTranslateTargetLanguageCode()
+                      .tag_string());
   translate_ui_languages_manager_->UpdateTargetLanguage(target_language_code);
   target_language_text_ = GetTargetLanguageName();
   UpdateLanguageLabel();

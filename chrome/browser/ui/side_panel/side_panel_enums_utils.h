@@ -66,6 +66,18 @@ inline std::string ToString(SidePanelOpenTrigger trigger) {
     case SidePanelOpenTrigger::kWindowResized:
       return "WindowResized";
 #endif
+    case SidePanelOpenTrigger::kGlicOpened:
+      return "GlicOpened";
+    case SidePanelOpenTrigger::kContextualTasks:
+      return "ContextualTasks";
+    case SidePanelOpenTrigger::kReadAnythingListenToThisPageContextMenu:
+      return "ReadAnythingListenToThisPageContextMenu";
+    case SidePanelOpenTrigger::kReadAnythingUnknown:
+      return "ReadAnythingUnknown";
+    case SidePanelOpenTrigger::kPdfTranslation:
+      return "PdfTranslation";
+    case SidePanelOpenTrigger::kUnknown:
+      return "Unknown";
   }
   NOTREACHED();
 }

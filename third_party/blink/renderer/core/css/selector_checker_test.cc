@@ -339,7 +339,7 @@ TEST_P(MatchFlagsTest, All) {
   using Bits = std::bitset<sizeof(MatchFlags) * 8>;
 
   SCOPED_TRACE(param.selector);
-  EXPECT_EQ(Bits(param.expected), Bits(result.flags));
+  EXPECT_EQ(Bits(param.expected), Bits(result.flags & ~kPrecomputedHoverMask));
 }
 
 class ImpactTest : public PageTestBase {
@@ -386,7 +386,7 @@ class ImpactTest : public PageTestBase {
     SelectorChecker::MatchResult result;
     checker.Match(context, result);
 
-    return result.flags;
+    return result.flags & ~kPrecomputedHoverMask;
   }
 };
 
@@ -1165,7 +1165,7 @@ TEST_F(EasySelectorCheckerTest, IsEasy) {
   EXPECT_FALSE(IsEasy(".a > .b .c"));
   EXPECT_FALSE(IsEasy(".a ~ .b"));
   EXPECT_FALSE(IsEasy("&"));
-  EXPECT_FALSE(IsEasy(":not(.a)"));
+  EXPECT_TRUE(IsEasy(":not(.a)"));
   EXPECT_TRUE(IsEasy(":not(div)"));
 }
 
@@ -1194,6 +1194,9 @@ TEST_F(EasySelectorCheckerTest, SmokeTest) {
   EXPECT_FALSE(Matches("div#a #c.cls1", "b"));
   EXPECT_FALSE(Matches("#c .cls1", "c"));
   EXPECT_FALSE(Matches("div #a .cls1", "c"));
+  EXPECT_TRUE(Matches(":not(.cls1)", "b"));
+  EXPECT_FALSE(Matches(":not(.cls1)", "c"));
+  EXPECT_TRUE(Matches("div:not(.cls1)", "b"));
 }
 
 class SelectorCheckerTest : public PageTestBase {};

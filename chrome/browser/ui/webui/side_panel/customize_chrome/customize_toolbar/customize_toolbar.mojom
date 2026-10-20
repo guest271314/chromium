@@ -34,7 +34,7 @@ enum ActionId {
   kTabSearch,
   kSplitTab,
   kContextualTasks,
-  kShowTabsFromOtherDevices,
+  kTtc,
 };
 
 // Unique identifiers for categories the actions can belong to.

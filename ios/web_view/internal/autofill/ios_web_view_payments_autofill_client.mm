@@ -13,6 +13,7 @@
 #import "base/notimplemented.h"
 #import "components/autofill/core/browser/data_manager/payments/payments_data_manager.h"
 #import "components/autofill/core/browser/data_model/payments/bnpl_issuer.h"
+#import "components/autofill/core/browser/payments/autofill_error_dialog_context.h"
 #import "components/autofill/core/browser/payments/bnpl_util.h"
 #import "components/autofill/core/browser/payments/card_unmask_challenge_option.h"
 #import "components/autofill/core/browser/payments/credit_card_cvc_authenticator.h"
@@ -33,7 +34,6 @@
 #import "ios/web_view/internal/autofill/web_view_autofill_client_ios.h"
 #import "ios/web_view/internal/web_view_browser_state.h"
 #import "services/network/public/cpp/weak_wrapper_shared_url_loader_factory.h"
-#import "url/gurl.h"
 
 namespace autofill::payments {
 
@@ -226,7 +226,9 @@ IOSWebViewPaymentsAutofillClient::GetMultipleRequestPaymentsNetworkInterface() {
 }
 
 void IOSWebViewPaymentsAutofillClient::ShowAutofillErrorDialog(
-    AutofillErrorDialogContext context) {}
+    AutofillErrorDialogContext context) {
+  [bridge_ showAutofillErrorDialogWithContext:context];
+}
 
 PaymentsWindowManager*
 IOSWebViewPaymentsAutofillClient::GetPaymentsWindowManager() {
@@ -307,14 +309,8 @@ IOSWebViewPaymentsAutofillClient::GetRiskBasedAuthenticator() {
   return risk_based_authenticator_.get();
 }
 
-bool IOSWebViewPaymentsAutofillClient::IsRiskBasedAuthEffectivelyAvailable()
-    const {
-  return GetPrefService()->GetBoolean(
-      ios_web_view::kRiskBasedAuthenticationEnabled);
-}
-
 bool IOSWebViewPaymentsAutofillClient::IsMandatoryReauthEnabled() {
-  return false;
+  return [bridge_ shouldRequireMandatoryReauth];
 }
 
 void IOSWebViewPaymentsAutofillClient::ShowMandatoryReauthOptInPrompt(
@@ -345,14 +341,6 @@ IOSWebViewPaymentsAutofillClient::GetMerchantPromoCodeManager() {
   return nullptr;
 }
 
-void IOSWebViewPaymentsAutofillClient::OpenPromoCodeOfferDetailsURL(
-    const GURL& url) {
-  web_state_->OpenURL(web::WebState::OpenURLParams(
-      url, web::Referrer(), WindowOpenDisposition::NEW_FOREGROUND_TAB,
-      ui::PageTransition::PAGE_TRANSITION_AUTO_TOPLEVEL,
-      /*is_renderer_initiated=*/false));
-}
-
 AutofillOfferManager*
 IOSWebViewPaymentsAutofillClient::GetAutofillOfferManager() {
   return nullptr;
@@ -364,26 +352,33 @@ void IOSWebViewPaymentsAutofillClient::UpdateOfferNotification(
 
 void IOSWebViewPaymentsAutofillClient::DismissOfferNotification() {}
 
+bool IOSWebViewPaymentsAutofillClient::IsTabVisibleForOfferNotification()
+    const {
+  // Offer notifications are not supported on iOS.
+  NOTIMPLEMENTED();
+  return false;
+}
+
 bool IOSWebViewPaymentsAutofillClient::ShowTouchToFillCreditCard(
-    base::WeakPtr<TouchToFillDelegate> delegate,
+    base::WeakPtr<TouchToFillPaymentMethodDelegate> delegate,
     base::span<const Suggestion> suggestions) {
   return false;
 }
 
 bool IOSWebViewPaymentsAutofillClient::ShowTouchToFillIban(
-    base::WeakPtr<TouchToFillDelegate> delegate,
+    base::WeakPtr<TouchToFillPaymentMethodDelegate> delegate,
     base::span<const Iban> ibans_to_suggest) {
   return false;
 }
 
 bool IOSWebViewPaymentsAutofillClient::ShowTouchToFillAffiliatedLoyaltyCard(
-    base::WeakPtr<TouchToFillDelegate> delegate,
+    base::WeakPtr<TouchToFillPaymentMethodDelegate> delegate,
     std::vector<LoyaltyCard> loyalty_cards_to_suggest) {
   return false;
 }
 
 bool IOSWebViewPaymentsAutofillClient::ShowTouchToFillForAllLoyaltyCards(
-    base::WeakPtr<TouchToFillDelegate> delegate,
+    base::WeakPtr<TouchToFillPaymentMethodDelegate> delegate,
     std::vector<LoyaltyCard> loyalty_cards_to_suggest) {
   return false;
 }
@@ -458,7 +453,7 @@ void IOSWebViewPaymentsAutofillClient::ShowCreditCardSaveAndFillPendingDialog(
 
 void IOSWebViewPaymentsAutofillClient::HideCreditCardSaveAndFillDialog() {}
 
-bool IOSWebViewPaymentsAutofillClient::IsTabModalPopupDeprecated() const {
+bool IOSWebViewPaymentsAutofillClient::IsTabModalPopup() const {
   return false;
 }
 

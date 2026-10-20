@@ -122,6 +122,11 @@ void RecordGameInputTriggerRumbleSupport(bool has_trigger_rumble) {
                             has_trigger_rumble);
 }
 
+// Record the HRESULT returned by the GameInputCreate function.
+void RecordGameInputCreateResult(HRESULT hr) {
+  base::UmaHistogramSparse("Gamepad.Win.GameInput.GameInputCreateResult", hr);
+}
+
 // Record a guide button press in the GameInput data fetcher. Uses a boolean
 // histogram as a counter (always records true).
 void RecordGameInputGuideButtonPress() {
@@ -174,7 +179,9 @@ void GameInputDataFetcher::OnAddedToProvider() {
   }
 
   if (!gameinput_) {
-    if (FAILED(create_gameinput_function.Run(&gameinput_))) {
+    HRESULT hr = create_gameinput_function.Run(&gameinput_);
+    RecordGameInputCreateResult(hr);
+    if (FAILED(hr)) {
       initialization_state_ = InitializationState::kCreateGameInputFailed;
       RecordGameInputInitializationResult(
           GameInputInitializationResult::kCreateGameInputFailed);
@@ -347,10 +354,18 @@ void GameInputDataFetcher::OnGuideButtonChangedSequenced(
     }
 
     if (current_buttons & GameInputSystemButtons::GameInputSystemButtonGuide) {
+      state->data.buttons[BUTTON_INDEX_META].used = true;
       state->data.buttons[BUTTON_INDEX_META].pressed = true;
       state->data.buttons[BUTTON_INDEX_META].value = 1.f;
-      RecordGameInputGuideButtonPress();
+      // Only record once per `GameInputDataFetcher` instance, since we only
+      // care whether the guide button was ever successfully pressed, not how
+      // many times.
+      if (!has_recorded_guide_button_press_) {
+        RecordGameInputGuideButtonPress();
+        has_recorded_guide_button_press_ = true;
+      }
     } else {
+      state->data.buttons[BUTTON_INDEX_META].used = true;
       state->data.buttons[BUTTON_INDEX_META].pressed = false;
       state->data.buttons[BUTTON_INDEX_META].value = 0.f;
     }
@@ -377,7 +392,10 @@ void GameInputDataFetcher::GetGamepadData(bool devices_changed_hint) {
     if (FAILED(gameinput_->GetCurrentReading(GameInputKindGamepad,
                                              gamepad_device->GetGamepad().Get(),
                                              &reading))) {
-      RecordGameInputGetCurrentReadingError();
+      if (!has_recorded_current_reading_error_) {
+        RecordGameInputGetCurrentReadingError();
+        has_recorded_current_reading_error_ = true;
+      }
       continue;
     }
 
@@ -415,6 +433,7 @@ void GameInputDataFetcher::GetGamepadData(bool devices_changed_hint) {
 
     base::span<GamepadButton> pad_buttons(pad.buttons);
     for (const auto& button : kButtonMappings) {
+      pad_buttons[button.button_index].used = true;
       if (gamepad_state.buttons & button.button_mask) {
         pad_buttons[button.button_index].pressed = true;
         pad_buttons[button.button_index].value = 1.0f;
@@ -429,6 +448,7 @@ void GameInputDataFetcher::GetGamepadData(bool devices_changed_hint) {
     // TODO(crbug.com/502624503): When moving to GameInput v3, access trigger
     // buttons using
     // GameInputGamepadButtons::GameInputGamepad(Left|Right)TriggerButton.
+    pad_buttons[BUTTON_INDEX_LEFT_TRIGGER].used = true;
     pad_buttons[BUTTON_INDEX_LEFT_TRIGGER].pressed =
         gamepad_state.leftTrigger >
         GamepadButton::kDefaultButtonPressedThreshold;
@@ -436,6 +456,7 @@ void GameInputDataFetcher::GetGamepadData(bool devices_changed_hint) {
     pad_buttons[BUTTON_INDEX_LEFT_TRIGGER].touched =
         gamepad_state.leftTrigger > 0.0f;
 
+    pad_buttons[BUTTON_INDEX_RIGHT_TRIGGER].used = true;
     pad_buttons[BUTTON_INDEX_RIGHT_TRIGGER].pressed =
         gamepad_state.rightTrigger >
         GamepadButton::kDefaultButtonPressedThreshold;

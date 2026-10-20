@@ -40,6 +40,7 @@
 #include "services/network/public/mojom/permissions_policy/permissions_policy_feature.mojom.h"
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/mojom/mediastream/media_stream.mojom.h"
+#include "url/origin.h"
 
 #if defined(TOOLKIT_VIEWS)
 #include "chrome/browser/ui/views/frame/browser_view.h"
@@ -77,7 +78,7 @@ constexpr UrlIdentity::FormatOptions options = {
 
 // Helper function to get the title of the calling application.
 std::u16string GetApplicationTitle(WebContents* web_contents) {
-  DCHECK(web_contents);
+  CHECK(web_contents, base::NotFatalUntil::M161);
   GURL content_origin =
       web_contents->GetPrimaryMainFrame()->GetLastCommittedOrigin().GetURL();
   UrlIdentity url_identity = UrlIdentity::CreateFromUrl(
@@ -179,8 +180,8 @@ void DisplayMediaAccessHandler::HandleRequest(
     const content::MediaStreamRequest& request,
     content::MediaResponseCallback callback,
     const extensions::Extension* extension) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
-  DCHECK(web_contents);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
+  CHECK(web_contents, base::NotFatalUntil::M161);
 
   RenderFrameHost* const rfh = RenderFrameHost::FromID(
       request.render_process_id, request.render_frame_id);
@@ -316,7 +317,7 @@ void DisplayMediaAccessHandler::UpdateMediaRequestState(
     int page_request_id,
     blink::mojom::MediaStreamType stream_type,
     content::MediaRequestState state) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
 
   if (state != content::MEDIA_REQUEST_STATE_DONE &&
       state != content::MEDIA_REQUEST_STATE_CLOSING) {
@@ -366,8 +367,11 @@ void DisplayMediaAccessHandler::ShowMediaSelectionDialog(
 bool DisplayMediaAccessHandler::IsRequestFirstInQueue(
     const RequestsQueue& queue,
     const content::MediaStreamRequest& request) const {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
 
+  if (queue.empty()) {
+    return false;
+  }
   const PendingAccessRequest& first_pending_request = *queue.front();
   // If requests are different, then this is a stale request.
   return first_pending_request.request.render_process_id ==
@@ -383,7 +387,7 @@ void DisplayMediaAccessHandler::BypassMediaSelectionDialog(
     const content::MediaStreamRequest& request,
     const DesktopMediaID& media_id,
     content::MediaResponseCallback callback) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
   if (web_contents->GetLastCommittedURL().GetScheme() !=
       content::kChromeUIScheme) {
     std::move(callback).Run(blink::mojom::StreamDevicesSet(),
@@ -412,7 +416,7 @@ void DisplayMediaAccessHandler::
         content::MediaResponseCallback callback,
         blink::mojom::StreamDevices devices,
         std::unique_ptr<content::MediaStreamUI> ui) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
   if (!web_contents) {
     return;
   }
@@ -429,8 +433,8 @@ void DisplayMediaAccessHandler::ProcessChangeSourceRequest(
     WebContents* web_contents,
     const content::MediaStreamRequest& request,
     content::MediaResponseCallback callback) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
-  DCHECK(web_contents);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
+  CHECK(web_contents, base::NotFatalUntil::M161);
 
   // Ensure we are observing the deletion of |web_contents|.
   web_contents_collection_.StartObserving(web_contents);
@@ -450,10 +454,26 @@ void DisplayMediaAccessHandler::ProcessChangeSourceRequest(
 void DisplayMediaAccessHandler::ProcessQueuedAccessRequest(
     const RequestsQueue& queue,
     WebContents* web_contents) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
-  DCHECK(web_contents);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
+  CHECK(web_contents, base::NotFatalUntil::M161);
 
   const PendingAccessRequest& pending_request = *queue.front();
+
+  content::RenderFrameHost* const rfh = content::RenderFrameHost::FromID(
+      pending_request.request.render_process_id,
+      pending_request.request.render_frame_id);
+
+  if (!rfh || !rfh->IsActive()) {
+    RejectRequest(web_contents, blink::mojom::MediaStreamRequestResult::
+                                    FAILED_DUE_TO_SHUTDOWN_NO_RFH_IN_HANDLER);
+    return;
+  }
+  if (rfh->GetLastCommittedOrigin() != pending_request.request.url_origin) {
+    RejectRequest(web_contents,
+                  blink::mojom::MediaStreamRequestResult::INVALID_STATE);
+    return;
+  }
+
   UpdateTrusted(pending_request.request, false /* is_trusted */);
 
   const GURL& request_origin = pending_request.request.security_origin;
@@ -480,15 +500,15 @@ void DisplayMediaAccessHandler::ProcessQueuedPickerRequest(
     WebContents* web_contents,
     AllowedScreenCaptureLevel capture_level,
     const GURL& request_origin) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
-  DCHECK(web_contents);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
+  CHECK(web_contents, base::NotFatalUntil::M161);
 
   // Reject captures for domains with more than 255 characters.
   //
   // Note, this check does not fully account for international characters, but
   // since the puny-encodings of international domains are limited to 255 bytes,
   // it is unlikely that valid domains are excluded by this check.
-  if (GetApplicationTitle(web_contents).size() > 255u) {
+  if (pending_request.application_title.size() > 255u) {
     RejectRequest(
         web_contents,
         MediaStreamRequestResult::CAPTURE_NOT_ALLOWED_FOR_LONG_DOMAINS);
@@ -564,7 +584,7 @@ void DisplayMediaAccessHandler::ProcessQueuedPickerRequest(
   gfx::NativeWindow parent_window = ui_web_contents->GetTopLevelNativeWindow();
   picker_params.context = parent_window;
   picker_params.parent = parent_window;
-  picker_params.app_name = GetApplicationTitle(web_contents);
+  picker_params.app_name = pending_request.application_title;
   picker_params.target_name = picker_params.app_name;
   picker_params.request_audio =
       pending_request.request.audio_type ==
@@ -580,6 +600,10 @@ void DisplayMediaAccessHandler::ProcessQueuedPickerRequest(
       (capture_level != AllowedScreenCaptureLevel::kUnrestricted);
   picker_params.preferred_display_surface =
       pending_request.request.preferred_display_surface;
+  picker_params.audio_selection_preferred =
+      base::FeatureList::IsEnabled(
+          blink::features::kGetDisplayMediaAudioSelection) &&
+      pending_request.request.audio_selection_preferred;
 #if BUILDFLAG(IS_ANDROID)
   picker_params.capture_this_tab =
       pending_request.request.video_type ==
@@ -599,8 +623,8 @@ void DisplayMediaAccessHandler::ProcessQueuedPickerRequest(
 void DisplayMediaAccessHandler::ProcessQueuedChangeSourceRequest(
     const content::MediaStreamRequest& request,
     WebContents* web_contents) {
-  DCHECK(web_contents);
-  DCHECK(!request.requested_video_device_ids.empty());
+  CHECK(web_contents, base::NotFatalUntil::M161);
+  CHECK(!request.requested_video_device_ids.empty(), base::NotFatalUntil::M161);
 
   WebContentsMediaCaptureId web_contents_id;
   if (!WebContentsMediaCaptureId::Parse(
@@ -618,8 +642,8 @@ void DisplayMediaAccessHandler::ProcessQueuedChangeSourceRequest(
 
 void DisplayMediaAccessHandler::RejectRequest(WebContents* web_contents,
                                               MediaStreamRequestResult result) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
-  DCHECK(web_contents);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
+  CHECK(web_contents, base::NotFatalUntil::M161);
 
   auto it = pending_requests_.find(web_contents);
   if (it == pending_requests_.end()) {
@@ -630,8 +654,10 @@ void DisplayMediaAccessHandler::RejectRequest(WebContents* web_contents,
     return;
   }
   PendingAccessRequest& mutable_request = *mutable_queue.front();
-  std::move(mutable_request.callback)
-      .Run(blink::mojom::StreamDevicesSet(), result, /*ui=*/nullptr);
+  if (mutable_request.callback) {
+    std::move(mutable_request.callback)
+        .Run(blink::mojom::StreamDevicesSet(), result, /*ui=*/nullptr);
+  }
   mutable_queue.pop_front();
   if (!mutable_queue.empty()) {
     ProcessQueuedAccessRequest(mutable_queue, web_contents);
@@ -640,8 +666,8 @@ void DisplayMediaAccessHandler::RejectRequest(WebContents* web_contents,
 
 void DisplayMediaAccessHandler::AcceptRequest(WebContents* web_contents,
                                               const DesktopMediaID& media_id) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
-  DCHECK(web_contents);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
+  CHECK(web_contents, base::NotFatalUntil::M161);
 
   auto it = pending_requests_.find(web_contents);
   if (it == pending_requests_.end()) {
@@ -680,7 +706,7 @@ void DisplayMediaAccessHandler::
         const DesktopMediaID& media_id,
         blink::mojom::StreamDevices devices,
         std::unique_ptr<content::MediaStreamUI> ui) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
   if (!web_contents) {
     return;
   }
@@ -705,8 +731,10 @@ void DisplayMediaAccessHandler::
     stream_devices_set.stream_devices.emplace_back(
         blink::mojom::StreamDevices::New());
     *(stream_devices_set.stream_devices[0]) = std::move(devices);
-    std::move(pending_request.callback)
-        .Run(stream_devices_set, MediaStreamRequestResult::OK, std::move(ui));
+    if (pending_request.callback) {
+      std::move(pending_request.callback)
+          .Run(stream_devices_set, MediaStreamRequestResult::OK, std::move(ui));
+    }
     queue.pop_front();
   }
 
@@ -718,7 +746,7 @@ void DisplayMediaAccessHandler::
 void DisplayMediaAccessHandler::OnDisplaySurfaceSelected(
     base::WeakPtr<WebContents> web_contents,
     base::expected<DesktopMediaID, MediaStreamRequestResult> result) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
 
   if (!web_contents) {
     // WebContentsDestroyed() will evict the entry from `pending_requests_`,
@@ -780,7 +808,7 @@ void DisplayMediaAccessHandler::OnDlpRestrictionChecked(
     base::WeakPtr<WebContents> web_contents,
     const DesktopMediaID& media_id,
     bool is_dlp_allowed) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
 
   if (!web_contents) {
     return;
@@ -789,6 +817,7 @@ void DisplayMediaAccessHandler::OnDlpRestrictionChecked(
   if (!is_dlp_allowed) {
     RejectRequest(web_contents.get(),
                   MediaStreamRequestResult::DLP_PERMISSION_DENIED);
+    return;
   }
   AcceptRequest(web_contents.get(), media_id);
 }
@@ -814,7 +843,7 @@ void DisplayMediaAccessHandler::DeletePendingAccessRequest(
 
 void DisplayMediaAccessHandler::WebContentsDestroyed(
     WebContents* web_contents) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
 
   pending_requests_.erase(web_contents);
 }

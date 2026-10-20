@@ -7,6 +7,7 @@
 #include <string>
 
 #include "ash/constants/webui_url_constants.h"
+#include "base/check_deref.h"
 #include "base/check_is_test.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
@@ -15,6 +16,7 @@
 #include "chrome/browser/ash/policy/skyvault/policy_utils.h"
 #include "chrome/browser/ui/webui/ash/skyvault/local_files_migration_ui.h"
 #include "chrome/browser/ui/webui/ash/system_web_dialog/system_web_dialog_delegate.h"
+#include "content/public/browser/navigation_controller.h"
 #include "ui/base/mojom/ui_base_types.mojom-shared.h"
 #include "ui/base/ui_base_types.h"
 #include "ui/gfx/geometry/size.h"
@@ -83,9 +85,10 @@ gfx::NativeWindow LocalFilesMigrationDialog::GetDialogWindowForTesting() const {
 
 void LocalFilesMigrationDialog::OnDialogShown(content::WebUI* webui) {
   CHECK(migration_callback_);
+  auto* controller =
+      &CHECK_DEREF(webui->GetController()->GetAs<LocalFilesMigrationUI>());
   SystemWebDialogDelegate::OnDialogShown(webui);
-  static_cast<LocalFilesMigrationUI*>(webui->GetController())
-      ->SetInitialDialogInfo(destination_, migration_start_time_);
+  controller->SetInitialDialogInfo(destination_, migration_start_time_);
 }
 
 bool LocalFilesMigrationDialog::ShouldShowCloseButton() const {

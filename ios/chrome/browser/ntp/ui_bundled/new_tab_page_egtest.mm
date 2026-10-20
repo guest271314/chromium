@@ -21,6 +21,7 @@
 #import "ios/chrome/browser/settings/manage_sync/public/manage_sync_settings_constants.h"
 #import "ios/chrome/browser/shared/model/url/chrome_url_constants.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
+#import "ios/chrome/browser/signin/model/constants.h"
 #import "ios/chrome/browser/signin/model/fake_system_identity.h"
 #import "ios/chrome/browser/signin/model/test_constants.h"
 #import "ios/chrome/grit/ios_strings.h"
@@ -170,6 +171,9 @@ enum class QuickActionsVisibility {
   error = [MetricsAppInterface expectTotalCount:1
                                    forHistogram:@"IOS.NTP.Impression"];
   chrome_test_util::GREYAssertErrorNil(error);
+  error = [MetricsAppInterface expectTotalCount:1
+                                   forHistogram:@"IOS.Home.Impression"];
+  chrome_test_util::GREYAssertErrorNil(error);
   [self releaseHistogramTester];
 
   // Open an incognito NTP and close it.
@@ -182,9 +186,12 @@ enum class QuickActionsVisibility {
   [ChromeEarlGrey closeAllTabs];
   error = [MetricsAppInterface expectTotalCount:0
                                    forHistogram:@"NewTabPage.TimeSpent"];
+  chrome_test_util::GREYAssertErrorNil(error);
   error = [MetricsAppInterface expectTotalCount:0
                                    forHistogram:@"IOS.NTP.Impression"];
   chrome_test_util::GREYAssertErrorNil(error);
+  error = [MetricsAppInterface expectTotalCount:0
+                                   forHistogram:@"IOS.Home.Impression"];
   chrome_test_util::GREYAssertErrorNil(error);
   [self releaseHistogramTester];
 
@@ -199,9 +206,12 @@ enum class QuickActionsVisibility {
 
   error = [MetricsAppInterface expectTotalCount:1
                                    forHistogram:@"NewTabPage.TimeSpent"];
+  chrome_test_util::GREYAssertErrorNil(error);
   error = [MetricsAppInterface expectTotalCount:1
                                    forHistogram:@"IOS.NTP.Impression"];
   chrome_test_util::GREYAssertErrorNil(error);
+  error = [MetricsAppInterface expectTotalCount:1
+                                   forHistogram:@"IOS.Home.Impression"];
   chrome_test_util::GREYAssertErrorNil(error);
   [self releaseHistogramTester];
 
@@ -218,9 +228,15 @@ enum class QuickActionsVisibility {
   error = [MetricsAppInterface expectTotalCount:0
                                    forHistogram:@"IOS.NTP.Impression"];
   chrome_test_util::GREYAssertErrorNil(error);
+  error = [MetricsAppInterface expectTotalCount:0
+                                   forHistogram:@"IOS.Home.Impression"];
+  chrome_test_util::GREYAssertErrorNil(error);
   [ChromeEarlGrey openNewTab];
   error = [MetricsAppInterface expectTotalCount:1
                                    forHistogram:@"IOS.NTP.Impression"];
+  chrome_test_util::GREYAssertErrorNil(error);
+  error = [MetricsAppInterface expectTotalCount:1
+                                   forHistogram:@"IOS.Home.Impression"];
   chrome_test_util::GREYAssertErrorNil(error);
   [ChromeEarlGrey selectTabAtIndex:0];
   error = [MetricsAppInterface expectTotalCount:1
@@ -246,6 +262,9 @@ enum class QuickActionsVisibility {
   error = [MetricsAppInterface expectTotalCount:0
                                    forHistogram:@"IOS.NTP.Impression"];
   chrome_test_util::GREYAssertErrorNil(error);
+  error = [MetricsAppInterface expectTotalCount:0
+                                   forHistogram:@"IOS.Home.Impression"];
+  chrome_test_util::GREYAssertErrorNil(error);
   [ChromeEarlGrey openNewTab];
   [ChromeEarlGrey openNewTab];
   error = [MetricsAppInterface expectTotalCount:1
@@ -254,12 +273,19 @@ enum class QuickActionsVisibility {
   error = [MetricsAppInterface expectTotalCount:2
                                    forHistogram:@"IOS.NTP.Impression"];
   chrome_test_util::GREYAssertErrorNil(error);
+  error = [MetricsAppInterface expectTotalCount:2
+                                   forHistogram:@"IOS.Home.Impression"];
+  chrome_test_util::GREYAssertErrorNil(error);
   [ChromeEarlGrey closeAllTabs];
   error = [MetricsAppInterface expectTotalCount:2
                                    forHistogram:@"NewTabPage.TimeSpent"];
   chrome_test_util::GREYAssertErrorNil(error);
   error = [MetricsAppInterface expectTotalCount:2
                                    forHistogram:@"IOS.NTP.Impression"];
+  chrome_test_util::GREYAssertErrorNil(error);
+  error = [MetricsAppInterface expectTotalCount:2
+                                   forHistogram:@"IOS.Home.Impression"];
+  chrome_test_util::GREYAssertErrorNil(error);
   [self releaseHistogramTester];
 }
 
@@ -348,11 +374,21 @@ enum class QuickActionsVisibility {
   [[AppLaunchManager sharedManager] ensureAppLaunchedWithConfiguration:config];
 
   [self validateNTPURL:expectedURL];
+
+  [ChromeEarlGrey removeUserDefaultsObjectForKey:@"NTPLocation"];
 }
 
 // Verifies opening a new tab from the New Tab button on the toolbar with the
 // correct policy's New Tab Page Location URL.
-- (void)testNewTabByNewTabButtonTapWithNTPLocation {
+// TODO(crbug.com/518881258): Flaky on simulator.
+#if TARGET_IPHONE_SIMULATOR
+#define MAYBE_testNewTabByNewTabButtonTapWithNTPLocation \
+  FLAKY_testNewTabByNewTabButtonTapWithNTPLocation
+#else
+#define MAYBE_testNewTabByNewTabButtonTapWithNTPLocation \
+  testNewTabByNewTabButtonTapWithNTPLocation
+#endif
+- (void)MAYBE_testNewTabByNewTabButtonTapWithNTPLocation {
   GREYAssertTrue(self.testServer->Start(), @"Test server failed to start.");
   const GURL expectedURL = self.testServer->GetURL(kPageURL);
 
@@ -388,11 +424,18 @@ enum class QuickActionsVisibility {
 // Verifies opening a new tab by long pressing the tab grid view and selecting
 // "New Tab" with the correct policy's New Tab Page Location URL.
 - (void)testNewTabByLongPressTabGridViewWithNTPLocation {
+  if ([ChromeEarlGrey isChromeNextEnabled] && [ChromeEarlGrey isIPadIdiom]) {
+    EARL_GREY_TEST_DISABLED(@"The button doesn't exist with Next.");
+  }
   GREYAssertTrue(self.testServer->Start(), @"Test server failed to start.");
   const GURL expectedURL = self.testServer->GetURL(kPageURL);
 
   // Set the policy's NTP Location value at runtime.
   [self setNTPPolicyValue:expectedURL.spec()];
+
+  // Open a new incognito tab to expose the "New Tab" item in the long press
+  // menu.
+  [ChromeEarlGrey openNewIncognitoTab];
 
   // Open tab via the UI.
   [[EarlGrey selectElementWithMatcher:chrome_test_util::ShowTabsButton()]
@@ -407,11 +450,21 @@ enum class QuickActionsVisibility {
       performAction:grey_tap()];
 
   [self validateNTPURL:expectedURL];
+
+  [ChromeEarlGrey closeAllIncognitoTabs];
 }
 
 // Verifies opening a new tab from the tab grid view by tapping on the New Tab
 // button with the correct policy's New Tab Page Location URL.
-- (void)testNewTabFromTabGridViewWithNTPLocation {
+// TODO(crbug.com/518881258): Flaky on simulator.
+#if TARGET_IPHONE_SIMULATOR
+#define MAYBE_testNewTabFromTabGridViewWithNTPLocation \
+  FLAKY_testNewTabFromTabGridViewWithNTPLocation
+#else
+#define MAYBE_testNewTabFromTabGridViewWithNTPLocation \
+  testNewTabFromTabGridViewWithNTPLocation
+#endif
+- (void)MAYBE_testNewTabFromTabGridViewWithNTPLocation {
   GREYAssertTrue(self.testServer->Start(), @"Test server failed to start.");
   const GURL expectedURL = self.testServer->GetURL(kPageURL);
 
@@ -479,6 +532,118 @@ enum class QuickActionsVisibility {
   // Verify the error badge on the ADP disappears.
   [[EarlGrey selectElementWithMatcher:grey_accessibilityID(
                                           kNTPFeedHeaderIdentityDiscBadge)]
+      assertWithMatcher:grey_notVisible()];
+}
+
+- (AppLaunchConfiguration)appConfigurationForTestCase {
+  AppLaunchConfiguration config = [super appConfigurationForTestCase];
+  if ([self.name containsString:@"testPremiumAvatarRingWithAiTier"]) {
+    config.features_enabled.push_back(kAiSubscriptionAvatarRingIOS);
+    config.additional_args.push_back("--force-ai-subscription-tier=1");
+  } else if ([self.name containsString:@"testPremiumAvatarRingWithoutAiTier"]) {
+    config.features_enabled.push_back(kAiSubscriptionAvatarRingIOS);
+    config.additional_args.push_back("--force-ai-subscription-tier=0");
+  } else if ([self.name containsString:@"testPremiumAvatarRingWithError"]) {
+    config.features_enabled.push_back(kAiSubscriptionAvatarRingIOS);
+    config.additional_args.push_back("--force-ai-subscription-tier=1");
+  } else if ([self.name containsString:
+                            @"testPremiumAvatarRingWithDynamicTierChange"]) {
+    config.features_enabled.push_back(kAiSubscriptionAvatarRingIOS);
+  }
+  return config;
+}
+
+// Tests that the premium avatar ring is displayed on the NTP when the user
+// has an AI tier.
+- (void)testPremiumAvatarRingWithAiTier {
+  [ChromeEarlGrey openNewTab];
+  // Sign in.
+  [SigninEarlGrey signinWithFakeIdentity:kPrimaryIdentity];
+
+  // Verify that the premium ring is visible.
+  [[EarlGrey
+      selectElementWithMatcher:grey_accessibilityID(
+                                   kPremiumAvatarRingAccessibilityIdentifier)]
+      assertWithMatcher:grey_sufficientlyVisible()];
+}
+
+// Tests that the premium avatar ring is NOT displayed on the NTP when the user
+// does not have an AI tier.
+- (void)testPremiumAvatarRingWithoutAiTier {
+  [ChromeEarlGrey openNewTab];
+  // Sign in.
+  [SigninEarlGrey signinWithFakeIdentity:kPrimaryIdentity];
+
+  // Verify that the premium ring is not visible.
+  [[EarlGrey
+      selectElementWithMatcher:grey_accessibilityID(
+                                   kPremiumAvatarRingAccessibilityIdentifier)]
+      assertWithMatcher:grey_notVisible()];
+}
+
+// Tests that the premium avatar ring is NOT displayed and the error badge is
+// displayed when the user has an AI tier but also has an account error.
+- (void)testPremiumAvatarRingWithError {
+  [ChromeEarlGrey openNewTab];
+  // Sign in.
+  [SigninEarlGrey signinWithFakeIdentity:kPrimaryIdentity];
+
+  // Verify that the premium ring is visible initially.
+  [[EarlGrey
+      selectElementWithMatcher:grey_accessibilityID(
+                                   kPremiumAvatarRingAccessibilityIdentifier)]
+      assertWithMatcher:grey_sufficientlyVisible()];
+
+  // Trigger a persistent auth error.
+  [SigninEarlGrey
+      setPersistentAuthErrorForAccount:CoreAccountId::FromGaiaId(
+                                           kPrimaryIdentity.gaiaId)];
+  [ChromeEarlGreyUI waitForAppToIdle];
+
+  // Verify that the error badge is visible.
+  [[EarlGrey selectElementWithMatcher:grey_accessibilityID(
+                                          kNTPFeedHeaderIdentityDiscBadge)]
+      assertWithMatcher:grey_sufficientlyVisible()];
+
+  // Verify that the premium ring is no longer visible.
+  [[EarlGrey
+      selectElementWithMatcher:grey_accessibilityID(
+                                   kPremiumAvatarRingAccessibilityIdentifier)]
+      assertWithMatcher:grey_notVisible()];
+}
+
+// Tests that the premium avatar ring appears and disappears dynamically when
+// the AI subscription tier pref changes.
+- (void)testPremiumAvatarRingWithDynamicTierChange {
+  [ChromeEarlGrey openNewTab];
+  // Ensure the pref is 0 initially.
+  [ChromeEarlGrey setIntegerValue:0 forUserPref:"sync.ai_subscription_tier"];
+
+  // Sign in.
+  [SigninEarlGrey signinWithFakeIdentity:kPrimaryIdentity];
+
+  // Verify that the premium ring is NOT visible initially.
+  [[EarlGrey
+      selectElementWithMatcher:grey_accessibilityID(
+                                   kPremiumAvatarRingAccessibilityIdentifier)]
+      assertWithMatcher:grey_notVisible()];
+
+  // Change the pref to 1 (AI tier active).
+  [ChromeEarlGrey setIntegerValue:1 forUserPref:"sync.ai_subscription_tier"];
+
+  // Verify that the premium ring becomes visible.
+  [[EarlGrey
+      selectElementWithMatcher:grey_accessibilityID(
+                                   kPremiumAvatarRingAccessibilityIdentifier)]
+      assertWithMatcher:grey_sufficientlyVisible()];
+
+  // Change the pref back to 0.
+  [ChromeEarlGrey setIntegerValue:0 forUserPref:"sync.ai_subscription_tier"];
+
+  // Verify that the premium ring is no longer visible.
+  [[EarlGrey
+      selectElementWithMatcher:grey_accessibilityID(
+                                   kPremiumAvatarRingAccessibilityIdentifier)]
       assertWithMatcher:grey_notVisible()];
 }
 

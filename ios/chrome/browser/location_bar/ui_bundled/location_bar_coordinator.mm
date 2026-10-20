@@ -9,7 +9,9 @@
 #import "base/metrics/histogram_macros.h"
 #import "base/strings/sys_string_conversions.h"
 #import "base/supports_user_data.h"
+#import "components/feature_engagement/public/event_constants.h"
 #import "components/feature_engagement/public/tracker.h"
+#import "components/omnibox/browser/aim_eligibility_service.h"
 #import "components/omnibox/browser/location_bar_model_impl.h"
 #import "components/omnibox/browser/omnibox_text_util.h"
 #import "components/omnibox/common/omnibox_features.h"
@@ -17,7 +19,11 @@
 #import "components/prefs/pref_service.h"
 #import "components/profile_metrics/browser_profile_type.h"
 #import "components/search_engines/util.h"
+#import "components/send_tab_to_self/features.h"
+#import "components/send_tab_to_self/metrics_util.h"
+#import "components/send_tab_to_self/send_tab_to_self_sync_service.h"
 #import "components/strings/grit/components_strings.h"
+#import "ios/chrome/browser/aim/model/ios_chrome_aim_eligibility_service_factory.h"
 #import "ios/chrome/browser/autocomplete/model/autocomplete_browser_agent.h"
 #import "ios/chrome/browser/autocomplete/model/autocomplete_scheme_classifier_impl.h"
 #import "ios/chrome/browser/badges/ui_bundled/badge_button_factory.h"
@@ -29,6 +35,8 @@
 #import "ios/chrome/browser/badges/ui_bundled/incognito_badge_view_controller.h"
 #import "ios/chrome/browser/badges/ui_bundled/incognito_badge_view_visibility_delegate.h"
 #import "ios/chrome/browser/composebox/coordinator/composebox_availability.h"
+#import "ios/chrome/browser/composebox/menu/coordinator/composebox_menu_coordinator.h"
+#import "ios/chrome/browser/composebox/public/composebox_entrypoint.h"
 #import "ios/chrome/browser/contextual_panel/entrypoint/coordinator/contextual_panel_entrypoint_coordinator.h"
 #import "ios/chrome/browser/contextual_panel/entrypoint/coordinator/contextual_panel_entrypoint_coordinator_delegate.h"
 #import "ios/chrome/browser/contextual_panel/entrypoint/ui/contextual_panel_entrypoint_visibility_delegate.h"
@@ -43,7 +51,7 @@
 #import "ios/chrome/browser/infobars/model/infobar_metrics_recorder.h"
 #import "ios/chrome/browser/intelligence/features/features.h"
 #import "ios/chrome/browser/lens/ui_bundled/lens_entrypoint.h"
-#import "ios/chrome/browser/lens_overlay/coordinator/lens_overlay_availability.h"
+#import "ios/chrome/browser/lens_overlay/public/lens_overlay_availability.h"
 #import "ios/chrome/browser/location_bar/badge/coordinator/location_bar_badge_coordinator.h"
 #import "ios/chrome/browser/location_bar/badge/coordinator/location_bar_badge_coordinator_delegate.h"
 #import "ios/chrome/browser/location_bar/badge/coordinator/location_bar_badge_mediator.h"
@@ -63,7 +71,6 @@
 #import "ios/chrome/browser/omnibox/coordinator/omnibox_coordinator.h"
 #import "ios/chrome/browser/omnibox/coordinator/popup/omnibox_popup_coordinator.h"
 #import "ios/chrome/browser/omnibox/model/chrome_omnibox_client_ios.h"
-#import "ios/chrome/browser/omnibox/model/omnibox_position/omnibox_position_browser_agent.h"
 #import "ios/chrome/browser/omnibox/model/placeholder_service/placeholder_service.h"
 #import "ios/chrome/browser/omnibox/model/placeholder_service/placeholder_service_factory.h"
 #import "ios/chrome/browser/omnibox/public/omnibox_presentation_context.h"
@@ -71,30 +78,38 @@
 #import "ios/chrome/browser/omnibox/ui/omnibox_text_field_ios.h"
 #import "ios/chrome/browser/overlays/model/public/overlay_presenter.h"
 #import "ios/chrome/browser/reader_mode/coordinator/reader_mode_chip_coordinator.h"
-#import "ios/chrome/browser/reader_mode/model/features.h"
 #import "ios/chrome/browser/reader_mode/model/reader_mode_web_state_utils.h"
 #import "ios/chrome/browser/search_engines/model/template_url_service_factory.h"
+#import "ios/chrome/browser/send_tab_to_self/model/send_tab_to_self_util.h"
 #import "ios/chrome/browser/shared/coordinator/layout_guide/layout_guide_util.h"
+#import "ios/chrome/browser/shared/coordinator/scene/scene_state.h"
+#import "ios/chrome/browser/shared/coordinator/scene/state/browser_layout_state.h"
+#import "ios/chrome/browser/shared/coordinator/scene/state/scene_layout_state.h"
 #import "ios/chrome/browser/shared/model/browser/browser.h"
 #import "ios/chrome/browser/shared/model/prefs/pref_names.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
 #import "ios/chrome/browser/shared/model/web_state_list/web_state_list.h"
 #import "ios/chrome/browser/shared/public/commands/browser_coordinator_commands.h"
-#import "ios/chrome/browser/shared/public/commands/bwg_commands.h"
 #import "ios/chrome/browser/shared/public/commands/command_dispatcher.h"
+#import "ios/chrome/browser/shared/public/commands/custom_leading_view_type.h"
 #import "ios/chrome/browser/shared/public/commands/fullscreen_commands.h"
+#import "ios/chrome/browser/shared/public/commands/gemini_commands.h"
 #import "ios/chrome/browser/shared/public/commands/help_commands.h"
 #import "ios/chrome/browser/shared/public/commands/lens_commands.h"
 #import "ios/chrome/browser/shared/public/commands/lens_overlay_commands.h"
 #import "ios/chrome/browser/shared/public/commands/page_action_menu_commands.h"
 #import "ios/chrome/browser/shared/public/commands/page_action_menu_entry_point_commands.h"
+#import "ios/chrome/browser/shared/public/commands/page_info_commands.h"
 #import "ios/chrome/browser/shared/public/commands/search_image_with_lens_command.h"
+#import "ios/chrome/browser/shared/public/commands/send_tab_to_self_commands.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/shared/ui/util/layout_guide_names.h"
 #import "ios/chrome/browser/shared/ui/util/pasteboard_util.h"
+#import "ios/chrome/browser/shared/ui/util/uikit_ui_util.h"
 #import "ios/chrome/browser/shared/ui/util/util_swift.h"
 #import "ios/chrome/browser/sharing/ui_bundled/sharing_coordinator.h"
 #import "ios/chrome/browser/sharing/ui_bundled/sharing_params.h"
+#import "ios/chrome/browser/sync/model/send_tab_to_self_sync_service_factory.h"
 #import "ios/chrome/browser/url_loading/model/image_search_param_generator.h"
 #import "ios/chrome/browser/url_loading/model/url_loading_browser_agent.h"
 #import "ios/chrome/browser/url_loading/model/url_loading_params.h"
@@ -104,9 +119,10 @@
 #import "ios/public/provider/chrome/browser/voice_search/voice_search_api.h"
 #import "ios/web/public/navigation/navigation_manager.h"
 #import "ios/web/public/navigation/referrer.h"
+#import "ios/web/public/thread/web_task_traits.h"
+#import "ios/web/public/thread/web_thread.h"
 #import "ios/web/public/web_state.h"
 #import "services/network/public/cpp/resource_request.h"
-#import "ui/base/device_form_factor.h"
 #import "url/gurl.h"
 
 namespace {
@@ -127,8 +143,8 @@ struct AIHubBadgeActiveWindowsData : public base::SupportsUserData::Data {
     LocationBarModelDelegateWebStateProvider,
     LocationBarSteadyViewConsumer,
     LocationBarViewControllerDelegate,
-    WebLocationBarDelegate,
-    URLDragDataSource> {
+    URLDragDataSource,
+    WebLocationBarDelegate> {
   // API endpoint for omnibox.
   std::unique_ptr<WebLocationBarImpl> _locationBar;
   // Observer that updates `viewController` for fullscreen events.
@@ -152,6 +168,11 @@ struct AIHubBadgeActiveWindowsData : public base::SupportsUserData::Data {
   raw_ptr<PrefService> _prefService;
   // Tracker for feature events.
   raw_ptr<feature_engagement::Tracker> _tracker;
+
+  // Whether this coordinator is for a text-only location bar.
+  BOOL _textOnly;
+  // Whether this location bar is currently active.
+  BOOL _active;
 }
 // Whether the coordinator is started.
 @property(nonatomic, assign, getter=isStarted) BOOL started;
@@ -189,6 +210,10 @@ struct AIHubBadgeActiveWindowsData : public base::SupportsUserData::Data {
 
 // Handler for URL drag interactions.
 @property(nonatomic, strong) URLDragDropHandler* dragDropHandler;
+
+// The coordinator showing the multimodal composebox menu.
+@property(nonatomic, strong)
+    ComposeboxMenuCoordinator* composeboxMenuCoordinator;
 @end
 
 @implementation LocationBarCoordinator
@@ -209,9 +234,30 @@ struct AIHubBadgeActiveWindowsData : public base::SupportsUserData::Data {
   return self.viewController;
 }
 
-- (instancetype)initWithBrowser:(Browser*)browser {
+- (UILayoutGuide*)steadyViewLayoutGuide {
+  return self.viewController.steadyViewLayoutGuide;
+}
+
+- (void)setContentSizeDelegate:
+    (id<LocationBarContentSizeDelegate>)contentSizeDelegate {
+  _contentSizeDelegate = contentSizeDelegate;
+  // The view controller only exists once started; `start` re-applies the
+  // delegate for the case where it was set before.
+  self.viewController.contentSizeDelegate = contentSizeDelegate;
+}
+
+- (instancetype)initWithBrowser:(Browser*)browser textOnly:(BOOL)textOnly {
   CHECK(browser);
-  return [super initWithBaseViewController:nil browser:browser];
+  self = [super initWithBaseViewController:nil browser:browser];
+  if (self) {
+    _textOnly = textOnly;
+    _active = YES;
+  }
+  return self;
+}
+
+- (instancetype)initWithBrowser:(Browser*)browser {
+  return [self initWithBrowser:browser textOnly:NO];
 }
 
 - (void)start {
@@ -229,8 +275,13 @@ struct AIHubBadgeActiveWindowsData : public base::SupportsUserData::Data {
 
   BOOL isIncognito = self.isOffTheRecord;
 
-  self.viewController = [[LocationBarViewController alloc] init];
+  self.viewController =
+      [[LocationBarViewController alloc] initWithTextOnly:_textOnly];
+  if (IsLocationBarPerformanceImprovementsEnabled()) {
+    self.viewController.active = _active;
+  }
   self.viewController.incognito = isIncognito;
+  self.viewController.contentSizeDelegate = _contentSizeDelegate;
   _prefService = self.profile->GetPrefs();
   self.viewController.profilePrefs = _prefService;
   self.viewController.delegate = self;
@@ -243,7 +294,7 @@ struct AIHubBadgeActiveWindowsData : public base::SupportsUserData::Data {
   self.viewController.pageActionMenuHandler = HandlerForProtocol(
       self.browser->GetCommandDispatcher(), PageActionMenuCommands);
   self.viewController.geminiHandler =
-      HandlerForProtocol(self.browser->GetCommandDispatcher(), BWGCommands);
+      HandlerForProtocol(self.browser->GetCommandDispatcher(), GeminiCommands);
   _tracker = feature_engagement::TrackerFactory::GetForProfile(self.profile);
   self.viewController.tracker = _tracker;
   self.viewController.voiceSearchEnabled =
@@ -286,131 +337,21 @@ struct AIHubBadgeActiveWindowsData : public base::SupportsUserData::Data {
         [self.omniboxCoordinator offsetProvider];
   }
 
-  if (IsAskGeminiChipEnabled() || IsProactiveSuggestionsFrameworkEnabled() ||
-      IsLocationBarBadgeMigrationEnabled()) {
-    self.locationBarBadgeCoordinator = [[LocationBarBadgeCoordinator alloc]
-        initWithBaseViewController:self.viewController
-                           browser:self.browser];
-    self.locationBarBadgeCoordinator.delegate = self;
-    [self.locationBarBadgeCoordinator start];
-    // TODO (crbug.com/429140788): Remove after migration when this view is
-    // permanently shown.
-    self.locationBarBadgeCoordinator.viewController.visibilityDelegate =
-        self.viewController.contextualEntrypointVisibilityDelegate;
-
-    [self.viewController
-        addChildViewController:self.locationBarBadgeCoordinator.viewController];
-    // TODO(crbug.com/469528076): After migration, refactor to
-    // setLocationBarBadgeView and set it in LocationBarSteadyView.
-    [self.viewController
-        setContextualPanelEntrypointView:self.locationBarBadgeCoordinator
-                                             .viewController.view];
-    [self.locationBarBadgeCoordinator.viewController
-        didMoveToParentViewController:self.viewController];
-  } else {
-    self.contextualPanelEntrypointCoordinator =
-        [[ContextualPanelEntrypointCoordinator alloc]
-            initWithBaseViewController:self.viewController
-                               browser:self.browser];
-    self.contextualPanelEntrypointCoordinator.delegate = self;
-    self.contextualPanelEntrypointCoordinator.visibilityDelegate =
-        self.viewController.contextualEntrypointVisibilityDelegate;
-    [self.contextualPanelEntrypointCoordinator start];
-    [self.viewController
-        addChildViewController:self.contextualPanelEntrypointCoordinator
-                                   .viewController];
-    [self.viewController
-        setContextualPanelEntrypointView:
-            self.contextualPanelEntrypointCoordinator.viewController.view];
-    [self.contextualPanelEntrypointCoordinator.viewController
-        didMoveToParentViewController:self.viewController];
-  }
-
-  if (IsReaderModeAvailable()) {
-    self.readerModeChipCoordinator = [[ReaderModeChipCoordinator alloc]
-        initWithBaseViewController:self.viewController
-                           browser:self.browser];
-    if (!IsLocationBarBadgeMigrationEnabled()) {
-      self.readerModeChipCoordinator.visibilityDelegate =
-          self.viewController.readerModeChipVisibilityDelegate;
-    }
-    [self.readerModeChipCoordinator start];
-    [self.viewController setReaderModeChipView:self.readerModeChipCoordinator
-                                                   .viewController.view];
-  }
-
-  // Create button factory that wil be used by the ViewController to get
-  // BadgeButtons for a BadgeType.
-  BadgeButtonFactory* buttonFactory = [[BadgeButtonFactory alloc] init];
-  buttonFactory.incognito = isIncognito;
-  self.badgeViewController =
-      [[BadgeViewController alloc] initWithButtonFactory:buttonFactory];
-  self.badgeViewController.layoutGuideCenter =
-      LayoutGuideCenterForBrowser(self.browser);
-  if (!IsLocationBarBadgeMigrationEnabled()) {
-    self.badgeViewController.visibilityDelegate =
-        [self.viewController badgeViewVisibilityDelegate];
-  }
-  [self.viewController addChildViewController:self.badgeViewController];
-  [self.viewController setBadgeView:self.badgeViewController.view];
-  [self.badgeViewController didMoveToParentViewController:self.viewController];
-  // Create BadgeMediator and set the viewController as its consumer.
-  OverlayPresenter* overlayPresenter = OverlayPresenter::FromBrowser(
-      self.browser, OverlayModality::kInfobarBanner);
-  self.badgeMediator =
-      [[BadgeMediator alloc] initWithWebStateList:self.webStateList
-                                 overlayPresenter:overlayPresenter];
-  self.badgeMediator.consumer = self.badgeViewController;
-  // TODO(crbug.com/40670043): Use HandlerForProtocol after commands protocol
-  // clean up.
-  self.badgeMediator.dispatcher =
-      static_cast<id<BrowserCoordinatorCommands, LocationBarBadgeCommands>>(
-          self.browser->GetCommandDispatcher());
-  buttonFactory.delegate = self.badgeMediator;
-
-  if (!IsFullscreenRefactoringEnabled()) {
-    FullscreenController* fullscreenController =
-        FullscreenController::FromBrowser(self.browser);
-    _badgeFullscreenUIUpdater = std::make_unique<FullscreenUIUpdater>(
-        fullscreenController, self.badgeViewController);
-  }
-
-  // Create incognito badge view controller and mediator for an incognito
-  // profile.
-  if (isIncognito && !IsChromeNextIaEnabled()) {
-    self.incognitoBadgeViewController = [[IncognitoBadgeViewController alloc]
-        initWithButtonFactory:buttonFactory];
-    if (!IsLocationBarBadgeMigrationEnabled()) {
-      self.incognitoBadgeViewController.visibilityDelegate =
-          [self.viewController incognitoBadgeViewVisibilityDelegate];
-      [self.viewController
-          addChildViewController:self.incognitoBadgeViewController];
-      [self.viewController
-          setIncognitoBadgeView:self.incognitoBadgeViewController.view];
-      [self.incognitoBadgeViewController
-          didMoveToParentViewController:self.viewController];
-    } else {
-      [self.locationBarBadgeCoordinator
-          addIncognitoBadgeViewController:self.incognitoBadgeViewController];
-    }
-
-    self.incognitoBadgeMediator =
-        [[IncognitoBadgeMediator alloc] initWithWebStateList:self.webStateList];
-    self.incognitoBadgeMediator.consumer = self.incognitoBadgeViewController;
-
-    if (!IsFullscreenRefactoringEnabled()) {
-      _incognitoBadgeFullscreenUIUpdater =
-          std::make_unique<FullscreenUIUpdater>(
-              FullscreenController::FromBrowser(self.browser),
-              self.incognitoBadgeViewController);
-    }
+  if (!_textOnly) {
+    [self setUpBadges];
   }
 
   UrlLoadingBrowserAgent* URLLoading =
       UrlLoadingBrowserAgent::FromBrowser(self.browser);
-  self.mediator =
-      [[LocationBarMediator alloc] initWithURLLoadingBrowsingAgent:URLLoading
-                                                       isIncognito:isIncognito];
+  AimEligibilityService* aimEligibilityService =
+      IOSChromeAimEligibilityServiceFactory::GetForProfile(self.profile);
+  self.mediator = [[LocationBarMediator alloc]
+      initWithURLLoadingBrowsingAgent:URLLoading
+                aimEligibilityService:aimEligibilityService
+                          isIncognito:isIncognito];
+  if (IsLocationBarPerformanceImprovementsEnabled()) {
+    self.mediator.active = _active;
+  }
   self.mediator.templateURLService =
       ios::TemplateURLServiceFactory::GetForProfile(self.profile);
   self.mediator.consumer = self.viewController;
@@ -423,6 +364,9 @@ struct AIHubBadgeActiveWindowsData : public base::SupportsUserData::Data {
 
   self.steadyViewMediator = [[LocationBarSteadyViewMediator alloc]
       initWithLocationBarModel:[self locationBarModel]];
+  if (IsLocationBarPerformanceImprovementsEnabled()) {
+    self.steadyViewMediator.active = _active;
+  }
   self.steadyViewMediator.webStateList = self.browser->GetWebStateList();
   self.steadyViewMediator.webContentAreaOverlayPresenter =
       OverlayPresenter::FromBrowser(self.browser,
@@ -431,10 +375,7 @@ struct AIHubBadgeActiveWindowsData : public base::SupportsUserData::Data {
   self.steadyViewMediator.tracker = _tracker;
 
   if (IsFullscreenRefactoringEnabled()) {
-    if (!IsChromeNextIaEnabled()) {
-      self.mediator.omniboxPositionBrowserAgent =
-          OmniboxPositionBrowserAgent::FromBrowser(self.browser);
-    }
+    self.mediator.browserLayoutState = self.browser->GetBrowserLayoutState();
     _fullscreenBrowserAgentObserver =
         std::make_unique<FullscreenBrowserAgentObserverBridge>(
             self.mediator, FullscreenBrowserAgent::FromBrowser(self.browser));
@@ -450,14 +391,19 @@ struct AIHubBadgeActiveWindowsData : public base::SupportsUserData::Data {
         FullscreenController::FromBrowser(self.browser), self.viewController);
   }
 
+  [self createMenuCoordinator];
+  if (!IsComposeboxPlusButtonBottomSheet() &&
+      IsPlusButtonMenuInFakeboxEnabled()) {
+    UIMenu* menu = [self.composeboxMenuCoordinator createMenu];
+    [self.viewController setPlusButtonMenu:menu];
+  }
+
   AutocompleteBrowserAgent* autocompleteBrowserAgent =
       AutocompleteBrowserAgent::FromBrowser(self.browser);
   if (autocompleteBrowserAgent) {
     __weak __typeof__(self) weakSelf = self;
     autocompleteBrowserAgent->RegisterWebStateListForPrefetching(
-        IsComposeboxIOSEnabled() ? OmniboxPresentationContext::kComposebox
-                                 : OmniboxPresentationContext::kLocationBar,
-        self.webStateList,
+        OmniboxPresentationContext::kComposebox, self.webStateList,
         base::BindRepeating(^metrics::OmniboxEventProto::PageClassification() {
           return [weakSelf getPageClassification:YES];
         }));
@@ -477,7 +423,10 @@ struct AIHubBadgeActiveWindowsData : public base::SupportsUserData::Data {
       stopDispatchingToTarget:self.viewController
                                   .pageActionMenuEntryPointHandler];
 
-  if (IsAskGeminiChipEnabled() || IsProactiveSuggestionsFrameworkEnabled() ||
+  [_composeboxMenuCoordinator stop];
+  _composeboxMenuCoordinator = nil;
+
+  if (IsPageActionMenuEnabled() || IsProactiveSuggestionsFrameworkEnabled() ||
       IsLocationBarBadgeMigrationEnabled()) {
     [self.locationBarBadgeCoordinator stop];
     self.locationBarBadgeCoordinator = nil;
@@ -506,6 +455,7 @@ struct AIHubBadgeActiveWindowsData : public base::SupportsUserData::Data {
   self.incognitoBadgeMediator = nil;
   self.incognitoBadgeViewController = nil;
 
+  self.viewController.dispatcher = nil;
   self.viewController.geminiHandler = nil;
   self.viewController = nil;
   [self.mediator disconnect];
@@ -578,9 +528,14 @@ struct AIHubBadgeActiveWindowsData : public base::SupportsUserData::Data {
 }
 
 - (void)setLocationBarActive:(BOOL)active {
+  _active = active;
   [self.badgeMediator setActive:active];
   self.mediator.active = active;
+  if (IsLocationBarPerformanceImprovementsEnabled()) {
+    self.steadyViewMediator.active = active;
+  }
   [self.locationBarBadgeCoordinator setActive:active];
+  self.viewController.active = active;
 }
 
 - (void)setTopPosition:(BOOL)topPosition {
@@ -647,6 +602,14 @@ struct AIHubBadgeActiveWindowsData : public base::SupportsUserData::Data {
   [self.viewController focusSteadyViewForVoiceOver];
 }
 
+- (void)setCustomLeadingViewType:(CustomLeadingViewType)type {
+  [self.viewController setCustomLeadingViewType:type];
+}
+
+- (void)dismissOmniboxMultimodalActionsMenu {
+  [_composeboxMenuCoordinator dismissMenu];
+}
+
 - (void)cancelOmniboxEdit {
   CHECK(!IsComposeboxIOSEnabled());
   [self cancelOmniboxEditWithCompletion:nil];
@@ -669,13 +632,16 @@ struct AIHubBadgeActiveWindowsData : public base::SupportsUserData::Data {
 
 - (web::WebState*)webStateForLocationBarModelDelegate:
     (const LocationBarModelDelegateIOS*)locationBarModelDelegate {
-  return self.webStateList->GetActiveWebState();
+  return self.webState;
 }
 
 #pragma mark - WebLocationBarDelegate
 
 - (web::WebState*)webState {
-  return self.webStateList->GetActiveWebState();
+  if (WebStateList* webStateList = self.webStateList) {
+    return webStateList->GetActiveWebState();
+  }
+  return nullptr;
 }
 
 - (LocationBarModel*)locationBarModel {
@@ -697,7 +663,9 @@ struct AIHubBadgeActiveWindowsData : public base::SupportsUserData::Data {
 }
 
 - (void)locationBarCopyTapped {
-  StoreURLInPasteboard(self.webState->GetVisibleURL());
+  if (web::WebState* webState = self.webState) {
+    StoreURLInPasteboard(webState->GetVisibleURL());
+  }
 }
 
 - (void)locationBarRequestScribbleTargetFocus {
@@ -724,6 +692,50 @@ struct AIHubBadgeActiveWindowsData : public base::SupportsUserData::Data {
 - (void)locationBarSearchCopiedTextTapped {
   default_browser::NotifyOmniboxTextCopyPasteAndNavigate(
       feature_engagement::TrackerFactory::GetForProfile(self.profile));
+}
+
+- (BOOL)locationBarCanSendTabToSelf {
+  return send_tab_to_self::IsOmniboxEntryPointEligible(self.webState,
+                                                       self.profile);
+}
+
+- (void)locationBarSendTabToSelfTapped {
+  if (!self.profile || !self.webState || ![self locationBarCanSendTabToSelf]) {
+    return;
+  }
+  if (feature_engagement::Tracker* tracker =
+          feature_engagement::TrackerFactory::GetForProfile(self.profile)) {
+    tracker->NotifyEvent(feature_engagement::events::kSendTabToSelfOmniboxUsed);
+  }
+  GURL url = self.webState->GetVisibleURL();
+  NSString* title = base::SysUTF16ToNSString(self.webState->GetTitle());
+  id<SendTabToSelfCommands> sendTabToSelfHandler = HandlerForProtocol(
+      self.browser->GetCommandDispatcher(), SendTabToSelfCommands);
+
+  ExecuteWhenTransitionsComplete(
+      ^{
+        [sendTabToSelfHandler
+            showSendTabToSelfUI:url
+                          title:title
+                     entryPoint:send_tab_to_self::ShareEntryPoint::
+                                    kOmniboxMenu];
+      },
+      self.viewController);
+}
+
+- (void)locationBarDidTapPlusButton {
+  if (IsComposeboxPlusButtonBottomSheet()) {
+    [_composeboxMenuCoordinator presentBottomSheetMenu];
+  } else if (IsPlusButtonMenuInFakeboxEnabled()) {
+    [_composeboxMenuCoordinator recordAttachmentsMenuOpen];
+  } else {
+    id<BrowserCoordinatorCommands> browserCoordinatorHandler =
+        HandlerForProtocol(self.browser->GetCommandDispatcher(),
+                           BrowserCoordinatorCommands);
+    [browserCoordinatorHandler
+        showComposeboxFromEntrypoint:ComposeboxEntrypoint::kNTPPlusButton
+                           withQuery:nil];
+  }
 }
 
 - (void)searchCopiedImage {
@@ -785,9 +797,8 @@ struct AIHubBadgeActiveWindowsData : public base::SupportsUserData::Data {
   if (IsFullscreenRefactoringEnabled()) {
     [HandlerForProtocol(self.browser->GetCommandDispatcher(),
                         FullscreenCommands)
-        enterFullscreenWithTrigger:FullscreenModeTransitionTrigger::
-                                       kForcedByUser
-                          animated:YES];
+        forceFullscreen:YES
+                feature:ForceFullscreenFeature::kHideToolbars];
     return;
   }
   FullscreenController* fullscreenController =
@@ -812,6 +823,15 @@ struct AIHubBadgeActiveWindowsData : public base::SupportsUserData::Data {
 - (void)markDisplayedBadgeAsUnread:(BOOL)read {
   CHECK(IsChromeNextIaEnabled());
   [self.locationBarBadgeCoordinator markDisplayedBadgeAsUnread:read];
+}
+
+- (void)setBadgeCustomLeadingViewType:(CustomLeadingViewType)type {
+  CHECK(IsChromeNextIaEnabled());
+  [self.viewController setCustomLeadingViewType:type];
+}
+
+- (void)hideBadgeForType:(LocationBarBadgeType)type {
+  [self.locationBarBadgeCoordinator hideBadgeForType:type];
 }
 
 - (void)togglePageActionMenuEntryPointHighlight:(BOOL)highlight {
@@ -854,7 +874,10 @@ struct AIHubBadgeActiveWindowsData : public base::SupportsUserData::Data {
     [self.omniboxCoordinator updateOmniboxState];
   }
   [self.viewController updateLocationText:text clipTail:clipTail];
-  [self.viewController updateForNTP:NO];
+  if (!IsLocationBarPerformanceImprovementsEnabled() ||
+      !IsVisibleURLNewTabPage(self.webState)) {
+    [self.viewController updateForNTP:NO];
+  }
   [self.mediator locationUpdated];
 }
 
@@ -891,12 +914,15 @@ struct AIHubBadgeActiveWindowsData : public base::SupportsUserData::Data {
   if ([self isOmniboxFirstResponder]) {
     return nil;
   }
-  if (!self.webState->GetVisibleURL().is_valid()) {
-    return nil;
+  if (web::WebState* webState = self.webState) {
+    const GURL& visibleURL = webState->GetVisibleURL();
+    if (visibleURL.is_valid()) {
+      return [[URLInfo alloc]
+          initWithURL:visibleURL
+                title:base::SysUTF16ToNSString(webState->GetTitle())];
+    }
   }
-  return [[URLInfo alloc]
-      initWithURL:self.webState->GetVisibleURL()
-            title:base::SysUTF16ToNSString(self.webState->GetTitle())];
+  return nil;
 }
 
 - (UIBezierPath*)visiblePathForView:(UIView*)view {
@@ -951,17 +977,138 @@ struct AIHubBadgeActiveWindowsData : public base::SupportsUserData::Data {
   return metrics::OmniboxEventProto::INVALID_SPEC;
 }
 
-- (void)setUpDragAndDrop {
-  // iOS 15 adds Drag and Drop support to iPhones. This causes the long-press
-  // recognizer for showing the copy/paste menu to not appear until the user
-  // lifts their finger. The long-term solution is to move to the new
-  // UIContextMenu API, but for now, disable Drag from the omnibox on iOS 15
-  // iPhones.
-  // TODO (crbug.com/1247668): Reenable this after moving to new API and move
-  // this code back to -start.
-  if (ui::GetDeviceFormFactor() == ui::DEVICE_FORM_FACTOR_PHONE) {
-    return;
+// Sets up the badge and entrypoint coordinators and view controllers.
+- (void)setUpBadges {
+  BOOL isIncognito = self.isOffTheRecord;
+
+  if (IsPageActionMenuEnabled() || IsProactiveSuggestionsFrameworkEnabled() ||
+      IsLocationBarBadgeMigrationEnabled()) {
+    self.locationBarBadgeCoordinator = [[LocationBarBadgeCoordinator alloc]
+        initWithBaseViewController:self.viewController
+                           browser:self.browser];
+    self.locationBarBadgeCoordinator.delegate = self;
+    [self.locationBarBadgeCoordinator start];
+    if (IsLocationBarPerformanceImprovementsEnabled()) {
+      [self.locationBarBadgeCoordinator setActive:_active];
+    }
+    // TODO (crbug.com/429140788): Remove after migration when this view is
+    // permanently shown.
+    self.locationBarBadgeCoordinator.viewController.visibilityDelegate =
+        self.viewController.contextualEntrypointVisibilityDelegate;
+
+    [self.viewController
+        addChildViewController:self.locationBarBadgeCoordinator.viewController];
+    // TODO(crbug.com/469528076): After migration, refactor to
+    // setLocationBarBadgeView and set it in LocationBarSteadyView.
+    [self.viewController
+        setContextualPanelEntrypointView:self.locationBarBadgeCoordinator
+                                             .viewController.view];
+    [self.locationBarBadgeCoordinator.viewController
+        didMoveToParentViewController:self.viewController];
+  } else {
+    self.contextualPanelEntrypointCoordinator =
+        [[ContextualPanelEntrypointCoordinator alloc]
+            initWithBaseViewController:self.viewController
+                               browser:self.browser];
+    self.contextualPanelEntrypointCoordinator.delegate = self;
+    self.contextualPanelEntrypointCoordinator.visibilityDelegate =
+        self.viewController.contextualEntrypointVisibilityDelegate;
+    [self.contextualPanelEntrypointCoordinator start];
+    [self.viewController
+        addChildViewController:self.contextualPanelEntrypointCoordinator
+                                   .viewController];
+    [self.viewController
+        setContextualPanelEntrypointView:
+            self.contextualPanelEntrypointCoordinator.viewController.view];
+    [self.contextualPanelEntrypointCoordinator.viewController
+        didMoveToParentViewController:self.viewController];
   }
+
+  self.readerModeChipCoordinator = [[ReaderModeChipCoordinator alloc]
+      initWithBaseViewController:self.viewController
+                         browser:self.browser];
+  if (!IsLocationBarBadgeMigrationEnabled()) {
+    self.readerModeChipCoordinator.visibilityDelegate =
+        self.viewController.readerModeChipVisibilityDelegate;
+  }
+  [self.readerModeChipCoordinator start];
+  [self.viewController
+      setReaderModeChipView:self.readerModeChipCoordinator.viewController.view];
+
+  // Create button factory that wil be used by the ViewController to get
+  // BadgeButtons for a BadgeType.
+  BadgeButtonFactory* buttonFactory = [[BadgeButtonFactory alloc] init];
+  buttonFactory.incognito = isIncognito;
+  self.badgeViewController =
+      [[BadgeViewController alloc] initWithButtonFactory:buttonFactory];
+  self.badgeViewController.layoutGuideCenter =
+      LayoutGuideCenterForBrowser(self.browser);
+  if (!IsLocationBarBadgeMigrationEnabled()) {
+    self.badgeViewController.visibilityDelegate =
+        [self.viewController badgeViewVisibilityDelegate];
+  }
+  [self.viewController addChildViewController:self.badgeViewController];
+  [self.viewController setBadgeView:self.badgeViewController.view];
+  [self.badgeViewController didMoveToParentViewController:self.viewController];
+  // Create BadgeMediator and set the viewController as its consumer.
+  OverlayPresenter* overlayPresenter = OverlayPresenter::FromBrowser(
+      self.browser, OverlayModality::kInfobarBanner);
+  self.badgeMediator =
+      [[BadgeMediator alloc] initWithWebStateList:self.webStateList
+                                 overlayPresenter:overlayPresenter];
+  if (IsLocationBarPerformanceImprovementsEnabled()) {
+    [self.badgeMediator setActive:_active];
+  }
+  self.badgeMediator.consumer = self.badgeViewController;
+  // TODO(crbug.com/40670043): Use HandlerForProtocol after commands protocol
+  // clean up.
+  self.badgeMediator.dispatcher =
+      static_cast<id<BrowserCoordinatorCommands, LocationBarBadgeCommands>>(
+          self.browser->GetCommandDispatcher());
+  self.badgeMediator.pageInfoHandler = HandlerForProtocol(
+      self.browser->GetCommandDispatcher(), PageInfoCommands);
+  buttonFactory.delegate = self.badgeMediator;
+
+  if (!IsFullscreenRefactoringEnabled()) {
+    FullscreenController* fullscreenController =
+        FullscreenController::FromBrowser(self.browser);
+    _badgeFullscreenUIUpdater = std::make_unique<FullscreenUIUpdater>(
+        fullscreenController, self.badgeViewController);
+  }
+
+  // Create incognito badge view controller and mediator for an incognito
+  // profile.
+  if (isIncognito && !IsChromeNextIaEnabled()) {
+    self.incognitoBadgeViewController = [[IncognitoBadgeViewController alloc]
+        initWithButtonFactory:buttonFactory];
+    if (!IsLocationBarBadgeMigrationEnabled()) {
+      self.incognitoBadgeViewController.visibilityDelegate =
+          [self.viewController incognitoBadgeViewVisibilityDelegate];
+      [self.viewController
+          addChildViewController:self.incognitoBadgeViewController];
+      [self.viewController
+          setIncognitoBadgeView:self.incognitoBadgeViewController.view];
+      [self.incognitoBadgeViewController
+          didMoveToParentViewController:self.viewController];
+    } else {
+      [self.locationBarBadgeCoordinator
+          addIncognitoBadgeViewController:self.incognitoBadgeViewController];
+    }
+
+    self.incognitoBadgeMediator =
+        [[IncognitoBadgeMediator alloc] initWithWebStateList:self.webStateList];
+    self.incognitoBadgeMediator.consumer = self.incognitoBadgeViewController;
+
+    if (!IsFullscreenRefactoringEnabled()) {
+      _incognitoBadgeFullscreenUIUpdater =
+          std::make_unique<FullscreenUIUpdater>(
+              FullscreenController::FromBrowser(self.browser),
+              self.incognitoBadgeViewController);
+    }
+  }
+}
+
+- (void)setUpDragAndDrop {
   self.dragDropHandler = [[URLDragDropHandler alloc] init];
   self.dragDropHandler.origin = WindowActivityLocationBarSteadyViewOrigin;
   self.dragDropHandler.dragDataSource = self;
@@ -983,6 +1130,8 @@ struct AIHubBadgeActiveWindowsData : public base::SupportsUserData::Data {
     return;
   }
 
+  // TODO(b/541315801): C2PA: Copied image could have C2PA metadata; candidate
+  // to pass raw bytes.
   UIImage* image = optionalImage->ToUIImage();
   if (usingLens) {
     id<LensCommands> handler =
@@ -1020,6 +1169,16 @@ struct AIHubBadgeActiveWindowsData : public base::SupportsUserData::Data {
                                                                GURL(), service);
   UrlLoadParams params = UrlLoadParams::InCurrentTab(webParams);
   UrlLoadingBrowserAgent::FromBrowser(self.browser)->Load(params);
+}
+
+// Creates the Composebox menu coordinator for the plus button.
+- (void)createMenuCoordinator {
+  [_composeboxMenuCoordinator stop];
+  _composeboxMenuCoordinator = [[ComposeboxMenuCoordinator alloc]
+      initWithBaseViewController:self.viewController
+                         browser:self.browser
+                      entrypoint:ComposeboxEntrypoint::kNTPFakebox];
+  [_composeboxMenuCoordinator start];
 }
 
 @end

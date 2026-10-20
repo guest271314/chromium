@@ -22,9 +22,11 @@
 #include "chrome/grit/branded_strings.h"
 #include "chrome/grit/generated_resources.h"
 #include "chrome/test/base/testing_profile.h"
+#include "components/affiliations/core/browser/match_type.h"
 #include "components/password_manager/core/browser/leak_detection/bulk_leak_check_service.h"
 #include "components/password_manager/core/browser/password_manager_test_utils.h"
 #include "components/password_manager/core/browser/password_store/test_password_store.h"
+#include "components/password_manager/core/browser/password_string.h"
 #include "components/password_manager/core/common/password_manager_pref_names.h"
 #include "components/prefs/pref_service.h"
 #include "components/safety_check/features.h"
@@ -54,6 +56,7 @@ using password_manager::InsecureType;
 using password_manager::IsLeaked;
 using password_manager::LeakCheckCredential;
 using password_manager::PasswordForm;
+using password_manager::PasswordString;
 using password_manager::TestPasswordStore;
 using safety_hub::SafetyHubCardState;
 using safety_hub_test_util::MakeForm;
@@ -456,8 +459,9 @@ TEST_F(PasswordStatusCheckServiceBaseTest,
 
   // Enumlate response from leak check server.
   static_cast<BulkLeakCheckDelegateInterface*>(bulk_leak_check_service())
-      ->OnFinishedCredential(LeakCheckCredential(kUsername1, kPassword),
-                             IsLeaked(true));
+      ->OnFinishedCredential(
+          LeakCheckCredential(kUsername1, PasswordString(kPassword)),
+          IsLeaked(true));
 
   bulk_leak_check_service()->set_state_and_notify(
       BulkLeakCheckService::State::kIdle);
@@ -633,8 +637,10 @@ TEST_F(PasswordStatusCheckServiceBaseTest, ScheduledCheckRunsRepeatedly) {
       .Times(runs);
 
   for (int i = 0; i < runs; ++i) {
+    // Advance slightly past the interval to avoid timer boundary rounding
+    // flakes.
     task_environment()->AdvanceClock(
-        service()->GetScheduledPasswordCheckInterval());
+        service()->GetScheduledPasswordCheckInterval() + base::Microseconds(1));
     RunUntilIdle();
   }
 }
@@ -717,7 +723,7 @@ TEST_F(PasswordStatusCheckServiceBaseTest, IgnoredSavedPasswords) {
       url::SchemeHostPort(GURL("https://idp.com"));
   federated_from.password_value.clear();
   federated_from.signon_realm = "federation://example.com/accounts.com";
-  federated_from.match_type = PasswordForm::MatchType::kExact;
+  federated_from.match_type = affiliations::MatchType::kExact;
   profile_store().AddLogin(password_manager::FromPasswordForm(federated_from));
   AdvanceClockForWeakAndReusedChecks();
   ASSERT_EQ(1UL, service()->weak_credential_count());

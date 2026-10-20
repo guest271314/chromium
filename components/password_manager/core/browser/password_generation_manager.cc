@@ -11,6 +11,7 @@
 
 #include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
+#include "components/password_manager/core/browser/browser_save_password_progress_logger.h"
 #include "components/password_manager/core/browser/form_saver.h"
 #include "components/password_manager/core/browser/password_feature_manager.h"
 #include "components/password_manager/core/browser/password_form.h"
@@ -20,6 +21,7 @@
 #include "components/password_manager/core/browser/password_manager_util.h"
 #include "components/password_manager/core/browser/password_save_manager_impl.h"
 #include "components/password_manager/core/browser/password_store/password_form_converters.h"
+#include "components/password_manager/core/browser/password_string.h"
 #include "components/password_manager/core/common/password_manager_features.h"
 #include "crypto/random.h"
 
@@ -66,9 +68,10 @@ class PasswordDataForUI : public PasswordFormManagerForUI {
   bool IsFetchCompleted() const override;
   bool IsMovableToAccountStore() const override;
   void Save() override;
+  bool IsPasswordUpdate() const override;
   bool IsUpdateAffectingPasswordsStoredInTheGoogleAccount() const override;
   void OnUpdateUsernameFromPrompt(const std::u16string& new_username) override;
-  void OnUpdatePasswordFromPrompt(const std::u16string& new_password) override;
+  void OnUpdatePasswordFromPrompt(const PasswordString& new_password) override;
   void OnNopeUpdateClicked() override;
   void OnNeverClicked() override;
   void OnNoInteraction(bool is_update) override;
@@ -164,6 +167,12 @@ void PasswordDataForUI::Save() {
   bubble_interaction_cb_.Run(true, pending_form_);
 }
 
+bool PasswordDataForUI::IsPasswordUpdate() const {
+  // A generated password can cause a password update, but that is handled in a
+  // different UI.
+  return false;
+}
+
 bool PasswordDataForUI::IsUpdateAffectingPasswordsStoredInTheGoogleAccount()
     const {
   // Generated passwords are always in the Google Account.
@@ -176,7 +185,7 @@ void PasswordDataForUI::OnUpdateUsernameFromPrompt(
 }
 
 void PasswordDataForUI::OnUpdatePasswordFromPrompt(
-    const std::u16string& new_password) {
+    const PasswordString& new_password) {
   // Ignore. The generated password can be edited in-place.
 }
 
@@ -376,13 +385,17 @@ void PasswordGenerationManager::GeneratedPasswordAccepted(
       return;
     }
   }
-  driver->GeneratedPasswordAccepted(generated.password_value);
+  driver->GeneratedPasswordAccepted(generated.password_value.value());
 }
 
 void PasswordGenerationManager::PresaveGeneratedPassword(
     PasswordForm generated,
     const std::vector<raw_ptr<const PasswordForm, VectorExperimental>>& matches,
     FormSaver* form_saver) {
+  if (auto logger = password_manager_util::GetLoggerIfAvailable(client_)) {
+    logger->LogMessage(
+        autofill::SavePasswordProgressLogger::STRING_GENERATION_STORE_PRE_SAVE);
+  }
   CHECK(!generated.password_value.empty());
   // Clear the username value if there are already saved credentials with
   // the same username in order to prevent overwriting.
@@ -412,6 +425,10 @@ void PasswordGenerationManager::PresaveGeneratedPassword(
 
 void PasswordGenerationManager::PasswordNoLongerGenerated(
     FormSaver* form_saver) {
+  if (auto logger = password_manager_util::GetLoggerIfAvailable(client_)) {
+    logger->LogMessage(
+        autofill::SavePasswordProgressLogger::STRING_GENERATION_STORE_ROLLBACK);
+  }
   DCHECK(presaved_);
   form_saver->Remove(*presaved_);
   presaved_.reset();
@@ -425,14 +442,18 @@ void PasswordGenerationManager::CommitGeneratedPassword(
     PasswordForm::Store store_to_save,
     FormSaver* profile_store_form_saver,
     FormSaver* account_store_form_saver) {
+  if (auto logger = password_manager_util::GetLoggerIfAvailable(client_)) {
+    logger->LogMessage(
+        autofill::SavePasswordProgressLogger::STRING_GENERATION_STORE_COMMIT);
+  }
   DCHECK(presaved_);
   generated.date_last_used = base::Time::Now();
   generated.date_created = base::Time::Now();
-  if (initial_generated_password_ != generated.password_value) {
+  if (initial_generated_password_ != generated.password_value.value()) {
     // If the generated password was edited, send UMA metrics on what kind of
     // changes were there.
     SendUmaHistogramsOnGeneratedPasswordAttributeChanges(
-        initial_generated_password_, generated.password_value);
+        initial_generated_password_.value(), generated.password_value.value());
   }
 
   if ((store_to_save & PasswordForm::Store::kAccountStore) ==
@@ -469,7 +490,7 @@ void PasswordGenerationManager::OnPresaveBubbleResult(
   }
 
   if (accepted) {
-    driver->GeneratedPasswordAccepted(pending.password_value);
+    driver->GeneratedPasswordAccepted(pending.password_value.value());
   } else {
     driver->ClearPreviewedForm();
   }

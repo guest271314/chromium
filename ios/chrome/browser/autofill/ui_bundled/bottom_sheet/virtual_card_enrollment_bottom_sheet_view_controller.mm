@@ -4,11 +4,13 @@
 
 #import "ios/chrome/browser/autofill/ui_bundled/bottom_sheet/virtual_card_enrollment_bottom_sheet_view_controller.h"
 
+#import "base/feature_list.h"
 #import "build/branding_buildflags.h"
 #import "components/autofill/core/browser/payments/payments_service_url.h"
 #import "components/autofill/core/common/autofill_payments_features.h"
 #import "components/grit/components_scaled_resources.h"
 #import "components/strings/grit/components_strings.h"
+#import "ios/chrome/browser/autofill/model/message/autofill_legal_message_line.h"
 #import "ios/chrome/browser/autofill/ui_bundled/bottom_sheet/bottom_sheet_constants.h"
 #import "ios/chrome/browser/autofill/ui_bundled/util/autofill_credit_card_util.h"
 #import "ios/chrome/browser/net/model/crurl.h"
@@ -44,10 +46,10 @@ CGFloat const kCreditCardCellHeight = 64;
 }  // namespace
 
 @interface VirtualCardEnrollmentBottomSheetViewController () <
+    ConfirmationAlertActionHandler,
     UITableViewDataSource,
     UITableViewDelegate,
-    UITextViewDelegate,
-    ConfirmationAlertActionHandler>
+    UITextViewDelegate>
 @end
 
 @implementation VirtualCardEnrollmentBottomSheetViewController {
@@ -166,10 +168,6 @@ CGFloat const kCreditCardCellHeight = 64;
       addArrangedSubview:[[UIView alloc]
                              initWithFrame:CGRectMake(0, 0, 0, kLogoPadding)]];
 
-  if (!base::FeatureList::IsEnabled(
-          autofill::features::kAutofillEnableWalletBranding)) {
-    [aboveTitleStackView addArrangedSubview:[self createGooglePayLogoView]];
-  }
   CGFloat logoIllustrationSpacerHeight =
       kLogoPadding + kIllustrationPadding - aboveTitleStackView.spacing;
   [aboveTitleStackView
@@ -184,31 +182,8 @@ CGFloat const kCreditCardCellHeight = 64;
   return aboveTitleStackView;
 }
 
-- (UIImageView*)createGooglePayLogoView {
-  UIImageView* logoImageTitleView =
-      [[UIImageView alloc] initWithImage:[self googlePayBadgeImage]];
-  logoImageTitleView.contentMode = UIViewContentModeCenter;
-#if BUILDFLAG(GOOGLE_CHROME_BRANDING)
-  logoImageTitleView.isAccessibilityElement = YES;
-  logoImageTitleView.accessibilityLabel =
-      l10n_util::GetNSString(IDS_AUTOFILL_GOOGLE_PAY_LOGO_ACCESSIBLE_NAME);
-#endif
-  return logoImageTitleView;
-}
-
 - (UIView*)createVerticalSpacerView:(CGFloat)height {
   return [[UIView alloc] initWithFrame:CGRectMake(0, 0, 0, height)];
-}
-
-// Returns the google pay badge image corresponding to the current
-// UIUserInterfaceStyle (light/dark mode).
-- (UIImage*)googlePayBadgeImage {
-#if BUILDFLAG(GOOGLE_CHROME_BRANDING)
-  return MakeSymbolMulticolor(CustomSymbolWithPointSize(
-      kGooglePaySymbol, kCreditCardCellHeight - 2 * kLogoPadding));
-#else
-  return NativeImage(IDR_AUTOFILL_GOOGLE_PAY);
-#endif
 }
 
 - (UIImageView*)createIllustrationView {
@@ -296,8 +271,8 @@ CGFloat const kCreditCardCellHeight = 64;
 }
 
 // Adds a text view for the given legal message to the under title view.
-- (void)addLegalMessages:(NSArray<SaveCardMessageWithLinks*>*)messages {
-  for (SaveCardMessageWithLinks* message in messages) {
+- (void)addLegalMessages:(NSArray<AutofillLegalMessageLine*>*)messages {
+  for (AutofillLegalMessageLine* message in messages) {
     UITextView* textView =
         [AutofillCreditCardUtil createTextViewForLegalMessage:message];
     textView.delegate = self;

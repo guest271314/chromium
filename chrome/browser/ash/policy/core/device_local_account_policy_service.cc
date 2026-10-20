@@ -81,6 +81,7 @@ void DeleteObsoleteExtensionCache(const std::string& account_id_to_delete) {
 }  // namespace
 
 DeviceLocalAccountPolicyService::DeviceLocalAccountPolicyService(
+    scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
     ash::SessionManagerClient* session_manager_client,
     ash::DeviceSettingsService* device_settings_service,
     ash::CrosSettings* cros_settings,
@@ -89,9 +90,9 @@ DeviceLocalAccountPolicyService::DeviceLocalAccountPolicyService(
     scoped_refptr<base::SequencedTaskRunner> store_first_load_task_runner,
     scoped_refptr<base::SequencedTaskRunner> extension_cache_task_runner,
     scoped_refptr<base::SequencedTaskRunner>
-        external_data_service_backend_task_runner,
-    scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory)
-    : session_manager_client_(session_manager_client),
+        external_data_service_backend_task_runner)
+    : url_loader_factory_(url_loader_factory),
+      session_manager_client_(session_manager_client),
       device_settings_service_(device_settings_service),
       cros_settings_(cros_settings),
       invalidation_listener_(invalidation_listener),
@@ -103,7 +104,6 @@ DeviceLocalAccountPolicyService::DeviceLocalAccountPolicyService(
       extension_cache_task_runner_(extension_cache_task_runner),
       resource_cache_task_runner_(base::ThreadPool::CreateSequencedTaskRunner(
           {base::MayBlock(), base::TaskPriority::BEST_EFFORT})),
-      url_loader_factory_(url_loader_factory),
       local_accounts_subscription_(cros_settings_->AddSettingsObserver(
           ash::kAccountsPrefDeviceLocalAccounts,
           base::BindRepeating(
@@ -111,6 +111,8 @@ DeviceLocalAccountPolicyService::DeviceLocalAccountPolicyService(
               base::Unretained(this)))),
       component_policy_cache_root_(base::PathService::CheckedGet(
           ash::DIR_DEVICE_LOCAL_ACCOUNT_COMPONENT_POLICY)) {
+  CHECK(url_loader_factory_);
+
   external_data_service_ =
       std::make_unique<DeviceLocalAccountExternalDataService>(
           this, std::move(external_data_service_backend_task_runner));
@@ -118,10 +120,13 @@ DeviceLocalAccountPolicyService::DeviceLocalAccountPolicyService(
 }
 
 DeviceLocalAccountPolicyService::~DeviceLocalAccountPolicyService() {
-  DCHECK(policy_brokers_.empty());
+  CHECK(policy_brokers_.empty(), base::NotFatalUntil::M160);
 }
 
 void DeviceLocalAccountPolicyService::Shutdown() {
+  local_accounts_subscription_ = {};
+  weak_factory_.InvalidateWeakPtrs();
+
   session_manager_client_ = nullptr;
   device_settings_service_ = nullptr;
   cros_settings_ = nullptr;
@@ -131,18 +136,25 @@ void DeviceLocalAccountPolicyService::Shutdown() {
   // may be destroyed sooner than `DeviceLocalAccountPolicyService`.
   invalidation_listener_ = nullptr;
 
-  DeleteBrokers(&policy_brokers_);
+  // Shut down extension caches without marking them as obsolete or deleting
+  // the on-disk cache directories.
+  for (auto& [user_id, broker] : policy_brokers_) {
+    if (broker->IsCacheRunning()) {
+      broker->StopCache(base::DoNothing());
+    }
+  }
+  policy_brokers_.clear();
 }
 
 void DeviceLocalAccountPolicyService::Connect(
     DeviceManagementService* device_management_service) {
-  DCHECK(!device_management_service_);
+  CHECK(!device_management_service_, base::NotFatalUntil::M160);
   device_management_service_ = device_management_service;
 
   // Connect the brokers.
   for (auto& [user_id, broker] : policy_brokers_) {
     broker->ConnectIfPossible(device_settings_service_,
-                              device_management_service_, url_loader_factory_);
+                              device_management_service_);
   }
 }
 
@@ -189,7 +201,7 @@ bool DeviceLocalAccountPolicyService::StartExtensionCacheForAccountIfPresent(
     const std::string& account_id) {
   for (auto& [user_id, broker] : policy_brokers_) {
     if (broker->account_id() == account_id) {
-      DCHECK(!broker->IsCacheRunning());
+      CHECK(!broker->IsCacheRunning(), base::NotFatalUntil::M160);
       broker->StartCache(extension_cache_task_runner_);
       return true;
     }
@@ -198,7 +210,8 @@ bool DeviceLocalAccountPolicyService::StartExtensionCacheForAccountIfPresent(
 }
 
 void DeviceLocalAccountPolicyService::OnOrphanedExtensionCachesDeleted() {
-  DCHECK_EQ(IN_PROGRESS, orphan_extension_cache_deletion_state_);
+  CHECK_EQ(IN_PROGRESS, orphan_extension_cache_deletion_state_,
+           base::NotFatalUntil::M160);
 
   orphan_extension_cache_deletion_state_ = DONE;
   StartExtensionCachesIfPossible();
@@ -206,8 +219,9 @@ void DeviceLocalAccountPolicyService::OnOrphanedExtensionCachesDeleted() {
 
 void DeviceLocalAccountPolicyService::OnObsoleteExtensionCacheShutdown(
     const std::string& account_id) {
-  DCHECK_NE(NOT_STARTED, orphan_extension_cache_deletion_state_);
-  DCHECK(IsExtensionCacheDirectoryBusy(account_id));
+  CHECK_NE(NOT_STARTED, orphan_extension_cache_deletion_state_,
+           base::NotFatalUntil::M160);
+  CHECK(IsExtensionCacheDirectoryBusy(account_id), base::NotFatalUntil::M160);
 
   // The account with |account_id| was deleted and the broker for it has shut
   // down completely.
@@ -232,8 +246,9 @@ void DeviceLocalAccountPolicyService::OnObsoleteExtensionCacheShutdown(
 
 void DeviceLocalAccountPolicyService::OnObsoleteExtensionCacheDeleted(
     const std::string& account_id) {
-  DCHECK_EQ(DONE, orphan_extension_cache_deletion_state_);
-  DCHECK(IsExtensionCacheDirectoryBusy(account_id));
+  CHECK_EQ(DONE, orphan_extension_cache_deletion_state_,
+           base::NotFatalUntil::M160);
+  CHECK(IsExtensionCacheDirectoryBusy(account_id), base::NotFatalUntil::M160);
 
   // The cache directory for |account_id| has been deleted. The directory no
   // longer needs to be marked as busy.
@@ -303,7 +318,7 @@ void DeviceLocalAccountPolicyService::UpdateAccountList() {
       SYSLOG(INFO) << "Creating the broker for account: "
                    << device_local_account.account_id;
       broker = std::make_unique<DeviceLocalAccountPolicyBroker>(
-          device_local_account,
+          url_loader_factory_, device_local_account,
           component_policy_cache_root_.Append(GetUniqueSubDirectoryForAccountID(
               device_local_account.account_id)),
           std::move(store), external_data_manager,
@@ -317,7 +332,7 @@ void DeviceLocalAccountPolicyService::UpdateAccountList() {
     // Fire up the cloud connection for fetching policy for the account from
     // the cloud if this is an enterprise-managed device.
     broker->ConnectIfPossible(device_settings_service_,
-                              device_management_service_, url_loader_factory_);
+                              device_management_service_);
 
     policy_brokers_[device_local_account.user_id] = std::move(broker);
     if (!broker_initialized) {
@@ -331,8 +346,8 @@ void DeviceLocalAccountPolicyService::UpdateAccountList() {
   }
 
   if (orphan_extension_cache_deletion_state_ == NOT_STARTED) {
-    DCHECK(old_policy_brokers.empty());
-    DCHECK(busy_extension_cache_directories_.empty());
+    CHECK(old_policy_brokers.empty(), base::NotFatalUntil::M160);
+    CHECK(busy_extension_cache_directories_.empty(), base::NotFatalUntil::M160);
 
     // If this method is running for the first time, no extension caches have
     // been started yet. Take this opportunity to do a clean-up by removing
@@ -383,7 +398,8 @@ void DeviceLocalAccountPolicyService::UpdateAccountList() {
 void DeviceLocalAccountPolicyService::DeleteBrokers(PolicyBrokerMap* map) {
   for (auto& [user_id, broker] : *map) {
     if (broker->IsCacheRunning()) {
-      DCHECK(!IsExtensionCacheDirectoryBusy(broker->account_id()));
+      CHECK(!IsExtensionCacheDirectoryBusy(broker->account_id()),
+            base::NotFatalUntil::M160);
       busy_extension_cache_directories_.insert(broker->account_id());
       broker->StopCache(base::BindOnce(
           &DeviceLocalAccountPolicyService::OnObsoleteExtensionCacheShutdown,

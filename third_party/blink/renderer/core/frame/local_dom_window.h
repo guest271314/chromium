@@ -70,7 +70,7 @@ class CustomElementRegistry;
 class ScrollResult;
 class Document;
 class DocumentInit;
-class DOMSelection;
+class DomSelection;
 class DOMViewport;
 class DOMVisualViewport;
 class CrashReportContext;
@@ -176,7 +176,6 @@ class CORE_EXPORT LocalDOMWindow final : public DOMWindow,
   // ExecutionContext overrides:
   bool IsWindow() const final { return true; }
   bool IsContextThread() const final;
-  bool ShouldInstallV8Extensions() const final;
   ContentSecurityPolicy* GetContentSecurityPolicyForWorld(
       const DOMWrapperWorld* world) final;
   const KURL& Url() const final;
@@ -189,10 +188,12 @@ class CORE_EXPORT LocalDOMWindow final : public DOMWindow,
   HttpsState GetHttpsState() const final;
   ResourceFetcher* Fetcher() final;
   bool CanExecuteScripts(ReasonForCallingCanExecuteScripts) final;
-  void ExceptionThrown(ErrorEvent*) final;
+  void ExceptionThrown(ErrorEvent*, SanitizeScriptErrors) final;
   void AddInspectorIssue(AuditsIssue) final;
   EventTarget* ErrorEventTarget() final { return this; }
-  String OutgoingReferrer() const final;
+  KURL OutgoingReferrerUrl() const final;
+  void SetInitiatorStateToken(
+      const InitiatorStateToken& initiator_state_token) final;
   CoreProbeSink* GetProbeSink() final;
   const BrowserInterfaceBrokerProxy& GetBrowserInterfaceBroker() const final;
   FrameOrWorkerScheduler* GetScheduler() final;
@@ -289,6 +290,7 @@ class CORE_EXPORT LocalDOMWindow final : public DOMWindow,
   Navigator* clientInformation() { return navigator(); }
 
   bool offscreenBuffering() const;
+  bool alwaysOnTopPopup() const;
 
   int outerHeight() const;
   int outerWidth() const;
@@ -329,7 +331,7 @@ class CORE_EXPORT LocalDOMWindow final : public DOMWindow,
   //  90 is when rotated counter clockwise.
   int orientation() const;
 
-  DOMSelection* getSelection();
+  DomSelection* getSelection();
 
   void print(ScriptState*);
   void stop();
@@ -386,6 +388,13 @@ class CORE_EXPORT LocalDOMWindow final : public DOMWindow,
   bool originAgentCluster() const;
 
   // Custom elements
+  //
+  // `window.customElements`. The ScriptState* overload is the web-exposed
+  // accessor and returns nullptr in non-main worlds (window.customElements
+  // only ever exposes the global registry, which is owned by the main
+  // world). See TreeScope::customElementRegistry() for the broader rule
+  // about when to pass ScriptState -- in short, any caller that will hand
+  // the registry to script must pass it.
   CustomElementRegistry* customElements(ScriptState*) const;
   CustomElementRegistry* customElements() const;
   CustomElementRegistry* MaybeCustomElements() const;
@@ -404,6 +413,8 @@ class CORE_EXPORT LocalDOMWindow final : public DOMWindow,
   DEFINE_ATTRIBUTE_EVENT_LISTENER(pageswap, kPageswap)
 
   DEFINE_ATTRIBUTE_EVENT_LISTENER(pagereveal, kPagereveal)
+
+  DEFINE_ATTRIBUTE_EVENT_LISTENER(openerchange, kOpenerchange)
 
   void RegisterEventListenerObserver(EventListenerObserver*);
 
@@ -438,6 +449,11 @@ class CORE_EXPORT LocalDOMWindow final : public DOMWindow,
       MessageEvent*,
       SourceLocation*,
       const base::UnguessableToken& source_agent_cluster_id);
+
+  // Activates the transient capability token on this window corresponding to
+  // `delegated_capability` when a delegated message is dispatched.
+  void ActivateDelegatedCapability(
+      mojom::blink::DelegatedCapability delegated_capability);
 
   // Events
   // EventTarget API
@@ -509,6 +525,16 @@ class CORE_EXPORT LocalDOMWindow final : public DOMWindow,
   const BlinkStorageKey& GetStorageKey() const { return storage_key_; }
   void SetStorageKey(const BlinkStorageKey& storage_key);
 
+  // Returns a token used to retrieve state associated with this LocalWindow in
+  // the browser process. This should be passed to navigations started from this
+  // LocalWindow. The InitiatorStateToken remains valid as long as:
+  //   - The frame exists and its policies have not changed.
+  //   - Or there is an ongoing navigation started from the frame in the state
+  //   associated with the token.
+  const InitiatorStateToken& GetInitiatorStateToken() const {
+    return initiator_state_token_;
+  }
+
   void DidReceiveUserActivation();
 
   // Returns the state of the |payment_request_token_| in this document.
@@ -529,6 +555,31 @@ class CORE_EXPORT LocalDOMWindow final : public DOMWindow,
   // Consumes the |display_capture_request_token_| if it was active in this
   // document.
   bool ConsumeDisplayCaptureRequestToken();
+
+  // Returns the state of the |digital_credentials_create_token_| in this
+  // document.
+  bool IsDigitalCredentialsCreateTokenActive() const;
+
+  // Consumes the |digital_credentials_create_token_| if it was active in this
+  // document.
+  bool ConsumeDigitalCredentialsCreateToken();
+
+  // Activates the |digital_credentials_create_token_| for testing.
+  void ActivateDigitalCredentialsCreateTokenForTesting() {
+    digital_credentials_create_token_.Activate();
+  }
+
+  // Returns the state of the |digital_credentials_get_token_| in this document.
+  bool IsDigitalCredentialsGetTokenActive() const;
+
+  // Consumes the |digital_credentials_get_token_| if it was active in this
+  // document.
+  bool ConsumeDigitalCredentialsGetToken();
+
+  // Activates the |digital_credentials_get_token_| for testing.
+  void ActivateDigitalCredentialsGetTokenForTesting() {
+    digital_credentials_get_token_.Activate();
+  }
 
   // Called when a network request buffered an additional `num_bytes` while this
   // frame is in back-forward cache.
@@ -638,6 +689,9 @@ class CORE_EXPORT LocalDOMWindow final : public DOMWindow,
   DelegatedCapabilityRequestToken payment_request_token_;
   DelegatedCapabilityRequestToken fullscreen_request_token_;
   DelegatedCapabilityRequestToken display_capture_request_token_;
+  DelegatedCapabilityRequestToken digital_credentials_create_token_;
+  DelegatedCapabilityRequestToken digital_credentials_get_token_;
+  DelegatedCapabilityRequestToken popup_request_token_;
 
   // https://dom.spec.whatwg.org/#window-current-event
   // We represent the "undefined" value as nullptr.
@@ -676,6 +730,12 @@ class CORE_EXPORT LocalDOMWindow final : public DOMWindow,
   // is detached.
   const LocalFrameToken token_;
 
+  // Token tracking the state of policies in the LocalFrame. Used to find an
+  // InitiatorNavigationState in the browser process for navigations started
+  // from this LocalFrame. This will be updated if the policies of the
+  // LocalFrame change (e.g. Referrer policy, CSP).
+  InitiatorStateToken initiator_state_token_;
+
   // Tracks which document policy violation reports have already been sent in
   // this document, to avoid reporting duplicates. The value stored comes
   // from |DocumentPolicyViolationReport::MatchId()|.
@@ -691,10 +751,6 @@ class CORE_EXPORT LocalDOMWindow final : public DOMWindow,
   // due to back-forward cache. This number gets reset when the frame gets out
   // of the back-forward cache.
   size_t total_bytes_buffered_while_in_back_forward_cache_ = 0;
-
-  // Collection of fenced frame APIs.
-  // https://github.com/shivanigithub/fenced-frame/issues/14
-  Member<Fence> fence_;
 
   Member<CrashReportContext> crash_report_storage_;
 

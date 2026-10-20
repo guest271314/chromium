@@ -14,24 +14,12 @@ import("//third_party/libaom/options.gni")
 # This flag sets defaults for the current generation of cast devices.
 is_cast_media_device = is_castos || is_cast_android
 
-# Out-of-process video decoding is a feature specific to Linux and ChromeOS
-# which makes the interaction with platform drivers (for the purposes of
-# hardware accelerated video decoding) happen on utility processes for stability
-# and security purposes. When |allow_oop_video_decoder| is true, code to
-# use this feature is compiled. Note that even if |allow_oop_video_decoder| is
-# true, the feature may be disabled by a runtime flag.
-#
-# When |allow_hosting_oop_video_decoder| is true, code to host the video decoder
-# utility processes is compiled. Note that even if
-# |allow_hosting_oop_video_decoder| is true, the hosting of these utility
-# processes may be disabled by a runtime flag.
-#
-# TODO(b/195769334): finish replacing usages of (is_linux || is_chromeos) with
-# allow_oop_video_decoder where appropriate. Also, finish replacing usages of
-# (is_linux || is_chromeos) with allow_hosting_oop_video_decoder where
-# appropriate.
-allow_hosting_oop_video_decoder = use_linux_video_acceleration
-allow_oop_video_decoder = allow_hosting_oop_video_decoder
+# Out-of-process video decoding is a feature specific to ChromeOS which makes
+# the interaction with platform drivers (for the purposes of hardware
+# accelerated video decoding) happen on utility processes for stability and
+# security purposes. When |enable_oop_video_decoder| is true, code to use this
+# feature is compiled.
+enable_oop_video_decoder = is_chromeos && use_linux_video_acceleration
 
 declare_args() {
   # Allows distributions to link pulseaudio directly (DT_NEEDED) instead of
@@ -71,6 +59,11 @@ declare_args() {
   if (is_ios || (is_android && current_cpu == "arm") || !proprietary_codecs) {
     media_use_openh264 = false
   }
+
+  # Enable usage of iamf_tools within the media library. Used for software
+  # decoding of the IAMF type content. Actual usage depends on the
+  # `kIamfAudioDecoding` feature flag.
+  media_use_iamf_tools = true
 
   # Override to dynamically link the cras (ChromeOS audio) library.
   use_cras = is_chromeos_device
@@ -122,6 +115,9 @@ declare_args() {
   # session.
   enable_media_drm_storage = is_android || is_castos
 
+  # Enable the URL-based CDM provisioning fetcher.
+  enable_cdm_provision_fetcher = is_android || is_castos || is_fuchsia
+
   # Enable HLS manifest parser and demuxer.
   enable_hls_demuxer = proprietary_codecs
 
@@ -140,6 +136,18 @@ declare_args() {
 
 # Use another declare_args() to allow dependence on args defined above.
 declare_args() {
+  # Enable usage of Symphonia audio decoder within the media library.
+  media_use_symphonia_decoder = media_use_symphonia
+
+  # Enable usage of Symphonia demuxer within the media library. Until it is
+  # fully functional, only enabled in non-official Linux and Mac builds so that
+  # it gets compile and test coverage without shipping in Chrome.
+  # Requires media_use_ffmpeg since it reads via BlockingUrlProtocol.
+  # TODO(crbug.com/550619039): enable in official builds once functional, and
+  # drop the media_use_ffmpeg requirement when FFmpeg is deprecated.
+  media_use_symphonia_demuxer = media_use_symphonia && media_use_ffmpeg &&
+                                !is_official_build && (is_linux || is_mac)
+
   # If overriding this to false, possibly via its component values,
   # `enable_libaom` should likely also be overriddent to false.
   enable_av1_decoder = enable_dav1d_decoder
@@ -223,9 +231,9 @@ declare_args() {
     # ASAN and TSAN will occasionally hang during pa_context_connect(), so we
     # disable PulseAudio when these configurations are enabled.
     #
-    # TODO(crbug.com/40636948): We shouldn't have to do this, but it's unclear why
-    # our test bots are hanging and all of the ones that don't hang just fall
-    # back to ALSA after a connection error anyways.
+    # TODO(crbug.com/40636948): We shouldn't have to do this, but it's unclear
+    # why our test bots are hanging and all of the ones that don't hang just
+    # fall back to ALSA after a connection error anyways.
     if (!use_cras && !is_castos && !is_asan && !is_tsan) {
       use_pulseaudio = true
     }
@@ -285,8 +293,25 @@ _default_mojo_media_services = []
 _default_mojo_media_host = ""
 
 if (is_cast_media_device) {
-  _default_mojo_media_services = cast_mojo_media_services
-  _default_mojo_media_host = cast_mojo_media_host
+  if (enable_cast_renderer) {
+    # In this path, mojo media services are hosted in two processes:
+    # 1. "renderer" and "cdm" run in browser process.
+    # 2. "video_decoder" runs in the gpu process.
+    _default_mojo_media_services = [
+      "cdm",
+      "renderer",
+      "video_decoder",
+    ]
+  } else {
+    # On Cast Receiver on Android, all the enabled mojo media services run in
+    # the gpu process.
+    _default_mojo_media_services = [
+      "cdm",
+      "audio_decoder",
+      "video_decoder",
+    ]
+  }
+  _default_mojo_media_host = "gpu"
 } else if (is_android) {
   _default_mojo_media_services = [
     "cdm",
@@ -352,6 +377,13 @@ declare_args() {
 }
 
 declare_args() {
+  # Multimedia Redirection: redirects remoted video playback to a
+  # platform-provided redirection sink. Builds on the Media Remoting RPC
+  # courier renderer.
+  enable_media_remoting_redirection = enable_media_remoting_rpc && is_win
+}
+
+declare_args() {
   # Currently it is available on Win, Mac and Linux, since it requires the audio
   # service to run in a separate process.
   chrome_wide_echo_cancellation_supported = is_win || is_mac || is_linux
@@ -368,19 +400,22 @@ declare_args() {
 media_subcomponent_deps = [
   "//media/audio",
   "//media/base",
-
-  # TODO(crbug.com/41237623): These files should not be in //media/base.
-  "//media/base/android",
   "//media/capabilities",
   "//media/cdm",
   "//media/device_monitors",
   "//media/filters",
   "//media/formats",
+  "//media/gfx",
   "//media/muxers",
   "//media/parsers",
   "//media/renderers",
   "//media/video",
 ]
+
+if (is_android) {
+  # TODO(crbug.com/41237623): These files should not be in //media/base.
+  media_subcomponent_deps += [ "//media/base/android" ]
+}
 
 if (is_fuchsia) {
   media_subcomponent_deps += [ "//media/fuchsia/common" ]

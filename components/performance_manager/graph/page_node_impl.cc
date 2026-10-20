@@ -4,6 +4,7 @@
 
 #include "components/performance_manager/graph/page_node_impl.h"
 
+#include <algorithm>
 #include <memory>
 #include <utility>
 
@@ -25,7 +26,6 @@
 #include "components/performance_manager/public/resource_attribution/page_context.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/render_frame_host.h"
-#include "content/public/browser/tracing_support.h"
 #include "content/public/browser/web_contents.h"
 #include "third_party/perfetto/include/perfetto/tracing/tracing.h"
 #include "third_party/perfetto/include/perfetto/tracing/track.h"
@@ -60,7 +60,7 @@ perfetto::StaticString PageNodeVisibilityToString(const bool& is_visible) {
   if (is_visible) {
     return "Visible";
   } else {
-    return "Not Visible";
+    return nullptr;
   }
 }
 
@@ -68,32 +68,32 @@ perfetto::StaticString PageNodeVisibilityToString(const bool& is_visible) {
 
 PageNodeImpl::PageNodeImpl(base::WeakPtr<content::WebContents> web_contents,
                            const content::WebContents::UniqueToken& page_token,
-                           const std::string& browser_context_id,
+                           const base::UnguessableToken& browser_context_id,
                            const GURL& visible_url,
                            PagePropertyFlags initial_properties,
-                           base::TimeTicks visibility_change_time)
+                           base::TimeTicks visibility_change_time,
+                           const perfetto::Track& tracing_track)
     : web_contents_(std::move(web_contents)),
       page_token_(page_token),
-      tracing_track_(content::GetWebContentsTracingTrack(page_token_)),
-      loading_track_("Loading", 0, tracing_track_),
+      frames_track_("Frames", 0, tracing_track),
       visibility_change_time_(visibility_change_time),
       main_frame_url_(visible_url),
       browser_context_id_(browser_context_id),
       is_focused_(false,
-                  perfetto::NamedTrack("IsFocused", 0, tracing_track_),
+                  perfetto::StateTrack("IsFocused", 0, tracing_track),
                   YesNoStateToString),
       is_visible_(initial_properties.Has(PagePropertyFlag::kIsVisible),
-                  tracing_track_,
+                  perfetto::StateTrack("Visibility", 0, tracing_track),
                   PageNodeVisibilityToString),
       is_audible_(initial_properties.Has(PagePropertyFlag::kIsAudible),
-                  perfetto::NamedTrack("IsAudible", 0, tracing_track_),
+                  perfetto::StateTrack("IsAudible", 0, tracing_track),
                   YesNoStateToString),
       has_picture_in_picture_(
           initial_properties.Has(PagePropertyFlag::kHasPictureInPicture)),
       is_off_the_record_(
           initial_properties.Has(PagePropertyFlag::kIsOffTheRecord)),
       loading_state_(LoadingState::kLoadingNotStarted,
-                     loading_track_,
+                     perfetto::StateTrack("LoadingState", 0, tracing_track),
                      PageNodeLoadingStateToString) {
   // The `PageNodeImpl` creation hook is before the `WebContents`' visible or
   // committed url can be set, so the initial main frame URL is always empty.
@@ -112,7 +112,7 @@ PageNodeImpl::~PageNodeImpl() {
   DCHECK_EQ(nullptr, embedder_frame_node_);
 }
 
-const std::string& PageNodeImpl::GetBrowserContextID() const {
+const base::UnguessableToken& PageNodeImpl::GetBrowserContextID() const {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   return browser_context_id_;
 }
@@ -175,6 +175,11 @@ PageNode::LoadingState PageNodeImpl::GetLoadingState() const {
   return loading_state_.value();
 }
 
+bool PageNodeImpl::IsUserOrBrowserInitiatedLoad() const {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  return is_user_or_browser_initiated_load_.value();
+}
+
 ukm::SourceId PageNodeImpl::GetUkmSourceID() const {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   return ukm_source_id_.value();
@@ -232,7 +237,7 @@ const GURL& PageNodeImpl::GetMainFrameUrl() const {
 base::ByteSize PageNodeImpl::EstimateMainFramePrivateFootprintSize() const {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   base::ByteSize total;
-  FrameNodeImpl* main_frame = main_frame_node();
+  FrameNodeImpl* main_frame = primary_main_frame_node();
   if (main_frame) {
     performance_manager::GraphImplOperations::VisitFrameAndChildrenPreOrder(
         main_frame, [&total](FrameNodeImpl* frame_node) {
@@ -308,14 +313,12 @@ void PageNodeImpl::TraceFrame(base::PassKey<FrameNodeImpl>,
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   DCHECK(frame_node);
   DCHECK(graph()->NodeInGraph(frame_node));
-  auto frame_track = perfetto::NamedTrack::FromPointer("FrameNodes", frame_node,
-                                                       tracing_track());
-  // Unmatched end event is a no-op.
-  TRACE_EVENT_END("performance_manager.graph", frame_track);
-  TRACE_EVENT_BEGIN(
-      "performance_manager.graph",
-      perfetto::StaticString(frame_node->IsMainFrame() ? "MainFrame" : "Frame"),
-      frame_track, perfetto::TerminatingFlow::FromPointer(frame_node));
+  const char* event_name =
+      frame_node->IsMainFrame() ? "MainFrameAttached" : "FrameAttached";
+  TRACE_EVENT_INSTANT("performance_manager.graph",
+                      perfetto::StaticString(event_name), frames_track_,
+                      perfetto::Flow::Global(base::UnguessableTokenHash()(
+                          frame_node->GetFrameToken().value())));
 }
 
 void PageNodeImpl::RemoveFrame(base::PassKey<FrameNodeImpl>,
@@ -330,9 +333,13 @@ void PageNodeImpl::RemoveFrame(base::PassKey<FrameNodeImpl>,
     size_t removed = main_frame_nodes_.erase(frame_node);
     DCHECK_EQ(1u, removed);
   }
-  auto frame_track = perfetto::NamedTrack::FromPointer("FrameNodes", frame_node,
-                                                       tracing_track());
-  TRACE_EVENT_END("performance_manager.graph", frame_track);
+  const char* event_name =
+      frame_node->IsMainFrame() ? "MainFrameDetached" : "FrameDetached";
+  TRACE_EVENT_INSTANT(
+      "performance_manager.graph", perfetto::StaticString(event_name),
+      frames_track_,
+      perfetto::TerminatingFlow::Global(
+          base::UnguessableTokenHash()(frame_node->GetFrameToken().value())));
 }
 
 void PageNodeImpl::SetLoadingState(LoadingState loading_state) {
@@ -340,8 +347,17 @@ void PageNodeImpl::SetLoadingState(LoadingState loading_state) {
   loading_state_.SetAndMaybeNotify(this, loading_state);
 }
 
+void PageNodeImpl::SetIsUserOrBrowserInitiatedLoad(
+    bool is_user_or_browser_initiated_load) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  is_user_or_browser_initiated_load_.SetAndMaybeNotify(
+      this, is_user_or_browser_initiated_load);
+}
+
 void PageNodeImpl::SetType(PageType type) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  CHECK_NE(type, PageType::kUnknown);
+  CHECK_EQ(type_.value(), PageType::kUnknown);
   type_.SetAndMaybeNotify(this, type);
 }
 
@@ -381,10 +397,10 @@ void PageNodeImpl::SetUkmSourceId(ukm::SourceId ukm_source_id) {
   ukm_source_id_.SetAndMaybeNotify(this, ukm_source_id);
 }
 
-void PageNodeImpl::OnFaviconUpdated() {
+void PageNodeImpl::OnFaviconUpdated(blink::mojom::FaviconUpdateReason reason) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   for (auto& observer : GetObservers()) {
-    observer.OnFaviconUpdated(this);
+    observer.OnFaviconUpdated(this, reason);
   }
 }
 
@@ -405,7 +421,7 @@ void PageNodeImpl::OnAboutToBeDiscarded(base::WeakPtr<PageNode> new_page_node) {
   }
 
   // Notify all embedded frames that the primary page is about to be discarded.
-  if (FrameNodeImpl* main_frame = main_frame_node()) {
+  if (FrameNodeImpl* main_frame = primary_main_frame_node()) {
     main_frame->OnPrimaryPageAboutToBeDiscarded();
   }
 
@@ -474,22 +490,14 @@ FrameNodeImpl* PageNodeImpl::embedder_frame_node() const {
   return embedder_frame_node_;
 }
 
-FrameNodeImpl* PageNodeImpl::main_frame_node() const {
+FrameNodeImpl* PageNodeImpl::primary_main_frame_node() const {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  if (main_frame_nodes_.empty()) {
-    return nullptr;
-  }
-
-  // Return the current frame node if there is one. Iterating over this set is
-  // fine because it is almost always of length 1 or 2.
   for (FrameNodeImpl* frame : main_frame_nodes()) {
-    if (frame->IsCurrent()) {
+    if (frame->IsActive() && !frame->parent_or_outer_document()) {
       return frame;
     }
   }
-
-  // Otherwise, return any old main frame node.
-  return *main_frame_nodes().begin();
+  return nullptr;
 }
 
 PageNode::NodeSetView<FrameNodeImpl*> PageNodeImpl::main_frame_nodes() const {
@@ -606,9 +614,9 @@ const FrameNode* PageNodeImpl::GetEmbedderFrameNode() const {
   return embedder_frame_node();
 }
 
-const FrameNode* PageNodeImpl::GetMainFrameNode() const {
-  CHECK(graph()->NodeEdgesArePublic(this) || !main_frame_node());
-  return main_frame_node();
+const FrameNode* PageNodeImpl::GetPrimaryMainFrameNode() const {
+  CHECK(graph()->NodeEdgesArePublic(this) || !primary_main_frame_node());
+  return primary_main_frame_node();
 }
 
 PageNode::NodeSetView<const FrameNode*> PageNodeImpl::GetMainFrameNodes()
@@ -661,7 +669,7 @@ void PageNodeImpl::EmitMainFrameUrlChangedEvent(
     const GURL& url,
     std::optional<int64_t> navigation_id) const {
   TRACE_EVENT_INSTANT("performance_manager.graph", "MainFrameUrlChanged",
-                      loading_track_, [&](perfetto::EventContext& ctx) {
+                      frames_track_, [&](perfetto::EventContext& ctx) {
                         perfetto::protos::pbzero::PageLoad* page_load =
                             ctx.event<ChromeTrackEvent>()->set_page_load();
                         page_load->set_url(url.possibly_invalid_spec());

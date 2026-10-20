@@ -101,8 +101,6 @@ class CC_EXPORT TileBasedLayerImpl : public LayerImpl {
       : LayerImpl(tree_impl, id) {}
 
   std::optional<SkColor4f> solid_color() const { return solid_color_; }
-  std::optional<gfx::Rect> CalculateScaledCullRect(
-      float max_contents_scale) const;
   std::optional<gfx::Rect> CalculateCullRectInLayerSpace() const;
 
   void ClearLastAppendQuadsScales() { last_append_quads_scales_.clear(); }
@@ -166,9 +164,7 @@ class CC_EXPORT TileBasedLayerImpl : public LayerImpl {
   // Invoked after a quad has been appended to allow subclasses to perform any
   // subclass-specific validation or tracking.
   virtual void DidAppendQuad(viz::DrawQuad* quad,
-                             const TilingSetCoverageIterator<Tiling>& iter,
-                             AppendQuadsData* append_quads_data,
-                             bool is_checkerboard) {}
+                             const TilingSetCoverageIterator<Tiling>& iter) {}
 
   virtual bool ValidateTilingSetForContentsResourceId() const { return true; }
 
@@ -593,7 +589,7 @@ bool TileBasedLayerImpl<Tiling>::AppendQuadForTile(
                    offset_visible_geometry_rect, needs_blending, *resource_id,
                    iter.texture_rect(), GetNearestNeighbor(),
                    !layer_tree_impl()->settings().enable_edge_anti_aliasing);
-      DidAppendQuad(quad, iter, append_quads_data, /*is_checkerboard=*/false);
+      DidAppendQuad(quad, iter);
       has_draw_quad = true;
     } else if (auto color = tile->GetSolidColor()) {
       float alpha = color->fA * shared_quad_state->opacity;
@@ -603,7 +599,7 @@ bool TileBasedLayerImpl<Tiling>::AppendQuadForTile(
         quad->SetNew(shared_quad_state, offset_geometry_rect,
                      offset_visible_geometry_rect, *color,
                      !layer_tree_impl()->settings().enable_edge_anti_aliasing);
-        DidAppendQuad(quad, iter, append_quads_data, /*is_checkerboard=*/false);
+        DidAppendQuad(quad, iter);
       }
       has_draw_quad = true;
     }
@@ -620,7 +616,7 @@ bool TileBasedLayerImpl<Tiling>::AppendQuadForTile(
         render_pass->CreateAndAppendDrawQuad<viz::SolidColorDrawQuad>();
     quad->SetNew(shared_quad_state, offset_geometry_rect,
                  offset_visible_geometry_rect, color, false);
-    DidAppendQuad(quad, iter, append_quads_data, /*is_checkerboard=*/true);
+    DidAppendQuad(quad, iter);
 
     return /*tile_produced=*/!ShouldReportTileAsMissing(
         iter.geometry_rect(), scaled_viewport_for_tile_priority);
@@ -670,26 +666,6 @@ void TileBasedLayerImpl<Tiling>::AppendSolidQuad(
       render_pass, occlusion, shared_quad_state, scaled_visible_layer_rect,
       color, !layer_tree_impl()->settings().enable_edge_anti_aliasing,
       effect_node.blend_mode, append_quads_data);
-}
-
-template <typename Tiling>
-std::optional<gfx::Rect> TileBasedLayerImpl<Tiling>::CalculateScaledCullRect(
-    float max_contents_scale) const {
-  const ScrollTree& scroll_tree =
-      layer_tree_impl()->property_trees()->scroll_tree();
-  if (scroll_tree_index() != kInvalidPropertyNodeId) {
-    const ScrollNode& scroll_node = scroll_tree.Node(scroll_tree_index());
-    if (transform_tree_index() == scroll_node.transform_id) {
-      if (const gfx::Rect* cull_rect =
-              scroll_tree.ScrollingContentsCullRect(scroll_node.element_id)) {
-        return gfx::ToEnclosingRect(gfx::ScaleRect(
-            // Convert into layer space.
-            gfx::RectF(*cull_rect) - offset_to_transform_parent(),
-            max_contents_scale));
-      }
-    }
-  }
-  return std::nullopt;
 }
 
 template <typename Tiling>

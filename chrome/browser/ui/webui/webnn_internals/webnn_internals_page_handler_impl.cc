@@ -45,6 +45,13 @@ void WebNNInternalsPageHandlerImpl::OnUpdateExistingContextDetails(
   page_->OnUpdateExistingContextDetails(mojo::Clone(contexts_details));
 }
 
+void WebNNInternalsPageHandlerImpl::OnUpdateAvailableExecutionProvidersDetails(
+    const std::vector<webnn::mojom::WebNNExecutionProviderDetailsPtr>&
+        available_execution_providers) {
+  page_->OnUpdateAvailableExecutionProvidersDetails(
+      mojo::Clone(available_execution_providers));
+}
+
 void WebNNInternalsPageHandlerImpl::RequestExistingContextsDetails(
     RequestExistingContextsDetailsCallback callback) {
   content::WebNNIntrospectionManager::GetInstance()
@@ -54,3 +61,23 @@ void WebNNInternalsPageHandlerImpl::RequestExistingContextsDetails(
               std::vector<
                   webnn::mojom::WebNNContextIntrospectionDetailsPtr>()));
 }
+
+void WebNNInternalsPageHandlerImpl::RequestAvailableExecutionProvidersDetails(
+    RequestAvailableExecutionProvidersDetailsCallback callback) {
+  content::WebNNIntrospectionManager::GetInstance()
+      ->EstablishServiceConnectionAndGetAvailableExecutionProvidersDetails(
+          mojo::WrapCallbackWithDefaultInvokeIfNotRun(
+              std::move(callback),
+              std::vector<webnn::mojom::WebNNExecutionProviderDetailsPtr>()));
+}
+
+#if BUILDFLAG(IS_WIN)
+void WebNNInternalsPageHandlerImpl::ForceOrtEnvironmentCreationForIntrospection(
+    ForceOrtEnvironmentCreationForIntrospectionCallback callback) {
+  content::WebNNIntrospectionManager::GetInstance()
+      ->ForceOrtEnvironmentCreationForIntrospection(
+          mojo::WrapCallbackWithDefaultInvokeIfNotRun(
+              std::move(callback),
+              std::vector<webnn::mojom::WebNNExecutionProviderDetailsPtr>()));
+}
+#endif

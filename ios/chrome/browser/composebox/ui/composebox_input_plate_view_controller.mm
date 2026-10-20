@@ -30,14 +30,14 @@
 #import "ios/chrome/browser/composebox/shared/ui/composebox_snackbar_presenter.h"
 #import "ios/chrome/browser/composebox/shared/ui/composebox_ui_constants.h"
 #import "ios/chrome/browser/composebox/ui/composebox_animation_context.h"
+#import "ios/chrome/browser/composebox/ui/composebox_favicons_accordion_view.h"
 #import "ios/chrome/browser/composebox/ui/composebox_input_item.h"
 #import "ios/chrome/browser/composebox/ui/composebox_input_item_cell.h"
 #import "ios/chrome/browser/composebox/ui/composebox_input_item_view.h"
 #import "ios/chrome/browser/composebox/ui/composebox_input_plate_mutator.h"
 #import "ios/chrome/browser/composebox/ui/composebox_input_plate_view_controller_delegate.h"
-#import "ios/chrome/browser/composebox/ui/composebox_strings.h"
+#import "ios/chrome/browser/composebox/ui/composebox_ui_config.h"
 #import "ios/chrome/browser/composebox/ui/composebox_ui_input_state.h"
-#import "ios/chrome/browser/composebox/ui/composebox_ui_util.h"
 #import "ios/chrome/browser/drag_and_drop/model/drag_item_util.h"
 #import "ios/chrome/browser/omnibox/ui/omnibox_text_input.h"
 #import "ios/chrome/browser/omnibox/ui/text_field_view_containing.h"
@@ -70,10 +70,9 @@ const CGFloat kInputPlateShadowRadius = 20.0f;
 const CGFloat kCarouselItemSpacing = 6.0f;
 /// The height of the carousel view.
 const CGFloat kCarouselHeight = 44.0f;
-/// The height of the AIM mode button.
-const CGFloat kAIMButtonHeight = 36.0f;
-/// The corner radius of the favicon in attach current tab action.
-const CGFloat kAttachCurrentTabIconRadius = 2.0f;
+/// The size of the AIM mode button.
+const CGFloat kAIMButtonSize = 36.0f;
+const CGFloat kCobrowsePlusButtonWidth = 48.0f;
 /// The width of the AIM mode button.
 const CGFloat kAIMButtonBaseWidth = 108.0f;
 const CGFloat kXButtonWidthInButton = 14.0;
@@ -91,7 +90,8 @@ const CGFloat kInputPlateStackViewSpacing = 6.0f;
 /// top edge when scrolling (crbug.com/464259064).
 const CGFloat kInputPlateStackViewVerticalPadding = 0.0f;
 /// The top padding with the expanded input plate when there are attachments.
-const CGFloat kInputPlateStackViewExpandedWithAttachmentsTopPadding = 10.0f;
+const CGFloat kInputPlateAttachmentsPadding = 10.0f;
+const CGFloat kInputPlateCobrowseAttachmentsPadding = 12.0f;
 /// The bottom padding with the expanded input plate when AIM is available.
 const CGFloat kInputPlateStackViewExpandedBottomPadding = 10.0f;
 /// The horizontal padding for the input plate stack view.
@@ -101,19 +101,10 @@ const NSDirectionalEdgeInsets kInputPlateStackViewPadding = {.leading = 0.0f,
 /// toolbar).
 const NSDirectionalEdgeInsets kInputPlatePadding = {.leading = 8.0,
                                                     .trailing = 5.0};
+const NSDirectionalEdgeInsets kInputPlateCobrowsePadding = {.leading = 12.0,
+                                                            .trailing = 5.0};
 /// The spacing added after the Lens and Voice buttons in compact mode.
 const CGFloat kShortcutsTrailingPaddingCompact = 3.0f;
-/// The padding of the toolbar.
-///
-/// Note: While padding is offset to visually align the clear button's visual
-/// bounding box, all other UI elements maintain symmetrical centering.
-const UIEdgeInsets kToolbarPadding = {.left = kInputPlatePadding.leading,
-                                      .right = kInputPlatePadding.leading};
-/// The padding of the carousel. Same as
-/// `kInputPlateStackViewExpandedWithAttachmentsTopPadding` to keep symmetry.
-const UIEdgeInsets kCarouselPadding = {
-    .left = kInputPlateStackViewExpandedWithAttachmentsTopPadding,
-    .right = kInputPlateStackViewExpandedWithAttachmentsTopPadding};
 
 /// The font size for the AIM mode button title.
 const CGFloat kAIMButtonFontSize = 14.0f;
@@ -125,6 +116,7 @@ const CGFloat kGenericButtonWidth = 24.0f;
 const CGFloat kGenericButtonHeight = 32.0f;
 /// The dimension of the send button.
 const CGFloat kSendButtonDimension = 36.0f;
+const CGFloat kCobrowseSendButtonDimension = 48.0f;
 /// The dimension of the button stack view.
 const CGFloat kButtonStackViewDimension = 36.0f;
 /// Duration of a change in compact mode.
@@ -142,8 +134,25 @@ const CGFloat kCloseIndicatorSize = 12.0f;
 /// The index of the attachment section in the carousel.
 const NSInteger kCarouselAttachmentSectionIndex = 0;
 
+/// The corner radius for the plus button container.
+const CGFloat kPlusButtonContainerCornerRadius = 18.0f;
+/// The trailing padding between the container and the tabs accordion stack.
+const CGFloat kPlusButtonContainerTrailingPadding = 8.0f;
+/// The default symbol point size for tabs accordion fallback favicon.
+const CGFloat kAccordionDefaultSymbolPointSize = 24.0f;
+/// The duration for tab attachment animation.
+const NSTimeInterval kTabAttachmentAnimationDuration = 0.6;
+/// The delay for tab attachment animation.
+const NSTimeInterval kTabAttachmentAnimationDelay = 1.0;
+/// The relative duration for tab attachment fade-out keyframe.
+const double kTabAttachmentFadeOutRelativeDuration = 0.333;
+/// The relative duration for tab attachment slide keyframe.
+const double kTabAttachmentSlideRelativeDuration = 1.0;
+
 /// The image for the send button.
-UIImage* SendButtonImage(BOOL highlighted, ComposeboxTheme* theme) {
+UIImage* SendButtonImage(BOOL highlighted,
+                         ComposeboxTheme* theme,
+                         ComposeboxEntrypoint entrypoint) {
   NSArray<UIColor*>* palette = @[
     [theme sendButtonForegroundColorHighlighted:highlighted],
     [theme sendButtonBackgroundColorHighlighted:highlighted]
@@ -154,9 +163,13 @@ UIImage* SendButtonImage(BOOL highlighted, ComposeboxTheme* theme) {
                           weight:UIImageSymbolWeightLight
                            scale:UIImageSymbolScaleMedium];
 
-  return SymbolWithPalette(
-      DefaultSymbolWithConfiguration(kRightArrowCircleFillSymbol, config),
-      palette);
+  if (entrypoint == ComposeboxEntrypoint::kCobrowse) {
+    return SymbolWithPalette(
+        SymbolWithConfiguration(SymbolArrowUpCircleFill, config), palette);
+  } else {
+    return SymbolWithPalette(
+        SymbolWithConfiguration(SymbolRightArrowCircleFill, config), palette);
+  }
 }
 
 }  // namespace
@@ -238,6 +251,35 @@ UIImage* SendButtonImage(BOOL highlighted, ComposeboxTheme* theme) {
 
   // The theme of the composebox.
   ComposeboxTheme* _theme;
+  // The entrypoint through which the composebox was invoked.
+  ComposeboxEntrypoint _entrypoint;
+
+  /// The stack view for the tabs accordion in Cobrowse context.
+  ComposeboxFaviconsAccordionView* _tabsAccordionStackView;
+
+  /// The container for the plus button and the accordion stack.
+  UIView* _plusButtonContainer;
+
+  /// The constraint for the leading edge of the tabs accordion.
+  NSLayoutConstraint* _tabsAccordionLeadingConstraint;
+
+  /// The constraint for the trailing edge of the tabs accordion when collapsed.
+  NSLayoutConstraint* _tabsAccordionTrailingConstraint;
+
+  /// The constraint pinning the container's trailing to the accordion.
+  NSLayoutConstraint* _containerTrailingToAccordionConstraint;
+
+  /// The constraint pinning the container's trailing to the plus button.
+  NSLayoutConstraint* _containerTrailingToPlusButtonConstraint;
+
+  /// Whether a tab attachment animation is pending completion of accordion
+  /// loading.
+  BOOL _pendingTabAttachmentAnimation;
+
+  /// All items attached to the composebox query context
+  /// (including media, files, and tab attachments). Serves as the single source
+  /// of truth for input plate attachments.
+  NSArray<ComposeboxInputItem*>* _currentItems;
 
   // Constraints for the dynamic padding of the input plate stack view.
   NSLayoutConstraint* _topPaddingConstraint;
@@ -250,16 +292,24 @@ UIImage* SendButtonImage(BOOL highlighted, ComposeboxTheme* theme) {
   BOOL _inputPlatePresented;
   /// Caches the items list if set before viewDidLoad.
   NSArray<ComposeboxInputItem*>* _cachedItems;
+
+  // Whether to trigger a glow effect on appear.
+  BOOL _glowOnAppear;
+
+  // Whether to force disable sending.
+  BOOL _disableSending;
 }
 
 /// ComposeboxAnimationContext
 @synthesize inputPlateViewForAnimation = _inputPlateContainerView;
 @synthesize keyboardHeight = _keyboardHeight;
 
-- (instancetype)initWithTheme:(ComposeboxTheme*)theme {
+- (instancetype)initWithTheme:(ComposeboxTheme*)theme
+                   entrypoint:(ComposeboxEntrypoint)entrypoint {
   if ((self = [super initWithNibName:nil bundle:nil])) {
     _omniboxContainer = [[UIView alloc] init];
     _theme = theme;
+    _entrypoint = entrypoint;
     _state = [[ComposeboxUIInputState alloc] init];
   }
   return self;
@@ -286,6 +336,9 @@ UIImage* SendButtonImage(BOOL highlighted, ComposeboxTheme* theme) {
   _canvasButton = [self createCanvasButton];
   _deepSearchButton = [self createDeepSearchButton];
   _askAboutThisPageButton = [self createAskAboutThisPageButton];
+  _plusButtonContainer = [self createPlusButtonContainer];
+  [self setupLargeContentViewer];
+
   [self updatePlusButtonItems];
   [self setupCarouselContainer];
   if (_cachedItems.count > 0) {
@@ -295,6 +348,7 @@ UIImage* SendButtonImage(BOOL highlighted, ComposeboxTheme* theme) {
   _inputPlateStackView =
       [[UIStackView alloc] initWithArrangedSubviews:@[ _omniboxContainer ]];
   _inputPlateStackView.translatesAutoresizingMaskIntoConstraints = NO;
+  _inputPlateStackView.insetsLayoutMarginsFromSafeArea = NO;
   [_inputPlateInternalContainerView addSubview:_inputPlateStackView];
 
   _bottomPaddingConstraint = [_inputPlateStackView.bottomAnchor
@@ -308,8 +362,7 @@ UIImage* SendButtonImage(BOOL highlighted, ComposeboxTheme* theme) {
 
   AddSameConstraintsToSidesWithInsets(
       _inputPlateStackView, _inputPlateInternalContainerView,
-      (LayoutSides::kLeading | LayoutSides::kTrailing),
-      kInputPlateStackViewPadding);
+      LayoutSides::kHorizontal, kInputPlateStackViewPadding);
 
   [self updateInputPlateStackViewAnimated:NO];
 
@@ -342,6 +395,59 @@ UIImage* SendButtonImage(BOOL highlighted, ComposeboxTheme* theme) {
   [self updatePreferredContentSize];
 }
 
+- (void)performTabAttachmentAnimationIfNeeded {
+  if (_entrypoint != ComposeboxEntrypoint::kCobrowse || self.compact) {
+    return;
+  }
+
+  if (_tabsAccordionStackView.isLoading) {
+    _pendingTabAttachmentAnimation = YES;
+    return;
+  }
+
+  _pendingTabAttachmentAnimation = NO;
+
+  _plusButtonContainer.backgroundColor =
+      [UIColor colorNamed:kSecondaryBackgroundColor];
+
+  if (_tabsAccordionStackView.arrangedSubviews.count > 0) {
+    // Delay the slide animation asynchronously because UIView animation delays
+    // execute constraint updates synchronously at setup time.
+    __weak __typeof(self) weakSelf = self;
+    base::SequencedTaskRunner::GetCurrentDefault()->PostDelayedTask(
+        FROM_HERE, base::BindOnce(^{
+          [weakSelf runTabAttachmentSlideAnimation];
+        }),
+        base::Seconds(kTabAttachmentAnimationDelay));
+  }
+}
+
+- (void)runTabAttachmentSlideAnimation {
+  __weak __typeof(self) weakSelf = self;
+  [UIView animateKeyframesWithDuration:kTabAttachmentAnimationDuration
+      delay:0.0
+      options:0
+      animations:^{
+        // Fades out the favicons.
+        [UIView addKeyframeWithRelativeStartTime:0.0
+                                relativeDuration:
+                                    kTabAttachmentFadeOutRelativeDuration
+                                      animations:^{
+                                        [weakSelf fadeOutTabsAccordion];
+                                      }];
+        // Slides the tabs accordion view.
+        [UIView
+            addKeyframeWithRelativeStartTime:0.0
+                            relativeDuration:kTabAttachmentSlideRelativeDuration
+                                  animations:^{
+                                    [weakSelf slideTabsAccordion];
+                                  }];
+      }
+      completion:^(BOOL finished) {
+        [weakSelf handleTabAttachmentAnimationCompletion];
+      }];
+}
+
 - (void)viewWillAppear:(BOOL)animated {
   [super viewWillAppear:animated];
   [[NSNotificationCenter defaultCenter]
@@ -354,6 +460,11 @@ UIImage* SendButtonImage(BOOL highlighted, ComposeboxTheme* theme) {
          selector:@selector(keyboardWillHide:)
              name:UIKeyboardWillHideNotification
            object:nil];
+
+  if (_glowOnAppear) {
+    [self triggerGlowEffect];
+    _glowOnAppear = NO;
+  }
 }
 
 - (void)viewWillDisappear:(BOOL)animated {
@@ -374,11 +485,17 @@ UIImage* SendButtonImage(BOOL highlighted, ComposeboxTheme* theme) {
 - (void)setEditView:(UIView<TextFieldViewContaining>*)editView {
   _editView = editView;
   _editView.translatesAutoresizingMaskIntoConstraints = NO;
-  _editView.minimumHeight =
-      _theme.inputPlatePosition == ComposeboxInputPlatePosition::kiPad
-          ? kOmniboxIPadMinHeight
-          : kOmniboxMinHeight;
   _editView.accessibilityIdentifier = kComposeboxAccessibilityIdentifier;
+  [_editView setPlaceholderColor:_theme.inputPlatePlaceholderColor];
+
+  if (_entrypoint == ComposeboxEntrypoint::kCobrowse) {
+    _editView.minimumHeight = kOmniboxCobrowseMinHeight;
+  } else if (_theme.inputPlatePosition == ComposeboxInputPlatePosition::kiPad) {
+    _editView.minimumHeight = kOmniboxIPadMinHeight;
+  } else {
+    _editView.minimumHeight = kOmniboxMinHeight;
+  }
+
   [_omniboxContainer addSubview:_editView];
   [NSLayoutConstraint activateConstraints:@[
     [_editView.leadingAnchor
@@ -389,16 +506,40 @@ UIImage* SendButtonImage(BOOL highlighted, ComposeboxTheme* theme) {
                                     .trailingAnchor],
   ]];
   AddSameConstraintsToSides(_editView, _omniboxContainer,
-                            LayoutSides::kTop | LayoutSides::kBottom);
+                            LayoutSides::kVertical);
 
   [self.mutator requestUIRefresh];
   [self updatePlaceholderText];
 }
 
 - (void)showMultimodalMenu {
-  if (@available(iOS 17.4, *)) {
-    [_plusButton performPrimaryAction];
+  [_plusButton performPrimaryAction];
+}
+
+- (void)dismissContextMenu {
+  [_plusButton.contextMenuInteraction dismissMenu];
+}
+
+- (void)updateTheme:(ComposeboxTheme*)theme {
+  _theme = theme;
+  _inputPlateContainerView.backgroundColor = _theme.inputPlateBackgroundColor;
+  [_editView setPlaceholderColor:_theme.inputPlatePlaceholderColor];
+  CGFloat cornerRadius =
+      _theme.inputPlatePosition == ComposeboxInputPlatePosition::kiPad
+          ? kInputPlateIpadCornerRadius
+          : kInputPlateCornerRadius;
+  _inputPlateContainerView.layer.cornerRadius = cornerRadius;
+  _inputPlateInternalContainerView.layer.cornerRadius = cornerRadius;
+  if (_entrypoint == ComposeboxEntrypoint::kCobrowse) {
+    _editView.minimumHeight = kOmniboxCobrowseMinHeight;
+  } else if (_theme.inputPlatePosition == ComposeboxInputPlatePosition::kiPad) {
+    _editView.minimumHeight = kOmniboxIPadMinHeight;
+  } else {
+    _editView.minimumHeight = kOmniboxMinHeight;
   }
+  [self updateInputPlateStackViewPadding];
+  [self updateDepthShadowAppearance];
+  [self updateAIMButtonAppearance];
 }
 
 #pragma mark - ComposeboxInputItemCellDelegate
@@ -423,12 +564,34 @@ UIImage* SendButtonImage(BOOL highlighted, ComposeboxTheme* theme) {
     return;
   }
   _cachedItems = nil;
-  _carouselContainer.hidden = !items.count;
+  _currentItems = items;
+
+  // `carouselItems` is the subset of items rendered in the collection view
+  // carousel. In `kCobrowse` mode, tab attachments are separated out and
+  // displayed in the tabs accordion view, while non-tab items (images, files,
+  // etc.) remain in the carousel.
+  NSArray<ComposeboxInputItem*>* carouselItems = items;
+  if (_entrypoint == ComposeboxEntrypoint::kCobrowse) {
+    _plusButtonContainer.backgroundColor =
+        [UIColor colorNamed:kSecondaryBackgroundColor];
+    // General media/file attachments shown in the horizontal carousel.
+    NSMutableArray<ComposeboxInputItem*>* nonTabs = [NSMutableArray array];
+    // Tab attachments (`kComposeboxInputItemTypeTab`) rendered separately
+    // in the favicons accordion view next to the plus button.
+    for (ComposeboxInputItem* item in items) {
+      if (item.type != ComposeboxInputItemType::kComposeboxInputItemTypeTab) {
+        [nonTabs addObject:item];
+      }
+    }
+    carouselItems = nonTabs;
+    [self rebuildTabsAccordion];
+  }
+  _carouselContainer.hidden = !carouselItems.count;
   [self updateInputPlateStackViewTopConstraint];
   NSDiffableDataSourceSnapshot<NSString*, ComposeboxInputItem*>* snapshot =
       [[NSDiffableDataSourceSnapshot alloc] init];
   [snapshot appendSectionsWithIdentifiers:@[ kMainSectionIdentifier ]];
-  [snapshot appendItemsWithIdentifiers:items];
+  [snapshot appendItemsWithIdentifiers:carouselItems];
   __weak __typeof__(self) weakSelf = self;
   [_dataSource applySnapshot:snapshot
         animatingDifferences:YES
@@ -442,10 +605,8 @@ UIImage* SendButtonImage(BOOL highlighted, ComposeboxTheme* theme) {
 
 - (void)updateState:(ComposeboxInputItemState)state
     forItemWithIdentifier:(const base::UnguessableToken&)identifier {
-  NSDiffableDataSourceSnapshot<NSString*, ComposeboxInputItem*>*
-      currentSnapshot = _dataSource.snapshot;
   ComposeboxInputItem* itemToUpdate;
-  for (ComposeboxInputItem* item in currentSnapshot.itemIdentifiers) {
+  for (ComposeboxInputItem* item in _currentItems) {
     if (item.identifier == identifier) {
       itemToUpdate = item;
       break;
@@ -457,6 +618,20 @@ UIImage* SendButtonImage(BOOL highlighted, ComposeboxTheme* theme) {
   }
 
   itemToUpdate.state = state;
+
+  // In `kCobrowse` mode, tab items are managed in the separate tabs accordion
+  // view rather than the collection view carousel. Since they are not present
+  // in the diffable data source snapshot, we skip reconfiguring the snapshot.
+  if (itemToUpdate.type ==
+          ComposeboxInputItemType::kComposeboxInputItemTypeTab &&
+      _entrypoint == ComposeboxEntrypoint::kCobrowse) {
+    [self rebuildTabsAccordion];
+    [self updateSendButtonStateIfNeeded];
+    return;
+  }
+
+  NSDiffableDataSourceSnapshot<NSString*, ComposeboxInputItem*>*
+      currentSnapshot = _dataSource.snapshot;
   NSDiffableDataSourceSnapshot<NSString*, ComposeboxInputItem*>* newSnapshot =
       [currentSnapshot copy];
   [newSnapshot reconfigureItemsWithIdentifiers:@[ itemToUpdate ]];
@@ -469,38 +644,43 @@ UIImage* SendButtonImage(BOOL highlighted, ComposeboxTheme* theme) {
 }
 
 - (void)updateSendButtonStateIfNeeded {
-  NSDiffableDataSourceSnapshot<NSString*, ComposeboxInputItem*>*
-      currentSnapshot = _dataSource.snapshot;
+  if (_disableSending) {
+    [self enableSendButton:NO];
+    return;
+  }
 
-  BOOL allLoaded = YES;
-  for (ComposeboxInputItem* item in currentSnapshot.itemIdentifiers) {
-    if (item.state != ComposeboxInputItemState::kLoaded) {
-      allLoaded = NO;
+  BOOL canSend = YES;
+  for (ComposeboxInputItem* item in _currentItems) {
+    if (item.state != ComposeboxInputItemState::kLoaded &&
+        item.state != ComposeboxInputItemState::kDeferred) {
+      canSend = NO;
       break;
     }
   }
 
-  [self enableSendButton:allLoaded];
+  [self enableSendButton:canSend];
 }
 
 - (void)enableSendButton:(BOOL)enableSending {
-  if (enableSending) {
-    _sendButton.alpha = 1;
-    _sendButton.enabled = YES;
-    [_editView forceDisableReturnKey:NO];
-    [_editView setAllowsReturnKeyWithEmptyText:YES];
-  } else {
-    _sendButton.alpha = kSendButtonDisabledOpacity;
-    _sendButton.enabled = NO;
-    [_editView forceDisableReturnKey:YES];
-    [_editView setAllowsReturnKeyWithEmptyText:NO];
-  }
+  _sendButton.enabled = enableSending;
+  _sendButton.alpha = enableSending ? 1 : kSendButtonDisabledOpacity;
+  BOOL isCobrowse = _entrypoint == ComposeboxEntrypoint::kCobrowse;
+  [self enableKeyboardSendButton:enableSending
+      allowsReturnKeyWithEmptyText:!isCobrowse];
+}
+
+// Enables the send button in the keyboard.
+- (void)enableKeyboardSendButton:(BOOL)enabled
+    allowsReturnKeyWithEmptyText:(BOOL)allowsReturnKeyWithEmptyText {
+  [_editView forceDisableReturnKey:!enabled];
+  [_editView setAllowsReturnKeyWithEmptyText:allowsReturnKeyWithEmptyText];
 }
 
 - (void)updateVisibleControls:(ComposeboxInputPlateControls)controls {
   using enum ComposeboxInputPlateControls;
   _visibleControls = controls;
   _plusButton.hidden = !(controls & kPlus);
+  _plusButtonContainer.hidden = _plusButton.hidden;
   _micButton.hidden = !(controls & kVoice);
   [self updateCameraButton];
 
@@ -587,21 +767,27 @@ UIImage* SendButtonImage(BOOL highlighted, ComposeboxTheme* theme) {
 
 - (void)setUIInputState:(ComposeboxUIInputState*)state {
   BOOL activeToolChanged = (_state.activeTool != state.activeTool);
-  BOOL stringsChanged = (_state.strings != state.strings);
+  BOOL uiConfigChanged = (_state.uiConfig != state.uiConfig);
 
   _state = state;
 
   // Trigger updates conditionally
-  if (activeToolChanged || stringsChanged) {
+  if (activeToolChanged || uiConfigChanged) {
     [self updatePlaceholderText];
   }
 
   if (activeToolChanged) {
     [self updateAIMButtonAppearance];
-    [self triggerGlowEffect];
+
+    // If the view is not yet shown, delay the glow effect.
+    if (self.view.window) {
+      [self triggerGlowEffect];
+    } else {
+      _glowOnAppear = YES;
+    }
   }
 
-  if (stringsChanged) {
+  if (uiConfigChanged) {
     [self updateCreateImageTitle];
   }
 
@@ -612,6 +798,11 @@ UIImage* SendButtonImage(BOOL highlighted, ComposeboxTheme* theme) {
 - (void)updatePreferredContentSizeForNewTextFieldHeight {
   // Trigger -viewDidLayoutSubviews that will call -updatePreferredContentSize.
   [_omniboxContainer layoutIfNeeded];
+}
+
+- (void)disableSending:(BOOL)disableSending {
+  _disableSending = disableSending;
+  [self updateSendButtonStateIfNeeded];
 }
 
 #pragma mark - Actions
@@ -688,7 +879,8 @@ UIImage* SendButtonImage(BOOL highlighted, ComposeboxTheme* theme) {
 
 - (void)plusButtonTapped {
   [self.delegate composeboxViewControllerDidTapPlusButton:self
-                                         withUIInputState:_state];
+                                         withUIInputState:_state
+                                                   button:_plusButton];
 }
 
 - (void)visualSearchButtonTapped {
@@ -745,12 +937,7 @@ UIImage* SendButtonImage(BOOL highlighted, ComposeboxTheme* theme) {
   ComposeboxInputItem* item =
       [_dataSource itemIdentifierForIndexPath:indexPath];
 
-  if (!item ||
-      item.type == ComposeboxInputItemType::kComposeboxInputItemTypeImage) {
-    return composeboxAttachments::kImageInputItemSize;
-  }
-
-  return composeboxAttachments::kTabFileInputItemSize;
+  return [ComposeboxInputItemView sizeWithItem:item];
 }
 
 #pragma mark - UICollectionViewDelegate
@@ -808,7 +995,6 @@ UIImage* SendButtonImage(BOOL highlighted, ComposeboxTheme* theme) {
 
 - (UICollectionViewDiffableDataSource<NSString*, ComposeboxInputItem*>*)
     createDataSource {
-  __weak ComposeboxTheme* theme = _theme;
   __weak __typeof(self) weakSelf = self;
   return [[UICollectionViewDiffableDataSource alloc]
       initWithCollectionView:_carouselView
@@ -820,13 +1006,17 @@ UIImage* SendButtonImage(BOOL highlighted, ComposeboxTheme* theme) {
                           dequeueReusableCellWithReuseIdentifier:
                               kItemCellReuseIdentifier
                                                     forIndexPath:indexPath];
-                  [cell configureWithItem:item theme:theme];
+                  [cell configureWithItem:item theme:[weakSelf currentTheme]];
                   cell.delegate = weakSelf;
                   return cell;
                 }];
 }
 
 #pragma mark - Private helpers
+
+- (ComposeboxTheme*)currentTheme {
+  return _theme;
+}
 
 /// Handles keyboard appearance notifications to adjust layout.
 - (void)keyboardWillShow:(NSNotification*)notification {
@@ -925,8 +1115,7 @@ UIImage* SendButtonImage(BOOL highlighted, ComposeboxTheme* theme) {
   if (_carouselContainer.hidden) {
     _topPaddingConstraint.constant = kInputPlateStackViewVerticalPadding;
   } else {
-    _topPaddingConstraint.constant =
-        kInputPlateStackViewExpandedWithAttachmentsTopPadding;
+    _topPaddingConstraint.constant = [self inputPlateAttachmentsPadding];
   }
 }
 
@@ -1015,7 +1204,7 @@ UIImage* SendButtonImage(BOOL highlighted, ComposeboxTheme* theme) {
 /// Updates the placeholder text based on the current operating mode of the
 /// composebox.
 - (void)updatePlaceholderText {
-  [_editView setCustomPlaceholderText:[_state.strings
+  [_editView setCustomPlaceholderText:[_state.uiConfig
                                           hintTextForTool:_state.activeTool]];
 }
 
@@ -1027,8 +1216,7 @@ UIImage* SendButtonImage(BOOL highlighted, ComposeboxTheme* theme) {
       configurationWithPointSize:kCloseIndicatorSize
                           weight:UIImageSymbolWeightBold
                            scale:UIImageSymbolScaleMedium];
-  xMarkImageView.image =
-      DefaultSymbolWithConfiguration(kXMarkSymbol, configuration);
+  xMarkImageView.image = SymbolWithConfiguration(SymbolXMark, configuration);
   // The parent button view is the relevant element.
   xMarkImageView.isAccessibilityElement = NO;
   xMarkImageView.tintColor = button.tintColor;
@@ -1077,10 +1265,10 @@ UIImage* SendButtonImage(BOOL highlighted, ComposeboxTheme* theme) {
   button.accessibilityTraits = UIAccessibilityTraitButton;
   button.accessibilityIdentifier = kComposeboxAIMButtonAccessibilityIdentifier;
 
-  UIImage* icon = CustomSymbolWithPointSize(kMagnifyingglassSparkSymbol,
-                                            kAIMButtonSymbolPointSize);
+  UIImage* icon = SymbolWithPointSize(SymbolMagnifyingglassSpark,
+                                      kAIMButtonSymbolPointSize);
 
-  NSString* title = [_state.strings chipLabelForTool:ComposeboxMode::kAIM];
+  NSString* title = [_state.uiConfig chipLabelForTool:ComposeboxMode::kAIM];
   button.configuration = [self modeIndicatorButtonConfigWithTitle:title
                                                             image:icon];
 
@@ -1092,7 +1280,7 @@ UIImage* SendButtonImage(BOOL highlighted, ComposeboxTheme* theme) {
       [_aimButton.widthAnchor constraintEqualToConstant:kAIMButtonBaseWidth];
 
   [NSLayoutConstraint activateConstraints:@[
-    [_aimButton.heightAnchor constraintEqualToConstant:kAIMButtonHeight],
+    [_aimButton.heightAnchor constraintEqualToConstant:kAIMButtonSize],
     self.aimButtonWidthConstraint
   ]];
 }
@@ -1101,9 +1289,8 @@ UIImage* SendButtonImage(BOOL highlighted, ComposeboxTheme* theme) {
 - (UIButton*)createPlusButton {
   UIButton* plusButton =
       [ExtendedTouchTargetButton buttonWithType:UIButtonTypeSystem];
-  [plusButton
-      setImage:DefaultSymbolWithPointSize(kPlusSymbol, kSymbolActionPointSize)
-      forState:UIControlStateNormal];
+  [plusButton setImage:SymbolWithPointSize(SymbolPlus, kSymbolActionPointSize)
+              forState:UIControlStateNormal];
   plusButton.translatesAutoresizingMaskIntoConstraints = NO;
   plusButton.imageView.contentMode = UIViewContentModeScaleAspectFit;
   plusButton.tintColor = [UIColor colorNamed:kTextPrimaryColor];
@@ -1112,13 +1299,17 @@ UIImage* SendButtonImage(BOOL highlighted, ComposeboxTheme* theme) {
   plusButton.accessibilityIdentifier =
       kComposeboxPlusButtonAccessibilityIdentifier;
 
+  CGFloat plusButtonWidth = _entrypoint == ComposeboxEntrypoint::kCobrowse
+                                ? kCobrowsePlusButtonWidth
+                                : kAIMButtonSize;
   [NSLayoutConstraint activateConstraints:@[
     [plusButton.heightAnchor
-        constraintGreaterThanOrEqualToConstant:kAIMButtonHeight],
-    [plusButton.widthAnchor constraintEqualToConstant:kAIMButtonHeight],
+        constraintGreaterThanOrEqualToConstant:kAIMButtonSize],
+    [plusButton.widthAnchor constraintEqualToConstant:plusButtonWidth],
   ]];
 
-  if (IsComposeboxPlusButtonBottomSheet()) {
+  if (_entrypoint == ComposeboxEntrypoint::kCobrowse ||
+      IsComposeboxPlusButtonBottomSheet()) {
     [plusButton addTarget:self
                    action:@selector(plusButtonTapped)
          forControlEvents:UIControlEventTouchUpInside];
@@ -1132,16 +1323,134 @@ UIImage* SendButtonImage(BOOL highlighted, ComposeboxTheme* theme) {
   return plusButton;
 }
 
+/// Creates the container for the plus button and the tabs accordion.
+- (UIView*)createPlusButtonContainer {
+  _tabsAccordionStackView = [[ComposeboxFaviconsAccordionView alloc] init];
+  _tabsAccordionStackView.accessibilityIdentifier =
+      kComposeboxTabsAccordionAccessibilityIdentifier;
+  _tabsAccordionStackView.hidden = YES;
+
+  UIView* container = [[UIView alloc] init];
+  container.layer.cornerRadius = kPlusButtonContainerCornerRadius;
+  container.clipsToBounds = YES;
+
+  [container addSubview:_plusButton];
+  [container addSubview:_tabsAccordionStackView];
+
+  _tabsAccordionLeadingConstraint = [_tabsAccordionStackView.leadingAnchor
+      constraintEqualToAnchor:_plusButton.trailingAnchor];
+  _tabsAccordionTrailingConstraint = [_tabsAccordionStackView.trailingAnchor
+      constraintEqualToAnchor:_plusButton.trailingAnchor];
+  _containerTrailingToAccordionConstraint = [container.trailingAnchor
+      constraintEqualToAnchor:_tabsAccordionStackView.trailingAnchor
+                     constant:kPlusButtonContainerTrailingPadding];
+  _containerTrailingToPlusButtonConstraint = [container.trailingAnchor
+      constraintEqualToAnchor:_plusButton.trailingAnchor];
+
+  [NSLayoutConstraint activateConstraints:@[
+    [_plusButton.leadingAnchor constraintEqualToAnchor:container.leadingAnchor],
+    [_plusButton.topAnchor constraintEqualToAnchor:container.topAnchor],
+    [_plusButton.bottomAnchor constraintEqualToAnchor:container.bottomAnchor],
+    _tabsAccordionLeadingConstraint,
+    [_tabsAccordionStackView.centerYAnchor
+        constraintEqualToAnchor:container.centerYAnchor],
+    _containerTrailingToPlusButtonConstraint
+  ]];
+
+  [container
+      setContentCompressionResistancePriority:UILayoutPriorityRequired
+                                      forAxis:UILayoutConstraintAxisHorizontal];
+  return container;
+}
+
+/// Shows the Large Content Viewer when long pressing the Plus button or a mode
+/// pill, as they don't grow with Dynamic Type to fit in the input plate.
+- (void)setupLargeContentViewer {
+  // The Plus button only has an image. The pills get their title and image
+  // from their configuration.
+  _plusButton.largeContentTitle = _plusButton.accessibilityLabel;
+  NSArray<UIButton*>* buttons = @[
+    _plusButton, _aimButton, _imageGenerationButton, _canvasButton,
+    _deepSearchButton, _askAboutThisPageButton
+  ];
+  for (UIButton* button in buttons) {
+    button.showsLargeContentViewer = YES;
+    [button addInteraction:[[UILargeContentViewerInteraction alloc]
+                               initWithDelegate:nil]];
+  }
+}
+
+/// Rebuilds the tab accordion stack view based on the current tabs.
+- (void)rebuildTabsAccordion {
+  NSMutableArray<ComposeboxInputItem*>* tabs = [NSMutableArray array];
+  for (ComposeboxInputItem* item in _currentItems) {
+    if (item.type == ComposeboxInputItemType::kComposeboxInputItemTypeTab &&
+        !item.performedAnimation) {
+      [tabs addObject:item];
+    }
+  }
+
+  BOOL isLoading = NO;
+  for (ComposeboxInputItem* tab in tabs) {
+    if (tab.state == ComposeboxInputItemState::kLoading) {
+      isLoading = YES;
+      break;
+    }
+  }
+
+  _tabsAccordionStackView.isLoading = isLoading;
+
+  NSMutableArray* images = [NSMutableArray array];
+  if (!isLoading) {
+    for (ComposeboxInputItem* tab in tabs) {
+      UIImage* faviconIcon =
+          tab.leadingIconImage
+              ?: SymbolWithPointSize(SymbolGlobeAmericas,
+                                     kAccordionDefaultSymbolPointSize);
+      [images addObject:faviconIcon];
+    }
+    [_tabsAccordionStackView updateWithImages:images];
+  }
+
+  BOOL hasTabs = tabs.count > 0;
+  _tabsAccordionStackView.hidden = !hasTabs;
+  if (hasTabs) {
+    _containerTrailingToPlusButtonConstraint.active = NO;
+    _tabsAccordionTrailingConstraint.active = NO;
+    _tabsAccordionLeadingConstraint.constant = 0.0;
+    _tabsAccordionLeadingConstraint.active = YES;
+    _containerTrailingToAccordionConstraint.constant =
+        kPlusButtonContainerTrailingPadding;
+    _containerTrailingToAccordionConstraint.active = YES;
+  } else {
+    _containerTrailingToAccordionConstraint.active = NO;
+    _tabsAccordionLeadingConstraint.active = NO;
+    _tabsAccordionTrailingConstraint.active = YES;
+    _containerTrailingToPlusButtonConstraint.active = YES;
+  }
+
+  // Force UIKit to complete the current layout pass synchronously to ensure
+  // loaded favicon subviews are displayed before scheduling animations.
+  if (!isLoading && _pendingTabAttachmentAnimation) {
+    [self.view setNeedsLayout];
+    [self.view layoutIfNeeded];
+    [self performTabAttachmentAnimationIfNeeded];
+  } else if (isLoading) {
+    _pendingTabAttachmentAnimation = YES;
+  }
+}
+
 /// Returns the send button.
 - (UIButton*)createSendButton {
   UIButtonConfiguration* buttonConfig =
       [UIButtonConfiguration plainButtonConfiguration];
-  buttonConfig.image = SendButtonImage(/*highlighted=*/NO, _theme);
+  buttonConfig.image = SendButtonImage(/*highlighted=*/NO, _theme, _entrypoint);
   buttonConfig.contentInsets = NSDirectionalEdgeInsetsZero;
 
   UIButton* sendButton =
       [ExtendedTouchTargetButton buttonWithType:UIButtonTypeSystem];
   sendButton.configuration = buttonConfig;
+  sendButton.backgroundColor = [_theme sendButtonBackgroundColorHighlighted:NO];
 
   __weak __typeof(self) weakSelf = self;
   sendButton.configurationUpdateHandler = ^(UIButton* button) {
@@ -1155,8 +1464,15 @@ UIImage* SendButtonImage(BOOL highlighted, ComposeboxTheme* theme) {
   [sendButton addTarget:self
                  action:@selector(sendButtonTapped)
        forControlEvents:UIControlEventTouchUpInside];
-  AddSizeConstraints(sendButton,
-                     CGSizeMake(kSendButtonDimension, kSendButtonDimension));
+
+  if (_entrypoint == ComposeboxEntrypoint::kCobrowse) {
+    AddSizeConstraints(sendButton, CGSizeMake(kCobrowseSendButtonDimension,
+                                              kSendButtonDimension));
+  } else {
+    AddSizeConstraints(sendButton,
+                       CGSizeMake(kSendButtonDimension, kSendButtonDimension));
+  }
+
   return sendButton;
 }
 
@@ -1164,7 +1480,7 @@ UIImage* SendButtonImage(BOOL highlighted, ComposeboxTheme* theme) {
 - (void)sendButtonDidUpdateConfiguration {
   UIButtonConfiguration* updatedConfig = _sendButton.configuration;
   BOOL isHighlighted = _sendButton.state == UIControlStateHighlighted;
-  updatedConfig.image = SendButtonImage(isHighlighted, _theme);
+  updatedConfig.image = SendButtonImage(isHighlighted, _theme, _entrypoint);
   _sendButton.configuration = updatedConfig;
   CGFloat scale = isHighlighted ? 0.95 : 1.0;
   __weak UIButton* weakSendButton = _sendButton;
@@ -1178,8 +1494,8 @@ UIImage* SendButtonImage(BOOL highlighted, ComposeboxTheme* theme) {
 /// Returns the microphone button.
 - (UIButton*)createMicrophoneButton {
   UIButton* micButton =
-      [self createButtonWithImage:CustomSymbolWithPointSize(
-                                      kVoiceSymbol, kSymbolActionPointSize)];
+      [self createButtonWithImage:SymbolWithPointSize(SymbolVoice,
+                                                      kSymbolActionPointSize)];
   micButton.imageView.contentMode = UIViewContentModeScaleAspectFit;
   micButton.accessibilityIdentifier =
       kComposeboxMicButtonAccessibilityIdentifier;
@@ -1222,19 +1538,18 @@ UIImage* SendButtonImage(BOOL highlighted, ComposeboxTheme* theme) {
   using enum ComposeboxInputPlateControls;
   if ((_visibleControls & kLens) != kNone) {
     _visualSearchButton.hidden = NO;
-    [_visualSearchButton setImage:CustomSymbolWithPointSize(
-                                      kCameraLensSymbol, kSymbolActionPointSize)
-                         forState:UIControlStateNormal];
+    [_visualSearchButton
+        setImage:SymbolWithPointSize(SymbolCameraLens, kSymbolActionPointSize)
+        forState:UIControlStateNormal];
     _visualSearchButton.accessibilityIdentifier =
         kComposeboxLensButtonAccessibilityIdentifier;
     _visualSearchButton.accessibilityLabel =
         l10n_util::GetNSString(IDS_IOS_ACCNAME_LENS);
   } else if ((_visibleControls & kQRScanner) != kNone) {
     _visualSearchButton.hidden = NO;
-    [_visualSearchButton
-        setImage:DefaultSymbolWithPointSize(kQRCodeFinderActionSymbol,
-                                            kSymbolActionPointSize)
-        forState:UIControlStateNormal];
+    [_visualSearchButton setImage:SymbolWithPointSize(SymbolQRCodeFinderAction,
+                                                      kSymbolActionPointSize)
+                         forState:UIControlStateNormal];
 
     _visualSearchButton.accessibilityIdentifier =
         kComposeboxQRCodeButtonAccessibilityIdentifier;
@@ -1253,9 +1568,10 @@ UIImage* SendButtonImage(BOOL highlighted, ComposeboxTheme* theme) {
   UIView* spacerView = [[UIView alloc] init];
   [spacerView setContentHuggingPriority:UILayoutPriorityFittingSizeLevel
                                 forAxis:UILayoutConstraintAxisHorizontal];
+
   UIStackView* buttonsStackView =
       [[UIStackView alloc] initWithArrangedSubviews:@[
-        _plusButton, _aimButton, _imageGenerationButton, _canvasButton,
+        _plusButtonContainer, _aimButton, _imageGenerationButton, _canvasButton,
         _deepSearchButton, _askAboutThisPageButton, spacerView, _sendButton,
         _micButton, _visualSearchButton
       ]];
@@ -1269,244 +1585,24 @@ UIImage* SendButtonImage(BOOL highlighted, ComposeboxTheme* theme) {
         constraintEqualToConstant:kButtonStackViewDimension]
   ]];
   buttonsStackView.layoutMarginsRelativeArrangement = YES;
-  buttonsStackView.layoutMargins = kToolbarPadding;
+  buttonsStackView.layoutMargins = [self toolbarPadding];
+
   return buttonsStackView;
 }
 
 /// Configures the menu items for the plus (+) button.
 - (void)updatePlusButtonItems {
-  if (!_plusButton || IsComposeboxPlusButtonBottomSheet()) {
+  if (!_plusButton || _entrypoint == ComposeboxEntrypoint::kCobrowse ||
+      IsComposeboxPlusButtonBottomSheet()) {
     return;
   }
 
-  __weak __typeof__(self) weakSelf = self;
-
-  using enum ComposeboxAttachmentOption;
-  UIAction* galleryAction = [self
-      actionWithTitle:l10n_util::GetNSString(IDS_IOS_COMPOSEBOX_GALLERY_ACTION)
-                image:DefaultSymbolWithPointSize(kPhotoSymbol,
-                                                 kSymbolActionPointSize)
-               hidden:[_state isAttachmentHidden:kGallery]
-             disabled:[_state isAttachmentDisabled:kGallery]
-             selected:NO
-              handler:^{
-                [weakSelf.delegate
-                    composeboxViewControllerDidTapGalleryButton:weakSelf];
-              }];
-  galleryAction.accessibilityIdentifier =
-      kComposeboxGalleryActionAccessibilityIdentifier;
-
-  UIAction* cameraAction = [self
-      actionWithTitle:l10n_util::GetNSString(IDS_IOS_COMPOSEBOX_CAMERA_ACTION)
-                image:DefaultSymbolWithPointSize(kSystemCameraSymbol,
-                                                 kSymbolActionPointSize)
-               hidden:[_state isAttachmentHidden:kCamera]
-             disabled:[_state isAttachmentDisabled:kCamera]
-             selected:NO
-              handler:^{
-                [weakSelf.delegate
-                    composeboxViewControllerDidTapCameraButton:weakSelf];
-              }];
-  cameraAction.accessibilityIdentifier =
-      kComposeboxCameraActionAccessibilityIdentifier;
-
-  UIAction* fileAction = [self
-      actionWithTitle:l10n_util::GetNSString(IDS_IOS_COMPOSEBOX_FILES_ACTION)
-                image:DefaultSymbolWithPointSize(kDocSymbol,
-                                                 kSymbolActionPointSize)
-               hidden:[_state isAttachmentHidden:kFile]
-             disabled:[_state isAttachmentDisabled:kFile]
-             selected:NO
-              handler:^{
-                [weakSelf.delegate
-                    composeboxViewControllerDidTapFileButton:weakSelf];
-              }];
-
-  fileAction.accessibilityIdentifier =
-      kComposeboxAttachFileActionAccessibilityIdentifier;
-
-  UIImage* favicon = _state.currentTabFavicon;
-  if (favicon) {
-    favicon = ImageWithCornerRadius(favicon, kAttachCurrentTabIconRadius);
-  }
-  UIAction* attachCurrentTabAction =
-      [self actionWithTitle:l10n_util::GetNSString(
-                                IDS_IOS_COMPOSEBOX_ADD_CURRENT_TAB_ACTION)
-                      image:favicon
-                                ?: DefaultSymbolWithPointSize(
-                                       kNewTabGroupActionSymbol,
-                                       kSymbolActionPointSize)
-                     hidden:[_state isAttachmentHidden:kCurrentTab]
-                   disabled:[_state isAttachmentDisabled:kCurrentTab]
-                   selected:NO
-                    handler:^{
-                      [weakSelf.mutator attachCurrentTabContent];
-                    }];
-  attachCurrentTabAction.accessibilityIdentifier =
-      kComposeboxAttachCurrentTabActionAccessibilityIdentifier;
-
-  UIAction* selectTabsAction =
-      [self actionWithTitle:l10n_util::GetNSString(
-                                IDS_IOS_COMPOSEBOX_SELECT_TAB_ACTION)
-                      image:DefaultSymbolWithPointSize(kNewTabGroupActionSymbol,
-                                                       kSymbolActionPointSize)
-                     hidden:[_state isAttachmentHidden:kTab]
-                   disabled:[_state isAttachmentDisabled:kTab]
-                   selected:NO
-                    handler:^{
-                      [weakSelf handleAttachTabs];
-                    }];
-  selectTabsAction.accessibilityIdentifier =
-      kComposeboxSelectTabsActionAccessibilityIdentifier;
-
-  UIAction* aimAction = [self
-      actionWithTitle:[_state.strings menuLabelForTool:ComposeboxMode::kAIM]
-                image:CustomSymbolWithPointSize(kMagnifyingglassSparkSymbol,
-                                                kSymbolActionPointSize)
-               hidden:[_state isToolHidden:ComposeboxMode::kAIM]
-             disabled:NO
-             selected:_state.activeTool == ComposeboxMode::kAIM
-              handler:^{
-                [weakSelf handleAIMTappedFromToolMenu];
-              }];
-  aimAction.accessibilityIdentifier =
-      kComposeboxAIMActionAccessibilityIdentifier;
-
-  UIAction* createImageAction = [self
-      actionWithTitle:[_state.strings
-                          menuLabelForTool:ComposeboxMode::kImageGeneration]
-                image:GetBananaIcon(kSymbolActionPointSize)
-               hidden:[_state isToolHidden:ComposeboxMode::kImageGeneration]
-             disabled:[_state isToolDisabled:ComposeboxMode::kImageGeneration]
-             selected:_state.activeTool == ComposeboxMode::kImageGeneration
-              handler:^{
-                [weakSelf handleImageGenTappedFromToolMenu];
-              }];
-  createImageAction.accessibilityIdentifier =
-      kComposeboxImageGenerationActionAccessibilityIdentifier;
-
-  UIAction* canvasAction = [self
-      actionWithTitle:[_state.strings menuLabelForTool:ComposeboxMode::kCanvas]
-                image:CustomSymbolWithPointSize(kDocumentBadgeSpark,
-                                                kSymbolActionPointSize)
-               hidden:[_state isToolHidden:ComposeboxMode::kCanvas]
-             disabled:[_state isToolDisabled:ComposeboxMode::kCanvas]
-             selected:_state.activeTool == ComposeboxMode::kCanvas
-              handler:^{
-                [weakSelf handleCanvasTappedFromToolMenu];
-              }];
-
-  UIAction* deepSearchAction =
-      [self actionWithTitle:[_state.strings
-                                menuLabelForTool:ComposeboxMode::kDeepSearch]
-                      image:CustomSymbolWithPointSize(kDeepSearchSymbol,
-                                                      kSymbolActionPointSize)
-                     hidden:[_state isToolHidden:ComposeboxMode::kDeepSearch]
-                   disabled:[_state isToolDisabled:ComposeboxMode::kDeepSearch]
-                   selected:_state.activeTool == ComposeboxMode::kDeepSearch
-                    handler:^{
-                      [weakSelf handleDeepSearchTappedFromToolMenu];
-                    }];
-
-  UIMenu* attachmentMenu =
-      [UIMenu menuWithTitle:@""
-                      image:nil
-                 identifier:nil
-                    options:UIMenuOptionsDisplayInline
-                   children:@[
-                     attachCurrentTabAction, selectTabsAction, cameraAction,
-                     galleryAction, fileAction
-                   ]];
-
-  NSString* toolsSectionTitle = [_state.strings toolsSectionHeader];
-  UIMenu* modeMenu = [UIMenu
-      menuWithTitle:toolsSectionTitle
-              image:nil
-         identifier:nil
-            options:UIMenuOptionsDisplayInline
-           children:@[
-             aimAction, createImageAction, deepSearchAction, canvasAction
-           ]];
-
-  NSMutableArray<UIMenuElement*>* sections =
-      [[NSMutableArray alloc] initWithArray:@[ attachmentMenu, modeMenu ]];
-  if (_state.allowModelPicker) {
-    BOOL regularHidden =
-        [_state isModelHidden:ComposeboxModelOption::kRegular] ||
-        ![_state isModelHidden:ComposeboxModelOption::kAuto];
-    // Note: When possible, this is meant to be replaced by 'Auto'.
-    UIAction* regularModelOption = [self
-        actionWithTitle:[_state.strings
-                            menuLabelForModel:ComposeboxModelOption::kRegular]
-                  image:DefaultSymbolWithPointSize(kBoltSymbol,
-                                                   kSymbolActionPointSize)
-                 hidden:regularHidden
-               disabled:[_state isModelDisabled:ComposeboxModelOption::kRegular]
-               selected:_state.activeModel == ComposeboxModelOption::kRegular
-                handler:^{
-                  [weakSelf handleModelChangeFromToolsMenuWithOption:
-                                ComposeboxModelOption::kRegular];
-                }];
-
-    UIAction* autoModelOption = [self
-        actionWithTitle:[_state.strings
-                            menuLabelForModel:ComposeboxModelOption::kAuto]
-                  image:DefaultSymbolWithPointSize(kSyncEnabledSymbol,
-                                                   kSymbolActionPointSize)
-                 hidden:[_state isModelHidden:ComposeboxModelOption::kAuto]
-               disabled:[_state isModelDisabled:ComposeboxModelOption::kAuto]
-               selected:_state.activeModel == ComposeboxModelOption::kAuto
-                handler:^{
-                  [weakSelf handleModelChangeFromToolsMenuWithOption:
-                                ComposeboxModelOption::kAuto];
-                }];
-
-    UIAction* thinkingModelOption = [self
-        actionWithTitle:[_state.strings
-                            menuLabelForModel:ComposeboxModelOption::kThinking]
-                  image:DefaultSymbolWithPointSize(kClockSymbol,
-                                                   kSymbolActionPointSize)
-                 hidden:[_state isModelHidden:ComposeboxModelOption::kThinking]
-               disabled:[_state
-                            isModelDisabled:ComposeboxModelOption::kThinking]
-               selected:_state.activeModel == ComposeboxModelOption::kThinking
-                handler:^{
-                  [weakSelf handleModelChangeFromToolsMenuWithOption:
-                                ComposeboxModelOption::kThinking];
-                }];
-
-    UIAction* thinkingModelNoGenUIOption = [self
-        actionWithTitle:
-            [_state.strings
-                menuLabelForModel:ComposeboxModelOption::kThinkingNoGenUI]
-                  image:DefaultSymbolWithPointSize(kClockSymbol,
-                                                   kSymbolActionPointSize)
-                 hidden:[_state isModelHidden:ComposeboxModelOption::
-                                                  kThinkingNoGenUI]
-               disabled:[_state isModelDisabled:ComposeboxModelOption::
-                                                    kThinkingNoGenUI]
-               selected:_state.activeModel ==
-                        ComposeboxModelOption::kThinkingNoGenUI
-                handler:^{
-                  [weakSelf handleModelChangeFromToolsMenuWithOption:
-                                ComposeboxModelOption::kThinkingNoGenUI];
-                }];
-
-    NSString* modelPickerTitle = [_state.strings modelSectionHeader];
-    UIMenu* modelPickerMenu =
-        [UIMenu menuWithTitle:modelPickerTitle
-                        image:nil
-                   identifier:nil
-                      options:UIMenuOptionsDisplayInline
-                     children:@[
-                       regularModelOption, autoModelOption, thinkingModelOption,
-                       thinkingModelNoGenUIOption
-                     ]];
-
-    [sections addObject:modelPickerMenu];
+  UIMenu* menu = [self.delegate composeboxViewControllerPlusButtonMenu:self];
+  if (!menu) {
+    return;
   }
 
-  _plusButton.menu = [UIMenu menuWithTitle:@"" children:sections];
+  _plusButton.menu = menu;
   _plusButton.preferredMenuElementOrder =
       UIContextMenuConfigurationElementOrderFixed;
 }
@@ -1540,6 +1636,24 @@ UIImage* SendButtonImage(BOOL highlighted, ComposeboxTheme* theme) {
   return action;
 }
 
+// The padding for the attachments section of the input plate.
+- (CGFloat)inputPlateAttachmentsPadding {
+  if (_entrypoint == ComposeboxEntrypoint::kCobrowse) {
+    return kInputPlateCobrowseAttachmentsPadding;
+  }
+
+  return kInputPlateAttachmentsPadding;
+}
+
+/// The padding of the carousel. Same as `inputPlateAttachmentsPadding` to keep
+/// symmetry.
+- (UIEdgeInsets)carouselPadding {
+  return {
+      .left = [self inputPlateAttachmentsPadding],
+      .right = [self inputPlateAttachmentsPadding],
+  };
+}
+
 /// Initializes and configures the collection view for the attachment carousel.
 - (void)setupCarouselContainer {
   // Carousel view
@@ -1563,7 +1677,7 @@ UIImage* SendButtonImage(BOOL highlighted, ComposeboxTheme* theme) {
   // The outer view has minimal padding to allow the carousel space for multiple
   // attachments when they overflow. This ensures that there's still some
   // padding when the carousel is scrolled to either end.
-  _carouselView.contentInset = kCarouselPadding;
+  _carouselView.contentInset = [self carouselPadding];
   _carouselView.showsHorizontalScrollIndicator = NO;
 
   _carouselContainer = [[UIView alloc] init];
@@ -1665,14 +1779,14 @@ UIImage* SendButtonImage(BOOL highlighted, ComposeboxTheme* theme) {
   _toolbarView = nil;
 
   if (self.compact) {
-    [_inputPlateStackView insertArrangedSubview:_plusButton atIndex:0];
+    [_inputPlateStackView insertArrangedSubview:_plusButtonContainer atIndex:0];
     [_inputPlateStackView addArrangedSubview:_micButton];
     [_inputPlateStackView addArrangedSubview:_visualSearchButton];
 
     _inputPlateStackView.axis = UILayoutConstraintAxisHorizontal;
     _inputPlateStackView.spacing = 0;
     [_inputPlateStackView setCustomSpacing:kButtonsCompactSpacing
-                                 afterView:_plusButton];
+                                 afterView:_plusButtonContainer];
     [_inputPlateStackView setCustomSpacing:kShortcutsSpacing
                                  afterView:_micButton];
     _bottomPaddingConstraint.constant = -kInputPlateStackViewVerticalPadding;
@@ -1690,6 +1804,11 @@ UIImage* SendButtonImage(BOOL highlighted, ComposeboxTheme* theme) {
             : kInputPlateCornerRadius;
     _inputPlateContainerView.layer.cornerRadius = cornerRadius;
     _inputPlateInternalContainerView.layer.cornerRadius = cornerRadius;
+
+    // Preset the toolbar frame so that during appearance animation elements
+    // have correct horizontal positions.
+    _toolbarView.frame = _inputPlateStackView.frame;
+    [_toolbarView layoutIfNeeded];
   }
 
   [self updateInputPlateStackViewPadding];
@@ -1698,8 +1817,13 @@ UIImage* SendButtonImage(BOOL highlighted, ComposeboxTheme* theme) {
 
 // Updates the side paddings of the input plate stack view.
 - (void)updateInputPlateStackViewPadding {
+  CGFloat baseTrailingPadding = [self inputPlatePadding].trailing;
+  if (_theme.inputPlatePosition == ComposeboxInputPlatePosition::kiPad) {
+    baseTrailingPadding = 14.0f;
+  }
+
   if (self.compact) {
-    CGFloat trailingPadding = kInputPlatePadding.trailing;
+    CGFloat trailingPadding = baseTrailingPadding;
     ComposeboxInputPlateControls shortcuts =
         ComposeboxInputPlateControls::kLens |
         ComposeboxInputPlateControls::kVoice;
@@ -1711,20 +1835,36 @@ UIImage* SendButtonImage(BOOL highlighted, ComposeboxTheme* theme) {
 
     _inputPlateStackView.layoutMarginsRelativeArrangement = YES;
     // Ensure we do not lose the margins on the sides when in compact mode.
-    _inputPlateStackView.layoutMargins =
-        UIEdgeInsetsMake(0, kInputPlatePadding.leading, 0, trailingPadding);
+    _inputPlateStackView.layoutMargins = UIEdgeInsetsMake(
+        0, [self inputPlatePadding].leading, 0, trailingPadding);
     // Margins are applied on the input plate, remove the margins on the
     // omnibox.
     _omniboxContainer.directionalLayoutMargins = NSDirectionalEdgeInsetsZero;
   } else {
     _inputPlateStackView.layoutMarginsRelativeArrangement = NO;
-    _omniboxContainer.directionalLayoutMargins = kInputPlatePadding;
+    NSDirectionalEdgeInsets margins = [self inputPlatePadding];
+    margins.trailing = baseTrailingPadding;
+    _omniboxContainer.directionalLayoutMargins = margins;
   }
 }
 
-/// Animates the transition of the input plate stack view between compact and
-/// expanded states.
+/// Updates and re-layouts the input plate stack view content within an
+/// animation block.
+- (void)updateInputPlateStackViewLayout {
+  [self.inputPlateStackView layoutIfNeeded];
+  [self.view layoutIfNeeded];
+}
+
+// The input plate stack view layout animation completion.
+- (void)inputPlateStackViewLayoutAnimationCompletion {
+  [self updatePreferredContentSize];
+  [self performTabAttachmentAnimationIfNeeded];
+}
+
+// Animates the transition of the input plate stack view between compact and
+// expanded states.
 - (void)updateInputPlateStackViewAnimated:(BOOL)animated {
+  [self updateInputPlateStackViewContent];
   if (!animated) {
     [self updateInputPlateStackViewContent];
     [self updatePreferredContentSize];
@@ -1736,13 +1876,11 @@ UIImage* SendButtonImage(BOOL highlighted, ComposeboxTheme* theme) {
       delay:0
       options:UIViewAnimationCurveEaseInOut
       animations:^{
-        [self updateInputPlateStackViewContent];
-        [self.inputPlateStackView layoutIfNeeded];
-        [self.view layoutIfNeeded];
+        [weakSelf updateInputPlateStackViewLayout];
       }
       completion:^(BOOL complete) {
         if (complete) {
-          [weakSelf updatePreferredContentSize];
+          [weakSelf inputPlateStackViewLayoutAnimationCompletion];
         }
       }];
 }
@@ -1783,15 +1921,20 @@ UIImage* SendButtonImage(BOOL highlighted, ComposeboxTheme* theme) {
   button.layer.borderWidth = 0;
 
   NSString* title =
-      [_state.strings chipLabelForTool:ComposeboxMode::kImageGeneration];
+      [_state.uiConfig chipLabelForTool:ComposeboxMode::kImageGeneration];
   UIButtonConfiguration* config = [self
       modeIndicatorButtonConfigWithTitle:title
-                                   image:GetBananaIcon(kSymbolActionPointSize)];
+                                   image:[_state.uiConfig
+                                             iconForTool:ComposeboxMode::
+                                                             kImageGeneration]];
   config.contentInsets = kImageGenerationButtonInsets;
   config.background.backgroundColor =
       [_theme toolButtonBackgroundColorWithActiveState:YES];
   config.baseForegroundColor = [_theme toolButtonTextColorWithActiveState:YES];
   button.tintColor = [_theme toolButtonTextColorWithActiveState:YES];
+
+  button.accessibilityLabel = [_state.uiConfig
+      removeToolAccessibilityLabelForTool:ComposeboxMode::kImageGeneration];
 
   button.configuration = config;
   [self setupXMarkInButton:button];
@@ -1804,7 +1947,7 @@ UIImage* SendButtonImage(BOOL highlighted, ComposeboxTheme* theme) {
   UIButtonConfiguration* config = _imageGenerationButton.configuration;
 
   NSString* createImageTitle =
-      [_state.strings chipLabelForTool:ComposeboxMode::kImageGeneration];
+      [_state.uiConfig chipLabelForTool:ComposeboxMode::kImageGeneration];
   UIFont* font = [UIFont systemFontOfSize:kAIMButtonFontSize
                                    weight:UIFontWeightMedium];
   NSDictionary* attributes = @{NSFontAttributeName : font};
@@ -1814,6 +1957,8 @@ UIImage* SendButtonImage(BOOL highlighted, ComposeboxTheme* theme) {
                                       attributes:attributes];
 
   _imageGenerationButton.configuration = config;
+  _imageGenerationButton.accessibilityLabel = [_state.uiConfig
+      removeToolAccessibilityLabelForTool:ComposeboxMode::kImageGeneration];
 }
 
 
@@ -1829,11 +1974,11 @@ UIImage* SendButtonImage(BOOL highlighted, ComposeboxTheme* theme) {
       forControlEvents:UIControlEventTouchUpInside];
   button.layer.borderWidth = 0;
 
-  NSString* title = [_state.strings chipLabelForTool:ComposeboxMode::kCanvas];
+  NSString* title = [_state.uiConfig chipLabelForTool:ComposeboxMode::kCanvas];
   UIButtonConfiguration* config =
       [self modeIndicatorButtonConfigWithTitle:title
-                                         image:CustomSymbolWithPointSize(
-                                                   kDocumentBadgeSpark,
+                                         image:SymbolWithPointSize(
+                                                   SymbolDocumentBadgeSpark,
                                                    kAIMButtonSymbolPointSize)];
   NSDirectionalEdgeInsets insets = kModeIndicatorButtonInsets;
   insets.trailing = kModeIndicatorButtonInsets.trailing + kXButtonWidthInButton;
@@ -1843,6 +1988,9 @@ UIImage* SendButtonImage(BOOL highlighted, ComposeboxTheme* theme) {
       [_theme toolButtonBackgroundColorWithActiveState:YES];
   config.baseForegroundColor = [_theme toolButtonTextColorWithActiveState:YES];
   button.tintColor = [_theme toolButtonTextColorWithActiveState:YES];
+
+  button.accessibilityLabel = [_state.uiConfig
+      removeToolAccessibilityLabelForTool:ComposeboxMode::kCanvas];
 
   button.configuration = config;
 
@@ -1869,11 +2017,11 @@ UIImage* SendButtonImage(BOOL highlighted, ComposeboxTheme* theme) {
   button.layer.borderWidth = 0;
 
   NSString* title =
-      [_state.strings chipLabelForTool:ComposeboxMode::kDeepSearch];
+      [_state.uiConfig chipLabelForTool:ComposeboxMode::kDeepSearch];
   UIButtonConfiguration* config =
       [self modeIndicatorButtonConfigWithTitle:title
-                                         image:CustomSymbolWithPointSize(
-                                                   kDeepSearchSymbol,
+                                         image:SymbolWithPointSize(
+                                                   SymbolDeepSearch,
                                                    kAIMButtonSymbolPointSize)];
   NSDirectionalEdgeInsets insets = kModeIndicatorButtonInsets;
   insets.trailing = kModeIndicatorButtonInsets.trailing + kXButtonWidthInButton;
@@ -1883,6 +2031,9 @@ UIImage* SendButtonImage(BOOL highlighted, ComposeboxTheme* theme) {
       [_theme toolButtonBackgroundColorWithActiveState:YES];
   config.baseForegroundColor = [_theme toolButtonTextColorWithActiveState:YES];
   button.tintColor = [_theme toolButtonTextColorWithActiveState:YES];
+
+  button.accessibilityLabel = [_state.uiConfig
+      removeToolAccessibilityLabelForTool:ComposeboxMode::kDeepSearch];
 
   button.configuration = config;
 
@@ -1920,8 +2071,8 @@ UIImage* SendButtonImage(BOOL highlighted, ComposeboxTheme* theme) {
   UIButtonConfiguration* config = [self
       modeIndicatorButtonConfigWithTitle:
           l10n_util::GetNSString(IDS_IOS_COMPOSEBOX_ASK_ABOUT_THIS_PAGE_ACTION)
-                                   image:CustomSymbolWithPointSize(
-                                             kMagnifyingglassSparkSymbol,
+                                   image:SymbolWithPointSize(
+                                             SymbolMagnifyingglassSpark,
                                              kAIMButtonSymbolPointSize)];
   config.background.backgroundColor = [UIColor clearColor];
   config.baseForegroundColor = [_theme toolButtonTextColorWithActiveState:NO];
@@ -2213,6 +2364,49 @@ UIImage* SendButtonImage(BOOL highlighted, ComposeboxTheme* theme) {
   dispatch_async(dispatch_get_main_queue(), ^{
     [weakSelf.mutator processFileURL:fileURL isPDF:isPDF];
   });
+}
+
+/// Fades out the tabs accordion stack view.
+- (void)fadeOutTabsAccordion {
+  _tabsAccordionStackView.alpha = 0;
+}
+
+/// Slides the tabs accordion stack view layout.
+- (void)slideTabsAccordion {
+  _containerTrailingToAccordionConstraint.active = NO;
+  _tabsAccordionLeadingConstraint.active = NO;
+  _tabsAccordionTrailingConstraint.active = YES;
+  _containerTrailingToPlusButtonConstraint.active = YES;
+  [self.view layoutIfNeeded];
+}
+
+/// Handles cleanup and state updating upon tab attachment animation completion.
+- (void)handleTabAttachmentAnimationCompletion {
+  for (ComposeboxInputItem* item in _currentItems) {
+    if (item.type == ComposeboxInputItemType::kComposeboxInputItemTypeTab) {
+      item.performedAnimation = YES;
+    }
+  }
+
+  [self rebuildTabsAccordion];
+  _tabsAccordionStackView.alpha = 1;
+}
+
+/// The side padding for the input plate stack view content (e.g. omnibox,
+/// toolbar).
+- (NSDirectionalEdgeInsets)inputPlatePadding {
+  return _entrypoint == ComposeboxEntrypoint::kCobrowse
+             ? kInputPlateCobrowsePadding
+             : kInputPlatePadding;
+}
+
+/// The padding of the toolbar.
+///
+/// Note: While padding is offset to visually align the clear button's visual
+/// bounding box, all other UI elements maintain symmetrical centering.
+- (UIEdgeInsets)toolbarPadding {
+  return {.left = [self inputPlatePadding].leading,
+          .right = [self inputPlatePadding].leading};
 }
 
 @end

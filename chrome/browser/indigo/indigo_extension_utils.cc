@@ -9,14 +9,18 @@
 #include <vector>
 
 #include "base/containers/span.h"
+#include "base/feature_list.h"
+#include "base/i18n/legacy_language_tag_helpers.h"
 #include "base/i18n/rtl.h"
 #include "base/no_destructor.h"
+#include "base/strings/to_string.h"
 #include "base/values.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/global_features.h"
 #include "chrome/browser/indigo/resources/grit/indigo_browser_resources.h"
 #include "chrome/browser/indigo/resources/grit/indigo_browser_resources_map.h"
-#include "chrome/grit/branded_strings.h"
+#include "chrome/browser/indigo/resources/grit/indigo_strings.h"
+#include "chrome/common/chrome_features.h"
 #include "chrome/grit/indigo_resources.h"
 #include "chrome/grit/indigo_resources_map.h"
 #include "components/application_locale_storage/application_locale_storage.h"
@@ -39,7 +43,8 @@ base::DictValue GetStrings() {
 
   base::DictValue dict;
   dict.Set("textdirection", base::i18n::IsRTL() ? "rtl" : "ltr");
-  dict.Set("language", l10n_util::GetLanguage(application_locale));
+  dict.Set("language",
+           base::i18n::GetLanguageSubtagUsingLanguageTag(application_locale));
   dict.Set("indigoTitle", l10n_util::GetStringUTF16(IDS_INDIGO_TITLE));
   dict.Set("textLayerStep1",
            l10n_util::GetStringUTF16(IDS_INDIGO_TEXT_LAYER_STEP_1));
@@ -51,6 +56,9 @@ base::DictValue GetStrings() {
            l10n_util::GetStringUTF16(IDS_INDIGO_DISCLAIMER_LINE_1));
   dict.Set("disclaimerLine2",
            l10n_util::GetStringUTF16(IDS_INDIGO_DISCLAIMER_LINE_2));
+  dict.Set(
+      "watermarkEnabled",
+      base::ToString(base::FeatureList::IsEnabled(features::kIndigoWatermark)));
   return dict;
 }
 

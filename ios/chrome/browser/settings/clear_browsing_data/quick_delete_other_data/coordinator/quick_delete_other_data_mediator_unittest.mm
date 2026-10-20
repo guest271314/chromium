@@ -12,17 +12,20 @@
 #import "components/search_engines/template_url_prepopulate_data.h"
 #import "components/search_engines/template_url_service.h"
 #import "components/strings/grit/components_strings.h"
+#import "components/sync/test/test_sync_service.h"
 #import "ios/chrome/browser/search_engines/model/template_url_service_factory.h"
 #import "ios/chrome/browser/settings/clear_browsing_data/public/quick_delete_util.h"
 #import "ios/chrome/browser/settings/clear_browsing_data/quick_delete_other_data/ui/quick_delete_other_data_consumer.h"
 #import "ios/chrome/browser/shared/model/application_context/application_context.h"
 #import "ios/chrome/browser/shared/model/profile/test/test_profile_ios.h"
+#import "ios/chrome/browser/shared/model/profile/test/test_profile_manager_ios.h"
 #import "ios/chrome/browser/signin/model/authentication_service.h"
 #import "ios/chrome/browser/signin/model/authentication_service_factory.h"
-#import "ios/chrome/browser/signin/model/fake_authentication_service_delegate.h"
 #import "ios/chrome/browser/signin/model/fake_system_identity.h"
 #import "ios/chrome/browser/signin/model/fake_system_identity_manager.h"
 #import "ios/chrome/browser/signin/model/identity_manager_factory.h"
+#import "ios/chrome/browser/sync/model/sync_service_factory.h"
+#import "ios/chrome/browser/sync/model/test_sync_service_utils.h"
 #import "ios/chrome/test/ios_chrome_scoped_testing_local_state.h"
 #import "ios/web/public/test/web_task_environment.h"
 #import "testing/gtest/include/gtest/gtest.h"
@@ -43,12 +46,13 @@ class QuickDeleteOtherDataMediatorTest : public PlatformTest {
         ios::TemplateURLServiceFactory::GetDefaultFactory());
     builder.AddTestingFactory(
         AuthenticationServiceFactory::GetInstance(),
-        AuthenticationServiceFactory::GetFactoryWithDelegate(
-            std::make_unique<FakeAuthenticationServiceDelegate>()));
+        AuthenticationServiceFactory::GetDefaultFactory());
+    builder.AddTestingFactory(SyncServiceFactory::GetInstance(),
+                              base::BindRepeating(&CreateTestSyncService));
 
-    profile_ = std::move(builder).Build();
+    profile_ = profile_manager_.AddProfileWithBuilder(std::move(builder));
 
-    auth_service_ = AuthenticationServiceFactory::GetForProfile(profile_.get());
+    auth_service_ = AuthenticationServiceFactory::GetForProfile(profile_);
 
     FakeSystemIdentityManager* system_identity_manager =
         FakeSystemIdentityManager::FromSystemIdentityManager(
@@ -70,12 +74,17 @@ class QuickDeleteOtherDataMediatorTest : public PlatformTest {
     mediator_ = [[QuickDeleteOtherDataMediator alloc]
         initWithAuthenticationService:auth_service_
                       identityManager:IdentityManagerFactory::GetForProfile(
-                                          profile_.get())
+                                          profile_)
                    templateURLService:template_url_service_];
   }
 
   void TearDown() override {
     [mediator_ disconnect];
+    mediator_ = nil;
+    consumer_ = nil;
+    auth_service_ = nullptr;
+    template_url_service_ = nullptr;
+    profile_ = nullptr;
     PlatformTest::TearDown();
   }
 
@@ -111,7 +120,7 @@ class QuickDeleteOtherDataMediatorTest : public PlatformTest {
     auto prepopulated_engines =
         regional_capabilities::GetAllPrepopulatedEngines();
     TemplateURL* defaultSearchEngine = nullptr;
-    for (const auto* engine : prepopulated_engines) {
+    for (const auto& engine : prepopulated_engines) {
       if (engine->type == engine_type) {
         defaultSearchEngine =
             template_url_service_->Add(std::make_unique<TemplateURL>(
@@ -127,8 +136,9 @@ class QuickDeleteOtherDataMediatorTest : public PlatformTest {
  protected:
   web::WebTaskEnvironment task_environment_;
   IOSChromeScopedTestingLocalState scoped_testing_local_state_;
+  TestProfileManagerIOS profile_manager_;
+  raw_ptr<TestProfileIOS> profile_ = nullptr;
   search_engines::SearchEnginesTestEnvironment search_engines_test_environment_;
-  std::unique_ptr<TestProfileIOS> profile_;
   QuickDeleteOtherDataMediator* mediator_;
   id consumer_;
   id<SystemIdentity> fake_identity_;
@@ -461,7 +471,7 @@ TEST_F(QuickDeleteOtherDataMediatorTest,
   OCMExpect([consumer_ setShouldShowMyActivityCell:NO]);
   OCMExpect([consumer_ setShouldShowSearchHistoryCell:NO]);
 
-  auth_service_->SignOut(signin_metrics::ProfileSignout::kTest, nil);
+  auth_service_->SignOut(signin_metrics::ProfileSignout::kTest);
 
   EXPECT_OCMOCK_VERIFY(consumer_);
 }

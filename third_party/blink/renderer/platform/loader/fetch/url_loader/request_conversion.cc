@@ -6,6 +6,7 @@
 
 #include <string_view>
 
+#include "base/feature_list.h"
 #include "mojo/public/cpp/bindings/receiver.h"
 #include "mojo/public/cpp/bindings/remote.h"
 #include "mojo/public/cpp/system/data_pipe.h"
@@ -14,6 +15,7 @@
 #include "net/filter/source_stream_type.h"
 #include "net/http/http_request_headers.h"
 #include "net/http/http_util.h"
+#include "services/network/public/cpp/features.h"
 #include "services/network/public/cpp/is_potentially_trustworthy.h"
 #include "services/network/public/cpp/optional_trust_token_params.h"
 #include "services/network/public/cpp/resource_request.h"
@@ -39,6 +41,7 @@
 #include "third_party/blink/renderer/platform/loader/fetch/resource_request.h"
 #include "third_party/blink/renderer/platform/loader/fetch/trust_token_params_conversion.h"
 #include "third_party/blink/renderer/platform/network/encoded_form_data.h"
+#include "third_party/blink/renderer/platform/network/http_names.h"
 #include "third_party/blink/renderer/platform/network/wrapped_data_pipe_getter.h"
 
 namespace blink {
@@ -96,7 +99,6 @@ mojom::ResourceType RequestContextToResourceType(
       return mojom::ResourceType::kObject;
 
     // Ping
-    case mojom::blink::RequestContextType::ATTRIBUTION_SRC:
     case mojom::blink::RequestContextType::BEACON:
     case mojom::blink::RequestContextType::PING:
       return mojom::ResourceType::kPing;
@@ -124,6 +126,7 @@ mojom::ResourceType RequestContextToResourceType(
     case mojom::blink::RequestContextType::SPECULATION_RULES:
     case mojom::blink::RequestContextType::SUBRESOURCE:
     case mojom::blink::RequestContextType::SUBRESOURCE_WEBBUNDLE:
+    case mojom::blink::RequestContextType::TEXT:
       return mojom::ResourceType::kSubResource;
 
     // TextTrack
@@ -261,11 +264,18 @@ void PopulateResourceRequest(const ResourceRequestHead& src,
   dest->url = GURL(src.Url());
   dest->site_for_cookies = src.SiteForCookies();
   dest->upgrade_if_insecure = src.UpgradeIfInsecure();
-  dest->is_revalidating = src.IsRevalidating();
-  if (src.GetDevToolsAcceptedStreamTypes()) {
-    dest->devtools_accepted_stream_types = std::vector<net::SourceStreamType>(
-        src.GetDevToolsAcceptedStreamTypes()->data.begin(),
-        src.GetDevToolsAcceptedStreamTypes()->data.end());
+  if (base::FeatureList::IsEnabled(network::features::kSafeRevalidation)) {
+    if (src.IsRevalidating()) {
+      if (!src.RevalidationEtag().IsNull()) {
+        dest->revalidation_etag = src.RevalidationEtag().Latin1();
+      }
+      if (!src.RevalidationLastModified().IsNull()) {
+        dest->revalidation_last_modified =
+            src.RevalidationLastModified().Latin1();
+      }
+    }
+  } else {
+    dest->is_revalidating = src.IsRevalidating();
   }
   if (src.RequestorOrigin()->ToString() == "null") {
     // "file:" origin is treated like an opaque unique origin when
@@ -305,12 +315,6 @@ void PopulateResourceRequest(const ResourceRequestHead& src,
   if (!src.GetRequestedWithHeader().empty()) {
     dest->cors_exempt_headers.SetHeader(kCorsExemptRequestedWithHeaderName,
                                         src.GetRequestedWithHeader().Utf8());
-  }
-  // Set Purpose header to cors_exempt_headers rather than headers to be
-  // exempted from CORS checks.
-  if (!src.GetPurposeHeader().empty()) {
-    dest->cors_exempt_headers.SetHeader(kPurposeHeaderName,
-                                        src.GetPurposeHeader().Utf8());
   }
   // Set Last-Event-ID header to cors_exempt_headers for EventSource.
   // HTTP headers are Latin-1 byte strings, but the Last-Event-ID header is
@@ -363,10 +367,6 @@ void PopulateResourceRequest(const ResourceRequestHead& src,
   }
 
   dest->keepalive = src.GetKeepalive();
-  dest->browsing_topics = src.GetBrowsingTopics();
-  dest->ad_auction_headers = src.GetAdAuctionHeaders();
-  dest->shared_storage_writable_eligible =
-      src.GetSharedStorageWritableEligible();
   dest->has_user_gesture = src.HasUserGesture();
   dest->enable_load_timing = true;
   dest->enable_upload_progress = src.ReportUploadProgress();
@@ -426,13 +426,6 @@ void PopulateResourceRequest(const ResourceRequestHead& src,
   }
 
   dest->storage_access_api_status = src.GetStorageAccessApiStatus();
-
-  dest->attribution_reporting_support = src.GetAttributionReportingSupport();
-
-  dest->attribution_reporting_eligibility =
-      src.GetAttributionReportingEligibility();
-
-  dest->attribution_reporting_src_token = src.GetAttributionSrcToken();
 
   dest->keepalive_token = src.GetKeepaliveToken();
 

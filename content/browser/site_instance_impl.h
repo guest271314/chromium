@@ -54,8 +54,6 @@ class CONTENT_EXPORT SiteInstanceImpl final : public SiteInstance {
   static scoped_refptr<SiteInstanceImpl> CreateForGuest(
       BrowserContext* browser_context,
       const StoragePartitionConfig& partition_config);
-  static scoped_refptr<SiteInstanceImpl> CreateForFencedFrame(
-      SiteInstanceImpl* embedder_site_instance);
   static scoped_refptr<SiteInstanceImpl> CreateForFixedStoragePartition(
       BrowserContext* browser_context,
       const GURL& url,
@@ -130,9 +128,8 @@ class CONTENT_EXPORT SiteInstanceImpl final : public SiteInstance {
   // for a URL being navigated to.
   static bool ShouldAssignSiteForUrlInfo(const UrlInfo& url_info);
 
-  // Returns the SiteInstanceGroup |this| belongs to.
-  // Currently, each SiteInstanceGroup has exactly one SiteInstance, but that
-  // will change as the migration continues. See crbug.com/1195535.
+  // Returns the SiteInstanceGroup |this| belongs to. See SiteInstanceGroup for
+  // cases where a group may contain multiple SiteInstances.
   SiteInstanceGroup* group() { return site_instance_group_.get(); }
 
   // Use this to get a related SiteInstance during navigations, where UrlInfo
@@ -236,7 +233,7 @@ class CONTENT_EXPORT SiteInstanceImpl final : public SiteInstance {
   // SiteInstance. May be empty if this SiteInstance does not have a
   // |site_info_|.
   const GURL& original_url() {
-    DCHECK(!IsDefaultSiteInstance());
+    CHECK(!IsDefaultSiteInstance(), base::NotFatalUntil::M159);
     return original_url_;
   }
 
@@ -333,6 +330,10 @@ class CONTENT_EXPORT SiteInstanceImpl final : public SiteInstance {
   // Returns true if this SiteInstance is for a site that contains PDF contents.
   bool IsPdf();
 
+  // Returns true if this SiteInstance is for privileged contents (a WebContents
+  // created with PrivilegedParams).
+  bool IsPrivileged();
+
   // Set the web site that this SiteInstance is rendering pages for.
   // This includes the scheme and registered domain, but not the port.  If the
   // URL does not have a valid registered domain, then the full hostname is
@@ -342,10 +343,18 @@ class CONTENT_EXPORT SiteInstanceImpl final : public SiteInstance {
   // SiteInstance.
   void SetSite(const UrlInfo& url_info);
 
-  // Same as above, but for SiteInfo. The above version should be used in most
-  // cases, unless the UrlInfo is unavailable, such as for sandboxed srcdoc
-  // frames.
-  void SetSite(const SiteInfo& site_info);
+  // Directly assigns the precomputed |site_info| and |original_url| to this
+  // SiteInstance, avoiding redundant recalculation of the SiteInfo.
+  // |original_url| specifies the first GURL navigated to in this SiteInstance.
+  // Used in the precomputed SiteInfo navigation path.
+  void SetSiteInfoAndOriginalUrl(const SiteInfo& site_info,
+                                 const GURL& original_url);
+
+  // Directly assigns the |site_info| to this SiteInstance. Used in cases where
+  // the original URL is not available or not applicable, such as when creating
+  // a SiteInstance for a fenced frame (which reuses the embedder's SiteInfo),
+  // or when creating guest or sandboxed SiteInstances from a SiteInfo directly.
+  void SetSiteInfo(const SiteInfo& site_info);
 
   // Similar to SetSite(), but first attempts to convert this object to a
   // default SiteInstance if |url_info| can be placed inside a default

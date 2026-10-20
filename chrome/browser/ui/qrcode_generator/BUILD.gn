@@ -25,11 +25,11 @@ source_set("impl") {
     "//chrome/browser:browser_process",
     "//chrome/browser/ui/browser_window",
     "//chrome/browser/ui/sharing_hub",
+    "//chrome/browser/ui/views/qrcode_generator",
     "//chrome/common:constants",
     "//components/prefs",
     "//url",
   ]
-  public_deps = [ "//chrome/browser:browser_public_dependencies" ]
 }
 
 source_set("browser_tests") {

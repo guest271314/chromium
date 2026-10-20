@@ -66,10 +66,11 @@ const char kOnResponseStartedEvent[] = "webRequest.onResponseStarted";
 const char kOnSendHeadersEvent[] = "webRequest.onSendHeaders";
 const char kOnAuthRequiredEvent[] = "webRequest.onAuthRequired";
 
+const char kFileUrlRedirectDisallowed[] =
+    "Cannot redirect to a file URL without file access.";
 const char kInvalidRedirectUrl[] = "redirectUrl '*' is not a valid URL.";
 const char kInvalidBlockingResponse[] =
     "cancel cannot be true in the presence of other keys.";
-const char kInvalidRequestFilterUrl[] = "'*' is not a valid URL pattern.";
 const char kBlockingPermissionRequired[] =
     "You do not have permission to use blocking webRequest listeners. "
     "Be sure to declare the webRequestBlocking permission in your "

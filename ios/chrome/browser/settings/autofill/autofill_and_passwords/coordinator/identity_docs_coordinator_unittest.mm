@@ -7,35 +7,48 @@
 #import <UIKit/UIKit.h>
 
 #import "base/test/ios/wait_util.h"
+#import "base/test/metrics/user_action_tester.h"
 #import "base/test/scoped_feature_list.h"
 #import "components/autofill/core/browser/data_manager/autofill_ai/entity_data_manager.h"
 #import "components/autofill/core/browser/data_model/autofill_ai/entity_instance.h"
-#import "components/autofill/core/browser/test_utils/entity_data_test_utils.h"
+#import "components/autofill/core/browser/test_utils/entity_data_test_util.h"
 #import "components/autofill/core/common/autofill_features.h"
+#import "components/sync/test/test_sync_service.h"
+#import "components/test/ios/test_utils.h"
 #import "ios/chrome/browser/autofill/model/ios_autofill_entity_data_manager_factory.h"
 #import "ios/chrome/browser/settings/autofill/autofill_and_passwords/coordinator/autofill_ai_base_mediator.h"
+#import "ios/chrome/browser/settings/autofill/autofill_and_passwords/ui/identity_docs_table_view_controller.h"
+#import "ios/chrome/browser/settings/autofill/suggestions_from_gemini/coordinator/suggestions_from_gemini_coordinator.h"
 #import "ios/chrome/browser/shared/model/browser/test/test_browser.h"
 #import "ios/chrome/browser/shared/model/profile/test/test_profile_ios.h"
+#import "ios/chrome/browser/shared/public/commands/command_dispatcher.h"
+#import "ios/chrome/browser/shared/public/commands/scene_commands.h"
+#import "ios/chrome/browser/sync/model/sync_service_factory.h"
+#import "ios/chrome/browser/sync/model/test_sync_service_utils.h"
 #import "ios/chrome/browser/webdata_services/model/web_data_service_factory.h"
 #import "ios/web/public/test/web_task_environment.h"
 #import "testing/gtest/include/gtest/gtest.h"
 #import "testing/platform_test.h"
+#import "third_party/ocmock/OCMock/OCMock.h"
 
 class IdentityDocsCoordinatorTest : public PlatformTest {
  protected:
   void SetUp() override {
     PlatformTest::SetUp();
-    scoped_feature_list_.InitWithFeatures(
-        {autofill::features::kAutofillAiWithDataSchema,
-         autofill::features::kAutofillAiCreateEntityDataManager},
-        {});
 
     TestProfileIOS::Builder builder;
     builder.AddTestingFactory(ios::WebDataServiceFactory::GetInstance(),
                               ios::WebDataServiceFactory::GetDefaultFactory());
+    builder.AddTestingFactory(SyncServiceFactory::GetInstance(),
+                              base::BindRepeating(&CreateTestSyncService));
 
     profile_ = std::move(builder).Build();
     browser_ = std::make_unique<TestBrowser>(profile_.get());
+
+    mock_scene_commands_ = OCMStrictProtocolMock(@protocol(SceneCommands));
+    [browser_->GetCommandDispatcher()
+        startDispatchingToTarget:mock_scene_commands_
+                     forProtocol:@protocol(SceneCommands)];
 
     navigation_controller_ = [[UINavigationController alloc] init];
 
@@ -52,9 +65,11 @@ class IdentityDocsCoordinatorTest : public PlatformTest {
   }
 
   web::WebTaskEnvironment task_environment_;
-  base::test::ScopedFeatureList scoped_feature_list_;
+  base::test::ScopedFeatureList scoped_feature_list_{
+      autofill::features::kAutofillAiWithDataSchema};
   std::unique_ptr<TestProfileIOS> profile_;
   std::unique_ptr<TestBrowser> browser_;
+  id<SceneCommands> mock_scene_commands_;
   UINavigationController* navigation_controller_;
   IdentityDocsCoordinator* coordinator_;
 };
@@ -90,4 +105,24 @@ TEST_F(IdentityDocsCoordinatorTest, StartsEntityEditCoordinator) {
   EXPECT_GT(navigation_controller_.viewControllers.count, initialCount);
 
   [coordinator_ stop];
+}
+
+// Tests that selecting Suggestions from Gemini registers the user action.
+TEST_F(IdentityDocsCoordinatorTest, SuggestionsFromGeminiActionRecorded) {
+  [coordinator_ start];
+
+  base::UserActionTester user_action_tester;
+
+  IdentityDocsTableViewController* viewController =
+      static_cast<IdentityDocsTableViewController*>(
+          navigation_controller_.topViewController);
+  ASSERT_NE(nil, viewController);
+
+  id<IdentityDocsTableViewControllerDelegate> delegate =
+      static_cast<id<IdentityDocsTableViewControllerDelegate>>(coordinator_);
+  [delegate identityDocsTableViewControllerDidSelectSuggestionsFromGemini:
+                viewController];
+
+  EXPECT_EQ(1, user_action_tester.GetActionCount(
+                   "PersonalContext.Settings.EntryPoint.IdentityDocsSettings"));
 }

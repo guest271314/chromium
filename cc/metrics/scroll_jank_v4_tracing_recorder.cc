@@ -24,6 +24,7 @@ using DamagingFrame = ScrollJankV4Frame::DamagingFrame;
 using NonDamagingFrame = ScrollJankV4Frame::NonDamagingFrame;
 using BeginFrameArgsForScrollJank =
     ScrollJankV4Frame::BeginFrameArgsForScrollJank;
+using VsyncIntervalType = ScrollJankV4Result::VsyncIntervalType;
 
 constexpr char kTracingCategory[] = "cc,benchmark,input,input.scrolling";
 
@@ -49,6 +50,20 @@ ToProtoEnum(JankReason reason) {
 #undef CASE
 }
 
+constexpr perfetto::protos::pbzero::EventLatency::ScrollJankV4Result::
+    VsyncIntervalType
+    ToProtoEnum(VsyncIntervalType type) {
+#define CASE(type, proto_type)                                          \
+  case VsyncIntervalType::type:                                         \
+    return perfetto::protos::pbzero::EventLatency::ScrollJankV4Result:: \
+        VsyncIntervalType::proto_type
+  switch (type) {
+    CASE(kCurrentOsProvided, CURRENT_OS_PROVIDED);
+    CASE(kPreviousDeadlineDerived, PREVIOUS_DEADLINE_DERIVED);
+  }
+#undef CASE
+}
+
 void PopulateScrollUpdatesRealProto(
     const ScrollUpdates::Real& real,
     perfetto::protos::pbzero::EventLatency::ScrollJankV4Result::ScrollUpdates::
@@ -56,7 +71,7 @@ void PopulateScrollUpdatesRealProto(
   if (real.first_input_trace_id.has_value()) {
     out.set_first_event_latency_id(real.first_input_trace_id->value());
   }
-  out.set_abs_total_raw_delta_pixels(real.abs_total_raw_delta_pixels);
+  out.set_total_raw_delta_pixels(real.total_raw_delta_pixels);
   if (real.has_inertial_input) {
     out.set_max_abs_inertial_raw_delta_pixels(
         real.max_abs_inertial_raw_delta_pixels);
@@ -102,11 +117,8 @@ void PopulateScrollUpdatesProto(
                     SYNTHETIC_WITHOUT_EXTRAPOLATED_INPUT_GENERATION_TIMESTAMP;
           }},
       result.first_scroll_update));
-  if (updates.scroll_begin_arrival_timestamp().has_value()) {
-    out.set_scroll_begin_arrival_us(updates.scroll_begin_arrival_timestamp()
-                                        ->since_origin()
-                                        .InMicroseconds());
-  }
+  out.set_scroll_begin_arrival_us(
+      updates.scroll_begin_arrival_timestamp().since_origin().InMicroseconds());
 }
 
 void PopulateScrollJankV4ResultProto(
@@ -137,7 +149,8 @@ void PopulateScrollJankV4ResultProto(
           }},
       result.presentation));
 
-  out.set_vsync_interval_us(args.interval.InNanoseconds());
+  out.set_vsync_interval_us(result.vsync_interval.InNanoseconds());
+  out.set_vsync_interval_type(ToProtoEnum(result.vsync_interval_type));
 
   if (result.vsyncs_since_previous_frame.has_value()) {
     out.set_vsyncs_since_previous_frame(*result.vsyncs_since_previous_frame);

@@ -12,9 +12,11 @@
 #include "base/test/values_test_util.h"
 #include "base/test/with_feature_override.h"
 #include "build/build_config.h"
+#include "content/browser/bad_message.h"
 #include "content/browser/devtools/render_frame_devtools_agent_host.h"
 #include "content/browser/permissions/permission_controller_impl.h"
 #include "content/browser/renderer_host/render_frame_host_impl.h"
+#include "content/browser/storage_partition_impl.h"
 #include "content/browser/web_contents/web_contents_impl.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/common/content_switches.h"
@@ -24,17 +26,28 @@
 #include "content/public/test/content_browser_test.h"
 #include "content/public/test/content_browser_test_content_browser_client.h"
 #include "content/public/test/content_browser_test_utils.h"
+#include "content/public/test/navigation_handle_observer.h"
 #include "content/public/test/test_devtools_protocol_client.h"
 #include "content/public/test/test_utils.h"
 #include "content/shell/browser/shell.h"
 #include "content/test/content_browser_test_utils_internal.h"
+#include "mojo/public/cpp/bindings/receiver_set.h"
+#include "mojo/public/cpp/bindings/remote.h"
 #include "net/base/net_errors.h"
 #include "net/dns/mock_host_resolver.h"
+#include "net/http/http_response_headers.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
+#include "net/url_request/redirect_info.h"
+#include "services/network/public/mojom/early_hints.mojom.h"
+#include "services/network/public/mojom/link_header.mojom.h"
+#include "services/network/public/mojom/url_loader.mojom.h"
+#include "services/network/public/mojom/url_response_head.mojom.h"
+#include "storage/browser/blob/blob_url_registry.h"
 #include "storage/browser/blob/features.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/common/features.h"
+#include "third_party/blink/public/mojom/blob/blob.mojom.h"
 #include "url/gurl.h"
 #include "url/origin.h"
 
@@ -227,6 +240,226 @@ IN_PROC_BROWSER_TEST_F(BlobUrlBrowserTest, ReplaceStateToAddAuthorityToBlob) {
   std::string window_location =
       EvalJs(new_contents, "window.location.href;").ExtractString();
   EXPECT_FALSE(base::MatchPattern(window_location, "*spoof*"));
+}
+
+namespace {
+
+// A blink::mojom::Blob implementation that, when Load() is called, responds
+// with a redirect to `redirect_target_` instead of a blob body. This simulates
+// a Blob endpoint that does not behave like a real blob.
+class RedirectingBlob : public blink::mojom::Blob {
+ public:
+  explicit RedirectingBlob(const GURL& redirect_target)
+      : redirect_target_(redirect_target) {}
+
+  mojo::PendingRemote<blink::mojom::Blob> BindNewPipeAndPassRemote() {
+    mojo::PendingRemote<blink::mojom::Blob> remote;
+    receivers_.Add(this, remote.InitWithNewPipeAndPassReceiver());
+    return remote;
+  }
+
+  // blink::mojom::Blob:
+  void Clone(mojo::PendingReceiver<blink::mojom::Blob> receiver) override {
+    receivers_.Add(this, std::move(receiver));
+  }
+  void AsDataPipeGetter(
+      mojo::PendingReceiver<network::mojom::DataPipeGetter>) override {
+    NOTREACHED();
+  }
+  void ReadAll(mojo::ScopedDataPipeProducerHandle,
+               mojo::PendingRemote<blink::mojom::BlobReaderClient>) override {
+    NOTREACHED();
+  }
+  void ReadRange(uint64_t,
+                 uint64_t,
+                 mojo::ScopedDataPipeProducerHandle,
+                 mojo::PendingRemote<blink::mojom::BlobReaderClient>) override {
+    NOTREACHED();
+  }
+  void Load(
+      mojo::PendingReceiver<network::mojom::URLLoader> loader,
+      const std::string& method,
+      const net::HttpRequestHeaders&,
+      mojo::PendingRemote<network::mojom::URLLoaderClient> client) override {
+    loader_receiver_ = std::move(loader);
+    client_.reset();
+    client_.Bind(std::move(client));
+    net::RedirectInfo redirect_info;
+    redirect_info.status_code = net::HTTP_FOUND;
+    redirect_info.new_method = method;
+    redirect_info.new_url = redirect_target_;
+    redirect_info.new_site_for_cookies =
+        net::SiteForCookies::FromUrl(redirect_target_);
+    auto head = network::mojom::URLResponseHead::New();
+    head->headers = net::HttpResponseHeaders::TryToCreate(
+        "HTTP/1.1 302 Found\r\nLocation: " + redirect_target_.spec() + "\r\n");
+    head->encoded_data_length = 0;
+    client_->OnReceiveRedirect(redirect_info, std::move(head));
+  }
+  void ReadSideData(ReadSideDataCallback) override { NOTREACHED(); }
+  void CaptureSnapshot(CaptureSnapshotCallback callback) override {
+    std::move(callback).Run(0, std::nullopt);
+  }
+  void GetInternalUUID(GetInternalUUIDCallback callback) override {
+    std::move(callback).Run("");
+  }
+
+ private:
+  const GURL redirect_target_;
+  mojo::ReceiverSet<blink::mojom::Blob> receivers_;
+  mojo::PendingReceiver<network::mojom::URLLoader> loader_receiver_;
+  mojo::Remote<network::mojom::URLLoaderClient> client_;
+};
+
+// A blink::mojom::Blob implementation that, when Load() is called, sends
+// Early Hints before sending the response body.
+class EarlyHintsBlob : public blink::mojom::Blob {
+ public:
+  explicit EarlyHintsBlob(const GURL& preload_target)
+      : preload_target_(preload_target) {}
+
+  mojo::PendingRemote<blink::mojom::Blob> BindNewPipeAndPassRemote() {
+    mojo::PendingRemote<blink::mojom::Blob> remote;
+    receivers_.Add(this, remote.InitWithNewPipeAndPassReceiver());
+    return remote;
+  }
+
+  // blink::mojom::Blob:
+  void Clone(mojo::PendingReceiver<blink::mojom::Blob> receiver) override {
+    receivers_.Add(this, std::move(receiver));
+  }
+  void AsDataPipeGetter(
+      mojo::PendingReceiver<network::mojom::DataPipeGetter>) override {
+    NOTREACHED();
+  }
+  void ReadAll(mojo::ScopedDataPipeProducerHandle,
+               mojo::PendingRemote<blink::mojom::BlobReaderClient>) override {
+    NOTREACHED();
+  }
+  void ReadRange(uint64_t,
+                 uint64_t,
+                 mojo::ScopedDataPipeProducerHandle,
+                 mojo::PendingRemote<blink::mojom::BlobReaderClient>) override {
+    NOTREACHED();
+  }
+  void Load(
+      mojo::PendingReceiver<network::mojom::URLLoader> loader,
+      const std::string& method,
+      const net::HttpRequestHeaders&,
+      mojo::PendingRemote<network::mojom::URLLoaderClient> client) override {
+    loader_receiver_ = std::move(loader);
+    client_.reset();
+    client_.Bind(std::move(client));
+
+    auto hints = network::mojom::EarlyHints::New();
+    hints->referrer_policy = network::mojom::ReferrerPolicy::kNever;
+    hints->ip_address_space = network::mojom::IPAddressSpace::kLoopback;
+    hints->headers = network::mojom::ParsedHeaders::New();
+    auto link = network::mojom::LinkHeader::New();
+    link->href = preload_target_;
+    link->rel = network::mojom::LinkRelAttribute::kPreload;
+    link->as = network::mojom::LinkAsAttribute::kScript;
+    hints->headers->link_headers.push_back(std::move(link));
+    client_->OnReceiveEarlyHints(std::move(hints));
+
+    std::string body = "<html><body>sample_blob_content</body></html>";
+    mojo::ScopedDataPipeProducerHandle producer_handle;
+    mojo::ScopedDataPipeConsumerHandle consumer_handle;
+    CHECK_EQ(MOJO_RESULT_OK,
+             mojo::CreateDataPipe(nullptr, producer_handle, consumer_handle));
+    size_t actually_written_bytes = 0;
+    CHECK_EQ(MOJO_RESULT_OK,
+             producer_handle->WriteData(base::as_byte_span(body),
+                                        MOJO_WRITE_DATA_FLAG_NONE,
+                                        actually_written_bytes));
+    CHECK_EQ(actually_written_bytes, body.size());
+
+    auto head = network::mojom::URLResponseHead::New();
+    head->headers = net::HttpResponseHeaders::TryToCreate(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n");
+    head->mime_type = "text/html";
+    client_->OnReceiveResponse(std::move(head), std::move(consumer_handle),
+                               std::nullopt);
+    client_->OnComplete(network::URLLoaderCompletionStatus(net::OK));
+  }
+  void ReadSideData(ReadSideDataCallback) override { NOTREACHED(); }
+  void CaptureSnapshot(CaptureSnapshotCallback callback) override {
+    std::move(callback).Run(0, std::nullopt);
+  }
+  void GetInternalUUID(GetInternalUUIDCallback callback) override {
+    std::move(callback).Run("");
+  }
+
+ private:
+  const GURL preload_target_;
+  mojo::ReceiverSet<blink::mojom::Blob> receivers_;
+  // Retain the receiver so the endpoint does not signal disconnect.
+  mojo::PendingReceiver<network::mojom::URLLoader> loader_receiver_;
+  mojo::Remote<network::mojom::URLLoaderClient> client_;
+};
+
+}  // namespace
+
+// A blob never serves a redirect, so a navigation to a blob URL whose
+// underlying Blob endpoint replies with OnReceiveRedirect must not follow the
+// redirect, regardless of any flags carried in the response head.
+IN_PROC_BROWSER_TEST_F(BlobUrlBrowserTest,
+                       NavigationToBlobUrlDoesNotFollowRedirect) {
+  GURL url = embedded_test_server()->GetURL("a.test", "/title1.html");
+  url::Origin origin = url::Origin::Create(url);
+  ASSERT_TRUE(NavigateToURL(shell(), url));
+
+  RenderFrameHostImpl* rfh = static_cast<RenderFrameHostImpl*>(
+      shell()->web_contents()->GetPrimaryMainFrame());
+
+  const GURL redirect_target("data:text/html,redirected");
+  RedirectingBlob blob(redirect_target);
+
+  const GURL blob_url("blob:" + origin.Serialize() +
+                      "/33221100-0000-0000-0000-000000000000");
+  static_cast<StoragePartitionImpl*>(rfh->GetStoragePartition())
+      ->GetBlobUrlRegistry()
+      ->AddUrlMapping(blob_url, blob.BindNewPipeAndPassRemote(),
+                      blink::StorageKey::CreateFirstParty(origin), origin,
+                      // BlobUrlRegistry lives in //storage and uses a numeric
+                      // process ID at the //content boundary.
+                      rfh->GetProcess()->GetID().GetUnsafeValue());
+
+  NavigationHandleObserver observer(shell()->web_contents(), blob_url);
+  EXPECT_FALSE(NavigateToURL(shell(), blob_url));
+  EXPECT_TRUE(observer.is_error());
+  EXPECT_EQ(net::ERR_UNSAFE_REDIRECT, observer.net_error_code());
+  EXPECT_NE(redirect_target, shell()->web_contents()->GetLastCommittedURL());
+}
+
+// A blob URL navigation should ignore Early Hints.
+IN_PROC_BROWSER_TEST_F(BlobUrlBrowserTest,
+                       NavigationToBlobUrlIgnoresEarlyHints) {
+  GURL url = embedded_test_server()->GetURL("a.test", "/title1.html");
+  url::Origin origin = url::Origin::Create(url);
+  EXPECT_TRUE(NavigateToURL(shell(), url));
+
+  RenderFrameHostImpl* rfh = static_cast<RenderFrameHostImpl*>(
+      shell()->web_contents()->GetPrimaryMainFrame());
+
+  const GURL preload_target =
+      embedded_test_server()->GetURL("a.test", "/title2.html");
+  EarlyHintsBlob blob(preload_target);
+
+  const GURL blob_url("blob:" + origin.Serialize() +
+                      "/33221100-0000-0000-0000-000000000001");
+  static_cast<StoragePartitionImpl*>(rfh->GetStoragePartition())
+      ->GetBlobUrlRegistry()
+      ->AddUrlMapping(blob_url, blob.BindNewPipeAndPassRemote(),
+                      blink::StorageKey::CreateFirstParty(origin), origin,
+                      rfh->GetProcess()->GetDeprecatedID());
+
+  EXPECT_TRUE(NavigateToURL(shell(), blob_url));
+  RenderFrameHostImpl* new_rfh = static_cast<RenderFrameHostImpl*>(
+      shell()->web_contents()->GetPrimaryMainFrame());
+  EXPECT_EQ(new_rfh->early_hints_manager(), nullptr);
+  EXPECT_EQ("sample_blob_content",
+            EvalJs(shell()->web_contents(), "document.body.innerText"));
 }
 
 IN_PROC_BROWSER_TEST_F(BlobUrlBrowserTest,
@@ -636,6 +869,94 @@ IN_PROC_BROWSER_TEST_P(BlobURLBrowserTestP,
 
   bool handle_null = EvalJs(shell(), "handle === null;").ExtractBool();
   EXPECT_FALSE(handle_null);
+}
+
+// Verifies that PDF processes cannot bind to BlobURLStore, using the associated
+// interface that is used by frames. See https://crbug.com/540051167.
+IN_PROC_BROWSER_TEST_F(BlobUrlBrowserTest, BlobUrlBlockedForPdfProcess) {
+  WebContentsImpl* tab = static_cast<WebContentsImpl*>(shell()->web_contents());
+  GURL url = embedded_test_server()->GetURL("a.test", "/empty.html");
+
+  // Commit `url` as PDF content so that the resulting frame runs in a process
+  // whose SiteInfo has `is_pdf` set.
+  ASSERT_TRUE(NavigateToURLWithPdf(tab, url));
+
+  // The SiteInstance and RenderProcessHost are treated as PDFs. However, the
+  // renderer process will not realize that blob creation should fail gracefully
+  // because ContentBrowserClient::IsDomStorageDisabled() defaults to false, and
+  // the PDF check in the renderer is implemented in the chrome/ layer. This
+  // happens to make testing the renderer kill easier below.
+  RenderFrameHostImpl* frame =
+      static_cast<RenderFrameHostImpl*>(tab->GetPrimaryMainFrame());
+
+  // Listen for the renderer kill and bad message reason.
+  RenderProcessHostBadIpcMessageWaiter kill_waiter(frame->GetProcess());
+
+  // Executing `URL.createObjectURL` triggers PublicURLManager in the renderer
+  // to bind blink.mojom.BlobURLStore via the associated interface on
+  // RenderFrameHost. The browser must reject this and terminate the process.
+  std::ignore = ExecJs(frame, "URL.createObjectURL(new Blob(['payload']))");
+
+  EXPECT_EQ(bad_message::RFH_BLOB_URL_STORE_ASSOCIATED_PDF_PROCESS_BLOCKED,
+            kill_waiter.Wait());
+}
+
+// Verifies that PDF processes cannot bind to BlobURLStore, using the interface
+// broker that is used by threaded worklets. See https://crbug.com/540051167.
+IN_PROC_BROWSER_TEST_F(BlobUrlBrowserTest,
+                       BlobUrlWorkletReceiverBlockedForPdfProcess) {
+  WebContentsImpl* tab = static_cast<WebContentsImpl*>(shell()->web_contents());
+  // AudioWorklet requires a secure context (e.g., localhost).
+  GURL url = embedded_test_server()->GetURL("localhost", "/empty.html");
+
+  ASSERT_TRUE(NavigateToURLWithPdf(tab, url));
+
+  // The SiteInstance and RenderProcessHost are treated as PDFs. However, the
+  // renderer process will not realize that blob creation should fail gracefully
+  // because ContentBrowserClient::IsDomStorageDisabled() defaults to false, and
+  // the PDF check in the renderer is implemented in the chrome/ layer. This
+  // happens to make testing the renderer kill easier below.
+  RenderFrameHostImpl* frame =
+      static_cast<RenderFrameHostImpl*>(tab->GetPrimaryMainFrame());
+
+  RenderProcessHostBadIpcMessageWaiter kill_waiter(frame->GetProcess());
+
+  // Creating an AudioWorklet triggers the renderer to request
+  // blink.mojom.BlobURLStore for the worklet via the BrowserInterfaceBroker.
+  std::ignore =
+      ExecJs(frame,
+             "const context = new OfflineAudioContext(1, 1, 44100);"
+             "context.audioWorklet.addModule('data:text/javascript,');");
+
+  EXPECT_EQ(bad_message::RFH_BLOB_URL_STORE_RECEIVER_PDF_PROCESS_BLOCKED,
+            kill_waiter.Wait());
+}
+
+class BlobUrlPdfKillswitchDisabledBrowserTest : public BlobUrlBrowserTest {
+ public:
+  BlobUrlPdfKillswitchDisabledBrowserTest() {
+    feature_list_.InitAndDisableFeature(
+        blink::features::kEnforcePdfBlobRestrictions);
+  }
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
+};
+
+IN_PROC_BROWSER_TEST_F(BlobUrlPdfKillswitchDisabledBrowserTest,
+                       BlobUrlAllowedForPdfProcess) {
+  WebContentsImpl* tab = static_cast<WebContentsImpl*>(shell()->web_contents());
+  GURL url = embedded_test_server()->GetURL("a.test", "/empty.html");
+
+  ASSERT_TRUE(NavigateToURLWithPdf(tab, url));
+
+  RenderFrameHostImpl* frame =
+      static_cast<RenderFrameHostImpl*>(tab->GetPrimaryMainFrame());
+
+  // Executing `URL.createObjectURL` should not kill the renderer when the
+  // EnforcePdfBlobRestrictions killswitch is disabled.
+  EXPECT_TRUE(ExecJs(frame, "URL.createObjectURL(new Blob(['payload']))"));
+  EXPECT_TRUE(frame->IsRenderFrameLive());
 }
 
 }  // namespace content

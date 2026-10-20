@@ -15,7 +15,14 @@
 #include "base/time/time.h"
 #include "components/sync/base/client_tag_hash.h"
 #include "components/sync/base/deletion_origin.h"
+#include "components/sync/model/processor_entity_metadata.h"
 #include "components/sync/protocol/entity_metadata.pb.h"
+
+class GURL;
+
+namespace base {
+class FilePath;
+}  // namespace base
 
 namespace sync_pb {
 class EntitySpecifics;
@@ -53,7 +60,7 @@ class ProcessorEntity {
   ~ProcessorEntity();
 
   const std::string& storage_key() const { return storage_key_; }
-  const sync_pb::EntityMetadata& metadata() const { return metadata_; }
+  const sync_pb::EntityMetadata& metadata() const { return metadata_.proto(); }
 
   ClientTagHash GetClientTagHash() const;
 
@@ -99,10 +106,16 @@ class ProcessorEntity {
       std::optional<sync_pb::UniquePosition> unique_position);
 
   // Squashes a pending commit with an update from the server.
+  // There was a conflict and the server just won it.
   void RecordForcedRemoteUpdate(
       const UpdateResponseData& response_data,
       sync_pb::EntitySpecifics trimmed_specifics,
       std::optional<sync_pb::UniquePosition> unique_position);
+
+  // Overrides the server ID and version. Crucial for handling server-initiated
+  // metadata resets (migration) where we want to force apply updates.
+  void OverrideServerMetadata(const std::string& server_id,
+                              int64_t server_version);
 
   // Applies a local change to this item.
   void RecordLocalUpdate(
@@ -162,6 +175,37 @@ class ProcessorEntity {
   // base_specifics_hash if the entity was not already unsynced.
   void IncrementSequenceNumber(base::Time modification_time);
 
+  // Returns true if an outgoing attachment upload is queued or in progress for
+  // this entity and has not yet produced a `temporary_blob_id`.
+  bool HasPendingAttachmentUpload() const;
+
+  // Marks that a local attachment upload for `file_path` is queued for this
+  // entity before the asynchronous upload handshake completes, holding back the
+  // entity from commit until `RecordAttachmentUploadCompleted()` is called.
+  // Must be called on an unsynced entity after `RecordLocalUpdate()` (which
+  // already increments the sequence number for the local change, avoiding
+  // double-incrementing). `ProcessorEntity` takes ownership of the staging file
+  // at `file_path` (which must be a unique path) and asynchronously deletes it
+  // once the upload completes or is cancelled. Any existing pending attachment
+  // upload is cancelled and its file is deleted.
+  void RecordAttachmentUploadQueued(const base::FilePath& file_path);
+
+  // Records that the asynchronous upload handshake completed and returned the
+  // resumable session `upload_url`.
+  void RecordAttachmentUploadStarted(const GURL& upload_url);
+
+  // Records that the outgoing attachment upload finished and returned
+  // `temporary_blob_id`, clearing `pending_upload` from metadata, scheduling
+  // deletion of the staging file on disk, and unblocking the entity for commit.
+  void RecordAttachmentUploadCompleted(const std::string& temporary_blob_id);
+
+  // Cancels any pending attachment upload for this entity, clearing
+  // `pending_upload` from metadata and scheduling deletion of the staging file
+  // on disk. Also called automatically on local deletion, forced remote
+  // update, and when a new attachment upload replaces an existing pending
+  // upload.
+  void RecordAttachmentUploadCancelled();
+
   // Returns the estimate of dynamically allocated memory in bytes.
   size_t EstimateMemoryUsage() const;
 
@@ -169,19 +213,17 @@ class ProcessorEntity {
 
  private:
   ProcessorEntity(const std::string& storage_key,
-                  sync_pb::EntityMetadata metadata);
+                  ProcessorEntityMetadata metadata);
 
-  // Check whether `specifics` matches the stored specifics_hash.
-  bool MatchesSpecificsHash(const sync_pb::EntitySpecifics& specifics) const;
-
-  // Updates hash string for EntitySpecifics in the metadata.
-  void UpdateSpecificsHash(const sync_pb::EntitySpecifics& specifics);
+  // Updates in-memory commit data and sequence number after a remote update is
+  // recorded in metadata.
+  void UpdateCommitDataAndSequenceAfterRemoteUpdate();
 
   // Storage key.
   std::string storage_key_;
 
   // Serializable Sync metadata.
-  sync_pb::EntityMetadata metadata_;
+  ProcessorEntityMetadata metadata_;
 
   // Sync data that exists for items being committed only. The data is moved
   // away when sending the commit request.

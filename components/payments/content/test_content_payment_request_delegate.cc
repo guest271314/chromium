@@ -9,8 +9,8 @@
 #include "base/functional/bind.h"
 #include "base/location.h"
 #include "base/task/single_thread_task_runner.h"
-#include "components/payments/content/web_payments_web_data_service.h"
 #include "components/payments/core/error_strings.h"
+#include "components/payments/core/web_payments_web_data_service.h"
 #include "content/public/browser/render_frame_host.h"
 
 namespace payments {
@@ -64,6 +64,10 @@ void TestContentPaymentRequestDelegate::ShowProcessingSpinner() {
   core_delegate_.ShowProcessingSpinner();
 }
 
+void TestContentPaymentRequestDelegate::ShowLoadingView() {
+  core_delegate_.ShowLoadingView();
+}
+
 bool TestContentPaymentRequestDelegate::IsBrowserWindowActive() const {
   return core_delegate_.IsBrowserWindowActive();
 }
@@ -101,18 +105,6 @@ TestContentPaymentRequestDelegate::GetAddressNormalizer() {
   return core_delegate_.GetAddressNormalizer();
 }
 
-autofill::RegionDataLoader*
-TestContentPaymentRequestDelegate::GetRegionDataLoader() {
-  return core_delegate_.GetRegionDataLoader();
-}
-
-ukm::UkmRecorder* TestContentPaymentRequestDelegate::GetUkmRecorder() {
-  return core_delegate_.GetUkmRecorder();
-}
-
-std::string TestContentPaymentRequestDelegate::GetAuthenticatedEmail() const {
-  return core_delegate_.GetAuthenticatedEmail();
-}
 
 PrefService* TestContentPaymentRequestDelegate::GetPrefService() {
   return core_delegate_.GetPrefService();
@@ -120,6 +112,7 @@ PrefService* TestContentPaymentRequestDelegate::GetPrefService() {
 
 void TestContentPaymentRequestDelegate::EmbedPaymentHandlerWindow(
     const GURL& url,
+    const std::optional<gfx::Size>& preferred_web_contents_size,
     PaymentHandlerOpenWindowCallback callback) {}
 
 bool TestContentPaymentRequestDelegate::IsInteractive() const {
@@ -147,11 +140,6 @@ void TestContentPaymentRequestDelegate::CompleteFullCardRequest() {
 const base::WeakPtr<PaymentUIObserver>
 TestContentPaymentRequestDelegate::GetPaymentUIObserver() const {
   return nullptr;
-}
-
-std::optional<base::UnguessableToken>
-TestContentPaymentRequestDelegate::GetChromeOSTWAInstanceId() const {
-  return std::nullopt;
 }
 
 std::string TestContentPaymentRequestDelegate::

@@ -29,6 +29,7 @@
 #include "base/strings/utf_string_conversions.h"
 #include "base/supports_user_data.h"
 #include "base/system/sys_info.h"
+#include "base/task/bind_post_task.h"
 #include "base/time/time.h"
 #include "base/trace_event/trace_event.h"
 #include "base/trace_event/typed_macros.h"
@@ -39,9 +40,8 @@
 #include "components/input/timeout_monitor.h"
 #include "components/viz/common/features.h"
 #include "content/browser/bad_message.h"
-#include "content/browser/child_process_security_policy_impl.h"
-#include "content/browser/dom_storage/session_storage_namespace_impl.h"
-#include "content/browser/fenced_frame/fenced_frame.h"
+#include "content/browser/dom_storage/session_storage_namespace_handle_impl.h"
+#include "content/browser/global_privacy_control_util.h"
 #include "content/browser/gpu/compositor_util.h"
 #include "content/browser/gpu/gpu_data_manager_impl.h"
 #include "content/browser/gpu/gpu_process_host.h"
@@ -90,6 +90,7 @@
 #include "third_party/blink/public/common/web_preferences/web_preferences.h"
 #include "third_party/blink/public/mojom/page/prerender_page_param.mojom.h"
 #include "third_party/perfetto/include/perfetto/tracing/traced_value.h"
+#include "third_party/perfetto/include/perfetto/tracing/track.h"
 #include "third_party/skia/include/core/SkBitmap.h"
 #include "ui/base/clipboard/clipboard.h"
 #include "ui/base/device_form_factor.h"
@@ -150,7 +151,7 @@ class PerProcessRenderViewHostSet : public base::SupportsUserData::Data {
  public:
   static PerProcessRenderViewHostSet* GetOrCreateForProcess(
       RenderProcessHost* process) {
-    DCHECK(process);
+    CHECK(process, base::NotFatalUntil::M152);
     auto* set = static_cast<PerProcessRenderViewHostSet*>(
         process->GetUserData(UserDataKey()));
     if (!set) {
@@ -229,7 +230,7 @@ RenderViewHost* RenderViewHost::From(RenderWidgetHost* rwh) {
 
 // static
 RenderViewHostImpl* RenderViewHostImpl::FromID(int process_id, int routing_id) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M152);
   RoutingIDViewMap& views = GetRoutingIDViewMap();
   auto it = views.find(RenderViewHostID(process_id, routing_id));
   return it == views.end() ? nullptr : it->second;
@@ -237,13 +238,13 @@ RenderViewHostImpl* RenderViewHostImpl::FromID(int process_id, int routing_id) {
 
 // static
 RenderViewHostImpl* RenderViewHostImpl::From(RenderWidgetHost* rwh) {
-  DCHECK(rwh);
+  CHECK(rwh, base::NotFatalUntil::M152);
   RenderWidgetHostOwnerDelegate* owner_delegate =
       RenderWidgetHostImpl::From(rwh)->owner_delegate();
   if (!owner_delegate)
     return nullptr;
   RenderViewHostImpl* rvh = static_cast<RenderViewHostImpl*>(owner_delegate);
-  DCHECK_EQ(rwh, rvh->GetWidget());
+  CHECK_EQ(rwh, rvh->GetWidget(), base::NotFatalUntil::M152);
   return rvh;
 }
 
@@ -285,6 +286,11 @@ void RenderViewHostImpl::GetPlatformSpecificPrefs(
       ui::Clipboard::IsSupportedClipboardBuffer(
           ui::ClipboardBuffer::kSelection);
 #endif
+  // Set the DevTools GPC override, if one is set. This takes precedence
+  // over the embedder's profile setting (see
+  // `IsGlobalPrivacyControlFeatureAndSettingEnabled()`).
+  prefs->global_privacy_control_devtools_override =
+      GetGlobalPrivacyControlDevToolsOverride();
 }
 
 // static
@@ -323,11 +329,12 @@ RenderViewHostImpl::RenderViewHostImpl(
   TRACE_EVENT("navigation", "RenderViewHostImpl::RenderViewHostImpl",
               ChromeTrackEvent::kRenderViewHost, *this);
   TRACE_EVENT_BEGIN("navigation.debug", "RenderViewHost",
-                    perfetto::Track::FromPointer(this),
+                    perfetto::NamedTrack::FromPointer("RenderViewHost", this),
                     "render_view_host_when_created", this);
 
-  DCHECK(delegate_);
-  DCHECK_NE(GetRoutingID(), render_widget_host_->GetRoutingID());
+  CHECK(delegate_, base::NotFatalUntil::M152);
+  CHECK_NE(GetRoutingID(), render_widget_host_->GetRoutingID(),
+           base::NotFatalUntil::M152);
 
   PerProcessRenderViewHostSet::GetOrCreateForProcess(GetProcess())
       ->Insert(this);
@@ -384,7 +391,8 @@ RenderViewHostImpl::~RenderViewHostImpl() {
     frame_tree_->UnregisterRenderViewHost(render_view_host_map_id_, this);
 
   // Corresponds to the TRACE_EVENT_BEGIN in RenderViewHostImpl's constructor.
-  TRACE_EVENT_END("navigation.debug", perfetto::Track::FromPointer(this));
+  TRACE_EVENT_END("navigation.debug",
+                  perfetto::NamedTrack::FromPointer("RenderViewHost", this));
 }
 
 RenderViewHostDelegate* RenderViewHostImpl::GetDelegate() {
@@ -417,8 +425,8 @@ bool RenderViewHostImpl::CreateRenderView(
   // ignored, so this is safe.
   if (!GetAgentSchedulingGroup().Init())
     return false;
-  DCHECK(GetProcess()->IsInitializedAndNotDead());
-  DCHECK(GetProcess()->GetBrowserContext());
+  CHECK(GetProcess()->IsInitializedAndNotDead(), base::NotFatalUntil::M152);
+  CHECK(GetProcess()->GetBrowserContext(), base::NotFatalUntil::M152);
 
   // Exactly one of main_frame_routing_id_ or proxy_route_id should be set.
   CHECK(!(main_frame_routing_id_ != IPC::mojom::kRoutingIdNone &&
@@ -431,11 +439,11 @@ bool RenderViewHostImpl::CreateRenderView(
   if (main_frame_routing_id_ != IPC::mojom::kRoutingIdNone) {
     main_rfh = RenderFrameHostImpl::FromID(GetProcess()->GetDeprecatedID(),
                                            main_frame_routing_id_);
-    DCHECK(main_rfh);
+    CHECK(main_rfh, base::NotFatalUntil::M152);
   } else {
     main_rfph = RenderFrameProxyHost::FromID(GetProcess()->GetDeprecatedID(),
                                              proxy_route_id);
-    DCHECK(main_rfph);
+    CHECK(main_rfph, base::NotFatalUntil::M152);
   }
   FrameTreeNode* const frame_tree_node =
       main_rfh ? main_rfh->frame_tree_node() : main_rfph->frame_tree_node();
@@ -450,7 +458,8 @@ bool RenderViewHostImpl::CreateRenderView(
       frame_tree_node->current_replication_state().Clone();
   params->devtools_main_frame_token =
       frame_tree_node->current_frame_host()->devtools_frame_token();
-  DCHECK_EQ(&frame_tree_node->frame_tree(), frame_tree_);
+  CHECK_EQ(&frame_tree_node->frame_tree(), frame_tree_,
+           base::NotFatalUntil::M152);
   params->navigation_metrics_token = navigation_metrics_token;
 
   if (frame_tree_->is_prerendering()) {
@@ -465,8 +474,6 @@ bool RenderViewHostImpl::CreateRenderView(
         prerender_host.should_pause_javascript_execution();
     params->prerender_param = std::move(prerender_param);
   }
-
-  params->attribution_support = delegate_->GetAttributionSupport();
 
   if (main_rfh) {
     auto local_frame_params = mojom::CreateLocalMainFrameParams::New();
@@ -501,8 +508,11 @@ bool RenderViewHostImpl::CreateRenderView(
           main_rfh->policy_container_host()->CreatePolicyContainerForBlink();
     }
 
+    local_frame_params->initiator_state_token =
+        main_rfh->current_initiator_state_token();
+
     // Populate the sandbox origin token if available.
-    if (auto token = main_rfh->TakeSandboxOriginToken()) {
+    if (auto token = main_rfh->GetPage().TakeSandboxOriginTokenForPopup()) {
       local_frame_params->sandbox_origin_token = *token;
     }
 
@@ -530,7 +540,7 @@ bool RenderViewHostImpl::CreateRenderView(
                (!base::FeatureList::IsEnabled(
                     features::kPrerenderMoreCorrectSpeculativeRFHCreation) ||
                 main_rfh->lifecycle_state() ==
-                    RenderFrameHostImpl::LifecycleStateImpl::kSpeculative)) {
+                    RenderFrameHostLifecycleStateImpl::kSpeculative)) {
       // During prerender, the browser may need to create new speculative local
       // main frames. Normally, creating a speculative local main frame is a
       // two step process: the browser first creates a RenderViewHost with a
@@ -633,21 +643,20 @@ void RenderViewHostImpl::SetMainFrameRoutingId(int routing_id) {
 void RenderViewHostImpl::SetFrameTree(FrameTree& frame_tree) {
   TRACE_EVENT("navigation", "RenderViewHostImpl::SetFrameTree",
               ChromeTrackEvent::kRenderViewHost, *this);
-  DCHECK(registered_with_frame_tree_);
+  CHECK(registered_with_frame_tree_, base::NotFatalUntil::M152);
   frame_tree_->UnregisterRenderViewHost(render_view_host_map_id_, this);
   frame_tree_ = &frame_tree;
   frame_tree_->RegisterRenderViewHost(render_view_host_map_id_, this);
   render_widget_host_->SetFrameTree(frame_tree);
 }
 
-void RenderViewHostImpl::EnterBackForwardCache(
-    const base::optional_ref<const GURL> navigation_request_url) {
+void RenderViewHostImpl::EnterBackForwardCache() {
   if (!will_enter_back_forward_cache_callback_for_testing_.is_null())
     will_enter_back_forward_cache_callback_for_testing_.Run();
 
   TRACE_EVENT("navigation", "RenderViewHostImpl::EnterBackForwardCache",
               ChromeTrackEvent::kRenderViewHost, *this);
-  DCHECK(registered_with_frame_tree_);
+  CHECK(registered_with_frame_tree_, base::NotFatalUntil::M152);
   // Only unregister the RenderViewHost if the FrameTree is the primary
   // FrameTree, inner FrameTrees hold their state when they enter back/forward
   // cache.
@@ -657,17 +666,20 @@ void RenderViewHostImpl::EnterBackForwardCache(
   }
   is_in_back_forward_cache_ = true;
   page_lifecycle_state_manager_->SetIsInBackForwardCache(
-      is_in_back_forward_cache_, /*page_restore_params=*/nullptr,
-      navigation_request_url);
+      is_in_back_forward_cache_, /*page_restore_params=*/nullptr);
 }
 
 void RenderViewHostImpl::PrepareToLeaveBackForwardCache(
     base::OnceClosure done_cb) {
   // We wrap `done_cb` in a default invoke because if this RenderViewHostImpl
   // disappears we still need to call `done_cb` otherwise the navigation
-  // will be blocked indefinitely.
+  // will be blocked indefinitely. We also post a task so that if `done_cb` is
+  // invoked from the destructor of this RenderViewHostImpl (e.g., on an unload
+  // timeout or during shutdown), the BackForwardCache restore does not commit
+  // synchronously in the middle of ~RenderFrameHostImpl / ~RenderViewHostImpl.
   page_lifecycle_state_manager_->SetIsLeavingBackForwardCache(
-      mojo::WrapCallbackWithDefaultInvokeIfNotRun(std::move(done_cb)));
+      mojo::WrapCallbackWithDefaultInvokeIfNotRun(
+          base::BindPostTaskToCurrentDefault(std::move(done_cb))));
 }
 
 void RenderViewHostImpl::LeaveBackForwardCache(
@@ -684,8 +696,7 @@ void RenderViewHostImpl::LeaveBackForwardCache(
   }
   is_in_back_forward_cache_ = false;
   page_lifecycle_state_manager_->SetIsInBackForwardCache(
-      is_in_back_forward_cache_, std::move(page_restore_params),
-      /*navigation_request_url=*/std::nullopt);
+      is_in_back_forward_cache_, std::move(page_restore_params));
 }
 
 void RenderViewHostImpl::ActivatePrerenderedPage(
@@ -711,6 +722,9 @@ void RenderViewHostImpl::SetIsFrozen(bool frozen) {
 }
 
 void RenderViewHostImpl::OnBackForwardCacheTimeout() {
+  if (!frame_tree_->is_primary()) {
+    return;
+  }
   auto entries = frame_tree_->controller()
                      .GetBackForwardCache()
                      .GetEntriesForRenderViewHostImpl(this);
@@ -721,6 +735,9 @@ void RenderViewHostImpl::OnBackForwardCacheTimeout() {
 }
 
 void RenderViewHostImpl::MaybeEvictFromBackForwardCache() {
+  if (!frame_tree_->is_primary()) {
+    return;
+  }
   auto entries = frame_tree_->controller()
                      .GetBackForwardCache()
                      .GetEntriesForRenderViewHostImpl(this);
@@ -730,6 +747,9 @@ void RenderViewHostImpl::MaybeEvictFromBackForwardCache() {
 }
 
 void RenderViewHostImpl::EnforceBackForwardCacheSizeLimit() {
+  if (!frame_tree_->is_primary()) {
+    return;
+  }
   frame_tree_->controller().GetBackForwardCache().EnforceCacheSizeLimit();
 }
 
@@ -916,7 +936,7 @@ void RenderViewHostImpl::PostRenderViewReady() {
 }
 
 void RenderViewHostImpl::RenderViewReady() {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M152);
   delegate_->RenderViewReady(this);
 }
 
@@ -950,28 +970,31 @@ std::vector<viz::SurfaceId> RenderViewHostImpl::CollectSurfaceIdsForEviction() {
       }
     }
 
-    auto entries = frame_tree_->controller()
-                       .GetBackForwardCache()
-                       .GetEntriesForRenderViewHostImpl(this);
-    for (auto* entry : entries) {
-      auto* rfh = entry->render_frame_host();
-      if (!rfh) {
-        continue;
+    if (frame_tree_->is_primary()) {
+      auto entries = frame_tree_->controller()
+                         .GetBackForwardCache()
+                         .GetEntriesForRenderViewHostImpl(this);
+      for (auto* entry : entries) {
+        auto* rfh = entry->render_frame_host();
+        if (!rfh) {
+          continue;
+        }
+        // While `is_in_back_forward_cache_` there is no
+        // `main_frame_routing_id_` so there is no `GetMainRenderFrameHost`.
+        // Furthermore the root of the `FrameTree` is now associated to the
+        // foreground `RenderWidgetHostView*`. Due to this
+        // `NodesIncludingInnerTreeNodes` does not find the children nodes
+        // associated with the BFCache entry.
+        //
+        // Instead we build a `FrameTree::NodeRange` that starts with the
+        // children of `rfh`. This will also be equivalent to
+        // `should_descend_into_inner_trees=true`. Thus finding all the
+        // compositor surfaces in the BFCache.
+        FrameTree::NodeRange node_range = FrameTree::SubtreeAndInnerTreeNodes(
+            rfh,
+            /*include_delegate_nodes_for_inner_frame_trees=*/true);
+        CollectSurfaceIdsForEvictionForFrameTreeNodeRange(node_range, ids);
       }
-      // While `is_in_back_forward_cache_` there is no `main_frame_routing_id_`
-      // so there is no `GetMainRenderFrameHost`. Furthermore the root of the
-      // `FrameTree` is now associated to the foreground
-      // `RenderWidgetHostView*`. Due to this `NodesIncludingInnerTreeNodes`
-      // does not find the children nodes associated with the BFCache entry.
-      //
-      // Instead we build a `FrameTree::NodeRange` that starts with the children
-      // of `rfh`. This will also be equivalent to
-      // `should_descend_into_inner_trees=true`. Thus finding all the compositor
-      // surfaces in the BFCache.
-      FrameTree::NodeRange node_range = FrameTree::SubtreeAndInnerTreeNodes(
-          rfh,
-          /*include_delegate_nodes_for_inner_frame_trees=*/true);
-      CollectSurfaceIdsForEvictionForFrameTreeNodeRange(node_range, ids);
     }
   }
 

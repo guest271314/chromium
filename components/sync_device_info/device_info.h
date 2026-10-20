@@ -13,6 +13,7 @@
 #include <variant>
 #include <vector>
 
+#include "base/containers/flat_set.h"
 #include "base/time/time.h"
 #include "base/types/strong_alias.h"
 #include "components/desktop_to_mobile_promos/features.h"
@@ -60,11 +61,12 @@ class DeviceInfo {
     kUnknown = 0,
     kSmsFetcher = 3,
     kRemoteCopy = 4,
-    kClickToCallV2 = 7,
-    kSharedClipboardV2 = 8,
+    // kClickToCallV2 = 7,  // Deprecated, do not reuse.
+    // kSharedClipboardV2 = 8,  // Deprecated, do not reuse.
     kOptimizationGuidePushNotification = 9,
     kOneTimeTokenBackendNotification = 10,
     kGlicExperimentalTriggering = 11,
+    kBrowserActuator = 12,
   };
   // LINT.ThenChange(/components/sync/protocol/device_info_specifics.proto:EnabledFeatures)
 
@@ -140,6 +142,27 @@ class DeviceInfo {
     std::array<uint8_t, 65> peer_public_key_x962;
   };
 
+  // Holds the device's public key used for Personal Context HPKE payload
+  // encryption.
+  struct PersonalContextInfo {
+    // NotReady indicates that more time is needed to calculate the
+    // PersonalContextInfo.
+    using NotReady =
+        base::StrongAlias<class PersonalContextNotReadyTag, std::monostate>;
+    // NotEligible indicates that the device/profile is not eligible for
+    // Personal Context encryption.
+    using NotEligible =
+        base::StrongAlias<class PersonalContextNotEligibleTag, std::monostate>;
+    using StatusOrInfo =
+        std::variant<NotReady, NotEligible, PersonalContextInfo>;
+
+    // Serialized proto bytes of tink.Keyset.
+    std::vector<uint8_t> serialized_tink_keyset;
+
+    friend bool operator==(const PersonalContextInfo&,
+                           const PersonalContextInfo&) = default;
+  };
+
   //
   // A Java counterpart will be generated for this enum.
   // GENERATED_JAVA_ENUM_PACKAGE: org.chromium.components.sync_device_info
@@ -170,6 +193,8 @@ class DeviceInfo {
     kTv = 6,
   };
 
+  // Tracks the per-device user opt-in and readiness state for the Glic
+  // experimental triggering feature.
   // These values are persisted to logs. Entries should not be renumbered and
   // numeric values should never be reused.
   // LINT.IfChange(GlicExperimentalTriggeringState)
@@ -193,10 +218,10 @@ class DeviceInfo {
       const std::string& signin_scoped_device_id,
       const std::string& manufacturer_name,
       const std::string& model_name,
+      std::optional<std::string> server_determined_model_name,
       const std::string& full_hardware_class,
       base::Time last_updated_timestamp,
       base::TimeDelta pulse_interval,
-      bool send_tab_to_self_receiving_enabled,
       SendTabReceivingType send_tab_to_self_receiving_type,
       const std::optional<SharingInfo>& sharing_info,
       const std::optional<PhoneAsASecurityKeyInfo>& paask_info,
@@ -206,7 +231,11 @@ class DeviceInfo {
       bool desktop_to_ios_promo_receiving_enabled,
       const MobilePromoOnDesktopPromoTypeSet&
           desktop_to_ios_promo_receiving_types,
-      GlicExperimentalTriggeringState glic_experimental_triggering_state);
+      GlicExperimentalTriggeringState glic_experimental_triggering_state,
+      std::optional<int> glic_experimental_triggering_version,
+      base::flat_set<std::string> glic_experimental_triggering_capabilities,
+      std::optional<std::string> android_os_build_fingerprint_prefix,
+      std::optional<PersonalContextInfo> personal_context_info);
 
   DeviceInfo& operator=(const DeviceInfo&) = delete;
 
@@ -258,6 +287,9 @@ class DeviceInfo {
   // when UMA is disabled.
   const std::string& full_hardware_class() const;
 
+  // Prefix of the android.os.Build.FINGERPRINT. Populated on Android.
+  const std::optional<std::string>& android_os_build_fingerprint_prefix() const;
+
   // Returns the time at which this device was last updated to the sync servers.
   base::Time last_updated_timestamp() const;
 
@@ -266,11 +298,7 @@ class DeviceInfo {
   // apps on Android).
   base::TimeDelta pulse_interval() const;
 
-  // Whether the receiving side of the SendTabToSelf feature is enabled.
-  bool send_tab_to_self_receiving_enabled() const;
-
   // Enabled message types for the receiving side of the SendTabToSelf feature.
-  // This is meaningless if send_tab_to_self_receiving_enabled() returns false.
   // If not set, the in-app message type will be assumed.
   SendTabReceivingType send_tab_to_self_receiving_type() const;
 
@@ -278,6 +306,8 @@ class DeviceInfo {
   const std::optional<SharingInfo>& sharing_info() const;
 
   const std::optional<PhoneAsASecurityKeyInfo>& paask_info() const;
+
+  const std::optional<PersonalContextInfo>& personal_context_info() const;
 
   // Returns the FCM registration token for sync invalidations.
   const std::string& fcm_registration_token() const;
@@ -295,8 +325,18 @@ class DeviceInfo {
   const MobilePromoOnDesktopPromoTypeSet& desktop_to_ios_promo_receiving_types()
       const;
 
-  // Returns the state of experimental triggering.
+  // Returns the experimental triggering state for Glic.
   GlicExperimentalTriggeringState glic_experimental_triggering_state() const;
+
+  // Returns the capability version of the experimental triggering protocol for
+  // Glic, or std::nullopt if unavailable.
+  std::optional<int> glic_experimental_triggering_version() const;
+
+  // Returns the capabilities supported for Glic experimental triggering.
+  const base::flat_set<std::string>& glic_experimental_triggering_capabilities()
+      const;
+
+  const std::optional<std::string>& server_determined_model_name() const;
 
   // Apps can set ids for a device that is meaningful to them but
   // not unique enough so the user can be tracked. Exposing |guid|
@@ -306,13 +346,14 @@ class DeviceInfo {
 
   void set_full_hardware_class(const std::string& full_hardware_class);
 
-  void set_send_tab_to_self_receiving_enabled(bool new_value);
-
   void set_send_tab_to_self_receiving_type(SendTabReceivingType new_value);
 
   void set_sharing_info(const std::optional<SharingInfo>& sharing_info);
 
   void set_paask_info(std::optional<PhoneAsASecurityKeyInfo>&& paask_info);
+
+  void set_personal_context_info(
+      std::optional<PersonalContextInfo> personal_context_info);
 
   void set_client_name(const std::string& client_name);
 
@@ -326,8 +367,17 @@ class DeviceInfo {
   void set_desktop_to_ios_promo_receiving_types(
       const MobilePromoOnDesktopPromoTypeSet& new_types);
 
+  // Sets the experimental triggering state for Glic.
   void set_glic_experimental_triggering_state(
       GlicExperimentalTriggeringState state);
+
+  // Sets the capability version of the experimental triggering protocol for
+  // Glic. Pass std::nullopt if unavailable.
+  void set_glic_experimental_triggering_version(std::optional<int> version);
+
+  // Sets the capabilities supported for Glic experimental triggering.
+  void set_glic_experimental_triggering_capabilities(
+      const base::flat_set<std::string>& capabilities);
 
  private:
   // Used by DeepCopyForTesting().
@@ -359,13 +409,15 @@ class DeviceInfo {
 
   const std::string model_name_;
 
+  const std::optional<std::string> server_determined_model_name_;
+
   std::string full_hardware_class_;
+
+  const std::optional<std::string> android_os_build_fingerprint_prefix_;
 
   const base::Time last_updated_timestamp_;
 
   const base::TimeDelta pulse_interval_;
-
-  bool send_tab_to_self_receiving_enabled_;
 
   SendTabReceivingType send_tab_to_self_receiving_type_;
 
@@ -393,11 +445,22 @@ class DeviceInfo {
   bool desktop_to_ios_promo_receiving_enabled_;
   MobilePromoOnDesktopPromoTypeSet desktop_to_ios_promo_receiving_types_;
 
+  // The opt-in state of Glic experimental triggering for the device.
   GlicExperimentalTriggeringState glic_experimental_triggering_state_;
 
+  // The version of the Glic experimental triggering protocol supported by the
+  // device.
+  std::optional<int> glic_experimental_triggering_version_;
+
+  // The capabilities supported for Glic experimental triggering.
+  base::flat_set<std::string> glic_experimental_triggering_capabilities_;
+
+  std::optional<PersonalContextInfo> personal_context_info_;
+
   // NOTE: when adding a member, don't forget to update
-  // |StoredDeviceInfoStillAccurate| in device_info_sync_bridge.cc or else
-  // changes in that member might not trigger uploads of updated DeviceInfos.
+  // |IsStoredLocalDeviceInfoStillAccurate| in device_info_sync_bridge.cc or
+  // else changes in that member might not trigger uploads of updated
+  // DeviceInfos.
 };
 
 }  // namespace syncer

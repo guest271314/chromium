@@ -14,7 +14,6 @@
 #include "chrome/browser/search_engine_choice/search_engine_choice_dialog_service_factory.h"
 #include "chrome/browser/search_engine_choice/search_engine_choice_service_factory.h"
 #include "chrome/browser/search_engines/template_url_service_factory.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "components/metrics/cloned_install_detector.h"
 #include "components/metrics/metrics_pref_names.h"
@@ -82,7 +81,7 @@ class SearchEngineChoiceServiceBrowserTest : public InProcessBrowserTest {
 
 IN_PROC_BROWSER_TEST_F(SearchEngineChoiceServiceBrowserTest,
                        StaticCondition_IsEligible) {
-  EXPECT_EQ(GetStaticConditions(browser()->profile()),
+  EXPECT_EQ(GetStaticConditions(browser()->GetProfile()),
             SearchEngineChoiceScreenConditions::kEligible);
 }
 
@@ -232,7 +231,7 @@ INSTANTIATE_TEST_SUITE_P(
 // Run 0, where we mark the profile as having made a search engine choice.
 IN_PROC_BROWSER_TEST_P(SearchEngineChoiceServiceRestoreBrowserTest,
                        PRE_PRE_StaticConditions) {
-  Profile* profile = browser()->profile();
+  Profile* profile = browser()->GetProfile();
 
   SearchEngineChoiceService* search_engine_choice_service =
       SearchEngineChoiceServiceFactory::GetForProfile(profile);
@@ -280,7 +279,7 @@ IN_PROC_BROWSER_TEST_P(SearchEngineChoiceServiceRestoreBrowserTest,
                .reset_count == 0;
   }));
 
-  Profile* profile = browser()->profile();
+  Profile* profile = browser()->GetProfile();
   SearchEngineChoiceService* search_engine_choice_service =
       SearchEngineChoiceServiceFactory::GetForProfile(profile);
   ASSERT_TRUE(search_engine_choice_service->GetClientForTesting()
@@ -311,13 +310,8 @@ IN_PROC_BROWSER_TEST_P(SearchEngineChoiceServiceRestoreBrowserTest,
 // Run 2, where the metrics ID gets reset following the clone detection.
 // TODO(https://crbug.com/419039727): Fix the flakiness.
 // TODO(https://crbug.com/510279237): Decouple antitampering from cloning tests.
-#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_LINUX)
-#define MAYBE_StaticConditions DISABLED_StaticConditions
-#else
-#define MAYBE_StaticConditions StaticConditions
-#endif
 IN_PROC_BROWSER_TEST_P(SearchEngineChoiceServiceRestoreBrowserTest,
-                       MAYBE_StaticConditions) {
+                       DISABLED_StaticConditions) {
   // The clone was detected in the previous session, but we reset the ID
   // starting in this one.
   ASSERT_FALSE(g_browser_process->GetMetricsServicesManager()
@@ -328,7 +322,7 @@ IN_PROC_BROWSER_TEST_P(SearchEngineChoiceServiceRestoreBrowserTest,
                 .reset_count,
             1);
 
-  Profile* profile = browser()->profile();
+  Profile* profile = browser()->GetProfile();
   SearchEngineChoiceService* search_engine_choice_service =
       SearchEngineChoiceServiceFactory::GetForProfile(profile);
   ASSERT_FALSE(search_engine_choice_service->GetClientForTesting()

@@ -4,17 +4,22 @@
 
 #import "ios/chrome/browser/authentication/ui_bundled/signin/signin_coordinator.h"
 
+#import <utility>
+
 #import "base/apple/foundation_util.h"
+#import "base/feature_list.h"
 #import "base/notreached.h"
 #import "base/strings/sys_string_conversions.h"
 #import "components/pref_registry/pref_registry_syncable.h"
 #import "components/prefs/pref_service.h"
 #import "components/signin/public/base/signin_metrics.h"
+#import "components/signin/public/base/signin_switches.h"
 #import "ios/chrome/browser/authentication/add_account_signin/coordinator/add_account_signin_coordinator.h"
 #import "ios/chrome/browser/authentication/consistency_promo_signin/coordinator/consistency_promo_signin_coordinator.h"
 #import "ios/chrome/browser/authentication/trusted_vault_reauthentication/coordinator/trusted_vault_reauthentication_coordinator.h"
 #import "ios/chrome/browser/authentication/trusted_vault_reauthentication/coordinator/trusted_vault_reauthentication_coordinator_delegate.h"
 #import "ios/chrome/browser/authentication/two_screens_signin/coordinator/two_screens_signin_coordinator.h"
+#import "ios/chrome/browser/authentication/ui_bundled/signin/deeplink_signin/deeplink_signin_coordinator.h"
 #import "ios/chrome/browser/authentication/ui_bundled/signin/history_sync/history_sync_signin_coordinator.h"
 #import "ios/chrome/browser/authentication/ui_bundled/signin/instant_signin/instant_signin_coordinator.h"
 #import "ios/chrome/browser/authentication/ui_bundled/signin/logging/first_run_signin_logger.h"
@@ -22,6 +27,8 @@
 #import "ios/chrome/browser/authentication/ui_bundled/signin/signin_history_sync/signin_and_history_sync_coordinator.h"
 #import "ios/chrome/browser/authentication/ui_bundled/signin/signin_in_progress.h"
 #import "ios/chrome/browser/authentication/ui_bundled/signin/signin_screen_provider.h"
+#import "ios/chrome/browser/authentication/ui_bundled/signin/signin_utils.h"
+#import "ios/chrome/browser/metrics/model/activity_reporter.h"
 #import "ios/chrome/browser/shared/coordinator/chrome_coordinator/animated_coordinator.h"
 #import "ios/chrome/browser/shared/coordinator/scene/scene_state.h"
 #import "ios/chrome/browser/shared/model/browser/browser.h"
@@ -40,6 +47,7 @@ using signin_metrics::PromoAction;
 
 @implementation SigninCoordinator {
   std::unique_ptr<SigninInProgress> _signinInProgress;
+  ActivityReporter* _activityReporter;
 }
 
 - (instancetype)initWithBaseViewController:(UIViewController*)viewController
@@ -49,12 +57,13 @@ using signin_metrics::PromoAction;
                                    (signin_metrics::AccessPoint)accessPoint {
   self = [super initWithBaseViewController:viewController browser:browser];
   if (self) {
+    _activityReporter =
+        [[ActivityReporter alloc] initWithDomain:ActivityReportDomainSignin];
     CHECK(browser);
-    CHECK_EQ(browser->type(), Browser::Type::kRegular,
-             base::NotFatalUntil::M145);
+    CHECK_EQ(browser->type(), Browser::Type::kRegular);
     auto* authService =
         AuthenticationServiceFactory::GetForProfile(self.profile);
-    CHECK(authService->SigninEnabled(), base::NotFatalUntil::M146);
+    CHECK(authService->SigninEnabled());
     _contextStyle = contextStyle;
     _accessPoint = accessPoint;
     _creationTimeTicks = base::TimeTicks::Now();
@@ -67,7 +76,6 @@ using signin_metrics::PromoAction;
 + (void)registerProfilePrefs:(user_prefs::PrefRegistrySyncable*)registry {
   // ConsistencyPromoSigninCoordinator.
   registry->RegisterIntegerPref(prefs::kSigninWebSignDismissalCount, 0);
-  registry->RegisterDictionaryPref(prefs::kSigninHasAcceptedManagementDialog);
 }
 
 + (SigninCoordinator*)signinCoordinatorWithCommand:(ShowSigninCommand*)command
@@ -76,7 +84,7 @@ using signin_metrics::PromoAction;
                                     (UIViewController*)baseViewController {
   AuthenticationService* authenticationService =
       AuthenticationServiceFactory::GetForProfile(browser->GetProfile());
-  CHECK(authenticationService->SigninEnabled(), base::NotFatalUntil::M146);
+  CHECK(authenticationService->SigninEnabled());
   SigninCoordinator* signinCoordinator;
   switch (command.operation) {
     case AuthenticationOperation::kResignin: {
@@ -105,6 +113,8 @@ using signin_metrics::PromoAction;
                                                          command.contextStyle
                                                       accessPoint:
                                                           command.accessPoint
+                                             confirmChangeProfile:
+                                                 command.confirmChangeProfile
                                              prepareChangeProfile:
                                                  command.prepareChangeProfile
                                              continuationProvider:provider];
@@ -151,6 +161,18 @@ using signin_metrics::PromoAction;
                                            accessPoint:command.accessPoint
                                            promoAction:command.promoAction
                                           showSnackbar:command.showSnackbar];
+      break;
+    }
+    case AuthenticationOperation::kDeepLinkSignin: {
+      signinCoordinator = [SigninCoordinator
+          deeplinkSigninCoordinatorWithBaseViewController:baseViewController
+                                                  browser:browser
+                                     selectedAccountEmail:
+                                         command.targetAccountEmail
+                        changeProfileContinuationProvider:
+                            command.changeProfileContinuationProvider
+                                       externalEntryPoint:
+                                           command.externalEntryPoint];
       break;
     }
   }
@@ -214,8 +236,8 @@ using signin_metrics::PromoAction;
                            continuationProvider:
                                (const ChangeProfileContinuationProvider&)
                                    continuationProvider {
-  CHECK(viewController, base::NotFatalUntil::M140);
-  CHECK(browser, base::NotFatalUntil::M140);
+  CHECK(viewController);
+  CHECK(browser);
   CHECK(continuationProvider);
   return [[AddAccountSigninCoordinator alloc]
       initWithBaseViewController:viewController
@@ -242,8 +264,8 @@ using signin_metrics::PromoAction;
                                          (const ChangeProfileContinuationProvider&)
                                              continuationProvider {
   CHECK(continuationProvider);
-  CHECK(viewController, base::NotFatalUntil::M140);
-  CHECK(browser, base::NotFatalUntil::M140);
+  CHECK(viewController);
+  CHECK(browser);
   return [[AddAccountSigninCoordinator alloc]
       initWithBaseViewController:viewController
                          browser:browser
@@ -269,8 +291,8 @@ using signin_metrics::PromoAction;
                                         (const ChangeProfileContinuationProvider&)
                                             continuationProvider {
   CHECK(continuationProvider);
-  CHECK(viewController, base::NotFatalUntil::M140);
-  CHECK(browser, base::NotFatalUntil::M140);
+  CHECK(viewController);
+  CHECK(browser);
   return [[AddAccountSigninCoordinator alloc]
       initWithBaseViewController:viewController
                          browser:browser
@@ -291,6 +313,9 @@ using signin_metrics::PromoAction;
                                                 accessPoint:
                                                     (signin_metrics::
                                                          AccessPoint)accessPoint
+                                       confirmChangeProfile:
+                                           (SigninChangeProfileConfirmationBlock)
+                                               confirmChangeProfile
                                        prepareChangeProfile:
                                            (ProceduralBlock)prepareChangeProfile
                                        continuationProvider:
@@ -301,6 +326,7 @@ using signin_metrics::PromoAction;
                                 browser:browser
                            contextStyle:contextStyle
                             accessPoint:accessPoint
+                   confirmChangeProfile:confirmChangeProfile
                    prepareChangeProfile:prepareChangeProfile
                    continuationProvider:continuationProvider];
 }
@@ -353,12 +379,33 @@ using signin_metrics::PromoAction;
                     showSnackbar:showSnackbar];
 }
 
++ (SigninCoordinator*)
+    deeplinkSigninCoordinatorWithBaseViewController:
+        (UIViewController*)viewController
+                                            browser:(Browser*)browser
+                               selectedAccountEmail:
+                                   (NSString*)selectedAccountEmail
+                  changeProfileContinuationProvider:
+                      (const ChangeProfileContinuationProvider&)
+                          changeProfileContinuationProvider
+                                 externalEntryPoint:(signin::ExternalEntryPoint)
+                                                        externalEntryPoint {
+  CHECK(base::FeatureList::IsEnabled(switches::kCrossDeviceSignin));
+  return [[DeeplinkSigninCoordinator alloc]
+             initWithBaseViewController:viewController
+                                browser:browser
+                   selectedAccountEmail:selectedAccountEmail
+      changeProfileContinuationProvider:changeProfileContinuationProvider
+                     externalEntryPoint:externalEntryPoint];
+}
+
 #pragma mark - SigninCoordinator
 
 - (void)start {
   // `signinCompletion` needs to be set by the owner to know when the sign-in
   // is finished.
-  CHECK(self.signinCompletion, base::NotFatalUntil::M151);
+  CHECK(self.signinCompletion);
+  [_activityReporter reportActive];
 }
 
 #pragma mark - AnimatedCoordinator
@@ -366,29 +413,32 @@ using signin_metrics::PromoAction;
 - (void)stopAnimated:(BOOL)animated {
   _signinInProgress.reset();
   [super stopAnimated:animated];
+  [_activityReporter reportInactive];
 }
 
 #pragma mark - Protected
 
-- (void)runCompletionWithSigninResult:(SigninCoordinatorResult)signinResult
-                   completionIdentity:(id<SystemIdentity>)completionIdentity {
-  // `identity` is set, if and only if the sign-in is successful.
-  CHECK(((signinResult == SigninCoordinatorResultSuccess ||
-          signinResult == SigninCoordinatorProfileSwitch) &&
-         completionIdentity) ||
-            ((signinResult != SigninCoordinatorResultSuccess) &&
-             !completionIdentity),
-        base::NotFatalUntil::M151)
-      << "signinResult: " << signinResult
-      << ", identity: " << (completionIdentity ? "YES" : "NO");
+- (void)runCompletionWithSigninResult:
+    (SigninCoordinatorResultOrIdentity)signinResult {
+  if (signinResult.has_value()) {
+    CHECK(signinResult.value());
+  }
   // If `self.signinCompletion` is nil, this method has been probably called
   // twice.
-  CHECK(self.signinCompletion, base::NotFatalUntil::M151);
+  CHECK(self.signinCompletion);
   SigninCoordinatorCompletionCallback signinCompletion = self.signinCompletion;
   // The owner should call the stop method, during the callback.
   // `self.signinCompletion` needs to be set to nil before calling it.
   self.signinCompletion = nil;
-  signinCompletion(self, signinResult, completionIdentity);
+  signinCompletion(self, std::move(signinResult));
+}
+
+- (void)runCompletionWithSigninResult:(SigninCoordinatorResult)signinResult
+                   completionIdentity:(id<SystemIdentity>)completionIdentity {
+  [self
+      runCompletionWithSigninResult:
+          signin::SigninCoordinatorResultOrIdentityFromSigninCoordinatorResult(
+              signinResult, completionIdentity)];
 }
 
 #pragma mark - BuggyAuthenticationViewOwner

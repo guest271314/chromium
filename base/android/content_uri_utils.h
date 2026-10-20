@@ -65,6 +65,10 @@ bool IsDocumentUri(const FilePath& content_uri);
 
 }  // namespace internal
 
+// Returns whether `content_uri` is served by a ContentProvider with the same
+// Android UID as the current process.
+BASE_EXPORT bool IsContentUriFromThisApp(const FilePath& content_uri);
+
 // Gets MIME type from a content URI. Returns an empty string if the URI is
 // invalid.
 BASE_EXPORT std::string GetContentUriMimeType(const FilePath& content_uri);

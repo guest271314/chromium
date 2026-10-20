@@ -41,7 +41,7 @@ class NoPasskeysBottomSheetBridge {
       base::PassKey<class NoPasskeysBottomSheetBridgeTest>,
       std::unique_ptr<JniDelegate> jni_delegate);
   NoPasskeysBottomSheetBridge(
-      base::PassKey<class TouchToFillControllerWebAuthnTest>,
+      base::PassKey<class TouchToFillPasswordManagerWebAuthnDelegateTest>,
       std::unique_ptr<JniDelegate> jni_delegate);
   NoPasskeysBottomSheetBridge(const NoPasskeysBottomSheetBridge&) = delete;
   NoPasskeysBottomSheetBridge& operator=(const NoPasskeysBottomSheetBridge&) =
@@ -58,10 +58,10 @@ class NoPasskeysBottomSheetBridge {
   void Dismiss();
 
   // Called via JNI when the sheet is dismissed.
-  void OnDismissed(JNIEnv* env);
+  void OnDismissed();
 
   // Called via JNI when the user selected the hybrid login option.
-  void OnClickUseAnotherDevice(JNIEnv* env);
+  void OnClickUseAnotherDevice();
 
  private:
   // Forwards all requests to JNI. Can be replaced in tests.

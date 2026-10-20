@@ -7,6 +7,8 @@
           "--use-gl=angle",
           "--use-gpu-in-tests"
         ],
+        "ci_only": true,
+        "experiment_percentage": 100,
         "merge": {
           "script": "//testing/merge_scripts/standard_gtest_merge.py"
         },
@@ -20,7 +22,7 @@
             "gpu": "apple:m2",
             "hidpi": "1",
             "mac_model": "Mac14,7",
-            "os": "Mac-14.4.1",
+            "os": "Mac-26.5.1",
             "pool": "chromium.tests.gpu"
           },
           "hard_timeout": 1800,
@@ -34,8 +36,11 @@
       {
         "args": [
           "--use-gpu-in-tests",
-          "--git-revision=${got_revision}"
+          "--git-revision=${got_revision}",
+          "--bypass-skia-gold-functionality"
         ],
+        "ci_only": true,
+        "experiment_percentage": 100,
         "merge": {
           "script": "//testing/merge_scripts/standard_gtest_merge.py"
         },
@@ -54,7 +59,7 @@
             "gpu": "apple:m2",
             "hidpi": "1",
             "mac_model": "Mac14,7",
-            "os": "Mac-14.4.1",
+            "os": "Mac-26.5.1",
             "pool": "chromium.tests.gpu"
           },
           "hard_timeout": 1800,
@@ -67,6 +72,8 @@
     ],
     "isolated_scripts": [
       {
+        "ci_only": true,
+        "experiment_percentage": 100,
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
@@ -83,7 +90,7 @@
             "gpu": "apple:m2",
             "hidpi": "1",
             "mac_model": "Mac14,7",
-            "os": "Mac-14.4.1",
+            "os": "Mac-26.5.1",
             "pool": "chromium.tests.gpu"
           },
           "hard_timeout": 1800,
@@ -99,6 +106,8 @@
           "--flag-specific=webgpu",
           "--initialize-webgpu-adapter-at-startup-timeout-ms=60000"
         ],
+        "ci_only": true,
+        "experiment_percentage": 100,
         "merge": {
           "args": [
             "--verbose"
@@ -119,7 +128,7 @@
             "gpu": "apple:m2",
             "hidpi": "1",
             "mac_model": "Mac14,7",
-            "os": "Mac-14.4.1",
+            "os": "Mac-26.5.1",
             "pool": "chromium.tests.gpu"
           },
           "hard_timeout": 1800,
@@ -135,6 +144,8 @@
           "--timeout-ms=30000",
           "--initialize-webgpu-adapter-at-startup-timeout-ms=60000"
         ],
+        "ci_only": true,
+        "experiment_percentage": 100,
         "merge": {
           "args": [
             "--verbose"
@@ -155,7 +166,7 @@
             "gpu": "apple:m2",
             "hidpi": "1",
             "mac_model": "Mac14,7",
-            "os": "Mac-14.4.1",
+            "os": "Mac-26.5.1",
             "pool": "chromium.tests.gpu"
           },
           "hard_timeout": 1800,
@@ -179,6 +190,8 @@
           "--jobs=4",
           "--use-webgpu-power-preference=default-high-performance"
         ],
+        "ci_only": true,
+        "experiment_percentage": 100,
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
@@ -196,7 +209,7 @@
             "gpu": "apple:m2",
             "hidpi": "1",
             "mac_model": "Mac14,7",
-            "os": "Mac-14.4.1",
+            "os": "Mac-26.5.1",
             "pool": "chromium.tests.gpu"
           },
           "hard_timeout": 1800,
@@ -221,6 +234,8 @@
           "--jobs=4",
           "--use-webgpu-power-preference=default-high-performance"
         ],
+        "ci_only": true,
+        "experiment_percentage": 100,
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
@@ -238,7 +253,7 @@
             "gpu": "apple:m2",
             "hidpi": "1",
             "mac_model": "Mac14,7",
-            "os": "Mac-14.4.1",
+            "os": "Mac-26.5.1",
             "pool": "chromium.tests.gpu"
           },
           "hard_timeout": 1800,
@@ -263,6 +278,8 @@
           "--jobs=4",
           "--use-webgpu-power-preference=default-high-performance"
         ],
+        "ci_only": true,
+        "experiment_percentage": 100,
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
@@ -280,7 +297,7 @@
             "gpu": "apple:m2",
             "hidpi": "1",
             "mac_model": "Mac14,7",
-            "os": "Mac-14.4.1",
+            "os": "Mac-26.5.1",
             "pool": "chromium.tests.gpu"
           },
           "hard_timeout": 1800,
@@ -304,6 +321,8 @@
           "--jobs=4",
           "--use-webgpu-power-preference=default-high-performance"
         ],
+        "ci_only": true,
+        "experiment_percentage": 100,
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
@@ -321,7 +340,7 @@
             "gpu": "apple:m2",
             "hidpi": "1",
             "mac_model": "Mac14,7",
-            "os": "Mac-14.4.1",
+            "os": "Mac-26.5.1",
             "pool": "chromium.tests.gpu"
           },
           "hard_timeout": 1800,
@@ -347,6 +366,8 @@
           "--jobs=4",
           "--use-webgpu-power-preference=default-high-performance"
         ],
+        "ci_only": true,
+        "experiment_percentage": 100,
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
@@ -364,7 +385,7 @@
             "gpu": "apple:m2",
             "hidpi": "1",
             "mac_model": "Mac14,7",
-            "os": "Mac-14.4.1",
+            "os": "Mac-26.5.1",
             "pool": "chromium.tests.gpu"
           },
           "hard_timeout": 1800,
@@ -381,6 +402,8 @@
           "--flag-specific=webgpu-swiftshader",
           "--initialize-webgpu-adapter-at-startup-timeout-ms=60000"
         ],
+        "ci_only": true,
+        "experiment_percentage": 100,
         "merge": {
           "args": [
             "--verbose"
@@ -401,7 +424,7 @@
             "gpu": "apple:m2",
             "hidpi": "1",
             "mac_model": "Mac14,7",
-            "os": "Mac-14.4.1",
+            "os": "Mac-26.5.1",
             "pool": "chromium.tests.gpu"
           },
           "hard_timeout": 1800,
@@ -417,6 +440,8 @@
           "--timeout-ms=30000",
           "--initialize-webgpu-adapter-at-startup-timeout-ms=60000"
         ],
+        "ci_only": true,
+        "experiment_percentage": 100,
         "merge": {
           "args": [
             "--verbose"
@@ -437,7 +462,7 @@
             "gpu": "apple:m2",
             "hidpi": "1",
             "mac_model": "Mac14,7",
-            "os": "Mac-14.4.1",
+            "os": "Mac-26.5.1",
             "pool": "chromium.tests.gpu"
           },
           "hard_timeout": 1800,
@@ -462,6 +487,8 @@
           "--jobs=4",
           "--use-webgpu-power-preference=default-high-performance"
         ],
+        "ci_only": true,
+        "experiment_percentage": 100,
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
@@ -479,7 +506,7 @@
             "gpu": "apple:m2",
             "hidpi": "1",
             "mac_model": "Mac14,7",
-            "os": "Mac-14.4.1",
+            "os": "Mac-26.5.1",
             "pool": "chromium.tests.gpu"
           },
           "hard_timeout": 1800,
@@ -507,6 +534,8 @@
           "--jobs=4",
           "--use-webgpu-power-preference=default-high-performance"
         ],
+        "ci_only": true,
+        "experiment_percentage": 100,
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
@@ -524,7 +553,7 @@
             "gpu": "apple:m2",
             "hidpi": "1",
             "mac_model": "Mac14,7",
-            "os": "Mac-14.4.1",
+            "os": "Mac-26.5.1",
             "pool": "chromium.tests.gpu"
           },
           "hard_timeout": 1800,

@@ -8,8 +8,6 @@
 #import "base/memory/ptr_util.h"
 #import "components/feature_engagement/public/event_constants.h"
 #import "components/feature_engagement/public/tracker.h"
-#import "components/google/core/common/google_util.h"
-#import "components/lens/lens_url_utils.h"
 #import "components/omnibox/common/omnibox_features.h"
 #import "components/strings/grit/components_strings.h"
 #import "ios/chrome/browser/feature_engagement/model/tracker_factory.h"
@@ -18,17 +16,21 @@
 #import "ios/chrome/browser/intelligence/bwg/model/gemini_service.h"
 #import "ios/chrome/browser/intelligence/bwg/model/gemini_service_factory.h"
 #import "ios/chrome/browser/intelligence/bwg/model/gemini_tab_helper.h"
+#import "ios/chrome/browser/intelligence/bwg/utils/gemini_availability.h"
 #import "ios/chrome/browser/intelligence/bwg/utils/gemini_constants.h"
 #import "ios/chrome/browser/intelligence/features/features.h"
-#import "ios/chrome/browser/lens_overlay/coordinator/lens_overlay_availability.h"
+#import "ios/chrome/browser/lens_overlay/public/lens_overlay_availability.h"
+#import "ios/chrome/browser/lens_overlay/public/lens_overlay_availability_utils.h"
+#import "ios/chrome/browser/lens_overlay/public/lens_overlay_entrypoint.h"
 #import "ios/chrome/browser/location_bar/ui_bundled/location_bar_consumer.h"
 #import "ios/chrome/browser/ntp/model/new_tab_page_util.h"
-#import "ios/chrome/browser/omnibox/model/omnibox_position/omnibox_position_browser_agent.h"
 #import "ios/chrome/browser/omnibox/model/placeholder_service/placeholder_service.h"
 #import "ios/chrome/browser/omnibox/model/placeholder_service/placeholder_service_observer_bridge.h"
 #import "ios/chrome/browser/omnibox/public/omnibox_util.h"
 #import "ios/chrome/browser/search_engines/model/search_engine_observer_bridge.h"
 #import "ios/chrome/browser/search_engines/model/search_engines_util.h"
+#import "ios/chrome/browser/shared/coordinator/scene/state/browser_layout_state.h"
+#import "ios/chrome/browser/shared/coordinator/scene/state/scene_layout_state.h"
 #import "ios/chrome/browser/shared/model/prefs/pref_names.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
 #import "ios/chrome/browser/shared/model/web_state_list/web_state_list.h"
@@ -44,18 +46,12 @@
 #import "ios/web/public/navigation/navigation_manager.h"
 #import "ios/web/public/web_state.h"
 #import "skia/ext/skia_utils_ios.h"
+#import "ui/base/device_form_factor.h"
 #import "ui/base/l10n/l10n_util.h"
 
-namespace {
-
-// The point size of the entry point's symbol.
-const CGFloat kIconPointSize = 16.0;
-
-}  // namespace
-
-@interface LocationBarMediator () <SearchEngineObserving,
-                                   WebStateListObserving,
-                                   PlaceholderServiceObserving>
+@interface LocationBarMediator () <PlaceholderServiceObserving,
+                                   SearchEngineObserving,
+                                   WebStateListObserving>
 
 // Whether the current default search engine supports search by image.
 @property(nonatomic, assign) BOOL searchEngineSupportsSearchByImage;
@@ -72,19 +68,34 @@ const CGFloat kIconPointSize = 16.0;
   BOOL _isIncognito;
   raw_ptr<UrlLoadingBrowserAgent> _URLLoadingBrowserAgent;
   NSHashTable<id<FullscreenUIElement>>* _fullscreenUIElements;
+  raw_ptr<AimEligibilityService> _aimEligibilityService;
+  // AIM eligibility subscription.
+  base::CallbackListSubscription _aimEligibilitySubscription;
 }
 
 - (instancetype)initWithURLLoadingBrowsingAgent:
                     (UrlLoadingBrowserAgent*)URLLoadingBrowserAgent
+                          aimEligibilityService:
+                              (AimEligibilityService*)aimEligibilityService
                                     isIncognito:(BOOL)isIncognito {
   self = [super init];
   if (self) {
+    _active = YES;
     _searchEngineSupportsSearchByImage = NO;
     _searchEngineSupportsLens = NO;
     _URLLoadingBrowserAgent = URLLoadingBrowserAgent;
     _isIncognito = isIncognito;
     _webStateListObserver = std::make_unique<WebStateListObserverBridge>(self);
     _fullscreenUIElements = [NSHashTable weakObjectsHashTable];
+    _aimEligibilityService = aimEligibilityService;
+    if (_aimEligibilityService) {
+      __weak __typeof(self) weakSelf = self;
+      _aimEligibilitySubscription =
+          _aimEligibilityService->RegisterEligibilityChangedCallback(
+              base::BindRepeating(^(void) {
+                [weakSelf updateAIMAvailability];
+              }));
+    }
   }
   return self;
 }
@@ -94,6 +105,8 @@ const CGFloat kIconPointSize = 16.0;
     _webStateList->RemoveObserver(_webStateListObserver.get());
     _webStateList = nullptr;
   }
+  _aimEligibilitySubscription = {};
+  _aimEligibilityService = nullptr;
   _webStateListObserver = nullptr;
   _searchEngineObserver = nullptr;
   self.placeholderService = nullptr;
@@ -117,9 +130,9 @@ const CGFloat kIconPointSize = 16.0;
     progress =
         self.topPosition ? agent->top_progress() : agent->bottom_progress();
   } else {
-    CHECK(self.omniboxPositionBrowserAgent);
+    CHECK(self.browserLayoutState);
     BOOL isBottomOmnibox =
-        self.omniboxPositionBrowserAgent->IsCurrentLayoutBottomOmnibox();
+        self.browserLayoutState.toolbarPosition == ToolbarPosition::kBottom;
     progress =
         isBottomOmnibox ? agent->bottom_progress() : agent->top_progress();
   }
@@ -143,6 +156,16 @@ const CGFloat kIconPointSize = 16.0;
 }
 
 #pragma mark - Setters
+
+- (void)setActive:(BOOL)active {
+  if (_active == active) {
+    return;
+  }
+  _active = active;
+  if (IsLocationBarPerformanceImprovementsEnabled() && _active) {
+    [self updatePlaceholderType];
+  }
+}
 
 - (void)setConsumer:(id<LocationBarConsumer>)consumer {
   _consumer = consumer;
@@ -228,6 +251,9 @@ const CGFloat kIconPointSize = 16.0;
                        change:(const WebStateListChange&)change
                        status:(const WebStateListStatus&)status {
   DCHECK_EQ(_webStateList, webStateList);
+  if (IsLocationBarPerformanceImprovementsEnabled() && !self.active) {
+    return;
+  }
   if (status.active_web_state_change()) {
     [self.consumer defocusOmnibox];
   }
@@ -253,7 +279,8 @@ const CGFloat kIconPointSize = 16.0;
   __weak __typeof(self) weakSelf = self;
   if (self.placeholderService) {
     self.placeholderService->FetchDefaultSearchEngineIcon(
-        kIconPointSize, base::BindRepeating(^(UIImage* image) {
+        PlaceholderService::IconSize::k16pt,
+        base::BindRepeating(^(UIImage* image) {
           [weakSelf.consumer setPlaceholderDefaultSearchEngineIcon:image];
         }));
   }
@@ -261,9 +288,36 @@ const CGFloat kIconPointSize = 16.0;
 
 #pragma mark - Private
 
+// Called when AIM availability is updated.
+- (void)updateAIMAvailability {
+  [self updatePlaceholderType];
+}
+
+// Whether to show the plus button in NTP.
+- (BOOL)shouldShowPlusButton {
+  if (!_aimEligibilityService) {
+    return NO;
+  }
+
+  web::WebState* webState = [self activeWebState];
+  if (!webState) {
+    return NO;
+  }
+
+  ProfileIOS* profile =
+      ProfileIOS::FromBrowserState(webState->GetBrowserState());
+  if (profile->IsOffTheRecord()) {
+    return NO;
+  }
+
+  BOOL allowedOnDevice = IsPlusButtonInFakeboxEnabled();
+  BOOL fuseboxEligible = _aimEligibilityService->IsFuseboxEligible();
+  return fuseboxEligible && allowedOnDevice;
+}
+
 /// Returns whether the Lens overlay is currently available for the web state.
 - (BOOL)isLensOverlayAvailable {
-  if (IsChromeNextIaEnabled() && !IsChromeNextIaLensIconVisible()) {
+  if (IsChromeNextIaEnabled()) {
     return NO;
   }
 
@@ -313,9 +367,9 @@ const CGFloat kIconPointSize = 16.0;
   }
 
   if (IsDirectBWGEntryPoint()) {
-    GeminiTabHelper* tabHelper = GeminiTabHelper::FromWebState(webState);
-    return tabHelper && tabHelper->IsGeminiAvailableForWebState() &&
-           geminiService->IsProfileEligibleForGemini();
+    return gemini::IsGeminiAvailable(gemini::EntryPoint::AIHub, profile,
+                                     webState)
+        .enabled;
   }
 
   return geminiService->IsProfileEligibleForGemini();
@@ -329,20 +383,23 @@ const CGFloat kIconPointSize = 16.0;
   }
   ProfileIOS* profile =
       ProfileIOS::FromBrowserState(webState->GetBrowserState());
-  GeminiService* geminiService = GeminiServiceFactory::GetForProfile(profile);
-  if (!geminiService) {
-    return NO;
-  }
-  GeminiTabHelper* tabHelper = GeminiTabHelper::FromWebState(webState);
-  return tabHelper && tabHelper->IsGeminiAvailableForWebState() &&
-         geminiService->IsProfileEligibleForGemini();
+  return gemini::IsGeminiAvailable(gemini::EntryPoint::AIHub, profile, webState)
+      .enabled;
 }
 
 /// Updates the placeholder.
 - (void)updatePlaceholderType {
+  if (IsLocationBarPerformanceImprovementsEnabled() && !self.active) {
+    return;
+  }
   if ([self isCurrentPageNTP]) {
-    [self.consumer setPlaceholderType:LocationBarPlaceholderType::
-                                          kDefaultSearchEngineIcon];
+    if ([self shouldShowPlusButton]) {
+      [self.consumer
+          setPlaceholderType:LocationBarPlaceholderType::kPlusButton];
+    } else {
+      [self.consumer setPlaceholderType:LocationBarPlaceholderType::
+                                            kDefaultSearchEngineIcon];
+    }
     return;
   } else {
     [self.consumer setPlaceholderType:LocationBarPlaceholderType::kNone];
@@ -384,24 +441,15 @@ const CGFloat kIconPointSize = 16.0;
 
 /// Whether the lens overlay entrypoint should be available.
 - (BOOL)isLensOverlayEntrypointAvailable {
-  if (![self isLensOverlayAvailable] ||
-      _isIncognito ||
-      !search_engines::SupportsSearchImageWithLens(self.templateURLService)) {
-    return NO;
-  }
-  GURL visibleURL = GURL();
   web::WebState* webState = [self activeWebState];
-  if (webState) {
-    visibleURL = webState->GetVisibleURL();
-  }
+  ProfileIOS* profile =
+      webState ? ProfileIOS::FromBrowserState(webState->GetBrowserState())
+               : nullptr;
+  const PrefService* prefs = profile ? profile->GetPrefs() : nullptr;
 
-  if (google_util::IsGoogleSearchUrl(visibleURL) ||
-      google_util::IsGoogleHomePageUrl(visibleURL)) {
-    return NO;
-  }
-
-  return !IsVisibleURLNewTabPage(webState) &&
-         !lens::IsLensMWebResult(visibleURL);
+  return IsLensOverlayEntrypointAvailable(LensOverlayEntrypoint::kLocationBar,
+                                          prefs, self.templateURLService,
+                                          webState);
 }
 
 - (BOOL)isCurrentPageNTP {

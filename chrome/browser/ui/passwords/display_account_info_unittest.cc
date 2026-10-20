@@ -32,7 +32,8 @@ class DisplayAccountInfoTest : public testing::Test {
     account_info =
         AccountInfo::Builder(account_info).SetFullName(kTestFullName).Build();
     identity_test_environment_.UpdateAccountInfoForAccount(account_info);
-    sync_service_.SetSignedIn(signin::ConsentLevel::kSignin, account_info);
+    sync_service_.SetSignedIn(signin::ConsentLevel::kSignin,
+                              account_info.GetCoreAccountInfo());
   }
 
   // Must only be called when there is a signed-in account.
@@ -44,7 +45,7 @@ class DisplayAccountInfoTest : public testing::Test {
         << "Trying to update capability of signed-in account when there's none";
     AccountInfo account_info =
         identity_manager()->FindExtendedAccountInfo(core_account_info);
-    AccountCapabilitiesTestMutator(&account_info.capabilities)
+    AccountCapabilitiesTestMutator(&account_info)
         .set_can_have_email_address_displayed(can_display);
     identity_test_environment_.UpdateAccountInfoForAccount(account_info);
   }

@@ -8,7 +8,6 @@
 
 #include "ash/public/cpp/ash_view_ids.h"
 #include "ash/public/cpp/rounded_image_view.h"
-#include "ash/style/ash_color_provider.h"
 #include "ash/style/typography.h"
 #include "ash/system/notification_center/ash_notification_control_button_factory.h"
 #include "ash/system/notification_center/message_center_constants.h"
@@ -92,7 +91,11 @@ void ConversationNotificationView::ToggleExpand() {
   actions_view_->SetExpanded(expanded_);
   // Updates expand state to message center, and let notification delegate
   // handle the state update.
+  auto weak_ptr = weak_factory_.GetWeakPtr();
   SetExpanded(expanded_);
+  if (!weak_ptr) {
+    return;
+  }
 
   app_name_view_->SetVisible(expanded_);
   app_name_divider_->SetVisible(expanded_);

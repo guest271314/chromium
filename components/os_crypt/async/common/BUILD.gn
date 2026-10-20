@@ -5,6 +5,7 @@
 import("//mojo/public/tools/bindings/mojom.gni")
 
 mojom("common_mojom") {
+  generate_blink = true
   generate_java = true
   sources = [ "encryptor.mojom" ]
 
@@ -18,9 +19,9 @@ mojom("common_mojom") {
       types = [
         {
           mojom = "os_crypt_async.mojom.Encryptor"
-          cpp = "::os_crypt_async::Encryptor"
-          default_constructible = false
-          move_only = true
+          cpp = "::scoped_refptr<::os_crypt_async::Encryptor>"
+          nullable_is_same_type = true
+          copyable_pass_by_value = true
         },
         {
           mojom = "os_crypt_async.mojom.Key"
@@ -44,6 +45,8 @@ mojom("common_mojom") {
 }
 
 mojom("algorithm_mojom") {
+  generate_blink = true
+
   # External code should depend on ":common_mojom" instead.
   visibility = [ ":*" ]
 

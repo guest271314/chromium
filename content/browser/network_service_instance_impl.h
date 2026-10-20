@@ -17,6 +17,10 @@
 #include "services/network/public/mojom/cert_verifier_service_updater.mojom-forward.h"
 #include "services/network/public/mojom/network_context.mojom-forward.h"
 
+namespace net {
+enum class NetLogFileFormat;
+}  // namespace net
+
 namespace content {
 
 // A directory name that is created below the http cache path and passed to the
@@ -26,6 +30,26 @@ namespace content {
 // as they rely on having access to the parent directory of the cache.
 inline constexpr base::FilePath::CharType kCacheDataDirectoryName[] =
     FILE_PATH_LITERAL("Cache_Data");
+
+// Subdirectories of the HTTP cache root (siblings of `kCacheDataDirectoryName`
+// so they inherit the parent directory's sandbox ACL).
+inline constexpr base::FilePath::CharType kNoVarySearchDirectoryName[] =
+    FILE_PATH_LITERAL("No_Vary_Search");
+inline constexpr base::FilePath::CharType kLogicalInvalidationDirectoryName[] =
+    FILE_PATH_LITERAL("Logical_Invalidation");
+
+// Expands the single cache path supplied by the embedder into the full
+// subdirectory layout the network service expects, leaving any path the
+// embedder set explicitly alone:
+//
+//   Cache/                     <- what the embedder passed in
+//   |-- Cache_Data/            <- `http_cache_directory`
+//   |-- No_Vary_Search/        <- `no_vary_search_directory`
+//   \-- Logical_Invalidation/  <- `logical_invalidation_directory`
+//
+// Does nothing if the cache is disabled or no cache path was supplied.
+CONTENT_EXPORT void PopulateHttpCacheDirectories(
+    network::mojom::NetworkContextParams* params);
 
 // Creates the network::NetworkService object on the IO thread directly instead
 // of trying to go through the ServiceManager.
@@ -87,6 +111,10 @@ GetCertVerifierParamsWithUpdater(
         cert_verifier_updater_remote);
 
 CONTENT_EXPORT uint64_t GetNetLogMaximumFileSizeFromCommandLineForTesting(
+    const base::CommandLine& command_line);
+
+CONTENT_EXPORT net::NetLogFileFormat
+GetNetLogFileFormatFromCommandLineForTesting(
     const base::CommandLine& command_line);
 }  // namespace content
 

@@ -10,6 +10,7 @@
 #include <memory>
 #include <string>
 
+#include "base/callback_list.h"
 #include "base/memory/raw_ptr.h"
 #include "base/scoped_observation.h"
 #include "chrome/browser/extensions/commands/command_service.h"
@@ -60,6 +61,8 @@ class ExtensionKeybindingRegistry : public CommandService::Observer,
       delete;
 
   ~ExtensionKeybindingRegistry() override;
+
+  static void EnsureAssociatedFactoryBuilt();
 
   // Enables/Disables general shortcut handling in Chrome.
   void SetShortcutHandlingSuspended(bool suspended);
@@ -114,7 +117,8 @@ class ExtensionKeybindingRegistry : public CommandService::Observer,
 
   // Notifies appropriate parties that a command has been executed.
   void CommandExecuted(const ExtensionId& extension_id,
-                       const std::string& command);
+                       const std::string& command,
+                       const ui::Accelerator& accelerator);
 
   // Add event target (extension_id, command name) to the target list of
   // `accelerator`. Note that only media keys can have more than one event
@@ -169,7 +173,11 @@ class ExtensionKeybindingRegistry : public CommandService::Observer,
   // Returns true if any media keys are registered.
   bool IsListeningToAnyMediaKeys() const;
 
+  void Shutdown();
+
   raw_ptr<content::BrowserContext> browser_context_;
+
+  base::CallbackListSubscription shutdown_subscription_;
 
   const raw_ptr<TabListInterface> tab_list_interface_;
 

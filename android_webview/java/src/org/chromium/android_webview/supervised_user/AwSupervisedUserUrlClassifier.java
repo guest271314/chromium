@@ -10,6 +10,7 @@ import org.jni_zero.CalledByNative;
 import org.jni_zero.JNINamespace;
 import org.jni_zero.NativeMethods;
 
+import org.chromium.android_webview.DualTraceEvent;
 import org.chromium.android_webview.common.AwSupervisedUserUrlClassifierDelegate;
 import org.chromium.android_webview.common.PlatformServiceBridge;
 import org.chromium.base.ContextUtils;
@@ -74,12 +75,26 @@ public class AwSupervisedUserUrlClassifier {
     public void checkIfNeedRestrictedContentBlocking() {
         mDelegate.needsRestrictedContentBlocking(
                 result -> {
-                    ThreadUtils.postOnUiThread(
-                            () -> {
-                                AwSupervisedUserUrlClassifierJni.get()
-                                        .setUserRequiresUrlChecks(result);
-                            });
+                    if (result != null) {
+                        ThreadUtils.postOnUiThread(
+                                () -> {
+                                    AwSupervisedUserUrlClassifierJni.get()
+                                            .setUserRequiresUrlChecks(result);
+                                });
+                    }
                 });
+    }
+
+    /** Sets up supervised user filtering if supervision is active. */
+    public static void checkRestrictedContentBlocking() {
+        try (DualTraceEvent ignored =
+                DualTraceEvent.scoped(
+                        "AwSupervisedUserUrlClassifier.checkRestrictedContentBlocking")) {
+            AwSupervisedUserUrlClassifier classifier = getInstance();
+            if (classifier != null && AwSupervisedUserSafeModeAction.isSupervisionEnabled()) {
+                classifier.checkIfNeedRestrictedContentBlocking();
+            }
+        }
     }
 
     @CalledByNative
@@ -95,7 +110,7 @@ public class AwSupervisedUserUrlClassifier {
                 .shouldBlockUrl(
                         requestUrl,
                         shouldBlockUrl -> {
-                            ThreadUtils.postOnUiThread(() -> callback.onResult(shouldBlockUrl));
+                            ThreadUtils.postOnUiThread(callback.bind(shouldBlockUrl));
                         });
     }
 

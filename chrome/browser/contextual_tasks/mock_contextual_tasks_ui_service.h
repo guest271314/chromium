@@ -7,6 +7,7 @@
 
 #include "chrome/browser/contextual_tasks/contextual_tasks_cookie_synchronizer.h"
 #include "chrome/browser/contextual_tasks/contextual_tasks_ui_service.h"
+#include "components/contextual_search/contextual_search_session_handle.h"
 #include "testing/gmock/include/gmock/gmock.h"
 
 namespace contextual_tasks {
@@ -30,17 +31,15 @@ class MockContextualTasksUiService : public ContextualTasksUiService {
                const std::optional<base::Uuid>& new_task_id,
                bool is_shown_in_tab),
               (override));
-  MOCK_METHOD(void,
-              OnWebUIReady,
-              (BrowserWindowInterface * browser_window_interface,
-               const base::Uuid& task_id,
-               content::WebContents* web_contents),
-              (override));
-  MOCK_METHOD(void,
-              OnWebUIDestroyed,
-              (BrowserWindowInterface * browser_window_interface,
-               const std::optional<base::Uuid>& task_id),
-              (override));
+  MOCK_METHOD(
+      void,
+      StartTaskUiInSidePanelImpl,
+      (BrowserWindowInterface*,
+       tabs::TabInterface*,
+       const GURL&,
+       std::unique_ptr<contextual_search::ContextualSearchSessionHandle>,
+       StartTaskUiOptions),
+      (override));
   MOCK_METHOD(GURL, GetDefaultAiPageUrl, (), (override));
   MOCK_METHOD(GURL,
               GetDefaultAiPageUrlForTask,
@@ -52,6 +51,10 @@ class MockContextualTasksUiService : public ContextualTasksUiService {
               (override));
   MOCK_METHOD(std::optional<GURL>,
               GetInitialUrlForTask,
+              (const base::Uuid&),
+              (override));
+  MOCK_METHOD(std::optional<GURL>,
+              GetCreationUrlForTask,
               (const base::Uuid&),
               (override));
   MOCK_METHOD(void,
@@ -75,6 +78,8 @@ class MockContextualTasksUiService : public ContextualTasksUiService {
               (const GURL&, BrowserWindowInterface*),
               (override));
   MOCK_METHOD(bool, IsAiUrl, (const GURL&), (override));
+  MOCK_METHOD(bool, IsSearchResultsUrl, (const GURL&), (override));
+  MOCK_METHOD(bool, IsGoogleCaptchaUrl, (const GURL&), (override));
   MOCK_METHOD(bool, IsUrlForPrimaryAccount, (const GURL&), (override));
   MOCK_METHOD(bool, IsPendingErrorPage, (const base::Uuid&), (override));
   MOCK_METHOD(void,

@@ -133,11 +133,13 @@ VideoDecodeAcceleratorTestSuite* VideoDecodeAcceleratorTestSuite::Create(
 
   for (base::CommandLine::SwitchMap::const_iterator it = switches.begin();
        it != switches.end(); ++it) {
-    if (it->first.find("gtest_") == 0 ||  // Handled by GoogleTest
-                                          // Options below are handled by Chrome
-        it->first == "use-gl" || it->first == "v" || it->first == "vmodule" ||
+    if (it->first.starts_with(
+            "gtest_") ||  // Handled by GoogleTest
+                          // Options below are handled by Chrome
+        it->first == "use-gl" ||
+        it->first == "v" || it->first == "vmodule" ||
         it->first == "enable-features" || it->first == "disable-features" ||
-        it->first.find("test-launcher-") == 0 ||
+        it->first.starts_with("test-launcher-") ||
         it->first == "enable-primary-node-access-for-vkms-testing" ||
         it->first == "single-process-tests" ||
         it->first == "enable-clear-hevc-for-testing") {
@@ -239,12 +241,14 @@ VideoDecodeAcceleratorTestSuite* VideoDecodeAcceleratorTestSuite::Create(
   setenv("MINIGBM_DEBUG", "nocompression", 1);
 #endif
 
-#if BUILDFLAG(USE_V4L2_CODEC)
-  // For V4L2 testing with VISL, dumb driver is used with vkms for minigbm
-  // backend. In this case, the primary node needs to be used instead of the
-  // render node.
+#if BUILDFLAG(USE_V4L2_CODEC) || BUILDFLAG(USE_VAAPI)
+  // For V4L2/VAAPI testing with VISL or libfake (virtual drivers), the dumb
+  // driver is used with vkms for minigbm backend. In this case, the primary
+  // node needs to be used instead of the render node.
   cmd_line->AppendSwitch(switches::kEnablePrimaryNodeAccessForVkmsTesting);
+#endif
 
+#if BUILDFLAG(USE_V4L2_CODEC)
   std::unique_ptr<base::FeatureList> feature_list =
       std::make_unique<base::FeatureList>();
   feature_list->InitFromCommandLine(

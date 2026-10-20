@@ -44,7 +44,7 @@ class SyncSessionDurationsMetricsRecorderTest : public testing::Test {
   void SignIn(signin::ConsentLevel consent_level) {
     AccountInfo account_info = identity_test_env_.MakePrimaryAccountAvailable(
         "foo@gmail.com", consent_level);
-    sync_service_.SetSignedIn(consent_level, account_info);
+    sync_service_.SetSignedIn(consent_level, account_info.GetCoreAccountInfo());
     sync_service_.FireStateChanged();
   }
 
@@ -130,11 +130,15 @@ class SyncSessionDurationsMetricsRecorderTest : public testing::Test {
 };
 
 TEST_F(SyncSessionDurationsMetricsRecorderTest, WebSignedOut) {
+  identity_test_env_.SetCookieAccounts({});
+
   base::HistogramTester ht;
   StartAndEndSession(kSessionTime);
 
   ExpectOneSessionWithDuration(ht, {"WithoutAccount"}, kSessionTime);
   ExpectNoSession(ht, {"WithAccount"});
+  ht.ExpectTimeBucketCount(
+      "Signin.SessionWithCookieSigninStatusUnknown.Duration", kSessionTime, 0);
 }
 
 TEST_F(SyncSessionDurationsMetricsRecorderTest, WebSignedIn) {
@@ -146,6 +150,8 @@ TEST_F(SyncSessionDurationsMetricsRecorderTest, WebSignedIn) {
 
   ExpectOneSessionWithDuration(ht, {"WithAccount"}, kSessionTime);
   ExpectNoSession(ht, {"WithoutAccount"});
+  ht.ExpectTotalCount("Signin.SessionWithCookieSigninStatusUnknown.Duration",
+                      0);
 }
 
 TEST_F(SyncSessionDurationsMetricsRecorderTest,
@@ -163,6 +169,8 @@ TEST_F(SyncSessionDurationsMetricsRecorderTest,
 
   ExpectOneSessionWithDuration(ht, {"WithAccount"}, kSessionTime);
   ExpectNoSession(ht, {"WithoutAccount"});
+  ht.ExpectTimeBucketCount(
+      "Signin.SessionWithCookieSigninStatusUnknown.Duration", kSessionTime, 1);
 }
 
 TEST_F(SyncSessionDurationsMetricsRecorderTest,
@@ -180,6 +188,8 @@ TEST_F(SyncSessionDurationsMetricsRecorderTest,
 
   ExpectOneSessionWithDuration(ht, {"WithoutAccount"}, kSessionTime);
   ExpectNoSession(ht, {"WithAccount"});
+  ht.ExpectTimeBucketCount(
+      "Signin.SessionWithCookieSigninStatusUnknown.Duration", kSessionTime, 1);
 }
 
 TEST_F(SyncSessionDurationsMetricsRecorderTest, NotOptedInToSync_SignedOut) {
@@ -287,7 +297,7 @@ TEST_F(SyncSessionDurationsMetricsRecorderTest,
   AccountInfo account =
       identity_test_env_.MakeAccountAvailable("foo@gmail.com");
   identity_test_env_.UpdatePersistentErrorOfRefreshTokenForAccount(
-      account.account_id,
+      account.GetAccountId(),
       GoogleServiceAuthError::FromInvalidGaiaCredentialsReason(
           GoogleServiceAuthError::InvalidGaiaCredentialsReason::UNKNOWN));
 

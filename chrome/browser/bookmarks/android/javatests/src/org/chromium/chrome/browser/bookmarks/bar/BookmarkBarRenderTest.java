@@ -35,22 +35,23 @@ import org.chromium.base.test.params.ParameterSet;
 import org.chromium.base.test.params.ParameterizedRunner;
 import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.Feature;
-import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.bookmarks.BookmarkManagerOpener;
 import org.chromium.chrome.browser.bookmarks.BookmarkOpener;
 import org.chromium.chrome.browser.browser_controls.TopControlsStacker;
-import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.fullscreen.BrowserControlsManager;
 import org.chromium.chrome.browser.fullscreen.FullscreenManager;
 import org.chromium.chrome.browser.layouts.LayoutManager;
 import org.chromium.chrome.browser.lifecycle.ActivityLifecycleDispatcher;
 import org.chromium.chrome.browser.tab.Tab;
+import org.chromium.chrome.browser.tab.TabObscuringHandler;
 import org.chromium.chrome.browser.theme.TopUiThemeColorProvider;
+import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager;
 import org.chromium.chrome.browser.ui.side_ui.SideUiStateProvider;
 import org.chromium.chrome.test.ChromeJUnit4RunnerDelegate;
 import org.chromium.chrome.test.util.ChromeRenderTestRule;
 import org.chromium.components.browser_ui.widget.CoordinatorLayoutForPointer;
+import org.chromium.ui.modaldialog.ModalDialogManager;
 import org.chromium.ui.resources.ResourceFactory;
 import org.chromium.ui.resources.ResourceFactoryJni;
 import org.chromium.ui.resources.ResourceManager;
@@ -102,6 +103,9 @@ public class BookmarkBarRenderTest {
 
     // TODO(crbug.com/496407828): Add render tests for side panel logic
     @Mock private OneshotSupplierImpl<SideUiStateProvider> mSideUiStateProviderSupplier;
+    @Mock private TabObscuringHandler mTabObscuringHandler;
+    @Mock private ModalDialogManager mModalDialogManager;
+    @Mock private SnackbarManager mSnackbarManager;
 
     private BookmarkBar mView;
 
@@ -144,7 +148,11 @@ public class BookmarkBarRenderTest {
                             mTopControlsStacker,
                             ObservableSuppliers.alwaysNull(),
                             mTopUiThemeColorProvider,
-                            mSideUiStateProviderSupplier);
+                            mSideUiStateProviderSupplier,
+                            mTabObscuringHandler,
+                            () -> mModalDialogManager,
+                            () -> mSnackbarManager,
+                            ObservableSuppliers.createNonNull(false));
 
                     assertNotNull(mView);
                     ChromeRenderTestRule.sanitize(mView);
@@ -155,7 +163,6 @@ public class BookmarkBarRenderTest {
     @MediumTest
     @UiThreadTest
     @Feature({"RenderTest"})
-    @DisableFeatures({ChromeFeatureList.ANDROID_BOOKMARK_BAR_FAST_FOLLOW})
     public void testEmptyState() throws IOException {
         mRenderTestRule.render(mView, "EmptyState");
     }

@@ -13,6 +13,7 @@
 #include "base/location.h"
 #include "base/logging.h"
 #include "base/memory/ptr_util.h"
+#include "base/metrics/histogram_functions.h"
 #include "base/sequence_checker.h"
 #include "base/task/sequenced_task_runner.h"
 #include "components/policy/core/common/cloud/cloud_policy_constants.h"
@@ -28,6 +29,13 @@ namespace em = enterprise_management;
 namespace policy {
 
 namespace {
+
+enum class DiskWriteStatus {
+  kSuccess = 0,
+  kDirectoryCreateFailed = 1,
+  kFileWriteFailed = 2,
+  kMaxValue = kFileWriteFailed
+};
 
 // Subdirectory in the user's profile for storing user policies.
 const base::FilePath::CharType kPolicyDir[] = FILE_PATH_LITERAL("Policy");
@@ -53,14 +61,22 @@ bool WriteStringToFile(const base::FilePath path, const std::string& data) {
   if (!base::CreateDirectory(path.DirName())) {
     DLOG_POLICY(WARNING, POLICY_FETCHING)
         << "Failed to create directory " << path.DirName().value();
+    base::UmaHistogramEnumeration(
+        "Enterprise.CloudPolicy.LocalCacheWriteStatus",
+        DiskWriteStatus::kDirectoryCreateFailed);
     return false;
   }
 
   if (!base::WriteFile(path, data)) {
     DLOG_POLICY(WARNING, POLICY_FETCHING) << "Failed to write " << path.value();
+    base::UmaHistogramEnumeration(
+        "Enterprise.CloudPolicy.LocalCacheWriteStatus",
+        DiskWriteStatus::kFileWriteFailed);
     return false;
   }
 
+  base::UmaHistogramEnumeration("Enterprise.CloudPolicy.LocalCacheWriteStatus",
+                                DiskWriteStatus::kSuccess);
   return true;
 }
 
@@ -105,6 +121,34 @@ void StorePolicyToDiskOnBackgroundThread(
 
 }  // namespace
 
+PolicyLoadResult::PolicyLoadResult() = default;
+
+PolicyLoadResult::PolicyLoadResult(const PolicyLoadResult& other)
+    : status(other.status),
+      policy(other.policy),
+      key(other.key),
+      doing_key_rotation(other.doing_key_rotation),
+      fallback(other.fallback
+                   ? std::make_unique<PolicyLoadResult>(*other.fallback)
+                   : nullptr) {}
+
+PolicyLoadResult& PolicyLoadResult::operator=(const PolicyLoadResult& other) {
+  if (this != &other) {
+    status = other.status;
+    policy = other.policy;
+    key = other.key;
+    doing_key_rotation = other.doing_key_rotation;
+    fallback = other.fallback
+                   ? std::make_unique<PolicyLoadResult>(*other.fallback)
+                   : nullptr;
+  }
+  return *this;
+}
+
+PolicyLoadResult::PolicyLoadResult(PolicyLoadResult&&) = default;
+PolicyLoadResult& PolicyLoadResult::operator=(PolicyLoadResult&&) = default;
+PolicyLoadResult::~PolicyLoadResult() = default;
+
 DesktopCloudPolicyStore::DesktopCloudPolicyStore(
     const base::FilePath& policy_path,
     const base::FilePath& key_path,
@@ -136,7 +180,7 @@ void DesktopCloudPolicyStore::LoadImmediately() {
   PolicyLoadResult result =
       LoadAndFilterPolicyFromDisk(policy_path_, key_path_, policy_load_filter_);
   // ...and install it, reporting success/failure to any observers.
-  PolicyLoaded(false, result);
+  PolicyLoaded(false, std::move(result));
 }
 
 void DesktopCloudPolicyStore::Clear() {
@@ -258,27 +302,13 @@ void DesktopCloudPolicyStore::PolicyLoaded(bool validate_in_background,
           << PolicyTypeLogPrefix(policy_type(), std::string())
           << "Loading policy from disk, doing_key_rotation: "
           << doing_key_rotation;
-      if (IsChromePolicyType(policy_type())) {
-        Validate(
-            std::move(cloud_policy), std::move(key), validate_in_background,
-            base::BindRepeating(
-                &DesktopCloudPolicyStore::InstallLoadedPolicyAfterValidation<
-                    em::CloudPolicySettings>,
-                weak_factory_.GetWeakPtr(), doing_key_rotation,
-                result.key.has_signing_key() ? result.key.signing_key()
-                                             : std::string()));
-      } else if (IsExtensionInstallPolicyType(policy_type())) {
-        ValidateExtensionInstallPolicy(
-            std::move(cloud_policy), std::move(key), validate_in_background,
-            base::BindRepeating(
-                &DesktopCloudPolicyStore::InstallLoadedPolicyAfterValidation<
-                    em::ExtensionInstallPolicies>,
-                weak_factory_.GetWeakPtr(), doing_key_rotation,
-                result.key.has_signing_key() ? result.key.signing_key()
-                                             : std::string()));
-      } else {
-        NOTREACHED();
-      }
+      Validate(std::move(cloud_policy), std::move(key), validate_in_background,
+               base::BindOnce(
+                   &DesktopCloudPolicyStore::InstallLoadedPolicyAfterValidation,
+                   weak_factory_.GetWeakPtr(), doing_key_rotation,
+                   result.key.has_signing_key() ? result.key.signing_key()
+                                                : std::string(),
+                   std::move(result.fallback), validate_in_background));
       break;
     }
     default:
@@ -286,14 +316,10 @@ void DesktopCloudPolicyStore::PolicyLoaded(bool validate_in_background,
   }
 }
 
-template <typename PayloadProto>
 void DesktopCloudPolicyStore::ValidateKeyAndSignature(
-    CloudPolicyValidator<PayloadProto>* validator,
+    CloudPolicyValidatorBase* validator,
     const em::PolicySigningKey* cached_key,
     const std::string& owning_domain) {
-  static_assert(std::is_same<PayloadProto, em::CloudPolicySettings>() ||
-                std::is_same<PayloadProto, em::ExtensionInstallPolicies>());
-
   VLOG_POLICY(1, POLICY_PROCESSING)
       << PolicyTypeLogPrefix(policy_type(), std::string())
       << "Has cached key: " << cached_key;
@@ -351,16 +377,24 @@ void DesktopCloudPolicyStore::ValidateKeyAndSignature(
   }
 }
 
-template <typename PayloadProto>
 void DesktopCloudPolicyStore::InstallLoadedPolicyAfterValidation(
     bool doing_key_rotation,
     const std::string& signing_key,
-    CloudPolicyValidator<PayloadProto>* validator) {
+    std::unique_ptr<PolicyLoadResult> fallback,
+    bool fallback_validate_in_background,
+    CloudPolicyValidatorBase* validator) {
   validation_result_ = validator->GetValidationResult();
   if (!validator->success()) {
     VLOG_POLICY(1, POLICY_PROCESSING)
         << PolicyTypeLogPrefix(policy_type(), std::string())
         << "Validation failed: status=" << validator->status();
+    if (fallback) {
+      VLOG_POLICY(1, POLICY_PROCESSING)
+          << PolicyTypeLogPrefix(policy_type(), std::string())
+          << "Attempting to load fallback policy cache";
+      PolicyLoaded(fallback_validate_in_background, std::move(*fallback));
+      return;
+    }
     status_ = STATUS_VALIDATION_ERROR;
     NotifyStoreError();
     return;
@@ -368,8 +402,7 @@ void DesktopCloudPolicyStore::InstallLoadedPolicyAfterValidation(
 
   VLOG_POLICY(1, POLICY_PROCESSING)
       << PolicyTypeLogPrefix(policy_type(), std::string())
-      << "Validation succeeded - installing policy with dm_token: "
-      << validator->policy_data()->request_token();
+      << "Validation succeeded - installing policy";
   VLOG_POLICY(1, POLICY_PROCESSING)
       << PolicyTypeLogPrefix(policy_type(), std::string())
       << "Device ID: " << validator->policy_data()->device_id();
@@ -384,8 +417,8 @@ void DesktopCloudPolicyStore::InstallLoadedPolicyAfterValidation(
     persisted_policy_key_ = signing_key;
   }
 
-  InstallPolicy(std::move(validator->policy_data()),
-                std::move(validator->payload()), persisted_policy_key_);
+  InstallPolicy(std::move(validator->policy_data()), validator,
+                persisted_policy_key_);
   status_ = STATUS_OK;
   NotifyStoreLoaded();
 }
@@ -402,20 +435,10 @@ void DesktopCloudPolicyStore::Store(const em::PolicyFetchResponse& policy) {
   // CloudPolicyStore::Store method.
   em::PolicyData policy_data;
   policy_data.ParseFromString(policy.policy_data());
-  if (IsChromePolicyType(policy_type())) {
-    Validate(
-        std::move(policy_copy), std::unique_ptr<em::PolicySigningKey>(), true,
-        base::BindRepeating(&DesktopCloudPolicyStore::OnPolicyToStoreValidated,
-                            weak_factory_.GetWeakPtr()));
-  } else if (IsExtensionInstallPolicyType(policy_type())) {
-    ValidateExtensionInstallPolicy(
-        std::move(policy_copy), std::unique_ptr<em::PolicySigningKey>(), true,
-        base::BindRepeating(
-            &DesktopCloudPolicyStore::OnExtensionInstallPolicyToStoreValidated,
-            weak_factory_.GetWeakPtr()));
-  } else {
-    NOTREACHED();
-  }
+  Validate(std::move(policy_copy), std::unique_ptr<em::PolicySigningKey>(),
+           true,
+           base::BindOnce(&DesktopCloudPolicyStore::OnPolicyToStoreValidated,
+                          weak_factory_.GetWeakPtr()));
 }
 
 void DesktopCloudPolicyStore::ResetPolicyKey() {
@@ -423,21 +446,7 @@ void DesktopCloudPolicyStore::ResetPolicyKey() {
 }
 
 void DesktopCloudPolicyStore::OnPolicyToStoreValidated(
-    UserCloudPolicyValidator* validator) {
-  OnPolicyToStoreValidatedImpl<em::CloudPolicySettings>(validator);
-}
-
-void DesktopCloudPolicyStore::OnExtensionInstallPolicyToStoreValidated(
-    ExtensionInstallCloudPolicyValidator* validator) {
-  OnPolicyToStoreValidatedImpl<em::ExtensionInstallPolicies>(validator);
-}
-
-template <typename PayloadProto>
-void DesktopCloudPolicyStore::OnPolicyToStoreValidatedImpl(
-    CloudPolicyValidator<PayloadProto>* validator) {
-  static_assert(std::is_same<PayloadProto, em::CloudPolicySettings>() ||
-                std::is_same<PayloadProto, em::ExtensionInstallPolicies>());
-
+    CloudPolicyValidatorBase* validator) {
   validation_result_ = validator->GetValidationResult();
   VLOG_POLICY(1, POLICY_PROCESSING)
       << PolicyTypeLogPrefix(policy_type(), std::string())
@@ -459,8 +468,8 @@ void DesktopCloudPolicyStore::OnPolicyToStoreValidatedImpl(
   if (validator->policy()->has_new_public_key())
     persisted_policy_key_ = validator->policy()->new_public_key();
 
-  InstallPolicy(std::move(validator->policy_data()),
-                std::move(validator->payload()), persisted_policy_key_);
+  InstallPolicy(std::move(validator->policy_data()), validator,
+                persisted_policy_key_);
   status_ = STATUS_OK;
   NotifyStoreLoaded();
 }
@@ -517,34 +526,9 @@ void UserCloudPolicyStore::Validate(
     std::unique_ptr<em::PolicyFetchResponse> policy,
     std::unique_ptr<em::PolicySigningKey> cached_key,
     bool validate_in_background,
-    UserCloudPolicyValidator::CompletionCallback callback) {
-  auto validator = CreateValidator(
+    CloudPolicyValidatorBase::CompletionCallback callback) {
+  std::unique_ptr<CloudPolicyValidatorBase> validator = CreateValidator(
       std::move(policy), CloudPolicyValidatorBase::TIMESTAMP_VALIDATED);
-  ValidateImpl<em::CloudPolicySettings>(
-      std::move(validator), std::move(cached_key), validate_in_background,
-      std::move(callback));
-}
-
-void UserCloudPolicyStore::ValidateExtensionInstallPolicy(
-    std::unique_ptr<em::PolicyFetchResponse> policy,
-    std::unique_ptr<em::PolicySigningKey> cached_key,
-    bool validate_in_background,
-    ExtensionInstallCloudPolicyValidator::CompletionCallback callback) {
-  auto validator = CreateExtensionInstallValidator(
-      std::move(policy), CloudPolicyValidatorBase::TIMESTAMP_VALIDATED);
-  ValidateImpl<em::ExtensionInstallPolicies>(
-      std::move(validator), std::move(cached_key), validate_in_background,
-      std::move(callback));
-}
-
-template <typename PayloadProto>
-void UserCloudPolicyStore::ValidateImpl(
-    std::unique_ptr<CloudPolicyValidator<PayloadProto>> validator,
-    std::unique_ptr<em::PolicySigningKey> cached_key,
-    bool validate_in_background,
-    CloudPolicyValidator<PayloadProto>::CompletionCallback callback) {
-  static_assert(std::is_same<PayloadProto, em::CloudPolicySettings>() ||
-                std::is_same<PayloadProto, em::ExtensionInstallPolicies>());
 
   // Extract the owning domain from the signed-in user (if any is set yet).
   // If there's no owning domain, then the code just ensures that the policy
@@ -570,8 +554,8 @@ void UserCloudPolicyStore::ValidateImpl(
 
   if (validate_in_background) {
     // Start validation in the background.
-    CloudPolicyValidator<PayloadProto>::StartValidation(std::move(validator),
-                                                        std::move(callback));
+    CloudPolicyValidatorBase::StartValidation(std::move(validator),
+                                              std::move(callback));
   } else {
     // Run validation immediately and invoke the callback with the results.
     validator->RunValidation();

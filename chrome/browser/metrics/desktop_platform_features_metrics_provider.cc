@@ -8,13 +8,12 @@
 
 #include "base/feature_list.h"
 #include "base/metrics/histogram_functions.h"
+#include "build/build_config.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/reading_list/reading_list_model_factory.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_window.h"
-#include "chrome/browser/ui/browser_window/public/browser_window_features.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface_iterator.h"
 #include "chrome/browser/ui/location_bar/location_bar.h"
@@ -24,6 +23,10 @@
 #include "ui/gfx/geometry/size.h"
 #include "ui/native_theme/native_theme.h"
 #include "ui/native_theme/os_settings_provider.h"
+
+#if BUILDFLAG(IS_WIN)
+#include "chrome/browser/win/isolated_browser/isolated_browser_support.h"
+#endif  // BUILDFLAG(IS_WIN)
 
 namespace {
 
@@ -55,6 +58,10 @@ void DesktopPlatformFeaturesMetricsProvider::ProvideCurrentSessionData(
   }
   base::UmaHistogramEnumeration("Browser.DarkModeStatus", status);
 
+  base::UmaHistogramBoolean(
+      "Browser.OverlayScrollbarsEnabled",
+      ui::OsSettingsProvider::Get().PrefersOverlayScrollbars());
+
   // Record how many items are in the reading list.
   std::vector<Profile*> profiles =
       g_browser_process->profile_manager()->GetLoadedProfiles();
@@ -83,8 +90,11 @@ void DesktopPlatformFeaturesMetricsProvider::ProvideCurrentSessionData(
         base::UmaHistogramCounts100000("Tabs.WindowWidth2",
                                        window_size.width());
 
-        // Record the width of the omnibox.
-        LocationBar* location_bar = browser->GetFeatures().location_bar();
+        // Record the width of the omnibox. `window` above is the same object
+        // as BrowserWindow::FromBrowser(browser) and was already null-checked,
+        // so the window is known to exist here.
+        LocationBar* location_bar =
+            BrowserWindow::FromBrowser(browser)->GetLocationBar();
         if (location_bar && location_bar->IsVisible()) {
           base::UmaHistogramCounts100000("Omnibox.Width",
                                          location_bar->Bounds().width());
@@ -95,4 +105,9 @@ void DesktopPlatformFeaturesMetricsProvider::ProvideCurrentSessionData(
         }
         return true;
       });
+
+#if BUILDFLAG(IS_WIN)
+  base::UmaHistogramBoolean("Windows.RunningIsolated",
+                            chrome::IsRunningIsolated());
+#endif  // BUILDFLAG(IS_WIN)
 }

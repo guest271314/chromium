@@ -1,5 +1,5 @@
 // Symphonia
-// Copyright (c) 2019-2022 The Project Symphonia Developers.
+// Copyright (c) 2019-2026 The Project Symphonia Developers.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
 // License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -238,7 +238,7 @@ fn read_id3v2p4_extended_header<B: ReadBytes>(reader: &mut B) -> Result<Extended
             _ => unreachable!(),
         };
 
-        let text_encoding = match (restrictions & 0x40) >> 5 {
+        let text_encoding = match (restrictions & 0x20) >> 5 {
             0 => TextEncodingRestriction::None,
             1 => TextEncodingRestriction::Utf8OrIso88591,
             _ => unreachable!(),
@@ -291,7 +291,7 @@ fn read_id3v2_body<B: ReadBytes + FiniteStream>(
             4 => read_id3v2p4_extended_header(reader)?,
             _ => unreachable!(),
         };
-        trace!("{:#?}", &extended);
+        trace!("{:#?}", extended);
     }
 
     let min_frame_size = min_frame_size(header.major_version);
@@ -428,7 +428,7 @@ impl ChapterGroupBuilder {
     fn add_toc(&mut self, toc: Id3v2TableOfContents) {
         // Do not allow non-unique element IDs.
         if !self.is_unique_key(&toc.id) {
-            debug!("id3v2: toc id '{}' is not unique", &toc.id);
+            debug!("id3v2: toc id '{}' is not unique", toc.id);
             return self.error();
         }
 
@@ -448,7 +448,7 @@ impl ChapterGroupBuilder {
     fn add_chapter(&mut self, mut chap: Id3v2Chapter) {
         // Do not allow non-unique element IDs.
         if !self.is_unique_key(&chap.id) {
-            debug!("id3v2: chapter id '{}' is not unique", &chap.id);
+            debug!("id3v2: chapter id '{}' is not unique", chap.id);
             return self.error();
         }
 

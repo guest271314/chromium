@@ -13,8 +13,10 @@
 #include "content/browser/buckets/bucket_manager.h"
 #include "content/browser/code_cache/generated_code_cache_context.h"
 #include "content/browser/file_system_access/file_system_access_error.h"
+#include "content/browser/renderer_host/clipboard_host_impl.h"
 #include "content/browser/renderer_host/code_cache_host_impl.h"
 #include "content/browser/renderer_host/render_process_host_impl.h"
+#include "content/browser/service_worker/embedded_worker_instance.h"
 #include "content/browser/service_worker/service_worker_consts.h"
 #include "content/browser/service_worker/service_worker_container_host.h"
 #include "content/browser/service_worker/service_worker_context_core.h"
@@ -28,9 +30,11 @@
 #include "content/public/browser/permission_descriptor_util.h"
 #include "content/public/browser/render_process_host.h"
 #include "content/public/browser/storage_partition.h"
+#include "content/public/browser/weak_document_ptr.h"
 #include "content/public/common/content_client.h"
 #include "content/public/common/origin_util.h"
 #include "mojo/public/cpp/bindings/message.h"
+#include "net/storage_access_api/status.h"
 #include "storage/browser/blob/blob_url_store_impl.h"
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/common/messaging/message_port_channel.h"
@@ -55,11 +59,11 @@ ServiceWorkerHost::ServiceWorkerHost(
               version_->script_url(),
               version_->key())),
       host_receiver_(container_host_.get(), std::move(host_receiver)) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M159);
 }
 
 ServiceWorkerHost::~ServiceWorkerHost() {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M159);
 
   // Explicitly destroy the ServiceWorkerContainerHost to release
   // ServiceWorkerObjectHosts and ServiceWorkerRegistrationObjectHosts owned by
@@ -76,9 +80,9 @@ void ServiceWorkerHost::CompleteStartWorkerPreparation(
     mojo::PendingReceiver<blink::mojom::BrowserInterfaceBroker> broker_receiver,
     mojo::PendingRemote<service_manager::mojom::InterfaceProvider>
         interface_provider_remote) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
-  DCHECK(!worker_process_id_);
-  DCHECK(process_id);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M159);
+  CHECK(!worker_process_id_, base::NotFatalUntil::M159);
+  CHECK(process_id, base::NotFatalUntil::M159);
   worker_process_id_ = process_id;
   broker_receiver_.Bind(std::move(broker_receiver));
   remote_interfaces_.Bind(std::move(interface_provider_remote));
@@ -86,37 +90,39 @@ void ServiceWorkerHost::CompleteStartWorkerPreparation(
 
 void ServiceWorkerHost::CreateWebTransportConnector(
     mojo::PendingReceiver<blink::mojom::WebTransportConnector> receiver) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
-  // TODO(crbug.com/379869738) Remove GetUnsafeValue.
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M159);
+  // TODO(crbug.com/379869738): Remove GetUnsafeValue.
   mojo::MakeSelfOwnedReceiver(
       std::make_unique<WebTransportConnectorImpl>(
           worker_process_id_.GetUnsafeValue(), /*frame=*/nullptr,
-          version_->key().origin(), GetNetworkAnonymizationKey(),
-          version_->BuildClientSecurityState()->Clone()),
+          WeakDocumentPtr(), version_->key().origin(),
+          GetNetworkAnonymizationKey(),
+          version_->BuildClientSecurityState()->Clone(),
+          version_->network_restrictions_id()),
       std::move(receiver));
 }
 
 void ServiceWorkerHost::CreateWebSocketConnector(
     mojo::PendingReceiver<blink::mojom::WebSocketConnector> receiver) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M159);
 
   const blink::StorageKey& storage_key = version_->key();
   mojo::MakeSelfOwnedReceiver(
       std::make_unique<WebSocketConnectorImpl>(
           content::GlobalRenderFrameHostId(worker_process_id_,
                                            IPC::mojom::kRoutingIdNone),
-          storage_key.origin(), storage_key.ToPartialNetIsolationInfo(),
+          WeakDocumentPtr(), storage_key.origin(),
+          storage_key.ToPartialNetIsolationInfo(),
           version_->BuildClientSecurityState()->Clone(),
-          // TODO(crbug.com/492462310): Pass network_restrictions_id so
-          // Connection-Allowlist is enforced for service worker WebSocket
-          // connections.
-          /*network_restrictions_id=*/std::nullopt),
+          net::StorageAccessApiStatus::kNone,
+          version_->network_restrictions_id(),
+          version_->embedded_worker()->WorkerDevtoolsId()),
       std::move(receiver));
 }
 
 void ServiceWorkerHost::BindCacheStorage(
     mojo::PendingReceiver<blink::mojom::CacheStorage> receiver) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M159);
   version_->embedded_worker()->BindCacheStorage(
       std::move(receiver),
       storage::BucketLocator::ForDefaultBucket(version_->key()));
@@ -141,18 +147,31 @@ void ServiceWorkerHost::GetSandboxedFileSystemForBucket(
   }
 }
 
-#if !BUILDFLAG(IS_ANDROID)
 void ServiceWorkerHost::BindHidService(
     mojo::PendingReceiver<blink::mojom::HidService> receiver) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M159);
   version_->embedded_worker()->BindHidService(version_->key().origin(),
                                               std::move(receiver));
 }
-#endif
+
+void ServiceWorkerHost::BindClipboardHost(
+    mojo::PendingReceiver<blink::mojom::ClipboardHost> receiver) {
+  CHECK_CURRENTLY_ON(BrowserThread::UI);
+  if (!GetContentClient()->browser()->IsClipboardAllowedForServiceWorker(
+          version_->key().origin())) {
+    // The renderer only exposes navigator.clipboard to eligible workers, so a
+    // request from an ineligible one means a compromised renderer.
+    mojo::ReportBadMessage(
+        "Clipboard is not allowed for this service worker origin.");
+    return;
+  }
+  clipboard_hosts_.Add(std::make_unique<ClipboardHostImpl>(*this),
+                       std::move(receiver));
+}
 
 void ServiceWorkerHost::BindUsbService(
     mojo::PendingReceiver<blink::mojom::WebUsbService> receiver) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M159);
   if (container_host_->top_frame_origin().opaque()) {
     // Service worker should not be available to a window/worker client whose
     // origin is opaque according to Service Worker specification. However, this
@@ -276,7 +295,7 @@ void ServiceWorkerHost::CreateBucketManagerHost(
 }
 
 base::WeakPtr<ServiceWorkerHost> ServiceWorkerHost::GetWeakPtr() {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M159);
   return weak_factory_.GetWeakPtr();
 }
 

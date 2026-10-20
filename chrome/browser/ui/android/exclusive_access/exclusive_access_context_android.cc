@@ -14,15 +14,22 @@
 
 ExclusiveAccessContextAndroid::ExclusiveAccessContextAndroid(
     JNIEnv* env,
-    const jni_zero::JavaRef<jobject>& j_context,
+    const jni_zero::JavaRef<jobject>& j_window_android,
     const jni_zero::JavaRef<jobject>& j_fullscreen_manager,
     const jni_zero::JavaRef<jobject>& j_activity_tab_provider) {
   java_context_.Reset(Java_ExclusiveAccessContext_create(
-      env, reinterpret_cast<int64_t>(this), j_context, j_fullscreen_manager,
-      j_activity_tab_provider));
+      env, reinterpret_cast<int64_t>(this), j_window_android,
+      j_fullscreen_manager, j_activity_tab_provider));
 }
 
+ExclusiveAccessContextAndroid::ExclusiveAccessContextAndroid() = default;
+
 ExclusiveAccessContextAndroid::~ExclusiveAccessContextAndroid() = default;
+
+void ExclusiveAccessContextAndroid::SetBubbleForTesting(  // IN-TEST
+    std::unique_ptr<ExclusiveAccessBubbleAndroid> bubble) {
+  exclusive_access_bubble_ = std::move(bubble);
+}
 
 void ExclusiveAccessContextAndroid::Destroy(JNIEnv* env) {
   Java_ExclusiveAccessContext_destroy(env, java_context_);
@@ -119,6 +126,7 @@ void ExclusiveAccessContextAndroid::UpdateExclusiveAccessBubble(
 void ExclusiveAccessContextAndroid::DestroyAnyExclusiveAccessBubble() {
   exclusive_access_bubble_.reset();
   exclusive_access_bubble_destruction_task_id_.reset();
+  snooze_reset_count_ = 0;
 }
 
 bool ExclusiveAccessContextAndroid::IsExclusiveAccessBubbleDisplayed() const {
@@ -130,7 +138,20 @@ void ExclusiveAccessContextAndroid::OnExclusiveAccessUserInput() {
   // re-snooze the bubble's hide timer or re-show it if the snooze period has
   // elapsed.
   if (exclusive_access_bubble_) {
-    exclusive_access_bubble_->OnUserInput();
+    // Prevent a malicious site from indefinitely suppressing the security
+    // notice by repeatedly resetting the snooze timer via interaction.
+    // If the user has interacted many times, we force a re-show regardless.
+    if (++snooze_reset_count_ >= kMaxSnoozeResets) {
+      snooze_reset_count_ = 0;
+      ExclusiveAccessBubbleParams force_params =
+          exclusive_access_bubble_->params();
+      // Set force_update to true to bypass the was_shown_ check and force
+      // the notice to re-show.
+      force_params.force_update = true;
+      exclusive_access_bubble_->Update(force_params, base::NullCallback());
+    } else {
+      exclusive_access_bubble_->OnUserInput();
+    }
   }
 }
 

@@ -15,6 +15,7 @@
 #include "base/functional/callback_helpers.h"
 #include "base/logging.h"
 #include "base/memory/ptr_util.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/metrics/histogram_macros.h"
@@ -38,10 +39,12 @@
 #include "media/base/video_codecs.h"
 #include "media/base/video_decoder_config.h"
 #include "media/base/video_frame.h"
+#include "media/base/video_transformation.h"
 #include "media/gpu/android/android_video_surface_chooser.h"
 #include "media/gpu/android/codec_allocator.h"
 #include "media/gpu/android/video_accelerator_util.h"
 #include "media/media_buildflags.h"
+#include "ui/gfx/geometry/size.h"
 
 #if BUILDFLAG(USE_PROPRIETARY_CODECS)
 #include "media/base/android/extract_sps_and_pps.h"
@@ -268,9 +271,10 @@ MediaCodecVideoDecoder::MediaCodecVideoDecoder(
       device_info_(device_info),
       enable_threaded_texture_mailboxes_(
           gpu_preferences.enable_threaded_texture_mailboxes),
-      use_block_model_(device_info_->SdkVersion() >=
-                           base::android::android_info::SDK_VERSION_V &&
-                       base::FeatureList::IsEnabled(kMediaCodecBlockModel)) {
+      use_block_model_(
+          device_info_->SdkVersionFull() >=
+              base::android::android_info::SDK_VERSION_FULL_CINNAMON_BUN_2 &&
+          base::FeatureList::IsEnabled(kMediaCodecBlockModel)) {
   DVLOG(2) << __func__;
   surface_chooser_helper_.chooser()->SetClientCallbacks(
       base::BindRepeating(&MediaCodecVideoDecoder::OnSurfaceChosen,
@@ -482,7 +486,8 @@ void MediaCodecVideoDecoder::OnMediaCryptoReady(
     bool requires_secure_video_codec) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   DVLOG(1) << __func__
-           << ": requires_secure_video_codec = " << requires_secure_video_codec;
+           << ": requires_secure_video_codec = " << requires_secure_video_codec
+           << " for codec " << GetCodecName(decoder_config_.codec());
 
   DCHECK(state_ == State::kInitializing);
 
@@ -506,12 +511,18 @@ void MediaCodecVideoDecoder::OnMediaCryptoReady(
   }
 
   media_crypto_ = std::move(media_crypto);
-  requires_secure_codec_ = requires_secure_video_codec;
+  requires_secure_codec_ =
+      base::FeatureList::IsEnabled(
+          kUseMediaCryptoRequiresSecureDecoderComponent)
+          ? MediaCodecUtil::RequiresSecureDecoderComponent(
+                media_crypto_,
+                MediaCodecUtil::CodecToAndroidMimeType(decoder_config_.codec()))
+          : requires_secure_video_codec;
 
   // Request a secure surface in all cases.  For L3, it's okay if we fall back
   // to TextureOwner rather than fail composition.  For L1, it's required.
   surface_chooser_helper_.SetSecureSurfaceMode(
-      requires_secure_video_codec
+      requires_secure_codec_
           ? SurfaceChooserHelper::SecureSurfaceMode::kRequired
           : SurfaceChooserHelper::SecureSurfaceMode::kRequested);
 
@@ -567,8 +578,8 @@ void MediaCodecVideoDecoder::OnVideoFrameFactoryInitialized(
                                        "Could not allocated TextureOwner"});
     return;
   }
-  texture_owner_bundle_ =
-      new CodecSurfaceBundle(std::move(texture_owner), GetDrDcLock());
+  texture_owner_bundle_ = base::MakeRefCounted<CodecSurfaceBundle>(
+      std::move(texture_owner), GetDrDcLock());
 
   // Overlays are disabled when |enable_threaded_texture_mailboxes| is true
   // (http://crbug.com/582170).
@@ -612,7 +623,8 @@ void MediaCodecVideoDecoder::OnSurfaceChosen(
     overlay->AddSurfaceDestroyedCallback(
         base::BindOnce(&MediaCodecVideoDecoder::OnSurfaceDestroyed,
                        weak_factory_.GetWeakPtr()));
-    target_surface_bundle_ = new CodecSurfaceBundle(std::move(overlay));
+    target_surface_bundle_ =
+        base::MakeRefCounted<CodecSurfaceBundle>(std::move(overlay));
   } else {
     target_surface_bundle_ = texture_owner_bundle_;
   }
@@ -1116,8 +1128,12 @@ bool MediaCodecVideoDecoder::DequeueOutput() {
   // If we're getting outputs larger than our configured size, we run the risk
   // of exceeding MediaCodec's allowed input buffer size. Update the coded size
   // as we go to ensure we can correctly reconfigure if needed later.
-  if (output_buffer->size().GetArea() > decoder_config_.coded_size().GetArea())
-    decoder_config_.set_coded_size(output_buffer->size());
+  // Note, that we use visible size here because there is no better alternative,
+  // coded size is not known at this point yet.
+  if (output_buffer->visible_size().GetArea() >
+      decoder_config_.coded_size().GetArea()) {
+    decoder_config_.set_coded_size(output_buffer->visible_size());
+  }
 
   // TODO(https://crbug.com/395659818): Idiosyncratic historical behavior is
   // being preserved behind a kill switch. Remove it as soon as it is safe.
@@ -1134,7 +1150,7 @@ bool MediaCodecVideoDecoder::DequeueOutput() {
       if (!color_space.IsValid()) {
         // If we get back an unsupported color space, then just default to
         // sRGB for < 720p, or 709 otherwise.  It's better than nothing.
-        color_space = output_buffer->size().width() >= 1280
+        color_space = output_buffer->visible_size().width() >= 1280
                           ? gfx::ColorSpace::CreateREC709()
                           : gfx::ColorSpace::CreateSRGB();
       }
@@ -1149,7 +1165,7 @@ bool MediaCodecVideoDecoder::DequeueOutput() {
     }
   }
 
-  gfx::Rect visible_rect(output_buffer->size());
+  gfx::Rect visible_rect(output_buffer->visible_size());
   std::unique_ptr<ScopedAsyncTrace> async_trace =
       ScopedAsyncTrace::CreateIfEnabled(
           "MediaCodecVideoDecoder::CreateVideoFrame");
@@ -1263,6 +1279,19 @@ void MediaCodecVideoDecoder::ForwardVideoFrame(
     frame->metadata().protected_video = true;
     if (requires_secure_codec_) {
       frame->metadata().hw_protected = true;
+    }
+  }
+
+  // Detect if the hardware decoder physically pre-rotated the video frame.
+  // If the frame's visible dimensions are perfectly swapped compared to the
+  // config's visible rect, and the rotation is 90 or 270, the decoder has
+  // already applied the rotation. We clear the transformation metadata to
+  // prevent double-rotation in the compositor (e.g., squashing portrait
+  // videos).
+  if (decoder_config_.video_transformation().IsOrthogonal()) {
+    if (frame->visible_rect().size() ==
+        gfx::TransposeSize(decoder_config_.visible_rect().size())) {
+      frame->metadata().transformation = kNoTransformation;
     }
   }
 

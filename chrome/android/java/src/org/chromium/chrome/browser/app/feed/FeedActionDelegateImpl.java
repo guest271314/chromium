@@ -12,6 +12,7 @@ import android.content.Intent;
 
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.supplier.OneshotSupplierImpl;
+import org.chromium.base.supplier.SupplierUtils;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.bookmarks.BookmarkManagerOpenerImpl;
@@ -27,8 +28,8 @@ import org.chromium.chrome.browser.price_tracking.PriceDropNotificationManagerFa
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.signin.SigninAndHistorySyncActivityLauncherImpl;
 import org.chromium.chrome.browser.suggestions.SuggestionsConfig;
-import org.chromium.chrome.browser.tab.EmptyTabObserver;
 import org.chromium.chrome.browser.tab.Tab;
+import org.chromium.chrome.browser.tab.TabObserver;
 import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager;
 import org.chromium.chrome.browser.ui.signin.BottomSheetSigninAndHistorySyncConfig;
 import org.chromium.chrome.browser.ui.signin.BottomSheetSigninAndHistorySyncConfig.NoAccountSigninMode;
@@ -43,7 +44,6 @@ import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
 import org.chromium.components.browser_ui.device_lock.DeviceLockActivityLauncher;
 import org.chromium.components.signin.SigninFeatureMap;
 import org.chromium.components.signin.metrics.SigninAccessPoint;
-import org.chromium.components.embedder_support.util.UrlUtilities;
 import org.chromium.content_public.browser.LoadUrlParams;
 import org.chromium.content_public.common.Referrer;
 import org.chromium.net.NetError;
@@ -54,7 +54,6 @@ import org.chromium.ui.base.WindowAndroid;
 import org.chromium.ui.modaldialog.ModalDialogManager;
 import org.chromium.ui.mojom.WindowOpenDisposition;
 import org.chromium.url.GURL;
-import org.chromium.url.Origin;
 
 import java.util.HashMap;
 import java.util.Map;
@@ -64,7 +63,6 @@ import java.util.Map;
 public class FeedActionDelegateImpl
         implements FeedActionDelegate, BottomSheetSigninAndHistorySyncCoordinator.Delegate {
     private static final String NEW_TAB_URL_HELP = "https://support.google.com/chrome/?p=new_tab";
-    private static final String ACLK_PATH = "/aclk";
     private final NativePageNavigationDelegate mNavigationDelegate;
     private final BookmarkModel mBookmarkModel;
     private final Activity mActivity;
@@ -112,8 +110,8 @@ public class FeedActionDelegateImpl
                                 deviceLockActivityLauncher,
                                 profileSupplier,
                                 () -> bottomSheetController,
-                                modalDialogManager,
-                                snackbarManager,
+                                SupplierUtils.of(modalDialogManager),
+                                SupplierUtils.of(snackbarManager),
                                 accessPoint));
             }
         }
@@ -145,11 +143,6 @@ public class FeedActionDelegateImpl
             int pageId,
             PageLoadObserver pageLoadObserver,
             int surfaceId) {
-        if (isAdUrl(params)) {
-            params.setInitiatorOrigin(Origin.createOpaqueOrigin());
-            params.setIsRendererInitiated(true);
-            params.setHasUserGesture(true);
-        }
         params.setReferrer(
                 new Referrer(
                         SuggestionsConfig.getReferrerUrl(),
@@ -179,11 +172,6 @@ public class FeedActionDelegateImpl
 
     @Override
     public void openUrl(int disposition, LoadUrlParams params) {
-        if (isAdUrl(params)) {
-            params.setInitiatorOrigin(Origin.createOpaqueOrigin());
-            params.setIsRendererInitiated(true);
-            params.setHasUserGesture(true);
-        }
         mNavigationDelegate.openUrl(disposition, params);
     }
 
@@ -287,19 +275,11 @@ public class FeedActionDelegateImpl
         }
     }
 
-    private static boolean isAdUrl(LoadUrlParams params) {
-        if (params.getUrl() == null) return false;
-        GURL gurl = new GURL(params.getUrl());
-        return gurl.isValid()
-                && gurl.getPath().equals(ACLK_PATH)
-                && UrlUtilities.isGoogleDomainUrl(gurl.getSpec(), true);
-    }
-
     /**
      * A {@link TabObserver} that observes navigation related events that originate from Feed
      * interactions. Calls reportPageLoaded when navigation completes.
      */
-    private static class FeedTabNavigationObserver extends EmptyTabObserver {
+    private static class FeedTabNavigationObserver implements TabObserver {
         private final boolean mInNewTab;
         private final int mPageId;
         private @Nullable PageLoadObserver mPageLoadObserver;

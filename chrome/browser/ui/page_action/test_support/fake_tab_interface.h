@@ -9,6 +9,7 @@
 #include "base/memory/raw_ptr.h"
 #include "components/tabs/public/mock_tab_interface.h"
 #include "content/public/browser/web_contents.h"
+#include "ui/base/unowned_user_data/unowned_user_data_host.h"
 
 class TestingProfile;
 
@@ -31,6 +32,9 @@ class FakeTabInterface : public tabs::MockTabInterface {
   base::CallbackListSubscription RegisterWillDeactivate(
       base::RepeatingCallback<void(TabInterface*)> cb) override;
   content::WebContents* GetContents() const override;
+  Profile* GetProfile() const override;
+  ui::UnownedUserDataHost& GetUnownedUserDataHost() override;
+  const ui::UnownedUserDataHost& GetUnownedUserDataHost() const override;
 
   void Activate();
   void Deactivate();
@@ -40,10 +44,12 @@ class FakeTabInterface : public tabs::MockTabInterface {
   std::unique_ptr<content::TestWebContentsFactory> web_contents_factory_;
   // Owned by `web_contents_factory_`.
   raw_ptr<content::WebContents> web_contents_;
+  raw_ptr<TestingProfile> testing_profile_;
 
   bool is_activated_ = false;
   base::RepeatingCallbackList<void(TabInterface*)> activation_callbacks_;
   base::RepeatingCallbackList<void(TabInterface*)> deactivation_callbacks_;
+  ui::UnownedUserDataHost user_data_host_;
 };
 
 }  // namespace page_actions

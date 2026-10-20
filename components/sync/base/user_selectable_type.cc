@@ -48,13 +48,7 @@ UserSelectableTypeInfo GetUserSelectableTypeInfo(
     // TODO(crbug.com/412602018): Remove this parameter once the feature is
     // launched.
     bool skip_feature_checks_if_early = false) {
-  // TODO(crbug.com/445841720): In CL #3, map AI_THREAD to an existing
-  // selectable type or to a new one. The first option should be trivial, the
-  // second requires touching UI code across platforms.
   // TODO(crbug.com/445840788): In CL #3, map CONTEXTUAL_TASK to an existing
-  // selectable type or to a new one. The first option should be trivial, the
-  // second requires touching UI code across platforms.
-  // TODO(crbug.com/476335087): In CL #3, map GEMINI_THREAD to an existing
   // selectable type or to a new one. The first option should be trivial, the
   // second requires touching UI code across platforms.
   static_assert(64 == syncer::GetNumDataTypes(),
@@ -70,17 +64,7 @@ UserSelectableTypeInfo GetUserSelectableTypeInfo(
       return {kBookmarksTypeName, BOOKMARKS, {BOOKMARKS}};
     case UserSelectableType::kPreferences: {
       DataTypeSet types = {PREFERENCES, DICTIONARY, SEARCH_ENGINES};
-      // `skip_feature_checks_if_early` is used to avoid checking the feature
-      // state during early startup phase, which can happen when setting
-      // policies during pref service initialization. It is only set to true
-      // when called from `GetUserSelectableTypeName()` and thus, is not
-      // affected by the feature flag anyway.
-      // See crbug.com/415305009 for more context.
-      if ((!skip_feature_checks_if_early || base::FeatureList::GetInstance()) &&
-          !base::FeatureList::IsEnabled(
-              kSyncSupportAlwaysSyncingPriorityPreferences)) {
-        types.Put(PRIORITY_PREFERENCES);
-      }
+
       if ((!skip_feature_checks_if_early || base::FeatureList::GetInstance()) &&
           base::FeatureList::IsEnabled(
               kSpellcheckSeparateLocalAndAccountDictionaries)) {
@@ -101,7 +85,8 @@ UserSelectableTypeInfo GetUserSelectableTypeInfo(
     case UserSelectableType::kThemes:
       return {kThemesTypeName, THEMES, {THEMES, THEMES_IOS, THEMES_ANDROID}};
     case UserSelectableType::kHistory: {
-      DataTypeSet types = {HISTORY, HISTORY_DELETE_DIRECTIVES, USER_EVENTS};
+      DataTypeSet types = {HISTORY, HISTORY_DELETE_DIRECTIVES, USER_EVENTS,
+                           JOURNEY};
       // With `kSpellcheckSeparateLocalAndAccountDictionaries` enabled,
       // `DICTIONARY` is controlled by the History opt-in.
       if ((!skip_feature_checks_if_early || base::FeatureList::GetInstance()) &&
@@ -119,19 +104,19 @@ UserSelectableTypeInfo GetUserSelectableTypeInfo(
       // In Chrome OS, "Apps" is a sub-item of OS settings.
       return {kAppsTypeName, UNSPECIFIED};
 #else
-      return {kAppsTypeName, APPS, {APPS, APP_SETTINGS, WEB_APPS, WEB_APKS}};
+      return {kAppsTypeName, APPS, {APPS, APP_SETTINGS, WEB_APPS}};
 #endif
     case UserSelectableType::kReadingList:
       return {kReadingListTypeName, READING_LIST, {READING_LIST}};
     case UserSelectableType::kTabs:
 #if BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_IOS)
-      return {
-          kTabsTypeName,
-          SESSIONS,
-          {SESSIONS, SAVED_TAB_GROUP, SHARED_COMMENT, SHARED_TAB_GROUP_DATA,
-           COLLABORATION_GROUP, SHARED_TAB_GROUP_ACCOUNT_DATA, WORKSPACE_DESK}};
+      return {kTabsTypeName,
+              SESSIONS,
+              {SESSIONS, SAVED_TAB_GROUP, SHARED_COMMENT, SHARED_TAB_GROUP_DATA,
+               COLLABORATION_GROUP, SHARED_TAB_GROUP_ACCOUNT_DATA,
+               WORKSPACE_DESK, NOTEBOOK}};
 #else
-      return {kTabsTypeName, SESSIONS, {SESSIONS, WORKSPACE_DESK}};
+      return {kTabsTypeName, SESSIONS, {SESSIONS, WORKSPACE_DESK, NOTEBOOK}};
 #endif
     case UserSelectableType::kSavedTabGroups:
       // Note: Tab groups is presented as a separate type only on desktop.
@@ -146,9 +131,8 @@ UserSelectableTypeInfo GetUserSelectableTypeInfo(
       return {kPaymentsTypeName,
               AUTOFILL_WALLET_DATA,
               {AUTOFILL_WALLET_CREDENTIAL, AUTOFILL_WALLET_DATA,
-               AUTOFILL_WALLET_METADATA, AUTOFILL_WALLET_OFFER,
-               AUTOFILL_WALLET_USAGE, AUTOFILL_VALUABLE,
-               AUTOFILL_VALUABLE_METADATA}};
+               AUTOFILL_WALLET_METADATA, AUTOFILL_WALLET_USAGE,
+               AUTOFILL_VALUABLE, AUTOFILL_VALUABLE_METADATA}};
     case UserSelectableType::kProductComparison:
       return {
           kProductComparisonTypeName, PRODUCT_COMPARISON, {PRODUCT_COMPARISON}};

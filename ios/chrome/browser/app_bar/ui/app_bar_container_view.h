@@ -7,6 +7,7 @@
 
 #import <UIKit/UIKit.h>
 
+enum class AppBarPosition;
 @protocol AppBarContainerViewDelegate;
 
 // Container view for the App Bar. It is in charge of positioning and layout
@@ -19,8 +20,18 @@
 // The progress of the fullscreen state.
 @property(nonatomic, assign) CGFloat fullscreenProgress;
 
+// The position of the app bar.
+@property(nonatomic, assign) AppBarPosition appBarPosition;
+
+// Indicates whether the assistant container is invoked.
+@property(nonatomic, assign) BOOL assistantContainerInvoked;
+
 // Sets the App Bar view to be contained.
 - (void)setAppBar:(UIView*)appBar;
+
+// Notifies the container view that the window size has changed, updating its
+// constraints.
+- (void)windowSizeDidChange;
 
 @end
 

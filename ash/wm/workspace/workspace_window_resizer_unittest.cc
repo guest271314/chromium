@@ -4,6 +4,8 @@
 
 #include "ash/wm/workspace/workspace_window_resizer.h"
 
+#include <ranges>
+
 #include "ash/public/cpp/shell_window_ids.h"
 #include "ash/public/cpp/window_properties.h"
 #include "ash/screen_util.h"
@@ -24,7 +26,6 @@
 #include "ash/wm/work_area_insets.h"
 #include "ash/wm/workspace/phantom_window_controller.h"
 #include "ash/wm/workspace_controller.h"
-#include "base/containers/adapters.h"
 #include "base/memory/raw_ptr.h"
 #include "base/strings/stringprintf.h"
 #include "base/test/gtest_util.h"
@@ -32,6 +33,7 @@
 #include "base/test/scoped_feature_list.h"
 #include "base/time/time.h"
 #include "base/timer/timer.h"
+#include "chromeos/ui/base/window_properties.h"
 #include "chromeos/ui/frame/caption_buttons/snap_controller.h"
 #include "ui/aura/client/aura_constants.h"
 #include "ui/aura/test/test_window_delegate.h"
@@ -75,34 +77,6 @@ void AllowSnap(aura::Window* window) {
                       aura::client::kResizeBehaviorCanResize |
                           aura::client::kResizeBehaviorCanMaximize);
 }
-
-// Used to test for various UAFs that could be triggered inadvertently in
-// WorkspaceWindowResizer; see tests below.
-class DestructionObserver : public aura::WindowObserver {
- public:
-  explicit DestructionObserver(
-      std::unique_ptr<WorkspaceWindowResizer>* resizer_ptr)
-      : resizer_ptr_(resizer_ptr) {}
-
-  // Used to trigger a UAF in LayoutAttachedWindowsResize() which is prone to
-  // synchronous destruction via attached_windows_[i]->SetBounds() from Window
-  // Observers in MultiWindowResizeController.
-  void OnWindowBoundsChanged(aura::Window* window,
-                             const gfx::Rect& old_bounds,
-                             const gfx::Rect& new_bounds,
-                             ui::PropertyChangeReason reason) override {
-    resizer_ptr_->reset();
-  }
-
-  // Used to trigger a UAF in RestackAttached which is prone to synchronous
-  // destruction via parent->StackChildAtTop() / StackChildBelow().
-  void OnWindowStackingChanged(aura::Window* window) override {
-    resizer_ptr_->reset();
-  }
-
- private:
-  raw_ptr<std::unique_ptr<WorkspaceWindowResizer>> resizer_ptr_;
-};
 
 }  // namespace
 
@@ -166,7 +140,7 @@ class WorkspaceWindowResizerTest : public AshTestBase {
   std::vector<int> WindowOrderAsIntVector(aura::Window* parent) const {
     std::vector<int> result;
     const aura::Window::Windows& windows = parent->children();
-    for (aura::Window* window : base::Reversed(windows)) {
+    for (aura::Window* window : std::views::reverse(windows)) {
       if (window == window_.get() || window == window2_.get() ||
           window == window3_.get()) {
         result.push_back(window->GetId());
@@ -180,13 +154,8 @@ class WorkspaceWindowResizerTest : public AshTestBase {
       aura::Window* window,
       const gfx::Point& point_in_parent = gfx::Point(),
       int window_component = HTCAPTION) {
-    auto resizer =
-        CreateWindowResizer(window, gfx::PointF(point_in_parent),
-                            window_component, wm::WINDOW_MOVE_SOURCE_MOUSE);
-    auto* workspace_resizer = WorkspaceWindowResizer::GetInstanceForTest();
-    workspace_resizer_ =
-        workspace_resizer ? workspace_resizer->GetWeakPtr() : nullptr;
-    return resizer;
+    return CreateWindowResizer(window, gfx::PointF(point_in_parent),
+                               window_component, wm::WINDOW_MOVE_SOURCE_MOUSE);
   }
 
   std::unique_ptr<WorkspaceWindowResizer> CreateWorkspaceResizerForTest(
@@ -232,8 +201,17 @@ class WorkspaceWindowResizerTest : public AshTestBase {
     resizer.reset();
   }
 
+  // Returns the WorkspaceWindowResizer created by the last
+  // `CreateResizerForTest()` call. Must only be called while it is alive.
+  WorkspaceWindowResizer* workspace_resizer() const {
+    WorkspaceWindowResizer* resizer =
+        WorkspaceWindowResizer::GetInstanceForTest();
+    CHECK(resizer);
+    return resizer;
+  }
+
   PhantomWindowController* snap_phantom_window_controller() const {
-    return workspace_resizer_->snap_phantom_window_controller_.get();
+    return workspace_resizer()->snap_phantom_window_controller_.get();
   }
 
   void InitTouchResizeWindow(const gfx::Rect& bounds, int window_component) {
@@ -245,11 +223,11 @@ class WorkspaceWindowResizerTest : public AshTestBase {
   }
 
   bool IsDwellCountdownTimerRunning() {
-    return workspace_resizer_->dwell_countdown_timer_.IsRunning();
+    return workspace_resizer()->dwell_countdown_timer_.IsRunning();
   }
 
   void DwellCountdownTimerFireNow() {
-    workspace_resizer_->dwell_countdown_timer_.FireNow();
+    workspace_resizer()->dwell_countdown_timer_.FireNow();
   }
 
   void DragToMaximizeBehaviorCheckCountdownTimerFireNow(aura::Window* window) {
@@ -267,8 +245,6 @@ class WorkspaceWindowResizerTest : public AshTestBase {
 
   aura::test::TestWindowDelegate touch_resize_delegate_;
   std::unique_ptr<aura::Window> touch_resize_window_;
-
-  base::WeakPtr<WorkspaceWindowResizer> workspace_resizer_ = nullptr;
 };
 
 // Assertions around attached window resize dragging from the right with 2
@@ -301,26 +277,6 @@ TEST_F(WorkspaceWindowResizerTest, AttachedResize_RIGHT_2) {
   resizer->RevertDrag();
   EXPECT_EQ("0,300 400x300", window_->bounds().ToString());
   EXPECT_EQ("400,200 100x200", window2_->bounds().ToString());
-}
-
-TEST_F(WorkspaceWindowResizerTest, LayoutAttachedWindowsResize_Destruction) {
-  // Verifies that destroying the resizer during LayoutAttachedWindows does not
-  // cause a UAF.
-  window_->SetBounds(gfx::Rect(0, 300, 400, 300));
-  window2_->SetBounds(gfx::Rect(400, 200, 100, 200));
-
-  std::unique_ptr<WorkspaceWindowResizer> resizer =
-      CreateWorkspaceResizerForTest(window_.get(), HTRIGHT, {window2_.get()});
-  ASSERT_TRUE(resizer.get());
-
-  DestructionObserver observer(&resizer);
-  window2_->AddObserver(&observer);
-
-  // This should trigger LayoutAttachedWindows and SetBounds on window2_.
-  // The implemented CHECK should catch this, and crash the program safely.
-  EXPECT_CHECK_DEATH(resizer->Drag(CalculateDragPoint(*resizer, 100, 10), 0));
-
-  window2_->RemoveObserver(&observer);
 }
 
 // Assertions around collapsing and expanding.
@@ -836,28 +792,6 @@ TEST_F(WorkspaceWindowResizerTest, RestackAttached) {
     const std::vector<int> expected_order = {2, 3, 1};
     EXPECT_EQ(expected_order, WindowOrderAsIntVector(window_->parent()));
   }
-}
-
-TEST_F(WorkspaceWindowResizerTest, RestackAttached_ResizerDestruction) {
-  // Verifies that destroying the resizer during **restacking** does not cause a
-  // Use-After-Free.
-  window_->SetBounds(gfx::Rect(0, 0, 200, 300));
-  window2_->SetBounds(gfx::Rect(200, 0, 100, 200));
-  window3_->SetBounds(gfx::Rect(300, 0, 100, 100));
-
-  std::unique_ptr<WorkspaceWindowResizer> resizer =
-      CreateWorkspaceResizerForTest(window_.get(), HTRIGHT,
-                                    {window2_.get(), window3_.get()});
-  ASSERT_TRUE(resizer.get());
-
-  DestructionObserver observer(&resizer);
-  window2_->AddObserver(&observer);
-
-  // This should trigger RestackWindows and call StackChildBelow.
-  // The CHECK in RestackWindows should detect destruction and crash safely.
-  EXPECT_CHECK_DEATH(resizer->Drag(CalculateDragPoint(*resizer, 100, -10), 0));
-
-  window2_->RemoveObserver(&observer);
 }
 
 // Makes sure we don't allow dragging below the work area.
@@ -2759,6 +2693,58 @@ TEST_F(MultiOrientationDisplayWorkspaceWindowResizerTest, Edge) {
     EXPECT_EQ(gfx::Rect(820, 30, 400, 60),
               window_state->GetRestoreBoundsInScreen());
   }
+}
+
+namespace {
+
+class DeleteResizerWindowObserver : public aura::WindowObserver {
+ public:
+  explicit DeleteResizerWindowObserver(std::unique_ptr<WindowResizer>* resizer)
+      : resizer_(resizer) {}
+  DeleteResizerWindowObserver(const DeleteResizerWindowObserver&) = delete;
+  DeleteResizerWindowObserver& operator=(const DeleteResizerWindowObserver&) =
+      delete;
+  ~DeleteResizerWindowObserver() override = default;
+
+  void OnWindowPropertyChanged(aura::Window* window,
+                               const void* key,
+                               intptr_t old) override {
+    if (key == chromeos::kFrameRestoreLookKey && resizer_->get()) {
+      EXPECT_DEATH(resizer_->reset(), "");
+    }
+  }
+
+ private:
+  raw_ptr<std::unique_ptr<WindowResizer>> resizer_;
+};
+
+}  // namespace
+
+using WorkspaceWindowResizerDeathTest = WorkspaceWindowResizerTest;
+
+TEST_F(WorkspaceWindowResizerDeathTest, BlockDeleteDuringUnmaximizeDrag) {
+  UpdateDisplay("800x600");
+  std::unique_ptr<aura::Window> window =
+      CreateTestWindowInShell({.bounds = {100, 100, 400, 300}});
+  WindowState* window_state = WindowState::Get(window.get());
+  window_state->Maximize();
+  ASSERT_TRUE(window_state->IsMaximized());
+  ASSERT_TRUE(window_state->HasRestoreBounds());
+
+  std::unique_ptr<WindowResizer> resizer = CreateResizerForTest(window.get());
+  ASSERT_TRUE(resizer);
+
+  DeleteResizerWindowObserver observer(&resizer);
+  window->AddObserver(&observer);
+
+  // Dragging the maximized window will set kFrameRestoreLookKey property and
+  // trigger CrossFadeAnimation. The ScopedDeleteBlocker will prevent deleting
+  // the resizer during this.
+  resizer->Drag(CalculateDragPoint(*resizer, 0, 50), 0);
+  window->RemoveObserver(&observer);
+
+  resizer->CompleteDrag();
+  EXPECT_FALSE(window_state->IsMaximized());
 }
 
 }  // namespace ash

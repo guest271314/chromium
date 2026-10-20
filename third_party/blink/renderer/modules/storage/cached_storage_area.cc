@@ -22,6 +22,7 @@
 #include "third_party/blink/renderer/platform/weborigin/kurl.h"
 #include "third_party/blink/renderer/platform/wtf/functional.h"
 #include "third_party/blink/renderer/platform/wtf/text/copy_lchars_from_uchar_source.h"
+#include "third_party/blink/renderer/platform/wtf/text/format.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_buffer.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_utf8_adaptor.h"
 #include "third_party/blink/renderer/platform/wtf/text/unicode.h"
@@ -503,10 +504,10 @@ bool CachedStorageArea::OnMemoryDump(
     base::trace_event::ProcessMemoryDump* pmd) {
   using base::trace_event::MemoryAllocatorDump;
 
-  String dump_name = UNSAFE_TODO(
-      String::Format("site_storage/%s/0x%" PRIXPTR "/cache_size",
-                     IsSessionStorage() ? "session_storage" : "local_storage",
-                     reinterpret_cast<uintptr_t>(this)));
+  String dump_name =
+      Format("site_storage/{}/0x{:X}/cache_size",
+             IsSessionStorage() ? "session_storage" : "local_storage",
+             reinterpret_cast<uintptr_t>(this));
   MemoryAllocatorDump* dump = pmd->CreateAllocatorDump(dump_name.Utf8());
   dump->AddScalar(MemoryAllocatorDump::kNameSize,
                   MemoryAllocatorDump::kUnitsBytes, memory_used());
@@ -752,7 +753,8 @@ String CachedStorageArea::Uint8VectorToString(const Vector<uint8_t>& input,
             corrupt = true;
             break;
           }
-          StringBuffer<UChar> buffer(payload.size() / sizeof(UChar));
+          StringBuffer<UChar> buffer(
+              base::checked_cast<wtf_size_t>(payload.size() / sizeof(UChar)));
           base::as_writable_bytes(buffer.Span()).copy_from(payload);
           result = String::Adopt(buffer);
           break;
@@ -816,7 +818,7 @@ Vector<uint8_t> CachedStorageArea::StringToUint8Vector(
       // TODO(dmurph): Figure out how to avoid a copy here.
       // TODO(dmurph): Handle invalid UTF16 better. https://crbug.com/873280.
       StringUtf8Adaptor utf8(input, Utf8ConversionMode::kStrictReplacingErrors);
-      Vector<uint8_t> result(utf8.size());
+      Vector<uint8_t> result(base::checked_cast<wtf_size_t>(utf8.size()));
       base::span(result).copy_from(base::as_byte_span(utf8));
       return result;
     }
@@ -833,7 +835,8 @@ Vector<uint8_t> CachedStorageArea::StringToUint8Vector(
         return result;
       }
       DCHECK(!input.Is8Bit());
-      Vector<uint8_t> result(input.CharactersSizeInBytes() + 1);
+      Vector<uint8_t> result(
+          base::checked_cast<wtf_size_t>(input.CharactersSizeInBytes() + 1));
       auto [format, payload] = base::span(result).split_at<1u>();
       format[0] = static_cast<uint8_t>(StorageFormat::UTF16);
       payload.copy_from(input.RawByteSpan());

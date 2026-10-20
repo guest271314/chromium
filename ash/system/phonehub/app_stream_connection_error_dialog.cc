@@ -12,8 +12,8 @@
 #include "ash/resources/vector_icons/vector_icons.h"
 #include "ash/strings/grit/ash_strings.h"
 #include "ash/style/ash_color_id.h"
-#include "ash/style/ash_color_provider.h"
 #include "ash/style/pill_button.h"
+#include "ash/style/style_util.h"
 #include "ash/style/typography.h"
 #include "base/memory/raw_ptr.h"
 #include "chromeos/ash/components/phonehub/url_constants.h"
@@ -82,8 +82,8 @@ class ConnectionErrorDialogDelegateView : public views::WidgetDelegateView {
 
     SetPaintToLayer();
     if (chromeos::features::IsSystemBlurEnabled()) {
-      layer()->SetBackgroundBlur(ColorProvider::kBackgroundBlurSigma);
-      layer()->SetBackdropFilterQuality(ColorProvider::kBackgroundBlurQuality);
+      layer()->SetBackgroundBlur(StyleUtil::kBackgroundBlurSigma);
+      layer()->SetBackdropFilterQuality(StyleUtil::kBackgroundBlurQuality);
     }
 
     layer()->SetFillsBoundsOpaquely(false);
@@ -94,7 +94,7 @@ class ConnectionErrorDialogDelegateView : public views::WidgetDelegateView {
         static_cast<ui::ColorId>(cros_tokens::kCrosSysBaseElevated)));
     SetBorder(std::make_unique<views::HighlightBorder>(
         kDialogRoundedCornerRadius,
-        views::HighlightBorder::Type::kHighlightBorder1));
+        views::HighlightBorder::Type::kHighlightBorderOnShadow));
 
     view_shadow_ =
         std::make_unique<views::ViewShadow>(this, kDialogShadowElevation);

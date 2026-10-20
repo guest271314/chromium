@@ -7,7 +7,6 @@
 <translation id="1049926623896334335">Документ Word</translation>
 <translation id="1056775291175587022">Немає мереж</translation>
 <translation id="1056898198331236512">Застереження</translation>
-<translation id="1060368002126861100">Щоб відкривати файли через додаток <ph name="APP_NAME" />, спершу перемістіть їх у папку з файлами в ОС Windows.</translation>
 <translation id="1062407476771304334">Замінити</translation>
 <translation id="1119383441774809183">Показувати текстові повідомлення</translation>
 <translation id="1119447706177454957">Внутрішня помилка</translation>
@@ -30,6 +29,7 @@
 <translation id="1209796539517632982">Імена серверів – автоматично</translation>
 <translation id="1210831758834677569">Лаоська</translation>
 <translation id="1221555006497674479">На спільному диску закінчується місце. Залишилося <ph name="REMAINING_PERCENTAGE" />% з <ph name="TOTAL_SPACE" /> пам’яті.</translation>
+<translation id="1239594683407221485">Перегляньте контент пристрою в додатку Файли.</translation>
 <translation id="1243314992276662751">Завантажити</translation>
 <translation id="1249250836236328755">Жанр</translation>
 <translation id="1254593899333212300">Пряме з'єднання з Інтернетом</translation>
@@ -41,6 +41,7 @@
 <translation id="1306130176943817227">Не вдалося видалити об’єкт, оскільки він використовується.</translation>
 <translation id="1307931752636661898">Не вдається переглянути файли Linux</translation>
 <translation id="1313405956111467313">Автоматична конфігурація проксі-сервера</translation>
+<translation id="1340527397989195812">Створити резервну копію медіа-вмісту з пристрою за допомогою додатка Файли.</translation>
 <translation id="134645005685694099">На вашому пристрої недостатньо пам’яті для синхронізації файлів. Нові файли більше не синхронізуватимуться автоматично.</translation>
 <translation id="1353686479385938207"><ph name="PROVIDER_NAME" />: <ph name="NETWORK_NAME" /></translation>
 <translation id="1358735829858566124">Файл або каталог не можна використовувати.</translation>
@@ -53,11 +54,11 @@
 <translation id="1399511500114202393">Без сертифіката користувача</translation>
 <translation id="1403008701842173542">Усюди</translation>
 <translation id="1404323374378969387">Норвезька</translation>
+<translation id="1408504635543854729">Перегляньте вміст пристрою в додатку Файли. Вміст не можна змінювати, доступ до нього обмежено адміністратором.</translation>
 <translation id="1412476183660741812">Підписаний вебпакет</translation>
-<translation id="1433628812591023318">Щоб перетягнути файли в Parallels Desktop, спершу перемістіть їх у папку "Файли Windows".</translation>
-<translation id="1435838927755162558">Надати додатку Parallels Desktop доступ до папки</translation>
 <translation id="1439919885608649279">Людина з квітами</translation>
 <translation id="1458457385801829801">Вилучити <ph name="TARGET_NAME" /></translation>
+<translation id="1464781208867302907">Щоб перейти до параметрів пристрою, відкрийте налаштування.</translation>
 <translation id="146691674290220697">Не вдалося скопіювати файли (<ph name="NUMBER_OF_FILES" />), оскільки вони зашифровані.</translation>
 <translation id="1471718551822868769">Словацька</translation>
 <translation id="1482884275703521657">Фінська</translation>
@@ -72,6 +73,7 @@
 <translation id="1577977504532381335">Переглянути правило адміністратора</translation>
 <translation id="158849752021629804">Потрібна домашня мережа</translation>
 <translation id="1589128298353575783"><ph name="NUMBER_OF_PB" /> ПБ</translation>
+<translation id="1593594475886691512">Форматування…</translation>
 <translation id="1601786938618212857">Створити ZIP-архів</translation>
 <translation id="1620510694547887537">Камера</translation>
 <translation id="162175252992296058">Португальська, міжнародна розкладка США</translation>
@@ -127,6 +129,7 @@
 <translation id="2001796770603320721">Керувати на Диску</translation>
 <translation id="2004942826429452291">Файли зберігатимуться в хмарі й на цьому пристрої Chromebook.</translation>
 <translation id="2009067268969781306">Якщо відформатувати диск, усі збережені на ньому дані буде видалено. Цю дію не можна відмінити.</translation>
+<translation id="2018352199541442911">На жаль, ваш зовнішній носій наразі не підтримується.</translation>
 <translation id="2025955442973426285">Тигринья</translation>
 <translation id="2029385776150020336">Англійська (США, розширена)</translation>
 <translation id="2037845485764049925">Російська</translation>
@@ -149,6 +152,7 @@
 <translation id="2142680004883808240">Російська, фонетична розкладка ЯЖЕРТЫ</translation>
 <translation id="2143778271340628265">Ручна конфігурація проксі-сервера</translation>
 <translation id="2148716181193084225">Сьогодні</translation>
+<translation id="2148756636027685713">Форматування закінчено</translation>
 <translation id="2161573825856688200">Проєкт Google</translation>
 <translation id="2163152940313951844">Недійсний символ: <ph name="CHARACTER_NAME" /></translation>
 <translation id="2178056538281447670">Microsoft 365</translation>
@@ -194,6 +198,7 @@
 <translation id="2468402215065996499">Тамагочі</translation>
 <translation id="2468470447085858632">Працюйте з файлами на Google Диску в режимі офлайн завдяки синхронізації файлів</translation>
 <translation id="2470939964922472929">Ви ввели неправильний PIN-код забагато разів. Щоб налаштувати новий PIN-код, введіть восьмизначний PUK-код, який надав оператор.</translation>
+<translation id="249113932447298600">На жаль, зараз пристрій <ph name="DEVICE_LABEL" /> не підтримується.</translation>
 <translation id="2500392669976258912">Гуджараті, фонетична розкладка</translation>
 <translation id="2515586267016047495">Alt</translation>
 <translation id="2517472476991765520">Сканувати</translation>
@@ -216,6 +221,7 @@
 <translation id="2653059201992392941">Залишилося спроб: <ph name="RETRIES" />.</translation>
 <translation id="2663066752008346276">Бірманська/м'янмська, розкладка м'янсан</translation>
 <translation id="2664412712123763093">Місце розташування файлу</translation>
+<translation id="2665919335226618153">От халепа! Сталася помилка під час форматування.</translation>
 <translation id="2672394942808662069">Канадська (багатомовна)</translation>
 <translation id="2707357721402813583">Ірландська</translation>
 <translation id="2708477391501452176">Французька (BÉPO)</translation>
@@ -225,7 +231,6 @@
 <translation id="2728450421877450246">Французька</translation>
 <translation id="2732288874651063549">Керувати параметрами спільного доступу для <ph name="VM_NAME" /></translation>
 <translation id="2732839045120506979">В'єтнамська, VNI</translation>
-<translation id="2735623501230989521">Надати додатку Parallels Desktop доступ до файлів у папці "<ph name="FOLDER_NAME" />"</translation>
 <translation id="2764206540577097904">Ваше індивідуальне сховище Google Workspace заповнено.</translation>
 <translation id="2771816809568414714">Сир</translation>
 <translation id="2783909841122647548">Встановлення пакетів Debian більше не підтримується. <ph name="BEGIN_LINK" />Докладніше<ph name="END_LINK" /></translation>
@@ -258,7 +263,6 @@
 <translation id="303198083543495566">Координати</translation>
 <translation id="3044404008258011032">Щоб відновити ці файли, перетягніть їх із кошика в нову папку. Оригінальну папку "<ph name="PARENT_FOLDER_NAME" />", у якій вони містилися, видалено.</translation>
 <translation id="3047197340186497470">Китайська, даї</translation>
-<translation id="3067790092342515856">Файли Windows</translation>
 <translation id="3083975830683400843">Chromebit</translation>
 <translation id="3085752524577180175">Хост SOCKS</translation>
 <translation id="3091469289665833668">Румунська</translation>
@@ -290,9 +294,11 @@
 <translation id="3293023191599135697">Мережі WEP не підтримуються</translation>
 <translation id="3295006446256079333">Цей том</translation>
 <translation id="3295357220137379386">Пристрій зайнятий</translation>
+<translation id="3305389145870741612">Процес форматування може зайняти декілька секунд. Зачекайте.</translation>
 <translation id="3307875152560779385">Українська</translation>
 <translation id="3326821416087822643">Архівування файлу <ph name="FILE_NAME" />…</translation>
 <translation id="3335337277364016868">Рік запису</translation>
+<translation id="3348038390189153836">Виявлено знімний пристрій</translation>
 <translation id="3353984535370177728">Виберіть папку для завантаження</translation>
 <translation id="3356580349448036450">Готово</translation>
 <translation id="3358452157379365236">Гітара</translation>
@@ -318,7 +324,6 @@
 <translation id="3529424493985988200">Щоб дізнатися більше, зв’яжіться з адміністратором.</translation>
 <translation id="3548125359243647069">Ви ввели неправильний PIN-код забагато разів.</translation>
 <translation id="3549797760399244642">Перейти на drive.google.com...</translation>
-<translation id="3553048479571901246">Щоб відкривати файли через додаток <ph name="APP_NAME" />, спершу скопіюйте їх у папку з файлами в ОС Windows.</translation>
 <translation id="3556731189587832921">Англійська (США), міжнародна розкладка для ПК</translation>
 <translation id="3557414470514932909">Переміщення файлу "<ph name="FILE_NAME" />" у кошик</translation>
 <translation id="3560848236447534728">Вірменська (фонетична)</translation>
@@ -372,6 +377,7 @@
 <translation id="3971140002794351170">Завантажити мобільний профіль, мережа <ph name="NETWORK_INDEX" /> з <ph name="NETWORK_COUNT" />, "<ph name="NETWORK_NAME" />", <ph name="NETWORK_PROVIDER_NAME" /></translation>
 <translation id="3973925058222872294">Англійська (Велика Британія)</translation>
 <translation id="3975895378829046965">Бенгальська, фонетична розкладка</translation>
+<translation id="3983764759749072418">Додатки з Play Маркету мають доступ до цього пристрою.</translation>
 <translation id="3999574733850440202">Нещодавно відкриті файли Microsoft переміщено в сервіс OneDrive</translation>
 <translation id="4002066346123236978">Назва</translation>
 <translation id="4017788180641807848">Англійська (США), розкладка Workman</translation>
@@ -397,6 +403,7 @@
 <translation id="421017592316736757">Щоб отримати доступ до цього файлу, потрібно перебувати в режимі онлайн.</translation>
 <translation id="4212740939091998969">Папка з назвою "<ph name="FOLDER_NAME" />" уже існує. Укажіть іншу назву.</translation>
 <translation id="4218274196133425560">Видалити виняток для хосту <ph name="HOST_NAME" /></translation>
+<translation id="4242533952199664413">Відкрити налаштування</translation>
 <translation id="4261901459838235729">Презентація Google</translation>
 <translation id="4277536868133419688">Фільтр "<ph name="FILTER_NAME" />" увімкнено.</translation>
 <translation id="4290535918735525311">Linux має доступ до 1 папки</translation>
@@ -437,7 +444,6 @@
 <translation id="4477002475007461989">Румунська</translation>
 <translation id="4508265954913339219">Помилка активації</translation>
 <translation id="4509667233588080747">Англійська (США), розкладка Workman International</translation>
-<translation id="4527800702232535228">Додаток Parallels Desktop має доступ до цієї папки</translation>
 <translation id="4552678318981539154">Придбати більше об’єму пам’яті</translation>
 <translation id="4552759165874948005">Мережа <ph name="NETWORK_TYPE" />, рівень сигналу – <ph name="SIGNAL_STRENGTH" />%</translation>
 <translation id="4559767610552730302">Боке</translation>
@@ -471,7 +477,6 @@
 <translation id="4779136857077979611">Оніґірі</translation>
 <translation id="4784330909746505604">Презентація PowerPoint</translation>
 <translation id="4788401404269709922"><ph name="NUMBER_OF_KB" /> КБ</translation>
-<translation id="4789067489790477934">Надати додатку Parallels Desktop доступ до файлів на Google Диску. Зміни буде синхронізовано на інших ваших пристроях.</translation>
 <translation id="4790766916287588578">Гінді, розкладка InScript</translation>
 <translation id="4798645114741131062">Ваш пристрій із ChromeOS Flex незабаром перестане отримувати оновлення. Рекомендуємо перейти на пристрій із ChromeOS.</translation>
 <translation id="4801956050125744859">Залишити обидві версії</translation>
@@ -491,12 +496,10 @@
 <translation id="4880214202172289027">Регулятор гучності</translation>
 <translation id="4881695831933465202">Відкрити</translation>
 <translation id="4891091358278567964">Щоб відновити ці файли, перетягніть їх із кошика в нову папку. Оригінальні папки, у яких вони містилися, видалено.</translation>
-<translation id="4900532980794411603">Надати доступ додатку Parallels Desktop</translation>
 <translation id="4902546322522096650">Мережа <ph name="NETWORK_INDEX" /> з <ph name="NETWORK_COUNT" />, <ph name="NETWORK_NAME" />, <ph name="SECURITY_STATUS" />, рівень сигналу – <ph name="SIGNAL_STRENGTH" />%. Підключитися</translation>
 <translation id="4906580650526544301">Мережа №<ph name="NETWORK_INDEX" />, загалом мереж: <ph name="NETWORK_COUNT" />, назва пристрою: <ph name="PHONE_NAME" />, оператор: <ph name="PROVIDER_NAME" />, стан з'єднання: <ph name="CONNECTION_STATUS" />, рівень сигналу: <ph name="SIGNAL_STRENGTH" />%, рівень заряду акумулятора телефона: <ph name="BATTERY_STATUS" />%, відомості</translation>
 <translation id="4935975195727477204">Квітка</translation>
 <translation id="4943368462779413526">Футбольний м’яч</translation>
-<translation id="4961158930123534723">Додатку Parallels Desktop надано доступ до 1 папки</translation>
 <translation id="4965874878399872778">Перевірка файлів на відповідність правилам безпеки вашої організації…</translation>
 <translation id="496656650103537022">Файл "<ph name="FILE_NAME" />" відновлено</translation>
 <translation id="4969785127455456148">Альбом</translation>
@@ -511,7 +514,6 @@
 <translation id="5011233892417813670">Chromebook</translation>
 <translation id="5024856940085636730">Операція триває довше, ніж очікувалось. Скасувати її?</translation>
 <translation id="5036141350290856713">Російська (фонетична)</translation>
-<translation id="5036159836254554629">Керувати доступом додатка Parallels Desktop</translation>
 <translation id="5038625366300922036">Більше…</translation>
 <translation id="5044852990838351217">Вірменська</translation>
 <translation id="5045550434625856497">Неправильний пароль</translation>
@@ -520,7 +522,6 @@
 <translation id="5081517858322016911">Буде видалено файли загальним обсягом <ph name="TOTAL_FILE_SIZE" /></translation>
 <translation id="508423945471810158">Переміщення елементів (<ph name="NUMBER_OF_ITEMS" />) у папку "<ph name="FOLDER_NAME" />"</translation>
 <translation id="509429900233858213">Сталася помилка.</translation>
-<translation id="5102922915594634436">Керувати синхронізованими папками</translation>
 <translation id="5109254780565519649">Сталася помилка. Можливо, відновлено не всі елементи.</translation>
 <translation id="5110329002213341433">Англійська (Канада)</translation>
 <translation id="5119780910075847424">Cинхронізацію призупинено</translation>
@@ -551,6 +552,7 @@
 <translation id="5275973617553375938">Відновлені файли з Google Диска</translation>
 <translation id="5278111733643988471">Щоб відновити цей файл, перетягніть його з кошика в нову папку. Оригінальну папку "<ph name="PARENT_FOLDER_NAME" />", у якій він містився, видалено.</translation>
 <translation id="5288441970121584418">Бургер</translation>
+<translation id="529175790091471945">Форматувати цей пристрій</translation>
 <translation id="5293615890992542006">Адміністратор заборонив переміщувати цей файл</translation>
 <translation id="5305688511332277257">Не встановлено жодного</translation>
 <translation id="5317780077021120954">Зберегти</translation>
@@ -566,6 +568,7 @@
 <translation id="5411472733320185105">Не використовуйте налаштування проксі-сервера для таких хостів і доменів:</translation>
 <translation id="541890217011173530">Курдська сорані, розкладка на основі англійської</translation>
 <translation id="5422221874247253874">Точка доступу</translation>
+<translation id="5422781158178868512">На жаль, пристрій зовнішньої пам’яті неможливо розпізнати.</translation>
 <translation id="5438282218546237410">Немає результатів для запиту "<ph name="SEARCH_TERM" />".</translation>
 <translation id="5447680084201416734">Недостатньо пам’яті.</translation>
 <translation id="5449551289610225147">Недійсний пароль</translation>
@@ -586,6 +589,7 @@
 <translation id="5580591966435005537">віртуальна машина</translation>
 <translation id="5583640892426849032">Backspace</translation>
 <translation id="5583664733673201137">Ширина розділових знаків – повна</translation>
+<translation id="5585912436068747822">Помилка форматування</translation>
 <translation id="5596627076506792578">Інші опції</translation>
 <translation id="5602622065581044566">Болгарська, фонетична розкладка</translation>
 <translation id="5604409170937514933">Шведська</translation>
@@ -612,10 +616,12 @@
 <translation id="5760252553414789727">Вибрано об’єктів: <ph name="SELECTED_FILES_COUNT" /></translation>
 <translation id="5763377084591234761">Німецька (Швейцарія)</translation>
 <translation id="5769519078756170258">Хост або домен для виключення</translation>
+<translation id="5774295353725270860">Відкрити програму файлів</translation>
 <translation id="5775750595919327203">Урду</translation>
 <translation id="5776325638577448643">Очистити й відформатувати</translation>
 <translation id="57838592816432529">Вимкнути звук</translation>
 <translation id="5788127256798019331">Файли Play</translation>
+<translation id="5788367137662787332">На жаль, підключити принаймні один розділ пристрою <ph name="DEVICE_LABEL" /> неможливо.</translation>
 <translation id="5804245609861364054">Каннада, транслітерація</translation>
 <translation id="5814126672212206791">Тип з’єднання</translation>
 <translation id="5817397429773072584">китайська (традиційна)</translation>
@@ -672,6 +678,7 @@
 <translation id="6220423280121890987">Панджабі</translation>
 <translation id="6224240818060029162">Данська</translation>
 <translation id="6224253798271602650">Форматувати (<ph name="DRIVE_NAME" />)</translation>
+<translation id="6224481128663248237">Форматування успішно завершено.</translation>
 <translation id="6241349547798190358">Нідерландська (Бельгія)</translation>
 <translation id="6267547857941397424">Мережа <ph name="NETWORK_INDEX" /> з <ph name="NETWORK_COUNT" />, <ph name="PHONE_NAME" />, рівень сигналу – <ph name="SIGNAL_STRENGTH" />%, рівень заряду акумулятора телефона – <ph name="BATTERY_STATUS" />%. Підключитися</translation>
 <translation id="6269630227984243955">Малайська</translation>
@@ -717,9 +724,7 @@
 <translation id="656398493051028875">Видалення файлу "<ph name="FILENAME" />"…</translation>
 <translation id="6581162200855843583">Посилання Google Диска</translation>
 <translation id="6588648400954570689">Налаштування синхронізації файлів</translation>
-<translation id="6594855146910089723">Linux і Parallels Desktop мають доступ до цієї папки</translation>
 <translation id="6607272825297743757">Інформація про файл</translation>
-<translation id="6609332149380188670">Додатку Parallels Desktop надано доступ до папок (<ph name="NUMBER_OF_ITEMS" />)</translation>
 <translation id="6629518321609546825">Введіть принаймні 4 цифри</translation>
 <translation id="6643016212128521049">Очистити</translation>
 <translation id="6650726141019353908">Рожевий метелик</translation>
@@ -807,9 +812,11 @@
 <translation id="7224162581405244205">Ісландська</translation>
 <translation id="7229570126336867161">Потрібна мережа EVDO</translation>
 <translation id="7230898482850090046">Ваш адміністратор просить вимкнути налаштування блокування вашої SIM-карти</translation>
+<translation id="7232750842195536390">Не вдалося перейменувати</translation>
 <translation id="7238097264433196391">Назва диска</translation>
 <translation id="7238643356913091553"><ph name="NETWORK_NAME" />, дeталі</translation>
 <translation id="7246947237293279874">Проксі-сервер FTP</translation>
+<translation id="725109152065019550">На жаль, адміністратор вимкнув зовнішню пам’ять у вашому обліковому записі.</translation>
 <translation id="7256405249507348194">Нерозпізнана помилка: <ph name="DESC" /></translation>
 <translation id="7268659760406822741">Доступні сервіси</translation>
 <translation id="7291818353625820805">Щоб символи клавіш вводилися повторно, вимкніть діакритичні знаки в налаштуваннях клавіатури.</translation>
@@ -832,9 +839,9 @@
 <translation id="7417705661718309329">Карта Google</translation>
 <translation id="7419668828140929293">Відновлення файлу "<ph name="FILENAME" />"</translation>
 <translation id="7435577899926900307">Розкладка Дворака (США)</translation>
+<translation id="7436921188514130341">От халепа! Сталася помилка під час перейменування.</translation>
 <translation id="7458955835361612701">Немає нещодавніх зображень</translation>
 <translation id="7469894403370665791">Автоматично з'єднувати з цією мережею</translation>
-<translation id="7486315294984620427">Щоб перетягнути файли в Parallels Desktop, спершу скопіюйте їх у папку "Файли Windows".</translation>
 <translation id="749452993132003881">Хірагана</translation>
 <translation id="7495372004724182530">Малаялам, фонетична розкладка</translation>
 <translation id="7505167922889582512">Показати сховані файли</translation>
@@ -847,6 +854,7 @@
 <translation id="7551643184018910560">Закріпити на панелі запуску</translation>
 <translation id="7553492409867692754">Надати додаткам Linux доступ до файлів у папці "<ph name="FOLDER_NAME" />"</translation>
 <translation id="7555339735447658365">Зараз ви не в мережі. Синхронізація файлів відновиться, коли пристрій підключиться до Інтернету.</translation>
+<translation id="7589461650300748890">Обережно!</translation>
 <translation id="7589661784326793847">Зачекайте</translation>
 <translation id="7600126690270271294">Сербська</translation>
 <translation id="7603724359189955920">Сітка</translation>
@@ -860,7 +868,6 @@
 <translation id="7663224033570512922">Гінді</translation>
 <translation id="7665680517722058469">Введіть інший пошуковий запит</translation>
 <translation id="7689532716264131859">Об’єкти (<ph name="NUMBER_OF_ITEMS" />) переміщено в кошик</translation>
-<translation id="7693909743393669729">Якщо відформатувати диск, усі наявні на ньому дані та розділи (зокрема, невидимі) буде видалено. Цю дію не можна відмінити.</translation>
 <translation id="7695430100978772476">Не вдалося відформатувати диск "<ph name="DRIVE_NAME" />"</translation>
 <translation id="76959938259365003">Не вдалось очистити кошик.</translation>
 <translation id="7705251383879779343">Файл "<ph name="FILE_NAME" />" скопійовано.</translation>
@@ -892,6 +899,7 @@
 <translation id="7814857791038398352">Microsoft OneDrive</translation>
 <translation id="7827012282502221009"><ph name="NUMBER_OF_TB" /> ТБ</translation>
 <translation id="7831491651892296503">Помилка налаштування мережі</translation>
+<translation id="7839051173341654115">Переглянути медіа-вміст або створити його резервну копію</translation>
 <translation id="7839804798877833423">Для отримання цих файлів буде використано приблизно <ph name="FILE_SIZE" /> мобільного передавання даних.</translation>
 <translation id="7846076177841592234">Скасувати вибір</translation>
 <translation id="7857117644404132472">Додати виняток</translation>
@@ -899,9 +907,10 @@
 <translation id="7868774406711971383">Польська</translation>
 <translation id="7874321682039004450">Філіппінська</translation>
 <translation id="78946041517601018">Спільні диски</translation>
+<translation id="7897900149154324287">Надалі не забувайте відключати знімний пристрій у додатку Файли, перш ніж від’єднувати його. Інакше ви можете втратити дані.</translation>
 <translation id="7901567919203965902">Workman (США, міжнародна)</translation>
 <translation id="7903984238293908205">Катакана</translation>
-<translation id="7908793776359722643">Якщо відформатувати розділ, усі збережені в ньому дані буде видалено. Цю дію не можна відмінити.</translation>
+<translation id="7908378463497120834">На жаль, підключити принаймні один розділ пристрою зовнішньої пам’яті неможливо.</translation>
 <translation id="7911118814695487383">Linux</translation>
 <translation id="7920501309908018401">Файли з папки "Мій диск" синхронізуються з Chromebook автоматично, щоб ви могли відкривати їх без інтернет-з’єднання.</translation>
 <translation id="7925247922861151263">Помилка перевірки AAA</translation>
@@ -1034,6 +1043,7 @@
 <translation id="8873014196523807561">Щоб відновити ці файли, перетягніть їх у нову папку. Оригінальні папки, у яких містилися деякі з цих файлів, видалено.</translation>
 <translation id="8874184842967597500">Не під’єднано</translation>
 <translation id="8876368061475701452">У черзі</translation>
+<translation id="8893928184421379330">На жаль, пристрій <ph name="DEVICE_LABEL" /> неможливо розпізнати.</translation>
 <translation id="8902208737522818687">Англійська для ПК (США, міжнародна)</translation>
 <translation id="8903931173357132290">Випускник</translation>
 <translation id="8912078710089354287">Собака, яка махає хвостом</translation>

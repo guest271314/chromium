@@ -7,11 +7,9 @@
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/utf_string_conversions.h"
 #include "chrome/browser/ui/autofill/payments/save_iban_ui.h"
-#include "chrome/browser/ui/views/accessibility/theme_tracking_non_accessible_image_view.h"
 #include "chrome/browser/ui/views/autofill/payments/dialog_view_ids.h"
 #include "chrome/browser/ui/views/autofill/payments/payments_view_util.h"
 #include "chrome/browser/ui/views/chrome_layout_provider.h"
-#include "chrome/browser/ui/views/chrome_typography.h"
 #include "chrome/grit/browser_resources.h"
 #include "components/autofill/core/browser/data_model/payments/iban.h"
 #include "components/autofill/core/common/autofill_payments_features.h"
@@ -20,10 +18,8 @@
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/mojom/dialog_button.mojom.h"
 #include "ui/base/resource/resource_bundle.h"
-#include "ui/gfx/color_palette.h"
-#include "ui/gfx/vector_icon_utils.h"
 #include "ui/views/accessibility/view_accessibility.h"
-#include "ui/views/controls/button/label_button.h"
+#include "ui/views/controls/button/md_text_button.h"
 #include "ui/views/controls/textfield/textfield.h"
 #include "ui/views/controls/throbber.h"
 #include "ui/views/layout/box_layout.h"
@@ -46,7 +42,7 @@ SaveIbanBubbleView::SaveIbanBubbleView(views::BubbleAnchor anchor_view,
                                        IbanBubbleController* controller)
     : AutofillLocationBarBubble(anchor_view, web_contents),
       controller_(controller) {
-  DCHECK(controller);
+  CHECK(controller, base::NotFatalUntil::M162);
   SetButtonLabel(ui::mojom::DialogButton::kOk,
                  controller->GetAcceptButtonText());
   SetButtonLabel(ui::mojom::DialogButton::kCancel,
@@ -314,7 +310,7 @@ bool SaveIbanBubbleView::Accept() {
   }
 
   if (controller_) {
-    DCHECK(nickname_textfield_);
+    CHECK(nickname_textfield_, base::NotFatalUntil::M162);
     controller_->OnAcceptButton(nickname_textfield_->GetText());
   }
 
@@ -341,7 +337,7 @@ std::unique_ptr<views::View> SaveIbanBubbleView::CreateLegalMessageView() {
       message_lines,
       v2_branding_enabled
           ? /*user_email=*/std::u16string()
-          : base::UTF8ToUTF16(controller()->GetAccountInfo().email),
+          : base::UTF8ToUTF16(controller()->GetAccountInfo().GetEmail()),
       v2_branding_enabled ? /*user_avatar=*/ui::ImageModel()
                           : GetProfileAvatar(controller()->GetAccountInfo()),
       base::BindRepeating(&SaveIbanBubbleView::LinkClicked,

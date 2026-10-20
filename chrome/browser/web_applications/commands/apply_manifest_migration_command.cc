@@ -11,6 +11,7 @@
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
 #include "base/metrics/histogram_functions.h"
+#include "base/time/time.h"
 #include "base/types/pass_key.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/web_applications/commands/command_result.h"
@@ -40,7 +41,7 @@
 #include "components/sync/protocol/web_app_specifics.pb.h"
 #include "components/webapps/browser/installable/installable_metrics.h"
 #include "components/webapps/browser/uninstall_result_code.h"
-#include "third_party/blink/public/common/features.h"
+#include "ui/base/window_open_disposition.h"
 
 namespace web_app {
 
@@ -111,8 +112,6 @@ ApplyManifestMigrationCommand::~ApplyManifestMigrationCommand() = default;
 void ApplyManifestMigrationCommand::StartWithLock(
     std::unique_ptr<AllAppsLock> lock) {
   all_apps_lock_ = std::move(lock);
-
-  CHECK(base::FeatureList::IsEnabled(blink::features::kWebAppMigrationApi));
 
   // Exit early if the source app cannot be migrated to a different app.
   if (!all_apps_lock_->registrar().AppMatches(
@@ -251,6 +250,7 @@ void ApplyManifestMigrationCommand::OnMigrationSourceInfoGathered(
   {
     ScopedRegistryUpdate update = all_apps_lock_->sync_bridge().BeginUpdate();
     WebApp* destination_app = update->UpdateApp(destination_app_id_);
+    CHECK(destination_app);
 
     if (migration_state->run_on_os_login_mode != RunOnOsLoginMode::kNotRun) {
       destination_app->SetRunOnOsLoginMode(
@@ -258,6 +258,18 @@ void ApplyManifestMigrationCommand::OnMigrationSourceInfoGathered(
     }
     destination_app->SetInstallState(proto::INSTALLED_WITH_OS_INTEGRATION);
     destination_app->SetUserDisplayMode(migration_state->user_display_mode);
+
+    const WebApp* source_app =
+        all_apps_lock_->registrar().GetAppById(source_app_id_);
+    base::Time first_install_time =
+        source_app ? source_app->first_install_time() : base::Time::Now();
+    if (first_install_time.is_null()) {
+      first_install_time = base::Time::Now();
+    }
+    // Since this is a migration, have the first installed time be the same as
+    // that of the source app.
+    destination_app->SetFirstInstallTime(first_install_time);
+    destination_app->SetLatestInstallTime(base::Time::Now());
   }
 
   SynchronizeOsOptions os_options{

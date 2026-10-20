@@ -8,11 +8,8 @@
 #include <optional>
 #include <utility>
 
-#include "base/functional/callback.h"
-#include "base/i18n/rtl.h"
 #include "base/memory/raw_ptr.h"
 #include "base/test/metrics/histogram_tester.h"
-#include "base/test/mock_callback.h"
 #include "base/test/scoped_feature_list.h"
 #include "chrome/browser/ui/autofill/mock_autofill_popup_controller.h"
 #include "chrome/browser/ui/views/autofill/popup/mock_accessibility_selection_delegate.h"
@@ -41,7 +38,6 @@
 #include "ui/gfx/geometry/point.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/views/accessibility/view_accessibility.h"
-#include "ui/views/controls/label.h"
 #include "ui/views/widget/widget.h"
 #include "ui/views/widget/widget_utils.h"
 
@@ -82,12 +78,12 @@ class PopupRowViewTest : public ChromeViewsTestBase {
   void ShowView(int line_number,
                 bool has_control,
                 bool is_acceptable = true,
-                SuggestionType type = SuggestionType::kAddressEntry) {
+                SuggestionType type = SuggestionType::kPasswordEntry) {
     std::vector<Suggestion> suggestions(line_number + 1, Suggestion(type));
     suggestions[line_number].type = type;
     suggestions[line_number].acceptability =
-        is_acceptable ? Suggestion::Acceptability::kAcceptable
-                      : Suggestion::Acceptability::kUnacceptable;
+        is_acceptable ? Suggestion::Acceptability::kSelectableAndAcceptable
+                      : Suggestion::Acceptability::kSelectableButUnacceptable;
     suggestions[line_number].main_text = Suggestion::Text(u"Suggestion");
     if (has_control) {
       suggestions[line_number].children = {Suggestion(type)};
@@ -281,6 +277,19 @@ TEST_F(PopupRowViewTest, SetSelectedCellVerifiesArgumentsNoControl) {
   EXPECT_FALSE(row_view().GetSelectedCell().has_value());
 }
 
+TEST_F(PopupRowViewTest, SetSelectedCellIgnoresUnselectableSuggestions) {
+  Suggestion suggestion(u"Source attribution",
+                        SuggestionType::kAtMemorySourceAttribution);
+  suggestion.acceptability =
+      Suggestion::Acceptability::kUnselectableAndUnacceptable;
+  ShowView(/*line_number=*/0, {suggestion});
+  EXPECT_FALSE(row_view().GetSelectedCell().has_value());
+
+  EXPECT_CALL(a11y_selection_delegate(), NotifyAXSelection).Times(0);
+  row_view().SetSelectedCell(CellType::kContent);
+  EXPECT_FALSE(row_view().GetSelectedCell().has_value());
+}
+
 TEST_F(PopupRowViewTest, SetSelectedCellVerifiesArgumentsWithControl) {
   ShowView(/*line_number=*/0, /*has_control=*/true);
   ASSERT_TRUE(row_view().GetExpandChildSuggestionsView());
@@ -455,6 +464,17 @@ TEST_F(PopupRowViewTest,
   generator().ClickLeftButton();
 }
 
+TEST_F(PopupRowViewTest, DatalistEntriesDoNotIgnoreInitialHoverClick) {
+  ShowView(/*line_number=*/0, /*has_control=*/false,
+           /*is_acceptable=*/true, SuggestionType::kDatalistEntry);
+
+  generator().MoveMouseTo(
+      row_view().GetContentView().GetBoundsInScreen().CenterPoint());
+  Paint();
+  EXPECT_CALL(controller(), AcceptSuggestion);
+  generator().ClickLeftButton();
+}
+
 TEST_F(PopupRowViewTest, NoCrashOnMouseAcceptingWithInvalidatedController) {
   EXPECT_CALL(controller(), ShouldIgnoreMouseObservedOutsideItemBoundsCheck())
       .WillOnce(Return(true));
@@ -520,44 +540,49 @@ struct PosInSetTestdata {
   int set_index;
 };
 
-const PosInSetTestdata kPosInSetTestcases[] = {
-    PosInSetTestdata{
-        .types = {SuggestionType::kAddressEntry, SuggestionType::kAddressEntry,
-                  SuggestionType::kSeparator, SuggestionType::kManageAddress},
-        .line_number = 1,
-        .set_size = 3,
-        .set_index = 2,
-    },
-    PosInSetTestdata{
-        .types = {SuggestionType::kPasswordEntry,
-                  SuggestionType::kAccountStoragePasswordEntry,
-                  SuggestionType::kSeparator,
-                  SuggestionType::kAllSavedPasswordsEntry},
-        .line_number = 0,
-        .set_size = 3,
-        .set_index = 1,
-    },
-    PosInSetTestdata{
-        .types = {SuggestionType::kAddressEntry, SuggestionType::kAddressEntry,
-                  SuggestionType::kSeparator, SuggestionType::kManageAddress},
-        .line_number = 3,
-        .set_size = 3,
-        .set_index = 3,
-    },
-    PosInSetTestdata{
-        .types = {SuggestionType::kAutocompleteEntry,
-                  SuggestionType::kAutocompleteEntry,
-                  SuggestionType::kAutocompleteEntry},
-        .line_number = 1,
-        .set_size = 3,
-        .set_index = 2,
-    },
-    PosInSetTestdata{
-        .types = {SuggestionType::kComposeResumeNudge},
-        .line_number = 0,
-        .set_size = 1,
-        .set_index = 1,
-    }};
+std::vector<PosInSetTestdata> GetPosInSetTestcases() {
+  return {
+      PosInSetTestdata{
+          .types = {SuggestionType::kAddressEntry,
+                    SuggestionType::kAddressEntry, SuggestionType::kSeparator,
+                    SuggestionType::kManageAddress},
+          .line_number = 1,
+          .set_size = 3,
+          .set_index = 2,
+      },
+      PosInSetTestdata{
+          .types = {SuggestionType::kPasswordEntry,
+                    SuggestionType::kAccountStoragePasswordEntry,
+                    SuggestionType::kSeparator,
+                    SuggestionType::kAllSavedPasswordsEntry},
+          .line_number = 0,
+          .set_size = 3,
+          .set_index = 1,
+      },
+      PosInSetTestdata{
+          .types = {SuggestionType::kAddressEntry,
+                    SuggestionType::kAddressEntry, SuggestionType::kSeparator,
+                    SuggestionType::kManageAddress},
+          .line_number = 3,
+          .set_size = 3,
+          .set_index = 3,
+      },
+      PosInSetTestdata{
+          .types = {SuggestionType::kAutocompleteEntry,
+                    SuggestionType::kAutocompleteEntry,
+                    SuggestionType::kAutocompleteEntry},
+          .line_number = 1,
+          .set_size = 3,
+          .set_index = 2,
+      },
+      PosInSetTestdata{
+          .types = {SuggestionType::kComposeResumeNudge},
+          .line_number = 0,
+          .set_size = 1,
+          .set_index = 1,
+      },
+  };
+}
 
 class PopupRowPosInSetViewTest
     : public PopupRowViewTest,
@@ -587,7 +612,7 @@ TEST_P(PopupRowPosInSetViewTest, All) {
 
 INSTANTIATE_TEST_SUITE_P(All,
                          PopupRowPosInSetViewTest,
-                         ::testing::ValuesIn(kPosInSetTestcases));
+                         ::testing::ValuesIn(GetPosInSetTestcases()));
 
 class PopupRowViewAcceptGuardEnabledTest : public PopupRowViewTest {
  public:
@@ -647,6 +672,11 @@ TEST_F(PopupRowViewAcceptGuardEnabledTest,
 }
 #endif  // !BUILDFLAG(IS_MAC)
 
+// TODO(crbug.com/500960278): Test case is flaky on macOS runners (frequently
+// running into timeout).
+#if !BUILDFLAG(IS_MAC)
+// Tests that a suggestion can be selected as soon as the row has been visible
+// for 500ms.
 TEST_F(PopupRowViewAcceptGuardEnabledTest,
        SuggestionIsAcceptedIfVisibleLongEnough) {
   base::HistogramTester histogram_tester;
@@ -666,6 +696,7 @@ TEST_F(PopupRowViewAcceptGuardEnabledTest,
   histogram_tester.ExpectUniqueSample(
       "Autofill.AcceptedSuggestionDesktopRowViewVisibleEnough", 1, 1);
 }
+#endif  // !BUILDFLAG(IS_MAC)
 
 }  // namespace
 }  // namespace autofill

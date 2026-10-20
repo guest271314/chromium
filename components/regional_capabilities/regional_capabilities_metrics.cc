@@ -6,7 +6,6 @@
 
 #include "base/containers/flat_map.h"
 #include "base/metrics/histogram_functions.h"
-#include "base/metrics/puma_histogram_functions.h"
 #include "base/notreached.h"
 #include "base/strings/strcat.h"
 #include "components/country_codes/country_codes.h"
@@ -99,6 +98,10 @@ std::string ToString(SearchEngineChoiceScreenConditions condition) {
       return "Managed";
     case SearchEngineChoiceScreenConditions::kEligibleForRestore:
       return "EligibleForRestore";
+    case SearchEngineChoiceScreenConditions::kUnavailableCurrentLocation:
+      return "UnavailableCurrentLocation";
+    case SearchEngineChoiceScreenConditions::kAlreadyCompletedImported:
+      return "AlreadyCompletedImported";
   }
   NOTREACHED();
 }
@@ -126,11 +129,13 @@ bool IsEligible(SearchEngineChoiceScreenConditions condition) {
     case SearchEngineChoiceScreenConditions::kAlreadyBeingShown:
     case SearchEngineChoiceScreenConditions::kUsingPersistedGuestSessionChoice:
     case SearchEngineChoiceScreenConditions::kIncompatibleCurrentLocation:
+    case SearchEngineChoiceScreenConditions::kUnavailableCurrentLocation:
     case SearchEngineChoiceScreenConditions::kAccountNotEligible:
     case SearchEngineChoiceScreenConditions::kIneligibleSurface:
     case SearchEngineChoiceScreenConditions::
         kHasNonHighlightablePrepopulatedSearchEngine:
     case SearchEngineChoiceScreenConditions::kManaged:
+    case SearchEngineChoiceScreenConditions::kAlreadyCompletedImported:
       return false;
   }
   NOTREACHED();
@@ -175,9 +180,6 @@ void RecordFunnelStage(
     metrics::ProfileMetricsService& profile_metrics_service) {
   profile_metrics_service.UmaHistogramEnumeration(
       "RegionalCapabilities.FunnelStage.Reported", stage);
-  base::PumaHistogramEnumeration(
-      base::PumaType::kRc, "PUMA.RegionalCapabilities.FunnelStage.Reported",
-      stage);
 }
 
 void RecordEligibilityFunnelStageDetails(
@@ -185,9 +187,6 @@ void RecordEligibilityFunnelStageDetails(
     metrics::ProfileMetricsService& profile_metrics_service) {
   profile_metrics_service.UmaHistogramEnumeration(
       "RegionalCapabilities.FunnelStage.Eligibility", conditions);
-  base::PumaHistogramEnumeration(
-      base::PumaType::kRc, "PUMA.RegionalCapabilities.FunnelStage.Eligibility",
-      conditions);
 }
 
 void RecordTriggeringFunnelStageDetails(
@@ -195,9 +194,6 @@ void RecordTriggeringFunnelStageDetails(
     metrics::ProfileMetricsService& profile_metrics_service) {
   profile_metrics_service.UmaHistogramEnumeration(
       "RegionalCapabilities.FunnelStage.Triggering", conditions);
-  base::PumaHistogramEnumeration(
-      base::PumaType::kRc, "PUMA.RegionalCapabilities.FunnelStage.Triggering",
-      conditions);
 }
 
 void RecordActiveRegionalProgram(
@@ -235,9 +231,26 @@ void RecordActiveRegionalProgramPerProfile(
       "RegionalCapabilities.ActiveRegionalProgram3", program);
 }
 
+void RecordDynamicCountryRegionalProgram(
+    ActiveRegionalProgram program,
+    metrics::ProfileMetricsService& profile_metrics_service) {
+  profile_metrics_service.UmaHistogramEnumeration(
+      "RegionalCapabilities.Debug.DynamicCountryRegionalProgram", program);
+}
+
 void RecordProgramSpecificExclusion(ProgramSpecificExclusion exclusion) {
   base::UmaHistogramEnumeration(
       "RegionalCapabilities.Debug.ProgramSpecificExclusion", exclusion);
+}
+
+void RecordDebugTriggeringEligibility(
+    SearchEngineChoiceScreenConditions conditions,
+    bool is_first_run) {
+  auto* histogram_name =
+      is_first_run
+          ? "RegionalCapabilities.Debug.TriggeringEligibility.FirstRun"
+          : "RegionalCapabilities.Debug.TriggeringEligibility.NotFirstRun";
+  base::UmaHistogramEnumeration(histogram_name, conditions);
 }
 
 }  // namespace regional_capabilities

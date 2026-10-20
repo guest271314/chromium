@@ -5,12 +5,14 @@
 #include "net/http/http_network_transaction.h"
 
 #include <deque>
+#include <optional>
 #include <queue>
 #include <set>
 #include <utility>
 #include <vector>
 
 #include "base/base64url.h"
+#include "base/byte_size.h"
 #include "base/compiler_specific.h"
 #include "base/debug/dump_without_crashing.h"
 #include "base/feature_list.h"
@@ -108,6 +110,11 @@ const size_t kMaxRetryAttempts = 2;
 // Max number of `retry_attempts_on_connection_errors_` for connection errors,
 // after which we give up and crash early.
 const size_t kMaxRetryAttemptsOnConnectionErrors = 50;
+
+// The threshold of connection error retry attempts at which we switch to
+// asynchronous retry.
+const size_t kAsyncRetryThresholdOnConnectionErrors =
+    kMaxRetryAttemptsOnConnectionErrors / 2;
 
 // Max number of calls to RestartWith* allowed for a single connection. A single
 // HttpNetworkTransaction should not signal very many restartable errors, but it
@@ -340,6 +347,22 @@ HttpNetworkTransaction::HttpNetworkTransaction(RequestPriority priority,
       priority_(priority) {}
 
 HttpNetworkTransaction::~HttpNetworkTransaction() {
+  if (retry_attempts_on_connection_errors_ > 0) {
+    base::UmaHistogramExactLinear(
+        "Net.NetworkTransaction.RetryAttemptsOnConnectionErrors",
+        retry_attempts_on_connection_errors_,
+        kMaxRetryAttemptsOnConnectionErrors + 1);
+    base::UmaHistogramExactLinear(
+        base::StrCat(
+            {"Net.NetworkTransaction.RetryAttemptsOnConnectionErrors.",
+             NegotiatedProtocolToHistogramSuffix(negotiated_protocol_)}),
+        retry_attempts_on_connection_errors_,
+        kMaxRetryAttemptsOnConnectionErrors + 1);
+  }
+
+  base::UmaHistogramEnumeration("Net.NetworkTransaction.TerminalState",
+                                terminal_state_);
+
 #if BUILDFLAG(ENABLE_REPORTING)
   // If no error or success report has been generated yet at this point, then
   // this network transaction was prematurely cancelled.
@@ -382,10 +405,12 @@ int HttpNetworkTransaction::Start(const HttpRequestInfo* request_info,
               NetLogWithSourceToFlow(net_log), "url", request_info->url);
 
   if (session_->power_suspended()) {
+    terminal_state_ = TerminalState::kOtherErrorBeforeSendingRequest;
     return ERR_NETWORK_IO_SUSPENDED;
   }
 
   if (request_info->load_flags & LOAD_ONLY_FROM_CACHE) {
+    terminal_state_ = TerminalState::kOtherErrorBeforeSendingRequest;
     return ERR_CACHE_MISS;
   }
 
@@ -451,6 +476,7 @@ int HttpNetworkTransaction::RestartIgnoringLastError(
   if (!CheckMaxRestarts())
     return ERR_TOO_MANY_RETRIES;
 
+  terminal_state_ = TerminalState::kAborted;
   next_state_ = STATE_CREATE_STREAM;
 
   int rv = DoLoop(OK);
@@ -642,6 +668,7 @@ int HttpNetworkTransaction::Read(IOBuffer* buf,
     DCHECK(proxy_info_.AnyProxyInChain(
         [](const ProxyServer& s) { return s.is_http_like(); }));
     DCHECK_EQ(headers->response_code(), HTTP_PROXY_AUTHENTICATION_REQUIRED);
+    terminal_state_ = TerminalState::kOtherErrorAfterSendingRequest;
     return ERR_TUNNEL_CONNECTION_FAILED;
   }
 
@@ -987,6 +1014,15 @@ bool HttpNetworkTransaction::UsingHttpProxyWithoutTunnel() const {
          request_->url.SchemeIs("http");
 }
 
+SSLInfo HttpNetworkTransaction::GetStreamSSLInfo() {
+  CHECK(stream_);
+  SSLInfo ssl_info;
+  if (IsSecureRequest()) {
+    stream_->GetSSLInfo(&ssl_info);
+  }
+  return ssl_info;
+}
+
 void HttpNetworkTransaction::DoCallback(int rv) {
   DCHECK_NE(rv, ERR_IO_PENDING);
   DCHECK(!callback_.is_null());
@@ -1011,8 +1047,10 @@ int HttpNetworkTransaction::DoLoop(int result) {
   DCHECK(next_state_ != STATE_NONE);
 
   int rv = result;
+  State last_state = STATE_NONE;
   do {
     State state = next_state_;
+    last_state = state;
     next_state_ = STATE_NONE;
     switch (state) {
       case STATE_CREATE_STREAM:
@@ -1108,6 +1146,29 @@ int HttpNetworkTransaction::DoLoop(int result) {
         NOTREACHED() << "bad state";
     }
   } while (rv != ERR_IO_PENDING && next_state_ != STATE_NONE);
+
+  // Update `terminal_state_` on final states only.
+  if (rv <= 0 && rv != ERR_IO_PENDING) {
+    const bool sent_request = last_state >= STATE_SEND_REQUEST_COMPLETE;
+    switch (rv) {
+      case OK:
+        terminal_state_ = last_state == STATE_READ_BODY_COMPLETE
+                              ? TerminalState::kSuccess
+                              : TerminalState::kResponseOk;
+        break;
+
+      case ERR_NETWORK_CHANGED:
+        terminal_state_ =
+            sent_request ? TerminalState::kNetworkChangedAfterSendingRequest
+                         : TerminalState::kNetworkChangedBeforeSendingRequest;
+        break;
+
+      default:
+        terminal_state_ = sent_request
+                              ? TerminalState::kOtherErrorAfterSendingRequest
+                              : TerminalState::kOtherErrorBeforeSendingRequest;
+    }
+  }
 
   return rv;
 }
@@ -1315,16 +1376,41 @@ int HttpNetworkTransaction::DoInitStreamComplete(int result) {
 
 int HttpNetworkTransaction::DoGenerateProxyAuthToken() {
   next_state_ = STATE_GENERATE_PROXY_AUTH_TOKEN_COMPLETE;
-  if (!ShouldApplyProxyAuth())
+  if (!ShouldApplyProxyAuth()) {
     return OK;
+  }
   HttpAuth::Target target = HttpAuth::AUTH_PROXY;
-  if (!auth_controllers_[target].get())
+  GURL auth_url = AuthURL(target);
+  // The proxy may have changed (for example due to fallback to another proxy
+  // in the list) since the controller was created for a previous attempt on
+  // this transaction. In that case, drop it and create a new one bound to the
+  // current proxy.
+  // TODO(crbug.com/40704785): Make sure to update the matching logic here when
+  // fixing this bug.
+  if (auth_controllers_[target].get() &&
+      !auth_controllers_[target]->MatchesSchemeHostPort(
+          url::SchemeHostPort(auth_url))) {
+    auth_controllers_[target] = nullptr;
+  }
+  if (!auth_controllers_[target].get()) {
     auth_controllers_[target] = base::MakeRefCounted<HttpAuthController>(
-        target, AuthURL(target), request_->network_anonymization_key,
+        target, auth_url, request_->network_anonymization_key,
         session_->http_auth_cache(), session_->http_auth_handler_factory(),
         session_->host_resolver());
+  }
+  // This is only reached for GET proxies (see ShouldApplyProxyAuth()); CONNECT
+  // proxy auth is handled by the proxy client sockets instead. GET proxy auth
+  // controllers are never given a certificate, so pass an empty SSLInfo.
+  //
+  // GetStreamSSLInfo() would also return an empty SSLInfo here, because a GET
+  // proxy is only used for "http" requests, so IsSecureRequest() is false. It
+  // is not used, to avoid implying that the proxy's certificate could show up
+  // here: GetStreamSSLInfo() only describes the destination server.
+  //
+  // As a result, GET proxy auth handlers derive no channel bindings and are not
+  // pinned to the proxy's certificate. This is legacy behavior.
   return auth_controllers_[target]->MaybeGenerateAuthToken(
-      request_, io_callback_, net_log_);
+      request_, SSLInfo(), io_callback_, net_log_);
 }
 
 int HttpNetworkTransaction::DoGenerateProxyAuthTokenComplete(int rv) {
@@ -1342,13 +1428,15 @@ int HttpNetworkTransaction::DoGenerateServerAuthToken() {
         target, AuthURL(target), request_->network_anonymization_key,
         session_->http_auth_cache(), session_->http_auth_handler_factory(),
         session_->host_resolver());
-    if (request_->load_flags & LOAD_DO_NOT_USE_EMBEDDED_IDENTITY)
+    if (request_->load_flags & LOAD_DO_NOT_USE_EMBEDDED_IDENTITY) {
       auth_controllers_[target]->DisableEmbeddedIdentity();
+    }
   }
-  if (!ShouldApplyServerAuth())
+  if (!ShouldApplyServerAuth()) {
     return OK;
+  }
   return auth_controllers_[target]->MaybeGenerateAuthToken(
-      request_, io_callback_, net_log_);
+      request_, GetStreamSSLInfo(), io_callback_, net_log_);
 }
 
 int HttpNetworkTransaction::DoGenerateServerAuthTokenComplete(int rv) {
@@ -1680,7 +1768,7 @@ int HttpNetworkTransaction::DoReadHeadersComplete(int result) {
   // Note: This will report a success for a redirect even if an error is
   // encountered later while draining the body.
   int response_code = response_.headers->response_code();
-  std::optional<base::ByteCount> content_length =
+  std::optional<base::ByteSize> content_length =
       response_.headers->GetContentLength();
   if ((response_code >= 400 && response_code < 600) ||
       response_code == HTTP_NO_CONTENT || response_code == HTTP_RESET_CONTENT ||
@@ -1924,6 +2012,14 @@ void HttpNetworkTransaction::GenerateNetworkErrorLoggingReport(int rv) {
   } else {
     details.server_ip = IPAddress();
   }
+  // Also report any other addresses that were contacted, so that the downgrade
+  // step can take all of them into account when the resolved address list
+  // contained more than one address.
+  for (const auto& attempt : connection_attempts_) {
+    if (attempt.endpoint.address() != details.server_ip) {
+      details.other_server_ips.push_back(attempt.endpoint.address());
+    }
+  }
   // HttpResponseHeaders::response_code() returns 0 if response code couldn't
   // be parsed, which is also how NEL represents the same.
   if (response_.headers) {
@@ -2100,8 +2196,26 @@ int HttpNetworkTransaction::HandleIOError(int error) {
             kMaxRetryAttemptsOnConnectionErrors) {
           base::UmaHistogramBoolean(
               "Net.NetworkTransaction.TooManyRetriesOnConnectionErrors", true);
+          base::UmaHistogramBoolean(
+              base::StrCat(
+                  {"Net.NetworkTransaction.TooManyRetriesOnConnectionErrors.",
+                   NegotiatedProtocolToHistogramSuffix(negotiated_protocol_)}),
+              true);
           return ERR_TOO_MANY_RETRIES;
         }
+
+        base::UmaHistogramSparse(
+            "Net.NetworkTransaction.RetryOnConnectionErrors", -error);
+        base::UmaHistogramSparse(
+            base::StrCat(
+                {"Net.NetworkTransaction.RetryOnConnectionErrors.",
+                 NegotiatedProtocolToHistogramSuffix(negotiated_protocol_)}),
+            -error);
+
+        if (retry_attempts_on_connection_errors_ == 0) {
+          initial_connection_error_ = error;
+        }
+
         retry_attempts_on_connection_errors_++;
         net_log_.AddEventWithNetErrorCode(
             NetLogEventType::HTTP_TRANSACTION_RESTART_AFTER_ERROR, error);
@@ -2120,12 +2234,41 @@ int HttpNetworkTransaction::HandleIOError(int error) {
         if (base::FeatureList::IsEnabled(
                 features::kAsyncRetryOnTooManyConnectionErrors) &&
             // For performance reasons, we initially retry synchronously.
-            // However, after a threshold of attempts
-            // (= kMaxRetryAttemptsOnConnectionErrors / 2), we switch to
-            // asynchronous retry to break potential priority starvation loops
-            // as described above.
+            // However, after a threshold of attempts, we switch to asynchronous
+            // retry to break potential priority starvation loops as described
+            // above.
             retry_attempts_on_connection_errors_ >=
-                kMaxRetryAttemptsOnConnectionErrors / 2) {
+                kAsyncRetryThresholdOnConnectionErrors) {
+          base::UmaHistogramBoolean(
+              "Net.NetworkTransaction.AsyncRetryOnTooManyConnectionErrors."
+              "Every",
+              true);
+          base::UmaHistogramBoolean(
+              base::StrCat(
+                  {"Net.NetworkTransaction.AsyncRetryOnTooManyConnectionErrors."
+                   "Every.",
+                   NegotiatedProtocolToHistogramSuffix(negotiated_protocol_)}),
+              true);
+          if (retry_attempts_on_connection_errors_ ==
+              kAsyncRetryThresholdOnConnectionErrors) {
+            base::UmaHistogramBoolean(
+                kAsyncRetryOnTooManyConnectionErrorsFirstHistogram, true);
+            base::UmaHistogramBoolean(
+                base::StrCat(
+                    {kAsyncRetryOnTooManyConnectionErrorsFirstHistogram, ".",
+                     NegotiatedProtocolToHistogramSuffix(
+                         negotiated_protocol_)}),
+                true);
+            base::UmaHistogramSparse(
+                "Net.NetworkTransaction.InitialErrorOnAsyncRetry",
+                -initial_connection_error_);
+            base::UmaHistogramSparse(
+                base::StrCat(
+                    {"Net.NetworkTransaction.InitialErrorOnAsyncRetry.",
+                     NegotiatedProtocolToHistogramSuffix(
+                         negotiated_protocol_)}),
+                -initial_connection_error_);
+          }
           // Use WeakPtr to prevent a potential dangling pointer crash. See
           // http://crbug.com/506964502 for more details.
           base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
@@ -2225,6 +2368,7 @@ void HttpNetworkTransaction::ResetStateForAuthRestart() {
   remote_endpoint_ = IPEndPoint();
   net_error_details_.quic_broken = false;
   net_error_details_.quic_connection_error = quic::QUIC_NO_ERROR;
+  terminal_state_ = TerminalState::kAborted;
 #if BUILDFLAG(ENABLE_REPORTING)
   network_error_logging_report_generated_ = false;
   start_timeticks_ = base::TimeTicks::Now();
@@ -2325,8 +2469,18 @@ int HttpNetworkTransaction::HandleAuthChallenge() {
   if (!auth_controllers_[target].get())
     return ERR_UNEXPECTED_PROXY_AUTH;
 
+  // CONNECT proxy auth challenges do not go through this path; they are
+  // handled by the proxy client sockets. Only challenges from GET proxies, or
+  // directly from servers, reach here. A proxy auth challenge sent by a server
+  // when there is no GET proxy results in ERR_UNEXPECTED_PROXY_AUTH above.
+  //
+  // GetStreamSSLInfo() describes the connection to the destination server, so
+  // only pass it to the server auth controller. The GET proxy auth controller
+  // gets an empty SSLInfo, matching DoGenerateProxyAuthToken().
+  const SSLInfo ssl_info =
+      target == HttpAuth::AUTH_SERVER ? GetStreamSSLInfo() : SSLInfo();
   int rv = auth_controllers_[target]->HandleAuthChallenge(
-      headers, response_.ssl_info, !ShouldApplyServerAuth(), false, net_log_);
+      headers, ssl_info, !ShouldApplyServerAuth(), false, net_log_);
   if (auth_controllers_[target]->HaveAuthHandler())
     pending_auth_target_ = target;
 
@@ -2430,13 +2584,14 @@ bool HttpNetworkTransaction::ContentEncodingsValid() const {
 
 void HttpNetworkTransaction::RecordStreamRequestResult(int result) {
   // Only record the first time the stream request completes.
-  if (num_restarts_ > 0) {
+  if (num_restarts_ > 0 || retry_attempts_ > 0 ||
+      retry_attempts_on_connection_errors_ > 0) {
     return;
   }
 
   base::TimeDelta elapsed = base::TimeTicks::Now() - start_timeticks_;
   base::UmaHistogramTimes(
-      base::StrCat({"Net.NetworkTransaction.StreamRequestCompleteTime3.",
+      base::StrCat({"Net.NetworkTransaction.StreamRequestCompleteTime4.",
                     IsGoogleHostWithAlpnH3(url_.host()) ? "GoogleHost." : "",
                     result == OK ? "Success" : "Failure"}),
       elapsed);
@@ -2445,7 +2600,7 @@ void HttpNetworkTransaction::RecordStreamRequestResult(int result) {
     CHECK(stream_);
     base::UmaHistogramEnumeration(
         base::StrCat({
-            "Net.NetworkTransaction.NegotiatedProtocol2",
+            "Net.NetworkTransaction.NegotiatedProtocol3",
             IsGoogleHostWithAlpnH3(url_.host()) ? ".GoogleHost" : "",
         }),
         negotiated_protocol_);
@@ -2454,7 +2609,7 @@ void HttpNetworkTransaction::RecordStreamRequestResult(int result) {
     int get_endpoint_result = stream_->GetRemoteEndpoint(&endpoint);
     if (get_endpoint_result == OK) {
       base::UmaHistogramEnumeration(
-          "Net.NetworkTransaction.StreamAddressFamily2", endpoint.GetFamily(),
+          "Net.NetworkTransaction.StreamAddressFamily3", endpoint.GetFamily(),
           static_cast<AddressFamily>(ADDRESS_FAMILY_LAST + 1));
     }
 
@@ -2464,27 +2619,37 @@ void HttpNetworkTransaction::RecordStreamRequestResult(int result) {
         create_stream_end_time_ - create_stream_start_time_;
 
     const std::string_view histogram_base_name =
-        ForWebSocketHandshake() ? "CreateWebSocketStreamTime3"
-                                : "CreateHttpStreamTime3";
+        ForWebSocketHandshake() ? "CreateWebSocketStreamTime"
+                                : "CreateHttpStreamTime";
     const std::string_view host_suffix =
         IsGoogleHostWithAlpnH3(url_.host()) ? ".GoogleHost" : "";
     const std::string_view protocol_suffix =
         NegotiatedProtocolToHistogramSuffixCoalesced(negotiated_protocol_);
-    std::string histogram_name =
-        base::StrCat({"Net.NetworkTransaction.", histogram_base_name,
-                      host_suffix, ".", protocol_suffix});
-    base::UmaHistogramTimes(histogram_name, create_time);
-
     const std::string_view address_suffix =
         AddressFamilyToString(endpoint.GetFamily());
-    base::UmaHistogramTimes(base::StrCat({histogram_name, ".", address_suffix}),
-                            create_time);
+
+    // TODO(crbug.com/531975349): Remove version 4 histograms once ongoing
+    // experiments have migrated to version 5.
+    std::string deprecated_histogram_name =
+        base::StrCat({"Net.NetworkTransaction.", histogram_base_name, "4",
+                      host_suffix, ".", protocol_suffix});
+    base::UmaHistogramTimes(deprecated_histogram_name, create_time);
+    base::UmaHistogramTimes(
+        base::StrCat({deprecated_histogram_name, ".", address_suffix}),
+        create_time);
+
+    std::string histogram_name =
+        base::StrCat({"Net.NetworkTransaction.", histogram_base_name, "5",
+                      host_suffix, ".", protocol_suffix});
+    base::UmaHistogramMediumTimes(histogram_name, create_time);
+    base::UmaHistogramMediumTimes(
+        base::StrCat({histogram_name, ".", address_suffix}), create_time);
 
     CHECK(stream_request_completion_details_.has_value());
     if (stream_request_completion_details_->session_source.has_value()) {
       base::UmaHistogramEnumeration(
           base::StrCat(
-              {"Net.NetworkTransaction.SessionSource3.", protocol_suffix}),
+              {"Net.NetworkTransaction.SessionSource4.", protocol_suffix}),
           *stream_request_completion_details_->session_source);
     }
 
@@ -2505,12 +2670,12 @@ void HttpNetworkTransaction::RecordStreamRequestResult(int result) {
       };
       base::UmaHistogramTimes(
           base::StrCat({"Net.NetworkTransaction.", protocol_suffix,
-                        "StreamCreationTime2.",
+                        "StreamCreationTime3.",
                         is_existing() ? "Existing" : "New"}),
           create_time);
     }
   } else {
-    base::UmaHistogramSparse("Net.NetworkTransaction.StreamRequestErrorCode3",
+    base::UmaHistogramSparse("Net.NetworkTransaction.StreamRequestErrorCode4",
                              -result);
   }
 }

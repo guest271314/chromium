@@ -60,9 +60,9 @@
 #import "ios/chrome/browser/shared/model/web_state_list/web_state_list_observer.h"
 #import "ios/chrome/browser/shared/public/commands/auto_deletion_commands.h"
 #import "ios/chrome/browser/shared/public/commands/browser_coordinator_commands.h"
-#import "ios/chrome/browser/shared/public/commands/bwg_commands.h"
 #import "ios/chrome/browser/shared/public/commands/command_dispatcher.h"
 #import "ios/chrome/browser/shared/public/commands/download_list_commands.h"
+#import "ios/chrome/browser/shared/public/commands/gemini_commands.h"
 #import "ios/chrome/browser/shared/public/commands/open_new_tab_command.h"
 #import "ios/chrome/browser/shared/public/commands/save_to_drive_commands.h"
 #import "ios/chrome/browser/shared/public/commands/scene_commands.h"
@@ -102,14 +102,14 @@
   // Restart when the animation ends.
   BOOL _restartPending;
   // Handler for Gemini commands.
-  __weak id<BWGCommands> _geminiHandler;
+  __weak id<GeminiCommands> _geminiHandler;
 }
 @end
 
 @implementation DownloadManagerCoordinator
 
 - (void)dealloc {
-  CHECK(_stopped, base::NotFatalUntil::M150);
+  CHECK(_stopped);
 }
 
 - (void)start {
@@ -118,13 +118,12 @@
 
 // Similar to start but can be called after pause.
 - (void)restart {
-  CHECK(self.presenter, base::NotFatalUntil::M150);
-  CHECK(self.browser, base::NotFatalUntil::M150);
-  if (IsGeminiCopresenceEnabled()) {
-    _geminiHandler =
-        HandlerForProtocol(self.browser->GetCommandDispatcher(), BWGCommands);
+  CHECK(self.presenter);
+  CHECK(self.browser);
+  if (IsPageActionMenuEnabled()) {
+    _geminiHandler = HandlerForProtocol(self.browser->GetCommandDispatcher(),
+                                        GeminiCommands);
   }
-
   if (_stopped && self.presenter.presentedViewController) {
     // Stopping animation is still in progress. Wait until it is done to
     // restart.
@@ -136,6 +135,10 @@
   [defaultCenter addObserver:self
                     selector:@selector(applicationDidEnterBackground:)
                         name:UIApplicationDidEnterBackgroundNotification
+                      object:nil];
+  [defaultCenter addObserver:self
+                    selector:@selector(applicationWillEnterForeground:)
+                        name:UIApplicationWillEnterForegroundNotification
                       object:nil];
 
   BOOL isIncognito = self.isOffTheRecord;
@@ -170,9 +173,6 @@
 
   _mediator.SetDownloadTask(_downloadTask.get());
   _mediator.SetConsumer(_viewController);
-  if (base::FeatureList::IsEnabled(kIOSDownloadNoUIUpdateInBackground)) {
-    _mediator.StartObservingNotifications();
-  }
 
   self.presenter.baseViewController = self.baseViewController;
   self.presenter.presentedViewController = _viewController;
@@ -203,9 +203,6 @@
   if (IsDownloadListEnabled()) {
     _mediator.SetDownloadRecordService(nullptr);
   }
-  if (base::FeatureList::IsEnabled(kIOSDownloadNoUIUpdateInBackground)) {
-    _mediator.StopObservingNotifications();
-  }
 
   if (_viewController) {
     [self.presenter dismissAnimated:self.animatesPresentation];
@@ -227,6 +224,7 @@
   [self stopStoreKitCoordinator];
 
   [[InstallationNotifier sharedInstance] unregisterForNotifications:self];
+  [[NSNotificationCenter defaultCenter] removeObserver:self];
   _stopped = YES;
 }
 
@@ -298,7 +296,7 @@
 - (void)downloadManagerTabHelper:(DownloadManagerTabHelper*)tabHelper
                  didHideDownload:(web::DownloadTask*)download
                         animated:(BOOL)animated {
-  CHECK_EQ(_downloadTask.get(), download, base::NotFatalUntil::M150);
+  CHECK_EQ(_downloadTask.get(), download);
   self.animatesPresentation = animated;
   [self stop];
   self.animatesPresentation = YES;
@@ -307,7 +305,7 @@
 - (void)downloadManagerTabHelper:(DownloadManagerTabHelper*)tabHelper
                  didShowDownload:(web::DownloadTask*)download
                         animated:(BOOL)animated {
-  CHECK_NE(_downloadTask.get(), download, base::NotFatalUntil::M150);
+  CHECK_NE(_downloadTask.get(), download);
   _downloadTask = download->GetWeakPtr();
   self.animatesPresentation = animated;
   [self start];
@@ -322,7 +320,7 @@
     // observer is called.
     return;
   }
-  CHECK_EQ(_downloadTask.get(), download, base::NotFatalUntil::M150);
+  CHECK_EQ(_downloadTask.get(), download);
   self.animatesPresentation = NO;
   [self pause];
   self.animatesPresentation = YES;
@@ -352,7 +350,7 @@
 
 - (void)downloadManagerTabHelper:(DownloadManagerTabHelper*)tabHelper
             wantsToStartDownload:(web::DownloadTask*)download {
-  CHECK_EQ(_downloadTask.get(), download, base::NotFatalUntil::M150);
+  CHECK_EQ(_downloadTask.get(), download);
   [self tryDownload];
 }
 
@@ -364,7 +362,10 @@
 #pragma mark - ContainedPresenterDelegate
 
 - (void)containedPresenterWillPresent:(id<ContainedPresenter>)presenter {
-  if (IsGeminiCopresenceEnabled()) {
+  if (IsPageActionMenuEnabled() &&
+      [_geminiHandler
+          respondsToSelector:@selector(
+                                 hideFloatyIfInvokedAnimated:fromSource:)]) {
     [_geminiHandler
         hideFloatyIfInvokedAnimated:NO
                          fromSource:gemini::FloatyUpdateSource::Banner];
@@ -372,12 +373,12 @@
 }
 
 - (void)containedPresenterDidPresent:(id<ContainedPresenter>)presenter {
-  CHECK_EQ(presenter, self.presenter, base::NotFatalUntil::M150);
+  CHECK_EQ(presenter, self.presenter);
   [_viewController disableCurrentButtonTemporarily];
 }
 
 - (void)containedPresenterDidDismiss:(id<ContainedPresenter>)presenter {
-  CHECK_EQ(presenter, self.presenter, base::NotFatalUntil::M150);
+  CHECK_EQ(presenter, self.presenter);
   // The view controller may not be dealloced immediately.
   presenter.presentedViewController = nil;
   if (_restartPending) {
@@ -385,7 +386,10 @@
     [self start];
   }
 
-  if (IsGeminiCopresenceEnabled()) {
+  if (IsPageActionMenuEnabled() &&
+      [_geminiHandler
+          respondsToSelector:@selector(updateFloatyVisibilityIfEligibleAnimated:
+                                       fromSource:)]) {
     [_geminiHandler
         updateFloatyVisibilityIfEligibleAnimated:NO
                                       fromSource:gemini::FloatyUpdateSource::
@@ -650,6 +654,10 @@
   [_openInController.presentingViewController
       dismissViewControllerAnimated:YES
                          completion:nil];
+}
+
+- (void)applicationWillEnterForeground:(NSNotification*)note {
+  _mediator.SetGoogleDriveAppInstalled(IsGoogleDriveAppInstalled());
 }
 
 #pragma mark - StoreKitCoordinatorDelegate

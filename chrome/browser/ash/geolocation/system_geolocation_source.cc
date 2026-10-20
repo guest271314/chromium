@@ -18,7 +18,6 @@
 #include "base/check_deref.h"
 #include "base/functional/callback_helpers.h"
 #include "chrome/browser/ash/privacy_hub/privacy_hub_util.h"
-#include "chrome/grit/branded_strings.h"
 #include "chromeos/ash/experiences/settings_ui/settings_app_manager.h"
 #include "components/prefs/pref_change_registrar.h"
 #include "components/prefs/pref_service.h"
@@ -32,8 +31,8 @@ namespace ash {
 
 SystemGeolocationSource::SystemGeolocationSource()
     : permission_update_callback_(base::DoNothing()) {
-  DCHECK(Shell::Get());
-  DCHECK(Shell::Get()->session_controller());
+  CHECK(Shell::Get(), base::NotFatalUntil::M160);
+  CHECK(Shell::Get()->session_controller(), base::NotFatalUntil::M160);
   observer_.Observe(Shell::Get()->session_controller());
 }
 
@@ -89,8 +88,9 @@ void SystemGeolocationSource::OnActiveUserPrefServiceChanged(
 }
 
 void SystemGeolocationSource::OnPrefChanged(const std::string& pref_name) {
-  DCHECK_EQ(pref_name, prefs::kUserGeolocationAccessLevel);
-  DCHECK(primary_user_pref_change_registrar_);
+  CHECK_EQ(pref_name, prefs::kUserGeolocationAccessLevel,
+           base::NotFatalUntil::M160);
+  CHECK(primary_user_pref_change_registrar_, base::NotFatalUntil::M160);
   // Get the actual permission status from CrOS by directly accessing pref
   // service.
   device::LocationSystemPermissionStatus status =

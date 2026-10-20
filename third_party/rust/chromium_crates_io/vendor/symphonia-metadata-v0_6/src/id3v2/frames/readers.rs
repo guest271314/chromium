@@ -1,5 +1,5 @@
 // Symphonia
-// Copyright (c) 2019-2022 The Project Symphonia Developers.
+// Copyright (c) 2019-2026 The Project Symphonia Developers.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
 // License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -145,7 +145,7 @@ fn read_date(reader: &mut BufReader<'_>) -> Result<String> {
     }
 
     // Safety: The data array only contains ASCII digits.
-    Ok(str::from_utf8(&date).unwrap().to_string())
+    Ok(str::from_utf8(&date).expect("date contains only ASCII digits").to_string())
 }
 
 /// Read and validate an encoding indicator.
@@ -174,7 +174,11 @@ fn read_lang_code(reader: &mut BufReader<'_>) -> Result<Option<String>> {
     }
     else {
         // Convert to lowercase string.
-        Some(std::str::from_utf8(&code).unwrap().to_ascii_lowercase())
+        Some(
+            std::str::from_utf8(&code)
+                .expect("lang code contains only ASCII alphabetic chars")
+                .to_ascii_lowercase(),
+        )
     };
 
     Ok(code)
@@ -417,7 +421,7 @@ pub fn read_chap_frame(mut reader: BufReader<'_>, frame: &FrameInfo<'_>) -> Resu
         }?;
 
         match frame {
-            FrameResult::MultipleTags(tag_list) => tags.extend(tag_list.into_iter()),
+            FrameResult::MultipleTags(tag_list) => tags.extend(tag_list),
             FrameResult::Tag(mut tag) => {
                 // The TIT2 (track title) and TIT3 (track subtitle/description) ID3v2 frames are
                 // repurposed for chapter title and description, respectively.
@@ -590,7 +594,7 @@ pub fn read_ctoc_frame(mut reader: BufReader<'_>, frame: &FrameInfo<'_>) -> Resu
         }?;
 
         match frame {
-            FrameResult::MultipleTags(tag_list) => tags.extend(tag_list.into_iter()),
+            FrameResult::MultipleTags(tag_list) => tags.extend(tag_list),
             FrameResult::Tag(tag) => tags.push(tag),
             FrameResult::Visual(visual) => visuals.push(visual),
             _ => {}
@@ -850,7 +854,9 @@ pub fn read_tipl_frame(mut reader: BufReader<'_>, frame: &FrameInfo<'_>) -> Resu
             // Iterate over all pairs, and parse them into standard tags.
             for pair in list.chunks_exact(2) {
                 // Safety: Pre-checked above all pairs can be parsed.
-                let parser = TIPL_FUNC_PARSERS.get(pair[0].as_str()).unwrap();
+                let parser = TIPL_FUNC_PARSERS
+                    .get(pair[0].as_str())
+                    .expect("pre-checked that pair key exists in TIPL_FUNC_PARSERS");
 
                 // Parse raw value into standard tag.
                 match parser(Arc::new(pair[1].clone())) {

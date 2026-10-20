@@ -19,10 +19,7 @@
 #include "chrome/browser/new_tab_page/microsoft_auth/microsoft_auth_service.h"
 #include "chrome/browser/new_tab_page/microsoft_auth/microsoft_auth_service_observer.h"
 #include "chrome/browser/new_tab_page/modules/new_tab_page_modules.h"
-#include "chrome/browser/new_tab_page/promos/promo_service.h"
-#include "chrome/browser/new_tab_page/promos/promo_service_observer.h"
 #include "chrome/browser/search/background/ntp_custom_background_service.h"
-#include "chrome/browser/search/background/ntp_custom_background_service_observer.h"
 #include "chrome/browser/themes/theme_service.h"
 #include "chrome/browser/themes/theme_service_observer.h"
 #include "chrome/browser/ui/search/ntp_user_data_logger.h"
@@ -35,6 +32,7 @@
 #include "components/search_provider_logos/logo_common.h"
 #include "components/segmentation_platform/public/result.h"
 #include "components/themes/ntp_background_service_observer.h"
+#include "components/themes/ntp_custom_background_service_observer.h"
 #include "components/user_education/common/feature_promo/feature_promo_controller.h"
 #include "components/user_education/common/feature_promo/feature_promo_result.h"
 #include "content/public/browser/web_contents_observer.h"
@@ -81,7 +79,6 @@ class NewTabPageHandler
       public ui::NativeThemeObserver,
       public ThemeServiceObserver,
       public NtpCustomBackgroundServiceObserver,
-      public PromoServiceObserver,
       public optimization_guide::SettingsEnabledObserver,
       public MicrosoftAuthServiceObserver,
       public new_tab_footer::NewTabFooterControllerObserver {
@@ -98,6 +95,7 @@ class NewTabPageHandler
                         segmentation_platform_service,
                     content::WebContents* web_contents,
                     const base::Time& ntp_navigation_start_time,
+                    base::TimeTicks ntp_navigation_start_time_ticks,
                     const std::vector<ntp::ModuleIdDetail>* module_id_details);
 
   NewTabPageHandler(const NewTabPageHandler&) = delete;
@@ -105,9 +103,8 @@ class NewTabPageHandler
 
   ~NewTabPageHandler() override;
 
-  // Histograms being recorded when a module is dismissed or restored.
+  // Histograms being recorded when a module is dismissed.
   static const char kModuleDismissedHistogram[];
-  static const char kModuleRestoredHistogram[];
   // Histograms being recorded when auto removal/undo event is triggered.
   static const char kModuleAutoRemovalHistogram[];
   static const char kModuleAutoRemovalUndoneHistogram[];
@@ -130,11 +127,7 @@ class NewTabPageHandler
   void SetMostVisitedSettings(ntp_tiles::TileType type, bool visible) override;
   void GetMostVisitedSettings(GetMostVisitedSettingsCallback callback) override;
   void GetDoodle(GetDoodleCallback callback) override;
-  void UpdatePromoData() override;
-  void BlocklistPromo(const std::string& promo_id) override;
-  void UndoBlocklistPromo(const std::string& promo_id) override;
   void OnDismissModule(const std::string& module_id) override;
-  void OnRestoreModule(const std::string& module_id) override;
   void SetModulesVisible(bool visible) override;
   void SetModulesDisabled(const std::vector<std::string>& module_ids,
                           bool disabled,
@@ -153,8 +146,6 @@ class NewTabPageHandler
   void UpdateActionChipsVisibility() override;
   void OnAppRendered(double time) override;
   void OnOneGoogleBarRendered(double time) override;
-  void OnPromoRendered(double time,
-                       const std::optional<GURL>& log_url) override;
   void OnCustomizeDialogAction(
       new_tab_page::mojom::CustomizeDialogAction action) override;
   void OnDoodleImageClicked(new_tab_page::mojom::DoodleImageType type,
@@ -166,9 +157,12 @@ class NewTabPageHandler
   void OnDoodleShared(new_tab_page::mojom::DoodleShareChannel channel,
                       const std::string& doodle_id,
                       const std::optional<std::string>& share_id) override;
-  void OnPromoLinkClicked() override;
   void IncrementComposeButtonShownCount() override;
   void MaybeTriggerAutomaticCustomizeChromePromo() override;
+  void CanShowRealboxContextMenuAnimation(
+      CanShowRealboxContextMenuAnimationCallback callback) override;
+  void RecordRealboxContextMenuAnimationImpression(bool shown) override;
+  void OnContextualSearchIPHEngaged() override;
 
  private:
   // ui::NativeThemeObserver:
@@ -179,10 +173,6 @@ class NewTabPageHandler
 
   // NtpCustomBackgroundServiceObserver:
   void OnCustomBackgroundImageUpdated() override;
-
-  // PromoServiceObserver:
-  void OnPromoDataUpdated() override;
-  void OnPromoServiceShuttingDown() override;
 
   // SettingsEnabledObserver:
   void OnChangeInFeatureCurrentlyEnabledState(bool is_now_enabled) override;
@@ -221,7 +211,9 @@ class NewTabPageHandler
   void MaybeLaunchInteractionSurvey(std::string_view interaction,
                                     const std::string& module_id,
                                     int delay_time_ms = 0);
+#if !BUILDFLAG(IS_ANDROID)
   void MaybeShowWebstoreToast();
+#endif  // !BUILDFLAG(IS_ANDROID)
 
   void RecordModuleInteraction(const std::string& module_id);
 
@@ -259,14 +251,11 @@ class NewTabPageHandler
   bool SyncMicrosoftModulesWithAuth();
 
   NTPUserDataLogger logger_;
-// TODO(b/502297163): Implement for Android.
-#if !BUILDFLAG(IS_ANDROID)
   base::ScopedObservation<ThemeService, ThemeServiceObserver>
       theme_service_observation_{this};
-  base::ScopedObservation<PromoService, PromoServiceObserver>
-      promo_service_observation_{this};
   base::ScopedObservation<MicrosoftAuthService, MicrosoftAuthServiceObserver>
       microsoft_auth_service_observation_{this};
+#if !BUILDFLAG(IS_ANDROID)
   base::ScopedObservation<new_tab_footer::NewTabFooterController,
                           new_tab_footer::NewTabFooterControllerObserver>
       footer_controller_observation_{this};
@@ -291,7 +280,6 @@ class NewTabPageHandler
       loader_map_;
   PrefChangeRegistrar pref_change_registrar_;
   PrefChangeRegistrar local_state_pref_change_registrar_;
-  raw_ptr<PromoService> promo_service_;
   raw_ptr<MicrosoftAuthService> const microsoft_auth_service_;
   raw_ptr<OptimizationGuideKeyedService> optimization_guide_keyed_service_ =
       nullptr;
@@ -300,7 +288,6 @@ class NewTabPageHandler
   base::ScopedObservation<NtpCustomBackgroundService,
                           NtpCustomBackgroundServiceObserver>
       ntp_custom_background_service_observation_{this};
-  std::optional<base::TimeTicks> promo_load_start_time_;
 // TODO(b/502297163): Implement for Android.
 #if !BUILDFLAG(IS_ANDROID)
   base::DictValue interaction_module_id_trigger_dict_;

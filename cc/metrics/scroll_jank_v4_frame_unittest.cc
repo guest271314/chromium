@@ -34,26 +34,33 @@ TEST(ScrollJankV4FrameTest, BeginFrameArgsForScrollJankFromBeginFrameArgs) {
       /* deadline= */ MillisecondsTicks(123) + kVsyncInterval / 3,
       /* interval= */ kVsyncInterval,
       viz::BeginFrameArgs::BeginFrameArgsType::NORMAL);
+  args.deadline_derived_interval = base::Milliseconds(8);
   BeginFrameArgsForScrollJank args_for_scroll_jank =
       BeginFrameArgsForScrollJank::From(args, 456);
-  EXPECT_EQ(args_for_scroll_jank, (BeginFrameArgsForScrollJank{
-                                      .frame_time = MillisecondsTicks(123),
-                                      .interval = kVsyncInterval,
-                                      .result_id = 456,
-                                  }));
+  EXPECT_EQ(args_for_scroll_jank,
+            (BeginFrameArgsForScrollJank{
+                .frame_time = MillisecondsTicks(123),
+                .interval = kVsyncInterval,
+                .deadline_derived_interval = base::Milliseconds(8),
+                .result_id = 456,
+            }));
 }
 
 TEST(ScrollJankV4FrameTest,
      BeginFrameArgsForScrollJankFromDispatchBeginFrameArgs) {
   ScrollEventMetrics::DispatchBeginFrameArgs args = {
-      .frame_time = MillisecondsTicks(123), .interval = kVsyncInterval};
+      .frame_time = MillisecondsTicks(123),
+      .interval = kVsyncInterval,
+      .deadline_derived_interval = base::Milliseconds(8)};
   BeginFrameArgsForScrollJank args_for_scroll_jank =
       BeginFrameArgsForScrollJank::From(args, 456);
-  EXPECT_EQ(args_for_scroll_jank, (BeginFrameArgsForScrollJank{
-                                      .frame_time = MillisecondsTicks(123),
-                                      .interval = kVsyncInterval,
-                                      .result_id = 456,
-                                  }));
+  EXPECT_EQ(args_for_scroll_jank,
+            (BeginFrameArgsForScrollJank{
+                .frame_time = MillisecondsTicks(123),
+                .interval = kVsyncInterval,
+                .deadline_derived_interval = base::Milliseconds(8),
+                .result_id = 456,
+            }));
 }
 
 TEST(ScrollJankV4FrameTest, EmptyRealScrollUpdatesToOstream) {
@@ -71,7 +78,7 @@ TEST(ScrollJankV4FrameTest, NonEmptyRealScrollUpdatesToOstream) {
       ScrollJankV4Frame::Stage::ScrollUpdates::Real{
           .last_input_generation_ts = MillisecondsTicks(3),
           .has_inertial_input = false,
-          .abs_total_raw_delta_pixels = 10,
+          .total_raw_delta_pixels = 10,
           .max_abs_inertial_raw_delta_pixels = 0,
       };
 
@@ -110,11 +117,11 @@ TEST(ScrollJankV4FrameTest, ScrollUpdatesToOstream) {
           .first_input_generation_ts = MillisecondsTicks(1),
           .last_input_generation_ts = MillisecondsTicks(3),
           .has_inertial_input = false,
-          .abs_total_raw_delta_pixels = 10,
+          .total_raw_delta_pixels = -10,
           .max_abs_inertial_raw_delta_pixels = 0,
       },
       /* synthetic= */ std::nullopt,
-      /* scroll_begin_arrival_timestamp= */ std::nullopt)};
+      /* scroll_begin_arrival_timestamp= */ MillisecondsTicks(5))};
 
   std::ostringstream out;
   auto& result = out << stage;

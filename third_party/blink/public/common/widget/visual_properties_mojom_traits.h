@@ -31,6 +31,10 @@ struct BLINK_COMMON_EXPORT StructTraits<blink::mojom::VisualPropertiesDataView,
     return r.resizable;
   }
 
+  static bool always_on_top_popup(const blink::VisualProperties& r) {
+    return r.always_on_top_popup;
+  }
+
   static const gfx::Size& min_size_for_auto_resize(
       const blink::VisualProperties& r) {
     return r.min_size_for_auto_resize;
@@ -73,9 +77,18 @@ struct BLINK_COMMON_EXPORT StructTraits<blink::mojom::VisualPropertiesDataView,
     return r.is_fullscreen_granted;
   }
 
+  static uint64_t fullscreen_grant_count(const blink::VisualProperties& r) {
+    return r.fullscreen_grant_count;
+  }
+
   static blink::mojom::DisplayMode display_mode(
       const blink::VisualProperties& r) {
     return r.display_mode;
+  }
+
+  static blink::mojom::ApplicationContext application_context(
+      const blink::VisualProperties& r) {
+    return r.application_context;
   }
 
   static const ui::mojom::WindowShowState& window_show_state(
@@ -83,9 +96,6 @@ struct BLINK_COMMON_EXPORT StructTraits<blink::mojom::VisualPropertiesDataView,
     return r.window_show_state;
   }
 
-  static uint32_t capture_sequence_number(const blink::VisualProperties& r) {
-    return r.capture_sequence_number;
-  }
 
   static double zoom_level(const blink::VisualProperties& r) {
     return r.zoom_level;

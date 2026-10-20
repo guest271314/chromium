@@ -74,7 +74,7 @@ public class FeedSwipeRefreshLayout extends SwipeRefreshLayout implements Scroll
                 new SwipeRefreshLayout.OnRefreshListener() {
                     @Override
                     public void onRefresh() {
-                        instance.setAccessibilityLiveRegion(ACCESSIBILITY_LIVE_REGION_ASSERTIVE);
+                        instance.setAccessibilityLiveRegion(ACCESSIBILITY_LIVE_REGION_POLITE);
                         instance.setContentDescription(
                                 activity.getResources()
                                         .getString(R.string.accessibility_swipe_refresh));
@@ -161,6 +161,10 @@ public class FeedSwipeRefreshLayout extends SwipeRefreshLayout implements Scroll
         mRefreshListeners.removeObserver(listener);
     }
 
+    ObserverList<SwipeRefreshLayout.OnRefreshListener> getRefreshListenersForTesting() {
+        return mRefreshListeners;
+    }
+
     /**
      * Starts a refreshing spinner at the bottom of the view. Should only be used for non-swipe
      * refreshes.
@@ -176,6 +180,25 @@ public class FeedSwipeRefreshLayout extends SwipeRefreshLayout implements Scroll
         setProgressViewEndTarget(false, offset);
         setRefreshing(true);
         setProgressViewEndTarget(false, (int) (SPINNER_END_OFFSET * metrics.density));
+    }
+
+    @Override
+    public void setRefreshing(boolean refreshing) {
+        super.setRefreshing(refreshing);
+        if (!refreshing) {
+            resetAccessibility();
+        }
+    }
+
+    @Override
+    public void reset() {
+        super.reset();
+        resetAccessibility();
+    }
+
+    private void resetAccessibility() {
+        setAccessibilityLiveRegion(ACCESSIBILITY_LIVE_REGION_NONE);
+        setContentDescription(null);
     }
 
     private void ensureTarget() {

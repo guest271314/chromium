@@ -24,6 +24,7 @@
 #include "base/numerics/safe_math.h"
 #include "base/rand_util.h"
 #include "base/strings/string_number_conversions.h"
+#include "base/strings/string_view_util.h"
 #include "base/trace_event/trace_event.h"
 #include "base/types/optional_util.h"
 #include "cc/base/features.h"
@@ -183,16 +184,15 @@ void PaintOpReader::ReadSimple(T* val) {
   AssertFieldAlignment();
 }
 
-uint8_t* PaintOpReader::CopyScratchSpace(size_t bytes) {
+base::span<uint8_t> PaintOpReader::CopyScratchSpace(size_t bytes) {
   DCHECK(SkIsAlign4(reinterpret_cast<uintptr_t>(remaining_.data())));
 
   if (options_.scratch_buffer.size() < bytes) {
     options_.scratch_buffer.resize(bytes);
   }
-  base::span(options_.scratch_buffer)
-      .first(bytes)
-      .copy_from(remaining_.first(bytes));
-  return options_.scratch_buffer.data();
+  auto result = base::span(options_.scratch_buffer).first(bytes);
+  result.copy_from(remaining_.first(bytes));
+  return result;
 }
 
 void PaintOpReader::ReadData(base::span<uint8_t> data) {
@@ -246,7 +246,14 @@ void PaintOpReader::Read(uint32_t* data) {
 }
 
 void PaintOpReader::Read(uint64_t* data) {
-  ReadSimple(data);
+  // uint64_t is serialized as two uint32_ts to meet the 4-byte minimum
+  // alignment requirement of the serialization format (see
+  // PaintOpWriter::Write(uint64_t)).
+  uint32_t lo = 0u;
+  uint32_t hi = 0u;
+  ReadSimple(&lo);
+  ReadSimple(&hi);
+  *data = static_cast<uint64_t>(hi) << 32 | lo;
 }
 
 void PaintOpReader::Read(int32_t* data) {
@@ -293,8 +300,8 @@ void PaintOpReader::Read(SkColor4f* color) {
 }
 
 void PaintOpReader::Read(SkPath* path) {
-  uint32_t path_id;
-  ReadSimple(&path_id);
+  PaintCacheId path_id;
+  Read(&path_id);
   if (!valid_)
     return;
 
@@ -327,10 +334,10 @@ void PaintOpReader::Read(SkPath* path) {
       if (!valid_)
         return;
 
-      auto* scratch = CopyScratchSpace(path_bytes);
+      base::span<uint8_t> scratch = CopyScratchSpace(path_bytes);
       size_t bytes_read = 0;
       std::optional<SkPath> deserialized_path =
-          SkPath::ReadFromMemory(scratch, path_bytes, &bytes_read);
+          SkPath::ReadFromMemory(scratch.data(), scratch.size(), &bytes_read);
 
       if (bytes_read == 0u || !deserialized_path) {
         SetInvalid(DeserializationError::kSkPathReadFromMemoryFailure);
@@ -457,6 +464,9 @@ void PaintOpReader::Read(PaintImage* image) {
     NOTREACHED();
   }
 
+  gfx::HDRMetadata hdr_metadata;
+  Read(&hdr_metadata);
+
   if (serialized_type == PaintOp::SerializedImageType::kMailbox) {
     if (!options_.shared_image_provider) {
       SetInvalid(DeserializationError::kMissingSharedImageProvider);
@@ -501,6 +511,7 @@ void PaintOpReader::Read(PaintImage* image) {
                  .set_texture_image(std::move(sk_image),
                                     PaintImage::kNonLazyStableId)
                  .set_reinterpret_as_srgb(reinterpret_as_srgb)
+                 .set_hdr_metadata(hdr_metadata)
                  .TakePaintImage();
     return;
   }
@@ -536,12 +547,12 @@ void PaintOpReader::Read(PaintImage* image) {
     PaintImageBuilder builder =
         PaintImageBuilder::WithDefault()
             .set_id(PaintImage::GetNextId())
-            .set_texture_image(entry->image(), PaintImage::kNonLazyStableId);
+            .set_texture_image(entry->image(), PaintImage::kNonLazyStableId)
+            .set_hdr_metadata(hdr_metadata);
     if (entry->HasGainmap()) {
       builder = std::move(builder).set_gainmap_texture_image(
           entry->gainmap_image(), entry->gainmap_info());
     }
-    builder = std::move(builder).set_hdr_metadata(entry->hdr_metadata());
     *image = builder.TakePaintImage();
   }
 }
@@ -580,8 +591,8 @@ void PaintOpReader::Read(sk_sp<SkColorSpace>* color_space) {
   if (!valid_ || size == 0)
     return;
 
-  auto* scratch = CopyScratchSpace(size);
-  *color_space = SkColorSpace::Deserialize(scratch, size);
+  base::span<uint8_t> scratch = CopyScratchSpace(size);
+  *color_space = SkColorSpace::Deserialize(scratch.data(), scratch.size());
   // If this had non-zero bytes, it should be a valid color space.
   if (!color_space)
     SetInvalid(DeserializationError::kSkColorSpaceDeserializeFailure);
@@ -629,11 +640,10 @@ void PaintOpReader::Read(sk_sp<sktext::gpu::Slug>* slug) {
     return;
   }
 
-  auto span = remaining_.first(data_bytes);
-  *slug =
-      sktext::gpu::Slug::Deserialize(const_cast<const uint8_t*>(span.data()),
-                                     span.size(), options_.strike_client);
-  DidRead(span.size());
+  base::span<uint8_t> scratch = CopyScratchSpace(data_bytes);
+  *slug = sktext::gpu::Slug::Deserialize(scratch.data(), scratch.size(),
+                                         options_.strike_client);
+  DidRead(data_bytes);
 
   if (!*slug) {
     SetInvalid(DeserializationError::kSlugDeserializeFailure);
@@ -728,7 +738,7 @@ void PaintOpReader::Read(sk_sp<PaintShader>* shader) {
   Read(&ref.image_);
   bool has_record = false;
   Read(&has_record);
-  uint32_t shader_id = PaintShader::kInvalidRecordShaderId;
+  PaintShader::RecordShaderId shader_id = PaintShader::kInvalidRecordShaderId;
   size_t shader_size = 0;
   if (has_record) {
     if (shader_type != PaintShader::Type::kPaintRecord) {
@@ -982,8 +992,8 @@ void PaintOpReader::Read(gfx::HDRMetadata* hdr_metadata) {
   if (!valid_ || size == 0) {
     return;
   }
-  uint8_t* scratch = CopyScratchSpace(size);
-  if (!gfx::mojom::HDRMetadata::Deserialize(scratch, size, hdr_metadata)) {
+  base::span<uint8_t> scratch = CopyScratchSpace(size);
+  if (!gfx::mojom::HDRMetadata::Deserialize(scratch, hdr_metadata)) {
     SetInvalid(DeserializationError::kHdrMetadataDeserializeFailure);
   }
   DidRead(size);
@@ -1041,8 +1051,8 @@ void PaintOpReader::Read(SkString* sk_string) {
   if (!valid_ || size == 0) {
     return;
   }
-  uint8_t* scratch = CopyScratchSpace(size);
-  *sk_string = SkString(reinterpret_cast<char*>(scratch), size);
+  base::span<uint8_t> scratch = CopyScratchSpace(size);
+  *sk_string = SkString(base::as_string_view(scratch));
   DidRead(size);
 }
 
@@ -1079,17 +1089,8 @@ void PaintOpReader::AlignMemory(size_t alignment) {
 
 // Don't inline this function so that crash reports can show the caller.
 NOINLINE void PaintOpReader::SetInvalid(DeserializationError error) {
-  static crash_reporter::CrashKeyString<4> deserialization_error_crash_key(
-      "PaintOpReader deserialization error");
   base::UmaHistogramEnumeration("GPU.PaintOpReader.DeserializationError",
                                 error);
-  if (valid_ && options_.crash_dump_on_failure &&
-      base::RandIntInclusive(1, 10) == 1) {
-    crash_reporter::ScopedCrashKeyString crash_key_scope(
-        &deserialization_error_crash_key,
-        base::NumberToString(static_cast<int>(error)));
-    base::debug::DumpWithoutCrashing();
-  }
   valid_ = false;
 }
 

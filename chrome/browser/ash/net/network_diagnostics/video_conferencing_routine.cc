@@ -8,6 +8,7 @@
 #include <string>
 #include <utility>
 
+#include "base/containers/span.h"
 #include "base/logging.h"
 #include "base/time/time.h"
 #include "chrome/browser/ash/net/network_diagnostics/network_diagnostics_util.h"
@@ -120,7 +121,7 @@ void VideoConferencingRoutine::ProbeMediaHostnames() {
 
 network::mojom::NetworkContext* VideoConferencingRoutine::GetNetworkContext() {
   Profile* profile = util::GetUserProfile();
-  DCHECK(profile);
+  CHECK(profile, base::NotFatalUntil::M160);
 
   return profile->GetDefaultStoragePartition()->GetNetworkContext();
 }

@@ -8,10 +8,11 @@
 #include "chrome/browser/ui/tabs/public/tab_dialog_manager.h"
 #include "chrome/browser/ui/tabs/public/tab_features.h"
 #include "chrome/browser/ui/views/autofill/payments/bnpl_tos_dialog.h"
-#include "components/autofill/core/browser/metrics/payments/bnpl_metrics.h"
 #include "components/autofill/core/browser/ui/payments/bnpl_tos_controller.h"
 #include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/web_contents.h"
+#include "ui/base/page_transition_types.h"
+#include "ui/base/window_open_disposition.h"
 
 using tabs::TabInterface;
 
@@ -47,11 +48,10 @@ BnplTosViewDesktop::BnplTosViewDesktop(
 BnplTosViewDesktop::~BnplTosViewDesktop() = default;
 
 void BnplTosViewDesktop::OpenLink(const GURL& url) {
-  web_contents_->OpenURL(
-      content::OpenURLParams(
-          url, content::Referrer(), WindowOpenDisposition::NEW_FOREGROUND_TAB,
-          ui::PAGE_TRANSITION_LINK, /*is_renderer_initiated=*/false),
-      /*navigation_handle_callback=*/{});
+  web_contents_->OpenURL(content::OpenURLParams::CreateBrowserInitiated(
+                             url, WindowOpenDisposition::NEW_FOREGROUND_TAB,
+                             ui::PAGE_TRANSITION_LINK),
+                         /*navigation_handle_callback=*/{});
 }
 
 }  // namespace autofill

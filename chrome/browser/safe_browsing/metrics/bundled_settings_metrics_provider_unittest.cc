@@ -9,6 +9,8 @@
 #include "chrome/browser/content_settings/host_content_settings_map_factory.h"
 #include "chrome/browser/profiles/profiles_state.h"
 #include "chrome/browser/site_protection/site_familiarity_utils.h"
+#include "chrome/browser/ssl/https_first_mode_settings_tracker.h"
+#include "chrome/common/pref_names.h"
 #include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile.h"
 #include "chrome/test/base/testing_profile_manager.h"
@@ -16,6 +18,7 @@
 #include "components/content_settings/core/common/features.h"
 #include "components/prefs/pref_service.h"
 #include "components/safe_browsing/buildflags.h"
+#include "components/safe_browsing/core/common/safe_browsing_prefs.h"
 #include "content/public/common/content_features.h"
 #include "content/public/test/browser_task_environment.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -25,10 +28,6 @@
 #include "components/account_id/account_id.h"
 #include "components/user_manager/scoped_user_manager.h"
 #endif  // BUILDFLAG(IS_CHROMEOS)
-
-#if BUILDFLAG(SAFE_BROWSING_AVAILABLE)
-#include "components/safe_browsing/core/common/safe_browsing_prefs.h"
-#endif  // BUILDFLAG(SAFE_BROWSING_AVAILABLE)
 
 namespace safe_browsing {
 
@@ -186,6 +185,67 @@ TEST_F(BundledSettingsMetricsProviderUnitTest,
   // Change the pref to false, which should record it as modified.
   prefs_->SetBoolean(prefs::kJavascriptOptimizerBlockedForUnfamiliarSites,
                      false);
+
+  {
+    base::HistogramTester histogram_tester;
+    BundledSettingsMetricsProvider provider;
+    provider.ProvideCurrentSessionData(/*uma_proto=*/nullptr);
+    histogram_tester.ExpectUniqueSample(kHistogramName, true, 1);
+  }
+}
+
+TEST_F(BundledSettingsMetricsProviderUnitTest,
+       StandardBundle_HttpsFirstModeMetrics) {
+  constexpr char kHistogramName[] =
+      "Security.StandardBundle.HttpsFirstModeSetting.WasModifiedFromDefault";
+
+  SetSelectedBundle(SecuritySettingsBundleSetting::STANDARD);
+
+  // HFM Balanced is false, kHttpsOnlyModeEnabled is false. This is standard
+  // bundle default (kDisabled), so unmodified.
+  prefs_->SetBoolean(prefs::kHttpsOnlyModeEnabled, false);
+  prefs_->SetBoolean(prefs::kHttpsFirstBalancedMode, false);
+
+  {
+    base::HistogramTester histogram_tester;
+    BundledSettingsMetricsProvider provider;
+    provider.ProvideCurrentSessionData(/*uma_proto=*/nullptr);
+    histogram_tester.ExpectUniqueSample(kHistogramName, false, 1);
+  }
+
+  // Change HFM setting to Balanced Mode. Since Standard bundle default is Off,
+  // this should be modified.
+  prefs_->SetBoolean(prefs::kHttpsFirstBalancedMode, true);
+
+  {
+    base::HistogramTester histogram_tester;
+    BundledSettingsMetricsProvider provider;
+    provider.ProvideCurrentSessionData(/*uma_proto=*/nullptr);
+    histogram_tester.ExpectUniqueSample(kHistogramName, true, 1);
+  }
+}
+
+TEST_F(BundledSettingsMetricsProviderUnitTest,
+       EnhancedBundle_HttpsFirstModeMetrics) {
+  constexpr char kHistogramName[] =
+      "Security.EnhancedBundle.HttpsFirstModeSetting.WasModifiedFromDefault";
+
+  SetSelectedBundle(SecuritySettingsBundleSetting::ENHANCED);
+
+  // HFM Balanced is true. This is Enhanced bundle default, so unmodified.
+  prefs_->SetBoolean(prefs::kHttpsOnlyModeEnabled, false);
+  prefs_->SetBoolean(prefs::kHttpsFirstBalancedMode, true);
+
+  {
+    base::HistogramTester histogram_tester;
+    BundledSettingsMetricsProvider provider;
+    provider.ProvideCurrentSessionData(/*uma_proto=*/nullptr);
+    histogram_tester.ExpectUniqueSample(kHistogramName, false, 1);
+  }
+
+  // Change HFM setting to Off. Since Enhanced bundle default is Balanced,
+  // this should be modified.
+  prefs_->SetBoolean(prefs::kHttpsFirstBalancedMode, false);
 
   {
     base::HistogramTester histogram_tester;

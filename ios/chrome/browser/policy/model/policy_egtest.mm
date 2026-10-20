@@ -175,11 +175,22 @@ const char kTestPageText[] = "pony";
   _settingsOpened = YES;
 }
 
+- (void)openAutofillSettingsPage {
+  [self openSettingsMenu];
+  if ([ChromeEarlGrey isYourSavedInfoSettingsPageIosEnabled]) {
+    [ChromeEarlGreyUI
+        tapSettingsMenuButton:grey_accessibilityID(
+                                  kSettingsAutofillAndPasswordsCellId)];
+  }
+}
+
 - (AppLaunchConfiguration)appConfigurationForTestCase {
   // Use commandline args to insert fake policy data into NSUserDefaults. To the
   // app, this policy data will appear under the
   // "com.apple.configuration.managed" key.
   AppLaunchConfiguration config = [super appConfigurationForTestCase];
+  config.additional_args.push_back(
+      base::StrCat({"--", switches::kEnableChromeBrowserCloudManagement}));
   config.relaunch_policy = NoForceRelaunchAndResetState;
   return config;
 }
@@ -249,7 +260,7 @@ const char kTestPageText[] = "pony";
           userBooleanPref:password_manager::prefs::kCredentialsEnableService],
       @"Preference was unexpectedly true");
   // Open settings menu and tap password manager.
-  [self openSettingsMenu];
+  [self openAutofillSettingsPage];
 
   // Mock successful reauth when opening the Password Manager.
   [ReauthenticationAppInterface mockReauthenticationModuleExpectedResult:
@@ -276,7 +287,7 @@ const char kTestPageText[] = "pony";
       [ChromeEarlGrey userBooleanPref:autofill::prefs::kAutofillProfileEnabled],
       @"Preference was unexpectedly true");
   // Open settings menu and tap Address and More setting.
-  [self openSettingsMenu];
+  [self openAutofillSettingsPage];
   [ChromeEarlGreyUI
       tapSettingsMenuButton:chrome_test_util::AddressesAndMoreButton()];
 
@@ -293,7 +304,7 @@ const char kTestPageText[] = "pony";
           userBooleanPref:autofill::prefs::kAutofillCreditCardEnabled],
       @"Preference was unexpectedly true");
   // Open settings menu and tap Payment Method setting.
-  [self openSettingsMenu];
+  [self openAutofillSettingsPage];
   [ChromeEarlGreyUI
       tapSettingsMenuButton:chrome_test_util::PaymentMethodsButton()];
 
@@ -454,8 +465,7 @@ const char kTestPageText[] = "pony";
 
 // Tests whether the managed item will be shown if UserPolicy is enabled and
 // the browser is signed in with a managed account.
-// TODO(crbug.com/435333773): Reenable this test.
-- (void)FLAKY_testPopupMenuItemWithUserPolicy {
+- (void)testPopupMenuItemWithUserPolicy {
   // Sign in with a managed account.
   NSString* managedAccountEmail = base::SysUTF8ToNSString(
       base::StrCat({"enterprise@", policy::SignatureProvider::kTestDomain1}));
@@ -471,13 +481,12 @@ const char kTestPageText[] = "pony";
       performAction:grey_scrollToContentEdge(kGREYContentEdgeBottom)];
   [ChromeEarlGreyUI
       tapToolsMenuAction:grey_accessibilityID(kTextMenuEnterpriseInfo)];
+
+  // Check the navigation before waiting for the page content.
+  [ChromeEarlGrey waitForWebStateVisibleURL:GURL(kChromeUIManagementURL)];
   [ChromeEarlGrey
       waitForWebStateContainingText:l10n_util::GetStringUTF8(
                                         IDS_IOS_MANAGEMENT_UI_DESC)];
-
-  // Check the navigation without assert the content (which is done in another
-  // test case).
-  [ChromeEarlGrey waitForWebStateVisibleURL:GURL(kChromeUIManagementURL)];
 }
 
 // Tests the chrome://management page when no machine level policy is set.
@@ -809,6 +818,32 @@ const char kTestPageText[] = "pony";
 }
 
 // Tests that the UI notifying the user of their sign out is displayed when the
+// policy changes while the app is launched.
+- (void)testBrowserSignInDisabledWhileAppVisibleFromManagedAccount {
+  FakeSystemIdentity* fakeManagedIdentity =
+      [FakeSystemIdentity fakeManagedIdentity];
+  [SigninEarlGrey
+      signinWithFakeManagedIdentityInPersonalProfile:fakeManagedIdentity];
+
+  // Force sign out.
+  SetPolicy(0, policy::key::kBrowserSignin);
+
+  // Check that the sign out pop up is presented.
+  ConditionBlock condition = ^{
+    NSError* error = nil;
+    [[EarlGrey
+        selectElementWithMatcher:grey_accessibilityLabel(l10n_util::GetNSString(
+                                     IDS_IOS_ENTERPRISE_SIGNED_OUT))]
+        assertWithMatcher:grey_sufficientlyVisible()
+                    error:&error];
+    return error == nil;
+  };
+  bool promptPresented = base::test::ios::WaitUntilConditionOrTimeout(
+      base::test::ios::kWaitForUIElementTimeout, condition);
+  GREYAssertTrue(promptPresented, @"'Signed Out' prompt not shown");
+}
+
+// Tests that the UI notifying the user of their sign out is displayed when the
 // primary account is restricted.
 - (void)testBrowserAccountRestrictedAlert {
   FakeSystemIdentity* fakeIdentity = [FakeSystemIdentity fakeIdentity1];
@@ -863,6 +898,11 @@ const char kTestPageText[] = "pony";
 // enterprise selected No Protection as the choice of protection.
 - (void)testEnterpriseBubbleInEnhancedSafeBrowsingPage {
   SetPolicy(0, policy::key::kSafeBrowsingProtectionLevel);
+  // Under Chrome Next, the NTP's tools menu button may be scrolled offscreen.
+  // Load a standard page to ensure a visible tools menu button.
+  if ([ChromeEarlGrey isChromeNextEnabled]) {
+    [ChromeEarlGrey loadURL:GURL(kChromeUIVersionURL)];
+  }
   [ChromeEarlGreyUI openSettingsMenu];
   [ChromeEarlGreyUI
       tapSettingsMenuButton:chrome_test_util::SettingsMenuPrivacyButton()];

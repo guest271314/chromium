@@ -5,21 +5,23 @@
 #include "components/network_time/time_tracker/time_tracker.h"
 
 #include "base/logging.h"
+#include "base/metrics/histogram_functions.h"
+#include "base/time/time.h"
 
 namespace {
 // Amount of divergence allowed between wall clock and tick clock.
-const uint32_t kClockDivergenceSeconds = 60;
+constexpr base::TimeDelta kMaxClockDivergence = base::Seconds(60);
 }  // namespace
 
 namespace network_time {
-TimeTracker::TimeTracker(const base::Time& system_time,
-                         const base::TimeTicks& system_ticks,
-                         const base::Time& time,
-                         const base::TimeDelta& uncertainty)
+TimeTracker::TimeTracker(base::Time system_time,
+                         base::TimeTicks system_ticks,
+                         base::Time time,
+                         base::TimeDelta uncertainty)
     : state_{system_time, system_ticks, time, uncertainty} {}
 
-bool TimeTracker::GetTime(const base::Time& system_time,
-                          const base::TimeTicks& system_ticks,
+bool TimeTracker::GetTime(base::Time system_time,
+                          base::TimeTicks system_ticks,
                           base::Time* time,
                           base::TimeDelta* uncertainty) const {
   base::TimeDelta tick_delta = system_ticks - state_.system_ticks;
@@ -30,13 +32,19 @@ bool TimeTracker::GetTime(const base::Time& system_time,
   }
 
   base::TimeDelta divergence = tick_delta - time_delta;
-  if (divergence.magnitude() > base::Seconds(kClockDivergenceSeconds)) {
+  if (divergence.magnitude() > kMaxClockDivergence) {
     DVLOG(1) << "Time unavailable due to clocks diverging";
     return false;
   }
+
   *time = state_.known_time + tick_delta;
+
+  const base::TimeDelta total_uncertainty = state_.uncertainty + divergence;
+  base::UmaHistogramMediumTimes("NetworkTime.EstimatedTimeUncertainty",
+                                total_uncertainty);
+
   if (uncertainty) {
-    *uncertainty = state_.uncertainty + divergence;
+    *uncertainty = total_uncertainty;
   }
   return true;
 }

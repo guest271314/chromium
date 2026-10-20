@@ -29,19 +29,19 @@ class FakeFileSystemAccessPermissionContext
       const url::Origin& origin,
       const PathInfo& path_info,
       HandleType handle_type,
-      UserAction user_action) override;
+      AccessTrigger access_trigger) override;
 
   scoped_refptr<FileSystemAccessPermissionGrant> GetWritePermissionGrant(
       const url::Origin& origin,
       const PathInfo& path_info,
       HandleType handle_type,
-      UserAction user_action) override;
+      AccessTrigger access_trigger) override;
 
   void ConfirmSensitiveEntryAccess(
       const url::Origin& origin,
       const PathInfo& path_info,
       HandleType handle_type,
-      UserAction user_action,
+      AccessTrigger access_trigger,
       GlobalRenderFrameHostId frame_id,
       base::OnceCallback<void(SensitiveEntryResult)> callback) override;
 
@@ -50,8 +50,7 @@ class FakeFileSystemAccessPermissionContext
       GlobalRenderFrameHostId frame_id,
       base::OnceCallback<void(AfterWriteCheckResult)> callback) override;
 
-  bool IsFileTypeDangerous(const base::FilePath& path,
-                           const url::Origin& origin) override;
+  bool IsFileTypeDangerous(const base::FilePath& path) override;
 
   base::expected<void, std::string> CanShowFilePicker(
       content::RenderFrameHost* rfh) override;

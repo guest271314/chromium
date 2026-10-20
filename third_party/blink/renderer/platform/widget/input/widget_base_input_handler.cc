@@ -10,7 +10,6 @@
 #include <utility>
 
 #include "base/memory/raw_ptr.h"
-#include "base/metrics/histogram_macros.h"
 #include "base/task/common/task_annotator.h"
 #include "base/time/time.h"
 #include "base/tracing/protos/chrome_track_event.pbzero.h"
@@ -45,65 +44,6 @@ using perfetto::protos::pbzero::TrackEvent;
 namespace blink {
 
 namespace {
-
-void LogPassiveEventListenersUma(WebInputEventResult result,
-                                 WebInputEvent::DispatchType dispatch_type) {
-  // This enum is backing a histogram. Do not remove or reorder members.
-  enum ListenerEnum {
-    PASSIVE_LISTENER_UMA_ENUM_PASSIVE,
-    PASSIVE_LISTENER_UMA_ENUM_UNCANCELABLE,
-    PASSIVE_LISTENER_UMA_ENUM_SUPPRESSED,
-    PASSIVE_LISTENER_UMA_ENUM_CANCELABLE,
-    PASSIVE_LISTENER_UMA_ENUM_CANCELABLE_AND_CANCELED,
-    PASSIVE_LISTENER_UMA_ENUM_FORCED_NON_BLOCKING_DUE_TO_FLING,
-    PASSIVE_LISTENER_UMA_ENUM_FORCED_NON_BLOCKING_DUE_TO_MAIN_THREAD_RESPONSIVENESS_DEPRECATED,
-    PASSIVE_LISTENER_UMA_ENUM_COUNT
-  };
-
-  ListenerEnum enum_value;
-  switch (dispatch_type) {
-    case WebInputEvent::DispatchType::kListenersForcedNonBlockingDueToFling:
-      enum_value = PASSIVE_LISTENER_UMA_ENUM_FORCED_NON_BLOCKING_DUE_TO_FLING;
-      break;
-    case WebInputEvent::DispatchType::kListenersNonBlockingPassive:
-      enum_value = PASSIVE_LISTENER_UMA_ENUM_PASSIVE;
-      break;
-    case WebInputEvent::DispatchType::kEventNonBlocking:
-      enum_value = PASSIVE_LISTENER_UMA_ENUM_UNCANCELABLE;
-      break;
-    case WebInputEvent::DispatchType::kBlocking:
-      if (result == WebInputEventResult::kHandledApplication)
-        enum_value = PASSIVE_LISTENER_UMA_ENUM_CANCELABLE_AND_CANCELED;
-      else if (result == WebInputEventResult::kHandledSuppressed)
-        enum_value = PASSIVE_LISTENER_UMA_ENUM_SUPPRESSED;
-      else
-        enum_value = PASSIVE_LISTENER_UMA_ENUM_CANCELABLE;
-      break;
-    default:
-      NOTREACHED();
-  }
-
-  UMA_HISTOGRAM_ENUMERATION("Event.PassiveListeners", enum_value,
-                            PASSIVE_LISTENER_UMA_ENUM_COUNT);
-}
-
-void LogAllPassiveEventListenersUma(const WebInputEvent& input_event,
-                                    WebInputEventResult result) {
-  // TODO(dtapuska): Use the input_event.timeStampSeconds as the start
-  // ideally this should be when the event was sent by the compositor to the
-  // renderer. https://crbug.com/565348.
-  if (input_event.GetType() == WebInputEvent::Type::kTouchStart ||
-      input_event.GetType() == WebInputEvent::Type::kTouchMove ||
-      input_event.GetType() == WebInputEvent::Type::kTouchEnd) {
-    const WebTouchEvent& touch = static_cast<const WebTouchEvent&>(input_event);
-
-    LogPassiveEventListenersUma(result, touch.dispatch_type);
-  } else if (input_event.GetType() == WebInputEvent::Type::kMouseWheel) {
-    LogPassiveEventListenersUma(
-        result,
-        static_cast<const WebMouseWheelEvent&>(input_event).dispatch_type);
-  }
-}
 
 WebCoalescedInputEvent GetCoalescedWebPointerEventForTouch(
     const WebPointerEvent& pointer_event,
@@ -350,6 +290,20 @@ void WidgetBaseInputHandler::HandleInputEvent(
           std::move(done_callback));
 
   bool prevent_default = false;
+  WebInputEventResult processed = WebInputEventResult::kNotHandled;
+
+  auto check_was_destroyed = [&]() {
+    if (!weak_self) {
+      if (callback) {
+        std::move(callback).Run(GetAckResult(processed), swap_latency_info,
+                                std::move(handling_state.event_overscroll()),
+                                std::move(handling_state.touch_action()));
+      }
+      return true;
+    }
+    return false;
+  };
+
   bool show_virtual_keyboard_for_mouse = false;
   if (WebInputEvent::IsMouseEventType(input_event.GetType())) {
     const WebMouseEvent& mouse_event =
@@ -359,6 +313,9 @@ void WidgetBaseInputHandler::HandleInputEvent(
                  mouse_event.PositionInWidget().y());
 
     widget_->client()->WillHandleMouseEvent(mouse_event);
+    if (check_was_destroyed()) {
+      return;
+    }
 
     // Reset the last known cursor if mouse has left this widget. So next
     // time that the mouse enters we always set the cursor accordingly.
@@ -395,21 +352,28 @@ void WidgetBaseInputHandler::HandleInputEvent(
       // through to the web app would cause compatibility problems since
       // DPAD_CENTER is also used as a "confirm" button).
       prevent_default = true;
+      processed = WebInputEventResult::kHandledSuppressed;
     }
   }
 #endif
+  if (check_was_destroyed()) {
+    return;
+  }
 
   if (WebInputEvent::IsGestureEventType(input_event.GetType())) {
     const WebGestureEvent& gesture_event =
         static_cast<const WebGestureEvent&>(input_event);
     bool suppress = false;
     widget_->client()->WillHandleGestureEvent(gesture_event, &suppress);
-    prevent_default = prevent_default || suppress;
+    if (suppress) {
+      prevent_default = true;
+      processed = WebInputEventResult::kHandledSuppressed;
+    }
+    if (check_was_destroyed()) {
+      return;
+    }
   }
 
-  WebInputEventResult processed = prevent_default
-                                      ? WebInputEventResult::kHandledSuppressed
-                                      : WebInputEventResult::kNotHandled;
   if (input_event.GetType() != WebInputEvent::Type::kChar ||
       !suppress_next_char_events_) {
     suppress_next_char_events_ = false;
@@ -421,15 +385,7 @@ void WidgetBaseInputHandler::HandleInputEvent(
         processed = widget_->client()->HandleInputEvent(coalesced_event);
     }
 
-    // The associated WidgetBase (and this WidgetBaseInputHandler) could
-    // have been destroyed. If it was return early before accessing any more of
-    // this class.
-    if (!weak_self) {
-      if (callback) {
-        std::move(callback).Run(GetAckResult(processed), swap_latency_info,
-                                std::move(handling_state.event_overscroll()),
-                                std::move(handling_state.touch_action()));
-      }
+    if (check_was_destroyed()) {
       return;
     }
   }
@@ -438,8 +394,6 @@ void WidgetBaseInputHandler::HandleInputEvent(
   // handling injected scroll events. So, stop monitoring EventMetrics for
   // |input_event| to avoid nested monitors.
   event_metrics_monitor = nullptr;
-
-  LogAllPassiveEventListenersUma(input_event, processed);
 
   // If this RawKeyDown event corresponds to a browser keyboard shortcut and
   // it's not processed by webkit, then we need to suppress the upcoming Char
@@ -458,6 +412,9 @@ void WidgetBaseInputHandler::HandleInputEvent(
     HandleInjectedScrollGestures(
         std::move(handling_state.injected_scroll_params()), input_event,
         coalesced_event.latency_info(), cloned_metrics.get());
+    if (check_was_destroyed()) {
+      return;
+    }
   }
 
   // Send gesture scroll events and their dispositions to the compositor thread,
@@ -483,6 +440,10 @@ void WidgetBaseInputHandler::HandleInputEvent(
     }
   }
 
+  if (check_was_destroyed()) {
+    return;
+  }
+
   if (callback) {
     std::move(callback).Run(GetAckResult(processed), swap_latency_info,
                             std::move(handling_state.event_overscroll()),
@@ -492,17 +453,37 @@ void WidgetBaseInputHandler::HandleInputEvent(
         << "Unexpected overscroll for un-acked event";
   }
 
+  if (!weak_self) {
+    return;
+  }
+
   // Show the virtual keyboard if enabled and a user gesture triggers a focus
   // change.
   if ((processed != WebInputEventResult::kNotHandled &&
        input_event.GetType() == WebInputEvent::Type::kTouchEnd) ||
       show_virtual_keyboard_for_mouse) {
     widget_->ShowVirtualKeyboard();
+    if (!weak_self) {
+      return;
+    }
   }
 
   if (!prevent_default &&
-      WebInputEvent::IsKeyboardEventType(input_event.GetType()))
+      WebInputEvent::IsGestureEventType(input_event.GetType())) {
+    widget_->client()->DidHandleGestureEvent(
+        static_cast<const WebGestureEvent&>(input_event));
+    if (!weak_self) {
+      return;
+    }
+  }
+
+  if (!prevent_default &&
+      WebInputEvent::IsKeyboardEventType(input_event.GetType())) {
     widget_->client()->DidHandleKeyEvent();
+    if (!weak_self) {
+      return;
+    }
+  }
 
 // TODO(rouslan): Fix ChromeOS and Windows 8 behavior of autofill popup with
 // virtual keyboard.
@@ -619,14 +600,16 @@ void WidgetBaseInputHandler::HandleInjectedScrollGestures(
               : cc::ScrollUpdateEventMetrics::ScrollUpdateType::kStarted,
           params.scroll_delta.y(),
           cc::EventMetrics::DispatchStage::kRendererCompositorFinished,
-          original_metrics, scroll_tracker_.scroll_begin_arrival_timestamp());
+          original_metrics, scroll_tracker_.scroll_begin_generated_timestamp(),
+          scroll_tracker_.scroll_begin_arrival_timestamp());
       scroll_tracker_.OnScrollUpdate();
     } else {
       metrics = cc::ScrollEventMetrics::CreateFromExisting(
           gesture_event->GetTypeAsUiEventType(),
           ui::ScrollInputType::kScrollbar, /*is_inertial=*/false,
           cc::EventMetrics::DispatchStage::kRendererCompositorFinished,
-          original_metrics, scroll_tracker_.scroll_begin_arrival_timestamp());
+          original_metrics, scroll_tracker_.scroll_begin_generated_timestamp(),
+          scroll_tracker_.scroll_begin_arrival_timestamp());
       if (gesture_event->GetType() ==
           WebInputEvent::Type::kGestureScrollBegin) {
         gesture_event->data.scroll_begin.scrollable_area_element_id =

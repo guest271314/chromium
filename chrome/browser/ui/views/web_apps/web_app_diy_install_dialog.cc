@@ -11,7 +11,6 @@
 #include "base/strings/utf_string_conversions.h"
 #include "chrome/browser/feature_engagement/tracker_factory.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/url_identity.h"
@@ -55,8 +54,6 @@
 #endif
 
 namespace {
-
-bool g_auto_accept_diy_dialog_for_testing = false;
 
 #if BUILDFLAG(IS_CHROMEOS)
 namespace cros_events = metrics::structured::events::v2::cr_os_events;
@@ -173,20 +170,19 @@ void ShowDiyAppInstallDialog(
   views::Widget* diy_dialog_widget =
       constrained_window::ShowWebModalDialogViews(dialog.release(),
                                                   web_contents);
-  if (IsWidgetCurrentSizeSmallerThanPreferredSize(diy_dialog_widget)) {
+  if (IsWidgetCurrentSizeSmallerThanPreferredSize(diy_dialog_widget,
+                                                  kDiyMaxShrinkage)) {
     delegate_weak_ptr->CloseDialogAsIgnored();
     return;
   }
   delegate_weak_ptr->OnWidgetShownStartTracking(diy_dialog_widget);
 
   base::RecordAction(base::UserMetricsAction("WebAppDiyInstallShown"));
-  if (g_auto_accept_diy_dialog_for_testing) {
+  InstallDialogTestResponse auto_response =
+      GetPwaInstallationDialogAutoResponseForTesting();  // IN-TEST
+  if (auto_response != InstallDialogTestResponse::kNone) {
     dialog_delegate->AcceptDialog();
   }
-}
-
-void SetAutoAcceptDiyAppsInstallDialogForTesting(bool auto_accept) {
-  g_auto_accept_diy_dialog_for_testing = auto_accept;
 }
 
 // Creates a view for the DIY install dialog that contains the

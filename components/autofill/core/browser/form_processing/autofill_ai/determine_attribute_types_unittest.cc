@@ -13,10 +13,11 @@
 #include "components/autofill/core/browser/autofill_field.h"
 #include "components/autofill/core/browser/data_model/autofill_ai/entity_type.h"
 #include "components/autofill/core/browser/data_model/autofill_ai/entity_type_names.h"
+#include "components/autofill/core/browser/field_types.h"
 #include "components/autofill/core/browser/form_structure.h"
 #include "components/autofill/core/browser/form_structure_sectioning_util.h"
-#include "components/autofill/core/browser/test_utils/autofill_form_test_utils.h"
-#include "components/autofill/core/browser/test_utils/autofill_test_utils.h"
+#include "components/autofill/core/browser/test_utils/autofill_form_test_util.h"
+#include "components/autofill/core/browser/test_utils/autofill_test_util.h"
 #include "components/autofill/core/common/autofill_features.h"
 #include "components/autofill/core/common/form_data.h"
 #include "testing/gmock/include/gmock/gmock.h"
@@ -81,7 +82,7 @@ class DetermineAttributeTypesTest : public testing::Test {
   static constexpr DetermineAttributeTypesPassKey kPassKey = {};
 
  private:
-  autofill::test::AutofillUnitTestEnvironment autofill_environment_;
+  test::AutofillUnitTestEnvironment autofill_environment_;
   base::test::ScopedFeatureList feature_list_{
       features::kAutofillAiWithDataSchema};
 };
@@ -205,6 +206,18 @@ TEST_F(DetermineAttributeTypesTest, AssignsDynamicTypesToTheVicinity) {
           Pair(section, UnorderedElementsAre(
                             Pair(kVehicle, vehicle_matcher),
                             Pair(kDriversLicense, drivers_license_matcher)))));
+}
+
+TEST_F(DetermineAttributeTypesTest, AssignsDynamicTypesToOrderAccount) {
+  std::vector<std::unique_ptr<AutofillField>> fields =
+      CreateFields({{ORDER_ID}, {EMAIL_ADDRESS}});
+  EXPECT_THAT(
+      DetermineAttributeTypes(fields, fields.front()->section(),
+                              EntityType(EntityTypeName::kOrder), kPassKey),
+      ElementsAre(
+          FieldAndType(fields[0], AttributeType(AttributeTypeName::kOrderId)),
+          FieldAndType(fields[1],
+                       AttributeType(AttributeTypeName::kOrderAccount))));
 }
 
 // Tests that DetermineAttributeTypes() propagates dynamic types forward.

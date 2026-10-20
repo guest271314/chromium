@@ -7,6 +7,7 @@ package org.chromium.chrome.browser.app.tab_activity_glue;
 import android.content.res.Configuration;
 
 import androidx.test.filters.MediumTest;
+import androidx.test.runner.lifecycle.Stage;
 
 import org.hamcrest.Matchers;
 import org.junit.After;
@@ -17,6 +18,7 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 
 import org.chromium.base.ThreadUtils;
+import org.chromium.base.test.util.ApplicationTestUtils;
 import org.chromium.base.test.util.CallbackHelper;
 import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.Criteria;
@@ -33,7 +35,9 @@ import org.chromium.chrome.tab_ui.R;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.chrome.test.transit.ChromeTransitTestRules;
 import org.chromium.chrome.test.transit.FreshCtaTransitTestRule;
+import org.chromium.components.omnibox.AutocompleteInput;
 import org.chromium.components.omnibox.OmniboxFocusReason;
+import org.chromium.components.omnibox.TextSelection;
 import org.chromium.ui.base.DeviceFormFactor;
 
 import java.util.concurrent.TimeoutException;
@@ -107,8 +111,10 @@ public class TabletPhoneLayoutChangeTest {
 
         ThreadUtils.runOnUiThreadBlocking(
                 () ->
-                        toolbarManager.setUrlBarFocusAndText(
-                                true, OmniboxFocusReason.OMNIBOX_TAP, urlBarText));
+                        toolbarManager.beginFuseboxInput(
+                                new AutocompleteInput(OmniboxFocusReason.OMNIBOX_TAP)
+                                        .setUserText(urlBarText)
+                                        .setSelection(TextSelection.SELECT_ALL)));
 
         CriteriaHelper.pollUiThread(
                 () -> {
@@ -136,7 +142,7 @@ public class TabletPhoneLayoutChangeTest {
 
     @Test
     @MediumTest
-    public void testTabSwitcherStateRetention() throws TimeoutException {
+    public void testTabSwitcherStateRetention_FlakeCheck() throws TimeoutException {
         ChromeTabbedActivity cta = mActivityTestRule.getActivity();
 
         ThreadUtils.runOnUiThreadBlocking(
@@ -146,7 +152,7 @@ public class TabletPhoneLayoutChangeTest {
         CriteriaHelper.pollUiThread(
                 () -> {
                     boolean isTabSwitcherShown =
-                            cta.getLayoutManager().isLayoutVisible(LayoutType.TAB_SWITCHER);
+                            cta.getLayoutManager().isLayoutVisible(LayoutType.HUB);
                     Criteria.checkThat(isTabSwitcherShown, Matchers.is(true));
                 },
                 TIMEOUT_MS,
@@ -159,8 +165,7 @@ public class TabletPhoneLayoutChangeTest {
                     boolean isTabSwitcherShown =
                             newCta.getCompositorViewHolderSupplier().get() != null
                                     && newCta.getLayoutManager() != null
-                                    && newCta.getLayoutManager()
-                                            .isLayoutVisible(LayoutType.TAB_SWITCHER);
+                                    && newCta.getLayoutManager().isLayoutVisible(LayoutType.HUB);
                     Criteria.checkThat(isTabSwitcherShown, Matchers.is(true));
                 },
                 TIMEOUT_MS,
@@ -175,21 +180,25 @@ public class TabletPhoneLayoutChangeTest {
         Configuration newConfig = new Configuration(config);
         config.smallestScreenWidthDp =
                 DeviceFormFactor.MINIMUM_TABLET_WIDTH_DP + (isTestOnTablet ? -1 : 1);
-        ThreadUtils.runOnUiThreadBlocking(
-                () -> {
-                    mActivityTestRule
-                            .getActivity()
-                            .getLifecycleDispatcher()
-                            .register((DestroyObserver) helper::notifyCalled);
-                    Assert.assertTrue(
-                            "Activity should be ready for tablet mode change.",
-                            cta.getTabletMode().changed);
-                    cta.performOnConfigurationChanged(newConfig);
-                    Assert.assertTrue(
-                            "ChromeActivity#mIsRecreatingForTabletModeChange should be true.",
-                            cta.recreatingForTabletModeChangeForTesting());
-                });
-        mActivityTestRule.recreateActivity();
+        ChromeTabbedActivity newCta =
+                ApplicationTestUtils.waitForActivityWithClass(
+                        ChromeTabbedActivity.class,
+                        Stage.RESUMED,
+                        () -> {
+                            mActivityTestRule
+                                    .getActivity()
+                                    .getLifecycleDispatcher()
+                                    .register((DestroyObserver) helper::notifyCalled);
+                            Assert.assertTrue(
+                                    "Activity should be ready for tablet mode change.",
+                                    cta.getTabletMode().changed);
+                            cta.performOnConfigurationChanged(newConfig);
+                            Assert.assertTrue(
+                                    "ChromeActivity#mIsRecreatingForTabletModeChange should be"
+                                            + " true.",
+                                    cta.recreatingForTabletModeChangeForTesting());
+                        });
+        mActivityTestRule.getActivityTestRule().setActivity(newCta);
         helper.waitForOnly("Wait for old Activity being destroyed.");
     }
 }

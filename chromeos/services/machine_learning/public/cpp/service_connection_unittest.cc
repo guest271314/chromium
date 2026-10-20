@@ -7,7 +7,7 @@
 #include <utility>
 #include <vector>
 
-#include "base/compiler_specific.h"
+#include "base/containers/span.h"
 #include "base/functional/bind.h"
 #include "base/memory/read_only_shared_memory_region.h"
 #include "base/message_loop/message_pump_type.h"
@@ -47,12 +47,17 @@ class ServiceConnectionTest : public testing::Test {
  protected:
   static void SetUpTestCase() {
     task_environment_ = new base::test::TaskEnvironment();
-    static base::Thread ipc_thread("ipc");
-    ipc_thread.StartWithOptions(
-        base::Thread::Options(base::MessagePumpType::IO, 0));
-    static mojo::core::ScopedIPCSupport ipc_support(
-        ipc_thread.task_runner(),
-        mojo::core::ScopedIPCSupport::ShutdownPolicy::CLEAN);
+    static base::Thread* ipc_thread = []() {
+      auto* thread = new base::Thread("ipc");
+      thread->StartWithOptions(
+          base::Thread::Options(base::MessagePumpType::IO, 0));
+      return thread;
+    }();
+    [[maybe_unused]] static mojo::core::ScopedIPCSupport* ipc_support = []() {
+      return new mojo::core::ScopedIPCSupport(
+          ipc_thread->task_runner(),
+          mojo::core::ScopedIPCSupport::ShutdownPolicy::CLEAN);
+    }();
     ServiceConnection::GetInstance()->Initialize();
   }
 
@@ -828,8 +833,7 @@ TEST_F(ServiceConnectionTest, FakeDocumentScanner) {
   std::vector<uint8_t> fake_nv12_data(kNv12ImageSize, 0);
   base::MappedReadOnlyRegion memory =
       base::ReadOnlySharedMemoryRegion::Create(fake_nv12_data.size());
-  UNSAFE_TODO(memcpy(memory.mapping.memory(), fake_nv12_data.data(),
-                     fake_nv12_data.size()));
+  base::span(memory.mapping).copy_from(fake_nv12_data);
 
   mojom::DetectCornersResultPtr result = mojom::DetectCornersResult::New();
   result->status = mojom::DocumentScannerResultStatus::OK;
@@ -882,8 +886,7 @@ TEST_F(ServiceConnectionTest, FakAnnotateEncodedImage) {
   std::vector<uint8_t> fake_data(kImageSize, 0);
   base::MappedReadOnlyRegion memory =
       base::ReadOnlySharedMemoryRegion::Create(fake_data.size());
-  UNSAFE_TODO(
-      memcpy(memory.mapping.memory(), fake_data.data(), fake_data.size()));
+  base::span(memory.mapping).copy_from(fake_data);
 
   mojom::ImageAnnotationResultPtr result = mojom::ImageAnnotationResult::New();
   result->status = mojom::ImageAnnotationResult_Status::OK;
@@ -936,8 +939,7 @@ TEST_F(ServiceConnectionTest, FakAnnotateRawImage) {
   std::vector<uint8_t> fake_data(kImageSize, 0);
   base::MappedReadOnlyRegion memory =
       base::ReadOnlySharedMemoryRegion::Create(fake_data.size());
-  UNSAFE_TODO(
-      memcpy(memory.mapping.memory(), fake_data.data(), fake_data.size()));
+  base::span(memory.mapping).copy_from(fake_data);
 
   mojom::ImageAnnotationResultPtr result = mojom::ImageAnnotationResult::New();
   result->status = mojom::ImageAnnotationResult_Status::OK;

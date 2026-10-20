@@ -9,6 +9,7 @@
 
 #include <array>
 #include <iterator>
+#include <string_view>
 
 #include "build/branding_buildflags.h"
 #include "build/build_config.h"
@@ -23,26 +24,40 @@
 #include "printing/buildflags/buildflags.h"
 #include "rlz/buildflags/buildflags.h"
 
+#if BUILDFLAG(IS_CHROMEOS)
+#include "ash/constants/chrome_pref_names.h"
+#endif  // BUILDFLAG(IS_CHROMEOS)
+
 namespace prefs {
 
 // *************** PROFILE PREFS ***************
 // These are attached to the user profile
 
-// A string property indicating whether default apps should be installed
-// in this profile.  Use the value "install" to enable defaults apps, or
+// A string property indicating whether default extensions should be installed
+// in this profile.  Use the value "install" to enable default extensions, or
 // "noinstall" to disable them.  This property is usually set in the
 // master_preferences and copied into the profile preferences on first run.
-// Defaults apps are installed only when creating a new profile.
-inline constexpr char kPreinstalledApps[] = "default_apps";
+// Default extensions are installed only when creating a new profile.
+// The pref name is "default_apps" for backwards compatibility. This pref used
+// to control both apps and extensions, and before that just apps.
+inline constexpr char kPreinstalledExtensions[] = "default_apps";
 
 // Disable SafeBrowsing checks for files coming from trusted URLs when false.
 inline constexpr char kSafeBrowsingForTrustedSourcesEnabled[] =
     "safebrowsing_for_trusted_sources_enabled";
 
+// Restrict YouTube cookies deletion.
+inline constexpr char kRestrictYouTubeCookiesDeletion[] =
+    "restrict_youtube_cookies_deletion";
+
 // Disables screenshot accelerators and extension APIs.
 // This setting resides both in profile prefs and local state. Accelerator
 // handling code reads local state, while extension APIs use profile pref.
 inline constexpr char kDisableScreenshots[] = "disable_screenshots";
+#if BUILDFLAG(IS_CHROMEOS)
+static_assert(std::string_view(kDisableScreenshots) ==
+              std::string_view(ash::chrome_prefs::kDisableScreenshots));
+#endif  // BUILDFLAG(IS_CHROMEOS)
 
 // A boolean specifying whether the partial download bubble (which shows up
 // automatically when downloads are complete) should be enabled. True (partial
@@ -70,6 +85,10 @@ inline constexpr char kDownloadAppVerificationPromptTimestamps[] =
 // If set to true profiles are created in ephemeral mode and do not store their
 // data in the profile folder on disk but only in memory.
 inline constexpr char kForceEphemeralProfiles[] = "profile.ephemeral_mode";
+#if BUILDFLAG(IS_CHROMEOS)
+static_assert(std::string_view(kForceEphemeralProfiles) ==
+              std::string_view(ash::chrome_prefs::kForceEphemeralProfiles));
+#endif  // BUILDFLAG(IS_CHROMEOS)
 
 // A boolean specifying whether the New Tab page is the home page or not.
 inline constexpr char kHomePageIsNewTabPage[] = "homepage_is_newtabpage";
@@ -83,6 +102,11 @@ inline constexpr char kHttpsOnlyModeEnabled[] = "https_only_mode_enabled";
 // A boolean specifying whether HTTPS-First Mode is enabled in Balanced Mode.
 inline constexpr char kHttpsFirstBalancedMode[] =
     "https_first_balanced_mode_enabled";
+
+// A boolean specifying whether the HTTPS-First Mode settings bundle upgrade
+// Toast has been queued.
+inline constexpr char kHttpsFirstModeBundleToastQueued[] =
+    "https_first_mode_bundle_toast_queued";
 
 // A boolean specifying whether HTTPS-First Mode (aka "HTTPS-Only Mode") is
 // enabled in Incognito Mode.
@@ -113,6 +137,9 @@ inline constexpr char kImportantSitesDialogHistory[] = "important_sites_dialog";
 
 // This is the profile creation time.
 inline constexpr char kProfileCreationTime[] = "profile.creation_time";
+
+// Preference which stores randomly generated profile ID for LOM.
+inline constexpr char kLomProfileId[] = "private_metrics.lom.profile_id";
 
 #if BUILDFLAG(IS_WIN)
 // This is a timestamp of the last time this profile was reset by a third party
@@ -151,6 +178,10 @@ inline constexpr char kSessionExitType[] = "profile.exit_type";
 // 4: restore the URLs defined in kURLsToRestoreOnStartup.
 // 5: open the New Tab Page on startup.
 inline constexpr char kRestoreOnStartup[] = "session.restore_on_startup";
+#if BUILDFLAG(IS_CHROMEOS)
+static_assert(std::string_view(kRestoreOnStartup) ==
+              std::string_view(ash::chrome_prefs::kRestoreOnStartup));
+#endif  // BUILDFLAG(IS_CHROMEOS)
 
 // The URLs to restore on startup or when the home button is pressed. The URLs
 // are only restored on startup if kRestoreOnStartup is 4.
@@ -158,10 +189,18 @@ inline constexpr char kURLsToRestoreOnStartup[] = "session.startup_urls";
 
 // Boolean that is true when user feedback to Google is allowed.
 inline constexpr char kUserFeedbackAllowed[] = "feedback_allowed";
+#if BUILDFLAG(IS_CHROMEOS)
+static_assert(std::string_view(kUserFeedbackAllowed) ==
+              std::string_view(ash::chrome_prefs::kUserFeedbackAllowed));
+#endif  // BUILDFLAG(IS_CHROMEOS)
 
 #if BUILDFLAG(ENABLE_RLZ)
 // Integer. RLZ ping delay in seconds.
 inline constexpr char kRlzPingDelaySeconds[] = "rlz_ping_delay";
+#if BUILDFLAG(IS_CHROMEOS)
+static_assert(std::string_view(kRlzPingDelaySeconds) ==
+              std::string_view(ash::chrome_prefs::kRlzPingDelaySeconds));
+#endif  // BUILDFLAG(IS_CHROMEOS)
 #endif  // BUILDFLAG(ENABLE_RLZ)
 
 // The default character encoding to assume for a web page in the
@@ -205,6 +244,12 @@ inline constexpr char kWebKitSerifFontFamilyArabic[] =
     "webkit.webprefs.fonts.serif.Arab";
 inline constexpr char kWebKitSansSerifFontFamilyArabic[] =
     "webkit.webprefs.fonts.sansserif.Arab";
+inline constexpr char kWebKitStandardFontFamilyArabicNastaliq[] =
+    "webkit.webprefs.fonts.standard.Aran";
+inline constexpr char kWebKitSerifFontFamilyArabicNastaliq[] =
+    "webkit.webprefs.fonts.serif.Aran";
+inline constexpr char kWebKitSansSerifFontFamilyArabicNastaliq[] =
+    "webkit.webprefs.fonts.sansserif.Aran";
 #if BUILDFLAG(IS_WIN)
 inline constexpr char kWebKitStandardFontFamilyCyrillic[] =
     "webkit.webprefs.fonts.standard.Cyrl";
@@ -401,13 +446,16 @@ inline constexpr char kNetworkEasterEggHighScore[] =
 inline constexpr char kNetworkPredictionOptions[] =
     "net.network_prediction_options";
 
-// An integer representing the state of the default apps installation process.
-// This value is persisted in the profile's user preferences because the process
-// is async, and the user may have stopped chrome in the middle.  The next time
-// the profile is opened, the process will continue from where it left off.
+// An integer representing the state of the default extensions installation
+// process. This value is persisted in the profile's user preferences because
+// the process is async, and the user may have stopped chrome in the middle.
+// The next time the profile is opened, the process will continue from where it
+// left off.
 //
-// See possible values in external_provider_impl.cc.
-inline constexpr char kPreinstalledAppsInstallState[] =
+// See possible values in external_provider_impl.cc. The pref name refers to
+// "apps" for historical reasons. It used to control apps and extensions, and
+// before that just apps.
+inline constexpr char kPreinstalledExtensionsInstallState[] =
     "default_apps_install_state";
 
 #if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
@@ -443,51 +491,21 @@ inline constexpr char kDeskAPIThirdPartyAllowlist[] =
 inline constexpr char kPrintingAPIExtensionsAllowlist[] =
     "printing.printing_api_extensions_whitelist";
 
-// The list of extensions allowed to skip discovery and scan confirmation
-// dialogs when using the chrome.documentScan API.
-inline constexpr char kDocumentScanAPITrustedExtensions[] =
-    "document_scan.document_scan_api_trusted_extensions";
 
 // A boolean specifying whether the insights extension is enabled. If set to
 // true, the CCaaS Chrome component extension will be installed.
 inline constexpr char kInsightsExtensionEnabled[] =
     "insights_extension_enabled";
 
-// A boolean pref which turns on Advanced Filesystem
-// (USB support, SD card, etc).
-inline constexpr char kLabsAdvancedFilesystemEnabled[] =
-    "settings.labs.advanced_filesystem";
 
 // A boolean pref which turns on the mediaplayer.
 inline constexpr char kLabsMediaplayerEnabled[] = "settings.labs.mediaplayer";
-
-// A boolean pref of whether to show mobile data first-use warning notification.
-// Note: 3g in the name is for legacy reasons. The pref was added while only 3G
-// mobile data was supported.
-inline constexpr char kShowMobileDataNotification[] =
-    "settings.internet.mobile.show_3g_promo_notification";
 
 // A string pref that contains version where "What's new" promo was shown.
 inline constexpr char kChromeOSReleaseNotesVersion[] =
     "settings.release_notes.version";
 
-// A boolean preference indicating whether user has seen first-run tutorial
-// already.
-inline constexpr char kFirstRunTutorialShown[] =
-    "settings.first_run_tutorial_shown";
 
-// List of mounted file systems via the File System Provider API. Used to
-// restore them after a reboot.
-inline constexpr char kFileSystemProviderMounted[] =
-    "file_system_provider.mounted";
-
-// A boolean pref set to true if the virtual keyboard should be enabled.
-inline constexpr char kTouchVirtualKeyboardEnabled[] =
-    "ui.touch_virtual_keyboard_enabled";
-
-// A boolean pref to enable virtual keyboard smart visibility.
-inline constexpr char kVirtualKeyboardSmartVisibilityEnabled[] =
-    "ui.virtual_keyboard_smart_visibility_enabled";
 
 // A boolean pref. If set to true, the Unified Desktop feature is made
 // available and turned on by default, which allows applications to span
@@ -525,10 +543,6 @@ inline constexpr char kMinimumAllowedChromeVersion[] = "minimum_req.version";
 inline constexpr char kShowArcSettingsOnSessionStart[] =
     "start_arc_settings_on_session_start";
 
-// Boolean preference that triggers chrome://settings/syncSetup to be opened
-// on user session start.
-inline constexpr char kShowSyncSettingsOnSessionStart[] =
-    "start_sync_settings_on_session_start";
 
 // Dictionary preference that maps language to default voice name preferences
 // for the users's text-to-speech settings. For example, this might map
@@ -551,10 +565,6 @@ inline constexpr char kTextToSpeechPitch[] = "settings.tts.speech_pitch";
 // system volume, and higher than 1.0 is louder.
 inline constexpr char kTextToSpeechVolume[] = "settings.tts.speech_volume";
 
-// Amount of times the release notes suggestion chip should be
-// shown before it disappears.
-inline constexpr char kReleaseNotesSuggestionChipTimesLeftToShow[] =
-    "times_left_to_show_release_notes_suggestion_chip";
 
 // A string pref storing the path of device wallpaper image file.
 inline constexpr char kDeviceWallpaperImageFilePath[] =
@@ -574,59 +584,6 @@ inline constexpr char kStartupBrowserWindowLaunchSuppressed[] =
 // chrome.login API.
 inline constexpr char kLoginExtensionApiDataForNextLoginAttempt[] =
     "extensions_api.login.data_for_next_login_attempt";
-
-// Int64 pref indicating the time in microseconds since Windows epoch when the
-// timer for update required which will block user session was started. If the
-// timer is not started the pref holds the default value base::Time().
-inline constexpr char kUpdateRequiredTimerStartTime[] =
-    "update_required_timer_start_time";
-
-// Int64 pref indicating the waiting time in microseconds after which the update
-// required timer will expire and block user session. If the timer is not
-// started the pref holds the default value base::TimeDelta().
-inline constexpr char kUpdateRequiredWarningPeriod[] =
-    "update_required_warning_period";
-
-// String user profile pref that contains the host and port of the local
-// proxy which tunnels user traffic, in the format <address>:<proxy>. Only set
-// when System-proxy and ARC++ are enabled by policy.
-inline constexpr char kSystemProxyUserTrafficHostAndPort[] =
-    "system_proxy.user_traffic_host_and_port";
-
-// Boolean pref indicating whether the supervised user has migrated EDU
-// secondary account to ARC++.
-inline constexpr char kEduCoexistenceArcMigrationCompleted[] =
-    "account_manager.edu_coexistence_arc_migration_completed";
-
-// A dictionary storing the string representation of
-// chromeos::settings::mojom::Setting IDs for the unique OS Settings changed.
-// Implicitly stores the total count of the unique OS Settings changed by each
-// user per device.
-// Key:string = the int equivalent of the Settings enum
-//      chromeos::settings::mojom::Setting casted to string. Need to cast to
-//      string since the keys in a dictionary can only be strings.
-// Value:int = constant number 1. It signifies whether that particular Settings
-//      has been used by the user during the device's lifetime.
-inline constexpr char kTotalUniqueOsSettingsChanged[] =
-    "settings.total_unique_os_settings_changed";
-
-// A boolean representing whether the user has changed a unique Setting after at
-// least 7 days have passed since the user completed OOBE.
-inline constexpr char kHasResetFirst7DaysSettingsUsedCount[] =
-    "settings.has_reset_first_seven_days_settings_used_count";
-
-// A boolean representing whether the user has revoked their consent
-// for UMA at least one time in the lifetime of the device.
-//
-// If the value is true, the user has revoked consent for recording their
-// metrics at least once in the device's lifetime AND has made a change to
-// Settings when the consent was revoked. This is the final value of this pref,
-// ie. once the pref is set to true, the value will never change again. Even if
-// the user grants consent again, we will not record their metric in the
-// histogram
-// "ChromeOS.Settings.NumUniqueSettingsChanged.DeviceLifetime2.{Time}".
-inline constexpr char kHasEverRevokedMetricsConsent[] =
-    "settings.has_ever_revoked_metrics_consent";
 
 // This boolean controls whether the first window shown on first run should be
 // unconditionally maximized, overriding the heuristic that normally chooses the
@@ -665,6 +622,16 @@ inline constexpr char kBookmarkBarHoverCount[] = "bookmark_bar.hover_count";
 inline constexpr char kBookmarkBarNavigationCount[] =
     "bookmark_bar.navigation_count";
 
+// A time pref that records the previous time the bookmark bar was rendered on
+// the NTP. It is only updated max once per 24 hours.
+inline constexpr char kBookmarkBarPreviousInitialRenderOnNtpTime[] =
+    "bookmark_bar.previous_render_on_ntp_time";
+
+// An integer pref that records how many times the bookmark bar is rendered on
+// the NTP. It is only updated max once per 24 hours.
+inline constexpr char kBookmarkBarRenderedOnNtpCount[] =
+    "bookmark_bar.rendered_on_ntp_count";
+
 // A boolean pref set to true if the Split Tab button should be pinned to the
 // toolbar.
 inline constexpr char kPinSplitTabButton[] = "browser.pin_split_tab_button";
@@ -696,9 +663,16 @@ inline constexpr char kSplitViewDragAndDropNudgeUsedCount[] =
 // recently used tabs.
 inline constexpr char kCtrlTabMru[] = "browser.ctrl_tab_mru";
 
-// A boolean pref set to true if Gemini integration be enabled. This is managed
-// by enterprise policy.
-inline constexpr char kGeminiSettings[] = "browser.gemini_settings";
+// An int pref that controls the voice typing feature. This is managed by
+// enterprise policy.
+inline constexpr char kVoiceTypingSettings[] = "browser.voice_typing_settings";
+
+// Boolean indicating completion of the Dictation onboarding.
+inline constexpr char kPrefDictationOnboardingCompleted[] =
+    "browser.dictation_onboarding_completed";
+
+// String pref storing the accelerator for the Dictation hotkey.
+inline constexpr char kVoiceTypingHotkey[] = "browser.voice_typing_hotkey";
 
 // Comma separated list of domain names (e.g. "google.com,school.edu").
 // When this pref is set, the user will be able to access Google Apps
@@ -763,6 +737,11 @@ inline constexpr char kGrayscaleThemeEnabled[] = "browser.theme.is_grayscale2";
 inline constexpr char kExtensionsUIDeveloperMode[] =
     "extensions.ui.developer_mode";
 
+// Boolean pref which persists whether new extensions should be pinned by
+// default.
+inline constexpr char kExtensionsPinnedByDefault[] =
+    "extensions.pinned_by_default";
+
 #if BUILDFLAG(IS_ANDROID) && BUILDFLAG(ENABLE_EXTENSIONS_CORE)
 // A boolean pref set to true if the extensions menu button should be pinned to
 // the toolbar.
@@ -774,14 +753,14 @@ inline constexpr char kPinExtensionsMenuButton[] =
 // extension + named command pair.
 inline constexpr char kExtensionCommands[] = "extensions.commands";
 
+// Boolean pref indicating whether native UI extension review prompts are
+// allowed by enterprise policy.
+inline constexpr char kExtensionReviewPromptsAllowed[] =
+    "extensions.review_prompts_allowed";
+
 // Whether Chrome should use its internal PDF viewer or not.
 inline constexpr char kPluginsAlwaysOpenPdfExternally[] =
     "plugins.always_open_pdf_externally";
-
-// Int64 containing the internal value of the time at which the default browser
-// infobar was last dismissed by the user.
-inline constexpr char kDefaultBrowserInfobarLastDeclined[] =
-    "browser.default_browser_infobar_last_declined";
 
 // base::Time containing time at which the default browser infobar was last
 // dismissed by the user.
@@ -968,6 +947,14 @@ inline constexpr char kImportDialogSavedPasswords[] =
 inline constexpr char kImportDialogSearchEngine[] =
     "import_dialog_search_engine";
 
+// A dictionary mapping foreign session tags (see
+// `sync_sessions::SyncedSession::GetSessionTag()`) to `true` for synced devices
+// whose tabs the user has chosen to hide in this profile via
+// `chrome://settings/deviceTabVisibility`. Sessions are visible by default and
+// removed from the dictionary when re-enabled.
+inline constexpr char kDeviceTabVisibilityHiddenSessions[] =
+    "sync.device_tab_visibility_hidden_sessions";
+
 // Profile avatar and name
 inline constexpr char kProfileAvatarIndex[] = "profile.avatar_index";
 inline constexpr char kProfileName[] = "profile.name";
@@ -988,6 +975,10 @@ inline constexpr char kInvertNotificationShown[] =
 // A pref holding the list of printer types to be disabled.
 inline constexpr char kPrinterTypeDenyList[] =
     "printing.printer_type_deny_list";
+#if BUILDFLAG(IS_CHROMEOS)
+static_assert(std::string_view(kPrinterTypeDenyList) ==
+              std::string_view(ash::chrome_prefs::kPrinterTypeDenyList));
+#endif  // BUILDFLAG(IS_CHROMEOS)
 
 // The allowed/default value for the 'Headers and footers' checkbox, in Print
 // Preview.
@@ -1129,18 +1120,6 @@ inline constexpr char kGCMProductCategoryForSubtypes[] =
 // Whether a user is allowed to use Easy Unlock.
 inline constexpr char kEasyUnlockAllowed[] = "easy_unlock.allowed";
 
-// Preference storing Easy Unlock pairing data.
-inline constexpr char kEasyUnlockPairing[] = "easy_unlock.pairing";
-
-#if BUILDFLAG(ENABLE_EXTENSIONS)
-// Used to indicate whether or not the toolbar redesign bubble has been shown
-// and acknowledged, and the last time the bubble was shown.
-inline constexpr char kToolbarIconSurfacingBubbleAcknowledged[] =
-    "toolbar_icon_surfacing_bubble_acknowledged";
-inline constexpr char kToolbarIconSurfacingBubbleLastShowTime[] =
-    "toolbar_icon_surfacing_bubble_show_time";
-#endif
-
 // Define the IP handling policy override that WebRTC should follow. When not
 // set, it defaults to "default".
 inline constexpr char kWebRTCIPHandlingPolicy[] = "webrtc.ip_handling_policy";
@@ -1217,10 +1196,14 @@ inline constexpr char kDataUrlInSvgUseEnabled[] =
 inline constexpr char kPartitionedBlobUrlUsage[] =
     "profile.content_settings.partitioned_blob_url_usage";
 
-// Boolean value indicating if the Reduce Accept-Language feature should be
-// enabled. Defaults to network::features::kReduceAcceptLanguage field trial.
-inline constexpr char kReduceAcceptLanguageEnabled[] =
-    "profile.reduce_accept_language_enabled";
+// Boolean indicating that the user dismissed the XSLT deprecation warning
+// banner with the "don't show this again" checkbox checked.
+// TODO(crbug.com/560233256): This pref is temporary, and is only required
+// before XSLT is disabled by default in M158. It can be removed in M158, or
+// whenever XSLT is disabled by default (other than for origin trials and
+// enterprise policy).
+inline constexpr char kXSLTDeprecationBannerSuppressed[] =
+    "profile.xslt_deprecation_banner_suppressed";
 
 // Boolean indicating if JS dialogs triggered from a different origin iframe
 // should be blocked. Has no effect if
@@ -1229,12 +1212,22 @@ inline constexpr char kSuppressDifferentOriginSubframeJSDialogs[] =
     "suppress_different_origin_subframe_js_dialogs";
 
 // Enum indicating if the user agent reduction feature should be forced enabled
-// or disabled. Defaults to blink::features::kReduceUserAgent field trial.
+// or disabled.
 inline constexpr char kUserAgentReduction[] = "user_agent_reduction";
 
 #if !BUILDFLAG(IS_ANDROID)
-// Boolean determining whether the projects panel entrypoint is displayed in the
-// tab strip.
+// Boolean determining whether the organizer panel entrypoint is displayed in
+// the tab strip.
+inline constexpr char kOrganizerPanelEntrypointEnabled[] =
+    "organizer_panel.entrypoint_enabled";
+// Dictionary mapping organizer panel section IDs to a boolean indicating
+// whether the section is expanded.
+inline constexpr char kOrganizerPanelSectionsExpanded[] =
+    "organizer_panel.sections_expanded";
+// Dictionary mapping organizer panel section IDs to a boolean indicating
+// whether the section shows all items.
+inline constexpr char kOrganizerPanelSectionsShowAll[] =
+    "organizer_panel.sections_show_all";
 inline constexpr char kProjectsPanelEntrypointEnabled[] =
     "projects_panel.entrypoint_enabled";
 
@@ -1242,6 +1235,10 @@ inline constexpr char kProjectsPanelEntrypointEnabled[] =
 // True when the side panel is aligned to the right.
 inline constexpr char kSidePanelHorizontalAlignment[] =
     "side_panel.is_right_aligned";
+// Dictionary determining the side panel alignment overrides for specific
+// side panel entries.
+inline constexpr char kSidePanelAlignmentOverrides[] =
+    "side_panel.alignment_overrides";
 // Boolean determining whether the companion side panel should be pinned to have
 // a button in the toolbar.
 inline constexpr char kSidePanelCompanionEntryPinnedToToolbar[] =
@@ -1251,28 +1248,15 @@ inline constexpr char kSidePanelIdToWidth[] = "side_panel.id_to_width";
 // Corresponds to the enterprise policy.
 inline constexpr char kGoogleSearchSidePanelEnabled[] =
     "side_panel.google_search_side_panel_enabled";
-// Boolean determining the side the tab search will be appear on (left / right).
-// True when the tab search button is on the right side of the tab strip even in
-// RTL.
-inline constexpr char kTabSearchRightAligned[] = "tab_search.is_right_aligned";
 
 // Boolean determining whether the tab search button is pinned to the tab strip.
 inline constexpr char kTabSearchPinnedToTabstrip[] =
     "tab_search.pinned_to_tabstrip";
 
-// Boolean indicating whether the tab search pinning migration to the tab strip
-// is complete.
-inline constexpr char kTabSearchPinnedToTabstripMigrationComplete[] =
-    "tab_search.pinned_to_tabstrip_migration_complete";
-
-// Boolean indicating whether the tab search pinning migration to the tab strip
-// is complete. This was created to fix a bug in the initial implementation,
-// which referenced kTabSearchPinnedToTabstripMigrationComplete.
-inline constexpr char kTabSearchPinnedToTabstripMigrationComplete2[] =
-    "tab_search.pinned_to_tabstrip_migration_complete_2";
-
-// Boolean determining whether the projects panel button is pinned to the tab
+// Boolean determining whether the organizer panel button is pinned to the tab
 // strip.
+inline constexpr char kOrganizerPanelPinnedToTabstrip[] =
+    "organizer_panel.pinned_to_tabstrip";
 inline constexpr char kProjectsPanelPinnedToTabstrip[] =
     "projects_panel.pinned_to_tabstrip";
 
@@ -1280,6 +1264,11 @@ inline constexpr char kProjectsPanelPinnedToTabstrip[] =
 // strip.
 inline constexpr char kEverythingMenuPinnedToTabstrip[] =
     "everything_menu.pinned_to_tabstrip";
+
+// Boolean determining whether the tab scroll buttons are pinned to the tab
+// strip.
+inline constexpr char kTabScrollButtonsPinnedToTabstrip[] =
+    "tab_scroll_buttons.pinned_to_tabstrip";
 
 // Boolean determining whether vertical tabs are enabled.
 inline constexpr char kVerticalTabsEnabled[] = "vertical_tabs.enabled";
@@ -1302,6 +1291,11 @@ inline constexpr char kVerticalTabsCollapsedState[] =
 // width. Only used during startup when session restore is not used.
 inline constexpr char kVerticalTabsUncollapsedWidth[] =
     "vertical_tabs.uncollapsed_width";
+
+// Time representing the last time the everything menu button in the vertical
+// tab strip top container was pressed.
+inline constexpr char kVerticalTabsEverythingMenuLastPressed[] =
+    "vertical_tabs.everything_menu_last_pressed";
 #endif  // !BUILDFLAG(IS_ANDROID)
 
 #if BUILDFLAG(ENABLE_COMPOSE)
@@ -1364,7 +1358,6 @@ inline constexpr char kManagedSerialAllowAllPortsForUrls[] =
 inline constexpr char kManagedSerialAllowUsbDevicesForUrls[] =
     "managed.serial_allow_usb_devices_for_urls";
 
-#if !BUILDFLAG(IS_ANDROID)
 // Used to store the value of the WebHidAllowAllDevicesForUrls policy.
 inline constexpr char kManagedWebHidAllowAllDevicesForUrls[] =
     "managed.web_hid_allow_all_devices_for_urls";
@@ -1382,7 +1375,6 @@ inline constexpr char kManagedWebHidAllowDevicesForUrlsOnLoginScreen[] =
 // policy.
 inline constexpr char kManagedWebHidAllowDevicesWithHidUsagesForUrls[] =
     "managed.web_hid_allow_devices_with_hid_usages_for_urls";
-#endif  // !BUILDFLAG(IS_ANDROID)
 
 // Directory of the last profile used.
 inline constexpr char kProfileLastUsed[] = "profile.last_used";
@@ -1438,11 +1430,6 @@ inline constexpr char kStabilitySystemUncleanShutdownCount[] =
 // user about setting Chrome as the default browser.
 inline constexpr char kBrowserSuppressDefaultBrowserPrompt[] =
     "browser.suppress_default_browser_prompt_for_version";
-
-// String that refers to the study group in which this install was enrolled.
-// Used to implement the sticky experiment tracking.
-inline constexpr char kDefaultBrowserPromptRefreshStudyGroup[] =
-    "browser.default_browser_prompt_refresh_study_group";
 
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
 // The time at which the default-PDF-viewer infobar was last shown.
@@ -1501,6 +1488,10 @@ inline constexpr char kAppWindowPlacement[] = "browser.app_window_placement";
 // String which specifies where to download files to by default.
 inline constexpr char kDownloadDefaultDirectory[] =
     "download.default_directory";
+#if BUILDFLAG(IS_CHROMEOS)
+static_assert(std::string_view(kDownloadDefaultDirectory) ==
+              std::string_view(ash::chrome_prefs::kDownloadDefaultDirectory));
+#endif  // BUILDFLAG(IS_CHROMEOS)
 
 // Boolean that records if the download directory was changed by an
 // upgrade a unsafe location to a safe location.
@@ -1536,6 +1527,10 @@ inline constexpr char kIncognitoReauthenticationForAndroid[] =
 // String which specifies where to save html files to by default.
 inline constexpr char kSaveFileDefaultDirectory[] =
     "savefile.default_directory";
+#if BUILDFLAG(IS_CHROMEOS)
+static_assert(std::string_view(kSaveFileDefaultDirectory) ==
+              std::string_view(ash::chrome_prefs::kSaveFileDefaultDirectory));
+#endif  // BUILDFLAG(IS_CHROMEOS)
 
 // The type used to save the page. See the enum SavePackage::SavePackageType in
 // the chrome/browser/download/save_package.h for the possible values.
@@ -1544,6 +1539,10 @@ inline constexpr char kSaveFileType[] = "savefile.type";
 // String which specifies the last directory that was chosen for uploading
 // or opening a file.
 inline constexpr char kSelectFileLastDirectory[] = "selectfile.last_directory";
+#if BUILDFLAG(IS_CHROMEOS)
+static_assert(std::string_view(kSelectFileLastDirectory) ==
+              std::string_view(ash::chrome_prefs::kSelectFileLastDirectory));
+#endif  // BUILDFLAG(IS_CHROMEOS)
 
 // Boolean that specifies if file selection dialogs are shown.
 inline constexpr char kAllowFileSelectionDialogs[] =
@@ -1590,6 +1589,24 @@ inline constexpr char kRestartLastSessionOnShutdown[] =
 inline constexpr char kRestartInBackgroundOnShutdown[] =
     "restart.in.background.on.shutdown";
 
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
+// Timestamp of when the scheduled restart nudge dialog was last shown
+// to the user, used for nudge cooldown calculations.
+inline constexpr char kScheduledRestartLastNudgeTime[] =
+    "restart.scheduled_restart_last_nudge_time";
+
+// Dictionary holding the HaTS product-specific data and a timestamp for a
+// Scheduled Restart survey that is delivered after a "Restart now" relaunch.
+// Cleared as soon as it is read after session restore.
+inline constexpr char kScheduledRestartHatsPendingSurvey[] =
+    "restart.scheduled_restart_hats_pending_survey";
+#endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
+
+// Pref name for controlling presentation of promotions, including full-tab
+// promotional and/or educational content.
+// This preference replaces browser.promotional_tabs_enabled.
+inline constexpr char kPromotionsEnabled[] = "browser.promotions_enabled";
+
 #if !BUILDFLAG(IS_ANDROID)
 #if !BUILDFLAG(IS_CHROMEOS)
 // Boolean that specifies whether or not to show security warnings for some
@@ -1605,11 +1622,6 @@ inline constexpr char kCommandLineFlagSecurityWarningsEnabled[] =
 inline constexpr char kNTPFooterExtensionAttributionEnabled[] =
     "ntp_footer.settings.extension_attribution";
 
-// Pref name for controlling presentation of promotions, including full-tab
-// promotional and/or educational content.
-// This preference replaces browser.promotional_tabs_enabled.
-inline constexpr char kPromotionsEnabled[] = "browser.promotions_enabled";
-
 // Boolean that specifies whether or not showing the unsupported OS warning is
 // suppressed. False by default. Controlled by the SuppressUnsupportedOSWarning
 // policy setting.
@@ -1618,10 +1630,44 @@ inline constexpr char kSuppressUnsupportedOSWarning[] =
 
 // Set before autorestarting Chrome, cleared on clean exit.
 inline constexpr char kWasRestarted[] = "was.restarted";
+#if BUILDFLAG(IS_CHROMEOS)
+static_assert(std::string_view(kWasRestarted) ==
+              std::string_view(ash::chrome_prefs::kWasRestarted));
+#endif  // BUILDFLAG(IS_CHROMEOS)
+
+// Dictionary containing the number of tabs and windows before a restart.
+inline constexpr char kPreSmartRestartSessionState[] =
+    "session.pre_smart_restart_session_state";
+
+// Dictionary containing the number of profiles with open windows before a
+// restart.
+inline constexpr char kPreSmartRestartProfileCounts[] =
+    "session.pre_smart_restart_profile_counts";
+
+#if BUILDFLAG(IS_MAC)
+// Boolean preference controlling zero window relaunch per enterprise policy.
+inline constexpr char kUpdateOnZeroWindowEnabled[] =
+    "policy.update_on_zero_window_enabled";
+#endif  //  BUILDFLAG(IS_MAC)
+
 #endif  // !BUILDFLAG(IS_ANDROID)
 
 // Whether Extensions are enabled.
 inline constexpr char kDisableExtensions[] = "extensions.disabled";
+
+#if BUILDFLAG(IS_ANDROID)
+// Dictionary pref for custom background information.
+inline constexpr char kNtpAndroidCustomBackgroundDict[] =
+    "ntp.android_custom_background_dict";
+
+// Boolean pref for whether the custom background is local to device.
+inline constexpr char kNtpAndroidCustomBackgroundLocalToDevice[] =
+    "ntp.android_custom_background_local_to_device";
+
+// Dictionary pref for the selected Chrome color information.
+inline constexpr char kNtpAndroidChromeColorDict[] =
+    "ntp.android_chrome_color_dict";
+#endif  // BUILDFLAG(IS_ANDROID)
 
 // Keeps track of which sessions are collapsed in the Other Devices menu.
 inline constexpr char kNtpCollapsedForeignSessions[] =
@@ -1666,6 +1712,11 @@ inline constexpr char kNtpCustomizeChromeButtonOpenCount[] =
     "NewTabPage.CustomizeChromeButtonOpenCount";
 // List keeping track of disabled NTP modules.
 inline constexpr char kNtpDisabledModules[] = "NewTabPage.DisabledModules";
+
+// Dictionary containing the state of the context menu button animation.
+inline constexpr char kContextMenuAnimationState[] =
+    "context_menu_animation_state";
+
 // List keeping track of modules hidden in Customize Chrome.
 inline constexpr char kNtpCustomizeChromeHiddenModules[] =
     "NewTabPage.CustomizeChromeHiddenModules";
@@ -1680,9 +1731,6 @@ inline constexpr char kNtpCustomizeChromeIPHAutoOpened[] =
     "NewTabPage.CustomizeChromeIPHAutoOpened";
 // List keeping track of modules not allowed to show on New Tab Page.
 inline constexpr char kNtpHiddenModules[] = "NewTabPage.HiddenModules";
-// Time the Microsoft files module was last dismissed.
-inline constexpr char kNtpMicrosoftFilesModuleLastDismissedTime[] =
-    "NewTabPage.MicrosoftFilesModuleLastDismissedTime";
 // The next time file suggestions can be requested after hitting a throttling
 // error.
 inline constexpr char kNtpMicrosoftFilesModuleRetryAfterTime[] =
@@ -1707,8 +1755,6 @@ inline constexpr char kNtpOutlookCalendarLastAttachmentRequestSuccess[] =
 inline constexpr char kNtpOutlookCalendarLastAttachmentRequestTime[] =
     "NewTabPage.OutlookCalendar.LastAttachmentRequestTime";
 // Time the Outlook Calendar module was last dismissed.
-inline constexpr char kNtpOutlookCalendarLastDismissedTime[] =
-    "NewTabPage.OutlookCalendar.LastDismissedTime";
 // The next time a user's Outlook calendar data can be requested after hitting a
 // throttling error.
 inline constexpr char kNtpOutlookCalendarRetryAfterTime[] =
@@ -1716,10 +1762,6 @@ inline constexpr char kNtpOutlookCalendarRetryAfterTime[] =
 // Whether NTP Outlook Calendar module is visible.
 inline constexpr char kNtpOutlookModuleVisible[] =
     "NewTabPage.OutlookModuleVisible";
-// List of promos that the user has dismissed while on the NTP.
-inline constexpr char kNtpPromoBlocklist[] = "ntp.promo_blocklist";
-// Whether the promo is visible.
-inline constexpr char kNtpPromoVisible[] = "ntp.promo_visible";
 // Whether NTP Sharepoint module is visible.
 inline constexpr char kNtpSharepointModuleVisible[] =
     "NewTabPage.SharepointModuleVisible";
@@ -1741,6 +1783,10 @@ inline constexpr char kDevToolsAdbKey[] = "devtools.adb_key";
 
 // Defines administrator-set availability of developer tools.
 inline constexpr char kDevToolsAvailability[] = "devtools.availability";
+#if BUILDFLAG(IS_CHROMEOS)
+static_assert(std::string_view(kDevToolsAvailability) ==
+              std::string_view(ash::chrome_prefs::kDevToolsAvailability));
+#endif  // BUILDFLAG(IS_CHROMEOS)
 
 // List of developer tools availability allowlist.
 inline constexpr char kDeveloperToolsAvailabilityAllowlist[] =
@@ -1917,6 +1963,21 @@ inline constexpr char kWebAppsUninstalledDefaultChromeApps[] =
 // outlive the app installation and uninstallation.
 inline constexpr char kWebAppsPreferences[] = "web_apps.web_app_ids";
 
+#if BUILDFLAG(IS_CHROMEOS)
+// The current migration state for PWA navigation capturing on ChromeOS, stored
+// as an integer matching values in `web_app::MigrationState`. Default
+// initialized to match that on-by-default is not enabled on ChromeOS.
+inline constexpr char kLastNavigationCapturingMigrationState[] =
+    "web_apps.last_navigation_capturing_migration_state";
+
+// A list of web app IDs that were set as the preferred app for capturing
+// supported links before migration was executed to start capturing by default.
+// Used as a backup to revert changes if the user turns off capturing by default
+// on ChromeOS.
+inline constexpr char kWebAppsPreviouslyAppSupportedLinks[] =
+    "web_apps.previously_app_supported_links";
+#endif
+
 #if BUILDFLAG(IS_MAC)
 // A boolean that indicates whether ad-hoc code signing should be used for
 // PWA app shims. This is managed by enterprise policy.
@@ -1988,11 +2049,18 @@ inline constexpr char kAuthSchemes[] = "auth.schemes";
 // from "auth.schemes".
 inline constexpr char kAllHttpAuthSchemesAllowedForOrigins[] =
     "auth.http_auth_allowed_for_origins";
+inline constexpr char kAllHttpAuthSchemesAllowedForProxies[] =
+    "auth.http_auth_allowed_for_proxies";
 
 // Boolean that specifies whether to disable CNAME lookups when generating
 // Kerberos SPN.
 inline constexpr char kDisableAuthNegotiateCnameLookup[] =
     "auth.disable_negotiate_cname_lookup";
+#if BUILDFLAG(IS_CHROMEOS)
+static_assert(
+    std::string_view(kDisableAuthNegotiateCnameLookup) ==
+    std::string_view(ash::chrome_prefs::kDisableAuthNegotiateCnameLookup));
+#endif  // BUILDFLAG(IS_CHROMEOS)
 
 // Boolean that specifies whether to include the port in a generated Kerberos
 // SPN.
@@ -2050,6 +2118,11 @@ inline constexpr char kIsolatedWebAppInstallForceList[] =
 inline constexpr char kIsolatedWebAppUserInstallationEnabled[] =
     "profile.isolated_web_app.install.user_install_enabled";
 
+// Dictionary pref storing policy metadata for Kiosk Isolated Web Apps (IWAs) in
+// bundle cache.
+inline constexpr char kKioskIwaCachePolicyState[] =
+    "kiosk.isolated_web_app_cache_policy_state";
+
 // An integer pref that remembers how many force install initializations are
 // pending. If more than `kIsolatedWebAppForceInstallMaxRetryTreshold`
 // initializations are pending, the initialization is delayed for
@@ -2069,17 +2142,6 @@ inline constexpr char kAuthNegotiateDelegateByKdcPolicy[] =
 // Boolean that specifies whether NTLMv2 is enabled.
 inline constexpr char kNtlmV2Enabled[] = "auth.ntlm_v2_enabled";
 #endif  // BUILDFLAG(IS_POSIX)
-
-#if BUILDFLAG(IS_CHROMEOS)
-
-// Holds URL patterns that specify origins that will be allowed to call
-// `subApps.{add|remove|list}())` without prior user gesture and that will skip
-// the user dialog authorization.
-inline constexpr char
-    kSubAppsAPIsAllowedWithoutGestureAndAuthorizationForOrigins[] =
-        "profile.isolated_web_app.sub_apps_allowed_without_user_gesture_and_"
-        "authorization";
-#endif  // BUILDFLAG(IS_CHROMEOS)
 
 #if BUILDFLAG(IS_WIN)
 // The integer value of the CloudAPAuthEnabled policy.
@@ -2152,12 +2214,20 @@ inline constexpr char kBuiltInDnsClientEnabled[] = "async_dns.enabled";
 // String specifying the secure DNS mode to use. Any string other than
 // "secure" or "automatic" will be mapped to the default "off" mode.
 inline constexpr char kDnsOverHttpsMode[] = "dns_over_https.mode";
+#if BUILDFLAG(IS_CHROMEOS)
+static_assert(std::string_view(kDnsOverHttpsMode) ==
+              std::string_view(ash::chrome_prefs::kDnsOverHttpsMode));
+#endif  // BUILDFLAG(IS_CHROMEOS)
 
 // String containing a space-separated list of DNS over HTTPS templates to use
 // in secure mode or automatic mode. If no templates are specified in automatic
 // mode, we will attempt discovery of DoH servers associated with the configured
 // insecure resolvers.
 inline constexpr char kDnsOverHttpsTemplates[] = "dns_over_https.templates";
+#if BUILDFLAG(IS_CHROMEOS)
+static_assert(std::string_view(kDnsOverHttpsTemplates) ==
+              std::string_view(ash::chrome_prefs::kDnsOverHttpsTemplates));
+#endif  // BUILDFLAG(IS_CHROMEOS)
 
 // Boolean that specifies whether Secure DNS in automatic mode should prefer to
 // fallback to DoH with Google DNS instead of using insecure DNS.
@@ -2175,6 +2245,11 @@ inline constexpr char kAdditionalDnsQueryTypesEnabled[] =
 // is not allowed and no prompt will be shown.
 // See also kAudioCaptureAllowedUrls.
 inline constexpr char kAudioCaptureAllowed[] = "hardware.audio_capture_enabled";
+#if BUILDFLAG(IS_CHROMEOS)
+static_assert(std::string_view(kAudioCaptureAllowed) ==
+              std::string_view(ash::chrome_prefs::kAudioCaptureAllowed));
+#endif  // BUILDFLAG(IS_CHROMEOS)
+
 // Holds URL patterns that specify URLs that will be granted access to audio
 // capture devices without prompt.
 inline constexpr char kAudioCaptureAllowedUrls[] =
@@ -2185,10 +2260,19 @@ inline constexpr char kAudioCaptureAllowedUrls[] =
 // prompted for device access.  When disabled, access to video capture devices
 // is not allowed and no prompt will be shown.
 inline constexpr char kVideoCaptureAllowed[] = "hardware.video_capture_enabled";
+#if BUILDFLAG(IS_CHROMEOS)
+static_assert(std::string_view(kVideoCaptureAllowed) ==
+              std::string_view(ash::chrome_prefs::kVideoCaptureAllowed));
+#endif  // BUILDFLAG(IS_CHROMEOS)
+
 // Holds URL patterns that specify URLs that will be granted access to video
 // capture devices without prompt.
 inline constexpr char kVideoCaptureAllowedUrls[] =
     "hardware.video_capture_allowed_urls";
+#if BUILDFLAG(IS_CHROMEOS)
+static_assert(std::string_view(kVideoCaptureAllowedUrls) ==
+              std::string_view(ash::chrome_prefs::kVideoCaptureAllowedUrls));
+#endif  // BUILDFLAG(IS_CHROMEOS)
 
 // A pref holding the value of the policy used to explicitly allow or deny
 // access to screen capture.  This includes all APIs that allow capturing
@@ -2226,6 +2310,15 @@ inline constexpr char kTabCaptureAllowedByOrigins[] =
 inline constexpr char kSameOriginTabCaptureAllowedByOrigins[] =
     "hardware.same_origin_tab_capture_allowed_by_origins";
 
+// Boolean determining whether the glass frame is enabled.
+inline constexpr char kGlassFrameEnabled[] = "glass_frame.enabled";
+
+// Int64 pref used by the metrics::DailyEvent owned by
+// GlassFrameMetricsReporter to record the last time daily glass frame
+// metrics were sampled.
+inline constexpr char kGlassFrameDailySample[] =
+    "glass_frame.last_daily_sample";
+
 #if BUILDFLAG(IS_CHROMEOS)
 // An any-api scoped refresh token for enterprise-enrolled devices.  Allows
 // for connection to Google APIs when the user isn't logged in.  Currently used
@@ -2239,29 +2332,10 @@ inline constexpr char kDeviceRobotAnyApiRefreshTokenV2[] =
 inline constexpr char kDeviceRefreshTokenAnyApiIsV3Used[] =
     "device_refresh_token_is_v3_used.any-api";
 
-// A dictionary containing server-provided device state pulled form the cloud
-// after recovery.
-inline constexpr char kServerBackedDeviceState[] = "server_backed_device_state";
 
-// A boolean preference controlling Android status reporting.
-inline constexpr char kReportArcStatusEnabled[] =
-    "arc.status_reporting_enabled";
 
-// Dictionary indicating current network bandwidth throttling settings.
-// Contains a boolean (is throttling enabled) and two integers (upload rate
-// and download rate in kbits/s to throttle to)
-inline constexpr char kNetworkThrottlingEnabled[] = "net.throttling_enabled";
 
-// Integer pref used by the metrics::DailyEvent owned by
-// ash::PowerMetricsReporter.
-inline constexpr char kPowerMetricsDailySample[] = "power.metrics.daily_sample";
 
-// Key for list of users that should be reported.
-inline constexpr char kReportingUsers[] = "reporting_users";
-
-// Whether to log events for Android app installs.
-inline constexpr char kArcAppInstallEventLoggingEnabled[] =
-    "arc.app_install_event_logging_enabled";
 
 
 #endif  // BUILDFLAG(IS_CHROMEOS)
@@ -2271,8 +2345,6 @@ inline constexpr char kDiskCacheDir[] = "browser.disk_cache_dir";
 // Pref name for the policy specifying the maximal cache size.
 inline constexpr char kDiskCacheSize[] = "browser.disk_cache_size";
 
-inline constexpr char kPerformanceTracingEnabled[] =
-    "feedback.performance_tracing_enabled";
 
 // Pref name for the policy controlling whether to enable Media Router.
 inline constexpr char kEnableMediaRouter[] = "media_router.enable_media_router";
@@ -2395,21 +2467,26 @@ inline constexpr char kBackgroundModeEnabled[] = "background_mode.enabled";
 inline constexpr char kHardwareAccelerationModeEnabled[] =
     "hardware_acceleration_mode.enabled";
 
-// Set to true if process isolation mode is enabled.
 #if BUILDFLAG(IS_WIN)
+// Set to true if process isolation mode is enabled.
 inline constexpr char kProcessIsolationEnabled[] = "isolation_state.enabled";
+
+// A string representing the state or field trial group name of the isolation
+// state.
+inline constexpr char kPreviousIsolationState[] = "isolation_state.previous";
+
 #endif  // BUILDFLAG(IS_WIN)
 
 // Hardware acceleration mode from previous browser launch.
 inline constexpr char kHardwareAccelerationModePrevious[] =
     "hardware_acceleration_mode_previous";
 
-// Integer that specifies the policy refresh rate for device-policy in
-// milliseconds. Not all values are meaningful, so it is clamped to a sane range
-// by the cloud policy subsystem.
-inline constexpr char kDevicePolicyRefreshRate[] = "policy.device_refresh_rate";
 
 #if !BUILDFLAG(IS_ANDROID)
+// A boolean specifying whether dynamic child module patching is enabled.
+inline constexpr char kDynamicPatchingEnabled[] =
+    "child_module.dynamic_patching_enabled";
+
 // A boolean where true means that the browser has previously attempted to
 // enable autoupdate and failed, so the next out-of-date browser start should
 // not prompt the user to enable autoupdate, it should offer to reinstall Chrome
@@ -2440,6 +2517,11 @@ inline constexpr char kNetworkProfileLastWarningTime[] =
 // shell_integration::win::MigrateTaskbarPins() completed.
 inline constexpr char kShortcutMigrationVersion[] =
     "browser.shortcut_migration_version";
+
+// The last time at which shell_integration::win::MigrateTaskbarPins()
+// completed.
+inline constexpr char kShortcutMigrationTime[] =
+    "browser.shortcut_migration_time";
 #endif  // BUILDFLAG(IS_WIN)
 
 // An integer that is incremented whenever changes are made to app shortcuts.
@@ -2451,6 +2533,11 @@ inline constexpr char kAppShortcutsVersion[] = "apps.shortcuts_version";
 // from an Intel mac to an ARM mac), then this will cause all shortcuts to be
 // re-created.
 inline constexpr char kAppShortcutsArch[] = "apps.shortcuts_arch";
+
+// A string indicating the OS version under which app shortcuts have been
+// created. If this changes (e.g., due to updating macOS version), then all
+// app shortcuts will be re-created.
+inline constexpr char kAppShortcutsOsVersion[] = "apps.shortcuts_os_version";
 
 // This references a default content setting value which we expose through the
 // preferences extensions API and also used for migration of the old
@@ -2471,6 +2558,9 @@ inline constexpr char kWatchdogExtensionActive[] =
 // given by the PartnerBookmarksProvider and either the user-visible renamed
 // title or an empty string if the bookmark node was removed.
 inline constexpr char kPartnerBookmarkMappings[] = "partnerbookmarks.mappings";
+
+// Boolean that is true when the AppStoreRatingEnabled policy is enabled.
+inline constexpr char kAppRatingPolicyEnabled[] = "app_rating_policy_enabled";
 #endif  // BUILDFLAG(IS_ANDROID)
 
 // Whether DNS Quick Check is disabled in proxy resolution.
@@ -2527,11 +2617,6 @@ inline constexpr char kEchoCheckedOffers[] = "EchoCheckedOffers";
 #if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
 // Policy that indicates how to handle animated images.
 inline constexpr char kAnimationPolicy[] = "settings.a11y.animation_policy";
-
-// Boolean pref indicating whether extension DOM activity logging is enabled
-// for enterprise telemetry.
-inline constexpr char kExtensionDOMActivityLoggingEnabled[] =
-    "enterprise_reporting.extension_dom_activity_logging_enabled";
 
 // A list of URLs (for U2F) or domains (for webauthn) that automatically permit
 // direct attestation of a Security Key.
@@ -2715,6 +2800,10 @@ inline constexpr char kIsolateOrigins[] = "site_isolation.isolate_origins";
 
 // Boolean that specifies opting into --site-per-process (full Site Isolation).
 inline constexpr char kSitePerProcess[] = "site_isolation.site_per_process";
+#if BUILDFLAG(IS_CHROMEOS)
+static_assert(std::string_view(kSitePerProcess) ==
+              std::string_view(ash::chrome_prefs::kSitePerProcess));
+#endif  // BUILDFLAG(IS_CHROMEOS)
 
 #if !BUILDFLAG(IS_ANDROID)
 // Boolean to allow SharedArrayBuffer in non-crossOriginIsolated contexts.
@@ -2847,7 +2936,6 @@ inline constexpr char kCaretBrowsingEnabled[] =
 inline constexpr char kShowCaretBrowsingDialog[] =
     "settings.a11y.caretbrowsing.show_dialog";
 
-
 #if BUILDFLAG(IS_ANDROID)
 // Boolean pref controlling whether immersive AR sessions are enabled
 // in WebXR Device API.
@@ -2864,11 +2952,10 @@ inline constexpr char kFetchKeepaliveDurationOnShutdown[] =
 // Boolean pref to control whether to enable annotation mode in the PDF viewer
 // or not.
 inline constexpr char kPdfAnnotationsEnabled[] = "pdf.enable_annotations";
-#endif
-
 #if BUILDFLAG(IS_CHROMEOS)
-// Boolean pref to control whether to enable Lens integration with media app
-inline constexpr char kMediaAppLensEnabled[] = "media_app.enable_lens";
+static_assert(std::string_view(kPdfAnnotationsEnabled) ==
+              std::string_view(ash::chrome_prefs::kPdfAnnotationsEnabled));
+#endif  // BUILDFLAG(IS_CHROMEOS)
 #endif
 
 // A comma-separated list of ports on which outgoing connections will be
@@ -2941,10 +3028,6 @@ inline constexpr char kOriginAgentClusterDefaultEnabled[] =
 inline constexpr char kSCTAuditingHashdanceReportCount[] =
     "sct_auditing.hashdance_report_count";
 
-#if BUILDFLAG(IS_CHROMEOS)
-inline constexpr char kConsumerAutoUpdateToggle[] =
-    "settings.consumer_auto_update_toggle";
-#endif
 
 #if !BUILDFLAG(IS_ANDROID)
 // An integer count of how many times the user has seen the memory saver mode
@@ -3233,35 +3316,15 @@ inline constexpr char kNonMilestoneUpdateToastVersion[] =
 #endif  // !BUILDFLAG(IS_ANDROID)
 
 #if BUILDFLAG(IS_ANDROID)
-
-// LINT.IfChange(TipsShownPrefs)
-// Boolean prefs indicating whether a tip notification has already been shown.
-inline constexpr char kAndroidTipNotificationShownESB[] =
-    "android.tips.notifications.esb_shown";
-inline constexpr char kAndroidTipNotificationShownQuickDelete[] =
-    "android.tips.notifications.quick_delete_shown";
-inline constexpr char kAndroidTipNotificationShownLens[] =
-    "android.tips.notifications.lens_shown";
-inline constexpr char kAndroidTipNotificationShownBottomOmnibox[] =
-    "android.tips.notifications.bottom_omnibox_shown";
-inline constexpr char kAndroidTipNotificationShownPasswordAutofill[] =
-    "android.tips.notifications.password_autofill_shown";
-inline constexpr char kAndroidTipNotificationShownSignin[] =
-    "android.tips.notifications.signin_shown";
-inline constexpr char kAndroidTipNotificationShownCreateTabGroups[] =
-    "android.tips.notifications.create_tab_group_shown";
-inline constexpr char kAndroidTipNotificationShownCustomizeMVT[] =
-    "android.tips.notifications.customize_mvt_shown";
-inline constexpr char kAndroidTipNotificationShownRecentTabs[] =
-    "android.tips.notifications.recent_tabs_shown";
-// LINT.ThenChange(//chrome/android/java/src/org/chromium/chrome/browser/notifications/tips/TipsUtils.java:TipsShownPrefs)
-#endif  // BUILDFLAG(IS_ANDROID)
-
-#if BUILDFLAG(IS_ANDROID)
 // Time pref indicating the timestamp of the most recently visited browsing
 // history entry that is donated to AppSearch.
 inline constexpr char kAuxiliarySearchLastDonatedHistoryEntryVisitTime[] =
     "auxiliary_search.last_donated_history_entry_visit_time";
+
+// Boolean pref indicating whether sharing browsing data with on-device
+// intelligence features is enabled.
+inline constexpr char kAuxiliarySearchBrowsingDataDonationEnabled[] =
+    "auxiliary_search.browsing_data_donation_enabled";
 
 // Boolean pref indicating whether the app rating prompt has been shown.
 inline constexpr char kAppRatingPromptShown[] = "app_rating_prompt_shown";

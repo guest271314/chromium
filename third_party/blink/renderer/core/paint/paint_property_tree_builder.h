@@ -6,6 +6,8 @@
 #define THIRD_PARTY_BLINK_RENDERER_CORE_PAINT_PAINT_PROPERTY_TREE_BUILDER_H_
 
 #include "base/dcheck_is_on.h"
+#include "base/feature_list.h"
+#include "base/metrics/field_trial_params.h"
 #include "third_party/blink/renderer/core/layout/geometry/physical_rect.h"
 #include "third_party/blink/renderer/platform/graphics/paint/clip_paint_property_node.h"
 #include "third_party/blink/renderer/platform/graphics/paint/effect_paint_property_node.h"
@@ -21,6 +23,18 @@ class LocalFrameView;
 class PaintLayer;
 class PhysicalBoxFragment;
 class VisualViewport;
+
+struct LineClampFloatClipState {
+  STACK_ALLOCATED();
+
+ public:
+  LineClampFloatClipState(const TransformPaintPropertyNodeOrAlias& transform,
+                          PhysicalRect rect)
+      : transform(&transform), rect(rect) {}
+
+  const TransformPaintPropertyNodeOrAlias* transform;
+  PhysicalRect rect;
+};
 
 // The context for PaintPropertyTreeBuilder.
 // It's responsible for bookkeeping tree state in other order, for example, the
@@ -189,6 +203,8 @@ struct PaintPropertyTreeBuilderFragmentContext {
     // that are baked in PaintOffsetTranslations since we entered the
     // fragmentainer.
     PhysicalOffset paint_offset_for_oof_in_fragmentainer;
+
+    std::optional<LineClampFloatClipState> line_clamp_float_clip_state;
   };
 
   ContainingBlockContext current;
@@ -214,6 +230,14 @@ struct PaintPropertyTreeBuilderFragmentContext {
   // Set to true when we visit a view transition element and is propagated to
   // all non-alias effects.
   bool self_or_ancestor_participates_in_view_transition = false;
+
+  // Set to true when we visit an object with filter operations that have a
+  // tainted origin, and propagated to all its descendants.
+  bool is_in_tainted_subtree = false;
+
+  // Set to true when we visit a canvas child and is propagated to all
+  // descendant effects.
+  bool is_in_drawable_canvas_subtree = false;
 
   // Whether newly created children should flatten their inherited transform
   // (equivalently, draw into the plane of their parent). Should generally
@@ -310,7 +334,7 @@ struct PaintPropertyTreeBuilderContext final {
 
   // This is always recalculated in PaintPropertyTreeBuilder::UpdateForSelf()
   // which overrides the inherited value.
-  CompositingReasons direct_compositing_reasons = CompositingReason::kNone;
+  CompositingReasons direct_compositing_reasons;
 };
 
 class VisualViewportPaintPropertyTreeBuilder {
@@ -435,6 +459,12 @@ class PaintPropertyTreeBuilder {
 
   static bool ScheduleDeferredTransformNodeUpdate(LayoutObject& object);
   static bool ScheduleDeferredOpacityNodeUpdate(LayoutObject& object);
+
+  // Returns the parent of the highest effect that has a reference filter
+  // applied.
+  static const blink::EffectPaintPropertyNode*
+  GetFirstParentEffectWithoutReferenceFilter(
+      const blink::EffectPaintPropertyNodeOrAlias* node_or_alias);
 
  private:
   ALWAYS_INLINE void InitPaintProperties();

@@ -16,12 +16,14 @@
 #include "components/input/render_input_router.mojom.h"
 #include "components/viz/common/vertical_scroll_direction.h"
 #include "content/common/content_export.h"
+#include "content/public/browser/global_routing_id.h"
 #include "content/public/common/drop_data.h"
 #include "services/metrics/public/cpp/ukm_recorder.h"
 #include "third_party/blink/public/common/input/web_input_event.h"
 #include "third_party/blink/public/common/page/drag_operation.h"
 #include "third_party/blink/public/mojom/frame/lifecycle.mojom.h"
 #include "third_party/blink/public/mojom/input/input_handler.mojom-shared.h"
+#include "third_party/blink/public/mojom/manifest/application_context.mojom.h"
 #include "third_party/blink/public/mojom/manifest/display_mode.mojom.h"
 #include "ui/base/mojom/window_show_state.mojom-forward.h"
 #include "ui/base/ui_base_types.h"
@@ -109,6 +111,15 @@ class CONTENT_EXPORT RenderWidgetHostDelegate {
   virtual KeyboardEventProcessingResult PreHandleKeyboardEvent(
       const input::NativeWebKeyboardEvent& event);
 
+  // Callback to give the browser a chance to handle the specified mouse event
+  // before sending it to the renderer. Returns whether `event` was handled.
+  virtual bool PreHandleMouseEvent(const blink::WebMouseEvent& event);
+
+  // Callback to give the browser a chance to handle the specified gesture
+  // event before sending it to the renderer. Returns whether `event` was
+  // handled.
+  virtual bool PreHandleGestureEvent(const blink::WebGestureEvent& event);
+
   // Callback to inform the browser that the renderer did not process the
   // specified events. This gives an opportunity to the browser to process the
   // back/forward mouse buttons.
@@ -137,11 +148,6 @@ class CONTENT_EXPORT RenderWidgetHostDelegate {
   // Asks whether the page is in a state of ignoring input events.
   virtual bool ShouldIgnoreWebInputEvents(const blink::WebInputEvent& event);
   virtual bool ShouldIgnoreInputEvents();
-
-  // Callback to give the browser a chance to handle the specified gesture
-  // event before sending it to the renderer.
-  // Returns true if the |event| was handled.
-  virtual bool PreHandleGestureEvent(const blink::WebGestureEvent& event);
 
   // Get the root BrowserAccessibilityManager for this frame tree.
   virtual ui::BrowserAccessibilityManager* GetRootBrowserAccessibilityManager();
@@ -239,6 +245,11 @@ class CONTENT_EXPORT RenderWidgetHostDelegate {
   // to frame-based widgets. Other widgets are always kBrowser.
   virtual blink::mojom::DisplayMode GetDisplayMode() const;
 
+  // Returns how the top-level browsing context is presented to the user (a
+  // standalone web application window vs ordinary browser UI). Only applies to
+  // frame-based widgets; other widgets are always kNone.
+  virtual blink::mojom::ApplicationContext GetApplicationContext() const;
+
   // Returns the window show state.
   virtual ui::mojom::WindowShowState GetWindowShowState();
 
@@ -248,6 +259,9 @@ class CONTENT_EXPORT RenderWidgetHostDelegate {
   // Returns whether the window can be resized or not. Defaults to true for
   // desktopOSs and false for mobileOSs.
   virtual bool GetResizable();
+
+  // Returns whether the window is an always-on-top popup.
+  virtual bool GetIsAlwaysOnTopPopup();
 
   // Returns the Window Control Overlay rectangle. Only applies to an
   // outermost main frame's widget. Other widgets always returns an empty rect.
@@ -323,6 +337,11 @@ class CONTENT_EXPORT RenderWidgetHostDelegate {
   // the WebContents.
   virtual VisibleTimeRequestTrigger& GetVisibleTimeRequestTrigger() = 0;
 
+  // Notifies the delegate that a drag has started.
+  virtual void OnStartDragging(
+      DropData* drop_data,
+      const GlobalRenderFrameHostToken& source_rfh_token) {}
+
   // Returns the delegated ink point renderer associated with this WebContents
   // for dispatching delegated ink points to viz. This also attempts to setup
   // mojo connection using |compositor|, if the DelegatedInkPointRenderer
@@ -373,11 +392,16 @@ class CONTENT_EXPORT RenderWidgetHostDelegate {
 
   // Show the newly created widget with the specified bounds.
   // The widget is identified by the route_id passed to CreateNewWidget.
-  virtual void ShowCreatedWidget(int process_id,
+  virtual void ShowCreatedWidget(ChildProcessId process_id,
                                  int widget_route_id,
                                  const gfx::Rect& initial_rect_in_dips,
                                  const gfx::Rect& initial_anchor_rect_in_dips) {
   }
+
+  // Constrain popup bounds so that the top of the popup is at or below the
+  // line of death (the top of the top-level main frame). See
+  // crbug.com/424995036.
+  virtual gfx::Rect ConstrainPopupBounds(const gfx::Rect& bounds);
 
   // Returns the amount that this view has been resized by a showing virtual
   // keyboard or 0 if the virtual keyboard is hidden or in a mode that doesn't
@@ -387,9 +411,6 @@ class CONTENT_EXPORT RenderWidgetHostDelegate {
   // Returns false if it's a private window, and text entered into this page
   // shouldn't be used to improve typing suggestions for the user.
   virtual bool ShouldDoLearning();
-
-  // Notifies when an input event is ignored.
-  virtual void OnInputIgnored(const blink::WebInputEvent& event) {}
 
 #if BUILDFLAG(IS_ANDROID)
   // Get the offset for the current touch sequence. e.g. visible top controls or

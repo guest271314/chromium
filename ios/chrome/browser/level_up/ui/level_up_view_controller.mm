@@ -4,8 +4,13 @@
 
 #import "ios/chrome/browser/level_up/ui/level_up_view_controller.h"
 
+#import "ios/chrome/browser/level_up/coordinator/level_up_category.h"
+#import "ios/chrome/browser/level_up/coordinator/level_up_stat.h"
+#import "ios/chrome/browser/level_up/coordinator/level_up_task.h"
 #import "ios/chrome/browser/level_up/ui/level_up_progress_view.h"
-#import "ios/chrome/browser/level_up/ui/level_up_table_view_controller.h"
+#import "ios/chrome/browser/level_up/ui/level_up_stat_view.h"
+#import "ios/chrome/browser/level_up/ui/level_up_task_collection_view_cell.h"
+#import "ios/chrome/browser/level_up/ui/level_up_welcome_header_view.h"
 #import "ios/chrome/browser/shared/public/commands/level_up_commands.h"
 #import "ios/chrome/browser/shared/ui/symbols/symbols.h"
 #import "ios/chrome/common/ui/colors/semantic_color_names.h"
@@ -14,130 +19,102 @@
 #import "ui/base/l10n/l10n_util.h"
 
 namespace {
+// Identifier for the welcome profile section and cell.
+NSString* const kWelcomeSectionIdentifier = @"WelcomeSection";
+// Identifier for the tasks progress section and cell.
+NSString* const kProgressSectionIdentifier = @"ProgressSection";
+// Identifier for the stats card section and cell.
+NSString* const kStatSectionIdentifier = @"StatSection";
+// Identifier for the checklist tasks section and cell.
+NSString* const kTasksSectionIdentifier = @"TasksSection";
 
-// Spacing for layout margins and stacks.
+// Item identifier for the welcome card cell.
+NSString* const kWelcomeItemIdentifier = @"WelcomeHeaderItem";
+// Item identifier for the progress card cell.
+NSString* const kProgressItemIdentifier = @"ProgressCardItem";
+// Item identifier for the tasks checklist table cell.
+NSString* const kTasksItemIdentifier = @"TasksTableCardItem";
+
+// Layout spacing.
 const CGFloat kLayoutSpacing = 16.0;
-// The size of the user avatar.
-const CGFloat kAvatarSize = 56.0;
-// The corner radius of the user avatar image view.
-const CGFloat kAvatarCornerRadius = 28.0;
-// Spacing within the welcome text container.
-const CGFloat kWelcomeTextSpacing = 4.0;
-// The line height multiple for the welcome title.
-const CGFloat kWelcomeTextLineHeightMultiple = 1.2;
-// The line height multiple for the user name.
-const CGFloat kUserNameLineHeightMultiple = 1.08;
-
+// Height of the welcome card cell.
+const CGFloat kWelcomeCellHeight = 56.0;
+// Height of the progress card cell.
+const CGFloat kProgressCellHeight = 150.0;
+// Width ratio for stats card group.
+const CGFloat kStatCardWidthRatio = 0.88;
+// Height of the stats card cell.
+const CGFloat kStatCardHeight = 140.0;
+// Height of the tasks card cell.
+const CGFloat kTasksCellHeight = 350.0;
 }  // namespace
 
+@interface LevelUpViewController () <LevelUpTaskCollectionViewCellDelegate,
+                                     UICollectionViewDelegate>
+@end
+
 @implementation LevelUpViewController {
-  // Subview displaying the task progress indicator card.
-  LevelUpProgressView* _progressView;
-  // Child view controller managing the task table view cells.
-  LevelUpTableViewController* _tableViewController;
-  // Height constraint for the tasks table view.
-  NSLayoutConstraint* _tableHeightConstraint;
-  // View displaying the welcome user header profile.
-  UIView* _welcomeHeaderView;
-  // Image view containing user's sign-in avatar.
-  UIImageView* _userAvatarImageView;
-  // Label showing user's full name.
-  UILabel* _userNameLabel;
+  // The collection view.
+  UICollectionView* _collectionView;
+  // The list of tasks.
+  NSArray<LevelUpTask*>* _tasks;
+  // The active level.
+  NSInteger _level;
+  // How many tasks the user must complete to get to the next level.
+  NSInteger _remainingTasksForNextLevel;
+  // How many tasks the user has already completed on their path to the next
+  // level.
+  NSInteger _totalTasksForNextLevel;
   // User's full name.
   NSString* _userFullName;
   // User's avatar image.
   UIImage* _userAvatar;
+
+  // The list of stats.
+  NSArray<LevelUpStat*>* _stats;
+  // The diffable data source.
+  UICollectionViewDiffableDataSource<NSString*, NSString*>* _diffableDataSource;
+  // The menu button in the navigation bar.
+  UIButton* _menuButton;
+  // Whether progress updates are enabled.
+  BOOL _progressUpdatesEnabled;
+  // Whether notifications for new tasks are enabled.
+  BOOL _newTasksNotificationEnabled;
 }
 
-- (instancetype)init {
-  self = [super init];
-  if (self) {
-    _progressView = [[LevelUpProgressView alloc] init];
-    _progressView.translatesAutoresizingMaskIntoConstraints = NO;
-
-    _tableViewController = [[LevelUpTableViewController alloc]
-        initWithStyle:UITableViewStylePlain];
-  }
-  return self;
-}
+@synthesize delegate = _delegate;
 
 - (void)viewDidLoad {
   [super viewDidLoad];
-
-  UIView* tableView = _tableViewController.tableView;
-
-  [self addChildViewController:_tableViewController];
-  [_tableViewController didMoveToParentViewController:self];
-
-  self.view.backgroundColor = [UIColor colorNamed:kSecondaryBackgroundColor];
-  self.title = l10n_util::GetNSString(IDS_IOS_TOOLS_MENU_LEVEL_UP);
-
-  UIButton* menuButton = [UIButton buttonWithType:UIButtonTypeSystem];
-  menuButton.backgroundColor = [UIColor colorNamed:kPrimaryBackgroundColor];
-  menuButton.tintColor = [UIColor colorNamed:kTextPrimaryColor];
-  [menuButton setImage:DefaultSymbolTemplateWithPointSize(
-                           kEllipsisSymbol, kSymbolAccessoryPointSize)
-              forState:UIControlStateNormal];
-
-  menuButton.menu = [UIMenu menuWithTitle:@"" children:@[]];
-  menuButton.showsMenuAsPrimaryAction = YES;
-  self.navigationItem.leftBarButtonItem =
-      [[UIBarButtonItem alloc] initWithCustomView:menuButton];
-
-  UIButton* dismissButton = [UIButton buttonWithType:UIButtonTypeSystem];
-  dismissButton.backgroundColor = [UIColor colorNamed:kPrimaryBackgroundColor];
-  dismissButton.tintColor = [UIColor colorNamed:kTextPrimaryColor];
-  [dismissButton setImage:DefaultSymbolTemplateWithPointSize(
-                              kXMarkSymbol, kSymbolAccessoryPointSize)
-                 forState:UIControlStateNormal];
-
-  [dismissButton addTarget:self
-                    action:@selector(dismiss)
-          forControlEvents:UIControlEventTouchUpInside];
-  self.navigationItem.rightBarButtonItem =
-      [[UIBarButtonItem alloc] initWithCustomView:dismissButton];
-
-  _welcomeHeaderView = [self createWelcomeHeaderView];
-  _userNameLabel.attributedText =
-      [self attributedUserNameStringWithName:_userFullName];
-  _userAvatarImageView.image = _userAvatar;
-
-  UIStackView* mainContainer = [[UIStackView alloc] initWithArrangedSubviews:@[
-    _welcomeHeaderView, _progressView, tableView
-  ]];
-  mainContainer.translatesAutoresizingMaskIntoConstraints = NO;
-  mainContainer.axis = UILayoutConstraintAxisVertical;
-  mainContainer.spacing = kLayoutSpacing;
-  mainContainer.alignment = UIStackViewAlignmentFill;
-
-  [self.view addSubview:mainContainer];
-
-  _tableHeightConstraint =
-      [tableView.heightAnchor constraintEqualToConstant:0.0];
-  _tableHeightConstraint.active = YES;
-
-  [self updateTableHeightConstraint];
-
-  [NSLayoutConstraint activateConstraints:@[
-    [mainContainer.topAnchor
-        constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor
-                       constant:kLayoutSpacing],
-    [mainContainer.leadingAnchor
-        constraintEqualToAnchor:self.view.safeAreaLayoutGuide.leadingAnchor
-                       constant:kLayoutSpacing],
-    [mainContainer.trailingAnchor
-        constraintEqualToAnchor:self.view.safeAreaLayoutGuide.trailingAnchor
-                       constant:-kLayoutSpacing],
-  ]];
+  [self setupNavigationItems];
+  [self setupContentView];
 }
 
 #pragma mark - LevelUpConsumer
 
-- (void)setLevel:(NSInteger)level tasksForLevel:(NSArray<LevelUpTask*>*)tasks {
-  [_progressView setLevel:level tasksForLevel:tasks];
-  [_tableViewController setLevel:level tasksForLevel:tasks];
+- (void)setLevel:(NSInteger)level
+    remainingTasksForNextLevel:(NSInteger)remainingTasksForNextLevel
+        totalTasksForNextLevel:(NSInteger)totalTasksForNextLevel {
+  _level = level;
+  _remainingTasksForNextLevel = remainingTasksForNextLevel;
+  _totalTasksForNextLevel = totalTasksForNextLevel;
+}
 
-  [self updateTableHeightConstraint];
+- (void)setRecommendedTasks:(NSArray<LevelUpTask*>*)tasks {
+  _tasks = [tasks copy];
+}
+
+- (void)setStats:(NSArray<LevelUpStat*>*)stats {
+  _stats = [stats copy];
+}
+
+- (void)setProgressUpdatesEnabled:(BOOL)enabled {
+  _progressUpdatesEnabled = enabled;
+  [self updateMenuButtonMenu];
+}
+
+- (void)setNewTasksNotificationEnabled:(BOOL)enabled {
+  _newTasksNotificationEnabled = enabled;
 }
 
 #pragma mark - LevelUpProfileConsumer
@@ -146,108 +123,379 @@ const CGFloat kUserNameLineHeightMultiple = 1.08;
              userAvatar:(UIImage*)userAvatar {
   _userFullName = userFullName;
   _userAvatar = userAvatar;
+  [self applyDataSnapshotAnimated:YES];
+}
 
-  if (self.isViewLoaded) {
-    _userNameLabel.attributedText =
-        [self attributedUserNameStringWithName:userFullName];
-    _userAvatarImageView.image = userAvatar;
-  }
+#pragma mark - LevelUpTaskCollectionViewCellDelegate
+
+- (void)didTapSeeAllTasks:(UICollectionViewCell*)cell {
+  [self.delegate didTapSeeAllTasks:self];
+}
+
+- (void)taskCollectionViewDidTapCompletedHeader:(UICollectionViewCell*)cell {
+  // Collapsible section is not supported on main screen.
+}
+
+- (void)taskCollectionViewCell:(LevelUpTaskCollectionViewCell*)cell
+                    didTapTask:(LevelUpTask*)task {
+  [self.delegate levelUpViewController:self didTapTask:task];
 }
 
 #pragma mark - Private
 
-// Updates the table height constraint constant to match the header and cells
-// combined.
-- (void)updateTableHeightConstraint {
-  if (!_tableHeightConstraint) {
-    return;
+// Configures the welcome header cell.
+- (void)configureWelcomeHeaderCell:(LevelUpWelcomeHeaderView*)cell {
+  cell.userAvatar = _userAvatar;
+  cell.userFullName = _userFullName;
+}
+
+// Configures the progress cell.
+- (void)configureProgressCell:(LevelUpProgressView*)cell {
+  cell.delegate = self.delegate;
+  [cell setLevel:_level
+      remainingTasksForNextLevel:_remainingTasksForNextLevel
+          totalTasksForNextLevel:_totalTasksForNextLevel];
+  [cell setNewTasksNotificationEnabled:_newTasksNotificationEnabled];
+}
+
+// Configures the tasks checklist cell.
+- (void)configureTasksCell:(LevelUpTaskCollectionViewCell*)cell {
+  cell.headerTitle = l10n_util::GetNSString(IDS_IOS_LEVEL_UP_YOUR_TASKS);
+  cell.showsSeeAllButton = YES;
+  cell.delegate = self;
+  [cell setTasks:_tasks completedTasks:nil completedExpanded:NO];
+}
+
+// Configures the stat card cell for a given stat item identifier.
+- (void)configureStatCell:(LevelUpStatView*)cell
+           itemIdentifier:(NSString*)itemIdentifier {
+  for (LevelUpStat* stat in _stats) {
+    NSString* statIdentifier =
+        [NSString stringWithFormat:@"StatCardItem_%d", stat.type];
+    if ([statIdentifier isEqualToString:itemIdentifier]) {
+      [cell setStatTitle:stat.title
+                 subtitle:stat.subtitle
+          imageLottieName:stat.imageLottieName
+                 statType:stat.type];
+      break;
+    }
   }
-  UITableView* tableView = _tableViewController.tableView;
-  [tableView layoutIfNeeded];
-
-  NSInteger taskCount = [_tableViewController tableView:tableView
-                                  numberOfRowsInSection:0];
-  CGFloat headerHeight = [tableView rectForHeaderInSection:0].size.height;
-  CGFloat rowHeight = tableView.rowHeight;
-  _tableHeightConstraint.constant = headerHeight + (taskCount * rowHeight);
 }
 
-- (void)dismiss {
-  [self.handler dismissLevelUp];
+// Sets up the navigation bar buttons and titles.
+- (void)setupNavigationItems {
+  self.view.backgroundColor = [UIColor colorNamed:kSecondaryBackgroundColor];
+  self.title = l10n_util::GetNSString(IDS_IOS_TOOLS_MENU_LEVEL_UP);
+
+  _menuButton = [UIButton buttonWithType:UIButtonTypeSystem];
+  _menuButton.backgroundColor = UIColor.clearColor;
+  _menuButton.tintColor = [UIColor colorNamed:kTextPrimaryColor];
+  [_menuButton setImage:SymbolTemplateWithPointSize(SymbolEllipsis,
+                                                    kSymbolAccessoryPointSize)
+               forState:UIControlStateNormal];
+  _menuButton.showsMenuAsPrimaryAction = YES;
+  [self updateMenuButtonMenu];
+  self.navigationItem.leftBarButtonItem =
+      [[UIBarButtonItem alloc] initWithCustomView:_menuButton];
+
+  UIButton* dismissButton = [UIButton buttonWithType:UIButtonTypeSystem];
+  dismissButton.backgroundColor = UIColor.clearColor;
+  dismissButton.tintColor = [UIColor colorNamed:kTextPrimaryColor];
+  [dismissButton setImage:SymbolTemplateWithPointSize(SymbolXMark,
+                                                      kSymbolAccessoryPointSize)
+                 forState:UIControlStateNormal];
+  [dismissButton addTarget:self
+                    action:@selector(dismiss)
+          forControlEvents:UIControlEventTouchUpInside];
+  self.navigationItem.rightBarButtonItem =
+      [[UIBarButtonItem alloc] initWithCustomView:dismissButton];
 }
 
-// Creates the welcome user header view.
-- (UIView*)createWelcomeHeaderView {
-  _userAvatarImageView = [[UIImageView alloc] init];
-  _userAvatarImageView.translatesAutoresizingMaskIntoConstraints = NO;
-  _userAvatarImageView.contentMode = UIViewContentModeScaleAspectFill;
-  _userAvatarImageView.layer.cornerRadius = kAvatarCornerRadius;
-  _userAvatarImageView.layer.masksToBounds = YES;
-  _userAvatarImageView.backgroundColor =
-      [UIColor colorNamed:kTextQuaternaryColor];
-  [NSLayoutConstraint activateConstraints:@[
-    [_userAvatarImageView.widthAnchor constraintEqualToConstant:kAvatarSize],
-    [_userAvatarImageView.heightAnchor constraintEqualToConstant:kAvatarSize],
+// Re-creates and applies the menu to the left bar button item.
+- (void)updateMenuButtonMenu {
+  NSString* title =
+      _progressUpdatesEnabled
+          ? l10n_util::GetNSString(IDS_IOS_LEVEL_UP_TURN_OFF_PROGRESS_UPDATES)
+          : l10n_util::GetNSString(IDS_IOS_LEVEL_UP_TURN_ON_PROGRESS_UPDATES);
+  Symbol symbol = _progressUpdatesEnabled ? SymbolBellSlash : SymbolBell;
+  UIImage* image =
+      SymbolTemplateWithPointSize(symbol, kSymbolAccessoryPointSize);
+
+  __weak __typeof(self) weakSelf = self;
+  UIAction* toggleAction = [UIAction actionWithTitle:title
+                                               image:image
+                                          identifier:nil
+                                             handler:^(UIAction* action) {
+                                               [weakSelf toggleProgressUpdates];
+                                             }];
+
+  NSString* turnOffTitle =
+      l10n_util::GetNSString(IDS_IOS_LEVEL_UP_TURN_OFF_LEVEL_UP);
+  UIImage* turnOffImage = SymbolTemplateWithPointSize(
+      SymbolArrowshapeUpSlash, kSymbolAccessoryPointSize);
+  UIAction* turnOffAction = [UIAction actionWithTitle:turnOffTitle
+                                                image:turnOffImage
+                                           identifier:nil
+                                              handler:^(UIAction* action) {
+                                                // TODO(crbug.com/544808224):
+                                                // Use full new design with
+                                                // secondary confirmation sheet.
+                                                [weakSelf turnOffLevelUp];
+                                              }];
+  turnOffAction.attributes = UIMenuElementAttributesDestructive;
+
+  _menuButton.menu = [UIMenu menuWithTitle:@""
+                                  children:@[ toggleAction, turnOffAction ]];
+}
+
+// Calls the delegate to turn off Level Up.
+- (void)turnOffLevelUp {
+  [self.delegate didTapTurnOffLevelUp:self];
+}
+
+// Calls the delegate to toggle the progress updates.
+- (void)toggleProgressUpdates {
+  [self.delegate didTapToggleProgressUpdates:self];
+}
+
+// Sets up the collection view layout.
+- (void)setupContentView {
+  UICollectionViewCompositionalLayoutConfiguration* config =
+      [[UICollectionViewCompositionalLayoutConfiguration alloc] init];
+  config.interSectionSpacing = kLayoutSpacing;
+
+  __weak __typeof(self) weakSelf = self;
+  UICollectionViewCompositionalLayout* layout =
+      [[UICollectionViewCompositionalLayout alloc]
+          initWithSectionProvider:^NSCollectionLayoutSection*(
+              NSInteger sectionIndex,
+              id<NSCollectionLayoutEnvironment> layoutEnvironment) {
+            return [weakSelf layoutSectionForIndex:sectionIndex];
+          }
+                    configuration:config];
+
+  _collectionView = [[UICollectionView alloc] initWithFrame:CGRectZero
+                                       collectionViewLayout:layout];
+  _collectionView.translatesAutoresizingMaskIntoConstraints = NO;
+  _collectionView.backgroundColor = [UIColor clearColor];
+  _collectionView.alwaysBounceVertical = YES;
+  _collectionView.delegate = self;
+  _collectionView.allowsSelection = NO;
+
+  [self.view addSubview:_collectionView];
+  AddSameConstraints(_collectionView, self.view);
+
+  UICollectionViewCellRegistration* welcomeRegistration =
+      [UICollectionViewCellRegistration
+          registrationWithCellClass:[LevelUpWelcomeHeaderView class]
+               configurationHandler:^(LevelUpWelcomeHeaderView* cell,
+                                      NSIndexPath* indexPath,
+                                      NSString* itemIdentifier) {
+                 [weakSelf configureWelcomeHeaderCell:cell];
+               }];
+
+  UICollectionViewCellRegistration* progressRegistration =
+      [UICollectionViewCellRegistration
+          registrationWithCellClass:[LevelUpProgressView class]
+               configurationHandler:^(LevelUpProgressView* cell,
+                                      NSIndexPath* indexPath,
+                                      NSString* itemIdentifier) {
+                 [weakSelf configureProgressCell:cell];
+               }];
+
+  UICollectionViewCellRegistration* tasksRegistration =
+      [UICollectionViewCellRegistration
+          registrationWithCellClass:[LevelUpTaskCollectionViewCell class]
+               configurationHandler:^(LevelUpTaskCollectionViewCell* cell,
+                                      NSIndexPath* indexPath,
+                                      NSString* itemIdentifier) {
+                 [weakSelf configureTasksCell:cell];
+               }];
+
+  UICollectionViewCellRegistration* statRegistration =
+      [UICollectionViewCellRegistration
+          registrationWithCellClass:[LevelUpStatView class]
+               configurationHandler:^(LevelUpStatView* cell,
+                                      NSIndexPath* indexPath,
+                                      NSString* itemIdentifier) {
+                 [weakSelf configureStatCell:cell
+                              itemIdentifier:itemIdentifier];
+               }];
+
+  _diffableDataSource = [[UICollectionViewDiffableDataSource alloc]
+      initWithCollectionView:_collectionView
+                cellProvider:^UICollectionViewCell*(
+                    UICollectionView* collectionView, NSIndexPath* indexPath,
+                    NSString* itemIdentifier) {
+                  __strong __typeof(weakSelf) strongSelf = weakSelf;
+                  if (!strongSelf) {
+                    return nil;
+                  }
+                  NSString* sectionIdentifier =
+                      [strongSelf->_diffableDataSource.snapshot
+                          sectionIdentifierForSectionContainingItemIdentifier:
+                              itemIdentifier];
+
+                  if ([sectionIdentifier
+                          isEqualToString:kWelcomeSectionIdentifier]) {
+                    return [collectionView
+                        dequeueConfiguredReusableCellWithRegistration:
+                            welcomeRegistration
+                                                         forIndexPath:indexPath
+                                                                 item:
+                                                                     itemIdentifier];
+                  }
+                  if ([sectionIdentifier
+                          isEqualToString:kProgressSectionIdentifier]) {
+                    return [collectionView
+                        dequeueConfiguredReusableCellWithRegistration:
+                            progressRegistration
+                                                         forIndexPath:indexPath
+                                                                 item:
+                                                                     itemIdentifier];
+                  }
+                  if ([sectionIdentifier
+                          isEqualToString:kStatSectionIdentifier]) {
+                    return [collectionView
+                        dequeueConfiguredReusableCellWithRegistration:
+                            statRegistration
+                                                         forIndexPath:indexPath
+                                                                 item:
+                                                                     itemIdentifier];
+                  }
+                  if ([sectionIdentifier
+                          isEqualToString:kTasksSectionIdentifier]) {
+                    return [collectionView
+                        dequeueConfiguredReusableCellWithRegistration:
+                            tasksRegistration
+                                                         forIndexPath:indexPath
+                                                                 item:
+                                                                     itemIdentifier];
+                  }
+                  return [[UICollectionViewCell alloc] init];
+                }];
+
+  [self applyDataSnapshotAnimated:NO];
+}
+
+// Rebuilds and applies the collection view diffable snapshot.
+- (void)applyDataSnapshotAnimated:(BOOL)animated {
+  NSDiffableDataSourceSnapshot<NSString*, NSString*>* snapshot =
+      [[NSDiffableDataSourceSnapshot alloc] init];
+
+  [snapshot appendSectionsWithIdentifiers:@[
+    kWelcomeSectionIdentifier, kProgressSectionIdentifier,
+    kStatSectionIdentifier, kTasksSectionIdentifier
   ]];
 
-  UILabel* welcomeLabel = [[UILabel alloc] init];
-  welcomeLabel.translatesAutoresizingMaskIntoConstraints = NO;
+  [snapshot appendItemsWithIdentifiers:@[ kWelcomeItemIdentifier ]
+             intoSectionWithIdentifier:kWelcomeSectionIdentifier];
 
-  NSMutableParagraphStyle* paragraphStyle =
-      [[NSMutableParagraphStyle alloc] init];
-  paragraphStyle.lineHeightMultiple = kWelcomeTextLineHeightMultiple;
+  [snapshot appendItemsWithIdentifiers:@[ kProgressItemIdentifier ]
+             intoSectionWithIdentifier:kProgressSectionIdentifier];
 
-  NSDictionary<NSAttributedStringKey, id>* welcomeTextAttributes = @{
-    NSFontAttributeName :
-        [UIFont preferredFontForTextStyle:UIFontTextStyleSubheadline],
-    NSForegroundColorAttributeName : [UIColor colorNamed:kTextSecondaryColor],
-    NSParagraphStyleAttributeName : paragraphStyle
-  };
+  NSMutableArray<NSString*>* statIdentifiers = [[NSMutableArray alloc] init];
+  for (LevelUpStat* stat in _stats) {
+    NSString* statIdentifier =
+        [NSString stringWithFormat:@"StatCardItem_%d", stat.type];
+    [statIdentifiers addObject:statIdentifier];
+  }
+  [snapshot appendItemsWithIdentifiers:statIdentifiers
+             intoSectionWithIdentifier:kStatSectionIdentifier];
 
-  welcomeLabel.attributedText = [[NSAttributedString alloc]
-      initWithString:l10n_util::GetNSString(IDS_IOS_LEVEL_UP_WELCOME)
-          attributes:welcomeTextAttributes];
+  [snapshot appendItemsWithIdentifiers:@[ kTasksItemIdentifier ]
+             intoSectionWithIdentifier:kTasksSectionIdentifier];
 
-  _userNameLabel = [[UILabel alloc] init];
-  _userNameLabel.translatesAutoresizingMaskIntoConstraints = NO;
+  [snapshot reconfigureItemsWithIdentifiers:@[ kWelcomeItemIdentifier ]];
 
-  UIStackView* textStack = [[UIStackView alloc]
-      initWithArrangedSubviews:@[ welcomeLabel, _userNameLabel ]];
-  textStack.translatesAutoresizingMaskIntoConstraints = NO;
-  textStack.axis = UILayoutConstraintAxisVertical;
-  textStack.spacing = kWelcomeTextSpacing;
-
-  UIStackView* headerStack = [[UIStackView alloc]
-      initWithArrangedSubviews:@[ _userAvatarImageView, textStack ]];
-  headerStack.translatesAutoresizingMaskIntoConstraints = NO;
-  headerStack.axis = UILayoutConstraintAxisHorizontal;
-  headerStack.spacing = kLayoutSpacing;
-  headerStack.alignment = UIStackViewAlignmentCenter;
-
-  [headerStack.heightAnchor constraintEqualToConstant:kAvatarSize].active = YES;
-
-  return headerStack;
+  [_diffableDataSource applySnapshot:snapshot animatingDifferences:animated];
 }
 
-// Returns an attributed string for the user's full name.
-- (NSAttributedString*)attributedUserNameStringWithName:(NSString*)name {
-  NSMutableParagraphStyle* paragraphStyle =
-      [[NSMutableParagraphStyle alloc] init];
-  paragraphStyle.lineHeightMultiple = kUserNameLineHeightMultiple;
+// Returns the collection layout section configuration for a given index path.
+- (NSCollectionLayoutSection*)layoutSectionForIndex:(NSInteger)sectionIndex {
+  NSString* sectionIdentifier = [_diffableDataSource.snapshot.sectionIdentifiers
+      objectAtIndex:sectionIndex];
 
-  UIFontDescriptor* bodyDescriptor = [UIFontDescriptor
-      preferredFontDescriptorWithTextStyle:UIFontTextStyleBody];
-  UIFontDescriptor* boldDescriptor = [bodyDescriptor
-      fontDescriptorWithSymbolicTraits:UIFontDescriptorTraitBold];
-  UIFont* userNameFont = [UIFont fontWithDescriptor:boldDescriptor size:0.0];
+  NSDirectionalEdgeInsets standardInsets = NSDirectionalEdgeInsetsMake(
+      kLayoutSpacing, kLayoutSpacing, 0, kLayoutSpacing);
 
-  NSDictionary<NSAttributedStringKey, id>* userNameTextAttributes = @{
-    NSFontAttributeName : userNameFont,
-    NSForegroundColorAttributeName : [UIColor colorNamed:kTextPrimaryColor],
-    NSParagraphStyleAttributeName : paragraphStyle
-  };
-  return [[NSAttributedString alloc] initWithString:name
-                                         attributes:userNameTextAttributes];
+  if ([sectionIdentifier isEqualToString:kWelcomeSectionIdentifier]) {
+    return [self
+        flatSectionWithHeightDimension:
+            [NSCollectionLayoutDimension estimatedDimension:kWelcomeCellHeight]
+                         contentInsets:standardInsets];
+  }
+  if ([sectionIdentifier isEqualToString:kProgressSectionIdentifier]) {
+    return [self
+        flatSectionWithHeightDimension:
+            [NSCollectionLayoutDimension estimatedDimension:kProgressCellHeight]
+                         contentInsets:standardInsets];
+  }
+  if ([sectionIdentifier isEqualToString:kStatSectionIdentifier]) {
+    NSCollectionLayoutSize* itemSize = [NSCollectionLayoutSize
+        sizeWithWidthDimension:[NSCollectionLayoutDimension
+                                   fractionalWidthDimension:1.0]
+               heightDimension:[NSCollectionLayoutDimension
+                                   fractionalHeightDimension:1.0]];
+    NSCollectionLayoutItem* item =
+        [NSCollectionLayoutItem itemWithLayoutSize:itemSize];
+
+    NSCollectionLayoutSize* groupSize = [NSCollectionLayoutSize
+        sizeWithWidthDimension:[NSCollectionLayoutDimension
+                                   fractionalWidthDimension:kStatCardWidthRatio]
+               heightDimension:[NSCollectionLayoutDimension
+                                   absoluteDimension:kStatCardHeight]];
+    NSCollectionLayoutGroup* group =
+        [NSCollectionLayoutGroup horizontalGroupWithLayoutSize:groupSize
+                                                      subitems:@[ item ]];
+
+    NSCollectionLayoutSection* section =
+        [NSCollectionLayoutSection sectionWithGroup:group];
+    section.orthogonalScrollingBehavior =
+        UICollectionLayoutSectionOrthogonalScrollingBehaviorGroupPaging;
+    section.interGroupSpacing = kLayoutSpacing;
+    section.contentInsets = standardInsets;
+    return section;
+  }
+  if ([sectionIdentifier isEqualToString:kTasksSectionIdentifier]) {
+    NSDirectionalEdgeInsets listInsets = NSDirectionalEdgeInsetsMake(
+        kLayoutSpacing, kLayoutSpacing, kLayoutSpacing, kLayoutSpacing);
+    return [self
+        flatSectionWithHeightDimension:[NSCollectionLayoutDimension
+                                           estimatedDimension:kTasksCellHeight]
+                         contentInsets:listInsets];
+  }
+  return nil;
+}
+
+// Returns a vertical section with the given height.
+- (NSCollectionLayoutSection*)
+    flatSectionWithHeightDimension:(NSCollectionLayoutDimension*)heightDimension
+                     contentInsets:(NSDirectionalEdgeInsets)insets {
+  NSCollectionLayoutSize* itemSize = [NSCollectionLayoutSize
+      sizeWithWidthDimension:[NSCollectionLayoutDimension
+                                 fractionalWidthDimension:1.0]
+             heightDimension:heightDimension];
+  NSCollectionLayoutItem* item =
+      [NSCollectionLayoutItem itemWithLayoutSize:itemSize];
+
+  NSCollectionLayoutSize* groupSize = [NSCollectionLayoutSize
+      sizeWithWidthDimension:[NSCollectionLayoutDimension
+                                 fractionalWidthDimension:1.0]
+             heightDimension:heightDimension];
+  NSCollectionLayoutGroup* group =
+      [NSCollectionLayoutGroup verticalGroupWithLayoutSize:groupSize
+                                                  subitems:@[ item ]];
+
+  NSCollectionLayoutSection* section =
+      [NSCollectionLayoutSection sectionWithGroup:group];
+  section.contentInsets = insets;
+  return section;
+}
+
+// Handles dismissing the view.
+- (void)dismiss {
+  [self.handler dismissLevelUp];
 }
 
 @end

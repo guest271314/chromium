@@ -72,12 +72,15 @@ base::DictValue PageNodeImplDescriber::DescribePageNodeData(
   result.Set("navigation_id",
              base::NumberToString(page_node_impl->navigation_id_));
   result.Set("contents_mime_type", page_node_impl->contents_mime_type_);
-  result.Set("browser_context_id", page_node_impl->browser_context_id_);
+  result.Set("browser_context_id",
+             page_node_impl->browser_context_id_.ToString());
   result.Set("type", PageNode::ToString(page_node_impl->type_.value()));
   result.Set("is_visible", page_node_impl->is_visible_.value());
   result.Set("is_audible", page_node_impl->is_audible_.value());
   result.Set("loading_state",
              PageNode::ToString(page_node_impl->loading_state_.value()));
+  result.Set("is_user_or_browser_initiated_load",
+             page_node_impl->is_user_or_browser_initiated_load_.value());
   result.Set("ukm_source_id",
              base::NumberToString(page_node_impl->ukm_source_id_.value()));
   result.Set("lifecycle_state",

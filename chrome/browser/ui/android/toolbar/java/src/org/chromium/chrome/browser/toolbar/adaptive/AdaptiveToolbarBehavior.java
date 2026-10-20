@@ -36,11 +36,6 @@ public interface AdaptiveToolbarBehavior {
     /** Default list of valid button variants used for BrApp. */
     Set<Integer> sValidButtons = new HashSet<>();
 
-    /** Returns {@code true} if adaptive toolbar button feature is enabled. */
-    default boolean shouldInitialize() {
-        return true;
-    }
-
     /** Returns {@code true} if a long click on the button shows a popup menu for settings UI. */
     default boolean canShowSettings() {
         return true;
@@ -133,9 +128,6 @@ public interface AdaptiveToolbarBehavior {
             sValidButtons.addAll(COMMON_BUTTONS);
             sValidButtons.add(AdaptiveToolbarButtonVariant.NEW_TAB);
             sValidButtons.add(AdaptiveToolbarButtonVariant.VOICE);
-        }
-
-        if (AdaptiveToolbarFeatures.isGlicActionEnabled()) {
             sValidButtons.add(AdaptiveToolbarButtonVariant.GLIC);
         }
 
@@ -170,4 +162,7 @@ public interface AdaptiveToolbarBehavior {
     /** Returns the default button variant when none of the predicted results cannot be chosen. */
     @AdaptiveToolbarButtonVariant
     int getSegmentationDefault(Profile profile);
+
+    /** Destroys the instance. */
+    default void destroy() {}
 }

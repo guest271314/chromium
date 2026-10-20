@@ -10,7 +10,6 @@
 #include "base/notreached.h"
 #include "base/strings/strcat.h"
 #include "components/trusted_vault/local_recovery_factor.h"
-#include "components/trusted_vault/recovery_key_store_connection.h"
 #include "components/trusted_vault/trusted_vault_server_constants.h"
 
 namespace trusted_vault {
@@ -40,6 +39,10 @@ std::string GetTrustedVaultURLFetchReasonSuffix(
       return "DownloadAuthenticationFactorsRegistrationState";
     case TrustedVaultURLFetchReasonForUMA::kRegisterICloudKeychain:
       return "RegisterICloudKeychain";
+    case TrustedVaultURLFetchReasonForUMA::kDownloadGaiaPasswordPublicKey:
+      return "DownloadGaiaPasswordPublicKey";
+    case TrustedVaultURLFetchReasonForUMA::kRotateSharedKey:
+      return "RotateSharedKey";
   }
 
   NOTREACHED();
@@ -88,13 +91,6 @@ void RecordTrustedVaultHintDegradedRecoverabilityChangedReason(
   base::UmaHistogramEnumeration(
       "TrustedVault.TrustedVaultHintDegradedRecoverabilityChangedReason",
       hint_degraded_recoverability_changed_reason);
-}
-
-void RecordTrustedVaultDeviceRegistrationState(
-    TrustedVaultDeviceRegistrationStateForUMA registration_state) {
-  RecordTrustedVaultRecoveryFactorRegistrationState(
-      LocalRecoveryFactorType::kPhysicalDevice, SecurityDomainId::kChromeSync,
-      registration_state);
 }
 
 void RecordTrustedVaultRecoveryFactorRegistrationState(
@@ -204,12 +200,40 @@ void RecordTrustedVaultRecoverKeysOutcome(
       status);
 }
 
-void RecordTrustedVaultFileReadStatus(SecurityDomainId security_domain_id,
-                                      TrustedVaultFileReadStatusForUMA status) {
+void RecordTrustedVaultFileReadStatusForSecurityDomain(
+    SecurityDomainId security_domain_id,
+    TrustedVaultFileReadStatusForUMA status) {
   base::UmaHistogramEnumeration(
       "TrustedVault.FileReadStatus." +
           GetSecurityDomainNameForUma(security_domain_id),
       status);
+}
+
+void RecordTrustedVaultFileReadStatus(TrustedVaultFileReadStatusForUMA status) {
+  base::UmaHistogramEnumeration("TrustedVault.FileReadStatus", status);
+}
+
+void RecordTrustedVaultFileWriteSuccessForSecurityDomain(
+    SecurityDomainId security_domain_id,
+    bool success) {
+  base::UmaHistogramBoolean("TrustedVault.FileWriteSuccess." +
+                                GetSecurityDomainNameForUma(security_domain_id),
+                            success);
+}
+
+void RecordTrustedVaultFileWriteSuccess(bool success) {
+  base::UmaHistogramBoolean("TrustedVault.FileWriteSuccess", success);
+}
+
+void RecordTrustedVaultFileWriteStatus(
+    TrustedVaultFileWriteStatusForUMA status) {
+  base::UmaHistogramEnumeration("TrustedVault.FileWriteStatus", status);
+}
+
+void RecordTrustedVaultLocalDomainsMigrationStatus(
+    TrustedVaultLocalDomainsMigrationStatusForUMA status) {
+  base::UmaHistogramEnumeration("TrustedVault.LocalDomainsMigrationStatus",
+                                status);
 }
 
 void RecordTrustedVaultSetEncryptionKeysForSecurityDomain(
@@ -274,6 +298,12 @@ std::string GetSecurityDomainNameForUma(SecurityDomainId domain) {
       // If adding a new value, also update the variants for SecurityDomainId
       // in tools/metrics/histograms/metadata/trusted_vault/histograms.xml.
   }
+}
+
+void RecordTrustedVaultRecoveryFlowTriggeredEndpoint(
+    TrustedVaultRecoveryFlowEndpoint endpoint) {
+  base::UmaHistogramEnumeration("TrustedVault.RecoveryFlowTriggeredEndpoint",
+                                endpoint);
 }
 
 }  // namespace trusted_vault

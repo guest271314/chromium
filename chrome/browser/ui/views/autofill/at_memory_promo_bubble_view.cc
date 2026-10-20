@@ -9,27 +9,29 @@
 #include "base/task/single_thread_task_runner.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/actions/chrome_action_id.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/navigator/browser_navigator.h"
 #include "chrome/browser/ui/navigator/browser_navigator_params.h"
-#include "chrome/browser/ui/views/chrome_layout_provider.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/frame/toolbar_button_provider.h"
 #include "chrome/browser/ui/views/user_education/impl/browser_user_education_context.h"
-#include "chrome/common/webui_url_constants.h"
 #include "chrome/grit/browser_resources.h"
-#include "components/accessibility_annotator/core/url_constants.h"
+#include "components/personal_context/core/url_constants.h"
 #include "components/strings/grit/components_strings.h"
 #include "components/user_education/common/feature_promo/feature_promo_specification.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/mojom/dialog_button.mojom.h"
+#include "ui/base/page_transition_types.h"
 #include "ui/base/resource/resource_bundle.h"
 #include "ui/base/ui_base_types.h"
+#include "ui/base/window_open_disposition.h"
 #include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/bubble/bubble_frame_view.h"
 #include "ui/views/controls/image_view.h"
 #include "ui/views/controls/label.h"
 #include "ui/views/layout/box_layout.h"
+#include "ui/views/layout/layout_provider.h"
 #include "ui/views/view.h"
 
 namespace autofill {
@@ -83,7 +85,7 @@ AtMemoryPromoBubbleView::AtMemoryPromoBubbleView(
   SetButtonLabel(ui::mojom::DialogButton::kCancel,
                  l10n_util::GetStringUTF16(IDS_AT_MEMORY_PROMO_GOT_IT_BUTTON));
   SetButtonStyle(ui::mojom::DialogButton::kOk, ui::ButtonStyle::kProminent);
-  SetButtonStyle(ui::mojom::DialogButton::kCancel, ui::ButtonStyle::kDefault);
+  SetButtonStyle(ui::mojom::DialogButton::kCancel, ui::ButtonStyle::kTonal);
   SetDefaultButton(static_cast<int>(ui::mojom::DialogButton::kNone));
 
   SetAcceptCallback(base::BindOnce(&AtMemoryPromoBubbleView::OnLearnMoreClicked,
@@ -101,7 +103,7 @@ void AtMemoryPromoBubbleView::OnLearnMoreClicked() {
   if (!browser_view) {
     return;
   }
-  Browser* browser = browser_view->browser();
+  BrowserWindowInterface* browser = browser_view->browser();
   if (browser) {
     // `PostTask` is used to avoid a use-after-free. Both `Navigate()`
     // and `NotifyUserAction()` trigger the destruction of this bubble. If
@@ -110,20 +112,20 @@ void AtMemoryPromoBubbleView::OnLearnMoreClicked() {
     // it destroys the view before navigation can be initiated.
     base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
         FROM_HERE, base::BindOnce(
-                       [](base::WeakPtr<Browser> browser) {
+                       [](base::WeakPtr<BrowserWindowInterface> browser) {
                          if (!browser) {
                            return;
                          }
                          NavigateParams params(
                              browser.get(),
-                             GURL(accessibility_annotator::
-                                      kAccessibilityAnnotatorLearnMoreURL),
+                             GURL(personal_context::
+                                      kPersonalContextOptedInLearnMoreURL),
                              ui::PAGE_TRANSITION_LINK);
                          params.disposition =
                              WindowOpenDisposition::NEW_FOREGROUND_TAB;
                          Navigate(&params);
                        },
-                       browser->AsWeakPtr()));
+                       browser->GetWeakPtr()));
   }
 
   NotifyUserAction(CustomHelpBubbleUi::UserAction::kDismiss);

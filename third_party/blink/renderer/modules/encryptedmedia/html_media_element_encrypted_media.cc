@@ -160,9 +160,9 @@ SetMediaKeysHandler::SetMediaKeysHandler(
       element_(element),
       new_media_keys_(media_keys),
       made_reservation_(false),
-      keep_alive_(this),
+      keep_alive_({}, this),
       timer_(ExecutionContext::From(script_state)
-                 ->GetTaskRunner(TaskType::kMiscPlatformAPI),
+                 ->GetTaskRunner(TaskType::kMediaElementEvent),
              this,
              &SetMediaKeysHandler::TimerFired) {
   DVLOG(EME_LOG_LEVEL) << __func__;
@@ -444,7 +444,6 @@ void HTMLMediaElementEncryptedMedia::Encrypted(
 
   event->SetTarget(GetSupplementable());
   GetSupplementable()->ScheduleEvent(event);
-  GetSupplementable()->OnEncryptedMediaInitData();
 }
 
 void HTMLMediaElementEncryptedMedia::DidBlockPlaybackWaitingForKey() {

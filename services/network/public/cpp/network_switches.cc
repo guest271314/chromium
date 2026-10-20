@@ -50,6 +50,11 @@ const char kLogNetLogDuration[] = "net-log-duration";
 // description of their meanings.
 const char kNetLogCaptureMode[] = "net-log-capture-mode";
 
+// Sets the format used for the network log file. Supported values are:
+//   "json"
+//   "ndjson"
+const char kNetLogFileFormat[] = "net-log-file-format";
+
 // Sets the maximum size, in megabytes. The log file can grow to before older
 // data is overwritten. Do not use this flag if you want an unlimited file size.
 const char kNetLogMaxSizeMb[] = "net-log-max-size-mb";
@@ -89,18 +94,6 @@ const char kUnsafelyTreatInsecureOriginAsSecure[] =
 const char kAdditionalTrustTokenKeyCommitments[] =
     "additional-private-state-token-key-commitments";
 
-// Allows the manual specification of a First-Party Set. The format is the same
-// as that of `--use-related-website-set`.
-//
-// DEPRECATED(crbug.com/1486689): This switch is under deprecation due to
-// renaming "First-Party Set" to "Related Website Set". Please use
-// `kUseRelatedWebsiteSet` instead.
-const char kUseFirstPartySet[] = "use-first-party-set";
-
-// Allows the manual specification of a Related Website Set. The set should be
-// provided as a stringified JSON object, whose format matches the format of the
-// JSON in https://github.com/GoogleChrome/related-website-sets.
-const char kUseRelatedWebsiteSet[] = "use-related-website-set";
 
 // Specifies manual overrides to the IP endpoint -> IP address space mapping.
 // This allows running local tests against "public" and "local" IP addresses.

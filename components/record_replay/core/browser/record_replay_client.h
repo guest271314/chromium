@@ -5,7 +5,11 @@
 #ifndef COMPONENTS_RECORD_REPLAY_CORE_BROWSER_RECORD_REPLAY_CLIENT_H_
 #define COMPONENTS_RECORD_REPLAY_CORE_BROWSER_RECORD_REPLAY_CLIENT_H_
 
+#include <string>
 #include <string_view>
+
+#include "base/containers/flat_map.h"
+#include "base/memory/weak_ptr.h"
 
 class GURL;
 
@@ -13,15 +17,14 @@ namespace autofill {
 class AutofillClient;
 }
 
-namespace content {
-class WebContents;
-}
-
 namespace record_replay {
 
-class RecordingDataManager;
+class TaskStore;
 class RecordReplayDriverFactory;
 class RecordReplayManager;
+class TaskDefinition;
+class TaskData;
+class TaskParameter;
 
 // The abstract base interface for the tab-level owner of most record & replay
 // classes in the browser process.
@@ -39,9 +42,9 @@ class RecordReplayClient {
   // Returns the driver factory owned by this client.
   virtual RecordReplayDriverFactory& GetDriverFactory() = 0;
 
-  // Returns the data manager (if one exists), which may be shared with other
+  // Returns the task store (if one exists), which may be shared with other
   // clients.
-  virtual RecordingDataManager* GetRecordingDataManager() = 0;
+  virtual TaskStore* GetTaskStore() = 0;
 
   // Returns the primary main frame's last committed URL without credentials.
   virtual GURL GetPrimaryMainFrameUrl() = 0;
@@ -51,6 +54,12 @@ class RecordReplayClient {
 
   // Reports a message in a user-visible way.
   virtual void ReportToUser(std::string_view message) = 0;
+
+  virtual base::WeakPtr<RecordReplayClient> GetWeakPtr() = 0;
+
+  // Offers to execute a saved automation task.
+  virtual void OfferExecuting(const TaskDefinition& definition,
+                              const std::vector<TaskParameter>& parameters) = 0;
 
  protected:
   RecordReplayClient();

@@ -2,17 +2,16 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "base/strings/strcat.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "chrome/browser/collaboration/messaging/messaging_backend_service_factory.h"
 #include "chrome/browser/data_sharing/data_sharing_service_factory.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/tab_group_sync/tab_group_sync_service_factory.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
-#include "chrome/browser/ui/tabs/features.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/tabs/saved_tab_groups/saved_tab_group_metrics.h"
+#include "chrome/browser/ui/tabs/saved_tab_groups/tab_group_sync_service_initialized_observer.h"
 #include "chrome/browser/ui/tabs/tab_group_model.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/toolbar/app_menu_model.h"
@@ -25,31 +24,26 @@
 #include "chrome/browser/ui/views/tabs/tab_strip.h"
 #include "chrome/browser/ui/views/test/tab_strip_interactive_test_mixin.h"
 #include "chrome/test/interaction/interactive_browser_test.h"
+#include "components/bookmarks/common/bookmark_bar_visibility_state.h"
+#include "components/bookmarks/common/bookmark_pref_names.h"
 #include "components/collaboration/public/messaging/activity_log.h"
 #include "components/collaboration/public/messaging/messaging_backend_service.h"
 #include "components/data_sharing/public/data_sharing_service.h"
 #include "components/data_sharing/public/features.h"
 #include "components/data_sharing/public/group_data.h"
+#include "components/prefs/pref_service.h"
 #include "components/saved_tab_groups/public/features.h"
 #include "components/saved_tab_groups/public/tab_group_sync_service.h"
+#include "components/search/ntp_features.h"
 #include "components/signin/public/base/consent_level.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "components/signin/public/identity_manager/identity_test_utils.h"
-#include "components/tab_groups/tab_group_color.h"
 #include "components/tab_groups/tab_group_id.h"
 #include "components/tabs/public/tab_group.h"
 #include "content/public/test/browser_test.h"
-#include "google_apis/gaia/core_account_id.h"
 #include "google_apis/gaia/gaia_id.h"
-#include "net/dns/mock_host_resolver.h"
-#include "net/test/embedded_test_server/http_connection.h"
-#include "net/test/embedded_test_server/http_request.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "ui/base/interaction/element_tracker.h"
-#include "ui/base/interaction/interactive_test_internal.h"
-#include "ui/gfx/codec/png_codec.h"
-#include "ui/gfx/image/image_skia_operations.h"
-#include "ui/gfx/image/image_unittest_util.h"
+#include "ui/base/page_transition_types.h"
 
 namespace tab_groups {
 constexpr char kSkipPixelTestsReason[] = "Should only run in pixel_tests.";
@@ -64,22 +58,34 @@ class SharedTabGroupInteractiveUiTest
 
   void SetUp() override {
     std::vector<base::test::FeatureRefAndParams> enabled_features = {
-        {data_sharing::features::kDataSharingFeature, {}},
-        {features::kTabGroupMenuMoreEntryPoints, {}}};
+        {data_sharing::features::kDataSharingFeature, {}}};
 
-    std::vector<base::test::FeatureRef> disabled_features = {
-        tab_groups::kProjectsPanel};
-
-    scoped_feature_list_.InitWithFeaturesAndParameters(enabled_features,
-                                                       disabled_features);
+    scoped_feature_list_.InitWithFeaturesAndParameters(enabled_features, {});
     InProcessBrowserTest::SetUp();
   }
 
+  void SetUpOnMainThread() override {
+    TabStripInteractiveTestMixin<InteractiveBrowserTest>::SetUpOnMainThread();
+    TabGroupSyncServiceInitializedObserver initialized_observer(
+        TabGroupSyncServiceFactory::GetForProfile(browser()->GetProfile()));
+    initialized_observer.Wait();
+  }
+
   MultiStep ShowBookmarksBar() {
-    return Steps(PressButton(kToolbarAppMenuButtonElementId),
-                 SelectMenuItem(AppMenuModel::kBookmarksMenuItem),
-                 SelectMenuItem(BookmarkSubMenuModel::kShowBookmarkBarMenuItem),
-                 WaitForShow(kBookmarkBarElementId));
+    return Steps(
+        Do([this]() {
+          PrefService* prefs = browser()->GetProfile()->GetPrefs();
+          if (base::FeatureList::IsEnabled(
+                  ntp_features::kNtpSimplificationBookmarkBar)) {
+            prefs->SetInteger(
+                bookmarks::prefs::kBookmarkBarVisibilityState,
+                static_cast<int>(
+                    bookmarks::BookmarkBarVisibilityState::kAlwaysShow));
+          } else {
+            prefs->SetBoolean(bookmarks::prefs::kShowBookmarkBar, true);
+          }
+        }),
+        WaitForShow(kBookmarkBarElementId));
   }
 
   MultiStep NameTabGroupHeaderView(TabGroupId group_id, std::string name) {
@@ -100,7 +106,7 @@ class SharedTabGroupInteractiveUiTest
   TabGroupId CreateNewTabGroup() {
     EXPECT_TRUE(
         AddTabAtIndex(0, GURL(url::kAboutBlankURL), ui::PAGE_TRANSITION_TYPED));
-    return browser()->tab_strip_model()->AddToNewGroup({0});
+    return browser()->GetTabStripModel()->AddToNewGroup({0});
   }
 
   void ShareTabGroup(TabGroupId group_id,
@@ -108,7 +114,7 @@ class SharedTabGroupInteractiveUiTest
                      data_sharing::MemberRole member_role,
                      bool should_sign_in) {
     TabGroupSyncService* service =
-        TabGroupSyncServiceFactory::GetForProfile(browser()->profile());
+        TabGroupSyncServiceFactory::GetForProfile(browser()->GetProfile());
     service->MakeTabGroupSharedForTesting(group_id, collaboration_id);
 
     // Additional Properties.
@@ -123,7 +129,7 @@ class SharedTabGroupInteractiveUiTest
     if (should_sign_in) {
       // Simulate a signed in primary account.
       signin::IdentityManager* identity_manager =
-          IdentityManagerFactory::GetForProfile(browser()->profile());
+          IdentityManagerFactory::GetForProfile(browser()->GetProfile());
       signin::MakePrimaryAccountAvailable(identity_manager, email,
                                           signin::ConsentLevel::kSignin);
       signin::MakePrimaryAccountAvailable(identity_manager, email,
@@ -175,14 +181,14 @@ class SharedTabGroupInteractiveUiTest
   data_sharing::DataSharingService* data_sharing_service() {
     data_sharing::DataSharingService* data_sharing_service =
         data_sharing::DataSharingServiceFactory::GetForProfile(
-            browser()->profile());
+            browser()->GetProfile());
     return data_sharing_service;
   }
 
   collaboration::messaging::MessagingBackendService* messaging_service() {
     collaboration::messaging::MessagingBackendService* messaging_service =
         collaboration::messaging::MessagingBackendServiceFactory::GetForProfile(
-            browser()->profile());
+            browser()->GetProfile());
     return messaging_service;
   }
 
@@ -221,19 +227,19 @@ IN_PROC_BROWSER_TEST_F(SharedTabGroupInteractiveUiTest,
   ShareTabGroup(group_id, syncer::CollaborationId("fake_collaboration_id"),
                 data_sharing::MemberRole::kOwner, /*should_sign_in=*/false);
 
-  RunTestSequence(WaitForShow(kTabGroupHeaderElementId),
-                  FinishTabstripAnimations(), ShowBookmarksBar(),
-                  PressButton(kToolbarAppMenuButtonElementId),
-                  WaitForShow(AppMenuModel::kTabGroupsMenuItem),
-                  SelectMenuItem(AppMenuModel::kTabGroupsMenuItem),
-                  EnsurePresent(tab_groups::STGEverythingMenu::kTabGroup),
-                  SetOnIncompatibleAction(OnIncompatibleAction::kSkipTest,
-                                          kSkipPixelTestsReason),
-                  Screenshot(STGEverythingMenu::kTabGroup,
-                             "shared_icon_in_app_menu", "5924633"),
-                  // Close the app menu to prevent flakes on mac.
-                  HoverTabAt(0), ClickMouse(),
-                  WaitForHide(AppMenuModel::kTabGroupsMenuItem));
+  RunTestSequence(
+      WaitForShow(kTabGroupHeaderElementId), FinishTabstripAnimations(),
+      ShowBookmarksBar(), PressButton(kToolbarAppMenuButtonElementId),
+      WaitForShow(AppMenuModel::kTabGroupsMenuItem),
+      SelectMenuItem(AppMenuModel::kTabGroupsMenuItem),
+      EnsurePresent(tab_groups::STGEverythingMenu::kTabGroup),
+      SetOnIncompatibleAction(OnIncompatibleAction::kIgnoreAndContinue,
+                              kSkipPixelTestsReason),
+      Screenshot(STGEverythingMenu::kTabGroup, "shared_icon_in_app_menu",
+                 "5924633"),
+      // Close the app menu to prevent flakes on mac.
+      HoverTabAt(0), ClickMouse(),
+      WaitForHide(AppMenuModel::kTabGroupsMenuItem));
 }
 
 // Take a screenshot of the shared tab group in the everything menu.
@@ -247,7 +253,7 @@ IN_PROC_BROWSER_TEST_F(SharedTabGroupInteractiveUiTest,
       WaitForShow(kTabGroupHeaderElementId), FinishTabstripAnimations(),
       ShowBookmarksBar(), PressButton(kSavedTabGroupOverflowButtonElementId),
       EnsurePresent(STGEverythingMenu::kTabGroup),
-      SetOnIncompatibleAction(OnIncompatibleAction::kSkipTest,
+      SetOnIncompatibleAction(OnIncompatibleAction::kIgnoreAndContinue,
                               kSkipPixelTestsReason),
       Screenshot(STGEverythingMenu::kTabGroup, "shared_icon_in_everything_menu",
                  "5924633"),
@@ -267,17 +273,17 @@ IN_PROC_BROWSER_TEST_F(SharedTabGroupInteractiveUiTest,
   // TODO(crbug.com/380088920): Manually trigger a layout until we have a way to
   // know when the entity tracker is initialized.
   TabGroup* tab_group =
-      browser()->tab_strip_model()->group_model()->GetTabGroup(group_id);
-  browser()->tab_strip_model()->ChangeTabGroupVisuals(
+      browser()->GetTabStripModel()->group_model()->GetTabGroup(group_id);
+  browser()->GetTabStripModel()->ChangeTabGroupVisuals(
       group_id, *tab_group->visual_data());
 
-  RunTestSequence(WaitForShow(kTabGroupHeaderElementId),
-                  FinishTabstripAnimations(),
-                  NameTabGroupHeaderView(group_id, kTabGroupHeaderToScreenshot),
-                  SetOnIncompatibleAction(OnIncompatibleAction::kSkipTest,
-                                          kSkipPixelTestsReason),
-                  Screenshot(kTabGroupHeaderToScreenshot,
-                             "shared_icon_in_tab_group_header", "5924633"));
+  RunTestSequence(
+      WaitForShow(kTabGroupHeaderElementId), FinishTabstripAnimations(),
+      NameTabGroupHeaderView(group_id, kTabGroupHeaderToScreenshot),
+      SetOnIncompatibleAction(OnIncompatibleAction::kIgnoreAndContinue,
+                              kSkipPixelTestsReason),
+      Screenshot(kTabGroupHeaderToScreenshot, "shared_icon_in_tab_group_header",
+                 "5924633"));
 }
 
 // Verify the closed metric is recorded when a shared group is closed from the
@@ -315,7 +321,7 @@ IN_PROC_BROWSER_TEST_F(SharedTabGroupInteractiveUiTest,
                 data_sharing::MemberRole::kOwner, /*should_sign_in=*/false);
 
   // Close the tab group.
-  browser()->tab_strip_model()->CloseAllTabsInGroup(group_id);
+  browser()->GetTabStripModel()->CloseAllTabsInGroup(group_id);
 
   RunTestSequence(FinishTabstripAnimations(), ShowBookmarksBar(),
                   EnsurePresent(kSavedTabGroupButtonElementId),
@@ -340,13 +346,11 @@ IN_PROC_BROWSER_TEST_F(SharedTabGroupInteractiveUiTest,
                 data_sharing::MemberRole::kOwner, /*should_sign_in=*/false);
 
   // Close the tab group.
-  browser()->tab_strip_model()->CloseAllTabsInGroup(group_id);
+  browser()->GetTabStripModel()->CloseAllTabsInGroup(group_id);
 
   RunTestSequence(FinishTabstripAnimations(), ShowBookmarksBar(),
                   PressButton(kSavedTabGroupOverflowButtonElementId),
                   SelectMenuItem(STGEverythingMenu::kTabGroup),
-                  WaitForShow(STGTabsMenuModel::kOpenGroup),
-                  SelectMenuItem(STGTabsMenuModel::kOpenGroup),
                   WaitForShow(kTabGroupHeaderElementId),
                   // Close the everything menu to prevent flakes on mac.
                   HoverTabAt(0), ClickMouse(),
@@ -355,7 +359,7 @@ IN_PROC_BROWSER_TEST_F(SharedTabGroupInteractiveUiTest,
   histogram_tester.ExpectUniqueSample(
       kRecallHistogram,
       saved_tab_groups::metrics::SharedTabGroupRecallTypeDesktop::
-          kOpenedFromSubmenuFromEverythingMenu,
+          kOpenedFromEverythingMenu,
       1);
 }
 
@@ -370,7 +374,7 @@ IN_PROC_BROWSER_TEST_F(SharedTabGroupInteractiveUiTest,
                 data_sharing::MemberRole::kOwner, /*should_sign_in=*/false);
 
   // Close the tab group.
-  browser()->tab_strip_model()->CloseAllTabsInGroup(group_id);
+  browser()->GetTabStripModel()->CloseAllTabsInGroup(group_id);
 
   RunTestSequence(FinishTabstripAnimations(), ShowBookmarksBar(),
                   PressButton(kToolbarAppMenuButtonElementId),
@@ -514,7 +518,7 @@ IN_PROC_BROWSER_TEST_F(SharedTabGroupInteractiveUiTest, GroupCloseLastTab) {
   RunTestSequence(
       WaitForShow(kTabGroupHeaderElementId), FinishTabstripAnimations(),
       Do([&]() {
-        browser()->tab_strip_model()->ActivateTabAt(0);
+        browser()->GetTabStripModel()->ActivateTabAt(0);
         chrome::CloseTab(browser());
       }),
       WaitForShow(kDataSharingSigninPromptDialogCancelButtonElementId),

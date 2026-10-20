@@ -8,6 +8,8 @@
 #include <IOSurface/IOSurfaceRef.h>
 #include <mach/mach.h>
 
+#include <optional>
+
 #include "base/apple/scoped_cftyperef.h"
 #include "base/component_export.h"
 #include "base/memory/unsafe_shared_memory_region.h"
@@ -112,10 +114,54 @@ COMPONENT_EXPORT(GFX)
 ScopedIOSurface IOSurfaceMachPortToIOSurface(
     ScopedRefCountedIOSurfaceMachPort io_surface_mach_port);
 
-// Return true if IOSurface Pixel Format is supported by WebGPU and
+// Return true if IOSurface pixel format is supported by WebGPU and
 // can be imported in WebGPU.
 COMPONENT_EXPORT(GFX)
-bool IOSurfaceIsWebGPUCompatible(IOSurfaceRef io_surface);
+bool IOSurfacePixelFormatIsWebGPUCompatible(uint32_t pixel_format);
+
+// Return true if IOSurface pixel format can be accessed by the CPU.
+COMPONENT_EXPORT(GFX)
+bool IOSurfacePixelFormatSupportsCpuAccess(uint32_t pixel_format);
+
+// Return true if the specified IOSurface pixel format can be displayed using
+// an AVSampleBufferDisplayLayer.
+COMPONENT_EXPORT(GFX)
+bool IOSurfacePixelFormatCanDisplayAsAVSampleBuffer(uint32_t pixel_format);
+
+// Return the maximum bit depth across all components for the specified
+// IOSurface pixel format, or 0 if the format is not recognized. For pixel
+// formats with non-uniform component sizes (such as 10-10-10-2 or 5-6-5),
+// this returns the maximum bit depth among the components (for example,
+// 10 for 10-10-10-2).
+COMPONENT_EXPORT(GFX)
+uint32_t IOSurfacePixelFormatMaxBitsPerComponent(uint32_t pixel_format);
+
+// Return the color space range ID for the specified IOSurface pixel format,
+// or INVALID if the format is not recognized.
+COMPONENT_EXPORT(GFX)
+gfx::ColorSpace::RangeID IOSurfacePixelFormatRangeID(uint32_t pixel_format);
+
+// Return true if the specified IOSurface pixel format can be used with the
+// specified viz::SharedImageFormat. If `match_rgba_and_bgra` is true, then
+// allow matching BGRA to RGBA formats and vice-versa.
+COMPONENT_EXPORT(GFX)
+bool IOSurfacePixelFormatMatchesSharedImageFormat(uint32_t pixel_format,
+                                                  viz::SharedImageFormat format,
+                                                  bool match_rgba_and_bgra);
+
+// Return the expected CVPixelFormatType for an IOSurface with the specified
+// viz::SharedImageFormat. If `override_rgba_to_bgra` is true then map RGBA and
+// RGBX to BGRA.
+COMPONENT_EXPORT(GFX)
+std::optional<uint32_t> SharedImageFormatToIOSurfacePixelFormat(
+    viz::SharedImageFormat format,
+    bool override_rgba_to_bgra);
+
+// Return the viz::SharedImageFormat for an IOSurface with the specified
+// CVPixelFormatType.
+COMPONENT_EXPORT(GFX)
+std::optional<viz::SharedImageFormat> IOSurfacePixelFormatToSharedImageFormat(
+    uint32_t pixel_format);
 
 }  // namespace gfx
 

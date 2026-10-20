@@ -60,7 +60,7 @@ PrefetchURLLoader::PrefetchURLLoader(
       is_signed_exchange_handling_enabled_(
           signed_exchange_utils::IsSignedExchangeHandlingEnabled(
               browser_context)) {
-  DCHECK(network_loader_factory_);
+  CHECK(network_loader_factory_, base::NotFatalUntil::M160);
   CHECK(!resource_request.trusted_params ||
         resource_request.trusted_params->isolation_info.request_type() ==
             net::IsolationInfo::RequestType::kOther ||
@@ -103,13 +103,14 @@ PrefetchURLLoader::PrefetchURLLoader(
 PrefetchURLLoader::~PrefetchURLLoader() = default;
 
 void PrefetchURLLoader::FollowRedirect(
-    const std::vector<std::string>& removed_headers,
-    const net::HttpRequestHeaders& modified_headers,
-    const net::HttpRequestHeaders& modified_cors_exempt_headers,
+    network::HttpRequestHeadersUpdateParams headers_update_params,
     const std::optional<GURL>& new_url) {
-  DCHECK(modified_headers.IsEmpty())
+  // Only `headers_update_params.removed_headers` is supported.
+  DCHECK(headers_update_params.modified_headers.IsEmpty())
       << "Redirect with modified headers was not supported yet. "
          "crbug.com/845683";
+  headers_update_params.modified_headers.Clear();
+  headers_update_params.modified_cors_exempt_headers.Clear();
   DCHECK(!new_url) << "Redirect with modified URL was not "
                       "supported yet. crbug.com/845683";
   if (signed_exchange_prefetch_handler_) {
@@ -119,11 +120,8 @@ void PrefetchURLLoader::FollowRedirect(
     return;
   }
 
-  DCHECK(loader_);
-  loader_->FollowRedirect(
-      removed_headers, net::HttpRequestHeaders() /* modified_headers */,
-      net::HttpRequestHeaders() /* modified_cors_exempt_headers */,
-      std::nullopt);
+  CHECK(loader_, base::NotFatalUntil::M160);
+  loader_->FollowRedirect(std::move(headers_update_params), std::nullopt);
 }
 
 void PrefetchURLLoader::SetPriority(net::RequestPriority priority,
@@ -145,7 +143,7 @@ void PrefetchURLLoader::OnReceiveResponse(
   if (is_signed_exchange_handling_enabled_ &&
       signed_exchange_utils::ShouldHandleAsSignedHTTPExchange(
           resource_request_.url, *response)) {
-    DCHECK(!signed_exchange_prefetch_handler_);
+    CHECK(!signed_exchange_prefetch_handler_, base::NotFatalUntil::M160);
     const bool keep_entry_for_prefetch_cache =
         !!prefetched_signed_exchange_cache_adapter_;
 
@@ -171,7 +169,8 @@ void PrefetchURLLoader::OnReceiveResponse(
   // we redirect back here for the inner response.
   if (resource_request_.load_flags &
       net::LOAD_RESTRICTED_PREFETCH_FOR_MAIN_FRAME) {
-    DCHECK(!recursive_prefetch_token_generator_.is_null());
+    CHECK(!recursive_prefetch_token_generator_.is_null(),
+          base::NotFatalUntil::M160);
     base::UnguessableToken recursive_prefetch_token =
         std::move(recursive_prefetch_token_generator_).Run(resource_request_);
     response->recursive_prefetch_token = recursive_prefetch_token;
@@ -197,7 +196,7 @@ void PrefetchURLLoader::OnReceiveResponse(
   }
 
   // Just drain the original response's body here.
-  DCHECK(!pipe_drainer_);
+  CHECK(!pipe_drainer_, base::NotFatalUntil::M160);
   pipe_drainer_ =
       std::make_unique<mojo::DataPipeDrainer>(this, std::move(body));
 
@@ -214,10 +213,12 @@ void PrefetchURLLoader::OnReceiveRedirect(
             ->TakePrefetchedSignedExchangeCacheEntry());
   }
 
-  resource_request_.url = redirect_info.new_url;
-  resource_request_.site_for_cookies = redirect_info.new_site_for_cookies;
-  resource_request_.referrer = GURL(redirect_info.new_referrer);
-  resource_request_.referrer_policy = redirect_info.new_referrer_policy;
+  resource_request_.UpdateOnRedirect(redirect_info);
+  if (resource_request_.trusted_params) {
+    network_anonymization_key_ =
+        resource_request_.trusted_params->isolation_info
+            .network_anonymization_key();
+  }
   forwarding_client_->OnReceiveRedirect(redirect_info, std::move(head));
 }
 
@@ -258,7 +259,7 @@ bool PrefetchURLLoader::SendEmptyBody() {
     client_receiver_.reset();
     return false;
   }
-  DCHECK(response_);
+  CHECK(response_, base::NotFatalUntil::M160);
   forwarding_client_->OnReceiveResponse(std::move(response_),
                                         std::move(consumer), std::nullopt);
   return true;

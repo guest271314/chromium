@@ -23,16 +23,18 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/trusted_vault/trusted_vault_encryption_keys_tab_helper.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/browser_window/public/create_browser_window.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/tabs/tab_enums.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/webauthn/user_actions.h"
 #include "chrome/browser/webauthn/authenticator_request_dialog_model.h"
 #include "chrome/browser/webauthn/gpm_enclave_controller.h"
 #include "chrome/browser/webauthn/webauthn_switches.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
+#include "components/trusted_vault/trusted_vault_histograms.h"
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/web_contents_observer.h"
@@ -195,8 +197,8 @@ class AuthenticatorRequestWindow
         Profile::FromBrowserContext(caller_web_contents->GetBrowserContext())
             ->GetOriginalProfile();
     // If the profile is shutting down, don't attempt to create a pop-up.
-    if (Browser::GetCreationStatusForProfile(profile) !=
-        Browser::CreationStatus::kOk) {
+    if (GetBrowserWindowCreationStatusForProfile(*profile) !=
+        BrowserWindowInterface::CreationStatus::kOk) {
       return;
     }
 
@@ -208,8 +210,9 @@ class AuthenticatorRequestWindow
     const gfx::Rect caller_bounds = caller_browser->GetWindow()->GetBounds();
     const gfx::Point caller_center = caller_bounds.CenterPoint();
 
-    Browser::CreateParams browser_params(Browser::TYPE_POPUP, profile,
-                                         /*user_gesture=*/true);
+    BrowserWindowCreateParams browser_params(BrowserWindowInterface::TYPE_POPUP,
+                                             profile,
+                                             /*from_user_gesture=*/true);
     browser_params.omit_from_session_restore = true;
     browser_params.should_trigger_session_restore = false;
     // This is empirically a good size for the MagicArch UI. (Note that the UI
@@ -221,8 +224,9 @@ class AuthenticatorRequestWindow
         gfx::Rect(caller_center.x() - kWidth / 2,
                   caller_center.y() - kHeight / 2, kWidth, kHeight);
     browser_params.initial_origin_specified =
-        Browser::ValueSpecified::kSpecified;
-    auto* browser = Browser::Create(browser_params);
+        BrowserWindowCreateParams::ValueSpecified::kSpecified;
+    BrowserWindowInterface* browser =
+        CreateBrowserWindow(std::move(browser_params));
 
     content::WebContents::CreateParams webcontents_params(profile);
     std::unique_ptr<content::WebContents> web_contents =
@@ -239,8 +243,20 @@ class AuthenticatorRequestWindow
     GURL url;
     switch (step_) {
       case AuthenticatorRequestDialogModel::Step::kGPMRecoverSecurityDomain:
-        url = GaiaUrls::GetInstance()->SigninChromePasskeyUnlockUrl(
-            account_index);
+        if (base::FeatureList::IsEnabled(
+                device::kWebAuthnGpmPasskeyEmbeddedRecoveryUrl)) {
+          url =
+              GaiaUrls::GetInstance()
+                  ->SigninChromePasskeyUnlockDesktopEmbeddedUrl(account_index);
+          trusted_vault::RecordTrustedVaultRecoveryFlowTriggeredEndpoint(
+              trusted_vault::TrustedVaultRecoveryFlowEndpoint::
+                  kDesktopEmbedded);
+        } else {
+          url = GaiaUrls::GetInstance()->SigninChromePasskeyUnlockUrl(
+              account_index);
+          trusted_vault::RecordTrustedVaultRecoveryFlowTriggeredEndpoint(
+              trusted_vault::TrustedVaultRecoveryFlowEndpoint::kDesktop);
+        }
         device::enclave::RecordEvent(device::enclave::Event::kRecoveryShown);
         webauthn::user_actions::RecordRecoveryShown(model_->request_type);
         passkey_reset_observer_ =
@@ -285,11 +301,11 @@ class AuthenticatorRequestWindow
       }
     }
 
-    browser->tab_strip_model()->AddWebContents(
+    browser->GetTabStripModel()->AddWebContents(
         std::move(web_contents), /*index=*/0,
         ui::PageTransition::PAGE_TRANSITION_AUTO_TOPLEVEL,
         AddTabTypes::ADD_ACTIVE);
-    browser->window()->Show();
+    browser->GetWindow()->Show();
   }
 
   ~AuthenticatorRequestWindow() override = default;

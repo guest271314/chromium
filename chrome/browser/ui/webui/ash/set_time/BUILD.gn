@@ -15,6 +15,8 @@ static_library("set_time") {
   ]
 
   deps = [
+    "//ash/public/cpp",
+    "//ash/strings",
     "//base",
     "//base:build_time",
     "//chrome/browser/ash/child_accounts/parent_access_code",
@@ -22,11 +24,15 @@ static_library("set_time") {
     "//chrome/browser/profiles:profile",
     "//chrome/browser/resources/chromeos/set_time_dialog:resources",
     "//chrome/browser/resources/chromeos/set_time_dialog:resources_grit",
+    "//chrome/browser/ui/webui:theme_source",
     "//chrome/browser/ui/webui/ash/system_web_dialog",
-    "//chrome/common",
     "//chromeos/ash/components/dbus/system_clock",
     "//chromeos/ash/components/login/login_state",
     "//chromeos/ash/components/settings",
+    "//components/prefs",
+    "//components/strings:components_strings_grit",
+    "//components/user_manager",
+    "//content/public/browser",
     "//ui/gfx",
     "//ui/web_dialogs",
     "//ui/webui",

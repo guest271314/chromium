@@ -13,7 +13,9 @@
 
 #include "base/check_op.h"
 #include "base/containers/span.h"
+#include "base/memory/raw_ptr.h"
 #include "base/strings/utf_string_conversions.h"
+#include "pdf/page_orientation.h"
 #include "pdf/pdf_ink_constants.h"
 #include "pdf/pdf_ink_conversions.h"
 #include "pdf/pdf_ink_transform.h"
@@ -163,7 +165,8 @@ std::optional<ink::PartitionedMesh> ReadV2InkModeledShapeFromPath(
 std::vector<FPDF_PAGEOBJECTMARK> FindInkTextAnnotationMarks(
     FPDF_PAGEOBJECT page_object) {
   std::vector<FPDF_PAGEOBJECTMARK> marks;
-  if (FPDFPageObj_GetType(page_object) != FPDF_PAGEOBJ_TEXT) {
+  const int type = FPDFPageObj_GetType(page_object);
+  if (type != FPDF_PAGEOBJ_TEXT && type != FPDF_PAGEOBJ_PATH) {
     return marks;
   }
 
@@ -180,14 +183,14 @@ std::vector<FPDF_PAGEOBJECTMARK> FindInkTextAnnotationMarks(
 
 bool IsValidTypeface(std::optional<int> typeface) {
   return typeface.has_value() &&
-         typeface.value() >= static_cast<int>(TextTypeface::kFirst) &&
-         typeface.value() <= static_cast<int>(TextTypeface::kLast);
+         typeface.value() >= static_cast<int>(TextTypeface::kMinValue) &&
+         typeface.value() <= static_cast<int>(TextTypeface::kMaxValue);
 }
 
 bool IsValidAlignment(std::optional<int> alignment) {
   return alignment.has_value() &&
-         alignment.value() >= static_cast<int>(TextAlignment::kFirst) &&
-         alignment.value() <= static_cast<int>(TextAlignment::kLast);
+         alignment.value() >= static_cast<int>(TextAlignment::kMinValue) &&
+         alignment.value() <= static_cast<int>(TextAlignment::kMaxValue);
 }
 
 bool IsValidOrientation(std::optional<int> orientation) {
@@ -200,9 +203,14 @@ bool IsValidOrientation(std::optional<int> orientation) {
 std::optional<InkTextBoxAttributes> ExtractAttributesFromMark(
     FPDF_PAGEOBJECT page_object,
     FPDF_PAGEOBJECTMARK mark) {
+  if (FPDFPageObj_GetType(page_object) != FPDF_PAGEOBJ_TEXT) {
+    return std::nullopt;
+  }
+
   // Read the metadata in `mark`.
   std::optional<int> version = GetPageObjectMarkIntParam(mark, "Version");
-  if (!version.has_value() || version.value() != kInkTextAnnotationVersion) {
+  if (!version.has_value() || version.value() <= 0 ||
+      version.value() > kInkTextAnnotationVersion) {
     return std::nullopt;
   }
 
@@ -226,6 +234,14 @@ std::optional<InkTextBoxAttributes> ExtractAttributesFromMark(
   std::optional<int> bold = GetPageObjectMarkIntParam(mark, "IsBold");
   std::optional<int> italic = GetPageObjectMarkIntParam(mark, "IsItalic");
   if (!bold.has_value() || !italic.has_value()) {
+    return std::nullopt;
+  }
+
+  std::optional<int> strikethrough =
+      GetPageObjectMarkIntParam(mark, "IsStrikethrough");
+  std::optional<int> underline = GetPageObjectMarkIntParam(mark, "IsUnderline");
+  if (version.value() >= 2 &&
+      (!strikethrough.has_value() || !underline.has_value())) {
     return std::nullopt;
   }
 
@@ -262,11 +278,22 @@ std::optional<InkTextBoxAttributes> ExtractAttributesFromMark(
 
   const bool is_bold = bold.value() != 0;
   const bool is_italic = italic.value() != 0;
-  return InkTextBoxAttributes(bounds, SkColorSetRGB(r, g, b), css_font_size,
-                              static_cast<TextTypeface>(typeface.value()),
-                              static_cast<TextAlignment>(alignment.value()),
-                              orientation.value(), is_bold, is_italic,
-                              base::UTF16ToUTF8(text.value()));
+  const bool is_strikethrough = strikethrough.value_or(0) != 0;
+  const bool is_underline = underline.value_or(0) != 0;
+  return InkTextBoxAttributes{
+      .rect = bounds,
+      .color = SkColorSetRGB(r, g, b),
+      .css_font_size = css_font_size,
+      .typeface = static_cast<TextTypeface>(typeface.value()),
+      .alignment = static_cast<TextAlignment>(alignment.value()),
+      .orientation = orientation.value(),
+      .viewport_orientation = PageOrientation::kOriginal,
+      .is_bold = is_bold,
+      .is_italic = is_italic,
+      .is_strikethrough = is_strikethrough,
+      .is_underline = is_underline,
+      .text = base::UTF16ToUTF8(text.value()),
+  };
 }
 
 }  // namespace
@@ -316,6 +343,19 @@ std::optional<ink::Mesh> CreateInkMeshFromPolylineForTesting(  // IN-TEST
   return CreateInkMeshFromPolyline(polyline);
 }
 
+ReadInkTextResult::ReadInkTextResult(
+    InkTextBox textbox,
+    std::vector<base::RawPtrIfPtrT<FPDF_PAGEOBJECT, DanglingUntriaged>>
+        text_objects)
+    : textbox(std::move(textbox)), text_objects(std::move(text_objects)) {}
+
+ReadInkTextResult::ReadInkTextResult(ReadInkTextResult&&) noexcept = default;
+
+ReadInkTextResult& ReadInkTextResult::operator=(ReadInkTextResult&&) noexcept =
+    default;
+
+ReadInkTextResult::~ReadInkTextResult() = default;
+
 bool PageContainsInkTextAnnotation(FPDF_PAGE page) {
   if (!page) {
     return false;
@@ -330,8 +370,15 @@ bool PageContainsInkTextAnnotation(FPDF_PAGE page) {
   return false;
 }
 
-std::vector<InkTextBox> ReadInkTextAnnotationsFromPage(FPDF_PAGE page) {
-  std::vector<InkTextBox> results;
+std::vector<ReadInkTextResult> ReadInkTextAnnotationsFromPage(FPDF_PAGE page) {
+  struct TextboxData {
+    std::optional<InkTextBoxAttributes> attributes;
+    std::vector<base::RawPtrIfPtrT<FPDF_PAGEOBJECT, DanglingUntriaged>>
+        page_objects;
+    FPDF_PAGEOBJECTMARK mark = nullptr;
+  };
+
+  std::vector<ReadInkTextResult> results;
   if (!page) {
     return results;
   }
@@ -339,8 +386,8 @@ std::vector<InkTextBox> ReadInkTextAnnotationsFromPage(FPDF_PAGE page) {
   // Collect invalid textbox IDs to ignore them.
   std::set<int> invalid_ids;
 
-  // Maps textbox IDs to their successfully extracted textboxes attributes.
-  std::map<int, InkTextBoxAttributes> ids_to_attributes;
+  // Maps textbox IDs to their loading data.
+  std::map<int, TextboxData> ids_to_data;
 
   const int page_object_count = FPDFPage_CountObjects(page);
   for (int i = 0; i < page_object_count; ++i) {
@@ -352,9 +399,10 @@ std::vector<InkTextBox> ReadInkTextAnnotationsFromPage(FPDF_PAGE page) {
     }
 
     if (marks.size() > 1) {
-      // If a text object has multiple marks, it is invalid. Collect all
-      // associated textbox IDs to ensure they are completely invalidated and
-      // skipped, rather than partially loaded from other objects.
+      // If a text object has multiple marks with TextboxId, it is invalid.
+      // Collect all associated textbox IDs to ensure they are completely
+      // invalidated and skipped, rather than partially loaded from other
+      // objects.
       for (FPDF_PAGEOBJECTMARK mark : marks) {
         std::optional<int> id = GetPageObjectMarkIntParam(mark, "TextboxId");
         if (id.has_value()) {
@@ -375,24 +423,33 @@ std::vector<InkTextBox> ReadInkTextAnnotationsFromPage(FPDF_PAGE page) {
       continue;
     }
 
-    // Extract attributes from the mark. Only the first text object should have
-    // the attributes. Subsequent text objects in the same textbox should not.
+    auto& data = ids_to_data[textbox_id];
+    data.page_objects.push_back(page_object);
+
+    // Extract attributes from the mark.
     std::optional<InkTextBoxAttributes> attributes =
         ExtractAttributesFromMark(page_object, mark);
     if (attributes.has_value()) {
-      if (ids_to_attributes.contains(textbox_id)) {
-        // Already extracted attributes. Multiple objects have attribute
-        // metadata.
-        invalid_ids.insert(textbox_id);
+      if (data.attributes.has_value()) {
+        // Note: when a single mark spans multiple page objects, that same
+        // `mark` pointer appears multiple times in this loop. So if this is the
+        // second time the mark was processed just skip it.
+        if (data.mark != mark) {
+          // The same textbox_id was used in multiple separate marks
+          invalid_ids.insert(textbox_id);
+        }
       } else {
-        ids_to_attributes.emplace(textbox_id, std::move(attributes.value()));
+        data.attributes = std::move(attributes.value());
+        data.mark = mark;
       }
     }
   }
 
-  for (auto& [textbox_id, attributes] : ids_to_attributes) {
-    if (!invalid_ids.contains(textbox_id)) {
-      results.emplace_back(textbox_id, std::move(attributes));
+  for (auto& [textbox_id, data] : ids_to_data) {
+    if (data.attributes.has_value() && !invalid_ids.contains(textbox_id)) {
+      results.emplace_back(
+          InkTextBox(textbox_id, std::move(data.attributes.value())),
+          std::move(data.page_objects));
     }
   }
 

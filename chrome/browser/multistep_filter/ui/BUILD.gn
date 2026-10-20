@@ -7,7 +7,7 @@ source_set("ui") {
   public_deps = []
   deps = []
 
-  if (!is_android && !is_ios) {
+  if (!is_android) {
     sources += [
       "filter_ui_controller.cc",
       "filter_ui_controller.h",
@@ -23,13 +23,24 @@ source_set("ui") {
     ]
 
     deps += [
-      "//chrome/browser/ui/toasts",
-      "//chrome/browser/ui/toasts/api:toasts",
+      "//chrome/app:generated_resources",
+      "//chrome/browser/contextual_cueing",
+      "//chrome/browser/favicon",
+      "//chrome/browser/ui/browser_window",
+      "//chrome/browser/ui/page_action",
+      "//chrome/browser/ui/user_education",
+      "//chrome/common",
+      "//components/favicon/core",
+      "//components/feature_engagement/public",
       "//components/multistep_filter/content",
+      "//components/multistep_filter/core:features",
       "//components/multistep_filter/core/logging",
       "//components/tabs:public",
+      "//components/vector_icons",
       "//content/public/browser",
+      "//ui/actions:actions_headers",
       "//ui/base",
+      "//ui/menus",
       "//ui/strings",
       "//url",
     ]
@@ -41,7 +52,7 @@ source_set("test_support") {
   sources = []
   deps = []
 
-  if (!is_android && !is_ios) {
+  if (!is_android) {
     sources += [ "filter_ui_controller_test_api.h" ]
     deps += [
       ":ui",
@@ -53,26 +64,32 @@ source_set("test_support") {
 source_set("unit_tests") {
   testonly = true
   sources = []
-  deps = []
+  deps = [ "//chrome/test/base:chrome_render_view_host_test_harness" ]
 
-  if (!is_android && !is_ios) {
+  if (!is_android) {
     sources += [ "filter_ui_controller_unittest.cc" ]
     deps += [
       ":test_support",
       ":ui",
       "//base/test:test_support",
       "//chrome/browser/multistep_filter/core",
+      "//chrome/browser/ui/page_action",
+      "//chrome/browser/ui/page_action:test_support",
       "//chrome/browser/ui/toasts",
       "//chrome/browser/ui/toasts/api:toasts",
       "//chrome/test:test_support",
+      "//components/favicon/core/test:test_support",
       "//components/multistep_filter/content",
       "//components/multistep_filter/core",
       "//components/multistep_filter/core:features",
+      "//components/multistep_filter/core:util",
       "//components/multistep_filter/core/annotation_index:test_support",
+      "//components/multistep_filter/core/logging",
       "//components/tabs:test_support",
       "//content/test:test_support",
       "//testing/gmock",
       "//testing/gtest",
+      "//ui/actions",
       "//url",
     ]
   }

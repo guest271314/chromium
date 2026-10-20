@@ -5,12 +5,15 @@
 #ifndef CHROME_UPDATER_UTIL_UTIL_H_
 #define CHROME_UPDATER_UTIL_UTIL_H_
 
+#include <stdint.h>
+
 #include <cmath>
 #include <concepts>
 #include <limits>
 #include <optional>
 #include <ostream>
 #include <string>
+#include <string_view>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -78,6 +81,9 @@ std::optional<base::FilePath> GetVersionedInstallDirectory(UpdaterScope scope);
 // Returns the path where cached CRX files should be stored, common to all
 // versions of the updater. Does not create the directory if it does not exist.
 std::optional<base::FilePath> GetCrxCacheDirectory(UpdaterScope scope);
+
+// Returns the temporary directory used by the updater.
+std::optional<base::FilePath> GetUpdaterTempDir();
 
 #if BUILDFLAG(IS_MAC)
 // For example: ~/Library/Google/GoogleUpdater/88.0.4293.0/GoogleUpdater.app
@@ -250,6 +256,12 @@ std::vector<base::FilePath> GetFilesWithPredicate(
 void EnumerateUpdateClientTempDirectories(
     UpdaterScope scope,
     base::FunctionRef<void(const base::FilePath& dir)> callback);
+
+// Returns true if the App ID is valid (not empty, not too long, does not
+// contain path separators '/' or '\', and does not contain path traversal
+// components).
+bool IsValidAppId(std::string_view app_id);
+bool IsValidAppId(std::wstring_view app_id);
 
 }  // namespace updater
 

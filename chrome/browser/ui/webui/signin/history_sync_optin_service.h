@@ -15,8 +15,8 @@
 #include "components/keyed_service/core/keyed_service.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
 
+class AccountInfo;
 class Profile;
-struct AccountInfo;
 
 class HistorySyncOptinServiceDefaultDelegate
     : public HistorySyncOptinHelper::Delegate {
@@ -32,6 +32,8 @@ class HistorySyncOptinServiceDefaultDelegate
       signin::SigninChoiceCallback on_account_management_screen_closed)
       override;
   void FinishFlowWithoutHistorySyncOptin() override;
+  void ShowSignInCelebration(
+      base::OnceClosure celebration_finished) override;
 };
 
 // Service responsible for managing the History Sync Opt-in flow.

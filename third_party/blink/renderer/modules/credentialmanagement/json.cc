@@ -1,3 +1,7 @@
+// Copyright 2026 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
 #include "third_party/blink/renderer/modules/credentialmanagement/json.h"
 
 #include "base/containers/span.h"
@@ -9,6 +13,8 @@
 #include "third_party/blink/renderer/bindings/modules/v8/v8_authentication_extensions_client_inputs_js_on.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_authentication_extensions_client_outputs.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_authentication_extensions_client_outputs_js_on.h"
+#include "third_party/blink/renderer/bindings/modules/v8/v8_authentication_extensions_cmtg_key_outputs.h"
+#include "third_party/blink/renderer/bindings/modules/v8/v8_authentication_extensions_cmtg_key_outputs_js_on.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_authentication_extensions_large_blob_inputs.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_authentication_extensions_large_blob_inputs_js_on.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_authentication_extensions_large_blob_outputs.h"
@@ -17,7 +23,6 @@
 #include "third_party/blink/renderer/bindings/modules/v8/v8_authentication_extensions_prf_outputs.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_authentication_extensions_prf_values.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_authentication_extensions_prf_values_js_on.h"
-#include "third_party/blink/renderer/bindings/modules/v8/v8_authentication_extensions_supplemental_pub_keys_outputs.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_public_key_credential_creation_options.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_public_key_credential_creation_options_js_on.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_public_key_credential_descriptor.h"
@@ -28,7 +33,7 @@
 #include "third_party/blink/renderer/bindings/modules/v8/v8_public_key_credential_user_entity_js_on.h"
 #include "third_party/blink/renderer/core/typed_arrays/dom_array_buffer.h"
 #include "third_party/blink/renderer/core/typed_arrays/dom_array_buffer_base.h"
-#include "third_party/blink/renderer/core/typed_arrays/dom_array_piece.h"
+#include "third_party/blink/renderer/core/typed_arrays/dom_array_buffer_util.h"
 #include "third_party/blink/renderer/platform/bindings/exception_code.h"
 #include "third_party/blink/renderer/platform/bindings/exception_state.h"
 #include "third_party/blink/renderer/platform/bindings/script_state.h"
@@ -201,8 +206,8 @@ AuthenticationExtensionsClientInputsFromJSON(
   if (json.hasRemoteDesktopClientOverride()) {
     result->setRemoteDesktopClientOverride(json.remoteDesktopClientOverride());
   }
-  if (json.hasSupplementalPubKeys()) {
-    result->setSupplementalPubKeys(json.supplementalPubKeys());
+  if (json.hasRemoteClientDataJSON()) {
+    result->setRemoteClientDataJSON(json.remoteClientDataJSON());
   }
   if (json.hasPrf()) {
     auto* prf = AuthenticationExtensionsPRFInputs::Create();
@@ -235,15 +240,20 @@ AuthenticationExtensionsClientInputsFromJSON(
     }
     result->setPrf(prf);
   }
+  if (json.hasCrossDeviceFallbackUrl()) {
+    result->setCrossDeviceFallbackUrl(json.crossDeviceFallbackUrl());
+  }
+  if (json.hasCmtgKey()) {
+    result->setCmtgKey(json.cmtgKey());
+  }
   return result;
 }
 
 }  // namespace
 
-String WebAuthnBase64UrlEncode(DOMArrayPiece buffer) {
+String WebAuthnBase64UrlEncode(base::span<const uint8_t> buffer) {
   // Tell Base64URLEncode to not include padding (trailing '=').
-  return Base64UrlEncode(buffer.ByteSpan(),
-                         Base64UrlEncodePolicy::kOmitPadding);
+  return Base64UrlEncode(buffer, Base64UrlEncodePolicy::kOmitPadding);
 }
 
 AuthenticationExtensionsClientOutputsJSON*
@@ -267,7 +277,8 @@ AuthenticationExtensionsClientOutputsToJSON(
       builder.AddBoolean("supported", large_blob->supported());
     }
     if (large_blob->hasBlob()) {
-      builder.AddString("blob", WebAuthnBase64UrlEncode(large_blob->blob()));
+      builder.AddString(
+          "blob", WebAuthnBase64UrlEncode(large_blob->blob()->ByteSpan()));
     }
     if (large_blob->hasWritten()) {
       builder.AddBoolean("written", large_blob->written());
@@ -275,10 +286,10 @@ AuthenticationExtensionsClientOutputsToJSON(
     json->setLargeBlob(builder.ToScriptObject());
   }
   if (in.hasCredBlob()) {
-    json->setCredBlob(in.getCredBlob());
+    json->setCredBlob(in.credBlob());
   }
   if (in.hasGetCredBlob()) {
-    json->setGetCredBlob(WebAuthnBase64UrlEncode(in.getCredBlob()));
+    json->setGetCredBlob(WebAuthnBase64UrlEncode(in.getCredBlob()->ByteSpan()));
   }
   if (in.hasPrf()) {
     V8ObjectBuilder builder(script_state);
@@ -289,23 +300,32 @@ AuthenticationExtensionsClientOutputsToJSON(
     if (prf.hasResults()) {
       V8ObjectBuilder results_builder(script_state);
       results_builder.AddString(
-          "first", WebAuthnBase64UrlEncode(prf.results()->first()));
+          "first",
+          WebAuthnBase64UrlEncode(
+              AsSpan<SharedBufferPolicy::kDisallow>(*prf.results()->first())));
       if (prf.results()->hasSecond()) {
         results_builder.AddString(
-            "second", WebAuthnBase64UrlEncode(prf.results()->second()));
+            "second",
+            WebAuthnBase64UrlEncode(AsSpan<SharedBufferPolicy::kDisallow>(
+                *prf.results()->second())));
       }
+      builder.Add("results", results_builder);
     }
     json->setPrf(builder.ToScriptObject());
   }
-  if (in.hasSupplementalPubKeys()) {
-    const AuthenticationExtensionsSupplementalPubKeysOutputs&
-        supplemental_pub_keys = *in.supplementalPubKeys();
-    V8ObjectBuilder builder(script_state);
-    if (supplemental_pub_keys.hasSignatures()) {
-      builder.AddVector<DOMArrayBuffer>("signatures",
-                                        supplemental_pub_keys.signatures());
-    }
-    json->setSupplementalPubKeys(builder.ToScriptObject());
+  if (in.hasCrossDeviceFallbackUrl()) {
+    json->setCrossDeviceFallbackUrl(in.crossDeviceFallbackUrl());
+  }
+  if (in.hasCmtgKey()) {
+    auto* cmtg_key_json = AuthenticationExtensionsCmtgKeyOutputsJSON::Create();
+    cmtg_key_json->setCmtgKey(
+        WebAuthnBase64UrlEncode(in.cmtgKey()->cmtgKey()->ByteSpan()));
+    cmtg_key_json->setSignature(
+        WebAuthnBase64UrlEncode(in.cmtgKey()->signature()->ByteSpan()));
+    json->setCmtgKey(cmtg_key_json);
+  }
+  if (in.hasRemoteClientDataJSON()) {
+    json->setRemoteClientDataJSON(in.remoteClientDataJSON());
   }
   return json;
 }

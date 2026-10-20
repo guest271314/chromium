@@ -57,7 +57,7 @@
 #include "ui/gfx/geometry/size.h"
 #include "ui/gfx/geometry/skia_conversions.h"
 #include "ui/gfx/skia_span_util.h"
-#include "ui/gl/trace_util.h"
+#include "ui/gfx/tone_map_util.h"
 
 namespace cc {
 
@@ -430,13 +430,6 @@ class GpuImageDecodeTaskImpl : public TileTask {
   }
   void OnTaskCompleted() override {
     cache_->OnImageDecodeTaskCompleted(image_, task_type_, client_id_);
-  }
-
-  // Overridden from TileTask:
-  bool TaskContainsLCPCandidateImages() const override {
-    if (!HasCompleted() && image_.paint_image().may_be_lcp_candidate())
-      return true;
-    return TileTask::TaskContainsLCPCandidateImages();
   }
 
  protected:
@@ -1556,8 +1549,6 @@ void GpuImageDecodeCache::OnImageDecodeTaskCompleted(
   // Decode task is complete, remove our reference to it.
   ImageData* image_data = GetImageDataForDrawImage(draw_image, cache_key);
   DCHECK(image_data);
-  UMA_HISTOGRAM_BOOLEAN("Compositing.DecodeLCPCandidateImage.Hardware",
-                        draw_image.paint_image().may_be_lcp_candidate());
   if (task_type == TaskType::kInRaster) {
     image_data->decode.task_map.erase(client_id);
   } else {
@@ -2162,11 +2153,11 @@ void GpuImageDecodeCache::UploadImageIfNecessary(const DrawImage& draw_image,
   // Do not color convert images that are YUV or might be tone mapped.
   if (image_data->info.yuva.has_value() ||
       draw_image.paint_image().HasGainmapInfo() ||
-      ToneMapUtil::UseGlobalToneMapFilter(decoded_color_space.get())) {
+      gfx::ToneMapUtil::UseGlobalToneMapFilter(
+          decoded_color_space.get(),
+          draw_image.paint_image().GetHDRMetadata())) {
     target_color_space = nullptr;
   }
-  const gfx::HDRMetadata& hdr_metadata =
-      draw_image.paint_image().GetHDRMetadata();
 
   std::array<ClientImageTransferCacheEntry::Image, kAuxImageCount> image;
   bool has_gainmap = false;
@@ -2202,7 +2193,7 @@ void GpuImageDecodeCache::UploadImageIfNecessary(const DrawImage& draw_image,
                 draw_image.paint_image().GetGainmapInfo(),
                 image_data->needs_mips)
           : ClientImageTransferCacheEntry(image[kAuxImageIndexDefault],
-                                          image_data->needs_mips, hdr_metadata,
+                                          image_data->needs_mips,
                                           target_color_space);
   if (!image_entry.IsValid())
     return;

@@ -15,6 +15,7 @@
 #include "services/network/public/mojom/no_vary_search.mojom-blink.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/blink/public/common/dom/dom_node_id.h"
 #include "third_party/blink/public/mojom/speculation_rules/speculation_rules.mojom-blink.h"
 #include "third_party/blink/public/platform/browser_interface_broker_proxy.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_binding_for_core.h"
@@ -34,6 +35,8 @@
 #include "third_party/blink/renderer/core/html/html_collection.h"
 #include "third_party/blink/renderer/core/html/html_div_element.h"
 #include "third_party/blink/renderer/core/html/html_head_element.h"
+#include "third_party/blink/renderer/core/html/html_image_element.h"
+#include "third_party/blink/renderer/core/html/html_map_element.h"
 #include "third_party/blink/renderer/core/html/html_meta_element.h"
 #include "third_party/blink/renderer/core/html/html_script_element.h"
 #include "third_party/blink/renderer/core/inspector/console_message_storage.h"
@@ -207,19 +210,22 @@ class SpeculationRuleSetTest : public ::testing::Test {
 
   SpeculationRuleSet* CreateSpeculationRuleSetWithTargetHint(
       const char* target_hint) {
-    return CreateRuleSet(UNSAFE_TODO(String::Format(R"({
+    return CreateRuleSet(StrCat({R"({
         "prefetch": [{
           "source": "list",
           "urls": ["https://example.com/hint.html"],
-          "target_hint": "%s"
+          "target_hint": ")",
+                                 target_hint,
+                                 R"("
         }],
         "prerender": [{
           "source": "list",
           "urls": ["https://example.com/hint.html"],
-          "target_hint": "%s"
+          "target_hint": ")",
+                                 target_hint,
+                                 R"("
         }]
-      })",
-                                                    target_hint, target_hint)),
+      })"}),
                          KURL("https://example.com/"), execution_context_);
   }
 
@@ -525,6 +531,70 @@ TEST_F(SpeculationRuleSetTest, IgnoresUnknownOrDifferentlyTypedTopLevelKeys) {
   EXPECT_EQ(rule_set->error_type(),
             SpeculationRuleSetErrorType::kInvalidRulesSkipped);
   EXPECT_THAT(rule_set->prefetch_rules(), ElementsAre());
+}
+
+TEST_F(SpeculationRuleSetTest, ModerateViewportHeuristicsParsed) {
+  // Parsing is intentionally independent of the origin trial (the trial only
+  // gates whether the params take effect, checked later when the heuristic
+  // runs). So the params are populated here even without the trial enabled.
+  ScopedSpeculationRulesModerateViewportHeuristicsControlForTest disabled(
+      false);
+  auto* rule_set = CreateRuleSet(
+      R"({
+        "moderate_viewport_heuristics": {
+          "distance_from_pointer_down": [-0.5, 0.2],
+          "largest_anchor_threshold": 0.1,
+          "delay": 200
+        },
+        "prefetch": [{"source": "list", "urls": ["https://example.com/a"]}]
+      })",
+      KURL("https://example.com/"), execution_context());
+  ASSERT_TRUE(rule_set);
+  EXPECT_EQ(rule_set->error_type(), SpeculationRuleSetErrorType::kNoError);
+  const auto& params = rule_set->moderate_viewport_heuristics_params();
+  ASSERT_TRUE(params.has_value());
+  ASSERT_TRUE(params->distance_from_pointer_down_low.has_value());
+  EXPECT_DOUBLE_EQ(*params->distance_from_pointer_down_low, -0.5);
+  ASSERT_TRUE(params->distance_from_pointer_down_high.has_value());
+  EXPECT_DOUBLE_EQ(*params->distance_from_pointer_down_high, 0.2);
+  ASSERT_TRUE(params->largest_anchor_threshold.has_value());
+  EXPECT_DOUBLE_EQ(*params->largest_anchor_threshold, 0.1);
+  ASSERT_TRUE(params->delay.has_value());
+  EXPECT_EQ(*params->delay, base::Milliseconds(200));
+}
+
+TEST_F(SpeculationRuleSetTest,
+       ModerateViewportHeuristicsIgnoresMalformedAndUnknownSubKeys) {
+  auto* rule_set = CreateRuleSet(
+      R"({
+        "moderate_viewport_heuristics": {
+          "distance_from_pointer_down": ["not", "numbers"],
+          "largest_anchor_threshold": "oops",
+          "delay": 300,
+          "some_unknown_subkey": 42
+        }
+      })",
+      KURL("https://example.com/"), execution_context());
+  ASSERT_TRUE(rule_set);
+  // Unknown sub-keys and malformed values are ignored; the ruleset still parses
+  // and the well-formed "delay" value is retained.
+  EXPECT_EQ(rule_set->error_type(), SpeculationRuleSetErrorType::kNoError);
+  const auto& params = rule_set->moderate_viewport_heuristics_params();
+  ASSERT_TRUE(params.has_value());
+  EXPECT_FALSE(params->distance_from_pointer_down_low.has_value());
+  EXPECT_FALSE(params->largest_anchor_threshold.has_value());
+  ASSERT_TRUE(params->delay.has_value());
+  EXPECT_EQ(*params->delay, base::Milliseconds(300));
+}
+
+TEST_F(SpeculationRuleSetTest,
+       ModerateViewportHeuristicsIgnoredWhenNotAnObject) {
+  auto* rule_set =
+      CreateRuleSet(R"({"moderate_viewport_heuristics": 42})",
+                    KURL("https://example.com/"), execution_context());
+  ASSERT_TRUE(rule_set);
+  EXPECT_EQ(rule_set->error_type(), SpeculationRuleSetErrorType::kNoError);
+  EXPECT_FALSE(rule_set->moderate_viewport_heuristics_params().has_value());
 }
 
 TEST_F(SpeculationRuleSetTest, DropUnrecognizedRules) {
@@ -1199,7 +1269,7 @@ TEST_F(SpeculationRuleSetTest, RemoveInMicrotask) {
       InsertSpeculationRules(page_holder.GetDocument(),
                              R"({"prefetch": [
              {"source": "list", "urls": ["https://example.com/bar"]}]})");
-  scoped_refptr<scheduler::EventLoop> event_loop =
+  scheduler::EventLoop* event_loop =
       frame.DomWindow()->GetAgent()->event_loop();
   event_loop->PerformMicrotaskCheckpoint();
   frame.View()->UpdateAllLifecyclePhasesForTest();
@@ -1555,14 +1625,16 @@ class DocumentRulesTest : public SpeculationRuleSetTest {
     // clang-format off
     auto* rule_set =
         CreateRuleSet(
-          String::Format(
+          StrCat({
             R"({
               "prefetch": [{
                 "source": "document",
-                "where": {%s}
+                "where": {)",
+            where_text,
+            R"(}
               }]
             })",
-            where_text.Latin1().c_str()),
+          }),
           base_url, execution_context());
     // clang-format on
     return rule_set;
@@ -2107,8 +2179,21 @@ T* AddAnchor(ContainerNode& parent,
   return link;
 }
 
+// Adds an image map (an <img> plus the <map>/<area> it uses) to |parent| and
+// returns the <area>. A default-styled <area> is rendered through the image
+// that uses its map, so the whole map is needed for it to count as a rendered
+// link.
 HTMLAreaElement* AddAreaElement(ContainerNode& parent, const String& href) {
-  return AddAnchor<HTMLAreaElement>(parent, href);
+  Document& document = parent.GetDocument();
+  auto* image = MakeGarbageCollected<HTMLImageElement>(document);
+  image->setAttribute(html_names::kUsemapAttr, AtomicString("#map"));
+  parent.appendChild(image);
+
+  auto* map = MakeGarbageCollected<HTMLMapElement>(document);
+  map->setAttribute(html_names::kNameAttr, AtomicString("map"));
+  parent.appendChild(map);
+
+  return AddAnchor<HTMLAreaElement>(*map, href);
 }
 
 // Tests that speculation candidates based of existing links are reported after
@@ -2461,6 +2546,14 @@ TEST_F(DocumentRulesTest, AreaElement) {
   PropagateRulesToStubSpeculationHost(page_holder, speculation_host,
                                       [&]() { area->remove(); });
   EXPECT_TRUE(candidates.empty());
+
+  // An author-styled area can render without an associated image.
+  PropagateRulesToStubSpeculationHost(page_holder, speculation_host, [&]() {
+    area = AddAnchor<HTMLAreaElement>(*document.body(),
+                                      "https://foo.com/action.html");
+    area->SetInlineStyleProperty(CSSPropertyID::kDisplay, CSSValueID::kInline);
+  });
+  EXPECT_THAT(candidates, HasURLs("https://foo.com/action.html"));
 }
 
 // Test that adding a link to an element that isn't connected doesn't DCHECK.
@@ -2615,7 +2708,8 @@ TEST_F(DocumentRulesTest, LinkReferrerPolicy) {
       page_holder.GetPage().GetConsoleMessageStorage();
   EXPECT_EQ(console_message_storage.size(), 1u);
   EXPECT_THAT(console_message_storage.at(0)->Nodes(),
-              testing::Contains(link_with_disallowed_referrer->GetDomNodeId()));
+              testing::Contains(DOMNodeIdType(
+                  link_with_disallowed_referrer->GetDomNodeId())));
 }
 
 // Tests that changing the "referrerpolicy" attribute results in the
@@ -3810,7 +3904,7 @@ TEST_F(DocumentRulesTest, RemoveForcesStyleUpdate) {
   HTMLScriptElement* to_remove = InsertSpeculationRules(doc,
                                                         R"({"prefetch": [
              {"source": "list", "urls": ["https://example.com/bar"]}]})");
-  scoped_refptr<scheduler::EventLoop> event_loop =
+  scheduler::EventLoop* event_loop =
       frame.DomWindow()->GetAgent()->event_loop();
   event_loop->PerformMicrotaskCheckpoint();
   frame.View()->UpdateAllLifecyclePhasesForTest();
@@ -3860,7 +3954,7 @@ TEST_F(DocumentRulesTest, RemoveWhileWaitingForStyle) {
   broker.SetBinderForTesting(mojom::blink::SpeculationHost::Name_,
                              BindRepeating(&StubSpeculationHost::BindUnsafe,
                                            Unretained(&speculation_host)));
-  auto event_loop = frame.DomWindow()->GetAgent()->event_loop();
+  auto* event_loop = frame.DomWindow()->GetAgent()->event_loop();
 
   // First, add the rule set and matching links. Style is not yet clean for the
   // newly added links, even after the microtask. We also add a rule set with a
@@ -4467,13 +4561,14 @@ TEST_F(SpeculationRuleSetTest, InvalidTag) {
   const char* tag =
       "Qu\xe9"
       "bec";
-  rule_set = CreateRuleSet(UNSAFE_TODO(String::Format(R"({
-        "tag": "%s",
+  rule_set = CreateRuleSet(StrCat({R"({
+        "tag": ")",
+                                   tag,
+                                   R"(",
         "prefetch": [{
           "where": {"href_matches": "/foo"}
         }]
-      })",
-                                                      tag)),
+      })"}),
                            KURL("https://example.com/"), execution_context());
   EXPECT_EQ(rule_set->error_type(),
             SpeculationRuleSetErrorType::kInvalidRulesetLevelTag);

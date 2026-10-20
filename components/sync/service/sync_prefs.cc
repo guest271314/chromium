@@ -42,18 +42,6 @@ namespace syncer {
 
 namespace {
 
-// Historic artifact for payment methods, migrated since 2023/07 to
-// prefs::internal::kSyncPayments to make the name consistent with other
-// user-selectable types.
-constexpr char kObsoleteAutofillWalletImportEnabled[] =
-    "autofill.wallet_import_enabled";
-
-// Boolean representing whether kObsoleteAutofillWalletImportEnabled was
-// migrated to the new pref representing a UserSelectableType. Should be cleaned
-// up together with the migration code (after 2024-07).
-constexpr char kObsoleteAutofillWalletImportEnabledMigrated[] =
-    "sync.autofill_wallet_import_enabled_migrated";
-
 // State of the migration done by MaybeMigrateCustomPassphrasePref().
 constexpr char kSyncEncryptionBootstrapTokenPerAccountMigrationDone[] =
     "sync.encryption_bootstrap_token_per_account_migration_done";
@@ -102,9 +90,7 @@ bool IsBookmarksSelectedByDefaultInTransportMode(PrefService& pref_service,
   // Note: If `kReplaceSyncPromosWithSignInPromos` gets disabled, the pref is
   // not reset and users will keep their bookmarks because that reduces the
   // risks of perceived dataloss.
-  return SigninPrefs(pref_service).GetBookmarksExplicitBrowserSignin(gaia_id) ||
-         base::FeatureList::IsEnabled(
-             kEnableBookmarksSelectedTypeOnSigninForTesting);
+  return SigninPrefs(pref_service).GetBookmarksExplicitBrowserSignin(gaia_id);
 #endif  // BUILDFLAG(IS_IOS) || BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_CHROMEOS)
 }
 
@@ -198,8 +184,6 @@ void SyncPrefs::RegisterProfilePrefs(PrefRegistrySimple* registry) {
       prefs::internal::kSyncInitialSyncFeatureSetupComplete, false);
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
-  registry->RegisterBooleanPref(kObsoleteAutofillWalletImportEnabledMigrated,
-                                false);
   registry->RegisterIntegerPref(prefs::internal::kSyncToSigninMigrationState,
                                 kNotMigrated);
   registry->RegisterBooleanPref(
@@ -208,6 +192,10 @@ void SyncPrefs::RegisterProfilePrefs(PrefRegistrySimple* registry) {
       prefs::internal::kMigrateExtensionsFromLocalToAccount, false);
   registry->RegisterBooleanPref(
       prefs::internal::kMigrateThemeFromLocalToAccount, false);
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
+  registry->RegisterBooleanPref(
+      prefs::internal::kReadingListPrefMigratedToAccount, false);
+#endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
   registry->RegisterBooleanPref(
       prefs::kCleanUpStatsTableFromAccountPasswordStore, false);
 
@@ -246,11 +234,12 @@ void SyncPrefs::RegisterProfilePrefs(PrefRegistrySimple* registry) {
   registry->RegisterTimePref(
       prefs::internal::kFirstTimeTriedToMigrateSyncFeaturePausedToSignin,
       base::Time());
+#if !BUILDFLAG(IS_CHROMEOS)
+  registry->RegisterBooleanPref(prefs::internal::kWipedAppsAndAppSettingsData,
+                                false);
+#endif  // !BUILDFLAG(IS_CHROMEOS)
 
   SyncFeatureStatusForMigrationsRecorder::RegisterProfilePrefs(registry);
-
-  // Obsolete prefs (registered for migrations only).
-  registry->RegisterBooleanPref(kObsoleteAutofillWalletImportEnabled, true);
 }
 
 void SyncPrefs::AddObserver(SyncPrefObserver* sync_pref_observer) {
@@ -987,42 +976,6 @@ void SyncPrefs::MaybeMigrateCustomPassphrasePref(const GaiaId& gaia_id) {
 }
 
 // static
-void SyncPrefs::MigrateAutofillWalletImportEnabledPref(
-    PrefService* pref_service) {
-  if (pref_service->GetBoolean(kObsoleteAutofillWalletImportEnabledMigrated)) {
-    // Migration already happened; nothing else needed.
-    return;
-  }
-
-  const base::Value* autofill_wallet_import_enabled =
-      pref_service->GetUserPrefValue(kObsoleteAutofillWalletImportEnabled);
-
-  if (autofill_wallet_import_enabled != nullptr) {
-    // If the previous pref was populated explicitly, carry over the value.
-    pref_service->SetBoolean(prefs::internal::kSyncPayments,
-                             autofill_wallet_import_enabled->GetBool());
-  } else if (pref_service->GetBoolean(
-                 prefs::internal::kSyncKeepEverythingSynced)) {
-    // The old pref isn't explicitly set (defaults to true) and sync-everything
-    // is on: in this case there is no need to explicitly set individual
-    // UserSelectableType to true.
-  } else {
-    // There is a special case for very old profiles, created before 2019 (i.e.
-    // before https://codereview.chromium.org/2068653003 and similar code
-    // changes). In older versions of the UI, it was possible to set
-    // kSyncKeepEverythingSynced to false, without populating
-    // kObsoleteAutofillWalletImportEnabled. The latter defaults to true, but
-    // that's not the case for the new replacement, i.e.
-    // prefs::internal::kSyncPayments, so it needs to be populated manually to
-    // migrate the old behavior.
-    pref_service->SetBoolean(prefs::internal::kSyncPayments, true);
-  }
-
-  pref_service->ClearPref(kObsoleteAutofillWalletImportEnabled);
-  pref_service->SetBoolean(kObsoleteAutofillWalletImportEnabledMigrated, true);
-}
-
-// static
 void SyncPrefs::MigrateGlobalDataTypePrefsToAccount(PrefService* pref_service,
                                                     const GaiaId& gaia_id) {
   CHECK(!gaia_id.empty());
@@ -1053,10 +1006,11 @@ void SyncPrefs::MigrateGlobalDataTypePrefsToAccount(PrefService* pref_service,
   // sign-in to be enabled by default. This is to specifically handle the case
   // when `syncer::kExplicitSigninForExtension` is true.
   bool extensions_enabled = everything_enabled;
-  // Explicitly set the bookmarks toggle, which otherwise requires an explicit
-  // sign-in to be enabled by default. This is to specifically handle the case
-  // when `syncer::kExplicitSigninForBookmarks` is true.
+  // Explicitly set the bookmarks and reading list toggles, which otherwise
+  // require an explicit sign-in to be enabled by default (see
+  // `SigninPrefs::GetBookmarksExplicitBrowserSignin()`).
   bool bookmarks_enabled = everything_enabled;
+  bool reading_list_enabled = everything_enabled;
 #endif  // !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
   if (everything_enabled) {
     // On desktop, Passwords is considered disabled by default and
@@ -1086,6 +1040,8 @@ void SyncPrefs::MigrateGlobalDataTypePrefsToAccount(PrefService* pref_service,
         GetPrefNameForType(UserSelectableType::kExtensions));
     bookmarks_enabled = pref_service->GetBoolean(
         GetPrefNameForType(UserSelectableType::kBookmarks));
+    reading_list_enabled = pref_service->GetBoolean(
+        GetPrefNameForType(UserSelectableType::kReadingList));
 #endif  // !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
   }
 #if BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_IOS)
@@ -1104,10 +1060,18 @@ void SyncPrefs::MigrateGlobalDataTypePrefsToAccount(PrefService* pref_service,
                         tabs_enabled);
   account_settings->Set(GetPrefNameForType(UserSelectableType::kBookmarks),
                         bookmarks_enabled);
+  account_settings->Set(GetPrefNameForType(UserSelectableType::kReadingList),
+                        reading_list_enabled);
   account_settings->Set(GetPrefNameForType(UserSelectableType::kSavedTabGroups),
                         saved_tab_groups_enabled);
   account_settings->Set(GetPrefNameForType(UserSelectableType::kExtensions),
                         extensions_enabled);
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
+  // Record that this migration now covers the Reading List toggle, to be able
+  // to identify users who were migrated before it did (crbug.com/568406887).
+  pref_service->SetBoolean(prefs::internal::kReadingListPrefMigratedToAccount,
+                           true);
+#endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
 #endif  // BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_IOS)
 
 #if BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_IOS)

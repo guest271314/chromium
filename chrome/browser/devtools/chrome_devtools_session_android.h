@@ -7,20 +7,21 @@
 
 #include <memory>
 
-#include "base/containers/flat_map.h"
-#include "base/containers/span.h"
-#include "base/memory/raw_ptr.h"
-#include "chrome/browser/devtools/protocol/protocol.h"
-#include "content/public/browser/devtools_manager_delegate.h"
+#include "chrome/browser/devtools/chrome_devtools_session_base.h"
+#include "printing/buildflags/buildflags.h"
 
 namespace content {
 class DevToolsAgentHostClientChannel;
 }  // namespace content
 
+class AutofillHandler;
 class BrowserHandlerAndroid;
+#if BUILDFLAG(ENABLE_PRINTING)
+class PageHandler;
+#endif  // BUILDFLAG(ENABLE_PRINTING)
 class TargetHandlerAndroid;
 
-class ChromeDevToolsSessionAndroid : public protocol::FrontendChannel {
+class ChromeDevToolsSessionAndroid : public ChromeDevToolsSessionBase {
  public:
   explicit ChromeDevToolsSessionAndroid(
       content::DevToolsAgentHostClientChannel* channel);
@@ -31,31 +32,15 @@ class ChromeDevToolsSessionAndroid : public protocol::FrontendChannel {
 
   ~ChromeDevToolsSessionAndroid() override;
 
-  void HandleCommand(
-      base::span<const uint8_t> message,
-      content::DevToolsManagerDelegate::NotHandledCallback callback);
-
   TargetHandlerAndroid* target_handler() { return target_handler_.get(); }
 
  private:
-  // protocol::FrontendChannel:
-  void SendProtocolResponse(
-      int call_id,
-      std::unique_ptr<protocol::Serializable> message) override;
-  void SendProtocolNotification(
-      std::unique_ptr<protocol::Serializable> message) override;
-  void FlushProtocolNotifications() override;
-  void FallThrough(int call_id,
-                   crdtp::span<uint8_t> method,
-                   crdtp::span<uint8_t> message) override;
-
-  base::flat_map<int, content::DevToolsManagerDelegate::NotHandledCallback>
-      pending_commands_;
-
-  protocol::UberDispatcher dispatcher_;
+  std::unique_ptr<AutofillHandler> autofill_handler_;
   std::unique_ptr<BrowserHandlerAndroid> browser_handler_;
+#if BUILDFLAG(ENABLE_PRINTING)
+  std::unique_ptr<PageHandler> page_handler_;
+#endif  // BUILDFLAG(ENABLE_PRINTING)
   std::unique_ptr<TargetHandlerAndroid> target_handler_;
-  raw_ptr<content::DevToolsAgentHostClientChannel> client_channel_;
 };
 
 #endif  // CHROME_BROWSER_DEVTOOLS_CHROME_DEVTOOLS_SESSION_ANDROID_H_

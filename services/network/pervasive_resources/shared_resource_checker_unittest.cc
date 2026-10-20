@@ -14,6 +14,7 @@
 #include "net/base/isolation_info.h"
 #include "net/base/load_flags.h"
 #include "services/network/cookie_settings.h"
+#include "services/network/pervasive_resources/shared_resource_checker_patterns.h"
 #include "services/network/public/cpp/features.h"
 #include "services/network/public/cpp/resource_request.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -69,22 +70,28 @@ static ResourceRequest CreateResourceRequest(const char* url,
 
 // Zstandard-compressed list of newline-delimited URL patterns:
 // https://www.example.test/exact
-// https://www.example.test/wildcard/end/*
-// https://www.example.test/wildcard/*/middle
+// https://www.example.test/wildcard/end/{:v}
+// https://www.example.test/wildcard/prefix-{:v}.js
+// https://www.example.test/wildcard/{:v}/middle
+// https://www.example.test/wildcard/{:v1}/{:v2}/two
 // https://www2.example.test/exact
 static constexpr uint8_t kTestUrlPatternsZstd[] = {
-    0x28, 0xb5, 0x2f, 0xfd, 0x24, 0x91, 0xfd, 0x01, 0x00, 0x62, 0x83,
-    0x0b, 0x10, 0xb0, 0xeb, 0xc0, 0x6a, 0xcf, 0x90, 0x83, 0xa5, 0x91,
-    0xf1, 0x43, 0x89, 0xcd, 0xae, 0x12, 0x03, 0xe3, 0xc9, 0x46, 0xaa,
-    0x21, 0xd4, 0xeb, 0x75, 0x2b, 0xc6, 0x09, 0x25, 0x40, 0x53, 0xde,
-    0x8b, 0xee, 0x28, 0x9e, 0x98, 0x2a, 0xef, 0x22, 0x33, 0x5b, 0xe2,
-    0x18, 0xe2, 0x09, 0x04, 0x00, 0x76, 0x48, 0x84, 0x53, 0x1c, 0x67,
-    0x29, 0x52, 0x2d, 0x16, 0xe5, 0x04, 0xd5, 0xee, 0x35, 0x49};
+    0x28, 0xb5, 0x2f, 0xfd, 0x24, 0xfa, 0xdd, 0x02, 0x00, 0xb2, 0x84, 0x0f,
+    0x11, 0xa0, 0x6f, 0xb8, 0xed, 0xcc, 0xf4, 0xfc, 0xce, 0x6f, 0x56, 0x35,
+    0x6c, 0x69, 0xa3, 0x9a, 0x1a, 0x1e, 0x82, 0x3c, 0xfa, 0x7c, 0xc9, 0x1d,
+    0xce, 0xba, 0x55, 0x63, 0xb9, 0x44, 0xa8, 0x0a, 0x79, 0x84, 0x77, 0x16,
+    0xcb, 0xed, 0x9c, 0x3b, 0x9a, 0xd3, 0x4c, 0x51, 0xf0, 0xc7, 0x54, 0xe7,
+    0x97, 0xfe, 0xc2, 0x19, 0x6c, 0xa6, 0xba, 0xa0, 0x94, 0x32, 0x17, 0x09,
+    0xff, 0x53, 0x09, 0x00, 0x5f, 0xe3, 0xe1, 0xaa, 0xb8, 0xa4, 0x58, 0xf8,
+    0xfb, 0xd6, 0x54, 0x00, 0x50, 0x45, 0x23, 0xaa, 0xd5, 0xe4, 0x14, 0xb9,
+    0x16, 0x8b, 0x72, 0x02, 0x17, 0xa8, 0x37, 0x7f};
 
 static const char* kPatternMatches[] = {
     "https://www.example.test/exact",
     "https://www.example.test/wildcard/end/match",
+    "https://www.example.test/wildcard/prefix-123.js",
     "https://www.example.test/wildcard/match/middle",
+    "https://www.example.test/wildcard/match/both/two",
     "https://www2.example.test/exact"};
 
 static const char* kPatternMatchFails[] = {
@@ -92,7 +99,12 @@ static const char* kPatternMatchFails[] = {
     "https://www.example.test/wildcard/end/query?hello=world",
     "https://www.example.test/exact2",
     "https://www.example.test/wildcard/end",
+    "https://www.example.test/wildcard/end/match/not",
+    "https://www.example.test/wildcard/prefix-123/extra.js",
+    "https://www.example.test/wildcard/prefix-.js",
     "https://www.example.test/wildcard/not/middl",
+    "https://www.example.test/wildcard/match/not/middle",
+    "https://www.example.test/wildcard/match/not/three/two",
     "https://www2.example.test/exac",
     "https://www3.example.test/exact",
     "http://www.example.test/exact",
@@ -131,6 +143,15 @@ class SharedResourceCheckerTest : public testing::Test,
     shared_resource_checker_->LoadPervasivePatterns(
         kTestUrlPatternsZstd, sizeof(kTestUrlPatternsZstd), expiration);
   }
+  bool LoadDefaultPervasivePatterns() const {
+    base::Time expires = base::Time::Now() + base::Days(1);
+    base::Time::Exploded expiration;
+    expires.UTCExplode(&expiration);
+    shared_resource_checker_->LoadPervasivePatterns(
+        internal::kPervasivePatternsZstd,
+        sizeof(internal::kPervasivePatternsZstd), expiration);
+    return !shared_resource_checker_->patterns_.empty();
+  }
 
  private:
   MockCookieSettings cookie_settings_;
@@ -164,10 +185,9 @@ constexpr mojom::RequestDestination kAllDestinations[] = {
     mojom::RequestDestination::kXslt,
     mojom::RequestDestination::kFencedframe,
     mojom::RequestDestination::kWebIdentity,
-    mojom::RequestDestination::kDictionary,
+    mojom::RequestDestination::kCompressionDictionary,
     mojom::RequestDestination::kSpeculationRules,
     mojom::RequestDestination::kJson,
-    mojom::RequestDestination::kSharedStorageWorklet,
 };
 
 // Make sure that all request destinations except for Script, Style or
@@ -180,7 +200,8 @@ TEST_P(SharedResourceCheckerTest, DestinationIsAllowed) {
     if (enabled() &&
         (request.destination == mojom::RequestDestination::kScript ||
          request.destination == mojom::RequestDestination::kStyle ||
-         request.destination == mojom::RequestDestination::kDictionary)) {
+         request.destination ==
+             mojom::RequestDestination::kCompressionDictionary)) {
       EXPECT_TRUE(shared_resource_checker()->IsSharedResource(request, origin,
                                                               std::nullopt));
     } else {
@@ -345,6 +366,10 @@ TEST_P(SharedResourceCheckerTest, UserGestureExpired) {
   task_environment.AdvanceClock(base::Minutes(2));
   EXPECT_FALSE(shared_resource_checker()->IsSharedResource(request2, origin,
                                                            std::nullopt));
+}
+
+TEST_P(SharedResourceCheckerTest, DefaultPatternsAreValid) {
+  EXPECT_TRUE(LoadDefaultPervasivePatterns());
 }
 
 INSTANTIATE_TEST_SUITE_P(/*no prefix*/,

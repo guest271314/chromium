@@ -26,11 +26,28 @@ class MockContextualTasksPanelController
     : public ContextualTasksPanelController {
  public:
   MockContextualTasksPanelController();
+  explicit MockContextualTasksPanelController(
+      BrowserWindowInterface* browser_window);
   ~MockContextualTasksPanelController() override;
 
-  MOCK_METHOD(void, Show, (bool, omnibox::ChromeAimEntryPoint), (override));
+  MOCK_METHOD(void,
+              Show,
+              (bool,
+               omnibox::ChromeAimEntryPoint,
+               bool,
+               std::optional<base::TimeTicks>),
+              (override));
   MOCK_METHOD(void, Close, (), (override));
+  MOCK_METHOD(void, OpenInZeroState, (), (override));
+  MOCK_METHOD(void,
+              ShareTabsWithActiveOrNewThread,
+              (const std::vector<tabs::TabHandle>&),
+              (override));
   MOCK_METHOD(bool, IsPanelOpenForContextualTask, (), (const, override));
+  MOCK_METHOD(ContextualTasksPanelController::EntrySource,
+              GetActiveEntrySource,
+              (),
+              (const, override));
   MOCK_METHOD(std::optional<tabs::TabHandle>,
               GetAutoSuggestedTabHandle,
               (),
@@ -40,14 +57,23 @@ class MockContextualTasksPanelController
               (content::WebContents*, base::Uuid),
               (override));
   MOCK_METHOD(void, OnAiInteraction, (), (override));
+  MOCK_METHOD(void,
+              SetPendingTaskForTab,
+              (tabs::TabInterface*, const base::Uuid&),
+              (override));
   MOCK_METHOD(content::WebContents*,
               GetActiveWebContents,
+              (),
+              (const override));
+  MOCK_METHOD(content::WebContents*,
+              GetToolbarWebContents,
               (),
               (const override));
   MOCK_METHOD(std::vector<content::WebContents*>,
               GetPanelWebContentsList,
               (),
               (const, override));
+  MOCK_METHOD(void, CleanUpUnusedWebContents, (), (override));
   MOCK_METHOD(std::unique_ptr<content::WebContents>,
               DetachWebContentsForTask,
               (const base::Uuid&),
@@ -70,8 +96,21 @@ class MockContextualTasksPanelController
   MOCK_METHOD(void, MoveTaskUiToNewTab, (), (override));
   MOCK_METHOD(void, NotifyExpandToFullTabStateChanged, (), (override));
   MOCK_METHOD(bool, CanExpandToFullTab, (), (const, override));
+  MOCK_METHOD(void,
+              ShowPageInfoBubble,
+              (bool is_pointer_interaction),
+              (override));
+  MOCK_METHOD(void, OnLogoPointerDown, (), (override));
+  MOCK_METHOD(void,
+              RecordTimeToHandshakeComplete,
+              (content::WebContents*),
+              (override));
   MOCK_METHOD(void, AddObserver, (Observer*), (override));
   MOCK_METHOD(void, RemoveObserver, (Observer*), (override));
+
+ private:
+  std::optional<ui::ScopedUnownedUserData<ContextualTasksPanelController>>
+      scoped_unowned_user_data_;
 };
 
 }  // namespace contextual_tasks

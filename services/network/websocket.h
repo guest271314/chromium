@@ -24,12 +24,14 @@
 #include "mojo/public/cpp/bindings/receiver.h"
 #include "mojo/public/cpp/bindings/remote.h"
 #include "net/base/network_delegate.h"
+#include "net/base/network_handle.h"
 #include "net/log/net_log.h"
 #include "net/storage_access_api/status.h"
 #include "net/traffic_annotation/network_traffic_annotation.h"
 #include "net/websockets/websocket_event_interface.h"
 #include "services/network/network_service.h"
 #include "services/network/public/mojom/client_security_state.mojom.h"
+#include "services/network/public/mojom/ip_address_space.mojom.h"
 #include "services/network/public/mojom/network_context.mojom.h"
 #include "services/network/public/mojom/websocket.mojom.h"
 #include "services/network/websocket_interceptor.h"
@@ -79,7 +81,9 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) WebSocket : public mojom::WebSocket {
       std::optional<WebSocketThrottler::PendingConnection>
           pending_connection_tracker,
       base::TimeDelta delay,
-      const std::optional<base::UnguessableToken>& throttling_profile_id);
+      const std::optional<base::UnguessableToken>& throttling_profile_id,
+      mojom::IPAddressSpace required_ip_address_space,
+      net::handles::NetworkHandle target_network);
 
   WebSocket(const WebSocket&) = delete;
   WebSocket& operator=(const WebSocket&) = delete;
@@ -174,7 +178,8 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) WebSocket : public mojom::WebSocket {
   void OnBeforeSendHeadersComplete(
       net::NetworkDelegate::OnBeforeStartTransactionCallback callback,
       int result,
-      const std::optional<net::HttpRequestHeaders>& headers);
+      const std::optional<net::HttpRequestHeaders>& headers,
+      std::optional<base::DictValue> extended_net_log_events);
   void OnHeadersReceivedComplete(
       net::CompletionOnceCallback callback,
       scoped_refptr<net::HttpResponseHeaders>* out_headers,
@@ -229,6 +234,8 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) WebSocket : public mojom::WebSocket {
   // The channel we use to send events to the network.
   std::unique_ptr<net::WebSocketChannel> channel_;
 
+  const GURL url_;
+
   // Delay used for per-renderer WebSocket throttling.
   const base::TimeDelta delay_;
 
@@ -241,9 +248,17 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) WebSocket : public mojom::WebSocket {
 
   const network::mojom::ClientSecurityStatePtr client_security_state_;
 
+  // The required IP address space specified in the WebSocket constructor
+  // (targetAddressSpace option). LocalNetworkAccessChecker enforces that the
+  // connection is actually made to the same IP address space.
+  const mojom::IPAddressSpace required_ip_address_space_;
+
   // For 3rd-party cookie permission checking. Also used by
   // RevokeIfNonceMatches() for handling network revocation.
   const net::IsolationInfo isolation_info_;
+
+  const net::handles::NetworkHandle target_network_ =
+      net::handles::kInvalidNetworkHandle;
 
   bool handshake_succeeded_ = false;
   const HasRawHeadersAccess has_raw_headers_access_;

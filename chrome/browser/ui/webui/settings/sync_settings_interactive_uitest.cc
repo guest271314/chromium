@@ -6,6 +6,8 @@
 #include <string_view>
 
 #include "base/feature_list.h"
+#include "base/functional/callback_helpers.h"
+#include "base/metrics/statistics_recorder.h"
 #include "base/no_destructor.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/test_future.h"
@@ -18,6 +20,7 @@
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
 #include "chrome/browser/ui/chrome_pages.h"
 #include "chrome/browser/ui/signin/signin_view_controller.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/webui/signin/signout_confirmation/signout_confirmation_ui.h"
 #include "chrome/browser/ui/webui/test_support/webui_interactive_test_mixin.h"
 #include "chrome/common/webui_url_constants.h"
@@ -240,8 +243,9 @@ IN_PROC_BROWSER_TEST_F(SyncSettingsInteractiveTest,
       StopObservingState(kTabCountState),
       InstrumentTab(kDiceSignInTabId, 1, browser()), Do([&]() {
         // Simulate adding the account from the web.
-        CoreAccountInfo account_info =
-            identity_test_env()->MakeAccountAvailable(kTestEmail);
+        CoreAccountInfo account_info = identity_test_env()
+                                           ->MakeAccountAvailable(kTestEmail)
+                                           .GetCoreAccountInfo();
         content::WebContents* signin_tab =
             signin_ui_util::GetSignInTabWithAccessPoint(
                 browser(), signin_metrics::AccessPoint::kSettings);
@@ -318,4 +322,40 @@ IN_PROC_BROWSER_TEST_F(
       WaitForStateChange(
           kHistorySyncOptinDialogContentsId,
           UiElementHasAppeared(GetHistoryOptinRejectButtonQuery())));
+}
+
+IN_PROC_BROWSER_TEST_F(SyncSettingsInteractiveTest,
+                       SignInOfferedLoggedOnMigration) {
+  base::HistogramTester histogram_tester;
+  DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kTabId);
+  const DeepQuery kSignInButton = {"settings-ui",
+                                   "settings-main",
+                                   "settings-people-page-index",
+                                   "settings-people-page",
+                                   "settings-sync-account-control",
+                                   "cr-button#signIn"};
+  const GURL kAccountSettingsUrl = GURL(chrome::kChromeUIAccountSettingsURL);
+
+  base::test::TestFuture<void> histogram_future;
+  base::StatisticsRecorder::ScopedHistogramSampleObserver observer(
+      "Signin.SignIn.Offered", base::IgnoreArgs<std::string_view, uint64_t,
+                                                base::HistogramBase::Sample32>(
+                                   histogram_future.GetRepeatingCallback()));
+
+  RunTestSequence(
+      InstrumentTab(kTabId, 0, browser()),
+      NavigateWebContents(kTabId, kAccountSettingsUrl),
+      WaitForStateChange(kTabId, PageWithMatchingTitle("Settings")),
+      WaitForStateChange(kTabId, UiElementHasAppeared(kSignInButton)));
+
+  EXPECT_TRUE(histogram_future.Wait());
+
+  histogram_tester.ExpectUniqueSample(
+      "Signin.SignIn.Offered", signin_metrics::AccessPoint::kSettings, 1);
+  histogram_tester.ExpectUniqueSample(
+      "Signin.SignIn.Offered.NewAccountNoExistingAccount",
+      signin_metrics::AccessPoint::kSettings, 1);
+  histogram_tester.ExpectTotalCount("Signin.SignIn.Offered.WithDefault", 0);
+  histogram_tester.ExpectTotalCount(
+      "Signin.SignIn.Offered.NewAccountExistingAccount", 0);
 }

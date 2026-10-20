@@ -4,6 +4,8 @@
 
 #include "components/sync_device_info/fake_local_device_info_provider.h"
 
+#include <optional>
+
 #include "base/notimplemented.h"
 #include "base/time/time.h"
 #include "components/sync/base/data_type.h"
@@ -23,11 +25,10 @@ FakeLocalDeviceInfoProvider::FakeLocalDeviceInfoProvider()
                    "device_id",
                    "fake_manufacturer",
                    "fake_model",
+                   /*server_determined_model_name=*/std::nullopt,
                    "fake_full_hardware_class",
                    /*last_updated_timestamp=*/base::Time::Now(),
                    DeviceInfoUtil::GetPulseInterval(),
-                   /*send_tab_to_self_receiving_enabled=*/
-                   false,
                    /*send_tab_to_self_receiving_type=*/
                    DeviceInfo::SendTabReceivingType::kChromeOrUnspecified,
                    /*sharing_info=*/std::nullopt,
@@ -40,7 +41,12 @@ FakeLocalDeviceInfoProvider::FakeLocalDeviceInfoProvider()
                    /*desktop_to_ios_promo_receiving_types=*/
                    MobilePromoOnDesktopPromoTypeSet{},
                    /*glic_experimental_triggering_state=*/
-                   DeviceInfo::GlicExperimentalTriggeringState::kUnavailable) {}
+                   DeviceInfo::GlicExperimentalTriggeringState::kUnavailable,
+                   /*glic_experimental_triggering_version=*/
+                   std::nullopt,
+                   /*glic_experimental_triggering_capabilities=*/{},
+                   /*android_os_build_fingerprint_prefix=*/std::nullopt,
+                   /*personal_context_info=*/std::nullopt) {}
 
 FakeLocalDeviceInfoProvider::~FakeLocalDeviceInfoProvider() = default;
 
@@ -65,6 +71,7 @@ void FakeLocalDeviceInfoProvider::Initialize(
     const std::string& manufacturer_name,
     const std::string& model_name,
     const std::string& full_hardware_class,
+    std::optional<std::string> android_os_build_fingerprint_prefix,
     const DeviceInfo* device_info_restored_from_store) {}
 
 void FakeLocalDeviceInfoProvider::Clear() {}

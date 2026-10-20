@@ -15,7 +15,6 @@
 #include "net/first_party_sets/first_party_set_entry.h"
 #include "net/first_party_sets/first_party_sets_context_config.h"
 #include "net/first_party_sets/global_first_party_sets.h"
-#include "net/first_party_sets/local_set_declaration.h"
 #include "testing/gmock/include/gmock/gmock-matchers.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -46,13 +45,11 @@ void SetComponentSets(FirstPartySetsLoader& loader,
 
 base::flat_map<net::SchemefulSite, net::FirstPartySetEntry> FindEntries(
     const net::GlobalFirstPartySets& sets,
-    const base::flat_set<net::SchemefulSite>& sites,
-    const net::FirstPartySetsContextConfig& config) {
+    const base::flat_set<net::SchemefulSite>& sites) {
   std::vector<std::pair<net::SchemefulSite, net::FirstPartySetEntry>> got;
   got.reserve(sites.size());
   for (const auto& site : sites) {
-    std::optional<net::FirstPartySetEntry> maybe_entry =
-        sets.FindEntry(site, config);
+    std::optional<net::FirstPartySetEntry> maybe_entry = sets.FindEntry(site);
     if (maybe_entry) {
       got.emplace_back(site, std::move(maybe_entry).value());
     }
@@ -77,17 +74,14 @@ class FirstPartySetsLoaderTest : public ::testing::Test {
 };
 
 TEST_F(FirstPartySetsLoaderTest, IgnoresInvalidFile) {
-  loader().SetManuallySpecifiedSet(net::LocalSetDeclaration());
   SetComponentSets(loader(), base::Version("1.2.3"),
                    "certainly not valid JSON");
   EXPECT_EQ(WaitAndGetResult().FindEntry(
-                net::SchemefulSite(GURL("https://example.test")),
-                net::FirstPartySetsContextConfig()),
+                net::SchemefulSite(GURL("https://example.test"))),
             std::nullopt);
 }
 
 TEST_F(FirstPartySetsLoaderTest, IgnoresInvalidVersion) {
-  loader().SetManuallySpecifiedSet(net::LocalSetDeclaration());
   SetComponentSets(
       loader(), base::Version(),
       "{\"primary\": \"https://example.test\",\"associatedSites\": "
@@ -95,8 +89,7 @@ TEST_F(FirstPartySetsLoaderTest, IgnoresInvalidVersion) {
       "{\"primary\": \"https://foo.test\",\"associatedSites\": "
       "[\"https://associatedsite2.test\"]}");
   EXPECT_EQ(WaitAndGetResult().FindEntry(
-                net::SchemefulSite(GURL("https://example.test")),
-                net::FirstPartySetsContextConfig()),
+                net::SchemefulSite(GURL("https://example.test"))),
             std::nullopt);
 }
 
@@ -112,12 +105,9 @@ TEST_F(FirstPartySetsLoaderTest, AcceptsMultipleSets) {
       "[\"https://associatedsite1.test\"]}\n"
       "{\"primary\": \"https://foo.test\",\"associatedSites\": "
       "[\"https://associatedsite2.test\"]}");
-  // Set required input to make sure callback gets called.
-  loader().SetManuallySpecifiedSet(net::LocalSetDeclaration());
 
   EXPECT_THAT(
-      FindEntries(WaitAndGetResult(), {example, associated1, foo, associated2},
-                  net::FirstPartySetsContextConfig()),
+      FindEntries(WaitAndGetResult(), {example, associated1, foo, associated2}),
       UnorderedElementsAre(
           Pair(example,
                net::FirstPartySetEntry(example, net::SiteType::kPrimary)),
@@ -146,83 +136,14 @@ TEST_F(FirstPartySetsLoaderTest, SetComponentSets_Idempotent) {
                    "\n"
                    R"({"primary": "https://foo2.test",)"
                    R"("associatedSites": ["https://associatedsite2.test"]})");
-  // Set required input to make sure callback gets called.
-  loader().SetManuallySpecifiedSet(net::LocalSetDeclaration());
 
   // The second call to SetComponentSets should have had no effect.
   EXPECT_THAT(
-      FindEntries(WaitAndGetResult(), {example, foo, example2, foo2},
-                  net::FirstPartySetsContextConfig()),
+      FindEntries(WaitAndGetResult(), {example, foo, example2, foo2}),
       UnorderedElementsAre(
           Pair(example,
                net::FirstPartySetEntry(example, net::SiteType::kPrimary)),
           Pair(foo, net::FirstPartySetEntry(foo, net::SiteType::kPrimary))));
-}
-
-TEST_F(FirstPartySetsLoaderTest, SetsManuallySpecified) {
-  const net::SchemefulSite bar(GURL("https://bar.test"));
-  const net::SchemefulSite associated1(GURL("https://associatedsite1.test"));
-  const net::SchemefulSite associated2(GURL("https://associatedsite2.test"));
-
-  SetComponentSets(loader(), base::Version("1.2.3"),
-                   R"({"primary": "https://example.test", "associatedSites": )"
-                   R"(["https://associatedsite1.test"]})");
-  loader().SetManuallySpecifiedSet(
-      net::LocalSetDeclaration::Create(
-          /*set_entries=*/base::flat_map<net::SchemefulSite,
-                                         net::FirstPartySetEntry>({
-              {bar, net::FirstPartySetEntry(bar, net::SiteType::kPrimary)},
-              {associated2,
-               net::FirstPartySetEntry(bar, net::SiteType::kAssociated)},
-          }),
-          /*aliases=*/{})
-          .value());
-
-  EXPECT_THAT(
-      WaitAndGetResult().FindEntry(associated2,
-                                   net::FirstPartySetsContextConfig()),
-      Optional(net::FirstPartySetEntry(bar, net::SiteType::kAssociated)));
-}
-
-TEST_F(FirstPartySetsLoaderTest, SetsManuallySpecified_Idempotent) {
-  const net::SchemefulSite bar(GURL("https://bar.test"));
-  const net::SchemefulSite associated1(GURL("https://associatedsite1.test"));
-  const net::SchemefulSite associated2(GURL("https://associatedsite2.test"));
-
-  loader().SetManuallySpecifiedSet(
-      net::LocalSetDeclaration::Create(
-          /*set_entries=*/base::flat_map<net::SchemefulSite,
-                                         net::FirstPartySetEntry>({
-              {bar, net::FirstPartySetEntry(bar, net::SiteType::kPrimary)},
-              {associated1,
-               net::FirstPartySetEntry(bar, net::SiteType::kAssociated)},
-          }),
-          /*aliases=*/{})
-          .value());
-
-  // All but the first SetManuallySpecifiedSet call should be ignored.
-  loader().SetManuallySpecifiedSet(
-      net::LocalSetDeclaration::Create(
-          /*set_entries=*/base::flat_map<net::SchemefulSite,
-                                         net::FirstPartySetEntry>({
-              {bar, net::FirstPartySetEntry(bar, net::SiteType::kPrimary)},
-              {associated2,
-               net::FirstPartySetEntry(bar, net::SiteType::kAssociated)},
-          }),
-          /*aliases=*/{})
-          .value());
-
-  SetComponentSets(loader(), base::Version(), "");
-
-  EXPECT_THAT(FindEntries(WaitAndGetResult(),
-                          {
-                              associated1,
-                              associated2,
-                          },
-                          net::FirstPartySetsContextConfig()),
-              UnorderedElementsAre(Pair(
-                  associated1,
-                  net::FirstPartySetEntry(bar, net::SiteType::kAssociated))));
 }
 
 }  // namespace content

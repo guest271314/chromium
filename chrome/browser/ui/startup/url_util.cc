@@ -19,7 +19,30 @@
 
 namespace startup {
 
-bool ValidateLaunchUrl(const GURL& url) {
+namespace {
+
+// Returns true if `url` is invalid or uses a nested scheme
+// (filesystem: or blob:) that could be used to launder privileged origins.
+bool IsNestedOrInvalid(const GURL& url) {
+  return !url.is_valid() || url.SchemeIsFileSystem() || url.SchemeIsBlob();
+}
+
+}  // namespace
+
+bool ValidateLaunchUrlWebSafe(const GURL& url) {
+  if (IsNestedOrInvalid(url)) {
+    return false;
+  }
+
+  // Deliberately does not use ChildProcessSecurityPolicy::IsWebSafeScheme().
+  // That set is scoped to "safe for a renderer to request" and also admits
+  // data:, ws:, wss: and any scheme registered via
+  // navigator.registerProtocolHandler(), none of which are meaningful or safe
+  // as a launch target. See crbug.com/446672134.
+  return url.SchemeIsHTTPOrHTTPS() || url.spec() == url::kAboutBlankURL;
+}
+
+bool ValidateLaunchUrlWebUnsafe(const GURL& url) {
   if (!url.is_valid()) {
     return false;
   }

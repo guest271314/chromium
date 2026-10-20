@@ -14,17 +14,18 @@ import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
+import org.chromium.base.ContextUtils;
 import org.chromium.base.test.transit.TransitAsserts;
 import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.CommandLineFlags;
-import org.chromium.base.test.util.DisableIf;
-import org.chromium.base.test.util.DisableLeakChecks;
+import org.chromium.base.test.util.Features.DisableFeatures;
+import org.chromium.base.test.util.Restriction;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.incognito.IncognitoUtils;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
+import org.chromium.chrome.test.transit.AutoResetCtaTransitTestRule;
 import org.chromium.chrome.test.transit.ChromeTransitTestRules;
-import org.chromium.chrome.test.transit.FreshCtaTransitTestRule;
 import org.chromium.chrome.test.transit.ntp.IncognitoNewTabPageStation;
 import org.chromium.chrome.test.transit.ntp.RegularNewTabPageStation;
 import org.chromium.chrome.test.transit.omnibox.FakeOmniboxSuggestions;
@@ -33,16 +34,18 @@ import org.chromium.chrome.test.transit.omnibox.OmniboxFacility;
 import org.chromium.chrome.test.transit.page.WebPageStation;
 import org.chromium.components.omnibox.OmniboxCapabilities;
 import org.chromium.ui.base.DeviceFormFactor;
+import org.chromium.ui.base.DeviceInput;
 
 /** Public Transit tests for Omnibox. */
 @RunWith(ChromeJUnit4ClassRunner.class)
 @CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
 @Batch(Batch.PER_CLASS)
-@DisableLeakChecks("crbug.com/512493155 (OmniboxPTTest)")
+// TODO(b/555414915): Update Android tests with WebUI NTP enabled on AL.
+@DisableFeatures(ChromeFeatureList.USE_WEB_UI_NTP_ANDROID)
 public class OmniboxPTTest {
     @Rule
-    public FreshCtaTransitTestRule mCtaTestRule =
-            ChromeTransitTestRules.freshChromeTabbedActivityRule();
+    public AutoResetCtaTransitTestRule mCtaTestRule =
+            ChromeTransitTestRules.fastAutoResetCtaActivityRule();
 
     private static final FakeOmniboxSuggestions sFakeSuggestions = new FakeOmniboxSuggestions();
     private WebPageStation mBlankPage;
@@ -60,15 +63,15 @@ public class OmniboxPTTest {
     @Before
     public void setUp() {
         OmniboxCapabilities.setHasDesktopExperienceForTesting(false);
+        DeviceInput.setSupportsAlphabeticKeyboardForTesting(false);
         mBlankPage = mCtaTestRule.startOnBlankPage();
     }
 
     @LargeTest
     @Test
-    @DisableIf.Device(DeviceFormFactor.DESKTOP_FREEFORM) // crbug.com/511288411
+    @Restriction(DeviceFormFactor.PHONE_OR_TABLET)
     public void testOpenTypeDelete_fromWebPage() {
-        ChromeFeatureList.sAndroidBottomToolbarV2ForceBottomForFocusedOmnibox.setForTesting(false);
-        var omniboxAndKeyboard = mBlankPage.openOmnibox(sFakeSuggestions);
+        OmniboxFacility omniboxAndKeyboard = mBlankPage.openOmnibox(sFakeSuggestions);
 
         doOpenTypeDelete(omniboxAndKeyboard);
 
@@ -77,46 +80,71 @@ public class OmniboxPTTest {
 
     @LargeTest
     @Test
-    @DisableIf.Device(DeviceFormFactor.DESKTOP_FREEFORM) // crbug.com/511288411
-    public void testOpenTypeDelete_fromNtp() {
-        ChromeFeatureList.sAndroidBottomToolbarV2ForceBottomForFocusedOmnibox.setForTesting(false);
-        RegularNewTabPageStation ntp = mBlankPage.openNewTabFast();
-        var omnibox = ntp.openOmnibox(sFakeSuggestions);
+    @Restriction(DeviceFormFactor.DESKTOP)
+    public void testOpenTypeDelete_fromWebPage_desktop() {
+        OmniboxCapabilities.setHasDesktopExperienceForTesting(true);
+        DeviceInput.setSupportsAlphabeticKeyboardForTesting(true);
+        OmniboxFacility omniboxAndKeyboard = mBlankPage.openOmnibox(sFakeSuggestions);
 
-        doOpenTypeDelete(omnibox);
+        doOpenTypeDelete(omniboxAndKeyboard);
 
-        mBlankPage =
-                ntp.openTabSwitcherActionMenu()
-                        .selectCloseTabAndDisplayAnotherTab(WebPageStation.newBuilder());
         TransitAsserts.assertFinalDestination(mBlankPage);
     }
 
     @LargeTest
     @Test
-    @DisableIf.Device(DeviceFormFactor.DESKTOP)
+    @Restriction(DeviceFormFactor.PHONE_OR_TABLET)
+    public void testOpenTypeDelete_fromNtp() {
+        RegularNewTabPageStation ntp = mBlankPage.openNewTabFast();
+        OmniboxFacility omnibox = ntp.openOmnibox(sFakeSuggestions);
+
+        doOpenTypeDelete(omnibox);
+
+        TransitAsserts.assertFinalDestination(ntp);
+    }
+
+    @LargeTest
+    @Test
+    @Restriction(DeviceFormFactor.DESKTOP)
+    public void testOpenTypeDelete_fromNtp_desktop() {
+        OmniboxCapabilities.setHasDesktopExperienceForTesting(true);
+        DeviceInput.setSupportsAlphabeticKeyboardForTesting(true);
+        RegularNewTabPageStation ntp = mBlankPage.openNewTabFast();
+        OmniboxFacility omnibox = ntp.openOmnibox(sFakeSuggestions);
+
+        doOpenTypeDelete(omnibox);
+
+        TransitAsserts.assertFinalDestination(ntp);
+    }
+
+    @LargeTest
+    @Test
+    @Restriction(DeviceFormFactor.PHONE_OR_TABLET)
     public void testOpenTypeDelete_fromIncognitoNtp() {
-        // Desktop opens an incognito profile as a separate window, which confuses Espresso and
-        // leads to test failures.
         IncognitoNewTabPageStation incognitoNtp = mBlankPage.openNewIncognitoTabOrWindowFast();
-        var omnibox = incognitoNtp.openOmnibox(sFakeSuggestions);
+        OmniboxFacility omnibox = incognitoNtp.openOmnibox(sFakeSuggestions);
 
         doOpenTypeDelete(omnibox);
 
         if (IncognitoUtils.shouldOpenIncognitoAsWindow()) {
-            incognitoNtp.openTabSwitcherActionMenu().selectCloseTabTo().reachLastStop();
+            TransitAsserts.assertFinalDestinations(mBlankPage, incognitoNtp);
         } else {
-            mBlankPage =
-                    incognitoNtp
-                            .openTabSwitcherActionMenu()
-                            .selectCloseTabAndDisplayRegularTab(WebPageStation.newBuilder());
+            TransitAsserts.assertFinalDestination(incognitoNtp);
         }
-        TransitAsserts.assertFinalDestination(mBlankPage);
     }
 
     private void doOpenTypeDelete(OmniboxFacility omnibox) {
         OmniboxEnteredTextFacility enteredText = omnibox.typeText("chr");
         enteredText = enteredText.simulateAutocomplete("omium");
-        enteredText.clickDelete();
+        boolean hasDesktopExperience =
+                OmniboxCapabilities.hasDesktopExperience(ContextUtils.getApplicationContext());
+
+        // Desktop does not show a delete button.
+        if (!hasDesktopExperience) {
+            enteredText.clickDelete();
+        } else {
+            enteredText.clearText();
+        }
 
         Espresso.closeSoftKeyboard();
         omnibox.pressBackTo().exitFacility();

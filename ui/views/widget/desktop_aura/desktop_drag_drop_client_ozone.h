@@ -8,6 +8,7 @@
 #include <memory>
 
 #include "base/functional/callback.h"
+#include "base/functional/callback_helpers.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/scoped_observation.h"
@@ -49,6 +50,17 @@ class VIEWS_EXPORT DesktopDragDropClientOzone
       delete;
 
   ~DesktopDragDropClientOzone() override;
+
+  // Called by window-move entry points (tab-drag move loops and caption
+  // click-holds) so that a renderer-initiated data drag cannot start while the
+  // user is moving a window. Suppression lasts until the returned runner is
+  // destroyed. Scopes may be nested and destroyed in any order. See
+  // StartDragAndDrop.
+  [[nodiscard]] static base::ScopedClosureRunner ScopedSuppressForWindowMove();
+
+  // Returns true if a drag is in progress or data drags are currently
+  // suppressed by a ScopedSuppressForWindowMove() scope.
+  static bool IsDragInProgressOrSuppressedForTesting();
 
  protected:
   friend class DesktopDragDropClientOzoneTest;

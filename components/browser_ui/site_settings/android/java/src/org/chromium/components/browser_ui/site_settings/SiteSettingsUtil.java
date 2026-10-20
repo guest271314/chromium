@@ -64,6 +64,8 @@ public class SiteSettingsUtil {
         ContentSettingsType.BLUETOOTH_CHOOSER_DATA,
         // Serial port is only shown when BLUETOOTH_RFCOMM_ANDROID is enabled.
         ContentSettingsType.SERIAL_CHOOSER_DATA,
+        // HID is only shown when WEB_HID is enabled.
+        ContentSettingsType.HID_CHOOSER_DATA,
     };
 
     static final int[] EMBEDDED_PERMISSIONS = {
@@ -90,6 +92,10 @@ public class SiteSettingsUtil {
                 if (type == ContentSettingsType.BLUETOOTH_CHOOSER_DATA
                         && !ContentFeatureMap.isEnabled(
                                 ContentFeatureList.WEB_BLUETOOTH_NEW_PERMISSIONS_BACKEND)) {
+                    continue;
+                }
+                if (type == ContentSettingsType.HID_CHOOSER_DATA
+                        && !ContentFeatureMap.isEnabled(ContentFeatureList.WEB_HID)) {
                     continue;
                 }
                 if (setting == type) {
@@ -124,14 +130,14 @@ public class SiteSettingsUtil {
                             Formatter.formatShortFileSize(context, storage));
         }
         if (cookies > 0) {
-            String cookie_str =
+            String cookieStr =
                     context.getResources()
                             .getQuantityString(R.plurals.cookies_count, cookies, cookies);
             result =
                     result.isEmpty()
-                            ? cookie_str
+                            ? cookieStr
                             : context.getString(
-                                    R.string.summary_with_one_bullet, result, cookie_str);
+                                    R.string.summary_with_one_bullet, result, cookieStr);
         }
         return result;
     }

@@ -98,7 +98,7 @@ PerformanceResourceTiming::PerformanceResourceTiming(
     base::TimeTicks time_origin,
     bool cross_origin_isolated_capability,
     ExecutionContext* context,
-    uint32_t navigation_id)
+    uint64_t navigation_id)
     : PerformanceEntry(
           info->name.IsNull() ? g_empty_atom : AtomicString(info->name),
           Performance::MonotonicTimeToDOMHighResTimeStamp(
@@ -289,8 +289,9 @@ DOMHighResTimeStamp PerformanceResourceTiming::redirectStart() const {
     return 0.0;
   }
 
-  if (DOMHighResTimeStamp worker_ready_time = WorkerReady())
+  if (DOMHighResTimeStamp worker_ready_time = WorkerReady()) {
     return worker_ready_time;
+  }
 
   return PerformanceEntry::startTime();
 }
@@ -316,8 +317,9 @@ DOMHighResTimeStamp PerformanceResourceTiming::fetchStart() const {
         info_->allow_negative_values, CrossOriginIsolatedCapability());
   }
 
-  if (DOMHighResTimeStamp worker_ready_time = WorkerReady())
+  if (DOMHighResTimeStamp worker_ready_time = WorkerReady()) {
     return worker_ready_time;
+  }
 
   // If the fetch came from service worker static routing API and the actual
   // source type is cache, we will not have a fetch start. For compatibility,
@@ -482,10 +484,12 @@ DOMHighResTimeStamp PerformanceResourceTiming::responseStart() const {
   }
 
   base::TimeTicks response_start = info_->timing->receive_headers_start;
-  if (response_start.is_null())
+  if (response_start.is_null()) {
     response_start = info_->timing->receive_headers_end;
-  if (response_start.is_null())
+  }
+  if (response_start.is_null()) {
     return requestStart();
+  }
 
   return Performance::MonotonicTimeToDOMHighResTimeStamp(
       TimeOrigin(), response_start, info_->allow_negative_values,
@@ -528,16 +532,10 @@ void PerformanceResourceTiming::BuildJSONValue(V8ObjectBuilder& builder) const {
   builder.AddString("initiatorType", initiatorType());
   builder.AddString("deliveryType", deliveryType());
   builder.AddString("nextHopProtocol", nextHopProtocol());
-  if (RuntimeEnabledFeatures::RenderBlockingStatusEnabled()) {
-    builder.AddString("renderBlockingStatus",
-                      renderBlockingStatus().AsStringView());
-  }
-  if (RuntimeEnabledFeatures::ResourceTimingContentTypeEnabled()) {
-    builder.AddString("contentType", contentType());
-  }
-  if (RuntimeEnabledFeatures::ResourceTimingContentEncodingEnabled()) {
-    builder.AddString("contentEncoding", contentEncoding());
-  }
+  builder.AddString("renderBlockingStatus",
+                    renderBlockingStatus().AsStringView());
+  builder.AddString("contentType", contentType());
+  builder.AddString("contentEncoding", contentEncoding());
   builder.AddNumber("workerStart", workerStart());
   if (RuntimeEnabledFeatures::ServiceWorkerStaticRouterTimingInfoEnabled(
           ExecutionContext::From(builder.GetScriptState()))) {

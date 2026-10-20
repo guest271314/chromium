@@ -8,6 +8,7 @@
 
 #include "partition_alloc/build_config.h"
 #include "partition_alloc/buildflags.h"
+#include "partition_alloc/debug_data_on_stack.h"
 #include "partition_alloc/internal/partition_root_internal.h"
 #include "partition_alloc/internal/thread_cache_internal.h"
 #include "partition_alloc/partition_alloc_base/logging.h"
@@ -122,7 +123,7 @@ InSlotMetadata::DoubleFreeOrCorruptionDetected(InSlotMetadata::CountType count,
 
   auto* thread_cache = root->GetThreadCache();
   if (ThreadCache::IsValid(thread_cache)) {
-    size_t bucket_index = slot_span->bucket - root->buckets_;
+    size_t bucket_index = slot_span->bucket - root->buckets_.data();
     if (thread_cache->IsInFreelist(slot_start, bucket_index, position)) {
       DoubleFreeDetected(position);
     }

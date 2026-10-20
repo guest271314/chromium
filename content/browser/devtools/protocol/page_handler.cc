@@ -10,7 +10,6 @@
 #include <sstream>
 #include <string>
 #include <utility>
-#include <variant>
 #include <vector>
 
 #include "base/check_op.h"
@@ -20,48 +19,48 @@
 #include "base/memory/ref_counted_memory.h"
 #include "base/numerics/safe_conversions.h"
 #include "base/process/process_handle.h"
+#include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
 #include "base/strings/to_string.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/task/sequenced_task_runner.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/task/thread_pool.h"
+#include "base/threading/thread_restrictions.h"
+#include "base/timer/timer.h"
 #include "base/trace_event/trace_event.h"
-#include "build/build_config.h"
 #include "components/back_forward_cache/disabled_reason_id.h"
 #include "content/browser/back_forward_cache/back_forward_cache_can_store_document_result.h"
 #include "content/browser/back_forward_cache/back_forward_cache_disable.h"
 #include "content/browser/back_forward_cache/back_forward_cache_metrics.h"
-#include "content/browser/child_process_security_policy_impl.h"
 #include "content/browser/devtools/devtools_agent_host_impl.h"
 #include "content/browser/devtools/devtools_session.h"
 #include "content/browser/devtools/protocol/browser_handler.h"
 #include "content/browser/devtools/protocol/devtools_mhtml_helper.h"
 #include "content/browser/devtools/protocol/emulation_handler.h"
 #include "content/browser/devtools/protocol/handler_helpers.h"
-#include "content/browser/devtools/protocol/page.h"
+#include "content/browser/devtools/protocol/media_recorder.h"
 #include "content/browser/manifest/manifest_manager_host.h"
-#include "content/browser/preloading/prerender/prerender_final_status.h"
+#include "content/browser/media/capture/web_contents_video_capture_device.h"
 #include "content/browser/renderer_host/frame_tree.h"
 #include "content/browser/renderer_host/navigation_entry_impl.h"
 #include "content/browser/renderer_host/navigation_request.h"
 #include "content/browser/renderer_host/navigator.h"
 #include "content/browser/renderer_host/render_frame_host_impl.h"
-#include "content/browser/renderer_host/render_widget_host_impl.h"
 #include "content/browser/renderer_host/render_widget_host_view_base.h"
 #include "content/browser/web_contents/web_contents_impl.h"
 #include "content/browser/web_contents/web_contents_view.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/browser_thread.h"
-#include "content/public/browser/download_manager.h"
 #include "content/public/browser/file_select_listener.h"
-#include "content/public/browser/javascript_dialog_manager.h"
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_entry.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/storage_partition.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_contents_delegate.h"
+#include "content/public/browser/web_contents_media_capture_id.h"
 #include "content/public/common/referrer.h"
 #include "content/public/common/result_codes.h"
 #include "content/public/common/url_constants.h"
@@ -85,7 +84,6 @@
 #include "ui/gfx/image/image.h"
 #include "ui/gfx/skbitmap_operations.h"
 #include "ui/snapshot/snapshot.h"
-#include "url/gurl.h"
 
 #if BUILDFLAG(IS_ANDROID)
 #include "content/browser/renderer_host/compositor_impl_android.h"
@@ -98,7 +96,6 @@ namespace {
 
 constexpr const char* kMhtml = "mhtml";
 constexpr int kDefaultScreenshotQuality = 80;
-constexpr int kMaxScreencastFramesInFlight = 2;
 constexpr char kCommandIsOnlyAvailableAtTopTarget[] =
     "Command can only be executed on top-level targets";
 constexpr char kErrorNotAttached[] = "Not attached to a page";
@@ -153,15 +150,25 @@ GetEncoder(const std::string& format, int quality, bool optimize_for_speed) {
   return protocol::Response::InvalidParams("Invalid image format");
 }
 
+// Returns the time at which |frame| was expected to be displayed, which the
+// capturer records as |reference_time|.
+base::TimeTicks ScreencastFrameTimestamp(const media::VideoFrame& frame) {
+  return frame.metadata().reference_time.value_or(base::TimeTicks::Now());
+}
+
 std::unique_ptr<Page::ScreencastFrameMetadata> BuildScreencastFrameMetadata(
     const gfx::Size& surface_size,
     float device_scale_factor,
     float page_scale_factor,
     const gfx::PointF& root_scroll_offset,
-    float top_controls_visible_height) {
+    float top_controls_visible_height,
+    base::TimeTicks timestamp) {
   if (surface_size.IsEmpty() || device_scale_factor == 0) {
     return nullptr;
   }
+
+  const base::Time wall_timestamp =
+      base::Time::Now() - (base::TimeTicks::Now() - timestamp);
 
   const gfx::SizeF content_size_dip =
       gfx::ScaleSize(gfx::SizeF(surface_size), 1 / device_scale_factor);
@@ -177,7 +184,8 @@ std::unique_ptr<Page::ScreencastFrameMetadata> BuildScreencastFrameMetadata(
           .SetDeviceHeight(content_size_dip.height())
           .SetScrollOffsetX(root_scroll_offset_dip.x())
           .SetScrollOffsetY(root_scroll_offset_dip.y())
-          .SetTimestamp(base::Time::Now().InSecondsFSinceUnixEpoch())
+          .SetTimestamp(wall_timestamp.InSecondsFSinceUnixEpoch())
+          .SetMonotonicTimestamp(timestamp.since_origin().InSecondsF())
           .Build();
   return page_metadata;
 }
@@ -304,9 +312,6 @@ void GotManifest(std::optional<std::string> manifest_id,
     auto file_handlers = std::make_unique<protocol::Array<Page::FileHandler>>();
     for (const auto& input_file_handler : input_manifest->file_handlers) {
       auto file_handler = Page::FileHandler::Create();
-      if (!input_file_handler->icons.empty()) {
-        file_handler.SetIcons(convert_icons(input_file_handler->icons));
-      }
       if (!input_file_handler->accept.empty()) {
         auto accepts = std::make_unique<protocol::Array<Page::FileFilter>>();
         for (const auto& input_accept : input_file_handler->accept) {
@@ -503,6 +508,7 @@ struct PageHandler::PendingScreenshotRequest {
 };
 
 PageHandler::PageHandler(
+    DevToolsIOContext* io_context,
     EmulationHandler* emulation_handler,
     BrowserHandler* browser_handler,
     bool allow_unsafe_operations,
@@ -516,12 +522,7 @@ PageHandler::PageHandler(
       navigation_initiator_origin_(navigation_initiator_origin),
       may_read_local_files_(may_read_local_files),
       enabled_(false),
-      screencast_max_width_(-1),
-      screencast_max_height_(-1),
-      capture_every_nth_frame_(1),
-      session_id_(0),
-      frame_counter_(0),
-      frames_in_flight_(0),
+      io_context_(io_context),
       host_(nullptr),
       emulation_handler_(emulation_handler),
       browser_handler_(browser_handler),
@@ -534,7 +535,7 @@ PageHandler::PageHandler(
   video_consumer_ = std::make_unique<DevToolsVideoConsumer>(base::BindRepeating(
       &PageHandler::OnFrameFromVideoConsumer, weak_factory_.GetWeakPtr()));
   video_consumer_->SetFormat(kScreencastPixelFormat);
-  DCHECK(emulation_handler_);
+  CHECK(emulation_handler_, base::NotFatalUntil::M159);
 }
 
 PageHandler::~PageHandler() = default;
@@ -602,7 +603,7 @@ void PageHandler::RenderWidgetHostVisibilityChanged(
 }
 
 void PageHandler::RenderWidgetHostDestroyed(RenderWidgetHost* widget_host) {
-  DCHECK(observation_.IsObservingSource(widget_host));
+  CHECK(observation_.IsObservingSource(widget_host), base::NotFatalUntil::M159);
   observation_.Reset();
 }
 
@@ -630,6 +631,8 @@ void PageHandler::DidRunJavaScriptDialog(const GURL& url,
   if (!enabled_) {
     return;
   }
+  // TODO(crbug.com/571032889): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
   DCHECK(pending_dialog_.is_null());
   pending_dialog_ = std::move(callback);
   std::string type = Page::DialogTypeEnum::Alert;
@@ -652,6 +655,8 @@ void PageHandler::DidRunBeforeUnloadConfirm(
   if (!enabled_) {
     return;
   }
+  // TODO(crbug.com/573951894): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
   DCHECK(pending_dialog_.is_null());
   pending_dialog_ = std::move(callback);
   frontend_->JavascriptDialogOpening(url.spec(), frame_id.ToString(),
@@ -682,11 +687,17 @@ Response PageHandler::Enable(
     FrameTreeNode* frame_tree_node = host_->frame_tree_node();
     NavigationRequest* navigation_request =
         host_->frame_tree_node()->navigation_request();
+    // A client that is not allowed to navigate the page to a URL must not
+    // learn it either (see GetNavigationHistory()). Redact the URL rather
+    // than omitting the event, so that navigation bookkeeping in clients
+    // keeps working.
+    const GURL& pending_url = navigation_request->common_params().url;
+    const bool may_disclose = !CheckNavigationAllowed(pending_url).IsError();
     frontend_->FrameStartedNavigating(
         frame_tree_node->current_frame_host()
             ->devtools_frame_token()
             .ToString(),
-        navigation_request->common_params().url.spec(),
+        may_disclose ? pending_url.spec() : std::string(),
         navigation_request->devtools_navigation_token().ToString(),
         GetFrameStartedNavigatingNavigationTypeString(
             navigation_request->common_params().navigation_type));
@@ -705,6 +716,8 @@ Response PageHandler::Disable() {
   if (!pending_dialog_.is_null()) {
     ResponseOrWebContents result = GetWebContentsForTopLevelActiveFrame();
     // Only a top level frame can have a dialog.
+    // TODO(crbug.com/558971359): CHECK-exclusion: Convert to a CHECK once we
+    // are confident it won't be triggered.
     DCHECK(std::holds_alternative<WebContentsImpl*>(result));
     WebContentsImpl* web_contents = std::get<WebContentsImpl*>(result);
     // Leave dialog hanging if there is a manager that can take care of it,
@@ -758,11 +771,9 @@ Response PageHandler::AddScriptToEvaluateOnNewDocumentInternal(
     const std::string& source,
     std::optional<std::string> world_name,
     std::optional<bool> include_command_line_api,
-    std::optional<bool> run_immediately,
-    std::string* identifier,
-    base::OnceClosure callback) {
+    std::string* identifier) {
   blink::mojom::BrowserOriginatingSessionState* state =
-      session()->browser_agent_state();
+      session()->browser_originating_session_state();
 
   // Generate identifier. This currently uses an id that is 1 higher than the
   // largest existent id, but is subject to change in the future. The clients
@@ -783,17 +794,13 @@ Response PageHandler::AddScriptToEvaluateOnNewDocumentInternal(
   script->include_command_line_api = include_command_line_api.value_or(false);
   state->scripts_to_evaluate_on_new_document[*identifier] = script.Clone();
 
-  session()->AddScriptToEvaluateOnNewDocument(*identifier, std::move(script),
-                                              run_immediately.value_or(false),
-                                              std::move(callback));
-
   return Response::Success();
 }
 
 Response PageHandler::RemoveScriptToEvaluateOnNewDocument(
     const std::string& identifier) {
   blink::mojom::BrowserOriginatingSessionState* state =
-      session()->browser_agent_state();
+      session()->browser_originating_session_state();
 
   auto it = state->scripts_to_evaluate_on_new_document.find(identifier);
   if (it == state->scripts_to_evaluate_on_new_document.end()) {
@@ -801,41 +808,31 @@ Response PageHandler::RemoveScriptToEvaluateOnNewDocument(
   }
   state->scripts_to_evaluate_on_new_document.erase(it);
 
-  session()->RemoveScriptToEvaluateOnNewDocument(identifier);
-
-  return Response::Success();
+  return Response::FallThrough();
 }
 
-void PageHandler::AddScriptToEvaluateOnNewDocument(
+Response PageHandler::AddScriptToEvaluateOnNewDocument(
     const std::string& source,
     std::optional<std::string> world_name,
     std::optional<bool> include_command_line_api,
     std::optional<bool> run_immediately,
-    std::unique_ptr<AddScriptToEvaluateOnNewDocumentCallback> callback) {
-  auto identifier = std::make_unique<std::string>();
-  auto* identifier_ptr = identifier.get();
-
-  AddScriptToEvaluateOnNewDocumentInternal(
-      source, world_name, include_command_line_api, run_immediately,
-      identifier_ptr,
-      base::BindOnce(
-          [](std::unique_ptr<AddScriptToEvaluateOnNewDocumentCallback> cb,
-             std::unique_ptr<std::string> id) { cb->sendSuccess(*id); },
-          std::move(callback), std::move(identifier)));
+    std::string* identifier) {
+  Response response = AddScriptToEvaluateOnNewDocumentInternal(
+      source, world_name, include_command_line_api, identifier);
+  if (response.IsError()) {
+    return response;
+  }
+  return Response::FallThrough(*identifier);
 }
 
-void PageHandler::AddScriptToEvaluateOnLoad(
-    const std::string& source,
-    std::unique_ptr<AddScriptToEvaluateOnLoadCallback> callback) {
-  auto identifier = std::make_unique<std::string>();
-  auto* identifier_ptr = identifier.get();
-
-  AddScriptToEvaluateOnNewDocumentInternal(
-      source, std::nullopt, std::nullopt, std::nullopt, identifier_ptr,
-      base::BindOnce(
-          [](std::unique_ptr<AddScriptToEvaluateOnLoadCallback> cb,
-             std::unique_ptr<std::string> id) { cb->sendSuccess(*id); },
-          std::move(callback), std::move(identifier)));
+Response PageHandler::AddScriptToEvaluateOnLoad(const std::string& source,
+                                                std::string* identifier) {
+  Response response = AddScriptToEvaluateOnNewDocumentInternal(
+      source, std::nullopt, std::nullopt, identifier);
+  if (response.IsError()) {
+    return response;
+  }
+  return Response::FallThrough(*identifier);
 }
 
 Response PageHandler::RemoveScriptToEvaluateOnLoad(
@@ -882,6 +879,7 @@ void PageHandler::Reload(std::optional<bool> bypassCache,
     have_pending_reload_ = true;
     pending_script_to_evaluate_on_load_ =
         script_to_evaluate_on_load.value_or("");
+    initiating_origin_ = outermost_main_frame->GetLastCommittedOrigin();
     navigation_controller.Reload(reload_type, false);
     callback->sendSuccess();
   } else {
@@ -953,6 +951,47 @@ void DispatchNavigateCallback(
 
 }  // namespace
 
+Response PageHandler::CheckNavigationAllowed(const GURL& url) {
+  CHECK(host_);
+
+  GURL inner_url = url;
+  if (url.SchemeIs(content::kViewSourceScheme)) {
+    inner_url = GURL(url.GetContent());
+  }
+
+  bool is_file = inner_url.SchemeIsFile();
+#if BUILDFLAG(IS_CHROMEOS)
+  // The "externalfile" scheme is ChromeOS-specific.
+  is_file |= inner_url.SchemeIs(content::kExternalFileScheme);
+#endif
+
+  if (is_file && !may_read_local_files_) {
+    return Response::ServerError("Navigating to local URL is not allowed");
+  }
+
+  // chrome-untrusted:// WebUIs might perform high-privileged actions on
+  // navigation, disallow navigation to them unless the client is trusted.
+  if ((inner_url.SchemeIs(kChromeUIUntrustedScheme) ||
+       inner_url.SchemeIs(kChromeDevToolsScheme)) &&
+      !is_trusted_) {
+    return Response::ServerError(
+        "Navigating to a URL with a privileged scheme is not allowed");
+  }
+
+  if (!session()->GetClient()->MayAttachToURL(url,
+                                              host_->web_ui() != nullptr)) {
+    url::Origin origin = url::Origin::Create(url);
+    if (!origin.scheme().empty() &&
+        origin.scheme() != content::kChromeUIScheme &&
+        origin.scheme() != content::kChromeUIUntrustedScheme &&
+        origin.scheme() != content::kChromeDevToolsScheme) {
+      return Response::ServerError("Not allowed");
+    }
+  }
+
+  return Response::Success();
+}
+
 void PageHandler::Navigate(const std::string& url,
                            std::optional<std::string> referrer,
                            std::optional<std::string> maybe_transition_type,
@@ -966,35 +1005,14 @@ void PageHandler::Navigate(const std::string& url,
     return;
   }
 
-  GURL inner_url = gurl;
-  if (gurl.SchemeIs(content::kViewSourceScheme)) {
-    inner_url = GURL(gurl.GetContent());
-  }
-
-  bool is_file = inner_url.SchemeIsFile();
-#if BUILDFLAG(IS_CHROMEOS)
-  // The "externalfile" scheme is ChromeOS-specific.
-  is_file |= inner_url.SchemeIs(content::kExternalFileScheme);
-#endif
-
-  if (is_file && !may_read_local_files_) {
-    callback->sendFailure(
-        Response::ServerError("Navigating to local URL is not allowed"));
-    return;
-  }
-
   if (!host_) {
     callback->sendFailure(Response::InternalError());
     return;
   }
 
-  // chrome-untrusted:// WebUIs might perform high-priviledged actions on
-  // navigation, disallow navigation to them unless the client is trusted.
-  if ((inner_url.SchemeIs(kChromeUIUntrustedScheme) ||
-       inner_url.SchemeIs(kChromeDevToolsScheme)) &&
-      !is_trusted_) {
-    callback->sendFailure(Response::ServerError(
-        "Navigating to a URL with a privileged scheme is not allowed"));
+  Response response = CheckNavigationAllowed(gurl);
+  if (response.IsError()) {
+    callback->sendFailure(std::move(response));
     return;
   }
 
@@ -1120,13 +1138,13 @@ void PageHandler::GetAnnotatedPageContent(
         web_contents, include_actionable_information.value_or(true),
         base::BindOnce(
             [](std::unique_ptr<GetAnnotatedPageContentCallback> callback,
-               const std::string& serialized_proto) {
-              if (!serialized_proto.empty()) {
-                callback->sendSuccess(
-                    protocol::Binary::fromString(serialized_proto));
+               base::expected<std::string, std::string> result) {
+              if (result.has_value()) {
+                callback->sendSuccess(protocol::Binary::fromString(*result));
               } else {
                 callback->sendFailure(Response::ServerError(
-                    "Failed to get annotated page content"));
+                    base::StrCat({"Failed to get annotated page content: ",
+                                  result.error()})));
               }
             },
             std::move(callback)));
@@ -1180,9 +1198,16 @@ void PageHandler::DidStartNavigating(
     return;
   }
 
+  // A client that is not allowed to navigate the page to a URL must not
+  // learn it either (see GetNavigationHistory()). Redact the URL rather than
+  // omitting the event, so that navigation bookkeeping in clients keeps
+  // working. This event fires at FrameTreeNode::TakeNavigationRequest() time,
+  // BEFORE NavigationRequest::OnStartChecksComplete() force-detaches sessions
+  // whose client fails MayAttachToURL(), so it must gate disclosure itself.
+  const bool may_disclose = host_ && !CheckNavigationAllowed(url).IsError();
   frontend_->FrameStartedNavigating(
-      ftn.current_frame_host()->devtools_frame_token().ToString(), url.spec(),
-      loader_id.ToString(),
+      ftn.current_frame_host()->devtools_frame_token().ToString(),
+      may_disclose ? url.spec() : std::string(), loader_id.ToString(),
       GetFrameStartedNavigatingNavigationTypeString(navigation_type));
 }
 
@@ -1280,12 +1305,22 @@ Response PageHandler::GetNavigationHistory(
   *entries = std::make_unique<NavigationEntries>();
   for (int i = 0; i != controller.GetEntryCount(); ++i) {
     auto* entry = controller.GetEntryAtIndex(i);
+    // A client that is not allowed to navigate the page to a URL must not
+    // learn it either, so the same check gates disclosure. Redact such entries
+    // rather than omitting them, so that `currentIndex` and the entry ids keep
+    // matching the actual history. Navigating to a redacted entry is rejected
+    // by NavigateToHistoryEntry().
+    const bool may_disclose =
+        !CheckNavigationAllowed(entry->GetURL()).IsError() &&
+        !CheckNavigationAllowed(entry->GetUserTypedURL()).IsError();
     (*entries)->emplace_back(
         Page::NavigationEntry::Create()
             .SetId(entry->GetUniqueID())
-            .SetUrl(entry->GetURL().spec())
-            .SetUserTypedURL(entry->GetUserTypedURL().spec())
-            .SetTitle(base::UTF16ToUTF8(entry->GetTitle()))
+            .SetUrl(may_disclose ? entry->GetURL().spec() : std::string())
+            .SetUserTypedURL(may_disclose ? entry->GetUserTypedURL().spec()
+                                          : std::string())
+            .SetTitle(may_disclose ? base::UTF16ToUTF8(entry->GetTitle())
+                                   : std::string())
             .SetTransitionType(TransitionTypeName(entry->GetTransitionType()))
             .Build());
   }
@@ -1300,10 +1335,18 @@ Response PageHandler::NavigateToHistoryEntry(int entry_id) {
 
   NavigationController& controller = host_->frame_tree()->controller();
   for (int i = 0; i != controller.GetEntryCount(); ++i) {
-    if (controller.GetEntryAtIndex(i)->GetUniqueID() == entry_id) {
-      controller.GoToIndex(i);
-      return Response::Success();
+    NavigationEntry* entry = controller.GetEntryAtIndex(i);
+    if (entry->GetUniqueID() != entry_id) {
+      continue;
     }
+    // Traversing to an entry navigates the page to the entry's URL, so apply
+    // the same restrictions Navigate() applies.
+    response = CheckNavigationAllowed(entry->GetURL());
+    if (response.IsError()) {
+      return response;
+    }
+    controller.GoToIndex(i);
+    return Response::Success();
   }
 
   return Response::InvalidParams("No entry with passed id");
@@ -1340,7 +1383,7 @@ void PageHandler::CaptureSnapshot(
     return;
   }
 
-  DCHECK(host_);
+  CHECK(host_, base::NotFatalUntil::M159);
   DevToolsMHTMLHelper::Capture(
       base::BindRepeating(&WebContents::FromFrameTreeNodeId,
                           host_->frame_tree_node()->frame_tree_node_id()),
@@ -1544,23 +1587,37 @@ void PageHandler::CaptureScreenshot(
   // Set view size for the screenshot right after emulating.
   if (clip) {
     double scale = dpfactor * clip->GetScale();
+    // Round the temporary view outward so resizable platforms provide enough
+    // source pixels after the widget's device scale factor is applied. This
+    // prevents double rounding from leaving the source too small.
     widget_host->GetView()->SetSize(
-        gfx::Size(base::ClampRound(clip->GetWidth() * scale),
-                  base::ClampRound(clip->GetHeight() * scale)));
+        gfx::Size(base::ClampCeil(clip->GetWidth() * scale),
+                  base::ClampCeil(clip->GetHeight() * scale)));
   } else if (emulation_enabled) {
     widget_host->GetView()->SetSize(
         gfx::ScaleToFlooredSize(emulated_view_size, dpfactor));
   }
   if (emulation_enabled || clip) {
-    const gfx::Size requested_image_size =
-        clip ? gfx::Size(clip->GetWidth(), clip->GetHeight())
-             : emulated_view_size;
     double scale = widget_host_device_scale_factor * dpfactor;
     if (clip) {
       scale *= clip->GetScale();
+      // CDP clip dimensions are double-precision DIPs. Preserve their
+      // fractions until conversion to the integral physical bitmap size. A
+      // positive dimension must remain nonempty because an empty requested
+      // size means that no cropping is needed in ScreenshotCaptured().
+      auto round_clip_dimension = [scale](double dimension) {
+        if (!(dimension > 0 && scale > 0)) {
+          return 0;
+        }
+        return std::max(1, base::ClampRound(dimension * scale));
+      };
+      pending_request->requested_image_size =
+          gfx::Size(round_clip_dimension(clip->GetWidth()),
+                    round_clip_dimension(clip->GetHeight()));
+    } else {
+      pending_request->requested_image_size =
+          gfx::ScaleToRoundedSize(emulated_view_size, scale);
     }
-    pending_request->requested_image_size =
-        gfx::ScaleToRoundedSize(requested_image_size, scale);
   }
 
   // TODO(crbug.com/377715191): this should check RenderWidgetHostViewBase
@@ -1584,7 +1641,13 @@ Response PageHandler::StartScreencast(std::optional<std::string> format,
                                       std::optional<int> quality,
                                       std::optional<int> max_width,
                                       std::optional<int> max_height,
-                                      std::optional<int> every_nth_frame) {
+                                      std::optional<int> every_nth_frame,
+                                      std::optional<int> max_frames_in_flight,
+                                      std::optional<bool> send_last_frame) {
+  if (screencast_encoder_ || media_recorder_) {
+    return Response::ServerError("Screencast is already active");
+  }
+
   Response response = AssureTopLevelActiveFrame();
   if (response.IsError()) {
     return response;
@@ -1592,6 +1655,13 @@ Response PageHandler::StartScreencast(std::optional<std::string> format,
   RenderWidgetHostImpl* widget_host = host_->GetRenderWidgetHost();
   if (!widget_host) {
     return Response::InternalError();
+  }
+  if (max_frames_in_flight.has_value() && max_frames_in_flight.value() <= 0) {
+    return Response::InvalidParams(
+        "maxFramesInFlight must be a positive integer");
+  }
+  if (every_nth_frame.has_value() && every_nth_frame.value() <= 0) {
+    return Response::InvalidParams("everyNthFrame must be a positive integer");
   }
 
   auto encoder =
@@ -1610,6 +1680,10 @@ Response PageHandler::StartScreencast(std::optional<std::string> format,
   frame_counter_ = 0;
   frames_in_flight_ = 0;
   capture_every_nth_frame_ = every_nth_frame.value_or(1);
+  max_frames_in_flight_ = max_frames_in_flight.value_or(3);
+  send_last_frame_ = send_last_frame.value_or(false);
+  last_frame_metadata_.reset();
+  last_frame_ = SkBitmap();
   bool visible = !widget_host->IsHidden();
   NotifyScreencastVisibility(visible);
 
@@ -1629,20 +1703,88 @@ Response PageHandler::StartScreencast(std::optional<std::string> format,
 
   video_consumer_->StartCapture();
 
-  return Response::FallThrough();
+  return Response::Success();
+}
+
+Response PageHandler::StartScreenRecording(std::optional<bool> audio,
+                                           std::optional<int> max_width,
+                                           std::optional<int> max_height,
+                                           std::optional<int> frame_rate,
+                                           std::string* out_stream) {
+  if (screencast_encoder_ || media_recorder_) {
+    return Response::ServerError("Screencast is already active");
+  }
+
+  Response response = AssureTopLevelActiveFrame();
+  if (response.IsError()) {
+    return response;
+  }
+  RenderWidgetHostImpl* widget_host = host_->GetRenderWidgetHost();
+  if (!widget_host) {
+    return Response::InternalError();
+  }
+
+  media_recorder_ = std::make_unique<MediaRecorder>(
+      io_context_, base::BindRepeating(&PageHandler::OnMediaRecorderFlushed,
+                                       weak_factory_.GetWeakPtr()));
+
+  bool has_audio = audio.value_or(false);
+  int fps = frame_rate.value_or(30);
+  if (fps <= 0) {
+    fps = 30;
+  }
+
+  Response result = media_recorder_->Start(
+      host_, has_audio, max_width.value_or(800), max_height.value_or(600), fps);
+  if (result.IsError()) {
+    media_recorder_.reset();
+    return result;
+  }
+
+  *out_stream = media_recorder_->GetStream();
+  return Response::Success();
+}
+
+void PageHandler::StopScreenRecording(
+    std::unique_ptr<StopScreenRecordingCallback> callback) {
+  if (!media_recorder_) {
+    if (callback) {
+      callback->sendFailure(
+          Response::ServerError("No active screen recording"));
+    }
+    return;
+  }
+
+  auto recorder = std::move(media_recorder_);
+  recorder->Stop(base::BindOnce(
+      [](std::unique_ptr<MediaRecorder> recorder,
+         std::unique_ptr<StopScreenRecordingCallback> callback,
+         std::string stream) {
+        if (callback) {
+          callback->sendSuccess(stream);
+        }
+      },
+      std::move(recorder), std::move(callback)));
+}
+
+void PageHandler::OnMediaRecorderFlushed() {
+  media_recorder_.reset();
 }
 
 Response PageHandler::StopScreencast() {
   screencast_encoder_.Reset();
+  last_frame_metadata_.reset();
+  last_frame_ = SkBitmap();
   if (video_consumer_) {
     video_consumer_->StopCapture();
   }
-  return Response::FallThrough();
+  return Response::Success();
 }
 
 Response PageHandler::ScreencastFrameAck(int session_id) {
   if (session_id == session_id_) {
     --frames_in_flight_;
+    MaybeSendLastScreencastFrame();
   }
   return Response::Success();
 }
@@ -1744,9 +1886,8 @@ void PageHandler::NotifyScreencastVisibility(bool visible) {
   frontend_->ScreencastVisibilityChanged(visible);
 }
 
-bool PageHandler::ShouldCaptureNextScreencastFrame() {
-  return frames_in_flight_ <= kMaxScreencastFramesInFlight &&
-         !(++frame_counter_ % capture_every_nth_frame_);
+bool PageHandler::EnoughScreencastFramesInFlight() {
+  return frames_in_flight_ >= max_frames_in_flight_;
 }
 
 void PageHandler::OnFrameFromVideoConsumer(
@@ -1755,7 +1896,14 @@ void PageHandler::OnFrameFromVideoConsumer(
     return;
   }
 
-  if (!ShouldCaptureNextScreencastFrame()) {
+  if (++frame_counter_ % capture_every_nth_frame_) {
+    return;
+  }
+
+  // Do not capture a new frame when not in sendLastFrame mode,
+  // and we cannot send this frame right away. This is a choice
+  // for performance over latency.
+  if (EnoughScreencastFramesInFlight() && !send_last_frame_) {
     return;
   }
 
@@ -1789,23 +1937,39 @@ void PageHandler::OnFrameFromVideoConsumer(
   std::unique_ptr<Page::ScreencastFrameMetadata> page_metadata =
       BuildScreencastFrameMetadata(surface_size, device_scale_factor,
                                    page_scale_factor, root_scroll_offset,
-                                   top_controls_visible_height);
+                                   top_controls_visible_height,
+                                   ScreencastFrameTimestamp(*frame));
   if (!page_metadata) {
     return;
   }
-
-  frames_in_flight_++;
-  ScreencastFrameCaptured(std::move(page_metadata),
-                          DevToolsVideoConsumer::GetSkBitmapFromFrame(frame));
-}
-
-void PageHandler::ScreencastFrameCaptured(
-    std::unique_ptr<Page::ScreencastFrameMetadata> page_metadata,
-    const SkBitmap& bitmap) {
+  SkBitmap bitmap = DevToolsVideoConsumer::GetSkBitmapFromFrame(frame);
   if (bitmap.drawsNothing()) {
-    --frames_in_flight_;
     return;
   }
+
+  last_frame_ = std::move(bitmap);
+  last_frame_metadata_ = std::move(page_metadata);
+  MaybeSendLastScreencastFrame();
+}
+
+void PageHandler::MaybeSendLastScreencastFrame() {
+  if (EnoughScreencastFramesInFlight()) {
+    // Note: when not in sendLastFrame mode, the frame should not be
+    // even captured if we cannot send it right away.
+    CHECK(send_last_frame_);
+    return;
+  }
+  if (!last_frame_metadata_ || last_frame_.drawsNothing()) {
+    return;
+  }
+
+  SendScreencastFrame(std::move(last_frame_metadata_), std::move(last_frame_));
+}
+
+void PageHandler::SendScreencastFrame(
+    std::unique_ptr<Page::ScreencastFrameMetadata> page_metadata,
+    const SkBitmap& bitmap) {
+  frames_in_flight_++;
   base::ThreadPool::PostTaskAndReplyWithResult(
       FROM_HERE, {base::TaskShutdownBehavior::CONTINUE_ON_SHUTDOWN},
       base::BindOnce(
@@ -1834,8 +1998,11 @@ void PageHandler::ScreenshotCaptured(
     std::unique_ptr<PendingScreenshotRequest> request,
     const gfx::Image& image) {
   if (request->original_view_size.width()) {
-    RenderWidgetHostImpl* widget_host = host_->GetRenderWidgetHost();
-    widget_host->GetView()->SetSize(request->original_view_size);
+    // The view is gone if the renderer exited before the capture completed.
+    if (RenderWidgetHostViewBase* view =
+            host_->GetRenderWidgetHost()->GetView()) {
+      view->SetSize(request->original_view_size);
+    }
     emulation_handler_->SetDeviceEmulationParams(
         request->original_emulation_params);
   }
@@ -1870,8 +2037,8 @@ void PageHandler::ScreenshotCaptured(
         Binary::fromVector(std::move(encoded_bitmap).value()));
     return;
   }
-  // TODO(caseq): send failure if we fail to encode?
-  request->callback->sendSuccess(Binary());
+  request->callback->sendFailure(
+      Response::ServerError("Unable to encode screenshot"));
 }
 
 Response PageHandler::StopLoading() {
@@ -1928,7 +2095,18 @@ void PageHandler::GetManifestIcons(
 void PageHandler::GetAppId(std::unique_ptr<GetAppIdCallback> callback) {
   // TODO: Use InstallableManager once it moves into content/.
   // Until then, this code is only used to return no image data in the tests.
-  callback->sendSuccess(std::nullopt, std::nullopt);
+  callback->sendSuccess(std::nullopt, std::nullopt, std::nullopt, std::nullopt);
+}
+
+void PageHandler::GetSubApps(std::unique_ptr<GetSubAppsCallback> callback) {
+  callback->sendSuccess(
+      std::make_unique<protocol::Array<protocol::Page::SubApp>>());
+}
+
+void PageHandler::GetSiblingSubApps(
+    std::unique_ptr<GetSiblingSubAppsCallback> callback) {
+  callback->sendSuccess(
+      std::make_unique<protocol::Array<protocol::Page::SubApp>>());
 }
 
 Response PageHandler::SetBypassCSP(bool enabled) {
@@ -2083,6 +2261,12 @@ Page::BackForwardCacheNotRestoredReason NotRestoredReasonToProtocol(
       // into sub reasons.
       NOTREACHED();
     case Reason::kUnknown:
+    case Reason::kRfhEnforceInsecureNavigationsSet:
+    case Reason::kRfhEnforceInsecureRequestPolicy:
+    case Reason::kRfhHadStickyUserActivationBeforeNavigationChanged:
+    case Reason::kRfhUpdateAdFrameStatus:
+    case Reason::kRfhDidChangeName:
+    case Reason::kRfhDidChangeOpener:
       return Page::BackForwardCacheNotRestoredReasonEnum::Unknown;
     case Reason::kCacheControlNoStoreDeviceBoundSessionTerminated:
       return Page::BackForwardCacheNotRestoredReasonEnum::
@@ -2206,6 +2390,7 @@ Page::BackForwardCacheNotRestoredReason BlocklistedFeatureToProtocol(
       return Page::BackForwardCacheNotRestoredReasonEnum::
           JsNetworkRequestReceivedCacheControlNoStoreResource;
     case WebSchedulerTrackedFeature::kWebSerial:
+    case WebSchedulerTrackedFeature::kWebUSB:
       // These features only disable aggressive throttling.
       NOTREACHED();
     case WebSchedulerTrackedFeature::kSmartCard:
@@ -2337,6 +2522,9 @@ DisableForRenderFrameHostReasonToProtocol(
         case back_forward_cache::DisabledReasonId::kPostMessageByWebViewClient:
           return Page::BackForwardCacheNotRestoredReasonEnum::
               PostMessageByWebViewClient;
+        case back_forward_cache::DisabledReasonId::kPrivilegedWebContents:
+          return Page::BackForwardCacheNotRestoredReasonEnum::
+              EmbedderPrivilegedWebContents;
       }
   }
 }
@@ -2406,6 +2594,12 @@ Page::BackForwardCacheNotRestoredReasonType MapNotRestoredReasonToType(
     case Reason::kWebLocksContention:
       return Page::BackForwardCacheNotRestoredReasonTypeEnum::PageSupportNeeded;
     case Reason::kNetworkRequestDatapipeDrainedAsBytesConsumer:
+    case Reason::kRfhEnforceInsecureNavigationsSet:
+    case Reason::kRfhEnforceInsecureRequestPolicy:
+    case Reason::kRfhHadStickyUserActivationBeforeNavigationChanged:
+    case Reason::kRfhUpdateAdFrameStatus:
+    case Reason::kRfhDidChangeName:
+    case Reason::kRfhDidChangeOpener:
     case Reason::kUnknown:
       return Page::BackForwardCacheNotRestoredReasonTypeEnum::SupportPending;
     case Reason::kBlocklistedFeatures:
@@ -2470,6 +2664,7 @@ Page::BackForwardCacheNotRestoredReasonType MapBlocklistedFeatureToType(
     case WebSchedulerTrackedFeature::kWebSocketSticky:
       return Page::BackForwardCacheNotRestoredReasonTypeEnum::Circumstantial;
     case WebSchedulerTrackedFeature::kWebSerial:
+    case WebSchedulerTrackedFeature::kWebUSB:
       NOTREACHED();
   }
 }
@@ -2499,7 +2694,7 @@ CreateNotRestoredExplanation(
        not_restored_reasons) {
     if (not_restored_reason ==
         BackForwardCacheMetrics::NotRestoredReason::kBlocklistedFeatures) {
-      DCHECK(!blocklisted_features.empty());
+      CHECK(!blocklisted_features.empty(), base::NotFatalUntil::M159);
       for (blink::scheduler::WebSchedulerTrackedFeature feature :
            blocklisted_features) {
         // Details are not always present for blocklisted features, because the
@@ -2596,6 +2791,15 @@ void PageHandler::ReadyToCommitNavigation(
     have_pending_reload_ = false;
     pending_script_to_evaluate_on_load_.clear();
   } else if (have_pending_reload_) {
+    // Drop the pending script if the reload encountered an error or if the
+    // navigation was redirected to a different origin.
+    if (navigation_request->DidEncounterError() ||
+        (navigation_request->WasServerRedirect() &&
+         !initiating_origin_.IsSameOriginWith(
+             navigation_request->GetOriginToCommit().value_or(
+                 url::Origin())))) {
+      pending_script_to_evaluate_on_load_.clear();
+    }
     prepare_for_reload_callback_.Run(
         std::move(pending_script_to_evaluate_on_load_));
     have_pending_reload_ = false;

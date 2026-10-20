@@ -10,6 +10,7 @@
 #include <string>
 #include <vector>
 
+#include "base/containers/span.h"
 #include "base/feature_list.h"
 #include "base/functional/callback_helpers.h"
 #include "base/strings/cstring_view.h"
@@ -30,6 +31,7 @@
 #include "chrome/browser/bitmap_fetcher/bitmap_fetcher_service_factory.h"
 #include "chrome/browser/bookmarks/bookmark_model_factory.h"
 #include "chrome/browser/browser_process.h"
+#include "chrome/browser/contextual_tasks/contextual_tasks_panel_controller.h"
 #include "chrome/browser/global_features.h"
 #include "chrome/browser/history/history_service_factory.h"
 #include "chrome/browser/history/top_sites_factory.h"
@@ -42,13 +44,15 @@
 #include "chrome/browser/preloading/prefetch/search_prefetch/search_prefetch_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_key.h"
+#include "chrome/browser/search/search.h"
+#include "chrome/browser/search_engines/ai_mode_button_service_factory.h"
 #include "chrome/browser/search_engines/template_url_service_factory.h"
+#include "chrome/browser/sessions/tab_restore_service_factory.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/sync/session_sync_service_factory.h"
 #include "chrome/browser/sync/sync_service_factory.h"
 #include "chrome/browser/tab_group_sync/tab_group_sync_service_factory.h"
 #include "chrome/browser/translate/chrome_translate_client.h"
-#include "chrome/browser/ui/browser_command_controller.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
 #include "chrome/browser/ui/lens/lens_overlay_entry_point_controller.h"
 #include "chrome/browser/ui/omnibox/omnibox_pedal_implementations.h"
@@ -59,12 +63,14 @@
 #include "chrome/common/webui_url_constants.h"
 #include "components/application_locale_storage/application_locale_storage.h"
 #include "components/bookmarks/browser/bookmark_model.h"
+#include "components/contextual_tasks/public/features.h"
 #include "components/history/core/browser/history_service.h"
 #include "components/history/core/browser/top_sites.h"
 #include "components/history/core/common/pref_names.h"
 #include "components/history_clusters/core/features.h"
 #include "components/history_embeddings/content/history_embeddings_service.h"
 #include "components/language/core/browser/pref_names.h"
+#include "components/lens/lens_features.h"
 #include "components/omnibox/browser/actions/omnibox_pedal_provider.h"
 #include "components/omnibox/browser/aim_eligibility_service.h"
 #include "components/omnibox/browser/autocomplete_classifier.h"
@@ -78,23 +84,30 @@
 #include "components/omnibox/browser/tab_matcher.h"
 #include "components/omnibox/common/omnibox_feature_configs.h"
 #include "components/omnibox/common/omnibox_features.h"
+#include "components/optimization_guide/core/feature_registry/feature_registration.h"
 #include "components/prefs/pref_service.h"
 #include "components/saved_tab_groups/public/tab_group_sync_service.h"
+#include "components/search_engines/ai_mode_button_service.h"
 #include "components/signin/public/identity_manager/accounts_in_cookie_jar_info.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "components/sync/service/sync_service.h"
 #include "components/sync_sessions/session_sync_service.h"
+#include "components/tabs/public/tab_interface.h"
 #include "components/translate/core/browser/translate_manager.h"
 #include "components/unified_consent/url_keyed_data_collection_consent_helper.h"
 #include "components/variations/service/variations_service.h"
 #include "content/public/browser/navigation_entry.h"
+#include "content/public/browser/permission_controller_delegate.h"
 #include "content/public/browser/service_worker_context.h"
 #include "content/public/browser/storage_partition.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_contents_user_data.h"
 #include "extensions/buildflags/buildflags.h"
+#include "net/base/url_util.h"
 #include "net/traffic_annotation/network_traffic_annotation.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "third_party/blink/public/common/storage_key/storage_key.h"
+#include "third_party/blink/public/mojom/permissions/permission_status.mojom.h"
 #include "url/origin.h"
 
 #if BUILDFLAG(IS_CHROMEOS)
@@ -109,7 +122,11 @@
 #include "extensions/common/extension_features.h"
 #endif
 
-#if !BUILDFLAG(IS_ANDROID)
+#if BUILDFLAG(IS_ANDROID)
+#include "base/android/jni_android.h"
+#include "chrome/browser/lens/jni_headers/LensSupportStatusHelper_jni.h"
+#else  // BUILDFLAG(IS_ANDROID)
+#include "chrome/browser/contextual_tasks/contextual_tasks_utils.h"
 #include "chrome/browser/lifetime/application_lifetime_desktop.h"
 #include "chrome/browser/sharing_hub/sharing_hub_features.h"
 #include "chrome/browser/ui/browser_commands.h"
@@ -123,8 +140,9 @@
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/views/side_panel/history_clusters/history_clusters_side_panel_coordinator.h"
 #include "chrome/browser/upgrade_detector/upgrade_detector.h"
+#include "components/contextual_search/contextual_search_service.h"
 #include "components/lens/lens_overlay_invocation_source.h"
-#endif
+#endif  // BUILDFLAG(IS_ANDROID)
 
 namespace {
 
@@ -132,9 +150,9 @@ namespace {
 // This list should be kept in sync with chrome/common/webui_url_constants.h.
 // Only include useful sub-pages, confirmation alerts are not useful.
 constexpr auto kChromeSettingsSubPages = std::to_array<base::cstring_view>({
-    chrome::kAddressesSubPage,
     chrome::kAutofillSubPage,
     chrome::kClearBrowserDataSubPage,
+    chrome::kContactInfoSubPage,
     chrome::kContentSettingsSubPage,
     chrome::kLanguageOptionsSubPage,
     chrome::kPasswordManagerSubPage,
@@ -229,14 +247,30 @@ ChromeAutocompleteProviderClient::ChromeAutocompleteProviderClient(
           unified_consent::UrlKeyedDataCollectionConsentHelper::
               NewPersonalizedDataCollectionConsentHelper(
                   SyncServiceFactory::GetForProfile(profile_))),
+#if BUILDFLAG(IS_ANDROID)
+      tab_matcher_(GetTemplateURLService(), profile_, web_contents_getter_),
+#else
       tab_matcher_(GetTemplateURLService(), profile_),
+#endif
       storage_partition_(nullptr),
       omnibox_triggered_feature_service_(
           std::make_unique<OmniboxTriggeredFeatureService>()) {
+  OmniboxPedalProfileType profile_type = OmniboxPedalProfileType::kRegular;
+  if (profile_->IsGuestSession()) {
+    profile_type = OmniboxPedalProfileType::kGuest;
+  } else if (profile_->IsPrimaryOTRProfileWithRegularParent()) {
+    profile_type = OmniboxPedalProfileType::kOtrWithRegularParent;
+  }
+
+  const OmniboxPedalOtrType otr_type =
+      IncognitoModePrefs::GetIncognitoModeType(profile_) ==
+              IncognitoModePrefs::IncognitoModeType::kEnterprise
+          ? OmniboxPedalOtrType::kIsolated
+          : OmniboxPedalOtrType::kIncognito;
+
   pedal_provider_ = std::make_unique<OmniboxPedalProvider>(
       *this,
-      GetPedalImplementations(profile_->IsIncognitoProfile(),
-                              profile_->IsGuestSession(), /*testing=*/false));
+      GetPedalImplementations(profile_type, otr_type, /*testing=*/false));
 }
 
 ChromeAutocompleteProviderClient::~ChromeAutocompleteProviderClient() = default;
@@ -317,6 +351,13 @@ ChromeAutocompleteProviderClient::GetTemplateURLService() const {
 GeolocationHeaderService*
 ChromeAutocompleteProviderClient::GetGeolocationHeaderService() const {
   return GeolocationHeaderServiceFactory::GetForProfile(profile_);
+}
+
+void ChromeAutocompleteProviderClient::ResetGeolocationPermissionToAsk(
+    const GURL& url) const {
+  if (auto* delegate = profile_->GetPermissionControllerDelegate()) {
+    delegate->ResetPermission(blink::PermissionType::GEOLOCATION, url, url);
+  }
 }
 
 DocumentSuggestionsService*
@@ -470,13 +511,28 @@ ChromeAutocompleteProviderClient::GetSessionSyncService() const {
   return SessionSyncServiceFactory::GetForProfile(profile_);
 }
 
+sessions::TabRestoreService*
+ChromeAutocompleteProviderClient::GetTabRestoreService() const {
+  return TabRestoreServiceFactory::GetForProfile(profile_);
+}
+
 AimEligibilityService*
 ChromeAutocompleteProviderClient::GetAimEligibilityService() const {
   return AimEligibilityServiceFactory::GetForProfile(profile_);
 }
 
+AiModeButtonService* ChromeAutocompleteProviderClient::GetAiModeButtonService()
+    const {
+  return AiModeButtonServiceFactory::GetForProfile(profile_);
+}
+
 bool ChromeAutocompleteProviderClient::IsOffTheRecord() const {
   return profile_->IsOffTheRecord();
+}
+
+bool ChromeAutocompleteProviderClient::IsPrimaryOTRProfileWithRegularParent()
+    const {
+  return profile_->IsPrimaryOTRProfileWithRegularParent();
 }
 
 bool ChromeAutocompleteProviderClient::IsIncognitoProfile() const {
@@ -527,14 +583,14 @@ std::string ChromeAutocompleteProviderClient::ProfileUserName() const {
 
 void ChromeAutocompleteProviderClient::Classify(
     const std::u16string& text,
-    bool prefer_keyword,
+    bool in_keyword_mode,
     bool allow_exact_keyword_match,
     metrics::OmniboxEventProto::PageClassification page_classification,
     AutocompleteMatch* match,
     GURL* alternate_nav_url) {
   AutocompleteClassifier* classifier = GetAutocompleteClassifier();
-  DCHECK(classifier);
-  classifier->Classify(text, prefer_keyword, allow_exact_keyword_match,
+  CHECK(classifier, base::NotFatalUntil::M161);
+  classifier->Classify(text, in_keyword_mode, allow_exact_keyword_match,
                        page_classification, match, alternate_nav_url);
 }
 
@@ -609,21 +665,32 @@ bool ChromeAutocompleteProviderClient::IsHistoryEmbeddingsSettingVisible()
 }
 
 bool ChromeAutocompleteProviderClient::IsLensEnabled() const {
-#if !BUILDFLAG(IS_ANDROID)
+#if BUILDFLAG(IS_ANDROID)
+  if (base::FeatureList::IsEnabled(lens::features::kLensOverlayAndroid)) {
+    JNIEnv* env = base::android::AttachCurrentThread();
+    return Java_LensSupportStatusHelper_isLensSearchSupported(
+        env, profile_->GetJavaObject(),
+        profile_->IsPrimaryOTRProfileWithRegularParent());
+  }
+
+#else
   if (auto* lens_search_controller =
           GetLensSearchController(GetWebContents(web_contents_getter_))) {
-    // Guaranteed to exist if lens_search_controller is  not null.
+    // Guaranteed to exist if lens_search_controller is not null.
     return lens::LensOverlayEntryPointController::From(
                lens_search_controller->GetTabInterface()
                    ->GetBrowserWindowInterface())
         ->IsEnabled();
   }
-#endif
+#endif  // BUILDFLAG(IS_ANDROID)
+
   return false;
 }
 
 bool ChromeAutocompleteProviderClient::AreLensEntrypointsVisible() const {
-#if !BUILDFLAG(IS_ANDROID)
+#if BUILDFLAG(IS_ANDROID)
+  return IsLensEnabled();
+#else
   if (auto* lens_search_controller =
           GetLensSearchController(GetWebContents(web_contents_getter_))) {
     // Guaranteed to exist if lens_search_controller is  not null.
@@ -632,8 +699,8 @@ bool ChromeAutocompleteProviderClient::AreLensEntrypointsVisible() const {
                    ->GetBrowserWindowInterface())
         ->AreVisible();
   }
-#endif  // !BUILDFLAG(IS_ANDROID)
   return false;
+#endif  // BUILDFLAG(IS_ANDROID)
 }
 
 std::optional<bool> ChromeAutocompleteProviderClient::IsPagePaywalled() const {
@@ -660,10 +727,9 @@ bool ChromeAutocompleteProviderClient::ShouldSendPageTitleSuggestParam() const {
       GetAimEligibilityService());
 }
 
-bool ChromeAutocompleteProviderClient::IsOmniboxNextLensSearchChipEnabled()
-    const {
+bool ChromeAutocompleteProviderClient::IsAskGShowChipEnabled() const {
 #if !BUILDFLAG(IS_ANDROID)
-  return IsOmniboxNextAimPopupEnabled() && omnibox::kShowLensSearchChip.Get();
+  return IsOmniboxNextAimPopupEnabled() && omnibox::kAskGShowChip.Get();
 #else
   return false;
 #endif  // !BUILDFLAG(IS_ANDROID)
@@ -679,7 +745,8 @@ bool ChromeAutocompleteProviderClient::IsOmniboxNextAimPopupEnabled() const {
 
 bool ChromeAutocompleteProviderClient::IsGeminiStarterPackEnabled() const {
   return AutocompleteProviderClient::IsGeminiStarterPackEnabled() &&
-         profile_->GetPrefs()->GetInteger(prefs::kGeminiSettings) == 0;
+         profile_->GetPrefs()->GetInteger(
+             optimization_guide::prefs::kGeminiSettings) == 0;
 }
 
 base::CallbackListSubscription
@@ -699,6 +766,11 @@ ChromeAutocompleteProviderClient::GetLensSuggestInputsWhenReady(
 base::WeakPtr<AutocompleteProviderClient>
 ChromeAutocompleteProviderClient::GetWeakPtr() {
   return weak_ptr_factory_.GetWeakPtr();
+}
+
+bool ChromeAutocompleteProviderClient::IsWebUiNtpEnabledForDesktopAndroid()
+    const {
+  return search::IsWebUiNtpEnabledForDesktopAndroid();
 }
 
 void ChromeAutocompleteProviderClient::OpenSharingHub() {
@@ -727,7 +799,7 @@ void ChromeAutocompleteProviderClient::OpenIncognitoClearBrowsingDataDialog() {
 
 void ChromeAutocompleteProviderClient::CloseIncognitoWindows() {
 #if !BUILDFLAG(IS_ANDROID)
-  if (profile_->IsIncognitoProfile()) {
+  if (profile_->IsPrimaryOTRProfileWithRegularParent()) {
     chrome::CloseAllBrowsersWithIncognitoProfile(profile_);
   }
 #endif  // !BUILDFLAG(IS_ANDROID)
@@ -742,7 +814,7 @@ bool ChromeAutocompleteProviderClient::OpenJourneys(const std::string& query) {
   }
 
   auto* const history_clusters_side_panel_coordinator =
-      bwi->GetFeatures().history_clusters_side_panel_coordinator();
+      HistoryClustersSidePanelCoordinator::From(bwi);
   if (history_clusters_side_panel_coordinator &&
       history_clusters_side_panel_coordinator->Show(query)) {
     return true;
@@ -753,14 +825,55 @@ bool ChromeAutocompleteProviderClient::OpenJourneys(const std::string& query) {
   return false;
 }
 
-void ChromeAutocompleteProviderClient::OpenLensOverlay(bool show) {
+bool ChromeAutocompleteProviderClient::ShouldOpenCoBrowsePanel() const {
+#if !BUILDFLAG(IS_ANDROID)
+  if (!omnibox::AreContextualTasksEligible(profile_)) {
+    return false;
+  }
+
+  return omnibox::kAskGCoBrowse.Get() ||
+         omnibox::kAskGCoBrowseWithVisualSelection.Get();
+#else
+  return false;
+#endif
+}
+
+void ChromeAutocompleteProviderClient::OpenCoBrowsePanel() {
+#if !BUILDFLAG(IS_ANDROID)
+  content::WebContents* web_contents = GetWebContents(web_contents_getter_);
+  auto* tab = web_contents
+                  ? tabs::TabInterface::MaybeGetFromContents(web_contents)
+                  : nullptr;
+  if (auto* lens_controller = LensSearchController::From(tab)) {
+    lens_controller->StartZeroStateSessionInSidePanel(
+        omnibox::ChromeAimEntryPoint::DESKTOP_CHROME_COBROWSE_OMNIBOX_ACTION,
+        lens::LensOverlayInvocationSource::kOmniboxPageAction,
+        /*open_lens_overlay=*/omnibox::kAskGCoBrowseWithVisualSelection.Get());
+
+    // Focus the side panel so that focus is not left on the omnibox.
+    BrowserWindowInterface* bwi =
+        tab ? tab->GetBrowserWindowInterface() : nullptr;
+    if (auto* controller =
+            contextual_tasks::ContextualTasksPanelController::From(bwi)) {
+      if (auto* side_panel_contents = controller->GetActiveWebContents()) {
+        side_panel_contents->Focus();
+      }
+    }
+  }
+#endif
+}
+
+void ChromeAutocompleteProviderClient::OpenLensOverlay(
+    bool show,
+    lens::LensOverlayInvocationSource invocation_source) {
 #if !BUILDFLAG(IS_ANDROID)
   if (auto* lens_search_controller =
           GetLensSearchController(GetWebContents(web_contents_getter_))) {
     if (show) {
-      // Force showing the contextual search box in the Lens Overlay.
-      lens_search_controller->OpenLensOverlay(
-          lens::LensOverlayInvocationSource::kOmniboxPageAction, true);
+      // Force showing the contextual search box in the Lens Overlay, unless
+      // kAskGLensChipRoute is enabled.
+      bool show_csb = !omnibox::kAskGLensChipRoute.Get();
+      lens_search_controller->OpenLensOverlay(invocation_source, show_csb);
     } else {
       // TODO(crbug.com/402497756): For prototyping, reusing the existing
       // omnibox entry point. However, for production, create a new invocation
@@ -774,15 +887,20 @@ void ChromeAutocompleteProviderClient::OpenLensOverlay(bool show) {
 
 void ChromeAutocompleteProviderClient::IssueContextualSearchRequest(
     const GURL& destination_url,
-    AutocompleteMatchType::Type match_type,
+    omnibox::AutocompleteMatchType match_type,
     bool is_zero_prefix_suggestion) {
 #if !BUILDFLAG(IS_ANDROID)
   if (auto* web_contents = GetWebContents(web_contents_getter_)) {
     web_contents->Focus();
     if (auto* lens_search_controller = GetLensSearchController(web_contents)) {
+      bool grant_session_permission =
+          base::FeatureList::IsEnabled(
+              omnibox::kWebUIOmniboxAskGAboutThisPage) &&
+          omnibox::kAskGBypassPrivacyNotice.Get();
       lens_search_controller->IssueContextualSearchRequest(
           lens::LensOverlayInvocationSource::kOmniboxContextualSuggestion,
-          destination_url, match_type, is_zero_prefix_suggestion);
+          destination_url, match_type, is_zero_prefix_suggestion,
+          grant_session_permission);
     }
   }
 #endif  // !BUILDFLAG(IS_ANDROID)
@@ -800,10 +918,26 @@ void ChromeAutocompleteProviderClient::PromptPageTranslation() {
     ChromeTranslateClient* translate_client =
         ChromeTranslateClient::FromWebContents(contents);
     if (translate_client) {
-      DCHECK_NE(nullptr, translate_client->GetTranslateManager());
+      CHECK_NE(nullptr, translate_client->GetTranslateManager(),
+               base::NotFatalUntil::M161);
       translate_client->GetTranslateManager()->ShowTranslateUI(
           /*auto_translate=*/true, /*triggered_from_menu=*/true);
     }
   }
 #endif  // !BUILDFLAG(IS_ANDROID)
 }
+
+bool ChromeAutocompleteProviderClient::ShouldOpenComposeboxForAskG() const {
+#if !BUILDFLAG(IS_ANDROID)
+  if (!omnibox::AreContextualTasksEligible(profile_)) {
+    return false;
+  }
+
+  return omnibox::IsAimPopupFeatureEnabled() && omnibox::kAskGComposeBox.Get();
+#else
+  return false;
+#endif
+}
+
+// This is implemented in OmniboxEditModelActionClient.
+void ChromeAutocompleteProviderClient::OpenComposeboxForAskG() {}

@@ -114,8 +114,13 @@ class MODULES_EXPORT BaseAudioContext
   void ReportWillBeDestroyed() final;
 
   // https://webaudio.github.io/web-audio-api/#BaseAudioContext
-  // Cannot be called from the audio thread.
-  AudioDestinationNode* destination() const;
+  //
+  // Cannot be called from the audio thread. This method returns a
+  // GarbageCollected object, which must not be accessed on the real-time audio
+  // thread. For audio thread access, use the corresponding
+  // AudioDestinationHandler instead.
+  virtual AudioDestinationNode* destinationNode() const;
+
   float sampleRate() const { return destination_handler_->SampleRate(); }
   double currentTime() const { return destination_handler_->CurrentTime(); }
   AudioListener* listener() { return listener_.Get(); }
@@ -184,12 +189,11 @@ class MODULES_EXPORT BaseAudioContext
 
   // Is the destination node initialized and ready to handle audio?
   bool IsDestinationInitialized() const {
-    AudioDestinationNode* dest = destination();
+    AudioDestinationNode* dest = destinationNode();
     return dest ? dest->GetAudioDestinationHandler().IsInitialized() : false;
   }
 
   void Dispose();
-
 
   size_t CurrentSampleFrame() const {
     return destination_handler_->CurrentSampleFrame();
@@ -321,6 +325,10 @@ class MODULES_EXPORT BaseAudioContext
   // if the execution context does not exist.
   bool CheckExecutionContextAndThrowIfNecessary(ExceptionState&);
 
+  wtf_size_t PendingPromiseResolverCountForTesting() const {
+    return pending_promise_resolvers_.size();
+  }
+
  protected:
   enum class ContextType { kRealtimeContext, kOfflineContext };
 
@@ -339,34 +347,28 @@ class MODULES_EXPORT BaseAudioContext
   // they can be collected.
   void HandleStoppableSourceNodes();
 
-  void RejectPendingDecodeAudioDataResolvers();
-
   // When the context goes away, reject any pending script promise resolvers.
   virtual void RejectPendingResolvers();
+
+  // Detaches all pending script promise resolvers when the context is being
+  // disposed by the garbage collector. This is called from Dispose() (a
+  // pre-finalizer), where allocating new objects (like DOMExceptions for
+  // rejecting promises) is prohibited. Detaching the resolvers ensures they
+  // don't attempt to access the context during their own disposal and avoids
+  // crashes from forbidden allocations.
+  virtual void DetachPendingResolvers();
 
   // Returns the window with which the instance is associated.
   LocalDOMWindow* GetWindow() const;
 
-  // The audio thread relies on the main thread to perform some operations over
-  // the objects that it owns and controls; this method posts the task to
-  // initiate those.
-  void ScheduleMainThreadCleanup();
-
-  // Handles promise resolving, stopping and finishing up of audio source nodes
-  // etc. Actions that should happen, but can happen asynchronously to the
-  // audio thread making rendering progress.
-  void PerformCleanupOnMainThread();
-
-  // https://webaudio.github.io/web-audio-api/#dom-baseaudiocontext-pending-promises-slot
-  HeapVector<Member<ScriptPromiseResolver<IDLUndefined>>>
-      pending_promises_resolvers_;
+  void AddPendingPromiseResolver(ScriptPromiseResolver<IDLUndefined>*);
+  void ResolvePendingPromiseResolver(ScriptPromiseResolver<IDLUndefined>*);
+  virtual void RejectPendingPromiseResolversWithException(
+      const String& message);
+  void RemovePendingPromiseResolvers(
+      const HeapVector<Member<ScriptPromiseResolver<IDLUndefined>>>&);
 
   Member<AudioDestinationNode> destination_node_;
-
-  // True if we're in the process of resolving promises for resume().  Resolving
-  // can take some time and the audio context process loop is very fast, so we
-  // don't want to call resolve an excessive number of times.
-  bool is_resolving_resume_promises_ = false;
 
   scoped_refptr<base::SingleThreadTaskRunner> task_runner_;
 
@@ -380,6 +382,8 @@ class MODULES_EXPORT BaseAudioContext
   // When the context goes away, there might still be some sources which
   // haven't finished playing.  Make sure to release them here.
   void ReleaseActiveSourceNodes();
+
+  void RejectPendingDecodeAudioDataResolvers();
 
   // The state of an audio context.  On creation, the state is Suspended. The
   // state is Running if audio is being processed (audio graph is being pulled
@@ -395,16 +399,16 @@ class MODULES_EXPORT BaseAudioContext
   // Listener for the PannerNodes
   Member<AudioListener> listener_;
 
-  // Set to `true` by the audio thread when it posts a main-thread task to
-  // perform delayed state sync'ing updates that needs to be done on the main
-  // thread. Cleared by the main thread task once it has run.
-  bool has_posted_cleanup_task_ = false;
-
   // Set to `true` if initial memory allocation for the context fails.
   bool has_allocation_failed_ = false;
 
   // Graph locking.
   scoped_refptr<DeferredTaskHandler> deferred_task_handler_;
+
+  // Vector for tracking suspend and resume resolvers in BaseAudioContext.
+  // https://webaudio.github.io/web-audio-api/#dom-baseaudiocontext-pending-promises-slot
+  HeapVector<Member<ScriptPromiseResolver<IDLUndefined>>>
+      pending_promise_resolvers_;
 
   // Vector of promises created by decodeAudioData.  This keeps the resolvers
   // alive until decodeAudioData finishes decoding and can tell the main thread

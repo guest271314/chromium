@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "base/containers/flat_set.h"
+#include "base/containers/span.h"
 #include "base/functional/bind.h"
 #include "base/pickle.h"
 #include "base/strings/utf_string_conversions.h"
@@ -30,6 +31,8 @@
 #include "ui/base/dragdrop/os_exchange_data.h"
 #include "ui/base/dragdrop/os_exchange_data_provider_factory.h"
 #include "ui/events/base_event_utils.h"
+#include "ui/events/event.h"
+#include "ui/events/types/event_type.h"
 #include "ui/gfx/geometry/point.h"
 #include "ui/gfx/geometry/vector2d.h"
 #include "ui/gfx/native_ui_types.h"
@@ -288,7 +291,8 @@ TEST_P(WaylandDataDragControllerTest, StartDrag) {
   // objects are ready.
   ScheduleTestTask(base::BindLambdaForTesting([&]() {
     // Now the server can read the data and give it to our callback.
-    ReadAndCheckData(kMimeTypeUtf8PlainText, kSampleTextForDragAndDrop);
+    ReadAndCheckData(kMimeTypeUtf8PlainText,
+                     base::byte_span_from_cstring(kSampleTextForDragAndDrop));
 
     SendDndCancelled();
   }));
@@ -371,13 +375,14 @@ TEST_P(WaylandDataDragControllerTest, StartDragWithFileContents) {
   OSExchangeData os_exchange_data;
   os_exchange_data.SetFileContents(
       base::FilePath(FILE_PATH_LITERAL("t\\est\".jpg")),
-      kSampleTextForDragAndDrop);
+      base::byte_span_from_cstring(kSampleTextForDragAndDrop));
   int operations = DragDropTypes::DRAG_COPY | DragDropTypes::DRAG_MOVE;
   drag_controller()->StartSession(os_exchange_data, operations,
                                   DragEventSource::kMouse);
 
   constexpr char kText[] = "application/octet-stream;name=\"t\\\\est\\\".jpg\"";
-  ReadAndCheckData(kText, kSampleTextForDragAndDrop);
+  ReadAndCheckData(kText,
+                   base::byte_span_from_cstring(kSampleTextForDragAndDrop));
   PostToServerAndWait([kText](wl::TestWaylandServerThread* server) {
     auto* source = server->data_device_manager()->data_source();
     ASSERT_TRUE(source);
@@ -510,7 +515,8 @@ TEST_P(WaylandDataDragControllerTest,
   // objects are ready.
   ScheduleTestTask(base::BindLambdaForTesting([&]() {
     // Now the server can read the data and give it to our callback.
-    ReadAndCheckData(kMimeTypeUtf8PlainText, kSampleTextForDragAndDrop);
+    ReadAndCheckData(kMimeTypeUtf8PlainText,
+                     base::byte_span_from_cstring(kSampleTextForDragAndDrop));
 
     EXPECT_CALL(*drop_handler_, OnDragLeave()).Times(1);
     SendDndDropPerformed();
@@ -906,6 +912,36 @@ TEST_P(WaylandDataDragControllerTest, DestroyOriginSurface) {
   // expected to gracefully reset its internal state.
   SendDndLeave();
   SendDndCancelled();
+}
+
+// Verifies the drag loop exits gracefully when the origin window is destroyed
+// while dispatching the synthetic pointer release at drag-session close.
+TEST_P(WaylandDataDragControllerTest,
+       DestroyOriginWindowDuringDragSessionClose) {
+  FocusAndPressLeftPointerButton(window_.get(), &delegate_);
+
+  // Once the drag session has started, emulate a successful drop. The
+  // controller will synthesize a release for the still-pressed pointer button;
+  // have the delegate destroy the origin window from within that event's
+  // dispatch, mimicking a queued close task running in a nested loop.
+  ScheduleTestTask(base::BindLambdaForTesting([&]() {
+    EXPECT_CALL(delegate_, DispatchEvent(_)).WillRepeatedly([&](Event* event) {
+      if (event->type() == EventType::kMouseReleased) {
+        window_.reset();
+      }
+    });
+    SendDndFinished();
+  }));
+
+  OSExchangeData os_exchange_data;
+  os_exchange_data.SetString(sample_text_for_dnd());
+  EXPECT_CALL(drag_started_callback_, Run()).Times(1);
+  EXPECT_FALSE(window_->StartDrag(
+      os_exchange_data, DragDropTypes::DRAG_COPY, DragEventSource::kMouse,
+      /*cursor=*/{}, /*can_grab_pointer=*/true, drag_started_callback_.Get(),
+      drag_finished_callback_.Get(), /*location_delegate=*/nullptr));
+
+  EXPECT_FALSE(window_);
 }
 
 // Ensures drag/drop events are properly propagated to non-toplevel windows.
@@ -1499,7 +1535,8 @@ TEST_P(WaylandDataDragControllerTest, OutgoingSessionWithoutDndFinished) {
   EXPECT_NE(drag_controller_state(), WaylandDataDragController::State::kIdle);
 
   // Then ensure that, even after such server-side bogus drag events flow,
-  // subsequent drags can start successfully.
+  // subsequent drag requests are rejected while the previous drag is in
+  // progress.
   FocusAndPressLeftPointerButton(window_.get(), &delegate_);
   OSExchangeData os_exchange_data;
   os_exchange_data.SetHtml(sample_text_for_dnd(), {});
@@ -1507,7 +1544,7 @@ TEST_P(WaylandDataDragControllerTest, OutgoingSessionWithoutDndFinished) {
       os_exchange_data, DragDropTypes::DRAG_COPY | DragDropTypes::DRAG_MOVE,
       DragEventSource::kMouse);
   WaylandTestBase::SyncDisplay();
-  ASSERT_TRUE(started);
+  ASSERT_FALSE(started);
 
   SendDndFinished();
   EXPECT_EQ(drag_controller_state(), WaylandDataDragController::State::kIdle);
@@ -1554,6 +1591,48 @@ TEST_P(WaylandDataDragControllerTest, ScaleEnterAndMotionEventsLocation) {
   Mock::VerifyAndClearExpectations(drop_handler_.get());
 
   SendDndLeave();
+}
+
+TEST_P(WaylandDataDragControllerTest,
+       RejectReentrantStartSessionDuringWindowDrag) {
+  FocusAndPressLeftPointerButton(window_.get(), &delegate_);
+
+  OSExchangeData window_drag_data(
+      OSExchangeDataProviderFactory::CreateProvider());
+  window_drag_data.SetPickledData(
+      ClipboardFormatType::CustomPlatformType(kMimeTypeWindowDrag), {});
+
+  // Start window drag session on window 1.
+  bool started = drag_controller()->StartSession(
+      window_drag_data, DragDropTypes::DRAG_MOVE, DragEventSource::kMouse);
+  ASSERT_TRUE(started);
+  EXPECT_TRUE(drag_controller()->IsDragInProgress());
+
+  // Create a second window to simulate the destination window.
+  MockWaylandPlatformWindowDelegate delegate_2(connection_.get());
+  EXPECT_CALL(delegate_2, OnAcceleratedWidgetAvailable(_)).Times(1);
+  auto window_2 = CreateWaylandWindowWithParams(
+      PlatformWindowType::kWindow, gfx::Rect(100, 100, 300, 300), &delegate_2);
+
+  // Destroy window 1 as all tabs are detached.
+  window_.reset();
+  EXPECT_TRUE(drag_controller()->IsDragInProgress());
+
+  // From window 2, attempt to start a second drag session while the window drag
+  // is still active.
+  FocusAndPressLeftPointerButton(window_2.get(), &delegate_2);
+  OSExchangeData attacker_data;
+  attacker_data.SetString(u"payload");
+  bool second_started = drag_controller()->StartSession(
+      attacker_data, DragDropTypes::DRAG_COPY, DragEventSource::kMouse);
+
+  // The re-entrant session request should be rejected, preserving the active
+  // window drag session.
+  EXPECT_FALSE(second_started);
+  EXPECT_TRUE(drag_controller()->IsDragInProgress());
+
+  drag_controller()->CancelSession();
+  EXPECT_FALSE(drag_controller()->IsDragInProgress());
 }
 
 INSTANTIATE_TEST_SUITE_P(XdgVersionStableTest,

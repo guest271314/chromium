@@ -15,6 +15,7 @@
 #include "net/base/net_export.h"
 #include "net/device_bound_sessions/cookie_craving.h"
 #include "net/device_bound_sessions/dbsc_request.h"
+#include "net/device_bound_sessions/deletion_reason.h"
 #include "net/device_bound_sessions/session_error.h"
 #include "net/device_bound_sessions/session_inclusion_rules.h"
 #include "net/device_bound_sessions/session_key.h"
@@ -22,7 +23,7 @@
 #include "url/gurl.h"
 
 namespace net {
-class FirstPartySetMetadata;
+struct CookieWithAccessResult;
 }  // namespace net
 
 namespace net::device_bound_sessions {
@@ -38,6 +39,8 @@ class NET_EXPORT Session {
   using Id = SessionKey::Id;
   using KeyIdOrError = unexportable_keys::ServiceErrorOr<
       unexportable_keys::UnexportableSigningKeyId>;
+  using MaybeAttestationKeyIdOrError = unexportable_keys::ServiceErrorOr<
+      std::optional<unexportable_keys::UnexportableAttestationKeyId>>;
 
   Session(const Session& other) = delete;
   Session& operator=(const Session& other) = delete;
@@ -49,7 +52,17 @@ class NET_EXPORT Session {
   // Creates an instance of `Session` based on the `params`.
   static base::expected<std::unique_ptr<Session>, SessionError> CreateIfValid(
       const SessionParams& params);
-  static std::unique_ptr<Session> CreateFromProto(const proto::Session& proto);
+
+  // Creates an instance of `Session` based on the `proto`.
+  // Returns:
+  // - A `Session` if the proto is valid (and either it is not expired or
+  //   `check_expiry` is false).
+  // - `DeletionReason::kExpired` if the proto is expired and `check_expiry` is
+  //   true.
+  // - `DeletionReason::kInvalidSessionParams` if the proto is invalid.
+  // The function never returns a nullptr Session in `base::ok()`.
+  static base::expected<std::unique_ptr<Session>, DeletionReason>
+  CreateFromProto(const proto::Session& proto, bool check_expiry = true);
   proto::Session ToProto() const;
 
   // Returns a display-friendly version of this Session. Used for DevTools.
@@ -65,6 +78,17 @@ class NET_EXPORT Session {
 
   const KeyIdOrError& unexportable_key_id() const { return key_id_or_error_; }
 
+  void set_unexportable_attestation_key_id(
+      MaybeAttestationKeyIdOrError maybe_attestation_key_id_or_error) {
+    maybe_attestation_key_id_or_error_ =
+        std::move(maybe_attestation_key_id_or_error);
+  }
+
+  const MaybeAttestationKeyIdOrError& maybe_unexportable_attestation_key_id()
+      const {
+    return maybe_attestation_key_id_or_error_;
+  }
+
   // Return whether `request` is in-scope for this session.
   bool IsInScope(DbscRequest& request);
 
@@ -74,8 +98,12 @@ class NET_EXPORT Session {
   // will be `base::TimeDelta::Max()`
   base::TimeDelta MinimumBoundCookieLifetime(
       DbscRequest& request,
-      const FirstPartySetMetadata& first_party_set_metadata,
       const SessionKey& session_key);
+  // Evaluates the minimum remaining lifetime across all bound cookie cravings
+  // satisfied by `cookies`. Returns base::TimeDelta() if any craving is
+  // missing/unsatisfied.
+  base::TimeDelta MinimumBoundCookieLifetime(
+      base::span<const CookieWithAccessResult> cookies) const;
 
   const Id& id() const { return id_; }
 
@@ -115,6 +143,9 @@ class NET_EXPORT Session {
   // Whether the URL is in-scope for the session.
   bool IncludesUrl(const GURL& url) const;
 
+  // Whether `origin` has any URL that is in-scope for the session.
+  bool IsVisibleToOrigin(const url::Origin& origin) const;
+
   // Whether a request initiated by `initiator` is allowed to trigger a
   // refresh for this session.
   bool AllowedToInitiateRefresh(
@@ -130,9 +161,7 @@ class NET_EXPORT Session {
   // Returns whether `request` would be allowed to set any bound
   // cookies. This is a prerequisite for certain kinds of changes to
   // session config.
-  bool CanSetBoundCookie(
-      DbscRequest& request,
-      const FirstPartySetMetadata& first_party_set_metadata) const;
+  bool CanSetBoundCookie(DbscRequest& request) const;
 
   const url::Origin& origin() const { return inclusion_rules_.origin(); }
 
@@ -159,7 +188,8 @@ class NET_EXPORT Session {
           bool should_defer_when_expired,
           base::Time creation_date,
           base::Time expiry_date,
-          std::vector<std::string> allowed_refresh_initiators);
+          std::vector<std::string> allowed_refresh_initiators,
+          AttestationMode attestation_mode = AttestationMode::kNone);
 
   // The unique server-issued identifier of the session.
   const Id id_;
@@ -185,14 +215,18 @@ class NET_EXPORT Session {
   base::Time creation_date_;
   // Expiry date for session, 400 days from last refresh similar to cookies.
   base::Time expiry_date_;
-  // Unexportable key for this session.
-  // NOTE: The key may not be available for sometime after a browser restart.
-  // This is because the key needs to be restored from a corresponding
-  // "wrapped" value that is persisted to disk. This restoration takes time
-  // and can be done lazily. The "wrapped" key and the restore process are
-  // transparent to this class. Once restored, the key can be set using
-  // `set_unexportable_key_id`
+  // Unexportable keys for this session. Attestation keys will only be set for
+  // sessions where `aik_required` is true.
+  //
+  // NOTE: The keys may not be available for some time after a browser
+  // restart. This is because the keys need to be restored from corresponding
+  // "wrapped" values that are persisted to disk. This restoration takes time
+  // and can be done lazily. The "wrapped" keys and the restore process are
+  // transparent to this class. Once restored, the keys can be set using
+  // `set_unexportable_key_id` and `set_unexportable_attestation_key_id`.
   KeyIdOrError key_id_or_error_ =
+      base::unexpected(unexportable_keys::ServiceError::kKeyNotReady);
+  MaybeAttestationKeyIdOrError maybe_attestation_key_id_or_error_ =
       base::unexpected(unexportable_keys::ServiceError::kKeyNotReady);
   // Precached challenge, if any. Should not be persisted.
   std::optional<std::string> cached_challenge_;

@@ -28,6 +28,7 @@
 #include "net/base/completion_once_callback.h"
 #include "net/base/features.h"
 #include "net/base/net_errors.h"
+#include "net/base/network_handle.h"
 #include "net/base/network_isolation_key.h"
 #include "net/base/port_util.h"
 #include "net/base/privacy_mode.h"
@@ -485,7 +486,6 @@ class CapturePreconnectsTransportSocketPool : public TransportClientSocketPool {
       const CommonConnectJobParams* common_connect_job_params)
       : TransportClientSocketPool(/*max_sockets=*/0,
                                   /*max_sockets_per_group=*/0,
-                                  SocketPoolAdditionalCapacity::CreateEmpty(),
                                   base::TimeDelta(),
                                   ProxyChain::Direct(),
                                   /*is_for_websockets=*/false,
@@ -601,18 +601,19 @@ class CapturePreconnectHttpStreamPoolDelegate
 class HttpStreamFactoryTest : public TestWithTaskEnvironment,
                               public ::testing::WithParamInterface<bool> {
  public:
-  HttpStreamFactoryTest() {
+  // TODO(crbug.com/463794414): Enable per-priority task queues for these tests.
+  HttpStreamFactoryTest()
+      : TestWithTaskEnvironment(
+            base::test::TaskEnvironment::TimeSource::DEFAULT,
+            {features::kNetworkServicePerPriorityTaskQueues}) {
     if (HappyEyeballsV3Enabled()) {
-      feature_list_.InitAndEnableFeature(features::kHappyEyeballsV3);
+      AddScopedFeatureList().InitAndEnableFeature(features::kHappyEyeballsV3);
     } else {
-      feature_list_.InitAndDisableFeature(features::kHappyEyeballsV3);
+      AddScopedFeatureList().InitAndDisableFeature(features::kHappyEyeballsV3);
     }
   }
 
   bool HappyEyeballsV3Enabled() const { return GetParam(); }
-
- private:
-  base::test::ScopedFeatureList feature_list_;
 };
 
 INSTANTIATE_TEST_SUITE_P(All,
@@ -728,7 +729,8 @@ TEST_P(HttpStreamFactoryTest, PreconnectDirectWithExistingSpdySession) {
                        ProxyChain::Direct(), SessionUsage::kDestination,
                        SocketTag(), NetworkAnonymizationKey(),
                        SecureDnsPolicy::kAllow,
-                       /*disable_cert_verification_network_fetches=*/false);
+                       /*disable_cert_verification_network_fetches=*/false,
+                       handles::kInvalidNetworkHandle);
     std::ignore = CreateFakeSpdySession(session->spdy_session_pool(), key);
 
     if (base::FeatureList::IsEnabled(features::kHappyEyeballsV3)) {
@@ -849,8 +851,7 @@ TEST_P(HttpStreamFactoryTest, PreconnectInvalidUrls) {
 
 // Verify that preconnects use the specified NetworkAnonymizationKey.
 TEST_P(HttpStreamFactoryTest, PreconnectNetworkIsolationKey) {
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndEnableFeature(
+  AddScopedFeatureList().InitAndEnableFeature(
       features::kPartitionConnectionsByNetworkIsolationKey);
 
   SpdySessionDependencies session_deps(
@@ -1952,8 +1953,7 @@ TEST_P(HttpStreamFactoryTest,
       NetworkAnonymizationKey::CreateSameSite(kSite2);
   const NetworkIsolationKey kNetworkIsolationKey2(kSite1, kSite1);
 
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndEnableFeature(
+  AddScopedFeatureList().InitAndEnableFeature(
       features::kPartitionConnectionsByNetworkIsolationKey);
 
   url::SchemeHostPort scheme_host_port("http", "myproxy.org", 443);
@@ -2023,8 +2023,7 @@ TEST_P(HttpStreamFactoryTest, NewSpdySessionCloseIdleH2Sockets) {
   // ClientSocketPool. When HappyEyeballsV3 is enabled we immediately create
   // a SpdySession after negotiating to use HTTP/2 so there would be no idle
   // HTTP/2 sockets when the feature is enabled.
-  base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitAndDisableFeature(features::kHappyEyeballsV3);
+  AddScopedFeatureList().InitAndDisableFeature(features::kHappyEyeballsV3);
 
   SpdySessionDependencies session_deps(
       ConfiguredProxyResolutionService::CreateDirect());
@@ -2172,12 +2171,11 @@ TEST_P(HttpStreamFactoryTest, TwoSpdyConnects) {
 }
 
 TEST_P(HttpStreamFactoryTest, RequestBidirectionalStreamImpl) {
-  base::test::ScopedFeatureList scoped_feature_list;
   // Explicitly disable HappyEyeballsV3 because it doesn't support bidirectional
   // streams yet.
   // TODO(crbug.com/346835898): Support bidirectional streams in
   // HappyEyeballsV3.
-  scoped_feature_list.InitAndDisableFeature(features::kHappyEyeballsV3);
+  AddScopedFeatureList().InitAndDisableFeature(features::kHappyEyeballsV3);
 
   SpdySessionDependencies session_deps(
       ConfiguredProxyResolutionService::CreateDirect());
@@ -2670,7 +2668,7 @@ class HttpStreamFactoryBidirectionalQuicTest
     // bidirectional streams.
     // TODO(crbug.com/346835898): Support bidirectional streams in
     // HappyEyeballsV3.
-    feature_list_.InitAndDisableFeature(features::kHappyEyeballsV3);
+    AddScopedFeatureList().InitAndDisableFeature(features::kHappyEyeballsV3);
     FLAGS_quic_enable_http3_grease_randomness = false;
     quic_context_.AdvanceTime(quic::QuicTime::Delta::FromMilliseconds(20));
     quic::QuicEnableVersion(version_);
@@ -2747,7 +2745,6 @@ class HttpStreamFactoryBidirectionalQuicTest
   MockHostResolver* host_resolver() { return &host_resolver_; }
 
  private:
-  base::test::ScopedFeatureList feature_list_;
   quic::test::QuicFlagSaver saver_;
   const quic::ParsedQuicVersion version_;
   MockQuicContext quic_context_;
@@ -2775,12 +2772,11 @@ INSTANTIATE_TEST_SUITE_P(VersionIncludeStreamDependencySequence,
 
 TEST_P(HttpStreamFactoryBidirectionalQuicTest,
        RequestBidirectionalStreamImplQuicAlternative) {
-  base::test::ScopedFeatureList scoped_feature_list;
   // Explicitly disable HappyEyeballsV3 because it doesn't support bidirectional
   // streams yet.
   // TODO(crbug.com/346835898): Support bidirectional streams in
   // HappyEyeballsV3.
-  scoped_feature_list.InitAndDisableFeature(features::kHappyEyeballsV3);
+  AddScopedFeatureList().InitAndDisableFeature(features::kHappyEyeballsV3);
 
   MockQuicData mock_quic_data(version());
   // Set priority to default value so that
@@ -2872,12 +2868,11 @@ TEST_P(HttpStreamFactoryBidirectionalQuicTest,
 // BidirectionalStreamQuicImpl.
 TEST_P(HttpStreamFactoryBidirectionalQuicTest,
        RequestBidirectionalStreamImplHttpJobFailsQuicJobSucceeds) {
-  base::test::ScopedFeatureList scoped_feature_list;
   // Explicitly disable HappyEyeballsV3 because it doesn't support bidirectional
   // streams yet.
   // TODO(crbug.com/346835898): Support bidirectional streams in
   // HappyEyeballsV3.
-  scoped_feature_list.InitAndDisableFeature(features::kHappyEyeballsV3);
+  AddScopedFeatureList().InitAndDisableFeature(features::kHappyEyeballsV3);
 
   // Set up Quic data.
   MockQuicData mock_quic_data(version());
@@ -2969,12 +2964,11 @@ TEST_P(HttpStreamFactoryBidirectionalQuicTest,
 }
 
 TEST_P(HttpStreamFactoryTest, RequestBidirectionalStreamImplFailure) {
-  base::test::ScopedFeatureList scoped_feature_list;
   // Explicitly disable HappyEyeballsV3 because it doesn't support bidirectional
   // streams yet.
   // TODO(crbug.com/346835898): Support bidirectional streams in
   // HappyEyeballsV3.
-  scoped_feature_list.InitAndDisableFeature(features::kHappyEyeballsV3);
+  AddScopedFeatureList().InitAndDisableFeature(features::kHappyEyeballsV3);
 
   SpdySessionDependencies session_deps(
       ConfiguredProxyResolutionService::CreateDirect());
@@ -3026,8 +3020,7 @@ TEST_P(HttpStreamFactoryTest, RequestBidirectionalStreamImplFailure) {
 TEST_P(HttpStreamFactoryTest, Tag) {
   // SocketTag is not supported yet for HappyEyeballsV3.
   // TODO(crbug.com/346835898): Support SocketTag.
-  base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitAndDisableFeature(features::kHappyEyeballsV3);
+  AddScopedFeatureList().InitAndDisableFeature(features::kHappyEyeballsV3);
 
   SpdySessionDependencies session_deps;
   auto socket_factory = std::make_unique<MockTaggingClientSocketFactory>();
@@ -3146,8 +3139,7 @@ TEST_P(HttpStreamFactoryTest, Tag) {
 TEST_P(HttpStreamFactoryBidirectionalQuicTest, Tag) {
   // SocketTag is not supported yet for HappyEyeballsV3.
   // TODO(crbug.com/346835898): Support SocketTag.
-  base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitAndDisableFeature(features::kHappyEyeballsV3);
+  AddScopedFeatureList().InitAndDisableFeature(features::kHappyEyeballsV3);
 
   // Prepare mock QUIC data for a first session establishment.
   MockQuicData mock_quic_data(version());
@@ -3279,8 +3271,7 @@ TEST_P(HttpStreamFactoryBidirectionalQuicTest, Tag) {
 TEST_P(HttpStreamFactoryTest, ChangeSocketTag) {
   // SocketTag is not supported yet for HappyEyeballsV3.
   // TODO(crbug.com/346835898): Support SocketTag.
-  base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitAndDisableFeature(features::kHappyEyeballsV3);
+  AddScopedFeatureList().InitAndDisableFeature(features::kHappyEyeballsV3);
 
   SpdySessionDependencies session_deps;
   auto socket_factory = std::make_unique<MockTaggingClientSocketFactory>();
@@ -3458,8 +3449,7 @@ TEST_P(HttpStreamFactoryTest, ChangeSocketTag) {
 TEST_P(HttpStreamFactoryTest, ChangeSocketTagAvoidOverwrite) {
   // SocketTag is not supported yet for HappyEyeballsV3.
   // TODO(crbug.com/346835898): Support SocketTag.
-  base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitAndDisableFeature(features::kHappyEyeballsV3);
+  AddScopedFeatureList().InitAndDisableFeature(features::kHappyEyeballsV3);
 
   SpdySessionDependencies session_deps;
   auto socket_factory = std::make_unique<MockTaggingClientSocketFactory>();
@@ -3951,8 +3941,7 @@ TEST_P(HttpStreamFactoryTest, SpdyIPPoolingWithDnsAliases) {
 }
 
 TEST_P(HttpStreamFactoryTest, PreconnectDirectCreatesSpdySession) {
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndEnableFeature(
+  AddScopedFeatureList().InitAndEnableFeature(
       net::features::kEnableErrorCodePropagationForPreconnect);
 
   SpdySessionDependencies session_deps;
@@ -3989,8 +3978,7 @@ TEST_P(HttpStreamFactoryTest, PreconnectDirectCreatesSpdySession) {
 }
 
 TEST_P(HttpStreamFactoryTest, PreconnectDirectNoSpdySessionForHttp1) {
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndEnableFeature(
+  AddScopedFeatureList().InitAndEnableFeature(
       net::features::kEnableErrorCodePropagationForPreconnect);
   SpdySessionDependencies session_deps;
 
@@ -4017,6 +4005,106 @@ TEST_P(HttpStreamFactoryTest, PreconnectDirectNoSpdySessionForHttp1) {
 
   // Verify that a SpdySession was not created as a result of the preconnect.
   EXPECT_EQ(0, GetSpdySessionCount(session.get()));
+}
+
+TEST_P(HttpStreamFactoryTest,
+       PreconnectDirectCreatesSpdySessionWithFeatureDisabled) {
+  AddScopedFeatureList().InitAndDisableFeature(
+      net::features::kEnableErrorCodePropagationForPreconnect);
+
+  SpdySessionDependencies session_deps;
+
+  // Prepare for an HTTPS connect that negotiates H2.
+  MockRead mock_read(ASYNC, OK);
+  SequencedSocketData socket_data(base::span_from_ref(mock_read),
+                                  base::span<MockWrite>());
+  socket_data.set_connect_data(MockConnect(ASYNC, OK));
+  session_deps.socket_factory->AddSocketDataProvider(&socket_data);
+
+  SSLSocketDataProvider ssl_socket_data(ASYNC, OK);
+  ssl_socket_data.next_proto = NextProto::kProtoHTTP2;
+  session_deps.socket_factory->AddSSLSocketDataProvider(&ssl_socket_data);
+
+  std::unique_ptr<HttpNetworkSession> session(
+      SpdySessionDependencies::SpdyCreateSession(&session_deps));
+
+  // Verify initially no sessions exist.
+  EXPECT_EQ(0, GetSpdySessionCount(session.get()));
+
+  // Set up connection change observer config.
+  class MockConnectionChangeObserver
+      : public ConnectionChangeNotifier::Observer {
+   public:
+    MockConnectionChangeObserver() = default;
+    ~MockConnectionChangeObserver() override = default;
+
+    void OnConnectionEstablished(
+        const ConnectionChangeNotifier::EstablishedConnectionInfo& info)
+        override {
+      connection_established_called_ = true;
+      connection_info_ = info.connection_info;
+    }
+
+    void OnSessionClosed(bool was_ever_used_to_create_streams) override {}
+    void OnConnectionFailed() override {}
+    void OnNetworkEvent(net::NetworkChangeEvent event) override {}
+
+    bool connection_established_called() const {
+      return connection_established_called_;
+    }
+    NextProto connection_info() const { return connection_info_; }
+
+   private:
+    bool connection_established_called_ = false;
+    NextProto connection_info_ = NextProto::kProtoUnknown;
+  };
+
+  MockConnectionChangeObserver observer;
+  ConnectionManagementConfig config;
+  config.connection_change_observer = observer.GetWeakPtr();
+
+  HttpRequestInfo request;
+  request.method = "GET";
+  request.url = GURL("https://www.google.com");
+  request.load_flags = 0;
+  request.traffic_annotation =
+      MutableNetworkTrafficAnnotationTag(TRAFFIC_ANNOTATION_FOR_TESTS);
+  request.connection_management_config = config;
+
+  HttpNetworkSessionPeer peer(session.get());
+  auto factory = std::make_unique<HttpStreamFactory>(session.get());
+  peer.SetHttpStreamFactory(std::move(factory));
+
+  base::RunLoop run_loop;
+  session->http_stream_factory()->PreconnectStreams(1, request,
+                                                    run_loop.QuitClosure());
+  run_loop.Run();
+
+  if (HappyEyeballsV3Enabled()) {
+    // Verify that a SpdySession was created as a result of the preconnect.
+    EXPECT_EQ(1, GetSpdySessionCount(session.get()));
+    // Since we created a SpdySession, there should be no idle sockets.
+    EXPECT_EQ(0,
+              session
+                  ->GetSocketPool(HttpNetworkSession::SocketPoolType::kNormal,
+                                  ProxyChain::Direct())
+                  ->IdleSocketCount());
+    // Observer is not notified because HttpStreamPool does not support
+    // ConnectionManagementConfig.
+    EXPECT_FALSE(observer.connection_established_called());
+  } else {
+    // Verify that a SpdySession was NOT created under legacy.
+    EXPECT_EQ(0, GetSpdySessionCount(session.get()));
+    // Socket is kept as idle in the legacy pool.
+    EXPECT_EQ(1,
+              session
+                  ->GetSocketPool(HttpNetworkSession::SocketPoolType::kNormal,
+                                  ProxyChain::Direct())
+                  ->IdleSocketCount());
+    // Connection change observer should not have been notified under legacy
+    // preconnect.
+    EXPECT_FALSE(observer.connection_established_called());
+  }
 }
 
 TEST_P(HttpStreamFactoryBidirectionalQuicTest, QuicIPPoolingWithDnsAliases) {

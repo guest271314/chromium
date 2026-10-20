@@ -20,11 +20,13 @@
 #include "components/omnibox/browser/autocomplete_provider.h"
 #include "components/omnibox/common/omnibox_features.h"
 #include "third_party/metrics_proto/omnibox_event.pb.h"
-#include "third_party/omnibox_proto/entity_info.pb.h"
 
 namespace base {
 class TimeDelta;
 }  // namespace base
+
+class AiModeButtonService;
+class TemplateURLService;
 
 // The set of parameters customizing the HUP scoring.
 struct HUPScoringParams {
@@ -111,7 +113,7 @@ namespace OmniboxFieldTrial {
 // A mapping that contains multipliers indicating that matches of the
 // specified type should have their relevance score multiplied by the
 // given number.  Omitted types are assumed to have multipliers of 1.0.
-typedef std::map<AutocompleteMatchType::Type, float> DemotionMultipliers;
+typedef std::map<omnibox::AutocompleteMatchType, float> DemotionMultipliers;
 
 // A vector that maps from the number of matching pages to the document
 // specificity score used in HistoryQuick provider / ScoredHistoryMatch
@@ -326,7 +328,6 @@ extern const char kMaxNumHQPUrlsIndexedAtStartupOnLowEndDevicesParam[];
 extern const char kMaxNumHQPUrlsIndexedAtStartupOnNonLowEndDevicesParam[];
 
 // Parameter names used by num suggestion experiments.
-extern const char kMaxZeroSuggestMatchesParam[];
 extern const char kUIMaxAutocompleteMatchesByProviderParam[];
 extern const char kUIMaxAutocompleteMatchesParam[];
 // The URL cutoff and increased limit for dynamic max autocompletion.
@@ -352,9 +353,6 @@ extern int kDefaultMinimumTimeBetweenSuggestQueriesMs;
 // Parameter names used by omnibox experiments that hide the path (and
 // optionally subdomains) in the steady state.
 extern const char kOmniboxUIUnelideURLOnHoverThresholdMsParam[];
-
-// Parameter names used by MIA experiments.
-extern const char kSuppressPsuggestBackfillWithMIAParam[];
 
 // `FeatureParam`s
 
@@ -392,9 +390,13 @@ bool IsOnFocusZeroSuggestEnabledInContext(
 bool IsHideSuggestionGroupHeadersEnabledInContext(
     metrics::OmniboxEventProto::PageClassification page_classification);
 
-// Returns whether AIM page action in Omnibox is enabled.
+// Returns whether AIM page action in Omnibox is enabled. This is a
+// runtime/dynamic check. I.e. its value can change without restarting the
+// browser.
 bool IsAimOmniboxEntrypointEnabled(
-    const AimEligibilityService* aim_eligibility_service);
+    const AimEligibilityService* aim_eligibility_service,
+    const AiModeButtonService* ai_mode_button_service,
+    const TemplateURLService* template_url_service);
 
 // Returns whether AIM starter pack is enabled.
 bool IsAimStarterPackEnabled(
@@ -690,26 +692,7 @@ inline constexpr base::FeatureParam<bool> kMobileParityEnableFeedForGoogleOnly{
 // <-- Mobile Parity update
 
 #if BUILDFLAG(IS_ANDROID)
-// Omnibox Improvement for Large Form Factors -->
-
-inline constexpr base::FeatureParam<bool>
-    kOmniboxImprovementForLFFSwitchToTabChip{
-        &omnibox::kOmniboxImprovementForLFF, "switch_to_tab_chip", true};
-
-inline constexpr base::FeatureParam<bool>
-    kOmniboxImprovementForLFFRemoveSuggestionViaButton{
-        &omnibox::kOmniboxImprovementForLFF, "remove_suggestion_via_button",
-        true};
-
-inline constexpr base::FeatureParam<bool>
-    kOmniboxImprovementForLFFPersistEditingState{
-        &omnibox::kOmniboxImprovementForLFF, "persist_editing_state", false};
-
-// <-- Omnibox Improvement for Large Form Factors
 // Fusebox -->
-inline constexpr base::FeatureParam<bool> kOmniboxShowModelPicker{
-    &omnibox::kOmniboxMultimodalInput, "show_model_picker", false};
-
 inline constexpr base::FeatureParam<bool>
     kOmniboxMultimodalPrioritizeSuggestionsForFirstDocument{
         &omnibox::kOmniboxMultimodalInput,

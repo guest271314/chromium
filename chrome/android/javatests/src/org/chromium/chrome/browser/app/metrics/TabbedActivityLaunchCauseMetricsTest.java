@@ -24,7 +24,7 @@ import androidx.test.runner.lifecycle.Stage;
 
 import org.hamcrest.Matchers;
 import org.junit.Assert;
-import org.junit.ClassRule;
+import org.junit.BeforeClass;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -44,6 +44,8 @@ import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.Criteria;
 import org.chromium.base.test.util.CriteriaHelper;
+import org.chromium.base.test.util.DisableIf;
+import org.chromium.base.test.util.DisabledTest;
 import org.chromium.base.test.util.PackageManagerWrapper;
 import org.chromium.base.test.util.RequiresRestart;
 import org.chromium.chrome.R;
@@ -55,13 +57,14 @@ import org.chromium.chrome.browser.bookmarkswidget.BookmarkWidgetProxy;
 import org.chromium.chrome.browser.document.ChromeLauncherActivity;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.searchwidget.SearchActivity;
-import org.chromium.chrome.test.ChromeBrowserTestRule;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.chrome.test.transit.ChromeTransitTestRules;
 import org.chromium.chrome.test.transit.FreshCtaTransitTestRule;
 import org.chromium.chrome.test.transit.page.CtaPageStation;
 import org.chromium.chrome.test.util.ChromeApplicationTestUtils;
+import org.chromium.content_public.browser.test.NativeLibraryTestUtils;
 import org.chromium.network.mojom.ReferrerPolicy;
+import org.chromium.ui.base.DeviceFormFactor;
 import org.chromium.ui.mojom.WindowOpenDisposition;
 import org.chromium.url.GURL;
 
@@ -79,9 +82,6 @@ public final class TabbedActivityLaunchCauseMetricsTest {
     public final FreshCtaTransitTestRule mActivityTestRule =
             ChromeTransitTestRules.freshChromeTabbedActivityRule();
 
-    @ClassRule
-    public static final ChromeBrowserTestRule sBrowserTestRule = new ChromeBrowserTestRule();
-
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule().strictness(Strictness.STRICT_STUBS);
 
     @Mock private ServiceTabLauncher.Natives mServiceTabLauncherJni;
@@ -90,6 +90,11 @@ public final class TabbedActivityLaunchCauseMetricsTest {
         if (!LibraryLoader.getInstance().isInitialized()) return 0;
         return RecordHistogram.getHistogramValueCountForTesting(
                 LaunchCauseMetrics.LAUNCH_CAUSE_HISTOGRAM, value);
+    }
+
+    @BeforeClass
+    public static void setUpClass() {
+        NativeLibraryTestUtils.loadNativeLibraryAndInitBrowserProcess();
     }
 
     @Test
@@ -122,6 +127,7 @@ public final class TabbedActivityLaunchCauseMetricsTest {
 
     @Test
     @MediumTest
+    @DisabledTest(message = "crbug.com/567102829")
     public void testRecreationMetrics() throws Throwable {
         final int count = histogramCountForValue(LaunchCauseMetrics.LaunchCause.RECREATION);
         // If this is the first test in the batch, opens an NTP. Otherwise, opens a blank page.
@@ -265,6 +271,8 @@ public final class TabbedActivityLaunchCauseMetricsTest {
     @Test
     @MediumTest
     @RequiresRestart("crbug.com/40774438")
+    @DisableIf.Device(DeviceFormFactor.DESKTOP) // crbug.com/537353093
+    @DisabledTest(message = "https://crbug.com/573081777")
     public void testExternalSearchIntentNoResolvers() throws Throwable {
         final int count =
                 1
@@ -328,7 +336,9 @@ public final class TabbedActivityLaunchCauseMetricsTest {
                                             "",
                                             ReferrerPolicy.DEFAULT,
                                             "",
-                                            null);
+                                            null,
+                                            null,
+                                            false);
                                 }));
         CriteriaHelper.pollInstrumentationThread(
                 () -> {

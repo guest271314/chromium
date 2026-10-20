@@ -15,6 +15,7 @@
 
 #include "base/atomic_sequence_num.h"
 #include "base/functional/callback.h"
+#include "base/memory/raw_ptr.h"
 #include "base/memory/ref_counted.h"
 #include "base/observer_list.h"
 #include "base/rand_util.h"
@@ -201,6 +202,15 @@ class GPU_IPC_CLIENT_EXPORT GpuChannelHost
                              gfx::BufferUsage buffer_usage,
                              gfx::GpuMemoryBufferHandle* handle);
 
+  // Same as above, but also dispatches creation of the shared image to the gpu
+  // main thread. This is intended replacement for the call above to avoid extra
+  // roundtrips for native buffers. For new code use this instead of above.
+  void CreateSharedImageWithHandle(const Mailbox& mailbox,
+                                   mojom::SharedImageInfoPtr info,
+                                   gfx::BufferUsage buffer_usage,
+                                   std::optional<SharedImagePoolId> pool_id,
+                                   gfx::GpuMemoryBufferHandle* buffer_handle);
+
 #if BUILDFLAG(IS_WIN)
   void CopyToGpuMemoryBufferAsync(
       const Mailbox& mailbox,
@@ -215,6 +225,9 @@ class GPU_IPC_CLIENT_EXPORT GpuChannelHost
       base::UnsafeSharedMemoryRegion memory_region,
       base::OnceCallback<void(bool)> callback);
 #endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_ANDROID)
+
+  void SignalSyncToken(std::vector<SyncToken> sync_tokens,
+                       base::OnceClosure callback);
 
   // Crashes the GPU process. This functionality is added here because
   // of instability when creating a new tab just to navigate to
@@ -290,7 +303,7 @@ class GPU_IPC_CLIENT_EXPORT GpuChannelHost
     // The GpuChannelLost Monitor for LayerTreeFrameSink.
     base::Lock channel_obs_lock_;
     // Note that ObserverList is sequence checked so we can't use that here.
-    std::vector<GpuChannelLostObserver*> GUARDED_BY(channel_obs_lock_)
+    std::vector<raw_ptr<GpuChannelLostObserver>> GUARDED_BY(channel_obs_lock_)
         observer_list_;
   };
 

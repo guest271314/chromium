@@ -270,7 +270,7 @@ class NearbyNotificationManagerTest : public testing::Test {
   std::unique_ptr<base::ScopedDisallowBlocking> disallow_blocking_;
   std::unique_ptr<NearbyNotificationManager> manager_;
   data_decoder::test::InProcessDataDecoder in_process_data_decoder_;
-  raw_ptr<MockSettingsOpener, DanglingUntriaged> settings_opener_;
+  raw_ptr<MockSettingsOpener> settings_opener_;
 };
 
 struct AttachmentsTestParamInternal {
@@ -282,94 +282,96 @@ struct AttachmentsTestParamInternal {
   int expected_not_capitalized_resource_id;
 };
 
-AttachmentsTestParamInternal kAttachmentsTestParams[] = {
-    // No attachments.
-    {{},
-     {},
-     {},
-     IDS_NEARBY_CAPITALIZED_UNKNOWN_ATTACHMENTS,
-     IDS_NEARBY_NOT_CAPITALIZED_UNKNOWN_ATTACHMENTS},
+std::vector<AttachmentsTestParamInternal> GetAttachmentsTestParams() {
+  return {
+      // No attachments.
+      {{},
+       {},
+       {},
+       IDS_NEARBY_CAPITALIZED_UNKNOWN_ATTACHMENTS,
+       IDS_NEARBY_NOT_CAPITALIZED_UNKNOWN_ATTACHMENTS},
 
-    // Mixed attachments.
-    {
-        {TextAttachment::Type::kText},
-        {FileAttachment::Type::kUnknown},
-        {},
-        IDS_NEARBY_CAPITALIZED_UNKNOWN_ATTACHMENTS,
-        IDS_NEARBY_NOT_CAPITALIZED_UNKNOWN_ATTACHMENTS,
-    },
+      // Mixed attachments.
+      {
+          {TextAttachment::Type::kText},
+          {FileAttachment::Type::kUnknown},
+          {},
+          IDS_NEARBY_CAPITALIZED_UNKNOWN_ATTACHMENTS,
+          IDS_NEARBY_NOT_CAPITALIZED_UNKNOWN_ATTACHMENTS,
+      },
 
-    // Text attachments.
-    {{TextAttachment::Type::kUrl},
-     {},
-     {},
-     IDS_NEARBY_TEXT_ATTACHMENTS_CAPITALIZED_LINKS,
-     IDS_NEARBY_TEXT_ATTACHMENTS_NOT_CAPITALIZED_LINKS},
-    {{TextAttachment::Type::kText},
-     {},
-     {},
-     IDS_NEARBY_TEXT_ATTACHMENTS_CAPITALIZED_UNKNOWN,
-     IDS_NEARBY_TEXT_ATTACHMENTS_NOT_CAPITALIZED_UNKNOWN},
-    {{TextAttachment::Type::kAddress},
-     {},
-     {},
-     IDS_NEARBY_TEXT_ATTACHMENTS_CAPITALIZED_ADDRESSES,
-     IDS_NEARBY_TEXT_ATTACHMENTS_NOT_CAPITALIZED_ADDRESSES},
-    {{TextAttachment::Type::kPhoneNumber},
-     {},
-     {},
-     IDS_NEARBY_TEXT_ATTACHMENTS_CAPITALIZED_PHONE_NUMBERS,
-     IDS_NEARBY_TEXT_ATTACHMENTS_NOT_CAPITALIZED_PHONE_NUMBERS},
-    {{TextAttachment::Type::kAddress, TextAttachment::Type::kAddress},
-     {},
-     {},
-     IDS_NEARBY_TEXT_ATTACHMENTS_CAPITALIZED_ADDRESSES,
-     IDS_NEARBY_TEXT_ATTACHMENTS_NOT_CAPITALIZED_ADDRESSES},
-    {{TextAttachment::Type::kAddress, TextAttachment::Type::kUrl},
-     {},
-     {},
-     IDS_NEARBY_TEXT_ATTACHMENTS_CAPITALIZED_UNKNOWN,
-     IDS_NEARBY_TEXT_ATTACHMENTS_NOT_CAPITALIZED_UNKNOWN},
+      // Text attachments.
+      {{TextAttachment::Type::kUrl},
+       {},
+       {},
+       IDS_NEARBY_TEXT_ATTACHMENTS_CAPITALIZED_LINKS,
+       IDS_NEARBY_TEXT_ATTACHMENTS_NOT_CAPITALIZED_LINKS},
+      {{TextAttachment::Type::kText},
+       {},
+       {},
+       IDS_NEARBY_TEXT_ATTACHMENTS_CAPITALIZED_UNKNOWN,
+       IDS_NEARBY_TEXT_ATTACHMENTS_NOT_CAPITALIZED_UNKNOWN},
+      {{TextAttachment::Type::kAddress},
+       {},
+       {},
+       IDS_NEARBY_TEXT_ATTACHMENTS_CAPITALIZED_ADDRESSES,
+       IDS_NEARBY_TEXT_ATTACHMENTS_NOT_CAPITALIZED_ADDRESSES},
+      {{TextAttachment::Type::kPhoneNumber},
+       {},
+       {},
+       IDS_NEARBY_TEXT_ATTACHMENTS_CAPITALIZED_PHONE_NUMBERS,
+       IDS_NEARBY_TEXT_ATTACHMENTS_NOT_CAPITALIZED_PHONE_NUMBERS},
+      {{TextAttachment::Type::kAddress, TextAttachment::Type::kAddress},
+       {},
+       {},
+       IDS_NEARBY_TEXT_ATTACHMENTS_CAPITALIZED_ADDRESSES,
+       IDS_NEARBY_TEXT_ATTACHMENTS_NOT_CAPITALIZED_ADDRESSES},
+      {{TextAttachment::Type::kAddress, TextAttachment::Type::kUrl},
+       {},
+       {},
+       IDS_NEARBY_TEXT_ATTACHMENTS_CAPITALIZED_UNKNOWN,
+       IDS_NEARBY_TEXT_ATTACHMENTS_NOT_CAPITALIZED_UNKNOWN},
 
-    // File attachments.
-    {{},
-     {FileAttachment::Type::kApp},
-     {},
-     IDS_NEARBY_FILE_ATTACHMENTS_CAPITALIZED_APPS,
-     IDS_NEARBY_FILE_ATTACHMENTS_NOT_CAPITALIZED_APPS},
-    {{},
-     {FileAttachment::Type::kImage},
-     {},
-     IDS_NEARBY_FILE_ATTACHMENTS_CAPITALIZED_IMAGES,
-     IDS_NEARBY_FILE_ATTACHMENTS_NOT_CAPITALIZED_IMAGES},
-    {{},
-     {FileAttachment::Type::kUnknown},
-     {},
-     IDS_NEARBY_FILE_ATTACHMENTS_CAPITALIZED_UNKNOWN,
-     IDS_NEARBY_FILE_ATTACHMENTS_NOT_CAPITALIZED_UNKNOWN},
-    {{},
-     {FileAttachment::Type::kVideo},
-     {},
-     IDS_NEARBY_FILE_ATTACHMENTS_CAPITALIZED_VIDEOS,
-     IDS_NEARBY_FILE_ATTACHMENTS_NOT_CAPITALIZED_VIDEOS},
-    {{},
-     {FileAttachment::Type::kApp, FileAttachment::Type::kApp},
-     {},
-     IDS_NEARBY_FILE_ATTACHMENTS_CAPITALIZED_APPS,
-     IDS_NEARBY_FILE_ATTACHMENTS_NOT_CAPITALIZED_APPS},
-    {{},
-     {FileAttachment::Type::kApp, FileAttachment::Type::kImage},
-     {},
-     IDS_NEARBY_FILE_ATTACHMENTS_CAPITALIZED_UNKNOWN,
-     IDS_NEARBY_FILE_ATTACHMENTS_NOT_CAPITALIZED_UNKNOWN},
+      // File attachments.
+      {{},
+       {FileAttachment::Type::kApp},
+       {},
+       IDS_NEARBY_FILE_ATTACHMENTS_CAPITALIZED_APPS,
+       IDS_NEARBY_FILE_ATTACHMENTS_NOT_CAPITALIZED_APPS},
+      {{},
+       {FileAttachment::Type::kImage},
+       {},
+       IDS_NEARBY_FILE_ATTACHMENTS_CAPITALIZED_IMAGES,
+       IDS_NEARBY_FILE_ATTACHMENTS_NOT_CAPITALIZED_IMAGES},
+      {{},
+       {FileAttachment::Type::kUnknown},
+       {},
+       IDS_NEARBY_FILE_ATTACHMENTS_CAPITALIZED_UNKNOWN,
+       IDS_NEARBY_FILE_ATTACHMENTS_NOT_CAPITALIZED_UNKNOWN},
+      {{},
+       {FileAttachment::Type::kVideo},
+       {},
+       IDS_NEARBY_FILE_ATTACHMENTS_CAPITALIZED_VIDEOS,
+       IDS_NEARBY_FILE_ATTACHMENTS_NOT_CAPITALIZED_VIDEOS},
+      {{},
+       {FileAttachment::Type::kApp, FileAttachment::Type::kApp},
+       {},
+       IDS_NEARBY_FILE_ATTACHMENTS_CAPITALIZED_APPS,
+       IDS_NEARBY_FILE_ATTACHMENTS_NOT_CAPITALIZED_APPS},
+      {{},
+       {FileAttachment::Type::kApp, FileAttachment::Type::kImage},
+       {},
+       IDS_NEARBY_FILE_ATTACHMENTS_CAPITALIZED_UNKNOWN,
+       IDS_NEARBY_FILE_ATTACHMENTS_NOT_CAPITALIZED_UNKNOWN},
 
-    // Wi-Fi Credentials attachments.
-    {{},
-     {},
-     {WifiCredentialsAttachment::SecurityType::kWpaPsk},
-     IDS_NEARBY_CAPITALIZED_UNKNOWN_ATTACHMENTS,
-     IDS_NEARBY_NOT_CAPITALIZED_UNKNOWN_ATTACHMENTS},
-};
+      // Wi-Fi Credentials attachments.
+      {{},
+       {},
+       {WifiCredentialsAttachment::SecurityType::kWpaPsk},
+       IDS_NEARBY_CAPITALIZED_UNKNOWN_ATTACHMENTS,
+       IDS_NEARBY_NOT_CAPITALIZED_UNKNOWN_ATTACHMENTS},
+  };
+}
 
 // Boolean parameter is |is_incoming| and the tuple parameter is a feature list
 // containing |is_self_share_enabled| and |is_self_share_auto_accept_enabled|.
@@ -417,6 +419,8 @@ std::u16string FormatNotificationTitle(
 }  // namespace
 
 TEST_F(NearbyNotificationManagerTest, RegistersAsBackgroundSurfaces) {
+  // Clear `settings_opener_` before resetting to avoid dangling pointer.
+  settings_opener_ = nullptr;
   manager_.reset();
   TransferUpdateCallback* receive_transfer_callback = nullptr;
   TransferUpdateCallback* send_transfer_callback = nullptr;
@@ -447,6 +451,8 @@ TEST_F(NearbyNotificationManagerTest, RegistersAsBackgroundSurfaces) {
 TEST_F(NearbyNotificationManagerTest, UnregistersSurfaces) {
   EXPECT_CALL(*nearby_service_, UnregisterReceiveSurface(manager()));
   EXPECT_CALL(*nearby_service_, UnregisterSendSurface(manager(), manager()));
+  // Clear `settings_opener_` before resetting to avoid dangling pointer.
+  settings_opener_ = nullptr;
   manager_.reset();
 }
 
@@ -758,7 +764,7 @@ TEST_P(NearbyNotificationManagerAttachmentsTest, ShowFailure) {
 INSTANTIATE_TEST_SUITE_P(
     NearbyNotificationManagerAttachmentsTest,
     NearbyNotificationManagerAttachmentsTest,
-    testing::Combine(testing::ValuesIn(kAttachmentsTestParams),
+    testing::Combine(testing::ValuesIn(GetAttachmentsTestParams()),
                      testing::Bool()));
 
 TEST_P(NearbyNotificationManagerConnectionRequestTest,
@@ -2004,6 +2010,7 @@ class NearbyFilesHoldingSpaceTest : public testing::Test {
 
     profile_ = profile_manager_->CreateTestingProfile(kEmail);
     ash::AnnotatedAccountId::Set(profile_, account_id);
+    // TODO(crbug.com/40225390): Use ProfileUserManagerController.
     user_manager_->OnUserProfileCreated(account_id, profile_->GetPrefs());
 
     static_cast<ash::SessionObserver*>(holding_space_controller_.get())

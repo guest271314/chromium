@@ -11,7 +11,6 @@
 <translation id="1253734725326687145">Kipengele cha kugusa kimehamishiwa kwenye upande wa juu kulia. Gusa hapa.</translation>
 <translation id="1266864766717917324">Imeshindwa kushiriki <ph name="CONTENT_TYPE" /></translation>
 <translation id="1269641567813814718">Win</translation>
-<translation id="1291104554099683393">Jaribu kushiriki maandishi katika sehemu ndogo ndogo.</translation>
 <translation id="1293699935367580298">Esc</translation>
 <translation id="1368832886055348810">Kushoto hadi Kulia</translation>
 <translation id="1383876407941801731">Tafuta</translation>
@@ -38,13 +37,11 @@
 <translation id="1901303067676059328">Chagua &amp;yote</translation>
 <translation id="19085484004813472">Hiki ni kipengele kipya</translation>
 <translation id="2006524834898217237">Hakikisha kwamba kifaa hiki kimeunganishwa kwenye intaneti.</translation>
-<translation id="208586643495776849">Tafadhali jaribu tena</translation>
 <translation id="2111134541987263231">Washa <ph name="BEGIN_BOLD" />Ruhusu katika Hali fiche<ph name="END_BOLD" /></translation>
 <translation id="2141853158323869627">{DAYS,plural, =1{Siku 1}other{Siku #}}</translation>
 <translation id="2148716181193084225">Leo</translation>
 <translation id="2168039046890040389">Ukurasa mmoja juu</translation>
 <translation id="2190355936436201913">(tupu)</translation>
-<translation id="2192232475740621500">Tumia uzito wa chini</translation>
 <translation id="2267918077332197517">Zuia arifa zote kutoka tovuti hii</translation>
 <translation id="2283117145434822734">F6</translation>
 <translation id="2289052229480071835">Gusa viashirio vya kugusa kwenye skrini yako.</translation>
@@ -56,7 +53,6 @@
 <translation id="2388990488038464401">Je, ungependa kutumia simu yako kupigia namba hii?</translation>
 <translation id="2435457462613246316">Onyesha nenosiri</translation>
 <translation id="24452542372838207">Panua arifa</translation>
-<translation id="2445449901874883781">Tumia uzito wa juu</translation>
 <translation id="2448407890032181691">Kipengele cha kugusa kimehamishiwa kwenye upande wa chini kulia. Gusa hapa.</translation>
 <translation id="2482878487686419369">Arifa</translation>
 <translation id="2497284189126895209">Faili zote</translation>
@@ -87,7 +83,6 @@
 <translation id="3306688585798492231">Skrini iliyo ndani ya mfumo</translation>
 <translation id="335581015389089642">Usemi</translation>
 <translation id="3372635229069101468">Bofya <ph name="BEGIN_BOLD" />Maelezo<ph name="END_BOLD" /></translation>
-<translation id="3389286852084373014">Maandishi ni makubwa mno</translation>
 <translation id="3406306243914553062">Maudhui ya HTML</translation>
 <translation id="3600566671520689681">{DAYS,plural, =1{Imesalia siku 1}other{Zimesalia siku #}}</translation>
 <translation id="3600969208114796418">Faili ya <ph name="SAVEAS_EXTENSION_TYPE" /></translation>
@@ -130,7 +125,6 @@
 <translation id="5046499563572181734">Gusa hapa</translation>
 <translation id="5076340679995252485">&amp;Bandika</translation>
 <translation id="520299402983819650">PB <ph name="QUANTITY" /></translation>
-<translation id="5278860589123563674">Imeshindwa kutuma</translation>
 <translation id="5283101102242354279">Washa kiendelezi katika Hali fiche:</translation>
 <translation id="528468243742722775">Mwisho</translation>
 <translation id="5329858601952122676">&amp;Futa</translation>
@@ -190,7 +184,6 @@
 <translation id="6965382102122355670">Sawa</translation>
 <translation id="6974053822202609517">Kulia hadi Kushoto</translation>
 <translation id="7052633198403197513">F1</translation>
-<translation id="7170202025028120564">Mipangilio ya onyesho la programu yako itaanza kutumika utakapoizima kisha uiwashe.</translation>
 <translation id="7222373446505536781">F11</translation>
 <translation id="7238427729722629793">{MINUTES,plural, =1{Imesalia dakika 1}other{Zimesalia dakika #}}</translation>
 <translation id="7252604552361840748">Tafuta kiendelezi hapo juu</translation>

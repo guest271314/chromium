@@ -42,7 +42,7 @@ namespace {
 CampaignsManager* g_instance = nullptr;
 
 static constexpr auto kAllSlotsSet =
-    base::EnumSet<Slot, Slot::kMinValue, Slot::kMaxValue>::All();
+    base::EnumSet<Slot>::All();
 
 inline constexpr char kCampaignFileName[] = "campaigns.json";
 
@@ -174,6 +174,10 @@ void CampaignsManager::RemoveObserver(Observer* observer) {
 void CampaignsManager::SetPrefs(PrefService* prefs) {
   // Pass `prefs` to `CampaignsMatcher` to enable prefs related targettings.
   matcher_.SetPrefs(prefs);
+}
+
+void CampaignsManager::SetActiveAccountId(const AccountId& account_id) {
+  client_->SetActiveAccountId(account_id);
 }
 
 void CampaignsManager::LoadCampaigns(base::OnceClosure load_callback,

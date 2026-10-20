@@ -17,7 +17,7 @@
 #include "base/containers/id_map.h"
 #include "base/functional/callback_helpers.h"
 #include "base/functional/function_ref.h"
-#include "base/memory/advanced_memory_safety_checks.h"
+#include "base/memory/sanitized_object.h"
 #include "base/process/kill.h"
 #include "base/process/process.h"
 #include "base/supports_user_data.h"
@@ -38,6 +38,8 @@
 #include "services/network/public/mojom/network_context.mojom-forward.h"
 #include "services/network/public/mojom/restricted_cookie_manager.mojom-forward.h"
 #include "services/network/public/mojom/url_loader_factory.mojom-forward.h"
+#include "third_party/blink/public/common/oom_intervention/oom_intervention_types.h"
+#include "third_party/blink/public/common/tokens/tokens.h"
 #include "third_party/blink/public/mojom/background_sync/background_sync.mojom.h"
 #include "third_party/blink/public/mojom/buckets/bucket_manager_host.mojom-forward.h"
 #include "third_party/blink/public/mojom/cache_storage/cache_storage.mojom-forward.h"
@@ -56,9 +58,9 @@
 #include "content/public/browser/android/child_process_importance.h"
 #endif
 
-#if BUILDFLAG(ALLOW_OOP_VIDEO_DECODER)
+#if BUILDFLAG(ENABLE_OOP_VIDEO_DECODER)
 #include "media/mojo/mojom/video_decoder.mojom-forward.h"
-#endif  // BUILDFLAG(ALLOW_OOP_VIDEO_DECODER)
+#endif  // BUILDFLAG(ENABLE_OOP_VIDEO_DECODER)
 
 #if BUILDFLAG(IS_FUCHSIA)
 #include "media/mojo/mojom/fuchsia_media.mojom-forward.h"
@@ -132,7 +134,7 @@ class CONTENT_EXPORT RenderProcessHost : public IPC::Listener,
                                          public base::SupportsUserData {
   // Do not remove this macro!
   // The macro is maintained by the memory safety team.
-  ADVANCED_MEMORY_SAFETY_CHECKS();
+  SANITIZED_OBJECT();
 
  public:
   using iterator = base::IDMap<RenderProcessHost*, ChildProcessId>::iterator;
@@ -150,9 +152,27 @@ class CONTENT_EXPORT RenderProcessHost : public IPC::Listener,
     kServiceWorker
   };
 
+  // Controls which active (initialized, non-dead, non-spare) RenderProcessHosts
+  // are counted by GetCurrentRenderProcessCountForTesting().
+  enum class RenderProcessCountMode {
+    // Counts all initialized, non-dead, non-spare RenderProcessHosts, including
+    // processes that only host prerendered frames or currently host no frames.
+    kIncludePrerenderOnlyOrEmptyProcess,
+
+    // Excludes RenderProcessHosts that only host prerendered frames or
+    // currently host no RenderFrameHosts (i.e., where
+    // IsOnlyHostingPrerenderedFramesOrEmpty() is true, such as transient
+    // speculative/prewarm prerender processes or worker-only processes).
+    kExcludePrerenderOnlyOrEmptyProcess,
+  };
+
   // General functions ---------------------------------------------------------
 
   ~RenderProcessHost() override {}
+
+  // Returns true if this is a test fake, such as MockRenderProcessHost, rather
+  // than the production RenderProcessHostImpl.
+  virtual bool IsMock() const = 0;
 
   // Initialize the new renderer process, returning true on success. This must
   // be called once before the object can be used, but can be called after
@@ -229,6 +249,7 @@ class CONTENT_EXPORT RenderProcessHost : public IPC::Listener,
   // rendering and may be backgrounded unnecessarily without this call.
   virtual void OnImmersiveXrSessionStarted() = 0;
   virtual void OnImmersiveXrSessionStopped() = 0;
+  virtual bool HasImmersiveXrSessionForTesting() const = 0;
 
   // Returns true if the process is hosting a Top Chrome WebUI, e.g., Tab
   // Search, Side Panel, Initial WebUI. High-privilege WebUIs that share
@@ -248,6 +269,13 @@ class CONTENT_EXPORT RenderProcessHost : public IPC::Listener,
   // as indicated by BrowserPluginGuest::IsGuest, may coexist with other
   // non-guest RenderFrames in the same process if IsForGuestsOnly() is false.
   virtual bool IsForGuestsOnly() = 0;
+
+  // Indicates whether the current RenderProcessHost hosts privileged content
+  // (a WebContents created with PrivilegedParams). Privileged content always
+  // requires a dedicated process, so a process either hosts only privileged
+  // content or none. This is set when the process is created, before the
+  // process lock is applied, so it is reliable during process setup.
+  virtual bool IsPrivileged() = 0;
 
   // Indicates whether the current RenderProcessHost is running with JavaScript
   // JIT disabled.
@@ -405,14 +433,13 @@ class CONTENT_EXPORT RenderProcessHost : public IPC::Listener,
   virtual void RemovePriorityClient(
       RenderProcessHostPriorityClient* priority_client) = 0;
 
-#if !BUILDFLAG(IS_ANDROID)
-  // Sets a process priority override. This overrides the entire built-in
-  // priority setting mechanism for the process.
-  // TODO(pmonette): Make this work well on Android.
+  // Sets a process priority override. On Desktop platforms, this overrides the
+  // entire built-in priority setting mechanism for the process. On Android,
+  // this boost the effective importance of the process.
+  // TODO(b/400850388): Make this work well on Android.
   virtual void SetPriorityOverride(base::Process::Priority priority) = 0;
   virtual bool HasPriorityOverride() = 0;
   virtual void ClearPriorityOverride() = 0;
-#endif
 
 #if BUILDFLAG(IS_ANDROID)
   // Sets whether to consider the process as a spare renderer when
@@ -431,6 +458,7 @@ class CONTENT_EXPORT RenderProcessHost : public IPC::Listener,
   virtual bool ShouldThrottleNavigationForSpareRendererGraduation() = 0;
 
   // Return the highest importance of all widgets in this process.
+  // It might be boosted by the priority override.
   virtual ChildProcessImportance GetEffectiveImportance() = 0;
 
   // Return the highest binding this process has.
@@ -706,11 +734,11 @@ class CONTENT_EXPORT RenderProcessHost : public IPC::Listener,
           receiver) = 0;
 #endif
   virtual void CreateOneShotSyncService(
-      const url::Origin& origin,
+      const blink::StorageKey& storage_key,
       mojo::PendingReceiver<blink::mojom::OneShotBackgroundSyncService>
           receiver) = 0;
   virtual void CreatePeriodicSyncService(
-      const url::Origin& origin,
+      const blink::StorageKey& storage_key,
       mojo::PendingReceiver<blink::mojom::PeriodicBackgroundSyncService>
           receiver) = 0;
   virtual void BindQuotaManagerHost(
@@ -735,10 +763,10 @@ class CONTENT_EXPORT RenderProcessHost : public IPC::Listener,
       const blink::StorageKey& storage_key,
       mojo::PendingReceiver<blink::mojom::NotificationService> receiver) = 0;
 
-#if BUILDFLAG(ALLOW_OOP_VIDEO_DECODER)
+#if BUILDFLAG(ENABLE_OOP_VIDEO_DECODER)
   virtual void CreateOOPVideoDecoder(
       mojo::PendingReceiver<media::mojom::VideoDecoder> receiver) = 0;
-#endif  // BUILDFLAG(ALLOW_OOP_VIDEO_DECODER)
+#endif  // BUILDFLAG(ENABLE_OOP_VIDEO_DECODER)
 
   // Returns the current number of active views in this process.  Excludes
   // any RenderViewHosts that are swapped out.
@@ -774,8 +802,29 @@ class CONTENT_EXPORT RenderProcessHost : public IPC::Listener,
   // be posted back on the UI thread).
   void PostTaskWhenProcessIsReady(base::OnceClosure task);
 
-  // Forces the renderer process to crash ASAP.
-  virtual void ForceCrash() {}
+  // Tells the renderer process that it is hung and should crash itself.
+  virtual void CrashHungProcess() {}
+
+  // Note: The following two methods are exposed here rather than kept
+  // internal to RenderProcessHostImpl so that callers like
+  // RenderFrameHostImpl::MaybeGenerateCrashReport() can inspect unresponsive
+  // state without unsafe downcasts, ensuring compatibility with test
+  // environments where GetProcess() returns a MockRenderProcessHost.
+
+  // Returns the JavaScript call stack captured while the renderer process was
+  // unresponsive, if any.
+  virtual const std::string& GetUnresponsiveDocumentJavascriptCallStack()
+      const = 0;
+
+  // Returns the frame token of the document that was unresponsive when the
+  // JavaScript call stack was captured.
+  virtual const blink::LocalFrameToken& GetUnresponsiveDocumentToken()
+      const = 0;
+
+  // Returns the crash memory metrics (such as whether an allocation failed)
+  // reported by the renderer into shared memory before exiting.
+  virtual std::optional<blink::OomInterventionMetrics> GetCrashMemoryMetrics()
+      const = 0;
 
   // Returns a string that contains information useful for debugging
   // crashes related to RenderProcessHost objects staying alive longer than
@@ -879,8 +928,12 @@ class CONTENT_EXPORT RenderProcessHost : public IPC::Listener,
   static void SetHungRendererAnalysisFunction(
       AnalyzeHungRendererFunction analyze_hung_renderer);
 
-  // Counts current RenderProcessHost(s), ignoring all spare processes.
-  static int GetCurrentRenderProcessCountForTesting();
+  // Counts current RenderProcessHost(s), ignoring all spare processes, and
+  // optionally ignoring processes that only host prerendered frames or no
+  // frames.
+  static int GetCurrentRenderProcessCountForTesting(
+      RenderProcessCountMode mode =
+          RenderProcessCountMode::kIncludePrerenderOnlyOrEmptyProcess);
 
   // Allows tests to override host interface binding behavior. Any interface
   // binding request which would normally pass through the RPH's internal

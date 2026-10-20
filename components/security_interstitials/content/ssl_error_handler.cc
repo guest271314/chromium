@@ -60,8 +60,6 @@ BASE_FEATURE(kMITMSoftwareInterstitial, base::FEATURE_ENABLED_BY_DEFAULT);
 
 namespace {
 
-BASE_FEATURE(kSSLCommonNameMismatchHandling, base::FEATURE_ENABLED_BY_DEFAULT);
-
 // Default delay in milliseconds before displaying the SSL interstitial.
 // This can be changed in tests.
 // - If there is a name mismatch and a suggested URL available result arrives
@@ -119,9 +117,7 @@ class CommonNameMismatchRedirectObserver
         blink::mojom::ConsoleMessageLevel::kInfo,
         base::StringPrintf(
             "Redirecting navigation %s -> %s because the server presented a "
-            "certificate valid for %s but not for %s. To disable such "
-            "redirects launch Chrome with the following flag: "
-            "--disable-features=SSLCommonNameMismatchHandling",
+            "certificate valid for %s but not for %s.",
             request_url_hostname_.c_str(), suggested_url_hostname_.c_str(),
             suggested_url_hostname_.c_str(), request_url_hostname_.c_str()));
     GetWebContents().RemoveUserData(UserDataKey());
@@ -146,10 +142,6 @@ void RecordUMA(SSLErrorHandler::UMAEvent event) {
 
 bool IsMITMSoftwareInterstitialEnabled() {
   return base::FeatureList::IsEnabled(kMITMSoftwareInterstitial);
-}
-
-bool IsSSLCommonNameMismatchHandlingEnabled() {
-  return base::FeatureList::IsEnabled(kSSLCommonNameMismatchHandling);
 }
 
 // Configuration for SSLErrorHandler.
@@ -539,13 +531,14 @@ void SSLErrorHandlerDelegateImpl::OnBlockingPageReady(
                                 std::move(interstitial_page)));
 }
 
-}  // namespace
-
 ConfigSingleton& GetConfig() {
   static base::NoDestructor<ConfigSingleton> config;
   return *config;
 }
 
+}  // namespace
+
+// static
 void SSLErrorHandler::HandleSSLError(
     content::WebContents* web_contents,
     net::Error cert_error,
@@ -565,16 +558,16 @@ void SSLErrorHandler::HandleSSLError(
   int options_mask = security_interstitials::CalculateSSLErrorOptionsMask(
       cert_error, hard_override_disabled, ssl_info.is_fatal_cert_error);
 
-  SSLErrorHandler* error_handler = new SSLErrorHandler(
-      std::unique_ptr<SSLErrorHandler::Delegate>(
-          new SSLErrorHandlerDelegateImpl(
-              web_contents, ssl_info, web_contents->GetBrowserContext(),
-              cert_error, options_mask, request_url, captive_portal_service,
-              std::move(blocking_page_factory),
-              GetConfig().on_blocking_page_shown_callback(),
-              std::move(blocking_page_ready_callback))),
-      web_contents, cert_error, ssl_info, network_time_tracker,
-      captive_portal_service, request_url);
+  auto delegate = std::make_unique<SSLErrorHandlerDelegateImpl>(
+      web_contents, ssl_info, web_contents->GetBrowserContext(), cert_error,
+      options_mask, request_url, captive_portal_service,
+      std::move(blocking_page_factory),
+      GetConfig().on_blocking_page_shown_callback(),
+      std::move(blocking_page_ready_callback));
+  // Protected ctor.
+  auto* error_handler = new SSLErrorHandler(
+      std::move(delegate), web_contents, cert_error, ssl_info,
+      network_time_tracker, captive_portal_service, request_url);
   web_contents->SetUserData(UserDataKey(), base::WrapUnique(error_handler));
   error_handler->StartHandlingError();
 }
@@ -770,8 +763,7 @@ void SSLErrorHandler::StartHandlingError() {
     }
   }
 
-  if (IsSSLCommonNameMismatchHandlingEnabled() &&
-      cert_error_ == net::ERR_CERT_COMMON_NAME_INVALID &&
+  if (cert_error_ == net::ERR_CERT_COMMON_NAME_INVALID &&
       delegate_->IsErrorOverridable()) {
     std::vector<std::string> dns_names;
     ssl_info_.cert->GetSubjectAltName(&dns_names, nullptr);

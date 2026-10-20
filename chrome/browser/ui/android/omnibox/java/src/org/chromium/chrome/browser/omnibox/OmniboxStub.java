@@ -4,12 +4,14 @@
 
 package org.chromium.chrome.browser.omnibox;
 
+import org.chromium.base.Callback;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.lens.LensEntryPoint;
+import org.chromium.chrome.browser.omnibox.suggestions.OmniboxLoadUrlParams;
 import org.chromium.chrome.browser.omnibox.voice.VoiceRecognitionHandler;
 import org.chromium.components.omnibox.AutocompleteInput;
-import org.chromium.url.GURL;
+import org.chromium.components.omnibox.OmniboxFocusReason;
 
 /**
  * Handles user interaction with the stubbed Omnibox (a.k.a. fakebox) used in the pages such as NTP
@@ -31,9 +33,30 @@ public interface OmniboxStub {
     void endInput();
 
     /**
+     * Enter the DRAFTING_NO_FOCUS state; see {@link
+     * org.chromium.components.omnibox.AutocompleteInput.DisplayState}
+     */
+    void enterDraftingNoFocus();
+
+    /** Handler for scrim clicks. */
+    void onScrimClicked();
+
+    /**
      * @return Whether the URL bar is currently focused.
      */
     boolean isUrlBarFocused();
+
+    /**
+     * Focuses the Omnibox and selects all of its text, whichever state the input session is in.
+     *
+     * <p>Unlike {@link #beginInput(AutocompleteInput)}, this never discards an in-progress input:
+     * an unfocused but still live session ({@link
+     * AutocompleteInput.DisplayState#DRAFTING_NO_FOCUS}) is refocused rather than restarted. A new
+     * session is only initialized when no session is currently in progress.
+     *
+     * @param focusReason The focus reason to start a session with, if none is in progress.
+     */
+    void focusAndSelectAllText(@OmniboxFocusReason int focusReason);
 
     /**
      * Get the {@link VoiceRecognitionHandler}.
@@ -56,6 +79,20 @@ public interface OmniboxStub {
      */
     default void removeUrlFocusChangeListener(UrlFocusChangeListener listener) {}
 
+    /**
+     * Adds a URL text change listener that will be notified when the URL bar text changes.
+     *
+     * @param listener The listener to be registered.
+     */
+    default void addUrlTextChangeListener(Callback<String> listener) {}
+
+    /**
+     * Removes a URL text change listener that was previously added.
+     *
+     * @param listener The listener to be removed.
+     */
+    default void removeUrlTextChangeListener(Callback<String> listener) {}
+
     /** Returns whether the Lens is currently enabled. */
     boolean isLensEnabled(@LensEntryPoint int lensEntryPoint);
 
@@ -69,10 +106,24 @@ public interface OmniboxStub {
     // Methods migrated from VoiceRecognitionHandler.Delegate
 
     /**
-     * Loads the provided URL, assumes the PageTransition type is TYPED.
+     * Uses the provided voice search query to generate a URL, and then loads that URL assuming the
+     * PageTransition type is TYPED.
      *
-     * @param url The URL to load.
+     * @param query The voice search query used to generate the URL to load.
      */
-    // TODO(crbug.com/477922724): migrate to loadUrl()
-    void loadUrlFromVoice(GURL url);
+    // TODO(b/519232041): Expand loadUrl() to take the "ActivationType" param to differentiate
+    // various ways of resolving user input and migrate this call to loadUrl().
+    void loadUrlFromVoice(String query);
+
+    /**
+     * Requests that the given URL be loaded.
+     *
+     * @param omniboxLoadUrlParams parameters describing the url load.
+     */
+    void loadUrl(OmniboxLoadUrlParams omniboxLoadUrlParams);
+
+    /** Returns the active AutocompleteInput, if any. */
+    default @Nullable AutocompleteInput getAutocompleteInputForTesting() {
+        return null;
+    }
 }

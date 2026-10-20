@@ -11,7 +11,6 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/signin/signin_promo_util.h"
 #include "chrome/common/extensions/api/omnibox/omnibox_handler.h"
-#include "chrome/grit/branded_strings.h"
 #include "chrome/grit/generated_resources.h"
 #include "components/prefs/pref_service.h"
 #include "components/signin/public/base/signin_pref_names.h"
@@ -117,7 +116,7 @@ ExtensionPostInstallDialogModel::ExtensionPostInstallDialogModel(
 ExtensionPostInstallDialogModel::~ExtensionPostInstallDialogModel() = default;
 
 std::u16string ExtensionPostInstallDialogModel::GetHowToUseText() const {
-  DCHECK(show_how_to_use_);
+  CHECK(show_how_to_use_, base::NotFatalUntil::M162);
   return how_to_use_text_;
 }
 

@@ -1,9 +1,6 @@
 {
     "0": {
         "benchmarks": {
-            "ad_frames.fencedframe": {
-                "abridged": false
-            },
             "blink_perf.accessibility": {
                 "abridged": false
             },
@@ -66,10 +63,6 @@
             },
             "memory.desktop": {
                 "abridged": false
-            },
-            "power.desktop": {
-                "end": 2,
-                "abridged": false
             }
         },
         "executables": {
@@ -89,35 +82,33 @@
             }
         },
         "crossbench": {
+            "blink-ai.crossbench": {
+                "crossbench_name": "blink-ai",
+                "arguments": []
+            },
             "devtools_frontend.crossbench": {
                 "crossbench_name": "devtools_frontend",
                 "arguments": [
-                    "--enable-field-trials"
+                    "--enable-field-trials=benchmarking"
                 ]
             },
             "jetstream2.crossbench": {
                 "crossbench_name": "jetstream_2",
                 "arguments": [
-                    "--enable-field-trials"
+                    "--enable-field-trials=benchmarking"
                 ]
             },
             "jetstream3-turbolev_future.crossbench": {
                 "crossbench_name": "jetstream_3",
                 "arguments": [
                     "--js-flags=--turbolev-future",
-                    "--enable-field-trials"
+                    "--enable-field-trials=benchmarking"
                 ]
             },
             "jetstream3.crossbench": {
                 "crossbench_name": "jetstream_3",
                 "arguments": [
-                    "--enable-field-trials"
-                ]
-            },
-            "motionmark1.3.crossbench": {
-                "crossbench_name": "motionmark_1.3",
-                "arguments": [
-                    "--enable-field-trials"
+                    "--enable-field-trials=benchmarking"
                 ]
             }
         }
@@ -125,7 +116,6 @@
     "1": {
         "benchmarks": {
             "power.desktop": {
-                "begin": 2,
                 "abridged": false
             },
             "rasterize_and_record_micro.top_25": {
@@ -163,6 +153,13 @@
             }
         },
         "executables": {
+            "partition_alloc_perftests": {
+                "arguments": [
+                    "--test-launcher-jobs=1",
+                    "--test-launcher-retry-limit=0"
+                ],
+                "path": "partition_alloc_perftests"
+            },
             "tint_benchmark": {
                 "arguments": [
                     "--use-chrome-perf-format"
@@ -177,21 +174,28 @@
             }
         },
         "crossbench": {
+            "motionmark1.3.crossbench": {
+                "crossbench_name": "motionmark_1.3",
+                "arguments": [
+                    "--enable-field-trials=benchmarking"
+                ]
+            },
             "speedometer3.crossbench": {
                 "crossbench_name": "speedometer_3",
                 "arguments": [
-                    "--enable-field-trials"
+                    "--network=live",
+                    "--enable-field-trials=benchmarking"
                 ]
             }
         }
     },
     "extra_infos": {
-        "num_stories": 1123,
-        "predicted_min_shard_time": 6480.0,
+        "num_stories": 1146,
+        "predicted_min_shard_time": 6610.0,
         "predicted_min_shard_index": 0,
-        "predicted_max_shard_time": 6487.0,
+        "predicted_max_shard_time": 6927.0,
         "predicted_max_shard_index": 1,
-        "shard #0": 6480.0,
-        "shard #1": 6487.0
+        "shard #0": 6610.0,
+        "shard #1": 6927.0
     }
 }

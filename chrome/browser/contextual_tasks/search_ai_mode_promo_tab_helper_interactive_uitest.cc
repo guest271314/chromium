@@ -2,6 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "chrome/browser/contextual_tasks/search_ai_mode_promo_tab_helper.h"
+
 #include <string_view>
 
 #include "base/callback_list.h"
@@ -14,13 +16,11 @@
 #include "chrome/browser/contextual_tasks/contextual_tasks_service_factory.h"
 #include "chrome/browser/contextual_tasks/contextual_tasks_ui_service_factory.h"
 #include "chrome/browser/contextual_tasks/mock_contextual_tasks_ui_service.h"
-#include "chrome/browser/contextual_tasks/search_ai_mode_promo_tab_helper.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/signin/dice_tab_helper.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/signin/identity_test_environment_profile_adaptor.h"
 #include "chrome/browser/signin/process_dice_header_delegate_impl.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
 #include "chrome/browser/ui/signin/promos/bubble_signin_promo_signin_button_view.h"
 #include "chrome/browser/ui/tabs/tab_enums.h"
@@ -44,6 +44,7 @@
 #include "net/test/embedded_test_server/http_response.h"
 #include "services/network/test/test_url_loader_factory.h"
 #include "testing/gmock/include/gmock/gmock.h"
+#include "ui/views/bubble/bubble_frame_view.h"
 
 namespace contextual_tasks {
 
@@ -107,7 +108,7 @@ class SearchAiModePromoTabHelperInteractiveUiTestBase
 
     identity_test_env_adaptor_ =
         std::make_unique<IdentityTestEnvironmentProfileAdaptor>(
-            browser()->profile());
+            browser()->GetProfile());
   }
 
   void TearDownOnMainThread() override {
@@ -235,7 +236,7 @@ class SearchAiModePromoTabHelperInteractiveUiTestBase
           process_dice_header_delegate_impl =
               ProcessDiceHeaderDelegateImpl::Create(signin_contents);
       process_dice_header_delegate_impl->CompleteChromeSignInAfterGaiaSignin(
-          account_info);
+          account_info.GetCoreAccountInfo());
       // Refresh token, otherwise the contextual_task_ui_service will not
       // intercept the post-signin navigation.
       identity_test_env()->SetRefreshTokenForPrimaryAccount();
@@ -320,10 +321,16 @@ class SearchAiModePromoTabHelperInteractiveBubbleDismissalUiTest
  public:
   SearchAiModePromoTabHelperInteractiveBubbleDismissalUiTest()
       : SearchAiModePromoTabHelperInteractiveUiTestBase(
-            /*load_original_aim_search=*/false) {}
+            /*load_original_aim_search=*/false) {
+    self_dismissal_feature_list_.InitAndEnableFeature(
+        switches::kSearchAIModeSignInPromoSelfDismissal);
+  }
 
   ~SearchAiModePromoTabHelperInteractiveBubbleDismissalUiTest() override =
       default;
+
+ private:
+  base::test::ScopedFeatureList self_dismissal_feature_list_;
 };
 
 IN_PROC_BROWSER_TEST_F(
@@ -397,4 +404,47 @@ IN_PROC_BROWSER_TEST_F(
           },
           "Wait for tab helper destruction")));
 }
+
+class SearchAiModePromoTabHelperInteractiveBubbleNoSelfDismissalUiTest
+    : public SearchAiModePromoTabHelperInteractiveUiTestBase {
+ public:
+  SearchAiModePromoTabHelperInteractiveBubbleNoSelfDismissalUiTest()
+      : SearchAiModePromoTabHelperInteractiveUiTestBase(
+            /*load_original_aim_search=*/true) {
+    feature_list_.InitAndDisableFeature(
+        switches::kSearchAIModeSignInPromoSelfDismissal);
+  }
+
+  ~SearchAiModePromoTabHelperInteractiveBubbleNoSelfDismissalUiTest() override =
+      default;
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
+};
+
+IN_PROC_BROWSER_TEST_F(
+    SearchAiModePromoTabHelperInteractiveBubbleNoSelfDismissalUiTest,
+    SigninPromoNoSelfDismissed) {
+  const GURL ai_url =
+      embedded_test_server()->GetURL(kGoogleHost, kSearchAimPath);
+  const GURL result_url =
+      embedded_test_server()->GetURL(kGoogleHost, kSearchResultRelativeUrl);
+  DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kSourceTabId);
+  DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kNewTabId);
+
+  RunTestSequence(InAnyContext(
+      InstrumentTab(kSourceTabId), NavigateWebContents(kSourceTabId, ai_url),
+      WaitForElementVisible(kSourceTabId, DeepQuery{"#link"}),
+      InstrumentNextTab(kNewTabId),
+      ClickElement(kSourceTabId, DeepQuery{"#link"}),
+      WaitForWebContentsNavigation(kNewTabId, result_url),
+      // Promo should be visible for a non-signed-in user initially.
+      WaitForShow(kSearchAIModeSignInPromoFrameViewId),
+      EnsurePresent(kSearchAIModeSignInPromoViewId),
+      WithView(kSearchAIModeSignInPromoViewId,
+               [](SearchAIModeSignInPromoView* view) {
+                 EXPECT_FALSE(view->IsTimerRunningForTesting());
+               })));
+}
+
 }  // namespace contextual_tasks

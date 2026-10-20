@@ -20,7 +20,7 @@
 #include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/page_user_data.h"
 #include "content/public/browser/webid/identity_request_dialog_controller.h"
-#include "third_party/blink/public/mojom/webid/federated_auth_request.mojom-shared.h"
+#include "third_party/blink/public/mojom/webid/federated_request.mojom-shared.h"
 #include "ui/gfx/native_ui_types.h"
 
 namespace content {
@@ -87,8 +87,7 @@ class IdentityDialogController
   int GetBrandIconIdealSize(blink::mojom::RpMode rp_mode) override;
 
   // content::IdentityRequestDialogController
-  void ShouldShowAccountsPassiveDialog(
-      ShouldShowAccountsPassiveDialogCallback cb) override;
+  void GetPassiveDialogVolume(GetPassiveDialogVolumeCallback cb) override;
   bool ShowAccountsDialog(
       content::RelyingPartyData rp_data,
       const std::vector<IdentityProviderDataPtr>& identity_provider_data,
@@ -128,6 +127,9 @@ class IdentityDialogController
       Account::SignInMode sign_in_mode,
       blink::mojom::RpMode rp_mode,
       AccountsDisplayedCallback accounts_displayed_callback) override;
+  bool ShowNativeAppUi(const content::NativeAppRequestOptions& request_options,
+                       DismissCallback dismiss_callback,
+                       NativeAppResultCallback native_result_callback) override;
 
   std::string GetTitle() const override;
   std::optional<std::string> GetSubtitle() const override;
@@ -139,13 +141,13 @@ class IdentityDialogController
       blink::mojom::RpMode rp_mode,
       DismissCallback dismiss_callback,
       content::IdentityRequestDialogController::ShownModalAsyncCallback
-          on_shown_async) override;
+          on_shown_async,
+      NativeAppResultCallback native_result_callback) override;
   void CloseModalDialog() override;
   content::WebContents* GetRpWebContents() override;
   void RequestIdPRegistrationPermision(
       const url::Origin& origin,
       base::OnceCallback<void(bool accepted)> callback) override;
-  bool DidShowUi() const override;
 
   // AccountSelectionView::Delegate:
   void OnAccountSelected(
@@ -157,8 +159,14 @@ class IdentityDialogController
                     const GURL& idp_login_url) override;
   void OnMoreDetails() override;
   void OnAccountsDisplayed() override;
+  void OnNativeAppResult(const std::string& token) override;
+  void OnNativeAppError(
+      const content::IdentityCredentialTokenError& error) override;
+  void OnNativeAppLoginFinished() override;
   gfx::NativeView GetNativeView() override;
   content::WebContents* GetWebContents() override;
+  content::IdentityRequestDialogController::PassiveDialogVolume
+  GetPassiveDialogVolume() const override;
 
   // Allows setting a mock AccountSelectionView for testing purposes.
   void SetAccountSelectionViewForTesting(
@@ -171,9 +179,7 @@ class IdentityDialogController
   void RequestUiVolumeRecommendation(
       segmentation_platform::ClassificationResultCallback callback);
 
-  // Called when |RequestUiVolumeRecommendation| returns a result.
   void OnRequestUiVolumeRecommendationResultReceived(
-      ShouldShowAccountsPassiveDialogCallback cb,
       const segmentation_platform::ClassificationResult&
           ui_volume_recommendation);
 
@@ -206,6 +212,7 @@ class IdentityDialogController
   std::unique_ptr<AccountSelectionView> account_view_{nullptr};
   AccountSelectionCallback on_account_selection_;
   DismissCallback on_dismiss_;
+  NativeAppResultCallback on_native_result_;
   LoginToIdPCallback on_login_;
   MoreDetailsCallback on_more_details_;
   AccountsDisplayedCallback on_accounts_displayed_;
@@ -217,6 +224,9 @@ class IdentityDialogController
   // Whether we show any FedCM UI or not. Excludes the loading dialog since that
   // one is not something that modifies user state or is actionable by the user.
   bool did_show_ui_ = false;
+  std::optional<content::IdentityRequestDialogController::PassiveDialogVolume>
+      passive_dialog_volume_;
+  GetPassiveDialogVolumeCallback passive_dialog_volume_callback_;
 
   // Request ID associated with a |GetClassificationResult| call to
   // |segmentation_platform_service_|. This is nullopt when the

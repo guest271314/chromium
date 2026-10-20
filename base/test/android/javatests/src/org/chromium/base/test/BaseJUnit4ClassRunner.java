@@ -27,14 +27,18 @@ import org.junit.runners.model.FrameworkMethod;
 import org.junit.runners.model.InitializationError;
 import org.junit.runners.model.Statement;
 
+import org.chromium.base.BaseSwitches;
+import org.chromium.base.CommandLine;
 import org.chromium.base.ContextUtils;
 import org.chromium.base.Log;
 import org.chromium.base.ResettersForTesting;
 import org.chromium.base.ResettersForTesting.State;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.library_loader.LibraryLoader;
+import org.chromium.base.library_loader.LibraryProcessType;
 import org.chromium.base.lifetime.LifetimeAssert;
 import org.chromium.base.metrics.UmaRecorderHolder;
+import org.chromium.base.task.AsyncTask;
 import org.chromium.base.test.params.MethodParamAnnotationRule;
 import org.chromium.base.test.util.AndroidSdkLevelSkipCheck;
 import org.chromium.base.test.util.BaseRestrictions;
@@ -46,7 +50,10 @@ import org.chromium.base.test.util.RestrictionSkipCheck;
 import org.chromium.base.test.util.SkipCheck;
 import org.chromium.base.test.util.TestAnimations;
 import org.chromium.base.test.util.TestLocale;
+import org.chromium.build.NativeLibraries;
+import org.chromium.build.annotations.Nullable;
 
+import java.lang.annotation.Annotation;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -65,7 +72,7 @@ import java.util.ServiceLoader;
 public class BaseJUnit4ClassRunner extends AndroidJUnit4ClassRunner {
     private static final String TAG = "BaseJUnit4ClassRunnr";
 
-    // Arbirary int that must not overlap with status codes defined by
+    // Arbitrary int that must not overlap with status codes defined by
     // https://developer.android.com/reference/android/test/InstrumentationTestRunner.html#REPORT_VALUE_ID
     private static final int STATUS_CODE_TEST_DURATION = 1337;
     private static final String DURATION_BUNDLE_ID = "duration_ms";
@@ -99,7 +106,7 @@ public class BaseJUnit4ClassRunner extends AndroidJUnit4ClassRunner {
 
     /**
      * An interface for classes that have some code to run before (or after) the class is
-     * instantiated. They run after {@Link BeforeClass} (or before @AfterClass) methods are called.
+     * instantiated. They run after {@link BeforeClass} (or before @AfterClass) methods are called.
      * Provides access to the test class (and the annotations defined for it) and the
      * instrumentation context.
      *
@@ -115,12 +122,12 @@ public class BaseJUnit4ClassRunner extends AndroidJUnit4ClassRunner {
     }
 
     /**
-     * An interface for classes that have some code to run before a test. They run after
-     * {@link SkipCheck}s and before {@Link Before} (or after @After). Provides access to the test
-     * method (and the annotations defined for it) and the instrumentation context.
+     * An interface for classes that have some code to run before a test. They run after {@link
+     * SkipCheck}s and before {@link Before} (or after @After). Provides access to the test method
+     * (and the annotations defined for it) and the instrumentation context.
      *
-     * Do not use TestHooks unless you also require ClassHooks. Otherwise, you should use TestRules
-     * and {@link #getDefaultTestRules}.
+     * <p>Do not use TestHooks unless you also require ClassHooks. Otherwise, you should use
+     * TestRules and {@link #getDefaultTestRules}.
      */
     public interface TestHook {
         /**
@@ -159,9 +166,11 @@ public class BaseJUnit4ClassRunner extends AndroidJUnit4ClassRunner {
 
     /** Makes it more obvious that all tests are being marked as failed. */
     private static class BeforeClassException extends RuntimeException {
-        private BeforeClassException(boolean batchedTest, Throwable causedBy) {
+        private BeforeClassException(Class<?> testClass, boolean batchedTest, Throwable causedBy) {
             super(
-                    "Exception in @BeforeClass."
+                    "Exception in "
+                            + testClass.getName()
+                            + " @BeforeClass."
                             + (batchedTest
                                     ? " All tests in this class will be marked as failed."
                                     : ""),
@@ -171,9 +180,11 @@ public class BaseJUnit4ClassRunner extends AndroidJUnit4ClassRunner {
 
     /** Makes it more obvious that all tests are being marked as failed. */
     private static class AfterClassException extends RuntimeException {
-        private AfterClassException(boolean batchedTest, Throwable causedBy) {
+        private AfterClassException(Class<?> testClass, boolean batchedTest, Throwable causedBy) {
             super(
-                    "Exception in @AfterClass."
+                    "Exception in "
+                            + testClass.getName()
+                            + " @AfterClass."
                             + (batchedTest
                                     ? " All tests in this class will be marked as failed."
                                     : ""),
@@ -413,13 +424,14 @@ public class BaseJUnit4ClassRunner extends AndroidJUnit4ClassRunner {
         return new Statement() {
             @Override
             public void evaluate() throws Throwable {
+                Class<?> testClass = getTestClass().getJavaClass();
                 try {
                     onBeforeTestClass();
                 } catch (Throwable t) {
                     if (t instanceof AssumptionViolatedException) {
                         throw t;
                     }
-                    throw new BeforeClassException(isBatchedTest(getTestClass().getJavaClass()), t);
+                    throw new BeforeClassException(testClass, isBatchedTest(testClass), t);
                 }
                 Throwable exception = null;
                 try {
@@ -438,8 +450,7 @@ public class BaseJUnit4ClassRunner extends AndroidJUnit4ClassRunner {
                     }
                 }
                 if (exception != null) {
-                    throw new AfterClassException(
-                            isBatchedTest(getTestClass().getJavaClass()), exception);
+                    throw new AfterClassException(testClass, isBatchedTest(testClass), exception);
                 }
             }
         };
@@ -532,8 +543,25 @@ public class BaseJUnit4ClassRunner extends AndroidJUnit4ClassRunner {
         SharedPreferencesTestUtil.deleteOnDiskSharedPreferences(getApplication());
 
         JniTestInstancesSnapshot.clearAllForTesting();
-        CommandLineFlags.reset(testClass.getAnnotations(), null);
+        // Test cases are batched based on the set of features they enable in their annotations,
+        // so all test cases in the same run have the same set of features enabled,
+        // so we can set the method-level command-line flags here in onBeforeTestClass().
+        Annotation[] testMethodAnnotations = getTestMethodAnnotations();
+        CommandLineFlags.reset(testClass.getAnnotations(), testMethodAnnotations);
         TestAnimations.reset(testClass, null);
+
+        LibraryLoader libraryLoader = LibraryLoader.getInstance();
+        if (NativeLibraries.LIBRARIES.length > 0
+                && !libraryLoader.isInitialized()
+                && libraryLoader.getLibraryProcessType() != LibraryProcessType.PROCESS_UNINITIALIZED
+                && !CommandLine.getInstance()
+                        .hasSwitch(BaseSwitches.DISABLE_NATIVE_INITIALIZATION)) {
+            libraryLoader.ensureInitialized();
+            // Make code that checks LibraryLoader.isInitialized() return false, while still
+            // allowing unguarded JNI to succeed. This would ideally be removed, but some tests
+            // currently rely on it.
+            libraryLoader.resetForTesting();
+        }
 
         // Allows tests to set the locale before the feature list is initialized.
         applyTestLocale();
@@ -548,6 +576,46 @@ public class BaseJUnit4ClassRunner extends AndroidJUnit4ClassRunner {
         for (ClassHook hook : getPreClassHooks()) {
             hook.run(targetContext, testClass);
         }
+    }
+
+    // Return the annotations of the test method with a specified name.
+    private Annotation @Nullable [] getTestMethodAnnotations() {
+        String testMethodName = InstrumentationRegistry.getArguments().getString("testMethodName");
+        String extractedName = extractTestMethodName(testMethodName);
+        if (extractedName == null) {
+            return null;
+        }
+        for (FrameworkMethod method : getTestClass().getAnnotatedMethods()) {
+            if (method.getName().equals(extractedName)) {
+                return method.getAnnotations();
+            }
+        }
+        return null;
+    }
+
+    // Extract the actual test method name. For example, return "testShowBottomSheet" when given
+    // "org.chromium.chrome.browser.keyboard_accessory.all_passwords_bottom_sheet.
+    // AllPasswordsBottomSheetRenderTest#testShowBottomSheet__NightMode".
+    private static @Nullable String extractTestMethodName(@Nullable String testMethodName) {
+        if (testMethodName == null) {
+            Log.e(TAG, "Expected testMethodName to be passed");
+            return null;
+        }
+        int index = testMethodName.indexOf('#');
+        if (index == -1) {
+            Log.e(TAG, "Encountered a test method name without #");
+            return null;
+        }
+        String sanitized = testMethodName.substring(index + 1);
+        index = sanitized.indexOf("__");
+        if (index != -1) {
+            sanitized = sanitized.substring(0, index);
+        }
+        index = sanitized.indexOf('[');
+        if (index != -1) {
+            sanitized = sanitized.substring(0, index);
+        }
+        return sanitized;
     }
 
     // Allows test classes to set the locale before the feature list is initialized.
@@ -593,6 +661,7 @@ public class BaseJUnit4ClassRunner extends AndroidJUnit4ClassRunner {
                     ResettersForTesting::afterHooksDidExecute);
             JniTestInstancesSnapshot.restoreSnapshotForTesting(mJniZeroSnapshot);
             clearJobSchedulerJobs();
+            AsyncTask.cancelAllTasksForTesting();
         } finally {
             Bundle b = new Bundle();
             b.putLong(DURATION_BUNDLE_ID, SystemClock.uptimeMillis() - mTestStartTimeMs);

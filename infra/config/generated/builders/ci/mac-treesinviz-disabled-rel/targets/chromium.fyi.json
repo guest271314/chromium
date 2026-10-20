@@ -11,11 +11,10 @@
         "module_name": "//chrome/test:browser_tests",
         "module_scheme": "gtest",
         "name": "browser_tests",
-        "retry_only_failed_tests": true,
         "swarming": {
           "dimensions": {
-            "cpu": "x86-64",
-            "os": "Mac-15"
+            "cpu": "arm64",
+            "os": "Mac-26"
           },
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com",
           "shards": 20
@@ -33,11 +32,10 @@
         "module_name": "//cc:cc_unittests",
         "module_scheme": "gtest",
         "name": "cc_unittests",
-        "retry_only_failed_tests": true,
         "swarming": {
           "dimensions": {
-            "cpu": "x86-64",
-            "os": "Mac-15"
+            "cpu": "arm64",
+            "os": "Mac-26"
           },
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
         },
@@ -54,11 +52,10 @@
         "module_name": "//content/test:content_browsertests",
         "module_scheme": "gtest",
         "name": "content_browsertests",
-        "retry_only_failed_tests": true,
         "swarming": {
           "dimensions": {
-            "cpu": "x86-64",
-            "os": "Mac-15"
+            "cpu": "arm64",
+            "os": "Mac-26"
           },
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com",
           "shards": 12
@@ -76,11 +73,10 @@
         "module_name": "//components/viz:viz_unittests",
         "module_scheme": "gtest",
         "name": "viz_unittests",
-        "retry_only_failed_tests": true,
         "swarming": {
           "dimensions": {
-            "cpu": "x86-64",
-            "os": "Mac-15"
+            "cpu": "arm64",
+            "os": "Mac-26"
           },
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
         },
@@ -109,12 +105,11 @@
           "has_native_resultdb_integration": true
         },
         "results_handler": "layout tests",
-        "retry_only_failed_tests": true,
         "swarming": {
           "dimensions": {
-            "cpu": "x86-64",
+            "cpu": "arm64",
             "gpu": null,
-            "os": "Mac-15"
+            "os": "Mac-26"
           },
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com",
           "shards": 12

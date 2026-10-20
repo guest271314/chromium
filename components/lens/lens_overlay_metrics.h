@@ -19,7 +19,6 @@
 #include "components/lens/lens_overlay_side_panel_menu_option.h"
 #include "components/lens/lens_overlay_side_panel_result.h"
 #include "components/lens/lens_permission_user_action.h"
-#include "net/base/net_errors.h"
 #include "services/metrics/public/cpp/ukm_source_id.h"
 
 namespace lens {
@@ -101,6 +100,10 @@ void RecordPermissionRequestedToBeShown(
     bool shown,
     LensOverlayInvocationSource invocation_source);
 
+// Recorded when first run permission is requested to be shown. Both sliced and
+// unsliced.
+void RecordFirstRunPermissionNoticeToBeShown();
+
 // Recorded when non-blocking privacy notice is requested to be shown.
 void RecordNonBlockingPrivacyNoticeToBeShown(
     LensOverlayInvocationSource invocation_source);
@@ -114,6 +117,11 @@ void RecordNonBlockingPrivacyNoticeAccepted(
 // Records user action in lens permission. Both sliced and unsliced.
 void RecordPermissionUserAction(LensPermissionUserAction user_action,
                                 LensOverlayInvocationSource invocation_source);
+
+// Records user action in lens first run permission notice. Both sliced and
+// unsliced.
+void RecordFirstRunPermissionNoticeUserAction(
+    LensPermissionUserAction user_action);
 
 // Records lens overlay invocation.
 void RecordInvocation(LensOverlayInvocationSource invocation_source,
@@ -181,6 +189,27 @@ void RecordUKMSessionEndMetrics(
     std::optional<base::TimeDelta> session_foreground_duration = std::nullopt,
     std::optional<int> generated_tab_count = std::nullopt);
 
+// LINT.IfChange(LensOverlayClusterInfoStatus)
+enum class LensOverlayClusterInfoStatus {
+  // The cluster info was fetched and parsed successfully.
+  kSuccess = 0,
+
+  // The request failed with an HTTP error.
+  kHttpError = 1,
+
+  // The response failed to parse as proto.
+  kProtoParseError = 2,
+
+  kMaxValue = kProtoParseError,
+};
+// LINT.ThenChange(//tools/metrics/histograms/metadata/lens/enums.xml:LensOverlayClusterInfoStatus)
+
+// Records the status of a Lens Overlay cluster info fetch request.
+void RecordClusterInfoFetchStatus(LensOverlayClusterInfoStatus status);
+
+// Records the response time of a Lens Overlay cluster info fetch request.
+void RecordClusterInfoResponseTime(base::TimeDelta response_time);
+
 // Records the duration between the time a lens request is started and the time
 // a response is generated.
 void RecordLensResponseTime(base::TimeDelta response_time);
@@ -227,9 +256,6 @@ void RecordSidePanelMenuOptionSelected(
 void RecordHandleTextDirectiveResult(
     lens::LensOverlayTextDirectiveResult result);
 
-// Records the load status of the side panel iframe.
-void RecordIframeLoadStatus(bool is_error_page, net::Error net_error_code);
-
 // Records the time it takes to close the side panel
 void RecordTimeToCloseOpenedSidePanel(base::TimeDelta duration);
 
@@ -253,6 +279,21 @@ void RecordTimeToGetPageContext(base::TimeDelta duration);
 
 // Records the time it takes for the page to bind
 void RecordTimeToWebuiBound(base::TimeDelta duration);
+
+// LINT.IfChange(LensContextualTasksQueryEligibility)
+enum class LensContextualTasksQueryEligibility {
+  kEligible = 0,
+  kAimIneligible = 1,
+  kCobrowseIneligible = 2,
+  kMaxValue = kCobrowseIneligible,
+};
+// LINT.ThenChange(//tools/metrics/histograms/metadata/lens/enums.xml:LensContextualTasksQueryEligibility)
+
+// Records the Lens query eligibility state when Contextual Tasks is enabled,
+// split by invocation source.
+void RecordContextualTasksQueryEligibility(
+    LensContextualTasksQueryEligibility eligibility,
+    std::optional<LensOverlayInvocationSource> invocation_source);
 
 }  // namespace lens
 

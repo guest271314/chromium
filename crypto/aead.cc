@@ -22,13 +22,15 @@ namespace {
 
 const EVP_AEAD* AeadForAlgorithm(Aead::AeadAlgorithm algorithm) {
   switch (algorithm) {
-    case Aead::AES_128_CTR_HMAC_SHA256:
+    case aead::AES_128_CTR_HMAC_SHA256:
       return EVP_aead_aes_128_ctr_hmac_sha256();
-    case Aead::AES_256_GCM:
+    case aead::AES_128_GCM:
+      return EVP_aead_aes_128_gcm();
+    case aead::AES_256_GCM:
       return EVP_aead_aes_256_gcm();
-    case Aead::AES_256_GCM_SIV:
+    case aead::AES_256_GCM_SIV:
       return EVP_aead_aes_256_gcm_siv();
-    case Aead::CHACHA20_POLY1305:
+    case aead::CHACHA20_POLY1305:
       return EVP_aead_chacha20_poly1305();
   }
 }
@@ -66,25 +68,15 @@ std::optional<std::vector<uint8_t>> Open(
 
 }  // namespace aead
 
-Aead::Aead(AeadAlgorithm algorithm) : algorithm_(algorithm) {}
-
 Aead::Aead(AeadAlgorithm algorithm, base::span<const uint8_t> key)
-    : Aead(algorithm) {
-  Init(key);
-}
-
-Aead::~Aead() = default;
-
-void Aead::Init(base::span<const uint8_t> key) {
+    : algorithm_(algorithm) {
   if (EVP_AEAD_CTX_init(ctx_.get(), AeadForAlgorithm(algorithm_), key.data(),
                         key.size(), EVP_AEAD_DEFAULT_TAG_LENGTH, nullptr)) {
     initialized_ = true;
   }
 }
 
-void Aead::Init(const std::string* key) {
-  Init(base::as_byte_span(*key));
-}
+Aead::~Aead() = default;
 
 std::vector<uint8_t> Aead::Seal(
     base::span<const uint8_t> plaintext,

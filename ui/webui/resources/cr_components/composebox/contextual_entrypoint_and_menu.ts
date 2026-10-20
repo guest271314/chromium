@@ -13,7 +13,7 @@ import type {TabInfo} from '//resources/mojo/components/omnibox/browser/searchbo
 import type {InputState} from '//resources/mojo/components/omnibox/composebox/composebox_query.mojom-webui.js';
 import type {UnguessableToken} from '//resources/mojo/mojo/public/mojom/base/unguessable_token.mojom-webui.js';
 
-import {GlifAnimationState} from './common.js';
+import {getLoadTimeBoolean, GlifAnimationState, TabSuggestionsState} from './common.js';
 import type {ContextualActionMenuElement} from './contextual_action_menu.js';
 import {getCss} from './contextual_entrypoint_and_menu.css.js';
 import {getHtml} from './contextual_entrypoint_and_menu.html.js';
@@ -43,7 +43,7 @@ export class ContextualEntrypointAndMenuElement extends
   }
 
   override render() {
-    return getHtml.bind(this as any)();
+    return getHtml.bind(this)();
   }
 
   static override get properties() {
@@ -52,23 +52,35 @@ export class ContextualEntrypointAndMenuElement extends
       // Public properties
       // =========================================================================
       fileNum: {type: Number},
+      nonTabFileNum: {type: Number},
       showContextMenuDescription: {type: Boolean},
       smartTabSharingActive: {type: Boolean},
+      smartTabSharingVisible: {type: Boolean},
+      contextManagementInComposeboxEnabled: {type: Boolean},
+      composeboxContextMenuTooltipsEnabled: {type: Boolean},
       hasImageFiles: {
         reflect: true,
         type: Boolean,
       },
-      disabledTabIds: {type: Object},
-      restoredTabIds: {type: Array},
+      selectedTabIds: {type: Object},
+      aimThreadRestoredTabs: {type: Array},
       tabSuggestions: {type: Array},
       inputState: {type: Object},
-      glifAnimationState: {type: String, reflect: true},
+      tabSuggestionsState: {type: Number},
+      glifAnimationState: {type: String},
       searchboxLayoutMode: {type: String},
-      uploadButtonDisabled: {type: Boolean},
       disableAutoReposition: {type: Boolean},
+      isSidePanel: {type: Boolean},
       usePecApi: {type: Boolean},
       energyEffectAnimationEnabled: {type: Boolean, reflect: true},
+      disableFallbackGlifAnimation: {type: Boolean},
       recentTabId: {type: Number},
+      shareTabsFlyoutOpen: {type: Boolean},
+      unboundedMenuEnabled: {
+        reflect: true,
+        type: Boolean,
+        attribute: 'unbounded-menu-enabled',
+      },
 
       // =========================================================================
       // Protected properties
@@ -78,33 +90,43 @@ export class ContextualEntrypointAndMenuElement extends
         type: Boolean,
       },
       sharedTabs: {type: Array},
-      restoredTabs_: {type: Array},
     };
   }
 
   accessor fileNum: number = 0;
+  accessor nonTabFileNum: number = 0;
   accessor showContextMenuDescription: boolean = false;
   accessor smartTabSharingActive: boolean = false;
-  accessor disabledTabIds: Map<number, UnguessableToken> = new Map();
-  accessor restoredTabIds: number[] = [];
+  accessor smartTabSharingVisible: boolean = false;
+  accessor contextManagementInComposeboxEnabled: boolean = false;
+  accessor composeboxContextMenuTooltipsEnabled: boolean =
+      getLoadTimeBoolean('composeboxContextMenuTooltipsEnabled', false);
+  accessor selectedTabIds: Map<number, UnguessableToken> = new Map();
+  accessor aimThreadRestoredTabs: TabInfo[] = [];
   accessor tabSuggestions: TabInfo[] = [];
   accessor inputState: InputState|null = null;
   accessor glifAnimationState: GlifAnimationState =
       GlifAnimationState.INELIGIBLE;
-  accessor uploadButtonDisabled: boolean = false;
   accessor sharedTabs: TabInfo[] = [];
   accessor recentTabId: number|null = null;
+  accessor shareTabsFlyoutOpen: boolean = false;
+  accessor unboundedMenuEnabled: boolean = false;
+  accessor tabSuggestionsState: TabSuggestionsState =
+      TabSuggestionsState.NOT_STARTED;
+  menuOpenDelayMs: number = 200;
+
+  private openTimeoutId_: number|null = null;
 
   accessor hasImageFiles: boolean = false;
   accessor searchboxLayoutMode: string = '';
   accessor disableAutoReposition: boolean = false;
   accessor usePecApi: boolean = false;
   accessor energyEffectAnimationEnabled: boolean = false;
+  accessor isSidePanel: boolean = false;
+  accessor disableFallbackGlifAnimation: boolean = false;
 
   protected accessor enableMultiTabSelection_: boolean =
       loadTimeData.getBoolean('composeboxContextMenuEnableMultiTabSelection');
-
-  protected accessor restoredTabs_: TabInfo[] = [];
 
   // TODO(crbug.com/499310611): Explore avoiding/removing this local property.
   private shouldOpenMenuForMultiSelection_: boolean = false;
@@ -125,18 +147,27 @@ export class ContextualEntrypointAndMenuElement extends
     return {entrypointButton, entrypoint};
   }
 
-  override willUpdate(changedProperties: PropertyValues<this>) {
-    super.willUpdate(changedProperties);
-
-    if (changedProperties.has('tabSuggestions') ||
-        changedProperties.has('restoredTabIds')) {
-      this.restoredTabs_ = this.tabSuggestions.filter(
-          tab => this.restoredTabIds.includes(tab.tabId));
+  override disconnectedCallback() {
+    super.disconnectedCallback();
+    if (this.openTimeoutId_ !== null) {
+      window.clearTimeout(this.openTimeoutId_);
+      this.openTimeoutId_ = null;
     }
   }
 
   override updated(changedProperties: PropertyValues<this>) {
     super.updated(changedProperties);
+
+    if (changedProperties.has('tabSuggestionsState')) {
+      if (this.tabSuggestionsState !== TabSuggestionsState.LOADING &&
+          this.openTimeoutId_ !== null) {
+        window.clearTimeout(this.openTimeoutId_);
+        this.openTimeoutId_ = null;
+        this.$.menu.updateComplete.then(() => {
+          this.showMenuAtEntrypoint_();
+        });
+      }
+    }
 
     if (this.shouldOpenMenuForMultiSelection_) {
       const {entrypointButton, entrypoint} = this.getEntrypointElements_();
@@ -160,7 +191,6 @@ export class ContextualEntrypointAndMenuElement extends
     }
   }
 
-
   closeMenu() {
     const menu =
         this.shadowRoot.querySelector<ContextualActionMenuElement>('#menu');
@@ -178,15 +208,37 @@ export class ContextualEntrypointAndMenuElement extends
   }
 
   protected onContextMenuEntrypointClick_() {
-    this.showMenuAtEntrypoint_();
+    if (this.openTimeoutId_ !== null) {
+      return;
+    }
+    if (this.tabSuggestionsState === TabSuggestionsState.NOT_STARTED) {
+      this.tabSuggestionsState = TabSuggestionsState.LOADING;
+      this.fire('request-tab-suggestions-load');
+    }
+    if (this.tabSuggestionsState === TabSuggestionsState.LOADING) {
+      this.openTimeoutId_ = window.setTimeout(() => {
+        this.openTimeoutId_ = null;
+        this.showMenuAtEntrypoint_();
+      }, this.menuOpenDelayMs);
+    } else {
+      this.showMenuAtEntrypoint_();
+    }
   }
 
-  private showMenuAtEntrypoint_() {
+  protected onContextMenuEntrypointHover_() {
+    this.fire('context-menu-entrypoint-hover');
+  }
+
+  private async showMenuAtEntrypoint_() {
     const {entrypointButton, entrypoint} = this.getEntrypointElements_();
     if (entrypointButton && entrypoint) {
       entrypointButton.classList.add('menu-open');
-      this.fire('context-menu-opened');
-      this.$.menu.showAt(entrypoint);
+      await this.updateComplete;
+      await this.$.menu.updateComplete;
+      if (!this.$.menu.open) {
+        this.$.menu.showAt(entrypoint);
+        this.fire('context-menu-opened');
+      }
     }
   }
 }

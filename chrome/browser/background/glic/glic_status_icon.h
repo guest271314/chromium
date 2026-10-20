@@ -25,20 +25,21 @@ class GlobalBrowserCollection;
 
 namespace glic {
 
-class GlicController;
+class GlicBackgroundDelegate;
 
-// This class abstracts away the details for creating a status tray icon and it
+// This class abstracts away the details for creating a status tray icon and its
 // context menu for the glic background mode manager. It is responsible for
-// notifying the GlicController when the UI needs to be shown in response to the
-// status icon being clicked or menu item being triggered.
+// notifying the GlicBackgroundDelegate when the UI needs to be shown in
+// response to the status icon being clicked or menu item being triggered.
 class GlicStatusIcon : public StatusIconObserver,
                        public StatusIconMenuModel::Delegate,
                        public BrowserCollectionObserver {
  public:
-  static std::unique_ptr<GlicStatusIcon> Create(GlicController* controller,
-                                                StatusTray* status_tray);
+  static std::unique_ptr<GlicStatusIcon> Create(
+      GlicBackgroundDelegate* delegate,
+      StatusTray* status_tray);
 
-  GlicStatusIcon(GlicController* controller, StatusTray* status_tray);
+  GlicStatusIcon(GlicBackgroundDelegate* delegate, StatusTray* status_tray);
 
   GlicStatusIcon(const GlicStatusIcon&) = delete;
   GlicStatusIcon& operator=(const GlicStatusIcon&) = delete;
@@ -56,10 +57,18 @@ class GlicStatusIcon : public StatusIconObserver,
   // BrowserCollectionObserver:
   void OnBrowserCreated(BrowserWindowInterface* browser) override;
   void OnBrowserClosed(BrowserWindowInterface* browser) override;
+  void OnBrowserActivated(BrowserWindowInterface* browser) override;
+  void OnBrowserDeactivated(BrowserWindowInterface* browser) override;
 
   void UpdateHotkey(const ui::Accelerator& hotkey);
 
   void UpdateVisibilityOfExitInContextMenu();
+
+  // Computes whether a click would open or close Gemini, and relabels the
+  // tooltip and context menu item accordingly.
+  void RefreshToggleLabel();
+
+  bool would_close_for_testing() const { return would_close_; }
 
   // Virtual for testing.
   virtual void SetIcon(const gfx::ImageSkia& icon);
@@ -74,7 +83,7 @@ class GlicStatusIcon : public StatusIconObserver,
 
   std::unique_ptr<StatusIconMenuModel> CreateStatusIconMenu();
 
-  raw_ptr<GlicController> controller_;
+  raw_ptr<GlicBackgroundDelegate> delegate_;
 
   base::ScopedObservation<GlobalBrowserCollection, BrowserCollectionObserver>
       browser_collection_observation_{this};
@@ -82,6 +91,9 @@ class GlicStatusIcon : public StatusIconObserver,
   raw_ptr<StatusTray> status_tray_ = nullptr;
   raw_ptr<StatusIcon> status_icon_ = nullptr;
   raw_ptr<StatusIconMenuModel> context_menu_ = nullptr;
+
+  // Whether a click on the icon would close Gemini rather than open it.
+  bool would_close_ = false;
 
 #if BUILDFLAG(IS_MAC)
   OSIconProviderMac os_icon_provider_mac_;

@@ -29,6 +29,8 @@ source_set("default_browser") {
     "default_browser_notification_observer.cc",
     "default_browser_notification_observer.h",
     "default_browser_setter.h",
+    "default_browser_time_after_setter_failure_tracker.cc",
+    "default_browser_time_after_setter_failure_tracker.h",
     "setters/default_browser_visual_guided_setter.cc",
     "setters/default_browser_visual_guided_setter.h",
     "setters/shell_integration_default_browser_setter.cc",
@@ -49,6 +51,8 @@ source_set("default_browser") {
     "//chrome/browser/ui/navigator",
     "//chrome/browser/ui/toasts",
     "//chrome/browser/ui/toasts/api:toasts",
+    "//components/tabs:public",
+    "//components/vector_icons",
     "//ui/base",
     "//ui/base/unowned_user_data",
     "//ui/message_center/public/cpp",
@@ -59,12 +63,14 @@ source_set("default_browser") {
     sources += [ "default_browser_monitor_win.cc" ]
 
     deps += [
+      "//chrome/browser/win",
       "//chrome/browser/win:registry_watcher",
       "//chrome/install_static:install_static_util",
     ]
   } else {
     sources += [ "default_browser_monitor_stub.cc" ]
   }
+  check_includes_strict = CHECK_INCLUDES_STRICT_PUBLIC_INCLUDES_PRIVATE
 }
 
 source_set("test_support") {
@@ -91,9 +97,12 @@ source_set("unit_tests") {
     "default_browser_controller_unittest.cc",
     "default_browser_features_unittest.cc",
     "default_browser_manager_unittest.cc",
-    "default_browser_notification_observer_unittest.cc",
     "setters/shell_integration_default_browser_setter_unittest.cc",
   ]
+
+  if (is_win) {
+    sources += [ "default_browser_notification_observer_unittest.cc" ]
+  }
 
   deps = [
     ":default_browser",
@@ -102,6 +111,7 @@ source_set("unit_tests") {
     "//chrome/browser:global_features",
     "//chrome/browser:shell_integration",
     "//chrome/test:test_support",
+    "//chrome/test/base:testing_browser_process",
     "//content/test:test_support",
     "//ui/base/unowned_user_data",
     "//url",
@@ -113,10 +123,11 @@ source_set("browser_tests") {
 
   defines = [ "HAS_OUT_OF_PROC_TEST_RUNNER" ]
 
-  sources = [
-    "default_browser_manager_browsertest.cc",
-    "setters/default_browser_visual_guided_setter_browsertest.cc",
-  ]
+  sources = [ "default_browser_manager_browsertest.cc" ]
+
+  if (is_win) {
+    sources += [ "setters/default_browser_visual_guided_setter_browsertest.cc" ]
+  }
 
   deps = [
     ":default_browser",
@@ -128,6 +139,7 @@ source_set("browser_tests") {
     "//chrome/browser/ui/toasts/api:toasts",
     "//chrome/test:test_support",
     "//chrome/test:test_support_ui",
+    "//chrome/test/base:testing_browser_process",
     "//content/test:test_support",
     "//ui/base",
   ]

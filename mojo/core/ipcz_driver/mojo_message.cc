@@ -29,7 +29,8 @@ constexpr int kGrowthFactor = 2;
 
 bool FixGeometricBufferGrowthIsEnabled() {
   static const bool kIsEnabled =
-      base::FeatureList::IsEnabled(kMojoFixGeometricBufferGrowth);
+      base::FeatureList::IsEnabled(kMojoFixGeometricBufferGrowth) ||
+      base::FeatureList::IsEnabled(kMojoFixGeometricBufferGrowth2);
   return kIsEnabled;
 }
 
@@ -143,7 +144,7 @@ void MojoMessage::SetParcel(ScopedIpczHandle parcel) {
   } else {
     data_storage_.reset();
   }
-  data_ = UNSAFE_TODO({data_storage_.get(), num_bytes});
+  data_ = UNSAFE_TODO({base::unchecked, data_storage_.get(), num_bytes});
   data_storage_size_ = num_bytes;
 
   result = GetIpczAPI().EndGet(parcel_.get(), transaction, IPCZ_NO_FLAGS,
@@ -171,8 +172,9 @@ MojoResult MojoMessage::ReserveCapacity(uint32_t payload_buffer_size,
 
   data_storage_size_ = std::max(payload_buffer_size, uint32_t{kMinBufferSize});
   DataPtr new_storage(new uint8_t[data_storage_size_]);
+  data_ = {};
   data_storage_ = std::move(new_storage);
-  data_ = UNSAFE_TODO(base::span(data_storage_.get(), 0u));
+  data_ = UNSAFE_TODO(base::span(base::unchecked, data_storage_.get(), 0u));
 
   if (buffer_size) {
     *buffer_size = base::checked_cast<uint32_t>(data_storage_size_);
@@ -205,14 +207,18 @@ MojoResult MojoMessage::AppendData(uint32_t additional_num_bytes,
     }
     data_storage_size_ = new_size;
     DataPtr new_storage(new uint8_t[data_storage_size_]);
-    std::ranges::copy(UNSAFE_TODO(base::span(data_storage_.get(), copy_size)),
+    std::ranges::copy(UNSAFE_TODO(base::span(base::unchecked,
+                                             data_storage_.get(), copy_size)),
                       new_storage.get());
+    data_ = {};
     data_storage_ = std::move(new_storage);
   }
-  data_ = UNSAFE_TODO(base::span(data_storage_.get(), new_data_size));
+  data_ = UNSAFE_TODO(
+      base::span(base::unchecked, data_storage_.get(), new_data_size));
 
   handles_.reserve(handles_.size() + num_handles);
-  for (MojoHandle handle : UNSAFE_TODO(base::span(handles, num_handles))) {
+  for (MojoHandle handle :
+       UNSAFE_TODO(base::span(base::unchecked, handles, num_handles))) {
     handles_.push_back(handle);
   }
   if (buffer) {

@@ -4,15 +4,17 @@
 
 #include "services/tracing/public/cpp/trace_startup.h"
 
+#include <optional>
+
 #include "base/check.h"
 #include "base/command_line.h"
+#include "base/containers/span.h"
 #include "base/memory/shared_memory_switch.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/synchronization/lock.h"
 #include "base/task/thread_pool/thread_pool_instance.h"
 #include "base/trace_event/trace_event.h"
-#include "base/trace_event/trace_log.h"
 #include "base/trace_event/trace_session_observer.h"
 #include "build/build_config.h"
 #include "components/tracing/common/tracing_switches.h"
@@ -32,7 +34,6 @@ namespace tracing {
 namespace {
 
 using base::trace_event::TraceConfig;
-using base::trace_event::TraceLog;
 
 class StartupTrackEventConfigObserver
     : public perfetto::TrackEventSessionObserver {
@@ -111,17 +112,6 @@ void InitTracing(
   g_tracing_initialized = true;
   base::TimeTicks init_start = base::TimeTicks::Now();
 
-  std::optional<uint64_t> maybe_process_track_uuid;
-  auto* command_line = base::CommandLine::ForCurrentProcess();
-  if (command_line->HasSwitch(switches::kTraceProcessTrackUuid)) {
-    uint64_t process_track_uuid;
-    if (base::StringToUint64(
-            command_line->GetSwitchValueASCII(switches::kTraceProcessTrackUuid),
-            &process_track_uuid)) {
-      maybe_process_track_uuid = process_track_uuid;
-    }
-  }
-
   // Create the PerfettoTracedProcess.
   auto& traced_process =
       PerfettoTracedProcess::MaybeCreateInstance(will_trace_thread_restart);
@@ -129,14 +119,10 @@ void InitTracing(
     traced_process.SetAllowSystemTracingConsumerCallback(
         std::move(allow_system_tracing_consumer));
   }
-  traced_process.SetupClientLibrary(enable_consumer, enable_system_backend,
-                                    maybe_process_track_uuid);
+  traced_process.SetupClientLibrary(enable_consumer, enable_system_backend);
 
   RegisterTracedValueProtoWriter();
 
-  // Ensure TraceLog is initialized first.
-  // https://crbug.com/764357
-  TraceLog::GetInstance();
   StartupTrackEventConfigObserver::GetInstance();
   base::trace_event::TraceSessionObserverList::Initialize();
 
@@ -166,6 +152,8 @@ void InitTracingPostFeatureList(
     bool will_trace_thread_restart,
     base::RepeatingCallback<bool()> allow_system_tracing_consumer) {
   DCHECK(base::FeatureList::GetInstance());
+  TraceStartupConfig::InitializeFromCommandLine(
+      *base::CommandLine::ForCurrentProcess());
   InitTracing(enable_consumer, will_trace_thread_restart,
               ShouldSetupSystemTracing(),
               std::move(allow_system_tracing_consumer));
@@ -202,6 +190,12 @@ base::UnsafeSharedMemoryRegion CreateTracingOutputSharedMemory() {
     return base::UnsafeSharedMemoryRegion();
   }
   return shm;
+}
+
+void EnableEarlyTrackRegistration() {
+  perfetto::internal::TrackRegistry::InitializeInstance(
+      TraceStartupConfig::GetProcessTrackUuid(
+          *base::CommandLine::ForCurrentProcess()));
 }
 
 }  // namespace tracing

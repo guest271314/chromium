@@ -11,7 +11,6 @@
 #include <optional>
 
 #include "base/memory/raw_ptr.h"
-#include "base/memory/raw_ptr_exclusion.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/memory/stack_allocated.h"
 #include "base/synchronization/lock.h"
@@ -32,12 +31,15 @@
 #include "ui/gfx/color_space.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/geometry/size.h"
+#include "ui/gfx/gpu_fence_handle.h"
 #include "ui/gfx/gpu_memory_buffer_handle.h"
 #include "ui/gfx/native_pixmap.h"
 
 #if BUILDFLAG(IS_WIN)
 #include <d3d11.h>
 #include <wrl/client.h>
+
+#include "gpu/command_buffer/service/shared_image/d3d_access_object.h"
 #endif
 
 #if BUILDFLAG(ENABLE_VULKAN)
@@ -54,7 +56,6 @@ class ProcessMemoryDump;
 
 namespace gfx {
 class D3DSharedFence;
-class GpuFence;
 }  // namespace gfx
 
 namespace gpu {
@@ -72,7 +73,6 @@ class DawnBufferRepresentation;
 class LegacyOverlayImageRepresentation;
 class OverlayImageRepresentation;
 class MemoryImageRepresentation;
-class RasterImageRepresentation;
 class MemoryTracker;
 class VideoImageRepresentation;
 class MemoryTypeTracker;
@@ -112,7 +112,7 @@ enum class SharedImageBackingType {
   // kGLImage = 6, // no longer used after GLImage removal
   kGLTexture = 7,
   kOzone = 8,
-  kRawDraw = 9,
+  // kRawDraw = 9, // no longer used after RawDraw removal
   kSharedMemory = 10,
   kVideo = 11,
   kWrappedSkImage = 12,
@@ -127,7 +127,8 @@ enum class SharedImageBackingType {
 };
 
 #if BUILDFLAG(IS_WIN)
-using VideoDevice = Microsoft::WRL::ComPtr<ID3D11Device>;
+// The device performing video access: a D3D11 device or a D3D12 command queue.
+using VideoDevice = D3DAccessObject;
 #else
 // This parameter is only used on Windows so null is expected.
 using VideoDevice = void*;
@@ -153,6 +154,7 @@ class GPU_GLES2_EXPORT SharedImageBacking {
   GrSurfaceOrigin surface_origin() const { return surface_origin_; }
   SkAlphaType alpha_type() const { return alpha_type_; }
   SharedImageUsageSet usage() const { return usage_; }
+  uint32_t array_layers() const { return array_layers_; }
   const Mailbox& mailbox() const { return mailbox_; }
   bool is_thread_safe() const { return !!lock_; }
   bool is_ref_counted() const { return is_ref_counted_; }
@@ -200,7 +202,7 @@ class GPU_GLES2_EXPORT SharedImageBacking {
   virtual void SetPurgeable(bool purgeable) {}
   virtual bool IsPurgeable() const;
 
-  virtual void Update(std::unique_ptr<gfx::GpuFence> in_fence);
+  virtual void Update(gfx::GpuFenceHandle in_fence);
 
   // Uploads pixels from memory into GPU texture. `pixmaps` should have one
   // pixmap per plane. Backings must implement this if they support
@@ -337,9 +339,6 @@ class GPU_GLES2_EXPORT SharedImageBacking {
   virtual std::unique_ptr<MemoryImageRepresentation> ProduceMemory(
       SharedImageManager* manager,
       MemoryTypeTracker* tracker);
-  virtual std::unique_ptr<RasterImageRepresentation> ProduceRaster(
-      SharedImageManager* manager,
-      MemoryTypeTracker* tracker);
   // Take void* device for resource generated from different devices. E.g  video
   // decoder starts using its own device on a separate thread.
   virtual std::unique_ptr<VideoImageRepresentation> ProduceVideo(
@@ -411,6 +410,7 @@ class GPU_GLES2_EXPORT SharedImageBacking {
   const GrSurfaceOrigin surface_origin_;
   const SkAlphaType alpha_type_;
   const SharedImageUsageSet usage_;
+  const uint32_t array_layers_;
   const std::string debug_label_;
   size_t estimated_size_ GUARDED_BY(lock_);
 
@@ -434,8 +434,9 @@ class GPU_GLES2_EXPORT SharedImageBacking {
   // A vector of SharedImageRepresentations which hold references to this
   // backing. The first reference is considered the owner, and the vector is
   // ordered by the order in which references were taken.
-  // RAW_PTR_EXCLUSION: Performance reasons (based on analysis of MotionMark).
-  RAW_PTR_EXCLUSION std::vector<SharedImageRepresentation*> refs_
+  // Uses UnprotectedInRelease for performance reasons (based on analysis of
+  // MotionMark).
+  std::vector<raw_ptr<SharedImageRepresentation, UnprotectedInRelease>> refs_
       GUARDED_BY(lock_);
 };
 

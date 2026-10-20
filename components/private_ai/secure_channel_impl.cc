@@ -28,7 +28,7 @@
 #include "components/private_ai/secure_session_async_impl.h"
 #include "components/private_ai/transport.h"
 #include "components/private_ai/websocket_client.h"
-#include "services/network/public/mojom/network_context.mojom.h"
+#include "services/network/public/cpp/network_context_getter.h"
 #include "third_party/oak/chromium/proto/session/session.pb.h"
 #include "url/gurl.h"
 
@@ -36,25 +36,35 @@ namespace private_ai {
 
 SecureChannelImpl::FactoryImpl::FactoryImpl(
     const GURL& url,
-    network::mojom::NetworkContext* network_context,
-    PrivateAiLogger* logger)
-    : url_(url), network_context_(network_context), logger_(logger) {}
+    network::NetworkContextGetter network_context_getter,
+    PrivateAiLogger* logger,
+    PrivateAiOakSessionDriver* oak_session_driver,
+    std::optional<bool> has_chrome_proxy)
+    : url_(url),
+      network_context_getter_(std::move(network_context_getter)),
+      logger_(logger),
+      oak_session_driver_(oak_session_driver),
+      has_chrome_proxy_(has_chrome_proxy) {}
 
 SecureChannelImpl::FactoryImpl::~FactoryImpl() = default;
 
 std::unique_ptr<SecureChannel> SecureChannelImpl::FactoryImpl::Create(
+    base::OnceClosure on_established,
     ResponseCallback callback) {
-  auto transport =
-      std::make_unique<WebSocketClient>(url_, network_context_, logger_);
-  auto secure_session = std::make_unique<SecureSessionAsyncImpl>();
-  auto attestation_handler = std::make_unique<AttestationHandlerImpl>(logger_);
+  auto transport = std::make_unique<WebSocketClient>(
+      url_, network_context_getter_, logger_, has_chrome_proxy_);
+  auto secure_session =
+      std::make_unique<SecureSessionAsyncImpl>(oak_session_driver_);
+  auto attestation_handler =
+      std::make_unique<AttestationHandlerImpl>(url_, logger_);
 
   return std::make_unique<SecureChannelImpl>(
-      std::move(callback), std::move(transport), std::move(secure_session),
-      std::move(attestation_handler), logger_);
+      std::move(on_established), std::move(callback), std::move(transport),
+      std::move(secure_session), std::move(attestation_handler), logger_);
 }
 
 SecureChannelImpl::SecureChannelImpl(
+    base::OnceClosure on_established,
     ResponseCallback callback,
     std::unique_ptr<Transport> transport,
     std::unique_ptr<SecureSession> secure_session,
@@ -64,7 +74,8 @@ SecureChannelImpl::SecureChannelImpl(
       secure_session_(std::move(secure_session)),
       attestation_handler_(std::move(attestation_handler)),
       logger_(logger),
-      response_callback_(std::move(callback)) {
+      response_callback_(std::move(callback)),
+      on_established_(std::move(on_established)) {
   CHECK(transport_);
   CHECK(secure_session_);
   CHECK(attestation_handler_);
@@ -130,30 +141,37 @@ void SecureChannelImpl::OnResponseReceived(
                                          static_cast<int>(response.error()),
                                          static_cast<int>(state_)));
 
-    StatusCode status_code = StatusCode::kError;
-    switch (state_) {
-      case State::kPerformingAttestation:
-        status_code = StatusCode::kAttestationFailed;
-        break;
-      case State::kPerformingHandshake:
-        status_code = StatusCode::kHandshakeFailed;
-        break;
-      case State::kEstablished:
-        status_code = StatusCode::kNetworkError;
-        break;
-      case State::kWaitingHandshakeMessage:
-      case State::kVerifyingHandshake:
-      case State::kClosed:
-        // Transport error in these states is unexpected because no requests
-        // should be in flight.
-        //
-        // Nevertheless, we do not crash here as this branch could be triggered
-        // by misbehaving server.
-        logger_->LogError(
-            FROM_HERE,
-            base::StringPrintf("Unexpected transport error in state: %d",
-                               static_cast<int>(state_)));
-        break;
+    StatusCode status_code = StatusCode::kUnexpectedTransportError;
+    if (response.error() == Transport::TransportError::kConnectionFailed) {
+      status_code = StatusCode::kNetworkError;
+    } else {
+      switch (state_) {
+        case State::kPerformingAttestation:
+          status_code = StatusCode::kAttestationFailed;
+          break;
+        case State::kPerformingHandshake:
+          status_code = StatusCode::kHandshakeFailed;
+          break;
+        case State::kEstablished:
+          status_code =
+              response.error() == Transport::TransportError::kSocketClosed
+                  ? StatusCode::kConnectionClosedByServer
+                  : StatusCode::kNetworkError;
+          break;
+        case State::kWaitingHandshakeMessage:
+        case State::kVerifyingHandshake:
+        case State::kClosed:
+          // Transport error in these states is unexpected because no requests
+          // should be in flight.
+          //
+          // Nevertheless, we do not crash here as this branch could be
+          // triggered by misbehaving server.
+          logger_->LogError(
+              FROM_HERE,
+              base::StringPrintf("Unexpected transport error in state: %d",
+                                 static_cast<int>(state_)));
+          break;
+      }
     }
 
     FailAllRequestsAndClose(status_code);
@@ -279,8 +297,8 @@ void SecureChannelImpl::OnHandshakeMessageReady(
 void SecureChannelImpl::RecordSessionDurationMetrics() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   if (state_ == State::kEstablished) {
-    base::UmaHistogramMediumTimes(
-        "PrivateAi.SecureChannel.SessionDuration",
+    base::UmaHistogramLongTimes(
+        "PrivateAi.SecureChannel.SessionDuration2",
         base::TimeTicks::Now() - state_entry_times_[State::kEstablished]);
     base::UmaHistogramCounts1000("PrivateAi.SecureChannel.RequestsPerSession",
                                  requests_in_session_count_);
@@ -337,6 +355,10 @@ void SecureChannelImpl::OnHandshakeVerification(bool handshake_verified) {
 
   state_ = State::kEstablished;
   state_entry_times_[state_] = base::TimeTicks::Now();
+
+  if (on_established_) {
+    std::move(on_established_).Run();
+  }
 
   ProcessPendingEncryptionRequests();
 }

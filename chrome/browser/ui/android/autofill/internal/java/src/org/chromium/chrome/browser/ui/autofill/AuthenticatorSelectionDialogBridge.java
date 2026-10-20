@@ -8,10 +8,12 @@ import android.content.Context;
 
 import org.jni_zero.CalledByNative;
 import org.jni_zero.JNINamespace;
+import org.jni_zero.JniType;
 import org.jni_zero.NativeMethods;
 
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
+import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.ui.autofill.data.AuthenticatorOption;
 import org.chromium.chrome.browser.ui.autofill.internal.R;
 import org.chromium.ui.base.WindowAndroid;
@@ -25,8 +27,8 @@ import java.util.List;
 @JNINamespace("autofill")
 @NullMarked
 public class AuthenticatorSelectionDialogBridge implements AuthenticatorSelectionDialog.Listener {
-    private final AuthenticatorSelectionDialog mAuthenticatorSelectionDialog;
     private long mNativeCardUnmaskAuthenticationSelectionDialogView;
+    private final AuthenticatorSelectionDialog mAuthenticatorSelectionDialog;
 
     public AuthenticatorSelectionDialogBridge(
             long nativeAuthenticatorSelectionDialogView,
@@ -39,7 +41,8 @@ public class AuthenticatorSelectionDialogBridge implements AuthenticatorSelectio
 
     @CalledByNative
     public static @Nullable AuthenticatorSelectionDialogBridge create(
-            long nativeAuthenticatorSelectionDialogView, WindowAndroid windowAndroid) {
+            long nativeAuthenticatorSelectionDialogView,
+            @JniType("ui::WindowAndroid*") WindowAndroid windowAndroid) {
         Context context = windowAndroid.getActivity().get();
         ModalDialogManager modalDialogManager = windowAndroid.getModalDialogManager();
         if (context == null || modalDialogManager == null) {
@@ -67,14 +70,14 @@ public class AuthenticatorSelectionDialogBridge implements AuthenticatorSelectio
      * @param identifier id of {@link AuthenticatorOption}.
      * @param description Description of {@link AuthenticatorOption}.
      * @param type type of {@link CardUnmaskChallengeOptionType}. Used to determine the icon that
-     *         should be shown.
+     *     should be shown.
      */
     @CalledByNative
     private static void createAuthenticatorOptionAndAddToList(
             List<AuthenticatorOption> list,
-            String title,
-            String identifier,
-            String description,
+            @JniType("std::u16string") String title,
+            @JniType("std::string") String identifier,
+            @JniType("std::u16string") String description,
             @CardUnmaskChallengeOptionType int type) {
         if (list == null) {
             return;
@@ -120,9 +123,6 @@ public class AuthenticatorSelectionDialogBridge implements AuthenticatorSelectio
     @CalledByNative
     public void dismiss() {
         mAuthenticatorSelectionDialog.dismiss(DialogDismissalCause.DISMISSED_BY_NATIVE);
-        // The native C++ view is destroyed after the dialog is dismissed, reset the native pointer
-        // to make it unreachable.
-        mNativeCardUnmaskAuthenticationSelectionDialogView = 0;
     }
 
     /**
@@ -132,9 +132,7 @@ public class AuthenticatorSelectionDialogBridge implements AuthenticatorSelectio
      */
     @Override
     public void onOptionSelected(String authenticatorOptionIdentifier) {
-        if (mNativeCardUnmaskAuthenticationSelectionDialogView == 0) {
-            return;
-        }
+        if (mNativeCardUnmaskAuthenticationSelectionDialogView == 0) return;
         AuthenticatorSelectionDialogBridgeJni.get()
                 .onOptionSelected(
                         mNativeCardUnmaskAuthenticationSelectionDialogView,
@@ -144,21 +142,20 @@ public class AuthenticatorSelectionDialogBridge implements AuthenticatorSelectio
     /** Notify that the dialog was dismissed. */
     @Override
     public void onDialogDismissed() {
-        if (mNativeCardUnmaskAuthenticationSelectionDialogView == 0) {
-            return;
-        }
+        if (mNativeCardUnmaskAuthenticationSelectionDialogView == 0) return;
         AuthenticatorSelectionDialogBridgeJni.get()
                 .onDismissed(mNativeCardUnmaskAuthenticationSelectionDialogView);
-        // The native C++ view is destroyed after the dialog is dismissed, reset the native pointer
-        // to make it unreachable.
-        mNativeCardUnmaskAuthenticationSelectionDialogView = 0;
+        if (ChromeFeatureList.isEnabled(
+                ChromeFeatureList.RESET_NATIVE_POINTER_IN_CREDIT_CARD_AUTH_DIALOG)) {
+            mNativeCardUnmaskAuthenticationSelectionDialogView = 0;
+        }
     }
 
     @NativeMethods
     interface Natives {
         void onOptionSelected(
                 long nativeAuthenticatorSelectionDialogViewAndroid,
-                String authenticatorOptionIdentifier);
+                @JniType("std::string") String authenticatorOptionIdentifier);
 
         void onDismissed(long nativeAuthenticatorSelectionDialogViewAndroid);
     }

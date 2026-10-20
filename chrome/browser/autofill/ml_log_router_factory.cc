@@ -4,7 +4,6 @@
 
 #include "chrome/browser/autofill/ml_log_router_factory.h"
 
-#include "chrome/browser/optimization_guide/optimization_guide_keyed_service.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_keyed_service_factory.h"
 #include "components/autofill/core/browser/ml_model/logging/ml_log_router.h"
@@ -21,7 +20,7 @@ MlLogRouterFactory* MlLogRouterFactory::GetInstance() {
 
 // static
 MlLogRouter* MlLogRouterFactory::GetForProfile(Profile* profile) {
-  return static_cast<autofill::MlLogRouter*>(
+  return static_cast<MlLogRouter*>(
       GetInstance()->GetServiceForBrowserContext(profile, /*create=*/true));
 }
 
@@ -38,7 +37,7 @@ MlLogRouterFactory::~MlLogRouterFactory() = default;
 std::unique_ptr<KeyedService>
 MlLogRouterFactory::BuildServiceInstanceForBrowserContext(
     content::BrowserContext* context) const {
-  return std::make_unique<autofill::MlLogRouter>();
+  return std::make_unique<MlLogRouter>();
 }
 
 }  // namespace autofill

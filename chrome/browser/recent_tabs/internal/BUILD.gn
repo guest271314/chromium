@@ -50,7 +50,6 @@ android_library("java") {
     "//base:base_java",
     "//chrome/browser/feature_engagement:java",
     "//chrome/browser/flags:java",
-    "//chrome/browser/hub:factory_java",
     "//chrome/browser/hub:java",
     "//chrome/browser/hub:pane_base_java",
     "//chrome/browser/profiles/android:java",
@@ -90,7 +89,6 @@ android_resources("java_resources") {
     "android/java/res/drawable/restore_tabs_detail_item_background_bottom.xml",
     "android/java/res/drawable/restore_tabs_detail_item_background_middle.xml",
     "android/java/res/drawable/restore_tabs_detail_item_background_top.xml",
-    "android/java/res/drawable/restore_tabs_expand_more.xml",
     "android/java/res/drawable/restore_tabs_fre_logo.xml",
     "android/java/res/drawable/restore_tabs_phone_icon.xml",
     "android/java/res/drawable/restore_tabs_single_item_background.xml",
@@ -110,6 +108,9 @@ android_resources("java_resources") {
 java_strings_grd("java_strings_grd") {
   defines = chrome_grit_defines
   grd_file = "android/java/strings/android_restore_tabs_strings.grd"
+  inputs = process_file_template(
+          xtb_locales,
+          [ "android/java/strings/translations/android_restore_tabs_strings_{{source_name_part}}.xtb" ])
 }
 
 robolectric_library("junit") {
@@ -159,7 +160,6 @@ robolectric_library("junit") {
     "//third_party/androidx:androidx_recyclerview_recyclerview_java",
     "//third_party/androidx:androidx_test_core_java",
     "//third_party/androidx:androidx_test_ext_junit_java",
-    "//third_party/androidx:androidx_test_runner_java",
     "//third_party/hamcrest:hamcrest_java",
     "//third_party/hamcrest:hamcrest_library_java",
     "//third_party/jni_zero:jni_zero_java",
@@ -224,6 +224,7 @@ android_library("unit_device_javatests") {
     ":java",
     "//base:base_java_test_support",
     "//base:tasks_java",
+    "//base/test:public_transit_java",
     "//chrome/browser/profiles/android:java",
     "//chrome/browser/recent_tabs:java",
     "//chrome/browser/tabmodel:java",

@@ -19,14 +19,14 @@
 #include "chrome/browser/ash/input_method/suggestion_enums.h"
 #include "chrome/browser/ash/input_method/textinput_test_helper.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/ui/browser_window.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
+#include "chrome/test/base/chrome_test_path_utils.h"
 #include "chrome/test/base/chrome_test_utils.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "components/autofill/core/browser/data_model/addresses/autofill_profile.h"
-#include "components/autofill/core/browser/test_utils/autofill_test_utils.h"
-#include "components/signin/public/identity_manager/identity_test_utils.h"
+#include "components/autofill/core/browser/test_utils/autofill_test_util.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "content/public/test/test_utils.h"
@@ -118,7 +118,7 @@ class NativeInputMethodEngineWithoutImeServiceTest
     auto observer = std::make_unique<TestObserver>();
     observer_ = observer.get();
 
-    profile_ = browser()->profile();
+    profile_ = browser()->GetProfile();
     prefs_ = profile_->GetPrefs();
     prefs_->Set(ash::prefs::kLanguageInputMethodSpecificSettings,
                 base::Value(base::Value::Type::DICT));
@@ -192,7 +192,11 @@ class NativeInputMethodEngineWithoutImeServiceTest
   }
 
   ui::InputMethod* GetBrowserInputMethod() {
-    return browser()->window()->GetNativeWindow()->GetHost()->GetInputMethod();
+    return browser()
+        ->GetWindow()
+        ->GetNativeWindow()
+        ->GetHost()
+        ->GetInputMethod();
   }
 
   std::unique_ptr<NativeInputMethodEngine> engine_;

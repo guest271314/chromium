@@ -6,10 +6,11 @@
 
 #include <memory>
 
+#include "base/containers/span.h"
 #include "base/time/time.h"
-#include "chrome/browser/send_tab_to_self/receiving_ui_handler.h"
 #include "components/send_tab_to_self/fake_send_tab_to_self_model.h"
 #include "components/send_tab_to_self/page_context.h"
+#include "components/send_tab_to_self/receiving_ui_handler.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "url/gurl.h"
 
@@ -25,11 +26,11 @@ class TestReceivingUiHandler : public ReceivingUiHandler {
   ~TestReceivingUiHandler() override = default;
 
   void DisplayNewEntries(
-      const std::vector<const SendTabToSelfEntry*>& new_entries) override {
+      base::span<const SendTabToSelfEntry* const> new_entries) override {
     number_displayed_entries_ = number_displayed_entries_ + new_entries.size();
   }
 
-  void DismissEntries(const std::vector<std::string>& guids) override {}
+  void DismissEntries(base::span<const std::string> guids) override {}
 
   size_t number_displayed_entries() const { return number_displayed_entries_; }
 
@@ -42,9 +43,10 @@ class TestReceivingUiHandler : public ReceivingUiHandler {
 TEST(SendTabToSelfClientServiceTest, MultipleEntriesAdded) {
   // Set up the test objects.
   FakeSendTabToSelfModel test_model;
-  TestReceivingUiHandler* test_handler = new TestReceivingUiHandler();
-  SendTabToSelfClientService client_service(
-      std::unique_ptr<TestReceivingUiHandler>(test_handler), &test_model);
+  auto test_handler = std::make_unique<TestReceivingUiHandler>();
+  TestReceivingUiHandler* test_handler_ptr = test_handler.get();
+  SendTabToSelfClientService client_service(std::move(test_handler),
+                                            &test_model);
 
   // Create 2 entries and simulated that they were both added remotely.
   SendTabToSelfEntry entry1("a", GURL("http://www.example-a.com"), "a site",
@@ -55,7 +57,7 @@ TEST(SendTabToSelfClientServiceTest, MultipleEntriesAdded) {
                             NavigationHistory());
   client_service.OnEntriesAddedRemotely({&entry1, &entry2});
 
-  EXPECT_EQ(2u, test_handler->number_displayed_entries());
+  EXPECT_EQ(2u, test_handler_ptr->number_displayed_entries());
 }
 
 }  // namespace

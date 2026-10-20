@@ -36,7 +36,9 @@
 #include "chrome/browser/safe_browsing/download_protection/deep_scanning_request.h"
 #include "chrome/browser/safe_browsing/download_protection/download_protection_service.h"
 #include "chrome/browser/safe_browsing/test_safe_browsing_service.h"
-#include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/omnibox/omnibox_next_features.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/file_system_access/file_system_access_test_utils.h"
 #include "chrome/common/chrome_paths.h"
 #include "chrome/common/pref_names.h"
@@ -72,6 +74,7 @@
 #include "services/network/public/cpp/data_element.h"
 #include "services/network/public/mojom/data_pipe_getter.mojom.h"
 #include "services/network/test/test_utils.h"
+#include "ui/base/window_open_disposition.h"
 
 namespace safe_browsing {
 
@@ -160,6 +163,10 @@ class DownloadDeepScanningBrowserTestBase
                          enterprise_obfuscation::kEnterpriseFileObfuscation)
                    : disabled_features_.push_back(
                          enterprise_obfuscation::kEnterpriseFileObfuscation);
+    // TODO(crbug.com/452061489): Fix tests that fail when the WebUI Omnibox is
+    // is enabled and then remove these two Features.
+    disabled_features_.push_back(omnibox::internal::kWebUIOmniboxPopup);
+    disabled_features_.push_back(omnibox::internal::kWebUIOmniboxAimPopup);
   }
 
   void OnDownloadCreated(content::DownloadManager* manager,
@@ -174,7 +181,7 @@ class DownloadDeepScanningBrowserTestBase
 
   void SetUpReporting() {
     enterprise_connectors::test::SetOnSecurityEventReporting(
-        browser()->profile()->GetPrefs(),
+        browser()->GetProfile()->GetPrefs(),
         /*enabled*/ true, /*enabled_event_names*/ {},
         /*enabled_opt_in_events*/ {}, connectors_machine_scope());
     client_ = std::make_unique<policy::MockCloudPolicyClient>();
@@ -182,16 +189,16 @@ class DownloadDeepScanningBrowserTestBase
 
 #if BUILDFLAG(IS_CHROMEOS)
     enterprise_connectors::RealtimeReportingClientFactory::GetForProfile(
-        browser()->profile())
+        browser()->GetProfile())
         ->SetBrowserCloudPolicyClientForTesting(client_.get());
 #else
     if (connectors_machine_scope()) {
       enterprise_connectors::RealtimeReportingClientFactory::GetForProfile(
-          browser()->profile())
+          browser()->GetProfile())
           ->SetBrowserCloudPolicyClientForTesting(client_.get());
     } else {
       enterprise_connectors::RealtimeReportingClientFactory::GetForProfile(
-          browser()->profile())
+          browser()->GetProfile())
           ->SetProfileCloudPolicyClientForTesting(client_.get());
     }
 #endif
@@ -200,7 +207,7 @@ class DownloadDeepScanningBrowserTestBase
     identity_test_environment_->MakePrimaryAccountAvailable(
         kUserName, signin::ConsentLevel::kSignin);
     enterprise_connectors::RealtimeReportingClientFactory::GetForProfile(
-        browser()->profile())
+        browser()->GetProfile())
         ->SetIdentityManagerForTesting(
             identity_test_environment_->identity_manager());
   }
@@ -212,7 +219,7 @@ class DownloadDeepScanningBrowserTestBase
     scoped_feature_list_.InitWithFeatures(std::move(enabled_features_),
                                           std::move(disabled_features_));
     test_sb_factory_ = std::make_unique<TestSafeBrowsingServiceFactory>();
-    test_sb_factory_->UseV4LocalDatabaseManager();
+    test_sb_factory_->UseSBLocalDatabaseManager();
     SafeBrowsingService::RegisterFactory(test_sb_factory_.get());
 
     InProcessBrowserTest::SetUp();
@@ -231,6 +238,9 @@ class DownloadDeepScanningBrowserTestBase
     SetBinaryUploadServiceTestFactory();
     SetUrlLoaderInterceptor();
     ObserveDownloadManager();
+    test_sb_factory_->test_safe_browsing_service()
+        ->download_protection_service()
+        ->SetDownloadRequestTimeoutForTesting(base::Seconds(60));
 
     if (!is_consumer_) {
       AuthorizeForDeepScanning();
@@ -241,12 +251,12 @@ class DownloadDeepScanningBrowserTestBase
       if (connectors_machine_scope()) {
         SetDMTokenForTesting(policy::DMToken::CreateValidToken("dm_token"));
       } else {
-        enterprise_connectors::test::SetProfileDMToken(browser()->profile(),
+        enterprise_connectors::test::SetProfileDMToken(browser()->GetProfile(),
                                                        "dm_token");
       }
 #endif
       enterprise_connectors::test::SetAnalysisConnector(
-          browser()->profile()->GetPrefs(),
+          browser()->GetProfile()->GetPrefs(),
           enterprise_connectors::FILE_DOWNLOADED,
           R"({
                               "service_provider": "google",
@@ -265,7 +275,7 @@ class DownloadDeepScanningBrowserTestBase
 
   void WaitForDownloadToFinish() {
     content::DownloadManager* download_manager =
-        browser()->profile()->GetDownloadManager();
+        browser()->GetProfile()->GetDownloadManager();
     content::DownloadTestObserverTerminal observer(
         download_manager, 1,
         content::DownloadTestObserver::ON_DANGEROUS_DOWNLOAD_QUIT);
@@ -378,7 +388,7 @@ class DownloadDeepScanningBrowserTestBase
 
   void SetBinaryUploadServiceTestFactory() {
     CloudBinaryUploadServiceFactory::GetInstance()->SetTestingFactory(
-        browser()->profile(),
+        browser()->GetProfile(),
         base::BindRepeating(
             &DownloadDeepScanningBrowserTestBase::CreateBinaryUploadService,
             base::Unretained(this)));
@@ -386,7 +396,7 @@ class DownloadDeepScanningBrowserTestBase
 
   void ObserveDownloadManager() {
     content::DownloadManager* download_manager =
-        browser()->profile()->GetDownloadManager();
+        browser()->GetProfile()->GetDownloadManager();
     download_manager->AddObserver(this);
   }
 
@@ -403,7 +413,7 @@ class DownloadDeepScanningBrowserTestBase
 
   void AuthorizeForDeepScanning() {
     static_cast<enterprise_connectors::CloudBinaryUploadServiceBase*>(
-        CloudBinaryUploadServiceFactory::GetForProfile(browser()->profile()))
+        CloudBinaryUploadServiceFactory::GetForProfile(browser()->GetProfile()))
         ->SetAuthForTesting("dm_token",
                             /*auth_check_result=*/enterprise_connectors::
                                 ScanRequestUploadResult::kSuccess);
@@ -415,14 +425,14 @@ class DownloadDeepScanningBrowserTestBase
 
   std::string GetProfileIdentifier() const {
 #if BUILDFLAG(IS_CHROMEOS)
-    return browser()->profile()->GetPath().AsUTF8Unsafe();
+    return browser()->GetProfile()->GetPath().AsUTF8Unsafe();
 #else
     if (connectors_machine_scope_) {
-      return browser()->profile()->GetPath().AsUTF8Unsafe();
+      return browser()->GetProfile()->GetPath().AsUTF8Unsafe();
     }
     auto* profile_id_service =
         enterprise::ProfileIdServiceFactory::GetForProfile(
-            browser()->profile());
+            browser()->GetProfile());
     if (profile_id_service && profile_id_service->GetProfileId().has_value()) {
       return profile_id_service->GetProfileId().value();
     }
@@ -462,10 +472,11 @@ class DownloadDeepScanningBrowserTestBase
                                                    data_pipe_consumer));
     data_pipe_getter_->Read(
         std::move(data_pipe_producer),
-        base::BindLambdaForTesting([&run_loop](int32_t status, uint64_t size) {
-          EXPECT_EQ(net::OK, status);
-          run_loop.Quit();
-        }));
+        base::BindLambdaForTesting(
+            [&run_loop](network::mojom::DataPipeGetter::ReadResult size) {
+              EXPECT_TRUE(size.has_value());
+              run_loop.Quit();
+            }));
     data_pipe_getter_.FlushForTesting();
     run_loop.Run();
 
@@ -585,7 +596,7 @@ class ConsumerDeepScanningBrowserTest
 };
 
 IN_PROC_BROWSER_TEST_F(ConsumerDeepScanningBrowserTest, ErrorIndicatesFailure) {
-  SetSafeBrowsingState(browser()->profile()->GetPrefs(),
+  SetSafeBrowsingState(browser()->GetProfile()->GetPrefs(),
                        SafeBrowsingState::ENHANCED_PROTECTION);
 
   ClientDownloadResponse metadata_response;
@@ -668,6 +679,65 @@ IN_PROC_BROWSER_TEST_P(DownloadDeepScanningBrowserTest,
   WaitForDownloadToFinish();
 
   // The file should be deep scanned, and safe.
+  ASSERT_EQ(download_items().size(), 1u);
+  download::DownloadItem* item = *download_items().begin();
+  EXPECT_EQ(
+      item->GetDangerType(),
+      download::DownloadDangerType::DOWNLOAD_DANGER_TYPE_DEEP_SCANNED_SAFE);
+  EXPECT_EQ(item->GetState(), download::DownloadItem::COMPLETE);
+}
+
+IN_PROC_BROWSER_TEST_P(DownloadDeepScanningBrowserTest, DataURLDownloadIsTruncated) {
+  base::ScopedAllowBlockingForTesting allow_blocking;
+
+  ClientDownloadResponse metadata_response;
+  metadata_response.set_verdict(ClientDownloadResponse::SAFE);
+  ExpectMetadataResponse(metadata_response);
+
+  enterprise_connectors::ContentAnalysisResponse sync_response;
+  auto* dlp_result = sync_response.add_results();
+  dlp_result->set_tag("dlp");
+  dlp_result->set_status(
+      enterprise_connectors::ContentAnalysisResponse::Result::SUCCESS);
+
+  auto* malware_result = sync_response.add_results();
+  malware_result->set_tag("malware");
+  malware_result->set_status(
+      enterprise_connectors::ContentAnalysisResponse::Result::SUCCESS);
+
+  ExpectContentAnalysisResumableMetadataResponse({"dlp", "malware"});
+  ExpectContentAnalysisResumableContentResponse(sync_response);
+
+  // Needs to be an octet-stream to trigger download
+  std::string data_url_string = "data:application/octet-stream;base64,";
+  data_url_string.append(10000, 'A');
+  GURL url(data_url_string);
+
+  ui_test_utils::NavigateToURLWithDisposition(
+      browser(), url, WindowOpenDisposition::CURRENT_TAB,
+      ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
+
+  WaitForDeepScanRequest();
+
+  EXPECT_EQ(last_request().reason(),
+            enterprise_connectors::ContentAnalysisRequest::NORMAL_DOWNLOAD);
+
+  // The truncate limit is 8192 characters, but may be less to ensure a valid
+  // base64 encoding.
+  EXPECT_LE(last_request().request_data().url().size(), 8192u);
+  EXPECT_GT(last_request().request_data().referrer_chain_size(), 0);
+  EXPECT_LE(last_request().request_data().referrer_chain(0).url().size(),
+            8192u);
+
+  ASSERT_TRUE(last_request().request_data().has_csd());
+  ASSERT_GT(last_request().request_data().csd().referrer_chain_size(), 0);
+  ASSERT_GT(last_request().request_data().csd().resources_size(), 0);
+  EXPECT_LE(last_request().request_data().csd().resources(0).url().size(),
+            8192u);
+  EXPECT_LE(last_request().request_data().csd().url().size(), 8192u);
+
+  WaitForDownloadToFinish();
+
   ASSERT_EQ(download_items().size(), 1u);
   download::DownloadItem* item = *download_items().begin();
   EXPECT_EQ(
@@ -911,31 +981,48 @@ IN_PROC_BROWSER_TEST_P(DownloadDeepScanningBrowserTest,
                                      "application/x-zip-compressed"};
   enterprise_connectors::test::EventReportValidator validator(client());
   validator.SetDoneClosure(run_loop.QuitClosure());
-  validator.ExpectSensitiveDataEventAndDangerousDeepScanningResult(
-      /*url*/ url.spec(),
-      /*tab_url*/ url.spec(),
-      /*source*/ "",
-      /*destination*/ "",
-      /*filename*/
+  chrome::cros::reporting::proto::SafeBrowsingDangerousDownloadEvent
+      dangerous_event;
+  dangerous_event.set_url(url.spec());
+  dangerous_event.set_tab_url(url.spec());
+  dangerous_event.set_file_name(
       connectors_machine_scope()
           ? (*download_items().begin())->GetTargetFilePath().AsUTF8Unsafe()
-          : "zipfile_two_archives.zip",
-      // sha256sum chrome/test/data/safe_browsing/download_protection/\
-      // zipfile_two_archives.zip |  tr '[:lower:]' '[:upper:]'
-      /*sha*/
-      "339C8FFDAE735C4F1846D0E6FF07FBD85CAEE6D96045AAEF5B30F3220836643C",
-      /*threat_type*/ "POTENTIALLY_UNWANTED",
-      /*trigger*/
-      enterprise_connectors::kFileDownloadDataTransferEventTrigger,
-      /*dlp_verdict*/ *dlp_result,
-      /*mimetypes*/ &zip_types,
-      /*size*/ is_obfuscated() ? 276 + kSingleChunkObfuscationOverhead : 276,
-      /*result*/
-      enterprise_connectors::EventResultToString(
-          enterprise_connectors::EventResult::WARNED),
-      /*username*/ kUserName,
-      /*profile_identifier*/ GetProfileIdentifier(),
-      /*scan_id*/ last_request().request_token());
+          : "zipfile_two_archives.zip");
+  dangerous_event.set_download_digest_sha256(
+      "339C8FFDAE735C4F1846D0E6FF07FBD85CAEE6D96045AAEF5B30F3220836643C");
+  dangerous_event.set_threat_type(
+      chrome::cros::reporting::proto::SafeBrowsingDangerousDownloadEvent::
+          POTENTIALLY_UNWANTED);
+  dangerous_event.set_trigger(chrome::cros::reporting::proto::FILE_DOWNLOAD);
+  dangerous_event.set_content_size(
+      is_obfuscated() ? 276 + kSingleChunkObfuscationOverhead : 276);
+  dangerous_event.set_event_result(
+      chrome::cros::reporting::proto::EventResult::EVENT_RESULT_WARNED);
+  dangerous_event.set_profile_user_name(kUserName);
+  dangerous_event.set_profile_identifier(GetProfileIdentifier());
+  dangerous_event.set_scan_id(last_request().request_token());
+
+  chrome::cros::reporting::proto::DlpSensitiveDataEvent dlp_event;
+  dlp_event.set_url(url.spec());
+  dlp_event.set_tab_url(url.spec());
+  dlp_event.set_file_name(
+      connectors_machine_scope()
+          ? (*download_items().begin())->GetTargetFilePath().AsUTF8Unsafe()
+          : "zipfile_two_archives.zip");
+  dlp_event.set_download_digest_sha_256(
+      "339C8FFDAE735C4F1846D0E6FF07FBD85CAEE6D96045AAEF5B30F3220836643C");
+  dlp_event.set_trigger(chrome::cros::reporting::proto::FILE_DOWNLOAD);
+  dlp_event.set_content_size(
+      is_obfuscated() ? 276 + kSingleChunkObfuscationOverhead : 276);
+  dlp_event.set_event_result(
+      chrome::cros::reporting::proto::EventResult::EVENT_RESULT_WARNED);
+  dlp_event.set_profile_user_name(kUserName);
+  dlp_event.set_profile_identifier(GetProfileIdentifier());
+  dlp_event.set_scan_id(last_request().request_token());
+
+  validator.ExpectDangerousDeepScanningResultAndSensitiveDataEvent(
+      std::move(dangerous_event), std::move(dlp_event), &zip_types);
   WaitForDownloadToFinish();
 
   // The file should be blocked.
@@ -971,11 +1058,11 @@ class DownloadRestrictionsDeepScanningBrowserTest
   void SetUpOnMainThread() override {
     DownloadDeepScanningBrowserTestBase::SetUpOnMainThread();
 
-    browser()->profile()->GetPrefs()->SetInteger(
+    browser()->GetProfile()->GetPrefs()->SetInteger(
         policy::policy_prefs::kDownloadRestrictions,
         static_cast<int>(policy::DownloadRestriction::DANGEROUS_FILES));
     enterprise_connectors::test::SetAnalysisConnector(
-        browser()->profile()->GetPrefs(),
+        browser()->GetProfile()->GetPrefs(),
         enterprise_connectors::FILE_DOWNLOADED,
         R"({
                               "service_provider": "google",
@@ -1015,7 +1102,7 @@ IN_PROC_BROWSER_TEST_P(DownloadRestrictionsDeepScanningBrowserTest,
       browser(), url, WindowOpenDisposition::CURRENT_TAB,
       ui_test_utils::BROWSER_TEST_NO_WAIT);
 
-  base::FilePath main_file = DownloadPrefs(browser()->profile())
+  base::FilePath main_file = DownloadPrefs(browser()->GetProfile())
                                  .DownloadPath()
                                  .AppendASCII("zipfile_two_archives.zip");
   base::RunLoop run_loop;
@@ -1087,7 +1174,7 @@ class AllowlistedUrlDeepScanningBrowserTest
 
     base::ListValue domain_list;
     domain_list.Append(embedded_test_server()->base_url().host());
-    browser()->profile()->GetPrefs()->SetList(
+    browser()->GetProfile()->GetPrefs()->SetList(
         prefs::kSafeBrowsingAllowlistDomains, std::move(domain_list));
   }
 };
@@ -1211,7 +1298,7 @@ class SavePackageDeepScanningBrowserTest
                                             /*is_obfuscated=*/false) {}
 
   base::FilePath GetSaveDir() {
-    return DownloadPrefs(browser()->profile()).DownloadPath();
+    return DownloadPrefs(browser()->GetProfile()).DownloadPath();
   }
 
   base::FilePath GetTestFilePath() {
@@ -1236,10 +1323,10 @@ IN_PROC_BROWSER_TEST_F(SavePackageDeepScanningBrowserTest, Allowed) {
 
   base::RunLoop run_loop;
   content::SavePackageFinishedObserver observer(
-      browser()->profile()->GetDownloadManager(), run_loop.QuitClosure());
+      browser()->GetProfile()->GetDownloadManager(), run_loop.QuitClosure());
   base::FilePath main_file = GetSaveDir().AppendASCII("text.htm");
   base::FilePath extra_files_dir = GetSaveDir().AppendASCII("text_files");
-  ASSERT_TRUE(browser()->tab_strip_model()->GetActiveWebContents()->SavePage(
+  ASSERT_TRUE(browser()->GetTabStripModel()->GetActiveWebContents()->SavePage(
       main_file, extra_files_dir, content::SAVE_PAGE_TYPE_AS_ONLY_HTML));
   WaitForDeepScanRequest();
 
@@ -1285,11 +1372,11 @@ IN_PROC_BROWSER_TEST_F(SavePackageDeepScanningBrowserTest, Blocked) {
 
   base::RunLoop run_loop;
   content::SavePackageFinishedObserver observer(
-      browser()->profile()->GetDownloadManager(), run_loop.QuitClosure(),
+      browser()->GetProfile()->GetDownloadManager(), run_loop.QuitClosure(),
       {download::DownloadItem::INTERRUPTED});
   base::FilePath main_file = GetSaveDir().AppendASCII("text.htm");
   base::FilePath extra_files_dir = GetSaveDir().AppendASCII("text_files");
-  ASSERT_TRUE(browser()->tab_strip_model()->GetActiveWebContents()->SavePage(
+  ASSERT_TRUE(browser()->GetTabStripModel()->GetActiveWebContents()->SavePage(
       main_file, extra_files_dir, content::SAVE_PAGE_TYPE_AS_ONLY_HTML));
   WaitForDeepScanRequest();
 
@@ -1373,11 +1460,11 @@ IN_PROC_BROWSER_TEST_F(SavePackageDeepScanningBrowserTest, KeepAfterWarning) {
 
   base::RunLoop save_package_run_loop;
   content::SavePackageFinishedObserver observer(
-      browser()->profile()->GetDownloadManager(),
+      browser()->GetProfile()->GetDownloadManager(),
       save_package_run_loop.QuitClosure(), {download::DownloadItem::COMPLETE});
   base::FilePath main_file = GetSaveDir().AppendASCII("text.htm");
   base::FilePath extra_files_dir = GetSaveDir().AppendASCII("text_files");
-  ASSERT_TRUE(browser()->tab_strip_model()->GetActiveWebContents()->SavePage(
+  ASSERT_TRUE(browser()->GetTabStripModel()->GetActiveWebContents()->SavePage(
       main_file, extra_files_dir, content::SAVE_PAGE_TYPE_AS_ONLY_HTML));
   WaitForDeepScanRequest();
 
@@ -1520,11 +1607,11 @@ IN_PROC_BROWSER_TEST_F(SavePackageDeepScanningBrowserTest,
 
   base::RunLoop save_package_run_loop;
   content::SavePackageFinishedObserver observer(
-      browser()->profile()->GetDownloadManager(),
+      browser()->GetProfile()->GetDownloadManager(),
       save_package_run_loop.QuitClosure(), {download::DownloadItem::CANCELLED});
   base::FilePath main_file = GetSaveDir().AppendASCII("text.htm");
   base::FilePath extra_files_dir = GetSaveDir().AppendASCII("text_files");
-  ASSERT_TRUE(browser()->tab_strip_model()->GetActiveWebContents()->SavePage(
+  ASSERT_TRUE(browser()->GetTabStripModel()->GetActiveWebContents()->SavePage(
       main_file, extra_files_dir, content::SAVE_PAGE_TYPE_AS_ONLY_HTML));
   WaitForDeepScanRequest();
 
@@ -1624,11 +1711,11 @@ IN_PROC_BROWSER_TEST_F(SavePackageDeepScanningBrowserTest, OpenNow) {
 
   base::RunLoop save_package_run_loop;
   content::SavePackageFinishedObserver observer(
-      browser()->profile()->GetDownloadManager(),
+      browser()->GetProfile()->GetDownloadManager(),
       save_package_run_loop.QuitClosure(), {download::DownloadItem::COMPLETE});
   base::FilePath main_file = GetSaveDir().AppendASCII("text.htm");
   base::FilePath extra_files_dir = GetSaveDir().AppendASCII("text_files");
-  ASSERT_TRUE(browser()->tab_strip_model()->GetActiveWebContents()->SavePage(
+  ASSERT_TRUE(browser()->GetTabStripModel()->GetActiveWebContents()->SavePage(
       main_file, extra_files_dir, content::SAVE_PAGE_TYPE_AS_ONLY_HTML));
   WaitForDeepScanRequest();
 
@@ -1772,7 +1859,7 @@ IN_PROC_BROWSER_TEST_F(FileSystemAccessDeepScanningBrowserTest, BlockedWrite) {
 
   // Setup message queue for JS responses.
   content::WebContents* web_contents =
-      browser()->tab_strip_model()->GetActiveWebContents();
+      browser()->GetTabStripModel()->GetActiveWebContents();
   ASSERT_TRUE(web_contents);
   content::DOMMessageQueue message_queue(web_contents);
 
@@ -1865,7 +1952,7 @@ IN_PROC_BROWSER_TEST_F(FileSystemAccessDeepScanningBrowserTest, AllowedWrite) {
 
   // Setup message queue for JS responses.
   content::WebContents* web_contents =
-      browser()->tab_strip_model()->GetActiveWebContents();
+      browser()->GetTabStripModel()->GetActiveWebContents();
   ASSERT_TRUE(web_contents);
   content::DOMMessageQueue message_queue(web_contents);
 
@@ -1911,7 +1998,7 @@ IN_PROC_BROWSER_TEST_F(FileSystemAccessDeepScanningBrowserTest, WarnedWrite) {
 
   // Setup message queue for JS responses.
   content::WebContents* web_contents =
-      browser()->tab_strip_model()->GetActiveWebContents();
+      browser()->GetTabStripModel()->GetActiveWebContents();
   ASSERT_TRUE(web_contents);
   content::DOMMessageQueue message_queue(web_contents);
 
@@ -1999,7 +2086,7 @@ IN_PROC_BROWSER_TEST_F(FileSystemAccessDeepScanningBrowserTest,
 
   // Setup message queue for JS responses.
   content::WebContents* web_contents =
-      browser()->tab_strip_model()->GetActiveWebContents();
+      browser()->GetTabStripModel()->GetActiveWebContents();
   ASSERT_TRUE(web_contents);
   content::DOMMessageQueue message_queue(web_contents);
 

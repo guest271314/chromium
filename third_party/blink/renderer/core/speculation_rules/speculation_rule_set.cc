@@ -8,6 +8,7 @@
 
 #include "services/network/public/mojom/no_vary_search.mojom-shared.h"
 #include "services/network/public/mojom/referrer_policy.mojom-shared.h"
+#include "third_party/blink/public/common/dom/dom_node_id.h"
 #include "third_party/blink/public/mojom/speculation_rules/speculation_rules.mojom-shared.h"
 #include "third_party/blink/renderer/core/css/style_rule.h"
 #include "third_party/blink/renderer/core/dom/document.h"
@@ -59,8 +60,9 @@ void AddConsoleMessageForSpeculationRuleSetValidation(
         mojom::blink::ConsoleMessageSource::kOther,
         mojom::blink::ConsoleMessageLevel::kWarning, error_message);
     if (script_element) {
-      console_message->SetNodes(element_document.GetFrame(),
-                                {script_element->GetDOMNodeId()});
+      console_message->SetNodes(
+          element_document.GetFrame(),
+          {DOMNodeIdType(script_element->GetDOMNodeId())});
     }
     element_document.AddConsoleMessage(console_message);
   }
@@ -80,8 +82,9 @@ void AddConsoleMessageForSpeculationRuleSetValidation(
         mojom::blink::ConsoleMessageSource::kOther,
         mojom::blink::ConsoleMessageLevel::kWarning, warning_message);
     if (script_element) {
-      console_message->SetNodes(element_document.GetFrame(),
-                                {script_element->GetDOMNodeId()});
+      console_message->SetNodes(
+          element_document.GetFrame(),
+          {DOMNodeIdType(script_element->GetDOMNodeId())});
     }
     element_document.AddConsoleMessage(console_message);
   }
@@ -662,9 +665,10 @@ SpeculationRuleSet* SpeculationRuleSet::Parse(Source* source,
       StringBuilder builder;
       builder.Append(
           "The following keys were duplicated on one or more objects: ");
-      builder.AppendRange(
-          parse_error.duplicate_keys, ", ",
-          [](const auto& key) { return key.EncodeForDebugging(); });
+      builder.AppendRange(parse_error.duplicate_keys, ", ",
+                          [](const auto& key, StringBuilder& b) {
+                            b.Append(key.EncodeForDebugging());
+                          });
       builder.Append(". All but the last value for each key are ignored.");
       duplicate_key_warning = builder.ReleaseString();
     }
@@ -685,6 +689,47 @@ SpeculationRuleSet* SpeculationRuleSet::Parse(Source* source,
       return result;
     }
     ruleset_tag = String(tag_str);
+  }
+
+  // Parse the ruleset-level "moderate_viewport_heuristics" object, which lets
+  // authors tune the mobile "moderate" eagerness viewport heuristic.
+  //
+  // This is parsed unconditionally, even when the
+  // SpeculationRulesModerateViewportHeuristicsControl origin trial is not (yet)
+  // enabled: whether the parsed params have any effect is gated separately, at
+  // the point the heuristic runs (see AnchorElementInteractionTracker). Gating
+  // here instead would be racy for third-party origin trials, where the token
+  // may be registered after the rules have already been parsed; parsing eagerly
+  // lets a later opt-in take effect on the next heuristic run without needing
+  // to re-parse. The use counter is likewise recorded where the params are
+  // applied.
+  //
+  // Per the design, unknown sub-keys and malformed values are ignored (they
+  // never cause the whole ruleset to fail).
+  if (JSONObject* mvh =
+          JSONObject::Cast(parsed->Get("moderate_viewport_heuristics"))) {
+    ModerateViewportHeuristicsParams params;
+    if (JSONArray* distance =
+            JSONArray::Cast(mvh->Get("distance_from_pointer_down"));
+        distance && distance->size() == 2) {
+      double low = 0.0;
+      double high = 0.0;
+      if (distance->at(0)->AsDouble(&low) && distance->at(1)->AsDouble(&high)) {
+        params.distance_from_pointer_down_low = low;
+        params.distance_from_pointer_down_high = high;
+      }
+    }
+    double threshold = 0.0;
+    if (JSONValue* threshold_value = mvh->Get("largest_anchor_threshold");
+        threshold_value && threshold_value->AsDouble(&threshold)) {
+      params.largest_anchor_threshold = threshold;
+    }
+    double delay_ms = 0.0;
+    if (JSONValue* delay_value = mvh->Get("delay");
+        delay_value && delay_value->AsDouble(&delay_ms)) {
+      params.delay = base::Milliseconds(delay_ms);
+    }
+    result->moderate_viewport_heuristics_params_ = std::move(params);
   }
 
   const auto parse_for_action =

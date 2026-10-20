@@ -7,14 +7,18 @@
 #include <type_traits>
 
 #include "base/functional/bind.h"
+#include "base/functional/callback_helpers.h"
 #include "base/logging.h"
 #include "base/memory/raw_ptr.h"
 #include "base/message_loop/message_pump_for_io.h"
 #include "base/message_loop/message_pump_for_ui.h"
 #include "base/message_loop/message_pump_type.h"
+#include "base/message_loop/message_pump_wakeup_counter.h"
 #include "base/rand_util.h"
 #include "base/run_loop.h"
+#include "base/task/current_thread.h"
 #include "base/task/single_thread_task_executor.h"
+#include "base/task/single_thread_task_runner.h"
 #include "base/test/bind.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
@@ -654,5 +658,103 @@ TEST_F(MessagePumpDefaultTest, BusyLoopPredictionAccuracyHistogram) {
   histogram_tester_.ExpectBucketCount(kHistogramName, 2 /*kFalseNegative*/, 1);
 }
 #endif  // !BUILDFLAG(IS_IOS)
+
+#if !BUILDFLAG(IS_IOS) && !BUILDFLAG(IS_FUCHSIA) && !BUILDFLAG(IS_APPLE)
+class MessagePumpWakeupCounterTest : public ::testing::Test {
+ protected:
+  void SetUp() override {
+    MessagePumpWakeupCounter::GetForCurrentThread().ResetForTesting();
+  }
+};
+
+TEST_F(MessagePumpWakeupCounterTest, IoPumpRecordsWakeup) {
+  SingleThreadTaskExecutor executor(MessagePumpType::IO);
+  MessagePumpWakeupCounter::InitializeForCurrentThread("TestIO");
+  HistogramTester histogram_tester;
+
+  base::RunLoop run_loop;
+  base::Thread background_thread("BackgroundThread");
+  background_thread.Start();
+
+  background_thread.task_runner()->PostTask(
+      FROM_HERE,
+      base::BindOnce(
+          [](scoped_refptr<SingleThreadTaskRunner> io_runner,
+             base::OnceClosure quit_closure) {
+            base::PlatformThread::Sleep(TestTimeouts::tiny_timeout());
+            io_runner->PostTask(FROM_HERE, std::move(quit_closure));
+          },
+          executor.task_runner(), run_loop.QuitClosure()));
+  run_loop.Run();
+
+  histogram_tester.ExpectBucketCount(
+      "Scheduling.MessagePump.WakeupCount2.TestIO", 1, 1);
+}
+
+TEST_F(MessagePumpWakeupCounterTest, BusyLoopSkipsRecordingSample) {
+  MessagePumpWakeupCounter::InitializeForCurrentThread("BusyLoopThread");
+  MessagePumpDefault pump;
+  pump.SetBusyLoop(Milliseconds(10));
+  pump.SetShouldBusyLoopForTesting(true);
+  ASSERT_TRUE(pump.ShouldBusyLoop());
+  testing::NiceMock<MockMessagePumpDelegate> delegate(MessagePumpType::DEFAULT);
+  EXPECT_CALL(delegate, DoWork)
+      .WillOnce([&] {
+        pump.ScheduleWork();
+        return MessagePump::Delegate::NextWorkInfo{
+            .delayed_run_time =
+                TimeTicks::Now() + TestTimeouts::tiny_timeout()};
+      })
+      .WillOnce([&] {
+        pump.Quit();
+        return MessagePump::Delegate::NextWorkInfo{TimeTicks::Max()};
+      });
+  HistogramTester histogram_tester;
+
+  pump.Run(&delegate);
+
+  histogram_tester.ExpectBucketCount(
+      "Scheduling.MessagePump.WakeupCount2.BusyLoopThread", 1, 0);
+}
+#endif  // !BUILDFLAG(IS_IOS) && !BUILDFLAG(IS_FUCHSIA) && !BUILDFLAG(IS_APPLE)
+
+#if BUILDFLAG(IS_WIN)
+// Regression test: if a native nested loop goes idle with a delayed task
+// pending, HandleWorkMessage() installs MessagePumpForUI's native timer. If the
+// RunLoop is later quit from that native loop, the timer must not leak past it.
+TEST(MessagePumpTest, NativeTimerDoesNotLeakPastRunLoopQuit) {
+  SingleThreadTaskExecutor executor(MessagePumpType::UI);
+  constexpr TimeDelta kPumpTimerDelay = Milliseconds(20);
+
+  // Makes the native nested loop install the pump's native timer when idle.
+  executor.task_runner()->PostDelayedTask(FROM_HERE, DoNothing(),
+                                          kPumpTimerDelay);
+
+  RunLoop run_loop;
+  executor.task_runner()->PostTask(
+      FROM_HERE, BindLambdaForTesting([&] {
+        CurrentThread::ScopedAllowApplicationTasksInNativeNestedLoop allow;
+        // Runs in the native loop's first pass. WM_APP is then retrieved
+        // after that pass has gone idle and installed the timer.
+        SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
+            FROM_HERE, BindOnce([] { ::PostMessage(nullptr, WM_APP, 0, 0); }));
+        MSG msg;
+        while (::GetMessage(&msg, nullptr, 0, 0)) {
+          if (msg.message == WM_APP) {
+            run_loop.Quit();
+            break;
+          }
+          ::DispatchMessage(&msg);
+        }
+      }));
+  run_loop.Run();
+
+  // A leaked native timer would deliver a WM_TIMER.
+  EXPECT_EQ(static_cast<DWORD>(WAIT_TIMEOUT),
+            ::MsgWaitForMultipleObjectsEx(
+                0, nullptr, TestTimeouts::tiny_timeout().InMilliseconds(),
+                QS_TIMER, MWMO_INPUTAVAILABLE));
+}
+#endif  // BUILDFLAG(IS_WIN)
 
 }  // namespace base

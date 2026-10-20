@@ -13,7 +13,6 @@
 #include "base/test/bind.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/threading/thread_restrictions.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/test/base/chromeos/crosier/annotations.h"
 #include "chrome/test/base/chromeos/crosier/chromeos_integration_test_mixin.h"
@@ -22,11 +21,11 @@
 #include "chrome/test/base/mixin_based_in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "content/public/test/browser_test.h"
-#include "gpu/config/gpu_finch_features.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/skia/include/core/SkColor.h"
 #include "ui/display/manager/display_configurator.h"
 #include "ui/gfx/color_analysis.h"
+#include "ui/gl/gl_switches.h"
 
 namespace {
 
@@ -52,7 +51,7 @@ class ScreenshotIntegrationTest : public MixinBasedInProcessBrowserTest,
   // MixinBasedInProcessBrowserTest:
   void TearDownOnMainThread() override {
     // Clean up even if the test was skipped.
-    browser()->window()->Close();
+    browser()->GetWindow()->Close();
   }
 
  protected:
@@ -83,7 +82,7 @@ IN_PROC_BROWSER_TEST_P(ScreenshotIntegrationTest, DISABLED_AverageColor) {
 
   // Maximize the browser window.
   ASSERT_TRUE(browser());
-  browser()->window()->Maximize();
+  browser()->GetWindow()->Maximize();
 
   // Load a page with a solid red background.
   ASSERT_TRUE(ui_test_utils::NavigateToURL(

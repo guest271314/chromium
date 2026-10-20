@@ -6,6 +6,7 @@
 
 #include <optional>
 
+#include "base/numerics/safe_conversions.h"
 #include "base/types/optional_util.h"
 #include "services/network/public/cpp/cors/cors_error_status.h"
 #include "services/network/public/mojom/cors.mojom-forward.h"
@@ -14,7 +15,6 @@
 #include "third_party/blink/renderer/core/core_probes_inl.h"
 #include "third_party/blink/renderer/core/dom/events/event_target.h"
 #include "third_party/blink/renderer/core/execution_context/agent.h"
-#include "third_party/blink/renderer/core/frame/attribution_src_loader.h"
 #include "third_party/blink/renderer/core/frame/deprecation/deprecation.h"
 #include "third_party/blink/renderer/core/frame/frame_console.h"
 #include "third_party/blink/renderer/core/frame/local_dom_window.h"
@@ -153,9 +153,6 @@ void ResourceLoadObserverForFrame::WillSendRequest(
                                                 request.Priority());
   }
 
-  frame->GetAttributionSrcLoader()->MaybeRegisterAttributionHeaders(
-      request, redirect_response);
-
   probe::WillSendRequest(
       document_->domWindow(), document_loader_,
       fetcher_properties_->GetFetchClientSettingsObject().GlobalObjectUrl(),
@@ -211,10 +208,10 @@ void ResourceLoadObserverForFrame::DidReceiveResponse(
     if (!resource_request.Url().ProtocolIs(url::kDataScheme)) {
       frame_client->DispatchDidLoadResourceFromMemoryCache(resource_request,
                                                            response);
+      auto scrub_null = [](const String& s) { return s ? s : g_empty_string; };
       frame->GetLocalFrameHostRemote().DidLoadResourceFromMemoryCache(
-          resource_request.Url(),
-          String::FromUtf8(resource_request.HttpMethod().Utf8()),
-          String::FromUtf8(response.MimeType().Utf8()),
+          resource_request.Url(), scrub_null(resource_request.HttpMethod()),
+          scrub_null(response.MimeType()),
           resource_request.GetRequestDestination(),
           response.RequestIncludeCredentials());
     }
@@ -272,9 +269,6 @@ void ResourceLoadObserverForFrame::DidReceiveResponse(
         document_loader_->GetContentSecurityNotifier());
   }
 
-  frame->GetAttributionSrcLoader()->MaybeRegisterAttributionHeaders(request,
-                                                                    response);
-
   frame->Loader().Progress().IncrementProgress(identifier, response);
   probe::DidReceiveResourceResponse(GetProbe(), identifier, document_loader_,
                                     response, resource);
@@ -292,7 +286,8 @@ void ResourceLoadObserverForFrame::CheckGuardrailsPolicyForSizeLimit(
     metrics.accumulated_bytes += bytes;
 
     if (document_->GetExecutionContext()->CheckGuardrailsPolicyForAssetSize(
-            GuardrailPolicyAssetType::kImage, metrics.accumulated_bytes,
+            GuardrailPolicyAssetType::kImage,
+            base::saturated_cast<size_t>(metrics.accumulated_bytes),
             metrics.url)) {
       resource_metrics_by_identifier_.erase(identifier);
     }
@@ -328,13 +323,15 @@ void ResourceLoadObserverForFrame::DidFinishLoading(
     uint64_t identifier,
     base::TimeTicks finish_time,
     int64_t encoded_data_length,
+    uint64_t encoded_body_length,
     int64_t decoded_body_length) {
   LocalFrame* frame = document_->GetFrame();
   DCHECK(frame);
   frame->Loader().Progress().CompleteProgress(identifier);
   resource_metrics_by_identifier_.erase(identifier);
   probe::DidFinishLoading(GetProbe(), identifier, document_loader_, finish_time,
-                          encoded_data_length, decoded_body_length);
+                          encoded_data_length, encoded_body_length,
+                          decoded_body_length);
 
   if (auto* interactive_detector = InteractiveDetector::From(*document_)) {
     interactive_detector->OnResourceLoadEnd(finish_time);

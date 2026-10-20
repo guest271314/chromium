@@ -20,11 +20,11 @@ source_set("events") {
     ":event_router",
     "//base",
     "//chrome/browser/chromeos/extensions/telemetry/api/common",
-    "//chrome/browser/profiles:profile",
-    "//chrome/browser/ui",
-    "//chrome/browser/ui/navigator",
     "//chrome/common/chromeos/extensions/api",
-    "//chromeos/crosapi/mojom",
+    "//chromeos/ash/components/browser_context_helper",
+    "//chromeos/ash/components/browser_delegate",
+    "//chromeos/ash/services/cros_healthd/public/mojom",
+    "//components/user_manager",
     "//extensions/browser",
     "//url",
   ]
@@ -32,20 +32,17 @@ source_set("events") {
 
 source_set("event_router") {
   sources = [
-    "event_observation_crosapi.cc",
-    "event_observation_crosapi.h",
+    "event_observation.cc",
+    "event_observation.h",
     "event_router.cc",
     "event_router.h",
-    "remote_event_service_strategy.cc",
-    "remote_event_service_strategy.h",
   ]
 
   deps = [
     ":event_converters",
     "//base",
     "//chrome/common/chromeos/extensions/api",
-    "//chromeos/ash/components/telemetry_extension/events",
-    "//chromeos/crosapi/mojom",
+    "//chromeos/ash/services/cros_healthd/public/mojom",
     "//content/public/browser",
     "//extensions/common",
     "//mojo/public/cpp/bindings",
@@ -66,7 +63,9 @@ source_set("event_manager") {
     "//chrome/browser/chromeos/extensions/telemetry/api/common",
     "//chrome/browser/chromeos/extensions/telemetry/api/common:util",
     "//chrome/common/chromeos/extensions",
-    "//chromeos/crosapi/mojom",
+    "//chrome/common/chromeos/extensions/api",
+    "//chromeos/ash/services/cros_healthd/public/cpp",
+    "//chromeos/ash/services/cros_healthd/public/mojom",
     "//content/public/browser",
   ]
 
@@ -85,46 +84,43 @@ source_set("event_converters") {
   deps = [
     "//base",
     "//chrome/common/chromeos/extensions/api",
-    "//chromeos/crosapi/mojom",
+    "//chromeos/ash/services/cros_healthd/public/mojom",
     "//third_party/abseil-cpp:absl",
-  ]
-}
-
-source_set("test_support") {
-  testonly = true
-  sources = [
-    "fake_events_service.cc",
-    "fake_events_service.h",
-    "fake_events_service_factory.cc",
-    "fake_events_service_factory.h",
-  ]
-
-  deps = [ "//base/test:test_support" ]
-
-  public_deps = [
-    "//chromeos/ash/components/telemetry_extension/events",
-    "//chromeos/crosapi/mojom",
-    "//mojo/public/cpp/bindings",
   ]
 }
 
 source_set("browser_tests") {
   testonly = true
   defines = [ "HAS_OUT_OF_PROC_TEST_RUNNER" ]
-  sources = [ "events_api_browsertest.cc" ]
+  sources = [
+    "event_manager_browsertest.cc",
+    "events_api_browsertest.cc",
+  ]
 
   deps = [
+    ":event_manager",
+    ":event_router",
     ":events",
-    ":test_support",
+    "//chrome/browser/chromeos/extensions/telemetry/api/common",
     "//chrome/browser/chromeos/extensions/telemetry/api/common:test_support",
     "//chrome/browser/profiles:profile",
-    "//chrome/browser/ui",
+    "//chrome/browser/ui/navigator",
     "//chrome/browser/ui/tabs:tab_strip",
+    "//chrome/browser/web_applications:web_applications_test_support",
+    "//chrome/common/chromeos/extensions",
+    "//chrome/common/chromeos/extensions/api",
     "//chrome/test:test_support_ui",
-    "//chromeos/crosapi/mojom",
+    "//chromeos/ash/components/mojo_service_manager:test_support",
+    "//chromeos/ash/services/cros_healthd/public/cpp:test_support",
+    "//chromeos/ash/services/cros_healthd/public/mojom",
+    "//content/public/browser",
     "//content/test:test_support",
+    "//extensions:test_support",
+    "//extensions/browser",
     "//extensions/common",
     "//mojo/public/cpp/bindings",
+    "//net",
+    "//net:test_support",
     "//testing/gtest",
     "//url",
   ]
@@ -134,28 +130,12 @@ source_set("browser_tests") {
 
 source_set("unit_tests") {
   testonly = true
-  sources = [
-    "event_manager_unittest.cc",
-    "events_api_converters_unittest.cc",
-  ]
+  sources = [ "events_api_converters_unittest.cc" ]
 
   deps = [
     ":event_converters",
-    ":event_manager",
-    ":event_router",
-    ":test_support",
-    "//chrome/browser/chromeos/extensions/telemetry/api/common",
-    "//chrome/browser/ui",
-    "//chrome/browser/web_applications:web_applications_test_support",
-    "//chrome/common",
-    "//chrome/common/chromeos/extensions",
     "//chrome/common/chromeos/extensions/api",
-    "//chrome/test:test_support",
-    "//chromeos/constants",
-    "//chromeos/crosapi/mojom",
-    "//content/public/browser",
-    "//net",
-    "//net:test_support",
+    "//chromeos/ash/services/cros_healthd/public/mojom",
     "//testing/gmock",
     "//testing/gtest",
   ]
@@ -164,7 +144,7 @@ source_set("unit_tests") {
 source_set("extensions_unittests") {
   testonly = true
   sources = [
-    "event_observation_crosapi_unittest.cc",
+    "event_observation_unittest.cc",
     "event_router_unittest.cc",
   ]
 
@@ -172,7 +152,7 @@ source_set("extensions_unittests") {
     ":event_router",
     "//base/test:test_support",
     "//chrome/common/chromeos/extensions/api",
-    "//chromeos/crosapi/mojom",
+    "//chromeos/ash/services/cros_healthd/public/mojom",
     "//content/test:test_support",
     "//extensions:test_support",
     "//extensions/common",

@@ -269,6 +269,13 @@ void GpuChannelHost::CopyNativeGmbToSharedMemoryAsync(
 }
 #endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_ANDROID)
 
+void GpuChannelHost::SignalSyncToken(std::vector<SyncToken> sync_tokens,
+                                     base::OnceClosure callback) {
+  AutoLock lock(deferred_message_lock_);
+  InternalFlush(UINT32_MAX);
+  GetGpuChannel().SignalSyncToken(std::move(sync_tokens), std::move(callback));
+}
+
 void GpuChannelHost::DelayedEnsureFlush(uint32_t deferred_message_id) {
   AutoLock lock(deferred_message_lock_);
   if (delayed_flush_deferred_message_id_) {
@@ -455,6 +462,17 @@ void GpuChannelHost::CreateGpuMemoryBuffer(
     gfx::GpuMemoryBufferHandle* buffer_handle) {
   GetGpuChannel().CreateGpuMemoryBuffer(size, format, buffer_usage,
                                         buffer_handle);
+}
+
+void GpuChannelHost::CreateSharedImageWithHandle(
+    const Mailbox& mailbox,
+    mojom::SharedImageInfoPtr info,
+    gfx::BufferUsage buffer_usage,
+    std::optional<SharedImagePoolId> pool_id,
+    gfx::GpuMemoryBufferHandle* buffer_handle) {
+  GetGpuChannel().CreateSharedImageWithHandle(mailbox, std::move(info),
+                                              buffer_usage, std::move(pool_id),
+                                              buffer_handle);
 }
 
 void GpuChannelHost::CrashGpuProcessForTesting() {

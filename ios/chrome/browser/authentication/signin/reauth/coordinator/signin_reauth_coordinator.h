@@ -29,8 +29,8 @@ enum class ReauthResult : int {
 @protocol SigninReauthCoordinatorDelegate
 
 // The result of the reauth process. If the result is success, `gaiaID` must be
-// the id of the account passed to the init method. `gaiaID` may be a distinct
-// ID than the one used in the init method if the user authentified with a
+// the ID of the account passed to the init method. `gaiaID` may be a different
+// ID from the one used in the init method if the user authenticated with a
 // different account.
 - (void)reauthFinishedWithResult:(ReauthResult)result
                           gaiaID:(const GaiaId*)gaiaID;
@@ -55,7 +55,9 @@ enum class ReauthResult : int {
 // Designated initializer for SigninReauthCoordinator started from an explicit
 // reauthentication UI.
 // `account` - the account for which the reauthentication flow should be
-//            shown.
+//            shown. If the user changes the email address in the add account
+//            dialog, and the reauth dialog is successful, the coordinator
+//            delegate receives kCancelledByUser.
 - (instancetype)initWithBaseViewController:(UIViewController*)viewController
                                    browser:(Browser*)browser
                                    account:(const CoreAccountInfo&)account

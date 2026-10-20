@@ -14,11 +14,13 @@
 
 #include "base/android/jni_android.h"
 #include "base/callback_list.h"
+#include "base/containers/flat_set.h"
 #include "base/containers/queue.h"
 #include "base/functional/callback.h"
 #include "base/gtest_prod_util.h"
 #include "base/i18n/rtl.h"
 #include "base/memory/raw_ptr.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/process/process.h"
 #include "base/scoped_observation.h"
@@ -91,10 +93,10 @@ class SelectionPopupController;
 class SynchronousCompositorHost;
 class SynchronousCompositorClient;
 class TouchSelectionControllerClientManagerAndroid;
-class WebContentsAccessibilityAndroid;
+class WebContentsAccessibilityBase;
 struct ContextMenuParams;
 
-BASE_FEATURE(kTooltips, "Tooltips", base::FEATURE_ENABLED_BY_DEFAULT);
+BASE_FEATURE(kTooltips, base::FEATURE_ENABLED_BY_DEFAULT);
 
 // -----------------------------------------------------------------------------
 // See comments in render_widget_host_view.h about this class and its members.
@@ -115,6 +117,17 @@ class CONTENT_EXPORT RenderWidgetHostViewAndroid
  public:
   static RenderWidgetHostViewAndroid* FromRenderWidgetHostView(
       RenderWidgetHostView* view);
+
+  // Returns whether a keyboard lock request for `codes` (std::nullopt means
+  // all keys) needs OS-level keyboard capture. Android keyboard capture is
+  // all-or-nothing: while enabled, capturable system shortcuts such as Alt+Tab
+  // and Meta+<key> are routed to the window instead of the system. Those
+  // shortcuts are generally Alt/Ctrl/Meta chords (or Meta alone), so, like
+  // Windows' ModifierKeyboardHookWin, OS capture is only requested when the
+  // page locks all keys or one of those modifiers. Other locked keys are
+  // handled in-browser via `skip_if_unhandled`.
+  static bool ShouldCaptureSystemKeys(
+      const std::optional<base::flat_set<ui::DomCode>>& codes);
 
   // Note: The tree of `gfx::NativeView` might not match the tree of
   // `cc::slim::Layer`.
@@ -174,31 +187,21 @@ class CONTENT_EXPORT RenderWidgetHostViewAndroid
   void SetInsets(const gfx::Insets& insets) override;
   gfx::Size GetCompositorViewportPixelSize() override;
   bool IsSurfaceAvailableForCopy() override;
-  void CopyFromSurface(
-      const gfx::Rect& src_rect,
-      const gfx::Size& output_size,
-      base::TimeDelta timeout,
-      base::OnceCallback<void(const content::CopyFromSurfaceResult&)> callback)
-      override;
   ui::FilteredGestureProvider* GetFilteredGestureProviderForTesting() override;
-  void CopyFromExactSurfaceWithIpcDelay(
-      const gfx::Rect& src_rect,
-      const gfx::Size& output_size,
-      base::OnceCallback<void(const content::CopyFromSurfaceResult&)> callback,
-      base::TimeDelta ipc_delay) override;
-  void CopyFromExactSurface(
-      const gfx::Rect& src_rect,
-      const gfx::Size& output_size,
-      base::OnceCallback<void(const content::CopyFromSurfaceResult&)> callback)
-      override;
+  // Identical to `CopyFromSurface()`, except that this method issues the
+  // `viz::CopyOutputRequest` against the exact `viz::Surface` currently
+  // embedded by this View, while `CopyFromSurface()` may return a copy of any
+  // Surface associated with this View, generated after the current Surface. The
+  // caller is responsible for making sure that the target Surface is embedded
+  // and available for copy when this API is called. This Surface can be removed
+  // from the UI after this call.
+  // Additionally, the result is a shared image, as opposed to a bitmap.
   void CopySharedImageFromExactSurface(
       const gfx::Rect& src_rect,
       const gfx::Size& output_size,
       base::OnceCallback<void(scoped_refptr<gpu::ClientSharedImage>,
                               viz::ReleaseCallback release_callback)> callback);
 
-  void EnsureSurfaceSynchronizedForWebTest() override;
-  uint32_t GetCaptureSequenceNumber() const override;
   int GetMouseWheelMinimumGranularity() const override;
   void UpdateCursor(const ui::Cursor& cursor) override;
   void DisplayCursor(const ui::Cursor& cursor) override;
@@ -214,15 +217,21 @@ class CONTENT_EXPORT RenderWidgetHostViewAndroid
   void RenderProcessGone() override;
   void ShowWithVisibility(PageVisibilityState page_visibility) final;
   void WasOccluded() override;
-  void WasUnOccluded() override;
-  void Destroy() override;
+  void DestroyImpl() override;
+  void OnDestroyOrDefer() override;
+  void CreateUnboundedSurface(
+      mojo::PendingAssociatedReceiver<blink::mojom::UnboundedSurfaceHost> host,
+      mojo::PendingAssociatedRemote<blink::mojom::UnboundedSurfaceClient>
+          client,
+      const gfx::Rect& bounds_in_dips,
+      base::WeakPtr<RenderWidgetHostViewBase> subframe_view) override;
   void UpdateTooltipUnderCursor(const std::u16string& tooltip_text) override;
   void UpdateTooltip(const std::u16string& tooltip_text) override;
   void UpdateTooltipFromKeyboard(const std::u16string& tooltip_text,
                                  const gfx::Rect& bounds) override;
   void ClearKeyboardTriggeredTooltip() override;
   void TransformPointToRootSurface(gfx::PointF* point) override;
-  gfx::Rect GetBoundsInRootWindow() override;
+  gfx::Rect GetBoundsInScreen() override;
   const viz::LocalSurfaceId& IncrementSurfaceIdForNavigation() override;
   void ProcessAckedTouchEvent(
       const input::TouchEventWithLatencyInfo& touch,
@@ -355,7 +364,7 @@ class CONTENT_EXPORT RenderWidgetHostViewAndroid
 
   // AndroidInputHelper::Delegate implementation.
   void SendGestureEvent(const blink::WebGestureEvent& event) override;
-  ui::FilteredGestureProvider& GetGestureProvider() override;
+  scoped_refptr<ui::FilteredGestureProvider> GetGestureProvider() override;
 
   void set_ime_adapter(ImeAdapterAndroid* ime_adapter) {
     ime_adapter_android_ = ime_adapter;
@@ -404,6 +413,7 @@ class CONTENT_EXPORT RenderWidgetHostViewAndroid
   }
 
   void OnOverscrollRefreshHandlerAvailable();
+  void ResetOverscrollController();
 
   // TextInputManager::Observer overrides.
   void OnUpdateTextInputStateCalled(TextInputManager* text_input_manager,
@@ -435,11 +445,14 @@ class CONTENT_EXPORT RenderWidgetHostViewAndroid
       const cc::RenderFrameMetadata& metadata) override {}
   void OnRootScrollOffsetChanged(
       const gfx::PointF& root_scroll_offset) override;
+  void OnReportScrollJankStats(uint32_t total_frames,
+                               uint32_t janky_frames) override;
 
   void WasEvicted();
+  bool IsClosing() const { return in_shutdown_; }
 
   void SetWebContentsAccessibility(
-      WebContentsAccessibilityAndroid* web_contents_accessibility);
+      WebContentsAccessibilityBase* web_contents_accessibility);
 
   base::android::ScopedJavaLocalRef<jobject> GetJavaObject();
 
@@ -453,6 +466,8 @@ class CONTENT_EXPORT RenderWidgetHostViewAndroid
   bool IsReady(JNIEnv* env);
 
   void DismissTextHandles(JNIEnv* env);
+
+  void SetIsGestureNavigationMode(JNIEnv* env, bool is_gesture_navigation_mode);
 
   // Returns an int equivalent to an Optional<SKColor>, with a value of 0
   // indicating SKTransparent for not set.
@@ -499,10 +514,19 @@ class CONTENT_EXPORT RenderWidgetHostViewAndroid
  protected:
   ~RenderWidgetHostViewAndroid() override;
 
+  void CleanUpHostObservers() override;
+
   // RenderWidgetHostViewBase:
   void UpdateFrameSinkIdRegistration() override;
   void UpdateBackgroundColor() override;
   bool HasFallbackSurface() const override;
+  void CopyFromSurfaceImpl(
+      const gfx::Rect& src_rect,
+      const gfx::Size& output_size,
+      bool is_copy_request_secure,
+      base::TimeDelta timeout,
+      base::OnceCallback<void(const content::CopyFromSurfaceResult&)> callback)
+      override;
   std::optional<DisplayFeature> GetDisplayFeature() override;
   void DisableDisplayFeatureOverrideForEmulation() override;
   void OverrideDisplayFeatureForEmulation(
@@ -521,6 +545,8 @@ class CONTENT_EXPORT RenderWidgetHostViewAndroid
   void UnlockOrientation() override;
   void SetHasPersistentVideo(bool has_persistent_video) override;
   void SetTouchpadOverscrollHistoryNavigation(bool enabled) override;
+  void ReportScrollJankStats(uint32_t total_frames,
+                             uint32_t janky_frames) override;
   void OnUnconfirmedTapConvertedToTap() override;
 
   // This method is used as a callback for `ViewAndroid::HitTest` to determine
@@ -528,6 +554,8 @@ class CONTENT_EXPORT RenderWidgetHostViewAndroid
   bool IsHitTestReady();
 
  private:
+  void ShutdownAndDisconnect();
+
   friend class RenderWidgetHostViewAndroidTest;
   friend class RenderWidgetHostViewAndroidFullscreenRotationTest;
   friend class RenderWidgetHostViewAndroidRotationTest;
@@ -562,6 +590,8 @@ class CONTENT_EXPORT RenderWidgetHostViewAndroid
 
     // Clears flags used to throttle SurfaceSync.
     void Unthrottle();
+
+    void StopTimers();
 
    private:
     friend class RenderWidgetHostViewAndroidRotationTest;
@@ -645,7 +675,7 @@ class CONTENT_EXPORT RenderWidgetHostViewAndroid
                         float mousedown_x,
                         float mouse_down_y);
 
-  WebContentsAccessibilityAndroid* GetWebContentsAccessibilityAndroid() const;
+  WebContentsAccessibilityBase* GetWebContentsAccessibilityBase() const;
 
   void OnFocusInternal();
   void LostFocusInternal();
@@ -669,9 +699,15 @@ class CONTENT_EXPORT RenderWidgetHostViewAndroid
   void ComputeDisplayFeature();
   void SetDisplayFeatureBoundsForTesting(const gfx::Rect& bounds);
 
+  // Update `tooltip_text_` returning `false` if already set to input string.
+  bool UpdateTooltipText(const std::u16string& tooltip_text);
+  // Return `tooltip_text_` clamped to `kMaxTooltipLength`.
+  std::u16string GetTrimmedTooltipText() const;
+
   // Window-specific bits that affect widget visibility.
   bool is_window_visible_;
   bool is_window_activity_started_;
+  bool in_shutdown_ = false;
 
   PageVisibilityState page_visibility_ = PageVisibilityState::kHidden;
   Visibility view_visibility_ = Visibility::HIDDEN;
@@ -714,7 +750,7 @@ class CONTENT_EXPORT RenderWidgetHostViewAndroid
 
   // Provides gesture synthesis given a stream of touch events (derived from
   // Android MotionEvent's) and touch event acks.
-  ui::FilteredGestureProvider gesture_provider_;
+  scoped_refptr<ui::FilteredGestureProvider> gesture_provider_;
 
   // Handles gesture based text selection
   StylusTextSelector stylus_text_selector_;
@@ -770,11 +806,8 @@ class CONTENT_EXPORT RenderWidgetHostViewAndroid
   base::TimeTicks prev_mousedown_timestamp_;
   gfx::Point prev_mousedown_point_;
   int left_click_count_ = 0;
-
   base::ObserverList<DestructionObserver>::Unchecked destruction_observers_;
-
   MouseWheelPhaseHandler mouse_wheel_phase_handler_;
-  uint32_t latest_capture_sequence_number_ = 0u;
 
   viz::ParentLocalSurfaceIdAllocator local_surface_id_allocator_;
   bool in_rotation_ = false;
@@ -812,8 +845,9 @@ class CONTENT_EXPORT RenderWidgetHostViewAndroid
   // Whether swipe-to-move-cursor gesture is activated.
   bool swipe_to_move_cursor_activated_ = false;
 
-  raw_ptr<WebContentsAccessibilityAndroid> web_contents_accessibility_ =
-      nullptr;
+  bool in_destroy_ = false;
+
+  raw_ptr<WebContentsAccessibilityBase> web_contents_accessibility_ = nullptr;
 
   // Represents a feature of the physical display whose offset and mask_length
   // are expressed in DIPs relative to the view. See display_feature.h for more
@@ -844,6 +878,8 @@ class CONTENT_EXPORT RenderWidgetHostViewAndroid
   // Used to schedule a single visual properties update on the next vsync tick
   // to achieve fluid resizing.
   bool visual_properties_update_pending_ = false;
+
+  bool disconnected_ = false;
 
   base::WeakPtrFactory<RenderWidgetHostViewAndroid> weak_ptr_factory_{this};
 };

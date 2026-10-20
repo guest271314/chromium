@@ -22,13 +22,13 @@
 #include "chrome/browser/sharesheet/sharesheet_controller.h"
 #include "chrome/browser/sharesheet/sharesheet_service_delegator.h"
 #include "chrome/browser/sharesheet/sharesheet_types.h"
-#include "chrome/grit/generated_resources.h"
 #include "components/drive/drive_api_util.h"
 #include "components/services/app_service/public/cpp/app_launch_util.h"
 #include "components/services/app_service/public/cpp/app_types.h"
 #include "components/services/app_service/public/cpp/icon_effects.h"
 #include "components/services/app_service/public/cpp/intent.h"
 #include "content/public/browser/web_contents.h"
+#include "ui/base/window_open_disposition.h"
 #include "ui/display/types/display_constants.h"
 #include "ui/views/view.h"
 
@@ -86,8 +86,8 @@ void SharesheetService::ShowBubble(
     GetNativeWindowCallback get_native_window_callback,
     DeliveredCallback delivered_callback,
     CloseCallback close_callback) {
-  DCHECK(intent);
-  DCHECK(intent->IsShareIntent());
+  CHECK(intent, base::NotFatalUntil::M162);
+  CHECK(intent->IsShareIntent(), base::NotFatalUntil::M162);
   CHECK(delivered_callback);
 
   SharesheetMetrics::RecordSharesheetLaunchSource(source);
@@ -111,8 +111,8 @@ void SharesheetService::ShowNearbyShareBubbleForArc(
     DeliveredCallback delivered_callback,
     CloseCallback close_callback,
     ActionCleanupCallback cleanup_callback) {
-  DCHECK(intent);
-  DCHECK(intent->IsShareIntent());
+  CHECK(intent, base::NotFatalUntil::M162);
+  CHECK(intent->IsShareIntent(), base::NotFatalUntil::M162);
 
   ShareAction* share_action =
       share_action_cache_->GetActionFromType(ShareActionType::kNearbyShare);
@@ -195,7 +195,7 @@ bool SharesheetService::OnAcceleratorPressed(
     const ShareActionType share_action_type) {
   ShareAction* share_action =
       share_action_cache_->GetActionFromType(share_action_type);
-  DCHECK(share_action);
+  CHECK(share_action, base::NotFatalUntil::M162);
   return share_action == nullptr
              ? false
              : share_action->OnAcceleratorPressed(accelerator);

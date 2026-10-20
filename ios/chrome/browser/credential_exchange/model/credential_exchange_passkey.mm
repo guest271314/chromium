@@ -13,7 +13,12 @@
                             userName:(NSString*)userName
                      userDisplayName:(NSString*)userDisplayName
                               userId:(NSData*)userId
-                          privateKey:(NSData*)privateKey {
+                          privateKey:(NSData*)privateKey
+                        creationDate:(NSDate*)creationDate
+                          hmacSecret:(NSData*)hmacSecret
+                 hmacSecretAlgorithm:(NSString*)hmacSecretAlgorithm
+                           largeBlob:(NSData*)largeBlob
+           largeBlobUncompressedSize:(NSNumber*)largeBlobUncompressedSize {
   self = [super init];
   if (self) {
     _credentialId = credentialId;
@@ -22,6 +27,11 @@
     _userDisplayName = userDisplayName;
     _userId = userId;
     _privateKey = privateKey;
+    _creationDate = creationDate;
+    _hmacSecret = hmacSecret;
+    _hmacSecretAlgorithm = hmacSecretAlgorithm;
+    _largeBlob = largeBlob;
+    _largeBlobUncompressedSize = largeBlobUncompressedSize;
   }
   return self;
 }
@@ -33,16 +43,32 @@
   CredentialExchangePasskey* other =
       base::apple::ObjCCast<CredentialExchangePasskey>(object);
   return other && [self.userName isEqualToString:other.userName] &&
-         [self.userDisplayName isEqualToString:other.userDisplayName] &&
+         (self.userDisplayName == other.userDisplayName ||
+          [self.userDisplayName isEqualToString:other.userDisplayName]) &&
          [self.rpId isEqualToString:other.rpId] &&
          [self.credentialId isEqualToData:other.credentialId] &&
          [self.userId isEqualToData:other.userId] &&
-         [self.privateKey isEqualToData:other.privateKey];
+         [self.privateKey isEqualToData:other.privateKey] &&
+         (self.creationDate == other.creationDate ||
+          [self.creationDate isEqual:other.creationDate]) &&
+         (self.hmacSecret == other.hmacSecret ||
+          [self.hmacSecret isEqual:other.hmacSecret]) &&
+         (self.hmacSecretAlgorithm == other.hmacSecretAlgorithm ||
+          [self.hmacSecretAlgorithm
+              isEqualToString:other.hmacSecretAlgorithm]) &&
+         (self.largeBlob == other.largeBlob ||
+          [self.largeBlob isEqual:other.largeBlob]) &&
+         (self.largeBlobUncompressedSize == other.largeBlobUncompressedSize ||
+          [self.largeBlobUncompressedSize
+              isEqualToNumber:other.largeBlobUncompressedSize]);
 }
 
 - (NSUInteger)hash {
   return self.userName.hash ^ self.userDisplayName.hash ^ self.rpId.hash ^
-         self.credentialId.hash ^ self.userId.hash ^ self.privateKey.hash;
+         self.credentialId.hash ^ self.userId.hash ^ self.privateKey.hash ^
+         self.creationDate.hash ^ self.hmacSecret.hash ^
+         self.hmacSecretAlgorithm.hash ^ self.largeBlob.hash ^
+         self.largeBlobUncompressedSize.hash;
 }
 
 @end

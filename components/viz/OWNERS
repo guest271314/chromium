@@ -36,13 +36,15 @@ flackr@chromium.org
 ccameron@chromium.org
 vasilyt@chromium.org
 magchen@chromium.org
-petermcneeley@google.com
 
 # viz debugger
-petermcneeley@google.com
 
 # scheduling / begin frames
-sunnyps@chromium.org
+jonross@chromium.org
+
+# overdraw/occlusion
+per-file occlusion_culler*=zoraiznaeem@chromium.org
+per-file overdraw_tracker*=zoraiznaeem@chromium.org
 
 # general
 vmpstr@chromium.org

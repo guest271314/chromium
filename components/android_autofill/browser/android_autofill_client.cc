@@ -4,9 +4,11 @@
 
 #include "components/android_autofill/browser/android_autofill_client.h"
 
+#include <optional>
 #include <utility>
 
 #include "base/check_op.h"
+#include "base/containers/span.h"
 #include "base/feature_list.h"
 #include "base/functional/function_ref.h"
 #include "base/notimplemented.h"
@@ -24,8 +26,11 @@
 #include "components/autofill/core/common/autofill_features.h"
 #include "components/credential_management/android/features.h"
 #include "components/credential_management/android/third_party_credential_manager_impl.h"
+#include "components/device_reauth/device_auth_availability_checker.h"
+#include "components/device_reauth/device_authenticator.h"
 #include "components/prefs/pref_service.h"
-#include "components/security_state/content/security_state_tab_helper.h"
+#include "components/security_state/content/android/security_state_client.h"
+#include "components/security_state/content/android/security_state_model_delegate.h"
 #include "components/user_prefs/user_prefs.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/navigation_controller.h"
@@ -57,7 +62,8 @@ AndroidAutofillClient::AndroidAutofillClient(content::WebContents* web_contents)
               web_contents)) {}
 
 AndroidAutofillClient::~AndroidAutofillClient() {
-  HideAutofillSuggestions(autofill::SuggestionHidingReason::kTabGone);
+  HideSuggestions(autofill::SuggestionHidingReason::kTabGone,
+                  /*product=*/std::nullopt);
 }
 
 // From this point on, the ContentCredentialManager will service API calls
@@ -188,9 +194,9 @@ url::Origin AndroidAutofillClient::GetLastCommittedPrimaryMainFrameOrigin()
 
 security_state::SecurityLevel
 AndroidAutofillClient::GetSecurityLevelForUmaHistograms() {
-  if (SecurityStateTabHelper* helper =
-          ::SecurityStateTabHelper::FromWebContents(&GetWebContents())) {
-    return helper->GetSecurityLevel();
+  if (SecurityStateModelDelegate* delegate =
+          security_state::GetSecurityStateModelDelegate()) {
+    return delegate->GetSecurityLevel(&GetWebContents());
   }
 
   // If there is no helper, it means we are not in a "web" state or the embedder
@@ -229,14 +235,16 @@ AndroidAutofillClient::ShowAutofillSuggestions(
 }
 
 void AndroidAutofillClient::UpdateAutofillDataListValues(
+    const autofill::LocalFrameToken& frame_token,
     base::span<const autofill::SelectOption> datalist) {
   // Leaving as an empty method since updating autofill popup window
   // dynamically does not seem to be a useful feature when delegating to Android
   // APIs.
 }
 
-void AndroidAutofillClient::HideAutofillSuggestions(
-    autofill::SuggestionHidingReason reason) {
+void AndroidAutofillClient::HideSuggestions(
+    autofill::SuggestionHidingReason reason,
+    std::optional<autofill::FillingProduct> product) {
   // TODO(321950502): Analyze hiding the datalist popup here.
 }
 
@@ -263,13 +271,19 @@ bool AndroidAutofillClient::IsPasswordManagerEnabled() const {
   NOTREACHED();
 }
 
+bool AndroidAutofillClient::UsesPlatformAutofill() const {
+  return true;
+}
+
 bool AndroidAutofillClient::IsContextSecure() const {
-  // Note: As of crbug.com/701018, Chrome relies on ChromeSecurityStateTabHelper
-  // to determine whether the page is secure, but WebView can only access a
-  // small part of the functionality so the helper will be null for now.
-  if (SecurityStateTabHelper* helper =
-          SecurityStateTabHelper::FromWebContents(&GetWebContents())) {
-    return security_state::IsSslCertificateValid(helper->GetSecurityLevel());
+  // Note: As of crbug.com/701018, Chrome determines whether the page is
+  // secure from the embedder-enriched security state, exposed here through
+  // SecurityStateModelDelegate. WebView does not register a
+  // SecurityStateClient, so it uses the SSLStatus fallback below.
+  if (SecurityStateModelDelegate* delegate =
+          security_state::GetSecurityStateModelDelegate()) {
+    return security_state::IsSslCertificateValid(
+        delegate->GetSecurityLevel(&GetWebContents()));
   }
 
   content::NavigationEntry* navigation_entry =
@@ -293,6 +307,16 @@ AndroidAutofillClient::GetFormInteractionsUkmLogger() {
 metrics::ProfileMetricsService*
 AndroidAutofillClient::GetProfileMetricsService() {
   NOTREACHED();
+}
+
+std::unique_ptr<device_reauth::DeviceAuthenticator>
+AndroidAutofillClient::GetDeviceAuthenticator(std::string histogram) const {
+  return nullptr;
+}
+
+std::unique_ptr<device_reauth::DeviceAuthAvailabilityChecker>
+AndroidAutofillClient::GetDeviceAuthAvailabilityChecker() const {
+  return nullptr;
 }
 
 content::WebContents& AndroidAutofillClient::GetWebContents() const {

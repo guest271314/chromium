@@ -26,7 +26,15 @@ enum class IOSHomeActionType {
   kPriceTrackingPromo = 10,
   kTips = 11,
   kShopCard = 12,
-  kMaxValue = kShopCard,
+  kLens = 13,
+  kVoiceSearch = 14,
+  kQuickActionIncognito = 15,
+  kQuickActionAIM = 16,
+  kTabSwitcher = 17,
+  kPlusButton = 18,
+  kStandaloneAIMModule = 19,
+  kAimInMostVisited = 20,
+  kMaxValue = kAimInMostVisited,
 };
 // LINT.ThenChange(/tools/metrics/histograms/metadata/ios/enums.xml)
 

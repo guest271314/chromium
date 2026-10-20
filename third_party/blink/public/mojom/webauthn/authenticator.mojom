@@ -51,6 +51,13 @@ enum AuthenticatorStatus {
   DEVICE_PUBLIC_KEY_ATTESTATION_REJECTED,
   CERTIFICATE_ERROR,
 
+  // The `remoteClientDataJSON` extension input failed to parse as JSON, was
+  // missing required fields (`type`, `origin`), had a wrong `type` for the
+  // operation, or had a non-boolean `crossOrigin`. Maps to a JS-side
+  // `EncodingError` DOMException.
+  // https://w3c.github.io/webauthn/#sctn-remote-client-data-json-extension
+  REMOTE_CLIENT_DATA_JSON_INVALID,
+
   // ERROR_WITH_DOM_EXCEPTION_DETAILS indicates that the error will be
   // described in a `WebAuthnDOMExceptionDetails` structure.
   ERROR_WITH_DOM_EXCEPTION_DETAILS,
@@ -58,6 +65,8 @@ enum AuthenticatorStatus {
   // IMMEDIATE_NOT_FOUND indicates that no immediate discoverable
   // credentials are found for a `get()` request.
   IMMEDIATE_NOT_FOUND,
+
+  CROSS_DEVICE_FALLBACK,
 
   UNKNOWN_ERROR,
 };
@@ -69,6 +78,7 @@ enum AuthenticatorTransport {
   BLE,
   HYBRID,
   INTERNAL,
+  SMART_CARD,
 };
 
 // See https://w3c.github.io/webauthn/#enum-hints
@@ -105,11 +115,6 @@ struct UvmEntry {
   uint32 user_verification_method;
   uint16 key_protection_type;
   uint16 matcher_protection_type;
-};
-
-// The output for the `supplementalPubKeys` extension.
-struct SupplementalPubKeysResponse {
-  array<array<uint8>> signatures;
 };
 
 // The output for the CMTG key extension.
@@ -181,13 +186,16 @@ struct MakeCredentialAuthenticatorResponse {
   bool echo_large_blob;
   bool supports_large_blob;
 
-  SupplementalPubKeysResponse? supplemental_pub_keys;
-
   // The response for the payment extension.
   AuthenticationExtensionsPaymentResponse? payment;
 
   // The response for the Credential Manager Trust Group key extension.
   CmtgKeyResponse? cmtg_key;
+
+  // True if getClientExtensionResults() called on the returned
+  // PublicKeyCredential instance should contain a `remoteClientDataJSON`
+  // extension output.
+  bool echo_remote_client_data_json;
 };
 
 struct GetAssertionAuthenticatorResponse {
@@ -223,6 +231,7 @@ struct AuthenticationExtensionsClientOutputs {
   // If so, |user_verification_methods| contains the actual value.
   [EnableIf=is_android]
   bool echo_user_verification_methods;
+
   [EnableIf=is_android]
   array<UvmEntry>? user_verification_methods;
 
@@ -252,13 +261,20 @@ struct AuthenticationExtensionsClientOutputs {
   // null if none.
   array<uint8>? get_cred_blob;
 
-  SupplementalPubKeysResponse? supplemental_pub_keys;
-
   // The response for the payment extension.
   AuthenticationExtensionsPaymentResponse? payment;
 
   // The response for the Credential Manager Trust Group key extension.
   CmtgKeyResponse? cmtg_key;
+
+  // The value of the `crossDeviceFallbackUrl` extension output, or null if
+  // none.
+  bool? cross_device_fallback_url;
+
+  // True if getClientExtensionResults() called on the returned
+  // PublicKeyCredential instance should contain a `remoteClientDataJSON`
+  // extension output.
+  bool echo_remote_client_data_json;
 };
 
 // Information about the relying party. These fields take arbitrary input.
@@ -364,13 +380,6 @@ struct RemoteDesktopClientOverride {
   bool same_origin_with_ancestors;
 };
 
-struct SupplementalPubKeysRequest {
-  bool device_scope_requested;
-  bool provider_scope_requested;
-  AttestationConveyancePreference attestation;
-  array<string> attestation_formats;
-};
-
 // TODO(https://crbug.com/459517287): With `IMMEDIATE` reflecting `uiMode`,
 // this no longer maps to the `mediation` field of `CredentialRequestOptions`,
 // and should be renamed to avoid confusion.
@@ -454,9 +463,15 @@ struct AuthenticationExtensionsClientInputs {
   // behalf of another origin.
   RemoteDesktopClientOverride? remote_desktop_client_override;
 
-  // If present, reflects the contents of the "supplementalPubKeys" extension.
-  // https://github.com/w3c/webauthn/pull/1663
-  SupplementalPubKeysRequest? supplemental_pub_keys;
+  // Provides a complete clientDataJSON for the request, overriding the
+  // browser-constructed version. Used by remote desktop clients.
+  // https://w3c.github.io/webauthn/#sctn-remote-client-data-json-extension
+  //
+  // SECURITY: This field comes from the renderer process and MUST NOT be
+  // trusted without validation. The browser process will only honor this
+  // override if the caller origin is explicitly allowlisted via an enterprise
+  // policy.
+  string? remote_client_data_json;
 
   // Parameters defining the type of browser bound keys that the relying party
   // would accept.
@@ -466,6 +481,10 @@ struct AuthenticationExtensionsClientInputs {
   // Group key extension.
   // https://github.com/w3c/webauthn/pull/2377
   bool cmtg_key = false;
+
+  // The cross-device fallback URL extension, if present.
+  // https://github.com/w3c/webauthn/pull/2380
+  url.mojom.Url? cross_device_fallback_url;
 };
 
 struct GetCredentialOptions {
@@ -602,9 +621,15 @@ struct PublicKeyCredentialCreationOptions {
   // behalf of another origin.
   RemoteDesktopClientOverride? remote_desktop_client_override;
 
-  // If present, reflects the contents of the "supplementalPubKeys" extension.
-  // https://github.com/w3c/webauthn/pull/1663
-  SupplementalPubKeysRequest? supplemental_pub_keys;
+  // Provides a complete clientDataJSON for the request, overriding the
+  // browser-constructed version. Used by remote desktop clients.
+  // https://w3c.github.io/webauthn/#sctn-remote-client-data-json-extension
+  //
+  // SECURITY: This field comes from the renderer process and MUST NOT be
+  // trusted without validation. The browser process will only honor this
+  // override if the caller origin is explicitly allowlisted via an enterprise
+  // policy.
+  string? remote_client_data_json;
 
   // Parameters defining the type of browser bound keys that the relying party
   // would accept.

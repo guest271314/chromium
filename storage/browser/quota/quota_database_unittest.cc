@@ -8,6 +8,7 @@
 #include <stdint.h>
 
 #include <algorithm>
+#include <array>
 #include <iterator>
 #include <memory>
 #include <set>
@@ -22,7 +23,6 @@
 #include "base/test/gmock_expected_support.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
-#include "base/test/simple_test_clock.h"
 #include "base/test/task_environment.h"
 #include "build/build_config.h"
 #include "components/services/storage/public/cpp/buckets/bucket_locator.h"
@@ -35,6 +35,7 @@
 #include "sql/statement.h"
 #include "sql/test/scoped_error_expecter.h"
 #include "sql/test/test_helpers.h"
+#include "sql/transaction.h"
 #include "storage/browser/quota/quota_client_type.h"
 #include "storage/browser/quota/quota_features.h"
 #include "storage/browser/quota/quota_internals.mojom.h"
@@ -64,17 +65,10 @@ bool ContainsBucket(const std::set<BucketLocator>& buckets,
 // mode, if stale buckets should be evicted, and if orphan buckets should be
 // evicted.
 class QuotaDatabaseTest : public testing::TestWithParam<bool> {
- public:
-  QuotaDatabaseTest() {
-    clock_ = std::make_unique<base::SimpleTestClock>();
-    QuotaDatabase::SetClockForTesting(clock_.get());
-  }
-
  protected:
   using BucketTableEntry = mojom::BucketTableEntry;
 
   void SetUp() override {
-    clock_->SetNow(base::Time::Now());
     ASSERT_TRUE(temp_directory_.CreateUniqueTempDir());
   }
 
@@ -82,7 +76,9 @@ class QuotaDatabaseTest : public testing::TestWithParam<bool> {
 
   bool use_in_memory_db() const { return GetParam(); }
 
-  base::SimpleTestClock* clock() { return clock_.get(); }
+  base::test::SingleThreadTaskEnvironment& task_environment() {
+    return task_environment_;
+  }
 
   base::FilePath ProfilePath() { return temp_directory_.GetPath(); }
 
@@ -101,9 +97,12 @@ class QuotaDatabaseTest : public testing::TestWithParam<bool> {
     return db->EnsureOpened() == QuotaError::kNone;
   }
 
-  int GetTransactionNesting(QuotaDatabase* db) {
+  bool IsGlobalTransactionValid(QuotaDatabase* db) {
     DCHECK_CALLED_ON_VALID_SEQUENCE(db->sequence_checker_);
-    return db->db_->transaction_nesting();
+    // There should always be a single global transaction active.
+    return db->transaction_.has_value() &&
+           db->transaction_->IsActiveForTesting() &&
+           db->db_->HasActiveTransactions();
   }
 
   template <typename EntryType>
@@ -111,9 +110,9 @@ class QuotaDatabaseTest : public testing::TestWithParam<bool> {
     std::set<EntryType> table;
 
     template <size_t length>
-    explicit EntryVerifier(const EntryType (&entries)[length]) {
-      for (size_t i = 0; i < length; ++i) {
-        table.insert(UNSAFE_TODO(entries[i]->Clone()));
+    explicit EntryVerifier(const std::array<EntryType, length>& entries) {
+      for (const auto& entry : entries) {
+        table.insert(entry->Clone());
       }
     }
 
@@ -172,9 +171,9 @@ class QuotaDatabaseTest : public testing::TestWithParam<bool> {
   }
 
  private:
-  base::test::SingleThreadTaskEnvironment task_environment_;
+  base::test::SingleThreadTaskEnvironment task_environment_{
+      base::test::TaskEnvironment::TimeSource::MOCK_TIME};
   base::ScopedTempDir temp_directory_;
-  std::unique_ptr<base::SimpleTestClock> clock_;
 };
 
 TEST_P(QuotaDatabaseTest, EnsureOpened) {
@@ -759,7 +758,7 @@ TEST_P(QuotaDatabaseTest, DumpBucketTable) {
   StorageKey storage_key3 =
       StorageKey::CreateFromStringForTesting("http://gle/");
 
-  Entry kTableEntries[] = {
+  const std::array kTableEntries = {
       mojom::BucketTableEntry::New(1, storage_key1.Serialize(),
                                    kDefaultBucketName, -1, 2147483647, now,
                                    now),
@@ -830,7 +829,6 @@ TEST_P(QuotaDatabaseTest, BootstrapFlag) {
 }
 
 TEST_P(QuotaDatabaseTest, OpenCorruptedDatabase) {
-  base::HistogramTester histograms;
   // Create database, force corruption and close db by leaving scope.
   {
     auto db = CreateDatabase(/*is_incognito=*/false);
@@ -851,17 +849,26 @@ TEST_P(QuotaDatabaseTest, OpenCorruptedDatabase) {
     ASSERT_TRUE(EnsureOpened(db.get()));
     EXPECT_TRUE(expecter.SawExpectedErrors());
 
-    // Ensure no nested transactions after reentrant calls to EnsureOpened()
-    EXPECT_EQ(GetTransactionNesting(db.get()), 1);
+    // Ensure that the reentrant call to EnsureOpened() opens only one global
+    // transaction.
+    EXPECT_TRUE(IsGlobalTransactionValid(db.get()));
 
     // Ensure data is deleted.
     base::FilePath storage_path = db->GetStoragePath();
     EXPECT_FALSE(base::IsDirectoryEmpty(storage_path));
   }
+}
 
-  histograms.ExpectTotalCount("Quota.QuotaDatabaseReset", 1);
-  histograms.ExpectBucketCount("Quota.QuotaDatabaseReset",
-                               DatabaseResetReason::kOpenDatabase, 1);
+// The long-running transaction that batches writes must be re-established
+// after every commit. Without it, writes would run unbatched for the rest of
+// the session, which no other test would notice: they would still be durable.
+TEST_P(QuotaDatabaseTest, LongRunningTransactionIsReopenedAfterCommit) {
+  auto db = CreateDatabase(use_in_memory_db());
+  ASSERT_TRUE(EnsureOpened(db.get()));
+  EXPECT_TRUE(IsGlobalTransactionValid(db.get()));
+
+  db->CommitNow();
+  EXPECT_TRUE(IsGlobalTransactionValid(db.get()));
 }
 
 TEST_P(QuotaDatabaseTest, QuotaDatabasePathMigration) {
@@ -1099,7 +1106,7 @@ TEST_P(QuotaDatabaseTest, Stale) {
 
   // If we wait a minute after initialization then it's returned as stale as
   // long as it's our first check.
-  clock()->SetNow(base::Time::Now() + base::Minutes(1));
+  task_environment().AdvanceClock(base::Minutes(1));
   ASSERT_OK_AND_ASSIGN(stale_buckets, db.GetExpiredBuckets(nullptr));
   EXPECT_EQ(2U, stale_buckets.size());
   ASSERT_OK_AND_ASSIGN(stale_buckets, db.GetExpiredBuckets(nullptr));
@@ -1119,8 +1126,8 @@ TEST_P(QuotaDatabaseTest, Stale) {
   ASSERT_OK_AND_ASSIGN(stale_buckets, db.GetExpiredBuckets(nullptr));
   EXPECT_EQ(1U, stale_buckets.size());
 
-  // But if we wait a day then it is enough at 400.
-  clock()->SetNow(base::Time::Now() + base::Days(1));
+  // But if we wait more than a day then it is enough at 400.
+  task_environment().AdvanceClock(base::Days(1) + base::Seconds(1));
   db.SetAlreadyEvictedStaleStorageForTesting(false);
   ASSERT_OK_AND_ASSIGN(stale_buckets, db.GetExpiredBuckets(nullptr));
   EXPECT_EQ(2U, stale_buckets.size());
@@ -1175,7 +1182,7 @@ TEST_P(QuotaDatabaseTest, Stale) {
 TEST_P(QuotaDatabaseTest, Orphan) {
   // Setup database and check no orphaned buckets counted.
   QuotaDatabase db(ProfilePath());
-  clock()->SetNow(base::Time::Now() + base::Minutes(1));
+  task_environment().AdvanceClock(base::Minutes(1));
   {
     base::HistogramTester histograms;
     db.SetAlreadyEvictedStaleStorageForTesting(false);

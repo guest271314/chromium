@@ -4,6 +4,10 @@
 
 package org.chromium.chrome.browser.ui.quickactionsearchwidget;
 
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.verify;
 
 import android.app.Activity;
@@ -21,7 +25,6 @@ import androidx.annotation.LayoutRes;
 import androidx.test.filters.SmallTest;
 import androidx.test.platform.app.InstrumentationRegistry;
 
-import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
@@ -36,16 +39,21 @@ import org.chromium.base.test.BaseActivityTestRule;
 import org.chromium.base.test.util.ApplicationTestUtils;
 import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.CommandLineFlags;
+import org.chromium.base.test.util.CriteriaHelper;
+import org.chromium.base.test.util.CriteriaNotSatisfiedException;
 import org.chromium.chrome.browser.IntentHandler;
 import org.chromium.chrome.browser.browserservices.intents.WebappConstants;
 import org.chromium.chrome.browser.document.ChromeLauncherActivity;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
+import org.chromium.chrome.browser.lens.LensController;
+import org.chromium.chrome.browser.lens.LensIntentParams;
+import org.chromium.chrome.browser.quickactionsearchwidget.QuickActionSearchWidgetProvider.QuickActionSearchWidgetProviderSearch;
 import org.chromium.chrome.browser.searchwidget.SearchActivityClientImpl;
 import org.chromium.chrome.browser.ui.quickactionsearchwidget.QuickActionSearchWidgetProviderDelegate.WidgetButtonSettings;
 import org.chromium.chrome.browser.ui.quickactionsearchwidget.QuickActionSearchWidgetProviderDelegate.WidgetVariant;
 import org.chromium.chrome.browser.ui.searchactivityutils.SearchActivityClient;
 import org.chromium.chrome.browser.ui.searchactivityutils.SearchActivityExtras.IntentOrigin;
-import org.chromium.chrome.browser.ui.searchactivityutils.SearchActivityPreferencesManager.SearchActivityPreferences;
+import org.chromium.chrome.browser.ui.searchactivityutils.SearchActivityPreferences;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.components.embedder_support.util.UrlConstants;
 import org.chromium.url.GURL;
@@ -75,9 +83,11 @@ public class QuickActionSearchWidgetProviderDelegateTest {
     private SearchActivityClient mClient;
 
     @Mock RemoteViews mMockRemoteViews;
+    @Mock LensController mMockLensController;
 
     @Before
     public void setUp() {
+        LensController.setInstanceForTesting(mMockLensController);
         mContext =
                 InstrumentationRegistry.getInstrumentation()
                         .getTargetContext()
@@ -85,12 +95,16 @@ public class QuickActionSearchWidgetProviderDelegateTest {
 
         mClient = new SearchActivityClientImpl(mContext, IntentOrigin.QUICK_ACTION_SEARCH_WIDGET);
 
+        Intent startLensIntent = new Intent(mContext, QuickActionSearchWidgetProviderSearch.class);
+        startLensIntent.setAction(QuickActionSearchWidgetProviderSearch.ACTION_START_LENS);
+
         mDelegate =
                 new QuickActionSearchWidgetProviderDelegate(
                         mContext,
                         IntentHandler.createTrustedOpenNewTabIntent(
                                 mContext, /* incognito= */ true),
-                        createDinoIntent(mContext));
+                        createDinoIntent(mContext),
+                        startLensIntent);
 
         Resources res = mContext.getResources();
         float density = res.getDisplayMetrics().density;
@@ -126,6 +140,22 @@ public class QuickActionSearchWidgetProviderDelegateTest {
                 },
                 /* shouldActivityLaunchVoiceMode= */ false);
         ApplicationTestUtils.finishActivity(mActivityTestRule.getActivity());
+    }
+
+    @Test
+    @SmallTest
+    public void testLensButtonClick() throws Exception {
+        QuickActionSearchWidgetTestUtils.clickOnView(mWidgetView, R.id.lens_quick_action_button);
+
+        CriteriaHelper.pollUiThread(
+                () -> {
+                    try {
+                        verify(mMockLensController)
+                                .startLens(any(Context.class), any(LensIntentParams.class));
+                    } catch (AssertionError e) {
+                        throw new CriteriaNotSatisfiedException(e);
+                    }
+                });
     }
 
     @Test
@@ -179,8 +209,11 @@ public class QuickActionSearchWidgetProviderDelegateTest {
 
     private void setUpViews() {
         SearchActivityPreferences prefs =
-                new SearchActivityPreferences(
-                        "EngineName", new GURL("http://engine"), true, true, true);
+                new SearchActivityPreferences.Builder()
+                        .setSearchEngineName("EngineName")
+                        .setSearchEngineUrl(new GURL("http://engine"))
+                        .setGoogleLensAvailable(true)
+                        .build();
 
         mWidgetView =
                 mDelegate
@@ -294,7 +327,7 @@ public class QuickActionSearchWidgetProviderDelegateTest {
 
         for (VerticalResizeHeightVariant variant : variants) {
             Integer layoutRes = mDelegate.getSearchWidgetVariantForHeight(variant.heightDp).layout;
-            Assert.assertEquals(
+            assertEquals(
                     "Unexpected layout where height=" + variant.variantName,
                     variant.layoutRes,
                     layoutRes);
@@ -322,21 +355,21 @@ public class QuickActionSearchWidgetProviderDelegateTest {
 
     private void testComputeNumberOfButtonsToHideForVariant(WidgetVariant variant) {
         // Target area width >= reference width: widget fits fully, no buttons should be hidden.
-        Assert.assertEquals(0, variant.computeNumberOfButtonsToHide(variant.widgetWidthDp * 2));
-        Assert.assertEquals(0, variant.computeNumberOfButtonsToHide(variant.widgetWidthDp + 1));
-        Assert.assertEquals(0, variant.computeNumberOfButtonsToHide(variant.widgetWidthDp));
+        assertEquals(0, variant.computeNumberOfButtonsToHide(variant.widgetWidthDp * 2));
+        assertEquals(0, variant.computeNumberOfButtonsToHide(variant.widgetWidthDp + 1));
+        assertEquals(0, variant.computeNumberOfButtonsToHide(variant.widgetWidthDp));
 
         // Target area width < reference width:
-        Assert.assertEquals(1, variant.computeNumberOfButtonsToHide(variant.widgetWidthDp - 1));
-        Assert.assertEquals(
+        assertEquals(1, variant.computeNumberOfButtonsToHide(variant.widgetWidthDp - 1));
+        assertEquals(
                 1,
                 variant.computeNumberOfButtonsToHide(
                         variant.widgetWidthDp - variant.buttonWidthDp));
-        Assert.assertEquals(
+        assertEquals(
                 2,
                 variant.computeNumberOfButtonsToHide(
                         variant.widgetWidthDp - variant.buttonWidthDp - 1));
-        Assert.assertEquals(
+        assertEquals(
                 3,
                 variant.computeNumberOfButtonsToHide(
                         variant.widgetWidthDp - variant.buttonWidthDp * 3));
@@ -353,7 +386,7 @@ public class QuickActionSearchWidgetProviderDelegateTest {
                         / res.getDisplayMetrics().density;
 
         // Check that the method returns that same value after conversion.
-        Assert.assertEquals(
+        assertEquals(
                 (int) expectedSizeDp,
                 WidgetVariant.getElementSizeInDP(
                         res, R.dimen.quick_action_search_widget_medium_button_width, 0));
@@ -374,7 +407,7 @@ public class QuickActionSearchWidgetProviderDelegateTest {
                         / res.getDisplayMetrics().density;
 
         // Check that the method returns that same value after conversion.
-        Assert.assertEquals(
+        assertEquals(
                 (int) expectedSizeDp,
                 WidgetVariant.getElementSizeInDP(
                         res,
@@ -391,10 +424,10 @@ public class QuickActionSearchWidgetProviderDelegateTest {
 
         // Verify that the call to hideButtons does not reveal buttons.
         settings.hideButtons(0);
-        Assert.assertFalse(settings.voiceSearchVisible);
-        Assert.assertFalse(settings.incognitoModeVisible);
-        Assert.assertFalse(settings.googleLensVisible);
-        Assert.assertFalse(settings.dinoGameVisible);
+        assertFalse(settings.voiceSearchVisible);
+        assertFalse(settings.incognitoModeVisible);
+        assertFalse(settings.googleLensVisible);
+        assertFalse(settings.dinoGameVisible);
 
         // Retry with all buttons visible.
         settings.voiceSearchVisible = true;
@@ -404,10 +437,10 @@ public class QuickActionSearchWidgetProviderDelegateTest {
 
         // Verify that the call to hideButtons does not hide anything if not necessary.
         settings.hideButtons(0);
-        Assert.assertTrue(settings.voiceSearchVisible);
-        Assert.assertTrue(settings.incognitoModeVisible);
-        Assert.assertTrue(settings.googleLensVisible);
-        Assert.assertTrue(settings.dinoGameVisible);
+        assertTrue(settings.voiceSearchVisible);
+        assertTrue(settings.incognitoModeVisible);
+        assertTrue(settings.googleLensVisible);
+        assertTrue(settings.dinoGameVisible);
     }
 
     @Test
@@ -425,19 +458,19 @@ public class QuickActionSearchWidgetProviderDelegateTest {
 
         // Tell settings we need 1 button removed.
         settings.hideButtons(1);
-        Assert.assertFalse(settings.voiceSearchVisible);
-        Assert.assertTrue(settings.incognitoModeVisible);
-        Assert.assertTrue(settings.googleLensVisible);
-        Assert.assertTrue(settings.dinoGameVisible);
+        assertFalse(settings.voiceSearchVisible);
+        assertTrue(settings.incognitoModeVisible);
+        assertTrue(settings.googleLensVisible);
+        assertTrue(settings.dinoGameVisible);
 
         // Mark the VoiceSearch button as available and try again.
         // The logic should hide the dino game first.
         settings.voiceSearchVisible = true;
         settings.hideButtons(1);
-        Assert.assertTrue(settings.voiceSearchVisible);
-        Assert.assertTrue(settings.incognitoModeVisible);
-        Assert.assertTrue(settings.googleLensVisible);
-        Assert.assertFalse(settings.dinoGameVisible);
+        assertTrue(settings.voiceSearchVisible);
+        assertTrue(settings.incognitoModeVisible);
+        assertTrue(settings.googleLensVisible);
+        assertFalse(settings.dinoGameVisible);
     }
 
     @Test
@@ -455,29 +488,29 @@ public class QuickActionSearchWidgetProviderDelegateTest {
 
         // Tell settings we need 3 buttons removed.
         settings.hideButtons(3);
-        Assert.assertFalse(settings.voiceSearchVisible);
-        Assert.assertFalse(settings.incognitoModeVisible);
-        Assert.assertFalse(settings.googleLensVisible);
-        Assert.assertTrue(settings.dinoGameVisible);
+        assertFalse(settings.voiceSearchVisible);
+        assertFalse(settings.incognitoModeVisible);
+        assertFalse(settings.googleLensVisible);
+        assertTrue(settings.dinoGameVisible);
 
         // Mark the Incognito mode and Lens buttons as available and try again.
         // The logic should hide the Dino game and Google Lens.
         settings.incognitoModeVisible = true;
         settings.googleLensVisible = true;
         settings.hideButtons(3);
-        Assert.assertFalse(settings.voiceSearchVisible);
-        Assert.assertTrue(settings.incognitoModeVisible);
-        Assert.assertFalse(settings.googleLensVisible);
-        Assert.assertFalse(settings.dinoGameVisible);
+        assertFalse(settings.voiceSearchVisible);
+        assertTrue(settings.incognitoModeVisible);
+        assertFalse(settings.googleLensVisible);
+        assertFalse(settings.dinoGameVisible);
 
         // Finally, tell the logic that voice search is available and see that it removes the
         // Incognito mode.
         settings.voiceSearchVisible = true;
         settings.hideButtons(3);
-        Assert.assertTrue(settings.voiceSearchVisible);
-        Assert.assertFalse(settings.incognitoModeVisible);
-        Assert.assertFalse(settings.googleLensVisible);
-        Assert.assertFalse(settings.dinoGameVisible);
+        assertTrue(settings.voiceSearchVisible);
+        assertFalse(settings.incognitoModeVisible);
+        assertFalse(settings.googleLensVisible);
+        assertFalse(settings.dinoGameVisible);
     }
 
     @Test
@@ -495,10 +528,10 @@ public class QuickActionSearchWidgetProviderDelegateTest {
 
         // Tell settings we need 4 or more buttons.
         settings.hideButtons(4);
-        Assert.assertFalse(settings.voiceSearchVisible);
-        Assert.assertFalse(settings.incognitoModeVisible);
-        Assert.assertFalse(settings.googleLensVisible);
-        Assert.assertFalse(settings.dinoGameVisible);
+        assertFalse(settings.voiceSearchVisible);
+        assertFalse(settings.incognitoModeVisible);
+        assertFalse(settings.googleLensVisible);
+        assertFalse(settings.dinoGameVisible);
 
         // Try again with more buttons.
         settings.voiceSearchVisible = true;
@@ -506,10 +539,10 @@ public class QuickActionSearchWidgetProviderDelegateTest {
         settings.googleLensVisible = true;
         settings.dinoGameVisible = true;
         settings.hideButtons(40);
-        Assert.assertFalse(settings.voiceSearchVisible);
-        Assert.assertFalse(settings.incognitoModeVisible);
-        Assert.assertFalse(settings.googleLensVisible);
-        Assert.assertFalse(settings.dinoGameVisible);
+        assertFalse(settings.voiceSearchVisible);
+        assertFalse(settings.incognitoModeVisible);
+        assertFalse(settings.googleLensVisible);
+        assertFalse(settings.dinoGameVisible);
     }
 
     @Test
@@ -518,8 +551,8 @@ public class QuickActionSearchWidgetProviderDelegateTest {
         // Dino widget has a square shape. When offered a square cell area - no cropping should be
         // performed.
         Size s = mDelegate.computeWidgetAreaPaddingForDinoWidgetPx(100, 100, 1.f);
-        Assert.assertEquals(0, s.getWidth());
-        Assert.assertEquals(0, s.getHeight());
+        assertEquals(0, s.getWidth());
+        assertEquals(0, s.getHeight());
     }
 
     @Test
@@ -529,8 +562,8 @@ public class QuickActionSearchWidgetProviderDelegateTest {
         // When offered a wider area, we should crop the sides.
         // Note that the input values are in DP, but result carries pixels.
         Size s = mDelegate.computeWidgetAreaPaddingForDinoWidgetPx(100, 80, 2.f);
-        Assert.assertEquals(20, s.getWidth());
-        Assert.assertEquals(0, s.getHeight());
+        assertEquals(20, s.getWidth());
+        assertEquals(0, s.getHeight());
     }
 
     @Test
@@ -540,8 +573,8 @@ public class QuickActionSearchWidgetProviderDelegateTest {
         // When offered a taller area, we should crop the top and bottom.
         // Note that the input values are in DP, but result carries pixels.
         Size s = mDelegate.computeWidgetAreaPaddingForDinoWidgetPx(100, 120, 3.f);
-        Assert.assertEquals(0, s.getWidth());
-        Assert.assertEquals(30, s.getHeight());
+        assertEquals(0, s.getWidth());
+        assertEquals(30, s.getHeight());
     }
 
     @Test
@@ -552,22 +585,22 @@ public class QuickActionSearchWidgetProviderDelegateTest {
         //   scale factor = target size / reference size
         // a scale factor of 1.0 means the area will host the widget as it was designed
         // without any scaling.
-        Assert.assertEquals(
+        assertEquals(
                 1.f,
                 mDelegate.computeScaleFactorForDinoWidget(
                         mDinoWidgetEdgeSizeDp, mDinoWidgetEdgeSizeDp),
                 0.001f);
-        Assert.assertEquals(
+        assertEquals(
                 1.f,
                 mDelegate.computeScaleFactorForDinoWidget(
                         mDinoWidgetEdgeSizeDp, mDinoWidgetEdgeSizeDp * 2),
                 0.001f);
-        Assert.assertEquals(
+        assertEquals(
                 2.f,
                 mDelegate.computeScaleFactorForDinoWidget(
                         mDinoWidgetEdgeSizeDp * 3, mDinoWidgetEdgeSizeDp * 2),
                 0.001f);
-        Assert.assertEquals(
+        assertEquals(
                 0.5f,
                 mDelegate.computeScaleFactorForDinoWidget(
                         mDinoWidgetEdgeSizeDp, mDinoWidgetEdgeSizeDp / 2),

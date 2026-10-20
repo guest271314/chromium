@@ -9,6 +9,7 @@
 #include <utility>
 #include <vector>
 
+#include "base/containers/span.h"
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/location.h"
@@ -25,7 +26,6 @@
 #include "build/chromeos_buildflags.h"
 #include "chrome/browser/bad_message.h"
 #include "chrome/browser/browser_process.h"
-#include "chrome/browser/printing/print_compositor_util.h"
 #include "chrome/browser/printing/print_error_dialog.h"
 #include "chrome/browser/printing/print_job.h"
 #include "chrome/browser/printing/print_job_manager.h"
@@ -54,22 +54,14 @@
 #include "printing/metafile_skia.h"
 #include "printing/mojom/print.mojom.h"
 #include "printing/print_settings.h"
+#include "printing/print_settings_conversion.h"
 #include "printing/printed_document.h"
 #include "printing/printing_utils.h"
 #include "ui/base/l10n/l10n_util.h"
 
-#if BUILDFLAG(ENABLE_PRINT_PREVIEW)
-#include "chrome/browser/printing/print_view_manager.h"
-#include "printing/print_settings_conversion.h"
-#endif
-
 #if BUILDFLAG(ENABLE_OOP_PRINTING)
 #include "chrome/browser/printing/oop_features.h"
 #include "chrome/browser/printing/print_backend_service_manager.h"
-#endif
-
-#if BUILDFLAG(IS_WIN)
-#include "chrome/browser/printing/xps_features.h"
 #endif
 
 #if BUILDFLAG(ENTERPRISE_CONTENT_ANALYSIS)
@@ -85,7 +77,7 @@ void OnDidGetDefaultPrintSettings(
     bool want_pdf_settings,
     std::unique_ptr<PrinterQuery> printer_query,
     mojom::PrintManagerHost::GetDefaultPrintSettingsCallback callback) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
 
   if (printer_query->last_status() != mojom::ResultCode::kSuccess) {
     if (!want_pdf_settings) {
@@ -115,7 +107,7 @@ void OnDidScriptedPrint(
     scoped_refptr<PrintQueriesQueue> queue,
     std::unique_ptr<PrinterQuery> printer_query,
     mojom::PrintManagerHost::ScriptedPrintCallback callback) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
 
   if (printer_query->last_status() != mojom::ResultCode::kSuccess ||
       !printer_query->settings().dpi()) {
@@ -142,39 +134,12 @@ void OnDidScriptedPrint(
   queue->QueuePrinterQuery(std::move(printer_query));
 }
 
-#if BUILDFLAG(ENABLE_PRINT_PREVIEW)
-std::string PrintMsgPrintParamsErrorDetails(const mojom::PrintParams& params) {
-  std::vector<std::string_view> details;
-
-  if (params.content_size.IsEmpty()) {
-    details.push_back("content size is empty");
-  }
-  if (params.page_size.IsEmpty()) {
-    details.push_back("page size is empty");
-  }
-  if (params.printable_area.IsEmpty()) {
-    details.push_back("printable area is empty");
-  }
-  if (!params.document_cookie) {
-    details.push_back("invalid document cookie");
-  }
-  if (params.dpi.width() <= kMinDpi || params.dpi.height() <= kMinDpi) {
-    details.push_back("invalid DPI dimensions");
-  }
-  if (params.margin_top < 0 || params.margin_left < 0) {
-    details.push_back("invalid margins");
-  }
-
-  return base::JoinString(details, "; ");
-}
-#endif  // BUILDFLAG(ENABLE_PRINT_PREVIEW)
-
 }  // namespace
 
 PrintViewManagerBase::PrintViewManagerBase(content::WebContents* web_contents)
     : PrintManager(web_contents),
       queue_(g_browser_process->print_job_manager()->queue()) {
-  DCHECK(queue_);
+  CHECK(queue_, base::NotFatalUntil::M162);
   Profile* profile =
       Profile::FromBrowserContext(web_contents->GetBrowserContext());
   printing_enabled_.Init(prefs::kPrintingEnabled, profile->GetPrefs());
@@ -186,7 +151,19 @@ PrintViewManagerBase::~PrintViewManagerBase() {
 }
 
 bool PrintViewManagerBase::PrintNow(content::RenderFrameHost* rfh) {
-  if (!StartPrintCommon(rfh)) {
+  return PrintNowImpl(rfh, /*print_selection_only=*/false);
+}
+
+#if BUILDFLAG(IS_ANDROID)
+bool PrintViewManagerBase::PrintNow(content::RenderFrameHost* rfh,
+                                    bool print_selection_only) {
+  return PrintNowImpl(rfh, print_selection_only);
+}
+#endif
+
+bool PrintViewManagerBase::PrintNowImpl(content::RenderFrameHost* rfh,
+                                        bool print_selection_only) {
+  if (!StartPrintCommon(rfh, print_selection_only)) {
     return false;
   }
 
@@ -200,7 +177,7 @@ bool PrintViewManagerBase::PrintNow(content::RenderFrameHost* rfh) {
 
 void PrintViewManagerBase::PrintNodeUnderContextMenu(
     content::RenderFrameHost* rfh) {
-  if (!StartPrintCommon(rfh)) {
+  if (!StartPrintCommon(rfh, /*print_selection_only=*/false)) {
     return;
   }
 
@@ -217,7 +194,7 @@ void PrintViewManagerBase::PrintForPrintPreview(
     scoped_refptr<base::RefCountedMemory> print_data,
     content::RenderFrameHost* rfh,
     PrinterHandler::PrintCallback callback) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
 
 #if BUILDFLAG(ENABLE_OOP_PRINTING) || BUILDFLAG(ENTERPRISE_CONTENT_ANALYSIS)
   bool show_system_dialog =
@@ -255,23 +232,6 @@ void PrintViewManagerBase::PrintForPrintPreview(
 #endif
                      std::move(callback), std::move(printer_query)));
 }
-
-void PrintViewManagerBase::AppendPrintPreviewSettings(base::DictValue settings,
-                                                      bool is_pdf) {
-  CHECK(!settings.empty());
-  if (is_pdf) {
-    settings.Set(kSettingHeaderFooterEnabled, false);
-    settings.Set(kSettingMarginsType,
-                 static_cast<int>(mojom::MarginType::kNoMargins));
-  }
-  print_preview_settings_.push(std::move(settings));
-}
-
-void PrintViewManagerBase::ClearPrintPreviewSettings() {
-  while (!print_preview_settings_.empty()) {
-    print_preview_settings_.pop();
-  }
-}
 #endif  // BUILDFLAG(ENABLE_PRINT_PREVIEW)
 
 void PrintViewManagerBase::PrintToPdf(
@@ -298,17 +258,11 @@ void PrintViewManagerBase::PrintDocument(
 #endif
 
 #if BUILDFLAG(IS_WIN)
-  const bool source_is_pdf =
-      !print_job_->document()->settings().is_modifiable();
-  if (!ShouldPrintUsingXps(source_is_pdf)) {
-    // Print using GDI, which first requires conversion to EMF.
-    print_job_->StartConversionToNativeFormat(
-        print_data, page_size, content_area, offsets,
-        web_contents()->GetLastCommittedURL());
-    return;
-  }
-#endif
-
+  // Print using GDI, which first requires conversion to EMF.
+  print_job_->StartConversionToNativeFormat(
+      print_data, page_size, content_area, offsets,
+      web_contents()->GetLastCommittedURL());
+#else
   std::unique_ptr<MetafileSkia> metafile = std::make_unique<MetafileSkia>();
   CHECK(metafile->InitFromData(*print_data));
 
@@ -316,55 +270,10 @@ void PrintViewManagerBase::PrintDocument(
   PrintedDocument* document = print_job_->document();
   document->SetDocument(std::move(metafile));
   ShouldQuitFromInnerMessageLoop();
+#endif
 }
 
 #if BUILDFLAG(ENABLE_PRINT_PREVIEW)
-#if BUILDFLAG(IS_WIN)
-void PrintViewManagerBase::OnDidUpdatePrintableArea(
-    std::unique_ptr<PrinterQuery> printer_query,
-    base::DictValue job_settings,
-    std::unique_ptr<PrintSettings> print_settings,
-    GetPrintPreviewParamsCallback callback,
-    bool success) {
-  if (!success) {
-    PRINTER_LOG(ERROR) << "Unable to update printable area for "
-                       << base::UTF16ToUTF8(print_settings->device_name())
-                       << " (paper vendor id "
-                       << print_settings->requested_media().vendor_id << ")";
-    std::move(callback).Run(nullptr);
-    return;
-  }
-  PRINTER_LOG(EVENT) << "Paper printable area updated for vendor id "
-                     << print_settings->requested_media().vendor_id;
-  CompleteGetPrintPreviewParams(std::move(job_settings),
-                                std::move(print_settings), std::move(callback));
-}
-#endif
-
-void PrintViewManagerBase::CompleteGetPrintPreviewParams(
-    base::DictValue job_settings,
-    std::unique_ptr<PrintSettings> print_settings,
-    GetPrintPreviewParamsCallback callback) {
-  mojom::PrintPagesParamsPtr settings = mojom::PrintPagesParams::New();
-  settings->pages = GetPageRangesFromJobSettings(job_settings);
-  settings->params = mojom::PrintParams::New();
-  RenderParamsFromPrintSettings(*print_settings, settings->params.get());
-  settings->params->document_cookie = PrintSettings::NewCookie();
-  if (!PrintMsgPrintParamsIsValid(*settings->params)) {
-    mojom::PrinterType printer_type = static_cast<mojom::PrinterType>(
-        *job_settings.FindInt(kSettingPrinterType));
-    PRINTER_LOG(ERROR) << "Printer settings invalid for "
-                       << base::UTF16ToUTF8(print_settings->device_name())
-                       << " (destination type " << printer_type << "): "
-                       << PrintMsgPrintParamsErrorDetails(*settings->params);
-    std::move(callback).Run(nullptr);
-    return;
-  }
-
-  set_cookie(settings->params->document_cookie);
-  std::move(callback).Run(std::move(settings));
-}
-
 void PrintViewManagerBase::OnPrintSettingsDone(
     scoped_refptr<base::RefCountedMemory> print_data,
     uint32_t page_count,
@@ -373,8 +282,8 @@ void PrintViewManagerBase::OnPrintSettingsDone(
 #endif
     PrinterHandler::PrintCallback callback,
     std::unique_ptr<printing::PrinterQuery> printer_query) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
-  DCHECK(printer_query);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
+  CHECK(printer_query, base::NotFatalUntil::M162);
 
   // Check if the job was cancelled.  With out-of-process printing, this could
   // happen if we detect that another system print dialog is already being
@@ -429,7 +338,7 @@ void PrintViewManagerBase::StartLocalPrintJob(
 #endif
     int cookie,
     PrinterHandler::PrintCallback callback) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
 
 #if BUILDFLAG(ENTERPRISE_CONTENT_ANALYSIS)
   // Populating `content_analysis_before_printing_document_` if needed should be
@@ -478,7 +387,7 @@ void PrintViewManagerBase::StartLocalPrintJob(
 void PrintViewManagerBase::GetDefaultPrintSettingsReply(
     GetDefaultPrintSettingsCallback callback,
     mojom::PrintParamsPtr params) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
 #if BUILDFLAG(ENABLE_OOP_PRINTING)
   if (ShouldPrintJobOop() && !params) {
     // The attempt to use the default settings failed.  There should be no
@@ -501,7 +410,7 @@ void PrintViewManagerBase::ScriptedPrintReply(
     ScriptedPrintCallback callback,
     int process_id,
     mojom::PrintPagesParamsPtr params) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
 
 #if BUILDFLAG(ENABLE_OOP_PRINTING)
   if (ShouldPrintJobOop()) {
@@ -569,8 +478,9 @@ bool PrintViewManagerBase::OnComposePdfDoneImpl(
     return false;
   }
 
-  DCHECK(region.IsValid());
-  DCHECK(LooksLikePdf(region.Map().GetMemoryAsSpan<const uint8_t>()));
+  CHECK(region.IsValid(), base::NotFatalUntil::M162);
+  CHECK(LooksLikePdf(region.Map().GetMemoryAsSpan<const uint8_t>()),
+        base::NotFatalUntil::M162);
   scoped_refptr<base::RefCountedSharedMemoryMapping> data =
       base::RefCountedSharedMemoryMapping::CreateFromWholeRegion(region);
   if (!data)
@@ -588,7 +498,7 @@ void PrintViewManagerBase::OnComposeDocumentDone(
     DidPrintDocumentCallback callback,
     mojom::PrintCompositor::Status status,
     base::ReadOnlySharedMemoryRegion region) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
 
   bool success =
       OnComposePdfDoneImpl(document_cookie, page_size, content_area,
@@ -621,9 +531,9 @@ void PrintViewManagerBase::DidPrintDocument(
   if (IsOopifEnabled() && print_job_->document()->settings().is_modifiable()) {
     auto* client = PrintCompositeClient::FromWebContents(web_contents());
     client->CompositeDocument(
-        params->document_cookie, GetCurrentTargetFrame(), content,
-        ui::AXTreeUpdate(), mojom::GenerateDocumentOutline::kNone,
-        GetCompositorDocumentType(),
+        params->document_cookie, CurrentTargetFrame(), content,
+        /*is_pdf=*/false, ui::AXTreeUpdate(),
+        mojom::GenerateDocumentOutline::kNone,
         base::BindOnce(&PrintViewManagerBase::OnComposeDocumentDone,
                        weak_ptr_factory_.GetWeakPtr(), params->document_cookie,
                        params->page_size, params->content_area,
@@ -645,14 +555,14 @@ void PrintViewManagerBase::DidPrintDocument(
 
 void PrintViewManagerBase::GetDefaultPrintSettings(
     GetDefaultPrintSettingsCallback callback) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
   if (!GetPrintingEnabledBooleanPref()) {
     GetDefaultPrintSettingsReply(std::move(callback), nullptr);
     return;
   }
 
-  content::RenderFrameHost* render_frame_host = GetCurrentTargetFrame();
-  if (!render_frame_host->IsActive()) {
+  content::RenderFrameHost& render_frame_host = CurrentTargetFrame();
+  if (!render_frame_host.IsActive()) {
     // Only active RFHs should show UI elements.
     GetDefaultPrintSettingsReply(std::move(callback), nullptr);
     return;
@@ -670,7 +580,7 @@ void PrintViewManagerBase::GetDefaultPrintSettings(
 #endif
 
   content::RenderProcessHost* render_process_host =
-      render_frame_host->GetProcess();
+      render_frame_host.GetProcess();
   auto callback_wrapper =
       base::BindOnce(&PrintViewManagerBase::GetDefaultPrintSettingsReply,
                      weak_ptr_factory_.GetWeakPtr(), std::move(callback));
@@ -678,7 +588,7 @@ void PrintViewManagerBase::GetDefaultPrintSettings(
       queue()->PopPrinterQuery(PrintSettings::NewInvalidCookie());
   if (!printer_query) {
     printer_query =
-        queue()->CreatePrinterQuery(render_frame_host->GetGlobalId());
+        queue()->CreatePrinterQuery(render_frame_host.GetGlobalId());
 #if BUILDFLAG(ENABLE_OOP_PRINTING)
     if (query_with_ui_client_id().has_value()) {
       printer_query->SetClientId(query_with_ui_client_id().value());
@@ -703,129 +613,23 @@ void PrintViewManagerBase::GetDefaultPrintSettings(
       !render_process_host->IsPdf(), want_pdf_settings);
 }
 
-#if BUILDFLAG(ENABLE_PRINT_PREVIEW)
-void PrintViewManagerBase::GetPrintPreviewParams(
-    GetPrintPreviewParamsCallback callback) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
-  if (!GetPrintingEnabledBooleanPref()) {
-    std::move(callback).Run(nullptr);
-    return;
-  }
-
-  if (print_preview_settings_.empty()) {
-    std::move(callback).Run(nullptr);
-    return;
-  }
-
-  base::DictValue job_settings = std::move(print_preview_settings_.front());
-  print_preview_settings_.pop();
-  CHECK(!job_settings.empty());
-
-  std::optional<int> printer_type_value =
-      job_settings.FindInt(kSettingPrinterType);
-  if (!printer_type_value) {
-    std::move(callback).Run(nullptr);
-    return;
-  }
-
-  mojom::PrinterType printer_type =
-      static_cast<mojom::PrinterType>(*printer_type_value);
-  if (printer_type != mojom::PrinterType::kExtension &&
-      printer_type != mojom::PrinterType::kPdf &&
-      printer_type != mojom::PrinterType::kLocal) {
-    std::move(callback).Run(nullptr);
-    return;
-  }
-
-  // `job_settings` does not yet contain the rasterized PDF dpi, so if the user
-  // has the print preference set, fetch it for use in
-  // `PrintSettingsFromJobSettings()`.
-  content::BrowserContext* context =
-      web_contents() ? web_contents()->GetBrowserContext() : nullptr;
-  PrefService* prefs =
-      context ? Profile::FromBrowserContext(context)->GetPrefs() : nullptr;
-  if (prefs && prefs->HasPrefPath(prefs::kPrintRasterizePdfDpi)) {
-    int value = prefs->GetInteger(prefs::kPrintRasterizePdfDpi);
-    if (value > 0)
-      job_settings.Set(kSettingRasterizePdfDpi, value);
-  }
-
-  std::unique_ptr<PrintSettings> print_settings =
-      PrintSettingsFromJobSettings(job_settings);
-  if (!print_settings) {
-    std::move(callback).Run(nullptr);
-    return;
-  }
-
-  bool open_in_external_preview =
-      job_settings.contains(kSettingOpenPDFInPreview);
-  if (!open_in_external_preview &&
-      (printer_type == mojom::PrinterType::kPdf ||
-       printer_type == mojom::PrinterType::kExtension)) {
-    if (print_settings->page_setup_device_units().printable_area().IsEmpty()) {
-      PrinterQuery::ApplyDefaultPrintableAreaToVirtualPrinterPrintSettings(
-          *print_settings);
-    }
-  }
-
-#if BUILDFLAG(IS_WIN)
-  // TODO(crbug.com/40260379):  Remove this if the printable areas can be made
-  // fully available from `PrintBackend::GetPrinterSemanticCapsAndDefaults()`
-  // for in-browser queries.
-  if (printer_type == mojom::PrinterType::kLocal) {
-    // Without a document cookie to find a previous query, must generate a
-    // fresh printer query each time, even if the paper size didn't change.
-    std::unique_ptr<PrinterQuery> printer_query =
-        queue()->CreatePrinterQuery(GetCurrentTargetFrame()->GetGlobalId());
-
-    auto* printer_query_ptr = printer_query.get();
-    auto* print_settings_ptr = print_settings.get();
-    printer_query_ptr->UpdatePrintableArea(
-        print_settings_ptr,
-        base::BindOnce(&PrintViewManagerBase::OnDidUpdatePrintableArea,
-                       weak_ptr_factory_.GetWeakPtr(), std::move(printer_query),
-                       std::move(job_settings), std::move(print_settings),
-                       std::move(callback)));
-    return;
-  }
-#endif
-
-  CompleteGetPrintPreviewParams(std::move(job_settings),
-                                std::move(print_settings), std::move(callback));
-}
-
-void PrintViewManagerBase::SetAccessibilityTree(
-    int32_t cookie,
-    const ui::AXTreeUpdate& accessibility_tree) {
-  auto* client = PrintCompositeClient::FromWebContents(web_contents());
-  if (client) {
-    client->SetAccessibilityTree(cookie, accessibility_tree);
-  }
-}
-#endif  // BUILDFLAG(ENABLE_PRINT_PREVIEW)
-
 void PrintViewManagerBase::IsPrintingEnabled(
     IsPrintingEnabledCallback callback) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
   std::move(callback).Run(GetPrintingEnabledBooleanPref());
 }
 
 void PrintViewManagerBase::ScriptedPrint(mojom::ScriptedPrintParamsPtr params,
                                          ScriptedPrintCallback callback) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
 
-  content::RenderFrameHost* render_frame_host = GetCurrentTargetFrame();
-  content::RenderProcessHost* render_process_host =
-      render_frame_host->GetProcess();
-  if (params->is_scripted && render_frame_host->IsNestedWithinFencedFrame()) {
-    // The renderer should have checked and disallowed the request for fenced
-    // frames in ChromeClient. Ignore the request and mark it as bad if it
-    // didn't happen for some reason.
-    bad_message::ReceivedBadMessage(
-        render_process_host, bad_message::PVMB_SCRIPTED_PRINT_FENCED_FRAME);
+  content::RenderFrameHost& render_frame_host = CurrentTargetFrame();
+  if (!render_frame_host.IsActive()) {
+    // Only active RFHs should show UI elements.
     std::move(callback).Run(nullptr);
     return;
   }
+
 #if BUILDFLAG(ENABLE_OOP_PRINTING)
   if (ShouldPrintJobOop() && !query_with_ui_client_id().has_value()) {
     // Renderer process has requested settings outside of the expected setup.
@@ -845,7 +649,7 @@ void PrintViewManagerBase::ScriptedPrint(mojom::ScriptedPrintParamsPtr params,
   }
 #endif  // BUILDFLAG(ENTERPRISE_CONTENT_ANALYSIS)
 
-  CompleteScriptedPrint(render_frame_host, std::move(params),
+  CompleteScriptedPrint(&render_frame_host, std::move(params),
                         std::move(callback));
 }
 
@@ -853,8 +657,9 @@ void PrintViewManagerBase::PrintingFailed(int32_t cookie,
                                           mojom::PrintFailureReason reason) {
   // Note: Not redundant with cookie checks in the same method in other parts of
   // the class hierarchy.
-  if (!IsValidCookie(cookie))
+  if (!IsValidCookie(cookie)) {
     return;
+  }
 
   PrintManager::PrintingFailed(cookie, reason);
 
@@ -928,7 +733,7 @@ void PrintViewManagerBase::RenderFrameDeleted(
 void PrintViewManagerBase::SystemDialogCancelled() {
   // System dialog was cancelled. Clean up the print job and notify the
   // BackgroundPrintingManager.
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
   ReleasePrinterQuery();
   TerminatePrintJob(true);
 }
@@ -940,7 +745,7 @@ bool PrintViewManagerBase::GetPrintingEnabledBooleanPref() const {
 
 void PrintViewManagerBase::OnDocDone(int job_id, PrintedDocument* document) {
 #if BUILDFLAG(IS_ANDROID)
-  DCHECK_LE(number_pages(), kMaxPageCount);
+  CHECK_LE(number_pages(), kMaxPageCount, base::NotFatalUntil::M162);
   PdfWritingDone(base::checked_cast<int>(number_pages()));
 #endif
 }
@@ -958,8 +763,9 @@ void PrintViewManagerBase::OnCanceling() {
 }
 
 void PrintViewManagerBase::OnFailed() {
-  if (!canceling_job_)
+  if (!canceling_job_) {
     ShowPrintErrorDialogForGenericError();
+  }
 
   TerminatePrintJob(true);
 }
@@ -1001,7 +807,7 @@ bool PrintViewManagerBase::RenderAllMissingPagesNow() {
 
 void PrintViewManagerBase::ShouldQuitFromInnerMessageLoop() {
   // Look at the reason.
-  DCHECK(print_job_->document());
+  CHECK(print_job_->document(), base::NotFatalUntil::M162);
   if (print_job_->document() && print_job_->document()->IsComplete() &&
       quit_inner_loop_) {
     // We are in a message loop created by RenderAllMissingPagesNow. Quit from
@@ -1017,9 +823,9 @@ scoped_refptr<PrintJob> PrintViewManagerBase::CreatePrintJob(
 
 bool PrintViewManagerBase::SetupNewPrintJob(
     std::unique_ptr<PrinterQuery> query) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
-  DCHECK(!quit_inner_loop_);
-  DCHECK(query);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
+  CHECK(!quit_inner_loop_, base::NotFatalUntil::M162);
+  CHECK(query, base::NotFatalUntil::M162);
 
   // Disconnect the current `print_job_`.
   auto weak_this = weak_ptr_factory_.GetWeakPtr();
@@ -1032,7 +838,7 @@ bool PrintViewManagerBase::SetupNewPrintJob(
     return false;
   }
 
-  DCHECK(!print_job_);
+  CHECK(!print_job_, base::NotFatalUntil::M162);
   print_job_ = CreatePrintJob(g_browser_process->print_job_manager());
   print_job_->Initialize(std::move(query), RenderSourceName(), number_pages());
 #if BUILDFLAG(IS_CHROMEOS)
@@ -1058,7 +864,7 @@ void PrintViewManagerBase::DisconnectFromCurrentPrintJob() {
   // Verify that assertion.
   if (print_job_ && print_job_->document() &&
       !print_job_->document()->IsComplete()) {
-    DCHECK(!result);
+    CHECK(!result, base::NotFatalUntil::M162);
     // That failed.
     TerminatePrintJob(true);
   } else {
@@ -1081,8 +887,9 @@ void PrintViewManagerBase::TerminatePrintJob(bool cancel) {
     PdfWritingDone(0);
 #endif
   } else {
-    DCHECK(!quit_inner_loop_);
-    DCHECK(!print_job_->document() || print_job_->document()->IsComplete());
+    CHECK(!quit_inner_loop_, base::NotFatalUntil::M162);
+    CHECK(!print_job_->document() || print_job_->document()->IsComplete(),
+          base::NotFatalUntil::M162);
 
     // WebContents is either dying or navigating elsewhere. We need to render
     // all the pages in an hurry if a print job is still pending. This does the
@@ -1111,13 +918,14 @@ void PrintViewManagerBase::ReleasePrintJob() {
   }
 #endif
 
-  if (!print_job_)
+  if (!print_job_) {
     return;
+  }
 
   if (rfh) {
     // printing_rfh_ should only ever point to a RenderFrameHost with a live
     // RenderFrame.
-    DCHECK(rfh->IsRenderFrameLive());
+    CHECK(rfh->IsRenderFrameLive(), base::NotFatalUntil::M162);
     GetPrintRenderFrame(rfh)->PrintingDone(printing_succeeded_);
   }
 
@@ -1215,7 +1023,7 @@ void PrintViewManagerBase::SetPrintingRFH(content::RenderFrameHost* rfh) {
         "The print's message shouldn't reach here during prerendering.");
     return;
   }
-  DCHECK(!printing_rfh_);
+  CHECK(!printing_rfh_, base::NotFatalUntil::M162);
   // Protect against future unsafety, since printing_rfh_ is cleared by
   // RenderFrameDeleted(), which will not be called if the render frame is not
   // live.
@@ -1223,7 +1031,8 @@ void PrintViewManagerBase::SetPrintingRFH(content::RenderFrameHost* rfh) {
   printing_rfh_ = rfh;
 }
 
-bool PrintViewManagerBase::StartPrintCommon(content::RenderFrameHost* rfh) {
+bool PrintViewManagerBase::StartPrintCommon(content::RenderFrameHost* rfh,
+                                            bool print_selection_only) {
   // Remember the ID for `rfh`, to enable checking that the `RenderFrameHost`
   // is still valid after a possible inner message loop runs in
   // `DisconnectFromCurrentPrintJob()`.
@@ -1255,14 +1064,17 @@ bool PrintViewManagerBase::StartPrintCommon(content::RenderFrameHost* rfh) {
 #endif
 
   SetPrintingRFH(rfh);
+#if BUILDFLAG(IS_ANDROID)
+  print_selection_only_ = print_selection_only;
+#endif
   return true;
 }
 
 #if BUILDFLAG(ENABLE_OOP_PRINTING)
 bool PrintViewManagerBase::RegisterSystemPrintClient() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
-  DCHECK(ShouldPrintJobOop());
-  DCHECK(!query_with_ui_client_id().has_value());
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
+  CHECK(ShouldPrintJobOop(), base::NotFatalUntil::M162);
+  CHECK(!query_with_ui_client_id().has_value(), base::NotFatalUntil::M162);
   query_with_ui_client_id_ =
       PrintBackendServiceManager::GetInstance().RegisterQueryWithUiClient();
   bool registered = query_with_ui_client_id().has_value();
@@ -1276,8 +1088,8 @@ bool PrintViewManagerBase::RegisterSystemPrintClient() {
 }
 
 void PrintViewManagerBase::UnregisterSystemPrintClient() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
-  DCHECK(ShouldPrintJobOop());
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
+  CHECK(ShouldPrintJobOop(), base::NotFatalUntil::M162);
   if (!query_with_ui_client_id().has_value()) {
     return;
   }
@@ -1309,7 +1121,7 @@ void PrintViewManagerBase::CompleteScriptedPrint(
     content::RenderFrameHost* rfh,
     mojom::ScriptedPrintParamsPtr params,
     ScriptedPrintCallback callback) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
   content::RenderProcessHost* render_process_host = rfh->GetProcess();
   auto callback_wrapper = base::BindOnce(
       &PrintViewManagerBase::ScriptedPrintReply, weak_ptr_factory_.GetWeakPtr(),
@@ -1319,9 +1131,17 @@ void PrintViewManagerBase::CompleteScriptedPrint(
   if (!printer_query)
     printer_query = queue()->CreatePrinterQuery(rfh->GetGlobalId());
 
+  bool has_selection = params->has_selection;
+#if BUILDFLAG(IS_ANDROID)
+  // Android does not support choosing "selection only" in the system print
+  // dialog. Selection is printed only if the print job was explicitly started
+  // for selection.
+  has_selection = print_selection_only_;
+#endif
+
   auto* printer_query_ptr = printer_query.get();
   printer_query_ptr->GetSettingsFromUser(
-      params->expected_pages_count, params->has_selection, params->margin_type,
+      params->expected_pages_count, has_selection, params->margin_type,
       params->is_scripted, !render_process_host->IsPdf(),
       base::BindOnce(&OnDidScriptedPrint, queue_, std::move(printer_query),
                      std::move(callback_wrapper)));
@@ -1353,13 +1173,17 @@ void PrintViewManagerBase::ContentAnalysisBeforePrintingDocument(
   scanning_data.printer_name =
       base::UTF16ToUTF8(print_job_->document()->settings().device_name());
 
+  // Create an immutable, browser-owned copy of the print data so a compromised
+  // renderer cannot mutate the backing shared memory while analysis is running.
+  auto safe_print_data =
+      base::MakeRefCounted<base::RefCountedBytes>(*print_data);
   auto on_verdict = base::BindOnce(
       &PrintViewManagerBase::CompletePrintDocumentAfterContentAnalysis,
-      weak_ptr_factory_.GetWeakPtr(), print_data, page_size, content_area,
+      weak_ptr_factory_.GetWeakPtr(), safe_print_data, page_size, content_area,
       offsets);
 
   enterprise_data_protection::PrintIfAllowedByPolicy(
-      print_data, web_contents()->GetOutermostWebContents(),
+      std::move(safe_print_data), web_contents()->GetOutermostWebContents(),
       std::move(scanning_data), std::move(on_verdict));
 }
 

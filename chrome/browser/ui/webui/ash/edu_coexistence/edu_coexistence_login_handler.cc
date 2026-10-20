@@ -11,6 +11,7 @@
 #include "ash/constants/ash_login_pref_names.h"
 #include "ash/constants/ash_pref_names.h"
 #include "base/check.h"
+#include "base/check_deref.h"
 #include "base/command_line.h"
 #include "base/feature_list.h"
 #include "base/files/file_path.h"
@@ -23,16 +24,13 @@
 #include "base/values.h"
 #include "chrome/browser/ash/child_accounts/edu_coexistence_tos_store_utils.h"
 #include "chrome/browser/ash/policy/core/user_cloud_policy_manager_ash.h"
-#include "chrome/browser/browser_process.h"
-#include "chrome/browser/browser_process_platform_part.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_manager.h"
-#include "chrome/browser/signin/chrome_device_id_helper.h"
-#include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/ui/webui/ash/edu_coexistence/edu_coexistence_state_tracker.h"
 #include "chrome/browser/ui/webui/signin/ash/inline_login_dialog.h"
 #include "chrome/common/channel_info.h"
 #include "chrome/common/chrome_constants.h"
+#include "components/application_locale_storage/application_locale_storage.h"
 #include "components/policy/core/common/cloud/cloud_policy_core.h"
 #include "components/policy/proto/device_management_backend.pb.h"
 #include "components/prefs/pref_registry_simple.h"
@@ -65,12 +63,6 @@ constexpr char kOnErrorWebUIListener[] = "show-error-screen";
 
 constexpr char kFetchAccessTokenResultHistogram[] =
     "AccountManager.EduCoexistence.FetchAccessTokenResult";
-
-signin::IdentityManager* GetIdentityManager() {
-  Profile* profile = ProfileManager::GetActiveUserProfile();
-  DCHECK(profile);
-  return IdentityManagerFactory::GetForProfile(profile);
-}
 
 std::string GetEduCoexistenceURL() {
   base::CommandLine* command_line = base::CommandLine::ForCurrentProcess();
@@ -145,13 +137,11 @@ void EduCoexistenceLoginHandler::RegisterProfilePrefs(
 }
 
 EduCoexistenceLoginHandler::EduCoexistenceLoginHandler(
+    const ApplicationLocaleStorage* application_locale_storage,
+    signin::IdentityManager* identity_manager,
     const base::RepeatingClosure& close_dialog_closure)
-    : EduCoexistenceLoginHandler(close_dialog_closure, GetIdentityManager()) {}
-
-EduCoexistenceLoginHandler::EduCoexistenceLoginHandler(
-    const base::RepeatingClosure& close_dialog_closure,
-    signin::IdentityManager* identity_manager)
-    : close_dialog_closure_(close_dialog_closure),
+    : application_locale_storage_(CHECK_DEREF(application_locale_storage)),
+      close_dialog_closure_(close_dialog_closure),
       identity_manager_(identity_manager) {
   Profile* profile = ProfileManager::GetActiveUserProfile();
   DCHECK(profile->IsChild());
@@ -284,8 +274,7 @@ void EduCoexistenceLoginHandler::SendInitializeEduArgs() {
   DCHECK(initialize_edu_args_callback_.has_value());
   base::DictValue params;
 
-  const std::string& app_locale = g_browser_process->GetApplicationLocale();
-  params.Set("hl", app_locale);
+  params.Set("hl", application_locale_storage_->GetTag().tag_string());
 
   params.Set("url", GetEduCoexistenceURL());
 

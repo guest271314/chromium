@@ -7,6 +7,7 @@ import '/strings.m.js';
 
 import type {CrIconButtonElement} from 'chrome://resources/cr_elements/cr_icon_button/cr_icon_button.js';
 import {WebUiListenerMixinLit} from 'chrome://resources/cr_elements/web_ui_listener_mixin_lit.js';
+import {assert} from 'chrome://resources/js/assert.js';
 import {focusWithoutInk} from 'chrome://resources/js/focus_without_ink.js';
 import {getFaviconForPageURL} from 'chrome://resources/js/icon.js';
 import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
@@ -59,6 +60,7 @@ export class BookmarksItemElement extends BookmarksItemElementBase {
       isFolder_: {type: Boolean},
       lastTouchPoints_: {type: Number},
       canUploadAsAccountBookmark_: {type: Boolean},
+      webuiRoundedIconsEnabled_: {type: Boolean},
     };
   }
 
@@ -71,6 +73,8 @@ export class BookmarksItemElement extends BookmarksItemElementBase {
   private accessor lastTouchPoints_: number = -1;
   // This is always false if `SyncEnableBookmarksInTransportMode` is disabled.
   protected accessor canUploadAsAccountBookmark_: boolean = false;
+  protected accessor webuiRoundedIconsEnabled_: boolean =
+      loadTimeData.getBoolean('webuiRoundedIconsEnabled');
 
   override connectedCallback() {
     super.connectedCallback();
@@ -188,7 +192,10 @@ export class BookmarksItemElement extends BookmarksItemElementBase {
       this.selectThisItem_();
     }
 
-    BrowserProxyImpl.getInstance().onSingleBookmarkUploadClicked(this.itemId);
+    // The handler identifies bookmarks by their legacy numeric id.
+    assert(this.item_?.legacyId !== undefined);
+    BrowserProxyImpl.getInstance().onSingleBookmarkUploadClicked(
+        this.item_.legacyId.toString());
   }
 
   private selectThisItem_() {
@@ -310,8 +317,13 @@ export class BookmarksItemElement extends BookmarksItemElementBase {
   }
 
   private updateCanUploadAsAccountBookmark_() {
+    // The handler identifies bookmarks by their legacy numeric id.
+    if (this.item_?.legacyId === undefined) {
+      this.canUploadAsAccountBookmark_ = false;
+      return;
+    }
     BrowserProxyImpl.getInstance()
-        .getCanUploadBookmarkToAccountStorage(this.itemId)
+        .getCanUploadBookmarkToAccountStorage(this.item_.legacyId.toString())
         .then((canUpload) => {
           this.canUploadAsAccountBookmark_ = canUpload;
         });

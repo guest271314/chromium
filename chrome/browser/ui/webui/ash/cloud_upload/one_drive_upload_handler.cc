@@ -20,7 +20,6 @@
 #include "chrome/browser/ash/file_system_provider/provided_file_system_info.h"
 #include "chrome/browser/ash/file_system_provider/service.h"
 #include "chrome/browser/ui/webui/ash/cloud_upload/cloud_upload_util.h"
-#include "chrome/common/extensions/extension_constants.h"
 #include "chrome/grit/generated_resources.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
@@ -68,7 +67,7 @@ OneDriveUploadHandler::~OneDriveUploadHandler() {
 }
 
 void OneDriveUploadHandler::Run() {
-  DCHECK(callback_);
+  CHECK(callback_, base::NotFatalUntil::M162);
 
   if (!profile_) {
     LOG(ERROR) << "No profile";
@@ -233,7 +232,7 @@ void OneDriveUploadHandler::OnIOTaskStatus(
     case file_manager::io_task::State::kSuccess:
       notification_manager_->SetDestinationPath(status.outputs[0].url.path());
       notification_manager_->ShowUploadProgress(100);
-      DCHECK_EQ(status.outputs.size(), 1u);
+      CHECK_EQ(status.outputs.size(), 1u, base::NotFatalUntil::M162);
       if (tried_reauth_) {
         OnSuccessfulUpload(OfficeFilesUploadResult::kSuccessAfterReauth,
                            status.outputs[0].url);

@@ -5,12 +5,12 @@
 /**
  * @fileoverview Definitions for chrome.accessibilityPrivate API
  * Partially generated from:
- * chrome/common/extensions/api/accessibility_private.json This file exists
- * because MV3 supports promises and MV2 does not.
+ * chromeos/ash/experiences/extensions/common/api/accessibility_private.json
+ * This file exists because MV3 supports promises and MV2 does not.
  * TODO(b/260590502): Delete this after MV3 migration.
  * run `tools/json_schema_compiler/compiler.py
- * chrome/common/extensions/api/accessibility_private.json -g ts_definitions` to
- * regenerate.
+ * chromeos/ash/experiences/extensions/common/api/accessibility_private.json -g
+ * ts_definitions` to regenerate.
  */
 
 import type {ChromeEvent} from '../../../../../../tools/typescript/definitions/chrome_event.js';
@@ -227,7 +227,6 @@ declare global {
         GOOGLE_TTS_LANGUAGE_PACKS = 'googleTtsLanguagePacks',
         DICTATION_CONTEXT_CHECKING = 'dictationContextChecking',
         GOOGLE_TTS_HIGH_QUALITY_VOICES = 'googleTtsHighQualityVoices',
-        CAPTIONS_ON_BRAILLE_DISPLAY = 'captionsOnBrailleDisplay',
       }
 
       export enum SelectToSpeakPanelAction {

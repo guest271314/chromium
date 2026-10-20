@@ -10,7 +10,6 @@
 #include "ash/wm/float/float_test_api.h"
 #include "ash/wm/window_state.h"
 #include "chrome/browser/profiles/profile_manager.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface_iterator.h"
@@ -50,27 +49,27 @@ using FloatControllerBrowserTest = InProcessBrowserTest;
 // the window to freeze. Regression test for b/278917878.
 IN_PROC_BROWSER_TEST_F(FloatControllerBrowserTest,
                        TuckingBrowserDoesNotFreezeWindow) {
-  ash::test::InstallSystemAppsForTesting(browser()->profile());
+  ash::test::InstallSystemAppsForTesting(browser()->GetProfile());
 
   // Open two SWAs. The bug was a result of the window targeters installed by
   // the window tucker and immersive mode not being reinstalled in the correct
   // order. More details in b/278917878.
-  ash::test::CreateSystemWebApp(browser()->profile(),
+  ash::test::CreateSystemWebApp(browser()->GetProfile(),
                                 ash::SystemWebAppType::FILE_MANAGER);
   aura::Window* browser_window1 =
       GetLastActiveBrowserWindowInterfaceWithAnyProfile()
           ->GetWindow()
           ->GetNativeWindow();
 
-  ash::test::CreateSystemWebApp(browser()->profile(),
+  ash::test::CreateSystemWebApp(browser()->GetProfile(),
                                 ash::SystemWebAppType::SETTINGS);
   aura::Window* browser_window2 =
       GetLastActiveBrowserWindowInterfaceWithAnyProfile()
           ->GetWindow()
           ->GetNativeWindow();
 
-  ASSERT_NE(browser()->window()->GetNativeWindow(), browser_window1);
-  ASSERT_NE(browser()->window()->GetNativeWindow(), browser_window2);
+  ASSERT_NE(browser()->GetWindow()->GetNativeWindow(), browser_window1);
+  ASSERT_NE(browser()->GetWindow()->GetNativeWindow(), browser_window2);
   ASSERT_NE(browser_window1, browser_window2);
 
   auto* float_controller = ash::Shell::Get()->float_controller();

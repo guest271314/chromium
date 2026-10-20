@@ -32,6 +32,7 @@ import org.chromium.base.test.util.PayloadCallbackHelper;
 import org.chromium.components.password_manager.core.browser.proto.ListPasswordsResult;
 import org.chromium.components.password_manager.core.browser.proto.PasswordWithLocalData;
 import org.chromium.components.signin.AccountUtils;
+import org.chromium.components.sync.protocol.DeletionOrigin;
 import org.chromium.components.sync.protocol.PasswordSpecificsData;
 
 import java.util.List;
@@ -41,9 +42,7 @@ import java.util.concurrent.TimeoutException;
 
 /** Tests for {@link FakePasswordStoreAndroidBackend}. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(
-        manifest = Config.NONE,
-        shadows = {ShadowSystemClock.class})
+@Config(shadows = {ShadowSystemClock.class})
 public class FakePasswordStoreAndroidBackendTest {
     private FakePasswordStoreAndroidBackend mBackend;
 
@@ -250,6 +249,35 @@ public class FakePasswordStoreAndroidBackendTest {
                         .build();
         mBackend.removeLogin(
                 removedLogin.toByteArray(),
+                sTestAccount,
+                successCallback::notifyCalled,
+                unexpected -> fail());
+
+        RobolectricUtil.runAllBackgroundAndUiIncludingDelayed();
+        Map<Account, List<PasswordWithLocalData>> allPasswords = mBackend.getAllSavedPasswords();
+        assertThat(successCallback.getCallCount(), is(1));
+        assertThat(allPasswords.get(sTestAccount.get()), hasSize(2));
+        assertThat(allPasswords, hasEntry(is(sTestAccount.get()), not(hasItem(sPwdWithLocalData))));
+    }
+
+    @Test
+    public void testRemoveLoginWithDeletionOrigin() throws TimeoutException {
+        fillPasswordStore();
+
+        CallbackHelper successCallback = new CallbackHelper();
+        PasswordSpecificsData removedLogin =
+                PasswordSpecificsData.newBuilder()
+                        .setUsernameValue(sPasswordData.getUsernameValue())
+                        .setUsernameElement(sPasswordData.getUsernameElement())
+                        .setPasswordElement(sPasswordData.getPasswordElement())
+                        .setOrigin(sPasswordData.getOrigin())
+                        .setSignonRealm(sPasswordData.getSignonRealm())
+                        .build();
+        DeletionOrigin deletionOrigin =
+                DeletionOrigin.newBuilder().setChromiumVersion("123.0.0.0").build();
+        mBackend.removeLogin(
+                removedLogin.toByteArray(),
+                deletionOrigin.toByteArray(),
                 sTestAccount,
                 successCallback::notifyCalled,
                 unexpected -> fail());

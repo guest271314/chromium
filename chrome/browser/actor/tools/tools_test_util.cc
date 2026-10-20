@@ -4,31 +4,26 @@
 
 #include "chrome/browser/actor/tools/tools_test_util.h"
 
-#include "base/base64.h"
 #include "base/run_loop.h"
 #include "base/strings/strcat.h"
 #include "base/strings/utf_string_conversions.h"
-#include "base/test/bind.h"
 #include "base/test/test_timeouts.h"
+#include "build/build_config.h"
 #include "chrome/browser/actor/actor_keyed_service.h"
 #include "chrome/browser/actor/actor_metrics.h"
 #include "chrome/browser/actor/actor_tab_data.h"
 #include "chrome/browser/actor/actor_test_util.h"
 #include "chrome/browser/actor/execution_engine.h"
 #include "chrome/browser/actor/site_policy.h"
-#include "chrome/browser/actor/ui/event_dispatcher.h"
-#include "chrome/browser/glic/glic_pref_names.h"
 #include "chrome/browser/optimization_guide/browser_test_util.h"
+#include "chrome/browser/password_manager/actor_login/chrome_actor_login_delegate_client.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/ui_features.h"
-#include "chrome/browser/ui/zoom/chrome_zoom_level_prefs.h"
-#include "chrome/common/buildflags.h"
 #include "chrome/common/chrome_features.h"
-#include "chrome/common/chrome_switches.h"
 #include "chrome/test/base/chrome_test_utils.h"
 #include "chrome/test/base/platform_browser_test.h"
-#include "components/actor/core/actor_features.h"
 #include "components/optimization_guide/core/filters/optimization_hints_component_update_listener.h"
+#include "components/password_manager/core/browser/actor_login/actor_login_quality_logger_interface.h"
+#include "components/password_manager/core/browser/actor_login/internal/actor_login_delegate_client.h"
 #include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/web_contents.h"
@@ -39,7 +34,16 @@
 #include "ui/display/display_switches.h"
 #include "ui/gfx/geometry/rect_f.h"
 
+#if !BUILDFLAG(IS_ANDROID)
+#include "chrome/browser/actor/ui/actor_task_unload_handler.h"
+#else
+#include "chrome/browser/actor/android/ui/actor_ui_tab_controller_android.h"
+#endif
+
 namespace actor {
+
+MockToolDelegate::MockToolDelegate() = default;
+MockToolDelegate::~MockToolDelegate() = default;
 
 actor_login::Credential MakeTestCredential(
     const std::u16string& username,
@@ -83,19 +87,20 @@ MockActorLoginService::MockActorLoginService() = default;
 MockActorLoginService::~MockActorLoginService() = default;
 
 void MockActorLoginService::GetCredentials(
-    tabs::TabInterface* tab,
+    actor_login::ActorLoginDelegateClient* client,
     bool has_sign_in_with_google_button,
-    base::WeakPtr<actor_login::ActorLoginQualityLoggerInterface> mqls_logger,
+    scoped_refptr<actor_login::ActorLoginQualityLoggerInterface> mqls_logger,
     actor_login::CredentialsOrErrorReply callback) {
   std::move(callback).Run(credentials_);
 }
 
 void MockActorLoginService::AttemptLogin(
-    tabs::TabInterface* tab,
+    actor_login::ActorLoginDelegateClient* client,
     const actor_login::Credential& credential,
     bool should_store_permission,
-    base::WeakPtr<actor_login::ActorLoginQualityLoggerInterface> mqls_logger,
+    scoped_refptr<actor_login::ActorLoginQualityLoggerInterface> mqls_logger,
     base::TimeTicks attempt_login_tool_start_time,
+    actor_login::FrameFillingStartedCallback frame_filling_started_cb,
     actor_login::LoginStatusResultOrErrorReply callback,
     base::WeakPtr<actor_login::ActionSequenceDelegate>
         action_sequence_delegate) {
@@ -110,9 +115,13 @@ void MockActorLoginService::AttemptLogin(
 
   last_credential_used_ = credential;
   last_permission_was_permanent_ = should_store_permission;
+  last_frame_filling_started_cb_ = std::move(frame_filling_started_cb);
 
   if (credential.type == actor_login::CredentialType::kFederated &&
       on_federated_login_delay_) {
+    auto* chrome_client =
+        static_cast<actor_login::ChromeActorLoginDelegateClient*>(client);
+    content::WebContents* web_contents = &chrome_client->GetWebContents();
     // A minimal enum translation for testing purposes.
     auto to_login_status = [](content::webid::FederatedLoginResult result) {
       switch (result) {
@@ -131,7 +140,7 @@ void MockActorLoginService::AttemptLogin(
       }
     };
     content::webid::FederatedEmbedderLoginRequest::Set(
-        tab->GetContents(), credential.federation_detail->idp_origin,
+        web_contents, credential.federation_detail->idp_origin,
         credential.federation_detail->account_id,
         base::BindOnce(to_login_status)
             .Then(base::BindOnce(
@@ -139,7 +148,7 @@ void MockActorLoginService::AttemptLogin(
                 action_sequence_delegate_)));
     std::move(on_federated_login_delay_)
         .Run(base::BindOnce(&MockActorLoginService::OnFederatedLoginResume,
-                            tab));
+                            web_contents));
   }
 
   std::move(callback).Run(login_status_);
@@ -167,9 +176,9 @@ void MockActorLoginService::SetFederatedLoginDelay(
 
 // static
 void MockActorLoginService::OnFederatedLoginResume(
-    tabs::TabInterface* tab,
+    content::WebContents* web_contents,
     content::webid::FederatedLoginResult result) {
-  content::webid::FederatedEmbedderLoginRequest::Get(tab->GetContents())
+  content::webid::FederatedEmbedderLoginRequest::Get(web_contents)
       ->OnFederatedResultReceived(result);
 }
 
@@ -187,6 +196,11 @@ bool MockActorLoginService::last_sequence_succeeded() const {
   return last_sequence_succeeded_.value_or(false);
 }
 
+actor_login::FrameFillingStartedCallback
+MockActorLoginService::last_frame_filling_started_cb() {
+  return std::move(last_frame_filling_started_cb_);
+}
+
 void MockActorLoginService::OnActionSequenceEnded(bool success) {
   last_sequence_succeeded_ = success;
 }
@@ -195,7 +209,7 @@ ActorToolsTest::ActorToolsTest() {
   scoped_feature_list_.InitWithFeaturesAndParameters(
       /*enabled_features=*/
       {{features::kGlic, {}}},
-      /*disabled_features=*/{features::kGlicWarming, kGlicActionAllowlist});
+      /*disabled_features=*/{features::kGlicWarming});
 }
 
 ActorToolsTest::~ActorToolsTest() = default;
@@ -203,6 +217,24 @@ ActorToolsTest::~ActorToolsTest() = default;
 void ActorToolsTest::SetUpOnMainThread() {
   PlatformBrowserTest::SetUpOnMainThread();
   host_resolver()->AddRule("*", "127.0.0.1");
+  embedded_test_server()->ServeFilesFromSourceDirectory("components/test/data");
+  embedded_https_test_server().ServeFilesFromSourceDirectory(
+      "components/test/data");
+
+#if !BUILDFLAG(IS_ANDROID)
+  // These tests drive browser initiated navigations as scaffolding, which the
+  // leave site confirmation would treat as the user navigating away. Note this
+  // switch also suppresses the shared tab close dialog, so a suppressed fixture
+  // provides no coverage of either confirmation flow; tests that need a dialog
+  // must opt back in explicitly.
+  previous_suppress_confirm_dialog_ =
+      ActorTaskTabCloseConfirmDialog::ShouldSuppressForTesting();
+  ActorTaskTabCloseConfirmDialog::SetSuppressForTesting(true);
+#else
+  previous_suppress_confirm_dialog_ = ui::ActorUiTabControllerAndroid::
+      ShouldSuppressNavigationDialogsForTesting();
+  ui::ActorUiTabControllerAndroid::SetSuppressNavigationDialogsForTesting(true);
+#endif
 
   task_id_ =
       ActorKeyedService::Get(GetProfile())
@@ -235,6 +267,14 @@ void ActorToolsTest::SetUpCommandLine(base::CommandLine* command_line) {
 }
 
 void ActorToolsTest::TearDownOnMainThread() {
+#if !BUILDFLAG(IS_ANDROID)
+  ActorTaskTabCloseConfirmDialog::SetSuppressForTesting(
+      previous_suppress_confirm_dialog_);
+#else
+  ui::ActorUiTabControllerAndroid::SetSuppressNavigationDialogsForTesting(
+      previous_suppress_confirm_dialog_);
+#endif
+
   // The ActorTask owned ExecutionEngine has a pointer to the profile, which
   // must be released before the browser is torn down to avoid a dangling
   // pointer.

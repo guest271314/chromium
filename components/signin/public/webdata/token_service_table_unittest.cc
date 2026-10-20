@@ -9,6 +9,7 @@
 
 #include "base/containers/to_vector.h"
 #include "base/files/scoped_temp_dir.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/run_loop.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/test/bind.h"
@@ -52,12 +53,12 @@ class TokenServiceTableTest : public testing::Test {
     table_ = std::make_unique<TokenServiceTable>();
     db_ = std::make_unique<WebDatabase>();
     db_->AddTable(table_.get());
-    ASSERT_EQ(sql::INIT_OK, db_->Init(file_, &encryptor_));
+    ASSERT_EQ(sql::INIT_OK, db_->Init(file_, encryptor_));
   }
 
   base::FilePath file_;
   base::ScopedTempDir temp_dir_;
-  const os_crypt_async::Encryptor encryptor_;
+  scoped_refptr<const os_crypt_async::Encryptor> encryptor_;
   std::unique_ptr<TokenServiceTable> table_;
   std::unique_ptr<WebDatabase> db_;
 };
@@ -301,7 +302,7 @@ TEST_F(TokenServiceTableTest, GetNullMtlsTokenBinding) {
 
   // Test reading null values
   std::string encrypted_token;
-  ASSERT_TRUE(encryptor_.EncryptString("pepperoni", &encrypted_token));
+  ASSERT_TRUE(encryptor_->EncryptString("pepperoni", &encrypted_token));
 
   // Manually insert an entry without setting `mtls_token_binding` to verify
   // that having a null value is read back as `false`.
@@ -382,138 +383,4 @@ TEST_F(TokenServiceTableTest, TokenMetrics) {
   }
 }
 
-class TokenServiceTableEncryptionOptionsTest : public testing::Test {
- public:
-  TokenServiceTableEncryptionOptionsTest()
-      : os_crypt_(os_crypt_async::GetTestOSCryptAsyncForTesting(
-            /*is_sync_for_unittests=*/true)) {}
 
-  void SetUp() override { ASSERT_TRUE(temp_dir_.CreateUniqueTempDir()); }
-
- protected:
-  os_crypt_async::Encryptor GetInstanceSync(
-      os_crypt_async::Encryptor::Option option) {
-    base::test::TestFuture<os_crypt_async::Encryptor> future;
-    os_crypt_->GetInstance(future.GetCallback(), option);
-    return future.Take();
-  }
-
-  base::ScopedTempDir temp_dir_;
-
- private:
-  std::unique_ptr<os_crypt_async::OSCryptAsync> os_crypt_;
-};
-
-TEST_F(TokenServiceTableEncryptionOptionsTest, TokenReencrypt) {
-  const auto filename =
-      temp_dir_.GetPath().AppendASCII("TestWebMutableDatabase");
-
-  const std::string kService = "testservice";
-  const std::string kService2 = "othertestservice";
-
-  const std::vector<uint8_t> kBindingKey = {1, 4, 2};
-
-  {
-    TokenServiceTable table;
-    WebDatabase db;
-    db.AddTable(&table);
-    const auto encryptor =
-        GetInstanceSync(os_crypt_async::Encryptor::Option::kEncryptSyncCompat);
-    ASSERT_EQ(sql::INIT_OK, db.Init(filename, &encryptor));
-
-    std::map<std::string, TokenWithBindingInfo> out_map;
-    bool should_reencrypt = false;
-
-    EXPECT_EQ(TokenServiceTable::Result::TOKEN_DB_RESULT_SUCCESS,
-              table.GetAllTokens(&out_map, should_reencrypt));
-    EXPECT_FALSE(should_reencrypt);
-    EXPECT_TRUE(out_map.empty());
-    table.SetTokenForService(kService, "steak", kBindingKey,
-                             /*mtls_token_binding=*/false);
-  }
-
-  {
-    TokenServiceTable table;
-    WebDatabase db;
-    db.AddTable(&table);
-    const auto encryptor =
-        GetInstanceSync(os_crypt_async::Encryptor::Option::kNone);
-    ASSERT_EQ(sql::INIT_OK, db.Init(filename, &encryptor));
-
-    std::map<std::string, TokenWithBindingInfo> out_map;
-    bool should_reencrypt = false;
-
-    EXPECT_EQ(TokenServiceTable::Result::TOKEN_DB_RESULT_SUCCESS,
-              table.GetAllTokens(&out_map, should_reencrypt));
-    // Moving from OSCrypt Sync compatible to new encryption should result in a
-    // re-encrypt being requested.
-    EXPECT_TRUE(should_reencrypt);
-    EXPECT_EQ(TokenWithBindingInfo("steak", kBindingKey),
-              out_map.find(kService)->second);
-    // Write the new value back, re-encrypting it.
-    table.SetTokenForService(kService, "steak", kBindingKey,
-                             /*mtls_token_binding=*/false);
-  }
-  {
-    TokenServiceTable table;
-    WebDatabase db;
-    db.AddTable(&table);
-    const auto encryptor =
-        GetInstanceSync(os_crypt_async::Encryptor::Option::kNone);
-    ASSERT_EQ(sql::INIT_OK, db.Init(filename, &encryptor));
-
-    std::map<std::string, TokenWithBindingInfo> out_map;
-    bool should_reencrypt = false;
-
-    EXPECT_EQ(TokenServiceTable::Result::TOKEN_DB_RESULT_SUCCESS,
-              table.GetAllTokens(&out_map, should_reencrypt));
-    EXPECT_FALSE(should_reencrypt);
-    EXPECT_EQ(TokenWithBindingInfo("steak", kBindingKey),
-              out_map.find(kService)->second);
-    // Add a second item.
-    table.SetTokenForService(kService2, "pepperoni", kBindingKey,
-                             /*mtls_token_binding=*/false);
-  }
-  {
-    TokenServiceTable table;
-    WebDatabase db;
-    db.AddTable(&table);
-    const auto encryptor =
-        GetInstanceSync(os_crypt_async::Encryptor::Option::kNone);
-    ASSERT_EQ(sql::INIT_OK, db.Init(filename, &encryptor));
-
-    std::map<std::string, TokenWithBindingInfo> out_map;
-    bool should_reencrypt = false;
-
-    EXPECT_EQ(TokenServiceTable::Result::TOKEN_DB_RESULT_SUCCESS,
-              table.GetAllTokens(&out_map, should_reencrypt));
-    // Note: pepperoni was already encrypted with the new key, so did not need
-    // to be re-encrypted.
-    EXPECT_FALSE(should_reencrypt);
-    EXPECT_EQ(TokenWithBindingInfo("steak", kBindingKey),
-              out_map.find(kService)->second);
-    EXPECT_EQ(TokenWithBindingInfo("pepperoni", kBindingKey),
-              out_map.find(kService2)->second);
-  }
-  {
-    TokenServiceTable table;
-    WebDatabase db;
-    db.AddTable(&table);
-    const auto encryptor =
-        GetInstanceSync(os_crypt_async::Encryptor::Option::kEncryptSyncCompat);
-    ASSERT_EQ(sql::INIT_OK, db.Init(filename, &encryptor));
-
-    std::map<std::string, TokenWithBindingInfo> out_map;
-    bool should_reencrypt = false;
-
-    EXPECT_EQ(TokenServiceTable::Result::TOKEN_DB_RESULT_SUCCESS,
-              table.GetAllTokens(&out_map, should_reencrypt));
-    // Reverting back to OSCrypt Sync compatible should request all data be
-    // re-encrypted again.
-    EXPECT_TRUE(should_reencrypt);
-    EXPECT_EQ(TokenWithBindingInfo("steak", kBindingKey),
-              out_map.find(kService)->second);
-    EXPECT_EQ(TokenWithBindingInfo("pepperoni", kBindingKey),
-              out_map.find(kService2)->second);
-  }
-}

@@ -5,6 +5,7 @@
 #include "ui/base/dragdrop/os_exchange_data_provider_mac.h"
 
 #import <Cocoa/Cocoa.h>
+#include <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 
 #include <algorithm>
 #include <optional>
@@ -178,6 +179,26 @@ bool OSExchangeDataProviderMac::IsFromPrivileged() const {
       containsObject:kUTTypeChromiumPrivilegedInitiatedDrag];
 }
 
+void OSExchangeDataProviderMac::SetChromeDragId(
+    const base::UnguessableToken& drag_id) {
+  chrome_drag_id_ = drag_id;
+  [GetPasteboard() setString:base::SysUTF8ToNSString(drag_id.ToString())
+                     forType:kUTTypeChromiumDragId];
+}
+
+std::optional<base::UnguessableToken>
+OSExchangeDataProviderMac::GetChromeDragId() const {
+  if (chrome_drag_id_.has_value()) {
+    return chrome_drag_id_;
+  }
+  NSString* item = [GetPasteboard() stringForType:kUTTypeChromiumDragId];
+  if (!item) {
+    return std::nullopt;
+  }
+  return base::UnguessableToken::DeserializeFromString(
+      base::SysNSStringToUTF8(item));
+}
+
 void OSExchangeDataProviderMac::SetString(std::u16string_view string) {
   [GetPasteboard() setString:base::SysUTF16ToNSString(string)
                      forType:NSPasteboardTypeString];
@@ -188,8 +209,10 @@ void OSExchangeDataProviderMac::SetURLs(
   if (url_infos.empty()) {
     return;
   }
-  // TODO(http://crbug.com/41011768): we should support multiple URLs,
-  // but currently only the first one is used.
+
+  // Currently, SetURLs is only used for single-URL Views drags (for example,
+  // the omnibox/location-bar site icon). Web-content and bookmark drags use
+  // different code paths, so only the first URL is written here.
   const auto& url_info = url_infos.front();
   NSArray<NSPasteboardItem*>* items = clipboard_util::PasteboardItemsFromUrls(
       @[ base::SysUTF8ToNSString(url_info.url.spec()) ],
@@ -286,18 +309,51 @@ bool OSExchangeDataProviderMac::HasCustomFormat(
 
 void OSExchangeDataProviderMac::SetFileContents(
     const base::FilePath& filename,
-    const std::string& file_contents) {
+    base::span<const uint8_t> file_contents) {
   NOTIMPLEMENTED();
 }
 
 std::optional<OSExchangeDataProvider::FileContentsInfo>
 OSExchangeDataProviderMac::GetFileContents() const {
-  NOTIMPLEMENTED();
+  NSPasteboard* pboard = GetPasteboard();
+  if (!pboard) {
+    return std::nullopt;
+  }
+
+  NSArray* types = [pboard types];
+  for (NSString* type in types) {
+    UTType* utType = [UTType typeWithIdentifier:type];
+    if ([utType conformsToType:UTTypeImage]) {
+      NSData* data = [pboard dataForType:type];
+      if (data) {
+        base::span<const uint8_t> span = base::apple::NSDataToSpan(data);
+        std::vector<uint8_t> file_contents(span.begin(), span.end());
+        base::FilePath filename;
+        NSString* ext = utType.preferredFilenameExtension;
+        if (ext) {
+          filename = base::FilePath(base::SysNSStringToUTF8(ext));
+        }
+        return FileContentsInfo{.filename = filename,
+                                .file_contents = std::move(file_contents)};
+      }
+    }
+  }
   return std::nullopt;
 }
 
 bool OSExchangeDataProviderMac::HasFileContents() const {
-  NOTIMPLEMENTED();
+  NSPasteboard* pboard = GetPasteboard();
+  if (!pboard) {
+    return false;
+  }
+
+  NSArray* types = [pboard types];
+  for (NSString* type in types) {
+    UTType* utType = [UTType typeWithIdentifier:type];
+    if ([utType conformsToType:UTTypeImage]) {
+      return true;
+    }
+  }
   return false;
 }
 
@@ -347,9 +403,9 @@ NSArray* OSExchangeDataProviderMac::SupportedPasteboardTypes() {
   return @[
     kUTTypeChromiumInitiatedDrag, kUTTypeChromiumPrivilegedInitiatedDrag,
     kUTTypeChromiumRendererInitiatedDrag, kUTTypeChromiumDataTransferCustomData,
-    kUTTypeWebKitWebUrlsWithTitles, kUTTypeChromiumSourceUrl,
-    NSPasteboardTypeFileURL, NSPasteboardTypeHTML, NSPasteboardTypeRTF,
-    NSPasteboardTypeString, NSPasteboardTypeURL
+    kUTTypeChromiumDragId, kUTTypeWebKitWebUrlsWithTitles,
+    kUTTypeChromiumSourceUrl, NSPasteboardTypeFileURL, NSPasteboardTypeHTML,
+    NSPasteboardTypeRTF, NSPasteboardTypeString, NSPasteboardTypeURL
   ];
 }
 

@@ -16,10 +16,12 @@
 #include "build/buildflag.h"
 #include "components/prefs/pref_service.h"
 #include "components/spellcheck/spellcheck_buildflags.h"
+#include "components/themes/cross_device/cross_device_theme_tracker.h"
 #include "extensions/buildflags/buildflags.h"
 
 class Profile;
 class SecurityEventRecorder;
+
 
 namespace syncer {
 class DataTypeController;
@@ -27,9 +29,15 @@ class DataTypeStoreService;
 class SyncService;
 }  // namespace syncer
 
-namespace webapk {
-class WebApkSyncService;
-}  // namespace webapk
+namespace sync_pb {
+class ThemeSpecifics;
+class ThemeAndroidSpecifics;
+}  // namespace sync_pb
+
+
+#if BUILDFLAG(IS_ANDROID)
+class NtpAndroidCustomBackgroundService;
+#endif  // BUILDFLAG(IS_ANDROID)
 
 #if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
 class ExtensionSyncService;
@@ -81,6 +89,7 @@ class PrefServiceSyncable;
 }  // namespace sync_preferences
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
+
 // Class responsible for instantiating sync controllers (DataTypeController)
 // for datatypes / features under chrome/.
 //
@@ -95,8 +104,13 @@ class ChromeSyncControllerBuilder {
   ChromeSyncControllerBuilder();
   ~ChromeSyncControllerBuilder();
 
+  using LocalThemeSpecifics = themes::LocalThemeSpecifics;
+
   // Setters to inject dependencies. Each of these setters must be invoked
   // before invoking `Build()`. In some cases it is allowed to inject nullptr.
+  void SetCrossDeviceThemeTracker(
+      themes::CrossDeviceThemeTracker<LocalThemeSpecifics>*
+          cross_device_theme_tracker);
   void SetDataTypeStoreService(
       syncer::DataTypeStoreService* data_type_store_service);
   void SetSecurityEventRecorder(SecurityEventRecorder* security_event_recorder);
@@ -116,7 +130,8 @@ class ChromeSyncControllerBuilder {
 #endif  // BUILDFLAG(ENABLE_SPELLCHECK)
 
 #if BUILDFLAG(IS_ANDROID)
-  void SetWebApkSyncService(webapk::WebApkSyncService* web_apk_sync_service);
+  void SetNtpAndroidCustomBackgroundService(
+      NtpAndroidCustomBackgroundService* ntp_android_custom_background_service);
 #endif  // BUILDFLAG(IS_ANDROID)
 
 #if BUILDFLAG(IS_CHROMEOS)
@@ -140,6 +155,7 @@ class ChromeSyncControllerBuilder {
       ash::sync_wifi::WifiConfigurationSyncService*
           wifi_configuration_sync_service);
 #endif  // BUILDFLAG(IS_CHROMEOS)
+
 
   // Actually builds the controllers. All setters above must have been called
   // beforehand (null may or may not be allowed).
@@ -172,6 +188,8 @@ class ChromeSyncControllerBuilder {
 
   // For all above, nullopt indicates the corresponding setter wasn't invoked.
   // nullptr indicates the setter was invoked with nullptr.
+  SafeOptional<raw_ptr<themes::CrossDeviceThemeTracker<LocalThemeSpecifics>>>
+      cross_device_theme_tracker_;
   SafeOptional<raw_ptr<syncer::DataTypeStoreService>> data_type_store_service_;
   SafeOptional<raw_ptr<SecurityEventRecorder>> security_event_recorder_;
 
@@ -193,7 +211,8 @@ class ChromeSyncControllerBuilder {
 #endif  // BUILDFLAG(ENABLE_SPELLCHECK)
 
 #if BUILDFLAG(IS_ANDROID)
-  SafeOptional<raw_ptr<webapk::WebApkSyncService>> web_apk_sync_service_;
+  SafeOptional<raw_ptr<NtpAndroidCustomBackgroundService>>
+      ntp_android_custom_background_service_;
 #endif  // BUILDFLAG(IS_ANDROID)
 
 #if BUILDFLAG(IS_CHROMEOS)

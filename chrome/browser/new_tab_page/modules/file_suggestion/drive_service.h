@@ -20,12 +20,12 @@
 #include "components/segmentation_platform/public/segmentation_platform_service.h"
 #include "components/signin/public/identity_manager/access_token_info.h"
 #include "google_apis/gaia/google_service_auth_error.h"
-#include "services/data_decoder/public/cpp/data_decoder.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "services/network/public/cpp/simple_url_loader.h"
 
-class PrefRegistrySimple;
-class PrefService;
+namespace base {
+class DictValue;
+}
 
 namespace signin {
 class IdentityManager;
@@ -45,20 +45,14 @@ enum class ItemSuggestRequestResult {
 // Handles requests for user Google Drive data.
 class DriveService : public KeyedService {
  public:
-  static const char kLastDismissedTimePrefName[];
-  static const base::TimeDelta kDismissDuration;
-
   DriveService(const DriveService&) = delete;
   DriveService(
       scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
       signin::IdentityManager* identity_manager,
       segmentation_platform::SegmentationPlatformService*
           segmentation_platform_service,
-      const std::string& application_locale,
-      PrefService* pref_service);
+      const std::string& application_locale);
   ~DriveService() override;
-
-  static void RegisterProfilePrefs(PrefRegistrySimple* registry);
 
   using GetFilesCallback =
       file_suggestion::mojom::DriveSuggestionHandler::GetFilesCallback;
@@ -70,17 +64,13 @@ class DriveService : public KeyedService {
   // show the Drive module, instead of ignoring it.
   bool GetDriveModuleSegmentationData();
   void GetDriveFilesInternal();
-  // Makes the service not return data for a specified amount of time.
-  void DismissModule();
-  // Makes the service return data again even if dimiss time is not yet over.
-  void RestoreModule();
 
  private:
   void OnTokenReceived(GoogleServiceAuthError error,
                        signin::AccessTokenInfo token_info);
   void OnJsonReceived(const std::string& token,
                       std::optional<std::string> json_response);
-  void OnJsonParsed(data_decoder::DataDecoder::ValueOrError result);
+  void ProcessParsedJson(std::optional<base::DictValue> dict);
 
   // Used for fetching OAuth2 access tokens. Only non-null when a token
   // is made available, or a token is being fetched.
@@ -92,7 +82,6 @@ class DriveService : public KeyedService {
   raw_ptr<segmentation_platform::SegmentationPlatformService>
       segmentation_platform_service_;
   std::string application_locale_;
-  raw_ptr<PrefService> pref_service_;
   std::optional<std::string> cached_json_;
   base::Time cached_json_time_;
   std::string cached_json_token_;

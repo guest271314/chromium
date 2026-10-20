@@ -20,6 +20,7 @@
 #include "chrome/browser/ui/autofill/autofill_popup_controller_impl.h"
 #include "chrome/browser/ui/autofill/autofill_popup_view.h"
 #include "chrome/browser/ui/autofill/autofill_suggestion_controller_test_base.h"
+#include "chrome/browser/ui/autofill/autofill_suggestion_controller_utils.h"
 #include "chrome/browser/ui/autofill/popup_controller_common.h"
 #include "chrome/test/base/chrome_render_view_host_test_harness.h"
 #include "chrome/test/base/testing_profile.h"
@@ -35,11 +36,13 @@
 #include "components/autofill/core/browser/foundations/browser_autofill_manager_test_api.h"
 #include "components/autofill/core/browser/suggestions/suggestion.h"
 #include "components/autofill/core/browser/suggestions/suggestion_hiding_reason.h"
+#include "components/autofill/core/browser/suggestions/suggestion_test_helpers.h"
 #include "components/autofill/core/browser/suggestions/suggestion_type.h"
-#include "components/autofill/core/browser/test_utils/autofill_test_utils.h"
+#include "components/autofill/core/browser/test_utils/autofill_test_util.h"
 #include "components/autofill/core/browser/ui/autofill_external_delegate.h"
 #include "components/autofill/core/browser/ui/autofill_suggestion_delegate.h"
 #include "components/autofill/core/common/aliases.h"
+#include "components/autofill/core/common/autofill_test_util.h"
 #include "components/autofill/core/common/unique_ids.h"
 #include "components/input/native_web_keyboard_event.h"
 #include "components/prefs/pref_service.h"
@@ -71,6 +74,7 @@ using base::WeakPtr;
 using ::testing::_;
 using ::testing::AtLeast;
 using ::testing::Field;
+using ::testing::IsEmpty;
 using ::testing::Mock;
 using ::testing::Optional;
 using ::testing::Return;
@@ -82,37 +86,6 @@ using TestAutofillSuggestionControllerAutofillClient =
     TestAutofillPopupControllerAutofillClient<>;
 #endif
 
-content::RenderFrameHost* CreateAndNavigateChildFrame(
-    content::RenderFrameHost* parent,
-    const GURL& url,
-    std::string_view name) {
-  content::RenderFrameHost* rfh =
-      content::RenderFrameHostTester::For(parent)->AppendChild(
-          std::string(name));
-  // ContentAutofillDriverFactory::DidFinishNavigation() creates a driver for
-  // subframes only if
-  // `NavigationHandle::HasSubframeNavigationEntryCommitted()` is true. This
-  // is not the case for the first navigation. (In non-unit-tests, the first
-  // navigation creates a driver in
-  // ContentAutofillDriverFactory::BindAutofillDriver().) Therefore,
-  // we simulate *two* navigations here, and explicitly set the transition
-  // type for the second navigation.
-  std::unique_ptr<content::NavigationSimulator> simulator;
-  // First navigation: `HasSubframeNavigationEntryCommitted() == false`.
-  // Must be a different URL from the second navigation.
-  GURL about_blank("about:blank");
-  CHECK_NE(about_blank, url);
-  simulator =
-      content::NavigationSimulator::CreateRendererInitiated(about_blank, rfh);
-  simulator->Commit();
-  rfh = simulator->GetFinalRenderFrameHost();
-  // Second navigation: `HasSubframeNavigationEntryCommitted() == true`.
-  // Must set the transition type to ui::PAGE_TRANSITION_MANUAL_SUBFRAME.
-  simulator = content::NavigationSimulator::CreateRendererInitiated(url, rfh);
-  simulator->SetTransition(ui::PAGE_TRANSITION_MANUAL_SUBFRAME);
-  simulator->Commit();
-  return simulator->GetFinalRenderFrameHost();
-}
 
 content::RenderFrameHost* NavigateAndCommitFrame(content::RenderFrameHost* rfh,
                                                  const GURL& url) {
@@ -295,10 +268,14 @@ TEST_F(AutofillSuggestionControllerTest, PopupsWithOnlyDataLists) {
 
 TEST_F(AutofillSuggestionControllerTest, GetOrCreate) {
   auto create_controller = [&](gfx::RectF bounds) {
+    LocalFrameToken frame_token(*main_frame()->GetFrameToken());
     return AutofillSuggestionController::GetOrCreate(
         client().suggestion_controller(manager()).GetWeakPtr(),
         manager().external_delegate().GetWeakPtrForTest(), web_contents(),
-        PopupControllerCommon(std::move(bounds), base::i18n::UNKNOWN_DIRECTION),
+        PopupControllerCommon(
+            FormGlobalId(frame_token, test::MakeFormRendererId()),
+            FieldGlobalId(frame_token, test::MakeFieldRendererId()),
+            std::move(bounds), base::i18n::UNKNOWN_DIRECTION),
         /*form_control_ax_id=*/0,
         AutofillSuggestionTriggerSource::kUnspecified);
   };
@@ -363,11 +340,15 @@ TEST_F(AutofillSuggestionControllerTest, ProperlyResetController) {
                               SuggestionType::kAutocompleteEntry});
 
   // Now show a new popup with the same controller, but with fewer items.
+  LocalFrameToken frame_token(*main_frame()->GetFrameToken());
   base::WeakPtr<AutofillSuggestionController> controller =
       AutofillSuggestionController::GetOrCreate(
           client().suggestion_controller(manager()).GetWeakPtr(),
           manager().external_delegate().GetWeakPtrForTest(), web_contents(),
-          PopupControllerCommon(gfx::RectF(), base::i18n::UNKNOWN_DIRECTION),
+          PopupControllerCommon(
+              FormGlobalId(frame_token, test::MakeFormRendererId()),
+              FieldGlobalId(frame_token, test::MakeFieldRendererId()),
+              gfx::RectF(), base::i18n::UNKNOWN_DIRECTION),
           /*form_control_ax_id=*/0,
           AutofillSuggestionTriggerSource::kUnspecified);
   EXPECT_EQ(0, controller->GetLineCount());
@@ -522,15 +503,7 @@ TEST_F(AutofillSuggestionControllerTestHidingLogic,
   ShowSuggestions(manager(), {SuggestionType::kAddressEntry});
   test::GenerateTestAutofillPopup(&manager().external_delegate());
   // The navigation generates a PrimaryMainFrameWasResized callback.
-  SuggestionHidingReason reason;
-  // On Android, keyboard accessory is not hidden if the Chrome native widget
-  // changes its size. The keyboard accessory is still hidden because the input
-  // field looses.
-  if constexpr (BUILDFLAG(IS_ANDROID)) {
-    reason = SuggestionHidingReason::kNavigation;
-  } else {
-    reason = SuggestionHidingReason::kWidgetChanged;
-  }
+  SuggestionHidingReason reason = SuggestionHidingReason::kRendererEvent;
   EXPECT_CALL(client().suggestion_controller(manager()), Hide(reason));
   NavigateAndCommitFrame(main_frame(), GURL("https://bar.com/"));
   // Verify and clear before TearDown() closes the popup.
@@ -543,14 +516,8 @@ TEST_F(AutofillSuggestionControllerTestHidingLogic,
        HideInSubFrameOnSubFrameNavigation) {
   ShowSuggestions(sub_manager(), {SuggestionType::kAddressEntry});
   test::GenerateTestAutofillPopup(&sub_manager().external_delegate());
-  if (sub_frame()->ShouldChangeRenderFrameHostOnSameSiteNavigation()) {
-    // If the RenderFrameHost changes, a RenderFrameDeleted will fire first.
-    EXPECT_CALL(client().suggestion_controller(sub_manager()),
-                Hide(SuggestionHidingReason::kRendererEvent));
-  } else {
-    EXPECT_CALL(client().suggestion_controller(sub_manager()),
-                Hide(SuggestionHidingReason::kNavigation));
-  }
+  EXPECT_CALL(client().suggestion_controller(sub_manager()),
+              Hide(SuggestionHidingReason::kRendererEvent));
   NavigateAndCommitFrame(sub_frame(), GURL("https://bar.com/"));
   // Verify and clear before TearDown() closes the popup.
   Mock::VerifyAndClearExpectations(
@@ -568,17 +535,67 @@ TEST_F(AutofillSuggestionControllerTestHidingLogic,
        HideInSubFrameOnMainFrameNavigation) {
   ShowSuggestions(sub_manager(), {SuggestionType::kAddressEntry});
   test::GenerateTestAutofillPopup(&sub_manager().external_delegate());
-  SuggestionHidingReason reason;
-  // On Android, keyboard accessory is not hidden if the Chrome native widget
-  // changes its size. The keyboard accessory is still hidden because the input
-  // field looses.
-  if constexpr (BUILDFLAG(IS_ANDROID)) {
-    reason = SuggestionHidingReason::kRendererEvent;
-  } else {
-    reason = SuggestionHidingReason::kWidgetChanged;
-  }
+  SuggestionHidingReason reason = SuggestionHidingReason::kRendererEvent;
   EXPECT_CALL(client().suggestion_controller(sub_manager()), Hide(reason));
   NavigateAndCommitFrame(main_frame(), GURL("https://bar.com/"));
+}
+
+TEST(AutofillSuggestionControllerUtilsTest, CleanUpRedundantSeparators_Empty) {
+  std::vector<Suggestion> suggestions;
+  CleanUpRedundantSeparators(suggestions);
+  EXPECT_THAT(suggestions, IsEmpty());
+}
+
+TEST(AutofillSuggestionControllerUtilsTest,
+     CleanUpRedundantSeparators_OnlySeparators) {
+  std::vector<Suggestion> suggestions = {
+      Suggestion(SuggestionType::kSeparator),
+      Suggestion(SuggestionType::kSeparator),
+  };
+  CleanUpRedundantSeparators(suggestions);
+  EXPECT_THAT(suggestions, IsEmpty());
+}
+
+TEST(AutofillSuggestionControllerUtilsTest,
+     CleanUpRedundantSeparators_LeadingAndTrailing) {
+  std::vector<Suggestion> suggestions = {
+      Suggestion(SuggestionType::kSeparator),
+      Suggestion(SuggestionType::kAddressEntry),
+      Suggestion(SuggestionType::kSeparator),
+  };
+  CleanUpRedundantSeparators(suggestions);
+  EXPECT_THAT(suggestions,
+              SuggestionVectorIdsAre(SuggestionType::kAddressEntry));
+}
+
+TEST(AutofillSuggestionControllerUtilsTest,
+     CleanUpRedundantSeparators_ConsecutiveDuplicates) {
+  std::vector<Suggestion> suggestions = {
+      Suggestion(SuggestionType::kAddressEntry),
+      Suggestion(SuggestionType::kSeparator),
+      Suggestion(SuggestionType::kSeparator),
+      Suggestion(SuggestionType::kSeparator),
+      Suggestion(SuggestionType::kManageAddress),
+  };
+  CleanUpRedundantSeparators(suggestions);
+  EXPECT_THAT(suggestions,
+              SuggestionVectorIdsAre(SuggestionType::kAddressEntry,
+                                     SuggestionType::kSeparator,
+                                     SuggestionType::kManageAddress));
+}
+
+TEST(AutofillSuggestionControllerUtilsTest,
+     CleanUpRedundantSeparators_ValidSeparatorsUnchanged) {
+  std::vector<Suggestion> suggestions = {
+      Suggestion(SuggestionType::kAddressEntry),
+      Suggestion(SuggestionType::kSeparator),
+      Suggestion(SuggestionType::kManageAddress),
+  };
+  CleanUpRedundantSeparators(suggestions);
+  EXPECT_THAT(suggestions,
+              SuggestionVectorIdsAre(SuggestionType::kAddressEntry,
+                                     SuggestionType::kSeparator,
+                                     SuggestionType::kManageAddress));
 }
 
 }  // namespace

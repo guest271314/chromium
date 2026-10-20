@@ -20,6 +20,7 @@ import android.widget.FrameLayout;
 import org.chromium.android_webview.common.Lifetime;
 import org.chromium.base.Callback;
 import org.chromium.base.ContentUriUtils;
+import org.chromium.base.ContextUtils;
 import org.chromium.base.Log;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.task.AsyncTask;
@@ -32,8 +33,9 @@ import org.chromium.url.GURL;
 
 /**
  * Adapts the AwWebContentsDelegate interface to the AwContentsClient interface.
- * This class also serves a secondary function of routing certain callbacks from the content layer
- * to specific listener interfaces.
+ *
+ * <p>This class also serves a secondary function of routing certain callbacks from the content
+ * layer to specific listener interfaces.
  */
 @Lifetime.WebView
 class AwWebContentsDelegateAdapter extends AwWebContentsDelegate {
@@ -42,7 +44,6 @@ class AwWebContentsDelegateAdapter extends AwWebContentsDelegate {
     private final AwContents mAwContents;
     private final AwContentsClient mContentsClient;
     private final AwSettings mAwSettings;
-    private final Context mContext;
     private View mContainerView;
     private FrameLayout mCustomView;
     private boolean mDidSynthesizePageLoad;
@@ -51,12 +52,10 @@ class AwWebContentsDelegateAdapter extends AwWebContentsDelegate {
             AwContents awContents,
             AwContentsClient contentsClient,
             AwSettings settings,
-            Context context,
             View containerView) {
         mAwContents = awContents;
         mContentsClient = contentsClient;
         mAwSettings = settings;
-        mContext = context;
         mDidSynthesizePageLoad = false;
         setContainerView(containerView);
     }
@@ -95,8 +94,8 @@ class AwWebContentsDelegateAdapter extends AwWebContentsDelegate {
     }
 
     /**
-     * Redispatches unhandled media keys. This allows bluetooth headphones with play/pause or
-     * other buttons to function correctly.
+     * Redispatches unhandled media keys. This allows bluetooth headphones with play/pause or other
+     * buttons to function correctly.
      */
     private void handleMediaKey(KeyEvent e) {
         switch (e.getKeyCode()) {
@@ -114,7 +113,10 @@ class AwWebContentsDelegateAdapter extends AwWebContentsDelegate {
             case KeyEvent.KEYCODE_MEDIA_CLOSE:
             case KeyEvent.KEYCODE_MEDIA_EJECT:
             case KeyEvent.KEYCODE_MEDIA_AUDIO_TRACK:
-                AudioManager am = (AudioManager) mContext.getSystemService(Context.AUDIO_SERVICE);
+                AudioManager am =
+                        (AudioManager)
+                                ContextUtils.getApplicationContext()
+                                        .getSystemService(Context.AUDIO_SERVICE);
                 am.dispatchMediaKeyEvent(e);
                 break;
             default:
@@ -124,12 +126,14 @@ class AwWebContentsDelegateAdapter extends AwWebContentsDelegate {
 
     @Override
     public boolean takeFocus(boolean reverse) {
-        int direction =
+        // Try sequential Tab navigation first (standard Android contract for Tab / Shift+Tab):
+        int direction = reverse ? View.FOCUS_BACKWARD : View.FOCUS_FORWARD;
+        if (tryToMoveFocus(direction)) return true;
+        // Fall back to directional spatial navigation if sequential navigation found no candidates:
+        direction =
                 (reverse == (mContainerView.getLayoutDirection() == View.LAYOUT_DIRECTION_RTL))
                         ? View.FOCUS_RIGHT
                         : View.FOCUS_LEFT;
-        if (tryToMoveFocus(direction)) return true;
-        direction = reverse ? View.FOCUS_BACKWARD : View.FOCUS_FORWARD;
         return tryToMoveFocus(direction);
     }
 
@@ -251,24 +255,32 @@ class AwWebContentsDelegateAdapter extends AwWebContentsDelegate {
 
                     @Override
                     public void onResult(String[] results) {
-                        if (mCompleted) {
-                            throw new IllegalStateException("Duplicate showFileChooser result");
-                        }
-                        mCompleted = true;
-                        if (results == null) {
-                            AwWebContentsDelegateJni.get()
-                                    .filesSelectedInChooser(
-                                            processId, renderId, webChromeClientMode, null, null);
-                            return;
-                        }
-                        GetDisplayNameTask task =
-                                new GetDisplayNameTask(
-                                        mContext,
-                                        processId,
-                                        renderId,
-                                        webChromeClientMode,
-                                        results);
-                        task.executeOnExecutor(AsyncTask.THREAD_POOL_EXECUTOR);
+                        ThreadUtils.runOnUiThread(
+                                () -> {
+                                    if (mCompleted) {
+                                        throw new IllegalStateException(
+                                                "Duplicate showFileChooser result");
+                                    }
+                                    mCompleted = true;
+                                    if (results == null) {
+                                        AwWebContentsDelegateJni.get()
+                                                .filesSelectedInChooser(
+                                                        processId,
+                                                        renderId,
+                                                        webChromeClientMode,
+                                                        null,
+                                                        null);
+                                        return;
+                                    }
+                                    GetDisplayNameTask task =
+                                            new GetDisplayNameTask(
+                                                    ContextUtils.getApplicationContext(),
+                                                    processId,
+                                                    renderId,
+                                                    webChromeClientMode,
+                                                    results);
+                                    task.executeOnExecutor(AsyncTask.THREAD_POOL_EXECUTOR);
+                                });
                     }
                 },
                 params);
@@ -334,15 +346,16 @@ class AwWebContentsDelegateAdapter extends AwWebContentsDelegate {
     /**
      * Called to show the web contents in fullscreen mode.
      *
-     * <p>If entering fullscreen on a video element the web contents will contain just
-     * the html5 video controls. {@link #enterFullscreenVideo(View)} will be called later
-     * once the ContentVideoView, which contains the hardware accelerated fullscreen video,
-     * is ready to be shown.
+     * <p>If entering fullscreen on a video element the web contents will contain just the html5
+     * video controls. {@link #enterFullscreenVideo(View)} will be called later once the
+     * ContentVideoView, which contains the hardware accelerated fullscreen video, is ready to be
+     * shown.
      */
     private void enterFullscreen() {
         if (mAwContents.isFullScreen()) {
             return;
         }
+        Context context = mAwContents.getProvidedContext();
         View fullscreenView = mAwContents.enterFullScreen();
         if (fullscreenView == null) {
             return;
@@ -353,7 +366,7 @@ class AwWebContentsDelegateAdapter extends AwWebContentsDelegate {
                         mAwContents.requestExitFullscreen();
                     }
                 };
-        mCustomView = new FrameLayout(mContext);
+        mCustomView = new FrameLayout(context);
         mCustomView.addView(fullscreenView);
         mContentsClient.onShowCustomView(mCustomView, cb);
     }
@@ -409,7 +422,7 @@ class AwWebContentsDelegateAdapter extends AwWebContentsDelegate {
         }
 
         /**
-         * @return the display name of a path if it is a content URI and is present in the database
+         * Returns the display name of a path if it is a content URI and is present in the database
          * or an empty string otherwise.
          */
         private String resolveFileName(String filePath) {
@@ -441,6 +454,7 @@ class AwWebContentsDelegateAdapter extends AwWebContentsDelegate {
      */
     @Override
     protected boolean isPopupSupported() {
-        return ContextMenuUtils.isPopupSupported(mContext);
+        Context context = mAwContents.getProvidedContext();
+        return ContextMenuUtils.isPopupSupported(context);
     }
 }

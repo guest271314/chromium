@@ -10,6 +10,7 @@
 
 #include <map>
 #include <memory>
+#include <optional>
 #include <set>
 #include <vector>
 
@@ -119,6 +120,7 @@ class UsbDeviceHandleImpl : public UsbDeviceHandle {
                                             bool success,
                                             ResultCallback callback);
   void ResetDeviceBlocking(ResultCallback callback);
+  void ResetDeviceComplete(ResultCallback callback, bool success);
   void ClearHaltBlocking(uint8_t endpoint_address, ResultCallback callback);
 
   // Refresh endpoint_map_ after ClaimInterface, ReleaseInterface and
@@ -129,6 +131,16 @@ class UsbDeviceHandleImpl : public UsbDeviceHandle {
   // interface containing the endpoint is not found.
   scoped_refptr<InterfaceClaimer> GetClaimedInterfaceForEndpoint(
       uint8_t endpoint_address);
+
+  // Returns the first colliding endpoint address if the given
+  // |interface_number| has any endpoints that collide with other currently
+  // claimed interfaces' active alternate settings. Returns std::nullopt if no
+  // collision is found. If |alternate_setting| is provided, only that specific
+  // alternate setting is checked; otherwise, all alternate settings of the
+  // interface are checked.
+  std::optional<uint8_t> FindFirstCollidingEndpointAddress(
+      int interface_number,
+      std::optional<int> alternate_setting);
 
   void ReportIsochronousTransferError(
       UsbDeviceHandle::IsochronousTransferCallback callback,
@@ -152,7 +164,7 @@ class UsbDeviceHandleImpl : public UsbDeviceHandle {
   ClaimedInterfaceMap claimed_interfaces_;
 
   // This set holds weak pointers to pending transfers.
-  std::set<Transfer*> transfers_;
+  std::set<raw_ptr<Transfer>> transfers_;
 
   // A map from endpoints to EndpointMapValue
   typedef std::map<int, EndpointMapValue> EndpointMap;

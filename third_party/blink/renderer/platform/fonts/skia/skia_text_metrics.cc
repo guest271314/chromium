@@ -14,22 +14,6 @@
 
 namespace blink {
 
-namespace {
-
-template <class T>
-T* advance_by_byte_size(T* p, unsigned byte_size) {
-  return reinterpret_cast<T*>(
-      UNSAFE_TODO(reinterpret_cast<uint8_t*>(p) + byte_size));
-}
-
-template <class T>
-const T* advance_by_byte_size(const T* p, unsigned byte_size) {
-  return reinterpret_cast<const T*>(
-      UNSAFE_TODO(reinterpret_cast<const uint8_t*>(p) + byte_size));
-}
-
-}  // namespace
-
 void SkFontGetGlyphWidthForHarfBuzz(const SkStrikeRef& strike_ref,
                                     bool subpixel,
                                     hb_codepoint_t codepoint,
@@ -53,32 +37,55 @@ void SkFontGetGlyphWidthForHarfBuzz(const SkStrikeRef& strike_ref,
 
 void SkFontGetGlyphWidthForHarfBuzz(const SkStrikeRef& strike_ref,
                                     bool subpixel,
-                                    unsigned count,
+                                    wtf_size_t count,
                                     const hb_codepoint_t* glyphs,
-                                    const unsigned glyph_stride,
+                                    wtf_size_t glyph_stride_32,
                                     hb_position_t* advances,
-                                    unsigned advance_stride) {
-  // Batch the call to getWidths because its function entry cost is not
-  // cheap. getWidths accepts multiple glyphd ID, but not from a sparse
-  // array that copy them to a regular array.
-  Vector<Glyph, 512> glyph_array(count);
-  for (unsigned i = 0; i < count;
-       i++, glyphs = advance_by_byte_size(glyphs, glyph_stride)) {
-    glyph_array[i] = *glyphs;
+                                    wtf_size_t advance_stride_32) {
+  if (count == 0) {
+    return;
   }
-  Vector<SkScalar, 512> sk_width_array(count);
-  strike_ref.getWidths(glyph_array, sk_width_array);
+  CHECK(glyphs);
+  CHECK(advances);
 
+  static_assert(sizeof(SkScalar) == sizeof(hb_position_t),
+                "SkScalar and hb_position_t must have the same size");
+  SkScalar* advance = reinterpret_cast<float*>(advances);
+  strike_ref.getWidthsStrided(count, glyphs, glyph_stride_32, advance,
+                              advance_stride_32);
+
+  // Perform in-place rounding and fixed-point conversion.
+  // SAFETY: See HarfBuzzGetGlyphHorizontalAdvances in harfbuzz_face.cc:
+  // We are interfacing with HarfBuzz and optimize this hot function in
+  // text shaping. HarfBuzz provides the allocated output buffer and
+  // stride information. The incoming count argument is provided by
+  // HarfBuzz and ensure that enough output write buffer space is available
+  // for the given stride.
   if (subpixel) {
-    for (unsigned i = 0; i < count;
-         i++, advances = advance_by_byte_size(advances, advance_stride)) {
-      *advances = SkiaScalarToHarfBuzzPosition(sk_width_array[i]);
+    if (advance_stride_32 == 1) {
+      for (wtf_size_t i = 0; i < count; ++i) {
+        UNSAFE_BUFFERS(advances[i] = SkiaScalarToHarfBuzzPosition(advance[i]));
+      }
+    } else {
+      for (wtf_size_t i = 0; i < count;
+           ++i, UNSAFE_BUFFERS(advance += advance_stride_32)) {
+        UNSAFE_BUFFERS(*reinterpret_cast<hb_position_t*>(advance) =
+                           SkiaScalarToHarfBuzzPosition(*advance));
+      }
     }
   } else {
-    for (unsigned i = 0; i < count;
-         i++, advances = advance_by_byte_size(advances, advance_stride)) {
-      *advances =
-          SkiaScalarToHarfBuzzPosition(SkScalarRoundToInt(sk_width_array[i]));
+    if (advance_stride_32 == 1) {
+      for (wtf_size_t i = 0; i < count; ++i) {
+        UNSAFE_BUFFERS(advances[i] = SkiaScalarToHarfBuzzPosition(
+                           SkScalarRoundToScalar(advance[i])));
+      }
+    } else {
+      for (wtf_size_t i = 0; i < count;
+           ++i, UNSAFE_BUFFERS(advance += advance_stride_32)) {
+        UNSAFE_BUFFERS(
+            *reinterpret_cast<hb_position_t*>(advance) =
+                SkiaScalarToHarfBuzzPosition(SkScalarRoundToScalar(*advance)));
+      }
     }
   }
 }
@@ -189,7 +196,7 @@ void SkFontGetBoundsForGlyphs(const SkFont& font,
                               const Vector<Glyph, 256>& glyphs,
                               base::span<SkRect> bounds) {
 #if BUILDFLAG(IS_APPLE)
-  for (unsigned i = 0; i < glyphs.size(); i++) {
+  for (wtf_size_t i = 0; i < glyphs.size(); ++i) {
     SkFontGetBoundsForGlyph(font, glyphs[i], &bounds[i]);
   }
 #else
@@ -197,7 +204,7 @@ void SkFontGetBoundsForGlyphs(const SkFont& font,
   font.getBounds(glyphs, {bounds.data(), glyphs.size()}, nullptr);
 
   if (!font.isSubpixel()) {
-    for (unsigned i = 0; i < glyphs.size(); i++) {
+    for (wtf_size_t i = 0; i < glyphs.size(); ++i) {
       SkIRect ir;
       bounds[i].roundOut(&ir);
       bounds[i].set(ir);
@@ -213,12 +220,6 @@ float SkFontGetWidthForGlyph(const SkFont& font, Glyph glyph) {
     sk_width = SkScalarRoundToInt(sk_width);
 
   return sk_width;
-}
-
-hb_position_t SkiaScalarToHarfBuzzPosition(SkScalar value) {
-  // We treat HarfBuzz hb_position_t as 16.16 fixed-point.
-  static const int kHbPosition1 = 1 << 16;
-  return ClampTo<int>(value * kHbPosition1);
 }
 
 }  // namespace blink

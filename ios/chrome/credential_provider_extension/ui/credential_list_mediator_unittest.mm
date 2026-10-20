@@ -5,6 +5,7 @@
 #import "base/test/ios/wait_util.h"
 #import "ios/chrome/common/app_group/app_group_constants.h"
 #import "ios/chrome/common/credential_provider/archivable_credential.h"
+#import "ios/chrome/common/credential_provider/archivable_credential_test_util.h"
 #import "ios/chrome/common/credential_provider/constants.h"
 #import "ios/chrome/common/credential_provider/mock_credential_store.h"
 #import "ios/chrome/credential_provider_extension/ui/credential_list_mediator+Testing.h"
@@ -20,50 +21,18 @@ namespace {
 using base::test::ios::kWaitForFileOperationTimeout;
 using base::test::ios::WaitUntilConditionOrTimeout;
 
-constexpr int64_t kJan1st2024 = 1704085200;
-
-NSData* StringToData(std::string str) {
-  return [NSData dataWithBytes:str.data() length:str.length()];
-}
-
-ArchivableCredential* TestPasskeyCredential(BOOL hidden = NO) {
-  return [[ArchivableCredential alloc]
-       initWithFavicon:@"favicon1"
-                  gaia:nil
-      recordIdentifier:@"recordIdentifier1"
-                syncId:StringToData("syncId1")
-              username:@"username1"
-       userDisplayName:@"userDisplayName1"
-                userId:StringToData("userId1")
-          credentialId:StringToData("credentialId1")
-                  rpId:@"rpId1"
-            privateKey:StringToData("privateKey1")
-             encrypted:StringToData("encrypted1")
-          creationTime:kJan1st2024
-          lastUsedTime:kJan1st2024
-                hidden:hidden
-            hiddenTime:kJan1st2024
-          editedByUser:NO];
-}
-
 ArchivableCredential* TestPasskeyCredential2() {
-  return [[ArchivableCredential alloc]
-       initWithFavicon:@"favicon2"
-                  gaia:nil
-      recordIdentifier:@"recordIdentifier2"
-                syncId:StringToData("syncId2")
-              username:@"username2"
-       userDisplayName:@"userDisplayName2"
-                userId:StringToData("userId2")
-          credentialId:StringToData("credentialId2")
-                  rpId:@"rpId2"
-            privateKey:StringToData("privateKey2")
-             encrypted:StringToData("encrypted2")
-          creationTime:kJan1st2024 + 1
-          lastUsedTime:kJan1st2024 + 1
-                hidden:NO
-            hiddenTime:kJan1st2024 + 1
-          editedByUser:NO];
+  return TestPasskeyCredential(TestPasskeyCredentialOverrides{
+      .favicon = @"favicon2",
+      .record_identifier = @"recordIdentifier2",
+      .sync_id = TestDataFromString("syncId2"),
+      .username = @"username2",
+      .user_display_name = @"userDisplayName2",
+      .user_id = TestDataFromString("userId2"),
+      .credential_id = TestDataFromString("credentialId2"),
+      .rp_id = @"rpId2",
+      .encrypted = TestDataFromString("encrypted2"),
+  });
 }
 
 ArchivableCredential* TestPasswordCredential() {
@@ -311,7 +280,8 @@ TEST_F(CredentialListMediatorTest, FetchAllCredentialsPasskeysOnly) {
 // Tests that fetching all credentials filters out hidden passkeys.
 TEST_F(CredentialListMediatorTest, FetchAllCredentialsWithHiddenPasskeys) {
   ArchivableCredential* passkey_credential = TestPasskeyCredential();
-  ArchivableCredential* hidden_passkey = TestPasskeyCredential(/*hidden=*/YES);
+  ArchivableCredential* hidden_passkey =
+      TestPasskeyCredential(TestPasskeyCredentialOverrides{.hidden = YES});
 
   NSMutableArray<id<Credential>>* credentials = [NSMutableArray array];
   [credentials addObject:passkey_credential];
@@ -524,6 +494,192 @@ TEST_F(CredentialListMediatorTest, FilterPasswordCredentialsNoFalseMatch) {
   NSArray<id<Credential>>* filteredCredentials =
       [credentialListMediator filterCredentials];
   ASSERT_EQ(filteredCredentials.count, 0u);
+}
+
+// Tests that an Android-app credential is not suggested to an unrelated
+// web origin whose DNS hostname happens to be lexically equal to the Android
+// package name, when there's no matching registry controlled domain.
+TEST_F(CredentialListMediatorTest,
+       FilterAndroidCredentialsRejectsCollidingWebOrigin) {
+  ArchivableCredential* androidCredential = [[ArchivableCredential alloc]
+               initWithFavicon:nil
+                          gaia:nil
+                      password:@"password"
+                          rank:1
+              recordIdentifier:@"android://hash@example.com"
+             serviceIdentifier:@"android://hash@example.com"
+                   serviceName:@"android://hash@example.com"
+      registryControlledDomain:@""
+                      username:@"uesrname_value"
+                          note:@""
+                  lastUsedTime:0];
+
+  NSMutableArray<id<Credential>>* credentials = [NSMutableArray array];
+  [credentials addObject:androidCredential];
+  id<CredentialStore> credentialStore =
+      [[MockCredentialStore alloc] initWithCredentials:credentials];
+
+  // iOS hands the CPE the *page origin's host* as the service identifier.
+  // A request for example.com should not be matched.
+  ASCredentialServiceIdentifier* requestedSite =
+      [[ASCredentialServiceIdentifier alloc]
+          initWithIdentifier:@"example.com"
+                        type:ASCredentialServiceIdentifierTypeDomain];
+  NSArray* serviceIdentifiers = @[ requestedSite ];
+
+  CredentialListMediator* mediator =
+      [[CredentialListMediator alloc] initWithConsumer:nil
+                                             UIHandler:nil
+                                       credentialStore:credentialStore
+                                    serviceIdentifiers:serviceIdentifiers
+                             credentialResponseHandler:nil];
+  mediator.allCredentials = [mediator fetchAllCredentials];
+  EXPECT_EQ([mediator filterCredentials].count, 0u);
+}
+
+// Tests that password credential matches registry controlled domain correctly.
+TEST_F(CredentialListMediatorTest,
+       PasswordCredentialMatchesRegistryControlledDomain) {
+  ArchivableCredential* credential =
+      [[ArchivableCredential alloc] initWithFavicon:nil
+                                               gaia:nil
+                                           password:@"qwerty123"
+                                               rank:1
+                                   recordIdentifier:@"recordIdentifier"
+                                  serviceIdentifier:@"https://railway.app/"
+                                        serviceName:@"railway.app"
+                           registryControlledDomain:@"railway.app"
+                                           username:@"username_value"
+                                               note:@"note"
+                                       lastUsedTime:0];
+
+  CredentialListMediator* credentialListMediator =
+      [[CredentialListMediator alloc] initWithConsumer:nil
+                                             UIHandler:nil
+                                       credentialStore:nil
+                                    serviceIdentifiers:nil
+                             credentialResponseHandler:nil];
+
+  // Exact match.
+  EXPECT_TRUE([credentialListMediator passwordCredential:credential
+                         matchesRegistryControlledDomain:@"railway.app"]);
+
+  // Subdomain match.
+  EXPECT_TRUE([credentialListMediator passwordCredential:credential
+                         matchesRegistryControlledDomain:@"login.railway.app"]);
+
+  // Attacker website (e.g. attacker app hosted on private public suffix).
+  // The test should expect the attacker website to fail to match.
+  EXPECT_FALSE([credentialListMediator
+                   passwordCredential:credential
+      matchesRegistryControlledDomain:@"attacker.up.railway.app"]);
+
+  // False matches.
+  EXPECT_FALSE([credentialListMediator passwordCredential:credential
+                          matchesRegistryControlledDomain:@"evil-railway.app"]);
+  EXPECT_FALSE([credentialListMediator
+                   passwordCredential:credential
+      matchesRegistryControlledDomain:@"railway.app.evil.com"]);
+  EXPECT_FALSE([credentialListMediator passwordCredential:credential
+                          matchesRegistryControlledDomain:@"railway.app.evil"]);
+  EXPECT_FALSE([credentialListMediator passwordCredential:credential
+                          matchesRegistryControlledDomain:@"evil.com"]);
+
+  // Empty registryControlledDomain should not match anything.
+  ArchivableCredential* credentialWithEmptyDomain =
+      [[ArchivableCredential alloc] initWithFavicon:nil
+                                               gaia:nil
+                                           password:@"qwerty123"
+                                               rank:1
+                                   recordIdentifier:@"recordIdentifier"
+                                  serviceIdentifier:@"https://railway.app/"
+                                        serviceName:@"railway.app"
+                           registryControlledDomain:@""
+                                           username:@"username_value"
+                                               note:@"note"
+                                       lastUsedTime:0];
+  EXPECT_FALSE([credentialListMediator
+                   passwordCredential:credentialWithEmptyDomain
+      matchesRegistryControlledDomain:@"railway.app"]);
+
+  // Nil registryControlledDomain should not match anything.
+  ArchivableCredential* credentialWithNilDomain =
+      [[ArchivableCredential alloc] initWithFavicon:nil
+                                               gaia:nil
+                                           password:@"qwerty123"
+                                               rank:1
+                                   recordIdentifier:@"recordIdentifier"
+                                  serviceIdentifier:@"https://railway.app/"
+                                        serviceName:@"railway.app"
+                           registryControlledDomain:nil
+                                           username:@"username_value"
+                                               note:@"note"
+                                       lastUsedTime:0];
+  EXPECT_FALSE([credentialListMediator
+                   passwordCredential:credentialWithNilDomain
+      matchesRegistryControlledDomain:@"railway.app"]);
+}
+
+// Tests that fallback password credential matching (when
+// registryControlledDomain is empty) matches domain subdomains correctly but
+// rejects public suffix / private registry subdomains.
+TEST_F(CredentialListMediatorTest,
+       PasswordCredentialMatchesFallbackServiceIdentifiers) {
+  ArchivableCredential* credential =
+      [[ArchivableCredential alloc] initWithFavicon:nil
+                                               gaia:nil
+                                           password:@"qwerty123"
+                                               rank:1
+                                   recordIdentifier:@"recordIdentifier"
+                                  serviceIdentifier:@"https://railway.app/"
+                                        serviceName:@"railway.app"
+                           registryControlledDomain:@""
+                                           username:@"username_value"
+                                               note:@"note"
+                                       lastUsedTime:0];
+
+  CredentialListMediator* credentialListMediator =
+      [[CredentialListMediator alloc] initWithConsumer:nil
+                                             UIHandler:nil
+                                       credentialStore:nil
+                                    serviceIdentifiers:nil
+                             credentialResponseHandler:nil];
+
+  // Exact matches.
+  ASCredentialServiceIdentifier* serviceIdentifierExact =
+      [[ASCredentialServiceIdentifier alloc]
+          initWithIdentifier:@"railway.app"
+                        type:ASCredentialServiceIdentifierTypeDomain];
+  EXPECT_TRUE([credentialListMediator
+             passwordCredential:credential
+      matchesServiceIdentifiers:@[ serviceIdentifierExact ]]);
+
+  // Subdomain matches.
+  ASCredentialServiceIdentifier* serviceIdentifierSubdomain =
+      [[ASCredentialServiceIdentifier alloc]
+          initWithIdentifier:@"login.railway.app"
+                        type:ASCredentialServiceIdentifierTypeDomain];
+  EXPECT_TRUE([credentialListMediator
+             passwordCredential:credential
+      matchesServiceIdentifiers:@[ serviceIdentifierSubdomain ]]);
+
+  // Attacker matches (should NOT match!).
+  ASCredentialServiceIdentifier* serviceIdentifierAttacker =
+      [[ASCredentialServiceIdentifier alloc]
+          initWithIdentifier:@"attacker.up.railway.app"
+                        type:ASCredentialServiceIdentifierTypeDomain];
+  EXPECT_FALSE([credentialListMediator
+             passwordCredential:credential
+      matchesServiceIdentifiers:@[ serviceIdentifierAttacker ]]);
+
+  // False matches.
+  ASCredentialServiceIdentifier* serviceIdentifierEvilSuffix =
+      [[ASCredentialServiceIdentifier alloc]
+          initWithIdentifier:@"railway.app.evil.com"
+                        type:ASCredentialServiceIdentifierTypeDomain];
+  EXPECT_FALSE([credentialListMediator
+             passwordCredential:credential
+      matchesServiceIdentifiers:@[ serviceIdentifierEvilSuffix ]]);
 }
 
 }  // namespace credential_provider_extension

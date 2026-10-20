@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "ash/constants/ash_features.h"
+#include "ash/constants/chrome_pref_names.h"
 #include "ash/constants/web_app_id_constants.h"
 #include "ash/webui/camera_app_ui/ocr.mojom.h"
 #include "ash/webui/camera_app_ui/pdf_builder.mojom.h"
@@ -28,8 +29,6 @@
 #include "base/task/sequenced_task_runner.h"
 #include "base/task/task_traits.h"
 #include "base/task/thread_pool.h"
-#include "chrome/browser/apps/app_service/app_service_proxy.h"
-#include "chrome/browser/apps/app_service/app_service_proxy_factory.h"
 #include "chrome/browser/apps/app_service/launch_utils.h"
 #include "chrome/browser/ash/file_manager/path_util.h"
 #include "chrome/browser/ash/system_web_apps/apps/camera_app/camera_app_survey_handler.h"
@@ -48,7 +47,6 @@
 #include "chrome/browser/ui/ash/system_web_apps/system_web_app_ui_utils.h"
 #include "chrome/browser/ui/webui/ash/internet/internet_config_dialog.h"
 #include "chrome/browser/web_applications/web_app_tab_helper.h"
-#include "chrome/common/pref_names.h"
 #include "chrome/services/pdf/public/mojom/pdf_progressive_searchifier.mojom.h"
 #include "chrome/services/pdf/public/mojom/pdf_service.mojom.h"
 #include "chrome/services/pdf/public/mojom/pdf_thumbnailer.mojom.h"
@@ -229,7 +227,7 @@ ChromeCameraAppUIDelegate::StorageMonitor::~StorageMonitor() {
 void ChromeCameraAppUIDelegate::StorageMonitor::StartMonitoring(
     base::FilePath monitor_path,
     base::RepeatingCallback<void(StorageMonitorStatus)> callback) {
-  DCHECK(task_runner_->RunsTasksInCurrentSequence());
+  CHECK(task_runner_->RunsTasksInCurrentSequence(), base::NotFatalUntil::M160);
   // Initialize and set most properties
   monitor_path_ = std::move(monitor_path);
   callback_ = callback;
@@ -245,7 +243,7 @@ void ChromeCameraAppUIDelegate::StorageMonitor::StartMonitoring(
 }
 
 void ChromeCameraAppUIDelegate::StorageMonitor::StopMonitoring() {
-  DCHECK(task_runner_->RunsTasksInCurrentSequence());
+  CHECK(task_runner_->RunsTasksInCurrentSequence(), base::NotFatalUntil::M160);
   if (timer_.IsRunning()) {
     timer_.Stop();
   }
@@ -519,10 +517,11 @@ void ChromeCameraAppUIDelegate::PopulateLoadTimeData(
   const PrefService* prefs = profile->GetPrefs();
   GURL cca_url = GURL(ash::kChromeUICameraAppURL);
   bool url_allowed = policy::IsOriginInAllowlist(
-      cca_url, prefs, prefs::kVideoCaptureAllowedUrls);
+      cca_url, prefs, ash::chrome_prefs::kVideoCaptureAllowedUrls);
   source->AddBoolean(
       "cca_disallowed",
-      !prefs->GetBoolean(prefs::kVideoCaptureAllowed) && !url_allowed);
+      !prefs->GetBoolean(ash::chrome_prefs::kVideoCaptureAllowed) &&
+          !url_allowed);
   const auto& camera_save_handler =
       CHECK_DEREF(CameraSaveHandler::Get(*profile));
   source->AddString(
@@ -732,7 +731,8 @@ void ChromeCameraAppUIDelegate::MonitorFileDeletionOnFileThread(
     FileMonitor* file_monitor,
     const base::FilePath& file_path,
     base::OnceCallback<void(FileMonitorResult)> callback) {
-  DCHECK(file_task_runner_->RunsTasksInCurrentSequence());
+  CHECK(file_task_runner_->RunsTasksInCurrentSequence(),
+        base::NotFatalUntil::M160);
 
   file_monitor->Monitor(file_path, std::move(callback));
 }

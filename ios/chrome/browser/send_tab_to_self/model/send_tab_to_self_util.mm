@@ -14,34 +14,50 @@
 #import "components/send_tab_to_self/outgoing_tab_form_field_extractor.h"
 #import "components/send_tab_to_self/received_tab_forms_filler.h"
 #import "components/send_tab_to_self/send_tab_to_self_entry.h"
-#import "components/shared_highlighting/core/common/text_fragment.h"
+#import "components/send_tab_to_self/send_tab_to_self_sync_service.h"
+#import "ios/chrome/browser/shared/model/profile/profile_ios.h"
 #import "ios/chrome/browser/shared/public/commands/open_new_tab_command.h"
+#import "ios/chrome/browser/sync/model/send_tab_to_self_sync_service_factory.h"
 #import "ios/web/public/js_messaging/web_frame.h"
 #import "ios/web/public/js_messaging/web_frames_manager.h"
+#import "ios/web/public/navigation/referrer.h"
 #import "ios/web/public/web_state.h"
 #import "url/origin.h"
 
 namespace send_tab_to_self {
 
+bool IsOmniboxEntryPointEligible(web::WebState* web_state,
+                                 ProfileIOS* profile) {
+  if (!base::FeatureList::IsEnabled(
+          send_tab_to_self::kSendTabToSelfExtraEntryPoints)) {
+    return false;
+  }
+  if (!web_state || !profile) {
+    return false;
+  }
+  SendTabToSelfSyncService* service =
+      SendTabToSelfSyncServiceFactory::GetForProfile(profile);
+  return service &&
+         service->GetEntryPointDisplayReason(web_state->GetVisibleURL())
+             .has_value();
+}
+
 OpenNewTabCommand* CreateOpenNewTabCommand(const SendTabToSelfEntry* entry) {
   OpenNewTabCommand* command =
       [OpenNewTabCommand commandWithURLFromChrome:entry->GetURL()];
   command.sendTabToSelfEntryGUID = base::SysUTF8ToNSString(entry->GetGUID());
+  return command;
+}
 
-  const send_tab_to_self::ScrollPosition& scroll_position =
-      entry->GetPageContext().scroll_position;
-  if (base::FeatureList::IsEnabled(kSendTabToSelfPropagateScrollPosition) &&
-      !scroll_position.IsEmpty()) {
-    shared_highlighting::TextFragment fragment(
-        scroll_position.text_fragment.text_start,
-        scroll_position.text_fragment.text_end,
-        scroll_position.text_fragment.prefix,
-        scroll_position.text_fragment.suffix);
-    command.textFragment = base::SysUTF8ToNSString(fragment.ToEscapedString(
-        shared_highlighting::TextFragment::EscapedStringFormat::
-            kWithoutTextDirective));
-  }
-
+OpenNewTabCommand* CreateOpenNewBackgroundTabCommand(
+    const SendTabToSelfEntry* entry) {
+  OpenNewTabCommand* command =
+      [[OpenNewTabCommand alloc] initWithURL:entry->GetURL()
+                                    referrer:web::Referrer()
+                                 inIncognito:NO
+                                inBackground:YES
+                                    appendTo:OpenPosition::kLastTab];
+  command.sendTabToSelfEntryGUID = base::SysUTF8ToNSString(entry->GetGUID());
   return command;
 }
 
@@ -49,15 +65,16 @@ PageContext ExtractFormFieldsFromWebState(web::WebState* web_state) {
   if (!web_state) {
     return PageContext();
   }
-
-  const url::Origin main_origin =
-      url::Origin::Create(web_state->GetLastCommittedURL());
-
   PageContext context;
 
   web::WebFramesManager* frames_manager =
       autofill::GetWebFramesManagerForAutofill(web_state);
+  if (!frames_manager) {
+    return context;
+  }
 
+  const url::Origin main_origin =
+      url::Origin::Create(web_state->GetLastCommittedURL());
   for (web::WebFrame* frame : frames_manager->GetAllWebFrames()) {
     autofill::AutofillDriverIOS* driver =
         autofill::AutofillDriverIOS::FromWebStateAndWebFrame(web_state, frame);

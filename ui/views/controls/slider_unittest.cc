@@ -9,7 +9,10 @@
 #include <utility>
 #include <vector>
 
+#include "base/i18n/language_tag.h"
 #include "base/i18n/rtl.h"
+#include "base/i18n/tag_converters.h"
+#include "base/i18n/test/scoped_rtl_for_testing.h"
 #include "base/memory/raw_ptr.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
@@ -200,8 +203,6 @@ void SliderTest::SetUp() {
 
 void SliderTest::TearDown() {
   widget_.reset();
-  base::i18n::SetICUDefaultLocale(default_locale_);
-
   views::ViewsTestBase::TearDown();
 }
 
@@ -230,7 +231,7 @@ TEST_P(SliderTest, UpdateFromClickHorizontal) {
 }
 
 TEST_P(SliderTest, UpdateFromClickRTLHorizontal) {
-  base::i18n::SetICUDefaultLocale("he");
+  base::i18n::ScopedRTLForTesting scoped_rtl(true);
 
   ClickAt(0, 0);
   EXPECT_EQ(GetMaxValue(), slider()->GetValue());
@@ -445,7 +446,7 @@ TEST_P(SliderTest, SliderValueForKeyboard) {
   EXPECT_LT(slider()->GetValue(), value);
 
   // RTL reverse left/right but not up/down.
-  base::i18n::SetICUDefaultLocale("he");
+  base::i18n::ScopedRTLForTesting scoped_rtl(true);
   EXPECT_TRUE(base::i18n::IsRTL());
 
   event_generator()->PressKey(ui::VKEY_RIGHT, 0);
@@ -540,6 +541,30 @@ TEST_P(SliderTest, SliderRaisesA11yEvents) {
   // Re-attachment should trigger the value change.
   root_view->AddChildView(std::move(owning_slider));
   EXPECT_EQ(1, ax_counter.GetCount(ax::mojom::Event::kValueChanged));
+}
+
+// Verifies that a slider can have its value set before being added to a
+// widget hierarchy.
+TEST_P(SliderTest, SetValueBeforeHostedByWidget) {
+  auto slider_unique = std::make_unique<views::Slider>();
+  views::Slider* slider = slider_unique.get();
+
+  // Set value on the slider before it is visible/parented
+  slider->SetValue(0.1f);
+
+  auto widget = std::make_unique<views::Widget>();
+  views::Widget::InitParams params =
+      CreateParams(views::Widget::InitParams::TYPE_WINDOW_FRAMELESS);
+  params.ownership = views::Widget::InitParams::CLIENT_OWNS_WIDGET;
+  widget->Init(std::move(params));
+  widget->SetBounds(gfx::Rect(0, 0, 100, 40));
+  widget->Show();
+
+  widget->SetContentsView(std::move(slider_unique));
+  ui::test::EventGenerator generator(GetContext(), widget->GetNativeWindow());
+  generator.MoveMouseTo(slider->GetBoundsInScreen().CenterPoint());
+
+  generator.ClickLeftButton();
 }
 
 #endif  // !BUILDFLAG(IS_MAC) || defined(USE_AURA)

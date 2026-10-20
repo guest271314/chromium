@@ -19,9 +19,6 @@ import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 
 import android.app.Activity;
-import android.content.Intent;
-import android.content.res.Configuration;
-import android.content.res.Resources;
 import android.os.Looper;
 import android.util.Pair;
 
@@ -36,12 +33,10 @@ import org.mockito.Captor;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
+import org.robolectric.Robolectric;
 import org.robolectric.Shadows;
 
 import org.chromium.base.Callback;
-import org.chromium.base.ContextUtils;
-import org.chromium.base.FeatureOverrides;
-import org.chromium.base.IntentUtils;
 import org.chromium.base.UnownedUserDataHost;
 import org.chromium.base.UserDataHost;
 import org.chromium.base.supplier.OneshotSupplierImpl;
@@ -51,11 +46,13 @@ import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.base.test.util.HistogramWatcher;
 import org.chromium.base.test.util.UserActionTester;
+import org.chromium.chrome.browser.actor.ui.ActorUiTabController;
 import org.chromium.chrome.browser.dom_distiller.ReaderModeManager.DistillationResult;
 import org.chromium.chrome.browser.dom_distiller.ReaderModeManager.DistillationStatus;
 import org.chromium.chrome.browser.dom_distiller.ReaderModeManager.EntryPoint;
 import org.chromium.chrome.browser.dom_distiller.TabDistillabilityProvider.DistillabilityObserver;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
+import org.chromium.chrome.browser.glic.GlicEnabling;
 import org.chromium.chrome.browser.preferences.Pref;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.tab.Tab;
@@ -63,7 +60,6 @@ import org.chromium.chrome.browser.tab.TabObserver;
 import org.chromium.chrome.browser.toolbar.adaptive.AdaptiveToolbarButtonVariant;
 import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager;
 import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManagerProvider;
-import org.chromium.components.dom_distiller.core.DomDistillerFeatures;
 import org.chromium.components.dom_distiller.core.DomDistillerUrlUtils;
 import org.chromium.components.dom_distiller.core.DomDistillerUrlUtilsJni;
 import org.chromium.components.messages.MessageDispatcher;
@@ -89,6 +85,7 @@ import java.util.concurrent.TimeoutException;
 
 /** This class tests the behavior of the {@link ReaderModeManager}. */
 @RunWith(BaseRobolectricTestRunner.class)
+@DisableFeatures(ChromeFeatureList.GLIC)
 public class ReaderModeManagerTest {
     private static final GURL MOCK_DISTILLER_URL = new GURL("chrome-distiller://url");
     private static final GURL MOCK_URL = JUnitTestGURLs.GOOGLE_URL_CAT;
@@ -96,6 +93,7 @@ public class ReaderModeManagerTest {
     @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
     @Mock private Profile mProfile;
     @Mock private Tab mTab;
+    @Mock private ActorUiTabController mActorUiTabController;
     @Mock private MockWebContents mWebContents;
     @Mock private TabDistillabilityProvider mDistillabilityProvider;
     @Mock private NavigationController mNavController;
@@ -109,8 +107,6 @@ public class ReaderModeManagerTest {
     @Mock private WindowAndroid mWindowAndroid;
     @Mock private SnackbarManager mSnackbarManager;
     @Mock private LoadCommittedDetails mLoadCommitedDetails;
-    @Mock private Activity mActivity;
-    @Mock private Resources mResources;
 
     @Captor private ArgumentCaptor<TabObserver> mTabObserverCaptor;
     private TabObserver mTabObserver;
@@ -130,6 +126,7 @@ public class ReaderModeManagerTest {
 
     @Before
     public void setUp() throws TimeoutException {
+        GlicEnabling.setEnabledForTesting(false);
         DomDistillerTabUtilsJni.setInstanceForTesting(mDistillerTabUtilsJniMock);
         DomDistillerUrlUtilsJni.setInstanceForTesting(mDistillerUrlUtilsJniMock);
         DomDistillerTabUtils.setDistillerHeuristicsForTesting(
@@ -167,13 +164,8 @@ public class ReaderModeManagerTest {
                         eq("chrome-distiller"), eq(MOCK_URL.getSpec()), eq("Test Title")))
                 .thenReturn(MOCK_DISTILLER_URL.getSpec());
 
-        when(mWindowAndroid.getActivity()).thenReturn(new WeakReference<>(mActivity));
-        when(mActivity.getResources()).thenReturn(mResources);
-        when(mActivity.getPackageName())
-                .thenReturn(ApplicationProvider.getApplicationContext().getPackageName());
-        Configuration configuration = new Configuration();
-        configuration.uiMode = Configuration.UI_MODE_NIGHT_NO;
-        when(mResources.getConfiguration()).thenReturn(configuration);
+        Activity activity = Robolectric.buildActivity(Activity.class).get();
+        when(mWindowAndroid.getActivity()).thenReturn(new WeakReference<>(activity));
 
         mManager = new ReaderModeManager(mTab, () -> mMessageDispatcher);
 
@@ -202,21 +194,6 @@ public class ReaderModeManagerTest {
         assertEquals(
                 "Page shouldn't be distillable.",
                 ReaderModeManager.DistillationStatus.NOT_POSSIBLE,
-                (int) result.second);
-    }
-
-    @Test
-    @Feature("ReaderMode")
-    @EnableFeatures(
-            DomDistillerFeatures.READER_MODE_IMPROVEMENTS
-                    + ":trigger_on_mobile_friendly_pages/true")
-    public void testMobileFriendlyNotDistillable_exceptWhenFeatureFlagAndParamEnabled() {
-        Pair<Boolean, Integer> result =
-                ReaderModeManager.computeDistillationStatus(mTab, true, true, true);
-        assertTrue("Distillability should be fully determined.", result.first);
-        assertEquals(
-                "Page should be be distillable.",
-                ReaderModeManager.DistillationStatus.POSSIBLE,
                 (int) result.second);
     }
 
@@ -286,36 +263,6 @@ public class ReaderModeManagerTest {
                         mMessageDispatcher,
                         never().description(
                                         "Message should be suppressed as the CPA UI will be shown"))
-                .enqueueMessage(
-                        any(), eq(mWebContents), eq(MessageScopeType.NAVIGATION), eq(false));
-    }
-
-    @Test
-    @Feature("ReaderMode")
-    @DisableFeatures(ChromeFeatureList.CCT_ADAPTIVE_BUTTON)
-    public void testUi_notTriggered_contextualPageActionUiEnabled_exceptOnCct() {
-        when(mTab.isCustomTab()).thenReturn(true);
-        mDistillabilityObserver.onIsPageDistillableResult(mTab, true, true, false);
-        assertEquals(
-                "Distillation should be possible.",
-                DistillationStatus.POSSIBLE,
-                mManager.getDistillationStatus());
-        verify(mMessageDispatcher)
-                .enqueueMessage(
-                        any(), eq(mWebContents), eq(MessageScopeType.NAVIGATION), eq(false));
-    }
-
-    @Test
-    @Feature("ReaderMode")
-    @DisableFeatures(DomDistillerFeatures.READER_MODE_DISTILL_IN_APP)
-    public void testUi_notTriggered_contextualPageActionUiEnabled_exceptOnIncognitoTabs() {
-        when(mTab.isIncognito()).thenReturn(true);
-        mDistillabilityObserver.onIsPageDistillableResult(mTab, true, true, false);
-        assertEquals(
-                "Distillation should be possible.",
-                DistillationStatus.POSSIBLE,
-                mManager.getDistillationStatus());
-        verify(mMessageDispatcher)
                 .enqueueMessage(
                         any(), eq(mWebContents), eq(MessageScopeType.NAVIGATION), eq(false));
     }
@@ -484,24 +431,6 @@ public class ReaderModeManagerTest {
 
     @Test
     @Feature("ReaderMode")
-    @DisableFeatures(ChromeFeatureList.CCT_ADAPTIVE_BUTTON)
-    public void testTryShowingPrompt_CctCpaOff_ShouldShowPrompt() {
-        when(mTab.getWebContents()).thenReturn(mWebContents);
-        when(mTab.isCustomTab()).thenReturn(true);
-
-        mDistillabilityObserver.onIsPageDistillableResult(mTab, true, true, false);
-
-        verify(mMessageDispatcher)
-                .enqueueMessage(
-                        any(), eq(mWebContents), eq(MessageScopeType.NAVIGATION), eq(false));
-    }
-
-    @Test
-    @Feature("ReaderMode")
-    @EnableFeatures({
-        ChromeFeatureList.CCT_ADAPTIVE_BUTTON,
-        DomDistillerFeatures.READER_MODE_DISTILL_IN_APP // Makes test mocking easier.
-    })
     public void testTryShowingPrompt_CctCpaButtonShowing_ShouldNotShowPrompt() {
         when(mTab.getWebContents()).thenReturn(mWebContents);
         when(mTab.isCustomTab()).thenReturn(true);
@@ -526,10 +455,6 @@ public class ReaderModeManagerTest {
 
     @Test
     @Feature("ReaderMode")
-    @EnableFeatures({
-        ChromeFeatureList.CCT_ADAPTIVE_BUTTON,
-        DomDistillerFeatures.READER_MODE_DISTILL_IN_APP // Makes test mocking easier.
-    })
     public void testTryShowingPrompt_CctCpaButtonShowingDelayed_ShouldNotShowPrompt() {
         when(mTab.getWebContents()).thenReturn(mWebContents);
         when(mTab.isCustomTab()).thenReturn(true);
@@ -557,8 +482,6 @@ public class ReaderModeManagerTest {
 
     @Test
     @Feature("ReaderMode")
-    @EnableFeatures({ChromeFeatureList.CCT_ADAPTIVE_BUTTON})
-    @DisableFeatures(DomDistillerFeatures.READER_MODE_DISTILL_IN_APP)
     public void testTryShowingPrompt_CctCpaButtonNotShowing_FallbackMessage_ShouldShowPrompt() {
         when(mTab.getWebContents()).thenReturn(mWebContents);
         when(mTab.isCustomTab()).thenReturn(true);
@@ -585,41 +508,6 @@ public class ReaderModeManagerTest {
 
     @Test
     @Feature("ReaderMode")
-    @EnableFeatures({ChromeFeatureList.CCT_ADAPTIVE_BUTTON})
-    @DisableFeatures(DomDistillerFeatures.READER_MODE_DISTILL_IN_APP)
-    public void testTryShowingPrompt_CctCpaButtonNotShowing_FallbackMenu_ShouldNotShowPrompt() {
-        when(mTab.getWebContents()).thenReturn(mWebContents);
-        when(mTab.isCustomTab()).thenReturn(true);
-        when(mTab.isLoading()).thenReturn(false);
-        when(mWebContents.getLastCommittedUrl()).thenReturn(MOCK_URL);
-
-        mDistillabilityObserver.onIsPageDistillableResult(mTab, true, true, false);
-
-        FeatureOverrides.overrideParam(
-                ChromeFeatureList.CCT_ADAPTIVE_BUTTON,
-                ReaderModeManager.CPA_FALLBACK_MENU_PARAM,
-                true);
-        // Simulate the button UI not being displayed.
-        mButtonVisibilitySupplier.set(false);
-        mManager.onContextualPageActionShown(mButtonVisibilitySupplier, /* isReaderMode= */ true);
-
-        verify(mMessageDispatcher, never())
-                .enqueueMessage(
-                        any(), eq(mWebContents), eq(MessageScopeType.NAVIGATION), eq(false));
-
-        // Verify the histogram for fallback UI is NOT recorded.
-        var watcher =
-                HistogramWatcher.newBuilder()
-                        .expectNoRecords("CustomTab.AdaptiveToolbarButton.FallbackUi")
-                        .build();
-        mManager.activateReaderMode(EntryPoint.APP_MENU);
-        watcher.assertExpected();
-    }
-
-    @Test
-    @Feature("ReaderMode")
-    @EnableFeatures({ChromeFeatureList.CCT_ADAPTIVE_BUTTON})
-    @DisableFeatures(DomDistillerFeatures.READER_MODE_DISTILL_IN_APP)
     public void testTryShowingPrompt_CctCpaButtonNotShowingDelayed_ShouldShowPrompt() {
         when(mTab.getWebContents()).thenReturn(mWebContents);
         when(mTab.isCustomTab()).thenReturn(true);
@@ -649,14 +537,16 @@ public class ReaderModeManagerTest {
 
     @Test
     @Feature("ReaderMode")
-    @EnableFeatures(ChromeFeatureList.CCT_ADAPTIVE_BUTTON)
-    @DisableFeatures(DomDistillerFeatures.READER_MODE_DISTILL_IN_APP)
-    public void testTryShowingPrompt_CctCpaOn_Incognito_ShouldShowPromptIfApplicable() {
+    public void testTryShowingPrompt_CctCpaOn_IncognitoCct_ShouldShowPromptIfApplicable() {
         when(mTab.getWebContents()).thenReturn(mWebContents);
         when(mTab.isIncognito()).thenReturn(true);
-        when(mTab.isCustomTab()).thenReturn(false);
+        when(mTab.isCustomTab()).thenReturn(true);
 
         mDistillabilityObserver.onIsPageDistillableResult(mTab, true, true, false);
+
+        // Notify that the CPA is not showing reader mode.
+        mButtonVisibilitySupplier.set(false);
+        mManager.onContextualPageActionShown(mButtonVisibilitySupplier, /* isReaderMode= */ false);
 
         verify(mMessageDispatcher)
                 .enqueueMessage(
@@ -675,7 +565,6 @@ public class ReaderModeManagerTest {
 
     @Test
     @Feature("ReaderMode")
-    @EnableFeatures({DomDistillerFeatures.READER_MODE_DISTILL_IN_APP})
     public void testDistillationSuccess_noSnackbar() {
         when(mTab.getWebContents()).thenReturn(mWebContents);
 
@@ -689,7 +578,6 @@ public class ReaderModeManagerTest {
 
     @Test
     @Feature("ReaderMode")
-    @EnableFeatures({DomDistillerFeatures.READER_MODE_DISTILL_IN_APP})
     public void testDistillationFailure_showSnackbar() {
         when(mTab.getWebContents()).thenReturn(mWebContents);
 
@@ -772,22 +660,7 @@ public class ReaderModeManagerTest {
 
     @Test
     @Feature("ReaderMode")
-    @DisableFeatures(DomDistillerFeatures.READER_MODE_DISTILL_IN_APP)
     public void testShouldUseReaderModeMessages() {
-        assertFalse(ReaderModeManager.shouldUseReaderModeMessages(null));
-
-        when(mTab.isCustomTab()).thenReturn(true);
-        assertTrue(ReaderModeManager.shouldUseReaderModeMessages(mTab));
-
-        when(mTab.isCustomTab()).thenReturn(false);
-        when(mTab.isIncognito()).thenReturn(true);
-        assertTrue(ReaderModeManager.shouldUseReaderModeMessages(mTab));
-    }
-
-    @Test
-    @Feature("ReaderMode")
-    @EnableFeatures(DomDistillerFeatures.READER_MODE_DISTILL_IN_APP)
-    public void testShouldUseReaderModeMessages_distillInApp() {
         assertFalse(ReaderModeManager.shouldUseReaderModeMessages(null));
 
         when(mTab.isCustomTab()).thenReturn(true);
@@ -800,27 +673,40 @@ public class ReaderModeManagerTest {
 
     @Test
     @Feature("ReaderMode")
-    public void testIsReaderModeCreatedIntent_NotChrome() {
-        Intent intent = new Intent();
-        intent.putExtra(ReaderModeManager.EXTRA_READER_MODE_PARENT, 1);
+    @EnableFeatures(ChromeFeatureList.GLIC)
+    public void testActivateReaderMode_WithActiveTask_Confirm() {
+        GlicEnabling.setEnabledForTesting(true);
+        mUserDataHost.setUserData(ActorUiTabController.class, mActorUiTabController);
+        when(mActorUiTabController.isActorActive()).thenReturn(true);
+        when(mActorUiTabController.showTaskAbortConfirmationDialog(any()))
+                .thenAnswer(
+                        invocation -> {
+                            Callback<Boolean> callback = invocation.getArgument(0);
+                            callback.onResult(true);
+                            return true;
+                        });
 
-        assertFalse(
-                "Untrusted intent should not be considered Reader Mode created",
-                ReaderModeManager.isReaderModeCreatedIntent(intent));
+        mManager.activateReaderMode(EntryPoint.APP_MENU);
+
+        verify(mActorUiTabController).showTaskAbortConfirmationDialog(any());
+        verify(mDistillerTabUtilsJniMock)
+                .distillCurrentPageAndViewIfSuccessful(eq(mWebContents), any());
     }
 
     @Test
     @Feature("ReaderMode")
-    public void testIsReaderModeCreatedIntent_FromChrome() {
-        Intent intent = new Intent();
-        intent.putExtra(ReaderModeManager.EXTRA_READER_MODE_PARENT, 1);
+    @EnableFeatures(ChromeFeatureList.GLIC)
+    public void testActivateReaderMode_WithActiveTask_Cancel() {
+        GlicEnabling.setEnabledForTesting(true);
+        mUserDataHost.setUserData(ActorUiTabController.class, mActorUiTabController);
+        when(mActorUiTabController.isActorActive()).thenReturn(true);
+        when(mActorUiTabController.showTaskAbortConfirmationDialog(any())).thenReturn(true);
 
-        intent.setPackage(ContextUtils.getApplicationContext().getPackageName());
-        IntentUtils.addTrustedIntentExtras(intent);
+        mManager.activateReaderMode(EntryPoint.APP_MENU);
 
-        assertTrue(
-                "Intent from Chrome should be considered Reader Mode created",
-                ReaderModeManager.isReaderModeCreatedIntent(intent));
+        verify(mActorUiTabController).showTaskAbortConfirmationDialog(any());
+        verify(mDistillerTabUtilsJniMock, never())
+                .distillCurrentPageAndViewIfSuccessful(any(), any());
     }
 
     private NavigationEntry createNavigationEntry(int index, GURL url) {

@@ -27,7 +27,9 @@
 #include "third_party/blink/renderer/core/dom/shadow_root.h"
 
 #include "third_party/blink/public/platform/platform.h"
+#include "third_party/blink/renderer/bindings/core/v8/module_request.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_css_style_sheet.h"
+#include "third_party/blink/renderer/bindings/core/v8/v8_css_style_sheet_init.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_observable_array_css_style_sheet.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_set_html_unsafe_options.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_shadow_root_mode.h"
@@ -62,7 +64,7 @@
 #include "third_party/blink/renderer/core/script/modulator.h"
 #include "third_party/blink/renderer/core/script/module_script.h"
 #include "third_party/blink/renderer/core/script/value_wrapper_synthetic_module_script.h"
-#include "third_party/blink/renderer/core/trustedtypes/trusted_parser_options.h"
+#include "third_party/blink/renderer/core/trustedtypes/trusted_html_parser_options.h"
 #include "third_party/blink/renderer/core/trustedtypes/trusted_types_names.h"
 #include "third_party/blink/renderer/core/trustedtypes/trusted_types_util.h"
 #include "third_party/blink/renderer/platform/bindings/exception_state.h"
@@ -93,7 +95,7 @@ class ReferenceTargetIdObserver : public IdTargetObserver {
 
 struct SameSizeAsShadowRoot : public DocumentFragment,
                               public TreeScope,
-                              public ElementRareDataField {
+                              public NodeRareDataField {
   Member<void*> member[2];
   AtomicString string_member;
   unsigned flags[1];
@@ -160,26 +162,43 @@ void ShadowRoot::SetInnerHTMLWithoutTrustedTypes(
   SetInnerHTMLInternal(
       html, FragmentParserOptions(), Sanitizer::Mode::kUnsafe,
       FragmentParserConfig::ParseDeclarativeShadowRoots::kDontParse,
+      FragmentParserConfig::ForceHtml::kDontForce,
       trusted_types_names::kInnerHTML, exception_state);
 }
 
 void ShadowRoot::setInnerHTML(
     const V8UnionStringLegacyNullToEmptyStringOrTrustedHTML* html,
     ExceptionState& exception_state) {
+  auto [compliant_string, resolved_options] =
+      TrustedTypesCheckForLegacyFragment(
+          html, GetExecutionContext(), trusted_types_names::kShadowRoot,
+          trusted_types_names::kInnerHTML, !GetDocument().IsHTMLDocument(),
+          exception_state);
+  if (exception_state.HadException()) {
+    return;
+  }
   SetInnerHTMLInternal(
-      CheckHTML(html, trusted_types_names::kInnerHTML, exception_state),
-      FragmentParserOptions(), Sanitizer::Mode::kUnsafe,
+      compliant_string, resolved_options, Sanitizer::Mode::kUnsafe,
       FragmentParserConfig::ParseDeclarativeShadowRoots::kDontParse,
+      FragmentParserConfig::ForceHtml::kDontForce,
       trusted_types_names::kInnerHTML, exception_state);
 }
 
 void ShadowRoot::setHTMLUnsafe(const V8UnionStringOrTrustedHTML* html,
                                ExceptionState& exception_state) {
   UseCounter::Count(GetDocument(), WebFeature::kHTMLUnsafeMethods);
+  FragmentParserOptions resolved_options;
+  String compliant_string = TrustedTypesCheckForFragment(
+      html, resolved_options, GetExecutionContext(),
+      trusted_types_names::kShadowRoot, trusted_types_names::kSetHTMLUnsafe,
+      exception_state);
+  if (exception_state.HadException()) {
+    return;
+  }
   SetInnerHTMLInternal(
-      CheckHTML(html, trusted_types_names::kSetHTMLUnsafe, exception_state),
-      FragmentParserOptions(), Sanitizer::Mode::kUnsafe,
+      compliant_string, resolved_options, Sanitizer::Mode::kUnsafe,
       FragmentParserConfig::ParseDeclarativeShadowRoots::kParse,
+      FragmentParserConfig::ForceHtml::kForce,
       trusted_types_names::kSetHTMLUnsafe, exception_state);
 }
 
@@ -188,21 +207,37 @@ void ShadowRoot::setHTMLUnsafe(const V8UnionStringOrTrustedHTML* html,
                                SetHTMLUnsafeOptions* options,
                                ExceptionState& exception_state) {
   UseCounter::Count(GetDocument(), WebFeature::kHTMLUnsafeMethods);
+  FragmentParserOptions resolved_options(options);
+  String compliant_string = TrustedTypesCheckForFragment(
+      html, resolved_options, GetExecutionContext(),
+      trusted_types_names::kShadowRoot, trusted_types_names::kSetHTMLUnsafe,
+      exception_state);
+  if (exception_state.HadException()) {
+    return;
+  }
   SetInnerHTMLInternal(
-      CheckHTML(html, trusted_types_names::kSetHTMLUnsafe, exception_state),
-      FragmentParserOptions(options), Sanitizer::Mode::kUnsafe,
+      compliant_string, resolved_options, Sanitizer::Mode::kUnsafe,
       FragmentParserConfig::ParseDeclarativeShadowRoots::kParse,
+      FragmentParserConfig::ForceHtml::kForce,
       trusted_types_names::kSetHTMLUnsafe, exception_state);
 }
 
 void ShadowRoot::setHTMLUnsafe(const V8UnionStringOrTrustedHTML* html,
-                               TrustedParserOptions* options,
+                               TrustedHTMLParserOptions* options,
                                ExceptionState& exception_state) {
   UseCounter::Count(GetDocument(), WebFeature::kHTMLUnsafeMethods);
+  FragmentParserOptions resolved_options(options);
+  String compliant_string = TrustedTypesCheckForFragment(
+      html, resolved_options, GetExecutionContext(),
+      trusted_types_names::kShadowRoot, trusted_types_names::kSetHTMLUnsafe,
+      exception_state);
+  if (exception_state.HadException()) {
+    return;
+  }
   SetInnerHTMLInternal(
-      CheckHTML(html, trusted_types_names::kSetHTMLUnsafe, exception_state),
-      FragmentParserOptions(options), Sanitizer::Mode::kUnsafe,
+      compliant_string, resolved_options, Sanitizer::Mode::kUnsafe,
       FragmentParserConfig::ParseDeclarativeShadowRoots::kParse,
+      FragmentParserConfig::ForceHtml::kForce,
       trusted_types_names::kSetHTMLUnsafe, exception_state);
 }
 
@@ -211,6 +246,7 @@ void ShadowRoot::SetInnerHTMLInternal(
     FragmentParserOptions options,
     Sanitizer::Mode sanitizer_mode,
     FragmentParserConfig::ParseDeclarativeShadowRoots parse_shadow_roots,
+    FragmentParserConfig::ForceHtml force_html,
     const AtomicString& property_name,
     ExceptionState& exception_state) {
   if (exception_state.HadException()) {
@@ -222,6 +258,7 @@ void ShadowRoot::SetInnerHTMLInternal(
           {
               .sanitizer_mode = sanitizer_mode,
               .parse_declarative_shadows = parse_shadow_roots,
+              .force_html = force_html,
               .interface_name = trusted_types_names::kShadowRoot,
               .property_name = property_name,
               .context_element = &host(),
@@ -238,7 +275,8 @@ void ShadowRoot::setHTML(const String& html,
   SetInnerHTMLInternal(
       html, FragmentParserOptions(options), Sanitizer::Mode::kSafe,
       FragmentParserConfig::ParseDeclarativeShadowRoots::kParse,
-      trusted_types_names::kSetHTML, exception_state);
+      FragmentParserConfig::ForceHtml::kForce, trusted_types_names::kSetHTML,
+      exception_state);
 }
 
 void ShadowRoot::RebuildLayoutTree(WhitespaceAttacher& whitespace_attacher) {
@@ -325,6 +363,59 @@ V8SlotAssignmentMode ShadowRoot::slotAssignment() const {
                                   : V8SlotAssignmentMode::Enum::kNamed);
 }
 
+class PendingModuleEntry final : public SingleModuleClient {
+ public:
+  PendingModuleEntry(ShadowRoot* shadow_root,
+                     Modulator* modulator,
+                     CSSStyleSheet* placeholder_sheet)
+      : shadow_root_(shadow_root),
+        modulator_(modulator),
+        placeholder_sheet_(placeholder_sheet) {}
+  ~PendingModuleEntry() override = default;
+
+  void Trace(Visitor* visitor) const override {
+    visitor->Trace(shadow_root_);
+    visitor->Trace(modulator_);
+    visitor->Trace(placeholder_sheet_);
+    SingleModuleClient::Trace(visitor);
+  }
+
+ private:
+  void NotifyModuleLoadFinished(ModuleScript* script,
+                                v8::ModuleImportPhase) override {
+    // The fetch may have failed, in which case script is null. Leave the empty
+    // placeholder unchanged.
+    if (!script) {
+      return;
+    }
+    // The context may have been destroyed (e.g. by navigation) before we get
+    // here.
+    ScriptState* script_state = modulator_->GetScriptState();
+    ScriptState::Scope scope(script_state);
+    if (!script_state->ContextIsValid()) {
+      return;
+    }
+    v8::Isolate* isolate = script_state->GetIsolate();
+    CHECK(isolate);
+    v8::HandleScope handle_scope(isolate);
+    CSSStyleSheet* fetched_sheet = V8CSSStyleSheet::ToWrappable(
+        isolate, static_cast<const ValueWrapperSyntheticModuleScript*>(script)
+                     ->GetExport(isolate));
+    // The CSS module may have failed to instantiate (e.g. parse error).
+    if (!fetched_sheet) {
+      return;
+    }
+    // Replace the empty placeholder sheet in adoptedStyleSheets with the
+    // fetched stylesheet. This preserves the ordering established at parse
+    // time.
+    shadow_root_->ReplaceAdoptedStyleSheet(*placeholder_sheet_, *fetched_sheet);
+  }
+
+  Member<ShadowRoot> shadow_root_;
+  Member<Modulator> modulator_;
+  Member<CSSStyleSheet> placeholder_sheet_;
+};
+
 HeapVector<Member<CSSStyleSheet>> ShadowRoot::ResolveAdoptedStyleSheets(
     const AtomicString& shadowrootadoptedstylesheets_attribute_value) {
   CHECK(RuntimeEnabledFeatures::ShadowRootAdoptedStyleSheetEnabled(
@@ -378,12 +469,26 @@ HeapVector<Member<CSSStyleSheet>> ShadowRoot::ResolveAdoptedStyleSheets(
                                ModuleScriptCustomFetchType::kNone, nullptr);
       }
 
-      // If the module is not yet in the module map, initiate a fetch. This
-      // pre-creates an empty CSSStyleSheet wrapped in a module on the entry.
-      // FetchSingle is a no-op if the entry already exists.
       const ModuleScript* module_script =
           modulator->GetFetchedModuleScript(resolved_url, ModuleType::kCSS);
-      if (!module_script) {
+      if (module_script) {
+        CSSStyleSheet* sheet = V8CSSStyleSheet::ToWrappable(
+            isolate,
+            static_cast<const ValueWrapperSyntheticModuleScript*>(module_script)
+                ->GetExport(isolate));
+        CHECK_EQ(sheet->ConstructorDocument(), GetDocument());
+        sheets.push_back(*sheet);
+      } else {
+        // Initiate a fetch if it's not already in the module map. First insert
+        // an empty placeholder into `sheets` to preserve the order, then fetch
+        // the module and replace the placeholder when it finishes.
+        CSSStyleSheetInit* init = CSSStyleSheetInit::Create();
+        CSSStyleSheet* placeholder_sheet =
+            CSSStyleSheet::Create(GetDocument(), init, ASSERT_NO_EXCEPTION);
+        sheets.push_back(*placeholder_sheet);
+
+        PendingModuleEntry* entry = MakeGarbageCollected<PendingModuleEntry>(
+            this, modulator, placeholder_sheet);
         ScriptFetchOptions options;
         ModuleScriptFetchRequest module_request(
             resolved_url, ModuleType::kCSS,
@@ -393,23 +498,8 @@ HeapVector<Member<CSSStyleSheet>> ShadowRoot::ResolveAdoptedStyleSheets(
             ModuleImportPhase::kEvaluation);
         modulator->FetchSingle(module_request, window->Fetcher(),
                                ModuleGraphLevel::kTopLevelModuleFetch,
-                               ModuleScriptCustomFetchType::kNone, nullptr);
-        module_script =
-            modulator->GetFetchedModuleScript(resolved_url, ModuleType::kCSS);
+                               ModuleScriptCustomFetchType::kNone, entry);
       }
-
-      // If the module map already has a finished failed entry for this URL,
-      // there is no pre-created sheet to adopt, so skip this specifier.
-      // TODO(crbug.com/448174611): Add devtools message for this scenario.
-      if (!module_script) {
-        continue;
-      }
-      CSSStyleSheet* sheet = V8CSSStyleSheet::ToWrappable(
-          isolate,
-          static_cast<const ValueWrapperSyntheticModuleScript*>(module_script)
-              ->GetExport(isolate));
-      CHECK_EQ(sheet->ConstructorDocument(), GetDocument());
-      sheets.push_back(*sheet);
     }
   }
   return sheets;
@@ -524,7 +614,7 @@ void ShadowRoot::ReferenceTargetChanged() {
 void ShadowRoot::Trace(Visitor* visitor) const {
   visitor->Trace(slot_assignment_);
   visitor->Trace(reference_target_id_observer_);
-  ElementRareDataField::Trace(visitor);
+  NodeRareDataField::Trace(visitor);
   TreeScope::Trace(visitor);
   DocumentFragment::Trace(visitor);
 }

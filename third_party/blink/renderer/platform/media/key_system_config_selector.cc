@@ -126,8 +126,8 @@ EmeConfig::Rule GetPersistentStateConfigRule(
   return EmeConfig{.persistence = EmeConfigRuleState::kRequired};
 }
 
-bool IsPersistentSessionType(WebEncryptedMediaSessionType sessionType) {
-  switch (sessionType) {
+bool IsPersistentSessionType(WebEncryptedMediaSessionType session_type) {
+  switch (session_type) {
     case WebEncryptedMediaSessionType::kTemporary:
       return false;
     case WebEncryptedMediaSessionType::kPersistentLicense:
@@ -159,7 +159,7 @@ bool IsSupportedMediaType(const std::string& container_mime_type,
   // TODO(crbug.com/40160292): Decouple the rest of clear vs EME codec support.
   if (base::FeatureList::IsEnabled(media::kPlatformEncryptedDolbyVision) &&
       !use_aes_decryptor &&
-      base::ToLowerASCII(container_mime_type) == "video/mp4" &&
+      base::EqualsCaseInsensitiveASCII(container_mime_type, "video/mp4") &&
       !codec_vector.empty()) {
     std::vector<std::string> filtered_codec_vector;
     for (const auto& codec : codec_vector) {
@@ -234,7 +234,7 @@ class KeySystemConfigSelector::ConfigState {
     return rules.hw_secure_codecs == EmeConfigRuleState::kRequired;
   }
 
-  bool AreHwSecureCodesNotAllowed() const {
+  bool AreHwSecureCodecsNotAllowed() const {
     return rules.hw_secure_codecs == EmeConfigRuleState::kNotAllowed;
   }
 
@@ -532,15 +532,16 @@ bool KeySystemConfigSelector::GetSupportedCapabilities(
     }
     // Both of these should not be true.
     DCHECK(!(proposed_config_state.AreHwSecureCodecsRequired() &&
-             proposed_config_state.AreHwSecureCodesNotAllowed()));
+             proposed_config_state.AreHwSecureCodecsNotAllowed()));
     bool hw_secure_requirement;
     bool* hw_secure_requirement_ptr = &hw_secure_requirement;
-    if (proposed_config_state.AreHwSecureCodecsRequired())
+    if (proposed_config_state.AreHwSecureCodecsRequired()) {
       hw_secure_requirement = true;
-    else if (proposed_config_state.AreHwSecureCodesNotAllowed())
+    } else if (proposed_config_state.AreHwSecureCodecsNotAllowed()) {
       hw_secure_requirement = false;
-    else
+    } else {
       hw_secure_requirement_ptr = nullptr;
+    }
     EmeConfig::Rule robustness_rule = key_systems_->GetRobustnessConfigRule(
         key_system, media_type, requested_robustness_ascii,
         hw_secure_requirement_ptr);

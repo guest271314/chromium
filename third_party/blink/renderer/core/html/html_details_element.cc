@@ -305,11 +305,12 @@ bool HTMLDetailsElement::IsValidBuiltinCommand(HTMLElement& invoker,
 }
 
 bool HTMLDetailsElement::HandleCommandInternal(HTMLElement& invoker,
-                                               CommandEventType command) {
+                                               CommandEventType command,
+                                               UIEvent* activate_event) {
   if (!IsValidBuiltinCommand(invoker, command)) {
     return false;
   }
-  if (HTMLElement::HandleCommandInternal(invoker, command)) {
+  if (HTMLElement::HandleCommandInternal(invoker, command, activate_event)) {
     return true;
   }
 
@@ -336,6 +337,10 @@ bool HTMLDetailsElement::HandleCommandInternal(HTMLElement& invoker,
                                             : Event::Cancelable::kNo,
         pending_toggle_event_->oldState(), pending_toggle_event_->newState(),
         &invoker);
+    if (RuntimeEnabledFeatures::ShadowRootReferenceTargetEnabled(
+            invoker.GetExecutionContext())) {
+      pending_toggle_event_->SetComposed(true);
+    }
   }
 
   return true;

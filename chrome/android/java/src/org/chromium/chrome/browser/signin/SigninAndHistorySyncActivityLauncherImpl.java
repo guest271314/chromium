@@ -16,6 +16,7 @@ import org.chromium.base.supplier.OneshotSupplier;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.profiles.Profile;
+import org.chromium.chrome.browser.settings.SettingsCustomTabLauncherImpl;
 import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager;
 import org.chromium.chrome.browser.ui.signin.BottomSheetSigninAndHistorySyncConfig;
 import org.chromium.chrome.browser.ui.signin.BottomSheetSigninAndHistorySyncCoordinator;
@@ -38,6 +39,8 @@ import java.util.function.Supplier;
 @NullMarked
 public final class SigninAndHistorySyncActivityLauncherImpl
         implements SigninAndHistorySyncActivityLauncher {
+    private static final String MY_ACCOUNT_URL = "https://myaccount.google.com/smartlink/home";
+
     private static @Nullable SigninAndHistorySyncActivityLauncher sLauncher;
 
     /** Singleton instance getter */
@@ -66,7 +69,12 @@ public final class SigninAndHistorySyncActivityLauncherImpl
             @AccessPoint int accessPoint) {
 
         if (SigninAndHistorySyncCoordinator.canStartSigninAndHistorySyncOrShowError(
-                context, profile, config.historyOptInMode, accessPoint)) {
+                context,
+                profile,
+                config.historyOptInMode,
+                accessPoint,
+                null,
+                SigninAndHistorySyncCoordinator.SigninFlow.DEFAULT_SIGNIN)) {
             return SigninAndHistorySyncActivity.createIntent(context, config, accessPoint);
         }
 
@@ -83,9 +91,9 @@ public final class SigninAndHistorySyncActivityLauncherImpl
                     BottomSheetSigninAndHistorySyncCoordinator.Delegate delegate,
                     DeviceLockActivityLauncher deviceLockActivityLauncher,
                     OneshotSupplier<Profile> profileSupplier,
-                    Supplier<BottomSheetController> bottomSheetController,
-                    ModalDialogManager modalDialogManager,
-                    @Nullable SnackbarManager snackbarManager,
+                    Supplier<BottomSheetController> bottomSheetControllerSupplier,
+                    Supplier<ModalDialogManager> modalDialogManagerSupplier,
+                    Supplier<@Nullable SnackbarManager> snackbarManagerSupplier,
                     @SigninAccessPoint int signinAccessPoint) {
         return BottomSheetSigninAndHistorySyncCoordinator.createAndObserveAddAccountResult(
                 windowAndroid,
@@ -94,9 +102,9 @@ public final class SigninAndHistorySyncActivityLauncherImpl
                 delegate,
                 deviceLockActivityLauncher,
                 profileSupplier,
-                bottomSheetController,
-                modalDialogManager,
-                snackbarManager,
+                bottomSheetControllerSupplier,
+                modalDialogManagerSupplier,
+                snackbarManagerSupplier,
                 signinAccessPoint);
     }
 
@@ -106,9 +114,15 @@ public final class SigninAndHistorySyncActivityLauncherImpl
             Profile profile,
             FullscreenSigninAndHistorySyncConfig config,
             @SigninAccessPoint int signinAccessPoint) {
-        if (SigninAndHistorySyncCoordinator.willShowSigninUi(profile)
+        if (SigninAndHistorySyncCoordinator.willShowSigninUi(
+                        profile,
+                        config.signinConfig.signinFlow,
+                        config.signinConfig.selectedAccountEmail)
                 || SigninAndHistorySyncCoordinator.willShowHistorySyncUi(
-                        profile, config.historyOptInMode)) {
+                        profile,
+                        config.historyOptInMode,
+                        config.signinConfig.signinFlow,
+                        config.signinConfig.selectedAccountEmail)) {
             return SigninAndHistorySyncActivity.createIntentForFullscreenSignin(
                     context, config, signinAccessPoint);
         }
@@ -122,10 +136,21 @@ public final class SigninAndHistorySyncActivityLauncherImpl
             FullscreenSigninAndHistorySyncConfig config,
             @SigninAccessPoint int signinAccessPoint) {
         if (SigninAndHistorySyncCoordinator.canStartSigninAndHistorySyncOrShowError(
-                context, profile, config.historyOptInMode, signinAccessPoint)) {
+                context,
+                profile,
+                config.historyOptInMode,
+                signinAccessPoint,
+                config.signinConfig.selectedAccountEmail,
+                config.signinConfig.signinFlow)) {
             return SigninAndHistorySyncActivity.createIntentForFullscreenSignin(
                     context, config, signinAccessPoint);
         }
         return null;
+    }
+
+    @MainThread
+    @Override
+    public void openManageGoogleAccount(Context context) {
+        new SettingsCustomTabLauncherImpl().openUrlInCct(context, MY_ACCOUNT_URL);
     }
 }

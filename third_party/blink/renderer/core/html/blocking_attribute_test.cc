@@ -1,3 +1,7 @@
+// Copyright 2026 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
 #include "third_party/blink/renderer/core/html/blocking_attribute.h"
 
 #include "third_party/blink/renderer/core/dom/document.h"
@@ -11,10 +15,6 @@ TEST_F(BlockingAttributeTest, CountRenderTokenUsageInLink) {
   SetHtmlInnerHTML("<link blocking=render rel=preload as=font href=foo.ttf>");
   EXPECT_TRUE(
       GetDocument().IsUseCounted(WebFeature::kBlockingAttributeRenderToken));
-  SetHtmlInnerHTML(
-      "<link rel=expect blocking=full-frame-rate as=font href=foo.ttf>");
-  EXPECT_TRUE(GetDocument().IsUseCounted(
-      WebFeature::kBlockingAttributeFullFrameRateToken));
 }
 
 TEST_F(BlockingAttributeTest, CountRenderTokenUsageInScript) {

@@ -10,8 +10,10 @@
 #include "base/strings/utf_string_conversions.h"
 #include "base/time/time.h"
 #include "chrome/app/vector_icons/vector_icons.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/color/chrome_color_id.h"
 #include "chrome/browser/ui/layout_constants.h"
+#include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/toolbar/app_menu.h"
 #include "chrome/browser/ui/views/toolbar/toolbar_ink_drop_util.h"
@@ -77,8 +79,9 @@ void WebAppMenuButton::StartHighlightAnimation() {
 }
 
 void WebAppMenuButton::ButtonPressed(const ui::Event& event) {
-  ShowMenu(event.IsKeyEvent() ? views::MenuRunner::SHOULD_SHOW_MNEMONICS
-                              : views::MenuRunner::NO_FLAGS);
+  ShowMenuWithFlags(event.IsKeyEvent()
+                        ? views::MenuRunner::SHOULD_SHOW_MNEMONICS
+                        : views::MenuRunner::NO_FLAGS);
   // Add UMA for how many times the web app menu button are clicked.
   base::RecordAction(
       base::UserMetricsAction("HostedAppMenuButtonButton_Clicked"));
@@ -95,7 +98,7 @@ void WebAppMenuButton::OnWebAppPendingUpdateChanged(
     const webapps::AppId& app_id,
     bool has_pending_update) {
   web_app::AppBrowserController* app_controller =
-      browser_view_->browser()->app_controller();
+      web_app::AppBrowserController::From(browser_view_->browser());
   // `app_controller` can be null if this button is used in a (Chrome OS) custom
   // tab bar view for an ARC app.
   if (!app_controller) {
@@ -110,7 +113,7 @@ void WebAppMenuButton::OnWebAppPendingMigrationInfoChanged(
     const webapps::AppId& app_id,
     bool has_pending_migration) {
   web_app::AppBrowserController* app_controller =
-      browser_view_->browser()->app_controller();
+      web_app::AppBrowserController::From(browser_view_->browser());
   // `app_controller` can be null if this button is used in a (Chrome OS) custom
   // tab bar view for an ARC app.
   if (!app_controller) {
@@ -134,10 +137,14 @@ base::CallbackListSubscription WebAppMenuButton::AwaitLabelTextUpdated(
   return label()->AddTextChangedCallback(callback);
 }
 
-void WebAppMenuButton::ShowMenu(int run_types) {
-  Browser* browser = browser_view_->browser();
-  RunMenu(std::make_unique<WebAppMenuModel>(browser_view_, browser), browser,
-          run_types);
+void WebAppMenuButton::ShowMenuWithFlags(int run_types) {
+  BrowserWindowInterface* browser = browser_view_->browser();
+  if (base::FeatureList::IsEnabled(features::kAppMenuGlowUp)) {
+    RunActionMenu(browser, run_types);
+  } else {
+    RunMenu(std::make_unique<WebAppMenuModel>(browser_view_, browser), browser,
+            run_types);
+  }
 }
 
 void WebAppMenuButton::OnThemeChanged() {
@@ -190,7 +197,7 @@ void WebAppMenuButton::UpdateState() {
 
 bool WebAppMenuButton::CanShowPendingUpdate() {
   web_app::AppBrowserController* app_controller =
-      browser_view_->browser()->app_controller();
+      web_app::AppBrowserController::From(browser_view_->browser());
   // `app_controller` can be null if this button is used in a (Chrome OS) custom
   // tab bar view for an ARC app.
   return app_controller && app_controller->HasPendingUpdateNotIgnoredByUser();
@@ -198,7 +205,7 @@ bool WebAppMenuButton::CanShowPendingUpdate() {
 
 bool WebAppMenuButton::CanShowPendingMigration() {
   web_app::AppBrowserController* app_controller =
-      browser_view_->browser()->app_controller();
+      web_app::AppBrowserController::From(browser_view_->browser());
   // `app_controller` can be null if this button is used in a (Chrome OS) custom
   // tab bar view for an ARC app.
   return app_controller && app_controller->HasPendingMigration();
@@ -207,7 +214,7 @@ bool WebAppMenuButton::CanShowPendingMigration() {
 void WebAppMenuButton::UpdateTextAndHighlightColor(
     bool has_pending_update_or_migration_info) {
   web_app::AppBrowserController* app_controller =
-      browser_view_->browser()->app_controller();
+      web_app::AppBrowserController::From(browser_view_->browser());
   // `app_controller` can be null if this button is used in a (Chrome OS) custom
   // tab bar view for an ARC app.
 

@@ -95,7 +95,6 @@ void gtk_enumerate_printers(GtkPrinterFunc func, gpointer data, GDestroyNotify d
 GList* gtk_print_backend_load_modules(void);
 GListModel* gtk_print_backend_get_printers(GtkPrintBackend* print_backend);
 GList* gtk_print_backend_get_printer_list(GtkPrintBackend* print_backend);
-GtkPrinter* gtk_print_backend_find_printer(GtkPrintBackend* print_backend, const char* printer_name);
 void gtk_file_chooser_add_filter(GtkFileChooser* chooser, GtkFileFilter* filter);
 GFile* gtk_file_chooser_get_file(GtkFileChooser* chooser);
 GtkFileFilter* gtk_file_chooser_get_filter(GtkFileChooser* chooser);
@@ -147,6 +146,7 @@ gboolean gtk_print_job_set_source_file(GtkPrintJob* job, const gchar* filename, 
 GtkPrintSettings* gtk_print_settings_copy(GtkPrintSettings* other);
 GtkPageOrientation gtk_print_settings_get_orientation(GtkPrintSettings* settings);
 GtkPageRange* gtk_print_settings_get_page_ranges(GtkPrintSettings* settings, gint *num_ranges);
+void gtk_print_settings_set_page_ranges(GtkPrintSettings* settings, GtkPageRange* page_ranges, gint num_ranges);
 const gchar* gtk_print_settings_get_printer(GtkPrintSettings* settings);
 GtkPrintPages gtk_print_settings_get_print_pages(GtkPrintSettings* settings);
 gint gtk_print_settings_get_resolution(GtkPrintSettings* settings);

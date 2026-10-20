@@ -4,8 +4,6 @@
 
 package org.chromium.chrome.browser.compositor.overlays.strip;
 
-import androidx.test.filters.SmallTest;
-
 import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Rule;
@@ -15,9 +13,9 @@ import org.mockito.Mock;
 import org.mockito.Mockito;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
-import org.robolectric.annotation.Config;
 
 import org.chromium.base.metrics.RecordHistogram;
+import org.chromium.base.supplier.ObservableSuppliers;
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.chrome.browser.TabUsageTracker;
 import org.chromium.chrome.browser.lifecycle.ActivityLifecycleDispatcher;
@@ -37,7 +35,6 @@ import java.util.concurrent.TimeoutException;
  * percentage of tabs used.
  */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 public class TabUsageTrackerTest {
     @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
     @Mock TabModelSelector mTabModelSelector;
@@ -62,6 +59,8 @@ public class TabUsageTrackerTest {
 
         Mockito.when(mTabModel.getCount()).thenReturn(INITIAL_TAB_COUNT);
         Mockito.when(mTabModelSelector.getCurrentModel()).thenReturn(mTabModel);
+        Mockito.when(mTabModelSelector.getCurrentTabModelSupplier())
+                .thenReturn(ObservableSuppliers.createMonotonic(mTabModel));
         Mockito.when(mTabModelSelector.getModels()).thenReturn(tabModels);
         Mockito.when(mTabModelSelector.isTabStateInitialized()).thenReturn(true);
 
@@ -69,7 +68,6 @@ public class TabUsageTrackerTest {
     }
 
     @Test
-    @SmallTest
     public void testOnStop_RecordsHistogram_NoInitialTabs() {
         // Arrange
         mTabUsageTracker.onResumeWithNative();
@@ -95,7 +93,6 @@ public class TabUsageTrackerTest {
     }
 
     @Test
-    @SmallTest
     public void testOnStop_RecordsHistogram_HasInitialTabs() {
         // Arrange
         Tab tab1 = getMockedTab(1);
@@ -122,7 +119,6 @@ public class TabUsageTrackerTest {
     }
 
     @Test
-    @SmallTest
     public void testOnStop_RecordsHistogram_NoInitialPinnedTabs() {
         // Arrange
         mTabUsageTracker.onResumeWithNative();
@@ -156,7 +152,6 @@ public class TabUsageTrackerTest {
     }
 
     @Test
-    @SmallTest
     public void testOnStop_RecordsHistogram_HasInitialPinnedTabs() {
         // Arrange
         Tab tab1 = getMockedTab(1, true);
@@ -193,7 +188,6 @@ public class TabUsageTrackerTest {
     }
 
     @Test
-    @SmallTest
     public void testOnStop_RecordsHistogram_NoPinnedTabsUsed() {
         // Arrange
         Tab tab1 = getMockedTab(1, false);
@@ -230,7 +224,6 @@ public class TabUsageTrackerTest {
     }
 
     @Test
-    @SmallTest
     public void testOnStop_CalledBeforeOnResume_DoesNotRecordHistogram() {
         mTabUsageTracker.onStopWithNative();
 
@@ -241,7 +234,6 @@ public class TabUsageTrackerTest {
     }
 
     @Test
-    @SmallTest
     public void testOnDestroy() {
         mTabUsageTracker.onDestroy();
 

@@ -11,11 +11,25 @@ namespace views::features {
 
 // Please keep alphabetized.
 
+// When enabled, the screen capture exclusion feature (such as
+// SetExcludeFromScreenCapture) is allowed even when running inside a remote
+// session. By default, it is disabled to prevent excluded windows (such as
+// Picture-in-Picture) from being completely hidden from the remote user's
+// local view of that remote session.
+BASE_FEATURE(kAllowWindowCaptureExclusionInRemoteSessions,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
 // Used to apply the initial URL to the WebContents in WebView. This is a kill
 // switch for this new logic, see crbug.com/456058558.
 // TODO(https://crbug.com/456058558): Remove this flag once the feature becomes
 // stable.
 BASE_FEATURE(kApplyInitialUrlToWebContents, base::FEATURE_ENABLED_BY_DEFAULT);
+
+// When enabled, drag and drop is only enabled for widgets that accept drag and
+// drop and require drag and drop support (e.g. not tooltips, popups, or
+// widgets where accept_events is false).
+BASE_FEATURE(kDisableDragDropForUnneededWidgets,
+             base::FEATURE_DISABLED_BY_DEFAULT);
 
 // Enables input protection by blocking interaction with views that are
 // currently or were recently obscured by always-on-top windows, and prevents
@@ -34,5 +48,36 @@ BASE_FEATURE(kEnableTouchDragCursorSync, base::FEATURE_ENABLED_BY_DEFAULT);
 // to kKeyboardAccessibleTooltip in //ui/base/ui_base_features.cc.
 BASE_FEATURE(kKeyboardAccessibleTooltipInViews,
              base::FEATURE_ENABLED_BY_DEFAULT);
+
+// When enabled, views::Label avoids computing the size of its text (which
+// requires expensive text shaping) to determine whether its default tooltip
+// should be shown, when the answer is known without it (empty or obscured
+// text, or zero content width, typically because the label hasn't been laid
+// out yet).
+BASE_FEATURE(kLabelDefaultTooltipFastPath, base::FEATURE_DISABLED_BY_DEFAULT);
+
+// If enabled, NativeViewHost controls the layers of the native view.
+BASE_FEATURE(kNativeViewHostManagesLayers, base::FEATURE_ENABLED_BY_DEFAULT);
+
+#if BUILDFLAG(IS_MAC)
+// When enabled, focusing a View in an inactive Widget makes the Widget's window
+// key (i.e. activates it), matching the behavior on other platforms. This is a
+// kill switch, see crbug.com/40486728.
+// TODO(crbug.com/40486728): Remove this flag once the behavior is stable.
+BASE_FEATURE(kMacActivateWidgetOnFocusRequest,
+             base::FEATURE_ENABLED_BY_DEFAULT);
+
+// When enabled, tell the browser compositor when the window is on an inactive
+// space, to allow it to reclaim resources. Should be enabled alongside
+// `features::kDetectSpaceChangeViaOcclusion` so that windows become visible
+// immediately during interactive space swipe gestures.
+BASE_FEATURE(kNotifyCompositorOfSpaceVisibilityOnMacOs,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
+// When enabled, tell the browser compositor when the window is hidden, to allow
+// it to reclaim resources.
+BASE_FEATURE(kNotifyCompositorOfWindowVisibilityOnMacOs,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+#endif
 
 }  // namespace views::features

@@ -224,7 +224,7 @@ inability to every change them.
 
 Avoid it if possible. Use `@Nullable` instead.
 
-## Rationale:
+**Rationale:**
 
 `Optional` adds binary size overhead and requires an extra allocation for each
 use. It may still be a good choice if you need to distinguish between "null" and
@@ -452,6 +452,20 @@ In summary:
   - [`@Batch(UNIT_TESTS)`] for unit tests
   - [`@Batch(PER_CLASS)`] for integration tests
   - [`@DoNotBatch`] for when each test method requires an app restart
+
+### Style and Conventions
+
+- **Mocks and Captors**: Tests should prefer `@Mock Foo mFoo` over
+  `Mockito.mock(Foo.class)`, and `@Captor ArgumentCaptor<Foo> mFooCaptor` over
+  `ArgumentCaptor.forClass(Foo.class)`. The annotations make it easy to see
+  which objects are mocks or captors, and encourage reusing them between test
+  cases. Inline mock creation (e.g. `Mockito.mock(Foo.class)`) should only be
+  used when a variable number of mocks are needed.
+- **Static Imports**: Tests should typically use static imports for functions
+  from `org.junit.Assert`, `org.mockito.Mockito`, and
+  `org.mockito.ArgumentMatchers` as this helps keep code terse and more
+  readable. There is not much ambiguity about which classes these commonly used
+  functions come from.
 
 ### Test-only Code
 

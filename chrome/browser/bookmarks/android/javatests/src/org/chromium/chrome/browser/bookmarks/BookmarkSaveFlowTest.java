@@ -46,7 +46,6 @@ import org.chromium.chrome.browser.price_tracking.PriceDropNotificationManager;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.profiles.ProfileManager;
 import org.chromium.chrome.browser.sync.SyncTestRule;
-import org.chromium.chrome.browser.user_education.UserEducationHelper;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.chrome.test.util.BookmarkTestUtil;
 import org.chromium.chrome.test.util.ChromeRenderTestRule;
@@ -57,9 +56,8 @@ import org.chromium.components.commerce.core.CommerceSubscription;
 import org.chromium.components.commerce.core.ShoppingService;
 import org.chromium.components.power_bookmarks.PowerBookmarkMeta;
 import org.chromium.components.power_bookmarks.ShoppingSpecifics;
-import org.chromium.components.signin.base.CoreAccountInfo;
 import org.chromium.components.signin.identitymanager.IdentityManager;
-import org.chromium.google_apis.gaia.GaiaId;
+import org.chromium.components.signin.test.util.TestAccounts;
 import org.chromium.url.GURL;
 
 import java.io.IOException;
@@ -77,14 +75,13 @@ public class BookmarkSaveFlowTest {
     public final ChromeRenderTestRule mRenderTestRule =
             ChromeRenderTestRule.Builder.withPublicCorpus()
                     .setBugComponent(ChromeRenderTestRule.Component.UI_BROWSER_BOOKMARKS)
-                    .setRevision(2)
+                    .setRevision(3)
                     .build();
 
     @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
 
     @Mock private ShoppingService mShoppingService;
     @Mock private PriceTrackingUtils.Natives mMockPriceTrackingUtilsJni;
-    @Mock private UserEducationHelper mUserEducationHelper;
     @Mock private IdentityManager mIdentityManager;
     @Mock private PriceDropNotificationManager mPriceDropNotificationManager;
 
@@ -93,8 +90,6 @@ public class BookmarkSaveFlowTest {
     private BottomSheetController mBottomSheetController;
     private BottomSheetTestSupport mBottomSheetTestSupport;
     private BookmarkModel mBookmarkModel;
-    private final CoreAccountInfo mAccountInfo =
-            CoreAccountInfo.createFromEmailAndGaiaId("test@gmail.com", new GaiaId("testGaiaId"));
 
     @Before
     public void setUp() throws ExecutionException {
@@ -103,7 +98,7 @@ public class BookmarkSaveFlowTest {
 
         // Setup mocks.
         PriceTrackingUtilsJni.setInstanceForTesting(mMockPriceTrackingUtilsJni);
-        doReturn(mAccountInfo).when(mIdentityManager).getPrimaryAccountInfo();
+        doReturn(TestAccounts.ACCOUNT1).when(mIdentityManager).getPrimaryAccountInfo();
 
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
@@ -116,7 +111,6 @@ public class BookmarkSaveFlowTest {
                                     mActivity,
                                     mBottomSheetController,
                                     mShoppingService,
-                                    mUserEducationHelper,
                                     ProfileManager.getLastUsedRegularProfile(),
                                     mIdentityManager,
                                     new BookmarkManagerOpenerImpl(),

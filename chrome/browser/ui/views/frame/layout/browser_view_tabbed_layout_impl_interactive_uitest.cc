@@ -2,11 +2,14 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "chrome/browser/ui/views/frame/layout/browser_view_tabbed_layout_impl.h"
+
 #include <initializer_list>
 #include <map>
 #include <memory>
 #include <vector>
 
+#include "base/feature_list.h"
 #include "base/memory/raw_ptr.h"
 #include "base/scoped_multi_source_observation.h"
 #include "base/test/scoped_feature_list.h"
@@ -14,6 +17,7 @@
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
 #include "chrome/browser/ui/browser_tabstrip.h"
+#include "chrome/browser/ui/immersive/immersive_mode_controller.h"
 #include "chrome/browser/ui/layout_constants.h"
 #include "chrome/browser/ui/side_panel/side_panel_entry.h"
 #include "chrome/browser/ui/side_panel/side_panel_registry.h"
@@ -25,21 +29,22 @@
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/frame/contents_container_view.h"
+#include "chrome/browser/ui/views/frame/contents_web_view.h"
 #include "chrome/browser/ui/views/frame/custom_corners_background.h"
-#include "chrome/browser/ui/views/frame/immersive_mode_controller.h"
 #include "chrome/browser/ui/views/frame/layout/browser_view_layout.h"
-#include "chrome/browser/ui/views/frame/layout/browser_view_tabbed_layout_impl.h"
 #include "chrome/browser/ui/views/frame/multi_contents_resize_area.h"
 #include "chrome/browser/ui/views/frame/multi_contents_view.h"
 #include "chrome/browser/ui/views/frame/top_container_view.h"
 #include "chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h"
 #include "chrome/browser/ui/views/side_panel/side_panel.h"
-#include "chrome/browser/ui/views/tabs/vertical/vertical_tab_strip_controller.h"
+#include "chrome/browser/ui/views/tabs/common/tab_strip_collection_controller.h"
 #include "chrome/browser/ui/views/toolbar/toolbar_view.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/test/interaction/interactive_browser_test.h"
+#include "components/bookmarks/common/bookmark_bar_visibility_state.h"
 #include "components/bookmarks/common/bookmark_pref_names.h"
 #include "components/prefs/pref_service.h"
+#include "components/search/ntp_features.h"
 #include "components/user_prefs/user_prefs.h"
 #include "content/public/test/browser_test.h"
 #include "testing/gmock/include/gmock/gmock.h"
@@ -48,6 +53,8 @@
 #include "ui/base/interaction/element_tracker.h"
 #include "ui/base/interaction/interactive_test_definitions.h"
 #include "ui/base/pointer/touch_ui_controller.h"
+#include "ui/compositor/compositor.h"
+#include "ui/display/display_switches.h"
 #include "ui/gfx/animation/animation.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/geometry/size.h"
@@ -74,8 +81,7 @@ class BrowserViewTabbedLayoutImplUiTest : public InteractiveBrowserTest {
   DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kSidePanelTestElement);
 
   void SetUp() override {
-    feature_list_.InitWithFeatures(
-        {tabs::kVerticalTabs, features::kSidePanelFlyoverAnimation}, {});
+    feature_list_.InitAndEnableFeature(features::kSidePanelFlyoverAnimation);
     set_open_about_blank_on_browser_launch(true);
     InteractiveBrowserTest::SetUp();
   }
@@ -115,7 +121,7 @@ class BrowserViewTabbedLayoutImplUiTest : public InteractiveBrowserTest {
                 return content_view;
               }),
               /*default_content_width_callback=*/base::NullCallback())));
-          browser()->browser_window_features()->side_panel_ui()->Show(
+          SidePanelUI::From(browser())->Show(
               SidePanelEntry::Id::kCustomizeChrome);
         }),
         WaitForShow(kSidePanelElementId),
@@ -133,6 +139,26 @@ class BrowserViewTabbedLayoutImplUiTest : public InteractiveBrowserTest {
         WaitForShow(kSidePanelTestElement),
         // Ensure that the browser gets a full layout.
         Do([this] { RunScheduledLayouts(); }));
+  }
+
+  auto ToggleVerticalTabStripCollapsed(bool should_be_collapsed) {
+    auto steps = Steps(
+        PressButton(kVerticalTabStripCollapseButtonElementId),
+        WaitForEvent(kTabStripRegionElementId,
+                     VerticalTabStripRegionView::kAnimationCompletedEvent),
+        Do([this]() { RunScheduledLayouts(); }),
+        CheckView(
+            kTabStripRegionElementId,
+            [](VerticalTabStripRegionView* region) {
+              return region->GetTabStripCollectionController()
+                  ->GetStateController()
+                  ->IsCollapsed();
+            },
+            should_be_collapsed));
+    AddDescriptionPrefix(
+        steps, base::StringPrintf("ToggleVerticalTabStripCollapsed(%s)",
+                                  should_be_collapsed ? "true" : "false"));
+    return steps;
   }
 
   auto SaveBounds(ElementSpecifier spec,
@@ -167,14 +193,11 @@ class BrowserViewTabbedLayoutImplUiTest : public InteractiveBrowserTest {
                        return !GetTemporaryValue(kSidePanelBounds)
                                    .Intersects(el->GetScreenBounds());
                      }),
-        CheckView(
-            ToolbarView::kToolbarElementId,
-            [=](ToolbarView* toolbar) {
-              LOG(INFO) << "Toolbar minimum size is "
-                        << toolbar->GetMinimumSize().ToString();
-              return toolbar->width() >= toolbar->GetMinimumSize().width();
-            },
-            "Toolbar is at least minimum size"));
+        CheckView(ToolbarView::kToolbarElementId, [=](ToolbarView* toolbar) {
+          LOG(INFO) << "Toolbar minimum size is "
+                    << toolbar->GetMinimumSize().ToString();
+          return toolbar->width() >= toolbar->GetMinimumSize().width();
+        }).SetDescription("Toolbar is at least minimum size"));
   }
 
   auto CloseSidePanel() {
@@ -349,6 +372,20 @@ class BrowserViewTabbedLayoutImplUiTest : public InteractiveBrowserTest {
     return steps;
   }
 
+  void SetBookmarkBarVisible(bool visible = true) {
+    PrefService* const prefs = user_prefs::UserPrefs::Get(GetProfile());
+    if (base::FeatureList::IsEnabled(
+            ntp_features::kNtpSimplificationBookmarkBar)) {
+      prefs->SetInteger(
+          bookmarks::prefs::kBookmarkBarVisibilityState,
+          static_cast<int>(
+              visible ? bookmarks::BookmarkBarVisibilityState::kAlwaysShow
+                      : bookmarks::BookmarkBarVisibilityState::kAlwaysHide));
+    } else {
+      prefs->SetBoolean(bookmarks::prefs::kShowBookmarkBar, visible);
+    }
+  }
+
  private:
   base::test::ScopedFeatureList feature_list_;
   const gfx::AnimationTestApi::RenderModeResetter render_mode_resetter_;
@@ -375,7 +412,7 @@ IN_PROC_BROWSER_TEST_F(BrowserViewTabbedLayoutImplUiTest,
       SetOnIncompatibleAction(OnIncompatibleAction::kSkipTest,
                               "Test is screenshot-only."),
       Do([this]() {
-        browser()->profile()->GetPrefs()->SetBoolean(
+        browser()->GetProfile()->GetPrefs()->SetBoolean(
             prefs::kTabSearchPinnedToTabstrip, false);
       }),
       SelectTab(kBrowserViewElementId, 0),
@@ -399,8 +436,7 @@ IN_PROC_BROWSER_TEST_F(BrowserViewTabbedLayoutImplUiTest,
 
 IN_PROC_BROWSER_TEST_F(BrowserViewTabbedLayoutImplUiTest,
                        VerticalTabsWithoutBookmarks) {
-  PrefService* const prefs = user_prefs::UserPrefs::Get(GetProfile());
-  prefs->SetBoolean(bookmarks::prefs::kShowBookmarkBar, false);
+  SetBookmarkBarVisible(false);
   tabs::VerticalTabStripStateController::From(browser())
       ->SetVerticalTabsEnabled(true);
   RunScheduledLayouts();
@@ -422,8 +458,7 @@ IN_PROC_BROWSER_TEST_F(BrowserViewTabbedLayoutImplUiTest,
 
 IN_PROC_BROWSER_TEST_F(BrowserViewTabbedLayoutImplUiTest,
                        VerticalTabsWithBookmarks) {
-  PrefService* const prefs = user_prefs::UserPrefs::Get(GetProfile());
-  prefs->SetBoolean(bookmarks::prefs::kShowBookmarkBar, true);
+  SetBookmarkBarVisible();
   tabs::VerticalTabStripStateController::From(browser())
       ->SetVerticalTabsEnabled(true);
   RunScheduledLayouts();
@@ -451,7 +486,7 @@ IN_PROC_BROWSER_TEST_F(BrowserViewTabbedLayoutImplUiTest,
       ->SetVerticalTabsEnabled(true);
   RunScheduledLayouts();
   RunTestSequence(
-      PressButton(kVerticalTabStripCollapseButtonElementId),
+      ToggleVerticalTabStripCollapsed(true),
       SetOnIncompatibleAction(OnIncompatibleAction::kSkipTest,
                               "Test is screenshot-only."),
       ScreenshotTop(kTabStripRegionElementId, "tabstrip_top", 3),
@@ -600,7 +635,8 @@ IN_PROC_BROWSER_TEST_F(BrowserViewTabbedLayoutImplUiTest, SmallSidePanelSize) {
 IN_PROC_BROWSER_TEST_F(BrowserViewTabbedLayoutImplUiTest,
                        LargeSidePanelPreferredSize) {
   RunScheduledLayouts();
-  const int large_width = browser()->GetBrowserView().width() - 20;
+  const int large_width =
+      BrowserView::GetBrowserViewForBrowser(browser())->width() - 20;
   RunTestSequence(SelectTab(kBrowserViewElementId, 0),
                   ReplaceAndShowSidePanel(SidePanelType::kToolbar, large_width),
                   VerifyLayout());
@@ -609,7 +645,8 @@ IN_PROC_BROWSER_TEST_F(BrowserViewTabbedLayoutImplUiTest,
 IN_PROC_BROWSER_TEST_F(BrowserViewTabbedLayoutImplUiTest,
                        VeryLargeSidePanelPreferredSize) {
   RunScheduledLayouts();
-  const int large_width = browser()->GetBrowserView().width() + 100;
+  const int large_width =
+      BrowserView::GetBrowserViewForBrowser(browser())->width() + 100;
   RunTestSequence(SelectTab(kBrowserViewElementId, 0),
                   ReplaceAndShowSidePanel(SidePanelType::kToolbar, large_width),
                   VerifyLayout());
@@ -644,7 +681,8 @@ IN_PROC_BROWSER_TEST_P(BrowserViewTabbedLayoutImplTopContainerBackgroundUiTest,
   }
   RunScheduledLayouts();
 
-  auto* const top_container = browser()->GetBrowserView().top_container();
+  auto* const top_container =
+      BrowserView::GetBrowserViewForBrowser(browser())->top_container();
   auto* const background =
       top_container->background()->AsA<CustomCornersBackground>();
   ASSERT_NE(nullptr, background);
@@ -664,7 +702,7 @@ IN_PROC_BROWSER_TEST_P(BrowserViewTabbedLayoutImplTopContainerBackgroundUiTest,
 #endif
       break;
   }
-  EXPECT_EQ(expected, background->primary_color());
+  EXPECT_EQ(expected, background->primary_color().color);
 }
 
 INSTANTIATE_TEST_SUITE_P(
@@ -744,26 +782,6 @@ class BrowserViewTabbedLayoutImplContentLayoutUiTest
         .SetDescription("CheckResizeCounts()");
   }
 
-  auto ToggleVerticalTabStripCollapsed(bool should_be_collapsed) {
-    auto steps = Steps(
-        PressButton(kVerticalTabStripCollapseButtonElementId),
-        WaitForEvent(kTabStripRegionElementId,
-                     VerticalTabStripRegionView::kAnimationCompletedEvent),
-        Do([this]() { RunScheduledLayouts(); }),
-        CheckView(
-            kTabStripRegionElementId,
-            [](VerticalTabStripRegionView* region) {
-              return region->GetVerticalTabStripController()
-                  ->GetStateController()
-                  ->IsCollapsed();
-            },
-            should_be_collapsed));
-    AddDescriptionPrefix(
-        steps, base::StringPrintf("ToggleVerticalTabStripCollapsed(%s)",
-                                  should_be_collapsed ? "true" : "false"));
-    return steps;
-  }
-
   auto EnterSplitView() {
     return Steps(
         Do([this]() {
@@ -776,10 +794,10 @@ class BrowserViewTabbedLayoutImplContentLayoutUiTest
   }
 
  private:
-  const std::vector<ContentsContainerView*>& GetContentsContainers() {
-    return browser()
-        ->GetBrowserView()
-        .multi_contents_view()
+  const std::vector<raw_ptr<ContentsContainerView, DanglingUntriaged>>&
+  GetContentsContainers() {
+    return BrowserView::GetBrowserViewForBrowser(browser())
+        ->multi_contents_view()
         ->contents_container_views();
   }
 
@@ -902,9 +920,7 @@ IN_PROC_BROWSER_TEST_F(BrowserViewTabbedLayoutImplContentLayoutUiTest,
       ->SetVerticalTabsEnabled(true);
   RunScheduledLayouts();
   RunTestSequence(EnterSplitView(), ClearResizeCounts(), OpenSidePanel(),
-                  // There is a known issue where the elements can resize more
-                  // than once. See https://crbug.com/485909751.
-                  CheckResizeCounts(1U, testing::_));
+                  CheckResizeCounts(1U, 1U));
 }
 
 IN_PROC_BROWSER_TEST_F(BrowserViewTabbedLayoutImplContentLayoutUiTest,
@@ -916,10 +932,7 @@ IN_PROC_BROWSER_TEST_F(BrowserViewTabbedLayoutImplContentLayoutUiTest,
       ->SetVerticalTabsEnabled(true);
   RunScheduledLayouts();
   RunTestSequence(EnterSplitView(), OpenSidePanel(), ClearResizeCounts(),
-                  CloseSidePanel(),
-                  // There is a known issue where the elements can resize more
-                  // than once. See https://crbug.com/485909751.
-                  CheckResizeCounts(1U, testing::_));
+                  CloseSidePanel(), CheckResizeCounts(1U, 1U));
 }
 
 IN_PROC_BROWSER_TEST_F(BrowserViewTabbedLayoutImplContentLayoutUiTest,
@@ -946,4 +959,63 @@ IN_PROC_BROWSER_TEST_F(BrowserViewTabbedLayoutImplContentLayoutUiTest,
   RunTestSequence(EnterSplitView(), ToggleVerticalTabStripCollapsed(true),
                   ClearResizeCounts(), ToggleVerticalTabStripCollapsed(false),
                   CheckResizeCounts(1U, 1U));
+}
+
+class BrowserViewHorizontalTabStripOldLayoutUiTest
+    : public BrowserViewTabbedLayoutImplUiTest {
+ public:
+  void SetUp() override {
+    test_feature_list_.InitWithFeatures(
+        /*enabled_features=*/{features::kSidePanelFlyoverAnimation},
+        /*disabled_features=*/{tabs::kTabStripUnification});
+    set_open_about_blank_on_browser_launch(true);
+    InteractiveBrowserTest::SetUp();
+  }
+
+  void SetUpCommandLine(base::CommandLine* command_line) override {
+    command_line->AppendSwitchASCII(switches::kForceDeviceScaleFactor, "1.5");
+    BrowserViewTabbedLayoutImplUiTest::SetUpCommandLine(command_line);
+  }
+
+ private:
+  base::test::ScopedFeatureList test_feature_list_;
+};
+
+IN_PROC_BROWSER_TEST_F(BrowserViewHorizontalTabStripOldLayoutUiTest,
+                       TabStripToolbarBoundaryAt150PercentScaling) {
+  RunScheduledLayouts();
+  RunTestSequence(
+      WaitForShow(kTabStripRegionElementId),
+      WaitForShow(ToolbarView::kToolbarElementId), Do([this]() {
+        auto* const browser_view =
+            BrowserView::GetBrowserViewForBrowser(browser());
+        const float scale =
+            browser_view->GetWidget()->GetCompositor()->device_scale_factor();
+        EXPECT_EQ(scale, 1.5f);
+
+        auto* const tabstrip = browser_view->tab_strip_view();
+        auto* const toolbar = browser_view->toolbar();
+        auto* const top_container = browser_view->top_container();
+        CHECK(tabstrip);
+        CHECK(toolbar);
+        CHECK(top_container);
+
+        const gfx::Rect tabstrip_bounds = tabstrip->bounds();
+        const gfx::Rect top_container_bounds = top_container->bounds();
+        const gfx::Rect toolbar_bounds = toolbar->GetBoundsInScreen();
+
+        LOG(INFO) << "Scale: " << scale;
+        LOG(INFO) << "TabStrip DIP bounds: " << tabstrip_bounds.ToString();
+        LOG(INFO) << "TopContainer DIP bounds: "
+                  << top_container_bounds.ToString();
+        LOG(INFO) << "Toolbar Screen bounds: " << toolbar_bounds.ToString();
+
+        // In DIP coordinates, overlap is exactly 1 DIP.
+        EXPECT_EQ(tabstrip_bounds.bottom() - top_container_bounds.y(), 1);
+
+        const float tabstrip_bottom_px = tabstrip_bounds.bottom() * scale;
+        const float top_container_top_px = top_container_bounds.y() * scale;
+        LOG(INFO) << "TabStrip bottom (px): " << tabstrip_bottom_px;
+        LOG(INFO) << "TopContainer top (px): " << top_container_top_px;
+      }));
 }

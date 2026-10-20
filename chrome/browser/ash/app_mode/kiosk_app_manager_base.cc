@@ -62,14 +62,13 @@ KioskAppManagerBase::App::~App() = default;
 base::FilePath KioskAppManagerBase::GetKioskAppIconCacheDir() {
   base::FilePath user_data_dir;
   bool has_dir = base::PathService::Get(chrome::DIR_USER_DATA, &user_data_dir);
-  DCHECK(has_dir);
+  CHECK(has_dir, base::NotFatalUntil::M160);
   return user_data_dir.AppendASCII(kIconCacheDir);
 }
 
 void KioskAppManagerBase::OnKioskAppDataChanged(const std::string& app_id) {
-  for (auto& observer : observers_) {
-    observer.OnKioskAppDataChanged(app_id);
-  }
+  observers_.NotifyAllowReentrancy(
+      &KioskAppManagerObserver::OnKioskAppDataChanged, app_id);
 }
 
 void KioskAppManagerBase::OnKioskAppDataLoadFailure(const std::string& app_id) {

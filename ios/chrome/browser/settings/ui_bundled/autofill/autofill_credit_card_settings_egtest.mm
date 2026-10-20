@@ -7,7 +7,7 @@
 #import "base/strings/sys_string_conversions.h"
 #import "base/test/ios/wait_util.h"
 #import "components/autofill/core/browser/metrics/payments/mandatory_reauth_metrics.h"
-#import "components/autofill/core/browser/test_utils/autofill_test_utils.h"
+#import "components/autofill/core/browser/test_utils/autofill_test_util.h"
 #import "components/autofill/core/common/autofill_payments_features.h"
 #import "components/strings/grit/components_strings.h"
 #import "ios/chrome/browser/autofill/ui_bundled/autofill_app_interface.h"
@@ -30,11 +30,11 @@ using chrome_test_util::ButtonWithAccessibilityLabel;
 using chrome_test_util::ButtonWithAccessibilityLabelId;
 using chrome_test_util::NavigationBarCancelButton;
 using chrome_test_util::NavigationBarDoneButton;
+using chrome_test_util::NavigationBarEditButton;
 using chrome_test_util::PaymentMethodsButton;
 using chrome_test_util::SettingsDoneButton;
 using chrome_test_util::SettingsMenuBackButton;
 using chrome_test_util::SettingsToolbarAddButton;
-using chrome_test_util::TabGridEditButton;
 
 namespace {
 
@@ -70,14 +70,6 @@ NSString* const kMandatoryReauthEditCardHistogramName =
 NSString* const kMandatoryReauthDeleteCardHistogramName =
     @"Autofill.PaymentMethods.MandatoryReauth.AuthEvent.SettingsPage."
     @"DeleteCard";
-
-// Return the edit button from the navigation bar.
-id<GREYMatcher> NavigationBarEditButton() {
-  return grey_allOf(
-      ButtonWithAccessibilityLabelId(IDS_IOS_NAVIGATION_BAR_EDIT_BUTTON),
-      grey_not(TabGridEditButton()),
-      grey_not(grey_accessibilityTrait(UIAccessibilityTraitNotEnabled)), nil);
-}
 
 // Matcher for the Delete button in the list view, located at the bottom of the
 // screen.
@@ -124,7 +116,16 @@ id<GREYMatcher> BottomToolbar() {
 // Helper to open the settings page for Autofill credit cards.
 - (void)openCreditCardsSettings {
   [ChromeEarlGreyUI openSettingsMenu];
-  [ChromeEarlGreyUI tapSettingsMenuButton:PaymentMethodsButton()];
+  if ([ChromeEarlGrey isYourSavedInfoSettingsPageIosEnabled]) {
+    [ChromeEarlGreyUI
+        tapSettingsMenuButton:grey_accessibilityID(
+                                  @"kSettingsAutofillAndPasswordsCellId")];
+    [[EarlGrey
+        selectElementWithMatcher:PaymentMethodsButton()]
+        performAction:grey_tap()];
+  } else {
+    [ChromeEarlGreyUI tapSettingsMenuButton:PaymentMethodsButton()];
+  }
 }
 
 // Helper to open the settings page for the Autofill credit card with `label`.
@@ -559,21 +560,24 @@ id<GREYMatcher> BottomToolbar() {
                                     ReauthenticationResult::kSuccess];
   [self openCreditCardListInEditMode];
 
-  [[EarlGrey selectElementWithMatcher:chrome_test_util::
-                                          SettingsBottomToolbarDeleteButton()]
-      assertWithMatcher:grey_not(grey_enabled())];
+  [ChromeEarlGrey
+      waitForMatcher:grey_allOf(
+                         chrome_test_util::SettingsBottomToolbarDeleteButton(),
+                         grey_not(grey_enabled()), nil)];
   [[EarlGrey selectElementWithMatcher:grey_accessibilityLabel(
                                           [self creditCardLabel:lastDigits])]
       performAction:grey_tap()];
-  [[EarlGrey selectElementWithMatcher:chrome_test_util::
-                                          SettingsBottomToolbarDeleteButton()]
-      assertWithMatcher:grey_enabled()];
+  [ChromeEarlGrey
+      waitForMatcher:grey_allOf(
+                         chrome_test_util::SettingsBottomToolbarDeleteButton(),
+                         grey_enabled(), nil)];
   [[EarlGrey selectElementWithMatcher:grey_accessibilityLabel(
                                           [self creditCardLabel:lastDigits])]
       performAction:grey_tap()];
-  [[EarlGrey selectElementWithMatcher:chrome_test_util::
-                                          SettingsBottomToolbarDeleteButton()]
-      assertWithMatcher:grey_not(grey_enabled())];
+  [ChromeEarlGrey
+      waitForMatcher:grey_allOf(
+                         chrome_test_util::SettingsBottomToolbarDeleteButton(),
+                         grey_not(grey_enabled()), nil)];
 }
 
 // Checks that deleting a card from the secondary edit card table works
@@ -587,12 +591,15 @@ id<GREYMatcher> BottomToolbar() {
   [[EarlGrey selectElementWithMatcher:grey_accessibilityLabel(
                                           [self creditCardLabel:lastDigits])]
       performAction:grey_tap()];
+  [ChromeEarlGrey
+      waitForMatcher:grey_allOf(
+                         chrome_test_util::SettingsBottomToolbarDeleteButton(),
+                         grey_enabled(), nil)];
   [[EarlGrey selectElementWithMatcher:chrome_test_util::
                                           SettingsBottomToolbarDeleteButton()]
       performAction:grey_tap()];
-  [[EarlGrey selectElementWithMatcher:chrome_test_util::
-                                          SettingsBottomToolbarDeleteButton()]
-      assertWithMatcher:grey_nil()];
+  [ChromeEarlGrey waitForUIElementToDisappearWithMatcher:
+                      chrome_test_util::SettingsBottomToolbarDeleteButton()];
   // If the done button in the nav bar is enabled it is no longer in edit
   // mode.
   [[EarlGrey selectElementWithMatcher:SettingsDoneButton()]

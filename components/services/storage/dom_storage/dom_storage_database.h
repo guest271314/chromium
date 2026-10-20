@@ -8,6 +8,7 @@
 #include <stdint.h>
 
 #include <map>
+#include <memory>
 #include <optional>
 #include <set>
 #include <string>
@@ -21,14 +22,16 @@
 #include "base/task/sequenced_task_runner.h"
 #include "base/threading/sequence_bound.h"
 #include "base/time/time.h"
+#include "base/trace_event/memory_allocator_dump_guid.h"
 #include "base/types/pass_key.h"
 #include "components/services/storage/dom_storage/db_status.h"
+#include "components/services/storage/dom_storage/dom_storage_histogram_helper.h"
+#include "components/services/storage/dom_storage/dom_storage_rollout.h"
 #include "third_party/blink/public/common/storage_key/storage_key.h"
 
 namespace base {
 class FilePath;
 namespace trace_event {
-class MemoryAllocatorDumpGuid;
 class ProcessMemoryDump;
 }  // namespace trace_event
 }  // namespace base
@@ -47,10 +50,11 @@ enum class StorageType;
 // and one for local storage. Records the key-value pairs for all StorageAreas
 // along with usage metadata.
 //
-// Use the `DomStorageDatabaseFactory` to asynchronously create an instance of
-// this type from any sequence. When owning a SequenceBound<DomStorageDatabase>
-// as produced by those helpers, all work on the DomStorageDatabase can be
-// safely done via `SequenceBound::PostTaskWithThisObject`.
+// Use the `DomStorageDatabaseFactory` to asynchronously create and open an
+// instance of this type from any sequence. When owning the resulting
+// `SequenceBound<std::unique_ptr<DomStorageDatabase>>`, all work on the
+// `DomStorageDatabase` can be safely done via `AsyncCall()` /
+// `PostTaskWithThisObject()`.
 class DomStorageDatabase {
  public:
   using Key = std::vector<uint8_t>;
@@ -177,7 +181,6 @@ class DomStorageDatabase {
     Metadata& operator=(const Metadata&) = delete;
 
     std::vector<MapMetadata> map_metadata;
-    std::optional<int64_t> next_map_id;
   };
 
   // A collection of key/value pair updates for a single map. Optionally
@@ -260,10 +263,23 @@ class DomStorageDatabase {
     std::optional<Usage> map_usage;
   };
 
-  // Constructs an absolute path to the `storage_type` database under
-  // `storage_partition_dir`.
-  static base::FilePath GetPath(StorageType storage_type,
-                                const base::FilePath& storage_partition_dir);
+  // Returns the LevelDB database path for `storage_type` under
+  // `storage_partition_dir`. The path is a directory:
+  //
+  // `storage_partition_dir`/Local Storage/leveldb     (for `kLocalStorage`)
+  // `storage_partition_dir`/Session Storage           (for `kSessionStorage`)
+  static base::FilePath GetLevelDbPath(
+      StorageType storage_type,
+      const base::FilePath& storage_partition_dir);
+
+  // Returns the SQLite database path for `storage_type` under
+  // `storage_partition_dir`. The path is a file:
+  //
+  // `storage_partition_dir`/LocalStorage              (for `kLocalStorage`)
+  // `storage_partition_dir`/SessionStorage            (for `kSessionStorage`)
+  static base::FilePath GetSqlitePath(
+      StorageType storage_type,
+      const base::FilePath& storage_partition_dir);
 
   virtual ~DomStorageDatabase() = default;
 
@@ -323,6 +339,14 @@ class DomStorageDatabase {
   // new copy of the database that replaces the old copy.
   virtual DbStatus CleanUpStaleData() = 0;
 
+  // For LevelDB to SQLite migration. Used after migration completes to close
+  // and delete the LevelDB.
+  virtual void Close() = 0;
+
+  // For LevelDB to SQLite migration. Detaches SQLite database from the LevelDB
+  // sequence so it can be bound to the SQLite sequence.
+  virtual void DetachFromSequence() = 0;
+
   // Test-only functions.
   virtual DbStatus PutVersionForTesting(int64_t version) = 0;
   virtual void MakeAllCommitsFailForTesting() = 0;
@@ -340,53 +364,257 @@ class DomStorageDatabaseFactory {
  public:
   using PassKey = base::PassKey<DomStorageDatabaseFactory>;
 
-  // Creates and opens a `SequenceBound<DomStorageDatabase>`.
+  struct DestroyOutcome {
+    DbStatus status;
+    DatabaseMetricsType destroyed_db_metrics_type;
+  };
+
+  // Result of opening a DomStorage database. Contains everything
+  // the caller needs to use the database and record metrics. The database has
+  // already been opened on its backend sequence. `open_status` carries the
+  // outcome.
+  class OpenResult {
+   public:
+    OpenResult();
+    ~OpenResult();
+    OpenResult(OpenResult&&);
+    OpenResult& operator=(OpenResult&&);
+
+    // Builds a failure result with no database, including failures before a
+    // database is opened.
+    static OpenResult FromError(DbStatus status);
+
+    // Stores `database` for transport to the caller's sequence, with a deleter
+    // that destroys it on `task_runner` (its backend sequence) if the result is
+    // dropped before `TakeDatabase()`. Producers of an `OpenResult` must set
+    // the database via this.
+    void SetDatabase(scoped_refptr<base::SequencedTaskRunner> task_runner,
+                     std::unique_ptr<DomStorageDatabase> database);
+
+    // Returns the database stored by `SetDatabase()`, bound to its backend
+    // sequence. Must be called once, on the caller's sequence.
+    base::SequenceBound<std::unique_ptr<DomStorageDatabase>> TakeDatabase();
+
+    DatabaseMetricsType metrics_type = DatabaseMetricsType::kOnDisk;
+    bool is_sqlite = false;
+    DbStatus open_status = DbStatus::IOError("uninitialized");
+
+    // Set only when the open was requested with a non-empty `dir_to_destroy`,
+    // reporting the outcome of destroying the pre-existing on-disk database
+    // before opening. Consumed by recovery callers to record recovery
+    // telemetry.
+    std::optional<DestroyOutcome> destroy_outcome;
+
+   private:
+    // The opened database while the result is in flight to the caller's
+    // sequence. If the result is dropped before `TakeDatabase()`, the
+    // `OnTaskRunnerDeleter` destroys it on its backend sequence, closing its
+    // file handle.
+    std::unique_ptr<DomStorageDatabase, base::OnTaskRunnerDeleter> database_{
+        nullptr, base::OnTaskRunnerDeleter(nullptr)};
+  };
+
+  using OpenResultCallback = base::OnceCallback<void(OpenResult)>;
+
+  using OpenCallback = base::RepeatingCallback<void(
+      StorageType,
+      const base::FilePath& dir_to_open,
+      const std::optional<base::trace_event::MemoryAllocatorDumpGuid>&,
+      const base::FilePath& dir_to_destroy,
+      OpenResultCallback)>;
+
+  // Asynchronously opens a DomStorageDatabase. The callback receives the opened
+  // database, its resolved configuration, and the Open() outcome.
   //
-  // To create an in-memory database, provide an empty `database_path`.
-  static base::SequenceBound<DomStorageDatabase> Create(
+  // The new database is opened at `dir_to_open`, or in-memory if `dir_to_open`
+  // is empty.
+  //
+  // If `dir_to_destroy` is non-empty, the pre-existing on-disk database at that
+  // location is destroyed before the new database is opened, all within this
+  // flow. The destroy outcome is reported via `OpenResult::destroy_status`.
+  // `dir_to_destroy` may differ from `dir_to_open`. E.g. recovery can destroy
+  // the on-disk database, then open an in-memory database by passing the
+  // on-disk location as `dir_to_destroy` and an empty `dir_to_open`.
+  static void Open(
       StorageType storage_type,
-      bool is_in_memory,
-      scoped_refptr<base::SequencedTaskRunner> blocking_task_runner);
+      const base::FilePath& dir_to_open,
+      const std::optional<base::trace_event::MemoryAllocatorDumpGuid>&
+          memory_dump_id,
+      const base::FilePath& dir_to_destroy,
+      OpenResultCallback callback);
 
-  using StatusCallback = base::OnceCallback<void(DbStatus)>;
+  // Define a migration callback that tests can override to simulate failures.
+  using MigrationCallback = base::RepeatingCallback<void(
+      StorageType storage_type,
+      const base::FilePath& dir_to_open,
+      const std::optional<base::trace_event::MemoryAllocatorDumpGuid>&
+          memory_dump_id,
+      OpenResultCallback callback,
+      DomStorageDatabase* source_database)>;
 
-  using CreateCallback =
-      base::RepeatingCallback<base::SequenceBound<DomStorageDatabase>(
-          StorageType,
-          bool,
-          scoped_refptr<base::SequencedTaskRunner>)>;
-  using DestroyCallback =
-      base::RepeatingCallback<void(const base::FilePath&, StatusCallback)>;
-
-  // Destroys the persistent database on the filesystem identified by the
-  // absolute path in `database_path`.
+  // Migrates the on-disk LevelDB `source_database` under `dir_to_open` to
+  // SQLite. Must be called on the `source_database` LevelDB sequence.
   //
-  // All work is done on `task_runner`, which must support blocking operations,
-  // and upon completion `callback` is called on the calling sequence.
-  static void Destroy(const base::FilePath& database_path,
-                      StatusCallback callback);
+  // On success, `callback` runs with the migrated SQLite result, which
+  // is already opened and bound to the SQLite sequence. `source_database`
+  // database has been emptied and its files deleted. On failure
+  // `source_database` is left untouched and still usable.
+  static void Migrate(
+      StorageType storage_type,
+      const base::FilePath& dir_to_open,
+      const std::optional<base::trace_event::MemoryAllocatorDumpGuid>&
+          memory_dump_id,
+      OpenResultCallback callback,
+      DomStorageDatabase* source_database);
 
  private:
+  friend class AsyncDomStorageDatabaseMigrationTest;
   friend class LocalStorageLevelDBTest;
   friend class LocalStorageSqliteTest;
+  friend class LocalStorageImplOnDiskSQLiteRolloutTestBase;
   friend class DomStorageDatabaseTest;
   friend class SessionStorageLevelDBTest;
   friend class SessionStorageSqliteTest;
+  friend class SessionStorageImplOnDiskSQLiteRolloutTestBase;
   friend class ScopedDomStorageDatabaseFactoryForTesting;
 
-  // Production implementations.
-  static base::SequenceBound<DomStorageDatabase> CreateImpl(
+  // Creates a new SQLite database at `destination_path` and copies all records
+  // from `source_database` into it, returning the opened SQLite database on
+  // success.
+  static StatusOr<std::unique_ptr<DomStorageDatabase>>
+  CreateAndPopulateSqliteDatabaseForMigration(
       StorageType storage_type,
-      bool is_in_memory,
-      scoped_refptr<base::SequencedTaskRunner> blocking_task_runner);
-  static void DestroyImpl(const base::FilePath& database_path,
-                          StatusCallback callback);
+      DomStorageDatabase& source_database,
+      const base::FilePath& destination_path);
 
-  // Returns the create/destroy callbacks, lazily initialized on first call.
-  // Defaults point to `CreateImpl`/`DestroyImpl`. Tests can swap in custom
-  // implementations via `ScopedDomStorageDatabaseFactoryForTesting`.
-  static CreateCallback& GetCreateCallback();
-  static DestroyCallback& GetDestroyCallback();
+  static void OpenImpl(
+      StorageType storage_type,
+      const base::FilePath& dir_to_open,
+      const std::optional<base::trace_event::MemoryAllocatorDumpGuid>&
+          memory_dump_id,
+      const base::FilePath& dir_to_destroy,
+      OpenResultCallback callback);
+
+  static void MigrateLevelDbToSqlite(
+      StorageType storage_type,
+      const base::FilePath& dir_to_open,
+      const std::optional<base::trace_event::MemoryAllocatorDumpGuid>&
+          memory_dump_id,
+      OpenResultCallback callback,
+      DomStorageDatabase* source_database);
+
+  // The following Open helpers are private static members so that
+  // `ConstructAndOpenDatabase()` can create a `PassKey` when constructing
+  // backend subclasses.
+
+  using OnDiskStateCheckedCallback =
+      base::OnceCallback<void(LevelDbOnDiskState)>;
+
+  // Reads the on-disk LevelDB state at `dir` and passes it to `callback`. Runs
+  // the read on `dir`'s LevelDB blocking sequence, re-posting to it if needed.
+  static void CheckOnDiskLevelDbState(StorageType storage_type,
+                                      base::FilePath dir,
+                                      OnDiskStateCheckedCallback callback);
+
+  using OnDatabaseDestroyedCallback =
+      base::OnceCallback<void(std::optional<DestroyOutcome> destroy_outcome)>;
+
+  // Bound as the `CheckOnDiskLevelDbState()` continuation for the destroy flow,
+  // so `leveldb_state` trails. Like `InitializeDatabase`, this runs on the
+  // destroy target's blocking sequence (selected via `GetTaskRunnerForDb()`),
+  // re-posting to it if needed.
+  static void DestroyDatabase(StorageType storage_type,
+                              base::FilePath dir_to_destroy,
+                              OnDatabaseDestroyedCallback callback,
+                              LevelDbOnDiskState leveldb_state);
+
+  // Invoked with the resolved backend to construct and open the database.
+  using OnBackendResolvedCallback =
+      base::OnceCallback<void(bool is_sqlite,
+                              bool write_exp_tag,
+                              DatabaseMetricsType metrics_type,
+                              base::FilePath database_path,
+                              std::optional<DestroyOutcome> destroy_outcome)>;
+
+  // Resolves the backend (in-memory vs on-disk, SQLite vs LevelDB) and the
+  // database path using `dir_to_open` (empty for in-memory), then runs
+  // `callback` with the result.
+  static void ResolveDatabaseBackend(
+      StorageType storage_type,
+      base::FilePath dir_to_open,
+      OnBackendResolvedCallback callback,
+      std::optional<DestroyOutcome> destroy_outcome);
+
+  // Resolves the migration backend by checking whether a SQLite database
+  // already exists on disk: if so it is opened, otherwise LevelDB is opened.
+  static void ResolveOnDiskMigrationDatabaseBackend(
+      StorageType storage_type,
+      base::FilePath dir_to_open,
+      OnBackendResolvedCallback callback,
+      std::optional<DestroyOutcome> destroy_outcome);
+
+  // Resolves the experimental backend from the on-disk LevelDB state, then runs
+  // `callback`. Bound as the `CheckOnDiskLevelDbState()` continuation for
+  // the open flow, so `leveldb_state` (the produced on-disk state) trails.
+  static void ResolveOnDiskExperimentalDatabaseBackend(
+      StorageType storage_type,
+      base::FilePath dir_to_open,
+      DomStorageSqliteRolloutStage stage,
+      OnBackendResolvedCallback callback,
+      std::optional<DestroyOutcome> destroy_outcome,
+      LevelDbOnDiskState leveldb_state);
+
+  // Constructs the resolved backend, opens it, records the OpenDatabase
+  // histograms, and runs `callback` (already bound to the caller's sequence)
+  // with the assembled `OpenResult`.
+  //
+  // For on-disk databases this may be called from any sequence. The work runs
+  // on the backend's blocking sequence (selected via `GetTaskRunnerForDb()`),
+  // re-posting to it if needed. For in-memory databases the caller must invoke
+  // this on the backend's sequence, since `GetTaskRunnerForDb()` returns a
+  // fresh sequence on each call for an empty path and so cannot be used here to
+  // re-post.
+  static void InitializeDatabase(
+      StorageType storage_type,
+      std::optional<base::trace_event::MemoryAllocatorDumpGuid> memory_dump_id,
+      OpenResultCallback callback,
+      bool is_sqlite,
+      bool write_exp_tag,
+      DatabaseMetricsType metrics_type,
+      base::FilePath database_path,
+      std::optional<DestroyOutcome> destroy_outcome);
+
+  // Constructs and opens the requested backend.
+  static StatusOr<std::unique_ptr<DomStorageDatabase>> ConstructAndOpenDatabase(
+      StorageType storage_type,
+      bool is_sqlite,
+      bool write_exp_tag,
+      const base::FilePath& database_path,
+      const std::optional<base::trace_event::MemoryAllocatorDumpGuid>&
+          memory_dump_id);
+
+  // Migrates all metadata and map entries from `source` to `destination`.
+  // `destination` must be empty.
+  static DbStatus MigrateDatabase(DomStorageDatabase& source,
+                                  DomStorageDatabase& destination);
+
+  // Moves the SQLite database file from `sqlite_staging_path` to `sqlite_path`.
+  static DbStatus MoveTempSqliteToFinalLocation(
+      const base::FilePath& sqlite_staging_path,
+      const base::FilePath& sqlite_path);
+
+  // Verifies that `destination` contains the same maps, metadata and entries
+  // as `source`.
+  static DbStatus VerifyMigration(StorageType storage_type,
+                                  DomStorageDatabase& source,
+                                  DomStorageDatabase& destination);
+
+  // Returns the open callback, lazily initialized on first call. Defaults to
+  // `OpenImpl`. Tests can swap in a custom implementation via
+  // `ScopedDomStorageDatabaseFactoryForTesting`.
+  static OpenCallback& GetOpenCallback();
+
+  static DomStorageDatabaseFactory::MigrationCallback& GetMigrationCallback();
 
   // Allow unit tests to create a database instance without `SequenceBound`.
   static PassKey CreatePassKeyForTesting();
@@ -411,12 +639,6 @@ void ReportDatabaseMemoryUsage(
 // Both LevelDB and SQLite implementations use this helper function.
 DbStatus PurgeOrigins(DomStorageDatabase& database,
                       std::set<url::Origin> origins);
-
-// Migrates all metadata and map entries from `source` to `destination`.
-// Intended for migrating from LevelDB to SQLite. The `destination` must be
-// empty.
-DbStatus MigrateDatabase(DomStorageDatabase& source,
-                         DomStorageDatabase& destination);
 
 }  // namespace storage
 

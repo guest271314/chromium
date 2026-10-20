@@ -67,7 +67,6 @@ extern const wchar_t kRegLastInstallerExtraField[];
 extern const wchar_t kRegMetricsId[];
 extern const wchar_t kRegMetricsIdEnabledDate[];
 extern const wchar_t kRegMetricsIdInstallDate[];
-extern const wchar_t kRegMetricsReportingLevel[];
 extern const wchar_t kRegMSIField[];
 extern const wchar_t kRegNameField[];
 extern const wchar_t kRegOemInstallField[];
@@ -78,12 +77,9 @@ extern const wchar_t kRegProfilesSignedIn[];
 extern const wchar_t kRegRLZBrandField[];
 extern const wchar_t kRegRLZReactivationBrandField[];
 extern const wchar_t kRegReferralField[];
-extern const wchar_t kRegRunAsUserField[];
-extern const wchar_t kRegSendsPingsField[];
 extern const wchar_t kRegUninstallCmdLine[];
 extern const wchar_t kRegUsageStatsField[];
 extern const wchar_t kRegVersionField[];
-extern const wchar_t kRegWebAccessibleField[];
 
 // Last time that chrome ran in the Time internal format.
 extern const wchar_t kRegLastRunTimeField[];

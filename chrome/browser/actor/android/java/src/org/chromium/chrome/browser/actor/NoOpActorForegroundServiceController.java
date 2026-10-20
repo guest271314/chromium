@@ -9,6 +9,7 @@ import android.content.Intent;
 
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
+import org.chromium.chrome.browser.tabmodel.TabModelSelector;
 
 import java.util.Set;
 
@@ -25,6 +26,9 @@ public class NoOpActorForegroundServiceController implements ActorForegroundServ
     }
 
     private NoOpActorForegroundServiceController() {}
+
+    @Override
+    public void startService(String glicTriggerMessageId) {}
 
     @Override
     public void startAndBindService(Runnable onConnected) {}
@@ -48,12 +52,20 @@ public class NoOpActorForegroundServiceController implements ActorForegroundServ
     public void stopActorForegroundService(int flags) {}
 
     @Override
+    public void transitionActiveTasksToBackground(TabModelSelector selector) {}
+
+    @Override
     public @Nullable Intent createTrustedBringTabToFrontIntent(ActorTask task) {
         return null;
     }
 
     @Override
     public boolean isActivityVisibleForTabs(Set<Integer> tabIds) {
+        return false;
+    }
+
+    @Override
+    public boolean isTabbedActivityVisible() {
         return false;
     }
 }

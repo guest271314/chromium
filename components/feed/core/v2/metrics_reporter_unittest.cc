@@ -257,7 +257,6 @@ TEST_F(MetricsReporterTest, ReportsLoadStreamStatus) {
 }
 
 TEST_F(MetricsReporterTest, ReportsLoadStreamStatusWhenDisabled) {
-  feedstore::Metadata::StreamMetadata stream_metadata;
   reporter_->OnLoadStream(
       StreamType(StreamKind::kForYou),
       LoadFailureResults(LoadStreamStatus::kLoadNotAllowedDisabled),
@@ -347,7 +346,6 @@ TEST_F(MetricsReporterTest, DoNotReportContentAgeWhenNotPositive) {
 }
 
 TEST_F(MetricsReporterTest, ReportsLoadStepLatenciesOnFirstView) {
-  feedstore::Metadata::StreamMetadata stream_metadata;
   {
     auto latencies = std::make_unique<LoadLatencyTimes>();
     task_environment_.FastForwardBy(base::Milliseconds(150));
@@ -783,27 +781,6 @@ TEST_F(MetricsReporterTest, TurnOffAction) {
                              FeedUserActionType::kTappedTurnOff);
   histogram_.ExpectUniqueSample("ContentSuggestions.Feed.UserActions",
                                 FeedUserActionType::kTappedTurnOff, 1);
-}
-
-TEST_F(MetricsReporterTest, NetworkRequestCompleteReportsUma) {
-  NetworkResponseInfo response_info;
-  response_info.status_code = 200;
-  response_info.fetch_duration = base::Seconds(2);
-  response_info.encoded_size_bytes = 123 * 1024;
-
-  MetricsReporter::NetworkRequestComplete(NetworkRequestType::kListWebFeeds,
-                                          response_info);
-
-  histogram_.ExpectUniqueSample(
-      "ContentSuggestions.Feed.Network.ResponseStatus.ListFollowedWebFeeds",
-      200, 1);
-  histogram_.ExpectUniqueTimeSample(
-      "ContentSuggestions.Feed.Network.Duration.ListFollowedWebFeeds",
-      base::Seconds(2), 1);
-  histogram_.ExpectUniqueSample(
-      "ContentSuggestions.Feed.Network.CompressedResponseSizeKB."
-      "ListFollowedWebFeeds",
-      123, 1);
 }
 
 TEST_F(MetricsReporterTest, UserSettingsOnStart_FeedNotEnabled) {

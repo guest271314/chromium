@@ -13,6 +13,7 @@
 #include "base/scoped_observation.h"
 #include "base/task/task_traits.h"
 #include "chrome/browser/profiles/profile_keyed_service_factory.h"
+#include "chrome/browser/safe_browsing/advanced_protection_status_manager.h"
 #include "chrome/browser/ssl/daily_navigation_counter.h"
 #include "components/keyed_service/core/keyed_service.h"
 #include "components/prefs/pref_change_registrar.h"
@@ -48,6 +49,30 @@ enum class HttpsFirstModeSetting {
 //      /tools/metrics/histograms/metadata/security/enums.xml
 // )
 
+// Detailed HFM state at startup, distinguishing between different enablement
+// reasons. These values are persisted to logs. Entries should not be renumbered
+// and numeric values should never be reused. Must be kept in sync with
+// HttpsFirstModeStartupState in enums.xml.
+enum class HttpsFirstModeStartupState {
+  kDisabled = 0,
+  kEnabledFull = 1,
+  kEnabledBalancedExplicit = 2,
+  kEnabledBalancedTypicallySecure = 3,
+  kEnabledBalancedEsbPairing = 4,
+  kEnabledBalancedAutoEnable = 5,
+  kMaxValue = kEnabledBalancedAutoEnable,
+};
+
+// Events for implicit HFM setting changes (e.g. due to ESB pairing).
+// These values are persisted to logs. Entries should not be renumbered and
+// numeric values should never be reused.
+// Must be kept in sync with HttpsFirstModeImplicitStateChange in enums.xml.
+enum class HttpsFirstModeImplicitStateChange {
+  kBalancedEnabledByEsb = 0,
+  kBalancedDisabledByEsb = 1,
+  kMaxValue = kBalancedDisabledByEsb,
+};
+
 // A `KeyedService` that tracks changes to the HTTPS-First Mode pref for each
 // profile. This is currently used for:
 // - Recording pref state in metrics and registering the client for a synthetic
@@ -56,7 +81,10 @@ enum class HttpsFirstModeSetting {
 //   prefs, and Advanced Protection status).
 // - Checking the Site Engagement scores of a site and enable/disable HFM based
 //   on that.
-class HttpsFirstModeService : public KeyedService {
+class HttpsFirstModeService
+    : public KeyedService,
+      public safe_browsing::AdvancedProtectionStatusManager::
+          StatusChangedObserver {
  public:
   explicit HttpsFirstModeService(Profile* profile, base::Clock* clock);
   ~HttpsFirstModeService() override;
@@ -67,6 +95,10 @@ class HttpsFirstModeService : public KeyedService {
   // Runs Typically Secure User and Site Engagement heuristics after the service
   // is created.
   void AfterStartup();
+
+  // Migrates existing Enhanced bundle users to Balanced HFM and schedules the
+  // upgrade Toast if they haven't manually customized HFM.
+  void MigrateEnhancedBundleUsersAndMaybeShowToast();
 
   // Returns true if the Typically Secure Heuristic enabled HTTPS-First Mode
   // in this profile. Does not update the recorded fallback events list.
@@ -106,6 +138,12 @@ class HttpsFirstModeService : public KeyedService {
 
  private:
   void OnHttpsFirstModePrefChanged();
+  void OnSafeBrowsingEnhancedPrefChanged();
+  // Triggered when the Security Settings Bundle pref changes during the
+  // session.
+  void OnSecuritySettingsBundleChanged();
+  // safe_browsing::AdvancedProtectionStatusManager::StatusChangedObserver:
+  void OnAdvancedProtectionStatusChanged(bool enabled) override;
   // HTTPS-Upgrade fallback events are stored in a pref. This method extracts
   // the fallback events, deletes old events, adds a new event if
   // `add_new_entry` is true. Returns true if the heuristic indicates that
@@ -136,6 +174,11 @@ class HttpsFirstModeService : public KeyedService {
 
   base::DictValue navigation_counts_dict_;
   std::unique_ptr<DailyNavigationCounter> navigation_counter_;
+
+  base::ScopedObservation<
+      safe_browsing::AdvancedProtectionStatusManager,
+      safe_browsing::AdvancedProtectionStatusManager::StatusChangedObserver>
+      obs_{this};
 
   base::WeakPtrFactory<HttpsFirstModeService> weak_factory_{this};
 };

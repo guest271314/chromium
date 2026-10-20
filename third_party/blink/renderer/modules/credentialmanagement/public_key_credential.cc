@@ -69,8 +69,7 @@ void OnGetClientCapabilitiesComplete(
   // extension implemented by the client, formed by prefixing "extension:"
   // to the extension identifier.
   //
-  // Excluded extensions: uvm, remoteDesktopClientOverride, and
-  // supplementalPubKeys.
+  // Excluded extensions: uvm and remoteDesktopClientOverride.
   results.emplace_back("extension:appid", true);
   results.emplace_back("extension:appidExclude", true);
   results.emplace_back("extension:hmacCreateSecret", true);
@@ -88,6 +87,14 @@ void OnGetClientCapabilitiesComplete(
   results.emplace_back(
       "extension:cmtgKey",
       RuntimeEnabledFeatures::WebAuthenticationCmtgKeyEnabled());
+  results.emplace_back(
+      "extension:crossDeviceFallbackUrl",
+      RuntimeEnabledFeatures::WebAuthenticationCrossDeviceFallbackUrlEnabled(
+          resolver->GetExecutionContext()));
+  if (RuntimeEnabledFeatures::WebAuthenticationRemoteClientDataJsonEnabled(
+          resolver->GetExecutionContext())) {
+    results.emplace_back("extension:remoteClientDataJSON", true);
+  }
 
   // Results should be sorted lexicographically based on the keys.
   std::sort(
@@ -96,21 +103,10 @@ void OnGetClientCapabilitiesComplete(
         return CodeUnitCompare(a.first, b.first) < 0;
       });
 
-  // TODO(crbug.com/393055190): Remove this when the feature is graduated from
-  // origin trials.
-  if (!RuntimeEnabledFeatures::WebAuthenticationImmediateGetEnabled(
-          resolver->GetExecutionContext())) {
-    for (wtf_size_t i = 0; i < results.size(); ++i) {
-      if (results[i].first == "immediateGet") {
-        results.EraseAt(i);
-        break;
-      }
-    }
-  }
   if (!RuntimeEnabledFeatures::WebAuthenticationAmbientEnabled(
           resolver->GetExecutionContext())) {
     for (wtf_size_t i = 0; i < results.size(); ++i) {
-      if (results[i].first == "ambientGet") {
+      if (results[i].first == "conditionalPassiveGet") {
         results.EraseAt(i);
         break;
       }
@@ -255,7 +251,8 @@ v8::Local<v8::Object> PublicKeyCredential::toJSON(
           [&](AuthenticatorAttestationResponseJSON* attestation_response) {
             auto* registration_response = RegistrationResponseJSON::Create();
             registration_response->setId(id());
-            registration_response->setRawId(WebAuthnBase64UrlEncode(rawId()));
+            registration_response->setRawId(
+                WebAuthnBase64UrlEncode(rawId()->ByteSpan()));
             registration_response->setResponse(attestation_response);
             if (!authenticator_attachment_.IsNull()) {
               registration_response->setAuthenticatorAttachment(
@@ -271,7 +268,8 @@ v8::Local<v8::Object> PublicKeyCredential::toJSON(
             auto* authentication_response =
                 AuthenticationResponseJSON::Create();
             authentication_response->setId(id());
-            authentication_response->setRawId(WebAuthnBase64UrlEncode(rawId()));
+            authentication_response->setRawId(
+                WebAuthnBase64UrlEncode(rawId()->ByteSpan()));
             authentication_response->setResponse(assertion_response);
             if (!authenticator_attachment_.IsNull()) {
               authentication_response->setAuthenticatorAttachment(

@@ -20,6 +20,7 @@
 #include "base/check_op.h"
 #include "base/debug/crash_logging.h"
 #include "base/debug/dump_without_crashing.h"
+#include "base/i18n/case_conversion.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/not_fatal_until.h"
 #include "base/strings/string_number_conversions.h"
@@ -29,6 +30,7 @@
 #include "base/time/time.h"
 #include "components/country_codes/country_codes.h"
 #include "components/google/core/common/google_util.h"
+#include "components/lens/lens_features.h"
 #include "components/lens/lens_overlay_invocation_source.h"
 #include "components/lens/lens_overlay_mime_type.h"
 #include "components/lens/lens_url_utils.h"
@@ -87,6 +89,8 @@ WDKeywordsResult::Metadata ComputeMergeEnginesRequirements(
         builtin_keywords_metadata->data_version;
     out_metadata.builtin_keyword_country =
         builtin_keywords_metadata->country_id;
+    out_metadata.prepopulated_engines_migration_state =
+        builtin_keywords_metadata->prepopulated_engines_migration_state;
   }
 
   const int starter_pack_data_version =
@@ -103,7 +107,8 @@ GURL GetBaseSearchUrl(TemplateURLService* turl_service,
                       bool is_aim_search,
                       const base::Time& query_start_time,
                       const std::u16string& query_text,
-                      std::map<std::string, std::string> additional_params) {
+                      std::map<std::string, std::string> additional_params,
+                      bool append_multimodal_udm_if_not_aim = true) {
   const TemplateURLRef& url_ref =
       turl_service->GetDefaultSearchProvider()->url_ref();
   TemplateURLRef::SearchTermsArgs search_term_args =
@@ -127,7 +132,7 @@ GURL GetBaseSearchUrl(TemplateURLService* turl_service,
                                                     param.second);
   }
 
-  if (!is_aim_search) {
+  if (!is_aim_search && append_multimodal_udm_if_not_aim) {
     std::string udm_value = query_text.empty()
                                 ? kUnimodalUdmQueryParameterValue
                                 : kMultimodalUdmQueryParameterValue;
@@ -148,10 +153,13 @@ GURL GetBaseSearchUrl(TemplateURLService* turl_service,
       result_url, kClientUploadDurationQueryParameter,
       base::NumberToString(
           (query_submission_time - query_start_time).InMilliseconds()));
-  result_url = net::AppendOrReplaceQueryParameter(
-      result_url, kQuerySubmissionTimeQueryParameter,
-      base::NumberToString(
-          query_submission_time.InMillisecondsSinceUnixEpoch()));
+  if (base::FeatureList::IsEnabled(
+          lens::features::kLensSendQuerySubmissionTime)) {
+    result_url = net::AppendOrReplaceQueryParameter(
+        result_url, kQuerySubmissionTimeQueryParameter,
+        base::NumberToString(
+            query_submission_time.InMillisecondsSinceUnixEpoch()));
+  }
   return result_url;
 }
 
@@ -289,8 +297,11 @@ bool IsSearchEngineKeywordValidToUse(const std::u16string& keyword_input,
     return false;
   }
 
+  std::u16string normalized_keyword =
+      base::i18n::ToLower(keyword_input_trimmed);
+
   const TemplateURL* turl_with_keyword =
-      service->GetTemplateURLForKeyword(keyword_input_trimmed);
+      service->GetTemplateURLForKeyword(normalized_keyword);
   return (!turl_with_keyword || turl_with_keyword == existing_url);
 }
 
@@ -499,7 +510,7 @@ void RemoveDuplicatePrepopulateIDs(
 // If not found, returns NULL.
 TemplateURL* GetTemplateURLByID(
     const TemplateURLService::TemplateURLVector& template_urls,
-    int64_t id) {
+    TemplateURLID id) {
   for (auto i(template_urls.begin()); i != template_urls.end(); ++i) {
     if ((*i)->id() == id) {
       return *i;
@@ -700,11 +711,13 @@ ActionsFromCurrentData CreateActionsFromCurrentPrepopulateData(
   int entries_matching_dsp_to_reconcile = 0;
   TemplateURL* dsp_match = nullptr;
 
+  size_t raw_regulatory_count = 0;
   for (auto& turl : existing_urls) {
     if (turl->CreatedByRegulatoryProgram()) {
       // This might be a deprecated keyword, as variants for some engines have
       // changed since programs were introduced. See
       // `ReconcilingTemplateURLDataHolder::GetOrComputeKeyword()`.
+      ++raw_regulatory_count;
       regulatory_entries.insert({turl->keyword(), turl.get()});
     }
     int prepopulate_id = turl->prepopulate_id();
@@ -724,6 +737,20 @@ ActionsFromCurrentData CreateActionsFromCurrentPrepopulateData(
       }
 
       ++entries_matching_dsp_to_reconcile;
+    }
+  }
+
+  if (raw_regulatory_count > 1) {
+    bool all_regulatory_same_keyword = (regulatory_entries.size() == 1);
+    base::UmaHistogramBoolean(
+        "Omnibox.TemplateUrl.DBRefresh.RegulatoryDuplicatesSameKeyword",
+        all_regulatory_same_keyword);
+
+    if (base::FeatureList::IsEnabled(switches::kKwdbRefreshDebugging) &&
+        regulatory_entries.size() > 1) {
+      // We expect to only have one regulatory program engine at a time, see
+      // `TemplateURLService::ResetPlayAPISearchEngine()`.
+      base::debug::DumpWithoutCrashing();
     }
   }
 
@@ -798,10 +825,6 @@ ActionsFromCurrentData CreateActionsFromCurrentPrepopulateData(
       base::debug::DumpWithoutCrashing();
     }
   }
-
-  // We expect to only have one regulatory program engine at a time, see
-  // `TemplateURLService::ResetPlayAPISearchEngine()`.
-  CHECK_LE(regulatory_entries.size(), 1u, base::NotFatalUntil::M152);
 
   // For each current prepopulated URL, check whether |template_urls| contained
   // a matching prepopulated URL.  If so, update the passed-in URL to match the
@@ -1052,6 +1075,7 @@ void GetSearchProvidersUsingKeywordResult(
   GetSearchProvidersUsingLoadedEngines(
       service, prefs, template_url_data_resolver, template_urls,
       default_search_provider, search_terms_data, out_updated_keywords_metadata,
+      keyword_result.had_prepopulated_decryption_failure,
       removed_keyword_guids);
 
   // If a data change happened, it should not cause a version downgrade.
@@ -1070,6 +1094,7 @@ void GetSearchProvidersUsingLoadedEngines(
     TemplateURL* default_search_provider,
     const SearchTermsData& search_terms_data,
     WDKeywordsResult::Metadata& in_out_keywords_metadata,
+    bool had_prepopulated_decryption_failure,
     std::set<std::string>* removed_keyword_guids) {
   DCHECK(template_urls);
   std::vector<std::unique_ptr<TemplateURLData>> prepopulated_urls =
@@ -1082,7 +1107,10 @@ void GetSearchProvidersUsingLoadedEngines(
       ComputeMergeEnginesRequirements(template_url_data_resolver,
                                       in_out_keywords_metadata);
 
-  if (required_metadata.HasBuiltinKeywordData()) {
+  // A prepopulated row discarded after a decryption failure requires regional
+  // reconciliation independently of any version or country update.
+  if (required_metadata.HasBuiltinKeywordData() ||
+      had_prepopulated_decryption_failure) {
     MergeEnginesFromPrepopulateData(
         service, &prepopulated_urls, template_urls, default_search_provider,
         template_url_data_resolver, removed_keyword_guids);
@@ -1181,9 +1209,10 @@ GURL GetUrlForMultimodalSearch(
     const std::string& lns_surface,
     const std::u16string& query_text,
     std::map<std::string, std::string> additional_params) {
-  GURL result_url =
-      GetBaseSearchUrl(turl_service, aim_entrypoint, is_aim_search,
-                       query_start_time, query_text, additional_params);
+  GURL result_url = GetBaseSearchUrl(
+      turl_service, aim_entrypoint, is_aim_search, query_start_time, query_text,
+      additional_params,
+      /*append_multimodal_udm_if_not_aim=*/request_id != nullptr);
   if (request_id) {
     std::string serialized_request_id;
     CHECK(request_id->SerializeToString(&serialized_request_id));

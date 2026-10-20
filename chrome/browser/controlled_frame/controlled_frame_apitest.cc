@@ -18,17 +18,24 @@
 #include "chrome/browser/content_settings/host_content_settings_map_factory.h"
 #include "chrome/browser/controlled_frame/controlled_frame_test_base.h"
 #include "chrome/browser/extensions/browsertest_util.h"
+#include "chrome/browser/extensions/chrome_test_extension_loader.h"
 #include "chrome/browser/extensions/menu_manager.h"
 #include "chrome/browser/extensions/service_worker_apitest.h"
-#include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/web_applications/isolated_web_apps/isolated_web_app_url_info.h"
 #include "chrome/browser/web_applications/isolated_web_apps/test/isolated_web_app_builder.h"
 #include "chrome/common/chrome_features.h"
 #include "chrome/common/chrome_paths.h"
+#include "chrome/common/pref_names.h"
 #include "components/content_settings/core/browser/host_content_settings_map.h"
 #include "components/content_settings/core/common/content_settings.h"
 #include "components/embedder_support/user_agent_utils.h"
+#include "components/prefs/pref_service.h"
 #include "content/public/browser/render_frame_host.h"
+#include "content/public/browser/render_widget_host_view.h"
+#include "content/public/browser/service_worker_context.h"
+#include "content/public/browser/service_worker_running_info.h"
+#include "content/public/browser/storage_partition.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_exposed_isolation_level.h"
 #include "content/public/common/content_features.h"
@@ -38,10 +45,13 @@
 #include "content/public/test/test_utils.h"
 #include "content/public/test/web_transport_simple_test_server.h"
 #include "extensions/browser/api/web_request/extension_web_request_event_router.h"
+#include "extensions/browser/background_script_executor.h"
 #include "extensions/browser/event_router.h"
 #include "extensions/browser/guest_view/web_view/web_view_guest.h"
+#include "extensions/browser/service_worker/service_worker_test_utils.h"
 #include "extensions/common/extension_features.h"
 #include "extensions/test/extension_test_message_listener.h"
+#include "extensions/test/test_extension_dir.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
 #include "net/test/embedded_test_server/install_default_websocket_handlers.h"
 #include "net/test/test_data_directory.h"
@@ -130,6 +140,7 @@ const content::EvalJsResult VerifyBackgroundColorIsRed(
 
 const content::EvalJsResult ExecuteScriptRequestFullScreen(
     content::RenderFrameHost* app_frame) {
+  app_frame->GetView()->SetHasFocusForTesting(true);
   return content::EvalJs(app_frame, R"(
     (async function() {
       const frame = document.getElementsByTagName('controlledframe')[0];
@@ -475,6 +486,44 @@ IN_PROC_BROWSER_TEST_F(ControlledFrameApiTest, ExecuteScript) {
   EXPECT_EQ(kEvalSuccessStr, VerifyBackgroundColorIsRed(web_view_guest));
 }
 
+IN_PROC_BROWSER_TEST_F(ControlledFrameApiTest,
+                       CaptureVisibleRegionDisabledByPolicy) {
+  std::unique_ptr<web_app::ScopedBundledIsolatedWebApp> app =
+      web_app::IsolatedWebAppBuilder(
+          web_app::ManifestBuilder().AddPermissionsPolicy(
+              network::mojom::PermissionsPolicyFeature::kControlledFrame,
+              /*self=*/true,
+              /*origins=*/{}))
+          .BuildBundle();
+  app->TrustSigningKey();
+  ASSERT_OK_AND_ASSIGN(web_app::IsolatedWebAppUrlInfo url_info,
+                       app->Install(profile()));
+  content::RenderFrameHost* app_frame = OpenApp(url_info.app_id());
+
+  ASSERT_TRUE(CreateControlledFrame(
+      app_frame, embedded_https_test_server().GetURL("/index.html")));
+
+  profile()->GetPrefs()->SetBoolean(prefs::kDisableScreenshots, true);
+
+  const std::string script = R"(
+    (async function() {
+      const frame = document.getElementsByTagName('controlledframe')[0];
+      if (!frame || !frame.request) {
+        return 'NO_FRAME';
+      }
+      try {
+        await frame.captureVisibleRegion();
+        return 'UNEXPECTED_SUCCESS';
+      } catch (err) {
+        return err.message ? err.message : String(err);
+      }
+    })();
+  )";
+
+  EXPECT_EQ("Failed to capture webview: screenshot has been disabled",
+            content::EvalJs(app_frame, script));
+}
+
 IN_PROC_BROWSER_TEST_F(ControlledFrameApiTest, EnterFullScreenControlledFrame) {
   const GURL embed_url = embedded_https_test_server().GetURL("/index.html");
   const url::Origin embed_origin = url::Origin::Create(embed_url);
@@ -609,6 +658,79 @@ IN_PROC_BROWSER_TEST_F(ControlledFrameApiTest, DisabledInBlobIframe) {
   // the frame's scheme as well as its isolation level.
   ASSERT_FALSE(CreateControlledFrame(
       iframe, embedded_https_test_server().GetURL("/index.html")));
+}
+// Verifies that when <controlledframe> is embedded inside a nested same-origin
+// iframe within an Isolated Web App, calling postMessage from the nested iframe
+// to the guest should preserve a valid MessageEvent.source.
+// See b/537662184.
+IN_PROC_BROWSER_TEST_F(ControlledFrameApiTest,
+                       MessageEventSourceInNestedIframe) {
+  web_app::IsolatedWebAppUrlInfo url_info =
+      CreateAndInstallEmptyApp(web_app::ManifestBuilder());
+  content::RenderFrameHost* app_frame = OpenApp(url_info.app_id());
+
+  // Create a nested same-origin iframe inside the app_frame, along with a
+  // sibling iframe.
+  ASSERT_TRUE(
+      ExecJs(app_frame, content::JsReplace(R"(
+      new Promise(resolve => {
+        const f = document.createElement('iframe');
+        f.src = $1;
+        f.addEventListener('load', () => {
+          const f2 = document.createElement('iframe');
+          f2.src = $1;
+          f2.addEventListener('load', resolve);
+          document.body.appendChild(f2);
+        });
+        document.body.appendChild(f);
+      });
+  )",
+                                           url_info.origin().Serialize())));
+  content::RenderFrameHost* iframe = ChildFrameAt(app_frame, 0);
+  ASSERT_NE(iframe, nullptr);
+
+  // Create the <controlledframe> inside the nested iframe.
+  const GURL https_url = embedded_https_test_server().GetURL("/index.html");
+  ASSERT_TRUE(CreateControlledFrame(iframe, https_url));
+
+  extensions::WebViewGuest* web_view_guest = GetWebViewGuest(app_frame);
+  ASSERT_NE(web_view_guest, nullptr);
+  content::RenderFrameHost* guest_frame = web_view_guest->GetGuestMainFrame();
+  ASSERT_NE(guest_frame, nullptr);
+
+  // Set up a message listener in the guest frame to record event.source.
+  // It will reply to the sender using the provided MessageChannel port.
+  // We also verify that sibling frames in the embedder aren't exposed.
+  ASSERT_TRUE(ExecJs(guest_frame, R"(
+    window.addEventListener('message', (e) => {
+      if (e.ports && e.ports.length > 0) {
+        let result = 'source_is_valid';
+        if (e.source === null) {
+          result = 'source_is_null';
+        } else if (e.source.parent.frames.length !== 1) {
+          result = 'sibling_exposed';
+        }
+        e.ports[0].postMessage(result);
+      }
+    });
+  )"));
+
+  // Post a message from the nested iframe embedder to the guest frame with a
+  // MessageChannel. Wait for the guest to evaluate event.source and send back
+  // the result.
+  const std::string result = EvalJs(iframe, R"(
+    new Promise(resolve => {
+      const frame = document.querySelector('controlledframe');
+      const channel = new MessageChannel();
+      channel.port1.onmessage = (e) => {
+        resolve(e.data);
+      };
+      frame.contentWindow.postMessage('ping', '*', [channel.port2]);
+    });
+  )")
+                                 .ExtractString();
+
+  EXPECT_EQ("source_is_valid", result);
 }
 
 IN_PROC_BROWSER_TEST_F(ControlledFrameApiTest, ElementHasExpectedProperties) {
@@ -850,6 +972,192 @@ IN_PROC_BROWSER_TEST_F(ControlledFrameApiTest, Histograms) {
   histogram_tester.ExpectBucketCount(
       "Blink.UseCounter.Features",
       blink::mojom::WebFeature::kHTMLControlledFrameElement, 1);
+}
+
+// Tests that network requests initiated by a guest Service Worker (such as
+// importScripts and subresource fetches) are classified as web view requests
+// and are not dispatched to an unrelated extension's webRequest listeners.
+// Regression test for https://crbug.com/495471295.
+IN_PROC_BROWSER_TEST_F(ControlledFrameApiTest,
+                       GuestServiceWorkerRequestsNotDispatchedToExtension) {
+  extensions::TestExtensionDir test_dir;
+  test_dir.WriteManifest(R"({
+    "name": "WebRequest Observer",
+    "version": "0.1",
+    "manifest_version": 3,
+    "background": {
+      "service_worker": "background.js"
+    },
+    "permissions": ["webRequest"],
+    "host_permissions": ["<all_urls>"]
+  })");
+  test_dir.WriteFile(FILE_PATH_LITERAL("background.js"), R"(
+    let interceptedUrls = [];
+    chrome.webRequest.onBeforeRequest.addListener(
+      (details) => {
+        interceptedUrls.push(details.url);
+      },
+      {urls: ['*://*/*']}
+    );
+    chrome.test.sendMessage('READY');
+  )");
+
+  ExtensionTestMessageListener ready_listener("READY");
+  extensions::ChromeTestExtensionLoader loader(profile());
+  scoped_refptr<const extensions::Extension> extension =
+      loader.LoadExtension(test_dir.UnpackedPath());
+  ASSERT_TRUE(extension);
+  ASSERT_TRUE(ready_listener.WaitUntilSatisfied());
+
+  web_app::IsolatedWebAppUrlInfo url_info =
+      CreateAndInstallEmptyApp(web_app::ManifestBuilder());
+  content::RenderFrameHost* app_frame = OpenApp(url_info.app_id());
+
+  const GURL guest_sw_test_url =
+      embedded_https_test_server().GetURL("/guest_sw_test.html");
+  ASSERT_TRUE(CreateControlledFrame(app_frame, guest_sw_test_url));
+
+  extensions::WebViewGuest* web_view_guest = GetWebViewGuest(app_frame);
+  ASSERT_TRUE(web_view_guest);
+
+  EXPECT_EQ("DONE",
+            content::EvalJs(web_view_guest->GetGuestMainFrame(), "startSW()"));
+
+  base::Value intercepted_urls =
+      extensions::BackgroundScriptExecutor::ExecuteScript(
+          profile(), extension->id(),
+          "chrome.test.sendScriptResult(interceptedUrls);",
+          extensions::BackgroundScriptExecutor::ResultCapture::
+              kSendScriptResult);
+  ASSERT_TRUE(intercepted_urls.is_list());
+  ASSERT_FALSE(intercepted_urls.GetList().empty());
+
+  for (const auto& url_value : intercepted_urls.GetList()) {
+    EXPECT_THAT(url_value.GetString(),
+                Not(HasSubstr("guest_sw_fetch_worker.js")));
+    EXPECT_THAT(url_value.GetString(),
+                Not(HasSubstr("guest_sw_fetch_from_worker.txt")));
+  }
+}
+
+class ControlledFrameServiceWorkerAutoPreloadTest
+    : public ControlledFrameApiTest,
+      public testing::WithParamInterface<bool> {
+ public:
+  ControlledFrameServiceWorkerAutoPreloadTest() {
+    scoped_feature_list_.InitWithFeatureState(
+        features::kOptimizeWebRequestProxyForServiceWorkerAutoPreload,
+        GetParam());
+  }
+  ~ControlledFrameServiceWorkerAutoPreloadTest() override = default;
+
+  static std::string DescribeParams(
+      const testing::TestParamInfo<ParamType>& info) {
+    return base::StrCat({"Optimization", info.param ? "Enabled" : "Disabled"});
+  }
+
+ private:
+  base::test::ScopedFeatureList scoped_feature_list_;
+};
+
+INSTANTIATE_TEST_SUITE_P(
+    /* no prefix */,
+    ControlledFrameServiceWorkerAutoPreloadTest,
+    testing::Bool(),
+    ControlledFrameServiceWorkerAutoPreloadTest::DescribeParams);
+
+IN_PROC_BROWSER_TEST_P(ControlledFrameServiceWorkerAutoPreloadTest,
+                       WebRequestOnErrorOccurredNavigation) {
+  web_app::IsolatedWebAppUrlInfo url_info =
+      CreateAndInstallEmptyApp(web_app::ManifestBuilder());
+  content::RenderFrameHost* app_frame = OpenApp(url_info.app_id());
+
+  const GURL sw_register_url =
+      embedded_https_test_server().GetURL("/sw_register.html");
+  const GURL sw_scope_url =
+      embedded_https_test_server().GetURL("/sw/index.html");
+  const GURL empty_url =
+      embedded_https_test_server().GetURL("/empty_title.html");
+
+  ASSERT_TRUE(CreateControlledFrame(app_frame, sw_register_url));
+
+  extensions::WebViewGuest* web_view_guest = GetWebViewGuest(app_frame);
+  ASSERT_TRUE(web_view_guest);
+
+  EXPECT_EQ("SW_REGISTERED",
+            content::EvalJs(web_view_guest->GetGuestMainFrame(),
+                            "window.swActivationPromise"));
+
+  // Step 1: Navigate to the page (SW installed)
+  web_view_guest->NavigateGuest(sw_scope_url.spec(), {}, false);
+  EXPECT_TRUE(content::WaitForLoadStop(web_view_guest->web_contents()));
+  EXPECT_EQ(
+      "SW Scope Page",
+      content::EvalJs(web_view_guest->GetGuestMainFrame(), "document.title"));
+
+  // Step 2: Navigate away and stop the SW.
+  web_view_guest->NavigateGuest(empty_url.spec(), {}, false);
+  EXPECT_TRUE(content::WaitForLoadStop(web_view_guest->web_contents()));
+
+  content::StoragePartition* storage_partition =
+      web_view_guest->GetGuestMainFrame()->GetStoragePartition();
+  content::ServiceWorkerContext* sw_context =
+      storage_partition->GetServiceWorkerContext();
+
+  const blink::StorageKey& sw_storage_key =
+      web_view_guest->GetGuestMainFrame()->GetStorageKey();
+  GURL sw_scope = sw_storage_key.origin().GetURL().Resolve("/sw/");
+
+  // ServiceWorkerAutoPreload only operates during the Service Worker startup
+  // phase. We must ensure the Service Worker is completely stopped before
+  // triggering navigation. Since JavaScript cannot reliably trigger a
+  // force-stop and synchronize with the browser, we use the C++ side helper.
+  ASSERT_TRUE(extensions::service_worker_test_utils::StopServiceWorkerForScope(
+      sw_context, sw_scope, sw_storage_key));
+
+  // Step 3: Add WebRequest interceptor and navigate to the page again.
+  // Step 4: Confirm that SWAutoPreload is not enabled (onErrorOccurred not
+  // called).
+  GURL sw_scope_stream_url =
+      embedded_https_test_server().GetURL("/sw/index.html?stream=1");
+  EXPECT_EQ("SUCCESS", content::EvalJs(app_frame, content::JsReplace(
+                                                      R"(
+    new Promise((resolve, reject) => {
+      const frame = document.getElementsByTagName('controlledframe')[0];
+      if (!frame || !frame.request) {
+        reject('Controlled Frame request API not found');
+        return;
+      }
+      frame.request.createWebRequestInterceptor({
+        urlPatterns: ['*://*/*'],
+      }).addEventListener('erroroccurred', (e) => {
+        reject('Unexpected erroroccurred: ' + e.error);
+      });
+
+      frame.addEventListener('loadcommit', () => {
+        const channel = new MessageChannel();
+        channel.port1.onmessage = (e) => {
+          if (e.data === 'SW_READY') {
+            channel.port1.postMessage('FINISH');
+          }
+        };
+        frame.contentWindow.postMessage('START', '*', [channel.port2]);
+      });
+
+      frame.addEventListener('loadstop', () => {
+        resolve('SUCCESS');
+      });
+
+      frame.src = $1;
+    });
+  )",
+                                                      sw_scope_stream_url)));
+
+  EXPECT_EQ(sw_scope_stream_url,
+            web_view_guest->GetGuestMainFrame()->GetLastCommittedURL());
+  EXPECT_EQ(
+      "SW Scope Page",
+      content::EvalJs(web_view_guest->GetGuestMainFrame(), "document.title"));
 }
 
 // This test verifies that various types of network requests (defined in

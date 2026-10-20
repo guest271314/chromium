@@ -2,6 +2,11 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+// TODO(crbug.com/549792645): Remove VLOG level override once Synced Setup
+// launches.
+#undef ENABLED_VLOG_LEVEL
+#define ENABLED_VLOG_LEVEL 1
+
 #include "chrome/browser/sync/chrome_sync_controller_builder.h"
 
 #include <memory>
@@ -14,9 +19,6 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/security_events/security_event_recorder.h"
 #include "chrome/browser/spellchecker/spellcheck_service.h"
-#include "chrome/browser/themes/theme_local_data_batch_uploader.h"
-#include "chrome/browser/themes/theme_service.h"
-#include "chrome/browser/themes/theme_syncable_service.h"
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/common/buildflags.h"
 #include "chrome/common/channel_info.h"
@@ -32,7 +34,10 @@
 #include "components/sync/model/forwarding_data_type_controller_delegate.h"
 #include "components/sync/service/data_type_controller.h"
 #include "components/sync/service/syncable_service_based_data_type_controller.h"
+#include "components/sync_preferences/features.h"
+#include "components/themes/cross_device/features.h"
 #include "content/public/browser/browser_thread.h"
+#include "extensions/buildflags/buildflags.h"
 
 #if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
 #include "chrome/browser/extensions/api/storage/settings_sync_util.h"  // nogncheck
@@ -43,6 +48,9 @@
 #endif
 
 #if BUILDFLAG(ENABLE_EXTENSIONS)
+#include "chrome/browser/themes/theme_local_data_batch_uploader.h"
+#include "chrome/browser/themes/theme_service.h"
+#include "chrome/browser/themes/theme_syncable_service.h"
 #include "chrome/browser/web_applications/web_app_provider.h"
 #include "chrome/browser/web_applications/web_app_sync_bridge.h"
 #include "chrome/browser/web_applications/web_app_utils.h"
@@ -66,12 +74,18 @@
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
 #if BUILDFLAG(IS_ANDROID)
-#include "chrome/browser/android/webapk/webapk_sync_service.h"
+#include "chrome/browser/ntp_customization/ntp_android_custom_background_service.h"
 #endif  // BUILDFLAG(IS_ANDROID)
 
 ChromeSyncControllerBuilder::ChromeSyncControllerBuilder() = default;
 
 ChromeSyncControllerBuilder::~ChromeSyncControllerBuilder() = default;
+
+void ChromeSyncControllerBuilder::SetCrossDeviceThemeTracker(
+    themes::CrossDeviceThemeTracker<LocalThemeSpecifics>*
+        cross_device_theme_tracker) {
+  cross_device_theme_tracker_.Set(cross_device_theme_tracker);
+}
 
 void ChromeSyncControllerBuilder::SetDataTypeStoreService(
     syncer::DataTypeStoreService* data_type_store_service) {
@@ -113,9 +127,10 @@ void ChromeSyncControllerBuilder::SetSpellcheckService(
 #endif  // BUILDFLAG(ENABLE_SPELLCHECK)
 
 #if BUILDFLAG(IS_ANDROID)
-void ChromeSyncControllerBuilder::SetWebApkSyncService(
-    webapk::WebApkSyncService* web_apk_sync_service) {
-  web_apk_sync_service_.Set(web_apk_sync_service);
+void ChromeSyncControllerBuilder::SetNtpAndroidCustomBackgroundService(
+    NtpAndroidCustomBackgroundService* ntp_android_custom_background_service) {
+  ntp_android_custom_background_service_.Set(
+      ntp_android_custom_background_service);
 }
 #endif  // BUILDFLAG(IS_ANDROID)
 
@@ -169,6 +184,7 @@ void ChromeSyncControllerBuilder::SetWifiConfigurationSyncService(
 }
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
+
 std::vector<std::unique_ptr<syncer::DataTypeController>>
 ChromeSyncControllerBuilder::Build(syncer::SyncService* sync_service) {
   std::vector<std::unique_ptr<syncer::DataTypeController>> controllers;
@@ -220,13 +236,29 @@ ChromeSyncControllerBuilder::Build(syncer::SyncService* sync_service) {
 #endif  // BUILDFLAG(ENABLE_EXTENSIONS_CORE)
 
 #if BUILDFLAG(ENABLE_EXTENSIONS)
-    if (extension_sync_service_.value()) {
+#if BUILDFLAG(IS_CHROMEOS)
+    const bool sync_apps = extension_sync_service_.value() != nullptr;
+#else
+    const bool sync_apps =
+        extension_sync_service_.value() &&
+        !base::FeatureList::IsEnabled(syncer::kSyncDoNotSyncAppsAndAppSettings);
+#endif  // BUILDFLAG(IS_CHROMEOS)
+    if (sync_apps) {
       controllers.push_back(
           std::make_unique<browser_sync::ExtensionDataTypeController>(
               syncer::APPS, data_type_store_factory,
               extension_sync_service_.value()->AsWeakPtr(), dump_stack,
+#if BUILDFLAG(IS_CHROMEOS)
+              base::FeatureList::IsEnabled(
+                  syncer::kReplaceSyncPromosWithSignInPromos)
+                  ? browser_sync::ExtensionDataTypeController::DelegateMode::
+                        kTransportModeWithSingleModel
+                  : browser_sync::ExtensionDataTypeController::DelegateMode::
+                        kLegacyFullSyncModeOnly,
+#else
               browser_sync::ExtensionDataTypeController::DelegateMode::
                   kLegacyFullSyncModeOnly,
+#endif  // BUILDFLAG(IS_CHROMEOS)
               extension_system_profile_.value()));
 
       controllers.push_back(
@@ -235,8 +267,17 @@ ChromeSyncControllerBuilder::Build(syncer::SyncService* sync_service) {
               extensions::settings_sync_util::GetSyncableServiceProvider(
                   extension_system_profile_.value(), syncer::APP_SETTINGS),
               dump_stack,
+#if BUILDFLAG(IS_CHROMEOS)
+              base::FeatureList::IsEnabled(
+                  syncer::kReplaceSyncPromosWithSignInPromos)
+                  ? browser_sync::ExtensionSettingDataTypeController::
+                        DelegateMode::kTransportModeWithSingleModel
+                  : browser_sync::ExtensionSettingDataTypeController::
+                        DelegateMode::kLegacyFullSyncModeOnly,
+#else
               browser_sync::ExtensionSettingDataTypeController::DelegateMode::
                   kLegacyFullSyncModeOnly,
+#endif  // BUILDFLAG(IS_CHROMEOS)
               extension_system_profile_.value()));
     }
 
@@ -280,17 +321,21 @@ ChromeSyncControllerBuilder::Build(syncer::SyncService* sync_service) {
 #endif  // BUILDFLAG(ENABLE_EXTENSIONS)
 
 #if BUILDFLAG(IS_ANDROID)
-    if (web_apk_sync_service_.value()) {
+    if (ntp_android_custom_background_service_.value()) {
       syncer::DataTypeControllerDelegate* delegate =
-          web_apk_sync_service_.value()->GetDataTypeControllerDelegate().get();
-      controllers.push_back(std::make_unique<syncer::DataTypeController>(
-          syncer::WEB_APKS,
-          /*delegate_for_full_sync_mode=*/
-          std::make_unique<syncer::ForwardingDataTypeControllerDelegate>(
-              delegate),
-          /*delegate_for_transport_mode=*/
-          std::make_unique<syncer::ForwardingDataTypeControllerDelegate>(
-              delegate)));
+          ntp_android_custom_background_service_.value()
+              ->GetSyncControllerDelegate()
+              .get();
+      if (delegate) {
+        controllers.push_back(std::make_unique<syncer::DataTypeController>(
+            syncer::THEMES_ANDROID,
+            /*delegate_for_full_sync_mode=*/
+            std::make_unique<syncer::ForwardingDataTypeControllerDelegate>(
+                delegate),
+            /*delegate_for_transport_mode=*/
+            std::make_unique<syncer::ForwardingDataTypeControllerDelegate>(
+                delegate)));
+      }
     }
 #endif  // BUILDFLAG(IS_ANDROID)
 
@@ -443,6 +488,42 @@ ChromeSyncControllerBuilder::Build(syncer::SyncService* sync_service) {
               sync_service, pref_service_.value()));
     }
 #endif  // BUILDFLAG(IS_CHROMEOS)
+
+    if (auto tracker = cross_device_theme_tracker_.value();
+        tracker &&
+        base::FeatureList::IsEnabled(themes::kCrossDeviceThemeTracker)) {
+      // TODO(crbug.com/549792645): Remove debug logs once Synced Setup
+      // launches.
+      VLOG_IF(1,
+              base::FeatureList::IsEnabled(
+                  sync_preferences::features::kCrossDevicePrefTrackerExtraLogs))
+          << "XplatSyncedSetup, " << __func__ << ": tracker present";
+      // CrossDeviceThemeTracker tracks remote themes across devices (e.g.
+      // Desktop and iOS themes on Android, or Android and iOS themes on
+      // Desktop) for Synced Set Up import. Continuous 2-way sync for Android's
+      // own NTP customizations (syncer::THEMES_ANDROID) is managed separately
+      // above by NtpAndroidCustomBackgroundService (guarded by
+      // syncer::kNewTabPageCustomizationThemeSync).
+      for (syncer::DataType type :
+           {syncer::THEMES, syncer::THEMES_ANDROID, syncer::THEMES_IOS}) {
+        if (auto* delegate = tracker->GetSyncDelegateForType(type).get()) {
+          VLOG_IF(
+              1,
+              base::FeatureList::IsEnabled(
+                  sync_preferences::features::kCrossDevicePrefTrackerExtraLogs))
+              << "XplatSyncedSetup, " << __func__ << ": "
+              << syncer::DataTypeToDebugString(type) << " delegate present";
+          controllers.push_back(std::make_unique<syncer::DataTypeController>(
+              type,
+              /*delegate_for_full_sync_mode=*/
+              std::make_unique<syncer::ForwardingDataTypeControllerDelegate>(
+                  delegate),
+              /*delegate_for_transport_mode=*/
+              std::make_unique<syncer::ForwardingDataTypeControllerDelegate>(
+                  delegate)));
+        }
+      }
+    }
 
     return controllers;
 }

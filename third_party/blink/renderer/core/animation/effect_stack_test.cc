@@ -10,6 +10,7 @@
 #include "third_party/blink/renderer/bindings/core/v8/v8_union_cssnumericvalue_double.h"
 #include "third_party/blink/renderer/core/animation/animation_clock.h"
 #include "third_party/blink/renderer/core/animation/animation_test_helpers.h"
+#include "third_party/blink/renderer/core/animation/document_animations.h"
 #include "third_party/blink/renderer/core/animation/document_timeline.h"
 #include "third_party/blink/renderer/core/animation/element_animations.h"
 #include "third_party/blink/renderer/core/animation/interpolable_length.h"
@@ -52,7 +53,11 @@ class AnimationEffectStackTest : public PageTestBase {
   void UpdateTimeline(base::TimeDelta time) {
     GetDocument().GetAnimationClock().UpdateTime(
         GetDocument().Timeline().CalculateZeroTime() + time);
-    timeline->ServiceAnimations(kTimingUpdateForAnimationFrame);
+    // Run full animation timing update, which includes removing replaced
+    // animations.
+    GetDocument()
+        .GetDocumentAnimations()
+        .UpdateAnimationTimingForAnimationFrame();
     SimulateMicrotask();
   }
 
@@ -339,6 +344,39 @@ TEST_F(AnimationEffectStackTest, AffectedPropertiesTransitionPriority) {
       effect_stack.AffectedProperties(KeyframeEffect::kTransitionPriority);
   ASSERT_EQ(1u, set.size());
   EXPECT_TRUE(set.Contains(PropertyHandle(GetCSSPropertyColor())));
+}
+
+TEST_F(AnimationEffectStackTest,
+       ForwardsFillDiscardingOutOfOrderSampledEffects) {
+  Animation* anim1 = Animation::Create(
+      MakeKeyframeEffect(MakeEffectModel(CSSPropertyID::kFontSize, "1px")),
+      timeline, ASSERT_NO_EXCEPTION);
+  Animation* anim2 = Animation::Create(
+      MakeKeyframeEffect(MakeEffectModel(CSSPropertyID::kFontSize, "2px")),
+      timeline, ASSERT_NO_EXCEPTION);
+  // Sample anim2 before anim1 so that sampled_effects_ initially has anim2
+  // (higher composite order) before anim1 (lower composite order).
+  anim2->setStartTime(MakeGarbageCollected<V8CSSNumberish>(0),
+                      ASSERT_NO_EXCEPTION);
+  anim2->Update(kTimingUpdateOnDemand);
+  anim1->setStartTime(MakeGarbageCollected<V8CSSNumberish>(0),
+                      ASSERT_NO_EXCEPTION);
+  anim1->Update(kTimingUpdateOnDemand);
+  GetDocument().GetPendingAnimations().Update(nullptr);
+
+  using ActiveInterpolationsMapHolder =
+      DisallowNewWrapper<ActiveInterpolationsMap>;
+  Persistent<ActiveInterpolationsMapHolder> interpolations =
+      MakeGarbageCollected<ActiveInterpolationsMapHolder>();
+
+  UpdateTimeline(base::Seconds(15));
+  ThreadState::Current()->CollectAllGarbageForTesting();
+  interpolations->Value() = EffectStack::ActiveInterpolations(
+      &element->GetElementAnimations()->GetEffectStack(), nullptr, nullptr,
+      KeyframeEffect::kDefaultPriority);
+  EXPECT_EQ(1u, interpolations->Value().size());
+  EXPECT_EQ(GetFontSizeValue(interpolations->Value()), 2);
+  EXPECT_EQ(1u, SampledEffectCount());
 }
 
 }  // namespace blink

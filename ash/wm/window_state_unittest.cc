@@ -18,6 +18,7 @@
 #include "ash/shell.h"
 #include "ash/test/ash_test_base.h"
 #include "ash/test/test_window_builder.h"
+#include "ash/test_shell_delegate.h"
 #include "ash/wm/desks/desks_test_util.h"
 #include "ash/wm/overview/overview_item.h"
 #include "ash/wm/overview/overview_test_util.h"
@@ -57,6 +58,31 @@ namespace ash {
 
 using chromeos::AppType;
 namespace {
+
+class WindowDestroyerOnHide : public aura::WindowObserver {
+ public:
+  explicit WindowDestroyerOnHide(std::unique_ptr<aura::Window> window)
+      : window_(std::move(window)) {
+    window_->AddObserver(this);
+  }
+  WindowDestroyerOnHide(const WindowDestroyerOnHide&) = delete;
+  WindowDestroyerOnHide& operator=(const WindowDestroyerOnHide&) = delete;
+  ~WindowDestroyerOnHide() override {
+    if (window_) {
+      window_->RemoveObserver(this);
+    }
+  }
+
+  // aura::WindowObserver:
+  void OnWindowVisibilityChanged(aura::Window* window, bool visible) override {
+    if (window == window_.get() && !visible) {
+      window_.reset();
+    }
+  }
+
+ private:
+  std::unique_ptr<aura::Window> window_;
+};
 
 class AlwaysMaximizeTestState : public WindowState::State {
  public:
@@ -406,6 +432,55 @@ TEST_F(WindowStateTest, AndroidPipWindowUmaMetricsCountsExitOnDestroy) {
             histograms.GetBucketCount(kAshPipEventsHistogramName,
                                       Sample32(AshPipEvents::ANDROID_PIP_END)));
   histograms.ExpectTotalCount(kAshPipEventsHistogramName, 4);
+}
+
+class TestWindowStateObserver : public WindowStateObserver {
+ public:
+  TestWindowStateObserver() = default;
+  ~TestWindowStateObserver() override = default;
+
+  void OnPostWindowStateTypeChange(
+      WindowState* window_state,
+      chromeos::WindowStateType old_type) override {
+    if (window_state->IsPip()) {
+      opened_count_++;
+    } else if (old_type == chromeos::WindowStateType::kPip) {
+      closed_count_++;
+    }
+  }
+
+  int opened_count() const { return opened_count_; }
+  int closed_count() const { return closed_count_; }
+
+ private:
+  int opened_count_ = 0;
+  int closed_count_ = 0;
+};
+
+TEST_F(WindowStateTest, NotifiesObserversOnPipTransition) {
+  auto widget = CreateTestWidget(views::Widget::InitParams::CLIENT_OWNS_WIDGET);
+  WindowState* window_state = WindowState::Get(widget->GetNativeWindow());
+  TestWindowStateObserver observer;
+  window_state->AddObserver(&observer);
+
+  const int initial_opened_count = observer.opened_count();
+  const int initial_closed_count = observer.closed_count();
+
+  // Entering PiP should notify the observer.
+  const WMEvent enter_pip(WM_EVENT_PIP);
+  window_state->OnWMEvent(&enter_pip);
+  EXPECT_TRUE(window_state->IsPip());
+  EXPECT_EQ(observer.opened_count(), initial_opened_count + 1);
+  EXPECT_EQ(observer.closed_count(), initial_closed_count);
+
+  // Leaving PiP should notify the observer.
+  const WMEvent exit_pip(WM_EVENT_NORMAL);
+  window_state->OnWMEvent(&exit_pip);
+  EXPECT_FALSE(window_state->IsPip());
+  EXPECT_EQ(observer.opened_count(), initial_opened_count + 1);
+  EXPECT_EQ(observer.closed_count(), initial_closed_count + 1);
+
+  window_state->RemoveObserver(&observer);
 }
 
 // Test that modal window dialogs can be snapped.
@@ -766,13 +841,13 @@ TEST_F(WindowStateTest, DoNotResizeMaximizedWindowInFullscreen) {
             maximized->GetBoundsInScreen().ToString());
 }
 
-TEST_F(WindowStateTest, LockedFullscreen) {
+TEST_F(WindowStateTest, TrustedPinned) {
   std::unique_ptr<aura::Window> window(
       CreateTestWindowInShell({.window_id = 0}));
   WindowState* window_state = WindowState::Get(window.get());
-  EXPECT_FALSE(window_state->IsLockedFullscreen());
+  EXPECT_FALSE(window_state->IsTrustedPinned());
   window_util::PinWindow(window.get(), true /* trusted */);
-  EXPECT_TRUE(window_state->IsLockedFullscreen());
+  EXPECT_TRUE(window_state->IsTrustedPinned());
 
   gfx::Rect work_area = display::Screen::Get()->GetPrimaryDisplay().work_area();
   EXPECT_EQ(work_area.ToString(), window->bounds().ToString());
@@ -782,7 +857,7 @@ TEST_F(WindowStateTest, LockedFullscreen) {
     const WMEvent fullscreen_event(WM_EVENT_FULLSCREEN);
     window_state->OnWMEvent(&fullscreen_event);
   }
-  EXPECT_TRUE(window_state->IsLockedFullscreen());
+  EXPECT_TRUE(window_state->IsTrustedPinned());
 
   // Update display triggers workspace event.
   UpdateDisplay("300x200");
@@ -790,7 +865,7 @@ TEST_F(WindowStateTest, LockedFullscreen) {
 
   // Unpin should work.
   window_state->Restore();
-  EXPECT_FALSE(window_state->IsLockedFullscreen());
+  EXPECT_FALSE(window_state->IsTrustedPinned());
 }
 
 TEST_F(WindowStateTest, AllowSetBoundsDirect) {
@@ -1784,8 +1859,8 @@ TEST_F(WindowStateTest, TransitionInTheSameLayerKeepSameRestoreHistory) {
 }
 
 // TODO(minch): Check the expected behavior of restoring from window state like
-// kPinned, kLockedFullscreen that do not support the window state restore
-// history. Test the restore behaviors of kPinned and kLockedFullscreen window
+// kPinned, kTrustedPinned that do not support the window state restore
+// history. Test the restore behaviors of kPinned and kTrustedPinned window
 // state. They are different with kFullscreen restore behaviors.
 TEST_F(WindowStateTest, PinnedRestoreTest) {
   UpdateDisplay("800x600");
@@ -1839,7 +1914,7 @@ TEST_F(WindowStateTest, PinnedRestoreTest) {
   EXPECT_EQ(window_state->GetRestoreWindowState(), WindowStateType::kNormal);
   EXPECT_EQ(window_state->GetRestoreBoundsInScreen(), gfx::Rect());
 
-  // Same should happen for kLockedFullscreen as well.
+  // Same should happen for kTrustedPinned as well.
   window_state->OnWMEvent(&snap_primary);
   window_state->OnWMEvent(&maximize_event);
   restore_stack = window_state->GetWindowStateTypeRestoreHistoryForTesting();
@@ -1848,8 +1923,8 @@ TEST_F(WindowStateTest, PinnedRestoreTest) {
             WindowStateType::kPrimarySnapped);
   EXPECT_EQ(window_state->GetRestoreBoundsInScreen(), work_area_bounds);
 
-  const WMEvent locked_fullscreen_event(WM_EVENT_LOCKED_FULLSCREEN);
-  window_state->OnWMEvent(&locked_fullscreen_event);
+  const WMEvent trusted_pin_event(WM_EVENT_TRUSTED_PIN);
+  window_state->OnWMEvent(&trusted_pin_event);
   restore_stack = window_state->GetWindowStateTypeRestoreHistoryForTesting();
   EXPECT_EQ(window->GetBoundsInScreen(), fullscreen_bounds);
   EXPECT_TRUE(restore_stack.empty());
@@ -2324,8 +2399,9 @@ class WindowStateMetricsTest : public AshTestBase {
       : AshTestBase(base::test::TaskEnvironment::TimeSource::MOCK_TIME) {}
 
   void AdvanceClock(base::TimeDelta delta) {
-    task_environment()->AdvanceClock(delta);
-    task_environment()->RunUntilIdle();
+    // Run mock time by the exact partial-split duration under test so any
+    // delayed metrics work due in that interval completes before assertions.
+    task_environment()->FastForwardBy(delta);
   }
 };
 
@@ -2412,8 +2488,35 @@ TEST_F(WindowStateMetricsTest, PartialSplitDuration) {
   histogram_tester.ExpectBucketCount(kHistogramName, 1, 1);
 }
 
-// TODO(skuhne): Add more unit test to verify the correctness for the restore
-// operation.
+using WindowStateDeathTest = WindowStateTest;
+
+TEST_F(WindowStateDeathTest, DisableZOrderingWindowDestroyedDuringHide) {
+  std::unique_ptr<aura::Window> w(CreateTestWindowInShell({.window_id = 1}));
+  w->SetProperty(aura::client::kZOrderingKey, ui::ZOrderLevel::kFloatingWindow);
+  WindowState* window_state = WindowState::Get(w.get());
+
+  auto observer = std::make_unique<WindowDestroyerOnHide>(std::move(w));
+
+  // The window should be destroyed during Hide() in DisableZOrdering.
+  // Since we added ScopedDeleteBlocker, it should crash.
+  EXPECT_DEATH(window_state->DisableZOrdering(nullptr), "");
+}
+
+TEST_F(WindowStateDeathTest,
+       DisableZOrderingWindowDestroyedDuringHideViaFullscreen) {
+  std::unique_ptr<aura::Window> w1(CreateTestWindowInShell({.window_id = 1}));
+  w1->SetProperty(aura::client::kZOrderingKey,
+                  ui::ZOrderLevel::kFloatingWindow);
+  auto observer = std::make_unique<WindowDestroyerOnHide>(std::move(w1));
+
+  std::unique_ptr<aura::Window> w2(CreateTestWindowInShell({.window_id = 2}));
+  WindowState* window_state2 = WindowState::Get(w2.get());
+
+  // Toggle fullscreen on w2. This will trigger UpdateAlwaysOnTop which calls
+  // DisableZOrdering on w1. It should crash due to ScopedDeleteBlocker.
+  const WMEvent toggle_fullscreen(WM_EVENT_TOGGLE_FULLSCREEN);
+  EXPECT_DEATH(window_state2->OnWMEvent(&toggle_fullscreen), "");
+}
 
 }  // namespace
 }  // namespace ash

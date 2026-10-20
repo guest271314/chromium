@@ -22,6 +22,7 @@
 #include "third_party/blink/renderer/core/page/page.h"
 #include "third_party/blink/renderer/core/paint/paint_layer.h"
 #include "third_party/blink/renderer/core/paint/paint_layer_scrollable_area.h"
+#include "third_party/blink/renderer/core/scroll/scroll_types.h"
 #include "third_party/blink/renderer/core/scroll/scrollable_area.h"
 #include "third_party/blink/renderer/core/scroll/scrollbar.h"
 #include "third_party/blink/renderer/platform/runtime_enabled_features.h"
@@ -74,26 +75,19 @@ bool ScrollManager::CanPropagate(const LayoutBox* layout_box,
       !scrollable_area->UserInputScrollable(kVerticalScrollbar))
     return true;
 
+  const ComputedStyle& style = layout_box->Style();
   switch (direction) {
     case ScrollPropagationDirection::kBoth:
-      return ((layout_box->StyleRef().OverscrollBehaviorX() ==
-                   EOverscrollBehavior::kAuto ||
-               layout_box->StyleRef().OverscrollBehaviorX() ==
-                   EOverscrollBehavior::kChain) &&
-              (layout_box->StyleRef().OverscrollBehaviorY() ==
-                   EOverscrollBehavior::kAuto ||
-               layout_box->StyleRef().OverscrollBehaviorY() ==
-                   EOverscrollBehavior::kChain));
+      return ((style.OverscrollBehaviorX() == EOverscrollBehavior::kAuto ||
+               style.OverscrollBehaviorX() == EOverscrollBehavior::kChain) &&
+              (style.OverscrollBehaviorY() == EOverscrollBehavior::kAuto ||
+               style.OverscrollBehaviorY() == EOverscrollBehavior::kChain));
     case ScrollPropagationDirection::kVertical:
-      return layout_box->StyleRef().OverscrollBehaviorY() ==
-                 EOverscrollBehavior::kAuto ||
-             layout_box->StyleRef().OverscrollBehaviorY() ==
-                 EOverscrollBehavior::kChain;
+      return style.OverscrollBehaviorY() == EOverscrollBehavior::kAuto ||
+             style.OverscrollBehaviorY() == EOverscrollBehavior::kChain;
     case ScrollPropagationDirection::kHorizontal:
-      return layout_box->StyleRef().OverscrollBehaviorX() ==
-                 EOverscrollBehavior::kAuto ||
-             layout_box->StyleRef().OverscrollBehaviorX() ==
-                 EOverscrollBehavior::kChain;
+      return style.OverscrollBehaviorX() == EOverscrollBehavior::kAuto ||
+             style.OverscrollBehaviorX() == EOverscrollBehavior::kChain;
     case ScrollPropagationDirection::kNone:
       return true;
     default:
@@ -115,21 +109,25 @@ ScrollManager::ScrollChainResult ScrollManager::RecomputeScrollChain(
     Node* cur_node = cur_box->GetNode();
 
     if (cur_node) {
-      if (CanScroll(*cur_node)) {
+      mojom::blink::ScrollDirectionPhysical physical_direction =
+          ToPhysicalDirection(direction, cur_box->IsHorizontalWritingMode(),
+                              cur_box->Style().IsFlippedBlocksWritingMode());
+      bool is_vertical =
+          physical_direction == mojom::blink::ScrollDirectionPhysical::kUp ||
+          physical_direction == mojom::blink::ScrollDirectionPhysical::kDown;
+      ScrollbarOrientation orientation =
+          is_vertical ? ScrollbarOrientation::kVerticalScrollbar
+                      : ScrollbarOrientation::kHorizontalScrollbar;
+
+      if (CanScroll(*cur_node, orientation)) {
         result.chain.push_front(cur_node->GetDomNodeId());
         // If `cur_node` is scrollable, respect its overscroll-behavior to
         // determine whether the scroll should bubble to parent elements.
         if (RuntimeEnabledFeatures::
                 RespectOverscrollBehaviorForScrollBubblingEnabled()) {
-          ScrollDirectionPhysical physical_direction = ToPhysicalDirection(
-              direction, cur_box->IsHorizontalWritingMode(),
-              cur_box->StyleRef().IsFlippedBlocksWritingMode());
-          bool is_vertical =
-              physical_direction == ScrollDirectionPhysical::kScrollUp ||
-              physical_direction == ScrollDirectionPhysical::kScrollDown;
           EOverscrollBehavior behavior =
-              is_vertical ? cur_box->StyleRef().OverscrollBehaviorY()
-                          : cur_box->StyleRef().OverscrollBehaviorX();
+              is_vertical ? cur_box->Style().OverscrollBehaviorY()
+                          : cur_box->Style().OverscrollBehaviorX();
           if (behavior != EOverscrollBehavior::kAuto &&
               behavior != EOverscrollBehavior::kChain) {
             result.can_bubble = false;
@@ -149,15 +147,17 @@ ScrollManager::ScrollChainResult ScrollManager::RecomputeScrollChain(
   return result;
 }
 
-bool ScrollManager::CanScroll(const Node& current_node) {
+bool ScrollManager::CanScroll(const Node& current_node,
+                              ScrollbarOrientation orientation) {
   LayoutBox* scrolling_box = current_node.GetLayoutBox();
   if (auto* element = DynamicTo<Element>(current_node)) {
     auto* box = element->GetLayoutBoxForScrolling();
     scrolling_box =
         box && box->GetScrollableArea()->ScrollableAxes() ? box : nullptr;
   }
-  if (!scrolling_box)
+  if (!scrolling_box) {
     return false;
+  }
 
   // We need to always add the global root scroller even if it isn't scrollable
   // since we can always pinch-zoom and scroll as well as for overscroll
@@ -178,7 +178,17 @@ bool ScrollManager::CanScroll(const Node& current_node) {
     return true;
   }
 
-  return scrolling_box->GetScrollableArea() != nullptr;
+  auto* scrollable_area = scrolling_box->GetScrollableArea();
+  if (!scrollable_area) {
+    return false;
+  }
+
+  // A box only participates in this scroll's chain if it is scrollable in the
+  // scroll's axis.
+  PhysicalAxes axis = orientation == ScrollbarOrientation::kVerticalScrollbar
+                          ? kPhysicalAxesVertical
+                          : kPhysicalAxesHorizontal;
+  return static_cast<bool>(scrollable_area->ScrollableAxes() & axis);
 }
 
 LogicalScrollResult ScrollManager::LogicalScroll(
@@ -217,9 +227,9 @@ LogicalScrollResult ScrollManager::LogicalScroll(
     auto* box = To<LayoutBox>(scroll_chain_node->GetLayoutObject());
     DCHECK(box);
 
-    ScrollDirectionPhysical physical_direction =
+    mojom::blink::ScrollDirectionPhysical physical_direction =
         ToPhysicalDirection(direction, box->IsHorizontalWritingMode(),
-                            box->StyleRef().IsFlippedBlocksWritingMode());
+                            box->Style().IsFlippedBlocksWritingMode());
 
     ScrollableArea* scrollable_area = ScrollableArea::GetForScrolling(box);
     DCHECK(scrollable_area);

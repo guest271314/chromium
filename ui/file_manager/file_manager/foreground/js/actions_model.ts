@@ -259,7 +259,7 @@ class DriveManageAction implements Action {
     getEntryProperties([this.entry_], props).then((results) => {
       if (results.length !== 1) {
         console.warn(
-            `getEntryProperties for alternateUrl should return 1 entry ` +
+            'getEntryProperties for alternateUrl should return 1 entry ' +
             `(returned ${results.length})`);
         return;
       }
@@ -494,7 +494,7 @@ export class ActionsModel extends EventTarget {
 
 /**
  * List of common actions, used both internally and externally (custom actions).
- * Keep in sync with file_system_provider.idl.
+ * Keep in sync with file_system_provider.webidl.
  */
 export enum CommonActionId {
   SHARE = 'SHARE',

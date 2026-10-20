@@ -54,6 +54,7 @@ class V8UnionHTMLElementOrLong;
 class V8UnionHTMLOptGroupElementOrHTMLOptionElement;
 class HTMLSelectedContentElement;
 class SelectMutationObserver;
+class UIEvent;
 
 enum class SelectPopupHideBehavior {
   kNormal,
@@ -133,6 +134,8 @@ class CORE_EXPORT HTMLSelectElement final
 
   // It is possible to pass WebAutofillState::kNotFilled here in case we need
   // to simulate a reset of a <select> element.
+  void SetAutofillState(
+      WebAutofillState = WebAutofillState::kAutofilled) override;
   void SetAutofillValue(const String& value, WebAutofillState);
   void SetAutofillOption(HTMLOptionElement* option, WebAutofillState);
 
@@ -231,6 +234,9 @@ class CORE_EXPORT HTMLSelectElement final
 
   void OptGroupInsertedOrRemoved(HTMLOptGroupElement&);
   void HrInsertedOrRemoved(HTMLHRElement&);
+  // ResetSelectedness calls ResetToDefaultSelection, but will also update all
+  // descendant selectedcontent elements if the selected option was changed.
+  void ResetSelectedness();
 
   HTMLOptionElement* SpatialNavigationFocusedOption();
 
@@ -295,7 +301,8 @@ class CORE_EXPORT HTMLSelectElement final
   bool IsValidBuiltinCommand(HTMLElement& invoker,
                              CommandEventType command) override;
   bool HandleCommandInternal(HTMLElement& invoker,
-                             CommandEventType command) override;
+                             CommandEventType command,
+                             UIEvent* activate_event) override;
 
   // SlottedButton returns the first child <button> in the light dom tree. If
   // this select is in a state where the <button> can't be rendered, such as a
@@ -358,12 +365,11 @@ class CORE_EXPORT HTMLSelectElement final
   // This should only be called when UsesMenuList() returns true.
   void SetIsAppearanceBasePickerForDisplayNone(bool);
 
-  void SelectedContentElementInsertedLegacy(
-      HTMLSelectedContentElement* selectedcontent);
   void SelectedContentElementInserted(
       HTMLSelectedContentElement* selectedcontent);
   void SelectedContentElementRemoved(
       HTMLSelectedContentElement* selectedcontent);
+  bool HasDescendantSelectedcontentElements() const;
 
   // This will only return an element if IsAppearanceBase(). The element
   // is a popover inside the UA shadowroot which is used to show the user a
@@ -461,6 +467,7 @@ class CORE_EXPORT HTMLSelectElement final
 
   bool ChildrenChangedAllChildrenRemovedNeedsList() const override;
   void ParseAttribute(const AttributeModificationParams&) override;
+  void DisabledAttributeChanged(DisabledChangedReason) override;
   bool IsPresentationAttribute(const QualifiedName&) const override;
 
   LayoutObject* CreateLayoutObject(const ComputedStyle&) override;
@@ -479,7 +486,8 @@ class CORE_EXPORT HTMLSelectElement final
     kResetReasonOptionInsertedOrRemoved,
     kResetReasonOthers
   };
-  void ResetToDefaultSelection(ResetReason = kResetReasonOthers);
+  // Returns true if the selectedness of any option was changed.
+  bool ResetToDefaultSelection(ResetReason = kResetReasonOthers);
   void TypeAheadFind(const KeyboardEvent&);
 
   bool IsOptionalFormControl() const override {
@@ -536,7 +544,7 @@ class CORE_EXPORT HTMLSelectElement final
   // Helper to update the select descendants' mutation observer.
   void UpdateMutationObserver();
 
-  void DidChangeIsCanvasOrInCanvasSubtree() final;
+  void DidChangeIsInCanvasSubtree(CanvasSubtreePropagation) final;
 
   // last_on_change_option_ is the currently selected option. It provides faster
   // access to the currently selected option than iterating through each option
@@ -561,7 +569,8 @@ class CORE_EXPORT HTMLSelectElement final
   // the shadow root and to determine which slot each child node is slotted
   // into. The number of descendant inputs and options is used instead of just a
   // flag so that we know if there are any descendants of each type or not when
-  // multiple are inserted or removed.
+  // multiple are inserted or removed. As an optimization, children which
+  // themselves are option or input elements are not included in this map.
   HeapHashMap<Member<Node>, DescendantCounts> children_descendant_counts_map_;
 
   TreeOrderedList<HTMLSelectedContentElement> descendant_selectedcontents_;

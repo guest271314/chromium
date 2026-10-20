@@ -125,6 +125,8 @@ dictionary DisableReasons {
   required boolean parentDisabledPermissions;
   required boolean unsupportedManifestVersion;
   required boolean unsupportedDeveloperExtension;
+  required boolean disabledByAnotherExtension;
+  DOMString? disabledByExtensionName;
 };
 
 dictionary OptionsPage {
@@ -253,8 +255,8 @@ dictionary ExtensionInfo {
   required boolean showAccessRequestsInToolbar;
   boolean pinnedToToolbar;
   required boolean isAffectedByMV2Deprecation;
-  required boolean didAcknowledgeMV2DeprecationNotice;
   required boolean canUploadAsAccountExtension;
+  required boolean canShowReviewPrompt;
 };
 
 dictionary ProfileInfo {
@@ -264,6 +266,7 @@ dictionary ProfileInfo {
   required boolean isIncognitoAvailable;
   required boolean isChildAccount;
   required boolean isMv2DeprecationNoticeDismissed;
+  required boolean extensionsPinnedByDefault;
 };
 
 dictionary GetExtensionsInfoOptions {
@@ -287,6 +290,7 @@ dictionary ExtensionConfigurationUpdate {
 dictionary ProfileConfigurationUpdate {
   boolean inDeveloperMode;
   boolean isMv2DeprecationNoticeDismissed;
+  boolean extensionsPinnedByDefault;
 };
 
 dictionary ExtensionCommandUpdate {
@@ -657,6 +661,10 @@ interface DeveloperPrivate {
   static Promise<undefined> updateExtensionConfiguration(
       ExtensionConfigurationUpdate update);
 
+  // Opens the review page for a specific extension.
+  // |extensionId|: The id of the extension to review.
+  static Promise<undefined> openReviewPage(DOMString extensionId);
+
   // Loads a user-selected unpacked item.
   // |options|: Additional configuration parameters.
   // |PromiseValue|: error
@@ -788,10 +796,6 @@ interface DeveloperPrivate {
   // Dismisses the menu notification for the extensions module in Safety Hub
   // if one is active.
   static undefined dismissSafetyHubExtensionsMenuNotification();
-
-  // Triggers the dismissal of the mv2 deprecation notice for `extensionId`.
-  static undefined dismissMv2DeprecationNoticeForExtension(
-      DOMString extensionId);
 
   // Uploads an extension to the signed in user's account and returns whether
   // the extension is actually uploaded in `callback`. If the extension is not

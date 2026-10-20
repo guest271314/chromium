@@ -10,6 +10,8 @@ static_library("browser") {
     "content_password_manager_driver.h",
     "content_password_manager_driver_factory.cc",
     "content_password_manager_driver_factory.h",
+    "content_password_manager_util.cc",
+    "content_password_manager_util.h",
     "form_meta_data.cc",
     "form_meta_data.h",
     "form_submission_tracker_util.cc",
@@ -45,8 +47,6 @@ static_library("browser") {
     "//mojo/public/cpp/system",
     "//net",
   ]
-
-  configs += [ "//build/config/compiler:wexit_time_destructors" ]
 }
 
 source_set("password_form_classification_util") {
@@ -114,8 +114,4 @@ source_set("unit_tests") {
     "//testing/gmock",
     "//testing/gtest",
   ]
-
-  # TODO(crbug.com/40031409): Fix code that adds exit-time destructors and
-  # enable the diagnostic by removing this line.
-  configs += [ "//build/config/compiler:no_exit_time_destructors" ]
 }

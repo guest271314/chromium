@@ -9,6 +9,7 @@
 #include "components/contextual_search/contextual_search_context_controller.h"
 #include "components/contextual_search/contextual_search_metrics_recorder.h"
 #include "components/contextual_search/contextual_search_session_entry.h"
+#include "components/contextual_search/input_state_model.h"
 #include "components/contextual_search/internal/composebox_query_controller.h"
 #include "components/contextual_search/pref_names.h"
 #include "components/pref_registry/pref_registry_syncable.h"
@@ -41,13 +42,17 @@ ContextualSearchService::ContextualSearchService(
     TemplateURLService* template_url_service,
     variations::VariationsClient* variations_client,
     version_info::Channel channel,
-    const std::string& locale)
-    : identity_manager_(identity_manager),
+    const std::string& locale,
+    std::unique_ptr<ContextualSearchSessionHandle::TabValidator> tab_validator,
+    GetAuthHeadersCallback get_auth_headers_callback)
+    : tab_validator_(std::move(tab_validator)),
+      identity_manager_(identity_manager),
       url_loader_factory_(std::move(url_loader_factory)),
       template_url_service_(template_url_service),
       variations_client_(variations_client),
       channel_(channel),
-      locale_(locale) {}
+      locale_(locale),
+      get_auth_headers_callback_(get_auth_headers_callback) {}
 
 ContextualSearchService::~ContextualSearchService() = default;
 
@@ -66,8 +71,8 @@ void ContextualSearchService::RegisterProfilePrefs(
   registry->RegisterIntegerPref(
       kSearchContentSharingSettings,
       static_cast<int>(kSearchContentSharingAllowedDefault));
-  registry->RegisterBooleanPref(
-      kDriveDisclaimerAccepted, false,
+  registry->RegisterIntegerPref(
+      kDriveConsentState, static_cast<int>(DriveConsentState::kRestricted),
       user_prefs::PrefRegistrySyncable::SYNCABLE_PREF);
 }
 
@@ -85,7 +90,7 @@ ContextualSearchService::CreateComposeboxQueryController(
   return std::make_unique<ComposeboxQueryController>(
       identity_manager_, url_loader_factory_, channel_, locale_,
       template_url_service_, variations_client_,
-      std::move(query_controller_config_params));
+      std::move(query_controller_config_params), get_auth_headers_callback_);
 }
 
 std::unique_ptr<ContextualSearchSessionHandle>
@@ -149,6 +154,11 @@ ContextualSearchService::GetSessionMetricsRecorder(
     return it->second.metrics_recorder_.get();
   }
   return nullptr;
+}
+
+ContextualSearchSessionHandle::TabValidator*
+ContextualSearchService::GetTabValidator() const {
+  return tab_validator_.get();
 }
 
 void ContextualSearchService::ReleaseSession(

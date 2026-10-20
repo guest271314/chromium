@@ -6,8 +6,15 @@ source_set("feature_list") {
   sources = [
     "features.cc",
     "features.h",
+    "host_override.cc",
+    "host_override.h",
   ]
-  deps = [ "//base" ]
+  deps = [
+    "//base",
+    "//net",
+    "//ui/base",
+    "//url",
+  ]
 }
 
 source_set("public") {
@@ -104,7 +111,9 @@ source_set("unit_tests") {
     "contextual_task_unittest.cc",
     "features_unittest.cc",
     "gemini_thread_data_type_controller_unittest.cc",
+    "host_override_unittest.cc",
     "prefs_unittest.cc",
+    "utils_unittest.cc",
   ]
 
   deps = [
@@ -120,6 +129,7 @@ source_set("unit_tests") {
     "//components/sync_preferences:test_support",
     "//components/url_deduplication",
     "//components/visited_url_ranking/public",
+    "//net",
     "//testing/gtest",
     "//url",
   ]

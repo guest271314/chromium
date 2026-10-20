@@ -1,3 +1,7 @@
+// Copyright 2026 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
 #include "third_party/blink/renderer/core/css/resolver/match_request.h"
 
 #include "third_party/blink/renderer/core/css/element_rule_collector.h"
@@ -27,9 +31,7 @@ void RuleSetGroup::AddRuleSet(RuleSet* rule_set) {
   if (!rule_set->LinkPseudoClassRules().empty()) {
     has_link_pseudo_class_rules_ |= rule_set_mask;
   }
-  if (!rule_set->OverscrollTargetRules().empty()) {
-    has_overscroll_target_pseudo_class_rules_ |= rule_set_mask;
-  }
+
   if (!rule_set->FocusPseudoClassRules().empty()) {
     has_focus_pseudo_class_rules_ |= rule_set_mask;
   }

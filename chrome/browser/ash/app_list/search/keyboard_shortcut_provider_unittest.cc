@@ -21,8 +21,8 @@
 namespace app_list::test {
 namespace {
 
-constexpr std::u16string kText = u"fake query";
-constexpr std::u16string kIrrelevantText = u"irrelevant";
+constexpr char16_t kText[] = u"fake query";
+constexpr char16_t kIrrelevantText[] = u"irrelevant";
 
 constexpr double kResultRelevanceThreshold = 0.79;
 constexpr size_t kMaxResults = 3u;
@@ -164,8 +164,6 @@ class CustomizableKeyboardShortcutProviderTest : public ChromeAshTestBase {
     search_controller_->AddProvider(std::move(provider));
   }
 
-  void Wait() { task_environment()->RunUntilIdle(); }
-
   const SearchProvider::Results& results() {
     return search_controller_->last_results();
   }
@@ -192,7 +190,6 @@ TEST_F(CustomizableKeyboardShortcutProviderTest, ResultOverwritten) {
   search_handler_->SetSearchResults(std::move(search_results));
 
   StartSearch(kText);
-  Wait();
 
   EXPECT_TRUE(results().empty());
 }
@@ -205,7 +202,6 @@ TEST_F(CustomizableKeyboardShortcutProviderTest, FourQualifiedReturnThree) {
   search_handler_->SetSearchResults(std::move(search_results));
 
   StartSearch(kText);
-  Wait();
 
   EXPECT_EQ(kMaxResults, results().size());
   for (const auto& result : results()) {
@@ -221,7 +217,6 @@ TEST_F(CustomizableKeyboardShortcutProviderTest, NoneQualifiedReturnEmpty) {
   search_handler_->SetSearchResults(std::move(search_results));
 
   StartSearch(kText);
-  Wait();
 
   EXPECT_TRUE(results().empty());
 }
@@ -235,7 +230,6 @@ TEST_F(CustomizableKeyboardShortcutProviderTest,
   search_handler_->SetSearchResults(std::move(search_results));
 
   StartSearch(kText);
-  Wait();
 
   EXPECT_EQ(2u, results().size());
   for (const auto& result : results()) {
@@ -254,7 +248,6 @@ TEST_F(CustomizableKeyboardShortcutProviderTest,
   search_handler_->SetSearchResults(std::move(search_results));
 
   StartSearch(kText);
-  Wait();
 
   EXPECT_EQ(3u, results().size());
 }

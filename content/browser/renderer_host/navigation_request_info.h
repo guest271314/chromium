@@ -11,6 +11,7 @@
 #include "content/common/content_export.h"
 #include "content/public/browser/frame_tree_node_id.h"
 #include "content/public/browser/weak_document_ptr.h"
+#include "content/public/common/child_process_id.h"
 #include "content/public/common/referrer.h"
 #include "net/base/isolation_info.h"
 #include "net/filter/source_stream_type.h"
@@ -22,7 +23,6 @@
 
 namespace content {
 
-class PrefetchServingPageMetricsContainer;
 
 // A struct to hold the parameters needed to start a navigation request in
 // ResourceDispatcherHost. It is initialized on the UI thread, and then passed
@@ -45,18 +45,14 @@ struct CONTENT_EXPORT NavigationRequestInfo {
       const base::UnguessableToken& devtools_navigation_token,
       const base::UnguessableToken& devtools_throttling_token,
       network::mojom::ClientSecurityStatePtr client_security_state,
-      const std::optional<std::vector<net::SourceStreamType>>&
-          devtools_accepted_stream_types,
       bool is_pdf,
-      int initiator_process_id,
+      ChildProcessId initiator_process_id,
       std::optional<blink::DocumentToken> initiator_document_token,
-      base::WeakPtr<PrefetchServingPageMetricsContainer>
-          prefetch_serving_page_metrics_container,
       bool allow_cookies_from_browser,
       int64_t navigation_id,
-      bool shared_storage_writable,
       bool is_ad_tagged,
-      bool force_no_https_upgrade);
+      bool force_no_https_upgrade,
+      bool is_visible);
   NavigationRequestInfo(const NavigationRequestInfo& other) = delete;
   ~NavigationRequestInfo();
 
@@ -130,22 +126,12 @@ struct CONTENT_EXPORT NavigationRequestInfo {
   // too once the UX story is sorted out.
   const network::mojom::ClientSecurityStatePtr client_security_state;
 
-  // If not null, the network service will not advertise any stream types
-  // (via Accept-Encoding) that are not listed. Also, it will not attempt
-  // decoding any non-listed stream types.
-  std::optional<std::vector<net::SourceStreamType>>
-      devtools_accepted_stream_types;
-
   // Indicates that this navigation is for PDF content in a renderer.
   const bool is_pdf;
 
   // The initiator document's token and its process ID.
-  const int initiator_process_id;
+  const ChildProcessId initiator_process_id;
   const std::optional<blink::DocumentToken> initiator_document_token;
-
-  // For per-navigation metrics of speculation rules prefetch.
-  base::WeakPtr<PrefetchServingPageMetricsContainer>
-      prefetch_serving_page_metrics_container;
 
   // Whether a Cookie header added to this request should not be overwritten by
   // the network service.
@@ -154,17 +140,15 @@ struct CONTENT_EXPORT NavigationRequestInfo {
   // Unique id that identifies the navigation.
   const int64_t navigation_id;
 
-  // Whether or not the request is eligible to write to shared storage from
-  // response headers. See
-  // https://github.com/WICG/shared-storage#from-response-headers.
-  bool shared_storage_writable_eligible;
-
   // Whether the embedder indicated this navigation is being used for
   // advertising purposes.
   bool is_ad_tagged;
 
   // If true, the navigation will not be upgraded to HTTPS.
   bool force_no_https_upgrade;
+
+  // Whether the WebContents where the navigation is happening is visible.
+  const bool is_visible;
 };
 
 }  // namespace content

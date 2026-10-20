@@ -209,10 +209,10 @@ void NavigateEvent::deferPageSwap(NavigationDeferPageSwapOptions* options,
 
   if (!can_intercept_) {
     exception_state.ThrowSecurityError(
-        "A navigation with URL '" + dispatch_params_->url.ElidedString() +
-        "' cannot be deferredf by in a window with origin '" +
-        DomWindow()->GetSecurityOrigin()->ToString() + "' and URL '" +
-        DomWindow()->Url().ElidedString() + "'.");
+        StrCat({"A navigation with URL '", dispatch_params_->url.ElidedString(),
+                "' cannot be deferred in a window with origin '",
+                DomWindow()->GetSecurityOrigin()->ToString(), "' and URL '",
+                DomWindow()->Url().ElidedString(), "'."}));
     return;
   }
 
@@ -450,13 +450,19 @@ void NavigateEvent::CommitNow() {
   // In our implementation, we call the corresponding function anyway, but
   // |type| being a reload type makes it do none of the spec-relevant
   // steps. Instead it does stuff like the loading spinner and use counters.
+
+  // Pass the original initiator origin to ensure that security checks for the
+  // committed navigation (e.g., Scroll-to-Text Fragment restrictions) are
+  // evaluated against the actual initiator, even though the navigation was
+  // intercepted by this document.
   DomWindow()->document()->Loader()->RunURLAndHistoryUpdateSteps(
       dispatch_params_->url, dispatch_params_->destination_item,
       mojom::blink::SameDocumentNavigationType::kNavigationApiIntercept,
       state_object, ToWebFrameLoadType(navigation_type_), fire_popstate,
       dispatch_params_->should_skip_screenshot, dispatch_params_->involvement,
       dispatch_params_->interaction_id, dispatch_params_->is_browser_initiated,
-      dispatch_params_->is_synchronously_committed_same_document);
+      dispatch_params_->is_synchronously_committed_same_document,
+      dispatch_params_->initiator_origin.get());
   if (LocalDOMWindow* window = DomWindow()) {
     window->GetFrame()->Loader().Progress().DidNavigationApiIntercept();
   }
@@ -464,6 +470,7 @@ void NavigateEvent::CommitNow() {
 
 void NavigateEvent::React(ScriptState* script_state) {
   CHECK(navigation_action_handlers_list_.empty());
+  has_reacted_ = true;
   PromiseAll<IDLUndefined>::WaitForAll(
       script_state, navigation_action_promises_list_,
       bindings::HeapBind(
@@ -498,11 +505,15 @@ void NavigateEvent::ReactDone(ScriptState* script_state,
   CHECK_NE(intercept_state_, InterceptState::kFinished);
 
   LocalDOMWindow* window = DomWindow();
-  if (signal_->aborted() || !window) {
+  if (!window) {
     return;
   }
 
   delayed_load_start_task_handle_.Cancel();
+
+  if (signal_->aborted()) {
+    return;
+  }
 
   CHECK_EQ(this, window->navigation()->ongoing_navigate_event_);
   window->navigation()->ongoing_navigate_event_ = nullptr;
@@ -616,7 +627,9 @@ void NavigateEvent::PotentiallyResetTheFocus() {
 
   if (Element* focus_delegate = document->GetAutofocusDelegate()) {
     focus_delegate->Focus(FocusParams(
-        user_initiated_ ? FocusTrigger::kUserGesture : FocusTrigger::kScript));
+        dispatch_params_->involvement == UserNavigationInvolvement::kActivation
+            ? FocusTrigger::kUserGesture
+            : FocusTrigger::kScript));
   } else {
     document->ClearFocusedElement();
     document->SetSequentialFocusNavigationStartingPoint(nullptr);

@@ -10,6 +10,7 @@
 
 #include "ash/constants/ash_features.h"
 #include "ash/constants/ash_switches.h"
+#include "base/check_deref.h"
 #include "base/command_line.h"
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
@@ -31,18 +32,13 @@
 #include "chrome/browser/ash/policy/core/policy_oauth2_token_fetcher.h"
 #include "chrome/browser/ash/policy/login/wildcard_login_checker.h"
 #include "chrome/browser/ash/policy/remote_commands/user_commands_factory_ash.h"
-#include "chrome/browser/ash/policy/reporting/arc_app_install_event_log_uploader.h"
 #include "chrome/browser/ash/policy/skyvault/local_files_cleanup.h"
-#include "chrome/browser/browser_process.h"
-#include "chrome/browser/browser_process_platform_part.h"
 #include "chrome/browser/enterprise/reporting/report_scheduler_desktop.h"
 #include "chrome/browser/enterprise/reporting/reporting_delegate_factory_desktop.h"
 #include "chrome/browser/invalidation/profile_invalidation_provider_factory.h"
-#include "chrome/browser/net/system_network_context_manager.h"
 #include "chrome/browser/policy/cloud/user_fm_registration_token_uploader_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/common/chrome_content_client.h"
-#include "chrome/common/chrome_features.h"
 #include "components/enterprise/browser/reporting/real_time_report_controller.h"
 #include "components/enterprise/browser/reporting/report_generator.h"
 #include "components/enterprise/browser/reporting/report_scheduler.h"
@@ -135,20 +131,22 @@ class UserCloudPolicyManagerAshNotifierFactory
 
 // Returns true only if SkyVault TT is enabled, but GA is not.
 bool IsSkyVaultTTEnabled() {
-  return base::FeatureList::IsEnabled(features::kSkyVault) &&
+  return base::FeatureList::IsEnabled(ash::features::kSkyVault) &&
          !base::FeatureList::IsEnabled(ash::features::kSkyVaultV2);
 }
 
 }  // namespace
 
 UserCloudPolicyManagerAsh::UserCloudPolicyManagerAsh(
+    PrefService* local_state,
+    scoped_refptr<network::SharedURLLoaderFactory> shared_url_loader_factory,
+    BrowserPolicyConnectorAsh* browser_policy_connector_ash,
     Profile* profile,
     std::unique_ptr<CloudPolicyStore> store,
     std::unique_ptr<CloudPolicyStore> extension_install_store,
     std::unique_ptr<CloudExternalDataManager> external_data_manager,
     const base::FilePath& component_policy_cache_path,
     PolicyEnforcement enforcement_type,
-    PrefService* local_state,
     base::TimeDelta policy_refresh_timeout,
     base::OnceClosure fatal_error_callback,
     const AccountId& account_id,
@@ -160,6 +158,9 @@ UserCloudPolicyManagerAsh::UserCloudPolicyManagerAsh(
           std::move(extension_install_store),
           task_runner,
           base::BindRepeating(content::GetNetworkConnectionTracker)),
+      local_state_(CHECK_DEREF(local_state)),
+      shared_url_loader_factory_(std::move(shared_url_loader_factory)),
+      browser_policy_connector_ash_(CHECK_DEREF(browser_policy_connector_ash)),
       profile_(profile),
       external_data_manager_(std::move(external_data_manager)),
       component_policy_cache_path_(component_policy_cache_path),
@@ -167,16 +168,16 @@ UserCloudPolicyManagerAsh::UserCloudPolicyManagerAsh(
                                     PolicyEnforcement::kServerCheckRequired ||
                                 !policy_refresh_timeout.is_zero()),
       enforcement_type_(enforcement_type),
-      local_state_(local_state),
       account_id_(account_id),
       fatal_error_callback_(std::move(fatal_error_callback)) {
-  DCHECK(profile_);
-  DCHECK(local_state_);
+  CHECK(shared_url_loader_factory_);
+  CHECK(profile_, base::NotFatalUntil::M160);
 
   // If a refresh timeout was specified, set a timer to call us back.
   if (!policy_refresh_timeout.is_zero()) {
     // Shouldn't pass a timeout unless we're refreshing existing policy.
-    DCHECK_EQ(enforcement_type_, PolicyEnforcement::kPolicyRequired);
+    CHECK_EQ(enforcement_type_, PolicyEnforcement::kPolicyRequired,
+             base::NotFatalUntil::M160);
     policy_refresh_timeout_.Start(
         FROM_HERE, policy_refresh_timeout,
         base::BindOnce(&UserCloudPolicyManagerAsh::OnPolicyRefreshTimeout,
@@ -192,39 +193,29 @@ UserCloudPolicyManagerAsh::UserCloudPolicyManagerAsh(
 }
 
 void UserCloudPolicyManagerAsh::ForceTimeoutForTest() {
-  DCHECK(policy_refresh_timeout_.IsRunning());
+  CHECK(policy_refresh_timeout_.IsRunning(), base::NotFatalUntil::M160);
   // Stop the timer to mimic what happens when a real timer fires, then invoke
   // the timer callback directly.
   policy_refresh_timeout_.Stop();
   OnPolicyRefreshTimeout();
 }
 
-void UserCloudPolicyManagerAsh::SetSignInURLLoaderFactoryForTests(
-    scoped_refptr<network::SharedURLLoaderFactory> signin_url_loader_factory) {
-  signin_url_loader_factory_for_tests_ = signin_url_loader_factory;
-}
 
-void UserCloudPolicyManagerAsh::SetSystemURLLoaderFactoryForTests(
-    scoped_refptr<network::SharedURLLoaderFactory> system_url_loader_factory) {
-  system_url_loader_factory_for_tests_ = system_url_loader_factory;
-}
 
 UserCloudPolicyManagerAsh::~UserCloudPolicyManagerAsh() = default;
 
 void UserCloudPolicyManagerAsh::ConnectManagementService(
-    DeviceManagementService* device_management_service,
-    scoped_refptr<network::SharedURLLoaderFactory> system_url_loader_factory) {
-  DCHECK(device_management_service);
+    DeviceManagementService* device_management_service) {
+  CHECK(device_management_service, base::NotFatalUntil::M160);
 
   CHECK(!core()->client());
 
-  // Note: |system_url_loader_factory| can be null for tests.
   // Use the system URL loader context here instead of a context derived
   // from the Profile because Connect() is called before the profile is
   // fully initialized (required so we can perform the initial policy load).
   std::unique_ptr<CloudPolicyClient> cloud_policy_client =
       std::make_unique<CloudPolicyClient>(
-          device_management_service, system_url_loader_factory,
+          device_management_service, shared_url_loader_factory_,
           ash::GetDeviceDMTokenForUserPolicyGetter(account_id_));
   CreateComponentCloudPolicyService(
       dm_protocol::kChromeExtensionPolicyType, component_policy_cache_path_,
@@ -232,7 +223,7 @@ void UserCloudPolicyManagerAsh::ConnectManagementService(
   core()->Connect(std::move(cloud_policy_client));
   observed_cloud_policy_client_.Observe(client());
 
-  external_data_manager_->Connect(system_url_loader_factory);
+  external_data_manager_->Connect(shared_url_loader_factory_);
 
   // Determine the next step after the CloudPolicyService initializes.
   if (service()->IsInitializationComplete()) {
@@ -265,13 +256,12 @@ void UserCloudPolicyManagerAsh::ConnectManagementService(
     observed_cloud_policy_service_.Observe(service());
   }
 
-  app_install_event_log_uploader_ =
-      std::make_unique<ArcAppInstallEventLogUploader>(client(), profile_);
 
   if (IsSkyVaultTTEnabled()) {
     // Local files should be deleted if required by policy.
     local_files_cleanup_ =
-        std::make_unique<local_user_files::LocalFilesCleanup>();
+        std::make_unique<local_user_files::LocalFilesCleanup>(
+            &local_state_.get());
   }
 }
 
@@ -284,7 +274,8 @@ void UserCloudPolicyManagerAsh::OnAccessTokenAvailable(
   access_token_ = access_token;
 
   if (!wildcard_username_.empty()) {
-    wildcard_login_checker_ = std::make_unique<WildcardLoginChecker>();
+    wildcard_login_checker_ =
+        std::make_unique<WildcardLoginChecker>(shared_url_loader_factory_);
     // Safe to set a callback with an unretained pointer because the
     // WildcardLoginChecker is owned by this object and won't invoke the
     // callback after we destroy it.
@@ -335,19 +326,14 @@ void UserCloudPolicyManagerAsh::OnWildcardCheckCompleted(
 
 void UserCloudPolicyManagerAsh::EnableWildcardLoginCheck(
     const std::string& username) {
-  DCHECK(access_token_.empty());
+  CHECK(access_token_.empty(), base::NotFatalUntil::M160);
   wildcard_username_ = username;
-}
-
-ArcAppInstallEventLogUploader*
-UserCloudPolicyManagerAsh::GetAppInstallEventLogUploader() {
-  return app_install_event_log_uploader_.get();
 }
 
 void UserCloudPolicyManagerAsh::Shutdown() {
   observed_profile_.Reset();
   local_files_cleanup_.reset();
-  app_install_event_log_uploader_.reset();
+
   report_scheduler_.reset();
   observed_cloud_policy_client_.Reset();
   observed_cloud_policy_service_.Reset();
@@ -414,7 +400,7 @@ void UserCloudPolicyManagerAsh::OnPolicyFetched(CloudPolicyClient* client) {
 
 void UserCloudPolicyManagerAsh::OnRegistrationStateChanged(
     CloudPolicyClient* cloud_policy_client) {
-  DCHECK_EQ(client(), cloud_policy_client);
+  CHECK_EQ(client(), cloud_policy_client, base::NotFatalUntil::M160);
 
   // Trigger re-registration. This happens if the client ID used for policy
   // fetches is unknown/purged from the DMServer.
@@ -453,7 +439,7 @@ void UserCloudPolicyManagerAsh::OnRegistrationStateChanged(
 
 void UserCloudPolicyManagerAsh::OnClientError(
     CloudPolicyClient* cloud_policy_client) {
-  DCHECK_EQ(client(), cloud_policy_client);
+  CHECK_EQ(client(), cloud_policy_client, base::NotFatalUntil::M160);
   switch (client()->last_dm_status()) {
     case DM_STATUS_SERVICE_MANAGEMENT_NOT_SUPPORTED:
       // If management is not supported for this user, then a registration
@@ -509,6 +495,11 @@ void UserCloudPolicyManagerAsh::OnStoreLoaded(
     CloudPolicyStore* cloud_policy_store) {
   CloudPolicyManager::OnStoreLoaded(cloud_policy_store);
 
+  if (cloud_policy_store == extension_install_store()) {
+    // Extension Install policies do not affect affiliation.
+    return;
+  }
+
   em::PolicyData const* const policy_data = cloud_policy_store->policy();
 
   bool is_managed = cloud_policy_store->is_managed();
@@ -522,14 +513,13 @@ void UserCloudPolicyManagerAsh::OnStoreLoaded(
     // server fetch fails.
     enforcement_type_ = PolicyEnforcement::kPolicyOptional;
 
-    DCHECK(policy_data->has_username());
+    CHECK(policy_data->has_username(), base::NotFatalUntil::M160);
 
-    policy::BrowserPolicyConnectorAsh const* const connector =
-        g_browser_process->platform_part()->browser_policy_connector_ash();
     is_affiliated = policy::IsUserAffiliated(
         base::flat_set<std::string>(policy_data->user_affiliation_ids().begin(),
                                     policy_data->user_affiliation_ids().end()),
-        connector->device_affiliation_ids(), account_id_.GetUserEmail());
+        browser_policy_connector_ash_->device_affiliation_ids(),
+        account_id_.GetUserEmail());
   }
 
   user_manager::UserManager::Get()->SetUserPolicyStatus(account_id_, is_managed,
@@ -538,7 +528,7 @@ void UserCloudPolicyManagerAsh::OnStoreLoaded(
 
 void UserCloudPolicyManagerAsh::SetPolicyRequired(bool policy_required) {
   auto* user_manager = user_manager::UserManager::Get();
-  user_manager::KnownUser known_user(local_state_);
+  user_manager::KnownUser known_user(&local_state_.get());
   known_user.SetProfileRequiresPolicy(
       account_id_,
       policy_required ? user_manager::ProfileRequiresPolicy::kPolicyRequired
@@ -555,7 +545,7 @@ void UserCloudPolicyManagerAsh::SetPolicyRequired(bool policy_required) {
                                    base::ToString(policy_required));
     base::CommandLine::StringVector flags;
     flags.assign(command_line.argv().begin() + 1, command_line.argv().end());
-    DCHECK_EQ(1u, flags.size());
+    CHECK_EQ(1u, flags.size(), base::NotFatalUntil::M160);
     ash::UserSessionManager::GetInstance()->SetSwitchesForUser(
         account_id_,
         ash::UserSessionManager::CommandLineSwitchesType::kSessionControl,
@@ -590,18 +580,6 @@ void UserCloudPolicyManagerAsh::FetchPolicyOAuthToken() {
     return;
   }
 
-  // TODO(jcivelli): Connect() is passed a SharedURLLoaderFactory but here we
-  // retrieve it from |g_browser_process|. We should move away from retrieving
-  // it from |g_browser_process| at which point we can remove
-  // SetSystemURLLoaderFactoryForTests().
-  scoped_refptr<network::SharedURLLoaderFactory> system_url_loader_factory =
-      system_url_loader_factory_for_tests_;
-  if (!system_url_loader_factory) {
-    system_url_loader_factory =
-        g_browser_process->system_network_context_manager()
-            ->GetSharedURLLoaderFactory();
-  }
-
   std::string refresh_token = user_context_refresh_token_for_tests_.value_or(
       ash::UserSessionManager::GetInstance()->user_context().GetRefreshToken());
 
@@ -609,7 +587,7 @@ void UserCloudPolicyManagerAsh::FetchPolicyOAuthToken() {
     token_fetcher_ =
         PolicyOAuth2TokenFetcher::CreateInstance(kOAuthConsumerName);
     token_fetcher_->StartWithRefreshToken(
-        refresh_token, system_url_loader_factory,
+        refresh_token, shared_url_loader_factory_,
         base::BindOnce(&UserCloudPolicyManagerAsh::OnOAuth2PolicyTokenFetched,
                        base::Unretained(this)));
     return;
@@ -625,7 +603,7 @@ void UserCloudPolicyManagerAsh::FetchPolicyOAuthToken() {
 void UserCloudPolicyManagerAsh::OnOAuth2PolicyTokenFetched(
     const std::string& policy_token,
     const GoogleServiceAuthError& error) {
-  DCHECK(!client()->is_registered());
+  CHECK(!client()->is_registered(), base::NotFatalUntil::M160);
 
   if (error.state() == GoogleServiceAuthError::NONE) {
     if (RequiresOAuthTokenForChildUser()) {
@@ -668,7 +646,7 @@ void UserCloudPolicyManagerAsh::OnInitialPolicyFetchComplete(bool success) {
 }
 
 void UserCloudPolicyManagerAsh::OnPolicyRefreshTimeout() {
-  DCHECK(waiting_for_policy_fetch_);
+  CHECK(waiting_for_policy_fetch_, base::NotFatalUntil::M160);
   LOG(WARNING) << "Timed out while waiting for the policy refresh. "
                << "The session will start with the cached policy.";
   CancelWaitForPolicyFetch(false, "policy refresh timeout");
@@ -717,7 +695,7 @@ void UserCloudPolicyManagerAsh::StartRefreshSchedulerIfReady() {
     return;  // Still waiting for the initial, blocking fetch.
   }
 
-  if (!service() || !local_state_) {
+  if (!service()) {
     return;  // Not connected.
   }
 
@@ -736,7 +714,7 @@ void UserCloudPolicyManagerAsh::StartRefreshSchedulerIfReady() {
   }
 
   core()->StartRefreshScheduler();
-  core()->TrackRefreshDelayPref(local_state_,
+  core()->TrackRefreshDelayPref(&local_state_.get(),
                                 policy_prefs::kUserPolicyRefreshRate);
 }
 
@@ -790,7 +768,8 @@ void UserCloudPolicyManagerAsh::StartReportSchedulerIfReady(
 
 void UserCloudPolicyManagerAsh::OnProfileInitializationComplete(
     Profile* profile) {
-  DCHECK(observed_profile_.IsObservingSource(profile));
+  CHECK(observed_profile_.IsObservingSource(profile),
+        base::NotFatalUntil::M160);
   observed_profile_.Reset();
 
   // Activate user remote commands only for unicorn accounts.
@@ -831,14 +810,18 @@ void UserCloudPolicyManagerAsh::ShutdownRemoteCommands() {
 
 void UserCloudPolicyManagerAsh::SetUserContextRefreshTokenForTests(
     const std::string& refresh_token) {
-  DCHECK(!refresh_token.empty());
-  DCHECK(!user_context_refresh_token_for_tests_);
+  CHECK(!refresh_token.empty(), base::NotFatalUntil::M160);
+  CHECK(!user_context_refresh_token_for_tests_, base::NotFatalUntil::M160);
   user_context_refresh_token_for_tests_ = std::make_optional(refresh_token);
 }
 
 enterprise_reporting::ReportScheduler*
 UserCloudPolicyManagerAsh::GetReportSchedulerForTesting() {
   return report_scheduler_.get();
+}
+
+CloudPolicyStore* UserCloudPolicyManagerAsh::extension_install_store() {
+  return CloudPolicyManager::extension_install_store();
 }
 
 // static

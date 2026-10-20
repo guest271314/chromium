@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "ash/constants/ash_switches.h"
+#include "ash/constants/chrome_switches.h"
 #include "ash/public/cpp/login_accelerators.h"
 #include "base/check.h"
 #include "base/check_deref.h"
@@ -33,6 +34,7 @@
 #include "chrome/browser/ash/app_mode/isolated_web_app/kiosk_iwa_manager.h"
 #include "chrome/browser/ash/app_mode/kiosk_app.h"
 #include "chrome/browser/ash/app_mode/kiosk_app_launch_error.h"
+#include "chrome/browser/ash/app_mode/kiosk_app_level_logs_manager_wrapper.h"
 #include "chrome/browser/ash/app_mode/kiosk_app_manager_base.h"
 #include "chrome/browser/ash/app_mode/kiosk_app_types.h"
 #include "chrome/browser/ash/app_mode/kiosk_chrome_app_manager.h"
@@ -44,9 +46,7 @@
 #include "chrome/browser/ash/login/screens/app_launch_splash_screen.h"
 #include "chrome/browser/ash/login/wizard_controller.h"
 #include "chrome/browser/ash/policy/core/device_local_account.h"
-#include "chrome/browser/chromeos/app_mode/kiosk_app_level_logs_manager_wrapper.h"
 #include "chrome/browser/ui/ash/login/login_display_host.h"
-#include "chrome/common/chrome_switches.h"
 #include "chromeos/ash/components/settings/cros_settings.h"
 #include "components/account_id/account_id.h"
 #include "components/prefs/pref_service.h"
@@ -200,13 +200,13 @@ std::optional<KioskApp> KioskControllerImpl::GetAutoLaunchApp() const {
 void KioskControllerImpl::InitializeKioskSystemSession(
     const KioskAppId& kiosk_app_id,
     Profile* profile,
-    const std::optional<std::string>& app_name) {
+    const std::optional<webapps::AppId>& app_id) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   CHECK(!system_session_.has_value())
       << "KioskSystemSession is already initialized";
 
-  system_session_.emplace(local_state_.get(), profile, kiosk_app_id, app_name);
+  system_session_.emplace(local_state_.get(), profile, kiosk_app_id, app_id);
 
   switch (kiosk_app_id.type) {
     case KioskAppType::kWebApp:
@@ -356,17 +356,17 @@ void KioskControllerImpl::OnUserLoggedIn(const user_manager::User& user) {
   }
 
   base::CommandLine* command_line = base::CommandLine::ForCurrentProcess();
-  command_line->AppendSwitch(::switches::kForceAppMode);
+  command_line->AppendSwitch(ash::chrome_switches::kForceAppMode);
 
   // Disables installation of preinstalled apps in kiosk sessions as
   // `UserManager::Observer::OnUserLoggedIn` is called before `Profile` creation
   // and `WebAppProvider::Start`.
   // TODO(crbug.com/385072112): Replace cmd line switch with proper filtering.
-  command_line->AppendSwitch(::switches::kDisableDefaultApps);
+  command_line->AppendSwitch(ash::chrome_switches::kDisableDefaultApps);
 
   // This happens in Web kiosks.
   if (!kiosk_app_id.empty()) {
-    command_line->AppendSwitchASCII(::switches::kAppId, kiosk_app_id);
+    command_line->AppendSwitchASCII(ash::chrome_switches::kAppId, kiosk_app_id);
   }
 
   // Disable window animation since kiosk app runs in a single full screen
@@ -385,8 +385,8 @@ void KioskControllerImpl::OnUserLoggedIn(const user_manager::User& user) {
 void KioskControllerImpl::OnAppLaunched(
     const KioskAppId& kiosk_app_id,
     Profile* profile,
-    const std::optional<std::string>& app_name) {
-  InitializeKioskSystemSession(kiosk_app_id, profile, app_name);
+    const std::optional<webapps::AppId>& app_id) {
+  InitializeKioskSystemSession(kiosk_app_id, profile, app_id);
 }
 
 void KioskControllerImpl::OnLaunchComplete(KioskAppLaunchError::Error error) {
@@ -419,14 +419,14 @@ void KioskControllerImpl::OnLaunchCompleteAfterCrash(
     const KioskAppId& app,
     Profile* profile,
     bool success,
-    const std::optional<std::string>& app_name) {
+    const std::optional<webapps::AppId>& app_id) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   if (success) {
     if (auto* input_controller =
             ui::OzonePlatform::GetInstance()->GetInputController()) {
       input_controller->DisableKeyboardImposterCheck();
     }
-    InitializeKioskSystemSession(app, profile, app_name);
+    InitializeKioskSystemSession(app, profile, app_id);
   } else {
     session_manager::SessionManager::Get()->RequestSignOut();
   }

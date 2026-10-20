@@ -5,8 +5,11 @@
 #include "ui/views/widget/desktop_aura/desktop_drag_drop_client_win.h"
 
 #include <memory>
+#include <utility>
 
 #include "base/auto_reset.h"
+#include "base/functional/callback.h"
+#include "base/no_destructor.h"
 #include "base/notimplemented.h"
 #include "base/scoped_observation.h"
 #include "base/threading/hang_watcher.h"
@@ -26,6 +29,11 @@
 namespace views {
 
 namespace {
+
+base::RepeatingClosure& GetOnDragStartedCallback() {
+  static base::NoDestructor<base::RepeatingClosure> callback;
+  return *callback;
+}
 
 class SourceWindowObserver : public aura::WindowObserver {
  public:
@@ -75,9 +83,12 @@ ui::mojom::DragOperation DesktopDragDropClientWin::StartDragAndDrop(
     int allowed_operations,
     ui::mojom::DragEventSource source) {
   CHECK(!g_is_dragging);
+  if (desktop_host_->IsInNativeMoveResizeLoop()) {
+    return ui::PreferredDragOperation(
+        ui::DragDropTypes::DropEffectToDragOperation(DROPEFFECT_NONE));
+  }
   gfx::Point touch_screen_point;
   if (source == ui::mojom::DragEventSource::kTouch) {
-    source_window->GetHost()->ConvertDIPToPixels(&touch_screen_point);
     display::Screen* screen = display::Screen::Get();
     CHECK(screen);
     aura::Window* window =
@@ -113,6 +124,10 @@ ui::mojom::DragOperation DesktopDragDropClientWin::StartDragAndDrop(
   // any) is not valid since the user can take unbounded time to complete the
   // drag. (http://crbug.com/806174)
   base::HangWatcher::InvalidateActiveExpectations();
+
+  if (auto& callback = GetOnDragStartedCallback()) {
+    callback.Run();
+  }
 
   HRESULT result = ::DoDragDrop(
       ui::OSExchangeDataProviderWin::GetIDataObject(*data.get()),
@@ -157,6 +172,12 @@ void DesktopDragDropClientWin::AddObserver(
 void DesktopDragDropClientWin::RemoveObserver(
     aura::client::DragDropClientObserver* observer) {
   NOTIMPLEMENTED();
+}
+
+// static
+void DesktopDragDropClientWin::SetOnDragStartedCallbackForTesting(
+    base::RepeatingClosure callback) {
+  GetOnDragStartedCallback() = std::move(callback);
 }
 
 void DesktopDragDropClientWin::OnNativeWidgetDestroying(HWND window) {

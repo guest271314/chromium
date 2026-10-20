@@ -12,20 +12,26 @@ import android.content.Intent;
 import android.view.ViewGroup;
 
 import androidx.annotation.VisibleForTesting;
+import androidx.appcompat.app.AppCompatDelegate;
 
 import org.chromium.base.ContextUtils;
 import org.chromium.base.DeviceInfo;
 import org.chromium.base.ResettersForTesting;
+import org.chromium.base.TriState;
+import org.chromium.base.TriStateUtils;
 import org.chromium.base.UnguessableToken;
-import org.chromium.blink.mojom.ImmersiveProjectionType;
-import org.chromium.blink.mojom.ImmersiveStereoMode;
 import org.chromium.build.annotations.Initializer;
+import org.chromium.build.annotations.MonotonicNonNull;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
+import org.chromium.chrome.browser.media.FullscreenVideoPictureInPictureController;
 import org.chromium.chrome.browser.media.VideoOverlayActivity;
+import org.chromium.chrome.browser.night_mode.NightModeStateProvider;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabUtils;
 import org.chromium.components.thinwebview.CompositorView;
+import org.chromium.content_public.browser.ImmersiveProjectionType;
+import org.chromium.content_public.browser.ImmersiveStereoMode;
 import org.chromium.content_public.browser.overlay_window.PlaybackState;
 
 /**
@@ -34,12 +40,19 @@ import org.chromium.content_public.browser.overlay_window.PlaybackState;
  */
 @NullMarked
 public class ImmersiveVideoPlaybackActivity extends VideoOverlayActivity {
-    private static final String TAG = "ImmersiveVideoPlaybackActivity";
+    private static final String TAG = "ImmersivePlayback";
+
+    static {
+        FullscreenVideoPictureInPictureController.registerNoPipComponentName(
+                ImmersiveVideoPlaybackActivity.class.getName());
+    }
 
     private @Nullable ImmersiveVideoPlaybackCoordinator mPlaybackCoordinator;
 
     @SuppressWarnings("StaticFieldLeak")
     private static @Nullable ImmersiveVideoPlaybackCoordinator sPlaybackCoordinatorForTesting;
+
+    private @MonotonicNonNull ImmersiveVideoPlaybackNightModeStateProvider mNightModeStateProvider;
 
     /** Stores state that arrives before the UI is ready. This is only used on startup. */
     @VisibleForTesting
@@ -50,18 +63,20 @@ public class ImmersiveVideoPlaybackActivity extends VideoOverlayActivity {
         public @Nullable Long mDurationMs;
         public @Nullable Long mPositionMs;
         public @Nullable Double mPlaybackRate;
-        public @Nullable @ImmersiveStereoMode.EnumType Integer mStereoMode;
-        public @Nullable @ImmersiveProjectionType.EnumType Integer mProjectionType;
+        public @Nullable @ImmersiveStereoMode Integer mStereoMode;
+        public @Nullable @ImmersiveProjectionType Integer mProjectionType;
+        public @TriState int mIsRecommended;
 
         void apply(ImmersiveVideoPlaybackActivity activity) {
+            if (mVideoWidth != null && mVideoHeight != null) {
+                activity.updateVideoSize(mVideoWidth, mVideoHeight);
+            }
             if (mStereoMode != null || mProjectionType != null) {
                 int stereoMode = mStereoMode != null ? mStereoMode : ImmersiveStereoMode.MONO;
                 int projectionType =
                         mProjectionType != null ? mProjectionType : ImmersiveProjectionType.QUAD;
-                activity.setImmersiveVideoOptions(stereoMode, projectionType);
-            }
-            if (mVideoWidth != null && mVideoHeight != null) {
-                activity.updateVideoSize(mVideoWidth, mVideoHeight);
+                activity.setImmersiveVideoOptions(
+                        stereoMode, projectionType, mIsRecommended == TriState.TRUE);
             }
             if (mPlaybackState != null) {
                 activity.setPlaybackState(mPlaybackState);
@@ -81,6 +96,7 @@ public class ImmersiveVideoPlaybackActivity extends VideoOverlayActivity {
             mPlaybackRate = null;
             mStereoMode = null;
             mProjectionType = null;
+            mIsRecommended = TriState.NOT_SET;
         }
     }
 
@@ -100,7 +116,9 @@ public class ImmersiveVideoPlaybackActivity extends VideoOverlayActivity {
             return;
         }
 
-        finishInitialize();
+        if (!isNativeHandleInitialized()) {
+            finishInitialize();
+        }
     }
 
     @Initializer
@@ -111,6 +129,8 @@ public class ImmersiveVideoPlaybackActivity extends VideoOverlayActivity {
             finishOverlay(/* closeByNative= */ true);
             return;
         }
+
+        setTitle(org.chromium.chrome.R.string.accessibility_video_player);
     }
 
     @Override
@@ -142,7 +162,11 @@ public class ImmersiveVideoPlaybackActivity extends VideoOverlayActivity {
                             });
 
             CompositorView compositorView = mPlaybackCoordinator.show();
-            addContentView(compositorView.getView(), new ViewGroup.LayoutParams(0, 0));
+            addContentView(
+                    compositorView.getView(),
+                    new ViewGroup.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                            ViewGroup.LayoutParams.MATCH_PARENT));
             setCompositorView(compositorView);
         }
 
@@ -152,10 +176,26 @@ public class ImmersiveVideoPlaybackActivity extends VideoOverlayActivity {
     @Override
     protected void cleanup() {
         if (mPlaybackCoordinator != null) {
-            mPlaybackCoordinator.destroy();
+            mPlaybackCoordinator.dispose();
             mPlaybackCoordinator = null;
         }
         mPendingState.reset();
+    }
+
+    @Override
+    public void onPauseWithNative() {
+        super.onPauseWithNative();
+        if (isNativeHandleInitialized()) {
+            togglePlayPause(/* toggleOn= */ false);
+        }
+    }
+
+    @Override
+    public void onResumeWithNative() {
+        super.onResumeWithNative();
+        if (mPlaybackCoordinator != null) {
+            mPlaybackCoordinator.showControlPanel();
+        }
     }
 
     @Override
@@ -177,13 +217,16 @@ public class ImmersiveVideoPlaybackActivity extends VideoOverlayActivity {
 
     @Override
     public void setImmersiveVideoOptions(
-            @ImmersiveStereoMode.EnumType int stereoMode,
-            @ImmersiveProjectionType.EnumType int projectionType) {
+            @ImmersiveStereoMode int stereoMode,
+            @ImmersiveProjectionType int projectionType,
+            boolean isRecommended) {
         if (mPlaybackCoordinator != null) {
-            mPlaybackCoordinator.updateVideoLayout(stereoMode, projectionType);
+            mPlaybackCoordinator.setImmersiveVideoOptions(
+                    stereoMode, projectionType, isRecommended);
         } else {
             mPendingState.mStereoMode = stereoMode;
             mPendingState.mProjectionType = projectionType;
+            mPendingState.mIsRecommended = TriStateUtils.from(isRecommended);
         }
     }
 
@@ -219,6 +262,19 @@ public class ImmersiveVideoPlaybackActivity extends VideoOverlayActivity {
         }
     }
 
+    @Override
+    protected void initializeNightModeStateProvider() {
+        if (mNightModeStateProvider != null) {
+            mNightModeStateProvider.initialize(getDelegate());
+        }
+    }
+
+    @Override
+    protected NightModeStateProvider createNightModeStateProvider() {
+        mNightModeStateProvider = new ImmersiveVideoPlaybackNightModeStateProvider();
+        return mNightModeStateProvider;
+    }
+
     public PendingState getPendingStateForTesting() {
         return mPendingState;
     }
@@ -241,10 +297,32 @@ public class ImmersiveVideoPlaybackActivity extends VideoOverlayActivity {
      */
     public static void createActivity(UnguessableToken nativeToken, Object initiatorTab) {
         Activity activity = TabUtils.getActivity((Tab) initiatorTab);
+        if (activity != null) {
+            FullscreenVideoPictureInPictureController.disableAutoPictureInPicture(activity);
+        }
         Context context = activity != null ? activity : ContextUtils.getApplicationContext();
         Intent intent = new Intent(context, ImmersiveVideoPlaybackActivity.class);
         intent.putExtra(NATIVE_TOKEN_KEY, nativeToken);
         intent.putExtra(WEB_CONTENTS_KEY, ((Tab) initiatorTab).getWebContents());
         context.startActivity(intent);
+    }
+
+    @VisibleForTesting
+    /* package */ static class ImmersiveVideoPlaybackNightModeStateProvider
+            implements NightModeStateProvider {
+        public void initialize(AppCompatDelegate delegate) {
+            delegate.setLocalNightMode(AppCompatDelegate.MODE_NIGHT_YES);
+        }
+
+        @Override
+        public boolean isInNightMode() {
+            return true;
+        }
+
+        @Override
+        public void addObserver(Observer observer) {}
+
+        @Override
+        public void removeObserver(Observer observer) {}
     }
 }

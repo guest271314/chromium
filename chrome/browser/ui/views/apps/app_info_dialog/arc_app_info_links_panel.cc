@@ -10,6 +10,7 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/views/chrome_layout_provider.h"
 #include "chrome/grit/generated_resources.h"
+#include "chromeos/ash/experiences/arc/app/arc_app_constants.h"
 #include "chromeos/ash/experiences/arc/intent_helper/arc_intent_helper_package.h"
 #include "chromeos/ash/experiences/arc/mojom/app.mojom.h"
 #include "ui/base/l10n/l10n_util.h"
@@ -38,7 +39,7 @@ ArcAppInfoLinksPanel::ArcAppInfoLinksPanel(Profile* profile,
   manage_link_ = AddChildView(std::move(manage_link));
 
   ArcAppListPrefs* const arc_prefs = ArcAppListPrefs::Get(profile_);
-  DCHECK(arc_prefs);
+  CHECK(arc_prefs, base::NotFatalUntil::M162);
   app_list_observation_.Observe(arc_prefs);
 
   std::unique_ptr<ArcAppListPrefs::AppInfo> app_info =

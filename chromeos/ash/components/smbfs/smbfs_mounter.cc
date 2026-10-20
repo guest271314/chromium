@@ -12,7 +12,7 @@
 #include "chromeos/components/mojo_bootstrap/pending_connection_manager.h"
 #include "mojo/core/configuration.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
-#include "mojo/public/cpp/system/platform_handle.h"
+#include "mojo/public/cpp/platform/platform_handle.h"
 
 namespace smbfs {
 
@@ -71,7 +71,7 @@ SmbFsMounter::SmbFsMounter()
 
 SmbFsMounter::~SmbFsMounter() {
   if (mojo_fd_pending_) {
-    mojo_bootstrap::PendingConnectionManager::Get()
+    mojo_bootstrap::PendingConnectionManager::GetForSmbFs()
         .CancelExpectedOpenIpcChannel(token_);
   }
 }
@@ -85,9 +85,10 @@ void SmbFsMounter::Mount(SmbFsMounter::DoneCallback callback) {
 
   // If |bootstrap_| is already bound, it was provided by a test subclass.
   if (!bootstrap_) {
-    mojo_bootstrap::PendingConnectionManager::Get().ExpectOpenIpcChannel(
-        token_,
-        base::BindOnce(&SmbFsMounter::OnIpcChannel, base::Unretained(this)));
+    mojo_bootstrap::PendingConnectionManager::GetForSmbFs()
+        .ExpectOpenIpcChannel(token_,
+                              base::BindOnce(&SmbFsMounter::OnIpcChannel,
+                                             base::Unretained(this)));
     mojo_fd_pending_ = true;
 
     bootstrap_.Bind(mojo::PendingRemote<mojom::SmbFsBootstrap>(
@@ -100,6 +101,10 @@ void SmbFsMounter::Mount(SmbFsMounter::DoneCallback callback) {
   std::vector<std::string> mount_options;
   if (options_.enable_verbose_logging) {
     mount_options.emplace_back("log-level=-2");
+  }
+  if (!options_.account_hash.empty()) {
+    mount_options.emplace_back(
+        base::StrCat({"account_hash=", options_.account_hash}));
   }
 
   ash::disks::MountPoint::Mount(
@@ -170,8 +175,7 @@ void SmbFsMounter::OnMountDone(
 
     mojom::PasswordPtr password = mojom::Password::New();
     password->length = static_cast<int32_t>(options_.password.size());
-    password->fd = mojo::WrapPlatformHandle(
-        mojo::PlatformHandle(std::move(pipe_read_end)));
+    password->fd = mojo::PlatformHandle(std::move(pipe_read_end));
     mount_options->password = std::move(password);
   }
 

@@ -16,23 +16,35 @@ import java.lang.annotation.RetentionPolicy;
  * in //components/feature_engagement/public/feature_constants.h.
  */
 @StringDef({
-    // keep-sorted start
     // FEATURE_CONSTANTS_JAVA_STRING_DEF_START
+    // keep-sorted start
     FeatureConstants.ACCOUNT_SETTINGS_HISTORY_SYNC,
     FeatureConstants.ADAPTIVE_BUTTON_IN_TOP_TOOLBAR_CUSTOMIZATION_ADD_TO_BOOKMARKS_FEATURE,
-    FeatureConstants.ADAPTIVE_BUTTON_IN_TOP_TOOLBAR_CUSTOMIZATION_GLIC_FEATURE,
     FeatureConstants.ADAPTIVE_BUTTON_IN_TOP_TOOLBAR_CUSTOMIZATION_NEW_TAB_FEATURE,
     FeatureConstants.ADAPTIVE_BUTTON_IN_TOP_TOOLBAR_CUSTOMIZATION_OPEN_IN_BROWSER_FEATURE,
     FeatureConstants.ADAPTIVE_BUTTON_IN_TOP_TOOLBAR_CUSTOMIZATION_READ_ALOUD_FEATURE,
     FeatureConstants.ADAPTIVE_BUTTON_IN_TOP_TOOLBAR_CUSTOMIZATION_SHARE_FEATURE,
     FeatureConstants.ADAPTIVE_BUTTON_IN_TOP_TOOLBAR_CUSTOMIZATION_TRANSLATE_FEATURE,
     FeatureConstants.ADAPTIVE_BUTTON_IN_TOP_TOOLBAR_CUSTOMIZATION_VOICE_SEARCH_FEATURE,
+    FeatureConstants.ADAPTIVE_BUTTON_PIN_GLIC_TOOLBAR_BUTTON_FEATURE,
+    FeatureConstants.AIM_ACTIVATION_HINT,
+    FeatureConstants.ANDROID_BOTTOM_BAR_EDUCATION,
+    FeatureConstants.ANDROID_BOTTOM_BAR_GLIC,
+    FeatureConstants.ANDROID_BOTTOM_BAR_NEW_TAB,
+    FeatureConstants.ANDROID_BOTTOM_BAR_PROMO_DIALOG,
     FeatureConstants.ANDROID_TAB_DECLUTTER_FEATURE,
+    FeatureConstants.ANDROID_TIPS_OPT_IN_PROMO_FEATURE,
+    FeatureConstants.ANDROID_VERTICAL_TABS_NEW_LABEL,
+    FeatureConstants.ANDROID_VERTICAL_TABS_PROMO_FEATURE,
+    FeatureConstants.APP_LANGUAGE_PROMO_FEATURE,
     FeatureConstants.APP_RATING_PROMPT_FEATURE,
     FeatureConstants.APP_SPECIFIC_HISTORY_FEATURE,
+    FeatureConstants.ARCHIVED_TABS_AUTO_DELETE_PROMO_FEATURE,
     FeatureConstants.AUTO_DARK_OPT_OUT_FEATURE,
     FeatureConstants.AUTO_DARK_USER_EDUCATION_MESSAGE_FEATURE,
     FeatureConstants.AUTO_DARK_USER_EDUCATION_MESSAGE_OPT_IN_FEATURE,
+    FeatureConstants.BLUE_BUBBLE_COOLDOWN_GROUP,
+    FeatureConstants.BOOKMARK_BAR_VISIBILITY_FEATURE,
     FeatureConstants.BOTTOM_TOOLBAR_FEATURE,
     FeatureConstants.CCT_HISTORY_FEATURE,
     FeatureConstants.CCT_MINIMIZED_FEATURE,
@@ -43,7 +55,6 @@ import java.lang.annotation.RetentionPolicy;
     FeatureConstants.CHROME_REENGAGEMENT_NOTIFICATION_3_FEATURE,
     FeatureConstants.CONTEXTUAL_PAGE_ACTIONS_ACTION_CHIP,
     FeatureConstants.CONTEXTUAL_PAGE_ACTIONS_QUIET_VARIANT,
-    FeatureConstants.COOKIE_CONTROLS_FEATURE,
     FeatureConstants.DATA_SAVER_DETAIL_FEATURE,
     FeatureConstants.DATA_SAVER_MILESTONE_PROMO_FEATURE,
     FeatureConstants.DATA_SAVER_PREVIEW_FEATURE,
@@ -57,36 +68,35 @@ import java.lang.annotation.RetentionPolicy;
     FeatureConstants.DOWNLOAD_PAGE_FEATURE,
     FeatureConstants.DOWNLOAD_PAGE_SCREENSHOT_FEATURE,
     FeatureConstants.DOWNLOAD_SETTINGS_FEATURE,
-    FeatureConstants.EPHEMERAL_TAB_FEATURE,
     FeatureConstants.FEED_CARD_MENU_FEATURE,
     FeatureConstants.FEED_HEADER_MENU_FEATURE,
     FeatureConstants.FEED_SWIPE_REFRESH_FEATURE,
+    FeatureConstants.FULLSCREEN_SIGNIN_PROMO_FEATURE,
     FeatureConstants.FUSEBOX_ATTACHMENT_FEATURE,
+    FeatureConstants.FUSEBOX_PLUS_BUTTON_HINT_FEATURE,
     FeatureConstants.GENERIC_ALWAYS_TRIGGER_HELP_UI_FEATURE,
     FeatureConstants.GESTURE_USER_EDUCATION,
     FeatureConstants.GLIC_PROMO_ANDROID_FEATURE,
     FeatureConstants.IDENTITY_DISC_FEATURE,
     FeatureConstants.INSTANCE_SWITCHER,
+    FeatureConstants.INTERRUPTIVE_IPH_COOLDOWN_GROUP,
     FeatureConstants.IPH_EXTENSIONS_MANAGE_APP_MENU_FEATURE,
     FeatureConstants.IPH_EXTENSIONS_MANAGE_TOOLBAR_FEATURE,
+    FeatureConstants.IPH_EXTENSIONS_PINNED_BY_DEFAULT_FEATURE,
+    FeatureConstants.IPH_INCOGNITO_INDICATOR_CLOSE_ALL_WINDOWS,
     FeatureConstants.IPH_MIC_TOOLBAR_FEATURE,
     FeatureConstants.IPH_PDF_PAGE_DOWNLOAD,
     FeatureConstants.IPH_SHARE_SCREENSHOT_FEATURE,
-    FeatureConstants.IPH_SHARING_HUB_LINK_TOGGLE_FEATURE,
     FeatureConstants.IPH_TAB_SWITCHER_XR,
     FeatureConstants.IPH_TAB_TEARING_XR,
     FeatureConstants.IPH_TOUCH_TO_SEARCH_CALLOUT,
     FeatureConstants.KEYBOARD_ACCESSORY_ACCOUNT_NAME_EMAIL_SUGGESTION_FEATURE,
-    FeatureConstants.KEYBOARD_ACCESSORY_ADDRESS_FILL_FEATURE,
     FeatureConstants.KEYBOARD_ACCESSORY_AT_MEMORY_FEATURE,
     FeatureConstants.KEYBOARD_ACCESSORY_AUTOFILL_AI_VALUABLES_FEATURE,
-    FeatureConstants.KEYBOARD_ACCESSORY_BAR_SWIPING_FEATURE,
     FeatureConstants.KEYBOARD_ACCESSORY_ENABLE_LOYALTY_CARDS_FEATURE,
     FeatureConstants.KEYBOARD_ACCESSORY_EXTERNAL_ACCOUNT_PROFILE_FEATURE,
     FeatureConstants.KEYBOARD_ACCESSORY_HOME_WORK_PROFILE_SUGGESTION_FEATURE,
-    FeatureConstants.KEYBOARD_ACCESSORY_PASSWORD_FILLING_FEATURE,
     FeatureConstants.KEYBOARD_ACCESSORY_PAYMENT_CARD_INFO_RETRIEVAL_FEATURE,
-    FeatureConstants.KEYBOARD_ACCESSORY_PAYMENT_FILLING_FEATURE,
     FeatureConstants.KEYBOARD_ACCESSORY_PAYMENT_OFFER_FEATURE,
     FeatureConstants.KEYBOARD_ACCESSORY_PAYMENT_VIRTUAL_CARD_DISABLED_FEATURE,
     FeatureConstants.KEYBOARD_ACCESSORY_PAYMENT_VIRTUAL_CARD_FEATURE,
@@ -94,6 +104,7 @@ import java.lang.annotation.RetentionPolicy;
     FeatureConstants.MENU_ADD_TO_GROUP,
     FeatureConstants.MOST_VISITED_TILES_CUSTOMIZATION_PIN,
     FeatureConstants.NEW_TAB_PAGE_THEME_CUSTOMIZATION_FEATURE,
+    FeatureConstants.NOTIFICATION_PERMISSION_PROMO_FEATURE,
     FeatureConstants.PAGE_INFO_FEATURE,
     FeatureConstants.PAGE_INFO_STORE_INFO_FEATURE,
     FeatureConstants.PAGE_SUMMARY_PDF_MENU_FEATURE,
@@ -107,16 +118,16 @@ import java.lang.annotation.RetentionPolicy;
     FeatureConstants.READ_LATER_APP_MENU_BOOKMARKS_FEATURE,
     FeatureConstants.READ_LATER_APP_MENU_BOOKMARK_THIS_PAGE_FEATURE,
     FeatureConstants.READ_LATER_BOTTOM_SHEET_FEATURE,
-    FeatureConstants.READ_LATER_CONTEXT_MENU_FEATURE,
     FeatureConstants.REQUEST_DESKTOP_SITE_DEFAULT_ON_FEATURE,
     FeatureConstants.REQUEST_DESKTOP_SITE_EXCEPTIONS_GENERIC_FEATURE,
     FeatureConstants.REQUEST_DESKTOP_SITE_WINDOW_SETTING_FEATURE,
     FeatureConstants.RESTORE_TABS_ON_FRE_FEATURE,
+    FeatureConstants.SEARCH_ENGINE_CHOICE_PROMO_FEATURE,
+    FeatureConstants.SEND_TAB_TO_SELF_OMNIBOX,
     FeatureConstants.SHARED_HIGHLIGHTING_BUILDER_FEATURE,
     FeatureConstants.SHARED_HIGHLIGHTING_RECEIVER_FEATURE,
     FeatureConstants.SHARING_HUB_WEBNOTES_STYLIZE_FEATURE,
     FeatureConstants.SHOPPING_LIST_MENU_ITEM_FEATURE,
-    FeatureConstants.SHOPPING_LIST_SAVE_FLOW_FEATURE,
     FeatureConstants.SITE_CONTROLS_FEATURE,
     FeatureConstants.TAB_GROUPS_DRAG_AND_DROP_FEATURE,
     FeatureConstants.TAB_GROUPS_REMOTE_GROUP,
@@ -128,19 +139,14 @@ import java.lang.annotation.RetentionPolicy;
     FeatureConstants.TAB_GROUP_SHARE_UPDATE_FEATURE,
     FeatureConstants.TAB_GROUP_SHARE_VERSION_UPDATE_FEATURE,
     FeatureConstants.TAB_GROUP_SYNC_ON_STRIP_FEATURE,
+    FeatureConstants.TAB_PICKER_SELECT_TABS_FEATURE,
     FeatureConstants.TAB_SWITCHER_ADD_TO_GROUP,
     FeatureConstants.TAB_SWITCHER_BUTTON_FEATURE,
     FeatureConstants.TAB_SWITCHER_BUTTON_SWITCH_INCOGNITO,
     FeatureConstants.THREE_DOT_MENU_BACK_BUTTON,
-    FeatureConstants.TRANSLATE_MENU_BUTTON_FEATURE,
-    FeatureConstants.VIDEO_TUTORIAL_NTP_CHROME_INTRO_FEATURE,
-    FeatureConstants.VIDEO_TUTORIAL_NTP_DOWNLOAD_FEATURE,
-    FeatureConstants.VIDEO_TUTORIAL_NTP_SEARCH_FEATURE,
-    FeatureConstants.VIDEO_TUTORIAL_NTP_SUMMARY_FEATURE,
-    FeatureConstants.VIDEO_TUTORIAL_NTP_VOICE_SEARCH_FEATURE,
-    FeatureConstants.VIDEO_TUTORIAL_TRY_NOW_FEATURE
-    // FEATURE_CONSTANTS_JAVA_STRING_DEF_END
+    FeatureConstants.TRANSLATE_MENU_BUTTON_FEATURE
     // keep-sorted end
+    // FEATURE_CONSTANTS_JAVA_STRING_DEF_END
 })
 @Retention(RetentionPolicy.SOURCE)
 @NullMarked
@@ -150,9 +156,6 @@ public @interface FeatureConstants {
 
     String ADAPTIVE_BUTTON_IN_TOP_TOOLBAR_CUSTOMIZATION_ADD_TO_BOOKMARKS_FEATURE =
             "IPH_AdaptiveButtonInTopToolbarCustomization_AddToBookmarks";
-
-    String ADAPTIVE_BUTTON_IN_TOP_TOOLBAR_CUSTOMIZATION_GLIC_FEATURE =
-            "IPH_AdaptiveButtonInTopToolbarCustomization_Glic";
 
     String ADAPTIVE_BUTTON_IN_TOP_TOOLBAR_CUSTOMIZATION_NEW_TAB_FEATURE =
             "IPH_AdaptiveButtonInTopToolbarCustomization_NewTab";
@@ -172,10 +175,33 @@ public @interface FeatureConstants {
     String ADAPTIVE_BUTTON_IN_TOP_TOOLBAR_CUSTOMIZATION_VOICE_SEARCH_FEATURE =
             "IPH_AdaptiveButtonInTopToolbarCustomization_VoiceSearch";
 
-    String ANDROID_TAB_DECLUTTER_FEATURE = "IPH_AndroidTabDeclutter";
+    String ADAPTIVE_BUTTON_PIN_GLIC_TOOLBAR_BUTTON_FEATURE =
+            "IPH_AdaptiveButtonPinGlicToolbarButton";
 
+    /** A hint to activate AI Mode on Android Desktop via keystrokes. */
+    String AIM_ACTIVATION_HINT = "IPH_AimActivationHint";
+
+    /** Bottom bar education bubble and tooltips. */
+    String ANDROID_BOTTOM_BAR_EDUCATION = "IPH_AndroidBottomBarEducation";
+
+    /** Describes the GLIC button on the new bottom bar. */
+    String ANDROID_BOTTOM_BAR_GLIC = "IPH_AndroidBottomBarGlic";
+
+    /** Describes the new tab button moved down in the bottom bar. */
+    String ANDROID_BOTTOM_BAR_NEW_TAB = "IPH_AndroidBottomBarNewTab";
+
+    /** Describes the promo dialog shown to introduce the bottom bar. */
+    String ANDROID_BOTTOM_BAR_PROMO_DIALOG = "IPH_AndroidBottomBarPromoDialog";
+
+    String ANDROID_TAB_DECLUTTER_FEATURE = "IPH_AndroidTabDeclutter";
+    String ANDROID_TIPS_OPT_IN_PROMO_FEATURE = "IPH_AndroidTipsOptInPromo";
+    String ANDROID_VERTICAL_TABS_NEW_LABEL = "IPH_AndroidVerticalTabsNewLabel";
+    String ANDROID_VERTICAL_TABS_PROMO_FEATURE = "IPH_AndroidVerticalTabsPromo";
+
+    String APP_LANGUAGE_PROMO_FEATURE = "IPH_AppLanguagePromo";
     String APP_RATING_PROMPT_FEATURE = "IPH_AppRatingPrompt";
     String APP_SPECIFIC_HISTORY_FEATURE = "IPH_AppSpecificHistory";
+    String ARCHIVED_TABS_AUTO_DELETE_PROMO_FEATURE = "IPH_ArchivedTabsAutoDeletePromo";
 
     String AUTO_DARK_OPT_OUT_FEATURE = "IPH_AutoDarkOptOut";
 
@@ -183,6 +209,11 @@ public @interface FeatureConstants {
 
     String AUTO_DARK_USER_EDUCATION_MESSAGE_OPT_IN_FEATURE =
             "IPH_AutoDarkUserEducationMessageOptIn";
+
+    /** Cooldown group for blue bubble IPHs on Android. */
+    String BLUE_BUBBLE_COOLDOWN_GROUP = "IPH_BlueBubbleCooldownGroup";
+
+    String BOOKMARK_BAR_VISIBILITY_FEATURE = "IPH_BookmarkBarVisibility";
 
     String BOTTOM_TOOLBAR_FEATURE = "IPH_BottomToolbarTip";
 
@@ -206,8 +237,6 @@ public @interface FeatureConstants {
     String CONTEXTUAL_PAGE_ACTIONS_ACTION_CHIP = "IPH_ContextualPageActions_ActionChip";
 
     String CONTEXTUAL_PAGE_ACTIONS_QUIET_VARIANT = "IPH_ContextualPageActions_QuietVariant";
-
-    String COOKIE_CONTROLS_FEATURE = "IPH_CookieControls";
 
     String DATA_SAVER_DETAIL_FEATURE = "IPH_DataSaverDetail";
 
@@ -247,8 +276,6 @@ public @interface FeatureConstants {
      */
     String DOWNLOAD_SETTINGS_FEATURE = "IPH_DownloadSettings";
 
-    String EPHEMERAL_TAB_FEATURE = "IPH_EphemeralTab";
-
     /** An IPH feature to show on a card menu on the FeedNewTabPage. */
     String FEED_CARD_MENU_FEATURE = "IPH_FeedCardMenu";
 
@@ -258,8 +285,13 @@ public @interface FeatureConstants {
     /** An IPH feature to prompt users to pull-to-refresh feed. */
     String FEED_SWIPE_REFRESH_FEATURE = "IPH_FeedSwipeRefresh";
 
+    String FULLSCREEN_SIGNIN_PROMO_FEATURE = "IPH_FullscreenSigninPromo";
+
     /** Used to track user engagement with the fusebox attachment button. */
     String FUSEBOX_ATTACHMENT_FEATURE = "IPH_FuseboxAttachment";
+
+    /** An IPH feature to prompt users to discover the fusebox (+) button. */
+    String FUSEBOX_PLUS_BUTTON_HINT_FEATURE = "IPH_FuseboxPlusButtonHint";
 
     /** A generic IPH feature to always trigger help UI when asked. */
     String GENERIC_ALWAYS_TRIGGER_HELP_UI_FEATURE = "IPH_GenericAlwaysTriggerHelpUiFeature";
@@ -276,7 +308,14 @@ public @interface FeatureConstants {
      */
     String IDENTITY_DISC_FEATURE = "IPH_IdentityDisc";
 
+    /**
+     * An IPH feature prompting user that app menu has a menu for managing multiple Chrome windows
+     * with instance switcher.
+     */
     String INSTANCE_SWITCHER = "IPH_InstanceSwitcher";
+
+    /** Cooldown group for interruptive IPHs on Android. */
+    String INTERRUPTIVE_IPH_COOLDOWN_GROUP = "IPH_InterruptiveIphCooldownGroup";
 
     /**
      * An IPH feature that shows after the extensions menu is uninstalled to inform users to manage
@@ -290,6 +329,15 @@ public @interface FeatureConstants {
      */
     String IPH_EXTENSIONS_MANAGE_TOOLBAR_FEATURE = "IPH_ExtensionsManageToolbar";
 
+    /** An IPH feature that shows when an extension is pinned by default. */
+    String IPH_EXTENSIONS_PINNED_BY_DEFAULT_FEATURE = "IPH_ExtensionsPinnedByDefault";
+
+    /**
+     * An IPH feature to inform users that they can close all Incognito windows by tapping the
+     * Incognito indicator.
+     */
+    String IPH_INCOGNITO_INDICATOR_CLOSE_ALL_WINDOWS = "IPH_IncognitoIndicatorCloseAllWindows";
+
     /** An IPH feature attached to the mic button in the toolbar prompring user to try voice. */
     String IPH_MIC_TOOLBAR_FEATURE = "IPH_MicToolbar";
 
@@ -298,9 +346,6 @@ public @interface FeatureConstants {
 
     /** An IPH feature to inform users about the screenshot sharing feature. */
     String IPH_SHARE_SCREENSHOT_FEATURE = "IPH_ShareScreenshot";
-
-    /** An IPH feature to inform users about the Sharing Hub link toggle. */
-    String IPH_SHARING_HUB_LINK_TOGGLE_FEATURE = "IPH_SharingHubLinkToggle";
 
     /** An IPH feature to inform users about the tab switcher feature on an XR device. */
     String IPH_TAB_SWITCHER_XR = "IPH_TabSwitcherXR";
@@ -314,13 +359,9 @@ public @interface FeatureConstants {
     String KEYBOARD_ACCESSORY_ACCOUNT_NAME_EMAIL_SUGGESTION_FEATURE =
             "IPH_AutofillAccountNameEmailSuggestion";
 
-    String KEYBOARD_ACCESSORY_ADDRESS_FILL_FEATURE = "IPH_KeyboardAccessoryAddressFilling";
-
     String KEYBOARD_ACCESSORY_AT_MEMORY_FEATURE = "IPH_AutofillAtMemory";
 
     String KEYBOARD_ACCESSORY_AUTOFILL_AI_VALUABLES_FEATURE = "IPH_AutofillAiValuables";
-
-    String KEYBOARD_ACCESSORY_BAR_SWIPING_FEATURE = "IPH_KeyboardAccessoryBarSwiping";
 
     String KEYBOARD_ACCESSORY_ENABLE_LOYALTY_CARDS_FEATURE = "IPH_AutofillEnableLoyaltyCards";
 
@@ -330,12 +371,8 @@ public @interface FeatureConstants {
     String KEYBOARD_ACCESSORY_HOME_WORK_PROFILE_SUGGESTION_FEATURE =
             "IPH_AutofillHomeWorkProfileSuggestion";
 
-    String KEYBOARD_ACCESSORY_PASSWORD_FILLING_FEATURE = "IPH_KeyboardAccessoryPasswordFilling";
-
     String KEYBOARD_ACCESSORY_PAYMENT_CARD_INFO_RETRIEVAL_FEATURE =
             "IPH_AutofillCardInfoRetrievalSuggestion";
-
-    String KEYBOARD_ACCESSORY_PAYMENT_FILLING_FEATURE = "IPH_KeyboardAccessoryPaymentFilling";
 
     String KEYBOARD_ACCESSORY_PAYMENT_OFFER_FEATURE = "IPH_KeyboardAccessoryPaymentOffer";
 
@@ -355,6 +392,8 @@ public @interface FeatureConstants {
 
     /** An IPH feature to inform users about the NTP theme customization options. */
     String NEW_TAB_PAGE_THEME_CUSTOMIZATION_FEATURE = "IPH_NewTabPageThemeCustomization";
+
+    String NOTIFICATION_PERMISSION_PROMO_FEATURE = "IPH_NotificationPermissionPromo";
 
     /** An IPH feature to inform about changing permissions in PageInfo. */
     String PAGE_INFO_FEATURE = "IPH_PageInfo";
@@ -384,7 +423,11 @@ public @interface FeatureConstants {
 
     String READ_LATER_BOTTOM_SHEET_FEATURE = "IPH_ReadLaterBottomSheet";
 
-    String READ_LATER_CONTEXT_MENU_FEATURE = "IPH_ReadLaterContextMenu";
+    /**
+     * An IPH feature prompting user that they can find their recently closed tabs and windows in
+     * the 'Recent tabs' surface.
+     */
+    String RECENT_TABS = "IPH_RecentTabs";
 
     String REQUEST_DESKTOP_SITE_DEFAULT_ON_FEATURE = "IPH_RequestDesktopSiteDefaultOn";
 
@@ -397,6 +440,11 @@ public @interface FeatureConstants {
      * An IPH feature to inform users that tabs from another synced device can be restored on FRE.
      */
     String RESTORE_TABS_ON_FRE_FEATURE = "IPH_RestoreTabsOnFRE";
+
+    String SEARCH_ENGINE_CHOICE_PROMO_FEATURE = "IPH_SearchEngineChoicePromo";
+
+    /** IPH for Send Tab to Self entry point in the omnibox long-press menu */
+    String SEND_TAB_TO_SELF_OMNIBOX = "IPH_SendTabToSelfOmnibox";
 
     /** An IPH feature to inform users about the link-to-text on selection share. */
     String SHARED_HIGHLIGHTING_BUILDER_FEATURE = "IPH_SharedHighlightingBuilder";
@@ -412,9 +460,6 @@ public @interface FeatureConstants {
      * item is available to track price.
      */
     String SHOPPING_LIST_MENU_ITEM_FEATURE = "IPH_ShoppingListMenuItem";
-
-    /** An IPH that shows in the bookmark save flow when bookmarking a product. */
-    String SHOPPING_LIST_SAVE_FLOW_FEATURE = "IPH_ShoppingListSaveFlow";
 
     /** An IPH feature to inform users that Site Controls have moved to the app menu. */
     String SITE_CONTROLS_FEATURE = "IPH_SiteControls";
@@ -468,6 +513,9 @@ public @interface FeatureConstants {
     /** An IPH feature to show when tab group is synced across devices. */
     String TAB_GROUP_SYNC_ON_STRIP_FEATURE = "IPH_TabGroupSyncOnStrip";
 
+    /** An IPH feature to prompt users in the Tab Picker to select tabs for search. */
+    String TAB_PICKER_SELECT_TABS_FEATURE = "IPH_TabPickerSelectTabs";
+
     /**
      * An IPH feature to prompt users to select the 'Add to group' option in the Tab Switcher 3-Dot
      * menu.
@@ -488,38 +536,5 @@ public @interface FeatureConstants {
 
     String TRANSLATE_MENU_BUTTON_FEATURE = "IPH_TranslateMenuButton";
 
-    /**
-     * An IPH feature to show a video tutorial card on NTP to educate about an introduction to
-     * chrome.
-     */
-    String VIDEO_TUTORIAL_NTP_CHROME_INTRO_FEATURE = "IPH_VideoTutorial_NTP_ChromeIntro";
-
-    /**
-     * An IPH feature to show a video tutorial card on NTP to educate about downloading in chrome.
-     */
-    String VIDEO_TUTORIAL_NTP_DOWNLOAD_FEATURE = "IPH_VideoTutorial_NTP_Download";
-
-    /**
-     * An IPH feature to show a video tutorial card on NTP to educate about how to search in chrome.
-     */
-    String VIDEO_TUTORIAL_NTP_SEARCH_FEATURE = "IPH_VideoTutorial_NTP_Search";
-
-    /**
-     * An IPH feature to show a video tutorial summary card on NTP that takes them to see the video
-     * tutorial list page.
-     */
-    String VIDEO_TUTORIAL_NTP_SUMMARY_FEATURE = "IPH_VideoTutorial_NTP_Summary";
-
-    /**
-     * An IPH feature to show a video tutorial card on NTP to educate about how to use voice search
-     * in chrome.
-     */
-    String VIDEO_TUTORIAL_NTP_VOICE_SEARCH_FEATURE = "IPH_VideoTutorial_NTP_VoiceSearch";
-
-    /**
-     * An IPH feature to show an appropriate help bubble when user clicks on Try Now button on video
-     * tutorial player.
-     */
-    String VIDEO_TUTORIAL_TRY_NOW_FEATURE = "IPH_VideoTutorial_TryNow";
     // FEATURE_CONSTANTS_JAVA_INTERFACE_END
 }

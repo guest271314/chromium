@@ -133,21 +133,17 @@ constexpr base::TimeDelta kSmallDelay = base::Milliseconds(500);
 // A delay time that ensures that DownloadCert happens.
 constexpr base::TimeDelta kInitialDownloadCertDelay = base::Seconds(35);
 
-const std::string& GetPublicKey() {
-  static std::string public_key;
-  if (public_key.empty()) {
-    base::Base64Decode(kPublicKeyBase64, &public_key);
-  }
+std::string GetPublicKey() {
+  std::string public_key;
+  CHECK(base::Base64Decode(kPublicKeyBase64, &public_key));
   return public_key;
 }
 
-const std::vector<uint8_t>& GetPublicKeyBin() {
-  static std::optional<std::vector<uint8_t>> public_key;
-  if (!public_key.has_value()) {
-    public_key = base::Base64Decode(kPublicKeyBase64);
-    CHECK(public_key.has_value());
-  }
-  return public_key.value();
+std::vector<uint8_t> GetPublicKeyBin() {
+  std::optional<std::vector<uint8_t>> public_key =
+      base::Base64Decode(kPublicKeyBase64);
+  CHECK(public_key.has_value());
+  return std::move(public_key).value();
 }
 
 std::vector<uint8_t> GetDataToSign() {
@@ -371,6 +367,16 @@ void VerifyDeleteKeyCalledOnce(CertScope cert_scope) {
         .WillOnce(RunOnceCallback<1>(                                        \
             policy::DeviceManagementStatus::DM_STATUS_SUCCESS, std::nullopt, \
             /*try_again_later_ms=*/(DELAY_MS), /*certificate=*/""));         \
+  }
+
+#define EXPECT_DOWNLOAD_CERT_CA_ERROR(START_CSR_FUNC)              \
+  {                                                                \
+    EXPECT_CALL(cert_provisioning_client_, START_CSR_FUNC)         \
+        .Times(1)                                                  \
+        .WillOnce(RunOnceCallback<1>(                              \
+            policy::DeviceManagementStatus::DM_STATUS_SUCCESS,     \
+            CertProvisioningResponseError::CA_ERROR, std::nullopt, \
+            /*certificate=*/""));                                  \
   }
 
 #define EXPECT_DOWNLOAD_CERT_NO_OP(DOWNLOAD_CERT_FUNC) \
@@ -2113,8 +2119,9 @@ TEST_F(CertProvisioningWorkerStaticTest, SerializationSuccess) {
   std::unique_ptr<CertProvisioningWorker> worker =
       CertProvisioningWorkerFactory::Get()->Create(
           process_id, kCertScope, GetProfile(), &testing_pref_service_,
-          cert_profile, &cert_provisioning_client_, MakeInvalidator(),
-          GetStateChangeCallback(), GetResultCallback());
+          cert_profile, &cert_provisioning_client_,
+          MakeInvalidator(&mock_invalidator), GetStateChangeCallback(),
+          GetResultCallback());
 
   StrictMock<PrefServiceObserver> pref_observer(
       &testing_pref_service_, GetPrefNameForSerialization(kCertScope));
@@ -2135,49 +2142,10 @@ TEST_F(CertProvisioningWorkerStaticTest, SerializationSuccess) {
                                               /*profile=*/_,
                                               /*callback=*/_, /*signals=*/_));
 
-    pref_val = ParseJsonDict(base::StringPrintf(
-        R"({
-          "cert_profile_1": {
-            "cert_profile": {
-              "policy_version": "cert_profile_version_1",
-              "name": "Certificate Profile 1",
-              "profile_id": "cert_profile_1",
-              "va_enabled": true,
-              "renewal_period": 1200300
-            },
-            "cert_scope": 0,
-            "process_id": "%s",
-            "public_key": "%s",
-            "state": 1
-          }
-        })",
-        process_id.c_str(), kPublicKeyBase64));
-    EXPECT_CALL(pref_observer, OnPrefValueUpdated(IsJson(pref_val))).Times(1);
-
     EXPECT_START_CSR_NO_OP(
         StartCsr(Eq(std::ref(provisioning_process)), /*callback=*/_));
 
     worker->DoStep();
-  }
-
-  // Recreate worker.
-  {
-    testing::InSequence seq;
-
-    mock_tpm_challenge_key = PrepareTpmChallengeKey();
-
-    EXPECT_CALL(*mock_tpm_challenge_key,
-                RestorePreparedKeyState(
-                    ::attestation::ENTERPRISE_USER,
-                    /*will_register_key=*/true, ::attestation::KEY_TYPE_RSA,
-                    GetKeyName(kCertProfileId), GetPublicKey(), /*profile=*/_))
-        .Times(1);
-
-    worker = CertProvisioningWorkerFactory::Get()->Deserialize(
-        kCertScope, GetProfile(), &testing_pref_service_,
-        *pref_val.FindDict(kCertProfileId), &cert_provisioning_client_,
-        MakeInvalidator(&mock_invalidator), GetStateChangeCallback(),
-        GetResultCallback());
   }
 
   // Retry start csr request, receive response, try sign challenge.
@@ -2187,9 +2155,6 @@ TEST_F(CertProvisioningWorkerStaticTest, SerializationSuccess) {
     EXPECT_START_CSR_OK(
         StartCsr(Eq(std::ref(provisioning_process)), /*callback=*/_),
         em::HashingAlgorithm::SHA256);
-
-    pref_val = ParseJsonDict("{}");
-    EXPECT_CALL(pref_observer, OnPrefValueUpdated(IsJson(pref_val))).Times(1);
 
     EXPECT_CALL(*mock_invalidator, Register(listener_type, _)).Times(1);
 
@@ -2291,13 +2256,15 @@ TEST_F(CertProvisioningWorkerStaticTest, SerializationOnFailure) {
       kCertProfileId, kCertProfileName, kCertProfileVersion, KeyType::kRsa,
       /*is_va_enabled=*/true, kCertProfileRenewalPeriod,
       ProtocolVersion::kStatic);
+  MockCertProvisioningInvalidator* mock_invalidator = nullptr;
 
   const std::string process_id = GenerateCertProvisioningId();
   MockTpmChallengeKeySubtle* mock_tpm_challenge_key = PrepareTpmChallengeKey();
   auto worker = CertProvisioningWorkerFactory::Get()->Create(
       process_id, kCertScope, GetProfile(), &testing_pref_service_,
-      cert_profile, &cert_provisioning_client_, MakeInvalidator(),
-      GetStateChangeCallback(), GetResultCallback());
+      cert_profile, &cert_provisioning_client_,
+      MakeInvalidator(&mock_invalidator), GetStateChangeCallback(),
+      GetResultCallback());
 
   PrefServiceObserver pref_observer(&testing_pref_service_,
                                     GetPrefNameForSerialization(kCertScope));
@@ -2308,13 +2275,15 @@ TEST_F(CertProvisioningWorkerStaticTest, SerializationOnFailure) {
   {
     testing::InSequence seq;
 
-    EXPECT_PREPARE_KEY_OK(*mock_tpm_challenge_key,
-                          StartPrepareKeyStep(::attestation::ENTERPRISE_USER,
-                                              /*will_register_key=*/true,
-                                              ::attestation::KEY_TYPE_RSA,
-                                              GetKeyName(kCertProfileId),
-                                              /*profile=*/_,
-                                              /*callback=*/_, /*signals=*/_));
+    EXPECT_PREPARE_KEY_OK(*mock_tpm_challenge_key, StartPrepareKeyStep);
+    EXPECT_START_CSR_OK(StartCsr, em::HashingAlgorithm::NO_HASH);
+    EXPECT_CALL(*mock_invalidator, Register).Times(1);
+    EXPECT_SIGN_CHALLENGE_OK(*mock_tpm_challenge_key, StartSignChallengeStep);
+    EXPECT_REGISTER_KEY_OK(*mock_tpm_challenge_key, StartRegisterKeyStep);
+    EXPECT_CALL(*key_permissions_manager_, AllowKeyForUsage);
+    EXPECT_SET_ATTRIBUTE_FOR_KEY_OK(SetAttributeForKey);
+    EXPECT_SIGN_RSAPKC1_RAW_OK(SignRSAPKCS1Raw);
+    EXPECT_FINISH_CSR_OK(FinishCsr);
 
     pref_val = ParseJsonDict(base::StringPrintf(
         R"({
@@ -2328,22 +2297,24 @@ TEST_F(CertProvisioningWorkerStaticTest, SerializationOnFailure) {
             "cert_scope": 0,
             "process_id": "%s",
             "public_key": "%s",
-            "state": 1
+            "state": 7
           }
         })",
         process_id.c_str(), kPublicKeyBase64));
     EXPECT_CALL(pref_observer, OnPrefValueUpdated(IsJson(pref_val))).Times(1);
 
-    EXPECT_START_CSR_CA_ERROR(StartCsr);
+    EXPECT_DOWNLOAD_CERT_CA_ERROR(DownloadCert);
 
     pref_val = ParseJsonDict("{}");
     EXPECT_CALL(pref_observer, OnPrefValueUpdated(IsJson(pref_val))).Times(1);
+
+    EXPECT_CALL(*mock_invalidator, Unregister);
+    EXPECT_CALL(*platform_keys_service_, RemoveKey)
+        .WillOnce(RunOnceCallback<2>(Status::kSuccess));
   }
 
   worker->DoStep();
-  FastForwardBy(base::Seconds(1));
-
-  VerifyDeleteKeyCalledOnce(kCertScope);
+  FastForwardBy(kInitialDownloadCertDelay + kSmallDelay);
 
   EXPECT_EQ(callback_observer_.Get<CertProfile>(), cert_profile);
   EXPECT_EQ(callback_observer_.Get<CertProvisioningWorkerState>(),
@@ -2411,6 +2382,7 @@ TEST_F(CertProvisioningWorkerStaticTest, CancelDeviceWorker) {
       kCertProfileId, kCertProfileName, kCertProfileVersion, KeyType::kRsa,
       /*is_va_enabled=*/true, kCertProfileRenewalPeriod,
       ProtocolVersion::kStatic);
+  MockCertProvisioningInvalidator* mock_invalidator = nullptr;
 
   EXPECT_CALL(state_change_callback_observer_, StateChangeCallback)
       .Times(AtLeast(1));
@@ -2418,8 +2390,9 @@ TEST_F(CertProvisioningWorkerStaticTest, CancelDeviceWorker) {
   MockTpmChallengeKeySubtle* mock_tpm_challenge_key = PrepareTpmChallengeKey();
   auto worker = CertProvisioningWorkerFactory::Get()->Create(
       process_id, kCertScope, GetProfile(), &testing_pref_service_,
-      cert_profile, &cert_provisioning_client_, MakeInvalidator(),
-      GetStateChangeCallback(), GetResultCallback());
+      cert_profile, &cert_provisioning_client_,
+      MakeInvalidator(&mock_invalidator), GetStateChangeCallback(),
+      GetResultCallback());
 
   PrefServiceObserver pref_observer(&testing_pref_service_,
                                     GetPrefNameForSerialization(kCertScope));
@@ -2428,14 +2401,15 @@ TEST_F(CertProvisioningWorkerStaticTest, CancelDeviceWorker) {
   {
     testing::InSequence seq;
 
-    EXPECT_PREPARE_KEY_OK(
-        *mock_tpm_challenge_key,
-        StartPrepareKeyStep(::attestation::ENTERPRISE_MACHINE,
-                            /*will_register_key=*/true,
-                            ::attestation::KEY_TYPE_RSA,
-                            /*key_name=*/GetKeyName(kCertProfileId),
-                            /*profile=*/_,
-                            /*callback=*/_, /*signals=*/_));
+    EXPECT_PREPARE_KEY_OK(*mock_tpm_challenge_key, StartPrepareKeyStep);
+    EXPECT_START_CSR_OK(StartCsr, em::HashingAlgorithm::NO_HASH);
+    EXPECT_CALL(*mock_invalidator, Register).Times(1);
+    EXPECT_SIGN_CHALLENGE_OK(*mock_tpm_challenge_key, StartSignChallengeStep);
+    EXPECT_REGISTER_KEY_OK(*mock_tpm_challenge_key, StartRegisterKeyStep);
+    EXPECT_CALL(*key_permissions_manager_, AllowKeyForUsage);
+    EXPECT_SET_ATTRIBUTE_FOR_KEY_OK(SetAttributeForKey);
+    EXPECT_SIGN_RSAPKC1_RAW_OK(SignRSAPKCS1Raw);
+    EXPECT_FINISH_CSR_OK(FinishCsr);
 
     pref_val = ParseJsonDict(base::StringPrintf(
         R"({
@@ -2449,13 +2423,11 @@ TEST_F(CertProvisioningWorkerStaticTest, CancelDeviceWorker) {
             "cert_scope": 1,
             "process_id": "%s",
             "public_key": "%s",
-            "state": 1
+            "state": 7
           }
         })",
         process_id.c_str(), kPublicKeyBase64));
     EXPECT_CALL(pref_observer, OnPrefValueUpdated(IsJson(pref_val))).Times(1);
-
-    EXPECT_START_CSR_NO_OP(StartCsr);
 
     worker->DoStep();
   }
@@ -2463,12 +2435,13 @@ TEST_F(CertProvisioningWorkerStaticTest, CancelDeviceWorker) {
   {
     pref_val = ParseJsonDict("{}");
     EXPECT_CALL(pref_observer, OnPrefValueUpdated(IsJson(pref_val))).Times(1);
+    EXPECT_CALL(*mock_invalidator, Unregister);
+    EXPECT_CALL(*platform_keys_service_, RemoveKey)
+        .WillOnce(RunOnceCallback<2>(Status::kSuccess));
 
     worker->Stop(CertProvisioningWorkerState::kCanceled);
 
     FastForwardBy(base::Seconds(1));
-
-    VerifyDeleteKeyCalledOnce(kCertScope);
   }
 
   EXPECT_EQ(callback_observer_.Get<CertProfile>(), cert_profile);

@@ -11,7 +11,6 @@
 <translation id="1253734725326687145">ಸ್ಪರ್ಶ ಟಾರ್ಗೆಟ್ ಅನ್ನು ಮೇಲಿನ ಬಲಕ್ಕೆ ಸರಿಸಲಾಗಿದೆ. ಇಲ್ಲಿ ಟ್ಯಾಪ್ ಮಾಡಿ.</translation>
 <translation id="1266864766717917324"><ph name="CONTENT_TYPE" /> ಅನ್ನು ಹಂಚಿಕೊಳ್ಳಲು ಸಾಧ್ಯವಾಗಲಿಲ್ಲ</translation>
 <translation id="1269641567813814718">Win</translation>
-<translation id="1291104554099683393">ಪಠ್ಯವನ್ನು ಸಣ್ಣ ಭಾಗಗಳಲ್ಲಿ ಹಂಚಿಕೊಳ್ಳಲು ಪ್ರಯತ್ನಿಸಿ.</translation>
 <translation id="1293699935367580298">Esc</translation>
 <translation id="1368832886055348810">ಎಡದಿಂದ ಬಲಕ್ಕೆ</translation>
 <translation id="1383876407941801731">ಹುಡುಕಿ</translation>
@@ -38,13 +37,11 @@
 <translation id="1901303067676059328">&amp;ಎಲ್ಲ ಆಯ್ಕೆ ಮಾಡಿ</translation>
 <translation id="19085484004813472">ಇದೊಂದು ಹೊಸ ಫೀಚರ್</translation>
 <translation id="2006524834898217237">ಈ ಸಾಧನವು ಇಂಟರ್ನೆಟ್‌ಗೆ ಸಂಪರ್ಕಗೊಂಡಿರುವುದನ್ನು ಖಚಿತಪಡಿಸಿಕೊಳ್ಳಿ.</translation>
-<translation id="208586643495776849">ಪುನಃ ಪ್ರಯತ್ನಿಸಿ</translation>
 <translation id="2111134541987263231"><ph name="BEGIN_BOLD" />ಅಜ್ಞಾತ ಮೋಡ್‌ನಲ್ಲಿ ಅನುಮತಿಸಿ<ph name="END_BOLD" /> ಎಂಬುದನ್ನು ಆನ್ ಮಾಡಿ</translation>
 <translation id="2141853158323869627">{DAYS,plural, =1{1ದಿ}one{#ದಿ}other{#ದಿ}}</translation>
 <translation id="2148716181193084225">ಇಂದು</translation>
 <translation id="2168039046890040389">ಪೇಜ್ ಅಪ್</translation>
 <translation id="2190355936436201913">(ಖಾಲಿ)</translation>
-<translation id="2192232475740621500">ಕಡಿಮೆ ಸಾಂದ್ರತೆಯನ್ನು ಬಳಸಿ</translation>
 <translation id="2267918077332197517">ಈ ಸೈಟ್‌ನಿಂದ ಎಲ್ಲಾ ಅಧಿಸೂಚನೆಗಳನ್ನು ನಿರ್ಬಂಧಿಸಿ</translation>
 <translation id="2283117145434822734">F6</translation>
 <translation id="2289052229480071835">ನಿಮ್ಮ ಪರದೆಯಲ್ಲಿ ಸ್ಪರ್ಶ ಟಾರ್ಗೆಟ್‌ಗಳನ್ನು ಟ್ಯಾಪ್ ಮಾಡಿ.</translation>
@@ -56,7 +53,6 @@
 <translation id="2388990488038464401">ನಿಮ್ಮ ಫೋನ್‌ನಿಂದ ಈ ಸಂಖ್ಯೆಗೆ ಕರೆ ಮಾಡಬೇಕೇ?</translation>
 <translation id="2435457462613246316">ಪಾಸ್‌ವರ್ಡ್ ಅನ್ನು ತೋರಿಸಿ</translation>
 <translation id="24452542372838207">ವಿಸ್ತರಿಸುವ ನೋಟಿಫಿಕೇಶನ್</translation>
-<translation id="2445449901874883781">ಅಧಿಕ ಸಾಂದ್ರತೆಯನ್ನು ಬಳಸಿ</translation>
 <translation id="2448407890032181691">ಸ್ಪರ್ಶ ಟಾರ್ಗೆಟ್ ಅನ್ನು ಕೆಳಗಿನ ಬಲಕ್ಕೆ ಸರಿಸಲಾಗಿದೆ. ಇಲ್ಲಿ ಟ್ಯಾಪ್ ಮಾಡಿ.</translation>
 <translation id="2482878487686419369">ಸೂಚನೆಗಳು</translation>
 <translation id="2497284189126895209">ಎಲ್ಲ ಫೈಲ್‌ಗಳು</translation>
@@ -87,7 +83,6 @@
 <translation id="3306688585798492231">ಅಂತರ್ನಿರ್ಮಿತ ಡಿಸ್‌ಪ್ಲೇ</translation>
 <translation id="335581015389089642">ಧ್ವನಿ</translation>
 <translation id="3372635229069101468"><ph name="BEGIN_BOLD" />ವಿವರಗಳು<ph name="END_BOLD" /> ಎಂಬುದನ್ನು ಕ್ಲಿಕ್ ಮಾಡಿ</translation>
-<translation id="3389286852084373014">ಪಠ್ಯ ತುಂಬಾ ದೊಡ್ಡದಾಗಿದೆ</translation>
 <translation id="3406306243914553062">HTML ವಿಷಯ</translation>
 <translation id="3600566671520689681">{DAYS,plural, =1{1 ದಿನ ಬಾಕಿ ಉಳಿದಿದೆ}one{# ದಿನಗಳು ಬಾಕಿ ಉಳಿದಿವೆ}other{# ದಿನಗಳು ಬಾಕಿ ಉಳಿದಿವೆ}}</translation>
 <translation id="3600969208114796418"><ph name="SAVEAS_EXTENSION_TYPE" /> ಫೈಲ್</translation>
@@ -130,7 +125,6 @@
 <translation id="5046499563572181734">ಇಲ್ಲಿ ಟ್ಯಾಪ್ ಮಾಡಿ</translation>
 <translation id="5076340679995252485">&amp;ಅಂಟಿಸಿ</translation>
 <translation id="520299402983819650"><ph name="QUANTITY" /> PB</translation>
-<translation id="5278860589123563674">ಕಳುಹಿಸಲು ವಿಫಲವಾಗಿದೆ</translation>
 <translation id="5283101102242354279">ಅಜ್ಞಾತ ಮೋಡ್‌ನಲ್ಲಿ ವಿಸ್ತರಣೆಯೊಂದನ್ನು ಆನ್ ಮಾಡಿ:</translation>
 <translation id="528468243742722775">ಅಂತ್ಯ</translation>
 <translation id="5329858601952122676">&amp;ಅಳಿಸು</translation>
@@ -190,7 +184,6 @@
 <translation id="6965382102122355670">ಸರಿ</translation>
 <translation id="6974053822202609517">ಬಲದಿಂದ ಎಡಕ್ಕೆ</translation>
 <translation id="7052633198403197513">F1</translation>
-<translation id="7170202025028120564">ಮುಂದಿನ ಬಾರಿ ನೀವು ಅಪ್ಲಿಕೇಶನ್‌ ಅನ್ನು ಮರುಪ್ರಾರಂಭಿಸಿದಾಗ, ಅದರ ಡಿಸ್‌ಪ್ಲೇ ಸೆಟ್ಟಿಂಗ್‌ಗಳು ಕಾರ್ಯಗತಗೊಳ್ಳುತ್ತವೆ.</translation>
 <translation id="7222373446505536781">F11</translation>
 <translation id="7238427729722629793">{MINUTES,plural, =1{1 ನಿಮಿಷ ಬಾಕಿ ಉಳಿದಿದೆ}one{# ನಿಮಿಷಗಳು ಬಾಕಿ ಉಳಿದಿವೆ}other{# ನಿಮಿಷಗಳು ಬಾಕಿ ಉಳಿದಿವೆ}}</translation>
 <translation id="7252604552361840748">ಮೇಲಿನ ವಿಸ್ತರಣೆಯನ್ನು ಹುಡುಕಿ</translation>

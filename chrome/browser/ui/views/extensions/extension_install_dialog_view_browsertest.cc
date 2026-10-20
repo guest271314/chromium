@@ -4,10 +4,9 @@
 
 #include "chrome/browser/ui/views/extensions/extension_install_dialog_view.h"
 
-#include <string>
+#include <memory>
 #include <utility>
 
-#include "base/feature_list.h"
 #include "base/files/file_path.h"
 #include "base/functional/callback_helpers.h"
 #include "base/i18n/message_formatter.h"
@@ -19,6 +18,7 @@
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/metrics/histogram_tester.h"
+#include "base/test/run_until.h"
 #include "build/build_config.h"
 #include "chrome/browser/extensions/chrome_test_extension_loader.h"
 #include "chrome/browser/extensions/extension_browsertest.h"
@@ -33,9 +33,9 @@
 #include "chrome/browser/picture_in_picture/picture_in_picture_window_manager.h"
 #include "chrome/browser/platform_util.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_tabstrip.h"
 #include "chrome/browser/ui/browser_window.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/tabs/tab_enums.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/test/test_browser_dialog.h"
@@ -46,7 +46,6 @@
 #include "chrome/test/base/mixin_based_in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "components/constrained_window/constrained_window_views.h"
-#include "content/public/browser/browser_thread.h"
 #include "content/public/browser/document_picture_in_picture_window_controller.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/test/browser_test.h"
@@ -55,7 +54,6 @@
 #include "extensions/browser/extension_icon_manager.h"
 #include "extensions/browser/extension_registrar.h"
 #include "extensions/browser/extension_registry.h"
-#include "extensions/browser/extension_system.h"
 #include "extensions/browser/test_extension_registry_observer.h"
 #include "extensions/browser/webstore_data_fetcher.h"
 #include "extensions/browser/webstore_install_result.h"
@@ -68,11 +66,14 @@
 #include "ui/accessibility/ax_enums.mojom.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/mojom/dialog_button.mojom.h"
+#include "ui/base/window_open_disposition.h"
 #include "ui/events/event.h"
 #include "ui/events/event_utils.h"
 #include "ui/gfx/native_ui_types.h"
 #include "ui/views/accessibility/view_accessibility.h"
-#include "ui/views/bubble/bubble_frame_view.h"
+#include "ui/views/bubble/bubble_dialog_delegate_view.h"
+#include "ui/views/controls/button/md_text_button.h"
+#include "ui/views/controls/button/radio_button.h"
 #include "ui/views/controls/scroll_view.h"
 #include "ui/views/metrics.h"
 #include "ui/views/test/button_test_api.h"
@@ -81,7 +82,9 @@
 #include "ui/views/widget/any_widget_observer.h"
 #include "ui/views/widget/widget.h"
 #include "ui/views/widget/widget_observer.h"
+#include "ui/views/window/dialog_delegate.h"
 
+using extensions::InstallPromptData;
 using extensions::PermissionIDSet;
 using extensions::PermissionMessage;
 using extensions::PermissionMessages;
@@ -166,10 +169,10 @@ class ExtensionInstallDialogViewTestBase
   void SetUpOnMainThread() override;
 
   // Creates and returns an install prompt of |prompt_type|.
-  std::unique_ptr<ExtensionInstallPrompt::Prompt> CreatePrompt(
-      ExtensionInstallPrompt::PromptType prompt_type);
-  std::unique_ptr<ExtensionInstallPrompt::Prompt> CreatePrompt(
-      ExtensionInstallPrompt::PromptType prompt_type,
+  std::unique_ptr<InstallPromptData> CreatePrompt(
+      InstallPromptData::PromptType prompt_type);
+  std::unique_ptr<InstallPromptData> CreatePrompt(
+      InstallPromptData::PromptType prompt_type,
       const extensions::Extension* extension);
 
   content::WebContents* web_contents() { return web_contents_; }
@@ -188,21 +191,21 @@ void ExtensionInstallDialogViewTestBase::SetUpOnMainThread() {
   extension_ = LoadExtension(test_data_dir_.AppendASCII(
       "install_prompt/permissions_scrollbar_regression"));
 
-  web_contents_ = browser()->tab_strip_model()->GetWebContentsAt(0);
+  web_contents_ = browser()->GetTabStripModel()->GetWebContentsAt(0);
 }
 
-std::unique_ptr<ExtensionInstallPrompt::Prompt>
+std::unique_ptr<InstallPromptData>
 ExtensionInstallDialogViewTestBase::CreatePrompt(
-    ExtensionInstallPrompt::PromptType prompt_type) {
+    InstallPromptData::PromptType prompt_type) {
   return CreatePrompt(prompt_type, extension_);
 }
 
-std::unique_ptr<ExtensionInstallPrompt::Prompt>
+std::unique_ptr<InstallPromptData>
 ExtensionInstallDialogViewTestBase::CreatePrompt(
-    ExtensionInstallPrompt::PromptType prompt_type,
+    InstallPromptData::PromptType prompt_type,
     const extensions::Extension* extension) {
-  std::unique_ptr<ExtensionInstallPrompt::Prompt> prompt(
-      new ExtensionInstallPrompt::Prompt(prompt_type));
+  std::unique_ptr<InstallPromptData> prompt =
+      std::make_unique<InstallPromptData>(prompt_type);
   prompt->set_extension(extension);
 
   std::unique_ptr<extensions::ExtensionIconManager> icon_manager(
@@ -220,12 +223,11 @@ class ScrollbarTest : public ExtensionInstallDialogViewTestBase {
  protected:
   ScrollbarTest() = default;
 
-  bool IsScrollbarVisible(
-      std::unique_ptr<ExtensionInstallPrompt::Prompt> prompt);
+  bool IsScrollbarVisible(std::unique_ptr<InstallPromptData> prompt);
 };
 
 bool ScrollbarTest::IsScrollbarVisible(
-    std::unique_ptr<ExtensionInstallPrompt::Prompt> prompt) {
+    std::unique_ptr<InstallPromptData> prompt) {
   auto dialog = std::make_unique<ExtensionInstallDialogView>(
       std::make_unique<ExtensionInstallPromptShowParams>(web_contents()),
       base::DoNothing(), std::move(prompt));
@@ -249,8 +251,8 @@ IN_PROC_BROWSER_TEST_F(ScrollbarTest, LongPromptScrollbar) {
   for (int i = 0; i < 20; i++) {
     permissions.emplace_back(permission_string, PermissionIDSet());
   }
-  std::unique_ptr<ExtensionInstallPrompt::Prompt> prompt =
-      CreatePrompt(ExtensionInstallPrompt::PERMISSIONS_PROMPT);
+  std::unique_ptr<InstallPromptData> prompt =
+      CreatePrompt(InstallPromptData::PERMISSIONS_PROMPT);
   prompt->AddPermissionMessages(permissions);
   ASSERT_TRUE(IsScrollbarVisible(std::move(prompt)))
       << "Scrollbar is not visible";
@@ -269,8 +271,8 @@ IN_PROC_BROWSER_TEST_F(ScrollbarTest, MAYBE_ScrollbarRegression) {
       u"Read and modify your data on *.facebook.com");
   PermissionMessages permissions;
   permissions.emplace_back(permission_string, PermissionIDSet());
-  std::unique_ptr<ExtensionInstallPrompt::Prompt> prompt =
-      CreatePrompt(ExtensionInstallPrompt::PERMISSIONS_PROMPT);
+  std::unique_ptr<InstallPromptData> prompt =
+      CreatePrompt(InstallPromptData::PERMISSIONS_PROMPT);
   prompt->AddPermissionMessages(permissions);
   ASSERT_FALSE(IsScrollbarVisible(std::move(prompt))) << "Scrollbar is visible";
 }
@@ -289,14 +291,13 @@ class ExtensionInstallDialogViewTest
       ExtensionInstallPromptTestHelper* helper) {
     auto dialog = std::make_unique<ExtensionInstallDialogView>(
         std::make_unique<ExtensionInstallPromptShowParams>(web_contents()),
-        helper->GetCallback(),
-        CreatePrompt(ExtensionInstallPrompt::INSTALL_PROMPT));
+        helper->GetCallback(), CreatePrompt(InstallPromptData::INSTALL_PROMPT));
     ExtensionInstallDialogView* delegate_view = dialog.get();
 
     views::Widget* modal_dialog = views::DialogDelegate::CreateDialogWidget(
         dialog.release(), gfx::NativeWindow(),
         platform_util::GetViewForWindow(
-            browser()->window()->GetNativeWindow()));
+            browser()->GetWindow()->GetNativeWindow()));
     modal_dialog->Show();
 
     return delegate_view;
@@ -340,7 +341,7 @@ IN_PROC_BROWSER_TEST_F(ExtensionInstallDialogViewTest, NotifyDelegate) {
 // user switches the tab after starting the installation.
 IN_PROC_BROWSER_TEST_F(ExtensionInstallDialogViewTest,
                        ActivateWebContentsOnTabChange) {
-  TabStripModel* tab_strip_model = browser()->tab_strip_model();
+  TabStripModel* tab_strip_model = browser()->GetTabStripModel();
   content::WebContents* originating_web_contents =
       tab_strip_model->GetActiveWebContents();
 
@@ -351,7 +352,7 @@ IN_PROC_BROWSER_TEST_F(ExtensionInstallDialogViewTest,
   auto show_dialog_callback =
       [&](std::unique_ptr<ExtensionInstallPromptShowParams> show_params,
           ExtensionInstallPrompt::DoneCallback done_callback,
-          std::unique_ptr<ExtensionInstallPrompt::Prompt> prompt) {
+          std::unique_ptr<InstallPromptData> prompt) {
         // show_params_weak won't be dangling till the dialog is closed.
         ExtensionInstallPromptShowParams* show_params_weak = show_params.get();
         std::move(ExtensionInstallPrompt::GetDefaultShowDialogCallback())
@@ -362,7 +363,7 @@ IN_PROC_BROWSER_TEST_F(ExtensionInstallDialogViewTest,
         // originating web contents are activated.
         EXPECT_TRUE(show_params_weak->GetParentWindow());
         EXPECT_EQ(show_params_weak->GetParentWindow(),
-                  browser()->window()->GetNativeWindow());
+                  browser()->GetWindow()->GetNativeWindow());
         EXPECT_EQ(tab_strip_model->GetActiveWebContents(),
                   originating_web_contents);
         run_loop.Quit();
@@ -370,7 +371,9 @@ IN_PROC_BROWSER_TEST_F(ExtensionInstallDialogViewTest,
 
   scoped_refptr<const extensions::Extension> extension =
       extensions::ExtensionBuilder("Test extension").Build();
-  ExtensionInstallPrompt prompt(originating_web_contents);
+  ExtensionInstallPrompt prompt(
+      originating_web_contents,
+      std::make_unique<InstallPromptData>(InstallPromptData::INSTALL_PROMPT));
   prompt.ShowDialog(/*install_callback=*/base::DoNothing(), extension.get(),
                     /*icon=*/nullptr,
                     base::BindLambdaForTesting(show_dialog_callback));
@@ -417,7 +420,7 @@ IN_PROC_BROWSER_TEST_F(ExtensionInstallDialogViewTest,
                        TabClosureClearsWebContentsFromDialogView) {
   ExtensionInstallPromptTestHelper helper;
   ExtensionInstallDialogView* delegate_view = CreateAndShowPrompt(&helper);
-  TabStripModel* tab_strip_model = browser()->tab_strip_model();
+  TabStripModel* tab_strip_model = browser()->GetTabStripModel();
   content::WebContents* originator_contents =
       tab_strip_model->GetActiveWebContents();
   ASSERT_TRUE(delegate_view->GetShowParamsForTesting());
@@ -429,11 +432,11 @@ IN_PROC_BROWSER_TEST_F(ExtensionInstallDialogViewTest,
   {
     // Close the first tab that results in install dialog moving to the second
     // tab.
-    int tab1_idx = tab_strip_model->GetIndexOfWebContents(originator_contents);
     content::WebContentsDestroyedWatcher tab_destroyed_watcher(
-        tab_strip_model->GetWebContentsAt(tab1_idx));
+        originator_contents);
     int previous_tab_count = tab_strip_model->count();
-    tab_strip_model->CloseWebContentsAt(tab1_idx, TabCloseTypes::CLOSE_NONE);
+    tab_strip_model->CloseWebContents(originator_contents,
+                                      TabCloseTypes::CLOSE_NONE);
     EXPECT_EQ(previous_tab_count - 1, tab_strip_model->count());
     tab_destroyed_watcher.Wait();
   }
@@ -495,7 +498,7 @@ class ExtensionInstallDialogViewInteractiveBrowserTest
  public:
   ExtensionInstallDialogViewInteractiveBrowserTest() {
     feature_list_.InitAndEnableFeature(
-        extensions_features::kAllowWithholdingExtensionPermissionsOnInstall);
+        extensions_features::kExtensionInstallSiteAccessOptions);
   }
 
   ExtensionInstallDialogViewInteractiveBrowserTest(
@@ -505,7 +508,7 @@ class ExtensionInstallDialogViewInteractiveBrowserTest
 
   // DialogBrowserTest:
   void ShowUi(const std::string& name) override {
-    extensions::ChromeTestExtensionLoader loader(browser()->profile());
+    extensions::ChromeTestExtensionLoader loader(browser()->GetProfile());
     base::FilePath test_data_dir;
     base::PathService::Get(chrome::DIR_TEST_DATA, &test_data_dir);
     scoped_refptr<const extensions::Extension> extension = loader.LoadExtension(
@@ -516,7 +519,7 @@ class ExtensionInstallDialogViewInteractiveBrowserTest
     icon.allocN32Pixels(800, 800);
     icon.eraseARGB(255, 128, 255, 128);
 
-    auto prompt = std::make_unique<ExtensionInstallPrompt::Prompt>(type_);
+    auto prompt = std::make_unique<InstallPromptData>(type_);
     // The invoke UI tests can either directly set permission messages to easily
     // test different potential edge cases, or use a proper permission set which
     // goes through the standard flow to generate the messages.
@@ -531,18 +534,17 @@ class ExtensionInstallDialogViewInteractiveBrowserTest
     }
 
     ExtensionInstallDialogView::SetInstallButtonDelayForTesting(0);
-    auto* web_contents = browser()->tab_strip_model()->GetActiveWebContents();
-    auto install_prompt =
-        std::make_unique<ExtensionInstallPrompt>(web_contents);
+    auto* web_contents = browser()->GetTabStripModel()->GetActiveWebContents();
+    auto install_prompt = std::make_unique<ExtensionInstallPrompt>(
+        web_contents, std::move(prompt));
     install_prompt->ShowDialog(base::DoNothing(), extension.get(), &icon,
-                               std::move(prompt),
                                ExtensionInstallPrompt::ShowDialogCallback());
     base::RunLoop().RunUntilIdle();
   }
 
   void set_from_webstore() { from_webstore_ = true; }
 
-  void set_type(ExtensionInstallPrompt::PromptType type) { type_ = type; }
+  void set_type(InstallPromptData::PromptType type) { type_ = type; }
 
   void SetPermissionSet(std::unique_ptr<PermissionSet> permissions) {
     permission_set_ = std::move(permissions);
@@ -562,8 +564,7 @@ class ExtensionInstallDialogViewInteractiveBrowserTest
   }
 
  private:
-  ExtensionInstallPrompt::PromptType type_ =
-      ExtensionInstallPrompt::INSTALL_PROMPT;
+  InstallPromptData::PromptType type_ = InstallPromptData::INSTALL_PROMPT;
   bool from_webstore_ = false;
   std::unique_ptr<PermissionSet> permission_set_;
   PermissionMessages permission_messages_;
@@ -578,20 +579,20 @@ IN_PROC_BROWSER_TEST_F(ExtensionInstallDialogViewInteractiveBrowserTest,
 
 IN_PROC_BROWSER_TEST_F(ExtensionInstallDialogViewInteractiveBrowserTest,
                        InvokeUi_External) {
-  set_type(ExtensionInstallPrompt::EXTERNAL_INSTALL_PROMPT);
+  set_type(InstallPromptData::EXTERNAL_INSTALL_PROMPT);
   ShowAndVerifyUi();
 }
 
 IN_PROC_BROWSER_TEST_F(ExtensionInstallDialogViewInteractiveBrowserTest,
                        InvokeUi_ExternalWithPermission) {
-  set_type(ExtensionInstallPrompt::EXTERNAL_INSTALL_PROMPT);
+  set_type(InstallPromptData::EXTERNAL_INSTALL_PROMPT);
   AddPermission("Example permission");
   ShowAndVerifyUi();
 }
 
 IN_PROC_BROWSER_TEST_F(ExtensionInstallDialogViewInteractiveBrowserTest,
                        InvokeUi_ReEnable) {
-  set_type(ExtensionInstallPrompt::RE_ENABLE_PROMPT);
+  set_type(InstallPromptData::RE_ENABLE_PROMPT);
   AddPermission("Example permission");
   ShowAndVerifyUi();
 }
@@ -618,7 +619,8 @@ IN_PROC_BROWSER_TEST_F(ExtensionInstallDialogViewInteractiveBrowserTest,
   AddPermissionWithDetails("Example header permission",
                            {u"Detailed permission 1", u"Detailed permission 2",
                             u"Very very very very very very long detailed "
-                            u"permission that wraps to a new line"});
+                            u"permission that wraps to a new line",
+                            u"Detailed permission 4"});
   ShowAndVerifyUi();
 }
 
@@ -661,8 +663,9 @@ class ExtensionInstallDialogViewOnUninstallationTest
 void ExtensionInstallDialogViewOnUninstallationTest::UninstallExtension(
     const std::string& extension_id) {
   extensions::TestExtensionRegistryObserver observer(
-      extensions::ExtensionRegistry::Get(browser()->profile()), extension_id);
-  extensions::ExtensionRegistrar::Get(browser()->profile())
+      extensions::ExtensionRegistry::Get(browser()->GetProfile()),
+      extension_id);
+  extensions::ExtensionRegistrar::Get(browser()->GetProfile())
       ->UninstallExtension(
           extension_id,
           extensions::UninstallReason::UNINSTALL_REASON_FOR_TESTING, nullptr);
@@ -675,15 +678,16 @@ IN_PROC_BROWSER_TEST_F(ExtensionInstallDialogViewOnUninstallationTest,
       LoadExtension(test_data_dir_.AppendASCII(
           "install_prompt/dialog_on_uninstall/same_extension"));
   ASSERT_TRUE(extension);
-  std::unique_ptr<ExtensionInstallPrompt::Prompt> prompt =
-      CreatePrompt(ExtensionInstallPrompt::REPAIR_PROMPT, extension);
+  std::unique_ptr<InstallPromptData> prompt =
+      CreatePrompt(InstallPromptData::REPAIR_PROMPT, extension);
   ExtensionInstallDialogView* dialog = new ExtensionInstallDialogView(
       std::make_unique<ExtensionInstallPromptShowParams>(web_contents()),
       base::DoNothing(), std::move(prompt));
 
   views::Widget* modal_dialog = views::DialogDelegate::CreateDialogWidget(
       dialog, gfx::NativeWindow(),
-      platform_util::GetViewForWindow(browser()->window()->GetNativeWindow()));
+      platform_util::GetViewForWindow(
+          browser()->GetWindow()->GetNativeWindow()));
   ASSERT_TRUE(modal_dialog);
   views::test::WidgetDestroyedWaiter dialog_observer(modal_dialog);
   modal_dialog->Show();
@@ -702,15 +706,16 @@ IN_PROC_BROWSER_TEST_F(ExtensionInstallDialogViewOnUninstallationTest,
           "install_prompt/dialog_on_uninstall/other_extension"));
   ASSERT_TRUE(extension);
   ASSERT_TRUE(other_extension);
-  std::unique_ptr<ExtensionInstallPrompt::Prompt> prompt =
-      CreatePrompt(ExtensionInstallPrompt::REPAIR_PROMPT, extension);
+  std::unique_ptr<InstallPromptData> prompt =
+      CreatePrompt(InstallPromptData::REPAIR_PROMPT, extension);
   ExtensionInstallDialogView* dialog = new ExtensionInstallDialogView(
       std::make_unique<ExtensionInstallPromptShowParams>(web_contents()),
       base::DoNothing(), std::move(prompt));
 
   views::Widget* modal_dialog = views::DialogDelegate::CreateDialogWidget(
       dialog, gfx::NativeWindow(),
-      platform_util::GetViewForWindow(browser()->window()->GetNativeWindow()));
+      platform_util::GetViewForWindow(
+          browser()->GetWindow()->GetNativeWindow()));
   ASSERT_TRUE(modal_dialog);
   views::test::WidgetDestroyedWaiter dialog_observer(modal_dialog);
   modal_dialog->Show();
@@ -743,8 +748,8 @@ void ExtensionInstallDialogRatingsSectionTest::TestRatingsSectionA11y(
   SCOPED_TRACE(base::StringPrintf(
       "Testing with %d ratings, %f average rating. Expected text: '%s'.",
       num_ratings, average_rating, expected_text.c_str()));
-  std::unique_ptr<ExtensionInstallPrompt::Prompt> prompt =
-      CreatePrompt(ExtensionInstallPrompt::REPAIR_PROMPT);
+  std::unique_ptr<InstallPromptData> prompt =
+      CreatePrompt(InstallPromptData::REPAIR_PROMPT);
   prompt->SetWebstoreData("1,234", true, average_rating, num_ratings,
                           base::NumberToString(num_ratings));
 
@@ -754,7 +759,8 @@ void ExtensionInstallDialogRatingsSectionTest::TestRatingsSectionA11y(
 
   views::Widget* modal_dialog = views::DialogDelegate::CreateDialogWidget(
       dialog, gfx::NativeWindow(),
-      platform_util::GetViewForWindow(browser()->window()->GetNativeWindow()));
+      platform_util::GetViewForWindow(
+          browser()->GetWindow()->GetNativeWindow()));
   modal_dialog->Show();
 
   views::View* rating_view = modal_dialog->non_client_view()->GetViewByID(
@@ -796,12 +802,50 @@ IN_PROC_BROWSER_TEST_F(ExtensionInstallDialogRatingsSectionTest,
   TestRatingsSectionA11y(0, 0.0, "Not yet rated by any users.");
 }
 
-class ExtensionInstallDialogWithWithholdPermissionsUI
+class ExtensionInstallDialogSiteAccessTestBase
     : public ExtensionInstallDialogViewTestBase {
+ public:
+  ExtensionInstallDialogSiteAccessTestBase() = default;
+  ExtensionInstallDialogSiteAccessTestBase(
+      const ExtensionInstallDialogSiteAccessTestBase&) = delete;
+  ExtensionInstallDialogSiteAccessTestBase& operator=(
+      const ExtensionInstallDialogSiteAccessTestBase&) = delete;
+
+ protected:
+  ExtensionInstallDialogView* CreateAndShowPrompt(
+      ExtensionInstallPromptTestHelper* helper,
+      bool with_host_permissions = true) {
+    std::unique_ptr<InstallPromptData> prompt =
+        CreatePrompt(InstallPromptData::INSTALL_PROMPT);
+    if (with_host_permissions) {
+      PermissionSet permissions(
+          extensions::APIPermissionSet(), extensions::ManifestPermissionSet(),
+          extensions::URLPatternSet(
+              {URLPattern(extensions::Extension::kValidHostPermissionSchemes,
+                          "http://example.com/*")}),
+          extensions::URLPatternSet());
+      prompt->AddPermissionSet(permissions);
+    }
+    auto dialog = std::make_unique<ExtensionInstallDialogView>(
+        std::make_unique<ExtensionInstallPromptShowParams>(web_contents()),
+        helper->GetCallback(), std::move(prompt));
+    ExtensionInstallDialogView* delegate_view = dialog.get();
+
+    views::Widget* modal_dialog = views::DialogDelegate::CreateDialogWidget(
+        dialog.release(), gfx::NativeWindow(),
+        platform_util::GetViewForWindow(
+            browser()->GetWindow()->GetNativeWindow()));
+    modal_dialog->Show();
+    return delegate_view;
+  }
+};
+
+class ExtensionInstallDialogWithWithholdPermissionsUI
+    : public ExtensionInstallDialogSiteAccessTestBase {
  public:
   ExtensionInstallDialogWithWithholdPermissionsUI() {
     scoped_feature_list_.InitAndEnableFeature(
-        extensions_features::kAllowWithholdingExtensionPermissionsOnInstall);
+        extensions_features::kExtensionInstallSiteAccessOptions);
   }
 
   ExtensionInstallDialogWithWithholdPermissionsUI(
@@ -813,34 +857,111 @@ class ExtensionInstallDialogWithWithholdPermissionsUI
   base::test::ScopedFeatureList scoped_feature_list_;
 };
 
-// Verifies that some UI is displayed in the extra view when withholding
+// Verifies that site access radio buttons are displayed when withholding
 // permissions on installation.
 IN_PROC_BROWSER_TEST_F(ExtensionInstallDialogWithWithholdPermissionsUI,
                        ShowsWithholdUI) {
   ExtensionInstallPromptTestHelper helper;
-  std::unique_ptr<ExtensionInstallPrompt::Prompt> prompt =
-      CreatePrompt(ExtensionInstallPrompt::INSTALL_PROMPT);
-  // Add a permission to the prompt with example.com as an explicit pattern.
-  PermissionSet permissions(
-      extensions::APIPermissionSet(), extensions::ManifestPermissionSet(),
-      extensions::URLPatternSet(
-          {URLPattern(extensions::Extension::kValidHostPermissionSchemes,
-                      "http://example.com/*")}),
-      extensions::URLPatternSet());
-  prompt->AddPermissionSet(permissions);
-  auto dialog = std::make_unique<ExtensionInstallDialogView>(
-      std::make_unique<ExtensionInstallPromptShowParams>(web_contents()),
-      helper.GetCallback(), std::move(prompt));
-  views::BubbleDialogDelegateView* delegate_view = dialog.get();
+  ExtensionInstallDialogView* delegate_view = CreateAndShowPrompt(&helper);
 
-  views::Widget* modal_dialog = views::DialogDelegate::CreateDialogWidget(
-      dialog.release(), gfx::NativeWindow(),
-      platform_util::GetViewForWindow(browser()->window()->GetNativeWindow()));
-  modal_dialog->Show();
+  ASSERT_TRUE(delegate_view->on_click_radio_button_for_testing());
+  ASSERT_TRUE(delegate_view->always_all_sites_radio_button_for_testing());
+  EXPECT_TRUE(delegate_view->on_click_radio_button_for_testing()->GetChecked());
+  EXPECT_FALSE(
+      delegate_view->always_all_sites_radio_button_for_testing()->GetChecked());
 
-  const views::View* const extra_view = delegate_view->GetExtraView();
-  EXPECT_TRUE(extra_view);
-  EXPECT_EQ("Checkbox", extra_view->GetClassName());
+  views::View* radio_group =
+      delegate_view->on_click_radio_button_for_testing()->parent();
+  ASSERT_TRUE(radio_group);
+  ui::AXNodeData group_node_data;
+  radio_group->GetViewAccessibility().GetAccessibleNodeData(&group_node_data);
+  EXPECT_EQ(ax::mojom::Role::kRadioGroup, group_node_data.role);
+  EXPECT_EQ(
+      l10n_util::GetStringUTF16(IDS_EXTENSION_PROMPT_ALLOW_SITE_ACCESS_TITLE),
+      group_node_data.GetString16Attribute(ax::mojom::StringAttribute::kName));
+
+  CloseAndWait(delegate_view->GetWidget());
+}
+
+// Verifies that accepting the dialog with the "on click" radio button selected
+// withholds permissions.
+IN_PROC_BROWSER_TEST_F(ExtensionInstallDialogWithWithholdPermissionsUI,
+                       AcceptWithOnClickSelectedWithholdsPermissions) {
+  ExtensionInstallDialogView::SetInstallButtonDelayForTesting(0);
+  ExtensionInstallPromptTestHelper helper;
+  ExtensionInstallDialogView* delegate_view = CreateAndShowPrompt(&helper);
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return delegate_view->IsDialogButtonEnabled(ui::mojom::DialogButton::kOk);
+  }));
+
+  ASSERT_TRUE(delegate_view->on_click_radio_button_for_testing());
+  EXPECT_TRUE(delegate_view->on_click_radio_button_for_testing()->GetChecked());
+
+  delegate_view->AcceptDialog();
+  EXPECT_EQ(ExtensionInstallPrompt::Result::ACCEPTED_WITH_WITHHELD_PERMISSIONS,
+            helper.result());
+}
+
+// Verifies that accepting the dialog with the "always on all sites" radio
+// button selected grants permissions.
+IN_PROC_BROWSER_TEST_F(ExtensionInstallDialogWithWithholdPermissionsUI,
+                       AcceptWithAlwaysAllSitesSelectedGrantsPermissions) {
+  ExtensionInstallDialogView::SetInstallButtonDelayForTesting(0);
+  ExtensionInstallPromptTestHelper helper;
+  ExtensionInstallDialogView* delegate_view = CreateAndShowPrompt(&helper);
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return delegate_view->IsDialogButtonEnabled(ui::mojom::DialogButton::kOk);
+  }));
+
+  ASSERT_TRUE(delegate_view->always_all_sites_radio_button_for_testing());
+  delegate_view->always_all_sites_radio_button_for_testing()->SetChecked(true);
+
+  delegate_view->AcceptDialog();
+  EXPECT_EQ(ExtensionInstallPrompt::Result::ACCEPTED, helper.result());
+}
+
+// Verifies that site access radio buttons are not shown when no host
+// permissions are requested, even if the feature is enabled.
+IN_PROC_BROWSER_TEST_F(ExtensionInstallDialogWithWithholdPermissionsUI,
+                       DoesNotShowWhenNoHostPermissions) {
+  ExtensionInstallPromptTestHelper helper;
+  ExtensionInstallDialogView* delegate_view =
+      CreateAndShowPrompt(&helper, /*with_host_permissions=*/false);
+
+  EXPECT_EQ(nullptr, delegate_view->on_click_radio_button_for_testing());
+  EXPECT_EQ(nullptr,
+            delegate_view->always_all_sites_radio_button_for_testing());
+
+  CloseAndWait(delegate_view->GetWidget());
+}
+
+class ExtensionInstallDialogWithoutWithholdPermissionsUI
+    : public ExtensionInstallDialogSiteAccessTestBase {
+ public:
+  ExtensionInstallDialogWithoutWithholdPermissionsUI() {
+    scoped_feature_list_.InitAndDisableFeature(
+        extensions_features::kExtensionInstallSiteAccessOptions);
+  }
+
+  ExtensionInstallDialogWithoutWithholdPermissionsUI(
+      const ExtensionInstallDialogWithoutWithholdPermissionsUI&) = delete;
+  ExtensionInstallDialogWithoutWithholdPermissionsUI& operator=(
+      const ExtensionInstallDialogWithoutWithholdPermissionsUI&) = delete;
+
+ private:
+  base::test::ScopedFeatureList scoped_feature_list_;
+};
+
+// Verifies that site access radio buttons are not shown when the feature is
+// disabled.
+IN_PROC_BROWSER_TEST_F(ExtensionInstallDialogWithoutWithholdPermissionsUI,
+                       DoesNotShowWithholdUI) {
+  ExtensionInstallPromptTestHelper helper;
+  ExtensionInstallDialogView* delegate_view = CreateAndShowPrompt(&helper);
+
+  EXPECT_EQ(nullptr, delegate_view->on_click_radio_button_for_testing());
+  EXPECT_EQ(nullptr,
+            delegate_view->always_all_sites_radio_button_for_testing());
 
   CloseAndWait(delegate_view->GetWidget());
 }
@@ -859,8 +980,8 @@ class ExtensionInstallDialogViewRequestTest
       ExtensionInstallPromptTestHelper* helper) {
     PermissionMessages permissions;
     permissions.emplace_back(u"Permission message", PermissionIDSet());
-    std::unique_ptr<ExtensionInstallPrompt::Prompt> prompt =
-        CreatePrompt(ExtensionInstallPrompt::EXTENSION_REQUEST_PROMPT);
+    std::unique_ptr<InstallPromptData> prompt =
+        CreatePrompt(InstallPromptData::EXTENSION_REQUEST_PROMPT);
     prompt->AddPermissionMessages(permissions);
 
     auto dialog = std::make_unique<ExtensionInstallDialogView>(
@@ -871,7 +992,7 @@ class ExtensionInstallDialogViewRequestTest
     views::Widget* modal_dialog = views::DialogDelegate::CreateDialogWidget(
         dialog.release(), gfx::NativeWindow(),
         platform_util::GetViewForWindow(
-            browser()->window()->GetNativeWindow()));
+            browser()->GetWindow()->GetNativeWindow()));
     modal_dialog->Show();
 
     return delegate_view;

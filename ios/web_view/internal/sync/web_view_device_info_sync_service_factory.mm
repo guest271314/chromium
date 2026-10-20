@@ -4,8 +4,10 @@
 
 #import "ios/web_view/internal/sync/web_view_device_info_sync_service_factory.h"
 
+#import <optional>
 #import <utility>
 
+#import "base/containers/flat_set.h"
 #import "base/feature_list.h"
 #import "base/features.h"
 #import "base/functional/bind.h"
@@ -42,9 +44,6 @@ class DeviceInfoSyncClient : public syncer::DeviceInfoSyncClient {
   std::string GetSigninScopedDeviceId() const override {
     return signin::GetSigninScopedDeviceId(prefs_);
   }
-
-  // syncer::DeviceInfoSyncClient:
-  bool GetSendTabToSelfReceivingEnabled() const override { return false; }
 
   // syncer::DeviceInfoSyncClient:
   syncer::DeviceInfo::SendTabReceivingType GetSendTabToSelfReceivingType()
@@ -102,6 +101,23 @@ class DeviceInfoSyncClient : public syncer::DeviceInfoSyncClient {
   syncer::DeviceInfo::GlicExperimentalTriggeringState
   GetGlicExperimentalTriggeringState() const override {
     return syncer::DeviceInfo::GlicExperimentalTriggeringState::kUnavailable;
+  }
+
+  // syncer::DeviceInfoSyncClient:
+  std::optional<int> GetGlicExperimentalTriggeringVersion() const override {
+    return std::nullopt;
+  }
+
+  // syncer::DeviceInfoSyncClient:
+  base::flat_set<std::string> GetGlicExperimentalTriggeringCapabilities()
+      const override {
+    return {};
+  }
+
+  // syncer::DeviceInfoSyncClient:
+  syncer::DeviceInfo::PersonalContextInfo::StatusOrInfo
+  GetLocalPersonalContextInfo() const override {
+    return syncer::DeviceInfo::PersonalContextInfo::NotEligible();
   }
 
  private:
@@ -162,9 +178,7 @@ WebViewDeviceInfoSyncServiceFactory::BuildServiceInstanceFor(
       std::move(local_device_info_provider), std::move(device_prefs),
       std::move(device_info_sync_client), sync_invalidations_service,
       /*pulse_task_runner=*/
-      base::FeatureList::IsEnabled(base::features::kReducePPMs)
-          ? web::GetUIThreadTaskRunner({base::TaskPriority::BEST_EFFORT})
-          : web::GetUIThreadTaskRunner({}));
+      web::GetUIThreadTaskRunner({base::TaskPriority::BEST_EFFORT}));
 }
 
 }  // namespace ios_web_view

@@ -4,6 +4,7 @@
 
 package org.chromium.chrome.browser.tabmodel;
 
+import static org.hamcrest.CoreMatchers.is;
 import static org.hamcrest.CoreMatchers.notNullValue;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -35,7 +36,6 @@ import org.chromium.base.Token;
 import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.Criteria;
 import org.chromium.base.test.util.CriteriaHelper;
-import org.chromium.base.test.util.DisableIf;
 import org.chromium.base.test.util.DoNotBatch;
 import org.chromium.base.test.util.ImportantFormFactors;
 import org.chromium.base.test.util.MinAndroidSdkLevel;
@@ -50,7 +50,6 @@ import org.chromium.chrome.browser.ui.browser_window.ChromeAndroidTaskTrackerFac
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.chrome.test.transit.AutoResetCtaTransitTestRule;
 import org.chromium.chrome.test.transit.ChromeTransitTestRules;
-import org.chromium.chrome.test.transit.page.WebPageStation;
 import org.chromium.chrome.test.util.ChromeTabUtils;
 import org.chromium.components.embedder_support.util.UrlConstants;
 import org.chromium.ui.base.DeviceFormFactor;
@@ -79,12 +78,11 @@ public class TabModelMultiWindowTest {
     @Mock
     private MediaCaptureDevicesDispatcherAndroid.Natives mMediaCaptureDevicesDispatcherAndroidJni;
 
-    private WebPageStation mPage;
     private TabModelJniBridge mTabModelJni;
 
     @Before
     public void setUp() {
-        mPage = mActivityTestRule.startOnBlankPage();
+        mActivityTestRule.startOnBlankPage();
         mTabModelJni =
                 (TabModelJniBridge)
                         mActivityTestRule.getActivity().getTabModelSelector().getModel(false);
@@ -112,14 +110,16 @@ public class TabModelMultiWindowTest {
         runOnUiThreadBlocking(
                 () -> mTabModelJni.moveTabToWindowForTesting(tabToMove, nativeBrowserWindow2, 0));
 
-        assertEquals(initialTabCount - 1, getTabCountOnUiThread(mTabModelJni));
         TabModel model2 = activity2.getTabModelSelector().getModel(false);
-        assertEquals(2, getTabCountOnUiThread(model2));
+        CriteriaHelper.pollUiThread(
+                () -> {
+                    Criteria.checkThat(mTabModelJni.getCount(), is(initialTabCount - 1));
+                    Criteria.checkThat(model2.getCount(), is(2));
+                });
         assertEquals(tabToMove, runOnUiThreadBlocking(() -> model2.getTabAt(0)));
     }
 
     @Test
-    @DisableIf.Device(DeviceFormFactor.DESKTOP) // https://crbug.com/481443908
     @LargeTest
     public void testMoveTabGroupToWindow() {
         ChromeTabbedActivity activity1 = mActivityTestRule.getActivity();
@@ -143,9 +143,12 @@ public class TabModelMultiWindowTest {
                     assertTrue(moved);
                 });
 
-        assertEquals(initialTabCount - 2, getTabCountOnUiThread(mTabModelJni));
         TabModel model2 = activity2.getTabModelSelector().getModel(false);
-        assertEquals(3, getTabCountOnUiThread(model2));
+        CriteriaHelper.pollUiThread(
+                () -> {
+                    Criteria.checkThat(mTabModelJni.getCount(), is(initialTabCount - 2));
+                    Criteria.checkThat(model2.getCount(), is(3));
+                });
         assertEquals(group.get(0), runOnUiThreadBlocking(() -> model2.getTabAt(0)));
         assertEquals(group.get(1), runOnUiThreadBlocking(() -> model2.getTabAt(1)));
         assertEquals(groupId, group.get(0).getTabGroupId());
@@ -153,7 +156,6 @@ public class TabModelMultiWindowTest {
     }
 
     @Test
-    @DisableIf.Device(DeviceFormFactor.DESKTOP) // https://crbug.com/481443908
     @LargeTest
     public void testMoveTabGroupToWindowFailure() {
         // Create a tab group.
@@ -162,7 +164,7 @@ public class TabModelMultiWindowTest {
         createTabGroup(2, tabModel);
 
         // Create an invalid group ID.
-        Token invalidGroupId = new Token(0, 0);
+        Token invalidGroupId = Token.EMPTY;
 
         // Create a new window.
         ChromeTabbedActivity activity2 = createNewWindow(activity1);

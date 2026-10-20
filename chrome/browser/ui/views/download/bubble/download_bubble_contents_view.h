@@ -9,11 +9,12 @@
 #include "base/memory/weak_ptr.h"
 #include "chrome/browser/download/download_ui_model.h"
 #include "chrome/browser/ui/download/download_bubble_contents_view_info.h"
+#include "chrome/browser/ui/views/download/bubble/download_bubble_mode.h"
 #include "chrome/browser/ui/views/download/bubble/download_bubble_security_view.h"
 #include "ui/base/metadata/metadata_header_macros.h"
 #include "ui/views/view.h"
 
-class Browser;
+class BrowserWindowInterface;
 class DownloadBubbleNavigationHandler;
 class DownloadBubblePrimaryView;
 class DownloadBubbleRowView;
@@ -45,11 +46,11 @@ class DownloadBubbleContentsView : public views::View,
   };
 
   DownloadBubbleContentsView(
-      base::WeakPtr<Browser> browser,
+      BrowserWindowInterface* browser,
       base::WeakPtr<DownloadBubbleUIController> bubble_controller,
       base::WeakPtr<DownloadBubbleNavigationHandler> navigation_handler,
       // Whether the primary view is the partial view.
-      bool primary_view_is_partial_view,
+      DownloadBubbleMode mode,
       std::unique_ptr<DownloadBubbleContentsViewInfo> info,
       // The owning bubble's delegate.
       views::BubbleDialogDelegate* bubble_delegate);
